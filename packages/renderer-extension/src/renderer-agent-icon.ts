@@ -14,6 +14,7 @@ export const RENDERER_AGENT_LABELS: Record<RendererAgent, string> = {
   grok: "Grok",
   omp: "Oh My Pi",
   codebuddy: "CodeBuddy",
+  antigravity: "Antigravity CLI",
 };
 
 const PI_PATHS = [
@@ -114,6 +115,18 @@ export function createRendererAgentIcon(
   }
   if (agent === "codebuddy") {
     return createSvgIcon([{ d: CODEBUDDY_MARK_PATH }], "#4a89ff", size, ownerDocument);
+  }
+  if (agent === "antigravity") {
+    const image = ownerDocument.createElement("img");
+    image.src = antigravityAgentIconUrl;
+    image.alt = "";
+    image.draggable = false;
+    image.style.width = `${size}px`;
+    image.style.height = `${size}px`;
+    image.style.objectFit = "contain";
+    image.style.borderRadius = "22.37%";
+    image.style.flex = "none";
+    return image;
   }
   const mark = ownerDocument.createElement("img");
   mark.src = grokAgentIconUrl;

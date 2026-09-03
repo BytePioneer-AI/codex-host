@@ -115,5 +115,14 @@ export function createExternalHarnessAdapters(
         environment,
       }),
     ],
+    [
+      "antigravity",
+      new AntigravityAdapter({
+        ...(environment[ANTIGRAVITY_COMMAND_ENV]
+          ? { command: environment[ANTIGRAVITY_COMMAND_ENV] }
+          : {}),
+        environment,
+      }),
+    ],
   ]);
 }

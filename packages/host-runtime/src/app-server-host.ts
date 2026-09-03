@@ -306,6 +306,8 @@ function approvalServerName(harnessId: ExternalHarnessId): string {
       return "Oh My Pi";
     case "codebuddy":
       return "CodeBuddy";
+    case "antigravity":
+      return "Antigravity CLI";
   }
 }
 

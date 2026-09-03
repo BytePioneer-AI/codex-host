@@ -42,6 +42,8 @@ export const OMP_TRANSPORT_MODEL_ID = "codexhost/omp-native";
 export const OMP_TRANSPORT_MODEL_PREFIX = `${OMP_TRANSPORT_MODEL_ID}@`;
 export const CODEBUDDY_TRANSPORT_MODEL_ID = "codexhost/codebuddy-native";
 export const CODEBUDDY_TRANSPORT_MODEL_PREFIX = `${CODEBUDDY_TRANSPORT_MODEL_ID}@`;
+export const ANTIGRAVITY_TRANSPORT_MODEL_ID = "codexhost/antigravity-native";
+export const ANTIGRAVITY_TRANSPORT_MODEL_PREFIX = `${ANTIGRAVITY_TRANSPORT_MODEL_ID}@`;
 
 export type RendererAdapterState = "installing" | "ready" | "unsupported";
 
@@ -139,6 +141,7 @@ function transportModelIdForAgent(agent: RendererAgent): string | null {
   if (agent === "grok") return GROK_TRANSPORT_MODEL_ID;
   if (agent === "omp") return OMP_TRANSPORT_MODEL_ID;
   if (agent === "codebuddy") return CODEBUDDY_TRANSPORT_MODEL_ID;
+  if (agent === "antigravity") return ANTIGRAVITY_TRANSPORT_MODEL_ID;
   return null;
 }
 
@@ -961,10 +964,12 @@ export function modelSelectionForAgent(
             : agent === "grok"
               ? grokTransportModelId(model, permissionModeId, thinkingOptionId)
               : agent === "omp"
-                ? ompTransportModelId(model, thinkingOptionId)
+                ? ompTransportModelId(model, thinkingOptionId, permissionModeId)
                 : agent === "codebuddy"
                   ? codeBuddyTransportModelId(model, permissionModeId)
-                  : transportModelIdForAgent(agent);
+                  : agent === "antigravity"
+                    ? antigravityTransportModelId(model, permissionModeId, thinkingOptionId)
+                    : transportModelIdForAgent(agent);
   return transportModelId ? { model: transportModelId, reasoningEffort } : officialSelection;
 }
 

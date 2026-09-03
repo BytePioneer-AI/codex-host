@@ -22,6 +22,8 @@ export const OMP_NATIVE_TRANSPORT_MODEL_ID = "codexhost/omp-native";
 export const OMP_NATIVE_TRANSPORT_MODEL_PREFIX = `${OMP_NATIVE_TRANSPORT_MODEL_ID}@`;
 export const CODEBUDDY_NATIVE_TRANSPORT_MODEL_ID = "codexhost/codebuddy-native";
 export const CODEBUDDY_NATIVE_TRANSPORT_MODEL_PREFIX = `${CODEBUDDY_NATIVE_TRANSPORT_MODEL_ID}@`;
+export const ANTIGRAVITY_NATIVE_TRANSPORT_MODEL_ID = "codexhost/antigravity-native";
+export const ANTIGRAVITY_NATIVE_TRANSPORT_MODEL_PREFIX = `${ANTIGRAVITY_NATIVE_TRANSPORT_MODEL_ID}@`;
 export const EXTERNAL_HARNESS_IDS = [
   "pi",
   "claude-code",
@@ -30,6 +32,7 @@ export const EXTERNAL_HARNESS_IDS = [
   "grok",
   "omp",
   "codebuddy",
+  "antigravity",
 ] as const;
 
 export type ExternalHarnessId = (typeof EXTERNAL_HARNESS_IDS)[number];
@@ -43,6 +46,7 @@ const transportModelByHarness = {
   grok: GROK_NATIVE_TRANSPORT_MODEL_ID,
   omp: OMP_NATIVE_TRANSPORT_MODEL_ID,
   codebuddy: CODEBUDDY_NATIVE_TRANSPORT_MODEL_ID,
+  antigravity: ANTIGRAVITY_NATIVE_TRANSPORT_MODEL_ID,
 } as const satisfies Record<ExternalHarnessId, string>;
 
 const harnessByTransportModel = new Map<string, ExternalHarnessId>(
@@ -567,9 +571,19 @@ export function encodeExternalTransportSelection(
         selection.thinkingOptionId,
       );
     case "omp":
-      return encodeOmpTransportModel(selection.model, selection.thinkingOptionId);
+      return encodeOmpTransportModel(
+        selection.model,
+        selection.thinkingOptionId,
+        selection.permissionModeId,
+      );
     case "codebuddy":
       return encodeCodeBuddyTransportModel(selection.model, selection.permissionModeId);
+    case "antigravity":
+      return encodeAntigravityTransportModel(
+        selection.model,
+        selection.permissionModeId,
+        selection.thinkingOptionId,
+      );
   }
 }
 
@@ -592,6 +606,8 @@ export function decodeExternalTransportSelection(
       return decodeOmpTransportSelection(value);
     case "codebuddy":
       return decodeCodeBuddyTransportSelection(value);
+    case "antigravity":
+      return decodeAntigravityTransportSelection(value);
   }
 }
 
@@ -670,6 +686,15 @@ export function decodeCreateRoute(request: JsonRpcRequest): CreateRoute | null {
       routeMode: "native",
       transportModelId: request.params.model,
       ...codeBuddySelection,
+    };
+  }
+  const antigravitySelection = decodeAntigravityTransportSelection(request.params.model);
+  if (antigravitySelection !== null) {
+    return {
+      harnessId: "antigravity",
+      routeMode: "native",
+      transportModelId: request.params.model,
+      ...antigravitySelection,
     };
   }
 

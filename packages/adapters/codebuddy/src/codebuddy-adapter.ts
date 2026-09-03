@@ -81,6 +81,7 @@ const SESSION_CAPABILITIES: HarnessSessionCapabilities = {
     selectModel: true,
     selectThinkingOption: false,
     selectPermissionMode: true,
+    permissionModeScope: "atCreate",
   },
   history: { fork: false, forkAcrossCwd: false, rollbackLastTurn: false },
 };

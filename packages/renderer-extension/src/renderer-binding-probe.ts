@@ -87,6 +87,7 @@ const externalHarnessIds = {
   grok: harnessIdSchema.parse("grok"),
   omp: harnessIdSchema.parse("omp"),
   codebuddy: harnessIdSchema.parse("codebuddy"),
+  antigravity: harnessIdSchema.parse("antigravity"),
 } as const;
 
 const externalAgents: readonly ExternalRendererAgent[] = [
@@ -97,6 +98,7 @@ const externalAgents: readonly ExternalRendererAgent[] = [
   "grok",
   "omp",
   "codebuddy",
+  "antigravity",
 ];
 type HarnessAvailability = Partial<Record<ExternalRendererAgent, RendererAgentAvailability>>;
 type HarnessAvailabilityErrors = Record<ExternalRendererAgent, CodexhostError | undefined>;
@@ -432,6 +434,23 @@ export function restoredThreadOwnership(inspection: ThreadInspection): RestoredT
       ...(permissionModeId ? { permissionModeId } : {}),
     };
   }
+  if (inspection.harnessId === "antigravity") {
+    const transportSelection = decodeAntigravityTransportModelId(inspection.transportModelId);
+    if (!transportSelection) {
+      throw new Error("Antigravity Thread reported an incompatible transport Model");
+    }
+    const model = inspection.effectiveModel ?? transportSelection.model;
+    const thinkingOptionId =
+      selectableThinkingOptionId(inspection) ?? transportSelection.thinkingOptionId;
+    const permissionModeId =
+      inspection.effectivePermissionModeId ?? transportSelection.permissionModeId;
+    return {
+      agent: "antigravity",
+      ...(model ? { model } : {}),
+      ...(thinkingOptionId ? { thinkingOptionId } : {}),
+      ...(permissionModeId ? { permissionModeId } : {}),
+    };
+  }
   throw new Error("Thread owner is not a Renderer Agent");
 }
 
@@ -644,6 +663,7 @@ export function installRendererBindingProbe(
       grok: undefined,
       omp: undefined,
       codebuddy: undefined,
+      antigravity: undefined,
     },
     requestGeneration: 0,
     request: null,

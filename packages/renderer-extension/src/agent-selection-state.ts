@@ -13,6 +13,7 @@ export const KNOWN_RENDERER_AGENTS = [
   "grok",
   "omp",
   "codebuddy",
+  "antigravity",
 ] as const;
 export const DEFAULT_RENDERER_AGENTS = KNOWN_RENDERER_AGENTS;
 export type RendererAgent = (typeof KNOWN_RENDERER_AGENTS)[number];
@@ -37,6 +38,8 @@ export interface DraftComposerState {
   ompModel?: HarnessModelRef;
   ompThinkingOptionId?: HarnessThinkingOptionId;
   codebuddyModel?: HarnessModelRef;
+  antigravityModel?: HarnessModelRef;
+  antigravityThinkingOptionId?: HarnessThinkingOptionId;
   permissionModeByAgent?: Partial<Record<ExternalRendererAgent, HarnessPermissionModeId>>;
 }
 
@@ -201,6 +204,7 @@ export class DraftAgentController<Composer extends object> {
     if (agent === "grok" && model) state.grokModel = model;
     if (agent === "omp" && model) state.ompModel = model;
     if (agent === "codebuddy" && model) state.codebuddyModel = model;
+    if (agent === "antigravity" && model) state.antigravityModel = model;
     if (agent === "pi" && thinkingOptionId) state.piThinkingOptionId = thinkingOptionId;
     else if (agent === "pi") delete state.piThinkingOptionId;
     if (agent === "claude-code" && thinkingOptionId) {
@@ -226,6 +230,7 @@ export class DraftAgentController<Composer extends object> {
         "grok",
         "omp",
         "codebuddy",
+        "antigravity",
       ] as const) {
         const current = state.permissionModeByAgent?.[candidate];
         if (candidate !== agent && current) permissionModeByAgent[candidate] = current;
@@ -248,6 +253,7 @@ export class DraftAgentController<Composer extends object> {
     if (agent === "opencode") return state.openCodeModel;
     if (agent === "grok") return state.grokModel;
     if (agent === "codebuddy") return state.codebuddyModel;
+    if (agent === "antigravity") return state.antigravityModel;
     return state.ompModel;
   }
 
@@ -261,6 +267,7 @@ export class DraftAgentController<Composer extends object> {
     if (agent === "grok") return state.grokThinkingOptionId;
     if (agent === "opencode") return state.openCodeThinkingOptionId;
     if (agent === "codebuddy") return undefined;
+    if (agent === "antigravity") return state.antigravityThinkingOptionId;
     return state.ompThinkingOptionId;
   }
 
@@ -296,6 +303,7 @@ export class DraftAgentController<Composer extends object> {
     else if (agent === "opencode") state.openCodeModel = model;
     else if (agent === "grok") state.grokModel = model;
     else if (agent === "codebuddy") state.codebuddyModel = model;
+    else if (agent === "antigravity") state.antigravityModel = model;
     else state.ompModel = model;
     return state;
   }

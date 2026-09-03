@@ -110,6 +110,7 @@ describe("Renderer Composer DOM behavior", () => {
           grok: undefined,
           omp: undefined,
           codebuddy: undefined,
+          antigravity: undefined,
         },
       ),
     ).toEqual([]);
@@ -137,6 +138,7 @@ describe("Renderer Composer DOM behavior", () => {
           grok: undefined,
           omp: undefined,
           codebuddy: undefined,
+          antigravity: undefined,
         },
       ),
     ).toEqual(["deepseek-harness"]);
@@ -164,6 +166,7 @@ describe("Renderer Composer DOM behavior", () => {
           grok: undefined,
           omp: undefined,
           codebuddy: undefined,
+          antigravity: undefined,
         },
       ),
     ).toEqual(["deepseek-harness"]);
@@ -189,6 +192,7 @@ describe("Renderer Composer DOM behavior", () => {
           grok: undefined,
           omp: undefined,
           codebuddy: undefined,
+          antigravity: undefined,
         },
       ),
     ).toEqual(["pi", "claude-code", "deepseek-harness", "opencode", "grok", "omp", "antigravity"]);
@@ -216,6 +220,7 @@ describe("Renderer Composer DOM behavior", () => {
           grok: undefined,
           omp: undefined,
           codebuddy: undefined,
+          antigravity: undefined,
         },
       ),
     ).toEqual([]);
@@ -243,6 +248,7 @@ describe("Renderer Composer DOM behavior", () => {
           grok: undefined,
           omp: undefined,
           codebuddy: undefined,
+          antigravity: undefined,
         },
       ),
     ).toEqual(["deepseek-harness"]);

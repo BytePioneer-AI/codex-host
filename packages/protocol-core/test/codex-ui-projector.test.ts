@@ -98,7 +98,7 @@ describe("Codex UI projector", () => {
           id: "turn-1-user",
           type: "userMessage",
           clientId: null,
-          content: [{ type: "text", text: "question" }],
+          content: [{ type: "text", text: "question", text_elements: [] }],
         },
         {
           id: "historical-reasoning-summary",

@@ -832,7 +832,7 @@ export function projectHistoricalTurn(input: HistoricalTurnProjectionInput): Jso
         id: `${turnId}-user`,
         type: "userMessage",
         clientId: null,
-        content: snapshot.input.map(({ text }) => ({ type: "text", text })),
+        content: snapshot.input.map(({ text }) => ({ type: "text", text, text_elements: [] })),
       },
       ...snapshot.items.flatMap(({ item, outcome }) => {
         if (item.type === "toolExecution") {
@@ -1449,7 +1449,7 @@ export class CodexTurnProjector {
             id: `${this.#turnId}-user`,
             type: "userMessage",
             clientId: null,
-            content: this.#input.map(({ text }) => ({ type: "text", text })),
+            content: this.#input.map(({ text }) => ({ type: "text", text, text_elements: [] })),
           },
         ];
   }

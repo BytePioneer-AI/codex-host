@@ -19,6 +19,7 @@ import {
 import {
   DEFAULT_RENDERER_AGENTS,
   DraftAgentController,
+  EXTERNAL_RENDERER_AGENTS,
   type ComposerAgentPhase,
   type ExternalRendererAgent,
   type RendererAgent,
@@ -88,15 +89,7 @@ const externalHarnessIds = {
   antigravity: harnessIdSchema.parse("antigravity"),
 } as const;
 
-const externalAgents: readonly ExternalRendererAgent[] = [
-  "pi",
-  "claude-code",
-  "deepseek-harness",
-  "opencode",
-  "grok",
-  "omp",
-  "antigravity",
-];
+const externalAgents = EXTERNAL_RENDERER_AGENTS;
 type HarnessAvailability = Partial<Record<ExternalRendererAgent, RendererAgentAvailability>>;
 type HarnessAvailabilityErrors = Record<ExternalRendererAgent, CodexhostError | undefined>;
 

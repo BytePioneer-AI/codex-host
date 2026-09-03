@@ -494,6 +494,28 @@ describe("Renderer draft Agent controller", () => {
     expect(agents.thinkingOptionForAgent(draft, "antigravity")).toBeUndefined();
   });
 
+  it("keeps every external Agent's permission mode when another Agent is restored", () => {
+    const composer = {};
+    const agents = controller();
+    const piMode = harnessPermissionModeIdSchema.parse("acceptEdits");
+    const antigravityMode = harnessPermissionModeIdSchema.parse("plan");
+    const opencodeMode = harnessPermissionModeIdSchema.parse("bypassPermissions");
+
+    agents.mount(composer, ["default"]);
+    agents.setExternalPermissionMode(composer, "antigravity", antigravityMode);
+    agents.setExternalPermissionMode(composer, "opencode", opencodeMode);
+
+    expect(agents.restore(composer, "pi", undefined, undefined, piMode)).toMatchObject({
+      agent: "pi",
+      phase: "locked",
+      permissionModeByAgent: {
+        pi: piMode,
+        antigravity: antigravityMode,
+        opencode: opencodeMode,
+      },
+    });
+  });
+
   it("applies the target Agent before clearing stale prewarm", async () => {
     const composer = {};
     const agents = controller();

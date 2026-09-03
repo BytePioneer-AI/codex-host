@@ -8,7 +8,7 @@ Define secure, isolated, and reversible execution of registered Harnesses throug
 
 ### Requirement: Remote Host SHALL use Codex's native SSH control transport
 
-On macOS and Linux, codexhost SHALL recognize a Codex `app-server --listen unix://` invocation, own the resolved Unix control socket, accept Codex WebSocket connections, and create one Host session per connection. One long-lived stock Codex app-server listener SHALL serve all of those Host sessions through a private sibling Unix socket, with one independent WebSocket connection per Host session. The native Shim SHALL forward `app-server proxy` and other app-server management commands to stock Codex without entering Host Runtime.
+On macOS and Linux, codexhost SHALL recognize a Codex `app-server --listen unix://` invocation, own the resolved Unix control socket, accept Codex WebSocket connections, and create one Host session per connection. One long-lived stock Codex app-server listener SHALL serve all of those Host sessions through a private sibling Unix socket, with one independent WebSocket connection per Host session. An unexpected Desktop transport disconnect SHALL end that Host session's Desktop input without treating the disconnect as a user cancellation. If an official or external Harness Turn is active, or an official `turn/start` has been forwarded and is awaiting its response, the Host session SHALL retain its owned runtime resources until the work reaches a real terminal event. Explicit listener shutdown SHALL still hard-close every owned Host session. The native Shim SHALL forward `app-server proxy` and other app-server management commands to stock Codex without entering Host Runtime.
 
 #### Scenario: Desktop connects through the stock proxy
 
@@ -33,6 +33,29 @@ On macOS and Linux, codexhost SHALL recognize a Codex `app-server --listen unix:
 - **AND** the stock app-server attaches the second connection to its loaded Thread and native subscription state
 - **AND** codexhost does not start a competing stdio app-server or surface an `active writer` error caused by a second process
 - **AND** closing either Desktop connection does not stop the shared stock listener or the remaining connection
+
+#### Scenario: Desktop transport drops during an active Turn
+
+- **GIVEN** a remote Host session has an active native Codex or external Harness Turn
+- **WHEN** its Desktop WebSocket closes without an explicit `turn/interrupt`
+- **THEN** codexhost ends only that session's Desktop input and does not send or synthesize Turn cancellation
+- **AND** the owned official connection and Harness Session remain alive until the Turn emits its real terminal event
+- **AND** the terminal state is persisted before the disconnected Host session releases its resources
+
+#### Scenario: Desktop transport drops while official Turn start is in flight
+
+- **GIVEN** a remote Host session has forwarded an official `turn/start` request
+- **WHEN** its Desktop WebSocket closes before the response or `turn/started` event arrives
+- **THEN** codexhost retains the official connection while the start request is pending
+- **AND** a successful response keeps the session alive until `turn/completed`
+- **AND** a failed response releases the disconnected session without leaking it
+
+#### Scenario: Remote listener stops with detached work
+
+- **GIVEN** a Desktop WebSocket has disconnected while its Host session is draining active work
+- **WHEN** the remote listener is explicitly stopped
+- **THEN** codexhost hard-closes the detached Host session and all of its owned resources
+- **AND** listener shutdown does not wait indefinitely for the Turn to finish
 
 ### Requirement: Remote Harness execution SHALL remain local to the SSH host
 

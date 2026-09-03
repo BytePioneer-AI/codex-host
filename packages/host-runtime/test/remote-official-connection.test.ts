@@ -125,6 +125,7 @@ describe("remote official app-server connection", () => {
           await new Promise<void>((resolve) => input.once("close", resolve));
           return 0;
         },
+        disconnect: () => input.destroy(),
         close: () => input.destroy(),
       }),
     });

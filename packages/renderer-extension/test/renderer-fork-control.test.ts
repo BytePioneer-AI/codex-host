@@ -165,6 +165,42 @@ describe("Renderer external Thread Fork control", () => {
     expect(remote.click).toHaveBeenCalledOnce();
   });
 
+  it("opens a delayed Host-qualified row and releases its observer", async () => {
+    const local = sidebarRow("delayed-thread", "local");
+    let rows: HTMLElement[] = [];
+    const callbacks: MutationCallback[] = [];
+    const disconnect = vi.fn();
+    class FakeMutationObserver {
+      constructor(callback: MutationCallback) {
+        callbacks.push(callback);
+      }
+      observe = vi.fn();
+      disconnect = disconnect;
+    }
+    vi.stubGlobal("document", {
+      querySelectorAll: () => rows,
+      documentElement: {},
+    });
+    vi.stubGlobal("window", {
+      setTimeout: globalThis.setTimeout,
+      clearTimeout: globalThis.clearTimeout,
+    });
+    vi.stubGlobal("MutationObserver", FakeMutationObserver);
+    const opening = openRendererThread(hostThreadIdSchema.parse("delayed-thread"), {
+      hostId: "local",
+      timeoutMs: 60_000,
+    });
+
+    rows = [local];
+    const notify = callbacks[0];
+    if (!notify) throw new Error("Sidebar observer was not installed");
+    notify([], {} as MutationObserver);
+    await opening;
+
+    expect(local.click).toHaveBeenCalledOnce();
+    expect(disconnect).toHaveBeenCalledOnce();
+  });
+
   it("aborts a pending sidebar wait and releases its observer", async () => {
     const disconnect = vi.fn();
     class FakeMutationObserver {

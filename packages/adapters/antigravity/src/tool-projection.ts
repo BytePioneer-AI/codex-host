@@ -74,13 +74,41 @@ function unwrapParameters(value: unknown): Record<string, unknown> | null {
   return null;
 }
 
+export function unwrapJsonString(value: string): string {
+  if (
+    (value.startsWith('"') && value.endsWith('"') && value.length >= 2) ||
+    (value.startsWith("'") && value.endsWith("'") && value.length >= 2)
+  ) {
+    try {
+      const parsed = JSON.parse(value);
+      if (typeof parsed === "string") return parsed;
+    } catch {
+      return value.slice(1, -1);
+    }
+  }
+  const trimmed = value.trim();
+  if (
+    trimmed !== value &&
+    ((trimmed.startsWith('"') && trimmed.endsWith('"') && trimmed.length >= 2) ||
+      (trimmed.startsWith("'") && trimmed.endsWith("'") && trimmed.length >= 2))
+  ) {
+    try {
+      const parsed = JSON.parse(trimmed);
+      if (typeof parsed === "string") return parsed;
+    } catch {
+      return trimmed.slice(1, -1);
+    }
+  }
+  return value;
+}
+
 function extractString(
   record: Record<string, unknown>,
   keys: readonly string[],
 ): string | undefined {
   for (const key of keys) {
     const val = record[key];
-    if (typeof val === "string") return val;
+    if (typeof val === "string") return unwrapJsonString(val);
   }
   for (const wrapper of ["input", "arguments", "params", "parameters"] as const) {
     if (isRecord(record[wrapper])) {
@@ -99,7 +127,8 @@ function extractBoolean(
     const val = record[key];
     if (typeof val === "boolean") return val;
     if (typeof val === "string") {
-      const lower = val.toLowerCase().trim();
+      const unwrapped = unwrapJsonString(val);
+      const lower = unwrapped.toLowerCase().trim();
       if (lower === "true") return true;
       if (lower === "false") return false;
     }
@@ -123,7 +152,13 @@ export function compactToolName(toolName: string): string {
 }
 
 const COMPACT_WRITE_TOOLS = new Set(["writetofile", "writefile", "write"]);
-const COMPACT_REPLACE_TOOLS = new Set(["replacefilecontent", "replacecontent", "replace"]);
+const COMPACT_REPLACE_TOOLS = new Set([
+  "replacefilecontent",
+  "replacecontent",
+  "replace",
+  "editfile",
+  "edit",
+]);
 const COMPACT_COMMAND_TOOLS = new Set([
   "runcommand",
   "bash",
@@ -138,6 +173,17 @@ const COMPACT_COMMAND_TOOLS = new Set([
 export function isAntigravityFileMutatingTool(toolName: string): boolean {
   const compact = compactToolName(toolName);
   return COMPACT_WRITE_TOOLS.has(compact) || COMPACT_REPLACE_TOOLS.has(compact);
+}
+
+function normalizeHunkHeader(line: string): string {
+  return line.replace(
+    /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/,
+    (_, oldStart: string, oldCount: string | undefined, newStart: string, newCount: string | undefined) => {
+      const oc = oldCount !== undefined ? oldCount : (oldStart === "0" ? "0" : "1");
+      const nc = newCount !== undefined ? newCount : (newStart === "0" ? "0" : "1");
+      return `@@ -${oldStart},${oc} +${newStart},${nc} @@`;
+    },
+  );
 }
 
 function formatUnifiedDiff(
@@ -168,6 +214,9 @@ function formatUnifiedDiff(
   const cleaned = slice.map((line) => {
     if (line.startsWith("--- ") || line.startsWith("+++ ")) {
       return line.replace(/\t+$/, "");
+    }
+    if (line.startsWith("@@ ")) {
+      return normalizeHunkHeader(line);
     }
     return line;
   });
@@ -236,6 +285,9 @@ export function synthesizeAntigravityFileChange(
       "ReplacementContent",
       "replacementContent",
       "replacement_content",
+      "CodeEdit",
+      "codeEdit",
+      "code_edit",
       "new_string",
       "newString",
       "newText",
@@ -243,14 +295,18 @@ export function synthesizeAntigravityFileChange(
       "content",
       "new",
     ]);
-    if (!rawPath || rawTarget === undefined || rawReplacement === undefined) return null;
+    const isEditTool = compact === "editfile" || compact === "edit";
+    if (!rawPath || rawReplacement === undefined || (!isEditTool && rawTarget === undefined)) {
+      return null;
+    }
+    const oldText = rawTarget ?? "";
     const displayed = displayPath(rawPath, cwd);
     if (!displayed) return null;
     const kind = "update";
     const unifiedDiff = formatUnifiedDiff(
       displayed.path,
       displayed.absolute,
-      rawTarget,
+      oldText,
       rawReplacement,
       kind,
     );

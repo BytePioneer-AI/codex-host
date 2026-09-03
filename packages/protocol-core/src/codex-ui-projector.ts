@@ -117,12 +117,43 @@ function parseJsonIfString(value: unknown): unknown {
   return value;
 }
 
+export function unwrapJsonString(value: string): string {
+  if (
+    (value.startsWith('"') && value.endsWith('"') && value.length >= 2) ||
+    (value.startsWith("'") && value.endsWith("'") && value.length >= 2)
+  ) {
+    try {
+      const parsed = JSON.parse(value);
+      if (typeof parsed === "string") return parsed;
+    } catch {
+      return value.slice(1, -1);
+    }
+  }
+  const trimmed = value.trim();
+  if (
+    trimmed !== value &&
+    ((trimmed.startsWith('"') && trimmed.endsWith('"') && trimmed.length >= 2) ||
+      (trimmed.startsWith("'") && trimmed.endsWith("'") && trimmed.length >= 2))
+  ) {
+    try {
+      const parsed = JSON.parse(trimmed);
+      if (typeof parsed === "string") return parsed;
+    } catch {
+      return trimmed.slice(1, -1);
+    }
+  }
+  return value;
+}
+
 function nestedString(value: unknown, keys: readonly string[]): string | undefined {
   const unwrapped = parseJsonIfString(value);
   if (!isRecord(unwrapped)) return undefined;
   for (const key of keys) {
     const field = unwrapped[key];
-    if (typeof field === "string" && field.trim().length > 0) return field.trim();
+    if (typeof field === "string") {
+      const unwrappedString = unwrapJsonString(field);
+      if (unwrappedString.trim().length > 0) return unwrappedString.trim();
+    }
   }
   for (const wrapper of ["input", "arguments", "params", "parameters"] as const) {
     const nested = nestedString(unwrapped[wrapper], keys);
@@ -136,7 +167,7 @@ function nestedRawString(value: unknown, keys: readonly string[]): string | unde
   if (!isRecord(unwrapped)) return undefined;
   for (const key of keys) {
     const field = unwrapped[key];
-    if (typeof field === "string") return field;
+    if (typeof field === "string") return unwrapJsonString(field);
   }
   for (const wrapper of ["input", "arguments", "params", "parameters"] as const) {
     const nested = nestedRawString(unwrapped[wrapper], keys);
@@ -152,7 +183,8 @@ function extractBoolean(value: unknown, keys: readonly string[]): boolean | unde
     const val = unwrapped[key];
     if (typeof val === "boolean") return val;
     if (typeof val === "string") {
-      const lower = val.toLowerCase().trim();
+      const unwrappedVal = unwrapJsonString(val);
+      const lower = unwrappedVal.toLowerCase().trim();
       if (lower === "true") return true;
       if (lower === "false") return false;
     }
@@ -297,19 +329,27 @@ function isWriteTool(toolName: string): boolean {
 }
 
 function formatHunkRange(start: number, count: number): string {
-  if (count === 1) return `${start}`;
+  if (count === 0) return "0,0";
   return `${start},${count}`;
 }
 
 export function ensureGitDiffHeader(filePath: string, unifiedDiff: string): string {
   const trimmed = unifiedDiff.trim();
   if (!trimmed) return unifiedDiff;
-  if (trimmed.startsWith("diff --git")) return unifiedDiff;
+  const normalizedDiff = trimmed.replace(
+    /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/gm,
+    (_, oldStart: string, oldCount: string | undefined, newStart: string, newCount: string | undefined) => {
+      const oc = oldCount !== undefined ? oldCount : (oldStart === "0" ? "0" : "1");
+      const nc = newCount !== undefined ? newCount : (newStart === "0" ? "0" : "1");
+      return `@@ -${oldStart},${oc} +${newStart},${nc} @@`;
+    },
+  );
+  if (normalizedDiff.startsWith("diff --git")) return normalizedDiff;
   const normalized = filePath.replaceAll("\\", "/");
   const isAbsolute = normalized.startsWith("/") || /^[a-zA-Z]:\//.test(normalized);
   const aPath = isAbsolute ? normalized : `a/${normalized}`;
   const bPath = isAbsolute ? normalized : `b/${normalized}`;
-  return `diff --git ${aPath} ${bPath}\n${unifiedDiff}`;
+  return `diff --git ${aPath} ${bPath}\n${normalizedDiff}`;
 }
 
 function simpleUnifiedDiff(
@@ -414,10 +454,7 @@ export function fileChangeFromTool(
       "codeContent",
       "code_content",
     ]);
-    // Do not turn a partial tool envelope into an empty diff. An explicit
-    // empty string remains a valid empty-file creation.
-    if (rawContent === undefined) return null;
-    const content = rawContent;
+    const content = rawContent ?? "";
     const overwrite = extractBoolean(args, ["Overwrite", "overwrite", "overWrite"]) ?? false;
     const kind = overwrite ? "update" : "add";
     return [
@@ -452,8 +489,7 @@ export function fileChangeFromTool(
     "replacement_content",
     "CodeEdit",
   ]);
-  if (rawNewText === undefined) return null;
-  const newText = rawNewText;
+  const newText = rawNewText ?? "";
   return [
     {
       path: displayedPath,
@@ -1325,8 +1361,25 @@ export class CodexTurnProjector {
       }
       return { messages: [] };
     }
+    let diffChanged = false;
+    if (projected.item.type === "toolExecution") {
+      const completedChanges = fileChangeFromTool(
+        projected.item.toolName,
+        projected.item.arguments,
+        this.#cwd,
+      );
+      if (completedChanges) {
+        const previousDiff = diffText(projected.wireFileChanges ?? []);
+        const newDiff = diffText(completedChanges);
+        projected.wireFileChanges = completedChanges;
+        diffChanged = newDiff !== previousDiff;
+      }
+    }
     const fileItem = wireFileChangeItem(projected);
     const messages = [
+      ...(fileItem && projected.wireFileChanges && diffChanged
+        ? this.#fileChangeUpdates(projected.item.itemId, projected.wireFileChanges)
+        : []),
       completedItem(
         projectItem(
           fileItem ?? projected.item,

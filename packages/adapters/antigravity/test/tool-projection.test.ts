@@ -140,6 +140,23 @@ describe("Antigravity Tool Projection", () => {
         expect(change.path).toBe("data.txt");
       });
 
+      it("unwraps JSON-string-wrapped tool arguments", () => {
+        const changes = synthesizeAntigravityFileChange(
+          "write_to_file",
+          {
+            TargetFile: '"src/wrapped.ts"',
+            CodeContent: '"console.log(\\"wrapped\\");\\n"',
+          },
+          CWD,
+        );
+        expect(changes).not.toBeNull();
+        const [change] = changes ?? [];
+        if (!change) throw new Error("Expected change");
+        expect(change.path).toBe("src/wrapped.ts");
+        expect(change.unifiedDiff).toContain('+console.log("wrapped");');
+        expect(change.unifiedDiff).toMatch(/@@ -0,0 \+1,1 @@/);
+      });
+
       it("returns null when TargetFile or CodeContent is missing", () => {
         expect(
           synthesizeAntigravityFileChange("write_to_file", { TargetFile: "foo.ts" }, CWD),
@@ -229,6 +246,24 @@ describe("Antigravity Tool Projection", () => {
             CWD,
           ),
         ).toBeNull();
+      });
+
+      it("projects edit_file with CodeEdit into update diff with @@ -0,0 +1,N @@ hunk", () => {
+        const changes = synthesizeAntigravityFileChange(
+          "edit_file",
+          {
+            TargetFile: "demo.py",
+            CodeEdit: "print('edited')\n",
+          },
+          CWD,
+        );
+        expect(changes).not.toBeNull();
+        const [change] = changes ?? [];
+        if (!change) throw new Error("Expected change");
+        expect(change.path).toBe("demo.py");
+        expect(change.kind).toBe("update");
+        expect(change.unifiedDiff).toContain("+print('edited')");
+        expect(change.unifiedDiff).toMatch(/@@ -0,0 \+1,1 @@/);
       });
     });
 

@@ -408,14 +408,21 @@ describe("Renderer Composer DOM behavior", () => {
     expect(isComposerInputIntent(event("c", { ctrlKey: true }))).toBe(false);
   });
 
-  it("recognizes only a uniquely described native context control", () => {
+  it("prefers the context-described native control when radial icons coexist", () => {
     const native = {
       hasAttribute: vi.fn(() => false),
       matches: (selector: string) => selector === 'span[role="img"][aria-label]',
       querySelectorAll: () => [{}, {}],
+      getAttribute: () => "背景信息窗口：20%",
+    } as unknown as HTMLElement;
+    const other = {
+      hasAttribute: vi.fn(() => false),
+      matches: (selector: string) => selector === 'span[role="img"][aria-label]',
+      querySelectorAll: () => [{}, {}],
+      getAttribute: () => "Claude Code Agent",
     } as unknown as HTMLElement;
     const composer = {
-      querySelectorAll: vi.fn(() => [native]),
+      querySelectorAll: vi.fn(() => [native, other]),
     } as unknown as Element;
 
     expect(isNativeContextUsageControlCandidate(native)).toBe(true);
@@ -428,7 +435,46 @@ describe("Renderer Composer DOM behavior", () => {
     expect(rendererUsageTriggerMaxWidth()).toBe("min(180px, 30vw)");
   });
 
-  it("places Usage beside the native context wrapper when it is present", () => {
+  it("prefers visible native radial controls when hidden duplicates coexist", () => {
+    const hidden = {
+      hidden: true,
+      hasAttribute: vi.fn(() => false),
+      matches: (selector: string) => selector === 'span[role="img"][aria-label]',
+      querySelectorAll: () => [{}, {}],
+      getAttribute: () => "Context usage: 20%",
+    } as unknown as HTMLElement;
+    const visible = {
+      hidden: false,
+      hasAttribute: vi.fn(() => false),
+      matches: (selector: string) => selector === 'span[role="img"][aria-label]',
+      querySelectorAll: () => [{}, {}],
+      getAttribute: () => "Context usage: 20%",
+    } as unknown as HTMLElement;
+    const composer = {
+      querySelectorAll: vi.fn(() => [hidden, visible]),
+    } as unknown as Element;
+
+    expect(isNativeContextUsageControlCandidate(hidden)).toBe(false);
+    expect(nativeContextUsageControlForComposer(composer)).toBe(visible);
+  });
+
+  it("captures a hidden native Context control when it is the only radial control", () => {
+    const hidden = {
+      hidden: true,
+      hasAttribute: vi.fn(() => false),
+      matches: (selector: string) => selector === 'span[role="img"][aria-label]',
+      querySelectorAll: () => [{}, {}],
+      getAttribute: () => "Context usage: 20%",
+    } as unknown as HTMLElement;
+    const composer = {
+      querySelectorAll: vi.fn(() => [hidden]),
+    } as unknown as Element;
+
+    expect(isNativeContextUsageControlCandidate(hidden)).toBe(false);
+    expect(nativeContextUsageControlForComposer(composer)).toBe(hidden);
+  });
+
+  it("does not add a renderer Usage control beside the native Context control", () => {
     const modelRoot = {
       parentElement: { kind: "model" } as unknown as HTMLElement,
     } as HTMLElement;
@@ -436,7 +482,7 @@ describe("Renderer Composer DOM behavior", () => {
     const contextWrapper = { parentElement: footer } as HTMLElement;
     const nativeContext = {
       parentElement: contextWrapper,
-      hidden: false,
+      hidden: true,
       hasAttribute: () => false,
       matches: (selector: string) => selector === 'span[role="img"][aria-label]',
       getAttribute: () => "Context usage: 20%",
@@ -445,9 +491,7 @@ describe("Renderer Composer DOM behavior", () => {
       removeAttribute: vi.fn(),
       contains: () => false,
     } as unknown as HTMLElement;
-    const placeUsage = vi.fn();
     const placeCredits = vi.fn();
-    const usageRoot = { remove: vi.fn() };
     const control = {
       composer: {
         querySelectorAll: (selector: string) =>
@@ -456,32 +500,25 @@ describe("Renderer Composer DOM behavior", () => {
       modelPicker: { root: modelRoot, trigger: {} },
       nativeModelControl: null,
       nativePermissionModeControl: null,
-      nativeContextUsageControl: { element: nativeContext, hidden: false, ariaHidden: null },
+      nativeContextUsageControl: { element: nativeContext, hidden: true, ariaHidden: "true" },
       credits: {
         anchor: null,
         place: placeCredits,
         root: { remove: vi.fn() },
       },
-      usage: {
-        anchor: null,
-        place: placeUsage,
-        root: usageRoot,
-      },
     } as unknown as ComposerAgentControl;
 
     reconcileComposerNativeControls(control, false, false);
 
-    expect(placeUsage).toHaveBeenCalledWith(contextWrapper);
-    expect(placeUsage).not.toHaveBeenCalledWith(modelRoot);
     expect(placeCredits).not.toHaveBeenCalled();
+    expect(nativeContext.hidden).toBe(false);
+    expect(nativeContext.removeAttribute).toHaveBeenCalledWith("aria-hidden");
   });
 
-  it("places Usage before the Model control when native Context is not ready", () => {
+  it("does not add a renderer Usage control when native Context is not ready", () => {
     const modelParent = {} as HTMLElement;
     const modelRoot = { parentElement: modelParent } as HTMLElement;
-    const placeUsage = vi.fn();
     const placeCredits = vi.fn();
-    const usageRoot = { remove: vi.fn() };
     const control = {
       composer: { querySelectorAll: () => [] },
       modelPicker: { root: modelRoot, trigger: {} },
@@ -493,16 +530,10 @@ describe("Renderer Composer DOM behavior", () => {
         place: placeCredits,
         root: { remove: vi.fn() },
       },
-      usage: {
-        anchor: null,
-        place: placeUsage,
-        root: usageRoot,
-      },
     } as unknown as ComposerAgentControl;
 
     reconcileComposerNativeControls(control, true, false);
 
-    expect(placeUsage).toHaveBeenCalledWith(modelRoot);
     expect(placeCredits).not.toHaveBeenCalled();
   });
 

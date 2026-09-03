@@ -15,7 +15,14 @@ export {
   observeCodexTokenUsage,
   projectCodexRateLimitsToCredits,
 } from "./codex-native-usage.js";
-export { CodexTurnProjector, projectHistoricalTurn } from "./codex-ui-projector.js";
+export {
+  CodexTurnProjector,
+  ensureGitDiffHeader,
+  fileChangeFromTool,
+  normalizeDisplayPath,
+  projectHistoricalTurn,
+  unwrapJsonString,
+} from "./codex-ui-projector.js";
 export type {
   CodexApprovalProjection,
   CodexQuestionProjection,

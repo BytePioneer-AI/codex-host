@@ -125,6 +125,20 @@ const DEFAULT_TOOL_OUTPUT_LIMIT = 64_000;
 const CONTEXT_USAGE_TIMEOUT_MS = 8_000;
 const CONTEXT_USAGE_RETRY_MS = 100;
 const GEMINI_CONTEXT_WINDOW_TOKENS = 1_048_576;
+const CLAUDE_CONTEXT_WINDOW_TOKENS = 200_000;
+
+export function resolveAntigravityContextWindow(
+  modelId?: string,
+  reportedWindow?: number,
+): number {
+  if (modelId && /^claude(?:[-_.]|$)/iu.test(modelId)) {
+    return CLAUDE_CONTEXT_WINDOW_TOKENS;
+  }
+  if (!modelId || /^gemini(?:[-_.]|$)/iu.test(modelId)) {
+    return GEMINI_CONTEXT_WINDOW_TOKENS;
+  }
+  return reportedWindow && reportedWindow > 0 ? reportedWindow : GEMINI_CONTEXT_WINDOW_TOKENS;
+}
 
 const CAPABILITIES: HarnessSessionCapabilities = {
   configuration: {
@@ -201,12 +215,8 @@ export function parseAntigravityContextUsage(
       breakdown?.total_tokens,
   );
   const window = safeToken(metadata.maxContextTokens ?? metadata.max_context_tokens);
-  if (used === undefined || window === undefined || window <= 0) return null;
-  // agy's Gemini status line uses a 1 Mi-token window while LS metadata reports 256k.
-  const contextWindowTokens =
-    /^gemini(?:[-_.]|$)/iu.test(modelId ?? "") && window === 256_000
-      ? GEMINI_CONTEXT_WINDOW_TOKENS
-      : window;
+  if (used === undefined) return null;
+  const contextWindowTokens = resolveAntigravityContextWindow(modelId, window);
   return { contextUsedTokens: used, contextWindowTokens };
 }
 
@@ -292,15 +302,21 @@ async function pollAntigravityContextUsage(
   return null;
 }
 
-function hostUsage(value: AntigravityUsage | undefined): HostUsage | null {
+function hostUsage(value: AntigravityUsage | undefined, modelId?: string): HostUsage | null {
   if (!value) return null;
   const inputTokens = safeToken(value.input_tokens);
   const outputTokens = safeToken(value.output_tokens);
   const reasoningOutputTokens = safeToken(value.thinking_tokens);
   const cachedInputTokens = safeToken(value.cache_read_tokens);
   const totalTokens = safeToken(value.total_tokens);
-  const contextUsedTokens = safeToken(value.context_used_tokens ?? value.estimated_tokens_used);
-  const contextWindowTokens = safeToken(value.context_window_tokens ?? value.max_context_tokens);
+  const contextUsedTokens = safeToken(
+    value.context_used_tokens ?? value.estimated_tokens_used ?? value.input_tokens,
+  );
+  const rawWindow = safeToken(value.context_window_tokens ?? value.max_context_tokens);
+  const contextWindowTokens =
+    contextUsedTokens !== undefined || rawWindow !== undefined
+      ? resolveAntigravityContextWindow(modelId, rawWindow)
+      : undefined;
   const usage: HostUsage = {
     ...(inputTokens !== undefined ? { inputTokens } : {}),
     ...(outputTokens !== undefined ? { outputTokens } : {}),
@@ -621,7 +637,7 @@ class AntigravitySession implements HarnessSession {
     }
     if (event.event === "step_update") {
       this.#handleStep(active, event.step_update);
-      const usage = hostUsage(event.step_update.usage);
+      const usage = hostUsage(event.step_update.usage, this.#model?.id);
       if (usage) this.#publishUsage(active, usage);
       this.#ensureContextUsage(active, event.step_update.conversation_id);
       return;
@@ -639,7 +655,7 @@ class AntigravitySession implements HarnessSession {
 
   async #handleResult(active: ActiveTurn, event: AntigravityResultEvent): Promise<void> {
     if (this.#active !== active) return;
-    const usage = hostUsage(event.result.usage);
+    const usage = hostUsage(event.result.usage, this.#model?.id);
     if (usage) this.#publishUsage(active, usage);
     this.#ensureContextUsage(active, event.result.conversation_id);
     if (active.contextUsagePromise) {

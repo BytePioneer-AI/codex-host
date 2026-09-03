@@ -23,6 +23,7 @@ import {
   parseAntigravityStreamLine,
   parseAntigravityUsageCommand,
   permissionDeniedTurnError,
+  resolveAntigravityContextWindow,
 } from "../src/index.js";
 
 const FETCHED_AT = "2026-08-31T14:40:00.000Z";
@@ -287,7 +288,7 @@ describe("Antigravity Adapter", () => {
     };
     expect(parseAntigravityContextUsage(metadata)).toEqual({
       contextUsedTokens: 19_505,
-      contextWindowTokens: 256_000,
+      contextWindowTokens: 1_048_576,
     });
     expect(parseAntigravityContextUsage(metadata, "gemini-3.7-flash-high")).toEqual({
       contextUsedTokens: 19_505,
@@ -295,9 +296,47 @@ describe("Antigravity Adapter", () => {
     });
     expect(parseAntigravityContextUsage(metadata, "claude-sonnet-4-6")).toEqual({
       contextUsedTokens: 19_505,
-      contextWindowTokens: 256_000,
+      contextWindowTokens: 200_000,
+    });
+    const chunkMetadata = {
+      trajectory: {
+        generatorMetadata: [
+          {
+            chatModel: {
+              chatStartMetadata: {
+                contextWindowMetadata: {
+                  estimatedTokensUsed: 12_000,
+                  maxContextTokens: 128_000,
+                },
+              },
+            },
+          },
+        ],
+      },
+    };
+    expect(parseAntigravityContextUsage(chunkMetadata, "gemini-2.5-flash")).toEqual({
+      contextUsedTokens: 12_000,
+      contextWindowTokens: 1_048_576,
+    });
+    expect(parseAntigravityContextUsage(chunkMetadata)).toEqual({
+      contextUsedTokens: 12_000,
+      contextWindowTokens: 1_048_576,
+    });
+    expect(parseAntigravityContextUsage(chunkMetadata, "claude-3-7-sonnet")).toEqual({
+      contextUsedTokens: 12_000,
+      contextWindowTokens: 200_000,
     });
     expect(parseAntigravityContextUsage({ generatorMetadata: [] })).toBeNull();
+  });
+
+  it("resolves context window sizes by model family with 1M Gemini default", () => {
+    expect(resolveAntigravityContextWindow()).toBe(1_048_576);
+    expect(resolveAntigravityContextWindow("gemini-3.7-flash-high")).toBe(1_048_576);
+    expect(resolveAntigravityContextWindow("gemini-1.5-pro", 128_000)).toBe(1_048_576);
+    expect(resolveAntigravityContextWindow("claude-sonnet-4-6")).toBe(200_000);
+    expect(resolveAntigravityContextWindow("claude-3-5-sonnet", 128_000)).toBe(200_000);
+    expect(resolveAntigravityContextWindow("gpt-oss-120b", 128_000)).toBe(128_000);
+    expect(resolveAntigravityContextWindow("gpt-oss-120b")).toBe(1_048_576);
   });
 
   it("projects the CLI /usage command into an account credits snapshot", () => {
@@ -1085,6 +1124,137 @@ setTimeout(() => { process.exit(0); }, 50);
             outcome: { status: "succeeded" },
           },
         });
+
+        await session.close();
+      } finally {
+        await adapter.close();
+        await cleanup();
+      }
+    });
+
+    it("dynamically switches between Gemini (1M) and Claude (200k) models within the same session", async () => {
+      const directory = await mkdtemp(path.join(os.tmpdir(), "codexhost-agy-model-switch-"));
+      const cwd = await mkdtemp(path.join(os.tmpdir(), "codexhost-agy-model-switch-cwd-"));
+      const cleanup = async (): Promise<void> => {
+        for (const target of [directory, cwd]) {
+          await rm(target, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+        }
+      };
+      const runsDir = path.join(directory, "runs");
+      const jsPath = path.join(directory, "agy.cjs");
+      const scriptContent = `
+const fs = require('fs');
+const path = require('path');
+if (process.argv.includes("models")) {
+  process.stdout.write("gemini-3.7-flash-high\\tGemini 3.7 Flash High\\nclaude-3-7-sonnet\\tClaude 3.7 Sonnet\\n");
+  process.exit(0);
+}
+const runsDir = ${JSON.stringify(runsDir)};
+fs.mkdirSync(runsDir, { recursive: true });
+const count = fs.readdirSync(runsDir).length;
+fs.writeFileSync(path.join(runsDir, "run-" + count + ".txt"), "");
+
+if (count === 0) {
+  process.stdout.write(JSON.stringify({ event: "init", conversation_id: "conv-switch", init: { permission_mode: "dangerously-skip-permissions" } }) + "\\n");
+  process.stdout.write(JSON.stringify({ event: "step_update", step_update: { conversation_id: "conv-switch", step_index: 1, state: "DONE", step_type: "agent_response", text_delta: "Hello from Gemini", usage: { input_tokens: 100, output_tokens: 20, total_tokens: 120 } } }) + "\\n");
+  process.stdout.write(JSON.stringify({ event: "result", result: { conversation_id: "conv-switch", status: "SUCCESS", num_turns: 1, response: "Hello from Gemini", usage: { input_tokens: 100, output_tokens: 20, total_tokens: 120 } } }) + "\\n");
+} else if (count === 1) {
+  process.stdout.write(JSON.stringify({ event: "init", conversation_id: "conv-switch", init: { permission_mode: "dangerously-skip-permissions" } }) + "\\n");
+  process.stdout.write(JSON.stringify({ event: "step_update", step_update: { conversation_id: "conv-switch", step_index: 2, state: "DONE", step_type: "agent_response", text_delta: "Hello from Claude", usage: { input_tokens: 250, output_tokens: 40, total_tokens: 290 } } }) + "\\n");
+  process.stdout.write(JSON.stringify({ event: "result", result: { conversation_id: "conv-switch", status: "SUCCESS", num_turns: 2, response: "Hello from Claude", usage: { input_tokens: 250, output_tokens: 40, total_tokens: 290 } } }) + "\\n");
+} else {
+  process.stdout.write(JSON.stringify({ event: "init", conversation_id: "conv-switch", init: { permission_mode: "dangerously-skip-permissions" } }) + "\\n");
+  process.stdout.write(JSON.stringify({ event: "step_update", step_update: { conversation_id: "conv-switch", step_index: 3, state: "DONE", step_type: "agent_response", text_delta: "Back to Gemini", usage: { input_tokens: 300, output_tokens: 50, total_tokens: 350 } } }) + "\\n");
+  process.stdout.write(JSON.stringify({ event: "result", result: { conversation_id: "conv-switch", status: "SUCCESS", num_turns: 3, response: "Back to Gemini", usage: { input_tokens: 300, output_tokens: 50, total_tokens: 350 } } }) + "\\n");
+}
+`;
+      await writeFile(jsPath, scriptContent);
+      let command: string;
+      if (process.platform === "win32") {
+        command = path.join(directory, "agy.cmd");
+        await writeFile(command, `@node "${jsPath}" %*\r\n`);
+      } else {
+        command = path.join(directory, "agy");
+        await writeFile(command, `#!/usr/bin/env node\n${scriptContent}`);
+        await chmod(command, 0o755);
+      }
+
+      const adapter = new AntigravityAdapter({ command });
+      try {
+        const opened = await adapter.open({
+          kind: "create",
+          cwd,
+          model: harnessModelRefSchema.parse({ id: "gemini-3.7-flash-high" }),
+        });
+        expect(opened.ok).toBe(true);
+        if (!opened.ok) return;
+        const session = opened.value;
+        const iterator = session.outputs[Symbol.asyncIterator]();
+
+        // Turn 1: Gemini (1M window)
+        const turn1Id = hostTurnIdSchema.parse("turn-switch-1");
+        await session.execute({
+          type: "turn.start",
+          turnId: turn1Id,
+          input: [{ type: "text", text: "hi gemini" }],
+        });
+
+        let turn1Usage: Record<string, unknown> | null = null;
+        while (true) {
+          const ev = await nextEvent(iterator);
+          if (ev.type === "session.usage.changed") turn1Usage = ev.usage as Record<string, unknown>;
+          if (ev.type === "turn.completed") break;
+        }
+        expect(turn1Usage).not.toBeNull();
+        expect(turn1Usage?.contextWindowTokens).toBe(1_048_576);
+
+        // Switch to Claude (200k window)
+        const selectClaude = await session.execute({
+          type: "model.select",
+          model: harnessModelRefSchema.parse({ id: "claude-3-7-sonnet" }),
+        });
+        expect(selectClaude.ok).toBe(true);
+
+        // Turn 2: Claude
+        const turn2Id = hostTurnIdSchema.parse("turn-switch-2");
+        await session.execute({
+          type: "turn.start",
+          turnId: turn2Id,
+          input: [{ type: "text", text: "hi claude" }],
+        });
+
+        let turn2Usage: Record<string, unknown> | null = null;
+        while (true) {
+          const ev = await nextEvent(iterator);
+          if (ev.type === "session.usage.changed") turn2Usage = ev.usage as Record<string, unknown>;
+          if (ev.type === "turn.completed") break;
+        }
+        expect(turn2Usage).not.toBeNull();
+        expect(turn2Usage?.contextWindowTokens).toBe(200_000);
+
+        // Switch back to Gemini
+        const selectGemini = await session.execute({
+          type: "model.select",
+          model: harnessModelRefSchema.parse({ id: "gemini-3.7-flash-high" }),
+        });
+        expect(selectGemini.ok).toBe(true);
+
+        // Turn 3: Gemini
+        const turn3Id = hostTurnIdSchema.parse("turn-switch-3");
+        await session.execute({
+          type: "turn.start",
+          turnId: turn3Id,
+          input: [{ type: "text", text: "back to gemini" }],
+        });
+
+        let turn3Usage: Record<string, unknown> | null = null;
+        while (true) {
+          const ev = await nextEvent(iterator);
+          if (ev.type === "session.usage.changed") turn3Usage = ev.usage as Record<string, unknown>;
+          if (ev.type === "turn.completed") break;
+        }
+        expect(turn3Usage).not.toBeNull();
+        expect(turn3Usage?.contextWindowTokens).toBe(1_048_576);
 
         await session.close();
       } finally {

@@ -458,18 +458,20 @@ describe("Antigravity Adversarial & Stress Testing", () => {
 
       const runsFile = path.join(directory, "responses.json");
       await writeFile(runsFile, JSON.stringify(responses));
-      const counterFile = path.join(directory, "counter.txt");
-      await writeFile(counterFile, "0");
+      const runsDir = path.join(directory, "runs");
 
       const jsPath = path.join(directory, "agy.cjs");
       const scriptContent = `
 const fs = require('fs');
+const path = require('path');
 if (process.argv.includes("models")) {
   process.stdout.write("gemini-3.7-flash-high\\tGemini 3.7 Flash High\\ngemini-3.1-pro-high\\tGemini 3.1 Pro High\\n");
   process.exit(0);
 }
-const counter = parseInt(fs.readFileSync(${JSON.stringify(counterFile)}, 'utf8'), 10);
-fs.writeFileSync(${JSON.stringify(counterFile)}, String(counter + 1));
+const runsDir = ${JSON.stringify(runsDir)};
+fs.mkdirSync(runsDir, { recursive: true });
+const counter = fs.readdirSync(runsDir).length;
+fs.writeFileSync(path.join(runsDir, "run-" + counter + ".txt"), "");
 const allResponses = JSON.parse(fs.readFileSync(${JSON.stringify(runsFile)}, 'utf8'));
 const lines = allResponses[counter] || allResponses[0] || [];
 for (const line of lines) {

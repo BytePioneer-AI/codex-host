@@ -15,6 +15,16 @@ pub fn terminate_process_instance(
         let current = match process_snapshot(expected.id) {
             Ok(current) => current,
             Err(PlatformError::NotFound(_)) => return Ok(()),
+            // A process that is mid-exit is still reported by the process
+            // enumeration, yet reading its image path fails with access denied
+            // rather than a missing-process error. Treat that like an
+            // already-gone process: the instance cannot be confirmed, so it must
+            // not be terminated, and the caller's retry loop observes the exit.
+            Err(PlatformError::Io(error))
+                if error.kind() == std::io::ErrorKind::PermissionDenied =>
+            {
+                return Ok(());
+            }
             Err(error) => return Err(error),
         };
         if !same_process_instance(expected, &current) {
@@ -94,7 +104,44 @@ pub fn terminate_process_group_instance(
 
 #[cfg(all(test, target_os = "windows"))]
 mod windows_tests {
-    use super::{process_snapshot, terminate_process_instance};
+    use super::{PlatformError, ProcessSnapshot, process_snapshot, terminate_process_instance};
+    use std::path::PathBuf;
+
+    /// The System process: always running, never readable.
+    const SYSTEM_PROCESS_ID: u32 = 4;
+
+    #[test]
+    fn treats_an_unreadable_process_image_as_an_unconfirmable_instance() {
+        // Reading the System process image fails with access denied rather than
+        // a missing-process error, which is the same failure a mid-exit process
+        // produces while it is still reported by the process enumeration.
+        let denied = process_snapshot(SYSTEM_PROCESS_ID).expect_err("System image path is denied");
+        assert!(
+            matches!(&denied, PlatformError::Io(error)
+                if error.kind() == std::io::ErrorKind::PermissionDenied),
+            "expected access denied, got {denied:?}"
+        );
+
+        // Deliberately mismatched, so no path can confirm - and therefore
+        // terminate - this instance even if the image path became readable.
+        let unconfirmable = ProcessSnapshot {
+            id: SYSTEM_PROCESS_ID,
+            parent_id: 0,
+            process_group_id: SYSTEM_PROCESS_ID,
+            executable: PathBuf::from(r"C:\codexhost-test\never-matches.exe"),
+            started_at_micros: 1,
+        };
+        terminate_process_instance(&unconfirmable, true)
+            .expect("tolerate an unreadable process image");
+
+        assert!(
+            !matches!(
+                process_snapshot(SYSTEM_PROCESS_ID),
+                Err(PlatformError::NotFound(_))
+            ),
+            "System process must still be running"
+        );
+    }
 
     #[test]
     fn refuses_to_terminate_a_reused_windows_process_id() {

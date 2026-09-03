@@ -13,6 +13,8 @@ use std::time::Duration;
 #[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
 use std::time::Instant;
 
+#[cfg(target_os = "windows")]
+use codexhost_platform::CUSTOM_INSTALL_ROOT_ENV;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 use codexhost_platform::parent_process_id;
 use codexhost_platform::{CODEX_CLI_PATH_ENV, STOCK_CODEX_PATH_ENV};
@@ -279,6 +281,108 @@ fn rejects_missing_official_cli_without_falling_back_to_path() {
     assert!(!output.status.success());
     assert!(output.stdout.is_empty());
     assert!(String::from_utf8_lossy(&output.stderr).contains("does not exist"));
+}
+
+#[cfg(target_os = "windows")]
+#[test]
+fn rejects_missing_stock_cli_when_cli_override_does_not_name_the_running_shim() {
+    let output = Command::new(shim_path())
+        .env_remove(STOCK_CODEX_PATH_ENV)
+        .env(CODEX_CLI_PATH_ENV, fake_codex_path())
+        .stdin(Stdio::null())
+        .output()
+        .expect("run shim with unrelated CLI override");
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("does not identify the running Shim"));
+}
+
+#[test]
+fn rejects_missing_stock_cli_without_a_cli_override() {
+    let output = Command::new(shim_path())
+        .env_remove(STOCK_CODEX_PATH_ENV)
+        .env_remove(CODEX_CLI_PATH_ENV)
+        .stdin(Stdio::null())
+        .output()
+        .expect("run shim without managed environment");
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains(&format!("{STOCK_CODEX_PATH_ENV} is required"))
+    );
+}
+
+#[cfg(target_os = "windows")]
+#[test]
+fn discovers_official_cli_when_browser_helper_preserves_only_codex_cli_path() {
+    let installation_root = temporary_directory().join("portable-codex");
+    let app_root = installation_root.join("app");
+    let resources = app_root.join("resources");
+    fs::create_dir_all(&resources).expect("create portable Codex resources");
+    fs::write(app_root.join("ChatGPT.exe"), b"desktop").expect("write fake Desktop executable");
+    fs::write(resources.join("app.asar"), b"asar").expect("write fake app.asar");
+    fs::copy(fake_codex_path(), resources.join("codex.exe"))
+        .expect("install fake official Codex CLI");
+
+    let output = Command::new(shim_path())
+        .args(["config", "read"])
+        .env_remove(STOCK_CODEX_PATH_ENV)
+        .env(CODEX_CLI_PATH_ENV, shim_path())
+        .env(CUSTOM_INSTALL_ROOT_ENV, &installation_root)
+        .env_remove(HOST_NODE_PATH_ENV)
+        .env_remove(HOST_RUNTIME_PATH_ENV)
+        .env_remove(REMOTE_SSH_MANAGED_ENV)
+        .env("FAKE_CODEX_PRINT_INVOCATION", "1")
+        .stdin(Stdio::null())
+        .output()
+        .expect("run Browser Use style shim invocation");
+
+    assert!(
+        output.status.success(),
+        "Browser Use style shim invocation exited {}; stderr={}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(output.stdout.is_empty());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("args=config|read"), "{stderr}");
+    assert!(stderr.contains("codex_cli_path_present=false"), "{stderr}");
+
+    fs::remove_dir_all(
+        installation_root
+            .parent()
+            .expect("portable installation parent"),
+    )
+    .expect("remove portable Codex installation");
+}
+
+#[cfg(target_os = "windows")]
+#[test]
+fn browser_helper_fallback_does_not_guess_an_official_cli_from_path() {
+    let missing_installation = temporary_directory().join("missing-portable-codex");
+    let output = Command::new(shim_path())
+        .env_remove(STOCK_CODEX_PATH_ENV)
+        .env(CODEX_CLI_PATH_ENV, shim_path())
+        .env(CUSTOM_INSTALL_ROOT_ENV, &missing_installation)
+        .env("PATH", fake_codex_path().parent().expect("fake CLI parent"))
+        .stdin(Stdio::null())
+        .output()
+        .expect("run Browser Use style shim invocation without an installation");
+
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("Desktop-managed official Codex CLI could not be discovered")
+    );
+
+    fs::remove_dir_all(
+        missing_installation
+            .parent()
+            .expect("missing installation parent"),
+    )
+    .expect("remove missing portable installation fixture");
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]

@@ -50,6 +50,14 @@ On macOS and Linux, codexhost SHALL recognize a Codex `app-server --listen unix:
 - **AND** a successful response keeps the session alive until `turn/completed`
 - **AND** a failed response releases the disconnected session without leaking it
 
+#### Scenario: Desktop repeats a matching remote listener bootstrap
+
+- **GIVEN** the installed managed Remote Host already owns a healthy control socket
+- **WHEN** Desktop invokes the same default `app-server --listen unix://` bootstrap again
+- **THEN** the Shim verifies the socket owner against the installed Node and Host Runtime paths
+- **AND** it returns success without starting a competing listener or replacing the socket identity
+- **AND** a socket owned by a different installed command is rejected instead of reused or overwritten
+
 #### Scenario: Remote listener stops with detached work
 
 - **GIVEN** a Desktop WebSocket has disconnected while its Host session is draining active work

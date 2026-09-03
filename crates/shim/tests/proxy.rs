@@ -21,6 +21,8 @@ use codexhost_platform::{process_exists, process_snapshot};
 use codexhost_shim::{HOST_NODE_PATH_ENV, HOST_RUNTIME_PATH_ENV, REMOTE_SSH_MANAGED_ENV};
 #[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
 use fs2::FileExt;
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+use std::os::unix::fs::MetadataExt;
 
 fn shim_path() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_codexhost-shim"))
@@ -283,7 +285,7 @@ fn rejects_missing_official_cli_without_falling_back_to_path() {
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 #[test]
-fn managed_remote_listener_detaches_after_the_socket_is_ready() {
+fn managed_remote_listener_detaches_and_reuses_a_matching_socket_owner() {
     static NEXT_REMOTE_DIRECTORY_ID: AtomicU64 = AtomicU64::new(0);
 
     let directory = PathBuf::from("/tmp").join(format!(
@@ -327,9 +329,9 @@ fn managed_remote_listener_detaches_after_the_socket_is_ready() {
     while !ready.exists() && Instant::now() < ready_deadline {
         thread::sleep(Duration::from_millis(20));
     }
-    let ready = fs::read_to_string(&ready).expect("read detached listener identity");
+    let ready_contents = fs::read_to_string(&ready).expect("read detached listener identity");
     let value = |label: &str| {
-        ready
+        ready_contents
             .lines()
             .find_map(|line| line.strip_prefix(label))
             .expect("listener identity field")
@@ -373,29 +375,168 @@ fn managed_remote_listener_detaches_after_the_socket_is_ready() {
     assert!(process_exists(root_id), "detached listener root exited");
     assert!(process_exists(shim_id), "detached listener Shim exited");
 
-    let termination = Command::new("/bin/kill")
-        .args(["-TERM", &shim_id.to_string()])
-        .status()
-        .expect("stop detached listener Shim");
-    assert!(termination.success());
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while (process_exists(root_id) || process_exists(shim_id)) && Instant::now() < deadline {
-        thread::sleep(Duration::from_millis(20));
-    }
-    if process_exists(root_id) || process_exists(shim_id) {
+    let original_socket = fs::metadata(&socket).expect("read original listener socket identity");
+    let repeated_started = Instant::now();
+    let repeated = Command::new(shim_path())
+        .args([
+            "-c",
+            "features.code_mode_host=true",
+            "app-server",
+            "--listen",
+            "unix://",
+        ])
+        .env_remove(HOST_NODE_PATH_ENV)
+        .env_remove(HOST_RUNTIME_PATH_ENV)
+        .env_remove("CODEXHOST_REMOTE_LISTENER_CHILD")
+        .env(STOCK_CODEX_PATH_ENV, fake_codex_path())
+        .env(CODEX_CLI_PATH_ENV, shim_path())
+        .env(REMOTE_SSH_MANAGED_ENV, "1")
+        .env("CODEX_HOME", &codex_home)
+        .env("FAKE_CODEX_UNIX_LISTENER_PATH", &socket)
+        .env("FAKE_CODEX_READY_PATH", &ready)
+        .stdin(Stdio::null())
+        .output()
+        .expect("repeat managed remote listener bootstrap");
+    let repeated_elapsed = repeated_started.elapsed();
+    let repeated_ready = fs::read_to_string(&ready).expect("read repeated listener identity");
+    let repeated_value = |label: &str| {
+        repeated_ready
+            .lines()
+            .find_map(|line| line.strip_prefix(label))
+            .expect("repeated listener identity field")
+            .parse::<u32>()
+            .expect("repeated listener identity PID")
+    };
+    let repeated_root_id = repeated_value("root=");
+    let repeated_shim_id = repeated_value("shim=");
+    let repeated_socket = fs::metadata(&socket).expect("read repeated listener socket identity");
+
+    let alternate_stock = directory.join("alternate-fake-codex");
+    fs::copy(fake_codex_path(), &alternate_stock).expect("copy alternate stock Codex fixture");
+    let mismatched = Command::new(shim_path())
+        .args([
+            "-c",
+            "features.code_mode_host=true",
+            "app-server",
+            "--listen",
+            "unix://",
+        ])
+        .env_remove(HOST_NODE_PATH_ENV)
+        .env_remove(HOST_RUNTIME_PATH_ENV)
+        .env_remove("CODEXHOST_REMOTE_LISTENER_CHILD")
+        .env(STOCK_CODEX_PATH_ENV, &alternate_stock)
+        .env(CODEX_CLI_PATH_ENV, shim_path())
+        .env(REMOTE_SSH_MANAGED_ENV, "1")
+        .env("CODEX_HOME", &codex_home)
+        .env("FAKE_CODEX_UNIX_LISTENER_PATH", &socket)
+        .env("FAKE_CODEX_READY_PATH", &ready)
+        .stdin(Stdio::null())
+        .output()
+        .expect("run mismatched managed remote listener bootstrap");
+    let mismatched_ready = fs::read_to_string(&ready).expect("read mismatched listener identity");
+    let mismatched_value = |label: &str| {
+        mismatched_ready
+            .lines()
+            .find_map(|line| line.strip_prefix(label))
+            .expect("mismatched listener identity field")
+            .parse::<u32>()
+            .expect("mismatched listener identity PID")
+    };
+    let mismatched_root_id = mismatched_value("root=");
+    let mismatched_shim_id = mismatched_value("shim=");
+    let mismatched_socket =
+        fs::metadata(&socket).expect("read mismatched listener socket identity");
+    let original_processes_survived = process_exists(root_id) && process_exists(shim_id);
+
+    let process_ids = [
+        root_id,
+        shim_id,
+        repeated_root_id,
+        repeated_shim_id,
+        mismatched_root_id,
+        mismatched_shim_id,
+    ]
+    .into_iter()
+    .collect::<std::collections::HashSet<_>>();
+    for process_id in [shim_id, repeated_shim_id, mismatched_shim_id]
+        .into_iter()
+        .collect::<std::collections::HashSet<_>>()
+    {
         let _ = Command::new("/bin/kill")
-            .args(["-KILL", &shim_id.to_string(), &root_id.to_string()])
+            .args(["-TERM", &process_id.to_string()])
             .status();
     }
-    assert!(
-        !process_exists(root_id),
-        "detached listener root survived shutdown"
-    );
-    assert!(
-        !process_exists(shim_id),
-        "detached listener Shim survived shutdown"
-    );
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while process_ids.iter().copied().any(process_exists) && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(20));
+    }
+    for process_id in process_ids
+        .iter()
+        .copied()
+        .filter(|process_id| process_exists(*process_id))
+    {
+        let _ = Command::new("/bin/kill")
+            .args(["-KILL", &process_id.to_string()])
+            .status();
+    }
     fs::remove_dir_all(directory).expect("remove remote listener fixture");
+
+    assert!(
+        repeated.status.success(),
+        "repeated bootstrap failed: {}; stderr={}",
+        repeated.status,
+        String::from_utf8_lossy(&repeated.stderr)
+    );
+    assert!(
+        repeated_elapsed < Duration::from_secs(2),
+        "repeated bootstrap did not reuse the listener promptly"
+    );
+    assert!(
+        original_processes_survived,
+        "repeated bootstrap terminated the original listener"
+    );
+    assert_eq!(
+        repeated_root_id, root_id,
+        "repeated bootstrap replaced the listener root"
+    );
+    assert_eq!(
+        repeated_shim_id, shim_id,
+        "repeated bootstrap replaced the listener Shim"
+    );
+    assert_eq!(
+        (repeated_socket.dev(), repeated_socket.ino()),
+        (original_socket.dev(), original_socket.ino()),
+        "repeated bootstrap replaced the listener socket"
+    );
+    assert!(
+        !mismatched.status.success(),
+        "bootstrap unexpectedly reused a listener from another installed runtime"
+    );
+    assert!(
+        String::from_utf8_lossy(&mismatched.stderr)
+            .contains("remote Host socket owner does not match"),
+        "unexpected mismatched bootstrap error: {}",
+        String::from_utf8_lossy(&mismatched.stderr)
+    );
+    assert_eq!(
+        mismatched_root_id, root_id,
+        "mismatched bootstrap replaced the listener root"
+    );
+    assert_eq!(
+        mismatched_shim_id, shim_id,
+        "mismatched bootstrap replaced the listener Shim"
+    );
+    assert_eq!(
+        (mismatched_socket.dev(), mismatched_socket.ino()),
+        (original_socket.dev(), original_socket.ino()),
+        "mismatched bootstrap replaced the listener socket"
+    );
+    for process_id in process_ids {
+        assert!(
+            !process_exists(process_id),
+            "detached listener process {process_id} survived shutdown"
+        );
+    }
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]

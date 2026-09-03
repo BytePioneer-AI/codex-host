@@ -9,6 +9,8 @@ use std::process::{Command, ExitStatus, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
+#[cfg(target_os = "windows")]
+use codexhost_platform::discover_desktop_managed_codex_cli;
 use codexhost_platform::{
     CODEX_CLI_PATH_ENV, STOCK_CODEX_PATH_ENV, canonical_existing_file,
     configure_background_command, node_entrypoint_path, proxy_environment, spawn_supervised,
@@ -685,16 +687,54 @@ fn child_command(
     Ok(command)
 }
 
+/// Resolve the official CLI for both the launcher-managed process tree and
+/// Windows Desktop helpers that persist only the standard `CODEX_CLI_PATH`
+/// override.
+///
+/// The launcher-provided path remains authoritative. Installation discovery is
+/// deliberately restricted to a re-entry where `CODEX_CLI_PATH` identifies
+/// this exact Shim, so an unrelated or direct invocation still fails closed.
+fn resolve_stock_codex_path(current_executable: &Path) -> ShimResult<PathBuf> {
+    let stock_codex_path = match env::var_os(STOCK_CODEX_PATH_ENV) {
+        Some(configured) => PathBuf::from(configured),
+        None => {
+            #[cfg(not(target_os = "windows"))]
+            return Err(format!("{STOCK_CODEX_PATH_ENV} is required").into());
+
+            #[cfg(target_os = "windows")]
+            {
+                let cli_override = env::var_os(CODEX_CLI_PATH_ENV)
+                    .map(PathBuf::from)
+                    .ok_or_else(|| format!("{STOCK_CODEX_PATH_ENV} is required"))?;
+                let cli_override = canonical_existing_file(&cli_override)?;
+                let current_executable = canonical_existing_file(current_executable)?;
+                if cli_override != current_executable {
+                    return Err(format!(
+                        "{STOCK_CODEX_PATH_ENV} is required when {CODEX_CLI_PATH_ENV} does not identify the running Shim"
+                    )
+                    .into());
+                }
+                discover_desktop_managed_codex_cli().map_err(|error| {
+                    format!(
+                        "{STOCK_CODEX_PATH_ENV} is unavailable and the Desktop-managed official Codex CLI could not be discovered: {error}"
+                    )
+                })?
+            }
+        }
+    };
+    Ok(validate_proxy_target(
+        current_executable,
+        &stock_codex_path,
+    )?)
+}
+
 /// Runs the byte-transparent proxy and emits optional lifecycle observations.
 pub fn run_proxy_with_observer(
     arguments: &[OsString],
     observer: &impl ProxyObserver,
 ) -> ShimResult<i32> {
     let current_executable = env::current_exe()?;
-    let stock_codex_path = env::var_os(STOCK_CODEX_PATH_ENV)
-        .map(PathBuf::from)
-        .ok_or_else(|| format!("{STOCK_CODEX_PATH_ENV} is required"))?;
-    let stock_codex_path = validate_proxy_target(&current_executable, &stock_codex_path)?;
+    let stock_codex_path = resolve_stock_codex_path(&current_executable)?;
     observer.invocation(arguments, &stock_codex_path);
 
     let started = Instant::now();

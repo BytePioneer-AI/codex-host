@@ -12,6 +12,7 @@ vi.mock("../../src/settings/icons.js", () => ({
 
 import { RendererSettingsPageScope } from "../../src/settings/core.js";
 import { rendererSettingsMessages } from "../../src/settings/localization.js";
+import { RendererDeepSeekSessionUnavailableError } from "../../src/renderer-model-client.js";
 import {
   CODEXHOST_RELEASES_LATEST_URL,
   createDefaultRendererSettingsPages,
@@ -37,6 +38,7 @@ class FakeElement {
   type = "";
   tabIndex = 0;
   disabled = false;
+  focused = false;
   scrollLeft = 0;
   scrollWidth = 0;
   clientWidth = 0;
@@ -62,7 +64,9 @@ class FakeElement {
     this.#listeners.get(name)?.(event);
   }
 
-  focus(): void {}
+  focus(): void {
+    this.focused = true;
+  }
 
   scrollBy(options: ScrollToOptions): void {
     this.scrollLeft += Number(options.left ?? 0);
@@ -734,7 +738,28 @@ describe("Renderer Updates page", () => {
     await vi.waitFor(() => expect(visibleText(content)).toContain("既有会话"));
     expect(visibleText(content)).toContain("未命名会话");
     expect(visibleText(content)).toContain("运行中");
-    expect(visibleText(content)).not.toContain("idle-session-identifier-that-is-long");
+    const visualIdentity = descendants(content).find(
+      ({ attributes, textContent }) =>
+        attributes.get("aria-hidden") === "true" && textContent.startsWith("会话 ID:"),
+    );
+    expect(visualIdentity?.textContent).not.toContain("idle-session-identifier-that-is-long");
+    expect(visualIdentity?.title).toBe("idle-session-identifier-that-is-long");
+    expect(descendants(content).find(({ tagName }) => tagName === "h2")?.textContent).toBe(
+      "会话导入",
+    );
+    expect(
+      descendants(content).find(
+        ({ className, textContent }) =>
+          className === "settings-visually-hidden" &&
+          textContent.includes("idle-session-identifier-that-is-long"),
+      )?.textContent,
+    ).toContain("idle-session-identifier-that-is-long");
+    expect(
+      descendants(content).find(
+        ({ className, textContent }) =>
+          className === "settings-visually-hidden" && textContent.startsWith("运行中:"),
+      )?.textContent,
+    ).toBe("运行中: 请先在 DSH 中停止该会话，然后刷新。");
 
     const actions = descendants(content).filter(
       ({ dataset }) => dataset.sessionImportAction === "import",
@@ -745,6 +770,9 @@ describe("Renderer Updates page", () => {
     actions[1]?.dispatch("click");
     expect(client.importDeepSeekModernSession).not.toHaveBeenCalled();
     actions[0]?.dispatch("click");
+    expect(descendants(content)).toContain(actions[0]);
+    expect(actions[0]?.getAttribute("aria-disabled")).toBe("true");
+    expect(actions[0]?.getAttribute("aria-busy")).toBe("true");
     actions[0]?.dispatch("click");
     await vi.waitFor(() => expect(client.importDeepSeekModernSession).toHaveBeenCalledOnce());
     expect(client.importDeepSeekModernSession).toHaveBeenCalledWith({
@@ -753,6 +781,84 @@ describe("Renderer Updates page", () => {
     await vi.waitFor(() =>
       expect(openImportedThread).toHaveBeenCalledWith("imported-thread", expect.any(AbortSignal)),
     );
+    scope.dispose();
+  });
+
+  it("localizes unavailable and ordinary list failures without exposing their detail", async () => {
+    const messages = rendererSettingsMessages("zh-CN");
+    const document = new FakeDocument();
+    for (const [error, expected] of [
+      [new RendererDeepSeekSessionUnavailableError(), messages.sessionImportUnavailable],
+      [new Error("private native failure detail"), messages.sessionImportLoadFailed],
+    ] as const) {
+      const client = {
+        listDeepSeekModernSessions: vi.fn(async () => Promise.reject(error)),
+        importDeepSeekModernSession: vi.fn(),
+      };
+      const page = createDefaultRendererSettingsPages(
+        messages,
+        () => null,
+        () => null,
+        () => client,
+      ).find(({ id }) => id === "session-import");
+      if (!page) throw new Error("Session Import page is not registered");
+      const content = document.createElement("main");
+      const scope = new RendererSettingsPageScope();
+      page.mount({
+        content: content as unknown as HTMLElement,
+        signal: scope.signal,
+        runLatest: (operation, handlers) => scope.runLatest(operation, handlers),
+      });
+
+      await vi.waitFor(() => expect(visibleText(content)).toContain(expected));
+      expect(visibleText(content)).not.toContain(error.message);
+      scope.dispose();
+    }
+  });
+
+  it("focuses a localized error if navigation fails after import committed", async () => {
+    const client = {
+      listDeepSeekModernSessions: vi.fn(async () => ({
+        candidates: [
+          {
+            nativeSessionId: "idle-session",
+            title: null,
+            updatedAt: 1_700_000_000_000,
+            cwd: "C:\\work",
+            running: false,
+          },
+        ],
+      })),
+      importDeepSeekModernSession: vi.fn(async () => ({
+        threadId: hostThreadIdSchema.parse("imported-thread"),
+      })),
+    };
+    const page = createDefaultRendererSettingsPages(
+      rendererSettingsMessages("en"),
+      () => null,
+      () => null,
+      () => client,
+      async () => Promise.reject(new Error("private navigation detail")),
+    ).find(({ id }) => id === "session-import");
+    if (!page) throw new Error("Session Import page is not registered");
+    const document = new FakeDocument();
+    const content = document.createElement("main");
+    const scope = new RendererSettingsPageScope();
+    page.mount({
+      content: content as unknown as HTMLElement,
+      signal: scope.signal,
+      runLatest: (operation, handlers) => scope.runLatest(operation, handlers),
+    });
+    await vi.waitFor(() => expect(visibleText(content)).toContain("Untitled session"));
+
+    descendants(content)
+      .find(({ dataset }) => dataset.sessionImportAction === "import")
+      ?.dispatch("click");
+
+    await vi.waitFor(() => expect(visibleText(content)).toContain("could not be opened"));
+    const status = elementWithClass(content, "settings-session-import-status");
+    expect(status.focused).toBe(true);
+    expect(visibleText(content)).not.toContain("private navigation detail");
     scope.dispose();
   });
 

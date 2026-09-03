@@ -7,6 +7,7 @@ import type {
   HostThreadId,
 } from "@codexhost/shared-contracts";
 
+import { RendererDeepSeekSessionUnavailableError } from "../renderer-model-client.js";
 import type { RendererSettingsPageDefinition, RendererSettingsPageMountContext } from "./core.js";
 import { createRendererSettingsIcon } from "./icons.js";
 import type { RendererSettingsMessages } from "./localization.js";
@@ -25,10 +26,6 @@ export type RendererImportedThreadOpener = (
   signal: AbortSignal,
 ) => Promise<void>;
 
-function errorMessage(error: unknown, fallback: string): string {
-  return error instanceof Error && error.message.trim() ? error.message : fallback;
-}
-
 function shortSessionId(value: string): string {
   return value.length <= 18 ? value : `${value.slice(0, 10)}…${value.slice(-6)}`;
 }
@@ -46,6 +43,13 @@ function createStatus(document: Document, message: string, error = false): HTMLE
   return status;
 }
 
+function createAccessibleText(document: Document, message: string): HTMLElement {
+  const text = document.createElement("span");
+  text.className = "settings-visually-hidden";
+  text.textContent = message;
+  return text;
+}
+
 export function createDeepSeekSessionImportSettingsPage(
   messages: RendererSettingsMessages,
   getClient: () => RendererDeepSeekSessionImportClient | null,
@@ -59,7 +63,7 @@ export function createDeepSeekSessionImportSettingsPage(
       const document = context.content.ownerDocument;
       const header = document.createElement("div");
       header.className = "settings-session-import-header";
-      const heading = document.createElement("div");
+      const heading = document.createElement("h2");
       heading.className = "settings-section-label";
       heading.textContent = messages.pageLabels["session-import"];
       const refresh = document.createElement("button");
@@ -80,15 +84,40 @@ export function createDeepSeekSessionImportSettingsPage(
       description.textContent = messages.sessionImportDescription;
       const content = document.createElement("section");
       content.className = "settings-session-import-content";
-      content.setAttribute("aria-live", "polite");
       context.content.append(header, description, content);
 
       let candidates: readonly DeepSeekModernSessionCandidate[] = [];
       let importingId: string | null = null;
+      let actions: Array<{
+        readonly button: HTMLButtonElement;
+        readonly candidate: DeepSeekModernSessionCandidate;
+      }> = [];
 
-      const renderUnavailable = (): void => {
+      const updateImportActions = (): void => {
+        for (const { button, candidate } of actions) {
+          const importing = importingId === candidate.nativeSessionId;
+          button.disabled = candidate.running;
+          button.setAttribute(
+            "aria-disabled",
+            candidate.running || importingId !== null ? "true" : "false",
+          );
+          button.setAttribute("aria-busy", importing ? "true" : "false");
+          button.replaceChildren(
+            createRendererSettingsIcon("download", 15),
+            importing ? messages.sessionImportImporting : messages.sessionImportAction,
+          );
+        }
+      };
+
+      const renderUnavailable = (focus = false): void => {
         candidates = [];
-        content.replaceChildren(createStatus(document, messages.sessionImportUnavailable));
+        actions = [];
+        const status = createStatus(document, messages.sessionImportUnavailable);
+        content.replaceChildren(status);
+        if (focus) {
+          status.tabIndex = -1;
+          status.focus();
+        }
       };
 
       const renderFailure = (
@@ -96,23 +125,29 @@ export function createDeepSeekSessionImportSettingsPage(
         imported = false,
         operation: "list" | "import" = "list",
       ): void => {
-        content.replaceChildren(
-          createStatus(
-            document,
-            imported
-              ? messages.sessionImportOpenFailed
-              : errorMessage(
-                  error,
-                  operation === "import"
-                    ? messages.sessionImportFailed
-                    : messages.sessionImportLoadFailed,
-                ),
-            true,
-          ),
+        if (!imported && error instanceof RendererDeepSeekSessionUnavailableError) {
+          renderUnavailable(operation === "import");
+          return;
+        }
+        actions = [];
+        const status = createStatus(
+          document,
+          imported
+            ? messages.sessionImportOpenFailed
+            : operation === "import"
+              ? messages.sessionImportFailed
+              : messages.sessionImportLoadFailed,
+          true,
         );
+        content.replaceChildren(status);
+        if (operation === "import") {
+          status.tabIndex = -1;
+          status.focus();
+        }
       };
 
       const renderCandidates = (): void => {
+        actions = [];
         content.replaceChildren();
         if (candidates.length === 0) {
           content.append(createStatus(document, messages.sessionImportEmpty));
@@ -141,7 +176,17 @@ export function createDeepSeekSessionImportSettingsPage(
           const identity = document.createElement("span");
           identity.textContent = `${messages.sessionImportSessionId}: ${shortSessionId(candidate.nativeSessionId)}`;
           identity.title = candidate.nativeSessionId;
-          copy.append(title, metadata, cwd, identity);
+          identity.setAttribute("aria-hidden", "true");
+          copy.append(
+            title,
+            metadata,
+            cwd,
+            identity,
+            createAccessibleText(
+              document,
+              `${messages.sessionImportSessionId}: ${candidate.nativeSessionId}`,
+            ),
+          );
 
           const actionArea = document.createElement("div");
           actionArea.className = "settings-session-import-row__action";
@@ -150,29 +195,29 @@ export function createDeepSeekSessionImportSettingsPage(
             running.className = "settings-session-import-running";
             running.textContent = messages.sessionImportRunning;
             running.title = messages.sessionImportRunningHint;
-            actionArea.append(running);
+            running.setAttribute("aria-hidden", "true");
+            actionArea.append(
+              running,
+              createAccessibleText(
+                document,
+                `${messages.sessionImportRunning}: ${messages.sessionImportRunningHint}`,
+              ),
+            );
           }
           const action = document.createElement("button");
           action.type = "button";
           action.className = "settings-command-button";
           action.dataset.sessionImportAction = "import";
-          action.disabled = candidate.running || importingId !== null;
-          action.replaceChildren(
-            createRendererSettingsIcon("download", 15),
-            importingId === candidate.nativeSessionId
-              ? messages.sessionImportImporting
-              : messages.sessionImportAction,
-          );
           action.addEventListener("click", () => {
             if (candidate.running || importingId !== null) return;
             const client = getClient();
             if (!client) {
-              renderUnavailable();
+              renderUnavailable(true);
               return;
             }
             importingId = candidate.nativeSessionId;
             refresh.disabled = true;
-            renderCandidates();
+            updateImportActions();
             let committed = false;
             void context.runLatest(
               async (signal) => {
@@ -186,6 +231,7 @@ export function createDeepSeekSessionImportSettingsPage(
                 success() {
                   importingId = null;
                   refresh.disabled = false;
+                  updateImportActions();
                 },
                 failure(error) {
                   importingId = null;
@@ -195,11 +241,13 @@ export function createDeepSeekSessionImportSettingsPage(
               },
             );
           });
+          actions.push({ button: action, candidate });
           actionArea.append(action);
           row.append(copy, actionArea);
           list.append(row);
         }
         content.append(list);
+        updateImportActions();
       };
 
       const load = (): void => {

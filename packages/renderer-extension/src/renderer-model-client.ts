@@ -77,8 +77,20 @@ export const UPDATE_CHECK_METHOD = "codexhost/update/check";
 export const UPDATE_START_METHOD = "codexhost/update/start";
 export const UPDATE_STATUS_METHOD = "codexhost/update/status";
 
+export class RendererDeepSeekSessionUnavailableError extends Error {
+  constructor() {
+    super("DeepSeek Modern Session import is unavailable");
+    this.name = "RendererDeepSeekSessionUnavailableError";
+  }
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function normalizeDeepSeekSessionError(error: unknown): unknown {
+  const code = isRecord(error) ? error.code : undefined;
+  return code === -32076 || code === -32077 ? new RendererDeepSeekSessionUnavailableError() : error;
 }
 
 function notifiedThreadId(notification: unknown): ThreadUsageInspectionParams["threadId"] | null {
@@ -186,6 +198,7 @@ export function createRendererModelClient(
   );
   const manager = managers[0];
   if (managers.length !== 1 || !manager) return null;
+  const pendingDeepSeekImports = new Map<string, Promise<DeepSeekModernSessionImportResult>>();
 
   const inspectHarness = async (input: HarnessInspectParams): Promise<HarnessInspection> => {
     const params = harnessInspectParamsSchema.parse(input);
@@ -234,22 +247,41 @@ export function createRendererModelClient(
     const result = await manager.sendRequest(THREAD_PERMISSION_MODE_SELECT_METHOD, params);
     return harnessConfigurationStateSchema.parse(result);
   };
+  const importDeepSeekModernSession = async (
+    input: DeepSeekModernSessionImportParams,
+  ): Promise<DeepSeekModernSessionImportResult> => {
+    const params = deepSeekModernSessionImportParamsSchema.parse(input);
+    const pending = pendingDeepSeekImports.get(params.nativeSessionId);
+    if (pending) return pending;
+    const request = (async () => {
+      try {
+        const result = await manager.sendRequest(DEEPSEEK_MODERN_SESSION_IMPORT_METHOD, params);
+        return deepSeekModernSessionImportResultSchema.parse(result);
+      } catch (error) {
+        throw normalizeDeepSeekSessionError(error);
+      }
+    })().finally(() => {
+      if (pendingDeepSeekImports.get(params.nativeSessionId) === request) {
+        pendingDeepSeekImports.delete(params.nativeSessionId);
+      }
+    });
+    pendingDeepSeekImports.set(params.nativeSessionId, request);
+    return request;
+  };
 
   return Object.freeze({
     async listDeepSeekModernSessions(
       input: DeepSeekModernSessionListParams,
     ): Promise<DeepSeekModernSessionListResult> {
       const params = deepSeekModernSessionListParamsSchema.parse(input);
-      const result = await manager.sendRequest(DEEPSEEK_MODERN_SESSION_LIST_METHOD, params);
-      return deepSeekModernSessionListResultSchema.parse(result);
+      try {
+        const result = await manager.sendRequest(DEEPSEEK_MODERN_SESSION_LIST_METHOD, params);
+        return deepSeekModernSessionListResultSchema.parse(result);
+      } catch (error) {
+        throw normalizeDeepSeekSessionError(error);
+      }
     },
-    async importDeepSeekModernSession(
-      input: DeepSeekModernSessionImportParams,
-    ): Promise<DeepSeekModernSessionImportResult> {
-      const params = deepSeekModernSessionImportParamsSchema.parse(input);
-      const result = await manager.sendRequest(DEEPSEEK_MODERN_SESSION_IMPORT_METHOD, params);
-      return deepSeekModernSessionImportResultSchema.parse(result);
-    },
+    importDeepSeekModernSession,
     async forkThread(input: ExternalThreadForkParams): Promise<ExternalThreadForkResult> {
       const params = externalThreadForkParamsSchema.parse(input);
       const result = await manager.sendRequest(THREAD_FORK_METHOD, params);

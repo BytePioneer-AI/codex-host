@@ -134,7 +134,10 @@ function sidebarRow(threadId: string, hostId: string) {
 }
 
 describe("Renderer external Thread Fork control", () => {
-  afterEach(() => vi.unstubAllGlobals());
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
 
   it("opens only the Host-qualified standard sidebar row", async () => {
     const local = sidebarRow("same-thread", "local");
@@ -147,6 +150,18 @@ describe("Renderer external Thread Fork control", () => {
     await openRendererThread(hostThreadIdSchema.parse("same-thread"), { hostId: "remote-1" });
 
     expect(local.click).not.toHaveBeenCalled();
+    expect(remote.click).toHaveBeenCalledOnce();
+  });
+
+  it("keeps the generic Fork opener compatible with a Remote Host row", async () => {
+    const remote = sidebarRow("remote-thread", "remote-1");
+    vi.stubGlobal("document", {
+      querySelectorAll: () => [remote],
+      documentElement: {},
+    });
+
+    await openRendererThread(hostThreadIdSchema.parse("remote-thread"));
+
     expect(remote.click).toHaveBeenCalledOnce();
   });
 
@@ -172,6 +187,31 @@ describe("Renderer external Thread Fork control", () => {
     abort.abort();
 
     await expect(opening).rejects.toMatchObject({ name: "AbortError" });
+    expect(disconnect).toHaveBeenCalledOnce();
+  });
+
+  it("times out a missing sidebar row and releases its observer", async () => {
+    vi.useFakeTimers();
+    const disconnect = vi.fn();
+    class FakeMutationObserver {
+      observe = vi.fn();
+      disconnect = disconnect;
+    }
+    vi.stubGlobal("document", { querySelectorAll: () => [], documentElement: {} });
+    vi.stubGlobal("window", {
+      setTimeout: globalThis.setTimeout,
+      clearTimeout: globalThis.clearTimeout,
+    });
+    vi.stubGlobal("MutationObserver", FakeMutationObserver);
+    const opening = openRendererThread(hostThreadIdSchema.parse("missing-thread"), {
+      hostId: "local",
+      timeoutMs: 5,
+    });
+    const rejection = expect(opening).rejects.toThrow("Thread did not appear in the sidebar");
+
+    await vi.advanceTimersByTimeAsync(5);
+
+    await rejection;
     expect(disconnect).toHaveBeenCalledOnce();
   });
 

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  DEEPSEEK_MODERN_HOST_THREAD_ID_MAX_LENGTH,
   DEEPSEEK_MODERN_SESSION_CWD_MAX_LENGTH,
   DEEPSEEK_MODERN_SESSION_ID_MAX_LENGTH,
   DEEPSEEK_MODERN_SESSION_LIST_MAX_LENGTH,
@@ -107,5 +108,13 @@ describe("DeepSeek Modern Session import contracts", () => {
     expect(deepSeekModernSessionImportResultSchema.safeParse({ threadId: " " }).success).toBe(
       false,
     );
+    expect(
+      deepSeekModernSessionImportResultSchema.safeParse({ threadId: "thread\0secret" }).success,
+    ).toBe(false);
+    expect(
+      deepSeekModernSessionImportResultSchema.safeParse({
+        threadId: "t".repeat(DEEPSEEK_MODERN_HOST_THREAD_ID_MAX_LENGTH + 1),
+      }).success,
+    ).toBe(false);
   });
 });

@@ -7,6 +7,7 @@ export const DEEPSEEK_MODERN_SESSION_CWD_MAX_LENGTH = 16_384;
 export const DEEPSEEK_MODERN_SESSION_TITLE_MAX_LENGTH = 4_096;
 export const DEEPSEEK_MODERN_SESSION_LIST_MAX_LENGTH = 1_000;
 export const DEEPSEEK_MODERN_SESSION_UPDATED_AT_MAX = 8_640_000_000_000_000;
+export const DEEPSEEK_MODERN_HOST_THREAD_ID_MAX_LENGTH = 1_024;
 
 const nonBlankTextSchema = z
   .string()
@@ -53,7 +54,9 @@ export type DeepSeekModernSessionImportParams = z.infer<
 
 export const deepSeekModernSessionImportResultSchema = z
   .object({
-    threadId: hostThreadIdSchema,
+    threadId: nonBlankTextSchema
+      .max(DEEPSEEK_MODERN_HOST_THREAD_ID_MAX_LENGTH)
+      .pipe(hostThreadIdSchema),
   })
   .strict();
 

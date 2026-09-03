@@ -22,12 +22,13 @@ function abortError(): Error {
 
 export function openRendererThread(
   threadId: HostThreadId,
-  options: { hostId: string; signal?: AbortSignal; timeoutMs?: number },
+  options: { hostId?: string; signal?: AbortSignal; timeoutMs?: number } = {},
 ): Promise<void> {
   const find = (): HTMLElement | null => {
     for (const row of document.querySelectorAll<HTMLElement>(SIDEBAR_THREAD_ROW_SELECTOR)) {
       if (
-        row.getAttribute(SIDEBAR_THREAD_HOST_ID_ATTRIBUTE) === options.hostId &&
+        (options.hostId === undefined ||
+          row.getAttribute(SIDEBAR_THREAD_HOST_ID_ATTRIBUTE) === options.hostId) &&
         threadIdFromSidebarRowElement(row) === threadId
       ) {
         return row;
@@ -217,7 +218,7 @@ class BrowserRendererForkDom implements RendererForkDom {
   }
 
   openThread(threadId: HostThreadId): Promise<void> {
-    return openRendererThread(threadId, { hostId: "local" });
+    return openRendererThread(threadId);
   }
 }
 

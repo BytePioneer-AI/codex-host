@@ -26,6 +26,7 @@ import {
   UPDATE_CHECK_METHOD,
   UPDATE_START_METHOD,
   UPDATE_STATUS_METHOD,
+  RendererDeepSeekSessionUnavailableError,
   createRendererModelClient,
   createThreadUsageSubscriptionRelay,
 } from "../src/renderer-model-client.js";
@@ -315,6 +316,43 @@ describe("Renderer fixed Model request client", () => {
       } as never),
     ).rejects.toThrow();
     expect(sendRequest).toHaveBeenCalledTimes(2);
+  });
+
+  it("coalesces an in-flight DSH Modern import across page mounts", async () => {
+    const response = Promise.withResolvers<unknown>();
+    const sendRequest = vi.fn(() => response.promise);
+    const client = createRendererModelClient([{ sendRequest }]);
+    if (!client?.importDeepSeekModernSession) {
+      throw new Error("DSH Modern Session client was not created");
+    }
+
+    const first = client.importDeepSeekModernSession({ nativeSessionId: "native-1" });
+    const remounted = client.importDeepSeekModernSession({ nativeSessionId: "native-1" });
+
+    expect(sendRequest).toHaveBeenCalledOnce();
+    response.resolve({ threadId: "thread-1" });
+    await expect(first).resolves.toEqual({ threadId: "thread-1" });
+    await expect(remounted).resolves.toEqual({ threadId: "thread-1" });
+  });
+
+  it("normalizes only stable unavailable DSH Modern response codes", async () => {
+    const unavailable = Object.assign(new Error("private unavailable detail"), { code: -32076 });
+    const unsupported = Object.assign(new Error("private unsupported detail"), { code: -32077 });
+    const sendRequest = vi
+      .fn()
+      .mockRejectedValueOnce(unavailable)
+      .mockRejectedValueOnce(unsupported);
+    const client = createRendererModelClient([{ sendRequest }]);
+    if (!client?.listDeepSeekModernSessions || !client.importDeepSeekModernSession) {
+      throw new Error("DSH Modern Session client was not created");
+    }
+
+    await expect(client.listDeepSeekModernSessions({})).rejects.toBeInstanceOf(
+      RendererDeepSeekSessionUnavailableError,
+    );
+    await expect(
+      client.importDeepSeekModernSession({ nativeSessionId: "native-1" }),
+    ).rejects.toBeInstanceOf(RendererDeepSeekSessionUnavailableError);
   });
 
   it("opens Harness Web through the pathless Host action", async () => {

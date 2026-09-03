@@ -4,8 +4,6 @@ import {
   harnessThinkingOptionIdSchema,
   hostThreadIdSchema,
   type ExternalThreadForkParams,
-  type DeepSeekModernSessionImportParams,
-  type DeepSeekModernSessionListParams,
   type HarnessInspectParams,
   type HarnessModelRef,
   type HarnessPermissionModeId,
@@ -1002,12 +1000,6 @@ export function installCurrentRendererAdapter(): {
       const targets = rendererRequestTargetsForHost(findActivePrewarmTargets(document), hostId);
       return modelClientForTargets(targets ?? []);
     },
-    listDeepSeekModernSessions: (input: DeepSeekModernSessionListParams) =>
-      currentModelClient().listDeepSeekModernSessions?.(input) ??
-      Promise.reject(new Error("DeepSeek Modern Session list is unavailable")),
-    importDeepSeekModernSession: (input: DeepSeekModernSessionImportParams) =>
-      currentModelClient().importDeepSeekModernSession?.(input) ??
-      Promise.reject(new Error("DeepSeek Modern Session import is unavailable")),
     forkThread: (input: ExternalThreadForkParams) => currentModelClient().forkThread(input),
     inspectHarness: (input: HarnessInspectParams) => currentModelClient().inspectHarness(input),
     inspectThread: (input: ThreadInspectionParams) => currentModelClient().inspectThread(input),

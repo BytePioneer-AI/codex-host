@@ -5,6 +5,7 @@ export { codexhostErrorSchema } from "./errors.js";
 export { REASONING_TRANSCRIPT_COMMAND } from "./reasoning-transcript.js";
 export type { CodexhostError } from "./errors.js";
 export {
+  DEEPSEEK_MODERN_HOST_THREAD_ID_MAX_LENGTH,
   DEEPSEEK_MODERN_SESSION_CWD_MAX_LENGTH,
   DEEPSEEK_MODERN_SESSION_ID_MAX_LENGTH,
   DEEPSEEK_MODERN_SESSION_LIST_MAX_LENGTH,

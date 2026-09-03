@@ -186,8 +186,9 @@ fn has_default_listener(arguments: &[String]) -> bool {
     app_server && (exact_arguments || shell_command) && !proxy
 }
 
-fn is_managed_desktop_ssh_service(arguments: &[String]) -> bool {
-    arguments == ["codex app-server desktop-ssh-websocket-v0.sock"]
+fn is_managed_remote_listener_service(arguments: &[String]) -> bool {
+    arguments == ["codexhost remote app-server listener"]
+        || arguments == ["codex app-server desktop-ssh-websocket-v0.sock"]
 }
 
 fn command_mentions_path(arguments: &[String], expected: &Path) -> bool {
@@ -228,9 +229,9 @@ fn matching_root(
             ListenerRole::Managed => {
                 executable.as_ref() == Some(&expected_node)
                     && (command_mentions_path(&arguments, expected_command)
-                        || is_managed_desktop_ssh_service(&arguments))
+                        || is_managed_remote_listener_service(&arguments))
                     && (has_default_listener(&arguments)
-                        || is_managed_desktop_ssh_service(&arguments))
+                        || is_managed_remote_listener_service(&arguments))
             }
         };
         if listener_matches {
@@ -239,6 +240,75 @@ fn matching_root(
         current = snapshots.get(&snapshot.parent_id).cloned();
     }
     Ok(None)
+}
+
+fn matching_roots(
+    owners: &[u32],
+    all: &[ProcessSnapshot],
+    options: &TerminateOptions,
+) -> LifecycleResult<Vec<ProcessSnapshot>> {
+    let snapshots = all
+        .iter()
+        .cloned()
+        .map(|snapshot| (snapshot.id, snapshot))
+        .collect::<HashMap<_, _>>();
+    let mut roots = Vec::new();
+    for owner_id in owners {
+        let Some(owner) = snapshots.get(owner_id) else {
+            continue;
+        };
+        if let Some(root) = matching_root(owner, &snapshots, options)?
+            && !roots
+                .iter()
+                .any(|candidate: &ProcessSnapshot| candidate.id == root.id)
+        {
+            roots.push(root);
+        }
+    }
+    Ok(roots)
+}
+
+pub fn existing_listener_is_reusable(
+    socket_path: &Path,
+    stock_codex_path: &Path,
+    node_path: Option<&Path>,
+    host_runtime_path: Option<&Path>,
+) -> LifecycleResult<bool> {
+    let (role, node_path, host_runtime_path) = match (node_path, host_runtime_path) {
+        (Some(node_path), Some(host_runtime_path)) => (
+            ListenerRole::Managed,
+            node_path.to_owned(),
+            host_runtime_path.to_owned(),
+        ),
+        (None, None) => (
+            ListenerRole::Stock,
+            stock_codex_path.to_owned(),
+            stock_codex_path.to_owned(),
+        ),
+        _ => {
+            return Err(
+                "CODEXHOST_HOST_NODE_PATH and CODEXHOST_HOST_RUNTIME_PATH must be configured together"
+                    .into(),
+            );
+        }
+    };
+    let options = TerminateOptions {
+        role,
+        socket_path: socket_path.to_owned(),
+        stock_codex_path: stock_codex_path.to_owned(),
+        node_path,
+        host_runtime_path,
+    };
+    let owners = socket_owner_process_ids(socket_path)?;
+    if owners.is_empty() {
+        return Ok(false);
+    }
+    let all = process_snapshots()?;
+    let roots = matching_roots(&owners, &all, &options)?;
+    if roots.len() == 1 {
+        return Ok(true);
+    }
+    Err("remote Host socket owner does not match the requested installed listener".into())
 }
 
 fn descendants(root: &ProcessSnapshot, snapshots: &[ProcessSnapshot]) -> Vec<ProcessSnapshot> {
@@ -301,24 +371,7 @@ pub fn run_terminate(arguments: &[String]) -> LifecycleResult<i32> {
         .into());
     }
     let all = process_snapshots()?;
-    let snapshots = all
-        .iter()
-        .cloned()
-        .map(|snapshot| (snapshot.id, snapshot))
-        .collect::<HashMap<_, _>>();
-    let mut roots = Vec::new();
-    for owner_id in owners {
-        let Some(owner) = snapshots.get(&owner_id) else {
-            continue;
-        };
-        if let Some(root) = matching_root(owner, &snapshots, &options)?
-            && !roots
-                .iter()
-                .any(|candidate: &ProcessSnapshot| candidate.id == root.id)
-        {
-            roots.push(root);
-        }
-    }
+    let mut roots = matching_roots(&owners, &all, &options)?;
     if roots.len() != 1 {
         return Err(
             "remote Host socket owner does not match the requested installed listener".into(),
@@ -332,7 +385,7 @@ pub fn run_terminate(arguments: &[String]) -> LifecycleResult<i32> {
 
 #[cfg(test)]
 mod tests {
-    use super::{command_mentions_path, has_default_listener, is_managed_desktop_ssh_service};
+    use super::{command_mentions_path, has_default_listener, is_managed_remote_listener_service};
     use std::path::Path;
 
     fn arguments(values: &[&str]) -> Vec<String> {
@@ -361,10 +414,13 @@ mod tests {
             "--listen",
             "unix:///tmp/custom.sock",
         ])));
-        assert!(is_managed_desktop_ssh_service(&arguments(&[
+        assert!(is_managed_remote_listener_service(&arguments(&[
+            "codexhost remote app-server listener",
+        ])));
+        assert!(is_managed_remote_listener_service(&arguments(&[
             "codex app-server desktop-ssh-websocket-v0.sock",
         ])));
-        assert!(!is_managed_desktop_ssh_service(&arguments(&[
+        assert!(!is_managed_remote_listener_service(&arguments(&[
             "codex app-server desktop-ssh-websocket-v1.sock",
         ])));
     }

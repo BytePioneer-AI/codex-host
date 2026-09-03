@@ -724,6 +724,198 @@ describe("AppServerHost HarnessAdapter projection", () => {
     }
   });
 
+  it("lets an active official Turn reach its terminal event after Desktop disconnects", async () => {
+    const fixture = createFixture();
+    const threadId = "019cbe86-76cf-7721-b5e4-978934e18757";
+    const turnId = "019cbe86-8eef-79d0-8658-cf2c64aa38cf";
+
+    try {
+      writeRequest(fixture.desktopInput, {
+        id: 1,
+        method: "turn/start",
+        params: { threadId, input: [{ type: "text", text: "keep running" }] },
+      });
+      await readJsonLine(fixture.official.stdin);
+      fixture.official.stdout.write(
+        `${JSON.stringify({ method: "turn/started", params: { threadId, turn: { id: turnId } } })}\n`,
+      );
+      await fixture.collector.waitFor((message) => turnEvent(message, "turn/started", turnId));
+
+      fixture.host.disconnect();
+      const beforeTerminal = await Promise.race([
+        fixture.running.then(() => "settled" as const),
+        new Promise<"pending">((resolve) => setTimeout(() => resolve("pending"), 25)),
+      ]);
+
+      expect(beforeTerminal).toBe("pending");
+      expect(fixture.official.kill).not.toHaveBeenCalled();
+
+      fixture.official.stdout.write(
+        `${JSON.stringify({
+          method: "turn/completed",
+          params: { threadId, turn: { id: turnId, status: "completed" } },
+        })}\n`,
+      );
+      await expect(
+        fixture.collector.waitFor((message) => turnEvent(message, "turn/completed", turnId)),
+      ).resolves.toBeTruthy();
+      await expect(fixture.running).resolves.toBe(0);
+      expect(fixture.official.kill).not.toHaveBeenCalled();
+    } finally {
+      fixture.host.close();
+      fixture.desktopInput.end();
+      await fixture.running;
+      rmSync(fixture.mappingStoreDirectory, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps a forwarded official turn/start alive across the pre-response disconnect race", async () => {
+    const fixture = createFixture();
+    const threadId = "019cbe87-ae18-7543-97f1-c60deeb61b17";
+    const turnId = "019cbe87-b77a-78a2-a16a-c6ad1fc2a026";
+
+    try {
+      writeRequest(fixture.desktopInput, {
+        id: 1,
+        method: "turn/start",
+        params: { threadId, input: [{ type: "text", text: "start then disconnect" }] },
+      });
+      await readJsonLine(fixture.official.stdin);
+      fixture.host.disconnect();
+
+      const beforeResponse = await Promise.race([
+        fixture.running.then(() => "settled" as const),
+        new Promise<"pending">((resolve) => setTimeout(() => resolve("pending"), 25)),
+      ]);
+      expect(beforeResponse).toBe("pending");
+
+      fixture.official.stdout.write(
+        `${JSON.stringify({ id: 1, result: { turn: { id: turnId } } })}\n`,
+      );
+      await expect(
+        fixture.collector.waitFor((message) => requestId(message, 1)),
+      ).resolves.toBeTruthy();
+      expect(fixture.official.stdin.writableEnded).toBe(false);
+
+      fixture.official.stdout.write(
+        `${JSON.stringify({
+          method: "turn/completed",
+          params: { threadId, turn: { id: turnId, status: "completed" } },
+        })}\n`,
+      );
+      await expect(fixture.running).resolves.toBe(0);
+      expect(fixture.official.kill).not.toHaveBeenCalled();
+    } finally {
+      fixture.host.close();
+      fixture.desktopInput.end();
+      await fixture.running;
+      rmSync(fixture.mappingStoreDirectory, { recursive: true, force: true });
+    }
+  });
+
+  it("releases a disconnected Host session when pending official turn/start fails", async () => {
+    const fixture = createFixture();
+    const threadId = "019cbe88-9a77-78ae-919f-79cfe1468e11";
+
+    try {
+      writeRequest(fixture.desktopInput, {
+        id: 1,
+        method: "turn/start",
+        params: { threadId, input: [{ type: "text", text: "rejected start" }] },
+      });
+      await readJsonLine(fixture.official.stdin);
+      fixture.host.disconnect();
+      fixture.official.stdout.write(
+        `${JSON.stringify({ id: 1, error: { code: -32000, message: "synthetic rejection" } })}\n`,
+      );
+
+      await expect(
+        fixture.collector.waitFor((message) => requestId(message, 1)),
+      ).resolves.toBeTruthy();
+      await expect(fixture.running).resolves.toBe(0);
+      expect(fixture.official.kill).not.toHaveBeenCalled();
+    } finally {
+      fixture.host.close();
+      fixture.desktopInput.end();
+      await fixture.running;
+      rmSync(fixture.mappingStoreDirectory, { recursive: true, force: true });
+    }
+  });
+
+  it("releases a disconnected Host when official completion precedes the start response", async () => {
+    const fixture = createFixture();
+    const threadId = "019cbe89-91f5-71c8-b24d-0410e73a2ef4";
+    const turnId = "019cbe89-9e78-7e49-ac62-3958b8db3881";
+
+    try {
+      writeRequest(fixture.desktopInput, {
+        id: 1,
+        method: "turn/start",
+        params: { threadId, input: [{ type: "text", text: "finish immediately" }] },
+      });
+      await readJsonLine(fixture.official.stdin);
+      fixture.host.disconnect();
+      fixture.official.stdout.write(
+        `${JSON.stringify({
+          method: "turn/completed",
+          params: { threadId, turn: { id: turnId, status: "completed" } },
+        })}\n`,
+      );
+      fixture.official.stdout.write(
+        `${JSON.stringify({ id: 1, result: { turn: { id: turnId } } })}\n`,
+      );
+
+      await expect(fixture.running).resolves.toBe(0);
+      expect(fixture.official.kill).not.toHaveBeenCalled();
+    } finally {
+      fixture.host.close();
+      fixture.desktopInput.end();
+      await fixture.running;
+      rmSync(fixture.mappingStoreDirectory, { recursive: true, force: true });
+    }
+  });
+
+  it("lets an active external Harness Turn finish after Desktop disconnects", async () => {
+    const fixture = createFixture();
+    let session: FakeHarnessSession | undefined;
+
+    try {
+      const threadId = await startPiThread(fixture);
+      const turnId = await startPiTurn(fixture, threadId);
+      session = fixture.adapter.sessions[0];
+      if (!session) throw new Error("Fake Pi Session was not opened");
+      const close = vi.spyOn(session, "close");
+      await fixture.collector.waitFor((message) => turnEvent(message, "turn/started", turnId));
+
+      fixture.host.disconnect();
+      const beforeTerminal = await Promise.race([
+        fixture.running.then(() => "settled" as const),
+        new Promise<"pending">((resolve) => setTimeout(() => resolve("pending"), 25)),
+      ]);
+
+      expect(beforeTerminal).toBe("pending");
+      expect(close).not.toHaveBeenCalled();
+
+      session.appendText("completed after transport disconnect");
+      session.succeedTurn();
+      await expect(
+        fixture.collector.waitFor((message) => turnEvent(message, "turn/completed", turnId)),
+      ).resolves.toBeTruthy();
+      await expect(fixture.running).resolves.toBe(0);
+      expect(close).toHaveBeenCalled();
+    } finally {
+      try {
+        session?.succeedTurn();
+      } catch {
+        // A failing implementation may already have interrupted the synthetic Turn.
+      }
+      fixture.host.close();
+      fixture.desktopInput.end();
+      await fixture.running;
+      rmSync(fixture.mappingStoreDirectory, { recursive: true, force: true });
+    }
+  });
+
   it("fails when official app-server output closes before Desktop input", async () => {
     const fixture = createFixture();
 

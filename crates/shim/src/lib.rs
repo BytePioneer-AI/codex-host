@@ -501,6 +501,35 @@ fn launch_detached_remote_listener(arguments: &[OsString]) -> ShimResult<i32> {
     let current_executable = env::current_exe()?;
     let socket_path = default_remote_socket_path()?;
     let previous_socket = socket_identity(&socket_path);
+    if previous_socket.is_some() {
+        let stock_codex_path = env::var_os(STOCK_CODEX_PATH_ENV)
+            .map(PathBuf::from)
+            .ok_or_else(|| format!("{STOCK_CODEX_PATH_ENV} is required"))?;
+        let launcher_managed = env::var_os(LAUNCHER_PID_ENV).is_some();
+        let (node_path, host_runtime_path) = select_host_paths(
+            env::var_os(HOST_NODE_PATH_ENV),
+            env::var_os(HOST_RUNTIME_PATH_ENV),
+            launcher_managed,
+            env::var_os(NPM_NODE_PATH_ENV),
+            env::var_os(NPM_PACKAGE_ROOT_ENV),
+        );
+        let node_path = node_path.as_deref().map(Path::new);
+        let host_runtime_path = host_runtime_path.as_deref().map(Path::new);
+        if remote_lifecycle::existing_listener_is_reusable(
+            &socket_path,
+            &stock_codex_path,
+            node_path,
+            host_runtime_path,
+        )? {
+            UnixStream::connect(&socket_path).map_err(|error| {
+                format!(
+                    "managed remote listener at {} is owned by the installed runtime but is not accepting connections: {error}",
+                    socket_path.display()
+                )
+            })?;
+            return Ok(0);
+        }
+    }
     let mut command = Command::new(&current_executable);
     command
         .args(arguments)

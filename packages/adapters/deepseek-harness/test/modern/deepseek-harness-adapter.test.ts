@@ -94,6 +94,7 @@ class FakeConnection implements ModernConnectionLike {
     ok: true,
     value: { sessionId: "session-forked" },
   };
+  sessionListResult: ModernRemoteResult<unknown> = { ok: true, value: { items: [] } };
   forkResponse: Promise<ModernRemoteResult<unknown>> | undefined;
   cancelResponse: Promise<ModernRemoteResult<unknown>> | undefined;
   closeError: Error | undefined;
@@ -126,6 +127,9 @@ class FakeConnection implements ModernConnectionLike {
     this.timeline.push(endpoint);
     if (endpoint === "session/modelCatalog") {
       return Promise.resolve({ ok: true, value: catalogValue() } as ModernRemoteResult<T>);
+    }
+    if (endpoint === "session/list") {
+      return Promise.resolve(this.sessionListResult as ModernRemoteResult<T>);
     }
     if (endpoint === "settings/describe") {
       return Promise.resolve({
@@ -561,6 +565,44 @@ function setup(
 }
 
 describe("Modern DeepSeek Harness Adapter", () => {
+  it("lists exact Modern Session candidates through the managed connection", async () => {
+    const { adapter, connection } = setup();
+    const sessionCwd = path.resolve("fixture-session-import");
+    connection.sessionListResult = {
+      ok: true,
+      value: {
+        items: [
+          {
+            sessionId: "native-session",
+            updatedAt: 42,
+            running: false,
+            blank: false,
+            cwd: sessionCwd,
+          },
+        ],
+      },
+    };
+
+    await expect(adapter.listModernSessionCandidates()).resolves.toEqual({
+      ok: true,
+      value: [
+        {
+          nativeSessionId: "native-session",
+          title: null,
+          updatedAt: 42,
+          cwd: sessionCwd,
+          running: false,
+        },
+      ],
+    });
+    expect(connection.calls).toContainEqual({ endpoint: "session/list", args: { _request: {} } });
+    await adapter.close();
+    await expect(adapter.listModernSessionCandidates()).resolves.toMatchObject({
+      ok: false,
+      error: { code: "invalidState" },
+    });
+  });
+
   it("advertises and opens Web only when the Host provides a local handoff", async () => {
     const enabled = setup([], { openWebUi: () => Promise.resolve() });
     await expect(enabled.adapter.inspect()).resolves.toMatchObject({

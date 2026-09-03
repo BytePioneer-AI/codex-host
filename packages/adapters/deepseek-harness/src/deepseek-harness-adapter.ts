@@ -10,7 +10,11 @@ import type {
   InspectHarnessInput,
   OpenSessionInput,
 } from "@codexhost/harness-adapter";
-import { harnessIdSchema, type HarnessId } from "@codexhost/shared-contracts";
+import {
+  harnessIdSchema,
+  type DeepSeekModernSessionCandidate,
+  type HarnessId,
+} from "@codexhost/shared-contracts";
 
 import {
   DeepSeekGenerationProbeError,
@@ -53,11 +57,18 @@ export interface DeepSeekHarnessAdapterDependencies {
     options: ProbeDeepSeekGenerationOptions,
   ) => Promise<DeepSeekExecutableGeneration>;
   readonly createLegacyAdapter?: (options: LegacyAdapterOptions) => HarnessAdapter;
-  readonly createModernAdapter?: (options: ModernDeepSeekHarnessAdapterOptions) => HarnessAdapter;
+  readonly createModernAdapter?: (
+    options: ModernDeepSeekHarnessAdapterOptions,
+  ) => ModernDelegateAdapter;
+}
+
+interface ModernDelegateAdapter extends HarnessAdapter {
+  listModernSessionCandidates(): Promise<HarnessResult<DeepSeekModernSessionCandidate[]>>;
 }
 
 interface DelegateOwner {
   readonly adapter: HarnessAdapter;
+  readonly generation: "legacy" | "modern";
   inspection: HarnessInspection;
   closePromise?: Promise<void>;
 }
@@ -85,7 +96,9 @@ export class DeepSeekHarnessAdapter implements HarnessAdapter {
     options: ProbeDeepSeekGenerationOptions,
   ) => Promise<DeepSeekExecutableGeneration>;
   readonly #createLegacyAdapter: (options: LegacyAdapterOptions) => HarnessAdapter;
-  readonly #createModernAdapter: (options: ModernDeepSeekHarnessAdapterOptions) => HarnessAdapter;
+  readonly #createModernAdapter: (
+    options: ModernDeepSeekHarnessAdapterOptions,
+  ) => ModernDelegateAdapter;
   readonly #randomUUID: NonNullable<DeepSeekHarnessAdapterDependencies["randomUUID"]>;
   #candidate: DelegateOwner | undefined;
   #cleanupFailedDuringClose = false;
@@ -137,6 +150,26 @@ export class DeepSeekHarnessAdapter implements HarnessAdapter {
       const selected = await this.#select(false);
       if (this.#closed) return { ok: false, error: closedError() };
       return selected.adapter.open(input);
+    } catch (error) {
+      return { ok: false, error: this.#selectionError(error) };
+    }
+  }
+
+  async listModernSessionCandidates(): Promise<HarnessResult<DeepSeekModernSessionCandidate[]>> {
+    try {
+      const selected = await this.#select(false);
+      if (this.#closed) return { ok: false, error: closedError() };
+      if (selected.generation !== "modern") {
+        return {
+          ok: false,
+          error: {
+            code: "unsupported",
+            message: "DeepSeek Harness Session import requires the Modern protocol",
+            retryable: false,
+          },
+        };
+      }
+      return (selected.adapter as ModernDelegateAdapter).listModernSessionCandidates();
     } catch (error) {
       return { ok: false, error: this.#selectionError(error) };
     }
@@ -307,6 +340,7 @@ export class DeepSeekHarnessAdapter implements HarnessAdapter {
     const adapter = this.#createLegacyAdapter(options);
     const owner: DelegateOwner = {
       adapter,
+      generation: "legacy",
       inspection: unavailableInspection("DeepSeek Harness Legacy selection is incomplete"),
     };
     this.#candidate = owner;
@@ -336,6 +370,7 @@ export class DeepSeekHarnessAdapter implements HarnessAdapter {
     });
     const owner: DelegateOwner = {
       adapter,
+      generation: "modern",
       inspection: unavailableInspection("DeepSeek Harness Modern selection is incomplete"),
     };
     this.#candidate = owner;

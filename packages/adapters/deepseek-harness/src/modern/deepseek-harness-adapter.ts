@@ -17,6 +17,7 @@ import {
   harnessIdSchema,
   nativeCheckpointRefSchema,
   nativeSessionRefSchema,
+  type DeepSeekModernSessionCandidate,
   type HarnessId,
   type HarnessPermissionModeCatalog,
   type HarnessPermissionModeId,
@@ -61,6 +62,7 @@ import {
   type ModernRemoteConnectionOptions,
 } from "./remote-connection.js";
 import { modernSessionCapabilities, ModernHarnessSession } from "./session.js";
+import { loadModernSessionCandidates, ModernSessionListError } from "./session-list.js";
 import {
   redactModernCredential,
   sanitizeModernRemoteFailure,
@@ -185,6 +187,11 @@ export class ModernDeepSeekHarnessAdapter implements HarnessAdapter {
     return this.#track(this.#open(input));
   }
 
+  listModernSessionCandidates(): Promise<HarnessResult<DeepSeekModernSessionCandidate[]>> {
+    if (!this.#accepting) return Promise.resolve({ ok: false, error: this.#stoppedError() });
+    return this.#track(this.#listModernSessionCandidates());
+  }
+
   close(): Promise<void> {
     if (!this.#closePromise) {
       this.#accepting = false;
@@ -230,6 +237,18 @@ export class ModernDeepSeekHarnessAdapter implements HarnessAdapter {
         status: failure.code === "notInstalled" ? "notInstalled" : "unavailable",
         error: failure,
       };
+    }
+  }
+
+  async #listModernSessionCandidates(): Promise<HarnessResult<DeepSeekModernSessionCandidate[]>> {
+    try {
+      await this.#connection.connect();
+      this.#assertAccepting();
+      const candidates = await loadModernSessionCandidates(this.#connection, this.#lifetime.signal);
+      this.#assertAccepting();
+      return { ok: true, value: candidates };
+    } catch (error) {
+      return { ok: false, error: toHarnessError(error, "unavailable") };
     }
   }
 
@@ -1056,6 +1075,26 @@ function toHarnessError(error: unknown, fallback: HarnessError["code"]): Harness
       message: error.message,
       retryable: code === "unavailable" || code === "processExited",
       diagnostic: error.code,
+    });
+  }
+  if (error instanceof ModernSessionListError) {
+    if (error.code === "remoteError") {
+      return nativeFailure(
+        error.nativeCode ?? "session/list-error",
+        "DeepSeek Harness Session list failed",
+      );
+    }
+    const code =
+      error.code === "cancelled"
+        ? "unavailable"
+        : error.code === "limitExceeded"
+          ? "protocolError"
+          : error.code;
+    return sanitizedHarnessError({
+      code,
+      message: error.message,
+      retryable: code === "unavailable" || code === "processExited",
+      diagnostic: error.nativeCode ?? error.code,
     });
   }
   if (error instanceof ModernHistoryError) {

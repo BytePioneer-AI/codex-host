@@ -8,6 +8,7 @@ import { PassThrough } from "node:stream";
 import { describe, expect, it, vi } from "vitest";
 import type {
   HarnessAdapter,
+  HarnessResult,
   HarnessSessionState,
   HostThreadSnapshot,
 } from "@codexhost/harness-adapter";
@@ -198,6 +199,26 @@ class ResumeStateRollbackAdapter extends FakeHarnessAdapter {
     }
     return opened;
   }
+}
+
+class WebUiHarnessAdapter extends FakeHarnessAdapter {
+  openCalls = 0;
+  failureMessage: string | undefined;
+  readonly webUi = {
+    open: async (): Promise<HarnessResult<void>> => {
+      this.openCalls += 1;
+      return this.failureMessage
+        ? {
+            ok: false,
+            error: {
+              code: "unavailable",
+              message: this.failureMessage,
+              retryable: true,
+            },
+          }
+        : { ok: true, value: undefined };
+    },
+  };
 }
 
 function createFixture(
@@ -989,6 +1010,50 @@ describe("AppServerHost HarnessAdapter projection", () => {
     ).resolves.toMatchObject({
       error: { code: -32077, message: "Harness 'unregistered' is unavailable" },
     });
+    await stopFixture(fixture);
+  });
+
+  it("opens a Harness Web UI without returning or echoing its credential", async () => {
+    const adapter = new WebUiHarnessAdapter(harnessIdSchema.parse("deepseek-harness"));
+    const fixture = createFixture({
+      externalAdapters: new Map<ExternalHarnessId, FakeHarnessAdapter>([
+        ["deepseek-harness", adapter],
+      ]),
+    });
+
+    writeRequest(fixture.desktopInput, {
+      id: 37,
+      method: "codexhost/harness/web-ui/open",
+      params: { harnessId: "deepseek-harness" },
+    });
+    await expect(fixture.collector.waitFor((message) => requestId(message, 37))).resolves.toEqual({
+      id: 37,
+      result: {},
+    });
+    expect(adapter.openCalls).toBe(1);
+
+    const canary = "SECRET_CANARY";
+    writeRequest(fixture.desktopInput, {
+      id: 38,
+      method: "codexhost/harness/web-ui/open",
+      params: { harnessId: "deepseek-harness", url: `http://127.0.0.1/?token=${canary}` },
+    });
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 38)),
+    ).resolves.toMatchObject({ error: { code: -32602 } });
+    expect(adapter.openCalls).toBe(1);
+
+    adapter.failureMessage = `failed near ?token=${canary}`;
+    writeRequest(fixture.desktopInput, {
+      id: 39,
+      method: "codexhost/harness/web-ui/open",
+      params: { harnessId: "deepseek-harness" },
+    });
+    await expect(fixture.collector.waitFor((message) => requestId(message, 39))).resolves.toEqual({
+      id: 39,
+      error: { code: -32092, message: "Harness Web UI could not be opened" },
+    });
+    expect(JSON.stringify(fixture.collector.messages)).not.toContain(canary);
     await stopFixture(fixture);
   });
 

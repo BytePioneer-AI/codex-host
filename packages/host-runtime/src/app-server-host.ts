@@ -25,6 +25,8 @@ import {
   harnessInspectParamsSchema,
   harnessConfigurationStateSchema,
   harnessInspectionSchema,
+  harnessWebUiOpenParamsSchema,
+  harnessWebUiOpenResultSchema,
   harnessModelSelectionStateSchema,
   harnessThinkingOptionIdSchema,
   hostItemIdSchema,
@@ -670,6 +672,10 @@ export class AppServerHost {
       }
       if (request.method === "codexhost/harness/inspect") {
         this.#dispatchDesktopRequest(() => this.#inspectHarness(request));
+        continue;
+      }
+      if (request.method === "codexhost/harness/web-ui/open") {
+        this.#dispatchDesktopRequest(() => this.#openHarnessWebUi(request));
         continue;
       }
       if (request.method === "codexhost/thread/fork") {
@@ -1718,6 +1724,34 @@ export class AppServerHost {
     await this.#writer.json(
       rpcEnvelope(request, { result: jsonValueSchema.parse(validated.data) }),
     );
+  }
+
+  async #openHarnessWebUi(request: JsonRpcRequest): Promise<void> {
+    const params = harnessWebUiOpenParamsSchema.safeParse(request.params);
+    if (!params.success) {
+      await this.#writer.json(rpcError(request, -32602, "Invalid Harness Web UI params"));
+      return;
+    }
+    const adapter = [...this.#externalAdapters].find(
+      ([harnessId]) => harnessId === params.data.harnessId,
+    )?.[1];
+    const webUi = adapter?.webUi;
+    if (!webUi) {
+      await this.#writer.json(rpcError(request, -32092, "Harness Web UI is unavailable"));
+      return;
+    }
+    try {
+      const result = await webUi.open();
+      if (!result.ok) {
+        await this.#writer.json(rpcError(request, -32092, "Harness Web UI could not be opened"));
+        return;
+      }
+      await this.#writer.json(
+        rpcEnvelope(request, { result: harnessWebUiOpenResultSchema.parse({}) }),
+      );
+    } catch {
+      await this.#writer.json(rpcError(request, -32092, "Harness Web UI could not be opened"));
+    }
   }
 
   async #inspectThread(request: JsonRpcRequest): Promise<void> {

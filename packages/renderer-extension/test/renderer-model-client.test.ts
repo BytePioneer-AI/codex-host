@@ -11,6 +11,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   HARNESS_INSPECT_METHOD,
+  HARNESS_WEB_UI_OPEN_METHOD,
   THREAD_FORK_METHOD,
   THREAD_INSPECT_METHOD,
   THREAD_MODEL_SELECT_METHOD,
@@ -144,6 +145,7 @@ describe("Renderer fixed Model request client", () => {
       "inspectThreadCommands",
       "inspectThreadUsage",
       "listThreadOwnership",
+      "openHarnessWebUi",
       "readUpdateStatus",
       "selectThreadModel",
       "selectThreadPermissionMode",
@@ -269,6 +271,20 @@ describe("Renderer fixed Model request client", () => {
     expect(sendRequest).toHaveBeenNthCalledWith(10, UPDATE_CHECK_METHOD, {});
     expect(sendRequest).toHaveBeenNthCalledWith(11, UPDATE_START_METHOD, {});
     expect(sendRequest).toHaveBeenNthCalledWith(12, UPDATE_STATUS_METHOD, {});
+  });
+
+  it("opens Harness Web through the pathless Host action", async () => {
+    const sendRequest = vi.fn(() => Promise.resolve({}));
+    const client = createRendererModelClient([{ sendRequest }]);
+    if (!client?.openHarnessWebUi) throw new Error("Harness Web UI client was not created");
+    const harnessId = harnessIdSchema.parse("deepseek-harness");
+
+    await expect(client.openHarnessWebUi({ harnessId })).resolves.toBeUndefined();
+    expect(sendRequest).toHaveBeenCalledWith(HARNESS_WEB_UI_OPEN_METHOD, { harnessId });
+    await expect(
+      client.openHarnessWebUi({ harnessId, url: "http://127.0.0.1/?token=secret" } as never),
+    ).rejects.toThrow();
+    expect(sendRequest).toHaveBeenCalledOnce();
   });
 
   it("defers Usage notification registration until a request manager is available", () => {

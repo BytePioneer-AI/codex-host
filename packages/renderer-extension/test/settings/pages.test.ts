@@ -186,6 +186,90 @@ function visibleText(root: FakeElement): string {
 }
 
 describe("Renderer Connections page", () => {
+  it("opens managed DSH Web only for the local Host and coalesces repeated clicks", async () => {
+    const opened = deferred<undefined>();
+    const diagnostics: RendererConnectionDiagnostics = {
+      snapshot: () => ({
+        adapter: { state: "ready", reason: "ready", modelUpdates: 1, hook: "request-bridge" },
+        hosts: [
+          {
+            hostId: "local",
+            active: true,
+            agents: [
+              {
+                agent: "deepseek-harness",
+                availability: "ready",
+                error: null,
+                webUiAvailable: true,
+              },
+            ],
+          },
+          {
+            hostId: "remote-ssh-codex-managed:fixture",
+            active: false,
+            agents: [
+              {
+                agent: "deepseek-harness",
+                availability: "ready",
+                error: null,
+                webUiAvailable: true,
+              },
+            ],
+          },
+        ],
+      }),
+      refresh: vi.fn(() => Promise.resolve()),
+      openWebUi: vi.fn(() => opened.promise),
+      subscribe: vi.fn(() => () => undefined),
+    };
+    const page = createDefaultRendererSettingsPages(
+      rendererSettingsMessages("zh-CN"),
+      () => null,
+      () => diagnostics,
+    ).find(({ id }) => id === "connections");
+    if (!page) throw new Error("Connections page is not registered");
+    const document = new FakeDocument();
+    const content = document.createElement("main");
+    const scope = new RendererSettingsPageScope();
+    const cleanup = page.mount({
+      content: content as unknown as HTMLElement,
+      signal: scope.signal,
+      runLatest: (operation, handlers) => scope.runLatest(operation, handlers),
+    });
+
+    const dshRow = descendants(content).find(
+      ({ dataset }) => dataset.connectionItem === "deepseek-harness",
+    );
+    if (!dshRow) throw new Error("DeepSeek Harness row is not rendered");
+    dshRow.dispatch("click", { target: null });
+    const open = descendants(content).find(
+      ({ dataset }) => dataset.connectionAction === "open-web-ui",
+    );
+    if (!open) throw new Error("DeepSeek Harness Web action is not rendered");
+    expect(visibleNotesText(open)).toContain("打开 DeepSeek Harness Web");
+    expect(descendants(content).some(({ href }) => href.includes("token="))).toBe(false);
+
+    open.dispatch("click");
+    open.dispatch("click");
+    expect(diagnostics.openWebUi).toHaveBeenCalledOnce();
+    expect(diagnostics.openWebUi).toHaveBeenCalledWith("local", "deepseek-harness");
+    expect(open.disabled).toBe(true);
+    opened.resolve(undefined);
+    await vi.waitFor(() => expect(open.disabled).toBe(false));
+
+    const remoteTab = descendants(content).find(
+      ({ dataset }) => dataset.connectionHostTab === "remote-ssh-codex-managed:fixture",
+    );
+    if (!remoteTab) throw new Error("Remote Host tab is not rendered");
+    remoteTab.dispatch("click");
+    expect(
+      descendants(content).find(({ dataset }) => dataset.connectionAction === "open-web-ui"),
+    ).toBeUndefined();
+
+    cleanup?.();
+    scope.dispose();
+  });
+
   it("renders Host tabs, install actions, and error details", async () => {
     const refreshRequest = deferred<undefined>();
     const diagnostics: RendererConnectionDiagnostics = {

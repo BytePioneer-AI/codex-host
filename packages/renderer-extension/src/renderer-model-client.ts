@@ -5,6 +5,8 @@ import {
   harnessConfigurationStateSchema,
   harnessInspectParamsSchema,
   harnessInspectionSchema,
+  harnessWebUiOpenParamsSchema,
+  harnessWebUiOpenResultSchema,
   harnessModelSelectionStateSchema,
   hostThreadIdSchema,
   threadInspectionParamsSchema,
@@ -29,6 +31,7 @@ import {
   type HarnessConfigurationState,
   type HarnessInspection,
   type HarnessInspectParams,
+  type HarnessWebUiOpenParams,
   type HarnessModelSelectionState,
   type ThreadInspection,
   type ThreadInspectionParams,
@@ -48,6 +51,7 @@ import {
 } from "@codexhost/shared-contracts";
 
 export const HARNESS_INSPECT_METHOD = "codexhost/harness/inspect";
+export const HARNESS_WEB_UI_OPEN_METHOD = "codexhost/harness/web-ui/open";
 export const THREAD_FORK_METHOD = "codexhost/thread/fork";
 export const THREAD_INSPECT_METHOD = "codexhost/thread/inspect";
 export const THREAD_COMMANDS_INSPECT_METHOD = "codexhost/thread/commands/inspect";
@@ -101,6 +105,7 @@ export interface RendererModelClient {
   clientForHost?(hostId: string): RendererModelClient | null;
   forkThread(input: ExternalThreadForkParams): Promise<ExternalThreadForkResult>;
   inspectHarness(input: HarnessInspectParams): Promise<HarnessInspection>;
+  openHarnessWebUi?(input: HarnessWebUiOpenParams): Promise<void>;
   inspectThread(input: ThreadInspectionParams): Promise<ThreadInspection>;
   inspectThreadCommands(input: ThreadCommandsInspectParams): Promise<HarnessCommandCatalog>;
   executeThreadCommand(input: ThreadCommandExecuteParams): Promise<ThreadCommandExecuteResult>;
@@ -221,6 +226,11 @@ export function createRendererModelClient(
       return externalThreadForkResultSchema.parse(result);
     },
     inspectHarness,
+    async openHarnessWebUi(input: HarnessWebUiOpenParams): Promise<void> {
+      const params = harnessWebUiOpenParamsSchema.parse(input);
+      const result = await manager.sendRequest(HARNESS_WEB_UI_OPEN_METHOD, params);
+      harnessWebUiOpenResultSchema.parse(result);
+    },
     async inspectThread(input: ThreadInspectionParams): Promise<ThreadInspection> {
       const params = threadInspectionParamsSchema.parse(input);
       const result = await manager.sendRequest(THREAD_INSPECT_METHOD, params);

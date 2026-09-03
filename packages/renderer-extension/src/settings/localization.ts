@@ -61,6 +61,7 @@ export interface RendererSettingsMessages {
   readonly connectionHostsScrollLeft: string;
   readonly connectionHostsScrollRight: string;
   readonly connectionOpenInstallation: string;
+  readonly connectionOpenHarnessWeb: string;
   readonly connectionInstall: string;
   readonly connectionInstallDescription: string;
   readonly connectionErrorTitle: string;
@@ -169,6 +170,7 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   connectionHostsScrollLeft: "Show previous Hosts",
   connectionHostsScrollRight: "Show more Hosts",
   connectionOpenInstallation: "Open official installation page",
+  connectionOpenHarnessWeb: "Open DeepSeek Harness Web",
   connectionInstall: "Install",
   connectionInstallDescription:
     "This Harness was not detected. Follow its official installation guide, then return here and run the check again.",
@@ -291,6 +293,7 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   connectionHostsScrollLeft: "查看前面的 Host",
   connectionHostsScrollRight: "查看更多 Host",
   connectionOpenInstallation: "前往官方安装页面",
+  connectionOpenHarnessWeb: "打开 DeepSeek Harness Web",
   connectionInstall: "安装",
   connectionInstallDescription:
     "尚未检测到该 Harness。请按照官方安装指南完成安装，然后返回此页面重新检查。",

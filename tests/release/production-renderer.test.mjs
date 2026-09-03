@@ -90,7 +90,8 @@ describe("production Renderer release chain", () => {
 
     expect(layout).toContain("desktop_controller");
     expect(layout).toContain("renderer_extension");
-    expect(launcher).toContain("--inspector-endpoint");
+    expect(launcher).toContain("--renderer-cdp-endpoint");
+    expect(launcher).toContain("--remote-debugging-port=");
     expect(launcher).toContain("desktop_controller");
     expect(launcher).toContain("renderer_extension");
   });

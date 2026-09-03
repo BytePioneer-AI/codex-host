@@ -8,13 +8,13 @@ import {
   serializeDesktopControllerReadiness,
   type DesktopControllerDependencies,
 } from "../src/production-controller.js";
-import type { RendererControlSession } from "../src/renderer-control-session.js";
+import type { RendererCdpControlSession } from "../src/renderer-cdp-control-session.js";
 
 const attachmentNonce = "0123456789abcdef0123456789abcdef";
 
 function controllerOptions() {
   return {
-    inspectorEndpoint: "http://127.0.0.1:43123",
+    rendererCdpEndpoint: "http://127.0.0.1:43123",
     rendererPath: "/renderer.js",
     defaultAgent: "pi" as const,
     attachmentPort: 43124,
@@ -26,16 +26,16 @@ function attachmentServer() {
   return { close: vi.fn(async () => {}) };
 }
 
-function controllerSnapshot(): RendererControlSession["snapshot"] {
-  return { titlePolicy: {} } as RendererControlSession["snapshot"];
+function controllerSnapshot(): RendererCdpControlSession["snapshot"] {
+  return {} as RendererCdpControlSession["snapshot"];
 }
 
 describe("production Desktop Controller", () => {
-  it("accepts only a loopback Inspector, absolute Renderer path, and strict attachment fields", () => {
+  it("accepts only a loopback Renderer CDP endpoint, absolute Renderer path, and strict attachment fields", () => {
     const rendererPath = path.resolve("fixtures/renderer-extension.js");
     expect(
       parseDesktopControllerArguments([
-        "--inspector-endpoint",
+        "--renderer-cdp-endpoint",
         "http://127.0.0.1:43123",
         "--renderer",
         rendererPath,
@@ -47,7 +47,7 @@ describe("production Desktop Controller", () => {
         attachmentNonce,
       ]),
     ).toEqual({
-      inspectorEndpoint: "http://127.0.0.1:43123",
+      rendererCdpEndpoint: "http://127.0.0.1:43123",
       rendererPath,
       defaultAgent: "pi",
       attachmentPort: 43124,
@@ -55,7 +55,7 @@ describe("production Desktop Controller", () => {
     });
     expect(() =>
       parseDesktopControllerArguments([
-        "--inspector-endpoint",
+        "--renderer-cdp-endpoint",
         "http://example.com:43123",
         "--renderer",
         "/renderer.js",
@@ -63,7 +63,7 @@ describe("production Desktop Controller", () => {
     ).toThrow("loopback HTTP origin");
     expect(() =>
       parseDesktopControllerArguments([
-        "--inspector-endpoint",
+        "--renderer-cdp-endpoint",
         "http://127.0.0.1:43123",
         "--renderer",
         "renderer.js",
@@ -71,7 +71,7 @@ describe("production Desktop Controller", () => {
     ).toThrow("absolute path");
     expect(() =>
       parseDesktopControllerArguments([
-        "--inspector-endpoint",
+        "--renderer-cdp-endpoint",
         "http://127.0.0.1:43123",
         "--renderer",
         rendererPath,
@@ -111,12 +111,11 @@ describe("production Desktop Controller", () => {
     });
     const activateDesktop = vi.fn(async () => 1);
     const close = vi.fn();
-    const session: RendererControlSession = {
+    const session: RendererCdpControlSession = {
       snapshot,
       ensureInstalled,
       activateDesktop,
       executeRenderer: vi.fn(),
-      readTitlePolicyCounters: vi.fn(),
       close,
     };
     const ready = vi.fn();
@@ -139,9 +138,9 @@ describe("production Desktop Controller", () => {
     await runDesktopController(controllerOptions(), abort.signal, dependencies);
 
     expect(install).toHaveBeenCalledWith({
-      inspectorEndpoint: "http://127.0.0.1:43123",
+      rendererCdpEndpoint: "http://127.0.0.1:43123",
       rendererSource:
-        'Object.defineProperty(window, "__codexhostProductionConfigV1", { configurable: true, value: { defaultAgent: "pi" } });\nproduction renderer',
+        'globalThis.__zod_globalConfig ??= {}; globalThis.__zod_globalConfig.jitless = true;\nObject.defineProperty(window, "__codexhostProductionConfigV1", { configurable: true, value: { defaultAgent: "pi" } });\nproduction renderer',
       enabledAgents: [
         "codex",
         "pi",
@@ -170,17 +169,16 @@ describe("production Desktop Controller", () => {
     expect(attach).toEqual(expect.any(Function));
   });
 
-  it("retries a transient Electron evaluation failure during cold startup", async () => {
+  it("retries a transient Renderer evaluation failure during cold startup", async () => {
     const abort = new AbortController();
     abort.abort();
     const close = vi.fn();
-    const session: RendererControlSession = {
+    const session: RendererCdpControlSession = {
       snapshot: controllerSnapshot(),
       ensureInstalled: vi.fn(),
       activateDesktop: vi.fn(async () => 1),
 
       executeRenderer: vi.fn(),
-      readTitlePolicyCounters: vi.fn(),
       close,
     };
     const install = vi
@@ -214,13 +212,12 @@ describe("production Desktop Controller", () => {
   it("recovers an unclassified inspection failure after managed readiness", async () => {
     const abort = new AbortController();
     const close = vi.fn();
-    const session: RendererControlSession = {
+    const session: RendererCdpControlSession = {
       snapshot: controllerSnapshot(),
       ensureInstalled: vi.fn(),
       activateDesktop: vi.fn(async () => 1),
 
       executeRenderer: vi.fn(),
-      readTitlePolicyCounters: vi.fn(),
       close,
     };
     const install = vi
@@ -299,13 +296,12 @@ describe("production Desktop Controller", () => {
     const abort = new AbortController();
     const activateDesktop = vi.fn(async () => 1);
     const close = vi.fn();
-    const session: RendererControlSession = {
+    const session: RendererCdpControlSession = {
       snapshot: controllerSnapshot(),
       ensureInstalled: vi.fn(),
       activateDesktop,
 
       executeRenderer: vi.fn(),
-      readTitlePolicyCounters: vi.fn(),
       close,
     };
     const install = vi
@@ -340,7 +336,7 @@ describe("production Desktop Controller", () => {
     const abort = new AbortController();
     const firstClose = vi.fn();
     const secondClose = vi.fn();
-    const first: RendererControlSession = {
+    const first: RendererCdpControlSession = {
       snapshot: controllerSnapshot(),
       ensureInstalled: vi.fn(async () => {
         throw new Error("Renderer binding disappeared");
@@ -348,16 +344,14 @@ describe("production Desktop Controller", () => {
       activateDesktop: vi.fn(async () => 1),
 
       executeRenderer: vi.fn(),
-      readTitlePolicyCounters: vi.fn(),
       close: firstClose,
     };
-    const second: RendererControlSession = {
+    const second: RendererCdpControlSession = {
       snapshot: controllerSnapshot(),
       ensureInstalled: vi.fn(),
       activateDesktop: vi.fn(async () => 1),
 
       executeRenderer: vi.fn(),
-      readTitlePolicyCounters: vi.fn(),
       close: secondClose,
     };
     const install = vi

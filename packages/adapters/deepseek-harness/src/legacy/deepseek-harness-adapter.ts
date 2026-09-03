@@ -130,7 +130,7 @@ export interface DeepSeekHarnessAdapterOptions extends DeepSeekHostConnectionOpt
 export interface DeepSeekHostConnectionLike {
   readonly client: DeepSeekHostClient;
   readonly stderrTail?: string;
-  connect(): Promise<void>;
+  connect(signal?: AbortSignal): Promise<void>;
   subscribe(sessionId: string, subscriber: DeepSeekHostSubscriber): () => void;
   close(): Promise<void>;
 }
@@ -221,9 +221,12 @@ const AUTONOMOUS_TURN_READY_EVENTS = new Set([
 function normalizedError(error: unknown, fallback: HarnessError["code"]): HarnessError {
   if (error instanceof DeepSeekHarnessTransportError) {
     return {
-      code: error.code,
+      code: error.code === "cancelled" ? "unavailable" : error.code,
       message: error.message,
       retryable: error.code === "unavailable" || error.code === "processExited",
+      ...(error.code === "authenticationRequired" && error.nativeCode
+        ? { diagnostic: error.nativeCode }
+        : {}),
     };
   }
   return {
@@ -871,7 +874,7 @@ class DeepSeekHarnessSession implements HarnessSession, DeepSeekHostSubscriber {
   }
 
   onFault(error: DeepSeekHarnessTransportError): void {
-    this.#fault(normalizedError(error, error.code));
+    this.#fault(normalizedError(error, error.code === "cancelled" ? "unavailable" : error.code));
   }
 
   close(): Promise<void> {

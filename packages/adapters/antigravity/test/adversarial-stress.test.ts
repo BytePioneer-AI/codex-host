@@ -2,230 +2,125 @@ import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-import type { HostCommandExecutionItem, HostToolExecutionItem } from "@codexhost/harness-adapter";
+import type {
+  HostCommandExecutionItem,
+  HostFileChange,
+  HostToolExecutionItem,
+} from "@codexhost/harness-adapter";
 import { hostItemIdSchema, hostTurnIdSchema } from "@codexhost/shared-contracts";
 import { describe, expect, it } from "vitest";
 
 import {
   AntigravityAdapter,
+  codeActionFileChange,
   completeAntigravityToolItem,
   displayPath,
+  parseAntigravityCodeActions,
   startAntigravityToolItem,
   synthesizeAntigravityCommand,
-  synthesizeAntigravityFileChange,
+  toolTargetFile,
 } from "../src/index.js";
 
 const CWD = path.resolve("/test/adversarial_workspace");
 let itemCounter = 0;
 const nextItemId = () => hostItemIdSchema.parse(`stress-item-${++itemCounter}`);
 
+const insert = (text: string) => ({ text, type: "UNIFIED_DIFF_LINE_TYPE_INSERT" });
+const remove = (text: string) => ({ text, type: "UNIFIED_DIFF_LINE_TYPE_DELETE" });
+const keep = (text: string) => ({ text, type: "UNIFIED_DIFF_LINE_TYPE_UNCHANGED" });
+
+/** Builds the File Change agy's Language Server would report for one edit. */
+function editChange(
+  relativePath: string,
+  lines: { text: string; type: string }[],
+  createFile = false,
+): HostFileChange | null {
+  const absolute = path.join(CWD, relativePath).replaceAll("\\", "/").replace(/^\//, "");
+  const [action] = parseAntigravityCodeActions({
+    steps: [
+      {
+        type: "CORTEX_STEP_TYPE_CODE_ACTION",
+        status: "CORTEX_STEP_STATUS_DONE",
+        codeAction: {
+          actionResult: {
+            edit: {
+              absoluteUri: `file:///${absolute}`,
+              ...(createFile ? { createFile: true } : {}),
+              diff: { unifiedDiff: { lines } },
+            },
+          },
+        },
+      },
+    ],
+  });
+  return action ? codeActionFileChange(action, CWD) : null;
+}
+
 describe("Antigravity Adversarial & Stress Testing", () => {
-  describe("1. Line Endings Handling (CRLF, Mixed Endings, Normalization)", () => {
-    it("handles write_to_file with CRLF and mixed line endings cleanly", () => {
-      const crlfContent = "line1\r\nline2\r\nline3\r\n";
-      const mixedContent = "header\r\nbody\nfooter\r\n";
-
-      const changesCrlf = synthesizeAntigravityFileChange(
-        "write_to_file",
-        { TargetFile: "src/crlf.ts", CodeContent: crlfContent },
-        CWD,
+  describe("1. Applied edits: line endings, boundaries, and complex payloads", () => {
+    it("keeps a CRLF file readable as a line-typed patch", () => {
+      const change = editChange(
+        "src/crlf.ts",
+        [insert("line1\r"), insert("line2\r"), insert("line3\r")],
+        true,
       );
-      expect(changesCrlf).not.toBeNull();
-      const [change1] = changesCrlf ?? [];
-      expect(change1?.unifiedDiff).not.toContain("\r");
-      expect(change1?.unifiedDiff).toContain("--- /dev/null");
-      expect(change1?.unifiedDiff).toContain("+++ b/src/crlf.ts");
-      expect(change1?.unifiedDiff).toContain("@@ -0,0 +1,3 @@\n+line1\n+line2\n+line3");
-
-      const changesMixed = synthesizeAntigravityFileChange(
-        "write_to_file",
-        { TargetFile: "src/mixed.ts", CodeContent: mixedContent, Overwrite: true },
-        CWD,
-      );
-      expect(changesMixed).not.toBeNull();
-      const [change2] = changesMixed ?? [];
-      expect(change2?.unifiedDiff).not.toContain("\r");
-      expect(change2?.unifiedDiff).toContain("--- a/src/mixed.ts");
-      expect(change2?.unifiedDiff).toContain("+++ b/src/mixed.ts");
-      expect(change2?.unifiedDiff).toContain("@@ -0,0 +1,3 @@\n+header\n+body\n+footer");
+      expect(change?.unifiedDiff).toContain("--- /dev/null");
+      expect(change?.unifiedDiff).toContain("+++ b/src/crlf.ts");
+      expect(change?.unifiedDiff).toContain("@@ -0,0 +1,3 @@");
+      expect(change?.unifiedDiff.split("\n")).toHaveLength(8);
     });
 
-    it("handles replace_file_content with mismatched CRLF and LF line endings between target and replacement", () => {
-      const targetContent = "function test() {\r\n  return 1;\r\n}\r\n";
-      const replacementContent = "function test() {\n  return 2;\n}\n";
+    it("reports a pure insertion and a pure deletion with the right ranges", () => {
+      const inserted = editChange("empty_target.txt", [insert("newly inserted line")]);
+      expect(inserted?.unifiedDiff).toContain("@@ -0,0 +1,1 @@");
+      expect(inserted?.unifiedDiff).toContain("+newly inserted line");
 
-      const changes = synthesizeAntigravityFileChange(
-        "replace_file_content",
-        {
-          TargetFile: "src/service.ts",
-          TargetContent: targetContent,
-          ReplacementContent: replacementContent,
-        },
-        CWD,
-      );
-      expect(changes).not.toBeNull();
-      const [change] = changes ?? [];
-      expect(change?.kind).toBe("update");
-      expect(change?.unifiedDiff).not.toContain("\r");
-      expect(change?.unifiedDiff).toContain("-  return 1;");
-      expect(change?.unifiedDiff).toContain("+  return 2;");
-    });
-  });
-
-  describe("2. Boundary Diffs (Empty, Identical, Zero-line)", () => {
-    it("handles empty target or empty replacement in replace_file_content", () => {
-      // Insertion into empty
-      const insertChanges = synthesizeAntigravityFileChange(
-        "replace_file_content",
-        {
-          TargetFile: "empty_target.txt",
-          TargetContent: "",
-          ReplacementContent: "newly inserted line\n",
-        },
-        CWD,
-      );
-      expect(insertChanges).not.toBeNull();
-      const [insert] = insertChanges ?? [];
-      expect(insert?.unifiedDiff).toContain("+newly inserted line");
-
-      // Deletion to empty
-      const deleteChanges = synthesizeAntigravityFileChange(
-        "replace_file_content",
-        {
-          TargetFile: "delete_target.txt",
-          TargetContent: "line to delete\n",
-          ReplacementContent: "",
-        },
-        CWD,
-      );
-      expect(deleteChanges).not.toBeNull();
-      const [del] = deleteChanges ?? [];
-      expect(del?.unifiedDiff).toContain("-line to delete");
-
-      // Both empty
-      const emptyBoth = synthesizeAntigravityFileChange(
-        "replace_file_content",
-        {
-          TargetFile: "both_empty.txt",
-          TargetContent: "",
-          ReplacementContent: "",
-        },
-        CWD,
-      );
-      expect(emptyBoth).not.toBeNull();
-      const [emptyChange] = emptyBoth ?? [];
-      expect(emptyChange?.kind).toBe("update");
-      expect(emptyChange?.unifiedDiff).toBeDefined();
+      const deleted = editChange("delete_target.txt", [remove("line to delete")]);
+      expect(deleted?.unifiedDiff).toContain("@@ -1,1 +0,0 @@");
+      expect(deleted?.unifiedDiff).toContain("-line to delete");
     });
 
-    it("handles identical TargetContent and ReplacementContent without throwing or corrupting", () => {
-      const sameText = "const a = 1;\nconst b = 2;\nconst c = 3;\n";
-      const changes = synthesizeAntigravityFileChange(
-        "replace_file_content",
-        {
-          TargetFile: "same.ts",
-          TargetContent: sameText,
-          ReplacementContent: sameText,
-        },
-        CWD,
-      );
-      expect(changes).not.toBeNull();
-      const [change] = changes ?? [];
-      expect(change?.kind).toBe("update");
-      expect(change?.path).toBe("same.ts");
-      expect(typeof change?.unifiedDiff).toBe("string");
+    it("drops an edit that changed nothing instead of emitting an empty patch", () => {
+      // An empty patch is what Codex Desktop misreads as a phantom +N -0 card.
+      expect(editChange("same.ts", [keep("const a = 1;"), keep("const b = 2;")])).toBeNull();
+      expect(editChange("empty.ts", [])).toBeNull();
     });
-  });
 
-  describe("3. Complex Payloads (Multi-hunk, Unicode, Emojis, Long Lines, Binary)", () => {
-    it("generates correct multi-hunk unified diffs when edits are separated by unchanged lines", () => {
-      const oldLines = Array.from({ length: 60 }, (_, i) => `line ${i + 1}`).join("\n");
-      const newLinesArray = Array.from({ length: 60 }, (_, i) => `line ${i + 1}`);
-      newLinesArray[2] = "MODIFIED LINE 3";
-      newLinesArray[55] = "MODIFIED LINE 56";
-      const newLines = newLinesArray.join("\n");
-
-      const changes = synthesizeAntigravityFileChange(
-        "replace_file_content",
-        {
-          TargetFile: "src/long.ts",
-          TargetContent: oldLines,
-          ReplacementContent: newLines,
-        },
-        CWD,
-      );
-      expect(changes).not.toBeNull();
-      const [change] = changes ?? [];
-      expect(change?.unifiedDiff).toContain("-line 3");
+    it("splits edits separated by unchanged lines into multiple hunks", () => {
+      const lines = Array.from({ length: 60 }, (_, index) => keep(`line ${index + 1}`));
+      lines[2] = insert("MODIFIED LINE 3");
+      lines[55] = insert("MODIFIED LINE 56");
+      const change = editChange("src/long.ts", lines);
       expect(change?.unifiedDiff).toContain("+MODIFIED LINE 3");
-      expect(change?.unifiedDiff).toContain("-line 56");
       expect(change?.unifiedDiff).toContain("+MODIFIED LINE 56");
-      // Multi-hunk diff contains multiple @@ markers
-      const hunkMatches = change?.unifiedDiff.match(/@@ -\d+,\d+ \+\d+,\d+ @@/g);
-      expect(hunkMatches?.length).toBeGreaterThanOrEqual(2);
+      expect(change?.unifiedDiff.match(/@@ -\d+,\d+ \+\d+,\d+ @@/gu)).toHaveLength(2);
     });
 
-    it("safely handles multi-byte unicode, emojis, and right-to-left characters", () => {
-      const unicodeOld =
-        "const greeting = 'Hello'; // 🌲 Initial\nconst cjk = '简体中文 繁體中文 日本語 한국어';\nconst rtl = 'مرحبا بالعالم';\n";
-      const unicodeNew =
-        "const greeting = '🚀 Hello 👨‍👩‍👧‍👦 🎉'; // 🔥 Updated\nconst cjk = '简体中文 繁體中文 日本語 한국어 - 2026';\nconst rtl = 'مرحبا بالعالم - شغال';\n";
-
-      const changes = synthesizeAntigravityFileChange(
-        "replace_file_content",
-        {
-          TargetFile: "src/i18n.ts",
-          TargetContent: unicodeOld,
-          ReplacementContent: unicodeNew,
-        },
-        CWD,
-      );
-      expect(changes).not.toBeNull();
-      const [change] = changes ?? [];
+    it("carries multi-byte unicode, emojis, and right-to-left text through unchanged", () => {
+      const change = editChange("src/i18n.ts", [
+        remove("const greeting = 'Hello'; // 🌲 Initial"),
+        insert("const greeting = '🚀 Hello 👨‍👩‍👧‍👦 🎉'; // 🔥 Updated"),
+        keep("const cjk = '简体中文 繁體中文 日本語 한국어';"),
+        keep("const rtl = 'مرحبا بالعالم';"),
+      ]);
       expect(change?.unifiedDiff).toContain("+const greeting = '🚀 Hello 👨‍👩‍👧‍👦 🎉'; // 🔥 Updated");
-      expect(change?.unifiedDiff).toContain(
-        "+const cjk = '简体中文 繁體中文 日本語 한국어 - 2026';",
-      );
-      expect(change?.unifiedDiff).toContain("+const rtl = 'مرحبا بالعالم - شغال';");
+      expect(change?.unifiedDiff).toContain(" const rtl = 'مرحبا بالعالم';");
     });
 
-    it("safely processes extremely long single lines (>20,000 characters) without hanging or crashing", () => {
-      const hugeLineOld = "A".repeat(20_000) + "\n";
-      const hugeLineNew = "A".repeat(10_000) + "B".repeat(10_000) + "\n";
-
+    it("processes an extremely long single line quickly", () => {
       const start = Date.now();
-      const changes = synthesizeAntigravityFileChange(
-        "replace_file_content",
-        {
-          TargetFile: "huge_line.min.js",
-          TargetContent: hugeLineOld,
-          ReplacementContent: hugeLineNew,
-        },
-        CWD,
-      );
-      const elapsed = Date.now() - start;
-      expect(elapsed).toBeLessThan(1000); // Must be fast
-      expect(changes).not.toBeNull();
-      const [change] = changes ?? [];
-      expect(change?.path).toBe("huge_line.min.js");
-      expect(change?.unifiedDiff.length).toBeGreaterThan(20_000);
+      const change = editChange("huge_line.min.js", [
+        remove("A".repeat(20_000)),
+        insert("A".repeat(10_000) + "B".repeat(10_000)),
+      ]);
+      expect(Date.now() - start).toBeLessThan(1_000);
+      expect(change?.unifiedDiff.length).toBeGreaterThan(40_000);
     });
 
-    it("safely handles control characters and escape sequences in file content", () => {
-      const escapeContent = "line1\t\x1b[31mRed Text\x1b[0m\0\b\f\v";
-      // displayPath should reject null byte in file path
-      expect(displayPath("bad\0file.txt", CWD)).toBeNull();
-
-      // But CodeContent with control chars should not crash diff synthesizer
-      const changes = synthesizeAntigravityFileChange(
-        "write_to_file",
-        {
-          TargetFile: "escaped.txt",
-          CodeContent: escapeContent,
-        },
-        CWD,
-      );
-      expect(changes).not.toBeNull();
+    it("keeps control characters in content while still rejecting them in a path", () => {
+      expect(displayPath("bad\u0000file.txt", CWD)).toBeNull();
+      const change = editChange("escaped.txt", [insert("line1\t\u001b[31mRed\u001b[0m")], true);
+      expect(change?.unifiedDiff).toContain("+line1\t\u001b[31mRed\u001b[0m");
     });
   });
 
@@ -320,10 +215,8 @@ describe("Antigravity Adversarial & Stress Testing", () => {
         { path: "file7.ts", text: "content7" },
       ];
 
-      for (const variant of variants) {
-        const changes = synthesizeAntigravityFileChange("write_to_file", variant, CWD);
-        expect(changes).not.toBeNull();
-        expect(changes?.[0]?.kind).toBe("add");
+      for (const [index, variant] of variants.entries()) {
+        expect(toolTargetFile("write_to_file", variant)).toBe(`file${index + 1}.ts`);
       }
     });
 
@@ -335,10 +228,8 @@ describe("Antigravity Adversarial & Stress Testing", () => {
         { parameters: { filePath: "wrap4.ts", content: "val4" } },
       ];
 
-      for (const nested of nestedCases) {
-        const changes = synthesizeAntigravityFileChange("write_to_file", nested, CWD);
-        expect(changes).not.toBeNull();
-        expect(changes?.[0]?.kind).toBe("add");
+      for (const [index, nested] of nestedCases.entries()) {
+        expect(toolTargetFile("write_to_file", nested)).toBe(`wrap${index + 1}.ts`);
       }
     });
 
@@ -470,10 +361,13 @@ if (process.argv.includes("models")) {
 }
 const runsDir = ${JSON.stringify(runsDir)};
 fs.mkdirSync(runsDir, { recursive: true });
-const counter = fs.readdirSync(runsDir).length;
-fs.writeFileSync(path.join(runsDir, "run-" + counter + ".txt"), "");
+// Only a Turn consumes a scripted response; quota and inspection probes run
+// the same binary and would otherwise shift every Turn onto the wrong script.
+const isTurn = process.argv.includes("stream-json");
+const counter = isTurn ? fs.readdirSync(runsDir).length : -1;
+if (isTurn) fs.writeFileSync(path.join(runsDir, "run-" + counter + ".txt"), "");
 const allResponses = JSON.parse(fs.readFileSync(${JSON.stringify(runsFile)}, 'utf8'));
-const lines = allResponses[counter] || allResponses[0] || [];
+const lines = isTurn ? allResponses[counter] || allResponses[0] || [] : [];
 for (const line of lines) {
   process.stdout.write(line + "\\n");
 }
@@ -631,27 +525,13 @@ for (const line of lines) {
   });
 
   describe("8. Namespaced Tool Identifiers (default_api:*, functions.*)", () => {
-    it("synthesizes file change and command for namespaced tool identifiers", () => {
-      const fileChange = synthesizeAntigravityFileChange(
-        "default_api:write_to_file",
-        { TargetFile: "src/namespaced.ts", CodeContent: "const x = 42;" },
-        CWD,
+    it("recognizes file targets and commands behind a tool namespace", () => {
+      expect(toolTargetFile("default_api:write_to_file", { TargetFile: "src/namespaced.ts" })).toBe(
+        "src/namespaced.ts",
       );
-      expect(fileChange).not.toBeNull();
-      expect(fileChange?.[0]?.kind).toBe("add");
-      expect(fileChange?.[0]?.path).toBe("src/namespaced.ts");
-
-      const replaceChange = synthesizeAntigravityFileChange(
-        "default_api:replace_file_content",
-        {
-          TargetFile: "src/namespaced.ts",
-          TargetContent: "const x = 42;",
-          ReplacementContent: "const x = 100;",
-        },
-        CWD,
-      );
-      expect(replaceChange).not.toBeNull();
-      expect(replaceChange?.[0]?.kind).toBe("update");
+      expect(
+        toolTargetFile("functions.replace_file_content", { TargetFile: "src/namespaced.ts" }),
+      ).toBe("src/namespaced.ts");
 
       const cmd = synthesizeAntigravityCommand("default_api:run_command", {
         CommandLine: "node script.js",

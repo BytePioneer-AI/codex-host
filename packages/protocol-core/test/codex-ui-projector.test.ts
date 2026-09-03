@@ -1502,7 +1502,9 @@ describe("Codex UI projector", () => {
       expect(changes?.[0]?.unifiedDiff).not.toContain("@@ -0,0 +0,0 @@");
     });
 
-    it("starts fileChange at item.started before CodeEdit arrives so intermediate step is displayed", () => {
+    it("withholds the fileChange card until an edit with content arrives", () => {
+      // A patch with no body renders in Codex Desktop as its own git header
+      // counted as added lines, so no card is better than an empty one.
       const value = projector();
       const editId = itemId("edit-file-1");
       value.project({ type: "turn.started", turnId });
@@ -1516,10 +1518,7 @@ describe("Codex UI projector", () => {
           arguments: { TargetFile: "demo.py" },
         },
       });
-      expect(started.messages[0]).toMatchObject({
-        method: "item/started",
-        params: { item: { type: "fileChange" } },
-      });
+      expect(started.messages).toEqual([]);
       const completed = value.project({
         type: "item.completed",
         turnId,
@@ -1534,6 +1533,7 @@ describe("Codex UI projector", () => {
         },
       });
       expect(completed.messages).toMatchObject([
+        { method: "item/started", params: { item: { type: "fileChange" } } },
         {
           method: "item/fileChange/patchUpdated",
           params: { changes: [{ diff: expect.stringContaining("+print('edited')") }] },
@@ -1671,22 +1671,13 @@ describe("Codex UI projector", () => {
       ]);
     });
 
-    it("projects write_to_file with empty string content as add diff", () => {
-      const changes = fileChangeFromTool("write_to_file", {
-        TargetFile: "src/empty.txt",
-        CodeContent: "",
-      });
-      expect(changes).toEqual([
-        {
-          path: "src/empty.txt",
-          kind: "add",
-          unifiedDiff:
-            "diff --git a/src/empty.txt b/src/empty.txt\n--- /dev/null\n+++ b/src/empty.txt\n@@ -0,0 +0,0 @@\n",
-        },
-      ]);
+    it("reports no change for write_to_file with empty content rather than a body-less patch", () => {
+      expect(
+        fileChangeFromTool("write_to_file", { TargetFile: "src/empty.txt", CodeContent: "" }),
+      ).toBeNull();
     });
 
-    it("starts fileChange at item.started before CodeContent arrives so intermediate step is displayed", () => {
+    it("withholds the write_to_file card until content arrives", () => {
       const value = projector();
       const writeId = itemId("write-file-deferred");
       value.project({ type: "turn.started", turnId });
@@ -1700,10 +1691,7 @@ describe("Codex UI projector", () => {
           arguments: { TargetFile: "quicksort.py" },
         },
       });
-      expect(started.messages[0]).toMatchObject({
-        method: "item/started",
-        params: { item: { type: "fileChange" } },
-      });
+      expect(started.messages).toEqual([]);
       const completed = value.project({
         type: "item.completed",
         turnId,
@@ -1721,6 +1709,7 @@ describe("Codex UI projector", () => {
         },
       });
       expect(completed.messages).toMatchObject([
+        { method: "item/started", params: { item: { type: "fileChange" } } },
         {
           method: "item/fileChange/patchUpdated",
           params: { changes: [{ diff: expect.stringContaining("+line 4") }] },
@@ -1873,7 +1862,7 @@ describe("Codex UI projector", () => {
           path: "src/wrapped.ts",
           kind: "add",
           unifiedDiff:
-            'diff --git a/src/wrapped.ts b/src/wrapped.ts\n--- /dev/null\n+++ b/src/wrapped.ts\n@@ -0,0 +1,1 @@\n+export const wrapped = true;\n',
+            "diff --git a/src/wrapped.ts b/src/wrapped.ts\n--- /dev/null\n+++ b/src/wrapped.ts\n@@ -0,0 +1,1 @@\n+export const wrapped = true;\n",
         },
       ]);
     });
@@ -2028,7 +2017,7 @@ describe("Codex UI projector", () => {
     it("handles JSON-string-wrapped boolean Overwrite arguments correctly in fileChangeFromTool", () => {
       const changesTrue = fileChangeFromTool(
         "write_to_file",
-        { TargetFile: "\"app.ts\"", CodeContent: "\"const x = 1;\"", Overwrite: "\"true\"" },
+        { TargetFile: '"app.ts"', CodeContent: '"const x = 1;"', Overwrite: '"true"' },
         "/workspace",
       );
       expect(changesTrue).not.toBeNull();
@@ -2037,7 +2026,7 @@ describe("Codex UI projector", () => {
 
       const changesFalse = fileChangeFromTool(
         "write_to_file",
-        { TargetFile: "\"app2.ts\"", CodeContent: "\"const x = 2;\"", Overwrite: "\"false\"" },
+        { TargetFile: '"app2.ts"', CodeContent: '"const x = 2;"', Overwrite: '"false"' },
         "/workspace",
       );
       expect(changesFalse).not.toBeNull();
@@ -2045,66 +2034,69 @@ describe("Codex UI projector", () => {
       expect(changesFalse?.[0]?.unifiedDiff).toContain("--- /dev/null");
     });
 
-    it("handles rapid consecutive file changes with empty contents without crashing and formats @@ -0,0 +0,0 @@", () => {
+    it("emits no card at all for a write with empty content", () => {
+      // Codex Desktop reads a body-less patch as its own git header being
+      // added, so an empty write must not reach the UI as a File Change.
+      expect(
+        fileChangeFromTool(
+          "write_to_file",
+          { TargetFile: "empty1.txt", CodeContent: "" },
+          "/workspace",
+        ),
+      ).toBeNull();
+      expect(
+        fileChangeFromTool(
+          "replace_file_content",
+          { TargetFile: "empty2.txt", TargetContent: "", ReplacementContent: "" },
+          "/workspace",
+        ),
+      ).toBeNull();
+    });
+
+    it("republishes the Turn diff when a File Change Item resolves its patch at completion", () => {
+      // An Adapter that only learns the applied patch when the step ends still
+      // has to update the Turn summary card, not just its own Item.
       const p = projector();
       p.project({ type: "turn.started", turnId });
-
-      const empty1Changes = fileChangeFromTool(
-        "write_to_file",
-        { TargetFile: "empty1.txt", CodeContent: "" },
-        "/workspace",
-      );
-      expect(empty1Changes).not.toBeNull();
-      expect(empty1Changes?.[0]?.unifiedDiff).toContain("@@ -0,0 +0,0 @@");
-
-      const emptyFile1: HostFileChangeItem = {
+      const pending: HostFileChangeItem = {
         type: "fileChange",
-        itemId: itemId("empty-file-1"),
-        changes: empty1Changes ?? [],
+        itemId: itemId("late-patch"),
+        changes: [],
       };
-      const started1 = p.project({ type: "item.started", turnId, item: emptyFile1 });
-      p.project({
+      const started = p.project({ type: "item.started", turnId, item: pending });
+      expect(
+        (started.messages.find((m) => m.method === "turn/diff/updated")?.params as { diff: string })
+          .diff,
+      ).toBe("");
+
+      const resolved: HostFileChangeItem = {
+        type: "fileChange",
+        itemId: pending.itemId,
+        changes: [
+          {
+            path: "late.ts",
+            kind: "add",
+            unifiedDiff:
+              "diff --git a/late.ts b/late.ts\n--- /dev/null\n+++ b/late.ts\n@@ -0,0 +1,1 @@\n+const late = 1;\n",
+          },
+        ],
+      };
+      const completed = p.project({
         type: "item.completed",
         turnId,
-        snapshot: { item: emptyFile1, outcome: { status: "succeeded" } },
+        snapshot: { item: resolved, outcome: { status: "succeeded" } },
       });
-
-      const empty2Changes = fileChangeFromTool(
-        "write_to_file",
-        { TargetFile: "empty2.txt", CodeContent: "" },
-        "/workspace",
-      );
-      expect(empty2Changes).not.toBeNull();
-      expect(empty2Changes?.[0]?.unifiedDiff).toContain("@@ -0,0 +0,0 @@");
-
-      const emptyFile2: HostFileChangeItem = {
-        type: "fileChange",
-        itemId: itemId("empty-file-2"),
-        changes: empty2Changes ?? [],
-      };
-      const started2 = p.project({ type: "item.started", turnId, item: emptyFile2 });
-      p.project({
-        type: "item.completed",
-        turnId,
-        snapshot: { item: emptyFile2, outcome: { status: "succeeded" } },
-      });
-
-      const turnDiffMsg1 = started1.messages.find((m) => m.method === "turn/diff/updated");
-      expect(turnDiffMsg1).toBeDefined();
-      const diff1 = (turnDiffMsg1?.params as { diff: string }).diff;
-      expect(diff1).toContain("@@ -0,0 +0,0 @@");
-
-      const turnDiffMsg2 = started2.messages.find((m) => m.method === "turn/diff/updated");
-      expect(turnDiffMsg2).toBeDefined();
-      const diff2 = (turnDiffMsg2?.params as { diff: string }).diff;
-      expect(diff2).toContain("diff --git a/empty1.txt b/empty1.txt");
-      expect(diff2).toContain("diff --git a/empty2.txt b/empty2.txt");
-
-      // Verify line counts are (+0 -0) without crashing line counters
-      const additions = diff2.split("\n").filter((l) => l.startsWith("+") && !l.startsWith("+++")).length;
-      const deletions = diff2.split("\n").filter((l) => l.startsWith("-") && !l.startsWith("---")).length;
-      expect(additions).toBe(0);
-      expect(deletions).toBe(0);
+      expect(completed.messages).toMatchObject([
+        {
+          method: "item/fileChange/patchUpdated",
+          params: { changes: [{ diff: expect.stringContaining("+const late = 1;") }] },
+        },
+        {
+          method: "turn/diff/updated",
+          params: { diff: expect.stringContaining("+const late = 1;") },
+        },
+        { method: "item/completed", params: { item: { type: "fileChange" } } },
+      ]);
     });
   });
 });

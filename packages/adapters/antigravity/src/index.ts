@@ -27,12 +27,19 @@ export {
 } from "./stream-events.js";
 export type { AntigravityStreamEvent } from "./stream-events.js";
 export {
+  codeActionFileChange,
+  parseAntigravityCodeActions,
+  requestAntigravityTrajectorySteps,
+} from "./code-action-diff.js";
+export type { AntigravityCodeAction } from "./code-action-diff.js";
+export {
   compactToolName,
   completeAntigravityToolItem,
   displayPath,
+  isAntigravityFileMutatingTool,
   startAntigravityToolItem,
   synthesizeAntigravityCommand,
-  synthesizeAntigravityFileChange,
+  toolTargetFile,
 } from "./tool-projection.js";
 
 export const packageMetadata = {

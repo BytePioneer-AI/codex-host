@@ -585,29 +585,23 @@ for (const line of lines) {
         const stateChanged = await nextEvent(iterator);
         expect(stateChanged.type).toBe("session.state.changed");
 
-        // Event 3: item.started for write_to_file (fileChange)
+        // Event 3: item.started for write_to_file. Without a reachable agy
+        // Language Server the applied patch is unknowable, so the step stays a
+        // Tool Execution instead of becoming an empty File Change card.
         const fileStarted = await nextEvent(iterator);
         expect(fileStarted).toMatchObject({
           type: "item.started",
           turnId,
-          item: {
-            type: "fileChange",
-            changes: expect.arrayContaining([
-              expect.objectContaining({
-                path: expect.stringContaining("test.ts"),
-                kind: "add",
-              }),
-            ]),
-          },
+          item: { type: "toolExecution", toolName: "write_to_file" },
         });
 
-        // Event 4: item.completed for write_to_file (fileChange)
+        // Event 4: item.completed for write_to_file
         const fileCompleted = await nextEvent(iterator);
         expect(fileCompleted).toMatchObject({
           type: "item.completed",
           turnId,
           snapshot: {
-            item: { type: "fileChange" },
+            item: { type: "toolExecution", toolName: "write_to_file" },
             outcome: { status: "succeeded" },
           },
         });
@@ -1002,7 +996,7 @@ setTimeout(() => { process.exit(0); }, 50);
       }
     });
 
-    it("projects multiple file changes in a turn producing standard git diff with accurate line counts", async () => {
+    it("projects file steps as Tool Executions when the applied patch cannot be read", async () => {
       const streamLines = [
         JSON.stringify({
           event: "init",
@@ -1073,54 +1067,37 @@ setTimeout(() => { process.exit(0); }, 50);
         expect((await nextEvent(iterator)).type).toBe("turn.started");
         expect((await nextEvent(iterator)).type).toBe("session.state.changed");
 
-        // Tool 1: write_to_file (fileChange)
+        // agy's stream never carries file content, so with no Language Server
+        // to read the applied patch from there is no diff to show — and the
+        // Adapter must not invent one.
         const fc1Started = await nextEvent(iterator);
         expect(fc1Started).toMatchObject({
           type: "item.started",
           turnId,
-          item: {
-            type: "fileChange",
-            changes: [
-              {
-                path: "src/file1.ts",
-                kind: "add",
-                unifiedDiff: expect.stringContaining("diff --git a/src/file1.ts b/src/file1.ts"),
-              },
-            ],
-          },
+          item: { type: "toolExecution", toolName: "write_to_file" },
         });
         const fc1Completed = await nextEvent(iterator);
         expect(fc1Completed).toMatchObject({
           type: "item.completed",
           turnId,
           snapshot: {
-            item: { type: "fileChange" },
+            item: { type: "toolExecution", toolName: "write_to_file" },
             outcome: { status: "succeeded" },
           },
         });
 
-        // Tool 2: replace_file_content (fileChange)
         const fc2Started = await nextEvent(iterator);
         expect(fc2Started).toMatchObject({
           type: "item.started",
           turnId,
-          item: {
-            type: "fileChange",
-            changes: [
-              {
-                path: "src/file2.ts",
-                kind: "update",
-                unifiedDiff: expect.stringContaining("diff --git a/src/file2.ts b/src/file2.ts"),
-              },
-            ],
-          },
+          item: { type: "toolExecution", toolName: "replace_file_content" },
         });
         const fc2Completed = await nextEvent(iterator);
         expect(fc2Completed).toMatchObject({
           type: "item.completed",
           turnId,
           snapshot: {
-            item: { type: "fileChange" },
+            item: { type: "toolExecution", toolName: "replace_file_content" },
             outcome: { status: "succeeded" },
           },
         });

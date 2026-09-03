@@ -3,7 +3,10 @@ import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-import { AntigravityAdapter, resolveAntigravityContextWindow } from "../packages/adapters/antigravity/dist/index.js";
+import {
+  AntigravityAdapter,
+  resolveAntigravityContextWindow,
+} from "../packages/adapters/antigravity/dist/index.js";
 import { CodexTurnProjector } from "../packages/protocol-core/dist/index.js";
 import {
   syncRendererNativeContextUsage,
@@ -35,8 +38,9 @@ async function main() {
         tool_name: "write_to_file",
         tool_info: {
           parameters: {
-            TargetFile: "\"snake.py\"",
-            CodeContent: "\"import pygame\\nimport sys\\n\\ndef main():\\n    print('Snake game')\\n    pygame.init()\\n\"",
+            TargetFile: '"snake.py"',
+            CodeContent:
+              "\"import pygame\\nimport sys\\n\\ndef main():\\n    print('Snake game')\\n    pygame.init()\\n\"",
             Overwrite: "true",
           },
         },
@@ -64,7 +68,7 @@ async function main() {
         tool_name: "replace_file_content",
         tool_info: {
           parameters: {
-            TargetFile: "\"snake.py\"",
+            TargetFile: '"snake.py"',
             TargetContent: "\"print('Snake game')\"",
             ReplacementContent: "\"print('Snake game v2.0')\\n    print('Score: 0')\"",
           },
@@ -93,8 +97,8 @@ async function main() {
         tool_name: "run_command",
         tool_info: {
           parameters: {
-            CommandLine: "\"python snake.py\"",
-            Cwd: "\"D:\\\\CodeProject\\\\test\"",
+            CommandLine: '"python snake.py"',
+            Cwd: '"D:\\\\CodeProject\\\\test"',
           },
         },
       },
@@ -211,7 +215,9 @@ for (const line of lines) {
 
         if (event.type === "session.usage.changed") {
           latestUsage = event.usage;
-          console.log(`[EVENT: USAGE] Context Window: ${event.usage.contextWindowTokens}, Used: ${event.usage.contextUsedTokens ?? 0}`);
+          console.log(
+            `[EVENT: USAGE] Context Window: ${event.usage.contextWindowTokens}, Used: ${event.usage.contextUsedTokens ?? 0}`,
+          );
           continue;
         }
 
@@ -226,9 +232,13 @@ for (const line of lines) {
             if (msg.method === "item/started") {
               const itm = msg.params.item;
               if (itm.type === "fileChange") {
-                console.log(`  ▶ [DESKTOP WIRE] item/started (fileChange) -> path: "${itm.changes[0]?.path}", kind: "${itm.changes[0]?.kind?.type}"`);
+                console.log(
+                  `  ▶ [DESKTOP WIRE] item/started (fileChange) -> path: "${itm.changes[0]?.path}", kind: "${itm.changes[0]?.kind?.type}"`,
+                );
               } else if (itm.type === "commandExecution") {
-                console.log(`  ▶ [DESKTOP WIRE] item/started (commandExecution) -> command: "${itm.command}"`);
+                console.log(
+                  `  ▶ [DESKTOP WIRE] item/started (commandExecution) -> command: "${itm.command}"`,
+                );
               }
             } else if (msg.method === "item/completed") {
               const itm = msg.params.item;
@@ -254,21 +264,29 @@ for (const line of lines) {
     const ctxWin = latestUsage?.contextWindowTokens;
     const resolvedContextWindow = resolveAntigravityContextWindow("gemini-3.7-flash-high");
     const is1M = ctxWin === 1_048_576 && resolvedContextWindow === 1_048_576;
-    console.log(`1. [CONTEXT WINDOW]: ${ctxWin} tokens ${is1M ? "✅ (1M Standard Verified!)" : "❌ (FAILED: expected 1048576)"}`);
+    console.log(
+      `1. [CONTEXT WINDOW]: ${ctxWin} tokens ${is1M ? "✅ (1M Standard Verified!)" : "❌ (FAILED: expected 1048576)"}`,
+    );
     if (!is1M) throw new Error(`Expected context window 1048576, got ${ctxWin}`);
 
     // 2. Check File Edit Diff Line Counts
     const diffMessages = wireMessages.filter((m) => m.method === "turn/diff/updated");
     const finalDiff = diffMessages[diffMessages.length - 1]?.params?.diff || "";
-    const addedLines = finalDiff.split("\n").filter((l) => l.startsWith("+") && !l.startsWith("+++")).length;
-    const removedLines = finalDiff.split("\n").filter((l) => l.startsWith("-") && !l.startsWith("---")).length;
+    const addedLines = finalDiff
+      .split("\n")
+      .filter((l) => l.startsWith("+") && !l.startsWith("+++")).length;
+    const removedLines = finalDiff
+      .split("\n")
+      .filter((l) => l.startsWith("-") && !l.startsWith("---")).length;
 
     console.log(`2. [BOTTOM FILE EDIT SUMMARY CARD]:`);
     console.log(`   File: snake.py`);
     console.log(`   Git header: diff --git a/snake.py b/snake.py`);
     console.log(`   Line count diff: +${addedLines} -${removedLines}`);
     const isLineCountValid = addedLines === 8 && removedLines === 1;
-    console.log(`   Status: ${isLineCountValid ? "✅ (Accurate +8 -1 line modification, NOT +0 -0!)" : "❌ (FAILED: got +0 -0 or wrong lines)"}`);
+    console.log(
+      `   Status: ${isLineCountValid ? "✅ (Accurate +8 -1 line modification, NOT +0 -0!)" : "❌ (FAILED: got +0 -0 or wrong lines)"}`,
+    );
     if (!isLineCountValid) throw new Error(`Expected +8 -1, got +${addedLines} -${removedLines}`);
 
     // 3. Check Native Context Tooltip Usage Injection
@@ -326,16 +344,25 @@ for (const line of lines) {
     const injectedTextZh = tooltipChildren[0]?.dataset?.codexhostNativeUsageDetailsText || "";
 
     console.log(`3. [NATIVE CONTEXT TOOLTIP INJECTION]:`);
-    console.log(injectedTextZh.split("\n").map((l) => `   ${l}`).join("\n"));
+    console.log(
+      injectedTextZh
+        .split("\n")
+        .map((l) => `   ${l}`)
+        .join("\n"),
+    );
     const detailsEn = formatRendererNativeContextUsageDetails(threadUsageSnapshot, "en");
     const tooltipValid =
       injectedTextZh.includes("Token 总数: 4k") &&
       injectedTextZh.includes("最近缓存命中率: CH 51%") &&
       detailsEn.includes("Total tokens: 4k");
-    console.log(`   Status: ${tooltipValid ? "✅ (Native tooltip successfully injected with external usage!)" : "❌ (FAILED)"}`);
+    console.log(
+      `   Status: ${tooltipValid ? "✅ (Native tooltip successfully injected with external usage!)" : "❌ (FAILED)"}`,
+    );
     if (!tooltipValid) throw new Error("Tooltip injection failed");
 
-    console.log("\n================================================================================");
+    console.log(
+      "\n================================================================================",
+    );
     console.log("🎉 ALL REAL END-TO-END VERIFICATIONS PASSED SUCCESSFULLY!");
     console.log("================================================================================");
   } finally {

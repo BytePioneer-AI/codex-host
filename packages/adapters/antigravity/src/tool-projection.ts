@@ -1,10 +1,7 @@
 import path from "node:path";
 
-import { createTwoFilesPatch } from "diff";
-
 import type {
   HostCommandExecutionItem,
-  HostFileChange,
   HostItem,
   HostToolExecutionItem,
 } from "@codexhost/harness-adapter";
@@ -26,10 +23,6 @@ function boundedText(value: unknown, limit: number): { text: string; truncated: 
   const text = typeof value === "string" ? value : JSON.stringify(value);
   if (!text) return null;
   return { text: text.slice(0, limit), truncated: text.length > limit };
-}
-
-function normalizeNewlines(str: string): string {
-  return str.replaceAll("\r\n", "\n");
 }
 
 export function displayPath(
@@ -119,29 +112,6 @@ function extractString(
   return undefined;
 }
 
-function extractBoolean(
-  record: Record<string, unknown>,
-  keys: readonly string[],
-): boolean | undefined {
-  for (const key of keys) {
-    const val = record[key];
-    if (typeof val === "boolean") return val;
-    if (typeof val === "string") {
-      const unwrapped = unwrapJsonString(val);
-      const lower = unwrapped.toLowerCase().trim();
-      if (lower === "true") return true;
-      if (lower === "false") return false;
-    }
-  }
-  for (const wrapper of ["input", "arguments", "params", "parameters"] as const) {
-    if (isRecord(record[wrapper])) {
-      const nested = extractBoolean(record[wrapper] as Record<string, unknown>, keys);
-      if (nested !== undefined) return nested;
-    }
-  }
-  return undefined;
-}
-
 export function compactToolName(toolName: string): string {
   const baseName = toolName.includes(":")
     ? toolName.slice(toolName.lastIndexOf(":") + 1)
@@ -154,10 +124,13 @@ export function compactToolName(toolName: string): string {
 const COMPACT_WRITE_TOOLS = new Set(["writetofile", "writefile", "write"]);
 const COMPACT_REPLACE_TOOLS = new Set([
   "replacefilecontent",
+  "multireplacefilecontent",
   "replacecontent",
   "replace",
   "editfile",
   "edit",
+  "sedfile",
+  "notebookedit",
 ]);
 const COMPACT_COMMAND_TOOLS = new Set([
   "runcommand",
@@ -175,145 +148,30 @@ export function isAntigravityFileMutatingTool(toolName: string): boolean {
   return COMPACT_WRITE_TOOLS.has(compact) || COMPACT_REPLACE_TOOLS.has(compact);
 }
 
-function normalizeHunkHeader(line: string): string {
-  return line.replace(
-    /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/,
-    (_, oldStart: string, oldCount: string | undefined, newStart: string, newCount: string | undefined) => {
-      const oc = oldCount !== undefined ? oldCount : (oldStart === "0" ? "0" : "1");
-      const nc = newCount !== undefined ? newCount : (newStart === "0" ? "0" : "1");
-      return `@@ -${oldStart},${oc} +${newStart},${nc} @@`;
-    },
-  );
-}
-
-function formatUnifiedDiff(
-  displayedPath: string,
-  isAbsolute: boolean,
-  oldText: string,
-  newText: string,
-  kind: "add" | "update",
-): string {
-  const normalized = displayedPath.replaceAll("\\", "/");
-  const aPath = isAbsolute ? normalized : `a/${normalized}`;
-  const bPath = isAbsolute ? normalized : `b/${normalized}`;
-  const gitHeader = `diff --git ${aPath} ${bPath}`;
-  const oldHeader = kind === "add" ? "/dev/null" : aPath;
-  const newHeader = bPath;
-  const rawPatch = createTwoFilesPatch(
-    oldHeader,
-    newHeader,
-    normalizeNewlines(oldText),
-    normalizeNewlines(newText),
-    "",
-    "",
-    { context: 3 },
-  );
-  const lines = rawPatch.replaceAll("\r\n", "\n").split("\n");
-  const headerIdx = lines.findIndex((l) => l.startsWith("--- "));
-  const slice = headerIdx !== -1 ? lines.slice(headerIdx) : lines;
-  const cleaned = slice.map((line) => {
-    if (line.startsWith("--- ") || line.startsWith("+++ ")) {
-      return line.replace(/\t+$/, "");
-    }
-    if (line.startsWith("@@ ")) {
-      return normalizeHunkHeader(line);
-    }
-    return line;
-  });
-  return [gitHeader, ...cleaned].join("\n");
-}
-
-export function synthesizeAntigravityFileChange(
-  toolName: string,
-  params: unknown,
-  cwd: string,
-): HostFileChange[] | null {
+/**
+ * The file a mutating tool step is about to change.
+ *
+ * agy's stream carries the target path but never the content, so this is all a
+ * tool step can contribute; the patch itself is read from the Language Server
+ * trajectory by `code-action-diff`.
+ */
+export function toolTargetFile(toolName: string, params: unknown): string | null {
+  if (!isAntigravityFileMutatingTool(toolName)) return null;
   const record = unwrapParameters(params);
   if (!record) return null;
-  const compact = compactToolName(toolName);
-
-  if (COMPACT_WRITE_TOOLS.has(compact)) {
-    const rawPath = extractString(record, [
-      "TargetFile",
-      "targetFile",
-      "target_file",
-      "filePath",
-      "file_path",
-      "path",
-      "file",
-    ]);
-    const rawContent = extractString(record, [
-      "CodeContent",
-      "codeContent",
-      "code_content",
-      "content",
-      "new_string",
-      "newString",
-      "newText",
-      "text",
-    ]);
-    if (!rawPath || rawContent === undefined) return null;
-    const displayed = displayPath(rawPath, cwd);
-    if (!displayed) return null;
-    const overwrite = extractBoolean(record, ["Overwrite", "overwrite", "overWrite"]) ?? false;
-    const kind = overwrite ? "update" : "add";
-    const unifiedDiff = formatUnifiedDiff(displayed.path, displayed.absolute, "", rawContent, kind);
-    return [{ path: displayed.path, kind, unifiedDiff }];
-  }
-
-  if (COMPACT_REPLACE_TOOLS.has(compact)) {
-    const rawPath = extractString(record, [
-      "TargetFile",
-      "targetFile",
-      "target_file",
-      "filePath",
-      "file_path",
-      "path",
-      "file",
-    ]);
-    const rawTarget = extractString(record, [
-      "TargetContent",
-      "targetContent",
-      "target_content",
-      "old_string",
-      "oldString",
-      "oldText",
-      "old_text",
-      "old",
-    ]);
-    const rawReplacement = extractString(record, [
-      "ReplacementContent",
-      "replacementContent",
-      "replacement_content",
-      "CodeEdit",
-      "codeEdit",
-      "code_edit",
-      "new_string",
-      "newString",
-      "newText",
-      "new_text",
-      "content",
-      "new",
-    ]);
-    const isEditTool = compact === "editfile" || compact === "edit";
-    if (!rawPath || rawReplacement === undefined || (!isEditTool && rawTarget === undefined)) {
-      return null;
-    }
-    const oldText = rawTarget ?? "";
-    const displayed = displayPath(rawPath, cwd);
-    if (!displayed) return null;
-    const kind = "update";
-    const unifiedDiff = formatUnifiedDiff(
-      displayed.path,
-      displayed.absolute,
-      oldText,
-      rawReplacement,
-      kind,
-    );
-    return [{ path: displayed.path, kind, unifiedDiff }];
-  }
-
-  return null;
+  const rawPath = extractString(record, [
+    "TargetFile",
+    "targetFile",
+    "target_file",
+    "AbsolutePath",
+    "absolutePath",
+    "absolute_path",
+    "filePath",
+    "file_path",
+    "path",
+    "file",
+  ]);
+  return rawPath && rawPath.trim().length > 0 ? rawPath : null;
 }
 
 export function synthesizeAntigravityCommand(
@@ -373,16 +231,6 @@ export function startAntigravityToolItem(
     return item;
   }
 
-  const fileChanges = synthesizeAntigravityFileChange(toolName, parameters, cwd ?? "");
-  if (fileChanges && fileChanges.length > 0) {
-    const item: HostItem = {
-      type: "fileChange",
-      itemId: newItemId,
-      changes: fileChanges,
-    };
-    return item;
-  }
-
   const item: HostToolExecutionItem = {
     type: "toolExecution",
     itemId: newItemId,
@@ -420,21 +268,9 @@ export function completeAntigravityToolItem(
     return completed;
   }
 
-  if (item.type === "fileChange") {
-    const parameters = step.tool_info?.parameters;
-    const fileChanges = parameters
-      ? synthesizeAntigravityFileChange(
-          step.tool_name ?? step.tool_info?.name ?? "",
-          parameters,
-          cwd ?? "",
-        )
-      : undefined;
-    const completed: HostItem = {
-      ...item,
-      ...(fileChanges && fileChanges.length > 0 ? { changes: fileChanges } : {}),
-    };
-    return completed;
-  }
+  // A File Change Item already carries the applied patch the Language Server
+  // recorded, so completion has nothing to add to it.
+  if (item.type === "fileChange") return item;
 
   if (item.type === "toolExecution") {
     const parameters = step.tool_info?.parameters;

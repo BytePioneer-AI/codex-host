@@ -279,7 +279,8 @@ describe("Renderer Usage native Codex snapshots", () => {
       },
       getElementById: () => null, // No aria-describedby match
       body: {
-        querySelectorAll: (sel: string) => (sel === '[role="tooltip"]' ? (tooltipVisible ? [rootTooltip] : []) : []),
+        querySelectorAll: (sel: string) =>
+          sel === '[role="tooltip"]' ? (tooltipVisible ? [rootTooltip] : []) : [],
       },
       defaultView: {
         MutationObserver: MockMutationObserver,
@@ -321,7 +322,9 @@ describe("Renderer Usage native Codex snapshots", () => {
     // Injected via fallback text pattern
     expect(tooltipChildren.length).toBe(1);
     expect(tooltipChildren[0]?.dataset.codexhostNativeUsageDetailsText).toContain("Cache read: 8k");
-    expect(tooltipChildren[0]?.dataset.codexhostNativeUsageDetailsText).toContain("Total tokens: 10k");
+    expect(tooltipChildren[0]?.dataset.codexhostNativeUsageDetailsText).toContain(
+      "Total tokens: 10k",
+    );
 
     // Tooltip dismisses (unhover)
     tooltipVisible = false;
@@ -332,7 +335,9 @@ describe("Renderer Usage native Codex snapshots", () => {
     tooltipVisible = true;
     triggerObserver();
     expect(tooltipChildren.length).toBe(1);
-    expect(tooltipChildren[0]?.dataset.codexhostNativeUsageDetailsText).toContain("Total tokens: 10k");
+    expect(tooltipChildren[0]?.dataset.codexhostNativeUsageDetailsText).toContain(
+      "Total tokens: 10k",
+    );
 
     clearRendererNativeContextUsage(trigger);
     expect(tooltipChildren.length).toBe(0);

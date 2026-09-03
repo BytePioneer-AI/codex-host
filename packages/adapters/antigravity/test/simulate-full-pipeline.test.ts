@@ -10,10 +10,7 @@ import {
   type JsonObject,
 } from "@codexhost/shared-contracts";
 import { CodexTurnProjector, type ProjectableHostEvent } from "@codexhost/protocol-core";
-import {
-  AntigravityAdapter,
-  resolveAntigravityContextWindow,
-} from "../src/antigravity-adapter.js";
+import { AntigravityAdapter, resolveAntigravityContextWindow } from "../src/antigravity-adapter.js";
 
 function asObject(value: unknown): JsonObject {
   return typeof value === "object" && value !== null ? (value as JsonObject) : {};
@@ -61,14 +58,18 @@ for (const line of lines) {
   }
 
   it("simulates full execution flow: unquoted parameters, 1M context, real diff line counts, and native tooltip injection", async () => {
-    // 1. Prepare realistic stream lines where tool arguments have literal JSON quotation
+    // The stream below is synthetic: real `agy --output-format stream-json`
+    // publishes only `TargetFile` for a file tool and keeps the content out of
+    // the stream entirely (the applied patch comes from its Language Server,
+    // see code-action-diff). What this exercises is the Host's generic
+    // content-carrying tool path and the JSON-quoted parameter unwrapping.
     const streamLines = [
       JSON.stringify({
         event: "init",
         conversation_id: "conv-e2e-real",
         init: { permission_mode: "dangerously-skip-permissions" },
       }),
-      // Step 1: write_to_file with JSON string quoted parameters (as seen in actual agy transcripts)
+      // Step 1: write_to_file with JSON string quoted parameters
       JSON.stringify({
         event: "step_update",
         step_update: {
@@ -79,8 +80,9 @@ for (const line of lines) {
           tool_name: "write_to_file",
           tool_info: {
             parameters: {
-              TargetFile: "\"snake.py\"",
-              CodeContent: "\"import pygame\\nimport sys\\n\\ndef main():\\n    print('Snake game')\\n    pygame.init()\\n\"",
+              TargetFile: '"snake.py"',
+              CodeContent:
+                "\"import pygame\\nimport sys\\n\\ndef main():\\n    print('Snake game')\\n    pygame.init()\\n\"",
               Overwrite: "true",
             },
           },
@@ -108,7 +110,7 @@ for (const line of lines) {
           tool_name: "replace_file_content",
           tool_info: {
             parameters: {
-              TargetFile: "\"snake.py\"",
+              TargetFile: '"snake.py"',
               TargetContent: "\"print('Snake game')\"",
               ReplacementContent: "\"print('Snake game v2.0')\\n    print('Score: 0')\"",
             },
@@ -137,8 +139,8 @@ for (const line of lines) {
           tool_name: "run_command",
           tool_info: {
             parameters: {
-              CommandLine: "\"python snake.py\"",
-              Cwd: "\"D:\\\\CodeProject\\\\test\"",
+              CommandLine: '"python snake.py"',
+              Cwd: '"D:\\\\CodeProject\\\\test"',
             },
           },
         },
@@ -303,14 +305,17 @@ for (const line of lines) {
       expect(finalDiff).not.toContain("@@ -0,0 +0,0 @@");
 
       // Count added and deleted lines in the unified diff
-      const addedLines = finalDiff.split("\n").filter((line) => line.startsWith("+") && !line.startsWith("+++")).length;
-      const removedLines = finalDiff.split("\n").filter((line) => line.startsWith("-") && !line.startsWith("---")).length;
+      const addedLines = finalDiff
+        .split("\n")
+        .filter((line) => line.startsWith("+") && !line.startsWith("+++")).length;
+      const removedLines = finalDiff
+        .split("\n")
+        .filter((line) => line.startsWith("-") && !line.startsWith("---")).length;
 
       // Ensure that lines are strictly non-zero and match the edits
       expect(addedLines).toBeGreaterThan(0);
       expect(addedLines).toBe(8); // 6 lines from write_to_file + 2 lines from replace_file_content
       expect(removedLines).toBe(1); // 1 replaced line (-print('Snake game'))
-
     } finally {
       await cleanup();
     }

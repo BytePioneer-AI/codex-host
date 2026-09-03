@@ -338,9 +338,15 @@ export function ensureGitDiffHeader(filePath: string, unifiedDiff: string): stri
   if (!trimmed) return unifiedDiff;
   const normalizedDiff = trimmed.replace(
     /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/gm,
-    (_, oldStart: string, oldCount: string | undefined, newStart: string, newCount: string | undefined) => {
-      const oc = oldCount !== undefined ? oldCount : (oldStart === "0" ? "0" : "1");
-      const nc = newCount !== undefined ? newCount : (newStart === "0" ? "0" : "1");
+    (
+      _,
+      oldStart: string,
+      oldCount: string | undefined,
+      newStart: string,
+      newCount: string | undefined,
+    ) => {
+      const oc = oldCount !== undefined ? oldCount : oldStart === "0" ? "0" : "1";
+      const nc = newCount !== undefined ? newCount : newStart === "0" ? "0" : "1";
       return `@@ -${oldStart},${oc} +${newStart},${nc} @@`;
     },
   );
@@ -352,12 +358,17 @@ export function ensureGitDiffHeader(filePath: string, unifiedDiff: string): stri
   return `diff --git ${aPath} ${bPath}\n${normalizedDiff}`;
 }
 
+/**
+ * Returns `null` for a patch with no changed lines: Codex Desktop cannot read
+ * a body-less hunk and falls back to rendering the git header itself as added
+ * content, which surfaces as a phantom card with the wrong line counts.
+ */
 function simpleUnifiedDiff(
   displayedPath: string,
   oldText: string,
   newText: string,
   kind: "add" | "update",
-): string {
+): string | null {
   const normalized = displayedPath.replaceAll("\\", "/");
   const isAbsolute = normalized.startsWith("/") || /^[a-zA-Z]:\//.test(normalized);
   const aPath = isAbsolute ? normalized : `a/${normalized}`;
@@ -367,6 +378,7 @@ function simpleUnifiedDiff(
   const newLines = newText === "" ? [] : newText.replaceAll("\r\n", "\n").split("\n");
   if (oldLines.at(-1) === "") oldLines.pop();
   if (newLines.at(-1) === "") newLines.pop();
+  if (oldLines.length === 0 && newLines.length === 0) return null;
   const oldHeader = kind === "add" ? "/dev/null" : aPath;
   const newHeader = bPath;
   const oldRange =
@@ -398,10 +410,7 @@ export function normalizeDisplayPath(filePath: string, cwd?: string): string | n
   const normalizedCwd = cwd.trim().replaceAll("\\", "/").replace(/\/+$/, "");
   if (normalizedCwd.length === 0) return normalizedFile.replace(/^\.\//, "");
 
-  if (
-    normalizedFile.toLowerCase() === normalizedCwd.toLowerCase() ||
-    normalizedFile === "."
-  ) {
+  if (normalizedFile.toLowerCase() === normalizedCwd.toLowerCase() || normalizedFile === ".") {
     return null;
   }
 
@@ -411,8 +420,7 @@ export function normalizeDisplayPath(filePath: string, cwd?: string): string | n
     return rel.length > 0 ? rel : null;
   }
 
-  const isAbsolute =
-    normalizedFile.startsWith("/") || /^[a-zA-Z]:\//.test(normalizedFile);
+  const isAbsolute = normalizedFile.startsWith("/") || /^[a-zA-Z]:\//.test(normalizedFile);
   if (!isAbsolute) {
     return normalizedFile.replace(/^\.\//, "");
   }
@@ -457,13 +465,8 @@ export function fileChangeFromTool(
     const content = rawContent ?? "";
     const overwrite = extractBoolean(args, ["Overwrite", "overwrite", "overWrite"]) ?? false;
     const kind = overwrite ? "update" : "add";
-    return [
-      {
-        path: displayedPath,
-        kind,
-        unifiedDiff: simpleUnifiedDiff(displayedPath, "", content, kind),
-      },
-    ];
+    const unifiedDiff = simpleUnifiedDiff(displayedPath, "", content, kind);
+    return unifiedDiff ? [{ path: displayedPath, kind, unifiedDiff }] : null;
   }
   // ponytail: Antigravity CodeEdit omits old text; report additions only until native patch metadata exists.
   const oldText =
@@ -490,13 +493,8 @@ export function fileChangeFromTool(
     "CodeEdit",
   ]);
   const newText = rawNewText ?? "";
-  return [
-    {
-      path: displayedPath,
-      kind: "update",
-      unifiedDiff: simpleUnifiedDiff(displayedPath, oldText, newText, "update"),
-    },
-  ];
+  const unifiedDiff = simpleUnifiedDiff(displayedPath, oldText, newText, "update");
+  return unifiedDiff ? [{ path: displayedPath, kind: "update", unifiedDiff }] : null;
 }
 
 function projectFileChangeKind(kind: HostFileChange["kind"]): JsonValue {
@@ -1311,6 +1309,11 @@ export class CodexTurnProjector {
         throw new Error("Host textual Item completion does not match its append updates");
       }
     }
+    // The Turn diff summary aggregates every File Change Item, so a patch that
+    // only becomes known at completion has to be republished, not just carried
+    // inside `item/completed`.
+    const previousFileDiff =
+      projected.item.type === "fileChange" ? diffText(projected.item.changes) : null;
     projected.item = event.snapshot.item;
     projected.outcome = event.snapshot.outcome;
     const startedAtMs = projected.startedAtMs;
@@ -1374,11 +1377,15 @@ export class CodexTurnProjector {
         projected.wireFileChanges = completedChanges;
         diffChanged = newDiff !== previousDiff;
       }
+    } else if (projected.item.type === "fileChange" && previousFileDiff !== null) {
+      diffChanged = diffText(projected.item.changes) !== previousFileDiff;
     }
     const fileItem = wireFileChangeItem(projected);
+    const changedFileChanges =
+      projected.item.type === "fileChange" ? projected.item.changes : projected.wireFileChanges;
     const messages = [
-      ...(fileItem && projected.wireFileChanges && diffChanged
-        ? this.#fileChangeUpdates(projected.item.itemId, projected.wireFileChanges)
+      ...(fileItem && changedFileChanges && diffChanged
+        ? this.#fileChangeUpdates(projected.item.itemId, changedFileChanges)
         : []),
       completedItem(
         projectItem(

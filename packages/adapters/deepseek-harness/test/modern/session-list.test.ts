@@ -6,6 +6,7 @@ import {
   DEEPSEEK_MODERN_SESSION_CWD_MAX_LENGTH,
   DEEPSEEK_MODERN_SESSION_ID_MAX_LENGTH,
   DEEPSEEK_MODERN_SESSION_LIST_MAX_LENGTH,
+  DEEPSEEK_MODERN_SESSION_TITLE_MAX_LENGTH,
   DEEPSEEK_MODERN_SESSION_UPDATED_AT_MAX,
 } from "@codexhost/shared-contracts";
 
@@ -165,6 +166,24 @@ describe("DeepSeek Harness Modern Session list", () => {
     ).toThrowError(expect.objectContaining({ code: "limitExceeded" }));
   });
 
+  it("keeps an exact-bound title and degrades an oversized title to null", () => {
+    const exact = "t".repeat(DEEPSEEK_MODERN_SESSION_TITLE_MAX_LENGTH);
+    expect(
+      parseModernSessionCandidates({
+        items: [
+          row({
+            sessionId: "exact-title",
+            projections: { asOfSeq: 0, values: { title: exact } },
+          }),
+          row({
+            sessionId: "oversized-title",
+            projections: { asOfSeq: 0, values: { title: `${exact}x` } },
+          }),
+        ],
+      }).map(({ title }) => title),
+    ).toEqual([exact, null]);
+  });
+
   it("rejects cyclic and over-deep projection values", () => {
     const cyclic: Record<string, unknown> = {};
     cyclic.self = cyclic;
@@ -184,6 +203,25 @@ describe("DeepSeek Harness Modern Session list", () => {
     expect(() =>
       parseModernSessionCandidates({
         items: [row({ projections: { asOfSeq: 0, values: deep } })],
+      }),
+    ).toThrowError(expect.objectContaining({ code: "limitExceeded" }));
+  });
+
+  it("accepts the exact JSON node work bound and rejects one additional node", () => {
+    // root + items + row + five scalar fields + projections/asOfSeq/values/array = 12 nodes.
+    const exactProjectionNodes = Array(199_988).fill(null);
+    expect(
+      parseModernSessionCandidates({
+        items: [row({ projections: { asOfSeq: 0, values: { nodes: exactProjectionNodes } } })],
+      }),
+    ).toHaveLength(1);
+    expect(() =>
+      parseModernSessionCandidates({
+        items: [
+          row({
+            projections: { asOfSeq: 0, values: { nodes: [...exactProjectionNodes, null] } },
+          }),
+        ],
       }),
     ).toThrowError(expect.objectContaining({ code: "limitExceeded" }));
   });

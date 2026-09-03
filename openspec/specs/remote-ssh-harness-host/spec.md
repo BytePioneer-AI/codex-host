@@ -54,7 +54,9 @@ On macOS and Linux, codexhost SHALL recognize a Codex `app-server --listen unix:
 
 - **GIVEN** the installed managed Remote Host already owns a healthy control socket
 - **WHEN** Desktop invokes the same default `app-server --listen unix://` bootstrap again
-- **THEN** the Shim verifies the socket owner against the installed Node and Host Runtime paths
+- **AND** Desktop first applies its stock-listener cleanup selector
+- **THEN** the managed listener does not advertise the stock `desktop-ssh-websocket-v0.sock` process marker and survives that cleanup
+- **AND** the Shim verifies the socket owner against the installed Node and Host Runtime paths
 - **AND** it returns success without starting a competing listener or replacing the socket identity
 - **AND** a socket owned by a different installed command is rejected instead of reused or overwritten
 

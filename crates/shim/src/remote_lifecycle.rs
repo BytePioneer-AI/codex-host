@@ -186,8 +186,9 @@ fn has_default_listener(arguments: &[String]) -> bool {
     app_server && (exact_arguments || shell_command) && !proxy
 }
 
-fn is_managed_desktop_ssh_service(arguments: &[String]) -> bool {
-    arguments == ["codex app-server desktop-ssh-websocket-v0.sock"]
+fn is_managed_remote_listener_service(arguments: &[String]) -> bool {
+    arguments == ["codexhost remote app-server listener"]
+        || arguments == ["codex app-server desktop-ssh-websocket-v0.sock"]
 }
 
 fn command_mentions_path(arguments: &[String], expected: &Path) -> bool {
@@ -228,9 +229,9 @@ fn matching_root(
             ListenerRole::Managed => {
                 executable.as_ref() == Some(&expected_node)
                     && (command_mentions_path(&arguments, expected_command)
-                        || is_managed_desktop_ssh_service(&arguments))
+                        || is_managed_remote_listener_service(&arguments))
                     && (has_default_listener(&arguments)
-                        || is_managed_desktop_ssh_service(&arguments))
+                        || is_managed_remote_listener_service(&arguments))
             }
         };
         if listener_matches {
@@ -384,7 +385,7 @@ pub fn run_terminate(arguments: &[String]) -> LifecycleResult<i32> {
 
 #[cfg(test)]
 mod tests {
-    use super::{command_mentions_path, has_default_listener, is_managed_desktop_ssh_service};
+    use super::{command_mentions_path, has_default_listener, is_managed_remote_listener_service};
     use std::path::Path;
 
     fn arguments(values: &[&str]) -> Vec<String> {
@@ -413,10 +414,13 @@ mod tests {
             "--listen",
             "unix:///tmp/custom.sock",
         ])));
-        assert!(is_managed_desktop_ssh_service(&arguments(&[
+        assert!(is_managed_remote_listener_service(&arguments(&[
+            "codexhost remote app-server listener",
+        ])));
+        assert!(is_managed_remote_listener_service(&arguments(&[
             "codex app-server desktop-ssh-websocket-v0.sock",
         ])));
-        assert!(!is_managed_desktop_ssh_service(&arguments(&[
+        assert!(!is_managed_remote_listener_service(&arguments(&[
             "codex app-server desktop-ssh-websocket-v1.sock",
         ])));
     }

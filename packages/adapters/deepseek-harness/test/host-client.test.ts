@@ -13,6 +13,8 @@ import {
   NodeDeepSeekCommandClient,
   NodeDeepSeekHostClient,
   deepSeekProcessInvocation,
+  deepSeekWebArguments,
+  dshWebHelpSupportsNoOpen,
   resolveDeepSeekCommand,
   type DeepSeekHostConnectionDependencies,
 } from "../src/host-client.js";
@@ -83,6 +85,130 @@ describe("DeepSeek local Host connection", () => {
         type: "client-request",
         method: "commands/list",
         payload: { args: { agentId: "session-1" } },
+      });
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("accepts host.describe from DSH 0.1.0 that omits home", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: URL, init?: RequestInit) => {
+        const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              type: "server-response",
+              rpcId: body.rpcId,
+              result: {
+                ok: true,
+                value: {
+                  version: "0.0.1",
+                  cwd: "/workspace",
+                  provider: "deepseek-official",
+                  model: "deepseek-v4-flash",
+                  attachedSessions: 0,
+                  canOpenPath: true,
+                },
+              },
+            }),
+          ),
+        );
+      }),
+    );
+    try {
+      const client = new NodeDeepSeekHostClient("http://127.0.0.1:43123");
+      const described = await client.host.describe({});
+      expect(described.result).toMatchObject({
+        ok: true,
+        value: {
+          version: "0.0.1",
+          provider: "deepseek-official",
+          model: "deepseek-v4-flash",
+          home: expect.any(String),
+        },
+      });
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("keeps the client timeout when host.describe fallback receives a caller signal", async () => {
+    const signals: AbortSignal[] = [];
+    const caller = new AbortController();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((_input: URL, init?: RequestInit) => {
+        if (init?.signal) signals.push(init.signal);
+        const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              type: "server-response",
+              rpcId: body.rpcId,
+              result: {
+                ok: true,
+                value: {
+                  version: "0.0.1",
+                  cwd: "/workspace",
+                  provider: "deepseek-official",
+                  model: "deepseek-v4-flash",
+                  attachedSessions: 0,
+                  canOpenPath: true,
+                },
+              },
+            }),
+          ),
+        );
+      }),
+    );
+    try {
+      const client = new NodeDeepSeekHostClient("http://127.0.0.1:43123");
+      await client.host.describe({}, caller.signal);
+      expect(signals.at(-1)).toBeDefined();
+      expect(signals.at(-1)).not.toBe(caller.signal);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("wraps invalid host.describe fallback envelopes as transport errors", async () => {
+    let calls = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((_input: URL, init?: RequestInit) => {
+        calls += 1;
+        const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        if (calls === 1) {
+          return Promise.resolve(
+            new Response(
+              JSON.stringify({
+                type: "server-response",
+                rpcId: body.rpcId,
+                result: {
+                  ok: true,
+                  value: {
+                    version: "0.0.1",
+                    cwd: "/workspace",
+                    provider: "deepseek-official",
+                    model: "deepseek-v4-flash",
+                    attachedSessions: 0,
+                    canOpenPath: true,
+                  },
+                },
+              }),
+            ),
+          );
+        }
+        return Promise.resolve(new Response("not-json"));
+      }),
+    );
+    try {
+      const client = new NodeDeepSeekHostClient("http://127.0.0.1:43123");
+      await expect(client.host.describe({})).rejects.toMatchObject({
+        name: "DeepSeekHarnessTransportError",
+        code: "protocolError",
       });
     } finally {
       vi.unstubAllGlobals();
@@ -292,6 +418,7 @@ describe("DeepSeek local Host connection", () => {
         ),
       spawn,
       sleep: () => Promise.resolve(),
+      readWebHelp: () => "",
     };
     const connection = new DeepSeekHostConnection(
       { command: executable, endpoint: "http://127.0.0.1:43123" },
@@ -301,7 +428,7 @@ describe("DeepSeek local Host connection", () => {
     await connection.connect();
     const expectedInvocation = deepSeekProcessInvocation(
       executable,
-      ["web", "--no-open", "--host", "127.0.0.1", "--port", "43123"],
+      deepSeekWebArguments(new URL("http://127.0.0.1:43123")),
       process.env,
     );
     expect(spawn).toHaveBeenCalledWith(expectedInvocation.command, expectedInvocation.arguments, {
@@ -311,6 +438,56 @@ describe("DeepSeek local Host connection", () => {
     });
     await connection.close();
     expect(child.kill).toHaveBeenCalledWith("SIGTERM");
+  });
+
+  it("passes --no-open only when this dsh web CLI still advertises it", async () => {
+    const executableDirectory = mkdtempSync(path.join(os.tmpdir(), "codexhost-dsh-no-open-"));
+    const executable = path.join(executableDirectory, "dsh");
+    writeFileSync(executable, "#!/bin/sh\nexit 0\n");
+    chmodSync(executable, 0o755);
+    let ready = false;
+    const child = childProcess();
+    const spawn = vi.fn(() => {
+      ready = true;
+      return child;
+    });
+    const dependencies: DeepSeekHostConnectionDependencies = {
+      createClient: () =>
+        fakeClient(() =>
+          ready
+            ? Promise.resolve(
+                success({
+                  version: "0.0.1",
+                  cwd: "/workspace",
+                  provider: "deepseek-official",
+                  model: "deepseek-v4-flash",
+                  attachedSessions: 0,
+                  canOpenPath: false,
+                }),
+              )
+            : Promise.reject(new TypeError("fetch failed")),
+        ),
+      spawn,
+      sleep: () => Promise.resolve(),
+      readWebHelp: () => "Options:\n  --no-open\n  --host <host>\n  --port <port>\n",
+    };
+    const connection = new DeepSeekHostConnection(
+      { command: executable, endpoint: "http://127.0.0.1:43123" },
+      dependencies,
+    );
+
+    await connection.connect();
+    const expectedInvocation = deepSeekProcessInvocation(
+      executable,
+      deepSeekWebArguments(new URL("http://127.0.0.1:43123"), { noOpen: true }),
+      process.env,
+    );
+    expect(spawn).toHaveBeenCalledWith(expectedInvocation.command, expectedInvocation.arguments, {
+      env: process.env,
+      stdio: "pipe",
+      windowsVerbatimArguments: expectedInvocation.windowsVerbatimArguments,
+    });
+    await connection.close();
   });
 
   it("classifies an npx DSH package startup exit as not installed", async () => {
@@ -332,6 +509,7 @@ describe("DeepSeek local Host connection", () => {
       createClient: () => fakeClient(() => Promise.reject(new TypeError("fetch failed"))),
       spawn,
       sleep: () => Promise.resolve(),
+      readWebHelp: () => "",
     };
     const connection = new DeepSeekHostConnection(
       { endpoint: "http://127.0.0.1:43123", environment },
@@ -345,12 +523,7 @@ describe("DeepSeek local Host connection", () => {
         "--offline",
         "--no-install",
         "@deepseek-ai/dsh",
-        "web",
-        "--no-open",
-        "--host",
-        "127.0.0.1",
-        "--port",
-        "43123",
+        ...deepSeekWebArguments(new URL("http://127.0.0.1:43123")),
       ],
       environment,
     );
@@ -430,5 +603,11 @@ describe("DeepSeek local Host connection", () => {
     expect(resolved).toMatchObject({ arguments: [] });
     expect(resolved?.command.toLowerCase()).toBe(executable.toLowerCase());
     expect(resolveDeepSeekCommand(undefined, { PATH: "" })).toBeNull();
+  });
+
+  it("detects --no-open from dsh web help without matching nearby flags", () => {
+    expect(dshWebHelpSupportsNoOpen("Options:\n  --no-open\n  --host <host>\n")).toBe(true);
+    expect(dshWebHelpSupportsNoOpen("Options:\n  --host <host>\n  --port <port>\n")).toBe(false);
+    expect(dshWebHelpSupportsNoOpen("--no-open-browser")).toBe(false);
   });
 });

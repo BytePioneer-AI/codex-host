@@ -30,6 +30,7 @@ export type {
   HarnessSession,
   HarnessSessionCapabilities,
   HarnessSubagentCapability,
+  HarnessWebUiAction,
   HarnessSessionState,
   HarnessThinkingOption,
   HarnessThinkingOptionId,

@@ -515,9 +515,14 @@ export interface HarnessSubagentCapability {
   }): Promise<HarnessResult<HostThreadSnapshot>>;
 }
 
+export interface HarnessWebUiAction {
+  open(): Promise<HarnessResult<void>>;
+}
+
 export interface HarnessAdapter {
   readonly harnessId: HarnessId;
   readonly subagents?: HarnessSubagentCapability;
+  readonly webUi?: HarnessWebUiAction;
 
   inspect(input?: InspectHarnessInput): Promise<HarnessInspection>;
   open(input: OpenSessionInput): Promise<HarnessResult<HarnessSession>>;

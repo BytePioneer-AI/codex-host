@@ -1,4 +1,8 @@
-import type { UpdateCheckResult, UpdateStatus } from "@codexhost/shared-contracts";
+import {
+  hostThreadIdSchema,
+  type UpdateCheckResult,
+  type UpdateStatus,
+} from "@codexhost/shared-contracts";
 import { describe, expect, it, vi } from "vitest";
 
 vi.mock("../../src/settings/icons.js", () => ({
@@ -682,5 +686,125 @@ describe("Renderer Updates page", () => {
 
     cleanup?.();
     scope.dispose();
+  });
+
+  it("lists local DSH Modern sessions and imports only an idle row", async () => {
+    const client = {
+      listDeepSeekModernSessions: vi.fn(async () => ({
+        candidates: [
+          {
+            nativeSessionId: "idle-session-identifier-that-is-long",
+            title: "既有会话",
+            updatedAt: 1_700_000_000_000,
+            cwd: "C:\\work\\idle",
+            running: false,
+          },
+          {
+            nativeSessionId: "running-session",
+            title: null,
+            updatedAt: 1_700_000_001_000,
+            cwd: "C:\\work\\running",
+            running: true,
+          },
+        ],
+      })),
+      importDeepSeekModernSession: vi.fn(async () => ({
+        threadId: hostThreadIdSchema.parse("imported-thread"),
+      })),
+    };
+    const openImportedThread = vi.fn(async () => undefined);
+    const page = createDefaultRendererSettingsPages(
+      rendererSettingsMessages("zh-CN"),
+      () => null,
+      () => null,
+      () => client,
+      openImportedThread,
+    ).find(({ id }) => id === "session-import");
+    if (!page) throw new Error("Session Import page is not registered");
+    const document = new FakeDocument();
+    const content = document.createElement("main");
+    const scope = new RendererSettingsPageScope();
+    page.mount({
+      content: content as unknown as HTMLElement,
+      signal: scope.signal,
+      runLatest: (operation, handlers) => scope.runLatest(operation, handlers),
+    });
+
+    await vi.waitFor(() => expect(client.listDeepSeekModernSessions).toHaveBeenCalledWith({}));
+    await vi.waitFor(() => expect(visibleText(content)).toContain("既有会话"));
+    expect(visibleText(content)).toContain("未命名会话");
+    expect(visibleText(content)).toContain("运行中");
+    expect(visibleText(content)).not.toContain("idle-session-identifier-that-is-long");
+
+    const actions = descendants(content).filter(
+      ({ dataset }) => dataset.sessionImportAction === "import",
+    );
+    expect(actions).toHaveLength(2);
+    expect(actions[0]?.disabled).toBe(false);
+    expect(actions[1]?.disabled).toBe(true);
+    actions[1]?.dispatch("click");
+    expect(client.importDeepSeekModernSession).not.toHaveBeenCalled();
+    actions[0]?.dispatch("click");
+    actions[0]?.dispatch("click");
+    await vi.waitFor(() => expect(client.importDeepSeekModernSession).toHaveBeenCalledOnce());
+    expect(client.importDeepSeekModernSession).toHaveBeenCalledWith({
+      nativeSessionId: "idle-session-identifier-that-is-long",
+    });
+    await vi.waitFor(() =>
+      expect(openImportedThread).toHaveBeenCalledWith("imported-thread", expect.any(AbortSignal)),
+    );
+    scope.dispose();
+  });
+
+  it("shows an honest unavailable state without a local import client", () => {
+    const page = createDefaultRendererSettingsPages(rendererSettingsMessages("en")).find(
+      ({ id }) => id === "session-import",
+    );
+    if (!page) throw new Error("Session Import page is not registered");
+    const document = new FakeDocument();
+    const content = document.createElement("main");
+    const scope = new RendererSettingsPageScope();
+    page.mount({
+      content: content as unknown as HTMLElement,
+      signal: scope.signal,
+      runLatest: (operation, handlers) => scope.runLatest(operation, handlers),
+    });
+
+    expect(visibleText(content)).toContain("codexhost-managed DeepSeek Harness 0.1.2-rc.1");
+    expect(
+      descendants(content).filter(({ dataset }) => dataset.sessionImportAction === "import"),
+    ).toHaveLength(0);
+    scope.dispose();
+  });
+
+  it("ignores a Session list that resolves after the settings page is disposed", async () => {
+    const listed = deferred<{ candidates: never[] }>();
+    const client = {
+      listDeepSeekModernSessions: vi.fn(() => listed.promise),
+      importDeepSeekModernSession: vi.fn(),
+    };
+    const page = createDefaultRendererSettingsPages(
+      rendererSettingsMessages("en"),
+      () => null,
+      () => null,
+      () => client,
+    ).find(({ id }) => id === "session-import");
+    if (!page) throw new Error("Session Import page is not registered");
+    const document = new FakeDocument();
+    const content = document.createElement("main");
+    const scope = new RendererSettingsPageScope();
+    page.mount({
+      content: content as unknown as HTMLElement,
+      signal: scope.signal,
+      runLatest: (operation, handlers) => scope.runLatest(operation, handlers),
+    });
+    const before = visibleText(content);
+
+    scope.dispose();
+    listed.resolve({ candidates: [] });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(visibleText(content)).toBe(before);
   });
 });

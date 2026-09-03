@@ -380,6 +380,93 @@ button {
   line-height: 20px;
 }
 
+.settings-session-import-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 24px;
+}
+
+.settings-session-import-header .settings-section-label {
+  min-width: 0;
+}
+
+.settings-session-import-content,
+.settings-session-import-list {
+  display: grid;
+  gap: 10px;
+}
+
+.settings-session-import-status {
+  display: flex;
+  align-items: center;
+  min-height: 64px;
+  gap: 12px;
+  padding: 16px;
+  color: var(--settings-muted);
+  background: var(--settings-panel);
+  border: 1px solid var(--settings-border);
+  border-radius: 8px;
+}
+
+.settings-session-import-status.is-error {
+  color: #ef4444;
+}
+
+.settings-session-import-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 20px;
+  min-width: 0;
+  padding: 16px;
+  background: var(--settings-panel);
+  border: 1px solid var(--settings-border);
+  border-radius: 8px;
+}
+
+.settings-session-import-row__copy {
+  display: grid;
+  min-width: 0;
+  gap: 4px;
+}
+
+.settings-session-import-row__copy strong {
+  overflow: hidden;
+  color: var(--settings-text);
+  font-size: 14px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-session-import-row__copy span,
+.settings-session-import-row__cwd {
+  overflow: hidden;
+  color: var(--settings-muted);
+  font-size: 12px;
+  line-height: 18px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-session-import-row__cwd {
+  display: block;
+  min-width: 0;
+  background: transparent;
+}
+
+.settings-session-import-row__action {
+  display: flex;
+  align-items: flex-end;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.settings-session-import-running {
+  color: var(--settings-muted);
+  font-size: 12px;
+}
+
 .settings-preference-row {
   display: flex;
   align-items: center;
@@ -1525,6 +1612,12 @@ button {
   filter: brightness(1.08);
 }
 
+.settings-command-button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+  filter: none;
+}
+
 .settings-command-button:focus-visible,
 .settings-update-link:focus-visible {
   outline: 2px solid var(--settings-focus);
@@ -1547,6 +1640,14 @@ button {
   .settings-layout {
     grid-template-columns: minmax(0, 1fr);
     grid-template-rows: auto minmax(0, 1fr);
+  }
+
+  .settings-session-import-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .settings-session-import-row__action {
+    align-items: flex-start;
   }
 
   .settings-sidebar {

@@ -3,10 +3,11 @@ import {
   hostTurnIdSchema,
   type ThreadInspection,
 } from "@codexhost/shared-contracts";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   installRendererForkControl,
+  openRendererThread,
   rendererForkTargetFromButton,
   type RendererForkDom,
   type RendererForkTarget,
@@ -110,7 +111,70 @@ function forkButton(
   return button;
 }
 
+function sidebarRow(threadId: string, hostId: string) {
+  const attributes = {
+    "data-app-action-sidebar-thread-row": "row-marker",
+    "data-app-action-sidebar-thread-id": `${hostId}:${threadId}`,
+    "data-app-action-sidebar-thread-host-id": hostId,
+  } as const;
+  const row = {
+    click: vi.fn(),
+    getAttribute: (name: string) => attributes[name as keyof typeof attributes] ?? null,
+  } as unknown as HTMLElement;
+  Object.defineProperty(row, "__reactFiber$test", {
+    value: {
+      memoizedProps: {
+        conversationId: threadId,
+        dataAttributes: attributes,
+      },
+      return: null,
+    },
+  });
+  return row;
+}
+
 describe("Renderer external Thread Fork control", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("opens only the Host-qualified standard sidebar row", async () => {
+    const local = sidebarRow("same-thread", "local");
+    const remote = sidebarRow("same-thread", "remote-1");
+    vi.stubGlobal("document", {
+      querySelectorAll: () => [local, remote],
+      documentElement: {},
+    });
+
+    await openRendererThread(hostThreadIdSchema.parse("same-thread"), { hostId: "remote-1" });
+
+    expect(local.click).not.toHaveBeenCalled();
+    expect(remote.click).toHaveBeenCalledOnce();
+  });
+
+  it("aborts a pending sidebar wait and releases its observer", async () => {
+    const disconnect = vi.fn();
+    class FakeMutationObserver {
+      observe = vi.fn();
+      disconnect = disconnect;
+    }
+    vi.stubGlobal("document", { querySelectorAll: () => [], documentElement: {} });
+    vi.stubGlobal("window", {
+      setTimeout: globalThis.setTimeout,
+      clearTimeout: globalThis.clearTimeout,
+    });
+    vi.stubGlobal("MutationObserver", FakeMutationObserver);
+    const abort = new AbortController();
+    const opening = openRendererThread(hostThreadIdSchema.parse("pending-thread"), {
+      hostId: "remote-1",
+      signal: abort.signal,
+      timeoutMs: 60_000,
+    });
+
+    abort.abort();
+
+    await expect(opening).rejects.toMatchObject({ name: "AbortError" });
+    expect(disconnect).toHaveBeenCalledOnce();
+  });
+
   it("resolves a Fork button only when DOM and Fiber identities agree", () => {
     expect(rendererForkTargetFromButton(forkButton())).toMatchObject({
       isProjectlessConversation: false,

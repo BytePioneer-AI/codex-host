@@ -1,4 +1,8 @@
 import {
+  deepSeekModernSessionImportParamsSchema,
+  deepSeekModernSessionImportResultSchema,
+  deepSeekModernSessionListParamsSchema,
+  deepSeekModernSessionListResultSchema,
   externalThreadForkParamsSchema,
   externalThreadForkResultSchema,
   harnessCommandCatalogSchema,
@@ -27,6 +31,10 @@ import {
   updateStatusResultSchema,
   type ExternalThreadForkParams,
   type ExternalThreadForkResult,
+  type DeepSeekModernSessionImportParams,
+  type DeepSeekModernSessionImportResult,
+  type DeepSeekModernSessionListParams,
+  type DeepSeekModernSessionListResult,
   type HarnessCommandCatalog,
   type HarnessConfigurationState,
   type HarnessInspection,
@@ -51,6 +59,8 @@ import {
 } from "@codexhost/shared-contracts";
 
 export const HARNESS_INSPECT_METHOD = "codexhost/harness/inspect";
+export const DEEPSEEK_MODERN_SESSION_LIST_METHOD = "codexhost/deepseek/modern-session/list";
+export const DEEPSEEK_MODERN_SESSION_IMPORT_METHOD = "codexhost/deepseek/modern-session/import";
 export const HARNESS_WEB_UI_OPEN_METHOD = "codexhost/harness/web-ui/open";
 export const THREAD_FORK_METHOD = "codexhost/thread/fork";
 export const THREAD_INSPECT_METHOD = "codexhost/thread/inspect";
@@ -103,6 +113,12 @@ function notificationTarget(manager: RequestManagerCandidate): RequestManagerCan
 export interface RendererModelClient {
   currentHostId?(): string | null;
   clientForHost?(hostId: string): RendererModelClient | null;
+  listDeepSeekModernSessions?(
+    input: DeepSeekModernSessionListParams,
+  ): Promise<DeepSeekModernSessionListResult>;
+  importDeepSeekModernSession?(
+    input: DeepSeekModernSessionImportParams,
+  ): Promise<DeepSeekModernSessionImportResult>;
   forkThread(input: ExternalThreadForkParams): Promise<ExternalThreadForkResult>;
   inspectHarness(input: HarnessInspectParams): Promise<HarnessInspection>;
   openHarnessWebUi?(input: HarnessWebUiOpenParams): Promise<void>;
@@ -220,6 +236,20 @@ export function createRendererModelClient(
   };
 
   return Object.freeze({
+    async listDeepSeekModernSessions(
+      input: DeepSeekModernSessionListParams,
+    ): Promise<DeepSeekModernSessionListResult> {
+      const params = deepSeekModernSessionListParamsSchema.parse(input);
+      const result = await manager.sendRequest(DEEPSEEK_MODERN_SESSION_LIST_METHOD, params);
+      return deepSeekModernSessionListResultSchema.parse(result);
+    },
+    async importDeepSeekModernSession(
+      input: DeepSeekModernSessionImportParams,
+    ): Promise<DeepSeekModernSessionImportResult> {
+      const params = deepSeekModernSessionImportParamsSchema.parse(input);
+      const result = await manager.sendRequest(DEEPSEEK_MODERN_SESSION_IMPORT_METHOD, params);
+      return deepSeekModernSessionImportResultSchema.parse(result);
+    },
     async forkThread(input: ExternalThreadForkParams): Promise<ExternalThreadForkResult> {
       const params = externalThreadForkParamsSchema.parse(input);
       const result = await manager.sendRequest(THREAD_FORK_METHOD, params);

@@ -10,6 +10,8 @@ import {
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  DEEPSEEK_MODERN_SESSION_IMPORT_METHOD,
+  DEEPSEEK_MODERN_SESSION_LIST_METHOD,
   HARNESS_INSPECT_METHOD,
   HARNESS_WEB_UI_OPEN_METHOD,
   THREAD_FORK_METHOD,
@@ -140,10 +142,12 @@ describe("Renderer fixed Model request client", () => {
       "checkUpdate",
       "executeThreadCommand",
       "forkThread",
+      "importDeepSeekModernSession",
       "inspectHarness",
       "inspectThread",
       "inspectThreadCommands",
       "inspectThreadUsage",
+      "listDeepSeekModernSessions",
       "listThreadOwnership",
       "openHarnessWebUi",
       "readUpdateStatus",
@@ -271,6 +275,46 @@ describe("Renderer fixed Model request client", () => {
     expect(sendRequest).toHaveBeenNthCalledWith(10, UPDATE_CHECK_METHOD, {});
     expect(sendRequest).toHaveBeenNthCalledWith(11, UPDATE_START_METHOD, {});
     expect(sendRequest).toHaveBeenNthCalledWith(12, UPDATE_STATUS_METHOD, {});
+  });
+
+  it("uses only the fixed DSH Modern Session import methods and strict shapes", async () => {
+    const sendRequest = vi
+      .fn<(method: string, params: unknown) => Promise<unknown>>()
+      .mockResolvedValueOnce({
+        candidates: [
+          {
+            nativeSessionId: "native-1",
+            title: "Existing session",
+            updatedAt: 1_000,
+            cwd: "C:\\work",
+            running: false,
+          },
+        ],
+      })
+      .mockResolvedValueOnce({ threadId: "thread-1" });
+    const client = createRendererModelClient([{ sendRequest }]);
+    if (!client?.listDeepSeekModernSessions || !client.importDeepSeekModernSession) {
+      throw new Error("DSH Modern Session client was not created");
+    }
+
+    await expect(client.listDeepSeekModernSessions({})).resolves.toMatchObject({
+      candidates: [{ nativeSessionId: "native-1" }],
+    });
+    await expect(
+      client.importDeepSeekModernSession({ nativeSessionId: "native-1" }),
+    ).resolves.toEqual({ threadId: "thread-1" });
+    expect(sendRequest).toHaveBeenNthCalledWith(1, DEEPSEEK_MODERN_SESSION_LIST_METHOD, {});
+    expect(sendRequest).toHaveBeenNthCalledWith(2, DEEPSEEK_MODERN_SESSION_IMPORT_METHOD, {
+      nativeSessionId: "native-1",
+    });
+
+    await expect(
+      client.importDeepSeekModernSession({
+        nativeSessionId: "native-2",
+        cwd: "C:\\injected",
+      } as never),
+    ).rejects.toThrow();
+    expect(sendRequest).toHaveBeenCalledTimes(2);
   });
 
   it("opens Harness Web through the pathless Host action", async () => {

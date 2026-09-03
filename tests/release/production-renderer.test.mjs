@@ -26,6 +26,8 @@ describe("production Renderer release chain", () => {
     expect(agentState).toContain("DEFAULT_RENDERER_AGENTS = KNOWN_RENDERER_AGENTS");
     expect(productionEntry).toContain("installRendererBinding(DEFAULT_RENDERER_AGENTS");
     expect(productionEntry).toContain("__codexhostProductionConfigV1");
+    expect(productionEntry).toContain('window.addEventListener("DOMContentLoaded"');
+    expect(productionEntry).toContain("document.documentElement && document.body");
     expect(productionEntry).not.toContain("RendererConfiguration");
     expect(probeEntry).toContain("installRendererBinding(DEFAULT_RENDERER_AGENTS)");
     expect(probeEntry).not.toContain("enableClaudeCode");

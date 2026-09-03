@@ -1,10 +1,8 @@
 import { describe, expect, it } from "vitest";
 
-import type { HarnessCommandInvocation } from "@codexhost/harness-adapter";
 import { hostTurnIdSchema } from "@codexhost/shared-contracts";
 
 import {
-  buildDeepSeekHarnessCommandLine,
   deepSeekHarnessCommandCatalog,
   parseDeepSeekHarnessCommand,
 } from "../src/harness-commands.js";
@@ -100,41 +98,6 @@ describe("DeepSeek Harness command registry", () => {
     expect(parseDeepSeekHarnessCommand({ turnId, commandId: "dsh.future" })).toMatchObject({
       ok: false,
       error: { code: "unsupported" },
-    });
-  });
-
-  it("builds an exact text command line without registering that command", () => {
-    const descriptor = {
-      id: "dsh.synthetic",
-      invocation: "/synthetic",
-      argumentMode: "text" as const,
-    };
-    const command = (
-      arguments_?: HarnessCommandInvocation["arguments"],
-    ): HarnessCommandInvocation => ({
-      turnId,
-      commandId: "dsh.synthetic",
-      ...(arguments_ ? { arguments: arguments_ } : {}),
-    });
-
-    expect(buildDeepSeekHarnessCommandLine(command(), descriptor)).toEqual({
-      ok: true,
-      value: "/synthetic",
-    });
-    expect(buildDeepSeekHarnessCommandLine(command({ text: "" }), descriptor)).toEqual({
-      ok: true,
-      value: "/synthetic",
-    });
-    expect(
-      buildDeepSeekHarnessCommandLine(command({ text: "edit objective" }), descriptor),
-    ).toEqual({ ok: true, value: "/synthetic edit objective" });
-    expect(buildDeepSeekHarnessCommandLine(command({ text: 1 }), descriptor)).toMatchObject({
-      ok: false,
-      error: { code: "invalidRequest" },
-    });
-    expect(buildDeepSeekHarnessCommandLine(command({ extra: true }), descriptor)).toMatchObject({
-      ok: false,
-      error: { code: "invalidRequest" },
     });
   });
 

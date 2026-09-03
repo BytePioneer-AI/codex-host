@@ -5,7 +5,11 @@ import {
   type HarnessCommandCatalog,
 } from "@codexhost/shared-contracts";
 
-import type { DeepSeekCommandDescriptor } from "./host-client.js";
+export interface DeepSeekCommandDescriptor {
+  readonly name: string;
+  readonly description: string;
+  readonly input?: { readonly hint: string; readonly images?: boolean };
+}
 
 const commandDefinitions = [
   {
@@ -31,12 +35,6 @@ const commandDefinitions = [
   },
 ] as const;
 
-interface CommandLineDescriptor {
-  readonly id: string;
-  readonly invocation: string;
-  readonly argumentMode: "none" | "text";
-}
-
 export interface ParsedDeepSeekHarnessCommand {
   readonly commandId: string;
   readonly line: string;
@@ -47,44 +45,6 @@ function invalidArguments(message: string): HarnessResult<never> {
     ok: false,
     error: { code: "invalidRequest", message, retryable: false },
   };
-}
-
-export function buildDeepSeekHarnessCommandLine(
-  command: HarnessCommandInvocation,
-  descriptor: CommandLineDescriptor,
-): HarnessResult<string> {
-  if (command.commandId !== descriptor.id) {
-    return {
-      ok: false,
-      error: {
-        code: "unsupported",
-        message: `DeepSeek Harness does not expose command '${command.commandId}'`,
-        retryable: false,
-      },
-    };
-  }
-
-  const arguments_ = command.arguments;
-  if (descriptor.argumentMode === "none") {
-    return arguments_ && Object.keys(arguments_).length > 0
-      ? invalidArguments(
-          `DeepSeek Harness ${descriptor.invocation} command does not accept arguments`,
-        )
-      : { ok: true, value: descriptor.invocation };
-  }
-
-  const text = arguments_?.text;
-  if (text !== undefined && typeof text !== "string") {
-    return invalidArguments(
-      `DeepSeek Harness ${descriptor.invocation} command argument 'text' must be a string`,
-    );
-  }
-  if (arguments_ && Object.keys(arguments_).some((key) => key !== "text")) {
-    return invalidArguments(
-      `DeepSeek Harness ${descriptor.invocation} command has an unknown argument`,
-    );
-  }
-  return { ok: true, value: text ? `${descriptor.invocation} ${text}` : descriptor.invocation };
 }
 
 export function deepSeekHarnessCommandCatalog(
@@ -127,36 +87,29 @@ export function parseDeepSeekHarnessCommand(
     };
   }
   const nativeInvocation = definition.id === "dsh.goal" ? "/goal" : definition.invocation;
-  const line = buildDeepSeekHarnessCommandLine(command, {
-    ...definition,
-    invocation: nativeInvocation,
-  });
-  if (!line.ok) return line;
-  if (definition.id === "dsh.goal") {
-    const text = (command.arguments?.text as string | undefined)?.trim() ?? "";
-    const control = text.toLowerCase();
-    if (control === "edit") {
-      return invalidArguments(
-        "DeepSeek Harness /goal edit command requires a replacement objective",
-      );
-    }
-    return {
-      ok: true,
-      value: {
-        commandId: definition.id,
-        line: text.length > 0 ? `${nativeInvocation} ${text}` : nativeInvocation,
-      },
-    };
+  const arguments_ = command.arguments;
+  if (definition.argumentMode === "none") {
+    return arguments_ && Object.keys(arguments_).length > 0
+      ? invalidArguments(`DeepSeek Harness ${nativeInvocation} command does not accept arguments`)
+      : { ok: true, value: { commandId: definition.id, line: nativeInvocation } };
   }
-  if (definition.id === "dsh.plan") {
-    const text = (command.arguments?.text as string | undefined)?.trim() ?? "";
-    return {
-      ok: true,
-      value: {
-        commandId: definition.id,
-        line: text.length > 0 ? `${nativeInvocation} ${text}` : nativeInvocation,
-      },
-    };
+  if (arguments_?.text !== undefined && typeof arguments_.text !== "string") {
+    return invalidArguments(
+      `DeepSeek Harness ${nativeInvocation} command argument 'text' must be a string`,
+    );
   }
-  return { ok: true, value: { commandId: definition.id, line: line.value } };
+  if (arguments_ && Object.keys(arguments_).some((key) => key !== "text")) {
+    return invalidArguments(`DeepSeek Harness ${nativeInvocation} command has an unknown argument`);
+  }
+  const text = (arguments_?.text as string | undefined)?.trim() ?? "";
+  if (definition.id === "dsh.goal" && text.toLowerCase() === "edit") {
+    return invalidArguments("DeepSeek Harness /goal edit command requires a replacement objective");
+  }
+  return {
+    ok: true,
+    value: {
+      commandId: definition.id,
+      line: text.length > 0 ? `${nativeInvocation} ${text}` : nativeInvocation,
+    },
+  };
 }

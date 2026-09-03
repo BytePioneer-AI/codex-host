@@ -1,11 +1,14 @@
-import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
 import {
   accountCreditsSnapshotSchema,
   harnessModelRefSchema,
+  harnessPermissionModeIdSchema,
   harnessThinkingOptionIdSchema,
+  hostTurnIdSchema,
+  nativeSessionRefSchema,
 } from "@codexhost/shared-contracts";
 import { describe, expect, it } from "vitest";
 
@@ -99,6 +102,77 @@ async function fakeAgy(lines: readonly string[]): Promise<{
   await writeFile(command, `#!/bin/sh\ncat <<'MODELS'\n${lines.join("\n")}\nMODELS\n`);
   await chmod(command, 0o755);
   return { command, cwd, cleanup };
+}
+
+/**
+ * Stand-in that answers the `models` probe but records the argv of every other
+ * invocation (a Turn, the /usage refresh) so tests can assert what the Session
+ * passes to `agy`. The captured path arrives through AGY_ARGV_FILE so the same
+ * executable works on POSIX and Windows.
+ */
+async function argvCapturingAgy(): Promise<{
+  command: string;
+  cwd: string;
+  argvFile: string;
+  cleanup(): Promise<void>;
+}> {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "codexhost-agy-argv-"));
+  const cwd = await mkdtemp(path.join(os.tmpdir(), "codexhost-agy-argv-cwd-"));
+  const argvFile = path.join(directory, "captured-argv.json");
+  const cleanup = async (): Promise<void> => {
+    for (const target of [directory, cwd]) {
+      await rm(target, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    }
+  };
+  const script = [
+    "#!/bin/sh",
+    'if [ "$1" = "--print=/usage" ]; then exit 0; fi',
+    'if [ "$1" = "models" ]; then',
+    "cat <<'MODELS'",
+    "gemini-3.8-flash-high\tGemini 3.8 Flash (High)",
+    "MODELS",
+    "exit 0",
+    "fi",
+    'printf \'%s\\n\' "$@" > "$AGY_ARGV_FILE"',
+    "cat <<'EVENTS'",
+    '{"event":"init","conversation_id":"conv-argv","init":{"cwd":"' +
+      cwd +
+      '","permission_mode":"dangerously-skip-permissions"}}',
+    '{"event":"result","result":{"conversation_id":"conv-argv","status":"SUCCESS","response":"ok","num_turns":1}}',
+    "EVENTS",
+  ].join("\n");
+  if (process.platform === "win32") {
+    const command = path.join(directory, "agy.cmd");
+    await writeFile(
+      command,
+      [
+        "@echo off",
+        'if "%1"=="--print=/usage" exit /b 0',
+        'if not "%1"=="models" (',
+        'echo %* > "%AGY_ARGV_FILE%"',
+        'echo {"event":"init","conversation_id":"conv-argv","init":{"cwd":"' +
+          cwd +
+          '","permission_mode":"dangerously-skip-permissions"}}',
+        'echo {"event":"result","result":{"conversation_id":"conv-argv","status":"SUCCESS","response":"ok","num_turns":1}}',
+        ") else (",
+        "echo gemini-3.8-flash-high	Gemini 3.8 Flash (High)",
+        ")",
+      ].join("\r\n"),
+    );
+    return { command, cwd, argvFile, cleanup };
+  }
+  const command = path.join(directory, "agy");
+  await writeFile(command, script);
+  await chmod(command, 0o755);
+  return { command, cwd, argvFile, cleanup };
+}
+
+async function readCapturedArgv(argvFile: string): Promise<string[]> {
+  const raw = await readFile(argvFile, "utf8");
+  return raw
+    .trim()
+    .split("\n")
+    .filter((argument) => argument.length > 0);
 }
 
 // Labels stay free of parentheses so the batch shim does not need escaping;
@@ -392,4 +466,90 @@ describe("Antigravity Adapter", () => {
     expect(error.message).toContain("'request-review'");
     expect(error.retryable).toBe(false);
   });
+
+  it("defaults newly created sessions to skip permissions", async () => {
+    const { command, cwd, cleanup } = await fakeAgy(FAKE_MODELS);
+    const adapter = new AntigravityAdapter({ command });
+    try {
+      const opened = await adapter.open({ kind: "create", cwd });
+      expect(opened.ok).toBe(true);
+      if (!opened.ok) return;
+      // Headless turns cannot prompt, so the default must be the permission
+      // mode that lets the CLI auto-approve tool calls instead of aborting.
+      expect(opened.value.initialState.effectivePermissionModeId).toBe(
+        "dangerously-skip-permissions",
+      );
+      await opened.value.close();
+    } finally {
+      await adapter.close();
+      await cleanup();
+    }
+  });
+
+  it("keeps a stored skip-permissions selection when resuming a session", async () => {
+    const { command, cwd, cleanup } = await fakeAgy(FAKE_MODELS);
+    const adapter = new AntigravityAdapter({ command });
+    try {
+      const nativeRef = nativeSessionRefSchema.parse({
+        harnessId: "antigravity",
+        nativeSessionId: "conv-resume-skip",
+        formatVersion: 1,
+      });
+      const opened = await adapter.open({
+        kind: "resume",
+        cwd,
+        nativeRef,
+        permissionModeId: harnessPermissionModeIdSchema.parse("dangerously-skip-permissions"),
+      });
+      expect(opened.ok).toBe(true);
+      if (!opened.ok) return;
+      // Resuming must not reset the thread back to the configured mode that
+      // headless stream-json turns cannot get interactive approval for.
+      expect(opened.value.initialState.effectivePermissionModeId).toBe(
+        "dangerously-skip-permissions",
+      );
+      await opened.value.close();
+    } finally {
+      await adapter.close();
+      await cleanup();
+    }
+  });
+
+  it("passes --add-dir <resolved cwd> and the skip flag to headless turns", async () => {
+    const { command, cwd, argvFile, cleanup } = await argvCapturingAgy();
+    const adapter = new AntigravityAdapter({
+      command,
+      environment: { ...process.env, AGY_ARGV_FILE: argvFile },
+    });
+    try {
+      const opened = await adapter.open({ kind: "create", cwd });
+      expect(opened.ok).toBe(true);
+      if (!opened.ok) return;
+      const session = opened.value;
+      const executed = await session.execute({
+        type: "turn.start",
+        turnId: hostTurnIdSchema.parse("turn-argv"),
+        input: [{ type: "text", text: "inspect argv" }],
+      });
+      expect(executed.ok, JSON.stringify(executed)).toBe(true);
+      if (!executed.ok) return;
+      // The fake script records argv as its first action, so once the file
+      // appears the captured list is complete. Poll instead of sleeping so the
+      // test tracks the actual signal and stays fast when the spawn is quick.
+      await expect
+        .poll(() => readCapturedArgv(argvFile), { timeout: 10_000, interval: 25 })
+        .toContain("--input-format");
+      const argv = await readCapturedArgv(argvFile);
+      const addDirIndex = argv.indexOf("--add-dir");
+      expect(addDirIndex).toBeGreaterThan(-1);
+      expect(argv[addDirIndex + 1]).toBe(path.resolve(cwd));
+      expect(argv).toContain("--dangerously-skip-permissions");
+      expect(argv).toContain("--input-format");
+      expect(argv).toContain("--output-format");
+      await session.close();
+    } finally {
+      await adapter.close();
+      await cleanup();
+    }
+  }, 20_000);
 });

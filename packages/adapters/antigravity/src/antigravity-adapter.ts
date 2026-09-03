@@ -70,6 +70,7 @@ import {
   parseAntigravityModels,
 } from "./model-catalog.js";
 import {
+  ANTIGRAVITY_DEFAULT_PERMISSION_MODE_ID,
   ANTIGRAVITY_PERMISSION_MODE_CATALOG,
   decodeAntigravityPermissionModeId,
   type AntigravityPermissionMode,
@@ -505,6 +506,9 @@ class AntigravitySession implements HarnessSession {
     if (this.#permissionMode === "dangerously-skip-permissions") {
       arguments_.push("--dangerously-skip-permissions");
     }
+    // agy only binds an explicitly added directory as its Active Workspace;
+    // the child process cwd alone leaves turns pointed at the scratch folder.
+    arguments_.push("--add-dir", path.resolve(this.#cwd));
     arguments_.push("--log-file", logPath);
     const invocation = commandInvocation(this.#executable, arguments_, this.#environment);
     let child: ChildProcessByStdio<Writable, Readable, Readable>;
@@ -1118,8 +1122,13 @@ export class AntigravityAdapter implements HarnessAdapter {
         };
       }
     }
-    let permissionMode: AntigravityPermissionMode = "configured";
-    if (input.kind === "create" && input.permissionModeId) {
+    let permissionMode: AntigravityPermissionMode = decodeAntigravityPermissionModeId(
+      ANTIGRAVITY_DEFAULT_PERMISSION_MODE_ID,
+    );
+    // Permission selection must survive resumed sessions too: resetting to the
+    // default here would silently turn a skip-permissions thread back into the
+    // configured mode that headless turns cannot prompt through.
+    if (input.permissionModeId) {
       try {
         permissionMode = decodeAntigravityPermissionModeId(input.permissionModeId);
       } catch (error) {

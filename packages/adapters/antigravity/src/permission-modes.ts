@@ -7,8 +7,9 @@ import {
 
 export type AntigravityPermissionMode = "configured" | "dangerously-skip-permissions";
 
-export const ANTIGRAVITY_DEFAULT_PERMISSION_MODE_ID =
-  harnessPermissionModeIdSchema.parse("configured");
+export const ANTIGRAVITY_DEFAULT_PERMISSION_MODE_ID = harnessPermissionModeIdSchema.parse(
+  "dangerously-skip-permissions",
+);
 
 export const ANTIGRAVITY_PERMISSION_MODE_CATALOG: HarnessPermissionModeCatalog =
   harnessPermissionModeCatalogSchema.parse({

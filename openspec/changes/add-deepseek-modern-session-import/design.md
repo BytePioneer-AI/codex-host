@@ -139,6 +139,8 @@ ExternalThreadRuntime.resolve
 
 exact `0.1.1-rc.2` compiled artifact 负向 Gate 同时通过：Legacy inspect、create 和 resume 保持 ready；导入路径的 list/import 均返回 Modern-only unsupported，Mapping Store 保持空，进程退出且端口释放。Hermetic 竞争 Gate 另覆盖两个 importer 和两个 AppServerHost 共享一个 Store，确认最终只有一个 ready winner，而每个连接只通知一次同一 Thread。
 
+提交态最终运行 `npm run check` 通过：Prettier/Rustfmt、全仓 ESLint与 boundary check、TypeScript build/typecheck、207 个 TypeScript 测试文件（2234 passed、18 skipped）以及 129 项 Rust 测试全部成功；该命令不包含 Playwright。父 PR #144 当时仍为 OPEN/CLEAN，因此按 stacked 分支约定只记录 `upstream/main` 更新，不在本阶段 rebase。
+
 ## Risks / Trade-offs
 
 - [mapping 提交与首次打开分离] → 导入可以在原生 Session随后消失时留下暂时不可打开的合法 mapping；不为此复制历史或删除用户已确认的关联，标准 resume 会如实报告错误。

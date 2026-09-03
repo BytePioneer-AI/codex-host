@@ -87,7 +87,7 @@ import {
   type DeepSeekHostSubscriber,
   type DeepSeekMuxEnvelope,
 } from "./host-client.js";
-import { deepSeekHarnessCommandCatalog, parseDeepSeekHarnessCommand } from "./harness-commands.js";
+import { deepSeekHarnessCommandCatalog, parseDeepSeekHarnessCommand } from "../harness-commands.js";
 import {
   deepSeekCheckpointRef,
   matchesDeepSeekForkHistory,
@@ -100,7 +100,7 @@ import {
   normalizeDeepSeekModelCatalog,
   normalizeDeepSeekThinkingOptions,
   parseDeepSeekThinkingOptionId,
-} from "./model-catalog.js";
+} from "../model-catalog.js";
 import {
   isDeepSeekPermissionModeSelectable,
   normalizeDeepSeekPermissionModeCatalog,
@@ -121,7 +121,7 @@ import {
   projectToolResult,
   projectTurnReason,
   structuredDiffs,
-} from "./projection.js";
+} from "../projection.js";
 
 export interface DeepSeekHarnessAdapterOptions extends DeepSeekHostConnectionOptions {
   toolOutputLimit?: number;

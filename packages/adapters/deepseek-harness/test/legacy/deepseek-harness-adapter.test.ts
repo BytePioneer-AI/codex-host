@@ -25,16 +25,16 @@ import {
   DeepSeekHarnessAdapter,
   type DeepSeekHarnessAdapterDependencies,
   type DeepSeekHostConnectionLike,
-} from "../src/deepseek-harness-adapter.js";
+} from "../../src/legacy/deepseek-harness-adapter.js";
 import {
   type DeepSeekCommandDescriptor,
   type DeepSeekCommandExecution,
   type DeepSeekHostClient,
   type DeepSeekHostSubscriber,
   type DeepSeekMuxEnvelope,
-} from "../src/host-client.js";
-import { encodeDeepSeekHarnessModelRef } from "../src/model-catalog.js";
-import { projectToolResult } from "../src/projection.js";
+} from "../../src/legacy/host-client.js";
+import { encodeDeepSeekHarnessModelRef } from "../../src/model-catalog.js";
+import { projectToolResult } from "../../src/projection.js";
 
 const SESSION_ID = "session-native-1" as SessionId;
 const CURRENT_MODEL: ModelSelection = {

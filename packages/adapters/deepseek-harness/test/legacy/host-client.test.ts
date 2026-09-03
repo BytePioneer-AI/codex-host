@@ -7,7 +7,7 @@ import { EventEmitter } from "node:events";
 
 import { describe, expect, it, vi } from "vitest";
 
-import type { DeepSeekHostClient } from "../src/host-client.js";
+import type { DeepSeekHostClient } from "../../src/legacy/host-client.js";
 import {
   DeepSeekHostConnection,
   NodeDeepSeekCommandClient,
@@ -15,7 +15,7 @@ import {
   deepSeekProcessInvocation,
   resolveDeepSeekCommand,
   type DeepSeekHostConnectionDependencies,
-} from "../src/host-client.js";
+} from "../../src/legacy/host-client.js";
 
 function success<T>(value: T) {
   return { rpcId: "response" as never, result: { ok: true as const, value } };

@@ -1099,13 +1099,12 @@ describe("AppServerHost HarnessAdapter projection", () => {
       result: { availability: "pending" },
     });
     session.succeedTurn();
-    await expect(
-      fixture.collector.waitFor(
-        (message) =>
-          method(message, "turn/completed") &&
-          (message.params as JsonObject).threadId === started.threadId,
-      ),
-    ).resolves.toMatchObject({
+    const completed = await fixture.collector.waitFor(
+      (message) =>
+        method(message, "turn/completed") &&
+        (message.params as JsonObject).threadId === started.threadId,
+    );
+    expect(completed).toMatchObject({
       params: {
         turn: {
           items: [

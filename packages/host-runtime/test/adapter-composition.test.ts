@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import path from "node:path";
 
 import type { HarnessInspection } from "@codexhost/harness-adapter";
 import {
@@ -6,6 +7,7 @@ import {
   GROK_COMMAND_ENV,
   OPENCODE_COMMAND_ENV,
   createExternalHarnessAdapters,
+  prefetchAntigravityModelCatalog,
   prefetchClaudeCodeModelCatalog,
 } from "../src/index.js";
 
@@ -34,6 +36,21 @@ describe("Host external Harness composition", () => {
     await expect(
       prefetchClaudeCodeModelCatalog(new Map([["claude-code", { inspect }]] as const)),
     ).resolves.toBeUndefined();
+  });
+
+  it("starts Antigravity Catalog prefetch immediately without waiting for it", async () => {
+    let finish = (): void => undefined;
+    const inspection = new Promise<HarnessInspection>((resolve) => {
+      finish = () => resolve({} as HarnessInspection);
+    });
+    const inspect = vi.fn(() => inspection);
+    const adapters = new Map([["antigravity", { inspect }]] as const);
+
+    const prefetch = prefetchAntigravityModelCatalog(adapters);
+
+    expect(inspect).toHaveBeenCalledOnce();
+    finish();
+    await expect(prefetch).resolves.toBeUndefined();
   });
 
   it("registers all external Harnesses by default without resolving executables", async () => {
@@ -92,6 +109,24 @@ describe("Host external Harness composition", () => {
     await expect(adapters.get("opencode")?.inspect()).resolves.toMatchObject({
       status: "notInstalled",
       error: { code: "notInstalled" },
+    });
+    await Promise.all([...adapters.values()].map((adapter) => adapter.close()));
+  });
+
+  it("fails closed when a managed macOS SSH Host cannot reach the Aqua broker", async () => {
+    const descriptorPath = path.join(
+      process.cwd(),
+      ".missing-fixture",
+      "claude-code-broker-v1.json",
+    );
+    const adapters = createExternalHarnessAdapters(
+      { PATH: "", CODEXHOST_CLAUDE_COMMAND: "/must/not/spawn/in/background" },
+      { platform: "darwin", managedRemoteHost: true, brokerDescriptorPath: descriptorPath },
+    );
+
+    await expect(adapters.get("claude-code")?.inspect()).resolves.toMatchObject({
+      status: "unavailable",
+      error: { code: "unavailable", stage: "harnessBroker" },
     });
     await Promise.all([...adapters.values()].map((adapter) => adapter.close()));
   });

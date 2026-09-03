@@ -1,3 +1,4 @@
+import { AntigravityAdapter } from "@codexhost/adapter-antigravity";
 import { ClaudeCodeAdapter } from "@codexhost/adapter-claude-code";
 import { CodeBuddyAdapter } from "@codexhost/adapter-codebuddy";
 import { DeepSeekHarnessAdapter } from "@codexhost/adapter-deepseek-harness";
@@ -5,6 +6,7 @@ import { GrokAdapter } from "@codexhost/adapter-grok";
 import { OpenCodeAdapter } from "@codexhost/adapter-opencode";
 import { PiAdapter } from "@codexhost/adapter-pi";
 import { OmpAdapter } from "@codexhost/adapter-omp";
+import { BrokeredHarnessAdapter } from "@codexhost/harness-broker";
 import type { HarnessAdapter } from "@codexhost/harness-adapter";
 import type { ExternalHarnessId } from "@codexhost/protocol-core";
 
@@ -16,6 +18,7 @@ export const PI_COMMAND_ENV = "CODEXHOST_PI_COMMAND";
 export const GROK_COMMAND_ENV = "CODEXHOST_GROK_COMMAND";
 export const OMP_COMMAND_ENV = "CODEXHOST_OMP_COMMAND";
 export const OPENCODE_COMMAND_ENV = "CODEXHOST_OPENCODE_COMMAND";
+export const ANTIGRAVITY_COMMAND_ENV = "CODEXHOST_ANTIGRAVITY_COMMAND";
 
 type InspectableHarnessAdapter = Pick<HarnessAdapter, "inspect">;
 
@@ -29,9 +32,36 @@ export async function prefetchClaudeCodeModelCatalog(
   }
 }
 
+export async function prefetchAntigravityModelCatalog(
+  adapters: ReadonlyMap<ExternalHarnessId, InspectableHarnessAdapter>,
+): Promise<void> {
+  try {
+    await adapters.get("antigravity")?.inspect();
+  } catch {
+    // Startup prefetch must not affect official Codex or another Harness.
+  }
+}
+
 export function createExternalHarnessAdapters(
   environment: NodeJS.ProcessEnv,
+  options: {
+    platform?: NodeJS.Platform;
+    managedRemoteHost?: boolean;
+    brokerDescriptorPath?: string;
+  } = {},
 ): ReadonlyMap<ExternalHarnessId, HarnessAdapter> {
+  const claudeAdapter =
+    (options.platform ?? process.platform) === "darwin" && options.managedRemoteHost === true
+      ? new BrokeredHarnessAdapter({
+          environment,
+          ...(options.brokerDescriptorPath ? { descriptorPath: options.brokerDescriptorPath } : {}),
+        })
+      : new ClaudeCodeAdapter({
+          ...(environment[CLAUDE_CODE_COMMAND_ENV]
+            ? { command: environment[CLAUDE_CODE_COMMAND_ENV] }
+            : {}),
+          environment,
+        });
   return new Map<ExternalHarnessId, HarnessAdapter>([
     [
       "pi",
@@ -40,15 +70,7 @@ export function createExternalHarnessAdapters(
         environment,
       }),
     ],
-    [
-      "claude-code",
-      new ClaudeCodeAdapter({
-        ...(environment[CLAUDE_CODE_COMMAND_ENV]
-          ? { command: environment[CLAUDE_CODE_COMMAND_ENV] }
-          : {}),
-        environment,
-      }),
-    ],
+    ["claude-code", claudeAdapter],
     [
       "deepseek-harness",
       new DeepSeekHarnessAdapter({

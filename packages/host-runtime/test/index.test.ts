@@ -14,6 +14,7 @@ describe("host-runtime package", () => {
     expect(packageMetadata.dependencies).toContain("@codexhost/adapter-omp");
     expect(packageMetadata.dependencies).toContain("@codexhost/adapter-codebuddy");
     expect(packageMetadata.dependencies).toContain("@codexhost/harness-adapter");
+    expect(packageMetadata.dependencies).toContain("@codexhost/harness-broker");
     expect(packageMetadata.dependencies).toContain("@codexhost/shared-contracts");
     expect(packageMetadata.dependencies).toContain("@codexhost/update-manager");
   });

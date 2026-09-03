@@ -554,6 +554,7 @@ class OpenCodeHarnessSession implements HarnessSession, OpenCodeTransportListene
         selectModel: this.#modelCatalog.models.length > 0,
         selectThinkingOption: thinkingSelectable,
         selectPermissionMode: true,
+        permissionModeScope: "live",
       },
       history: { fork: true, forkAcrossCwd: false, rollbackLastTurn: true },
     };
@@ -1824,6 +1825,7 @@ export class OpenCodeAdapter implements HarnessAdapter {
             selectModel: catalog.models.length > 0,
             selectThinkingOption: catalog.thinkingOptions.length > 1,
             selectPermissionMode: true,
+            permissionModeScope: "live",
           },
           history: { fork: true, forkAcrossCwd: false, rollbackLastTurn: true },
         },

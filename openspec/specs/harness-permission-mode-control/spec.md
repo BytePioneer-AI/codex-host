@@ -27,6 +27,19 @@ A `HarnessAdapter` MAY expose a strict browser-safe Permission Mode catalog toge
 - **WHEN** Pi is inspected or opened
 - **THEN** it SHALL report `selectPermissionMode=false`, omit the catalog, and reject `permissionMode.select` as unsupported
 
+### Requirement: Permission Mode change scope is structural
+
+A capable Adapter SHALL report `configuration.permissionModeScope`. `live` means the current Session can change mode after creation. `atCreate` means the mode is fixed once the Session exists. The field SHALL default to `live` when omitted so existing capable Adapters keep live selection. `selectPermissionMode` SHALL remain true for an `atCreate` Adapter that still offers create-time selection.
+
+#### Scenario: Grok mode is fixed at create
+
+- **WHEN** Grok is inspected or opened
+- **THEN** it SHALL report `selectPermissionMode=true` and `permissionModeScope=atCreate`
+- **AND** `permissionMode.select` on an already-open Session SHALL return a non-retryable invalid request
+- **AND** Host SHALL NOT persist `transportModelId` or `requestedPermissionModeId` for that rejected selection
+- **AND** resume SHALL restore the stored Permission Mode while loading that Session
+- **AND** restoring the mode SHALL NOT enable `permissionMode.select` on the already-open Session
+
 ### Requirement: Session state carries the current native mode
 
 A capable Session SHALL accept an optional create-time mode and `permissionMode.select`, and SHALL publish `effectivePermissionModeId` through the ordered complete Session state. A successful command result SHALL contain only completion; callers SHALL use the state published before that result as the current mode.

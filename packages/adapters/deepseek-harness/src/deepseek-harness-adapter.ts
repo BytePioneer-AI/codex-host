@@ -502,6 +502,7 @@ class DeepSeekHarnessSession implements HarnessSession, DeepSeekHostSubscriber {
         selectModel: true,
         selectThinkingOption: true,
         selectPermissionMode: input.permissionModes !== null,
+        permissionModeScope: "live",
       },
       history: { fork: true, forkAcrossCwd: false, rollbackLastTurn: false },
     };
@@ -1783,6 +1784,7 @@ export class DeepSeekHarnessAdapter implements HarnessAdapter {
             selectModel: true,
             selectThinkingOption: true,
             selectPermissionMode: permissionModes !== null,
+            permissionModeScope: "live",
           },
           history: { fork: true, forkAcrossCwd: false, rollbackLastTurn: false },
         },

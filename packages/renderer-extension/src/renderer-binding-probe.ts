@@ -1,11 +1,13 @@
 import {
   harnessIdSchema,
+  permissionModeFixedAtCreate,
   type HarnessCommandDescriptor,
   type HarnessModelCatalog,
   type HarnessModelRef,
   type HarnessModelSelectionState,
   type HarnessPermissionModeCatalog,
   type HarnessPermissionModeId,
+  type HarnessPermissionModeScope,
   type HarnessThinkingOptionId,
   type AccountCreditsSnapshot,
   type ThreadInspection,
@@ -40,7 +42,9 @@ import {
   type ExternalModelControlView,
   type ExternalPermissionModeControlView,
 } from "./renderer-composer-dom.js";
+import { rendererHarnessMessages } from "./renderer-harness-localization.js";
 import {
+  decodeAntigravityTransportModelId,
   decodeClaudeTransportModelId,
   decodeDeepSeekHarnessTransportModelId,
   decodeCodeBuddyTransportModelId,
@@ -185,6 +189,27 @@ export function shouldReloadExternalCatalogAfterAvailabilityRefresh(
   return previous !== next || !configurationReady;
 }
 
+function isExternalConfigurationReadyView(
+  modelView: ExternalModelControlView,
+  permissionModeView: ExternalPermissionModeControlView,
+): boolean {
+  return (
+    modelView.status !== "selecting" &&
+    modelView.catalog?.models.some((model) => model.ref.id === modelView.selected?.id) === true &&
+    isPermissionModeControlReady(permissionModeView)
+  );
+}
+
+function isExternalConfigurationStable(
+  modelView: ExternalModelControlView,
+  permissionModeView: ExternalPermissionModeControlView,
+): boolean {
+  return (
+    (modelView.status === "empty" && isPermissionModeControlReady(permissionModeView)) ||
+    isExternalConfigurationReadyView(modelView, permissionModeView)
+  );
+}
+
 export interface RendererBindingProbeStatus {
   version: 2;
   mountedComposers: number;
@@ -283,6 +308,13 @@ export function lockedPermissionMode(
   return restored;
 }
 
+export function permissionModeSelectionLocked(input: {
+  phase: ComposerAgentPhase;
+  permissionModeScope?: HarnessPermissionModeScope;
+}): boolean {
+  return input.phase === "locked" && permissionModeFixedAtCreate(input);
+}
+
 export function shouldPersistNewThreadConfigurationSelection(phase: ComposerAgentPhase): boolean {
   return phase === "draft";
 }
@@ -329,10 +361,13 @@ export function restoredThreadOwnership(inspection: ThreadInspection): RestoredT
     const model = inspection.effectiveModel ?? transportSelection.model;
     const thinkingOptionId =
       selectableThinkingOptionId(inspection) ?? transportSelection.thinkingOptionId;
+    const permissionModeId =
+      inspection.effectivePermissionModeId ?? transportSelection.permissionModeId;
     return {
       agent: "omp",
       ...(model ? { model } : {}),
       ...(thinkingOptionId ? { thinkingOptionId } : {}),
+      ...(permissionModeId ? { permissionModeId } : {}),
     };
   }
   if (inspection.harnessId === "claude-code") {
@@ -823,13 +858,7 @@ export function installRendererBindingProbe(
   const isExternalConfigurationReady = (mounted: MountedComposer): boolean => {
     const current = controller.get(mounted.composer);
     if (current.agent === "codex") return true;
-    return (
-      mounted.modelView.status !== "selecting" &&
-      mounted.modelView.catalog?.models.some(
-        (model) => model.ref.id === mounted.modelView.selected?.id,
-      ) === true &&
-      isPermissionModeControlReady(mounted.permissionModeView)
-    );
+    return isExternalConfigurationReadyView(mounted.modelView, mounted.permissionModeView);
   };
 
   const clearDraftPrewarm = async (): Promise<void> => {
@@ -860,10 +889,7 @@ export function installRendererBindingProbe(
     }
     const requestModelControl = modelControl;
     const requestHostId = activeModelHostId();
-    const client =
-      requestModelControl && requestHostId
-        ? (requestModelControl.clientForHost?.(requestHostId) ?? requestModelControl)
-        : null;
+    const client = modelClientForHostFrom(requestModelControl, requestHostId);
     const generation = controller.beginOwnershipRequest(mounted.composer);
     const usageGeneration = mounted.usageRequestGeneration;
     mounted.ownershipStatus = "loading";
@@ -996,7 +1022,20 @@ export function installRendererBindingProbe(
     const state = controller.get(mounted.composer);
     if (state.agent === "codex") return;
     const agent = state.agent;
-    const availability = activeHarnessAvailabilityState().availability[agent];
+    const requestModelControl = modelControl;
+    const isDraft = !threadIdFromComposerModelTarget(mounted.modelTarget);
+    const requestHostId = isDraft ? activeModelHostId() : mounted.hostId;
+    if (!requestHostId) {
+      mounted.modelView = {
+        status: "waitingForAdapter",
+        thinkingSelectionSupported: false,
+      };
+      mounted.permissionModeView = { status: "idle" };
+      renderMounted(mounted);
+      return;
+    }
+    if (isDraft) mounted.hostId = requestHostId;
+    const availability = hostHarnessAvailabilityState(requestHostId).availability[agent];
     if (availability !== "ready") {
       mounted.modelView = {
         status:
@@ -1022,13 +1061,23 @@ export function installRendererBindingProbe(
     if (adapterStatus.state !== "ready") return;
     const generation = controller.beginModelRequest(mounted.composer);
     try {
-      if (!modelControl) throw new Error("External configuration control is unavailable");
-      const inspection = await modelControl.inspectHarness({
+      if (!requestModelControl || !requestHostId) {
+        throw new Error("External configuration control is unavailable");
+      }
+      const client = modelClientForHostFrom(requestModelControl, requestHostId);
+      if (!client) {
+        throw new Error(`Renderer Model request manager is unavailable for Host ${requestHostId}`);
+      }
+      const inspection = await client.inspectHarness({
         harnessId: externalHarnessIds[agent],
       });
       if (
         !isCurrentModelRequest(mounted, generation) ||
-        controller.get(mounted.composer).agent !== agent
+        controller.get(mounted.composer).agent !== agent ||
+        mounted.hostId !== requestHostId ||
+        modelControl !== requestModelControl ||
+        modelClientForHostFrom(requestModelControl, requestHostId) !== client ||
+        activeModelHostId() !== requestHostId
       ) {
         return;
       }
@@ -1038,9 +1087,6 @@ export function installRendererBindingProbe(
       const previousModelAvailable =
         previousModel !== undefined &&
         inspection.catalog.models.some((model) => model.ref.id === previousModel.id);
-      if (current.phase === "locked" && previousModel && !previousModelAvailable) {
-        throw new Error("Existing Thread Model is absent from the current Catalog");
-      }
       const preferredConfiguration =
         current.phase === "draft" && !previousModelAvailable
           ? readNewThreadExternalConfigurationPreference(
@@ -1050,13 +1096,27 @@ export function installRendererBindingProbe(
             )
           : undefined;
       const previousPermissionModeId = controller.permissionModeForAgent(mounted.composer, agent);
+      const permissionModeLock = permissionModeSelectionLocked({
+        phase: current.phase,
+        permissionModeScope: inspection.capabilities.configuration.permissionModeScope,
+      })
+        ? {
+            selectionLocked: true as const,
+            selectionLockedReason: rendererHarnessMessages(settingsLifecycle.locale)
+              .permissionModeFixedAtCreate,
+          }
+        : {};
       let selectedPermissionModeId: HarnessPermissionModeId | undefined;
       if (inspection.capabilities.configuration.selectPermissionMode) {
         const permissionModes = inspection.permissionModes;
         if (!permissionModes) {
           throw new Error("External Harness omitted its Permission Mode catalog");
         }
-        mounted.permissionModeView = { status: "loading", catalog: permissionModes };
+        mounted.permissionModeView = {
+          status: "loading",
+          catalog: permissionModes,
+          ...permissionModeLock,
+        };
         const restoredPermissionModeId =
           current.phase === "locked"
             ? lockedPermissionMode(
@@ -1078,6 +1138,7 @@ export function installRendererBindingProbe(
           status: "loading",
           catalog: permissionModes,
           selected: selectedPermissionModeId,
+          ...permissionModeLock,
         };
       } else {
         mounted.permissionModeView = { status: "unsupported" };
@@ -1098,9 +1159,13 @@ export function installRendererBindingProbe(
             status: "ready",
             catalog: mounted.permissionModeView.catalog,
             selected: selectedPermissionModeId,
+            ...permissionModeLock,
           };
         }
         return;
+      }
+      if (current.phase === "locked" && previousModel && !previousModelAvailable) {
+        throw new Error("Existing Thread Model is absent from the current Catalog");
       }
 
       const selected = previousModelAvailable
@@ -1171,6 +1236,7 @@ export function installRendererBindingProbe(
           status: "ready",
           catalog: mounted.permissionModeView.catalog,
           selected: selectedPermissionModeId,
+          ...permissionModeLock,
         };
       }
     } catch (error) {
@@ -1365,7 +1431,15 @@ export function installRendererBindingProbe(
     const catalog = mounted.permissionModeView.catalog;
     const selectedPermissionModeId = catalog?.modes.find(({ id }) => id === permissionModeId)?.id;
     const model = controller.modelForAgent(mounted.composer, agent);
-    if (!catalog || !selectedPermissionModeId || !model || !modelControl) return;
+    if (
+      !catalog ||
+      !selectedPermissionModeId ||
+      !model ||
+      !modelControl ||
+      mounted.permissionModeView.selectionLocked
+    ) {
+      return;
+    }
     const previousPermissionModeId = controller.permissionModeForAgent(mounted.composer, agent);
     const thinkingOptionId = controller.thinkingOptionForAgent(mounted.composer, agent);
     const generation = controller.beginModelRequest(mounted.composer);
@@ -1698,12 +1772,19 @@ export function installRendererBindingProbe(
     }, delay);
   }
 
-  function modelClientForHost(hostId: string): RendererModelClient | null {
-    if (!modelControl) return null;
-    const selected = modelControl.clientForHost?.(hostId);
+  function modelClientForHostFrom(
+    control: RendererModelClient | null,
+    hostId: string | null,
+  ): RendererModelClient | null {
+    if (!control || !hostId) return null;
+    const selected = control.clientForHost?.(hostId);
     if (selected) return selected;
-    const currentHostId = modelControl.currentHostId?.() ?? "local";
-    return currentHostId === hostId ? modelControl : null;
+    const currentHostId = control.currentHostId?.() ?? "local";
+    return currentHostId === hostId ? control : null;
+  }
+
+  function modelClientForHost(hostId: string): RendererModelClient | null {
+    return modelClientForHostFrom(modelControl, hostId);
   }
 
   function refreshHarnessAvailabilityForHost(
@@ -1795,7 +1876,7 @@ export function installRendererBindingProbe(
               shouldReloadExternalCatalogAfterAvailabilityRefresh(
                 previousStatus,
                 status,
-                isExternalConfigurationReady(mounted),
+                isExternalConfigurationStable(mounted.modelView, mounted.permissionModeView),
               )
             ) {
               void loadExternalCatalog(mounted);
@@ -2003,7 +2084,10 @@ export function installRendererBindingProbe(
       shouldRetryExternalThreadUsage(state.agent, mounted.usage, mounted.accountCredits)
     ) {
       scheduleThreadUsageRefresh(mounted);
-    } else if (state.agent !== "codex" && !isExternalConfigurationReady(mounted)) {
+    } else if (
+      state.agent !== "codex" &&
+      !isExternalConfigurationStable(mounted.modelView, mounted.permissionModeView)
+    ) {
       void loadExternalCatalog(mounted);
     }
     void refreshCommands(mounted);
@@ -2244,6 +2328,16 @@ export function installRendererBindingProbe(
   const onHostRouteChange = (): void => {
     reconcileHarnessAvailabilityHost();
     void refreshHarnessAvailability();
+    for (const mounted of mountedByComposer.values()) {
+      const state = controller.get(mounted.composer);
+      if (
+        state.agent !== "codex" &&
+        !threadIdFromComposerModelTarget(mounted.modelTarget) &&
+        !isExternalConfigurationStable(mounted.modelView, mounted.permissionModeView)
+      ) {
+        void loadExternalCatalog(mounted);
+      }
+    }
   };
   const onAdapterStatus = () => {
     publishConnectionStatus();
@@ -2252,11 +2346,8 @@ export function installRendererBindingProbe(
       void refreshHarnessAvailabilityForHost("local");
       void refreshHarnessAvailability();
       for (const mounted of mountedByComposer.values()) {
-        if (
-          mounted.modelView.status === "waitingForAdapter" &&
-          mounted.composer.isConnected &&
-          applyComposerAgent(mounted.composer)
-        ) {
+        if (mounted.modelView.status === "waitingForAdapter" && mounted.composer.isConnected) {
+          applyComposerAgent(mounted.composer);
           void loadExternalCatalog(mounted);
         }
       }
@@ -2374,6 +2465,9 @@ export function installRendererBindingProbe(
         const mounted = connected[0];
         if (mounted) {
           const state = controller.get(mounted.composer);
+          if (!threadIdFromComposerModelTarget(mounted.modelTarget)) {
+            mounted.hostId = activeModelHostId();
+          }
           if (
             threadIdFromComposerModelTarget(mounted.modelTarget) &&
             mounted.ownershipStatus !== "ready"

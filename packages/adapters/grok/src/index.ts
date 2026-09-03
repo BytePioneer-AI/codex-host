@@ -35,7 +35,6 @@ export {
   GROK_DEFAULT_PERMISSION_MODE_ID,
   GROK_PERMISSION_MODE_CATALOG,
   decodeGrokPermissionModeId,
-  grokPermissionModeNotification,
   grokPermissionModeSessionMeta,
 } from "./permission-modes.js";
 export type { GrokPermissionMode } from "./permission-modes.js";

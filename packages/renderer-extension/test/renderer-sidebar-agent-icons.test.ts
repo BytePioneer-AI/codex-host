@@ -20,6 +20,7 @@ import {
 const PI_HARNESS_ID = harnessIdSchema.parse("pi");
 const CLAUDE_CODE_HARNESS_ID = harnessIdSchema.parse("claude-code");
 const OPENCODE_HARNESS_ID = harnessIdSchema.parse("opencode");
+const ANTIGRAVITY_HARNESS_ID = harnessIdSchema.parse("antigravity");
 const FUTURE_HARNESS_ID = harnessIdSchema.parse("future-agent");
 
 class FakeRow implements SidebarAgentIconRow {
@@ -382,34 +383,74 @@ describe("Renderer sidebar Agent ownership", () => {
     control.dispose();
   });
 
-  it("fails undecorated, retries only on refresh, and ignores pending results after disposal", async () => {
-    const row = new FakeRow("pi-thread");
-    const dom = new FakeDom([row]);
-    const client = clientWith(vi.fn().mockRejectedValue(new Error("unavailable")));
-    const control = installRendererSidebarAgentIcons({ getClient: () => client, dom });
-    await settle();
-    dom.change();
-    await settle();
-    expect(client.listThreadOwnership).toHaveBeenCalledTimes(1);
-    expect(row.agent).toBeNull();
+  it("retries failed ownership requests without requiring an explicit refresh", async () => {
+    vi.useFakeTimers();
+    try {
+      const row = new FakeRow("pi-thread");
+      const dom = new FakeDom([row]);
+      const listThreadOwnership = vi
+        .fn<(input: ThreadOwnershipListParams) => Promise<ThreadOwnershipListResult>>()
+        .mockRejectedValueOnce(new Error("unavailable"))
+        .mockResolvedValue({
+          threads: [
+            {
+              threadId: "pi-thread" as HostThreadId,
+              owner: "external",
+              harnessId: PI_HARNESS_ID,
+            },
+          ],
+        });
+      const client = clientWith(listThreadOwnership);
+      const control = installRendererSidebarAgentIcons({ getClient: () => client, dom });
 
-    control.refresh();
-    await settle();
-    expect(client.listThreadOwnership).toHaveBeenCalledTimes(2);
-    control.dispose();
-    expect(dom.cleared).toBe(true);
-    expect(dom.listeners.size).toBe(0);
+      await vi.runAllTimersAsync();
+
+      expect(listThreadOwnership).toHaveBeenCalledTimes(2);
+      expect(row.agent).toBe("pi");
+      control.dispose();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
-  it("contains a synchronous early-client failure and retries after refresh", async () => {
-    const row = new FakeRow("pi-thread");
-    const dom = new FakeDom([row]);
-    const listThreadOwnership = vi
-      .fn<(input: ThreadOwnershipListParams) => Promise<ThreadOwnershipListResult>>()
-      .mockImplementationOnce(() => {
-        throw new Error("request manager unavailable");
-      })
-      .mockResolvedValue({
+  it("contains a synchronous early-client failure and retries automatically", async () => {
+    vi.useFakeTimers();
+    try {
+      const row = new FakeRow("pi-thread");
+      const dom = new FakeDom([row]);
+      const listThreadOwnership = vi
+        .fn<(input: ThreadOwnershipListParams) => Promise<ThreadOwnershipListResult>>()
+        .mockImplementationOnce(() => {
+          throw new Error("request manager unavailable");
+        })
+        .mockResolvedValue({
+          threads: [
+            {
+              threadId: "pi-thread" as HostThreadId,
+              owner: "external",
+              harnessId: PI_HARNESS_ID,
+            },
+          ],
+        });
+      const client = clientWith(listThreadOwnership);
+      const control = installRendererSidebarAgentIcons({ getClient: () => client, dom });
+
+      await vi.runAllTimersAsync();
+
+      expect(listThreadOwnership).toHaveBeenCalledTimes(2);
+      expect(row.agent).toBe("pi");
+      control.dispose();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("retries when the ownership client is unavailable during the first scan", async () => {
+    vi.useFakeTimers();
+    try {
+      const row = new FakeRow("pi-thread");
+      const dom = new FakeDom([row]);
+      const client = clientWith(async () => ({
         threads: [
           {
             threadId: "pi-thread" as HostThreadId,
@@ -417,18 +458,39 @@ describe("Renderer sidebar Agent ownership", () => {
             harnessId: PI_HARNESS_ID,
           },
         ],
-      });
-    const client = clientWith(listThreadOwnership);
-    const control = installRendererSidebarAgentIcons({ getClient: () => client, dom });
+      }));
+      const getClient = vi.fn<() => RendererModelClient | null>().mockReturnValueOnce(null);
+      getClient.mockReturnValue(client);
+      const control = installRendererSidebarAgentIcons({ getClient, dom });
 
-    await settle();
-    expect(row.agent).toBeNull();
-    control.refresh();
-    await settle();
+      await vi.runAllTimersAsync();
 
-    expect(listThreadOwnership).toHaveBeenCalledTimes(2);
-    expect(row.agent).toBe("pi");
-    control.dispose();
+      expect(getClient).toHaveBeenCalledTimes(2);
+      expect(client.listThreadOwnership).toHaveBeenCalledTimes(1);
+      expect(row.agent).toBe("pi");
+      control.dispose();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps failed ownership retries bounded while the service stays unavailable", async () => {
+    vi.useFakeTimers();
+    try {
+      const row = new FakeRow("pi-thread");
+      const dom = new FakeDom([row]);
+      const client = clientWith(vi.fn().mockRejectedValue(new Error("unavailable")));
+      const control = installRendererSidebarAgentIcons({ getClient: () => client, dom });
+
+      await vi.runAllTimersAsync();
+
+      expect(client.listThreadOwnership).toHaveBeenCalledTimes(6);
+      expect(vi.getTimerCount()).toBe(0);
+      expect(row.agent).toBeNull();
+      control.dispose();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("maps only known external Harness ownership to Renderer Agents", () => {
@@ -446,6 +508,13 @@ describe("Renderer sidebar Agent ownership", () => {
         harnessId: OPENCODE_HARNESS_ID,
       }),
     ).toBe("opencode");
+    expect(
+      rendererAgentForThreadOwnership({
+        threadId: "antigravity-thread" as HostThreadId,
+        owner: "external",
+        harnessId: ANTIGRAVITY_HARNESS_ID,
+      }),
+    ).toBe("antigravity");
     expect(
       rendererAgentForThreadOwnership({
         threadId: "future-thread" as HostThreadId,

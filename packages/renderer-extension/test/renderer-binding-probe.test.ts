@@ -15,6 +15,7 @@ import {
   isComposerModelWriteAllowed,
   isOwnershipSubmissionBlocked,
   lockedPermissionMode,
+  permissionModeSelectionLocked,
   lateConversationTargetResolution,
   harnessAvailabilityDuringInspect,
   passiveHarnessAvailabilityAgents,
@@ -95,6 +96,7 @@ describe("Renderer Composer DOM behavior", () => {
           opencode: "ready",
           grok: "ready",
           omp: "ready",
+          antigravity: "ready",
         },
         {
           pi: undefined,
@@ -121,6 +123,7 @@ describe("Renderer Composer DOM behavior", () => {
           opencode: "ready",
           grok: "ready",
           omp: "ready",
+          antigravity: "ready",
         },
         {
           pi: undefined,
@@ -147,6 +150,7 @@ describe("Renderer Composer DOM behavior", () => {
           opencode: "ready",
           grok: "ready",
           omp: "ready",
+          antigravity: "ready",
         },
         {
           pi: undefined,
@@ -175,6 +179,7 @@ describe("Renderer Composer DOM behavior", () => {
           opencode: "checking",
           grok: "checking",
           omp: "checking",
+          antigravity: "checking",
         },
         {
           pi: undefined,
@@ -186,7 +191,7 @@ describe("Renderer Composer DOM behavior", () => {
           codebuddy: undefined,
         },
       ),
-    ).toEqual(["pi", "claude-code", "deepseek-harness", "opencode", "grok", "omp"]);
+    ).toEqual(["pi", "claude-code", "deepseek-harness", "opencode", "grok", "omp", "antigravity"]);
 
     expect(
       passiveHarnessAvailabilityAgents(
@@ -197,6 +202,7 @@ describe("Renderer Composer DOM behavior", () => {
           opencode: "ready",
           grok: "ready",
           omp: "ready",
+          antigravity: "ready",
         },
         {
           pi: undefined,
@@ -223,6 +229,7 @@ describe("Renderer Composer DOM behavior", () => {
           opencode: "ready",
           grok: "ready",
           omp: "ready",
+          antigravity: "ready",
         },
         {
           pi: undefined,
@@ -921,6 +928,24 @@ describe("Renderer Composer DOM behavior", () => {
     expect(
       restoredThreadOwnership({
         owner: "external",
+        harnessId: "omp",
+        transportModelId: "codexhost/omp-native@omp-model-v1.synthetic@write@high",
+        history: { fork: true, forkAcrossCwd: true, rollbackLastTurn: true },
+        effectiveModel: harnessModelRefSchema.parse({ id: "omp-model-v1.synthetic" }),
+        effectiveThinkingOptionId: thinkingOptionId,
+        availableThinkingOptions: [{ id: thinkingOptionId, label: "High" }],
+        effectivePermissionModeId: harnessPermissionModeIdSchema.parse("write"),
+        locked: true,
+      }),
+    ).toEqual({
+      agent: "omp",
+      model: { id: "omp-model-v1.synthetic" },
+      thinkingOptionId: "high",
+      permissionModeId: "write",
+    });
+    expect(
+      restoredThreadOwnership({
+        owner: "external",
         harnessId: "grok",
         transportModelId: "codexhost/grok-native@grok-4.6@auto@high",
         history: { fork: true, forkAcrossCwd: true, rollbackLastTurn: true },
@@ -979,6 +1004,20 @@ describe("Renderer Composer DOM behavior", () => {
       agent: "deepseek-harness",
       model: { id: "deepseek-harness-model-v1.Zmxhc2g" },
       permissionModeId: "trusted-run",
+    });
+    expect(
+      restoredThreadOwnership({
+        owner: "external",
+        harnessId: "antigravity",
+        transportModelId: "codexhost/antigravity-native@gpt-5.6-sol@configured@high",
+        history: { fork: false, forkAcrossCwd: false, rollbackLastTurn: false },
+        locked: true,
+      }),
+    ).toEqual({
+      agent: "antigravity",
+      model: { id: "gpt-5.6-sol" },
+      thinkingOptionId: "high",
+      permissionModeId: "configured",
     });
     expect(() =>
       restoredThreadOwnership({
@@ -1054,6 +1093,19 @@ describe("Renderer Composer DOM behavior", () => {
     expect(() => lockedPermissionMode(catalog, undefined, foreign)).toThrow(
       "absent from the current Catalog",
     );
+  });
+
+  it("locks Permission Mode selection only for an existing atCreate Session", () => {
+    expect(permissionModeSelectionLocked({ phase: "draft", permissionModeScope: "atCreate" })).toBe(
+      false,
+    );
+    expect(permissionModeSelectionLocked({ phase: "locked", permissionModeScope: "live" })).toBe(
+      false,
+    );
+    expect(permissionModeSelectionLocked({ phase: "locked" })).toBe(false);
+    expect(
+      permissionModeSelectionLocked({ phase: "locked", permissionModeScope: "atCreate" }),
+    ).toBe(true);
   });
 
   it("persists explicit configuration selections only for a new-Thread draft", () => {

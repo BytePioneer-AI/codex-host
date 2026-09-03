@@ -11,9 +11,10 @@ export interface CodexApprovalRequestProjection {
   parseResponse(result: unknown): HostApprovalResponse;
 }
 
-const TITLE_MAX_LENGTH = 120;
+const TITLE_MAX_LENGTH = 150;
 const DESCRIPTION_MAX_LENGTH = 500;
 const SERVER_NAME_MAX_LENGTH = 80;
+const ELLIPSIS = "…";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -25,6 +26,21 @@ function boundedText(value: string, field: string, maxLength: number): string {
     throw new Error(`Host Approval ${field} must contain 1 to ${maxLength} characters`);
   }
   return text;
+}
+
+// Approval display text is projected, not validated: a Harness that labels a Tool Call with a long
+// shell command or file path must still reach the Approval dialog. Only emptiness stays fatal.
+function clampedText(value: string, field: string, maxLength: number): string {
+  const text = value.trim();
+  if (text.length === 0) {
+    throw new Error(`Host Approval ${field} must contain at least 1 character`);
+  }
+  const characters = [...text];
+  if (characters.length <= maxLength) return text;
+  return `${characters
+    .slice(0, maxLength - 1)
+    .join("")
+    .trimEnd()}${ELLIPSIS}`;
 }
 
 function actionsForEffect(
@@ -99,9 +115,9 @@ export function projectCodexApprovalRequest(input: {
   const deny = requiredActionForEffect(interaction, "deny");
 
   const serverName = boundedText(input.serverName, "server name", SERVER_NAME_MAX_LENGTH);
-  const title = boundedText(interaction.title, "title", TITLE_MAX_LENGTH);
+  const title = clampedText(interaction.title, "title", TITLE_MAX_LENGTH);
   const description = interaction.description
-    ? boundedText(interaction.description, "description", DESCRIPTION_MAX_LENGTH)
+    ? clampedText(interaction.description, "description", DESCRIPTION_MAX_LENGTH)
     : undefined;
   const denyResponse: HostApprovalResponse = { type: "approval", actionId: deny.id };
   const persist = [

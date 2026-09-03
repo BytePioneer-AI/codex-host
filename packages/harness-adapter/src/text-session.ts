@@ -82,6 +82,7 @@ export interface ResumeSessionInput {
   cwd: string;
   environment?: Record<string, string | undefined>;
   knownTurnRefs?: NativeTurnRef[];
+  permissionModeId?: HarnessPermissionModeId;
 }
 
 export interface ForkSessionInput {

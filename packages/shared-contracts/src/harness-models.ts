@@ -146,6 +146,16 @@ const harnessHistoryCapabilitiesSchema = z
     message: "Cross-cwd Fork requires exact history Fork support",
   });
 
+export const harnessPermissionModeScopeSchema = z.enum(["live", "atCreate"]);
+
+export type HarnessPermissionModeScope = z.infer<typeof harnessPermissionModeScopeSchema>;
+
+export function permissionModeFixedAtCreate(configuration: {
+  permissionModeScope?: HarnessPermissionModeScope;
+}): boolean {
+  return configuration.permissionModeScope === "atCreate";
+}
+
 export const harnessSessionCapabilitiesSchema = z
   .object({
     configuration: z
@@ -153,6 +163,7 @@ export const harnessSessionCapabilitiesSchema = z
         selectModel: z.boolean(),
         selectThinkingOption: z.boolean(),
         selectPermissionMode: z.boolean(),
+        permissionModeScope: harnessPermissionModeScopeSchema.default("live"),
       })
       .strict(),
     history: harnessHistoryCapabilitiesSchema,

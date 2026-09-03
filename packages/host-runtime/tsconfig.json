@@ -10,6 +10,7 @@
   "references": [
     { "path": "../desktop-control/tsconfig.json" },
     { "path": "../harness-adapter/tsconfig.json" },
+    { "path": "../harness-broker/tsconfig.json" },
     { "path": "../mapping-store/tsconfig.json" },
     { "path": "../protocol-core/tsconfig.json" },
     { "path": "../shared-contracts/tsconfig.json" },
@@ -19,7 +20,8 @@
     { "path": "../adapters/deepseek-harness/tsconfig.json" },
     { "path": "../adapters/opencode/tsconfig.json" },
     { "path": "../adapters/grok/tsconfig.json" },
-    { "path": "../adapters/omp/tsconfig.json" }
+    { "path": "../adapters/omp/tsconfig.json" },
+    { "path": "../adapters/antigravity/tsconfig.json" }
   ],
   "include": ["src/**/*.ts"]
 }

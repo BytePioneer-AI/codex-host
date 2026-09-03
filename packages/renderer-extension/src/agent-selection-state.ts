@@ -213,6 +213,9 @@ export class DraftAgentController<Composer extends object> {
     } else if (agent === "opencode") delete state.openCodeThinkingOptionId;
     if (agent === "omp" && thinkingOptionId) state.ompThinkingOptionId = thinkingOptionId;
     else if (agent === "omp") delete state.ompThinkingOptionId;
+    if (agent === "antigravity" && thinkingOptionId) {
+      state.antigravityThinkingOptionId = thinkingOptionId;
+    } else if (agent === "antigravity") delete state.antigravityThinkingOptionId;
     if (agent !== "codex") {
       const permissionModeByAgent: NonNullable<DraftComposerState["permissionModeByAgent"]> = {};
       for (const candidate of [
@@ -337,6 +340,10 @@ export class DraftAgentController<Composer extends object> {
       state.ompThinkingOptionId = thinkingOptionId;
     } else if (agent === "omp") {
       delete state.ompThinkingOptionId;
+    } else if (agent === "antigravity" && thinkingOptionId) {
+      state.antigravityThinkingOptionId = thinkingOptionId;
+    } else if (agent === "antigravity") {
+      delete state.antigravityThinkingOptionId;
     }
     return state;
   }

@@ -246,6 +246,7 @@ export async function runDesktopController(
           "opencode",
           "grok",
           "omp",
+          "antigravity",
         ],
         timeoutMs: PRODUCTION_INSTALL_TIMEOUT_MS,
       },

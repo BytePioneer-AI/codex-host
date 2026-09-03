@@ -258,7 +258,7 @@ function fixture(options: ClaudeCodeAdapterOptions = {}) {
     }),
   };
   const adapter = new ClaudeCodeAdapter(
-    { closeTimeoutMs: 50, continuationQuiescenceMs: 50, ...options },
+    { closeTimeoutMs: 50, continuationQuiescenceMs: 50, cancelTimeoutMs: 5_000, ...options },
     dependencies,
   );
   return { adapter, dependencies, history, inspectors, inspectInstallation, transports };
@@ -529,6 +529,7 @@ describe("Claude Code HarnessAdapter", () => {
         selectModel: true,
         selectThinkingOption: true,
         selectPermissionMode: true,
+        permissionModeScope: "live",
       },
       history: { fork: true, forkAcrossCwd: false, rollbackLastTurn: true },
       subagents: { observe: true, readTranscript: true },
@@ -640,14 +641,12 @@ describe("Claude Code HarnessAdapter", () => {
       status: "error",
     });
     await expect(adapter.inspect({ cwd: "/failure" })).resolves.toMatchObject({
-      status: "ready",
-      catalog: { models: [] },
-      capabilities: { configuration: { selectModel: false } },
+      status: "unavailable",
+      error: { code: "unavailable", retryable: false },
     });
     await expect(adapter.inspect({ cwd: "/unsupported" })).resolves.toMatchObject({
-      status: "ready",
-      catalog: { models: [] },
-      capabilities: { configuration: { selectModel: false } },
+      status: "unavailable",
+      error: { code: "unavailable", retryable: false },
     });
     expect(dependencies.createInspector).toHaveBeenCalledTimes(4);
     expect(close).toHaveBeenCalledTimes(4);
@@ -1723,6 +1722,82 @@ describe("Claude Code HarnessAdapter", () => {
       type: "turn.completed",
       outcome: { status: "succeeded" },
     });
+    await session.close();
+  });
+
+  it("projects Claude Task tools as accumulated Todo snapshots", async () => {
+    const { adapter, transports } = fixture();
+    const session = await openSession(adapter);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+
+    await session.execute(textTurn("tasks"));
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    const transport = transports[0];
+    if (!transport) throw new Error("Fake Claude transport was not created");
+
+    transport.event({
+      type: "tool.started",
+      callId: "create-1",
+      toolName: "TaskCreate",
+      arguments: {
+        subject: "Run tests",
+        description: "Run focused tests",
+        activeForm: "Running tests",
+      },
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.started",
+      item: { type: "toolExecution", toolName: "Todo", arguments: {} },
+    });
+    transport.event({
+      type: "tool.completed",
+      callId: "create-1",
+      toolName: "TaskCreate",
+      structuredResult: { task: { id: "1", subject: "Run tests" } },
+      isError: false,
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.completed",
+      snapshot: {
+        item: {
+          type: "toolExecution",
+          toolName: "Todo",
+          arguments: { todos: [{ id: "1", content: "Run tests", status: "pending" }] },
+        },
+      },
+    });
+
+    transport.event({
+      type: "tool.started",
+      callId: "update-1",
+      toolName: "TaskUpdate",
+      arguments: { taskId: "1", status: "in_progress" },
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.started",
+      item: { type: "toolExecution", toolName: "Todo", arguments: {} },
+    });
+    transport.event({
+      type: "tool.completed",
+      callId: "update-1",
+      toolName: "TaskUpdate",
+      isError: false,
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.completed",
+      snapshot: {
+        item: {
+          type: "toolExecution",
+          toolName: "Todo",
+          arguments: { todos: [{ id: "1", content: "Run tests", status: "in_progress" }] },
+        },
+      },
+    });
+
+    transport.finish({ status: "succeeded" });
+    await nextEvent(iterator);
     await session.close();
   });
 
@@ -4289,6 +4364,85 @@ describe("Claude Code HarnessAdapter", () => {
     await session.close();
   });
 
+  it("kills a hung interrupt and continues on a resumed Transport", async () => {
+    const { adapter, dependencies, transports } = fixture({ cancelTimeoutMs: 20 });
+    const session = await openSession(adapter);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+
+    await session.execute(textTurn("hung"));
+    expect((await nextEvent(iterator)).type).toBe("session.state.changed");
+    expect((await nextEvent(iterator)).type).toBe("turn.started");
+    expect((await nextEvent(iterator)).type).toBe("item.started");
+    transports[0]?.abort.mockImplementation(async () => new Promise(() => undefined));
+
+    await expect(
+      session.execute({ type: "turn.cancel", turnId: hostTurnIdSchema.parse("hung") }),
+    ).resolves.toEqual({
+      ok: true,
+      value: { cancellationRequested: true },
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.completed",
+      snapshot: { outcome: { status: "cancelled" } },
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "turn.completed",
+      outcome: { status: "cancelled", reason: "Cancelled by user" },
+    });
+    expect(transports[0]?.close).toHaveBeenCalled();
+
+    await expect(session.execute(textTurn("after-kill"))).resolves.toMatchObject({ ok: true });
+    expect(transports).toHaveLength(2);
+    expect(dependencies.createTransport).toHaveBeenLastCalledWith(
+      expect.objectContaining({ openMode: "resume" }),
+    );
+    expect((await nextEvent(iterator)).type).toBe("session.state.changed");
+    expect((await nextEvent(iterator)).type).toBe("turn.started");
+    expect((await nextEvent(iterator)).type).toBe("item.started");
+    transports[1]?.finish({ status: "succeeded" });
+    expect((await nextEvent(iterator)).type).toBe("item.completed");
+    expect((await nextEvent(iterator)).type).toBe("turn.completed");
+    await session.close();
+  });
+
+  it("escalates an acked interrupt that never ends the Turn", async () => {
+    const { adapter, transports } = fixture({ cancelTimeoutMs: 20 });
+    const session = await openSession(adapter);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+
+    await session.execute(textTurn("acked"));
+    expect((await nextEvent(iterator)).type).toBe("session.state.changed");
+    expect((await nextEvent(iterator)).type).toBe("turn.started");
+    expect((await nextEvent(iterator)).type).toBe("item.started");
+
+    await expect(
+      session.execute({ type: "turn.cancel", turnId: hostTurnIdSchema.parse("acked") }),
+    ).resolves.toEqual({
+      ok: true,
+      value: { cancellationRequested: true },
+    });
+    expect(transports[0]?.abort).toHaveBeenCalledOnce();
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.completed",
+      snapshot: { outcome: { status: "cancelled" } },
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "turn.completed",
+      outcome: { status: "cancelled", reason: "Cancelled by user" },
+    });
+    expect(transports[0]?.close).toHaveBeenCalled();
+
+    await expect(session.execute(textTurn("after-escalate"))).resolves.toMatchObject({ ok: true });
+    expect(transports).toHaveLength(2);
+    expect((await nextEvent(iterator)).type).toBe("session.state.changed");
+    expect((await nextEvent(iterator)).type).toBe("turn.started");
+    expect((await nextEvent(iterator)).type).toBe("item.started");
+    transports[1]?.finish({ status: "succeeded" });
+    expect((await nextEvent(iterator)).type).toBe("item.completed");
+    expect((await nextEvent(iterator)).type).toBe("turn.completed");
+    await session.close();
+  });
+
   it("maps failed native results without faulting a reusable Session", async () => {
     const { adapter, transports } = fixture();
     const session = await openSession(adapter);
@@ -4414,7 +4568,10 @@ describe("Claude Code HarnessAdapter", () => {
 
     const inspecting = adapter.inspect({ cwd: "/closing" });
     await expect(adapter.close()).resolves.toBeUndefined();
-    await expect(inspecting).resolves.toMatchObject({ status: "ready", catalog: { models: [] } });
+    await expect(inspecting).resolves.toMatchObject({
+      status: "unavailable",
+      error: { code: "unavailable", retryable: false },
+    });
     expect(close).toHaveBeenCalled();
     await expect(adapter.inspect()).resolves.toMatchObject({
       status: "unavailable",

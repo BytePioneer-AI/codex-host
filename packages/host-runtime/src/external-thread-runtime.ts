@@ -20,13 +20,14 @@ import {
   type JsonObject,
 } from "@codexhost/protocol-core";
 import { HarnessOutputChannel } from "@codexhost/harness-adapter";
-import type {
-  HarnessId,
-  HarnessPermissionModeId,
-  HarnessThinkingOptionId,
-  HostInteractionId,
-  HostTurnId,
-  NativeSessionRef,
+import {
+  permissionModeFixedAtCreate,
+  type HarnessId,
+  type HarnessPermissionModeId,
+  type HarnessThinkingOptionId,
+  type HostInteractionId,
+  type HostTurnId,
+  type NativeSessionRef,
 } from "@codexhost/shared-contracts";
 
 import {
@@ -133,6 +134,7 @@ class ReadonlySnapshotSession implements HarnessSession {
       selectModel: false,
       selectThinkingOption: false,
       selectPermissionMode: false,
+      permissionModeScope: "live" as const,
     },
     history: { fork: false, forkAcrossCwd: false, rollbackLastTurn: false },
     subagents: { observe: false, readTranscript: false },
@@ -461,23 +463,27 @@ export class ExternalThreadRuntime {
         ...(snapshot.value.state ? { restoredState: snapshot.value.state } : {}),
       });
     }
+    const restoredSelection = decodeExternalTransportSelection(harnessId, record.transportModelId);
     const opened = await adapter.open({
       kind: "resume",
       cwd: record.cwd,
       environment: { ...this.#environment, [DELEGATION_THREAD_ID_ENV]: record.hostThreadId },
       nativeRef: record.nativeSessionRef as NativeSessionRef,
       knownTurnRefs: record.turnMappings.map(({ nativeTurnRef }) => nativeTurnRef),
+      ...(harnessId === "grok" && restoredSelection?.permissionModeId
+        ? { permissionModeId: restoredSelection.permissionModeId }
+        : {}),
     });
     if (!opened.ok) {
       throw new ExternalThreadOpenError(mapExternalThreadHarnessError(opened.error, "resume"));
     }
     const session = opened.value;
     try {
-      const restoredSelection = decodeExternalTransportSelection(
-        harnessId,
-        record.transportModelId,
-      );
-      if (restoredSelection?.permissionModeId && harnessId !== "opencode") {
+      if (
+        restoredSelection?.permissionModeId &&
+        harnessId !== "opencode" &&
+        !permissionModeFixedAtCreate(session.capabilities.configuration)
+      ) {
         if (!session.capabilities.configuration.selectPermissionMode) {
           throw new ExternalThreadOpenError({
             code: -32076,
@@ -517,7 +523,7 @@ export class ExternalThreadRuntime {
         const liveSelection: ExternalConfigurationSelection = {
           model: effectiveModel,
           ...(effectiveThinkingOptionId ? { thinkingOptionId: effectiveThinkingOptionId } : {}),
-          ...(harnessId === "opencode" && effectivePermissionModeId
+          ...((harnessId === "omp" || harnessId === "opencode") && effectivePermissionModeId
             ? { permissionModeId: effectivePermissionModeId }
             : {}),
         };

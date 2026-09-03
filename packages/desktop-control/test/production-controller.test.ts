@@ -142,7 +142,16 @@ describe("production Desktop Controller", () => {
       inspectorEndpoint: "http://127.0.0.1:43123",
       rendererSource:
         'Object.defineProperty(window, "__codexhostProductionConfigV1", { configurable: true, value: { defaultAgent: "pi" } });\nproduction renderer',
-      enabledAgents: ["codex", "pi", "claude-code", "deepseek-harness", "opencode", "grok", "omp"],
+      enabledAgents: [
+        "codex",
+        "pi",
+        "claude-code",
+        "deepseek-harness",
+        "opencode",
+        "grok",
+        "omp",
+        "antigravity",
+      ],
       timeoutMs: 90_000,
     });
     expect(startAttachmentServer).toHaveBeenCalledWith({

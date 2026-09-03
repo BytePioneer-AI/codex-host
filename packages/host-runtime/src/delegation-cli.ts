@@ -89,6 +89,7 @@ thread wait defaults to 30000 ms and waits only until the Thread reaches a termi
 thread list defaults to the caller cwd, limit 25, created-desc; limit is capped at 100. --parent uses Delegation lineage, not Codex Subagent relationships.
 read and wait are non-consuming: they do not start a Turn, send input, wake an Agent, mark messages read, or inject a result into the parent Session.
 Native Codex as caller requires a session sandbox that permits local Runtime connections; otherwise RUNTIME_UNREACHABLE is returned. Native Codex as a target uses brokered official requests and is unaffected.
+Native Codex shell commands also need the Host-provided CODEXHOST_* environment variables. If shell_environment_policy filters them, prefer inherit = "all" with ignore_default_excludes = true and a narrow include_only containing "CODEXHOST_RUNTIME_ENDPOINT" and "CODEXHOST_RUNTIME_TOKEN" plus the variables required by the platform and invoked tools. Avoid unconstrained inherit = "all", which forwards unrelated ambient variables.
 
 Errors are JSON: {"error":{"code":"...","message":"...","details":{...}}}.
 INVALID_ARGUMENT: fix the named argument or incompatible option combination.
@@ -110,9 +111,24 @@ async function requestRuntime(input: {
   const endpoint = input.environment[DELEGATION_RUNTIME_ENDPOINT_ENV];
   const token = input.environment[DELEGATION_RUNTIME_TOKEN_ENV];
   if (!endpoint || !token) {
+    const missingEnvironmentVariables = [
+      ...(!endpoint ? [DELEGATION_RUNTIME_ENDPOINT_ENV] : []),
+      ...(!token ? [DELEGATION_RUNTIME_TOKEN_ENV] : []),
+    ];
     throw new DelegationControlError(
       "RUNTIME_UNREACHABLE",
-      `${DELEGATION_RUNTIME_ENDPOINT_ENV} and ${DELEGATION_RUNTIME_TOKEN_ENV} are required`,
+      `${missingEnvironmentVariables.join(" and ")} ${missingEnvironmentVariables.length === 1 ? "is" : "are"} required. If this command runs inside native Codex, shell_environment_policy may have filtered the Host-provided CODEXHOST_* variables. Prefer inherit = "all" with ignore_default_excludes = true and a narrow include_only allowlist that contains "CODEXHOST_RUNTIME_ENDPOINT" and "CODEXHOST_RUNTIME_TOKEN" plus the variables required by the platform and invoked tools; do not use unconstrained inherit = "all".`,
+      {
+        reason: "missing_runtime_environment",
+        missingEnvironmentVariables,
+        nativeCodexRecovery: {
+          recommendedPolicy: {
+            inherit: "all",
+            ignoreDefaultExcludes: true,
+            includeOnlyMustContain: [DELEGATION_RUNTIME_ENDPOINT_ENV, DELEGATION_RUNTIME_TOKEN_ENV],
+          },
+        },
+      },
     );
   }
   let response: Response;

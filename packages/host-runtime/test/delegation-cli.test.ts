@@ -262,8 +262,76 @@ describe("delegation CLI", () => {
         diagnosticOutput,
       }),
     ).resolves.toBe(1);
-    expect(JSON.parse(outputText(diagnosticOutput))).toMatchObject({
-      error: { code: "RUNTIME_UNREACHABLE" },
+    expect(JSON.parse(outputText(diagnosticOutput))).toEqual({
+      error: {
+        code: "RUNTIME_UNREACHABLE",
+        message:
+          'CODEXHOST_RUNTIME_ENDPOINT and CODEXHOST_RUNTIME_TOKEN are required. If this command runs inside native Codex, shell_environment_policy may have filtered the Host-provided CODEXHOST_* variables. Prefer inherit = "all" with ignore_default_excludes = true and a narrow include_only allowlist that contains "CODEXHOST_RUNTIME_ENDPOINT" and "CODEXHOST_RUNTIME_TOKEN" plus the variables required by the platform and invoked tools; do not use unconstrained inherit = "all".',
+        details: {
+          reason: "missing_runtime_environment",
+          missingEnvironmentVariables: [
+            DELEGATION_RUNTIME_ENDPOINT_ENV,
+            DELEGATION_RUNTIME_TOKEN_ENV,
+          ],
+          nativeCodexRecovery: {
+            recommendedPolicy: {
+              inherit: "all",
+              ignoreDefaultExcludes: true,
+              includeOnlyMustContain: [
+                DELEGATION_RUNTIME_ENDPOINT_ENV,
+                DELEGATION_RUNTIME_TOKEN_ENV,
+              ],
+            },
+          },
+        },
+      },
     });
+  });
+
+  it("reports only the Host Runtime variables that are missing", async () => {
+    const diagnosticOutput = new PassThrough();
+    await expect(
+      runDelegationCli({
+        arguments: ["thread", "read", "thread-1"],
+        environment: { [DELEGATION_RUNTIME_ENDPOINT_ENV]: "http://127.0.0.1:4321" },
+        diagnosticOutput,
+      }),
+    ).resolves.toBe(1);
+    expect(JSON.parse(outputText(diagnosticOutput))).toMatchObject({
+      error: {
+        code: "RUNTIME_UNREACHABLE",
+        message: expect.stringContaining(`${DELEGATION_RUNTIME_TOKEN_ENV} is required`),
+        details: {
+          reason: "missing_runtime_environment",
+          missingEnvironmentVariables: [DELEGATION_RUNTIME_TOKEN_ENV],
+        },
+      },
+    });
+  });
+
+  it("reports a missing endpoint without exposing the provided token", async () => {
+    const diagnosticOutput = new PassThrough();
+    await expect(
+      runDelegationCli({
+        arguments: ["thread", "read", "thread-1"],
+        environment: { [DELEGATION_RUNTIME_TOKEN_ENV]: "token" },
+        diagnosticOutput,
+      }),
+    ).resolves.toBe(1);
+    const diagnostic = JSON.parse(outputText(diagnosticOutput)) as {
+      error: { message: string; details: { missingEnvironmentVariables: string[] } };
+    };
+    expect(diagnostic.error.message).toContain(`${DELEGATION_RUNTIME_ENDPOINT_ENV} is required`);
+    expect(diagnostic.error.message).not.toContain("token");
+    expect(diagnostic.error.details.missingEnvironmentVariables).toEqual([
+      DELEGATION_RUNTIME_ENDPOINT_ENV,
+    ]);
+  });
+
+  it("documents the safe native Codex environment-policy recovery", () => {
+    expect(DELEGATION_HELP).toContain("shell_environment_policy");
+    expect(DELEGATION_HELP).toContain("ignore_default_excludes = true");
+    expect(DELEGATION_HELP).toContain('include_only containing "CODEXHOST_RUNTIME_ENDPOINT"');
+    expect(DELEGATION_HELP).toContain('Avoid unconstrained inherit = "all"');
   });
 });

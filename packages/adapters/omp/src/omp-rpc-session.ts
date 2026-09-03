@@ -37,6 +37,41 @@ export interface OmpSessionState {
   availableThinkingLevels: HarnessThinkingOptionId[] | null;
 }
 
+export type OmpInteractionRequest =
+  | {
+      requestId: string;
+      method: "select";
+      title: string;
+      options: string[];
+      timeoutMs?: number;
+    }
+  | {
+      requestId: string;
+      method: "confirm";
+      title: string;
+      message: string;
+      timeoutMs?: number;
+    }
+  | {
+      requestId: string;
+      method: "input";
+      title: string;
+      placeholder?: string;
+      timeoutMs?: number;
+    }
+  | {
+      requestId: string;
+      method: "editor";
+      title: string;
+      prefill?: string;
+      timeoutMs?: number;
+    };
+
+export type OmpInteractionResponse =
+  | { requestId: string; cancelled: true }
+  | { requestId: string; value: string }
+  | { requestId: string; confirmed: boolean };
+
 export type OmpTurnEvent =
   | { type: "text.delta"; messageId: string; delta: string }
   | { type: "reasoning.delta"; messageId: string; delta: string }
@@ -47,6 +82,12 @@ export type OmpTurnEvent =
       type: "compaction.completed";
       outcome: "succeeded" | "cancelled" | "failed";
       errorMessage?: string;
+    }
+  | { type: "interaction.requested"; request: OmpInteractionRequest }
+  | {
+      type: "interaction.closed";
+      requestId: string;
+      reason: "responded" | "cancelled" | "expired" | "superseded";
     }
   | { type: "tool.started"; callId: string; toolName: string; arguments: JsonValue }
   | { type: "tool.updated"; callId: string; output: JsonValue }
@@ -184,6 +225,7 @@ interface ActiveTurn {
   failure: Error | null;
   sawTool: boolean;
   tools: Map<string, string>;
+  interactions: Map<string, { request: OmpInteractionRequest; timeout: NodeJS.Timeout | null }>;
   settlement: "pending" | "confirming" | "confirmed";
   cancellation: "none" | "requesting" | "accepted";
   cancellationTimeout: NodeJS.Timeout | null;
@@ -815,6 +857,7 @@ export class OmpRpcSession {
         failure: null,
         sawTool: false,
         tools: new Map(),
+        interactions: new Map(),
         settlement: "pending",
         cancellation: "none",
         cancellationTimeout: null,
@@ -827,6 +870,48 @@ export class OmpRpcSession {
       this.#rejectActiveTurn(error instanceof Error ? error : new Error(message(error)));
     }
     return settled;
+  }
+
+  respondToInteraction(response: OmpInteractionResponse): Promise<void> {
+    return this.#resolveInteraction(response, "cancelled" in response ? "cancelled" : "responded");
+  }
+
+  async #resolveInteraction(
+    response: OmpInteractionResponse,
+    reason: "responded" | "cancelled" | "expired",
+  ): Promise<void> {
+    const active = this.#activeTurn;
+    const pending = active?.interactions.get(response.requestId);
+    if (!active || !pending || this.#closed || this.#failed) {
+      throw new Error("Omp RPC interaction is not pending");
+    }
+    if ("value" in response && !["select", "input", "editor"].includes(pending.request.method)) {
+      throw new Error("Omp RPC interaction response type does not match the request");
+    }
+    if ("confirmed" in response && pending.request.method !== "confirm") {
+      throw new Error("Omp RPC confirmation does not match the request");
+    }
+    const frame =
+      "cancelled" in response
+        ? { type: "extension_ui_response", id: response.requestId, cancelled: true }
+        : "confirmed" in response
+          ? { type: "extension_ui_response", id: response.requestId, confirmed: response.confirmed }
+          : { type: "extension_ui_response", id: response.requestId, value: response.value };
+    if (!active.interactions.delete(response.requestId)) {
+      throw new Error("Omp RPC interaction is not pending");
+    }
+    if (pending.timeout) clearTimeout(pending.timeout);
+    active.onEvent({ type: "interaction.closed", requestId: response.requestId, reason });
+    try {
+      await this.#write(frame);
+    } catch (error) {
+      const fault = new OmpRpcFaultError(
+        "protocolError",
+        `Omp RPC interaction response failed: ${message(error)}`,
+      );
+      this.#fail(fault);
+      throw fault;
+    }
   }
 
   abort(): Promise<void> {
@@ -987,6 +1072,18 @@ export class OmpRpcSession {
     const active = this.#activeTurn;
     if (this.#handleSubagentFrame(active, value)) return;
     if (!active) {
+      if (value.type === "extension_ui_request" && this.#isBlockingInteraction(value)) {
+        this.#fail(
+          new OmpRpcFaultError(
+            "protocolError",
+            "Omp RPC requested blocking Extension UI outside an active Turn",
+          ),
+        );
+      }
+      return;
+    }
+    if (value.type === "extension_ui_request") {
+      this.#startInteraction(active, value);
       return;
     }
     if (value.type === "message_start" && assistantText(value.message) !== null) {
@@ -1158,6 +1255,104 @@ export class OmpRpcSession {
     return true;
   }
 
+  #isBlockingInteraction(value: Record<string, unknown>): boolean {
+    return ["select", "confirm", "input", "editor"].includes(String(value.method));
+  }
+
+  #startInteraction(active: ActiveTurn, value: Record<string, unknown>): void {
+    if (!this.#isBlockingInteraction(value)) return;
+    const requestId = value.id;
+    const method = value.method;
+    const title = value.title;
+    const timeoutMs = value.timeout;
+    if (
+      typeof requestId !== "string" ||
+      requestId.length === 0 ||
+      typeof method !== "string" ||
+      typeof title !== "string" ||
+      title.length === 0 ||
+      (timeoutMs !== undefined &&
+        (typeof timeoutMs !== "number" || !Number.isFinite(timeoutMs) || timeoutMs < 0)) ||
+      active.interactions.has(requestId)
+    ) {
+      throw new OmpRpcFaultError(
+        "protocolError",
+        "Omp RPC returned an invalid Interaction request",
+      );
+    }
+
+    let request: OmpInteractionRequest;
+    if (method === "select") {
+      if (
+        !Array.isArray(value.options) ||
+        value.options.length === 0 ||
+        !value.options.every(
+          (option): option is string => typeof option === "string" && option.length > 0,
+        )
+      ) {
+        throw new OmpRpcFaultError("protocolError", "Omp RPC select request has invalid options");
+      }
+      request = {
+        requestId,
+        method,
+        title,
+        options: [...value.options],
+        ...(typeof timeoutMs === "number" ? { timeoutMs } : {}),
+      };
+    } else if (method === "confirm") {
+      if (typeof value.message !== "string") {
+        throw new OmpRpcFaultError("protocolError", "Omp RPC confirm request has no message");
+      }
+      request = {
+        requestId,
+        method,
+        title,
+        message: value.message,
+        ...(typeof timeoutMs === "number" ? { timeoutMs } : {}),
+      };
+    } else if (method === "input") {
+      if (value.placeholder !== undefined && typeof value.placeholder !== "string") {
+        throw new OmpRpcFaultError("protocolError", "Omp RPC input placeholder is invalid");
+      }
+      request = {
+        requestId,
+        method,
+        title,
+        ...(typeof value.placeholder === "string" ? { placeholder: value.placeholder } : {}),
+        ...(typeof timeoutMs === "number" ? { timeoutMs } : {}),
+      };
+    } else {
+      if (value.prefill !== undefined && typeof value.prefill !== "string") {
+        throw new OmpRpcFaultError("protocolError", "Omp RPC editor prefill is invalid");
+      }
+      request = {
+        requestId,
+        method: "editor",
+        title,
+        ...(typeof value.prefill === "string" ? { prefill: value.prefill } : {}),
+        ...(typeof timeoutMs === "number" ? { timeoutMs } : {}),
+      };
+    }
+
+    const pending = { request, timeout: null as NodeJS.Timeout | null };
+    if (request.timeoutMs !== undefined) {
+      pending.timeout = setTimeout(() => {
+        if (this.#activeTurn !== active || !active.interactions.has(requestId)) return;
+        void this.#resolveInteraction({ requestId, cancelled: true }, "expired").catch((error) => {
+          if (this.#closed || this.#failed) return;
+          this.#fail(
+            new OmpRpcFaultError(
+              "protocolError",
+              `Omp RPC Interaction timeout handling failed: ${message(error)}`,
+            ),
+          );
+        });
+      }, request.timeoutMs);
+    }
+    active.interactions.set(requestId, pending);
+    active.onEvent({ type: "interaction.requested", request });
+  }
+
   #handleResponse(value: Record<string, unknown>): void {
     const id = value.id;
     if (typeof id !== "string") {
@@ -1273,6 +1468,10 @@ export class OmpRpcSession {
     }
     if (active.cancellationTimeout) clearTimeout(active.cancellationTimeout);
     active.cancellationTimeout = null;
+    this.#closeInteractions(
+      active,
+      active.cancellation === "accepted" ? "cancelled" : "superseded",
+    );
     if (active.tools.size > 0) {
       this.#fail(
         new OmpRpcFaultError("protocolError", "Omp RPC settled with active Tool executions"),
@@ -1428,10 +1627,19 @@ export class OmpRpcSession {
     this.#options.onFault?.(finalFault);
   }
 
+  #closeInteractions(active: ActiveTurn, reason: "cancelled" | "expired" | "superseded"): void {
+    for (const [requestId, pending] of active.interactions) {
+      active.interactions.delete(requestId);
+      if (pending.timeout) clearTimeout(pending.timeout);
+      active.onEvent({ type: "interaction.closed", requestId, reason });
+    }
+  }
+
   #rejectActiveTurn(error: Error): void {
     const active = this.#activeTurn;
     if (!active) return;
     if (active.cancellationTimeout) clearTimeout(active.cancellationTimeout);
+    this.#closeInteractions(active, "cancelled");
     this.#activeTurn = null;
     active.reject(error);
   }

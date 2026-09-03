@@ -167,15 +167,24 @@ export function piTransportModelId(
 export function ompTransportModelId(
   model?: HarnessModelRef,
   thinkingOptionId?: HarnessThinkingOptionId,
+  permissionModeId?: HarnessPermissionModeId,
 ): string {
   if (!model) {
-    if (thinkingOptionId) throw new Error("OMP transport Thinking requires a Model Ref");
+    if (permissionModeId || thinkingOptionId) {
+      throw new Error("OMP transport configuration requires a Model Ref");
+    }
     return OMP_TRANSPORT_MODEL_ID;
   }
   const parsedModel = harnessModelRefSchema.parse(model);
+  const parsedPermissionMode = permissionModeId
+    ? harnessPermissionModeIdSchema.parse(permissionModeId)
+    : undefined;
   const parsedThinking = thinkingOptionId
     ? harnessThinkingOptionIdSchema.parse(thinkingOptionId)
     : undefined;
+  if (parsedPermissionMode) {
+    return `${OMP_TRANSPORT_MODEL_PREFIX}${parsedModel.id}@${parsedPermissionMode}@${parsedThinking ?? ""}`;
+  }
   return `${OMP_TRANSPORT_MODEL_PREFIX}${parsedModel.id}${parsedThinking ? `@${parsedThinking}` : ""}`;
 }
 
@@ -487,21 +496,35 @@ export function isPiTransportModelId(value: unknown): value is string {
 
 export function decodeOmpTransportModelId(value: unknown): {
   model?: HarnessModelRef;
+  permissionModeId?: HarnessPermissionModeId;
   thinkingOptionId?: HarnessThinkingOptionId;
 } | null {
   if (value === OMP_TRANSPORT_MODEL_ID) return {};
   if (typeof value !== "string" || !value.startsWith(OMP_TRANSPORT_MODEL_PREFIX)) return null;
   const components = value.slice(OMP_TRANSPORT_MODEL_PREFIX.length).split("@");
-  if (components.length < 1 || components.length > 2) return null;
-  const [modelId, thinkingOptionId] = components;
-  if (components.length === 2 && !thinkingOptionId) return null;
+  if (components.length < 1 || components.length > 3) return null;
+  const [modelId, permissionOrThinkingId, thinkingOptionId] = components;
+  if (components.length === 2 && !permissionOrThinkingId) return null;
+  if (components.length === 3 && !permissionOrThinkingId) return null;
   const model = harnessModelRefSchema.safeParse({ id: modelId });
   if (!model.success) return null;
-  const thinking = thinkingOptionId
-    ? harnessThinkingOptionIdSchema.safeParse(thinkingOptionId)
-    : null;
+  const permissionMode =
+    components.length === 3
+      ? harnessPermissionModeIdSchema.safeParse(permissionOrThinkingId)
+      : null;
+  if (permissionMode && !permissionMode.success) return null;
+  const thinking =
+    components.length === 2
+      ? harnessThinkingOptionIdSchema.safeParse(permissionOrThinkingId)
+      : thinkingOptionId
+        ? harnessThinkingOptionIdSchema.safeParse(thinkingOptionId)
+        : null;
   if (thinking && !thinking.success) return null;
-  return { model: model.data, ...(thinking?.success ? { thinkingOptionId: thinking.data } : {}) };
+  return {
+    model: model.data,
+    ...(permissionMode?.success ? { permissionModeId: permissionMode.data } : {}),
+    ...(thinking?.success ? { thinkingOptionId: thinking.data } : {}),
+  };
 }
 
 export function isOmpTransportModelId(value: unknown): value is string {
@@ -938,10 +961,10 @@ export function modelSelectionForAgent(
               : agent === "grok"
                 ? grokTransportModelId(model, permissionModeId, thinkingOptionId)
                 : agent === "omp"
-                  ? ompTransportModelId(model, thinkingOptionId)
+                  ? ompTransportModelId(model, thinkingOptionId, permissionModeId)
                   : agent === "antigravity"
                     ? antigravityTransportModelId(model, permissionModeId, thinkingOptionId)
-                  : transportModelIdForAgent(agent);
+                    : transportModelIdForAgent(agent);
   return transportModelId ? { model: transportModelId, reasoningEffort } : officialSelection;
 }
 

@@ -1,6 +1,8 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 
+import { KNOWN_RENDERER_AGENTS } from "@codexhost/shared-contracts";
+
 import {
   startControllerAttachmentServer,
   type ControllerAttachmentServer,
@@ -242,16 +244,7 @@ export async function runDesktopController(
       {
         rendererCdpEndpoint: options.rendererCdpEndpoint,
         rendererSource: `${RENDERER_CSP_BOOTSTRAP}\n${configuration}\n${rendererSource}`,
-        enabledAgents: [
-          "codex",
-          "pi",
-          "claude-code",
-          "deepseek-harness",
-          "opencode",
-          "grok",
-          "omp",
-          "antigravity",
-        ],
+        enabledAgents: KNOWN_RENDERER_AGENTS,
         timeoutMs: PRODUCTION_INSTALL_TIMEOUT_MS,
       },
       dependencies,

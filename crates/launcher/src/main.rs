@@ -420,8 +420,8 @@ fn desktop_controller_command(
     let mut command = Command::new(&options.node);
     command
         .arg(node_entrypoint_path(&options.desktop_controller))
-        .arg("--inspector-endpoint")
-        .arg(&control.inspector_endpoint)
+        .arg("--renderer-cdp-endpoint")
+        .arg(&control.renderer_cdp_endpoint)
         .arg("--renderer")
         .arg(&options.renderer_extension)
         .arg("--default-agent")
@@ -1042,7 +1042,7 @@ fn launch(
         let result = supervise_desktop(
             &installation,
             &options,
-            std::slice::from_ref(&control.inspector_argument),
+            &control.renderer_cdp_arguments,
             &environment,
             &control,
             &descriptor_path,
@@ -1133,7 +1133,7 @@ fn launch(
     supervise_desktop(
         &installation,
         &options,
-        std::slice::from_ref(&control.inspector_argument),
+        &control.renderer_cdp_arguments,
         &environment,
         &control,
         &descriptor_path,
@@ -1421,15 +1421,18 @@ mod tests {
 
     fn runtime_control() -> RuntimeControl {
         RuntimeControl {
-            inspector_endpoint: "http://127.0.0.1:43123".into(),
-            inspector_argument: "--inspect=127.0.0.1:43123".into(),
+            renderer_cdp_endpoint: "http://127.0.0.1:43123".into(),
+            renderer_cdp_arguments: [
+                "--remote-debugging-address=127.0.0.1".into(),
+                "--remote-debugging-port=43123".into(),
+            ],
             attachment_port: 43124,
             nonce: "0123456789abcdef0123456789abcdef".into(),
         }
     }
 
     #[test]
-    fn production_controller_uses_private_node_and_loopback_inspector() {
+    fn production_controller_uses_private_node_and_loopback_renderer_cdp() {
         let options = resolved_options();
         let command = desktop_controller_command(&options, &runtime_control(), &[]);
         assert_eq!(command.get_program(), "/opt/node");
@@ -1437,7 +1440,7 @@ mod tests {
             command.get_args().collect::<Vec<_>>(),
             [
                 "/opt/desktop-controller.mjs",
-                "--inspector-endpoint",
+                "--renderer-cdp-endpoint",
                 "http://127.0.0.1:43123",
                 "--renderer",
                 "/opt/renderer-extension.js",
@@ -1451,26 +1454,26 @@ mod tests {
         );
 
         let control = allocate_runtime_control().expect("ephemeral runtime control");
-        assert!(control.inspector_endpoint.starts_with("http://127.0.0.1:"));
-        let inspector_port = control
-            .inspector_endpoint
-            .rsplit(':')
-            .next()
-            .expect("Inspector endpoint port")
-            .parse::<u16>()
-            .expect("numeric Inspector endpoint port");
-        assert_ne!(inspector_port, control.attachment_port);
         assert!(
             control
-                .inspector_argument
-                .to_string_lossy()
-                .starts_with("--inspect=127.0.0.1:")
+                .renderer_cdp_endpoint
+                .starts_with("http://127.0.0.1:")
         );
-        assert!(
-            !control
-                .inspector_argument
-                .to_string_lossy()
-                .contains("remote-debugging")
+        let renderer_cdp_port = control
+            .renderer_cdp_endpoint
+            .rsplit(':')
+            .next()
+            .expect("Renderer CDP endpoint port")
+            .parse::<u16>()
+            .expect("numeric Renderer CDP endpoint port");
+        assert_ne!(renderer_cdp_port, control.attachment_port);
+        assert_eq!(
+            control.renderer_cdp_arguments[0].to_string_lossy(),
+            "--remote-debugging-address=127.0.0.1"
+        );
+        assert_eq!(
+            control.renderer_cdp_arguments[1].to_string_lossy(),
+            format!("--remote-debugging-port={renderer_cdp_port}")
         );
         let environment = desktop_environment(
             &options,

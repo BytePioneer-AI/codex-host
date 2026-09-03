@@ -27,6 +27,17 @@ export type {
 } from "./contract-audit.js";
 export { inspectRendererDom, validateRendererDomInspection } from "./renderer-dom.js";
 export {
+  createRendererCdpControlSession,
+  installRendererCdpControlSession,
+  selectPrimaryRendererTarget,
+} from "./renderer-cdp-control-session.js";
+export type {
+  InstallRendererCdpControlOptions,
+  ProductionRendererStatus as RendererCdpProductionStatus,
+  RendererCdpControlSession,
+  RendererCdpControlSnapshot,
+} from "./renderer-cdp-control-session.js";
+export {
   activateElectronDesktop,
   createRendererControlSession,
   inspectElectronWebContents,
@@ -57,7 +68,10 @@ export type {
   MainProcessTitlePolicyStatus,
   RendererTitlePolicyReadiness,
 } from "./main-process-title-policy.js";
-export { installRendererDraftPrewarmPolicy } from "./renderer-draft-prewarm-policy.js";
+export {
+  installRendererDraftPrewarmPolicy,
+  installRendererDraftPrewarmPolicyDirect,
+} from "./renderer-draft-prewarm-policy.js";
 export type { RendererDraftPrewarmPolicyStatus } from "./renderer-draft-prewarm-policy.js";
 
 export {

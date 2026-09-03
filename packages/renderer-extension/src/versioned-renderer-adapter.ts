@@ -63,7 +63,6 @@ export interface RendererAdapterStatus {
     | "ready"
     | "asset-import-failed"
     | "installation-failed"
-    | "title-policy-unavailable"
     | "draft-prewarm-clear-failed"
     | "draft-routing-policy-unavailable";
   modelUpdates: number;
@@ -999,12 +998,6 @@ export function installCurrentRendererAdapter(): {
     });
   };
 
-  const unsupportedResult = () => ({
-    status: liveStatus,
-    modelControl: null,
-    applyAgent: () => false,
-    dispose() {},
-  });
   const usageSubscription = createThreadUsageSubscriptionRelay();
   const requestRouteResolver = createRendererRequestRouteResolver(
     () => window.__codexhostDraftPrewarmPolicyV1,
@@ -1074,10 +1067,6 @@ export function installCurrentRendererAdapter(): {
     startUpdate: () => currentModelClient().startUpdate(),
     readUpdateStatus: () => currentModelClient().readUpdateStatus(),
   });
-  if (!isMainProcessTitlePolicyReady(window.__codexhostMainProcessTitlePolicyV1)) {
-    updateStatus("unsupported", "title-policy-unavailable", null);
-    return unsupportedResult();
-  }
   const forkControl = installRendererForkControl({
     getClient: () => modelControl,
     reportError: (error) => {

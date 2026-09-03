@@ -23,22 +23,25 @@ use crate::runtime_instance::{
 
 #[derive(Debug)]
 pub(super) struct RuntimeControl {
-    pub(super) inspector_endpoint: String,
-    pub(super) inspector_argument: OsString,
+    pub(super) renderer_cdp_endpoint: String,
+    pub(super) renderer_cdp_arguments: [OsString; 2],
     pub(super) attachment_port: u16,
     pub(super) nonce: String,
 }
 
 pub(super) fn allocate_runtime_control() -> Result<RuntimeControl, Box<dyn Error>> {
-    let inspector = TcpListener::bind(("127.0.0.1", 0))?;
+    let renderer_cdp = TcpListener::bind(("127.0.0.1", 0))?;
     let attachment = TcpListener::bind(("127.0.0.1", 0))?;
-    let inspector_port = inspector.local_addr()?.port();
+    let renderer_cdp_port = renderer_cdp.local_addr()?.port();
     let attachment_port = attachment.local_addr()?.port();
     drop(attachment);
-    drop(inspector);
+    drop(renderer_cdp);
     Ok(RuntimeControl {
-        inspector_endpoint: format!("http://127.0.0.1:{inspector_port}"),
-        inspector_argument: OsString::from(format!("--inspect=127.0.0.1:{inspector_port}")),
+        renderer_cdp_endpoint: format!("http://127.0.0.1:{renderer_cdp_port}"),
+        renderer_cdp_arguments: [
+            OsString::from("--remote-debugging-address=127.0.0.1"),
+            OsString::from(format!("--remote-debugging-port={renderer_cdp_port}")),
+        ],
         attachment_port,
         nonce: random_nonce()?,
     })

@@ -115,7 +115,7 @@ describe("Antigravity Fork Session Branching", () => {
       if (!opened.ok) return;
 
       expect(opened.value.capabilities.history.fork).toBe(true);
-      expect(opened.value.capabilities.history.forkAcrossCwd).toBe(false);
+      expect(opened.value.capabilities.history.forkAcrossCwd).toBe(true);
       await opened.value.close();
     } finally {
       await adapter.close();

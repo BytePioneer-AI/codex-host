@@ -220,7 +220,7 @@ const CAPABILITIES: HarnessSessionCapabilities = {
     selectPermissionMode: true,
     permissionModeScope: "live",
   },
-  history: { fork: true, forkAcrossCwd: false, rollbackLastTurn: true },
+  history: { fork: true, forkAcrossCwd: true, rollbackLastTurn: true },
   subagents: { observe: false, readTranscript: false },
 };
 

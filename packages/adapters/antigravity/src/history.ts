@@ -137,7 +137,10 @@ function historyRoot(environment: NodeJS.ProcessEnv): string {
 }
 
 function safeThreadId(environment: NodeJS.ProcessEnv): string | null {
-  const threadId = environment[THREAD_ID_ENV]?.trim();
+  const threadId = (
+    environment[THREAD_ID_ENV] ??
+    environment.CODEXHOST_DELEGATION_THREAD_ID
+  )?.trim();
   return threadId && /^[A-Za-z0-9._-]+$/u.test(threadId) ? threadId : null;
 }
 

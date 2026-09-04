@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { copyFile, mkdir } from "node:fs/promises";
+import { copyFile, cp, mkdir } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -24,6 +24,10 @@ export function nativeConversationDbPath(nativeSessionId: string, homedir = os.h
   return path.join(homedir, ".gemini", "antigravity-cli", "conversations", `${nativeSessionId}.db`);
 }
 
+export function nativeBrainDirPath(nativeSessionId: string, homedir = os.homedir()): string {
+  return path.join(homedir, ".gemini", "antigravity-cli", "brain", nativeSessionId);
+}
+
 export async function copyNativeConversationDbIfExists(
   sourceSessionId: string,
   derivedSessionId: string,
@@ -34,6 +38,21 @@ export async function copyNativeConversationDbIfExists(
   try {
     await mkdir(path.dirname(targetDb), { recursive: true });
     await copyFile(sourceDb, targetDb);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export async function copyNativeBrainDirIfExists(
+  sourceSessionId: string,
+  derivedSessionId: string,
+  homedir = os.homedir(),
+): Promise<boolean> {
+  const sourceBrain = nativeBrainDirPath(sourceSessionId, homedir);
+  const targetBrain = nativeBrainDirPath(derivedSessionId, homedir);
+  try {
+    await cp(sourceBrain, targetBrain, { recursive: true });
     return true;
   } catch {
     return false;
@@ -174,7 +193,10 @@ export async function forkAntigravitySession(
     ...(thinkingOptionId ? { thinkingOptionId } : {}),
   });
 
-  await copyNativeConversationDbIfExists(sourceRef.nativeSessionId, derivedNativeSessionId);
+  await Promise.all([
+    copyNativeConversationDbIfExists(sourceRef.nativeSessionId, derivedNativeSessionId),
+    copyNativeBrainDirIfExists(sourceRef.nativeSessionId, derivedNativeSessionId),
+  ]);
 
   const derivedNativeRef: NativeSessionRef = {
     harnessId,

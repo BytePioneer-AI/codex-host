@@ -13,7 +13,7 @@ import {
   type NativeSessionRef,
 } from "@codexhost/shared-contracts";
 
-import { copyNativeConversationDbIfExists } from "./fork.js";
+import { copyNativeBrainDirIfExists, copyNativeConversationDbIfExists } from "./fork.js";
 import { AntigravityHistory, type AntigravityTurn } from "./history.js";
 import type { AntigravityPermissionMode } from "./permission-modes.js";
 
@@ -129,7 +129,10 @@ export async function rollbackAntigravityLastTurn(
     ...(thinkingOptionId ? { thinkingOptionId } : {}),
   });
 
-  await copyNativeConversationDbIfExists(sourceRef.nativeSessionId, derivedNativeSessionId);
+  await Promise.all([
+    copyNativeConversationDbIfExists(sourceRef.nativeSessionId, derivedNativeSessionId),
+    copyNativeBrainDirIfExists(sourceRef.nativeSessionId, derivedNativeSessionId),
+  ]);
 
   const derivedNativeRef: NativeSessionRef = {
     harnessId,

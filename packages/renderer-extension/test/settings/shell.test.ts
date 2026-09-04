@@ -13,8 +13,13 @@ describe("Renderer settings foundation", () => {
     const registry = createDefaultRendererSettingsRegistry();
 
     expect(pages.map(({ id }) => id)).toEqual(DEFAULT_RENDERER_SETTINGS_PAGE_IDS);
-    expect(pages.map(({ label }) => label)).toEqual(["Connections", "Updates", "About"]);
-    expect(pages.map(({ icon }) => icon)).toEqual(["connections", "updates", "about"]);
+    expect(pages.map(({ label }) => label)).toEqual([
+      "Connections",
+      "Session Import",
+      "Updates",
+      "About",
+    ]);
+    expect(pages.map(({ icon }) => icon)).toEqual(["connections", "download", "updates", "about"]);
     expect(registry.defaultPageId).toBe("connections");
     expect(Object.isFrozen(pages)).toBe(true);
     expect(pages.every((page) => Object.isFrozen(page))).toBe(true);
@@ -41,7 +46,12 @@ describe("Renderer settings foundation", () => {
   it("publishes only available settings pages", () => {
     const pages = createDefaultRendererSettingsPages();
 
-    expect(pages.map(({ id }) => id)).toEqual(["connections", "updates", "about"]);
+    expect(pages.map(({ id }) => id)).toEqual([
+      "connections",
+      "session-import",
+      "updates",
+      "about",
+    ]);
     expect(pages.find(({ id }) => id === "connections")?.mount.toString()).toContain(
       "connectionRefresh",
     );

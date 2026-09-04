@@ -148,26 +148,19 @@ pub fn launch_stock_desktop(
     }
 }
 
-#[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
-fn latest_release_command() -> Command {
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn external_url_command(url: &str) -> Command {
     #[cfg(target_os = "macos")]
     let mut command = {
         let mut command = Command::new("/usr/bin/open");
-        command.arg(CODEXHOST_RELEASES_LATEST_URL);
-        command
-    };
-
-    #[cfg(target_os = "windows")]
-    let mut command = {
-        let mut command = Command::new("explorer.exe");
-        command.arg(CODEXHOST_RELEASES_LATEST_URL);
+        command.arg(url);
         command
     };
 
     #[cfg(target_os = "linux")]
     let mut command = {
         let mut command = Command::new("xdg-open");
-        command.arg(CODEXHOST_RELEASES_LATEST_URL);
+        command.arg(url);
         command
     };
 
@@ -175,18 +168,33 @@ fn latest_release_command() -> Command {
     command
 }
 
-pub fn open_latest_codexhost_release() -> Result<(), PlatformError> {
-    #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
-    return Err(PlatformError::Unsupported(
-        "opening the codexhost Releases page is supported on Windows, macOS, and Linux only",
-    ));
+#[cfg(target_os = "windows")]
+pub fn open_external_url(url: &str) -> Result<(), PlatformError> {
+    super::windows_ui::open_external_url(url).map_err(PlatformError::Io)
+}
 
-    #[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
-    latest_release_command().spawn()?.wait()?;
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+pub fn open_external_url(url: &str) -> Result<(), PlatformError> {
+    if !external_url_command(url).spawn()?.wait()?.success() {
+        return Err(PlatformError::Invalid(
+            "the operating-system URL opener exited unsuccessfully".into(),
+        ));
+    }
     Ok(())
 }
 
-#[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
+#[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
+pub fn open_external_url(_url: &str) -> Result<(), PlatformError> {
+    Err(PlatformError::Unsupported(
+        "opening an external URL is supported on Windows, macOS, and Linux only",
+    ))
+}
+
+pub fn open_latest_codexhost_release() -> Result<(), PlatformError> {
+    open_external_url(CODEXHOST_RELEASES_LATEST_URL)
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 fn configure_external_command(command: &mut Command) {
     remove_codexhost_environment(command, std::env::vars_os().map(|(name, _)| name));
     command
@@ -806,7 +814,7 @@ mod tests {
     use super::desktop_launch_command;
     use super::{
         CODEXHOST_RELEASES_LATEST_URL, DesktopSession, configure_managed_desktop_environment,
-        latest_release_command, remove_codexhost_environment,
+        external_url_command, remove_codexhost_environment,
     };
     #[cfg(target_os = "linux")]
     use super::{
@@ -1125,7 +1133,7 @@ mod tests {
 
     #[test]
     fn latest_release_uses_only_the_fixed_github_url() {
-        let command = latest_release_command();
+        let command = external_url_command(CODEXHOST_RELEASES_LATEST_URL);
         #[cfg(target_os = "macos")]
         assert_eq!(command.get_program(), "/usr/bin/open");
         #[cfg(target_os = "linux")]

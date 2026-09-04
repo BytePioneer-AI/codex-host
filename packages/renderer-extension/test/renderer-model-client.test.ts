@@ -10,7 +10,10 @@ import {
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  DEEPSEEK_MODERN_SESSION_IMPORT_METHOD,
+  DEEPSEEK_MODERN_SESSION_LIST_METHOD,
   HARNESS_INSPECT_METHOD,
+  HARNESS_WEB_UI_OPEN_METHOD,
   THREAD_FORK_METHOD,
   THREAD_INSPECT_METHOD,
   THREAD_MODEL_SELECT_METHOD,
@@ -23,6 +26,7 @@ import {
   UPDATE_CHECK_METHOD,
   UPDATE_START_METHOD,
   UPDATE_STATUS_METHOD,
+  RendererDeepSeekSessionUnavailableError,
   createRendererModelClient,
   createThreadUsageSubscriptionRelay,
 } from "../src/renderer-model-client.js";
@@ -139,11 +143,14 @@ describe("Renderer fixed Model request client", () => {
       "checkUpdate",
       "executeThreadCommand",
       "forkThread",
+      "importDeepSeekModernSession",
       "inspectHarness",
       "inspectThread",
       "inspectThreadCommands",
       "inspectThreadUsage",
+      "listDeepSeekModernSessions",
       "listThreadOwnership",
+      "openHarnessWebUi",
       "readUpdateStatus",
       "selectThreadModel",
       "selectThreadPermissionMode",
@@ -269,6 +276,97 @@ describe("Renderer fixed Model request client", () => {
     expect(sendRequest).toHaveBeenNthCalledWith(10, UPDATE_CHECK_METHOD, {});
     expect(sendRequest).toHaveBeenNthCalledWith(11, UPDATE_START_METHOD, {});
     expect(sendRequest).toHaveBeenNthCalledWith(12, UPDATE_STATUS_METHOD, {});
+  });
+
+  it("uses only the fixed DSH Modern Session import methods and strict shapes", async () => {
+    const sendRequest = vi
+      .fn<(method: string, params: unknown) => Promise<unknown>>()
+      .mockResolvedValueOnce({
+        candidates: [
+          {
+            nativeSessionId: "native-1",
+            title: "Existing session",
+            updatedAt: 1_000,
+            cwd: "C:\\work",
+            running: false,
+          },
+        ],
+      })
+      .mockResolvedValueOnce({ threadId: "thread-1" });
+    const client = createRendererModelClient([{ sendRequest }]);
+    if (!client?.listDeepSeekModernSessions || !client.importDeepSeekModernSession) {
+      throw new Error("DSH Modern Session client was not created");
+    }
+
+    await expect(client.listDeepSeekModernSessions({})).resolves.toMatchObject({
+      candidates: [{ nativeSessionId: "native-1" }],
+    });
+    await expect(
+      client.importDeepSeekModernSession({ nativeSessionId: "native-1" }),
+    ).resolves.toEqual({ threadId: "thread-1" });
+    expect(sendRequest).toHaveBeenNthCalledWith(1, DEEPSEEK_MODERN_SESSION_LIST_METHOD, {});
+    expect(sendRequest).toHaveBeenNthCalledWith(2, DEEPSEEK_MODERN_SESSION_IMPORT_METHOD, {
+      nativeSessionId: "native-1",
+    });
+
+    await expect(
+      client.importDeepSeekModernSession({
+        nativeSessionId: "native-2",
+        cwd: "C:\\injected",
+      } as never),
+    ).rejects.toThrow();
+    expect(sendRequest).toHaveBeenCalledTimes(2);
+  });
+
+  it("coalesces an in-flight DSH Modern import across page mounts", async () => {
+    const response = Promise.withResolvers<unknown>();
+    const sendRequest = vi.fn(() => response.promise);
+    const client = createRendererModelClient([{ sendRequest }]);
+    if (!client?.importDeepSeekModernSession) {
+      throw new Error("DSH Modern Session client was not created");
+    }
+
+    const first = client.importDeepSeekModernSession({ nativeSessionId: "native-1" });
+    const remounted = client.importDeepSeekModernSession({ nativeSessionId: "native-1" });
+
+    expect(sendRequest).toHaveBeenCalledOnce();
+    response.resolve({ threadId: "thread-1" });
+    await expect(first).resolves.toEqual({ threadId: "thread-1" });
+    await expect(remounted).resolves.toEqual({ threadId: "thread-1" });
+  });
+
+  it("normalizes only stable unavailable DSH Modern response codes", async () => {
+    const unavailable = Object.assign(new Error("private unavailable detail"), { code: -32076 });
+    const unsupported = Object.assign(new Error("private unsupported detail"), { code: -32077 });
+    const sendRequest = vi
+      .fn()
+      .mockRejectedValueOnce(unavailable)
+      .mockRejectedValueOnce(unsupported);
+    const client = createRendererModelClient([{ sendRequest }]);
+    if (!client?.listDeepSeekModernSessions || !client.importDeepSeekModernSession) {
+      throw new Error("DSH Modern Session client was not created");
+    }
+
+    await expect(client.listDeepSeekModernSessions({})).rejects.toBeInstanceOf(
+      RendererDeepSeekSessionUnavailableError,
+    );
+    await expect(
+      client.importDeepSeekModernSession({ nativeSessionId: "native-1" }),
+    ).rejects.toBeInstanceOf(RendererDeepSeekSessionUnavailableError);
+  });
+
+  it("opens Harness Web through the pathless Host action", async () => {
+    const sendRequest = vi.fn(() => Promise.resolve({}));
+    const client = createRendererModelClient([{ sendRequest }]);
+    if (!client?.openHarnessWebUi) throw new Error("Harness Web UI client was not created");
+    const harnessId = harnessIdSchema.parse("deepseek-harness");
+
+    await expect(client.openHarnessWebUi({ harnessId })).resolves.toBeUndefined();
+    expect(sendRequest).toHaveBeenCalledWith(HARNESS_WEB_UI_OPEN_METHOD, { harnessId });
+    await expect(
+      client.openHarnessWebUi({ harnessId, url: "http://127.0.0.1/?token=secret" } as never),
+    ).rejects.toThrow();
+    expect(sendRequest).toHaveBeenCalledOnce();
   });
 
   it("defers Usage notification registration until a request manager is available", () => {

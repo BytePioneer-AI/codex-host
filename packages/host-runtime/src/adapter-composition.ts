@@ -8,6 +8,7 @@ import { OmpAdapter } from "@codexhost/adapter-omp";
 import { BrokeredHarnessAdapter } from "@codexhost/harness-broker";
 import type { HarnessAdapter } from "@codexhost/harness-adapter";
 import type { ExternalHarnessId } from "@codexhost/protocol-core";
+import { createLauncherUrlOpener } from "./launcher-url-opener.js";
 
 export const CLAUDE_CODE_COMMAND_ENV = "CODEXHOST_CLAUDE_COMMAND";
 export const DEEPSEEK_HARNESS_COMMAND_ENV = "CODEXHOST_DEEPSEEK_HARNESS_COMMAND";
@@ -46,8 +47,12 @@ export function createExternalHarnessAdapters(
     platform?: NodeJS.Platform;
     managedRemoteHost?: boolean;
     brokerDescriptorPath?: string;
+    openLocalUrl?: (url: URL) => Promise<void>;
   } = {},
 ): ReadonlyMap<ExternalHarnessId, HarnessAdapter> {
+  const openLocalUrl = options.managedRemoteHost
+    ? undefined
+    : (options.openLocalUrl ?? createLauncherUrlOpener(environment));
   const claudeAdapter =
     (options.platform ?? process.platform) === "darwin" && options.managedRemoteHost === true
       ? new BrokeredHarnessAdapter({
@@ -79,6 +84,7 @@ export function createExternalHarnessAdapters(
           ? { endpoint: environment[DEEPSEEK_HARNESS_ENDPOINT_ENV] }
           : {}),
         environment,
+        ...(openLocalUrl ? { openWebUi: openLocalUrl } : {}),
       }),
     ],
     [

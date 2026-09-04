@@ -41,6 +41,11 @@ export {
   synthesizeAntigravityCommand,
   toolTargetFile,
 } from "./tool-projection.js";
+export {
+  ANTIGRAVITY_COMMAND_CATALOG,
+  findAntigravityCommandDescriptor,
+  parseAndFormatAntigravityCommand,
+} from "./slash-commands.js";
 
 export const packageMetadata = {
   name: "@codexhost/adapter-antigravity",

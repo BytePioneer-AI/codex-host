@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -9,10 +9,12 @@ import {
   harnessThinkingOptionIdSchema,
   hostItemIdSchema,
   jsonValueSchema,
+  nativeCheckpointRefSchema,
   nativeTurnRefSchema,
   type HarnessModelRef,
   type HarnessThinkingOptionId,
   type JsonValue,
+  type NativeCheckpointRef,
   type NativeTurnRef,
 } from "@codexhost/shared-contracts";
 import { z } from "zod";
@@ -109,6 +111,7 @@ const turnOutcomeSchema = z.union([
 
 const turnSchema = z.strictObject({
   nativeTurnRef: nativeTurnRefSchema,
+  checkpoint: nativeCheckpointRefSchema.optional(),
   input: z.array(z.strictObject({ type: z.literal("text"), text: z.string() })),
   items: z.array(z.strictObject({ item: hostItemSchema, outcome: itemOutcomeSchema })),
   outcome: turnOutcomeSchema,
@@ -123,7 +126,7 @@ const historySchema = z.strictObject({
   thinkingOptionId: harnessThinkingOptionIdSchema.optional(),
 });
 
-type AntigravityTurn = HostThreadSnapshot["turns"][number];
+export type AntigravityTurn = HostThreadSnapshot["turns"][number];
 
 function historyRoot(environment: NodeJS.ProcessEnv): string {
   const dataDirectory = environment.CODEXHOST_DATA_DIR;
@@ -211,6 +214,60 @@ export class AntigravityHistory {
     });
   }
 
+  static async createDerived(input: {
+    environment: NodeJS.ProcessEnv;
+    nativeSessionId: string;
+    turns: AntigravityTurn[];
+    model?: HarnessModelRef;
+    thinkingOptionId?: HarnessThinkingOptionId;
+  }): Promise<AntigravityHistory> {
+    const file = historyPath(input.environment);
+    const history = new AntigravityHistory({
+      file,
+      nativeSessionId: input.nativeSessionId,
+      turns: input.turns,
+      ...(input.model ? { model: input.model } : {}),
+      ...(input.thinkingOptionId ? { thinkingOptionId: input.thinkingOptionId } : {}),
+    });
+    history.#queueWrite();
+    await history.flush();
+    return history;
+  }
+
+  static async findByNativeSessionId(
+    environment: NodeJS.ProcessEnv,
+    nativeSessionId: string,
+  ): Promise<AntigravityHistory | null> {
+    const root = historyRoot(environment);
+    let entries: string[];
+    try {
+      entries = await readdir(root);
+    } catch {
+      return null;
+    }
+    for (const entry of entries) {
+      if (!entry.endsWith(".json")) continue;
+      const file = path.join(root, entry);
+      try {
+        const parsed = historySchema.safeParse(JSON.parse(await readFile(file, "utf8")));
+        if (parsed.success && parsed.data.nativeSessionId === nativeSessionId) {
+          return new AntigravityHistory({
+            file,
+            nativeSessionId: parsed.data.nativeSessionId,
+            turns: parsed.data.turns as AntigravityTurn[],
+            ...(parsed.data.model ? { model: parsed.data.model } : {}),
+            ...(parsed.data.thinkingOptionId
+              ? { thinkingOptionId: parsed.data.thinkingOptionId }
+              : {}),
+          });
+        }
+      } catch {
+        // A missing or corrupt sidecar cannot safely be treated as Native history.
+      }
+    }
+    return null;
+  }
+
   get model(): HarnessModelRef | undefined {
     return this.#model;
   }
@@ -242,6 +299,7 @@ export class AntigravityHistory {
 
   append(input: {
     nativeTurnRef: NativeTurnRef;
+    checkpoint?: NativeCheckpointRef;
     turnInput: AntigravityTurn["input"];
     items: AntigravityTurn["items"];
     outcome: AntigravityTurn["outcome"];
@@ -249,6 +307,7 @@ export class AntigravityHistory {
   }): void {
     const turn: AntigravityTurn = {
       nativeTurnRef: input.nativeTurnRef,
+      ...(input.checkpoint ? { checkpoint: input.checkpoint } : {}),
       input: input.turnInput,
       items: input.items,
       outcome: input.outcome,

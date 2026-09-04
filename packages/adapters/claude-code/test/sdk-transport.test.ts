@@ -901,7 +901,7 @@ describe("ClaudeSdkTransport Thinking control", () => {
     const value = fixture();
 
     await value.transport.start();
-    expect(options(value).thinking).toEqual({ type: "adaptive" });
+    expect(options(value).thinking).toEqual({ type: "adaptive", display: "summarized" });
     expect(options(value).effort).toBeUndefined();
 
     await value.transport.setThinkingOption(harnessThinkingOptionIdSchema.parse("high"));
@@ -924,7 +924,7 @@ describe("ClaudeSdkTransport Thinking control", () => {
   it("passes explicit and disabled Thinking when creating the Query", async () => {
     const explicit = fixture("create", "default", harnessThinkingOptionIdSchema.parse("xhigh"));
     await explicit.transport.start();
-    expect(options(explicit).thinking).toEqual({ type: "adaptive" });
+    expect(options(explicit).thinking).toEqual({ type: "adaptive", display: "summarized" });
     expect(options(explicit).effort).toBe("xhigh");
     await explicit.transport.close();
 

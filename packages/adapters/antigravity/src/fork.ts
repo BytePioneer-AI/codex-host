@@ -57,15 +57,31 @@ export async function cloneNativeConversationDb(
     try {
       db.prepare("UPDATE trajectory_meta SET cascade_id = ?").run(derivedSessionId);
       if (retainedTurnsCount !== undefined) {
-        const retainStepCount = retainedTurnsCount * 2;
         try {
-          db.prepare("DELETE FROM steps WHERE idx >= ?").run(retainStepCount);
+          if (retainedTurnsCount === 0) {
+            db.prepare("DELETE FROM steps").run();
+          } else {
+            // In agy, each turn begins with a user_input step (step_type = 14)
+            const rows = db
+              .prepare("SELECT idx FROM steps WHERE step_type = 14 ORDER BY idx ASC")
+              .all() as Array<{ idx: number }>;
+            const cutoff = rows[retainedTurnsCount];
+            if (cutoff) {
+              db.prepare("DELETE FROM steps WHERE idx >= ?").run(cutoff.idx);
+            }
+          }
         } catch {}
         try {
-          db.prepare("DELETE FROM gen_metadata WHERE idx >= ?").run(retainStepCount);
+          db.prepare("DELETE FROM gen_metadata WHERE idx >= ?").run(retainedTurnsCount);
         } catch {}
         try {
-          db.prepare("DELETE FROM executor_metadata WHERE idx >= ?").run(retainStepCount);
+          db.prepare("DELETE FROM executor_metadata WHERE idx >= ?").run(retainedTurnsCount);
+        } catch {}
+        try {
+          db.prepare("DELETE FROM parent_references WHERE idx >= ?").run(retainedTurnsCount);
+        } catch {}
+        try {
+          db.prepare("DELETE FROM battle_mode_infos WHERE idx >= ?").run(retainedTurnsCount);
         } catch {}
       }
     } finally {
@@ -83,12 +99,25 @@ export async function cloneNativeConversationDb(
       const cur = sumDb.prepare("SELECT * FROM conversation_summaries WHERE conversation_id = ?");
       const row = cur.get(sourceSessionId) as Record<string, unknown> | undefined;
       if (row) {
+        let remainingStepCount = 0;
+        try {
+          const countDb = new DatabaseSync(targetDb);
+          try {
+            const countRow = countDb.prepare("SELECT count(*) as c FROM steps").get() as
+              | { c: number }
+              | undefined;
+            if (countRow) remainingStepCount = countRow.c;
+          } finally {
+            countDb.close();
+          }
+        } catch {}
+
         const cols = Object.keys(row);
         const newRow: Record<string, unknown> = {
           ...row,
           conversation_id: derivedSessionId,
           last_modified_time: new Date().toISOString(),
-          ...(retainedTurnsCount !== undefined ? { step_count: retainedTurnsCount * 2 } : {}),
+          ...(retainedTurnsCount !== undefined ? { step_count: remainingStepCount } : {}),
         };
         const placeholders = cols.map(() => "?").join(", ");
         const values = cols.map((col) => newRow[col] as SQLInputValue);
@@ -118,7 +147,10 @@ export async function copyNativeBrainDirIfExists(
   const sourceBrain = nativeBrainDirPath(sourceSessionId, homedir);
   const targetBrain = nativeBrainDirPath(derivedSessionId, homedir);
   try {
-    await cp(sourceBrain, targetBrain, { recursive: true });
+    await cp(sourceBrain, targetBrain, {
+      recursive: true,
+      filter: (source) => path.basename(source) !== ".system_generated",
+    });
     return true;
   } catch {
     return false;

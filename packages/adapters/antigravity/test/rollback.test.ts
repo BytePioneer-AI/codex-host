@@ -10,10 +10,11 @@ import {
   hostTurnIdSchema,
   nativeSessionRefSchema,
 } from "@codexhost/shared-contracts";
+import { DatabaseSync } from "node:sqlite";
 import { describe, expect, it } from "vitest";
 
 import { AntigravityAdapter } from "../src/index.js";
-import { nativeConversationDbPath } from "../src/fork.js";
+import { cloneNativeConversationDb, nativeConversationDbPath } from "../src/fork.js";
 import { AntigravityHistory } from "../src/history.js";
 
 const antigravityHarnessId = harnessIdSchema.parse("antigravity");
@@ -437,6 +438,67 @@ describe("Antigravity Rollback Last Turn Capability", () => {
       await cleanup();
       await rm(fakeHome, { recursive: true, force: true });
       await rm(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it("accurately prunes steps based on turn boundaries in native sqlite db", async () => {
+    const fakeHome = await mkdtemp(path.join(os.tmpdir(), "codexhost-prune-test-"));
+    try {
+      const sourceDbPath = nativeConversationDbPath("source-prune-session", fakeHome);
+      await mkdir(path.dirname(sourceDbPath), { recursive: true });
+      const db = new DatabaseSync(sourceDbPath);
+      try {
+        db.exec(`
+          CREATE TABLE trajectory_meta (trajectory_id text primary key, cascade_id text);
+          INSERT INTO trajectory_meta VALUES ('traj-1', 'source-prune-session');
+          CREATE TABLE steps (idx integer primary key, step_type integer);
+          -- Turn 1: user (idx 0), agent (idx 1)
+          INSERT INTO steps VALUES (0, 14), (1, 15);
+          -- Turn 2: user (idx 2), system (idx 3), agent (idx 4)
+          INSERT INTO steps VALUES (2, 14), (3, 101), (4, 15);
+          -- Turn 3: user (idx 5), system (idx 6), agent (idx 7)
+          INSERT INTO steps VALUES (5, 14), (6, 101), (7, 15);
+          CREATE TABLE gen_metadata (idx integer primary key);
+          INSERT INTO gen_metadata VALUES (0), (1), (2);
+          CREATE TABLE executor_metadata (idx integer primary key);
+          INSERT INTO executor_metadata VALUES (0), (1), (2);
+        `);
+      } finally {
+        db.close();
+      }
+
+      // Retain 2 turns (Turn 1 and Turn 2)
+      const cloned = await cloneNativeConversationDb(
+        "source-prune-session",
+        "derived-prune-session",
+        2,
+        fakeHome,
+      );
+      expect(cloned).toBe(true);
+
+      const derivedDbPath = nativeConversationDbPath("derived-prune-session", fakeHome);
+      const derivedDb = new DatabaseSync(derivedDbPath);
+      try {
+        const meta = derivedDb.prepare("SELECT cascade_id FROM trajectory_meta").get() as {
+          cascade_id: string;
+        };
+        expect(meta.cascade_id).toBe("derived-prune-session");
+
+        const steps = derivedDb
+          .prepare("SELECT idx, step_type FROM steps ORDER BY idx ASC")
+          .all() as Array<{ idx: number; step_type: number }>;
+        // Should keep idx 0..4 (Turn 1 and Turn 2 completely intact)
+        expect(steps.map((s) => s.idx)).toEqual([0, 1, 2, 3, 4]);
+
+        const genMeta = derivedDb
+          .prepare("SELECT idx FROM gen_metadata ORDER BY idx ASC")
+          .all() as Array<{ idx: number }>;
+        expect(genMeta.map((g) => g.idx)).toEqual([0, 1]);
+      } finally {
+        derivedDb.close();
+      }
+    } finally {
+      await rm(fakeHome, { recursive: true, force: true });
     }
   });
 

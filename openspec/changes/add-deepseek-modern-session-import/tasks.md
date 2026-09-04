@@ -9,7 +9,7 @@
 
 - [x] 2.1 新增 Modern-only `session/list` reader/parser，限制 response、节点、深度、item 和字段长度
 - [x] 2.2 精确发送 `{ _request: {} }`，解析 root/Fork/Subagent/blank/running/cwd/title并保留 authoritative order
-- [x] 2.3 在 Modern Adapter 与公共 DeepSeek Facade 暴露窄方法；Legacy 返回 unsupported且不调用 Legacy transport
+- [x] 2.3 在公共 `HarnessAdapter` 定义可选 Session Import 候选接口，由 Modern Adapter 与公共 DeepSeek Facade 实现；Legacy 返回 unsupported且不调用 Legacy transport，其他 Harness 无需改动
 - [x] 2.4 覆盖 valid、malformed、duplicate、invalid cwd/time/title、unknown projection、exact/oversize bound、Remote failure 和 close
 
 ## 3. Fixed Contracts 与 Host mapping 事务
@@ -37,7 +37,7 @@
 
 ## 5. 聚焦测试
 
-- [x] 5.1 Shared Contracts 覆盖 exact shape、边界、额外字段拒绝和 browser bundle
+- [x] 5.1 Shared Contracts 覆盖通用候选与 DSH fixed method 的 exact shape、边界、额外字段拒绝和 browser bundle
 - [x] 5.2 Host 覆盖 mapped exclusion、fresh revalidation、busy/disappeared、幂等、跨 Host 竞争和所有 persistence rollback
 - [x] 5.3 断言 ready record 的 Native Ref、cwd/title、default carrier、paginated、non-ephemeral 和 empty mappings
 - [x] 5.4 断言 `thread/started`/`thread/list` 立即可见，并且第一次标准 resume 才恢复 Snapshot和补齐 Turn mappings
@@ -53,4 +53,4 @@
 - [x] 6.3 打开导入 Thread，确认完整历史、同一 nativeSessionId、懒补齐 mappings并继续下一轮
 - [x] 6.4 运行受影响 workspace typecheck、聚焦测试、browser boundary、Prettier和 `git diff --check`
 - [x] 6.5 用户通过 `npm start` 完成最终真实视觉与交互测试
-- [x] 6.6 审查相对父分支全部文件，确认除全局唯一索引所需的 Store-wide 写队列外，无 Legacy、其他 Harness、DSH源码、通用 Adapter、Store Schema、依赖或 lockfile越界
+- [x] 6.6 审查相对父分支全部文件，确认除窄的可选 Session Import 接口和全局唯一索引所需的 Store-wide 写队列外，无 Legacy、其他 Harness 实现、DSH源码、Store Schema、依赖或 lockfile越界

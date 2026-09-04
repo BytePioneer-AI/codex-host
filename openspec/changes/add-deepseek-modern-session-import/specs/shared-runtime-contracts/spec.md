@@ -1,8 +1,8 @@
 ## ADDED Requirements
 
-### Requirement: DSH Modern import contracts are fixed and browser-safe
+### Requirement: Session import candidates and DSH operations are fixed and browser-safe
 
-Shared Contracts SHALL export strict browser-safe Runtime Schemas for exactly two DSH Modern import operations: an empty candidate-list request and a Native Session import request. Candidate results SHALL contain only bounded Native Session ID, cwd, title or null, update time and running state; import params SHALL contain only Native Session ID; import results SHALL contain only Host Thread ID. The contracts MUST NOT expose a generic Harness method, arbitrary payload, DSH SDK/wire type, Native event, Transcript, Prompt, Tool output, credential, URL, token, cookie or undeclared field.
+Shared Contracts SHALL export one strict browser-safe Harness Session Import candidate Schema containing only bounded Native Session ID, cwd, title or null, update time and running state. The two DSH Modern import operations—an empty candidate-list request and a Native Session import request—SHALL reuse that candidate shape; import params SHALL contain only Native Session ID and import results SHALL contain only Host Thread ID. The contracts MUST NOT expose a generic Harness method, arbitrary payload, DSH SDK/wire type, Native event, Transcript, Prompt, Tool output, credential, URL, token, cookie or undeclared field.
 
 #### Scenario: Renderer validates a candidate list
 

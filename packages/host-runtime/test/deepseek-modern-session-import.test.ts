@@ -24,12 +24,13 @@ const directories: string[] = [];
 
 class ModernCandidateAdapter extends FakeHarnessAdapter {
   candidates: DeepSeekModernSessionCandidate[] = [];
-  readonly listModernSessionCandidates = vi.fn(
+  readonly listCandidates = vi.fn(
     async (): Promise<HarnessResult<DeepSeekModernSessionCandidate[]>> => ({
       ok: true,
       value: structuredClone(this.candidates),
     }),
   );
+  readonly sessionImport = { listCandidates: this.listCandidates };
 
   constructor() {
     super(DEEPSEEK_HARNESS_ID);
@@ -186,7 +187,7 @@ describe("DeepSeekModernSessionImporter", () => {
     const setup = await fixture();
     setup.adapter.candidates = [candidate("shared")];
     const release = Promise.withResolvers<undefined>();
-    setup.adapter.listModernSessionCandidates.mockImplementationOnce(async () => {
+    setup.adapter.listCandidates.mockImplementationOnce(async () => {
       await release.promise;
       return { ok: true, value: structuredClone(setup.adapter.candidates) };
     });
@@ -200,8 +201,8 @@ describe("DeepSeekModernSessionImporter", () => {
     expect(right).toEqual(left);
     if (!left.ok || !right.ok) throw new Error("Concurrent import did not succeed");
     expect(left.threadId).toBe(right.threadId);
-    expect(setup.adapter.listModernSessionCandidates).toHaveBeenCalledOnce();
-    setup.adapter.listModernSessionCandidates.mockRejectedValueOnce(new Error("must not list"));
+    expect(setup.adapter.listCandidates).toHaveBeenCalledOnce();
+    setup.adapter.listCandidates.mockRejectedValueOnce(new Error("must not list"));
     await expect(setup.importer.import("shared")).resolves.toMatchObject({
       ok: true,
       threadId: left.threadId,
@@ -218,7 +219,7 @@ describe("DeepSeekModernSessionImporter", () => {
     setup.adapter.candidates = [available];
     const listed = Promise.withResolvers<undefined>();
     const release = Promise.withResolvers<undefined>();
-    setup.adapter.listModernSessionCandidates.mockImplementationOnce(async () => {
+    setup.adapter.listCandidates.mockImplementationOnce(async () => {
       listed.resolve(undefined);
       await release.promise;
       return { ok: true, value: [available] };

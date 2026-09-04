@@ -6,6 +6,7 @@ import type {
   HarnessInspection,
   HarnessResult,
   HarnessSession,
+  HarnessSessionImportCapability,
   HarnessWebUiAction,
   InspectHarnessInput,
   OpenSessionInput,
@@ -63,7 +64,7 @@ export interface DeepSeekHarnessAdapterDependencies {
 }
 
 interface ModernDelegateAdapter extends HarnessAdapter {
-  listModernSessionCandidates(): Promise<HarnessResult<DeepSeekModernSessionCandidate[]>>;
+  readonly sessionImport: HarnessSessionImportCapability;
 }
 
 interface DelegateOwner {
@@ -88,6 +89,9 @@ class DelegateSelectionError extends Error {
 /** Public DeepSeek Adapter that selects one exact DSH protocol generation for its lifetime. */
 export class DeepSeekHarnessAdapter implements HarnessAdapter {
   readonly harnessId: HarnessId = DEEPSEEK_HARNESS_ID;
+  readonly sessionImport: HarnessSessionImportCapability = Object.freeze({
+    listCandidates: () => this.#listSessionImportCandidates(),
+  });
   readonly webUi: HarnessWebUiAction = Object.freeze({
     open: () => this.#openWebUi(),
   });
@@ -155,7 +159,14 @@ export class DeepSeekHarnessAdapter implements HarnessAdapter {
     }
   }
 
-  async listModernSessionCandidates(): Promise<HarnessResult<DeepSeekModernSessionCandidate[]>> {
+  close(): Promise<void> {
+    this.#closePromise ??= this.#performClose();
+    return this.#closePromise;
+  }
+
+  async #listSessionImportCandidates(): Promise<
+    HarnessResult<readonly DeepSeekModernSessionCandidate[]>
+  > {
     try {
       const selected = await this.#select(false);
       if (this.#closed) return { ok: false, error: closedError() };
@@ -169,15 +180,10 @@ export class DeepSeekHarnessAdapter implements HarnessAdapter {
           },
         };
       }
-      return (selected.adapter as ModernDelegateAdapter).listModernSessionCandidates();
+      return (selected.adapter as ModernDelegateAdapter).sessionImport.listCandidates();
     } catch (error) {
       return { ok: false, error: this.#selectionError(error) };
     }
-  }
-
-  close(): Promise<void> {
-    this.#closePromise ??= this.#performClose();
-    return this.#closePromise;
   }
 
   #openWebUi(): Promise<HarnessResult<void>> {

@@ -583,7 +583,7 @@ describe("Modern DeepSeek Harness Adapter", () => {
       },
     };
 
-    await expect(adapter.listModernSessionCandidates()).resolves.toEqual({
+    await expect(adapter.sessionImport.listCandidates()).resolves.toEqual({
       ok: true,
       value: [
         {
@@ -597,7 +597,7 @@ describe("Modern DeepSeek Harness Adapter", () => {
     });
     expect(connection.calls).toContainEqual({ endpoint: "session/list", args: { _request: {} } });
     await adapter.close();
-    await expect(adapter.listModernSessionCandidates()).resolves.toMatchObject({
+    await expect(adapter.sessionImport.listCandidates()).resolves.toMatchObject({
       ok: false,
       error: { code: "invalidState" },
     });

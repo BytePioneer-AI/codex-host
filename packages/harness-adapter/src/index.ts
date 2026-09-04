@@ -29,6 +29,8 @@ export type {
   HarnessResult,
   HarnessSession,
   HarnessSessionCapabilities,
+  HarnessSessionImportCandidate,
+  HarnessSessionImportCapability,
   HarnessSubagentCapability,
   HarnessWebUiAction,
   HarnessSessionState,

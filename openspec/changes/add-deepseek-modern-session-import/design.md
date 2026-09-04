@@ -29,20 +29,20 @@ Mapping Store 已经是运行中 Host 的唯一 External Thread metadata 索引�
 
 **Non-Goals:**
 
-- Legacy `0.1.1-rc.2` Session 导入，或任何其他 Harness 的 Session import/list 抽象。
+- Legacy `0.1.1-rc.2` Session 导入，或为任何其他 Harness 实现 Session Import 能力。
 - Remote Host 导入、外部 Modern Web 附着、凭据共享、默认 3080 之外的端口扫描或进程发现。
 - 批量导入、搜索、分页、按 cwd 筛选、Native Session rename/delete/archive、跨 cwd 迁移或完整 Session 管理页。
 - 读取 DSH JSONL/SQLite/projection cache/credential store，复制 Transcript、Prompt、Tool output、Diff 或 preview。
 - 在导入时调用 DSH create/fork/prompt/cancel/select/command，或打开 Session、恢复 Agent、读取 Snapshot、注册 live Runtime。
-- 修改通用 `HarnessAdapter`、Mapping Store V1 Schema、依赖、lockfile 或其他 Harness 行为。
+- 修改 Mapping Store V1 Schema、依赖、lockfile 或其他 Harness 行为。
 
 ## Decisions
 
-### 1. 候选能力只属于 concrete DeepSeek Modern Adapter
+### 1. 公共 Adapter 只定义可选的候选发现能力
 
-`ModernDeepSeekHarnessAdapter` 在现有 authenticated `ModernRemoteConnection` 上增加一个 DSH-specific list 方法。公共 `DeepSeekHarnessAdapter` Facade 只在其生命周期已经选择 Modern delegate 后转发该方法；选择 Legacy 时返回稳定 `unsupported`，不得调用 Legacy `sessions.list` 或 `open`。
+公共 `HarnessAdapter` 增加可选 `HarnessSessionImportCapability`，其中只有 `listCandidates()` 一个操作，返回 SDK-free、浏览器安全的标准候选。该 seam 不包含 Host JSON-RPC、Mapping Store、Host Thread、Transcript 或具体 Harness wire；没有该能力的 Adapter 不需要实现或改动。
 
-Host 通过窄的 structural capability 取得该方法，不扩展公共 `HarnessAdapter`。Renderer 只看到 SDK-free Shared Contract。这样代际判断仍只发生在现有 selector，Host 不解析 DSH 版本、endpoint 或 event，也不会形成任意 Harness method bridge。
+`ModernDeepSeekHarnessAdapter` 在现有 authenticated `ModernRemoteConnection` 上实现该能力。公共 `DeepSeekHarnessAdapter` Facade 只在其生命周期已经选择 Modern delegate 后转发；选择 Legacy 时返回稳定 `unsupported`，不得调用 Legacy `sessions.list` 或 `open`。Host 只读取公共可选能力，代际判断仍只发生在现有 selector，Host 不解析 DSH 版本、endpoint 或 event，也不会形成任意 Harness method bridge。
 
 ### 2. `session/list` 解析严格、有界且保留可扩展 projection
 
@@ -144,6 +144,7 @@ exact `0.1.1-rc.2` compiled artifact 负向 Gate 同时通过：Legacy inspect�
 ## Risks / Trade-offs
 
 - [mapping 提交与首次打开分离] → 导入可以在原生 Session随后消失时留下暂时不可打开的合法 mapping；不为此复制历史或删除用户已确认的关联，标准 resume 会如实报告错误。
+- [公共可选能力当前只有一个实现] → seam 由明确的产品方向驱动，且只有一个候选发现方法；其他 Harness 不实现、不暴露占位能力，待真实接入时再验证候选字段是否仍足够。
 - [DSH list 没有分页] → 使用固定 response/item/work bounds，超限整体失败；只有 rc.1 后续提供受验证分页协议时再增加分页。
 - [running 只是瞬时状态] → 提交前重列仍不能形成 lease；首次打开的 native busy/identity 结果继续权威，不能猜测 attached 状态。
 - [设置页触发 Adapter selection/startup] → 与现有 Harness inspection 生命周期一致；只允许父变更已经证明所有权的本地 managed Modern process，不附着外部端口。

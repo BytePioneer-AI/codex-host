@@ -1,12 +1,22 @@
 import { z } from "zod";
 
+import {
+  HARNESS_SESSION_IMPORT_CWD_MAX_LENGTH,
+  HARNESS_SESSION_IMPORT_ID_MAX_LENGTH,
+  HARNESS_SESSION_IMPORT_LIST_MAX_LENGTH,
+  HARNESS_SESSION_IMPORT_TITLE_MAX_LENGTH,
+  HARNESS_SESSION_IMPORT_UPDATED_AT_MAX,
+  harnessSessionImportCandidateSchema,
+  harnessSessionImportIdSchema,
+  type HarnessSessionImportCandidate,
+} from "./harness-session-import.js";
 import { hostThreadIdSchema } from "./ids.js";
 
-export const DEEPSEEK_MODERN_SESSION_ID_MAX_LENGTH = 1_024;
-export const DEEPSEEK_MODERN_SESSION_CWD_MAX_LENGTH = 16_384;
-export const DEEPSEEK_MODERN_SESSION_TITLE_MAX_LENGTH = 4_096;
-export const DEEPSEEK_MODERN_SESSION_LIST_MAX_LENGTH = 1_000;
-export const DEEPSEEK_MODERN_SESSION_UPDATED_AT_MAX = 8_640_000_000_000_000;
+export const DEEPSEEK_MODERN_SESSION_ID_MAX_LENGTH = HARNESS_SESSION_IMPORT_ID_MAX_LENGTH;
+export const DEEPSEEK_MODERN_SESSION_CWD_MAX_LENGTH = HARNESS_SESSION_IMPORT_CWD_MAX_LENGTH;
+export const DEEPSEEK_MODERN_SESSION_TITLE_MAX_LENGTH = HARNESS_SESSION_IMPORT_TITLE_MAX_LENGTH;
+export const DEEPSEEK_MODERN_SESSION_LIST_MAX_LENGTH = HARNESS_SESSION_IMPORT_LIST_MAX_LENGTH;
+export const DEEPSEEK_MODERN_SESSION_UPDATED_AT_MAX = HARNESS_SESSION_IMPORT_UPDATED_AT_MAX;
 export const DEEPSEEK_MODERN_HOST_THREAD_ID_MAX_LENGTH = 1_024;
 
 const nonBlankTextSchema = z
@@ -14,19 +24,11 @@ const nonBlankTextSchema = z
   .refine((value) => value.trim().length > 0, "Value must not be empty or whitespace")
   .refine((value) => !value.includes("\0"), "Value must not contain NUL");
 
-const deepSeekModernSessionIdSchema = nonBlankTextSchema.max(DEEPSEEK_MODERN_SESSION_ID_MAX_LENGTH);
+const deepSeekModernSessionIdSchema = harnessSessionImportIdSchema;
 
-export const deepSeekModernSessionCandidateSchema = z
-  .object({
-    nativeSessionId: deepSeekModernSessionIdSchema,
-    title: nonBlankTextSchema.max(DEEPSEEK_MODERN_SESSION_TITLE_MAX_LENGTH).nullable(),
-    updatedAt: z.number().int().nonnegative().max(DEEPSEEK_MODERN_SESSION_UPDATED_AT_MAX),
-    cwd: nonBlankTextSchema.max(DEEPSEEK_MODERN_SESSION_CWD_MAX_LENGTH),
-    running: z.boolean(),
-  })
-  .strict();
+export const deepSeekModernSessionCandidateSchema = harnessSessionImportCandidateSchema;
 
-export type DeepSeekModernSessionCandidate = z.infer<typeof deepSeekModernSessionCandidateSchema>;
+export type DeepSeekModernSessionCandidate = HarnessSessionImportCandidate;
 
 export const deepSeekModernSessionListParamsSchema = z.object({}).strict();
 

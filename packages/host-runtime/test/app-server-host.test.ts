@@ -224,12 +224,13 @@ class WebUiHarnessAdapter extends FakeHarnessAdapter {
 
 class ModernSessionImportAdapter extends FakeHarnessAdapter {
   candidates: DeepSeekModernSessionCandidate[] = [];
-  readonly listModernSessionCandidates = vi.fn(
+  readonly listCandidates = vi.fn(
     async (): Promise<HarnessResult<DeepSeekModernSessionCandidate[]>> => ({
       ok: true,
       value: structuredClone(this.candidates),
     }),
   );
+  readonly sessionImport = { listCandidates: this.listCandidates };
 }
 
 function createFixture(
@@ -1276,7 +1277,7 @@ describe("AppServerHost HarnessAdapter projection", () => {
     await expect(
       fixture.collector.waitFor((message) => requestId(message, 42)),
     ).resolves.toMatchObject({ error: { code: -32602 } });
-    expect(adapter.listModernSessionCandidates).not.toHaveBeenCalled();
+    expect(adapter.listCandidates).not.toHaveBeenCalled();
     await stopFixture(fixture);
   });
 

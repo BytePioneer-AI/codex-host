@@ -8,6 +8,7 @@ import {
   type HarnessInspection,
   type HarnessResult,
   type HarnessSession,
+  type HarnessSessionImportCapability,
   type HarnessWebUiAction,
   type InspectHarnessInput,
   type OpenSessionInput,
@@ -126,6 +127,9 @@ const DEFAULT_DEPENDENCIES: ModernDeepSeekHarnessAdapterDependencies = {
 /** Exact Modern Adapter assembly over the managed Web Remote. */
 export class ModernDeepSeekHarnessAdapter implements HarnessAdapter {
   readonly harnessId: HarnessId = DEEPSEEK_HARNESS_ID;
+  readonly sessionImport: HarnessSessionImportCapability = Object.freeze({
+    listCandidates: () => this.#listSessionImportCandidates(),
+  });
   readonly webUi?: HarnessWebUiAction;
   readonly #connection: ModernConnectionLike;
   readonly #control: ModernControlStore;
@@ -187,11 +191,6 @@ export class ModernDeepSeekHarnessAdapter implements HarnessAdapter {
     return this.#track(this.#open(input));
   }
 
-  listModernSessionCandidates(): Promise<HarnessResult<DeepSeekModernSessionCandidate[]>> {
-    if (!this.#accepting) return Promise.resolve({ ok: false, error: this.#stoppedError() });
-    return this.#track(this.#listModernSessionCandidates());
-  }
-
   close(): Promise<void> {
     if (!this.#closePromise) {
       this.#accepting = false;
@@ -238,6 +237,13 @@ export class ModernDeepSeekHarnessAdapter implements HarnessAdapter {
         error: failure,
       };
     }
+  }
+
+  #listSessionImportCandidates(): Promise<
+    HarnessResult<readonly DeepSeekModernSessionCandidate[]>
+  > {
+    if (!this.#accepting) return Promise.resolve({ ok: false, error: this.#stoppedError() });
+    return this.#track(this.#listModernSessionCandidates());
   }
 
   async #listModernSessionCandidates(): Promise<HarnessResult<DeepSeekModernSessionCandidate[]>> {

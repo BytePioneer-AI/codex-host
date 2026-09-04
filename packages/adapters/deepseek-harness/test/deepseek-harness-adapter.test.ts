@@ -127,10 +127,12 @@ class FakeAdapter implements HarnessAdapter {
     return { ok: true, value: {} as HarnessSession };
   }
 
-  async listModernSessionCandidates(): Promise<HarnessResult<DeepSeekModernSessionCandidate[]>> {
-    this.listCalls += 1;
-    return { ok: true, value: [] };
-  }
+  readonly sessionImport = {
+    listCandidates: async (): Promise<HarnessResult<DeepSeekModernSessionCandidate[]>> => {
+      this.listCalls += 1;
+      return { ok: true, value: [] };
+    },
+  };
 
   close(): Promise<void> {
     this.closeCalls += 1;
@@ -171,7 +173,10 @@ describe("DeepSeek public generation selector", () => {
       },
     );
 
-    await expect(adapter.listModernSessionCandidates()).resolves.toEqual({ ok: true, value: [] });
+    await expect(adapter.sessionImport.listCandidates()).resolves.toEqual({
+      ok: true,
+      value: [],
+    });
     expect(modern.listCalls).toBe(1);
     expect(failedLegacy.listCalls).toBe(0);
     await adapter.close();
@@ -187,7 +192,7 @@ describe("DeepSeek public generation selector", () => {
       },
     );
 
-    await expect(adapter.listModernSessionCandidates()).resolves.toMatchObject({
+    await expect(adapter.sessionImport.listCandidates()).resolves.toMatchObject({
       ok: false,
       error: { code: "unsupported", retryable: false },
     });

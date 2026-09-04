@@ -1,4 +1,4 @@
-import type { HarnessAdapter, HarnessResult } from "@codexhost/harness-adapter";
+import type { HarnessAdapter, HarnessSessionImportCapability } from "@codexhost/harness-adapter";
 import { MappingStoreError, type StoredThreadRecordV1 } from "@codexhost/mapping-store";
 import {
   mapExternalThreadHarnessError,
@@ -21,10 +21,6 @@ import {
 
 const DEEPSEEK_HARNESS_ID = harnessIdSchema.parse("deepseek-harness");
 
-interface DeepSeekModernSessionAdapter extends HarnessAdapter {
-  listModernSessionCandidates(): Promise<HarnessResult<DeepSeekModernSessionCandidate[]>>;
-}
-
 export type DeepSeekModernSessionListOutcome =
   | { ok: true; candidates: DeepSeekModernSessionCandidate[] }
   | { ok: false; error: ExternalThreadRpcError };
@@ -33,12 +29,10 @@ export type DeepSeekModernSessionImportOutcome =
   | { ok: true; threadId: HostThreadId; thread: JsonObject }
   | { ok: false; error: ExternalThreadRpcError };
 
-function modernAdapter(adapter: HarnessAdapter | undefined): DeepSeekModernSessionAdapter | null {
-  return adapter?.harnessId === DEEPSEEK_HARNESS_ID &&
-    typeof (adapter as { listModernSessionCandidates?: unknown }).listModernSessionCandidates ===
-      "function"
-    ? (adapter as DeepSeekModernSessionAdapter)
-    : null;
+function sessionImportCapability(
+  adapter: HarnessAdapter | undefined,
+): HarnessSessionImportCapability | null {
+  return adapter?.harnessId === DEEPSEEK_HARNESS_ID ? (adapter.sessionImport ?? null) : null;
 }
 
 function fixedError(code: number, message: string): ExternalThreadRpcError {
@@ -74,7 +68,7 @@ function importedThread(
 }
 
 export class DeepSeekModernSessionImporter {
-  readonly #adapter: DeepSeekModernSessionAdapter | null;
+  readonly #sessionImport: HarnessSessionImportCapability | null;
   readonly #adapterRegistered: boolean;
   readonly #diagnose: (error: unknown) => void;
   readonly #imports = new Map<string, Promise<DeepSeekModernSessionImportOutcome>>();
@@ -85,7 +79,7 @@ export class DeepSeekModernSessionImporter {
     diagnose?: (error: unknown) => void;
     repository: ExternalThreadRepository;
   }) {
-    this.#adapter = modernAdapter(input.adapter);
+    this.#sessionImport = sessionImportCapability(input.adapter);
     this.#adapterRegistered = input.adapter?.harnessId === DEEPSEEK_HARNESS_ID;
     this.#diagnose = input.diagnose ?? (() => undefined);
     this.#repository = input.repository;
@@ -121,8 +115,8 @@ export class DeepSeekModernSessionImporter {
   }
 
   async #readCandidates(): Promise<DeepSeekModernSessionListOutcome> {
-    const adapter = this.#adapter;
-    if (!adapter) {
+    const sessionImport = this.#sessionImport;
+    if (!sessionImport) {
       return {
         ok: false,
         error: this.#adapterRegistered
@@ -131,9 +125,9 @@ export class DeepSeekModernSessionImporter {
       };
     }
     try {
-      const listed = await adapter.listModernSessionCandidates();
+      const listed = await sessionImport.listCandidates();
       return listed.ok
-        ? { ok: true, candidates: listed.value }
+        ? { ok: true, candidates: [...listed.value] }
         : { ok: false, error: mapExternalThreadHarnessError(listed.error, "read") };
     } catch {
       return {

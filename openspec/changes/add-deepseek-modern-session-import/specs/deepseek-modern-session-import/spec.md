@@ -1,8 +1,8 @@
 ## ADDED Requirements
 
-### Requirement: Candidate discovery uses only the exact Modern Session Remote
+### Requirement: Candidate discovery uses the optional Adapter capability and exact Modern Session Remote
 
-The concrete DeepSeek Adapter SHALL discover import candidates only when its lifetime delegate is exact `0.1.2-rc.1` Modern. It SHALL call the authenticated `session/list` Remote with exact args `{ _request: {} }`, validate the complete response under finite byte, depth, node, item and field limits, and expose only bounded SDK-free candidate metadata. It MUST NOT use Legacy `sessions.list`, scan Native storage, read history to synthesize metadata, attach an external Modern Web, or expose DSH wire objects outside the Adapter package.
+`HarnessAdapter` SHALL define one optional Session Import capability that lists bounded SDK-free candidate metadata and does not expose Host RPC, Mapping Store, Host Thread or Transcript operations. The concrete DeepSeek Adapter SHALL implement that capability only through an exact `0.1.2-rc.1` Modern lifetime delegate. It SHALL call the authenticated `session/list` Remote with exact args `{ _request: {} }`, validate the complete response under finite byte, depth, node, item and field limits, and expose only bounded SDK-free candidate metadata. It MUST NOT use Legacy `sessions.list`, scan Native storage, read history to synthesize metadata, attach an external Modern Web, or expose DSH wire objects outside the Adapter package.
 
 #### Scenario: Modern profile contains importable history
 
@@ -25,8 +25,14 @@ The concrete DeepSeek Adapter SHALL discover import candidates only when its lif
 #### Scenario: Legacy is selected
 
 - **WHEN** the public DeepSeek Facade has selected exact `0.1.1-rc.2` Legacy
-- **THEN** candidate discovery SHALL return `unsupported`
+- **THEN** its Session Import capability SHALL return `unsupported`
 - **AND** it SHALL NOT call Legacy Session list, resume, history or mutation APIs
+
+#### Scenario: Another Harness does not implement import
+
+- **WHEN** another registered Adapter omits the optional Session Import capability
+- **THEN** that Adapter SHALL remain valid without placeholder methods or behavior changes
+- **AND** the DeepSeek implementation SHALL impose no native discovery semantics on it
 
 #### Scenario: Candidate response exceeds a bound
 

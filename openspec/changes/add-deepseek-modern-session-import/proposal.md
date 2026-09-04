@@ -12,7 +12,7 @@ codexhost 当前只会把自身已经写入 Mapping Store 的 DeepSeek Harness N
 - 增加两个 DSH Modern-only 固定 Host 方法：列出候选，以及只按 `nativeSessionId` 导入。Host 在写入前重新列举并验证，Renderer 不能提交 cwd、标题或状态作为事实。
 - 导入只通过 Mapping Store 的 provisional → ready 事务持久化 Host Thread 与既有 Native Session 的元信息映射，初始 `turnMappings=[]`；不打开 Agent、不读取或复制 Transcript、不调用任何 DSH mutation API。
 - ready mapping 立即进入标准 Thread 列表。第一次真正打开 Thread 时，复用现有 Modern resume、journal Snapshot 和 `alignSnapshot()` 懒恢复历史并补齐 Turn mappings。
-- 在设置页新增紧凑、可访问、本地化的“会话导入 / Session Import”Tab，提供刷新、状态说明和每行一个“导入并打开”动作；不增加第二个 Dialog、批量操作或通用 Session 管理页。
+- 在设置页新增紧凑、可访问、本地化的“会话导入 / Session Import”Tab：单行 Harness 选择器仅启用 DeepSeek，提供刷新、状态说明和每行一个“导入并打开”动作；自动打开失败时保留原始 cwd、复制路径和只重试导航的恢复状态，不增加第二个 Dialog、批量操作或通用 Session 管理页。
 
 ## Capabilities
 

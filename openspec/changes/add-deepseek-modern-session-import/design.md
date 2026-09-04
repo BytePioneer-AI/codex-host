@@ -25,7 +25,7 @@ Mapping Store 已经是运行中 Host 的唯一 External Thread metadata 索引�
 - Host 只信任 Renderer 提交的 bounded Native Session ID，并在 durable write 前用新鲜 native list 复查所有元信息与状态。
 - 每个成功导入只创建一个合法 V1 ready mapping；重复点击、陈旧 UI、并发提交和失败不得产生重复或半成品 Thread。
 - 导入成功后立即进入标准 Thread surface；历史与后续对话复用现有 Modern resume 管线。
-- 设置页保持紧凑、可访问、本地化，并且无论当前 Composer 位于哪个 Host 都只访问 local Host。
+- 设置页保持紧凑、可访问、本地化；用单行 Harness 选择器明确当前只有 DeepSeek 可导入，并且无论当前 Composer 位于哪个 Host 都只访问 local Host。
 
 **Non-Goals:**
 
@@ -115,11 +115,11 @@ ExternalThreadRuntime.resolve
 
 生产 registry 在 Connections 与 Updates 之间增加 `session-import` 页面。页面始终存在以保持导航稳定，但只有 `modelClientForHost("local")` 可提供两个 method-specific 操作；Remote Host、缺失 request bridge、Legacy delegate 或 unavailable Modern DSH 显示明确 unavailable 状态，不切换到当前 remote Composer 的 client。
 
-页面不嵌套 Dialog。顶部只有标题、简短说明和 Refresh；候选每行显示 title fallback、格式化更新时间、单行 cwd、短 Session ID、running 状态和一个“导入并打开”按钮。blank、Subagent 和已映射 Session不会出现。running 行保留但 action disabled，以便用户知道关闭活动后可以刷新。
+页面不嵌套 Dialog。顶部只有标题、单行 Harness 选择器、简短说明和 Refresh；选择器复用 Renderer 已知外部 Harness 名录，DeepSeek Harness 是唯一 enabled/selected 项，Pi、Claude Code、OpenCode、Grok、Oh My Pi 和 Antigravity CLI 只作为灰色 disabled 项说明当前能力边界，不得触发请求。候选每行显示 title fallback、格式化更新时间、单行 cwd、短 Session ID、running 状态和一个“导入并打开”按钮。blank、Subagent 和已映射 Session不会出现。running 行保留但 action disabled，以便用户知道关闭活动后可以刷新。
 
-页面只维护 `loading | unavailable | empty | error | ready | importing` 六种状态，复用 `RendererSettingsPageScope.runLatest` 使导航、关闭、刷新和 locale remount 后的旧结果不能修改当前页面。提交期间禁用重复操作。所有文本使用现有 English/简体中文 catalog，状态使用 ARIA live/alert，键盘 focus 和窄窗口布局沿用 settings shell。
+页面维护 `loading | unavailable | empty | error | ready | importing | imported-recovery` 七种状态，复用 `RendererSettingsPageScope.runLatest` 使导航、关闭、刷新和 locale remount 后的旧结果不能修改当前页面。提交期间禁用重复操作。所有文本使用现有 English/简体中文 catalog，状态使用 ARIA live/alert，键盘 focus 和窄窗口布局沿用 settings shell。
 
-成功后 Host 返回 committed result，并让每个参与竞争的 AppServerHost 连接各自至多收到一次 `thread/started`，所以任一窗口都能看到 winner。Renderer 复用从 Fork 控件抽出的 Host-qualified sidebar opener，只匹配 `hostId=local + returned threadId`，关闭设置并打开该行；generic Fork 继续保留原有 Host-neutral opener，不能被本地导入硬编码破坏。超时或 stale page 只清理 observer/timer并显示本地化可恢复错误，不得再次 import 或撤销 ready mapping；Thread 保持可由下一次标准侧栏/list刷新发现，用户可手动打开。
+成功后 Host 返回 committed result，并让每个参与竞争的 AppServerHost 连接各自至多收到一次 `thread/started`，所以任一窗口都能看到 winner。Renderer 复用从 Fork 控件抽出的 Host-qualified sidebar opener，只匹配 `hostId=local + returned threadId`，关闭设置并打开该行；generic Fork 继续保留原有 Host-neutral opener，不能被本地导入硬编码破坏。若 Codex 尚未为原始 cwd 渲染项目/Thread 行，超时只清理 observer/timer并显示“已导入”恢复卡片，保留权威 cwd、复制路径和重试打开动作；重试只调用 sidebar opener，不得再次 import 或撤销 ready mapping。stale page 不得产生 UI 或导航副作用。
 
 ### 7. 错误与竞争保持可恢复
 

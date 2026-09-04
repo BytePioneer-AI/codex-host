@@ -32,6 +32,8 @@
 - [x] 4.5 实现紧凑 title/time/cwd/short-id 行、中英文案、ARIA、focus 和窄窗口布局
 - [x] 4.6 抽取 Fork 已有 sidebar opener，严格匹配 local Host + returned Thread ID并清理 abort/timeout observer，同时保持 Remote Fork 原行为
 - [x] 4.7 导入成功后打开标准 Thread；stale/timeout 不重试导入、不撤销 mapping
+- [x] 4.8 增加单行 Harness 选择器；DeepSeek 是唯一 enabled/selected 项，其他已知外部 Harness 灰显且不触发请求
+- [x] 4.9 导航超时后显示已导入恢复状态、原始 cwd、复制路径和只重试 sidebar opener 的动作
 
 ## 5. 聚焦测试
 
@@ -42,6 +44,7 @@
 - [x] 5.5 Settings DOM/Vitest 覆盖六种状态、local-only、刷新、stale result、running、双击、成功及导航失败
 - [x] 5.6 Thread opener 覆盖已存在/延迟行、Host ID 冲突、abort、timeout，并保持 Local/Remote Fork 原测试通过
 - [x] 5.7 Legacy exact rc.2 只跑负向测试：import unsupported、无 Legacy list/open、无新 mapping
+- [x] 5.8 Settings DOM 覆盖 Harness enabled/disabled 集合、恢复状态、路径复制和重试不重复 import
 
 ## 6. exact rc.1 Gate 与收尾
 

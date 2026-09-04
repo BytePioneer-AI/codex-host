@@ -7,10 +7,16 @@ import type {
   HostThreadId,
 } from "@codexhost/shared-contracts";
 
+import { KNOWN_RENDERER_AGENTS, type ExternalRendererAgent } from "../agent-selection-state.js";
+import { RENDERER_AGENT_LABELS } from "../renderer-agent-icon.js";
 import { RendererDeepSeekSessionUnavailableError } from "../renderer-model-client.js";
 import type { RendererSettingsPageDefinition, RendererSettingsPageMountContext } from "./core.js";
 import { createRendererSettingsIcon } from "./icons.js";
 import type { RendererSettingsMessages } from "./localization.js";
+
+const SESSION_IMPORT_HARNESSES = KNOWN_RENDERER_AGENTS.filter(
+  (agent): agent is ExternalRendererAgent => agent !== "codex",
+);
 
 export interface RendererDeepSeekSessionImportClient {
   listDeepSeekModernSessions(
@@ -79,12 +85,33 @@ export function createDeepSeekSessionImportSettingsPage(
       setRefreshLabel(false);
       header.append(heading, refresh);
 
+      const harness = document.createElement("div");
+      harness.className = "settings-session-import-harness";
+      const harnessLabel = document.createElement("span");
+      harnessLabel.textContent = messages.sessionImportHarness;
+      const harnessOptions = document.createElement("div");
+      harnessOptions.className = "settings-session-import-harness__options";
+      harnessOptions.dataset.sessionImportHarness = "selector";
+      harnessOptions.setAttribute("role", "group");
+      harnessOptions.setAttribute("aria-label", messages.sessionImportHarness);
+      for (const agent of SESSION_IMPORT_HARNESSES) {
+        const option = document.createElement("button");
+        option.type = "button";
+        option.className = "settings-session-import-harness__option";
+        option.dataset.sessionImportHarnessOption = agent;
+        option.textContent = RENDERER_AGENT_LABELS[agent];
+        option.disabled = agent !== "deepseek-harness";
+        option.setAttribute("aria-pressed", agent === "deepseek-harness" ? "true" : "false");
+        harnessOptions.append(option);
+      }
+      harness.append(harnessLabel, harnessOptions);
+
       const description = document.createElement("p");
       description.className = "settings-page-description";
       description.textContent = messages.sessionImportDescription;
       const content = document.createElement("section");
       content.className = "settings-session-import-content";
-      context.content.append(header, description, content);
+      context.content.append(header, harness, description, content);
 
       let candidates: readonly DeepSeekModernSessionCandidate[] = [];
       let importingId: string | null = null;
@@ -120,23 +147,15 @@ export function createDeepSeekSessionImportSettingsPage(
         }
       };
 
-      const renderFailure = (
-        error: unknown,
-        imported = false,
-        operation: "list" | "import" = "list",
-      ): void => {
-        if (!imported && error instanceof RendererDeepSeekSessionUnavailableError) {
+      const renderFailure = (error: unknown, operation: "list" | "import" = "list"): void => {
+        if (error instanceof RendererDeepSeekSessionUnavailableError) {
           renderUnavailable(operation === "import");
           return;
         }
         actions = [];
         const status = createStatus(
           document,
-          imported
-            ? messages.sessionImportOpenFailed
-            : operation === "import"
-              ? messages.sessionImportFailed
-              : messages.sessionImportLoadFailed,
+          operation === "import" ? messages.sessionImportFailed : messages.sessionImportLoadFailed,
           true,
         );
         content.replaceChildren(status);
@@ -144,6 +163,91 @@ export function createDeepSeekSessionImportSettingsPage(
           status.tabIndex = -1;
           status.focus();
         }
+      };
+
+      const renderOpenRecovery = (
+        candidate: DeepSeekModernSessionCandidate,
+        threadId: HostThreadId,
+      ): void => {
+        actions = [];
+        refresh.disabled = false;
+        const recovery = document.createElement("section");
+        recovery.className = "settings-session-import-recovery";
+        recovery.setAttribute("role", "region");
+        recovery.setAttribute("aria-label", messages.sessionImportImported);
+        recovery.tabIndex = -1;
+
+        const recoveryCopy = document.createElement("div");
+        recoveryCopy.className = "settings-session-import-recovery__copy";
+        const title = document.createElement("strong");
+        title.textContent = messages.sessionImportImported;
+        const explanation = document.createElement("p");
+        explanation.textContent = messages.sessionImportOpenFailed;
+        recoveryCopy.append(title, explanation);
+
+        const path = document.createElement("div");
+        path.className = "settings-session-import-recovery__path";
+        const cwd = document.createElement("code");
+        cwd.textContent = candidate.cwd;
+        cwd.title = candidate.cwd;
+        const copyPath = document.createElement("button");
+        copyPath.type = "button";
+        copyPath.className = "settings-command-button settings-command-button--secondary";
+        copyPath.dataset.sessionImportAction = "copy-project-path";
+        const setCopyLabel = (label: string): void => {
+          copyPath.replaceChildren(createRendererSettingsIcon("copy", 15), label);
+        };
+        const showCopyFeedback = (label: string): void => {
+          setCopyLabel(label);
+          document.defaultView?.setTimeout(
+            () => setCopyLabel(messages.sessionImportCopyProjectPath),
+            2_000,
+          );
+        };
+        setCopyLabel(messages.sessionImportCopyProjectPath);
+        copyPath.addEventListener("click", () => {
+          const clipboard = document.defaultView?.navigator.clipboard;
+          if (!clipboard) {
+            showCopyFeedback(messages.sessionImportPathCopyFailed);
+            return;
+          }
+          void clipboard.writeText(candidate.cwd).then(
+            () => showCopyFeedback(messages.sessionImportPathCopied),
+            () => showCopyFeedback(messages.sessionImportPathCopyFailed),
+          );
+        });
+        path.append(cwd, copyPath);
+
+        const retry = document.createElement("button");
+        retry.type = "button";
+        retry.className = "settings-command-button";
+        retry.dataset.sessionImportAction = "retry-open";
+        const setRetrying = (pending: boolean): void => {
+          retry.disabled = pending;
+          refresh.disabled = pending;
+          retry.setAttribute("aria-busy", pending ? "true" : "false");
+          retry.replaceChildren(
+            createRendererSettingsIcon("refresh", 15),
+            pending ? messages.sessionImportRetrying : messages.sessionImportRetryOpen,
+          );
+        };
+        setRetrying(false);
+        retry.addEventListener("click", () => {
+          if (retry.disabled) return;
+          setRetrying(true);
+          void context.runLatest((signal) => openImportedThread(threadId, signal), {
+            success() {
+              setRetrying(false);
+            },
+            failure() {
+              renderOpenRecovery(candidate, threadId);
+            },
+          });
+        });
+
+        recovery.append(recoveryCopy, path, retry);
+        content.replaceChildren(recovery);
+        recovery.focus();
       };
 
       const renderCandidates = (): void => {
@@ -218,13 +322,13 @@ export function createDeepSeekSessionImportSettingsPage(
             importingId = candidate.nativeSessionId;
             refresh.disabled = true;
             updateImportActions();
-            let committed = false;
+            let committedThreadId: HostThreadId | null = null;
             void context.runLatest(
               async (signal) => {
                 const result = await client.importDeepSeekModernSession({
                   nativeSessionId: candidate.nativeSessionId,
                 });
-                committed = true;
+                committedThreadId = result.threadId;
                 await openImportedThread(result.threadId, signal);
               },
               {
@@ -236,7 +340,11 @@ export function createDeepSeekSessionImportSettingsPage(
                 failure(error) {
                   importingId = null;
                   refresh.disabled = false;
-                  renderFailure(error, committed, "import");
+                  if (committedThreadId) {
+                    renderOpenRecovery(candidate, committedThreadId);
+                  } else {
+                    renderFailure(error, "import");
+                  }
                 },
               },
             );

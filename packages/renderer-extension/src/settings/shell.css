@@ -404,6 +404,69 @@ button {
   min-width: 0;
 }
 
+.settings-session-import-harness {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  gap: 12px;
+  margin: -12px 0 16px;
+  color: var(--settings-muted);
+  font-size: 13px;
+}
+
+.settings-session-import-harness > span {
+  flex: none;
+}
+
+.settings-session-import-harness__options {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  flex: 1;
+  gap: 6px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+}
+
+.settings-session-import-harness__options::-webkit-scrollbar {
+  display: none;
+}
+
+.settings-session-import-harness__option {
+  min-height: 32px;
+  flex: none;
+  padding: 6px 10px;
+  color: var(--settings-muted);
+  font: inherit;
+  font-size: 12px;
+  white-space: nowrap;
+  background: rgb(255 255 255 / 4%);
+  border: 1px solid var(--settings-border);
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.settings-session-import-harness__option[aria-pressed="true"] {
+  color: #e8f3ff;
+  background: var(--settings-active);
+  border-color: rgb(51 156 255 / 50%);
+}
+
+.settings-session-import-harness__option:disabled {
+  opacity: 0.38;
+  cursor: not-allowed;
+}
+
+.settings-session-import-harness__option:focus-visible {
+  outline: 2px solid var(--settings-focus);
+  outline-offset: 2px;
+}
+
+.settings-session-import-harness + .settings-page-description {
+  margin-top: 0;
+}
+
 .settings-session-import-content,
 .settings-session-import-list {
   display: grid;
@@ -424,6 +487,66 @@ button {
 
 .settings-session-import-status.is-error {
   color: #ef4444;
+}
+
+.settings-session-import-recovery {
+  display: grid;
+  justify-items: start;
+  gap: 14px;
+  padding: 16px;
+  background: var(--settings-panel);
+  border: 1px solid var(--settings-border);
+  border-radius: 8px;
+}
+
+.settings-session-import-recovery:focus-visible {
+  outline: 2px solid var(--settings-focus);
+  outline-offset: 2px;
+}
+
+.settings-session-import-recovery__copy {
+  display: grid;
+  gap: 4px;
+}
+
+.settings-session-import-recovery__copy strong {
+  color: var(--settings-text);
+  font-size: 14px;
+}
+
+.settings-session-import-recovery__copy p {
+  margin: 0;
+  color: var(--settings-muted);
+  font-size: 13px;
+  line-height: 20px;
+}
+
+.settings-session-import-recovery__path {
+  display: flex;
+  align-items: stretch;
+  width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--settings-border);
+  border-radius: 6px;
+}
+
+.settings-session-import-recovery__path code {
+  min-width: 0;
+  flex: 1;
+  padding: 8px 10px;
+  overflow-x: auto;
+  color: var(--settings-text);
+  font-size: 12px;
+  line-height: 20px;
+  white-space: nowrap;
+}
+
+.settings-session-import-recovery__path .settings-command-button {
+  min-height: 0;
+  flex: none;
+  border-width: 0 0 0 1px;
+  border-radius: 0;
 }
 
 .settings-session-import-row {

@@ -822,6 +822,32 @@ describe("Renderer Session Import page", () => {
     expect(descendants(content).find(({ tagName }) => tagName === "h2")?.textContent).toBe(
       "会话导入",
     );
+    const harnessSelector = descendants(content).find(
+      ({ dataset }) => dataset.sessionImportHarness === "selector",
+    );
+    if (!harnessSelector) throw new Error("Session Import Harness selector is not rendered");
+    const harnessOptions = descendants(harnessSelector).filter(
+      ({ dataset }) => dataset.sessionImportHarnessOption !== undefined,
+    );
+    expect(harnessOptions.map(({ textContent }) => textContent)).toEqual([
+      "Pi",
+      "Claude Code",
+      "DeepSeek Harness",
+      "OpenCode",
+      "Grok",
+      "Oh My Pi",
+      "Antigravity CLI",
+    ]);
+    expect(
+      harnessOptions.filter(({ disabled }) => !disabled).map(({ textContent }) => textContent),
+    ).toEqual(["DeepSeek Harness"]);
+    expect(
+      harnessOptions.find(({ attributes }) => attributes.get("aria-pressed") === "true")
+        ?.textContent,
+    ).toBe("DeepSeek Harness");
+    for (const option of harnessOptions) option.dispatch("click");
+    expect(client.listDeepSeekModernSessions).toHaveBeenCalledOnce();
+    expect(client.importDeepSeekModernSession).not.toHaveBeenCalled();
     expect(
       descendants(content).find(
         ({ className, textContent }) =>
@@ -1024,7 +1050,7 @@ describe("Renderer Session Import page", () => {
     }
   });
 
-  it("focuses a localized error if navigation fails after import committed", async () => {
+  it("keeps project recovery actions after committed import navigation fails", async () => {
     const client = {
       listDeepSeekModernSessions: vi.fn(async () => ({
         candidates: [
@@ -1041,12 +1067,16 @@ describe("Renderer Session Import page", () => {
         threadId: hostThreadIdSchema.parse("imported-thread"),
       })),
     };
+    const openImportedThread = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("private navigation detail"))
+      .mockResolvedValueOnce(undefined);
     const page = createDefaultRendererSettingsPages(
       rendererSettingsMessages("en"),
       () => null,
       () => null,
       () => client,
-      async () => Promise.reject(new Error("private navigation detail")),
+      openImportedThread,
     ).find(({ id }) => id === "session-import");
     if (!page) throw new Error("Session Import page is not registered");
     const document = new FakeDocument();
@@ -1063,10 +1093,34 @@ describe("Renderer Session Import page", () => {
       .find(({ dataset }) => dataset.sessionImportAction === "import")
       ?.dispatch("click");
 
-    await vi.waitFor(() => expect(visibleText(content)).toContain("could not be opened"));
-    const status = elementWithClass(content, "settings-session-import-status");
-    expect(status.focused).toBe(true);
+    await vi.waitFor(() => expect(visibleText(content)).toContain("Session imported"));
+    const recovery = elementWithClass(content, "settings-session-import-recovery");
+    expect(recovery.focused).toBe(true);
+    expect(visibleText(content)).toContain("C:\\work");
+    expect(visibleText(content)).toContain("added as a project");
     expect(visibleText(content)).not.toContain("private navigation detail");
+
+    const copyPath = descendants(content).find(
+      ({ dataset }) => dataset.sessionImportAction === "copy-project-path",
+    );
+    if (!copyPath) throw new Error("Copy project path action is not rendered");
+    copyPath.dispatch("click");
+    await vi.waitFor(() => expect(document.clipboardWriteText).toHaveBeenCalledWith("C:\\work"));
+    expect(visibleNotesText(copyPath)).toContain("Copied");
+
+    const retry = descendants(content).find(
+      ({ dataset }) => dataset.sessionImportAction === "retry-open",
+    );
+    if (!retry) throw new Error("Retry open action is not rendered");
+    retry.dispatch("click");
+    expect(retry.disabled).toBe(true);
+    expect(retry.getAttribute("aria-busy")).toBe("true");
+    expect(
+      descendants(content).find(({ dataset }) => dataset.sessionImportAction === "refresh")
+        ?.disabled,
+    ).toBe(true);
+    await vi.waitFor(() => expect(openImportedThread).toHaveBeenCalledTimes(2));
+    expect(client.importDeepSeekModernSession).toHaveBeenCalledOnce();
     scope.dispose();
   });
 

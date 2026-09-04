@@ -49,7 +49,7 @@ Codex Desktop
 | OMP | CLI 原生 RPC | create、resume、fork、跨 cwd fork、rollback | Model、Thinking | 无 Host Interaction | Usage、Commands、Compaction、Subagent、Autonomous Turn |
 | Claude Code | Claude Agent SDK | create、resume、fork、rollback；fork 不跨 cwd | Model、Thinking、Permission Mode | Approval、Question | Usage、Credits、Commands、Subagent、Autonomous Turn |
 | Grok | ACP 加私有扩展 | create、resume、fork、跨 cwd fork、rollback | Model、Thinking、Permission Mode | Approval | Usage、Credits、Commands、Compaction |
-| DeepSeek Harness | 原生 Host API / RPC | create、resume、fork；fork 不跨 cwd | Model、Thinking | Approval、Question | Usage、Commands、Compaction、分页历史、共享 Host 连接 |
+| DeepSeek Harness | 原生 Host API / RPC | create、resume、fork；Modern `0.1.2-rc.1` 支持 rollback；fork 不跨 cwd | Model、Thinking、Permission Mode | Approval、Question | Usage、Commands、Compaction、分页历史、共享 Host 连接 |
 
 原生 Codex 通过官方 App Server 协议接入，不实现外部 `HarnessAdapter`，不是新增外部 Harness 的参考模板。
 
@@ -88,7 +88,7 @@ Codex Desktop
 | Account Credits | Claude Code | Grok |
 | Fork 和跨 cwd Fork | Pi | OMP、Grok |
 | 同 cwd Fork、原生 Transcript Fork | Claude Code | DeepSeek Harness |
-| Last-Turn Rollback | Pi | OMP、Claude Code、Grok |
+| Last-Turn Rollback | Pi | OMP、Claude Code、Grok、DeepSeek Harness Modern `0.1.2-rc.1` |
 | Subagent 生命周期和 Transcript | OMP | Claude Code |
 | Autonomous Turn | OMP | Claude Code |
 | Harness Commands / compaction | Pi | Claude Code、Grok、OMP、DeepSeek Harness |
@@ -163,9 +163,10 @@ DeepSeek Harness 最适合参考服务化 Host 接入：
 - 原生 Model/Thinking 目录与选择；
 - 显式注册的 Harness Commands 和原生 compaction；
 - 基于 `turn/end` Checkpoint 的同 cwd 精确 Fork；
+- Modern `0.1.2-rc.1` 通过 Fork 或空 Session replacement 实现的 Last-Turn Rollback；
 - Usage 基线和增量合并。
 
-当前它不支持跨 cwd Fork、rollback、Permission Mode 或 Subagent。不要从它推断这些能力可以省略；应根据目标 Harness 的原生能力决定。
+当前它不支持跨 cwd Fork 或 Subagent；Permission Mode 与 Last-Turn Rollback 取决于协议代际。不要从它推断这些能力可以省略；应根据目标 Harness 的原生能力决定。
 
 ## 公共契约的核心语义
 

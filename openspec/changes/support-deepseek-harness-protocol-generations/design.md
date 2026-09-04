@@ -18,7 +18,7 @@ Modern ACP 不提供 transcript replay、Fork、commands 和 elicitation；SDK �
 
 - 同一 CH 构建只支持经过独立 Gate 的 Legacy `0.1.1-rc.2` 与 Modern `0.1.2-rc.1`。
 - 两代源码、原生类型、解析器、状态机和测试有明确边界；版本选择只发生一次。
-- Modern 恢复现有 DSH 能力：创建/恢复、完整历史、实时 Turn、autonomous Turn、Model/Thinking、Permission、Approval/Question、Usage、命令、取消和同 cwd Fork。
+- Modern 恢复现有 DSH 能力：创建/恢复、完整历史、实时 Turn、autonomous Turn、Model/Thinking、Permission、Approval/Question、Usage、命令、取消、同 cwd Fork 和 Last-Turn Rollback。
 - 所有 Remote envelope、stream frame、history record、projection、interaction request 和结果均在信任边界严格校验并受有限工作量约束。
 - 保持 DSH Web profile、credentials、tools、Skills、presets 和官方 Session store 为事实源。
 - 对不支持的版本、认证或行为失败关闭，并给出不含 token/cookie/完整启动 URL 的诊断。
@@ -197,7 +197,7 @@ Host 响应通过 `$events/result` 提交一次 exact `{clientId,eventId,outcome
 
 `unattended-full-access` 只通过决策 7 所述、同时经过动态 catalog、control projection 与 journal 三事实确认的 exact rc.1 Permission preset 生效，不能用 waterfall 临时放宽策略。
 
-### 11. Modern Fork 使用完整原生前缀并做后验验证
+### 11. Modern Fork 与 Last-Turn Rollback 使用完整原生前缀
 
 Modern Fork 先用完整 journal reader验证 sourceRef、同 cwd 和 checkpoint 的 `turn/end` seq，再调用 `session/fork({ request: { sessionId, atSeq } })`。DSH 选择第一个 `seq >= atSeq` 的 `turn/end`，并保留该完成 Turn 之后、下一 `turn/start` 之前的配置事件；若 atSeq 位于最后一个 `turn/end` 之后但仍未越过 journal 尾部，DSH 返回 fork unavailable 而不会回退，预期前缀必须按这一原生语义计算。
 
@@ -209,6 +209,8 @@ Fork 返回后打开 child follow/page/control，并验证：
 - child Native refs 全部使用 child Session ID。
 
 后验失败关闭且不自动重试；DSH 没有可靠 delete/idempotency 时允许留下官方 orphan，并在诊断中只报告稳定错误，不泄露路径或内容。
+
+Last-Turn Rollback 不增加新协议：两轮及以上从倒数第二轮 Checkpoint 走同一 Fork；单轮通过 `session/create` 创建空 Session，并继承来源 projection 中的当前 Agent Preset；合法空 journal 的 projection baseline 为 `cursor=-1`。零轮或存在未完成 Turn 时在任何 create/fork 前拒绝。Host 现有事务随后恢复 Model、Thinking、Permission，验证恰好少一轮并原子替换 mapping。原 DSH Session 和工作区文件都不修改。
 
 ### 12. 错误、诊断和重试按所有权分层
 
@@ -233,7 +235,7 @@ Hermetic tests：
 - control：baseline/update、watermark、stale update、external change、replacement baseline；
 - Turn：requestId 先后顺序、prompt/autonomous 竞态、resume incomplete、cancel、authoritative reasoning 修订和 exactly-once terminal；
 - `$events`：多 Client next、claim、replacement replay、旧 clientId、cancel、close/fault；
-- Modern Adapter：inspect/create/resume、Model/Thinking、Permission、commands、Usage、Fork；
+- Modern Adapter：inspect/create/resume、Model/Thinking、Permission、commands、Usage、Fork、Last-Turn Rollback；
 - Legacy 全量既有测试原样通过；共享 command/model-ref 对两代执行同一行为表。
 
 真实 Gate：
@@ -256,6 +258,7 @@ Hermetic tests：
 - [每 stream 一个物理 WebSocket] → 首版优先正确性；只有测得资源问题后再复用 mux。
 - [`session/control` 暴露 Host-wide baseline] → 仅保留 loaded/mapped Session 行，其余立即丢弃。
 - [Fork 后验失败可能留下 orphan] → 失败关闭且不自动重试；等待 DSH delete/idempotency 能力。
+- [Last-Turn Rollback 只替换会话历史] → 明确不修改来源 Native Session，也不回退上一轮文件改动。
 - [用户 profile 扩展事件] → 已知 required event 明确识别，未知 ignorable event 忽略，未知 required event fault。
 - [最终 Reasoning 晚于已流式正文可见] → 不发布 provisional 内容；在 change spec 与 PR 中明确 live ordering 取舍，历史仍保留原生顺序。
 - [浏览器认证 URL 必须交给本机平台] → 第一跳使用 stdin，持久层/Renderer/诊断不含 token；Windows 以清理后的 helper 环境调用系统 `ShellExecuteW`，平台交接属于同用户可信边界并有 10 秒 Host deadline。

@@ -141,7 +141,7 @@ Fully quit Codex Desktop, open a new terminal, and start codexhost.
 | Fork | Native | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Context compaction | Native | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Slash commands | Native | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Edit previous message | Native | ✅ | ✅ | ✅ | ✅ | — |
+| Edit previous message | Native | ✅ | ✅ | ✅ | ✅ | ✅ |
 
 ## Cross-Agent collaboration
 

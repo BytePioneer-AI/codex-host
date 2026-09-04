@@ -1580,13 +1580,12 @@ describe("AppServerHost HarnessAdapter projection", () => {
       result: { availability: "pending" },
     });
     session.succeedTurn();
-    await expect(
-      fixture.collector.waitFor(
-        (message) =>
-          method(message, "turn/completed") &&
-          (message.params as JsonObject).threadId === started.threadId,
-      ),
-    ).resolves.toMatchObject({
+    const completed = await fixture.collector.waitFor(
+      (message) =>
+        method(message, "turn/completed") &&
+        (message.params as JsonObject).threadId === started.threadId,
+    );
+    expect(completed).toMatchObject({
       params: {
         turn: {
           items: [
@@ -1599,6 +1598,39 @@ describe("AppServerHost HarnessAdapter projection", () => {
         },
       },
     });
+    const completedItems = (
+      (completed.params as JsonObject).turn as { items: Array<{ id?: string; type?: string }> }
+    ).items;
+    expect(completedItems.filter((item) => item.type === "userMessage")).toHaveLength(1);
+    expect(new Set(completedItems.map((item) => item.id)).size).toBe(completedItems.length);
+
+    // Delegated external Threads use paginated history; read via turns/list.
+    writeRequest(fixture.desktopInput, {
+      id: 1057,
+      method: "thread/turns/list",
+      params: { threadId: started.threadId, limit: 20, itemsView: "full" },
+    });
+    const listed = await fixture.collector.waitFor((message) => requestId(message, 1057));
+    expect(listed).toMatchObject({
+      result: {
+        data: [
+          {
+            items: [
+              {
+                type: "userMessage",
+                content: [{ type: "text", text: "review auth" }],
+              },
+              { type: "agentMessage", text: "Checking auth." },
+            ],
+          },
+        ],
+      },
+    });
+    const storedItems =
+      (listed as { result: { data: Array<{ items: Array<{ id?: string; type?: string }> }> } })
+        .result.data[0]?.items ?? [];
+    expect(storedItems.filter((item) => item.type === "userMessage")).toHaveLength(1);
+    expect(new Set(storedItems.map((item) => item.id)).size).toBe(storedItems.length);
     await stopFixture(fixture);
   });
 

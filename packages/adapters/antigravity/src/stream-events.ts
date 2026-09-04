@@ -31,6 +31,9 @@ export interface AntigravityStepUpdateEvent {
     state: "ACTIVE" | "DONE" | "ERROR" | string;
     step_type: string;
     text_delta?: string;
+    text?: string;
+    content?: string;
+    message?: string;
     duration_seconds?: number;
     usage?: AntigravityUsage;
     tool_name?: string;

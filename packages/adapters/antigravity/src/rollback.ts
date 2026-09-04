@@ -130,7 +130,11 @@ export async function rollbackAntigravityLastTurn(
   });
 
   await Promise.all([
-    copyNativeConversationDbIfExists(sourceRef.nativeSessionId, derivedNativeSessionId),
+    copyNativeConversationDbIfExists(
+      sourceRef.nativeSessionId,
+      derivedNativeSessionId,
+      mappedTurns.length,
+    ),
     copyNativeBrainDirIfExists(sourceRef.nativeSessionId, derivedNativeSessionId),
   ]);
 

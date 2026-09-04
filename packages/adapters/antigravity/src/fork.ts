@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { copyFile, cp, mkdir } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 
 import type {
   ForkSessionInput,
@@ -28,21 +29,86 @@ export function nativeBrainDirPath(nativeSessionId: string, homedir = os.homedir
   return path.join(homedir, ".gemini", "antigravity-cli", "brain", nativeSessionId);
 }
 
-export async function copyNativeConversationDbIfExists(
+export async function cloneNativeConversationDb(
   sourceSessionId: string,
   derivedSessionId: string,
-  homedir = os.homedir(),
+  retainedTurnsCountOrHomedir?: number | string,
+  homedirOption = os.homedir(),
 ): Promise<boolean> {
+  let retainedTurnsCount: number | undefined;
+  let homedir = homedirOption;
+  if (typeof retainedTurnsCountOrHomedir === "string") {
+    homedir = retainedTurnsCountOrHomedir;
+  } else if (typeof retainedTurnsCountOrHomedir === "number") {
+    retainedTurnsCount = retainedTurnsCountOrHomedir;
+  }
+
   const sourceDb = nativeConversationDbPath(sourceSessionId, homedir);
   const targetDb = nativeConversationDbPath(derivedSessionId, homedir);
   try {
     await mkdir(path.dirname(targetDb), { recursive: true });
     await copyFile(sourceDb, targetDb);
-    return true;
   } catch {
     return false;
   }
+
+  try {
+    const db = new DatabaseSync(targetDb);
+    try {
+      db.prepare("UPDATE trajectory_meta SET cascade_id = ?").run(derivedSessionId);
+      if (retainedTurnsCount !== undefined) {
+        const retainStepCount = retainedTurnsCount * 2;
+        try {
+          db.prepare("DELETE FROM steps WHERE idx >= ?").run(retainStepCount);
+        } catch {}
+        try {
+          db.prepare("DELETE FROM gen_metadata WHERE idx >= ?").run(retainStepCount);
+        } catch {}
+        try {
+          db.prepare("DELETE FROM executor_metadata WHERE idx >= ?").run(retainStepCount);
+        } catch {}
+      }
+    } finally {
+      db.close();
+    }
+  } catch {
+    // If table updating fails, ignore
+  }
+
+  // Register in conversation_summaries.db so `agy` trajectory lookup succeeds
+  try {
+    const summariesDbPath = path.join(homedir, ".gemini", "antigravity-cli", "conversation_summaries.db");
+    const sumDb = new DatabaseSync(summariesDbPath);
+    try {
+      const cur = sumDb.prepare("SELECT * FROM conversation_summaries WHERE conversation_id = ?");
+      const row = cur.get(sourceSessionId) as Record<string, unknown> | undefined;
+      if (row) {
+        const cols = Object.keys(row);
+        const newRow: Record<string, unknown> = {
+          ...row,
+          conversation_id: derivedSessionId,
+          last_modified_time: new Date().toISOString(),
+          ...(retainedTurnsCount !== undefined ? { step_count: retainedTurnsCount * 2 } : {}),
+        };
+        const placeholders = cols.map(() => "?").join(", ");
+        const values = cols.map((col) => newRow[col] as SQLInputValue);
+        sumDb
+          .prepare(
+            `INSERT OR REPLACE INTO conversation_summaries (${cols.map((c) => `\`${c}\``).join(", ")}) VALUES (${placeholders})`,
+          )
+          .run(...values);
+      }
+    } finally {
+      sumDb.close();
+    }
+  } catch {
+    // If summaries registration fails, continue
+  }
+
+  return true;
 }
+
+export const copyNativeConversationDbIfExists = cloneNativeConversationDb;
 
 export async function copyNativeBrainDirIfExists(
   sourceSessionId: string,
@@ -194,7 +260,11 @@ export async function forkAntigravitySession(
   });
 
   await Promise.all([
-    copyNativeConversationDbIfExists(sourceRef.nativeSessionId, derivedNativeSessionId),
+    copyNativeConversationDbIfExists(
+      sourceRef.nativeSessionId,
+      derivedNativeSessionId,
+      retainedTurns.length,
+    ),
     copyNativeBrainDirIfExists(sourceRef.nativeSessionId, derivedNativeSessionId),
   ]);
 

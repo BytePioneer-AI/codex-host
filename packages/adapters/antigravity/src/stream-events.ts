@@ -52,6 +52,7 @@ export interface AntigravityResultEvent {
     conversation_id: string;
     status: string;
     response?: string;
+    error?: string;
     num_turns: number;
     usage?: AntigravityUsage;
   };

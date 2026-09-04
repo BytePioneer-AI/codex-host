@@ -784,28 +784,39 @@ class AntigravitySession implements HarnessSession {
     }
     active.process.stdin.end();
     if (this.#active !== active) return;
-    if (!this.#nativeRef) {
+    const convId =
+      event.result.conversation_id && event.result.conversation_id.trim().length > 0
+        ? event.result.conversation_id.trim()
+        : (this.#nativeRef?.nativeSessionId ?? "");
+
+    if (!this.#nativeRef && convId) {
       this.#nativeRef = nativeSessionRefSchema.parse({
         harnessId: this.harnessId,
-        nativeSessionId: event.result.conversation_id,
+        nativeSessionId: convId,
         formatVersion: 1,
       });
-      this.#history.bindNativeSession(event.result.conversation_id);
+      this.#history.bindNativeSession(convId);
       this.#event({ type: "session.state.changed", state: this.#state() });
     }
     if (event.result.response) {
       this.#appendOrSyncAgentText(active, event.result.response, false);
     }
+    const safeTurnId =
+      event.result.num_turns !== undefined && event.result.num_turns !== null
+        ? `turn:${event.result.num_turns}`
+        : `turn:${this.#history.snapshot().length + 1}`;
+    const safeSessionId = convId || this.#nativeRef?.nativeSessionId || "unknown-session";
+
     const nativeTurnRef = nativeTurnRefSchema.parse({
       harnessId: this.harnessId,
-      nativeSessionId: event.result.conversation_id,
-      nativeTurnKey: `turn:${event.result.num_turns}`,
+      nativeSessionId: safeSessionId,
+      nativeTurnKey: safeTurnId,
       formatVersion: 1,
     });
     const checkpoint = nativeCheckpointRefSchema.parse({
       harnessId: this.harnessId,
-      nativeSessionId: event.result.conversation_id,
-      checkpointId: `turn:${event.result.num_turns}`,
+      nativeSessionId: safeSessionId,
+      checkpointId: safeTurnId,
       formatVersion: 1,
     });
     if (active.cancellationRequested) {
@@ -829,12 +840,13 @@ class AntigravitySession implements HarnessSession {
         this.#completeTurn(active, { status: "succeeded", checkpoint }, nativeTurnRef);
       }
     } else {
+      const errorDetail = event.result.error?.trim() || active.stderr;
       this.#completeTurn(
         active,
         {
           status: "failed",
           error: normalizedProcessError(
-            active.stderr,
+            errorDetail,
             `Antigravity Turn ended with status ${event.result.status}`,
           ),
           checkpoint,

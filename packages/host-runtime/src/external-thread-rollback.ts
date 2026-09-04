@@ -11,6 +11,7 @@ import {
   type JsonObject,
 } from "@codexhost/protocol-core";
 import {
+  modelSelectionFixedAtCreate,
   permissionModeFixedAtCreate,
   type HostTurnId,
   type NativeCheckpointRef,
@@ -64,7 +65,10 @@ async function restoreCurrentConfiguration(
   session: HarnessSession,
   configuration: HarnessSessionState,
 ): Promise<ExternalThreadRpcError | null> {
-  if (configuration.effectiveModel) {
+  if (
+    configuration.effectiveModel &&
+    !modelSelectionFixedAtCreate(session.capabilities.configuration)
+  ) {
     if (!session.capabilities.configuration.selectModel) {
       return { code: -32076, message: "External rollback cannot restore the current Model" };
     }

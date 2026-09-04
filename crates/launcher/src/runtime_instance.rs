@@ -35,14 +35,13 @@ pub enum StartupState {
 pub struct StartupObservation {
     pub desktop_running: bool,
     pub descriptor_present: bool,
-    pub control_endpoint_ready: bool,
 }
 
 pub fn classify_startup(observation: StartupObservation) -> StartupState {
     if observation.desktop_running {
         return StartupState::Attach;
     }
-    if observation.descriptor_present && !observation.control_endpoint_ready {
+    if observation.descriptor_present {
         return StartupState::RecoverStale;
     }
     StartupState::CleanLaunch
@@ -350,7 +349,6 @@ mod tests {
             classify_startup(StartupObservation {
                 desktop_running: true,
                 descriptor_present: false,
-                control_endpoint_ready: false,
             }),
             StartupState::Attach
         );
@@ -358,7 +356,6 @@ mod tests {
             classify_startup(StartupObservation {
                 desktop_running: false,
                 descriptor_present: true,
-                control_endpoint_ready: false,
             }),
             StartupState::RecoverStale
         );
@@ -366,7 +363,6 @@ mod tests {
             classify_startup(StartupObservation {
                 desktop_running: false,
                 descriptor_present: false,
-                control_endpoint_ready: false,
             }),
             StartupState::CleanLaunch
         );

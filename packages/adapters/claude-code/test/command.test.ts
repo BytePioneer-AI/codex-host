@@ -114,11 +114,14 @@ describe("Claude Code executable resolution", () => {
     const homeDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "codexhost-claude-home-"));
     directories.push(homeDirectory);
     expect(() =>
-      resolveClaudeCodeExecutable({
-        environment: { PATH: "" },
-        homeDirectory,
-        platform: "linux",
-      }),
+      resolveClaudeCodeExecutable(
+        {
+          environment: { PATH: "" },
+          homeDirectory,
+          platform: "linux",
+        },
+        { isExecutable: () => false },
+      ),
     ).toThrow("not installed");
   });
 });

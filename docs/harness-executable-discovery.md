@@ -94,11 +94,12 @@ Windows 当前覆盖常见的：
 | Pi | 是 | 否，仍保留 Adapter 内实现 | 是 | 找不到时保留原有延迟失败语义 |
 | OMP | 是 | 否，仍保留 Adapter 内实现 | 是 | 找不到时保留原有延迟失败语义 |
 | Grok | 是 | 是 | 否 | GUI 精简 `PATH` 下仍应补齐 Node Runtime PATH |
+| Penguin | 是 | 是 | 是 | Adapter 连接或启动本地 Penguin API Server，Session 和模型仍由 Penguin 管理 |
 | DeepSeek Harness | 否 | 否 | 否 | 优先连接 loopback DSH Web Host；本地 `dsh`/`npx` fallback 仍使用 Adapter 内发现代码 |
 
 因此，当前准确结论是：
 
-> Claude Code、Pi、OMP 和 Grok 已共用可执行文件发现引擎；DeepSeek Harness 尚未迁移。进程 invocation 和 Node Runtime PATH 补全也还没有在所有 Adapter 中完全统一。
+> Claude Code、Pi、OMP、Grok 和 Penguin 已共用可执行文件发现引擎；DeepSeek Harness 尚未迁移。进程 invocation 和 Node Runtime PATH 补全也还没有在所有 Adapter 中完全统一。
 
 ## DeepSeek Harness 的特殊性
 
@@ -138,6 +139,7 @@ DeepSeek 的 endpoint 校验、Host 启动、就绪等待和 HTTP/WebSocket 生�
 3. **任意自定义目录不会自动遍历。** 非常规安装位置应通过对应 `CODEXHOST_*_COMMAND` 显式配置。
 4. **Windows 自定义版本管理器根目录没有全部覆盖。** 例如自定义 `NVM_HOME`、`VOLTA_HOME` 仍可能需要显式命令。
 5. **发现成功不代表运行时兼容。** 找到安装在 Node 24 下的 Harness 后，仍需保证实际用于启动它的 Node Runtime 满足该 Harness 的版本要求。
+6. **Penguin 的 API/Server 生命周期仍由其 Adapter 专用实现。** 公共发现引擎只负责 CLI 路径解析、Node Runtime PATH 补全和 Windows `.cmd/.bat` 调用包装。
 
 ## 后续建议
 

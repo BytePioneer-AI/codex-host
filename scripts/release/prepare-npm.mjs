@@ -399,6 +399,7 @@ function pathNpmCliPath() {
 const npmCliPath =
   existingFile(process.env.npm_execpath) ??
   existingFile(officialNpmCliPath(process.execPath)) ??
+  homebrewNpmCliPath(process.argv0) ??
   homebrewNpmCliPath(process.execPath) ??
   pathNpmCliPath();
 if (!npmCliPath) fail("could not locate the npm CLI used to update this global installation");

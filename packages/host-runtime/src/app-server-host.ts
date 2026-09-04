@@ -46,6 +46,7 @@ import {
   threadThinkingSelectParamsSchema,
   threadOwnershipListParamsSchema,
   threadOwnershipListResultSchema,
+  modelSelectionFixedAtCreate,
   permissionModeFixedAtCreate,
   updateCheckResultSchema,
   updateEmptyParamsSchema,
@@ -313,6 +314,8 @@ function approvalServerName(harnessId: ExternalHarnessId): string {
       return "Oh My Pi";
     case "antigravity":
       return "Antigravity CLI";
+    case "penguin":
+      return "Penguin Harness";
   }
 }
 
@@ -1899,6 +1902,12 @@ export class AppServerHost {
             owner: "external",
             harnessId: resolution.thread.harnessId,
             transportModelId: resolution.thread.transportModelId,
+            ...(resolution.thread.session.capabilities.configuration.modelSelectionScope
+              ? {
+                  modelSelectionScope:
+                    resolution.thread.session.capabilities.configuration.modelSelectionScope,
+                }
+              : {}),
             ...(resolution.thread.stateObserver.state.effectiveModel
               ? { effectiveModel: resolution.thread.stateObserver.state.effectiveModel }
               : {}),
@@ -2269,6 +2278,16 @@ export class AppServerHost {
     if (!thread.session.capabilities.configuration.selectModel) {
       await this.#writer.json(
         rpcError(request, -32078, "External Harness does not support Model selection"),
+      );
+      return;
+    }
+    if (modelSelectionFixedAtCreate(thread.session.capabilities.configuration)) {
+      await this.#writer.json(
+        rpcError(
+          request,
+          -32078,
+          "External Harness fixes the Model when the Session is created; start a new Thread to change it",
+        ),
       );
       return;
     }

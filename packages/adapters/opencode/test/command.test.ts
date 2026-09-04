@@ -67,7 +67,10 @@ describe("OpenCode executable resolution", () => {
     const homeDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "codexhost-opencode-home-"));
     directories.push(homeDirectory);
     expect(() =>
-      resolveOpenCodeExecutable({ environment: { PATH: "" }, homeDirectory, platform: "linux" }),
+      resolveOpenCodeExecutable(
+        { environment: { PATH: "" }, homeDirectory, platform: "linux" },
+        { isExecutable: () => false },
+      ),
     ).toThrow("not installed");
   });
 });

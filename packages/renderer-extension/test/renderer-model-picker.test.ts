@@ -269,6 +269,14 @@ describe("Renderer combined Model and Thinking picker presentation", () => {
       selected: model,
     };
     expect(isRendererModelPickerDisabled(selectingView)).toBe(true);
+    expect(
+      isRendererModelPickerDisabled({
+        status: "ready",
+        catalog: readyCatalog,
+        selected: model,
+        selectionLocked: true,
+      }),
+    ).toBe(true);
     expect(shouldCloseRendererModelPicker(selectingView)).toBe(false);
     expect(shouldCloseRendererModelPicker({ status: "loading" })).toBe(true);
     expect(

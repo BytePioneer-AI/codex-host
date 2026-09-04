@@ -13,6 +13,7 @@ import {
   GROK_NATIVE_TRANSPORT_MODEL_ID,
   OMP_NATIVE_TRANSPORT_MODEL_ID,
   OPENCODE_NATIVE_TRANSPORT_MODEL_ID,
+  PENGUIN_NATIVE_TRANSPORT_MODEL_ID,
   PI_NATIVE_TRANSPORT_MODEL_ID,
   decodeClaudeTransportSelection,
   decodeAntigravityTransportSelection,
@@ -33,6 +34,7 @@ import {
   encodePiTransportModel,
   encodeOmpTransportModel,
   transportModelIdForHarness,
+  encodePenguinTransportModel,
 } from "../src/index.js";
 
 describe("external Harness transport model routing", () => {
@@ -44,6 +46,7 @@ describe("external Harness transport model routing", () => {
     ["grok", GROK_NATIVE_TRANSPORT_MODEL_ID],
     ["omp", OMP_NATIVE_TRANSPORT_MODEL_ID],
     ["antigravity", ANTIGRAVITY_NATIVE_TRANSPORT_MODEL_ID],
+    ["penguin", PENGUIN_NATIVE_TRANSPORT_MODEL_ID],
   ] as const)("decodes the %s native transport token", (harnessId, transportModelId) => {
     const request: JsonRpcRequest = {
       id: 2,
@@ -169,6 +172,27 @@ describe("external Harness transport model routing", () => {
     expect(
       decodeAntigravityTransportSelection(`${ANTIGRAVITY_NATIVE_TRANSPORT_MODEL_ID}@${model.id}`),
     ).toEqual({ model });
+  });
+
+  it("round-trips a Penguin Model, Permission Mode, and Thinking selection", () => {
+    const model = harnessModelRefSchema.parse({ id: "penguin-model-v1.c3ludGhldGljYWw" });
+    const permissionModeId = harnessPermissionModeIdSchema.parse("always-ask");
+    const thinkingOptionId = harnessThinkingOptionIdSchema.parse("high");
+    const transportModelId = encodePenguinTransportModel(model, permissionModeId, thinkingOptionId);
+
+    expect(transportModelId).toBe(
+      `${PENGUIN_NATIVE_TRANSPORT_MODEL_ID}@${model.id}@${permissionModeId}@${thinkingOptionId}`,
+    );
+    expect(
+      decodeCreateRoute({ id: 12, method: "thread/start", params: { model: transportModelId } }),
+    ).toEqual({
+      harnessId: "penguin",
+      routeMode: "native",
+      transportModelId,
+      model,
+      permissionModeId,
+      thinkingOptionId,
+    });
   });
 
   it("round-trips a request-scoped Pi Model and Thinking pair", () => {

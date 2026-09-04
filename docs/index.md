@@ -16,6 +16,8 @@
 |---|---|
 | [`harness-command-integration.md`](harness-command-integration.md) | 说明新增 Harness 原生命令时的 Adapter、Host、Renderer 边界和验证要求。 |
 | [`harness-executable-discovery.md`](harness-executable-discovery.md) | 说明外部 Harness CLI 的跨平台发现机制、当前接入范围和剩余限制。 |
+| [`penguin-harness-adapter.zh-CN.md`](penguin-harness-adapter.zh-CN.md) | 说明 Penguin Harness 适配器的连接方式、能力边界、配置项、Session 归档和固定 Agent 配置。 |
+| [`penguin-harness-upstream-pr.md`](penguin-harness-upstream-pr.md) | 面向 CodexHost 官方开发者的 Penguin 适配器 PR 草案、变更范围、限制和验收项。 |
 | [`acp-layer-follow-up.md`](acp-layer-follow-up.md) | 记录未来出现第二个生产 ACP Harness 后抽取共享 ACP 层的触发条件和边界。 |
 | [`codex-desktop-upgrade-diagnosis-playbook.md`](codex-desktop-upgrade-diagnosis-playbook.md) | 提供 Codex Desktop 更新后 Renderer、Bridge、Agent 和 Model 异常的排查流程。 |
 

@@ -49,7 +49,7 @@ use codexhost_platform::{
 use compatibility::{MAX_CONTROLLER_READINESS_LINE_BYTES, parse_controller_readiness_line};
 use desktop_attachment::{
     LauncherOwnership, RuntimeControl, acquire_launcher_ownership, allocate_runtime_control,
-    endpoint_ready, publish_runtime_descriptor, stop_stale_launcher, wait_for_host_chain,
+    publish_runtime_descriptor, stop_stale_launcher, wait_for_host_chain,
 };
 use installation_layout::InstalledResources;
 use native_harness_broker::run_native_harness_broker_cli;
@@ -1000,13 +1000,9 @@ fn launch(
         let descriptor_path = default_descriptor_path()?;
         let descriptor = read_descriptor(&descriptor_path).ok().flatten();
         let descriptor_present = descriptor_path.exists();
-        let control_endpoint_ready = descriptor.as_ref().is_some_and(|descriptor| {
-            endpoint_ready(descriptor.control_port, Duration::from_millis(300))
-        });
         let state = classify_startup(StartupObservation {
             desktop_running: !roots.is_empty(),
             descriptor_present,
-            control_endpoint_ready,
         });
 
         match state {
@@ -1049,14 +1045,7 @@ fn launch(
                     continue;
                 }
             }
-            StartupState::CleanLaunch => {
-                if descriptor_present && control_endpoint_ready {
-                    return Err(
-                        "codexhost control endpoint is still active without a live Desktop; retry after it exits"
-                            .into(),
-                    );
-                }
-            }
+            StartupState::CleanLaunch => {}
         }
 
         let control = allocate_runtime_control()?;
@@ -1131,13 +1120,9 @@ fn launch(
     let descriptor_path = default_descriptor_path()?;
     let descriptor = read_descriptor(&descriptor_path).ok().flatten();
     let descriptor_present = descriptor_path.exists();
-    let control_endpoint_ready = descriptor.as_ref().is_some_and(|descriptor| {
-        endpoint_ready(descriptor.control_port, Duration::from_millis(300))
-    });
     match classify_startup(StartupObservation {
         desktop_running: false,
         descriptor_present,
-        control_endpoint_ready,
     }) {
         StartupState::RecoverStale => {
             if let Some(descriptor) = &descriptor {
@@ -1148,12 +1133,6 @@ fn launch(
             }
         }
         StartupState::Attach => unreachable!("no Desktop roots were observed"),
-        StartupState::CleanLaunch if descriptor_present && control_endpoint_ready => {
-            return Err(
-                "codexhost control endpoint is still active without a live Desktop; retry after it exits"
-                    .into(),
-            );
-        }
         StartupState::CleanLaunch => {}
     }
     let control = allocate_runtime_control()?;

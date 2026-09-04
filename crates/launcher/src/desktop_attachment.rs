@@ -82,16 +82,6 @@ pub(super) fn acquire_launcher_ownership(
     Err("another codexhost Launcher did not become attachable before timeout".into())
 }
 
-pub(super) fn endpoint_ready(port: u16, timeout: Duration) -> bool {
-    TcpStream::connect_timeout(
-        &format!("127.0.0.1:{port}")
-            .parse()
-            .expect("valid loopback socket address"),
-        timeout,
-    )
-    .is_ok()
-}
-
 pub(super) fn wait_for_host_chain(
     desktop_pid: u32,
     options: &ResolvedLaunchOptions,

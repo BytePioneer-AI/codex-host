@@ -12,6 +12,7 @@ export interface RendererHarnessMessages {
   readonly selecting: string;
   readonly permissionsUnavailable: string;
   readonly permissionModeFixedAtCreate: string;
+  readonly modelFixedAtCreate: string;
 }
 
 const ENGLISH_HARNESS_MESSAGES: RendererHarnessMessages = Object.freeze({
@@ -25,6 +26,8 @@ const ENGLISH_HARNESS_MESSAGES: RendererHarnessMessages = Object.freeze({
   permissionsUnavailable: "Permissions unavailable",
   permissionModeFixedAtCreate:
     "Grok fixes its Permission Mode when the Session is created. Start a new Thread to change it.",
+  modelFixedAtCreate:
+    "Penguin fixes its Model when the Session is created. Start a new Thread to change it.",
 });
 
 const CHINESE_HARNESS_MESSAGES: RendererHarnessMessages = Object.freeze({
@@ -37,6 +40,7 @@ const CHINESE_HARNESS_MESSAGES: RendererHarnessMessages = Object.freeze({
   selecting: "正在选择...",
   permissionsUnavailable: "权限不可用",
   permissionModeFixedAtCreate: "Grok 的权限模式在会话创建时确定，如需更改请新建会话",
+  modelFixedAtCreate: "Penguin 的模型在会话创建时确定，如需更改请新建会话",
 });
 
 const CHINESE_PERMISSION_MODE_LABELS = new Map<string, string>([

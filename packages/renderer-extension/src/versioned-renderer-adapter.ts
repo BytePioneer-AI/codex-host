@@ -42,6 +42,8 @@ export const OMP_TRANSPORT_MODEL_ID = "codexhost/omp-native";
 export const OMP_TRANSPORT_MODEL_PREFIX = `${OMP_TRANSPORT_MODEL_ID}@`;
 export const ANTIGRAVITY_TRANSPORT_MODEL_ID = "codexhost/antigravity-native";
 export const ANTIGRAVITY_TRANSPORT_MODEL_PREFIX = `${ANTIGRAVITY_TRANSPORT_MODEL_ID}@`;
+export const PENGUIN_TRANSPORT_MODEL_ID = "codexhost/penguin-native";
+export const PENGUIN_TRANSPORT_MODEL_PREFIX = `${PENGUIN_TRANSPORT_MODEL_ID}@`;
 
 export type RendererAdapterState = "installing" | "ready" | "unsupported";
 
@@ -138,6 +140,7 @@ function transportModelIdForAgent(agent: RendererAgent): string | null {
   if (agent === "grok") return GROK_TRANSPORT_MODEL_ID;
   if (agent === "omp") return OMP_TRANSPORT_MODEL_ID;
   if (agent === "antigravity") return ANTIGRAVITY_TRANSPORT_MODEL_ID;
+  if (agent === "penguin") return PENGUIN_TRANSPORT_MODEL_ID;
   return null;
 }
 
@@ -206,6 +209,30 @@ export function antigravityTransportModelId(
     return `${ANTIGRAVITY_TRANSPORT_MODEL_PREFIX}${parsedModel.id}@${parsedPermission ?? ""}@${parsedThinking}`;
   }
   return `${ANTIGRAVITY_TRANSPORT_MODEL_PREFIX}${parsedModel.id}${parsedPermission ? `@${parsedPermission}` : ""}`;
+}
+
+export function penguinTransportModelId(
+  model?: HarnessModelRef,
+  permissionModeId?: HarnessPermissionModeId,
+  thinkingOptionId?: HarnessThinkingOptionId,
+): string {
+  if (!model) {
+    if (permissionModeId || thinkingOptionId) {
+      throw new Error("Penguin transport configuration requires a Model Ref");
+    }
+    return PENGUIN_TRANSPORT_MODEL_ID;
+  }
+  const parsedModel = harnessModelRefSchema.parse(model);
+  const parsedPermissionMode = permissionModeId
+    ? harnessPermissionModeIdSchema.parse(permissionModeId)
+    : undefined;
+  const parsedThinking = thinkingOptionId
+    ? harnessThinkingOptionIdSchema.parse(thinkingOptionId)
+    : undefined;
+  if (parsedThinking) {
+    return `${PENGUIN_TRANSPORT_MODEL_PREFIX}${parsedModel.id}@${parsedPermissionMode ?? ""}@${parsedThinking}`;
+  }
+  return `${PENGUIN_TRANSPORT_MODEL_PREFIX}${parsedModel.id}${parsedPermissionMode ? `@${parsedPermissionMode}` : ""}`;
 }
 
 export function openCodeTransportModelId(
@@ -520,6 +547,39 @@ export function decodeAntigravityTransportModelId(value: unknown): {
 
 export function isAntigravityTransportModelId(value: unknown): value is string {
   return decodeAntigravityTransportModelId(value) !== null;
+}
+
+export function decodePenguinTransportModelId(value: unknown): {
+  model?: HarnessModelRef;
+  thinkingOptionId?: HarnessThinkingOptionId;
+  permissionModeId?: HarnessPermissionModeId;
+} | null {
+  if (value === PENGUIN_TRANSPORT_MODEL_ID) return {};
+  if (typeof value !== "string" || !value.startsWith(PENGUIN_TRANSPORT_MODEL_PREFIX)) return null;
+  const components = value.slice(PENGUIN_TRANSPORT_MODEL_PREFIX.length).split("@");
+  if (components.length < 1 || components.length > 3) return null;
+  const [modelId, permissionModeId, thinkingOptionId] = components;
+  if (components.length === 2 && !permissionModeId) return null;
+  if (components.length === 3 && !thinkingOptionId) return null;
+  const model = harnessModelRefSchema.safeParse({ id: modelId });
+  if (!model.success) return null;
+  const permissionMode = permissionModeId
+    ? harnessPermissionModeIdSchema.safeParse(permissionModeId)
+    : null;
+  if (permissionMode && !permissionMode.success) return null;
+  const thinking = thinkingOptionId
+    ? harnessThinkingOptionIdSchema.safeParse(thinkingOptionId)
+    : null;
+  if (thinking && !thinking.success) return null;
+  return {
+    model: model.data,
+    ...(permissionMode?.success ? { permissionModeId: permissionMode.data } : {}),
+    ...(thinking?.success ? { thinkingOptionId: thinking.data } : {}),
+  };
+}
+
+export function isPenguinTransportModelId(value: unknown): value is string {
+  return decodePenguinTransportModelId(value) !== null;
 }
 
 export function threadIdFromComposerModelTarget(
@@ -919,7 +979,9 @@ export function modelSelectionForAgent(
                 ? ompTransportModelId(model, thinkingOptionId, permissionModeId)
                 : agent === "antigravity"
                   ? antigravityTransportModelId(model, permissionModeId, thinkingOptionId)
-                  : transportModelIdForAgent(agent);
+                  : agent === "penguin"
+                    ? penguinTransportModelId(model, permissionModeId, thinkingOptionId)
+                    : transportModelIdForAgent(agent);
   return transportModelId ? { model: transportModelId, reasoningEffort } : officialSelection;
 }
 

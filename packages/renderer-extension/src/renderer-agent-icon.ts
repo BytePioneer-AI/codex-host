@@ -14,6 +14,7 @@ export const RENDERER_AGENT_LABELS: Record<RendererAgent, string> = {
   grok: "Grok",
   omp: "Oh My Pi",
   antigravity: "Antigravity CLI",
+  penguin: "Penguin Harness",
 };
 
 const PI_PATHS = [
@@ -22,6 +23,12 @@ const PI_PATHS = [
     fillRule: "evenodd",
   },
   { d: "M17.5 12H23v11h-5.5V12z" },
+] as const;
+
+const PENGUIN_PATHS = [
+  {
+    d: "M12 2.25c-3.6 0-6.25 2.85-6.25 6.6v4.2c0 2.98 1.5 5.14 3.55 6.06L8.1 21h2.5l1.4-1.35 1.4 1.35h2.5l-1.2-1.89c2.05-.92 3.55-3.08 3.55-6.06v-4.2c0-3.75-2.65-6.6-6.25-6.6Zm-2.1 6.2a1.15 1.15 0 1 1 0 2.3 1.15 1.15 0 0 1 0-2.3Zm4.2 0a1.15 1.15 0 1 1 0 2.3 1.15 1.15 0 0 1 0-2.3Zm-2.1 2.9 2.05 1.4c-.37 1.18-1.12 1.73-2.05 1.73s-1.68-.55-2.05-1.73L12 11.35Z",
+  },
 ] as const;
 
 // DeepSeek Harness whale mark, exact extract from the official dsh web
@@ -84,6 +91,9 @@ export function createRendererAgentIcon(
       ownerDocument,
       "0 0 23.16 17.04",
     );
+  }
+  if (agent === "penguin") {
+    return createSvgIcon(PENGUIN_PATHS, "#2f3a4a", size, ownerDocument);
   }
   if (agent === "opencode") {
     const image = ownerDocument.createElement("img");

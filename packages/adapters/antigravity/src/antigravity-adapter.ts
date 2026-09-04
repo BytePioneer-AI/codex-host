@@ -657,6 +657,7 @@ class AntigravitySession implements HarnessSession {
       httpsPort: null,
     };
     this.#active = active;
+    child.stdin.on("error", () => undefined);
     child.stderr.setEncoding("utf8").on("data", (chunk: string) => {
       active.stderr = (active.stderr + chunk).slice(-8_000);
     });
@@ -694,7 +695,12 @@ class AntigravitySession implements HarnessSession {
     });
     try {
       const turnPrompt = formatAntigravityTurnPrompt(text);
-      child.stdin.write(`${JSON.stringify({ event: "user", message: { content: turnPrompt } })}\n`);
+      if (child.stdin.writable) {
+        child.stdin.write(
+          `${JSON.stringify({ event: "user", message: { content: turnPrompt } })}\n`,
+          () => undefined,
+        );
+      }
     } catch (error) {
       child.kill();
       this.#completeTurn(active, {
@@ -785,7 +791,9 @@ class AntigravitySession implements HarnessSession {
       const contextUsage = await active.contextUsagePromise;
       if (contextUsage) this.#publishUsage(active, contextUsage);
     }
-    active.process.stdin.end();
+    if (active.process.stdin.writable) {
+      active.process.stdin.end();
+    }
     if (this.#active !== active) return;
     const convId =
       event.result.conversation_id && event.result.conversation_id.trim().length > 0

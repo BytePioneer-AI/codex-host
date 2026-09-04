@@ -90,6 +90,12 @@ function emit() {
   }
 }
 
+process.stdin.resume();
+process.stdin.on("data", () => {});
+process.stdin.on("end", () => {
+  process.exit(0);
+});
+
 if (delay > 0) {
   setTimeout(emit, delay);
 } else {

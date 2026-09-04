@@ -860,6 +860,13 @@ fn desktop_environment(
         environment.push((OsString::from(STARTUP_TRACE_ENV), OsString::from("1")));
     }
     environment.extend(npm_update_runtime_environment(env::vars_os()));
+    #[cfg(target_os = "windows")]
+    for name in ["PATH", "PATHEXT"] {
+        if let Some(value) = env::var_os(name) {
+            environment.push((OsString::from(name), value));
+        }
+    }
+
     environment
 }
 
@@ -1567,6 +1574,29 @@ mod tests {
             OsString::from("CODEXHOST_DATA_DIR"),
             OsString::from("/home/codex/.codexhost"),
         )));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn desktop_environment_forwards_windows_command_search_variables() {
+        let environment = desktop_environment(
+            &resolved_options(),
+            &runtime_control(),
+            Path::new(r"C:\\codexhost.exe"),
+            Path::new(r"C:\\runtime\\desktop-runtime-v1.json"),
+            None,
+        );
+
+        for name in ["PATH", "PATHEXT"] {
+            assert_eq!(
+                environment
+                    .iter()
+                    .find(|(candidate, _)| candidate == name)
+                    .map(|(_, value)| value),
+                std::env::var_os(name).as_ref(),
+                "{name} must reach the AppX-launched Host Runtime"
+            );
+        }
     }
 
     #[test]

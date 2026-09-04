@@ -1,5 +1,5 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import type { AddressInfo } from "node:net";
+import type { AddressInfo, Socket } from "node:net";
 
 import {
   DelegationControlError,
@@ -14,6 +14,33 @@ import {
 } from "./delegation-types.js";
 
 const MAX_REQUEST_BYTES = 2 * 1024 * 1024;
+const MAX_CONNECTIONS = 32;
+const CONNECTION_TIMEOUT_MS = 5_000;
+const LOOPBACK_PORT_MIN = 49_152;
+const LOOPBACK_PORT_COUNT = 16_384;
+const LOOPBACK_LISTEN_ATTEMPTS = 8;
+
+function listenLoopback(server: Server): Promise<void> {
+  const { promise, resolve, reject } = Promise.withResolvers<undefined>();
+  let attempts = 0;
+  const listen = (): void => {
+    const port = LOOPBACK_PORT_MIN + Math.floor(Math.random() * LOOPBACK_PORT_COUNT);
+    const onError = (error: NodeJS.ErrnoException): void => {
+      if (error.code === "EADDRINUSE" && ++attempts < LOOPBACK_LISTEN_ATTEMPTS) {
+        listen();
+        return;
+      }
+      reject(error);
+    };
+    server.once("error", onError);
+    server.listen(port, "127.0.0.1", () => {
+      server.off("error", onError);
+      resolve(undefined);
+    });
+  };
+  listen();
+  return promise;
+}
 
 function errorBody(error: unknown): {
   error: { code: string; message: string; details?: unknown };
@@ -35,8 +62,12 @@ function errorBody(error: unknown): {
   };
 }
 
-function writeJson(response: ServerResponse, status: number, value: unknown): void {
-  response.writeHead(status, { "content-type": "application/json; charset=utf-8" });
+function writeJson(response: ServerResponse, status: number, value: unknown, close = false): void {
+  if (close) response.shouldKeepAlive = false;
+  response.writeHead(status, {
+    "content-type": "application/json; charset=utf-8",
+    ...(close ? { connection: "close" } : {}),
+  });
   response.end(`${JSON.stringify(value)}\n`);
 }
 
@@ -78,15 +109,21 @@ export async function startDelegationControlServer(input: {
   const server = createServer((request, response) => {
     void (async () => {
       if (request.method !== "POST") {
-        writeJson(response, 405, {
-          error: { code: "INVALID_ARGUMENT", message: "POST is required" },
-        });
+        writeJson(
+          response,
+          405,
+          { error: { code: "INVALID_ARGUMENT", message: "POST is required" } },
+          true,
+        );
         return;
       }
       if (request.headers.authorization !== `Bearer ${input.token}`) {
-        writeJson(response, 401, {
-          error: { code: "RUNTIME_UNREACHABLE", message: "Runtime token is invalid" },
-        });
+        writeJson(
+          response,
+          401,
+          { error: { code: "RUNTIME_UNREACHABLE", message: "Runtime token is invalid" } },
+          true,
+        );
         return;
       }
       const body = await jsonBody(request);
@@ -119,13 +156,20 @@ export async function startDelegationControlServer(input: {
       writeJson(response, error instanceof DelegationControlError ? 400 : 500, errorBody(error));
     });
   });
-  await new Promise<void>((resolve, reject) => {
-    server.once("error", reject);
-    server.listen(0, "127.0.0.1", () => {
-      server.off("error", reject);
-      resolve();
+  server.headersTimeout = CONNECTION_TIMEOUT_MS;
+  server.requestTimeout = CONNECTION_TIMEOUT_MS;
+  let connections = 0;
+  server.on("connection", (socket: Socket) => {
+    if (connections >= MAX_CONNECTIONS) {
+      socket.destroy();
+      return;
+    }
+    connections += 1;
+    socket.once("close", () => {
+      connections -= 1;
     });
   });
+  await listenLoopback(server);
   const address = server.address() as AddressInfo;
   return {
     endpoint: `http://127.0.0.1:${address.port}`,

@@ -205,6 +205,51 @@ describe("HarnessDelegationCoordinator", () => {
       await value.close();
     }
   });
+  it("shares one in-flight external Delegation start for equivalent requests", async () => {
+    const value = await fixture();
+    try {
+      const input = {
+        harnessId: "pi" as const,
+        task: "one delegated task",
+        cwd: "/synthetic",
+        parentThreadId: "parent-thread",
+        requestId: "concurrent-request",
+      };
+      const [first, second] = await Promise.all([
+        value.coordinator.start(input),
+        value.coordinator.start(input),
+      ]);
+      expect(second.threadId).toBe(first.threadId);
+      expect(value.adapter.sessions).toHaveLength(1);
+    } finally {
+      await value.close();
+    }
+  });
+
+  it("rejects a conflicting request ID while its first start is in flight", async () => {
+    const value = await fixture();
+    try {
+      const first = value.coordinator.start({
+        harnessId: "pi",
+        task: "first delegated task",
+        cwd: "/synthetic",
+        parentThreadId: "parent-thread",
+        requestId: "conflicting-request",
+      });
+      await expect(
+        value.coordinator.start({
+          harnessId: "pi",
+          task: "different delegated task",
+          cwd: "/synthetic",
+          parentThreadId: "parent-thread",
+          requestId: "conflicting-request",
+        }),
+      ).rejects.toMatchObject({ code: "INVALID_ARGUMENT" });
+      await first;
+    } finally {
+      await value.close();
+    }
+  });
 
   it("sends follow-up Turns, rejects busy sends, and cancels the active Turn", async () => {
     const value = await fixture();

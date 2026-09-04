@@ -145,6 +145,7 @@ describe("production Desktop Controller", () => {
         "codex",
         "pi",
         "claude-code",
+        "qwen-code",
         "deepseek-harness",
         "opencode",
         "grok",

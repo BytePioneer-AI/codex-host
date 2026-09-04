@@ -15,7 +15,7 @@ This integration is experimental. It preserves OpenAI's pairing, account authent
 
 1. On Windows, open **Settings → Connections → Control this computer**, enable access, and create a pairing code.
 2. On the controller, open **Settings → Connections → Control other devices**, add the code, and select the Windows environment.
-3. Open a project in that environment. In the composer Agent/Model selector, choose Pi, Claude Code, Grok, or another Harness available on Windows.
+3. Open a project in that environment. In the composer Agent/Model selector, choose Pi, Claude Code, Grok, Qwen Code, or another Harness available on Windows.
 
 Prove that a stock Codex task works over Remote Control before diagnosing a Harness. Pairing failures, missing environments, and account authorization errors belong to the official Remote Control layer.
 

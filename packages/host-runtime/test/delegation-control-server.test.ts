@@ -37,6 +37,9 @@ describe("delegation control server", () => {
     });
     try {
       expect(new URL(server.endpoint).hostname).toBe("127.0.0.1");
+      expect(new URL(server.endpoint).port).toSatisfy(
+        (port) => Number(port) >= 49_152 && Number(port) <= 65_535,
+      );
       const unauthorized = await fetch(`${server.endpoint}/v1/delegate/start`, {
         method: "POST",
         body: "{}",

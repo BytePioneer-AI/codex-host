@@ -13,6 +13,7 @@ import {
   GROK_NATIVE_TRANSPORT_MODEL_ID,
   OMP_NATIVE_TRANSPORT_MODEL_ID,
   OPENCODE_NATIVE_TRANSPORT_MODEL_ID,
+  QWEN_CODE_NATIVE_TRANSPORT_MODEL_ID,
   PI_NATIVE_TRANSPORT_MODEL_ID,
   decodeClaudeTransportSelection,
   decodeAntigravityTransportSelection,
@@ -23,6 +24,7 @@ import {
   decodeGrokTransportSelection,
   decodeOmpTransportSelection,
   decodeOpenCodeTransportSelection,
+  decodeQwenCodeTransportSelection,
   decodePiTransportModel,
   decodePiTransportSelection,
   encodeClaudeTransportModel,
@@ -30,6 +32,7 @@ import {
   encodeDeepSeekHarnessTransportModel,
   encodeGrokTransportModel,
   encodeOpenCodeTransportModel,
+  encodeQwenCodeTransportModel,
   encodePiTransportModel,
   encodeOmpTransportModel,
   transportModelIdForHarness,
@@ -40,6 +43,7 @@ describe("external Harness transport model routing", () => {
     ["pi", PI_NATIVE_TRANSPORT_MODEL_ID],
     ["claude-code", CLAUDE_CODE_NATIVE_TRANSPORT_MODEL_ID],
     ["deepseek-harness", DEEPSEEK_HARNESS_NATIVE_TRANSPORT_MODEL_ID],
+    ["qwen-code", QWEN_CODE_NATIVE_TRANSPORT_MODEL_ID],
     ["opencode", OPENCODE_NATIVE_TRANSPORT_MODEL_ID],
     ["grok", GROK_NATIVE_TRANSPORT_MODEL_ID],
     ["omp", OMP_NATIVE_TRANSPORT_MODEL_ID],
@@ -82,6 +86,20 @@ describe("external Harness transport model routing", () => {
       routeMode: "native",
       transportModelId,
       model,
+    });
+  });
+
+  it("round-trips a Qwen Code Model and Permission Mode", () => {
+    const model = harnessModelRefSchema.parse({ id: "qwen-max" });
+    const permissionModeId = harnessPermissionModeIdSchema.parse("plan");
+    const transportModelId = encodeQwenCodeTransportModel(model, permissionModeId);
+    expect(decodeQwenCodeTransportSelection(transportModelId)).toEqual({ model, permissionModeId });
+    expect(
+      decodeCreateRoute({ id: 12, method: "thread/start", params: { model: transportModelId } }),
+    ).toMatchObject({
+      harnessId: "qwen-code",
+      model,
+      permissionModeId,
     });
   });
 

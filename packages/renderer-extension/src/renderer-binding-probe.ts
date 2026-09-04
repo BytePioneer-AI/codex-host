@@ -51,6 +51,7 @@ import {
   decodeOmpTransportModelId,
   decodeOpenCodeTransportModelId,
   decodePiTransportModelId,
+  decodeQwenCodeTransportModelId,
   findComposerModelTarget,
   threadIdFromComposerModelTarget,
   waitForRendererDraftPrewarmPolicy,
@@ -81,6 +82,7 @@ import type {
 const externalHarnessIds = {
   pi: harnessIdSchema.parse("pi"),
   "claude-code": harnessIdSchema.parse("claude-code"),
+  "qwen-code": harnessIdSchema.parse("qwen-code"),
   "deepseek-harness": harnessIdSchema.parse("deepseek-harness"),
   opencode: harnessIdSchema.parse("opencode"),
   grok: harnessIdSchema.parse("grok"),
@@ -91,6 +93,7 @@ const externalHarnessIds = {
 const externalAgents: readonly ExternalRendererAgent[] = [
   "pi",
   "claude-code",
+  "qwen-code",
   "deepseek-harness",
   "opencode",
   "grok",
@@ -386,6 +389,21 @@ export function restoredThreadOwnership(inspection: ThreadInspection): RestoredT
       ...(permissionModeId ? { permissionModeId } : {}),
     };
   }
+  if (inspection.harnessId === "qwen-code") {
+    const transportSelection = decodeQwenCodeTransportModelId(inspection.transportModelId);
+    if (!transportSelection) {
+      throw new Error("Qwen Code Thread reported an incompatible transport Model");
+    }
+    const model = inspection.effectiveModel ?? transportSelection.model;
+    const permissionModeId =
+      inspection.effectivePermissionModeId ?? transportSelection.permissionModeId;
+    return {
+      agent: "qwen-code",
+      ...(model ? { model } : {}),
+      ...(permissionModeId ? { permissionModeId } : {}),
+    };
+  }
+
   if (inspection.harnessId === "deepseek-harness") {
     const transportSelection = decodeDeepSeekHarnessTransportModelId(inspection.transportModelId);
     if (!transportSelection) {
@@ -641,6 +659,7 @@ export function installRendererBindingProbe(
     errors: {
       pi: undefined,
       "claude-code": undefined,
+      "qwen-code": undefined,
       "deepseek-harness": undefined,
       opencode: undefined,
       grok: undefined,

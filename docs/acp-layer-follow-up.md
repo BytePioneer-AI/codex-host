@@ -1,6 +1,6 @@
 # ACP 层后续开发说明
 
-> 状态：尚未触发；当前仍只有 Grok 使用生产 ACP Transport。
+> 状态：进行中；目前只有 Grok 使用生产 ACP Transport。
 
 ## 背景
 
@@ -64,6 +64,9 @@ packages/adapters/grok/src/acp-transport.ts
 > 一个 Adapter 只有假设中的共享接口；两个真实 Adapter 才能暴露稳定的公共部分。
 
 因此，应等第二个生产 ACP Harness 接入并完成最小实现后，再比较两套代码并抽取共同机制。
+
+> 更新（2026-09）：Qwen Code 已从 ACP Transport 迁移到官方 `@qwen-code/sdk` 的
+> `query()`，因此不再构成第二个生产 ACP 实现。「抽取触发条件」目前仍未满足。
 
 ## 抽取触发条件
 

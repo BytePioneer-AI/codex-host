@@ -60,6 +60,7 @@ describe("Host external Harness composition", () => {
       "pi",
       "claude-code",
       "deepseek-harness",
+      "qwen-code",
       "opencode",
       "grok",
       "omp",
@@ -67,6 +68,7 @@ describe("Host external Harness composition", () => {
     ]);
     expect(adapters.get("claude-code")?.harnessId).toBe("claude-code");
     expect(adapters.get("deepseek-harness")?.harnessId).toBe("deepseek-harness");
+    expect(adapters.get("qwen-code")?.harnessId).toBe("qwen-code");
     expect(adapters.get("omp")?.harnessId).toBe("omp");
     expect(adapters.get("grok")?.harnessId).toBe("grok");
     expect(adapters.get("opencode")?.harnessId).toBe("opencode");

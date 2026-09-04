@@ -34,6 +34,8 @@ export const CLAUDE_CODE_TRANSPORT_MODEL_ID = "codexhost/claude-code-native";
 export const CLAUDE_CODE_TRANSPORT_MODEL_PREFIX = `${CLAUDE_CODE_TRANSPORT_MODEL_ID}@`;
 export const DEEPSEEK_HARNESS_TRANSPORT_MODEL_ID = "codexhost/deepseek-harness-native";
 export const DEEPSEEK_HARNESS_TRANSPORT_MODEL_PREFIX = `${DEEPSEEK_HARNESS_TRANSPORT_MODEL_ID}@`;
+export const QWEN_CODE_TRANSPORT_MODEL_ID = "codexhost/qwen-code-native";
+export const QWEN_CODE_TRANSPORT_MODEL_PREFIX = `${QWEN_CODE_TRANSPORT_MODEL_ID}@`;
 export const OPENCODE_TRANSPORT_MODEL_ID = "codexhost/opencode-native";
 export const OPENCODE_TRANSPORT_MODEL_PREFIX = `${OPENCODE_TRANSPORT_MODEL_ID}@`;
 export const GROK_TRANSPORT_MODEL_ID = "codexhost/grok-native";
@@ -134,6 +136,7 @@ function transportModelIdForAgent(agent: RendererAgent): string | null {
   if (agent === "pi") return PI_TRANSPORT_MODEL_ID;
   if (agent === "claude-code") return CLAUDE_CODE_TRANSPORT_MODEL_ID;
   if (agent === "deepseek-harness") return DEEPSEEK_HARNESS_TRANSPORT_MODEL_ID;
+  if (agent === "qwen-code") return QWEN_CODE_TRANSPORT_MODEL_ID;
   if (agent === "opencode") return OPENCODE_TRANSPORT_MODEL_ID;
   if (agent === "grok") return GROK_TRANSPORT_MODEL_ID;
   if (agent === "omp") return OMP_TRANSPORT_MODEL_ID;
@@ -263,6 +266,45 @@ export function decodeOpenCodeTransportModelId(value: unknown): {
 
 export function isOpenCodeTransportModelId(value: unknown): value is string {
   return decodeOpenCodeTransportModelId(value) !== null;
+}
+
+export function qwenCodeTransportModelId(
+  model?: HarnessModelRef,
+  permissionModeId?: HarnessPermissionModeId,
+): string {
+  if (!model) {
+    if (permissionModeId) {
+      throw new Error("Qwen Code transport Permission Mode requires a Model Ref");
+    }
+    return QWEN_CODE_TRANSPORT_MODEL_ID;
+  }
+  const parsedModel = harnessModelRefSchema.parse(model);
+  const parsedPermissionMode = permissionModeId
+    ? harnessPermissionModeIdSchema.parse(permissionModeId)
+    : undefined;
+  return `${QWEN_CODE_TRANSPORT_MODEL_PREFIX}${parsedModel.id}${parsedPermissionMode ? `@${parsedPermissionMode}` : ""}`;
+}
+
+export function decodeQwenCodeTransportModelId(value: unknown): {
+  model?: HarnessModelRef;
+  permissionModeId?: HarnessPermissionModeId;
+} | null {
+  if (value === QWEN_CODE_TRANSPORT_MODEL_ID) return {};
+  if (typeof value !== "string" || !value.startsWith(QWEN_CODE_TRANSPORT_MODEL_PREFIX)) return null;
+  const components = value.slice(QWEN_CODE_TRANSPORT_MODEL_PREFIX.length).split("@");
+  if (components.length < 1 || components.length > 2) return null;
+  const [modelId, permissionModeId] = components;
+  if (!modelId || (components.length === 2 && !permissionModeId)) return null;
+  const model = harnessModelRefSchema.safeParse({ id: modelId });
+  if (!model.success) return null;
+  const permissionMode = permissionModeId
+    ? harnessPermissionModeIdSchema.safeParse(permissionModeId)
+    : null;
+  if (permissionMode && !permissionMode.success) return null;
+  return {
+    model: model.data,
+    ...(permissionMode?.success ? { permissionModeId: permissionMode.data } : {}),
+  };
 }
 
 export function claudeTransportModelId(
@@ -911,15 +953,17 @@ export function modelSelectionForAgent(
         ? claudeTransportModelId(model, permissionModeId, thinkingOptionId)
         : agent === "deepseek-harness"
           ? deepSeekHarnessTransportModelId(model, permissionModeId)
-          : agent === "opencode"
-            ? openCodeTransportModelId(model, permissionModeId, thinkingOptionId)
-            : agent === "grok"
-              ? grokTransportModelId(model, permissionModeId, thinkingOptionId)
-              : agent === "omp"
-                ? ompTransportModelId(model, thinkingOptionId, permissionModeId)
-                : agent === "antigravity"
-                  ? antigravityTransportModelId(model, permissionModeId, thinkingOptionId)
-                  : transportModelIdForAgent(agent);
+          : agent === "qwen-code"
+            ? qwenCodeTransportModelId(model, permissionModeId)
+            : agent === "opencode"
+              ? openCodeTransportModelId(model, permissionModeId, thinkingOptionId)
+              : agent === "grok"
+                ? grokTransportModelId(model, permissionModeId, thinkingOptionId)
+                : agent === "omp"
+                  ? ompTransportModelId(model, thinkingOptionId, permissionModeId)
+                  : agent === "antigravity"
+                    ? antigravityTransportModelId(model, permissionModeId, thinkingOptionId)
+                    : transportModelIdForAgent(agent);
   return transportModelId ? { model: transportModelId, reasoningEffort } : officialSelection;
 }
 

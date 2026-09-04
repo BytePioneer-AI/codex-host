@@ -14,6 +14,8 @@ export const CLAUDE_CODE_NATIVE_TRANSPORT_MODEL_ID = "codexhost/claude-code-nati
 export const CLAUDE_CODE_NATIVE_TRANSPORT_MODEL_PREFIX = `${CLAUDE_CODE_NATIVE_TRANSPORT_MODEL_ID}@`;
 export const DEEPSEEK_HARNESS_NATIVE_TRANSPORT_MODEL_ID = "codexhost/deepseek-harness-native";
 export const DEEPSEEK_HARNESS_NATIVE_TRANSPORT_MODEL_PREFIX = `${DEEPSEEK_HARNESS_NATIVE_TRANSPORT_MODEL_ID}@`;
+export const QWEN_CODE_NATIVE_TRANSPORT_MODEL_ID = "codexhost/qwen-code-native";
+export const QWEN_CODE_NATIVE_TRANSPORT_MODEL_PREFIX = `${QWEN_CODE_NATIVE_TRANSPORT_MODEL_ID}@`;
 export const OPENCODE_NATIVE_TRANSPORT_MODEL_ID = "codexhost/opencode-native";
 export const OPENCODE_NATIVE_TRANSPORT_MODEL_PREFIX = `${OPENCODE_NATIVE_TRANSPORT_MODEL_ID}@`;
 export const GROK_NATIVE_TRANSPORT_MODEL_ID = "codexhost/grok-native";
@@ -26,6 +28,7 @@ export const EXTERNAL_HARNESS_IDS = [
   "pi",
   "claude-code",
   "deepseek-harness",
+  "qwen-code",
   "opencode",
   "grok",
   "omp",
@@ -39,6 +42,7 @@ const transportModelByHarness = {
   pi: PI_NATIVE_TRANSPORT_MODEL_ID,
   "claude-code": CLAUDE_CODE_NATIVE_TRANSPORT_MODEL_ID,
   "deepseek-harness": DEEPSEEK_HARNESS_NATIVE_TRANSPORT_MODEL_ID,
+  "qwen-code": QWEN_CODE_NATIVE_TRANSPORT_MODEL_ID,
   opencode: OPENCODE_NATIVE_TRANSPORT_MODEL_ID,
   grok: GROK_NATIVE_TRANSPORT_MODEL_ID,
   omp: OMP_NATIVE_TRANSPORT_MODEL_ID,
@@ -440,6 +444,52 @@ export function decodeClaudeTransportSelection(
   };
 }
 
+export function encodeQwenCodeTransportModel(
+  model?: HarnessModelRef,
+  permissionModeId?: HarnessPermissionModeId,
+): string {
+  if (!model) {
+    if (permissionModeId) {
+      throw new Error("Qwen Code transport Permission Mode requires a Model Ref");
+    }
+    return QWEN_CODE_NATIVE_TRANSPORT_MODEL_ID;
+  }
+  const parsedModel = harnessModelRefSchema.parse(model);
+  const parsedPermissionModeId = permissionModeId
+    ? harnessPermissionModeIdSchema.parse(permissionModeId)
+    : undefined;
+  return `${QWEN_CODE_NATIVE_TRANSPORT_MODEL_PREFIX}${parsedModel.id}${parsedPermissionModeId ? `@${parsedPermissionModeId}` : ""}`;
+}
+
+export function decodeQwenCodeTransportSelection(
+  value: unknown,
+): ExternalConfigurationSelection | null {
+  if (value === QWEN_CODE_NATIVE_TRANSPORT_MODEL_ID) return {};
+  if (typeof value !== "string" || !value.startsWith(QWEN_CODE_NATIVE_TRANSPORT_MODEL_PREFIX)) {
+    return null;
+  }
+  const components = value.slice(QWEN_CODE_NATIVE_TRANSPORT_MODEL_PREFIX.length).split("@");
+  if (components.length < 1 || components.length > 2) {
+    throw new Error("Qwen Code transport configuration has an invalid component count");
+  }
+  const [modelId, permissionModeId] = components;
+  if (components.length === 2 && !permissionModeId) {
+    throw new Error("Qwen Code transport configuration has an empty Permission Mode");
+  }
+  const model = harnessModelRefSchema.safeParse({ id: modelId });
+  if (!model.success) throw new Error("Qwen Code transport Model contains an invalid Model Ref");
+  const permissionMode = permissionModeId
+    ? harnessPermissionModeIdSchema.safeParse(permissionModeId)
+    : null;
+  if (permissionMode && !permissionMode.success) {
+    throw new Error("Qwen Code transport contains an invalid Permission Mode");
+  }
+  return {
+    model: model.data,
+    ...(permissionMode?.success ? { permissionModeId: permissionMode.data } : {}),
+  };
+}
+
 export function encodeDeepSeekHarnessTransportModel(
   model?: HarnessModelRef,
   permissionModeId?: HarnessPermissionModeId,
@@ -506,6 +556,8 @@ export function encodeExternalTransportSelection(
       );
     case "deepseek-harness":
       return encodeDeepSeekHarnessTransportModel(selection.model, selection.permissionModeId);
+    case "qwen-code":
+      return encodeQwenCodeTransportModel(selection.model, selection.permissionModeId);
     case "opencode":
       return encodeOpenCodeTransportModel(
         selection.model,
@@ -544,6 +596,8 @@ export function decodeExternalTransportSelection(
       return decodeClaudeTransportSelection(value);
     case "deepseek-harness":
       return decodeDeepSeekHarnessTransportSelection(value);
+    case "qwen-code":
+      return decodeQwenCodeTransportSelection(value);
     case "opencode":
       return decodeOpenCodeTransportSelection(value);
     case "grok":
@@ -596,6 +650,16 @@ export function decodeCreateRoute(request: JsonRpcRequest): CreateRoute | null {
       ...deepSeekSelection,
     };
   }
+  const qwenCodeSelection = decodeQwenCodeTransportSelection(request.params.model);
+  if (qwenCodeSelection !== null) {
+    return {
+      harnessId: "qwen-code",
+      routeMode: "native",
+      transportModelId: request.params.model,
+      ...qwenCodeSelection,
+    };
+  }
+
   const openCodeSelection = decodeOpenCodeTransportSelection(request.params.model);
   if (openCodeSelection !== null) {
     return {

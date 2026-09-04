@@ -290,7 +290,7 @@ function unixSeconds(): number {
   return Math.floor(Date.now() / 1000);
 }
 
-function approvalServerName(harnessId: ExternalHarnessId): string {
+export function approvalServerName(harnessId: ExternalHarnessId): string {
   switch (harnessId) {
     case "pi":
       return "Pi";
@@ -298,6 +298,8 @@ function approvalServerName(harnessId: ExternalHarnessId): string {
       return "Claude Code";
     case "deepseek-harness":
       return "DeepSeek Harness";
+    case "qwen-code":
+      return "Qwen Code";
     case "grok":
       return "Grok";
     case "opencode":

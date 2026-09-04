@@ -44,6 +44,7 @@ import { createHostUpdateCoordinator, type HostUpdateCoordinator } from "./updat
 
 const STOCK_CODEX_PATH_ENV = "CODEXHOST_STOCK_CODEX_PATH";
 const DEFAULT_AGENT_ENV = "CODEXHOST_DEFAULT_AGENT";
+export const MANAGED_REMOTE_APP_SERVER_PROCESS_TITLE = "codexhost remote app-server listener";
 
 export function createRemoteOfficialAppServerPlan(
   arguments_: readonly string[],
@@ -329,7 +330,7 @@ export async function runHostRuntime(input: {
           officialState.unexpectedExit = result;
           void listener.close();
         });
-        process.title = "codex app-server desktop-ssh-websocket-v0.sock";
+        process.title = MANAGED_REMOTE_APP_SERVER_PROCESS_TITLE;
         process.once("SIGINT", stop);
         process.once("SIGTERM", stop);
         await listener.closed;

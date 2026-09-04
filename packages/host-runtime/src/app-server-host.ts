@@ -443,6 +443,8 @@ export class AppServerHost {
   #delegationCoordinator: HarnessDelegationCoordinator;
   #unregisterDelegationApi: (() => void) | undefined;
   #activeOfficialTurns = new Map<string, string>();
+  #pendingOfficialTurnStarts = new Map<unknown, string>();
+  #activeWorkDrainWaiters = new Set<() => void>();
   #pendingOfficialDelegationThreads = new Set<string>();
   #pendingOfficialTerminalStatuses = new Map<string, DelegationStartResult["status"]>();
   #officialUsageByThread = new Map<string, HostUsage>();
@@ -455,6 +457,7 @@ export class AppServerHost {
   #subagentThreadStatuses = new Map<string, "active" | "idle">();
   #runningSubagentsByParent = new Map<string, Set<string>>();
   #closeRequested = false;
+  #drainActiveWorkOnInputEnd = false;
   #desktopInputEnded = false;
 
   constructor(options: AppServerHostOptions) {
@@ -524,8 +527,17 @@ export class AppServerHost {
   close(): void {
     if (this.#closeRequested) return;
     this.#closeRequested = true;
+    this.#signalActiveWorkChanged();
     this.#options.desktopInput.destroy();
     this.#terminateOfficial();
+  }
+
+  disconnect(): void {
+    if (this.#closeRequested || this.#desktopInputEnded || this.#drainActiveWorkOnInputEnd) return;
+    this.#drainActiveWorkOnInputEnd = true;
+    const desktopInput = this.#options.desktopInput as Readable & { end?: () => void };
+    if (typeof desktopInput.end === "function") desktopInput.end();
+    else desktopInput.destroy();
   }
 
   async run(): Promise<number> {
@@ -625,6 +637,7 @@ export class AppServerHost {
       }
       this.#officialRequestBroker.failAll(new Error("codexhost Host Runtime closed"));
       this.#externalRuntime.clear();
+      this.#pendingOfficialTurnStarts.clear();
       this.#routeObservationTracker.clear();
       this.#unregisterDelegationApi?.();
       this.#unregisterDelegationApi = undefined;
@@ -638,6 +651,49 @@ export class AppServerHost {
     const official = this.#official;
     if (!official) return;
     official.close();
+  }
+
+  #hasActiveWork(): boolean {
+    return (
+      this.#pendingOfficialTurnStarts.size > 0 ||
+      this.#activeOfficialTurns.size > 0 ||
+      this.#runningSubagentsByParent.size > 0 ||
+      this.#externalRuntime
+        .values()
+        .some((thread) => thread.running || thread.activeTurnId !== null)
+    );
+  }
+
+  async #waitForActiveWorkToDrain(): Promise<void> {
+    while (!this.#closeRequested && this.#hasActiveWork()) {
+      await new Promise<void>((resolve) => this.#activeWorkDrainWaiters.add(resolve));
+    }
+  }
+
+  #signalActiveWorkChanged(): void {
+    if (!this.#closeRequested && this.#hasActiveWork()) return;
+    const waiters = [...this.#activeWorkDrainWaiters];
+    this.#activeWorkDrainWaiters.clear();
+    for (const resolve of waiters) resolve();
+  }
+
+  #observeOfficialTurnStartResponse(value: JsonValue): void {
+    if (!isRecord(value) || !("id" in value)) return;
+    const threadId = this.#pendingOfficialTurnStarts.get(value.id);
+    if (!threadId) return;
+    this.#pendingOfficialTurnStarts.delete(value.id);
+    const result = isRecord(value.result) ? value.result : null;
+    const turn = result && isRecord(result.turn) ? result.turn : null;
+    if (turn && typeof turn.id === "string") {
+      this.#activeOfficialTurns.set(threadId, turn.id);
+    }
+    this.#signalActiveWorkChanged();
+  }
+
+  #forgetPendingOfficialTurnStarts(threadId: string): void {
+    for (const [requestId, pendingThreadId] of this.#pendingOfficialTurnStarts) {
+      if (pendingThreadId === threadId) this.#pendingOfficialTurnStarts.delete(requestId);
+    }
   }
 
   async #forwardDesktop(): Promise<void> {
@@ -900,6 +956,9 @@ export class AppServerHost {
           await this.#startExternalTurn(request, resolution.thread);
           continue;
         }
+        if (typeof threadId === "string") {
+          this.#pendingOfficialTurnStarts.set(request.id, threadId);
+        }
       }
       if (request.method === "turn/interrupt") {
         const params = requestObject(request);
@@ -1014,10 +1073,19 @@ export class AppServerHost {
           continue;
         }
       }
-      await writeFrame(official.stdin, frame);
+      try {
+        await writeFrame(official.stdin, frame);
+      } catch (error) {
+        if (request.method === "turn/start") {
+          this.#pendingOfficialTurnStarts.delete(request.id);
+          this.#signalActiveWorkChanged();
+        }
+        throw error;
+      }
     }
     this.#desktopInputEnded = true;
-    official.stdin.end();
+    if (this.#drainActiveWorkOnInputEnd) await this.#waitForActiveWorkToDrain();
+    if (!this.#closeRequested) official.stdin.end();
   }
 
   async #forwardOfficial(): Promise<void> {
@@ -1030,6 +1098,7 @@ export class AppServerHost {
         const frame = current.value;
         const following = frames.next();
         const parsed = parseJsonFrame(frame);
+        this.#observeOfficialTurnStartResponse(parsed);
         if (isRecord(parsed) && parsed.method === "account/updated")
           this.#resetOfficialUsageState();
         if (this.#officialRequestBroker.handle(parsed)) {
@@ -1073,11 +1142,15 @@ export class AppServerHost {
     const params = value.params;
     if (value.method === "turn/started" && typeof params.threadId === "string") {
       const turn = isRecord(params.turn) ? params.turn : null;
-      if (turn && typeof turn.id === "string")
+      if (turn && typeof turn.id === "string") {
+        this.#forgetPendingOfficialTurnStarts(params.threadId);
         this.#activeOfficialTurns.set(params.threadId, turn.id);
+      }
     }
     if (value.method === "turn/completed" && typeof params.threadId === "string") {
+      this.#forgetPendingOfficialTurnStarts(params.threadId);
       this.#activeOfficialTurns.delete(params.threadId);
+      this.#signalActiveWorkChanged();
       const delegation = await this.#repository.getDelegationByChild(
         hostThreadIdSchema.parse(params.threadId),
       );
@@ -1368,6 +1441,7 @@ export class AppServerHost {
       };
     } catch (error) {
       this.#activeOfficialTurns.delete(threadId);
+      this.#signalActiveWorkChanged();
       await this.#officialRequestBroker
         .request("thread/delete", { threadId })
         .catch(() => undefined);
@@ -2045,6 +2119,7 @@ export class AppServerHost {
       thread.responseGates.delete(turnId);
       thread.ephemeralTurnIds.delete(turnId);
       gate.resolve();
+      this.#signalActiveWorkChanged();
       throw error;
     }
     if (!result.ok) {
@@ -2054,6 +2129,7 @@ export class AppServerHost {
       thread.responseGates.delete(turnId);
       thread.ephemeralTurnIds.delete(turnId);
       gate.resolve();
+      this.#signalActiveWorkChanged();
       await this.#writer.json(rpcError(request, -32073, result.error.message));
       return;
     }
@@ -2882,6 +2958,7 @@ export class AppServerHost {
       thread.activeTurnId = null;
       thread.projectedTurns.delete(turnId);
       thread.responseGates.delete(turnId);
+      this.#signalActiveWorkChanged();
       throw new Error(result.error.message);
     }
   }
@@ -2975,6 +3052,7 @@ export class AppServerHost {
       thread.projectedTurns.delete(turnId);
       thread.responseGates.delete(turnId);
       gate.resolve();
+      this.#signalActiveWorkChanged();
       await this.#writer.json(rpcError(request, -32073, result.error.message));
       return;
     }
@@ -3231,6 +3309,7 @@ export class AppServerHost {
       thread.activeTurnId = null;
       thread.projectedTurns.delete(event.turnId);
       thread.responseGates.delete(event.turnId);
+      this.#signalActiveWorkChanged();
       const delegation = await this.#repository.getDelegationByChild(thread.record.hostThreadId);
       if (delegation) {
         const status =
@@ -3397,6 +3476,7 @@ export class AppServerHost {
     if (!running) return;
     running.delete(childThreadId);
     if (running.size === 0) this.#runningSubagentsByParent.delete(parentThreadId);
+    this.#signalActiveWorkChanged();
   }
 
   #hasRunningSubagents(parentThreadId: string): boolean {

@@ -236,6 +236,16 @@ function unsupported(message: string): HarnessError {
   return { code: "unsupported", message, retryable: false };
 }
 
+export const ANTIGRAVITY_WORKSPACE_FILE_INSTRUCTION =
+  "[System Instruction: When creating new files in the workspace, you MUST use the write_to_file tool. When modifying existing files, use the replace_file_content tool. CRITICAL: NEVER include ArtifactMetadata when calling write_to_file for workspace files (ArtifactMetadata is strictly reserved for artifacts in the brain directory, and providing it for workspace files causes a path validation rejection). Do NOT use terminal commands (such as Set-Content, Out-File, echo, or cat) to create or write code files.]\n\n";
+
+export function formatAntigravityTurnPrompt(text: string): string {
+  if (text.startsWith("/") || text.includes("ArtifactMetadata")) {
+    return text;
+  }
+  return `${ANTIGRAVITY_WORKSPACE_FILE_INSTRUCTION}${text}`;
+}
+
 /**
  * Headless agy answers a permission request by denying it, then reports the
  * Turn as successful with an empty response. Without this the user sees a Turn
@@ -691,7 +701,8 @@ class AntigravitySession implements HarnessSession {
       });
     });
     try {
-      child.stdin.write(`${JSON.stringify({ event: "user", message: { content: text } })}\n`);
+      const turnPrompt = formatAntigravityTurnPrompt(text);
+      child.stdin.write(`${JSON.stringify({ event: "user", message: { content: turnPrompt } })}\n`);
     } catch (error) {
       child.kill();
       this.#completeTurn(active, {

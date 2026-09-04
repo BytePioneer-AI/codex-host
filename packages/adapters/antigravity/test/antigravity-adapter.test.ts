@@ -12,11 +12,13 @@ import {
 import { describe, expect, it } from "vitest";
 
 import {
+  ANTIGRAVITY_WORKSPACE_FILE_INSTRUCTION,
   AntigravityAdapter,
   antigravityAvailableThinkingOptions,
   antigravityModelArguments,
   antigravityToolErrorMessage,
   fetchAntigravityQuota,
+  formatAntigravityTurnPrompt,
   isAntigravityPermissionDenial,
   parseAntigravityContextUsage,
   parseAntigravityModels,
@@ -1238,6 +1240,18 @@ if (count === 0) {
         await adapter.close();
         await cleanup();
       }
+    });
+
+    it("formats turn prompt with workspace file instructions and leaves slash commands untouched", () => {
+      const normalPrompt = "Create a hello world python file";
+      const formatted = formatAntigravityTurnPrompt(normalPrompt);
+      expect(formatted).toBe(`${ANTIGRAVITY_WORKSPACE_FILE_INSTRUCTION}${normalPrompt}`);
+
+      const slashCommand = "/plan refactor authentication";
+      expect(formatAntigravityTurnPrompt(slashCommand)).toBe(slashCommand);
+
+      // Idempotency: does not double-inject if instruction already present
+      expect(formatAntigravityTurnPrompt(formatted)).toBe(formatted);
     });
   });
 });

@@ -88,6 +88,14 @@ interface ModernForkExpectation extends ParsedModernForkInput {
   readonly exactSeedLength?: number;
 }
 
+type ModernRollbackPlan =
+  | {
+      readonly kind: "fork";
+      readonly input: ParsedModernForkInput;
+      readonly agentPreset: string;
+    }
+  | { readonly kind: "create"; readonly agentPreset: string };
+
 export interface ModernDeepSeekHarnessAdapterOptions extends ModernRemoteConnectionOptions {
   readonly toolOutputLimit?: number;
   readonly maxEvents?: number;
@@ -266,12 +274,17 @@ export class ModernDeepSeekHarnessAdapter implements HarnessAdapter {
     let forkExpectation: ModernForkExpectation | undefined;
     try {
       const cwd = path.resolve(input.cwd);
-      const forkInput = input.kind === "fork" ? parseModernForkInput(input) : undefined;
+      let forkInput = input.kind === "fork" ? parseModernForkInput(input) : undefined;
+      const rollbackSourceSessionId =
+        input.kind === "rollbackLastTurn"
+          ? modernSessionId(input.sourceRef, "roll back")
+          : undefined;
+      let rollbackPlan: ModernRollbackPlan | undefined;
       let sessionId =
         input.kind === "create"
           ? `session-${this.#dependencies.randomUUID()}`
           : input.kind === "resume"
-            ? resumeSessionId(input)
+            ? modernSessionId(input.nativeRef, "resume")
             : undefined;
       if (sessionId) {
         if (this.#sessionIds.has(sessionId)) {
@@ -305,6 +318,26 @@ export class ModernDeepSeekHarnessAdapter implements HarnessAdapter {
       }
       this.#assertAccepting();
 
+      if (rollbackSourceSessionId) {
+        rollbackPlan = await this.#resolveLastTurnRollback(rollbackSourceSessionId, cwd);
+        if (rollbackPlan.kind === "fork") {
+          forkInput = rollbackPlan.input;
+        } else {
+          sessionId = `session-${this.#dependencies.randomUUID()}`;
+          if (sessionId === rollbackSourceSessionId || this.#sessionIds.has(sessionId)) {
+            throw new AdapterOperationError({
+              code: "sessionBusy",
+              message: "DeepSeek Harness Session is already loaded",
+              retryable: true,
+            });
+          }
+          this.#sessionIds.add(sessionId);
+          reservedSessionId = sessionId;
+          detachControl = this.#control.attach(sessionId);
+        }
+        this.#assertAccepting();
+      }
+
       if (forkInput) {
         forkExpectation = await this.#forkSession(forkInput, cwd);
         sessionId = forkExpectation.childSessionId;
@@ -318,8 +351,12 @@ export class ModernDeepSeekHarnessAdapter implements HarnessAdapter {
       }
       if (!sessionId) throw new Error("unreachable Session open mode");
 
-      if (input.kind === "create") {
-        await this.#createSession(sessionId, cwd);
+      if (input.kind === "create" || rollbackPlan?.kind === "create") {
+        await this.#createSession(
+          sessionId,
+          cwd,
+          rollbackPlan?.kind === "create" ? rollbackPlan.agentPreset : undefined,
+        );
         this.#assertAccepting();
         if (createConfiguration?.model) {
           await selectModernModel(
@@ -355,6 +392,27 @@ export class ModernDeepSeekHarnessAdapter implements HarnessAdapter {
       );
       this.#assertAccepting();
       if (forkExpectation) await this.#verifyForkJournal(forkExpectation, journal, cwd);
+      if (rollbackPlan) {
+        if (currentModernAgentPreset(journal) !== rollbackPlan.agentPreset) {
+          throw rollbackProtocolError();
+        }
+        if (rollbackPlan.kind === "create") {
+          const replacement = projectModernHistory({
+            harnessId: this.harnessId,
+            sessionId,
+            events: journal.events,
+            ...(this.#options.toolOutputLimit === undefined
+              ? {}
+              : { toolOutputLimit: this.#options.toolOutputLimit }),
+            ...(this.#options.maxEvents === undefined
+              ? {}
+              : { maxEvents: this.#options.maxEvents }),
+          });
+          if (replacement.incompleteTurn || replacement.snapshot.turns.length !== 0) {
+            throw rollbackProtocolError();
+          }
+        }
+      }
       this.#control.seed(sessionId, journal.projections);
       this.#assertAccepting();
       const openedConfiguration = readModernConfigurationSnapshot({
@@ -451,22 +509,85 @@ export class ModernDeepSeekHarnessAdapter implements HarnessAdapter {
     }
   }
 
-  async #createSession(requestedSessionId: string, cwd: string): Promise<void> {
+  async #createSession(
+    requestedSessionId: string,
+    cwd: string,
+    agentPreset?: string,
+  ): Promise<void> {
     const result = await this.#connection.call<unknown>("session/create", {
-      request: { sessionId: requestedSessionId, cwd },
+      request: {
+        sessionId: requestedSessionId,
+        cwd,
+        ...(agentPreset === undefined ? {} : { agentPreset }),
+      },
     });
     if (!result.ok) throw new AdapterOperationError(remoteFailure("session/create", result.error));
     if (
       !isRecord(result.value) ||
       !hasExactOptionalKeys(result.value, ["sessionId"], ["agentPreset"]) ||
       result.value.sessionId !== requestedSessionId ||
-      (Object.hasOwn(result.value, "agentPreset") && typeof result.value.agentPreset !== "string")
+      (Object.hasOwn(result.value, "agentPreset") &&
+        typeof result.value.agentPreset !== "string") ||
+      (agentPreset !== undefined && result.value.agentPreset !== agentPreset)
     ) {
       throw new AdapterOperationError({
         code: "protocolError",
         message: "DeepSeek Harness session/create returned an invalid Session identity",
         retryable: false,
       });
+    }
+  }
+
+  async #resolveLastTurnRollback(
+    sourceSessionId: string,
+    cwd: string,
+  ): Promise<ModernRollbackPlan> {
+    const source = await openModernJournal(
+      this.#connection,
+      { sessionId: sourceSessionId, cwd },
+      this.#journalOptions(),
+    );
+    try {
+      const projected = projectModernHistory({
+        harnessId: this.harnessId,
+        sessionId: sourceSessionId,
+        events: source.events,
+        ...(this.#options.toolOutputLimit === undefined
+          ? {}
+          : { toolOutputLimit: this.#options.toolOutputLimit }),
+        ...(this.#options.maxEvents === undefined ? {} : { maxEvents: this.#options.maxEvents }),
+      });
+      if (projected.incompleteTurn) {
+        throw new AdapterOperationError({
+          code: "sessionBusy",
+          message: "DeepSeek Harness Native Session has an active Turn",
+          retryable: true,
+        });
+      }
+      if (projected.snapshot.turns.length === 0) {
+        throw new AdapterOperationError({
+          code: "invalidState",
+          message: "DeepSeek Harness Native Session has no Turn to roll back",
+          retryable: false,
+        });
+      }
+      const agentPreset = currentModernAgentPreset(source);
+      const retained = projected.snapshot.turns.at(-2);
+      if (retained) {
+        const checkpointId = retained.checkpoint?.checkpointId;
+        if (!checkpointId) throw forkCheckpointError();
+        return {
+          kind: "fork",
+          input: { sourceSessionId, checkpointId },
+          agentPreset,
+        };
+      }
+      return {
+        kind: "create",
+        agentPreset,
+      };
+    } finally {
+      await source.close();
     }
   }
 
@@ -765,8 +886,13 @@ function validateOpen(input: OpenSessionInput): HarnessError | undefined {
       retryable: false,
     };
   }
-  if (input.kind !== "create" && input.kind !== "resume" && input.kind !== "fork") {
-    return unsupported(`DeepSeek Harness Modern does not support '${input.kind}'`);
+  const kind: unknown = input.kind;
+  if (kind !== "create" && kind !== "resume" && kind !== "fork" && kind !== "rollbackLastTurn") {
+    return {
+      code: "unsupported",
+      message: `DeepSeek Harness Modern does not support '${String(kind)}'`,
+      retryable: false,
+    };
   }
   if (
     input.kind === "create" &&
@@ -877,8 +1003,8 @@ function delegationPermissionIsApplied(events: readonly ModernJournalEvent[]): b
   );
 }
 
-function resumeSessionId(input: Extract<OpenSessionInput, { kind: "resume" }>): string {
-  const parsed = nativeSessionRefSchema.safeParse(input.nativeRef);
+function modernSessionId(ref: unknown, operation: "resume" | "roll back"): string {
+  const parsed = nativeSessionRefSchema.safeParse(ref);
   if (
     !parsed.success ||
     parsed.data.harnessId !== DEEPSEEK_HARNESS_ID ||
@@ -886,7 +1012,7 @@ function resumeSessionId(input: Extract<OpenSessionInput, { kind: "resume" }>): 
   ) {
     throw new AdapterOperationError({
       code: "invalidRequest",
-      message: "DeepSeek Harness cannot resume this Native Session Ref",
+      message: `DeepSeek Harness cannot ${operation} this Native Session Ref`,
       retryable: false,
     });
   }
@@ -935,6 +1061,22 @@ function forkProtocolError(): AdapterOperationError {
   });
 }
 
+function rollbackProtocolError(): AdapterOperationError {
+  return new AdapterOperationError({
+    code: "protocolError",
+    message: "DeepSeek Harness last-Turn rollback did not create the expected replacement Session",
+    retryable: false,
+  });
+}
+
+function currentModernAgentPreset(journal: ModernJournal): string {
+  const agentPreset = journal.projections.values.agentPreset;
+  if (typeof agentPreset !== "string" || agentPreset.trim() === "") {
+    throw rollbackProtocolError();
+  }
+  return agentPreset;
+}
+
 function forkRemoteFailure(failure: ModernRemoteFailure): HarnessError {
   if (failure.code === "session/fork-unavailable") {
     return {
@@ -970,10 +1112,6 @@ function forkRemoteFailure(failure: ModernRemoteFailure): HarnessError {
     ...nativeFailure(knownCode, "DeepSeek Harness Fork failed"),
     retryable: false,
   };
-}
-
-function unsupported(message: string): HarnessError {
-  return { code: "unsupported", message, retryable: false };
 }
 
 function remoteFailure(endpoint: string, failure: ModernRemoteFailure): HarnessError {

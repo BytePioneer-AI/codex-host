@@ -15,6 +15,10 @@ import { parseHostUsage, type HostUsage } from "@codexhost/harness-adapter";
 import type { StoredThreadRecordV1 } from "@codexhost/mapping-store";
 import {
   accountCreditsSnapshotSchema,
+  deepSeekModernSessionImportParamsSchema,
+  deepSeekModernSessionImportResultSchema,
+  deepSeekModernSessionListParamsSchema,
+  deepSeekModernSessionListResultSchema,
   externalThreadForkParamsSchema,
   harnessCommandCatalogSchema,
   harnessIdSchema,
@@ -55,6 +59,7 @@ import {
   type HostTurnId,
 } from "@codexhost/shared-contracts";
 import { executeExternalThreadFork } from "./external-thread-fork.js";
+import { DeepSeekModernSessionImporter } from "./deepseek-modern-session-import.js";
 import {
   ExternalHistoryRequestError,
   listExternalItems,
@@ -449,6 +454,7 @@ export class AppServerHost {
   #nextQuestionRequestId = HOST_QUESTION_REQUEST_ID_MAX;
   #officialRequestBroker: OfficialRequestBroker;
   #delegationCoordinator: HarnessDelegationCoordinator;
+  #deepSeekModernSessionImporter: DeepSeekModernSessionImporter;
   #unregisterDelegationApi: (() => void) | undefined;
   #activeOfficialTurns = new Map<string, string>();
   #pendingOfficialDelegationThreads = new Set<string>();
@@ -496,6 +502,11 @@ export class AppServerHost {
       environment: this.#options.environment ?? process.env,
       repository: this.#repository,
       consumeOutputs: (thread) => this.#consumeHarnessOutputs(thread),
+      diagnose: (error) => this.#diagnose(error),
+    });
+    this.#deepSeekModernSessionImporter = new DeepSeekModernSessionImporter({
+      adapter: this.#externalAdapters.get("deepseek-harness"),
+      repository: this.#repository,
       diagnose: (error) => this.#diagnose(error),
     });
     this.#delegationCoordinator = new HarnessDelegationCoordinator({
@@ -676,6 +687,14 @@ export class AppServerHost {
       }
       if (request.method === "codexhost/harness/web-ui/open") {
         this.#dispatchDesktopRequest(() => this.#openHarnessWebUi(request));
+        continue;
+      }
+      if (request.method === "codexhost/deepseek/modern-session/list") {
+        this.#dispatchDesktopRequest(() => this.#listDeepSeekModernSessions(request));
+        continue;
+      }
+      if (request.method === "codexhost/deepseek/modern-session/import") {
+        this.#dispatchDesktopRequest(() => this.#importDeepSeekModernSession(request));
         continue;
       }
       if (request.method === "codexhost/thread/fork") {
@@ -1752,6 +1771,43 @@ export class AppServerHost {
     } catch {
       await this.#writer.json(rpcError(request, -32092, "Harness Web UI could not be opened"));
     }
+  }
+
+  async #listDeepSeekModernSessions(request: JsonRpcRequest): Promise<void> {
+    const params = deepSeekModernSessionListParamsSchema.safeParse(request.params);
+    if (!params.success) {
+      await this.#writer.json(rpcError(request, -32602, "Invalid DeepSeek Session list params"));
+      return;
+    }
+    const outcome = await this.#deepSeekModernSessionImporter.list();
+    if (!outcome.ok) {
+      await this.#writer.json(rpcError(request, outcome.error.code, outcome.error.message));
+      return;
+    }
+    const result = deepSeekModernSessionListResultSchema.safeParse({
+      candidates: outcome.candidates,
+    });
+    if (!result.success) {
+      await this.#writer.json(rpcError(request, -32076, "DeepSeek Session list is invalid"));
+      return;
+    }
+    await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(result.data) }));
+  }
+
+  async #importDeepSeekModernSession(request: JsonRpcRequest): Promise<void> {
+    const params = deepSeekModernSessionImportParamsSchema.safeParse(request.params);
+    if (!params.success) {
+      await this.#writer.json(rpcError(request, -32602, "Invalid DeepSeek Session import params"));
+      return;
+    }
+    const outcome = await this.#deepSeekModernSessionImporter.import(params.data.nativeSessionId);
+    if (!outcome.ok) {
+      await this.#writer.json(rpcError(request, outcome.error.code, outcome.error.message));
+      return;
+    }
+    const result = deepSeekModernSessionImportResultSchema.parse({ threadId: outcome.threadId });
+    await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(result) }));
+    if (outcome.newlyCreated) await this.#notifyExternalThreadStarted(outcome.thread);
   }
 
   async #inspectThread(request: JsonRpcRequest): Promise<void> {

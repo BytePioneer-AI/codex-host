@@ -32,6 +32,7 @@ import {
   hostItemIdSchema,
   hostThreadIdSchema,
   hostTurnIdSchema,
+  type DeepSeekModernSessionCandidate,
 } from "@codexhost/shared-contracts";
 
 import type {
@@ -219,6 +220,16 @@ class WebUiHarnessAdapter extends FakeHarnessAdapter {
         : { ok: true, value: undefined };
     },
   };
+}
+
+class ModernSessionImportAdapter extends FakeHarnessAdapter {
+  candidates: DeepSeekModernSessionCandidate[] = [];
+  readonly listModernSessionCandidates = vi.fn(
+    async (): Promise<HarnessResult<DeepSeekModernSessionCandidate[]>> => ({
+      ok: true,
+      value: structuredClone(this.candidates),
+    }),
+  );
 }
 
 function createFixture(
@@ -1054,6 +1065,99 @@ describe("AppServerHost HarnessAdapter projection", () => {
       error: { code: -32092, message: "Harness Web UI could not be opened" },
     });
     expect(JSON.stringify(fixture.collector.messages)).not.toContain(canary);
+    await stopFixture(fixture);
+  });
+
+  it("lists and imports a Modern DeepSeek Session as notLoaded metadata", async () => {
+    const adapter = new ModernSessionImportAdapter(harnessIdSchema.parse("deepseek-harness"));
+    adapter.candidates = [
+      {
+        nativeSessionId: "native-import",
+        title: "Imported history",
+        updatedAt: 123,
+        cwd: path.resolve("import-workspace"),
+        running: false,
+      },
+    ];
+    const fixture = createFixture({
+      externalAdapters: new Map<ExternalHarnessId, FakeHarnessAdapter>([
+        ["deepseek-harness", adapter],
+      ]),
+    });
+    const officialWrite = vi.fn();
+    fixture.official.stdin.on("data", officialWrite);
+
+    writeRequest(fixture.desktopInput, {
+      id: 40,
+      method: "codexhost/deepseek/modern-session/list",
+      params: {},
+    });
+    await expect(fixture.collector.waitFor((message) => requestId(message, 40))).resolves.toEqual({
+      id: 40,
+      result: { candidates: adapter.candidates },
+    });
+    writeRequest(fixture.desktopInput, {
+      id: 41,
+      method: "codexhost/deepseek/modern-session/import",
+      params: { nativeSessionId: "native-import" },
+    });
+    const response = await fixture.collector.waitFor((message) => requestId(message, 41));
+    expect(response).toMatchObject({ result: { threadId: expect.any(String) } });
+    const threadId = (response.result as JsonObject).threadId;
+    const started = await fixture.collector.waitFor(
+      (message) =>
+        method(message, "thread/started") &&
+        (messageParams(message).thread as JsonObject | undefined)?.id === threadId,
+    );
+    expect(messageParams(started).thread).toMatchObject({
+      id: threadId,
+      status: { type: "notLoaded" },
+      cwd: path.resolve("import-workspace"),
+      name: "Imported history",
+      turns: [],
+    });
+    expect(fixture.collector.messages.indexOf(response)).toBeLessThan(
+      fixture.collector.messages.indexOf(started),
+    );
+    expect(adapter.sessions).toHaveLength(0);
+    expect(officialWrite).not.toHaveBeenCalled();
+
+    writeRequest(fixture.desktopInput, {
+      id: 43,
+      method: "codexhost/deepseek/modern-session/import",
+      params: { nativeSessionId: "native-import" },
+    });
+    await expect(fixture.collector.waitFor((message) => requestId(message, 43))).resolves.toEqual({
+      id: 43,
+      result: { threadId },
+    });
+    expect(
+      fixture.collector.messages.filter(
+        (message) =>
+          method(message, "thread/started") &&
+          (messageParams(message).thread as JsonObject | undefined)?.id === threadId,
+      ),
+    ).toHaveLength(1);
+    await stopFixture(fixture);
+  });
+
+  it("rejects invalid Modern DeepSeek import params before calling the Adapter", async () => {
+    const adapter = new ModernSessionImportAdapter(harnessIdSchema.parse("deepseek-harness"));
+    const fixture = createFixture({
+      externalAdapters: new Map<ExternalHarnessId, FakeHarnessAdapter>([
+        ["deepseek-harness", adapter],
+      ]),
+    });
+
+    writeRequest(fixture.desktopInput, {
+      id: 42,
+      method: "codexhost/deepseek/modern-session/import",
+      params: { nativeSessionId: "", cwd: "/untrusted" },
+    });
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 42)),
+    ).resolves.toMatchObject({ error: { code: -32602 } });
+    expect(adapter.listModernSessionCandidates).not.toHaveBeenCalled();
     await stopFixture(fixture);
   });
 

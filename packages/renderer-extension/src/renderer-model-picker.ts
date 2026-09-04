@@ -36,6 +36,8 @@ export interface RendererModelControlView {
   selected?: HarnessModelRef;
   selectedThinkingOptionId?: HarnessThinkingOptionId;
   resolvedModelLabel?: string;
+  selectionLocked?: boolean;
+  selectionLockedReason?: string;
   thinkingSelectionSupported?: boolean;
   error?: string;
 }
@@ -134,6 +136,7 @@ export function isRendererModelPickerDisabled(view: RendererModelControlView): b
     view.status === "loading" ||
     view.status === "selecting" ||
     view.status === "empty" ||
+    view.selectionLocked === true ||
     view.catalog === undefined
   );
 }
@@ -669,7 +672,7 @@ export function renderRendererModelPicker(
   const accessibleLabel = secondaryLabel
     ? `${presentation.modelLabel}, ${secondaryLabel}`
     : presentation.modelLabel;
-  control.trigger.title = view.error ?? accessibleLabel;
+  control.trigger.title = view.selectionLockedReason ?? view.error ?? accessibleLabel;
   control.trigger.setAttribute("aria-label", `Model: ${accessibleLabel}`);
   control.trigger.setAttribute(
     "aria-busy",

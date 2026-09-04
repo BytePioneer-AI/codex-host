@@ -10,6 +10,7 @@ import type {
   HarnessSession,
   OpenSessionInput,
 } from "@codexhost/harness-adapter";
+import { modelSelectionFixedAtCreate } from "@codexhost/shared-contracts";
 
 import { consumeBrokerFrames, writeBrokerFrame } from "./framing.js";
 import {
@@ -729,7 +730,11 @@ export async function startHarnessBrokerServer(input: {
             },
           };
         }
-        if (record.selection.model && reopened.value.capabilities.configuration.selectModel) {
+        if (
+          record.selection.model &&
+          reopened.value.capabilities.configuration.selectModel &&
+          !modelSelectionFixedAtCreate(reopened.value.capabilities.configuration)
+        ) {
           const selected = await reopened.value.execute({
             type: "model.select",
             model: record.selection.model,

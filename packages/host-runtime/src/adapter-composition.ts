@@ -5,6 +5,7 @@ import { GrokAdapter } from "@codexhost/adapter-grok";
 import { OpenCodeAdapter } from "@codexhost/adapter-opencode";
 import { PiAdapter } from "@codexhost/adapter-pi";
 import { OmpAdapter } from "@codexhost/adapter-omp";
+import { PenguinAdapter } from "@codexhost/adapter-penguin";
 import { BrokeredHarnessAdapter } from "@codexhost/harness-broker";
 import type { HarnessAdapter } from "@codexhost/harness-adapter";
 import type { ExternalHarnessId } from "@codexhost/protocol-core";
@@ -17,6 +18,7 @@ export const GROK_COMMAND_ENV = "CODEXHOST_GROK_COMMAND";
 export const OMP_COMMAND_ENV = "CODEXHOST_OMP_COMMAND";
 export const OPENCODE_COMMAND_ENV = "CODEXHOST_OPENCODE_COMMAND";
 export const ANTIGRAVITY_COMMAND_ENV = "CODEXHOST_ANTIGRAVITY_COMMAND";
+export const PENGUIN_COMMAND_ENV = "CODEXHOST_PENGUIN_COMMAND";
 
 type InspectableHarnessAdapter = Pick<HarnessAdapter, "inspect">;
 
@@ -110,6 +112,13 @@ export function createExternalHarnessAdapters(
         ...(environment[ANTIGRAVITY_COMMAND_ENV]
           ? { command: environment[ANTIGRAVITY_COMMAND_ENV] }
           : {}),
+        environment,
+      }),
+    ],
+    [
+      "penguin",
+      new PenguinAdapter({
+        ...(environment[PENGUIN_COMMAND_ENV] ? { command: environment[PENGUIN_COMMAND_ENV] } : {}),
         environment,
       }),
     ],

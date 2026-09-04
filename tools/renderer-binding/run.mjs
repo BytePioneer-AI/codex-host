@@ -21,6 +21,7 @@ export const RENDERER_PROBE_AGENTS = Object.freeze([
   "deepseek-harness",
   "opencode",
   "grok",
+  "penguin",
 ]);
 
 function usage() {

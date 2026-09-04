@@ -15,6 +15,7 @@ import {
   isComposerModelWriteAllowed,
   isOwnershipSubmissionBlocked,
   lockedPermissionMode,
+  modelSelectionLocked,
   permissionModeSelectionLocked,
   lateConversationTargetResolution,
   harnessAvailabilityDuringInspect,
@@ -110,6 +111,7 @@ describe("Renderer Composer DOM behavior", () => {
           grok: undefined,
           omp: undefined,
           antigravity: undefined,
+          penguin: undefined,
         },
       ),
     ).toEqual([]);
@@ -137,6 +139,7 @@ describe("Renderer Composer DOM behavior", () => {
           grok: undefined,
           omp: undefined,
           antigravity: undefined,
+          penguin: undefined,
         },
       ),
     ).toEqual(["deepseek-harness"]);
@@ -164,6 +167,7 @@ describe("Renderer Composer DOM behavior", () => {
           grok: undefined,
           omp: undefined,
           antigravity: undefined,
+          penguin: undefined,
         },
       ),
     ).toEqual(["deepseek-harness"]);
@@ -189,6 +193,7 @@ describe("Renderer Composer DOM behavior", () => {
           grok: undefined,
           omp: undefined,
           antigravity: undefined,
+          penguin: undefined,
         },
       ),
     ).toEqual(["pi", "claude-code", "deepseek-harness", "opencode", "grok", "omp", "antigravity"]);
@@ -216,6 +221,7 @@ describe("Renderer Composer DOM behavior", () => {
           grok: undefined,
           omp: undefined,
           antigravity: undefined,
+          penguin: undefined,
         },
       ),
     ).toEqual([]);
@@ -243,6 +249,7 @@ describe("Renderer Composer DOM behavior", () => {
           grok: undefined,
           omp: undefined,
           antigravity: undefined,
+          penguin: undefined,
         },
       ),
     ).toEqual(["deepseek-harness"]);
@@ -1106,6 +1113,13 @@ describe("Renderer Composer DOM behavior", () => {
     expect(
       permissionModeSelectionLocked({ phase: "locked", permissionModeScope: "atCreate" }),
     ).toBe(true);
+  });
+
+  it("locks Model selection only for an existing atCreate Session", () => {
+    expect(modelSelectionLocked({ phase: "draft", modelSelectionScope: "atCreate" })).toBe(false);
+    expect(modelSelectionLocked({ phase: "locked", modelSelectionScope: "live" })).toBe(false);
+    expect(modelSelectionLocked({ phase: "locked" })).toBe(false);
+    expect(modelSelectionLocked({ phase: "locked", modelSelectionScope: "atCreate" })).toBe(true);
   });
 
   it("persists explicit configuration selections only for a new-Thread draft", () => {

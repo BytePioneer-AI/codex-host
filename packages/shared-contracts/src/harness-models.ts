@@ -150,10 +150,20 @@ export const harnessPermissionModeScopeSchema = z.enum(["live", "atCreate"]);
 
 export type HarnessPermissionModeScope = z.infer<typeof harnessPermissionModeScopeSchema>;
 
+export const harnessModelSelectionScopeSchema = z.enum(["live", "atCreate"]);
+
+export type HarnessModelSelectionScope = z.infer<typeof harnessModelSelectionScopeSchema>;
+
 export function permissionModeFixedAtCreate(configuration: {
   permissionModeScope?: HarnessPermissionModeScope;
 }): boolean {
   return configuration.permissionModeScope === "atCreate";
+}
+
+export function modelSelectionFixedAtCreate(configuration: {
+  modelSelectionScope?: HarnessModelSelectionScope | undefined;
+}): boolean {
+  return configuration.modelSelectionScope === "atCreate";
 }
 
 export const harnessSessionCapabilitiesSchema = z
@@ -161,6 +171,7 @@ export const harnessSessionCapabilitiesSchema = z
     configuration: z
       .object({
         selectModel: z.boolean(),
+        modelSelectionScope: harnessModelSelectionScopeSchema.optional(),
         selectThinkingOption: z.boolean(),
         selectPermissionMode: z.boolean(),
         permissionModeScope: harnessPermissionModeScopeSchema.default("live"),
@@ -296,6 +307,7 @@ const externalThreadInspectionSchema = z
     owner: z.literal("external"),
     harnessId: nonBlankTextSchema.max(256),
     transportModelId: nonBlankTextSchema.max(1_024),
+    modelSelectionScope: harnessModelSelectionScopeSchema.optional(),
     effectiveModel: harnessModelRefSchema.optional(),
     resolvedModelLabel: harnessResolvedModelLabelSchema.optional(),
     effectiveThinkingOptionId: harnessThinkingOptionIdSchema.optional(),

@@ -23,6 +23,7 @@
   <a href="https://code.claude.com/docs/en/quickstart"><img alt="Claude Code" src="https://img.shields.io/badge/Claude_Code-D97757?logo=claudecode&logoColor=white" /></a>
   <a href="https://opencode.ai/docs/"><img alt="OpenCode" src="docs/imgs/badge-opencode.svg" /></a>
   <a href="https://github.com/deepseek-ai/deepseek-harness"><img alt="DeepSeek Harness" src="https://img.shields.io/badge/DeepSeek-4D6BFE?logo=deepseek&logoColor=white" /></a>
+  <a href="https://github.com/Prism-Shadow/penguin-harness"><img alt="Penguin Harness" src="https://img.shields.io/badge/Penguin_Harness-2f3a4a?logo=github&logoColor=white" /></a>
   <a href="https://grok.com/"><img alt="Grok" src="https://img.shields.io/badge/Grok-000000?logo=x&logoColor=white" /></a>
   <a href="https://github.com/can1357/oh-my-pi"><img alt="Oh My Pi" src="docs/imgs/badge-omp-v5.svg" /></a>
   <a href="https://antigravity.google/product/antigravity-cli"><img alt="AGY" src="docs/imgs/badge-agy.svg" /></a>
@@ -47,7 +48,9 @@
 
 ## 界面预览
 
-无需切换应用，**Pi、Claude Code、OpenCode、OMP、Grok Build 和 DeepSeek Harness** 都可以在同一个 Codex Desktop 窗口中直接使用。
+无需切换应用，**Pi、Claude Code、OpenCode、OMP、Grok Build、DeepSeek Harness 和 Penguin Harness** 都可以在同一个 Codex Desktop 窗口中直接使用。
+
+Penguin Harness 当前属于实验性适配器，连接方式、能力边界和隔离注意事项见 [Penguin Harness 适配器说明](docs/penguin-harness-adapter.zh-CN.md)。
 
 https://github.com/user-attachments/assets/c48192d7-23ff-4f6e-b61a-6345a655bb76
 

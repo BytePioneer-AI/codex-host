@@ -23,6 +23,7 @@ const HARNESS_INSTALL_URLS: Readonly<Record<ExternalRendererAgent, string>> = Ob
   grok: "https://grok.com/",
   omp: "https://github.com/can1357/oh-my-pi",
   antigravity: "https://antigravity.google/product/antigravity-cli",
+  penguin: "https://github.com/Prism-Shadow/penguin-harness",
 });
 
 export interface RendererConnectionAgentSnapshot {

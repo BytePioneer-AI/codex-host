@@ -4,6 +4,7 @@ import { packageMetadata as grokAdapter } from "@codexhost/adapter-grok";
 import { packageMetadata as openCodeAdapter } from "@codexhost/adapter-opencode";
 import { packageMetadata as piAdapter } from "@codexhost/adapter-pi";
 import { packageMetadata as ompAdapter } from "@codexhost/adapter-omp";
+import { packageMetadata as penguinAdapter } from "@codexhost/adapter-penguin";
 import { packageMetadata as desktopControl } from "@codexhost/desktop-control";
 import { packageMetadata as harnessAdapter } from "@codexhost/harness-adapter";
 import { packageMetadata as harnessBroker } from "@codexhost/harness-broker";
@@ -19,6 +20,7 @@ export {
   GROK_COMMAND_ENV,
   OMP_COMMAND_ENV,
   OPENCODE_COMMAND_ENV,
+  PENGUIN_COMMAND_ENV,
   PI_COMMAND_ENV,
   createExternalHarnessAdapters,
   prefetchAntigravityModelCatalog,
@@ -125,6 +127,7 @@ export const packageMetadata = {
     mappingStore.name,
     piAdapter.name,
     ompAdapter.name,
+    penguinAdapter.name,
     openCodeAdapter.name,
     sharedContracts.name,
     updateManager.name,

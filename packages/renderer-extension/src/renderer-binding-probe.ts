@@ -1,10 +1,12 @@
 import {
   harnessIdSchema,
+  modelSelectionFixedAtCreate,
   permissionModeFixedAtCreate,
   type HarnessCommandDescriptor,
   type HarnessModelCatalog,
   type HarnessModelRef,
   type HarnessModelSelectionState,
+  type HarnessModelSelectionScope,
   type HarnessPermissionModeCatalog,
   type HarnessPermissionModeId,
   type HarnessPermissionModeScope,
@@ -50,6 +52,7 @@ import {
   decodeGrokTransportModelId,
   decodeOmpTransportModelId,
   decodeOpenCodeTransportModelId,
+  decodePenguinTransportModelId,
   decodePiTransportModelId,
   findComposerModelTarget,
   threadIdFromComposerModelTarget,
@@ -86,6 +89,7 @@ const externalHarnessIds = {
   grok: harnessIdSchema.parse("grok"),
   omp: harnessIdSchema.parse("omp"),
   antigravity: harnessIdSchema.parse("antigravity"),
+  penguin: harnessIdSchema.parse("penguin"),
 } as const;
 
 const externalAgents: readonly ExternalRendererAgent[] = [
@@ -96,6 +100,7 @@ const externalAgents: readonly ExternalRendererAgent[] = [
   "grok",
   "omp",
   "antigravity",
+  "penguin",
 ];
 type HarnessAvailability = Partial<Record<ExternalRendererAgent, RendererAgentAvailability>>;
 type HarnessAvailabilityErrors = Record<ExternalRendererAgent, CodexhostError | undefined>;
@@ -314,6 +319,13 @@ export function permissionModeSelectionLocked(input: {
   return input.phase === "locked" && permissionModeFixedAtCreate(input);
 }
 
+export function modelSelectionLocked(input: {
+  phase: ComposerAgentPhase;
+  modelSelectionScope?: HarnessModelSelectionScope | undefined;
+}): boolean {
+  return input.phase === "locked" && modelSelectionFixedAtCreate(input);
+}
+
 export function shouldPersistNewThreadConfigurationSelection(phase: ComposerAgentPhase): boolean {
   return phase === "draft";
 }
@@ -429,6 +441,23 @@ export function restoredThreadOwnership(inspection: ThreadInspection): RestoredT
       inspection.effectivePermissionModeId ?? transportSelection.permissionModeId;
     return {
       agent: "antigravity",
+      ...(model ? { model } : {}),
+      ...(thinkingOptionId ? { thinkingOptionId } : {}),
+      ...(permissionModeId ? { permissionModeId } : {}),
+    };
+  }
+  if (inspection.harnessId === "penguin") {
+    const transportSelection = decodePenguinTransportModelId(inspection.transportModelId);
+    if (!transportSelection) {
+      throw new Error("Penguin Harness Thread reported an incompatible transport Model");
+    }
+    const model = inspection.effectiveModel ?? transportSelection.model;
+    const thinkingOptionId =
+      selectableThinkingOptionId(inspection) ?? transportSelection.thinkingOptionId;
+    const permissionModeId =
+      inspection.effectivePermissionModeId ?? transportSelection.permissionModeId;
+    return {
+      agent: "penguin",
       ...(model ? { model } : {}),
       ...(thinkingOptionId ? { thinkingOptionId } : {}),
       ...(permissionModeId ? { permissionModeId } : {}),
@@ -646,6 +675,7 @@ export function installRendererBindingProbe(
       grok: undefined,
       omp: undefined,
       antigravity: undefined,
+      penguin: undefined,
     },
     requestGeneration: 0,
     request: null,
@@ -1108,6 +1138,16 @@ export function installRendererBindingProbe(
               .permissionModeFixedAtCreate,
           }
         : {};
+      const modelSelectionLock = modelSelectionLocked({
+        phase: current.phase,
+        modelSelectionScope: inspection.capabilities.configuration.modelSelectionScope,
+      })
+        ? {
+            selectionLocked: true as const,
+            selectionLockedReason: rendererHarnessMessages(settingsLifecycle.locale)
+              .modelFixedAtCreate,
+          }
+        : {};
       let selectedPermissionModeId: HarnessPermissionModeId | undefined;
       if (inspection.capabilities.configuration.selectPermissionMode) {
         const permissionModes = inspection.permissionModes;
@@ -1227,6 +1267,7 @@ export function installRendererBindingProbe(
         status: "ready",
         catalog: effectiveCatalog,
         selected,
+        ...modelSelectionLock,
         ...(selectedThinkingOptionId ? { selectedThinkingOptionId } : {}),
         ...(mounted.threadConfiguration?.resolvedModelLabel
           ? { resolvedModelLabel: mounted.threadConfiguration.resolvedModelLabel }
@@ -1278,6 +1319,7 @@ export function installRendererBindingProbe(
     const current = controller.get(mounted.composer);
     if (current.agent === "codex") return;
     const agent = current.agent;
+    if (mounted.modelView.selectionLocked) return;
     const catalog = mounted.modelView.catalog;
     const selected = catalog?.models.find((model) => model.ref.id === modelId)?.ref;
     if (!catalog || !selected || !modelControl) return;

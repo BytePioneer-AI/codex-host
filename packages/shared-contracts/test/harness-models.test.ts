@@ -9,6 +9,7 @@ import {
   harnessModelCatalogSchema,
   harnessModelRefSchema,
   harnessModelSelectionStateSchema,
+  harnessModelSelectionScopeSchema,
   harnessThinkingOptionIdSchema,
   threadInspectionParamsSchema,
   threadInspectionSchema,
@@ -74,6 +75,23 @@ describe("Harness Model runtime contracts", () => {
     expect(JSON.parse(JSON.stringify(harnessInspectionSchema.parse(readyInspection())))).toEqual(
       readyInspection(),
     );
+  });
+
+  it("preserves the Model selection scope", () => {
+    const base = readyInspection();
+    const inspection = {
+      ...base,
+      capabilities: {
+        ...base.capabilities,
+        configuration: {
+          ...base.capabilities.configuration,
+          modelSelectionScope: harnessModelSelectionScopeSchema.parse("atCreate"),
+        },
+      },
+    };
+    expect(harnessInspectionSchema.parse(inspection)).toMatchObject({
+      capabilities: { configuration: { modelSelectionScope: "atCreate" } },
+    });
   });
 
   it("rejects native configuration and unknown fields", () => {

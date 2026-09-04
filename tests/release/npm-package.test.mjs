@@ -2,7 +2,6 @@ import { spawnSync } from "node:child_process";
 import {
   chmod,
   copyFile,
-  link,
   mkdir,
   mkdtemp,
   readFile,
@@ -84,7 +83,7 @@ async function createHomebrewNodeLayout(root) {
   );
   await mkdir(path.dirname(cellarNode), { recursive: true });
   try {
-    await link(process.execPath, cellarNode);
+    await symlink(process.execPath, cellarNode);
   } catch {
     await copyFile(process.execPath, cellarNode);
     await chmod(cellarNode, 0o755);
@@ -595,7 +594,7 @@ describe("npm package release", () => {
         const { brewPrefix, cellarNode } = await createHomebrewNodeLayout(root);
         const { userBin } = await createGlobalCodexhostInstall(brewPrefix);
         const result = spawnCodexhost(cellarNode, userBin, ["--help"]);
-        expect(result.status).toBe(0);
+        expect(result.status, result.stderr).toBe(0);
         expect(result.stderr).toBe("");
         expect(result.stdout).toContain("usage:");
       } finally {

@@ -53,6 +53,7 @@ function validMetafile(extraInputs = {}) {
       "packages/adapters/opencode/dist/index.js": {},
       "packages/adapters/grok/dist/index.js": {},
       "packages/adapters/omp/dist/index.js": {},
+      "packages/adapters/penguin/dist/index.js": {},
       "node_modules/@agentclientprotocol/sdk/index.js": {},
       "node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs": {},
       "node_modules/@opencode-ai/sdk/dist/v2/client.js": {},
@@ -154,6 +155,12 @@ describe("release Host Bundle", () => {
     expect(() => auditHostBundleMetafile({ inputs: withoutOmp })).toThrow(
       "missing required input: /packages/adapters/omp/",
     );
+
+    const withoutPenguin = { ...validMetafile().inputs };
+    delete withoutPenguin["packages/adapters/penguin/dist/index.js"];
+    expect(() => auditHostBundleMetafile({ inputs: withoutPenguin })).toThrow(
+      "missing required input: /packages/adapters/penguin/",
+    );
   });
 
   it("builds the real production entry with all external Harness Adapters", async () => {
@@ -175,6 +182,7 @@ describe("release Host Bundle", () => {
       expect(source).toContain("Claude Code is not installed");
       expect(source).toContain("CODEXHOST_DEEPSEEK_HARNESS_ENDPOINT");
       expect(source).toContain("CODEXHOST_OPENCODE_COMMAND");
+      expect(source).toContain("CODEXHOST_PENGUIN_COMMAND");
       expect(source).toContain("--codexhost-harness-broker");
       expect(source).not.toContain("claude-agent-sdk-darwin-arm64");
       expect(source).not.toContain("dsh-jsonrpc-agent");

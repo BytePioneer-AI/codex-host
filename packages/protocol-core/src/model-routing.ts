@@ -22,6 +22,8 @@ export const OMP_NATIVE_TRANSPORT_MODEL_ID = "codexhost/omp-native";
 export const OMP_NATIVE_TRANSPORT_MODEL_PREFIX = `${OMP_NATIVE_TRANSPORT_MODEL_ID}@`;
 export const ANTIGRAVITY_NATIVE_TRANSPORT_MODEL_ID = "codexhost/antigravity-native";
 export const ANTIGRAVITY_NATIVE_TRANSPORT_MODEL_PREFIX = `${ANTIGRAVITY_NATIVE_TRANSPORT_MODEL_ID}@`;
+export const PENGUIN_NATIVE_TRANSPORT_MODEL_ID = "codexhost/penguin-native";
+export const PENGUIN_NATIVE_TRANSPORT_MODEL_PREFIX = `${PENGUIN_NATIVE_TRANSPORT_MODEL_ID}@`;
 export const EXTERNAL_HARNESS_IDS = [
   "pi",
   "claude-code",
@@ -30,6 +32,7 @@ export const EXTERNAL_HARNESS_IDS = [
   "grok",
   "omp",
   "antigravity",
+  "penguin",
 ] as const;
 
 export type ExternalHarnessId = (typeof EXTERNAL_HARNESS_IDS)[number];
@@ -43,6 +46,7 @@ const transportModelByHarness = {
   grok: GROK_NATIVE_TRANSPORT_MODEL_ID,
   omp: OMP_NATIVE_TRANSPORT_MODEL_ID,
   antigravity: ANTIGRAVITY_NATIVE_TRANSPORT_MODEL_ID,
+  penguin: PENGUIN_NATIVE_TRANSPORT_MODEL_ID,
 } as const satisfies Record<ExternalHarnessId, string>;
 
 const harnessByTransportModel = new Map<string, ExternalHarnessId>(
@@ -399,6 +403,74 @@ export function decodeGrokTransportSelection(
   };
 }
 
+export function encodePenguinTransportModel(
+  model?: HarnessModelRef,
+  permissionModeId?: HarnessPermissionModeId,
+  thinkingOptionId?: HarnessThinkingOptionId,
+): string {
+  if (!model) {
+    if (permissionModeId || thinkingOptionId) {
+      throw new Error("Penguin transport configuration requires a Model Ref");
+    }
+    return PENGUIN_NATIVE_TRANSPORT_MODEL_ID;
+  }
+  const parsedModel = harnessModelRefSchema.parse(model);
+  const parsedPermissionMode = permissionModeId
+    ? harnessPermissionModeIdSchema.parse(permissionModeId)
+    : undefined;
+  const parsedThinking = thinkingOptionId
+    ? harnessThinkingOptionIdSchema.parse(thinkingOptionId)
+    : undefined;
+  if (parsedThinking) {
+    return `${PENGUIN_NATIVE_TRANSPORT_MODEL_PREFIX}${parsedModel.id}@${parsedPermissionMode ?? ""}@${parsedThinking}`;
+  }
+  return `${PENGUIN_NATIVE_TRANSPORT_MODEL_PREFIX}${parsedModel.id}${parsedPermissionMode ? `@${parsedPermissionMode}` : ""}`;
+}
+
+export function decodePenguinTransportSelection(
+  value: unknown,
+): ExternalConfigurationSelection | null {
+  if (value === PENGUIN_NATIVE_TRANSPORT_MODEL_ID) return {};
+  if (typeof value !== "string" || !value.startsWith(PENGUIN_NATIVE_TRANSPORT_MODEL_PREFIX)) {
+    return null;
+  }
+  const components = value.slice(PENGUIN_NATIVE_TRANSPORT_MODEL_PREFIX.length).split("@");
+  if (components.length < 1 || components.length > 3) {
+    throw new Error("Penguin transport configuration has an invalid component count");
+  }
+  const [modelId, permissionModeId, thinkingOptionId] = components;
+  if (components.length === 2 && !permissionModeId) {
+    throw new Error("Penguin transport configuration has an empty Permission Mode");
+  }
+  if (components.length === 3 && !thinkingOptionId) {
+    throw new Error("Penguin transport configuration has an empty Thinking option");
+  }
+  const model = harnessModelRefSchema.safeParse({ id: modelId });
+  if (!model.success) throw new Error("Penguin transport Model contains an invalid Model Ref");
+  const permissionMode = permissionModeId
+    ? harnessPermissionModeIdSchema.safeParse(permissionModeId)
+    : null;
+  if (permissionMode && !permissionMode.success) {
+    throw new Error("Penguin transport configuration contains an invalid Permission Mode");
+  }
+  const thinking = thinkingOptionId
+    ? harnessThinkingOptionIdSchema.safeParse(thinkingOptionId)
+    : null;
+  if (thinking && !thinking.success) {
+    throw new Error("Penguin transport configuration contains an invalid Thinking option");
+  }
+  return {
+    model: model.data,
+    ...(permissionMode?.success ? { permissionModeId: permissionMode.data } : {}),
+    ...(thinking?.success ? { thinkingOptionId: thinking.data } : {}),
+  };
+}
+
+export function decodePenguinTransportModel(value: unknown): HarnessModelRef | null | undefined {
+  const selection = decodePenguinTransportSelection(value);
+  return selection === null ? null : selection.model;
+}
+
 export function decodeClaudeTransportSelection(
   value: unknown,
 ): ExternalConfigurationSelection | null {
@@ -530,6 +602,12 @@ export function encodeExternalTransportSelection(
         selection.permissionModeId,
         selection.thinkingOptionId,
       );
+    case "penguin":
+      return encodePenguinTransportModel(
+        selection.model,
+        selection.permissionModeId,
+        selection.thinkingOptionId,
+      );
   }
 }
 
@@ -552,6 +630,8 @@ export function decodeExternalTransportSelection(
       return decodeOmpTransportSelection(value);
     case "antigravity":
       return decodeAntigravityTransportSelection(value);
+    case "penguin":
+      return decodePenguinTransportSelection(value);
   }
 }
 
@@ -630,6 +710,15 @@ export function decodeCreateRoute(request: JsonRpcRequest): CreateRoute | null {
       routeMode: "native",
       transportModelId: request.params.model,
       ...antigravitySelection,
+    };
+  }
+  const penguinSelection = decodePenguinTransportSelection(request.params.model);
+  if (penguinSelection !== null) {
+    return {
+      harnessId: "penguin",
+      routeMode: "native",
+      transportModelId: request.params.model,
+      ...penguinSelection,
     };
   }
 

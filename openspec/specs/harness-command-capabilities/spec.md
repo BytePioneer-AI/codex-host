@@ -65,12 +65,6 @@ The Host MUST obtain the current Harness command catalog before execution, MUST 
 - **THEN** Host rejects the submission as an unavailable Harness command
 - **AND** it does not send that text as a normal model Prompt or attempt an arbitrary native command
 
-#### Scenario: External command image input fails closed
-
-- **WHEN** an External Harness command submission carries `image` or `localImage` inputs
-- **THEN** Host rejects the submission before Adapter execution
-- **AND** it does not silently drop the images or submit the remaining text
-
 ### Requirement: Native command semantics remain inside the owning Adapter
 
 The Adapter MUST translate a registered command into the Harness-native operation and MUST translate native success, failure, cancellation, and busy states into Host-facing results or events. Shared layers MUST NOT contain Harness-specific RPC details.

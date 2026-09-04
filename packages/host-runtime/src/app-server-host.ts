@@ -381,10 +381,7 @@ function requestObject(request: JsonRpcRequest): JsonObject {
   return request.params as JsonObject;
 }
 
-function requestExternalInput(params: JsonObject): {
-  text: string;
-  hasImages: boolean;
-} {
+function requestText(params: JsonObject): string {
   if (!Array.isArray(params.input)) throw new Error("turn/start input must be an array");
   const text = params.input
     .filter((item): item is JsonObject => isRecord(item) && item.type === "text")
@@ -392,10 +389,7 @@ function requestExternalInput(params: JsonObject): {
     .filter((value): value is string => typeof value === "string")
     .join("\n");
   if (!text) throw new Error("turn/start must contain text input");
-  const hasImages = params.input.some(
-    (item) => isRecord(item) && (item.type === "image" || item.type === "localImage"),
-  );
-  return { text, hasImages };
+  return text;
 }
 
 function sandboxResult(params: JsonObject): JsonObject {
@@ -3017,21 +3011,14 @@ export class AppServerHost {
         return;
       }
     }
-    let input: ReturnType<typeof requestExternalInput>;
+    let text: string;
     try {
-      input = requestExternalInput(params);
+      text = requestText(params);
     } catch (error) {
       await this.#writer.json(rpcError(request, -32602, errorMessage(error)));
       return;
     }
-    const { text, hasImages } = input;
     const commandText = text.trimStart();
-    if (hasImages) {
-      await this.#writer.json(
-        rpcError(request, -32078, "External Harness text Turns do not accept image input"),
-      );
-      return;
-    }
     if (thread.session.commands) {
       this.#pendingExternalCommandRequests.add(thread.id);
       try {

@@ -47,8 +47,6 @@ The command button belongs to the active external Harness controls, near the Com
 
 Only add Renderer-specific code when the command needs a new presentation or interaction.
 
-External Harness text Turns do not accept image input. Host rejects those submissions before Adapter execution instead of silently dropping attachments.
-
 ## 5. Add focused tests
 
 At minimum, cover:
@@ -56,7 +54,6 @@ At minimum, cover:
 - command appears in the owning Adapter catalog;
 - unknown command is rejected;
 - invalid arguments are rejected;
-- image-bearing External Harness Turns fail before command execution;
 - busy Session is rejected;
 - native operation is called with the expected payload;
 - success, failure, and cancellation are projected correctly;

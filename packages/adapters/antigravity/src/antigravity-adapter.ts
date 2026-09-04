@@ -896,6 +896,11 @@ class AntigravitySession implements HarnessSession {
       return;
     }
     if (step.step_type !== "tool") return;
+    if (active.agentItem) {
+      this.#completeItem(active, active.agentItem, { status: "succeeded" });
+      active.agentItem = null;
+      active.agentText = "";
+    }
     const merged = mergePendingStep(active.pendingSteps.get(step.step_index), step);
     let item = active.tools.get(step.step_index);
     if (!item) {
@@ -998,7 +1003,15 @@ class AntigravitySession implements HarnessSession {
       this.#appendAgentText(active, text);
       return;
     }
-    if (text === active.agentText) return;
+    if (
+      text === active.agentText ||
+      active.agentText.startsWith(text) ||
+      active.agentText.trim() === text.trim() ||
+      active.agentText.endsWith(text) ||
+      active.agentText.includes(text.trim())
+    ) {
+      return;
+    }
     if (text.startsWith(active.agentText)) {
       const delta = text.slice(active.agentText.length);
       if (delta.length > 0) this.#appendAgentText(active, delta);

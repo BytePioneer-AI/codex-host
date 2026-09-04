@@ -1137,8 +1137,8 @@ fs.writeFileSync(path.join(runsDir, "run-" + count + ".txt"), "");
 
 if (count === 0) {
   process.stdout.write(JSON.stringify({ event: "init", conversation_id: "conv-switch", init: { permission_mode: "dangerously-skip-permissions" } }) + "\\n");
-  process.stdout.write(JSON.stringify({ event: "step_update", step_update: { conversation_id: "conv-switch", step_index: 1, state: "DONE", step_type: "agent_response", text_delta: "Hello from Gemini", usage: { input_tokens: 100, output_tokens: 20, total_tokens: 120 } } }) + "\\n");
-  process.stdout.write(JSON.stringify({ event: "result", result: { conversation_id: "conv-switch", status: "SUCCESS", num_turns: 1, response: "Hello from Gemini", usage: { input_tokens: 100, output_tokens: 20, total_tokens: 120 } } }) + "\\n");
+  process.stdout.write(JSON.stringify({ event: "step_update", step_update: { conversation_id: "conv-switch", step_index: 1, state: "DONE", step_type: "agent_response", text_delta: "Hello from Gemini", usage: { input_tokens: 100, output_tokens: 20, cache_read_tokens: 0, total_tokens: 120 } } }) + "\\n");
+  process.stdout.write(JSON.stringify({ event: "result", result: { conversation_id: "conv-switch", status: "SUCCESS", num_turns: 1, response: "Hello from Gemini", usage: { input_tokens: 100, output_tokens: 20, cache_read_tokens: 0, total_tokens: 120 } } }) + "\\n");
 } else if (count === 1) {
   process.stdout.write(JSON.stringify({ event: "init", conversation_id: "conv-switch", init: { permission_mode: "dangerously-skip-permissions" } }) + "\\n");
   process.stdout.write(JSON.stringify({ event: "step_update", step_update: { conversation_id: "conv-switch", step_index: 2, state: "DONE", step_type: "agent_response", text_delta: "Hello from Claude", usage: { input_tokens: 250, output_tokens: 40, total_tokens: 290 } } }) + "\\n");
@@ -1188,6 +1188,8 @@ if (count === 0) {
         }
         expect(turn1Usage).not.toBeNull();
         expect(turn1Usage?.contextWindowTokens).toBe(1_048_576);
+        expect(turn1Usage).not.toHaveProperty("cachedInputTokens");
+        expect(turn1Usage).not.toHaveProperty("cacheHitRatePercent");
 
         // Switch to Claude (200k window)
         const selectClaude = await session.execute({

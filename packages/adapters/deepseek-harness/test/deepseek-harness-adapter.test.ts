@@ -7,7 +7,7 @@ import type {
   HarnessSession,
   InspectHarnessInput,
 } from "@codexhost/harness-adapter";
-import { harnessIdSchema } from "@codexhost/shared-contracts";
+import { harnessIdSchema, type DeepSeekModernSessionCandidate } from "@codexhost/shared-contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { DeepSeekHarnessAdapter } from "../src/deepseek-harness-adapter.js";
@@ -109,6 +109,7 @@ class FakeAdapter implements HarnessAdapter {
   inspectCalls = 0;
   openCalls = 0;
   closeCalls = 0;
+  listCalls = 0;
 
   constructor(
     readonly inspectResult: (input?: InspectHarnessInput) => Promise<HarnessInspection> = () =>
@@ -124,6 +125,11 @@ class FakeAdapter implements HarnessAdapter {
   async open(): Promise<HarnessResult<HarnessSession>> {
     this.openCalls += 1;
     return { ok: true, value: {} as HarnessSession };
+  }
+
+  async listModernSessionCandidates(): Promise<HarnessResult<DeepSeekModernSessionCandidate[]>> {
+    this.listCalls += 1;
+    return { ok: true, value: [] };
   }
 
   close(): Promise<void> {
@@ -153,6 +159,42 @@ function deferred<T>(): {
 }
 
 describe("DeepSeek public generation selector", () => {
+  it("forwards Session discovery only to the selected Modern generation", async () => {
+    const failedLegacy = new FakeAdapter(() => Promise.resolve(unavailableInspection));
+    const modern = new FakeAdapter();
+    const adapter = new DeepSeekHarnessAdapter(
+      {},
+      {
+        probeExecutable: () => Promise.resolve(modernExecutable),
+        createLegacyAdapter: () => failedLegacy,
+        createModernAdapter: () => modern,
+      },
+    );
+
+    await expect(adapter.listModernSessionCandidates()).resolves.toEqual({ ok: true, value: [] });
+    expect(modern.listCalls).toBe(1);
+    expect(failedLegacy.listCalls).toBe(0);
+    await adapter.close();
+  });
+
+  it("rejects Session discovery on Legacy without calling its Session API", async () => {
+    const legacy = new FakeAdapter();
+    const adapter = new DeepSeekHarnessAdapter(
+      {},
+      {
+        probeExecutable: () => Promise.resolve(legacyExecutable),
+        createLegacyAdapter: () => legacy,
+      },
+    );
+
+    await expect(adapter.listModernSessionCandidates()).resolves.toMatchObject({
+      ok: false,
+      error: { code: "unsupported", retryable: false },
+    });
+    expect(legacy.listCalls).toBe(0);
+    await adapter.close();
+  });
+
   it("attaches an exact Legacy Host even when no executable is installed", async () => {
     const connection = new FakeConnection(() => Promise.resolve());
     const probeExecutable = vi.fn(() =>

@@ -5,6 +5,25 @@ export { codexhostErrorSchema } from "./errors.js";
 export { REASONING_TRANSCRIPT_COMMAND } from "./reasoning-transcript.js";
 export type { CodexhostError } from "./errors.js";
 export {
+  DEEPSEEK_MODERN_SESSION_CWD_MAX_LENGTH,
+  DEEPSEEK_MODERN_SESSION_ID_MAX_LENGTH,
+  DEEPSEEK_MODERN_SESSION_LIST_MAX_LENGTH,
+  DEEPSEEK_MODERN_SESSION_TITLE_MAX_LENGTH,
+  DEEPSEEK_MODERN_SESSION_UPDATED_AT_MAX,
+  deepSeekModernSessionCandidateSchema,
+  deepSeekModernSessionImportParamsSchema,
+  deepSeekModernSessionImportResultSchema,
+  deepSeekModernSessionListParamsSchema,
+  deepSeekModernSessionListResultSchema,
+} from "./deepseek-modern-sessions.js";
+export type {
+  DeepSeekModernSessionCandidate,
+  DeepSeekModernSessionImportParams,
+  DeepSeekModernSessionImportResult,
+  DeepSeekModernSessionListParams,
+  DeepSeekModernSessionListResult,
+} from "./deepseek-modern-sessions.js";
+export {
   externalThreadForkParamsSchema,
   externalThreadForkResultSchema,
 } from "./external-thread-fork.js";

@@ -31,6 +31,7 @@ export interface RendererSettingsMessages {
   readonly runtimeCapabilityNotInstalled: string;
   readonly sessionImportHarness: string;
   readonly sessionImportDescription: string;
+  readonly sessionImportAvailabilityNote: string;
   readonly sessionImportRefresh: string;
   readonly sessionImportRefreshing: string;
   readonly sessionImportUnavailable: string;
@@ -162,6 +163,8 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   sessionImportHarness: "Harness",
   sessionImportDescription:
     "Sessions keep their original project path. If a folder is not in the Codex sidebar, add it as a project first. Original history remains managed by the Harness.",
+  sessionImportAvailabilityNote:
+    "Currently, only DeepSeek Harness Modern sessions can be imported. Support for other Harnesses is coming later.",
   sessionImportRefresh: "Refresh",
   sessionImportRefreshing: "Loading local sessions...",
   sessionImportUnavailable:
@@ -312,6 +315,8 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   sessionImportHarness: "Harness",
   sessionImportDescription:
     "会话将保留原始项目路径；若该文件夹尚未出现在 Codex 侧栏，请先将其添加为项目。原始历史仍由 Harness 管理。",
+  sessionImportAvailabilityNote:
+    "当前仅支持导入 DeepSeek Harness Modern 会话；其他 Harness 的会话导入能力敬请期待。",
   sessionImportRefresh: "刷新",
   sessionImportRefreshing: "正在读取本地会话……",
   sessionImportUnavailable:

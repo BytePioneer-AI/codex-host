@@ -822,6 +822,9 @@ describe("Renderer Session Import page", () => {
     expect(descendants(content).find(({ tagName }) => tagName === "h2")?.textContent).toBe(
       "会话导入",
     );
+    expect(visibleText(content)).toContain(
+      "当前仅支持导入 DeepSeek Harness Modern 会话；其他 Harness 的会话导入能力敬请期待。",
+    );
     const harnessSelector = descendants(content).find(
       ({ dataset }) => dataset.sessionImportHarness === "selector",
     );

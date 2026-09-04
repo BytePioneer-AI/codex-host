@@ -465,6 +465,11 @@ button {
 
 .settings-session-import-harness + .settings-page-description {
   margin-top: 0;
+  margin-bottom: 4px;
+}
+
+.settings-session-import-availability-note {
+  margin-top: 0;
 }
 
 .settings-session-import-content,

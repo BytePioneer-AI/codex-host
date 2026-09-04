@@ -109,9 +109,13 @@ export function createDeepSeekSessionImportSettingsPage(
       const description = document.createElement("p");
       description.className = "settings-page-description";
       description.textContent = messages.sessionImportDescription;
+      const availabilityNote = document.createElement("p");
+      availabilityNote.className =
+        "settings-page-description settings-session-import-availability-note";
+      availabilityNote.textContent = messages.sessionImportAvailabilityNote;
       const content = document.createElement("section");
       content.className = "settings-session-import-content";
-      context.content.append(header, harness, description, content);
+      context.content.append(header, harness, description, availabilityNote, content);
 
       let candidates: readonly DeepSeekModernSessionCandidate[] = [];
       let importingId: string | null = null;

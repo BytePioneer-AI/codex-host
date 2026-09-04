@@ -1,10 +1,16 @@
 import {
+  deepSeekModernSessionImportParamsSchema,
+  deepSeekModernSessionImportResultSchema,
+  deepSeekModernSessionListParamsSchema,
+  deepSeekModernSessionListResultSchema,
   externalThreadForkParamsSchema,
   externalThreadForkResultSchema,
   harnessCommandCatalogSchema,
   harnessConfigurationStateSchema,
   harnessInspectParamsSchema,
   harnessInspectionSchema,
+  harnessWebUiOpenParamsSchema,
+  harnessWebUiOpenResultSchema,
   harnessModelSelectionStateSchema,
   hostThreadIdSchema,
   threadInspectionParamsSchema,
@@ -25,10 +31,15 @@ import {
   updateStatusResultSchema,
   type ExternalThreadForkParams,
   type ExternalThreadForkResult,
+  type DeepSeekModernSessionImportParams,
+  type DeepSeekModernSessionImportResult,
+  type DeepSeekModernSessionListParams,
+  type DeepSeekModernSessionListResult,
   type HarnessCommandCatalog,
   type HarnessConfigurationState,
   type HarnessInspection,
   type HarnessInspectParams,
+  type HarnessWebUiOpenParams,
   type HarnessModelSelectionState,
   type ThreadInspection,
   type ThreadInspectionParams,
@@ -48,6 +59,9 @@ import {
 } from "@codexhost/shared-contracts";
 
 export const HARNESS_INSPECT_METHOD = "codexhost/harness/inspect";
+export const DEEPSEEK_MODERN_SESSION_LIST_METHOD = "codexhost/deepseek/modern-session/list";
+export const DEEPSEEK_MODERN_SESSION_IMPORT_METHOD = "codexhost/deepseek/modern-session/import";
+export const HARNESS_WEB_UI_OPEN_METHOD = "codexhost/harness/web-ui/open";
 export const THREAD_FORK_METHOD = "codexhost/thread/fork";
 export const THREAD_INSPECT_METHOD = "codexhost/thread/inspect";
 export const THREAD_COMMANDS_INSPECT_METHOD = "codexhost/thread/commands/inspect";
@@ -63,8 +77,20 @@ export const UPDATE_CHECK_METHOD = "codexhost/update/check";
 export const UPDATE_START_METHOD = "codexhost/update/start";
 export const UPDATE_STATUS_METHOD = "codexhost/update/status";
 
+export class RendererDeepSeekSessionUnavailableError extends Error {
+  constructor() {
+    super("DeepSeek Modern Session import is unavailable");
+    this.name = "RendererDeepSeekSessionUnavailableError";
+  }
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function normalizeDeepSeekSessionError(error: unknown): unknown {
+  const code = isRecord(error) ? error.code : undefined;
+  return code === -32076 || code === -32077 ? new RendererDeepSeekSessionUnavailableError() : error;
 }
 
 function notifiedThreadId(notification: unknown): ThreadUsageInspectionParams["threadId"] | null {
@@ -99,8 +125,15 @@ function notificationTarget(manager: RequestManagerCandidate): RequestManagerCan
 export interface RendererModelClient {
   currentHostId?(): string | null;
   clientForHost?(hostId: string): RendererModelClient | null;
+  listDeepSeekModernSessions?(
+    input: DeepSeekModernSessionListParams,
+  ): Promise<DeepSeekModernSessionListResult>;
+  importDeepSeekModernSession?(
+    input: DeepSeekModernSessionImportParams,
+  ): Promise<DeepSeekModernSessionImportResult>;
   forkThread(input: ExternalThreadForkParams): Promise<ExternalThreadForkResult>;
   inspectHarness(input: HarnessInspectParams): Promise<HarnessInspection>;
+  openHarnessWebUi?(input: HarnessWebUiOpenParams): Promise<void>;
   inspectThread(input: ThreadInspectionParams): Promise<ThreadInspection>;
   inspectThreadCommands(input: ThreadCommandsInspectParams): Promise<HarnessCommandCatalog>;
   executeThreadCommand(input: ThreadCommandExecuteParams): Promise<ThreadCommandExecuteResult>;
@@ -165,6 +198,7 @@ export function createRendererModelClient(
   );
   const manager = managers[0];
   if (managers.length !== 1 || !manager) return null;
+  const pendingDeepSeekImports = new Map<string, Promise<DeepSeekModernSessionImportResult>>();
 
   const inspectHarness = async (input: HarnessInspectParams): Promise<HarnessInspection> => {
     const params = harnessInspectParamsSchema.parse(input);
@@ -213,14 +247,52 @@ export function createRendererModelClient(
     const result = await manager.sendRequest(THREAD_PERMISSION_MODE_SELECT_METHOD, params);
     return harnessConfigurationStateSchema.parse(result);
   };
+  const importDeepSeekModernSession = async (
+    input: DeepSeekModernSessionImportParams,
+  ): Promise<DeepSeekModernSessionImportResult> => {
+    const params = deepSeekModernSessionImportParamsSchema.parse(input);
+    const pending = pendingDeepSeekImports.get(params.nativeSessionId);
+    if (pending) return pending;
+    const request = (async () => {
+      try {
+        const result = await manager.sendRequest(DEEPSEEK_MODERN_SESSION_IMPORT_METHOD, params);
+        return deepSeekModernSessionImportResultSchema.parse(result);
+      } catch (error) {
+        throw normalizeDeepSeekSessionError(error);
+      }
+    })().finally(() => {
+      if (pendingDeepSeekImports.get(params.nativeSessionId) === request) {
+        pendingDeepSeekImports.delete(params.nativeSessionId);
+      }
+    });
+    pendingDeepSeekImports.set(params.nativeSessionId, request);
+    return request;
+  };
 
   return Object.freeze({
+    async listDeepSeekModernSessions(
+      input: DeepSeekModernSessionListParams,
+    ): Promise<DeepSeekModernSessionListResult> {
+      const params = deepSeekModernSessionListParamsSchema.parse(input);
+      try {
+        const result = await manager.sendRequest(DEEPSEEK_MODERN_SESSION_LIST_METHOD, params);
+        return deepSeekModernSessionListResultSchema.parse(result);
+      } catch (error) {
+        throw normalizeDeepSeekSessionError(error);
+      }
+    },
+    importDeepSeekModernSession,
     async forkThread(input: ExternalThreadForkParams): Promise<ExternalThreadForkResult> {
       const params = externalThreadForkParamsSchema.parse(input);
       const result = await manager.sendRequest(THREAD_FORK_METHOD, params);
       return externalThreadForkResultSchema.parse(result);
     },
     inspectHarness,
+    async openHarnessWebUi(input: HarnessWebUiOpenParams): Promise<void> {
+      const params = harnessWebUiOpenParamsSchema.parse(input);
+      const result = await manager.sendRequest(HARNESS_WEB_UI_OPEN_METHOD, params);
+      harnessWebUiOpenResultSchema.parse(result);
+    },
     async inspectThread(input: ThreadInspectionParams): Promise<ThreadInspection> {
       const params = threadInspectionParamsSchema.parse(input);
       const result = await manager.sendRequest(THREAD_INSPECT_METHOD, params);

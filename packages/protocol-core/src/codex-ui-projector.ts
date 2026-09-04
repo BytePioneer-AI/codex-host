@@ -66,7 +66,6 @@ interface ProjectedItem {
   reasoningPartStarted: boolean;
   streamedCommandOutput: boolean;
   wireStarted: boolean;
-  wireItemType?: string;
   wireFileChanges: HostFileChange[] | null;
   startedAtMs?: number;
   durationMs?: number;
@@ -103,95 +102,15 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function parseJsonIfString(value: unknown): unknown {
-  if (typeof value === "string") {
-    const trimmed = value.trim();
-    if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
-      try {
-        return JSON.parse(trimmed);
-      } catch {
-        return value;
-      }
-    }
-  }
-  return value;
-}
-
-export function unwrapJsonString(value: string): string {
-  if (
-    (value.startsWith('"') && value.endsWith('"') && value.length >= 2) ||
-    (value.startsWith("'") && value.endsWith("'") && value.length >= 2)
-  ) {
-    try {
-      const parsed = JSON.parse(value);
-      if (typeof parsed === "string") return parsed;
-    } catch {
-      return value.slice(1, -1);
-    }
-  }
-  const trimmed = value.trim();
-  if (
-    trimmed !== value &&
-    ((trimmed.startsWith('"') && trimmed.endsWith('"') && trimmed.length >= 2) ||
-      (trimmed.startsWith("'") && trimmed.endsWith("'") && trimmed.length >= 2))
-  ) {
-    try {
-      const parsed = JSON.parse(trimmed);
-      if (typeof parsed === "string") return parsed;
-    } catch {
-      return trimmed.slice(1, -1);
-    }
-  }
-  return value;
-}
-
 function nestedString(value: unknown, keys: readonly string[]): string | undefined {
-  const unwrapped = parseJsonIfString(value);
-  if (!isRecord(unwrapped)) return undefined;
+  if (!isRecord(value)) return undefined;
   for (const key of keys) {
-    const field = unwrapped[key];
-    if (typeof field === "string") {
-      const unwrappedString = unwrapJsonString(field);
-      if (unwrappedString.trim().length > 0) return unwrappedString.trim();
-    }
+    const field = value[key];
+    if (typeof field === "string" && field.trim().length > 0) return field.trim();
   }
-  for (const wrapper of ["input", "arguments", "params", "parameters"] as const) {
-    const nested = nestedString(unwrapped[wrapper], keys);
-    if (nested !== undefined) return nested;
-  }
-  return undefined;
-}
-
-function nestedRawString(value: unknown, keys: readonly string[]): string | undefined {
-  const unwrapped = parseJsonIfString(value);
-  if (!isRecord(unwrapped)) return undefined;
-  for (const key of keys) {
-    const field = unwrapped[key];
-    if (typeof field === "string") return unwrapJsonString(field);
-  }
-  for (const wrapper of ["input", "arguments", "params", "parameters"] as const) {
-    const nested = nestedRawString(unwrapped[wrapper], keys);
-    if (nested !== undefined) return nested;
-  }
-  return undefined;
-}
-
-function extractBoolean(value: unknown, keys: readonly string[]): boolean | undefined {
-  const unwrapped = parseJsonIfString(value);
-  if (!isRecord(unwrapped)) return undefined;
-  for (const key of keys) {
-    const val = unwrapped[key];
-    if (typeof val === "boolean") return val;
-    if (typeof val === "string") {
-      const unwrappedVal = unwrapJsonString(val);
-      const lower = unwrappedVal.toLowerCase().trim();
-      if (lower === "true") return true;
-      if (lower === "false") return false;
-    }
-  }
-  for (const wrapper of ["input", "arguments", "params", "parameters"] as const) {
-    const nested = extractBoolean(unwrapped[wrapper], keys);
-    if (nested !== undefined) return nested;
+  for (const wrapper of ["input", "arguments", "params"] as const) {
+    const nested = nestedString(value[wrapper], keys);
+    if (nested) return nested;
   }
   return undefined;
 }
@@ -215,21 +134,13 @@ function toolOutputText(item: Extract<HostItem, { type: "toolExecution" }>): str
  * can be reconstructed from the native arguments.
  */
 export function toolCommandLine(toolName: string, args: JsonValue): string | undefined {
-  const lower = compactToolName(toolName);
-  const command = nestedString(args, [
-    "command",
-    "cmd",
-    "script",
-    "commandLine",
-    "command_line",
-    "CommandLine",
-  ]);
+  const lower = toolName.toLowerCase().replaceAll(/[_-]/g, "");
+  const command = nestedString(args, ["command", "cmd", "script", "commandLine", "command_line"]);
   if (
-    ["bash", "exec", "terminal", "run", "shell", "powershell", "command", "runcommand"].includes(
-      lower,
-    )
+    command &&
+    ["bash", "exec", "terminal", "run", "shell", "powershell", "command"].includes(lower)
   ) {
-    return command || "run";
+    return command;
   }
   const filePath = nestedString(args, [
     "path",
@@ -239,67 +150,24 @@ export function toolCommandLine(toolName: string, args: JsonValue): string | und
     "filename",
     "target",
     "uri",
-    "TargetFile",
-    "targetFile",
-    "target_file",
-    "AbsolutePath",
-    "absolutePath",
-    "absolute_path",
-    "DirectoryPath",
-    "directoryPath",
-    "directory_path",
-    "SearchPath",
-    "searchPath",
-    "search_path",
-    "SearchDirectory",
-    "searchDirectory",
-    "search_directory",
   ]);
-  const pattern = nestedString(args, [
-    "pattern",
-    "glob",
-    "glob_pattern",
-    "query",
-    "regex",
-    "Pattern",
-    "Query",
-  ]);
-  const url = nestedString(args, ["url", "uri", "Url", "href"]);
-  if (["read", "readfile", "fileread", "view", "viewfile"].includes(lower)) {
-    return filePath ? `read ${filePath}` : "read";
+  const pattern = nestedString(args, ["pattern", "glob", "glob_pattern", "query", "regex"]);
+  if (["read", "readfile", "fileread", "view"].includes(lower)) {
+    return filePath ? `read ${filePath}` : undefined;
   }
-  if (["readurlcontent", "fetch", "fetchurl", "curl", "download"].includes(lower)) {
-    return url ? `fetch ${url}` : filePath ? `read ${filePath}` : "fetch";
-  }
-  if (["listdir", "ls", "dir", "listdirectory"].includes(lower)) {
-    return filePath ? `ls ${filePath}` : "ls";
-  }
-  if (["glob", "find", "findfiles", "findbyname"].includes(lower)) {
+  if (["glob", "find", "findfiles"].includes(lower)) {
     const target = pattern ?? filePath;
-    return target ? `glob ${target}` : "glob";
+    return target ? `glob ${target}` : undefined;
   }
   if (["grep", "grepsearch"].includes(lower)) {
-    return pattern
-      ? filePath
-        ? `grep ${pattern} ${filePath}`
-        : `grep ${pattern}`
-      : filePath
-        ? `grep ${filePath}`
-        : "grep";
-  }
-  if (["websearch", "searchweb", "search"].includes(lower)) {
-    return pattern ? `search ${pattern}` : "search";
+    if (!pattern) return undefined;
+    return filePath ? `grep ${pattern} ${filePath}` : `grep ${pattern}`;
   }
   return undefined;
 }
 
 function compactToolName(toolName: string): string {
-  const baseName = toolName.includes(":")
-    ? toolName.slice(toolName.lastIndexOf(":") + 1)
-    : toolName.includes(".")
-      ? toolName.slice(toolName.lastIndexOf(".") + 1)
-      : toolName;
-  return baseName.toLowerCase().replaceAll(/[_-]/g, "");
+  return toolName.toLowerCase().replaceAll(/[_-]/g, "");
 }
 
 function isFileMutatingTool(toolName: string): boolean {
@@ -317,75 +185,30 @@ function isFileMutatingTool(toolName: string): boolean {
     "filewrite",
     "create",
     "createfile",
-    "writetofile",
-    "replacefilecontent",
   ].includes(compactToolName(toolName));
 }
 
 function isWriteTool(toolName: string): boolean {
-  return ["write", "writefile", "filewrite", "create", "createfile", "writetofile"].includes(
+  return ["write", "writefile", "filewrite", "create", "createfile"].includes(
     compactToolName(toolName),
   );
 }
 
-function formatHunkRange(start: number, count: number): string {
-  if (count === 0) return "0,0";
-  return `${start},${count}`;
-}
-
-export function ensureGitDiffHeader(filePath: string, unifiedDiff: string): string {
-  const trimmed = unifiedDiff.trim();
-  if (!trimmed) return unifiedDiff;
-  const normalizedDiff = trimmed.replace(
-    /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/gm,
-    (
-      _,
-      oldStart: string,
-      oldCount: string | undefined,
-      newStart: string,
-      newCount: string | undefined,
-    ) => {
-      const oc = oldCount !== undefined ? oldCount : oldStart === "0" ? "0" : "1";
-      const nc = newCount !== undefined ? newCount : newStart === "0" ? "0" : "1";
-      return `@@ -${oldStart},${oc} +${newStart},${nc} @@`;
-    },
-  );
-  if (normalizedDiff.startsWith("diff --git")) return normalizedDiff;
-  const normalized = filePath.replaceAll("\\", "/");
-  const isAbsolute = normalized.startsWith("/") || /^[a-zA-Z]:\//.test(normalized);
-  const aPath = isAbsolute ? normalized : `a/${normalized}`;
-  const bPath = isAbsolute ? normalized : `b/${normalized}`;
-  return `diff --git ${aPath} ${bPath}\n${normalizedDiff}`;
-}
-
-/**
- * Returns `null` for a patch with no changed lines: Codex Desktop cannot read
- * a body-less hunk and falls back to rendering the git header itself as added
- * content, which surfaces as a phantom card with the wrong line counts.
- */
 function simpleUnifiedDiff(
   displayedPath: string,
   oldText: string,
   newText: string,
   kind: "add" | "update",
-): string | null {
-  const normalized = displayedPath.replaceAll("\\", "/");
-  const isAbsolute = normalized.startsWith("/") || /^[a-zA-Z]:\//.test(normalized);
-  const aPath = isAbsolute ? normalized : `a/${normalized}`;
-  const bPath = isAbsolute ? normalized : `b/${normalized}`;
-  const gitHeader = `diff --git ${aPath} ${bPath}`;
-  const oldLines = oldText === "" ? [] : oldText.replaceAll("\r\n", "\n").split("\n");
-  const newLines = newText === "" ? [] : newText.replaceAll("\r\n", "\n").split("\n");
+): string {
+  const oldLines = oldText === "" ? [] : oldText.split("\n");
+  const newLines = newText === "" ? [] : newText.split("\n");
   if (oldLines.at(-1) === "") oldLines.pop();
   if (newLines.at(-1) === "") newLines.pop();
-  if (oldLines.length === 0 && newLines.length === 0) return null;
-  const oldHeader = kind === "add" ? "/dev/null" : aPath;
-  const newHeader = bPath;
-  const oldRange =
-    kind === "add" ? "0,0" : oldLines.length === 0 ? "0,0" : formatHunkRange(1, oldLines.length);
-  const newRange = newLines.length === 0 ? "0,0" : formatHunkRange(1, newLines.length);
+  const oldHeader = kind === "add" ? "/dev/null" : `a/${displayedPath}`;
+  const newHeader = `b/${displayedPath}`;
+  const oldRange = kind === "add" ? "0,0" : `1,${oldLines.length}`;
+  const newRange = newLines.length === 0 ? "0,0" : `1,${newLines.length}`;
   return [
-    gitHeader,
     `--- ${oldHeader}`,
     `+++ ${newHeader}`,
     `@@ -${oldRange} +${newRange} @@`,
@@ -395,62 +218,12 @@ function simpleUnifiedDiff(
   ].join("\n");
 }
 
-export function normalizeDisplayPath(filePath: string, cwd?: string): string | null {
-  if (
-    typeof filePath !== "string" ||
-    filePath.trim().length === 0 ||
-    filePath.includes("\0") ||
-    filePath.includes("\n") ||
-    filePath.includes("\r")
-  ) {
-    return null;
-  }
-  const normalizedFile = filePath.trim().replaceAll("\\", "/");
-  if (!cwd) return normalizedFile.replace(/^\.\//, "");
-  const normalizedCwd = cwd.trim().replaceAll("\\", "/").replace(/\/+$/, "");
-  if (normalizedCwd.length === 0) return normalizedFile.replace(/^\.\//, "");
-
-  if (normalizedFile.toLowerCase() === normalizedCwd.toLowerCase() || normalizedFile === ".") {
-    return null;
-  }
-
-  const cwdPrefix = normalizedCwd.toLowerCase() + "/";
-  if (normalizedFile.toLowerCase().startsWith(cwdPrefix)) {
-    const rel = normalizedFile.slice(cwdPrefix.length);
-    return rel.length > 0 ? rel : null;
-  }
-
-  const isAbsolute = normalizedFile.startsWith("/") || /^[a-zA-Z]:\//.test(normalizedFile);
-  if (!isAbsolute) {
-    return normalizedFile.replace(/^\.\//, "");
-  }
-
-  return normalizedFile;
-}
-
-export function fileChangeFromTool(
-  toolName: string,
-  args: JsonValue,
-  cwd?: string,
-): HostFileChange[] | null {
+export function fileChangeFromTool(toolName: string, args: JsonValue): HostFileChange[] | null {
   if (!isFileMutatingTool(toolName)) return null;
-  const rawPath = nestedString(args, [
-    "path",
-    "file_path",
-    "filePath",
-    "file",
-    "TargetFile",
-    "targetFile",
-    "target_file",
-    "AbsolutePath",
-    "absolutePath",
-    "absolute_path",
-  ]);
-  if (!rawPath) return null;
-  const displayedPath = normalizeDisplayPath(rawPath, cwd);
+  const displayedPath = nestedString(args, ["path", "file_path", "filePath", "file"]);
   if (!displayedPath) return null;
   if (isWriteTool(toolName)) {
-    const rawContent = nestedRawString(args, [
+    const content = nestedString(args, [
       "content",
       "new_string",
       "newString",
@@ -458,43 +231,33 @@ export function fileChangeFromTool(
       "file_text",
       "text",
       "new",
-      "CodeContent",
-      "codeContent",
-      "code_content",
     ]);
-    const content = rawContent ?? "";
-    const overwrite = extractBoolean(args, ["Overwrite", "overwrite", "overWrite"]) ?? false;
-    const kind = overwrite ? "update" : "add";
-    const unifiedDiff = simpleUnifiedDiff(displayedPath, "", content, kind);
-    return unifiedDiff ? [{ path: displayedPath, kind, unifiedDiff }] : null;
+    if (content === undefined) return null;
+    return [
+      {
+        path: displayedPath,
+        kind: "add",
+        unifiedDiff: simpleUnifiedDiff(displayedPath, "", content, "add"),
+      },
+    ];
   }
-  // ponytail: Antigravity CodeEdit omits old text; report additions only until native patch metadata exists.
-  const oldText =
-    nestedRawString(args, [
-      "old_string",
-      "oldString",
-      "oldText",
-      "old_text",
-      "old",
-      "TargetContent",
-      "targetContent",
-      "target_content",
-    ]) ?? "";
-  const rawNewText = nestedRawString(args, [
+  const oldText = nestedString(args, ["old_string", "oldString", "oldText", "old_text", "old"]);
+  const newText = nestedString(args, [
     "new_string",
     "newString",
     "newText",
     "new_text",
     "content",
     "new",
-    "ReplacementContent",
-    "replacementContent",
-    "replacement_content",
-    "CodeEdit",
   ]);
-  const newText = rawNewText ?? "";
-  const unifiedDiff = simpleUnifiedDiff(displayedPath, oldText, newText, "update");
-  return unifiedDiff ? [{ path: displayedPath, kind: "update", unifiedDiff }] : null;
+  if (oldText === undefined || newText === undefined) return null;
+  return [
+    {
+      path: displayedPath,
+      kind: "update",
+      unifiedDiff: simpleUnifiedDiff(displayedPath, oldText, newText, "update"),
+    },
+  ];
 }
 
 function projectFileChangeKind(kind: HostFileChange["kind"]): JsonValue {
@@ -506,7 +269,7 @@ function projectFileChanges(changes: HostFileChange[]): JsonValue[] {
   return changes.map(({ path, kind, unifiedDiff }) => ({
     path,
     kind: projectFileChangeKind(kind),
-    diff: ensureGitDiffHeader(path, unifiedDiff),
+    diff: unifiedDiff,
   }));
 }
 
@@ -683,7 +446,6 @@ function projectItem(
   defaultCwd: string,
   includeCommandOutput = true,
   senderThreadId?: string,
-  forcedWireType?: string,
 ): JsonObject {
   switch (item.type) {
     case "agentMessage":
@@ -718,26 +480,12 @@ function projectItem(
         durationMs: item.durationMs ?? null,
       };
     case "toolExecution": {
-      if (forcedWireType === "dynamicToolCall") {
-        const status = itemStatus(outcome);
-        return {
-          id: item.itemId,
-          type: "dynamicToolCall",
-          namespace: item.namespace ?? null,
-          tool: item.toolName,
-          arguments: item.arguments,
-          status,
-          contentItems: toolContentItems(item),
-          success: outcome ? outcome.status === "succeeded" : null,
-          durationMs: item.durationMs ?? null,
-        };
-      }
       const command = toolCommandLine(item.toolName, item.arguments);
-      if (command || forcedWireType === "commandExecution") {
+      if (command) {
         return {
           id: item.itemId,
           type: "commandExecution",
-          command: command ?? item.toolName,
+          command,
           cwd: defaultCwd,
           processId: null,
           source: "agent",
@@ -872,7 +620,7 @@ export function projectHistoricalTurn(input: HistoricalTurnProjectionInput): Jso
         if (item.type === "toolExecution") {
           if (isTodoTool(item.toolName) || todoPlanFromTool(item.toolName, item.arguments))
             return [];
-          const changes = fileChangeFromTool(item.toolName, item.arguments, cwd);
+          const changes = fileChangeFromTool(item.toolName, item.arguments);
           if (changes) {
             return [
               projectItem(
@@ -912,37 +660,11 @@ function applyUpdate(item: HostItem, update: HostItemUpdate): HostItem {
   if (item.type === "commandExecution" && update.type === "output.append") {
     return { ...item, output: (item.output ?? "") + update.text };
   }
-  if (item.type === "commandExecution" && update.type === "output.replace") {
-    const text =
-      typeof update.output === "string"
-        ? update.output
-        : (toolOutputText({
-            type: "toolExecution",
-            itemId: item.itemId,
-            toolName: "",
-            arguments: null,
-            output: update.output,
-          }) ?? "");
-    return { ...item, output: text };
-  }
   if (item.type === "toolExecution" && update.type === "output.replace") {
     return { ...item, output: update.output };
   }
-  if (item.type === "toolExecution" && update.type === "output.append") {
-    const current = toolOutputText(item) ?? "";
-    return {
-      ...item,
-      output: { content: [{ type: "text", text: current + update.text }] },
-    };
-  }
   if (item.type === "fileChange" && update.type === "fileChanges.replace") {
     return { ...item, changes: update.changes };
-  }
-  if (
-    item.type === "fileChange" &&
-    (update.type === "output.append" || update.type === "output.replace")
-  ) {
-    return item;
   }
   if (item.type === "subagentDelegation" && update.type === "subagents.replace") {
     return { ...item, subagents: update.subagents };
@@ -951,11 +673,7 @@ function applyUpdate(item: HostItem, update: HostItemUpdate): HostItem {
 }
 
 function diffText(changes: HostFileChange[]): string {
-  return changes
-    .map(({ path, unifiedDiff }) => ensureGitDiffHeader(path, unifiedDiff).trimEnd())
-    .filter((diff) => diff.length > 0)
-    .map((diff) => `${diff}\n`)
-    .join("");
+  return changes.map(({ unifiedDiff }) => unifiedDiff).join("\n");
 }
 
 export class CodexTurnProjector {
@@ -1147,7 +865,7 @@ export class CodexTurnProjector {
         const plan = planFromTodoValue(event.item.arguments);
         return { messages: plan ? [this.#planUpdated(plan)] : [] };
       }
-      const changes = fileChangeFromTool(event.item.toolName, event.item.arguments, this.#cwd);
+      const changes = fileChangeFromTool(event.item.toolName, event.item.arguments);
       if (changes) {
         projected.wireFileChanges = changes;
         const fileItem = {
@@ -1214,46 +932,23 @@ export class CodexTurnProjector {
         );
       }
     } else if (event.update.type === "output.append") {
-      const command =
-        next.type === "commandExecution"
-          ? next.command
-          : next.type === "toolExecution"
-            ? toolCommandLine(next.toolName, next.arguments)
-            : undefined;
-      if (command || projected.wireItemType === "commandExecution") {
-        projected.streamedCommandOutput = true;
-        messages.push({
-          method: "item/commandExecution/outputDelta",
-          emittedAtMs,
-          params: {
-            threadId: this.#threadId,
-            turnId: this.#turnId,
-            itemId: event.itemId,
-            delta: event.update.text,
-          },
-        });
-      }
+      projected.streamedCommandOutput = true;
+      messages.push({
+        method: "item/commandExecution/outputDelta",
+        emittedAtMs,
+        params: {
+          threadId: this.#threadId,
+          turnId: this.#turnId,
+          itemId: event.itemId,
+          delta: event.update.text,
+        },
+      });
     } else if (event.update.type === "output.replace") {
-      const command =
-        next.type === "commandExecution"
-          ? next.command
-          : next.type === "toolExecution"
-            ? toolCommandLine(next.toolName, next.arguments)
-            : undefined;
-      if (command || projected.wireItemType === "commandExecution") {
-        const text =
-          next.type === "commandExecution"
-            ? (next.output ?? "")
-            : next.type === "toolExecution"
-              ? (toolOutputText(next) ?? "")
-              : "";
+      if (next.type === "toolExecution" && toolCommandLine(next.toolName, next.arguments)) {
+        const text = toolOutputText(next);
         if (text) {
           const previousText =
-            previous.type === "commandExecution"
-              ? (previous.output ?? "")
-              : previous.type === "toolExecution"
-                ? (toolOutputText(previous) ?? "")
-                : "";
+            previous.type === "toolExecution" ? (toolOutputText(previous) ?? "") : "";
           const delta = text.startsWith(previousText) ? text.slice(previousText.length) : text;
           if (delta.length > 0) {
             projected.streamedCommandOutput = true;
@@ -1309,11 +1004,6 @@ export class CodexTurnProjector {
         throw new Error("Host textual Item completion does not match its append updates");
       }
     }
-    // The Turn diff summary aggregates every File Change Item, so a patch that
-    // only becomes known at completion has to be republished, not just carried
-    // inside `item/completed`.
-    const previousFileDiff =
-      projected.item.type === "fileChange" ? diffText(projected.item.changes) : null;
     projected.item = event.snapshot.item;
     projected.outcome = event.snapshot.outcome;
     const startedAtMs = projected.startedAtMs;
@@ -1339,11 +1029,7 @@ export class CodexTurnProjector {
             planFromTodoValue(projected.item.arguments) ?? planFromTodoValue(projected.item.output);
           return { messages: plan ? [this.#planUpdated(plan, emittedAtMs)] : [] };
         }
-        const changes = fileChangeFromTool(
-          projected.item.toolName,
-          projected.item.arguments,
-          this.#cwd,
-        );
+        const changes = fileChangeFromTool(projected.item.toolName, projected.item.arguments);
         if (changes) {
           projected.wireFileChanges = changes;
           const fileItem = {
@@ -1364,29 +1050,8 @@ export class CodexTurnProjector {
       }
       return { messages: [] };
     }
-    let diffChanged = false;
-    if (projected.item.type === "toolExecution") {
-      const completedChanges = fileChangeFromTool(
-        projected.item.toolName,
-        projected.item.arguments,
-        this.#cwd,
-      );
-      if (completedChanges) {
-        const previousDiff = diffText(projected.wireFileChanges ?? []);
-        const newDiff = diffText(completedChanges);
-        projected.wireFileChanges = completedChanges;
-        diffChanged = newDiff !== previousDiff;
-      }
-    } else if (projected.item.type === "fileChange" && previousFileDiff !== null) {
-      diffChanged = diffText(projected.item.changes) !== previousFileDiff;
-    }
     const fileItem = wireFileChangeItem(projected);
-    const changedFileChanges =
-      projected.item.type === "fileChange" ? projected.item.changes : projected.wireFileChanges;
     const messages = [
-      ...(fileItem && changedFileChanges && diffChanged
-        ? this.#fileChangeUpdates(projected.item.itemId, changedFileChanges)
-        : []),
       completedItem(
         projectItem(
           fileItem ?? projected.item,
@@ -1394,7 +1059,6 @@ export class CodexTurnProjector {
           this.#cwd,
           !projected.streamedCommandOutput,
           this.#threadId,
-          projected.wireItemType,
         ),
       ),
     ];
@@ -1519,8 +1183,6 @@ export class CodexTurnProjector {
     projected.wireStarted = true;
     projected.startedAtMs = startedAtMs;
     this.#wireItemOrder.push(item.itemId);
-    const wireItem = projectItem(item, null, this.#cwd, true, this.#threadId);
-    projected.wireItemType = wireItem.type as string;
     return {
       method: "item/started",
       emittedAtMs: startedAtMs,
@@ -1528,7 +1190,7 @@ export class CodexTurnProjector {
         threadId: this.#threadId,
         turnId: this.#turnId,
         startedAtMs,
-        item: wireItem,
+        item: projectItem(item, null, this.#cwd, true, this.#threadId),
       },
     };
   }

@@ -1,7 +1,5 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { accessSync, constants, statSync } from "node:fs";
-import path from "node:path";
 
 import { sanitizeDiagnosticTail } from "@codexhost/harness-adapter";
 import type { HostFrame, MuxFrame, RpcError, RpcRequest } from "@deepseek-ai/dsh-host-apiproxy/api";
@@ -12,16 +10,29 @@ import {
 } from "@deepseek-ai/dsh-host-apiproxy/api/rpc.schema";
 import { AbstractApiClient, type IApiClient } from "@deepseek-ai/dsh-host-apiproxy/client";
 import type { SessionId } from "@deepseek-ai/dsh-session/types";
+import WebSocket, { type RawData } from "ws";
+
+import {
+  deepSeekProcessInvocation,
+  killDeepSeekProcessTree,
+  resolveDeepSeekCommand,
+  type DeepSeekCommandInvocation,
+} from "../executable.js";
+import {
+  DeepSeekGenerationProbeError,
+  parseDeepSeekLegacyEndpoint,
+} from "../generation-selector.js";
+import type { DeepSeekCommandDescriptor } from "../harness-commands.js";
+export {
+  deepSeekProcessInvocation,
+  resolveDeepSeekCommand,
+  type DeepSeekCommandInvocation,
+} from "../executable.js";
+export type { DeepSeekCommandDescriptor } from "../harness-commands.js";
 
 export type DeepSeekHostClient = IApiClient & { readonly commands: DeepSeekCommandClient };
 export type DeepSeekMuxEnvelope = RpcRequest<MuxFrame>;
 export type DeepSeekHostEnvelope = RpcRequest<HostFrame>;
-
-export interface DeepSeekCommandDescriptor {
-  readonly name: string;
-  readonly description: string;
-  readonly input?: { readonly hint: string; readonly images?: boolean };
-}
 
 export interface DeepSeekCommandExecution {
   readonly commandId: string;
@@ -46,7 +57,13 @@ export interface DeepSeekCommandClient {
 }
 
 export type DeepSeekHarnessTransportErrorCode =
-  "notInstalled" | "unavailable" | "protocolError" | "processExited" | "nativeFailure";
+  | "authenticationRequired"
+  | "cancelled"
+  | "notInstalled"
+  | "unavailable"
+  | "protocolError"
+  | "processExited"
+  | "nativeFailure";
 
 export class DeepSeekHarnessTransportError extends Error {
   constructor(
@@ -62,13 +79,35 @@ export class DeepSeekHarnessTransportError extends Error {
 type StreamFrame = MuxFrame | HostFrame;
 type StreamItem<F> = { type: "frame"; envelope: RpcRequest<F> } | { type: "end" };
 type FrameSchema<F> = { parse(value: unknown): F };
-const MISSING_COMMAND_IMAGES =
-  'typert gateway: commands/execute: args fields do not match the descriptor: missing "images"';
+const COMMAND_NAME = /^[a-z][a-z0-9_-]*$/u;
 
 function commandProtocolError(method: string, detail: string): DeepSeekHarnessTransportError {
   return new DeepSeekHarnessTransportError(
     "protocolError",
     `DeepSeek Harness '${method}' returned ${detail}`,
+  );
+}
+
+async function rejectLegacyHttpFailure(response: Response): Promise<void> {
+  if (response.ok) return;
+  await response.body?.cancel().catch(() => undefined);
+  if (response.status === 401 || response.status === 403) {
+    throw new DeepSeekHarnessTransportError(
+      "authenticationRequired",
+      "DeepSeek Harness Web requires authentication",
+      `HTTP_${String(response.status)}`,
+    );
+  }
+  if (response.status >= 300 && response.status < 400) {
+    throw new DeepSeekHarnessTransportError(
+      "protocolError",
+      "DeepSeek Harness Legacy RPC refused an HTTP redirect",
+    );
+  }
+  throw new DeepSeekHarnessTransportError(
+    "protocolError",
+    `DeepSeek Harness Legacy RPC failed with HTTP ${String(response.status)}`,
+    response.status === 404 ? "HTTP_404" : undefined,
   );
 }
 
@@ -79,25 +118,34 @@ function record(value: unknown): Record<string, unknown> | null {
 }
 
 function parseCommandDescriptors(value: unknown): DeepSeekCommandDescriptor[] {
-  const valid =
-    Array.isArray(value) &&
-    value.every((entry) => {
-      const descriptor = record(entry);
-      if (
-        !descriptor ||
-        typeof descriptor.name !== "string" ||
-        typeof descriptor.description !== "string"
-      ) {
-        return false;
-      }
-      if (descriptor.input === undefined) return true;
-      const input = record(descriptor.input);
-      return (
-        !!input &&
-        typeof input.hint === "string" &&
-        (input.images === undefined || typeof input.images === "boolean")
-      );
-    });
+  if (!Array.isArray(value)) throw new TypeError("an invalid command catalog");
+  const names = new Set<string>();
+  const valid = value.every((entry) => {
+    const descriptor = record(entry);
+    if (
+      !descriptor ||
+      Object.keys(descriptor).some((key) => !["name", "description", "input"].includes(key)) ||
+      typeof descriptor.name !== "string" ||
+      !COMMAND_NAME.test(descriptor.name) ||
+      names.has(descriptor.name) ||
+      typeof descriptor.description !== "string" ||
+      descriptor.description.trim().length === 0 ||
+      descriptor.description.length > 512
+    ) {
+      return false;
+    }
+    names.add(descriptor.name);
+    if (descriptor.input === undefined) return true;
+    const input = record(descriptor.input);
+    return (
+      !!input &&
+      Object.keys(input).every((key) => key === "hint" || key === "images") &&
+      typeof input.hint === "string" &&
+      input.hint.trim().length > 0 &&
+      input.hint.length <= 512 &&
+      (input.images === undefined || typeof input.images === "boolean")
+    );
+  });
   if (!valid) throw new TypeError("an invalid command catalog");
   return value as DeepSeekCommandDescriptor[];
 }
@@ -134,8 +182,10 @@ export class NodeDeepSeekHostClient extends AbstractApiClient {
     return this.#endpoint.href;
   }
 
-  protected doFetch(input: URL, init?: RequestInit): Promise<Response> {
-    return globalThis.fetch(input, init);
+  protected async doFetch(input: URL, init?: RequestInit): Promise<Response> {
+    const response = await globalThis.fetch(input, { ...init, redirect: "manual" });
+    await rejectLegacyHttpFailure(response);
+    return response;
   }
 
   protected override openMux(
@@ -172,10 +222,15 @@ export class NodeDeepSeekHostClient extends AbstractApiClient {
       wake = undefined;
     };
     const handleOpen = (): void => onOpen?.();
-    const handleMessage = (message: MessageEvent): void => {
+    const handleMessage = (data: RawData, isBinary: boolean): void => {
       try {
-        if (typeof message.data !== "string") throw new Error("binary WebSocket frame");
-        const full = serverRequestSchema.parse(JSON.parse(message.data));
+        if (isBinary) throw new Error("binary WebSocket frame");
+        const text = Buffer.isBuffer(data)
+          ? data.toString("utf8")
+          : Array.isArray(data)
+            ? Buffer.concat(data).toString("utf8")
+            : Buffer.from(data).toString("utf8");
+        const full = serverRequestSchema.parse(JSON.parse(text));
         const frame = schema.parse(full.payload);
         this.onEnvelope(full);
         enqueue({ type: "frame", envelope: { rpcId: full.rpcId, payload: frame } });
@@ -184,7 +239,7 @@ export class NodeDeepSeekHostClient extends AbstractApiClient {
           "protocolError",
           `DeepSeek Harness emitted an invalid ${pathname} frame: ${error instanceof Error ? error.message : String(error)}`,
         );
-        socket.close();
+        socket.terminate();
       }
     };
     const handleError = (): void => {
@@ -194,11 +249,14 @@ export class NodeDeepSeekHostClient extends AbstractApiClient {
       );
     };
     const handleClose = (): void => enqueue({ type: "end" });
-    const handleAbort = (): void => socket.close();
-    socket.addEventListener("open", handleOpen);
-    socket.addEventListener("message", handleMessage);
-    socket.addEventListener("error", handleError);
-    socket.addEventListener("close", handleClose, { once: true });
+    const handleAbort = (): void => {
+      socket.terminate();
+      enqueue({ type: "end" });
+    };
+    socket.on("open", handleOpen);
+    socket.on("message", handleMessage);
+    socket.on("error", handleError);
+    socket.once("close", handleClose);
     signal.addEventListener("abort", handleAbort, { once: true });
     if (signal.aborted) handleAbort();
     try {
@@ -217,11 +275,11 @@ export class NodeDeepSeekHostClient extends AbstractApiClient {
       }
     } finally {
       signal.removeEventListener("abort", handleAbort);
-      socket.removeEventListener("open", handleOpen);
-      socket.removeEventListener("message", handleMessage);
-      socket.removeEventListener("error", handleError);
-      socket.removeEventListener("close", handleClose);
-      socket.close();
+      socket.off("open", handleOpen);
+      socket.off("message", handleMessage);
+      socket.off("error", handleError);
+      socket.off("close", handleClose);
+      if (socket.readyState !== WebSocket.CLOSED) socket.terminate();
     }
   }
 }
@@ -248,31 +306,17 @@ export class NodeDeepSeekCommandClient implements DeepSeekCommandClient {
     );
   }
 
-  async execute(
+  execute(
     sessionId: SessionId,
     line: string,
     signal?: AbortSignal,
   ): Promise<DeepSeekCommandResult<DeepSeekCommandExecution | undefined>> {
-    const result = await this.#call(
+    return this.#call(
       "commands/execute",
-      { agentId: sessionId, line },
+      { agentId: sessionId, line, images: [] },
       parseCommandExecution,
       signal,
     );
-    if (
-      !result.ok &&
-      result.error.code === "internal" &&
-      result.error.message === MISSING_COMMAND_IMAGES
-    ) {
-      // rc.6 has no images parameter; newer DSH requires an explicit empty batch.
-      return this.#call(
-        "commands/execute",
-        { agentId: sessionId, line, images: [] },
-        parseCommandExecution,
-        signal,
-      );
-    }
-    return result;
   }
 
   async #call<T>(
@@ -287,13 +331,9 @@ export class NodeDeepSeekCommandClient implements DeepSeekCommandClient {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ type: "client-request", rpcId, method, payload: { args } }),
       ...(signal ? { signal } : {}),
+      redirect: "manual",
     });
-    if (!response.ok) {
-      throw new DeepSeekHarnessTransportError(
-        "unavailable",
-        `DeepSeek Harness '${method}' transport failed with HTTP ${response.status}`,
-      );
-    }
+    await rejectLegacyHttpFailure(response);
     let envelope: ReturnType<typeof serverResponseSchema.parse>;
     try {
       envelope = serverResponseSchema.parse(await response.json());
@@ -320,11 +360,15 @@ export class NodeDeepSeekCommandClient implements DeepSeekCommandClient {
 
 export interface DeepSeekHostConnectionOptions {
   command?: string;
+  /** Selector-owned resolved command; prevents a second PATH lookup after the exact version Gate. */
+  commandInvocation?: DeepSeekCommandInvocation;
   endpoint?: string;
   environment?: NodeJS.ProcessEnv;
   startupTimeoutMs?: number;
   commandTimeoutMs?: number;
   closeTimeoutMs?: number;
+  /** Probe an existing Host only; never start a process when the endpoint is unavailable. */
+  attachOnly?: boolean;
 }
 
 export interface DeepSeekHostConnectionDependencies {
@@ -336,9 +380,12 @@ export interface DeepSeekHostConnectionDependencies {
       env: NodeJS.ProcessEnv;
       stdio: "pipe";
       windowsVerbatimArguments?: boolean;
+      detached: boolean;
     },
   ): ChildProcess;
   sleep(milliseconds: number): Promise<void>;
+  platform?: NodeJS.Platform;
+  killProcessTree?(child: ChildProcess, platform: NodeJS.Platform, timeoutMs: number): void;
 }
 
 export interface DeepSeekHostSubscriber {
@@ -351,114 +398,18 @@ const DEFAULT_STARTUP_TIMEOUT_MS = 20_000;
 const DEFAULT_COMMAND_TIMEOUT_MS = 5_000;
 const DEFAULT_CLOSE_TIMEOUT_MS = 3_000;
 
-function environmentValue(environment: NodeJS.ProcessEnv, name: string): string | undefined {
-  return Object.entries(environment).find(([key]) => key.toLowerCase() === name.toLowerCase())?.[1];
-}
-
 function parseLoopbackEndpoint(endpoint: string): URL {
-  let parsed: URL;
   try {
-    parsed = new URL(endpoint);
-  } catch {
-    throw new DeepSeekHarnessTransportError("unavailable", "DeepSeek Harness endpoint is invalid");
-  }
-  const loopback =
-    parsed.hostname === "localhost" ||
-    parsed.hostname === "[::1]" ||
-    /^127(?:\.\d{1,3}){3}$/u.test(parsed.hostname);
-  if (!loopback || (parsed.protocol !== "http:" && parsed.protocol !== "https:")) {
-    throw new DeepSeekHarnessTransportError(
-      "unavailable",
-      "DeepSeek Harness endpoint must use HTTP on loopback",
-    );
-  }
-  parsed.pathname = "/";
-  parsed.search = "";
-  parsed.hash = "";
-  return parsed;
-}
-
-function executableCandidates(command: string, environment: NodeJS.ProcessEnv): string[] {
-  const targetPath = process.platform === "win32" ? path.win32 : path.posix;
-  if (targetPath.isAbsolute(command) || command.includes("/") || command.includes("\\")) {
-    return [command];
-  }
-  const extensions =
-    process.platform === "win32" && targetPath.extname(command) === ""
-      ? (environmentValue(environment, "PATHEXT") ?? ".COM;.EXE;.BAT;.CMD")
-          .split(";")
-          .map((extension) => extension.trim())
-          .filter(Boolean)
-      : [""];
-  return (environmentValue(environment, "PATH") ?? "")
-    .split(targetPath.delimiter)
-    .map((directory) => directory.trim().replace(/^"|"$/gu, ""))
-    .filter(Boolean)
-    .flatMap((directory) =>
-      extensions.map((extension) => targetPath.join(directory, command + extension)),
-    );
-}
-
-export interface DeepSeekCommandInvocation {
-  command: string;
-  arguments: string[];
-  kind: "configured" | "dsh" | "npx";
-}
-
-function resolveExecutable(command: string, environment: NodeJS.ProcessEnv): string | null {
-  const accessMode = process.platform === "win32" ? constants.F_OK : constants.X_OK;
-  for (const candidate of executableCandidates(command, environment)) {
-    try {
-      accessSync(candidate, accessMode);
-      if (statSync(candidate).isFile()) return candidate;
-    } catch {
-      // Continue through the configured PATH.
+    return new URL(parseDeepSeekLegacyEndpoint(endpoint));
+  } catch (error) {
+    if (error instanceof DeepSeekGenerationProbeError) {
+      throw new DeepSeekHarnessTransportError(
+        error.code === "authenticationRequired" ? "authenticationRequired" : "protocolError",
+        error.message,
+      );
     }
+    throw error;
   }
-  return null;
-}
-
-export function resolveDeepSeekCommand(
-  configured: string | undefined,
-  environment: NodeJS.ProcessEnv,
-): DeepSeekCommandInvocation | null {
-  if (configured) {
-    const command = resolveExecutable(configured, environment);
-    return command ? { command, arguments: [], kind: "configured" } : null;
-  }
-  const dsh = resolveExecutable("dsh", environment);
-  if (dsh) return { command: dsh, arguments: [], kind: "dsh" };
-  const npx = resolveExecutable(process.platform === "win32" ? "npx.cmd" : "npx", environment);
-  return npx
-    ? {
-        command: npx,
-        arguments: ["--offline", "--no-install", "@deepseek-ai/dsh"],
-        kind: "npx",
-      }
-    : null;
-}
-
-export function deepSeekProcessInvocation(
-  command: string,
-  arguments_: string[],
-  environment: NodeJS.ProcessEnv,
-  platform = process.platform,
-): {
-  command: string;
-  arguments: string[];
-  windowsVerbatimArguments: boolean;
-} {
-  const extension = path.win32.extname(command).toLowerCase();
-  if (platform !== "win32" || ![".cmd", ".bat"].includes(extension)) {
-    return { command, arguments: arguments_, windowsVerbatimArguments: false };
-  }
-  const quote = (value: string): string => `"${value.replaceAll("%", "%%").replaceAll('"', '""')}"`;
-  const commandLine = [command, ...arguments_].map(quote).join(" ");
-  return {
-    command: environmentValue(environment, "ComSpec") ?? "cmd.exe",
-    arguments: ["/d", "/v:off", "/s", "/c", `"${commandLine}"`],
-    windowsVerbatimArguments: true,
-  };
 }
 
 function isMissingExecutableError(error: unknown): boolean {
@@ -470,15 +421,96 @@ function isMissingExecutableError(error: unknown): boolean {
   );
 }
 
-function unwrap<T>(
+function unwrapProbe<T>(
   response: { result: { ok: true; value: T } | { ok: false; error: { message: string } } },
   operation: string,
 ): T {
   if (response.result.ok) return response.result.value;
   throw new DeepSeekHarnessTransportError(
-    "unavailable",
-    `DeepSeek Harness ${operation} failed: ${response.result.error.message}`,
+    "protocolError",
+    `DeepSeek Harness ${operation} did not satisfy the exact 0.1.1-rc.2 wire contract`,
   );
+}
+
+function abortableDelay(delay: Promise<void>, signal: AbortSignal): Promise<void> {
+  if (signal.aborted) {
+    return Promise.reject(
+      new DeepSeekHarnessTransportError("cancelled", "DeepSeek Harness connection was cancelled"),
+    );
+  }
+  let rejectAborted: ((reason: unknown) => void) | undefined;
+  const onAbort = (): void => {
+    rejectAborted?.(
+      new DeepSeekHarnessTransportError("cancelled", "DeepSeek Harness connection was cancelled"),
+    );
+  };
+  const aborted = new Promise<void>((_, reject) => {
+    rejectAborted = reject;
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+  if (signal.aborted) onAbort();
+  return Promise.race([delay, aborted]).finally(() => signal.removeEventListener("abort", onAbort));
+}
+
+async function waitForStreamReadiness(
+  opened: Promise<void>,
+  startupFault: Promise<never>,
+  timeoutMs: number,
+  signal: AbortSignal,
+): Promise<"opened" | "timedOut" | "aborted"> {
+  let timeout: NodeJS.Timeout | undefined;
+  let resolveAborted: (() => void) | undefined;
+  const timedOut = new Promise<"timedOut">((resolve) => {
+    timeout = setTimeout(() => resolve("timedOut"), timeoutMs);
+  });
+  const aborted = new Promise<"aborted">((resolve) => {
+    resolveAborted = () => resolve("aborted");
+    signal.addEventListener("abort", resolveAborted, { once: true });
+  });
+  if (signal.aborted) resolveAborted?.();
+  try {
+    return await Promise.race([
+      opened.then(() => "opened" as const),
+      startupFault,
+      timedOut,
+      aborted,
+    ]);
+  } finally {
+    if (timeout) clearTimeout(timeout);
+    if (resolveAborted) signal.removeEventListener("abort", resolveAborted);
+  }
+}
+
+function waitForProcessExit(child: ChildProcess, timeoutMs: number): Promise<boolean> {
+  if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve(true);
+  return new Promise((resolve) => {
+    const finish = (exited: boolean): void => {
+      clearTimeout(timeout);
+      child.off("exit", onExit);
+      resolve(exited);
+    };
+    const onExit = (): void => finish(true);
+    const timeout = setTimeout(() => finish(false), timeoutMs);
+    child.once("exit", onExit);
+  });
+}
+
+async function waitForOperations(
+  operations: readonly Promise<void>[],
+  timeoutMs: number,
+): Promise<void> {
+  if (operations.length === 0) return;
+  let timeout: NodeJS.Timeout | undefined;
+  try {
+    await Promise.race([
+      Promise.allSettled(operations),
+      new Promise<void>((resolve) => {
+        timeout = setTimeout(resolve, timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timeout) clearTimeout(timeout);
+  }
 }
 
 export class DeepSeekHostConnection {
@@ -487,12 +519,17 @@ export class DeepSeekHostConnection {
   readonly #dependencies: DeepSeekHostConnectionDependencies;
   readonly #endpoint: string;
   readonly #environment: NodeJS.ProcessEnv;
+  readonly #lifetime = new AbortController();
   readonly #options: DeepSeekHostConnectionOptions;
+  readonly #platform: NodeJS.Platform;
+  readonly #killProcessTree: NonNullable<DeepSeekHostConnectionDependencies["killProcessTree"]>;
   readonly #startupTimeoutMs: number;
   readonly #subscribers = new Map<string, DeepSeekHostSubscriber>();
   #abort: AbortController | null = null;
   #closePromise: Promise<void> | null = null;
+  #closed = false;
   #connectPromise: Promise<void> | null = null;
+  #fault: DeepSeekHarnessTransportError | null = null;
   #managedProcess: ChildProcess | null = null;
   #stderrTail = "";
   #pumpPromise: Promise<void> | null = null;
@@ -507,11 +544,16 @@ export class DeepSeekHostConnection {
           stdio: spawnOptions.stdio,
           windowsHide: true,
           windowsVerbatimArguments: spawnOptions.windowsVerbatimArguments,
+          detached: spawnOptions.detached,
         }),
       sleep: (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
+      platform: process.platform,
+      killProcessTree: killDeepSeekProcessTree,
     },
   ) {
     this.#options = options;
+    this.#platform = dependencies.platform ?? process.platform;
+    this.#killProcessTree = dependencies.killProcessTree ?? killDeepSeekProcessTree;
     this.#environment = options.environment ?? process.env;
     this.#endpoint = parseLoopbackEndpoint(options.endpoint ?? DEFAULT_ENDPOINT).href;
     this.#startupTimeoutMs = options.startupTimeoutMs ?? DEFAULT_STARTUP_TIMEOUT_MS;
@@ -531,9 +573,18 @@ export class DeepSeekHostConnection {
     return this.#stderrTail;
   }
 
-  connect(): Promise<void> {
+  connect(signal?: AbortSignal): Promise<void> {
+    if (this.#closed) {
+      return Promise.reject(
+        new DeepSeekHarnessTransportError("unavailable", "DeepSeek Harness connection is closing"),
+      );
+    }
+    if (this.#fault) return Promise.reject(this.#fault);
     if (this.#connectPromise) return this.#connectPromise;
-    const attempt = this.#performConnect();
+    const lifetime = signal
+      ? AbortSignal.any([signal, this.#lifetime.signal])
+      : this.#lifetime.signal;
+    const attempt = this.#performConnect(lifetime);
     this.#connectPromise = attempt;
     void attempt.catch(() => {
       if (this.#connectPromise === attempt) this.#connectPromise = null;
@@ -549,27 +600,54 @@ export class DeepSeekHostConnection {
       );
     }
     this.#subscribers.set(sessionId, subscriber);
+    const fault = this.#fault;
+    if (fault) {
+      queueMicrotask(() => {
+        if (this.#subscribers.get(sessionId) === subscriber) subscriber.onFault(fault);
+      });
+    }
     return () => {
       if (this.#subscribers.get(sessionId) === subscriber) this.#subscribers.delete(sessionId);
     };
   }
 
   close(): Promise<void> {
-    this.#closePromise ??= this.#performClose();
+    if (!this.#closePromise) {
+      this.#closed = true;
+      this.#lifetime.abort(new Error("DeepSeek Harness connection closed"));
+      this.#closePromise = this.#performClose();
+    }
     return this.#closePromise;
   }
 
-  async #performConnect(): Promise<void> {
+  async #performConnect(signal: AbortSignal): Promise<void> {
+    if (signal?.aborted) {
+      throw new DeepSeekHarnessTransportError(
+        "cancelled",
+        "DeepSeek Harness connection was cancelled",
+      );
+    }
     try {
-      await this.#probe();
+      await this.#probe(signal);
     } catch (initialError) {
+      if (signal.aborted || this.#closed) {
+        throw new DeepSeekHarnessTransportError(
+          "cancelled",
+          "DeepSeek Harness connection was cancelled",
+        );
+      }
       if (
-        initialError instanceof DeepSeekHarnessTransportError &&
-        initialError.code === "protocolError"
+        this.#options.attachOnly ||
+        (initialError instanceof DeepSeekHarnessTransportError &&
+          (initialError.code === "protocolError" ||
+            initialError.code === "authenticationRequired" ||
+            initialError.code === "cancelled"))
       ) {
         throw initialError;
       }
-      const invocation = resolveDeepSeekCommand(this.#options.command, this.#environment);
+      const invocation =
+        this.#options.commandInvocation ??
+        resolveDeepSeekCommand(this.#options.command, this.#environment);
       if (!invocation) {
         throw new DeepSeekHarnessTransportError(
           "notInstalled",
@@ -577,12 +655,18 @@ export class DeepSeekHostConnection {
         );
       }
       const endpoint = new URL(this.#endpoint);
+      if (endpoint.protocol === "https:") {
+        throw new DeepSeekHarnessTransportError(
+          "unavailable",
+          "DeepSeek Harness Legacy managed Web requires an HTTP endpoint",
+        );
+      }
       const args = [
         ...invocation.arguments,
         "web",
         "--no-open",
         "--host",
-        endpoint.hostname,
+        endpoint.hostname === "[::1]" ? "::1" : endpoint.hostname,
         "--port",
         endpoint.port || "80",
       ];
@@ -590,6 +674,7 @@ export class DeepSeekHostConnection {
         invocation.command,
         args,
         this.#environment,
+        this.#platform,
       );
       const child = this.#dependencies.spawn(
         processInvocation.command,
@@ -598,11 +683,15 @@ export class DeepSeekHostConnection {
           env: this.#environment,
           stdio: "pipe",
           windowsVerbatimArguments: processInvocation.windowsVerbatimArguments,
+          detached: this.#platform !== "win32",
         },
       );
       this.#managedProcess = child;
       child.stderr?.on("data", (chunk: Buffer | string) => {
         this.#stderrTail = sanitizeDiagnosticTail(`${this.#stderrTail}${chunk.toString()}`);
+      });
+      child.stdout?.on("data", () => {
+        // Legacy readiness is proven by the rc.2 endpoint; continuously drain this pipe.
       });
       let processError: Error | null = null;
       child.once("error", (error) => {
@@ -610,6 +699,12 @@ export class DeepSeekHostConnection {
       });
       const deadline = Date.now() + this.#startupTimeoutMs;
       for (;;) {
+        if (signal?.aborted) {
+          throw new DeepSeekHarnessTransportError(
+            "cancelled",
+            "DeepSeek Harness connection was cancelled",
+          );
+        }
         if (processError) {
           if (isMissingExecutableError(processError)) {
             throw new DeepSeekHarnessTransportError(
@@ -635,67 +730,140 @@ export class DeepSeekHostConnection {
           );
         }
         try {
-          await this.#probe();
+          await this.#probe(signal);
           break;
-        } catch {
+        } catch (error) {
+          const retryableManagedProbe =
+            error instanceof DeepSeekHarnessTransportError &&
+            (error.code === "unavailable" ||
+              (error.code === "protocolError" && error.nativeCode === "HTTP_404"));
+          if (!retryableManagedProbe) throw error;
           if (Date.now() >= deadline) {
+            if (error.code === "protocolError") throw error;
             throw new DeepSeekHarnessTransportError(
               "unavailable",
               `DeepSeek Harness Web did not become ready at ${this.#endpoint}`,
             );
           }
-          await this.#dependencies.sleep(200);
+          await abortableDelay(this.#dependencies.sleep(200), signal);
         }
       }
+    }
+    if (signal.aborted || this.#closed) {
+      throw new DeepSeekHarnessTransportError(
+        "cancelled",
+        "DeepSeek Harness connection was cancelled",
+      );
     }
     const abort = new AbortController();
     this.#abort = abort;
     let markOpen = (): void => undefined;
     const opened = new Promise<void>((resolve) => {
-      markOpen = resolve;
+      markOpen = (): void => {
+        // Defer readiness one event-loop turn so an iterator that opens and immediately ends
+        // cannot be mistaken for a live event stream.
+        setImmediate(() => {
+          if (!signal?.aborted) resolve();
+        });
+      };
     });
-    this.#pumpPromise = this.#pump(abort.signal, markOpen);
-    const ready = await Promise.race([
-      opened.then(() => true),
-      this.#dependencies.sleep(this.#startupTimeoutMs).then(() => false),
-    ]);
-    if (!ready) {
+    let markStartupFault: (error: DeepSeekHarnessTransportError) => void = () => undefined;
+    const startupFault = new Promise<never>((_resolve, reject) => {
+      markStartupFault = reject;
+    });
+    if (signal?.aborted) {
       abort.abort();
       throw new DeepSeekHarnessTransportError(
-        "unavailable",
-        "DeepSeek Harness event stream did not become ready",
+        "cancelled",
+        "DeepSeek Harness connection was cancelled",
+      );
+    }
+    if (this.#fault) throw this.#fault;
+    this.#pumpPromise = this.#pump(abort.signal, markOpen, markStartupFault);
+    const readiness = await waitForStreamReadiness(
+      opened,
+      startupFault,
+      this.#startupTimeoutMs,
+      signal,
+    );
+    if (readiness !== "opened") {
+      abort.abort();
+      if (readiness === "aborted") {
+        throw new DeepSeekHarnessTransportError(
+          "cancelled",
+          "DeepSeek Harness connection was cancelled",
+        );
+      }
+      throw new DeepSeekHarnessTransportError(
+        "protocolError",
+        "DeepSeek Harness Legacy event stream did not satisfy the exact 0.1.1-rc.2 contract",
+      );
+    }
+    if (signal?.aborted) {
+      abort.abort();
+      throw new DeepSeekHarnessTransportError(
+        "cancelled",
+        "DeepSeek Harness connection was cancelled",
       );
     }
   }
 
-  async #probe(): Promise<void> {
-    let response: Awaited<ReturnType<DeepSeekHostClient["host"]["describe"]>>;
+  async #probe(signal: AbortSignal): Promise<void> {
+    let observedResponse = false;
     try {
-      response = await this.#client.host.describe({});
+      const response = await this.#client.host.describe({}, signal);
+      observedResponse = true;
+      const description = unwrapProbe(response, "host.describe");
+      if (description.version !== "0.0.1") {
+        throw new DeepSeekHarnessTransportError(
+          "protocolError",
+          "DeepSeek Harness Host did not expose the exact 0.1.1-rc.2 Host protocol",
+        );
+      }
+      unwrapProbe(await this.#client.llm.models({}, signal), "llm.models");
+      unwrapProbe(await this.#client.settings.describe({}, signal), "settings.describe");
+      unwrapProbe(await this.#client.sessions.list({}, signal), "sessions.list");
     } catch (error) {
-      if (error instanceof TypeError && error.message.toLowerCase().includes("fetch")) throw error;
+      if (error instanceof DeepSeekHarnessTransportError) throw error;
+      if (signal?.aborted) {
+        throw new DeepSeekHarnessTransportError(
+          "cancelled",
+          "DeepSeek Harness Legacy endpoint probe was cancelled",
+        );
+      }
+      if (
+        !observedResponse &&
+        error instanceof Error &&
+        ((error instanceof TypeError && error.message.toLowerCase().includes("fetch")) ||
+          error.name === "TimeoutError" ||
+          error.name === "AbortError")
+      ) {
+        throw new DeepSeekHarnessTransportError(
+          "unavailable",
+          "DeepSeek Harness Legacy endpoint is unavailable",
+        );
+      }
       throw new DeepSeekHarnessTransportError(
         "protocolError",
-        `DeepSeek Harness Host returned an invalid response: ${error instanceof Error ? error.message : String(error)}`,
-      );
-    }
-    const description = unwrap(response, "host.describe");
-    if (description.version !== "0.0.1") {
-      throw new DeepSeekHarnessTransportError(
-        "protocolError",
-        `DeepSeek Harness Host protocol '${description.version}' is incompatible`,
+        "DeepSeek Harness Host did not satisfy the exact 0.1.1-rc.2 wire contract",
       );
     }
   }
 
-  async #pump(signal: AbortSignal, onOpen: () => void): Promise<void> {
+  async #pump(
+    signal: AbortSignal,
+    onOpen: () => void,
+    onStartupFault: (error: DeepSeekHarnessTransportError) => void,
+  ): Promise<void> {
     try {
-      for await (const envelope of this.#client.events.mux({}, signal, onOpen)) {
+      for await (const envelope of this.#client.events.mux({}, signal, () => {
+        onOpen();
+      })) {
         const frame = envelope.payload;
         if (frame.type === "stream/error") {
           throw new DeepSeekHarnessTransportError(
             "unavailable",
-            `DeepSeek Harness event stream failed: ${frame.error.message}`,
+            "DeepSeek Harness Legacy event stream failed",
           );
         }
         if ("sessionId" in frame) this.#subscribers.get(frame.sessionId)?.onMux(envelope);
@@ -715,21 +883,48 @@ export class DeepSeekHostConnection {
               "unavailable",
               error instanceof Error ? error.message : String(error),
             );
+      this.#fault = fault;
+      onStartupFault(
+        fault.code === "unavailable"
+          ? new DeepSeekHarnessTransportError(
+              "protocolError",
+              "DeepSeek Harness Legacy event stream did not satisfy the exact 0.1.1-rc.2 contract",
+            )
+          : fault,
+      );
       for (const subscriber of this.#subscribers.values()) subscriber.onFault(fault);
     }
   }
 
   async #performClose(): Promise<void> {
     this.#abort?.abort();
-    await this.#pumpPromise?.catch(() => undefined);
+    await waitForOperations(
+      [this.#connectPromise, this.#pumpPromise].filter(
+        (promise): promise is Promise<void> => promise !== null,
+      ),
+      this.#closeTimeoutMs,
+    );
     this.#subscribers.clear();
     const child = this.#managedProcess;
-    if (!child || child.exitCode !== null || child.signalCode !== null) return;
-    child.kill("SIGTERM");
-    await Promise.race([
-      new Promise<void>((resolve) => child.once("exit", () => resolve())),
-      this.#dependencies.sleep(this.#closeTimeoutMs),
-    ]);
-    if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+    if (!child) return;
+    if (this.#platform !== "win32" && child.exitCode === null && child.signalCode === null) {
+      const gracefulExit = waitForProcessExit(child, this.#closeTimeoutMs);
+      child.kill("SIGTERM");
+      await gracefulExit;
+    }
+    try {
+      this.#killProcessTree(child, this.#platform, this.#closeTimeoutMs);
+    } catch {
+      throw new DeepSeekHarnessTransportError(
+        "unavailable",
+        "DeepSeek Harness Legacy process tree could not be stopped",
+      );
+    }
+    if (child.exitCode !== null || child.signalCode !== null) return;
+    if (await waitForProcessExit(child, this.#closeTimeoutMs)) return;
+    throw new DeepSeekHarnessTransportError(
+      "unavailable",
+      "DeepSeek Harness Legacy process tree did not exit within cleanup bounds",
+    );
   }
 }

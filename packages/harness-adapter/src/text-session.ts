@@ -5,6 +5,7 @@ import type {
   HarnessModelRef,
   HarnessPermissionModeId,
   HarnessSessionCapabilities,
+  HarnessSessionImportCandidate,
   HarnessThinkingOption,
   HarnessThinkingOptionId,
   HostInteractionId,
@@ -28,6 +29,7 @@ export type {
   HarnessPermissionModeCatalog,
   HarnessPermissionModeId,
   HarnessSessionCapabilities,
+  HarnessSessionImportCandidate,
   HarnessThinkingOption,
   HarnessThinkingOptionId,
 } from "@codexhost/shared-contracts";
@@ -515,9 +517,20 @@ export interface HarnessSubagentCapability {
   }): Promise<HarnessResult<HostThreadSnapshot>>;
 }
 
+export interface HarnessWebUiAction {
+  open(): Promise<HarnessResult<void>>;
+}
+
+/** Optional discovery of existing Native Sessions that codexhost can map and resume. */
+export interface HarnessSessionImportCapability {
+  listCandidates(): Promise<HarnessResult<readonly HarnessSessionImportCandidate[]>>;
+}
+
 export interface HarnessAdapter {
   readonly harnessId: HarnessId;
+  readonly sessionImport?: HarnessSessionImportCapability;
   readonly subagents?: HarnessSubagentCapability;
+  readonly webUi?: HarnessWebUiAction;
 
   inspect(input?: InspectHarnessInput): Promise<HarnessInspection>;
   open(input: OpenSessionInput): Promise<HarnessResult<HarnessSession>>;

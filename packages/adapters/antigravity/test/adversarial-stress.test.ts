@@ -363,8 +363,8 @@ if (process.argv.includes("models") || process.argv.some((arg) => arg.includes("
 }
 const runsDir = ${JSON.stringify(runsDir)};
 fs.mkdirSync(runsDir, { recursive: true });
-// Only a Turn consumes a scripted response; quota and inspection probes run
-// the same binary and would otherwise shift every Turn onto the wrong script.
+// Only a Turn consumes a scripted response. Quota probes also request
+// stream-json output, but unlike Turns they do not use stream-json input.
 const isTurn = process.argv.includes("--input-format");
 const counter = isTurn ? fs.readdirSync(runsDir).length : -1;
 if (isTurn) fs.writeFileSync(path.join(runsDir, "run-" + counter + ".txt"), "");

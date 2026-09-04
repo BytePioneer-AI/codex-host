@@ -33,7 +33,8 @@ mod windows_ui;
 
 pub use background::detach_from_terminal;
 pub use desktop_launch::{
-    DesktopProcess, launch_desktop, launch_stock_desktop, open_latest_codexhost_release,
+    DesktopProcess, launch_desktop, launch_stock_desktop, open_external_url,
+    open_latest_codexhost_release,
 };
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 pub use desktop_launch::{DesktopSession, launch_desktop_session};

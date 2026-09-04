@@ -72,7 +72,9 @@ import {
   writeNewThreadExternalConfigurationPreference,
 } from "./renderer-new-thread-preference.js";
 import { installRendererSidebarAgentIcons } from "./renderer-sidebar-agent-icons.js";
+import { routeRendererHarnessCommandSelection } from "./renderer-harness-command-claim.js";
 import { installRendererSettingsLifecycle } from "./renderer-settings-lifecycle.js";
+import { openRendererThread } from "./renderer-fork-control.js";
 import type {
   RendererConnectionDiagnostics,
   RendererConnectionSnapshot,
@@ -99,6 +101,7 @@ const externalAgents: readonly ExternalRendererAgent[] = [
 ];
 type HarnessAvailability = Partial<Record<ExternalRendererAgent, RendererAgentAvailability>>;
 type HarnessAvailabilityErrors = Record<ExternalRendererAgent, CodexhostError | undefined>;
+type HarnessWebUiAvailability = Record<ExternalRendererAgent, boolean>;
 
 function isRetryableHarnessAvailability(
   availability: RendererAgentAvailability | undefined,
@@ -142,6 +145,7 @@ export function harnessAvailabilityDuringInspect(
 interface HostHarnessAvailabilityState {
   availability: HarnessAvailability;
   errors: HarnessAvailabilityErrors;
+  webUi: HarnessWebUiAvailability;
   requestGeneration: number;
   request: { client: RendererModelClient; promise: Promise<void> } | null;
   retryTimer: number | null;
@@ -441,10 +445,6 @@ export function isOwnershipSubmissionBlocked(status: ComposerOwnershipStatus): b
   return status === "loading" || status === "error";
 }
 
-function hasNativeContextUsage(usage: ThreadUsageSnapshot | null): boolean {
-  return usage?.contextUsedTokens !== undefined && usage.contextWindowTokens !== undefined;
-}
-
 interface MountedComposer {
   composer: Element;
   composerId: string;
@@ -458,10 +458,6 @@ interface MountedComposer {
   accountCredits: AccountCreditsSnapshot | null;
   hostId: string | null;
   usageRequestGeneration: number;
-  nativeContextRefreshElement: HTMLElement | null;
-  nativeContextRefreshListener: (() => void) | null;
-  nativeContextRefreshLastAt: number;
-  exactUsageRefreshStarted: boolean;
 }
 
 interface PendingComposerReplacement {
@@ -632,6 +628,18 @@ export function installRendererBindingProbe(
   const settingsLifecycle = installRendererSettingsLifecycle(window, {
     getUpdateClient: () => modelControl,
     getConnectionDiagnostics: () => connectionDiagnostics,
+    getSessionImportClient: () => {
+      const client = modelClientForHost("local");
+      const list = client?.listDeepSeekModernSessions;
+      const importSession = client?.importDeepSeekModernSession;
+      if (!list || !importSession) return null;
+      return {
+        listDeepSeekModernSessions: (input) => list(input),
+        importDeepSeekModernSession: (input) => importSession(input),
+      };
+    },
+    openImportedThread: (threadId, signal) =>
+      openRendererThread(threadId, { hostId: "local", signal }),
     onLocaleChange() {
       for (const mounted of mountedByComposer.values()) renderMounted(mounted);
     },
@@ -655,6 +663,9 @@ export function installRendererBindingProbe(
       omp: undefined,
       antigravity: undefined,
     },
+    webUi: Object.fromEntries(
+      externalAgents.map((agent) => [agent, false]),
+    ) as HarnessWebUiAvailability,
     requestGeneration: 0,
     request: null,
     retryTimer: null,
@@ -679,42 +690,6 @@ export function installRendererBindingProbe(
   const availabilityRetryDelays = [500, 1000, 2000, 4000, 8000] as const;
   const usageRefreshTimers = new Map<Element, number>();
   const usageRefreshAttempts = new Map<Element, number>();
-
-  const unbindNativeContextUsageRefresh = (mounted: MountedComposer): void => {
-    const element = mounted.nativeContextRefreshElement;
-    const listener = mounted.nativeContextRefreshListener;
-    if (element && listener) {
-      for (const eventName of ["pointerenter", "focusin", "click"] as const) {
-        element.removeEventListener(eventName, listener, true);
-      }
-    }
-    mounted.nativeContextRefreshElement = null;
-    mounted.nativeContextRefreshListener = null;
-  };
-
-  const bindNativeContextUsageRefresh = (mounted: MountedComposer): void => {
-    const native = mounted.control.nativeContextUsageControl?.element ?? null;
-    const interactive =
-      native && typeof native.closest === "function"
-        ? native.closest<HTMLElement>('button,[role="button"]')
-        : null;
-    const target = interactive ?? native;
-    if (target === mounted.nativeContextRefreshElement) return;
-    unbindNativeContextUsageRefresh(mounted);
-    if (!target || typeof target.addEventListener !== "function") return;
-    const listener = (): void => {
-      if (controller.get(mounted.composer).agent === "codex") return;
-      const now = Date.now();
-      if (now - mounted.nativeContextRefreshLastAt < 750) return;
-      mounted.nativeContextRefreshLastAt = now;
-      void refreshThreadUsage(mounted, "exact");
-    };
-    for (const eventName of ["pointerenter", "focusin", "click"] as const) {
-      target.addEventListener(eventName, listener, true);
-    }
-    mounted.nativeContextRefreshElement = target;
-    mounted.nativeContextRefreshListener = listener;
-  };
 
   const isMountedComposer = (composer: Element): boolean =>
     composer.isConnected &&
@@ -770,7 +745,12 @@ export function installRendererBindingProbe(
       mounted.accountCredits,
       settingsLifecycle.locale,
     );
-    bindNativeContextUsageRefresh(mounted);
+    if (mounted.control.usage) {
+      mounted.control.usage.onOpen = () => {
+        if (controller.get(mounted.composer).agent === "codex") return;
+        void refreshThreadUsage(mounted, "exact");
+      };
+    }
   };
 
   const refreshCommands = async (mounted: MountedComposer): Promise<void> => {
@@ -815,6 +795,20 @@ export function installRendererBindingProbe(
     } finally {
       mounted.control.harnessCommands.setExecuting(null);
     }
+  };
+
+  const selectCommand = (mounted: MountedComposer, command: HarnessCommandDescriptor): void => {
+    const threadId = threadIdFromComposerModelTarget(mounted.modelTarget);
+    if (!threadId || !modelControl || controller.get(mounted.composer).agent === "codex") return;
+    const editor = mounted.composer.querySelector<HTMLElement>(EDITOR_SELECTOR);
+    if (
+      routeRendererHarnessCommandSelection(editor, command, () => {
+        void executeCommand(mounted, command);
+      })
+    ) {
+      return;
+    }
+    console.error("codexhost Harness command could not claim the current Composer editor");
   };
 
   const applyThreadUsageUpdate = (update: ThreadUsageInspection): void => {
@@ -1004,14 +998,8 @@ export function installRendererBindingProbe(
           const agent = controller.get(mounted.composer).agent;
           if (agent === "codex" && mounted.usage === null) {
             void refreshThreadUsage(mounted);
-          } else if (agent !== "codex") {
-            if (!hasNativeContextUsage(mounted.usage) && !mounted.exactUsageRefreshStarted) {
-              mounted.exactUsageRefreshStarted = true;
-              void refreshThreadUsage(mounted, "exact");
-            }
-            if (shouldRetryExternalThreadUsage(agent, mounted.usage, mounted.accountCredits)) {
-              scheduleThreadUsageRefresh(mounted);
-            }
+          } else if (shouldRetryExternalThreadUsage(agent, mounted.usage, mounted.accountCredits)) {
+            scheduleThreadUsageRefresh(mounted);
           }
         }
       }
@@ -1046,10 +1034,6 @@ export function installRendererBindingProbe(
       mounted.ownershipStatus = "ready";
       renderMounted(mounted);
       if (shouldRetryExternalThreadUsage(controller.get(mounted.composer).agent, null, null)) {
-        if (!mounted.exactUsageRefreshStarted) {
-          mounted.exactUsageRefreshStarted = true;
-          void refreshThreadUsage(mounted, "exact");
-        }
         scheduleThreadUsageRefresh(mounted);
       }
     } else {
@@ -1060,7 +1044,6 @@ export function installRendererBindingProbe(
       mounted.ownershipStatus = "loading";
       mounted.usage = null;
       mounted.accountCredits = null;
-      mounted.exactUsageRefreshStarted = false;
       mounted.usageRequestGeneration += 1;
       usageRefreshAttempts.delete(mounted.composer);
       if (previousTarget?.[0] === "conversation") renderMounted(mounted);
@@ -1875,12 +1858,17 @@ export function installRendererBindingProbe(
         agentsToInspect.map(async (agent) => {
           let status: RendererAgentAvailability = "error";
           let nextError: CodexhostError | undefined;
+          let webUiAvailable = false;
           try {
             const inspection = await client.inspectHarness({
               harnessId: externalHarnessIds[agent],
               refresh,
             });
             status = inspection.status === "ready" ? "ready" : inspection.status;
+            webUiAvailable =
+              hostId === "local" &&
+              inspection.status === "ready" &&
+              inspection.webUi?.open === true;
             if (inspection.status !== "ready") {
               const error = inspection.error;
               nextError = {
@@ -1906,6 +1894,7 @@ export function installRendererBindingProbe(
           const previousStatus = state.availability[agent];
           state.errors[agent] = nextError;
           state.availability = { ...state.availability, [agent]: status };
+          state.webUi = { ...state.webUi, [agent]: webUiAvailable };
           if (hostId !== activeAvailabilityHostId) {
             publishConnectionStatus();
             return;
@@ -2023,6 +2012,7 @@ export function installRendererBindingProbe(
               agent,
               availability: state.availability[agent] ?? "checking",
               error: state.errors[agent] ?? null,
+              ...(state.webUi[agent] ? { webUiAvailable: true as const } : {}),
             })),
           };
         }),
@@ -2032,6 +2022,25 @@ export function installRendererBindingProbe(
       return refreshConnectionHosts(harnessAvailabilityByHost.keys(), (hostId) =>
         refreshHarnessAvailabilityForHost(hostId, true, false, true),
       );
+    },
+    async openWebUi(hostId: string, agent: ExternalRendererAgent): Promise<void> {
+      const state = hostHarnessAvailabilityState(hostId);
+      const client = hostId === "local" ? modelClientForHost(hostId) : null;
+      if (
+        state.availability[agent] !== "ready" ||
+        state.webUi[agent] !== true ||
+        !client?.openHarnessWebUi
+      ) {
+        throw new Error("Harness Web UI is unavailable");
+      }
+      try {
+        await client.openHarnessWebUi({ harnessId: externalHarnessIds[agent] });
+      } catch (error) {
+        state.webUi = { ...state.webUi, [agent]: false };
+        publishConnectionStatus();
+        void refreshHarnessAvailabilityForHost(hostId, true, false, true).catch(() => undefined);
+        throw error;
+      }
     },
     subscribe(listener: () => void): () => void {
       connectionListeners.add(listener);
@@ -2088,7 +2097,7 @@ export function installRendererBindingProbe(
       },
       (command) => {
         const mounted = mountedByComposer.get(composer);
-        if (mounted) void executeCommand(mounted, command);
+        if (mounted) selectCommand(mounted, command);
       },
     );
     const mounted: MountedComposer = {
@@ -2108,10 +2117,6 @@ export function installRendererBindingProbe(
       accountCredits: inherited?.accountCredits ?? null,
       hostId: inherited?.hostId ?? hostId,
       usageRequestGeneration: 0,
-      nativeContextRefreshElement: null,
-      nativeContextRefreshListener: null,
-      nativeContextRefreshLastAt: 0,
-      exactUsageRefreshStarted: false,
     };
     mountedByComposer.set(composer, mounted);
     if (isComposerModelWriteAllowed(modelTarget)) {
@@ -2139,10 +2144,6 @@ export function installRendererBindingProbe(
       inherited &&
       shouldRetryExternalThreadUsage(state.agent, mounted.usage, mounted.accountCredits)
     ) {
-      if (!hasNativeContextUsage(mounted.usage) && !mounted.exactUsageRefreshStarted) {
-        mounted.exactUsageRefreshStarted = true;
-        void refreshThreadUsage(mounted, "exact");
-      }
       scheduleThreadUsageRefresh(mounted);
     } else if (
       state.agent !== "codex" &&
@@ -2192,18 +2193,13 @@ export function installRendererBindingProbe(
           window.clearTimeout(timer);
           usageRefreshTimers.delete(composer);
         }
-        unbindNativeContextUsageRefresh(mounted);
         disposeComposerAgentControl(mounted.control);
         mountedByComposer.delete(composer);
         continue;
       }
       const state = controller.get(composer);
       const hideCodexControls = controller.isSwitching(composer) || state.agent !== "codex";
-      const previousNativeContext = mounted.control.nativeContextUsageControl?.element ?? null;
       reconcileComposerNativeControls(mounted.control, hideCodexControls, hideCodexControls);
-      if (previousNativeContext !== (mounted.control.nativeContextUsageControl?.element ?? null)) {
-        renderMounted(mounted);
-      }
       if (refreshTargets) refreshMountedConversationTarget(mounted);
     }
     for (const editor of document.querySelectorAll(EDITOR_SELECTOR)) {
@@ -2576,7 +2572,6 @@ export function installRendererBindingProbe(
       for (const mounted of mountedByComposer.values()) {
         mounted.usageRequestGeneration += 1;
         usageRefreshAttempts.delete(mounted.composer);
-        unbindNativeContextUsageRefresh(mounted);
         disposeComposerAgentControl(mounted.control);
       }
       mountedByComposer.clear();

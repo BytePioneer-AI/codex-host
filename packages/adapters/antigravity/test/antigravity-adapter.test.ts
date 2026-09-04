@@ -1,4 +1,4 @@
-import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -987,8 +987,12 @@ setTimeout(() => { process.exit(0); }, 50);
         expect(addDirIndex).toBeGreaterThan(-1);
         expect(captured.argv[addDirIndex + 1]).toBe(projectCwd);
 
-        const expectedResolvedCwd = path.resolve(projectCwd).toLowerCase();
-        const actualResolvedCwd = path.resolve(captured.cwd).toLowerCase();
+        // macOS exposes its temporary directory through `/var`, while a child
+        // process can report the same directory through the `/private/var`
+        // symlink target. Compare canonical filesystem paths rather than the
+        // two valid spellings.
+        const expectedResolvedCwd = (await realpath(projectCwd)).toLowerCase();
+        const actualResolvedCwd = (await realpath(captured.cwd)).toLowerCase();
         expect(actualResolvedCwd).toBe(expectedResolvedCwd);
 
         await session.close();
@@ -1135,8 +1139,8 @@ fs.writeFileSync(path.join(runsDir, "run-" + count + ".txt"), "");
 
 if (count === 0) {
   process.stdout.write(JSON.stringify({ event: "init", conversation_id: "conv-switch", init: { permission_mode: "dangerously-skip-permissions" } }) + "\\n");
-  process.stdout.write(JSON.stringify({ event: "step_update", step_update: { conversation_id: "conv-switch", step_index: 1, state: "DONE", step_type: "agent_response", text_delta: "Hello from Gemini", usage: { input_tokens: 100, output_tokens: 20, total_tokens: 120 } } }) + "\\n");
-  process.stdout.write(JSON.stringify({ event: "result", result: { conversation_id: "conv-switch", status: "SUCCESS", num_turns: 1, response: "Hello from Gemini", usage: { input_tokens: 100, output_tokens: 20, total_tokens: 120 } } }) + "\\n");
+  process.stdout.write(JSON.stringify({ event: "step_update", step_update: { conversation_id: "conv-switch", step_index: 1, state: "DONE", step_type: "agent_response", text_delta: "Hello from Gemini", usage: { input_tokens: 100, output_tokens: 20, cache_read_tokens: 0, total_tokens: 120 } } }) + "\\n");
+  process.stdout.write(JSON.stringify({ event: "result", result: { conversation_id: "conv-switch", status: "SUCCESS", num_turns: 1, response: "Hello from Gemini", usage: { input_tokens: 100, output_tokens: 20, cache_read_tokens: 0, total_tokens: 120 } } }) + "\\n");
 } else if (count === 1) {
   process.stdout.write(JSON.stringify({ event: "init", conversation_id: "conv-switch", init: { permission_mode: "dangerously-skip-permissions" } }) + "\\n");
   process.stdout.write(JSON.stringify({ event: "step_update", step_update: { conversation_id: "conv-switch", step_index: 2, state: "DONE", step_type: "agent_response", text_delta: "Hello from Claude", usage: { input_tokens: 250, output_tokens: 40, total_tokens: 290 } } }) + "\\n");
@@ -1186,6 +1190,8 @@ if (count === 0) {
         }
         expect(turn1Usage).not.toBeNull();
         expect(turn1Usage?.contextWindowTokens).toBe(1_048_576);
+        expect(turn1Usage).not.toHaveProperty("cachedInputTokens");
+        expect(turn1Usage).not.toHaveProperty("cacheHitRatePercent");
 
         // Switch to Claude (200k window)
         const selectClaude = await session.execute({

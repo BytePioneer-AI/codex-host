@@ -117,12 +117,6 @@ export function findSourceBoundaryViolations({
     ) {
       violations.push(`${filePath}: import '${specifier}' bypasses a package's public exports`);
     }
-
-    // Not checked here: whether a bare '@codexhost/*' specifier is declared as a
-    // dependency of the importing package. Such an import is well-formed — it
-    // goes through the public exports — so it passes every rule above even when
-    // it points at a package higher in the layering. tsc resolves it through the
-    // Workspace, so nothing else catches it either.
   }
 
   return violations;

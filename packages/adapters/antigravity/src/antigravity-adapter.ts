@@ -390,7 +390,6 @@ function hostUsage(value: AntigravityUsage | undefined, modelId?: string): HostU
   const inputTokens = safeToken(value.input_tokens);
   const outputTokens = safeToken(value.output_tokens);
   const reasoningOutputTokens = safeToken(value.thinking_tokens);
-  const cachedInputTokens = safeToken(value.cache_read_tokens);
   const totalTokens = safeToken(value.total_tokens);
   const contextUsedTokens = safeToken(
     value.context_used_tokens ?? value.estimated_tokens_used ?? value.input_tokens,
@@ -404,15 +403,11 @@ function hostUsage(value: AntigravityUsage | undefined, modelId?: string): HostU
     ...(inputTokens !== undefined ? { inputTokens } : {}),
     ...(outputTokens !== undefined ? { outputTokens } : {}),
     ...(reasoningOutputTokens !== undefined ? { reasoningOutputTokens } : {}),
-    ...(cachedInputTokens !== undefined ? { cachedInputTokens } : {}),
     ...(totalTokens !== undefined ? { totalTokens } : {}),
     ...(contextUsedTokens !== undefined &&
     contextWindowTokens !== undefined &&
     contextWindowTokens > 0
       ? { contextUsedTokens, contextWindowTokens }
-      : {}),
-    ...(inputTokens !== undefined && cachedInputTokens !== undefined && inputTokens > 0
-      ? { cacheHitRatePercent: Math.min(100, (cachedInputTokens / inputTokens) * 100) }
       : {}),
   };
   return Object.keys(usage).length > 0 ? usage : null;

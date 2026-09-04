@@ -7,6 +7,7 @@ import {
 
 import type { RendererModelClient } from "./renderer-model-client.js";
 import {
+  SIDEBAR_THREAD_HOST_ID_ATTRIBUTE,
   SIDEBAR_THREAD_ROW_SELECTOR,
   threadIdFromSidebarRowElement,
 } from "./renderer-sidebar-agent-icons.js";
@@ -14,6 +15,73 @@ import {
 const RESPONSE_CONVERSATION_ATTRIBUTE = "data-response-annotation-conversation";
 const TURN_KEY_ATTRIBUTE = "data-content-search-turn-key";
 const OPEN_THREAD_TIMEOUT_MS = 5_000;
+
+function abortError(): Error {
+  return Object.assign(new Error("Thread opening was aborted"), { name: "AbortError" });
+}
+
+export function openRendererThread(
+  threadId: HostThreadId,
+  options: { hostId?: string; signal?: AbortSignal; timeoutMs?: number } = {},
+): Promise<void> {
+  const find = (): HTMLElement | null => {
+    for (const row of document.querySelectorAll<HTMLElement>(SIDEBAR_THREAD_ROW_SELECTOR)) {
+      if (
+        (options.hostId === undefined ||
+          row.getAttribute(SIDEBAR_THREAD_HOST_ID_ATTRIBUTE) === options.hostId) &&
+        threadIdFromSidebarRowElement(row) === threadId
+      ) {
+        return row;
+      }
+    }
+    return null;
+  };
+  if (options.signal?.aborted) return Promise.reject(abortError());
+  const current = find();
+  if (current) {
+    current.click();
+    return Promise.resolve();
+  }
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const cleanup = (): void => {
+      window.clearTimeout(timeout);
+      observer.disconnect();
+      options.signal?.removeEventListener("abort", onAbort);
+    };
+    const finish = (row: HTMLElement): void => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      row.click();
+      resolve();
+    };
+    const observer = new MutationObserver(() => {
+      const row = find();
+      if (row) finish(row);
+    });
+    const timeout = window.setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(new Error("Thread did not appear in the sidebar"));
+    }, options.timeoutMs ?? OPEN_THREAD_TIMEOUT_MS);
+    const onAbort = (): void => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(abortError());
+    };
+    options.signal?.addEventListener("abort", onAbort, { once: true });
+    observer.observe(document.documentElement, { childList: true, subtree: true });
+    if (options.signal?.aborted) {
+      onAbort();
+      return;
+    }
+    const row = find();
+    if (row) finish(row);
+  });
+}
 
 export interface RendererForkTarget {
   control: object;
@@ -150,35 +218,7 @@ class BrowserRendererForkDom implements RendererForkDom {
   }
 
   openThread(threadId: HostThreadId): Promise<void> {
-    const find = (): HTMLElement | null => {
-      for (const row of document.querySelectorAll<HTMLElement>(SIDEBAR_THREAD_ROW_SELECTOR)) {
-        if (threadIdFromSidebarRowElement(row) === threadId) return row;
-      }
-      return null;
-    };
-    const current = find();
-    if (current) {
-      current.click();
-      return Promise.resolve();
-    }
-    return new Promise((resolve, reject) => {
-      const observer = new MutationObserver(() => {
-        const row = find();
-        if (!row) return;
-        cleanup();
-        row.click();
-        resolve();
-      });
-      const timeout = window.setTimeout(() => {
-        cleanup();
-        reject(new Error("Forked Thread did not appear in the sidebar"));
-      }, OPEN_THREAD_TIMEOUT_MS);
-      const cleanup = (): void => {
-        window.clearTimeout(timeout);
-        observer.disconnect();
-      };
-      observer.observe(document.documentElement, { childList: true, subtree: true });
-    });
+    return openRendererThread(threadId);
   }
 }
 

@@ -416,7 +416,13 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
           ? { resume: this.sessionId }
           : { sessionId: this.sessionId }),
         ...(this.#model ? { model: this.#model } : {}),
-        thinking: thinking.enabled ? { type: "adaptive" } : { type: "disabled" },
+        // Adaptive Thinking is redacted by default: the API streams `thinking_delta`
+        // frames carrying only token estimates and empty text, so no Reasoning Item
+        // would ever start. Summarized display is the official channel for readable
+        // Thinking and is what Claude Code's own TUI renders.
+        thinking: thinking.enabled
+          ? { type: "adaptive", display: "summarized" }
+          : { type: "disabled" },
         ...(thinking.effort ? { effort: thinking.effort } : {}),
         pathToClaudeCodeExecutable: executable,
         settingSources: ["user"],

@@ -113,9 +113,11 @@ describe("delegation CLI", () => {
     ).resolves.toBe(0);
     const call = vi.mocked(fetchImpl).mock.calls[0];
     if (!call) throw new Error("Runtime fetch was not called");
-    expect(JSON.parse(String(call[1]?.body))).toMatchObject({
+    const body = JSON.parse(String(call[1]?.body));
+    expect(body).toMatchObject({
       parentThreadId: "parent-from-environment",
     });
+    expect(body).not.toHaveProperty("cwd");
   });
 
   it("sends follow-up messages and cancellation requests using deep links", async () => {

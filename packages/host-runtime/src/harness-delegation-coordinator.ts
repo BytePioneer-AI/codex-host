@@ -57,7 +57,7 @@ function terminal(status: DelegationThreadSnapshot["status"]): boolean {
 }
 
 function taskDigest(
-  input: Pick<DelegationStartInput, "task" | "cwd" | "model" | "thinkingOptionId">,
+  input: Pick<DelegationStartInput, "task" | "model" | "thinkingOptionId"> & { cwd: string },
 ): string {
   return createHash("sha256")
     .update(
@@ -82,7 +82,7 @@ function statusFromThread(thread: ExternalThread): StoredDelegationRecordV1["sta
 function validateStart(input: DelegationStartInput): void {
   if (!input.task?.trim())
     throw new DelegationControlError("INVALID_ARGUMENT", "Task must not be empty");
-  if (!input.cwd?.trim())
+  if (input.cwd !== undefined && !input.cwd.trim())
     throw new DelegationControlError("INVALID_ARGUMENT", "cwd must not be empty");
   if (input.requestId !== undefined && !input.requestId.trim()) {
     throw new DelegationControlError("INVALID_ARGUMENT", "Request ID must not be empty");
@@ -115,7 +115,7 @@ export class HarnessDelegationCoordinator {
   readonly #sendOfficial: (input: ThreadSendInput) => Promise<ThreadSendResult>;
   readonly #cancelOfficial: (input: ThreadCancelInput) => Promise<ThreadCancelResult>;
   readonly #startOfficial: (
-    input: DelegationStartInput & { parentThreadId: string },
+    input: DelegationStartInput & { parentThreadId: string; cwd: string },
   ) => Promise<DelegationStartResult>;
   readonly #listOfficial: (input: ThreadListInput) => Promise<DelegationThreadListResult>;
   readonly #activeOfficialParents: () => string[];
@@ -142,7 +142,7 @@ export class HarnessDelegationCoordinator {
     sendOfficial(input: ThreadSendInput): Promise<ThreadSendResult>;
     cancelOfficial(input: ThreadCancelInput): Promise<ThreadCancelResult>;
     startOfficial(
-      input: DelegationStartInput & { parentThreadId: string },
+      input: DelegationStartInput & { parentThreadId: string; cwd: string },
     ): Promise<DelegationStartResult>;
     listOfficial(input: ThreadListInput): Promise<DelegationThreadListResult>;
     activeOfficialParents(): string[];
@@ -192,7 +192,10 @@ export class HarnessDelegationCoordinator {
   async start(input: DelegationStartInput): Promise<DelegationStartResult> {
     validateStart(input);
     const parentThreadId = await this.#resolveParent(input.parentThreadId);
-    if (input.harnessId === "codex") return this.#startOfficial({ ...input, parentThreadId });
+    const parent = await this.#parentMetadata(parentThreadId);
+    const cwd = path.resolve(input.cwd ?? parent.cwd ?? process.cwd());
+    const startInput = { ...input, parentThreadId, cwd };
+    if (input.harnessId === "codex") return this.#startOfficial(startInput);
     if (!EXTERNAL_HARNESS_IDS.includes(input.harnessId as ExternalHarnessId)) {
       throw new DelegationControlError(
         "HARNESS_NOT_FOUND",
@@ -203,7 +206,7 @@ export class HarnessDelegationCoordinator {
       );
     }
     const targetHarnessId = input.harnessId as ExternalHarnessId;
-    const digest = taskDigest(input);
+    const digest = taskDigest(startInput);
     const duplicate = input.requestId
       ? await this.#repository.findDelegationByRequest(input.requestId)
       : await this.#repository.findRecentDelegation({
@@ -237,11 +240,10 @@ export class HarnessDelegationCoordinator {
     if (input.model || input.thinkingOptionId) {
       const inspected = await this.inspect({
         harnessId: targetHarnessId,
-        cwd: input.cwd,
+        cwd: startInput.cwd,
       });
       this.#validateConfiguration(inspected.inspection, input.model, input.thinkingOptionId);
     }
-    const parent = await this.#parentMetadata(parentThreadId);
     const delegationId = hostThreadIdSchema.parse(randomUUID());
     const childThreadId = hostThreadIdSchema.parse(randomUUID());
     const turnId = hostTurnIdSchema.parse(randomUUID());
@@ -251,7 +253,7 @@ export class HarnessDelegationCoordinator {
         hostThreadId: childThreadId,
         createRequestId,
         harnessId: harnessIdSchema.parse(targetHarnessId),
-        cwd: path.resolve(input.cwd),
+        cwd: startInput.cwd,
         title: input.task.trim().slice(0, 120),
         transportModelId:
           input.model || input.thinkingOptionId
@@ -595,9 +597,12 @@ export class HarnessDelegationCoordinator {
     }
   }
 
-  async #parentMetadata(parentThreadId: string): Promise<{ harnessId: RoutedHarnessId }> {
+  async #parentMetadata(
+    parentThreadId: string,
+  ): Promise<{ harnessId: RoutedHarnessId; cwd?: string }> {
     const record = await this.#repository.find(parentThreadId);
-    return { harnessId: record ? (record.harnessId as RoutedHarnessId) : "codex" };
+    if (!record) return { harnessId: "codex" };
+    return { harnessId: record.harnessId as RoutedHarnessId, cwd: record.cwd };
   }
 
   async #existingResult(delegation: StoredDelegationRecordV1): Promise<DelegationStartResult> {

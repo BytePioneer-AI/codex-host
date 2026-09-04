@@ -79,7 +79,7 @@ export const DELEGATION_HELP = `usage:
 
 Thread identifiers accept a bare ID or codex://threads/<id>. Output is JSON by default.
 harness inspect returns the target Model catalog, default Model, Thinking options, and configuration capabilities without creating a Thread. Use opaque IDs exactly as returned.
-delegate start requires --harness and --task, creates and submits the child Thread, then returns immediately. --cwd selects the child workspace and defaults to the caller process cwd. --model and --thinking select values returned by harness inspect. Omit either option to preserve that target's current default behavior. --parent-thread overrides caller inference. Reuse --request-id for idempotent retries; without it, identical recent parent/target/task/configuration requests are deduplicated briefly.
+delegate start requires --harness and --task, creates and submits the child Thread, then returns immediately. --cwd selects the child workspace and defaults to the resolved parent Thread workspace, with the caller process cwd as a fallback. --model and --thinking select values returned by harness inspect. Omit either option to preserve that target's current default behavior. --parent-thread overrides caller inference. Reuse --request-id for idempotent retries; without it, identical recent parent/target/task/configuration requests are deduplicated briefly.
 Successful start fields: delegationId, threadId, turnId, harnessId, deepLink, status, next.read, next.wait.
 thread send starts a new Turn in an idle writable Thread and returns immediately. It fails with THREAD_BUSY instead of queueing or starting a concurrent Turn.
 thread cancel requests cancellation of the current Turn while preserving the Thread. An idle Thread returns cancelled=false.
@@ -231,7 +231,7 @@ export async function runDelegationCli(input: {
           body: {
             harnessId,
             task,
-            cwd: value(parsed, "--cwd") ?? process.cwd(),
+            ...(value(parsed, "--cwd") ? { cwd: value(parsed, "--cwd") } : {}),
             ...(value(parsed, "--model") ? { model: { id: value(parsed, "--model") } } : {}),
             ...(value(parsed, "--thinking")
               ? { thinkingOptionId: value(parsed, "--thinking") }

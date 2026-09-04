@@ -12,7 +12,7 @@ codexhost 当前只会把自身已经写入 Mapping Store 的 DeepSeek Harness N
 - 增加两个 DSH Modern-only 固定 Host 方法：列出候选，以及只按 `nativeSessionId` 导入。Host 在写入前重新列举并验证，Renderer 不能提交 cwd、标题或状态作为事实。
 - 导入只通过 Mapping Store 的 provisional → ready 事务持久化 Host Thread 与既有 Native Session 的元信息映射，初始 `turnMappings=[]`；不打开 Agent、不读取或复制 Transcript、不调用任何 DSH mutation API。
 - ready mapping 立即进入标准 Thread 列表。第一次真正打开 Thread 时，复用现有 Modern resume、journal Snapshot 和 `alignSnapshot()` 懒恢复历史并补齐 Turn mappings。
-- 在设置页新增紧凑、可访问、本地化的“会话导入 / Session Import”Tab，提供刷新、状态说明和每行一个“导入并打开”动作；不增加第二个 Dialog、批量操作或通用 Session 管理页。
+- 在设置页新增紧凑、可访问、本地化的“会话导入 / Session Import”Tab：单行 Harness 选择器仅启用 DeepSeek，提供刷新、状态说明和每行一个“导入并打开”动作；自动打开失败时保留原始 cwd、复制路径和只重试导航的恢复状态，不增加第二个 Dialog、批量操作或通用 Session 管理页。
 
 ## Capabilities
 
@@ -32,6 +32,7 @@ codexhost 当前只会把自身已经写入 Mapping Store 的 DeepSeek Harness N
 - `packages/adapters/deepseek-harness`: Modern `session/list` parser/reader 和公共 Facade 的 Modern-only 转发。
 - `packages/shared-contracts`: DSH Modern 候选 list/import 的固定 Params/Result Schema。
 - `packages/host-runtime`: 候选排除、新鲜复查、mapping 事务、固定方法和 `thread/started` 通知。
+- `packages/mapping-store`: 将依赖全局 Native Session/Turn 唯一索引的写入放进同一 Store 队列，封闭跨 Host Thread 的提交竞争；不改变 Schema。
 - `packages/renderer-extension`: method-specific client、设置页 Tab、本地 Host 路由及复用的 Host-qualified Thread opener。
 - OpenSpec、聚焦单元/集成测试和 exact rc.1 compiled artifact Gate。
 - 不修改 DSH 源码、通用 `HarnessAdapter`、Mapping Store V1 Schema、其他 Harness、Rust/native 平台层、依赖或 lockfile。

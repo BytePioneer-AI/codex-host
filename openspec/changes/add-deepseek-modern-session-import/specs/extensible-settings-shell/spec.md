@@ -2,7 +2,7 @@
 
 ### Requirement: Settings exposes a local DSH Modern Session Import page
 
-The production settings registry SHALL expose one localized Session Import page between Connections and Updates. The page SHALL use only fixed DSH Modern list/import client methods routed to the local Host, regardless of the active Composer Host. It SHALL report unavailable when the local request bridge is absent, DeepSeek is unavailable, or the selected DeepSeek generation is not exact `0.1.2-rc.1` Modern. It MUST NOT expose Legacy or another Harness import, Remote Host import, a generic request bridge, filesystem access, credentials or a second modal.
+The production settings registry SHALL expose one localized Session Import page between Connections and Updates. The page SHALL use only fixed DSH Modern list/import client methods routed to the local Host, regardless of the active Composer Host. It SHALL report unavailable when the local request bridge is absent, DeepSeek is unavailable, or the selected DeepSeek generation is not exact `0.1.2-rc.1` Modern. It MUST NOT enable Legacy or another Harness import, Remote Host import, a generic request bridge, filesystem access, credentials or a second modal.
 
 #### Scenario: Local Modern import is available
 
@@ -24,7 +24,13 @@ The production settings registry SHALL expose one localized Session Import page 
 
 ### Requirement: Session Import presentation is compact and accessible
 
-The page SHALL provide a heading, one short description, Refresh, and a compact candidate list. Each row SHALL present a localized title fallback, update time, cwd, short Native Session identity, momentary running state and at most one primary “Import and open” action. Running rows SHALL remain visible but disabled. Blank, Subagent and already-mapped Sessions SHALL not be displayed.
+The page SHALL provide a heading, one short description, one single-line Harness selector, Refresh, and a compact candidate list. The selector SHALL select DeepSeek Harness and keep every other known external Harness option disabled until that Harness has an implemented import capability. It MUST NOT route a list or import request to a disabled Harness. Each candidate row SHALL present a localized title fallback, update time, cwd, short Native Session identity, momentary running state and at most one primary “Import and open” action. Running rows SHALL remain visible but disabled. Blank, Subagent and already-mapped Sessions SHALL not be displayed.
+
+#### Scenario: Only DeepSeek import is implemented
+
+- **WHEN** the Session Import page mounts
+- **THEN** its one-line Harness selector SHALL select DeepSeek Harness as the only enabled option
+- **AND** Pi, Claude Code, OpenCode, Grok, Oh My Pi and Antigravity CLI SHALL remain visible but disabled and issue no request
 
 #### Scenario: List is loading, unavailable, empty or failed
 
@@ -69,5 +75,5 @@ The page SHALL use its existing page scope and latest-result generation for list
 #### Scenario: Sidebar navigation times out after commit
 
 - **WHEN** Host committed and returned the mapping but its matching local sidebar row is not found within the bounded wait
-- **THEN** Renderer SHALL clean up its observer/timer and leave the imported Thread available to the next standard sidebar/list refresh
-- **AND** it SHALL not retry import, delete the mapping or click a row belonging to another Host
+- **THEN** Renderer SHALL clean up its observer/timer and show a focused imported recovery state containing the selected candidate cwd, Copy project path and Retry open actions
+- **AND** Retry open SHALL invoke only the same Host-qualified sidebar opener; it SHALL not retry import, delete the mapping or click a row belonging to another Host

@@ -50,6 +50,7 @@ describe("Renderer settings localization", () => {
     expect(chinese.updateDownloadFromReleases).toBe("前往 GitHub Releases 下载");
     expect(chinese.updateDownloadWindowsInstaller).toBe("下载 Windows 安装包");
     expect(chinese.pageLabels.about).toBe("关于");
+    expect(chinese.pageLabels["session-import"]).toBe("会话导入");
     expect(chinese.aboutTagline).toBe("在 Codex Desktop 中运行 Pi 和其他 Harness");
     expect(chinese.aboutParagraphs).toHaveLength(3);
     expect(chinese.aboutStarCallout).toContain("请给我们一个 Star");
@@ -64,6 +65,6 @@ describe("Renderer settings localization", () => {
       createDefaultRendererSettingsPages(rendererSettingsMessages("zh-CN")).map(
         ({ label }) => label,
       ),
-    ).toEqual(["连接", "更新", "关于"]);
+    ).toEqual(["连接", "会话导入", "更新", "关于"]);
   });
 });

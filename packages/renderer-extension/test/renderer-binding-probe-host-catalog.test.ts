@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type * as RendererComposerDom from "../src/renderer-composer-dom.js";
 import type { RendererConnectionDiagnostics } from "../src/settings/connections-page.js";
+import type { RendererDeepSeekSessionImportClient } from "../src/settings/deepseek-session-import-page.js";
 import type * as VersionedRendererAdapter from "../src/versioned-renderer-adapter.js";
 
 const testState = vi.hoisted(() => ({
@@ -11,6 +12,7 @@ const testState = vi.hoisted(() => ({
   sendButton: null as unknown as HTMLButtonElement,
   renderedModelViews: [] as Array<{ status: string; error?: string }>,
   getConnectionDiagnostics: null as null | (() => RendererConnectionDiagnostics | null),
+  getSessionImportClient: null as null | (() => RendererDeepSeekSessionImportClient | null),
   documentListeners: new Map<string, EventListener>(),
   modelTarget: ["conversation", "thread-a"] as readonly unknown[],
 }));
@@ -78,9 +80,13 @@ vi.mock("../src/renderer-sidebar-agent-icons.js", () => ({
 vi.mock("../src/renderer-settings-lifecycle.js", () => ({
   installRendererSettingsLifecycle: (
     _window: unknown,
-    options: { getConnectionDiagnostics(): RendererConnectionDiagnostics | null },
+    options: {
+      getConnectionDiagnostics(): RendererConnectionDiagnostics | null;
+      getSessionImportClient(): RendererDeepSeekSessionImportClient | null;
+    },
   ) => {
     testState.getConnectionDiagnostics = options.getConnectionDiagnostics;
+    testState.getSessionImportClient = options.getSessionImportClient;
     return {
       locale: "en",
       refresh: vi.fn(),
@@ -146,6 +152,7 @@ function installFakeBrowser(): void {
   testState.sendButton = sendButton;
   testState.renderedModelViews = [];
   testState.getConnectionDiagnostics = null;
+  testState.getSessionImportClient = null;
   testState.documentListeners.clear();
   testState.modelTarget = ["conversation", "thread-a"];
   const window_ = {
@@ -202,6 +209,53 @@ afterEach(() => {
 });
 
 describe("Renderer binding Host-scoped Claude catalogs", () => {
+  it("routes Session import to local while the current Composer Host is remote", async () => {
+    installFakeBrowser();
+    const local = {
+      inspectHarness: vi.fn(async () => readyInspection()),
+      listDeepSeekModernSessions: vi.fn(async () => ({ candidates: [] })),
+      importDeepSeekModernSession: vi.fn(async () => ({ threadId: "local-thread" })),
+    };
+    const remote = {
+      inspectHarness: vi.fn(async () => readyInspection()),
+      listDeepSeekModernSessions: vi.fn(),
+      importDeepSeekModernSession: vi.fn(),
+    };
+    const modelControl = {
+      ...remote,
+      currentHostId: () => "remote-1",
+      clientForHost: vi.fn((hostId: string) => (hostId === "local" ? local : remote)),
+      inspectThread: vi.fn(),
+      inspectThreadCommands: vi.fn(async () => ({ commands: [] })),
+      inspectThreadUsage: vi.fn(),
+      subscribeThreadUsage: () => () => undefined,
+    };
+    const { installRendererBindingProbe } = await import("../src/renderer-binding-probe.js");
+    const probe = installRendererBindingProbe({
+      enabledAgents: ["codex", "deepseek-harness"],
+      defaultAgent: "codex",
+    });
+    probe.setAdapter(
+      { state: "ready", reason: "ready", modelUpdates: 0, hook: "request-bridge" },
+      undefined,
+      undefined,
+      modelControl as never,
+    );
+
+    const client = testState.getSessionImportClient?.();
+    if (!client) throw new Error("Local Session import client was not installed");
+    await client.listDeepSeekModernSessions({});
+    await client.importDeepSeekModernSession({ nativeSessionId: "native-session" });
+
+    expect(modelControl.clientForHost).toHaveBeenCalledWith("local");
+    expect(local.listDeepSeekModernSessions).toHaveBeenCalledOnce();
+    expect(local.importDeepSeekModernSession).toHaveBeenCalledWith({
+      nativeSessionId: "native-session",
+    });
+    expect(remote.listDeepSeekModernSessions).not.toHaveBeenCalled();
+    expect(remote.importDeepSeekModernSession).not.toHaveBeenCalled();
+  });
+
   it("invalidates and refreshes a stale managed Web capability after open fails", async () => {
     installFakeBrowser();
     let dshAvailable = true;

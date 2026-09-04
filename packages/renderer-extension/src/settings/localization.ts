@@ -29,6 +29,28 @@ export interface RendererSettingsMessages {
   readonly inDevelopment: string;
   readonly notAvailable: string;
   readonly runtimeCapabilityNotInstalled: string;
+  readonly sessionImportHarness: string;
+  readonly sessionImportDescription: string;
+  readonly sessionImportRefresh: string;
+  readonly sessionImportRefreshing: string;
+  readonly sessionImportUnavailable: string;
+  readonly sessionImportEmpty: string;
+  readonly sessionImportLoadFailed: string;
+  readonly sessionImportFailed: string;
+  readonly sessionImportUntitled: string;
+  readonly sessionImportUpdatedAt: string;
+  readonly sessionImportSessionId: string;
+  readonly sessionImportRunning: string;
+  readonly sessionImportRunningHint: string;
+  readonly sessionImportAction: string;
+  readonly sessionImportImporting: string;
+  readonly sessionImportImported: string;
+  readonly sessionImportOpenFailed: string;
+  readonly sessionImportCopyProjectPath: string;
+  readonly sessionImportPathCopied: string;
+  readonly sessionImportPathCopyFailed: string;
+  readonly sessionImportRetryOpen: string;
+  readonly sessionImportRetrying: string;
   readonly connectionsDescription: string;
   readonly connectionAdapter: string;
   readonly connectionHosts: string;
@@ -137,6 +159,31 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   inDevelopment: "In development",
   notAvailable: "Not available",
   runtimeCapabilityNotInstalled: "This runtime capability is not installed yet.",
+  sessionImportHarness: "Harness",
+  sessionImportDescription:
+    "Sessions keep their original project path. If a folder is not in the Codex sidebar, add it as a project first. Original history remains managed by the Harness.",
+  sessionImportRefresh: "Refresh",
+  sessionImportRefreshing: "Loading local sessions...",
+  sessionImportUnavailable:
+    "Session import requires a local, codexhost-managed DeepSeek Harness 0.1.2-rc.1 Modern runtime.",
+  sessionImportEmpty: "No local DeepSeek Harness sessions are available to import.",
+  sessionImportLoadFailed: "Local sessions could not be loaded.",
+  sessionImportFailed: "The session could not be imported.",
+  sessionImportUntitled: "Untitled session",
+  sessionImportUpdatedAt: "Updated",
+  sessionImportSessionId: "Session ID",
+  sessionImportRunning: "Running",
+  sessionImportRunningHint: "Stop this session in DSH, then refresh.",
+  sessionImportAction: "Import and open",
+  sessionImportImporting: "Importing...",
+  sessionImportImported: "Session imported",
+  sessionImportOpenFailed:
+    "The Codex sidebar has not shown it yet. Make sure the folder below is added as a project, then try opening it again.",
+  sessionImportCopyProjectPath: "Copy project path",
+  sessionImportPathCopied: "Copied",
+  sessionImportPathCopyFailed: "Copy failed",
+  sessionImportRetryOpen: "Try opening again",
+  sessionImportRetrying: "Opening...",
   connectionsDescription:
     "View runtime status by Host. Select an item to inspect details or complete its setup.",
   connectionAdapter: "Renderer adapter",
@@ -244,6 +291,7 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   aboutRepository: "Open-source repository",
   pageLabels: Object.freeze({
     connections: "Connections",
+    "session-import": "Session Import",
     updates: "Updates",
     about: "About",
   }),
@@ -261,6 +309,30 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   inDevelopment: "开发中",
   notAvailable: "暂不可用",
   runtimeCapabilityNotInstalled: "运行时尚未安装该项能力，因此暂不可用。",
+  sessionImportHarness: "Harness",
+  sessionImportDescription:
+    "会话将保留原始项目路径；若该文件夹尚未出现在 Codex 侧栏，请先将其添加为项目。原始历史仍由 Harness 管理。",
+  sessionImportRefresh: "刷新",
+  sessionImportRefreshing: "正在读取本地会话……",
+  sessionImportUnavailable:
+    "会话导入仅支持本地、由 codexhost 管理的 DeepSeek Harness 0.1.2-rc.1 Modern 运行时。",
+  sessionImportEmpty: "没有可导入的本地 DeepSeek Harness 会话。",
+  sessionImportLoadFailed: "无法读取本地会话。",
+  sessionImportFailed: "无法导入该会话。",
+  sessionImportUntitled: "未命名会话",
+  sessionImportUpdatedAt: "更新时间",
+  sessionImportSessionId: "会话 ID",
+  sessionImportRunning: "运行中",
+  sessionImportRunningHint: "请先在 DSH 中停止该会话，然后刷新。",
+  sessionImportAction: "导入并打开",
+  sessionImportImporting: "正在导入……",
+  sessionImportImported: "会话已导入",
+  sessionImportOpenFailed: "Codex 侧栏尚未显示该会话。请确认以下文件夹已添加为项目，然后重试打开。",
+  sessionImportCopyProjectPath: "复制项目路径",
+  sessionImportPathCopied: "已复制",
+  sessionImportPathCopyFailed: "复制失败",
+  sessionImportRetryOpen: "重试打开",
+  sessionImportRetrying: "正在打开……",
   connectionsDescription: "按 Host 查看运行时状态。选择一项，在右侧检查详情或完成配置。",
   connectionAdapter: "Renderer 适配器",
   connectionHosts: "Host 列表",
@@ -365,6 +437,7 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   aboutRepository: "开源仓库",
   pageLabels: Object.freeze({
     connections: "连接",
+    "session-import": "会话导入",
     updates: "更新",
     about: "关于",
   }),

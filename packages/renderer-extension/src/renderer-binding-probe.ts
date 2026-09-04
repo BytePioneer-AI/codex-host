@@ -74,6 +74,7 @@ import {
 import { installRendererSidebarAgentIcons } from "./renderer-sidebar-agent-icons.js";
 import { routeRendererHarnessCommandSelection } from "./renderer-harness-command-claim.js";
 import { installRendererSettingsLifecycle } from "./renderer-settings-lifecycle.js";
+import { openRendererThread } from "./renderer-fork-control.js";
 import type {
   RendererConnectionDiagnostics,
   RendererConnectionSnapshot,
@@ -627,6 +628,18 @@ export function installRendererBindingProbe(
   const settingsLifecycle = installRendererSettingsLifecycle(window, {
     getUpdateClient: () => modelControl,
     getConnectionDiagnostics: () => connectionDiagnostics,
+    getSessionImportClient: () => {
+      const client = modelClientForHost("local");
+      const list = client?.listDeepSeekModernSessions;
+      const importSession = client?.importDeepSeekModernSession;
+      if (!list || !importSession) return null;
+      return {
+        listDeepSeekModernSessions: (input) => list(input),
+        importDeepSeekModernSession: (input) => importSession(input),
+      };
+    },
+    openImportedThread: (threadId, signal) =>
+      openRendererThread(threadId, { hostId: "local", signal }),
     onLocaleChange() {
       for (const mounted of mountedByComposer.values()) renderMounted(mounted);
     },

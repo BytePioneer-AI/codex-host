@@ -4,11 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 
-import type {
-  ForkSessionInput,
-  HarnessResult,
-  HarnessSession,
-} from "@codexhost/harness-adapter";
+import type { ForkSessionInput, HarnessResult, HarnessSession } from "@codexhost/harness-adapter";
 import {
   nativeCheckpointRefSchema,
   nativeSessionRefSchema,
@@ -93,7 +89,12 @@ export async function cloneNativeConversationDb(
 
   // Register in conversation_summaries.db so `agy` trajectory lookup succeeds
   try {
-    const summariesDbPath = path.join(homedir, ".gemini", "antigravity-cli", "conversation_summaries.db");
+    const summariesDbPath = path.join(
+      homedir,
+      ".gemini",
+      "antigravity-cli",
+      "conversation_summaries.db",
+    );
     const sumDb = new DatabaseSync(summariesDbPath);
     try {
       const cur = sumDb.prepare("SELECT * FROM conversation_summaries WHERE conversation_id = ?");
@@ -104,8 +105,7 @@ export async function cloneNativeConversationDb(
           const countDb = new DatabaseSync(targetDb);
           try {
             const countRow = countDb.prepare("SELECT count(*) as c FROM steps").get() as
-              | { c: number }
-              | undefined;
+              { c: number } | undefined;
             if (countRow) remainingStepCount = countRow.c;
           } finally {
             countDb.close();
@@ -161,13 +161,15 @@ export interface ForkAntigravitySessionOptions {
   harnessId: HarnessId;
   input: ForkSessionInput;
   adapterEnvironment: NodeJS.ProcessEnv;
-  sourceSession?: {
-    history: AntigravityHistory;
-    model?: HarnessModelRef | undefined;
-    thinkingOptionId?: HarnessThinkingOptionId | undefined;
-    permissionMode: AntigravityPermissionMode;
-    isActive: boolean;
-  } | undefined;
+  sourceSession?:
+    | {
+        history: AntigravityHistory;
+        model?: HarnessModelRef | undefined;
+        thinkingOptionId?: HarnessThinkingOptionId | undefined;
+        permissionMode: AntigravityPermissionMode;
+        isActive: boolean;
+      }
+    | undefined;
   createSession: (params: {
     history: AntigravityHistory;
     nativeRef: NativeSessionRef;

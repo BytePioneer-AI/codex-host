@@ -136,16 +136,37 @@ describe("Empirical Adversarial Challenges: Fork & Rollback", () => {
     it("forks at first turn (1 of 3), middle turn (2 of 3), and last turn (3 of 3)", async () => {
       const turns = [
         [
-          JSON.stringify({ event: "init", conversation_id: "p", init: { permission_mode: "configured" } }),
-          JSON.stringify({ event: "result", result: { conversation_id: "p", status: "SUCCESS", num_turns: 1, response: "Answer 1" } }),
+          JSON.stringify({
+            event: "init",
+            conversation_id: "p",
+            init: { permission_mode: "configured" },
+          }),
+          JSON.stringify({
+            event: "result",
+            result: { conversation_id: "p", status: "SUCCESS", num_turns: 1, response: "Answer 1" },
+          }),
         ],
         [
-          JSON.stringify({ event: "init", conversation_id: "p", init: { permission_mode: "configured" } }),
-          JSON.stringify({ event: "result", result: { conversation_id: "p", status: "SUCCESS", num_turns: 2, response: "Answer 2" } }),
+          JSON.stringify({
+            event: "init",
+            conversation_id: "p",
+            init: { permission_mode: "configured" },
+          }),
+          JSON.stringify({
+            event: "result",
+            result: { conversation_id: "p", status: "SUCCESS", num_turns: 2, response: "Answer 2" },
+          }),
         ],
         [
-          JSON.stringify({ event: "init", conversation_id: "p", init: { permission_mode: "configured" } }),
-          JSON.stringify({ event: "result", result: { conversation_id: "p", status: "SUCCESS", num_turns: 3, response: "Answer 3" } }),
+          JSON.stringify({
+            event: "init",
+            conversation_id: "p",
+            init: { permission_mode: "configured" },
+          }),
+          JSON.stringify({
+            event: "result",
+            result: { conversation_id: "p", status: "SUCCESS", num_turns: 3, response: "Answer 3" },
+          }),
         ],
       ];
 
@@ -211,7 +232,9 @@ describe("Empirical Adversarial Challenges: Fork & Rollback", () => {
           if (snap1.ok) {
             expect(snap1.value.turns).toHaveLength(1);
             expect(snap1.value.turns[0]?.input).toEqual([{ type: "text", text: "prompt 1" }]);
-            expect(snap1.value.turns[0]?.checkpoint?.nativeSessionId).toBe(fork1.value.initialState.nativeRef?.nativeSessionId);
+            expect(snap1.value.turns[0]?.checkpoint?.nativeSessionId).toBe(
+              fork1.value.initialState.nativeRef?.nativeSessionId,
+            );
           }
           await fork1.value.close();
         }
@@ -232,8 +255,12 @@ describe("Empirical Adversarial Challenges: Fork & Rollback", () => {
             expect(snap2.value.turns).toHaveLength(2);
             expect(snap2.value.turns[0]?.input).toEqual([{ type: "text", text: "prompt 1" }]);
             expect(snap2.value.turns[1]?.input).toEqual([{ type: "text", text: "prompt 2" }]);
-            expect(snap2.value.turns[0]?.checkpoint?.nativeSessionId).toBe(fork2.value.initialState.nativeRef?.nativeSessionId);
-            expect(snap2.value.turns[1]?.checkpoint?.nativeSessionId).toBe(fork2.value.initialState.nativeRef?.nativeSessionId);
+            expect(snap2.value.turns[0]?.checkpoint?.nativeSessionId).toBe(
+              fork2.value.initialState.nativeRef?.nativeSessionId,
+            );
+            expect(snap2.value.turns[1]?.checkpoint?.nativeSessionId).toBe(
+              fork2.value.initialState.nativeRef?.nativeSessionId,
+            );
           }
           await fork2.value.close();
         }
@@ -294,10 +321,23 @@ describe("Empirical Adversarial Challenges: Fork & Rollback", () => {
         // Set up on disk
         const dataDir = await mkdtemp(path.join(os.tmpdir(), "codexhost-agy-adv-cpnotfound-"));
         const env = { CODEXHOST_DATA_DIR: dataDir, CODEXHOST_THREAD_ID: "th-exist" };
-        const history = await AntigravityHistory.open({ environment: env, nativeSessionId: "conv-exist" });
+        const history = await AntigravityHistory.open({
+          environment: env,
+          nativeSessionId: "conv-exist",
+        });
         history.append({
-          nativeTurnRef: { harnessId: antigravityHarnessId, nativeSessionId: "conv-exist", nativeTurnKey: "turn:1", formatVersion: 1 },
-          checkpoint: { harnessId: antigravityHarnessId, nativeSessionId: "conv-exist", checkpointId: "turn:1", formatVersion: 1 },
+          nativeTurnRef: {
+            harnessId: antigravityHarnessId,
+            nativeSessionId: "conv-exist",
+            nativeTurnKey: "turn:1",
+            formatVersion: 1,
+          },
+          checkpoint: {
+            harnessId: antigravityHarnessId,
+            nativeSessionId: "conv-exist",
+            checkpointId: "turn:1",
+            formatVersion: 1,
+          },
           turnInput: [{ type: "text", text: "hi" }],
           items: [],
           outcome: { status: "succeeded" },
@@ -362,18 +402,44 @@ describe("Empirical Adversarial Challenges: Fork & Rollback", () => {
       const turns = [
         // Parent Turn 1
         [
-          JSON.stringify({ event: "init", conversation_id: "p", init: { permission_mode: "configured" } }),
-          JSON.stringify({ event: "result", result: { conversation_id: "p", status: "SUCCESS", num_turns: 1, response: "P1 ans" } }),
+          JSON.stringify({
+            event: "init",
+            conversation_id: "p",
+            init: { permission_mode: "configured" },
+          }),
+          JSON.stringify({
+            event: "result",
+            result: { conversation_id: "p", status: "SUCCESS", num_turns: 1, response: "P1 ans" },
+          }),
         ],
         // Parent Turn 2
         [
-          JSON.stringify({ event: "init", conversation_id: "p", init: { permission_mode: "configured" } }),
-          JSON.stringify({ event: "result", result: { conversation_id: "p", status: "SUCCESS", num_turns: 2, response: "P2 ans" } }),
+          JSON.stringify({
+            event: "init",
+            conversation_id: "p",
+            init: { permission_mode: "configured" },
+          }),
+          JSON.stringify({
+            event: "result",
+            result: { conversation_id: "p", status: "SUCCESS", num_turns: 2, response: "P2 ans" },
+          }),
         ],
         // Forked Turn (executed on child)
         [
-          JSON.stringify({ event: "init", conversation_id: "c", init: { permission_mode: "configured" } }),
-          JSON.stringify({ event: "result", result: { conversation_id: "c", status: "SUCCESS", num_turns: 2, response: "Child branched turn" } }),
+          JSON.stringify({
+            event: "init",
+            conversation_id: "c",
+            init: { permission_mode: "configured" },
+          }),
+          JSON.stringify({
+            event: "result",
+            result: {
+              conversation_id: "c",
+              status: "SUCCESS",
+              num_turns: 2,
+              response: "Child branched turn",
+            },
+          }),
         ],
       ];
 
@@ -451,14 +517,20 @@ describe("Empirical Adversarial Challenges: Fork & Rollback", () => {
         expect(childSnap.ok).toBe(true);
         if (childSnap.ok) {
           expect(childSnap.value.turns).toHaveLength(2);
-          expect(childSnap.value.turns[0]?.input).toEqual([{ type: "text", text: "parent turn 1" }]);
-          expect(childSnap.value.turns[1]?.input).toEqual([{ type: "text", text: "branch divergent turn" }]);
+          expect(childSnap.value.turns[0]?.input).toEqual([
+            { type: "text", text: "parent turn 1" },
+          ]);
+          expect(childSnap.value.turns[1]?.input).toEqual([
+            { type: "text", text: "branch divergent turn" },
+          ]);
         }
 
         await forked.history.flush();
         // Verify child file on disk has 2 turns
         const childFile = path.join(dataDir, "antigravity-history", `${childThreadId}.json`);
-        const childFileContent = JSON.parse(await readFile(childFile, "utf8")) as { turns: unknown[] };
+        const childFileContent = JSON.parse(await readFile(childFile, "utf8")) as {
+          turns: unknown[];
+        };
         expect(childFileContent.turns).toHaveLength(2);
 
         // VERIFY PARENT SESSION IS 100% UNTOUCHED
@@ -466,8 +538,12 @@ describe("Empirical Adversarial Challenges: Fork & Rollback", () => {
         expect(parentSnapAfter.ok).toBe(true);
         if (parentSnapAfter.ok) {
           expect(parentSnapAfter.value.turns).toHaveLength(2);
-          expect(parentSnapAfter.value.turns[0]?.input).toEqual([{ type: "text", text: "parent turn 1" }]);
-          expect(parentSnapAfter.value.turns[1]?.input).toEqual([{ type: "text", text: "parent turn 2" }]);
+          expect(parentSnapAfter.value.turns[0]?.input).toEqual([
+            { type: "text", text: "parent turn 1" },
+          ]);
+          expect(parentSnapAfter.value.turns[1]?.input).toEqual([
+            { type: "text", text: "parent turn 2" },
+          ]);
         }
 
         const parentFileContentAfter = await readFile(parentFile, "utf8");
@@ -525,12 +601,36 @@ describe("Empirical Adversarial Challenges: Fork & Rollback", () => {
     it("rolls back 1-turn session to 0 turns and allows executing a new turn on rolled-back session", async () => {
       const turns = [
         [
-          JSON.stringify({ event: "init", conversation_id: "init-1", init: { permission_mode: "configured" } }),
-          JSON.stringify({ event: "result", result: { conversation_id: "init-1", status: "SUCCESS", num_turns: 1, response: "Old turn 1" } }),
+          JSON.stringify({
+            event: "init",
+            conversation_id: "init-1",
+            init: { permission_mode: "configured" },
+          }),
+          JSON.stringify({
+            event: "result",
+            result: {
+              conversation_id: "init-1",
+              status: "SUCCESS",
+              num_turns: 1,
+              response: "Old turn 1",
+            },
+          }),
         ],
         [
-          JSON.stringify({ event: "init", conversation_id: "init-2", init: { permission_mode: "configured" } }),
-          JSON.stringify({ event: "result", result: { conversation_id: "init-2", status: "SUCCESS", num_turns: 1, response: "New turn 1" } }),
+          JSON.stringify({
+            event: "init",
+            conversation_id: "init-2",
+            init: { permission_mode: "configured" },
+          }),
+          JSON.stringify({
+            event: "result",
+            result: {
+              conversation_id: "init-2",
+              status: "SUCCESS",
+              num_turns: 1,
+              response: "New turn 1",
+            },
+          }),
         ],
       ];
 
@@ -600,7 +700,9 @@ describe("Empirical Adversarial Challenges: Fork & Rollback", () => {
         expect(snapAfterExec.ok).toBe(true);
         if (snapAfterExec.ok) {
           expect(snapAfterExec.value.turns).toHaveLength(1);
-          expect(snapAfterExec.value.turns[0]?.input).toEqual([{ type: "text", text: "replacement first turn" }]);
+          expect(snapAfterExec.value.turns[0]?.input).toEqual([
+            { type: "text", text: "replacement first turn" },
+          ]);
         }
 
         await rolledBackSession.close();
@@ -617,16 +719,37 @@ describe("Empirical Adversarial Challenges: Fork & Rollback", () => {
     it("handles consecutive rollbacks: 3 -> 2 -> 1 -> 0 -> failure", async () => {
       const turns = [
         [
-          JSON.stringify({ event: "init", conversation_id: "c", init: { permission_mode: "configured" } }),
-          JSON.stringify({ event: "result", result: { conversation_id: "c", status: "SUCCESS", num_turns: 1, response: "R1" } }),
+          JSON.stringify({
+            event: "init",
+            conversation_id: "c",
+            init: { permission_mode: "configured" },
+          }),
+          JSON.stringify({
+            event: "result",
+            result: { conversation_id: "c", status: "SUCCESS", num_turns: 1, response: "R1" },
+          }),
         ],
         [
-          JSON.stringify({ event: "init", conversation_id: "c", init: { permission_mode: "configured" } }),
-          JSON.stringify({ event: "result", result: { conversation_id: "c", status: "SUCCESS", num_turns: 2, response: "R2" } }),
+          JSON.stringify({
+            event: "init",
+            conversation_id: "c",
+            init: { permission_mode: "configured" },
+          }),
+          JSON.stringify({
+            event: "result",
+            result: { conversation_id: "c", status: "SUCCESS", num_turns: 2, response: "R2" },
+          }),
         ],
         [
-          JSON.stringify({ event: "init", conversation_id: "c", init: { permission_mode: "configured" } }),
-          JSON.stringify({ event: "result", result: { conversation_id: "c", status: "SUCCESS", num_turns: 3, response: "R3" } }),
+          JSON.stringify({
+            event: "init",
+            conversation_id: "c",
+            init: { permission_mode: "configured" },
+          }),
+          JSON.stringify({
+            event: "result",
+            result: { conversation_id: "c", status: "SUCCESS", num_turns: 3, response: "R3" },
+          }),
         ],
       ];
 
@@ -790,12 +913,31 @@ describe("Empirical Adversarial Challenges: Fork & Rollback", () => {
     it("rejects fork and rollback when a turn is actively in-flight on the source session", async () => {
       const turns = [
         [
-          JSON.stringify({ event: "init", conversation_id: "busy", init: { permission_mode: "configured" } }),
-          JSON.stringify({ event: "result", result: { conversation_id: "busy", status: "SUCCESS", num_turns: 1, response: "Done" } }),
+          JSON.stringify({
+            event: "init",
+            conversation_id: "busy",
+            init: { permission_mode: "configured" },
+          }),
+          JSON.stringify({
+            event: "result",
+            result: { conversation_id: "busy", status: "SUCCESS", num_turns: 1, response: "Done" },
+          }),
         ],
         [
-          JSON.stringify({ event: "init", conversation_id: "busy", init: { permission_mode: "configured" } }),
-          JSON.stringify({ event: "result", result: { conversation_id: "busy", status: "SUCCESS", num_turns: 2, response: "Slow done" } }),
+          JSON.stringify({
+            event: "init",
+            conversation_id: "busy",
+            init: { permission_mode: "configured" },
+          }),
+          JSON.stringify({
+            event: "result",
+            result: {
+              conversation_id: "busy",
+              status: "SUCCESS",
+              num_turns: 2,
+              response: "Slow done",
+            },
+          }),
         ],
       ];
 
@@ -881,8 +1023,15 @@ describe("Empirical Adversarial Challenges: Fork & Rollback", () => {
     it("allows concurrent forks from the same checkpoint and preserves session configuration", async () => {
       const turns = [
         [
-          JSON.stringify({ event: "init", conversation_id: "cfg", init: { permission_mode: "dangerously-skip-permissions" } }),
-          JSON.stringify({ event: "result", result: { conversation_id: "cfg", status: "SUCCESS", num_turns: 1, response: "Done" } }),
+          JSON.stringify({
+            event: "init",
+            conversation_id: "cfg",
+            init: { permission_mode: "dangerously-skip-permissions" },
+          }),
+          JSON.stringify({
+            event: "result",
+            result: { conversation_id: "cfg", status: "SUCCESS", num_turns: 1, response: "Done" },
+          }),
         ],
       ];
 
@@ -959,11 +1108,15 @@ describe("Empirical Adversarial Challenges: Fork & Rollback", () => {
         // Verify configuration was preserved
         expect(forkA.value.initialState.effectiveModel).toEqual(model);
         expect(forkA.value.initialState.effectiveThinkingOptionId).toBe(thinkingOptionId);
-        expect(forkA.value.initialState.effectivePermissionModeId).toBe("dangerously-skip-permissions");
+        expect(forkA.value.initialState.effectivePermissionModeId).toBe(
+          "dangerously-skip-permissions",
+        );
 
         expect(forkB.value.initialState.effectiveModel).toEqual(model);
         expect(forkB.value.initialState.effectiveThinkingOptionId).toBe(thinkingOptionId);
-        expect(forkB.value.initialState.effectivePermissionModeId).toBe("dangerously-skip-permissions");
+        expect(forkB.value.initialState.effectivePermissionModeId).toBe(
+          "dangerously-skip-permissions",
+        );
 
         await forkA.value.close();
         await forkB.value.close();

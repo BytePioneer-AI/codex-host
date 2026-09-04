@@ -21,13 +21,15 @@ export interface RollbackAntigravityLastTurnOptions {
   harnessId: HarnessId;
   input: RollbackLastTurnSessionInput;
   adapterEnvironment: NodeJS.ProcessEnv;
-  sourceSession?: {
-    history: AntigravityHistory;
-    model?: HarnessModelRef | undefined;
-    thinkingOptionId?: HarnessThinkingOptionId | undefined;
-    permissionMode: AntigravityPermissionMode;
-    isActive: boolean;
-  } | undefined;
+  sourceSession?:
+    | {
+        history: AntigravityHistory;
+        model?: HarnessModelRef | undefined;
+        thinkingOptionId?: HarnessThinkingOptionId | undefined;
+        permissionMode: AntigravityPermissionMode;
+        isActive: boolean;
+      }
+    | undefined;
   createSession: (params: {
     history: AntigravityHistory;
     nativeRef: NativeSessionRef;

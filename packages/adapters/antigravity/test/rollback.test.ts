@@ -199,7 +199,9 @@ describe("Antigravity Rollback Last Turn Capability", () => {
       expect(rolledBackSnapshot.ok).toBe(true);
       if (!rolledBackSnapshot.ok) return;
       expect(rolledBackSnapshot.value.turns).toHaveLength(1);
-      expect(rolledBackSnapshot.value.turns[0]?.input).toEqual([{ type: "text", text: "question 1" }]);
+      expect(rolledBackSnapshot.value.turns[0]?.input).toEqual([
+        { type: "text", text: "question 1" },
+      ]);
 
       // Verify parent session remains untouched with 2 turns
       const parentSnapshotAfter = await parentSession.readSnapshot();

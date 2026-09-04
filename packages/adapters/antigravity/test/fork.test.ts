@@ -14,10 +14,7 @@ import {
 import { describe, expect, it } from "vitest";
 
 import { AntigravityAdapter } from "../src/index.js";
-import {
-  copyNativeConversationDbIfExists,
-  nativeConversationDbPath,
-} from "../src/fork.js";
+import { copyNativeConversationDbIfExists, nativeConversationDbPath } from "../src/fork.js";
 import { AntigravityHistory } from "../src/history.js";
 
 const antigravityHarnessId = harnessIdSchema.parse("antigravity");

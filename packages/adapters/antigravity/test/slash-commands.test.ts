@@ -3,10 +3,7 @@ import os from "node:os";
 import path from "node:path";
 
 import type { HarnessOutput, HostEvent } from "@codexhost/harness-adapter";
-import {
-  harnessCommandCatalogSchema,
-  hostTurnIdSchema,
-} from "@codexhost/shared-contracts";
+import { harnessCommandCatalogSchema, hostTurnIdSchema } from "@codexhost/shared-contracts";
 import { describe, expect, it } from "vitest";
 
 import { AntigravityAdapter } from "../src/antigravity-adapter.js";
@@ -381,9 +378,7 @@ describe("Antigravity Slash Commands Capability", () => {
     });
 
     it("rejects execution when another turn is already active with sessionBusy error", async () => {
-      const streamLines = [
-        JSON.stringify({ event: "init", conversation_id: "conv-cmd-busy" }),
-      ];
+      const streamLines = [JSON.stringify({ event: "init", conversation_id: "conv-cmd-busy" })];
       const { command, cwd, cleanup } = await fakeStreamingAgy(streamLines);
       const adapter = new AntigravityAdapter({ command });
       try {

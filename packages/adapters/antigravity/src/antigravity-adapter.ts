@@ -79,10 +79,7 @@ import {
   type AntigravityPermissionMode,
 } from "./permission-modes.js";
 import { rollbackAntigravityLastTurn } from "./rollback.js";
-import {
-  ANTIGRAVITY_COMMAND_CATALOG,
-  parseAndFormatAntigravityCommand,
-} from "./slash-commands.js";
+import { ANTIGRAVITY_COMMAND_CATALOG, parseAndFormatAntigravityCommand } from "./slash-commands.js";
 import {
   codeActionFileChange,
   requestAntigravityTrajectorySteps,

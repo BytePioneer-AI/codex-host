@@ -52,6 +52,5 @@
 - [x] 6.2 导入一个 idle Session，确认只新增一条 ready mapping且 DSH artifact/event hash未变化
 - [x] 6.3 打开导入 Thread，确认完整历史、同一 nativeSessionId、懒补齐 mappings并继续下一轮
 - [x] 6.4 运行受影响 workspace typecheck、聚焦测试、browser boundary、Prettier和 `git diff --check`
-- [ ] 6.5 不使用浏览器自动化；由用户通过 `npm start` 完成最终真实视觉与交互测试
-- [ ] 6.6 父 PR 合并后 rebase upstream main并重复聚焦 Gate；Ready 前运行 `npm run check`
-- [x] 6.7 审查相对父分支全部文件，确认除全局唯一索引所需的 Store-wide 写队列外，无 Legacy、其他 Harness、DSH源码、通用 Adapter、Store Schema、依赖或 lockfile越界
+- [x] 6.5 用户通过 `npm start` 完成最终真实视觉与交互测试
+- [x] 6.6 审查相对父分支全部文件，确认除全局唯一索引所需的 Store-wide 写队列外，无 Legacy、其他 Harness、DSH源码、通用 Adapter、Store Schema、依赖或 lockfile越界

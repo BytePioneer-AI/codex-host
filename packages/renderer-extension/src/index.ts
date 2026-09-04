@@ -70,13 +70,10 @@ export {
   rendererCreditsTone,
 } from "./renderer-credits-control.js";
 export {
-  clearRendererNativeContextUsage,
   formatRendererCacheHitRate,
   formatRendererCost,
   formatRendererCreditsPercent,
-  formatRendererNativeContextUsageDetails,
   formatRendererTokenCount,
-  syncRendererNativeContextUsage,
 } from "./renderer-usage-control.js";
 export {
   inspectRendererForkContract,

@@ -10,7 +10,6 @@ import {
   hostTurnIdSchema,
   nativeSessionRefSchema,
 } from "@codexhost/shared-contracts";
-import { DatabaseSync } from "node:sqlite";
 import { describe, expect, it } from "vitest";
 
 import { AntigravityAdapter } from "../src/index.js";
@@ -53,6 +52,7 @@ const lines = turnStreamLines[Math.min(count, turnStreamLines.length - 1)] || []
 for (const line of lines) {
   process.stdout.write(line + "\\n");
 }
+setTimeout(() => { process.exit(0); }, 50);
 `;
   const jsPath = path.join(directory, "agy.cjs");
   await writeFile(jsPath, scriptContent);
@@ -446,6 +446,7 @@ describe("Antigravity Rollback Last Turn Capability", () => {
   it("accurately prunes steps based on turn boundaries in native sqlite db", async () => {
     const fakeHome = await mkdtemp(path.join(os.tmpdir(), "codexhost-prune-test-"));
     try {
+      const { DatabaseSync } = await import("node:sqlite");
       const sourceDbPath = nativeConversationDbPath("source-prune-session", fakeHome);
       await mkdir(path.dirname(sourceDbPath), { recursive: true });
       const db = new DatabaseSync(sourceDbPath);

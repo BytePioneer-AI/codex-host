@@ -70,7 +70,7 @@ export async function rollbackAntigravityLastTurn(
     };
   }
 
-  const sessionEnvironment = input.environment ?? adapterEnvironment;
+  const sessionEnvironment = { ...adapterEnvironment, ...(input.environment ?? {}) };
   let sourceHistory: AntigravityHistory | null = sourceSession?.history ?? null;
   if (!sourceHistory) {
     sourceHistory = await AntigravityHistory.findByNativeSessionId(

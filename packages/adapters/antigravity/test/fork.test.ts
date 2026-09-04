@@ -40,6 +40,7 @@ if (process.argv.includes("models")) {
 for (const line of lines) {
   process.stdout.write(line + "\\n");
 }
+setTimeout(() => { process.exit(0); }, 50);
 `;
   const jsPath = path.join(directory, "agy.cjs");
   await writeFile(jsPath, scriptContent);
@@ -88,6 +89,7 @@ const lines = turnStreamLines[Math.min(count, turnStreamLines.length - 1)] || []
 for (const line of lines) {
   process.stdout.write(line + "\\n");
 }
+setTimeout(() => { process.exit(0); }, 50);
 `;
   const jsPath = path.join(directory, "agy.cjs");
   await writeFile(jsPath, scriptContent);

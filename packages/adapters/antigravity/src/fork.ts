@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { copyFile, cp, mkdir } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { DatabaseSync, type SQLInputValue } from "node:sqlite";
+import type { DatabaseSync as DatabaseSyncType, SQLInputValue } from "node:sqlite";
 
 import type { ForkSessionInput, HarnessResult, HarnessSession } from "@codexhost/harness-adapter";
 import {
@@ -44,6 +44,13 @@ export async function cloneNativeConversationDb(
   try {
     await mkdir(path.dirname(targetDb), { recursive: true });
     await copyFile(sourceDb, targetDb);
+  } catch {
+    return false;
+  }
+
+  let DatabaseSync: typeof DatabaseSyncType;
+  try {
+    ({ DatabaseSync } = await import("node:sqlite"));
   } catch {
     return false;
   }
@@ -227,7 +234,7 @@ export async function forkAntigravitySession(
     };
   }
 
-  const sessionEnvironment = input.environment ?? adapterEnvironment;
+  const sessionEnvironment = { ...adapterEnvironment, ...(input.environment ?? {}) };
   let sourceHistory: AntigravityHistory | null = sourceSession?.history ?? null;
   if (!sourceHistory) {
     sourceHistory = await AntigravityHistory.findByNativeSessionId(

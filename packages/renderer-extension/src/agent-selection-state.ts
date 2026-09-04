@@ -1,22 +1,17 @@
+import { KNOWN_RENDERER_AGENTS } from "@codexhost/shared-contracts";
 import type {
   HarnessModelRef,
   HarnessPermissionModeId,
   HarnessThinkingOptionId,
+  RendererAgent,
 } from "@codexhost/shared-contracts";
 
-export const KNOWN_RENDERER_AGENTS = [
-  "codex",
-  "pi",
-  "claude-code",
-  "deepseek-harness",
-  "opencode",
-  "grok",
-  "omp",
-  "antigravity",
-] as const;
+export { KNOWN_RENDERER_AGENTS };
+export type { RendererAgent };
 export const DEFAULT_RENDERER_AGENTS = KNOWN_RENDERER_AGENTS;
-export type RendererAgent = (typeof KNOWN_RENDERER_AGENTS)[number];
 export type ExternalRendererAgent = Exclude<RendererAgent, "codex">;
+export const EXTERNAL_RENDERER_AGENTS: readonly ExternalRendererAgent[] =
+  KNOWN_RENDERER_AGENTS.filter((agent): agent is ExternalRendererAgent => agent !== "codex");
 export type RendererAgentAvailability =
   "checking" | "ready" | "notInstalled" | "unavailable" | "error";
 export type ComposerAgentPhase = "draft" | "locked";
@@ -219,15 +214,7 @@ export class DraftAgentController<Composer extends object> {
     } else if (agent === "antigravity") delete state.antigravityThinkingOptionId;
     if (agent !== "codex") {
       const permissionModeByAgent: NonNullable<DraftComposerState["permissionModeByAgent"]> = {};
-      for (const candidate of [
-        "pi",
-        "claude-code",
-        "deepseek-harness",
-        "opencode",
-        "grok",
-        "omp",
-        "antigravity",
-      ] as const) {
+      for (const candidate of EXTERNAL_RENDERER_AGENTS) {
         const current = state.permissionModeByAgent?.[candidate];
         if (candidate !== agent && current) permissionModeByAgent[candidate] = current;
       }

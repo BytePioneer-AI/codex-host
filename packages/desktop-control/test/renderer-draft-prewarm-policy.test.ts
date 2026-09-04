@@ -302,6 +302,40 @@ describe("Renderer draft prewarm policy", () => {
     expect(evaluate).toHaveBeenCalledTimes(2);
   });
 
+  it("retries a cold-start Inspector command timeout within the mounting budget", async () => {
+    const evaluate = vi
+      .fn<() => Promise<unknown>>()
+      .mockRejectedValueOnce(new Error("CDP command 'Runtime.evaluate' timed out"))
+      .mockResolvedValue({ state: "ready", reason: "owned-request-bridge" });
+    const inspector = {
+      async evaluate<T>(): Promise<T> {
+        return (await evaluate()) as T;
+      },
+    };
+
+    await expect(installRendererDraftPrewarmPolicy(inspector, 17)).resolves.toEqual({
+      state: "ready",
+      reason: "owned-request-bridge",
+    });
+    expect(evaluate).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not retry an unrelated Inspector failure", async () => {
+    const evaluate = vi
+      .fn<() => Promise<unknown>>()
+      .mockRejectedValue(new Error("Inspector target is not ready"));
+    const inspector = {
+      async evaluate<T>(): Promise<T> {
+        return (await evaluate()) as T;
+      },
+    };
+
+    await expect(installRendererDraftPrewarmPolicy(inspector, 17)).rejects.toThrow(
+      "Inspector target is not ready",
+    );
+    expect(evaluate).toHaveBeenCalledOnce();
+  });
+
   it("installs the fixed policy on the uniquely owned Host request bridge", async () => {
     const fixture = rendererFixture();
 

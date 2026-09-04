@@ -177,7 +177,15 @@ async function waitForDraftPrewarmPolicy(
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       const remaining = deadline - Date.now();
-      if (!message.includes("Renderer request manager is ambiguous") || remaining <= 0) throw error;
+      // "ambiguous" means the Renderer is mid-mount and more than one Host request manager is
+      // momentarily visible. The command timeout means the nested attach/evaluate/getProperties/
+      // callFunctionOn round trip exceeded the CDP client's per-command budget during cold startup;
+      // installDraftPrewarmPolicyBridge re-affirms or disposes an existing policy, so retrying is
+      // safe, and a late response for the timed-out command is dropped by the client.
+      const retryable =
+        message.includes("Renderer request manager is ambiguous") ||
+        message.includes("CDP command 'Runtime.evaluate' timed out");
+      if (!retryable || remaining <= 0) throw error;
       await new Promise<void>((resolve) => {
         setTimeout(resolve, Math.min(REQUEST_MANAGER_POLL_INTERVAL_MS, remaining));
       });

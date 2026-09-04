@@ -148,6 +148,8 @@ export type {
   NativeTurnRef,
   NativeTurnRefV1,
 } from "./native-refs.js";
+export { KNOWN_RENDERER_AGENTS } from "./renderer-agents.js";
+export type { RendererAgent } from "./renderer-agents.js";
 export {
   UPDATE_ERROR_MAX_LENGTH,
   UPDATE_SEMVER_PATTERN,

@@ -1,4 +1,4 @@
-import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -985,8 +985,12 @@ setTimeout(() => { process.exit(0); }, 50);
         expect(addDirIndex).toBeGreaterThan(-1);
         expect(captured.argv[addDirIndex + 1]).toBe(projectCwd);
 
-        const expectedResolvedCwd = path.resolve(projectCwd).toLowerCase();
-        const actualResolvedCwd = path.resolve(captured.cwd).toLowerCase();
+        // macOS exposes its temporary directory through `/var`, while a child
+        // process can report the same directory through the `/private/var`
+        // symlink target. Compare canonical filesystem paths rather than the
+        // two valid spellings.
+        const expectedResolvedCwd = (await realpath(projectCwd)).toLowerCase();
+        const actualResolvedCwd = (await realpath(captured.cwd)).toLowerCase();
         expect(actualResolvedCwd).toBe(expectedResolvedCwd);
 
         await session.close();

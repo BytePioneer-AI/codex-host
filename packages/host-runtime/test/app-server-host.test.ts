@@ -1141,6 +1141,125 @@ describe("AppServerHost HarnessAdapter projection", () => {
     await stopFixture(fixture);
   });
 
+  it("notifies each Host connection once when concurrent imports share one Store", async () => {
+    const directory = mkdtempSync(path.join(tmpdir(), "codexhost-host-import-shared-"));
+    const firstReadyEntered = Promise.withResolvers<undefined>();
+    const releaseFirstReady = Promise.withResolvers<undefined>();
+    let readyReplacements = 0;
+    const mappingStore = new MappingStore({
+      directory,
+      beforeReplace(record) {
+        if (record.state !== "ready") return;
+        readyReplacements += 1;
+        if (readyReplacements === 1) {
+          firstReadyEntered.resolve(undefined);
+          return releaseFirstReady.promise;
+        }
+      },
+    });
+    await mappingStore.initialize();
+    const candidate: DeepSeekModernSessionCandidate = {
+      nativeSessionId: "shared-native-import",
+      title: "Shared import",
+      updatedAt: 123,
+      cwd: path.resolve("shared-import-workspace"),
+      running: false,
+    };
+    const firstAdapter = new ModernSessionImportAdapter(harnessIdSchema.parse("deepseek-harness"));
+    firstAdapter.candidates = [candidate];
+    const secondAdapter = new ModernSessionImportAdapter(harnessIdSchema.parse("deepseek-harness"));
+    secondAdapter.candidates = [candidate];
+    const first = createFixture({
+      externalAdapters: new Map([["deepseek-harness", firstAdapter]]),
+      mappingStore,
+      mappingStoreDirectory: directory,
+      closeMappingStoreOnExit: false,
+    });
+    const second = createFixture({
+      externalAdapters: new Map([["deepseek-harness", secondAdapter]]),
+      mappingStore,
+      mappingStoreDirectory: directory,
+      closeMappingStoreOnExit: false,
+    });
+
+    try {
+      await vi.waitFor(() => {
+        expect(first.spawnOfficial).toHaveBeenCalledOnce();
+        expect(second.spawnOfficial).toHaveBeenCalledOnce();
+      });
+      writeRequest(first.desktopInput, {
+        id: 44,
+        method: "codexhost/deepseek/modern-session/import",
+        params: { nativeSessionId: candidate.nativeSessionId },
+      });
+      writeRequest(second.desktopInput, {
+        id: 45,
+        method: "codexhost/deepseek/modern-session/import",
+        params: { nativeSessionId: candidate.nativeSessionId },
+      });
+      await firstReadyEntered.promise;
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      const replacementsBeforeRelease = readyReplacements;
+      releaseFirstReady.resolve(undefined);
+      const [firstResponse, secondResponse] = await Promise.all([
+        first.collector.waitFor((message) => requestId(message, 44)),
+        second.collector.waitFor((message) => requestId(message, 45)),
+      ]);
+      expect(replacementsBeforeRelease).toBe(1);
+      const firstThreadId = (firstResponse.result as JsonObject).threadId;
+      const secondThreadId = (secondResponse.result as JsonObject).threadId;
+      expect(firstThreadId).toBe(secondThreadId);
+      if (typeof firstThreadId !== "string") throw new Error("Import response has no Thread ID");
+      await Promise.all([
+        first.collector.waitFor(
+          (message) =>
+            method(message, "thread/started") &&
+            (messageParams(message).thread as JsonObject | undefined)?.id === firstThreadId,
+        ),
+        second.collector.waitFor(
+          (message) =>
+            method(message, "thread/started") &&
+            (messageParams(message).thread as JsonObject | undefined)?.id === firstThreadId,
+        ),
+      ]);
+
+      for (const [fixture, id] of [
+        [first, 46],
+        [second, 47],
+      ] as const) {
+        writeRequest(fixture.desktopInput, {
+          id,
+          method: "codexhost/deepseek/modern-session/import",
+          params: { nativeSessionId: candidate.nativeSessionId },
+        });
+        await expect(
+          fixture.collector.waitFor((message) => requestId(message, id)),
+        ).resolves.toEqual({ id, result: { threadId: firstThreadId } });
+        expect(
+          fixture.collector.messages.filter(
+            (message) =>
+              method(message, "thread/started") &&
+              (messageParams(message).thread as JsonObject | undefined)?.id === firstThreadId,
+          ),
+        ).toHaveLength(1);
+      }
+      await expect(mappingStore.listThreads()).resolves.toEqual([
+        expect.objectContaining({
+          hostThreadId: firstThreadId,
+          state: "ready",
+          nativeSessionRef: expect.objectContaining({
+            nativeSessionId: candidate.nativeSessionId,
+          }),
+        }),
+      ]);
+    } finally {
+      releaseFirstReady.resolve(undefined);
+      await Promise.all([closeFixture(first), closeFixture(second)]);
+      await mappingStore.close();
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   it("rejects invalid Modern DeepSeek import params before calling the Adapter", async () => {
     const adapter = new ModernSessionImportAdapter(harnessIdSchema.parse("deepseek-harness"));
     const fixture = createFixture({

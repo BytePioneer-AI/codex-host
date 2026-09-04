@@ -193,10 +193,11 @@ describe("DeepSeekModernSessionImporter", () => {
 
     const first = setup.importer.import("shared");
     const second = setup.importer.import("shared");
+    expect(first).toBe(second);
     release.resolve(undefined);
     const [left, right] = await Promise.all([first, second]);
-    expect(left).toMatchObject({ ok: true, newlyCreated: true });
-    expect(right).toMatchObject({ ok: true, newlyCreated: false });
+    expect(left).toMatchObject({ ok: true });
+    expect(right).toEqual(left);
     if (!left.ok || !right.ok) throw new Error("Concurrent import did not succeed");
     expect(left.threadId).toBe(right.threadId);
     expect(setup.adapter.listModernSessionCandidates).toHaveBeenCalledOnce();
@@ -204,7 +205,6 @@ describe("DeepSeekModernSessionImporter", () => {
     await expect(setup.importer.import("shared")).resolves.toMatchObject({
       ok: true,
       threadId: left.threadId,
-      newlyCreated: false,
     });
     expect((await setup.repository.list()).filter(({ state }) => state === "ready")).toHaveLength(
       1,
@@ -251,11 +251,78 @@ describe("DeepSeekModernSessionImporter", () => {
     await setup.repository.close();
   });
 
+  it("resolves competing importer instances to one ready mapping", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "codexhost-dsh-import-race-"));
+    directories.push(directory);
+    const firstReadyEntered = Promise.withResolvers<undefined>();
+    const releaseFirstReady = Promise.withResolvers<undefined>();
+    let readyReplacements = 0;
+    const store = new MappingStore({
+      directory,
+      beforeReplace(record) {
+        if (record.state !== "ready") return;
+        readyReplacements += 1;
+        if (readyReplacements === 1) {
+          firstReadyEntered.resolve(undefined);
+          return releaseFirstReady.promise;
+        }
+      },
+    });
+    const repository = new ExternalThreadRepository(store);
+    await repository.initialize();
+    const adapter = new ModernCandidateAdapter();
+    adapter.candidates = [candidate("competing")];
+    const firstImporter = new DeepSeekModernSessionImporter({ adapter, repository });
+    const secondImporter = new DeepSeekModernSessionImporter({ adapter, repository });
+
+    const imports = [firstImporter.import("competing"), secondImporter.import("competing")];
+    await firstReadyEntered.promise;
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    const replacementsBeforeRelease = readyReplacements;
+    releaseFirstReady.resolve(undefined);
+    const results = await Promise.all(imports);
+
+    expect(replacementsBeforeRelease).toBe(1);
+    expect(results.every(({ ok }) => ok)).toBe(true);
+    const [firstResult, secondResult] = results;
+    if (!firstResult?.ok || !secondResult?.ok) {
+      throw new Error("Expected both importers to resolve the winning mapping");
+    }
+    expect([firstResult.threadId, secondResult.threadId]).toEqual([
+      firstResult.threadId,
+      firstResult.threadId,
+    ]);
+    const records = await repository.list();
+    expect(records).toEqual([
+      expect.objectContaining({
+        hostThreadId: firstResult.threadId,
+        state: "ready",
+        nativeSessionRef: expect.objectContaining({ nativeSessionId: "competing" }),
+      }),
+    ]);
+    await repository.close();
+  });
+
   it("removes its provisional record when the ready commit fails", async () => {
     const setup = await fixture();
     setup.adapter.candidates = [candidate()];
     vi.spyOn(setup.repository, "commitNative").mockRejectedValueOnce(
       new Error("synthetic commit failure"),
+    );
+
+    await expect(setup.importer.import("native-session")).resolves.toMatchObject({
+      ok: false,
+      error: { code: -32081 },
+    });
+    await expect(setup.repository.list()).resolves.toEqual([]);
+    await setup.repository.close();
+  });
+
+  it("does not leave a record when provisional creation fails", async () => {
+    const setup = await fixture();
+    setup.adapter.candidates = [candidate()];
+    vi.spyOn(setup.repository, "createProvisional").mockRejectedValueOnce(
+      new Error("synthetic create failure"),
     );
 
     await expect(setup.importer.import("native-session")).resolves.toMatchObject({

@@ -26,6 +26,11 @@ export {
   type SelectedReleaseArtifact,
 } from "./github-release.js";
 export {
+  fetchLatestGitHubReleaseWithGitHubCli,
+  type GitHubCliReleaseFetchOptions,
+  type GitHubCliRunner,
+} from "./github-cli-release.js";
+export {
   acquireUpdateOperationLock,
   cleanupTerminalUpdateState,
   discoverLatestUpdateStatus,

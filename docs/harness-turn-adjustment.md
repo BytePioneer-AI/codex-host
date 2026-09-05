@@ -46,7 +46,7 @@ Desktop 自带的 steeringUserMessage 绑定旧 Turn；旧 Turn 结束时会把�
 
 中断续接的 Turn 由 Host 发起，Desktop 默认给它空的 `params.input`；显示 userMessage 并不会填回编辑器使用的输入。请求桥在确认调整响应的 Turn 身份后，将已提交的文本和 client identity 写入该 Turn 的空输入。响应先到时等待对应的 Turn/item 通知，通知先到时直接补齐，已有输入不覆盖。关闭 Thread 或卸载请求桥时清理待同步输入，避免后续编辑发送空的 `turn/start`。
 
-运行中调整与已发送消息的编辑是独立能力。Codewiz 已实现最后一轮回退；Claude Code / Codewiz CC 仍声明 `rollbackLastTurn=false`，因此支持运行中调整，但不支持铅笔编辑历史消息。不能以调整可用推断历史编辑可用。
+运行中调整与已发送消息的编辑是独立能力。Pi、OMP、OpenCode、Claude Code 已接入最后一轮回退，Desktop 铅笔编辑沿用公共 `thread/revert` → `turn/start`。Claude 多轮编辑使用原生 Fork 保留前缀；首轮编辑使用 Adapter 持久化的待重发状态，原生 Session 在重发时按预留 UUID 创建。旧历史保留，不回滚工具已经修改的文件。原生落盘、进程关闭和冷恢复的实现及验证见 [Claude Code 消息编辑](claude-code-message-edit-feasibility.md)。
 
 中断续发保留旧 Turn 和新 Turn。它不需要 rollback 或另建 Native Session；映射继续使用原生历史。当前交付以协议、Adapter fixture 和 Renderer 状态测试为验证范围，不能据此声称全部 Harness 版本都经过真实运行验证。
 

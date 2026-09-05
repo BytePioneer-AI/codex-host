@@ -274,6 +274,34 @@ export class ExternalThreadResolver {
     }
     const session = opened.value;
     try {
+      // Claude resumes lazily, so ordinary native references do not report Model/Thinking yet.
+      // Restore the saved selection before another configuration command publishes defaults.
+      // Pending references already carry their durable configuration and remain authoritative.
+      if (harnessId === "claude-code") {
+        if (restoredSelection?.model && !session.initialState.effectiveModel) {
+          const selected = await session.execute({
+            type: "model.select",
+            model: restoredSelection.model,
+          });
+          if (!selected.ok)
+            throw new ExternalThreadOpenError(
+              mapExternalThreadHarnessError(selected.error, "resume"),
+            );
+        }
+        if (
+          restoredSelection?.thinkingOptionId &&
+          !session.initialState.effectiveThinkingOptionId
+        ) {
+          const selected = await session.execute({
+            type: "thinking.select",
+            thinkingOptionId: restoredSelection.thinkingOptionId,
+          });
+          if (!selected.ok)
+            throw new ExternalThreadOpenError(
+              mapExternalThreadHarnessError(selected.error, "resume"),
+            );
+        }
+      }
       if (
         restoredSelection?.permissionModeId &&
         harnessId !== "opencode" &&

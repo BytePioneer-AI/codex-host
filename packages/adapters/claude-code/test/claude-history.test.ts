@@ -20,6 +20,70 @@ function message(type: "user" | "assistant", uuid: string, content: unknown, sto
 }
 
 describe("Claude history mapping", () => {
+  it("keeps native interruption records in the cancelled Turn rather than inventing another user Turn", () => {
+    const snapshot = mapClaudeSnapshot(
+      [
+        { ...message("user", "user-1", "first"), promptId: "prompt-1", promptSource: "sdk" },
+        message("assistant", "partial", [{ type: "text", text: "partial answer" }]),
+        {
+          ...message("user", "interruption", [
+            { type: "text", text: "[Request interrupted by user]" },
+          ]),
+          promptId: "prompt-1",
+        },
+      ],
+      sessionId,
+    );
+    expect(snapshot.turns).toHaveLength(1);
+    expect(snapshot.turns[0]).toMatchObject({
+      nativeTurnRef: { nativeTurnKey: "user-1" },
+      input: [{ text: "first" }],
+      outcome: { status: "cancelled" },
+      checkpoint: { checkpointId: "interruption" },
+    });
+  });
+
+  it("retains genuine user inputs that quote the native interruption text", () => {
+    const text = "[Request interrupted by user]";
+    const snapshot = mapClaudeSnapshot(
+      [
+        { ...message("user", "first", "start"), promptId: "first" },
+        { ...message("user", "literal", [{ type: "text", text }]), promptId: "literal" },
+        {
+          ...message("user", "sdk-input", [{ type: "text", text }]),
+          promptId: "literal",
+          promptSource: "sdk",
+        },
+        message("user", "unattributed", [{ type: "text", text }]),
+      ],
+      sessionId,
+    );
+    expect(snapshot.turns.map((turn) => turn.nativeTurnRef.nativeTurnKey)).toEqual([
+      "first",
+      "literal",
+      "sdk-input",
+      "unattributed",
+    ]);
+  });
+
+  it.each(["[Request interrupted by user]", "[Request interrupted by user for tool use]"])(
+    "recognizes %s without an assistant checkpoint",
+    (text) => {
+      const snapshot = mapClaudeSnapshot(
+        [
+          { ...message("user", "first", "start"), promptId: "first", promptSource: "sdk" },
+          { ...message("user", "interruption", [{ type: "text", text }]), promptId: "first" },
+        ],
+        sessionId,
+      );
+      expect(snapshot.turns).toHaveLength(1);
+      expect(snapshot.turns[0]).toMatchObject({
+        checkpoint: { checkpointId: "interruption" },
+        outcome: { status: "cancelled" },
+      });
+    },
+  );
+
   it("groups human Turns around native Tool messages with stable identities", () => {
     const history = [
       message("user", "user-1", "first"),

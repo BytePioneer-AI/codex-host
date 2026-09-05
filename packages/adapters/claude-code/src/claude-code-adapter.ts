@@ -72,6 +72,7 @@ import {
 
 import { ClaudeBackgroundOccupancy } from "./background-occupancy.js";
 import { ClaudeCodeExecutableError, resolveClaudeCodeExecutable } from "./command.js";
+import { ClaudePendingSessions, isPendingClaudeSession } from "./pending-session.js";
 import { forkClaudeSession } from "./claude-fork.js";
 import { mapClaudeSnapshot, mapClaudeSubagentSnapshot } from "./claude-history.js";
 import { claudeTranscriptItemId } from "./item-identity.js";
@@ -491,7 +492,7 @@ class ClaudeHarnessSession implements HarnessSession {
       selectPermissionMode: true,
       permissionModeScope: "live",
     },
-    history: { fork: true, forkAcrossCwd: false, rollbackLastTurn: false },
+    history: { fork: true, forkAcrossCwd: false, rollbackLastTurn: true, replacementFence: true },
     subagents: { observe: true, readTranscript: true },
   };
   readonly commands: HarnessCommandCapability;
@@ -507,6 +508,10 @@ class ClaudeHarnessSession implements HarnessSession {
   readonly #onClosed: () => void;
   readonly #onPlanLimitObserved: (planLimit: ClaudePlanLimitEvent) => ClaudePlanLimitEvent | null;
   #openMode: "create" | "resume";
+  readonly #pendingSessions: ClaudePendingSessions;
+  #pendingClaimed = false;
+  #submittedInput = false;
+  #startupTask: Promise<ClaudeTurnTransport> | null = null;
   readonly #randomUUID: () => string;
   #requestedModel: HarnessModelRef | undefined;
   #requestedPermissionModeId: HarnessPermissionModeId;
@@ -524,6 +529,7 @@ class ClaudeHarnessSession implements HarnessSession {
   #readingHistory = false;
   #state: HarnessSessionState;
   #statePublished = false;
+  #lastCompletedMessageId: string | null = null;
   #transport: ClaudeTurnTransport | null = null;
   #usageGeneration = 0;
   #latestUsage: HostUsage | null = null;
@@ -552,6 +558,9 @@ class ClaudeHarnessSession implements HarnessSession {
       environment?: NodeJS.ProcessEnv;
       openMode: "create" | "resume";
       sessionId: string;
+      nativeRef?: NativeSessionRef;
+      pendingSessions: ClaudePendingSessions;
+      knownConfiguration?: boolean;
       requestedModel?: HarnessModelRef;
       requestedPermissionModeId: HarnessPermissionModeId;
       requestedThinkingOptionId: HarnessThinkingOptionId;
@@ -561,6 +570,7 @@ class ClaudeHarnessSession implements HarnessSession {
     },
   ) {
     this.#cwd = cwd;
+    this.#pendingSessions = options.pendingSessions;
     const environment = options.environment;
     this.#createTransport = environment
       ? (input) => dependencies.createTransport({ ...input, environment })
@@ -578,18 +588,32 @@ class ClaudeHarnessSession implements HarnessSession {
     this.#sessionId = options.sessionId;
     this.#toolOutputLimit = options.toolOutputLimit;
     this.#continuationQuiescenceMs = options.continuationQuiescenceMs;
-    this.#nativeRef = nativeSessionRefSchema.parse({
-      harnessId: this.harnessId,
-      nativeSessionId: this.#sessionId,
-      formatVersion: 1,
-    });
+    this.#nativeRef =
+      options.nativeRef ??
+      nativeSessionRefSchema.parse({
+        harnessId: this.harnessId,
+        nativeSessionId: this.#sessionId,
+        formatVersion: 1,
+      });
     this.commands = {
       list: async () => ({ ok: true, value: claudeCommandCatalog }),
       execute: (command) => this.#executeHarnessCommand(command),
     };
-    this.initialState = this.#openMode === "resume" ? { nativeRef: this.#nativeRef } : {};
+    const durable = this.#openMode === "resume" || options.nativeRef !== undefined;
+    this.initialState = durable
+      ? {
+          nativeRef: this.#nativeRef,
+          ...(options.knownConfiguration
+            ? {
+                ...(options.requestedModel ? { effectiveModel: options.requestedModel } : {}),
+                effectiveThinkingOptionId: this.#requestedThinkingOptionId,
+                effectivePermissionModeId: this.#requestedPermissionModeId,
+              }
+            : {}),
+        }
+      : {};
     this.#state = this.initialState;
-    this.#statePublished = this.#openMode === "resume";
+    this.#statePublished = durable;
     this.outputs = this.#channel.outputs;
   }
 
@@ -613,7 +637,35 @@ class ClaudeHarnessSession implements HarnessSession {
     try {
       let messages: unknown[];
       try {
-        messages = await this.#readSessionMessages({ cwd: this.#cwd, sessionId: this.#sessionId });
+        // Native result frames can precede the batched transcript write. Never derive a rollback
+        // from that stale prefix: wait for the most recent completed native message to land.
+        const deadline = Date.now() + this.#closeTimeoutMs;
+        for (;;) {
+          messages = await this.#readSessionMessages({
+            cwd: this.#cwd,
+            sessionId: this.#sessionId,
+          });
+          if (
+            !this.#lastCompletedMessageId ||
+            messages.some(
+              (message) => isRecord(message) && message.uuid === this.#lastCompletedMessageId,
+            )
+          ) {
+            this.#lastCompletedMessageId = null;
+            break;
+          }
+          if (Date.now() >= deadline || this.#phase !== "open") {
+            return {
+              ok: false,
+              error: {
+                code: "sessionBusy",
+                message: "Claude Code history is still being persisted",
+                retryable: true,
+              },
+            };
+          }
+          await delay(25);
+        }
       } catch {
         return {
           ok: false,
@@ -623,6 +675,21 @@ class ClaudeHarnessSession implements HarnessSession {
             retryable: true,
           },
         };
+      }
+      if (messages.length === 0 && isPendingClaudeSession(this.#nativeRef)) {
+        try {
+          const pending = await this.#pendingSessions.read(this.#nativeRef, this.#cwd);
+          if (!pending.started) return { ok: true, value: { turns: [], state: this.#state } };
+        } catch {
+          return {
+            ok: false,
+            error: {
+              code: "sessionNotFound",
+              message: "Claude Code pending Session is unavailable",
+              retryable: false,
+            },
+          };
+        }
       }
       if (messages.length === 0) {
         return {
@@ -781,6 +848,7 @@ class ClaudeHarnessSession implements HarnessSession {
       resolveCompletion,
     };
     this.#active = active;
+    this.#submittedInput = true;
     this.#event({ type: "turn.started", turnId: command.turnId });
     this.#event({ type: "item.started", turnId: command.turnId, item });
     try {
@@ -892,6 +960,7 @@ class ClaudeHarnessSession implements HarnessSession {
       resolveCompletion,
     };
     this.#active = active;
+    this.#submittedInput = true;
     this.#event({ type: "turn.started", turnId: command.turnId });
     if (item) this.#event({ type: "item.started", turnId: command.turnId, item });
     const running =
@@ -925,6 +994,21 @@ class ClaudeHarnessSession implements HarnessSession {
       CONTEXT_USAGE_RETRY_DELAYS_MS,
     );
     return this.#contextRefreshInFlight ?? Promise.resolve();
+  }
+
+  blocksRollback(sessionId: string): boolean {
+    return (
+      this.#sessionId === sessionId &&
+      (this.#phase !== "open" ||
+        this.#active !== null ||
+        this.#acceptingTurn ||
+        this.#configurationTask !== null ||
+        this.#readingHistory)
+    );
+  }
+
+  async prepareRollback(sessionId: string): Promise<HarnessResult<unknown>> {
+    return this.#sessionId === sessionId ? this.readSnapshot() : { ok: true, value: null };
   }
 
   close(): Promise<void> {
@@ -980,6 +1064,8 @@ class ClaudeHarnessSession implements HarnessSession {
         }
       }
       this.#requestedModel = command.model;
+      const persistenceError = await this.#savePendingConfiguration();
+      if (persistenceError) return { ok: false, error: persistenceError };
       this.#publishState(this.#configuredState());
       return { ok: true, value: { completed: true } };
     } finally {
@@ -1038,6 +1124,8 @@ class ClaudeHarnessSession implements HarnessSession {
         }
       }
       this.#requestedThinkingOptionId = thinkingOptionId;
+      const persistenceError = await this.#savePendingConfiguration();
+      if (persistenceError) return { ok: false, error: persistenceError };
       this.#publishState(this.#configuredState());
       return { ok: true, value: { completed: true } };
     } finally {
@@ -1102,6 +1190,8 @@ class ClaudeHarnessSession implements HarnessSession {
       this.#requestedPermissionModeId = transport
         ? encodeClaudePermissionModeId(transport.getPermissionMode())
         : command.permissionModeId;
+      const persistenceError = await this.#savePendingConfiguration();
+      if (persistenceError) return { ok: false, error: persistenceError };
       this.#publishState(this.#configuredState());
       return { ok: true, value: { completed: true } };
     } finally {
@@ -1239,6 +1329,7 @@ class ClaudeHarnessSession implements HarnessSession {
 
   async #close(): Promise<void> {
     if (this.#phase === "closed") return;
+    this.#phase = "closing";
     this.#usageGeneration += 1;
     this.#contextUsageFreshUntilMs = 0;
     this.#contextUsageCooldownUntilMs = 0;
@@ -1248,74 +1339,135 @@ class ClaudeHarnessSession implements HarnessSession {
     this.#contextRefreshWake = null;
     this.#clearCancelEscalation();
     this.#clearContinuationQuiescence();
-    if (this.#phase !== "faulted") this.#phase = "closing";
-    const configurationTask = this.#configurationTask;
-    if (configurationTask) {
-      await Promise.race([configurationTask, delay(this.#closeTimeoutMs)]);
-    }
-    let transportClosed = false;
-    const active = this.#active;
-    if (active) {
-      active.cancellationRequested = true;
-      if (active.held) {
-        this.#finishFailed(active, invalidState("Claude Code Session closed during active Turn"));
-      } else {
-        await this.#transport?.abort().catch(() => undefined);
-        await Promise.race([active.completion, delay(this.#closeTimeoutMs)]);
-        if (this.#active === active) {
-          await this.#transport?.close().catch(() => undefined);
-          transportClosed = true;
-          this.#finishFailed(active, invalidState("Claude Code Session closed during active Turn"));
-        }
+    const failures: unknown[] = [];
+    const settle = async (task: Promise<unknown> | undefined): Promise<void> => {
+      if (!task) return;
+      const timeout = rejectAfter(this.#closeTimeoutMs * 4, "Claude Code Session close timed out");
+      try {
+        await Promise.race([task, timeout.promise]);
+      } catch (error) {
+        failures.push(error);
+      } finally {
+        timeout.cancel();
       }
-    }
-    if (!transportClosed) await this.#transport?.close().catch(() => undefined);
+    };
+    // Closing the transport also releases in-flight configuration/initialization RPCs.
+    const closingTransport = this.#transport;
+    await settle(closingTransport?.close());
+    await settle(this.#configurationTask ?? undefined);
+    await settle(
+      this.#startupTask?.then(
+        () => undefined,
+        () => undefined,
+      ),
+    );
+    if (this.#transport !== closingTransport) await settle(this.#transport?.close());
+    if (failures.length === 0) await settle(this.#releaseUnusedClaim());
+    const active = this.#active;
+    if (active)
+      this.#finishFailed(active, invalidState("Claude Code Session closed during active Turn"));
     this.#phase = "closed";
     this.#channel.end();
     this.#onClosed();
+    if (failures.length > 0)
+      throw new AggregateError(failures, "Claude Code Session could not stop safely");
   }
 
-  async #ensureTransport(): Promise<ClaudeTurnTransport> {
-    if (this.#transport) return this.#transport;
+  #ensureTransport(): Promise<ClaudeTurnTransport> {
+    if (this.#startupTask) return this.#startupTask;
+    if (this.#transport) return Promise.resolve(this.#transport);
+    const task = this.#startTransport();
+    this.#startupTask = task;
+    void task
+      .finally(() => {
+        if (this.#startupTask === task) this.#startupTask = null;
+      })
+      .catch(() => undefined);
+    return task;
+  }
+
+  async #startTransport(): Promise<ClaudeTurnTransport> {
+    if (this.#openMode === "create" && isPendingClaudeSession(this.#nativeRef)) {
+      await this.#pendingSessions.claim(this.#nativeRef, this.#cwd);
+      this.#pendingClaimed = true;
+    }
+    if (this.#phase !== "open") {
+      await this.#releaseUnusedClaim();
+      throw new Error("Claude Code Session closed during startup");
+    }
     const selectedModel =
       this.#requestedModel ?? (this.#openMode === "create" ? CLAUDE_DEFAULT_MODEL_REF : undefined);
     const model = selectedModel ? decodeClaudeModelRef(selectedModel) : undefined;
     const permissionMode = decodeClaudePermissionModeId(this.#requestedPermissionModeId);
-    const transport = this.#createTransport({
-      cwd: this.#cwd,
-      sessionId: this.#sessionId,
-      openMode: this.#openMode,
-      ...(model ? { model } : {}),
-      thinkingOptionId: this.#requestedThinkingOptionId,
-      permissionMode,
-      onPermissionModeChanged: (mode) => this.#handlePermissionModeChanged(mode),
-      onFault: () => this.#fault(faultError()),
-      onPlanLimit: (planLimit) => this.#handlePlanLimit(planLimit),
-    });
-    transport.setAutonomousTurnHandler((turn) => this.#handleAutonomousTurn(turn));
-    transport.setIdleTurnHandler({
-      onEvent: (event) => {
-        const active = this.#active;
-        if (active) this.#handleTurnEvent(active, event);
-      },
-      onTerminal: (result) => {
-        const active = this.#active;
-        if (active) this.#finishResult(active, result);
-      },
-    });
+    let transport: ClaudeTurnTransport;
     try {
+      transport = this.#createTransport({
+        cwd: this.#cwd,
+        sessionId: this.#sessionId,
+        openMode: this.#openMode,
+        ...(model ? { model } : {}),
+        thinkingOptionId: this.#requestedThinkingOptionId,
+        permissionMode,
+        onPermissionModeChanged: (mode) => this.#handlePermissionModeChanged(mode),
+        onFault: () => this.#fault(faultError()),
+        onPlanLimit: (planLimit) => this.#handlePlanLimit(planLimit),
+      });
+      this.#transport = transport;
+      transport.setAutonomousTurnHandler((turn) => this.#handleAutonomousTurn(turn));
+      transport.setIdleTurnHandler({
+        onEvent: (event) => {
+          const active = this.#active;
+          if (active) this.#handleTurnEvent(active, event);
+        },
+        onTerminal: (result) => {
+          const active = this.#active;
+          if (active) this.#finishResult(active, result);
+        },
+      });
       await transport.start();
       this.#state = {
         ...this.#configuredState(true),
         effectivePermissionModeId: encodeClaudePermissionModeId(transport.getPermissionMode()),
       };
     } catch (error) {
-      await transport.close().catch(() => undefined);
+      try {
+        await this.#transport?.close();
+      } catch (closeError) {
+        this.#fault(faultError());
+        throw closeError;
+      }
+      this.#transport = null;
+      await this.#releaseUnusedClaim();
       throw error;
     }
     this.#openMode = "resume";
     this.#transport = transport;
     return transport;
+  }
+
+  async #releaseUnusedClaim(): Promise<void> {
+    if (!this.#pendingClaimed || this.#submittedInput) return;
+    await this.#pendingSessions.release(this.#nativeRef, this.#cwd);
+    this.#pendingClaimed = false;
+    this.#openMode = "create";
+  }
+
+  async #savePendingConfiguration(): Promise<HarnessError | null> {
+    if (!isPendingClaudeSession(this.#nativeRef)) return null;
+    const configuration = { ...this.#configuredState() };
+    delete configuration.nativeRef;
+    try {
+      await this.#pendingSessions.saveConfiguration(this.#nativeRef, this.#cwd, configuration);
+      return null;
+    } catch {
+      const error: HarnessError = {
+        code: "nativeFailure",
+        message: "Claude Code pending configuration could not be persisted",
+        retryable: false,
+      };
+      this.#fault(error);
+      return error;
+    }
   }
 
   #configuredState(nativeReady = this.#state.nativeRef !== undefined): HarnessSessionState {
@@ -2155,6 +2307,8 @@ class ClaudeHarnessSession implements HarnessSession {
           formatVersion: 1,
         })
       : null;
+    this.#lastCompletedMessageId =
+      active.checkpointId ?? active.nativeTurnRef?.nativeTurnKey ?? null;
     this.#event({
       type: "turn.completed",
       turnId: active.command.turnId,
@@ -2237,7 +2391,7 @@ class ClaudeHarnessSession implements HarnessSession {
     this.#event({ type: "session.faulted", error });
     this.#channel.end();
     void this.#transport?.close().catch(() => undefined);
-    this.#onClosed();
+    // Keep faulted resources owned until explicit close proves the replacement fence.
   }
 
   #event(event: HostEvent): void {
@@ -2300,6 +2454,7 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
   readonly #cancelTimeoutMs: number;
   readonly #closeTimeoutMs: number;
   readonly #dependencies: ClaudeAdapterDependencies;
+  readonly #pendingSessions: ClaudePendingSessions;
   readonly #toolOutputLimit: number;
   readonly #continuationQuiescenceMs: number;
   readonly #inspectionCache = new Map<string, HarnessInspection>();
@@ -2310,6 +2465,7 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
   #latestPlanLimit: ClaudePlanLimitEvent | null = null;
 
   constructor(options: ClaudeCodeAdapterOptions = {}, dependencies?: ClaudeAdapterDependencies) {
+    this.#pendingSessions = new ClaudePendingSessions(options.environment ?? process.env);
     this.#closeTimeoutMs = options.closeTimeoutMs ?? DEFAULT_CLOSE_TIMEOUT_MS;
     this.#cancelTimeoutMs = options.cancelTimeoutMs ?? DEFAULT_CANCEL_TIMEOUT_MS;
     if (!Number.isSafeInteger(this.#cancelTimeoutMs) || this.#cancelTimeoutMs <= 0) {
@@ -2438,7 +2594,12 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
             selectPermissionMode: snapshot.canSelectPermissionMode,
             permissionModeScope: "live",
           },
-          history: { fork: true, forkAcrossCwd: false, rollbackLastTurn: false },
+          history: {
+            fork: true,
+            forkAcrossCwd: false,
+            rollbackLastTurn: true,
+            replacementFence: true,
+          },
           subagents: { observe: true, readTranscript: true },
         },
       };
@@ -2486,19 +2647,21 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
         },
       };
     }
-    if (input.kind === "rollbackLastTurn") {
+    if (
+      input.kind === "rollbackLastTurn" &&
+      [...this.#sessions].some((session) => session.blocksRollback(input.sourceRef.nativeSessionId))
+    ) {
       return {
         ok: false,
         error: {
-          code: "unsupported",
-          message:
-            "Claude Code cannot derive a durable distinct empty rollback Session for every history",
-          retryable: false,
+          code: "sessionBusy",
+          message: "Claude Code Session is busy during rollback",
+          retryable: true,
         },
       };
     }
     let requestedThinkingOptionId = CLAUDE_DEFAULT_THINKING_OPTION_ID;
-    if (input.kind === "create" && input.thinkingOptionId) {
+    if ((input.kind === "create" || input.kind === "rollbackLastTurn") && input.thinkingOptionId) {
       try {
         requestedThinkingOptionId = parseClaudeThinkingOptionId(input.thinkingOptionId);
       } catch {
@@ -2512,7 +2675,7 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
         };
       }
     }
-    if (input.kind === "create" && input.model) {
+    if ((input.kind === "create" || input.kind === "rollbackLastTurn") && input.model) {
       try {
         decodeClaudeModelRef(input.model);
       } catch {
@@ -2526,13 +2689,15 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
         };
       }
     }
-    const requestedPermissionModeId =
+    let requestedPermissionModeId =
       input.kind === "create"
         ? (input.permissionModeId ??
           (input.executionPolicy === "unattended-full-access"
             ? encodeClaudePermissionModeId("auto")
             : CLAUDE_DEFAULT_PERMISSION_MODE_ID))
-        : CLAUDE_DEFAULT_PERMISSION_MODE_ID;
+        : input.kind === "rollbackLastTurn" || input.kind === "resume"
+          ? (input.permissionModeId ?? CLAUDE_DEFAULT_PERMISSION_MODE_ID)
+          : CLAUDE_DEFAULT_PERMISSION_MODE_ID;
     try {
       decodeClaudePermissionModeId(requestedPermissionModeId);
     } catch {
@@ -2546,6 +2711,12 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
       };
     }
     const cwd = path.resolve(input.cwd);
+    if (input.kind === "rollbackLastTurn") {
+      for (const source of this.#sessions) {
+        const ready = await source.prepareRollback(input.sourceRef.nativeSessionId);
+        if (!ready.ok) return ready;
+      }
+    }
     const nativeRef =
       input.kind === "resume" ? nativeSessionRefSchema.safeParse(input.nativeRef) : null;
     if (nativeRef && (!nativeRef.success || nativeRef.data.harnessId !== this.harnessId)) {
@@ -2559,9 +2730,19 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
       };
     }
     const forked =
-      input.kind === "fork"
+      input.kind === "fork" || input.kind === "rollbackLastTurn"
         ? await forkClaudeSession({
-            checkpoint: input.checkpoint,
+            ...(input.kind === "fork"
+              ? { kind: "fork" as const, checkpoint: input.checkpoint }
+              : {
+                  kind: "rollbackLastTurn" as const,
+                  pendingSessions: this.#pendingSessions,
+                  configuration: {
+                    ...(input.model ? { effectiveModel: input.model } : {}),
+                    effectiveThinkingOptionId: requestedThinkingOptionId,
+                    effectivePermissionModeId: requestedPermissionModeId,
+                  },
+                }),
             cwd,
             dependencies: this.#dependencies,
             harnessId: this.harnessId,
@@ -2569,6 +2750,53 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
           })
         : null;
     if (forked && !forked.ok) return forked;
+    const durableRef = forked?.ok
+      ? forked.value.nativeRef
+      : nativeRef?.success
+        ? nativeRef.data
+        : undefined;
+    let openMode: "create" | "resume" =
+      (forked?.ok && forked.value.openMode === "create") || input.kind === "create"
+        ? "create"
+        : "resume";
+    let requestedModel =
+      input.kind === "create" || input.kind === "rollbackLastTurn" ? input.model : undefined;
+    if (durableRef && isPendingClaudeSession(durableRef)) {
+      try {
+        const pending = await this.#pendingSessions.read(durableRef, cwd);
+        if (!pending.started) {
+          const messages = await this.#dependencies.readSessionMessages({
+            cwd,
+            sessionId: durableRef.nativeSessionId,
+          });
+          if (messages.length > 0 || (input.kind === "resume" && input.knownTurnRefs?.length))
+            throw new Error("Pending Session unexpectedly contains history");
+          openMode = "create";
+        }
+        if (pending.configuration.effectiveModel)
+          decodeClaudeModelRef(pending.configuration.effectiveModel);
+        if (pending.configuration.effectiveThinkingOptionId)
+          parseClaudeThinkingOptionId(pending.configuration.effectiveThinkingOptionId);
+        if (pending.configuration.effectivePermissionModeId)
+          decodeClaudePermissionModeId(pending.configuration.effectivePermissionModeId);
+        requestedModel ??= pending.configuration.effectiveModel;
+        requestedThinkingOptionId =
+          pending.configuration.effectiveThinkingOptionId ?? requestedThinkingOptionId;
+        requestedPermissionModeId =
+          input.kind === "resume" && input.permissionModeId
+            ? input.permissionModeId
+            : (pending.configuration.effectivePermissionModeId ?? requestedPermissionModeId);
+      } catch {
+        return {
+          ok: false,
+          error: {
+            code: "sessionNotFound",
+            message: "Claude Code pending Session cannot be recovered",
+            retryable: false,
+          },
+        };
+      }
+    }
     const session: ClaudeHarnessSession = new ClaudeHarnessSession(
       cwd,
       this.#dependencies,
@@ -2577,13 +2805,18 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
       (planLimit) => this.#recordPlanLimit(session, planLimit),
       {
         ...(input.environment ? { environment: input.environment } : {}),
-        openMode: input.kind === "create" ? "create" : "resume",
+        openMode,
+        pendingSessions: this.#pendingSessions,
+        knownConfiguration:
+          input.kind === "rollbackLastTurn" ||
+          Boolean(durableRef && isPendingClaudeSession(durableRef)),
+        ...(durableRef ? { nativeRef: durableRef } : {}),
         sessionId: forked?.ok
           ? forked.value.sessionId
           : nativeRef?.success
             ? nativeRef.data.nativeSessionId
             : this.#dependencies.randomUUID(),
-        ...(input.kind === "create" && input.model ? { requestedModel: input.model } : {}),
+        ...(requestedModel ? { requestedModel } : {}),
         requestedPermissionModeId,
         requestedThinkingOptionId,
         toolOutputLimit: this.#toolOutputLimit,

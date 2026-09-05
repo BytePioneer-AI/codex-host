@@ -384,7 +384,7 @@ describe("Claude Code HarnessAdapter", () => {
     expect(dependencies.createTransport).not.toHaveBeenCalled();
   });
 
-  it("reports last-Turn rollback unsupported before reading history or starting a Transport", async () => {
+  it("rejects unavailable rollback history before forking or starting a Transport", async () => {
     const { adapter, dependencies, transports } = fixture();
     const sourceRef = nativeSessionRefSchema.parse({
       harnessId: "claude-code",
@@ -394,8 +394,8 @@ describe("Claude Code HarnessAdapter", () => {
 
     await expect(
       adapter.open({ kind: "rollbackLastTurn", sourceRef, cwd: "/synthetic" }),
-    ).resolves.toMatchObject({ ok: false, error: { code: "unsupported" } });
-    expect(dependencies.readSessionMessages).not.toHaveBeenCalled();
+    ).resolves.toMatchObject({ ok: false, error: { code: "sessionNotFound" } });
+    expect(dependencies.readSessionMessages).toHaveBeenCalledOnce();
     expect(dependencies.forkSession).not.toHaveBeenCalled();
     expect(dependencies.createTransport).not.toHaveBeenCalled();
     expect(transports).toHaveLength(0);
@@ -445,7 +445,12 @@ describe("Claude Code HarnessAdapter", () => {
           selectThinkingOption: true,
           selectPermissionMode: true,
         },
-        history: { fork: true, forkAcrossCwd: false, rollbackLastTurn: false },
+        history: {
+          fork: true,
+          forkAcrossCwd: false,
+          rollbackLastTurn: true,
+          replacementFence: true,
+        },
         subagents: { observe: true, readTranscript: true },
       },
     });
@@ -467,7 +472,7 @@ describe("Claude Code HarnessAdapter", () => {
         selectPermissionMode: true,
         permissionModeScope: "live",
       },
-      history: { fork: true, forkAcrossCwd: false, rollbackLastTurn: false },
+      history: { fork: true, forkAcrossCwd: false, rollbackLastTurn: true, replacementFence: true },
       subagents: { observe: true, readTranscript: true },
     });
     const iterator = session.outputs[Symbol.asyncIterator]();
@@ -4481,7 +4486,7 @@ describe("Claude Code HarnessAdapter", () => {
       ok: false,
     });
     expect(transports).toHaveLength(1);
-    await session.close();
+    await expect(session.close()).rejects.toThrow("could not stop safely");
   });
 
   it("kills a hung interrupt and continues on a resumed Transport", async () => {

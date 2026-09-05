@@ -1213,7 +1213,26 @@ export class PiRpcSession {
   #handleResponse(value: Record<string, unknown>): void {
     const id = value.id;
     if (typeof id !== "string") {
-      this.#fail(new PiRpcFaultError("protocolError", "Pi RPC response has no id"));
+      // Current Pi builds omit the request id from unknown-command error
+      // frames; route them back to the unique pending command they name so
+      // unsupported commands still degrade gracefully instead of faulting.
+      const unknownCommand =
+        value.success === false &&
+        typeof value.command === "string" &&
+        value.error === `Unknown command: ${value.command}`
+          ? value.command
+          : null;
+      const orphaned = [...this.#pending.entries()].filter(
+        ([, pending]) => pending.command === unknownCommand,
+      );
+      if (unknownCommand === null || orphaned.length !== 1 || !orphaned[0]) {
+        this.#fail(new PiRpcFaultError("protocolError", "Pi RPC response has no id"));
+        return;
+      }
+      const [orphanedId, pending] = orphaned[0];
+      if (pending.timeout) clearTimeout(pending.timeout);
+      this.#pending.delete(orphanedId);
+      pending.reject(new PiRpcUnsupportedCommandError(pending.command));
       return;
     }
     const pending = this.#pending.get(id);

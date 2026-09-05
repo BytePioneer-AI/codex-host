@@ -86,6 +86,7 @@ import {
   type AntigravityCodeAction,
 } from "./code-action-diff.js";
 import { fetchAntigravityQuota, type AntigravityQuotaSnapshot } from "./quota.js";
+import { AntigravityQuestionBridge } from "./question-bridge.js";
 import {
   antigravityToolErrorMessage,
   isAntigravityPermissionDenial,
@@ -114,6 +115,8 @@ export interface AntigravityAdapterOptions {
 interface ActiveTurn {
   command: TurnStartCommand;
   process: ChildProcessByStdio<Writable, Readable, Readable>;
+  exited: Promise<void>;
+  questions: AntigravityQuestionBridge;
   logPath: string;
   agentItem: HostAgentMessageItem | null;
   agentText: string;
@@ -229,12 +232,8 @@ function invalidState(message: string): HarnessError {
   return { code: "invalidState", message, retryable: false };
 }
 
-function unsupported(message: string): HarnessError {
-  return { code: "unsupported", message, retryable: false };
-}
-
 export const ANTIGRAVITY_WORKSPACE_FILE_INSTRUCTION =
-  "[System Instruction: When creating new files in the workspace, you MUST use the write_to_file tool. When modifying existing files, use the replace_file_content tool. CRITICAL: NEVER include ArtifactMetadata when calling write_to_file for workspace files (ArtifactMetadata is strictly reserved for artifacts in the brain directory, and providing it for workspace files causes a path validation rejection). Do NOT use terminal commands (such as Set-Content, Out-File, echo, or cat) to create or write code files.]\n\n";
+  "[System Instruction: When creating new files in the workspace, you MUST use the write_to_file tool. When modifying existing files, use the replace_file_content tool. CRITICAL: NEVER include ArtifactMetadata when calling write_to_file for workspace files (ArtifactMetadata is strictly reserved for artifacts in the brain directory, and providing it for workspace files causes a path validation rejection). Do NOT use terminal commands (such as Set-Content, Out-File, echo, or cat) to create or write code files. For clarification, ask_question is connected to the codexhost Desktop through a Hook. Use single-choice or text questions. The Hook returns the actual user response in its reason while blocking the native auto-skip behavior; do not retry merely because the native tool reports it was blocked.]\n\n";
 
 export function formatAntigravityTurnPrompt(text: string): string {
   if (text.startsWith("/") || text.includes("ArtifactMetadata")) {
@@ -479,6 +478,8 @@ class AntigravitySession implements HarnessSession {
   readonly #toolOutputLimit: number;
   readonly #history: AntigravityHistory;
   #active: ActiveTurn | null = null;
+  #preparingQuestions: Promise<AntigravityQuestionBridge> | null = null;
+  #questionCleanup: Promise<void> = Promise.resolve();
   #closed = false;
   #model: HarnessModelRef | undefined;
   #nativeRef: NativeSessionRef | undefined;
@@ -541,7 +542,7 @@ class AntigravitySession implements HarnessSession {
   }
 
   get isActive(): boolean {
-    return this.#active !== null;
+    return this.#active !== null || this.#preparingQuestions !== null;
   }
 
   readonly initialState: HarnessSessionState;
@@ -577,12 +578,14 @@ class AntigravitySession implements HarnessSession {
     if (command.type === "permissionMode.select") return this.#selectPermissionMode(command);
     if (command.type === "thinking.select") return this.#selectThinking(command);
     if (command.type === "interaction.respond") {
-      return {
-        ok: false,
-        error: unsupported("Antigravity headless mode cannot answer interactive prompts"),
-      };
+      return (
+        this.#active?.questions.respond(command) ?? {
+          ok: false,
+          error: invalidState("Antigravity Question is not active"),
+        }
+      );
     }
-    if (this.#active) {
+    if (this.isActive) {
       return {
         ok: false,
         error: {
@@ -603,6 +606,50 @@ class AntigravitySession implements HarnessSession {
       };
     }
 
+    let questions: AntigravityQuestionBridge;
+    this.#preparingQuestions = AntigravityQuestionBridge.create({
+      turnId: command.turnId,
+      nativeSessionId: () =>
+        this.#active?.command === command && !this.#active.cancellationRequested
+          ? this.#nativeRef?.nativeSessionId
+          : undefined,
+      schedule: (action) => {
+        if (this.#active?.command === command) this.#enqueue(this.#active, action);
+        else action();
+      },
+      emit: (output) => {
+        const active = this.#active;
+        if (!active || active.command !== command) return;
+        if (output.kind === "event" && output.event.type === "item.started" && active.agentItem) {
+          this.#completeItem(active, active.agentItem, { status: "succeeded" });
+          active.agentItem = null;
+          active.agentText = "";
+        }
+        if (output.kind === "event" && output.event.type === "item.completed") {
+          active.completedItems.push(output.event.snapshot);
+        }
+        this.#channel.emit(output);
+      },
+    });
+    try {
+      questions = await this.#preparingQuestions;
+    } catch (error) {
+      return {
+        ok: false,
+        error: {
+          code: "nativeFailure",
+          message: `Question bridge setup failed: ${errorMessage(error)}`,
+          retryable: true,
+        },
+      };
+    } finally {
+      this.#preparingQuestions = null;
+    }
+    if (this.#closed) {
+      await questions.dispose();
+      return { ok: false, error: invalidState("Antigravity Session is closed") };
+    }
+    const environment = { ...this.#environment, ...questions.environment };
     const logPath = path.join(os.tmpdir(), `codexhost-antigravity-${randomUUID()}.log`);
     const arguments_ = [
       "--input-format",
@@ -618,18 +665,20 @@ class AntigravitySession implements HarnessSession {
       arguments_.push("--dangerously-skip-permissions");
     }
     arguments_.push("--add-dir", this.#cwd);
+    arguments_.push("--add-dir", questions.directory);
     arguments_.push("--log-file", logPath);
-    const invocation = commandInvocation(this.#executable, arguments_, this.#environment);
+    const invocation = commandInvocation(this.#executable, arguments_, environment);
     let child: ChildProcessByStdio<Writable, Readable, Readable>;
     try {
       child = spawn(invocation.command, invocation.arguments, {
         cwd: this.#cwd,
-        env: this.#environment,
+        env: environment,
         windowsHide: true,
         windowsVerbatimArguments: invocation.windowsVerbatimArguments,
         stdio: ["pipe", "pipe", "pipe"],
       });
     } catch (error) {
+      await questions.dispose();
       return {
         ok: false,
         error: { code: "nativeFailure", message: errorMessage(error), retryable: true },
@@ -638,6 +687,8 @@ class AntigravitySession implements HarnessSession {
     const active: ActiveTurn = {
       command,
       process: child,
+      exited: new Promise<void>((resolve) => child.once("close", () => resolve())),
+      questions,
       logPath,
       agentItem: null,
       agentText: "",
@@ -719,11 +770,14 @@ class AntigravitySession implements HarnessSession {
   async close(): Promise<void> {
     if (this.#closed) return;
     this.#closed = true;
+    const preparing = await this.#preparingQuestions?.catch(() => undefined);
+    await preparing?.dispose();
     if (this.#active) {
       this.#active.cancellationRequested = true;
       this.#active.process.kill();
       this.#completeTurn(this.#active, { status: "cancelled", reason: "Session closed" });
     }
+    await this.#questionCleanup;
     await this.#history.flush().catch(() => undefined);
     this.#channel.end();
     this.#onClosed();
@@ -1050,6 +1104,14 @@ class AntigravitySession implements HarnessSession {
 
   #completeTurn(active: ActiveTurn, outcome: TurnOutcome, nativeTurnRef?: NativeTurnRef): void {
     if (this.#active !== active) return;
+    active.questions.stop();
+    this.#questionCleanup = this.#questionCleanup
+      .then(async () => {
+        const timer = setTimeout(() => active.process.kill(), 2_000);
+        await active.exited.finally(() => clearTimeout(timer));
+        await active.questions.dispose();
+      })
+      .catch(() => undefined);
     this.#active = null;
     const itemOutcome: HostItemOutcome =
       outcome.status === "failed"
@@ -1103,7 +1165,7 @@ class AntigravitySession implements HarnessSession {
     if (this.#closed) {
       return { ok: false, error: invalidState("Antigravity Session is closed") };
     }
-    if (this.#active) {
+    if (this.isActive) {
       return {
         ok: false,
         error: {
@@ -1140,12 +1202,13 @@ class AntigravitySession implements HarnessSession {
       };
     }
     this.#active.cancellationRequested = true;
+    this.#active.questions.stop();
     this.#active.process.kill();
     return { ok: true, value: { cancellationRequested: true } };
   }
 
   #selectModel(command: ModelSelectCommand): HarnessResult<ModelSelectCompleted> {
-    if (this.#active) {
+    if (this.isActive) {
       return {
         ok: false,
         error: { code: "sessionBusy", message: "Turn is active", retryable: true },
@@ -1164,7 +1227,7 @@ class AntigravitySession implements HarnessSession {
   }
 
   #selectThinking(command: ThinkingSelectCommand): HarnessResult<ThinkingSelectCompleted> {
-    if (this.#active) {
+    if (this.isActive) {
       return {
         ok: false,
         error: { code: "sessionBusy", message: "Turn is active", retryable: true },
@@ -1201,7 +1264,7 @@ class AntigravitySession implements HarnessSession {
   #selectPermissionMode(
     command: PermissionModeSelectCommand,
   ): HarnessResult<PermissionModeSelectCompleted> {
-    if (this.#active) {
+    if (this.isActive) {
       return {
         ok: false,
         error: { code: "sessionBusy", message: "Turn is active", retryable: true },

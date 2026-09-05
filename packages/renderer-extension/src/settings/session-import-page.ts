@@ -1,31 +1,19 @@
 import type {
-  DeepSeekModernSessionCandidate,
-  DeepSeekModernSessionImportParams,
-  DeepSeekModernSessionImportResult,
-  DeepSeekModernSessionListParams,
-  DeepSeekModernSessionListResult,
+  HarnessId,
+  HarnessSessionImportCandidate,
+  HarnessSessionImportSourcesResult,
   HostThreadId,
 } from "@codexhost/shared-contracts";
 
-import { KNOWN_RENDERER_AGENTS, type ExternalRendererAgent } from "../agent-selection-state.js";
-import { RENDERER_AGENT_LABELS } from "../renderer-agent-icon.js";
-import { RendererDeepSeekSessionUnavailableError } from "../renderer-model-client.js";
+import {
+  RendererSessionImportUnavailableError,
+  type RendererSessionImportClient,
+} from "../renderer-session-import-client.js";
+export type { RendererSessionImportClient } from "../renderer-session-import-client.js";
 import type { RendererSettingsPageDefinition, RendererSettingsPageMountContext } from "./core.js";
 import { createRendererSettingsIcon } from "./icons.js";
 import type { RendererSettingsMessages } from "./localization.js";
-
-const SESSION_IMPORT_HARNESSES = KNOWN_RENDERER_AGENTS.filter(
-  (agent): agent is ExternalRendererAgent => agent !== "codex",
-);
-
-export interface RendererDeepSeekSessionImportClient {
-  listDeepSeekModernSessions(
-    input: DeepSeekModernSessionListParams,
-  ): Promise<DeepSeekModernSessionListResult>;
-  importDeepSeekModernSession(
-    input: DeepSeekModernSessionImportParams,
-  ): Promise<DeepSeekModernSessionImportResult>;
-}
+import { createSessionImportListControls } from "./session-import-list-controls.js";
 
 export type RendererImportedThreadOpener = (
   threadId: HostThreadId,
@@ -56,9 +44,9 @@ function createAccessibleText(document: Document, message: string): HTMLElement 
   return text;
 }
 
-export function createDeepSeekSessionImportSettingsPage(
+export function createSessionImportSettingsPage(
   messages: RendererSettingsMessages,
-  getClient: () => RendererDeepSeekSessionImportClient | null,
+  getClient: () => RendererSessionImportClient | null,
   openImportedThread: RendererImportedThreadOpener,
 ): RendererSettingsPageDefinition {
   return Object.freeze({
@@ -94,16 +82,31 @@ export function createDeepSeekSessionImportSettingsPage(
       harnessOptions.dataset.sessionImportHarness = "selector";
       harnessOptions.setAttribute("role", "group");
       harnessOptions.setAttribute("aria-label", messages.sessionImportHarness);
-      for (const agent of SESSION_IMPORT_HARNESSES) {
-        const option = document.createElement("button");
-        option.type = "button";
-        option.className = "settings-session-import-harness__option";
-        option.dataset.sessionImportHarnessOption = agent;
-        option.textContent = RENDERER_AGENT_LABELS[agent];
-        option.disabled = agent !== "deepseek-harness";
-        option.setAttribute("aria-pressed", agent === "deepseek-harness" ? "true" : "false");
-        harnessOptions.append(option);
-      }
+      let selectedHarness: HarnessId | null = null;
+      let sources: HarnessSessionImportSourcesResult["harnesses"] = [];
+      const sourceButtons: HTMLButtonElement[] = [];
+      const renderHarnessOptions = (): void => {
+        harnessOptions.replaceChildren();
+        sourceButtons.length = 0;
+        for (const source of sources) {
+          const option = document.createElement("button");
+          option.type = "button";
+          option.className = "settings-session-import-harness__option";
+          option.dataset.sessionImportHarnessOption = source.harnessId;
+          option.textContent = source.name;
+          option.setAttribute("aria-pressed", String(source.harnessId === selectedHarness));
+          option.addEventListener("click", () => {
+            if (option.disabled || importingId !== null || source.harnessId === selectedHarness)
+              return;
+            selectedHarness = source.harnessId;
+            listControls.reset();
+            renderHarnessOptions();
+            load();
+          });
+          sourceButtons.push(option);
+          harnessOptions.append(option);
+        }
+      };
       harness.append(harnessLabel, harnessOptions);
 
       const description = document.createElement("p");
@@ -115,19 +118,30 @@ export function createDeepSeekSessionImportSettingsPage(
       availabilityNote.textContent = messages.sessionImportAvailabilityNote;
       const content = document.createElement("section");
       content.className = "settings-session-import-content";
-      context.content.append(header, harness, description, availabilityNote, content);
+      const listControls = createSessionImportListControls(document, messages, () => load());
+      context.content.append(
+        header,
+        harness,
+        description,
+        availabilityNote,
+        listControls.searchForm,
+        content,
+        listControls.pagination,
+      );
 
-      let candidates: readonly DeepSeekModernSessionCandidate[] = [];
+      let candidates: readonly HarnessSessionImportCandidate[] = [];
       let importingId: string | null = null;
       let actions: Array<{
         readonly button: HTMLButtonElement;
-        readonly candidate: DeepSeekModernSessionCandidate;
+        readonly candidate: HarnessSessionImportCandidate;
       }> = [];
 
       const updateImportActions = (): void => {
+        listControls.setBusy(importingId !== null, importingId !== null);
+        for (const button of sourceButtons) button.disabled = importingId !== null;
         for (const { button, candidate } of actions) {
           const importing = importingId === candidate.nativeSessionId;
-          button.disabled = candidate.running;
+          button.disabled = candidate.running === true;
           button.setAttribute(
             "aria-disabled",
             candidate.running || importingId !== null ? "true" : "false",
@@ -141,6 +155,7 @@ export function createDeepSeekSessionImportSettingsPage(
       };
 
       const renderUnavailable = (focus = false): void => {
+        listControls.setTotal(0);
         candidates = [];
         actions = [];
         const status = createStatus(document, messages.sessionImportUnavailable);
@@ -152,7 +167,8 @@ export function createDeepSeekSessionImportSettingsPage(
       };
 
       const renderFailure = (error: unknown, operation: "list" | "import" = "list"): void => {
-        if (error instanceof RendererDeepSeekSessionUnavailableError) {
+        listControls.setTotal(0);
+        if (error instanceof RendererSessionImportUnavailableError) {
           renderUnavailable(operation === "import");
           return;
         }
@@ -170,7 +186,7 @@ export function createDeepSeekSessionImportSettingsPage(
       };
 
       const renderOpenRecovery = (
-        candidate: DeepSeekModernSessionCandidate,
+        candidate: HarnessSessionImportCandidate,
         threadId: HostThreadId,
       ): void => {
         actions = [];
@@ -227,6 +243,8 @@ export function createDeepSeekSessionImportSettingsPage(
         retry.className = "settings-command-button";
         retry.dataset.sessionImportAction = "retry-open";
         const setRetrying = (pending: boolean): void => {
+          listControls.setBusy(pending, pending);
+          for (const button of sourceButtons) button.disabled = pending;
           retry.disabled = pending;
           refresh.disabled = pending;
           retry.setAttribute("aria-busy", pending ? "true" : "false");
@@ -258,7 +276,14 @@ export function createDeepSeekSessionImportSettingsPage(
         actions = [];
         content.replaceChildren();
         if (candidates.length === 0) {
-          content.append(createStatus(document, messages.sessionImportEmpty));
+          content.append(
+            createStatus(
+              document,
+              listControls.params().query
+                ? messages.sessionImportNoMatches
+                : messages.sessionImportEmpty,
+            ),
+          );
           return;
         }
         const list = document.createElement("div");
@@ -298,17 +323,20 @@ export function createDeepSeekSessionImportSettingsPage(
 
           const actionArea = document.createElement("div");
           actionArea.className = "settings-session-import-row__action";
-          if (candidate.running) {
+          if (candidate.running !== false) {
             const running = document.createElement("span");
             running.className = "settings-session-import-running";
-            running.textContent = messages.sessionImportRunning;
+            running.textContent =
+              candidate.running === null
+                ? messages.sessionImportRunningUnknown
+                : messages.sessionImportRunning;
             running.title = messages.sessionImportRunningHint;
             running.setAttribute("aria-hidden", "true");
             actionArea.append(
               running,
               createAccessibleText(
                 document,
-                `${messages.sessionImportRunning}: ${messages.sessionImportRunningHint}`,
+                `${running.textContent}: ${messages.sessionImportRunningHint}`,
               ),
             );
           }
@@ -317,7 +345,9 @@ export function createDeepSeekSessionImportSettingsPage(
           action.className = "settings-command-button";
           action.dataset.sessionImportAction = "import";
           action.addEventListener("click", () => {
-            if (candidate.running || importingId !== null) return;
+            if (candidate.running === true || importingId !== null || selectedHarness === null)
+              return;
+            const harnessId = selectedHarness;
             const client = getClient();
             if (!client) {
               renderUnavailable(true);
@@ -329,11 +359,12 @@ export function createDeepSeekSessionImportSettingsPage(
             let committedThreadId: HostThreadId | null = null;
             void context.runLatest(
               async (signal) => {
-                const result = await client.importDeepSeekModernSession({
+                const result = await client.importHarnessSession({
+                  harnessId,
                   nativeSessionId: candidate.nativeSessionId,
                 });
                 committedThreadId = result.threadId;
-                await openImportedThread(result.threadId, signal);
+                if (!signal.aborted) await openImportedThread(result.threadId, signal);
               },
               {
                 success() {
@@ -343,6 +374,7 @@ export function createDeepSeekSessionImportSettingsPage(
                 },
                 failure(error) {
                   importingId = null;
+                  updateImportActions();
                   refresh.disabled = false;
                   if (committedThreadId) {
                     renderOpenRecovery(candidate, committedThreadId);
@@ -363,7 +395,7 @@ export function createDeepSeekSessionImportSettingsPage(
       };
 
       const load = (): void => {
-        if (importingId !== null) return;
+        if (importingId !== null || context.signal.aborted) return;
         const client = getClient();
         if (!client) {
           refresh.disabled = false;
@@ -371,23 +403,54 @@ export function createDeepSeekSessionImportSettingsPage(
           renderUnavailable();
           return;
         }
+        listControls.setBusy(true);
         refresh.disabled = true;
         setRefreshLabel(true);
         content.replaceChildren(createStatus(document, messages.sessionImportRefreshing));
-        void context.runLatest(() => client.listDeepSeekModernSessions({}), {
-          success(result) {
-            candidates = result.candidates;
-            refresh.disabled = false;
-            setRefreshLabel(false);
-            renderCandidates();
+        const requestedHarness = selectedHarness;
+        const pageParams = listControls.params();
+        void context.runLatest(
+          async (signal) => {
+            const result = await client.listSessionImportSources();
+            const selected =
+              result.harnesses.find(({ harnessId }) => harnessId === requestedHarness)?.harnessId ??
+              result.harnesses[0]?.harnessId ??
+              null;
+            if (signal.aborted) throw new Error("Session import selection changed");
+            // Keep the selector available even if one Harness's current native protocol is unsupported.
+            sources = result.harnesses;
+            selectedHarness = selected;
+            if (selected !== requestedHarness) {
+              listControls.reset();
+              pageParams.offset = 0;
+            }
+            renderHarnessOptions();
+            return selected
+              ? client.listHarnessSessions({ harnessId: selected, ...pageParams })
+              : { candidates: [], total: 0 };
           },
-          failure(error) {
-            candidates = [];
-            refresh.disabled = false;
-            setRefreshLabel(false);
-            renderFailure(error);
+          {
+            success(result) {
+              listControls.setBusy(false);
+              if (listControls.setTotal(result.total)) {
+                load();
+                return;
+              }
+              candidates = result.candidates;
+              refresh.disabled = false;
+              setRefreshLabel(false);
+              if (selectedHarness === null) renderUnavailable();
+              else renderCandidates();
+            },
+            failure(error) {
+              listControls.setBusy(false);
+              candidates = [];
+              refresh.disabled = false;
+              setRefreshLabel(false);
+              renderFailure(error);
+            },
           },
-        });
+        );
       };
 
       refresh.addEventListener("click", load);

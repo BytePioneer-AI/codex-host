@@ -54,7 +54,7 @@ Codex Desktop 协议、官方 app-server、Renderer 兼容绑定仍是 codexhost
 | Claude Code | Agent SDK；审批、提问、Subagent、后台延续、Credits；支持 Fork/Rollback，不支持跨目录 Fork | 原生回调和后台生命周期；macOS 受管远程有专属 Broker 承载 |
 | OMP | 原生 RPC；权限模式、审批与提问、Subagent、后台自主 Turn、跨目录 Fork/Rollback | 权限切换可能重启原生连接；恢复时可能替换不可用 Model，不能复活旧 Thinking |
 | Grok | ACP 加扩展；审批、压缩、Credits、Fork/跨目录 Fork/Rollback | Permission Mode 在 Session 创建时固定，不能通过恢复后的普通配置写入补设 |
-| OpenCode | SDK/Server 事件流；原生命令、审批、提问、Diff、Fork/Rollback，不支持跨目录 Fork | 原生权限 API 有累加语义，恢复须尊重原生实际状态，不无条件重放旧权限 |
+| OpenCode | SDK/Server 事件流；固定 `/compact`、审批、提问、Diff、Fork/Rollback，不支持跨目录 Fork | 原生权限 API 有累加语义，恢复须尊重原生实际状态，不无条件重放旧权限 |
 | DeepSeek Harness | 公共 Adapter 内选择 Legacy/Modern；Modern 有控制状态确认、自主 Turn、导入和托管 Web | 两代协议能力不同；原生状态确认、事件关联、历史与认证须留在插件 |
 | Antigravity | CLI `stream-json`；配置、工具、文件变化投影、Credits；不支持 Fork/Rollback | Adapter 自持历史补充记录及恢复逻辑；不得迁回 Host 或在重构时删除 |
 
@@ -96,7 +96,7 @@ Codex Desktop 协议、官方 app-server、Renderer 兼容绑定仍是 codexhost
 
 ### 2.4 可选能力尚未贯通
 
-**Session Import：**已有 `adapter.sessionImport?.listCandidates()`，但共享 RPC Schema、Host Importer 和设置页面仍绑定 DeepSeek。Importer 的去重、并发、忙碌检查与临时记录清理大部分是通用 Thread 管理语义。
+**Session Import：**本地共享 RPC、Host Importer 和设置页面已通用化，Pi 与 DSH Modern 共用同一路径。Adapter 通过 `listCandidates()` 提供元数据，通过 `resolveCandidate(id)` 重新验证完整原生引用；Host 保留去重、并发、忙碌检查与临时记录清理。远程和 CC Broker 导入尚未扩展，见[当前导入契约](harness-session-import.md)。
 
 **Credits：**Host 通过结构探测读取 `credits()`、`refreshCredits()`，它们不是正式 Adapter 成员。Renderer 还通过 Codex/Grok/Claude 名单决定是否等待 Credits，而 Antigravity 也有对应方法。这是能力提供与消费的双重接线，不等于本轮已证明具体 UI 故障。
 
@@ -318,7 +318,7 @@ Host 接收已确认状态并维护公共配置视图，不能生成虚假的 ef
 
 | 能力 | 目标 |
 | --- | --- |
-| Commands | 沿用 `session.commands`；保留原生命令、参数、忙碌校验、Turn/Item、取消和临时历史语义 |
+| Commands | 静态目录通过 `adapter.commandCatalog` 提供，不启动 Session 或请求原生命令发现；执行沿用 `session.commands`，保留参数、忙碌校验、Turn/Item、取消和临时历史语义 |
 | Credits | 正式可选接口；沿用 `AccountCreditsSnapshot`，明确缓存读取、刷新、未知和失败状态，去除结构探测与 Renderer 名单 |
 | Session Import | 插件发现候选并提供正确原生引用；Host 通用导入、去重、并发和映射提交 |
 | Web UI | 沿用可选入口；插件处理原生地址、认证与可用性，公共层受控打开 |
@@ -327,7 +327,7 @@ Host 接收已确认状态并维护公共配置视图，不能生成虚假的 ef
 
 导入不是普通 Session slash command：操作发生在目标 Thread 建立之前。不能强行包装成用户文本 Turn，也不能让插件直接写映射库。
 
-当前候选只包含原生 Session ID。通用化时必须保证完整 Native Session 引用由插件确认，Host 不能替插件猜测原生格式；具体使用候选中的完整引用还是额外解析入口，应根据现有调用与验证需求选择最小方案。
+当前 list 候选只包含浏览器安全元数据，导入时由 `resolveCandidate(id)` 返回新鲜 `{ candidate, nativeRef }`。完整 Native Session 引用由插件确认，Host 不猜测原生格式，也不接收 Renderer 提供的 locator。此只读解析入口不承担 prepare/commit/rollback 事务；映射提交仍属于 Host。
 
 保留重新校验候选、忙碌拒绝、重复导入幂等、跨请求竞争处理和失败清理，不因通用化降低这些保证。
 

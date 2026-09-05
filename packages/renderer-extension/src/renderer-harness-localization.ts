@@ -5,6 +5,8 @@ import type { RendererSettingsLocale } from "./settings/localization.js";
 export interface RendererHarnessMessages {
   readonly commands: string;
   readonly harnessCommands: string;
+  readonly commandsUnavailable: string;
+  readonly commandRequiresConversation: string;
   readonly textArgument: string;
   readonly permissionMode: string;
   readonly permissions: string;
@@ -17,6 +19,8 @@ export interface RendererHarnessMessages {
 const ENGLISH_HARNESS_MESSAGES: RendererHarnessMessages = Object.freeze({
   commands: "Commands",
   harnessCommands: "Harness commands",
+  commandsUnavailable: "No Harness commands available yet",
+  commandRequiresConversation: "Start a conversation before running this command",
   textArgument: "Text",
   permissionMode: "Permission mode",
   permissions: "Permissions",
@@ -30,6 +34,8 @@ const ENGLISH_HARNESS_MESSAGES: RendererHarnessMessages = Object.freeze({
 const CHINESE_HARNESS_MESSAGES: RendererHarnessMessages = Object.freeze({
   commands: "命令",
   harnessCommands: "Harness 命令",
+  commandsUnavailable: "暂无可用的 Harness 命令",
+  commandRequiresConversation: "请先开始对话，再执行此命令",
   textArgument: "文本",
   permissionMode: "权限模式",
   permissions: "权限",

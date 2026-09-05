@@ -37,9 +37,23 @@ export {
   HARNESS_SESSION_IMPORT_TITLE_MAX_LENGTH,
   HARNESS_SESSION_IMPORT_UPDATED_AT_MAX,
   harnessSessionImportCandidateSchema,
+  HARNESS_SESSION_IMPORT_DEFAULT_PAGE_SIZE,
   harnessSessionImportIdSchema,
+  harnessSessionImportSourcesParamsSchema,
+  harnessSessionImportSourcesResultSchema,
+  harnessSessionListParamsSchema,
+  harnessSessionListResultSchema,
+  harnessSessionImportParamsSchema,
+  harnessSessionImportResultSchema,
 } from "./harness-session-import.js";
-export type { HarnessSessionImportCandidate } from "./harness-session-import.js";
+export type {
+  HarnessSessionImportCandidate,
+  HarnessSessionImportSourcesResult,
+  HarnessSessionListParams,
+  HarnessSessionListResult,
+  HarnessSessionImportParams,
+  HarnessSessionImportResult,
+} from "./harness-session-import.js";
 export {
   DEEPSEEK_MODERN_HOST_THREAD_ID_MAX_LENGTH,
   DEEPSEEK_MODERN_SESSION_CWD_MAX_LENGTH,
@@ -137,6 +151,7 @@ export type {
 export {
   harnessCommandCatalogSchema,
   harnessCommandDescriptorSchema,
+  harnessCommandsInspectParamsSchema,
   threadCommandExecuteParamsSchema,
   threadCommandExecuteResultSchema,
   threadCommandsInspectParamsSchema,
@@ -144,6 +159,7 @@ export {
 export type {
   HarnessCommandCatalog,
   HarnessCommandDescriptor,
+  HarnessCommandsInspectParams,
   ThreadCommandExecuteParams,
   ThreadCommandExecuteResult,
   ThreadCommandsInspectParams,

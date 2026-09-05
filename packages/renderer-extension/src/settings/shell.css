@@ -472,6 +472,58 @@ button {
   margin-top: 0;
 }
 
+.settings-session-import-search,
+.settings-session-import-pagination {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin: 16px 0;
+}
+
+.settings-session-import-search input {
+  flex: 1;
+  min-width: 160px;
+}
+
+.settings-session-import-search input,
+.settings-session-import-pagination select {
+  min-height: 36px;
+  padding: 6px 10px;
+  color: var(--settings-text);
+  background: var(--settings-bg);
+  border: 1px solid var(--settings-border);
+  border-radius: 6px;
+}
+
+.settings-session-import-search input:focus-visible,
+.settings-session-import-pagination select:focus-visible {
+  outline: 2px solid var(--settings-focus);
+  outline-offset: 2px;
+}
+
+.settings-session-import-pagination {
+  color: var(--settings-muted);
+  font-size: 12px;
+}
+
+.settings-session-import-pagination label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.settings-session-import-pagination > span {
+  flex: 1;
+  min-width: 130px;
+}
+
+.settings-session-import-pagination__navigation {
+  display: flex;
+  gap: 8px;
+  margin-left: auto;
+}
+
 .settings-session-import-content,
 .settings-session-import-list {
   display: grid;

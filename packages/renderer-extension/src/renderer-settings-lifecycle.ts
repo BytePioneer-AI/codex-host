@@ -10,9 +10,9 @@ import {
   type RendererUpdateClient,
 } from "./settings/pages.js";
 import type {
-  RendererDeepSeekSessionImportClient,
+  RendererSessionImportClient,
   RendererImportedThreadOpener,
-} from "./settings/deepseek-session-import-page.js";
+} from "./settings/session-import-page.js";
 import { installRendererSettingsShell, type RendererSettingsShell } from "./settings/shell.js";
 import {
   installRendererSettingsHeaderTrigger,
@@ -25,7 +25,7 @@ const UPDATE_RETRY_DELAYS_MS = [1_000, 3_000, 10_000, 30_000] as const;
 export interface RendererSettingsLifecycleOptions {
   getUpdateClient?(): RendererUpdateClient | null;
   getConnectionDiagnostics?(): RendererConnectionDiagnostics | null;
-  getSessionImportClient?(): RendererDeepSeekSessionImportClient | null;
+  getSessionImportClient?(): RendererSessionImportClient | null;
   openImportedThread?: RendererImportedThreadOpener;
   onLocaleChange?(locale: RendererSettingsLocale): void;
 }

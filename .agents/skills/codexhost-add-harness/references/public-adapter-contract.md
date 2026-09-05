@@ -73,10 +73,10 @@
 | `session.refreshUsage()` | 主动查询可靠统计并发布完整 Usage；未知是 null，采集失败不默认使正常 Turn 失败 | 通过公共 Usage 路径验证初始值、刷新和通知 |
 | `session.commands` | 校验 Catalog 和参数，以 Host 的 turnId 走正常 Turn/Item 输出；未知命令拒绝 | 如 compact，复用公共命令 UI |
 | `adapter.subagents.readSnapshot()` | 稳定原生 Subagent 身份、只读 Transcript；与能力声明一致 | 不等同于跨 Harness 委派 |
-| `adapter.sessionImport.listCandidates()` | 返回可被映射并 resume 的候选；只发现，不占有 Host 的导入事务 | 当前上层导入仍有 DeepSeek 专用入口，不能声称实现接口即完成通用导入 UI |
+| `adapter.sessionImport.listCandidates()` / `resolveCandidate(id)` | list 返回浏览器安全元数据；resolve 重新校验并返回 `{ candidate, nativeRef }`，完整 locator 由 Adapter 确认；不写 Host 映射库 | 本地 Host/RPC/设置页已通用化，Pi 与 DSH Modern 已接入；仅有 list 的旧插件不进入可导入目录。远程与 CC Broker 尚未扩展 |
 | `adapter.webUi.open()` | inspection 的 webUi 与动作一致；本地打开优先使用 Context 服务 | managed remote 无本地 opener，缺服务时明确不可用，不绕过 Native Launcher |
 
-相关 schema：`packages/shared-contracts/src/harness-commands.ts`、`harness-session-import.ts`、`thread-usage.ts`；Usage 解析用 `parseHostUsage()`。
+相关 schema：`packages/shared-contracts/src/harness-commands.ts`、`harness-session-import.ts`、`thread-usage.ts`；Usage 解析用 `parseHostUsage()`。导入契约、未知运行状态与接入验收见 [`docs/harness-session-import.md`](../../../../docs/harness-session-import.md)。
 
 **Credits 尚不是正式 Adapter 字段。**现有 Host 通过 `credits()` / `refreshCredits()` 结构检查处理，并有 Renderer 等特例。新 Harness 需要额度展示时，单独核对公共扩展和上层使用方；不要在 Manifest 虚构 capability 或承诺自动接入。
 

@@ -1,9 +1,3 @@
-import type { HarnessCommandCatalog } from "@codexhost/shared-contracts";
-
-import {
-  deepSeekHarnessCommandCatalog,
-  type DeepSeekCommandDescriptor,
-} from "../harness-commands.js";
 import { ModernRemoteConnectionError, type ModernRemoteCallOptions } from "./remote-connection.js";
 import {
   redactModernCredential,
@@ -11,13 +5,8 @@ import {
   type ModernRemoteResult,
 } from "./wire.js";
 
-const MAX_COMMANDS = 1_024;
-const MAX_COMMAND_NAME_LENGTH = 128;
-const MAX_COMMAND_DESCRIPTION_LENGTH = 512;
-const MAX_COMMAND_INPUT_HINT_LENGTH = 512;
 const MAX_COMMAND_ID_LENGTH = 512;
 const MAX_COMMAND_RESULT_TEXT_LENGTH = 64 * 1_024;
-const COMMAND_NAME = /^[a-z][a-z0-9_-]*$/u;
 
 export type ModernCommandErrorCode =
   | "authenticationRequired"
@@ -94,52 +83,6 @@ function boundedString(value: unknown, maximum: number, allowBlank = false): val
   );
 }
 
-/** Strictly parse one successful Modern `commands/list` value. */
-export function parseModernCommandDescriptors(value: unknown): DeepSeekCommandDescriptor[] {
-  if (!Array.isArray(value)) {
-    throw commandError("protocolError", "DeepSeek Harness returned an invalid command catalog");
-  }
-  if (value.length > MAX_COMMANDS) {
-    throw commandError("limitExceeded", "DeepSeek Harness command catalog exceeded its bound");
-  }
-
-  const names = new Set<string>();
-  return value.map((candidate) => {
-    if (
-      !isPlainRecord(candidate) ||
-      !hasExactKeys(candidate, ["name", "description"], ["input"]) ||
-      !boundedString(candidate.name, MAX_COMMAND_NAME_LENGTH) ||
-      !COMMAND_NAME.test(candidate.name) ||
-      names.has(candidate.name) ||
-      !boundedString(candidate.description, MAX_COMMAND_DESCRIPTION_LENGTH)
-    ) {
-      throw commandError("protocolError", "DeepSeek Harness returned an invalid command catalog");
-    }
-    names.add(candidate.name);
-
-    if (candidate.input === undefined) {
-      return { name: candidate.name, description: candidate.description };
-    }
-    const input = candidate.input;
-    if (
-      !isPlainRecord(input) ||
-      !hasExactKeys(input, ["hint"], ["images"]) ||
-      !boundedString(input.hint, MAX_COMMAND_INPUT_HINT_LENGTH) ||
-      (input.images !== undefined && typeof input.images !== "boolean")
-    ) {
-      throw commandError("protocolError", "DeepSeek Harness returned an invalid command catalog");
-    }
-    return {
-      name: candidate.name,
-      description: candidate.description,
-      input: {
-        hint: input.hint,
-        ...(input.images === undefined ? {} : { images: input.images }),
-      },
-    };
-  });
-}
-
 /** Strictly parse one successful Modern `commands/execute` value. */
 export function parseModernCommandExecution(value: unknown): ModernCommandExecution | undefined {
   if (value === undefined) return undefined;
@@ -196,7 +139,7 @@ function connectionError(endpoint: string, error: ModernRemoteConnectionError): 
 
 async function callModernCommand<T>(
   remote: ModernCommandRemote,
-  endpoint: "commands/list" | "commands/execute",
+  endpoint: "commands/execute",
   args: Readonly<Record<string, unknown>>,
   parse: (value: unknown) => T,
   signal?: AbortSignal,
@@ -231,22 +174,6 @@ async function callModernCommand<T>(
       `DeepSeek Harness ${endpoint} request failed`,
     );
   }
-}
-
-/** Read and filter the current Session's exact native command catalog. */
-export async function listModernCommands(
-  remote: ModernCommandRemote,
-  agentId: string,
-  signal?: AbortSignal,
-): Promise<HarnessCommandCatalog> {
-  const descriptors = await callModernCommand(
-    remote,
-    "commands/list",
-    { agentId },
-    parseModernCommandDescriptors,
-    signal,
-  );
-  return deepSeekHarnessCommandCatalog(descriptors);
 }
 
 /** Execute one already-reviewed complete native command line. */

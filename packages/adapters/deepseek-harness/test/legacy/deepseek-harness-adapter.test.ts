@@ -27,7 +27,6 @@ import {
   type DeepSeekHostConnectionLike,
 } from "../../src/legacy/deepseek-harness-adapter.js";
 import {
-  type DeepSeekCommandDescriptor,
   type DeepSeekCommandExecution,
   type DeepSeekHostClient,
   type DeepSeekHostSubscriber,
@@ -1287,7 +1286,7 @@ describe("DeepSeekHarnessAdapter local Host", () => {
     await adapter.close();
   });
 
-  it("fails inspection and open instead of downgrading malformed Permission Mode protocol", async () => {
+  it("rejects malformed Permission Mode settings without command discovery during open", async () => {
     const { adapter, connection } = fixture();
     connection.calls.settingsDescribe.mockResolvedValueOnce(
       success({
@@ -1315,9 +1314,9 @@ describe("DeepSeekHarnessAdapter local Host", () => {
       commandSuccess([{ name: "compact", description: "Compact history" }]),
     );
     await expect(adapter.open({ kind: "create", cwd: "/workspace" })).resolves.toMatchObject({
-      ok: false,
-      error: { code: "protocolError" },
+      ok: true,
     });
+    expect(connection.calls.commandList).not.toHaveBeenCalled();
     await adapter.close();
   });
 
@@ -1758,9 +1757,9 @@ describe("DeepSeekHarnessAdapter local Host", () => {
 
     await expect(commands.list()).resolves.toMatchObject({
       ok: true,
-      value: { commands: [{ id: "dsh.compact", invocation: "/compact" }] },
+      value: adapter.commandCatalog,
     });
-    expect(connection.calls.commandList).toHaveBeenCalledWith(SESSION_ID);
+    expect(connection.calls.commandList).not.toHaveBeenCalled();
     let resolveExecution:
       ((value: { ok: true; value: DeepSeekCommandExecution }) => void) | undefined;
     connection.calls.commandExecute.mockImplementationOnce(
@@ -1862,7 +1861,7 @@ describe("DeepSeekHarnessAdapter local Host", () => {
     if (!commands) throw new Error("DeepSeek Harness Session did not expose commands");
     await expect(commands.list()).resolves.toMatchObject({
       ok: true,
-      value: { commands: [{ id: scenario.commandId, invocation: scenario.invocation }] },
+      value: adapter.commandCatalog,
     });
     const iterator = session.outputs[Symbol.asyncIterator]();
     const turnId = hostTurnIdSchema.parse(`${scenario.commandId}-text`);
@@ -1896,7 +1895,7 @@ describe("DeepSeekHarnessAdapter local Host", () => {
     await adapter.close();
   });
 
-  it("hides dsh.compact when the native deployment does not advertise the argument-free command", async () => {
+  it("keeps the static catalog independent of the native deployment catalog", async () => {
     const { adapter, connection } = fixture();
     connection.calls.commandList.mockResolvedValueOnce(
       commandSuccess([
@@ -1911,14 +1910,12 @@ describe("DeepSeekHarnessAdapter local Host", () => {
     const commands = session.commands;
     if (!commands) throw new Error("DeepSeek Harness Session did not expose commands");
 
-    await expect(commands.list()).resolves.toEqual({
-      ok: true,
-      value: { commands: [] },
-    });
+    await expect(commands.list()).resolves.toEqual({ ok: true, value: adapter.commandCatalog });
+    expect(connection.calls.commandList).not.toHaveBeenCalled();
     await adapter.close();
   });
 
-  it("rechecks the current native catalog before command execution", async () => {
+  it("executes known commands without querying the native catalog", async () => {
     const { adapter, connection } = fixture();
     const session = await openCreated(adapter);
     const commands = session.commands;
@@ -1927,27 +1924,20 @@ describe("DeepSeekHarnessAdapter local Host", () => {
 
     await expect(
       commands.execute({
-        turnId: hostTurnIdSchema.parse("missing-native-compact"),
+        turnId: hostTurnIdSchema.parse("static-compact"),
         commandId: "dsh.compact",
       }),
-    ).resolves.toMatchObject({ ok: false, error: { code: "unsupported" } });
-    expect(connection.calls.commandExecute).not.toHaveBeenCalled();
+    ).resolves.toMatchObject({ ok: true });
+    expect(connection.calls.commandList).not.toHaveBeenCalled();
+    expect(connection.calls.commandExecute).toHaveBeenCalledOnce();
     await adapter.close();
   });
 
-  it("serializes command admission while the native catalog is pending", async () => {
+  it("serializes concurrent command admission without native discovery", async () => {
     const { adapter, connection } = fixture();
     const session = await openCreated(adapter);
     const commands = session.commands;
     if (!commands) throw new Error("DeepSeek Harness Session did not expose commands");
-    let resolveCatalog:
-      ((value: ReturnType<typeof commandSuccess<DeepSeekCommandDescriptor[]>>) => void) | undefined;
-    connection.calls.commandList.mockImplementationOnce(
-      () =>
-        new Promise<ReturnType<typeof commandSuccess<DeepSeekCommandDescriptor[]>>>((resolve) => {
-          resolveCatalog = resolve;
-        }),
-    );
     connection.calls.commandExecute.mockResolvedValueOnce(
       commandSuccess({
         commandId: "native-command-1",
@@ -1956,7 +1946,6 @@ describe("DeepSeekHarnessAdapter local Host", () => {
     );
     const firstTurnId = hostTurnIdSchema.parse("admitting-command");
     const first = commands.execute({ turnId: firstTurnId, commandId: "dsh.compact" });
-    await vi.waitFor(() => expect(connection.calls.commandList).toHaveBeenCalledOnce());
 
     await expect(
       commands.execute({
@@ -1964,9 +1953,6 @@ describe("DeepSeekHarnessAdapter local Host", () => {
         commandId: "dsh.compact",
       }),
     ).resolves.toMatchObject({ ok: false, error: { code: "sessionBusy" } });
-    resolveCatalog?.(
-      commandSuccess([{ name: "compact", description: "Compact older conversation history" }]),
-    );
     await expect(first).resolves.toMatchObject({ ok: true, value: { turnId: firstTurnId } });
     await vi.waitFor(() => expect(connection.calls.commandExecute).toHaveBeenCalledOnce());
     await adapter.close();
@@ -1977,23 +1963,14 @@ describe("DeepSeekHarnessAdapter local Host", () => {
     const session = await openCreated(adapter);
     const commands = session.commands;
     if (!commands) throw new Error("DeepSeek Harness Session did not expose commands");
-    let admissionSignal: AbortSignal | undefined;
-    connection.calls.commandList.mockImplementationOnce(
-      (_sessionId: SessionId, signal: AbortSignal) =>
-        new Promise((_resolve, reject) => {
-          admissionSignal = signal;
-          signal.addEventListener("abort", () => reject(signal.reason), { once: true });
-        }),
-    );
     const turnId = hostTurnIdSchema.parse("cancel-command-admission");
     const execution = commands.execute({ turnId, commandId: "dsh.compact" });
-    await vi.waitFor(() => expect(admissionSignal).toBeDefined());
 
     await expect(session.execute({ type: "turn.cancel", turnId })).resolves.toEqual({
       ok: true,
       value: { cancellationRequested: true },
     });
-    expect(admissionSignal?.aborted).toBe(true);
+    expect(connection.calls.commandList).not.toHaveBeenCalled();
     await expect(execution).resolves.toMatchObject({
       ok: false,
       error: { code: "invalidState", message: expect.stringContaining("cancelled") },

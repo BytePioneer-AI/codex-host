@@ -22,10 +22,10 @@ import {
   type RendererConnectionDiagnostics,
 } from "./connections-page.js";
 import {
-  createDeepSeekSessionImportSettingsPage,
-  type RendererDeepSeekSessionImportClient,
+  createSessionImportSettingsPage,
+  type RendererSessionImportClient,
   type RendererImportedThreadOpener,
-} from "./deepseek-session-import-page.js";
+} from "./session-import-page.js";
 import { createReleaseNotesElement } from "./release-notes.js";
 
 export type {
@@ -576,13 +576,13 @@ export function createDefaultRendererSettingsPages(
   messages: RendererSettingsMessages = DEFAULT_RENDERER_SETTINGS_MESSAGES,
   getUpdateClient: () => RendererUpdateClient | null = () => null,
   getDiagnostics: () => RendererConnectionDiagnostics | null = () => null,
-  getSessionImportClient: () => RendererDeepSeekSessionImportClient | null = () => null,
+  getSessionImportClient: () => RendererSessionImportClient | null = () => null,
   openImportedThread: RendererImportedThreadOpener = () =>
     Promise.reject(new Error("Imported Thread navigation is unavailable")),
 ): readonly RendererSettingsPageDefinition[] {
   return Object.freeze([
     createConnectionsSettingsPage(messages, getDiagnostics),
-    createDeepSeekSessionImportSettingsPage(messages, getSessionImportClient, openImportedThread),
+    createSessionImportSettingsPage(messages, getSessionImportClient, openImportedThread),
     updatesPage(messages, getUpdateClient),
     aboutPage(messages),
   ]);
@@ -592,7 +592,7 @@ export function createDefaultRendererSettingsRegistry(
   messages: RendererSettingsMessages = DEFAULT_RENDERER_SETTINGS_MESSAGES,
   getUpdateClient: () => RendererUpdateClient | null = () => null,
   getDiagnostics: () => RendererConnectionDiagnostics | null = () => null,
-  getSessionImportClient: () => RendererDeepSeekSessionImportClient | null = () => null,
+  getSessionImportClient: () => RendererSessionImportClient | null = () => null,
   openImportedThread?: RendererImportedThreadOpener,
 ): RendererSettingsPageRegistry {
   return createRendererSettingsPageRegistry(

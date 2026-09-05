@@ -46,12 +46,17 @@ function prependEditor(editor: HTMLElement, prefix: string): boolean {
   return prependTextarea(editor, prefix) || prependContentEditable(editor, prefix);
 }
 
+// Clicking compact always uses the native default; typed instructions remain supported.
+export function rendererHarnessCommandExecutesDirectly(command: HarnessCommandDescriptor): boolean {
+  return command.invocation === "/compact" || command.argumentMode === "none";
+}
+
 export function routeRendererHarnessCommandSelection(
   editor: HTMLElement | null,
   command: HarnessCommandDescriptor,
   execute: () => void,
 ): boolean {
-  if (command.argumentMode === "none") {
+  if (rendererHarnessCommandExecutesDirectly(command)) {
     execute();
     return true;
   }

@@ -1,3 +1,4 @@
+import { harnessIdSchema } from "@codexhost/shared-contracts";
 import { hostThreadIdSchema, type UpdateCheckResult } from "@codexhost/shared-contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -118,8 +119,13 @@ describe("Renderer Settings lifecycle", () => {
   it("binds Session import to its narrow client and closes only after navigation", async () => {
     const events: string[] = [];
     const client = {
-      listDeepSeekModernSessions: vi.fn(),
-      importDeepSeekModernSession: vi.fn(),
+      listSessionImportSources: vi.fn(async () => ({
+        harnesses: [
+          { harnessId: harnessIdSchema.parse("deepseek-harness"), name: "DeepSeek Harness" },
+        ],
+      })),
+      listHarnessSessions: vi.fn(),
+      importHarnessSession: vi.fn(),
     };
     const openImportedThread = vi.fn(async () => {
       events.push("opened");

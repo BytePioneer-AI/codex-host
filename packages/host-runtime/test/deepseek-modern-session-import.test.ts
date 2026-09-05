@@ -13,7 +13,7 @@ import {
 } from "@codexhost/shared-contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { DeepSeekModernSessionImporter } from "../src/deepseek-modern-session-import.js";
+import { HarnessSessionImporter } from "../src/harness-session-import.js";
 import {
   createExternalThreadRecordInput,
   ExternalThreadRepository,
@@ -30,7 +30,30 @@ class ModernCandidateAdapter extends FakeHarnessAdapter {
       value: structuredClone(this.candidates),
     }),
   );
-  readonly sessionImport = { listCandidates: this.listCandidates };
+  readonly sessionImport = {
+    listCandidates: this.listCandidates,
+    resolveCandidate: async (nativeSessionId: string) => {
+      const result = await this.listCandidates();
+      if (!result.ok) return result;
+      const candidate = result.value.find((entry) => entry.nativeSessionId === nativeSessionId);
+      return candidate
+        ? {
+            ok: true as const,
+            value: {
+              candidate,
+              nativeRef: { harnessId: this.harnessId, nativeSessionId, formatVersion: 1 as const },
+            },
+          }
+        : {
+            ok: false as const,
+            error: {
+              code: "sessionNotFound" as const,
+              message: "Missing session",
+              retryable: false,
+            },
+          };
+    },
+  };
 
   constructor() {
     super(DEEPSEEK_HARNESS_ID);
@@ -44,7 +67,11 @@ async function fixture() {
   const repository = new ExternalThreadRepository(store);
   await repository.initialize();
   const adapter = new ModernCandidateAdapter();
-  const importer = new DeepSeekModernSessionImporter({ adapter, repository });
+  const importer = new HarnessSessionImporter({
+    harnessId: DEEPSEEK_HARNESS_ID,
+    adapter,
+    repository,
+  });
   return { adapter, importer, repository };
 }
 
@@ -67,7 +94,61 @@ afterEach(async () => {
   await Promise.all(directories.splice(0).map((directory) => rm(directory, { recursive: true })));
 });
 
-describe("DeepSeekModernSessionImporter", () => {
+describe("HarnessSessionImporter — DSH behavior preservation", () => {
+  it("paginates unlimited Adapter metadata after ownership filtering and searches beyond the current page", async () => {
+    const setup = await fixture();
+    try {
+      setup.adapter.candidates = Array.from({ length: 1_005 }, (_, index) =>
+        candidate(`session-${index}`, {
+          title: index === 10 ? "Off-page Needle" : "Other title",
+          cwd: path.resolve(index === 11 ? "SPECIAL-Project" : "workspace"),
+          updatedAt: index,
+        }),
+      );
+      expect(await setup.importer.import("session-1004")).toMatchObject({ ok: true });
+      expect(await setup.importer.list({ limit: 2 })).toMatchObject({
+        ok: true,
+        total: 1_004,
+        candidates: [{ nativeSessionId: "session-1003" }, { nativeSessionId: "session-1002" }],
+      });
+      expect(await setup.importer.list({ offset: 2, limit: 1 })).toMatchObject({
+        ok: true,
+        total: 1_004,
+        candidates: [{ nativeSessionId: "session-1001" }],
+      });
+      expect(await setup.importer.list({ query: " nEEdLE " })).toMatchObject({
+        ok: true,
+        total: 1,
+        candidates: [{ nativeSessionId: "session-10" }],
+      });
+      expect(await setup.importer.list({ query: "special-project" })).toMatchObject({
+        ok: true,
+        total: 1,
+        candidates: [{ nativeSessionId: "session-11" }],
+      });
+      expect(await setup.importer.list({ query: "session-1004" })).toEqual({
+        ok: true,
+        total: 0,
+        candidates: [],
+      });
+      expect(await setup.importer.list({ query: "absent" })).toEqual({
+        ok: true,
+        total: 0,
+        candidates: [],
+      });
+      expect(await setup.importer.list({ offset: 2_000 })).toEqual({
+        ok: true,
+        total: 1_004,
+        candidates: [],
+      });
+      const page = await setup.importer.list();
+      if (!page.ok) throw new Error("List failed");
+      expect(page.candidates).toHaveLength(20);
+    } finally {
+      await setup.repository.close();
+    }
+  });
+
   it("lists only unmapped ordinary DeepSeek Sessions", async () => {
     const setup = await fixture();
     const mapped = candidate("mapped");
@@ -92,6 +173,7 @@ describe("DeepSeekModernSessionImporter", () => {
     await expect(setup.importer.list()).resolves.toEqual({
       ok: true,
       candidates: [available],
+      total: 1,
     });
     await setup.repository.close();
   });
@@ -123,6 +205,7 @@ describe("DeepSeekModernSessionImporter", () => {
     await expect(setup.importer.list()).resolves.toEqual({
       ok: true,
       candidates: [available],
+      total: 1,
     });
     await setup.repository.close();
   });
@@ -273,8 +356,16 @@ describe("DeepSeekModernSessionImporter", () => {
     await repository.initialize();
     const adapter = new ModernCandidateAdapter();
     adapter.candidates = [candidate("competing")];
-    const firstImporter = new DeepSeekModernSessionImporter({ adapter, repository });
-    const secondImporter = new DeepSeekModernSessionImporter({ adapter, repository });
+    const firstImporter = new HarnessSessionImporter({
+      harnessId: DEEPSEEK_HARNESS_ID,
+      adapter,
+      repository,
+    });
+    const secondImporter = new HarnessSessionImporter({
+      harnessId: DEEPSEEK_HARNESS_ID,
+      adapter,
+      repository,
+    });
 
     const imports = [firstImporter.import("competing"), secondImporter.import("competing")];
     await firstReadyEntered.promise;
@@ -337,7 +428,8 @@ describe("DeepSeekModernSessionImporter", () => {
   it("rejects Adapters without the Modern-only capability", async () => {
     const setup = await fixture();
     const legacy = new FakeHarnessAdapter(DEEPSEEK_HARNESS_ID);
-    const importer = new DeepSeekModernSessionImporter({
+    const importer = new HarnessSessionImporter({
+      harnessId: DEEPSEEK_HARNESS_ID,
       adapter: legacy,
       repository: setup.repository,
     });
@@ -353,7 +445,10 @@ describe("DeepSeekModernSessionImporter", () => {
 
   it("reports a missing DeepSeek Adapter as unavailable", async () => {
     const setup = await fixture();
-    const importer = new DeepSeekModernSessionImporter({ repository: setup.repository });
+    const importer = new HarnessSessionImporter({
+      harnessId: DEEPSEEK_HARNESS_ID,
+      repository: setup.repository,
+    });
 
     await expect(importer.list()).resolves.toMatchObject({
       ok: false,

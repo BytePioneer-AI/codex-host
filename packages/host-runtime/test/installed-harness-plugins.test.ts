@@ -84,6 +84,32 @@ describe("installed Harness composition", () => {
     }
   });
 
+  it("provides every built-in command catalog before inspection or Session creation", async () => {
+    const expected = {
+      pi: ["/compact"],
+      "claude-code": ["/compact", "/init", "/recap"],
+      "deepseek-harness": ["/compact", "/dsh-goal", "/plan"],
+      opencode: ["/compact"],
+      grok: ["/compact"],
+      omp: ["/compact"],
+      antigravity: [],
+    };
+    const registry = await load();
+    try {
+      for (const [id, adapter] of registry.adapters) {
+        const open = vi.spyOn(adapter, "open");
+        const inspect = vi.spyOn(adapter, "inspect");
+        expect(adapter.commandCatalog?.commands.map(({ invocation }) => invocation) ?? []).toEqual(
+          expected[id as keyof typeof expected],
+        );
+        expect(open).not.toHaveBeenCalled();
+        expect(inspect).not.toHaveBeenCalled();
+      }
+    } finally {
+      await registry.close();
+    }
+  });
+
   it.each([
     ["pi", "CODEXHOST_PI_COMMAND"],
     ["claude-code", "CODEXHOST_CLAUDE_COMMAND"],
@@ -121,6 +147,11 @@ describe("installed Harness composition", () => {
     try {
       const adapter = [...registry.adapters].find(([id]) => id === "claude-code")?.[1];
       expect(adapter?.constructor.name).toBe("BrokeredHarnessAdapter");
+      expect(adapter?.commandCatalog?.commands.map(({ invocation }) => invocation)).toEqual([
+        "/compact",
+        "/init",
+        "/recap",
+      ]);
       expect(await adapter?.inspect()).toMatchObject({
         status: "unavailable",
         error: { code: "unavailable", stage: "harnessBroker" },

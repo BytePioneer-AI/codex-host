@@ -1,5 +1,7 @@
 import {
+  harnessIdSchema,
   hostThreadIdSchema,
+  type HarnessSessionListParams,
   type UpdateCheckResult,
   type UpdateStatus,
 } from "@codexhost/shared-contracts";
@@ -12,12 +14,10 @@ vi.mock("../../src/settings/icons.js", () => ({
 
 import { RendererSettingsPageScope } from "../../src/settings/core.js";
 import { rendererSettingsMessages } from "../../src/settings/localization.js";
-import {
-  DEEPSEEK_MODERN_SESSION_IMPORT_METHOD,
-  DEEPSEEK_MODERN_SESSION_LIST_METHOD,
-  RendererDeepSeekSessionUnavailableError,
-  createRendererModelClient,
-} from "../../src/renderer-model-client.js";
+import { createRendererModelClient } from "../../src/renderer-model-client.js";
+import { RendererSessionImportUnavailableError } from "../../src/renderer-session-import-client.js";
+const HARNESS_SESSION_LIST_METHOD = "codexhost/harness/session-import/list";
+const HARNESS_SESSION_IMPORT_METHOD = "codexhost/harness/session-import/import";
 import {
   CODEXHOST_RELEASES_LATEST_URL,
   createDefaultRendererSettingsPages,
@@ -41,6 +41,7 @@ class FakeElement {
   textContent = "";
   title = "";
   type = "";
+  value = "";
   tabIndex = 0;
   disabled = false;
   focused = false;
@@ -699,6 +700,258 @@ describe("Renderer Updates page", () => {
 });
 
 describe("Renderer Session Import page", () => {
+  it("configures page size, searches all metadata, rejects stale searches and locks controls during import", async () => {
+    const rows = Array.from({ length: 45 }, (_, index) => ({
+      nativeSessionId: `session-${index}`,
+      title: `Session ${index}`,
+      cwd: "C:\\work",
+      updatedAt: 1_000,
+      running: null,
+    }));
+    const slow = deferred<{ candidates: typeof rows; total: number }>();
+    const imported = deferred<{ threadId: ReturnType<typeof hostThreadIdSchema.parse> }>();
+    const client = {
+      listSessionImportSources: vi.fn(async () => ({
+        harnesses: [{ harnessId: harnessIdSchema.parse("pi"), name: "Pi" }],
+      })),
+      listHarnessSessions: vi.fn(
+        async ({ query = "", offset = 0, limit = 20 }: HarnessSessionListParams) => {
+          if (query === "slow") return slow.promise;
+          const matched = rows.filter((row) =>
+            row.title.toLowerCase().includes(query.toLowerCase()),
+          );
+          return { candidates: matched.slice(offset, offset + limit), total: matched.length };
+        },
+      ),
+      importHarnessSession: vi.fn(() => imported.promise),
+    };
+    const page = createDefaultRendererSettingsPages(
+      rendererSettingsMessages("en"),
+      () => null,
+      () => null,
+      () => client,
+      async () => undefined,
+    ).find(({ id }) => id === "session-import");
+    if (!page) throw new Error("Import page missing");
+    const content = new FakeDocument().createElement("main");
+    const scope = new RendererSettingsPageScope();
+    page.mount({
+      content: content as unknown as HTMLElement,
+      signal: scope.signal,
+      runLatest: (operation, handlers) => scope.runLatest(operation, handlers),
+    });
+    const action = (name: string): FakeElement => {
+      const element = descendants(content).find(
+        ({ dataset }) => dataset.sessionImportAction === name,
+      );
+      if (!element) throw new Error(`Missing control ${name}`);
+      return element;
+    };
+    const visibleRows = () =>
+      descendants(content).filter(({ dataset }) => dataset.sessionImportId !== undefined);
+    const search = (query: string): void => {
+      action("search-input").value = query;
+      descendants(content)
+        .find(({ tagName }) => tagName === "form")
+        ?.dispatch("submit", { preventDefault: vi.fn() });
+    };
+    await vi.waitFor(() => expect(visibleRows()).toHaveLength(20));
+    expect(action("previous").disabled).toBe(true);
+    expect(action("page-summary").textContent).toBe("Page 1 of 3 · 45 sessions");
+    action("next").dispatch("click");
+    await vi.waitFor(() => expect(visibleRows()[0]?.dataset.sessionImportId).toBe("session-20"));
+    action("next").dispatch("click");
+    await vi.waitFor(() => expect(visibleRows()).toHaveLength(5));
+    expect(action("next").disabled).toBe(true);
+    action("previous").dispatch("click");
+    await vi.waitFor(() =>
+      expect(action("page-summary").textContent).toBe("Page 2 of 3 · 45 sessions"),
+    );
+    action("page-size").value = "50";
+    action("page-size").dispatch("change");
+    await vi.waitFor(() => expect(visibleRows()).toHaveLength(45));
+    expect(client.listHarnessSessions).toHaveBeenLastCalledWith({
+      harnessId: "pi",
+      query: "",
+      offset: 0,
+      limit: 50,
+    });
+    search("slow");
+    await vi.waitFor(() =>
+      expect(client.listHarnessSessions).toHaveBeenLastCalledWith({
+        harnessId: "pi",
+        query: "slow",
+        offset: 0,
+        limit: 50,
+      }),
+    );
+    search("SESSION 32");
+    await vi.waitFor(() => expect(visibleRows()).toHaveLength(1));
+    expect(visibleRows()[0]?.dataset.sessionImportId).toBe("session-32");
+    slow.resolve({ candidates: rows, total: 45 });
+    await slow.promise;
+    await Promise.resolve();
+    expect(visibleRows()).toHaveLength(1);
+    expect(action("page-summary").textContent).toBe("Page 1 of 1 · 1 sessions");
+    search("absent");
+    await vi.waitFor(() => expect(visibleText(content)).toContain("No sessions match"));
+    expect(action("previous").disabled).toBe(true);
+    expect(action("next").disabled).toBe(true);
+    search("Session 32");
+    await vi.waitFor(() => expect(visibleRows()).toHaveLength(1));
+    action("import").dispatch("click");
+    expect(action("search-input").disabled).toBe(true);
+    expect(action("page-size").disabled).toBe(true);
+    search("absent"); // Synthetic submission must not invalidate a pending import.
+    imported.resolve({ threadId: hostThreadIdSchema.parse("imported") });
+    await vi.waitFor(() => expect(action("search-input").disabled).toBe(false));
+    expect(client.listHarnessSessions).toHaveBeenLastCalledWith({
+      harnessId: "pi",
+      query: "Session 32",
+      offset: 0,
+      limit: 50,
+    });
+    scope.dispose();
+  });
+
+  it("returns to a valid page when refresh removes the current last page", async () => {
+    const rows = Array.from({ length: 41 }, (_, index) => ({
+      nativeSessionId: `row-${index}`,
+      title: null,
+      cwd: "C:\\work",
+      updatedAt: 1,
+      running: null,
+    }));
+    const client = {
+      listSessionImportSources: vi.fn(async () => ({
+        harnesses: [{ harnessId: harnessIdSchema.parse("pi"), name: "Pi" }],
+      })),
+      listHarnessSessions: vi.fn(async ({ offset = 0, limit = 20 }: HarnessSessionListParams) => ({
+        candidates: rows.slice(offset, offset + limit),
+        total: rows.length,
+      })),
+      importHarnessSession: vi.fn(),
+    };
+    const page = createDefaultRendererSettingsPages(
+      rendererSettingsMessages("en"),
+      () => null,
+      () => null,
+      () => client,
+    ).find(({ id }) => id === "session-import");
+    if (!page) throw new Error("Import page missing");
+    const content = new FakeDocument().createElement("main");
+    const scope = new RendererSettingsPageScope();
+    page.mount({
+      content: content as unknown as HTMLElement,
+      signal: scope.signal,
+      runLatest: (operation, handlers) => scope.runLatest(operation, handlers),
+    });
+    const control = (name: string) =>
+      descendants(content).find(({ dataset }) => dataset.sessionImportAction === name);
+    await vi.waitFor(() => expect(control("page-summary")?.textContent).toContain("Page 1 of 3"));
+    control("next")?.dispatch("click");
+    await vi.waitFor(() => expect(control("page-summary")?.textContent).toContain("Page 2 of 3"));
+    control("next")?.dispatch("click");
+    await vi.waitFor(() => expect(control("page-summary")?.textContent).toContain("Page 3 of 3"));
+    rows.splice(1);
+    control("refresh")?.dispatch("click");
+    await vi.waitFor(() =>
+      expect(control("page-summary")?.textContent).toBe("Page 1 of 1 · 1 sessions"),
+    );
+    expect(client.listHarnessSessions).toHaveBeenLastCalledWith({
+      harnessId: "pi",
+      query: "",
+      offset: 0,
+      limit: 20,
+    });
+    expect(
+      descendants(content).filter(({ dataset }) => dataset.sessionImportId !== undefined),
+    ).toHaveLength(1);
+    scope.dispose();
+  });
+
+  it("discovers Harness options, ignores stale Harness results, and imports Pi with an activity warning", async () => {
+    const oldList = deferred<{ candidates: []; total: number }>();
+    const client = {
+      listSessionImportSources: vi.fn(async () => ({
+        harnesses: [
+          { harnessId: harnessIdSchema.parse("deepseek-harness"), name: "DeepSeek Harness" },
+          { harnessId: harnessIdSchema.parse("pi"), name: "Pi" },
+        ],
+      })),
+      listHarnessSessions: vi.fn(async ({ harnessId }: { harnessId: string }) =>
+        harnessId === "deepseek-harness"
+          ? oldList.promise
+          : {
+              total: 1,
+              candidates: [
+                {
+                  nativeSessionId: "pi-session",
+                  title: "Pi original",
+                  cwd: "C:\\work",
+                  running: null,
+                  updatedAt: 1_000,
+                },
+              ],
+            },
+      ),
+      importHarnessSession: vi.fn(async () => ({
+        threadId: hostThreadIdSchema.parse("pi-imported"),
+      })),
+    };
+    const open = vi.fn(async () => undefined);
+    const page = createDefaultRendererSettingsPages(
+      rendererSettingsMessages("en"),
+      () => null,
+      () => null,
+      () => client,
+      open,
+    ).find(({ id }) => id === "session-import");
+    if (!page) throw new Error("Session import page missing");
+    const content = new FakeDocument().createElement("main");
+    const scope = new RendererSettingsPageScope();
+    page.mount({
+      content: content as unknown as HTMLElement,
+      signal: scope.signal,
+      runLatest: (operation, handlers) => scope.runLatest(operation, handlers),
+    });
+    await vi.waitFor(() =>
+      expect(client.listHarnessSessions).toHaveBeenCalledWith({
+        harnessId: "deepseek-harness",
+        query: "",
+        offset: 0,
+        limit: 20,
+      }),
+    );
+    const options = descendants(content).filter(
+      ({ dataset }) => dataset.sessionImportHarnessOption !== undefined,
+    );
+    expect(options.map(({ textContent }) => textContent)).toEqual(["DeepSeek Harness", "Pi"]);
+    options[1]?.dispatch("click");
+    await vi.waitFor(() => expect(visibleText(content)).toContain("Pi original"));
+    oldList.resolve({ candidates: [], total: 0 });
+    await oldList.promise;
+    await Promise.resolve();
+    expect(visibleText(content)).toContain("Pi original");
+    expect(visibleText(content)).toContain("Activity unknown");
+    expect(visibleText(content)).toContain("close the session in its native client");
+    const button = descendants(content).find(
+      ({ dataset }) => dataset.sessionImportAction === "import",
+    );
+    expect(button?.disabled).toBe(false);
+    button?.dispatch("click");
+    await vi.waitFor(() =>
+      expect(client.importHarnessSession).toHaveBeenCalledWith({
+        harnessId: "pi",
+        nativeSessionId: "pi-session",
+      }),
+    );
+    await vi.waitFor(() =>
+      expect(open).toHaveBeenCalledWith("pi-imported", expect.any(AbortSignal)),
+    );
+    scope.dispose();
+  });
+
   it("renders loading and empty states, ignores an older list, and recovers through Refresh", async () => {
     const candidate = {
       nativeSessionId: "recovered-session",
@@ -707,16 +960,21 @@ describe("Renderer Session Import page", () => {
       cwd: "C:\\work",
       running: false,
     };
-    const first = deferred<{ candidates: (typeof candidate)[] }>();
-    const second = deferred<{ candidates: (typeof candidate)[] }>();
+    const first = deferred<{ candidates: (typeof candidate)[]; total: number }>();
+    const second = deferred<{ candidates: (typeof candidate)[]; total: number }>();
     const client = {
-      listDeepSeekModernSessions: vi
+      listSessionImportSources: vi.fn(async () => ({
+        harnesses: [
+          { harnessId: harnessIdSchema.parse("deepseek-harness"), name: "DeepSeek Harness" },
+        ],
+      })),
+      listHarnessSessions: vi
         .fn()
         .mockImplementationOnce(() => first.promise)
         .mockImplementationOnce(() => second.promise)
         .mockRejectedValueOnce(new Error("private list detail"))
-        .mockResolvedValueOnce({ candidates: [candidate] }),
-      importDeepSeekModernSession: vi.fn(),
+        .mockResolvedValueOnce({ candidates: [candidate], total: 1 }),
+      importHarnessSession: vi.fn(),
     };
     const page = createDefaultRendererSettingsPages(
       rendererSettingsMessages("en"),
@@ -742,19 +1000,21 @@ describe("Renderer Session Import page", () => {
     expect(visibleNotesText(refresh)).toContain("Loading local sessions");
     expect(visibleText(content)).toContain("Loading local sessions");
 
+    await vi.waitFor(() => expect(client.listHarnessSessions).toHaveBeenCalledOnce());
     // A synthetic second activation proves runLatest still rejects stale results even if
     // browser-level disabled handling is bypassed.
     refresh.dispatch("click");
-    second.resolve({ candidates: [] });
-    await vi.waitFor(() => expect(visibleText(content)).toContain("No local DeepSeek Harness"));
+    second.resolve({ candidates: [], total: 0 });
+    await vi.waitFor(() => expect(visibleText(content)).toContain("No local sessions"));
     expect(refresh.disabled).toBe(false);
 
     first.resolve({
+      total: 1,
       candidates: [{ ...candidate, nativeSessionId: "stale-session", title: "Ignored stale" }],
     });
     await first.promise;
     await Promise.resolve();
-    expect(visibleText(content)).toContain("No local DeepSeek Harness");
+    expect(visibleText(content)).toContain("No local sessions");
     expect(visibleText(content)).not.toContain("Ignored stale");
 
     refresh.dispatch("click");
@@ -763,13 +1023,19 @@ describe("Renderer Session Import page", () => {
 
     refresh.dispatch("click");
     await vi.waitFor(() => expect(visibleText(content)).toContain("Recovered session"));
-    expect(client.listDeepSeekModernSessions).toHaveBeenCalledTimes(4);
+    expect(client.listHarnessSessions).toHaveBeenCalledTimes(4);
     scope.dispose();
   });
 
   it("lists local DSH Modern sessions and imports only an idle row", async () => {
     const client = {
-      listDeepSeekModernSessions: vi.fn(async () => ({
+      listSessionImportSources: vi.fn(async () => ({
+        harnesses: [
+          { harnessId: harnessIdSchema.parse("deepseek-harness"), name: "DeepSeek Harness" },
+        ],
+      })),
+      listHarnessSessions: vi.fn(async () => ({
+        total: 2,
         candidates: [
           {
             nativeSessionId: "idle-session-identifier-that-is-long",
@@ -787,7 +1053,7 @@ describe("Renderer Session Import page", () => {
           },
         ],
       })),
-      importDeepSeekModernSession: vi.fn(async () => ({
+      importHarnessSession: vi.fn(async () => ({
         threadId: hostThreadIdSchema.parse("imported-thread"),
       })),
     };
@@ -809,7 +1075,14 @@ describe("Renderer Session Import page", () => {
       runLatest: (operation, handlers) => scope.runLatest(operation, handlers),
     });
 
-    await vi.waitFor(() => expect(client.listDeepSeekModernSessions).toHaveBeenCalledWith({}));
+    await vi.waitFor(() =>
+      expect(client.listHarnessSessions).toHaveBeenCalledWith({
+        harnessId: "deepseek-harness",
+        query: "",
+        offset: 0,
+        limit: 20,
+      }),
+    );
     await vi.waitFor(() => expect(visibleText(content)).toContain("既有会话"));
     expect(visibleText(content)).toContain("未命名会话");
     expect(visibleText(content)).toContain("运行中");
@@ -823,7 +1096,7 @@ describe("Renderer Session Import page", () => {
       "会话导入",
     );
     expect(visibleText(content)).toContain(
-      "当前仅支持导入 DeepSeek Harness Modern 会话；其他 Harness 的会话导入能力敬请期待。",
+      "可选 Harness 来自本地 Host。运行状态未知时，请先在原生客户端关闭该会话再导入，避免同时写入。",
     );
     const harnessSelector = descendants(content).find(
       ({ dataset }) => dataset.sessionImportHarness === "selector",
@@ -832,15 +1105,7 @@ describe("Renderer Session Import page", () => {
     const harnessOptions = descendants(harnessSelector).filter(
       ({ dataset }) => dataset.sessionImportHarnessOption !== undefined,
     );
-    expect(harnessOptions.map(({ textContent }) => textContent)).toEqual([
-      "Pi",
-      "Claude Code",
-      "DeepSeek Harness",
-      "OpenCode",
-      "Grok",
-      "Oh My Pi",
-      "Antigravity CLI",
-    ]);
+    expect(harnessOptions.map(({ textContent }) => textContent)).toEqual(["DeepSeek Harness"]);
     expect(
       harnessOptions.filter(({ disabled }) => !disabled).map(({ textContent }) => textContent),
     ).toEqual(["DeepSeek Harness"]);
@@ -849,8 +1114,8 @@ describe("Renderer Session Import page", () => {
         ?.textContent,
     ).toBe("DeepSeek Harness");
     for (const option of harnessOptions) option.dispatch("click");
-    expect(client.listDeepSeekModernSessions).toHaveBeenCalledOnce();
-    expect(client.importDeepSeekModernSession).not.toHaveBeenCalled();
+    expect(client.listHarnessSessions).toHaveBeenCalledOnce();
+    expect(client.importHarnessSession).not.toHaveBeenCalled();
     expect(
       descendants(content).find(
         ({ className, textContent }) =>
@@ -863,7 +1128,7 @@ describe("Renderer Session Import page", () => {
         ({ className, textContent }) =>
           className === "settings-visually-hidden" && textContent.startsWith("运行中:"),
       )?.textContent,
-    ).toBe("运行中: 请先在 DSH 中停止该会话，然后刷新。");
+    ).toBe("运行中: 请先在原生客户端关闭该会话，再刷新并导入。");
 
     const actions = descendants(content).filter(
       ({ dataset }) => dataset.sessionImportAction === "import",
@@ -872,14 +1137,15 @@ describe("Renderer Session Import page", () => {
     expect(actions[0]?.disabled).toBe(false);
     expect(actions[1]?.disabled).toBe(true);
     actions[1]?.dispatch("click");
-    expect(client.importDeepSeekModernSession).not.toHaveBeenCalled();
+    expect(client.importHarnessSession).not.toHaveBeenCalled();
     actions[0]?.dispatch("click");
     expect(descendants(content)).toContain(actions[0]);
     expect(actions[0]?.getAttribute("aria-disabled")).toBe("true");
     expect(actions[0]?.getAttribute("aria-busy")).toBe("true");
     actions[0]?.dispatch("click");
-    await vi.waitFor(() => expect(client.importDeepSeekModernSession).toHaveBeenCalledOnce());
-    expect(client.importDeepSeekModernSession).toHaveBeenCalledWith({
+    await vi.waitFor(() => expect(client.importHarnessSession).toHaveBeenCalledOnce());
+    expect(client.importHarnessSession).toHaveBeenCalledWith({
+      harnessId: "deepseek-harness",
       nativeSessionId: "idle-session-identifier-that-is-long",
     });
     await vi.waitFor(() =>
@@ -890,7 +1156,13 @@ describe("Renderer Session Import page", () => {
 
   it("shows a localized focused error when import fails before commit", async () => {
     const client = {
-      listDeepSeekModernSessions: vi.fn(async () => ({
+      listSessionImportSources: vi.fn(async () => ({
+        harnesses: [
+          { harnessId: harnessIdSchema.parse("deepseek-harness"), name: "DeepSeek Harness" },
+        ],
+      })),
+      listHarnessSessions: vi.fn(async () => ({
+        total: 1,
         candidates: [
           {
             nativeSessionId: "idle-session",
@@ -901,9 +1173,7 @@ describe("Renderer Session Import page", () => {
           },
         ],
       })),
-      importDeepSeekModernSession: vi.fn(async () =>
-        Promise.reject(new Error("private import detail")),
-      ),
+      importHarnessSession: vi.fn(async () => Promise.reject(new Error("private import detail"))),
     };
     const openImportedThread = vi.fn();
     const page = createDefaultRendererSettingsPages(
@@ -949,19 +1219,24 @@ describe("Renderer Session Import page", () => {
       running: false,
     };
     const sendRequest = vi.fn((method: string): Promise<unknown> => {
-      if (method === DEEPSEEK_MODERN_SESSION_LIST_METHOD) {
-        return Promise.resolve({ candidates: [candidate] });
+      if (method === HARNESS_SESSION_LIST_METHOD) {
+        return Promise.resolve({ candidates: [candidate], total: 1 });
       }
-      if (method === DEEPSEEK_MODERN_SESSION_IMPORT_METHOD) return imported.promise;
+      if (method === HARNESS_SESSION_IMPORT_METHOD) return imported.promise;
       return Promise.reject(new Error(`Unexpected method: ${method}`));
     });
     const modelClient = createRendererModelClient([{ sendRequest }]);
-    if (!modelClient?.listDeepSeekModernSessions || !modelClient.importDeepSeekModernSession) {
+    if (!modelClient?.listHarnessSessions || !modelClient.importHarnessSession) {
       throw new Error("DSH Modern Session client was not created");
     }
     const client = {
-      listDeepSeekModernSessions: modelClient.listDeepSeekModernSessions,
-      importDeepSeekModernSession: modelClient.importDeepSeekModernSession,
+      listSessionImportSources: vi.fn(async () => ({
+        harnesses: [
+          { harnessId: harnessIdSchema.parse("deepseek-harness"), name: "DeepSeek Harness" },
+        ],
+      })),
+      listHarnessSessions: modelClient.listHarnessSessions,
+      importHarnessSession: modelClient.importHarnessSession,
     };
     const navigated: string[] = [];
     const openImportedThread = vi.fn(async (threadId: string, signal: AbortSignal) => {
@@ -991,9 +1266,7 @@ describe("Renderer Session Import page", () => {
       ?.dispatch("click");
     await vi.waitFor(() =>
       expect(
-        sendRequest.mock.calls.filter(
-          ([method]) => method === DEEPSEEK_MODERN_SESSION_IMPORT_METHOD,
-        ),
+        sendRequest.mock.calls.filter(([method]) => method === HARNESS_SESSION_IMPORT_METHOD),
       ).toHaveLength(1),
     );
     const staleContent = visibleText(firstContent);
@@ -1012,7 +1285,7 @@ describe("Renderer Session Import page", () => {
       .find(({ dataset }) => dataset.sessionImportAction === "import")
       ?.dispatch("click");
     expect(
-      sendRequest.mock.calls.filter(([method]) => method === DEEPSEEK_MODERN_SESSION_IMPORT_METHOD),
+      sendRequest.mock.calls.filter(([method]) => method === HARNESS_SESSION_IMPORT_METHOD),
     ).toHaveLength(1);
 
     imported.resolve({ threadId: "imported-thread" });
@@ -1025,12 +1298,17 @@ describe("Renderer Session Import page", () => {
     const messages = rendererSettingsMessages("zh-CN");
     const document = new FakeDocument();
     for (const [error, expected] of [
-      [new RendererDeepSeekSessionUnavailableError(), messages.sessionImportUnavailable],
+      [new RendererSessionImportUnavailableError(), messages.sessionImportUnavailable],
       [new Error("private native failure detail"), messages.sessionImportLoadFailed],
     ] as const) {
       const client = {
-        listDeepSeekModernSessions: vi.fn(async () => Promise.reject(error)),
-        importDeepSeekModernSession: vi.fn(),
+        listSessionImportSources: vi.fn(async () => ({
+          harnesses: [
+            { harnessId: harnessIdSchema.parse("deepseek-harness"), name: "DeepSeek Harness" },
+          ],
+        })),
+        listHarnessSessions: vi.fn(async () => Promise.reject(error)),
+        importHarnessSession: vi.fn(),
       };
       const page = createDefaultRendererSettingsPages(
         messages,
@@ -1055,7 +1333,13 @@ describe("Renderer Session Import page", () => {
 
   it("keeps project recovery actions after committed import navigation fails", async () => {
     const client = {
-      listDeepSeekModernSessions: vi.fn(async () => ({
+      listSessionImportSources: vi.fn(async () => ({
+        harnesses: [
+          { harnessId: harnessIdSchema.parse("deepseek-harness"), name: "DeepSeek Harness" },
+        ],
+      })),
+      listHarnessSessions: vi.fn(async () => ({
+        total: 1,
         candidates: [
           {
             nativeSessionId: "idle-session",
@@ -1066,7 +1350,7 @@ describe("Renderer Session Import page", () => {
           },
         ],
       })),
-      importDeepSeekModernSession: vi.fn(async () => ({
+      importHarnessSession: vi.fn(async () => ({
         threadId: hostThreadIdSchema.parse("imported-thread"),
       })),
     };
@@ -1123,7 +1407,7 @@ describe("Renderer Session Import page", () => {
         ?.disabled,
     ).toBe(true);
     await vi.waitFor(() => expect(openImportedThread).toHaveBeenCalledTimes(2));
-    expect(client.importDeepSeekModernSession).toHaveBeenCalledOnce();
+    expect(client.importHarnessSession).toHaveBeenCalledOnce();
     scope.dispose();
   });
 
@@ -1141,7 +1425,7 @@ describe("Renderer Session Import page", () => {
       runLatest: (operation, handlers) => scope.runLatest(operation, handlers),
     });
 
-    expect(visibleText(content)).toContain("codexhost-managed DeepSeek Harness 0.1.2-rc.1");
+    expect(visibleText(content)).toContain("Session import is unavailable for this local Harness");
     expect(
       descendants(content).filter(({ dataset }) => dataset.sessionImportAction === "import"),
     ).toHaveLength(0);
@@ -1149,10 +1433,15 @@ describe("Renderer Session Import page", () => {
   });
 
   it("ignores a Session list that resolves after the settings page is disposed", async () => {
-    const listed = deferred<{ candidates: never[] }>();
+    const listed = deferred<{ candidates: never[]; total: number }>();
     const client = {
-      listDeepSeekModernSessions: vi.fn(() => listed.promise),
-      importDeepSeekModernSession: vi.fn(),
+      listSessionImportSources: vi.fn(async () => ({
+        harnesses: [
+          { harnessId: harnessIdSchema.parse("deepseek-harness"), name: "DeepSeek Harness" },
+        ],
+      })),
+      listHarnessSessions: vi.fn(() => listed.promise),
+      importHarnessSession: vi.fn(),
     };
     const page = createDefaultRendererSettingsPages(
       rendererSettingsMessages("en"),
@@ -1172,7 +1461,7 @@ describe("Renderer Session Import page", () => {
     const before = visibleText(content);
 
     scope.dispose();
-    listed.resolve({ candidates: [] });
+    listed.resolve({ candidates: [], total: 0 });
     await Promise.resolve();
     await Promise.resolve();
 

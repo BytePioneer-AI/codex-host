@@ -1,5 +1,7 @@
 import { randomUUID } from "node:crypto";
 
+import { deepSeekHarnessCommandCatalog } from "./harness-commands.js";
+
 import type {
   HarnessAdapter,
   HarnessError,
@@ -7,12 +9,14 @@ import type {
   HarnessResult,
   HarnessSession,
   HarnessSessionImportCapability,
+  HarnessSessionImportSource,
   HarnessWebUiAction,
   InspectHarnessInput,
   OpenSessionInput,
 } from "@codexhost/harness-adapter";
 import {
   harnessIdSchema,
+  nativeSessionRefSchema,
   type DeepSeekModernSessionCandidate,
   type HarnessId,
 } from "@codexhost/shared-contracts";
@@ -88,10 +92,38 @@ class DelegateSelectionError extends Error {
 
 /** Public DeepSeek Adapter that selects one exact DSH protocol generation for its lifetime. */
 export class DeepSeekHarnessAdapter implements HarnessAdapter {
+  readonly commandCatalog = deepSeekHarnessCommandCatalog();
   readonly harnessId: HarnessId = DEEPSEEK_HARNESS_ID;
-  readonly sessionImport: HarnessSessionImportCapability = Object.freeze({
+  readonly sessionImport = Object.freeze({
     listCandidates: () => this.#listSessionImportCandidates(),
-  });
+    resolveCandidate: async (
+      nativeSessionId: string,
+    ): Promise<HarnessResult<HarnessSessionImportSource>> => {
+      const listed = await this.#listSessionImportCandidates();
+      if (!listed.ok) return listed;
+      const candidate = listed.value.find((entry) => entry.nativeSessionId === nativeSessionId);
+      if (!candidate)
+        return {
+          ok: false,
+          error: {
+            code: "sessionNotFound",
+            message: "DeepSeek Session is no longer available",
+            retryable: false,
+          },
+        };
+      return {
+        ok: true,
+        value: {
+          candidate,
+          nativeRef: nativeSessionRefSchema.parse({
+            harnessId: this.harnessId,
+            nativeSessionId,
+            formatVersion: 1,
+          }),
+        },
+      };
+    },
+  } satisfies HarnessSessionImportCapability);
   readonly webUi: HarnessWebUiAction = Object.freeze({
     open: () => this.#openWebUi(),
   });

@@ -31,6 +31,7 @@ export type {
   HarnessSessionCapabilities,
   HarnessSessionImportCandidate,
   HarnessSessionImportCapability,
+  HarnessSessionImportSource,
   HarnessSubagentCapability,
   HarnessWebUiAction,
   HarnessSessionState,

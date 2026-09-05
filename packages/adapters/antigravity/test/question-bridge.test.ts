@@ -29,7 +29,7 @@ const input = {
   },
 };
 
-async function fixture(timeoutMs = 5_000) {
+async function fixture(timeoutMs = 5_000, approvals = false) {
   const outputs: HarnessOutput[] = [];
   const bridge = await AntigravityQuestionBridge.create({
     turnId: hostTurnIdSchema.parse("turn-test"),
@@ -37,6 +37,8 @@ async function fixture(timeoutMs = 5_000) {
     schedule: (action) => action(),
     emit: (output) => outputs.push(output),
     timeoutMs,
+    approvals,
+    ownsApprovalSession: (id) => id === "owned-child",
   });
   const url = bridge.environment.CODEXHOST_AGY_QUESTION_URL;
   if (!url) throw new Error("Bridge did not publish its URL");
@@ -84,6 +86,158 @@ async function question(outputs: HarnessOutput[]): Promise<HostQuestionInteracti
 }
 
 describe("Antigravity question Hook bridge", () => {
+  it.each(["allow-once", "deny"])(
+    "returns a scoped %s tool decision without changing Question semantics",
+    async (actionId) => {
+      const { bridge, outputs } = await fixture(5_000, true);
+      const payload = {
+        ...input,
+        toolCall: { name: "run_command", args: { CommandLine: "echo fixture" } },
+      };
+      try {
+        const done = runHook(bridge, payload);
+        await vi.waitFor(() =>
+          expect(
+            outputs.some(
+              (output) => output.kind === "interaction" && output.interaction.type === "approval",
+            ),
+          ).toBe(true),
+        );
+        const output = outputs.find((candidate) => candidate.kind === "interaction");
+        if (output?.kind !== "interaction" || output.interaction.type !== "approval")
+          throw new Error("No Approval");
+        const interactionId = output.interaction.interactionId;
+        expect(output.interaction.actions.map((action) => action.effect)).toEqual([
+          "allowOnce",
+          "deny",
+        ]);
+        expect(output.interaction.description).toContain("echo fixture");
+        expect(
+          bridge.respond({
+            type: "interaction.respond",
+            interactionId,
+            response: { type: "approval", actionId: "allow-always" },
+          }),
+        ).toMatchObject({ ok: false });
+        expect(
+          bridge.respond({
+            type: "interaction.respond",
+            interactionId,
+            response: { type: "question", answers: {} },
+          }),
+        ).toMatchObject({ ok: false });
+        const command = {
+          type: "interaction.respond" as const,
+          interactionId,
+          response: { type: "approval" as const, actionId },
+        };
+        expect(bridge.respond(command)).toMatchObject({ ok: true });
+        expect(bridge.respond(command)).toMatchObject({ ok: false });
+        expect(JSON.parse((await done).stdout)).toMatchObject({
+          decision: actionId === "allow-once" ? "allow" : "deny",
+        });
+        expect(
+          outputs.map((value) => (value.kind === "event" ? value.event.type : value.kind)),
+        ).toEqual(["interaction", "interaction.closed"]);
+        const asking = runHook(bridge, { ...input, stepIdx: 3 });
+        await vi.waitFor(() =>
+          expect(outputs.filter((value) => value.kind === "interaction")).toHaveLength(2),
+        );
+        const questionOutput = outputs.find(
+          (value) => value.kind === "interaction" && value.interaction.type === "question",
+        );
+        if (questionOutput?.kind !== "interaction") throw new Error("Question missing");
+        bridge.respond({
+          type: "interaction.respond",
+          interactionId: questionOutput.interaction.interactionId,
+          response: { type: "question", answers: { q1: ["Beta"] } },
+        });
+        expect(JSON.parse((await asking).stdout).decision).toBe("deny");
+      } finally {
+        await bridge.dispose();
+      }
+    },
+  );
+
+  it("separates concurrent parent/owned-child approvals and rejects foreign identities", async () => {
+    const { bridge, outputs } = await fixture(5_000, true);
+    const toolCall = { name: "view_file", args: { AbsolutePath: "fixture.txt" } };
+    try {
+      const first = runHook(bridge, { ...input, toolCall });
+      const second = runHook(bridge, { ...input, conversationId: "owned-child", toolCall });
+      await vi.waitFor(() =>
+        expect(outputs.filter((value) => value.kind === "interaction")).toHaveLength(2),
+      );
+      const foreign = await runHook(bridge, { ...input, conversationId: "other-parent", toolCall });
+      expect(JSON.parse(foreign.stdout).decision).toBe("deny");
+      for (const output of outputs.filter((value) => value.kind === "interaction")) {
+        if (output.kind !== "interaction" || output.interaction.type !== "approval") continue;
+        bridge.respond({
+          type: "interaction.respond",
+          interactionId: output.interaction.interactionId,
+          response: {
+            type: "approval",
+            actionId: output.interaction.description?.includes("owned-child")
+              ? "deny"
+              : "allow-once",
+          },
+        });
+      }
+      expect(JSON.parse((await first).stdout).decision).toBe("allow");
+      expect(JSON.parse((await second).stdout).decision).toBe("deny");
+    } finally {
+      await bridge.dispose();
+    }
+  });
+
+  it("denies expired and cancelled approvals and verifies the effective all-tool Hook before execution", async () => {
+    const { bridge, outputs } = await fixture(40, true);
+    const toolCall = { name: "run_command", args: { CommandLine: "echo fixture" } };
+    try {
+      expect(JSON.parse((await runHook(bridge, { ...input, toolCall })).stdout).decision).toBe(
+        "deny",
+      );
+      expect(outputs).toContainEqual(
+        expect.objectContaining({
+          kind: "event",
+          event: expect.objectContaining({ type: "interaction.closed", reason: "expired" }),
+        }),
+      );
+      const config = JSON.parse(
+        await readFile(path.join(bridge.directory, ".agents", "hooks.json"), "utf8"),
+      );
+      const handler = config["codexhost-question-bridge"].PreToolUse[0];
+      const hook = {
+        name: "codexhost-question-bridge",
+        enabled: true,
+        source: path.join(bridge.directory, ".agents", "hooks.json"),
+        actions: [
+          { event: "PreToolUse", matcher: handler.matcher, command: handler.hooks[0].command },
+        ],
+      };
+      const report = (value: object) =>
+        JSON.stringify({
+          event: "command_result",
+          command: {
+            name: "hooks",
+            data: { hooks: [value] },
+          },
+        });
+      expect(bridge.verifyApprovalHooks(report(hook))).toBe(true);
+      expect(bridge.verifyApprovalHooks(report({ ...hook, enabled: false }))).toBe(false);
+      expect(bridge.verifyApprovalHooks(report({ ...hook, source: "/foreign/hooks.json" }))).toBe(
+        false,
+      );
+      expect(bridge.verifyApprovalHooks("not json")).toBe(false);
+      bridge.stop();
+      expect(
+        JSON.parse((await runHook(bridge, { ...input, stepIdx: 4, toolCall })).stdout).decision,
+      ).toBe("deny");
+    } finally {
+      await bridge.dispose();
+    }
+  });
+
   it("rejects answers past the announced deadline even before the timer callback runs", async () => {
     const { bridge, outputs } = await fixture();
     try {

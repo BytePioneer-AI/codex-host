@@ -46,8 +46,10 @@ claiming successful native cancellation.
 ## Boundaries
 
 - Child Threads are read-only. Further instructions go through the parent.
-- This does not enable Autonomous Turns or child-specific Approval/Question
-  interactions. The existing Question bridge is scoped to the parent Turn.
+- This does not enable Autonomous Turns or child-specific Questions.
+  The optional Desktop approvals mode can route Hook requests from registered
+  direct children through the active parent Turn; unknown children are rejected.
+  The Question bridge remains scoped to the parent Turn.
 - If a parent result arrives while children are still running, the observer and
   CLI stay alive until they settle or the Session closes. New parent input is
   rejected as busy during that interval.

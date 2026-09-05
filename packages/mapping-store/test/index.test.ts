@@ -488,6 +488,8 @@ describe("mapping-store package", () => {
       hostTurnId: hostTurnIdSchema.parse("source-turn-3"),
     });
     await store.upsertTurnMappings(threadId, [mapping(2), mapping(3)]);
+    const before = await store.getThread(threadId);
+    if (!before?.nativeSessionRef) throw new Error("Ready Thread is missing its Native Session");
     const replacementRef = nativeSessionRefSchema.parse({
       harnessId,
       nativeSessionId: "native-session-2",
@@ -500,6 +502,8 @@ describe("mapping-store package", () => {
     ];
     const replaced = await store.replaceReadySession({
       hostThreadId: threadId,
+      expectedRevision: before.revision,
+      expectedNativeSessionRef: before.nativeSessionRef,
       nativeSessionRef: replacementRef,
       turnMappings: replacementMappings,
       forkSource: {
@@ -525,6 +529,8 @@ describe("mapping-store package", () => {
     await expect(
       store.replaceReadySession({
         hostThreadId: threadId,
+        expectedRevision: replaced.revision,
+        expectedNativeSessionRef: replacementRef,
         nativeSessionRef: failedRef,
         turnMappings: [mappingForSession(failedRef, 1)],
         forkSource: { hostThreadId: sourceThreadId, hostTurnId: mapping(1).hostTurnId },
@@ -534,6 +540,60 @@ describe("mapping-store package", () => {
       nativeSessionRef: replacementRef,
       turnMappings: replacementMappings,
     });
+    await store.close();
+  });
+
+  it("rejects a derived Session replacement with a stale revision or source ref", async () => {
+    const directory = await temporaryStoreDirectory();
+    const store = new MappingStore({ directory });
+    await store.initialize();
+    const sourceThreadId = hostThreadIdSchema.parse("source-thread");
+    await createReady(store, {
+      hostThreadId: sourceThreadId,
+      hostTurnId: hostTurnIdSchema.parse("source-turn-3"),
+    });
+    await store.upsertTurnMappings(threadId, [mapping(2), mapping(3)]);
+    const before = await store.getThread(threadId);
+    if (!before?.nativeSessionRef) throw new Error("Ready Thread is missing its Native Session");
+    const replacementRef = nativeSessionRefSchema.parse({
+      harnessId,
+      nativeSessionId: "native-session-replacement",
+      formatVersion: 1,
+    }) as NativeSessionRef;
+    const staleSourceRef = nativeSessionRefSchema.parse({
+      ...before.nativeSessionRef,
+      locator: { sessionFile: "/synthetic/stale-source.jsonl" },
+    }) as NativeSessionRef;
+    const replacementMappings = [
+      mappingForSession(replacementRef, 1),
+      mappingForSession(replacementRef, 2),
+    ];
+    const forkSource = {
+      hostThreadId: sourceThreadId,
+      hostTurnId: hostTurnIdSchema.parse("source-turn-2"),
+    };
+
+    await expect(
+      store.replaceReadySession({
+        hostThreadId: threadId,
+        expectedRevision: before.revision - 1,
+        expectedNativeSessionRef: before.nativeSessionRef,
+        nativeSessionRef: replacementRef,
+        turnMappings: replacementMappings,
+        forkSource,
+      }),
+    ).rejects.toMatchObject({ code: "MAPPING_CONFLICT" });
+    await expect(
+      store.replaceReadySession({
+        hostThreadId: threadId,
+        expectedRevision: before.revision,
+        expectedNativeSessionRef: staleSourceRef,
+        nativeSessionRef: replacementRef,
+        turnMappings: replacementMappings,
+        forkSource,
+      }),
+    ).rejects.toMatchObject({ code: "MAPPING_CONFLICT" });
+    await expect(store.getThread(threadId)).resolves.toEqual(before);
     await store.close();
   });
 
@@ -547,6 +607,7 @@ describe("mapping-store package", () => {
     };
     await createReady(first, forkSource);
     const before = await first.getThread(threadId);
+    if (!before?.nativeSessionRef) throw new Error("Ready Thread is missing its Native Session");
     const replacementRef = nativeSessionRefSchema.parse({
       harnessId,
       nativeSessionId: "native-session-empty",
@@ -556,6 +617,8 @@ describe("mapping-store package", () => {
 
     const replaced = await first.replaceReadySessionAfterLastTurn({
       hostThreadId: threadId,
+      expectedRevision: before.revision,
+      expectedNativeSessionRef: before.nativeSessionRef,
       nativeSessionRef: replacementRef,
       turnMappings: [],
     });
@@ -575,24 +638,66 @@ describe("mapping-store package", () => {
     await second.close();
   });
 
-  it("replaces last-Turn mappings on the same Native Session identity", async () => {
+  it("rejects a last-Turn replacement that reuses the current Native Session identity", async () => {
     const directory = await temporaryStoreDirectory();
     const store = new MappingStore({ directory });
     await store.initialize();
     await createReady(store);
     await store.upsertTurnMappings(threadId, [mapping(1), mapping(2)]);
     const before = await store.getThread(threadId);
+    if (!before?.nativeSessionRef) throw new Error("Ready Thread is missing its Native Session");
 
-    const replaced = await store.replaceReadySessionAfterLastTurn({
-      hostThreadId: threadId,
-      nativeSessionRef: nativeRef,
-      turnMappings: [mapping(1)],
-    });
-    expect(replaced).toMatchObject({
-      revision: (before?.revision ?? 0) + 1,
-      nativeSessionRef: nativeRef,
-      turnMappings: [mapping(1)],
-    });
+    await expect(
+      store.replaceReadySessionAfterLastTurn({
+        hostThreadId: threadId,
+        expectedRevision: before.revision,
+        expectedNativeSessionRef: before.nativeSessionRef,
+        nativeSessionRef: nativeRef,
+        turnMappings: [mapping(1)],
+      }),
+    ).rejects.toMatchObject({ code: "MAPPING_CONFLICT" });
+    await expect(store.getThread(threadId)).resolves.toEqual(before);
+    await store.close();
+  });
+
+  it("rejects a last-Turn replacement when its expected source record is stale", async () => {
+    const directory = await temporaryStoreDirectory();
+    const store = new MappingStore({ directory });
+    await store.initialize();
+    await createReady(store);
+    await store.upsertTurnMappings(threadId, [mapping(1), mapping(2)]);
+    const before = await store.getThread(threadId);
+    if (!before?.nativeSessionRef) throw new Error("Ready Thread is missing its Native Session");
+    const replacementRef = nativeSessionRefSchema.parse({
+      harnessId,
+      nativeSessionId: "native-session-replacement",
+      formatVersion: 1,
+    }) as NativeSessionRef;
+    const staleRef = nativeSessionRefSchema.parse({
+      harnessId,
+      nativeSessionId: "native-session-stale",
+      formatVersion: 1,
+    }) as NativeSessionRef;
+
+    await expect(
+      store.replaceReadySessionAfterLastTurn({
+        hostThreadId: threadId,
+        expectedRevision: before.revision - 1,
+        expectedNativeSessionRef: before.nativeSessionRef,
+        nativeSessionRef: replacementRef,
+        turnMappings: [mappingForSession(replacementRef, 1)],
+      }),
+    ).rejects.toMatchObject({ code: "MAPPING_CONFLICT" });
+    await expect(
+      store.replaceReadySessionAfterLastTurn({
+        hostThreadId: threadId,
+        expectedRevision: before.revision,
+        expectedNativeSessionRef: staleRef,
+        nativeSessionRef: replacementRef,
+        turnMappings: [mappingForSession(replacementRef, 1)],
+      }),
+    ).rejects.toMatchObject({ code: "MAPPING_CONFLICT" });
+    await expect(store.getThread(threadId)).resolves.toEqual(before);
     await store.close();
   });
 
@@ -608,6 +713,8 @@ describe("mapping-store package", () => {
     await store.initialize();
     await createReady(store);
     await store.upsertTurnMappings(threadId, [mapping(2), mapping(3)]);
+    const before = await store.getThread(threadId);
+    if (!before?.nativeSessionRef) throw new Error("Ready Thread is missing its Native Session");
     const replacementRef = nativeSessionRefSchema.parse({
       harnessId,
       nativeSessionId: "native-session-shorter",
@@ -615,6 +722,8 @@ describe("mapping-store package", () => {
     }) as NativeSessionRef;
     const replaced = await store.replaceReadySessionAfterLastTurn({
       hostThreadId: threadId,
+      expectedRevision: before.revision,
+      expectedNativeSessionRef: before.nativeSessionRef,
       nativeSessionRef: replacementRef,
       turnMappings: [mappingForSession(replacementRef, 1), mappingForSession(replacementRef, 2)],
     });
@@ -628,6 +737,8 @@ describe("mapping-store package", () => {
     await expect(
       store.replaceReadySessionAfterLastTurn({
         hostThreadId: threadId,
+        expectedRevision: replaced.revision,
+        expectedNativeSessionRef: replacementRef,
         nativeSessionRef: failedRef,
         turnMappings: [mappingForSession(failedRef, 1)],
       }),

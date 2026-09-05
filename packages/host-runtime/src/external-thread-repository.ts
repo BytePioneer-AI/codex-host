@@ -316,8 +316,19 @@ export class ExternalThreadRepository {
         ...(turn.checkpoint ? { nativeCheckpointRef: turn.checkpoint } : {}),
       };
     });
+    const turns = snapshot.turns.map((turn, index) => {
+      const mapping = mappings[index];
+      if (!mapping) throw new Error("External rollback Snapshot mapping is incomplete");
+      return projectHistoricalTurn({
+        turnId: mapping.hostTurnId,
+        cwd: derived.cwd,
+        snapshot: turn,
+      });
+    });
     const nextRecord = await this.store.replaceReadySession({
       hostThreadId: derived.hostThreadId,
+      expectedRevision: derived.revision,
+      expectedNativeSessionRef: derived.nativeSessionRef,
       nativeSessionRef,
       turnMappings: mappings,
       forkSource: {
@@ -325,18 +336,7 @@ export class ExternalThreadRepository {
         hostTurnId: selectedSource.hostTurnId,
       },
     });
-    return {
-      record: nextRecord,
-      turns: snapshot.turns.map((turn, index) => {
-        const mapping = mappings[index];
-        if (!mapping) throw new Error("External rollback Snapshot mapping is incomplete");
-        return projectHistoricalTurn({
-          turnId: mapping.hostTurnId,
-          cwd: derived.cwd,
-          snapshot: turn,
-        });
-      }),
-    };
+    return { record: nextRecord, turns };
   }
 
   async commitLastTurnRollback(
@@ -348,6 +348,7 @@ export class ExternalThreadRepository {
       current.state !== "ready" ||
       !current.nativeSessionRef ||
       nativeSessionRef.harnessId !== current.harnessId ||
+      nativeSessionRef.nativeSessionId === current.nativeSessionRef.nativeSessionId ||
       snapshot.turns.length !== current.turnMappings.length - 1
     ) {
       throw new Error("Last-Turn rollback is not an exact ready Session replacement");
@@ -370,23 +371,23 @@ export class ExternalThreadRepository {
         ...(turn.checkpoint ? { nativeCheckpointRef: turn.checkpoint } : {}),
       };
     });
+    const turns = snapshot.turns.map((turn, index) => {
+      const mapping = mappings[index];
+      if (!mapping) throw new Error("Last-Turn rollback Snapshot mapping is incomplete");
+      return projectHistoricalTurn({
+        turnId: mapping.hostTurnId,
+        cwd: current.cwd,
+        snapshot: turn,
+      });
+    });
     const nextRecord = await this.store.replaceReadySessionAfterLastTurn({
       hostThreadId: current.hostThreadId,
+      expectedRevision: current.revision,
+      expectedNativeSessionRef: current.nativeSessionRef,
       nativeSessionRef,
       turnMappings: mappings,
     });
-    return {
-      record: nextRecord,
-      turns: snapshot.turns.map((turn, index) => {
-        const mapping = mappings[index];
-        if (!mapping) throw new Error("Last-Turn rollback Snapshot mapping is incomplete");
-        return projectHistoricalTurn({
-          turnId: mapping.hostTurnId,
-          cwd: current.cwd,
-          snapshot: turn,
-        });
-      }),
-    };
+    return { record: nextRecord, turns };
   }
 
   async sessionTreeId(record: StoredThreadRecordV1): Promise<string> {
@@ -401,6 +402,38 @@ export class ExternalThreadRepository {
       current = source;
     }
     return current.hostThreadId;
+  }
+
+  projectKnownSnapshot(
+    record: StoredThreadRecordV1,
+    snapshot: HostThreadSnapshot,
+  ): AlignedExternalSnapshot | null {
+    const nativeSessionRef = record.nativeSessionRef;
+    if (!nativeSessionRef || record.state !== "ready") {
+      throw new Error("External Thread has no committed Native Session identity");
+    }
+    if (snapshot.turns.length !== record.turnMappings.length) return null;
+    const turns = snapshot.turns.map((turn, index) => {
+      const mapping = record.turnMappings[index];
+      if (!mapping || nativeTurnKey(turn.nativeTurnRef) !== nativeTurnKey(mapping.nativeTurnRef)) {
+        return null;
+      }
+      if (
+        turn.nativeTurnRef.harnessId !== record.harnessId ||
+        turn.nativeTurnRef.nativeSessionId !== nativeSessionRef.nativeSessionId ||
+        (turn.checkpoint &&
+          (turn.checkpoint.harnessId !== record.harnessId ||
+            turn.checkpoint.nativeSessionId !== nativeSessionRef.nativeSessionId))
+      ) {
+        throw new Error("Live Snapshot identity does not belong to the stored Thread");
+      }
+      return projectHistoricalTurn({
+        turnId: mapping.hostTurnId,
+        cwd: record.cwd,
+        snapshot: turn,
+      });
+    });
+    return turns.some((turn) => turn === null) ? null : { record, turns: turns as JsonObject[] };
   }
 
   async alignSnapshot(
@@ -448,6 +481,9 @@ export class ExternalThreadRepository {
     });
 
     const orderedMappings = aligned.map(({ mapping }) => mapping);
+    const turns = aligned.map(({ mapping, snapshot: turn }) =>
+      projectHistoricalTurn({ turnId: mapping.hostTurnId, cwd: record.cwd, snapshot: turn }),
+    );
     const mappingsChanged =
       orderedMappings.length !== record.turnMappings.length ||
       orderedMappings.some((mapping, index) => {
@@ -457,12 +493,7 @@ export class ExternalThreadRepository {
     const nextRecord = mappingsChanged
       ? await this.store.reconcileTurnMappings(record.hostThreadId, orderedMappings)
       : record;
-    return {
-      record: nextRecord,
-      turns: aligned.map(({ mapping, snapshot: turn }) =>
-        projectHistoricalTurn({ turnId: mapping.hostTurnId, cwd: record.cwd, snapshot: turn }),
-      ),
-    };
+    return { record: nextRecord, turns };
   }
 }
 

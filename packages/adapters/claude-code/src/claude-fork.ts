@@ -195,7 +195,11 @@ export async function forkClaudeSession(
   const sourceIds = nativeIds(source.value);
   const derivedIds = nativeIds(derived.value);
   if (
-    !isDeepStrictEqual(sourceAfter.value.turns.slice(0, boundaryIndex + 1), sourcePrefix) ||
+    sourceAfter.value.turns.length < source.value.turns.length ||
+    !isDeepStrictEqual(
+      sourceAfter.value.turns.slice(0, source.value.turns.length),
+      source.value.turns,
+    ) ||
     !isDeepStrictEqual(derivedContent, expectedPrefix) ||
     derivedIds.size === 0 ||
     [...derivedIds].some((id) => sourceIds.has(id))

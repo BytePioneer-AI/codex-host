@@ -111,7 +111,7 @@ function readyInspection(modelId = "claude-model-v1.b3B1cw") {
         selectPermissionMode: false,
         permissionModeScope: "live" as const,
       },
-      history: { fork: true, forkAcrossCwd: false, rollbackLastTurn: true },
+      history: { fork: true, forkAcrossCwd: false, rollbackLastTurn: false },
     },
   };
 }
@@ -127,7 +127,7 @@ function emptyInspection() {
         selectPermissionMode: false,
         permissionModeScope: "live" as const,
       },
-      history: { fork: true, forkAcrossCwd: false, rollbackLastTurn: true },
+      history: { fork: true, forkAcrossCwd: false, rollbackLastTurn: false },
     },
   };
 }
@@ -341,7 +341,7 @@ describe("Renderer binding Host-scoped Claude catalogs", () => {
         transportModelId:
           "codexhost/claude-code-native@claude-model-v1.b3B1cw@bypassPermissions@auto",
         effectiveModel: harnessModelRefSchema.parse({ id: "claude-model-v1.b3B1cw" }),
-        history: { fork: true, forkAcrossCwd: false, rollbackLastTurn: true },
+        history: { fork: true, forkAcrossCwd: false, rollbackLastTurn: false },
         locked: true,
       })),
       inspectThreadCommands: vi.fn(async () => ({ commands: [] })),
@@ -411,7 +411,7 @@ describe("Renderer binding Host-scoped Claude catalogs", () => {
         transportModelId:
           "codexhost/claude-code-native@claude-model-v1.b3B1cw@bypassPermissions@auto",
         effectiveModel: harnessModelRefSchema.parse({ id: "claude-model-v1.b3B1cw" }),
-        history: { fork: true, forkAcrossCwd: false, rollbackLastTurn: true },
+        history: { fork: true, forkAcrossCwd: false, rollbackLastTurn: false },
         locked: true,
       })),
       inspectThreadCommands: vi.fn(async () => ({ commands: [] })),
@@ -510,7 +510,7 @@ describe("Renderer binding Host-scoped Claude catalogs", () => {
         transportModelId:
           "codexhost/claude-code-native@claude-model-v1.b3B1cw@bypassPermissions@auto",
         effectiveModel: harnessModelRefSchema.parse({ id: "claude-model-v1.b3B1cw" }),
-        history: { fork: true, forkAcrossCwd: false, rollbackLastTurn: true },
+        history: { fork: true, forkAcrossCwd: false, rollbackLastTurn: false },
         locked: true,
       })),
       inspectThreadCommands: vi.fn(async () => ({ commands: [] })),

@@ -5,7 +5,11 @@ import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 
-import type { HarnessOutput, HarnessSession } from "@codexhost/harness-adapter";
+import {
+  comparableHistoricalTurn,
+  type HarnessOutput,
+  type HarnessSession,
+} from "@codexhost/harness-adapter";
 import { hostTurnIdSchema } from "@codexhost/shared-contracts";
 import { afterEach, describe, expect, it } from "vitest";
 
@@ -215,13 +219,17 @@ async function nextOutput(
   return result.value;
 }
 
-async function waitForTurn(session: HarnessSession, turnId: string): Promise<HarnessOutput[]> {
+async function waitForTurn(
+  session: HarnessSession,
+  iterator: AsyncIterator<HarnessOutput>,
+  turnId: string,
+  text: string,
+): Promise<HarnessOutput[]> {
   const outputs: HarnessOutput[] = [];
-  const iterator = session.outputs[Symbol.asyncIterator]();
   const started = await session.execute({
     type: "turn.start",
     turnId: hostTurnIdSchema.parse(turnId),
-    input: [{ type: "text", text: "Edit the fixture exactly once, then finish." }],
+    input: [{ type: "text", text }],
   });
   if (!started.ok) throw new Error(started.error.message);
   for (let index = 0; index < 100; index += 1) {
@@ -239,7 +247,7 @@ async function waitForTurn(session: HarnessSession, turnId: string): Promise<Har
 }
 
 describe.runIf(Boolean(command))("OpenCode Adapter real rollback", () => {
-  it("restores a real Edit Tool change and preserves exact Fork history", async () => {
+  it("preserves a real Edit Tool change while deriving exact rollback history", async () => {
     if (!command) throw new Error("CODEXHOST_OPENCODE_REAL_COMMAND is required");
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "codexhost-opencode-rollback-"));
     const workspace = path.join(root, "workspace");
@@ -314,8 +322,29 @@ describe.runIf(Boolean(command))("OpenCode Adapter real rollback", () => {
       const sourceRef = opened.value.initialState.nativeRef;
       if (!sourceRef) throw new Error("OpenCode Session did not expose a Native Ref");
       expect(sourceRef.locator).toMatchObject({ executionPolicy: "unattended-full-access" });
-      const outputs = await waitForTurn(opened.value, "real-edit");
-      expect(outputs).toContainEqual(
+      const sourceOutputs = opened.value.outputs[Symbol.asyncIterator]();
+      const editOutputs = await waitForTurn(
+        opened.value,
+        sourceOutputs,
+        "real-edit",
+        "Edit the fixture exactly once, then finish.",
+      );
+      expect(editOutputs).toContainEqual(
+        expect.objectContaining({
+          kind: "event",
+          event: expect.objectContaining({
+            type: "turn.completed",
+            outcome: expect.objectContaining({ status: "succeeded" }),
+          }),
+        }),
+      );
+      const followupOutputs = await waitForTurn(
+        opened.value,
+        sourceOutputs,
+        "real-followup",
+        "Confirm that the edit is complete without changing any files.",
+      );
+      expect(followupOutputs).toContainEqual(
         expect.objectContaining({
           kind: "event",
           event: expect.objectContaining({
@@ -325,25 +354,32 @@ describe.runIf(Boolean(command))("OpenCode Adapter real rollback", () => {
         }),
       );
       expect(await fs.readFile(fixture, "utf8")).toBe("after\n");
-      const snapshot = await opened.value.readSnapshot();
-      if (!snapshot.ok) throw new Error(snapshot.error.message);
-      expect(snapshot.value.turns).toHaveLength(1);
-      expect(snapshot.value.turns[0]?.items).toEqual(
+      const sourceBefore = await opened.value.readSnapshot();
+      if (!sourceBefore.ok) throw new Error(sourceBefore.error.message);
+      expect(sourceBefore.value.turns).toHaveLength(2);
+      const sourceFirstTurn = sourceBefore.value.turns[0];
+      if (!sourceFirstTurn) throw new Error("OpenCode source is missing its first Turn");
+      expect(sourceFirstTurn.items).toEqual(
         expect.arrayContaining([
           expect.objectContaining({ item: expect.objectContaining({ type: "toolExecution" }) }),
           expect.objectContaining({ item: expect.objectContaining({ type: "fileChange" }) }),
         ]),
       );
-      const checkpoint = snapshot.value.turns[0]?.checkpoint;
+      expect(sourceBefore.value.turns[1]?.outcome).toMatchObject({ status: "succeeded" });
+      const checkpoint = sourceFirstTurn.checkpoint;
       if (!checkpoint) throw new Error("OpenCode Edit Turn did not expose a Checkpoint");
       await opened.value.close();
 
       const forked = await adapter.open({ kind: "fork", sourceRef, checkpoint, cwd: workspace });
       if (!forked.ok) throw new Error(forked.error.message);
-      await expect(forked.value.readSnapshot()).resolves.toMatchObject({
-        ok: true,
-        value: { turns: [{ outcome: { status: "succeeded" } }] },
-      });
+      const forkedSnapshot = await forked.value.readSnapshot();
+      if (!forkedSnapshot.ok) throw new Error(forkedSnapshot.error.message);
+      expect(forkedSnapshot.value.turns).toHaveLength(1);
+      const forkedTurn = forkedSnapshot.value.turns[0];
+      if (!forkedTurn) throw new Error("OpenCode Fork is missing its retained Turn");
+      expect(comparableHistoricalTurn(forkedTurn)).toEqual(
+        comparableHistoricalTurn(sourceFirstTurn),
+      );
       await forked.value.close();
 
       const rolledBack = await adapter.open({
@@ -352,55 +388,114 @@ describe.runIf(Boolean(command))("OpenCode Adapter real rollback", () => {
         cwd: workspace,
       });
       if (!rolledBack.ok) throw new Error(rolledBack.error.message);
-      expect(rolledBack.value.initialState.nativeRef?.nativeSessionId).toBe(
-        sourceRef.nativeSessionId,
+      const rolledBackRef = rolledBack.value.initialState.nativeRef;
+      if (!rolledBackRef) throw new Error("OpenCode rollback did not expose a Native Ref");
+      expect(rolledBackRef.nativeSessionId).not.toBe(sourceRef.nativeSessionId);
+      expect(await fs.readFile(fixture, "utf8")).toBe("after\n");
+      const rolledBackSnapshot = await rolledBack.value.readSnapshot();
+      if (!rolledBackSnapshot.ok) throw new Error(rolledBackSnapshot.error.message);
+      expect(rolledBackSnapshot.value.turns).toHaveLength(1);
+      const rolledBackTurn = rolledBackSnapshot.value.turns[0];
+      if (!rolledBackTurn) throw new Error("OpenCode rollback is missing its retained Turn");
+      expect(comparableHistoricalTurn(rolledBackTurn)).toEqual(
+        comparableHistoricalTurn(sourceFirstTurn),
       );
-      expect(await fs.readFile(fixture, "utf8")).toBe("before\n");
-      await expect(rolledBack.value.readSnapshot()).resolves.toMatchObject({
-        ok: true,
-        value: { turns: [] },
-      });
+      expect(rolledBackTurn.items).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ item: expect.objectContaining({ type: "toolExecution" }) }),
+          expect.objectContaining({ item: expect.objectContaining({ type: "fileChange" }) }),
+        ]),
+      );
       await rolledBack.value.close();
+
+      const sourceAfterRollback = await adapter.open({
+        kind: "resume",
+        nativeRef: sourceRef,
+        cwd: workspace,
+      });
+      if (!sourceAfterRollback.ok) throw new Error(sourceAfterRollback.error.message);
+      const sourceAfter = await sourceAfterRollback.value.readSnapshot();
+      if (!sourceAfter.ok) throw new Error(sourceAfter.error.message);
+      expect(sourceAfter.value).toEqual(sourceBefore.value);
+      expect(await fs.readFile(fixture, "utf8")).toBe("after\n");
+      await sourceAfterRollback.value.close();
 
       await adapter.close();
       adapter = new OpenCodeAdapter(adapterOptions);
-      const resumed = await adapter.open({ kind: "resume", nativeRef: sourceRef, cwd: workspace });
+      const resumed = await adapter.open({
+        kind: "resume",
+        nativeRef: rolledBackRef,
+        cwd: workspace,
+      });
       if (!resumed.ok) throw new Error(resumed.error.message);
       expect(resumed.value.initialState.nativeRef?.locator).toMatchObject({
         executionPolicy: "unattended-full-access",
       });
-      await expect(resumed.value.readSnapshot()).resolves.toMatchObject({
-        ok: true,
-        value: { turns: [] },
-      });
-      await waitForTurn(resumed.value, "after-restart");
+      const resumedBefore = await resumed.value.readSnapshot();
+      if (!resumedBefore.ok) throw new Error(resumedBefore.error.message);
+      expect(resumedBefore.value.turns).toHaveLength(1);
+      const resumedFirstTurn = resumedBefore.value.turns[0];
+      if (!resumedFirstTurn) throw new Error("Restarted OpenCode Session lost its retained Turn");
+      expect(comparableHistoricalTurn(resumedFirstTurn)).toEqual(
+        comparableHistoricalTurn(sourceFirstTurn),
+      );
+      const resumedOutputs = resumed.value.outputs[Symbol.asyncIterator]();
+      await waitForTurn(
+        resumed.value,
+        resumedOutputs,
+        "after-restart",
+        "Confirm again that no further changes are needed.",
+      );
       expect(await fs.readFile(fixture, "utf8")).toBe("after\n");
-      await expect(resumed.value.readSnapshot()).resolves.toMatchObject({
-        ok: true,
-        value: { turns: [{ outcome: { status: "succeeded" } }] },
-      });
+      const resumedAfter = await resumed.value.readSnapshot();
+      if (!resumedAfter.ok) throw new Error(resumedAfter.error.message);
+      expect(resumedAfter.value.turns).toHaveLength(2);
       await resumed.value.close();
 
       const rolledBackAgain = await adapter.open({
         kind: "rollbackLastTurn",
-        sourceRef,
+        sourceRef: rolledBackRef,
         cwd: workspace,
       });
       if (!rolledBackAgain.ok) throw new Error(rolledBackAgain.error.message);
-      expect(rolledBackAgain.value.initialState.nativeRef?.nativeSessionId).toBe(
-        sourceRef.nativeSessionId,
+      expect(rolledBackAgain.value.initialState.nativeRef?.nativeSessionId).not.toBe(
+        rolledBackRef.nativeSessionId,
       );
-      expect(await fs.readFile(fixture, "utf8")).toBe("before\n");
-      await expect(rolledBackAgain.value.readSnapshot()).resolves.toMatchObject({
+      expect(await fs.readFile(fixture, "utf8")).toBe("after\n");
+      const rolledBackAgainRef = rolledBackAgain.value.initialState.nativeRef;
+      if (!rolledBackAgainRef) {
+        throw new Error("Second OpenCode rollback did not expose a Native Ref");
+      }
+      const rolledBackAgainSnapshot = await rolledBackAgain.value.readSnapshot();
+      if (!rolledBackAgainSnapshot.ok) throw new Error(rolledBackAgainSnapshot.error.message);
+      expect(rolledBackAgainSnapshot.value.turns).toHaveLength(1);
+      const rolledBackAgainTurn = rolledBackAgainSnapshot.value.turns[0];
+      if (!rolledBackAgainTurn) throw new Error("Second OpenCode rollback lost its retained Turn");
+      expect(comparableHistoricalTurn(rolledBackAgainTurn)).toEqual(
+        comparableHistoricalTurn(sourceFirstTurn),
+      );
+      await rolledBackAgain.value.close();
+
+      const emptyPrefixRollback = await adapter.open({
+        kind: "rollbackLastTurn",
+        sourceRef: rolledBackAgainRef,
+        cwd: workspace,
+      });
+      if (!emptyPrefixRollback.ok) throw new Error(emptyPrefixRollback.error.message);
+      expect(emptyPrefixRollback.value.initialState.nativeRef?.nativeSessionId).not.toBe(
+        rolledBackAgainRef.nativeSessionId,
+      );
+      await expect(emptyPrefixRollback.value.readSnapshot()).resolves.toMatchObject({
         ok: true,
         value: { turns: [] },
       });
-      await rolledBackAgain.value.close();
+      expect(await fs.readFile(fixture, "utf8")).toBe("after\n");
+      await emptyPrefixRollback.value.close();
     } finally {
       await adapter.close();
       await modelServer.close();
       openServers.delete(modelServer);
       await fs.rm(root, { recursive: true, force: true });
     }
-  }, 120_000);
+  }, 180_000);
 });

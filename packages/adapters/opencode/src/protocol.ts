@@ -55,6 +55,7 @@ export interface OpenCodeTransport {
   }): Promise<Session>;
   deleteSession(sessionID: string): Promise<void>;
   getSession(sessionID: string): Promise<Session>;
+  getPaths(): Promise<{ directory: string; worktree: string }>;
   updateSessionMetadata(sessionID: string, metadata: Record<string, unknown>): Promise<Session>;
   updateSessionPermission(sessionID: string, permission: PermissionRuleset): Promise<Session>;
   getMessages(sessionID: string): Promise<OpenCodeMessageWithParts[]>;

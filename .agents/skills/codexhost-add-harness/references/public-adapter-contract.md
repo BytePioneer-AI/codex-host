@@ -26,7 +26,7 @@
 - `readSnapshot()`：只读历史和当前状态。
 - `execute()`：执行 Turn、取消、Interaction 响应和配置变更。
 - `refreshUsage()`：仅在原生系统支持主动刷新时提供。
-- `close()`：终结活动操作、关闭 Transport 并结束输出流。
+- `close()`：释放 Adapter 控制的资源并结束输出流；只有显式声明 History replacement fence 时，才额外保证原生工作不能继续修改 Transcript 或 Workspace。
 
 ## `inspect()` 契约
 
@@ -49,7 +49,7 @@
 - `create`：创建空的、独立的原生 Session；可携带 Model、Thinking、Permission Mode 和 `executionPolicy`。
 - `resume`：以相同 Native Session identity 恢复可继续会话；`knownTurnRefs` 用于稳定对齐已持久化 Turn。
 - `fork`：从指定 Checkpoint 创建独立 Native Session，不能修改源会话。
-- `rollbackLastTurn`：生成删除最后一个 Turn 后仍可继续的 Session；不能修改调用方仍在使用的源 Session。
+- `rollbackLastTurn`：生成删除最后一个 Turn 后仍可继续的 Session；不能修改调用方仍在使用的源 Session。Host 会携带当前确认的 Model、Thinking 和 Permission Mode，Adapter 必须在返回前保留或恢复这些配置。
 
 所有模式都必须：
 
@@ -69,6 +69,21 @@
 
 History 的详细要求见 [thread-lifecycle-and-history.md](thread-lifecycle-and-history.md)。跨 Harness 环境要求见 [cross-harness-delegation.md](cross-harness-delegation.md)。
 
+## `close()` 契约
+
+所有 `HarnessSession.close()` 在 Promise resolve 时都必须满足：
+
+- `outputs` 已结束，并且 close 前已经发出的值会在结束前可被消费；
+- 后续不能再接受命令或产生输出；
+- Adapter 控制的 Transport、订阅、定时器和其他资源已经释放；
+- 重复调用安全。
+
+只有 `capabilities.history.replacementFence === true` 时，`close()` resolve 还必须证明该 Session 启动或控制的原生工作已经停止，并且不会继续修改 Native Transcript 或 Workspace。Host 才能在历史替换提交前用 `close()` 隔离旧 Session，并排空其输出。CLI/RPC Harness 通常需要等待子进程树退出；独立 Server Harness 需要停止订阅和它为该 Session 启动的 Server。仅断开一个仍可自主执行的监听器不满足 fence 契约。
+
+`replacementFence` 是可选字段，遗漏与 `false` 等价；未声明 Rollback 的旧 Adapter 仍可直接解析，旧的 Rollback-capable Adapter 则必须显式迁移并证明 fence，否则按不兼容能力 fail closed。普通 `close()` 的资源和输出保证不能被推断为 native/workspace fence。
+
+Session 的 `capabilities` 在其生命周期内必须保持不变。Host 会在候选 Session 打开时以及配置/历史异步校验完成后的提交边界重复检查 `replacementFence`；如果能力声明发生变化，替换会在关闭来源 Session 或写 Store 前失败。
+
 ## 能力声明
 
 `HarnessSessionCapabilities` 是 Host 的行为依据，不是展示信息：
@@ -78,7 +93,8 @@ History 的详细要求见 [thread-lifecycle-and-history.md](thread-lifecycle-an
 - `configuration.selectPermissionMode`：允许 `permissionMode.select`，且 `inspect()` 必须提供 Catalog。
 - `history.fork`：快照应提供可用 Checkpoint，Adapter 应接受 `open({ kind: "fork" })`。
 - `history.forkAcrossCwd`：仅在 `fork` 为 true 时可为 true。
-- `history.rollbackLastTurn`：Adapter 应接受 `open({ kind: "rollbackLastTurn" })`。
+- `history.replacementFence`：`close()` 可以作为 History replacement 的 Native work、Transcript 和 Workspace fence；遗漏视为 false。
+- `history.rollbackLastTurn`：Adapter 应接受 `open({ kind: "rollbackLastTurn" })`，并且必须同时声明 `history.replacementFence=true`。
 - `subagents.observe`：输出标准 Subagent 生命周期。
 - `subagents.readTranscript`：Adapter 提供 `subagents.readSnapshot()`。
 - `autonomousTurns.observe`：能够输出不是由当前 Host `turn.start` 发起的原生 Turn。
@@ -151,11 +167,12 @@ Harness Commands：
 
 `Session.close()` 和 `Adapter.close()` 必须幂等：
 
-- 关闭或取消原生活动任务；
 - 结束所有待处理 Interaction；
 - 将活动 Item 和 Turn 置于唯一终态；
 - 关闭子进程、SDK 流、Socket、订阅和定时器；
 - 结束 `outputs`；
 - 不因重复调用重复发出终态事件。
+
+Adapter 应尽力取消原生活动任务；只有 Session 声明 `history.replacementFence=true` 时，才能保证 `close()` resolve 后这些任务已停止且不能再修改 Transcript 或 Workspace。
 
 最小公共行为应通过 `packages/harness-adapter/src/testing.ts` 和 `packages/harness-adapter/test/text-session.test.ts` 的模式测试；原生转换再由 Adapter 自己的测试覆盖。

@@ -625,7 +625,12 @@ class OmpHarnessSession implements HarnessSession {
         selectPermissionMode: true,
         permissionModeScope: "live",
       },
-      history: { fork: true, forkAcrossCwd: true, rollbackLastTurn: true },
+      history: {
+        fork: true,
+        forkAcrossCwd: true,
+        rollbackLastTurn: true,
+        replacementFence: true,
+      },
       subagents: { observe: true, readTranscript: true },
     };
     this.commands = {
@@ -2228,7 +2233,12 @@ export class OmpAdapter implements HarnessAdapter {
             selectPermissionMode: true,
             permissionModeScope: "live",
           },
-          history: { fork: true, forkAcrossCwd: true, rollbackLastTurn: true },
+          history: {
+            fork: true,
+            forkAcrossCwd: true,
+            rollbackLastTurn: true,
+            replacementFence: true,
+          },
           subagents: { observe: true, readTranscript: true },
         },
       };
@@ -2316,6 +2326,8 @@ export class OmpAdapter implements HarnessAdapter {
     ) as NativeSessionRef;
     let session: OmpHarnessSession | undefined;
     let transport: OmpTurnTransport | undefined;
+    let permissionModeId = OMP_DEFAULT_PERMISSION_MODE_ID;
+    let permissionMode: OmpPermissionMode = "yolo";
     try {
       if (sourceRef.harnessId !== this.harnessId) {
         return {
@@ -2326,6 +2338,10 @@ export class OmpAdapter implements HarnessAdapter {
             retryable: false,
           },
         };
+      }
+      if (input.kind === "rollbackLastTurn" && input.permissionModeId) {
+        permissionModeId = harnessPermissionModeIdSchema.parse(input.permissionModeId);
+        permissionMode = decodeOmpPermissionModeId(permissionModeId);
       }
       const sourceSessionFile = sessionFileFromRef(sourceRef);
       if (input.kind === "fork") {
@@ -2427,8 +2443,8 @@ export class OmpAdapter implements HarnessAdapter {
         startedThinkingLevels,
         initialUsage,
         supportsThinkingSelection: startedThinkingLevels !== null,
-        permissionMode: "yolo",
-        permissionModeId: OMP_DEFAULT_PERMISSION_MODE_ID,
+        permissionMode,
+        permissionModeId,
       });
       return { ok: true, value: session };
     } catch (error) {

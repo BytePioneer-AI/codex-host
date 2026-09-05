@@ -473,4 +473,102 @@ describe("ExternalThreadRuntime register", () => {
       await adapter.close();
     },
   );
+
+  it("coalesces concurrent cold restores into one Adapter open", async () => {
+    const adapter = new FakeHarnessAdapter(harnessId);
+    const created = await adapter.open({ kind: "create", cwd: "/synthetic" });
+    if (!created.ok || !created.value.initialState.nativeRef) {
+      throw new Error("Fake source Session did not open");
+    }
+    const nativeRef = created.value.initialState.nativeRef;
+    await created.value.close();
+    const stored = { ...record(), nativeSessionRef: nativeRef } as StoredThreadRecordV1;
+    const entered = Promise.withResolvers<undefined>();
+    const release = Promise.withResolvers<undefined>();
+    const open = vi.fn(async (input: OpenSessionInput) => {
+      entered.resolve(undefined);
+      await release.promise;
+      return adapter.open(input);
+    });
+    const restoringAdapter: HarnessAdapter = {
+      harnessId,
+      inspect: (input): Promise<HarnessInspection> => adapter.inspect(input),
+      open,
+      close: () => adapter.close(),
+    };
+    const repository = {
+      find: async () => stored,
+      alignSnapshot: async () => ({ record: stored, turns: [] }),
+      sessionTreeId: async () => hostThreadId,
+    } as unknown as ExternalThreadRepository;
+    const runtime = new ExternalThreadRuntime({
+      adapters: new Map([["pi", restoringAdapter]]),
+      repository,
+      consumeOutputs: async () => undefined,
+      diagnose: () => undefined,
+    });
+
+    const first = runtime.resolve(hostThreadId);
+    const second = runtime.resolve(hostThreadId);
+    await entered.promise;
+    release.resolve(undefined);
+    const [firstResolution, secondResolution] = await Promise.all([first, second]);
+
+    expect(open).toHaveBeenCalledOnce();
+    expect(firstResolution.kind).toBe("external");
+    expect(secondResolution.kind).toBe("external");
+    if (firstResolution.kind === "external" && secondResolution.kind === "external") {
+      expect(secondResolution.thread).toBe(firstResolution.thread);
+    }
+    await adapter.close();
+  });
+
+  it("closes a resumed Session when snapshot recovery preserves a Harness error", async () => {
+    const adapter = new FakeHarnessAdapter(harnessId);
+    const created = await adapter.open({ kind: "create", cwd: "/synthetic" });
+    if (!created.ok || !created.value.initialState.nativeRef) {
+      throw new Error("Fake source Session did not open");
+    }
+    const nativeRef = created.value.initialState.nativeRef;
+    await created.value.close();
+    const stored = { ...record(), nativeSessionRef: nativeRef } as StoredThreadRecordV1;
+    let resumed: FakeHarnessSession | undefined;
+    const open = vi.fn(async (input: OpenSessionInput) => {
+      const opened = await adapter.open(input);
+      if (input.kind === "resume" && opened.ok) {
+        if (!(opened.value instanceof FakeHarnessSession)) {
+          throw new Error("Fake resume did not return a Fake Session");
+        }
+        resumed = opened.value;
+        vi.spyOn(resumed, "readSnapshot").mockResolvedValue({
+          ok: false,
+          error: {
+            code: "authenticationRequired",
+            message: "synthetic expired credentials",
+            retryable: false,
+          },
+        });
+      }
+      return opened;
+    });
+    const restoringAdapter: HarnessAdapter = {
+      harnessId,
+      inspect: (input): Promise<HarnessInspection> => adapter.inspect(input),
+      open,
+      close: () => adapter.close(),
+    };
+    const runtime = new ExternalThreadRuntime({
+      adapters: new Map([["pi", restoringAdapter]]),
+      repository: { find: async () => stored } as unknown as ExternalThreadRepository,
+      consumeOutputs: async () => undefined,
+      diagnose: () => undefined,
+    });
+
+    await expect(runtime.resolve(hostThreadId)).resolves.toEqual({
+      kind: "error",
+      error: { code: -32077, message: "External Harness is unavailable" },
+    });
+    expect(resumed?.closed).toBe(true);
+    await adapter.close();
+  });
 });

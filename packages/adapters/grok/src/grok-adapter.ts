@@ -82,7 +82,6 @@ import type { GrokCompactResult } from "./grok-manual-compaction.js";
 import { projectGrokFileChanges } from "./grok-file-change.js";
 import { forkGrokSession } from "./grok-fork.js";
 import { mapGrokReplay } from "./grok-history.js";
-import { rewindGrokLastTurn } from "./grok-rewind.js";
 import {
   GROK_DEFAULT_PERMISSION_MODE_ID,
   GROK_PERMISSION_MODE_CATALOG,
@@ -203,7 +202,7 @@ function capabilitiesForModels(modelState: GrokModelState): HarnessSessionCapabi
       selectPermissionMode: true,
       permissionModeScope: "atCreate",
     },
-    history: { fork: true, forkAcrossCwd: true, rollbackLastTurn: true },
+    history: { fork: true, forkAcrossCwd: true, rollbackLastTurn: false },
   };
 }
 const DEFAULT_CLOSE_TIMEOUT_MS = 2_000;
@@ -1372,6 +1371,17 @@ export class GrokAdapter implements HarnessAdapter {
         ok: false,
         error: { code: "invalidRequest", message: "Grok Adapter requires cwd", retryable: false },
       };
+    if (input.kind === "rollbackLastTurn") {
+      return {
+        ok: false,
+        error: {
+          code: "unsupported",
+          message:
+            "Grok cannot derive a distinct last-Turn rollback Session without changing the source",
+          retryable: false,
+        },
+      };
+    }
     const requestedPermissionModeId =
       input.kind === "create"
         ? (input.permissionModeId ??
@@ -1422,44 +1432,7 @@ export class GrokAdapter implements HarnessAdapter {
     let initialPermissionModeId = requestedPermissionModeId;
     try {
       let opened: GrokOpenResult | undefined;
-      if (input.kind === "rollbackLastTurn") {
-        const sourceRef = nativeSessionRefSchema.safeParse(input.sourceRef);
-        if (!sourceRef.success || sourceRef.data.harnessId !== this.harnessId) {
-          await transport.close().catch(() => undefined);
-          return {
-            ok: false,
-            error: {
-              code: "invalidRequest",
-              message: "Grok cannot rewind another Harness's Native Session",
-              retryable: false,
-            },
-          };
-        }
-        const sourceSession = [...this.#sessions].find(
-          (entry) =>
-            entry.initialState.nativeRef?.nativeSessionId === sourceRef.data.nativeSessionId,
-        );
-        sourceConfiguration = sourceSession?.currentConfiguration();
-        const rewound = await rewindGrokLastTurn({
-          cwd,
-          harnessId: this.harnessId,
-          sourceRef: sourceRef.data,
-          locateSource: (sessionId) => transport.locateSession(sessionId),
-          readHistory: (historyCwd, sessionId) => transport.readHistory(sessionId, historyCwd),
-          rewindAndLoad: async (params) => {
-            opened = await transport.open({
-              kind: "rewind",
-              sessionId: params.sessionId,
-              targetPromptIndex: params.targetPromptIndex,
-            });
-            return { sessionId: opened.sessionId };
-          },
-        });
-        if (!rewound.ok) {
-          await transport.close().catch(() => undefined);
-          return rewound;
-        }
-      } else if (input.kind === "fork") {
+      if (input.kind === "fork") {
         const sourceSession = [...this.#sessions].find(
           (entry) =>
             input.sourceRef.harnessId === this.harnessId &&
@@ -1509,10 +1482,7 @@ export class GrokAdapter implements HarnessAdapter {
           ok: false,
           error: {
             code: "nativeFailure",
-            message:
-              input.kind === "rollbackLastTurn"
-                ? "Grok Native Rewind did not open a Session"
-                : "Grok Native Fork did not open a Session",
+            message: "Grok Native Fork did not open a Session",
             retryable: true,
           },
         };
@@ -1523,8 +1493,8 @@ export class GrokAdapter implements HarnessAdapter {
       if (!modelState)
         throw new GrokTransportError("protocolError", "Grok returned an invalid Model catalog");
       const retainedConfiguration = sourceConfiguration;
-      if ((input.kind === "rollbackLastTurn" || input.kind === "fork") && retainedConfiguration) {
-        const operation = input.kind === "rollbackLastTurn" ? "Rewind" : "Fork";
+      if (input.kind === "fork" && retainedConfiguration) {
+        const operation = "Fork";
         initialPermissionModeId =
           retainedConfiguration.permissionModeId ?? GROK_DEFAULT_PERMISSION_MODE_ID;
         const catalogModel = modelState.catalog.models.find(
@@ -1590,7 +1560,7 @@ export class GrokAdapter implements HarnessAdapter {
       }
       const history = await transport.getHistory();
       const initialUsage =
-        input.kind === "resume" || input.kind === "fork" || input.kind === "rollbackLastTurn"
+        input.kind === "resume" || input.kind === "fork"
           ? combineUsage(sessionUsageFromHistory(history), usageFromSignals(opened.signals))
           : null;
       const environment = input.environment ?? this.#environment;

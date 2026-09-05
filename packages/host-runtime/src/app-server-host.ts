@@ -1293,7 +1293,12 @@ export class AppServerHost {
             selectPermissionMode: false,
             permissionModeScope: "live",
           },
-          history: { fork: true, forkAcrossCwd: true, rollbackLastTurn: true },
+          history: {
+            fork: true,
+            forkAcrossCwd: true,
+            rollbackLastTurn: true,
+            replacementFence: true,
+          },
         },
       },
     };
@@ -1967,14 +1972,33 @@ export class AppServerHost {
       await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(result) }));
       return;
     }
-    if (params.data.refresh === "exact") void resolution.thread.session.refreshUsage?.();
-    const adapter = this.#externalAdapters.get(resolution.thread.harnessId);
+    const thread = resolution.thread;
+    const refreshUsage = thread.session.refreshUsage?.bind(thread.session);
+    if (params.data.refresh === "exact" && refreshUsage) {
+      const access = this.#externalRuntime.beginSessionAccess(thread);
+      if (!access) {
+        await this.#writer.json(
+          rpcError(request, -32072, "External Thread history is being changed"),
+        );
+        return;
+      }
+      void (async () => {
+        try {
+          await refreshUsage();
+        } catch (error) {
+          this.#diagnose(error);
+        } finally {
+          this.#externalRuntime.endSessionAccess(thread, access);
+        }
+      })();
+    }
+    const adapter = this.#externalAdapters.get(thread.harnessId);
     if (adapter && isCreditsAdapter(adapter)) void adapter.refreshCredits?.();
     const credits =
       adapter && isCreditsAdapter(adapter) ? projectAccountCredits(adapter.credits()) : null;
     const result = threadUsageInspectionSchema.parse({
       threadId: params.data.threadId,
-      usage: resolution.thread.latestUsage,
+      usage: thread.latestUsage,
       ...(credits ? { accountCredits: credits } : {}),
     });
     await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(result) }));
@@ -2081,11 +2105,29 @@ export class AppServerHost {
     }
     const resolution = await this.#resolveExternalThread(params.data.threadId);
     if (await this.#writeResolutionError(request, resolution)) return;
-    if (resolution.kind !== "external" || !resolution.thread.session.commands) {
+    if (resolution.kind !== "external") {
       await this.#writer.json(rpcEnvelope(request, { result: { commands: [] } }));
       return;
     }
-    const result = await resolution.thread.session.commands.list();
+    const thread = resolution.thread;
+    const commands = thread.session.commands;
+    if (!commands) {
+      await this.#writer.json(rpcEnvelope(request, { result: { commands: [] } }));
+      return;
+    }
+    const access = this.#externalRuntime.beginSessionAccess(thread);
+    if (!access) {
+      await this.#writer.json(
+        rpcError(request, -32072, "External Thread history is being changed"),
+      );
+      return;
+    }
+    let result: Awaited<ReturnType<typeof commands.list>>;
+    try {
+      result = await commands.list();
+    } finally {
+      this.#externalRuntime.endSessionAccess(thread, access);
+    }
     if (!result.ok) {
       await this.#writer.json(rpcError(request, -32078, result.error.message));
       return;
@@ -2116,7 +2158,12 @@ export class AppServerHost {
       return;
     }
     const thread = resolution.thread;
-    if (thread.running || this.#pendingExternalCommandRequests.has(thread.id)) {
+    if (
+      thread.running ||
+      thread.activeTurnId ||
+      this.#pendingExternalCommandRequests.has(thread.id) ||
+      !this.#externalRuntime.canStartSessionOperation(thread)
+    ) {
       await this.#writer.json(
         rpcError(request, -32072, "External Thread already has an active operation"),
       );
@@ -2131,7 +2178,19 @@ export class AppServerHost {
         );
         return;
       }
-      const catalog = await commands.list();
+      const access = this.#externalRuntime.beginSessionAccess(thread);
+      if (!access) {
+        await this.#writer.json(
+          rpcError(request, -32072, "External Thread history is being changed"),
+        );
+        return;
+      }
+      let catalog: Awaited<ReturnType<typeof commands.list>>;
+      try {
+        catalog = await commands.list();
+      } finally {
+        this.#externalRuntime.endSessionAccess(thread, access);
+      }
       if (!catalog.ok) {
         await this.#writer.json(rpcError(request, -32078, catalog.error.message));
         return;
@@ -2182,7 +2241,11 @@ export class AppServerHost {
       );
       return;
     }
-    if (thread.running) {
+    if (
+      thread.running ||
+      thread.activeTurnId ||
+      !this.#externalRuntime.canStartSessionOperation(thread)
+    ) {
       await this.#writer.json(
         rpcError(request, -32072, "External Thread already has an active operation"),
       );
@@ -2272,38 +2335,49 @@ export class AppServerHost {
       );
       return;
     }
-    const beforeRevision = thread.stateObserver.revision;
-    const result = await thread.session.execute({
-      type: "model.select",
-      model: params.data.model,
-    });
-    if (!result.ok) {
-      await this.#writer.json(rpcError(request, -32078, result.error.message));
+    const access = this.#externalRuntime.beginSessionAccess(thread);
+    if (!access) {
+      await this.#writer.json(
+        rpcError(request, -32072, "External Thread history is being changed"),
+      );
       return;
     }
     try {
-      const state = await thread.stateObserver.waitForChange(beforeRevision);
-      const projected = harnessModelSelectionStateSchema.parse({
-        ...(state.effectiveModel ? { effectiveModel: state.effectiveModel } : {}),
-        ...(state.resolvedModelLabel ? { resolvedModelLabel: state.resolvedModelLabel } : {}),
-        ...(state.effectiveThinkingOptionId
-          ? { effectiveThinkingOptionId: state.effectiveThinkingOptionId }
-          : {}),
-        ...(state.availableThinkingOptions
-          ? { availableThinkingOptions: state.availableThinkingOptions }
-          : {}),
-        ...(state.effectivePermissionModeId
-          ? { effectivePermissionModeId: state.effectivePermissionModeId }
-          : {}),
+      const beforeRevision = thread.stateObserver.revision;
+      const result = await thread.session.execute({
+        type: "model.select",
+        model: params.data.model,
       });
-      if (!projected.effectiveModel) {
-        throw new Error("Harness Session did not report an effective Model");
+      if (!result.ok) {
+        await this.#writer.json(rpcError(request, -32078, result.error.message));
+        return;
       }
-      await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(projected) }));
-    } catch (error) {
-      await this.#writer.json(
-        rpcError(request, -32078, `Model state was not confirmed: ${errorMessage(error)}`),
-      );
+      try {
+        const state = await thread.stateObserver.waitForChange(beforeRevision);
+        const projected = harnessModelSelectionStateSchema.parse({
+          ...(state.effectiveModel ? { effectiveModel: state.effectiveModel } : {}),
+          ...(state.resolvedModelLabel ? { resolvedModelLabel: state.resolvedModelLabel } : {}),
+          ...(state.effectiveThinkingOptionId
+            ? { effectiveThinkingOptionId: state.effectiveThinkingOptionId }
+            : {}),
+          ...(state.availableThinkingOptions
+            ? { availableThinkingOptions: state.availableThinkingOptions }
+            : {}),
+          ...(state.effectivePermissionModeId
+            ? { effectivePermissionModeId: state.effectivePermissionModeId }
+            : {}),
+        });
+        if (!projected.effectiveModel) {
+          throw new Error("Harness Session did not report an effective Model");
+        }
+        await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(projected) }));
+      } catch (error) {
+        await this.#writer.json(
+          rpcError(request, -32078, `Model state was not confirmed: ${errorMessage(error)}`),
+        );
+      }
+    } finally {
+      this.#externalRuntime.endSessionAccess(thread, access);
     }
   }
 
@@ -2333,68 +2407,79 @@ export class AppServerHost {
       );
       return;
     }
-    const beforeRevision = thread.stateObserver.revision;
-    const result = await thread.session.execute({
-      type: "thinking.select",
-      thinkingOptionId: params.data.thinkingOptionId,
-    });
-    if (!result.ok) {
-      await this.#writer.json(rpcError(request, -32078, result.error.message));
+    const access = this.#externalRuntime.beginSessionAccess(thread);
+    if (!access) {
+      await this.#writer.json(
+        rpcError(request, -32072, "External Thread history is being changed"),
+      );
       return;
     }
     try {
-      const state = await thread.stateObserver.waitForChange(beforeRevision);
-      const projected = harnessModelSelectionStateSchema.parse({
-        ...(state.effectiveModel ? { effectiveModel: state.effectiveModel } : {}),
-        ...(state.resolvedModelLabel ? { resolvedModelLabel: state.resolvedModelLabel } : {}),
-        ...(state.effectiveThinkingOptionId
-          ? { effectiveThinkingOptionId: state.effectiveThinkingOptionId }
-          : {}),
-        ...(state.availableThinkingOptions
-          ? { availableThinkingOptions: state.availableThinkingOptions }
-          : {}),
-        ...(state.effectivePermissionModeId
-          ? { effectivePermissionModeId: state.effectivePermissionModeId }
-          : {}),
+      const beforeRevision = thread.stateObserver.revision;
+      const result = await thread.session.execute({
+        type: "thinking.select",
+        thinkingOptionId: params.data.thinkingOptionId,
       });
-      if (!projected.effectiveThinkingOptionId) {
-        throw new Error("Harness Session did not report effective Thinking");
+      if (!result.ok) {
+        await this.#writer.json(rpcError(request, -32078, result.error.message));
+        return;
       }
-      thread.requestedThinkingOptionId = projected.effectiveThinkingOptionId;
-      const previousSelection = decodeExternalTransportSelection(
-        thread.harnessId,
-        thread.transportModelId,
-      );
-      const effectiveModel =
-        projected.effectiveModel ?? thread.requestedModel ?? previousSelection?.model;
-      if (effectiveModel) {
-        const transportModelId = encodeExternalTransportSelection(thread.harnessId, {
-          ...(previousSelection ?? {}),
-          model: effectiveModel,
-          thinkingOptionId: projected.effectiveThinkingOptionId,
+      try {
+        const state = await thread.stateObserver.waitForChange(beforeRevision);
+        const projected = harnessModelSelectionStateSchema.parse({
+          ...(state.effectiveModel ? { effectiveModel: state.effectiveModel } : {}),
+          ...(state.resolvedModelLabel ? { resolvedModelLabel: state.resolvedModelLabel } : {}),
+          ...(state.effectiveThinkingOptionId
+            ? { effectiveThinkingOptionId: state.effectiveThinkingOptionId }
+            : {}),
+          ...(state.availableThinkingOptions
+            ? { availableThinkingOptions: state.availableThinkingOptions }
+            : {}),
+          ...(state.effectivePermissionModeId
+            ? { effectivePermissionModeId: state.effectivePermissionModeId }
+            : {}),
         });
-        thread.transportModelId = transportModelId;
-        thread.requestedModel = effectiveModel;
-        try {
-          thread.record = await this.#repository.setTransportModelId(
-            thread.record.hostThreadId,
-            transportModelId,
-          );
-        } catch (error) {
-          this.#diagnose(error);
+        if (!projected.effectiveThinkingOptionId) {
+          throw new Error("Harness Session did not report effective Thinking");
         }
-        thread.thread = externalThreadValue({
-          record: { ...thread.record, transportModelId },
-          turns: thread.turns,
-          sessionId: thread.sessionId,
-          running: thread.running,
-        });
+        thread.requestedThinkingOptionId = projected.effectiveThinkingOptionId;
+        const previousSelection = decodeExternalTransportSelection(
+          thread.harnessId,
+          thread.transportModelId,
+        );
+        const effectiveModel =
+          projected.effectiveModel ?? thread.requestedModel ?? previousSelection?.model;
+        if (effectiveModel) {
+          const transportModelId = encodeExternalTransportSelection(thread.harnessId, {
+            ...(previousSelection ?? {}),
+            model: effectiveModel,
+            thinkingOptionId: projected.effectiveThinkingOptionId,
+          });
+          thread.transportModelId = transportModelId;
+          thread.requestedModel = effectiveModel;
+          try {
+            thread.record = await this.#repository.setTransportModelId(
+              thread.record.hostThreadId,
+              transportModelId,
+            );
+          } catch (error) {
+            this.#diagnose(error);
+          }
+          thread.thread = externalThreadValue({
+            record: { ...thread.record, transportModelId },
+            turns: thread.turns,
+            sessionId: thread.sessionId,
+            running: thread.running,
+          });
+        }
+        await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(projected) }));
+      } catch (error) {
+        await this.#writer.json(
+          rpcError(request, -32078, `Thinking state was not confirmed: ${errorMessage(error)}`),
+        );
       }
-      await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(projected) }));
-    } catch (error) {
-      await this.#writer.json(
-        rpcError(request, -32078, `Thinking state was not confirmed: ${errorMessage(error)}`),
-      );
+    } finally {
+      this.#externalRuntime.endSessionAccess(thread, access);
     }
   }
 
@@ -2434,72 +2519,83 @@ export class AppServerHost {
       );
       return;
     }
-    const beforeRevision = thread.stateObserver.revision;
-    const result = await thread.session.execute({
-      type: "permissionMode.select",
-      permissionModeId: params.data.permissionModeId,
-    });
-    if (!result.ok) {
-      await this.#writer.json(rpcError(request, -32078, result.error.message));
+    const access = this.#externalRuntime.beginSessionAccess(thread);
+    if (!access) {
+      await this.#writer.json(
+        rpcError(request, -32072, "External Thread history is being changed"),
+      );
       return;
     }
     try {
-      const state = await thread.stateObserver.waitForChange(beforeRevision);
-      const projected = harnessConfigurationStateSchema.parse({
-        ...(state.effectiveModel ? { effectiveModel: state.effectiveModel } : {}),
-        ...(state.resolvedModelLabel ? { resolvedModelLabel: state.resolvedModelLabel } : {}),
-        ...(state.effectiveThinkingOptionId
-          ? { effectiveThinkingOptionId: state.effectiveThinkingOptionId }
-          : {}),
-        ...(state.availableThinkingOptions
-          ? { availableThinkingOptions: state.availableThinkingOptions }
-          : {}),
-        ...(state.effectivePermissionModeId
-          ? { effectivePermissionModeId: state.effectivePermissionModeId }
-          : {}),
+      const beforeRevision = thread.stateObserver.revision;
+      const result = await thread.session.execute({
+        type: "permissionMode.select",
+        permissionModeId: params.data.permissionModeId,
       });
-      if (!projected.effectivePermissionModeId) {
-        throw new Error("Harness Session did not report its current Permission Mode");
+      if (!result.ok) {
+        await this.#writer.json(rpcError(request, -32078, result.error.message));
+        return;
       }
-      thread.requestedPermissionModeId = projected.effectivePermissionModeId;
-      const previousSelection = decodeExternalTransportSelection(
-        thread.harnessId,
-        thread.transportModelId,
-      );
-      const effectiveModel =
-        projected.effectiveModel ?? thread.requestedModel ?? previousSelection?.model;
-      if (effectiveModel) {
-        const transportModelId = encodeExternalTransportSelection(thread.harnessId, {
-          ...(previousSelection ?? {}),
-          model: effectiveModel,
-          permissionModeId: projected.effectivePermissionModeId,
+      try {
+        const state = await thread.stateObserver.waitForChange(beforeRevision);
+        const projected = harnessConfigurationStateSchema.parse({
+          ...(state.effectiveModel ? { effectiveModel: state.effectiveModel } : {}),
+          ...(state.resolvedModelLabel ? { resolvedModelLabel: state.resolvedModelLabel } : {}),
+          ...(state.effectiveThinkingOptionId
+            ? { effectiveThinkingOptionId: state.effectiveThinkingOptionId }
+            : {}),
+          ...(state.availableThinkingOptions
+            ? { availableThinkingOptions: state.availableThinkingOptions }
+            : {}),
+          ...(state.effectivePermissionModeId
+            ? { effectivePermissionModeId: state.effectivePermissionModeId }
+            : {}),
         });
-        thread.transportModelId = transportModelId;
-        thread.requestedModel = effectiveModel;
-        try {
-          thread.record = await this.#repository.setTransportModelId(
-            thread.record.hostThreadId,
-            transportModelId,
-          );
-        } catch (error) {
-          this.#diagnose(error);
+        if (!projected.effectivePermissionModeId) {
+          throw new Error("Harness Session did not report its current Permission Mode");
         }
-        thread.thread = externalThreadValue({
-          record: { ...thread.record, transportModelId },
-          turns: thread.turns,
-          sessionId: thread.sessionId,
-          running: thread.running,
-        });
+        thread.requestedPermissionModeId = projected.effectivePermissionModeId;
+        const previousSelection = decodeExternalTransportSelection(
+          thread.harnessId,
+          thread.transportModelId,
+        );
+        const effectiveModel =
+          projected.effectiveModel ?? thread.requestedModel ?? previousSelection?.model;
+        if (effectiveModel) {
+          const transportModelId = encodeExternalTransportSelection(thread.harnessId, {
+            ...(previousSelection ?? {}),
+            model: effectiveModel,
+            permissionModeId: projected.effectivePermissionModeId,
+          });
+          thread.transportModelId = transportModelId;
+          thread.requestedModel = effectiveModel;
+          try {
+            thread.record = await this.#repository.setTransportModelId(
+              thread.record.hostThreadId,
+              transportModelId,
+            );
+          } catch (error) {
+            this.#diagnose(error);
+          }
+          thread.thread = externalThreadValue({
+            record: { ...thread.record, transportModelId },
+            turns: thread.turns,
+            sessionId: thread.sessionId,
+            running: thread.running,
+          });
+        }
+        await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(projected) }));
+      } catch (error) {
+        await this.#writer.json(
+          rpcError(
+            request,
+            -32078,
+            `Permission Mode state was not confirmed: ${errorMessage(error)}`,
+          ),
+        );
       }
-      await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(projected) }));
-    } catch (error) {
-      await this.#writer.json(
-        rpcError(
-          request,
-          -32078,
-          `Permission Mode state was not confirmed: ${errorMessage(error)}`,
-        ),
-      );
+    } finally {
+      this.#externalRuntime.endSessionAccess(thread, access);
     }
   }
 
@@ -2766,13 +2862,35 @@ export class AppServerHost {
       adapters: this.#externalAdapters,
       repository: this.#repository,
       runtime: this.#externalRuntime,
+      hasRunningSubagents: (threadId) => this.#hasRunningSubagents(threadId),
       environment: this.#options.environment ?? process.env,
     });
     if (!result.ok) {
       await this.#writer.json(rpcError(request, result.error.code, result.error.message));
       return;
     }
-    await this.#writer.json(rpcEnvelope(request, { result: threadRevertResult(result.thread) }));
+    const retainedTurns = Array.isArray(result.thread.turns)
+      ? result.thread.turns.filter(
+          (turn): turn is JsonObject =>
+            typeof turn === "object" && turn !== null && !Array.isArray(turn),
+        )
+      : [];
+    const turnsBackwardsCursor = listExternalTurns(retainedTurns, {
+      limit: 1,
+      itemsView: "notLoaded",
+    }).backwardsCursor;
+    const itemsBackwardsCursor = listExternalItems(retainedTurns, {
+      limit: 1,
+      sortDirection: "desc",
+    }).backwardsCursor;
+    await this.#writer.json(
+      rpcEnvelope(request, {
+        result: threadRevertResult(result.thread, {
+          turnsBackwardsCursor,
+          itemsBackwardsCursor,
+        }),
+      }),
+    );
     await this.#writer.json({ method: "thread/reverted", params: { threadId: thread.id } });
   }
 
@@ -2787,6 +2905,7 @@ export class AppServerHost {
       adapters: this.#externalAdapters,
       repository: this.#repository,
       runtime: this.#externalRuntime,
+      hasRunningSubagents: (threadId) => this.#hasRunningSubagents(threadId),
       environment: this.#options.environment ?? process.env,
     });
     if (!result.ok) {
@@ -3030,8 +3149,12 @@ export class AppServerHost {
     text: string,
     requestedTurnId: string,
   ): Promise<void> {
-    if (thread.running) {
-      throw new Error("External Thread already has an active Turn");
+    if (
+      thread.running ||
+      thread.activeTurnId ||
+      !this.#externalRuntime.canStartSessionOperation(thread)
+    ) {
+      throw new DelegationControlError("THREAD_BUSY", "External Thread is busy");
     }
     const turnId = hostTurnIdSchema.parse(requestedTurnId);
     const projection: ProjectedTurn = {
@@ -3066,7 +3189,12 @@ export class AppServerHost {
   }
 
   async #startExternalTurn(request: JsonRpcRequest, thread: ExternalThread): Promise<void> {
-    if (thread.running || this.#pendingExternalCommandRequests.has(thread.id)) {
+    if (
+      thread.running ||
+      thread.activeTurnId ||
+      this.#pendingExternalCommandRequests.has(thread.id) ||
+      !this.#externalRuntime.canStartSessionOperation(thread)
+    ) {
       await this.#writer.json(
         rpcError(request, -32072, "External Thread already has an active Turn"),
       );
@@ -3096,10 +3224,23 @@ export class AppServerHost {
       return;
     }
     const commandText = text.trimStart();
-    if (thread.session.commands) {
+    const commands = thread.session.commands;
+    if (commands) {
       this.#pendingExternalCommandRequests.add(thread.id);
       try {
-        const catalog = await thread.session.commands.list();
+        const access = this.#externalRuntime.beginSessionAccess(thread);
+        if (!access) {
+          await this.#writer.json(
+            rpcError(request, -32072, "External Thread history is being changed"),
+          );
+          return;
+        }
+        let catalog: Awaited<ReturnType<typeof commands.list>>;
+        try {
+          catalog = await commands.list();
+        } finally {
+          this.#externalRuntime.endSessionAccess(thread, access);
+        }
         if (!catalog.ok) {
           await this.#writer.json(rpcError(request, -32073, catalog.error.message));
           return;
@@ -3148,6 +3289,12 @@ export class AppServerHost {
       return;
     }
     const turnId = hostTurnIdSchema.parse(randomUUID());
+    if (!this.#externalRuntime.canStartSessionOperation(thread)) {
+      await this.#writer.json(
+        rpcError(request, -32072, "External Thread history is being changed"),
+      );
+      return;
+    }
     const startedAtMs = Date.now();
     const projection: ProjectedTurn = {
       projector: new CodexTurnProjector({
@@ -3239,6 +3386,22 @@ export class AppServerHost {
   }
 
   async #projectHarnessOutput(thread: ExternalThread, output: HarnessOutput): Promise<void> {
+    const projection =
+      this.#externalRuntime.beginOutputProjection(thread) ??
+      (await this.#externalRuntime.waitForOutputProjection(thread));
+    if (!projection) return;
+    try {
+      await this.#projectHarnessOutputWithAccess(thread, output);
+    } finally {
+      this.#externalRuntime.endOutputProjection(thread, projection);
+    }
+  }
+
+  async #projectHarnessOutputWithAccess(
+    thread: ExternalThread,
+    output: HarnessOutput,
+  ): Promise<void> {
+    if (this.#externalRuntime.get(thread.id) !== thread) return;
     if (output.kind === "interaction") {
       if (output.interaction.type === "approval") {
         await this.#projectApproval(thread, output.interaction);

@@ -125,8 +125,18 @@ describe("Codex thread/fork protocol boundary", () => {
   });
 
   it("builds the paginated ThreadRevertResponse without embedding history", () => {
-    expect(threadRevertResult({ id: "thread-1", turns: [{ id: "turn-1" }] })).toEqual({
+    expect(
+      threadRevertResult(
+        { id: "thread-1", turns: [{ id: "turn-1" }] },
+        {
+          turnsBackwardsCursor: "turn-cursor",
+          itemsBackwardsCursor: "item-cursor",
+        },
+      ),
+    ).toEqual({
       thread: { id: "thread-1", turns: [] },
+      turnsBackwardsCursor: "turn-cursor",
+      itemsBackwardsCursor: "item-cursor",
     });
   });
 

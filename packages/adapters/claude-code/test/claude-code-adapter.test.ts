@@ -384,74 +384,7 @@ describe("Claude Code HarnessAdapter", () => {
     expect(dependencies.createTransport).not.toHaveBeenCalled();
   });
 
-  it("rolls back the last Turn through Claude's Native Fork", async () => {
-    const { adapter, dependencies, history } = fixture();
-    const sourceRef = nativeSessionRefSchema.parse({
-      harnessId: "claude-code",
-      nativeSessionId: "source-session",
-      formatVersion: 1,
-    });
-    history.push(
-      {
-        type: "user",
-        uuid: "user-1",
-        session_id: "source-session",
-        message: { role: "user", content: "first" },
-      },
-      {
-        type: "assistant",
-        uuid: "assistant-1",
-        session_id: "source-session",
-        message: { role: "assistant", content: [{ type: "text", text: "answer" }] },
-      },
-      {
-        type: "user",
-        uuid: "user-2",
-        session_id: "source-session",
-        message: { role: "user", content: "second" },
-      },
-      {
-        type: "assistant",
-        uuid: "assistant-2",
-        session_id: "source-session",
-        message: { role: "assistant", content: [{ type: "text", text: "answer" }] },
-      },
-    );
-    vi.mocked(dependencies.readSessionMessages).mockImplementation(async ({ sessionId }) =>
-      sessionId === "derived-session"
-        ? [
-            {
-              type: "user",
-              uuid: "derived-user-1",
-              session_id: "derived-session",
-              message: { role: "user", content: "first" },
-            },
-            {
-              type: "assistant",
-              uuid: "derived-assistant-1",
-              session_id: "derived-session",
-              message: { role: "assistant", content: [{ type: "text", text: "answer" }] },
-            },
-          ]
-        : structuredClone(history),
-    );
-
-    const opened = await adapter.open({ kind: "rollbackLastTurn", sourceRef, cwd: "/synthetic" });
-    if (!opened.ok) throw new Error(opened.error.message);
-    expect(dependencies.forkSession).toHaveBeenCalledWith({
-      checkpointId: "assistant-1",
-      cwd: path.resolve("/synthetic"),
-      sourceSessionId: "source-session",
-    });
-    await expect(opened.value.readSnapshot()).resolves.toMatchObject({
-      ok: true,
-      value: { turns: [{ nativeTurnRef: { nativeSessionId: "derived-session" } }] },
-    });
-    await opened.value.close();
-    await adapter.close();
-  });
-
-  it("rejects an empty last-Turn rollback without creating a Transport", async () => {
+  it("reports last-Turn rollback unsupported before reading history or starting a Transport", async () => {
     const { adapter, dependencies, transports } = fixture();
     const sourceRef = nativeSessionRefSchema.parse({
       harnessId: "claude-code",
@@ -461,7 +394,9 @@ describe("Claude Code HarnessAdapter", () => {
 
     await expect(
       adapter.open({ kind: "rollbackLastTurn", sourceRef, cwd: "/synthetic" }),
-    ).resolves.toMatchObject({ ok: false, error: { code: "invalidState" } });
+    ).resolves.toMatchObject({ ok: false, error: { code: "unsupported" } });
+    expect(dependencies.readSessionMessages).not.toHaveBeenCalled();
+    expect(dependencies.forkSession).not.toHaveBeenCalled();
     expect(dependencies.createTransport).not.toHaveBeenCalled();
     expect(transports).toHaveLength(0);
     await adapter.close();
@@ -510,7 +445,7 @@ describe("Claude Code HarnessAdapter", () => {
           selectThinkingOption: true,
           selectPermissionMode: true,
         },
-        history: { fork: true, forkAcrossCwd: false, rollbackLastTurn: true },
+        history: { fork: true, forkAcrossCwd: false, rollbackLastTurn: false },
         subagents: { observe: true, readTranscript: true },
       },
     });
@@ -531,7 +466,7 @@ describe("Claude Code HarnessAdapter", () => {
         selectPermissionMode: true,
         permissionModeScope: "live",
       },
-      history: { fork: true, forkAcrossCwd: false, rollbackLastTurn: true },
+      history: { fork: true, forkAcrossCwd: false, rollbackLastTurn: false },
       subagents: { observe: true, readTranscript: true },
     });
     const iterator = session.outputs[Symbol.asyncIterator]();

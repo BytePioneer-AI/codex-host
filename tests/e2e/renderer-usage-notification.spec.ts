@@ -27,7 +27,12 @@ const { outputFiles } = await build({
             selectPermissionMode: false,
             permissionModeScope: "live" as const,
           },
-          history: { fork: true, forkAcrossCwd: true, rollbackLastTurn: true },
+          history: {
+            fork: true,
+            forkAcrossCwd: true,
+            rollbackLastTurn: true,
+            replacementFence: true,
+          },
         },
       };
 
@@ -70,7 +75,12 @@ const { outputFiles } = await build({
         harnessId: "pi",
         transportModelId: "codexhost/pi-native",
         effectiveModel: model,
-        history: { fork: true, forkAcrossCwd: true, rollbackLastTurn: true },
+        history: {
+          fork: true,
+          forkAcrossCwd: true,
+          rollbackLastTurn: true,
+          replacementFence: true,
+        },
         usage: { cacheHitRatePercent: 27, totalCostUsd: 5.634 },
         locked: true,
       };

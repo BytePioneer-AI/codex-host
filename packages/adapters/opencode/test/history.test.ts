@@ -1,4 +1,10 @@
-import type { AssistantMessage, Session, TextPart, UserMessage } from "@opencode-ai/sdk/v2";
+import type {
+  AssistantMessage,
+  Session,
+  SnapshotFileDiff,
+  TextPart,
+  UserMessage,
+} from "@opencode-ai/sdk/v2";
 import { nativeCheckpointRefSchema } from "@codexhost/shared-contracts";
 import { describe, expect, it } from "vitest";
 
@@ -112,6 +118,27 @@ describe("OpenCode history projection", () => {
         { file: "a.ts", patch: "@@ -1 +1 @@", status: "modified", additions: 1, deletions: 1 },
         { file: "missing.patch", status: "added", additions: 1, deletions: 0 },
         { patch: "@@", status: "deleted", additions: 0, deletions: 1 },
+        {
+          file: "unknown-status.ts",
+          patch: "@@",
+          status: "renamed",
+          additions: 1,
+          deletions: 1,
+        } as unknown as SnapshotFileDiff,
+        {
+          file: "invalid-count.ts",
+          patch: "@@",
+          status: "modified",
+          additions: -1,
+          deletions: 1,
+        },
+        {
+          file: 17,
+          patch: "@@",
+          status: "modified",
+          additions: 1,
+          deletions: 1,
+        } as unknown as SnapshotFileDiff,
       ]),
     ).toEqual([{ path: "a.ts", kind: "update", unifiedDiff: "@@ -1 +1 @@" }]);
   });

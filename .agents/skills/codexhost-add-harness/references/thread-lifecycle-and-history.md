@@ -82,7 +82,7 @@ Fork 必须：
 - 创建与源 Session 不同的 Native Session identity；
 - 不修改源 Session 或源历史；
 - 返回可继续写入的派生 Session；
-- 派生快照最后一个 Turn 与目标 Checkpoint 一致；
+- 派生快照在语义上截止于目标 Checkpoint 所表示的 Turn 边界；Fork 可以重新分配 Native Session、message、Turn、Checkpoint 和 Item ID，但不能改变保留历史的内容或丢失该边界的 Checkpoint presence；
 - 失败时删除已经创建的派生原生 Session。
 
 `forkAcrossCwd` 为 false 时，只允许派生到源 cwd。为 true 时，Adapter 还必须验证原生 Harness 确实能够在目标 cwd 中安全继续，而不是只修改进程工作目录。
@@ -93,6 +93,14 @@ Fork 必须：
 - 带 Subagent 的 RPC：OMP；
 - Transcript 原生 Fork、同 cwd：Claude Code；
 - 只有 ACP 私有扩展可用时：Grok。
+
+## History replacement fence
+
+`history.replacementFence` 声明当前 Session 的 `close()` resolve 可以作为历史替换的 Native work、Transcript 和 Workspace fence。它是可选字段，遗漏与 `false` 等价；普通资源清理和 `outputs` 结束不构成这个保证。
+
+Host 只有在当前权威 Session 明确声明 `replacementFence=true` 时，才可执行会替换其 Native Session identity 的 direct rollback 或 legacy Fork rollback。Host 在提交 Mapping Store 前关闭并排空当前 Session，并在 commit 边界再次检查 capability。Adapter 返回的候选 Session 也必须声明相同 fence，否则 Host 必须在恢复配置、读取候选历史或写 Store 前拒绝它。
+
+`fork=true` 不蕴含 replacement fence，因为普通 Fork 不需要关闭或替换源 Session。`rollbackLastTurn=true` 则必须与 `replacementFence=true` 同时出现，共享 schema 会拒绝缺失或显式 false 的组合。
 
 ## RollbackLastTurn
 
@@ -105,10 +113,13 @@ Fork 必须：
 - 结果恰好少一个 Turn；
 - 保留当前有效 Model、Thinking 和 Permission Mode；
 - 返回有效 Native identity；
+- 对源历史和派生历史做身份归一化后的完整语义前缀比较：Fork 重建时 Native Session、message、Turn、Checkpoint 和 Item ID 可以变化，不参与跨 Session 相等性；必须比较 Turn 顺序、输入、Item 语义及其 Outcome、Turn Outcome 和 Model，并保留每个对应 Turn 的 Checkpoint presence，不能只比较 Turn 数量或任何原生 key/ID；
 - 源 Session 在替换完成前仍保持可回滚失败的安全状态；
 - 失败不应留下半替换 Runtime 或错误持久化记录。
 
-原生系统没有真正 Rollback 时，可以通过 Fork 到倒数第二个 Checkpoint 实现。只有一个 Turn 时，结果应是新的空白可继续 Session。参考 Pi、OMP 和 Claude Code。
+原生系统没有真正 Rollback 时，可以通过 Fork 到倒数第二个 Checkpoint 实现。只有一个 Turn 时，结果应是新的空白可继续 Session。参考 Pi、OMP 和 OpenCode；Claude Code 当前因空 Session 无法持久恢复而不声明此能力。
+
+Host 在写入 Mapping Store 前会关闭并排空显式声明 `replacementFence=true` 的旧 Session，把 `close()` 当作原生执行 fence。提交失败后旧映射仍是权威来源，Host 会在下一次访问时用它冷恢复，而不是继续使用已经关闭的 wrapper。
 
 ## 快照投影规则
 

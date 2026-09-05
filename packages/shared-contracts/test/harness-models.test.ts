@@ -9,6 +9,7 @@ import {
   harnessModelCatalogSchema,
   harnessModelRefSchema,
   harnessModelSelectionStateSchema,
+  harnessSessionCapabilitiesSchema,
   harnessThinkingOptionIdSchema,
   harnessWebUiOpenParamsSchema,
   harnessWebUiOpenResultSchema,
@@ -50,7 +51,12 @@ function readyInspection() {
         selectPermissionMode: false,
         permissionModeScope: "live",
       },
-      history: { fork: true, forkAcrossCwd: true, rollbackLastTurn: true },
+      history: {
+        fork: true,
+        forkAcrossCwd: true,
+        rollbackLastTurn: true,
+        replacementFence: true,
+      },
     },
   };
 }
@@ -92,6 +98,32 @@ describe("Harness Model runtime contracts", () => {
     expect(JSON.parse(JSON.stringify(harnessInspectionSchema.parse(readyInspection())))).toEqual(
       readyInspection(),
     );
+  });
+
+  it("keeps the replacement fence backward compatible and requires it for rollback", () => {
+    const legacyCapabilities = {
+      ...readyInspection().capabilities,
+      history: { fork: true, forkAcrossCwd: true, rollbackLastTurn: false },
+    };
+
+    expect(harnessSessionCapabilitiesSchema.parse(legacyCapabilities).history).toEqual(
+      legacyCapabilities.history,
+    );
+    expect(
+      harnessSessionCapabilitiesSchema.safeParse({
+        ...readyInspection().capabilities,
+        history: {
+          ...readyInspection().capabilities.history,
+          replacementFence: false,
+        },
+      }).success,
+    ).toBe(false);
+    expect(
+      harnessSessionCapabilitiesSchema.safeParse({
+        ...readyInspection().capabilities,
+        history: { fork: true, forkAcrossCwd: true, rollbackLastTurn: true },
+      }).success,
+    ).toBe(false);
   });
 
   it("rejects native configuration and unknown fields", () => {

@@ -101,6 +101,9 @@ export interface RollbackLastTurnSessionInput {
   sourceRef: NativeSessionRef;
   cwd: string;
   environment?: Record<string, string | undefined>;
+  model?: HarnessModelRef;
+  thinkingOptionId?: HarnessThinkingOptionId;
+  permissionModeId?: HarnessPermissionModeId;
 }
 
 export type OpenSessionInput =
@@ -490,6 +493,7 @@ export type HarnessOutput =
 
 export interface HarnessSession {
   readonly harnessId: HarnessId;
+  /** Fixed for the lifetime of this Session. */
   readonly capabilities: HarnessSessionCapabilities;
   readonly initialState: HarnessSessionState;
   readonly initialUsage: HostUsage | null;
@@ -506,6 +510,12 @@ export interface HarnessSession {
   execute(
     command: PermissionModeSelectCommand,
   ): Promise<HarnessResult<PermissionModeSelectCompleted>>;
+  /**
+   * Idempotently releases Adapter-controlled resources and ends `outputs`. After fulfillment the
+   * Session emits no later output. Only when `capabilities.history.replacementFence === true` is
+   * fulfillment also a fence proving that no Native task controlled by this Session remains able
+   * to mutate its transcript or workspace.
+   */
   close(): Promise<void>;
 }
 

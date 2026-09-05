@@ -203,6 +203,7 @@ export class FakeHarnessSession implements HarnessSession {
     initialPermissionModeId: HarnessPermissionModeId | undefined = permissionModes?.defaultModeId,
     supportsRollbackLastTurn = false,
     permissionModeScope: HarnessPermissionModeScope = "live",
+    supportsReplacementFence = true,
   ) {
     this.harnessId = harnessId;
     const availableThinkingOptions = thinkingOptionsForModel(catalog, initialModel);
@@ -222,6 +223,7 @@ export class FakeHarnessSession implements HarnessSession {
         fork: supportsFork,
         forkAcrossCwd: supportsForkAcrossCwd,
         rollbackLastTurn: supportsRollbackLastTurn,
+        replacementFence: supportsReplacementFence,
       },
       subagents: { observe: false, readTranscript: false },
     };
@@ -246,6 +248,10 @@ export class FakeHarnessSession implements HarnessSession {
 
   get state(): HarnessSessionState {
     return this.#state;
+  }
+
+  get closed(): boolean {
+    return this.#closed;
   }
 
   setStateForSnapshot(state: HarnessSessionState): void {
@@ -278,6 +284,26 @@ export class FakeHarnessSession implements HarnessSession {
     this.#event({ type: "turn.autonomous.started", turnId, input });
     this.#event({ type: "turn.started", turnId });
     this.succeedTurn();
+  }
+
+  startAutonomousTurn(turnId: HostTurnId, input: TurnStartCommand["input"]): void {
+    if (this.#closed) throw new Error("Fake Harness Session is closed");
+    if (this.#active) throw new Error("Fake Harness Session already has an active Turn");
+    const item: HostAgentMessageItem = {
+      type: "agentMessage",
+      itemId: this.#nextItemId(),
+      text: "",
+    };
+    this.#active = {
+      command: { type: "turn.start", turnId, input: cloneJson(input) },
+      items: new Map([[item.itemId, item]]),
+      completedItems: [],
+      interactions: new Map(),
+      cancellationRequested: false,
+    };
+    this.#event({ type: "turn.autonomous.started", turnId, input: cloneJson(input) });
+    this.#event({ type: "turn.started", turnId });
+    this.#event({ type: "item.started", turnId, item });
   }
 
   publishUsage(usage: HostUsage | null, observedForTurnId?: HostTurnId): void {
@@ -994,6 +1020,7 @@ export class FakeHarnessAdapter implements HarnessAdapter {
   readonly supportsFork: boolean;
   readonly supportsForkAcrossCwd: boolean;
   readonly supportsRollbackLastTurn: boolean;
+  readonly supportsReplacementFence: boolean;
   readonly permissionModeScope: HarnessPermissionModeScope;
   inspectionCalls = 0;
   #closePromise: Promise<void> | null = null;
@@ -1009,6 +1036,7 @@ export class FakeHarnessAdapter implements HarnessAdapter {
     permissionModes?: HarnessPermissionModeCatalog,
     supportsRollbackLastTurn = false,
     permissionModeScope: HarnessPermissionModeScope = "live",
+    supportsReplacementFence = true,
   ) {
     this.harnessId = harnessId;
     this.catalog = catalog;
@@ -1017,6 +1045,7 @@ export class FakeHarnessAdapter implements HarnessAdapter {
     this.supportsFork = supportsFork;
     this.supportsForkAcrossCwd = supportsForkAcrossCwd;
     this.supportsRollbackLastTurn = supportsRollbackLastTurn;
+    this.supportsReplacementFence = supportsReplacementFence;
     this.permissionModeScope = permissionModeScope;
   }
 
@@ -1048,6 +1077,7 @@ export class FakeHarnessAdapter implements HarnessAdapter {
           fork: this.supportsFork,
           forkAcrossCwd: this.supportsForkAcrossCwd,
           rollbackLastTurn: this.supportsRollbackLastTurn,
+          replacementFence: this.supportsReplacementFence,
         },
         subagents: { observe: false, readTranscript: false },
       },
@@ -1146,7 +1176,10 @@ export class FakeHarnessAdapter implements HarnessAdapter {
         },
       };
     }
-    if (input.kind === "resume") return { ok: true, value: source };
+    if (input.kind === "resume") {
+      if (!source.closed) return { ok: true, value: source };
+      return { ok: true, value: this.#resumeSession(input.cwd, input.nativeRef, source) };
+    }
     if (input.kind === "rollbackLastTurn") {
       const current = await source.readSnapshot();
       if (!current.ok) return current;
@@ -1270,7 +1303,37 @@ export class FakeHarnessAdapter implements HarnessAdapter {
       permissionModeId,
       this.supportsRollbackLastTurn,
       this.permissionModeScope,
+      this.supportsReplacementFence,
     );
+    this.sessions.push(session);
+    this.#sessionsByNativeId.set(nativeRef.nativeSessionId, session);
+    return session;
+  }
+
+  #resumeSession(
+    cwd: string,
+    nativeRef: NativeSessionRef,
+    source: FakeHarnessSession,
+  ): FakeHarnessSession {
+    const state = source.state;
+    const session = new FakeHarnessSession(
+      this.harnessId,
+      this.catalog,
+      state.effectiveModel,
+      cloneJson(nativeRef),
+      source.persistedSnapshot(),
+      this.supportsFork,
+      cwd,
+      this.supportsForkAcrossCwd,
+      state.effectiveThinkingOptionId,
+      this.initialUsage,
+      this.permissionModes,
+      state.effectivePermissionModeId,
+      this.supportsRollbackLastTurn,
+      this.permissionModeScope,
+      this.supportsReplacementFence,
+    );
+    session.setStateForSnapshot({ ...cloneJson(state), nativeRef: cloneJson(nativeRef) });
     this.sessions.push(session);
     this.#sessionsByNativeId.set(nativeRef.nativeSessionId, session);
     return session;

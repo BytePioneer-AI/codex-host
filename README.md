@@ -145,7 +145,7 @@ xattr -dr com.apple.quarantine /Applications/codexhost.app
 | Fork | 原生 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — |
 | 上下文压缩 | 原生 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — |
 | 斜杠命令 | 原生 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — |
-| 修订上一条消息 | 原生 | ✅ | ✅ | ✅ | ✅ | ✅ | — | — |
+| 修订上一条消息 | 原生 | ✅ | ✅ | — | ✅ | — | — | — |
 
 > **Antigravity 当前状态：**接入仍在完善中，工作目录目前固定为 `~/.gemini/antigravity-cli/scratch`。
 

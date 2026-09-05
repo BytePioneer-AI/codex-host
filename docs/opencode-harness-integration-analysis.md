@@ -53,7 +53,7 @@ OpenCodeAdapter
 - Renderer 的 Agent picker、Model/Thinking 草稿状态、Thread ownership 恢复和 OpenCode 图标；
 - Text/Reasoning streaming、Tool lifecycle、Question、Approval once/deny、Cancel、Usage、完整 Diff、Native command、Compact、Model 与 variant；
 - transcript Snapshot、精确 Checkpoint Fork、SSE 重连后的 status/messages/pending interaction 对账；
-- Revert/unrevert、失败补偿和 `rollbackLastTurn` capability；已用 loopback 假模型驱动 OpenCode `1.18.4` 的真实 `edit` Tool，验证 Git-backed Diff、精确 Fork 和工作树恢复。
+- conversation-only 的 distinct `rollbackLastTurn` Session；已用 loopback 假模型驱动 OpenCode `1.18.4` 的真实 `edit` Tool，验证 Git-backed Diff、精确历史派生、来源 Session 隔离和工作树保持不变。
 
 当前明确不对外声明：
 
@@ -77,7 +77,7 @@ OpenCodeAdapter
 | ESLint + package boundary audit | 通过 |
 | Release Host Bundle 审计与真实 build | 通过 |
 | 隔离 OpenCode `1.18.25` real smoke | inspect、create、read、command list、close、resume 通过；没有调用付费/外部 Model |
-| Git-backed real Gate | loopback 假模型驱动原生 `edit` Tool；stream、Tool、Diff、精确 Fork、rollback 文件恢复通过 |
+| Git-backed real Gate | loopback 假模型驱动原生 `edit` Tool；stream、Tool、Diff、精确 Fork、distinct rollback、来源 Session 与工作树保持不变通过 |
 | 进程清理 | real smoke 结束后没有残留受管 `opencode serve` 进程 |
 
 真实 smoke 还发现并修正了 macOS `/var` 与 `/private/var` realpath 别名导致的 Resume/Fork cwd 误拒绝。尚未执行 Desktop 启动，也没有覆盖本机 OpenCode `1.18.4`。
@@ -307,17 +307,17 @@ OpenCode `Session.fork({ messageID })` 会复制 **目标 message 之前**的消
 1. Snapshot 将该 Turn 最后一个 assistant message ID 记为 `NativeCheckpointRef.checkpointId`；
 2. Fork 时重新读取源 transcript，找到这个 assistant message 后的第一个 message；
 3. 有下一条 message 时，把它作为 OpenCode 的 exclusive `messageID` boundary；目标是最后一条时省略 `messageID`；
-4. 派生后再次读历史，验证 Turn 数和最后 checkpoint 与请求完全一致，否则删除派生 Session 并返回 `checkpointNotFound` / `nativeFailure`。
+4. 派生后再次读历史，验证 Turn 数、保留 Turn 的完整语义内容以及目标边界的 checkpoint presence；不要要求派生 checkpoint ID 与源请求 ID 相等，因为 Fork 可以重新分配 Native Session、message、Turn、Checkpoint 和 Item ID。验证失败时删除派生 Session 并返回 `checkpointNotFound` / `nativeFailure`。
 
 这和本仓库 Pi Adapter 先解析“目标 Turn 后的下一条 user entry”再调用原生 Fork 的做法一致。ACP 的 `session/fork` 没有 checkpoint/message 参数，所以只走 ACP 无法实现这项精确能力。
 
 `forkAcrossCwd` 第一版应声明 `false`。OpenCode request 可以带另一个 directory，但复制的旧 assistant message 仍保存原 path，而且 transcript Fork 不复制文件系统；只有跨 cwd 的历史、工具路径和文件安全 Gate 全部通过后才能开启。
 
-`rollbackLastTurn` 在最后一个 User Message 边界调用 `session.revert()`：它在原 Native Session 上设置持久 revert boundary，并在 Git-backed workspace 通过 Snapshot 恢复该 Turn 的文件修改。Adapter 的 Snapshot 会立即隐藏被回滚 Turn；下一次 prompt/compact 时 OpenCode cleanup 会删除被放弃的 Message/Part。若 Session attach 或后续校验失败，Adapter 调用 `unrevert()` 恢复来源 Session 和工作树。
+`rollbackLastTurn` 复用同一个 exclusive boundary，但调用 `session.fork({ messageID })` 派生新的 Native Session。派生历史精确截止在最后一个 User Message 之前；来源 Session 和项目文件保持不变。Adapter 会验证新旧 Session ID 不同、Turn 数精确少一，并在配置或 attach 校验失败时删除派生 Session。这里不能使用 `session.revert()`：该 API 原地修改来源 Session，还会通过 Git-backed Snapshot 恢复工作区文件，不符合 Desktop 编辑消息只改对话历史的语义。
 
 ### Diff、Usage 与 Subagent
 
-`session.diff({ messageID })` 是 Turn 级文件变化的首选来源。codexhost `HostFileChange` 要求 path、add/update/delete 和 unified diff；OpenCode V1 `SnapshotFileDiff` 的 `file`、`status`、`patch` 在 schema 中是可选字段，所以 Adapter 必须验证完整性，不能用 additions/deletions 猜 path 或伪造 patch。缺字段时应通过消息/patch part 对账，仍无法得到完整 diff 就不宣称该 Turn 有可用 FileChange。
+`session.diff({ messageID })` 是 Turn 级文件变化的首选来源。codexhost `HostFileChange` 要求 path、add/update/delete 和 unified diff；OpenCode V1 `SnapshotFileDiff` 的 `file`、`status`、`patch` 在 schema 中是可选字段，所以 Adapter 必须验证完整性，不能用 additions/deletions 猜 path 或伪造 patch。严格回滚校验还要通过 `/path` 读取权威 worktree，把 Patch 的绝对路径与 diff 的 worktree-relative 路径归一到同一文件身份，并拒绝越出 worktree、路径元数据不一致或 Patch 文件覆盖不完整的结果。缺字段或无法完成对账时，不宣称该 Turn 有可用 FileChange。
 
 Usage 可直接来自 Assistant Message 的 `tokens.input/output/reasoning/cache.read/cache.write` 与 `cost`，Context Window 来自实际 Provider Model 的 `limit.context`。建议：
 
@@ -528,7 +528,7 @@ OpenCode Console 还存在多 account/org 的隐藏实验功能，如 `opencode 
 | Fork | 支持但标明语义 | exact transcript checkpoint fork；不是文件系统 Fork |
 | Fork across cwd | 首版不支持 | 新旧 message path 和文件系统不随 transcript 一起 Fork |
 | Compact | 支持 | `session.summarize()` |
-| Revert/unrevert | 支持 | 原 Session 原生回滚 + Git-backed Snapshot/Diff/恢复 Gate |
+| Last-Turn rollback | 支持 | exclusive transcript Fork 到 distinct Session；来源 Session 与工作区保持不变 |
 | Model selection | 支持 | provider/model API；凭据留在 OpenCode |
 | Permission Mode | 支持 | `default` / `ask` / `allow`；Session 原生 PermissionRuleset |
 | Thinking/effort | 按 Model 探测 | 只映射已验证的 variant |
@@ -553,7 +553,7 @@ OpenCode Console 还存在多 account/org 的隐藏实验功能，如 `opencode 
 5. Tool 生命周期、proposed edit、真实 diff 和 tool error。
 6. Prompt admission、busy→idle 完成边界、cancel、并发输入，以及 V2 queue/steer（启用时）。
 7. Session load/resume、跨 OpenCode 进程恢复、最后/中间 Checkpoint Fork、Fork 后目录语义和派生历史校验。
-8. Revert/unrevert 对原 Session、工作树的实际影响和失败补偿。
+8. Last-Turn rollback 的 distinct Session、精确前缀、来源 Session 隔离、工作树不变和派生失败清理。
 9. Model/provider/variant 切换、未登录 provider、OAuth 中断、凭据脱敏；Agent 不得误投影为 Permission Mode。
 10. 前台/后台 Task、child Session 状态、取消/失败、父 Turn 完成与 Subagent transcript。
 11. 单 Server 多 Session、跨 cwd 并发、Interaction 路由与 Permission 隔离。
@@ -563,7 +563,7 @@ OpenCode Console 还存在多 account/org 的隐藏实验功能，如 `opencode 
 
 1. 补 OpenAPI 方法级 capability handshake，避免只根据 Server 版本或 SDK 类型推断能力。
 2. 用隔离 Provider/fixture 完成 Question、Permission、Tool error、Cancel、真实 Model streaming 的 live Gate。
-3. 在 Remote SSH 和 Windows 环境复核 Revert/unrevert 的进程树与路径语义。
+3. 在 Remote SSH 和 Windows 环境复核 distinct rollback 的进程树与路径语义。
 4. 验证单 Server 多 Session、跨 cwd 并发、Interaction 路由和 Remote SSH/Windows 进程树。
 5. 增加 Session-scoped approval policy 和 Subagent observe/transcript；Agent picker 需先补独立 Host capability。
 6. 以独立实验开关接入 V2 replay、queue/steer、idempotency 和 staged revert。

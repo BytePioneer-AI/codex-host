@@ -2,6 +2,7 @@ import { Buffer } from "node:buffer";
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { isDeepStrictEqual } from "node:util";
 
 import type {
   AssistantMessage,
@@ -16,6 +17,7 @@ import type {
 } from "@opencode-ai/sdk/v2";
 
 import {
+  comparableHistoricalTurn,
   HarnessOutputChannel,
   validateHostApprovalResponse,
   validateHostQuestionResponse,
@@ -87,6 +89,7 @@ import {
   type OpenCodeExecutionPolicy,
   type OpenCodeMessageWithParts,
 } from "./history.js";
+import { openCodeFileIdentity, verifiedOpenCodeWorktree } from "./file-change-verification.js";
 import {
   decodeOpenCodeModelRef,
   decodeOpenCodeVariant,
@@ -315,32 +318,72 @@ function nativeVariantFromSession(
   return undefined;
 }
 
-function turnHasNativePatch(
+function turnNativePatchFiles(
   messages: readonly OpenCodeMessageWithParts[],
   userMessageID: string,
-): boolean {
+): string[] {
   const start = messages.findIndex(({ info }) => info.id === userMessageID);
-  if (start < 0) return false;
+  if (start < 0) return [];
   let end = start + 1;
   while (end < messages.length && messages[end]?.info.role !== "user") end += 1;
-  return messages
-    .slice(start + 1, end)
-    .some(({ parts }) => parts.some((part) => part.type === "patch" && part.files.length > 0));
+  return [
+    ...new Set(
+      messages
+        .slice(start + 1, end)
+        .flatMap(({ parts }) => parts.flatMap((part) => (part.type === "patch" ? part.files : []))),
+    ),
+  ];
 }
 
 async function readTurnDiff(
   transport: OpenCodeTransport,
   sessionID: string,
   userMessageID: string,
-  nativePatchObserved: boolean,
+  nativePatchFiles: readonly string[],
+  options: { strict?: boolean; worktree?: string } = {},
 ): Promise<SnapshotFileDiff[]> {
+  const strict = options.strict === true;
   for (let attempt = 0; ; attempt += 1) {
-    const diffs = await transport.getDiff(sessionID, userMessageID).catch(() => []);
+    let diffs: SnapshotFileDiff[];
+    try {
+      diffs = await transport.getDiff(sessionID, userMessageID);
+    } catch (error) {
+      if (strict) {
+        throw new OpenCodeTransportError(
+          "protocolError",
+          "OpenCode could not verify FileChange history",
+          { cause: error },
+        );
+      }
+      diffs = [];
+    }
+    const reliableChanges = reliableOpenCodeFileChanges(diffs);
+    const worktree = options.worktree;
+    const reliablePaths = worktree
+      ? reliableChanges.map(({ path: file }) => openCodeFileIdentity(file, worktree))
+      : [];
+    const nativePatchPaths = worktree
+      ? nativePatchFiles.map((file) => openCodeFileIdentity(file, worktree))
+      : [];
+    const completeStrictProjection =
+      Boolean(worktree) &&
+      reliableChanges.length === diffs.length &&
+      reliablePaths.every((file): file is string => file !== undefined) &&
+      nativePatchPaths.every((file) => file !== undefined && reliablePaths.includes(file));
     if (
-      reliableOpenCodeFileChanges(diffs).length > 0 ||
-      !nativePatchObserved ||
-      attempt >= DIFF_RECONCILIATION_DELAYS_MS.length
+      strict
+        ? completeStrictProjection
+        : reliableChanges.length > 0 || nativePatchFiles.length === 0
     ) {
+      return diffs;
+    }
+    if (attempt >= DIFF_RECONCILIATION_DELAYS_MS.length) {
+      if (strict) {
+        throw new OpenCodeTransportError(
+          "protocolError",
+          "OpenCode did not expose complete reliable FileChange history",
+        );
+      }
       return diffs;
     }
     await new Promise<void>((resolve) =>
@@ -354,11 +397,29 @@ async function readProjection(
   sessionID: string,
   providerCatalog: OpenCodeProviderCatalog,
   toolOutputLimit: number,
+  options: { strictFileChanges?: boolean } = {},
 ): Promise<OpenCodeSnapshotProjection> {
-  const [session, messages] = await Promise.all([
+  const strictFileChanges = options.strictFileChanges === true;
+  const [session, messages, paths] = await Promise.all([
     transport.getSession(sessionID),
     transport.getMessages(sessionID),
+    strictFileChanges
+      ? transport.getPaths().catch((error: unknown) => {
+          throw new OpenCodeTransportError(
+            "protocolError",
+            "OpenCode could not verify worktree paths",
+            { cause: error },
+          );
+        })
+      : undefined,
   ]);
+  const worktree = paths ? verifiedOpenCodeWorktree(session.directory, paths) : undefined;
+  if (strictFileChanges && !worktree) {
+    throw new OpenCodeTransportError(
+      "protocolError",
+      "OpenCode returned inconsistent Session and worktree paths",
+    );
+  }
   const userMessageIds = messages
     .filter(({ info }) => info.role === "user")
     .map(({ info }) => info.id);
@@ -368,7 +429,8 @@ async function readProjection(
         transport,
         sessionID,
         messageID,
-        turnHasNativePatch(messages, messageID),
+        turnNativePatchFiles(messages, messageID),
+        { strict: strictFileChanges, ...(worktree ? { worktree } : {}) },
       );
       return [messageID, diffs] as const;
     }),
@@ -504,6 +566,7 @@ class OpenCodeHarnessSession implements HarnessSession, OpenCodeTransportListene
   #session: Session;
   #snapshot: HostThreadSnapshot;
   #state: HarnessSessionState;
+  readonly #strictFileChanges: boolean;
   #usage: HostUsage | null;
   #variant: string | undefined;
 
@@ -518,6 +581,7 @@ class OpenCodeHarnessSession implements HarnessSession, OpenCodeTransportListene
     randomUUID(): string;
     executionPolicy: OpenCodeExecutionPolicy;
     permissionMode: OpenCodePermissionMode;
+    strictFileChanges: boolean;
     onClosed(): void;
   }) {
     this.#transport = input.transport;
@@ -534,6 +598,7 @@ class OpenCodeHarnessSession implements HarnessSession, OpenCodeTransportListene
     this.#connection = input.connection;
     this.#executionPolicy = input.executionPolicy;
     this.#permissionMode = input.permissionMode;
+    this.#strictFileChanges = input.strictFileChanges;
     for (const { info } of input.projection.messages) {
       if (info.role === "user") this.#knownUserMessageIds.add(info.id);
     }
@@ -556,7 +621,12 @@ class OpenCodeHarnessSession implements HarnessSession, OpenCodeTransportListene
         selectPermissionMode: true,
         permissionModeScope: "live",
       },
-      history: { fork: true, forkAcrossCwd: false, rollbackLastTurn: true },
+      history: {
+        fork: true,
+        forkAcrossCwd: false,
+        rollbackLastTurn: true,
+        replacementFence: true,
+      },
     };
     this.commands = {
       list: async () => {
@@ -602,6 +672,7 @@ class OpenCodeHarnessSession implements HarnessSession, OpenCodeTransportListene
         this.#session.id,
         this.#providerCatalog,
         this.#toolOutputLimit,
+        { strictFileChanges: this.#strictFileChanges },
       );
       this.#applyProjection(projection);
       return { ok: true, value: { ...this.#snapshot, state: this.#state } };
@@ -1434,7 +1505,7 @@ class OpenCodeHarnessSession implements HarnessSession, OpenCodeTransportListene
           this.#transport,
           this.#session.id,
           userMessageID,
-          turnHasNativePatch(messages, userMessageID),
+          turnNativePatchFiles(messages, userMessageID),
         ),
       );
       if (changes.length > 0) {
@@ -1827,7 +1898,12 @@ export class OpenCodeAdapter implements HarnessAdapter {
             selectPermissionMode: true,
             permissionModeScope: "live",
           },
-          history: { fork: true, forkAcrossCwd: false, rollbackLastTurn: true },
+          history: {
+            fork: true,
+            forkAcrossCwd: false,
+            rollbackLastTurn: true,
+            replacementFence: true,
+          },
         },
         permissionModes: OPENCODE_PERMISSION_MODE_CATALOG,
       };
@@ -1875,7 +1951,6 @@ export class OpenCodeAdapter implements HarnessAdapter {
     let connection: OpenCodeServerConnectionLike | undefined;
     let transport: OpenCodeTransport | undefined;
     let createdForCleanup: Session | undefined;
-    let revertedForCleanup: string | undefined;
     try {
       const sourceRef =
         input.kind === "create"
@@ -1998,13 +2073,13 @@ export class OpenCodeAdapter implements HarnessAdapter {
             };
           }
           session = await transport.forkSession(source.id, boundary.messageID);
-          createdForCleanup = session;
           if (session.id === source.id) {
             throw new OpenCodeTransportError(
               "protocolError",
               "OpenCode Fork did not create a distinct Native Session",
             );
           }
+          createdForCleanup = session;
           const derivedMessages = await transport.getMessages(session.id);
           const derived = projectOpenCodeHistory({
             session,
@@ -2018,8 +2093,17 @@ export class OpenCodeAdapter implements HarnessAdapter {
             );
           }
         } else {
-          const sourceMessages = await transport.getMessages(source.id);
-          const boundary = resolveOpenCodeLastTurnBoundary(source, sourceMessages);
+          const sourceProjection = await readProjection(
+            transport,
+            source.id,
+            providers,
+            this.#toolOutputLimit,
+            { strictFileChanges: true },
+          );
+          const boundary = resolveOpenCodeLastTurnBoundary(
+            sourceProjection.session,
+            sourceProjection.messages,
+          );
           if (!boundary) {
             await transport.close().catch(() => undefined);
             await connection.close().catch(() => undefined);
@@ -2028,18 +2112,56 @@ export class OpenCodeAdapter implements HarnessAdapter {
               error: invalidState("OpenCode Native Session has no Turn to roll back"),
             };
           }
-          session = await transport.revertSession(source.id, boundary.lastUserMessageID);
-          revertedForCleanup = source.id;
-          const afterMessages = await transport.getMessages(session.id);
-          const after = projectOpenCodeHistory({
-            session,
-            messages: afterMessages,
-            toolOutputLimit: this.#toolOutputLimit,
-          });
-          if (after.turns.length !== boundary.sourceTurnCount - 1) {
+          const sourceModel = sourceProjection.model;
+          const sourceVariant = sourceProjection.variant;
+          const sourcePermissionMode = permissionModeFromSession(
+            sourceProjection.session.permission,
+          );
+          session = await transport.forkSession(source.id, boundary.lastUserMessageID);
+          if (session.id === source.id) {
             throw new OpenCodeTransportError(
               "protocolError",
-              "OpenCode rollback did not remove exactly the last Turn",
+              "OpenCode rollback did not create a distinct Native Session",
+            );
+          }
+          createdForCleanup = session;
+          if (sourceModel) {
+            session = await transport.updateSessionMetadata(
+              session.id,
+              selectionMetadata(session, sourceModel, sourceVariant),
+            );
+          }
+          if (permissionModeFromSession(session.permission) !== sourcePermissionMode) {
+            session = await transport.updateSessionPermission(
+              session.id,
+              requestedPermissionRules(session.permission, sourcePermissionMode),
+            );
+          }
+          const [after, sourceAfter] = await Promise.all([
+            readProjection(transport, session.id, providers, this.#toolOutputLimit, {
+              strictFileChanges: true,
+            }),
+            readProjection(transport, source.id, providers, this.#toolOutputLimit, {
+              strictFileChanges: true,
+            }),
+          ]);
+          const expectedTurns = sourceProjection.snapshot.turns
+            .slice(0, -1)
+            .map(comparableHistoricalTurn);
+          if (
+            after.snapshot.turns.length !== expectedTurns.length ||
+            !isDeepStrictEqual(after.snapshot.turns.map(comparableHistoricalTurn), expectedTurns) ||
+            !isDeepStrictEqual(sourceAfter.snapshot, sourceProjection.snapshot) ||
+            !isDeepStrictEqual(after.model, sourceModel) ||
+            after.variant !== sourceVariant ||
+            permissionModeFromSession(after.session.permission) !== sourcePermissionMode ||
+            !isDeepStrictEqual(sourceAfter.model, sourceModel) ||
+            sourceAfter.variant !== sourceVariant ||
+            permissionModeFromSession(sourceAfter.session.permission) !== sourcePermissionMode
+          ) {
+            throw new OpenCodeTransportError(
+              "protocolError",
+              "OpenCode rollback did not preserve the source snapshot, configuration, and semantic retained prefix",
             );
           }
         }
@@ -2049,6 +2171,7 @@ export class OpenCodeAdapter implements HarnessAdapter {
         session.id,
         providers,
         this.#toolOutputLimit,
+        { strictFileChanges: input.kind === "rollbackLastTurn" },
       );
       const harnessSession = new OpenCodeHarnessSession({
         transport,
@@ -2061,17 +2184,14 @@ export class OpenCodeAdapter implements HarnessAdapter {
         randomUUID: this.#uuid,
         executionPolicy,
         permissionMode: permissionModeFromSession(projection.session.permission),
+        strictFileChanges: input.kind === "rollbackLastTurn",
         onClosed: () => this.#sessions.delete(harnessSession),
       });
       await harnessSession.start();
       this.#sessions.add(harnessSession);
       createdForCleanup = undefined;
-      revertedForCleanup = undefined;
       return { ok: true, value: harnessSession };
     } catch (error) {
-      if (revertedForCleanup && transport) {
-        await transport.unrevertSession(revertedForCleanup).catch(() => undefined);
-      }
       if (createdForCleanup && transport) {
         await transport.deleteSession(createdForCleanup.id).catch(() => undefined);
       }

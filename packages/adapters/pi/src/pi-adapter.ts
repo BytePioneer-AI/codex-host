@@ -599,7 +599,12 @@ class PiHarnessSession implements HarnessSession {
         selectPermissionMode: false,
         permissionModeScope: "live",
       },
-      history: { fork: true, forkAcrossCwd: true, rollbackLastTurn: true },
+      history: {
+        fork: true,
+        forkAcrossCwd: true,
+        rollbackLastTurn: true,
+        replacementFence: true,
+      },
       autonomousTurns: { observe: true },
     };
     this.commands = {
@@ -1937,7 +1942,12 @@ export class PiAdapter implements HarnessAdapter {
             selectPermissionMode: false,
             permissionModeScope: "live",
           },
-          history: { fork: true, forkAcrossCwd: true, rollbackLastTurn: true },
+          history: {
+            fork: true,
+            forkAcrossCwd: true,
+            rollbackLastTurn: true,
+            replacementFence: true,
+          },
           autonomousTurns: { observe: true },
         },
       };

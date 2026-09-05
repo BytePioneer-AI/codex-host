@@ -198,6 +198,33 @@ describe("OpenCode SDK transport", () => {
     });
   });
 
+  it("reads authoritative directory and worktree paths through the SDK", async () => {
+    const get = vi.fn().mockResolvedValue({
+      data: {
+        home: "/home/synthetic",
+        state: "/state",
+        config: "/config",
+        directory: "/repo/packages/app",
+        worktree: "/repo",
+      },
+      error: undefined,
+    });
+    const connection = {
+      stderrTail: "",
+      client: async () => clientWith({ path: { get } }),
+      close: async () => undefined,
+    };
+    const transport = new SdkOpenCodeTransport(connection, "/repo/packages/app", {
+      commandTimeoutMs: 100,
+    });
+
+    await expect(transport.getPaths()).resolves.toMatchObject({
+      directory: "/repo/packages/app",
+      worktree: "/repo",
+    });
+    expect(get).toHaveBeenCalledWith();
+  });
+
   it("creates and updates Session permissions through the SDK", async () => {
     const create = vi.fn().mockResolvedValue({ data: { id: "session-1" }, error: undefined });
     const update = vi.fn().mockResolvedValue({ data: { id: "session-1" }, error: undefined });

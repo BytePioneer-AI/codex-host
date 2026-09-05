@@ -184,6 +184,14 @@ export class SdkOpenCodeTransport implements OpenCodeTransport {
     );
   }
 
+  async getPaths() {
+    const client = await this.#getClient();
+    return responseData(
+      await withTimeout(client.path.get(), this.#commandTimeoutMs, "OpenCode Path read"),
+      "Path read",
+    );
+  }
+
   async updateSessionMetadata(sessionID: string, metadata: Record<string, unknown>) {
     const client = await this.#getClient();
     return responseData(

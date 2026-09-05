@@ -556,7 +556,12 @@ describe("minimal Harness text Session", () => {
           selectPermissionMode: false,
           permissionModeScope: "live",
         },
-        history: { fork: true, forkAcrossCwd: true, rollbackLastTurn: false },
+        history: {
+          fork: true,
+          forkAcrossCwd: true,
+          rollbackLastTurn: false,
+          replacementFence: true,
+        },
         subagents: { observe: false, readTranscript: false },
       },
     });
@@ -570,6 +575,7 @@ describe("minimal Harness text Session", () => {
     const result = await adapter.open({ kind: "create", cwd: "/synthetic" });
     if (!result.ok) throw new Error(result.error.message);
     const session = result.value;
+    expect(session.capabilities.history.replacementFence).toBe(true);
     const iterator = session.outputs[Symbol.asyncIterator]();
     const model = adapter.catalog.models[1]?.ref;
     if (!model) throw new Error("Fake catalog has no secondary Model");

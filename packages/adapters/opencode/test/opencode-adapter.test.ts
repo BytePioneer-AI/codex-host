@@ -20,7 +20,7 @@ import {
   nativeCheckpointRefSchema,
   nativeSessionRefSchema,
 } from "@codexhost/shared-contracts";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import type { OpenCodeMessageWithParts } from "../src/history.js";
 import {
@@ -86,10 +86,10 @@ function providerCatalog(): OpenCodeProviderCatalog {
   return { all: [provider], connected: [provider.id], default: { [provider.id]: model.id } };
 }
 
-function userMessage(id: string, text: string): OpenCodeMessageWithParts {
+function userMessage(id: string, text: string, sessionID = "session-1"): OpenCodeMessageWithParts {
   const info: UserMessage = {
     id,
-    sessionID: "session-1",
+    sessionID,
     role: "user",
     time: { created: 1 },
     agent: "build",
@@ -106,10 +106,11 @@ function assistantMessage(
   parentID: string,
   parts: Part[] = [],
   error?: AssistantMessage["error"],
+  sessionID = "session-1",
 ): OpenCodeMessageWithParts {
   const info: AssistantMessage = {
     id,
-    sessionID: "session-1",
+    sessionID,
     role: "assistant",
     time: { created: 2, completed: 3 },
     parentID,
@@ -156,6 +157,7 @@ class FakeOpenCodeTransport implements OpenCodeTransport {
   aborts = 0;
   failSubscribe = false;
   forkedSessionID = "session-fork";
+  paths = { directory: cwd, worktree: cwd };
 
   async health() {
     return { healthy: true as const, version: "1.18.25" };
@@ -202,6 +204,10 @@ class FakeOpenCodeTransport implements OpenCodeTransport {
     return session;
   }
 
+  async getPaths() {
+    return this.paths;
+  }
+
   async updateSessionMetadata(sessionID: string, metadata: Record<string, unknown>) {
     this.metadataUpdates.push({ sessionID, metadata });
     if (this.metadataError) throw this.metadataError;
@@ -237,7 +243,10 @@ class FakeOpenCodeTransport implements OpenCodeTransport {
     const boundary = messageID
       ? source.findIndex(({ info }) => info.id === messageID)
       : source.length;
-    const derived = nativeSession(this.forkedSessionID);
+    const derived = nativeSession(
+      this.forkedSessionID,
+      this.sessions.get(sessionID)?.directory ?? cwd,
+    );
     this.sessions.set(derived.id, derived);
     this.messages.set(derived.id, source.slice(0, boundary < 0 ? source.length : boundary));
     return derived;
@@ -743,7 +752,12 @@ describe("OpenCode HarnessAdapter", () => {
         selectPermissionMode: true,
         permissionModeScope: "live",
       },
-      history: { fork: true, forkAcrossCwd: false, rollbackLastTurn: true },
+      history: {
+        fork: true,
+        forkAcrossCwd: false,
+        rollbackLastTurn: true,
+        replacementFence: true,
+      },
     });
     await expect(
       opened.value.execute({
@@ -1552,28 +1566,535 @@ describe("OpenCode HarnessAdapter", () => {
 
     const rollbackTransport = new FakeOpenCodeTransport();
     rollbackTransport.messages.set("session-1", sourceMessages);
+    const rollbackSource = rollbackTransport.sessions.get("session-1");
+    if (!rollbackSource) throw new Error("Rollback source Session is missing");
+    rollbackSource.model = {
+      providerID: "provider-1",
+      id: "model-1",
+      variant: "high",
+    };
+    rollbackSource.permission = [{ permission: "*", pattern: "*", action: "allow" }];
     const rollbackFixture = await openAdapterWithInput(rollbackTransport, {
       kind: "rollbackLastTurn",
       sourceRef,
       cwd,
     });
-    expect(rollbackTransport.forkCalls).toEqual([]);
-    expect(rollbackTransport.revertCalls).toEqual([
-      { sessionID: "session-1", messageID: "user-2" },
-    ]);
-    expect(rollbackFixture.session.initialState.nativeRef?.nativeSessionId).toBe("session-1");
+    expect(rollbackTransport.forkCalls).toEqual([{ sessionID: "session-1", messageID: "user-2" }]);
+    expect(rollbackTransport.revertCalls).toEqual([]);
+    expect(rollbackFixture.session.initialState).toMatchObject({
+      nativeRef: { nativeSessionId: "session-fork" },
+      effectiveThinkingOptionId: expect.any(String),
+      effectivePermissionModeId: "allow",
+    });
     await expect(rollbackFixture.session.readSnapshot()).resolves.toMatchObject({
       ok: true,
       value: { turns: [{ input: [{ text: "one" }] }] },
     });
-    expect(rollbackTransport.sessions.get("session-1")?.revert).toMatchObject({
-      messageID: "user-2",
-    });
+    expect(rollbackTransport.messages.get("session-1")).toEqual(sourceMessages);
+    expect(rollbackTransport.sessions.get("session-1")).not.toHaveProperty("revert");
     await rollbackFixture.session.close();
     await rollbackFixture.adapter.close();
   });
 
-  it("restores a reverted source Session when attachment fails", async () => {
+  it("accepts a rollback Fork that regenerates Native history identities", async () => {
+    const sourceMessages = [
+      userMessage("user-1", "one"),
+      assistantMessage("assistant-1", "user-1", [
+        {
+          id: "answer-source-1",
+          sessionID: "session-1",
+          messageID: "assistant-1",
+          type: "text",
+          text: "answer one",
+        },
+      ]),
+      userMessage("user-2", "two"),
+      assistantMessage("assistant-2", "user-2"),
+    ];
+    const transport = new FakeOpenCodeTransport();
+    transport.messages.set("session-1", sourceMessages);
+    transport.forkSession = vi.fn(async (sessionID: string, messageID?: string) => {
+      transport.forkCalls.push({ sessionID, ...(messageID ? { messageID } : {}) });
+      const derived = nativeSession("session-fork");
+      transport.sessions.set(derived.id, derived);
+      transport.messages.set(derived.id, [
+        userMessage("derived-user-1", "one", derived.id),
+        assistantMessage(
+          "derived-assistant-1",
+          "derived-user-1",
+          [
+            {
+              id: "answer-derived-1",
+              sessionID: derived.id,
+              messageID: "derived-assistant-1",
+              type: "text",
+              text: "answer one",
+            },
+          ],
+          undefined,
+          derived.id,
+        ),
+      ]);
+      return derived;
+    });
+    const sourceRef = nativeSessionRefSchema.parse({
+      harnessId: "opencode",
+      nativeSessionId: "session-1",
+      locator: { directory: cwd },
+      formatVersion: 1,
+    });
+    const adapter = adapterFor(transport);
+
+    const opened = await adapter.open({ kind: "rollbackLastTurn", sourceRef, cwd });
+    expect(opened).toMatchObject({ ok: true });
+    if (!opened.ok) throw new Error(opened.error.message);
+    expect(transport.forkCalls).toEqual([{ sessionID: "session-1", messageID: "user-2" }]);
+    await expect(opened.value.readSnapshot()).resolves.toMatchObject({
+      ok: true,
+      value: {
+        turns: [
+          {
+            nativeTurnRef: {
+              nativeSessionId: "session-fork",
+              nativeTurnKey: "derived-user-1",
+            },
+            checkpoint: {
+              nativeSessionId: "session-fork",
+              checkpointId: "derived-assistant-1",
+            },
+            items: [{ item: { itemId: "answer-derived-1", text: "answer one" } }],
+          },
+        ],
+      },
+    });
+    expect(transport.messages.get("session-1")).toEqual(sourceMessages);
+    await opened.value.close();
+    await adapter.close();
+  });
+
+  it("matches absolute Patch files to workspace-relative FileChanges", async () => {
+    const transport = new FakeOpenCodeTransport();
+    transport.messages.set("session-1", [
+      userMessage("user-1", "one"),
+      assistantMessage("assistant-1", "user-1", [
+        {
+          id: "patch-1",
+          sessionID: "session-1",
+          messageID: "assistant-1",
+          type: "patch",
+          hash: "snapshot-1",
+          files: [`${cwd}/src/fixture.txt`],
+        },
+      ]),
+      userMessage("user-2", "two"),
+      assistantMessage("assistant-2", "user-2"),
+    ]);
+    transport.diffs.set("user-1", [
+      {
+        file: "src/fixture.txt",
+        patch: "@@ -1 +1 @@\n-before\n+after",
+        additions: 1,
+        deletions: 1,
+        status: "modified",
+      },
+    ]);
+    const sourceRef = nativeSessionRefSchema.parse({
+      harnessId: "opencode",
+      nativeSessionId: "session-1",
+      locator: { directory: cwd },
+      formatVersion: 1,
+    });
+    const adapter = adapterFor(transport);
+
+    const opened = await adapter.open({ kind: "rollbackLastTurn", sourceRef, cwd });
+    expect(opened).toMatchObject({ ok: true });
+    if (!opened.ok) throw new Error(opened.error.message);
+    const snapshot = await opened.value.readSnapshot();
+    if (!snapshot.ok) throw new Error(snapshot.error.message);
+    expect(snapshot.value.turns[0]?.items).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          item: expect.objectContaining({
+            type: "fileChange",
+            changes: [expect.objectContaining({ path: "src/fixture.txt" })],
+          }),
+        }),
+      ]),
+    );
+    await opened.value.close();
+    await adapter.close();
+  });
+
+  it("anchors strict FileChange identity to the OpenCode worktree for a nested cwd", async () => {
+    const nestedCwd = `${cwd}/packages/app`;
+    const transport = new FakeOpenCodeTransport();
+    const source = transport.sessions.get("session-1");
+    if (!source) throw new Error("Source Session is missing");
+    source.directory = nestedCwd;
+    transport.paths = { directory: nestedCwd, worktree: cwd };
+    transport.messages.set("session-1", [
+      userMessage("user-1", "one"),
+      assistantMessage("assistant-1", "user-1", [
+        {
+          id: "patch-1",
+          sessionID: "session-1",
+          messageID: "assistant-1",
+          type: "patch",
+          hash: "snapshot-1",
+          files: [`${cwd}/src/shared.ts`],
+        },
+      ]),
+      userMessage("user-2", "two"),
+      assistantMessage("assistant-2", "user-2"),
+    ]);
+    transport.diffs.set("user-1", [
+      {
+        file: "src/shared.ts",
+        patch: "@@ -1 +1 @@\n-before\n+after",
+        additions: 1,
+        deletions: 1,
+        status: "modified",
+      },
+    ]);
+    const sourceRef = nativeSessionRefSchema.parse({
+      harnessId: "opencode",
+      nativeSessionId: "session-1",
+      locator: { directory: nestedCwd },
+      formatVersion: 1,
+    });
+    const adapter = adapterFor(transport);
+
+    const opened = await adapter.open({ kind: "rollbackLastTurn", sourceRef, cwd: nestedCwd });
+    expect(opened).toMatchObject({ ok: true });
+    if (opened.ok) await opened.value.close();
+    await adapter.close();
+  });
+
+  it("rejects rollback when OpenCode cannot provide authoritative worktree paths", async () => {
+    const transport = new FakeOpenCodeTransport();
+    transport.messages.set("session-1", [
+      userMessage("user-1", "one"),
+      assistantMessage("assistant-1", "user-1"),
+      userMessage("user-2", "two"),
+      assistantMessage("assistant-2", "user-2"),
+    ]);
+    transport.getPaths = vi.fn(async () => {
+      throw new Error("synthetic Path failure");
+    });
+    const sourceRef = nativeSessionRefSchema.parse({
+      harnessId: "opencode",
+      nativeSessionId: "session-1",
+      locator: { directory: cwd },
+      formatVersion: 1,
+    });
+    const adapter = adapterFor(transport);
+
+    await expect(adapter.open({ kind: "rollbackLastTurn", sourceRef, cwd })).resolves.toMatchObject(
+      { ok: false, error: { code: "protocolError" } },
+    );
+    expect(transport.forkCalls).toEqual([]);
+    await adapter.close();
+  });
+
+  it("rejects a rollback Fork that changes a retained FileChange", async () => {
+    const sourceMessages = [
+      userMessage("user-1", "one"),
+      assistantMessage("assistant-1", "user-1"),
+      userMessage("user-2", "two"),
+      assistantMessage("assistant-2", "user-2"),
+    ];
+    const transport = new FakeOpenCodeTransport();
+    transport.messages.set("session-1", sourceMessages);
+    transport.diffs.set("user-1", [
+      {
+        file: "fixture.txt",
+        patch: "@@ -1 +1 @@\n-before\n+after",
+        additions: 1,
+        deletions: 1,
+        status: "modified",
+      },
+    ]);
+    transport.forkSession = vi.fn(async (sessionID: string, messageID?: string) => {
+      transport.forkCalls.push({ sessionID, ...(messageID ? { messageID } : {}) });
+      const derived = nativeSession("session-fork");
+      transport.sessions.set(derived.id, derived);
+      transport.messages.set(derived.id, [
+        userMessage("derived-user-1", "one", derived.id),
+        assistantMessage("derived-assistant-1", "derived-user-1", [], undefined, derived.id),
+      ]);
+      transport.diffs.set("derived-user-1", [
+        {
+          file: "fixture.txt",
+          patch: "@@ -1 +1 @@\n-before\n+unexpected",
+          additions: 1,
+          deletions: 1,
+          status: "modified",
+        },
+      ]);
+      return derived;
+    });
+    const sourceRef = nativeSessionRefSchema.parse({
+      harnessId: "opencode",
+      nativeSessionId: "session-1",
+      locator: { directory: cwd },
+      formatVersion: 1,
+    });
+    const adapter = adapterFor(transport);
+
+    await expect(adapter.open({ kind: "rollbackLastTurn", sourceRef, cwd })).resolves.toMatchObject(
+      { ok: false, error: { code: "protocolError" } },
+    );
+    expect(transport.forkCalls).toEqual([{ sessionID: "session-1", messageID: "user-2" }]);
+    expect(transport.sessions.has("session-fork")).toBe(false);
+    expect(transport.messages.get("session-1")).toEqual(sourceMessages);
+    expect(transport.diffs.get("user-1")).toEqual([
+      expect.objectContaining({ patch: "@@ -1 +1 @@\n-before\n+after" }),
+    ]);
+    await adapter.close();
+  });
+
+  it("rejects a rollback Fork when retained FileChange history cannot be verified", async () => {
+    const sourceMessages = [
+      userMessage("user-1", "one"),
+      assistantMessage("assistant-1", "user-1"),
+      userMessage("user-2", "two"),
+      assistantMessage("assistant-2", "user-2"),
+    ];
+    const transport = new FakeOpenCodeTransport();
+    transport.messages.set("session-1", sourceMessages);
+    transport.diffs.set("user-1", [
+      {
+        file: "fixture.txt",
+        patch: "@@ -1 +1 @@\n-before\n+after",
+        additions: 1,
+        deletions: 1,
+        status: "modified",
+      },
+    ]);
+    const readDiff = transport.getDiff.bind(transport);
+    transport.getDiff = vi.fn(async (sessionID: string, messageID?: string) => {
+      if (sessionID === "session-fork") {
+        throw new Error("synthetic derived diff failure");
+      }
+      return readDiff(sessionID, messageID);
+    });
+    const sourceRef = nativeSessionRefSchema.parse({
+      harnessId: "opencode",
+      nativeSessionId: "session-1",
+      locator: { directory: cwd },
+      formatVersion: 1,
+    });
+    const adapter = adapterFor(transport);
+
+    await expect(adapter.open({ kind: "rollbackLastTurn", sourceRef, cwd })).resolves.toMatchObject(
+      { ok: false, error: { code: "protocolError" } },
+    );
+    expect(transport.sessions.has("session-fork")).toBe(false);
+    expect(transport.messages.get("session-1")).toEqual(sourceMessages);
+    await adapter.close();
+  });
+
+  it("rejects rollback when a retained Patch never exposes a reliable FileChange", async () => {
+    vi.useFakeTimers();
+    const transport = new FakeOpenCodeTransport();
+    transport.messages.set("session-1", [
+      userMessage("user-1", "one"),
+      assistantMessage("assistant-1", "user-1", [
+        {
+          id: "patch-1",
+          sessionID: "session-1",
+          messageID: "assistant-1",
+          type: "patch",
+          hash: "snapshot-1",
+          files: ["fixture.txt"],
+        },
+      ]),
+      userMessage("user-2", "two"),
+      assistantMessage("assistant-2", "user-2"),
+    ]);
+    const sourceRef = nativeSessionRefSchema.parse({
+      harnessId: "opencode",
+      nativeSessionId: "session-1",
+      locator: { directory: cwd },
+      formatVersion: 1,
+    });
+    const adapter = adapterFor(transport);
+
+    try {
+      const opening = adapter.open({ kind: "rollbackLastTurn", sourceRef, cwd });
+      await vi.runAllTimersAsync();
+      await expect(opening).resolves.toMatchObject({
+        ok: false,
+        error: { code: "protocolError" },
+      });
+      expect(transport.forkCalls).toEqual([]);
+      expect(transport.messages.get("session-1")).toHaveLength(4);
+    } finally {
+      vi.useRealTimers();
+      await adapter.close();
+    }
+  });
+
+  it.each([
+    {
+      failure: "returns a mixed reliable and incomplete diff set",
+      patchFiles: ["src/a.ts", "src/b.ts"],
+      diffs: [
+        {
+          file: "src/a.ts",
+          patch: "@@ -1 +1 @@\n-before a\n+after a",
+          additions: 1,
+          deletions: 1,
+          status: "modified" as const,
+        },
+        {
+          file: "src/b.ts",
+          additions: 1,
+          deletions: 1,
+          status: "modified" as const,
+        },
+      ],
+    },
+    {
+      failure: "omits one file named by the retained Patch",
+      patchFiles: ["src/a.ts", "src/b.ts"],
+      diffs: [
+        {
+          file: "src/a.ts",
+          patch: "@@ -1 +1 @@\n-before a\n+after a",
+          additions: 1,
+          deletions: 1,
+          status: "modified" as const,
+        },
+      ],
+    },
+    {
+      failure: "reports the same basename from a different directory",
+      patchFiles: ["src/a.ts", "src/b.ts"],
+      diffs: [
+        {
+          file: "src/a.ts",
+          patch: "@@ -1 +1 @@\n-before a\n+after a",
+          additions: 1,
+          deletions: 1,
+          status: "modified" as const,
+        },
+        {
+          file: "other/b.ts",
+          patch: "@@ -1 +1 @@\n-before b\n+after b",
+          additions: 1,
+          deletions: 1,
+          status: "modified" as const,
+        },
+      ],
+    },
+    {
+      failure: "only correlates an out-of-workspace traversal",
+      patchFiles: ["src/a.ts", "/outside/b.ts"],
+      diffs: [
+        {
+          file: "src/a.ts",
+          patch: "@@ -1 +1 @@\n-before a\n+after a",
+          additions: 1,
+          deletions: 1,
+          status: "modified" as const,
+        },
+        {
+          file: "../outside/b.ts",
+          patch: "@@ -1 +1 @@\n-before b\n+after b",
+          additions: 1,
+          deletions: 1,
+          status: "modified" as const,
+        },
+      ],
+    },
+  ])("rejects rollback when OpenCode $failure", async ({ diffs, patchFiles }) => {
+    vi.useFakeTimers();
+    const transport = new FakeOpenCodeTransport();
+    transport.messages.set("session-1", [
+      userMessage("user-1", "one"),
+      assistantMessage("assistant-1", "user-1", [
+        {
+          id: "patch-1",
+          sessionID: "session-1",
+          messageID: "assistant-1",
+          type: "patch",
+          hash: "snapshot-1",
+          files: patchFiles,
+        },
+      ]),
+      userMessage("user-2", "two"),
+      assistantMessage("assistant-2", "user-2"),
+    ]);
+    transport.diffs.set("user-1", diffs);
+    const sourceRef = nativeSessionRefSchema.parse({
+      harnessId: "opencode",
+      nativeSessionId: "session-1",
+      locator: { directory: cwd },
+      formatVersion: 1,
+    });
+    const adapter = adapterFor(transport);
+
+    try {
+      const opening = adapter.open({ kind: "rollbackLastTurn", sourceRef, cwd });
+      await vi.runAllTimersAsync();
+      await expect(opening).resolves.toMatchObject({
+        ok: false,
+        error: { code: "protocolError" },
+      });
+      expect(transport.forkCalls).toEqual([]);
+      expect(transport.messages.get("session-1")).toHaveLength(4);
+    } finally {
+      vi.useRealTimers();
+      await adapter.close();
+    }
+  });
+
+  it("keeps rollback candidate history reads strict through Host precommit validation", async () => {
+    const sourceMessages = [
+      userMessage("user-1", "one"),
+      assistantMessage("assistant-1", "user-1"),
+      userMessage("user-2", "two"),
+      assistantMessage("assistant-2", "user-2"),
+    ];
+    const transport = new FakeOpenCodeTransport();
+    transport.messages.set("session-1", sourceMessages);
+    transport.diffs.set("user-1", [
+      {
+        file: "fixture.txt",
+        patch: "@@ -1 +1 @@\n-before\n+after",
+        additions: 1,
+        deletions: 1,
+        status: "modified",
+      },
+    ]);
+    const sourceRef = nativeSessionRefSchema.parse({
+      harnessId: "opencode",
+      nativeSessionId: "session-1",
+      locator: { directory: cwd },
+      formatVersion: 1,
+    });
+    const adapter = adapterFor(transport);
+    const opened = await adapter.open({ kind: "rollbackLastTurn", sourceRef, cwd });
+    if (!opened.ok) throw new Error(opened.error.message);
+    const readDiff = transport.getDiff.bind(transport);
+    transport.getDiff = vi.fn(async (sessionID: string, messageID?: string) => {
+      if (sessionID === "session-fork") {
+        throw new Error("synthetic precommit diff failure");
+      }
+      return readDiff(sessionID, messageID);
+    });
+
+    await expect(opened.value.readSnapshot()).resolves.toMatchObject({
+      ok: false,
+      error: { code: "protocolError" },
+    });
+    expect(transport.messages.get("session-1")).toEqual(sourceMessages);
+    await opened.value.close();
+    await adapter.close();
+  });
+
+  it("deletes a derived rollback Session when attachment fails without changing the source", async () => {
     const transport = new FakeOpenCodeTransport();
     transport.messages.set("session-1", [
       userMessage("user-1", "one"),
@@ -1593,11 +2114,110 @@ describe("OpenCode HarnessAdapter", () => {
         ok: false,
       },
     );
-    expect(transport.forkCalls).toEqual([]);
-    expect(transport.revertCalls).toEqual([{ sessionID: "session-1", messageID: "user-1" }]);
-    expect(transport.unrevertCalls).toEqual(["session-1"]);
+    expect(transport.forkCalls).toEqual([{ sessionID: "session-1", messageID: "user-1" }]);
+    expect(transport.revertCalls).toEqual([]);
+    expect(transport.unrevertCalls).toEqual([]);
     expect(transport.sessions.get("session-1")?.revert).toBeUndefined();
     expect(transport.sessions.get("session-1")).not.toHaveProperty("revert");
+    expect(transport.sessions.has("session-fork")).toBe(false);
+    await adapter.close();
+  });
+
+  it("does not delete the source when a rollback Fork aliases its Native Session", async () => {
+    const transport = new FakeOpenCodeTransport();
+    const sourceMessages = [
+      userMessage("user-1", "one"),
+      assistantMessage("assistant-1", "user-1"),
+    ];
+    transport.messages.set("session-1", sourceMessages);
+    const source = transport.sessions.get("session-1");
+    if (!source) throw new Error("Rollback source Session is missing");
+    transport.forkSession = vi.fn(async () => source);
+    const deleteSession = vi.spyOn(transport, "deleteSession");
+    const sourceRef = nativeSessionRefSchema.parse({
+      harnessId: "opencode",
+      nativeSessionId: "session-1",
+      locator: { directory: cwd },
+      formatVersion: 1,
+    });
+    const adapter = adapterFor(transport);
+
+    await expect(adapter.open({ kind: "rollbackLastTurn", sourceRef, cwd })).resolves.toMatchObject(
+      { ok: false, error: { code: "protocolError" } },
+    );
+    expect(deleteSession).not.toHaveBeenCalled();
+    expect(transport.sessions.get("session-1")).toBe(source);
+    expect(transport.messages.get("session-1")).toEqual(sourceMessages);
+    await adapter.close();
+  });
+
+  it("deletes a rollback Fork whose retained transcript is the wrong same-length prefix", async () => {
+    const transport = new FakeOpenCodeTransport();
+    const sourceMessages = [
+      userMessage("user-1", "one"),
+      assistantMessage("assistant-1", "user-1"),
+      userMessage("user-2", "two"),
+      assistantMessage("assistant-2", "user-2"),
+    ];
+    transport.messages.set("session-1", sourceMessages);
+    transport.forkSession = vi.fn(async () => {
+      const derived = nativeSession("session-fork");
+      transport.sessions.set(derived.id, derived);
+      transport.messages.set(derived.id, [
+        userMessage("wrong-user", "wrong"),
+        assistantMessage("wrong-assistant", "wrong-user"),
+      ]);
+      return derived;
+    });
+    const sourceRef = nativeSessionRefSchema.parse({
+      harnessId: "opencode",
+      nativeSessionId: "session-1",
+      locator: { directory: cwd },
+      formatVersion: 1,
+    });
+    const adapter = adapterFor(transport);
+
+    await expect(adapter.open({ kind: "rollbackLastTurn", sourceRef, cwd })).resolves.toMatchObject(
+      { ok: false, error: { code: "protocolError" } },
+    );
+    expect(transport.sessions.has("session-fork")).toBe(false);
+    expect(transport.messages.get("session-1")).toEqual(sourceMessages);
+    await adapter.close();
+  });
+
+  it("does not delete the source when a history Fork aliases its Native Session", async () => {
+    const transport = new FakeOpenCodeTransport();
+    const sourceMessages = [
+      userMessage("user-1", "one"),
+      assistantMessage("assistant-1", "user-1"),
+      userMessage("user-2", "two"),
+      assistantMessage("assistant-2", "user-2"),
+    ];
+    transport.messages.set("session-1", sourceMessages);
+    const source = transport.sessions.get("session-1");
+    if (!source) throw new Error("Fork source Session is missing");
+    transport.forkSession = vi.fn(async () => source);
+    const deleteSession = vi.spyOn(transport, "deleteSession");
+    const sourceRef = nativeSessionRefSchema.parse({
+      harnessId: "opencode",
+      nativeSessionId: "session-1",
+      locator: { directory: cwd },
+      formatVersion: 1,
+    });
+    const checkpoint = nativeCheckpointRefSchema.parse({
+      harnessId: "opencode",
+      nativeSessionId: "session-1",
+      checkpointId: "assistant-1",
+      formatVersion: 1,
+    });
+    const adapter = adapterFor(transport);
+
+    await expect(adapter.open({ kind: "fork", sourceRef, checkpoint, cwd })).resolves.toMatchObject(
+      { ok: false, error: { code: "protocolError" } },
+    );
+    expect(deleteSession).not.toHaveBeenCalled();
+    expect(transport.sessions.get("session-1")).toBe(source);
+    expect(transport.messages.get("session-1")).toEqual(sourceMessages);
     await adapter.close();
   });
 });

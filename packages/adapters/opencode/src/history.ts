@@ -248,8 +248,27 @@ function assistantItems(
 
 export function reliableOpenCodeFileChanges(diffs: readonly SnapshotFileDiff[]): HostFileChange[] {
   return diffs.flatMap((diff) => {
-    if (!diff.file || !diff.patch || !diff.status) return [];
-    const kind = diff.status === "added" ? "add" : diff.status === "deleted" ? "delete" : "update";
+    if (
+      typeof diff.file !== "string" ||
+      !diff.file ||
+      typeof diff.patch !== "string" ||
+      !diff.patch ||
+      !Number.isSafeInteger(diff.additions) ||
+      diff.additions < 0 ||
+      !Number.isSafeInteger(diff.deletions) ||
+      diff.deletions < 0
+    ) {
+      return [];
+    }
+    const kind =
+      diff.status === "added"
+        ? "add"
+        : diff.status === "deleted"
+          ? "delete"
+          : diff.status === "modified"
+            ? "update"
+            : undefined;
+    if (!kind) return [];
     return [{ path: diff.file, kind, unifiedDiff: diff.patch } satisfies HostFileChange];
   });
 }

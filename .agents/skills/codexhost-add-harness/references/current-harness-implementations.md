@@ -47,8 +47,8 @@ Codex Desktop
 |---|---|---|---|---|---|
 | Pi | CLI 原生 RPC | create、resume、fork、跨 cwd fork、rollback | Model、Thinking | Question | Usage、Commands、Compaction、工具和文件投影 |
 | OMP | CLI 原生 RPC | create、resume、fork、跨 cwd fork、rollback | Model、Thinking | 无 Host Interaction | Usage、Commands、Compaction、Subagent、Autonomous Turn |
-| Claude Code | Claude Agent SDK | create、resume、fork、rollback；fork 不跨 cwd | Model、Thinking、Permission Mode | Approval、Question | Usage、Credits、Commands、Subagent、Autonomous Turn |
-| Grok | ACP 加私有扩展 | create、resume、fork、跨 cwd fork、rollback | Model、Thinking、Permission Mode | Approval | Usage、Credits、Commands、Compaction |
+| Claude Code | Claude Agent SDK | create、resume、fork；fork 不跨 cwd，rollback 不支持 | Model、Thinking、Permission Mode | Approval、Question | Usage、Credits、Commands、Subagent、Autonomous Turn |
+| Grok | ACP 加私有扩展 | create、resume、fork、跨 cwd fork；rollback 不支持 | Model、Thinking、Permission Mode | Approval | Usage、Credits、Commands、Compaction |
 | DeepSeek Harness | 原生 Host API / RPC | create、resume、fork；fork 不跨 cwd | Model、Thinking | Approval、Question | Usage、Commands、Compaction、分页历史、共享 Host 连接 |
 
 原生 Codex 通过官方 App Server 协议接入，不实现外部 `HarnessAdapter`，不是新增外部 Harness 的参考模板。
@@ -88,7 +88,7 @@ Codex Desktop
 | Account Credits | Claude Code | Grok |
 | Fork 和跨 cwd Fork | Pi | OMP、Grok |
 | 同 cwd Fork、原生 Transcript Fork | Claude Code | DeepSeek Harness |
-| Last-Turn Rollback | Pi | OMP、Claude Code、Grok |
+| Last-Turn Rollback | Pi | OMP、OpenCode |
 | Subagent 生命周期和 Transcript | OMP | Claude Code |
 | Autonomous Turn | OMP | Claude Code |
 | Harness Commands / compaction | Pi | Claude Code、Grok、OMP、DeepSeek Harness |
@@ -135,7 +135,7 @@ Claude Code 是能力面最完整的参考：
 - Model、Thinking、Permission Mode；
 - Tool、Command、File Change、Reasoning、Compaction；
 - Subagent 与 Autonomous Turn；
-- Transcript 读取、Fork 和 Rollback；
+- Transcript 读取和同 cwd Fork；当前不能为单 Turn 历史派生可恢复的空 rollback Session；
 - Context Usage、Plan Limit 和 Credits；
 - 后台占用与 continuation quiescence。
 

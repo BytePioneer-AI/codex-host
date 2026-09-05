@@ -139,11 +139,16 @@ const harnessHistoryCapabilitiesSchema = z
     fork: z.boolean(),
     forkAcrossCwd: z.boolean(),
     rollbackLastTurn: z.boolean(),
+    replacementFence: z.boolean().optional(),
   })
   .strict()
   .refine((history) => history.fork || !history.forkAcrossCwd, {
     path: ["forkAcrossCwd"],
     message: "Cross-cwd Fork requires exact history Fork support",
+  })
+  .refine((history) => !history.rollbackLastTurn || history.replacementFence === true, {
+    path: ["replacementFence"],
+    message: "Last-Turn rollback requires a history replacement fence",
   });
 
 export const harnessPermissionModeScopeSchema = z.enum(["live", "atCreate"]);

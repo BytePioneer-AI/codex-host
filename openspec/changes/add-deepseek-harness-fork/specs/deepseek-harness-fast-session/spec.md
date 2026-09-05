@@ -9,7 +9,8 @@ The system SHALL provide a `deepseek-harness` implementation of `HarnessAdapter`
 - **WHEN** Host opens the DeepSeek Adapter with a create input and an available runtime
 - **THEN** the Adapter SHALL return a HarnessSession with a stable Native Session reference
 - **AND** `open(create)` and `open(resume)` SHALL be available
-- **AND** inspection and Session capabilities SHALL report `history.fork=true`, `history.forkAcrossCwd=false`, and `history.rollbackLastTurn=false`
+- **AND** Modern inspection and Session capabilities SHALL report `history.fork=true`, `history.forkAcrossCwd=false`, and `history.rollbackLastTurn=true`
+- **AND** Legacy inspection and Session capabilities SHALL keep `history.rollbackLastTurn=false`
 
 #### Scenario: Existing DeepSeek Session resumes
 
@@ -19,7 +20,7 @@ The system SHALL provide a `deepseek-harness` implementation of `HarnessAdapter`
 
 ### Requirement: Unsupported fast-path capabilities are explicit
 
-The DeepSeek Adapter SHALL reject cross-cwd Fork, rollback, and runtime Permission Mode selection as unsupported, and SHALL NOT publish the optional Subagent capability. It SHALL advertise and execute only structured Model/Thinking choices and explicitly registered Harness Commands that the connected DSH Host confirms.
+The DeepSeek Adapter SHALL reject cross-cwd Fork as unsupported and SHALL NOT publish the optional Subagent capability. The Legacy Adapter SHALL continue to reject rollback. Each generation SHALL publish and execute only the capabilities verified for its connected DSH Host.
 
 #### Scenario: Host attempts cross-cwd Fork
 
@@ -27,9 +28,9 @@ The DeepSeek Adapter SHALL reject cross-cwd Fork, rollback, and runtime Permissi
 - **THEN** the Adapter SHALL return an `unsupported` error before invoking `sessions.fork`
 - **AND** it SHALL NOT create a replacement Session or modify project files
 
-#### Scenario: Host attempts rollback
+#### Scenario: Host attempts Legacy rollback
 
-- **WHEN** Host opens the Adapter with a rollback input
+- **WHEN** Host opens the Legacy Adapter with a rollback input
 - **THEN** the Adapter SHALL return an `unsupported` error without mutating the source Session
 
 ## ADDED Requirements
@@ -93,3 +94,25 @@ Every Fork-capable DeepSeek Turn SHALL expose a stable Checkpoint derived from i
 - **WHEN** source/checkpoint identities are foreign or mismatched, the Checkpoint encoding is invalid, or it does not identify a real source `turn/end`
 - **THEN** the Adapter SHALL return `invalidRequest` or `checkpointNotFound` as appropriate
 - **AND** it SHALL NOT invoke native Fork
+
+### Requirement: DeepSeek Modern Last-Turn Rollback creates an exact replacement
+
+The exact `dsh-v0.1.2-rc.1` Modern Adapter SHALL implement `open(rollbackLastTurn)` by returning a distinct Native Session whose complete history is the source's exact current completed history without its final Turn. It SHALL leave the source Session and project files unchanged. Model, Thinking, Permission and mapping replacement SHALL remain owned by the existing Host rollback transaction.
+
+#### Scenario: A multi-Turn Session rolls back
+
+- **WHEN** the source contains at least two completed Turns and no incomplete Turn
+- **THEN** the Adapter SHALL Fork at the penultimate Turn's exact `turn/end` Checkpoint
+- **AND** the existing child identity, raw prefix, cwd, seed and projected-history verification SHALL apply
+
+#### Scenario: A single-Turn Session rolls back
+
+- **WHEN** the source contains exactly one completed Turn and no incomplete Turn
+- **THEN** the Adapter SHALL create a distinct empty Session
+- **AND** it SHALL pass the source journal's current projected Agent Preset to `session/create` and verify the returned Session preserves it
+
+#### Scenario: The source is empty or active
+
+- **WHEN** the source contains no completed Turn or contains an incomplete Turn
+- **THEN** the Adapter SHALL return `invalidState` or `sessionBusy` respectively
+- **AND** it SHALL NOT invoke `session/create` or `session/fork`

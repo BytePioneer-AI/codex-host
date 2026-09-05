@@ -65,7 +65,12 @@ export type { RendererHarnessMessages } from "./renderer-harness-localization.js
 export { mountRendererHarnessCommandControl } from "./renderer-harness-command-control.js";
 export type { RendererHarnessCommandControl } from "./renderer-harness-command-control.js";
 export {
+  creditsFamilyFromSelection,
+  creditsHeaderEntries,
   creditsPeriodLabel,
+  creditsPopoverRows,
+  creditsProviderShortLabel,
+  creditsSelectionHint,
   formatRendererCreditsReset,
   rendererCreditsTone,
 } from "./renderer-credits-control.js";
@@ -236,6 +241,9 @@ export type { RendererSettingsShell } from "./settings/shell.js";
 export {
   SETTINGS_HEADER_SURFACE_SELECTOR,
   SETTINGS_TRIGGER_ATTRIBUTE,
+  findRendererHeaderStartSlot,
+  findRendererHeaderTitleCluster,
+  findRendererHeaderTitleOverflow,
   inspectRendererSettingsContract,
   installRendererSettingsHeaderTrigger,
   mountRendererSettingsTrigger,

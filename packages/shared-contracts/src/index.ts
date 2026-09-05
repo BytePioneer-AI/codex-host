@@ -123,6 +123,7 @@ export type {
   ThreadCommandsInspectParams,
 } from "./harness-commands.js";
 export {
+  accountCreditsAccountUsageSchema,
   accountCreditsProductUsageSchema,
   accountCreditsSnapshotSchema,
   threadUsageInspectionParamsSchema,
@@ -130,6 +131,8 @@ export {
   threadUsageSnapshotSchema,
 } from "./thread-usage.js";
 export type {
+  AccountCreditsAccountUsage,
+  AccountCreditsProductUsage,
   AccountCreditsSnapshot,
   ThreadUsageInspection,
   ThreadUsageInspectionParams,

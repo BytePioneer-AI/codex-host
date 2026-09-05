@@ -172,7 +172,7 @@ export function rendererUsageRefreshDelay(attempt: number): number {
  * to pick up account limits after Usage has already arrived.
  */
 function externalAgentHasAccountCredits(agent: RendererAgent): boolean {
-  return agent === "codex" || agent === "grok" || agent === "claude-code";
+  return agent === "codex" || agent === "grok" || agent === "claude-code" || agent === "omp";
 }
 
 export function shouldRetryExternalThreadUsage(

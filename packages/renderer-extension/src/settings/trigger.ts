@@ -113,6 +113,13 @@ export function inspectRendererSettingsContract(
   };
 }
 
+function visibleHeaderShellSlots(header: HTMLElement): HTMLElement[] {
+  return [...header.querySelectorAll<HTMLElement>(SETTINGS_HEADER_SLOT_SELECTOR)].filter((slot) => {
+    const bounds = measuredBounds(slot);
+    return bounds.width > 0 && bounds.height > 0;
+  });
+}
+
 function findRendererSettingsHeaderInsertionPoint(
   ownerDocument: Document,
 ): RendererSettingsHeaderInsertionPoint | null {
@@ -122,13 +129,95 @@ function findRendererSettingsHeaderInsertionPoint(
   const headerBounds = measuredBounds(header);
   if (headerBounds.width <= 0 || headerBounds.height <= 0) return null;
 
-  const endSlot = [...header.querySelectorAll<HTMLElement>(SETTINGS_HEADER_SLOT_SELECTOR)]
-    .filter((slot) => {
-      const bounds = measuredBounds(slot);
-      return bounds.width > 0 && bounds.height > 0;
-    })
-    .toSorted((left, right) => measuredBounds(right).left - measuredBounds(left).left)[0];
+  const endSlot = visibleHeaderShellSlots(header).toSorted(
+    (left, right) => measuredBounds(right).left - measuredBounds(left).left,
+  )[0];
   return endSlot ? { parent: header, before: endSlot } : null;
+}
+
+function applicationHeader(ownerDocument?: Document): HTMLElement | null {
+  const doc =
+    ownerDocument ?? (typeof globalThis.document === "undefined" ? null : globalThis.document);
+  if (!doc || typeof doc.querySelector !== "function") return null;
+
+  const header = doc.querySelector<HTMLElement>(SETTINGS_APPLICATION_HEADER_SELECTOR);
+  if (!header) return null;
+
+  const headerBounds = measuredBounds(header);
+  if (headerBounds.width <= 0 || headerBounds.height <= 0) return null;
+  return header;
+}
+
+/**
+ * Leftmost visible header shell slot. This is *not* the thread-title cluster:
+ * Codex keeps the folder / title / overflow menu in a sibling between the
+ * start and end shell slots.
+ */
+export function findRendererHeaderStartSlot(ownerDocument?: Document): HTMLElement | null {
+  const header = applicationHeader(ownerDocument);
+  if (!header) return null;
+
+  return (
+    visibleHeaderShellSlots(header).toSorted(
+      (left, right) => measuredBounds(left).left - measuredBounds(right).left,
+    )[0] ?? null
+  );
+}
+
+function headerEndSlot(header: HTMLElement): HTMLElement | null {
+  const slots = visibleHeaderShellSlots(header).toSorted(
+    (left, right) => measuredBounds(left).left - measuredBounds(right).left,
+  );
+  return slots.length > 1 ? (slots[slots.length - 1] ?? null) : null;
+}
+
+function isOwnedHeaderControl(element: HTMLElement): boolean {
+  return Boolean(
+    element.closest?.(
+      "[data-codexhost-credits-control], [data-codexhost-settings-trigger], [data-codexhost-credits-extras]",
+    ),
+  );
+}
+
+/**
+ * The thread-title overflow (`…`) button — the rightmost native control in the
+ * left title band. Credits inserts immediately after this node so it stays
+ * next to the folder / title, not in the Share / settings group.
+ */
+export function findRendererHeaderTitleOverflow(ownerDocument?: Document): HTMLElement | null {
+  const header = applicationHeader(ownerDocument);
+  if (!header || typeof header.querySelectorAll !== "function") return null;
+
+  const headerBounds = measuredBounds(header);
+  const leftBandRight = headerBounds.left + Math.max(280, headerBounds.width * 0.42);
+  const endSlot = headerEndSlot(header);
+  const buttons = [...header.querySelectorAll<HTMLElement>("button, [role='button']")];
+  const leftButtons = buttons.filter((button) => {
+    if (endSlot && typeof endSlot.contains === "function" && endSlot.contains(button)) return false;
+    if (isOwnedHeaderControl(button)) return false;
+    const bounds = measuredBounds(button);
+    if (bounds.width <= 0 || bounds.height <= 0) return false;
+    return bounds.left >= headerBounds.left - 1 && bounds.right <= leftBandRight;
+  });
+  leftButtons.sort((left, right) => measuredBounds(right).left - measuredBounds(left).left);
+  return leftButtons[0] ?? null;
+}
+
+/**
+ * Header child that owns the folder, thread title, and overflow (`…`) control.
+ * Used only as a fallback when the overflow button itself cannot be resolved.
+ */
+export function findRendererHeaderTitleCluster(ownerDocument?: Document): HTMLElement | null {
+  const header = applicationHeader(ownerDocument);
+  if (!header) return null;
+
+  const overflow = findRendererHeaderTitleOverflow(ownerDocument);
+  if (overflow?.parentElement) return overflow.parentElement;
+
+  const slots = visibleHeaderShellSlots(header).toSorted(
+    (left, right) => measuredBounds(left).left - measuredBounds(right).left,
+  );
+  return slots[0] ?? null;
 }
 
 export function mountRendererSettingsTrigger(

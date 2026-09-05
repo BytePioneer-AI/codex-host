@@ -302,6 +302,14 @@ describe("Renderer Composer DOM behavior", () => {
         { usedPercent: 62, periodType: "five_hour" },
       ),
     ).toBe(false);
+    expect(shouldRetryExternalThreadUsage("omp", { totalCostUsd: 0.168 })).toBe(true);
+    expect(
+      shouldRetryExternalThreadUsage(
+        "omp",
+        { totalCostUsd: 0.168 },
+        { usedPercent: 64, periodType: "weekly" },
+      ),
+    ).toBe(false);
     expect(rendererUsageRefreshDelay(0)).toBe(250);
     expect(rendererUsageRefreshDelay(1)).toBe(500);
     expect(rendererUsageRefreshDelay(99)).toBe(8000);
@@ -506,26 +514,123 @@ describe("Renderer Composer DOM behavior", () => {
     expect(placeCredits).not.toHaveBeenCalled();
   });
 
-  it("anchors credits to the permission-mode picker's own root", () => {
-    const permissionModeRoot = { parentElement: {} } as HTMLElement;
-    const control = {
-      permissionModePicker: { root: permissionModeRoot },
-    } as unknown as ComposerAgentControl;
+  it("anchors credits after the left-side thread-title overflow button", () => {
+    const button = (
+      left: number,
+      width: number,
+      extra: Record<string, unknown> = {},
+    ): HTMLElement =>
+      ({
+        getBoundingClientRect: () => ({
+          left,
+          right: left + width,
+          top: 36,
+          bottom: 64,
+          width,
+          height: 28,
+        }),
+        closest: () => null,
+        ...extra,
+      }) as unknown as HTMLElement;
+    const folder = button(16, 28);
+    const title = button(48, 220);
+    const overflow = button(272, 28);
+    const share = button(860, 72);
+    const startSlot = {
+      getBoundingClientRect: () => ({
+        left: 0,
+        right: 40,
+        top: 36,
+        bottom: 72,
+        width: 40,
+        height: 36,
+      }),
+    } as unknown as HTMLElement;
+    const endSlot = {
+      getBoundingClientRect: () => ({
+        left: 900,
+        right: 1020,
+        top: 36,
+        bottom: 72,
+        width: 120,
+        height: 36,
+      }),
+      contains: (node: Node) => node === share,
+    } as unknown as HTMLElement;
+    const header = {
+      getBoundingClientRect: () => ({
+        left: 0,
+        right: 1100,
+        top: 36,
+        bottom: 82,
+        width: 1100,
+        height: 46,
+      }),
+      children: [startSlot, endSlot],
+      querySelector: () => null,
+      querySelectorAll: (selector: string) => {
+        if (selector === ':scope > [data-test-id="header-shell-slot"]') return [startSlot, endSlot];
+        if (selector === "button, [role='button']") return [folder, title, overflow, share];
+        return [];
+      },
+    };
+    const ownerDocument = {
+      querySelector: (selector: string) =>
+        selector === 'header[data-pip-obstacle="app-shell-header"]' ? header : null,
+    } as unknown as Document;
 
-    expect(creditsPlacementAnchor(control)).toBe(permissionModeRoot);
+    expect(creditsPlacementAnchor({} as ComposerAgentControl, ownerDocument)).toBe(overflow);
   });
 
-  it("does not anchor credits until the permission-mode picker has been inserted into the DOM", () => {
-    const permissionModeRoot = { parentElement: null } as unknown as HTMLElement;
-    const control = {
-      permissionModePicker: { root: permissionModeRoot },
-    } as unknown as ComposerAgentControl;
-
-    expect(creditsPlacementAnchor(control)).toBeNull();
+  it("does not anchor credits until the application header start slot is visible", () => {
+    const ownerDocument = {
+      querySelector: () => null,
+    } as unknown as Document;
+    expect(creditsPlacementAnchor({} as ComposerAgentControl, ownerDocument)).toBeNull();
   });
 
-  it("places credits immediately before the permission-mode picker, independent of Usage", () => {
-    const permissionModeRoot = { parentElement: {} } as HTMLElement;
+  it("places credits against the header start slot, independent of Usage", () => {
+    const overflow = {
+      getBoundingClientRect: () => ({
+        left: 200,
+        right: 228,
+        top: 36,
+        bottom: 64,
+        width: 28,
+        height: 28,
+      }),
+      closest: () => null,
+    } as unknown as HTMLElement;
+    const startSlot = {
+      getBoundingClientRect: () => ({
+        left: 0,
+        right: 120,
+        top: 36,
+        bottom: 72,
+        width: 120,
+        height: 36,
+      }),
+    } as unknown as HTMLElement;
+    const header = {
+      getBoundingClientRect: () => ({
+        left: 0,
+        right: 1100,
+        top: 36,
+        bottom: 82,
+        width: 1100,
+        height: 46,
+      }),
+      querySelectorAll: (selector: string) => {
+        if (selector === ':scope > [data-test-id="header-shell-slot"]') return [startSlot];
+        if (selector === "button, [role='button']") return [overflow];
+        return [];
+      },
+    };
+    vi.stubGlobal("document", {
+      querySelector: (selector: string) =>
+        selector === 'header[data-pip-obstacle="app-shell-header"]' ? header : null,
+    });
+
     const placeUsage = vi.fn();
     const placeCredits = vi.fn();
     const control = {
@@ -534,7 +639,7 @@ describe("Renderer Composer DOM behavior", () => {
       nativeModelControl: null,
       nativePermissionModeControl: null,
       nativeContextUsageControl: null,
-      permissionModePicker: { root: permissionModeRoot },
+      permissionModePicker: { root: { parentElement: {} } },
       credits: {
         anchor: null,
         place: placeCredits,
@@ -547,9 +652,12 @@ describe("Renderer Composer DOM behavior", () => {
       },
     } as unknown as ComposerAgentControl;
 
-    reconcileComposerNativeControls(control, true, false);
-
-    expect(placeCredits).toHaveBeenCalledWith(permissionModeRoot);
+    try {
+      reconcileComposerNativeControls(control, true, false);
+      expect(placeCredits).toHaveBeenCalledWith(overflow);
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it("does not treat codexhost Usage controls as native anchors", () => {

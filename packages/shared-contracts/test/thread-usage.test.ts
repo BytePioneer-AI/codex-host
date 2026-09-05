@@ -29,6 +29,20 @@ describe("Thread Usage contracts", () => {
           usedPercent: 33,
           resetsAt: "2026-08-20T03:32:07.498525+00:00",
           periodType: "weekly",
+          productUsage: [
+            {
+              product: "Grok Build",
+              usagePercent: 33,
+              resetsAt: "2026-08-20T03:32:07.498525+00:00",
+              accounts: [
+                {
+                  accountName: "user@example.com",
+                  usagePercent: 33,
+                  resetsAt: "2026-08-20T03:32:07.498525+00:00",
+                },
+              ],
+            },
+          ],
         },
       }),
     ).toMatchObject({

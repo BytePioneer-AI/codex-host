@@ -32,6 +32,7 @@ import {
   type RendererPermissionModePickerControl,
 } from "./renderer-permission-mode-picker.js";
 import {
+  creditsSelectionHint,
   mountRendererCreditsControl,
   renderRendererCreditsControl,
   type RendererCreditsControl,
@@ -42,6 +43,11 @@ import {
   type RendererUsageControl,
 } from "./renderer-usage-control.js";
 import type { RendererSettingsLocale } from "./settings/localization.js";
+import {
+  findRendererHeaderStartSlot,
+  findRendererHeaderTitleCluster,
+  findRendererHeaderTitleOverflow,
+} from "./settings/trigger.js";
 import type { RendererAdapterStatus } from "./versioned-renderer-adapter.js";
 import {
   mountRendererHarnessCommandControl,
@@ -472,13 +478,22 @@ function usagePlacementAnchor(control: ComposerAgentControl): HTMLElement | null
 }
 
 /**
- * Credits stays attached to the renderer-owned permission-mode slot. It is
- * independent from the native context indicator because Credits describes
- * account limits, not the current thread's context window.
+ * Credits mounts immediately after the thread-title overflow (`…`) button.
+ * It is independent from composer Usage because Credits describes account
+ * limits, not the current thread's context window.
  */
-export function creditsPlacementAnchor(control: ComposerAgentControl): HTMLElement | null {
-  const root = control.permissionModePicker?.root;
-  return root?.parentElement ? root : null;
+export function creditsPlacementAnchor(
+  _control?: ComposerAgentControl,
+  ownerDocument?: Document,
+): HTMLElement | null {
+  const doc =
+    ownerDocument ?? (typeof globalThis.document === "undefined" ? null : globalThis.document);
+  if (!doc) return null;
+  return (
+    findRendererHeaderTitleOverflow(doc) ??
+    findRendererHeaderTitleCluster(doc) ??
+    findRendererHeaderStartSlot(doc)
+  );
 }
 
 function refreshTrailingClusterPlacement(control: ComposerAgentControl): void {
@@ -581,9 +596,6 @@ export function reconcileComposerNativeControls(
 ): void {
   refreshNativeContextUsageControl(control);
   refreshNativeModelControl(control);
-  // Resolve the permission-mode picker's position before Credits anchors to
-  // it below, so Credits never reads a stale (e.g. mount-time fallback)
-  // location for it within this same pass.
   refreshNativePermissionModeControl(control);
   refreshTrailingClusterPlacement(control);
   refreshUsagePlacement(control);
@@ -734,7 +746,16 @@ export function renderComposerAgentControl(
   );
   if (control.usage) renderRendererUsageControl(control.usage, usage, locale);
   control.harnessCommands.setLocale(locale);
-  renderRendererCreditsControl(control.credits, accountCredits);
+  renderRendererCreditsControl(
+    control.credits,
+    accountCredits,
+    creditsSelectionHint({
+      modelLabel: selectedCatalogModel?.label,
+      modelId: selectedModel?.id,
+      resolvedModelLabel: modelView.resolvedModelLabel,
+      agent: state.agent,
+    }),
+  );
 }
 
 export function disposeComposerAgentControl(control: ComposerAgentControl): void {

@@ -202,7 +202,10 @@ class FakeClaudeTransport implements ClaudeTurnTransport {
   }
 }
 
-function fixture(options: ClaudeCodeAdapterOptions = {}) {
+function fixture(
+  options: ClaudeCodeAdapterOptions = {},
+  dependencyOverrides: Partial<ClaudeAdapterDependencies> = {},
+) {
   const history: unknown[] = [];
   const transports: FakeClaudeTransport[] = [];
   const inspectors: Array<{
@@ -214,6 +217,7 @@ function fixture(options: ClaudeCodeAdapterOptions = {}) {
   const dependencies: ClaudeAdapterDependencies = {
     randomUUID: () => `claude-id-${++uuid}`,
     inspectInstallation,
+    fetchCredits: async () => null,
     createInspector: vi.fn(() => {
       const inspector = {
         close: vi.fn(async () => undefined),
@@ -259,7 +263,7 @@ function fixture(options: ClaudeCodeAdapterOptions = {}) {
   };
   const adapter = new ClaudeCodeAdapter(
     { closeTimeoutMs: 50, continuationQuiescenceMs: 50, cancelTimeoutMs: 5_000, ...options },
-    dependencies,
+    { ...dependencies, ...dependencyOverrides },
   );
   return { adapter, dependencies, history, inspectors, inspectInstallation, transports };
 }
@@ -3890,6 +3894,25 @@ describe("Claude Code HarnessAdapter", () => {
     await nextEvent(iteratorB);
     await sessionA.close();
     await sessionB.close();
+  });
+
+  it("falls back to OmniRoute credits when custom gateway is used without Anthropic planLimit", async () => {
+    const omnirouteSnapshot = {
+      usedPercent: 8.5,
+      periodType: "five_hour" as const,
+      resetsAt: "2026-08-31T16:54:00.000Z",
+      productUsage: [
+        {
+          product: "Gemini Flash (5h)",
+          usagePercent: 8.5,
+          resetsAt: "2026-08-31T16:54:00.000Z",
+        },
+      ],
+    };
+    const { adapter } = fixture({}, { fetchCredits: async () => omnirouteSnapshot });
+    expect(adapter.credits()).toBeNull();
+    await adapter.refreshCredits();
+    expect(adapter.credits()).toEqual(omnirouteSnapshot);
   });
 
   it("reuses one Transport and Native Session for sequential Turns", async () => {

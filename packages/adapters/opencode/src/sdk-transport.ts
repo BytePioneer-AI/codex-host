@@ -125,10 +125,14 @@ export class SdkOpenCodeTransport implements OpenCodeTransport {
 
   async commands() {
     const client = await this.#getClient();
-    return responseData(
+    const commands = responseData(
       await withTimeout(client.command.list(), this.#commandTimeoutMs, "OpenCode Command list"),
       "Command list",
     );
+    return commands.map((command) => ({
+      ...command,
+      template: typeof command.template === "string" ? command.template : "",
+    }));
   }
 
   async createSession(

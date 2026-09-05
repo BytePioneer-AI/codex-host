@@ -3,6 +3,7 @@ import { PassThrough, Writable } from "node:stream";
 
 import WebSocket, { type RawData } from "ws";
 
+import { APP_SERVER_WEBSOCKET_CLIENT_OPTIONS } from "./app-server-websocket-options.js";
 import type {
   OfficialAppServerConnection,
   OfficialAppServerExit,
@@ -36,12 +37,6 @@ export async function createRemoteOfficialAppServerConnection(
   let pending = Buffer.alloc(0);
   let outputPaused = false;
 
-  const webSocketOptions = {
-    maxPayload: 128 * 1024 * 1024,
-    // The native Codex daemon client uses tokio-tungstenite without offering
-    // permessage-deflate. Keep the same handshake for every private listener.
-    perMessageDeflate: false,
-  } as const;
   let socket: WebSocket;
   if (endpoint.startsWith("ws://")) {
     const url = new URL(endpoint);
@@ -52,10 +47,10 @@ export async function createRemoteOfficialAppServerConnection(
     ) {
       throw new Error("Shared official app-server URL must use a loopback WebSocket endpoint");
     }
-    socket = new WebSocket(endpoint, webSocketOptions);
+    socket = new WebSocket(endpoint, APP_SERVER_WEBSOCKET_CLIENT_OPTIONS);
   } else {
     socket = new WebSocket("ws://localhost/", {
-      ...webSocketOptions,
+      ...APP_SERVER_WEBSOCKET_CLIENT_OPTIONS,
       createConnection: () => net.createConnection(endpoint),
     });
   }

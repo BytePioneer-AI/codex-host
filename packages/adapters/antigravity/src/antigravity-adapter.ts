@@ -31,6 +31,7 @@ import {
   type HostItem,
   type HostItemOutcome,
   type HostItemSnapshot,
+  type HostSubagentState,
   type HostThreadSnapshot,
   type HostUsage,
   type InteractionRespondAccepted,
@@ -87,6 +88,8 @@ import {
 } from "./code-action-diff.js";
 import { fetchAntigravityQuota, type AntigravityQuotaSnapshot } from "./quota.js";
 import { AntigravityQuestionBridge } from "./question-bridge.js";
+import { AntigravitySubagents } from "./subagents.js";
+import { nativeSubagentIdSchema, readSubagentTranscript } from "./subagent-transcript.js";
 import {
   antigravityToolErrorMessage,
   isAntigravityPermissionDenial,
@@ -117,6 +120,7 @@ interface ActiveTurn {
   process: ChildProcessByStdio<Writable, Readable, Readable>;
   exited: Promise<void>;
   questions: AntigravityQuestionBridge;
+  subagents: AntigravitySubagents;
   logPath: string;
   agentItem: HostAgentMessageItem | null;
   agentText: string;
@@ -221,7 +225,7 @@ const CAPABILITIES: HarnessSessionCapabilities = {
     permissionModeScope: "live",
   },
   history: { fork: true, forkAcrossCwd: true, rollbackLastTurn: true },
-  subagents: { observe: false, readTranscript: false },
+  subagents: { observe: true, readTranscript: true },
 };
 
 function errorMessage(error: unknown): string {
@@ -477,6 +481,7 @@ class AntigravitySession implements HarnessSession {
   readonly #printTimeout: string;
   readonly #toolOutputLimit: number;
   readonly #history: AntigravityHistory;
+  readonly #subagentObservers = new Set<AntigravitySubagents>();
   #active: ActiveTurn | null = null;
   #preparingQuestions: Promise<AntigravityQuestionBridge> | null = null;
   #questionCleanup: Promise<void> = Promise.resolve();
@@ -542,7 +547,19 @@ class AntigravitySession implements HarnessSession {
   }
 
   get isActive(): boolean {
-    return this.#active !== null || this.#preparingQuestions !== null;
+    return (
+      this.#active !== null ||
+      this.#preparingQuestions !== null ||
+      [...this.#subagentObservers].some((observer) => observer.running)
+    );
+  }
+
+  subagentState(id: string): HostSubagentState | undefined {
+    for (const observer of [...this.#subagentObservers].reverse()) {
+      const state = observer.state(id);
+      if (state) return state;
+    }
+    return historySubagentState(this.#history, id);
   }
 
   readonly initialState: HarnessSessionState;
@@ -689,6 +706,29 @@ class AntigravitySession implements HarnessSession {
       process: child,
       exited: new Promise<void>((resolve) => child.once("close", () => resolve())),
       questions,
+      subagents: new AntigravitySubagents({
+        turnId: command.turnId,
+        parentId: () => this.#nativeRef?.nativeSessionId,
+        port: () => this.#languageServerPort(active),
+        cwd: this.#cwd,
+        outputLimit: this.#toolOutputLimit,
+        initialStates: this.#history
+          .snapshot()
+          .flatMap((turn) =>
+            turn.items.flatMap(({ item }) =>
+              item.type === "subagentDelegation" ? item.subagents : [],
+            ),
+          ),
+        emit: (event) => {
+          if (event.type === "subagent.state.changed") {
+            const state = active.subagents.state(event.nativeSubagentId);
+            if (state) this.#history.updateSubagent(state);
+          }
+          this.#event(event);
+        },
+        complete: (snapshot) => active.completedItems.push(snapshot),
+        schedule: (work) => this.#enqueue(active, work),
+      }),
       logPath,
       agentItem: null,
       agentText: "",
@@ -708,6 +748,7 @@ class AntigravitySession implements HarnessSession {
       httpsPort: null,
     };
     this.#active = active;
+    this.#subagentObservers.add(active.subagents);
     child.stdin.on("error", () => undefined);
     child.stderr.setEncoding("utf8").on("data", (chunk: string) => {
       active.stderr = (active.stderr + chunk).slice(-8_000);
@@ -730,6 +771,8 @@ class AntigravitySession implements HarnessSession {
     child.once("close", (code) => {
       this.#enqueue(active, () => {
         void unlink(active.logPath).catch(() => undefined);
+        if (active.subagents.running) void active.subagents.cancel();
+        else active.subagents.stop();
         if (this.#active !== active || active.receivedResult) return;
         if (active.cancellationRequested) {
           this.#completeTurn(active, { status: "cancelled", reason: "Cancelled by user" });
@@ -773,10 +816,13 @@ class AntigravitySession implements HarnessSession {
     const preparing = await this.#preparingQuestions?.catch(() => undefined);
     await preparing?.dispose();
     if (this.#active) {
-      this.#active.cancellationRequested = true;
-      this.#active.process.kill();
-      this.#completeTurn(this.#active, { status: "cancelled", reason: "Session closed" });
+      const active = this.#active;
+      active.cancellationRequested = true;
+      await active.subagents.cancel();
+      active.process.kill();
+      this.#completeTurn(active, { status: "cancelled", reason: "Session closed" });
     }
+    await Promise.all([...this.#subagentObservers].map((observer) => observer.cancel()));
     await this.#questionCleanup;
     await this.#history.flush().catch(() => undefined);
     this.#channel.end();
@@ -825,6 +871,7 @@ class AntigravitySession implements HarnessSession {
       return;
     }
     if (event.event === "step_update") {
+      if (event.step_update.conversation_id !== this.#nativeRef?.nativeSessionId) return;
       await this.#handleStep(active, event.step_update);
       const usage = hostUsage(event.step_update.usage, this.#model?.id);
       if (usage) this.#publishUsage(active, usage);
@@ -845,9 +892,7 @@ class AntigravitySession implements HarnessSession {
       const contextUsage = await active.contextUsagePromise;
       if (contextUsage) this.#publishUsage(active, contextUsage);
     }
-    if (active.process.stdin.writable) {
-      active.process.stdin.end();
-    }
+    await active.subagents.refresh();
     if (this.#active !== active) return;
     const convId =
       event.result.conversation_id && event.result.conversation_id.trim().length > 0
@@ -945,6 +990,15 @@ class AntigravitySession implements HarnessSession {
     active: ActiveTurn,
     step: AntigravityStepUpdateEvent["step_update"],
   ): Promise<void> {
+    if (step.step_type === "subagent") {
+      if (active.agentItem) {
+        this.#completeItem(active, active.agentItem, { status: "succeeded" });
+        active.agentItem = null;
+        active.agentText = "";
+      }
+      if (active.subagents.handle(step)) return;
+      step = { ...step, step_type: "tool" };
+    }
     if (step.step_type === "agent_response") {
       if (typeof step.text_delta === "string" && step.text_delta.length > 0) {
         this.#appendOrSyncAgentText(active, step.text_delta, true);
@@ -1107,9 +1161,13 @@ class AntigravitySession implements HarnessSession {
     active.questions.stop();
     this.#questionCleanup = this.#questionCleanup
       .then(async () => {
+        if (outcome.status !== "succeeded") await active.subagents.cancel();
+        await active.subagents.settled;
+        if (active.process.stdin.writable) active.process.stdin.end();
         const timer = setTimeout(() => active.process.kill(), 2_000);
         await active.exited.finally(() => clearTimeout(timer));
         await active.questions.dispose();
+        this.#subagentObservers.delete(active.subagents);
       })
       .catch(() => undefined);
     this.#active = null;
@@ -1119,6 +1177,7 @@ class AntigravitySession implements HarnessSession {
         : outcome.status === "cancelled"
           ? { status: "cancelled", ...(outcome.reason ? { reason: outcome.reason } : {}) }
           : { status: "succeeded" };
+    active.subagents.finish(itemOutcome);
     if (active.agentItem) this.#completeItem(active, active.agentItem, itemOutcome);
     // A step whose patch never resolved still ran, so an interrupted Turn
     // reports it as a Tool Execution rather than dropping it silently.
@@ -1135,7 +1194,10 @@ class AntigravitySession implements HarnessSession {
         nativeTurnRef,
         ...(outcome.checkpoint ? { checkpoint: outcome.checkpoint } : {}),
         turnInput: active.command.input,
-        items: active.completedItems,
+        items: active.completedItems.map((snapshot) => ({
+          ...snapshot,
+          item: active.subagents.snapshot(snapshot.item),
+        })),
         outcome:
           outcome.status === "failed"
             ? { status: "failed", error: outcome.error }
@@ -1190,7 +1252,7 @@ class AntigravitySession implements HarnessSession {
     return { ok: true, value: { turnId: command.turnId } };
   }
 
-  #cancel(command: TurnCancelCommand): HarnessResult<TurnCancelAccepted> {
+  async #cancel(command: TurnCancelCommand): Promise<HarnessResult<TurnCancelAccepted>> {
     if (!this.#active || this.#active.command.turnId !== command.turnId) {
       return {
         ok: false,
@@ -1201,9 +1263,11 @@ class AntigravitySession implements HarnessSession {
         },
       };
     }
-    this.#active.cancellationRequested = true;
-    this.#active.questions.stop();
-    this.#active.process.kill();
+    const active = this.#active;
+    active.cancellationRequested = true;
+    active.questions.stop();
+    await active.subagents.cancel();
+    active.process.kill();
     return { ok: true, value: { cancellationRequested: true } };
   }
 
@@ -1307,8 +1371,60 @@ class AntigravitySession implements HarnessSession {
   }
 }
 
+function historySubagentState(
+  history: AntigravityHistory,
+  id: string,
+): HostSubagentState | undefined {
+  for (const turn of history.snapshot().reverse()) {
+    for (const { item } of [...turn.items].reverse()) {
+      if (item.type !== "subagentDelegation") continue;
+      const state = item.subagents.find((child) => child.nativeSubagentId === id);
+      if (state) return state;
+    }
+  }
+  return undefined;
+}
+
 export class AntigravityAdapter implements HarnessAdapter {
   readonly harnessId: HarnessId = antigravityHarnessId;
+  readonly subagents = {
+    readSnapshot: async (input: {
+      parent: NativeSessionRef;
+      nativeSubagentId: string;
+      cwd: string;
+    }): Promise<HarnessResult<HostThreadSnapshot>> => {
+      if (
+        this.#closed ||
+        input.parent.harnessId !== this.harnessId ||
+        !nativeSubagentIdSchema.safeParse(input.nativeSubagentId).success
+      ) {
+        return { ok: false, error: invalidState("Invalid Antigravity Subagent reference") };
+      }
+      const session = this.#findSession(input.parent.nativeSessionId);
+      const history =
+        session?.history ??
+        (await AntigravityHistory.findByNativeSessionId(
+          this.#environment,
+          input.parent.nativeSessionId,
+        ));
+      const state =
+        session?.subagentState(input.nativeSubagentId) ??
+        (history ? historySubagentState(history, input.nativeSubagentId) : undefined);
+      if (!state) {
+        return {
+          ok: false,
+          error: invalidState("Subagent does not belong to this parent Session"),
+        };
+      }
+      return readSubagentTranscript({
+        parentId: input.parent.nativeSessionId,
+        childId: input.nativeSubagentId,
+        status: state.status,
+        cwd: input.cwd,
+        outputLimit: this.#toolOutputLimit,
+      });
+    },
+  };
   readonly #command: string | undefined;
   readonly #environment: NodeJS.ProcessEnv;
   readonly #inspectTimeoutMs: number;

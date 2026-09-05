@@ -3,7 +3,7 @@ import { mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promise
 import os from "node:os";
 import path from "node:path";
 
-import type { HostThreadSnapshot } from "@codexhost/harness-adapter";
+import type { HostSubagentState, HostThreadSnapshot } from "@codexhost/harness-adapter";
 import {
   harnessModelRefSchema,
   harnessThinkingOptionIdSchema,
@@ -280,6 +280,24 @@ export class AntigravityHistory {
 
   snapshot(): AntigravityTurn[] {
     return [...this.#turns];
+  }
+
+  updateSubagent(state: HostSubagentState): void {
+    let changed = false;
+    this.#turns = this.#turns.map((turn) => ({
+      ...turn,
+      items: turn.items.map((snapshot) => {
+        if (snapshot.item.type !== "subagentDelegation") return snapshot;
+        const subagents = snapshot.item.subagents.map((previous) => {
+          if (previous.nativeSubagentId !== state.nativeSubagentId) return previous;
+          if (JSON.stringify(previous) === JSON.stringify(state)) return previous;
+          changed = true;
+          return state;
+        });
+        return { ...snapshot, item: { ...snapshot.item, subagents } };
+      }),
+    }));
+    if (changed) this.#queueWrite();
   }
 
   bindNativeSession(nativeSessionId: string): void {

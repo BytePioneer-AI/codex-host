@@ -37,6 +37,7 @@ export interface AntigravityStepUpdateEvent {
     duration_seconds?: number;
     usage?: AntigravityUsage;
     tool_name?: string;
+    subagent_info?: unknown;
     tool_info?: {
       name?: string;
       parameters?: unknown;

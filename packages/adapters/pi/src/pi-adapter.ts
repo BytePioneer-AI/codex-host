@@ -1857,6 +1857,7 @@ class PiHarnessSession implements HarnessSession {
 }
 
 export class PiAdapter implements HarnessAdapter {
+  readonly commandCatalog = piCommandCatalog;
   readonly sessionImport = Object.freeze({
     listCandidates: async () => {
       const result = await this.#readImport((signal) => this.#importIndex.list(signal));

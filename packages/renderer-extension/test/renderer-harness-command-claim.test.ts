@@ -130,6 +130,31 @@ describe("Renderer Harness command Composer claims", () => {
     expect(execute).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ["claude.compact", "text"],
+    ["pi.compact", "text"],
+    ["omp.compact", "text"],
+    ["grok.compact", "text"],
+    ["opencode.compact", "none"],
+    ["dsh.compact", "none"],
+  ] as const)("executes %s directly without changing the draft", (id, argumentMode) => {
+    const editor = new FakeTextarea();
+    const execute = vi.fn();
+    const command = { ...noneCommand, id, argumentMode };
+
+    expect(
+      routeRendererHarnessCommandSelection(editor as unknown as HTMLElement, command, execute),
+    ).toBe(true);
+    expect(execute).toHaveBeenCalledOnce();
+    expect(editor.value).toBe("keep this draft");
+    expect(editor.events).toHaveLength(0);
+    expect(editor.focus).not.toHaveBeenCalled();
+
+    execute.mockClear();
+    expect(routeRendererHarnessCommandSelection(null, command, execute)).toBe(true);
+    expect(execute).toHaveBeenCalledOnce();
+  });
+
   it("keeps argument-free commands on detached execution", () => {
     const execute = vi.fn();
 

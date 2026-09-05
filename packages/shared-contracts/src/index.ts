@@ -152,6 +152,7 @@ export type {
 export {
   harnessCommandCatalogSchema,
   harnessCommandDescriptorSchema,
+  harnessCommandsInspectParamsSchema,
   threadCommandExecuteParamsSchema,
   threadCommandExecuteResultSchema,
   threadCommandsInspectParamsSchema,
@@ -159,6 +160,7 @@ export {
 export type {
   HarnessCommandCatalog,
   HarnessCommandDescriptor,
+  HarnessCommandsInspectParams,
   ThreadCommandExecuteParams,
   ThreadCommandExecuteResult,
   ThreadCommandsInspectParams,

@@ -53,10 +53,10 @@ import {
   type NativeSessionRef,
 } from "@codexhost/shared-contracts";
 
-import { parseDeepSeekHarnessCommand } from "../harness-commands.js";
+import { deepSeekHarnessCommandCatalog, parseDeepSeekHarnessCommand } from "../harness-commands.js";
 import { isRecord, parseArguments, projectToolResult, structuredDiffs } from "../projection.js";
 import type { ModernModelCatalogSnapshot } from "./catalog.js";
-import { executeModernCommand, listModernCommands, ModernCommandError } from "./commands.js";
+import { executeModernCommand, ModernCommandError } from "./commands.js";
 import {
   modernConfigurationHarnessError,
   modernSelectionForModel,
@@ -1089,21 +1089,10 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
   }
 
   async #listHarnessCommands(): Promise<
-    HarnessResult<Awaited<ReturnType<typeof listModernCommands>>>
+    HarnessResult<ReturnType<typeof deepSeekHarnessCommandCatalog>>
   > {
     if (this.#closed) return { ok: false, error: closedError() };
-    const abort = new AbortController();
-    this.#operationControllers.add(abort);
-    try {
-      const catalog = await listModernCommands(this.#remote, this.#sessionId, abort.signal);
-      if (this.#closed) return { ok: false, error: closedError() };
-      return { ok: true, value: catalog };
-    } catch (error) {
-      if (this.#closed) return { ok: false, error: closedError() };
-      return { ok: false, error: commandHarnessError(error) };
-    } finally {
-      this.#operationControllers.delete(abort);
-    }
+    return { ok: true, value: deepSeekHarnessCommandCatalog() };
   }
 
   async #executeHarnessCommand(
@@ -1125,21 +1114,13 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
     this.#commandAdmission = admission;
     this.#operationControllers.add(admission.abort);
     try {
-      let catalog;
-      try {
-        catalog = await listModernCommands(this.#remote, this.#sessionId, admission.abort.signal);
-      } catch (error) {
-        if (this.#closed) return { ok: false, error: closedError() };
-        if (admission.cancellationRequested || admission.abort.signal.aborted) {
-          return { ok: false, error: invalidState("DeepSeek Harness command was cancelled") };
-        }
-        return { ok: false, error: commandHarnessError(error) };
-      }
+      const catalog = await this.#listHarnessCommands();
+      if (!catalog.ok) return catalog;
       if (this.#closed) return { ok: false, error: closedError() };
       if (admission.cancellationRequested) {
         return { ok: false, error: invalidState("DeepSeek Harness command was cancelled") };
       }
-      if (!catalog.commands.some(({ id }) => id === parsed.value.commandId)) {
+      if (!catalog.value.commands.some(({ id }) => id === parsed.value.commandId)) {
         return {
           ok: false,
           error: {

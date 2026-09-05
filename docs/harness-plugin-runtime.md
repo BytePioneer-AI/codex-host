@@ -7,8 +7,8 @@
 当前源码启动路径可以加载原先不认识的外部 Harness ID，通过 `codexhost/harness/plugins/list` 返回描述，并通过公共 Harness 检查接口和 `thread/start` 调用该插件。
 
 七个既有 Adapter 通过同样的 `manifest.json` 和 `createHarnessAdapter` 工厂加载；`adapter-composition.ts` 已删除，Host 源码、包依赖和 TypeScript references 不再直接引用具体 Adapter 包。预装集合仅由发行清单 [`scripts/release/harness-plugins.json`](../scripts/release/harness-plugins.json) 决定。原生构造参数、预取和 Claude Code 的直接/Broker 选择仍由相应插件负责。
-本地会话导入已使用公共 `sessionImport` 契约、Host 映射事务与动态设置页；Pi 和 DSH Modern 是两个实际实现。完整原生引用只在 Adapter 与 Host 间流转，详见[会话导入](harness-session-import.md)。这不代表普通 Agent Picker 已完成动态接入。
 
+本地会话导入已使用公共 `sessionImport` 契约、Host 映射事务与动态设置页；Pi 和 DSH Modern 是两个实际实现。完整原生引用只在 Adapter 与 Host 间流转，详见[会话导入](harness-session-import.md)。这不代表普通 Agent Picker 已完成动态接入。
 
 尚未实现的目标包括：
 
@@ -86,6 +86,7 @@ plugins/
 - 资源只能是插件内部相对路径；拒绝目录遍历和解析后逃出根目录的符号链接。
 - 链接只接受不带用户凭据的 HTTPS 地址。
 - 能力继续由 `HarnessAdapter.inspect()`、Session 能力和公共可选接口提供，不在 Manifest 复制第二份运行时能力真相。
+- 命令目录由可选的静态 `HarnessAdapter.commandCatalog` 声明，通过 `codexhost/harness/commands/inspect` 查询；读取目录不检查原生运行时、不连接原生服务、不创建或恢复 Session。未声明时返回空目录，不通过启动会话回退发现。执行仍走 `session.commands`。
 
 入口导出 [`HarnessPluginModule`](../packages/harness-adapter/src/plugin.ts) 定义的工厂，不通过模块全局副作用注册：
 

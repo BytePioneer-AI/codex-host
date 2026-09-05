@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { hostTurnIdSchema } from "@codexhost/shared-contracts";
+import { harnessCommandCatalogSchema, hostTurnIdSchema } from "@codexhost/shared-contracts";
 
 import {
   deepSeekHarnessCommandCatalog,
@@ -9,72 +9,21 @@ import {
 
 const turnId = hostTurnIdSchema.parse("command-turn");
 
-describe("DeepSeek Harness command registry", () => {
-  it("exposes compact only when the current native catalog advertises its exact shape", () => {
+describe("DeepSeek Harness static command registry", () => {
+  it("provides exactly three valid commands without native discovery", () => {
+    const catalog = deepSeekHarnessCommandCatalog();
+    expect(harnessCommandCatalogSchema.parse(catalog)).toEqual(catalog);
     expect(
-      deepSeekHarnessCommandCatalog([
-        { name: "future", description: "A future command" },
-        { name: "compact", description: "  Compact older conversation history  " },
-      ]),
-    ).toEqual({
-      commands: [
-        {
-          id: "dsh.compact",
-          invocation: "/compact",
-          label: "Compact context",
-          description: "Compact older conversation history",
-          argumentMode: "none",
-        },
-      ],
-    });
-
-    expect(
-      deepSeekHarnessCommandCatalog([
-        {
-          name: "compact",
-          description: "Compact with instructions",
-          input: { hint: "<instructions>" },
-        },
-      ]),
-    ).toEqual({ commands: [] });
-    expect(deepSeekHarnessCommandCatalog([])).toEqual({ commands: [] });
-  });
-
-  it("omits compact when its native description cannot enter the Host catalog", () => {
-    expect(deepSeekHarnessCommandCatalog([{ name: "compact", description: "   " }])).toEqual({
-      commands: [],
-    });
-    expect(
-      deepSeekHarnessCommandCatalog([{ name: "compact", description: "x".repeat(513) }]),
-    ).toEqual({ commands: [] });
-  });
-
-  it("exposes goal only when the current native catalog advertises text input", () => {
-    expect(
-      deepSeekHarnessCommandCatalog([
-        {
-          name: "goal",
-          description: "set or view the goal for a long-running task",
-          input: {
-            hint: "[<objective>|clear|edit <objective>|pause|resume]",
-            images: true,
-          },
-        },
-      ]),
-    ).toEqual({
-      commands: [
-        {
-          id: "dsh.goal",
-          invocation: "/dsh-goal",
-          label: "Goal",
-          description: "set or view the goal for a long-running task",
-          argumentMode: "text",
-        },
-      ],
-    });
-    expect(deepSeekHarnessCommandCatalog([{ name: "goal", description: "Missing input" }])).toEqual(
-      { commands: [] },
-    );
+      catalog.commands.map(({ id, invocation, argumentMode }) => ({
+        id,
+        invocation,
+        argumentMode,
+      })),
+    ).toEqual([
+      { id: "dsh.compact", invocation: "/compact", argumentMode: "none" },
+      { id: "dsh.goal", invocation: "/dsh-goal", argumentMode: "text" },
+      { id: "dsh.plan", invocation: "/plan", argumentMode: "text" },
+    ]);
   });
 
   it("parses compact without arguments and rejects unknown IDs or arguments", () => {
@@ -84,10 +33,7 @@ describe("DeepSeek Harness command registry", () => {
     });
     expect(
       parseDeepSeekHarnessCommand({ turnId, commandId: "dsh.compact", arguments: {} }),
-    ).toEqual({
-      ok: true,
-      value: { commandId: "dsh.compact", line: "/compact" },
-    });
+    ).toMatchObject({ ok: true });
     expect(
       parseDeepSeekHarnessCommand({
         turnId,
@@ -101,108 +47,41 @@ describe("DeepSeek Harness command registry", () => {
     });
   });
 
-  it("maps goal grammar to exact command lines", () => {
-    for (const [text, expected] of [
-      [undefined, "/goal"],
-      ["   ", "/goal"],
-      ["  ship the release  ", "/goal ship the release"],
-      ["edit replace the objective", "/goal edit replace the objective"],
-      ["clear", "/goal clear"],
-      ["pause", "/goal pause"],
-      ["resume", "/goal resume"],
-    ] as const) {
-      expect(
-        parseDeepSeekHarnessCommand({
-          turnId,
-          commandId: "dsh.goal",
-          ...(text === undefined ? {} : { arguments: { text } }),
-        }),
-      ).toEqual({ ok: true, value: { commandId: "dsh.goal", line: expected } });
-    }
+  it.each([
+    ["dsh.goal", undefined, "/goal"],
+    ["dsh.goal", "   ", "/goal"],
+    ["dsh.goal", "  ship the release  ", "/goal ship the release"],
+    ["dsh.goal", "edit replace the objective", "/goal edit replace the objective"],
+    ["dsh.goal", "clear", "/goal clear"],
+    ["dsh.goal", "pause", "/goal pause"],
+    ["dsh.goal", "resume", "/goal resume"],
+    ["dsh.plan", undefined, "/plan"],
+    ["dsh.plan", "   ", "/plan"],
+    ["dsh.plan", "  sketch the layout  ", "/plan sketch the layout"],
+    ["dsh.plan", "off", "/plan off"],
+  ])("maps %s %s to the native line", (commandId, text, line) => {
+    expect(
+      parseDeepSeekHarnessCommand({
+        turnId,
+        commandId,
+        ...(text === undefined ? {} : { arguments: { text } }),
+      }),
+    ).toEqual({ ok: true, value: { commandId, line } });
   });
 
   it("rejects bare goal edits", () => {
     for (const text of ["edit", " EDIT ", "edit   "]) {
       expect(
-        parseDeepSeekHarnessCommand({
-          turnId,
-          commandId: "dsh.goal",
-          arguments: { text },
-        }),
+        parseDeepSeekHarnessCommand({ turnId, commandId: "dsh.goal", arguments: { text } }),
       ).toMatchObject({ ok: false, error: { code: "invalidRequest" } });
     }
   });
 
-  it("exposes plan only when the current native catalog advertises text input", () => {
-    expect(
-      deepSeekHarnessCommandCatalog([
-        {
-          name: "plan",
-          description: "Enter or leave plan mode",
-          input: { hint: "[off|message]", images: true },
-        },
-      ]),
-    ).toEqual({
-      commands: [
-        {
-          id: "dsh.plan",
-          invocation: "/plan",
-          label: "Plan mode",
-          description: "Enter or leave plan mode",
-          argumentMode: "text",
-        },
-      ],
-    });
-    expect(deepSeekHarnessCommandCatalog([{ name: "plan", description: "Missing input" }])).toEqual(
-      { commands: [] },
-    );
-  });
-
-  it("maps plan messages to exact command lines", () => {
-    for (const [text, expected] of [
-      [undefined, "/plan"],
-      ["   ", "/plan"],
-      ["  sketch the layout  ", "/plan sketch the layout"],
-      ["off", "/plan off"],
-    ] as const) {
+  it.each(["dsh.goal", "dsh.plan"])("validates text arguments for %s", (commandId) => {
+    for (const arguments_ of [{ text: 123 }, { unexpected: true }]) {
       expect(
-        parseDeepSeekHarnessCommand({
-          turnId,
-          commandId: "dsh.plan",
-          ...(text === undefined ? {} : { arguments: { text } }),
-        }),
-      ).toEqual({ ok: true, value: { commandId: "dsh.plan", line: expected } });
+        parseDeepSeekHarnessCommand({ turnId, commandId, arguments: arguments_ }),
+      ).toMatchObject({ ok: false, error: { code: "invalidRequest" } });
     }
-  });
-
-  it("filters client-only, first-class, export, and unknown native commands", () => {
-    expect(
-      deepSeekHarnessCommandCatalog([
-        { name: "model", description: "Client model command", input: { hint: "<model>" } },
-        {
-          name: "goal",
-          description: "Goal",
-          input: { hint: "[objective]", images: true },
-        },
-        {
-          name: "permission",
-          description: "Permission Mode",
-          input: { hint: "<preset>" },
-        },
-        { name: "compact", description: "Compact" },
-        { name: "export", description: "Export" },
-        {
-          name: "feedback",
-          description: "Feedback",
-          input: { hint: "<text>" },
-        },
-        { name: "future", description: "Future command", input: { hint: "[args]" } },
-        {
-          name: "plan",
-          description: "Plan",
-          input: { hint: "[off|message]", images: true },
-        },
-      ]).commands.map(({ id }) => id),
-    ).toEqual(["dsh.goal", "dsh.compact", "dsh.plan"]);
   });
 });

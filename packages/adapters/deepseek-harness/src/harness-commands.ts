@@ -1,7 +1,6 @@
 import { type HarnessCommandInvocation, type HarnessResult } from "@codexhost/harness-adapter";
 import {
   harnessCommandCatalogSchema,
-  harnessCommandDescriptorSchema,
   type HarnessCommandCatalog,
 } from "@codexhost/shared-contracts";
 
@@ -14,23 +13,23 @@ export interface DeepSeekCommandDescriptor {
 const commandDefinitions = [
   {
     id: "dsh.compact",
-    nativeName: "compact",
     invocation: "/compact",
     label: "Compact context",
+    description: "Compact the current conversation context",
     argumentMode: "none",
   },
   {
     id: "dsh.goal",
-    nativeName: "goal",
     invocation: "/dsh-goal",
     label: "Goal",
+    description: "Set or view the goal for a long-running task",
     argumentMode: "text",
   },
   {
     id: "dsh.plan",
-    nativeName: "plan",
     invocation: "/plan",
     label: "Plan mode",
+    description: "Enter or leave plan mode",
     argumentMode: "text",
   },
 ] as const;
@@ -47,29 +46,10 @@ function invalidArguments(message: string): HarnessResult<never> {
   };
 }
 
-export function deepSeekHarnessCommandCatalog(
-  nativeDescriptors: readonly DeepSeekCommandDescriptor[],
-): HarnessCommandCatalog {
-  const commands = nativeDescriptors.flatMap((native) => {
-    const definition = commandDefinitions.find(({ nativeName }) => nativeName === native.name);
-    if (
-      !definition ||
-      (definition.argumentMode === "none"
-        ? native.input !== undefined
-        : native.input === undefined || native.input.hint.trim().length === 0)
-    ) {
-      return [];
-    }
-    const parsed = harnessCommandDescriptorSchema.safeParse({
-      id: definition.id,
-      invocation: definition.invocation,
-      label: definition.label,
-      description: native.description,
-      argumentMode: definition.argumentMode,
-    });
-    return parsed.success ? [parsed.data] : [];
+export function deepSeekHarnessCommandCatalog(): HarnessCommandCatalog {
+  return harnessCommandCatalogSchema.parse({
+    commands: commandDefinitions,
   });
-  return harnessCommandCatalogSchema.parse({ commands });
 }
 
 export function parseDeepSeekHarnessCommand(

@@ -354,25 +354,6 @@ async function readDeepSeekPermissionModeCatalog(
   return normalizeDeepSeekPermissionModeCatalog(settings.namespaces);
 }
 
-async function requireDeepSeekPermissionCommand(
-  client: DeepSeekHostClient,
-  sessionId: SessionId,
-): Promise<void> {
-  const response = await client.commands.list(sessionId);
-  if (!response.ok) {
-    throw new DeepSeekHarnessTransportError(
-      response.error.code === "session-not-found" ? "unavailable" : "nativeFailure",
-      `DeepSeek Harness 'commands/list' failed: ${response.error.message}`,
-    );
-  }
-  if (!response.value.some(({ name, input }) => name === "permission" && input !== undefined)) {
-    throw new DeepSeekHarnessTransportError(
-      "protocolError",
-      "DeepSeek Harness did not expose its Permission Mode command",
-    );
-  }
-}
-
 async function executeDeepSeekPermissionMode(
   client: DeepSeekHostClient,
   sessionId: SessionId,
@@ -1167,22 +1148,13 @@ class DeepSeekHarnessSession implements HarnessSession, DeepSeekHostSubscriber {
     }
   }
 
-  async #listHarnessCommands(
-    signal?: AbortSignal,
-  ): Promise<HarnessResult<ReturnType<typeof deepSeekHarnessCommandCatalog>>> {
+  async #listHarnessCommands(): Promise<
+    HarnessResult<ReturnType<typeof deepSeekHarnessCommandCatalog>>
+  > {
     if (this.#closed) {
       return { ok: false, error: invalidState("DeepSeek Harness Session is closed") };
     }
-    try {
-      const sessionId = this.#nativeRef.nativeSessionId as SessionId;
-      const result = await (signal
-        ? this.#commandClient.list(sessionId, signal)
-        : this.#commandClient.list(sessionId));
-      if (!result.ok) return { ok: false, error: commandFailure("commands/list", result.error) };
-      return { ok: true, value: deepSeekHarnessCommandCatalog(result.value) };
-    } catch (error) {
-      return { ok: false, error: normalizedError(error, "unavailable") };
-    }
+    return { ok: true, value: deepSeekHarnessCommandCatalog() };
   }
 
   async #executeHarnessCommand(
@@ -1219,7 +1191,7 @@ class DeepSeekHarnessSession implements HarnessSession, DeepSeekHostSubscriber {
     };
     this.#commandAdmission = admission;
     try {
-      const catalog = await this.#listHarnessCommands(admission.abort.signal);
+      const catalog = await this.#listHarnessCommands();
       if (admission.cancellationRequested) {
         return {
           ok: false,
@@ -2013,6 +1985,7 @@ class DeepSeekHarnessSession implements HarnessSession, DeepSeekHostSubscriber {
 }
 
 export class DeepSeekHarnessAdapter implements HarnessAdapter {
+  readonly commandCatalog = deepSeekHarnessCommandCatalog();
   readonly harnessId: HarnessId = deepSeekHarnessId;
   readonly #connection: DeepSeekHostConnectionLike;
   readonly #dependencies: DeepSeekHarnessAdapterDependencies;
@@ -2322,9 +2295,6 @@ export class DeepSeekHarnessAdapter implements HarnessAdapter {
               "session.selectModel",
             );
           }
-        }
-        if (permissionModes) {
-          await requireDeepSeekPermissionCommand(this.#connection.client, sessionId as SessionId);
         }
         if (requestedPermissionModeId) {
           await executeDeepSeekPermissionMode(

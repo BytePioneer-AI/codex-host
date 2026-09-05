@@ -536,6 +536,8 @@ export interface HarnessSessionImportCapability {
 
 export interface HarnessAdapter {
   readonly harnessId: HarnessId;
+  /** Static command metadata. Reading it must not inspect, connect to, or open a Native Session. */
+  readonly commandCatalog?: HarnessCommandCatalog;
   readonly sessionImport?: HarnessSessionImportCapability;
   readonly subagents?: HarnessSubagentCapability;
   readonly webUi?: HarnessWebUiAction;

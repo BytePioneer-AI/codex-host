@@ -1,20 +1,22 @@
 import { randomUUID } from "node:crypto";
 
+import { deepSeekHarnessCommandCatalog } from "./harness-commands.js";
+
 import type {
   HarnessAdapter,
   HarnessError,
   HarnessInspection,
   HarnessResult,
   HarnessSession,
-  HarnessSessionImportSource,
   HarnessSessionImportCapability,
+  HarnessSessionImportSource,
   HarnessWebUiAction,
   InspectHarnessInput,
   OpenSessionInput,
 } from "@codexhost/harness-adapter";
 import {
-  nativeSessionRefSchema,
   harnessIdSchema,
+  nativeSessionRefSchema,
   type DeepSeekModernSessionCandidate,
   type HarnessId,
 } from "@codexhost/shared-contracts";
@@ -90,6 +92,7 @@ class DelegateSelectionError extends Error {
 
 /** Public DeepSeek Adapter that selects one exact DSH protocol generation for its lifetime. */
 export class DeepSeekHarnessAdapter implements HarnessAdapter {
+  readonly commandCatalog = deepSeekHarnessCommandCatalog();
   readonly harnessId: HarnessId = DEEPSEEK_HARNESS_ID;
   readonly sessionImport = Object.freeze({
     listCandidates: () => this.#listSessionImportCandidates(),

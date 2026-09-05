@@ -54,7 +54,7 @@ Codex Desktop 协议、官方 app-server、Renderer 兼容绑定仍是 codexhost
 | Claude Code | Agent SDK；审批、提问、Subagent、后台延续、Credits；支持 Fork/Rollback，不支持跨目录 Fork | 原生回调和后台生命周期；macOS 受管远程有专属 Broker 承载 |
 | OMP | 原生 RPC；权限模式、审批与提问、Subagent、后台自主 Turn、跨目录 Fork/Rollback | 权限切换可能重启原生连接；恢复时可能替换不可用 Model，不能复活旧 Thinking |
 | Grok | ACP 加扩展；审批、压缩、Credits、Fork/跨目录 Fork/Rollback | Permission Mode 在 Session 创建时固定，不能通过恢复后的普通配置写入补设 |
-| OpenCode | SDK/Server 事件流；原生命令、审批、提问、Diff、Fork/Rollback，不支持跨目录 Fork | 原生权限 API 有累加语义，恢复须尊重原生实际状态，不无条件重放旧权限 |
+| OpenCode | SDK/Server 事件流；固定 `/compact`、审批、提问、Diff、Fork/Rollback，不支持跨目录 Fork | 原生权限 API 有累加语义，恢复须尊重原生实际状态，不无条件重放旧权限 |
 | DeepSeek Harness | 公共 Adapter 内选择 Legacy/Modern；Modern 有控制状态确认、自主 Turn、导入和托管 Web | 两代协议能力不同；原生状态确认、事件关联、历史与认证须留在插件 |
 | Antigravity | CLI `stream-json`；配置、工具、文件变化投影、Credits；不支持 Fork/Rollback | Adapter 自持历史补充记录及恢复逻辑；不得迁回 Host 或在重构时删除 |
 
@@ -318,7 +318,7 @@ Host 接收已确认状态并维护公共配置视图，不能生成虚假的 ef
 
 | 能力 | 目标 |
 | --- | --- |
-| Commands | 沿用 `session.commands`；保留原生命令、参数、忙碌校验、Turn/Item、取消和临时历史语义 |
+| Commands | 静态目录通过 `adapter.commandCatalog` 提供，不启动 Session 或请求原生命令发现；执行沿用 `session.commands`，保留参数、忙碌校验、Turn/Item、取消和临时历史语义 |
 | Credits | 正式可选接口；沿用 `AccountCreditsSnapshot`，明确缓存读取、刷新、未知和失败状态，去除结构探测与 Renderer 名单 |
 | Session Import | 插件发现候选并提供正确原生引用；Host 通用导入、去重、并发和映射提交 |
 | Web UI | 沿用可选入口；插件处理原生地址、认证与可用性，公共层受控打开 |

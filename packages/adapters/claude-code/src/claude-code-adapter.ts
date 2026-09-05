@@ -186,7 +186,7 @@ interface ActiveTurn {
 }
 
 const claudeCodeHarnessId = harnessIdSchema.parse("claude-code");
-const claudeCommandCatalog = harnessCommandCatalogSchema.parse({
+export const claudeCommandCatalog = harnessCommandCatalogSchema.parse({
   commands: [
     {
       id: "claude.compact",
@@ -2208,6 +2208,7 @@ class ClaudeHarnessSession implements HarnessSession {
 }
 
 export class ClaudeCodeAdapter implements HarnessAdapter {
+  readonly commandCatalog = claudeCommandCatalog;
   readonly harnessId: HarnessId = claudeCodeHarnessId;
   readonly subagents = {
     readSnapshot: async (input: {

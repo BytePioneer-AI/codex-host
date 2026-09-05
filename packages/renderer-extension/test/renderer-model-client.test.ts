@@ -10,8 +10,6 @@ import {
 import { describe, expect, it, vi } from "vitest";
 
 import {
-  DEEPSEEK_MODERN_SESSION_IMPORT_METHOD,
-  DEEPSEEK_MODERN_SESSION_LIST_METHOD,
   HARNESS_INSPECT_METHOD,
   HARNESS_PLUGIN_LIST_METHOD,
   HARNESS_WEB_UI_OPEN_METHOD,
@@ -27,12 +25,11 @@ import {
   UPDATE_CHECK_METHOD,
   UPDATE_START_METHOD,
   UPDATE_STATUS_METHOD,
-  RendererDeepSeekSessionUnavailableError,
   createRendererModelClient,
   createThreadUsageSubscriptionRelay,
 } from "../src/renderer-model-client.js";
-import { RendererSessionImportUnavailableError } from "../src/renderer-session-import-client.js";
 
+import { RendererSessionImportUnavailableError } from "../src/renderer-session-import-client.js";
 
 const piHarnessId = harnessIdSchema.parse("pi");
 const model = harnessModelRefSchema.parse({ id: "pi-model-v1.synthetic" });
@@ -173,12 +170,13 @@ describe("Renderer fixed Model request client", () => {
       "forkThread",
       "importHarnessSession",
       "inspectHarness",
+      "inspectHarnessCommands",
       "inspectThread",
       "inspectThreadCommands",
       "inspectThreadUsage",
+      "listHarnessPlugins",
       "listHarnessSessions",
       "listSessionImportSources",
-      "listHarnessPlugins",
       "listThreadOwnership",
       "openHarnessWebUi",
       "readUpdateStatus",
@@ -308,17 +306,19 @@ describe("Renderer fixed Model request client", () => {
     expect(sendRequest).toHaveBeenNthCalledWith(12, UPDATE_STATUS_METHOD, {});
   });
 
-  it("uses only the fixed DSH Modern Session import methods and strict shapes", async () => {
+  it("uses fixed generic Session import methods and never accepts a browser-supplied locator", async () => {
     const sendRequest = vi
-      .fn<(method: string, params: unknown) => Promise<unknown>>()
+      .fn()
+      .mockResolvedValueOnce({ harnesses: [{ harnessId: "pi", name: "Pi" }] })
       .mockResolvedValueOnce({
+        total: 1,
         candidates: [
           {
             nativeSessionId: "native-1",
-            title: "Existing session",
+            title: null,
             updatedAt: 1_000,
             cwd: "C:\\work",
-            running: false,
+            running: null,
           },
         ],
       })
@@ -356,7 +356,7 @@ describe("Renderer fixed Model request client", () => {
     expect(sendRequest).toHaveBeenCalledTimes(3);
   });
 
-  it("coalesces an in-flight DSH Modern import across page mounts", async () => {
+  it("coalesces per Harness and native ID across remounts without colliding with other Harnesses", async () => {
     const response = Promise.withResolvers<unknown>();
     const sendRequest = vi.fn(() => response.promise);
     const client = createRendererModelClient([{ sendRequest }]);
@@ -375,17 +375,15 @@ describe("Renderer fixed Model request client", () => {
     });
     expect(sendRequest).toHaveBeenCalledTimes(2);
     response.resolve({ threadId: "thread-1" });
-    await expect(first).resolves.toEqual({ threadId: "thread-1" });
-    await expect(remounted).resolves.toEqual({ threadId: "thread-1" });
+    await expect(Promise.all([first, remounted, other])).resolves.toEqual(
+      Array(3).fill({ threadId: "thread-1" }),
+    );
   });
 
-  it("normalizes only stable unavailable DSH Modern response codes", async () => {
-    const unavailable = Object.assign(new Error("private unavailable detail"), { code: -32076 });
-    const unsupported = Object.assign(new Error("private unsupported detail"), { code: -32077 });
-    const sendRequest = vi
-      .fn()
-      .mockRejectedValueOnce(unavailable)
-      .mockRejectedValueOnce(unsupported);
+  it.each([-32601, -32076])("normalizes unavailable code %s, including old Hosts", async (code) => {
+    const sendRequest = vi.fn(async () => {
+      throw Object.assign(new Error("private detail"), { code });
+    });
     const client = createRendererModelClient([{ sendRequest }]);
     if (
       !client?.listSessionImportSources ||

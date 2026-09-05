@@ -1938,17 +1938,7 @@ describe("DeepSeek Harness Modern Session", () => {
   });
 
   it("keeps public command discovery readable during an active Turn", async () => {
-    const test = setup(
-      [
-        () => accepted(),
-        () => ({
-          ok: true,
-          value: [{ name: "compact", description: "Compact context" }],
-        }),
-      ],
-      [],
-      ["request-1"],
-    );
+    const test = setup([() => accepted()], [], ["request-1"]);
     const outputs = test.session.outputs[Symbol.asyncIterator]();
     await test.session.execute({
       type: "turn.start",
@@ -1962,20 +1952,15 @@ describe("DeepSeek Harness Modern Session", () => {
 
     await expect(test.session.commands.list()).resolves.toMatchObject({
       ok: true,
-      value: { commands: [{ id: "dsh.compact" }] },
+      value: { commands: [{ id: "dsh.compact" }, { id: "dsh.goal" }, { id: "dsh.plan" }] },
     });
+    expect(test.remote.calls.map(({ endpoint }) => endpoint)).not.toContain("commands/list");
     await test.session.close();
   });
 
   it("runs a Host command Turn and activates a buffered autonomous Turn afterwards", async () => {
     const execution = deferred<ModernRemoteResult<unknown>>();
-    const test = setup([
-      () => ({
-        ok: true,
-        value: [{ name: "goal", description: "Set goal", input: { hint: "<goal>" } }],
-      }),
-      () => execution.promise,
-    ]);
+    const test = setup([() => execution.promise]);
     const outputs = test.session.outputs[Symbol.asyncIterator]();
     const commandTurnId = turnId("command-turn");
 
@@ -1986,12 +1971,12 @@ describe("DeepSeek Harness Modern Session", () => {
         arguments: { text: "ship" },
       }),
     ).resolves.toEqual({ ok: true, value: { turnId: commandTurnId } });
-    expect(test.remote.calls[1]).toMatchObject({
+    expect(test.remote.calls[0]).toMatchObject({
       endpoint: "commands/execute",
       args: { agentId: SESSION_ID, line: "/goal ship", images: [] },
       options: { timeoutMs: null },
     });
-    expect(test.remote.calls[1]?.signal).toBeInstanceOf(AbortSignal);
+    expect(test.remote.calls[0]?.signal).toBeInstanceOf(AbortSignal);
     expect(await nextEvent(outputs)).toEqual({ type: "turn.started", turnId: commandTurnId });
     expect(await nextEvent(outputs)).toMatchObject({
       type: "item.started",
@@ -2033,13 +2018,7 @@ describe("DeepSeek Harness Modern Session", () => {
 
   it("blocks prompts, configuration, and a second command while a command is active", async () => {
     const execution = deferred<ModernRemoteResult<unknown>>();
-    const test = setup([
-      () => ({
-        ok: true,
-        value: [{ name: "compact", description: "Compact context" }],
-      }),
-      () => execution.promise,
-    ]);
+    const test = setup([() => execution.promise]);
     const outputs = test.session.outputs[Symbol.asyncIterator]();
     const activeTurnId = turnId("active-command");
     await expect(
@@ -2068,7 +2047,7 @@ describe("DeepSeek Harness Modern Session", () => {
         commandId: "dsh.compact",
       }),
     ).resolves.toMatchObject({ ok: false, error: { code: "sessionBusy" } });
-    expect(test.remote.calls).toHaveLength(2);
+    expect(test.remote.calls).toHaveLength(1);
 
     execution.resolve({
       ok: true,
@@ -2086,15 +2065,13 @@ describe("DeepSeek Harness Modern Session", () => {
     await test.session.close();
   });
 
-  it("rejects command admission when configuration changes during re-list", async () => {
-    const listed = deferred<ModernRemoteResult<unknown>>();
-    const test = setup([() => listed.promise]);
+  it("rejects command admission when configuration changes before acceptance", async () => {
+    const test = setup([]);
     const outputs = test.session.outputs[Symbol.asyncIterator]();
     const executing = test.session.commands.execute({
       turnId: turnId("command-race"),
       commandId: "dsh.compact",
     });
-    await vi.waitFor(() => expect(test.remote.calls).toHaveLength(1));
     test.control.update(
       "modelSelection",
       {
@@ -2103,26 +2080,15 @@ describe("DeepSeek Harness Modern Session", () => {
       } as ModernControlJsonValue,
       1,
     );
-    listed.resolve({
-      ok: true,
-      value: [{ name: "compact", description: "Compact context" }],
-    });
-
     await expect(executing).resolves.toMatchObject({ ok: false, error: { code: "sessionBusy" } });
-    expect(test.remote.calls).toHaveLength(1);
+    expect(test.remote.calls).toHaveLength(0);
     expect(await nextEvent(outputs)).toMatchObject({ type: "session.state.changed" });
     await test.session.close();
   });
 
-  it("rejects command admission after an autonomous Turn arrives during re-list", async () => {
-    const listed = deferred<ModernRemoteResult<unknown>>();
-    const test = setup([() => listed.promise], [], ["autonomous-after-admission"]);
+  it("rejects commands while an autonomous Turn is active without native discovery", async () => {
+    const test = setup([], [], ["autonomous-after-admission"]);
     const outputs = test.session.outputs[Symbol.asyncIterator]();
-    const executing = test.session.commands.execute({
-      turnId: turnId("command-autonomous-race"),
-      commandId: "dsh.compact",
-    });
-    await vi.waitFor(() => expect(test.remote.calls).toHaveLength(1));
 
     test.feed.push(event(0, "turn/start", { turn: 1 }));
     test.feed.push(event(1, "step/start", { turn: 1, step: 1 }));
@@ -2135,18 +2101,6 @@ describe("DeepSeek Harness Modern Session", () => {
       }),
     );
     test.feed.push(requestHeader(3));
-    test.feed.push(event(4, "step/end", { turn: 1, step: 1 }));
-    test.feed.push(event(5, "turn/end", { turn: 1, reason: { kind: "completed" } }));
-    listed.resolve({
-      ok: true,
-      value: [{ name: "compact", description: "Compact context" }],
-    });
-
-    await expect(executing).resolves.toMatchObject({
-      ok: false,
-      error: { code: "sessionBusy" },
-    });
-    expect(test.remote.calls).toHaveLength(1);
     expect(await nextEvent(outputs)).toEqual({
       type: "turn.autonomous.started",
       turnId: "autonomous-after-admission",
@@ -2156,6 +2110,15 @@ describe("DeepSeek Harness Modern Session", () => {
       type: "turn.started",
       turnId: "autonomous-after-admission",
     });
+    await expect(
+      test.session.commands.execute({
+        turnId: turnId("command-autonomous-race"),
+        commandId: "dsh.compact",
+      }),
+    ).resolves.toMatchObject({ ok: false, error: { code: "sessionBusy" } });
+    expect(test.remote.calls).toHaveLength(0);
+    test.feed.push(event(4, "step/end", { turn: 1, step: 1 }));
+    test.feed.push(event(5, "turn/end", { turn: 1, reason: { kind: "completed" } }));
     expect(await nextEvent(outputs)).toMatchObject({
       type: "turn.completed",
       turnId: "autonomous-after-admission",
@@ -2166,13 +2129,7 @@ describe("DeepSeek Harness Modern Session", () => {
 
   it("cancels an active command with exactly one Item and Turn terminal", async () => {
     const execution = deferred<ModernRemoteResult<unknown>>();
-    const test = setup([
-      () => ({
-        ok: true,
-        value: [{ name: "compact", description: "Compact context" }],
-      }),
-      () => execution.promise,
-    ]);
+    const test = setup([() => execution.promise]);
     const outputs = test.session.outputs[Symbol.asyncIterator]();
     const commandTurnId = turnId("cancelled-command");
     await test.session.commands.execute({
@@ -2185,7 +2142,7 @@ describe("DeepSeek Harness Modern Session", () => {
     await expect(
       test.session.execute({ type: "turn.cancel", turnId: commandTurnId }),
     ).resolves.toEqual({ ok: true, value: { cancellationRequested: true } });
-    expect(test.remote.calls[1]?.signal?.aborted).toBe(true);
+    expect(test.remote.calls[0]?.signal?.aborted).toBe(true);
     execution.reject(new ModernRemoteConnectionError("cancelled", "cancelled"));
     const emitted = await eventsThrough(outputs, "turn.completed");
     expect(emitted.map(({ type }) => type)).toEqual(["item.completed", "turn.completed"]);
@@ -2208,13 +2165,7 @@ describe("DeepSeek Harness Modern Session", () => {
 
   it("closes an active command once without activating its buffered autonomous Turn", async () => {
     const execution = deferred<ModernRemoteResult<unknown>>();
-    const test = setup([
-      () => ({
-        ok: true,
-        value: [{ name: "compact", description: "Compact context" }],
-      }),
-      () => execution.promise,
-    ]);
+    const test = setup([() => execution.promise]);
     const outputs = test.session.outputs[Symbol.asyncIterator]();
     const commandTurnId = turnId("closed-command");
     await test.session.commands.execute({
@@ -2240,7 +2191,7 @@ describe("DeepSeek Harness Modern Session", () => {
     await new Promise<void>((resolve) => setImmediate(resolve));
 
     await test.session.close();
-    expect(test.remote.calls[1]?.signal?.aborted).toBe(true);
+    expect(test.remote.calls[0]?.signal?.aborted).toBe(true);
     expect(await nextEvent(outputs)).toMatchObject({
       type: "item.completed",
       turnId: commandTurnId,
@@ -2262,10 +2213,6 @@ describe("DeepSeek Harness Modern Session", () => {
 
   it("faults an accepted command exactly once after an uncertain execute failure", async () => {
     const test = setup([
-      () => ({
-        ok: true,
-        value: [{ name: "compact", description: "Compact context" }],
-      }),
       () => Promise.reject(new ModernRemoteConnectionError("unavailable", "lost response")),
     ]);
     const outputs = test.session.outputs[Symbol.asyncIterator]();
@@ -2281,11 +2228,8 @@ describe("DeepSeek Harness Modern Session", () => {
       type: "session.faulted",
       error: { code: "unavailable" },
     });
-    expect(test.remote.calls.map(({ endpoint }) => endpoint)).toEqual([
-      "commands/list",
-      "commands/execute",
-    ]);
-    expect(test.remote.calls[1]).toMatchObject({ options: { timeoutMs: null } });
+    expect(test.remote.calls.map(({ endpoint }) => endpoint)).toEqual(["commands/execute"]);
+    expect(test.remote.calls[0]).toMatchObject({ options: { timeoutMs: null } });
     await expect(outputs.next()).resolves.toEqual({ done: true, value: undefined });
     await test.session.close();
   });

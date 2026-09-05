@@ -2,7 +2,7 @@ import type { HarnessAdapter } from "@codexhost/harness-adapter";
 import type { HarnessPluginContext } from "@codexhost/harness-adapter/plugin";
 import { BrokeredHarnessAdapter } from "@codexhost/harness-broker";
 
-import { ClaudeCodeAdapter } from "./claude-code-adapter.js";
+import { ClaudeCodeAdapter, claudeCommandCatalog } from "./claude-code-adapter.js";
 
 export const CLAUDE_CODE_COMMAND_ENV = "CODEXHOST_CLAUDE_COMMAND";
 
@@ -10,6 +10,7 @@ export function createHarnessAdapter(context: HarnessPluginContext): HarnessAdap
   const environment = { ...context.environment };
   if (context.platform === "darwin" && context.managedRemoteHost) {
     return new BrokeredHarnessAdapter({
+      commandCatalog: claudeCommandCatalog,
       environment,
       ...(context.brokerDescriptorPath ? { descriptorPath: context.brokerDescriptorPath } : {}),
     });

@@ -513,6 +513,14 @@ describe("AppServerHost installed Harness plugins", () => {
       expect(await fixture.collector.waitFor((message) => requestId(message, 910))).toMatchObject({
         result: { candidates: [] },
       });
+      writeRequest(fixture.desktopInput, {
+        id: 911,
+        method: "codexhost/harness/session-import/sources",
+        params: {},
+      });
+      expect(await fixture.collector.waitFor((message) => requestId(message, 911))).toMatchObject({
+        result: { harnesses: [{ harnessId: "deepseek-harness", name: "DeepSeek Harness" }] },
+      });
     } finally {
       try {
         await stopFixture(fixture);
@@ -3633,6 +3641,59 @@ describe("AppServerHost HarnessAdapter projection", () => {
     await stopFixture(fixture);
   });
 
+  it("reads static Harness command catalogs without inspection or opening a Session", async () => {
+    const fixture = createFixture();
+    const catalog = {
+      commands: [
+        harnessCommandDescriptorSchema.parse({
+          id: "fake.compact",
+          invocation: "/compact",
+          label: "Compact",
+          argumentMode: "none",
+        }),
+      ],
+    };
+    Object.assign(fixture.adapter, { commandCatalog: catalog });
+    const inspect = vi.spyOn(fixture.adapter, "inspect");
+    const open = vi.spyOn(fixture.adapter, "open");
+    writeRequest(fixture.desktopInput, {
+      id: 1,
+      method: "codexhost/harness/commands/inspect",
+      params: { harnessId: "pi" },
+    });
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 1)),
+    ).resolves.toMatchObject({ result: catalog });
+    expect(inspect).not.toHaveBeenCalled();
+    expect(open).not.toHaveBeenCalled();
+    expect(fixture.adapter.sessions).toHaveLength(0);
+
+    for (const [id, params, code] of [
+      [2, { threadId: "unused" }, -32602],
+      [3, { harnessId: "missing" }, -32077],
+    ] as const) {
+      writeRequest(fixture.desktopInput, {
+        id,
+        method: "codexhost/harness/commands/inspect",
+        params,
+      });
+      await expect(
+        fixture.collector.waitFor((message) => requestId(message, id)),
+      ).resolves.toMatchObject({ error: { code } });
+    }
+    Object.assign(fixture.adapter, { commandCatalog: { commands: [{ id: "invalid" }] } });
+    writeRequest(fixture.desktopInput, {
+      id: 4,
+      method: "codexhost/harness/commands/inspect",
+      params: { harnessId: "pi" },
+    });
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 4)),
+    ).resolves.toMatchObject({ error: { code: -32078 } });
+    expect(open).not.toHaveBeenCalled();
+    await stopFixture(fixture);
+  });
+
   it("acknowledges an accepted Harness command through the public command contract", async () => {
     const fixture = createFixture();
     const threadId = await startPiThread(fixture);
@@ -3757,49 +3818,79 @@ describe("AppServerHost HarnessAdapter projection", () => {
     await stopFixture(fixture);
   });
 
-  it("rejects an ordinary Turn when an autonomous Turn starts during command discovery", async () => {
+  it("preserves ordinary prompt whitespace without command discovery", async () => {
     const fixture = createFixture();
     const threadId = await startPiThread(fixture);
     const session = fixture.adapter.sessions[0];
     if (!session) throw new Error("Fake Pi Session was not opened");
-    const catalog = { ok: true as const, value: { commands: [] } };
-    let releaseCatalog = (): void => undefined;
-    const list = vi.fn(
-      () =>
-        new Promise<typeof catalog>((resolve) => {
-          releaseCatalog = () => resolve(catalog);
-        }),
-    );
-    session.commands = { list, execute: vi.fn() };
+    const list = vi.fn();
+    const executeCommand = vi.fn();
+    session.commands = { list, execute: executeCommand };
     const execute = vi.spyOn(session, "execute");
-    const autonomousTurnId = hostTurnIdSchema.parse("catalog-race-autonomous-turn");
-    const completeAutonomousTurn = vi
-      .spyOn(session, "succeedTurn")
-      .mockImplementationOnce(() => undefined);
+    const text = " \ntext /compact text \n";
 
     writeRequest(fixture.desktopInput, {
       id: 2,
       method: "turn/start",
-      params: { threadId, input: [{ type: "text", text: "ordinary message" }] },
+      params: { threadId, input: [{ type: "text", text }] },
     });
-    await vi.waitFor(() => expect(list).toHaveBeenCalledOnce());
-    session.publishAutonomousTurn(autonomousTurnId, [{ type: "text", text: "native follow-up" }]);
-    await fixture.collector.waitFor((message) =>
-      turnEvent(message, "turn/started", autonomousTurnId),
-    );
-
-    releaseCatalog();
     await expect(
       fixture.collector.waitFor((message) => requestId(message, 2)),
-    ).resolves.toMatchObject({ error: { code: -32072 } });
-    expect(execute).not.toHaveBeenCalled();
-
-    completeAutonomousTurn.mockRestore();
-    session.succeedTurn();
-    await fixture.collector.waitFor((message) =>
-      turnEvent(message, "turn/completed", autonomousTurnId),
+    ).resolves.toMatchObject({ result: { turn: { status: "inProgress" } } });
+    expect(execute).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "turn.start", input: [{ type: "text", text }] }),
     );
+    expect(list).not.toHaveBeenCalled();
+    expect(executeCommand).not.toHaveBeenCalled();
     await stopFixture(fixture);
+  });
+
+  it.each([
+    ["bare", "/compact"],
+    ["space", "/compact "],
+    ["newline", "/compact\n"],
+    ["space before newline", "/compact \n"],
+    ["surrounding whitespace", " \n/compact\t\r\n"],
+  ])("recognizes compact without instructions: %s", async (_name, text) => {
+    const fixture = createFixture();
+    try {
+      const threadId = await startPiThread(fixture);
+      const session = fixture.adapter.sessions[0];
+      if (!session) throw new Error("Fake Pi Session was not opened");
+      session.commands = {
+        list: async () => ({
+          ok: true,
+          value: {
+            commands: [
+              harnessCommandDescriptorSchema.parse({
+                id: "fake.compact",
+                invocation: "/compact",
+                label: "Compact",
+                argumentMode: "text",
+              }),
+            ],
+          },
+        }),
+        execute: async ({ turnId, arguments: arguments_ }) => {
+          expect(arguments_).toBeUndefined();
+          session.publishEphemeralCommand(turnId, {
+            type: "contextCompaction",
+            itemId: hostItemIdSchema.parse("compact-whitespace-test"),
+          });
+          return { ok: true, value: { turnId } };
+        },
+      };
+      writeRequest(fixture.desktopInput, {
+        id: 2,
+        method: "turn/start",
+        params: { threadId, input: [{ type: "text", text }] },
+      });
+      await expect(
+        fixture.collector.waitFor((message) => requestId(message, 2)),
+      ).resolves.toMatchObject({ result: { turn: { status: "inProgress" } } });
+    } finally {
+      await stopFixture(fixture);
+    }
   });
 
   it("projects a Harness command's native compaction Item through the existing UI lane", async () => {

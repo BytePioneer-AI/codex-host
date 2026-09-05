@@ -2,6 +2,7 @@ import {
   externalThreadForkParamsSchema,
   externalThreadForkResultSchema,
   harnessCommandCatalogSchema,
+  harnessCommandsInspectParamsSchema,
   harnessConfigurationStateSchema,
   harnessInspectParamsSchema,
   harnessInspectionSchema,
@@ -30,6 +31,7 @@ import {
   type ExternalThreadForkParams,
   type ExternalThreadForkResult,
   type HarnessCommandCatalog,
+  type HarnessCommandsInspectParams,
   type HarnessConfigurationState,
   type HarnessInspection,
   type HarnessInspectParams,
@@ -51,19 +53,18 @@ import {
   type UpdateStartResult,
   type UpdateStatusResult,
 } from "@codexhost/shared-contracts";
+
 import {
   createRendererSessionImportClient,
   type RendererSessionImportClient,
 } from "./renderer-session-import-client.js";
 
-
 export const HARNESS_INSPECT_METHOD = "codexhost/harness/inspect";
 export const HARNESS_PLUGIN_LIST_METHOD = "codexhost/harness/plugins/list";
-export const DEEPSEEK_MODERN_SESSION_LIST_METHOD = "codexhost/deepseek/modern-session/list";
-export const DEEPSEEK_MODERN_SESSION_IMPORT_METHOD = "codexhost/deepseek/modern-session/import";
 export const HARNESS_WEB_UI_OPEN_METHOD = "codexhost/harness/web-ui/open";
 export const THREAD_FORK_METHOD = "codexhost/thread/fork";
 export const THREAD_INSPECT_METHOD = "codexhost/thread/inspect";
+export const HARNESS_COMMANDS_INSPECT_METHOD = "codexhost/harness/commands/inspect";
 export const THREAD_COMMANDS_INSPECT_METHOD = "codexhost/thread/commands/inspect";
 export const THREAD_COMMAND_EXECUTE_METHOD = "codexhost/thread/command/execute";
 export const THREAD_MODEL_SELECT_METHOD = "codexhost/thread/model/select";
@@ -77,20 +78,8 @@ export const UPDATE_CHECK_METHOD = "codexhost/update/check";
 export const UPDATE_START_METHOD = "codexhost/update/start";
 export const UPDATE_STATUS_METHOD = "codexhost/update/status";
 
-export class RendererDeepSeekSessionUnavailableError extends Error {
-  constructor() {
-    super("DeepSeek Modern Session import is unavailable");
-    this.name = "RendererDeepSeekSessionUnavailableError";
-  }
-}
-
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function normalizeDeepSeekSessionError(error: unknown): unknown {
-  const code = isRecord(error) ? error.code : undefined;
-  return code === -32076 || code === -32077 ? new RendererDeepSeekSessionUnavailableError() : error;
 }
 
 function notifiedThreadId(notification: unknown): ThreadUsageInspectionParams["threadId"] | null {
@@ -130,6 +119,7 @@ export interface RendererModelClient extends Partial<RendererSessionImportClient
   inspectHarness(input: HarnessInspectParams): Promise<HarnessInspection>;
   openHarnessWebUi?(input: HarnessWebUiOpenParams): Promise<void>;
   inspectThread(input: ThreadInspectionParams): Promise<ThreadInspection>;
+  inspectHarnessCommands(input: HarnessCommandsInspectParams): Promise<HarnessCommandCatalog>;
   inspectThreadCommands(input: ThreadCommandsInspectParams): Promise<HarnessCommandCatalog>;
   executeThreadCommand(input: ThreadCommandExecuteParams): Promise<ThreadCommandExecuteResult>;
   listThreadOwnership(input: ThreadOwnershipListParams): Promise<ThreadOwnershipListResult>;
@@ -199,6 +189,13 @@ export function createRendererModelClient(
     const result = await manager.sendRequest(HARNESS_INSPECT_METHOD, params);
     return harnessInspectionSchema.parse(result);
   };
+  const inspectHarnessCommands = async (
+    input: HarnessCommandsInspectParams,
+  ): Promise<HarnessCommandCatalog> => {
+    const params = harnessCommandsInspectParamsSchema.parse(input);
+    const result = await manager.sendRequest(HARNESS_COMMANDS_INSPECT_METHOD, params);
+    return harnessCommandCatalogSchema.parse(result);
+  };
   const inspectThreadCommands = async (
     input: ThreadCommandsInspectParams,
   ): Promise<HarnessCommandCatalog> => {
@@ -267,6 +264,7 @@ export function createRendererModelClient(
       const result = await manager.sendRequest(THREAD_INSPECT_METHOD, params);
       return threadInspectionSchema.parse(result);
     },
+    inspectHarnessCommands,
     inspectThreadCommands,
     executeThreadCommand,
     async listThreadOwnership(

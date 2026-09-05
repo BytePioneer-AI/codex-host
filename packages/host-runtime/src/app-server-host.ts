@@ -21,6 +21,8 @@ import {
   type HarnessPluginDescriptor,
   externalThreadForkParamsSchema,
   harnessCommandCatalogSchema,
+  harnessCommandsInspectParamsSchema,
+  type HarnessId,
   harnessIdSchema,
   threadCommandExecuteParamsSchema,
   threadCommandExecuteResultSchema,
@@ -813,6 +815,17 @@ export class AppServerHost {
       }
       if (request.method === "codexhost/thread/permission-mode/select") {
         await this.#selectThreadPermissionMode(request);
+        continue;
+      }
+      if (request.method === "codexhost/harness/commands/inspect") {
+        const params = harnessCommandsInspectParamsSchema.safeParse(request.params);
+        if (!params.success) {
+          await this.#writer.json(
+            rpcError(request, -32602, "Invalid Harness command inspection params"),
+          );
+        } else {
+          await this.#writeHarnessCommandCatalog(request, params.data.harnessId);
+        }
         continue;
       }
       if (request.method === "codexhost/thread/commands/inspect") {
@@ -2091,27 +2104,26 @@ export class AppServerHost {
       );
       return;
     }
-    const resolution = await this.#resolveExternalThread(params.data.threadId);
-    if (await this.#writeResolutionError(request, resolution)) return;
-    if (resolution.kind !== "external" || !resolution.thread.session.commands) {
+    const location = await this.#locateExternalThread(params.data.threadId);
+    if (await this.#writeResolutionError(request, location)) return;
+    if (location.kind !== "external") {
       await this.#writer.json(rpcEnvelope(request, { result: { commands: [] } }));
       return;
     }
-    const result = await resolution.thread.session.commands.list();
-    if (!result.ok) {
-      await this.#writer.json(rpcError(request, -32078, result.error.message));
+    await this.#writeHarnessCommandCatalog(request, location.record.harnessId);
+  }
+
+  async #writeHarnessCommandCatalog(request: JsonRpcRequest, harnessId: HarnessId): Promise<void> {
+    const adapter = this.#externalAdapters.get(harnessId);
+    if (!adapter) {
+      await this.#writer.json(rpcError(request, -32077, `Harness '${harnessId}' is unavailable`));
       return;
     }
     try {
-      await this.#writer.json(
-        rpcEnvelope(request, {
-          result: jsonValueSchema.parse(harnessCommandCatalogSchema.parse(result.value)),
-        }),
-      );
-    } catch (error) {
-      await this.#writer.json(
-        rpcError(request, -32078, `Harness command catalog is invalid: ${errorMessage(error)}`),
-      );
+      const catalog = harnessCommandCatalogSchema.parse(adapter.commandCatalog ?? { commands: [] });
+      await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(catalog) }));
+    } catch {
+      await this.#writer.json(rpcError(request, -32078, "Harness command catalog is invalid"));
     }
   }
 
@@ -3107,8 +3119,9 @@ export class AppServerHost {
       await this.#writer.json(rpcError(request, -32602, errorMessage(error)));
       return;
     }
-    const commandText = text.trimStart();
-    if (thread.session.commands) {
+    const commandCandidate = text.trimStart();
+    if (thread.session.commands && /^\/[^\s/]+(?:\s|$)/u.test(commandCandidate)) {
+      const commandText = commandCandidate.trimEnd();
       this.#pendingExternalCommandRequests.add(thread.id);
       try {
         const catalog = await thread.session.commands.list();
@@ -3143,12 +3156,10 @@ export class AppServerHost {
           }
           return;
         }
-        if (/^\/[^\s/]+(?:\s|$)/u.test(commandText)) {
-          await this.#writer.json(
-            rpcError(request, -32078, "External Harness does not expose the requested command"),
-          );
-          return;
-        }
+        await this.#writer.json(
+          rpcError(request, -32078, "External Harness does not expose the requested command"),
+        );
+        return;
       } finally {
         this.#pendingExternalCommandRequests.delete(thread.id);
       }

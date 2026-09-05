@@ -8,7 +8,10 @@ import { MappingStore } from "@codexhost/mapping-store";
 import { harnessIdSchema, hostThreadIdSchema, hostTurnIdSchema } from "@codexhost/shared-contracts";
 import { describe, expect, it, vi } from "vitest";
 
-import { HarnessDelegationCoordinator } from "../src/harness-delegation-coordinator.js";
+import {
+  HarnessDelegationCoordinator,
+  sanitizeDelegationTitle,
+} from "../src/harness-delegation-coordinator.js";
 import { ExternalThreadRepository } from "../src/external-thread-repository.js";
 import { ExternalThreadRuntime } from "../src/external-thread-runtime.js";
 
@@ -353,5 +356,69 @@ describe("HarnessDelegationCoordinator", () => {
     } finally {
       await value.close();
     }
+  });
+  it("sanitizes task text when creating child Thread title", async () => {
+    const adapter = new RecordingAdapter(harnessIdSchema.parse("pi"));
+    const value = await fixture(adapter);
+    try {
+      const longSuffix = "x".repeat(150);
+      await value.coordinator.start({
+        harnessId: "pi",
+        task: `\u001B[32mdeploy\u001B[0m\n\tcoordinator\r\n${longSuffix}`,
+        cwd: "/synthetic",
+        parentThreadId: "parent-thread",
+      });
+      const records = await value.repository.list();
+      expect(records).toHaveLength(1);
+      const title = records[0]?.title ?? "";
+      expect(title).not.toContain("\n");
+      expect(title).not.toContain("\u001B");
+      expect(title).not.toContain("32m");
+      expect(title).not.toContain("0m");
+      expect(title.startsWith("deploy coordinator ")).toBe(true);
+      expect(title.length).toBeLessThanOrEqual(120);
+      expect(title.endsWith("...")).toBe(true);
+      expect(title).toBe(
+        sanitizeDelegationTitle(`\u001B[32mdeploy\u001B[0m\n\tcoordinator\r\n${longSuffix}`),
+      );
+    } finally {
+      await value.close();
+    }
+  });
+});
+
+describe("sanitizeDelegationTitle", () => {
+  it("strips ANSI CSI sequences without leaving visible parameter or terminator artifacts", () => {
+    const input =
+      "\u001B[32mdeploy\u001B[0m \u001B[1;31mwith colors\u001B[0m and \u001B[2K\u001B[1Gclear";
+    const result = sanitizeDelegationTitle(input);
+    expect(result).toBe("deploy with colors and clear");
+    expect(result).not.toMatch(/32m|31m|2K|1G/);
+  });
+
+  it("replaces C0 control characters and DEL with spaces, collapses whitespace, and trims", () => {
+    const input =
+      "\u0000\u0001\u0002Hello\u001F\t\nworld\u007F\r\nfrom \u001B[31mcodexhost\u001B[0m\u0000";
+    expect(sanitizeDelegationTitle(input)).toBe("Hello world from codexhost");
+    expect(sanitizeDelegationTitle(input)).not.toContain("31m");
+  });
+
+  it("handles multi-line tasks with newlines and tabs", () => {
+    const input = "\n\tFix the login authentication flow\r\n\t  and update unit tests.\n";
+    expect(sanitizeDelegationTitle(input)).toBe(
+      "Fix the login authentication flow and update unit tests.",
+    );
+  });
+
+  it("does not truncate strings within the maximum length", () => {
+    const input = "a".repeat(120);
+    expect(sanitizeDelegationTitle(input)).toBe("a".repeat(120));
+  });
+
+  it("truncates strings exceeding maximum length and appends an ellipsis keeping total length within limit", () => {
+    const input = "a".repeat(121);
+    const sanitized = sanitizeDelegationTitle(input);
+    expect(sanitized).toBe(`${"a".repeat(117)}...`);
+    expect(sanitized).toHaveLength(120);
   });
 });

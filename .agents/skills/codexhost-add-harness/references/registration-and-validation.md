@@ -1,12 +1,14 @@
 # 注册、发布与验证
 
-Adapter 代码完成不代表 Harness 已完成产品接入。当前仓库使用显式注册和静态 release bundle；新增 Harness 时应从源码搜索现有 Harness ID，确认所有同类接线位置。
+Adapter 代码完成不代表 Harness 已完成产品接入。当前 Host 已将七个既有 Harness 和用户插件统一动态加载，并将插件独立打包；Renderer 和旧路由仍有静态接线。实际契约见仓库 `docs/harness-plugin-runtime.md`，分别验证 Host 加载与 Desktop 产品接入。
 
 ## Adapter 包
 
 在 `packages/adapters/<harness>/` 创建独立包，通常包含：
 
-- `src/index.ts`：只导出 Host Runtime 需要的 Adapter、选项和必要类型；
+- `manifest.json`：身份、展示资源、兼容版本及入口；
+- `src/plugin.ts`：导出 `createHarnessAdapter(context)`，必要时提供非阻塞预取 `warmup(adapter)`；
+- `src/index.ts`：包公开的 Adapter、选项和必要类型；
 - Adapter 主模块；
 - 原生 Transport 或 SDK 封装；
 - History、Model、Usage、Interaction 等有独立职责的投影模块；
@@ -37,26 +39,20 @@ CLI Harness 应优先使用 `packages/harness-discovery/src/`：
 
 ## Protocol routing
 
-检查 `packages/protocol-core/src/model-routing.ts`：
-
-- 增加稳定 `ExternalHarnessId`；
-- 增加基础 Transport Model ID；
-- 更新 Harness ↔ Transport Model 映射；
-- 如果支持在 Transport Model 中编码 Model、Thinking 或 Permission Mode，则实现并测试严格的 encode/decode；
-- 更新 create route 的识别和验证；
-- 不允许新编码与现有 Harness 前缀冲突。
+新 ID 使用 `shared-contracts` 的版本化 `encodeHarnessPluginRoute` / `decodeHarnessPluginRoute`，不扩充 Host 固定名单或新增 Harness 专用 codec。检查 `packages/protocol-core/src/model-routing.ts` 的通用编解码，以及未安装/非法插件路由不会落入官方 app-server。既有七种旧编码暂时保留，历史兼容迁移另行验证。
 
 使用 lowercase `codexhost` 品牌和稳定、transport-safe 的 ID。
 
 ## Runtime composition
 
-检查 `packages/host-runtime/src/adapter-composition.ts`：
+检查 `packages/host-runtime/src/harness-plugin-loader.ts` 和 `installed-harness-plugins.ts`：
 
-- 导入 Adapter；
-- 定义必要的 codexhost 配置环境变量；
-- 在 `createExternalHarnessAdapters()` 中构造并注册；
-- 将 Runtime environment 传给 Adapter；
-- 只有真实启动需要时才添加预取或特殊初始化。
+- 插件携带 Manifest、编译后的 ESM 工厂入口和可解析依赖；
+- 预装与用户目录共用 Loader，各根目录通过 `enabled.json` 授予执行权限；
+- 身份与资源校验、重复 ID 拒绝、加载/预取错误和关闭保持一致；
+- 命令环境变量、原生构造和必要预取由插件拥有；
+- 验证 Runtime environment 通过工厂和 Session-open 传播；
+- Host 不 import 具体 Adapter 包；旧 `adapter-composition.ts` 已删除。
 
 通用 Runtime、External Thread 和 Delegation 逻辑应通过 Adapter Map 自动支持新 Harness。出现新 Harness 专用分支时，先判断是否缺少公共接口，避免绕过 seam。
 
@@ -73,8 +69,8 @@ CLI Harness 应优先使用 `packages/harness-discovery/src/`：
 
 检查：
 
-- `packages/host-runtime/package.json` 的 Workspace dependency；
-- `packages/host-runtime/src/index.ts` 的 package metadata 和公共导出；
+- Adapter 包自身的 Workspace dependency；Host 包不增加具体 Adapter 依赖；
+- `packages/host-runtime/src/index.ts` 的通用加载 API 和公共导出；
 - 相关 package metadata 测试；
 - 根 `tsconfig.json` 和新包 `tsconfig.json` 的 project references；
 - 根 Workspace、lockfile 和构建是否覆盖新包。
@@ -83,13 +79,13 @@ CLI Harness 应优先使用 `packages/harness-discovery/src/`：
 
 ## Release bundle
 
-检查 `packages/host-runtime/scripts/build-release.mjs`：
+检查 `packages/harness-adapter/scripts/build-plugin.mjs`、`scripts/release/harness-plugins.mjs` 和发行清单 `scripts/release/harness-plugins.json`：
 
-- 新 Adapter 源码必须进入 release bundle；
-- 新原生运行时依赖必须加入允许列表；
-- required input 审计应包含新 Adapter；
-- 第三方依赖的 license metadata、license 文件、`THIRD_PARTY_NOTICES.txt` 和 package/payload 文件白名单必须更新；
-- 不应意外打包测试、工具、source map 或不允许依赖。
+- 发行版预装插件由清单决定，分别打包入口和经审查的 JavaScript 依赖；用户插件不必修改发行清单；
+- 产物携带 Manifest、资源和启用配置，能在仓库外由实际 Runtime 的相邻目录加载；
+- 第三方依赖的 license metadata、license 文件、`THIRD_PARTY_NOTICES.txt` 和 package/payload 文件白名单必须一致；
+- 插件 Bundle 不包含测试、工具、source map 或未审查依赖；
+- `packages/host-runtime/scripts/build-release.mjs` 的核心审计必须继续拒绝 Adapter 或 Harness SDK 混入 Host Bundle。
 
 同时搜索：
 
@@ -150,7 +146,7 @@ CLI Harness 应优先使用 `packages/harness-discovery/src/`：
 
 根据能力在 `packages/host-runtime/test/` 增加聚焦覆盖：
 
-- Adapter composition 注册；
+- 动态插件加载、预装/用户目录组合和描述查询；
 - Approval 展示名；
 - Account Credits（如支持）；
 - `thread/start` 和 `turn/start` 路由；
@@ -214,7 +210,7 @@ npm run format:check
 2. 能力声明和原生行为一致。
 3. Thread 可以正确创建、运行、读取，并在支持时恢复和编辑历史。
 4. 所有适用 Host、Renderer 和 Desktop Control 注册点已完成。
-5. Release 构建包含 Adapter、受审查依赖及其第三方声明。
+5. 发行物独立携带预装插件、受审查依赖及其第三方声明；核心 Host 无具体 Adapter 静态依赖。
 6. 聚焦测试覆盖公共契约、原生边界和适用的产品 UI。
 7. 跨 Harness 环境、inspection、显式/默认配置、后续消息、取消、持久化恢复和递归委派要求已验证。
 8. 完整 Agent 协调所需的普通可写 Thread 语义已验证；不支持或推迟的能力已明确记录。

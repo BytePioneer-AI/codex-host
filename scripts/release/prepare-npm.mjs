@@ -14,6 +14,10 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 
 import { writeDistributionMetadata } from "./distribution-metadata.mjs";
+import {
+  buildPreinstalledHarnessPlugins,
+  preinstalledHarnessPluginPaths,
+} from "./harness-plugins.mjs";
 import { hostReleaseTarget, npmReleaseUsage, releaseTargetForHost } from "./targets.mjs";
 
 const repositoryRoot = path.resolve(import.meta.dirname, "../..");
@@ -198,6 +202,7 @@ export function expectedNpmPackagePaths(target) {
     "app/desktop-controller.mjs",
     "app/host-runtime.mjs",
     "app/renderer-extension.js",
+    ...preinstalledHarnessPluginPaths(),
     "licenses/Anthropic-SDK-LICENSE.txt",
     "licenses/Claude-Agent-SDK-LICENSE.md",
     "licenses/MCP-SDK-LICENSE.txt",
@@ -957,6 +962,10 @@ export async function prepareNpmPackage({
     },
     root,
   );
+  await buildPreinstalledHarnessPlugins({
+    repositoryRoot: root,
+    outputDirectory: path.join(packageRoot, "app", "plugins"),
+  });
   await runCommand(
     {
       label: "Desktop Controller Bundle build",

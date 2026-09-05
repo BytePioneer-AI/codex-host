@@ -18,7 +18,9 @@ description: 为 codexhost 新增或规划外部 Harness 接入。当需要实�
 - `packages/shared-contracts/src/harness-models.ts`
 - 涉及 Permission Mode 时读取 `packages/shared-contracts/src/harness-permission-modes.ts`
 - `packages/protocol-core/src/model-routing.ts`
-- `packages/host-runtime/src/adapter-composition.ts`
+- `packages/harness-adapter/src/plugin.ts`
+- `packages/host-runtime/src/harness-plugin-loader.ts`
+- `docs/harness-plugin-runtime.md`
 - `packages/renderer-extension/src/agent-selection-state.ts`
 - `packages/renderer-extension/src/versioned-renderer-adapter.ts`
 - [references/current-harness-implementations.md](references/current-harness-implementations.md)
@@ -47,7 +49,7 @@ description: 为 codexhost 新增或规划外部 Harness 接入。当需要实�
 
 在 `HarnessAdapter` 和 `HarnessSession` 后实现新的原生集成。在所属 Adapter 包内，将原生请求、事件、历史、错误、身份和能力转换为公共契约。
 
-只在当前仓库要求的显式组合和路由位置注册新 Harness。原生协议细节必须留在对应 Adapter 内部。
+通过 Manifest、插件工厂和显式启用配置接入 Host；发行版预装集合由发行清单管理。保持 Host 对具体 Adapter 包无静态依赖。Renderer 与旧路由尚未完全迁移，按当前源码核对实际产品接入范围。原生协议细节必须留在对应 Adapter 内部。
 
 ## 完成接入
 

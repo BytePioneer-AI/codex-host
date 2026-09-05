@@ -9,6 +9,8 @@ import {
   harnessConfigurationStateSchema,
   harnessInspectParamsSchema,
   harnessInspectionSchema,
+  harnessPluginListResultSchema,
+  type HarnessPluginListResult,
   harnessWebUiOpenParamsSchema,
   harnessWebUiOpenResultSchema,
   harnessModelSelectionStateSchema,
@@ -59,6 +61,7 @@ import {
 } from "@codexhost/shared-contracts";
 
 export const HARNESS_INSPECT_METHOD = "codexhost/harness/inspect";
+export const HARNESS_PLUGIN_LIST_METHOD = "codexhost/harness/plugins/list";
 export const DEEPSEEK_MODERN_SESSION_LIST_METHOD = "codexhost/deepseek/modern-session/list";
 export const DEEPSEEK_MODERN_SESSION_IMPORT_METHOD = "codexhost/deepseek/modern-session/import";
 export const HARNESS_WEB_UI_OPEN_METHOD = "codexhost/harness/web-ui/open";
@@ -124,6 +127,7 @@ function notificationTarget(manager: RequestManagerCandidate): RequestManagerCan
 
 export interface RendererModelClient {
   currentHostId?(): string | null;
+  listHarnessPlugins?(): Promise<HarnessPluginListResult>;
   clientForHost?(hostId: string): RendererModelClient | null;
   listDeepSeekModernSessions?(
     input: DeepSeekModernSessionListParams,
@@ -288,6 +292,11 @@ export function createRendererModelClient(
       return externalThreadForkResultSchema.parse(result);
     },
     inspectHarness,
+    async listHarnessPlugins(): Promise<HarnessPluginListResult> {
+      return harnessPluginListResultSchema.parse(
+        await manager.sendRequest(HARNESS_PLUGIN_LIST_METHOD, {}),
+      );
+    },
     async openHarnessWebUi(input: HarnessWebUiOpenParams): Promise<void> {
       const params = harnessWebUiOpenParamsSchema.parse(input);
       const result = await manager.sendRequest(HARNESS_WEB_UI_OPEN_METHOD, params);

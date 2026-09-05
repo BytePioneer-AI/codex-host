@@ -15,7 +15,7 @@
 - `packages/host-runtime/src/delegation-snapshot.ts`
 - `packages/host-runtime/src/external-thread-runtime.ts`
 - `packages/protocol-core/src/model-routing.ts`
-- `packages/host-runtime/src/adapter-composition.ts`
+- `packages/host-runtime/src/harness-plugin-loader.ts`
 
 使用 [current-harness-implementations.md](current-harness-implementations.md) 选择最接近的传输实现，以及各项能力最合适的参考实现。公共语义同时参见 [public-adapter-contract.md](public-adapter-contract.md) 和 [thread-lifecycle-and-history.md](thread-lifecycle-and-history.md)；上述源码接口仍然是权威依据。
 
@@ -112,10 +112,10 @@ Adapter 不得重命名、自行发现、自行生成或替换这些值。委派
 
 ## 注册位置
 
-当前仓库使用显式注册。将新 Harness 添加到所有适用位置，包括：
+Host 通过插件 Manifest、工厂和显式启用配置注册；新 ID 使用共享通用路由编码。检查所有适用位置，包括：
 
-- `packages/protocol-core/src/model-routing.ts` 中的 Harness ID 和 Transport Model 映射；
-- `packages/host-runtime/src/adapter-composition.ts` 中的 Adapter 创建逻辑；
+- `packages/shared-contracts/src/harness-route.ts` 的通用路由及 `packages/protocol-core/src/model-routing.ts` 的接收路径；
+- 插件的 `createHarnessAdapter(context)`、Host Loader，以及发行版需要预装时的 `scripts/release/harness-plugins.json`；
 - 当前项目结构要求的包导出、Workspace 依赖、发布打包和测试；
 - 正式 Desktop 产品接入时，[renderer-product-integration.md](renderer-product-integration.md) 中的 Renderer Agent、Transport Model 和 Desktop Control 注册。
 

@@ -1,0 +1,10 @@
+{
+  "manifestVersion": 1,
+  "id": "claude-code",
+  "name": "Claude Code",
+  "version": "0.0.0",
+  "adapterApiVersion": 1,
+  "entry": "./dist/plugin.js",
+  "icon": "./assets/icon.svg",
+  "links": { "installation": "https://code.claude.com/docs/en/quickstart" }
+}

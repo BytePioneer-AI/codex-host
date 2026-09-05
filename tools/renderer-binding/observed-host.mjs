@@ -3,7 +3,7 @@ import path from "node:path";
 
 import {
   AppServerHost,
-  createExternalHarnessAdapters,
+  installedHarnessPluginOptions,
 } from "../../packages/host-runtime/dist/index.js";
 
 const STOCK_CODEX_PATH_ENV = "CODEXHOST_STOCK_CODEX_PATH";
@@ -29,7 +29,7 @@ const host = new AppServerHost({
   arguments: process.argv.slice(2),
   defaultAgent,
   environment,
-  externalAdapters: createExternalHarnessAdapters(environment),
+  ...installedHarnessPluginOptions(environment),
   onRequestRoute(observation) {
     fs.appendFileSync(
       observationPath,

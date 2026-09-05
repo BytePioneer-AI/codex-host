@@ -13,6 +13,7 @@ import {
   DEEPSEEK_MODERN_SESSION_IMPORT_METHOD,
   DEEPSEEK_MODERN_SESSION_LIST_METHOD,
   HARNESS_INSPECT_METHOD,
+  HARNESS_PLUGIN_LIST_METHOD,
   HARNESS_WEB_UI_OPEN_METHOD,
   THREAD_FORK_METHOD,
   THREAD_INSPECT_METHOD,
@@ -65,6 +66,31 @@ const inspection = {
 };
 
 describe("Renderer fixed Model request client", () => {
+  it("reads plugin descriptors from its own target and rejects backend or executable metadata", async () => {
+    const sendLocal = vi
+      .fn()
+      .mockResolvedValue({ plugins: [{ id: "local-agent", name: "Local Agent", version: "1" }] });
+    const sendRemote = vi
+      .fn()
+      .mockResolvedValue({ plugins: [{ id: "remote-agent", name: "Remote Agent", version: "2" }] });
+    const local = createRendererModelClient([{ sendRequest: sendLocal }]);
+    const remote = createRendererModelClient([{ sendRequest: sendRemote }]);
+    expect(await local?.listHarnessPlugins?.()).toMatchObject({ plugins: [{ id: "local-agent" }] });
+    expect(await remote?.listHarnessPlugins?.()).toMatchObject({
+      plugins: [{ id: "remote-agent" }],
+    });
+    expect(sendLocal).toHaveBeenCalledExactlyOnceWith(HARNESS_PLUGIN_LIST_METHOD, {});
+    expect(sendRemote).toHaveBeenCalledExactlyOnceWith(HARNESS_PLUGIN_LIST_METHOD, {});
+    sendRemote.mockResolvedValue({
+      plugins: [{ id: "remote-agent", name: "Remote", version: "1", icon: "javascript:alert(1)" }],
+    });
+    await expect(remote?.listHarnessPlugins?.()).rejects.toThrow();
+    sendRemote.mockResolvedValue({
+      plugins: [{ id: "remote-agent", name: "Remote", version: "1", entry: "/private/plugin.js" }],
+    });
+    await expect(remote?.listHarnessPlugins?.()).rejects.toThrow();
+  });
+
   it("calls only the fixed inspect and select methods with validated params", async () => {
     let usageNotification: ((notification: unknown) => void) | undefined;
     const removeUsageNotification = vi.fn();
@@ -149,6 +175,7 @@ describe("Renderer fixed Model request client", () => {
       "inspectThreadCommands",
       "inspectThreadUsage",
       "listDeepSeekModernSessions",
+      "listHarnessPlugins",
       "listThreadOwnership",
       "openHarnessWebUi",
       "readUpdateStatus",

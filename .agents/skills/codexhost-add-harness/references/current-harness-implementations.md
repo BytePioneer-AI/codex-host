@@ -32,7 +32,7 @@ Codex Desktop
 
 - 可执行文件发现：`packages/harness-discovery/src/`
 - Harness ID 与 Transport Model 路由：`packages/protocol-core/src/model-routing.ts`
-- Adapter 实例注册：`packages/host-runtime/src/adapter-composition.ts`
+- 插件工厂和加载：`packages/harness-adapter/src/plugin.ts`、`packages/host-runtime/src/harness-plugin-loader.ts`；当前安装/预装契约见仓库 `docs/harness-plugin-runtime.md`
 - 外部 Thread 生命周期：`packages/host-runtime/src/external-thread-runtime.ts`
 - 事件到 Desktop 的投影：`packages/protocol-core/src/codex-ui-projector.ts`
 - Renderer Agent 注册、Transport Model 写入、配置恢复和产品 UI：`packages/renderer-extension/src/`
@@ -195,10 +195,10 @@ DeepSeek Harness 最适合参考服务化 Host 接入：
 - Harness Commands 通过可选的 `session.commands` 暴露。
 - `HarnessExecutionPolicy` 只在 create 时使用；当前 delegation 请求 `unattended-full-access`。Adapter 可以映射为原生非交互执行配置，也可以在已验证的原生执行基线天然满足时明确接受而不传额外参数；无法保证时返回类型化错误。Pi 属于无需权限参数的 deliberate no-op，OMP、Claude Code、Grok 和 DeepSeek 使用各自原生权限机制。
 - 所有 Session-open 路径都应传播 `OpenSessionInput.environment`；它不仅是进程基础环境，也承载跨 Harness 委派的私有 Runtime 信息。
-- Harness ID、Transport Model、Adapter Map、Renderer Agent、Desktop Control 启用列表、Host Runtime 依赖和 release bundle 当前都是显式注册，不是动态插件发现。
+- Host 已通过 Manifest 和工厂动态加载全部预装/用户插件；发行清单只负责预装集合，不再向 Host 增加具体 Adapter 包依赖。Renderer Agent、Desktop Control 启用列表和旧 Transport Model 兼容仍有静态接线，不能由 Host 加载成功推断完整产品接入。
 - 显式 command、endpoint 或远程安装配置还可能分布在 `run-host-runtime.ts`、`officialEnvironment()`、SSH Remote Host、Launcher 和 npm launcher；只在目标 Harness 需要这些配置时接入，但必须覆盖所有实际运行模式。
 - Account Credits 目前通过 Adapter 的可选 `credits()` / `refreshCredits()` 结构检查和 Renderer Agent 白名单接入，不属于 `HarnessAdapter` 正式能力声明；新 Harness 支持 Credits 时必须同时检查 Host 和 Renderer。
-- `packages/host-runtime/src/app-server-host.ts` 的 `approvalServerName()` 维护 Approval 对话框中的 Harness 展示名；支持 Approval 的新 Harness 必须加入映射。
+- `packages/host-runtime/src/app-server-host.ts` 的 Approval 展示优先使用插件描述中的名称；`approvalServerName()` 仍作为旧路径的兼容回退，新目录插件无需加入名称映射。
 
 ## 实施前的参考选择输出
 
@@ -211,7 +211,7 @@ Approval/Question：Claude Code
 Subagent：不支持，明确声明
 Delegation：cross-harness-delegation.md
 Renderer：agent-selection-state.ts + versioned-renderer-adapter.ts + Picker/ownership/Settings
-注册与发布：model-routing.ts + adapter-composition.ts + host-runtime package/release
+加载与发布：plugin.ts + harness-plugin-loader.ts + 发行预装清单与独立插件 Bundle
 ```
 
 如果目标 Harness 的原生能力与所有现有实现都不同，先记录语义差异，再设计 Adapter 内部 Transport seam；不要把差异泄漏为 Host Runtime 中的新 Harness 专用分支。

@@ -1,6 +1,7 @@
 import type { ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { pathToFileURL } from "node:url";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { PassThrough } from "node:stream";
@@ -23,6 +24,8 @@ import {
   type JsonObject,
 } from "@codexhost/protocol-core";
 import {
+  encodeHarnessPluginRoute,
+  harnessPluginRouteSchema,
   harnessCommandDescriptorSchema,
   harnessIdSchema,
   harnessModelRefSchema,
@@ -236,6 +239,7 @@ class ModernSessionImportAdapter extends FakeHarnessAdapter {
 function createFixture(
   options: {
     environment?: NodeJS.ProcessEnv;
+    pluginDirectory?: string;
     externalAdapters?: ReadonlyMap<ExternalHarnessId, FakeHarnessAdapter>;
     mappingStore?: MappingStore;
     mappingStoreDirectory?: string;
@@ -271,6 +275,7 @@ function createFixture(
       ? { closeMappingStoreOnExit: options.closeMappingStoreOnExit }
       : {}),
     ...(options.environment ? { environment: options.environment } : {}),
+    ...(options.pluginDirectory ? { pluginRoots: [options.pluginDirectory] } : {}),
     externalAdapters:
       options.externalAdapters ?? new Map<ExternalHarnessId, HarnessAdapter>([["pi", adapter]]),
     spawnOfficial: spawnOfficial as unknown as typeof spawn,
@@ -363,6 +368,172 @@ async function stopFixture(fixture: ReturnType<typeof createFixture>): Promise<v
   await closeFixture(fixture);
   rmSync(fixture.mappingStoreDirectory, { recursive: true, force: true });
 }
+
+describe("AppServerHost installed Harness plugins", () => {
+  it("discovers an unknown plugin, serves its descriptor, routes a Thread, and closes it", async () => {
+    const directory = mkdtempSync(path.join(tmpdir(), "codexhost-plugin-host-"));
+    const location = path.join(directory, "sample-agent");
+    mkdirSync(location);
+    writeFileSync(
+      path.join(directory, "enabled.json"),
+      JSON.stringify({ version: 1, enabled: ["sample-agent"] }),
+    );
+    writeFileSync(
+      path.join(location, "manifest.json"),
+      JSON.stringify({
+        manifestVersion: 1,
+        id: "sample-agent",
+        name: "Sample Agent",
+        version: "1.0.0",
+        adapterApiVersion: 1,
+        entry: "index.mjs",
+      }),
+    );
+    writeFileSync(
+      path.join(location, "index.mjs"),
+      `
+      import { FakeHarnessAdapter } from ${JSON.stringify(pathToFileURL(path.resolve("packages/harness-adapter/dist/testing.js")).href)};
+      import { writeFileSync } from "node:fs";
+      export function createHarnessAdapter() {
+        const adapter = new FakeHarnessAdapter("sample-agent");
+        const close = adapter.close.bind(adapter);
+        adapter.close = async () => { await close(); writeFileSync(new URL("closed", import.meta.url), "yes"); };
+        return adapter;
+      }
+    `,
+    );
+    const fixture = createFixture({ pluginDirectory: directory, externalAdapters: new Map() });
+    try {
+      writeRequest(fixture.desktopInput, {
+        id: 901,
+        method: "codexhost/harness/plugins/list",
+        params: {},
+      });
+      expect(await fixture.collector.waitFor((message) => requestId(message, 901))).toMatchObject({
+        result: { plugins: [{ id: "sample-agent", name: "Sample Agent", version: "1.0.0" }] },
+      });
+      writeRequest(fixture.desktopInput, {
+        id: 902,
+        method: "codexhost/harness/inspect",
+        params: { harnessId: "sample-agent" },
+      });
+      expect(await fixture.collector.waitFor((message) => requestId(message, 902))).toMatchObject({
+        result: { status: "ready" },
+      });
+      const model = encodeHarnessPluginRoute(
+        harnessPluginRouteSchema.parse({ harnessId: "sample-agent" }),
+      );
+      const threadId = await startExternalThread(fixture, model, 903);
+      expect(
+        await fixture.mappingStore.getThread(hostThreadIdSchema.parse(threadId)),
+      ).toMatchObject({ harnessId: "sample-agent" });
+      expect(fixture.official.stdin.readableLength).toBe(0);
+      writeRequest(fixture.desktopInput, { id: 904, method: "initialize", params: {} });
+      expect(await readJsonLine(fixture.official.stdin)).toMatchObject({
+        id: 904,
+        method: "initialize",
+      });
+      writeRequest(fixture.official.stdout, { id: 904, result: { userAgent: "official" } });
+      expect(await fixture.collector.waitFor((message) => requestId(message, 904))).toMatchObject({
+        result: { userAgent: "official" },
+      });
+    } finally {
+      await stopFixture(fixture);
+      try {
+        expect(readFileSync(path.join(location, "closed"), "utf8")).toBe("yes");
+      } finally {
+        rmSync(directory, { recursive: true, force: true });
+      }
+    }
+  });
+
+  it("binds DeepSeek Session Import after its Adapter has been dynamically loaded", async () => {
+    const directory = mkdtempSync(path.join(tmpdir(), "codexhost-dynamic-import-"));
+    const location = path.join(directory, "deepseek-harness");
+    mkdirSync(location);
+    writeFileSync(
+      path.join(directory, "enabled.json"),
+      JSON.stringify({ version: 1, enabled: ["deepseek-harness"] }),
+    );
+    writeFileSync(
+      path.join(location, "manifest.json"),
+      JSON.stringify({
+        manifestVersion: 1,
+        id: "deepseek-harness",
+        name: "DeepSeek Harness",
+        version: "1",
+        adapterApiVersion: 1,
+        entry: "plugin.mjs",
+      }),
+    );
+    writeFileSync(
+      path.join(location, "plugin.mjs"),
+      `
+      import { FakeHarnessAdapter } from ${JSON.stringify(pathToFileURL(path.resolve("packages/harness-adapter/dist/testing.js")).href)};
+      export function createHarnessAdapter() {
+        const adapter = new FakeHarnessAdapter("deepseek-harness");
+        adapter.sessionImport = { listCandidates: async () => ({ ok: true, value: [] }) };
+        return adapter;
+      }
+    `,
+    );
+    const fixture = createFixture({ pluginDirectory: directory, externalAdapters: new Map() });
+    try {
+      writeRequest(fixture.desktopInput, {
+        id: 910,
+        method: "codexhost/deepseek/modern-session/list",
+        params: {},
+      });
+      expect(await fixture.collector.waitFor((message) => requestId(message, 910))).toMatchObject({
+        result: { candidates: [] },
+      });
+    } finally {
+      try {
+        await stopFixture(fixture);
+      } finally {
+        rmSync(directory, { recursive: true, force: true });
+      }
+    }
+  });
+
+  it("validates catalog parameters and leaves uninstalled routes out of the official stream", async () => {
+    const fixture = createFixture();
+    try {
+      writeRequest(fixture.desktopInput, {
+        id: 911,
+        method: "codexhost/harness/plugins/list",
+        params: { directory: "/untrusted" },
+      });
+      expect(await fixture.collector.waitFor((message) => requestId(message, 911))).toMatchObject({
+        error: { code: -32602 },
+      });
+      writeRequest(fixture.desktopInput, {
+        id: 912,
+        method: "thread/start",
+        params: {
+          model: encodeHarnessPluginRoute(
+            harnessPluginRouteSchema.parse({ harnessId: "missing-agent" }),
+          ),
+          cwd: "/synthetic",
+        },
+      });
+      expect(await fixture.collector.waitFor((message) => requestId(message, 912))).toHaveProperty(
+        "error",
+      );
+      writeRequest(fixture.desktopInput, {
+        id: 913,
+        method: "thread/start",
+        params: { model: "codexhost/plugin-v1@invalid", cwd: "/synthetic" },
+      });
+      expect(await fixture.collector.waitFor((message) => requestId(message, 913))).toHaveProperty(
+        "error",
+      );
+      expect(fixture.official.stdin.readableLength).toBe(0);
+    } finally {
+      await stopFixture(fixture);
+    }
+  });
+});
 
 describe("AppServerHost HarnessAdapter projection", () => {
   it("uses an injected shared listener connection without spawning a stdio app-server", async () => {

@@ -194,6 +194,22 @@ fn run_orphan_shim_launcher() -> bool {
 #[allow(clippy::zombie_processes)]
 fn main() {
     let arguments = env::args().skip(1).collect::<Vec<_>>();
+    if let Some(shim) = env::var_os("FAKE_CODEX_HELPER_SHIM") {
+        let depth = environment_u64("FAKE_CODEX_HELPER_DEPTH", 0);
+        let mut command = Command::new(if depth == 0 {
+            PathBuf::from(shim)
+        } else {
+            env::current_exe().expect("fake helper executable")
+        });
+        command.args(&arguments);
+        if depth == 0 {
+            command.env_remove("FAKE_CODEX_HELPER_SHIM");
+        } else {
+            command.env("FAKE_CODEX_HELPER_DEPTH", (depth - 1).to_string());
+        }
+        let status = command.status().expect("run fake Desktop or helper child");
+        process::exit(status.code().unwrap_or(1));
+    }
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     if env::var_os("FAKE_CODEX_CRASH").is_some() {
         use std::os::unix::process::CommandExt;
@@ -289,6 +305,18 @@ fn main() {
                 eprintln!("{name}={}", value.to_string_lossy());
             }
         }
+    }
+
+    if env::var_os("FAKE_CODEX_ROUTE_RESPONSE").is_some() {
+        io::stdin().read_exact(&mut [0]).expect("routing request");
+        io::stdout()
+            .write_all(b"response")
+            .expect("routing response");
+        io::stdout().flush().expect("flush routing response");
+        io::stdin()
+            .read_to_end(&mut Vec::new())
+            .expect("routing EOF");
+        return;
     }
 
     if env::var_os("FAKE_CODEX_SPAWN_CHILD").is_some() {

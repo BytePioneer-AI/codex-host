@@ -208,6 +208,7 @@ export function expectedPayloadPaths(target) {
   const paths = [
     `bin/codexhost${target.executableSuffix}`,
     `libexec/codexhost-shim${target.executableSuffix}`,
+    ...(target.hostPlatform === "win32" ? ["libexec/codexhost-node-repl.exe"] : []),
     `libexec/codexhost-updater${target.executableSuffix}`,
     `runtime/node${target.executableSuffix}`,
     "app/codexhost-distribution.json",
@@ -310,6 +311,14 @@ export async function prepareReleasePayload({ target, root = repositoryRoot }) {
     "release Shim",
     true,
   );
+  if (target.hostPlatform === "win32") {
+    await copyReleaseFile(
+      path.join(rustOutput, "codexhost-node-repl.exe"),
+      path.join(payloadRoot, "libexec", "codexhost-node-repl.exe"),
+      "release Desktop tool proxy",
+      true,
+    );
+  }
   await copyReleaseFile(
     path.join(rustOutput, `codexhost-updater${target.executableSuffix}`),
     path.join(payloadRoot, "libexec", `codexhost-updater${target.executableSuffix}`),

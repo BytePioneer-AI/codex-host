@@ -34,6 +34,119 @@ fn fake_codex_path() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_fake-codex-cli"))
 }
 
+#[cfg(target_os = "windows")]
+#[test]
+fn node_repl_proxy_preserves_stdio_and_explicit_proxy_configuration() {
+    let directory = temporary_directory();
+    let node = directory.join("node.exe");
+    fs::copy(fake_codex_path(), &node).unwrap();
+    fs::copy(fake_codex_path(), directory.join("node_repl.exe")).unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_codexhost-node-repl"))
+        .args(["--fixture-option", "two words"])
+        .env("NODE_REPL_NODE_PATH", &node)
+        .env("HTTP_PROXY", "http://explicit.invalid:3128")
+        .env("HTTPS_PROXY", "")
+        .env("ALL_PROXY", "")
+        .env("NODE_USE_ENV_PROXY", "0")
+        .env("FAKE_CODEX_PRINT_INVOCATION", "1")
+        .env("FAKE_CODEX_PRINT_PROXY_ENV", "1")
+        .env("FAKE_CODEX_EXIT_CODE", "7")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let input = b"{\"jsonrpc\":\"2.0\"}\r\n\0\xFF";
+    child.stdin.take().unwrap().write_all(input).unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert_eq!(output.status.code(), Some(7));
+    assert_eq!(output.stdout, input);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("args=--fixture-option|two words"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("HTTP_PROXY=http://explicit.invalid:3128"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("NODE_USE_ENV_PROXY=0"), "{stderr}");
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[cfg(target_os = "windows")]
+#[test]
+fn node_repl_proxy_does_not_search_path_for_missing_runtime() {
+    let output = Command::new(env!("CARGO_BIN_EXE_codexhost-node-repl"))
+        .env_remove("NODE_REPL_NODE_PATH")
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("NODE_REPL_NODE_PATH is required"));
+}
+
+#[cfg(target_os = "windows")]
+#[test]
+fn desktop_helpers_do_not_reenter_host_runtime() {
+    // Test process = launcher, first fixture = Desktop, additional fixtures = helpers.
+    // Use the same inherited configuration and stdio command at every depth.
+    for depth in [0, 1, 2] {
+        let directory = temporary_directory();
+        let mut child = Command::new(fake_codex_path())
+            .args(["app-server", "--listen", "stdio://"])
+            .env("FAKE_CODEX_HELPER_SHIM", shim_path())
+            .env("FAKE_CODEX_HELPER_DEPTH", depth.to_string())
+            .env("FAKE_CODEX_PRINT_INVOCATION", "1")
+            .env("FAKE_CODEX_ROUTE_RESPONSE", "1")
+            .env("CODEXHOST_LAUNCHER_PID", process::id().to_string())
+            .env("CODEXHOST_DATA_DIR", &directory)
+            .env_remove("CODEXHOST_NPM_NODE_PATH")
+            .env_remove("CODEXHOST_NPM_PACKAGE_ROOT")
+            .env(STOCK_CODEX_PATH_ENV, fake_codex_path())
+            .env(CODEX_CLI_PATH_ENV, shim_path())
+            .env(HOST_NODE_PATH_ENV, fake_codex_path())
+            .env(HOST_RUNTIME_PATH_ENV, fake_codex_path())
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("spawn launcher-owned Desktop fixture");
+        let mut stdin = child.stdin.take().expect("fixture stdin");
+        stdin.write_all(b"x").expect("write fixture request");
+        let mut response = [0; 8];
+        child
+            .stdout
+            .as_mut()
+            .unwrap()
+            .read_exact(&mut response)
+            .expect("read routing response before closing stdin");
+        assert_eq!(&response, b"response");
+        drop(stdin);
+        let output = child.wait_with_output().expect("wait for fixture");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(output.status.success(), "depth={depth}: {stderr}");
+        assert!(output.stdout.is_empty());
+        if depth == 0 {
+            assert!(
+                !stderr.contains("args=app-server|"),
+                "main Desktop must use Host Runtime: {stderr}"
+            );
+        } else {
+            assert!(
+                stderr.contains("args=app-server|--listen|stdio://"),
+                "helper must use stock CLI: {stderr}"
+            );
+            assert!(
+                !directory.join("local-host-runtime-owner.lock").exists(),
+                "helper must not acquire a Host Runtime lease"
+            );
+        }
+        fs::remove_dir_all(directory).expect("remove isolated routing fixture");
+    }
+}
+
 fn temporary_directory() -> PathBuf {
     static NEXT_DIRECTORY_ID: AtomicU64 = AtomicU64::new(0);
 
@@ -336,6 +449,9 @@ fn discovers_official_cli_when_browser_helper_preserves_only_codex_cli_path() {
         .env_remove(HOST_RUNTIME_PATH_ENV)
         .env_remove(REMOTE_SSH_MANAGED_ENV)
         .env("FAKE_CODEX_PRINT_INVOCATION", "1")
+        .env("FAKE_CODEX_PRINT_PROXY_ENV", "1")
+        .env("HTTP_PROXY", "http://explicit-proxy.invalid:3128")
+        .env_remove("NODE_USE_ENV_PROXY")
         .stdin(Stdio::null())
         .output()
         .expect("run Browser Use style shim invocation");
@@ -350,6 +466,11 @@ fn discovers_official_cli_when_browser_helper_preserves_only_codex_cli_path() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("args=config|read"), "{stderr}");
     assert!(stderr.contains("codex_cli_path_present=false"), "{stderr}");
+    assert!(
+        stderr.contains("HTTP_PROXY=http://explicit-proxy.invalid:3128"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("NODE_USE_ENV_PROXY=1"), "{stderr}");
 
     fs::remove_dir_all(
         installation_root

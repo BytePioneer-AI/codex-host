@@ -605,7 +605,8 @@ export async function startHarnessBrokerServer(input: {
             record.bootstrapTurnId === undefined;
           const isBootstrapTurnContinuation =
             record.bootstrapTurnId !== undefined &&
-            ((command.type === "turn.cancel" && command.turnId === record.bootstrapTurnId) ||
+            (((command.type === "turn.cancel" || command.type === "turn.steer") &&
+              command.turnId === record.bootstrapTurnId) ||
               command.type === "interaction.respond");
           if (!isBootstrapTurn && !isBootstrapTurnContinuation) {
             return {
@@ -622,7 +623,16 @@ export async function startHarnessBrokerServer(input: {
         }
         let result;
         if (command.type === "turn.start") result = await record.session.execute(command);
-        else if (command.type === "turn.cancel") result = await record.session.execute(command);
+        else if (command.type === "turn.steer") {
+          result = await record.session.execute({
+            type: command.type,
+            turnId: command.turnId,
+            input: command.input,
+            ...(command.clientUserMessageId
+              ? { clientUserMessageId: command.clientUserMessageId }
+              : {}),
+          });
+        } else if (command.type === "turn.cancel") result = await record.session.execute(command);
         else if (command.type === "interaction.respond") {
           result = await record.session.execute({
             type: command.type,

@@ -65,15 +65,20 @@ function responseAccepted(response: { data: unknown; error: unknown }, operation
     );
 }
 
-function withTimeout<T>(promise: Promise<T>, milliseconds: number, operation: string): Promise<T> {
+function withTimeout<T>(
+  promise: Promise<T>,
+  milliseconds: number,
+  operation: string,
+  onTimeout?: () => void,
+): Promise<T> {
   let timer: NodeJS.Timeout | undefined;
   return Promise.race([
     promise,
     new Promise<never>((_resolve, reject) => {
-      timer = setTimeout(
-        () => reject(new OpenCodeTransportError("unavailable", `${operation} timed out`)),
-        milliseconds,
-      );
+      timer = setTimeout(() => {
+        onTimeout?.();
+        reject(new OpenCodeTransportError("unavailable", `${operation} timed out`));
+      }, milliseconds);
     }),
   ]).finally(() => {
     if (timer) clearTimeout(timer);
@@ -287,16 +292,22 @@ export class SdkOpenCodeTransport implements OpenCodeTransport {
 
   async promptAsync(input: OpenCodePromptInput): Promise<void> {
     const client = await this.#getClient();
+    const abort = new AbortController();
     responseAccepted(
       await withTimeout(
-        client.session.promptAsync({
-          sessionID: input.sessionID,
-          ...(input.model ? { model: input.model } : {}),
-          ...(input.variant ? { variant: input.variant } : {}),
-          parts: [{ type: "text", text: input.text }],
-        }),
+        client.session.promptAsync(
+          {
+            sessionID: input.sessionID,
+            ...(input.messageID ? { messageID: input.messageID } : {}),
+            ...(input.model ? { model: input.model } : {}),
+            ...(input.variant ? { variant: input.variant } : {}),
+            parts: [{ type: "text", text: input.text }],
+          },
+          { signal: abort.signal },
+        ),
         this.#commandTimeoutMs,
         "OpenCode prompt admission",
+        () => abort.abort(),
       ),
       "prompt admission",
     );

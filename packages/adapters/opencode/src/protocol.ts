@@ -23,6 +23,7 @@ export interface OpenCodeProviderCatalogResponse {
 
 export interface OpenCodePromptInput {
   sessionID: string;
+  messageID?: string;
   text: string;
   model?: OpenCodeNativeModelRef;
   variant?: string;

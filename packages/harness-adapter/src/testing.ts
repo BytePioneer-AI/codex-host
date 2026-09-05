@@ -66,6 +66,8 @@ import type {
   ThinkingSelectCompleted,
   TurnCancelAccepted,
   TurnCancelCommand,
+  TurnSteerAccepted,
+  TurnSteerCommand,
   TurnStartAccepted,
   TurnStartCommand,
 } from "./text-session.js";
@@ -76,6 +78,7 @@ interface ActiveFakeTurn {
   completedItems: HostItemSnapshot[];
   interactions: Map<HostInteractionId, HostInteraction>;
   cancellationRequested: boolean;
+  steerByClientId: Map<string, string>;
 }
 
 const invalidStateError: HarnessError = {
@@ -180,6 +183,7 @@ export class FakeHarnessSession implements HarnessSession {
     options: { itemId?: HostItemId; title?: string; expiresAt?: string };
   } | null = null;
   #nextRejection: HarnessError | null = null;
+  #nextSteerOutput: string | null = null;
   #state: HarnessSessionState;
   #snapshot: HostThreadSnapshot;
   #turnOrdinal = 0;
@@ -204,6 +208,7 @@ export class FakeHarnessSession implements HarnessSession {
     supportsRollbackLastTurn = false,
     permissionModeScope: HarnessPermissionModeScope = "live",
     supportsReplacementFence = true,
+    supportsSteer = false,
   ) {
     this.harnessId = harnessId;
     const availableThinkingOptions = thinkingOptionsForModel(catalog, initialModel);
@@ -226,6 +231,7 @@ export class FakeHarnessSession implements HarnessSession {
         replacementFence: supportsReplacementFence,
       },
       subagents: { observe: false, readTranscript: false },
+      ...(supportsSteer ? { activeTurns: { steer: true } } : {}),
     };
     this.cwd = cwd;
     this.#catalog = catalog;
@@ -280,6 +286,7 @@ export class FakeHarnessSession implements HarnessSession {
       completedItems: [],
       interactions: new Map(),
       cancellationRequested: false,
+      steerByClientId: new Map(),
     };
     this.#event({ type: "turn.autonomous.started", turnId, input });
     this.#event({ type: "turn.started", turnId });
@@ -300,6 +307,7 @@ export class FakeHarnessSession implements HarnessSession {
       completedItems: [],
       interactions: new Map(),
       cancellationRequested: false,
+      steerByClientId: new Map(),
     };
     this.#event({ type: "turn.autonomous.started", turnId, input: cloneJson(input) });
     this.#event({ type: "turn.started", turnId });
@@ -372,6 +380,10 @@ export class FakeHarnessSession implements HarnessSession {
     this.#completeCancellationDuringRequest = true;
   }
 
+  appendTextOnNextSteer(text: string): void {
+    this.#nextSteerOutput = text;
+  }
+
   requestApprovalOnNextTurn(title: string, description?: string): void {
     this.#nextApproval = { title, ...(description ? { description } : {}) };
   }
@@ -384,6 +396,7 @@ export class FakeHarnessSession implements HarnessSession {
   }
 
   execute(command: TurnStartCommand): Promise<HarnessResult<TurnStartAccepted>>;
+  execute(command: TurnSteerCommand): Promise<HarnessResult<TurnSteerAccepted>>;
   execute(command: TurnCancelCommand): Promise<HarnessResult<TurnCancelAccepted>>;
   execute(command: InteractionRespondCommand): Promise<HarnessResult<InteractionRespondAccepted>>;
   execute(command: ModelSelectCommand): Promise<HarnessResult<ModelSelectCompleted>>;
@@ -396,6 +409,7 @@ export class FakeHarnessSession implements HarnessSession {
   ): Promise<
     HarnessResult<
       | TurnStartAccepted
+      | TurnSteerAccepted
       | TurnCancelAccepted
       | InteractionRespondAccepted
       | ModelSelectCompleted
@@ -404,6 +418,7 @@ export class FakeHarnessSession implements HarnessSession {
     >
   > {
     if (this.#closed) return { ok: false, error: invalidStateError };
+    if (command.type === "turn.steer") return this.#steer(command);
     if (command.type === "turn.cancel") return this.#cancel(command);
     if (command.type === "interaction.respond") return this.#respond(command);
     if (command.type === "model.select") return this.#selectModel(command);
@@ -446,6 +461,7 @@ export class FakeHarnessSession implements HarnessSession {
       completedItems: [],
       interactions: new Map(),
       cancellationRequested: false,
+      steerByClientId: new Map(),
     };
     this.#event({ type: "turn.started", turnId: command.turnId });
     this.#event({ type: "item.started", turnId: command.turnId, item });
@@ -909,6 +925,62 @@ export class FakeHarnessSession implements HarnessSession {
     return { ok: true, value: { cancellationRequested: true } };
   }
 
+  #steer(command: TurnSteerCommand): HarnessResult<TurnSteerAccepted> {
+    if (this.capabilities.activeTurns?.steer !== true) {
+      return {
+        ok: false,
+        error: {
+          code: "unsupported",
+          message: "Fake Harness does not support steering",
+          retryable: false,
+        },
+      };
+    }
+    const active = this.#active;
+    if (!active || active.command.turnId !== command.turnId) {
+      return { ok: false, error: invalidState("Turn Steer must reference the active Turn") };
+    }
+    if (command.input.length === 0 || command.input.every(({ text }) => text.length === 0)) {
+      return {
+        ok: false,
+        error: {
+          code: "invalidRequest",
+          message: "Turn Steer input must not be empty",
+          retryable: false,
+        },
+      };
+    }
+    const inputKey = JSON.stringify(command.input);
+    if (command.clientUserMessageId) {
+      const previous = active.steerByClientId.get(command.clientUserMessageId);
+      if (previous !== undefined) {
+        return previous === inputKey
+          ? { ok: true, value: { turnId: command.turnId } }
+          : {
+              ok: false,
+              error: {
+                code: "invalidRequest",
+                message: "Turn Steer id was reused with different input",
+                retryable: false,
+              },
+            };
+      }
+    }
+    if (active.cancellationRequested) {
+      return { ok: false, error: invalidState("Turn Steer must reference the active Turn") };
+    }
+    if (command.clientUserMessageId) {
+      active.steerByClientId.set(command.clientUserMessageId, inputKey);
+    }
+    active.command.input.push(...cloneJson(command.input));
+    if (this.#nextSteerOutput !== null) {
+      const output = this.#nextSteerOutput;
+      this.#nextSteerOutput = null;
+      this.appendText(output);
+    }
+    return { ok: true, value: { turnId: command.turnId } };
+  }
+
   #startItem(item: HostItem): void {
     const active = this.#requireActive();
     active.items.set(item.itemId, item);
@@ -1021,6 +1093,7 @@ export class FakeHarnessAdapter implements HarnessAdapter {
   readonly supportsForkAcrossCwd: boolean;
   readonly supportsRollbackLastTurn: boolean;
   readonly supportsReplacementFence: boolean;
+  readonly supportsSteer: boolean;
   readonly permissionModeScope: HarnessPermissionModeScope;
   inspectionCalls = 0;
   #closePromise: Promise<void> | null = null;
@@ -1037,6 +1110,7 @@ export class FakeHarnessAdapter implements HarnessAdapter {
     supportsRollbackLastTurn = false,
     permissionModeScope: HarnessPermissionModeScope = "live",
     supportsReplacementFence = true,
+    supportsSteer = false,
   ) {
     this.harnessId = harnessId;
     this.catalog = catalog;
@@ -1046,6 +1120,7 @@ export class FakeHarnessAdapter implements HarnessAdapter {
     this.supportsForkAcrossCwd = supportsForkAcrossCwd;
     this.supportsRollbackLastTurn = supportsRollbackLastTurn;
     this.supportsReplacementFence = supportsReplacementFence;
+    this.supportsSteer = supportsSteer;
     this.permissionModeScope = permissionModeScope;
   }
 
@@ -1080,6 +1155,7 @@ export class FakeHarnessAdapter implements HarnessAdapter {
           replacementFence: this.supportsReplacementFence,
         },
         subagents: { observe: false, readTranscript: false },
+        ...(this.supportsSteer ? { activeTurns: { steer: true } } : {}),
       },
     };
   }
@@ -1304,6 +1380,7 @@ export class FakeHarnessAdapter implements HarnessAdapter {
       this.supportsRollbackLastTurn,
       this.permissionModeScope,
       this.supportsReplacementFence,
+      this.supportsSteer,
     );
     this.sessions.push(session);
     this.#sessionsByNativeId.set(nativeRef.nativeSessionId, session);
@@ -1332,6 +1409,7 @@ export class FakeHarnessAdapter implements HarnessAdapter {
       this.supportsRollbackLastTurn,
       this.permissionModeScope,
       this.supportsReplacementFence,
+      this.supportsSteer,
     );
     session.setStateForSnapshot({ ...cloneJson(state), nativeRef: cloneJson(nativeRef) });
     this.sessions.push(session);

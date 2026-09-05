@@ -40,6 +40,15 @@
 - 失败或取消 Turn 在原生系统未保存历史时可以没有 Native Turn identity；
 - 同一个原生 Turn 不得映射到多个不同的 Host Turn。
 
+当 `activeTurns.steer=true` 时，一个 Host Turn 可以对应多个连续的原生 User/Assistant 段。Adapter 必须为该组合提供可恢复的明确分组依据，并满足：
+
+- `NativeTurnRef` 使用组合的根原生输入身份；
+- Snapshot 按接受顺序返回根输入和所有 steer 输入，以及各段产生的 Item；
+- Adapter 内部 recovery input 只有在仍属于完整、可证明的 Turn 分组时才可从 Snapshot 隐藏；standalone 或被外部 User 打断的消息必须可见；
+- Turn outcome 与 Checkpoint 取最后一个已接受输入的终态，不能把中间 Assistant 终态暴露成可 Fork 的 Host Turn 边界；
+- Last-Turn Rollback 删除整个组合，不能留下 steer 段成为伪造的独立 Turn；
+- 分组证据缺失或不连续时 fail closed 为独立原生 Turn，不能按文本相似度猜测归属。
+
 Adapter 可以在 Turn 开始前读取历史边界，在完成后重新读取并找出新增 Native Turn。Pi 和 OMP 是该模式的主要参考。原生系统允许调用方写入消息 ID 时，可参考 Claude Code 预先建立 Native Turn key 的方式。
 
 ## `readSnapshot()`

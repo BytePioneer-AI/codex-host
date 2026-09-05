@@ -24,7 +24,7 @@
 - `outputs`：单消费者、有序的异步输出流。
 - `commands`：可选的 Harness 专用命令能力。
 - `readSnapshot()`：只读历史和当前状态。
-- `execute()`：执行 Turn、取消、Interaction 响应和配置变更。
+- `execute()`：执行 Turn、活动 Turn steering、取消、Interaction 响应和配置变更。
 - `refreshUsage()`：仅在原生系统支持主动刷新时提供。
 - `close()`：释放 Adapter 控制的资源并结束输出流；只有显式声明 History replacement fence 时，才额外保证原生工作不能继续修改 Transcript 或 Workspace。
 
@@ -95,6 +95,7 @@ Session 的 `capabilities` 在其生命周期内必须保持不变。Host 会在
 - `history.forkAcrossCwd`：仅在 `fork` 为 true 时可为 true。
 - `history.replacementFence`：`close()` 可以作为 History replacement 的 Native work、Transcript 和 Workspace fence；遗漏视为 false。
 - `history.rollbackLastTurn`：Adapter 应接受 `open({ kind: "rollbackLastTurn" })`，并且必须同时声明 `history.replacementFence=true`。
+- `activeTurns.steer`：允许 `turn.steer` 向当前活动文本 Turn 追加调整输入；字段可选，遗漏视为 false。
 - `subagents.observe`：输出标准 Subagent 生命周期。
 - `subagents.readTranscript`：Adapter 提供 `subagents.readSnapshot()`。
 - `autonomousTurns.observe`：能够输出不是由当前 Host `turn.start` 发起的原生 Turn。
@@ -127,6 +128,9 @@ Session 必须显式控制并发，而不是依赖原生调用偶然串行：
 - `interaction.respond` 必须能在所属 Turn 活动时执行；
 - Permission Mode 是否可在活动 Turn 中改变取决于原生语义，允许时仍须与同类配置写入串行，不允许时返回 `sessionBusy`；
 - 空文本 Turn 返回 `invalidRequest`；
+- `turn.steer` 必须引用当前活动文本 Turn，只能在 `activeTurns.steer=true` 时接受，并继续使用同一个 Host Turn ID；
+- 带 `clientUserMessageId` 的重复 steer 必须幂等：相同输入复用原结果，不同输入返回 `invalidRequest`；已记录 identity 的判断先于后续 cancel/terminal 状态拒绝；
+- 多个 steer admission 必须显式串行，并与 Turn 完成和取消收敛；不能因短暂 idle 提前发出终态；
 - 取消必须引用当前活动 Turn；
 - Interaction 响应必须引用当前待处理 Interaction；
 - 不受支持的命令返回 `unsupported`；

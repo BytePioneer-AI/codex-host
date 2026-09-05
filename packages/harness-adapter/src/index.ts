@@ -94,6 +94,8 @@ export type {
   TurnCancelAccepted,
   TurnCancelCommand,
   TurnOutcome,
+  TurnSteerAccepted,
+  TurnSteerCommand,
   TurnStartAccepted,
   TurnStartCommand,
   TurnStartedEvent,

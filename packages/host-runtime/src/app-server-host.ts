@@ -66,6 +66,7 @@ import {
   listExternalTurns,
 } from "./external-thread-history.js";
 import { executeExternalThreadRollback } from "./external-thread-rollback.js";
+import { executeExternalTurnSteer } from "./external-turn-steering.js";
 import {
   createExternalThreadRecordInput,
   createProductionExternalThreadStore,
@@ -74,10 +75,13 @@ import {
   type ExternalThreadStore,
 } from "./external-thread-repository.js";
 import {
+  createTurnProjectionGate,
   ExternalThreadRuntime,
+  type ExternalProjectedTurn,
   type ExternalThread,
   type ExternalThreadLocation,
   type ExternalThreadResolution,
+  type TurnProjectionGate,
 } from "./external-thread-runtime.js";
 import {
   DELEGATION_CLI_PATH_ENV,
@@ -197,15 +201,6 @@ export interface AppServerHostOptions {
   onRequestRoute?: (observation: RequestRouteObservation) => void;
   updateCoordinator?: HostUpdateCoordinator;
   onDelegationApi?: (api: DelegationControlRegistration) => (() => void) | undefined;
-}
-
-interface TurnProjectionGate {
-  promise: Promise<void>;
-  resolve(): void;
-}
-
-interface ProjectedTurn {
-  projector: CodexTurnProjector;
 }
 
 type HostApprovalRequestId = number;
@@ -403,14 +398,6 @@ function sandboxResult(params: JsonObject): JsonObject {
     excludeTmpdirEnvVar: false,
     excludeSlashTmp: false,
   };
-}
-
-function turnProjectionGate(): TurnProjectionGate {
-  let resolve = (): void => undefined;
-  const promise = new Promise<void>((complete) => {
-    resolve = complete;
-  });
-  return { promise, resolve };
 }
 
 class OrderedWriter {
@@ -985,6 +972,20 @@ export class AppServerHost {
         }
         if (typeof threadId === "string") {
           this.#pendingOfficialTurnStarts.set(request.id, threadId);
+        }
+      }
+      if (request.method === "turn/steer") {
+        const params = isRecord(request.params) ? request.params : {};
+        const resolution =
+          typeof params.threadId === "string"
+            ? await this.#resolveExternalThread(params.threadId)
+            : ({ kind: "official" } as const);
+        if (await this.#writeResolutionError(request, resolution)) continue;
+        if (resolution.kind === "external") {
+          this.#dispatchDesktopRequest(() =>
+            this.#steerExternalTurn(request, resolution.thread, params),
+          );
+          continue;
         }
       }
       if (request.method === "turn/interrupt") {
@@ -2252,7 +2253,7 @@ export class AppServerHost {
       return;
     }
     const turnId = requestedTurnId ?? hostTurnIdSchema.parse(randomUUID());
-    const projection: ProjectedTurn = {
+    const projection: ExternalProjectedTurn = {
       projector: new CodexTurnProjector({
         threadId: thread.id,
         turnId,
@@ -2260,7 +2261,7 @@ export class AppServerHost {
         startedAtMs: Date.now(),
       }),
     };
-    const gate = turnProjectionGate();
+    const gate = createTurnProjectionGate();
     thread.running = true;
     thread.activeTurnId = turnId;
     thread.projectedTurns.set(turnId, projection);
@@ -3157,7 +3158,7 @@ export class AppServerHost {
       throw new DelegationControlError("THREAD_BUSY", "External Thread is busy");
     }
     const turnId = hostTurnIdSchema.parse(requestedTurnId);
-    const projection: ProjectedTurn = {
+    const projection: ExternalProjectedTurn = {
       projector: new CodexTurnProjector({
         threadId: thread.id,
         turnId,
@@ -3296,7 +3297,7 @@ export class AppServerHost {
       return;
     }
     const startedAtMs = Date.now();
-    const projection: ProjectedTurn = {
+    const projection: ExternalProjectedTurn = {
       projector: new CodexTurnProjector({
         threadId: thread.id,
         turnId,
@@ -3304,7 +3305,7 @@ export class AppServerHost {
         startedAtMs,
       }),
     };
-    const gate = turnProjectionGate();
+    const gate = createTurnProjectionGate();
     thread.running = true;
     thread.activeTurnId = turnId;
     thread.projectedTurns.set(turnId, projection);
@@ -3334,6 +3335,23 @@ export class AppServerHost {
     }
   }
 
+  async #steerExternalTurn(
+    request: JsonRpcRequest,
+    thread: ExternalThread,
+    params: JsonObject,
+  ): Promise<void> {
+    const outcome = await executeExternalTurnSteer(thread, params);
+    try {
+      await this.#writer.json(
+        outcome.ok
+          ? rpcEnvelope(request, { result: { turnId: outcome.turnId } })
+          : rpcError(request, outcome.code, outcome.message),
+      );
+    } finally {
+      outcome.releaseProjectionGate();
+    }
+  }
+
   async #interruptExternalTurn(
     request: JsonRpcRequest,
     thread: ExternalThread,
@@ -3350,7 +3368,7 @@ export class AppServerHost {
       return;
     }
     const turnId = thread.activeTurnId;
-    const cancellationGate = turnProjectionGate();
+    const cancellationGate = createTurnProjectionGate();
     const gate: TurnProjectionGate = {
       promise: Promise.all([
         thread.responseGates.get(turnId)?.promise ?? Promise.resolve(),
@@ -3536,7 +3554,7 @@ export class AppServerHost {
       if (thread.running || thread.activeTurnId) {
         throw new Error("External autonomous Turn started while another Turn is active");
       }
-      const projection: ProjectedTurn = {
+      const projection: ExternalProjectedTurn = {
         projector: new CodexTurnProjector({
           threadId: thread.id,
           turnId: event.turnId,
@@ -4070,7 +4088,7 @@ export class AppServerHost {
     });
   }
 
-  #projectedTurn(thread: ExternalThread, turnId: HostTurnId): ProjectedTurn {
+  #projectedTurn(thread: ExternalThread, turnId: HostTurnId): ExternalProjectedTurn {
     const projection = thread.projectedTurns.get(turnId);
     if (!projection) throw new Error("Harness output references an unknown Host Turn");
     return projection;

@@ -39,6 +39,7 @@ import {
 } from "@codexhost/shared-contracts";
 
 import { encodeOpenCodeModelRef } from "./model-catalog.js";
+import { parseOpenCodeMessageGroup } from "./message-grouping.js";
 
 export interface OpenCodeMessageWithParts {
   info: Message;
@@ -124,6 +125,10 @@ function messageErrorText(message: AssistantMessage): string {
     : "OpenCode Assistant failed";
 }
 
+export function isTerminalOpenCodeAssistant(message: AssistantMessage): boolean {
+  return message.time.completed !== undefined || Boolean(message.finish) || Boolean(message.error);
+}
+
 function assistantOutcome(message: AssistantMessage | undefined): HistoricalTurnOutcome {
   if (!message) {
     return { status: "unknown", reason: "OpenCode history has no Assistant terminal" };
@@ -144,7 +149,7 @@ function assistantOutcome(message: AssistantMessage | undefined): HistoricalTurn
       },
     };
   }
-  if (message.time.completed !== undefined || message.finish) return { status: "succeeded" };
+  if (isTerminalOpenCodeAssistant(message)) return { status: "succeeded" };
   return { status: "unknown", reason: "OpenCode Assistant message is not terminal" };
 }
 
@@ -282,47 +287,101 @@ function userText(entry: OpenCodeMessageWithParts): string {
     .join("");
 }
 
-export function projectOpenCodeHistory(input: OpenCodeHistoryInput): HostThreadSnapshot {
-  const messages = activeMessages(input.session, input.messages);
-  const turns: HostThreadSnapshot["turns"] = [];
-  for (let index = 0; index < messages.length;) {
-    const userEntry = messages[index] as OpenCodeMessageWithParts;
-    if (userEntry.info.role !== "user") {
+interface OpenCodeUserMessageUnit {
+  readonly user: OpenCodeMessageWithParts & { info: UserMessage };
+  readonly entries: OpenCodeMessageWithParts[];
+}
+
+function openCodeTurnGroups(
+  session: Session,
+  messages: readonly OpenCodeMessageWithParts[],
+): OpenCodeUserMessageUnit[][] {
+  const active = activeMessages(session, messages);
+  const units: OpenCodeUserMessageUnit[] = [];
+  for (let index = 0; index < active.length;) {
+    const entry = active[index];
+    if (!entry || entry.info.role !== "user") {
       index += 1;
       continue;
     }
     let end = index + 1;
-    while (end < messages.length && messages[end]?.info.role !== "user") end += 1;
-    const turnEntries = messages.slice(index, end);
+    while (end < active.length && active[end]?.info.role !== "user") end += 1;
+    units.push({
+      user: entry as OpenCodeMessageWithParts & { info: UserMessage },
+      entries: active.slice(index, end),
+    });
+    index = end;
+  }
+
+  const groups: OpenCodeUserMessageUnit[][] = [];
+  for (let index = 0; index < units.length; index += 1) {
+    const root = units[index];
+    if (!root) continue;
+    const parsedRoot = parseOpenCodeMessageGroup(root.user.info.id);
+    const group = [root];
+    if (parsedRoot?.kind === "input" && parsedRoot.sequence === 0) {
+      let previousSequence = parsedRoot.sequence;
+      while (index + 1 < units.length) {
+        const candidate = units[index + 1];
+        if (!candidate) break;
+        const parsed = parseOpenCodeMessageGroup(candidate.user.info.id);
+        if (!parsed || parsed.token !== parsedRoot.token || parsed.sequence <= previousSequence) {
+          break;
+        }
+        group.push(candidate);
+        previousSequence = parsed.sequence;
+        index += 1;
+      }
+    }
+    groups.push(group);
+  }
+  return groups;
+}
+
+export function projectOpenCodeHistory(input: OpenCodeHistoryInput): HostThreadSnapshot {
+  const turns: HostThreadSnapshot["turns"] = [];
+  for (const group of openCodeTurnGroups(input.session, input.messages)) {
+    const root = group[0];
+    if (!root) continue;
+    const turnEntries = group.flatMap(({ entries }) => entries);
     const assistants = turnEntries.filter(
       (entry): entry is OpenCodeMessageWithParts & { info: AssistantMessage } =>
         entry.info.role === "assistant",
     );
-    const terminal = assistants.at(-1)?.info;
+    const finalUserMessageId = group.at(-1)?.user.info.id;
+    const terminal = assistants
+      .filter(({ info }) => info.parentID === finalUserMessageId)
+      .at(-1)?.info;
     const outcome = assistantOutcome(terminal);
     const items = assistants.flatMap((entry) =>
       assistantItems(entry, assistantOutcome(entry.info), input.toolOutputLimit),
     );
-    const changes = reliableOpenCodeFileChanges(
-      input.diffsByUserMessageId?.get(userEntry.info.id) ?? [],
-    );
-    if (changes.length > 0) {
-      const item: HostFileChangeItem = {
-        type: "fileChange",
-        itemId: itemId(`opencode-diff:${userEntry.info.id}`),
-        changes,
-      };
-      items.push({ item, outcome: { status: "succeeded" } });
+    for (const { user } of group) {
+      const changes = reliableOpenCodeFileChanges(
+        input.diffsByUserMessageId?.get(user.info.id) ?? [],
+      );
+      if (changes.length > 0) {
+        const item: HostFileChangeItem = {
+          type: "fileChange",
+          itemId: itemId(`opencode-diff:${user.info.id}`),
+          changes,
+        };
+        items.push({ item, outcome: { status: "succeeded" } });
+      }
     }
-    const checkpoint = terminal
-      ? (nativeCheckpointRefSchema.parse({
-          harnessId: openCodeHarnessId,
-          nativeSessionId: input.session.id,
-          checkpointId: terminal.id,
-          formatVersion: 1,
-        }) as NativeCheckpointRef)
-      : undefined;
-    const user = userEntry.info as UserMessage;
+    const checkpoint =
+      terminal && isTerminalOpenCodeAssistant(terminal)
+        ? (nativeCheckpointRefSchema.parse({
+            harnessId: openCodeHarnessId,
+            nativeSessionId: input.session.id,
+            checkpointId: terminal.id,
+            formatVersion: 1,
+          }) as NativeCheckpointRef)
+        : undefined;
+    const user = root.user.info;
+    const parsedRoot = parseOpenCodeMessageGroup(user.id);
+    const hasNamespacedContinuation =
+      group.length > 1 && parsedRoot?.kind === "input" && parsedRoot.sequence === 0;
     turns.push({
       nativeTurnRef: nativeTurnRefSchema.parse({
         harnessId: openCodeHarnessId,
@@ -331,12 +390,19 @@ export function projectOpenCodeHistory(input: OpenCodeHistoryInput): HostThreadS
         formatVersion: 1,
       }),
       ...(checkpoint ? { checkpoint } : {}),
-      input: [{ type: "text", text: userText(userEntry) }],
+      input: group.flatMap(({ user: entry }, index) => {
+        const parsedEntry = parseOpenCodeMessageGroup(entry.info.id);
+        const isGroupedRecovery =
+          hasNamespacedContinuation &&
+          index > 0 &&
+          parsedEntry?.kind === "recovery" &&
+          parsedEntry.token === parsedRoot.token;
+        return isGroupedRecovery ? [] : [{ type: "text" as const, text: userText(entry) }];
+      }),
       items,
       outcome,
       model: encodeOpenCodeModelRef(user.model),
     });
-    index = end;
   }
   return { turns };
 }
@@ -361,13 +427,25 @@ export function resolveOpenCodeForkBoundary(
   const active = activeMessages(session, messages);
   const checkpointIndex = active.findIndex(({ info }) => info.id === checkpoint.checkpointId);
   if (checkpointIndex < 0 || active[checkpointIndex]?.info.role !== "assistant") return null;
-  const targetUserCount = active
-    .slice(0, checkpointIndex + 1)
-    .filter(({ info }) => info.role === "user").length;
+  const groups = openCodeTurnGroups(session, messages);
+  const targetGroupIndex = groups.findIndex((group) => {
+    const finalUserMessageId = group.at(-1)?.user.info.id;
+    const terminal = group
+      .flatMap(({ entries }) => entries)
+      .filter(
+        (entry): entry is OpenCodeMessageWithParts & { info: AssistantMessage } =>
+          entry.info.role === "assistant" && entry.info.parentID === finalUserMessageId,
+      )
+      .at(-1)?.info;
+    return Boolean(
+      terminal && isTerminalOpenCodeAssistant(terminal) && terminal.id === checkpoint.checkpointId,
+    );
+  });
+  if (targetGroupIndex < 0) return null;
   const nextMessage = active[checkpointIndex + 1]?.info.id;
   return {
     ...(nextMessage ? { messageID: nextMessage } : {}),
-    sourceTurnCount: targetUserCount,
+    sourceTurnCount: targetGroupIndex + 1,
   };
 }
 
@@ -375,10 +453,7 @@ export function resolveOpenCodeLastTurnBoundary(
   session: Session,
   messages: readonly OpenCodeMessageWithParts[],
 ): { lastUserMessageID: string; sourceTurnCount: number } | null {
-  const users = activeMessages(session, messages).filter(
-    (entry): entry is OpenCodeMessageWithParts & { info: UserMessage } =>
-      entry.info.role === "user",
-  );
-  const last = users.at(-1);
-  return last ? { lastUserMessageID: last.info.id, sourceTurnCount: users.length } : null;
+  const groups = openCodeTurnGroups(session, messages);
+  const last = groups.at(-1)?.[0];
+  return last ? { lastUserMessageID: last.user.info.id, sourceTurnCount: groups.length } : null;
 }

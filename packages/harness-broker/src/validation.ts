@@ -74,6 +74,19 @@ const turnStartSchema = z
 const turnCancelSchema = z
   .object({ type: z.literal("turn.cancel"), turnId: hostTurnIdSchema })
   .strict();
+const turnSteerSchema = z
+  .object({
+    type: z.literal("turn.steer"),
+    turnId: hostTurnIdSchema,
+    input: z
+      .array(textInputSchema)
+      .min(1)
+      .refine((input) => input.some(({ text }) => text.length > 0), {
+        message: "Turn steering input must contain text",
+      }),
+    clientUserMessageId: z.string().min(1).max(1_024).optional(),
+  })
+  .strict();
 const interactionResponseSchema = z.union([
   z
     .object({
@@ -109,6 +122,7 @@ const permissionSelectSchema = z
 
 export const brokerHostCommandSchema = z.discriminatedUnion("type", [
   turnStartSchema,
+  turnSteerSchema,
   turnCancelSchema,
   interactionRespondSchema,
   modelSelectSchema,

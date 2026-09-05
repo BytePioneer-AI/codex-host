@@ -43,6 +43,7 @@ describe.runIf(Boolean(command))("OpenCode Adapter real Server", () => {
             rollbackLastTurn: true,
             replacementFence: true,
           },
+          activeTurns: { steer: true },
         },
       });
       const opened = await adapter.open({

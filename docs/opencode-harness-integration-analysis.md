@@ -10,7 +10,7 @@ OpenCode 最原生的 codexhost 接入方式不是解析 TUI，也不是只调�
 
 - 第一阶段使用 SDK 暴露的现行 Session API、SSE、Question、Permission、Diff、Fork、Revert、Compact 和 Abort，完整投影到 codexhost 的 Harness 契约。
 - `@opencode-ai/sdk/v2` 同时包含现行 API 和 `client.v2.*`，因此后续无需更换传输层即可逐项启用原生 V2 能力。
-- OpenCode V2 的 durable event、按 Session replay、queue/steer、幂等 prompt admission、staged revert 等能力很适合平台集成，但官方自己的 V2 parity 清单仍有关键缺口，应先做成实验性 capability，不能直接替换现行执行链。
+- OpenCode V2 的 durable event、按 Session replay、queue/durable steer、幂等 prompt admission、staged revert 等能力很适合平台集成，但官方自己的 V2 parity 清单仍有关键缺口，应先做成实验性 capability，不能直接替换现行执行链。当前活动 Turn steering 使用已验证的现行 V1 prompt 路径，不依赖 V2 delivery。
 - ACP 可以作为标准协议兼容路径或快速 MVP，但它本身也是 OpenCode HTTP SDK 的一次降维投影，会丢失原生 Question、部分 Session 控制和更完整的事件。
 - OpenCode Plugin 的 `experimental_workspace` 是值得利用的“平台能力”：未来可用一个可选插件把 codexhost 管理的本地或远程 workspace 注册给 OpenCode；基础 Harness Adapter 不应依赖这个实验接口。
 
@@ -52,6 +52,7 @@ OpenCodeAdapter
 - Protocol Core 的 `codexhost/opencode-native` carrier；
 - Renderer 的 Agent picker、Model/Thinking 草稿状态、Thread ownership 恢复和 OpenCode 图标；
 - Text/Reasoning streaming、Tool lifecycle、Question、Approval once/deny、Cancel、Usage、完整 Diff、Native command、Compact、Model 与 variant；
+- 活动 Turn steering：复用现行 `promptAsync()` admission，在同一 Host Turn 中串行接受调整，并在恢复时保持逻辑 Turn、Diff、Fork 与 rollback 边界；
 - transcript Snapshot、精确 Checkpoint Fork、SSE 重连后的 status/messages/pending interaction 对账；
 - conversation-only 的 distinct `rollbackLastTurn` Session；已用 loopback 假模型驱动 OpenCode `1.18.4` 的真实 `edit` Tool，验证 Git-backed Diff、精确历史派生、来源 Session 隔离和工作树保持不变。
 
@@ -62,23 +63,25 @@ OpenCodeAdapter
 - `executionPolicy=unattended-full-access` 要求 `allow` Permission Mode，并继续在每个受管 Server 的进程环境中注入 OpenCode 原生 `permission: "allow"`；不使用共享 `always` 规则；
 - `build`/`plan` 是 Agent，不会冒充 Permission Mode；
 - cross-cwd Fork、Subagent identity/transcript；
-- V2 durable replay、queue/steer、幂等 admission 和 staged revert；
+- V2 durable replay、queue/durable steer、幂等 admission 和 staged revert；
 - `experimental_workspace` Plugin。它是本文找到的平台扩展点，但仍属于后续实验增强。
 
 生产 Bundle 只导入 `@opencode-ai/sdk/v2/client`。没有使用 SDK 顶层 `v2` 入口，因为后者会把 SDK 自带的 `createOpencodeServer()` 和 `cross-spawn` 一并打包，重复 codexhost 已拥有的进程监管责任。
 
-当前验证结果（最近一次完整验证需在 admission race 修复后重跑）：
+当前验证结果如下。活动 Turn steering 变更已重新执行适用的 TypeScript、Vitest、lint、格式与 OpenSpec 检查；Release Bundle、真实 smoke、Git Gate 与进程清理保留既有基线，本次未重复执行：
 
-| 验证 | 结果 |
-| --- | --- |
-| 全仓库 TypeScript build + test typecheck | 通过 |
-| OpenCode hermetic Adapter/transport/model/history/usage tests | 通过 |
-| 全仓库 Vitest（含既有 Harness 与 Renderer） | 通过 |
-| ESLint + package boundary audit | 通过 |
-| Release Host Bundle 审计与真实 build | 通过 |
-| 隔离 OpenCode `1.18.25` real smoke | inspect、create、read、command list、close、resume 通过；没有调用付费/外部 Model |
-| Git-backed real Gate | loopback 假模型驱动原生 `edit` Tool；stream、Tool、Diff、精确 Fork、distinct rollback、来源 Session 与工作树保持不变通过 |
-| 进程清理 | real smoke 结束后没有残留受管 `opencode serve` 进程 |
+| 验证 | 结果 | 时点 |
+| --- | --- | --- |
+| 全仓库 TypeScript build + test typecheck | 通过 | 本次重跑 |
+| steering contract/transport/Adapter/history/Host 聚焦测试 | 297 项通过 | 本次重跑 |
+| 全仓库 Vitest（含既有 Harness 与 Renderer） | 2,425 项通过，9 项按环境跳过 | 本次重跑 |
+| ESLint + package boundary audit | 通过 | 本次重跑 |
+| Prettier + Rust format check | 通过 | 本次重跑 |
+| OpenSpec strict validation | 通过 | 本次重跑 |
+| Release Host Bundle 审计与真实 build | 通过 | 既有基线，本次未重跑 |
+| 隔离 OpenCode `1.18.25` real smoke | inspect、create、read、command list、close、resume 通过；没有调用付费/外部 Model | 既有基线，本次未重跑 |
+| Git-backed real Gate | loopback 假模型驱动原生 `edit` Tool；stream、Tool、Diff、精确 Fork、distinct rollback、来源 Session 与工作树保持不变通过 | 既有基线，本次未重跑 |
+| 进程清理 | real smoke 结束后没有残留受管 `opencode serve` 进程 | 既有基线，本次未重跑 |
 
 真实 smoke 还发现并修正了 macOS `/var` 与 `/private/var` realpath 别名导致的 Resume/Fork cwd 误拒绝。尚未执行 Desktop 启动，也没有覆盖本机 OpenCode `1.18.4`。
 
@@ -121,7 +124,7 @@ OpenCodeAdapter
 
 还做了两组兼容性实测：
 
-- `@opencode-ai/sdk@1.18.25` 连接本机 OpenCode Server `1.18.4` 时，health、agents、providers、Question list、Permission list 均成功。因此生产实现应固定 SDK 依赖，但以 Server health、OpenAPI 和关键方法探测决定 capability，不应仅因 patch 版本不同就拒绝运行。
+- `@opencode-ai/sdk@1.18.25` 连接本机 OpenCode Server `1.18.4` 时，health、agents、providers、Question list、Permission list 均成功。因此通用 Adapter 能力应以 Server health、OpenAPI 和关键方法探测决定，不能因 patch 版本不同整体拒绝运行；但活动 Turn steering 依赖 caller Message ID、排序和 busy-loop 语义，当前只在精确验证的 `1.18.25` 上声明，其他版本继续使用原生生成的 root Message ID。
 - 在隔离数据目录中，用上述新 SDK 向 `1.18.4` Session 写入两条 `noReply` 用户消息，再以第二条 message ID Fork；源 Session 保留两条，派生 Session 只含第一条。临时 Session 随后已删除。这证明精确 message boundary Fork 在旧 Server 上也可用，但还没有证明所有目标最低版本都可用。
 
 `1.18.4` 与 `1.18.25` 的 `opencode acp` 均通过了真实 `initialize` 探测。`1.18.25` 还用 `@agentclientprotocol/sdk@1.3.0` 验证了 `session/list`、`session/new`、配置选项和 `session/close`；配置选项包括 Model、`build`/`plan` Agent mode，以及模型提供时的 effort/variant。
@@ -255,7 +258,11 @@ Remote SSH 场景中，Server 应由远端 Host Runtime 在 workspace 所在机�
 
 ### Turn、事件流与完成边界
 
-Adapter 应在提交 prompt **之前**建立 SSE 订阅，但不能为 Host Turn 自行生成并注入 OpenCode user message ID。`messageID` 虽是 SDK 可选参数，却属于 OpenCode Native identity：OpenCode `1.18.4` 的 Agent Loop 用可排序 ID 判断最新 User/Assistant Message，注入随机 UUID 会破坏其顺序不变量，导致 Assistant 已 `finish=stop` 后仍继续循环。当前实现调用 `promptAsync()` 时省略 `messageID`，再从 Native User Message 事件或完成后的 transcript 绑定真实 ID；只有 `parentID` 指向该 User Message 的 Assistant Part 才允许投影。OpenCode 自己的 ACP 实现也是先注册 idle waiter，再发请求，且源码明确说明 idle 排在该 Turn 的事件之后；证据见 [`acp/event.ts`](https://github.com/anomalyco/opencode/blob/v1.18.25/packages/opencode/src/acp/event.ts#L54-L74) 和 [`session/status.ts`](https://github.com/anomalyco/opencode/blob/v1.18.25/packages/opencode/src/session/status.ts#L39-L48)。
+Adapter 应在提交 prompt **之前**建立 SSE 订阅。OpenCode `v1.18.25` 的消息分页先按 `time.created`、再按 ID 排序，latest-message 选择也把 ID 用作同毫秒消息的确定性 tie-breaker；调用方因此不能注入不具备原生排序形状的随机 UUID。当前实现复刻原生 [`id.ts`](https://github.com/anomalyco/opencode/blob/v1.18.25/packages/opencode/src/id/id.ts#L15-L65) 的 6 字节 timestamp/counter 前缀，并只在 14 字符 Base62 不透明后缀中加入 namespaced Turn token 与递增序号，最后一个序号专门保留给单次 recovery；排序依据见 [`message-v2.ts`](https://github.com/anomalyco/opencode/blob/v1.18.25/packages/opencode/src/session/message-v2.ts#L402-L443) 与 [`message-v2.ts`](https://github.com/anomalyco/opencode/blob/v1.18.25/packages/opencode/src/session/message-v2.ts#L548-L573)。这样既能精确绑定 root/steer User Message，也能在 Resume 后恢复逻辑分组。只有 `parentID` 指向该活动 Turn 所有权集合中 User Message 的 Assistant Part 才允许实时投影。OpenCode 自己的 ACP 实现也是先注册 idle waiter，再发请求，且源码明确说明 idle 排在该 Turn 的事件之后；证据见 [`acp/event.ts`](https://github.com/anomalyco/opencode/blob/v1.18.25/packages/opencode/src/acp/event.ts#L54-L74) 和 [`session/status.ts`](https://github.com/anomalyco/opencode/blob/v1.18.25/packages/opencode/src/session/status.ts#L39-L48)。若未来版本改变 Message ID 接受或排序约束，必须先关闭 steering capability 并重新 Gate，不能回退为随机 ID。
+
+`promptAsync()` 的客户端请求有超时 AbortSignal；超时或响应丢失后，Adapter 以 caller Message ID 查询权威 transcript，已落盘即视为 admission 成功，未落盘才返回失败。多个 steer 按进入顺序串行，并用 lifecycle version 同时围住 transcript 与 Diff 对账。最新 user 的终态 Assistant 后续进入 idle 且没有 pending admission/Interaction 时才关闭 steering；busy 中的 tool-call Assistant 终态仍属于可调整阶段。
+
+OpenCode 上游存在一个窄窗口：steer user 已落盘，但旧 busy loop 恰好退出而没有消费它。Adapter 只为“已成功持久化的 steer、没有 Assistant、没有 Interaction”启用恢复，并统一等待 50 ms 后再次核验 status 与 transcript；最终 preflight 还会用 lifecycle epoch 拦住期间恢复 busy、新 User、owned Assistant、短暂打开又关闭的 Interaction，以及更新的 steer/cancel/fault。满足条件时最多写入一次 namespaced recovery prompt；普通 root、失败 steer、grace 内重新 busy 都不会触发。恢复仍无 Assistant 或 admission 失败时，同一 Host Turn 明确失败，不会无限等待。Transport stream 永久故障同样先等待 admission chain、保留所有已进入 native admission 的 Message identity、串行 abort，并用有界 transcript 读取重新发现 prompt response 与首次查询都失败后才晚落盘的 steer；随后统一对账每段 Diff，按 root Native Turn identity 发布失败。Fault finalization、Session 输出结束、Transport/受管 Server teardown 与并发 `close()` 共享同一 Promise，不会在 close fulfilled 后继续输出。
 
 不能把 HTTP `204`、一次 text delta 或短暂没有新事件当作 Turn 完成。建议终止条件同时满足：
 
@@ -265,13 +272,13 @@ Adapter 应在提交 prompt **之前**建立 SSE 订阅，但不能为 Host Turn
 
 `MessageAbortedError` 在 Host 已请求 cancel 时映射为 cancelled；其他原生 error 映射为 failed；无 error 且达到 idle barrier 才映射为 succeeded。SSE 断线时不能猜结果，应暂停增量完成、重连后读取 status + messages + pending interactions 对账，再决定是否补发终态。
 
-历史 Snapshot 应以持久的 User/Assistant Message 与 Part 为事实源，而不是重放临时 SSE 文本。一个 Host Turn 由一个 user message 及其后、下一个 user message 前的 assistant/compaction/tool parts 组成；Native Turn/Item identity 必须直接使用 OpenCode ID，避免重连后生成新 ID 导致 UI 重复。Model/Thinking 选择写入 namespaced Session metadata，原生更新成功后才发布 effective state；这样即使尚未产生下一条 User Message，Resume 也能恢复当前选择，同时保留其他原生 metadata。
+历史 Snapshot 应以持久的 User/Assistant Message 与 Part 为事实源，而不是重放临时 SSE 文本。普通 Host Turn 由一个 user message 及其后、下一个 user message 前的 assistant/compaction/tool parts 组成；带 namespaced root/steer 序号的连续 user message 则合并为一个逻辑 Host Turn。该 Turn 的 Native identity 使用 root User Message，Checkpoint 与 outcome 使用最后一个 steer/recovery 段的 Assistant 终态，每段 Diff 分别读取后归入同一 Turn。内部 recovery input 只在仍属于完整 root-led 分组时隐藏；被其他 user 打断或独立出现的 recovery-shaped ID 必须作为普通可见 Turn，避免吞掉真实用户输入。Native Turn/Item identity 直接使用 OpenCode ID，避免重连后生成新 ID 导致 UI 重复。Model/Thinking 选择写入 namespaced Session metadata，原生更新成功后才发布 effective state；这样即使尚未产生下一条 User Message，Resume 也能恢复当前选择，同时保留其他原生 metadata。
 
 ### Adapter 内部责任边界
 
 `packages/adapters/opencode/src/opencode-adapter.ts` 仍保留为一个 Session façade，但它内部有四类必须保持同一状态机原子性的职责：Turn admission/completion、OpenCode SSE 到 Host Item/Interaction 的投影、Session state/usage projection，以及 history lifecycle/reconnect reconciliation。当前已将受管 Server 的进程生命周期与 SDK transport 拆到 `server-connection.ts` / `sdk-transport.ts`；暂不把上述四类状态机进一步拆成多个对象，因为它们共享 `ActiveTurn`、admission buffer、interaction closure 和 exactly-once completion invariant。下一次拆分应以可观察的 HarnessSession seam 为边界，并先为跨模块事件顺序建立契约测试，避免用 event bus 或共享可变全局状态替代现有显式状态机。
 
-本文件不把当前约 1,840 行实现视为已完成的结构优化：这是后续设计审查信号，而不是已经满足的重构目标。
+本文件不把当前已明显超过 2,500 行的实现视为已完成的结构优化：这是后续设计审查信号，而不是已经满足的重构目标。
 
 ### Question 与 Approval 的保真映射
 
@@ -401,7 +408,7 @@ client.v2.event.subscribe
 权威清单见 [`specs/v2/session.md` 的 V1 parity checklist](https://github.com/anomalyco/opencode/blob/v1.18.25/specs/v2/session.md#L123-L181)。因此建议：
 
 - V1/现行 API 负责第一版真实执行链；
-- V2 的 event replay、queue/steer、idempotency、staged revert 分别设独立实验 capability；
+- V2 的 event replay、queue/durable steer、idempotency、staged revert 分别设独立实验 capability；现行 V1 steering 的 capability 与它们相互独立；
 - 每项只有通过 codexhost interaction Gate 后才宣称支持；
 - 不用一个笼统的 `supportsV2` 开关掩盖不同能力的成熟度。
 
@@ -535,7 +542,8 @@ OpenCode Console 还存在多 account/org 的隐藏实验功能，如 `opencode 
 | Agent selection | 需新增 Host capability | 不能用 Permission Mode 代替 Agent |
 | Subagent observe/transcript | 第二阶段 | child Session + task metadata；逐项 Gate |
 | Durable event replay | 实验 | V2 per-session sequence/replay |
-| Prompt queue/steer | 实验 | V2 delivery 模式 |
+| Active-Turn steer | 支持（精确 Gate `1.18.25`） | 现行 `promptAsync()`；串行 admission、幂等、单次 stable-idle recovery、Host Turn 分组、完成/取消/transport fault 竞态 Gate |
+| Durable prompt queue/steer | 实验 | V2 delivery 模式；不作为现行 steering 的回退路径 |
 | Idempotent prompt admission | 实验 | V2 caller-supplied ID |
 | Staged revert | 实验 | V2 stage/clear/commit |
 | PTY WebSocket | 延后 | 需要单独终端权限和 token 生命周期设计 |
@@ -551,7 +559,7 @@ OpenCode Console 还存在多 account/org 的隐藏实验功能，如 `opencode 
 3. Permission 的 once/reject、Adapter Session scope、原生 always 的进程共享行为，以及进程退出时 pending request 的终止语义。
 4. Question 的单选、多选、custom、reject、cancel；明确验证不支持的 secret/multiline 与重启恢复边界。
 5. Tool 生命周期、proposed edit、真实 diff 和 tool error。
-6. Prompt admission、busy→idle 完成边界、cancel、并发输入，以及 V2 queue/steer（启用时）。
+6. Prompt admission timeout/落盘对账、busy→idle 完成边界、连续 steer、取消后的幂等重试、瞬时 idle、单次 orphan recovery、transport fault、steer/完成/cancel 竞态，以及 V2 durable queue/steer（启用时）。
 7. Session load/resume、跨 OpenCode 进程恢复、最后/中间 Checkpoint Fork、Fork 后目录语义和派生历史校验。
 8. Last-Turn rollback 的 distinct Session、精确前缀、来源 Session 隔离、工作树不变和派生失败清理。
 9. Model/provider/variant 切换、未登录 provider、OAuth 中断、凭据脱敏；Agent 不得误投影为 Permission Mode。
@@ -566,7 +574,7 @@ OpenCode Console 还存在多 account/org 的隐藏实验功能，如 `opencode 
 3. 在 Remote SSH 和 Windows 环境复核 distinct rollback 的进程树与路径语义。
 4. 验证单 Server 多 Session、跨 cwd 并发、Interaction 路由和 Remote SSH/Windows 进程树。
 5. 增加 Session-scoped approval policy 和 Subagent observe/transcript；Agent picker 需先补独立 Host capability。
-6. 以独立实验开关接入 V2 replay、queue/steer、idempotency 和 staged revert。
+6. 以独立实验开关接入 V2 replay、durable queue/steer、idempotency 和 staged revert；不替换已验证的现行 steering 路径。
 7. 最后评估可选 Workspace Plugin；它不是发布第一版 OpenCode Harness 的阻塞项。
 
 在这个顺序下，codexhost 能先获得比 ACP 和 CLI 更完整的 OpenCode 原生交互，同时把快速演进中的 V2 风险隔离在可探测、可回退的 capability 后面。

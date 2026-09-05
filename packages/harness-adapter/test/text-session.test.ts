@@ -327,6 +327,48 @@ describe("minimal Harness text Session", () => {
     expect(cancelledItemIndexes.every((index) => index < cancelledTurnIndex)).toBe(true);
   });
 
+  it("reuses an identified steering result after cancellation starts", async () => {
+    const adapter = new FakeHarnessAdapter(
+      harnessIdSchema.parse("steering-fake"),
+      undefined,
+      true,
+      true,
+      null,
+      undefined,
+      false,
+      "live",
+      true,
+      true,
+    );
+    const opened = await adapter.open({ kind: "create", cwd: "/synthetic" });
+    if (!opened.ok) throw new Error(opened.error.message);
+    const session = opened.value as FakeHarnessSession;
+    const command = {
+      type: "turn.steer" as const,
+      turnId: turnId("steered-cancel"),
+      input: [{ type: "text" as const, text: "adjust" }],
+      clientUserMessageId: "identified-adjustment",
+    };
+    await session.execute(textTurn("steered-cancel"));
+    await expect(session.execute(command)).resolves.toEqual({
+      ok: true,
+      value: { turnId: "steered-cancel" },
+    });
+    await session.execute({ type: "turn.cancel", turnId: turnId("steered-cancel") });
+    await expect(session.execute(command)).resolves.toEqual({
+      ok: true,
+      value: { turnId: "steered-cancel" },
+    });
+    await expect(
+      session.execute({
+        ...command,
+        input: [{ type: "text", text: "conflict" }],
+      }),
+    ).resolves.toMatchObject({ ok: false, error: { code: "invalidRequest" } });
+    session.completeCancellation();
+    await adapter.close();
+  });
+
   it("round-trips a typed choice Question and closes it before the Turn", async () => {
     const session = new FakeHarnessSession(harnessIdSchema.parse("fake"));
     const collected = collect(session.outputs);

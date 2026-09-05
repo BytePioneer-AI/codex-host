@@ -48,6 +48,7 @@ Codex Desktop
 | Pi | CLI 原生 RPC | create、resume、fork、跨 cwd fork、rollback | Model、Thinking | Question | Usage、Commands、Compaction、工具和文件投影 |
 | OMP | CLI 原生 RPC | create、resume、fork、跨 cwd fork、rollback | Model、Thinking | 无 Host Interaction | Usage、Commands、Compaction、Subagent、Autonomous Turn |
 | Claude Code | Claude Agent SDK | create、resume、fork；fork 不跨 cwd，rollback 不支持 | Model、Thinking、Permission Mode | Approval、Question | Usage、Credits、Commands、Subagent、Autonomous Turn |
+| OpenCode | loopback Server + 原生 SDK | create、resume、fork；fork 不跨 cwd、rollback | Model、Thinking、Permission Mode | Approval、Question | Usage、Commands、Compaction、活动 Turn steering、工具和文件投影 |
 | Grok | ACP 加私有扩展 | create、resume、fork、跨 cwd fork；rollback 不支持 | Model、Thinking、Permission Mode | Approval | Usage、Credits、Commands、Compaction |
 | DeepSeek Harness | 原生 Host API / RPC | create、resume、fork；fork 不跨 cwd | Model、Thinking | Approval、Question | Usage、Commands、Compaction、分页历史、共享 Host 连接 |
 
@@ -92,6 +93,7 @@ Codex Desktop
 | Subagent 生命周期和 Transcript | OMP | Claude Code |
 | Autonomous Turn | OMP | Claude Code |
 | Harness Commands / compaction | Pi | Claude Code、Grok、OMP、DeepSeek Harness |
+| 活动 Turn steering | OpenCode（当前精确验证 1.18.25） | 必须按目标 Harness 与原生版本逐项验证 admission、完成、取消、持久化和 idle 语义 |
 | Tool、Command 和 File Change 投影 | Claude Code | Pi、OMP、Grok、DeepSeek Harness |
 | Approval/Question 响应校验 | `packages/harness-adapter/src/interaction.ts` | Claude Code、DeepSeek Harness |
 | 测试公共契约与完整事件顺序 | `packages/harness-adapter/src/testing.ts` 和 `test/text-session.test.ts` | 对应 Adapter 测试 |
@@ -140,6 +142,18 @@ Claude Code 是能力面最完整的参考：
 - 后台占用与 continuation quiescence。
 
 它的实现复杂度高。只提取目标能力的模式，不以整个 Adapter 作为新实现模板。
+
+### OpenCode
+
+OpenCode 适合参考常驻 Server 与同一 Turn 多段原生消息的控制：
+
+- loopback Server、Basic Auth、SDK Transport 和 SSE 对账；
+- 活动 Turn 中串行追加 prompt，并用明确 capability 对 Host 开放；
+- steer、idle reconciliation 与 cancel 的版本化竞态收敛；
+- 仅对已持久化却未被消费的 steer 执行单次 stable-idle recovery；
+- 将多个原生 User/Assistant 段恢复为一个 Host Turn，并保持 Fork、rollback 和 Diff 边界。
+
+其调用方 Message ID 和历史分组依赖已验证的 OpenCode 原生约束；不能复制到不共享这些约束的 Harness。
 
 ### Grok
 

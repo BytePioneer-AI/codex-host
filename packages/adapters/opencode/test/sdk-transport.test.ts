@@ -163,6 +163,7 @@ describe("OpenCode SDK transport", () => {
     const promptAsync = vi
       .fn()
       .mockResolvedValueOnce({ data: undefined, error: undefined })
+      .mockResolvedValueOnce({ data: undefined, error: undefined })
       .mockResolvedValueOnce({ data: undefined, error: { message: "synthetic rejection" } });
     const connection = {
       stderrTail: "",
@@ -176,8 +177,38 @@ describe("OpenCode SDK transport", () => {
     expect(promptAsync).toHaveBeenNthCalledWith(
       1,
       expect.not.objectContaining({ messageID: expect.anything() }),
+      { signal: expect.any(AbortSignal) },
+    );
+    await expect(
+      transport.promptAsync({ ...input, messageID: "msg_000000000001CH012345678900" }),
+    ).resolves.toBeUndefined();
+    expect(promptAsync).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ messageID: "msg_000000000001CH012345678900" }),
+      { signal: expect.any(AbortSignal) },
     );
     await expect(transport.promptAsync(input)).rejects.toMatchObject({ code: "unavailable" });
+  });
+
+  it("aborts an ambiguous prompt admission when its response times out", async () => {
+    let signal: AbortSignal | undefined;
+    const promptAsync = vi.fn((_input: unknown, options: { signal: AbortSignal }) => {
+      signal = options.signal;
+      return new Promise<never>(() => undefined);
+    });
+    const connection = {
+      stderrTail: "",
+      client: async () => clientWith({ session: { promptAsync } }),
+      close: async () => undefined,
+    };
+    const transport = new SdkOpenCodeTransport(connection, "/synthetic", {
+      commandTimeoutMs: 5,
+    });
+
+    await expect(
+      transport.promptAsync({ sessionID: "session-1", text: "hello" }),
+    ).rejects.toMatchObject({ code: "unavailable" });
+    expect(signal?.aborted).toBe(true);
   });
 
   it("updates Session metadata through the SDK", async () => {

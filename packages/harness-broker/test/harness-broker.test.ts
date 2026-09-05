@@ -67,13 +67,25 @@ describe("macOS Aqua Harness broker", () => {
       process.platform === "win32"
         ? `\\\\.\\pipe\\codexhost-harness-broker-${process.pid}-${randomUUID()}`
         : path.join(root, "broker.sock");
-    const native = new FakeHarnessAdapter(harnessIdSchema.parse("claude-code"));
+    const native = new FakeHarnessAdapter(
+      harnessIdSchema.parse("claude-code"),
+      undefined,
+      true,
+      true,
+      null,
+      undefined,
+      false,
+      "live",
+      true,
+      true,
+    );
     const nativeOpen = vi.spyOn(native, "open");
     const server = await startHarnessBrokerServer({ descriptorPath, socketPath, adapter: native });
     const adapter = new BrokeredHarnessAdapter({ descriptorPath });
 
     await expect(adapter.inspect({ cwd: root })).resolves.toMatchObject({
       status: "ready",
+      capabilities: { activeTurns: { steer: true } },
     });
     const opened = await adapter.open({
       kind: "create",
@@ -98,9 +110,35 @@ describe("macOS Aqua Harness broker", () => {
       value: { kind: "event", event: { type: "item.started", turnId: "broker-turn-1" } },
     });
 
+    const steer = {
+      type: "turn.steer" as const,
+      turnId: hostTurnIdSchema.parse("broker-turn-1"),
+      input: [{ type: "text" as const, text: "adjust" }],
+      clientUserMessageId: "broker-steer-1",
+    };
+    await expect(opened.value.execute(steer)).resolves.toEqual({
+      ok: true,
+      value: { turnId: "broker-turn-1" },
+    });
+    await expect(opened.value.execute(steer)).resolves.toEqual({
+      ok: true,
+      value: { turnId: "broker-turn-1" },
+    });
+    await expect(
+      opened.value.execute({
+        ...steer,
+        input: [{ type: "text", text: "conflicting retry" }],
+      }),
+    ).resolves.toMatchObject({ ok: false, error: { code: "invalidRequest" } });
+
     expect(native.sessions).toHaveLength(1);
     expect(native.sessions[0]?.cwd).toBe(root);
     expect(nativeOpen).toHaveBeenCalledWith({ kind: "create", cwd: root });
+    native.sessions[0]?.succeedTurn();
+    expect(native.sessions[0]?.persistedSnapshot().turns[0]?.input).toEqual([
+      { type: "text", text: "ping" },
+      { type: "text", text: "adjust" },
+    ]);
     await opened.value.close();
     await adapter.close();
     await server.close();

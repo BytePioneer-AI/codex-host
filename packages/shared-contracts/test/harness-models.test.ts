@@ -126,6 +126,23 @@ describe("Harness Model runtime contracts", () => {
     ).toBe(false);
   });
 
+  it("keeps active Turn steering optional and validates it strictly", () => {
+    const legacy = readyInspection().capabilities;
+    expect(harnessSessionCapabilitiesSchema.parse(legacy)).toEqual(legacy);
+    expect(
+      harnessSessionCapabilitiesSchema.parse({
+        ...legacy,
+        activeTurns: { steer: true },
+      }),
+    ).toMatchObject({ activeTurns: { steer: true } });
+    expect(
+      harnessSessionCapabilitiesSchema.safeParse({
+        ...legacy,
+        activeTurns: { steer: true, queue: true },
+      }).success,
+    ).toBe(false);
+  });
+
   it("rejects native configuration and unknown fields", () => {
     expect(
       harnessInspectionSchema.safeParse({

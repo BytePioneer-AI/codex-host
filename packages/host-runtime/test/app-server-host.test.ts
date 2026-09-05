@@ -180,6 +180,21 @@ function rollbackCapableAdapter(): FakeHarnessAdapter {
   );
 }
 
+function steeringCapableAdapter(): FakeHarnessAdapter {
+  return new FakeHarnessAdapter(
+    harnessIdSchema.parse("pi"),
+    undefined,
+    true,
+    true,
+    null,
+    undefined,
+    false,
+    "live",
+    true,
+    true,
+  );
+}
+
 class SameIdentityRollbackAdapter extends FakeHarnessAdapter {
   constructor() {
     super(harnessIdSchema.parse("pi"), undefined, true, true, null, undefined, true);
@@ -7178,6 +7193,236 @@ describe("AppServerHost HarnessAdapter projection", () => {
     );
     expect(questionClosedIndex).toBeGreaterThan(responseIndex);
     expect(turnIndex).toBeGreaterThan(questionClosedIndex);
+    await stopFixture(fixture);
+  });
+
+  it("steers an active external Turn exactly once and responds before steer output", async () => {
+    const adapter = steeringCapableAdapter();
+    const fixture = createFixture({
+      externalAdapters: new Map<ExternalHarnessId, FakeHarnessAdapter>([["pi", adapter]]),
+    });
+    const officialWrite = vi.fn();
+    fixture.official.stdin.on("data", officialWrite);
+    const threadId = await startPiThread(fixture);
+    const turnId = await startPiTurn(fixture, threadId, 2, "initial request");
+    const session = adapter.sessions[0];
+    if (!session) throw new Error("Fake steering Session was not opened");
+    await fixture.collector.waitFor((message) => turnEvent(message, "turn/started", turnId));
+    session.appendTextOnNextSteer("adjusted output");
+    const params = {
+      threadId,
+      expectedTurnId: turnId,
+      input: [{ type: "text", text: "focus on tests" }],
+      clientUserMessageId: "desktop-steer-1",
+    };
+
+    writeRequest(fixture.desktopInput, { id: 3, method: "turn/steer", params });
+    writeRequest(fixture.desktopInput, { id: 4, method: "turn/steer", params });
+    await expect(fixture.collector.waitFor((message) => requestId(message, 3))).resolves.toEqual({
+      id: 3,
+      result: { turnId },
+    });
+    const delta = await fixture.collector.waitFor(
+      (message) =>
+        method(message, "item/agentMessage/delta") &&
+        messageParams(message).delta === "adjusted output",
+    );
+    await expect(fixture.collector.waitFor((message) => requestId(message, 4))).resolves.toEqual({
+      id: 4,
+      result: { turnId },
+    });
+    const responseIndex = fixture.collector.messages.findIndex((message) => requestId(message, 3));
+    expect(fixture.collector.messages.indexOf(delta)).toBeGreaterThan(responseIndex);
+
+    writeRequest(fixture.desktopInput, {
+      id: 5,
+      method: "turn/steer",
+      params: {
+        ...params,
+        input: [{ type: "text", text: "conflicting retry" }],
+      },
+    });
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 5)),
+    ).resolves.toMatchObject({
+      error: {
+        code: -32602,
+        message: "turn/steer clientUserMessageId was reused with new input",
+      },
+    });
+
+    session.succeedTurn();
+    const completed = await fixture.collector.waitFor((message) =>
+      turnEvent(message, "turn/completed", turnId),
+    );
+    expect(completed).toMatchObject({ params: { turn: { status: "completed" } } });
+    expect(session.persistedSnapshot().turns[0]?.input).toEqual([
+      { type: "text", text: "initial request" },
+      { type: "text", text: "focus on tests" },
+    ]);
+    expect(officialWrite).not.toHaveBeenCalled();
+    await stopFixture(fixture);
+  });
+
+  it("rejects unsupported, malformed, and stale external steering without backend fallthrough", async () => {
+    const fixture = createFixture();
+    const officialWrite = vi.fn();
+    fixture.official.stdin.on("data", officialWrite);
+    const threadId = await startPiThread(fixture);
+    const turnId = await startPiTurn(fixture, threadId);
+
+    writeRequest(fixture.desktopInput, {
+      id: 3,
+      method: "turn/steer",
+      params: {
+        threadId,
+        expectedTurnId: turnId,
+        input: [{ type: "text", text: "adjust" }],
+      },
+    });
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 3)),
+    ).resolves.toMatchObject({
+      error: { code: -32076, message: "External Harness does not support turn/steer" },
+    });
+    expect(officialWrite).not.toHaveBeenCalled();
+    fixture.adapter.sessions[0]?.succeedTurn();
+    await stopFixture(fixture);
+
+    const adapter = steeringCapableAdapter();
+    const capable = createFixture({
+      externalAdapters: new Map<ExternalHarnessId, FakeHarnessAdapter>([["pi", adapter]]),
+    });
+    const capableOfficialWrite = vi.fn();
+    capable.official.stdin.on("data", capableOfficialWrite);
+    const capableThreadId = await startPiThread(capable);
+    const capableTurnId = await startPiTurn(capable, capableThreadId);
+    writeRequest(capable.desktopInput, {
+      id: 3,
+      method: "turn/steer",
+      params: {
+        threadId: capableThreadId,
+        expectedTurnId: "stale-turn",
+        input: [{ type: "text", text: "adjust" }],
+      },
+    });
+    await expect(
+      capable.collector.waitFor((message) => requestId(message, 3)),
+    ).resolves.toMatchObject({ error: { code: -32074 } });
+    writeRequest(capable.desktopInput, {
+      id: 4,
+      method: "turn/steer",
+      params: {
+        threadId: capableThreadId,
+        expectedTurnId: capableTurnId,
+        input: [{ type: "image", url: "https://example.invalid/image.png" }],
+      },
+    });
+    await expect(
+      capable.collector.waitFor((message) => requestId(message, 4)),
+    ).resolves.toMatchObject({ error: { code: -32602 } });
+    expect(capableOfficialWrite).not.toHaveBeenCalled();
+    adapter.sessions[0]?.succeedTurn();
+    await stopFixture(capable);
+  });
+
+  it("rejects a steering admission that acknowledges a different Turn", async () => {
+    const adapter = steeringCapableAdapter();
+    const fixture = createFixture({
+      externalAdapters: new Map<ExternalHarnessId, FakeHarnessAdapter>([["pi", adapter]]),
+    });
+    const officialWrite = vi.fn();
+    fixture.official.stdin.on("data", officialWrite);
+    const threadId = await startPiThread(fixture);
+    const turnId = await startPiTurn(fixture, threadId);
+    const session = adapter.sessions[0];
+    if (!session) throw new Error("Fake steering Session was not opened");
+    vi.spyOn(session, "execute").mockImplementationOnce(
+      async () =>
+        ({
+          ok: true,
+          value: { turnId: hostTurnIdSchema.parse("different-turn") },
+        }) as never,
+    );
+
+    writeRequest(fixture.desktopInput, {
+      id: 3,
+      method: "turn/steer",
+      params: {
+        threadId,
+        expectedTurnId: turnId,
+        input: [{ type: "text", text: "adjust" }],
+      },
+    });
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 3)),
+    ).resolves.toMatchObject({
+      error: { code: -32073, message: "External Harness steering returned a different Turn" },
+    });
+    expect(officialWrite).not.toHaveBeenCalled();
+    session.succeedTurn();
+    await stopFixture(fixture);
+  });
+
+  it("returns a local error when steering throws before returning a Promise", async () => {
+    const adapter = steeringCapableAdapter();
+    const fixture = createFixture({
+      externalAdapters: new Map<ExternalHarnessId, FakeHarnessAdapter>([["pi", adapter]]),
+    });
+    const officialWrite = vi.fn();
+    fixture.official.stdin.on("data", officialWrite);
+    const threadId = await startPiThread(fixture);
+    const turnId = await startPiTurn(fixture, threadId);
+    const session = adapter.sessions[0];
+    if (!session) throw new Error("Fake steering Session was not opened");
+    vi.spyOn(session, "execute").mockImplementationOnce(() => {
+      throw new Error("synthetic synchronous steering failure");
+    });
+
+    writeRequest(fixture.desktopInput, {
+      id: 3,
+      method: "turn/steer",
+      params: {
+        threadId,
+        expectedTurnId: turnId,
+        input: [{ type: "text", text: "adjust" }],
+      },
+    });
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 3)),
+    ).resolves.toMatchObject({
+      error: {
+        code: -32073,
+        message: "External Harness steering failed: synthetic synchronous steering failure",
+      },
+    });
+    expect(officialWrite).not.toHaveBeenCalled();
+    session.succeedTurn();
+    await stopFixture(fixture);
+  });
+
+  it("leaves official turn/steer requests on the official connection", async () => {
+    const fixture = createFixture();
+    const request = {
+      id: 17,
+      method: "turn/steer",
+      params: {
+        threadId: "official-thread",
+        expectedTurnId: "official-turn",
+        input: [{ type: "text", text: "adjust" }],
+      },
+    };
+    writeRequest(fixture.desktopInput, request);
+    await expect(readJsonLine(fixture.official.stdin)).resolves.toEqual(request);
+
+    const malformed = {
+      jsonrpc: "2.0",
+      id: 18,
+      method: "turn/steer",
+      params: ["not-an-object"],
+    };
+    writeRequest(fixture.desktopInput, malformed);
+    await expect(readJsonLine(fixture.official.stdin)).resolves.toEqual(malformed);
     await stopFixture(fixture);
   });
 

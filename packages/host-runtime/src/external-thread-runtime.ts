@@ -1,9 +1,11 @@
 import type {
   HarnessAdapter,
   HarnessModelRef,
+  HarnessResult,
   HarnessSession,
   HarnessSessionState,
   HostUsage,
+  TurnSteerAccepted,
   TurnCompletedEvent,
 } from "@codexhost/harness-adapter";
 import type { StoredThreadRecordV1 } from "@codexhost/mapping-store";
@@ -33,6 +35,22 @@ import { SessionStateObserver } from "./session-state-observer.js";
 export interface TurnProjectionGate {
   promise: Promise<void>;
   resolve(): void;
+}
+
+export function createTurnProjectionGate(): TurnProjectionGate {
+  let resolve = (): void => undefined;
+  const promise = new Promise<void>((complete) => {
+    resolve = complete;
+  });
+  return { promise, resolve };
+}
+
+export interface ExternalProjectedTurn {
+  projector: CodexTurnProjector;
+  steerRequests?: Map<
+    string,
+    { inputKey: string; result: Promise<HarnessResult<TurnSteerAccepted>> }
+  >;
 }
 
 export interface ExternalThreadHistoryMutation {
@@ -100,7 +118,7 @@ export interface ExternalThread {
   activeTurnId: HostTurnId | null;
   latestUsage: HostUsage | null;
   usageTurnId: HostTurnId | null;
-  projectedTurns: Map<HostTurnId, { projector: CodexTurnProjector }>;
+  projectedTurns: Map<HostTurnId, ExternalProjectedTurn>;
   responseGates: Map<HostTurnId, TurnProjectionGate>;
   ephemeralTurnIds: Set<HostTurnId>;
   persistenceError: Error | null;

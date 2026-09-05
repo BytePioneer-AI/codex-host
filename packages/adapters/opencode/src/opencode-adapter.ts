@@ -58,6 +58,8 @@ import {
   type TurnCancelAccepted,
   type TurnCancelCommand,
   type TurnOutcome,
+  type TurnSteerAccepted,
+  type TurnSteerCommand,
   type TurnStartAccepted,
   type TurnStartCommand,
 } from "@codexhost/harness-adapter";
@@ -79,6 +81,7 @@ import {
 } from "@codexhost/shared-contracts";
 
 import {
+  isTerminalOpenCodeAssistant,
   openCodeAssistantMessages,
   openCodeNativeSessionRef,
   parseOpenCodeSessionRef,
@@ -101,6 +104,11 @@ import {
   type OpenCodeProviderCatalog,
 } from "./model-catalog.js";
 import {
+  OpenCodeMessageIdGenerator,
+  parseOpenCodeMessageGroup,
+  type OpenCodeMessageGroupIdentity,
+} from "./message-grouping.js";
+import {
   decodeOpenCodePermissionModeId,
   OPENCODE_DEFAULT_PERMISSION_MODE_ID,
   OPENCODE_PERMISSION_MODE_CATALOG,
@@ -110,6 +118,7 @@ import {
 } from "./permission-modes.js";
 import {
   OpenCodeTransportError,
+  type OpenCodePromptInput,
   type OpenCodeTransport,
   type OpenCodeTransportListener,
 } from "./protocol.js";
@@ -162,13 +171,28 @@ interface BufferedOutput {
   sequence: number;
 }
 
+type ContinuationIdleState = "unobserved" | "observed" | "stable";
+type OrphanRecoveryState = "available" | "pending" | "used";
+
+interface ActiveTurnContinuation {
+  latestMessageID: string | null;
+  persistence: "pending" | "persisted";
+  idle: ContinuationIdleState;
+  stableIdleCheckVersion: number | null;
+  recovery: OrphanRecoveryState;
+  enteredMessageIDs: Set<string>;
+}
+
 interface ActiveTurn {
   kind: ActiveKind;
   turnId: TurnStartCommand["turnId"];
   userMessageID: string | null;
+  userMessageIDs: string[];
+  messageGroup: OpenCodeMessageGroupIdentity | null;
   preexistingUserMessageIds: Set<string>;
   assistantMessageIds: Set<string>;
   cancellationRequested: boolean;
+  cancellationPromise: Promise<HarnessResult<TurnCancelAccepted>> | null;
   admissionCompleted: boolean;
   admissionFailure: HarnessError | null;
   admissionFailurePromise: Promise<void>;
@@ -179,6 +203,8 @@ interface ActiveTurn {
   finishing: boolean;
   reconcilePending: boolean;
   terminalAssistant: AssistantMessage | null;
+  terminalError: HarnessError | null;
+  faultSettlementPending: boolean;
   items: Map<string, LiveItem>;
   toolItemByCallId: Map<string, HostItemId>;
   interactions: Map<HostInteractionId, ActiveInteraction>;
@@ -187,6 +213,14 @@ interface ActiveTurn {
   finished: boolean;
   admissionBuffer: BufferedOutput[];
   admissionSequence: number;
+  lifecycleVersion: number;
+  pendingSteerAdmissions: number;
+  steerTail: Promise<void>;
+  continuation: ActiveTurnContinuation;
+  steerByClientId: Map<
+    string,
+    { inputKey: string; result: Promise<HarnessResult<TurnSteerAccepted>> }
+  >;
 }
 
 interface OpenCodeSnapshotProjection {
@@ -201,12 +235,20 @@ interface OpenCodeSnapshotProjection {
 const openCodeHarnessId = harnessIdSchema.parse("opencode");
 const DEFAULT_TOOL_OUTPUT_LIMIT = 64_000;
 const DEFAULT_CLOSE_TIMEOUT_MS = 3_000;
+const VERIFIED_STEERING_VERSION = "1.18.25";
+const RECOVERY_PROMPT_TEXT = "Continue following the latest user instruction.";
+const ORPHAN_RECOVERY_GRACE_MS = 50;
+const FAULT_RECONCILIATION_DELAYS_MS = [0, 25, 50, 100, 200, 400] as const;
 // OpenCode persists session.diff in a background summary after emitting the
 // terminal Patch Part. Reconcile briefly so FileChange precedes Turn completion.
 const DIFF_RECONCILIATION_DELAYS_MS = [25, 50, 100, 200, 400, 800] as const;
 const COMPACT_COMMAND_ID = "opencode.compact";
 const NATIVE_COMMAND_PREFIX = "opencode.command.";
 const SELECTION_METADATA_KEY = "codexhost.selection.v1";
+
+function supportsSteering(version: string): boolean {
+  return version === VERIFIED_STEERING_VERSION;
+}
 
 function invalidState(message: string): HarnessError {
   return { code: "invalidState", message, retryable: false };
@@ -555,14 +597,17 @@ class OpenCodeHarnessSession implements HarnessSession, OpenCodeTransportListene
   readonly #connection: OpenCodeServerConnectionLike;
   readonly #executionPolicy: OpenCodeExecutionPolicy;
   readonly #uuid: () => string;
+  readonly #messageIds = new OpenCodeMessageIdGenerator();
   readonly #knownUserMessageIds = new Set<string>();
   #active: ActiveTurn | null = null;
   #closePromise: Promise<void> | null = null;
   #configuring = false;
   #connectedCount = 0;
+  #faultFinalizationPromise: Promise<void> | null = null;
   #model: OpenCodeNativeModelRef | undefined;
   #permissionMode: OpenCodePermissionMode;
   #phase: SessionPhase = "open";
+  #resourceClosePromise: Promise<void> | null = null;
   #session: Session;
   #snapshot: HostThreadSnapshot;
   #state: HarnessSessionState;
@@ -582,6 +627,7 @@ class OpenCodeHarnessSession implements HarnessSession, OpenCodeTransportListene
     executionPolicy: OpenCodeExecutionPolicy;
     permissionMode: OpenCodePermissionMode;
     strictFileChanges: boolean;
+    steeringSupported: boolean;
     onClosed(): void;
   }) {
     this.#transport = input.transport;
@@ -627,6 +673,7 @@ class OpenCodeHarnessSession implements HarnessSession, OpenCodeTransportListene
         rollbackLastTurn: true,
         replacementFence: true,
       },
+      ...(input.steeringSupported ? { activeTurns: { steer: true } } : {}),
     };
     this.commands = {
       list: async () => {
@@ -682,6 +729,7 @@ class OpenCodeHarnessSession implements HarnessSession, OpenCodeTransportListene
   }
 
   execute(command: TurnStartCommand): Promise<HarnessResult<TurnStartAccepted>>;
+  execute(command: TurnSteerCommand): Promise<HarnessResult<TurnSteerAccepted>>;
   execute(command: TurnCancelCommand): Promise<HarnessResult<TurnCancelAccepted>>;
   execute(command: InteractionRespondCommand): Promise<HarnessResult<InteractionRespondAccepted>>;
   execute(command: ModelSelectCommand): Promise<HarnessResult<ModelSelectCompleted>>;
@@ -694,6 +742,7 @@ class OpenCodeHarnessSession implements HarnessSession, OpenCodeTransportListene
   ): Promise<
     HarnessResult<
       | TurnStartAccepted
+      | TurnSteerAccepted
       | TurnCancelAccepted
       | InteractionRespondAccepted
       | ModelSelectCompleted
@@ -704,6 +753,7 @@ class OpenCodeHarnessSession implements HarnessSession, OpenCodeTransportListene
     if (this.#phase !== "open") {
       return { ok: false, error: invalidState("OpenCode Session is not open") };
     }
+    if (command.type === "turn.steer") return this.#steer(command);
     if (command.type === "turn.cancel") return this.#cancel(command);
     if (command.type === "interaction.respond") return this.#respond(command);
     if (command.type === "model.select") return this.#selectModel(command);
@@ -730,15 +780,21 @@ class OpenCodeHarnessSession implements HarnessSession, OpenCodeTransportListene
         },
       };
     }
-    const active = this.#createActive("prompt", command.turnId, null);
+    const messageGroup = this.capabilities.activeTurns?.steer
+      ? this.#messageIds.createGroup(this.#uuid())
+      : null;
+    const userMessageID = messageGroup ? this.#messageIds.next(messageGroup) : null;
+    const active = this.#createActive("prompt", command.turnId, userMessageID, messageGroup);
     this.#active = active;
     active.admissionBuffer.push({
       output: { kind: "event", event: { type: "turn.started", turnId: command.turnId } },
       sequence: active.admissionSequence++,
     });
     try {
-      const prompt = this.#transport.promptAsync({
+      this.#beginPromptAdmission(active, userMessageID);
+      const prompt = this.#admitPrompt({
         sessionID: this.#session.id,
+        ...(userMessageID ? { messageID: userMessageID } : {}),
         text,
         ...(this.#model ? { model: this.#model } : {}),
         ...(this.#variant ? { variant: this.#variant } : {}),
@@ -777,6 +833,177 @@ class OpenCodeHarnessSession implements HarnessSession, OpenCodeTransportListene
 
   onFault(error: OpenCodeTransportError): void {
     queueMicrotask(() => this.#fault(error));
+  }
+
+  async #admitPrompt(input: OpenCodePromptInput): Promise<void> {
+    try {
+      await this.#transport.promptAsync(input);
+    } catch (error) {
+      if (!input.messageID) throw error;
+      let messages: OpenCodeMessageWithParts[];
+      try {
+        messages = await this.#transport.getMessages(input.sessionID);
+      } catch {
+        throw error;
+      }
+      const persisted = messages.some(
+        ({ info }) => info.role === "user" && info.id === input.messageID,
+      );
+      if (!persisted) throw error;
+    }
+  }
+
+  #beginPromptAdmission(active: ActiveTurn, messageID: string | null): void {
+    if (messageID) active.continuation.enteredMessageIDs.add(messageID);
+    active.continuation.latestMessageID = messageID;
+    active.continuation.persistence = "pending";
+    active.continuation.idle = "unobserved";
+    active.continuation.stableIdleCheckVersion = null;
+  }
+
+  #scheduleStableIdleCheck(active: ActiveTurn, lifecycleVersion: number): void {
+    if (active.continuation.stableIdleCheckVersion === lifecycleVersion) return;
+    active.continuation.stableIdleCheckVersion = lifecycleVersion;
+    setTimeout(() => {
+      void this.#confirmStableIdle(active, lifecycleVersion);
+    }, ORPHAN_RECOVERY_GRACE_MS);
+  }
+
+  async #confirmStableIdle(active: ActiveTurn, lifecycleVersion: number): Promise<void> {
+    if (active.continuation.stableIdleCheckVersion !== lifecycleVersion) return;
+    if (
+      this.#active !== active ||
+      active.finished ||
+      active.pendingSteerAdmissions > 0 ||
+      active.continuation.persistence !== "persisted" ||
+      active.continuation.latestMessageID !== active.userMessageIDs.at(-1) ||
+      active.lifecycleVersion !== lifecycleVersion
+    ) {
+      active.continuation.stableIdleCheckVersion = null;
+      return;
+    }
+    let status;
+    try {
+      status = await this.#transport.getStatus(this.#session.id);
+    } catch {
+      if (active.continuation.stableIdleCheckVersion === lifecycleVersion) {
+        active.continuation.stableIdleCheckVersion = null;
+        void this.#reconcileAndFinish(active);
+      }
+      return;
+    }
+    if (active.continuation.stableIdleCheckVersion !== lifecycleVersion) return;
+    if (
+      this.#active !== active ||
+      active.finished ||
+      active.pendingSteerAdmissions > 0 ||
+      active.lifecycleVersion !== lifecycleVersion
+    ) {
+      active.continuation.stableIdleCheckVersion = null;
+      return;
+    }
+    active.continuation.stableIdleCheckVersion = null;
+    if (status.type !== "idle") {
+      active.continuation.idle = "unobserved";
+      return;
+    }
+    active.continuation.idle = "stable";
+    void this.#reconcileAndFinish(active);
+  }
+
+  #queueOrphanRecovery(active: ActiveTurn): boolean {
+    const group = active.messageGroup;
+    if (!group || active.continuation.recovery !== "available") return false;
+    const orphanedMessageID = active.userMessageIDs.at(-1);
+    if (!orphanedMessageID) return false;
+    let messageID: string;
+    try {
+      messageID = this.#messageIds.nextRecovery(group);
+    } catch (error) {
+      active.terminalError = normalizeError(error, "protocolError");
+      return false;
+    }
+    active.userMessageIDs.push(messageID);
+    active.continuation.recovery = "pending";
+    active.lifecycleVersion += 1;
+    const recoveryLifecycleVersion = active.lifecycleVersion;
+    active.pendingSteerAdmissions += 1;
+    const admission = active.steerTail.then(async (): Promise<boolean> => {
+      if (
+        this.#active !== active ||
+        active.finished ||
+        active.terminalError ||
+        active.cancellationRequested ||
+        this.#phase !== "open"
+      ) {
+        throw new Error("OpenCode Turn ended before orphan recovery could be admitted");
+      }
+      const [status, messages] = await Promise.all([
+        this.#transport.getStatus(this.#session.id),
+        this.#transport.getMessages(this.#session.id),
+      ]);
+      if (
+        this.#active !== active ||
+        active.finished ||
+        active.terminalError ||
+        active.cancellationRequested ||
+        active.interactions.size > 0 ||
+        this.#phase !== "open" ||
+        active.lifecycleVersion !== recoveryLifecycleVersion ||
+        active.continuation.idle !== "stable" ||
+        active.terminalAssistant?.parentID === orphanedMessageID ||
+        active.userMessageIDs.at(-1) !== messageID
+      ) {
+        return false;
+      }
+      if (status.type !== "idle") return false;
+      const orphanVisible = messages.some(
+        ({ info }) => info.role === "user" && info.id === orphanedMessageID,
+      );
+      const orphanAnswered = messages.some(
+        ({ info }) => info.role === "assistant" && info.parentID === orphanedMessageID,
+      );
+      if (!orphanVisible || orphanAnswered) return false;
+      this.#beginPromptAdmission(active, messageID);
+      await this.#admitPrompt({
+        sessionID: this.#session.id,
+        messageID,
+        text: RECOVERY_PROMPT_TEXT,
+        ...(this.#model ? { model: this.#model } : {}),
+        ...(this.#variant ? { variant: this.#variant } : {}),
+      });
+      return true;
+    });
+    const discardReservedMessage = (): void => {
+      const index = active.userMessageIDs.indexOf(messageID);
+      if (index >= 0) active.userMessageIDs.splice(index, 1);
+    };
+    const settled = admission
+      .then((admitted) => {
+        if (!admitted) {
+          discardReservedMessage();
+          active.continuation.recovery = "available";
+          if (active.continuation.idle === "stable") {
+            active.continuation.idle = "observed";
+          }
+        } else {
+          active.continuation.recovery = "used";
+        }
+      })
+      .catch((error: unknown) => {
+        discardReservedMessage();
+        active.continuation.recovery = "used";
+        if (!active.cancellationRequested && !active.terminalError) {
+          active.terminalError = normalizeError(error, "nativeFailure");
+        }
+      })
+      .finally(() => {
+        active.pendingSteerAdmissions -= 1;
+        active.lifecycleVersion += 1;
+        void this.#reconcileAndFinish(active);
+      });
+    active.steerTail = settled;
+    return true;
   }
 
   async #executeHarnessCommand(
@@ -899,13 +1126,144 @@ class OpenCodeHarnessSession implements HarnessSession, OpenCodeTransportListene
         error: invalidState("OpenCode cancellation must reference the active Turn"),
       };
     }
+    if (active.cancellationPromise) return active.cancellationPromise;
     active.cancellationRequested = true;
-    try {
-      await this.#transport.abort(this.#session.id);
-      return { ok: true, value: { cancellationRequested: true } };
-    } catch (error) {
-      return { ok: false, error: normalizeError(error, "nativeFailure") };
+    active.lifecycleVersion += 1;
+    active.cancellationPromise = active.steerTail.then(async () => {
+      if (this.#active !== active || active.finished) {
+        return { ok: true as const, value: { cancellationRequested: true as const } };
+      }
+      try {
+        await this.#transport.abort(this.#session.id);
+        return { ok: true as const, value: { cancellationRequested: true as const } };
+      } catch (error) {
+        if (this.#active !== active || active.finished) {
+          return { ok: true as const, value: { cancellationRequested: true as const } };
+        }
+        return { ok: false as const, error: normalizeError(error, "nativeFailure") };
+      }
+    });
+    return active.cancellationPromise;
+  }
+
+  #steer(command: TurnSteerCommand): Promise<HarnessResult<TurnSteerAccepted>> {
+    if (!this.capabilities.activeTurns?.steer) {
+      return Promise.resolve({
+        ok: false,
+        error: unsupported("OpenCode steering is unavailable for this native version"),
+      });
     }
+    const active = this.#active;
+    if (
+      !active ||
+      active.kind !== "prompt" ||
+      active.turnId !== command.turnId ||
+      !active.admissionCompleted ||
+      !active.messageGroup
+    ) {
+      return Promise.resolve({
+        ok: false,
+        error: invalidState("OpenCode steering must reference an active text Turn"),
+      });
+    }
+    const inputKey = JSON.stringify(command.input);
+    const text = command.input.map((input) => input.text).join("\n");
+    if (!text) {
+      return Promise.resolve({
+        ok: false,
+        error: {
+          code: "invalidRequest",
+          message: "OpenCode steering input must not be empty",
+          retryable: false,
+        },
+      });
+    }
+    if (command.clientUserMessageId) {
+      const existing = active.steerByClientId.get(command.clientUserMessageId);
+      if (existing) {
+        if (existing.inputKey !== inputKey) {
+          return Promise.resolve({
+            ok: false,
+            error: {
+              code: "invalidRequest",
+              message: "OpenCode steering id was reused with different input",
+              retryable: false,
+            },
+          });
+        }
+        return existing.result;
+      }
+    }
+    const latestUserMessageID = active.userMessageIDs.at(-1);
+    const terminalAssistant = active.terminalAssistant;
+    const latestAssistantReachedIdle =
+      active.pendingSteerAdmissions === 0 &&
+      active.interactions.size === 0 &&
+      active.continuation.idle !== "unobserved" &&
+      terminalAssistant !== null &&
+      terminalAssistant.parentID === latestUserMessageID &&
+      isTerminalOpenCodeAssistant(terminalAssistant);
+    if (active.cancellationRequested || active.terminalError || latestAssistantReachedIdle) {
+      return Promise.resolve({
+        ok: false,
+        error: invalidState("OpenCode text Turn ended before steering could be admitted"),
+      });
+    }
+
+    let messageID: string;
+    try {
+      messageID = this.#messageIds.next(active.messageGroup);
+    } catch (error) {
+      return Promise.resolve({ ok: false, error: normalizeError(error, "invalidRequest") });
+    }
+    active.userMessageIDs.push(messageID);
+    active.lifecycleVersion += 1;
+    active.pendingSteerAdmissions += 1;
+    const admitted = active.steerTail.then(async (): Promise<HarnessResult<TurnSteerAccepted>> => {
+      if (
+        this.#active !== active ||
+        active.finished ||
+        active.terminalError ||
+        active.cancellationRequested ||
+        this.#phase !== "open"
+      ) {
+        return {
+          ok: false,
+          error: invalidState("OpenCode text Turn ended before steering could be admitted"),
+        };
+      }
+      try {
+        this.#beginPromptAdmission(active, messageID);
+        await this.#admitPrompt({
+          sessionID: this.#session.id,
+          messageID,
+          text,
+          ...(this.#model ? { model: this.#model } : {}),
+          ...(this.#variant ? { variant: this.#variant } : {}),
+        });
+        return { ok: true, value: { turnId: active.turnId } };
+      } catch (error) {
+        return { ok: false, error: normalizeError(error, "nativeFailure") };
+      }
+    });
+    const result = admitted
+      .then((admission) => {
+        if (!admission.ok) {
+          const index = active.userMessageIDs.indexOf(messageID);
+          if (index >= 0) active.userMessageIDs.splice(index, 1);
+        }
+        return admission;
+      })
+      .finally(() => {
+        active.pendingSteerAdmissions -= 1;
+        active.lifecycleVersion += 1;
+        void this.#reconcileAndFinish(active);
+      });
+    active.steerTail = result.then(() => undefined);
+    if (command.clientUserMessageId) {
+      active.steerByClientId.set(command.clientUserMessageId, { inputKey, result });
+    }
+    return result;
   }
 
   async #respond(
@@ -1128,12 +1486,33 @@ class OpenCodeHarnessSession implements HarnessSession, OpenCodeTransportListene
     const active = this.#active;
     if (event.type === "session.status" && event.properties.sessionID === this.#session.id) {
       if (!active) return;
-      if (event.properties.status.type === "busy") active.sawBusy = true;
-      if (event.properties.status.type === "idle") void this.#reconcileAndFinish(active);
+      if (event.properties.status.type === "busy") {
+        active.sawBusy = true;
+        active.lifecycleVersion += 1;
+        active.continuation.idle = "unobserved";
+        active.continuation.stableIdleCheckVersion = null;
+      }
+      if (event.properties.status.type === "idle") {
+        if (
+          active.continuation.persistence === "persisted" &&
+          active.continuation.idle === "unobserved"
+        ) {
+          active.continuation.idle = "observed";
+        }
+        void this.#reconcileAndFinish(active);
+      }
       return;
     }
     if (event.type === "session.idle" && event.properties.sessionID === this.#session.id) {
-      if (active) void this.#reconcileAndFinish(active);
+      if (active) {
+        if (
+          active.continuation.persistence === "persisted" &&
+          active.continuation.idle === "unobserved"
+        ) {
+          active.continuation.idle = "observed";
+        }
+        void this.#reconcileAndFinish(active);
+      }
       return;
     }
     if (event.type === "message.updated" && event.properties.sessionID === this.#session.id) {
@@ -1144,12 +1523,18 @@ class OpenCodeHarnessSession implements HarnessSession, OpenCodeTransportListene
         // parent relation, Command result, or idle transcript reconciliation
         // provides the ownership proof.
         this.#knownUserMessageIds.add(info.id);
+        if (active) active.lifecycleVersion += 1;
+        if (active?.continuation.latestMessageID === info.id) {
+          active.continuation.persistence = "persisted";
+        }
+        if (active?.userMessageIDs.includes(info.id)) void this.#reconcileAndFinish(active);
         return;
       }
       if (!active || !this.#bindUserMessage(active, info.parentID)) return;
+      active.lifecycleVersion += 1;
       active.assistantMessageIds.add(info.id);
       active.terminalAssistant = info;
-      if (info.time.completed !== undefined || info.finish || info.error) {
+      if (isTerminalOpenCodeAssistant(info)) {
         void this.#reconcileAndFinish(active);
       }
       return;
@@ -1205,22 +1590,16 @@ class OpenCodeHarnessSession implements HarnessSession, OpenCodeTransportListene
       active
     ) {
       const error = event.properties.error;
-      this.#completeTurn(active, {
-        status: active.cancellationRequested ? "cancelled" : "failed",
-        ...(active.cancellationRequested
-          ? { reason: "Cancelled by user" }
-          : {
-              error: {
-                code:
-                  error?.name === "ProviderAuthError" ? "authenticationRequired" : "nativeFailure",
-                message:
-                  error && "message" in error.data && typeof error.data.message === "string"
-                    ? error.data.message
-                    : "OpenCode Session failed",
-                retryable: error?.name === "ProviderAuthError",
-              },
-            }),
-      } as TurnOutcome);
+      active.terminalError = {
+        code: error?.name === "ProviderAuthError" ? "authenticationRequired" : "nativeFailure",
+        message:
+          error && "message" in error.data && typeof error.data.message === "string"
+            ? error.data.message
+            : "OpenCode Session failed",
+        retryable: error?.name === "ProviderAuthError",
+      };
+      active.lifecycleVersion += 1;
+      void active.steerTail.then(() => this.#reconcileAndFinish(active));
     }
   }
 
@@ -1377,6 +1756,7 @@ class OpenCodeHarnessSession implements HarnessSession, OpenCodeTransportListene
       nativeId: request.id,
       interaction,
     });
+    active.lifecycleVersion += 1;
     this.#output({ kind: "interaction", interaction });
   }
 
@@ -1402,6 +1782,7 @@ class OpenCodeHarnessSession implements HarnessSession, OpenCodeTransportListene
       nativeId: request.id,
       interaction,
     });
+    active.lifecycleVersion += 1;
     this.#output({ kind: "interaction", interaction });
   }
 
@@ -1452,17 +1833,27 @@ class OpenCodeHarnessSession implements HarnessSession, OpenCodeTransportListene
 
   async #reconcileAndFinish(active: ActiveTurn): Promise<void> {
     if (this.#active !== active || active.kind === "compact") return;
+    if (active.faultSettlementPending) return;
     if (active.finishing) {
       active.reconcilePending = true;
       return;
     }
     active.finishing = true;
+    const lifecycleVersion = active.lifecycleVersion;
     try {
       const [status, messages] = await Promise.all([
         this.#transport.getStatus(this.#session.id),
         this.#transport.getMessages(this.#session.id),
       ]);
-      if (this.#active !== active || status.type !== "idle") return;
+      if (this.#active !== active || (status.type !== "idle" && !active.terminalError)) return;
+      if (active.pendingSteerAdmissions > 0) {
+        active.reconcilePending = false;
+        return;
+      }
+      if (lifecycleVersion !== active.lifecycleVersion) {
+        active.reconcilePending = true;
+        return;
+      }
       this.#resolveUserMessage(active, messages);
       const lifecycleObserved =
         active.sawBusy ||
@@ -1470,72 +1861,130 @@ class OpenCodeHarnessSession implements HarnessSession, OpenCodeTransportListene
         (active.kind === "command" && active.nativeCompleted) ||
         active.cancellationRequested;
       if (!lifecycleObserved) return;
-      const userIndex = messages.findIndex(({ info }) => info.id === active.userMessageID);
-      if (userIndex < 0) {
-        if (active.cancellationRequested) {
-          this.#completeTurn(active, { status: "cancelled", reason: "Cancelled by user" });
-        }
+      const nativeUserIds = active.userMessageIDs;
+      if (nativeUserIds.length === 0) return;
+      const nativeUsers = new Map(
+        messages
+          .filter(({ info }) => info.role === "user" && nativeUserIds.includes(info.id))
+          .map((entry) => [entry.info.id, entry] as const),
+      );
+      if (nativeUserIds.some((messageID) => !nativeUsers.has(messageID))) {
         return;
       }
-      let end = userIndex + 1;
-      while (end < messages.length && messages[end]?.info.role !== "user") end += 1;
-      const assistants = messages
-        .slice(userIndex + 1, end)
-        .filter(
-          (entry): entry is OpenCodeMessageWithParts & { info: AssistantMessage } =>
-            entry.info.role === "assistant",
-        );
-      const terminal = assistants.at(-1)?.info ?? active.terminalAssistant;
       if (
-        !terminal ||
-        (terminal.time.completed === undefined &&
-          !terminal.finish &&
-          !terminal.error &&
-          !active.nativeCompleted)
+        active.continuation.latestMessageID &&
+        nativeUsers.has(active.continuation.latestMessageID)
       ) {
-        return;
+        active.continuation.persistence = "persisted";
       }
+      const assistants = messages.filter(
+        (entry): entry is OpenCodeMessageWithParts & { info: AssistantMessage } =>
+          entry.info.role === "assistant" && nativeUserIds.includes(entry.info.parentID),
+      );
+      const latestUserMessageID = nativeUserIds.at(-1) as string;
+      const latestAssistant = assistants
+        .filter(({ info }) => info.parentID === latestUserMessageID)
+        .at(-1)?.info;
+      const latestTerminal =
+        latestAssistant && (isTerminalOpenCodeAssistant(latestAssistant) || active.nativeCompleted)
+          ? latestAssistant
+          : undefined;
+      if (!latestTerminal && !active.cancellationRequested && !active.terminalError) {
+        if (latestAssistant || active.interactions.size > 0 || !active.messageGroup) return;
+        if (
+          active.continuation.latestMessageID !== latestUserMessageID ||
+          active.continuation.persistence !== "persisted"
+        ) {
+          return;
+        }
+        if (active.continuation.recovery === "available") {
+          const parsedLatestUser = parseOpenCodeMessageGroup(latestUserMessageID);
+          if (parsedLatestUser?.kind !== "input" || parsedLatestUser.sequence === 0) {
+            return;
+          }
+          if (active.continuation.idle !== "stable") {
+            this.#scheduleStableIdleCheck(active, lifecycleVersion);
+            return;
+          }
+          if (this.#queueOrphanRecovery(active)) return;
+        }
+        if (active.continuation.idle !== "stable") {
+          this.#scheduleStableIdleCheck(active, lifecycleVersion);
+          return;
+        }
+        active.terminalError = {
+          code: "nativeFailure",
+          message: "OpenCode did not continue an admitted steering message after recovery",
+          retryable: false,
+        };
+      }
+      const terminal = latestTerminal;
       for (const entry of assistants) {
         for (const part of entry.parts) this.#projectPart(active, part);
       }
-      active.terminalAssistant = terminal;
-      const userMessageID = active.userMessageID as string;
-      const changes = reliableOpenCodeFileChanges(
-        await readTurnDiff(
-          this.#transport,
-          this.#session.id,
-          userMessageID,
-          turnNativePatchFiles(messages, userMessageID),
-        ),
-      );
-      if (changes.length > 0) {
-        const id = `opencode-live-diff:${active.userMessageID}`;
-        if (!active.items.has(id)) {
-          const item: HostFileChangeItem = {
-            type: "fileChange",
-            itemId: hostItemIdSchema.parse(id),
-            changes,
-          };
-          active.items.set(id, { item, completed: false });
-          this.#event({ type: "item.started", turnId: active.turnId, item });
+      if (terminal) {
+        active.terminalAssistant = terminal;
+        if (
+          status.type === "idle" &&
+          active.continuation.latestMessageID === latestUserMessageID &&
+          active.continuation.idle === "unobserved"
+        ) {
+          active.continuation.idle = "observed";
         }
       }
-      const checkpoint = nativeCheckpointRefSchema.parse({
-        harnessId: this.harnessId,
-        nativeSessionId: this.#session.id,
-        checkpointId: terminal.id,
-        formatVersion: 1,
-      }) as NativeCheckpointRef;
+      for (const userMessageID of nativeUserIds) {
+        const changes = reliableOpenCodeFileChanges(
+          await readTurnDiff(
+            this.#transport,
+            this.#session.id,
+            userMessageID,
+            turnNativePatchFiles(messages, userMessageID),
+          ),
+        );
+        if (changes.length > 0) {
+          const id = `opencode-live-diff:${userMessageID}`;
+          if (!active.items.has(id)) {
+            const item: HostFileChangeItem = {
+              type: "fileChange",
+              itemId: hostItemIdSchema.parse(id),
+              changes,
+            };
+            active.items.set(id, { item, completed: false });
+            this.#event({ type: "item.started", turnId: active.turnId, item });
+          }
+        }
+      }
+      if (active.pendingSteerAdmissions > 0) {
+        active.reconcilePending = false;
+        return;
+      }
+      if (lifecycleVersion !== active.lifecycleVersion) {
+        active.reconcilePending = true;
+        return;
+      }
+      const checkpoint = terminal
+        ? (nativeCheckpointRefSchema.parse({
+            harnessId: this.harnessId,
+            nativeSessionId: this.#session.id,
+            checkpointId: terminal.id,
+            formatVersion: 1,
+          }) as NativeCheckpointRef)
+        : undefined;
       const nativeTurnRef: NativeTurnRef = {
         harnessId: this.harnessId,
         nativeSessionId: this.#session.id,
         nativeTurnKey: active.userMessageID as string,
         formatVersion: 1,
       };
-      const outcome: TurnOutcome =
-        active.cancellationRequested || terminal.error?.name === "MessageAbortedError"
-          ? { status: "cancelled", reason: "Cancelled by user", checkpoint }
-          : terminal.error
+      const outcome: TurnOutcome = active.terminalError
+        ? { status: "failed", error: active.terminalError }
+        : active.cancellationRequested || terminal?.error?.name === "MessageAbortedError"
+          ? {
+              status: "cancelled",
+              reason: "Cancelled by user",
+              ...(checkpoint ? { checkpoint } : {}),
+            }
+          : terminal?.error
             ? {
                 status: "failed",
                 error: {
@@ -1552,17 +2001,31 @@ class OpenCodeHarnessSession implements HarnessSession, OpenCodeTransportListene
                     terminal.error.name === "ProviderAuthError" ||
                     (terminal.error.name === "APIError" && terminal.error.data.isRetryable),
                 },
-                checkpoint,
+                ...(checkpoint ? { checkpoint } : {}),
               }
-            : { status: "succeeded", checkpoint };
+            : terminal
+              ? { status: "succeeded", ...(checkpoint ? { checkpoint } : {}) }
+              : { status: "cancelled", reason: "Cancelled by user" };
       this.#completeTurn(active, outcome, nativeTurnRef);
       void this.#refreshProjection(active.turnId);
     } catch (error) {
       if (this.#active === active) {
-        this.#completeTurn(active, {
-          status: "failed",
-          error: normalizeError(error, "protocolError"),
-        });
+        if (active.pendingSteerAdmissions > 0) {
+          active.reconcilePending = false;
+          return;
+        }
+        if (lifecycleVersion !== active.lifecycleVersion) {
+          active.reconcilePending = true;
+          return;
+        }
+        this.#completeTurn(
+          active,
+          {
+            status: "failed",
+            error: active.terminalError ?? normalizeError(error, "protocolError"),
+          },
+          this.#nativeTurnRef(active),
+        );
       }
     } finally {
       active.finishing = false;
@@ -1608,10 +2071,22 @@ class OpenCodeHarnessSession implements HarnessSession, OpenCodeTransportListene
     active.resolveCompletion();
   }
 
+  #nativeTurnRef(active: ActiveTurn): NativeTurnRef | undefined {
+    return active.userMessageID
+      ? {
+          harnessId: this.harnessId,
+          nativeSessionId: this.#session.id,
+          nativeTurnKey: active.userMessageID,
+          formatVersion: 1,
+        }
+      : undefined;
+  }
+
   #createActive(
     kind: ActiveKind,
     turnId: ActiveTurn["turnId"],
     userMessageID: string | null,
+    messageGroup: OpenCodeMessageGroupIdentity | null = null,
   ): ActiveTurn {
     let resolveCompletion = (): void => undefined;
     const completion = new Promise<void>((resolve) => {
@@ -1625,11 +2100,26 @@ class OpenCodeHarnessSession implements HarnessSession, OpenCodeTransportListene
       kind,
       turnId,
       userMessageID,
+      userMessageIDs: userMessageID ? [userMessageID] : [],
+      messageGroup,
       preexistingUserMessageIds: new Set(this.#knownUserMessageIds),
       assistantMessageIds: new Set(),
       admissionBuffer: [],
       admissionSequence: 0,
+      lifecycleVersion: 0,
+      pendingSteerAdmissions: 0,
+      steerTail: Promise.resolve(),
+      continuation: {
+        latestMessageID: userMessageID,
+        persistence: "pending",
+        idle: "unobserved",
+        stableIdleCheckVersion: null,
+        recovery: "available",
+        enteredMessageIDs: new Set(),
+      },
+      steerByClientId: new Map(),
       cancellationRequested: false,
+      cancellationPromise: null,
       admissionCompleted: false,
       admissionFailure: null,
       admissionFailurePromise,
@@ -1641,6 +2131,8 @@ class OpenCodeHarnessSession implements HarnessSession, OpenCodeTransportListene
       finishing: false,
       reconcilePending: false,
       terminalAssistant: null,
+      terminalError: null,
+      faultSettlementPending: false,
       items: new Map(),
       toolItemByCallId: new Map(),
       interactions: new Map(),
@@ -1728,20 +2220,96 @@ class OpenCodeHarnessSession implements HarnessSession, OpenCodeTransportListene
   #fault(error: unknown): void {
     if (this.#phase === "faulted" || this.#phase === "closed") return;
     const normalized = normalizeError(error, "internalError");
-    if (this.#active && !this.#active.admissionCompleted) {
-      const active = this.#active;
+    const active = this.#active;
+    if (active && !active.admissionCompleted) {
       active.admissionBuffer.length = 0;
       active.admissionFailure = normalized;
       active.resolveAdmissionFailure(normalized);
       active.finished = true;
       active.resolveCompletion();
       this.#active = null;
-    } else if (this.#active) {
-      this.#completeTurn(this.#active, { status: "failed", error: normalized });
     }
     this.#phase = "faulted";
-    this.#event({ type: "session.faulted", error: normalized });
+    const admittedActive = active?.admissionCompleted ? active : null;
+    if (admittedActive) {
+      admittedActive.terminalError ??= normalized;
+      admittedActive.faultSettlementPending = true;
+      admittedActive.lifecycleVersion += 1;
+    }
+    this.#faultFinalizationPromise = this.#finalizeFault(admittedActive, normalized);
+    this.#closePromise ??= this.#faultFinalizationPromise.finally(this.#onClosed);
+  }
+
+  async #finalizeFault(active: ActiveTurn | null, error: HarnessError): Promise<void> {
+    if (active) {
+      try {
+        await this.#settleActiveFault(active, error);
+      } catch {
+        if (this.#active === active && !active.finished) {
+          active.faultSettlementPending = false;
+          this.#completeTurn(active, { status: "failed", error }, this.#nativeTurnRef(active));
+        }
+      }
+    }
+    this.#event({ type: "session.faulted", error });
     this.#channel.end();
+    await this.#closeResources().catch(() => undefined);
+  }
+
+  async #settleActiveFault(active: ActiveTurn, error: HarnessError): Promise<void> {
+    try {
+      await active.steerTail;
+      if (this.#active !== active || active.finished) return;
+      if (active.cancellationPromise) {
+        await active.cancellationPromise;
+      } else {
+        try {
+          await this.#transport.abort(this.#session.id);
+        } catch {
+          // Preserve the original transport fault as the terminal error.
+        }
+      }
+      const admissionCandidates = [...active.continuation.enteredMessageIDs];
+      const persistedAdmissions = new Set<string>();
+      for (const delayMs of admissionCandidates.length > 0 ? FAULT_RECONCILIATION_DELAYS_MS : []) {
+        if (this.#active !== active || active.finished) return;
+        if (delayMs > 0) {
+          await new Promise<void>((resolve) => setTimeout(resolve, delayMs));
+        }
+        try {
+          const messages = await this.#transport.getMessages(this.#session.id);
+          for (const { info } of messages) {
+            if (info.role === "user" && admissionCandidates.includes(info.id)) {
+              persistedAdmissions.add(info.id);
+            }
+          }
+        } catch {
+          // A later bounded read may succeed after the transport reconnects.
+        }
+        if (persistedAdmissions.size === admissionCandidates.length) break;
+      }
+      for (const messageID of persistedAdmissions) {
+        if (!active.userMessageIDs.includes(messageID)) active.userMessageIDs.push(messageID);
+      }
+      active.userMessageIDs.sort((left, right) => {
+        const leftGroup = parseOpenCodeMessageGroup(left);
+        const rightGroup = parseOpenCodeMessageGroup(right);
+        return leftGroup && rightGroup && leftGroup.token === rightGroup.token
+          ? leftGroup.sequence - rightGroup.sequence
+          : 0;
+      });
+    } finally {
+      active.faultSettlementPending = false;
+      active.lifecycleVersion += 1;
+    }
+    if (this.#active !== active || active.finished) return;
+    await this.#reconcileAndFinish(active);
+    if (this.#active !== active || active.finished) return;
+    this.#completeTurn(
+      active,
+      { status: "failed", error: active.terminalError ?? error },
+      this.#nativeTurnRef(active),
+    );
   }
 
   async #close(): Promise<void> {
@@ -1750,25 +2318,49 @@ class OpenCodeHarnessSession implements HarnessSession, OpenCodeTransportListene
     if (!faulted) this.#phase = "closing";
     const active = this.#active;
     if (active) {
-      active.cancellationRequested = true;
-      await this.#transport.abort(this.#session.id).catch(() => undefined);
+      await this.#cancel({ type: "turn.cancel", turnId: active.turnId });
       await Promise.race([
         active.completion,
         new Promise<void>((resolve) => setTimeout(resolve, this.#closeTimeoutMs)),
       ]);
     }
-    await this.#transport.close();
-    await this.#connection.close();
+    if (this.#faultFinalizationPromise) {
+      await this.#faultFinalizationPromise;
+      return;
+    }
+    await this.#closeResources();
+    if (this.#faultFinalizationPromise) {
+      await this.#faultFinalizationPromise;
+      return;
+    }
     if (this.#active) {
       this.#completeTurn(this.#active, {
         status: "failed",
         error: invalidState("OpenCode Session closed before active Turn cancellation settled"),
       });
     }
-    if (!faulted) {
-      this.#phase = "closed";
-      this.#channel.end();
+    this.#phase = "closed";
+    this.#channel.end();
+  }
+
+  #closeResources(): Promise<void> {
+    this.#resourceClosePromise ??= this.#performResourceClose();
+    return this.#resourceClosePromise;
+  }
+
+  async #performResourceClose(): Promise<void> {
+    let closeFailure: { error: unknown } | null = null;
+    try {
+      await this.#transport.close();
+    } catch (error) {
+      closeFailure = { error };
     }
+    try {
+      await this.#connection.close();
+    } catch (error) {
+      closeFailure ??= { error };
+    }
+    if (closeFailure) throw closeFailure.error;
   }
 
   #output(output: HarnessOutput): void {
@@ -1785,9 +2377,10 @@ class OpenCodeHarnessSession implements HarnessSession, OpenCodeTransportListene
   }
 
   #bindUserMessage(active: ActiveTurn, messageID: string): boolean {
-    if (active.userMessageID) return active.userMessageID === messageID;
+    if (active.userMessageID) return active.userMessageIDs.includes(messageID);
     if (active.preexistingUserMessageIds.has(messageID)) return false;
     active.userMessageID = messageID;
+    active.userMessageIDs.push(messageID);
     this.#knownUserMessageIds.add(messageID);
     return true;
   }
@@ -1904,6 +2497,7 @@ export class OpenCodeAdapter implements HarnessAdapter {
             rollbackLastTurn: true,
             replacementFence: true,
           },
+          ...(supportsSteering(health.version) ? { activeTurns: { steer: true } } : {}),
         },
         permissionModes: OPENCODE_PERMISSION_MODE_CATALOG,
       };
@@ -1993,6 +2587,11 @@ export class OpenCodeAdapter implements HarnessAdapter {
       };
       connection = this.#createConnection(serverOptions);
       transport = this.#createTransport(connection, input.cwd, serverOptions);
+      const health = await transport.health();
+      if (health.healthy !== true) {
+        throw new OpenCodeTransportError("protocolError", "OpenCode health check was not healthy");
+      }
+      const steeringSupported = supportsSteering(health.version);
       const providers = await transport.providers();
       const modelCatalog = normalizeOpenCodeModelCatalog(providers);
       let session: Session;
@@ -2185,6 +2784,7 @@ export class OpenCodeAdapter implements HarnessAdapter {
         executionPolicy,
         permissionMode: permissionModeFromSession(projection.session.permission),
         strictFileChanges: input.kind === "rollbackLastTurn",
+        steeringSupported,
         onClosed: () => this.#sessions.delete(harnessSession),
       });
       await harnessSession.start();

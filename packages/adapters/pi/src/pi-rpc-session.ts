@@ -99,6 +99,17 @@ export interface PiTurnResult {
   cancelled: boolean;
 }
 
+export type PiAutonomousTurnResult =
+  | { status: "succeeded"; text: string }
+  | { status: "cancelled"; text: string; reason: string }
+  | { status: "failed"; text: string; error: Error };
+
+export interface PiAutonomousTurn {
+  nativeTurnKey: string;
+  events: PiTurnEvent[];
+  result: PiAutonomousTurnResult;
+}
+
 export interface PiCompactResult {
   outcome: "succeeded" | "cancelled" | "failed";
   errorMessage?: string;
@@ -165,6 +176,10 @@ interface ManualCompaction {
 }
 
 interface ActiveTurn {
+  origin: "requested" | "autonomous";
+  autonomousEvents: PiTurnEvent[] | null;
+  nativeTurnKey: string | null;
+  nativeCancellationObserved: boolean;
   text: string;
   assistantMessageId: string | null;
   sawStreamedMessageText: boolean;
@@ -451,6 +466,7 @@ export class PiRpcSession {
     PiRpcSessionOptions;
   readonly #processAdapter: PiRpcProcessAdapter;
   #activeTurn: ActiveTurn | null = null;
+  #autonomousTurnHandler: ((turn: PiAutonomousTurn) => void) | null = null;
   #buffer: Buffer<ArrayBufferLike> = Buffer.alloc(0);
   #child: ChildProcessWithoutNullStreams | null = null;
   #closed = false;
@@ -491,6 +507,10 @@ export class PiRpcSession {
 
   get stderrTail(): string {
     return this.#stderrTail;
+  }
+
+  setAutonomousTurnHandler(handler: (turn: PiAutonomousTurn) => void): void {
+    this.#autonomousTurnHandler = handler;
   }
 
   async start(): Promise<this> {
@@ -708,6 +728,10 @@ export class PiRpcSession {
 
     const settled = new Promise<PiTurnResult>((resolve, reject) => {
       this.#activeTurn = {
+        origin: "requested",
+        autonomousEvents: null,
+        nativeTurnKey: null,
+        nativeCancellationObserved: false,
         text: "",
         assistantMessageId: null,
         sawStreamedMessageText: false,
@@ -923,7 +947,17 @@ export class PiRpcSession {
       });
       return;
     }
-    const active = this.#activeTurn;
+    let active = this.#activeTurn;
+    if (
+      !active &&
+      !this.#manualCompaction &&
+      !this.#compactionActive &&
+      this.#autonomousTurnHandler &&
+      value.type === "message_start" &&
+      assistantText(value.message) !== null
+    ) {
+      active = this.#startAutonomousTurn(value.message);
+    }
     if (!active) {
       if (value.type === "extension_ui_request" && this.#isBlockingInteraction(value)) {
         this.#fail(
@@ -936,6 +970,15 @@ export class PiRpcSession {
       return;
     }
     if (value.type === "extension_ui_request") {
+      if (active.origin === "autonomous" && this.#isBlockingInteraction(value)) {
+        this.#fail(
+          new PiRpcFaultError(
+            "protocolError",
+            "Pi RPC requested blocking Extension UI during an autonomous Turn",
+          ),
+        );
+        return;
+      }
       this.#startInteraction(active, value);
       return;
     }
@@ -1013,6 +1056,62 @@ export class PiRpcSession {
       if (active.settlement !== "pending") return;
       active.settlement = "confirming";
       void this.#confirmSettledTurn(active);
+    }
+  }
+
+  #startAutonomousTurn(value: unknown): ActiveTurn {
+    const events: PiTurnEvent[] = [];
+    const active: ActiveTurn = {
+      origin: "autonomous",
+      autonomousEvents: events,
+      nativeTurnKey: assistantMessageId(value) ?? randomUUID(),
+      nativeCancellationObserved: false,
+      text: "",
+      assistantMessageId: null,
+      sawStreamedMessageText: false,
+      sawStreamedMessageReasoning: false,
+      lastFinalizedMessageText: null,
+      lastFinalizedMessageReasoning: null,
+      reasoningMessageOpen: false,
+      onEvent: (event) => events.push(event),
+      resolve: () => undefined,
+      reject: () => undefined,
+      failure: null,
+      sawTool: false,
+      tools: new Map(),
+      interactions: new Map(),
+      settlement: "pending",
+      cancellation: "none",
+      cancellationTimeout: null,
+      abortPromise: null,
+    };
+    this.#activeTurn = active;
+    return active;
+  }
+
+  #emitAutonomousTurn(active: ActiveTurn, result: PiAutonomousTurnResult): void {
+    const handler = this.#autonomousTurnHandler;
+    if (
+      active.origin !== "autonomous" ||
+      !active.nativeTurnKey ||
+      !active.autonomousEvents ||
+      !handler
+    ) {
+      return;
+    }
+    try {
+      handler({
+        nativeTurnKey: active.nativeTurnKey,
+        events: [...active.autonomousEvents],
+        result,
+      });
+    } catch (error) {
+      this.#fail(
+        new PiRpcFaultError(
+          "protocolError",
+          `Pi autonomous Turn handler failed: ${message(error)}`,
+        ),
+      );
     }
   }
 
@@ -1237,6 +1336,29 @@ export class PiRpcSession {
       return;
     }
     this.#activeTurn = null;
+    if (active.origin === "autonomous") {
+      if (active.failure) {
+        this.#emitAutonomousTurn(
+          active,
+          active.nativeCancellationObserved
+            ? {
+                status: "cancelled",
+                text: active.text,
+                reason: "Pi autonomous Assistant was aborted",
+              }
+            : { status: "failed", text: active.text, error: active.failure },
+        );
+      } else if (active.text.trim().length === 0 && !active.sawTool) {
+        this.#emitAutonomousTurn(active, {
+          status: "failed",
+          text: active.text,
+          error: new Error("Pi RPC autonomous Turn settled without displayable output"),
+        });
+      } else {
+        this.#emitAutonomousTurn(active, { status: "succeeded", text: active.text });
+      }
+      return;
+    }
     if (active.cancellation === "accepted") {
       active.resolve({ text: active.text, cancelled: true });
     } else if (active.failure) {
@@ -1281,6 +1403,9 @@ export class PiRpcSession {
     }
 
     active.failure = failure;
+    if (active.origin === "autonomous" && isRecord(value) && value.stopReason === "aborted") {
+      active.nativeCancellationObserved = true;
+    }
     this.#latestCacheHitRatePercent = cacheHitRatePercent;
     const messageId = this.#ensureAssistantMessage(active, value);
     if (!active.sawStreamedMessageReasoning && finalReasoning.length > 0) {
@@ -1403,7 +1528,11 @@ export class PiRpcSession {
     if (active.cancellationTimeout) clearTimeout(active.cancellationTimeout);
     this.#closeInteractions(active, "cancelled");
     this.#activeTurn = null;
-    active.reject(error);
+    if (active.origin === "autonomous") {
+      this.#emitAutonomousTurn(active, { status: "failed", text: active.text, error });
+    } else {
+      active.reject(error);
+    }
   }
 
   #rejectAll(error: Error): void {

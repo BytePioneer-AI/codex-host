@@ -21,6 +21,11 @@ import {
   createConnectionsSettingsPage,
   type RendererConnectionDiagnostics,
 } from "./connections-page.js";
+import {
+  createDeepSeekSessionImportSettingsPage,
+  type RendererDeepSeekSessionImportClient,
+  type RendererImportedThreadOpener,
+} from "./deepseek-session-import-page.js";
 import { createReleaseNotesElement } from "./release-notes.js";
 
 export type {
@@ -63,7 +68,12 @@ function windowsInstallerDownloadUrl(window: Window | null | undefined, version:
   return `https://github.com/BytePioneer-AI/codex-host/releases/download/v${version}/codexhost-${version}-windows-${architecture}.exe`;
 }
 
-export const DEFAULT_RENDERER_SETTINGS_PAGE_IDS = ["connections", "updates", "about"] as const;
+export const DEFAULT_RENDERER_SETTINGS_PAGE_IDS = [
+  "connections",
+  "session-import",
+  "updates",
+  "about",
+] as const;
 
 export type DefaultRendererSettingsPageId = (typeof DEFAULT_RENDERER_SETTINGS_PAGE_IDS)[number];
 
@@ -566,9 +576,13 @@ export function createDefaultRendererSettingsPages(
   messages: RendererSettingsMessages = DEFAULT_RENDERER_SETTINGS_MESSAGES,
   getUpdateClient: () => RendererUpdateClient | null = () => null,
   getDiagnostics: () => RendererConnectionDiagnostics | null = () => null,
+  getSessionImportClient: () => RendererDeepSeekSessionImportClient | null = () => null,
+  openImportedThread: RendererImportedThreadOpener = () =>
+    Promise.reject(new Error("Imported Thread navigation is unavailable")),
 ): readonly RendererSettingsPageDefinition[] {
   return Object.freeze([
     createConnectionsSettingsPage(messages, getDiagnostics),
+    createDeepSeekSessionImportSettingsPage(messages, getSessionImportClient, openImportedThread),
     updatesPage(messages, getUpdateClient),
     aboutPage(messages),
   ]);
@@ -578,8 +592,16 @@ export function createDefaultRendererSettingsRegistry(
   messages: RendererSettingsMessages = DEFAULT_RENDERER_SETTINGS_MESSAGES,
   getUpdateClient: () => RendererUpdateClient | null = () => null,
   getDiagnostics: () => RendererConnectionDiagnostics | null = () => null,
+  getSessionImportClient: () => RendererDeepSeekSessionImportClient | null = () => null,
+  openImportedThread?: RendererImportedThreadOpener,
 ): RendererSettingsPageRegistry {
   return createRendererSettingsPageRegistry(
-    createDefaultRendererSettingsPages(messages, getUpdateClient, getDiagnostics),
+    createDefaultRendererSettingsPages(
+      messages,
+      getUpdateClient,
+      getDiagnostics,
+      getSessionImportClient,
+      openImportedThread,
+    ),
   );
 }

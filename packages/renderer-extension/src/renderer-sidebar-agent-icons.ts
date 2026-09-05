@@ -328,7 +328,7 @@ class BrowserSidebarAgentIconDom implements SidebarAgentIconDom {
   readonly #rowsByElement = new WeakMap<HTMLElement, BrowserSidebarAgentIconRow>();
   readonly #trackedRows = new Set<BrowserSidebarAgentIconRow>();
 
-  constructor(private readonly root: HTMLElement) {}
+  constructor(private readonly root: ParentNode & Node) {}
 
   rows(): readonly SidebarAgentIconRow[] {
     for (const row of this.#trackedRows) {
@@ -373,7 +373,7 @@ export function installRendererSidebarAgentIcons(options: {
   }): RendererAgent | null;
   dom?: SidebarAgentIconDom;
 }): RendererSidebarAgentIcons {
-  const dom = options.dom ?? new BrowserSidebarAgentIconDom(document.documentElement);
+  const dom = options.dom ?? new BrowserSidebarAgentIconDom(document);
   const ownershipByThread = new Map<string, Exclude<RendererAgent, "codex"> | null>();
   const pending = new Set<string>();
   const failed = new Set<string>();

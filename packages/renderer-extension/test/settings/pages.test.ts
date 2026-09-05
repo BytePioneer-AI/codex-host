@@ -1,4 +1,8 @@
-import type { UpdateCheckResult, UpdateStatus } from "@codexhost/shared-contracts";
+import {
+  hostThreadIdSchema,
+  type UpdateCheckResult,
+  type UpdateStatus,
+} from "@codexhost/shared-contracts";
 import { describe, expect, it, vi } from "vitest";
 
 vi.mock("../../src/settings/icons.js", () => ({
@@ -8,6 +12,12 @@ vi.mock("../../src/settings/icons.js", () => ({
 
 import { RendererSettingsPageScope } from "../../src/settings/core.js";
 import { rendererSettingsMessages } from "../../src/settings/localization.js";
+import {
+  DEEPSEEK_MODERN_SESSION_IMPORT_METHOD,
+  DEEPSEEK_MODERN_SESSION_LIST_METHOD,
+  RendererDeepSeekSessionUnavailableError,
+  createRendererModelClient,
+} from "../../src/renderer-model-client.js";
 import {
   CODEXHOST_RELEASES_LATEST_URL,
   createDefaultRendererSettingsPages,
@@ -33,6 +43,7 @@ class FakeElement {
   type = "";
   tabIndex = 0;
   disabled = false;
+  focused = false;
   scrollLeft = 0;
   scrollWidth = 0;
   clientWidth = 0;
@@ -58,7 +69,9 @@ class FakeElement {
     this.#listeners.get(name)?.(event);
   }
 
-  focus(): void {}
+  focus(): void {
+    this.focused = true;
+  }
 
   scrollBy(options: ScrollToOptions): void {
     this.scrollLeft += Number(options.left ?? 0);
@@ -186,6 +199,90 @@ function visibleText(root: FakeElement): string {
 }
 
 describe("Renderer Connections page", () => {
+  it("opens managed DSH Web only for the local Host and coalesces repeated clicks", async () => {
+    const opened = deferred<undefined>();
+    const diagnostics: RendererConnectionDiagnostics = {
+      snapshot: () => ({
+        adapter: { state: "ready", reason: "ready", modelUpdates: 1, hook: "request-bridge" },
+        hosts: [
+          {
+            hostId: "local",
+            active: true,
+            agents: [
+              {
+                agent: "deepseek-harness",
+                availability: "ready",
+                error: null,
+                webUiAvailable: true,
+              },
+            ],
+          },
+          {
+            hostId: "remote-ssh-codex-managed:fixture",
+            active: false,
+            agents: [
+              {
+                agent: "deepseek-harness",
+                availability: "ready",
+                error: null,
+                webUiAvailable: true,
+              },
+            ],
+          },
+        ],
+      }),
+      refresh: vi.fn(() => Promise.resolve()),
+      openWebUi: vi.fn(() => opened.promise),
+      subscribe: vi.fn(() => () => undefined),
+    };
+    const page = createDefaultRendererSettingsPages(
+      rendererSettingsMessages("zh-CN"),
+      () => null,
+      () => diagnostics,
+    ).find(({ id }) => id === "connections");
+    if (!page) throw new Error("Connections page is not registered");
+    const document = new FakeDocument();
+    const content = document.createElement("main");
+    const scope = new RendererSettingsPageScope();
+    const cleanup = page.mount({
+      content: content as unknown as HTMLElement,
+      signal: scope.signal,
+      runLatest: (operation, handlers) => scope.runLatest(operation, handlers),
+    });
+
+    const dshRow = descendants(content).find(
+      ({ dataset }) => dataset.connectionItem === "deepseek-harness",
+    );
+    if (!dshRow) throw new Error("DeepSeek Harness row is not rendered");
+    dshRow.dispatch("click", { target: null });
+    const open = descendants(content).find(
+      ({ dataset }) => dataset.connectionAction === "open-web-ui",
+    );
+    if (!open) throw new Error("DeepSeek Harness Web action is not rendered");
+    expect(visibleNotesText(open)).toContain("打开 DeepSeek Harness Web");
+    expect(descendants(content).some(({ href }) => href.includes("token="))).toBe(false);
+
+    open.dispatch("click");
+    open.dispatch("click");
+    expect(diagnostics.openWebUi).toHaveBeenCalledOnce();
+    expect(diagnostics.openWebUi).toHaveBeenCalledWith("local", "deepseek-harness");
+    expect(open.disabled).toBe(true);
+    opened.resolve(undefined);
+    await vi.waitFor(() => expect(open.disabled).toBe(false));
+
+    const remoteTab = descendants(content).find(
+      ({ dataset }) => dataset.connectionHostTab === "remote-ssh-codex-managed:fixture",
+    );
+    if (!remoteTab) throw new Error("Remote Host tab is not rendered");
+    remoteTab.dispatch("click");
+    expect(
+      descendants(content).find(({ dataset }) => dataset.connectionAction === "open-web-ui"),
+    ).toBeUndefined();
+
+    cleanup?.();
+    scope.dispose();
+  });
+
   it("renders Host tabs, install actions, and error details", async () => {
     const refreshRequest = deferred<undefined>();
     const diagnostics: RendererConnectionDiagnostics = {
@@ -598,5 +695,487 @@ describe("Renderer Updates page", () => {
 
     cleanup?.();
     scope.dispose();
+  });
+});
+
+describe("Renderer Session Import page", () => {
+  it("renders loading and empty states, ignores an older list, and recovers through Refresh", async () => {
+    const candidate = {
+      nativeSessionId: "recovered-session",
+      title: "Recovered session",
+      updatedAt: 1_700_000_000_000,
+      cwd: "C:\\work",
+      running: false,
+    };
+    const first = deferred<{ candidates: (typeof candidate)[] }>();
+    const second = deferred<{ candidates: (typeof candidate)[] }>();
+    const client = {
+      listDeepSeekModernSessions: vi
+        .fn()
+        .mockImplementationOnce(() => first.promise)
+        .mockImplementationOnce(() => second.promise)
+        .mockRejectedValueOnce(new Error("private list detail"))
+        .mockResolvedValueOnce({ candidates: [candidate] }),
+      importDeepSeekModernSession: vi.fn(),
+    };
+    const page = createDefaultRendererSettingsPages(
+      rendererSettingsMessages("en"),
+      () => null,
+      () => null,
+      () => client,
+    ).find(({ id }) => id === "session-import");
+    if (!page) throw new Error("Session Import page is not registered");
+    const document = new FakeDocument();
+    const content = document.createElement("main");
+    const scope = new RendererSettingsPageScope();
+    page.mount({
+      content: content as unknown as HTMLElement,
+      signal: scope.signal,
+      runLatest: (operation, handlers) => scope.runLatest(operation, handlers),
+    });
+    const refresh = descendants(content).find(
+      ({ dataset }) => dataset.sessionImportAction === "refresh",
+    );
+    if (!refresh) throw new Error("Session Import Refresh is not rendered");
+
+    expect(refresh.disabled).toBe(true);
+    expect(visibleNotesText(refresh)).toContain("Loading local sessions");
+    expect(visibleText(content)).toContain("Loading local sessions");
+
+    // A synthetic second activation proves runLatest still rejects stale results even if
+    // browser-level disabled handling is bypassed.
+    refresh.dispatch("click");
+    second.resolve({ candidates: [] });
+    await vi.waitFor(() => expect(visibleText(content)).toContain("No local DeepSeek Harness"));
+    expect(refresh.disabled).toBe(false);
+
+    first.resolve({
+      candidates: [{ ...candidate, nativeSessionId: "stale-session", title: "Ignored stale" }],
+    });
+    await first.promise;
+    await Promise.resolve();
+    expect(visibleText(content)).toContain("No local DeepSeek Harness");
+    expect(visibleText(content)).not.toContain("Ignored stale");
+
+    refresh.dispatch("click");
+    await vi.waitFor(() => expect(visibleText(content)).toContain("could not be loaded"));
+    expect(visibleText(content)).not.toContain("private list detail");
+
+    refresh.dispatch("click");
+    await vi.waitFor(() => expect(visibleText(content)).toContain("Recovered session"));
+    expect(client.listDeepSeekModernSessions).toHaveBeenCalledTimes(4);
+    scope.dispose();
+  });
+
+  it("lists local DSH Modern sessions and imports only an idle row", async () => {
+    const client = {
+      listDeepSeekModernSessions: vi.fn(async () => ({
+        candidates: [
+          {
+            nativeSessionId: "idle-session-identifier-that-is-long",
+            title: "既有会话",
+            updatedAt: 1_700_000_000_000,
+            cwd: "C:\\work\\idle",
+            running: false,
+          },
+          {
+            nativeSessionId: "running-session",
+            title: null,
+            updatedAt: 1_700_000_001_000,
+            cwd: "C:\\work\\running",
+            running: true,
+          },
+        ],
+      })),
+      importDeepSeekModernSession: vi.fn(async () => ({
+        threadId: hostThreadIdSchema.parse("imported-thread"),
+      })),
+    };
+    const openImportedThread = vi.fn(async () => undefined);
+    const page = createDefaultRendererSettingsPages(
+      rendererSettingsMessages("zh-CN"),
+      () => null,
+      () => null,
+      () => client,
+      openImportedThread,
+    ).find(({ id }) => id === "session-import");
+    if (!page) throw new Error("Session Import page is not registered");
+    const document = new FakeDocument();
+    const content = document.createElement("main");
+    const scope = new RendererSettingsPageScope();
+    page.mount({
+      content: content as unknown as HTMLElement,
+      signal: scope.signal,
+      runLatest: (operation, handlers) => scope.runLatest(operation, handlers),
+    });
+
+    await vi.waitFor(() => expect(client.listDeepSeekModernSessions).toHaveBeenCalledWith({}));
+    await vi.waitFor(() => expect(visibleText(content)).toContain("既有会话"));
+    expect(visibleText(content)).toContain("未命名会话");
+    expect(visibleText(content)).toContain("运行中");
+    const visualIdentity = descendants(content).find(
+      ({ attributes, textContent }) =>
+        attributes.get("aria-hidden") === "true" && textContent.startsWith("会话 ID:"),
+    );
+    expect(visualIdentity?.textContent).not.toContain("idle-session-identifier-that-is-long");
+    expect(visualIdentity?.title).toBe("idle-session-identifier-that-is-long");
+    expect(descendants(content).find(({ tagName }) => tagName === "h2")?.textContent).toBe(
+      "会话导入",
+    );
+    expect(visibleText(content)).toContain(
+      "当前仅支持导入 DeepSeek Harness Modern 会话；其他 Harness 的会话导入能力敬请期待。",
+    );
+    const harnessSelector = descendants(content).find(
+      ({ dataset }) => dataset.sessionImportHarness === "selector",
+    );
+    if (!harnessSelector) throw new Error("Session Import Harness selector is not rendered");
+    const harnessOptions = descendants(harnessSelector).filter(
+      ({ dataset }) => dataset.sessionImportHarnessOption !== undefined,
+    );
+    expect(harnessOptions.map(({ textContent }) => textContent)).toEqual([
+      "Pi",
+      "Claude Code",
+      "DeepSeek Harness",
+      "OpenCode",
+      "Grok",
+      "Oh My Pi",
+      "Antigravity CLI",
+    ]);
+    expect(
+      harnessOptions.filter(({ disabled }) => !disabled).map(({ textContent }) => textContent),
+    ).toEqual(["DeepSeek Harness"]);
+    expect(
+      harnessOptions.find(({ attributes }) => attributes.get("aria-pressed") === "true")
+        ?.textContent,
+    ).toBe("DeepSeek Harness");
+    for (const option of harnessOptions) option.dispatch("click");
+    expect(client.listDeepSeekModernSessions).toHaveBeenCalledOnce();
+    expect(client.importDeepSeekModernSession).not.toHaveBeenCalled();
+    expect(
+      descendants(content).find(
+        ({ className, textContent }) =>
+          className === "settings-visually-hidden" &&
+          textContent.includes("idle-session-identifier-that-is-long"),
+      )?.textContent,
+    ).toContain("idle-session-identifier-that-is-long");
+    expect(
+      descendants(content).find(
+        ({ className, textContent }) =>
+          className === "settings-visually-hidden" && textContent.startsWith("运行中:"),
+      )?.textContent,
+    ).toBe("运行中: 请先在 DSH 中停止该会话，然后刷新。");
+
+    const actions = descendants(content).filter(
+      ({ dataset }) => dataset.sessionImportAction === "import",
+    );
+    expect(actions).toHaveLength(2);
+    expect(actions[0]?.disabled).toBe(false);
+    expect(actions[1]?.disabled).toBe(true);
+    actions[1]?.dispatch("click");
+    expect(client.importDeepSeekModernSession).not.toHaveBeenCalled();
+    actions[0]?.dispatch("click");
+    expect(descendants(content)).toContain(actions[0]);
+    expect(actions[0]?.getAttribute("aria-disabled")).toBe("true");
+    expect(actions[0]?.getAttribute("aria-busy")).toBe("true");
+    actions[0]?.dispatch("click");
+    await vi.waitFor(() => expect(client.importDeepSeekModernSession).toHaveBeenCalledOnce());
+    expect(client.importDeepSeekModernSession).toHaveBeenCalledWith({
+      nativeSessionId: "idle-session-identifier-that-is-long",
+    });
+    await vi.waitFor(() =>
+      expect(openImportedThread).toHaveBeenCalledWith("imported-thread", expect.any(AbortSignal)),
+    );
+    scope.dispose();
+  });
+
+  it("shows a localized focused error when import fails before commit", async () => {
+    const client = {
+      listDeepSeekModernSessions: vi.fn(async () => ({
+        candidates: [
+          {
+            nativeSessionId: "idle-session",
+            title: "Import candidate",
+            updatedAt: 1_700_000_000_000,
+            cwd: "C:\\work",
+            running: false,
+          },
+        ],
+      })),
+      importDeepSeekModernSession: vi.fn(async () =>
+        Promise.reject(new Error("private import detail")),
+      ),
+    };
+    const openImportedThread = vi.fn();
+    const page = createDefaultRendererSettingsPages(
+      rendererSettingsMessages("en"),
+      () => null,
+      () => null,
+      () => client,
+      openImportedThread,
+    ).find(({ id }) => id === "session-import");
+    if (!page) throw new Error("Session Import page is not registered");
+    const document = new FakeDocument();
+    const content = document.createElement("main");
+    const scope = new RendererSettingsPageScope();
+    page.mount({
+      content: content as unknown as HTMLElement,
+      signal: scope.signal,
+      runLatest: (operation, handlers) => scope.runLatest(operation, handlers),
+    });
+    await vi.waitFor(() => expect(visibleText(content)).toContain("Import candidate"));
+
+    descendants(content)
+      .find(({ dataset }) => dataset.sessionImportAction === "import")
+      ?.dispatch("click");
+
+    await vi.waitFor(() => expect(visibleText(content)).toContain("could not be imported"));
+    expect(elementWithClass(content, "settings-session-import-status").focused).toBe(true);
+    expect(visibleText(content)).not.toContain("private import detail");
+    expect(openImportedThread).not.toHaveBeenCalled();
+    expect(
+      descendants(content).find(({ dataset }) => dataset.sessionImportAction === "refresh")
+        ?.disabled,
+    ).toBe(false);
+    scope.dispose();
+  });
+
+  it("coalesces import across page remount and lets only the current scope navigate", async () => {
+    const imported = deferred<unknown>();
+    const candidate = {
+      nativeSessionId: "remounted-session",
+      title: "Remounted session",
+      updatedAt: 1_700_000_000_000,
+      cwd: "C:\\work",
+      running: false,
+    };
+    const sendRequest = vi.fn((method: string): Promise<unknown> => {
+      if (method === DEEPSEEK_MODERN_SESSION_LIST_METHOD) {
+        return Promise.resolve({ candidates: [candidate] });
+      }
+      if (method === DEEPSEEK_MODERN_SESSION_IMPORT_METHOD) return imported.promise;
+      return Promise.reject(new Error(`Unexpected method: ${method}`));
+    });
+    const modelClient = createRendererModelClient([{ sendRequest }]);
+    if (!modelClient?.listDeepSeekModernSessions || !modelClient.importDeepSeekModernSession) {
+      throw new Error("DSH Modern Session client was not created");
+    }
+    const client = {
+      listDeepSeekModernSessions: modelClient.listDeepSeekModernSessions,
+      importDeepSeekModernSession: modelClient.importDeepSeekModernSession,
+    };
+    const navigated: string[] = [];
+    const openImportedThread = vi.fn(async (threadId: string, signal: AbortSignal) => {
+      if (signal.aborted) throw Object.assign(new Error("aborted"), { name: "AbortError" });
+      navigated.push(threadId);
+    });
+    const page = createDefaultRendererSettingsPages(
+      rendererSettingsMessages("en"),
+      () => null,
+      () => null,
+      () => client,
+      openImportedThread,
+    ).find(({ id }) => id === "session-import");
+    if (!page) throw new Error("Session Import page is not registered");
+
+    const firstDocument = new FakeDocument();
+    const firstContent = firstDocument.createElement("main");
+    const firstScope = new RendererSettingsPageScope();
+    page.mount({
+      content: firstContent as unknown as HTMLElement,
+      signal: firstScope.signal,
+      runLatest: (operation, handlers) => firstScope.runLatest(operation, handlers),
+    });
+    await vi.waitFor(() => expect(visibleText(firstContent)).toContain("Remounted session"));
+    descendants(firstContent)
+      .find(({ dataset }) => dataset.sessionImportAction === "import")
+      ?.dispatch("click");
+    await vi.waitFor(() =>
+      expect(
+        sendRequest.mock.calls.filter(
+          ([method]) => method === DEEPSEEK_MODERN_SESSION_IMPORT_METHOD,
+        ),
+      ).toHaveLength(1),
+    );
+    const staleContent = visibleText(firstContent);
+    firstScope.dispose();
+
+    const currentDocument = new FakeDocument();
+    const currentContent = currentDocument.createElement("main");
+    const currentScope = new RendererSettingsPageScope();
+    page.mount({
+      content: currentContent as unknown as HTMLElement,
+      signal: currentScope.signal,
+      runLatest: (operation, handlers) => currentScope.runLatest(operation, handlers),
+    });
+    await vi.waitFor(() => expect(visibleText(currentContent)).toContain("Remounted session"));
+    descendants(currentContent)
+      .find(({ dataset }) => dataset.sessionImportAction === "import")
+      ?.dispatch("click");
+    expect(
+      sendRequest.mock.calls.filter(([method]) => method === DEEPSEEK_MODERN_SESSION_IMPORT_METHOD),
+    ).toHaveLength(1);
+
+    imported.resolve({ threadId: "imported-thread" });
+    await vi.waitFor(() => expect(navigated).toEqual(["imported-thread"]));
+    expect(visibleText(firstContent)).toBe(staleContent);
+    currentScope.dispose();
+  });
+
+  it("localizes unavailable and ordinary list failures without exposing their detail", async () => {
+    const messages = rendererSettingsMessages("zh-CN");
+    const document = new FakeDocument();
+    for (const [error, expected] of [
+      [new RendererDeepSeekSessionUnavailableError(), messages.sessionImportUnavailable],
+      [new Error("private native failure detail"), messages.sessionImportLoadFailed],
+    ] as const) {
+      const client = {
+        listDeepSeekModernSessions: vi.fn(async () => Promise.reject(error)),
+        importDeepSeekModernSession: vi.fn(),
+      };
+      const page = createDefaultRendererSettingsPages(
+        messages,
+        () => null,
+        () => null,
+        () => client,
+      ).find(({ id }) => id === "session-import");
+      if (!page) throw new Error("Session Import page is not registered");
+      const content = document.createElement("main");
+      const scope = new RendererSettingsPageScope();
+      page.mount({
+        content: content as unknown as HTMLElement,
+        signal: scope.signal,
+        runLatest: (operation, handlers) => scope.runLatest(operation, handlers),
+      });
+
+      await vi.waitFor(() => expect(visibleText(content)).toContain(expected));
+      expect(visibleText(content)).not.toContain(error.message);
+      scope.dispose();
+    }
+  });
+
+  it("keeps project recovery actions after committed import navigation fails", async () => {
+    const client = {
+      listDeepSeekModernSessions: vi.fn(async () => ({
+        candidates: [
+          {
+            nativeSessionId: "idle-session",
+            title: null,
+            updatedAt: 1_700_000_000_000,
+            cwd: "C:\\work",
+            running: false,
+          },
+        ],
+      })),
+      importDeepSeekModernSession: vi.fn(async () => ({
+        threadId: hostThreadIdSchema.parse("imported-thread"),
+      })),
+    };
+    const openImportedThread = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("private navigation detail"))
+      .mockResolvedValueOnce(undefined);
+    const page = createDefaultRendererSettingsPages(
+      rendererSettingsMessages("en"),
+      () => null,
+      () => null,
+      () => client,
+      openImportedThread,
+    ).find(({ id }) => id === "session-import");
+    if (!page) throw new Error("Session Import page is not registered");
+    const document = new FakeDocument();
+    const content = document.createElement("main");
+    const scope = new RendererSettingsPageScope();
+    page.mount({
+      content: content as unknown as HTMLElement,
+      signal: scope.signal,
+      runLatest: (operation, handlers) => scope.runLatest(operation, handlers),
+    });
+    await vi.waitFor(() => expect(visibleText(content)).toContain("Untitled session"));
+
+    descendants(content)
+      .find(({ dataset }) => dataset.sessionImportAction === "import")
+      ?.dispatch("click");
+
+    await vi.waitFor(() => expect(visibleText(content)).toContain("Session imported"));
+    const recovery = elementWithClass(content, "settings-session-import-recovery");
+    expect(recovery.focused).toBe(true);
+    expect(visibleText(content)).toContain("C:\\work");
+    expect(visibleText(content)).toContain("added as a project");
+    expect(visibleText(content)).not.toContain("private navigation detail");
+
+    const copyPath = descendants(content).find(
+      ({ dataset }) => dataset.sessionImportAction === "copy-project-path",
+    );
+    if (!copyPath) throw new Error("Copy project path action is not rendered");
+    copyPath.dispatch("click");
+    await vi.waitFor(() => expect(document.clipboardWriteText).toHaveBeenCalledWith("C:\\work"));
+    expect(visibleNotesText(copyPath)).toContain("Copied");
+
+    const retry = descendants(content).find(
+      ({ dataset }) => dataset.sessionImportAction === "retry-open",
+    );
+    if (!retry) throw new Error("Retry open action is not rendered");
+    retry.dispatch("click");
+    expect(retry.disabled).toBe(true);
+    expect(retry.getAttribute("aria-busy")).toBe("true");
+    expect(
+      descendants(content).find(({ dataset }) => dataset.sessionImportAction === "refresh")
+        ?.disabled,
+    ).toBe(true);
+    await vi.waitFor(() => expect(openImportedThread).toHaveBeenCalledTimes(2));
+    expect(client.importDeepSeekModernSession).toHaveBeenCalledOnce();
+    scope.dispose();
+  });
+
+  it("shows an honest unavailable state without a local import client", () => {
+    const page = createDefaultRendererSettingsPages(rendererSettingsMessages("en")).find(
+      ({ id }) => id === "session-import",
+    );
+    if (!page) throw new Error("Session Import page is not registered");
+    const document = new FakeDocument();
+    const content = document.createElement("main");
+    const scope = new RendererSettingsPageScope();
+    page.mount({
+      content: content as unknown as HTMLElement,
+      signal: scope.signal,
+      runLatest: (operation, handlers) => scope.runLatest(operation, handlers),
+    });
+
+    expect(visibleText(content)).toContain("codexhost-managed DeepSeek Harness 0.1.2-rc.1");
+    expect(
+      descendants(content).filter(({ dataset }) => dataset.sessionImportAction === "import"),
+    ).toHaveLength(0);
+    scope.dispose();
+  });
+
+  it("ignores a Session list that resolves after the settings page is disposed", async () => {
+    const listed = deferred<{ candidates: never[] }>();
+    const client = {
+      listDeepSeekModernSessions: vi.fn(() => listed.promise),
+      importDeepSeekModernSession: vi.fn(),
+    };
+    const page = createDefaultRendererSettingsPages(
+      rendererSettingsMessages("en"),
+      () => null,
+      () => null,
+      () => client,
+    ).find(({ id }) => id === "session-import");
+    if (!page) throw new Error("Session Import page is not registered");
+    const document = new FakeDocument();
+    const content = document.createElement("main");
+    const scope = new RendererSettingsPageScope();
+    page.mount({
+      content: content as unknown as HTMLElement,
+      signal: scope.signal,
+      runLatest: (operation, handlers) => scope.runLatest(operation, handlers),
+    });
+    const before = visibleText(content);
+
+    scope.dispose();
+    listed.resolve({ candidates: [] });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(visibleText(content)).toBe(before);
   });
 });

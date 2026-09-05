@@ -13,7 +13,8 @@
     }
   },
   "scripts": {
-    "build": "tsc -b"
+    "build": "tsc -b",
+    "test": "vitest run test"
   },
   "dependencies": {
     "@codexhost/harness-adapter": "0.0.0",

@@ -33,14 +33,15 @@ mod windows_ui;
 
 pub use background::detach_from_terminal;
 pub use desktop_launch::{
-    DesktopProcess, launch_desktop, launch_stock_desktop, open_latest_codexhost_release,
+    DesktopProcess, launch_desktop, launch_stock_desktop, open_external_url,
+    open_latest_codexhost_release,
 };
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 pub use desktop_launch::{DesktopSession, launch_desktop_session};
 #[cfg(not(target_os = "linux"))]
 pub use installation::discover_codex_desktop;
 #[cfg(target_os = "windows")]
-pub use installation::discover_codex_desktop_from_root;
+pub use installation::{discover_codex_desktop_from_root, discover_desktop_managed_codex_cli};
 #[cfg(target_os = "linux")]
 pub use linux_installation::discover_codex_desktop;
 pub use macos_native_harness_broker::{

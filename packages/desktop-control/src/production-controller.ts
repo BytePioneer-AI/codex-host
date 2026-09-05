@@ -7,12 +7,12 @@ import {
   type StartControllerAttachmentServerOptions,
 } from "./controller-attachment-server.js";
 import {
-  installRendererControlSession,
-  type RendererControlSession,
-} from "./renderer-control-session.js";
+  installRendererCdpControlSession,
+  type RendererCdpControlSession,
+} from "./renderer-cdp-control-session.js";
 
 export interface DesktopControllerOptions {
-  inspectorEndpoint: string;
+  rendererCdpEndpoint: string;
   rendererPath: string;
   defaultAgent: "codex" | "pi";
   attachmentPort: number;
@@ -28,11 +28,11 @@ export interface DesktopControllerReadiness {
 export interface DesktopControllerDependencies {
   readRenderer(filePath: string): Promise<string>;
   install(options: {
-    inspectorEndpoint: string;
+    rendererCdpEndpoint: string;
     rendererSource: string;
     enabledAgents: readonly string[];
     timeoutMs: number;
-  }): Promise<RendererControlSession>;
+  }): Promise<RendererCdpControlSession>;
   startAttachmentServer(
     options: StartControllerAttachmentServerOptions,
   ): Promise<ControllerAttachmentServer>;
@@ -43,6 +43,8 @@ export interface DesktopControllerDependencies {
 }
 
 const PRODUCTION_INSTALL_TIMEOUT_MS = 90_000;
+const RENDERER_CSP_BOOTSTRAP =
+  "globalThis.__zod_globalConfig ??= {}; globalThis.__zod_globalConfig.jitless = true;";
 const DESKTOP_CONTROLLER_READINESS_MAX_BYTES = 512;
 const TRANSIENT_INSTALL_ATTEMPTS = 3;
 const TRANSIENT_INSTALL_RETRY_MS = 250;
@@ -78,7 +80,7 @@ export function serializeDesktopControllerReadiness(readiness: DesktopController
 
 const defaultDependencies: DesktopControllerDependencies = {
   readRenderer: (filePath) => readFile(filePath, "utf8"),
-  install: installRendererControlSession,
+  install: installRendererCdpControlSession,
   startAttachmentServer: startControllerAttachmentServer,
   ready: (readiness) => {
     process.stdout.write(`${serializeDesktopControllerReadiness(readiness)}\n`);
@@ -87,7 +89,7 @@ const defaultDependencies: DesktopControllerDependencies = {
   monitorIntervalMs: 500,
 };
 
-function inspectorEndpoint(value: string): string {
+function rendererCdpEndpoint(value: string): string {
   const url = new URL(value);
   if (
     url.protocol !== "http:" ||
@@ -99,7 +101,7 @@ function inspectorEndpoint(value: string): string {
     url.search ||
     url.hash
   ) {
-    throw new Error("--inspector-endpoint must be a loopback HTTP origin with an explicit port");
+    throw new Error("--renderer-cdp-endpoint must be a loopback HTTP origin with an explicit port");
   }
   return url.origin;
 }
@@ -115,10 +117,12 @@ export function parseDesktopControllerArguments(
   for (let index = 0; index < arguments_.length; index += 1) {
     const argument = arguments_[index];
     const value = arguments_[index + 1];
-    if (argument === "--inspector-endpoint") {
-      if (endpoint !== undefined) throw new Error("--inspector-endpoint may only be provided once");
-      if (!value) throw new Error("--inspector-endpoint requires a value");
-      endpoint = inspectorEndpoint(value);
+    if (argument === "--renderer-cdp-endpoint") {
+      if (endpoint !== undefined) {
+        throw new Error("--renderer-cdp-endpoint may only be provided once");
+      }
+      if (!value) throw new Error("--renderer-cdp-endpoint requires a value");
+      endpoint = rendererCdpEndpoint(value);
       index += 1;
       continue;
     }
@@ -164,13 +168,13 @@ export function parseDesktopControllerArguments(
     }
     throw new Error(`unknown Desktop Controller option: ${argument}`);
   }
-  if (endpoint === undefined) throw new Error("--inspector-endpoint is required");
+  if (endpoint === undefined) throw new Error("--renderer-cdp-endpoint is required");
   if (rendererPath === undefined) throw new Error("--renderer is required");
   if (defaultAgent === undefined) throw new Error("--default-agent is required");
   if (attachmentPort === undefined) throw new Error("--attachment-port is required");
   if (attachmentNonce === undefined) throw new Error("--attachment-nonce is required");
   return {
-    inspectorEndpoint: endpoint,
+    rendererCdpEndpoint: endpoint,
     rendererPath,
     defaultAgent,
     attachmentPort,
@@ -178,7 +182,7 @@ export function parseDesktopControllerArguments(
   };
 }
 
-function isTransientElectronInstallError(error: unknown): boolean {
+function isTransientRendererInstallError(error: unknown): boolean {
   let current: unknown = error;
   for (let depth = 0; depth < 4; depth += 1) {
     const message = current instanceof Error ? current.message : String(current);
@@ -197,12 +201,12 @@ function isTransientElectronInstallError(error: unknown): boolean {
 async function installProductionSession(
   options: Parameters<DesktopControllerDependencies["install"]>[0],
   dependencies: DesktopControllerDependencies,
-): Promise<RendererControlSession> {
+): Promise<RendererCdpControlSession> {
   for (let attempt = 1; attempt <= TRANSIENT_INSTALL_ATTEMPTS; attempt += 1) {
     try {
       return await dependencies.install(options);
     } catch (error) {
-      if (attempt === TRANSIENT_INSTALL_ATTEMPTS || !isTransientElectronInstallError(error)) {
+      if (attempt === TRANSIENT_INSTALL_ATTEMPTS || !isTransientRendererInstallError(error)) {
         throw error;
       }
       await dependencies.sleep(TRANSIENT_INSTALL_RETRY_MS);
@@ -218,7 +222,7 @@ export async function runDesktopController(
 ): Promise<void> {
   const configuration = `Object.defineProperty(window, "__codexhostProductionConfigV1", { configurable: true, value: { defaultAgent: ${JSON.stringify(options.defaultAgent)} } });`;
   const now = dependencies.now ?? Date.now;
-  let session: RendererControlSession | undefined;
+  let session: RendererCdpControlSession | undefined;
   let nextRecoveryAt = 0;
   let recoveryDelayMs = RECOVERY_RETRY_INITIAL_MS;
   const recordRecoveryFailure = (): void => {
@@ -229,15 +233,15 @@ export async function runDesktopController(
     nextRecoveryAt = 0;
     recoveryDelayMs = RECOVERY_RETRY_INITIAL_MS;
   };
-  const createSession = async (): Promise<RendererControlSession> => {
+  const createSession = async (): Promise<RendererCdpControlSession> => {
     startupTrace("reading Renderer bundle");
     const rendererSource = await dependencies.readRenderer(options.rendererPath);
     if (rendererSource.trim().length === 0) throw new Error("production Renderer Bundle is empty");
     startupTrace("installing Renderer Session");
     const installed = await installProductionSession(
       {
-        inspectorEndpoint: options.inspectorEndpoint,
-        rendererSource: `${configuration}\n${rendererSource}`,
+        rendererCdpEndpoint: options.rendererCdpEndpoint,
+        rendererSource: `${RENDERER_CSP_BOOTSTRAP}\n${configuration}\n${rendererSource}`,
         enabledAgents: [
           "codex",
           "pi",
@@ -278,12 +282,12 @@ export async function runDesktopController(
     session?.close();
     session = undefined;
   };
-  const ensureSession = async (): Promise<RendererControlSession> => {
+  const ensureSession = async (): Promise<RendererCdpControlSession> => {
     if (!session) session = await createSession();
     else await session.ensureInstalled();
     return session;
   };
-  const recoverSession = async (): Promise<RendererControlSession> => {
+  const recoverSession = async (): Promise<RendererCdpControlSession> => {
     try {
       const current = await ensureSession();
       recordRecoverySuccess();

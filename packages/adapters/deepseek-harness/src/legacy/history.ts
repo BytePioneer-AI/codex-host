@@ -27,7 +27,7 @@ import {
   type NativeTurnRef,
 } from "@codexhost/shared-contracts";
 
-import { encodeDeepSeekHarnessModelRef, type DeepSeekNativeModelRef } from "./model-catalog.js";
+import { encodeDeepSeekHarnessModelRef, type DeepSeekNativeModelRef } from "../model-catalog.js";
 import {
   contentText,
   deepSeekUsageKey,
@@ -40,7 +40,7 @@ import {
   projectToolResult,
   projectTurnReason,
   structuredDiffs,
-} from "./projection.js";
+} from "../projection.js";
 
 interface HistoryTool {
   itemIndex: number;

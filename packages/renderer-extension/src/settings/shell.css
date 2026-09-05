@@ -41,6 +41,18 @@ button {
   display: none !important;
 }
 
+.settings-visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
 .codexhost-settings-dialog {
   width: min(1120px, calc(100vw - 32px));
   height: min(780px, calc(100vh - 32px));
@@ -297,6 +309,7 @@ button {
 
 .settings-section-label {
   min-height: auto;
+  margin: 0;
   padding: 0 0 28px;
   color: var(--settings-text);
   font-size: 24px;
@@ -378,6 +391,221 @@ button {
   color: var(--settings-muted);
   font-size: 13px;
   line-height: 20px;
+}
+
+.settings-session-import-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 24px;
+}
+
+.settings-session-import-header .settings-section-label {
+  min-width: 0;
+}
+
+.settings-session-import-harness {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  gap: 12px;
+  margin: -12px 0 16px;
+  color: var(--settings-muted);
+  font-size: 13px;
+}
+
+.settings-session-import-harness > span {
+  flex: none;
+}
+
+.settings-session-import-harness__options {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  flex: 1;
+  gap: 6px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+}
+
+.settings-session-import-harness__options::-webkit-scrollbar {
+  display: none;
+}
+
+.settings-session-import-harness__option {
+  min-height: 32px;
+  flex: none;
+  padding: 6px 10px;
+  color: var(--settings-muted);
+  font: inherit;
+  font-size: 12px;
+  white-space: nowrap;
+  background: rgb(255 255 255 / 4%);
+  border: 1px solid var(--settings-border);
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.settings-session-import-harness__option[aria-pressed="true"] {
+  color: #e8f3ff;
+  background: var(--settings-active);
+  border-color: rgb(51 156 255 / 50%);
+}
+
+.settings-session-import-harness__option:disabled {
+  opacity: 0.38;
+  cursor: not-allowed;
+}
+
+.settings-session-import-harness__option:focus-visible {
+  outline: 2px solid var(--settings-focus);
+  outline-offset: 2px;
+}
+
+.settings-session-import-harness + .settings-page-description {
+  margin-top: 0;
+  margin-bottom: 4px;
+}
+
+.settings-session-import-availability-note {
+  margin-top: 0;
+}
+
+.settings-session-import-content,
+.settings-session-import-list {
+  display: grid;
+  gap: 10px;
+}
+
+.settings-session-import-status {
+  display: flex;
+  align-items: center;
+  min-height: 64px;
+  gap: 12px;
+  padding: 16px;
+  color: var(--settings-muted);
+  background: var(--settings-panel);
+  border: 1px solid var(--settings-border);
+  border-radius: 8px;
+}
+
+.settings-session-import-status.is-error {
+  color: #ef4444;
+}
+
+.settings-session-import-recovery {
+  display: grid;
+  justify-items: start;
+  gap: 14px;
+  padding: 16px;
+  background: var(--settings-panel);
+  border: 1px solid var(--settings-border);
+  border-radius: 8px;
+}
+
+.settings-session-import-recovery:focus-visible {
+  outline: 2px solid var(--settings-focus);
+  outline-offset: 2px;
+}
+
+.settings-session-import-recovery__copy {
+  display: grid;
+  gap: 4px;
+}
+
+.settings-session-import-recovery__copy strong {
+  color: var(--settings-text);
+  font-size: 14px;
+}
+
+.settings-session-import-recovery__copy p {
+  margin: 0;
+  color: var(--settings-muted);
+  font-size: 13px;
+  line-height: 20px;
+}
+
+.settings-session-import-recovery__path {
+  display: flex;
+  align-items: stretch;
+  width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--settings-border);
+  border-radius: 6px;
+}
+
+.settings-session-import-recovery__path code {
+  min-width: 0;
+  flex: 1;
+  padding: 8px 10px;
+  overflow-x: auto;
+  color: var(--settings-text);
+  font-size: 12px;
+  line-height: 20px;
+  white-space: nowrap;
+}
+
+.settings-session-import-recovery__path .settings-command-button {
+  min-height: 0;
+  flex: none;
+  border-width: 0 0 0 1px;
+  border-radius: 0;
+}
+
+.settings-session-import-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 20px;
+  min-width: 0;
+  padding: 16px;
+  background: var(--settings-panel);
+  border: 1px solid var(--settings-border);
+  border-radius: 8px;
+}
+
+.settings-session-import-row__copy {
+  display: grid;
+  min-width: 0;
+  gap: 4px;
+}
+
+.settings-session-import-row__copy strong {
+  overflow: hidden;
+  color: var(--settings-text);
+  font-size: 14px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-session-import-row__copy span,
+.settings-session-import-row__cwd {
+  overflow: hidden;
+  color: var(--settings-muted);
+  font-size: 12px;
+  line-height: 18px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-session-import-row__cwd {
+  display: block;
+  min-width: 0;
+  background: transparent;
+}
+
+.settings-session-import-row__action {
+  display: flex;
+  align-items: flex-end;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.settings-session-import-running {
+  color: var(--settings-muted);
+  font-size: 12px;
 }
 
 .settings-preference-row {
@@ -1525,6 +1753,13 @@ button {
   filter: brightness(1.08);
 }
 
+.settings-command-button:disabled,
+.settings-command-button[aria-disabled="true"] {
+  opacity: 0.55;
+  cursor: not-allowed;
+  filter: none;
+}
+
 .settings-command-button:focus-visible,
 .settings-update-link:focus-visible {
   outline: 2px solid var(--settings-focus);
@@ -1547,6 +1782,14 @@ button {
   .settings-layout {
     grid-template-columns: minmax(0, 1fr);
     grid-template-rows: auto minmax(0, 1fr);
+  }
+
+  .settings-session-import-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .settings-session-import-row__action {
+    align-items: flex-start;
   }
 
   .settings-sidebar {

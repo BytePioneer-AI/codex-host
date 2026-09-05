@@ -27,6 +27,8 @@ use super::DesktopInstallation;
 use super::PlatformError;
 #[cfg(target_os = "windows")]
 use super::WindowsAppxActivationIdentity;
+#[cfg(target_os = "windows")]
+use super::canonical_existing_file;
 
 #[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
 pub(super) fn sha256_file(path: &Path) -> Result<String, PlatformError> {
@@ -216,8 +218,31 @@ fn discover_installed_windows_package() -> Result<WindowsPackageDetails, Platfor
 }
 
 #[cfg(target_os = "windows")]
+fn desktop_cli_candidate(
+    canonical_cache_root: &Path,
+    candidate: PathBuf,
+) -> Result<Option<(SystemTime, PathBuf)>, PlatformError> {
+    if !candidate.is_file() {
+        return Ok(None);
+    }
+    let modified = candidate
+        .metadata()
+        .and_then(|metadata| metadata.modified())
+        .unwrap_or(SystemTime::UNIX_EPOCH);
+    let canonical = candidate.canonicalize().map_err(PlatformError::Io)?;
+    Ok(canonical
+        .starts_with(canonical_cache_root)
+        .then_some((modified, canonical)))
+}
+
+#[cfg(target_os = "windows")]
 fn find_desktop_cli_cache(local_app_data: &Path) -> Result<Option<PathBuf>, PlatformError> {
     let cache_root = local_app_data.join("OpenAI/Codex/bin");
+    let canonical_cache_root = match cache_root.canonicalize() {
+        Ok(root) => root,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(PlatformError::Io(error)),
+    };
     let mut candidates = vec![cache_root.join("codex.exe")];
 
     if let Ok(entries) = cache_root.read_dir() {
@@ -230,19 +255,12 @@ fn find_desktop_cli_cache(local_app_data: &Path) -> Result<Option<PathBuf>, Plat
 
     candidates
         .into_iter()
-        .filter(|candidate| candidate.is_file())
-        .map(|candidate| {
-            let modified = candidate
-                .metadata()
-                .and_then(|metadata| metadata.modified())
-                .unwrap_or(SystemTime::UNIX_EPOCH);
-            let canonical = candidate.canonicalize().map_err(PlatformError::Io)?;
-            Ok((modified, canonical))
-        })
+        .map(|candidate| desktop_cli_candidate(&canonical_cache_root, candidate))
         .collect::<Result<Vec<_>, PlatformError>>()
         .map(|candidates| {
             candidates
                 .into_iter()
+                .flatten()
                 .max_by_key(|(modified, _)| *modified)
                 .map(|(_, candidate)| candidate)
         })
@@ -317,6 +335,91 @@ fn windows_local_app_data() -> Result<PathBuf, PlatformError> {
                 "LOCALAPPDATA is unavailable; cannot locate the Desktop CLI cache".into(),
             )
         })
+}
+
+/// Locate the executable CLI maintained by Codex Desktop without enumerating
+/// the installed AppX package.
+///
+/// Desktop helpers can preserve `CODEX_CLI_PATH` while dropping private
+/// launcher state. This focused lookup lets the Shim recover the same
+/// Desktop-managed CLI that normal installation discovery selects, without
+/// paying the PackageManager cost on every helper invocation.
+#[cfg(target_os = "windows")]
+pub fn discover_desktop_managed_codex_cli() -> Result<PathBuf, PlatformError> {
+    if let Some(root) = custom_install_root(env::var_os) {
+        let installation = discover_codex_desktop_from_root(&root)?;
+        let executable = canonical_existing_file(&installation.executable_codex_cli)?;
+        if !executable.starts_with(&installation.install_root) {
+            return Err(PlatformError::Invalid(format!(
+                "portable Codex CLI '{}' resolves outside installation root '{}'",
+                installation.executable_codex_cli.display(),
+                installation.install_root.display()
+            )));
+        }
+        return Ok(executable);
+    }
+    find_desktop_cli_cache(&windows_local_app_data()?)?.ok_or_else(|| {
+        PlatformError::NotFound(
+            "no runnable Codex CLI was found in the Desktop-managed cache; launch the official Desktop once to create it".into(),
+        )
+    })
+}
+
+#[cfg(all(test, target_os = "windows"))]
+mod desktop_managed_cli_tests {
+    use std::fs;
+
+    use super::{desktop_cli_candidate, find_desktop_cli_cache};
+
+    #[test]
+    fn focused_cli_discovery_uses_only_the_desktop_managed_cache() {
+        let root = crate::temporary_directory("desktop-managed-cli");
+        let cache = root.join("OpenAI/Codex/bin/cache-build");
+        fs::create_dir_all(&cache).expect("create Desktop-managed CLI cache");
+        let expected = cache.join("codex.exe");
+        fs::write(&expected, b"codex").expect("write cached Codex CLI");
+
+        let discovered = find_desktop_cli_cache(&root)
+            .expect("search Desktop-managed CLI cache")
+            .expect("discover cached Codex CLI");
+        assert_eq!(discovered, expected.canonicalize().expect("canonical CLI"));
+
+        fs::remove_dir_all(root).expect("remove Desktop-managed CLI fixture");
+    }
+
+    #[test]
+    fn focused_cli_discovery_does_not_consult_path() {
+        let root = crate::temporary_directory("desktop-managed-cli-missing");
+        let unrelated = root.join("path-entry");
+        fs::create_dir_all(&unrelated).expect("create unrelated PATH directory");
+        fs::write(unrelated.join("codex.exe"), b"codex").expect("write unrelated CLI");
+        let original_path = std::env::var_os("PATH");
+
+        // The lookup takes an explicit Desktop cache root and never reads PATH.
+        let discovered = find_desktop_cli_cache(&root).expect("search empty Desktop cache");
+        assert!(discovered.is_none());
+        assert_eq!(std::env::var_os("PATH"), original_path);
+
+        fs::remove_dir_all(root).expect("remove unrelated PATH fixture");
+    }
+
+    #[test]
+    fn focused_cli_discovery_rejects_candidates_outside_the_cache_root() {
+        let root = crate::temporary_directory("desktop-managed-cli-containment");
+        let cache = root.join("OpenAI/Codex/bin");
+        fs::create_dir_all(&cache).expect("create Desktop-managed CLI cache");
+        let outside = root.join("outside-codex.exe");
+        fs::write(&outside, b"codex").expect("write outside CLI");
+
+        let candidate = desktop_cli_candidate(
+            &cache.canonicalize().expect("canonical cache root"),
+            outside,
+        )
+        .expect("inspect outside CLI");
+        assert!(candidate.is_none());
+
+        fs::remove_dir_all(root).expect("remove containment fixture");
+    }
 }
 
 #[cfg(target_os = "windows")]

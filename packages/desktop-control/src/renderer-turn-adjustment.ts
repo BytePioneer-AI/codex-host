@@ -8,11 +8,17 @@ export interface TurnAdjustmentManager {
 
 type SendRequest = (method: string, parameters: unknown, options?: unknown) => unknown;
 
+interface RendererTurnAdjustmentBridge {
+  sendRequest: SendRequest;
+  onNotification(method: string, parameters: unknown): void;
+  dispose(): void;
+}
+
 /** Serialized into the Renderer: keep this function self-contained and browser-safe. */
-export function createRendererTurnAdjustmentSender(
+export function createRendererTurnAdjustmentBridge(
   manager: TurnAdjustmentManager,
   send: SendRequest,
-): SendRequest {
+): RendererTurnAdjustmentBridge {
   const record = (value: unknown): value is Record<string, unknown> =>
     typeof value === "object" && value !== null && !Array.isArray(value);
   const turns = (state: unknown): Record<string, unknown>[] | null => {
@@ -36,7 +42,33 @@ export function createRendererTurnAdjustmentSender(
     return Array.isArray(state.turns) && state.turns.every(record) ? state.turns : null;
   };
 
-  return (method, parameters, options) => {
+  const pendingInputs = new Map<
+    string,
+    { threadId: string; turnId: string; input: unknown[]; clientId: string }
+  >();
+  let disposed = false;
+  const restoreContinuationInput = (key: string): void => {
+    const pending = pendingInputs.get(key);
+    if (!pending) return;
+    const target = turns(manager.getConversation?.(pending.threadId))?.find(
+      (turn) => turn.turnId === pending.turnId,
+    );
+    if (!target || !record(target.params) || !Array.isArray(target.params.input)) return;
+    manager.updateConversationState?.(pending.threadId, (state) => {
+      const turn = turns(state)?.find((turn) => turn.turnId === pending.turnId);
+      if (!turn || !record(turn.params) || !Array.isArray(turn.params.input)) return;
+      // Server-initiated Turns receive visible userMessage items, but the stock
+      // editor reads params.input. The client identity also preserves that input
+      // when Desktop merges a later history page into its live Turn state.
+      if (turn.params.input.length === 0) {
+        turn.params.input = pending.input;
+        turn.params.clientUserMessageId = pending.clientId;
+      }
+      pendingInputs.delete(key);
+    });
+  };
+
+  const sendRequest: SendRequest = (method, parameters, options) => {
     if (method !== "turn/steer" || !record(parameters) || typeof parameters.threadId !== "string") {
       return send(method, parameters, options);
     }
@@ -88,8 +120,9 @@ export function createRendererTurnAdjustmentSender(
         });
         if (!detached)
           throw new Error("The current execution ended before the adjustment was submitted");
+        let response: unknown;
         try {
-          return await send("codexhost/turn/adjust", parameters, options);
+          response = await send("codexhost/turn/adjust", parameters, options);
         } catch (error) {
           // Restore the original item so the stock failure/outcome-unknown path retains restoreMessage.
           manager.updateConversationState(threadId, (state) => {
@@ -106,7 +139,52 @@ export function createRendererTurnAdjustmentSender(
           });
           throw error;
         }
+        if (
+          !disposed &&
+          record(response) &&
+          response.delivery === "interrupt-and-continue" &&
+          response.previousTurnId === parameters.expectedTurnId &&
+          typeof response.turnId === "string" &&
+          typeof clientId === "string" &&
+          Array.isArray(parameters.input)
+        ) {
+          const key = JSON.stringify([threadId, response.turnId]);
+          pendingInputs.set(key, {
+            threadId,
+            turnId: response.turnId,
+            input: structuredClone(parameters.input),
+            clientId,
+          });
+          restoreContinuationInput(key);
+        }
+        return response;
       },
     );
+  };
+
+  return {
+    sendRequest,
+    onNotification(method, parameters) {
+      if (!record(parameters) || typeof parameters.threadId !== "string") return;
+      if (method === "thread/closed" || method === "thread/deleted") {
+        for (const [key, pending] of pendingInputs) {
+          if (pending.threadId === parameters.threadId) pendingInputs.delete(key);
+        }
+        return;
+      }
+      const turnId =
+        (method === "turn/started" || method === "turn/completed") && record(parameters.turn)
+          ? parameters.turn.id
+          : method === "item/started" || method === "item/completed"
+            ? parameters.turnId
+            : null;
+      if (typeof turnId === "string") {
+        restoreContinuationInput(JSON.stringify([parameters.threadId, turnId]));
+      }
+    },
+    dispose() {
+      disposed = true;
+      pendingInputs.clear();
+    },
   };
 }

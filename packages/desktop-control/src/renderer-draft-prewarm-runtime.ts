@@ -1,5 +1,5 @@
 import type {
-  createRendererTurnAdjustmentSender,
+  createRendererTurnAdjustmentBridge,
   TurnAdjustmentManager,
 } from "./renderer-turn-adjustment.js";
 
@@ -52,7 +52,7 @@ export function installDraftPrewarmPolicyBridge(
   hostId: string,
   target: DraftPrewarmPolicyTarget,
   prewarmedThreadManager: RendererPrewarmedThreadManager,
-  createAdjustmentSender?: typeof createRendererTurnAdjustmentSender,
+  createAdjustmentBridge?: typeof createRendererTurnAdjustmentBridge,
 ): { state: "ready"; reason: "owned-request-bridge" } {
   const existing = target.__codexhostDraftPrewarmPolicyV1 as
     | {
@@ -238,6 +238,7 @@ export function installDraftPrewarmPolicyBridge(
         rememberExternalThread(value.params.thread);
       }
       originalOnNotification.call(manager, value.method, value.params);
+      adjustmentBridge?.onNotification(value.method, value.params);
       return;
     }
     if (typeof value.method === "string" && value.id !== undefined) {
@@ -538,7 +539,8 @@ export function installDraftPrewarmPolicyBridge(
       ? originalPrewarm.call(bridge, routedParameters)
       : originalPrewarm.call(bridge, routedParameters, options);
   };
-  const installedSend = createAdjustmentSender?.(manager, routedSend) ?? routedSend;
+  const adjustmentBridge = createAdjustmentBridge?.(manager, routedSend);
+  const installedSend = adjustmentBridge?.sendRequest ?? routedSend;
   bridge.sendRequest = installedSend;
   bridge.prewarmThreadStart = routedPrewarm;
   const routedWindowMessage = (event: Event): void => {
@@ -561,6 +563,7 @@ export function installDraftPrewarmPolicyBridge(
   const routedOnNotification = (method: string, parameters: unknown): void => {
     if (!handleOuterNotification(method, parameters)) {
       originalOnNotification.call(manager, method, parameters);
+      adjustmentBridge?.onNotification(method, parameters);
     }
   };
   const routedDispatchAppServerResponse = (
@@ -615,6 +618,7 @@ export function installDraftPrewarmPolicyBridge(
       return Promise.resolve();
     },
     dispose(): void {
+      adjustmentBridge?.dispose();
       if (bridge.sendRequest === installedSend) bridge.sendRequest = originalSend;
       if (bridge.prewarmThreadStart === routedPrewarm) {
         bridge.prewarmThreadStart = originalPrewarm;

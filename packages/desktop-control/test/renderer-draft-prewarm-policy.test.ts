@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { createRendererTurnAdjustmentBridge } from "../src/renderer-turn-adjustment.js";
 
 import {
   installRendererDraftPrewarmPolicy,
@@ -208,6 +209,54 @@ function rendererFixture(
 }
 
 describe("Renderer draft prewarm policy", () => {
+  it("restores edit input after the stock notification creates the continuation Turn", async () => {
+    const parameters = {
+      threadId: "thread",
+      expectedTurnId: "old-turn",
+      clientUserMessageId: "client",
+      input: [{ type: "text", text: "adjustment" }],
+    };
+    const oldTurn = {
+      turnId: "old-turn",
+      status: "inProgress",
+      items: [
+        {
+          id: "pending",
+          type: "steeringUserMessage",
+          clientUserMessageId: "client",
+          status: "pending",
+        },
+      ],
+    };
+    const nextTurn = { turnId: "next-turn", params: { input: [] }, items: [] };
+    const state: Record<string, unknown> = { turns: [oldTurn] };
+    const manager: RendererHostRequestManager = {
+      ...requestManagerFixture(),
+      getConversation: () => state,
+      updateConversationState: (_id: string, update: (value: Record<string, unknown>) => void) =>
+        update(state),
+      onNotification: vi.fn(() => (state.turns as unknown[]).push(nextTurn)),
+    };
+    const bridge = requestBridgeFixture({
+      sendRequest: async (method) =>
+        method === "codexhost/thread/inspect"
+          ? { owner: "external", activeTurns: { steer: false, interruptAndContinue: true } }
+          : { turnId: "next-turn", previousTurnId: "old-turn", delivery: "interrupt-and-continue" },
+    });
+    installDraftPrewarmPolicyBridge(
+      manager,
+      bridge,
+      "local",
+      {},
+      { discardAllPrewarmedThreads: vi.fn() },
+      createRendererTurnAdjustmentBridge,
+    );
+    await bridge.sendRequest("turn/steer", parameters);
+    expect(nextTurn.params.input).toEqual([]);
+    manager.onNotification("turn/started", { threadId: "thread", turn: { id: "next-turn" } });
+    expect(nextTurn.params).toEqual({ input: parameters.input, clientUserMessageId: "client" });
+  });
+
   it("selects the request manager owned by the active remote Composer Host", () => {
     const localManager = {};
     const remoteManager = {};

@@ -139,11 +139,16 @@ const harnessHistoryCapabilitiesSchema = z
     fork: z.boolean(),
     forkAcrossCwd: z.boolean(),
     rollbackLastTurn: z.boolean(),
+    replacementFence: z.boolean().optional(),
   })
   .strict()
   .refine((history) => history.fork || !history.forkAcrossCwd, {
     path: ["forkAcrossCwd"],
     message: "Cross-cwd Fork requires exact history Fork support",
+  })
+  .refine((history) => !history.rollbackLastTurn || history.replacementFence === true, {
+    path: ["replacementFence"],
+    message: "Last-Turn rollback requires a history replacement fence",
   });
 
 export const harnessPermissionModeScopeSchema = z.enum(["live", "atCreate"]);
@@ -155,6 +160,13 @@ export function permissionModeFixedAtCreate(configuration: {
 }): boolean {
   return configuration.permissionModeScope === "atCreate";
 }
+
+export const harnessActiveTurnCapabilitiesSchema = z
+  .object({
+    steer: z.boolean(),
+    interruptAndContinue: z.boolean().optional(),
+  })
+  .strict();
 
 export const harnessSessionCapabilitiesSchema = z
   .object({
@@ -180,6 +192,7 @@ export const harnessSessionCapabilitiesSchema = z
       })
       .strict()
       .optional(),
+    activeTurns: harnessActiveTurnCapabilitiesSchema.optional(),
   })
   .strict();
 
@@ -324,6 +337,7 @@ const externalThreadInspectionSchema = z
     effectivePermissionModeId: harnessPermissionModeIdSchema.optional(),
     history: harnessHistoryCapabilitiesSchema,
     usage: threadUsageSnapshotSchema.optional(),
+    activeTurns: harnessActiveTurnCapabilitiesSchema.optional(),
     locked: z.literal(true),
   })
   .strict();

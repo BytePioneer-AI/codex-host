@@ -1,3 +1,6 @@
+import { isDeepStrictEqual } from "node:util";
+
+import { comparableHistoricalTurn } from "@codexhost/harness-adapter";
 import type { HarnessThinkingOptionId } from "@codexhost/shared-contracts";
 
 import { mapPiSnapshot, resolvePiLastTurnBoundary, type PiSessionHistory } from "./pi-history.js";
@@ -64,13 +67,10 @@ export async function rollbackPiLastTurn(
     sessionId: state.sessionId,
     model: modelFromState(state),
   });
-  const expectedTurnKeys = sourceSnapshot.turns
-    .slice(0, -1)
-    .map((turn) => turn.nativeTurnRef.nativeTurnKey);
-  const actualTurnKeys = snapshot.turns.map((turn) => turn.nativeTurnRef.nativeTurnKey);
+  const expectedTurns = sourceSnapshot.turns.slice(0, -1).map(comparableHistoricalTurn);
   if (
     snapshot.turns.length !== boundary.sourceTurnCount - 1 ||
-    actualTurnKeys.some((key, index) => key !== expectedTurnKeys[index])
+    !isDeepStrictEqual(snapshot.turns.map(comparableHistoricalTurn), expectedTurns)
   ) {
     throw new Error("Pi last-Turn rollback did not produce the exact retained history prefix");
   }

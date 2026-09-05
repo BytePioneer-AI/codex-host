@@ -679,6 +679,8 @@ function diffText(changes: HostFileChange[]): string {
 export class CodexTurnProjector {
   readonly #cwd: string;
   readonly #input: HostTurnSnapshot["input"];
+  readonly #emitInitialInput: boolean;
+  readonly #clientUserMessageId: string | null;
   readonly #interactions = new Map<HostInteractionId, ProjectedInteraction>();
   readonly #items = new Map<HostItemId, ProjectedItem>();
   readonly #itemOrder: HostItemId[] = [];
@@ -696,11 +698,15 @@ export class CodexTurnProjector {
     cwd: string;
     startedAtMs: number;
     initialInput?: HostTurnSnapshot["input"];
+    emitInitialInput?: boolean;
+    clientUserMessageId?: string;
   }) {
     this.#threadId = input.threadId;
     this.#turnId = input.turnId;
     this.#cwd = input.cwd;
     this.#input = input.initialInput ?? [];
+    this.#emitInitialInput = input.emitInitialInput ?? false;
+    this.#clientUserMessageId = input.clientUserMessageId ?? null;
     this.#startedAtMs = input.startedAtMs;
     this.#startedAt = Math.floor(input.startedAtMs / 1000);
   }
@@ -834,6 +840,18 @@ export class CodexTurnProjector {
             turn: this.pendingTurn(this.#startedAt),
           },
         },
+        ...(this.#emitInitialInput
+          ? this.#projectInput().flatMap((item) => [
+              {
+                method: "item/started",
+                params: { threadId: this.#threadId, turnId: this.#turnId, item },
+              },
+              {
+                method: "item/completed",
+                params: { threadId: this.#threadId, turnId: this.#turnId, item },
+              },
+            ])
+          : []),
       ],
     };
   }
@@ -1172,7 +1190,7 @@ export class CodexTurnProjector {
           {
             id: `${this.#turnId}-user`,
             type: "userMessage",
-            clientId: null,
+            clientId: this.#clientUserMessageId,
             content: this.#input.map(({ text }) => ({ type: "text", text, text_elements: [] })),
           },
         ];

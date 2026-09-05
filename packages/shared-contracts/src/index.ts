@@ -111,6 +111,7 @@ export {
   harnessPermissionModeScopeSchema,
   harnessResolvedModelLabelSchema,
   harnessSessionCapabilitiesSchema,
+  harnessActiveTurnCapabilitiesSchema,
   harnessThinkingOptionIdSchema,
   harnessThinkingOptionSchema,
   harnessWebUiCapabilitySchema,
@@ -247,6 +248,12 @@ export type {
   UpdateStatusResult,
 } from "./updates.js";
 export { WORKSPACE_CONTRACT_VERSION } from "./version.js";
+export {
+  TURN_ADJUST_METHOD,
+  turnAdjustmentParamsSchema,
+  turnAdjustmentResultSchema,
+} from "./turn-adjustment.js";
+export type { TurnAdjustmentParams, TurnAdjustmentResult } from "./turn-adjustment.js";
 
 export const workspaceContractVersionSchema = z.literal(WORKSPACE_CONTRACT_VERSION);
 

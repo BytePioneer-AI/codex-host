@@ -85,3 +85,26 @@ Fork 分叉会话上下文，不回滚文件、不自动创建 Worktree，也不
 6. 缺失 Session、不可读文件/分页错误、打开失败和关闭路径均有资源清理测试。
 
 Host 集成参考 `packages/host-runtime/src/external-thread-runtime.ts`、`external-thread-fork.ts`、`external-thread-rollback.ts`。当前恢复流程仍有 Grok/OpenCode/OMP 特例；新 Harness 必须通过通用路径验证。如通用恢复策略无法表达其原生配置语义，记录公共缺口，不扩展名称判断。
+
+## History replacement fence
+
+`history.replacementFence` 声明当前 Session 的 `close()` resolve 可以作为历史替换的 Native work、Transcript 和 Workspace fence。它是可选字段，遗漏与 `false` 等价；普通资源清理和 `outputs` 结束不构成这个保证。
+
+Host 只有在当前权威 Session 明确声明 `replacementFence=true` 时，才可执行会替换其 Native Session identity 的 direct rollback 或 legacy Fork rollback。Host 在提交 Mapping Store 前关闭并排空当前 Session，并在 commit 边界再次检查 capability。Adapter 返回的候选 Session 也必须声明相同 fence，否则 Host 必须在恢复配置、读取候选历史或写 Store 前拒绝它。
+
+`fork=true` 不蕴含 replacement fence，因为普通 Fork 不需要关闭或替换源 Session。`rollbackLastTurn=true` 则必须与 `replacementFence=true` 同时出现，共享 schema 会拒绝缺失或显式 false 的组合。
+
+
+## 同一 Turn 的多段输入
+
+当 `activeTurns.steer=true` 时，一个 Host Turn 可以对应多个连续的原生 User/Assistant 段。Adapter 必须为该组合提供可恢复的明确分组依据，并满足：
+
+- `NativeTurnRef` 使用组合的根原生输入身份；
+- Snapshot 按接受顺序返回根输入和所有 steer 输入，以及各段产生的 Item；
+- Adapter 内部 recovery input 只有在仍属于完整、可证明的 Turn 分组时才可从 Snapshot 隐藏；standalone 或被外部 User 打断的消息必须可见；
+- Turn outcome 与 Checkpoint 取最后一个已接受输入的终态，不能把中间 Assistant 终态暴露成可 Fork 的 Host Turn 边界；
+- Last-Turn Rollback 删除整个组合，不能留下 steer 段成为伪造的独立 Turn；
+- 分组证据缺失或不连续时 fail closed 为独立原生 Turn，不能按文本相似度猜测归属。
+
+
+历史替换须对来源前缀和候选快照做身份归一化后的语义比较：忽略重新分配的原生 ID，保留 Turn 顺序、输入、Item/Turn outcome、Model 和 Checkpoint presence。

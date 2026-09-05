@@ -54,6 +54,7 @@ Pi 适合观察 CLI/RPC、延迟启动、history、模型/Thinking、Question、
 | 常驻 Host RPC/共享订阅 | DeepSeek `legacy/host-client.ts`；Modern 读 `modern/remote-connection.ts`、`event-gateway.ts` 和 `session.ts` |
 | 原生协议代际选择 | DeepSeek `generation-selector.ts`、顶层 Adapter；原生版本策略不等于插件 API 版本 |
 | 导入候选与本地 Web UI | DeepSeek 顶层 Adapter、`modern/session-list.ts`；Host 上层仍有专用边界 |
+| 历史替换与活动 Turn steering | Pi/OMP rollback；OpenCode `message-grouping.ts`、`opencode-adapter.ts` 及取消/idle 回归 |
 | 插件工厂和非阻塞预取 | 七个 `src/plugin.ts`；只有确有预取需求时参考 Claude/Antigravity 的 warmup |
 | 公共行为测试模式 | `packages/harness-adapter/src/testing.ts`、`packages/harness-adapter/test/text-session.test.ts`；Fake 是参考，不是自动证明插件正确的 conformance runner |
 | 插件加载/打包 | [加载与验证](registration-and-validation.md) |

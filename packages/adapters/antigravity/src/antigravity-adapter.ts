@@ -41,6 +41,8 @@ import {
   type ThinkingSelectCompleted,
   type TurnCancelAccepted,
   type TurnCancelCommand,
+  type TurnSteerAccepted,
+  type TurnSteerCommand,
   type TurnOutcome,
   type TurnStartAccepted,
   type TurnStartCommand,
@@ -506,6 +508,7 @@ class AntigravitySession implements HarnessSession {
   }
 
   execute(command: TurnStartCommand): Promise<HarnessResult<TurnStartAccepted>>;
+  execute(command: TurnSteerCommand): Promise<HarnessResult<TurnSteerAccepted>>;
   execute(command: TurnCancelCommand): Promise<HarnessResult<TurnCancelAccepted>>;
   execute(command: InteractionRespondCommand): Promise<HarnessResult<InteractionRespondAccepted>>;
   execute(command: ModelSelectCommand): Promise<HarnessResult<ModelSelectCompleted>>;
@@ -518,6 +521,7 @@ class AntigravitySession implements HarnessSession {
   ): Promise<
     HarnessResult<
       | TurnStartAccepted
+      | TurnSteerAccepted
       | TurnCancelAccepted
       | InteractionRespondAccepted
       | ModelSelectCompleted
@@ -526,6 +530,9 @@ class AntigravitySession implements HarnessSession {
     >
   > {
     if (this.#closed) return { ok: false, error: invalidState("Antigravity Session is closed") };
+    if (command.type === "turn.steer") {
+      return { ok: false, error: unsupported("Antigravity does not support steering") };
+    }
     if (command.type === "turn.cancel") return this.#cancel(command);
     if (command.type === "model.select") return this.#selectModel(command);
     if (command.type === "permissionMode.select") return this.#selectPermissionMode(command);

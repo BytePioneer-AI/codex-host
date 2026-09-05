@@ -168,8 +168,14 @@ export function mapExternalThreadHarnessError(
   }
 }
 
-export function threadRevertResult(thread: JsonObject): JsonObject {
-  return { thread: { ...thread, turns: [] } };
+export function threadRevertResult(
+  thread: JsonObject,
+  cursors: {
+    turnsBackwardsCursor: string | null;
+    itemsBackwardsCursor: string | null;
+  },
+): JsonObject {
+  return { thread: { ...thread, turns: [] }, ...cursors };
 }
 
 export function threadRollbackResult(thread: JsonObject): JsonObject {

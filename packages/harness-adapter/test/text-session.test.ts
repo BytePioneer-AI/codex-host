@@ -327,6 +327,48 @@ describe("minimal Harness text Session", () => {
     expect(cancelledItemIndexes.every((index) => index < cancelledTurnIndex)).toBe(true);
   });
 
+  it("reuses an identified steering result after cancellation starts", async () => {
+    const adapter = new FakeHarnessAdapter(
+      harnessIdSchema.parse("steering-fake"),
+      undefined,
+      true,
+      true,
+      null,
+      undefined,
+      false,
+      "live",
+      true,
+      true,
+    );
+    const opened = await adapter.open({ kind: "create", cwd: "/synthetic" });
+    if (!opened.ok) throw new Error(opened.error.message);
+    const session = opened.value as FakeHarnessSession;
+    const command = {
+      type: "turn.steer" as const,
+      turnId: turnId("steered-cancel"),
+      input: [{ type: "text" as const, text: "adjust" }],
+      clientUserMessageId: "identified-adjustment",
+    };
+    await session.execute(textTurn("steered-cancel"));
+    await expect(session.execute(command)).resolves.toEqual({
+      ok: true,
+      value: { turnId: "steered-cancel" },
+    });
+    await session.execute({ type: "turn.cancel", turnId: turnId("steered-cancel") });
+    await expect(session.execute(command)).resolves.toEqual({
+      ok: true,
+      value: { turnId: "steered-cancel" },
+    });
+    await expect(
+      session.execute({
+        ...command,
+        input: [{ type: "text", text: "conflict" }],
+      }),
+    ).resolves.toMatchObject({ ok: false, error: { code: "invalidRequest" } });
+    session.completeCancellation();
+    await adapter.close();
+  });
+
   it("round-trips a typed choice Question and closes it before the Turn", async () => {
     const session = new FakeHarnessSession(harnessIdSchema.parse("fake"));
     const collected = collect(session.outputs);
@@ -556,7 +598,12 @@ describe("minimal Harness text Session", () => {
           selectPermissionMode: false,
           permissionModeScope: "live",
         },
-        history: { fork: true, forkAcrossCwd: true, rollbackLastTurn: false },
+        history: {
+          fork: true,
+          forkAcrossCwd: true,
+          rollbackLastTurn: false,
+          replacementFence: true,
+        },
         subagents: { observe: false, readTranscript: false },
       },
     });
@@ -570,6 +617,7 @@ describe("minimal Harness text Session", () => {
     const result = await adapter.open({ kind: "create", cwd: "/synthetic" });
     if (!result.ok) throw new Error(result.error.message);
     const session = result.value;
+    expect(session.capabilities.history.replacementFence).toBe(true);
     const iterator = session.outputs[Symbol.asyncIterator]();
     const model = adapter.catalog.models[1]?.ref;
     if (!model) throw new Error("Fake catalog has no secondary Model");

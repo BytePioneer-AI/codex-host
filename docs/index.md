@@ -16,6 +16,7 @@
 |---|---|
 | [`harness-plugin-architecture.md`](harness-plugin-architecture.md) | 目标架构与分阶段迁移方案：分析目录发现式 Harness 插件架构、现有耦合、行为保持、风险与验收标准；完整迁移尚未完成。 |
 | [`harness-plugin-runtime.md`](harness-plugin-runtime.md) | 插件运行时实现：七个 Harness 统一动态加载、预装发行、目录与工厂契约、安全边界和剩余迁移目标。 |
+| [`harness-turn-adjustment.md`](harness-turn-adjustment.md) | 说明运行中调整的能力选择、中断续发、Desktop 消息恢复与 Harness 支持边界。 |
 | [`harness-command-integration.md`](harness-command-integration.md) | 说明新增 Harness 原生命令时的 Adapter、Host、Renderer 边界和验证要求。 |
 | [`claude-code-plan-mode.md`](claude-code-plan-mode.md) | 说明 Claude Code 规划模式、显式计划退出确认及原生权限状态边界。 |
 | [`harness-executable-discovery.md`](harness-executable-discovery.md) | 说明外部 Harness CLI 的跨平台发现机制、当前接入范围和剩余限制。 |

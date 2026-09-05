@@ -9,6 +9,7 @@ import {
   harnessModelCatalogSchema,
   harnessModelRefSchema,
   harnessModelSelectionStateSchema,
+  harnessSessionCapabilitiesSchema,
   harnessThinkingOptionIdSchema,
   harnessWebUiOpenParamsSchema,
   harnessWebUiOpenResultSchema,
@@ -50,7 +51,12 @@ function readyInspection() {
         selectPermissionMode: false,
         permissionModeScope: "live",
       },
-      history: { fork: true, forkAcrossCwd: true, rollbackLastTurn: true },
+      history: {
+        fork: true,
+        forkAcrossCwd: true,
+        rollbackLastTurn: true,
+        replacementFence: true,
+      },
     },
   };
 }
@@ -92,6 +98,64 @@ describe("Harness Model runtime contracts", () => {
     expect(JSON.parse(JSON.stringify(harnessInspectionSchema.parse(readyInspection())))).toEqual(
       readyInspection(),
     );
+  });
+
+  it("keeps the replacement fence backward compatible and requires it for rollback", () => {
+    const legacyCapabilities = {
+      ...readyInspection().capabilities,
+      history: { fork: true, forkAcrossCwd: true, rollbackLastTurn: false },
+    };
+
+    expect(harnessSessionCapabilitiesSchema.parse(legacyCapabilities).history).toEqual(
+      legacyCapabilities.history,
+    );
+    expect(
+      harnessSessionCapabilitiesSchema.safeParse({
+        ...readyInspection().capabilities,
+        history: {
+          ...readyInspection().capabilities.history,
+          replacementFence: false,
+        },
+      }).success,
+    ).toBe(false);
+    expect(
+      harnessSessionCapabilitiesSchema.safeParse({
+        ...readyInspection().capabilities,
+        history: { fork: true, forkAcrossCwd: true, rollbackLastTurn: true },
+      }).success,
+    ).toBe(false);
+  });
+
+  it("keeps active Turn steering optional and validates it strictly", () => {
+    const legacy = readyInspection().capabilities;
+    expect(harnessSessionCapabilitiesSchema.parse(legacy)).toEqual(legacy);
+    expect(
+      harnessSessionCapabilitiesSchema.parse({
+        ...legacy,
+        activeTurns: { steer: true },
+      }),
+    ).toMatchObject({ activeTurns: { steer: true } });
+    expect(
+      harnessSessionCapabilitiesSchema.safeParse({
+        ...legacy,
+        activeTurns: { steer: true, queue: true },
+      }).success,
+    ).toBe(false);
+  });
+
+  it("exposes optional interrupt-and-continue independently from same-Turn steer", () => {
+    expect(
+      harnessSessionCapabilitiesSchema.parse({
+        ...readyInspection().capabilities,
+        activeTurns: { steer: false, interruptAndContinue: true },
+      }).activeTurns,
+    ).toEqual({ steer: false, interruptAndContinue: true });
+    expect(
+      harnessSessionCapabilitiesSchema.safeParse({
+        ...readyInspection().capabilities,
+        activeTurns: { steer: false, interruptAndContinue: "yes" },
+      }).success,
+    ).toBe(false);
   });
 
   it("rejects native configuration and unknown fields", () => {

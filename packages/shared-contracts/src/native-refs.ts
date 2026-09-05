@@ -20,6 +20,8 @@ export type NativeSessionRefV1 = Omit<
   z.infer<typeof nativeSessionRefV1RuntimeSchema>,
   "locator"
 > & {
+  /** Adapter-owned recovery metadata. A reserved native ID must have durable evidence of empty
+   * history; a missing native transcript alone must never be treated as an empty Session. */
   locator?: JsonValue;
 };
 export const nativeSessionRefV1Schema =

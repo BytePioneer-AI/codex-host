@@ -101,6 +101,9 @@ export interface RollbackLastTurnSessionInput {
   sourceRef: NativeSessionRef;
   cwd: string;
   environment?: Record<string, string | undefined>;
+  model?: HarnessModelRef;
+  thinkingOptionId?: HarnessThinkingOptionId;
+  permissionModeId?: HarnessPermissionModeId;
 }
 
 export type OpenSessionInput =
@@ -129,6 +132,13 @@ export interface TurnStartCommand {
 export interface TurnCancelCommand {
   type: "turn.cancel";
   turnId: HostTurnId;
+}
+
+export interface TurnSteerCommand {
+  type: "turn.steer";
+  turnId: HostTurnId;
+  input: HostTextInput[];
+  clientUserMessageId?: string;
 }
 
 export interface HostChoiceQuestion {
@@ -240,6 +250,7 @@ export interface HarnessCommandCapability {
 
 export type HostCommand =
   | TurnStartCommand
+  | TurnSteerCommand
   | TurnCancelCommand
   | InteractionRespondCommand
   | ModelSelectCommand
@@ -252,6 +263,10 @@ export interface TurnStartAccepted {
 
 export interface TurnCancelAccepted {
   cancellationRequested: true;
+}
+
+export interface TurnSteerAccepted {
+  turnId: HostTurnId;
 }
 
 export interface InteractionRespondAccepted {
@@ -490,6 +505,7 @@ export type HarnessOutput =
 
 export interface HarnessSession {
   readonly harnessId: HarnessId;
+  /** Fixed for the lifetime of this Session. */
   readonly capabilities: HarnessSessionCapabilities;
   readonly initialState: HarnessSessionState;
   readonly initialUsage: HostUsage | null;
@@ -499,6 +515,7 @@ export interface HarnessSession {
   refreshUsage?(): Promise<void>;
   readSnapshot(): Promise<HarnessResult<HostThreadSnapshot>>;
   execute(command: TurnStartCommand): Promise<HarnessResult<TurnStartAccepted>>;
+  execute(command: TurnSteerCommand): Promise<HarnessResult<TurnSteerAccepted>>;
   execute(command: TurnCancelCommand): Promise<HarnessResult<TurnCancelAccepted>>;
   execute(command: InteractionRespondCommand): Promise<HarnessResult<InteractionRespondAccepted>>;
   execute(command: ModelSelectCommand): Promise<HarnessResult<ModelSelectCompleted>>;
@@ -506,6 +523,12 @@ export interface HarnessSession {
   execute(
     command: PermissionModeSelectCommand,
   ): Promise<HarnessResult<PermissionModeSelectCompleted>>;
+  /**
+   * Idempotently releases Adapter-controlled resources and ends `outputs`. After fulfillment the
+   * Session emits no later output. Only when `capabilities.history.replacementFence === true` is
+   * fulfillment also a fence proving that no Native task controlled by this Session remains able
+   * to mutate its transcript or workspace.
+   */
   close(): Promise<void>;
 }
 

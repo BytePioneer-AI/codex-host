@@ -1,4 +1,5 @@
 import type { CdpClient } from "./cdp-client.js";
+import { createRendererTurnAdjustmentBridge } from "./renderer-turn-adjustment.js";
 import {
   installDraftPrewarmPolicyBridge,
   installDraftPrewarmPolicyInRenderer,
@@ -117,6 +118,7 @@ const INSTALL_RENDERER_POLICY_FUNCTION = `function(requestClient, hostId, prewar
     hostId,
     window,
     prewarmedThreadManager,
+    (${createRendererTurnAdjustmentBridge.toString()}),
   );
 }`;
 const REQUEST_MANAGER_WAIT_TIMEOUT_MS = 60_000;
@@ -143,6 +145,7 @@ function directRendererInstaller(): string {
       selected.hostId,
       window,
       selected.prewarmedThreadManager,
+      (${createRendererTurnAdjustmentBridge.toString()}),
     );
   })()`;
 }

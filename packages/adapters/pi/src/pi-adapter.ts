@@ -46,6 +46,8 @@ import {
   type ThinkingSelectCompleted,
   type TurnCancelAccepted,
   type TurnCancelCommand,
+  type TurnSteerAccepted,
+  type TurnSteerCommand,
   type TurnOutcome,
   type TurnStartAccepted,
   type TurnStartCommand,
@@ -596,13 +598,19 @@ class PiHarnessSession implements HarnessSession {
     this.#requestedThinkingOptionId = options.thinkingOptionId;
     this.#toolOutputLimit = options.toolOutputLimit;
     this.capabilities = {
+      activeTurns: { steer: false, interruptAndContinue: true },
       configuration: {
         selectModel: true,
         selectThinkingOption: options.supportsThinkingSelection,
         selectPermissionMode: false,
         permissionModeScope: "live",
       },
-      history: { fork: true, forkAcrossCwd: true, rollbackLastTurn: true },
+      history: {
+        fork: true,
+        forkAcrossCwd: true,
+        rollbackLastTurn: true,
+        replacementFence: true,
+      },
       autonomousTurns: { observe: true },
     };
     this.commands = {
@@ -657,6 +665,7 @@ class PiHarnessSession implements HarnessSession {
   }
 
   execute(command: TurnStartCommand): Promise<HarnessResult<TurnStartAccepted>>;
+  execute(command: TurnSteerCommand): Promise<HarnessResult<TurnSteerAccepted>>;
   execute(command: TurnCancelCommand): Promise<HarnessResult<TurnCancelAccepted>>;
   execute(command: InteractionRespondCommand): Promise<HarnessResult<InteractionRespondAccepted>>;
   execute(command: ModelSelectCommand): Promise<HarnessResult<ModelSelectCompleted>>;
@@ -669,6 +678,7 @@ class PiHarnessSession implements HarnessSession {
   ): Promise<
     HarnessResult<
       | TurnStartAccepted
+      | TurnSteerAccepted
       | TurnCancelAccepted
       | InteractionRespondAccepted
       | ModelSelectCompleted
@@ -678,6 +688,12 @@ class PiHarnessSession implements HarnessSession {
   > {
     if (this.#phase !== "open") {
       return { ok: false, error: invalidState("Pi Session is not open") };
+    }
+    if (command.type === "turn.steer") {
+      return {
+        ok: false,
+        error: { code: "unsupported", message: "Pi does not support steering", retryable: false },
+      };
     }
     if (command.type === "turn.cancel") return this.#cancel(command);
     if (command.type === "interaction.respond") return this.#respond(command);
@@ -1985,13 +2001,19 @@ export class PiAdapter implements HarnessAdapter {
         status: "ready",
         catalog,
         capabilities: {
+          activeTurns: { steer: false, interruptAndContinue: true },
           configuration: {
             selectModel: true,
             selectThinkingOption: thinkingLevels !== null,
             selectPermissionMode: false,
             permissionModeScope: "live",
           },
-          history: { fork: true, forkAcrossCwd: true, rollbackLastTurn: true },
+          history: {
+            fork: true,
+            forkAcrossCwd: true,
+            rollbackLastTurn: true,
+            replacementFence: true,
+          },
           autonomousTurns: { observe: true },
         },
       };

@@ -1,3 +1,8 @@
+import type {
+  createRendererTurnAdjustmentBridge,
+  TurnAdjustmentManager,
+} from "./renderer-turn-adjustment.js";
+
 export interface RendererDebugger {
   isAttached(): boolean;
   attach(version: string): void;
@@ -31,7 +36,7 @@ export interface RendererHostRequestBridge {
   onError(id: unknown, error: unknown, metrics?: unknown): void;
 }
 
-export interface RendererHostRequestManager {
+export interface RendererHostRequestManager extends TurnAdjustmentManager {
   onNotification(method: string, parameters: unknown): void;
   onRequest(request: Record<string, unknown>): void;
   dispatchAppServerResponse(method: string, response: Record<string, unknown>): unknown;
@@ -47,6 +52,7 @@ export function installDraftPrewarmPolicyBridge(
   hostId: string,
   target: DraftPrewarmPolicyTarget,
   prewarmedThreadManager: RendererPrewarmedThreadManager,
+  createAdjustmentBridge?: typeof createRendererTurnAdjustmentBridge,
 ): { state: "ready"; reason: "owned-request-bridge" } {
   const existing = target.__codexhostDraftPrewarmPolicyV1 as
     | {
@@ -232,6 +238,7 @@ export function installDraftPrewarmPolicyBridge(
         rememberExternalThread(value.params.thread);
       }
       originalOnNotification.call(manager, value.method, value.params);
+      adjustmentBridge?.onNotification(value.method, value.params);
       return;
     }
     if (typeof value.method === "string" && value.id !== undefined) {
@@ -532,7 +539,9 @@ export function installDraftPrewarmPolicyBridge(
       ? originalPrewarm.call(bridge, routedParameters)
       : originalPrewarm.call(bridge, routedParameters, options);
   };
-  bridge.sendRequest = routedSend;
+  const adjustmentBridge = createAdjustmentBridge?.(manager, routedSend);
+  const installedSend = adjustmentBridge?.sendRequest ?? routedSend;
+  bridge.sendRequest = installedSend;
   bridge.prewarmThreadStart = routedPrewarm;
   const routedWindowMessage = (event: Event): void => {
     const message = (event as Event & { data?: unknown }).data;
@@ -554,6 +563,7 @@ export function installDraftPrewarmPolicyBridge(
   const routedOnNotification = (method: string, parameters: unknown): void => {
     if (!handleOuterNotification(method, parameters)) {
       originalOnNotification.call(manager, method, parameters);
+      adjustmentBridge?.onNotification(method, parameters);
     }
   };
   const routedDispatchAppServerResponse = (
@@ -608,7 +618,8 @@ export function installDraftPrewarmPolicyBridge(
       return Promise.resolve();
     },
     dispose(): void {
-      if (bridge.sendRequest === routedSend) bridge.sendRequest = originalSend;
+      adjustmentBridge?.dispose();
+      if (bridge.sendRequest === installedSend) bridge.sendRequest = originalSend;
       if (bridge.prewarmThreadStart === routedPrewarm) {
         bridge.prewarmThreadStart = originalPrewarm;
       }

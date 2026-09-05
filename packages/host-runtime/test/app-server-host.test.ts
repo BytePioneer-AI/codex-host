@@ -12,6 +12,7 @@ import type {
   HarnessResult,
   HarnessSessionState,
   HostThreadSnapshot,
+  HostCommand,
 } from "@codexhost/harness-adapter";
 import { FakeHarnessAdapter, FakeHarnessSession } from "@codexhost/harness-adapter/testing";
 import { MappingStore } from "@codexhost/mapping-store";
@@ -36,6 +37,7 @@ import {
   hostThreadIdSchema,
   hostTurnIdSchema,
   type DeepSeekModernSessionCandidate,
+  type HostTurnId,
 } from "@codexhost/shared-contracts";
 
 import type {
@@ -182,10 +184,208 @@ function rollbackCapableAdapter(): FakeHarnessAdapter {
   );
 }
 
+function steeringCapableAdapter(): FakeHarnessAdapter {
+  return new FakeHarnessAdapter(
+    harnessIdSchema.parse("pi"),
+    undefined,
+    true,
+    true,
+    null,
+    undefined,
+    false,
+    "live",
+    true,
+    true,
+  );
+}
+
+async function adjustmentFixture() {
+  const fixture = createFixture();
+  const threadId = await startPiThread(fixture);
+  const session = fixture.adapter.sessions[0];
+  if (!session) throw new Error("Fake adjustment Session was not opened");
+  Object.defineProperty(session, "capabilities", {
+    value: { ...session.capabilities, activeTurns: { steer: false, interruptAndContinue: true } },
+  });
+  const turnId = await startPiTurn(fixture, threadId, 2, "initial request");
+  await fixture.collector.waitFor((message) => turnEvent(message, "turn/started", turnId));
+  const params = {
+    threadId,
+    expectedTurnId: turnId,
+    clientUserMessageId: "adjustment-1",
+    input: [{ type: "text", text: "focus on tests" }],
+  };
+  return { ...fixture, threadId, turnId, session, params };
+}
+
+class SameIdentityRollbackAdapter extends FakeHarnessAdapter {
+  constructor() {
+    super(harnessIdSchema.parse("pi"), undefined, true, true, null, undefined, true);
+  }
+
+  override async open(input: Parameters<FakeHarnessAdapter["open"]>[0]) {
+    if (input.kind === "rollbackLastTurn") {
+      return super.open({
+        kind: "resume",
+        nativeRef: input.sourceRef,
+        cwd: input.cwd,
+        ...(input.environment ? { environment: input.environment } : {}),
+      });
+    }
+    return super.open(input);
+  }
+}
+
+class AliasedIdentityRollbackAdapter extends FakeHarnessAdapter {
+  rollbackSession: FakeHarnessSession | undefined;
+
+  constructor() {
+    super(harnessIdSchema.parse("pi"), undefined, true, true, null, undefined, true);
+  }
+
+  override async open(input: Parameters<FakeHarnessAdapter["open"]>[0]) {
+    const opened = await super.open(input);
+    if (input.kind === "rollbackLastTurn" && opened.ok) {
+      this.rollbackSession = opened.value as FakeHarnessSession;
+      this.rollbackSession.initialState.nativeRef = input.sourceRef;
+    }
+    return opened;
+  }
+}
+
+class OtherLoadedSessionRollbackAdapter extends FakeHarnessAdapter {
+  constructor() {
+    super(harnessIdSchema.parse("pi"), undefined, true, true, null, undefined, true);
+  }
+
+  override async open(input: Parameters<FakeHarnessAdapter["open"]>[0]) {
+    if (input.kind === "rollbackLastTurn") {
+      const other = this.sessions[1];
+      if (!other) throw new Error("Synthetic other Session is not loaded");
+      return { ok: true as const, value: other };
+    }
+    return super.open(input);
+  }
+}
+
+class OtherLoadedSessionForkRollbackAdapter extends FakeHarnessAdapter {
+  #forkCalls = 0;
+
+  constructor() {
+    super(harnessIdSchema.parse("pi"));
+  }
+
+  override async open(input: Parameters<FakeHarnessAdapter["open"]>[0]) {
+    if (input.kind === "fork") {
+      this.#forkCalls += 1;
+      if (this.#forkCalls === 2) {
+        const other = this.sessions[2];
+        if (!other) throw new Error("Synthetic other Session is not loaded");
+        return { ok: true as const, value: other };
+      }
+    }
+    return super.open(input);
+  }
+}
+
+class MismatchedSnapshotIdentityRollbackAdapter extends FakeHarnessAdapter {
+  constructor() {
+    super(harnessIdSchema.parse("pi"), undefined, true, true, null, undefined, true);
+  }
+
+  override async open(input: Parameters<FakeHarnessAdapter["open"]>[0]) {
+    const opened = await super.open(input);
+    if (
+      input.kind === "rollbackLastTurn" &&
+      opened.ok &&
+      opened.value instanceof FakeHarnessSession
+    ) {
+      const nativeRef = opened.value.initialState.nativeRef;
+      if (nativeRef) {
+        opened.value.setStateForSnapshot({
+          ...opened.value.state,
+          nativeRef: { ...nativeRef, nativeSessionId: `${nativeRef.nativeSessionId}-mismatch` },
+        });
+      }
+    }
+    return opened;
+  }
+}
+
+class MissingReplacementFenceRollbackAdapter extends FakeHarnessAdapter {
+  constructor() {
+    super(harnessIdSchema.parse("pi"), undefined, true, true, null, undefined, true);
+  }
+
+  override async open(input: Parameters<FakeHarnessAdapter["open"]>[0]) {
+    const opened = await super.open(input);
+    if (input.kind === "rollbackLastTurn" && opened.ok) {
+      opened.value.capabilities.history.replacementFence = false;
+    }
+    return opened;
+  }
+}
+
+class DowngradingReplacementFenceRollbackAdapter extends FakeHarnessAdapter {
+  constructor() {
+    super(harnessIdSchema.parse("pi"), undefined, true, true, null, undefined, true);
+  }
+
+  override async open(input: Parameters<FakeHarnessAdapter["open"]>[0]) {
+    const opened = await super.open(input);
+    if (input.kind === "rollbackLastTurn" && opened.ok) {
+      const readSnapshot = opened.value.readSnapshot.bind(opened.value);
+      opened.value.readSnapshot = async () => {
+        const snapshot = await readSnapshot();
+        opened.value.capabilities.history.replacementFence = false;
+        return snapshot;
+      };
+    }
+    return opened;
+  }
+}
+
+class ThrowingSnapshotRollbackAdapter extends FakeHarnessAdapter {
+  constructor() {
+    super(harnessIdSchema.parse("pi"), undefined, true, true, null, undefined, true);
+  }
+
+  override async open(input: Parameters<FakeHarnessAdapter["open"]>[0]) {
+    const opened = await super.open(input);
+    if (input.kind === "rollbackLastTurn" && opened.ok) {
+      opened.value.readSnapshot = async () => {
+        throw new Error("Synthetic replacement history read failure");
+      };
+    }
+    return opened;
+  }
+}
+
+class DelayedRollbackAdapter extends FakeHarnessAdapter {
+  readonly rollbackStarted = Promise.withResolvers<undefined>();
+  readonly continueRollback = Promise.withResolvers<undefined>();
+
+  constructor() {
+    super(harnessIdSchema.parse("pi"), undefined, true, true, null, undefined, true);
+  }
+
+  override async open(input: Parameters<FakeHarnessAdapter["open"]>[0]) {
+    if (input.kind === "rollbackLastTurn") {
+      const opened = await super.open(input);
+      this.rollbackStarted.resolve(undefined);
+      await this.continueRollback.promise;
+      return opened;
+    }
+    return super.open(input);
+  }
+}
+
 class ResumeStateRollbackAdapter extends FakeHarnessAdapter {
+  rollbackInput: Parameters<FakeHarnessAdapter["open"]>[0] | undefined;
   rollbackReplacementStateAtFirstRead: HarnessSessionState | undefined;
 
   override async open(input: Parameters<FakeHarnessAdapter["open"]>[0]) {
+    if (input.kind === "rollbackLastTurn") this.rollbackInput = input;
     const opened = await super.open(input);
     if (
       input.kind === "rollbackLastTurn" &&
@@ -353,11 +553,12 @@ async function startPiTurn(
   fixture: ReturnType<typeof createFixture>,
   threadId: string,
   id = 2,
+  text = "synthetic",
 ): Promise<string> {
   writeRequest(fixture.desktopInput, {
     id,
     method: "turn/start",
-    params: { threadId, input: [{ type: "text", text: "synthetic" }] },
+    params: { threadId, input: [{ type: "text", text }] },
   });
   const response = await fixture.collector.waitFor((message) => requestId(message, id));
   const result = response.result as JsonObject;
@@ -371,8 +572,9 @@ async function completePiTurn(
   threadId: string,
   requestIdValue: number,
   sessionIndex = 0,
+  text = "synthetic",
 ): Promise<string> {
-  const turnId = await startPiTurn(fixture, threadId, requestIdValue);
+  const turnId = await startPiTurn(fixture, threadId, requestIdValue, text);
   const session = fixture.adapter.sessions[sessionIndex];
   if (!session) throw new Error("Fake Pi Session was not opened");
   await fixture.collector.waitFor((message) => turnEvent(message, "turn/started", turnId));
@@ -4611,6 +4813,137 @@ describe("AppServerHost HarnessAdapter projection", () => {
     await stopFixture(fixture);
   });
 
+  it("rejects a rollback candidate whose close capability is inconsistent with the source", async () => {
+    const adapter = new MissingReplacementFenceRollbackAdapter();
+    const fixture = createFixture({ externalAdapters: new Map([["pi", adapter]]) });
+    const threadId = await startPiThread(fixture);
+    await completePiTurn(fixture, threadId, 2);
+    await completePiTurn(fixture, threadId, 3);
+    const before = await fixture.mappingStore.getThread(hostThreadIdSchema.parse(threadId));
+
+    writeRequest(fixture.desktopInput, {
+      id: 10,
+      method: "thread/rollback",
+      params: { threadId, numTurns: 1 },
+    });
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 10)),
+    ).resolves.toMatchObject({
+      error: {
+        code: -32076,
+        message: "External rollback returned a Session without a history replacement fence",
+      },
+    });
+    await expect(
+      fixture.mappingStore.getThread(hostThreadIdSchema.parse(threadId)),
+    ).resolves.toEqual(before);
+    expect(adapter.sessions[0]?.closed).toBe(false);
+    expect(adapter.sessions[1]?.closed).toBe(true);
+    await completePiTurn(fixture, threadId, 11, 0, "source remains authoritative");
+    await stopFixture(fixture);
+  });
+
+  it("rechecks a rollback candidate fence after its asynchronous history validation", async () => {
+    const adapter = new DowngradingReplacementFenceRollbackAdapter();
+    const fixture = createFixture({ externalAdapters: new Map([["pi", adapter]]) });
+    const threadId = await startPiThread(fixture);
+    await completePiTurn(fixture, threadId, 2);
+    await completePiTurn(fixture, threadId, 3);
+    const before = await fixture.mappingStore.getThread(hostThreadIdSchema.parse(threadId));
+
+    writeRequest(fixture.desktopInput, {
+      id: 10,
+      method: "thread/rollback",
+      params: { threadId, numTurns: 1 },
+    });
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 10)),
+    ).resolves.toMatchObject({
+      error: {
+        code: -32076,
+        message: "External rollback candidate lost its history replacement fence",
+      },
+    });
+    await expect(
+      fixture.mappingStore.getThread(hostThreadIdSchema.parse(threadId)),
+    ).resolves.toEqual(before);
+    expect(adapter.sessions[0]?.closed).toBe(false);
+    expect(adapter.sessions[1]?.closed).toBe(true);
+    await completePiTurn(fixture, threadId, 11, 0, "source remains authoritative");
+    await stopFixture(fixture);
+  });
+
+  it.each([false, true])(
+    "validates fixed Thinking on message revert (mismatch=%s)",
+    async (mismatch) => {
+      class FixedThinkingRollbackAdapter extends FakeHarnessAdapter {
+        override async open(input: Parameters<FakeHarnessAdapter["open"]>[0]) {
+          const opened = await super.open(input);
+          if (opened.ok) opened.value.capabilities.configuration.selectThinkingOption = false;
+          if (
+            mismatch &&
+            input.kind === "rollbackLastTurn" &&
+            opened.ok &&
+            opened.value instanceof FakeHarnessSession
+          ) {
+            opened.value.setStateForSnapshot({
+              ...opened.value.state,
+              effectiveThinkingOptionId: harnessThinkingOptionIdSchema.parse("low"),
+            });
+          }
+          return opened;
+        }
+      }
+      const adapter = new FixedThinkingRollbackAdapter(
+        harnessIdSchema.parse("pi"),
+        undefined,
+        true,
+        true,
+        null,
+        undefined,
+        true,
+      );
+      const fixture = createFixture({ externalAdapters: new Map([["pi", adapter]]) });
+      try {
+        const threadId = await startExternalThread(fixture, "codexhost/pi-native", 1, {
+          historyMode: "paginated",
+        });
+        const first = await completePiTurn(fixture, threadId, 2);
+        const last = await completePiTurn(fixture, threadId, 3);
+        writeRequest(fixture.desktopInput, {
+          id: 10,
+          method: "thread/revert",
+          params: { threadId, beforeTurnId: last },
+        });
+        const response = await fixture.collector.waitFor((message) => requestId(message, 10));
+        if (mismatch) {
+          expect(response).toMatchObject({
+            error: { code: -32080, message: "External rollback changed configuration" },
+          });
+          expect(adapter.sessions[0]?.closed).toBe(false);
+          expect(adapter.sessions[1]?.closed).toBe(true);
+          expect(
+            (
+              await fixture.mappingStore.getThread(hostThreadIdSchema.parse(threadId))
+            )?.turnMappings.map((mapping) => mapping.hostTurnId),
+          ).toEqual([first, last]);
+          return;
+        }
+        expect(response).toMatchObject({ result: { thread: { id: threadId, turns: [] } } });
+        expect(
+          (
+            await fixture.mappingStore.getThread(hostThreadIdSchema.parse(threadId))
+          )?.turnMappings.map((mapping) => mapping.hostTurnId),
+        ).toEqual([first]);
+        expect(adapter.sessions[1]?.state.effectiveThinkingOptionId).toBe(
+          adapter.sessions[0]?.state.effectiveThinkingOptionId,
+        );
+      } finally {
+        await stopFixture(fixture);
+      }
+    },
+  );
+
   it("restores configuration before reading a resume-state rollback replacement", async () => {
     const permissionModes = harnessPermissionModeCatalogSchema.parse({
       modes: [
@@ -4673,6 +5006,12 @@ describe("AppServerHost HarnessAdapter projection", () => {
       effectivePermissionModeId: permissionModeId,
     };
     expect(adapter.rollbackReplacementStateAtFirstRead).toMatchObject(expectedConfiguration);
+    expect(adapter.rollbackInput).toMatchObject({
+      kind: "rollbackLastTurn",
+      model,
+      thinkingOptionId,
+      permissionModeId,
+    });
     expect(adapter.sessions[1]?.state).toMatchObject(expectedConfiguration);
     await stopFixture(fixture);
   });
@@ -4693,12 +5032,19 @@ describe("AppServerHost HarnessAdapter projection", () => {
       method: "thread/revert",
       params: { threadId, beforeTurnId: lastTurnId },
     });
-    await expect(
-      fixture.collector.waitFor((message) => requestId(message, 10)),
-    ).resolves.toMatchObject({ result: { thread: { id: threadId, turns: [] } } });
-    await expect(
-      fixture.collector.waitFor((message) => method(message, "thread/reverted")),
-    ).resolves.toEqual({ method: "thread/reverted", params: { threadId } });
+    const reverted = await fixture.collector.waitFor((message) => requestId(message, 10));
+    expect(reverted.result).toEqual({
+      thread: expect.objectContaining({ id: threadId, turns: [] }),
+      turnsBackwardsCursor: expect.any(String),
+      itemsBackwardsCursor: expect.any(String),
+    });
+    const notification = await fixture.collector.waitFor((message) =>
+      method(message, "thread/reverted"),
+    );
+    expect(notification).toEqual({ method: "thread/reverted", params: { threadId } });
+    expect(fixture.collector.messages.indexOf(reverted)).toBeLessThan(
+      fixture.collector.messages.indexOf(notification),
+    );
     await expect(
       fixture.mappingStore.getThread(hostThreadIdSchema.parse(threadId)),
     ).resolves.toMatchObject({
@@ -4707,6 +5053,167 @@ describe("AppServerHost HarnessAdapter projection", () => {
     });
     expect(adapter.sessions).toHaveLength(2);
     expect(officialWrite).not.toHaveBeenCalled();
+
+    const result = reverted.result as JsonObject;
+    const turnsBackwardsCursor = result.turnsBackwardsCursor;
+    const itemsBackwardsCursor = result.itemsBackwardsCursor;
+    if (typeof turnsBackwardsCursor !== "string" || typeof itemsBackwardsCursor !== "string") {
+      throw new Error("Paginated Revert did not return retained history cursors");
+    }
+    writeRequest(fixture.desktopInput, {
+      id: 11,
+      method: "thread/turns/list",
+      params: {
+        threadId,
+        cursor: turnsBackwardsCursor,
+        limit: 1,
+        itemsView: "full",
+      },
+    });
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 11)),
+    ).resolves.toMatchObject({ result: { data: [{ id: firstTurnId }] } });
+
+    writeRequest(fixture.desktopInput, {
+      id: 12,
+      method: "thread/items/list",
+      params: {
+        threadId,
+        cursor: itemsBackwardsCursor,
+        limit: 1,
+        sortDirection: "desc",
+      },
+    });
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 12)),
+    ).resolves.toMatchObject({ result: { data: [{ turnId: firstTurnId }] } });
+
+    await completePiTurn(fixture, threadId, 13, 1, "edited replacement");
+    await expect(adapter.sessions[1]?.readSnapshot()).resolves.toMatchObject({
+      ok: true,
+      value: {
+        turns: [
+          expect.objectContaining({ input: [{ type: "text", text: "synthetic" }] }),
+          expect.objectContaining({ input: [{ type: "text", text: "edited replacement" }] }),
+        ],
+      },
+    });
+    expect(adapter.sessions).toHaveLength(2);
+    await stopFixture(fixture);
+  });
+
+  it("lets Native output win a racing paginated history refresh without duplicate mappings", async () => {
+    const fixture = createFixture();
+    const threadId = await startExternalThread(fixture, "codexhost/pi-native", 1, {
+      historyMode: "paginated",
+    });
+    const firstTurnId = await completePiTurn(fixture, threadId, 2);
+    const session = fixture.adapter.sessions[0];
+    if (!session) throw new Error("Fake Pi Session was not opened");
+    const refreshStarted = Promise.withResolvers<undefined>();
+    const continueRefresh = Promise.withResolvers<undefined>();
+    const readSnapshot = session.readSnapshot.bind(session);
+    session.readSnapshot = async () => {
+      refreshStarted.resolve(undefined);
+      await continueRefresh.promise;
+      return readSnapshot();
+    };
+
+    writeRequest(fixture.desktopInput, {
+      id: 10,
+      method: "thread/turns/list",
+      params: { threadId, cursor: null, limit: 10, itemsView: "full" },
+    });
+    await refreshStarted.promise;
+    const autonomousTurnId = hostTurnIdSchema.parse("refresh-racing-autonomous-turn");
+    session.startAutonomousTurn(autonomousTurnId, [{ type: "text", text: "native refresh race" }]);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    continueRefresh.resolve(undefined);
+
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 10)),
+    ).resolves.toMatchObject({ error: { code: -32072 } });
+    await fixture.collector.waitFor((message) =>
+      turnEvent(message, "turn/started", autonomousTurnId),
+    );
+    session.appendText("native answer");
+    session.succeedTurn();
+    await fixture.collector.waitFor((message) =>
+      turnEvent(message, "turn/completed", autonomousTurnId),
+    );
+    await expect(
+      fixture.mappingStore.getThread(hostThreadIdSchema.parse(threadId)),
+    ).resolves.toMatchObject({
+      turnMappings: [{ hostTurnId: firstTurnId }, { hostTurnId: autonomousTurnId }],
+    });
+    await stopFixture(fixture);
+  });
+
+  it("fails a paginated history refresh closed when readSnapshot throws", async () => {
+    const fixture = createFixture();
+    const threadId = await startExternalThread(fixture, "codexhost/pi-native", 1, {
+      historyMode: "paginated",
+    });
+    await completePiTurn(fixture, threadId, 2);
+    const session = fixture.adapter.sessions[0];
+    if (!session) throw new Error("Fake Pi Session was not opened");
+    const readSnapshot = session.readSnapshot.bind(session);
+    session.readSnapshot = async () => {
+      throw new Error("Synthetic live history read failure");
+    };
+
+    writeRequest(fixture.desktopInput, {
+      id: 10,
+      method: "thread/turns/list",
+      params: { threadId, cursor: null, limit: 10, itemsView: "full" },
+    });
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 10)),
+    ).resolves.toMatchObject({ error: { code: -32076 } });
+
+    session.readSnapshot = readSnapshot;
+    await completePiTurn(fixture, threadId, 11, 0, "source remains usable");
+    await stopFixture(fixture);
+  });
+
+  it("reverts the only paginated External Turn and accepts its edited replacement", async () => {
+    const adapter = rollbackCapableAdapter();
+    const fixture = createFixture({ externalAdapters: new Map([["pi", adapter]]) });
+    const threadId = await startExternalThread(fixture, "codexhost/pi-native", 1, {
+      historyMode: "paginated",
+    });
+    const onlyTurnId = await completePiTurn(fixture, threadId, 2);
+
+    writeRequest(fixture.desktopInput, {
+      id: 10,
+      method: "thread/revert",
+      params: { threadId, beforeTurnId: onlyTurnId },
+    });
+    const reverted = await fixture.collector.waitFor((message) => requestId(message, 10));
+    expect(reverted.result).toEqual({
+      thread: expect.objectContaining({ id: threadId, turns: [] }),
+      turnsBackwardsCursor: null,
+      itemsBackwardsCursor: null,
+    });
+    await expect(
+      fixture.collector.waitFor((message) => method(message, "thread/reverted")),
+    ).resolves.toEqual({ method: "thread/reverted", params: { threadId } });
+
+    await completePiTurn(fixture, threadId, 11, 1, "edited first message");
+    await expect(adapter.sessions[1]?.readSnapshot()).resolves.toMatchObject({
+      ok: true,
+      value: {
+        turns: [
+          expect.objectContaining({ input: [{ type: "text", text: "edited first message" }] }),
+        ],
+      },
+    });
+    await expect(
+      fixture.mappingStore.getThread(hostThreadIdSchema.parse(threadId)),
+    ).resolves.toMatchObject({
+      nativeSessionRef: { nativeSessionId: "fake-session-2" },
+      turnMappings: [expect.objectContaining({ hostTurnId: expect.any(String) })],
+    });
     await stopFixture(fixture);
   });
 
@@ -4790,7 +5297,7 @@ describe("AppServerHost HarnessAdapter projection", () => {
     await stopFixture(fixture);
   });
 
-  it("keeps the current Session authoritative when last-Turn persistence fails", async () => {
+  it("cold-resumes the stored Session when latest-message revert persistence fails", async () => {
     const directory = mkdtempSync(path.join(tmpdir(), "codexhost-host-last-turn-failure-"));
     let failRollbackCommit = false;
     const mappingStore = new MappingStore({
@@ -4807,16 +5314,18 @@ describe("AppServerHost HarnessAdapter projection", () => {
       mappingStore,
       mappingStoreDirectory: directory,
     });
-    const threadId = await startPiThread(fixture);
+    const threadId = await startExternalThread(fixture, "codexhost/pi-native", 1, {
+      historyMode: "paginated",
+    });
     await completePiTurn(fixture, threadId, 2);
-    await completePiTurn(fixture, threadId, 3);
+    const lastTurnId = await completePiTurn(fixture, threadId, 3);
     const before = await mappingStore.getThread(hostThreadIdSchema.parse(threadId));
     failRollbackCommit = true;
 
     writeRequest(fixture.desktopInput, {
       id: 10,
-      method: "thread/rollback",
-      params: { threadId, numTurns: 1 },
+      method: "thread/revert",
+      params: { threadId, beforeTurnId: lastTurnId },
     });
     await expect(
       fixture.collector.waitFor((message) => requestId(message, 10)),
@@ -4825,14 +5334,662 @@ describe("AppServerHost HarnessAdapter projection", () => {
       before,
     );
     await expect(adapter.sessions[0]?.readSnapshot()).resolves.toMatchObject({
-      ok: true,
-      value: { turns: [{}, {}] },
+      ok: false,
+      error: { code: "invalidState" },
     });
     await expect(adapter.sessions[1]?.readSnapshot()).resolves.toMatchObject({
       ok: false,
       error: { code: "invalidState" },
     });
-    await completePiTurn(fixture, threadId, 11, 0);
+
+    writeRequest(fixture.desktopInput, {
+      id: 11,
+      method: "thread/turns/list",
+      params: { threadId, limit: 20, itemsView: "full" },
+    });
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 11)),
+    ).resolves.toMatchObject({ result: { data: [{}, {}] } });
+    expect(adapter.sessions[2]?.initialState.nativeRef).toEqual(before?.nativeSessionRef);
+    await expect(adapter.sessions[2]?.readSnapshot()).resolves.toMatchObject({
+      ok: true,
+      value: { turns: [{}, {}] },
+    });
+    await completePiTurn(fixture, threadId, 12, 2);
+    await stopFixture(fixture);
+  });
+
+  it("rejects a latest-message revert that reuses the source Native Session", async () => {
+    const adapter = new SameIdentityRollbackAdapter();
+    const fixture = createFixture({ externalAdapters: new Map([["pi", adapter]]) });
+    const threadId = await startExternalThread(fixture, "codexhost/pi-native", 1, {
+      historyMode: "paginated",
+    });
+    const lastTurnId = await completePiTurn(fixture, threadId, 2);
+    const before = await fixture.mappingStore.getThread(hostThreadIdSchema.parse(threadId));
+
+    writeRequest(fixture.desktopInput, {
+      id: 10,
+      method: "thread/revert",
+      params: { threadId, beforeTurnId: lastTurnId },
+    });
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 10)),
+    ).resolves.toMatchObject({
+      error: { code: -32076, message: "External rollback did not return a distinct Session" },
+    });
+    await expect(
+      fixture.mappingStore.getThread(hostThreadIdSchema.parse(threadId)),
+    ).resolves.toEqual(before);
+    expect(adapter.sessions).toHaveLength(1);
+    await completePiTurn(fixture, threadId, 11, 0, "source remains usable");
+    await stopFixture(fixture);
+  });
+
+  it("does not close a rollback wrapper that aliases the authoritative Native Session", async () => {
+    const adapter = new AliasedIdentityRollbackAdapter();
+    const fixture = createFixture({ externalAdapters: new Map([["pi", adapter]]) });
+    const threadId = await startExternalThread(fixture, "codexhost/pi-native", 1, {
+      historyMode: "paginated",
+    });
+    const lastTurnId = await completePiTurn(fixture, threadId, 2);
+    const before = await fixture.mappingStore.getThread(hostThreadIdSchema.parse(threadId));
+
+    writeRequest(fixture.desktopInput, {
+      id: 10,
+      method: "thread/revert",
+      params: { threadId, beforeTurnId: lastTurnId },
+    });
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 10)),
+    ).resolves.toMatchObject({ error: { code: -32076 } });
+    await expect(adapter.rollbackSession?.readSnapshot()).resolves.toMatchObject({ ok: true });
+    await expect(
+      fixture.mappingStore.getThread(hostThreadIdSchema.parse(threadId)),
+    ).resolves.toEqual(before);
+    await completePiTurn(fixture, threadId, 11, 0, "source remains authoritative");
+    await stopFixture(fixture);
+  });
+
+  it("does not inspect, reconfigure, or close another loaded Thread returned as rollback", async () => {
+    const adapter = new OtherLoadedSessionRollbackAdapter();
+    const fixture = createFixture({ externalAdapters: new Map([["pi", adapter]]) });
+    const firstThreadId = await startExternalThread(fixture, "codexhost/pi-native", 1, {
+      historyMode: "paginated",
+    });
+    const lastTurnId = await completePiTurn(fixture, firstThreadId, 2);
+    const secondThreadId = await startExternalThread(fixture, "codexhost/pi-native", 3, {
+      historyMode: "paginated",
+    });
+    const other = adapter.sessions[1];
+    if (!other) throw new Error("Synthetic other Session was not opened");
+    const execute = vi.spyOn(other, "execute");
+    const readSnapshot = vi.spyOn(other, "readSnapshot");
+    const before = await fixture.mappingStore.getThread(hostThreadIdSchema.parse(firstThreadId));
+    execute.mockClear();
+    readSnapshot.mockClear();
+
+    writeRequest(fixture.desktopInput, {
+      id: 10,
+      method: "thread/revert",
+      params: { threadId: firstThreadId, beforeTurnId: lastTurnId },
+    });
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 10)),
+    ).resolves.toMatchObject({ error: { code: -32076 } });
+
+    expect(execute).not.toHaveBeenCalled();
+    expect(readSnapshot).not.toHaveBeenCalled();
+    await expect(
+      fixture.mappingStore.getThread(hostThreadIdSchema.parse(firstThreadId)),
+    ).resolves.toEqual(before);
+    await completePiTurn(fixture, secondThreadId, 11, 1, "other remains authoritative");
+    await completePiTurn(fixture, firstThreadId, 12, 0, "source remains authoritative");
+    await stopFixture(fixture);
+  });
+
+  it("does not close another loaded Thread returned by legacy Fork rollback", async () => {
+    const adapter = new OtherLoadedSessionForkRollbackAdapter();
+    const fixture = createFixture({ externalAdapters: new Map([["pi", adapter]]) });
+    const sourceThreadId = await startPiThread(fixture);
+    await completePiTurn(fixture, sourceThreadId, 2);
+    await completePiTurn(fixture, sourceThreadId, 3);
+    const tailTurnId = await completePiTurn(fixture, sourceThreadId, 4);
+    writeRequest(fixture.desktopInput, {
+      id: 10,
+      method: "thread/fork",
+      params: { threadId: sourceThreadId, lastTurnId: tailTurnId },
+    });
+    const forkResponse = await fixture.collector.waitFor((message) => requestId(message, 10));
+    const derivedThreadId = ((forkResponse.result as JsonObject).thread as JsonObject).id;
+    if (typeof derivedThreadId !== "string") throw new Error("Synthetic Fork has no Thread ID");
+    const otherThreadId = await startExternalThread(fixture, "codexhost/pi-native", 20);
+    const other = adapter.sessions[2];
+    if (!other) throw new Error("Synthetic other Session was not opened");
+    const readSnapshot = vi.spyOn(other, "readSnapshot");
+    const before = await fixture.mappingStore.getThread(hostThreadIdSchema.parse(derivedThreadId));
+    readSnapshot.mockClear();
+
+    writeRequest(fixture.desktopInput, {
+      id: 11,
+      method: "thread/rollback",
+      params: { threadId: derivedThreadId, numTurns: 1 },
+    });
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 11)),
+    ).resolves.toMatchObject({ error: { code: -32076 } });
+    expect(readSnapshot).not.toHaveBeenCalled();
+    await expect(
+      fixture.mappingStore.getThread(hostThreadIdSchema.parse(derivedThreadId)),
+    ).resolves.toEqual(before);
+    await completePiTurn(fixture, otherThreadId, 12, 2, "other remains authoritative");
+    await completePiTurn(fixture, derivedThreadId, 13, 1, "derived remains authoritative");
+    await stopFixture(fixture);
+  });
+
+  it("rejects a rollback Snapshot whose state changes Native Session identity", async () => {
+    const adapter = new MismatchedSnapshotIdentityRollbackAdapter();
+    const fixture = createFixture({ externalAdapters: new Map([["pi", adapter]]) });
+    const threadId = await startExternalThread(fixture, "codexhost/pi-native", 1, {
+      historyMode: "paginated",
+    });
+    const lastTurnId = await completePiTurn(fixture, threadId, 2);
+    const before = await fixture.mappingStore.getThread(hostThreadIdSchema.parse(threadId));
+
+    writeRequest(fixture.desktopInput, {
+      id: 10,
+      method: "thread/revert",
+      params: { threadId, beforeTurnId: lastTurnId },
+    });
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 10)),
+    ).resolves.toMatchObject({ error: { code: -32080 } });
+    await expect(
+      fixture.mappingStore.getThread(hostThreadIdSchema.parse(threadId)),
+    ).resolves.toEqual(before);
+    await expect(adapter.sessions[1]?.readSnapshot()).resolves.toMatchObject({
+      ok: false,
+      error: { code: "invalidState" },
+    });
+    await completePiTurn(fixture, threadId, 11, 0, "source remains usable");
+    await stopFixture(fixture);
+  });
+
+  it("fails closed when a rollback Session throws while reading history", async () => {
+    const adapter = new ThrowingSnapshotRollbackAdapter();
+    const fixture = createFixture({ externalAdapters: new Map([["pi", adapter]]) });
+    const threadId = await startExternalThread(fixture, "codexhost/pi-native", 1, {
+      historyMode: "paginated",
+    });
+    const lastTurnId = await completePiTurn(fixture, threadId, 2);
+    const before = await fixture.mappingStore.getThread(hostThreadIdSchema.parse(threadId));
+
+    writeRequest(fixture.desktopInput, {
+      id: 10,
+      method: "thread/revert",
+      params: { threadId, beforeTurnId: lastTurnId },
+    });
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 10)),
+    ).resolves.toMatchObject({ error: { code: -32076 } });
+    await expect(
+      fixture.mappingStore.getThread(hostThreadIdSchema.parse(threadId)),
+    ).resolves.toEqual(before);
+    await completePiTurn(fixture, threadId, 11, 0, "source remains usable");
+    await stopFixture(fixture);
+  });
+
+  it("lets observed autonomous activity invalidate a racing latest-message revert", async () => {
+    const adapter = new DelayedRollbackAdapter();
+    const fixture = createFixture({ externalAdapters: new Map([["pi", adapter]]) });
+    const threadId = await startExternalThread(fixture, "codexhost/pi-native", 1, {
+      historyMode: "paginated",
+    });
+    const lastTurnId = await completePiTurn(fixture, threadId, 2);
+    const autonomousTurnId = hostTurnIdSchema.parse("racing-autonomous-turn");
+
+    writeRequest(fixture.desktopInput, {
+      id: 10,
+      method: "thread/revert",
+      params: { threadId, beforeTurnId: lastTurnId },
+    });
+    await adapter.rollbackStarted.promise;
+    adapter.sessions[0]?.startAutonomousTurn(autonomousTurnId, [
+      { type: "text", text: "racing native input" },
+    ]);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    adapter.continueRollback.resolve(undefined);
+
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 10)),
+    ).resolves.toMatchObject({ error: { code: -32072 } });
+    await fixture.collector.waitFor((message) =>
+      turnEvent(message, "turn/started", autonomousTurnId),
+    );
+    adapter.sessions[0]?.appendText("autonomous answer");
+    adapter.sessions[0]?.succeedTurn();
+    await fixture.collector.waitFor((message) =>
+      turnEvent(message, "turn/completed", autonomousTurnId),
+    );
+    await expect(
+      fixture.mappingStore.getThread(hostThreadIdSchema.parse(threadId)),
+    ).resolves.toMatchObject({
+      nativeSessionRef: { nativeSessionId: "fake-session-1" },
+      turnMappings: [{ hostTurnId: lastTurnId }, { hostTurnId: autonomousTurnId }],
+    });
+    await expect(adapter.sessions[1]?.readSnapshot()).resolves.toMatchObject({
+      ok: false,
+      error: { code: "invalidState" },
+    });
+    await completePiTurn(fixture, threadId, 11, 0, "continued after autonomous race");
+    await stopFixture(fixture);
+  });
+
+  it("drains and rejects Native output emitted while fencing a history commit", async () => {
+    const adapter = rollbackCapableAdapter();
+    const fixture = createFixture({ externalAdapters: new Map([["pi", adapter]]) });
+    const threadId = await startExternalThread(fixture, "codexhost/pi-native", 1, {
+      historyMode: "paginated",
+    });
+    await completePiTurn(fixture, threadId, 2);
+    const lastTurnId = await completePiTurn(fixture, threadId, 3);
+    const before = await fixture.mappingStore.getThread(hostThreadIdSchema.parse(threadId));
+    const source = adapter.sessions[0];
+    if (!source) throw new Error("Fake Pi Session was not opened");
+    const autonomousTurnId = hostTurnIdSchema.parse("fencing-autonomous-turn");
+    const closeSource = source.close.bind(source);
+    let injected = false;
+    source.close = async () => {
+      if (!injected) {
+        injected = true;
+        source.startAutonomousTurn(autonomousTurnId, [
+          { type: "text", text: "Native activity at the fence" },
+        ]);
+      }
+      await closeSource();
+    };
+
+    writeRequest(fixture.desktopInput, {
+      id: 10,
+      method: "thread/revert",
+      params: { threadId, beforeTurnId: lastTurnId },
+    });
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 10)),
+    ).resolves.toMatchObject({ error: { code: -32072 } });
+    await expect(
+      fixture.mappingStore.getThread(hostThreadIdSchema.parse(threadId)),
+    ).resolves.toEqual(before);
+    expect(
+      fixture.collector.messages.some((message) =>
+        turnEvent(message, "turn/started", autonomousTurnId),
+      ),
+    ).toBe(false);
+    await expect(source.readSnapshot()).resolves.toMatchObject({
+      ok: false,
+      error: { code: "invalidState" },
+    });
+    await expect(adapter.sessions[1]?.readSnapshot()).resolves.toMatchObject({
+      ok: false,
+      error: { code: "invalidState" },
+    });
+
+    writeRequest(fixture.desktopInput, {
+      id: 11,
+      method: "thread/turns/list",
+      params: { threadId, limit: 20, itemsView: "full" },
+    });
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 11)),
+    ).resolves.toMatchObject({ result: { data: [{}, {}, {}] } });
+    expect(adapter.sessions[2]?.initialState.nativeRef).toEqual(before?.nativeSessionRef);
+    await completePiTurn(fixture, threadId, 12, 2, "continued after fencing recovery");
+    await stopFixture(fixture);
+  });
+
+  it("fences the old Native Session before an asynchronous rollback Store commit", async () => {
+    const directory = mkdtempSync(path.join(tmpdir(), "codexhost-host-rollback-fence-"));
+    const commitStarted = Promise.withResolvers<undefined>();
+    const continueCommit = Promise.withResolvers<undefined>();
+    let delayRollbackCommit = false;
+    const mappingStore = new MappingStore({
+      directory,
+      async beforeReplace(record) {
+        if (
+          delayRollbackCommit &&
+          record.state === "ready" &&
+          record.nativeSessionRef?.nativeSessionId === "fake-session-2" &&
+          record.turnMappings.length === 1
+        ) {
+          commitStarted.resolve(undefined);
+          await continueCommit.promise;
+        }
+      },
+    });
+    const adapter = rollbackCapableAdapter();
+    const fixture = createFixture({
+      externalAdapters: new Map([["pi", adapter]]),
+      mappingStore,
+      mappingStoreDirectory: directory,
+    });
+    const threadId = await startExternalThread(fixture, "codexhost/pi-native", 1, {
+      historyMode: "paginated",
+    });
+    await completePiTurn(fixture, threadId, 2);
+    const lastTurnId = await completePiTurn(fixture, threadId, 3);
+    const source = adapter.sessions[0];
+    if (!source) throw new Error("Fake Pi Session was not opened");
+    delayRollbackCommit = true;
+
+    writeRequest(fixture.desktopInput, {
+      id: 10,
+      method: "thread/revert",
+      params: { threadId, beforeTurnId: lastTurnId },
+    });
+    await commitStarted.promise;
+    expect(source.closed).toBe(true);
+    expect(() =>
+      source.startAutonomousTurn(hostTurnIdSchema.parse("too-late-autonomous-turn"), [
+        { type: "text", text: "must not start during Store commit" },
+      ]),
+    ).toThrow("Fake Harness Session is closed");
+
+    continueCommit.resolve(undefined);
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 10)),
+    ).resolves.toMatchObject({ result: { thread: { turns: [] } } });
+    await completePiTurn(fixture, threadId, 11, 1, "continued after fenced commit");
+    await stopFixture(fixture);
+  });
+
+  it("rejects delegated send and read while latest-message history is being replaced", async () => {
+    const adapter = new DelayedRollbackAdapter();
+    let delegationApi: DelegationControlApi | undefined;
+    const fixture = createFixture({
+      externalAdapters: new Map([["pi", adapter]]),
+      onDelegationApi: (api) => {
+        delegationApi = api;
+        return undefined;
+      },
+    });
+    await vi.waitFor(() => expect(delegationApi).toBeDefined());
+    if (!delegationApi) throw new Error("Delegation API was not registered");
+    const threadId = await startExternalThread(fixture, "codexhost/pi-native", 1, {
+      historyMode: "paginated",
+    });
+    const lastTurnId = await completePiTurn(fixture, threadId, 2);
+
+    writeRequest(fixture.desktopInput, {
+      id: 10,
+      method: "thread/revert",
+      params: { threadId, beforeTurnId: lastTurnId },
+    });
+    await adapter.rollbackStarted.promise;
+    await expect(delegationApi.send({ threadId, message: "racing send" })).rejects.toMatchObject({
+      code: "THREAD_BUSY",
+    });
+    await expect(delegationApi.read({ threadId, view: "result" })).rejects.toMatchObject({
+      code: "THREAD_BUSY",
+    });
+
+    adapter.continueRollback.resolve(undefined);
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 10)),
+    ).resolves.toMatchObject({ result: { thread: { id: threadId, turns: [] } } });
+    await completePiTurn(fixture, threadId, 11, 1, "edited after exclusive rollback");
+    await stopFixture(fixture);
+  });
+
+  it("rechecks active Native work after a delayed command catalog read", async () => {
+    const adapter = rollbackCapableAdapter();
+    const fixture = createFixture({ externalAdapters: new Map([["pi", adapter]]) });
+    const threadId = await startExternalThread(fixture, "codexhost/pi-native", 1, {
+      historyMode: "paginated",
+    });
+    await completePiTurn(fixture, threadId, 2);
+    const source = adapter.sessions[0];
+    if (!source) throw new Error("Fake Pi Session was not opened");
+    const catalogStarted = Promise.withResolvers<undefined>();
+    const continueCatalog = Promise.withResolvers<undefined>();
+    const execute = vi.fn(async ({ turnId }: { turnId: HostTurnId }) => ({
+      ok: true as const,
+      value: { turnId },
+    }));
+    source.commands = {
+      list: async () => {
+        catalogStarted.resolve(undefined);
+        await continueCatalog.promise;
+        return {
+          ok: true,
+          value: {
+            commands: [
+              harnessCommandDescriptorSchema.parse({
+                id: "fake.compact",
+                invocation: "/compact",
+                label: "Compact",
+                argumentMode: "none",
+              }),
+            ],
+          },
+        };
+      },
+      execute,
+    };
+
+    writeRequest(fixture.desktopInput, {
+      id: 10,
+      method: "codexhost/thread/command/execute",
+      params: { threadId, commandId: "fake.compact" },
+    });
+    await catalogStarted.promise;
+    const autonomousTurnId = hostTurnIdSchema.parse("command-racing-autonomous-turn");
+    source.startAutonomousTurn(autonomousTurnId, [{ type: "text", text: "native activity" }]);
+    await fixture.collector.waitFor((message) =>
+      turnEvent(message, "turn/started", autonomousTurnId),
+    );
+
+    continueCatalog.resolve(undefined);
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 10)),
+    ).resolves.toMatchObject({ error: { code: -32072 } });
+    expect(execute).not.toHaveBeenCalled();
+    source.appendText("native answer");
+    source.succeedTurn();
+    await fixture.collector.waitFor((message) =>
+      turnEvent(message, "turn/completed", autonomousTurnId),
+    );
+    await completePiTurn(fixture, threadId, 12, 0, "source remains authoritative");
+    await stopFixture(fixture);
+  });
+
+  it("fences explicit command discovery from a racing history replacement", async () => {
+    const adapter = rollbackCapableAdapter();
+    const fixture = createFixture({ externalAdapters: new Map([["pi", adapter]]) });
+    const threadId = await startExternalThread(fixture, "codexhost/pi-native", 1, {
+      historyMode: "paginated",
+    });
+    const lastTurnId = await completePiTurn(fixture, threadId, 2);
+    const before = await fixture.mappingStore.getThread(hostThreadIdSchema.parse(threadId));
+    const source = adapter.sessions[0];
+    if (!source) throw new Error("Fake Pi Session was not opened");
+    const catalogStarted = Promise.withResolvers<undefined>();
+    const continueCatalog = Promise.withResolvers<undefined>();
+    const descriptor = harnessCommandDescriptorSchema.parse({
+      id: "fake.compact",
+      invocation: "/compact",
+      label: "Compact",
+      argumentMode: "none",
+    });
+    const execute = vi.fn(async ({ turnId }: { turnId: HostTurnId }) => {
+      expect(source.closed).toBe(false);
+      source.publishEphemeralCommand(turnId, {
+        type: "contextCompaction",
+        itemId: hostItemIdSchema.parse(`history-racing-command-${turnId}`),
+      });
+      return { ok: true as const, value: { turnId } };
+    });
+    source.commands = {
+      list: async () => {
+        catalogStarted.resolve(undefined);
+        await continueCatalog.promise;
+        return { ok: true, value: { commands: [descriptor] } };
+      },
+      execute,
+    };
+
+    writeRequest(fixture.desktopInput, {
+      id: 10,
+      method: "codexhost/thread/command/execute",
+      params: { threadId, commandId: descriptor.id },
+    });
+    await catalogStarted.promise;
+    writeRequest(fixture.desktopInput, {
+      id: 11,
+      method: "thread/revert",
+      params: { threadId, beforeTurnId: lastTurnId },
+    });
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 11)),
+    ).resolves.toMatchObject({ error: { code: -32072 } });
+    await expect(
+      fixture.mappingStore.getThread(hostThreadIdSchema.parse(threadId)),
+    ).resolves.toEqual(before);
+    expect(source.closed).toBe(false);
+    expect(execute).not.toHaveBeenCalled();
+
+    continueCatalog.resolve(undefined);
+    const commandResponse = await fixture.collector.waitFor((message) => requestId(message, 10));
+    expect(commandResponse).toMatchObject({ result: { accepted: true } });
+    const commandTurnId = (commandResponse.result as JsonObject).turnId;
+    if (typeof commandTurnId !== "string") throw new Error("Command response has no Turn ID");
+    await fixture.collector.waitFor((message) =>
+      turnEvent(message, "turn/completed", commandTurnId),
+    );
+    expect(execute).toHaveBeenCalledOnce();
+
+    writeRequest(fixture.desktopInput, {
+      id: 12,
+      method: "thread/revert",
+      params: { threadId, beforeTurnId: lastTurnId },
+    });
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 12)),
+    ).resolves.toMatchObject({ result: { thread: { id: threadId, turns: [] } } });
+    expect(source.closed).toBe(true);
+    await stopFixture(fixture);
+  });
+
+  it("fences Turn command discovery from a racing history replacement", async () => {
+    const adapter = rollbackCapableAdapter();
+    const fixture = createFixture({ externalAdapters: new Map([["pi", adapter]]) });
+    const threadId = await startExternalThread(fixture, "codexhost/pi-native", 1, {
+      historyMode: "paginated",
+    });
+    const lastTurnId = await completePiTurn(fixture, threadId, 2);
+    const before = await fixture.mappingStore.getThread(hostThreadIdSchema.parse(threadId));
+    const source = adapter.sessions[0];
+    if (!source) throw new Error("Fake Pi Session was not opened");
+    const catalogStarted = Promise.withResolvers<undefined>();
+    const continueCatalog = Promise.withResolvers<undefined>();
+    source.commands = {
+      list: async () => {
+        catalogStarted.resolve(undefined);
+        await continueCatalog.promise;
+        return { ok: true, value: { commands: [] } };
+      },
+      execute: vi.fn(),
+    };
+
+    writeRequest(fixture.desktopInput, {
+      id: 20,
+      method: "turn/start",
+      params: { threadId, input: [{ type: "text", text: "/unknown" }] },
+    });
+    await catalogStarted.promise;
+    writeRequest(fixture.desktopInput, {
+      id: 21,
+      method: "thread/revert",
+      params: { threadId, beforeTurnId: lastTurnId },
+    });
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 21)),
+    ).resolves.toMatchObject({ error: { code: -32072 } });
+    await expect(
+      fixture.mappingStore.getThread(hostThreadIdSchema.parse(threadId)),
+    ).resolves.toEqual(before);
+    expect(source.closed).toBe(false);
+
+    continueCatalog.resolve(undefined);
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 20)),
+    ).resolves.toMatchObject({ error: { code: -32078 } });
+
+    writeRequest(fixture.desktopInput, {
+      id: 22,
+      method: "thread/revert",
+      params: { threadId, beforeTurnId: lastTurnId },
+    });
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 22)),
+    ).resolves.toMatchObject({ result: { thread: { id: threadId, turns: [] } } });
+    expect(source.closed).toBe(true);
+    await stopFixture(fixture);
+  });
+
+  it("keeps an exact Usage refresh fenced from a racing history replacement", async () => {
+    const adapter = rollbackCapableAdapter();
+    const fixture = createFixture({ externalAdapters: new Map([["pi", adapter]]) });
+    const threadId = await startExternalThread(fixture, "codexhost/pi-native", 1, {
+      historyMode: "paginated",
+    });
+    const lastTurnId = await completePiTurn(fixture, threadId, 2);
+    const before = await fixture.mappingStore.getThread(hostThreadIdSchema.parse(threadId));
+    const source = adapter.sessions[0];
+    if (!source) throw new Error("Fake Pi Session was not opened");
+    const refreshStarted = Promise.withResolvers<undefined>();
+    const continueRefresh = Promise.withResolvers<undefined>();
+    const refreshFinished = Promise.withResolvers<undefined>();
+    source.refreshUsage = vi.fn(async () => {
+      refreshStarted.resolve(undefined);
+      await continueRefresh.promise;
+      refreshFinished.resolve(undefined);
+    });
+
+    writeRequest(fixture.desktopInput, {
+      id: 40,
+      method: "codexhost/thread/usage/inspect",
+      params: { threadId, refresh: "exact" },
+    });
+    await refreshStarted.promise;
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 40)),
+    ).resolves.toMatchObject({ result: { threadId } });
+
+    writeRequest(fixture.desktopInput, {
+      id: 41,
+      method: "thread/revert",
+      params: { threadId, beforeTurnId: lastTurnId },
+    });
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 41)),
+    ).resolves.toMatchObject({ error: { code: -32072 } });
+    await expect(
+      fixture.mappingStore.getThread(hostThreadIdSchema.parse(threadId)),
+    ).resolves.toEqual(before);
+    expect(source.closed).toBe(false);
+
+    continueRefresh.resolve(undefined);
+    await refreshFinished.promise;
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    writeRequest(fixture.desktopInput, {
+      id: 42,
+      method: "thread/revert",
+      params: { threadId, beforeTurnId: lastTurnId },
+    });
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 42)),
+    ).resolves.toMatchObject({ result: { thread: { id: threadId, turns: [] } } });
+    expect(source.closed).toBe(true);
     await stopFixture(fixture);
   });
 
@@ -4916,6 +6073,124 @@ describe("AppServerHost HarnessAdapter projection", () => {
       value: { turns: [{}, {}, {}, {}] },
     });
     expect(officialWrite).not.toHaveBeenCalled();
+    await stopFixture(fixture);
+  });
+
+  it("rejects legacy Fork rollback without opening a candidate when close is not a fence", async () => {
+    const adapter = new FakeHarnessAdapter(
+      harnessIdSchema.parse("pi"),
+      undefined,
+      true,
+      true,
+      null,
+      undefined,
+      false,
+      "live",
+      false,
+    );
+    const open = vi.spyOn(adapter, "open");
+    const fixture = createFixture({ externalAdapters: new Map([["pi", adapter]]) });
+    const sourceThreadId = await startPiThread(fixture);
+    await completePiTurn(fixture, sourceThreadId, 2);
+    await completePiTurn(fixture, sourceThreadId, 3);
+    writeRequest(fixture.desktopInput, {
+      id: 10,
+      method: "thread/fork",
+      params: { threadId: sourceThreadId },
+    });
+    const forkResponse = await fixture.collector.waitFor((message) => requestId(message, 10));
+    const derivedId = ((forkResponse.result as JsonObject).thread as JsonObject).id;
+    if (typeof derivedId !== "string") throw new Error("Tail Fork response has no Thread ID");
+    const before = await fixture.mappingStore.getThread(hostThreadIdSchema.parse(derivedId));
+
+    writeRequest(fixture.desktopInput, {
+      id: 11,
+      method: "thread/rollback",
+      params: { threadId: derivedId, numTurns: 1 },
+    });
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 11)),
+    ).resolves.toMatchObject({
+      error: {
+        code: -32076,
+        message: "External Harness cannot fence Native activity for history replacement",
+      },
+    });
+    expect(open.mock.calls.filter(([input]) => input.kind === "fork")).toHaveLength(1);
+    expect(adapter.sessions).toHaveLength(2);
+    await expect(
+      fixture.mappingStore.getThread(hostThreadIdSchema.parse(derivedId)),
+    ).resolves.toEqual(before);
+    await stopFixture(fixture);
+  });
+
+  it("preserves a derived Thread's live configuration across legacy Fork rollback", async () => {
+    const permissionModes = harnessPermissionModeCatalogSchema.parse({
+      modes: [
+        { id: "default", label: "Default" },
+        { id: "auto", label: "Auto" },
+      ],
+      defaultModeId: "default",
+    });
+    const adapter = new FakeHarnessAdapter(
+      harnessIdSchema.parse("pi"),
+      undefined,
+      true,
+      true,
+      null,
+      permissionModes,
+    );
+    const fixture = createFixture({ externalAdapters: new Map([["pi", adapter]]) });
+    const sourceThreadId = await startPiThread(fixture);
+    await completePiTurn(fixture, sourceThreadId, 2);
+    await completePiTurn(fixture, sourceThreadId, 3);
+    const tailTurnId = await completePiTurn(fixture, sourceThreadId, 4);
+    writeRequest(fixture.desktopInput, {
+      id: 10,
+      method: "thread/fork",
+      params: { threadId: sourceThreadId, lastTurnId: tailTurnId },
+    });
+    const forkResponse = await fixture.collector.waitFor((message) => requestId(message, 10));
+    const derivedId = ((forkResponse.result as JsonObject).thread as JsonObject).id;
+    if (typeof derivedId !== "string") throw new Error("Synthetic Fork has no Thread ID");
+    const model = adapter.catalog.models[1]?.ref;
+    if (!model) throw new Error("Fake catalog has no secondary Model");
+    const thinkingOptionId = harnessThinkingOptionIdSchema.parse("low");
+    const permissionModeId = harnessPermissionModeIdSchema.parse("auto");
+
+    writeRequest(fixture.desktopInput, {
+      id: 11,
+      method: "codexhost/thread/model/select",
+      params: { threadId: derivedId, model },
+    });
+    await fixture.collector.waitFor((message) => requestId(message, 11));
+    writeRequest(fixture.desktopInput, {
+      id: 12,
+      method: "codexhost/thread/thinking/select",
+      params: { threadId: derivedId, thinkingOptionId },
+    });
+    await fixture.collector.waitFor((message) => requestId(message, 12));
+    writeRequest(fixture.desktopInput, {
+      id: 13,
+      method: "codexhost/thread/permission-mode/select",
+      params: { threadId: derivedId, permissionModeId },
+    });
+    await fixture.collector.waitFor((message) => requestId(message, 13));
+
+    writeRequest(fixture.desktopInput, {
+      id: 14,
+      method: "thread/rollback",
+      params: { threadId: derivedId, numTurns: 1 },
+    });
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 14)),
+    ).resolves.toMatchObject({ result: { thread: { id: derivedId, turns: [{}, {}] } } });
+    expect(adapter.sessions[2]?.state).toMatchObject({
+      effectiveModel: model,
+      effectiveThinkingOptionId: thinkingOptionId,
+      effectivePermissionModeId: permissionModeId,
+    });
+    await completePiTurn(fixture, derivedId, 15, 2, "continued with restored configuration");
     await stopFixture(fixture);
   });
 
@@ -5491,7 +6766,7 @@ describe("AppServerHost HarnessAdapter projection", () => {
     await stopFixture(fixture);
   });
 
-  it("keeps the temporary derived Session authoritative when rollback commit fails", async () => {
+  it("cold-resumes the stored derived Session when rollback commit fails", async () => {
     const directory = mkdtempSync(path.join(tmpdir(), "codexhost-host-rollback-failure-"));
     let failRollbackCommit = false;
     const mappingStore = new MappingStore({
@@ -5534,8 +6809,8 @@ describe("AppServerHost HarnessAdapter projection", () => {
       error: { code: "invalidState" },
     });
     await expect(fixture.adapter.sessions[1]?.readSnapshot()).resolves.toMatchObject({
-      ok: true,
-      value: { turns: [{}, {}, {}] },
+      ok: false,
+      error: { code: "invalidState" },
     });
 
     writeRequest(fixture.desktopInput, {
@@ -5546,6 +6821,8 @@ describe("AppServerHost HarnessAdapter projection", () => {
     await expect(
       fixture.collector.waitFor((message) => requestId(message, 12)),
     ).resolves.toMatchObject({ result: { thread: { turns: [{}, {}, {}] } } });
+    expect(fixture.adapter.sessions[3]?.initialState.nativeRef).toEqual(before?.nativeSessionRef);
+    await completePiTurn(fixture, derivedId, 13, 3, "continued after cold recovery");
     await stopFixture(fixture);
   });
 
@@ -6292,6 +7569,467 @@ describe("AppServerHost HarnessAdapter projection", () => {
     );
     expect(questionClosedIndex).toBeGreaterThan(responseIndex);
     expect(turnIndex).toBeGreaterThan(questionClosedIndex);
+    await stopFixture(fixture);
+  });
+
+  it("adjusts once after terminal projection, preserving two Turns and the new user input", async () => {
+    const fixture = await adjustmentFixture();
+    const { session, params, turnId } = fixture;
+    const execute = vi.spyOn(session, "execute");
+    const officialWrite = vi.fn();
+    fixture.official.stdin.on("data", officialWrite);
+    writeRequest(fixture.desktopInput, { id: 3, method: "codexhost/turn/adjust", params });
+    writeRequest(fixture.desktopInput, { id: 4, method: "codexhost/turn/adjust", params });
+    await vi.waitFor(() => expect(execute).toHaveBeenCalledWith({ type: "turn.cancel", turnId }));
+    expect(execute).toHaveBeenCalledTimes(1);
+    writeRequest(fixture.desktopInput, {
+      id: 5,
+      method: "codexhost/turn/adjust",
+      params: { ...params, clientUserMessageId: "concurrent" },
+    });
+    expect(await fixture.collector.waitFor((message) => requestId(message, 5))).toMatchObject({
+      error: { code: -32072 },
+    });
+    writeRequest(fixture.desktopInput, {
+      id: 6,
+      method: "turn/start",
+      params: { threadId: params.threadId, input: params.input },
+    });
+    expect(await fixture.collector.waitFor((message) => requestId(message, 6))).toMatchObject({
+      error: { code: -32072 },
+    });
+    session.appendText("last output before stopping");
+    session.completeCancellation();
+    const response = await fixture.collector.waitFor((message) => requestId(message, 3));
+    const result = response.result as JsonObject;
+    const nextTurnId = String(result.turnId);
+    expect(result).toEqual({
+      turnId: nextTurnId,
+      previousTurnId: turnId,
+      delivery: "interrupt-and-continue",
+    });
+    expect(nextTurnId).not.toBe(turnId);
+    expect(await fixture.collector.waitFor((message) => requestId(message, 4))).toEqual({
+      id: 4,
+      result,
+    });
+    const userInput = await fixture.collector.waitFor(
+      (message) =>
+        method(message, "item/completed") &&
+        messageParams(message).turnId === nextTurnId &&
+        (messageParams(message).item as JsonObject)?.type === "userMessage",
+    );
+    expect(userInput).toMatchObject({
+      params: {
+        item: { clientId: "adjustment-1", content: [{ type: "text", text: "focus on tests" }] },
+      },
+    });
+    const messages = fixture.collector.messages;
+    const terminalIndex = messages.findIndex((message) =>
+      turnEvent(message, "turn/completed", turnId),
+    );
+    const responseIndex = messages.indexOf(response);
+    expect(terminalIndex).toBeGreaterThan(
+      messages.findIndex(
+        (message) => messageParams(message).delta === "last output before stopping",
+      ),
+    );
+    expect(responseIndex).toBeGreaterThan(terminalIndex);
+    expect(
+      messages.findIndex((message) => turnEvent(message, "turn/started", nextTurnId)),
+    ).toBeGreaterThan(responseIndex);
+    session.succeedTurn();
+    await fixture.collector.waitFor((message) => turnEvent(message, "turn/completed", nextTurnId));
+    expect(session.persistedSnapshot().turns.map((turn) => turn.input)).toEqual([
+      [{ type: "text", text: "initial request" }],
+      params.input,
+    ]);
+    writeRequest(fixture.desktopInput, { id: 7, method: "codexhost/turn/adjust", params });
+    expect(await fixture.collector.waitFor((message) => requestId(message, 7))).toEqual({
+      id: 7,
+      result,
+    });
+    writeRequest(fixture.desktopInput, {
+      id: 8,
+      method: "codexhost/turn/adjust",
+      params: { ...params, input: [{ type: "text", text: "changed" }] },
+    });
+    expect(await fixture.collector.waitFor((message) => requestId(message, 8))).toMatchObject({
+      error: { code: -32602 },
+    });
+    expect(
+      execute.mock.calls.filter(([command]) => (command as HostCommand).type === "turn.start"),
+    ).toHaveLength(1);
+    expect(officialWrite).not.toHaveBeenCalled();
+    await stopFixture(fixture);
+  });
+
+  it("waits for an outstanding cancel even when the original Turn naturally completes", async () => {
+    const fixture = await adjustmentFixture();
+    const cancelled = Promise.withResolvers<never>();
+    const execute = vi
+      .spyOn(fixture.session, "execute")
+      .mockImplementationOnce(() => cancelled.promise);
+    writeRequest(fixture.desktopInput, {
+      id: 3,
+      method: "codexhost/turn/adjust",
+      params: fixture.params,
+    });
+    await vi.waitFor(() => expect(execute).toHaveBeenCalledOnce());
+    fixture.session.succeedTurn();
+    const terminal = await fixture.collector.waitFor((message) =>
+      turnEvent(message, "turn/completed", fixture.turnId),
+    );
+    expect(terminal).toMatchObject({ params: { turn: { status: "completed" } } });
+    expect(execute).toHaveBeenCalledOnce();
+    cancelled.resolve({
+      ok: false,
+      error: { code: "invalidState", message: "Already ended", retryable: false },
+    } as never);
+    expect(await fixture.collector.waitFor((message) => requestId(message, 3))).toMatchObject({
+      result: { delivery: "interrupt-and-continue" },
+    });
+    fixture.session.succeedTurn();
+    await stopFixture(fixture);
+  });
+
+  it("withdraws a pending adjustment when Stop is requested", async () => {
+    const fixture = await adjustmentFixture();
+    const execute = vi.spyOn(fixture.session, "execute");
+    writeRequest(fixture.desktopInput, {
+      id: 3,
+      method: "codexhost/turn/adjust",
+      params: fixture.params,
+    });
+    await vi.waitFor(() => expect(execute).toHaveBeenCalledOnce());
+    writeRequest(fixture.desktopInput, {
+      id: 4,
+      method: "turn/interrupt",
+      params: { threadId: fixture.threadId, turnId: fixture.turnId },
+    });
+    expect(await fixture.collector.waitFor((message) => requestId(message, 4))).toEqual({
+      id: 4,
+      result: {},
+    });
+    expect(await fixture.collector.waitFor((message) => requestId(message, 3))).toMatchObject({
+      error: { message: "Adjustment was stopped before continuation" },
+    });
+    fixture.session.completeCancellation();
+    await fixture.collector.waitFor((message) =>
+      turnEvent(message, "turn/completed", fixture.turnId),
+    );
+    expect(execute).toHaveBeenCalledOnce();
+    await startPiTurn(fixture, fixture.threadId, 5, "manual continuation");
+    fixture.session.succeedTurn();
+    await stopFixture(fixture);
+  });
+
+  it("does not continue after a Session fault", async () => {
+    const fixture = await adjustmentFixture();
+    const execute = vi.spyOn(fixture.session, "execute");
+    writeRequest(fixture.desktopInput, {
+      id: 3,
+      method: "codexhost/turn/adjust",
+      params: fixture.params,
+    });
+    await vi.waitFor(() => expect(execute).toHaveBeenCalledOnce());
+    fixture.session.fault({
+      code: "nativeFailure",
+      message: "Native connection lost",
+      retryable: false,
+    });
+    expect(await fixture.collector.waitFor((message) => requestId(message, 3))).toHaveProperty(
+      "error",
+    );
+    expect(execute).toHaveBeenCalledOnce();
+    await stopFixture(fixture);
+  });
+
+  it("releases a rejected continuation without retrying its identity", async () => {
+    const fixture = await adjustmentFixture();
+    fixture.session.completeCancellationOnRequest();
+    fixture.session.rejectNextTurn({
+      code: "nativeFailure",
+      message: "Prompt rejected",
+      retryable: false,
+    });
+    const execute = vi.spyOn(fixture.session, "execute");
+    writeRequest(fixture.desktopInput, {
+      id: 3,
+      method: "codexhost/turn/adjust",
+      params: fixture.params,
+    });
+    expect(await fixture.collector.waitFor((message) => requestId(message, 3))).toMatchObject({
+      error: { message: "Prompt rejected" },
+    });
+    writeRequest(fixture.desktopInput, {
+      id: 4,
+      method: "codexhost/turn/adjust",
+      params: fixture.params,
+    });
+    expect(await fixture.collector.waitFor((message) => requestId(message, 4))).toMatchObject({
+      error: { message: "Prompt rejected" },
+    });
+    expect(execute).toHaveBeenCalledTimes(2);
+    await startPiTurn(fixture, fixture.threadId, 5, "manual retry");
+    fixture.session.succeedTurn();
+    await stopFixture(fixture);
+  });
+
+  it("prefers native steering for the adjustment endpoint", async () => {
+    const adapter = steeringCapableAdapter();
+    const fixture = createFixture({ externalAdapters: new Map([["pi", adapter]]) });
+    const threadId = await startPiThread(fixture);
+    const turnId = await startPiTurn(fixture, threadId);
+    const session = adapter.sessions[0];
+    if (!session) throw new Error("Fake steering Session was not opened");
+    const execute = vi.spyOn(session, "execute");
+    writeRequest(fixture.desktopInput, {
+      id: 3,
+      method: "codexhost/turn/adjust",
+      params: {
+        threadId,
+        expectedTurnId: turnId,
+        clientUserMessageId: "native-adjust",
+        input: [{ type: "text", text: "adjust" }],
+      },
+    });
+    expect(await fixture.collector.waitFor((message) => requestId(message, 3))).toMatchObject({
+      result: { turnId, previousTurnId: turnId, delivery: "steer" },
+    });
+    expect(execute).toHaveBeenCalledWith(expect.objectContaining({ type: "turn.steer" }));
+    expect(execute).toHaveBeenCalledOnce();
+    session.succeedTurn();
+    await stopFixture(fixture);
+  });
+
+  it("steers an active external Turn exactly once and responds before steer output", async () => {
+    const adapter = steeringCapableAdapter();
+    const fixture = createFixture({
+      externalAdapters: new Map<ExternalHarnessId, FakeHarnessAdapter>([["pi", adapter]]),
+    });
+    const officialWrite = vi.fn();
+    fixture.official.stdin.on("data", officialWrite);
+    const threadId = await startPiThread(fixture);
+    const turnId = await startPiTurn(fixture, threadId, 2, "initial request");
+    const session = adapter.sessions[0];
+    if (!session) throw new Error("Fake steering Session was not opened");
+    await fixture.collector.waitFor((message) => turnEvent(message, "turn/started", turnId));
+    session.appendTextOnNextSteer("adjusted output");
+    const params = {
+      threadId,
+      expectedTurnId: turnId,
+      input: [{ type: "text", text: "focus on tests" }],
+      clientUserMessageId: "desktop-steer-1",
+    };
+
+    writeRequest(fixture.desktopInput, { id: 3, method: "turn/steer", params });
+    writeRequest(fixture.desktopInput, { id: 4, method: "turn/steer", params });
+    await expect(fixture.collector.waitFor((message) => requestId(message, 3))).resolves.toEqual({
+      id: 3,
+      result: { turnId },
+    });
+    const delta = await fixture.collector.waitFor(
+      (message) =>
+        method(message, "item/agentMessage/delta") &&
+        messageParams(message).delta === "adjusted output",
+    );
+    await expect(fixture.collector.waitFor((message) => requestId(message, 4))).resolves.toEqual({
+      id: 4,
+      result: { turnId },
+    });
+    const responseIndex = fixture.collector.messages.findIndex((message) => requestId(message, 3));
+    expect(fixture.collector.messages.indexOf(delta)).toBeGreaterThan(responseIndex);
+
+    writeRequest(fixture.desktopInput, {
+      id: 5,
+      method: "turn/steer",
+      params: {
+        ...params,
+        input: [{ type: "text", text: "conflicting retry" }],
+      },
+    });
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 5)),
+    ).resolves.toMatchObject({
+      error: {
+        code: -32602,
+        message: "turn/steer clientUserMessageId was reused with new input",
+      },
+    });
+
+    session.succeedTurn();
+    const completed = await fixture.collector.waitFor((message) =>
+      turnEvent(message, "turn/completed", turnId),
+    );
+    expect(completed).toMatchObject({ params: { turn: { status: "completed" } } });
+    expect(session.persistedSnapshot().turns[0]?.input).toEqual([
+      { type: "text", text: "initial request" },
+      { type: "text", text: "focus on tests" },
+    ]);
+    expect(officialWrite).not.toHaveBeenCalled();
+    await stopFixture(fixture);
+  });
+
+  it("rejects unsupported, malformed, and stale external steering without backend fallthrough", async () => {
+    const fixture = createFixture();
+    const officialWrite = vi.fn();
+    fixture.official.stdin.on("data", officialWrite);
+    const threadId = await startPiThread(fixture);
+    const turnId = await startPiTurn(fixture, threadId);
+
+    writeRequest(fixture.desktopInput, {
+      id: 3,
+      method: "turn/steer",
+      params: {
+        threadId,
+        expectedTurnId: turnId,
+        input: [{ type: "text", text: "adjust" }],
+      },
+    });
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 3)),
+    ).resolves.toMatchObject({
+      error: { code: -32076, message: "External Harness does not support turn/steer" },
+    });
+    expect(officialWrite).not.toHaveBeenCalled();
+    fixture.adapter.sessions[0]?.succeedTurn();
+    await stopFixture(fixture);
+
+    const adapter = steeringCapableAdapter();
+    const capable = createFixture({
+      externalAdapters: new Map<ExternalHarnessId, FakeHarnessAdapter>([["pi", adapter]]),
+    });
+    const capableOfficialWrite = vi.fn();
+    capable.official.stdin.on("data", capableOfficialWrite);
+    const capableThreadId = await startPiThread(capable);
+    const capableTurnId = await startPiTurn(capable, capableThreadId);
+    writeRequest(capable.desktopInput, {
+      id: 3,
+      method: "turn/steer",
+      params: {
+        threadId: capableThreadId,
+        expectedTurnId: "stale-turn",
+        input: [{ type: "text", text: "adjust" }],
+      },
+    });
+    await expect(
+      capable.collector.waitFor((message) => requestId(message, 3)),
+    ).resolves.toMatchObject({ error: { code: -32074 } });
+    writeRequest(capable.desktopInput, {
+      id: 4,
+      method: "turn/steer",
+      params: {
+        threadId: capableThreadId,
+        expectedTurnId: capableTurnId,
+        input: [{ type: "image", url: "https://example.invalid/image.png" }],
+      },
+    });
+    await expect(
+      capable.collector.waitFor((message) => requestId(message, 4)),
+    ).resolves.toMatchObject({ error: { code: -32602 } });
+    expect(capableOfficialWrite).not.toHaveBeenCalled();
+    adapter.sessions[0]?.succeedTurn();
+    await stopFixture(capable);
+  });
+
+  it("rejects a steering admission that acknowledges a different Turn", async () => {
+    const adapter = steeringCapableAdapter();
+    const fixture = createFixture({
+      externalAdapters: new Map<ExternalHarnessId, FakeHarnessAdapter>([["pi", adapter]]),
+    });
+    const officialWrite = vi.fn();
+    fixture.official.stdin.on("data", officialWrite);
+    const threadId = await startPiThread(fixture);
+    const turnId = await startPiTurn(fixture, threadId);
+    const session = adapter.sessions[0];
+    if (!session) throw new Error("Fake steering Session was not opened");
+    vi.spyOn(session, "execute").mockImplementationOnce(
+      async () =>
+        ({
+          ok: true,
+          value: { turnId: hostTurnIdSchema.parse("different-turn") },
+        }) as never,
+    );
+
+    writeRequest(fixture.desktopInput, {
+      id: 3,
+      method: "turn/steer",
+      params: {
+        threadId,
+        expectedTurnId: turnId,
+        input: [{ type: "text", text: "adjust" }],
+      },
+    });
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 3)),
+    ).resolves.toMatchObject({
+      error: { code: -32073, message: "External Harness steering returned a different Turn" },
+    });
+    expect(officialWrite).not.toHaveBeenCalled();
+    session.succeedTurn();
+    await stopFixture(fixture);
+  });
+
+  it("returns a local error when steering throws before returning a Promise", async () => {
+    const adapter = steeringCapableAdapter();
+    const fixture = createFixture({
+      externalAdapters: new Map<ExternalHarnessId, FakeHarnessAdapter>([["pi", adapter]]),
+    });
+    const officialWrite = vi.fn();
+    fixture.official.stdin.on("data", officialWrite);
+    const threadId = await startPiThread(fixture);
+    const turnId = await startPiTurn(fixture, threadId);
+    const session = adapter.sessions[0];
+    if (!session) throw new Error("Fake steering Session was not opened");
+    vi.spyOn(session, "execute").mockImplementationOnce(() => {
+      throw new Error("synthetic synchronous steering failure");
+    });
+
+    writeRequest(fixture.desktopInput, {
+      id: 3,
+      method: "turn/steer",
+      params: {
+        threadId,
+        expectedTurnId: turnId,
+        input: [{ type: "text", text: "adjust" }],
+      },
+    });
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 3)),
+    ).resolves.toMatchObject({
+      error: {
+        code: -32073,
+        message: "External Harness steering failed: synthetic synchronous steering failure",
+      },
+    });
+    expect(officialWrite).not.toHaveBeenCalled();
+    session.succeedTurn();
+    await stopFixture(fixture);
+  });
+
+  it("leaves official turn/steer requests on the official connection", async () => {
+    const fixture = createFixture();
+    const request = {
+      id: 17,
+      method: "turn/steer",
+      params: {
+        threadId: "official-thread",
+        expectedTurnId: "official-turn",
+        input: [{ type: "text", text: "adjust" }],
+      },
+    };
+    writeRequest(fixture.desktopInput, request);
+    await expect(readJsonLine(fixture.official.stdin)).resolves.toEqual(request);
+
+    const malformed = {
+      jsonrpc: "2.0",
+      id: 18,
+      method: "turn/steer",
+      params: ["not-an-object"],
+    };
+    writeRequest(fixture.desktopInput, malformed);
+    await expect(readJsonLine(fixture.official.stdin)).resolves.toEqual(malformed);
     await stopFixture(fixture);
   });
 

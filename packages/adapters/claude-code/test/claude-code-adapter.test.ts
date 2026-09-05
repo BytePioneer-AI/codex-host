@@ -384,74 +384,7 @@ describe("Claude Code HarnessAdapter", () => {
     expect(dependencies.createTransport).not.toHaveBeenCalled();
   });
 
-  it("rolls back the last Turn through Claude's Native Fork", async () => {
-    const { adapter, dependencies, history } = fixture();
-    const sourceRef = nativeSessionRefSchema.parse({
-      harnessId: "claude-code",
-      nativeSessionId: "source-session",
-      formatVersion: 1,
-    });
-    history.push(
-      {
-        type: "user",
-        uuid: "user-1",
-        session_id: "source-session",
-        message: { role: "user", content: "first" },
-      },
-      {
-        type: "assistant",
-        uuid: "assistant-1",
-        session_id: "source-session",
-        message: { role: "assistant", content: [{ type: "text", text: "answer" }] },
-      },
-      {
-        type: "user",
-        uuid: "user-2",
-        session_id: "source-session",
-        message: { role: "user", content: "second" },
-      },
-      {
-        type: "assistant",
-        uuid: "assistant-2",
-        session_id: "source-session",
-        message: { role: "assistant", content: [{ type: "text", text: "answer" }] },
-      },
-    );
-    vi.mocked(dependencies.readSessionMessages).mockImplementation(async ({ sessionId }) =>
-      sessionId === "derived-session"
-        ? [
-            {
-              type: "user",
-              uuid: "derived-user-1",
-              session_id: "derived-session",
-              message: { role: "user", content: "first" },
-            },
-            {
-              type: "assistant",
-              uuid: "derived-assistant-1",
-              session_id: "derived-session",
-              message: { role: "assistant", content: [{ type: "text", text: "answer" }] },
-            },
-          ]
-        : structuredClone(history),
-    );
-
-    const opened = await adapter.open({ kind: "rollbackLastTurn", sourceRef, cwd: "/synthetic" });
-    if (!opened.ok) throw new Error(opened.error.message);
-    expect(dependencies.forkSession).toHaveBeenCalledWith({
-      checkpointId: "assistant-1",
-      cwd: path.resolve("/synthetic"),
-      sourceSessionId: "source-session",
-    });
-    await expect(opened.value.readSnapshot()).resolves.toMatchObject({
-      ok: true,
-      value: { turns: [{ nativeTurnRef: { nativeSessionId: "derived-session" } }] },
-    });
-    await opened.value.close();
-    await adapter.close();
-  });
-
-  it("rejects an empty last-Turn rollback without creating a Transport", async () => {
+  it("rejects unavailable rollback history before forking or starting a Transport", async () => {
     const { adapter, dependencies, transports } = fixture();
     const sourceRef = nativeSessionRefSchema.parse({
       harnessId: "claude-code",
@@ -461,7 +394,9 @@ describe("Claude Code HarnessAdapter", () => {
 
     await expect(
       adapter.open({ kind: "rollbackLastTurn", sourceRef, cwd: "/synthetic" }),
-    ).resolves.toMatchObject({ ok: false, error: { code: "invalidState" } });
+    ).resolves.toMatchObject({ ok: false, error: { code: "sessionNotFound" } });
+    expect(dependencies.readSessionMessages).toHaveBeenCalledOnce();
+    expect(dependencies.forkSession).not.toHaveBeenCalled();
     expect(dependencies.createTransport).not.toHaveBeenCalled();
     expect(transports).toHaveLength(0);
     await adapter.close();
@@ -510,7 +445,12 @@ describe("Claude Code HarnessAdapter", () => {
           selectThinkingOption: true,
           selectPermissionMode: true,
         },
-        history: { fork: true, forkAcrossCwd: false, rollbackLastTurn: true },
+        history: {
+          fork: true,
+          forkAcrossCwd: false,
+          rollbackLastTurn: true,
+          replacementFence: true,
+        },
         subagents: { observe: true, readTranscript: true },
       },
     });
@@ -525,13 +465,14 @@ describe("Claude Code HarnessAdapter", () => {
 
     const session = await openSession(adapter);
     expect(session.capabilities).toEqual({
+      activeTurns: { steer: false, interruptAndContinue: true },
       configuration: {
         selectModel: true,
         selectThinkingOption: true,
         selectPermissionMode: true,
         permissionModeScope: "live",
       },
-      history: { fork: true, forkAcrossCwd: false, rollbackLastTurn: true },
+      history: { fork: true, forkAcrossCwd: false, rollbackLastTurn: true, replacementFence: true },
       subagents: { observe: true, readTranscript: true },
     });
     const iterator = session.outputs[Symbol.asyncIterator]();
@@ -4484,6 +4425,68 @@ describe("Claude Code HarnessAdapter", () => {
     await nextEvent(iterator);
     expect(transports).toHaveLength(1);
     await session.close();
+  });
+
+  it("keeps a hard-cancelled Turn occupied until Transport closure completes", async () => {
+    const { adapter, transports } = fixture({ cancelTimeoutMs: 1000 });
+    const session = await openSession(adapter);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+    await session.execute(textTurn("hard-cancel-fence"));
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    const transport = transports[0];
+    if (!transport) throw new Error("Fake Claude transport was not created");
+    const closed = Promise.withResolvers<undefined>();
+    transport.abort.mockRejectedValueOnce(new Error("Interrupt failed"));
+    transport.close.mockImplementation(() => closed.promise);
+    const cancel = session.execute({
+      type: "turn.cancel",
+      turnId: hostTurnIdSchema.parse("hard-cancel-fence"),
+    });
+    await vi.waitFor(() => expect(transport.close).toHaveBeenCalledOnce());
+    // A native result arriving during close must not open the continuation boundary.
+    transport.finish({ status: "cancelled", reason: "aborted_streaming" });
+    await expect(session.execute(textTurn("too-early"))).resolves.toMatchObject({
+      ok: false,
+      error: { code: "sessionBusy" },
+    });
+    closed.resolve(undefined);
+    await cancel;
+    await nextEvent(iterator);
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "turn.completed",
+      outcome: { status: "cancelled" },
+    });
+    await expect(session.execute(textTurn("after-closed"))).resolves.toMatchObject({ ok: true });
+    expect(transports).toHaveLength(2);
+    await session.close();
+  });
+
+  it("faults instead of permitting continuation when hard cancellation cannot close", async () => {
+    const { adapter, transports } = fixture({ cancelTimeoutMs: 20 });
+    const session = await openSession(adapter);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+    await session.execute(textTurn("unclosed"));
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    const transport = transports[0];
+    if (!transport) throw new Error("Fake Claude transport was not created");
+    transport.abort.mockRejectedValueOnce(new Error("Interrupt failed"));
+    transport.close.mockRejectedValue(new Error("Close failed"));
+    await session.execute({ type: "turn.cancel", turnId: hostTurnIdSchema.parse("unclosed") });
+    await nextEvent(iterator);
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "turn.completed",
+      outcome: { status: "failed" },
+    });
+    expect(await nextEvent(iterator)).toMatchObject({ type: "session.faulted" });
+    await expect(session.execute(textTurn("unsafe-continuation"))).resolves.toMatchObject({
+      ok: false,
+    });
+    expect(transports).toHaveLength(1);
+    await expect(session.close()).rejects.toThrow("could not stop safely");
   });
 
   it("kills a hung interrupt and continues on a resumed Transport", async () => {

@@ -400,7 +400,12 @@ describe("Pi HarnessAdapter Session", () => {
       },
       capabilities: {
         configuration: { selectModel: true, selectThinkingOption: true },
-        history: { fork: true, forkAcrossCwd: true, rollbackLastTurn: true },
+        history: {
+          fork: true,
+          forkAcrossCwd: true,
+          rollbackLastTurn: true,
+          replacementFence: true,
+        },
         autonomousTurns: { observe: true },
       },
     });
@@ -678,9 +683,16 @@ describe("Pi HarnessAdapter Session", () => {
       };
       transport.history = structuredClone(inputHistory);
       transport.fork.mockImplementationOnce(async (entryId) => {
-        const cutoff = transport.history.entries.findIndex((entry) => entry.id === entryId);
-        transport.history.entries = transport.history.entries.slice(0, cutoff);
-        transport.history.leafId = "source-assistant-1";
+        expect(entryId).toBe("source-user-2");
+        const retained = sourceHistory(1);
+        retained.entries[0] = { ...retained.entries[0], id: "derived-user-1" };
+        retained.entries[1] = {
+          ...retained.entries[1],
+          id: "derived-assistant-1",
+          parentId: "derived-user-1",
+        };
+        retained.leafId = "derived-assistant-1";
+        transport.history = retained;
         transport.state = {
           ...transport.state,
           sessionId: "rollback-final-session",
@@ -726,12 +738,77 @@ describe("Pi HarnessAdapter Session", () => {
     });
     await expect(opened.value.readSnapshot()).resolves.toMatchObject({
       ok: true,
-      value: { turns: [{ nativeTurnRef: { nativeTurnKey: "source-user-1" } }] },
+      value: { turns: [{ nativeTurnRef: { nativeTurnKey: "derived-user-1" } }] },
     });
     expect(inputHistory).toEqual(unchangedInputHistory);
     await opened.value.close();
     await adapter.close();
   });
+
+  it.each(["input", "items", "outcome"] as const)(
+    "rejects a rollback whose retained Turn keeps its key but corrupts %s",
+    async (corruption) => {
+      const { adapter, dependencies, transports } = fixture();
+      vi.mocked(dependencies.createTransport).mockImplementationOnce((options) => {
+        const transport = new FakePiTransport();
+        transport.options = options;
+        transport.state = {
+          ...transport.state,
+          sessionId: "rollback-startup-session",
+          sessionFile: "/synthetic/rollback-startup.jsonl",
+        };
+        transport.history = sourceHistory(2);
+        transport.fork.mockImplementationOnce(async (entryId) => {
+          expect(entryId).toBe("source-user-2");
+          const retained = sourceHistory(1);
+          const entry = retained.entries[corruption === "input" ? 0 : 1];
+          if (
+            !entry ||
+            typeof entry.message !== "object" ||
+            entry.message === null ||
+            Array.isArray(entry.message)
+          ) {
+            throw new Error("Synthetic retained Turn has no Message");
+          }
+          entry.message = {
+            ...entry.message,
+            ...(corruption === "input"
+              ? { content: [{ type: "text", text: "corrupted question" }] }
+              : corruption === "items"
+                ? { content: [{ type: "text", text: "corrupted answer" }] }
+                : { stopReason: "aborted" }),
+          };
+          transport.history = retained;
+          transport.state = {
+            ...transport.state,
+            sessionId: "rollback-final-session",
+            sessionFile: "/synthetic/rollback-final.jsonl",
+          };
+          return transport.state;
+        });
+        transports.push(transport);
+        return transport;
+      });
+      const sourceRef = nativeSessionRefSchema.parse({
+        harnessId: "pi",
+        nativeSessionId: "source-session",
+        locator: { sessionFile: "/synthetic/source.jsonl" },
+        formatVersion: 1,
+      });
+
+      await expect(
+        adapter.open({ kind: "rollbackLastTurn", cwd: "/synthetic", sourceRef }),
+      ).resolves.toMatchObject({
+        ok: false,
+        error: {
+          code: "nativeFailure",
+          message: "Pi last-Turn rollback did not produce the exact retained history prefix",
+        },
+      });
+      expect(transports[0]?.close).toHaveBeenCalledOnce();
+      await adapter.close();
+    },
+  );
 
   it("rolls the only Pi Turn back to an empty continuable Session", async () => {
     const { adapter, dependencies, transports } = fixture();
@@ -951,6 +1028,7 @@ describe("Pi HarnessAdapter Session", () => {
     ).resolves.toMatchObject({ ok: false, error: { code: "unsupported" } });
     const session = await openSession(adapter);
     expect(session.capabilities.configuration.selectPermissionMode).toBe(false);
+    expect(session.capabilities.history.replacementFence).toBe(true);
     await expect(
       session.execute({
         type: "permissionMode.select",

@@ -908,7 +908,12 @@ describe("Renderer Composer DOM behavior", () => {
         harnessId: "opencode",
         transportModelId:
           "codexhost/opencode-native@opencode-model-v1.WyJwcm92aWRlci0xIiwibW9kZWwtMSJd@ask@ocv.aGlnaA",
-        history: { fork: true, forkAcrossCwd: false, rollbackLastTurn: true },
+        history: {
+          fork: true,
+          forkAcrossCwd: false,
+          rollbackLastTurn: true,
+          replacementFence: true,
+        },
         effectiveModel: harnessModelRefSchema.parse({
           id: "opencode-model-v1.WyJwcm92aWRlci0xIiwibW9kZWwtMSJd",
         }),
@@ -930,7 +935,12 @@ describe("Renderer Composer DOM behavior", () => {
         owner: "external",
         harnessId: "omp",
         transportModelId: "codexhost/omp-native@omp-model-v1.synthetic@write@high",
-        history: { fork: true, forkAcrossCwd: true, rollbackLastTurn: true },
+        history: {
+          fork: true,
+          forkAcrossCwd: true,
+          rollbackLastTurn: true,
+          replacementFence: true,
+        },
         effectiveModel: harnessModelRefSchema.parse({ id: "omp-model-v1.synthetic" }),
         effectiveThinkingOptionId: thinkingOptionId,
         availableThinkingOptions: [{ id: thinkingOptionId, label: "High" }],
@@ -948,7 +958,7 @@ describe("Renderer Composer DOM behavior", () => {
         owner: "external",
         harnessId: "grok",
         transportModelId: "codexhost/grok-native@grok-4.6@auto@high",
-        history: { fork: true, forkAcrossCwd: true, rollbackLastTurn: true },
+        history: { fork: true, forkAcrossCwd: true, rollbackLastTurn: false },
         effectiveModel: harnessModelRefSchema.parse({ id: "grok-4.6" }),
         effectiveThinkingOptionId: thinkingOptionId,
         availableThinkingOptions: [{ id: thinkingOptionId, label: "High" }],
@@ -966,7 +976,7 @@ describe("Renderer Composer DOM behavior", () => {
         owner: "external",
         harnessId: "grok",
         transportModelId: "codexhost/grok-native@grok-4.6@always-approve",
-        history: { fork: true, forkAcrossCwd: true, rollbackLastTurn: true },
+        history: { fork: true, forkAcrossCwd: true, rollbackLastTurn: false },
         locked: true,
       }),
     ).toEqual({

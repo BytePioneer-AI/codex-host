@@ -483,6 +483,8 @@ export class MappingStore {
         current.state !== "ready" ||
         !current.nativeSessionRef ||
         !current.forkSource ||
+        current.revision !== input.expectedRevision ||
+        !sameJson(current.nativeSessionRef, input.expectedNativeSessionRef) ||
         current.forkSource.hostThreadId !== input.forkSource.hostThreadId ||
         current.nativeSessionRef.nativeSessionId === input.nativeSessionRef.nativeSessionId ||
         input.turnMappings.length < 1 ||
@@ -493,7 +495,7 @@ export class MappingStore {
       ) {
         throw new MappingStoreError(
           "MAPPING_CONFLICT",
-          "Ready Session replacement must retain an exact shorter derived prefix",
+          "Ready Session replacement must replace the expected Session with a distinct exact shorter derived prefix",
         );
       }
       return {
@@ -512,6 +514,9 @@ export class MappingStore {
       if (
         current.state !== "ready" ||
         !current.nativeSessionRef ||
+        current.revision !== input.expectedRevision ||
+        !sameJson(current.nativeSessionRef, input.expectedNativeSessionRef) ||
+        current.nativeSessionRef.nativeSessionId === input.nativeSessionRef.nativeSessionId ||
         input.turnMappings.length !== current.turnMappings.length - 1 ||
         input.turnMappings.some(
           ({ hostTurnId }, index) => hostTurnId !== current.turnMappings[index]?.hostTurnId,
@@ -519,7 +524,7 @@ export class MappingStore {
       ) {
         throw new MappingStoreError(
           "MAPPING_CONFLICT",
-          "Last-Turn Session replacement must retain the exact shorter Host Turn prefix",
+          "Last-Turn Session replacement must replace the expected Session with a distinct exact shorter Host Turn prefix",
         );
       }
       return {

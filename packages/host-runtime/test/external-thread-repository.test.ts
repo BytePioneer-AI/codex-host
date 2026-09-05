@@ -8,6 +8,7 @@ import {
   harnessIdSchema,
   hostThreadIdSchema,
   hostTurnIdSchema,
+  nativeCheckpointRefSchema,
   nativeSessionRefSchema,
   nativeTurnRefSchema,
 } from "@codexhost/shared-contracts";
@@ -49,6 +50,26 @@ function snapshotTurnForSession(
 
 function snapshotTurn(key: string): HostThreadSnapshot["turns"][number] {
   return snapshotTurnForSession(nativeSessionRef, key);
+}
+
+function malformedSnapshotTurnForSession(
+  sessionRef: typeof nativeSessionRef,
+  key: string,
+): HostThreadSnapshot["turns"][number] {
+  return {
+    ...snapshotTurnForSession(sessionRef, key),
+    items: [
+      {
+        item: {
+          type: "subagentDelegation",
+          itemId: "malformed-item",
+          operation: "spawn",
+          subagents: null,
+        },
+        outcome: { status: "succeeded" },
+      },
+    ],
+  } as unknown as HostThreadSnapshot["turns"][number];
 }
 
 function mapping(hostKey: string, nativeKey: string): StoredTurnMappingV1 {
@@ -109,7 +130,92 @@ describe("ExternalThreadRepository", () => {
     await repository.close();
   });
 
-  it("commits a last-Turn replacement that keeps the same Native Session identity", async () => {
+  it("rejects a stale Fork rollback after the derived record changes", async () => {
+    const directory = await temporaryStoreDirectory();
+    const store = new MappingStore({ directory });
+    const repository = new ExternalThreadRepository(store);
+    await repository.initialize();
+    const sourceThreadId = hostThreadIdSchema.parse("source-thread");
+    const sourceSessionRef = nativeSessionRefSchema.parse({
+      harnessId,
+      nativeSessionId: "source-session",
+      formatVersion: 1,
+    });
+    const sourceMappings = [1, 2, 3].map((ordinal): StoredTurnMappingV1 => ({
+      hostTurnId: hostTurnIdSchema.parse(`source-host-${ordinal}`),
+      nativeTurnRef: nativeTurnRefSchema.parse({
+        harnessId,
+        nativeSessionId: sourceSessionRef.nativeSessionId,
+        nativeTurnKey: `source-native-${ordinal}`,
+        formatVersion: 1,
+      }),
+      nativeCheckpointRef: nativeCheckpointRefSchema.parse({
+        harnessId,
+        nativeSessionId: sourceSessionRef.nativeSessionId,
+        checkpointId: `source-checkpoint-${ordinal}`,
+        formatVersion: 1,
+      }),
+    }));
+    const forkBoundary = sourceMappings[2];
+    if (!forkBoundary) throw new Error("Synthetic source Fork boundary is missing");
+    await store.createProvisional({
+      hostThreadId: sourceThreadId,
+      createRequestId: "create-source",
+      harnessId,
+      cwd: "/synthetic",
+      title: "Source Thread",
+      transportModelId: "codexhost/claude-code-native",
+      ephemeral: false,
+      historyMode: "legacy",
+    });
+    const source = await store.commitReady({
+      hostThreadId: sourceThreadId,
+      nativeSessionRef: sourceSessionRef,
+      turnMappings: sourceMappings,
+    });
+    await store.createProvisional({
+      hostThreadId,
+      createRequestId: "create-derived",
+      harnessId,
+      cwd: "/synthetic",
+      title: "Derived Thread",
+      transportModelId: "codexhost/claude-code-native",
+      ephemeral: false,
+      historyMode: "legacy",
+      forkSource: {
+        hostThreadId: sourceThreadId,
+        hostTurnId: forkBoundary.hostTurnId,
+      },
+    });
+    const derived = await store.commitReady({
+      hostThreadId,
+      nativeSessionRef,
+      turnMappings: [
+        mapping("derived-host-1", "derived-native-1"),
+        mapping("derived-host-2", "derived-native-2"),
+        mapping("derived-host-3", "derived-native-3"),
+      ],
+    });
+    const newer = await store.setTitle(hostThreadId, "Newer derived title");
+    const replacementRef = nativeSessionRefSchema.parse({
+      harnessId,
+      nativeSessionId: "replacement-session",
+      formatVersion: 1,
+    });
+
+    await expect(
+      repository.commitForkRollback(derived, source, replacementRef, {
+        turns: [
+          snapshotTurnForSession(replacementRef, "replacement-native-1"),
+          snapshotTurnForSession(replacementRef, "replacement-native-2"),
+        ],
+      }),
+    ).rejects.toMatchObject({ code: "MAPPING_CONFLICT" });
+    await expect(store.getThread(hostThreadId)).resolves.toEqual(newer);
+    await repository.close();
+  });
+
+  it("rejects a last-Turn replacement that keeps the same Native Session identity", async () => {
     const directory = await temporaryStoreDirectory();
     const store = new MappingStore({ directory });
     const repository = new ExternalThreadRepository(store);
@@ -130,19 +236,47 @@ describe("ExternalThreadRepository", () => {
       turnMappings: [mapping("host-a", "native-a"), mapping("host-b", "native-b")],
     });
 
-    const committed = await repository.commitLastTurnRollback(original, nativeSessionRef, {
-      turns: [snapshotTurnForSession(nativeSessionRef, "native-a")],
+    await expect(
+      repository.commitLastTurnRollback(original, nativeSessionRef, {
+        turns: [snapshotTurnForSession(nativeSessionRef, "native-a")],
+      }),
+    ).rejects.toThrow("not an exact ready Session replacement");
+    await expect(store.getThread(hostThreadId)).resolves.toEqual(original);
+    await repository.close();
+  });
+
+  it("validates rollback projection before replacing the stored Session", async () => {
+    const directory = await temporaryStoreDirectory();
+    const store = new MappingStore({ directory });
+    const repository = new ExternalThreadRepository(store);
+    await repository.initialize();
+    await store.createProvisional({
+      hostThreadId,
+      createRequestId: "create-malformed-rollback",
+      harnessId,
+      cwd: "/synthetic",
+      title: "Malformed rollback",
+      transportModelId: "codexhost/claude-code-native",
+      ephemeral: false,
+      historyMode: "paginated",
     });
-    expect(committed.record).toMatchObject({
+    const original = await store.commitReady({
+      hostThreadId,
       nativeSessionRef,
-      turnMappings: [
-        {
-          hostTurnId: original.turnMappings[0]?.hostTurnId,
-          nativeTurnRef: { nativeSessionId: nativeSessionRef.nativeSessionId },
-        },
-      ],
+      turnMappings: [mapping("host-a", "native-a"), mapping("host-b", "native-b")],
     });
-    expect(committed.turns).toMatchObject([{ id: original.turnMappings[0]?.hostTurnId }]);
+    const replacementRef = nativeSessionRefSchema.parse({
+      harnessId,
+      nativeSessionId: "native-session-2",
+      formatVersion: 1,
+    });
+
+    await expect(
+      repository.commitLastTurnRollback(original, replacementRef, {
+        turns: [malformedSnapshotTurnForSession(replacementRef, "native-a-derived")],
+      }),
+    ).rejects.toThrow();
+    await expect(store.getThread(hostThreadId)).resolves.toEqual(original);
     await repository.close();
   });
 
@@ -194,6 +328,45 @@ describe("ExternalThreadRepository", () => {
     await secondRepository.close();
   });
 
+  it("projects only already-mapped live history without inventing Host Turn IDs", async () => {
+    const directory = await temporaryStoreDirectory();
+    const store = new MappingStore({ directory });
+    const repository = new ExternalThreadRepository(store);
+    await repository.initialize();
+    await store.createProvisional({
+      hostThreadId,
+      createRequestId: "create-live-projection",
+      harnessId,
+      cwd: "/synthetic",
+      title: "Live projection",
+      transportModelId: "codexhost/claude-code-native",
+      ephemeral: false,
+      historyMode: "paginated",
+    });
+    const original = await store.commitReady({
+      hostThreadId,
+      nativeSessionRef,
+      turnMappings: [mapping("host-a", "native-a")],
+    });
+
+    expect(
+      repository.projectKnownSnapshot(original, { turns: [snapshotTurn("native-a")] }),
+    ).toMatchObject({
+      record: original,
+      turns: [{ id: "host-a" }],
+    });
+    expect(
+      repository.projectKnownSnapshot(original, {
+        turns: [snapshotTurn("native-a"), snapshotTurn("native-b")],
+      }),
+    ).toBeNull();
+    expect(
+      repository.projectKnownSnapshot(original, { turns: [snapshotTurn("native-b")] }),
+    ).toBeNull();
+    await expect(store.getThread(hostThreadId)).resolves.toEqual(original);
+    await repository.close();
+  });
+
   it("adopts Native Snapshot order when persisted mappings conflict", async () => {
     const directory = await temporaryStoreDirectory();
     const store = new MappingStore({ directory });
@@ -228,6 +401,39 @@ describe("ExternalThreadRepository", () => {
     expect(aligned.turns.map((turn) => turn.id)).toEqual(
       aligned.record.turnMappings.map(({ hostTurnId }) => hostTurnId),
     );
+    await repository.close();
+  });
+
+  it("validates refreshed history projection before reconciling stored mappings", async () => {
+    const directory = await temporaryStoreDirectory();
+    const store = new MappingStore({ directory });
+    const repository = new ExternalThreadRepository(store);
+    await repository.initialize();
+    await store.createProvisional({
+      hostThreadId,
+      createRequestId: "create-malformed-refresh",
+      harnessId,
+      cwd: "/synthetic",
+      title: "Malformed refresh",
+      transportModelId: "codexhost/claude-code-native",
+      ephemeral: false,
+      historyMode: "paginated",
+    });
+    const original = await store.commitReady({
+      hostThreadId,
+      nativeSessionRef,
+      turnMappings: [mapping("host-a", "native-a")],
+    });
+
+    await expect(
+      repository.alignSnapshot(original, {
+        turns: [
+          snapshotTurn("native-a"),
+          malformedSnapshotTurnForSession(nativeSessionRef, "native-b"),
+        ],
+      }),
+    ).rejects.toThrow();
+    await expect(store.getThread(hostThreadId)).resolves.toEqual(original);
     await repository.close();
   });
 });

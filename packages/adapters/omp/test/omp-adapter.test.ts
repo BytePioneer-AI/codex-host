@@ -123,14 +123,14 @@ class FakeOmpTransport implements OmpTurnTransport {
     this.onEvent?.(event);
   }
 
-  succeed(text: string): void {
+  succeed(text: string, input = "edit"): void {
     this.history = {
       entries: [
         {
           id: "user-1",
           parentId: null,
           type: "message",
-          message: { role: "user", content: [{ type: "text", text: "edit" }] },
+          message: { role: "user", content: [{ type: "text", text: input }] },
         },
         {
           id: "assistant-1",
@@ -324,7 +324,10 @@ describe("OMP Adapter Session environment", () => {
           expect.objectContaining({ id: "yolo", dangerous: true }),
         ]),
       },
-      capabilities: { configuration: { selectPermissionMode: true } },
+      capabilities: {
+        configuration: { selectPermissionMode: true },
+        history: { replacementFence: true },
+      },
     });
     const opened = await adapter.open({
       kind: "create",
@@ -332,6 +335,7 @@ describe("OMP Adapter Session environment", () => {
       permissionModeId: harnessPermissionModeIdSchema.parse("write"),
     });
     if (!opened.ok) throw new Error(opened.error.message);
+    expect(opened.value.capabilities.history.replacementFence).toBe(true);
     await opened.value.readSnapshot();
     await expect(
       opened.value.execute({
@@ -530,6 +534,284 @@ describe("OMP Adapter Fork", () => {
         ],
       },
     });
+    await opened.value.close();
+    await adapter.close();
+  });
+});
+
+describe("OMP Adapter Last-Turn rollback", () => {
+  it("derives the exact retained prefix in a distinct Native Session", async () => {
+    const firstTurn = historyTurn({
+      userId: "source-user-1",
+      assistantId: "source-assistant-1",
+      parentId: null,
+      text: "first",
+    });
+    const secondTurn = historyTurn({
+      userId: "source-user-2",
+      assistantId: "source-assistant-2",
+      parentId: "source-assistant-1",
+      text: "second",
+    });
+    const sourceHistory: OmpSessionHistory = {
+      entries: [...firstTurn, ...secondTurn],
+      leafId: "source-assistant-2",
+    };
+    const transport = new FakeOmpTransport();
+    transport.state = {
+      ...transport.state,
+      sessionId: "rollback-startup",
+      sessionFile: "/synthetic/rollback-startup.jsonl",
+    };
+    transport.history = structuredClone(sourceHistory);
+    const fork = vi.fn(async (entryId: string) => {
+      expect(entryId).toBe("source-user-2");
+      transport.state = {
+        ...transport.state,
+        sessionId: "rollback-derived",
+        sessionFile: "/synthetic/rollback-derived.jsonl",
+      };
+      transport.history = {
+        entries: historyTurn({
+          userId: "derived-user-1",
+          assistantId: "derived-assistant-1",
+          parentId: null,
+          text: "first",
+        }),
+        leafId: "derived-assistant-1",
+      };
+      return transport.state;
+    });
+    transport.fork = fork;
+    const createTransport = vi.fn(() => transport);
+    const adapter = new OmpAdapter({}, { createTransport });
+    const sourceRef = nativeSessionRefSchema.parse({
+      harnessId: "omp",
+      nativeSessionId: "source-session",
+      locator: { sessionFile: "/synthetic/source-session.jsonl" },
+      formatVersion: 1,
+    });
+
+    const opened = await adapter.open({
+      kind: "rollbackLastTurn",
+      cwd: "/synthetic",
+      sourceRef,
+      permissionModeId: harnessPermissionModeIdSchema.parse("always-ask"),
+    });
+
+    expect(opened.ok).toBe(true);
+    if (!opened.ok) return;
+    expect(createTransport).toHaveBeenCalledWith(
+      expect.objectContaining({ forkSessionFile: "/synthetic/source-session.jsonl" }),
+    );
+    expect(fork).toHaveBeenCalledTimes(1);
+    expect(opened.value.initialState.nativeRef).toMatchObject({
+      nativeSessionId: "rollback-derived",
+      locator: { sessionFile: "/synthetic/rollback-derived.jsonl" },
+    });
+    expect(opened.value.initialState.effectivePermissionModeId).toBe("always-ask");
+    await expect(opened.value.readSnapshot()).resolves.toMatchObject({
+      ok: true,
+      value: {
+        turns: [
+          {
+            nativeTurnRef: {
+              nativeSessionId: "rollback-derived",
+              nativeTurnKey: "derived-user-1",
+            },
+          },
+        ],
+      },
+    });
+    expect(sourceHistory).toEqual({
+      entries: [...firstTurn, ...secondTurn],
+      leafId: "source-assistant-2",
+    });
+    await opened.value.close();
+    await adapter.close();
+  });
+
+  it.each(["input", "items", "outcome"] as const)(
+    "rejects a rollback whose retained Turn keeps its key but corrupts %s",
+    async (corruption) => {
+      const firstTurn = historyTurn({
+        userId: "source-user-1",
+        assistantId: "source-assistant-1",
+        parentId: null,
+        text: "first",
+      });
+      const secondTurn = historyTurn({
+        userId: "source-user-2",
+        assistantId: "source-assistant-2",
+        parentId: "source-assistant-1",
+        text: "second",
+      });
+      const transport = new FakeOmpTransport();
+      transport.state = {
+        ...transport.state,
+        sessionId: "rollback-startup",
+        sessionFile: "/synthetic/rollback-startup.jsonl",
+      };
+      transport.history = {
+        entries: [...firstTurn, ...secondTurn],
+        leafId: "source-assistant-2",
+      };
+      transport.fork = vi.fn(async (entryId: string) => {
+        expect(entryId).toBe("source-user-2");
+        const retained: OmpSessionHistory = {
+          entries: structuredClone(firstTurn),
+          leafId: "source-assistant-1",
+        };
+        const entry = retained.entries[corruption === "input" ? 0 : 1];
+        if (
+          !entry ||
+          typeof entry.message !== "object" ||
+          entry.message === null ||
+          Array.isArray(entry.message)
+        ) {
+          throw new Error("Synthetic retained Turn has no Message");
+        }
+        entry.message = {
+          ...entry.message,
+          ...(corruption === "input"
+            ? { content: [{ type: "text", text: "corrupted question" }] }
+            : corruption === "items"
+              ? { content: [{ type: "text", text: "corrupted answer" }] }
+              : { stopReason: "aborted" }),
+        };
+        transport.history = retained;
+        transport.state = {
+          ...transport.state,
+          sessionId: "rollback-derived",
+          sessionFile: "/synthetic/rollback-derived.jsonl",
+        };
+        return transport.state;
+      });
+      const close = vi.spyOn(transport, "close");
+      const adapter = new OmpAdapter({}, { createTransport: () => transport });
+      const sourceRef = nativeSessionRefSchema.parse({
+        harnessId: "omp",
+        nativeSessionId: "source-session",
+        locator: { sessionFile: "/synthetic/source-session.jsonl" },
+        formatVersion: 1,
+      });
+
+      await expect(
+        adapter.open({ kind: "rollbackLastTurn", cwd: "/synthetic", sourceRef }),
+      ).resolves.toMatchObject({
+        ok: false,
+        error: {
+          code: "nativeFailure",
+          message: "Omp last-Turn rollback did not produce the exact retained history prefix",
+        },
+      });
+      expect(close).toHaveBeenCalledOnce();
+      await adapter.close();
+    },
+  );
+
+  it("rejects a rollback Fork that aliases its startup Native Session", async () => {
+    const transport = new RestartableOmpTransport();
+    transport.state = {
+      ...transport.state,
+      sessionId: "rollback-startup",
+      sessionFile: "/synthetic/rollback-startup.jsonl",
+    };
+    transport.history = {
+      entries: historyTurn({
+        userId: "source-user-1",
+        assistantId: "source-assistant-1",
+        parentId: null,
+        text: "only",
+      }),
+      leafId: "source-assistant-1",
+    };
+    const createTransport = vi.fn(() => transport);
+    const adapter = new OmpAdapter({}, { createTransport });
+    const sourceRef = nativeSessionRefSchema.parse({
+      harnessId: "omp",
+      nativeSessionId: "source-session",
+      locator: { sessionFile: "/synthetic/source-session.jsonl" },
+      formatVersion: 1,
+    });
+
+    await expect(
+      adapter.open({ kind: "rollbackLastTurn", cwd: "/synthetic", sourceRef }),
+    ).resolves.toMatchObject({ ok: false, error: { code: "nativeFailure" } });
+    expect(transport.closed).toBe(true);
+    await adapter.close();
+  });
+
+  it("rolls the only Turn back to an empty distinct Session that can continue", async () => {
+    const onlyTurn = historyTurn({
+      userId: "source-user-1",
+      assistantId: "source-assistant-1",
+      parentId: null,
+      text: "original",
+    });
+    const transport = new FakeOmpTransport();
+    transport.autoCompleteTurn = false;
+    transport.state = {
+      ...transport.state,
+      sessionId: "rollback-startup",
+      sessionFile: "/synthetic/rollback-startup.jsonl",
+    };
+    transport.history = { entries: structuredClone(onlyTurn), leafId: "source-assistant-1" };
+    transport.fork = vi.fn(async (entryId: string) => {
+      expect(entryId).toBe("source-user-1");
+      transport.state = {
+        ...transport.state,
+        sessionId: "rollback-empty",
+        sessionFile: "/synthetic/rollback-empty.jsonl",
+      };
+      transport.history = { entries: [], leafId: null };
+      return transport.state;
+    });
+    const adapter = new OmpAdapter({}, { createTransport: () => transport });
+    const sourceRef = nativeSessionRefSchema.parse({
+      harnessId: "omp",
+      nativeSessionId: "source-session",
+      locator: { sessionFile: "/synthetic/source-session.jsonl" },
+      formatVersion: 1,
+    });
+
+    const opened = await adapter.open({
+      kind: "rollbackLastTurn",
+      cwd: "/synthetic",
+      sourceRef,
+    });
+    if (!opened.ok) throw new Error(opened.error.message);
+    expect(opened.value.initialState.nativeRef).toMatchObject({
+      nativeSessionId: "rollback-empty",
+    });
+    await expect(opened.value.readSnapshot()).resolves.toMatchObject({
+      ok: true,
+      value: { turns: [] },
+    });
+
+    const iterator = opened.value.outputs[Symbol.asyncIterator]();
+    await expect(
+      opened.value.execute({
+        type: "turn.start",
+        turnId: "edited-turn" as HostTurnId,
+        input: [{ type: "text", text: "edited" }],
+      }),
+    ).resolves.toMatchObject({ ok: true });
+    transport.succeed("edited answer", "edited");
+    let event = await nextEvent(iterator);
+    while (event.type !== "turn.completed") event = await nextEvent(iterator);
+    await expect(opened.value.readSnapshot()).resolves.toMatchObject({
+      ok: true,
+      value: { turns: [{ input: [{ type: "text", text: "edited" }] }] },
+    });
+    expect(onlyTurn).toEqual(
+      historyTurn({
+        userId: "source-user-1",
+        assistantId: "source-assistant-1",
+        parentId: null,
+        text: "original",
+      }),
+    );
     await opened.value.close();
     await adapter.close();
   });

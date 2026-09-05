@@ -134,6 +134,7 @@ Codex Desktop을 완전히 종료한 뒤, 새 터미널을 열고 codexhost를 �
 | 기능 | <a href="https://openai.com/codex/"><img alt="Codex" src="imgs/badge-codex.svg" /></a> | <a href="https://pi.dev/"><img alt="Pi" src="https://img.shields.io/badge/Pi-000000?logo=pi&logoColor=white" /></a> | <a href="https://github.com/can1357/oh-my-pi"><img alt="Oh My Pi" src="imgs/badge-omp-v5.svg" /></a> | <a href="https://code.claude.com/docs/en/quickstart"><img alt="Claude Code" src="https://img.shields.io/badge/Claude_Code-D97757?logo=claudecode&logoColor=white" /></a> | <a href="https://opencode.ai/docs/"><img alt="OpenCode" src="imgs/badge-opencode.svg" /></a> | <a href="https://grok.com/"><img alt="Grok" src="https://img.shields.io/badge/Grok-000000?logo=x&logoColor=white" /></a> | <a href="https://github.com/deepseek-ai/deepseek-harness"><img alt="DeepSeek Harness" src="https://img.shields.io/badge/DeepSeek-4D6BFE?logo=deepseek&logoColor=white" /></a> | <a href="https://antigravity.google/product/antigravity-cli"><img alt="AGY" src="imgs/badge-agy.svg" /></a> |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | 스트리밍 응답 | 기본 제공 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| 응답 생성 중 방향 조정 | 기본 제공 | 중단 후 계속 | 중단 후 계속 | 중단 후 계속 | 같은 Turn (1.18.25) | 중단 후 계속 | 중단 후 계속 | — |
 | 도구 상태 | 기본 제공 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Edit Diff | 기본 제공 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — |
 | 질문 / 취소 | 기본 제공 | ✅ | — / ✅ | ✅ | ✅ | ✅ | ✅ | — / ✅ |
@@ -145,7 +146,7 @@ Codex Desktop을 완전히 종료한 뒤, 새 터미널을 열고 codexhost를 �
 | Fork | 기본 제공 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — |
 | 컨텍스트 압축 | 기본 제공 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — |
 | 슬래시 명령 | 기본 제공 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — |
-| 이전 메시지 수정 | 기본 제공 | ✅ | ✅ | ✅ | ✅ | ✅ | — | — |
+| 이전 메시지 수정 | 기본 제공 | ✅ | ✅ | ✅ | ✅ | — | — | — |
 
 > **Antigravity 현재 상태:** 연동은 아직 보완 중이며, 작업 디렉터리는 현재 `~/.gemini/antigravity-cli/scratch`로 고정되어 있습니다.
 

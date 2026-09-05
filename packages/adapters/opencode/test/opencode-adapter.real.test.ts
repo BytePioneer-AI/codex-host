@@ -37,7 +37,13 @@ describe.runIf(Boolean(command))("OpenCode Adapter real Server", () => {
         status: "ready",
         capabilities: {
           configuration: { selectPermissionMode: true },
-          history: { fork: true, forkAcrossCwd: false, rollbackLastTurn: true },
+          history: {
+            fork: true,
+            forkAcrossCwd: false,
+            rollbackLastTurn: true,
+            replacementFence: true,
+          },
+          activeTurns: { steer: true },
         },
       });
       const opened = await adapter.open({
@@ -46,6 +52,7 @@ describe.runIf(Boolean(command))("OpenCode Adapter real Server", () => {
         executionPolicy: "unattended-full-access",
       });
       if (!opened.ok) throw new Error(opened.error.message);
+      expect(opened.value.capabilities.history.replacementFence).toBe(true);
       expect(opened.value.initialState).toMatchObject({
         effectivePermissionModeId: "allow",
       });

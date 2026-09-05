@@ -83,3 +83,23 @@
 ## 本页验收
 
 通过公共接口证明：inspection 无用户会话副作用；输入/能力校验真实；创建、后续 Turn、取消和关闭可用；每种受支持配置写入由原生确认；Session 环境覆盖正确；失败无资源泄漏。为不支持和受限分支添加拒绝测试，而不只测试成功路径。
+
+## `close()` 契约
+
+所有 `HarnessSession.close()` 在 Promise resolve 时都必须满足：
+
+- `outputs` 已结束，并且 close 前已经发出的值会在结束前可被消费；
+- 后续不能再接受命令或产生输出；
+- Adapter 控制的 Transport、订阅、定时器和其他资源已经释放；
+- 重复调用安全。
+
+只有 `capabilities.history.replacementFence === true` 时，`close()` resolve 还必须证明该 Session 启动或控制的原生工作已经停止，并且不会继续修改 Native Transcript 或 Workspace。Host 才能在历史替换提交前用 `close()` 隔离旧 Session，并排空其输出。CLI/RPC Harness 通常需要等待子进程树退出；独立 Server Harness 需要停止订阅和它为该 Session 启动的 Server。仅断开一个仍可自主执行的监听器不满足 fence 契约。
+
+`replacementFence` 是可选字段，遗漏与 `false` 等价；未声明 Rollback 的旧 Adapter 仍可直接解析，旧的 Rollback-capable Adapter 则必须显式迁移并证明 fence，否则按不兼容能力 fail closed。普通 `close()` 的资源和输出保证不能被推断为 native/workspace fence。
+
+Session 的 `capabilities` 在其生命周期内必须保持不变。Host 会在候选 Session 打开时以及配置/历史异步校验完成后的提交边界重复检查 `replacementFence`；如果能力声明发生变化，替换会在关闭来源 Session 或写 Store 前失败。
+
+
+## 活动 Turn 输入
+
+`activeTurns.steer=true` 才能接受 `turn.steer`。输入继续归入当前 Host Turn；多个 admission 串行，与取消和完成收敛。带 `clientUserMessageId` 的重复请求须幂等，相同身份但不同输入拒绝。具体契约以 `text-session.ts` 和共享能力 schema 为准。

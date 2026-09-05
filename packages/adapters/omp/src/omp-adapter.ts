@@ -49,6 +49,8 @@ import {
   type ThinkingSelectCompleted,
   type TurnCancelAccepted,
   type TurnCancelCommand,
+  type TurnSteerAccepted,
+  type TurnSteerCommand,
   type TurnOutcome,
   type TurnStartAccepted,
   type TurnStartCommand,
@@ -619,13 +621,19 @@ class OmpHarnessSession implements HarnessSession {
     this.#permissionMode = options.permissionMode;
     this.#permissionModeId = options.permissionModeId;
     this.capabilities = {
+      activeTurns: { steer: false, interruptAndContinue: true },
       configuration: {
         selectModel: true,
         selectThinkingOption: options.supportsThinkingSelection,
         selectPermissionMode: true,
         permissionModeScope: "live",
       },
-      history: { fork: true, forkAcrossCwd: true, rollbackLastTurn: true },
+      history: {
+        fork: true,
+        forkAcrossCwd: true,
+        rollbackLastTurn: true,
+        replacementFence: true,
+      },
       subagents: { observe: true, readTranscript: true },
     };
     this.commands = {
@@ -857,6 +865,7 @@ class OmpHarnessSession implements HarnessSession {
   }
 
   execute(command: TurnStartCommand): Promise<HarnessResult<TurnStartAccepted>>;
+  execute(command: TurnSteerCommand): Promise<HarnessResult<TurnSteerAccepted>>;
   execute(command: TurnCancelCommand): Promise<HarnessResult<TurnCancelAccepted>>;
   execute(command: InteractionRespondCommand): Promise<HarnessResult<InteractionRespondAccepted>>;
   execute(command: ModelSelectCommand): Promise<HarnessResult<ModelSelectCompleted>>;
@@ -869,6 +878,7 @@ class OmpHarnessSession implements HarnessSession {
   ): Promise<
     HarnessResult<
       | TurnStartAccepted
+      | TurnSteerAccepted
       | TurnCancelAccepted
       | InteractionRespondAccepted
       | ModelSelectCompleted
@@ -878,6 +888,12 @@ class OmpHarnessSession implements HarnessSession {
   > {
     if (this.#phase !== "open") {
       return { ok: false, error: invalidState("Omp Session is not open") };
+    }
+    if (command.type === "turn.steer") {
+      return {
+        ok: false,
+        error: { code: "unsupported", message: "OMP does not support steering", retryable: false },
+      };
     }
     if (command.type === "turn.cancel") return this.#cancel(command);
     if (command.type === "interaction.respond") return this.#respond(command);
@@ -2223,13 +2239,19 @@ export class OmpAdapter implements HarnessAdapter {
         catalog,
         permissionModes: OMP_PERMISSION_MODE_CATALOG,
         capabilities: {
+          activeTurns: { steer: false, interruptAndContinue: true },
           configuration: {
             selectModel: true,
             selectThinkingOption: thinkingLevels !== null,
             selectPermissionMode: true,
             permissionModeScope: "live",
           },
-          history: { fork: true, forkAcrossCwd: true, rollbackLastTurn: true },
+          history: {
+            fork: true,
+            forkAcrossCwd: true,
+            rollbackLastTurn: true,
+            replacementFence: true,
+          },
           subagents: { observe: true, readTranscript: true },
         },
       };
@@ -2317,6 +2339,8 @@ export class OmpAdapter implements HarnessAdapter {
     ) as NativeSessionRef;
     let session: OmpHarnessSession | undefined;
     let transport: OmpTurnTransport | undefined;
+    let permissionModeId = OMP_DEFAULT_PERMISSION_MODE_ID;
+    let permissionMode: OmpPermissionMode = "yolo";
     try {
       if (sourceRef.harnessId !== this.harnessId) {
         return {
@@ -2327,6 +2351,10 @@ export class OmpAdapter implements HarnessAdapter {
             retryable: false,
           },
         };
+      }
+      if (input.kind === "rollbackLastTurn" && input.permissionModeId) {
+        permissionModeId = harnessPermissionModeIdSchema.parse(input.permissionModeId);
+        permissionMode = decodeOmpPermissionModeId(permissionModeId);
       }
       const sourceSessionFile = sessionFileFromRef(sourceRef);
       if (input.kind === "fork") {
@@ -2428,8 +2456,8 @@ export class OmpAdapter implements HarnessAdapter {
         startedThinkingLevels,
         initialUsage,
         supportsThinkingSelection: startedThinkingLevels !== null,
-        permissionMode: "yolo",
-        permissionModeId: OMP_DEFAULT_PERMISSION_MODE_ID,
+        permissionMode,
+        permissionModeId,
       });
       return { ok: true, value: session };
     } catch (error) {

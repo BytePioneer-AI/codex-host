@@ -1,4 +1,6 @@
 import path from "node:path";
+import type { ChildProcessWithoutNullStreams } from "node:child_process";
+import { once } from "node:events";
 
 import { describe, expect, it, vi } from "vitest";
 import type { PermissionUpdate, Query, SDKMessage } from "@anthropic-ai/claude-agent-sdk";
@@ -29,6 +31,14 @@ class FakeQuery {
     ],
   }));
   readonly interrupt = vi.fn(async () => undefined);
+  readonly stopTask = vi.fn(async (taskId: string) => {
+    this.push({
+      type: "system",
+      subtype: "task_notification",
+      task_id: taskId,
+      status: "stopped",
+    } as unknown as SDKMessage);
+  });
   readonly getContextUsage = vi.fn(
     async (): Promise<{
       totalTokens: number;
@@ -1026,6 +1036,34 @@ describe("ClaudeSdkTransport Model control", () => {
 });
 
 describe("ClaudeSdkTransport abort", () => {
+  it.skipIf(process.platform === "win32")(
+    "waits for the owned process to exit after SIGKILL",
+    async () => {
+      const value = fixture();
+      await value.transport.start();
+      const spawnProcess = options(value).spawnClaudeCodeProcess;
+      if (!spawnProcess) throw new Error("SDK process ownership hook was not installed");
+      const child = spawnProcess({
+        command: process.execPath,
+        args: [
+          "-e",
+          "process.on('SIGTERM', () => {}); process.stdout.write('ready'); setInterval(() => {}, 1000)",
+        ],
+        signal: new AbortController().signal,
+        cwd: process.cwd(),
+        env: process.env,
+      }) as ChildProcessWithoutNullStreams;
+      try {
+        await once(child.stdout, "data");
+        await value.transport.close();
+        expect(child.signalCode).toBe("SIGKILL");
+      } finally {
+        if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+        await value.transport.close().catch(() => undefined);
+      }
+    },
+  );
+
   it("interrupts the active Query without closing the transport", async () => {
     const value = fixture();
     await value.transport.start();
@@ -1859,4 +1897,68 @@ describe("ClaudeSdkTransport Tool Approval callbacks", () => {
     ).rejects.toThrow("not pending");
     await value.transport.close();
   });
+});
+
+describe("Claude history replacement fence", () => {
+  it("does not accept a stop-task receipt without a native task terminal", async () => {
+    const value = fixture();
+    await value.transport.start();
+    value.fakeQuery.stopTask.mockImplementation(async () => undefined);
+    value.fakeQuery.push({
+      type: "system",
+      subtype: "task_started",
+      task_id: "still-running",
+    } as unknown as SDKMessage);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await expect(value.transport.close()).rejects.toThrow("shutdown could not be confirmed");
+    expect(value.fakeQuery.stopTask).toHaveBeenCalledWith("still-running");
+  });
+
+  it("rejects close if native output cannot be drained", async () => {
+    const value = fixture();
+    await value.transport.start();
+    const close = vi.spyOn(value.fakeQuery, "close").mockImplementation(() => undefined);
+    try {
+      await expect(value.transport.close()).rejects.toThrow("shutdown could not be confirmed");
+    } finally {
+      close.mockRestore();
+      value.fakeQuery.close();
+    }
+  });
+
+  it.skipIf(process.platform === "win32")(
+    "stops wrapper children even when the wrapper has exited",
+    async () => {
+      const value = fixture();
+      await value.transport.start();
+      const spawnProcess = options(value).spawnClaudeCodeProcess;
+      if (!spawnProcess) throw new Error("Missing native process ownership hook");
+      const child = spawnProcess({
+        command: process.execPath,
+        args: [
+          "-e",
+          "const c=require('child_process').spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:'ignore'}); process.stdout.write(String(c.pid)); c.unref();",
+        ],
+        signal: new AbortController().signal,
+        cwd: process.cwd(),
+        env: process.env,
+      }) as ChildProcessWithoutNullStreams;
+      let pid = 0;
+      try {
+        const [chunk] = await once(child.stdout, "data");
+        pid = Number(String(chunk));
+        if (child.exitCode === null) await once(child, "exit");
+        expect(() => process.kill(pid, 0)).not.toThrow();
+        await value.transport.close();
+        expect(() => process.kill(pid, 0)).toThrow();
+      } finally {
+        if (pid) {
+          try {
+            process.kill(pid, "SIGKILL");
+          } catch {}
+        }
+        await value.transport.close().catch(() => undefined);
+      }
+    },
+  );
 });

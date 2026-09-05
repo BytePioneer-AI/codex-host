@@ -363,13 +363,18 @@ export class HarnessDelegationCoordinator {
     if (thread.record.subagent) {
       throw new DelegationControlError("DELEGATION_FAILED", "Thread is read-only");
     }
-    if (thread.running || thread.activeTurnId) {
+    if (
+      thread.running ||
+      thread.activeTurnId ||
+      !this.#externalRuntime.canStartSessionOperation(thread)
+    ) {
       throw new DelegationControlError("THREAD_BUSY", "Thread already has an active Turn");
     }
     const turnId = hostTurnIdSchema.parse(randomUUID());
     try {
       await this.#startExternalTurn(thread, input.message, turnId);
     } catch (error) {
+      if (error instanceof DelegationControlError) throw error;
       throw new DelegationControlError(
         "DELEGATION_FAILED",
         error instanceof Error ? error.message : String(error),
@@ -391,6 +396,9 @@ export class HarnessDelegationCoordinator {
     const thread = resolution.thread;
     if (thread.record.subagent) {
       throw new DelegationControlError("DELEGATION_FAILED", "Thread is read-only");
+    }
+    if (!this.#externalRuntime.canAccessSession(thread)) {
+      throw new DelegationControlError("THREAD_BUSY", "Thread history is being changed");
     }
     const turnId = thread.activeTurnId;
     if (!thread.running || !turnId) {
@@ -414,9 +422,17 @@ export class HarnessDelegationCoordinator {
       throw new DelegationControlError("THREAD_NOT_FOUND", "Thread was not found");
     }
     const thread = resolution.thread;
+    if (!this.#externalRuntime.canAccessSession(thread)) {
+      throw new DelegationControlError("THREAD_BUSY", "Thread history is being changed");
+    }
     if (!thread.running && !resolution.historyFresh) {
       const error = await this.#externalRuntime.refresh(thread);
-      if (error) throw new DelegationControlError("INTERNAL_ERROR", error.message);
+      if (error) {
+        throw new DelegationControlError(
+          error.code === -32072 ? "THREAD_BUSY" : "INTERNAL_ERROR",
+          error.message,
+        );
+      }
     }
     const turns = thread.activeTurnId
       ? [

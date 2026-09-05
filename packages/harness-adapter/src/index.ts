@@ -3,6 +3,7 @@ import { WORKSPACE_CONTRACT_VERSION } from "@codexhost/shared-contracts";
 export { validateHostApprovalResponse } from "./approval.js";
 export { validateHostInteractionResponse } from "./interaction.js";
 export { HarnessOutputChannel } from "./output-channel.js";
+export { comparableHistoricalTurn } from "./history-comparison.js";
 export { sanitizeDiagnosticTail } from "./diagnostics.js";
 export { validateHostQuestionResponse } from "./question.js";
 export { parseHostUsage } from "./usage.js";
@@ -94,6 +95,8 @@ export type {
   TurnCancelAccepted,
   TurnCancelCommand,
   TurnOutcome,
+  TurnSteerAccepted,
+  TurnSteerCommand,
   TurnStartAccepted,
   TurnStartCommand,
   TurnStartedEvent,

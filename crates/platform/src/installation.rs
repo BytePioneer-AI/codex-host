@@ -1023,6 +1023,12 @@ pub fn discover_desktop_managed_codex_cli() -> Result<PathBuf, PlatformError> {
     Ok(installation.executable_codex_cli)
 }
 
+/// Inspect an explicit macOS bundle without selecting another installation.
+#[cfg(target_os = "macos")]
+pub fn discover_codex_desktop_from_root(root: &Path) -> Result<DesktopInstallation, PlatformError> {
+    inspect_bundle(root)
+}
+
 #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
 pub fn discover_codex_desktop() -> Result<DesktopInstallation, PlatformError> {
     Err(PlatformError::Unsupported(

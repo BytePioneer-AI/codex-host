@@ -758,7 +758,7 @@ pub fn run_proxy_with_observer(
 
     let started = Instant::now();
     let shutdown_signals = ShutdownSignals::install()?;
-    let desktop_helper = desktop_invocation::is_desktop_helper();
+    let desktop_helper = desktop_invocation::is_desktop_helper(&stock_codex_path);
     let local_host_runtime = !desktop_helper
         && should_start_host_runtime(arguments)
         && host_runtime_paths_are_configured()

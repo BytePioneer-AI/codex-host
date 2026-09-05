@@ -413,9 +413,7 @@ fn rejects_missing_stock_cli_when_cli_override_does_not_name_the_running_shim() 
 }
 
 #[cfg(target_os = "macos")]
-#[test]
-fn macos_browser_helper_preserving_only_cli_override_reaches_official_cli() {
-    let directory = temporary_directory();
+fn macos_fixture_bundle(directory: &std::path::Path) -> PathBuf {
     let bundle = directory.join("ChatGPT.app");
     fs::create_dir_all(bundle.join("Contents/MacOS")).unwrap();
     fs::create_dir_all(bundle.join("Contents/Resources")).unwrap();
@@ -433,6 +431,14 @@ fn macos_browser_helper_preserving_only_cli_override_reaches_official_cli() {
     fs::write(bundle.join("Contents/Resources/app.asar"), b"fixture").unwrap();
     fs::copy(fake_codex_path(), bundle.join("Contents/MacOS/ChatGPT")).unwrap();
     fs::copy(fake_codex_path(), bundle.join("Contents/Resources/codex")).unwrap();
+    bundle
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn macos_browser_helper_preserving_only_cli_override_reaches_official_cli() {
+    let directory = temporary_directory();
+    let bundle = macos_fixture_bundle(&directory);
     let mut command = Command::new(shim_path());
     for (key, _) in std::env::vars_os() {
         if key.to_string_lossy().starts_with("CODEXHOST_") {
@@ -455,6 +461,67 @@ fn macos_browser_helper_preserving_only_cli_override_reaches_official_cli() {
     );
     assert!(stderr.contains("codex_cli_path_present=false"), "{stderr}");
     fs::remove_dir_all(directory).unwrap();
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn macos_native_helpers_do_not_become_host_runtime_owners() {
+    for (depth, detached) in [
+        (0, false),
+        (1, false),
+        (2, false),
+        (0, true),
+        (1, true),
+        (2, true),
+    ] {
+        let directory = temporary_directory();
+        let bundle = macos_fixture_bundle(&directory);
+        let desktop = bundle.join("Contents/MacOS/ChatGPT");
+        let mut command = Command::new(if detached {
+            fake_codex_path()
+        } else {
+            desktop.clone()
+        });
+        if detached {
+            command.env("FAKE_CODEX_DETACHED_DESKTOP", &desktop);
+        }
+        let output = command
+            .args(["app-server", "--listen", "stdio://"])
+            .env("FAKE_CODEX_HELPER_SHIM", shim_path())
+            .env("FAKE_CODEX_HELPER_DEPTH", depth.to_string())
+            .env("FAKE_CODEX_HELPER_EXECUTABLE", fake_codex_path())
+            .env("FAKE_CODEX_PRINT_INVOCATION", "1")
+            .env("CODEXHOST_LAUNCHER_PID", process::id().to_string())
+            .env(
+                "CODEXHOST_LAUNCHER_EXECUTABLE",
+                std::env::current_exe().unwrap(),
+            )
+            .env("CODEXHOST_DATA_DIR", &directory)
+            .env_remove("CODEXHOST_NPM_NODE_PATH")
+            .env_remove("CODEXHOST_NPM_PACKAGE_ROOT")
+            .env_remove(REMOTE_SSH_MANAGED_ENV)
+            .env(
+                STOCK_CODEX_PATH_ENV,
+                bundle.join("Contents/Resources/codex"),
+            )
+            .env(CODEX_CLI_PATH_ENV, shim_path())
+            .env(HOST_NODE_PATH_ENV, fake_codex_path())
+            .env(HOST_RUNTIME_PATH_ENV, fake_codex_path())
+            .stdin(Stdio::null())
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(output.status.success(), "depth={depth}: {stderr}");
+        assert_eq!(
+            stderr.contains("args=app-server|--listen|stdio://"),
+            depth > 0,
+            "only auxiliary helpers may use stock CLI: depth={depth}, {stderr}"
+        );
+        if depth > 0 {
+            assert!(!directory.join("local-host-runtime-owner.lock").exists());
+        }
+        fs::remove_dir_all(directory).unwrap();
+    }
 }
 
 #[test]

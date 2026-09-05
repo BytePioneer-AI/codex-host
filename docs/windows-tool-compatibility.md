@@ -29,7 +29,9 @@ separately from actual administrator-policy denials.
 
 The Windows package includes `libexec/codexhost-node-repl.exe`. The launcher uses
 Desktop's supported `CODEX_NODE_REPL_PATH` override when the wrapper is present,
-unless the user has selected a different custom runtime. The wrapper resolves
+unless the user has selected a different custom runtime. Explicit custom values,
+including empty values, are forwarded unchanged in the AppX activation environment;
+they must not rely on inheritance from the launcher process. The wrapper resolves
 the official `node_repl.exe` next to Desktop's `NODE_REPL_NODE_PATH`; it does not
 search PATH or modify the official runtime. Arguments, stdio, and exit status
 are forwarded, with the child supervised by the existing Windows job mechanism.

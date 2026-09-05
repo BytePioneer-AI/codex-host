@@ -29,6 +29,9 @@ mod windows_desktop;
 mod windows_process;
 #[cfg(target_os = "windows")]
 #[allow(unsafe_code)]
+mod windows_proxy;
+#[cfg(target_os = "windows")]
+#[allow(unsafe_code)]
 mod windows_ui;
 
 pub use background::detach_from_terminal;
@@ -71,6 +74,8 @@ pub use process::{
 };
 pub use process_supervision::{ChildProcessGuard, SupervisedChild, spawn_supervised};
 pub use process_termination::{terminate_process_group_instance, terminate_process_instance};
+#[cfg(target_os = "windows")]
+pub use proxy_environment::desktop_helper_proxy_environment;
 pub use proxy_environment::proxy_environment;
 #[cfg(target_os = "macos")]
 pub use system_proxy::{SystemProxySettings, system_proxy_settings};

@@ -77,10 +77,14 @@ describe("release Payload", () => {
       expect(paths).toEqual(expectedPayloadPaths(target));
       expect(paths).toHaveLength(19 + preinstalledHarnessPluginPaths().length);
       expect(expectedPayloadPaths(releaseTarget("windows-x64"))).toHaveLength(
-        20 + preinstalledHarnessPluginPaths().length,
+        21 + preinstalledHarnessPluginPaths().length,
       );
       expect(paths).toContain("app/plugins/enabled.json");
       expect(paths).toContain("app/plugins/claude-code/plugin.mjs");
+      expect(expectedPayloadPaths(releaseTarget("windows-x64"))).toContain(
+        "libexec/codexhost-node-repl.exe",
+      );
+      expect(paths).not.toContain("libexec/codexhost-node-repl");
       expect(expectedPayloadPaths(releaseTarget("windows-x64"))).toContain(
         "bin/codexhost-start.exe",
       );

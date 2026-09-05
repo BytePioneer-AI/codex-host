@@ -42,7 +42,10 @@ const REMOTE_PROFILE_ONLY_ENVIRONMENT: [&str; 3] = [
 
 fn remove_codexhost_environment(command: &mut Command, names: impl IntoIterator<Item = OsString>) {
     for name in names {
-        if name == CODEX_CLI_PATH_ENV || name.to_string_lossy().starts_with("CODEXHOST_") {
+        if name == CODEX_CLI_PATH_ENV
+            || (cfg!(target_os = "windows") && name == "CODEX_NODE_REPL_PATH")
+            || name.to_string_lossy().starts_with("CODEXHOST_")
+        {
             command.env_remove(name);
         }
     }
@@ -65,7 +68,132 @@ fn managed_desktop_environment(
         ),
     ];
     environment.extend_from_slice(additional_environment);
+    #[cfg(target_os = "windows")]
+    if let Some(runtime) =
+        managed_node_repl_override(&shim_path, std::env::var_os("CODEX_NODE_REPL_PATH"))
+    {
+        environment.push((OsString::from("CODEX_NODE_REPL_PATH"), runtime));
+    }
     Ok(environment)
+}
+
+#[cfg(target_os = "windows")]
+fn managed_node_repl_override(shim: &Path, existing: Option<OsString>) -> Option<OsString> {
+    const WRAPPER: &str = "codexhost-node-repl.exe";
+    if existing.as_ref().is_some_and(|value| {
+        !Path::new(value)
+            .file_name()
+            .is_some_and(|name| name.to_string_lossy().eq_ignore_ascii_case(WRAPPER))
+    }) {
+        // AppX activation does not inherit the launcher's process environment.
+        // Forward custom values (including empty ones), not just non-overrides.
+        return existing;
+    }
+    canonical_existing_file(&shim.with_file_name(WRAPPER))
+        .ok()
+        .map(|path| path.into_os_string())
+}
+
+#[cfg(all(test, target_os = "windows"))]
+mod node_repl_override_tests {
+    use super::*;
+
+    #[test]
+    fn appx_environment_preserves_explicit_node_repl_override() {
+        const CHILD: &str = "CODEXHOST_TEST_APPX_NODE_REPL_ENV";
+        if std::env::var_os(CHILD).is_none() {
+            // Isolate process environment from parallel tests; never mutate the
+            // environment of the multi-threaded test runner.
+            for value in ["C:/custom tools/工具/node_repl.exe", ""] {
+                let mut command = Command::new(std::env::current_exe().unwrap());
+                command
+                    .args([
+                        "--exact",
+                        "desktop_launch::node_repl_override_tests::appx_environment_preserves_explicit_node_repl_override",
+                        "--nocapture",
+                    ])
+                    .env(CHILD, "1")
+                    .env("CODEX_NODE_REPL_PATH", value);
+                super::super::configure_background_command(&mut command);
+                let output = command.output().expect("run isolated environment test");
+                assert!(
+                    output.status.success(),
+                    "AppX override {value:?} was not preserved: {}{}",
+                    String::from_utf8_lossy(&output.stdout),
+                    String::from_utf8_lossy(&output.stderr),
+                );
+            }
+            return;
+        }
+
+        let directory =
+            std::env::temp_dir().join(format!("codexhost-appx-node-env-{}", std::process::id()));
+        std::fs::create_dir(&directory).expect("isolated AppX fixture");
+        let shim = directory.join("codexhost-shim.exe");
+        std::fs::write(&shim, b"fixture").unwrap();
+        std::fs::write(directory.join("codexhost-node-repl.exe"), b"fixture").unwrap();
+        let installation = DesktopInstallation {
+            identity: DesktopIdentity::WindowsPackage {
+                package_name: "fixture".into(),
+                package_family_name: "fixture".into(),
+                appx_activation: Some(super::super::WindowsAppxActivationIdentity {
+                    package_full_name: "fixture".into(),
+                    app_user_model_id: "fixture!App".into(),
+                }),
+            },
+            version: "1.0.0".into(),
+            build: "1".into(),
+            asar_integrity: String::new(),
+            install_root: directory.clone(),
+            desktop_launcher: directory.join("Desktop.exe"),
+            desktop_executable: directory.join("Desktop.exe"),
+            packaged_codex_cli: directory.join("codex.exe"),
+            executable_codex_cli: directory.join("codex.exe"),
+        };
+        let environment = managed_desktop_environment(&installation, &shim, &[]).unwrap();
+        let block = super::super::windows_desktop::windows_environment_block(&environment)
+            .expect("serialize the environment passed to AppX");
+        std::fs::remove_dir_all(&directory).unwrap();
+        let decoded = String::from_utf16(&block).unwrap();
+        let actual = decoded
+            .split('\0')
+            .filter(|entry| entry.starts_with("CODEX_NODE_REPL_PATH="))
+            .collect::<Vec<_>>();
+        let expected = format!(
+            "CODEX_NODE_REPL_PATH={}",
+            std::env::var("CODEX_NODE_REPL_PATH").unwrap()
+        );
+        assert_eq!(actual, [expected.as_str()]);
+    }
+
+    #[test]
+    fn uses_packaged_wrapper_and_preserves_user_override() {
+        let directory =
+            std::env::temp_dir().join(format!("codexhost-tool-override-{}", std::process::id()));
+        std::fs::create_dir(&directory).expect("isolated launcher fixture");
+        let shim = directory.join("codexhost-shim.exe");
+        let wrapper = directory.join("codexhost-node-repl.exe");
+        assert!(managed_node_repl_override(&shim, None).is_none());
+        std::fs::write(&wrapper, b"fixture").unwrap();
+        let expected = Some(canonical_existing_file(&wrapper).unwrap().into_os_string());
+        assert_eq!(managed_node_repl_override(&shim, None), expected);
+        assert_eq!(
+            managed_node_repl_override(
+                &shim,
+                Some("C:/old/libexec/codexhost-node-repl.exe".into())
+            ),
+            expected
+        );
+        assert_eq!(
+            managed_node_repl_override(&shim, Some("C:/custom/node_repl.exe".into())),
+            Some("C:/custom/node_repl.exe".into())
+        );
+        assert_eq!(
+            managed_node_repl_override(&shim, Some(OsString::new())),
+            Some(OsString::new())
+        );
+        std::fs::remove_dir_all(directory).unwrap();
+    }
 }
 
 fn configure_managed_desktop_environment(

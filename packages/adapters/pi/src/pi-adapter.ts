@@ -15,9 +15,9 @@ import {
   type HarnessOutput,
   type HarnessResult,
   type HarnessSession,
+  type HarnessSessionCapabilities,
   type HarnessSessionImportCapability,
   type HarnessSessionImportSource,
-  type HarnessSessionCapabilities,
   type HarnessSessionState,
   type HarnessThinkingOptionId,
   type InspectHarnessInput,
@@ -71,8 +71,8 @@ import {
 } from "@codexhost/shared-contracts";
 
 import { mapPiSnapshot, resolvePiForkBoundary, type PiSessionHistory } from "./pi-history.js";
-import { PiSessionImportIndex } from "./pi-session-import.js";
 import { rollbackPiLastTurn } from "./pi-last-turn-rollback.js";
+import { PiSessionImportIndex } from "./pi-session-import.js";
 import {
   PiRpcFaultError,
   PiRpcSession,
@@ -1858,6 +1858,7 @@ class PiHarnessSession implements HarnessSession {
 
 export class PiAdapter implements HarnessAdapter {
   readonly commandCatalog = piCommandCatalog;
+  readonly harnessId: HarnessId = piHarnessId;
   readonly sessionImport = Object.freeze({
     listCandidates: async () => {
       const result = await this.#readImport((signal) => this.#importIndex.list(signal));
@@ -1888,7 +1889,6 @@ export class PiAdapter implements HarnessAdapter {
   readonly #importIndex: PiSessionImportIndex;
   readonly #importAbort = new AbortController();
   readonly #importRequests = new Set<Promise<unknown>>();
-  readonly harnessId: HarnessId = piHarnessId;
   readonly #closeTimeoutMs: number;
   readonly #createTransport: PiAdapterDependencies["createTransport"];
   readonly #inspectionCache = new Map<string, Extract<HarnessInspection, { status: "ready" }>>();
@@ -1905,11 +1905,12 @@ export class PiAdapter implements HarnessAdapter {
       createTransport: (sessionOptions) => new PiRpcSession({ ...options, ...sessionOptions }),
     },
   ) {
-    this.#importIndex = new PiSessionImportIndex({ ...process.env, ...options.environment });
     this.#createTransport = dependencies.createTransport;
+    this.#importIndex = new PiSessionImportIndex({ ...process.env, ...options.environment });
     this.#closeTimeoutMs = options.closeTimeoutMs ?? 2_000;
     this.#toolOutputLimit = options.toolOutputLimit ?? DEFAULT_TOOL_OUTPUT_LIMIT;
   }
+
   #readImport<T>(operation: (signal: AbortSignal) => Promise<T>): Promise<HarnessResult<T>> {
     if (this.#importAbort.signal.aborted)
       return Promise.resolve({ ok: false, error: invalidState("Pi Adapter is closed") });
@@ -1928,7 +1929,6 @@ export class PiAdapter implements HarnessAdapter {
     this.#importRequests.add(request);
     return request;
   }
-
 
   async inspect(input: InspectHarnessInput = {}): Promise<HarnessInspection> {
     if (this.#closePromise) {
@@ -2227,9 +2227,10 @@ export class PiAdapter implements HarnessAdapter {
   }
 
   close(): Promise<void> {
-      this.#importAbort.abort();
     if (!this.#closePromise) {
+      this.#importAbort.abort();
       this.#closePromise = Promise.all([
+        ...this.#importRequests,
         ...[...this.#inspections].map((transport) => transport.close()),
         ...[...this.#sessions].map((session) => session.close()),
       ]).then(() => undefined);

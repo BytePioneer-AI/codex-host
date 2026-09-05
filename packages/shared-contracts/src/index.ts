@@ -36,8 +36,9 @@ export {
   HARNESS_SESSION_IMPORT_LIST_MAX_LENGTH,
   HARNESS_SESSION_IMPORT_TITLE_MAX_LENGTH,
   HARNESS_SESSION_IMPORT_UPDATED_AT_MAX,
-  HARNESS_SESSION_IMPORT_DEFAULT_PAGE_SIZE,
   harnessSessionImportCandidateSchema,
+  HARNESS_SESSION_IMPORT_DEFAULT_PAGE_SIZE,
+  harnessSessionImportIdSchema,
   harnessSessionImportSourcesParamsSchema,
   harnessSessionImportSourcesResultSchema,
   harnessSessionListParamsSchema,
@@ -52,9 +53,7 @@ export type {
   HarnessSessionListResult,
   HarnessSessionImportParams,
   HarnessSessionImportResult,
-  harnessSessionImportIdSchema,
 } from "./harness-session-import.js";
-export type { HarnessSessionImportCandidate } from "./harness-session-import.js";
 export {
   DEEPSEEK_MODERN_HOST_THREAD_ID_MAX_LENGTH,
   DEEPSEEK_MODERN_SESSION_CWD_MAX_LENGTH,

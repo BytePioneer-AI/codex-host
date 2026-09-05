@@ -1,0 +1,4 @@
+interface:
+  display_name: "codexhost PR 合入评估"
+  short_description: "评估功能价值与实现克制，生成合入建议看板"
+  default_prompt: "用 $codexhost-pr-triage 评估当前仓库的 open PR：功能是否有意义、代码是否改得过度、维护代价是否值得。给出 ACCEPT / SIMPLIFY / DISCUSS / DECLINE，并生成本地 HTML 看板；CI 和冲突作为修复成本与后续动作的辅助信息，不作为硬阻断，不执行 GitHub 写操作。"

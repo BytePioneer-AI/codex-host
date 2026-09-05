@@ -485,6 +485,7 @@ function refreshTrailingClusterPlacement(control: ComposerAgentControl): void {
   const sendButton = control.sendButton;
   const modelRoot = control.modelPicker?.root;
   const agentRoot = control.root ?? control.picker?.root;
+  const commandRoot = control.harnessCommands?.root;
   if (!sendButton || !modelRoot || !agentRoot) return;
   const anchor = trailingActionAnchor(sendButton);
   const parent = anchor.parentElement;
@@ -492,13 +493,20 @@ function refreshTrailingClusterPlacement(control: ComposerAgentControl): void {
   if (
     modelRoot.parentElement === parent &&
     agentRoot.parentElement === parent &&
+    (!commandRoot || commandRoot.parentElement === parent) &&
     modelRoot.nextElementSibling === agentRoot &&
-    agentRoot.nextElementSibling === anchor
+    (!commandRoot || agentRoot.nextElementSibling === commandRoot) &&
+    (commandRoot
+      ? commandRoot.nextElementSibling === anchor
+      : agentRoot.nextElementSibling === anchor)
   ) {
     return;
   }
   parent.insertBefore(modelRoot, anchor);
   parent.insertBefore(agentRoot, anchor);
+  if (commandRoot) {
+    parent.insertBefore(commandRoot, anchor);
+  }
 }
 
 function refreshUsagePlacement(control: ComposerAgentControl): void {
@@ -626,10 +634,11 @@ export function mountComposerAgentControl(
   );
   const credits = mountRendererCreditsControl(composerId);
 
-  const toolbar = sendButton.parentElement;
+  const anchor = trailingActionAnchor(sendButton);
+  const toolbar = anchor.parentElement ?? sendButton.parentElement;
   const harnessCommands = mountRendererHarnessCommandControl(
     toolbar ?? composer,
-    trailingActionAnchor(sendButton),
+    anchor,
     onSelectCommand,
   );
 

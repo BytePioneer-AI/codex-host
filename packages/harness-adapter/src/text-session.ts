@@ -520,9 +520,17 @@ export interface HarnessSubagentCapability {
 export interface HarnessWebUiAction {
   open(): Promise<HarnessResult<void>>;
 }
+/** Fresh native metadata and the complete resumable identity; never sent to Renderer. */
+export interface HarnessSessionImportSource {
+  candidate: HarnessSessionImportCandidate;
+  nativeRef: NativeSessionRef;
+}
+
 
 /** Optional discovery of existing Native Sessions that codexhost can map and resume. */
 export interface HarnessSessionImportCapability {
+  /** Read-only revalidation. Omission keeps older discovery-only plugins valid, not importable. */
+  resolveCandidate?(nativeSessionId: string): Promise<HarnessResult<HarnessSessionImportSource>>;
   listCandidates(): Promise<HarnessResult<readonly HarnessSessionImportCandidate[]>>;
 }
 

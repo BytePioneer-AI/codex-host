@@ -96,7 +96,7 @@ Codex Desktop 协议、官方 app-server、Renderer 兼容绑定仍是 codexhost
 
 ### 2.4 可选能力尚未贯通
 
-**Session Import：**已有 `adapter.sessionImport?.listCandidates()`，但共享 RPC Schema、Host Importer 和设置页面仍绑定 DeepSeek。Importer 的去重、并发、忙碌检查与临时记录清理大部分是通用 Thread 管理语义。
+**Session Import：**本地共享 RPC、Host Importer 和设置页面已通用化，Pi 与 DSH Modern 共用同一路径。Adapter 通过 `listCandidates()` 提供元数据，通过 `resolveCandidate(id)` 重新验证完整原生引用；Host 保留去重、并发、忙碌检查与临时记录清理。远程和 CC Broker 导入尚未扩展，见[当前导入契约](harness-session-import.md)。
 
 **Credits：**Host 通过结构探测读取 `credits()`、`refreshCredits()`，它们不是正式 Adapter 成员。Renderer 还通过 Codex/Grok/Claude 名单决定是否等待 Credits，而 Antigravity 也有对应方法。这是能力提供与消费的双重接线，不等于本轮已证明具体 UI 故障。
 
@@ -327,7 +327,7 @@ Host 接收已确认状态并维护公共配置视图，不能生成虚假的 ef
 
 导入不是普通 Session slash command：操作发生在目标 Thread 建立之前。不能强行包装成用户文本 Turn，也不能让插件直接写映射库。
 
-当前候选只包含原生 Session ID。通用化时必须保证完整 Native Session 引用由插件确认，Host 不能替插件猜测原生格式；具体使用候选中的完整引用还是额外解析入口，应根据现有调用与验证需求选择最小方案。
+当前 list 候选只包含浏览器安全元数据，导入时由 `resolveCandidate(id)` 返回新鲜 `{ candidate, nativeRef }`。完整 Native Session 引用由插件确认，Host 不猜测原生格式，也不接收 Renderer 提供的 locator。此只读解析入口不承担 prepare/commit/rollback 事务；映射提交仍属于 Host。
 
 保留重新校验候选、忙碌拒绝、重复导入幂等、跨请求竞争处理和失败清理，不因通用化降低这些保证。
 

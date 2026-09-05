@@ -19,10 +19,6 @@ import {
   harnessPluginListParamsSchema,
   harnessPluginListResultSchema,
   type HarnessPluginDescriptor,
-  deepSeekModernSessionImportParamsSchema,
-  deepSeekModernSessionImportResultSchema,
-  deepSeekModernSessionListParamsSchema,
-  deepSeekModernSessionListResultSchema,
   externalThreadForkParamsSchema,
   harnessCommandCatalogSchema,
   harnessIdSchema,
@@ -63,7 +59,7 @@ import {
   type HostTurnId,
 } from "@codexhost/shared-contracts";
 import { executeExternalThreadFork } from "./external-thread-fork.js";
-import { DeepSeekModernSessionImporter } from "./deepseek-modern-session-import.js";
+import { isSessionImportRequest, SessionImportRequests } from "./session-import-requests.js";
 import {
   ExternalHistoryRequestError,
   listExternalItems,
@@ -458,7 +454,7 @@ export class AppServerHost {
   #nextQuestionRequestId = HOST_QUESTION_REQUEST_ID_MAX;
   #officialRequestBroker: OfficialRequestBroker;
   #delegationCoordinator: HarnessDelegationCoordinator;
-  #deepSeekModernSessionImporter: DeepSeekModernSessionImporter | undefined;
+  #sessionImportRequests: SessionImportRequests | undefined;
   #unregisterDelegationApi: (() => void) | undefined;
   #activeOfficialTurns = new Map<string, string>();
   #pendingOfficialTurnStarts = new Map<unknown, string>();
@@ -475,7 +471,6 @@ export class AppServerHost {
   #subagentThreadStatuses = new Map<string, "active" | "idle">();
   #runningSubagentsByParent = new Map<string, Set<string>>();
   #pendingExternalCommandRequests = new Set<string>();
-  #notifiedDeepSeekSessionImports = new Set<string>();
   #closeRequested = false;
   #drainActiveWorkOnInputEnd = false;
   #desktopInputEnded = false;
@@ -788,12 +783,8 @@ export class AppServerHost {
         });
         continue;
       }
-      if (request.method === "codexhost/deepseek/modern-session/list") {
-        this.#dispatchDesktopRequest(() => this.#listDeepSeekModernSessions(request));
-        continue;
-      }
-      if (request.method === "codexhost/deepseek/modern-session/import") {
-        this.#dispatchDesktopRequest(() => this.#importDeepSeekModernSession(request));
+      if (isSessionImportRequest(request.method)) {
+        this.#dispatchDesktopRequest(() => this.#handleSessionImport(request));
         continue;
       }
       if (request.method === "codexhost/thread/fork") {
@@ -1890,52 +1881,16 @@ export class AppServerHost {
     }
   }
 
-  // Resolve after plugin loading, not while the constructor's Adapter map is still empty.
-  get #sessionImporter(): DeepSeekModernSessionImporter {
-    return (this.#deepSeekModernSessionImporter ??= new DeepSeekModernSessionImporter({
-      adapter: this.#externalAdapters.get("deepseek-harness"),
+  async #handleSessionImport(request: JsonRpcRequest): Promise<void> {
+    this.#sessionImportRequests ??= new SessionImportRequests({
+      adapters: this.#externalAdapters,
+      descriptors: () => this.#pluginDescriptors,
       repository: this.#repository,
       diagnose: (error) => this.#diagnose(error),
-    }));
-  }
-
-  async #listDeepSeekModernSessions(request: JsonRpcRequest): Promise<void> {
-    const params = deepSeekModernSessionListParamsSchema.safeParse(request.params);
-    if (!params.success) {
-      await this.#writer.json(rpcError(request, -32602, "Invalid DeepSeek Session list params"));
-      return;
-    }
-    const outcome = await this.#sessionImporter.list();
-    if (!outcome.ok) {
-      await this.#writer.json(rpcError(request, outcome.error.code, outcome.error.message));
-      return;
-    }
-    const result = deepSeekModernSessionListResultSchema.safeParse({
-      candidates: outcome.candidates,
     });
-    if (!result.success) {
-      await this.#writer.json(rpcError(request, -32076, "DeepSeek Session list is invalid"));
-      return;
-    }
-    await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(result.data) }));
-  }
-
-  async #importDeepSeekModernSession(request: JsonRpcRequest): Promise<void> {
-    const params = deepSeekModernSessionImportParamsSchema.safeParse(request.params);
-    if (!params.success) {
-      await this.#writer.json(rpcError(request, -32602, "Invalid DeepSeek Session import params"));
-      return;
-    }
-    const outcome = await this.#sessionImporter.import(params.data.nativeSessionId);
-    if (!outcome.ok) {
-      await this.#writer.json(rpcError(request, outcome.error.code, outcome.error.message));
-      return;
-    }
-    const notify = !this.#notifiedDeepSeekSessionImports.has(outcome.threadId);
-    if (notify) this.#notifiedDeepSeekSessionImports.add(outcome.threadId);
-    const result = deepSeekModernSessionImportResultSchema.parse({ threadId: outcome.threadId });
-    await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(result) }));
-    if (notify) await this.#notifyExternalThreadStarted(outcome.thread);
+    const response = await this.#sessionImportRequests.handle(request);
+    await this.#writer.json(rpcEnvelope(request, response.body));
+    if (response.importedThread) await this.#notifyExternalThreadStarted(response.importedThread);
   }
 
   async #inspectThread(request: JsonRpcRequest): Promise<void> {

@@ -1,3 +1,7 @@
+import { mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+
 import { describe, expect, it, vi } from "vitest";
 import {
   harnessPermissionModeIdSchema,
@@ -594,6 +598,70 @@ describe("Pi HarnessAdapter Session", () => {
     });
     await opened.value.close();
     await adapter.close();
+  });
+
+  it("resumes an import-discovered locator, projects history, and continues the same native session", async () => {
+    const cwd = await realpath(
+      await mkdtemp(path.join(os.tmpdir(), "codexhost-pi-import-resume-")),
+    );
+    const sessionFile = path.join(cwd, "original.jsonl");
+    const history = sourceHistory();
+    const { adapter, dependencies, transports } = fixture({
+      environment: { PI_CODING_AGENT_SESSION_DIR: cwd },
+    });
+    try {
+      await writeFile(
+        sessionFile,
+        [{ type: "session", version: 3, id: "import-source", cwd }, ...history.entries]
+          .map((entry) => JSON.stringify(entry))
+          .join("\n") + "\n",
+      );
+      const source = await adapter.sessionImport.resolveCandidate("import-source");
+      if (!source.ok) throw new Error(source.error.message);
+      expect(dependencies.createTransport).not.toHaveBeenCalled();
+      vi.mocked(dependencies.createTransport).mockImplementationOnce((options) => {
+        const transport = new FakePiTransport();
+        transport.options = options;
+        transport.state = { ...transport.state, sessionId: "import-source", sessionFile };
+        transport.history = structuredClone(history);
+        transports.push(transport);
+        return transport;
+      });
+      const opened = await adapter.open({
+        kind: "resume",
+        cwd: source.value.candidate.cwd,
+        nativeRef: source.value.nativeRef,
+      });
+      if (!opened.ok) throw new Error(opened.error.message);
+      expect(dependencies.createTransport).toHaveBeenCalledWith(
+        expect.objectContaining({ sessionFile, cwd }),
+      );
+      expect(await opened.value.readSnapshot()).toMatchObject({
+        ok: true,
+        value: {
+          turns: [
+            { nativeTurnRef: { nativeTurnKey: "source-user-1" } },
+            { nativeTurnRef: { nativeTurnKey: "source-user-2" } },
+          ],
+        },
+      });
+      const iterator = opened.value.outputs[Symbol.asyncIterator]();
+      expect(await opened.value.execute(textTurn("continue-imported"))).toMatchObject({ ok: true });
+      transports[0]?.succeed("continued answer");
+      let terminal = await nextEvent(iterator);
+      while (terminal.type !== "turn.completed") terminal = await nextEvent(iterator);
+      expect(await opened.value.readSnapshot()).toMatchObject({
+        ok: true,
+        value: {
+          state: { nativeRef: source.value.nativeRef },
+          turns: [{}, {}, { input: [{ type: "text", text: "continue-imported" }] }],
+        },
+      });
+      await opened.value.close();
+    } finally {
+      await adapter.close();
+      await rm(cwd, { recursive: true, force: true });
+    }
   });
 
   it("rolls back the last Pi Turn and restores current Model and Thinking", async () => {

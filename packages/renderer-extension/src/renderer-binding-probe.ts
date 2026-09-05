@@ -630,12 +630,14 @@ export function installRendererBindingProbe(
     getConnectionDiagnostics: () => connectionDiagnostics,
     getSessionImportClient: () => {
       const client = modelClientForHost("local");
-      const list = client?.listDeepSeekModernSessions;
-      const importSession = client?.importDeepSeekModernSession;
-      if (!list || !importSession) return null;
+      const sources = client?.listSessionImportSources;
+      const list = client?.listHarnessSessions;
+      const importSession = client?.importHarnessSession;
+      if (!sources || !list || !importSession) return null;
       return {
-        listDeepSeekModernSessions: (input) => list(input),
-        importDeepSeekModernSession: (input) => importSession(input),
+        listSessionImportSources: () => sources(),
+        listHarnessSessions: (input) => list(input),
+        importHarnessSession: (input) => importSession(input),
       };
     },
     openImportedThread: (threadId, signal) =>

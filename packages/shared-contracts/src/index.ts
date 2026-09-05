@@ -36,7 +36,22 @@ export {
   HARNESS_SESSION_IMPORT_LIST_MAX_LENGTH,
   HARNESS_SESSION_IMPORT_TITLE_MAX_LENGTH,
   HARNESS_SESSION_IMPORT_UPDATED_AT_MAX,
+  HARNESS_SESSION_IMPORT_DEFAULT_PAGE_SIZE,
   harnessSessionImportCandidateSchema,
+  harnessSessionImportSourcesParamsSchema,
+  harnessSessionImportSourcesResultSchema,
+  harnessSessionListParamsSchema,
+  harnessSessionListResultSchema,
+  harnessSessionImportParamsSchema,
+  harnessSessionImportResultSchema,
+} from "./harness-session-import.js";
+export type {
+  HarnessSessionImportCandidate,
+  HarnessSessionImportSourcesResult,
+  HarnessSessionListParams,
+  HarnessSessionListResult,
+  HarnessSessionImportParams,
+  HarnessSessionImportResult,
   harnessSessionImportIdSchema,
 } from "./harness-session-import.js";
 export type { HarnessSessionImportCandidate } from "./harness-session-import.js";

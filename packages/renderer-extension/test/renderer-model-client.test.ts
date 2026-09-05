@@ -31,6 +31,8 @@ import {
   createRendererModelClient,
   createThreadUsageSubscriptionRelay,
 } from "../src/renderer-model-client.js";
+import { RendererSessionImportUnavailableError } from "../src/renderer-session-import-client.js";
+
 
 const piHarnessId = harnessIdSchema.parse("pi");
 const model = harnessModelRefSchema.parse({ id: "pi-model-v1.synthetic" });
@@ -169,12 +171,13 @@ describe("Renderer fixed Model request client", () => {
       "checkUpdate",
       "executeThreadCommand",
       "forkThread",
-      "importDeepSeekModernSession",
+      "importHarnessSession",
       "inspectHarness",
       "inspectThread",
       "inspectThreadCommands",
       "inspectThreadUsage",
-      "listDeepSeekModernSessions",
+      "listHarnessSessions",
+      "listSessionImportSources",
       "listHarnessPlugins",
       "listThreadOwnership",
       "openHarnessWebUi",
@@ -321,42 +324,56 @@ describe("Renderer fixed Model request client", () => {
       })
       .mockResolvedValueOnce({ threadId: "thread-1" });
     const client = createRendererModelClient([{ sendRequest }]);
-    if (!client?.listDeepSeekModernSessions || !client.importDeepSeekModernSession) {
-      throw new Error("DSH Modern Session client was not created");
+    if (
+      !client?.listSessionImportSources ||
+      !client.listHarnessSessions ||
+      !client.importHarnessSession
+    )
+      throw new Error("Session import client missing");
+    expect(await client.listSessionImportSources()).toEqual({
+      harnesses: [{ harnessId: "pi", name: "Pi" }],
+    });
+    expect(await client.listHarnessSessions({ harnessId: piHarnessId })).toMatchObject({
+      candidates: [{ nativeSessionId: "native-1", running: null }],
+    });
+    expect(
+      await client.importHarnessSession({ harnessId: piHarnessId, nativeSessionId: "native-1" }),
+    ).toEqual({ threadId: "thread-1" });
+    expect(sendRequest.mock.calls).toEqual([
+      ["codexhost/harness/session-import/sources", {}],
+      ["codexhost/harness/session-import/list", { harnessId: "pi" }],
+      ["codexhost/harness/session-import/import", { harnessId: "pi", nativeSessionId: "native-1" }],
+    ]);
+    for (const extra of [{ cwd: "C:\\injected" }, { locator: { sessionFile: "/injected" } }]) {
+      await expect(
+        client.importHarnessSession({
+          harnessId: piHarnessId,
+          nativeSessionId: "native-2",
+          ...extra,
+        }),
+      ).rejects.toThrow();
     }
-
-    await expect(client.listDeepSeekModernSessions({})).resolves.toMatchObject({
-      candidates: [{ nativeSessionId: "native-1" }],
-    });
-    await expect(
-      client.importDeepSeekModernSession({ nativeSessionId: "native-1" }),
-    ).resolves.toEqual({ threadId: "thread-1" });
-    expect(sendRequest).toHaveBeenNthCalledWith(1, DEEPSEEK_MODERN_SESSION_LIST_METHOD, {});
-    expect(sendRequest).toHaveBeenNthCalledWith(2, DEEPSEEK_MODERN_SESSION_IMPORT_METHOD, {
-      nativeSessionId: "native-1",
-    });
-
-    await expect(
-      client.importDeepSeekModernSession({
-        nativeSessionId: "native-2",
-        cwd: "C:\\injected",
-      } as never),
-    ).rejects.toThrow();
-    expect(sendRequest).toHaveBeenCalledTimes(2);
+    expect(sendRequest).toHaveBeenCalledTimes(3);
   });
 
   it("coalesces an in-flight DSH Modern import across page mounts", async () => {
     const response = Promise.withResolvers<unknown>();
     const sendRequest = vi.fn(() => response.promise);
     const client = createRendererModelClient([{ sendRequest }]);
-    if (!client?.importDeepSeekModernSession) {
-      throw new Error("DSH Modern Session client was not created");
-    }
-
-    const first = client.importDeepSeekModernSession({ nativeSessionId: "native-1" });
-    const remounted = client.importDeepSeekModernSession({ nativeSessionId: "native-1" });
-
-    expect(sendRequest).toHaveBeenCalledOnce();
+    if (!client?.importHarnessSession) throw new Error("Session import client missing");
+    const first = client.importHarnessSession({
+      harnessId: piHarnessId,
+      nativeSessionId: "native-1",
+    });
+    const remounted = client.importHarnessSession({
+      harnessId: piHarnessId,
+      nativeSessionId: "native-1",
+    });
+    const other = client.importHarnessSession({
+      harnessId: harnessIdSchema.parse("deepseek-harness"),
+      nativeSessionId: "native-1",
+    });
+    expect(sendRequest).toHaveBeenCalledTimes(2);
     response.resolve({ threadId: "thread-1" });
     await expect(first).resolves.toEqual({ threadId: "thread-1" });
     await expect(remounted).resolves.toEqual({ threadId: "thread-1" });
@@ -370,16 +387,51 @@ describe("Renderer fixed Model request client", () => {
       .mockRejectedValueOnce(unavailable)
       .mockRejectedValueOnce(unsupported);
     const client = createRendererModelClient([{ sendRequest }]);
-    if (!client?.listDeepSeekModernSessions || !client.importDeepSeekModernSession) {
-      throw new Error("DSH Modern Session client was not created");
-    }
-
-    await expect(client.listDeepSeekModernSessions({})).rejects.toBeInstanceOf(
-      RendererDeepSeekSessionUnavailableError,
+    if (
+      !client?.listSessionImportSources ||
+      !client.listHarnessSessions ||
+      !client.importHarnessSession
+    )
+      throw new Error("Session import client missing");
+    await expect(client.listSessionImportSources()).rejects.toBeInstanceOf(
+      RendererSessionImportUnavailableError,
+    );
+    await expect(client.listHarnessSessions({ harnessId: piHarnessId })).rejects.toBeInstanceOf(
+      RendererSessionImportUnavailableError,
     );
     await expect(
-      client.importDeepSeekModernSession({ nativeSessionId: "native-1" }),
-    ).rejects.toBeInstanceOf(RendererDeepSeekSessionUnavailableError);
+      client.importHarnessSession({ harnessId: piHarnessId, nativeSessionId: "native-1" }),
+    ).rejects.toBeInstanceOf(RendererSessionImportUnavailableError);
+  });
+
+  it("keeps storage failures distinct from unsupported import and validates paging/search requests", async () => {
+    const failure = Object.assign(new Error("private storage detail"), { code: -32077 });
+    const sendRequest = vi.fn(async () => {
+      throw failure;
+    });
+    const client = createRendererModelClient([{ sendRequest }]);
+    if (!client?.listHarnessSessions) throw new Error("Import client missing");
+    await expect(
+      client.listHarnessSessions({
+        harnessId: piHarnessId,
+        query: "needle",
+        offset: 40,
+        limit: 20,
+      }),
+    ).rejects.toBe(failure);
+    expect(sendRequest).toHaveBeenCalledWith("codexhost/harness/session-import/list", {
+      harnessId: "pi",
+      query: "needle",
+      offset: 40,
+      limit: 20,
+    });
+    await expect(
+      client.listHarnessSessions({ harnessId: piHarnessId, offset: -1 }),
+    ).rejects.toThrow();
+    await expect(
+      client.listHarnessSessions({ harnessId: piHarnessId, limit: 0 }),
+    ).rejects.toThrow();
+    expect(sendRequest).toHaveBeenCalledOnce();
   });
 
   it("opens Harness Web through the pathless Host action", async () => {

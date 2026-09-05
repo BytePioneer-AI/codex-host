@@ -182,6 +182,52 @@ describe("DeepSeek public generation selector", () => {
     await adapter.close();
   });
 
+  it("revalidates Modern import metadata and provides its generation-owned native identity", async () => {
+    const modern = new FakeAdapter();
+    const list = vi
+      .spyOn(modern.sessionImport, "listCandidates")
+      .mockResolvedValueOnce({
+        ok: true,
+        value: [
+          {
+            nativeSessionId: "native",
+            cwd: "/project",
+            title: "Fresh",
+            updatedAt: 1,
+            running: true,
+          },
+        ],
+      })
+      .mockResolvedValueOnce({ ok: true, value: [] });
+    const adapter = new DeepSeekHarnessAdapter(
+      {},
+      {
+        probeExecutable: () => Promise.resolve(modernExecutable),
+        createLegacyAdapter: () => new FakeAdapter(() => Promise.resolve(unavailableInspection)),
+        createModernAdapter: () => modern,
+      },
+    );
+    expect(await adapter.sessionImport.resolveCandidate("native")).toEqual({
+      ok: true,
+      value: {
+        candidate: {
+          nativeSessionId: "native",
+          cwd: "/project",
+          title: "Fresh",
+          updatedAt: 1,
+          running: true,
+        },
+        nativeRef: { harnessId: "deepseek-harness", nativeSessionId: "native", formatVersion: 1 },
+      },
+    });
+    expect(await adapter.sessionImport.resolveCandidate("native")).toMatchObject({
+      ok: false,
+      error: { code: "sessionNotFound" },
+    });
+    expect(list).toHaveBeenCalledTimes(2);
+    await adapter.close();
+  });
+
   it("rejects Session discovery on Legacy without calling its Session API", async () => {
     const legacy = new FakeAdapter();
     const adapter = new DeepSeekHarnessAdapter(
@@ -195,6 +241,10 @@ describe("DeepSeek public generation selector", () => {
     await expect(adapter.sessionImport.listCandidates()).resolves.toMatchObject({
       ok: false,
       error: { code: "unsupported", retryable: false },
+    });
+    await expect(adapter.sessionImport.resolveCandidate("native")).resolves.toMatchObject({
+      ok: false,
+      error: { code: "unsupported" },
     });
     expect(legacy.listCalls).toBe(0);
     await adapter.close();

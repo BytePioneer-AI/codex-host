@@ -233,7 +233,30 @@ class ModernSessionImportAdapter extends FakeHarnessAdapter {
       value: structuredClone(this.candidates),
     }),
   );
-  readonly sessionImport = { listCandidates: this.listCandidates };
+  readonly sessionImport = {
+    listCandidates: this.listCandidates,
+    resolveCandidate: async (nativeSessionId: string) => {
+      const listed = await this.listCandidates();
+      if (!listed.ok) return listed;
+      const candidate = listed.value.find((entry) => entry.nativeSessionId === nativeSessionId);
+      return candidate
+        ? {
+            ok: true as const,
+            value: {
+              candidate,
+              nativeRef: { harnessId: this.harnessId, nativeSessionId, formatVersion: 1 as const },
+            },
+          }
+        : {
+            ok: false as const,
+            error: {
+              code: "sessionNotFound" as const,
+              message: "Missing session",
+              retryable: false,
+            },
+          };
+    },
+  };
 }
 
 function createFixture(
@@ -472,7 +495,10 @@ describe("AppServerHost installed Harness plugins", () => {
       import { FakeHarnessAdapter } from ${JSON.stringify(pathToFileURL(path.resolve("packages/harness-adapter/dist/testing.js")).href)};
       export function createHarnessAdapter() {
         const adapter = new FakeHarnessAdapter("deepseek-harness");
-        adapter.sessionImport = { listCandidates: async () => ({ ok: true, value: [] }) };
+        adapter.sessionImport = {
+          listCandidates: async () => ({ ok: true, value: [] }),
+          resolveCandidate: async () => ({ ok: false, error: { code: "sessionNotFound", message: "Missing", retryable: false } }),
+        };
         return adapter;
       }
     `,

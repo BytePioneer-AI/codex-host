@@ -39,6 +39,7 @@ type Scenario =
   | "malformed-catalog"
   | "malformed-thinking"
   | "unsupported-thinking"
+  | "unsupported-thinking-no-id"
   | "stats-full"
   | "stats-cache-hit"
   | "stats-context-only"
@@ -304,6 +305,15 @@ class FakePiRpcProcess extends EventEmitter {
       if (this.#scenario === "unsupported-thinking") {
         this.#output({
           id: command.id,
+          type: "response",
+          command: command.type,
+          success: false,
+          error: `Unknown command: ${command.type}`,
+        });
+        return;
+      }
+      if (this.#scenario === "unsupported-thinking-no-id") {
+        this.#output({
           type: "response",
           command: command.type,
           success: false,
@@ -1419,6 +1429,16 @@ describe("Pi RPC Turn aggregation", () => {
     await expect(malformed.getAvailableThinkingLevels()).rejects.toThrow("invalid level");
     expect(onFault).toHaveBeenCalledWith(expect.objectContaining({ kind: "protocolError" }));
     await malformed.close();
+  });
+
+  it("degrades an unknown Thinking command whose error frame has no id", async () => {
+    const onFault = vi.fn();
+    const rpc = session("unsupported-thinking-no-id", onFault);
+    await rpc.start();
+    await expect(rpc.getAvailableThinkingLevels()).resolves.toBeNull();
+    await expect(rpc.getAvailableModels()).resolves.toHaveLength(2);
+    expect(onFault).not.toHaveBeenCalled();
+    await rpc.close();
   });
 
   it("faults a malformed native Model catalog", async () => {

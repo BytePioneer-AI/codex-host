@@ -1,4 +1,6 @@
 import {
+  encodeHarnessPluginRoute,
+  harnessPluginRouteSchema,
   harnessModelRefSchema,
   harnessPermissionModeIdSchema,
   harnessThinkingOptionIdSchema,
@@ -25,6 +27,7 @@ import {
   decodeOpenCodeTransportSelection,
   decodePiTransportModel,
   decodePiTransportSelection,
+  encodeExternalTransportSelection,
   encodeClaudeTransportModel,
   encodeAntigravityTransportModel,
   encodeDeepSeekHarnessTransportModel,
@@ -36,6 +39,38 @@ import {
 } from "../src/index.js";
 
 describe("external Harness transport model routing", () => {
+  it("routes arbitrary installed plugin identities with a shared configuration codec", () => {
+    const configuration = {
+      model: harnessModelRefSchema.parse({ id: "opaque-model" }),
+      thinkingOptionId: harnessThinkingOptionIdSchema.parse("high"),
+      permissionModeId: harnessPermissionModeIdSchema.parse("ask"),
+    };
+    const transportModelId = encodeExternalTransportSelection("sample-agent", configuration);
+    expect(
+      decodeCreateRoute({ id: 99, method: "thread/start", params: { model: transportModelId } }),
+    ).toEqual({
+      harnessId: "sample-agent",
+      routeMode: "native",
+      transportModelId,
+      ...configuration,
+    });
+    expect(decodeExternalTransportSelection("sample-agent", transportModelId)).toEqual(
+      configuration,
+    );
+    expect(decodeExternalTransportSelection("another-agent", transportModelId)).toBeNull();
+    expect(transportModelIdForHarness("sample-agent")).toMatch(/^codexhost\/plugin-v1@/u);
+  });
+
+  it.each(["pi", "claude-code", "deepseek-harness", "opencode", "grok", "omp", "antigravity"])(
+    "also accepts the shared codec for transitional identity %s",
+    (harnessId) => {
+      const route = harnessPluginRouteSchema.parse({ harnessId, model: { id: "opaque-model" } });
+      expect(decodeExternalTransportSelection(harnessId, encodeHarnessPluginRoute(route))).toEqual({
+        model: route.model,
+      });
+    },
+  );
+
   it.each([
     ["pi", PI_NATIVE_TRANSPORT_MODEL_ID],
     ["claude-code", CLAUDE_CODE_NATIVE_TRANSPORT_MODEL_ID],

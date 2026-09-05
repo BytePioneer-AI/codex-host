@@ -12,15 +12,17 @@ import type {
   HostQuestionInteraction,
 } from "@codexhost/harness-adapter";
 import { parseHostUsage, type HostUsage } from "@codexhost/harness-adapter";
+import type { HarnessPluginContext } from "@codexhost/harness-adapter/plugin";
 import type { StoredThreadRecordV1 } from "@codexhost/mapping-store";
 import {
   accountCreditsSnapshotSchema,
-  deepSeekModernSessionImportParamsSchema,
-  deepSeekModernSessionImportResultSchema,
-  deepSeekModernSessionListParamsSchema,
-  deepSeekModernSessionListResultSchema,
+  harnessPluginListParamsSchema,
+  harnessPluginListResultSchema,
+  type HarnessPluginDescriptor,
   externalThreadForkParamsSchema,
   harnessCommandCatalogSchema,
+  harnessCommandsInspectParamsSchema,
+  type HarnessId,
   harnessIdSchema,
   threadCommandExecuteParamsSchema,
   threadCommandExecuteResultSchema,
@@ -59,7 +61,7 @@ import {
   type HostTurnId,
 } from "@codexhost/shared-contracts";
 import { executeExternalThreadFork } from "./external-thread-fork.js";
-import { DeepSeekModernSessionImporter } from "./deepseek-modern-session-import.js";
+import { isSessionImportRequest, SessionImportRequests } from "./session-import-requests.js";
 import {
   ExternalHistoryRequestError,
   listExternalItems,
@@ -91,6 +93,7 @@ import {
   DelegationControlError,
 } from "./delegation-types.js";
 import { HarnessDelegationCoordinator } from "./harness-delegation-coordinator.js";
+import { loadHarnessPlugins } from "./harness-plugin-loader.js";
 import type {
   DelegationControlRegistration,
   DelegationStartInput,
@@ -190,7 +193,9 @@ export interface AppServerHostOptions {
   desktopInput?: Readable;
   desktopOutput?: Writable;
   diagnosticOutput?: Writable;
-  externalAdapters: ReadonlyMap<ExternalHarnessId, HarnessAdapter>;
+  externalAdapters?: ReadonlyMap<ExternalHarnessId, HarnessAdapter>;
+  pluginRoots?: readonly string[];
+  pluginContext?: HarnessPluginContext;
   mappingStore?: ExternalThreadStore;
   /** Defaults to true. A listener that shares one store across sessions owns closing it. */
   closeMappingStoreOnExit?: boolean;
@@ -308,6 +313,8 @@ function approvalServerName(harnessId: ExternalHarnessId): string {
       return "Oh My Pi";
     case "antigravity":
       return "Antigravity CLI";
+    default:
+      return harnessId;
   }
 }
 
@@ -427,6 +434,7 @@ export class AppServerHost {
     AppServerHostOptions;
   #official: OfficialAppServerConnection | null = null;
   #externalAdapters: Map<ExternalHarnessId, HarnessAdapter>;
+  #pluginDescriptors: HarnessPluginDescriptor[] = [];
   #externalRuntime: ExternalThreadRuntime;
   #repository: ExternalThreadRepository;
   #pendingDesktopApprovals = new Map<HostApprovalRequestId, PendingDesktopApproval>();
@@ -435,7 +443,7 @@ export class AppServerHost {
   #nextQuestionRequestId = HOST_QUESTION_REQUEST_ID_MAX;
   #officialRequestBroker: OfficialRequestBroker;
   #delegationCoordinator: HarnessDelegationCoordinator;
-  #deepSeekModernSessionImporter: DeepSeekModernSessionImporter;
+  #sessionImportRequests: SessionImportRequests | undefined;
   #unregisterDelegationApi: (() => void) | undefined;
   #activeOfficialTurns = new Map<string, string>();
   #pendingOfficialTurnStarts = new Map<unknown, string>();
@@ -452,7 +460,6 @@ export class AppServerHost {
   #subagentThreadStatuses = new Map<string, "active" | "idle">();
   #runningSubagentsByParent = new Map<string, Set<string>>();
   #pendingExternalCommandRequests = new Set<string>();
-  #notifiedDeepSeekSessionImports = new Set<string>();
   #closeRequested = false;
   #drainActiveWorkOnInputEnd = false;
   #desktopInputEnded = false;
@@ -487,11 +494,6 @@ export class AppServerHost {
       environment: this.#options.environment ?? process.env,
       repository: this.#repository,
       consumeOutputs: (thread) => this.#consumeHarnessOutputs(thread),
-      diagnose: (error) => this.#diagnose(error),
-    });
-    this.#deepSeekModernSessionImporter = new DeepSeekModernSessionImporter({
-      adapter: this.#externalAdapters.get("deepseek-harness"),
-      repository: this.#repository,
       diagnose: (error) => this.#diagnose(error),
     });
     this.#delegationCoordinator = new HarnessDelegationCoordinator({
@@ -544,9 +546,33 @@ export class AppServerHost {
 
   async run(): Promise<number> {
     try {
+      if (this.#options.pluginRoots) {
+        const plugins = await loadHarnessPlugins({
+          roots: this.#options.pluginRoots,
+          context: this.#options.pluginContext ?? {
+            environment: this.#options.environment ?? process.env,
+            platform: process.platform,
+            managedRemoteHost: false,
+          },
+          reservedIds: new Set(this.#externalAdapters.keys()),
+          diagnose: (diagnostic) => this.#diagnose(`Harness plugin: ${JSON.stringify(diagnostic)}`),
+        });
+        this.#pluginDescriptors = plugins.list();
+        for (const [id, adapter] of plugins.adapters) this.#externalAdapters.set(id, adapter);
+      }
       await this.#repository.initialize();
     } catch (error) {
-      this.#diagnose(`Mapping Store initialization failed: ${errorMessage(error)}`);
+      this.#diagnose(`Host initialization failed: ${errorMessage(error)}`);
+      await Promise.allSettled(
+        [...new Set(this.#externalAdapters.values())].map((adapter) =>
+          Promise.resolve().then(() => adapter.close()),
+        ),
+      );
+      this.#unregisterDelegationApi?.();
+      this.#unregisterDelegationApi = undefined;
+      if (this.#options.closeMappingStoreOnExit !== false) {
+        await this.#repository.close().catch((closeError) => this.#diagnose(closeError));
+      }
       return 1;
     }
     let official: OfficialAppServerConnection;
@@ -562,11 +588,15 @@ export class AppServerHost {
     } catch (error) {
       this.#diagnose(`Official app-server connection failed: ${errorMessage(error)}`);
       await Promise.allSettled(
-        [...new Set(this.#externalAdapters.values())].map((adapter) => adapter.close()),
+        [...new Set(this.#externalAdapters.values())].map((adapter) =>
+          Promise.resolve().then(() => adapter.close()),
+        ),
       );
       if (this.#options.closeMappingStoreOnExit !== false) {
         await this.#repository.close().catch((closeError) => this.#diagnose(closeError));
       }
+      this.#unregisterDelegationApi?.();
+      this.#unregisterDelegationApi = undefined;
       return 1;
     }
     official.stderr.pipe(this.#options.diagnosticOutput, { end: false });
@@ -625,7 +655,9 @@ export class AppServerHost {
       await Promise.allSettled(threads.map(({ session }) => session.close()));
       await Promise.allSettled(threads.map(({ outputTask }) => outputTask));
       await Promise.allSettled(
-        [...new Set(this.#externalAdapters.values())].map((adapter) => adapter.close()),
+        [...new Set(this.#externalAdapters.values())].map((adapter) =>
+          Promise.resolve().then(() => adapter.close()),
+        ),
       );
       for (const pending of [...this.#pendingDesktopApprovals.values()]) {
         await this.#resolveDesktopApproval(pending.interaction.interactionId).catch(
@@ -727,12 +759,21 @@ export class AppServerHost {
         this.#dispatchDesktopRequest(() => this.#openHarnessWebUi(request));
         continue;
       }
-      if (request.method === "codexhost/deepseek/modern-session/list") {
-        this.#dispatchDesktopRequest(() => this.#listDeepSeekModernSessions(request));
+      if (request.method === "codexhost/harness/plugins/list") {
+        this.#dispatchDesktopRequest(async () => {
+          if (!harnessPluginListParamsSchema.safeParse(request.params).success) {
+            await this.#writer.json(
+              rpcError(request, -32602, "Invalid Harness plugin list params"),
+            );
+            return;
+          }
+          const result = harnessPluginListResultSchema.parse({ plugins: this.#pluginDescriptors });
+          await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(result) }));
+        });
         continue;
       }
-      if (request.method === "codexhost/deepseek/modern-session/import") {
-        this.#dispatchDesktopRequest(() => this.#importDeepSeekModernSession(request));
+      if (isSessionImportRequest(request.method)) {
+        this.#dispatchDesktopRequest(() => this.#handleSessionImport(request));
         continue;
       }
       if (request.method === "codexhost/thread/fork") {
@@ -761,6 +802,17 @@ export class AppServerHost {
       }
       if (request.method === "codexhost/thread/permission-mode/select") {
         await this.#selectThreadPermissionMode(request);
+        continue;
+      }
+      if (request.method === "codexhost/harness/commands/inspect") {
+        const params = harnessCommandsInspectParamsSchema.safeParse(request.params);
+        if (!params.success) {
+          await this.#writer.json(
+            rpcError(request, -32602, "Invalid Harness command inspection params"),
+          );
+        } else {
+          await this.#writeHarnessCommandCatalog(request, params.data.harnessId);
+        }
         continue;
       }
       if (request.method === "codexhost/thread/commands/inspect") {
@@ -1848,43 +1900,16 @@ export class AppServerHost {
     }
   }
 
-  async #listDeepSeekModernSessions(request: JsonRpcRequest): Promise<void> {
-    const params = deepSeekModernSessionListParamsSchema.safeParse(request.params);
-    if (!params.success) {
-      await this.#writer.json(rpcError(request, -32602, "Invalid DeepSeek Session list params"));
-      return;
-    }
-    const outcome = await this.#deepSeekModernSessionImporter.list();
-    if (!outcome.ok) {
-      await this.#writer.json(rpcError(request, outcome.error.code, outcome.error.message));
-      return;
-    }
-    const result = deepSeekModernSessionListResultSchema.safeParse({
-      candidates: outcome.candidates,
+  async #handleSessionImport(request: JsonRpcRequest): Promise<void> {
+    this.#sessionImportRequests ??= new SessionImportRequests({
+      adapters: this.#externalAdapters,
+      descriptors: () => this.#pluginDescriptors,
+      repository: this.#repository,
+      diagnose: (error) => this.#diagnose(error),
     });
-    if (!result.success) {
-      await this.#writer.json(rpcError(request, -32076, "DeepSeek Session list is invalid"));
-      return;
-    }
-    await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(result.data) }));
-  }
-
-  async #importDeepSeekModernSession(request: JsonRpcRequest): Promise<void> {
-    const params = deepSeekModernSessionImportParamsSchema.safeParse(request.params);
-    if (!params.success) {
-      await this.#writer.json(rpcError(request, -32602, "Invalid DeepSeek Session import params"));
-      return;
-    }
-    const outcome = await this.#deepSeekModernSessionImporter.import(params.data.nativeSessionId);
-    if (!outcome.ok) {
-      await this.#writer.json(rpcError(request, outcome.error.code, outcome.error.message));
-      return;
-    }
-    const notify = !this.#notifiedDeepSeekSessionImports.has(outcome.threadId);
-    if (notify) this.#notifiedDeepSeekSessionImports.add(outcome.threadId);
-    const result = deepSeekModernSessionImportResultSchema.parse({ threadId: outcome.threadId });
-    await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(result) }));
-    if (notify) await this.#notifyExternalThreadStarted(outcome.thread);
+    const response = await this.#sessionImportRequests.handle(request);
+    await this.#writer.json(rpcEnvelope(request, response.body));
+    if (response.importedThread) await this.#notifyExternalThreadStarted(response.importedThread);
   }
 
   async #inspectThread(request: JsonRpcRequest): Promise<void> {
@@ -2104,45 +2129,26 @@ export class AppServerHost {
       );
       return;
     }
-    const resolution = await this.#resolveExternalThread(params.data.threadId);
-    if (await this.#writeResolutionError(request, resolution)) return;
-    if (resolution.kind !== "external") {
+    const location = await this.#locateExternalThread(params.data.threadId);
+    if (await this.#writeResolutionError(request, location)) return;
+    if (location.kind !== "external") {
       await this.#writer.json(rpcEnvelope(request, { result: { commands: [] } }));
       return;
     }
-    const thread = resolution.thread;
-    const commands = thread.session.commands;
-    if (!commands) {
-      await this.#writer.json(rpcEnvelope(request, { result: { commands: [] } }));
-      return;
-    }
-    const access = this.#externalRuntime.beginSessionAccess(thread);
-    if (!access) {
-      await this.#writer.json(
-        rpcError(request, -32072, "External Thread history is being changed"),
-      );
-      return;
-    }
-    let result: Awaited<ReturnType<typeof commands.list>>;
-    try {
-      result = await commands.list();
-    } finally {
-      this.#externalRuntime.endSessionAccess(thread, access);
-    }
-    if (!result.ok) {
-      await this.#writer.json(rpcError(request, -32078, result.error.message));
+    await this.#writeHarnessCommandCatalog(request, location.record.harnessId);
+  }
+
+  async #writeHarnessCommandCatalog(request: JsonRpcRequest, harnessId: HarnessId): Promise<void> {
+    const adapter = this.#externalAdapters.get(harnessId);
+    if (!adapter) {
+      await this.#writer.json(rpcError(request, -32077, `Harness '${harnessId}' is unavailable`));
       return;
     }
     try {
-      await this.#writer.json(
-        rpcEnvelope(request, {
-          result: jsonValueSchema.parse(harnessCommandCatalogSchema.parse(result.value)),
-        }),
-      );
-    } catch (error) {
-      await this.#writer.json(
-        rpcError(request, -32078, `Harness command catalog is invalid: ${errorMessage(error)}`),
-      );
+      const catalog = harnessCommandCatalogSchema.parse(adapter.commandCatalog ?? { commands: [] });
+      await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(catalog) }));
+    } catch {
+      await this.#writer.json(rpcError(request, -32078, "Harness command catalog is invalid"));
     }
   }
 
@@ -3224,9 +3230,10 @@ export class AppServerHost {
       await this.#writer.json(rpcError(request, -32602, errorMessage(error)));
       return;
     }
-    const commandText = text.trimStart();
+    const commandCandidate = text.trimStart();
     const commands = thread.session.commands;
-    if (commands) {
+    if (commands && /^\/[^\s/]+(?:\s|$)/u.test(commandCandidate)) {
+      const commandText = commandCandidate.trimEnd();
       this.#pendingExternalCommandRequests.add(thread.id);
       try {
         const access = this.#externalRuntime.beginSessionAccess(thread);
@@ -3273,12 +3280,10 @@ export class AppServerHost {
           }
           return;
         }
-        if (/^\/[^\s/]+(?:\s|$)/u.test(commandText)) {
-          await this.#writer.json(
-            rpcError(request, -32078, "External Harness does not expose the requested command"),
-          );
-          return;
-        }
+        await this.#writer.json(
+          rpcError(request, -32078, "External Harness does not expose the requested command"),
+        );
+        return;
       } finally {
         this.#pendingExternalCommandRequests.delete(thread.id);
       }
@@ -3841,7 +3846,8 @@ export class AppServerHost {
     try {
       result = projection.projector.projectApproval(
         interaction,
-        approvalServerName(thread.harnessId),
+        this.#pluginDescriptors.find(({ id }) => id === thread.harnessId)?.name ??
+          approvalServerName(thread.harnessId),
       );
     } catch (error) {
       this.#diagnose(error);

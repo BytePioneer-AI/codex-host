@@ -1268,6 +1268,7 @@ class GrokHarnessSession implements HarnessSession {
 }
 
 export class GrokAdapter implements HarnessAdapter {
+  readonly commandCatalog = grokCommandCatalog;
   readonly harnessId: HarnessId = grokHarnessId;
   readonly #closeTimeoutMs: number;
   readonly #dependencies: GrokAdapterDependencies;

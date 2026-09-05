@@ -2,9 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   executeModernCommand,
-  listModernCommands,
   ModernCommandError,
-  parseModernCommandDescriptors,
   parseModernCommandExecution,
   type ModernCommandRemote,
 } from "../../src/modern/commands.js";
@@ -40,48 +38,6 @@ class FakeRemote implements ModernCommandRemote {
 }
 
 describe("DeepSeek Harness Modern native commands", () => {
-  it("lists the exact Session catalog and exposes only the shared reviewed whitelist", async () => {
-    const signal = new AbortController().signal;
-    const remote = new FakeRemote({
-      ok: true,
-      value: [
-        {
-          name: "goal",
-          description: "Set or view the goal",
-          input: { hint: "[objective]", images: true },
-        },
-        {
-          name: "permission",
-          description: "Select permissions",
-          input: { hint: "<preset>" },
-        },
-        { name: "compact", description: "Compact context" },
-        { name: "future", description: "Future command" },
-        {
-          name: "plan",
-          description: "Enter or leave plan mode",
-          input: { hint: "[off|message]", images: false },
-        },
-      ],
-    });
-
-    await expect(listModernCommands(remote, "session-1", signal)).resolves.toMatchObject({
-      commands: [
-        { id: "dsh.goal", invocation: "/dsh-goal", argumentMode: "text" },
-        { id: "dsh.compact", invocation: "/compact", argumentMode: "none" },
-        { id: "dsh.plan", invocation: "/plan", argumentMode: "text" },
-      ],
-    });
-    expect(remote.calls).toEqual([
-      {
-        endpoint: "commands/list",
-        args: { agentId: "session-1" },
-        signal,
-        options: undefined,
-      },
-    ]);
-  });
-
   it("executes the complete native line once with empty images and no transport timeout", async () => {
     const signal = new AbortController().signal;
     const line = "/goal edit  preserve spacing  ";
@@ -131,44 +87,6 @@ describe("DeepSeek Harness Modern native commands", () => {
       commandId: "cmd-1234abcd-2",
       result: { kind: "error", text: "busy" },
     });
-  });
-
-  it.each([
-    ["a non-array", {}],
-    ["an extra descriptor field", [{ name: "compact", description: "Compact", extra: true }]],
-    ["an invalid name", [{ name: "Compact", description: "Compact" }]],
-    ["an oversized name", [{ name: `a${"x".repeat(128)}`, description: "Command" }]],
-    ["a blank description", [{ name: "compact", description: " " }]],
-    ["an oversized description", [{ name: "compact", description: "x".repeat(513) }]],
-    [
-      "an extra input field",
-      [{ name: "goal", description: "Goal", input: { hint: "objective", extra: true } }],
-    ],
-    [
-      "an invalid images flag",
-      [{ name: "goal", description: "Goal", input: { hint: "objective", images: "yes" } }],
-    ],
-    [
-      "duplicate names",
-      [
-        { name: "compact", description: "First" },
-        { name: "compact", description: "Second" },
-      ],
-    ],
-  ])("rejects %s in commands/list", (_label, value) => {
-    expect(() => parseModernCommandDescriptors(value)).toThrowError(
-      expect.objectContaining({ code: "protocolError" }),
-    );
-  });
-
-  it("bounds the native catalog before parsing entries", () => {
-    const value = Array.from({ length: 1_025 }, () => ({
-      name: "compact",
-      description: "Compact",
-    }));
-    expect(() => parseModernCommandDescriptors(value)).toThrowError(
-      expect.objectContaining({ code: "limitExceeded" }),
-    );
   });
 
   it.each([
@@ -225,9 +143,12 @@ describe("DeepSeek Harness Modern native commands", () => {
     );
     Object.defineProperty(source, "cause", { enumerable: true, value: new Error(canary) });
 
-    const failure = await listModernCommands(new FakeRemote(source), "session-1").catch(
-      (error: unknown) => error,
-    );
+    const failure = await executeModernCommand(
+      new FakeRemote(source),
+      "session-1",
+      "/compact",
+      new AbortController().signal,
+    ).catch((error: unknown) => error);
     expect(failure).toMatchObject({ code: expectedCode, nativeCode: "api_key=[redacted]" });
     expect((failure as Error).cause).toBeUndefined();
     expect(JSON.stringify(failure)).not.toContain(canary);
@@ -279,9 +200,11 @@ describe("DeepSeek Harness Modern native commands", () => {
 
   it("drops raw exception messages and causes", async () => {
     const canary = "COMMAND_THROWN_SECRET_CANARY";
-    const failure = await listModernCommands(
+    const failure = await executeModernCommand(
       new FakeRemote(new Error(`api_key=${canary}`, { cause: new Error(canary) })),
       "session-1",
+      "/compact",
+      new AbortController().signal,
     ).catch((error: unknown) => error);
 
     expect(failure).toBeInstanceOf(ModernCommandError);

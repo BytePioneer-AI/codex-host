@@ -4,16 +4,16 @@
 
 **Codex Desktop에서 Pi와 다른 Harness를 실행하세요**
 
-저희는 **Codex Desktop**이 최고의 데스크톱 개발 경험 중 하나를 제공한다고 생각합니다.
+저희는 **Codex Desktop**이 현재 최고의 데스크톱 개발 경험을 제공한다고 생각합니다.
 
-하지만 **Codex**만이 뛰어난 **Agent Harness**인 것은 아닙니다. **Claude Code**나 **Pi Agent**를 선호하는 개발자도 있습니다.
+하지만 **Codex**만이 뛰어난 **Agent Harness**인 것은 아닙니다. **Claude Code**나 **Pi Agent**를 선호하는 사람도 있습니다.
 
-**codexhost**를 사용하면 **Codex Desktop**의 기본 경험을 유지하면서 실제 작업을 실행할 **Agent**를 선택하고, 여러 Agent가 함께 작업하도록 할 수 있습니다.
+**CodexHost**를 사용하면 **Codex Desktop**의 기본 경험을 유지하면서 실제 작업을 실행할 **Agent**를 선택하고, 여러 Agent가 함께 작업하도록 할 수 있습니다.
 
 ⭐ 이 프로젝트가 도움이 되었다면 Star를 눌러 주세요! ⭐
 
 <p>
-  <a href="https://opensource.org/licenses/MIT"><img alt="MIT 라이선스" src="https://img.shields.io/badge/license-MIT-1f6feb?logo=open-source-initiative&logoColor=white" /></a>
+  <a href="https://opensource.org/licenses/MIT"><img alt="license MIT" src="https://img.shields.io/badge/license-MIT-1f6feb?logo=open-source-initiative&logoColor=white" /></a>
   <a href="https://linux.do"><img alt="LINUX DO" src="https://shorturl.at/ggSqS" /></a>
 </p>
 
@@ -21,9 +21,11 @@
   <a href="https://pi.dev/"><img alt="Pi" src="https://img.shields.io/badge/Pi-000000?logo=pi&logoColor=white" /></a>
   <a href="https://openai.com/codex/"><img alt="Codex" src="imgs/badge-codex.svg" /></a>
   <a href="https://code.claude.com/docs/en/quickstart"><img alt="Claude Code" src="https://img.shields.io/badge/Claude_Code-D97757?logo=claudecode&logoColor=white" /></a>
+  <a href="https://opencode.ai/docs/"><img alt="OpenCode" src="imgs/badge-opencode.svg" /></a>
   <a href="https://github.com/deepseek-ai/deepseek-harness"><img alt="DeepSeek Harness" src="https://img.shields.io/badge/DeepSeek-4D6BFE?logo=deepseek&logoColor=white" /></a>
   <a href="https://grok.com/"><img alt="Grok" src="https://img.shields.io/badge/Grok-000000?logo=x&logoColor=white" /></a>
   <a href="https://github.com/can1357/oh-my-pi"><img alt="Oh My Pi" src="imgs/badge-omp-v5.svg" /></a>
+  <a href="https://antigravity.google/product/antigravity-cli"><img alt="AGY" src="imgs/badge-agy.svg" /></a>
 </p>
 
 <p align="center">
@@ -37,18 +39,23 @@
   <a href="#빠른-시작">빠른 시작</a> •
   <a href="#기능-상태">기능 상태</a> •
   <a href="#agent-간-협업">Agent 간 협업</a> •
-  <a href="#원격-harness">원격 Harness</a>
+  <a href="#원격-harness">원격 연결</a> •
+  <a href="#교류-그룹-참여">교류 그룹</a> •
+  <a href="#개발">개발</a>
 </p>
+
 
 ## 인터페이스 미리보기
 
-앱을 전환하지 않고도 **Pi, Claude Code, OMP, Grok Build, DeepSeek Harness**를 하나의 Codex Desktop 창에서 바로 사용할 수 있습니다.
+앱을 전환하지 않고도 **Pi, Claude Code, OpenCode, OMP, Grok Build, DeepSeek Harness**를 하나의 Codex Desktop 창에서 바로 사용할 수 있습니다.
 
 https://github.com/user-attachments/assets/c48192d7-23ff-4f6e-b61a-6345a655bb76
 
 ### 인터페이스
 
-![Codex Desktop에서 독립 Thread로 실행 중인 Pi, Oh My Pi, Grok Build, DeepSeek Harness](imgs/codexhost-interface-overview.png)
+<div align="center">
+  <img width="90%" src="imgs/codexhost-interface-overview.png" alt="Codex Desktop에서 독립 Thread로 실행 중인 Pi, Claude Code, OpenCode, Oh My Pi, Grok Build, DeepSeek Harness">
+</div>
 
 ## 빠른 시작
 
@@ -68,23 +75,21 @@ codexhost
 
 **macOS** - Apple 인증 문제
 
-처음 실행할 때 Apple이 앱을 확인할 수 없다는 메시지가 표시되면 다음을 실행하세요:
+처음 열 때 앱을 확인할 수 없다는 메시지가 표시되면 다음을 실행하세요:
 
 ```bash
 xattr -dr com.apple.quarantine /Applications/codexhost.app
 ```
 
-그런 다음 `codexhost`를 다시 실행하세요.
+**Windows** - 휴대용/압축 해제 Codex Desktop
 
-**Windows** - 휴대용 Codex Desktop
-
-휴대용 Codex Desktop을 사용하는 경우, codexhost를 실행하기 전에 `CODEXHOST_INSTALL_ROOT`를 `app\ChatGPT.exe`가 포함된 디렉터리로 설정하세요:
+휴대용 버전을 사용하는 경우 `CODEXHOST_INSTALL_ROOT`를 Codex Desktop의 압축 해제 디렉터리로 설정하세요:
 
 ```powershell
 [Environment]::SetEnvironmentVariable("CODEXHOST_INSTALL_ROOT", "D:\CodexPortable", "User")
 ```
 
-새 터미널을 열고 codexhost를 시작하세요.
+Codex Desktop을 완전히 종료한 뒤, 새 터미널을 열고 codexhost를 시작하세요.
 
 </details>
 
@@ -102,7 +107,7 @@ xattr -dr com.apple.quarantine /Applications/codexhost.app
   <tr>
     <td width="50%" valign="top">
       <p><strong>Agent 및 Model 선택</strong></p>
-      <img src="imgs/agent-harness-selector.png" alt="작업 제출 전에 실제 실행할 Agent와 Model을 선택할 수 있으며 Codex, Pi, Claude Code, DeepSeek Harness, Grok, Oh My Pi를 사용할 수 있습니다">
+      <img src="imgs/agent-harness-selector.png" alt="작업 제출 전에 실제 실행할 Agent와 Model을 선택할 수 있으며 Codex, Pi, Claude Code, OpenCode, DeepSeek Harness, Grok, Oh My Pi를 사용할 수 있습니다">
     </td>
     <td width="50%" valign="top">
       <p><strong>Usage 및 비용 정보</strong></p>
@@ -126,45 +131,50 @@ xattr -dr com.apple.quarantine /Applications/codexhost.app
 
 ## 기능 상태
 
-| 기능 | <a href="https://openai.com/codex/"><img alt="Codex" src="imgs/badge-codex.svg" /></a> | <a href="https://pi.dev/"><img alt="Pi" src="https://img.shields.io/badge/Pi-000000?logo=pi&logoColor=white" /></a> | <a href="https://github.com/can1357/oh-my-pi"><img alt="Oh My Pi" src="imgs/badge-omp-v5.svg" /></a> | <a href="https://code.claude.com/docs/en/quickstart"><img alt="Claude Code" src="https://img.shields.io/badge/Claude_Code-D97757?logo=claudecode&logoColor=white" /></a> | <a href="https://opencode.ai/docs/"><img alt="OpenCode" src="imgs/badge-opencode.svg" /></a> | <a href="https://grok.com/"><img alt="Grok" src="https://img.shields.io/badge/Grok-000000?logo=x&logoColor=white" /></a> | <a href="https://github.com/deepseek-ai/deepseek-harness"><img alt="DeepSeek Harness" src="https://img.shields.io/badge/DeepSeek-4D6BFE?logo=deepseek&logoColor=white" /></a> |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| 스트리밍 응답 | 기본 제공 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| 응답 생성 중 방향 조정 | 기본 제공 | — | — | — | ✅ (1.18.25 검증) | — | — |
-| 도구 상태 | 기본 제공 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Edit Diff | 기본 제공 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| 질문 / 취소 | 기본 제공 | ✅ | — / ✅ | ✅ | ✅ | ✅ | ✅ |
-| Model / Thinking 선택 | 기본 제공 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| 도구 승인 | 기본 제공 | ✅ | — | ✅ | ✅ | ✅ | ✅ |
-| 권한 모드 | 기본 제공 | — | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Agent 간 작업 협업 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Usage | 기본 제공 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Fork | 기본 제공 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| 컨텍스트 압축 | 기본 제공 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| 슬래시 명령 | 기본 제공 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| 이전 메시지 수정 | 기본 제공 | ✅ | ✅ | — | ✅ | — | — |
+| 기능 | <a href="https://openai.com/codex/"><img alt="Codex" src="imgs/badge-codex.svg" /></a> | <a href="https://pi.dev/"><img alt="Pi" src="https://img.shields.io/badge/Pi-000000?logo=pi&logoColor=white" /></a> | <a href="https://github.com/can1357/oh-my-pi"><img alt="Oh My Pi" src="imgs/badge-omp-v5.svg" /></a> | <a href="https://code.claude.com/docs/en/quickstart"><img alt="Claude Code" src="https://img.shields.io/badge/Claude_Code-D97757?logo=claudecode&logoColor=white" /></a> | <a href="https://opencode.ai/docs/"><img alt="OpenCode" src="imgs/badge-opencode.svg" /></a> | <a href="https://grok.com/"><img alt="Grok" src="https://img.shields.io/badge/Grok-000000?logo=x&logoColor=white" /></a> | <a href="https://github.com/deepseek-ai/deepseek-harness"><img alt="DeepSeek Harness" src="https://img.shields.io/badge/DeepSeek-4D6BFE?logo=deepseek&logoColor=white" /></a> | <a href="https://antigravity.google/product/antigravity-cli"><img alt="AGY" src="imgs/badge-agy.svg" /></a> |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 스트리밍 응답 | 기본 제공 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| 응답 생성 중 방향 조정 | 기본 제공 | — | — | — | ✅ (1.18.25 검증) | — | — | — |
+| 도구 상태 | 기본 제공 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Edit Diff | 기본 제공 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — |
+| 질문 / 취소 | 기본 제공 | ✅ | — / ✅ | ✅ | ✅ | ✅ | ✅ | — / ✅ |
+| Model / Thinking 선택 | 기본 제공 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| 도구 승인 | 기본 제공 | ✅ | — | ✅ | ✅ | ✅ | ✅ | — |
+| 권한 모드 | 기본 제공 | — | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Agent 간 작업 협업 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Usage | 기본 제공 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Fork | 기본 제공 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — |
+| 컨텍스트 압축 | 기본 제공 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — |
+| 슬래시 명령 | 기본 제공 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — |
+| 이전 메시지 수정 | 기본 제공 | ✅ | ✅ | — | ✅ | — | — | — |
+
+> **Antigravity 현재 상태:** 연동은 아직 보완 중이며, 작업 디렉터리는 현재 `~/.gemini/antigravity-cli/scratch`로 고정되어 있습니다.
 
 ## Agent 간 협업
 
-현재 Agent에게 독립 작업을 다른 Harness로 위임하도록 요청할 수 있습니다. 예를 들면 다음과 같습니다.
+현재 Agent에게 독립 작업을 다른 Harness로 넘기도록 요청할 수 있습니다. 예를 들면 다음과 같습니다.
 
-> `@claude-code`에게 이 변경 사항을 독립적으로 검토하고 호환성 위험을 찾도록 요청하세요.
+> `claude-code`에게 이 변경 사항을 독립적으로 검토하고 호환성 위험을 지적하도록 요청하세요.
 >
-> `@pi`에게 이 테스트가 간헐적으로 실패하는 원인을 조사하도록 요청하세요.
+> `pi`에게 이 테스트가 간헐적으로 실패하는 원인을 조사하도록 요청하세요.
 >
-> 제가 문서를 정리하는 동안 `@omp`에게 이 기능을 구현하도록 요청하세요.
+> 제가 문서를 정리하는 동안 `omp`에게 이 기능을 구현하도록 요청하세요.
+>
+> `opencode`에게 독립 Thread에서 이 수정을 검증하고 관련 테스트를 실행하도록 요청하세요.
 
-codexhost는 대상 Harness를 위한 별도의 Native Session을 만듭니다. 위임된 Session은 Codex Desktop의 대화 목록에 표시되며, 언제든 열어서 진행 상황을 확인하거나 대화를 이어갈 수 있습니다.
+CodexHost는 대상 Harness를 위한 별도의 Native Session을 만듭니다. 위임된 Session은 Codex Desktop의 대화 목록에 표시되며, 언제든 열어서 진행 상황을 확인하거나 대화를 이어갈 수 있습니다.
 
 <details>
 <summary><h3 id="원격-harness">원격 Harness</h3></summary>
 
-로컬 Codex Desktop에서 원격 노드의 Harness를 사용하여 원격 컴퓨터에서 작업을 실행하면서 Codex Desktop의 통합 인터페이스를 계속 사용할 수 있습니다. 양쪽 끝에 동일한 버전의 codexhost를 설치해야 합니다.
+
+로컬 Codex Desktop에서 원격 노드의 Harness를 사용하여, 원격 컴퓨터에서 작업을 실행하면서 Codex Desktop의 통합 인터페이스를 계속 사용할 수 있습니다. 양쪽 끝에 동일한 버전의 codexhost를 설치해야 합니다.
 
 **두 가지 연결 방식을 지원합니다:**
 
 #### 1️⃣ SSH 원격 (Mac/Linux 서버에 권장)
 
-Codex Desktop의 기본 SSH 작업 공간을 통해 SSH를 통해 다른 개발 노드의 Harness에 연결하고 제어할 수 있습니다.
+SSH를 통해 다른 개발 노드의 Harness에 연결하고 제어합니다. Codex Desktop의 기본 SSH 작업 공간이 필요합니다.
 
 | 클라이언트 ↓ / 원격 Host → | macOS | Linux | Windows |
 | --- | --- | --- | --- |
@@ -181,33 +191,80 @@ codexhost remote start
 codexhost remote status
 ```
 
-그런 다음 로컬 codexhost를 통해 Codex Desktop을 시작하고 SSH 작업 공간을 연 뒤, 원격 composer의 Agent/Model 선택기에서 원하는 Harness를 선택하세요.
+그런 다음 로컬 codexhost를 통해 Codex Desktop을 시작하고 SSH 작업 공간을 연 뒤, 원격 입력창의 Agent/Model 선택기에서 원하는 Harness를 선택하세요.
 
-[SSH 원격 설정, 진단 및 제거 문서 보기 →](remote-ssh-host.md)
+[SSH 설정, 진단 및 제거 문서 보기 →](remote-ssh-host.md)
 
 #### 2️⃣ Remote Control 원격 (실험 · Windows에 권장)
 
-Windows가 제어 대상 Host인 경우, codexhost는 Codex Desktop의 공식 페어링, 계정 인증 및 relay를 유지하면서 Windows에 설치되고 인증된 Harness를 이미 페어링된 다른 컴퓨터의 Codex Desktop에서 사용할 수 있습니다. 두 컴퓨터 모두 동일한 codexhost 빌드가 필요하며, 공식 Remote Control을 통해 기본 Codex가 이미 작동해야 합니다.
+Windows가 제어 대상 Host인 경우, Codex Desktop의 공식 페어링, 계정 인증 및 relay를 유지하면서 이미 페어링된 다른 컴퓨터의 Codex Desktop에서 Windows의 Harness를 사용할 수 있습니다. 공식 Remote Control에서 기본 Codex 작업이 이미 실행 가능해야 합니다.
 
-이 연결 방식은 공개 서비스나 TCP 리스너를 추가하지 않습니다. Harness 자격 증명은 제어 대상 Windows 컴퓨터에 그대로 유지됩니다.
+이 연결 방식은 공개 서비스나 TCP 포트를 추가하지 않습니다. Harness 자격 증명은 제어 대상 Windows 컴퓨터에 그대로 유지됩니다.
 
-[Remote Control 요구 사항, 전송 경계 및 진단 →](remote-control-host.md)
+[Remote Control 설정, 전송 경계 및 진단 →](remote-control-host.md)
 
 </details>
 
 <details>
 <summary><h3>작동 방식</h3></summary>
 
-대부분의 멀티 에이전트 클라이언트는 [ACP](https://agentclientprotocol.com/) 프로토콜을 통해 여러 Harness를 연결합니다. 통합은 빠르지만 도구, 승인, 권한, Diff, 질문과 같은 기본 기능이 먼저 공통분모로 축소된 후 UI에서 다시 근사하게 구현됩니다.
+대부분의 멀티 에이전트 클라이언트는 [ACP](https://agentclientprotocol.com/) 프로토콜을 통해 여러 Harness를 연결합니다. 통합은 빠르지만 도구, 승인, 권한, Diff, 질문과 같은 기본 기능이 먼저 평탄화됩니다.
 
-codexhost는 다른 방식을 사용합니다.
+CodexHost는 가능한 한 이 길을 피합니다.
 
-- **Desktop 계층**: CDP / Electron Inspector를 사용해 공식 Codex Desktop에 Agent 선택과 Session 제어 기능을 추가합니다. 채팅 UI를 다시 만들지 않으며 공식 설치 프로그램도 수정하지 않습니다.
-- **프로토콜 계층**: CLI Shim을 사용해 공식 app-server에 투명하게 연결하고 Codex 요청을 변경 없이 전달합니다.
-- **Harness 계층**: 각 Harness의 기본 인터페이스를 사용합니다. Pi는 공식 RPC를 사용하고 Claude Code는 Agent SDK / CLI를 사용합니다. 각 Harness의 결과는 Desktop의 스트리밍 출력, 도구, Diff, 승인 및 질문 UI에 반영됩니다.
-- **오케스트레이션 계층**: 위임할 Harness를 위한 별도 Native Session과 일반 쓰기 가능 Thread를 만들고 위임 관계를 따로 저장합니다. 생성과 결과 확인을 분리하므로, 시작한 Agent가 결과를 읽거나 기다리거나 백그라운드에서 계속 실행할지 명시적으로 선택합니다.
+- **Desktop 측**: CDP / Electron Inspector를 사용해 공식 Codex Desktop에 Agent 선택과 세션 UI를 더합니다. 채팅 셸을 다시 만들지 않으며 공식 설치 프로그램도 수정하지 않습니다.
+- **프로토콜 측**: CLI Shim을 사용해 공식 app-server에 투명하게 연결하고 Codex 요청을 그대로 전달합니다.
+- **Harness 측**: 각 Harness의 기본 인터페이스로 연동합니다. Pi는 공식 RPC를, Claude Code는 Agent SDK / CLI를 사용한 뒤 Desktop의 기존 스트리밍 출력, 도구, Diff, 승인 및 질문에 투영합니다.
+- **오케스트레이션 측**: 위임할 Harness를 위한 별도 Native Session과 일반 쓰기 가능 Thread를 만들고 위임 관계를 따로 저장합니다. 생성과 결과 관찰을 분리하므로, 시작한 쪽이 읽기, 대기, 또는 백그라운드 실행을 명시적으로 선택합니다.
 
-목표는 단순히 대화가 가능하게 만드는 것이 아니라 높은 충실도를 유지하는 것입니다. 스트리밍, 도구 상태, 안정적인 Patch, 기본 승인과 질문은 가능한 한 Host가 추측하거나 만들어 내지 않고 Harness 자체에서 제공됩니다.
+목표는 단순히 대화가 가능하게 만드는 것이 아니라 충실도를 유지하는 것입니다. 스트리밍, 도구 상태, 안정적인 Patch, 기본 승인과 질문은 가능한 한 Host가 추측하거나 만들어 내지 않고 Harness 자체에서 제공됩니다.
+
+</details>
+
+## 교류 그룹 참여
+
+<table align="center">
+  <tr>
+    <td>
+      <strong>교류 그룹 참여</strong><br />
+      <sub>CodexHost 사용법과 기능에 관심 있는 개발자는 QR 코드를 스캔해 위챗 그룹에 참여할 수 있습니다.</sub>
+      <ul>
+        <li><sub>설치 문제는 그룹에서 질문할 수 있습니다</sub></li>
+        <li><sub>기능 제안과 피드백</sub></li>
+        <li><sub>개발 관련 논의</sub></li>
+        <li><sub>버그는 <strong>issue</strong>로 제출해 주세요</sub></li>
+      </ul>
+      <sub><strong>함께 기여해 주세요.</strong></sub>
+    </td>
+    <td align="center">
+      <img width="230" alt="위챗 그룹 QR 코드" src="https://github.com/user-attachments/assets/e40b162e-a961-43ac-9728-af59890c4d72" />
+    </td>
+  </tr>
+</table>
+
+## 개발
+
+환경 요구 사항: 공식 Codex Desktop, Node.js 22.19+ 또는 24, Rust.
+
+```bash
+git clone https://github.com/BytePioneer-AI/codex-host
+cd codex-host
+npm ci
+npm start
+```
+
+### 실행 아키텍처
+
+Pi를 예로 듭니다. 왼쪽에서 오른쪽이 한 번의 요청 호출 체인입니다: Desktop → 공용 계층 → Pi 플러그인 → 네이티브 프로세스.
+
+<div align="center">
+  <img width="100%" src="imgs/pi-runtime-architecture.png" alt="Pi를 예로 든 실행 아키텍처: Desktop에서 공용 계층, 이어서 Pi 플러그인과 네이티브 프로세스">
+</div>
+
+### Harness 추가
+
+주요 작업은 플러그인의 Manifest, 팩토리, Adapter, Session 및 네이티브 통신과 변환 로직을 구현하는 것입니다. 현재 Renderer에는 여전히 정적 연결이 있어, 완전한 Desktop 연동은 별도로 처리해야 합니다.
+Harness를 추가할 때는 코딩 Agent가 저장소의 [codexhost-add-harness Skill](../.agents/skills/codexhost-add-harness/SKILL.md)을 사용하도록 할 수 있습니다. 플러그인 구조, 공용 Adapter 인터페이스, 기능 구현과 테스트 요구 사항을 설명합니다.
 
 ## 감사의 글
 

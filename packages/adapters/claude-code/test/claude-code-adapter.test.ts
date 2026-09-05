@@ -3867,6 +3867,128 @@ describe("Claude Code HarnessAdapter", () => {
     await session.close();
   });
 
+  it.each(["approve", "stay", "cancel"] as const)(
+    "presents ExitPlanMode as an explicit plan review and maps %s to the native permission decision",
+    async (choice) => {
+      const { adapter, transports } = fixture();
+      const session = await openSession(adapter);
+      const iterator = session.outputs[Symbol.asyncIterator]();
+      await session.execute(textTurn("plan-review"));
+      await nextEvent(iterator);
+      await nextEvent(iterator);
+      await nextEvent(iterator);
+      const transport = transports[0];
+      if (!transport) throw new Error("Fake Claude transport was not created");
+      transport.changePermissionMode("plan");
+      await nextEvent(iterator);
+      const plan = `# Implementation plan\n${"Read, edit, verify.\n".repeat(100)}`;
+      transport.event({
+        type: "interaction.requested",
+        request: { type: "planApproval", requestId: "exit-plan", plan },
+      });
+      const interaction = await nextInteraction(iterator);
+      expect(interaction).toMatchObject({
+        type: "question",
+        title: "Review plan",
+        questions: [
+          {
+            id: "plan-decision",
+            type: "choice",
+            multiple: false,
+            allowOther: false,
+            optional: false,
+            options: [
+              { value: "stay", label: "Stay in plan mode" },
+              { value: "approve", label: "Approve plan and exit plan mode" },
+            ],
+          },
+        ],
+      });
+      if (interaction.type !== "question") throw new Error("Expected a plan review Question");
+      expect(interaction.questions[0]?.prompt).toContain(plan);
+      expect(interaction.questions[0]?.prompt).toContain(
+        "restore the permission mode used before planning",
+      );
+      for (const response of [
+        { type: "approval" as const, actionId: "allowOnce" },
+        { type: "question" as const, answers: { "plan-decision": ["allowOnce"] } },
+        { type: "question" as const, answers: { "plan-decision": ["approve", "stay"] } },
+        { type: "question" as const, answers: {} },
+      ]) {
+        await expect(
+          session.execute({
+            type: "interaction.respond",
+            interactionId: interaction.interactionId,
+            response,
+          }),
+        ).resolves.toMatchObject({ ok: false, error: { code: "invalidRequest" } });
+      }
+      expect(transport.respondToInteraction).not.toHaveBeenCalled();
+      await expect(
+        session.execute({
+          type: "interaction.respond",
+          interactionId: interaction.interactionId,
+          response:
+            choice === "cancel"
+              ? { type: "question", answers: {}, cancelled: true }
+              : { type: "question", answers: { "plan-decision": [choice] } },
+        }),
+      ).resolves.toMatchObject({ ok: true });
+      expect(transport.respondToInteraction).toHaveBeenLastCalledWith({
+        type: "approval",
+        requestId: "exit-plan",
+        decision: choice === "approve" ? "allowOnce" : "deny",
+      });
+      expect(transport.setPermissionMode).not.toHaveBeenCalled();
+      expect(await nextEvent(iterator)).toMatchObject({
+        type: "interaction.closed",
+        interactionId: interaction.interactionId,
+      });
+      await expect(
+        session.execute({
+          type: "interaction.respond",
+          interactionId: interaction.interactionId,
+          response: { type: "question", answers: { "plan-decision": ["approve"] } },
+        }),
+      ).resolves.toMatchObject({ ok: false, error: { code: "invalidState" } });
+      transport.finish({ status: "succeeded" });
+      await session.close();
+    },
+  );
+
+  it("does not offer plan approval when Claude provides no plan text", async () => {
+    const { adapter, transports } = fixture();
+    const session = await openSession(adapter);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+    await session.execute(textTurn("missing-plan"));
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    transports[0]?.event({
+      type: "interaction.requested",
+      request: { type: "planApproval", requestId: "exit-plan", plan: null },
+    });
+    const interaction = await nextInteraction(iterator);
+    expect(interaction).toMatchObject({
+      type: "question",
+      questions: [{ options: [{ value: "stay" }] }],
+    });
+    if (interaction.type !== "question" || interaction.questions[0]?.type !== "choice")
+      throw new Error("Expected plan choice");
+    expect(interaction.questions[0].options).toHaveLength(1);
+    expect(interaction.questions[0].prompt).toContain("did not provide plan text");
+    await expect(
+      session.execute({
+        type: "interaction.respond",
+        interactionId: interaction.interactionId,
+        response: { type: "question", answers: { "plan-decision": ["approve"] } },
+      }),
+    ).resolves.toMatchObject({ ok: false, error: { code: "invalidRequest" } });
+    expect(transports[0]?.respondToInteraction).not.toHaveBeenCalled();
+    transports[0]?.finish({ status: "succeeded" });
+    await session.close();
+  });
+
   it("maps independent native Approvals to bounded Host actions and exact responses", async () => {
     const { adapter, transports } = fixture();
     const session = await openSession(adapter);

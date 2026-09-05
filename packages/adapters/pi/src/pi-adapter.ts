@@ -16,6 +16,8 @@ import {
   type HarnessResult,
   type HarnessSession,
   type HarnessSessionCapabilities,
+  type HarnessSessionImportCapability,
+  type HarnessSessionImportSource,
   type HarnessSessionState,
   type HarnessThinkingOptionId,
   type InspectHarnessInput,
@@ -72,6 +74,7 @@ import {
 
 import { mapPiSnapshot, resolvePiForkBoundary, type PiSessionHistory } from "./pi-history.js";
 import { rollbackPiLastTurn } from "./pi-last-turn-rollback.js";
+import { PiSessionImportIndex } from "./pi-session-import.js";
 import {
   PiRpcFaultError,
   PiRpcSession,
@@ -1869,7 +1872,38 @@ class PiHarnessSession implements HarnessSession {
 }
 
 export class PiAdapter implements HarnessAdapter {
+  readonly commandCatalog = piCommandCatalog;
   readonly harnessId: HarnessId = piHarnessId;
+  readonly sessionImport = Object.freeze({
+    listCandidates: async () => {
+      const result = await this.#readImport((signal) => this.#importIndex.list(signal));
+      return result.ok
+        ? { ok: true as const, value: result.value.map(({ candidate }) => candidate) }
+        : result;
+    },
+    resolveCandidate: async (
+      nativeSessionId: string,
+    ): Promise<HarnessResult<HarnessSessionImportSource>> => {
+      const result = await this.#readImport((signal) =>
+        this.#importIndex.resolve(nativeSessionId, signal),
+      );
+      if (!result.ok) return result;
+      const source = result.value;
+      return source
+        ? { ok: true, value: source }
+        : {
+            ok: false,
+            error: {
+              code: "sessionNotFound",
+              message: "Pi Session is no longer importable",
+              retryable: false,
+            },
+          };
+    },
+  } satisfies HarnessSessionImportCapability);
+  readonly #importIndex: PiSessionImportIndex;
+  readonly #importAbort = new AbortController();
+  readonly #importRequests = new Set<Promise<unknown>>();
   readonly #closeTimeoutMs: number;
   readonly #createTransport: PiAdapterDependencies["createTransport"];
   readonly #inspectionCache = new Map<string, Extract<HarnessInspection, { status: "ready" }>>();
@@ -1887,8 +1921,28 @@ export class PiAdapter implements HarnessAdapter {
     },
   ) {
     this.#createTransport = dependencies.createTransport;
+    this.#importIndex = new PiSessionImportIndex({ ...process.env, ...options.environment });
     this.#closeTimeoutMs = options.closeTimeoutMs ?? 2_000;
     this.#toolOutputLimit = options.toolOutputLimit ?? DEFAULT_TOOL_OUTPUT_LIMIT;
+  }
+
+  #readImport<T>(operation: (signal: AbortSignal) => Promise<T>): Promise<HarnessResult<T>> {
+    if (this.#importAbort.signal.aborted)
+      return Promise.resolve({ ok: false, error: invalidState("Pi Adapter is closed") });
+    const request = operation(this.#importAbort.signal)
+      .then((value): HarnessResult<T> => ({ ok: true, value }))
+      .catch((): HarnessResult<T> => ({
+        ok: false,
+        error: {
+          code: "unavailable",
+          message:
+            "Pi Session discovery failed; check storage access and duplicate Session identities, then retry after closing native clients",
+          retryable: true,
+        },
+      }))
+      .finally(() => this.#importRequests.delete(request));
+    this.#importRequests.add(request);
+    return request;
   }
 
   async inspect(input: InspectHarnessInput = {}): Promise<HarnessInspection> {
@@ -2194,7 +2248,9 @@ export class PiAdapter implements HarnessAdapter {
 
   close(): Promise<void> {
     if (!this.#closePromise) {
+      this.#importAbort.abort();
       this.#closePromise = Promise.all([
+        ...this.#importRequests,
         ...[...this.#inspections].map((transport) => transport.close()),
         ...[...this.#sessions].map((session) => session.close()),
       ]).then(() => undefined);

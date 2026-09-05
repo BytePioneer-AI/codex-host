@@ -1,6 +1,32 @@
 import { z } from "zod";
 import { WORKSPACE_CONTRACT_VERSION } from "./version.js";
 
+export {
+  HARNESS_PLUGIN_ROUTE_PREFIX,
+  decodeHarnessPluginRoute,
+  encodeHarnessPluginRoute,
+  harnessPluginRouteSchema,
+} from "./harness-route.js";
+export type { HarnessPluginRoute } from "./harness-route.js";
+export {
+  HARNESS_PLUGIN_API_VERSION,
+  HARNESS_PLUGIN_ICON_MAX_BYTES,
+  HARNESS_PLUGIN_LIMIT,
+  HARNESS_PLUGIN_MANIFEST_MAX_BYTES,
+  harnessPluginConfigurationSchema,
+  harnessPluginDescriptorSchema,
+  harnessPluginIconSchema,
+  harnessPluginIdSchema,
+  harnessPluginListParamsSchema,
+  harnessPluginListResultSchema,
+  harnessPluginManifestSchema,
+} from "./harness-plugins.js";
+export type {
+  HarnessPluginConfiguration,
+  HarnessPluginDescriptor,
+  HarnessPluginListResult,
+  HarnessPluginManifest,
+} from "./harness-plugins.js";
 export { codexhostErrorSchema } from "./errors.js";
 export { REASONING_TRANSCRIPT_COMMAND } from "./reasoning-transcript.js";
 export type { CodexhostError } from "./errors.js";
@@ -11,9 +37,23 @@ export {
   HARNESS_SESSION_IMPORT_TITLE_MAX_LENGTH,
   HARNESS_SESSION_IMPORT_UPDATED_AT_MAX,
   harnessSessionImportCandidateSchema,
+  HARNESS_SESSION_IMPORT_DEFAULT_PAGE_SIZE,
   harnessSessionImportIdSchema,
+  harnessSessionImportSourcesParamsSchema,
+  harnessSessionImportSourcesResultSchema,
+  harnessSessionListParamsSchema,
+  harnessSessionListResultSchema,
+  harnessSessionImportParamsSchema,
+  harnessSessionImportResultSchema,
 } from "./harness-session-import.js";
-export type { HarnessSessionImportCandidate } from "./harness-session-import.js";
+export type {
+  HarnessSessionImportCandidate,
+  HarnessSessionImportSourcesResult,
+  HarnessSessionListParams,
+  HarnessSessionListResult,
+  HarnessSessionImportParams,
+  HarnessSessionImportResult,
+} from "./harness-session-import.js";
 export {
   DEEPSEEK_MODERN_HOST_THREAD_ID_MAX_LENGTH,
   DEEPSEEK_MODERN_SESSION_CWD_MAX_LENGTH,
@@ -111,6 +151,7 @@ export type {
 export {
   harnessCommandCatalogSchema,
   harnessCommandDescriptorSchema,
+  harnessCommandsInspectParamsSchema,
   threadCommandExecuteParamsSchema,
   threadCommandExecuteResultSchema,
   threadCommandsInspectParamsSchema,
@@ -118,6 +159,7 @@ export {
 export type {
   HarnessCommandCatalog,
   HarnessCommandDescriptor,
+  HarnessCommandsInspectParams,
   ThreadCommandExecuteParams,
   ThreadCommandExecuteResult,
   ThreadCommandsInspectParams,

@@ -36,12 +36,20 @@ export interface RendererSettingsMessages {
   readonly sessionImportRefreshing: string;
   readonly sessionImportUnavailable: string;
   readonly sessionImportEmpty: string;
+  readonly sessionImportSearch: string;
+  readonly sessionImportSearchPlaceholder: string;
+  readonly sessionImportNoMatches: string;
+  readonly sessionImportPageSize: string;
+  readonly sessionImportPrevious: string;
+  readonly sessionImportNext: string;
+  readonly sessionImportPageSummary: string;
   readonly sessionImportLoadFailed: string;
   readonly sessionImportFailed: string;
   readonly sessionImportUntitled: string;
   readonly sessionImportUpdatedAt: string;
   readonly sessionImportSessionId: string;
   readonly sessionImportRunning: string;
+  readonly sessionImportRunningUnknown: string;
   readonly sessionImportRunningHint: string;
   readonly sessionImportAction: string;
   readonly sessionImportImporting: string;
@@ -164,19 +172,29 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   sessionImportDescription:
     "Sessions keep their original project path. If a folder is not in the Codex sidebar, add it as a project first. Original history remains managed by the Harness.",
   sessionImportAvailabilityNote:
-    "Currently, only DeepSeek Harness Modern sessions can be imported. Support for other Harnesses is coming later.",
+    "Available Harnesses come from the local Host. If activity is unknown, close the session in its native client before importing to avoid concurrent writes.",
   sessionImportRefresh: "Refresh",
   sessionImportRefreshing: "Loading local sessions...",
   sessionImportUnavailable:
-    "Session import requires a local, codexhost-managed DeepSeek Harness 0.1.2-rc.1 Modern runtime.",
-  sessionImportEmpty: "No local DeepSeek Harness sessions are available to import.",
-  sessionImportLoadFailed: "Local sessions could not be loaded.",
+    "Session import is unavailable for this local Harness or its current protocol. Update the Host/plugin or choose another Harness.",
+  sessionImportEmpty: "No local sessions are available to import.",
+  sessionImportSearch: "Search",
+  sessionImportSearchPlaceholder: "Search titles, session IDs or project paths",
+  sessionImportNoMatches: "No sessions match your search.",
+  sessionImportPageSize: "Per page",
+  sessionImportPrevious: "Previous",
+  sessionImportNext: "Next",
+  sessionImportPageSummary: "Page {page} of {pages} · {total} sessions",
+  sessionImportLoadFailed:
+    "Local sessions could not be loaded. Check directory access or duplicate session IDs, then retry.",
   sessionImportFailed: "The session could not be imported.",
   sessionImportUntitled: "Untitled session",
   sessionImportUpdatedAt: "Updated",
   sessionImportSessionId: "Session ID",
   sessionImportRunning: "Running",
-  sessionImportRunningHint: "Stop this session in DSH, then refresh.",
+  sessionImportRunningUnknown: "Activity unknown",
+  sessionImportRunningHint:
+    "Close this session in its native client before importing, then refresh.",
   sessionImportAction: "Import and open",
   sessionImportImporting: "Importing...",
   sessionImportImported: "Session imported",
@@ -316,19 +334,27 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   sessionImportDescription:
     "会话将保留原始项目路径；若该文件夹尚未出现在 Codex 侧栏，请先将其添加为项目。原始历史仍由 Harness 管理。",
   sessionImportAvailabilityNote:
-    "当前仅支持导入 DeepSeek Harness Modern 会话；其他 Harness 的会话导入能力敬请期待。",
+    "可选 Harness 来自本地 Host。运行状态未知时，请先在原生客户端关闭该会话再导入，避免同时写入。",
   sessionImportRefresh: "刷新",
   sessionImportRefreshing: "正在读取本地会话……",
   sessionImportUnavailable:
-    "会话导入仅支持本地、由 codexhost 管理的 DeepSeek Harness 0.1.2-rc.1 Modern 运行时。",
-  sessionImportEmpty: "没有可导入的本地 DeepSeek Harness 会话。",
-  sessionImportLoadFailed: "无法读取本地会话。",
+    "本地 Harness 或当前协议暂不支持会话导入，请更新 Host/插件或选择其他 Harness。",
+  sessionImportEmpty: "没有可导入的本地会话。",
+  sessionImportSearch: "搜索",
+  sessionImportSearchPlaceholder: "搜索标题、会话 ID 或项目路径",
+  sessionImportNoMatches: "没有匹配的会话。",
+  sessionImportPageSize: "每页",
+  sessionImportPrevious: "上一页",
+  sessionImportNext: "下一页",
+  sessionImportPageSummary: "第 {page} / {pages} 页 · 共 {total} 条",
+  sessionImportLoadFailed: "无法读取本地会话，请检查目录访问权限或重复的会话 ID 后重试。",
   sessionImportFailed: "无法导入该会话。",
   sessionImportUntitled: "未命名会话",
   sessionImportUpdatedAt: "更新时间",
   sessionImportSessionId: "会话 ID",
   sessionImportRunning: "运行中",
-  sessionImportRunningHint: "请先在 DSH 中停止该会话，然后刷新。",
+  sessionImportRunningUnknown: "运行状态未知",
+  sessionImportRunningHint: "请先在原生客户端关闭该会话，再刷新并导入。",
   sessionImportAction: "导入并打开",
   sessionImportImporting: "正在导入……",
   sessionImportImported: "会话已导入",

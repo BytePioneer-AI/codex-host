@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 
+import { deepSeekHarnessCommandCatalog } from "../harness-commands.js";
+
 import {
   sanitizeDiagnosticTail,
   type HarnessAdapter,
@@ -126,6 +128,7 @@ const DEFAULT_DEPENDENCIES: ModernDeepSeekHarnessAdapterDependencies = {
 
 /** Exact Modern Adapter assembly over the managed Web Remote. */
 export class ModernDeepSeekHarnessAdapter implements HarnessAdapter {
+  readonly commandCatalog = deepSeekHarnessCommandCatalog();
   readonly harnessId: HarnessId = DEEPSEEK_HARNESS_ID;
   readonly sessionImport: HarnessSessionImportCapability = Object.freeze({
     listCandidates: () => this.#listSessionImportCandidates(),

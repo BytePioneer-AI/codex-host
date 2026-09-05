@@ -19,7 +19,7 @@ Use `none` when the command has no argument and `text` when it accepts trailing 
 
 ## 2. Register it in the owning Adapter
 
-Add the descriptor to the Adapter's command catalog. Implement execution in that Adapter and validate:
+Declare a static `HarnessAdapter.commandCatalog`. Reading this metadata must not call `inspect()`, connect to a native service, or open a Session. Keep `session.commands.list()` consistent with this catalog for existing execution clients. Implement execution in the owning Adapter and validate:
 
 - command ID;
 - argument shape;
@@ -41,9 +41,11 @@ For commands with visible progress, decide explicitly whether they need:
 
 ## 4. Reuse Host and Renderer routing
 
-The shared command catalog and Host command RPC should not need command-specific branches. The Renderer should consume the catalog through the Composer's independent Harness Commands button and popover. Selecting an argument-free command executes it directly; selecting a text command prefixes its invocation in the current editor and leaves the draft and attachments in place for the ordinary submit path.
+The Renderer reads static metadata via `codexhost/harness/commands/inspect { harnessId }`, through the target Host and public Adapter contract. No Thread or Native Session is needed, and there is no native-discovery fallback. The legacy Thread catalog RPC also reads Adapter metadata without opening or resuming a Session. The independent Composer popover has no Harness-specific catalog branches. Selecting `/compact` always executes directly with no text arguments, leaving the current draft and attachments untouched, even when the Harness supports optional compaction instructions. Other text commands prefix their invocation in the current editor, including before the first Turn, preserving the draft and attachments for ordinary submission. Direct commands (`/compact` and argument-free commands) execute only when a Thread exists; otherwise their menu items are disabled with an explanation, while the menu and other text commands remain available. Manually submitted `/compact` text retains the Adapter's existing argument support.
 
-The command button belongs to the active external Harness controls, near the Composer's left-side actions. It MUST remain outside the Codex React-managed Slash command list; the independent popover owns its own focus, keyboard navigation, positioning, and scrolling.
+The command button belongs to the active external Harness controls, near the Composer's left-side actions. It remains visible before a Thread exists and while the command catalog is empty or unavailable; in those states it is disabled with a localized availability hint. Only command execution requires a Thread; catalog inspection does not. Switching to Codex hides the external Harness command button and closes its popover. It MUST remain outside the Codex React-managed Slash command list; the independent popover owns its own focus, keyboard navigation, positioning, and scrolling.
+
+For typed submission, the Host first checks for a leading slash-command token (ignoring leading whitespace). Only command candidates have trailing whitespace removed before catalog matching; ordinary prompts retain their original text and skip command catalog inspection. Unknown slash commands are rejected.
 
 Only add Renderer-specific code when the command needs a new presentation or interaction.
 
@@ -74,11 +76,12 @@ For native RPC changes, also verify the request and event sequence against the r
 ## Current examples: Pi, Grok, Claude, and DeepSeek commands
 
 ```text
-Renderer command catalog
+Adapter static commandCatalog (no native request or Session)
+  -> Host harness/commands/inspect
   -> Composer Harness Commands button
   -> independent command popover
-  -> argumentMode none: fixed Host command/execute
-     argumentMode text: prefix the Composer, then ordinary turn/start
+  -> /compact or argumentMode none: fixed Host command/execute (no arguments)
+     other argumentMode text: prefix the Composer, then ordinary turn/start
   -> current Host catalog validation
   -> owning Adapter
        Pi:     native { type: "compact" }
@@ -87,7 +90,7 @@ Renderer command catalog
                /compact  context compaction
                /init     generate CLAUDE.md
                /recap    one-line session recap
-       DeepSeek: commands/list for the current Native Session
+       DeepSeek: fixed Adapter catalog
                  /compact
                  /dsh-goal [<objective>|clear|edit <objective>|pause|resume]
                    -> native /goal
@@ -102,7 +105,9 @@ maps it to custom summarization instructions. `/init` and `/recap` take no
 arguments. These commands invoke Harness-native operations and must not be
 submitted as Host text Turns.
 
-DeepSeek is dynamic rather than a fixed catalog. The Adapter preserves the relative order of the current Session's native `commands/list` response and maps only valid `compact`, `goal`, and `plan` descriptors to stable codexhost IDs. Missing or incompatible entries disappear; malformed catalogs fail explicitly. Native `feedback` conflicts with Codex Desktop's built-in command of the same name and is not exposed. Native `permission` and `export`, the Client-side `/model`, and unknown future commands are also not exposed through this surface.
+DeepSeek declares exactly `/compact`, `/dsh-goal`, and `/plan` in its static Adapter catalog, for both new and existing Threads. Neither catalog display nor command admission queries native `commands/list`. Execution retains ID, argument, busy-state, cancellation, and native-result validation; an unsupported native deployment reports its execution error rather than being probed beforehand. Native `feedback`, `permission`, `export`, the Client-side `/model`, and unknown commands are not exposed through this surface.
+
+OpenCode exposes only the fixed `/compact` command, implemented through native Session summarization. Dynamic native command discovery and execution are not part of its Host integration.
 
 The public `/dsh-goal` invocation avoids Codex Desktop's built-in `/goal` command and maps only inside the Adapter to native DSH `/goal`. `/dsh-goal` and `/plan` accept text arguments only. DSH remains the owner of goal and plan state and any model-visible follow-up.
 

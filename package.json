@@ -25,7 +25,8 @@
   "scripts": {
     "start": "node tools/dev-desktop/run.mjs",
     "build": "npm run build:typescript && npm run build:renderer && npm run build:rust",
-    "build:typescript": "tsc -b",
+    "build:typescript": "tsc -b && npm run build:plugins",
+    "build:plugins": "node scripts/release/harness-plugins.mjs --output packages/host-runtime/dist/plugins",
     "build:renderer": "npm run build --workspace=@codexhost/renderer-extension",
     "build:rust": "cargo build --locked --package codexhost-launcher --package codexhost-platform --package codexhost-shim --package codexhost-updater",
     "release:prepare": "node scripts/release/prepare-version.mjs",

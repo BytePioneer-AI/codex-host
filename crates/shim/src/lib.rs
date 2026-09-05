@@ -9,7 +9,7 @@ use std::process::{Command, ExitStatus, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "macos"))]
 use codexhost_platform::discover_desktop_managed_codex_cli;
 use codexhost_platform::{
     CODEX_CLI_PATH_ENV, STOCK_CODEX_PATH_ENV, canonical_existing_file,
@@ -17,6 +17,7 @@ use codexhost_platform::{
     validate_proxy_target,
 };
 
+mod desktop_invocation;
 mod local_runtime_lease;
 mod process_identity;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
@@ -624,6 +625,7 @@ fn child_command(
     arguments: &[OsString],
     current_executable: &Path,
     stock_codex_path: &Path,
+    desktop_helper: bool,
 ) -> ShimResult<Command> {
     let launcher_managed = env::var_os(LAUNCHER_PID_ENV).is_some();
     let inherited_remote_profile = launcher_managed
@@ -641,7 +643,14 @@ fn child_command(
         } else {
             Vec::new()
         };
-    if should_start_host_runtime(arguments) {
+    #[cfg(target_os = "windows")]
+    let remote_proxy_environment = if desktop_helper || env::var_os(STOCK_CODEX_PATH_ENV).is_none()
+    {
+        codexhost_platform::desktop_helper_proxy_environment()
+    } else {
+        remote_proxy_environment
+    };
+    if !desktop_helper && should_start_host_runtime(arguments) {
         match host_paths {
             (Some(node_path), Some(runtime_path)) => {
                 let node_path =
@@ -675,6 +684,16 @@ fn child_command(
     }
 
     let mut command = Command::new(stock_codex_path);
+    if desktop_helper {
+        // Do not pass launcher/runtime credentials or npm routing back into the
+        // stock helper's descendants. The official CLI still performs policy,
+        // authentication, and tool approvals using its normal configuration.
+        for (name, _) in env::vars_os() {
+            if name.to_string_lossy().starts_with("CODEXHOST_") {
+                command.env_remove(name);
+            }
+        }
+    }
     command
         .args(arguments)
         .env_remove(CODEX_CLI_PATH_ENV)
@@ -688,7 +707,7 @@ fn child_command(
 }
 
 /// Resolve the official CLI for both the launcher-managed process tree and
-/// Windows Desktop helpers that persist only the standard `CODEX_CLI_PATH`
+/// Desktop helpers that persist only the standard `CODEX_CLI_PATH`
 /// override.
 ///
 /// The launcher-provided path remains authoritative. Installation discovery is
@@ -698,10 +717,10 @@ fn resolve_stock_codex_path(current_executable: &Path) -> ShimResult<PathBuf> {
     let stock_codex_path = match env::var_os(STOCK_CODEX_PATH_ENV) {
         Some(configured) => PathBuf::from(configured),
         None => {
-            #[cfg(not(target_os = "windows"))]
+            #[cfg(not(any(target_os = "windows", target_os = "macos")))]
             return Err(format!("{STOCK_CODEX_PATH_ENV} is required").into());
 
-            #[cfg(target_os = "windows")]
+            #[cfg(any(target_os = "windows", target_os = "macos"))]
             {
                 let cli_override = env::var_os(CODEX_CLI_PATH_ENV)
                     .map(PathBuf::from)
@@ -739,7 +758,9 @@ pub fn run_proxy_with_observer(
 
     let started = Instant::now();
     let shutdown_signals = ShutdownSignals::install()?;
-    let local_host_runtime = should_start_host_runtime(arguments)
+    let desktop_helper = desktop_invocation::is_desktop_helper(&stock_codex_path);
+    let local_host_runtime = !desktop_helper
+        && should_start_host_runtime(arguments)
         && host_runtime_paths_are_configured()
         && !is_managed_remote_listener(arguments)
         && env::var_os(DATA_DIRECTORY_ENV).is_some();
@@ -750,7 +771,12 @@ pub fn run_proxy_with_observer(
     } else {
         None
     };
-    let mut command = child_command(arguments, &current_executable, &stock_codex_path)?;
+    let mut command = child_command(
+        arguments,
+        &current_executable,
+        &stock_codex_path,
+        desktop_helper,
+    )?;
     command
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

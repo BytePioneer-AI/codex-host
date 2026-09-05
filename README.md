@@ -93,6 +93,12 @@ xattr -dr com.apple.quarantine /Applications/codexhost.app
 
 </details>
 
+### 更新检查与 GitHub 限流
+
+codexhost 优先通过已登录的 [GitHub CLI](https://cli.github.com/)（`gh auth login --hostname github.com`）检查最新 Release，使用账户的 API 额度，减少共享代理出口的匿名限流影响。凭证由 `gh` 管理，codexhost 不读取或保存 Token。
+
+未安装、未登录或调用失败时会回退到公开 API；单次 `gh` 调用最多等待 5 秒。支持 PATH、macOS Homebrew 和常见 Windows/Linux 安装位置；也可通过 Host 环境变量 `CODEXHOST_GH_COMMAND` 指定可执行文件路径（不带参数）。安装包下载和校验流程保持不变；认证请求仍受 GitHub 账户及次级限流约束。
+
 ### 交互展示
 
 <table>

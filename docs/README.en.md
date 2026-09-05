@@ -89,6 +89,12 @@ Fully quit Codex Desktop, open a new terminal, and start codexhost.
 
 </details>
 
+### Update checks and GitHub rate limits
+
+codexhost prefers an authenticated [GitHub CLI](https://cli.github.com/) (`gh auth login --hostname github.com`) for latest Release checks, using the account's API quota to reduce anonymous rate limits on shared proxy exits. Credentials remain managed by `gh`; codexhost does not read or store tokens.
+
+If `gh` is missing, unauthenticated, or fails, discovery falls back to the public API. Each CLI invocation is limited to 5 seconds. Discovery searches PATH, macOS Homebrew, and common Windows/Linux installation locations. Set `CODEXHOST_GH_COMMAND` in the Host environment to specify an executable path without arguments. Artifact downloads and verification are unchanged; authenticated requests remain subject to GitHub account and secondary rate limits.
+
 ### Interaction Examples
 
 <table>

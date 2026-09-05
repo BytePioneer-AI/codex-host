@@ -11,6 +11,7 @@ import {
   createBackgroundUpdateManager,
   discoverLatestUpdateStatus,
   fetchLatestGitHubRelease,
+  fetchLatestGitHubReleaseWithGitHubCli,
   isUpdateOperationActive,
   recoverUpdateOperationLock,
   resolveInstalledUpdateContext,
@@ -72,8 +73,16 @@ export function createHostUpdateCoordinator(
   };
   const fetchLatest: (signal?: AbortSignal) => Promise<CodexhostLatestRelease> =
     options.fetchLatest ??
-    ((signal?: AbortSignal) =>
-      fetchLatestGitHubRelease({ signal: signal ?? AbortSignal.timeout(15_000) }));
+    (async (signal?: AbortSignal) => {
+      const timeoutSignal = AbortSignal.timeout(15_000);
+      const requestSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
+      const authenticated = await fetchLatestGitHubReleaseWithGitHubCli({
+        ...(options.environment ? { environment: options.environment } : {}),
+        platform,
+        signal: requestSignal,
+      });
+      return authenticated ?? fetchLatestGitHubRelease({ signal: requestSignal });
+    });
   let candidate: CodexhostLatestRelease | null = null;
 
   async function latestStatus(context: InstalledUpdateContext): Promise<UpdateStatus | null> {

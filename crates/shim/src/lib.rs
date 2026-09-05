@@ -9,7 +9,7 @@ use std::process::{Command, ExitStatus, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "macos"))]
 use codexhost_platform::discover_desktop_managed_codex_cli;
 use codexhost_platform::{
     CODEX_CLI_PATH_ENV, STOCK_CODEX_PATH_ENV, canonical_existing_file,
@@ -707,7 +707,7 @@ fn child_command(
 }
 
 /// Resolve the official CLI for both the launcher-managed process tree and
-/// Windows Desktop helpers that persist only the standard `CODEX_CLI_PATH`
+/// Desktop helpers that persist only the standard `CODEX_CLI_PATH`
 /// override.
 ///
 /// The launcher-provided path remains authoritative. Installation discovery is
@@ -717,10 +717,10 @@ fn resolve_stock_codex_path(current_executable: &Path) -> ShimResult<PathBuf> {
     let stock_codex_path = match env::var_os(STOCK_CODEX_PATH_ENV) {
         Some(configured) => PathBuf::from(configured),
         None => {
-            #[cfg(not(target_os = "windows"))]
+            #[cfg(not(any(target_os = "windows", target_os = "macos")))]
             return Err(format!("{STOCK_CODEX_PATH_ENV} is required").into());
 
-            #[cfg(target_os = "windows")]
+            #[cfg(any(target_os = "windows", target_os = "macos"))]
             {
                 let cli_override = env::var_os(CODEX_CLI_PATH_ENV)
                     .map(PathBuf::from)
@@ -758,7 +758,7 @@ pub fn run_proxy_with_observer(
 
     let started = Instant::now();
     let shutdown_signals = ShutdownSignals::install()?;
-    let desktop_helper = desktop_invocation::is_desktop_helper();
+    let desktop_helper = desktop_invocation::is_desktop_helper(&stock_codex_path);
     let local_host_runtime = !desktop_helper
         && should_start_host_runtime(arguments)
         && host_runtime_paths_are_configured()

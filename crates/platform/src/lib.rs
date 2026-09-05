@@ -43,8 +43,10 @@ pub use desktop_launch::{
 pub use desktop_launch::{DesktopSession, launch_desktop_session};
 #[cfg(not(target_os = "linux"))]
 pub use installation::discover_codex_desktop;
-#[cfg(target_os = "windows")]
-pub use installation::{discover_codex_desktop_from_root, discover_desktop_managed_codex_cli};
+#[cfg(any(target_os = "windows", target_os = "macos"))]
+pub use installation::discover_codex_desktop_from_root;
+#[cfg(any(target_os = "windows", target_os = "macos"))]
+pub use installation::discover_desktop_managed_codex_cli;
 #[cfg(target_os = "linux")]
 pub use linux_installation::discover_codex_desktop;
 pub use macos_native_harness_broker::{

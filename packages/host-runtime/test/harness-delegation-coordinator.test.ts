@@ -136,6 +136,50 @@ describe("HarnessDelegationCoordinator", () => {
     }
   });
 
+  it("resolves delegated cwd from explicit input, parent Thread, then process cwd", async () => {
+    const adapter = new RecordingAdapter(harnessIdSchema.parse("pi"));
+    const value = await fixture(adapter);
+    try {
+      await value.repository.createProvisional({
+        hostThreadId: hostThreadIdSchema.parse("stored-parent"),
+        createRequestId: "stored-parent-request",
+        harnessId: harnessIdSchema.parse("pi"),
+        cwd: "/parent-workspace",
+        title: "parent",
+        transportModelId: "codexhost/pi-native",
+        ephemeral: false,
+        historyMode: "paginated",
+      });
+
+      await value.coordinator.start({
+        harnessId: "pi",
+        task: "inherit cwd",
+        cwd: undefined as unknown as string,
+        parentThreadId: "stored-parent",
+      });
+      await value.coordinator.start({
+        harnessId: "pi",
+        task: "explicit cwd",
+        cwd: "/explicit-workspace",
+        parentThreadId: "stored-parent",
+      });
+      await value.coordinator.start({
+        harnessId: "pi",
+        task: "fallback cwd",
+        cwd: undefined as unknown as string,
+        parentThreadId: "missing-parent",
+      });
+
+      expect(adapter.openInputs.map((input) => input.cwd)).toEqual([
+        path.resolve("/parent-workspace"),
+        path.resolve("/explicit-workspace"),
+        path.resolve(process.cwd()),
+      ]);
+    } finally {
+      await value.close();
+    }
+  });
+
   it("inspects and applies an explicit Model and Thinking selection", async () => {
     const adapter = new RecordingAdapter(harnessIdSchema.parse("pi"));
     const value = await fixture(adapter);

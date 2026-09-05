@@ -1,5 +1,6 @@
 import { AntigravityAdapter } from "@codexhost/adapter-antigravity";
 import { ClaudeCodeAdapter } from "@codexhost/adapter-claude-code";
+import { CodeBuddyAdapter } from "@codexhost/adapter-codebuddy";
 import { DeepSeekHarnessAdapter } from "@codexhost/adapter-deepseek-harness";
 import { GrokAdapter } from "@codexhost/adapter-grok";
 import { OpenCodeAdapter } from "@codexhost/adapter-opencode";
@@ -11,6 +12,7 @@ import type { ExternalHarnessId } from "@codexhost/protocol-core";
 import { createLauncherUrlOpener } from "./launcher-url-opener.js";
 
 export const CLAUDE_CODE_COMMAND_ENV = "CODEXHOST_CLAUDE_COMMAND";
+export const CODEBUDDY_COMMAND_ENV = "CODEXHOST_CODEBUDDY_COMMAND";
 export const DEEPSEEK_HARNESS_COMMAND_ENV = "CODEXHOST_DEEPSEEK_HARNESS_COMMAND";
 export const DEEPSEEK_HARNESS_ENDPOINT_ENV = "CODEXHOST_DEEPSEEK_HARNESS_ENDPOINT";
 export const PI_COMMAND_ENV = "CODEXHOST_PI_COMMAND";
@@ -107,6 +109,15 @@ export function createExternalHarnessAdapters(
       "omp",
       new OmpAdapter({
         ...(environment[OMP_COMMAND_ENV] ? { command: environment[OMP_COMMAND_ENV] } : {}),
+        environment,
+      }),
+    ],
+    [
+      "codebuddy",
+      new CodeBuddyAdapter({
+        ...(environment[CODEBUDDY_COMMAND_ENV]
+          ? { command: environment[CODEBUDDY_COMMAND_ENV] }
+          : {}),
         environment,
       }),
     ],

@@ -137,6 +137,7 @@ export function rendererAgentForThreadOwnership(
   if (ownership.harnessId === "opencode") return "opencode";
   if (ownership.harnessId === "grok") return "grok";
   if (ownership.harnessId === "omp") return "omp";
+  if (ownership.harnessId === "codebuddy") return "codebuddy";
   if (ownership.harnessId === "antigravity") return "antigravity";
   return null;
 }

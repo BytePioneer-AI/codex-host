@@ -12,6 +12,7 @@ export const KNOWN_RENDERER_AGENTS = [
   "opencode",
   "grok",
   "omp",
+  "codebuddy",
   "antigravity",
 ] as const;
 export const DEFAULT_RENDERER_AGENTS = KNOWN_RENDERER_AGENTS;
@@ -36,6 +37,7 @@ export interface DraftComposerState {
   grokThinkingOptionId?: HarnessThinkingOptionId;
   ompModel?: HarnessModelRef;
   ompThinkingOptionId?: HarnessThinkingOptionId;
+  codebuddyModel?: HarnessModelRef;
   antigravityModel?: HarnessModelRef;
   antigravityThinkingOptionId?: HarnessThinkingOptionId;
   permissionModeByAgent?: Partial<Record<ExternalRendererAgent, HarnessPermissionModeId>>;
@@ -201,6 +203,7 @@ export class DraftAgentController<Composer extends object> {
     if (agent === "opencode" && model) state.openCodeModel = model;
     if (agent === "grok" && model) state.grokModel = model;
     if (agent === "omp" && model) state.ompModel = model;
+    if (agent === "codebuddy" && model) state.codebuddyModel = model;
     if (agent === "antigravity" && model) state.antigravityModel = model;
     if (agent === "pi" && thinkingOptionId) state.piThinkingOptionId = thinkingOptionId;
     else if (agent === "pi") delete state.piThinkingOptionId;
@@ -226,6 +229,7 @@ export class DraftAgentController<Composer extends object> {
         "opencode",
         "grok",
         "omp",
+        "codebuddy",
         "antigravity",
       ] as const) {
         const current = state.permissionModeByAgent?.[candidate];
@@ -248,8 +252,9 @@ export class DraftAgentController<Composer extends object> {
     if (agent === "deepseek-harness") return state.deepSeekHarnessModel;
     if (agent === "opencode") return state.openCodeModel;
     if (agent === "grok") return state.grokModel;
-    if (agent === "omp") return state.ompModel;
-    return state.antigravityModel;
+    if (agent === "codebuddy") return state.codebuddyModel;
+    if (agent === "antigravity") return state.antigravityModel;
+    return state.ompModel;
   }
 
   thinkingOptionForAgent(
@@ -261,8 +266,9 @@ export class DraftAgentController<Composer extends object> {
     if (agent === "claude-code") return state.claudeThinkingOptionId;
     if (agent === "grok") return state.grokThinkingOptionId;
     if (agent === "opencode") return state.openCodeThinkingOptionId;
-    if (agent === "omp") return state.ompThinkingOptionId;
-    return agent === "antigravity" ? state.antigravityThinkingOptionId : undefined;
+    if (agent === "codebuddy") return undefined;
+    if (agent === "antigravity") return state.antigravityThinkingOptionId;
+    return state.ompThinkingOptionId;
   }
 
   permissionModeForAgent(
@@ -296,8 +302,9 @@ export class DraftAgentController<Composer extends object> {
     else if (agent === "deepseek-harness") state.deepSeekHarnessModel = model;
     else if (agent === "opencode") state.openCodeModel = model;
     else if (agent === "grok") state.grokModel = model;
-    else if (agent === "omp") state.ompModel = model;
-    else state.antigravityModel = model;
+    else if (agent === "codebuddy") state.codebuddyModel = model;
+    else if (agent === "antigravity") state.antigravityModel = model;
+    else state.ompModel = model;
     return state;
   }
 

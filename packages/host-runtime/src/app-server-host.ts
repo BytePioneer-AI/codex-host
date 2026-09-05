@@ -124,7 +124,6 @@ const THREAD_USAGE_UPDATED_METHOD = "codexhost/thread/usage/updated";
 // that reading briefly cached so concurrent Composer inspections coalesce.
 const OFFICIAL_RATE_LIMIT_TTL_MS = 15_000;
 const OFFICIAL_OUTPUT_DRAIN_TIMEOUT_MS = 250;
-const NEVER_SETTLES = new Promise<never>(() => undefined);
 
 function delay(milliseconds: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
@@ -1204,11 +1203,12 @@ export class AppServerHost {
           this.#diagnose(error);
         }
         this.#routeObservationTracker.bindOfficialResponse(parsed);
+        const write = this.#writer.frame(frame);
         const prematureOutputEnd = following.then((result) => {
-          if (!result.done || this.#closeRequested || this.#desktopInputEnded) return NEVER_SETTLES;
+          if (!result.done || this.#closeRequested || this.#desktopInputEnded) return write;
           throw new Error("official app-server output closed before Desktop input ended");
         });
-        await Promise.race([this.#writer.frame(frame), prematureOutputEnd]);
+        await Promise.race([write, prematureOutputEnd]);
         current = await following;
       }
     } finally {

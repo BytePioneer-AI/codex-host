@@ -50,7 +50,11 @@ Mapping Store SHALL support replacing a ready derived Thread's NativeSessionRef,
 - **THEN** the prior ready Native Session, full mapping set, Fork source, and indexes SHALL remain authoritative
 
 ### Requirement: Startup recovers bounded incomplete state
-Initialization SHALL remove abandoned temp files, recover a bad primary from its valid backup, isolate unrecoverable records, remove creating records without Native identity, and rebuild all indexes before serving Host operations.
+Initialization SHALL remove abandoned temp files and lock files superseded by an earlier run, recover a bad primary from its valid backup, isolate unrecoverable records, remove creating records without Native identity, and rebuild all indexes before serving Host operations.
+
+#### Scenario: A dead owner's lock was renamed aside
+- **WHEN** initialization takes the Store lock from an owner that cannot be proven live
+- **THEN** it SHALL leave no superseded lock file behind, including the one it just renamed aside
 
 #### Scenario: Primary record is malformed
 - **WHEN** its latest backup is valid

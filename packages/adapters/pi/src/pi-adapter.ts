@@ -598,6 +598,7 @@ class PiHarnessSession implements HarnessSession {
     this.#requestedThinkingOptionId = options.thinkingOptionId;
     this.#toolOutputLimit = options.toolOutputLimit;
     this.capabilities = {
+      activeTurns: { steer: false, interruptAndContinue: true },
       configuration: {
         selectModel: true,
         selectThinkingOption: options.supportsThinkingSelection,
@@ -2000,6 +2001,7 @@ export class PiAdapter implements HarnessAdapter {
         status: "ready",
         catalog,
         capabilities: {
+          activeTurns: { steer: false, interruptAndContinue: true },
           configuration: {
             selectModel: true,
             selectThinkingOption: thinkingLevels !== null,

@@ -143,6 +143,21 @@ describe("Harness Model runtime contracts", () => {
     ).toBe(false);
   });
 
+  it("exposes optional interrupt-and-continue independently from same-Turn steer", () => {
+    expect(
+      harnessSessionCapabilitiesSchema.parse({
+        ...readyInspection().capabilities,
+        activeTurns: { steer: false, interruptAndContinue: true },
+      }).activeTurns,
+    ).toEqual({ steer: false, interruptAndContinue: true });
+    expect(
+      harnessSessionCapabilitiesSchema.safeParse({
+        ...readyInspection().capabilities,
+        activeTurns: { steer: false, interruptAndContinue: "yes" },
+      }).success,
+    ).toBe(false);
+  });
+
   it("rejects native configuration and unknown fields", () => {
     expect(
       harnessInspectionSchema.safeParse({

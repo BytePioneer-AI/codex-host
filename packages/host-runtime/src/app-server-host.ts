@@ -48,6 +48,7 @@ import {
   threadThinkingSelectParamsSchema,
   threadOwnershipListParamsSchema,
   threadOwnershipListResultSchema,
+  TURN_ADJUST_METHOD,
   permissionModeFixedAtCreate,
   updateCheckResultSchema,
   updateEmptyParamsSchema,
@@ -69,6 +70,7 @@ import {
 } from "./external-thread-history.js";
 import { executeExternalThreadRollback } from "./external-thread-rollback.js";
 import { executeExternalTurnSteer } from "./external-turn-steering.js";
+import { ExternalTurnAdjustments } from "./external-turn-adjustment.js";
 import {
   createExternalThreadRecordInput,
   createProductionExternalThreadStore,
@@ -436,6 +438,7 @@ export class AppServerHost {
   #externalAdapters: Map<ExternalHarnessId, HarnessAdapter>;
   #pluginDescriptors: HarnessPluginDescriptor[] = [];
   #externalRuntime: ExternalThreadRuntime;
+  #turnAdjustments: ExternalTurnAdjustments;
   #repository: ExternalThreadRepository;
   #pendingDesktopApprovals = new Map<HostApprovalRequestId, PendingDesktopApproval>();
   #pendingDesktopQuestions = new Map<HostQuestionRequestId, PendingDesktopQuestion>();
@@ -496,6 +499,7 @@ export class AppServerHost {
       consumeOutputs: (thread) => this.#consumeHarnessOutputs(thread),
       diagnose: (error) => this.#diagnose(error),
     });
+    this.#turnAdjustments = new ExternalTurnAdjustments(this.#externalRuntime);
     this.#delegationCoordinator = new HarnessDelegationCoordinator({
       adapters: this.#externalAdapters,
       environment: this.#options.environment ?? process.env,
@@ -531,6 +535,7 @@ export class AppServerHost {
   close(): void {
     if (this.#closeRequested) return;
     this.#closeRequested = true;
+    this.#turnAdjustments.close();
     this.#signalActiveWorkChanged();
     this.#options.desktopInput.destroy();
     this.#terminateOfficial();
@@ -782,6 +787,10 @@ export class AppServerHost {
       }
       if (request.method === "codexhost/thread/inspect") {
         await this.#inspectThread(request);
+        continue;
+      }
+      if (request.method === TURN_ADJUST_METHOD) {
+        this.#dispatchDesktopRequest(() => this.#adjustExternalTurn(request));
         continue;
       }
       if (request.method === "codexhost/thread/usage/inspect") {
@@ -1955,6 +1964,9 @@ export class AppServerHost {
                 }
               : {}),
             history: resolution.thread.session.capabilities.history,
+            ...(resolution.thread.session.capabilities.activeTurns
+              ? { activeTurns: resolution.thread.session.capabilities.activeTurns }
+              : {}),
             ...(resolution.thread.latestUsage ? { usage: resolution.thread.latestUsage } : {}),
             locked: true,
           },
@@ -3345,6 +3357,10 @@ export class AppServerHost {
     thread: ExternalThread,
     params: JsonObject,
   ): Promise<void> {
+    if (this.#turnAdjustments.hasPending(thread)) {
+      await this.#writer.json(rpcError(request, -32072, "Another adjustment is pending"));
+      return;
+    }
     const outcome = await executeExternalTurnSteer(thread, params);
     try {
       await this.#writer.json(
@@ -3357,11 +3373,47 @@ export class AppServerHost {
     }
   }
 
+  async #adjustExternalTurn(request: JsonRpcRequest): Promise<void> {
+    const params = requestObject(request);
+    if (typeof params.threadId !== "string") {
+      await this.#writer.json(rpcError(request, -32602, "Adjustment requires threadId"));
+      return;
+    }
+    const resolution = await this.#resolveExternalThread(params.threadId);
+    if (await this.#writeResolutionError(request, resolution)) return;
+    if (resolution.kind !== "external") {
+      await this.#writer.json(rpcError(request, -32076, "Adjustment requires an external Thread"));
+      return;
+    }
+    const outcome = await this.#turnAdjustments.execute(resolution.thread, params);
+    try {
+      await this.#writer.json(
+        outcome.ok
+          ? rpcEnvelope(request, { result: outcome.value })
+          : rpcError(request, outcome.code, outcome.message),
+      );
+    } finally {
+      outcome.releaseProjectionGate();
+      this.#signalActiveWorkChanged();
+    }
+  }
+
   async #interruptExternalTurn(
     request: JsonRpcRequest,
     thread: ExternalThread,
     requestedTurnId: JsonValue | undefined,
   ): Promise<void> {
+    if (typeof requestedTurnId === "string") {
+      try {
+        if (await this.#turnAdjustments.stop(thread, requestedTurnId)) {
+          await this.#writer.json(rpcEnvelope(request, { result: {} }));
+          return;
+        }
+      } catch (error) {
+        await this.#writer.json(rpcError(request, -32074, errorMessage(error)));
+        return;
+      }
+    }
     if (
       typeof requestedTurnId !== "string" ||
       !thread.running ||
@@ -3405,6 +3457,8 @@ export class AppServerHost {
       }
     } catch (error) {
       this.#diagnose(error);
+    } finally {
+      this.#turnAdjustments.fault(thread, "Harness output ended during adjustment");
     }
   }
 
@@ -3417,6 +3471,9 @@ export class AppServerHost {
       await this.#projectHarnessOutputWithAccess(thread, output);
     } finally {
       this.#externalRuntime.endOutputProjection(thread, projection);
+    }
+    if (output.kind === "event" && output.event.type === "turn.completed") {
+      this.#turnAdjustments.terminal(thread, output.event);
     }
   }
 
@@ -3550,6 +3607,7 @@ export class AppServerHost {
       return;
     }
     if (event.type === "session.faulted") {
+      this.#turnAdjustments.fault(thread, event.error.message);
       thread.stateObserver.fault(new Error(event.error.message));
       this.#diagnose(`${thread.harnessId} Harness Session faulted: ${event.error.message}`);
       return;

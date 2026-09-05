@@ -1,4 +1,6 @@
 import path from "node:path";
+import type { ChildProcessWithoutNullStreams } from "node:child_process";
+import { once } from "node:events";
 
 import { describe, expect, it, vi } from "vitest";
 import type { PermissionUpdate, Query, SDKMessage } from "@anthropic-ai/claude-agent-sdk";
@@ -1026,6 +1028,34 @@ describe("ClaudeSdkTransport Model control", () => {
 });
 
 describe("ClaudeSdkTransport abort", () => {
+  it.skipIf(process.platform === "win32")(
+    "waits for the owned process to exit after SIGKILL",
+    async () => {
+      const value = fixture();
+      await value.transport.start();
+      const spawnProcess = options(value).spawnClaudeCodeProcess;
+      if (!spawnProcess) throw new Error("SDK process ownership hook was not installed");
+      const child = spawnProcess({
+        command: process.execPath,
+        args: [
+          "-e",
+          "process.on('SIGTERM', () => {}); process.stdout.write('ready'); setInterval(() => {}, 1000)",
+        ],
+        signal: new AbortController().signal,
+        cwd: process.cwd(),
+        env: process.env,
+      }) as ChildProcessWithoutNullStreams;
+      try {
+        await once(child.stdout, "data");
+        await value.transport.close();
+        expect(child.signalCode).toBe("SIGKILL");
+      } finally {
+        if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+        await value.transport.close().catch(() => undefined);
+      }
+    },
+  );
+
   it("interrupts the active Query without closing the transport", async () => {
     const value = fixture();
     await value.transport.start();

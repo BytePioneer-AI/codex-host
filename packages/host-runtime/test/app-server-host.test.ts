@@ -12,6 +12,7 @@ import type {
   HarnessResult,
   HarnessSessionState,
   HostThreadSnapshot,
+  HostCommand,
 } from "@codexhost/harness-adapter";
 import { FakeHarnessAdapter, FakeHarnessSession } from "@codexhost/harness-adapter/testing";
 import { MappingStore } from "@codexhost/mapping-store";
@@ -196,6 +197,25 @@ function steeringCapableAdapter(): FakeHarnessAdapter {
     true,
     true,
   );
+}
+
+async function adjustmentFixture() {
+  const fixture = createFixture();
+  const threadId = await startPiThread(fixture);
+  const session = fixture.adapter.sessions[0];
+  if (!session) throw new Error("Fake adjustment Session was not opened");
+  Object.defineProperty(session, "capabilities", {
+    value: { ...session.capabilities, activeTurns: { steer: false, interruptAndContinue: true } },
+  });
+  const turnId = await startPiTurn(fixture, threadId, 2, "initial request");
+  await fixture.collector.waitFor((message) => turnEvent(message, "turn/started", turnId));
+  const params = {
+    threadId,
+    expectedTurnId: turnId,
+    clientUserMessageId: "adjustment-1",
+    input: [{ type: "text", text: "focus on tests" }],
+  };
+  return { ...fixture, threadId, turnId, session, params };
 }
 
 class SameIdentityRollbackAdapter extends FakeHarnessAdapter {
@@ -7549,6 +7569,237 @@ describe("AppServerHost HarnessAdapter projection", () => {
     );
     expect(questionClosedIndex).toBeGreaterThan(responseIndex);
     expect(turnIndex).toBeGreaterThan(questionClosedIndex);
+    await stopFixture(fixture);
+  });
+
+  it("adjusts once after terminal projection, preserving two Turns and the new user input", async () => {
+    const fixture = await adjustmentFixture();
+    const { session, params, turnId } = fixture;
+    const execute = vi.spyOn(session, "execute");
+    const officialWrite = vi.fn();
+    fixture.official.stdin.on("data", officialWrite);
+    writeRequest(fixture.desktopInput, { id: 3, method: "codexhost/turn/adjust", params });
+    writeRequest(fixture.desktopInput, { id: 4, method: "codexhost/turn/adjust", params });
+    await vi.waitFor(() => expect(execute).toHaveBeenCalledWith({ type: "turn.cancel", turnId }));
+    expect(execute).toHaveBeenCalledTimes(1);
+    writeRequest(fixture.desktopInput, {
+      id: 5,
+      method: "codexhost/turn/adjust",
+      params: { ...params, clientUserMessageId: "concurrent" },
+    });
+    expect(await fixture.collector.waitFor((message) => requestId(message, 5))).toMatchObject({
+      error: { code: -32072 },
+    });
+    writeRequest(fixture.desktopInput, {
+      id: 6,
+      method: "turn/start",
+      params: { threadId: params.threadId, input: params.input },
+    });
+    expect(await fixture.collector.waitFor((message) => requestId(message, 6))).toMatchObject({
+      error: { code: -32072 },
+    });
+    session.appendText("last output before stopping");
+    session.completeCancellation();
+    const response = await fixture.collector.waitFor((message) => requestId(message, 3));
+    const result = response.result as JsonObject;
+    const nextTurnId = String(result.turnId);
+    expect(result).toEqual({
+      turnId: nextTurnId,
+      previousTurnId: turnId,
+      delivery: "interrupt-and-continue",
+    });
+    expect(nextTurnId).not.toBe(turnId);
+    expect(await fixture.collector.waitFor((message) => requestId(message, 4))).toEqual({
+      id: 4,
+      result,
+    });
+    const userInput = await fixture.collector.waitFor(
+      (message) =>
+        method(message, "item/completed") &&
+        messageParams(message).turnId === nextTurnId &&
+        (messageParams(message).item as JsonObject)?.type === "userMessage",
+    );
+    expect(userInput).toMatchObject({
+      params: {
+        item: { clientId: "adjustment-1", content: [{ type: "text", text: "focus on tests" }] },
+      },
+    });
+    const messages = fixture.collector.messages;
+    const terminalIndex = messages.findIndex((message) =>
+      turnEvent(message, "turn/completed", turnId),
+    );
+    const responseIndex = messages.indexOf(response);
+    expect(terminalIndex).toBeGreaterThan(
+      messages.findIndex(
+        (message) => messageParams(message).delta === "last output before stopping",
+      ),
+    );
+    expect(responseIndex).toBeGreaterThan(terminalIndex);
+    expect(
+      messages.findIndex((message) => turnEvent(message, "turn/started", nextTurnId)),
+    ).toBeGreaterThan(responseIndex);
+    session.succeedTurn();
+    await fixture.collector.waitFor((message) => turnEvent(message, "turn/completed", nextTurnId));
+    expect(session.persistedSnapshot().turns.map((turn) => turn.input)).toEqual([
+      [{ type: "text", text: "initial request" }],
+      params.input,
+    ]);
+    writeRequest(fixture.desktopInput, { id: 7, method: "codexhost/turn/adjust", params });
+    expect(await fixture.collector.waitFor((message) => requestId(message, 7))).toEqual({
+      id: 7,
+      result,
+    });
+    writeRequest(fixture.desktopInput, {
+      id: 8,
+      method: "codexhost/turn/adjust",
+      params: { ...params, input: [{ type: "text", text: "changed" }] },
+    });
+    expect(await fixture.collector.waitFor((message) => requestId(message, 8))).toMatchObject({
+      error: { code: -32602 },
+    });
+    expect(
+      execute.mock.calls.filter(([command]) => (command as HostCommand).type === "turn.start"),
+    ).toHaveLength(1);
+    expect(officialWrite).not.toHaveBeenCalled();
+    await stopFixture(fixture);
+  });
+
+  it("waits for an outstanding cancel even when the original Turn naturally completes", async () => {
+    const fixture = await adjustmentFixture();
+    const cancelled = Promise.withResolvers<never>();
+    const execute = vi
+      .spyOn(fixture.session, "execute")
+      .mockImplementationOnce(() => cancelled.promise);
+    writeRequest(fixture.desktopInput, {
+      id: 3,
+      method: "codexhost/turn/adjust",
+      params: fixture.params,
+    });
+    await vi.waitFor(() => expect(execute).toHaveBeenCalledOnce());
+    fixture.session.succeedTurn();
+    const terminal = await fixture.collector.waitFor((message) =>
+      turnEvent(message, "turn/completed", fixture.turnId),
+    );
+    expect(terminal).toMatchObject({ params: { turn: { status: "completed" } } });
+    expect(execute).toHaveBeenCalledOnce();
+    cancelled.resolve({
+      ok: false,
+      error: { code: "invalidState", message: "Already ended", retryable: false },
+    } as never);
+    expect(await fixture.collector.waitFor((message) => requestId(message, 3))).toMatchObject({
+      result: { delivery: "interrupt-and-continue" },
+    });
+    fixture.session.succeedTurn();
+    await stopFixture(fixture);
+  });
+
+  it("withdraws a pending adjustment when Stop is requested", async () => {
+    const fixture = await adjustmentFixture();
+    const execute = vi.spyOn(fixture.session, "execute");
+    writeRequest(fixture.desktopInput, {
+      id: 3,
+      method: "codexhost/turn/adjust",
+      params: fixture.params,
+    });
+    await vi.waitFor(() => expect(execute).toHaveBeenCalledOnce());
+    writeRequest(fixture.desktopInput, {
+      id: 4,
+      method: "turn/interrupt",
+      params: { threadId: fixture.threadId, turnId: fixture.turnId },
+    });
+    expect(await fixture.collector.waitFor((message) => requestId(message, 4))).toEqual({
+      id: 4,
+      result: {},
+    });
+    expect(await fixture.collector.waitFor((message) => requestId(message, 3))).toMatchObject({
+      error: { message: "Adjustment was stopped before continuation" },
+    });
+    fixture.session.completeCancellation();
+    await fixture.collector.waitFor((message) =>
+      turnEvent(message, "turn/completed", fixture.turnId),
+    );
+    expect(execute).toHaveBeenCalledOnce();
+    await startPiTurn(fixture, fixture.threadId, 5, "manual continuation");
+    fixture.session.succeedTurn();
+    await stopFixture(fixture);
+  });
+
+  it("does not continue after a Session fault", async () => {
+    const fixture = await adjustmentFixture();
+    const execute = vi.spyOn(fixture.session, "execute");
+    writeRequest(fixture.desktopInput, {
+      id: 3,
+      method: "codexhost/turn/adjust",
+      params: fixture.params,
+    });
+    await vi.waitFor(() => expect(execute).toHaveBeenCalledOnce());
+    fixture.session.fault({
+      code: "nativeFailure",
+      message: "Native connection lost",
+      retryable: false,
+    });
+    expect(await fixture.collector.waitFor((message) => requestId(message, 3))).toHaveProperty(
+      "error",
+    );
+    expect(execute).toHaveBeenCalledOnce();
+    await stopFixture(fixture);
+  });
+
+  it("releases a rejected continuation without retrying its identity", async () => {
+    const fixture = await adjustmentFixture();
+    fixture.session.completeCancellationOnRequest();
+    fixture.session.rejectNextTurn({
+      code: "nativeFailure",
+      message: "Prompt rejected",
+      retryable: false,
+    });
+    const execute = vi.spyOn(fixture.session, "execute");
+    writeRequest(fixture.desktopInput, {
+      id: 3,
+      method: "codexhost/turn/adjust",
+      params: fixture.params,
+    });
+    expect(await fixture.collector.waitFor((message) => requestId(message, 3))).toMatchObject({
+      error: { message: "Prompt rejected" },
+    });
+    writeRequest(fixture.desktopInput, {
+      id: 4,
+      method: "codexhost/turn/adjust",
+      params: fixture.params,
+    });
+    expect(await fixture.collector.waitFor((message) => requestId(message, 4))).toMatchObject({
+      error: { message: "Prompt rejected" },
+    });
+    expect(execute).toHaveBeenCalledTimes(2);
+    await startPiTurn(fixture, fixture.threadId, 5, "manual retry");
+    fixture.session.succeedTurn();
+    await stopFixture(fixture);
+  });
+
+  it("prefers native steering for the adjustment endpoint", async () => {
+    const adapter = steeringCapableAdapter();
+    const fixture = createFixture({ externalAdapters: new Map([["pi", adapter]]) });
+    const threadId = await startPiThread(fixture);
+    const turnId = await startPiTurn(fixture, threadId);
+    const session = adapter.sessions[0];
+    if (!session) throw new Error("Fake steering Session was not opened");
+    const execute = vi.spyOn(session, "execute");
+    writeRequest(fixture.desktopInput, {
+      id: 3,
+      method: "codexhost/turn/adjust",
+      params: {
+        threadId,
+        expectedTurnId: turnId,
+        clientUserMessageId: "native-adjust",
+        input: [{ type: "text", text: "adjust" }],
+      },
+    });
+    expect(await fixture.collector.waitFor((message) => requestId(message, 3))).toMatchObject({
+      result: { turnId, previousTurnId: turnId, delivery: "steer" },
+    });
+    expect(execute).toHaveBeenCalledWith(expect.objectContaining({ type: "turn.steer" }));
+    expect(execute).toHaveBeenCalledOnce();
+    session.succeedTurn();
     await stopFixture(fixture);
   });
 

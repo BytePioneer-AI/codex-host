@@ -567,6 +567,7 @@ class DeepSeekHarnessSession implements HarnessSession, DeepSeekHostSubscriber {
         permissionModeScope: "live",
       },
       history: { fork: true, forkAcrossCwd: false, rollbackLastTurn: false },
+      activeTurns: { steer: false, interruptAndContinue: true },
     };
     this.initialState = this.#configurationState();
     this.outputs = this.#channel.outputs;
@@ -2055,6 +2056,7 @@ export class DeepSeekHarnessAdapter implements HarnessAdapter {
             permissionModeScope: "live",
           },
           history: { fork: true, forkAcrossCwd: false, rollbackLastTurn: false },
+          activeTurns: { steer: false, interruptAndContinue: true },
         },
       };
     } catch (error) {

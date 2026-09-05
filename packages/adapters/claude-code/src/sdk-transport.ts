@@ -767,6 +767,15 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
     for (const child of this.#children) {
       if (!processExited(child)) child.kill("SIGKILL");
     }
+    const exitTimeout = rejectAfter(this.#closeTimeoutMs, "Claude SDK process did not exit");
+    try {
+      await Promise.race([
+        Promise.all(this.#children.map((child) => this.#waitForExit(child))),
+        exitTimeout.promise,
+      ]);
+    } finally {
+      exitTimeout.cancel();
+    }
     this.#query = null;
     const active = this.#active;
     this.#active = null;

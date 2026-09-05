@@ -161,6 +161,13 @@ export function permissionModeFixedAtCreate(configuration: {
   return configuration.permissionModeScope === "atCreate";
 }
 
+export const harnessActiveTurnCapabilitiesSchema = z
+  .object({
+    steer: z.boolean(),
+    interruptAndContinue: z.boolean().optional(),
+  })
+  .strict();
+
 export const harnessSessionCapabilitiesSchema = z
   .object({
     configuration: z
@@ -185,12 +192,7 @@ export const harnessSessionCapabilitiesSchema = z
       })
       .strict()
       .optional(),
-    activeTurns: z
-      .object({
-        steer: z.boolean(),
-      })
-      .strict()
-      .optional(),
+    activeTurns: harnessActiveTurnCapabilitiesSchema.optional(),
   })
   .strict();
 
@@ -335,6 +337,7 @@ const externalThreadInspectionSchema = z
     effectivePermissionModeId: harnessPermissionModeIdSchema.optional(),
     history: harnessHistoryCapabilitiesSchema,
     usage: threadUsageSnapshotSchema.optional(),
+    activeTurns: harnessActiveTurnCapabilitiesSchema.optional(),
     locked: z.literal(true),
   })
   .strict();

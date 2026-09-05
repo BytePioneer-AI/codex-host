@@ -175,6 +175,7 @@ interface ActiveTurn {
   nativeTurnKey: string;
   nativeTurnRef: NativeTurnRef | null;
   cancellationRequested: boolean;
+  hardCancellation?: Promise<void>;
   usageRequestIds: Set<string>;
   estimatedInputTokens: number;
   estimatedOutputTokens: number;
@@ -483,6 +484,7 @@ export function projectClaudePlanLimitToCredits(
 class ClaudeHarnessSession implements HarnessSession {
   readonly harnessId: HarnessId = claudeCodeHarnessId;
   readonly capabilities: HarnessSessionCapabilities = {
+    activeTurns: { steer: false, interruptAndContinue: true },
     configuration: {
       selectModel: true,
       selectThinkingOption: true,
@@ -1219,14 +1221,14 @@ class ClaudeHarnessSession implements HarnessSession {
     }
     active.cancellationRequested = true;
     if (active.held) {
-      this.#finish(active, { status: "cancelled", reason: "Cancelled by user" });
+      await this.#hardCancel(active);
       return { ok: true, value: { cancellationRequested: true } };
     }
     const timeout = rejectAfter(this.#cancelTimeoutMs, "Claude Code interrupt timed out");
     try {
       await Promise.race([this.#transport?.abort() ?? Promise.resolve(), timeout.promise]);
     } catch {
-      this.#hardCancel(active);
+      await this.#hardCancel(active);
       return { ok: true, value: { cancellationRequested: true } };
     } finally {
       timeout.cancel();
@@ -1803,7 +1805,11 @@ class ClaudeHarnessSession implements HarnessSession {
   }
 
   #finishResult(active: ActiveTurn, result: ClaudeTransportTurnResult): void {
-    if (this.#active !== active) return;
+    if (this.#active !== active || active.hardCancellation) return;
+    if (active.cancellationRequested && this.#occupancy.unsettled) {
+      void this.#hardCancel(active);
+      return;
+    }
     if (result.status === "succeeded" && (active.tools.size > 0 || active.subagents.size > 0)) {
       this.#finishFailed(active, transportFailure("protocol"));
     } else if (result.status === "succeeded") {
@@ -2164,7 +2170,7 @@ class ClaudeHarnessSession implements HarnessSession {
   #handleTurnTransportFailure(active: ActiveTurn): void {
     if (this.#active !== active) return;
     if (active.cancellationRequested) {
-      this.#hardCancel(active);
+      void this.#hardCancel(active);
       return;
     }
     this.#fault(faultError());
@@ -2175,7 +2181,7 @@ class ClaudeHarnessSession implements HarnessSession {
     const timer = setTimeout(() => {
       this.#cancelEscalation = null;
       if (this.#active !== active || this.#phase !== "open") return;
-      this.#hardCancel(active);
+      void this.#hardCancel(active);
     }, this.#cancelTimeoutMs);
     timer.unref();
     this.#cancelEscalation = timer;
@@ -2187,14 +2193,32 @@ class ClaudeHarnessSession implements HarnessSession {
     this.#cancelEscalation = null;
   }
 
-  #hardCancel(active: ActiveTurn): void {
-    if (this.#active !== active) return;
+  #hardCancel(active: ActiveTurn): Promise<void> {
+    if (active.hardCancellation) return active.hardCancellation;
+    if (this.#active !== active) return Promise.resolve();
     this.#clearCancelEscalation();
     const transport = this.#transport;
-    this.#transport = null;
-    this.#openMode = "resume";
-    this.#finish(active, { status: "cancelled", reason: "Cancelled by user" });
-    void transport?.close().catch(() => undefined);
+    // Keep the Turn occupied until the owned SDK process has actually closed.
+    // Native terminal/failure callbacks during close must not release it early.
+    active.hardCancellation = Promise.resolve().then(async () => {
+      const timeout = rejectAfter(this.#cancelTimeoutMs, "Claude Code process did not stop");
+      try {
+        await Promise.race([transport?.close() ?? Promise.resolve(), timeout.promise]);
+        if (this.#active !== active) return;
+        this.#transport = null;
+        this.#openMode = "resume";
+        this.#finish(active, { status: "cancelled", reason: "Cancelled by user" });
+      } catch {
+        this.#fault({
+          code: "nativeFailure",
+          message: "Claude Code process could not be stopped safely",
+          retryable: false,
+        });
+      } finally {
+        timeout.cancel();
+      }
+    });
+    return active.hardCancellation;
   }
 
   #fault(error: HarnessError): void {
@@ -2212,7 +2236,7 @@ class ClaudeHarnessSession implements HarnessSession {
     this.#phase = "faulted";
     this.#event({ type: "session.faulted", error });
     this.#channel.end();
-    void this.#transport?.close();
+    void this.#transport?.close().catch(() => undefined);
     this.#onClosed();
   }
 
@@ -2407,6 +2431,7 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
         catalog,
         ...(permissionModes ? { permissionModes } : {}),
         capabilities: {
+          activeTurns: { steer: false, interruptAndContinue: true },
           configuration: {
             selectModel: true,
             selectThinkingOption: true,

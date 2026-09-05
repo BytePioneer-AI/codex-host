@@ -621,6 +621,7 @@ class OmpHarnessSession implements HarnessSession {
     this.#permissionMode = options.permissionMode;
     this.#permissionModeId = options.permissionModeId;
     this.capabilities = {
+      activeTurns: { steer: false, interruptAndContinue: true },
       configuration: {
         selectModel: true,
         selectThinkingOption: options.supportsThinkingSelection,
@@ -2238,6 +2239,7 @@ export class OmpAdapter implements HarnessAdapter {
         catalog,
         permissionModes: OMP_PERMISSION_MODE_CATALOG,
         capabilities: {
+          activeTurns: { steer: false, interruptAndContinue: true },
           configuration: {
             selectModel: true,
             selectThinkingOption: thinkingLevels !== null,

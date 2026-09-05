@@ -198,6 +198,7 @@ const grokCommandCatalog = harnessCommandCatalogSchema.parse({
 });
 function capabilitiesForModels(modelState: GrokModelState): HarnessSessionCapabilities {
   return {
+    activeTurns: { steer: false, interruptAndContinue: true },
     configuration: {
       selectModel: modelState.catalog.models.length > 0,
       selectThinkingOption: modelState.catalog.thinkingOptions.length > 0,

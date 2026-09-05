@@ -130,6 +130,7 @@ export function modernSessionCapabilities(
       permissionModeScope: "live",
     },
     history: { fork: true, forkAcrossCwd: false, rollbackLastTurn: false },
+    activeTurns: { steer: false, interruptAndContinue: true },
     autonomousTurns: { observe: true },
   };
 }

@@ -460,6 +460,7 @@ describe("Claude Code HarnessAdapter", () => {
 
     const session = await openSession(adapter);
     expect(session.capabilities).toEqual({
+      activeTurns: { steer: false, interruptAndContinue: true },
       configuration: {
         selectModel: true,
         selectThinkingOption: true,
@@ -4417,6 +4418,68 @@ describe("Claude Code HarnessAdapter", () => {
     transports[0]?.finish({ status: "succeeded" });
     await nextEvent(iterator);
     await nextEvent(iterator);
+    expect(transports).toHaveLength(1);
+    await session.close();
+  });
+
+  it("keeps a hard-cancelled Turn occupied until Transport closure completes", async () => {
+    const { adapter, transports } = fixture({ cancelTimeoutMs: 1000 });
+    const session = await openSession(adapter);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+    await session.execute(textTurn("hard-cancel-fence"));
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    const transport = transports[0];
+    if (!transport) throw new Error("Fake Claude transport was not created");
+    const closed = Promise.withResolvers<undefined>();
+    transport.abort.mockRejectedValueOnce(new Error("Interrupt failed"));
+    transport.close.mockImplementation(() => closed.promise);
+    const cancel = session.execute({
+      type: "turn.cancel",
+      turnId: hostTurnIdSchema.parse("hard-cancel-fence"),
+    });
+    await vi.waitFor(() => expect(transport.close).toHaveBeenCalledOnce());
+    // A native result arriving during close must not open the continuation boundary.
+    transport.finish({ status: "cancelled", reason: "aborted_streaming" });
+    await expect(session.execute(textTurn("too-early"))).resolves.toMatchObject({
+      ok: false,
+      error: { code: "sessionBusy" },
+    });
+    closed.resolve(undefined);
+    await cancel;
+    await nextEvent(iterator);
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "turn.completed",
+      outcome: { status: "cancelled" },
+    });
+    await expect(session.execute(textTurn("after-closed"))).resolves.toMatchObject({ ok: true });
+    expect(transports).toHaveLength(2);
+    await session.close();
+  });
+
+  it("faults instead of permitting continuation when hard cancellation cannot close", async () => {
+    const { adapter, transports } = fixture({ cancelTimeoutMs: 20 });
+    const session = await openSession(adapter);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+    await session.execute(textTurn("unclosed"));
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    const transport = transports[0];
+    if (!transport) throw new Error("Fake Claude transport was not created");
+    transport.abort.mockRejectedValueOnce(new Error("Interrupt failed"));
+    transport.close.mockRejectedValue(new Error("Close failed"));
+    await session.execute({ type: "turn.cancel", turnId: hostTurnIdSchema.parse("unclosed") });
+    await nextEvent(iterator);
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "turn.completed",
+      outcome: { status: "failed" },
+    });
+    expect(await nextEvent(iterator)).toMatchObject({ type: "session.faulted" });
+    await expect(session.execute(textTurn("unsafe-continuation"))).resolves.toMatchObject({
+      ok: false,
+    });
     expect(transports).toHaveLength(1);
     await session.close();
   });

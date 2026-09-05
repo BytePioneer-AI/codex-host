@@ -507,6 +507,37 @@ async function completeAfterBusy(transport: FakeOpenCodeTransport): Promise<void
 }
 
 describe("OpenCode HarnessAdapter", () => {
+  it.each([false, true])(
+    "distinguishes a native default sentinel from an advertised variant (named=%s)",
+    async (named) => {
+      const transport = new FakeOpenCodeTransport();
+      transport.providers = async () => {
+        const catalog = providerCatalog();
+        const model = catalog.all[0]?.models["model-1"];
+        if (!model) throw new Error("Missing fixture Model");
+        model.variants = named ? { default: {} } : {};
+        return catalog;
+      };
+      const create = transport.createSession.bind(transport);
+      transport.createSession = async (input) => {
+        const session = await create(input);
+        session.model = { providerID: "provider-1", id: "model-1", variant: "default" };
+        return session;
+      };
+      const { adapter, session } = await openFixture(transport);
+      try {
+        const expected = encodeOpenCodeVariant(named ? "default" : undefined);
+        expect(session.initialState.effectiveThinkingOptionId).toBe(expected);
+        await expect(session.readSnapshot()).resolves.toMatchObject({
+          ok: true,
+          value: { state: { effectiveThinkingOptionId: expected } },
+        });
+      } finally {
+        await adapter.close();
+      }
+    },
+  );
+
   it("uses a dedicated connection and preserves per-open environment for unattended delegation", async () => {
     const connectionOptions: OpenCodeServerOptions[] = [];
     const connections = [] as Array<{

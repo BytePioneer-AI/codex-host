@@ -4565,6 +4565,77 @@ describe("AppServerHost HarnessAdapter projection", () => {
     await stopFixture(fixture);
   });
 
+  it.each([false, true])(
+    "validates fixed Thinking on message revert (mismatch=%s)",
+    async (mismatch) => {
+      class FixedThinkingRollbackAdapter extends FakeHarnessAdapter {
+        override async open(input: Parameters<FakeHarnessAdapter["open"]>[0]) {
+          const opened = await super.open(input);
+          if (opened.ok) opened.value.capabilities.configuration.selectThinkingOption = false;
+          if (
+            mismatch &&
+            input.kind === "rollbackLastTurn" &&
+            opened.ok &&
+            opened.value instanceof FakeHarnessSession
+          ) {
+            opened.value.setStateForSnapshot({
+              ...opened.value.state,
+              effectiveThinkingOptionId: harnessThinkingOptionIdSchema.parse("low"),
+            });
+          }
+          return opened;
+        }
+      }
+      const adapter = new FixedThinkingRollbackAdapter(
+        harnessIdSchema.parse("pi"),
+        undefined,
+        true,
+        true,
+        null,
+        undefined,
+        true,
+      );
+      const fixture = createFixture({ externalAdapters: new Map([["pi", adapter]]) });
+      try {
+        const threadId = await startExternalThread(fixture, "codexhost/pi-native", 1, {
+          historyMode: "paginated",
+        });
+        const first = await completePiTurn(fixture, threadId, 2);
+        const last = await completePiTurn(fixture, threadId, 3);
+        writeRequest(fixture.desktopInput, {
+          id: 10,
+          method: "thread/revert",
+          params: { threadId, beforeTurnId: last },
+        });
+        const response = await fixture.collector.waitFor((message) => requestId(message, 10));
+        if (mismatch) {
+          expect(response).toMatchObject({
+            error: { code: -32080, message: "External rollback changed configuration" },
+          });
+          expect(adapter.sessions[0]?.closed).toBe(false);
+          expect(adapter.sessions[1]?.closed).toBe(true);
+          expect(
+            (
+              await fixture.mappingStore.getThread(hostThreadIdSchema.parse(threadId))
+            )?.turnMappings.map((mapping) => mapping.hostTurnId),
+          ).toEqual([first, last]);
+          return;
+        }
+        expect(response).toMatchObject({ result: { thread: { id: threadId, turns: [] } } });
+        expect(
+          (
+            await fixture.mappingStore.getThread(hostThreadIdSchema.parse(threadId))
+          )?.turnMappings.map((mapping) => mapping.hostTurnId),
+        ).toEqual([first]);
+        expect(adapter.sessions[1]?.state.effectiveThinkingOptionId).toBe(
+          adapter.sessions[0]?.state.effectiveThinkingOptionId,
+        );
+      } finally {
+        await stopFixture(fixture);
+      }
+    },
+  );
+
   it("restores configuration before reading a resume-state rollback replacement", async () => {
     const permissionModes = harnessPermissionModeCatalogSchema.parse({
       modes: [

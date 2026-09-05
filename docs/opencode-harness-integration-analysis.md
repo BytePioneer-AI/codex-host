@@ -322,6 +322,8 @@ OpenCode `Session.fork({ messageID })` 会复制 **目标 message 之前**的消
 
 `rollbackLastTurn` 复用同一个 exclusive boundary，但调用 `session.fork({ messageID })` 派生新的 Native Session。派生历史精确截止在最后一个 User Message 之前；来源 Session 和项目文件保持不变。Adapter 会验证新旧 Session ID 不同、Turn 数精确少一，并在配置或 attach 校验失败时删除派生 Session。这里不能使用 `session.revert()`：该 API 原地修改来源 Session，还会通过 Git-backed Snapshot 恢复工作区文件，不符合 Desktop 编辑消息只改对话历史的语义。
 
+回退恢复配置时，固定的 Model、Thinking 或 Permission Mode 不要求可切换能力；Host 仍在提交前核对候选 Session 的最终配置。原生将默认 variant 表示为字符串 `default` 时，Adapter 仅在已知 Model 没有声明同名 variant 的情况下将其归一为默认 Thinking；真正声明的 `default` 选项保留独立身份，避免默认值表示差异误触发配置不一致。
+
 ### Diff、Usage 与 Subagent
 
 `session.diff({ messageID })` 是 Turn 级文件变化的首选来源。codexhost `HostFileChange` 要求 path、add/update/delete 和 unified diff；OpenCode V1 `SnapshotFileDiff` 的 `file`、`status`、`patch` 在 schema 中是可选字段，所以 Adapter 必须验证完整性，不能用 additions/deletions 猜 path 或伪造 patch。严格回滚校验还要通过 `/path` 读取权威 worktree，把 Patch 的绝对路径与 diff 的 worktree-relative 路径归一到同一文件身份，并拒绝越出 worktree、路径元数据不一致或 Patch 文件覆盖不完整的结果。缺字段或无法完成对账时，不宣称该 Turn 有可用 FileChange。

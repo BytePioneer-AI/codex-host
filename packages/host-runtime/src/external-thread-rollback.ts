@@ -80,20 +80,19 @@ async function restoreCurrentConfiguration(
   session: HarnessSession,
   configuration: HarnessSessionState,
 ): Promise<ExternalThreadRpcError | null> {
-  if (configuration.effectiveModel) {
-    if (!session.capabilities.configuration.selectModel) {
-      return { code: -32076, message: "External rollback cannot restore the current Model" };
-    }
+  // Fixed settings need no selection command. The replacement snapshot below
+  // must still report the exact current configuration before it can be committed.
+  if (configuration.effectiveModel && session.capabilities.configuration.selectModel) {
     const selected = await session.execute({
       type: "model.select",
       model: configuration.effectiveModel,
     });
     if (!selected.ok) return mapExternalThreadHarnessError(selected.error, "fork");
   }
-  if (configuration.effectiveThinkingOptionId) {
-    if (!session.capabilities.configuration.selectThinkingOption) {
-      return { code: -32076, message: "External rollback cannot restore current Thinking" };
-    }
+  if (
+    configuration.effectiveThinkingOptionId &&
+    session.capabilities.configuration.selectThinkingOption
+  ) {
     const selected = await session.execute({
       type: "thinking.select",
       thinkingOptionId: configuration.effectiveThinkingOptionId,
@@ -102,14 +101,9 @@ async function restoreCurrentConfiguration(
   }
   if (
     configuration.effectivePermissionModeId &&
+    session.capabilities.configuration.selectPermissionMode &&
     !permissionModeFixedAtCreate(session.capabilities.configuration)
   ) {
-    if (!session.capabilities.configuration.selectPermissionMode) {
-      return {
-        code: -32076,
-        message: "External rollback cannot restore the current Permission Mode",
-      };
-    }
     const selected = await session.execute({
       type: "permissionMode.select",
       permissionModeId: configuration.effectivePermissionModeId,

@@ -484,7 +484,18 @@ async function readProjection(
     toolOutputLimit,
   });
   const model = nativeModelFromSession(session, messages);
-  const variant = nativeVariantFromSession(session, messages);
+  const nativeVariant = nativeVariantFromSession(session, messages);
+  const nativeModel = model
+    ? providerCatalog.all.find(({ id }) => id === model.providerID)?.models[model.modelID]
+    : undefined;
+  // A native "default" without an advertised variant is the default selection.
+  // Keep a real named variant when the Model advertises one with that name.
+  const variant =
+    nativeVariant === "default" &&
+    nativeModel &&
+    !Object.hasOwn(nativeModel.variants ?? {}, "default")
+      ? undefined
+      : nativeVariant;
   const usage = projectOpenCodeUsage(
     openCodeAssistantMessages(session, messages),
     model ? openCodeContextWindow(providerCatalog, model) : undefined,

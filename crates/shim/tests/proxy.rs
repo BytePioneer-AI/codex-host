@@ -485,12 +485,13 @@ fn macos_native_helpers_do_not_become_host_runtime_owners() {
         if detached {
             command.env("FAKE_CODEX_DETACHED_DESKTOP", &desktop);
         }
-        let output = command
+        let mut child = command
             .args(["app-server", "--listen", "stdio://"])
             .env("FAKE_CODEX_HELPER_SHIM", shim_path())
             .env("FAKE_CODEX_HELPER_DEPTH", depth.to_string())
             .env("FAKE_CODEX_HELPER_EXECUTABLE", fake_codex_path())
             .env("FAKE_CODEX_PRINT_INVOCATION", "1")
+            .env("FAKE_CODEX_ROUTE_RESPONSE", "1")
             .env("CODEXHOST_LAUNCHER_PID", process::id().to_string())
             .env(
                 "CODEXHOST_LAUNCHER_EXECUTABLE",
@@ -507,9 +508,25 @@ fn macos_native_helpers_do_not_become_host_runtime_owners() {
             .env(CODEX_CLI_PATH_ENV, shim_path())
             .env(HOST_NODE_PATH_ENV, fake_codex_path())
             .env(HOST_RUNTIME_PATH_ENV, fake_codex_path())
-            .stdin(Stdio::null())
-            .output()
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
             .unwrap();
+        // Keep the fixture alive until the shim has published its process
+        // identity, as a real app-server does while exchanging requests.
+        let mut stdin = child.stdin.take().unwrap();
+        stdin.write_all(b"x").unwrap();
+        let mut response = [0_u8; 8];
+        child
+            .stdout
+            .as_mut()
+            .unwrap()
+            .read_exact(&mut response)
+            .unwrap();
+        assert_eq!(&response, b"response");
+        drop(stdin);
+        let output = child.wait_with_output().unwrap();
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(output.status.success(), "depth={depth}: {stderr}");
         assert_eq!(

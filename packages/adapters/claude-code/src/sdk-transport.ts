@@ -554,17 +554,29 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
       return Promise.reject(new Error("Claude SDK Interaction is not pending"));
     }
     if (response.type === "approval") {
-      if (pending.request.type !== "approval") {
+      if (pending.request.type !== "approval" && pending.request.type !== "planApproval") {
         return Promise.reject(new Error("Claude SDK Interaction response type does not match"));
       }
       let result: PermissionResult;
       if (response.decision === "deny") {
-        result = denied(pending.toolUseId, "User denied the Tool request");
+        result = denied(
+          pending.toolUseId,
+          pending.request.type === "planApproval"
+            ? "User chose to stay in plan mode. Do not begin implementation."
+            : "User denied the Tool request",
+        );
       } else if (response.decision === "allowOnce") {
+        if (pending.request.type === "planApproval" && !pending.request.plan) {
+          return Promise.reject(new Error("Claude SDK plan text is unavailable for approval"));
+        }
         result = allowed(pending.toolUseId, pending.input);
       } else {
         const requestedScope = response.decision === "allowForSession" ? "session" : "always";
-        if (pending.request.suggestedScope !== requestedScope || !pending.suggestions) {
+        if (
+          pending.request.type !== "approval" ||
+          pending.request.suggestedScope !== requestedScope ||
+          !pending.suggestions
+        ) {
           return Promise.reject(new Error("Claude SDK Approval scope is not pending"));
         }
         result = allowed(pending.toolUseId, pending.input, pending.suggestions);
@@ -657,6 +669,12 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
     if (toolName === "AskUserQuestion") {
       const questions = parseQuestions(input);
       request = questions ? { type: "question", requestId, questions } : null;
+    } else if (toolName === "ExitPlanMode") {
+      request = {
+        type: "planApproval",
+        requestId,
+        plan: typeof input.plan === "string" && input.plan.trim().length > 0 ? input.plan : null,
+      };
     } else {
       request = parseApprovalRequest(requestId, toolName, options);
     }

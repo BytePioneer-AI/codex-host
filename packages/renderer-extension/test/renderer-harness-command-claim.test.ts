@@ -1,4 +1,7 @@
-import type { HarnessCommandDescriptor } from "@codexhost/shared-contracts";
+import {
+  harnessCommandDescriptorSchema,
+  type HarnessCommandDescriptor,
+} from "@codexhost/shared-contracts";
 import { describe, expect, it, vi } from "vitest";
 
 import { routeRendererHarnessCommandSelection } from "../src/renderer-harness-command-claim.js";
@@ -140,7 +143,7 @@ describe("Renderer Harness command Composer claims", () => {
   ] as const)("executes %s directly without changing the draft", (id, argumentMode) => {
     const editor = new FakeTextarea();
     const execute = vi.fn();
-    const command = { ...noneCommand, id, argumentMode };
+    const command = harnessCommandDescriptorSchema.parse({ ...noneCommand, id, argumentMode });
 
     expect(
       routeRendererHarnessCommandSelection(editor as unknown as HTMLElement, command, execute),

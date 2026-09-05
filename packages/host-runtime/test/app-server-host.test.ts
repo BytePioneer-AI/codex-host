@@ -2806,14 +2806,25 @@ describe("AppServerHost HarnessAdapter projection", () => {
     await stopFixture(fixture);
   });
 
-  it("fails External current and future metadata updates closed without official fallback", async () => {
+  it("persists External pin metadata but rejects unsupported metadata without official fallback", async () => {
     const fixture = createFixture();
     const officialWrite = vi.fn();
     fixture.official.stdin.on("data", officialWrite);
     const threadId = await startPiThread(fixture);
+    writeRequest(fixture.desktopInput, {
+      id: 53,
+      method: "thread/metadata/update",
+      params: { threadId, isPinned: true },
+    });
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 53)),
+    ).resolves.toMatchObject({ result: { thread: { id: threadId, isPinned: true } } });
+    await expect(
+      fixture.mappingStore.getThread(hostThreadIdSchema.parse(threadId)),
+    ).resolves.toMatchObject({ isPinned: true });
     for (const [id, patch] of [
-      [53, { isPinned: true }],
       [54, { gitInfo: { branch: "main", sha: null } }],
+      [55, { isPinned: false, gitInfo: { branch: "main", sha: null } }],
     ] as const) {
       writeRequest(fixture.desktopInput, {
         id,
@@ -2838,7 +2849,7 @@ describe("AppServerHost HarnessAdapter projection", () => {
     });
     expect(officialWrite).not.toHaveBeenCalled();
     const stored = await fixture.mappingStore.getThread(hostThreadIdSchema.parse(threadId));
-    expect(stored).not.toHaveProperty("isPinned");
+    expect(stored).toMatchObject({ isPinned: true });
     expect(stored).not.toHaveProperty("gitInfo");
     await stopFixture(fixture);
   });

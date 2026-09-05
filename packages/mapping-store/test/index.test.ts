@@ -692,6 +692,33 @@ describe("mapping-store package", () => {
     await third.close();
   });
 
+  it("persists pin state atomically and treats legacy records as unpinned", async () => {
+    const directory = await temporaryStoreDirectory();
+    const first = new MappingStore({ directory });
+    await first.initialize();
+    await createReady(first);
+    await first.close();
+
+    // 模拟引入 External Thread 置顶前写入的旧版 v1 记录。
+    const recordPath = path.join(directory, "threads", `${threadId}.json`);
+    const legacy = JSON.parse(await readFile(recordPath, "utf8")) as Record<string, unknown>;
+    delete legacy.isPinned;
+    await writeFile(recordPath, JSON.stringify(legacy));
+
+    const second = new MappingStore({ directory });
+    await second.initialize();
+    await expect(second.getThread(threadId)).resolves.toMatchObject({ isPinned: false });
+    const before = await second.getThread(threadId);
+    const pinned = await second.setPinned(threadId, true);
+    expect(pinned).toMatchObject({ isPinned: true, revision: (before?.revision ?? 0) + 1 });
+    await second.close();
+
+    const third = new MappingStore({ directory });
+    await third.initialize();
+    await expect(third.getThread(threadId)).resolves.toMatchObject({ isPinned: true });
+    await third.close();
+  });
+
   it("keeps prior archive state and Revision when archive replacement fails", async () => {
     const directory = await temporaryStoreDirectory();
     let fail = false;

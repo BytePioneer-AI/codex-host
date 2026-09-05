@@ -70,6 +70,7 @@ export const THREAD_MODEL_SELECT_METHOD = "codexhost/thread/model/select";
 export const THREAD_THINKING_SELECT_METHOD = "codexhost/thread/thinking/select";
 export const THREAD_PERMISSION_MODE_SELECT_METHOD = "codexhost/thread/permission-mode/select";
 export const THREAD_OWNERSHIP_LIST_METHOD = "codexhost/thread/ownership/list";
+export const THREAD_METADATA_UPDATE_METHOD = "thread/metadata/update";
 export const THREAD_USAGE_INSPECT_METHOD = "codexhost/thread/usage/inspect";
 export const THREAD_USAGE_UPDATED_METHOD = "codexhost/thread/usage/updated";
 export const THREAD_TOKEN_USAGE_UPDATED_METHOD = "thread/tokenUsage/updated";
@@ -138,6 +139,11 @@ export interface RendererModelClient {
   inspectThreadCommands(input: ThreadCommandsInspectParams): Promise<HarnessCommandCatalog>;
   executeThreadCommand(input: ThreadCommandExecuteParams): Promise<ThreadCommandExecuteResult>;
   listThreadOwnership(input: ThreadOwnershipListParams): Promise<ThreadOwnershipListResult>;
+  /** 使用官方协议更新 Thread 置顶状态；仅 External Thread 兼容桥需要主动调用。 */
+  updateThreadPinned?(input: {
+    threadId: ThreadOwnershipListParams["threadIds"][number];
+    isPinned: boolean;
+  }): Promise<void>;
   inspectThreadUsage(input: ThreadUsageInspectionParams): Promise<ThreadUsageInspection>;
   subscribeThreadUsage?(listener: (update: ThreadUsageInspection) => void): () => void;
   selectThreadModel(input: ThreadModelSelectParams): Promise<HarnessModelSelectionState>;
@@ -313,6 +319,16 @@ export function createRendererModelClient(
         throw new Error("Thread ownership-list result does not match the requested IDs");
       }
       return result;
+    },
+    async updateThreadPinned(input: {
+      threadId: ThreadOwnershipListParams["threadIds"][number];
+      isPinned: boolean;
+    }): Promise<void> {
+      const threadId = hostThreadIdSchema.parse(input.threadId);
+      await manager.sendRequest(THREAD_METADATA_UPDATE_METHOD, {
+        threadId,
+        isPinned: input.isPinned,
+      });
     },
     inspectThreadUsage,
     subscribeThreadUsage(listener: (update: ThreadUsageInspection) => void): () => void {

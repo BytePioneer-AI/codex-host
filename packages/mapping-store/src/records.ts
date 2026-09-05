@@ -45,6 +45,8 @@ export const storedThreadRecordV1Schema = z
     cwd: nonBlankTextSchema.max(16_384),
     title: z.string().max(4_096),
     archived: z.boolean(),
+    // 兼容旧版 v1 记录：缺少置顶字段时按未置顶迁移，避免破坏既有任务历史。
+    isPinned: z.boolean().default(false),
     transportModelId: nonBlankTextSchema.max(1_024),
     ephemeral: z.boolean(),
     historyMode: z.enum(["legacy", "paginated"]),

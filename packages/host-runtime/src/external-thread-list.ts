@@ -114,7 +114,7 @@ function includesExternalRecord(
     return false;
   }
   if (query.parentThreadId !== null || query.ancestorThreadId !== null) return false;
-  if (query.isPinned === true) return false;
+  if (query.isPinned !== null && record.isPinned !== query.isPinned) return false;
   return true;
 }
 

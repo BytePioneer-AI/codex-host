@@ -24,11 +24,11 @@ import {
   type HostAgentMessageItem,
   type HostCommand,
   type HostEvent,
+  type HostFileChange,
   type HostItem,
   type HostItemOutcome,
   type HostItemSnapshot,
   type HostThreadSnapshot,
-  type HostToolExecutionItem,
   type HostUsage,
   type InteractionRespondAccepted,
   type InteractionRespondCommand,
@@ -57,7 +57,6 @@ import {
   type HarnessPermissionModeId,
   type HarnessThinkingOptionId,
   type HostItemId,
-  type JsonValue,
   type NativeSessionRef,
   type NativeTurnRef,
 } from "@codexhost/shared-contracts";
@@ -74,6 +73,11 @@ import {
   decodeAntigravityPermissionModeId,
   type AntigravityPermissionMode,
 } from "./permission-modes.js";
+import {
+  codeActionFileChange,
+  requestAntigravityTrajectorySteps,
+  type AntigravityCodeAction,
+} from "./code-action-diff.js";
 import { fetchAntigravityQuota, type AntigravityQuotaSnapshot } from "./quota.js";
 import {
   antigravityToolErrorMessage,
@@ -85,6 +89,12 @@ import {
   type AntigravityStreamEvent,
   type AntigravityUsage,
 } from "./stream-events.js";
+import {
+  completeAntigravityToolItem,
+  isAntigravityFileMutatingTool,
+  startAntigravityToolItem,
+  toolTargetFile,
+} from "./tool-projection.js";
 
 export interface AntigravityAdapterOptions {
   command?: string;
@@ -100,7 +110,7 @@ interface ActiveTurn {
   logPath: string;
   agentItem: HostAgentMessageItem | null;
   agentText: string;
-  tools: Map<number, HostToolExecutionItem>;
+  tools: Map<number, HostItem>;
   completedItems: HostItemSnapshot[];
   stderr: string;
   cancellationRequested: boolean;
@@ -114,6 +124,20 @@ interface ActiveTurn {
     HostUsage,
     "contextUsedTokens" | "contextWindowTokens"
   > | null> | null;
+  /**
+   * Serializes stream handling: resolving a real edit diff needs an awaited
+   * Language Server round trip, and Items must still reach the Host in the
+   * order agy reported them.
+   */
+  queue: Promise<void>;
+  /** Applied edits already claimed by a tool step, so a repeat edit of the
+   * same file maps to the next recorded Code Action rather than the first. */
+  codeActionCursor: number;
+  fileChanges: Map<number, HostFileChange>;
+  /** First sighting of a step whose Item was deferred: agy names the tool and
+   * its parameters when the step opens, not when it ends. */
+  pendingSteps: Map<number, AntigravityStepUpdateEvent["step_update"]>;
+  httpsPort: number | null;
 }
 
 const antigravityHarnessId = harnessIdSchema.parse("antigravity");
@@ -122,7 +146,62 @@ const DEFAULT_PRINT_TIMEOUT = "30m";
 const DEFAULT_TOOL_OUTPUT_LIMIT = 64_000;
 const CONTEXT_USAGE_TIMEOUT_MS = 8_000;
 const CONTEXT_USAGE_RETRY_MS = 100;
+const TRAJECTORY_TIMEOUT_MS = 2_000;
 const GEMINI_CONTEXT_WINDOW_TOKENS = 1_048_576;
+const CLAUDE_CONTEXT_WINDOW_TOKENS = 200_000;
+
+/**
+ * agy names a tool and its parameters when a step opens and repeats only what
+ * changed when it ends, so a step whose Item was deferred has to carry that
+ * opening detail forward.
+ */
+function mergePendingStep(
+  pending: AntigravityStepUpdateEvent["step_update"] | undefined,
+  step: AntigravityStepUpdateEvent["step_update"],
+): AntigravityStepUpdateEvent["step_update"] {
+  if (!pending) return step;
+  const toolName = step.tool_name ?? pending.tool_name;
+  const name = step.tool_info?.name ?? pending.tool_info?.name;
+  const parameters = step.tool_info?.parameters ?? pending.tool_info?.parameters;
+  const output = step.tool_info?.output ?? pending.tool_info?.output;
+  const error = step.tool_info?.error ?? pending.tool_info?.error;
+  return {
+    ...pending,
+    ...step,
+    ...(toolName !== undefined ? { tool_name: toolName } : {}),
+    ...(step.tool_info !== undefined || pending.tool_info !== undefined
+      ? {
+          tool_info: {
+            ...(name !== undefined ? { name } : {}),
+            ...(parameters !== undefined ? { parameters } : {}),
+            ...(output !== undefined ? { output } : {}),
+            ...(error !== undefined ? { error } : {}),
+          },
+        }
+      : {}),
+  };
+}
+
+/**
+ * agy reports a tool target with the platform's own separators while its
+ * trajectory reports a `file://` URI, so the two only compare after both are
+ * resolved — case-insensitively where the filesystem is.
+ */
+function sameFile(left: string, right: string): boolean {
+  const a = path.resolve(left);
+  const b = path.resolve(right);
+  return process.platform === "win32" ? a.toLowerCase() === b.toLowerCase() : a === b;
+}
+
+export function resolveAntigravityContextWindow(modelId?: string, reportedWindow?: number): number {
+  if (modelId && /^claude(?:[-_.]|$)/iu.test(modelId)) {
+    return CLAUDE_CONTEXT_WINDOW_TOKENS;
+  }
+  if (!modelId || /^gemini(?:[-_.]|$)/iu.test(modelId)) {
+    return GEMINI_CONTEXT_WINDOW_TOKENS;
+  }
+  return reportedWindow && reportedWindow > 0 ? reportedWindow : GEMINI_CONTEXT_WINDOW_TOKENS;
+}
 
 const CAPABILITIES: HarnessSessionCapabilities = {
   configuration: {
@@ -166,18 +245,6 @@ export function permissionDeniedTurnError(nativeMode: string | null, denial: str
   };
 }
 
-function jsonValue(value: unknown): JsonValue {
-  if (value === undefined) return null;
-  return JSON.parse(JSON.stringify(value)) as JsonValue;
-}
-
-function boundedText(value: unknown, limit: number): { text: string; truncated: boolean } | null {
-  if (value === undefined) return null;
-  const text = typeof value === "string" ? value : JSON.stringify(value);
-  if (!text) return null;
-  return { text: text.slice(0, limit), truncated: text.length > limit };
-}
-
 function safeToken(value: unknown): number | undefined {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
 }
@@ -211,12 +278,8 @@ export function parseAntigravityContextUsage(
       breakdown?.total_tokens,
   );
   const window = safeToken(metadata.maxContextTokens ?? metadata.max_context_tokens);
-  if (used === undefined || window === undefined || window <= 0) return null;
-  // agy's Gemini status line uses a 1 Mi-token window while LS metadata reports 256k.
-  const contextWindowTokens =
-    /^gemini(?:[-_.]|$)/iu.test(modelId ?? "") && window === 256_000
-      ? GEMINI_CONTEXT_WINDOW_TOKENS
-      : window;
+  if (used === undefined) return null;
+  const contextWindowTokens = resolveAntigravityContextWindow(modelId, window);
   return { contextUsedTokens: used, contextWindowTokens };
 }
 
@@ -282,6 +345,7 @@ async function pollAntigravityContextUsage(
   logPath: string,
   conversationId: string,
   modelId?: string,
+  isDone?: () => boolean,
 ): Promise<Pick<HostUsage, "contextUsedTokens" | "contextWindowTokens"> | null> {
   const deadline = Date.now() + CONTEXT_USAGE_TIMEOUT_MS;
   while (Date.now() < deadline) {
@@ -295,33 +359,35 @@ async function pollAntigravityContextUsage(
       );
       if (usage) return usage;
     }
+    if (isDone?.()) break;
     await new Promise<void>((resolve) => setTimeout(resolve, CONTEXT_USAGE_RETRY_MS));
   }
   return null;
 }
 
-function hostUsage(value: AntigravityUsage | undefined): HostUsage | null {
+function hostUsage(value: AntigravityUsage | undefined, modelId?: string): HostUsage | null {
   if (!value) return null;
   const inputTokens = safeToken(value.input_tokens);
   const outputTokens = safeToken(value.output_tokens);
   const reasoningOutputTokens = safeToken(value.thinking_tokens);
-  const cachedInputTokens = safeToken(value.cache_read_tokens);
   const totalTokens = safeToken(value.total_tokens);
-  const contextUsedTokens = safeToken(value.context_used_tokens ?? value.estimated_tokens_used);
-  const contextWindowTokens = safeToken(value.context_window_tokens ?? value.max_context_tokens);
+  const contextUsedTokens = safeToken(
+    value.context_used_tokens ?? value.estimated_tokens_used ?? value.input_tokens,
+  );
+  const rawWindow = safeToken(value.context_window_tokens ?? value.max_context_tokens);
+  const contextWindowTokens =
+    contextUsedTokens !== undefined || rawWindow !== undefined
+      ? resolveAntigravityContextWindow(modelId, rawWindow)
+      : undefined;
   const usage: HostUsage = {
     ...(inputTokens !== undefined ? { inputTokens } : {}),
     ...(outputTokens !== undefined ? { outputTokens } : {}),
     ...(reasoningOutputTokens !== undefined ? { reasoningOutputTokens } : {}),
-    ...(cachedInputTokens !== undefined ? { cachedInputTokens } : {}),
     ...(totalTokens !== undefined ? { totalTokens } : {}),
     ...(contextUsedTokens !== undefined &&
     contextWindowTokens !== undefined &&
     contextWindowTokens > 0
       ? { contextUsedTokens, contextWindowTokens }
-      : {}),
-    ...(inputTokens !== undefined && cachedInputTokens !== undefined && inputTokens > 0
-      ? { cacheHitRatePercent: Math.min(100, (cachedInputTokens / inputTokens) * 100) }
       : {}),
   };
   return Object.keys(usage).length > 0 ? usage : null;
@@ -505,6 +571,7 @@ class AntigravitySession implements HarnessSession {
     if (this.#permissionMode === "dangerously-skip-permissions") {
       arguments_.push("--dangerously-skip-permissions");
     }
+    arguments_.push("--add-dir", this.#cwd);
     arguments_.push("--log-file", logPath);
     const invocation = commandInvocation(this.#executable, arguments_, this.#environment);
     let child: ChildProcessByStdio<Writable, Readable, Readable>;
@@ -537,6 +604,11 @@ class AntigravitySession implements HarnessSession {
       permissionDenial: null,
       latestUsage: null,
       contextUsagePromise: null,
+      queue: Promise.resolve(),
+      codeActionCursor: 0,
+      fileChanges: new Map(),
+      pendingSteps: new Map(),
+      httpsPort: null,
     };
     this.#active = active;
     child.stderr.setEncoding("utf8").on("data", (chunk: string) => {
@@ -545,30 +617,34 @@ class AntigravitySession implements HarnessSession {
     const lines = readline.createInterface({ input: child.stdout });
     lines.on("line", (line) => {
       const event = parseAntigravityStreamLine(line);
-      if (event) this.#handleEvent(active, event);
+      if (event) this.#enqueue(active, () => this.#handleEvent(active, event));
       else if (line.trim()) active.stderr = (active.stderr + `\n${line}`).slice(-8_000);
     });
     child.once("error", (error) => {
-      if (this.#active !== active) return;
-      this.#completeTurn(active, {
-        status: "failed",
-        error: { code: "nativeFailure", message: error.message, retryable: true },
+      this.#enqueue(active, () => {
+        if (this.#active !== active) return;
+        this.#completeTurn(active, {
+          status: "failed",
+          error: { code: "nativeFailure", message: error.message, retryable: true },
+        });
       });
     });
     child.once("exit", (code) => {
-      void unlink(active.logPath).catch(() => undefined);
-      if (this.#active !== active || active.receivedResult) return;
-      if (active.cancellationRequested) {
-        this.#completeTurn(active, { status: "cancelled", reason: "Cancelled by user" });
-      } else {
-        this.#completeTurn(active, {
-          status: "failed",
-          error: normalizedProcessError(
-            active.stderr,
-            `Antigravity CLI exited before a result event (code ${String(code)})`,
-          ),
-        });
-      }
+      this.#enqueue(active, () => {
+        void unlink(active.logPath).catch(() => undefined);
+        if (this.#active !== active || active.receivedResult) return;
+        if (active.cancellationRequested) {
+          this.#completeTurn(active, { status: "cancelled", reason: "Cancelled by user" });
+        } else {
+          this.#completeTurn(active, {
+            status: "failed",
+            error: normalizedProcessError(
+              active.stderr,
+              `Antigravity CLI exited before a result event (code ${String(code)})`,
+            ),
+          });
+        }
+      });
     });
     try {
       child.stdin.write(`${JSON.stringify({ event: "user", message: { content: text } })}\n`);
@@ -600,7 +676,22 @@ class AntigravitySession implements HarnessSession {
     this.#onClosed();
   }
 
-  #handleEvent(active: ActiveTurn, event: AntigravityStreamEvent): void {
+  /**
+   * Runs stream work one item at a time. Resolving a real edit patch needs an
+   * awaited Language Server call, and Codex Desktop renders Items in arrival
+   * order, so nothing may overtake a step that is still resolving.
+   */
+  #enqueue(active: ActiveTurn, work: () => Promise<void> | void): void {
+    active.queue = active.queue.then(work).catch((error: unknown) => {
+      if (this.#active !== active) return;
+      this.#completeTurn(active, {
+        status: "failed",
+        error: { code: "nativeFailure", message: errorMessage(error), retryable: true },
+      });
+    });
+  }
+
+  async #handleEvent(active: ActiveTurn, event: AntigravityStreamEvent): Promise<void> {
     if (this.#active !== active) return;
     if (event.event === "init") {
       active.nativePermissionMode = event.init?.permission_mode ?? null;
@@ -627,26 +718,20 @@ class AntigravitySession implements HarnessSession {
       return;
     }
     if (event.event === "step_update") {
-      this.#handleStep(active, event.step_update);
-      const usage = hostUsage(event.step_update.usage);
+      await this.#handleStep(active, event.step_update);
+      const usage = hostUsage(event.step_update.usage, this.#model?.id);
       if (usage) this.#publishUsage(active, usage);
       this.#ensureContextUsage(active, event.step_update.conversation_id);
       return;
     }
     if (event.event !== "result") return;
     active.receivedResult = true;
-    void this.#handleResult(active, event).catch((error: unknown) => {
-      if (this.#active !== active) return;
-      this.#completeTurn(active, {
-        status: "failed",
-        error: { code: "nativeFailure", message: errorMessage(error), retryable: true },
-      });
-    });
+    await this.#handleResult(active, event);
   }
 
   async #handleResult(active: ActiveTurn, event: AntigravityResultEvent): Promise<void> {
     if (this.#active !== active) return;
-    const usage = hostUsage(event.result.usage);
+    const usage = hostUsage(event.result.usage, this.#model?.id);
     if (usage) this.#publishUsage(active, usage);
     this.#ensureContextUsage(active, event.result.conversation_id);
     if (active.contextUsagePromise) {
@@ -664,8 +749,8 @@ class AntigravitySession implements HarnessSession {
       this.#history.bindNativeSession(event.result.conversation_id);
       this.#event({ type: "session.state.changed", state: this.#state() });
     }
-    if (!active.agentItem && event.result.response) {
-      this.#appendAgentText(active, event.result.response);
+    if (event.result.response) {
+      this.#appendOrSyncAgentText(active, event.result.response, false);
     }
     const nativeTurnRef = nativeTurnRefSchema.parse({
       harnessId: this.harnessId,
@@ -722,63 +807,140 @@ class AntigravitySession implements HarnessSession {
       active.logPath,
       conversationId,
       this.#model?.id,
+      () =>
+        active.receivedResult || active.cancellationRequested || active.process.exitCode !== null,
     );
   }
 
-  #handleStep(active: ActiveTurn, step: AntigravityStepUpdateEvent["step_update"]): void {
-    if (step.step_type === "agent_response" && step.text_delta) {
-      this.#appendAgentText(active, step.text_delta);
+  async #handleStep(
+    active: ActiveTurn,
+    step: AntigravityStepUpdateEvent["step_update"],
+  ): Promise<void> {
+    if (step.step_type === "agent_response") {
+      if (typeof step.text_delta === "string" && step.text_delta.length > 0) {
+        this.#appendOrSyncAgentText(active, step.text_delta, true);
+        return;
+      }
+      const fullOrDelta =
+        step.text ??
+        (typeof step.content === "string" ? step.content : undefined) ??
+        (typeof step.message === "string" ? step.message : undefined);
+      if (typeof fullOrDelta === "string" && fullOrDelta.length > 0) {
+        this.#appendOrSyncAgentText(active, fullOrDelta, false);
+        return;
+      }
       return;
     }
     if (step.step_type !== "tool") return;
+    const merged = mergePendingStep(active.pendingSteps.get(step.step_index), step);
     let item = active.tools.get(step.step_index);
     if (!item) {
-      item = {
-        type: "toolExecution",
-        itemId: this.#newItemId(),
-        toolName: step.tool_name ?? step.tool_info?.name ?? "antigravity.tool",
-        arguments: jsonValue(step.tool_info?.parameters),
-      };
+      const started = await this.#startToolItem(active, merged);
+      if (!started) {
+        active.pendingSteps.set(step.step_index, merged);
+        return;
+      }
+      active.pendingSteps.delete(step.step_index);
+      item = started;
       active.tools.set(step.step_index, item);
       this.#event({ type: "item.started", turnId: active.command.turnId, item });
     }
-    if (step.state !== "DONE" && step.state !== "ERROR") return;
-    const toolError = antigravityToolErrorMessage(step.tool_info?.error);
+    if (merged.state !== "DONE" && merged.state !== "ERROR") return;
+    const toolError = antigravityToolErrorMessage(merged.tool_info?.error);
     if (toolError !== null && active.permissionDenial === null) {
       if (isAntigravityPermissionDenial(toolError)) active.permissionDenial = toolError;
     }
-    const output = boundedText(
-      step.tool_info?.output ?? step.tool_info?.error,
-      this.#toolOutputLimit,
-    );
-    const completed: HostToolExecutionItem = {
-      ...item,
-      ...(output
-        ? {
-            output: { content: [{ type: "text", text: output.text }], truncated: output.truncated },
-          }
-        : {}),
-      ...(typeof step.duration_seconds === "number"
-        ? { durationMs: Math.max(0, Math.round(step.duration_seconds * 1_000)) }
-        : {}),
-    };
+    const completed = completeAntigravityToolItem(item, merged, this.#toolOutputLimit, this.#cwd);
     active.tools.delete(step.step_index);
-    this.#completeItem(
-      active,
-      completed,
-      step.state === "ERROR"
+    const toolName =
+      merged.tool_name ??
+      merged.tool_info?.name ??
+      (item.type === "toolExecution" ? item.toolName : item.type);
+    const itemOutcome: HostItemOutcome =
+      merged.state === "ERROR"
         ? {
             status: "failed",
             error: {
               code: "nativeFailure",
               message: toolError
-                ? `Antigravity tool '${completed.toolName}' failed: ${toolError}`
-                : `Antigravity tool '${completed.toolName}' failed`,
+                ? `Antigravity tool '${toolName}' failed: ${toolError}`
+                : `Antigravity tool '${toolName}' failed`,
               retryable: false,
             },
           }
-        : { status: "succeeded" },
+        : { status: "succeeded" };
+    this.#completeItem(active, completed, itemOutcome);
+  }
+
+  /**
+   * A file-mutating step only becomes a File Change Item once its patch is
+   * known. agy publishes the step before the Language Server has recorded the
+   * applied edit, so an unresolved step stays uncarded until its terminal
+   * update rather than showing an empty patch.
+   */
+  async #startToolItem(
+    active: ActiveTurn,
+    step: AntigravityStepUpdateEvent["step_update"],
+  ): Promise<HostItem | null> {
+    const toolName = step.tool_name ?? step.tool_info?.name ?? "antigravity.tool";
+    if (isAntigravityFileMutatingTool(toolName)) {
+      const change = await this.#claimFileChange(active, step, toolName);
+      if (change) {
+        return { type: "fileChange", itemId: this.#newItemId(), changes: [change] };
+      }
+      if (step.state !== "DONE" && step.state !== "ERROR") return null;
+    }
+    return startAntigravityToolItem(this.#newItemId(), step, this.#cwd);
+  }
+
+  async #claimFileChange(
+    active: ActiveTurn,
+    step: AntigravityStepUpdateEvent["step_update"],
+    toolName: string,
+  ): Promise<HostFileChange | null> {
+    const claimed = active.fileChanges.get(step.step_index);
+    if (claimed) return claimed;
+    const target = toolTargetFile(toolName, step.tool_info?.parameters);
+    if (!target) return null;
+    const port = await this.#languageServerPort(active);
+    if (port === null) return null;
+    const actions = await requestAntigravityTrajectorySteps(
+      port,
+      step.conversation_id,
+      TRAJECTORY_TIMEOUT_MS,
     );
+    const index = actions.findIndex(
+      (action, at) => at >= active.codeActionCursor && sameFile(action.absolutePath, target),
+    );
+    const action: AntigravityCodeAction | undefined = index === -1 ? undefined : actions[index];
+    if (!action) return null;
+    const change = codeActionFileChange(action, this.#cwd);
+    if (!change) return null;
+    active.codeActionCursor = index + 1;
+    active.fileChanges.set(step.step_index, change);
+    return change;
+  }
+
+  async #languageServerPort(active: ActiveTurn): Promise<number | null> {
+    if (active.httpsPort !== null) return active.httpsPort;
+    const port = await antigravityHttpsPort(active.logPath);
+    if (port !== null) active.httpsPort = port;
+    return port;
+  }
+
+  #appendOrSyncAgentText(active: ActiveTurn, text: string, isExplicitDelta: boolean): void {
+    if (!text) return;
+    if (isExplicitDelta || !active.agentItem) {
+      this.#appendAgentText(active, text);
+      return;
+    }
+    if (text === active.agentText) return;
+    if (text.startsWith(active.agentText)) {
+      const delta = text.slice(active.agentText.length);
+      if (delta.length > 0) this.#appendAgentText(active, delta);
+      return;
+    }
+    this.#appendAgentText(active, text);
   }
 
   #appendAgentText(active: ActiveTurn, text: string): void {
@@ -808,6 +970,14 @@ class AntigravitySession implements HarnessSession {
           ? { status: "cancelled", ...(outcome.reason ? { reason: outcome.reason } : {}) }
           : { status: "succeeded" };
     if (active.agentItem) this.#completeItem(active, active.agentItem, itemOutcome);
+    // A step whose patch never resolved still ran, so an interrupted Turn
+    // reports it as a Tool Execution rather than dropping it silently.
+    for (const step of active.pendingSteps.values()) {
+      const item = startAntigravityToolItem(this.#newItemId(), step, this.#cwd);
+      this.#event({ type: "item.started", turnId: active.command.turnId, item });
+      this.#completeItem(active, item, itemOutcome);
+    }
+    active.pendingSteps.clear();
     for (const item of active.tools.values()) this.#completeItem(active, item, itemOutcome);
     active.tools.clear();
     if (nativeTurnRef) {

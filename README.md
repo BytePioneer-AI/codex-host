@@ -236,7 +236,7 @@ CodexHost 尽量不走这条路：
       <sub><strong>欢迎一起贡献~ </strong></sub>
     </td>
     <td align="center">
-      <img width="230" alt="7ba6eda891ba4c8d091f2a71a8b8e81d" src="https://github.com/user-attachments/assets/e40b162e-a961-43ac-9728-af59890c4d72" />
+      <img width="230" alt="7ba6eda891ba4c8d091f2a71a8b8e81d" src="https://github.com/user-attachments/assets/6bdddc62-596a-477a-9953-936d4752667c" />
     </td>
   </tr>
 </table>
@@ -251,6 +251,19 @@ cd codex-host
 npm ci
 npm start
 ```
+
+### 运行架构
+
+以 Pi 为例。从左到右是一次请求的调用链：Desktop → 公共层 → Pi 插件 → 原生进程。
+
+<div align="center">
+  <img width="100%" src="docs/imgs/pi-runtime-architecture.png" alt="以 Pi 为例的运行架构：Desktop 到公共层，再到 Pi 插件和原生进程">
+</div>
+
+### 新增 Harness
+
+主要实现插件的 Manifest、工厂、Adapter、Session 及原生通信与转换逻辑。当前 Renderer 仍有静态接线，完整 Desktop 接入还需单独处理。
+新增 Harness 时，可以让编码 Agent 使用仓库内的 [codexhost-add-harness Skill](.agents/skills/codexhost-add-harness/SKILL.md)。它说明了插件结构、公共 Adapter 接口、能力实现与测试要求。
 
 ## 鸣谢
 

@@ -13,6 +13,8 @@ use std::time::Duration;
 #[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
 use std::time::Instant;
 
+#[cfg(target_os = "windows")]
+use codexhost_platform::CUSTOM_INSTALL_ROOT_ENV;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 use codexhost_platform::parent_process_id;
 use codexhost_platform::{CODEX_CLI_PATH_ENV, STOCK_CODEX_PATH_ENV};
@@ -21,6 +23,8 @@ use codexhost_platform::{process_exists, process_snapshot};
 use codexhost_shim::{HOST_NODE_PATH_ENV, HOST_RUNTIME_PATH_ENV, REMOTE_SSH_MANAGED_ENV};
 #[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
 use fs2::FileExt;
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+use std::os::unix::fs::MetadataExt;
 
 fn shim_path() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_codexhost-shim"))
@@ -28,6 +32,119 @@ fn shim_path() -> PathBuf {
 
 fn fake_codex_path() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_fake-codex-cli"))
+}
+
+#[cfg(target_os = "windows")]
+#[test]
+fn node_repl_proxy_preserves_stdio_and_explicit_proxy_configuration() {
+    let directory = temporary_directory();
+    let node = directory.join("node.exe");
+    fs::copy(fake_codex_path(), &node).unwrap();
+    fs::copy(fake_codex_path(), directory.join("node_repl.exe")).unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_codexhost-node-repl"))
+        .args(["--fixture-option", "two words"])
+        .env("NODE_REPL_NODE_PATH", &node)
+        .env("HTTP_PROXY", "http://explicit.invalid:3128")
+        .env("HTTPS_PROXY", "")
+        .env("ALL_PROXY", "")
+        .env("NODE_USE_ENV_PROXY", "0")
+        .env("FAKE_CODEX_PRINT_INVOCATION", "1")
+        .env("FAKE_CODEX_PRINT_PROXY_ENV", "1")
+        .env("FAKE_CODEX_EXIT_CODE", "7")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let input = b"{\"jsonrpc\":\"2.0\"}\r\n\0\xFF";
+    child.stdin.take().unwrap().write_all(input).unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert_eq!(output.status.code(), Some(7));
+    assert_eq!(output.stdout, input);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("args=--fixture-option|two words"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("HTTP_PROXY=http://explicit.invalid:3128"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("NODE_USE_ENV_PROXY=0"), "{stderr}");
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[cfg(target_os = "windows")]
+#[test]
+fn node_repl_proxy_does_not_search_path_for_missing_runtime() {
+    let output = Command::new(env!("CARGO_BIN_EXE_codexhost-node-repl"))
+        .env_remove("NODE_REPL_NODE_PATH")
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("NODE_REPL_NODE_PATH is required"));
+}
+
+#[cfg(target_os = "windows")]
+#[test]
+fn desktop_helpers_do_not_reenter_host_runtime() {
+    // Test process = launcher, first fixture = Desktop, additional fixtures = helpers.
+    // Use the same inherited configuration and stdio command at every depth.
+    for depth in [0, 1, 2] {
+        let directory = temporary_directory();
+        let mut child = Command::new(fake_codex_path())
+            .args(["app-server", "--listen", "stdio://"])
+            .env("FAKE_CODEX_HELPER_SHIM", shim_path())
+            .env("FAKE_CODEX_HELPER_DEPTH", depth.to_string())
+            .env("FAKE_CODEX_PRINT_INVOCATION", "1")
+            .env("FAKE_CODEX_ROUTE_RESPONSE", "1")
+            .env("CODEXHOST_LAUNCHER_PID", process::id().to_string())
+            .env("CODEXHOST_DATA_DIR", &directory)
+            .env_remove("CODEXHOST_NPM_NODE_PATH")
+            .env_remove("CODEXHOST_NPM_PACKAGE_ROOT")
+            .env(STOCK_CODEX_PATH_ENV, fake_codex_path())
+            .env(CODEX_CLI_PATH_ENV, shim_path())
+            .env(HOST_NODE_PATH_ENV, fake_codex_path())
+            .env(HOST_RUNTIME_PATH_ENV, fake_codex_path())
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("spawn launcher-owned Desktop fixture");
+        let mut stdin = child.stdin.take().expect("fixture stdin");
+        stdin.write_all(b"x").expect("write fixture request");
+        let mut response = [0; 8];
+        child
+            .stdout
+            .as_mut()
+            .unwrap()
+            .read_exact(&mut response)
+            .expect("read routing response before closing stdin");
+        assert_eq!(&response, b"response");
+        drop(stdin);
+        let output = child.wait_with_output().expect("wait for fixture");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(output.status.success(), "depth={depth}: {stderr}");
+        assert!(output.stdout.is_empty());
+        if depth == 0 {
+            assert!(
+                !stderr.contains("args=app-server|"),
+                "main Desktop must use Host Runtime: {stderr}"
+            );
+        } else {
+            assert!(
+                stderr.contains("args=app-server|--listen|stdio://"),
+                "helper must use stock CLI: {stderr}"
+            );
+            assert!(
+                !directory.join("local-host-runtime-owner.lock").exists(),
+                "helper must not acquire a Host Runtime lease"
+            );
+        }
+        fs::remove_dir_all(directory).expect("remove isolated routing fixture");
+    }
 }
 
 fn temporary_directory() -> PathBuf {
@@ -281,9 +398,119 @@ fn rejects_missing_official_cli_without_falling_back_to_path() {
     assert!(String::from_utf8_lossy(&output.stderr).contains("does not exist"));
 }
 
+#[cfg(target_os = "windows")]
+#[test]
+fn rejects_missing_stock_cli_when_cli_override_does_not_name_the_running_shim() {
+    let output = Command::new(shim_path())
+        .env_remove(STOCK_CODEX_PATH_ENV)
+        .env(CODEX_CLI_PATH_ENV, fake_codex_path())
+        .stdin(Stdio::null())
+        .output()
+        .expect("run shim with unrelated CLI override");
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("does not identify the running Shim"));
+}
+
+#[test]
+fn rejects_missing_stock_cli_without_a_cli_override() {
+    let output = Command::new(shim_path())
+        .env_remove(STOCK_CODEX_PATH_ENV)
+        .env_remove(CODEX_CLI_PATH_ENV)
+        .stdin(Stdio::null())
+        .output()
+        .expect("run shim without managed environment");
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains(&format!("{STOCK_CODEX_PATH_ENV} is required"))
+    );
+}
+
+#[cfg(target_os = "windows")]
+#[test]
+fn discovers_official_cli_when_browser_helper_preserves_only_codex_cli_path() {
+    let installation_root = temporary_directory().join("portable-codex");
+    let app_root = installation_root.join("app");
+    let resources = app_root.join("resources");
+    fs::create_dir_all(&resources).expect("create portable Codex resources");
+    fs::write(app_root.join("ChatGPT.exe"), b"desktop").expect("write fake Desktop executable");
+    fs::write(resources.join("app.asar"), b"asar").expect("write fake app.asar");
+    fs::copy(fake_codex_path(), resources.join("codex.exe"))
+        .expect("install fake official Codex CLI");
+
+    let output = Command::new(shim_path())
+        .args(["config", "read"])
+        .env_remove(STOCK_CODEX_PATH_ENV)
+        .env(CODEX_CLI_PATH_ENV, shim_path())
+        .env(CUSTOM_INSTALL_ROOT_ENV, &installation_root)
+        .env_remove(HOST_NODE_PATH_ENV)
+        .env_remove(HOST_RUNTIME_PATH_ENV)
+        .env_remove(REMOTE_SSH_MANAGED_ENV)
+        .env("FAKE_CODEX_PRINT_INVOCATION", "1")
+        .env("FAKE_CODEX_PRINT_PROXY_ENV", "1")
+        .env("HTTP_PROXY", "http://explicit-proxy.invalid:3128")
+        .env_remove("NODE_USE_ENV_PROXY")
+        .stdin(Stdio::null())
+        .output()
+        .expect("run Browser Use style shim invocation");
+
+    assert!(
+        output.status.success(),
+        "Browser Use style shim invocation exited {}; stderr={}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(output.stdout.is_empty());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("args=config|read"), "{stderr}");
+    assert!(stderr.contains("codex_cli_path_present=false"), "{stderr}");
+    assert!(
+        stderr.contains("HTTP_PROXY=http://explicit-proxy.invalid:3128"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("NODE_USE_ENV_PROXY=1"), "{stderr}");
+
+    fs::remove_dir_all(
+        installation_root
+            .parent()
+            .expect("portable installation parent"),
+    )
+    .expect("remove portable Codex installation");
+}
+
+#[cfg(target_os = "windows")]
+#[test]
+fn browser_helper_fallback_does_not_guess_an_official_cli_from_path() {
+    let missing_installation = temporary_directory().join("missing-portable-codex");
+    let output = Command::new(shim_path())
+        .env_remove(STOCK_CODEX_PATH_ENV)
+        .env(CODEX_CLI_PATH_ENV, shim_path())
+        .env(CUSTOM_INSTALL_ROOT_ENV, &missing_installation)
+        .env("PATH", fake_codex_path().parent().expect("fake CLI parent"))
+        .stdin(Stdio::null())
+        .output()
+        .expect("run Browser Use style shim invocation without an installation");
+
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("Desktop-managed official Codex CLI could not be discovered")
+    );
+
+    fs::remove_dir_all(
+        missing_installation
+            .parent()
+            .expect("missing installation parent"),
+    )
+    .expect("remove missing portable installation fixture");
+}
+
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 #[test]
-fn managed_remote_listener_detaches_after_the_socket_is_ready() {
+fn managed_remote_listener_detaches_and_reuses_a_matching_socket_owner() {
     static NEXT_REMOTE_DIRECTORY_ID: AtomicU64 = AtomicU64::new(0);
 
     let directory = PathBuf::from("/tmp").join(format!(
@@ -327,9 +554,9 @@ fn managed_remote_listener_detaches_after_the_socket_is_ready() {
     while !ready.exists() && Instant::now() < ready_deadline {
         thread::sleep(Duration::from_millis(20));
     }
-    let ready = fs::read_to_string(&ready).expect("read detached listener identity");
+    let ready_contents = fs::read_to_string(&ready).expect("read detached listener identity");
     let value = |label: &str| {
-        ready
+        ready_contents
             .lines()
             .find_map(|line| line.strip_prefix(label))
             .expect("listener identity field")
@@ -373,29 +600,168 @@ fn managed_remote_listener_detaches_after_the_socket_is_ready() {
     assert!(process_exists(root_id), "detached listener root exited");
     assert!(process_exists(shim_id), "detached listener Shim exited");
 
-    let termination = Command::new("/bin/kill")
-        .args(["-TERM", &shim_id.to_string()])
-        .status()
-        .expect("stop detached listener Shim");
-    assert!(termination.success());
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while (process_exists(root_id) || process_exists(shim_id)) && Instant::now() < deadline {
-        thread::sleep(Duration::from_millis(20));
-    }
-    if process_exists(root_id) || process_exists(shim_id) {
+    let original_socket = fs::metadata(&socket).expect("read original listener socket identity");
+    let repeated_started = Instant::now();
+    let repeated = Command::new(shim_path())
+        .args([
+            "-c",
+            "features.code_mode_host=true",
+            "app-server",
+            "--listen",
+            "unix://",
+        ])
+        .env_remove(HOST_NODE_PATH_ENV)
+        .env_remove(HOST_RUNTIME_PATH_ENV)
+        .env_remove("CODEXHOST_REMOTE_LISTENER_CHILD")
+        .env(STOCK_CODEX_PATH_ENV, fake_codex_path())
+        .env(CODEX_CLI_PATH_ENV, shim_path())
+        .env(REMOTE_SSH_MANAGED_ENV, "1")
+        .env("CODEX_HOME", &codex_home)
+        .env("FAKE_CODEX_UNIX_LISTENER_PATH", &socket)
+        .env("FAKE_CODEX_READY_PATH", &ready)
+        .stdin(Stdio::null())
+        .output()
+        .expect("repeat managed remote listener bootstrap");
+    let repeated_elapsed = repeated_started.elapsed();
+    let repeated_ready = fs::read_to_string(&ready).expect("read repeated listener identity");
+    let repeated_value = |label: &str| {
+        repeated_ready
+            .lines()
+            .find_map(|line| line.strip_prefix(label))
+            .expect("repeated listener identity field")
+            .parse::<u32>()
+            .expect("repeated listener identity PID")
+    };
+    let repeated_root_id = repeated_value("root=");
+    let repeated_shim_id = repeated_value("shim=");
+    let repeated_socket = fs::metadata(&socket).expect("read repeated listener socket identity");
+
+    let alternate_stock = directory.join("alternate-fake-codex");
+    fs::copy(fake_codex_path(), &alternate_stock).expect("copy alternate stock Codex fixture");
+    let mismatched = Command::new(shim_path())
+        .args([
+            "-c",
+            "features.code_mode_host=true",
+            "app-server",
+            "--listen",
+            "unix://",
+        ])
+        .env_remove(HOST_NODE_PATH_ENV)
+        .env_remove(HOST_RUNTIME_PATH_ENV)
+        .env_remove("CODEXHOST_REMOTE_LISTENER_CHILD")
+        .env(STOCK_CODEX_PATH_ENV, &alternate_stock)
+        .env(CODEX_CLI_PATH_ENV, shim_path())
+        .env(REMOTE_SSH_MANAGED_ENV, "1")
+        .env("CODEX_HOME", &codex_home)
+        .env("FAKE_CODEX_UNIX_LISTENER_PATH", &socket)
+        .env("FAKE_CODEX_READY_PATH", &ready)
+        .stdin(Stdio::null())
+        .output()
+        .expect("run mismatched managed remote listener bootstrap");
+    let mismatched_ready = fs::read_to_string(&ready).expect("read mismatched listener identity");
+    let mismatched_value = |label: &str| {
+        mismatched_ready
+            .lines()
+            .find_map(|line| line.strip_prefix(label))
+            .expect("mismatched listener identity field")
+            .parse::<u32>()
+            .expect("mismatched listener identity PID")
+    };
+    let mismatched_root_id = mismatched_value("root=");
+    let mismatched_shim_id = mismatched_value("shim=");
+    let mismatched_socket =
+        fs::metadata(&socket).expect("read mismatched listener socket identity");
+    let original_processes_survived = process_exists(root_id) && process_exists(shim_id);
+
+    let process_ids = [
+        root_id,
+        shim_id,
+        repeated_root_id,
+        repeated_shim_id,
+        mismatched_root_id,
+        mismatched_shim_id,
+    ]
+    .into_iter()
+    .collect::<std::collections::HashSet<_>>();
+    for process_id in [shim_id, repeated_shim_id, mismatched_shim_id]
+        .into_iter()
+        .collect::<std::collections::HashSet<_>>()
+    {
         let _ = Command::new("/bin/kill")
-            .args(["-KILL", &shim_id.to_string(), &root_id.to_string()])
+            .args(["-TERM", &process_id.to_string()])
             .status();
     }
-    assert!(
-        !process_exists(root_id),
-        "detached listener root survived shutdown"
-    );
-    assert!(
-        !process_exists(shim_id),
-        "detached listener Shim survived shutdown"
-    );
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while process_ids.iter().copied().any(process_exists) && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(20));
+    }
+    for process_id in process_ids
+        .iter()
+        .copied()
+        .filter(|process_id| process_exists(*process_id))
+    {
+        let _ = Command::new("/bin/kill")
+            .args(["-KILL", &process_id.to_string()])
+            .status();
+    }
     fs::remove_dir_all(directory).expect("remove remote listener fixture");
+
+    assert!(
+        repeated.status.success(),
+        "repeated bootstrap failed: {}; stderr={}",
+        repeated.status,
+        String::from_utf8_lossy(&repeated.stderr)
+    );
+    assert!(
+        repeated_elapsed < Duration::from_secs(2),
+        "repeated bootstrap did not reuse the listener promptly"
+    );
+    assert!(
+        original_processes_survived,
+        "repeated bootstrap terminated the original listener"
+    );
+    assert_eq!(
+        repeated_root_id, root_id,
+        "repeated bootstrap replaced the listener root"
+    );
+    assert_eq!(
+        repeated_shim_id, shim_id,
+        "repeated bootstrap replaced the listener Shim"
+    );
+    assert_eq!(
+        (repeated_socket.dev(), repeated_socket.ino()),
+        (original_socket.dev(), original_socket.ino()),
+        "repeated bootstrap replaced the listener socket"
+    );
+    assert!(
+        !mismatched.status.success(),
+        "bootstrap unexpectedly reused a listener from another installed runtime"
+    );
+    assert!(
+        String::from_utf8_lossy(&mismatched.stderr)
+            .contains("remote Host socket owner does not match"),
+        "unexpected mismatched bootstrap error: {}",
+        String::from_utf8_lossy(&mismatched.stderr)
+    );
+    assert_eq!(
+        mismatched_root_id, root_id,
+        "mismatched bootstrap replaced the listener root"
+    );
+    assert_eq!(
+        mismatched_shim_id, shim_id,
+        "mismatched bootstrap replaced the listener Shim"
+    );
+    assert_eq!(
+        (mismatched_socket.dev(), mismatched_socket.ino()),
+        (original_socket.dev(), original_socket.ino()),
+        "mismatched bootstrap replaced the listener socket"
+    );
+    for process_id in process_ids {
+        assert!(
+            !process_exists(process_id),
+            "detached listener process {process_id} survived shutdown"
+        );
+    }
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]

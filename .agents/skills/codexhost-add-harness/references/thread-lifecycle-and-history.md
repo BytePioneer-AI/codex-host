@@ -1,138 +1,87 @@
-# Thread 生命周期与 History
+# 身份与历史
 
-本文说明外部 Harness 的 Session identity、Turn identity、快照、恢复、Fork 和 Rollback 语义。权威接口位于 `packages/harness-adapter/src/text-session.ts`，Host 集成位于 `packages/host-runtime/src/external-thread-runtime.ts`、`external-thread-fork.ts` 和 `external-thread-rollback.ts`。
+所有插件读取 identity、create、Turn 和快照要求；持久化产品接入还必须实现 resume。Fork 和 Rollback 按原生能力选择。权威接口为 `packages/harness-adapter/src/text-session.ts`，相关 Ref schema 在 `packages/shared-contracts/src/ids.ts`。
 
-## 三层身份
+## 所有权与身份
 
-必须区分：
+| 身份/数据 | 所有者 | 用途 |
+|---|---|---|
+| Host Thread ID、Host Turn ID、映射事务 | Host | Desktop 身份、实时事件关联、持久化协调 |
+| `NativeSessionRef` | 插件提供，Host 保存 | 重启后定位同一原生 Session |
+| `NativeTurnRef` | 插件提供，Host 对齐 | 识别同一个原生逻辑 Turn，不代表可 Fork |
+| `NativeCheckpointRef` | 支持 Fork 的插件提供 | 标识可精确派生的历史边界，不是文件快照 |
+| 原生消息、分支、Transcript 格式 | 对应 Harness / 插件 | 原生事实源及其公共快照投影 |
 
-- Host Thread ID：codexhost 和 Desktop 使用，由 Host 创建并持久化。
-- `NativeSessionRef`：原生 Harness 会话身份，由 Adapter 提供。
-- `NativeTurnRef`：原生历史中的稳定 Turn 身份，用于 Host Turn 对齐。
+Native Ref 使用当前 Harness ID、稳定原生 ID 和需要时的可持久化 locator；不存进程内句柄、凭据或临时随机假身份。插件不直接写 Host Mapping Store，也不重新实现 Host 的 Thread 锁、导入去重和替换事务。
 
-支持 Fork 时还需要 `NativeCheckpointRef`，它表示可派生到某个 Turn 边界的原生位置。
+## Create 与 Turn
 
-所有 Native Ref 必须：
+- create 产生独立可写 Session，不继承其他 Session 历史。
+- identity 已知时放入 initialState；原生延迟创建时，在确认后及时发 state 事件。身份可持久化前不声称可恢复。
+- 普通 Turn 的实时事件始终使用 Host 输入的 turnId；成功终态提供可与历史对齐的 NativeTurnRef。
+- 原生失败/取消没有落盘时，不伪造 NativeTurnRef；如已落盘，返回相应稳定身份与实际 outcome。
+- 原生无直接 Turn ID 时，可以基于稳定的消息/Entry ID 或插件拥有的持久化记录对齐。参考 Pi/OMP 的历史边界或 Claude 的消息身份，不使用每次读取重新生成的随机 ID。
 
-- 使用当前 Adapter 的 `harnessId`；
-- 包含稳定、非空的原生 ID；
-- 能在进程重启后重新定位同一原生数据；
-- 不包含凭据或仅当前进程有效的对象句柄；
-- 需要附加路径或格式信息时使用可持久化的 `locator`。
+## 只读快照：所有插件必须处理
 
-## Create
+`readSnapshot()` 返回公共 `HostThreadSnapshot`：
 
-`open({ kind: "create" })` 应产生独立、可写的 Session：
+- 按原生有效分支和历史顺序返回逻辑 Turn，不把所有分支拼成一段对话。
+- Turn 包含稳定 NativeTurnRef、用户输入、公共 Item、真实 outcome；支持精确派生的边界提供 checkpoint。
+- 同一历史重复读取时，Turn/Item 身份稳定。历史损坏、分页缺失或无法确定终态时明确报错或使用类型允许的 unknown，不能猜测成功。
+- 可携带当次确认的 state；与初始状态和实时状态语义一致。
+- 不发送 Prompt、不触发 Agent、不把旧历史重放到 outputs，也不另占 outputs 消费者。
+- 活动操作期间不能安全读时可返回 sessionBusy；无法读取时返回明确错误，不以空历史冒充成功。
 
-- 不继承另一个 Session 的历史；
-- 初始 Native identity 已知时放入 `initialState.nativeRef`；
-- 原生系统延迟分配 identity 时，在第一轮启动后及时发布 `session.state.changed`；
-- identity 可持久化之前，不能将 Thread 当作可恢复会话宣布成功；
-- 创建失败必须清理原生 Session，不保留半持久化 Thread。
+完整普通 Thread 需要可靠历史；仅能实时输出的实现必须报告产品限制，不能将缺失快照视为无影响。
 
-## Turn identity
+## Resume：持久化普通 Thread 的基线
 
-每个被接受的 Host Turn 都应最终映射到稳定 `NativeTurnRef`：
+- 验证 nativeRef，恢复同一 Native Session，返回可继续写入的 Session。
+- 处理 Host 提供的 knownTurnRefs，保持历史与已有 Host Turn 对齐；原生稳定身份本身已足够时无需额外重编码。
+- 原生返回不同 identity 时失败，不创建空会话冒充恢复成功。
+- 传播本次环境和适用 cwd，读取原生已确认配置；不要盲目重放过期 Model/Thinking/权限。
+- 恢复失败保留源历史及 Host 持久化记录，允许之后重试。
 
-- `turnId` 由 Host 提供，所有实时事件都使用该 ID；
-- `nativeTurnRef` 来自原生历史，用于重启后的对齐；
-- 成功 Turn 缺少 `nativeTurnRef` 会导致 Host 无法可靠持久化；
-- 失败或取消 Turn 在原生系统未保存历史时可以没有 Native Turn identity；
-- 同一个原生 Turn 不得映射到多个不同的 Host Turn。
+当前能力 schema 没有独立 resume 开关，也没有自动 ephemeral Thread 路径。原生不支持 resume 时，分支返回 unsupported，并明确这只是受限后端；不能声称支持持久化产品或完整 Agent 协调。
 
-Adapter 可以在 Turn 开始前读取历史边界，在完成后重新读取并找出新增 Native Turn。Pi 和 OMP 是该模式的主要参考。原生系统允许调用方写入消息 ID 时，可参考 Claude Code 预先建立 Native Turn key 的方式。
+## Fork：精确保留前缀并独立继续
 
-## `readSnapshot()`
+仅在 history.fork 为 true 时支持；forkAcrossCwd 为 true 必须同时支持 fork。
 
-`readSnapshot()` 返回完整、只读的 `HostThreadSnapshot`：
+- 校验 sourceRef 和 checkpoint 属于同一 Harness、同一源 Session，且位置有效。
+- 保留到指定 Turn 边界的历史，创建不同 Native Session，不修改源历史。
+- 派生快照与目标前缀一致，末轮不能多也不能少；派生 Session 可继续执行。
+- 跨 cwd 需要验证原生 Session 确实绑定目标目录；只改变子进程 cwd 不构成验证。
+- 失败关闭新资源；原生支持安全删除派生临时数据时回收它，不误删源数据。无法回收的持久化副作用必须报告，不以清理失败掩盖原始错误。
 
-- Turn 按原生历史顺序排列；
-- 每个 Turn 包含稳定 `nativeTurnRef`、用户文本输入、已完成 Item 和 outcome；
-- 支持 Fork 的 Turn 在可派生边界提供 `checkpoint`；
-- 可提供当次读取确认的 Session 配置状态；
-- 重复读取相同历史应得到稳定 identity 和 Item ID；
-- 不启动 Turn、不发送输入、不消费实时事件、不触发 Agent；
-- 不将读取到的旧历史重新发到 `outputs`；
-- 不能可靠读取时返回类型化错误，不返回伪造的空历史。
+Fork 分叉会话上下文，不回滚文件、不自动创建 Worktree，也不切换 Harness。
 
-活动 Turn 的实时内容由 `outputs` 和 Host projector 维护；快照主要用于恢复、对齐和终态刷新。Adapter 可以在活动操作期间返回 `sessionBusy`。
+## Rollback：去掉最后一个完整 Turn
 
-## Resume
+`rollbackLastTurn` 返回移除最后一轮后仍可继续的 Session，由 Host 执行替换；不在 Host 事务成功前破坏调用方仍使用的源 Session。
 
-`open({ kind: "resume" })` 应：
+- 源历史非空且无活动操作；结果恰好少一个逻辑 Turn，而非少一条消息。
+- 保留当前已确认 Model、Thinking、Permission Mode；原生不能保证时拒绝支持。
+- 返回有效身份与精确保留前缀；只有一轮时可得到空白但可继续的新 Session。
+- 原生无直接操作时，只有通过 Fork/Clone 等能满足上述语义才可组合实现。
+- 失败不留下半替换 Runtime 或错误映射；原生临时资源按 Fork 的规则清理。
 
-- 验证 `nativeRef.harnessId`；
-- 打开完全相同的 Native Session identity；
-- 如果原生系统返回不同 identity，则以 `sessionNotFound` 或 `protocolError` 失败；
-- 接收并利用 `knownTurnRefs` 保持 Host 与 Native Turn 对齐；
-- 通过 `readSnapshot()` 返回既有历史；
-- 保持 Session 可继续写入；
-- 传播新的 `cwd` 和 `environment` 到本次执行进程，但不得因此改变 Native identity。
+这是会话历史操作，不是工作区文件或 Git 回滚。
 
-恢复失败时 Host 仍保留持久化记录，便于之后重试；Adapter 不得创建一个空 Session 冒充恢复成功。
+## 导入：可选发现，不转移事务所有权
 
-## Fork
+需要导入已有原生 Session 时，读取 `packages/shared-contracts/src/harness-session-import.ts` 和 Adapter 的 `sessionImport` 接口。候选身份必须能真实 resume；原生发现、版本和 locator 由插件拥有，Host 拥有映射创建、去重、并发与失败恢复。
 
-仅当 `capabilities.history.fork` 为 true 时支持 `open({ kind: "fork" })`。
+当前 DeepSeek 的上层导入入口仍是专用路径。提供候选接口不代表新 Harness 已有通用导入 UI；不要复制新的 Harness 专用导入方法来绕过缺口。
 
-Fork 必须：
+## 验收
 
-- 验证 `sourceRef` 和 `checkpoint` 属于同一 Harness、同一源 Native Session；
-- 保留到 Checkpoint 为止的历史；
-- 创建与源 Session 不同的 Native Session identity；
-- 不修改源 Session 或源历史；
-- 返回可继续写入的派生 Session；
-- 派生快照最后一个 Turn 与目标 Checkpoint 一致；
-- 失败时删除已经创建的派生原生 Session。
+1. create 和成功 Turn 产生可持久化身份；重复快照身份、顺序稳定。
+2. 普通产品在 Host 重启后 resume 同一历史，继续第二个 Turn，不重放旧事件。
+3. 快照中的工具失败、Turn 取消、原生异常和不完整历史如实反映。
+4. 支持 Fork 时验证中间/末尾边界、源隔离、非法 checkpoint，以及声明支持的跨 cwd。
+5. 支持 Rollback 时验证多轮、单轮、空历史、配置保留和失败不破坏源。
+6. 缺失 Session、不可读文件/分页错误、打开失败和关闭路径均有资源清理测试。
 
-`forkAcrossCwd` 为 false 时，只允许派生到源 cwd。为 true 时，Adapter 还必须验证原生 Harness 确实能够在目标 cwd 中安全继续，而不是只修改进程工作目录。
-
-参考选择：
-
-- CLI/RPC 与跨 cwd：Pi；
-- 带 Subagent 的 RPC：OMP；
-- Transcript 原生 Fork、同 cwd：Claude Code；
-- 只有 ACP 私有扩展可用时：Grok。
-
-## RollbackLastTurn
-
-`rollbackLastTurn` 的公共语义不是在原 Session 上破坏性删除，而是返回一个已经去掉最后一个 Turn、仍可继续的 Session。Host 随后用它替换当前外部 Thread 的 Session。
-
-必须满足：
-
-- 源历史至少有一个 Turn；
-- 没有活动 Turn；
-- 结果恰好少一个 Turn；
-- 保留当前有效 Model、Thinking 和 Permission Mode；
-- 返回有效 Native identity；
-- 源 Session 在替换完成前仍保持可回滚失败的安全状态；
-- 失败不应留下半替换 Runtime 或错误持久化记录。
-
-原生系统没有真正 Rollback 时，可以通过 Fork 到倒数第二个 Checkpoint 实现。只有一个 Turn 时，结果应是新的空白可继续 Session。参考 Pi、OMP 和 Claude Code。
-
-## 快照投影规则
-
-历史 Item 必须使用公共 `HostItem` 类型：
-
-- Agent 回答：`agentMessage`
-- 可见 Reasoning：`reasoning`
-- Shell 或明确命令：`commandExecution`
-- 其他工具：`toolExecution`
-- 文件修改：`fileChange`
-- 压缩：`contextCompaction`
-- Subagent：`subagentDelegation`
-
-历史中的 Item 应具有稳定 ID，outcome 应反映 Item 自身结果。Tool 失败不必使整个 Turn 失败；以原生 Turn 的最终结果为准。
-
-## History 能力完成标准
-
-声称支持持久化 History 前，至少验证：
-
-1. create 后得到稳定 Native Session identity。
-2. 成功 Turn 得到稳定 Native Turn identity。
-3. 重复 `readSnapshot()` 不改变 identity、顺序或内容。
-4. Host 重启后 resume 返回同一历史并可继续新 Turn。
-5. 支持 Fork 时，源与派生历史隔离。
-6. 支持 Rollback 时，结果恰好少一个 Turn且配置不变。
-7. 失败、取消和不完整原生历史不会被错误标记为成功。
-8. 所有打开路径都正确关闭失败过程中创建的原生资源。
+Host 集成参考 `packages/host-runtime/src/external-thread-runtime.ts`、`external-thread-fork.ts`、`external-thread-rollback.ts`。当前恢复流程仍有 Grok/OpenCode/OMP 特例；新 Harness 必须通过通用路径验证。如通用恢复策略无法表达其原生配置语义，记录公共缺口，不扩展名称判断。

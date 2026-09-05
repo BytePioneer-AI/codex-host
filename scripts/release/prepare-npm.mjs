@@ -14,6 +14,10 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 
 import { writeDistributionMetadata } from "./distribution-metadata.mjs";
+import {
+  buildPreinstalledHarnessPlugins,
+  preinstalledHarnessPluginPaths,
+} from "./harness-plugins.mjs";
 import { hostReleaseTarget, npmReleaseUsage, releaseTargetForHost } from "./targets.mjs";
 
 const repositoryRoot = path.resolve(import.meta.dirname, "../..");
@@ -193,11 +197,13 @@ export function expectedNpmPackagePaths(target) {
     "README.md",
     `bin/codexhost${target.executableSuffix}`,
     `libexec/codexhost-shim${target.executableSuffix}`,
+    ...(target.hostPlatform === "win32" ? ["libexec/codexhost-node-repl.exe"] : []),
     `libexec/codexhost-updater${target.executableSuffix}`,
     "app/codexhost-distribution.json",
     "app/desktop-controller.mjs",
     "app/host-runtime.mjs",
     "app/renderer-extension.js",
+    ...preinstalledHarnessPluginPaths(),
     "licenses/Anthropic-SDK-LICENSE.txt",
     "licenses/Claude-Agent-SDK-LICENSE.md",
     "licenses/MCP-SDK-LICENSE.txt",
@@ -938,6 +944,14 @@ export async function prepareNpmPackage({
     "npm Shim",
     true,
   );
+  if (target.hostPlatform === "win32") {
+    await copyReleaseFile(
+      path.join(rustOutput, "codexhost-node-repl.exe"),
+      path.join(packageRoot, "libexec", "codexhost-node-repl.exe"),
+      "npm Desktop tool proxy",
+      true,
+    );
+  }
   await copyReleaseFile(
     path.join(rustOutput, `codexhost-updater${target.executableSuffix}`),
     path.join(packageRoot, "libexec", `codexhost-updater${target.executableSuffix}`),
@@ -957,6 +971,10 @@ export async function prepareNpmPackage({
     },
     root,
   );
+  await buildPreinstalledHarnessPlugins({
+    repositoryRoot: root,
+    outputDirectory: path.join(packageRoot, "app", "plugins"),
+  });
   await runCommand(
     {
       label: "Desktop Controller Bundle build",

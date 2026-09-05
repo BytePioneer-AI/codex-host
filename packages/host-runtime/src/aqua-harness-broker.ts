@@ -1,4 +1,3 @@
-import { ClaudeCodeAdapter } from "@codexhost/adapter-claude-code";
 import {
   defaultHarnessBrokerDescriptorPath,
   defaultHarnessBrokerSocketPath,
@@ -6,7 +5,8 @@ import {
   type HarnessBrokerServer,
 } from "@codexhost/harness-broker";
 
-import { CLAUDE_CODE_COMMAND_ENV } from "./adapter-composition.js";
+import { loadHarnessPlugins } from "./harness-plugin-loader.js";
+import { installedHarnessPluginOptions } from "./installed-harness-plugins.js";
 
 export async function runClaudeAquaHarnessBroker(
   environment: NodeJS.ProcessEnv = process.env,
@@ -14,12 +14,22 @@ export async function runClaudeAquaHarnessBroker(
   if (process.platform !== "darwin") {
     throw new Error("Claude Aqua Harness broker is available only on macOS");
   }
-  const adapter = new ClaudeCodeAdapter({
-    ...(environment[CLAUDE_CODE_COMMAND_ENV]
-      ? { command: environment[CLAUDE_CODE_COMMAND_ENV] }
-      : {}),
-    environment,
+  // The legacy Broker protocol still targets Claude Code, but construction and
+  // dependencies belong to its installed plugin. Do not recursively use a Broker client here.
+  const { pluginRoots, pluginContext } = installedHarnessPluginOptions(environment);
+  const plugins = await loadHarnessPlugins({
+    roots: pluginRoots,
+    context: pluginContext,
+    onlyIds: new Set(["claude-code"]),
+    warmup: false,
+    diagnose: (diagnostic) =>
+      process.stderr.write(`Harness plugin: ${JSON.stringify(diagnostic)}\n`),
   });
+  const adapter = [...plugins.adapters.values()][0];
+  if (!adapter) {
+    await plugins.close();
+    throw new Error("The installed Harness plugin required by the Aqua broker is unavailable");
+  }
   let server: HarnessBrokerServer;
   try {
     server = await startHarnessBrokerServer({

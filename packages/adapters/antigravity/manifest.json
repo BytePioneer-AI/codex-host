@@ -1,0 +1,10 @@
+{
+  "manifestVersion": 1,
+  "id": "antigravity",
+  "name": "Antigravity CLI",
+  "version": "0.0.0",
+  "adapterApiVersion": 1,
+  "entry": "./dist/plugin.js",
+  "icon": "./assets/icon.svg",
+  "links": { "installation": "https://antigravity.google/product/antigravity-cli" }
+}

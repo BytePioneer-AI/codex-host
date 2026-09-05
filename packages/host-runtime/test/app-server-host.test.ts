@@ -1,6 +1,7 @@
 import type { ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { pathToFileURL } from "node:url";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { PassThrough } from "node:stream";
@@ -8,6 +9,7 @@ import { PassThrough } from "node:stream";
 import { describe, expect, it, vi } from "vitest";
 import type {
   HarnessAdapter,
+  HarnessResult,
   HarnessSessionState,
   HostThreadSnapshot,
 } from "@codexhost/harness-adapter";
@@ -22,6 +24,8 @@ import {
   type JsonObject,
 } from "@codexhost/protocol-core";
 import {
+  encodeHarnessPluginRoute,
+  harnessPluginRouteSchema,
   harnessCommandDescriptorSchema,
   harnessIdSchema,
   harnessModelRefSchema,
@@ -31,6 +35,7 @@ import {
   hostItemIdSchema,
   hostThreadIdSchema,
   hostTurnIdSchema,
+  type DeepSeekModernSessionCandidate,
 } from "@codexhost/shared-contracts";
 
 import type {
@@ -200,9 +205,41 @@ class ResumeStateRollbackAdapter extends FakeHarnessAdapter {
   }
 }
 
+class WebUiHarnessAdapter extends FakeHarnessAdapter {
+  openCalls = 0;
+  failureMessage: string | undefined;
+  readonly webUi = {
+    open: async (): Promise<HarnessResult<void>> => {
+      this.openCalls += 1;
+      return this.failureMessage
+        ? {
+            ok: false,
+            error: {
+              code: "unavailable",
+              message: this.failureMessage,
+              retryable: true,
+            },
+          }
+        : { ok: true, value: undefined };
+    },
+  };
+}
+
+class ModernSessionImportAdapter extends FakeHarnessAdapter {
+  candidates: DeepSeekModernSessionCandidate[] = [];
+  readonly listCandidates = vi.fn(
+    async (): Promise<HarnessResult<DeepSeekModernSessionCandidate[]>> => ({
+      ok: true,
+      value: structuredClone(this.candidates),
+    }),
+  );
+  readonly sessionImport = { listCandidates: this.listCandidates };
+}
+
 function createFixture(
   options: {
     environment?: NodeJS.ProcessEnv;
+    pluginDirectory?: string;
     externalAdapters?: ReadonlyMap<ExternalHarnessId, FakeHarnessAdapter>;
     mappingStore?: MappingStore;
     mappingStoreDirectory?: string;
@@ -238,6 +275,7 @@ function createFixture(
       ? { closeMappingStoreOnExit: options.closeMappingStoreOnExit }
       : {}),
     ...(options.environment ? { environment: options.environment } : {}),
+    ...(options.pluginDirectory ? { pluginRoots: [options.pluginDirectory] } : {}),
     externalAdapters:
       options.externalAdapters ?? new Map<ExternalHarnessId, HarnessAdapter>([["pi", adapter]]),
     spawnOfficial: spawnOfficial as unknown as typeof spawn,
@@ -330,6 +368,172 @@ async function stopFixture(fixture: ReturnType<typeof createFixture>): Promise<v
   await closeFixture(fixture);
   rmSync(fixture.mappingStoreDirectory, { recursive: true, force: true });
 }
+
+describe("AppServerHost installed Harness plugins", () => {
+  it("discovers an unknown plugin, serves its descriptor, routes a Thread, and closes it", async () => {
+    const directory = mkdtempSync(path.join(tmpdir(), "codexhost-plugin-host-"));
+    const location = path.join(directory, "sample-agent");
+    mkdirSync(location);
+    writeFileSync(
+      path.join(directory, "enabled.json"),
+      JSON.stringify({ version: 1, enabled: ["sample-agent"] }),
+    );
+    writeFileSync(
+      path.join(location, "manifest.json"),
+      JSON.stringify({
+        manifestVersion: 1,
+        id: "sample-agent",
+        name: "Sample Agent",
+        version: "1.0.0",
+        adapterApiVersion: 1,
+        entry: "index.mjs",
+      }),
+    );
+    writeFileSync(
+      path.join(location, "index.mjs"),
+      `
+      import { FakeHarnessAdapter } from ${JSON.stringify(pathToFileURL(path.resolve("packages/harness-adapter/dist/testing.js")).href)};
+      import { writeFileSync } from "node:fs";
+      export function createHarnessAdapter() {
+        const adapter = new FakeHarnessAdapter("sample-agent");
+        const close = adapter.close.bind(adapter);
+        adapter.close = async () => { await close(); writeFileSync(new URL("closed", import.meta.url), "yes"); };
+        return adapter;
+      }
+    `,
+    );
+    const fixture = createFixture({ pluginDirectory: directory, externalAdapters: new Map() });
+    try {
+      writeRequest(fixture.desktopInput, {
+        id: 901,
+        method: "codexhost/harness/plugins/list",
+        params: {},
+      });
+      expect(await fixture.collector.waitFor((message) => requestId(message, 901))).toMatchObject({
+        result: { plugins: [{ id: "sample-agent", name: "Sample Agent", version: "1.0.0" }] },
+      });
+      writeRequest(fixture.desktopInput, {
+        id: 902,
+        method: "codexhost/harness/inspect",
+        params: { harnessId: "sample-agent" },
+      });
+      expect(await fixture.collector.waitFor((message) => requestId(message, 902))).toMatchObject({
+        result: { status: "ready" },
+      });
+      const model = encodeHarnessPluginRoute(
+        harnessPluginRouteSchema.parse({ harnessId: "sample-agent" }),
+      );
+      const threadId = await startExternalThread(fixture, model, 903);
+      expect(
+        await fixture.mappingStore.getThread(hostThreadIdSchema.parse(threadId)),
+      ).toMatchObject({ harnessId: "sample-agent" });
+      expect(fixture.official.stdin.readableLength).toBe(0);
+      writeRequest(fixture.desktopInput, { id: 904, method: "initialize", params: {} });
+      expect(await readJsonLine(fixture.official.stdin)).toMatchObject({
+        id: 904,
+        method: "initialize",
+      });
+      writeRequest(fixture.official.stdout, { id: 904, result: { userAgent: "official" } });
+      expect(await fixture.collector.waitFor((message) => requestId(message, 904))).toMatchObject({
+        result: { userAgent: "official" },
+      });
+    } finally {
+      await stopFixture(fixture);
+      try {
+        expect(readFileSync(path.join(location, "closed"), "utf8")).toBe("yes");
+      } finally {
+        rmSync(directory, { recursive: true, force: true });
+      }
+    }
+  });
+
+  it("binds DeepSeek Session Import after its Adapter has been dynamically loaded", async () => {
+    const directory = mkdtempSync(path.join(tmpdir(), "codexhost-dynamic-import-"));
+    const location = path.join(directory, "deepseek-harness");
+    mkdirSync(location);
+    writeFileSync(
+      path.join(directory, "enabled.json"),
+      JSON.stringify({ version: 1, enabled: ["deepseek-harness"] }),
+    );
+    writeFileSync(
+      path.join(location, "manifest.json"),
+      JSON.stringify({
+        manifestVersion: 1,
+        id: "deepseek-harness",
+        name: "DeepSeek Harness",
+        version: "1",
+        adapterApiVersion: 1,
+        entry: "plugin.mjs",
+      }),
+    );
+    writeFileSync(
+      path.join(location, "plugin.mjs"),
+      `
+      import { FakeHarnessAdapter } from ${JSON.stringify(pathToFileURL(path.resolve("packages/harness-adapter/dist/testing.js")).href)};
+      export function createHarnessAdapter() {
+        const adapter = new FakeHarnessAdapter("deepseek-harness");
+        adapter.sessionImport = { listCandidates: async () => ({ ok: true, value: [] }) };
+        return adapter;
+      }
+    `,
+    );
+    const fixture = createFixture({ pluginDirectory: directory, externalAdapters: new Map() });
+    try {
+      writeRequest(fixture.desktopInput, {
+        id: 910,
+        method: "codexhost/deepseek/modern-session/list",
+        params: {},
+      });
+      expect(await fixture.collector.waitFor((message) => requestId(message, 910))).toMatchObject({
+        result: { candidates: [] },
+      });
+    } finally {
+      try {
+        await stopFixture(fixture);
+      } finally {
+        rmSync(directory, { recursive: true, force: true });
+      }
+    }
+  });
+
+  it("validates catalog parameters and leaves uninstalled routes out of the official stream", async () => {
+    const fixture = createFixture();
+    try {
+      writeRequest(fixture.desktopInput, {
+        id: 911,
+        method: "codexhost/harness/plugins/list",
+        params: { directory: "/untrusted" },
+      });
+      expect(await fixture.collector.waitFor((message) => requestId(message, 911))).toMatchObject({
+        error: { code: -32602 },
+      });
+      writeRequest(fixture.desktopInput, {
+        id: 912,
+        method: "thread/start",
+        params: {
+          model: encodeHarnessPluginRoute(
+            harnessPluginRouteSchema.parse({ harnessId: "missing-agent" }),
+          ),
+          cwd: "/synthetic",
+        },
+      });
+      expect(await fixture.collector.waitFor((message) => requestId(message, 912))).toHaveProperty(
+        "error",
+      );
+      writeRequest(fixture.desktopInput, {
+        id: 913,
+        method: "thread/start",
+        params: { model: "codexhost/plugin-v1@invalid", cwd: "/synthetic" },
+      });
+      expect(await fixture.collector.waitFor((message) => requestId(message, 913))).toHaveProperty(
+        "error",
+      );
+      expect(fixture.official.stdin.readableLength).toBe(0);
+    } finally {
+      await stopFixture(fixture);
+    }
+  });
+});
 
 describe("AppServerHost HarnessAdapter projection", () => {
   it("uses an injected shared listener connection without spawning a stdio app-server", async () => {
@@ -724,6 +928,198 @@ describe("AppServerHost HarnessAdapter projection", () => {
     }
   });
 
+  it("lets an active official Turn reach its terminal event after Desktop disconnects", async () => {
+    const fixture = createFixture();
+    const threadId = "019cbe86-76cf-7721-b5e4-978934e18757";
+    const turnId = "019cbe86-8eef-79d0-8658-cf2c64aa38cf";
+
+    try {
+      writeRequest(fixture.desktopInput, {
+        id: 1,
+        method: "turn/start",
+        params: { threadId, input: [{ type: "text", text: "keep running" }] },
+      });
+      await readJsonLine(fixture.official.stdin);
+      fixture.official.stdout.write(
+        `${JSON.stringify({ method: "turn/started", params: { threadId, turn: { id: turnId } } })}\n`,
+      );
+      await fixture.collector.waitFor((message) => turnEvent(message, "turn/started", turnId));
+
+      fixture.host.disconnect();
+      const beforeTerminal = await Promise.race([
+        fixture.running.then(() => "settled" as const),
+        new Promise<"pending">((resolve) => setTimeout(() => resolve("pending"), 25)),
+      ]);
+
+      expect(beforeTerminal).toBe("pending");
+      expect(fixture.official.kill).not.toHaveBeenCalled();
+
+      fixture.official.stdout.write(
+        `${JSON.stringify({
+          method: "turn/completed",
+          params: { threadId, turn: { id: turnId, status: "completed" } },
+        })}\n`,
+      );
+      await expect(
+        fixture.collector.waitFor((message) => turnEvent(message, "turn/completed", turnId)),
+      ).resolves.toBeTruthy();
+      await expect(fixture.running).resolves.toBe(0);
+      expect(fixture.official.kill).not.toHaveBeenCalled();
+    } finally {
+      fixture.host.close();
+      fixture.desktopInput.end();
+      await fixture.running;
+      rmSync(fixture.mappingStoreDirectory, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps a forwarded official turn/start alive across the pre-response disconnect race", async () => {
+    const fixture = createFixture();
+    const threadId = "019cbe87-ae18-7543-97f1-c60deeb61b17";
+    const turnId = "019cbe87-b77a-78a2-a16a-c6ad1fc2a026";
+
+    try {
+      writeRequest(fixture.desktopInput, {
+        id: 1,
+        method: "turn/start",
+        params: { threadId, input: [{ type: "text", text: "start then disconnect" }] },
+      });
+      await readJsonLine(fixture.official.stdin);
+      fixture.host.disconnect();
+
+      const beforeResponse = await Promise.race([
+        fixture.running.then(() => "settled" as const),
+        new Promise<"pending">((resolve) => setTimeout(() => resolve("pending"), 25)),
+      ]);
+      expect(beforeResponse).toBe("pending");
+
+      fixture.official.stdout.write(
+        `${JSON.stringify({ id: 1, result: { turn: { id: turnId } } })}\n`,
+      );
+      await expect(
+        fixture.collector.waitFor((message) => requestId(message, 1)),
+      ).resolves.toBeTruthy();
+      expect(fixture.official.stdin.writableEnded).toBe(false);
+
+      fixture.official.stdout.write(
+        `${JSON.stringify({
+          method: "turn/completed",
+          params: { threadId, turn: { id: turnId, status: "completed" } },
+        })}\n`,
+      );
+      await expect(fixture.running).resolves.toBe(0);
+      expect(fixture.official.kill).not.toHaveBeenCalled();
+    } finally {
+      fixture.host.close();
+      fixture.desktopInput.end();
+      await fixture.running;
+      rmSync(fixture.mappingStoreDirectory, { recursive: true, force: true });
+    }
+  });
+
+  it("releases a disconnected Host session when pending official turn/start fails", async () => {
+    const fixture = createFixture();
+    const threadId = "019cbe88-9a77-78ae-919f-79cfe1468e11";
+
+    try {
+      writeRequest(fixture.desktopInput, {
+        id: 1,
+        method: "turn/start",
+        params: { threadId, input: [{ type: "text", text: "rejected start" }] },
+      });
+      await readJsonLine(fixture.official.stdin);
+      fixture.host.disconnect();
+      fixture.official.stdout.write(
+        `${JSON.stringify({ id: 1, error: { code: -32000, message: "synthetic rejection" } })}\n`,
+      );
+
+      await expect(
+        fixture.collector.waitFor((message) => requestId(message, 1)),
+      ).resolves.toBeTruthy();
+      await expect(fixture.running).resolves.toBe(0);
+      expect(fixture.official.kill).not.toHaveBeenCalled();
+    } finally {
+      fixture.host.close();
+      fixture.desktopInput.end();
+      await fixture.running;
+      rmSync(fixture.mappingStoreDirectory, { recursive: true, force: true });
+    }
+  });
+
+  it("releases a disconnected Host when official completion precedes the start response", async () => {
+    const fixture = createFixture();
+    const threadId = "019cbe89-91f5-71c8-b24d-0410e73a2ef4";
+    const turnId = "019cbe89-9e78-7e49-ac62-3958b8db3881";
+
+    try {
+      writeRequest(fixture.desktopInput, {
+        id: 1,
+        method: "turn/start",
+        params: { threadId, input: [{ type: "text", text: "finish immediately" }] },
+      });
+      await readJsonLine(fixture.official.stdin);
+      fixture.host.disconnect();
+      fixture.official.stdout.write(
+        `${JSON.stringify({
+          method: "turn/completed",
+          params: { threadId, turn: { id: turnId, status: "completed" } },
+        })}\n`,
+      );
+      fixture.official.stdout.write(
+        `${JSON.stringify({ id: 1, result: { turn: { id: turnId } } })}\n`,
+      );
+
+      await expect(fixture.running).resolves.toBe(0);
+      expect(fixture.official.kill).not.toHaveBeenCalled();
+    } finally {
+      fixture.host.close();
+      fixture.desktopInput.end();
+      await fixture.running;
+      rmSync(fixture.mappingStoreDirectory, { recursive: true, force: true });
+    }
+  });
+
+  it("lets an active external Harness Turn finish after Desktop disconnects", async () => {
+    const fixture = createFixture();
+    let session: FakeHarnessSession | undefined;
+
+    try {
+      const threadId = await startPiThread(fixture);
+      const turnId = await startPiTurn(fixture, threadId);
+      session = fixture.adapter.sessions[0];
+      if (!session) throw new Error("Fake Pi Session was not opened");
+      const close = vi.spyOn(session, "close");
+      await fixture.collector.waitFor((message) => turnEvent(message, "turn/started", turnId));
+
+      fixture.host.disconnect();
+      const beforeTerminal = await Promise.race([
+        fixture.running.then(() => "settled" as const),
+        new Promise<"pending">((resolve) => setTimeout(() => resolve("pending"), 25)),
+      ]);
+
+      expect(beforeTerminal).toBe("pending");
+      expect(close).not.toHaveBeenCalled();
+
+      session.appendText("completed after transport disconnect");
+      session.succeedTurn();
+      await expect(
+        fixture.collector.waitFor((message) => turnEvent(message, "turn/completed", turnId)),
+      ).resolves.toBeTruthy();
+      await expect(fixture.running).resolves.toBe(0);
+      expect(close).toHaveBeenCalled();
+    } finally {
+      try {
+        session?.succeedTurn();
+      } catch {
+        // A failing implementation may already have interrupted the synthetic Turn.
+      }
+      fixture.host.close();
+      fixture.desktopInput.end();
+      await fixture.running;
+      rmSync(fixture.mappingStoreDirectory, { recursive: true, force: true });
+    }
+  });
+
   it("fails when official app-server output closes before Desktop input", async () => {
     const fixture = createFixture();
 
@@ -992,6 +1388,262 @@ describe("AppServerHost HarnessAdapter projection", () => {
     await stopFixture(fixture);
   });
 
+  it("opens a Harness Web UI without returning or echoing its credential", async () => {
+    const adapter = new WebUiHarnessAdapter(harnessIdSchema.parse("deepseek-harness"));
+    const fixture = createFixture({
+      externalAdapters: new Map<ExternalHarnessId, FakeHarnessAdapter>([
+        ["deepseek-harness", adapter],
+      ]),
+    });
+
+    writeRequest(fixture.desktopInput, {
+      id: 37,
+      method: "codexhost/harness/web-ui/open",
+      params: { harnessId: "deepseek-harness" },
+    });
+    await expect(fixture.collector.waitFor((message) => requestId(message, 37))).resolves.toEqual({
+      id: 37,
+      result: {},
+    });
+    expect(adapter.openCalls).toBe(1);
+
+    const canary = "SECRET_CANARY";
+    writeRequest(fixture.desktopInput, {
+      id: 38,
+      method: "codexhost/harness/web-ui/open",
+      params: { harnessId: "deepseek-harness", url: `http://127.0.0.1/?token=${canary}` },
+    });
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 38)),
+    ).resolves.toMatchObject({ error: { code: -32602 } });
+    expect(adapter.openCalls).toBe(1);
+
+    adapter.failureMessage = `failed near ?token=${canary}`;
+    writeRequest(fixture.desktopInput, {
+      id: 39,
+      method: "codexhost/harness/web-ui/open",
+      params: { harnessId: "deepseek-harness" },
+    });
+    await expect(fixture.collector.waitFor((message) => requestId(message, 39))).resolves.toEqual({
+      id: 39,
+      error: { code: -32092, message: "Harness Web UI could not be opened" },
+    });
+    expect(JSON.stringify(fixture.collector.messages)).not.toContain(canary);
+    await stopFixture(fixture);
+  });
+
+  it("lists and imports a Modern DeepSeek Session as notLoaded metadata", async () => {
+    const adapter = new ModernSessionImportAdapter(harnessIdSchema.parse("deepseek-harness"));
+    adapter.candidates = [
+      {
+        nativeSessionId: "native-import",
+        title: "Imported history",
+        updatedAt: 123,
+        cwd: path.resolve("import-workspace"),
+        running: false,
+      },
+    ];
+    const fixture = createFixture({
+      externalAdapters: new Map<ExternalHarnessId, FakeHarnessAdapter>([
+        ["deepseek-harness", adapter],
+      ]),
+    });
+    const officialWrite = vi.fn();
+    fixture.official.stdin.on("data", officialWrite);
+
+    writeRequest(fixture.desktopInput, {
+      id: 40,
+      method: "codexhost/deepseek/modern-session/list",
+      params: {},
+    });
+    await expect(fixture.collector.waitFor((message) => requestId(message, 40))).resolves.toEqual({
+      id: 40,
+      result: { candidates: adapter.candidates },
+    });
+    writeRequest(fixture.desktopInput, {
+      id: 41,
+      method: "codexhost/deepseek/modern-session/import",
+      params: { nativeSessionId: "native-import" },
+    });
+    const response = await fixture.collector.waitFor((message) => requestId(message, 41));
+    expect(response).toMatchObject({ result: { threadId: expect.any(String) } });
+    const threadId = (response.result as JsonObject).threadId;
+    const started = await fixture.collector.waitFor(
+      (message) =>
+        method(message, "thread/started") &&
+        (messageParams(message).thread as JsonObject | undefined)?.id === threadId,
+    );
+    expect(messageParams(started).thread).toMatchObject({
+      id: threadId,
+      status: { type: "notLoaded" },
+      cwd: path.resolve("import-workspace"),
+      name: "Imported history",
+      turns: [],
+    });
+    expect(fixture.collector.messages.indexOf(response)).toBeLessThan(
+      fixture.collector.messages.indexOf(started),
+    );
+    expect(adapter.sessions).toHaveLength(0);
+    expect(officialWrite).not.toHaveBeenCalled();
+
+    writeRequest(fixture.desktopInput, {
+      id: 43,
+      method: "codexhost/deepseek/modern-session/import",
+      params: { nativeSessionId: "native-import" },
+    });
+    await expect(fixture.collector.waitFor((message) => requestId(message, 43))).resolves.toEqual({
+      id: 43,
+      result: { threadId },
+    });
+    expect(
+      fixture.collector.messages.filter(
+        (message) =>
+          method(message, "thread/started") &&
+          (messageParams(message).thread as JsonObject | undefined)?.id === threadId,
+      ),
+    ).toHaveLength(1);
+    await stopFixture(fixture);
+  });
+
+  it("notifies each Host connection once when concurrent imports share one Store", async () => {
+    const directory = mkdtempSync(path.join(tmpdir(), "codexhost-host-import-shared-"));
+    const firstReadyEntered = Promise.withResolvers<undefined>();
+    const releaseFirstReady = Promise.withResolvers<undefined>();
+    let readyReplacements = 0;
+    const mappingStore = new MappingStore({
+      directory,
+      beforeReplace(record) {
+        if (record.state !== "ready") return;
+        readyReplacements += 1;
+        if (readyReplacements === 1) {
+          firstReadyEntered.resolve(undefined);
+          return releaseFirstReady.promise;
+        }
+      },
+    });
+    await mappingStore.initialize();
+    const candidate: DeepSeekModernSessionCandidate = {
+      nativeSessionId: "shared-native-import",
+      title: "Shared import",
+      updatedAt: 123,
+      cwd: path.resolve("shared-import-workspace"),
+      running: false,
+    };
+    const firstAdapter = new ModernSessionImportAdapter(harnessIdSchema.parse("deepseek-harness"));
+    firstAdapter.candidates = [candidate];
+    const secondAdapter = new ModernSessionImportAdapter(harnessIdSchema.parse("deepseek-harness"));
+    secondAdapter.candidates = [candidate];
+    const first = createFixture({
+      externalAdapters: new Map([["deepseek-harness", firstAdapter]]),
+      mappingStore,
+      mappingStoreDirectory: directory,
+      closeMappingStoreOnExit: false,
+    });
+    const second = createFixture({
+      externalAdapters: new Map([["deepseek-harness", secondAdapter]]),
+      mappingStore,
+      mappingStoreDirectory: directory,
+      closeMappingStoreOnExit: false,
+    });
+
+    try {
+      await vi.waitFor(() => {
+        expect(first.spawnOfficial).toHaveBeenCalledOnce();
+        expect(second.spawnOfficial).toHaveBeenCalledOnce();
+      });
+      writeRequest(first.desktopInput, {
+        id: 44,
+        method: "codexhost/deepseek/modern-session/import",
+        params: { nativeSessionId: candidate.nativeSessionId },
+      });
+      writeRequest(second.desktopInput, {
+        id: 45,
+        method: "codexhost/deepseek/modern-session/import",
+        params: { nativeSessionId: candidate.nativeSessionId },
+      });
+      await firstReadyEntered.promise;
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      const replacementsBeforeRelease = readyReplacements;
+      releaseFirstReady.resolve(undefined);
+      const [firstResponse, secondResponse] = await Promise.all([
+        first.collector.waitFor((message) => requestId(message, 44)),
+        second.collector.waitFor((message) => requestId(message, 45)),
+      ]);
+      expect(replacementsBeforeRelease).toBe(1);
+      const firstThreadId = (firstResponse.result as JsonObject).threadId;
+      const secondThreadId = (secondResponse.result as JsonObject).threadId;
+      expect(firstThreadId).toBe(secondThreadId);
+      if (typeof firstThreadId !== "string") throw new Error("Import response has no Thread ID");
+      await Promise.all([
+        first.collector.waitFor(
+          (message) =>
+            method(message, "thread/started") &&
+            (messageParams(message).thread as JsonObject | undefined)?.id === firstThreadId,
+        ),
+        second.collector.waitFor(
+          (message) =>
+            method(message, "thread/started") &&
+            (messageParams(message).thread as JsonObject | undefined)?.id === firstThreadId,
+        ),
+      ]);
+
+      for (const [fixture, id] of [
+        [first, 46],
+        [second, 47],
+      ] as const) {
+        writeRequest(fixture.desktopInput, {
+          id,
+          method: "codexhost/deepseek/modern-session/import",
+          params: { nativeSessionId: candidate.nativeSessionId },
+        });
+        await expect(
+          fixture.collector.waitFor((message) => requestId(message, id)),
+        ).resolves.toEqual({ id, result: { threadId: firstThreadId } });
+        expect(
+          fixture.collector.messages.filter(
+            (message) =>
+              method(message, "thread/started") &&
+              (messageParams(message).thread as JsonObject | undefined)?.id === firstThreadId,
+          ),
+        ).toHaveLength(1);
+      }
+      await expect(mappingStore.listThreads()).resolves.toEqual([
+        expect.objectContaining({
+          hostThreadId: firstThreadId,
+          state: "ready",
+          nativeSessionRef: expect.objectContaining({
+            nativeSessionId: candidate.nativeSessionId,
+          }),
+        }),
+      ]);
+    } finally {
+      releaseFirstReady.resolve(undefined);
+      await Promise.all([closeFixture(first), closeFixture(second)]);
+      await mappingStore.close();
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects invalid Modern DeepSeek import params before calling the Adapter", async () => {
+    const adapter = new ModernSessionImportAdapter(harnessIdSchema.parse("deepseek-harness"));
+    const fixture = createFixture({
+      externalAdapters: new Map<ExternalHarnessId, FakeHarnessAdapter>([
+        ["deepseek-harness", adapter],
+      ]),
+    });
+
+    writeRequest(fixture.desktopInput, {
+      id: 42,
+      method: "codexhost/deepseek/modern-session/import",
+      params: { nativeSessionId: "", cwd: "/untrusted" },
+    });
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 42)),
+    ).resolves.toMatchObject({ error: { code: -32602 } });
+    expect(adapter.listCandidates).not.toHaveBeenCalled();
+    await stopFixture(fixture);
+  });
+
   it("answers a later Harness inspect while an earlier inspect is still running", async () => {
     const pi = new FakeHarnessAdapter(harnessIdSchema.parse("pi"));
     const claude = new FakeHarnessAdapter(harnessIdSchema.parse("claude-code"));
@@ -1099,13 +1751,12 @@ describe("AppServerHost HarnessAdapter projection", () => {
       result: { availability: "pending" },
     });
     session.succeedTurn();
-    await expect(
-      fixture.collector.waitFor(
-        (message) =>
-          method(message, "turn/completed") &&
-          (message.params as JsonObject).threadId === started.threadId,
-      ),
-    ).resolves.toMatchObject({
+    const completed = await fixture.collector.waitFor(
+      (message) =>
+        method(message, "turn/completed") &&
+        (message.params as JsonObject).threadId === started.threadId,
+    );
+    expect(completed).toMatchObject({
       params: {
         turn: {
           items: [
@@ -1118,6 +1769,39 @@ describe("AppServerHost HarnessAdapter projection", () => {
         },
       },
     });
+    const completedItems = (
+      (completed.params as JsonObject).turn as { items: Array<{ id?: string; type?: string }> }
+    ).items;
+    expect(completedItems.filter((item) => item.type === "userMessage")).toHaveLength(1);
+    expect(new Set(completedItems.map((item) => item.id)).size).toBe(completedItems.length);
+
+    // Delegated external Threads use paginated history; read via turns/list.
+    writeRequest(fixture.desktopInput, {
+      id: 1057,
+      method: "thread/turns/list",
+      params: { threadId: started.threadId, limit: 20, itemsView: "full" },
+    });
+    const listed = await fixture.collector.waitFor((message) => requestId(message, 1057));
+    expect(listed).toMatchObject({
+      result: {
+        data: [
+          {
+            items: [
+              {
+                type: "userMessage",
+                content: [{ type: "text", text: "review auth" }],
+              },
+              { type: "agentMessage", text: "Checking auth." },
+            ],
+          },
+        ],
+      },
+    });
+    const storedItems =
+      (listed as { result: { data: Array<{ items: Array<{ id?: string; type?: string }> }> } })
+        .result.data[0]?.items ?? [];
+    expect(storedItems.filter((item) => item.type === "userMessage")).toHaveLength(1);
+    expect(new Set(storedItems.map((item) => item.id)).size).toBe(storedItems.length);
     await stopFixture(fixture);
   });
 
@@ -2889,6 +3573,40 @@ describe("AppServerHost HarnessAdapter projection", () => {
     await stopFixture(fixture);
   });
 
+  it("projects autonomous Harness Turn input in the live turn/started payload", async () => {
+    const fixture = createFixture();
+    await startPiThread(fixture);
+    const session = fixture.adapter.sessions[0];
+    if (!session) throw new Error("Fake Pi Session was not opened");
+    const turnId = hostTurnIdSchema.parse("autonomous-turn");
+
+    session.publishAutonomousTurn(turnId, [
+      { type: "text", text: "native follow-up" },
+      { type: "text", text: "second line" },
+    ]);
+
+    await expect(
+      fixture.collector.waitFor((message) => turnEvent(message, "turn/started", turnId)),
+    ).resolves.toMatchObject({
+      params: {
+        turn: {
+          id: turnId,
+          items: [
+            {
+              type: "userMessage",
+              content: [
+                { type: "text", text: "native follow-up" },
+                { type: "text", text: "second line" },
+              ],
+            },
+          ],
+        },
+      },
+    });
+    await fixture.collector.waitFor((message) => turnEvent(message, "turn/completed", turnId));
+    await stopFixture(fixture);
+  });
+
   it("acknowledges an accepted Harness command through the public command contract", async () => {
     const fixture = createFixture();
     const threadId = await startPiThread(fixture);
@@ -2913,7 +3631,10 @@ describe("AppServerHost HarnessAdapter projection", () => {
           type: "contextCompaction",
           itemId: hostItemIdSchema.parse("fake-command-compaction-item"),
         });
-        return { ok: true, value: { turnId } };
+        return {
+          ok: true,
+          value: { turnId },
+        };
       },
     };
     const turnId = hostTurnIdSchema.parse("manual-compact");
@@ -2933,6 +3654,125 @@ describe("AppServerHost HarnessAdapter projection", () => {
     await fixture.collector.waitFor((message) => turnEvent(message, "turn/started", nextTurnId));
     session.succeedTurn();
     await fixture.collector.waitFor((message) => turnEvent(message, "turn/completed", nextTurnId));
+    await stopFixture(fixture);
+  });
+
+  it("serializes command catalog admission and releases it after discovery failure", async () => {
+    const fixture = createFixture();
+    const threadId = await startPiThread(fixture);
+    const session = fixture.adapter.sessions[0];
+    if (!session) throw new Error("Fake Pi Session was not opened");
+    let resolveCatalog:
+      | ((value: {
+          ok: false;
+          error: {
+            code: "unavailable";
+            message: string;
+            retryable: true;
+          };
+        }) => void)
+      | undefined;
+    const descriptor = harnessCommandDescriptorSchema.parse({
+      id: "fake.compact",
+      invocation: "/compact",
+      label: "Compact",
+      argumentMode: "none",
+    });
+    const list = vi
+      .fn()
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            resolveCatalog = resolve;
+          }),
+      )
+      .mockResolvedValue({ ok: true, value: { commands: [descriptor] } });
+    const execute = vi.fn(async ({ turnId }) => {
+      session.publishEphemeralCommand(turnId, {
+        type: "contextCompaction",
+        itemId: hostItemIdSchema.parse(`retried-command-${turnId}`),
+      });
+      return { ok: true as const, value: { turnId } };
+    });
+    session.commands = { list, execute };
+
+    writeRequest(fixture.desktopInput, {
+      id: 2,
+      method: "codexhost/thread/command/execute",
+      params: { threadId, commandId: "fake.compact" },
+    });
+    await vi.waitFor(() => expect(list).toHaveBeenCalledOnce());
+    writeRequest(fixture.desktopInput, {
+      id: 3,
+      method: "codexhost/thread/command/execute",
+      params: { threadId, commandId: "fake.compact" },
+    });
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 3)),
+    ).resolves.toMatchObject({ error: { code: -32072 } });
+
+    resolveCatalog?.({
+      ok: false,
+      error: { code: "unavailable", message: "catalog offline", retryable: true },
+    });
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 2)),
+    ).resolves.toMatchObject({ error: { code: -32078, message: "catalog offline" } });
+
+    writeRequest(fixture.desktopInput, {
+      id: 4,
+      method: "codexhost/thread/command/execute",
+      params: { threadId, commandId: "fake.compact" },
+    });
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 4)),
+    ).resolves.toMatchObject({ result: { accepted: true } });
+    expect(execute).toHaveBeenCalledOnce();
+    await stopFixture(fixture);
+  });
+
+  it("rejects an ordinary Turn when an autonomous Turn starts during command discovery", async () => {
+    const fixture = createFixture();
+    const threadId = await startPiThread(fixture);
+    const session = fixture.adapter.sessions[0];
+    if (!session) throw new Error("Fake Pi Session was not opened");
+    const catalog = { ok: true as const, value: { commands: [] } };
+    let releaseCatalog = (): void => undefined;
+    const list = vi.fn(
+      () =>
+        new Promise<typeof catalog>((resolve) => {
+          releaseCatalog = () => resolve(catalog);
+        }),
+    );
+    session.commands = { list, execute: vi.fn() };
+    const execute = vi.spyOn(session, "execute");
+    const autonomousTurnId = hostTurnIdSchema.parse("catalog-race-autonomous-turn");
+    const completeAutonomousTurn = vi
+      .spyOn(session, "succeedTurn")
+      .mockImplementationOnce(() => undefined);
+
+    writeRequest(fixture.desktopInput, {
+      id: 2,
+      method: "turn/start",
+      params: { threadId, input: [{ type: "text", text: "ordinary message" }] },
+    });
+    await vi.waitFor(() => expect(list).toHaveBeenCalledOnce());
+    session.publishAutonomousTurn(autonomousTurnId, [{ type: "text", text: "native follow-up" }]);
+    await fixture.collector.waitFor((message) =>
+      turnEvent(message, "turn/started", autonomousTurnId),
+    );
+
+    releaseCatalog();
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 2)),
+    ).resolves.toMatchObject({ error: { code: -32072 } });
+    expect(execute).not.toHaveBeenCalled();
+
+    completeAutonomousTurn.mockRestore();
+    session.succeedTurn();
+    await fixture.collector.waitFor((message) =>
+      turnEvent(message, "turn/completed", autonomousTurnId),
+    );
     await stopFixture(fixture);
   });
 

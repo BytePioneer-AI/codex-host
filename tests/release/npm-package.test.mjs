@@ -636,6 +636,10 @@ describe("npm package release", () => {
       expect(paths).not.toContain("runtime/node");
       expect(paths).toContain("bin/codexhost");
       expect(paths).toContain("libexec/codexhost-shim");
+      expect(expectedNpmPackagePaths(releaseTarget("windows-x64"))).toContain(
+        "libexec/codexhost-node-repl.exe",
+      );
+      expect(paths).not.toContain("libexec/codexhost-node-repl");
       expect(paths).toContain("libexec/codexhost-updater");
       expect(paths).toContain("app/codexhost-distribution.json");
       await mkdir(path.join(root, "runtime"), { recursive: true });

@@ -157,7 +157,7 @@ The first accepted text Turn SHALL resolve the user-installed Claude Code execut
 - **AND** source history SHALL remain unchanged
 
 ### Requirement: Claude text streaming has one complete ordered lifecycle
-Every accepted Claude text Turn SHALL emit one Turn start, retain the established Root Agent Message lifecycle, emit zero or more Root Reasoning Item lifecycles only for explicit streamed Claude thinking, emit one terminal for every started Item, and emit one Turn terminal. Partial and complete Root Assistant text SHALL be reconciled by native execution scope and native Assistant `message.id`; complete content from a later Root response in the same Tool loop SHALL NOT be treated as a cumulative snapshot of the Host Turn. Claude messages carrying a non-empty `parent_tool_use_id` SHALL remain nested execution and SHALL NOT append, compare with, create, or close Root Assistant, Reasoning, or ordinary Tool Items. Live Reasoning SHALL use only Root `thinking_delta` text and SHALL ignore complete Assistant `thinking` blocks. Unknown native message types and all unsupported non-text content MUST NOT cross the HarnessAdapter seam.
+Every accepted Claude text Turn SHALL emit one Turn start, retain the established Root Agent Message lifecycle, emit zero or more Root Reasoning Item lifecycles only for explicit streamed Claude thinking, emit one terminal for every started Item, and emit one Turn terminal. Partial and complete Root Assistant text SHALL be reconciled by native execution scope and native Assistant `message.id`; complete content from a later Root response in the same Tool loop SHALL NOT be treated as a cumulative snapshot of the Host Turn. Claude messages carrying a non-empty `parent_tool_use_id` SHALL remain nested execution and SHALL NOT append, compare with, create, or close Root Assistant, Reasoning, or ordinary Tool Items. Live Reasoning SHALL use only Root `thinking_delta` text and SHALL ignore complete Assistant `thinking` blocks. Whenever a Thinking option other than Off is active, the Adapter SHALL request summarized Thinking display when creating the Query, because adaptive Thinking otherwise streams only redacted `thinking_delta` frames whose text is empty and no Reasoning would be observable. Unknown native message types and all unsupported non-text content MUST NOT cross the HarnessAdapter seam.
 
 #### Scenario: Partial text and full Assistant agree
 - **WHEN** SDK partial events stream a Root text prefix and the complete Root Assistant message with the same native `message.id` contains the prefix plus a suffix
@@ -182,6 +182,11 @@ Every accepted Claude text Turn SHALL emit one Turn start, retain the establishe
 - **WHEN** a complete Root Assistant text cannot be reconciled with partial text already emitted for the same Root execution scope and native `message.id`
 - **THEN** every started Item and the Turn SHALL fail exactly once
 - **AND** the Adapter SHALL NOT replay or replace the visible text silently
+
+#### Scenario: Thinking is enabled for a Session
+- **WHEN** the Adapter creates a Claude Query with a Thinking option other than Off
+- **THEN** it SHALL request adaptive Thinking with summarized display
+- **AND** redacted `thinking_delta` frames carrying empty text SHALL NOT start a Reasoning Item
 
 #### Scenario: Streamed thinking has a complete Assistant counterpart
 - **WHEN** Root SDK stream events emit non-empty `thinking_delta` text for one Assistant message and the complete Assistant wrapper with the same native `message.id` contains thinking blocks

@@ -9,12 +9,15 @@ use std::process::{Command, ExitStatus, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
+#[cfg(target_os = "windows")]
+use codexhost_platform::discover_desktop_managed_codex_cli;
 use codexhost_platform::{
     CODEX_CLI_PATH_ENV, STOCK_CODEX_PATH_ENV, canonical_existing_file,
     configure_background_command, node_entrypoint_path, proxy_environment, spawn_supervised,
     validate_proxy_target,
 };
 
+mod desktop_invocation;
 mod local_runtime_lease;
 mod process_identity;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
@@ -499,6 +502,35 @@ fn launch_detached_remote_listener(arguments: &[OsString]) -> ShimResult<i32> {
     let current_executable = env::current_exe()?;
     let socket_path = default_remote_socket_path()?;
     let previous_socket = socket_identity(&socket_path);
+    if previous_socket.is_some() {
+        let stock_codex_path = env::var_os(STOCK_CODEX_PATH_ENV)
+            .map(PathBuf::from)
+            .ok_or_else(|| format!("{STOCK_CODEX_PATH_ENV} is required"))?;
+        let launcher_managed = env::var_os(LAUNCHER_PID_ENV).is_some();
+        let (node_path, host_runtime_path) = select_host_paths(
+            env::var_os(HOST_NODE_PATH_ENV),
+            env::var_os(HOST_RUNTIME_PATH_ENV),
+            launcher_managed,
+            env::var_os(NPM_NODE_PATH_ENV),
+            env::var_os(NPM_PACKAGE_ROOT_ENV),
+        );
+        let node_path = node_path.as_deref().map(Path::new);
+        let host_runtime_path = host_runtime_path.as_deref().map(Path::new);
+        if remote_lifecycle::existing_listener_is_reusable(
+            &socket_path,
+            &stock_codex_path,
+            node_path,
+            host_runtime_path,
+        )? {
+            UnixStream::connect(&socket_path).map_err(|error| {
+                format!(
+                    "managed remote listener at {} is owned by the installed runtime but is not accepting connections: {error}",
+                    socket_path.display()
+                )
+            })?;
+            return Ok(0);
+        }
+    }
     let mut command = Command::new(&current_executable);
     command
         .args(arguments)
@@ -593,6 +625,7 @@ fn child_command(
     arguments: &[OsString],
     current_executable: &Path,
     stock_codex_path: &Path,
+    desktop_helper: bool,
 ) -> ShimResult<Command> {
     let launcher_managed = env::var_os(LAUNCHER_PID_ENV).is_some();
     let inherited_remote_profile = launcher_managed
@@ -610,7 +643,14 @@ fn child_command(
         } else {
             Vec::new()
         };
-    if should_start_host_runtime(arguments) {
+    #[cfg(target_os = "windows")]
+    let remote_proxy_environment = if desktop_helper || env::var_os(STOCK_CODEX_PATH_ENV).is_none()
+    {
+        codexhost_platform::desktop_helper_proxy_environment()
+    } else {
+        remote_proxy_environment
+    };
+    if !desktop_helper && should_start_host_runtime(arguments) {
         match host_paths {
             (Some(node_path), Some(runtime_path)) => {
                 let node_path =
@@ -644,6 +684,16 @@ fn child_command(
     }
 
     let mut command = Command::new(stock_codex_path);
+    if desktop_helper {
+        // Do not pass launcher/runtime credentials or npm routing back into the
+        // stock helper's descendants. The official CLI still performs policy,
+        // authentication, and tool approvals using its normal configuration.
+        for (name, _) in env::vars_os() {
+            if name.to_string_lossy().starts_with("CODEXHOST_") {
+                command.env_remove(name);
+            }
+        }
+    }
     command
         .args(arguments)
         .env_remove(CODEX_CLI_PATH_ENV)
@@ -656,21 +706,61 @@ fn child_command(
     Ok(command)
 }
 
+/// Resolve the official CLI for both the launcher-managed process tree and
+/// Windows Desktop helpers that persist only the standard `CODEX_CLI_PATH`
+/// override.
+///
+/// The launcher-provided path remains authoritative. Installation discovery is
+/// deliberately restricted to a re-entry where `CODEX_CLI_PATH` identifies
+/// this exact Shim, so an unrelated or direct invocation still fails closed.
+fn resolve_stock_codex_path(current_executable: &Path) -> ShimResult<PathBuf> {
+    let stock_codex_path = match env::var_os(STOCK_CODEX_PATH_ENV) {
+        Some(configured) => PathBuf::from(configured),
+        None => {
+            #[cfg(not(target_os = "windows"))]
+            return Err(format!("{STOCK_CODEX_PATH_ENV} is required").into());
+
+            #[cfg(target_os = "windows")]
+            {
+                let cli_override = env::var_os(CODEX_CLI_PATH_ENV)
+                    .map(PathBuf::from)
+                    .ok_or_else(|| format!("{STOCK_CODEX_PATH_ENV} is required"))?;
+                let cli_override = canonical_existing_file(&cli_override)?;
+                let current_executable = canonical_existing_file(current_executable)?;
+                if cli_override != current_executable {
+                    return Err(format!(
+                        "{STOCK_CODEX_PATH_ENV} is required when {CODEX_CLI_PATH_ENV} does not identify the running Shim"
+                    )
+                    .into());
+                }
+                discover_desktop_managed_codex_cli().map_err(|error| {
+                    format!(
+                        "{STOCK_CODEX_PATH_ENV} is unavailable and the Desktop-managed official Codex CLI could not be discovered: {error}"
+                    )
+                })?
+            }
+        }
+    };
+    Ok(validate_proxy_target(
+        current_executable,
+        &stock_codex_path,
+    )?)
+}
+
 /// Runs the byte-transparent proxy and emits optional lifecycle observations.
 pub fn run_proxy_with_observer(
     arguments: &[OsString],
     observer: &impl ProxyObserver,
 ) -> ShimResult<i32> {
     let current_executable = env::current_exe()?;
-    let stock_codex_path = env::var_os(STOCK_CODEX_PATH_ENV)
-        .map(PathBuf::from)
-        .ok_or_else(|| format!("{STOCK_CODEX_PATH_ENV} is required"))?;
-    let stock_codex_path = validate_proxy_target(&current_executable, &stock_codex_path)?;
+    let stock_codex_path = resolve_stock_codex_path(&current_executable)?;
     observer.invocation(arguments, &stock_codex_path);
 
     let started = Instant::now();
     let shutdown_signals = ShutdownSignals::install()?;
-    let local_host_runtime = should_start_host_runtime(arguments)
+    let desktop_helper = desktop_invocation::is_desktop_helper();
+    let local_host_runtime = !desktop_helper
+        && should_start_host_runtime(arguments)
         && host_runtime_paths_are_configured()
         && !is_managed_remote_listener(arguments)
         && env::var_os(DATA_DIRECTORY_ENV).is_some();
@@ -681,7 +771,12 @@ pub fn run_proxy_with_observer(
     } else {
         None
     };
-    let mut command = child_command(arguments, &current_executable, &stock_codex_path)?;
+    let mut command = child_command(
+        arguments,
+        &current_executable,
+        &stock_codex_path,
+        desktop_helper,
+    )?;
     command
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

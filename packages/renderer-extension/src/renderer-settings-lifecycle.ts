@@ -9,6 +9,10 @@ import {
   type RendererConnectionDiagnostics,
   type RendererUpdateClient,
 } from "./settings/pages.js";
+import type {
+  RendererDeepSeekSessionImportClient,
+  RendererImportedThreadOpener,
+} from "./settings/deepseek-session-import-page.js";
 import { installRendererSettingsShell, type RendererSettingsShell } from "./settings/shell.js";
 import {
   installRendererSettingsHeaderTrigger,
@@ -21,6 +25,8 @@ const UPDATE_RETRY_DELAYS_MS = [1_000, 3_000, 10_000, 30_000] as const;
 export interface RendererSettingsLifecycleOptions {
   getUpdateClient?(): RendererUpdateClient | null;
   getConnectionDiagnostics?(): RendererConnectionDiagnostics | null;
+  getSessionImportClient?(): RendererDeepSeekSessionImportClient | null;
+  openImportedThread?: RendererImportedThreadOpener;
   onLocaleChange?(locale: RendererSettingsLocale): void;
 }
 
@@ -57,6 +63,14 @@ export function installRendererSettingsLifecycle(
       messages,
       options.getUpdateClient ?? (() => null),
       options.getConnectionDiagnostics ?? (() => null),
+      options.getSessionImportClient ?? (() => null),
+      async (threadId, signal) => {
+        if (!options.openImportedThread) {
+          throw new Error("Imported Thread navigation is unavailable");
+        }
+        await options.openImportedThread(threadId, signal);
+        if (!disposed && !signal.aborted) shell?.close();
+      },
     );
     const nextShell = installRendererSettingsShell(definitions, messages, ownerWindow.document);
     const nextTrigger = installRendererSettingsHeaderTrigger({

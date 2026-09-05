@@ -9,6 +9,7 @@ import {
   nativeCheckpointRefSchema,
   nativeSessionRefSchema,
   nativeTurnRefSchema,
+  type HostThreadId,
   type NativeSessionRef,
 } from "@codexhost/shared-contracts";
 import { afterEach, describe, expect, it } from "vitest";
@@ -83,6 +84,20 @@ async function createReady(
   });
 }
 
+async function createProvisional(store: MappingStore, value: string): Promise<HostThreadId> {
+  const hostThreadId = hostThreadIdSchema.parse(value);
+  await store.createProvisional({
+    hostThreadId,
+    createRequestId: `create-${value}`,
+    harnessId,
+    cwd: "/synthetic",
+    transportModelId: "codexhost/pi-native",
+    ephemeral: false,
+    historyMode: "legacy",
+  });
+  return hostThreadId;
+}
+
 afterEach(async () => {
   await Promise.all(
     temporaryDirectories
@@ -116,6 +131,81 @@ describe("mapping-store package", () => {
     ).resolves.toMatchObject({ hostThreadId: threadId, state: "ready" });
     await expect(store.listThreads()).resolves.toHaveLength(1);
     await store.close();
+  });
+
+  it("serializes competing Native Session commits across Host Threads", async () => {
+    const directory = await temporaryStoreDirectory();
+    const firstReadyEntered = Promise.withResolvers<undefined>();
+    const releaseFirstReady = Promise.withResolvers<undefined>();
+    let readyReplacements = 0;
+    const store = new MappingStore({
+      directory,
+      beforeReplace(record) {
+        if (record.state !== "ready") return;
+        readyReplacements += 1;
+        if (readyReplacements === 1) {
+          firstReadyEntered.resolve(undefined);
+          return releaseFirstReady.promise;
+        }
+      },
+    });
+    await store.initialize();
+    const firstId = await createProvisional(store, "thread-native-first");
+    const secondId = await createProvisional(store, "thread-native-second");
+
+    const commits = [
+      store.commitReady({ hostThreadId: firstId, nativeSessionRef: nativeRef }),
+      store.commitReady({ hostThreadId: secondId, nativeSessionRef: nativeRef }),
+    ];
+    await firstReadyEntered.promise;
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    const replacementsBeforeRelease = readyReplacements;
+    releaseFirstReady.resolve(undefined);
+    const results = await Promise.allSettled(commits);
+
+    expect(replacementsBeforeRelease).toBe(1);
+    expect(results.map(({ status }) => status).toSorted()).toEqual(["fulfilled", "rejected"]);
+    const fulfilled = results.find((result) => result.status === "fulfilled");
+    const rejected = results.find((result) => result.status === "rejected");
+    if (
+      !fulfilled ||
+      fulfilled.status !== "fulfilled" ||
+      !rejected ||
+      rejected.status !== "rejected"
+    ) {
+      throw new Error("Expected exactly one successful Native Session commit");
+    }
+    expect(rejected.reason).toMatchObject({ code: "DUPLICATE_NATIVE_SESSION" });
+    const winnerId = fulfilled.value.hostThreadId;
+    const loserId = winnerId === firstId ? secondId : firstId;
+    const inMemory = await store.listThreads();
+    expect(inMemory.filter(({ state }) => state === "ready")).toHaveLength(1);
+    expect(inMemory.find(({ hostThreadId }) => hostThreadId === loserId)).toMatchObject({
+      state: "creating",
+    });
+    const persisted = await Promise.all(
+      [firstId, secondId].map(
+        async (hostThreadId) =>
+          JSON.parse(
+            await readFile(path.join(directory, "threads", `${hostThreadId}.json`), "utf8"),
+          ) as StoredThreadRecordV1,
+      ),
+    );
+    expect(persisted.filter(({ state }) => state === "ready")).toHaveLength(1);
+    expect(persisted.find(({ hostThreadId }) => hostThreadId === loserId)).toMatchObject({
+      state: "creating",
+    });
+
+    await expect(store.removeProvisional(loserId)).resolves.toBeUndefined();
+    await store.close();
+
+    const restarted = new MappingStore({ directory });
+    await restarted.initialize();
+    await expect(restarted.listThreads()).resolves.toEqual([
+      expect.objectContaining({ hostThreadId: winnerId, state: "ready" }),
+    ]);
+    await expect(restarted.getThread(loserId)).resolves.toBeNull();
+    await restarted.close();
   });
 
   it("persists strict identity and Desktop metadata across restart", async () => {

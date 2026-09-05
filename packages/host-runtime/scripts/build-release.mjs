@@ -5,23 +5,18 @@ import { pathToFileURL } from "node:url";
 import { build as esbuildBuild } from "esbuild";
 
 const forbiddenInputFragments = [
-  "/node_modules/@anthropic-ai/claude-agent-sdk-",
+  "/packages/adapters/",
+  "/node_modules/@codexhost/adapter-",
+  "/node_modules/@anthropic-ai/",
+  "/node_modules/@agentclientprotocol/",
+  "/node_modules/@deepseek-ai/",
+  "/node_modules/@opencode-ai/",
   "/test/",
   "/tests/",
   "/tools/",
 ];
 const forbiddenBundleReferences = ["sourceMappingURL="];
-const allowedRuntimePackages = new Set([
-  "@agentclientprotocol/sdk",
-  "@anthropic-ai/claude-agent-sdk",
-  "@deepseek-ai/cosmokit",
-  "@deepseek-ai/dsh-host-apiproxy",
-  "@deepseek-ai/schemastery",
-  "@opencode-ai/sdk",
-  "diff",
-  "ws",
-  "zod",
-]);
+const allowedRuntimePackages = new Set(["diff", "ws", "zod"]);
 
 function normalizedInputPath(value) {
   return `/${value.replaceAll("\\", "/").replace(/^\/+|\/+$/gu, "")}/`;
@@ -48,23 +43,12 @@ export function auditHostBundleMetafile(metafile) {
   for (const required of [
     "/packages/host-runtime/src/release-main.ts/",
     "/packages/host-runtime/src/app-server-host.ts/",
-    "/packages/host-runtime/src/adapter-composition.ts/",
+    "/packages/host-runtime/src/harness-plugin-loader.ts/",
+    "/packages/host-runtime/src/installed-harness-plugins.ts/",
     "/packages/host-runtime/src/remote-app-server.ts/",
     "/packages/host-runtime/src/remote-control-app-server.ts/",
     "/packages/host-runtime/src/remote-socket-lock.ts/",
     "/packages/harness-broker/",
-    "/packages/adapters/pi/",
-    "/packages/adapters/claude-code/",
-    "/packages/adapters/deepseek-harness/",
-    "/packages/adapters/opencode/",
-    "/packages/adapters/grok/",
-    "/packages/adapters/omp/",
-    "/node_modules/@agentclientprotocol/sdk/",
-    "/node_modules/@anthropic-ai/claude-agent-sdk/",
-    "/node_modules/@deepseek-ai/cosmokit/",
-    "/node_modules/@deepseek-ai/dsh-host-apiproxy/",
-    "/node_modules/@deepseek-ai/schemastery/",
-    "/node_modules/@opencode-ai/sdk/",
     "/node_modules/ws/",
   ]) {
     if (!normalized.some((input) => input.includes(required))) {

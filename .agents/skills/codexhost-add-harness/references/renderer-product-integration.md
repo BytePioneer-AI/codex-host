@@ -1,162 +1,82 @@
-# Renderer 与产品接入
+# Desktop 产品接入：当前仍需单独完成的范围
 
-实现 `HarnessAdapter` 只完成了执行层接入。一个能够在 Codex Desktop 中被用户选择、创建 Thread、恢复配置并显示状态的正式 Harness，还必须接入 Renderer 和 Desktop Control 的静态 Agent 注册面。
+仅当交付包含 Desktop 可选、可创建/恢复 Thread、可展示配置与状态时读取本页。后端插件可明确不包含该范围；预装发行也不自动意味着 UI 接入完成。
 
-如果本次工作只是后端 Adapter 原型，可以明确推迟本页要求；否则本页全部适用。
+## 现状与约束
 
-## 当前请求链路
+Host 已有插件目录和通用路由，但 Renderer 尚未完全目录驱动：
 
-新 Thread 的外部 Harness 路由经过：
+- `packages/renderer-extension/src/renderer-model-client.ts` 提供按目标 Host 查询且校验结果的 `listHarnessPlugins()`。
+- `agent-selection-state.ts` 仍以 `KNOWN_RENDERER_AGENTS` 推导联合类型，并按 Harness 保存部分配置。
+- `versioned-renderer-adapter.ts`、Picker、图标、偏好、ownership 和 Desktop Control 仍有静态接线。
+
+本页未带目录前缀的 Renderer 源文件均位于 `packages/renderer-extension/src/`。实施前重新核对上述源码；若某处已动态化，则验证通用路径，不重新加入固定分支。
+
+**新增 UI 接线与公共层全面动态化是不同任务。**根据用户范围完成当前产品接入；发现必须扩大公共接口或 UI 状态模型才能正确支持时，明确缺口，不悄悄把新增插件扩展为全仓库迁移。
+
+## 新插件的路由：一律使用共享编码
 
 ```text
-Renderer Agent 选择
-  → Renderer 写入 codexhost Transport Model carrier
-  → Desktop 发出 thread/start
-  → protocol-core 解码 carrier
-  → Host Runtime 选择 HarnessAdapter
+选择目标 Host 上的 Harness 和配置
+  → Renderer 写入共享插件 Transport Model carrier
+  → Desktop thread/start
+  → protocol-core 解码
+  → 目标 Host 的 Adapter Map
 ```
 
-因此必须同时检查：
+读取 `packages/shared-contracts/src/harness-route.ts`、`packages/protocol-core/src/model-routing.ts` 和 Renderer 的 `versioned-renderer-adapter.ts`。
 
-- `packages/protocol-core/src/model-routing.ts`
-- `packages/renderer-extension/src/versioned-renderer-adapter.ts`
+- 新 ID 使用 `encodeHarnessPluginRoute` / `decodeHarnessPluginRoute`；不要添加第八套 Harness 专用 prefix/codec。
+- 旧七种编码属于历史兼容，保留既有读取行为；不可拿它们作为新插件模板，也不可借接入删除旧格式。
+- Model Ref、Thinking、Permission Mode 遵守共享 schema 并完整往返；依赖字段约束以共享 codec 为准。
+- 创建、配置更新、ThreadInspection 恢复必须一致。非法或缺失插件身份明确不可用，不回落到官方 Codex。
 
-当前两端分别维护 Transport Model 常量和 encode/decode 逻辑。新增 Harness 后，Renderer 生成的 token 必须能被 `protocol-core` 严格解码；Model、Thinking 和 Permission Mode 必须完整往返。为两端增加兼容性测试，不能只测试其中一端。
+## 按职责检查当前接线
 
-## Renderer Agent 注册
+| 职责 | 当前源码入口 | 完成条件 |
+|---|---|---|
+| Agent 选择与配置草稿 | `agent-selection-state.ts` | 新 Agent 可选择；Model/Thinking/权限按 Agent 隔离；切换/重挂 Composer 不串状态 |
+| 目标 Host、Catalog、ownership 和诊断 | `renderer-binding-probe.ts` | 目录、可用性、恢复身份和配置属于正确 Host/Thread；旧异步结果不能覆盖新目标 |
+| carrier 写入与恢复 | `versioned-renderer-adapter.ts` | 新共享 codec 与 Host 兼容，创建和恢复配置一致 |
+| Picker 与安装入口 | `renderer-agent-picker.ts`、`renderer-agent-icon.ts` | 名称、图标、安装链接和可用性一致；加载成功与原生 ready 区分 |
+| Sidebar 与新 Thread 偏好 | `renderer-sidebar-agent-icons.ts`、`renderer-new-thread-preference.ts` | 旧 Thread 保留 Harness 身份，缺插件明确不可用，偏好不把未知值误恢复成 Codex |
+| 权限偏好与展示 | `renderer-permission-mode-preference.ts`、`renderer-harness-localization.ts` | 只表达真实原生模式和作用域，不机械复制历史特例 |
+| Settings | `settings/pages.ts` | Connections 状态、安装入口、刷新与错误提示一致 |
 
-检查 `packages/renderer-extension/src/agent-selection-state.ts`：
+当前接入可能需要扩展 Renderer 的固定联合类型及映射；列出实际修改位置和原因，而不是全仓库机械补名字。Host 的加载/委派名单和专用 codec 不随之扩展。
 
-- 将 Harness 加入 `KNOWN_RENDERER_AGENTS`；
-- 更新 `RendererAgent` / `ExternalRendererAgent` 推导出的所有完整映射；
-- 为该 Harness 保存所需的 Model、Thinking 和 Permission Mode 草稿状态；
-- 更新 restore、read、write 和切换逻辑；
-- 确认 Composer 替换、Thread 重访和新 Thread 偏好不会丢失或串用其他 Agent 的配置。
+插件 Manifest 是新插件展示元数据来源。目录图标是经过校验的数据 URL，使用 img 展示，不把 SVG/描述字符串内联为 HTML。若当前静态 UI 仍需构建期资源，明确这是过渡产品接线，并保证与插件声明一致。
 
-当前文件仍有按 Agent 展开的状态字段和分支。应完成所有适用分支，但不要借新增一个 Harness 进行无关的大规模状态重构；只有多个真实调用方已经证明通用映射更清晰时才抽象。
+## 能力与运行状态
 
-检查 `packages/renderer-extension/src/renderer-binding-probe.ts`：
+- Catalog/能力来自目标 Host 的 inspect，effective 状态来自原生确认后的 Thread 状态。
+- selectModel、selectThinkingOption 和 selectPermissionMode 决定相应控件；权限 atCreate 不显示为任意 live 切换。
+- Thread 配置通过公共 select 请求更新，失败时不把 requested 值当作已生效。
+- 固定 Model 或空 Catalog 是合法原生情况，但当前 Composer 就绪判断未必支持；必须验证不会永久禁用提交，不能编造模型绕过。
+- Usage 初始值、刷新、通知、Commands、压缩走既有公共路径，验证换 Thread/Host 后不残留前一个实例的数据。
+- Credits 仍是 Host 结构检查加 UI 策略，不是 Manifest/Adapter 正式 capability；新增额度需求单独核对接口和使用方。
+- Session Import 候选接口不等于通用导入 UI。当前 DeepSeek 导入、本地 Web UI 等路径按实际支持范围接入并报告限制。
 
-- `externalHarnessIds` 和 `externalAgents`；
-- Availability 初始化、错误状态、刷新和 Settings 诊断；
-- `restoredThreadOwnership()` 中 Harness identity 与 Transport 配置恢复；
-- Catalog 加载、Model/Thinking/Permission Mode 选择；
-- 新 Thread 配置写入和既有 Thread 配置更新；
-- Usage、Credits 和 Harness Commands 的显示与刷新策略。
+目录查询结果包含已加载的描述，也可能对应 unavailable Adapter；目录存在不代表原生安装、认证或运行就绪。旧 Host 不支持目录方法时显式显示兼容限制，不把错误伪装成空目录。
 
-未知 Harness 不得被恢复成 Codex，也不得静默丢弃配置。Thread ownership 无法解析时应 fail closed。
+## Desktop Control 与发布
 
-## Transport Model 写入与恢复
+正式产品接入还检查：
 
-检查 `packages/renderer-extension/src/versioned-renderer-adapter.ts`：
+- `packages/desktop-control/src/production-controller.ts`、`renderer-control-session.ts` 中的启用列表和注入参数。
+- `tools/renderer-binding/run.mjs`、`renderer-observer.mjs` 和 `tools/codex-desktop-contract-audit/run.mjs` 中声称覆盖生产 Agent 的列表。
+- `tests/release/production-renderer.test.mjs`、相关 Renderer/Desktop Control 测试及实际 Renderer build。
 
-- 基础 Transport Model ID 和 prefix；
-- Renderer 侧 encode/decode；
-- `transportModelIdForAgent()`；
-- `modelSelectionForAgent()`；
-- `installCurrentRendererAdapter().applyAgent()` 使用的配置写入；
-- `packages/renderer-extension/src/index.ts` 中确实需要公开的导出。
+工具名单按实际用途维护，不要求所有诊断工具复制生产名单。Renderer 是浏览器包，不能引入 Node.js built-ins、Harness SDK 或 Electron 私有 API。
 
-编码规则必须满足：
+## 产品验收
 
-- 基础 ID 与 `protocol-core` 完全一致；
-- 组件使用 transport-safe 的共享 schema；
-- 缺失 Model 时不能携带依赖 Model 的 Thinking 或 Permission Mode；
-- 空组件、组件数量错误和未知 ID 必须拒绝；
-- 新 Harness prefix 不与现有 Harness 冲突；
-- 从 `ThreadInspection` 恢复后的配置与创建时写入的配置一致。
+1. 正确目标 Host 上能看到、选择并创建该 Harness 的 Thread，且 carrier 使用共享格式。
+2. 未安装、认证失败、不可用、旧 Host 不兼容与刷新重试状态准确。
+3. 新/旧 Thread 的 Model、Thinking、权限、ownership、Sidebar 和偏好一致。
+4. Host/Thread 切换、Composer 重挂和异步响应乱序不会串配置或图标。
+5. 受支持的工具、审批、提问、取消、Usage、Commands 和历史操作经真实 UI 验证。
+6. 缺失插件不把原 Thread 交给 Codex；重新安装后的历史恢复按原生能力验证。
+7. Desktop Control、生产 Renderer 构建和浏览器边界检查通过；截图只用于可见 UI 变化。
 
-## Agent Picker、图标和侧边栏
-
-检查：
-
-- `packages/renderer-extension/src/renderer-agent-picker.ts`
-- `packages/renderer-extension/src/renderer-agent-icon.ts`
-- `packages/renderer-extension/src/renderer-sidebar-agent-icons.ts`
-- `packages/renderer-extension/src/renderer-new-thread-preference.ts`
-- `packages/renderer-extension/src/settings/pages.ts`
-
-需要提供：
-
-- 用户可见 Label；
-- 可打包的本地图标或内联 SVG；
-- 官方安装或快速开始 URL；
-- Agent Picker 中的安装、可用性和选择状态；
-- 外部 Thread 在侧边栏中的 ownership 图标；
-- 新 Thread 最近 Agent 和外部配置偏好；
-- Connections Settings 中的 Availability 与诊断展示。
-
-`renderer-extension` 是浏览器包。图标和 UI 代码不得引入 Node.js built-ins、Electron private API、Harness SDK 或远程运行时依赖。
-
-## Model、Thinking 与 Permission Mode
-
-Renderer 使用 `inspect()` 返回的能力和 Catalog 决定控制项：
-
-- `selectModel` 为 true 时必须有可选择的 Model 和有效默认值；
-- `selectThinkingOption` 为 true 时，Model 支持的 Thinking ID 必须存在于 Catalog；
-- `selectPermissionMode` 为 true 时必须提供 Permission Mode Catalog；
-- 新 Thread 的配置通过 Transport Model carrier 写入；
-- 已存在 Thread 的配置通过 `codexhost/thread/model/select`、`thinking/select` 和 `permission-mode/select` 更新；
-- Adapter 原生确认后，Host 返回的状态必须与 Renderer 显示一致。
-
-公共契约允许固定 Model 或不可选择 Model，但当前 Renderer 的提交就绪逻辑可能仍要求一个已选择的 Catalog Model。如果目标 Harness 使用 `selectModel: false` 或空 Catalog，必须验证 Composer 不会被永久阻塞；必要时补齐通用 Renderer 语义，不能伪造一个不存在的 Model 来绕过 UI。
-
-Harness 专用偏好只在确有产品语义时增加。例如 Claude Code 的 Permission Mode 兼容偏好是特例，不应为每个 Harness机械复制。
-
-## Usage、Credits 与 Commands
-
-Thread Usage 和 Harness Commands 已有通用 Renderer 路径，新增 Harness 通常不需要专用 UI 分支，但必须通过实际 Thread 验证：
-
-- Usage 初始值、主动刷新和通知更新；
-- Context Window、Cost 和 Cache 字段的显示；
-- `commands.list()` 和 `commands.execute()`；
-- Thread 切换或 Composer 替换后不会显示前一个 Harness 的数据。
-
-Account Credits 当前不是 `HarnessAdapter` 的正式字段。Host 在 `packages/host-runtime/src/app-server-host.ts` 通过结构检查读取可选的 `credits()` 和 `refreshCredits()`，Renderer 在 `renderer-binding-probe.ts` 中维护哪些 Agent 需要等待 Account Credits。如果新 Harness 提供 Account Credits，应同步接入这两处并增加测试；否则不要增加 Credits 专用分支。
-
-## Desktop Control 和工具链
-
-生产 Renderer 的启用列表还由 Desktop Control 传入。检查：
-
-- `packages/desktop-control/src/production-controller.ts`
-- `packages/desktop-control/src/renderer-control-session.ts`
-- 对应测试
-
-同时搜索仓库中的 Agent 白名单和探测工具，尤其是：
-
-- `tools/renderer-binding/run.mjs`
-- `tools/renderer-binding/renderer-observer.mjs`
-- `tools/codex-desktop-contract-audit/run.mjs`
-- `tests/release/production-renderer.test.mjs`
-- `packages/renderer-extension/test/`
-
-工具列表与生产列表用途可能不同，不应机械复制；但任何声称覆盖全部生产 Agent 的工具都必须包含新 Harness。新增 Harness 后，用其 ID 搜索与现有 Harness ID 并列出现的数组、联合类型、映射和 switch，逐项判断是否适用。
-
-## 聚焦测试
-
-至少覆盖：
-
-1. Agent union、Label、安装 URL 和图标创建。
-2. Renderer Transport Model encode/decode 与 `protocol-core` 兼容。
-3. 新 Thread 选择该 Harness 后写入正确 carrier。
-4. Model、Thinking、Permission Mode 的默认选择和更新。
-5. `ThreadInspection` 能恢复 Agent ownership 和配置。
-6. 未安装、不可用、认证失败和重试状态。
-7. Agent Picker 与 Settings Connections 展示。
-8. 侧边栏外部 Thread 图标。
-9. 新 Thread 偏好持久化和非法旧值兼容。
-10. Usage、Credits（如支持）和 Commands。
-11. Desktop Controller 生产启用列表与 Renderer readiness。
-12. 生产 Renderer build 和相关 release test。
-
-## 完成标准
-
-正式产品接入只有在以下条件同时满足时才完成：
-
-- 用户能在 Agent Picker 中看到并选择该 Harness；
-- 新 Thread 使用正确 Transport Model 路由到目标 Adapter；
-- 既有 Thread 能恢复正确 ownership 和配置；
-- Availability、安装入口、图标、Settings 和侧边栏一致；
-- Model、Thinking、Permission Mode、Usage、Credits 和 Commands 按声明工作；
-- Desktop Control、探测工具和生产 Renderer 测试已覆盖新 Agent；
-- Renderer bundle 仍满足浏览器边界和 release 审计。
+如果只完成后端，报告“插件后端可用，Desktop 未接入”，而不是把本页验证标成通过。若完成 UI 但未做真实原生验收，同样明确保留该验收项。

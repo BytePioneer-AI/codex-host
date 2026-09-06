@@ -89,7 +89,12 @@ import {
 import { fetchAntigravityQuota, type AntigravityQuotaSnapshot } from "./quota.js";
 import { AntigravityQuestionBridge } from "./question-bridge.js";
 import { AntigravitySubagents } from "./subagents.js";
-import { nativeSubagentIdSchema, readSubagentTranscript } from "./subagent-transcript.js";
+import {
+  nativeSubagentIdSchema,
+  readSubagentTranscript,
+  subagentRpc,
+} from "./subagent-transcript.js";
+import { hasHistoricalAntigravityError } from "./turn-result.js";
 import {
   antigravityToolErrorMessage,
   isAntigravityPermissionDenial,
@@ -129,6 +134,7 @@ interface ActiveTurn {
   stderr: string;
   cancellationRequested: boolean;
   receivedResult: boolean;
+  completedResponseStep: number | null;
   /** agy's own effective permission mode, as reported by the `init` event. */
   nativePermissionMode: string | null;
   /** First tool denial of the Turn, kept to explain an otherwise empty result. */
@@ -770,6 +776,7 @@ class AntigravitySession implements HarnessSession {
       stderr: "",
       cancellationRequested: false,
       receivedResult: false,
+      completedResponseStep: null,
       nativePermissionMode: null,
       permissionDenial: null,
       latestUsage: null,
@@ -962,13 +969,36 @@ class AntigravitySession implements HarnessSession {
       checkpointId: safeTurnId,
       formatVersion: 1,
     });
+    let historicalError = false;
+    if (
+      !active.cancellationRequested &&
+      !active.permissionDenial &&
+      !active.stderr.trim() &&
+      event.result.status === "ERROR" &&
+      !event.result.error?.trim() &&
+      active.completedResponseStep !== null &&
+      convId === this.#nativeRef?.nativeSessionId
+    ) {
+      const port = await this.#languageServerPort(active);
+      if (port !== null) {
+        try {
+          historicalError = hasHistoricalAntigravityError(
+            await subagentRpc(port, convId, "GetCascadeTrajectory"),
+            event.result,
+            active.completedResponseStep,
+          );
+        } catch {
+          // Unavailable or incomplete native evidence must retain the CLI failure.
+        }
+      }
+    }
     if (active.cancellationRequested) {
       this.#completeTurn(
         active,
         { status: "cancelled", reason: "Cancelled by user", checkpoint },
         nativeTurnRef,
       );
-    } else if (event.result.status === "SUCCESS") {
+    } else if (event.result.status === "SUCCESS" || historicalError) {
       if (active.permissionDenial !== null && !active.agentItem) {
         this.#completeTurn(
           active,
@@ -1033,6 +1063,7 @@ class AntigravitySession implements HarnessSession {
       step = { ...step, step_type: "tool" };
     }
     if (step.step_type === "agent_response") {
+      active.completedResponseStep = step.state === "DONE" ? step.step_index : null;
       if (typeof step.text_delta === "string" && step.text_delta.length > 0) {
         this.#appendOrSyncAgentText(active, step.text_delta, true);
         return;

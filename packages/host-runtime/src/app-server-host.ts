@@ -1,5 +1,8 @@
 import type { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
+import { readFile, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import type { Readable, Writable } from "node:stream";
 
 import type {
@@ -7,9 +10,12 @@ import type {
   HarnessOutput,
   HarnessSession,
   HostApprovalInteraction,
+  HostImageInput,
   HostSubagentState,
   HostApprovalResponse,
   HostQuestionInteraction,
+  HostTextInput,
+  HostTurnInput,
 } from "@codexhost/harness-adapter";
 import { parseHostUsage, type HostUsage } from "@codexhost/harness-adapter";
 import type { HarnessPluginContext } from "@codexhost/harness-adapter/plugin";
@@ -120,6 +126,26 @@ import type { HostUpdateCoordinator } from "./update-coordinator.js";
 
 const SUBAGENT_TERMINAL_REFRESH_DELAYS_MS = [0, 50, 100, 150] as const;
 const THREAD_USAGE_UPDATED_METHOD = "codexhost/thread/usage/updated";
+// Desktop pastes screenshots as `localImage` file references; keep a Host-side
+// cap so an oversized attachment cannot exhaust memory while being re-encoded.
+const IMAGE_INPUT_MAX_BYTES = 5 * 1024 * 1024;
+const IMAGE_MIME_TYPE_BY_EXTENSION: Readonly<Record<string, string>> = {
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".webp": "image/webp",
+  ".gif": "image/gif",
+  ".bmp": "image/bmp",
+  ".svg": "image/svg+xml",
+};
+const IMAGE_EXTENSION_BY_MIME_TYPE: Readonly<Record<string, string>> = {
+  "image/png": ".png",
+  "image/jpeg": ".jpg",
+  "image/webp": ".webp",
+  "image/gif": ".gif",
+  "image/bmp": ".bmp",
+  "image/svg+xml": ".svg",
+};
 // Native Codex account quota is still pulled through its official API; keep
 // that reading briefly cached so concurrent Composer inspections coalesce.
 const OFFICIAL_RATE_LIMIT_TTL_MS = 15_000;
@@ -388,15 +414,84 @@ function requestObject(request: JsonRpcRequest): JsonObject {
   return request.params as JsonObject;
 }
 
-function requestText(params: JsonObject): string {
+async function readLocalImageInput(sourcePath: string): Promise<HostImageInput> {
+  const extension = path.extname(sourcePath).toLowerCase();
+  const mimeType = IMAGE_MIME_TYPE_BY_EXTENSION[extension];
+  if (!mimeType) {
+    throw new Error(`turn/start localImage extension '${extension}' is not a supported image`);
+  }
+  const data = await readFile(sourcePath);
+  if (data.byteLength > IMAGE_INPUT_MAX_BYTES) {
+    throw new Error("turn/start localImage exceeds the 5 MiB Host image limit");
+  }
+  return { type: "image", mimeType, base64Data: data.toString("base64"), sourcePath };
+}
+
+/**
+ * Parse the Desktop `UserInput` union carried by `turn/start`. Text parts pass
+ * through unchanged; `image` data URLs and `localImage` file references become
+ * structured Host image inputs. Desktop-only variants the Host cannot project
+ * (audio, …) are ignored, and the Turn is rejected only when neither text nor
+ * image input survived parsing.
+ */
+async function requestInput(params: JsonObject): Promise<HostTurnInput[]> {
   if (!Array.isArray(params.input)) throw new Error("turn/start input must be an array");
-  const text = params.input
-    .filter((item): item is JsonObject => isRecord(item) && item.type === "text")
-    .map((item) => item.text)
-    .filter((value): value is string => typeof value === "string")
+  const inputs: HostTurnInput[] = [];
+  for (const item of params.input) {
+    if (!isRecord(item)) continue;
+    if (item.type === "text") {
+      if (typeof item.text === "string") inputs.push({ type: "text", text: item.text });
+      continue;
+    }
+    if (item.type === "image") {
+      if (typeof item.url !== "string") {
+        throw new Error("turn/start image input must carry a data URL");
+      }
+      const match = /^data:([^;,]+);base64,([A-Za-z0-9+/]+={0,2})$/u.exec(item.url);
+      const [, mimeType, base64Data] = match ?? [];
+      if (!mimeType || !base64Data) {
+        throw new Error("turn/start image input must be a base64 data URL");
+      }
+      inputs.push({ type: "image", mimeType, base64Data });
+      continue;
+    }
+    if (item.type === "localImage") {
+      if (typeof item.path !== "string" || item.path.length === 0) {
+        throw new Error("turn/start localImage input must carry a path");
+      }
+      inputs.push(await readLocalImageInput(item.path));
+    }
+  }
+  const hasContent = inputs.some((input) => input.type === "image" || input.text.length > 0);
+  if (!hasContent) throw new Error("turn/start must contain text or image input");
+  return inputs;
+}
+
+function turnInputText(inputs: readonly HostTurnInput[]): string {
+  return inputs
+    .filter((input): input is HostTextInput => input.type === "text")
+    .map((input) => input.text)
     .join("\n");
-  if (!text) throw new Error("turn/start must contain text input");
-  return text;
+}
+
+/**
+ * Degrade image inputs for Sessions without the image input capability: each
+ * image is materialized into a temporary file and referenced from a text part
+ * so Harness CLIs that recognize file paths in prompts still see the image.
+ */
+async function degradedTextInputs(inputs: readonly HostTurnInput[]): Promise<HostTextInput[]> {
+  const degraded: HostTextInput[] = [];
+  for (const input of inputs) {
+    if (input.type === "text") {
+      if (input.text.length > 0) degraded.push(input);
+      continue;
+    }
+    const extension = IMAGE_EXTENSION_BY_MIME_TYPE[input.mimeType] ?? ".png";
+    const target = path.join(os.tmpdir(), `codexhost-${randomUUID()}${extension}`);
+    await writeFile(target, Buffer.from(input.base64Data, "base64"));
+    degraded.push({ type: "text", text: `[Image attached: ${target}]` });
+  }
+  return degraded;
 }
 
 function sandboxResult(params: JsonObject): JsonObject {
@@ -1950,6 +2045,7 @@ export class AppServerHost {
               : {}),
             history: resolution.thread.session.capabilities.history,
             ...(resolution.thread.latestUsage ? { usage: resolution.thread.latestUsage } : {}),
+            ...(resolution.thread.record.subagent ? { subagent: true } : {}),
             locked: true,
           },
     );
@@ -2783,9 +2879,17 @@ export class AppServerHost {
       );
       return;
     }
+    // Desktop asks to revert everything from `beforeTurnId` onward, so the
+    // rollback depth is the number of mapped Turns at and after the boundary.
+    const boundaryIndex = thread.record.turnMappings.findIndex(
+      ({ hostTurnId }) => hostTurnId === revert.beforeTurnId,
+    );
     const result = await executeExternalThreadRollback({
       derived: thread,
-      rollback: { threadId: revert.threadId, numTurns: 1 },
+      rollback: {
+        threadId: revert.threadId,
+        numTurns: boundaryIndex >= 0 ? thread.record.turnMappings.length - boundaryIndex : 1,
+      },
       expectedLastTurnId: revert.beforeTurnId,
       adapters: this.#externalAdapters,
       repository: this.#repository,
@@ -3112,13 +3216,14 @@ export class AppServerHost {
         return;
       }
     }
-    let text: string;
+    let inputs: HostTurnInput[];
     try {
-      text = requestText(params);
+      inputs = await requestInput(params);
     } catch (error) {
       await this.#writer.json(rpcError(request, -32602, errorMessage(error)));
       return;
     }
+    const text = turnInputText(inputs);
     const commandCandidate = text.trimStart();
     if (thread.session.commands && /^\/[^\s/]+(?:\s|$)/u.test(commandCandidate)) {
       const commandText = commandCandidate.trimEnd();
@@ -3172,12 +3277,30 @@ export class AppServerHost {
     }
     const turnId = hostTurnIdSchema.parse(randomUUID());
     const startedAtMs = Date.now();
+    const supportsImageInput = thread.session.capabilities.input?.image === true;
+    let sessionInput: HostTurnInput[];
+    try {
+      sessionInput =
+        supportsImageInput || !inputs.some((input) => input.type === "image")
+          ? inputs
+          : await degradedTextInputs(inputs);
+    } catch (error) {
+      await this.#writer.json(
+        rpcError(
+          request,
+          -32073,
+          `External image input could not be staged: ${errorMessage(error)}`,
+        ),
+      );
+      return;
+    }
     const projection: ProjectedTurn = {
       projector: new CodexTurnProjector({
         threadId: thread.id,
         turnId,
         cwd: thread.cwd,
         startedAtMs,
+        initialInput: inputs,
       }),
     };
     const gate = turnProjectionGate();
@@ -3189,7 +3312,7 @@ export class AppServerHost {
     const result = await thread.session.execute({
       type: "turn.start",
       turnId,
-      input: [{ type: "text", text }],
+      input: sessionInput,
     });
     if (!result.ok) {
       thread.running = false;
@@ -3254,8 +3377,99 @@ export class AppServerHost {
   async #consumeHarnessOutputs(thread: ExternalThread): Promise<void> {
     try {
       for await (const output of thread.session.outputs) {
-        await this.#projectHarnessOutput(thread, output);
+        try {
+          await this.#projectHarnessOutput(thread, output);
+        } catch (error) {
+          // A projector invariant violation must never wedge the Thread: fail
+          // the active Turn, clear its live state, and keep draining outputs.
+          await this.#recoverFailedProjection(thread, error);
+        }
       }
+    } catch (error) {
+      this.#diagnose(error);
+    }
+  }
+
+  /**
+   * Synthesize the failed terminal for the active Turn after a projection
+   * failure, mirroring the mid-turn failure shape the projector emits: an
+   * `error` frame followed by `turn/completed` with `status: "failed"`. The
+   * Thread is left idle so Desktop can start a new Turn.
+   */
+  async #recoverFailedProjection(thread: ExternalThread, cause: unknown): Promise<void> {
+    this.#diagnose(`External Turn projection failed: ${errorMessage(cause)}`);
+    const turnId = thread.activeTurnId;
+    if (turnId === null) return;
+    const projection = thread.projectedTurns.get(turnId);
+    const wireError = {
+      message: `External Turn projection failed: ${errorMessage(cause)}`,
+      codexErrorInfo: "other",
+      additionalDetails: null,
+    };
+    const completedAtMs = Date.now();
+    const completedAt = Math.floor(completedAtMs / 1000);
+    const pendingItems = projection ? projection.projector.pendingTurn().items : undefined;
+    const turn: JsonObject = {
+      id: turnId,
+      status: "failed",
+      items: Array.isArray(pendingItems) ? pendingItems : [],
+      error: wireError,
+      startedAt: null,
+      completedAt,
+      durationMs: null,
+      itemsView: "full",
+    };
+    try {
+      for (const pending of [...this.#pendingDesktopApprovals.values()]) {
+        if (pending.thread === thread && pending.interaction.turnId === turnId) {
+          await this.#resolveDesktopApproval(pending.interaction.interactionId);
+        }
+      }
+      for (const pending of [...this.#pendingDesktopQuestions.values()]) {
+        if (pending.thread === thread && pending.interaction.turnId === turnId) {
+          await this.#resolveDesktopQuestion(pending.interaction.interactionId);
+        }
+      }
+      await this.#writer.json({
+        method: "error",
+        params: { error: wireError, willRetry: false, threadId: thread.id, turnId },
+      });
+      await this.#writer.json({
+        method: "turn/completed",
+        emittedAtMs: completedAtMs,
+        params: { threadId: thread.id, turn },
+      });
+    } catch (error) {
+      this.#diagnose(error);
+    }
+    if (!thread.ephemeralTurnIds.delete(turnId)) {
+      thread.turns.push(turn);
+      thread.thread.updatedAt = completedAt;
+      thread.thread.recencyAt = completedAt;
+    }
+    thread.historyHydrated = false;
+    thread.running = false;
+    thread.activeTurnId = null;
+    thread.projectedTurns.delete(turnId);
+    const gate = thread.responseGates.get(turnId);
+    thread.responseGates.delete(turnId);
+    gate?.resolve();
+    this.#signalActiveWorkChanged();
+    try {
+      const delegation = await this.#repository.getDelegationByChild(thread.record.hostThreadId);
+      if (delegation) {
+        await this.#repository.setDelegationStatus(delegation.delegationId, "failed");
+      }
+    } catch (error) {
+      this.#diagnose(error);
+    }
+    try {
+      await this.#setThreadStatus(
+        thread,
+        this.#hasRunningSubagents(thread.id)
+          ? { type: "active", activeFlags: [] }
+          : { type: "idle" },
+      );
     } catch (error) {
       this.#diagnose(error);
     }
@@ -3401,7 +3615,9 @@ export class AppServerHost {
           threadId: thread.id,
           turnId: event.turnId,
           cwd: thread.cwd,
-          startedAtMs: Date.now(),
+          // Buffered/replayed autonomous Turns carry their native start time;
+          // only fall back to the replay wall clock when it is unknown.
+          startedAtMs: event.startedAtMs ?? Date.now(),
           initialInput: event.input,
         }),
       };
@@ -3446,13 +3662,20 @@ export class AppServerHost {
         };
       }
     }
-    const result = projection.projector.project(event as ProjectableHostEvent);
+    // A buffered/replayed terminal carries its native completion time; pass it
+    // as the projection time so Turn durations reflect native time, not replay.
+    const result = projection.projector.project(
+      event as ProjectableHostEvent,
+      event.type === "turn.completed" && event.completedAtMs !== undefined
+        ? event.completedAtMs
+        : Date.now(),
+    );
     if (event.type === "turn.started") {
       await this.#setThreadStatus(thread, { type: "active", activeFlags: [] });
     }
     if (event.type === "turn.completed") {
       if (!result.completedTurn) throw new Error("Turn projector returned no completed Turn");
-      const completedAt = Math.floor(Date.now() / 1000);
+      const completedAt = Math.floor((event.completedAtMs ?? Date.now()) / 1000);
       if (ephemeralTurn) {
         thread.ephemeralTurnIds.delete(event.turnId);
       } else {
@@ -3568,10 +3791,20 @@ export class AppServerHost {
           typeof item.id === "string" &&
           previousItems.get(item.id) !== JSON.stringify(item),
       );
+      // The historical projection carries native Turn timing when the adapter
+      // could observe it. Lay changed items out sequentially inside that
+      // window using their native durations instead of collapsing every item
+      // onto one emission timestamp; fall back to distinct wall-clock reads
+      // only when the native timeline is unknown.
+      const turnStartedAtMs =
+        typeof turn.startedAt === "number" ? Math.floor(turn.startedAt * 1000) : null;
+      const turnCompletedAtMs =
+        typeof turn.completedAt === "number" ? Math.floor(turn.completedAt * 1000) : null;
+      let itemCursorMs = turnStartedAtMs;
       if (changedItems.length > 0) {
         await this.#writer.json({
           method: "turn/started",
-          emittedAtMs,
+          emittedAtMs: turnStartedAtMs ?? emittedAtMs,
           params: {
             threadId,
             turn: {
@@ -3584,23 +3817,36 @@ export class AppServerHost {
         });
       }
       for (const item of changedItems) {
+        const itemDurationMs =
+          typeof item.durationMs === "number" && item.durationMs >= 0 ? item.durationMs : null;
+        let startedAtMs: number;
+        let completedAtMs: number;
+        if (itemCursorMs !== null) {
+          startedAtMs = itemCursorMs;
+          completedAtMs = startedAtMs + (itemDurationMs ?? 0);
+          itemCursorMs =
+            turnCompletedAtMs !== null ? Math.min(completedAtMs, turnCompletedAtMs) : completedAtMs;
+        } else {
+          startedAtMs = Date.now();
+          completedAtMs = itemDurationMs !== null ? startedAtMs + itemDurationMs : Date.now();
+        }
         await this.#writer.json({
           method: "item/started",
-          emittedAtMs,
+          emittedAtMs: startedAtMs,
           params: {
             threadId,
             turnId: turn.id,
-            startedAtMs: emittedAtMs,
+            startedAtMs,
             item,
           },
         });
         await this.#writer.json({
           method: "item/completed",
-          emittedAtMs,
+          emittedAtMs: completedAtMs,
           params: {
             threadId,
             turnId: turn.id,
-            completedAtMs: emittedAtMs,
+            completedAtMs,
             item,
           },
         });
@@ -3608,7 +3854,7 @@ export class AppServerHost {
       if (terminal) {
         await this.#writer.json({
           method: "turn/completed",
-          emittedAtMs,
+          emittedAtMs: turnCompletedAtMs ?? emittedAtMs,
           params: { threadId, turn },
         });
       }

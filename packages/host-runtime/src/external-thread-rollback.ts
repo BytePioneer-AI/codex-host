@@ -225,14 +225,17 @@ export async function executeExternalThreadRollback(input: {
   }
   const refreshError = await runtime.refresh(derived);
   if (refreshError) return { ok: false, error: refreshError };
-  if (
-    expectedLastTurnId !== undefined &&
-    derived.record.turnMappings.at(-1)?.hostTurnId !== expectedLastTurnId
-  ) {
-    return {
-      ok: false,
-      error: { code: -32080, message: "External Revert boundary is unavailable" },
-    };
+  if (expectedLastTurnId !== undefined) {
+    const boundaryIndex = derived.record.turnMappings.findIndex(
+      ({ hostTurnId }) => hostTurnId === expectedLastTurnId,
+    );
+    if (boundaryIndex < 0) {
+      // The boundary never produced a Turn mapping: a phantom or failed message
+      // at the tail (or a zombie Thread with no mappings at all). No mapped
+      // Turn follows it, so the Revert succeeds as a no-op and Desktop can
+      // edit or delete the failed item instead of wedging its queue.
+      return { ok: true, thread: derived.thread };
+    }
   }
   if (rollback.numTurns === 1 && derived.session.capabilities.history.rollbackLastTurn) {
     return executeCurrentLastTurnRollback({

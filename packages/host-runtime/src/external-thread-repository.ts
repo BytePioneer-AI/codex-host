@@ -80,6 +80,46 @@ function sameMapping(left: StoredTurnMappingV1, right: StoredTurnMappingV1): boo
   return JSON.stringify(left) === JSON.stringify(right);
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/**
+ * Rehydration must not wipe live timing: when the historical projection of a
+ * Turn carries no native timing, keep the timing of the previously projected
+ * Turn with the same Host Turn ID instead of replacing numbers with null.
+ */
+function preserveProjectedTurnTiming(
+  projected: JsonObject,
+  previousTurns: readonly JsonObject[],
+): JsonObject {
+  if (previousTurns.length === 0) return projected;
+  const previous = previousTurns.find((turn) => turn.id === projected.id);
+  if (!previous) return projected;
+  const merged: JsonObject = { ...projected };
+  for (const key of ["startedAt", "completedAt", "durationMs"] as const) {
+    if (merged[key] === null && typeof previous[key] === "number") merged[key] = previous[key];
+  }
+  if (Array.isArray(merged.items) && Array.isArray(previous.items)) {
+    const previousItems = new Map(
+      previous.items.flatMap((item) =>
+        isRecord(item) && typeof item.id === "string" ? ([[item.id, item]] as const) : [],
+      ),
+    );
+    merged.items = merged.items.map((item) => {
+      if (!isRecord(item) || (item.durationMs !== null && item.durationMs !== undefined)) {
+        return item;
+      }
+      const live = typeof item.id === "string" ? previousItems.get(item.id) : undefined;
+      if (live && typeof live.durationMs === "number") {
+        return { ...item, durationMs: live.durationMs };
+      }
+      return item;
+    });
+  }
+  return merged;
+}
+
 export function defaultMappingStoreDirectory(environment: NodeJS.ProcessEnv): string {
   const dataDirectory = environment.CODEXHOST_DATA_DIR;
   return path.join(
@@ -406,6 +446,7 @@ export class ExternalThreadRepository {
   async alignSnapshot(
     record: StoredThreadRecordV1,
     snapshot: HostThreadSnapshot,
+    previousTurns: readonly JsonObject[] = [],
   ): Promise<AlignedExternalSnapshot> {
     const nativeSessionRef = record.nativeSessionRef;
     if (!nativeSessionRef || record.state !== "ready") {
@@ -460,7 +501,10 @@ export class ExternalThreadRepository {
     return {
       record: nextRecord,
       turns: aligned.map(({ mapping, snapshot: turn }) =>
-        projectHistoricalTurn({ turnId: mapping.hostTurnId, cwd: record.cwd, snapshot: turn }),
+        preserveProjectedTurnTiming(
+          projectHistoricalTurn({ turnId: mapping.hostTurnId, cwd: record.cwd, snapshot: turn }),
+          previousTurns,
+        ),
       ),
     };
   }

@@ -371,7 +371,11 @@ export class ExternalThreadRuntime {
     const snapshot = await thread.session.readSnapshot();
     if (!snapshot.ok) return mapExternalThreadHarnessError(snapshot.error, "read");
     try {
-      const aligned = await this.#repository.alignSnapshot(thread.record, snapshot.value);
+      const aligned = await this.#repository.alignSnapshot(
+        thread.record,
+        snapshot.value,
+        thread.turns,
+      );
       thread.record = aligned.record;
       thread.turns = aligned.turns;
       thread.historyHydrated = true;

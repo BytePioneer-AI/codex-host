@@ -9,10 +9,27 @@ import { PassThrough } from "node:stream";
 import { describe, expect, it, vi } from "vitest";
 import type {
   HarnessAdapter,
+  HarnessOutput,
   HarnessResult,
+  HarnessSession,
   HarnessSessionState,
+  HostCommand,
+  HostEvent,
   HostThreadSnapshot,
+  InteractionRespondAccepted,
+  InteractionRespondCommand,
+  ModelSelectCommand,
+  ModelSelectCompleted,
+  PermissionModeSelectCommand,
+  PermissionModeSelectCompleted,
+  ThinkingSelectCommand,
+  ThinkingSelectCompleted,
+  TurnCancelAccepted,
+  TurnCancelCommand,
+  TurnStartAccepted,
+  TurnStartCommand,
 } from "@codexhost/harness-adapter";
+import { HarnessOutputChannel } from "@codexhost/harness-adapter";
 import { FakeHarnessAdapter, FakeHarnessSession } from "@codexhost/harness-adapter/testing";
 import { MappingStore } from "@codexhost/mapping-store";
 import {
@@ -35,7 +52,10 @@ import {
   hostItemIdSchema,
   hostThreadIdSchema,
   hostTurnIdSchema,
+  nativeSessionRefSchema,
   type DeepSeekModernSessionCandidate,
+  type HarnessId,
+  type HarnessSessionCapabilities,
 } from "@codexhost/shared-contracts";
 
 import type {
@@ -257,6 +277,128 @@ class ModernSessionImportAdapter extends FakeHarnessAdapter {
           };
     },
   };
+}
+
+/**
+ * A Session whose event stream the test scripts directly, so Host recovery can
+ * be exercised against protocol sequences no well-behaved Adapter would emit.
+ */
+class ScriptedHarnessSession implements HarnessSession {
+  readonly harnessId: HarnessId;
+  readonly capabilities: HarnessSessionCapabilities = {
+    configuration: {
+      selectModel: false,
+      selectThinkingOption: false,
+      selectPermissionMode: false,
+      permissionModeScope: "live",
+    },
+    history: { fork: false, forkAcrossCwd: false, rollbackLastTurn: false },
+  };
+  readonly initialState: HarnessSessionState;
+  readonly initialUsage = null;
+  readonly outputs: AsyncIterable<HarnessOutput>;
+  readonly turnStarts: TurnStartCommand[] = [];
+  readonly #channel = new HarnessOutputChannel<HarnessOutput>();
+  #closed = false;
+
+  constructor(harnessId: HarnessId, nativeSessionId: string) {
+    this.harnessId = harnessId;
+    this.initialState = {
+      nativeRef: nativeSessionRefSchema.parse({ harnessId, nativeSessionId, formatVersion: 1 }),
+    };
+    this.outputs = this.#channel.outputs;
+  }
+
+  get nativeSessionId(): string {
+    return this.initialState.nativeRef?.nativeSessionId ?? "";
+  }
+
+  emit(event: HostEvent): void {
+    if (this.#closed) throw new Error("Scripted Harness Session is closed");
+    this.#channel.emit({ kind: "event", event });
+  }
+
+  async readSnapshot(): Promise<HarnessResult<HostThreadSnapshot>> {
+    return { ok: true, value: { turns: [] } };
+  }
+
+  execute(command: TurnStartCommand): Promise<HarnessResult<TurnStartAccepted>>;
+  execute(command: TurnCancelCommand): Promise<HarnessResult<TurnCancelAccepted>>;
+  execute(command: InteractionRespondCommand): Promise<HarnessResult<InteractionRespondAccepted>>;
+  execute(command: ModelSelectCommand): Promise<HarnessResult<ModelSelectCompleted>>;
+  execute(command: ThinkingSelectCommand): Promise<HarnessResult<ThinkingSelectCompleted>>;
+  execute(
+    command: PermissionModeSelectCommand,
+  ): Promise<HarnessResult<PermissionModeSelectCompleted>>;
+  async execute(
+    command: HostCommand,
+  ): Promise<
+    HarnessResult<
+      | TurnStartAccepted
+      | TurnCancelAccepted
+      | InteractionRespondAccepted
+      | ModelSelectCompleted
+      | ThinkingSelectCompleted
+      | PermissionModeSelectCompleted
+    >
+  > {
+    if (this.#closed) {
+      return {
+        ok: false,
+        error: {
+          code: "invalidState",
+          message: "Scripted Harness Session is closed",
+          retryable: false,
+        },
+      };
+    }
+    if (command.type === "turn.start") {
+      this.turnStarts.push(command);
+      return { ok: true, value: { turnId: command.turnId } };
+    }
+    if (command.type === "turn.cancel") {
+      return { ok: true, value: { cancellationRequested: true } };
+    }
+    return {
+      ok: false,
+      error: {
+        code: "unsupported",
+        message: `Scripted Session cannot execute '${command.type}'`,
+        retryable: false,
+      },
+    };
+  }
+
+  async close(): Promise<void> {
+    this.#closed = true;
+    this.#channel.end();
+  }
+}
+
+class ScriptedSessionAdapter extends FakeHarnessAdapter {
+  readonly scriptedSessions: ScriptedHarnessSession[] = [];
+
+  override async open(): Promise<HarnessResult<HarnessSession>> {
+    const session = new ScriptedHarnessSession(
+      this.harnessId,
+      `scripted-session-${this.scriptedSessions.length + 1}`,
+    );
+    this.scriptedSessions.push(session);
+    return { ok: true, value: session };
+  }
+}
+
+class ImageCapableAdapter extends FakeHarnessAdapter {
+  override async open(
+    input: Parameters<FakeHarnessAdapter["open"]>[0],
+  ): Promise<HarnessResult<HarnessSession>> {
+    const opened = await super.open(input);
+    if (opened.ok) {
+      const session = opened.value as { capabilities: HarnessSessionCapabilities };
+      session.capabilities = { ...session.capabilities, input: { image: true } };
+    }
+    return opened;
+  }
 }
 
 function createFixture(
@@ -841,6 +983,136 @@ describe("AppServerHost HarnessAdapter projection", () => {
       nativeSubagentId: "native-agent-1",
       cwd: "/synthetic",
     });
+    await stopFixture(fixture);
+  });
+
+  it("refreshes an open Subagent Thread with per-item native timing and subagent inspection", async () => {
+    const base = new FakeHarnessAdapter(harnessIdSchema.parse("pi"));
+    let subagentPhase: "started" | "working" = "started";
+    const turnStartedAtMs = 1_750_000_000_000;
+    const turnCompletedAtMs = turnStartedAtMs + 60_000;
+    const adapter = Object.assign(base, {
+      subagents: {
+        readSnapshot: vi.fn(async (input: { parent: { nativeSessionId: string } }) => {
+          const subagentSnapshot: HostThreadSnapshot = {
+            turns: [
+              {
+                nativeTurnRef: {
+                  harnessId: harnessIdSchema.parse("pi"),
+                  nativeSessionId: input.parent.nativeSessionId,
+                  nativeTurnKey: "native-subagent-turn",
+                  formatVersion: 1,
+                },
+                input: subagentPhase === "started" ? [{ type: "text", text: "Analyze files" }] : [],
+                items:
+                  subagentPhase === "started"
+                    ? []
+                    : [
+                        {
+                          item: {
+                            type: "commandExecution",
+                            itemId: hostItemIdSchema.parse("subagent-command"),
+                            command: "pwd",
+                            output: "/synthetic",
+                            exitCode: 0,
+                            durationMs: 4_200,
+                          },
+                          outcome: { status: "succeeded" },
+                        },
+                      ],
+                outcome: { status: "unknown", reason: "Synthetic history" },
+                ...(subagentPhase === "working"
+                  ? { startedAtMs: turnStartedAtMs, completedAtMs: turnCompletedAtMs }
+                  : {}),
+              },
+            ],
+          };
+          return { ok: true as const, value: subagentSnapshot };
+        }),
+      },
+    });
+    const fixture = createFixture({
+      externalAdapters: new Map([["pi", adapter]]) as ReadonlyMap<
+        ExternalHarnessId,
+        FakeHarnessAdapter
+      >,
+    });
+    const threadId = await startPiThread(fixture);
+    const turnId = await startPiTurn(fixture, threadId);
+    const session = adapter.sessions[0];
+    if (!session) throw new Error("Fake Session was not opened");
+    await fixture.collector.waitFor((message) => turnEvent(message, "turn/started", turnId));
+    const childStartedPromise = fixture.collector.waitFor(
+      (message) =>
+        method(message, "thread/started") &&
+        (messageParams(message).thread as JsonObject | undefined)?.parentThreadId === threadId,
+    );
+    const delegationItemId = session.startSubagentDelegation({
+      subagentId: "agent-call",
+      nativeSubagentId: "native-agent-1",
+      description: "Analyze files",
+      background: false,
+      status: "running",
+    });
+    const childStarted = await childStartedPromise;
+    const childThreadId = (messageParams(childStarted).thread as JsonObject).id;
+    if (typeof childThreadId !== "string") throw new Error("Child Thread has no ID");
+
+    writeRequest(fixture.desktopInput, {
+      id: 98,
+      method: "thread/turns/list",
+      params: { threadId: childThreadId, limit: 20, itemsView: "full" },
+    });
+    await fixture.collector.waitFor((message) => requestId(message, 98));
+
+    writeRequest(fixture.desktopInput, {
+      id: 97,
+      method: "codexhost/thread/inspect",
+      params: { threadId: childThreadId },
+    });
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 97)),
+    ).resolves.toMatchObject({
+      result: { owner: "external", harnessId: "pi", subagent: true, locked: true },
+    });
+    writeRequest(fixture.desktopInput, {
+      id: 96,
+      method: "codexhost/thread/inspect",
+      params: { threadId },
+    });
+    const parentInspection = await fixture.collector.waitFor((message) => requestId(message, 96));
+    expect(parentInspection).toMatchObject({ result: { owner: "external" } });
+    expect((parentInspection.result as JsonObject).subagent).toBeUndefined();
+
+    subagentPhase = "working";
+    session.emitSubagentTranscriptChanged("native-agent-1");
+
+    await expect(
+      fixture.collector.waitFor(
+        (message) =>
+          method(message, "item/started") &&
+          messageParams(message).threadId === childThreadId &&
+          (messageParams(message).item as JsonObject | undefined)?.id === "subagent-command",
+      ),
+    ).resolves.toMatchObject({
+      emittedAtMs: turnStartedAtMs,
+      params: { turnId: expect.any(String), startedAtMs: turnStartedAtMs },
+    });
+    await expect(
+      fixture.collector.waitFor(
+        (message) =>
+          method(message, "item/completed") &&
+          messageParams(message).threadId === childThreadId &&
+          (messageParams(message).item as JsonObject | undefined)?.id === "subagent-command",
+      ),
+    ).resolves.toMatchObject({
+      emittedAtMs: turnStartedAtMs + 4_200,
+      params: { turnId: expect.any(String), completedAtMs: turnStartedAtMs + 4_200 },
+    });
+
+    session.completeItem(delegationItemId, { status: "succeeded" });
+    session.succeedTurn();
+    await fixture.collector.waitFor((message) => turnEvent(message, "turn/completed", turnId));
     await stopFixture(fixture);
   });
 
@@ -3641,6 +3913,324 @@ describe("AppServerHost HarnessAdapter projection", () => {
     await stopFixture(fixture);
   });
 
+  it("projects buffered autonomous Turn timing from native start and completion times", async () => {
+    const adapter = new ScriptedSessionAdapter(harnessIdSchema.parse("pi"));
+    const fixture = createFixture({ externalAdapters: new Map([["pi", adapter]]) });
+    await startPiThread(fixture);
+    const session = adapter.scriptedSessions[0];
+    if (!session) throw new Error("Scripted Session was not opened");
+
+    const turnId = hostTurnIdSchema.parse("autonomous-timed-turn");
+    const startedAtMs = Date.now() - 45_000;
+    const completedAtMs = startedAtMs + 30_000;
+    session.emit({
+      type: "turn.autonomous.started",
+      turnId,
+      input: [{ type: "text", text: "buffered continuation" }],
+      startedAtMs,
+    });
+    session.emit({ type: "turn.started", turnId });
+    await expect(
+      fixture.collector.waitFor((message) => turnEvent(message, "turn/started", turnId)),
+    ).resolves.toMatchObject({
+      emittedAtMs: startedAtMs,
+      params: { turn: { id: turnId, startedAt: Math.floor(startedAtMs / 1000) } },
+    });
+
+    const item = {
+      type: "agentMessage" as const,
+      itemId: hostItemIdSchema.parse("autonomous-timed-item"),
+      text: "",
+    };
+    session.emit({ type: "item.started", turnId, item });
+    session.emit({
+      type: "item.updated",
+      turnId,
+      itemId: item.itemId,
+      update: { type: "text.append", text: "replayed answer" },
+    });
+    session.emit({
+      type: "item.completed",
+      turnId,
+      snapshot: { item: { ...item, text: "replayed answer" }, outcome: { status: "succeeded" } },
+    });
+    session.emit({
+      type: "turn.completed",
+      turnId,
+      nativeTurnRef: {
+        harnessId: harnessIdSchema.parse("pi"),
+        nativeSessionId: session.nativeSessionId,
+        nativeTurnKey: "autonomous-native-turn",
+        formatVersion: 1,
+      },
+      outcome: { status: "succeeded" },
+      completedAtMs,
+    });
+    await expect(
+      fixture.collector.waitFor((message) => turnEvent(message, "turn/completed", turnId)),
+    ).resolves.toMatchObject({
+      params: {
+        turn: {
+          id: turnId,
+          status: "completed",
+          startedAt: Math.floor(startedAtMs / 1000),
+          completedAt: Math.floor(completedAtMs / 1000),
+          durationMs: completedAtMs - startedAtMs,
+        },
+      },
+    });
+    await stopFixture(fixture);
+  });
+
+  it("fails the active Turn and keeps the Thread usable after a projection invariant violation", async () => {
+    const adapter = new ScriptedSessionAdapter(harnessIdSchema.parse("pi"));
+    const fixture = createFixture({ externalAdapters: new Map([["pi", adapter]]) });
+    const threadId = await startPiThread(fixture);
+    const session = adapter.scriptedSessions[0];
+    if (!session) throw new Error("Scripted Session was not opened");
+
+    writeRequest(fixture.desktopInput, {
+      id: 2,
+      method: "turn/start",
+      params: { threadId, input: [{ type: "text", text: "wedge" }] },
+    });
+    const response = await fixture.collector.waitFor((message) => requestId(message, 2));
+    expect(response).not.toHaveProperty("error");
+    const wedgedTurnId = ((response.result as JsonObject).turn as JsonObject).id;
+    if (typeof wedgedTurnId !== "string") throw new Error("Turn response has no ID");
+    const wedgedTurn = hostTurnIdSchema.parse(wedgedTurnId);
+
+    const item = {
+      type: "agentMessage" as const,
+      itemId: hostItemIdSchema.parse("wedge-item"),
+      text: "",
+    };
+    session.emit({ type: "turn.started", turnId: wedgedTurn });
+    session.emit({ type: "item.started", turnId: wedgedTurn, item });
+    // A duplicate Item start violates the projector invariant and used to exit
+    // the output drain loop, wedging the Thread with a permanently active Turn.
+    session.emit({ type: "item.started", turnId: wedgedTurn, item });
+
+    await expect(
+      fixture.collector.waitFor(
+        (message) => method(message, "error") && messageParams(message).turnId === wedgedTurnId,
+      ),
+    ).resolves.toMatchObject({
+      params: {
+        error: {
+          message: expect.stringContaining("started more than once"),
+          codexErrorInfo: "other",
+        },
+        willRetry: false,
+        threadId,
+        turnId: wedgedTurnId,
+      },
+    });
+    await expect(
+      fixture.collector.waitFor((message) => turnEvent(message, "turn/completed", wedgedTurnId)),
+    ).resolves.toMatchObject({
+      params: { turn: { id: wedgedTurnId, status: "failed" } },
+    });
+    await fixture.collector.waitFor((message) => threadStatus(message, threadId, "idle"));
+
+    writeRequest(fixture.desktopInput, {
+      id: 3,
+      method: "turn/start",
+      params: { threadId, input: [{ type: "text", text: "recovered" }] },
+    });
+    const second = await fixture.collector.waitFor((message) => requestId(message, 3));
+    expect(second).not.toHaveProperty("error");
+    const secondTurnId = ((second.result as JsonObject).turn as JsonObject).id;
+    if (typeof secondTurnId !== "string") throw new Error("Second Turn response has no ID");
+    const secondTurn = hostTurnIdSchema.parse(secondTurnId);
+    const secondItem = {
+      type: "agentMessage" as const,
+      itemId: hostItemIdSchema.parse("recovered-item"),
+      text: "",
+    };
+    session.emit({ type: "turn.started", turnId: secondTurn });
+    session.emit({ type: "item.started", turnId: secondTurn, item: secondItem });
+    session.emit({
+      type: "item.updated",
+      turnId: secondTurn,
+      itemId: secondItem.itemId,
+      update: { type: "text.append", text: "answer" },
+    });
+    session.emit({
+      type: "item.completed",
+      turnId: secondTurn,
+      snapshot: { item: { ...secondItem, text: "answer" }, outcome: { status: "succeeded" } },
+    });
+    session.emit({
+      type: "turn.completed",
+      turnId: secondTurn,
+      nativeTurnRef: {
+        harnessId: harnessIdSchema.parse("pi"),
+        nativeSessionId: session.nativeSessionId,
+        nativeTurnKey: "recovered-native-turn",
+        formatVersion: 1,
+      },
+      outcome: { status: "succeeded" },
+    });
+    await expect(
+      fixture.collector.waitFor((message) => turnEvent(message, "turn/completed", secondTurnId)),
+    ).resolves.toMatchObject({ params: { turn: { status: "completed" } } });
+    await stopFixture(fixture);
+  });
+
+  it("passes structured image input to image-capable Sessions and echoes it in the Turn", async () => {
+    const adapter = new ImageCapableAdapter(harnessIdSchema.parse("pi"));
+    const fixture = createFixture({ externalAdapters: new Map([["pi", adapter]]) });
+    const threadId = await startPiThread(fixture);
+    const session = adapter.sessions[0];
+    if (!session) throw new Error("Fake Pi Session was not opened");
+
+    writeRequest(fixture.desktopInput, {
+      id: 2,
+      method: "turn/start",
+      params: {
+        threadId,
+        input: [
+          { type: "text", text: "describe" },
+          { type: "image", url: "data:image/png;base64,aGVsbG8=" },
+        ],
+      },
+    });
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 2)),
+    ).resolves.toMatchObject({
+      result: {
+        turn: {
+          status: "inProgress",
+          items: [
+            {
+              type: "userMessage",
+              content: [
+                { type: "text", text: "describe", text_elements: [] },
+                { type: "inputImage", imageUrl: "data:image/png;base64,aGVsbG8=" },
+              ],
+            },
+          ],
+        },
+      },
+    });
+
+    session.succeedTurn();
+    await fixture.collector.waitFor((message) => method(message, "turn/completed"));
+    expect(session.persistedSnapshot().turns[0]?.input).toEqual([
+      { type: "text", text: "describe" },
+      { type: "image", mimeType: "image/png", base64Data: "aGVsbG8=" },
+    ]);
+    await stopFixture(fixture);
+  });
+
+  it("accepts an image-only Turn and degrades localImage input to a staged file reference", async () => {
+    const fixture = createFixture();
+    const threadId = await startPiThread(fixture);
+    const session = fixture.adapter.sessions[0];
+    if (!session) throw new Error("Fake Pi Session was not opened");
+    const sourceDirectory = mkdtempSync(path.join(tmpdir(), "codexhost-local-image-"));
+    const sourcePath = path.join(sourceDirectory, "screenshot.PNG");
+    const bytes = Buffer.from("synthetic-png-bytes");
+    writeFileSync(sourcePath, bytes);
+    try {
+      writeRequest(fixture.desktopInput, {
+        id: 2,
+        method: "turn/start",
+        params: { threadId, input: [{ type: "localImage", path: sourcePath }] },
+      });
+      const response = await fixture.collector.waitFor((message) => requestId(message, 2));
+      expect(response).not.toHaveProperty("error");
+      const turn = (response.result as JsonObject).turn as JsonObject;
+      expect(turn).toMatchObject({
+        status: "inProgress",
+        items: [
+          {
+            type: "userMessage",
+            content: [
+              {
+                type: "inputImage",
+                imageUrl: `data:image/png;base64,${bytes.toString("base64")}`,
+              },
+            ],
+          },
+        ],
+      });
+
+      session.succeedTurn();
+      const turnId = turn.id;
+      if (typeof turnId !== "string") throw new Error("Turn response has no ID");
+      await fixture.collector.waitFor((message) => turnEvent(message, "turn/completed", turnId));
+      const degraded = session.persistedSnapshot().turns[0]?.input;
+      expect(degraded).toHaveLength(1);
+      const part = degraded?.[0];
+      if (part?.type !== "text") throw new Error("Degraded Session input is not text");
+      const match = /^\[Image attached: (.+)\]$/u.exec(part.text);
+      const stagedPath = match?.[1];
+      if (!stagedPath) throw new Error("Degraded text has no staged image path");
+      expect(path.basename(stagedPath)).toMatch(/^codexhost-.+\.png$/u);
+      expect(readFileSync(stagedPath)).toEqual(bytes);
+      rmSync(stagedPath, { force: true });
+    } finally {
+      rmSync(sourceDirectory, { recursive: true, force: true });
+      await stopFixture(fixture);
+    }
+  });
+
+  it("rejects turn/start only when neither text nor image input is present", async () => {
+    const fixture = createFixture();
+    const threadId = await startPiThread(fixture);
+    const session = fixture.adapter.sessions[0];
+    if (!session) throw new Error("Fake Pi Session was not opened");
+
+    writeRequest(fixture.desktopInput, {
+      id: 2,
+      method: "turn/start",
+      params: { threadId, input: [] },
+    });
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 2)),
+    ).resolves.toMatchObject({
+      error: { code: -32602, message: "turn/start must contain text or image input" },
+    });
+
+    writeRequest(fixture.desktopInput, {
+      id: 3,
+      method: "turn/start",
+      params: { threadId, input: [{ type: "text", text: "" }] },
+    });
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 3)),
+    ).resolves.toMatchObject({ error: { code: -32602 } });
+
+    writeRequest(fixture.desktopInput, {
+      id: 4,
+      method: "turn/start",
+      params: {
+        threadId,
+        input: [
+          { type: "text", text: "" },
+          { type: "image", url: "data:image/webp;base64,AA==" },
+        ],
+      },
+    });
+    const accepted = await fixture.collector.waitFor((message) => requestId(message, 4));
+    expect(accepted).not.toHaveProperty("error");
+
+    session.succeedTurn();
+    await fixture.collector.waitFor((message) => method(message, "turn/completed"));
+    const degraded = session.persistedSnapshot().turns[0]?.input;
+    expect(degraded).toHaveLength(1);
+    const part = degraded?.[0];
+    if (part?.type !== "text") throw new Error("Degraded Session input is not text");
+    const match = /^\[Image attached: (.+)\]$/u.exec(part.text);
+    const stagedPath = match?.[1];
+    if (!stagedPath) throw new Error("Degraded text has no staged image path");
+    expect(stagedPath).toMatch(/\.webp$/u);
+    rmSync(stagedPath, { force: true });
+    await stopFixture(fixture);
+  });
+
   it("reads static Harness command catalogs without inspection or opening a Session", async () => {
     const fixture = createFixture();
     const catalog = {
@@ -4002,6 +4592,10 @@ describe("AppServerHost HarnessAdapter projection", () => {
       params: {
         turn: {
           items: [
+            {
+              type: "userMessage",
+              content: [{ type: "text", text: "reasoning", text_elements: [] }],
+            },
             {
               id: `${reasoningId}-summary`,
               type: "reasoning",
@@ -4710,7 +5304,7 @@ describe("AppServerHost HarnessAdapter projection", () => {
     await stopFixture(fixture);
   });
 
-  it("rejects a stale paginated Revert boundary without changing history", async () => {
+  it("treats an unmapped paginated Revert boundary as a tail no-op success", async () => {
     const adapter = rollbackCapableAdapter();
     const fixture = createFixture({ externalAdapters: new Map([["pi", adapter]]) });
     const threadId = await startExternalThread(fixture, "codexhost/pi-native", 1, {
@@ -4722,15 +5316,94 @@ describe("AppServerHost HarnessAdapter projection", () => {
     writeRequest(fixture.desktopInput, {
       id: 10,
       method: "thread/revert",
-      params: { threadId, beforeTurnId: "stale-turn" },
+      params: { threadId, beforeTurnId: "phantom-tail-turn" },
     });
     await expect(
       fixture.collector.waitFor((message) => requestId(message, 10)),
-    ).resolves.toMatchObject({ error: { code: -32080 } });
+    ).resolves.toMatchObject({ result: { thread: { id: threadId, turns: [] } } });
+    await expect(
+      fixture.collector.waitFor((message) => method(message, "thread/reverted")),
+    ).resolves.toEqual({ method: "thread/reverted", params: { threadId } });
     await expect(
       fixture.mappingStore.getThread(hostThreadIdSchema.parse(threadId)),
     ).resolves.toEqual(before);
     expect(adapter.sessions).toHaveLength(1);
+    await stopFixture(fixture);
+  });
+
+  it("treats a paginated Revert of a zombie Thread without mappings as a no-op success", async () => {
+    const adapter = rollbackCapableAdapter();
+    const fixture = createFixture({ externalAdapters: new Map([["pi", adapter]]) });
+    const threadId = await startExternalThread(fixture, "codexhost/pi-native", 1, {
+      historyMode: "paginated",
+    });
+    const before = await fixture.mappingStore.getThread(hostThreadIdSchema.parse(threadId));
+    expect(before?.turnMappings).toHaveLength(0);
+
+    writeRequest(fixture.desktopInput, {
+      id: 10,
+      method: "thread/revert",
+      params: { threadId, beforeTurnId: "failed-image-message" },
+    });
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 10)),
+    ).resolves.toMatchObject({ result: { thread: { id: threadId, turns: [] } } });
+    await expect(
+      fixture.collector.waitFor((message) => method(message, "thread/reverted")),
+    ).resolves.toEqual({ method: "thread/reverted", params: { threadId } });
+    await expect(
+      fixture.mappingStore.getThread(hostThreadIdSchema.parse(threadId)),
+    ).resolves.toEqual(before);
+    expect(adapter.sessions).toHaveLength(1);
+    await stopFixture(fixture);
+  });
+
+  it("computes the paginated Revert depth from the boundary index", async () => {
+    const adapter = rollbackCapableAdapter();
+    const fixture = createFixture({ externalAdapters: new Map([["pi", adapter]]) });
+    const sourceThreadId = await startExternalThread(fixture, "codexhost/pi-native", 1, {
+      historyMode: "paginated",
+    });
+    await completePiTurn(fixture, sourceThreadId, 2);
+    await completePiTurn(fixture, sourceThreadId, 3);
+    await completePiTurn(fixture, sourceThreadId, 4);
+
+    writeRequest(fixture.desktopInput, {
+      id: 10,
+      method: "thread/fork",
+      params: { threadId: sourceThreadId },
+    });
+    const forkResponse = await fixture.collector.waitFor((message) => requestId(message, 10));
+    const derived = (forkResponse.result as JsonObject).thread as JsonObject;
+    const derivedId = derived.id;
+    if (typeof derivedId !== "string") throw new Error("Fork response has no derived Thread ID");
+    const derivedTurnIds = (derived.turns as JsonObject[]).map((turn) => turn.id);
+    expect(derivedTurnIds).toHaveLength(3);
+    const firstDerivedTurnId = derivedTurnIds[0];
+    const middleDerivedTurnId = derivedTurnIds[1];
+    if (typeof firstDerivedTurnId !== "string" || typeof middleDerivedTurnId !== "string") {
+      throw new Error("Derived Fork Turn IDs are missing");
+    }
+
+    writeRequest(fixture.desktopInput, {
+      id: 11,
+      method: "thread/revert",
+      params: { threadId: derivedId, beforeTurnId: middleDerivedTurnId },
+    });
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 11)),
+    ).resolves.toMatchObject({ result: { thread: { id: derivedId, turns: [] } } });
+    await expect(
+      fixture.collector.waitFor(
+        (message) =>
+          method(message, "thread/reverted") && messageParams(message).threadId === derivedId,
+      ),
+    ).resolves.toEqual({ method: "thread/reverted", params: { threadId: derivedId } });
+    await expect(
+      fixture.mappingStore.getThread(hostThreadIdSchema.parse(derivedId)),
+    ).resolves.toMatchObject({
+      turnMappings: [{ hostTurnId: firstDerivedTurnId }],
+    });
     await stopFixture(fixture);
   });
 
@@ -5846,7 +6519,7 @@ describe("AppServerHost HarnessAdapter projection", () => {
       params: {
         turn: {
           status: "completed",
-          items: [{ type: "fileChange" }, { type: "agentMessage" }],
+          items: [{ type: "userMessage" }, { type: "fileChange" }, { type: "agentMessage" }],
         },
       },
     });

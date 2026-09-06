@@ -4,8 +4,10 @@ import path from "node:path";
 
 import type { HostThreadSnapshot } from "@codexhost/harness-adapter";
 import { MappingStore, type StoredTurnMappingV1 } from "@codexhost/mapping-store";
+import type { JsonObject } from "@codexhost/protocol-core";
 import {
   harnessIdSchema,
+  hostItemIdSchema,
   hostThreadIdSchema,
   hostTurnIdSchema,
   nativeSessionRefSchema,
@@ -228,6 +230,95 @@ describe("ExternalThreadRepository", () => {
     expect(aligned.turns.map((turn) => turn.id)).toEqual(
       aligned.record.turnMappings.map(({ hostTurnId }) => hostTurnId),
     );
+    await repository.close();
+  });
+
+  it("keeps live Turn timing when rehydration projects null historical timing", async () => {
+    const directory = await temporaryStoreDirectory();
+    const store = new MappingStore({ directory });
+    const repository = new ExternalThreadRepository(store);
+    await repository.initialize();
+    await store.createProvisional({
+      hostThreadId,
+      createRequestId: "create-rehydration",
+      harnessId,
+      cwd: "/synthetic",
+      title: "Claude Thread",
+      transportModelId: "codexhost/claude-code-native",
+      ephemeral: false,
+      historyMode: "legacy",
+    });
+    const original = await store.commitReady({
+      hostThreadId,
+      nativeSessionRef,
+      turnMappings: [mapping("host-a", "native-a")],
+    });
+    const liveTurn: JsonObject = {
+      id: "host-a",
+      status: "completed",
+      items: [
+        { id: "live-item", type: "commandExecution", durationMs: 1_234 },
+        { id: "host-a-user", type: "userMessage" },
+      ],
+      error: null,
+      startedAt: 1_700_000_000,
+      completedAt: 1_700_000_010,
+      durationMs: 10_000,
+      itemsView: "full",
+    };
+    const snapshot: HostThreadSnapshot = {
+      turns: [
+        {
+          ...snapshotTurn("native-a"),
+          items: [
+            {
+              item: {
+                type: "commandExecution",
+                itemId: hostItemIdSchema.parse("live-item"),
+                command: "pwd",
+                output: "/synthetic",
+                exitCode: 0,
+              },
+              outcome: { status: "succeeded" },
+            },
+          ],
+        },
+      ],
+    };
+
+    const aligned = await repository.alignSnapshot(original, snapshot, [liveTurn]);
+    expect(aligned.turns[0]).toMatchObject({
+      id: "host-a",
+      startedAt: 1_700_000_000,
+      completedAt: 1_700_000_010,
+      durationMs: 10_000,
+    });
+    expect(aligned.turns[0]?.items).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: "live-item", type: "commandExecution", durationMs: 1_234 }),
+      ]),
+    );
+
+    // A snapshot that carries its own native timing wins over the live values.
+    const timed = await repository.alignSnapshot(
+      original,
+      {
+        turns: [
+          {
+            ...snapshotTurn("native-a"),
+            startedAtMs: 1_700_000_100_000,
+            completedAtMs: 1_700_000_130_000,
+          },
+        ],
+      },
+      [liveTurn],
+    );
+    expect(timed.turns[0]).toMatchObject({
+      id: "host-a",
+      startedAt: 1_700_000_100,
+      completedAt: 1_700_000_130,
+      durationMs: 30_000,
+    });
     await repository.close();
   });
 });

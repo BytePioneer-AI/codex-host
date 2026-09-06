@@ -1,8 +1,14 @@
 import { parseHostUsage, type HostUsage } from "@codexhost/harness-adapter";
-import { observeCodexRateLimits, type JsonObject } from "@codexhost/protocol-core";
+import {
+  observeCodexRateLimitResetCredits,
+  observeCodexRateLimits,
+  type CodexRateLimitResetCredits,
+  type JsonObject,
+} from "@codexhost/protocol-core";
 
 interface AccountSnapshot {
   usage: HostUsage | null;
+  resetCredits: CodexRateLimitResetCredits | null;
   freshUntil: number;
   refresh?: Promise<void>;
 }
@@ -15,6 +21,10 @@ export class AccountRateLimits {
     return this.#accounts.get(accountId)?.usage ?? null;
   }
 
+  getResetCredits(accountId: string): CodexRateLimitResetCredits | null {
+    return this.#accounts.get(accountId)?.resetCredits ?? null;
+  }
+
   reset(accountId: string): void {
     this.#accounts.delete(accountId);
   }
@@ -22,7 +32,7 @@ export class AccountRateLimits {
   #state(accountId: string): AccountSnapshot {
     let state = this.#accounts.get(accountId);
     if (!state) {
-      state = { usage: null, freshUntil: 0 };
+      state = { usage: null, resetCredits: null, freshUntil: 0 };
       this.#accounts.set(accountId, state);
     }
     return state;
@@ -47,6 +57,7 @@ export class AccountRateLimits {
       .then((response) => {
         if (this.#accounts.get(accountId) !== state) return;
         const usage = observeCodexRateLimits(response);
+        state.resetCredits = observeCodexRateLimitResetCredits(response);
         if (!usage) return;
         state.usage = parseHostUsage(usage);
         state.freshUntil = Date.now() + 15_000;

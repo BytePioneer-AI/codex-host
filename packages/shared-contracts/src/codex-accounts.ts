@@ -85,3 +85,34 @@ export const codexAccountUsageResultSchema = z
   })
   .strict();
 export type CodexAccountUsageResult = z.infer<typeof codexAccountUsageResultSchema>;
+
+export const codexAccountResetCreditConsumeParamsSchema = z
+  .object({
+    accountId: accountIdSchema,
+    idempotencyKey: z.string().uuid().optional(),
+  })
+  .strict();
+export type CodexAccountResetCreditConsumeParams = z.infer<
+  typeof codexAccountResetCreditConsumeParamsSchema
+>;
+
+export const codexAccountResetCreditConsumeOutcomeSchema = z.enum([
+  "reset",
+  "nothingToReset",
+  "noCredit",
+  "alreadyRedeemed",
+]);
+export type CodexAccountResetCreditConsumeOutcome = z.infer<
+  typeof codexAccountResetCreditConsumeOutcomeSchema
+>;
+
+export const codexAccountResetCreditConsumeResultSchema = z
+  .object({
+    accountId: accountIdSchema,
+    outcome: codexAccountResetCreditConsumeOutcomeSchema,
+    accountCredits: accountCreditsSnapshotSchema.optional(),
+  })
+  .strict();
+export type CodexAccountResetCreditConsumeResult = z.infer<
+  typeof codexAccountResetCreditConsumeResultSchema
+>;

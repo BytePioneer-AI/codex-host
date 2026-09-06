@@ -1038,6 +1038,15 @@ export function installCurrentRendererAdapter(): {
       if (!client.inspectCodexAccountUsage) throw new Error("Codex Account Usage is unavailable");
       return client.inspectCodexAccountUsage(input);
     },
+    consumeCodexAccountResetCredit: (
+      input: Parameters<NonNullable<RendererModelClient["consumeCodexAccountResetCredit"]>>[0],
+    ) => {
+      const client = currentModelClient();
+      if (!client.consumeCodexAccountResetCredit) {
+        throw new Error("Codex Account reset-credit consume is unavailable");
+      }
+      return client.consumeCodexAccountResetCredit(input);
+    },
     listCodexAccounts: () => currentModelClient().listCodexAccounts(),
     refreshCodexAccounts: () => {
       const client = currentModelClient();

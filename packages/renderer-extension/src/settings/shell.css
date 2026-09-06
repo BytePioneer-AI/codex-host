@@ -600,6 +600,72 @@ button {
   border-radius: 9999px;
 }
 
+.settings-account-usage__resets {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 2px;
+  padding-top: 10px;
+  border-top: 1px solid var(--settings-divider);
+}
+
+.settings-account-usage__resets-heading {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.settings-account-usage__resets-title {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.settings-account-usage__resets-details {
+  width: 22px;
+  height: 22px;
+  color: color-mix(in srgb, currentColor 55%, transparent);
+}
+
+.settings-account-usage__resets-details[aria-expanded="true"] {
+  color: var(--settings-text);
+  background: var(--settings-hover);
+}
+
+.settings-account-usage__resets-list {
+  margin: 6px 0 0;
+  padding: 0;
+  list-style: none;
+  color: color-mix(in srgb, currentColor 68%, transparent);
+  font-size: 11px;
+  font-weight: 400;
+}
+
+.settings-account-usage__resets-list > li + li {
+  margin-top: 3px;
+}
+
+.settings-account-usage__resets-sub {
+  color: color-mix(in srgb, currentColor 60%, transparent);
+  font-size: 11px;
+  font-weight: 400;
+}
+
+.settings-account-usage__resets-sub--warn {
+  color: #c9a227;
+}
+
+.settings-account-usage__resets-sub--hot {
+  color: #c45c4a;
+}
+
+.settings-account-usage__resets .settings-command-button {
+  flex: none;
+  min-height: 26px;
+  padding: 3px 9px;
+  font-size: 11px;
+}
+
 .settings-account-usage--loading {
   background-image: none;
 }

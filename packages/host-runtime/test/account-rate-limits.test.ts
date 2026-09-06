@@ -48,4 +48,31 @@ describe("Account quota cache", () => {
     expect(cache.get("a")?.planFiveHourUsedPercent).toBe(30);
     expect(cache.get("b")?.planFiveHourUsedPercent).toBe(80);
   });
+
+  it("keeps reset-card inventory on the same Account snapshot as quota windows", async () => {
+    const cache = new AccountRateLimits();
+    await cache.refresh("a", async () => ({
+      result: {
+        rateLimits: { primary: { usedPercent: 90, windowDurationMins: 300 } },
+        rateLimitResetCredits: {
+          availableCount: 2,
+          credits: [
+            {
+              id: "soon",
+              status: "available",
+              expiresAt: 2_400,
+            },
+          ],
+        },
+      },
+    }));
+    expect(cache.get("a")?.planFiveHourUsedPercent).toBe(90);
+    expect(cache.getResetCredits("a")).toEqual({
+      availableCount: 2,
+      nextExpiresAtUnix: 2_400,
+      expiresAtUnix: [2_400],
+    });
+    cache.reset("a");
+    expect(cache.getResetCredits("a")).toBeNull();
+  });
 });

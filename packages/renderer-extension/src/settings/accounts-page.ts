@@ -13,6 +13,8 @@ import type {
   CodexAccountSummary,
   CodexAccountUsageParams,
   CodexAccountUsageResult,
+  CodexAccountResetCreditConsumeParams,
+  CodexAccountResetCreditConsumeResult,
 } from "@codexhost/shared-contracts";
 
 import { createRendererAgentIcon } from "../renderer-agent-icon.js";
@@ -26,6 +28,9 @@ export interface RendererCodexAccountClient {
   listCodexAccounts(): Promise<CodexAccountListResult>;
   refreshCodexAccounts?(): Promise<CodexAccountListResult>;
   inspectCodexAccountUsage?(input: CodexAccountUsageParams): Promise<CodexAccountUsageResult>;
+  consumeCodexAccountResetCredit?(
+    input: CodexAccountResetCreditConsumeParams,
+  ): Promise<CodexAccountResetCreditConsumeResult>;
   createCodexAccount(input: CodexAccountCreateParams): Promise<CodexAccountMutationResult>;
   deleteCodexAccount(input: CodexAccountDeleteParams): Promise<CodexAccountDeleteResult>;
   activateCodexAccount(input: CodexAccountActivateParams): Promise<CodexAccountMutationResult>;
@@ -93,6 +98,7 @@ export function createAccountsSettingsPage(
       let loginRefreshTimer: number | undefined;
       const usageByAccountId = new Map<string, AccountUsageViewState>();
       let usageGeneration = 0;
+      let usingResetAccountId: string | null = null;
 
       const clearLoginRefresh = (): void => {
         if (loginRefreshTimer === undefined) return;
@@ -214,6 +220,12 @@ export function createAccountsSettingsPage(
             document,
             usageByAccountId.get(account.accountId),
             messages,
+            {
+              usingReset: usingResetAccountId === account.accountId,
+              ...(getClient()?.consumeCodexAccountResetCredit
+                ? { onUseReset: () => useReset(account.accountId) }
+                : {}),
+            },
           );
           if (usage) row.append(usage);
 
@@ -412,6 +424,46 @@ export function createAccountsSettingsPage(
             render();
           },
         });
+      };
+      const resetOutcomeMessage = (
+        outcome: CodexAccountResetCreditConsumeResult["outcome"],
+      ): string => {
+        if (outcome === "reset") return messages.accountResetCreditsSucceeded;
+        if (outcome === "nothingToReset") return messages.accountResetCreditsNothingToReset;
+        if (outcome === "noCredit") return messages.accountResetCreditsNoCredit;
+        return messages.accountResetCreditsAlreadyRedeemed;
+      };
+      const useReset = (accountId: string): void => {
+        const consume = getClient()?.consumeCodexAccountResetCredit;
+        if (!consume || usingResetAccountId !== null) return;
+        if (document.defaultView?.confirm?.(messages.accountResetCreditsConfirm) === false) return;
+        usingResetAccountId = accountId;
+        loginMessage = messages.accountResetCreditsUsing;
+        render();
+        void context.runLatest(
+          () => consume({ accountId, idempotencyKey: crypto.randomUUID() }),
+          {
+            success(result) {
+              usingResetAccountId = null;
+              loginMessage = resetOutcomeMessage(result.outcome);
+              if (result.accountCredits) {
+                usageByAccountId.set(accountId, {
+                  status: "ready",
+                  credits: result.accountCredits,
+                });
+              } else if (result.outcome === "reset") {
+                usageByAccountId.delete(accountId);
+                loadUsage(accounts);
+              }
+              render();
+            },
+            failure(error) {
+              usingResetAccountId = null;
+              loginMessage = errorMessage(error, messages.accountResetCreditsFailed);
+              render();
+            },
+          },
+        );
       };
       const deleteAccount = (accountId: string): void => {
         const account = accounts.find((candidate) => candidate.accountId === accountId);

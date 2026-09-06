@@ -859,18 +859,69 @@ describe("AppServerHost HarnessAdapter projection", () => {
         expect(quotaRead).toMatchObject({ method: "account/rateLimits/read", params: {} });
         writeRequest(connection.stdout as PassThrough, {
           id: requiredMessageId(quotaRead),
-          result: { rateLimits: { primary: { usedPercent, windowDurationMins: 300 } } },
+          result: {
+            rateLimits: { primary: { usedPercent, windowDurationMins: 300 } },
+            rateLimitResetCredits: {
+              availableCount: 2,
+              credits: [
+                {
+                  id: "reset-soon",
+                  resetType: "codexRateLimits",
+                  status: "available",
+                  grantedAt: 1_000,
+                  expiresAt: 2_400,
+                  title: "Full reset",
+                  description: null,
+                },
+              ],
+            },
+          },
         });
         await expect(
           fixture.collector.waitFor((message) => requestId(message, id)),
         ).resolves.toMatchObject({
           result: {
             accountId,
-            accountCredits: { usedPercent },
+            accountCredits: {
+              usedPercent,
+              resetCredits: {
+                availableCount: 2,
+                nextExpiresAt: new Date(2_400 * 1000).toISOString(),
+              },
+            },
             usage: { planFiveHourUsedPercent: usedPercent },
           },
         });
       }
+      writeRequest(fixture.desktopInput, {
+        id: 133,
+        method: "codexhost/account/rate-limit-reset/consume",
+        params: { accountId: "account-b", idempotencyKey: "2f1d4a6c-8b90-4e12-a345-6789abcdef01" },
+      });
+      const consumeRead = await readJsonLine(accountB.stdin as PassThrough);
+      expect(consumeRead).toMatchObject({
+        method: "account/rateLimitResetCredit/consume",
+        params: { idempotencyKey: "2f1d4a6c-8b90-4e12-a345-6789abcdef01" },
+      });
+      writeRequest(accountB.stdout as PassThrough, {
+        id: requiredMessageId(consumeRead),
+        result: { outcome: "reset" },
+      });
+      const refreshedQuota = await readJsonLine(accountB.stdin as PassThrough);
+      expect(refreshedQuota).toMatchObject({ method: "account/rateLimits/read", params: {} });
+      writeRequest(accountB.stdout as PassThrough, {
+        id: requiredMessageId(refreshedQuota),
+        result: { rateLimits: { primary: { usedPercent: 1, windowDurationMins: 300 } } },
+      });
+      await expect(
+        fixture.collector.waitFor((message) => requestId(message, 133)),
+      ).resolves.toMatchObject({
+        result: {
+          accountId: "account-b",
+          outcome: "reset",
+          accountCredits: { usedPercent: 1 },
+        },
+      });
       writeRequest(fixture.desktopInput, {
         id: 132,
         method: "codexhost/thread/usage/inspect",

@@ -5,6 +5,7 @@ import {
   rendererCreditsTone,
 } from "../renderer-credits-control.js";
 import { formatRendererCreditsPercent } from "../renderer-usage-control.js";
+import { createRendererSettingsIcon } from "./icons.js";
 import type { RendererSettingsMessages } from "./localization.js";
 
 export type AccountUsageViewState =
@@ -17,6 +18,8 @@ const TONE_COLOR = {
   warn: "#c9a227",
   hot: "#c45c4a",
 } as const;
+
+let resetCreditsDetailsId = 0;
 
 export function creditsPeriodLabel(
   periodType: AccountCreditsSnapshot["periodType"],
@@ -70,10 +73,16 @@ export function creditsUsedResetLine(
   return `${messages.accountCreditsUsed} · ${reset} ${messages.accountCreditsReset}`;
 }
 
+export interface AccountUsageCardOptions {
+  onUseReset?: () => void;
+  usingReset?: boolean;
+}
+
 export function renderAccountUsageCard(
   document: Document,
   state: AccountUsageViewState | undefined,
   messages: RendererSettingsMessages,
+  options: AccountUsageCardOptions = {},
 ): HTMLElement | null {
   if (!state || state.status === "empty") return null;
   if (state.status === "loading") {
@@ -92,13 +101,57 @@ export function renderAccountUsageCard(
     card.append(top, bar);
     return card;
   }
-  return renderReadyUsageCard(document, state.credits, messages);
+  return renderReadyUsageCard(document, state.credits, messages, options);
+}
+
+function creditsNeedReset(credits: AccountCreditsSnapshot): boolean {
+  if (rendererCreditsTone(credits.usedPercent) === "hot") return true;
+  return (credits.productUsage ?? []).some(
+    (product) => rendererCreditsTone(product.usagePercent) === "hot",
+  );
+}
+
+function resetExpiryTone(
+  value: string,
+  now: Date = new Date(),
+): "ok" | "warn" | "hot" | undefined {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return undefined;
+  const remainingMs = date.getTime() - now.getTime();
+  if (remainingMs <= 8 * 60 * 60 * 1000) return "hot";
+  if (remainingMs <= 24 * 60 * 60 * 1000) return "warn";
+  return undefined;
+}
+
+function resetCreditsCount(count: number, locale: RendererSettingsMessages["locale"]): string {
+  if (locale === "zh-CN") return `${count} 张`;
+  return count === 1 ? "1 available" : `${count} available`;
+}
+
+function resetCreditsExpiryLine(
+  nextExpiresAt: string,
+  messages: RendererSettingsMessages,
+): string {
+  const reset = formatAccountCreditsReset(nextExpiresAt, messages.locale);
+  return messages.locale === "zh-CN" ? `最近 ${reset}到期` : `next expires ${reset}`;
+}
+
+export function resetCreditDetailLine(
+  index: number,
+  expiresAt: string,
+  messages: RendererSettingsMessages,
+  now: Date = new Date(),
+): string {
+  return messages.accountResetCreditsCardExpiry
+    .replace("{index}", String(index))
+    .replace("{time}", formatAccountCreditsReset(expiresAt, messages.locale, now));
 }
 
 function renderReadyUsageCard(
   document: Document,
   credits: AccountCreditsSnapshot,
   messages: RendererSettingsMessages,
+  options: AccountUsageCardOptions,
 ): HTMLElement {
   const card = document.createElement("div");
   card.className = "settings-account-usage";
@@ -123,6 +176,75 @@ function renderReadyUsageCard(
         messages,
       }),
     );
+  }
+  const resetCredits = credits.resetCredits;
+  if (resetCredits) {
+    const footer = document.createElement("div");
+    footer.className = "settings-account-usage__resets";
+    const copy = document.createElement("div");
+    const heading = document.createElement("div");
+    heading.className = "settings-account-usage__resets-heading";
+    const title = document.createElement("div");
+    title.className = "settings-account-usage__resets-title";
+    title.textContent = messages.accountResetCredits;
+    heading.append(title);
+    const expiresAt = resetCredits.expiresAt ?? [];
+    let details: HTMLElement | null = null;
+    if (expiresAt.length > 0) {
+      const detailsId = `codexhost-reset-credits-${++resetCreditsDetailsId}`;
+      const toggle = document.createElement("button");
+      toggle.type = "button";
+      toggle.className = "settings-icon-button settings-account-usage__resets-details";
+      toggle.setAttribute("aria-label", messages.accountResetCreditsDetails);
+      toggle.setAttribute("aria-expanded", "false");
+      toggle.setAttribute("aria-controls", detailsId);
+      toggle.title = messages.accountResetCreditsDetails;
+      toggle.append(createRendererSettingsIcon("info", 14));
+      details = document.createElement("ul");
+      details.id = detailsId;
+      details.className = "settings-account-usage__resets-list";
+      details.hidden = true;
+      for (const [index, value] of expiresAt.entries()) {
+        const item = document.createElement("li");
+        item.textContent = resetCreditDetailLine(index + 1, value, messages);
+        details.append(item);
+      }
+      toggle.addEventListener("click", () => {
+        const open = details?.hidden === true;
+        if (details) details.hidden = !open;
+        toggle.setAttribute("aria-expanded", open ? "true" : "false");
+      });
+      heading.append(toggle);
+    }
+    const sub = document.createElement("div");
+    const expiryTone = resetCredits.nextExpiresAt
+      ? resetExpiryTone(resetCredits.nextExpiresAt)
+      : undefined;
+    sub.className = expiryTone
+      ? `settings-account-usage__resets-sub settings-account-usage__resets-sub--${expiryTone}`
+      : "settings-account-usage__resets-sub";
+    const parts = [resetCreditsCount(resetCredits.availableCount, messages.locale)];
+    if (resetCredits.nextExpiresAt) {
+      parts.push(resetCreditsExpiryLine(resetCredits.nextExpiresAt, messages));
+    }
+    sub.textContent = parts.join(" · ");
+    copy.append(heading, sub);
+    if (details) copy.append(details);
+    footer.append(copy);
+    if (options.onUseReset) {
+      const use = document.createElement("button");
+      use.type = "button";
+      use.className = creditsNeedReset(credits)
+        ? "settings-command-button"
+        : "settings-command-button settings-command-button--secondary";
+      use.textContent = options.usingReset
+        ? messages.accountResetCreditsUsing
+        : messages.accountResetCreditsUse;
+      use.disabled = options.usingReset === true;
+      use.addEventListener("click", options.onUseReset);
+      footer.append(use);
+    }
+    card.append(footer);
   }
   return card;
 }

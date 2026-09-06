@@ -1,8 +1,12 @@
 import {
   codexAccountUsageParamsSchema,
   codexAccountUsageResultSchema,
+  codexAccountResetCreditConsumeParamsSchema,
+  codexAccountResetCreditConsumeResultSchema,
   type CodexAccountUsageParams,
   type CodexAccountUsageResult,
+  type CodexAccountResetCreditConsumeParams,
+  type CodexAccountResetCreditConsumeResult,
   codexAccountActivateParamsSchema,
   codexAccountCreateParamsSchema,
   codexAccountDeleteParamsSchema,
@@ -111,6 +115,8 @@ export const CODEX_ACCOUNT_ACTIVATE_METHOD = "codexhost/account/activate";
 export const CODEX_ACCOUNT_LOGIN_START_METHOD = "codexhost/account/login/start";
 export const CODEX_ACCOUNT_LOGIN_CANCEL_METHOD = "codexhost/account/login/cancel";
 export const CODEX_ACCOUNT_LOGIN_COMPLETED_METHOD = "codexhost/account/login/completed";
+export const CODEX_ACCOUNT_RESET_CREDIT_CONSUME_METHOD =
+  "codexhost/account/rate-limit-reset/consume";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -168,6 +174,9 @@ export interface RendererModelClient extends Partial<RendererSessionImportClient
   startUpdate(): Promise<UpdateStartResult>;
   readUpdateStatus(): Promise<UpdateStatusResult>;
   inspectCodexAccountUsage?(input: CodexAccountUsageParams): Promise<CodexAccountUsageResult>;
+  consumeCodexAccountResetCredit?(
+    input: CodexAccountResetCreditConsumeParams,
+  ): Promise<CodexAccountResetCreditConsumeResult>;
   listCodexAccounts(): Promise<CodexAccountListResult>;
   refreshCodexAccounts(): Promise<CodexAccountListResult>;
   createCodexAccount(input: CodexAccountCreateParams): Promise<CodexAccountMutationResult>;
@@ -389,6 +398,15 @@ export function createRendererModelClient(
         codexAccountUsageParamsSchema.parse(input),
       );
       return codexAccountUsageResultSchema.parse(result);
+    },
+    async consumeCodexAccountResetCredit(
+      input: CodexAccountResetCreditConsumeParams,
+    ): Promise<CodexAccountResetCreditConsumeResult> {
+      const result = await manager.sendRequest(
+        CODEX_ACCOUNT_RESET_CREDIT_CONSUME_METHOD,
+        codexAccountResetCreditConsumeParamsSchema.parse(input),
+      );
+      return codexAccountResetCreditConsumeResultSchema.parse(result);
     },
     async listCodexAccounts(): Promise<CodexAccountListResult> {
       const result = await manager.sendRequest(CODEX_ACCOUNT_LIST_METHOD, {});

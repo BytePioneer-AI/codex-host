@@ -22,6 +22,9 @@ import {
   accountCreditsSnapshotSchema,
   codexAccountUsageParamsSchema,
   codexAccountUsageResultSchema,
+  codexAccountResetCreditConsumeParamsSchema,
+  codexAccountResetCreditConsumeOutcomeSchema,
+  codexAccountResetCreditConsumeResultSchema,
   codexAccountActivateParamsSchema,
   codexAccountCreateParamsSchema,
   codexAccountDeleteParamsSchema,
@@ -808,7 +811,8 @@ export class AppServerHost {
         request.method === "codexhost/account/delete" ||
         request.method === "codexhost/account/activate" ||
         request.method === "codexhost/account/login/start" ||
-        request.method === "codexhost/account/login/cancel"
+        request.method === "codexhost/account/login/cancel" ||
+        request.method === "codexhost/account/rate-limit-reset/consume"
       ) {
         this.#dispatchDesktopRequest(() => this.#handleCodexAccountRequest(request));
         continue;
@@ -1436,13 +1440,42 @@ export class AppServerHost {
           throw new Error("Unknown Codex Account");
         await this.#refreshOfficialRateLimits(accountId);
         const usage = this.#officialRateLimits.get(accountId);
-        const accountCredits = projectCodexRateLimitsToCredits(usage);
+        const accountCredits = this.#officialAccountCredits(accountId);
         const result = codexAccountUsageResultSchema.parse({
           accountId,
           usage,
           ...(accountCredits ? { accountCredits } : {}),
         });
         await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(result) }));
+        return;
+      }
+
+      if (request.method === "codexhost/account/rate-limit-reset/consume") {
+        const params = codexAccountResetCreditConsumeParamsSchema.parse(requestObject(request));
+        if (!(await this.#accountRepository.get(params.accountId)))
+          throw new Error("Unknown Codex Account");
+        const runtime = await this.#codexRuntimePool.get(params.accountId);
+        const response = await runtime.request("account/rateLimitResetCredit/consume", {
+          idempotencyKey: params.idempotencyKey ?? randomUUID(),
+        });
+        if (isRecord(response.error)) {
+          await this.#writer.json(rpcEnvelope(request, { error: response.error }));
+          return;
+        }
+        const result = isRecord(response.result) ? response.result : null;
+        const outcome = codexAccountResetCreditConsumeOutcomeSchema.safeParse(result?.outcome);
+        if (!outcome.success) throw new Error("Official reset-credit consume response is invalid");
+        this.#officialRateLimits.reset(params.accountId);
+        if (outcome.data === "reset") await this.#refreshOfficialRateLimits(params.accountId);
+        const accountCredits = this.#officialAccountCredits(params.accountId);
+        const consumeResult = codexAccountResetCreditConsumeResultSchema.parse({
+          accountId: params.accountId,
+          outcome: outcome.data,
+          ...(accountCredits ? { accountCredits } : {}),
+        });
+        await this.#writer.json(
+          rpcEnvelope(request, { result: jsonValueSchema.parse(consumeResult) }),
+        );
         return;
       }
 
@@ -2452,9 +2485,7 @@ export class AppServerHost {
         ? this.#refreshOfficialRateLimits(accountId)
         : Promise.resolve();
       await rateLimitRefresh;
-      const accountCredits = projectCodexRateLimitsToCredits(
-        accountId ? this.#officialRateLimits.get(accountId) : null,
-      );
+      const accountCredits = this.#officialAccountCredits(accountId);
       const result = threadUsageInspectionSchema.parse({
         threadId: params.data.threadId,
         usage: this.#combinedOfficialUsage(
@@ -2502,6 +2533,14 @@ export class AppServerHost {
   #refreshOfficialRateLimits(accountId: string): Promise<void> {
     return this.#officialRateLimits.refresh(accountId, async () =>
       (await this.#codexRuntimePool.get(accountId)).request("account/rateLimits/read", {}),
+    );
+  }
+
+  #officialAccountCredits(accountId: string | undefined): AccountCreditsSnapshot | null {
+    if (!accountId) return null;
+    return projectCodexRateLimitsToCredits(
+      this.#officialRateLimits.get(accountId),
+      this.#officialRateLimits.getResetCredits(accountId),
     );
   }
 

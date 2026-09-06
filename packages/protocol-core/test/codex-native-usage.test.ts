@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  observeCodexRateLimitResetCredits,
   observeCodexRateLimits,
   observeCodexTokenUsage,
   projectCodexRateLimitsToCredits,
@@ -147,6 +148,82 @@ describe("Codex native Usage observations", () => {
           resetsAt: new Date(2_400 * 1000).toISOString(),
         },
       ],
+    });
+  });
+
+  it("reads banked reset cards and the soonest available expiry", () => {
+    expect(
+      observeCodexRateLimitResetCredits({
+        id: "internal",
+        result: {
+          rateLimits: { primary: { usedPercent: 2, windowDurationMins: 300 } },
+          rateLimitResetCredits: {
+            availableCount: 2,
+            credits: [
+              {
+                id: "later",
+                resetType: "codexRateLimits",
+                status: "available",
+                grantedAt: 1_000,
+                expiresAt: 4_000,
+                title: "Full reset",
+                description: null,
+              },
+              {
+                id: "soon",
+                resetType: "codexRateLimits",
+                status: "available",
+                grantedAt: 1_100,
+                expiresAt: 2_400,
+                title: "Full reset",
+                description: null,
+              },
+              {
+                id: "used",
+                resetType: "codexRateLimits",
+                status: "redeemed",
+                grantedAt: 900,
+                expiresAt: 1_200,
+                title: "Full reset",
+                description: null,
+              },
+            ],
+          },
+        },
+      }),
+    ).toEqual({
+      availableCount: 2,
+      nextExpiresAtUnix: 2_400,
+      expiresAtUnix: [2_400, 4_000],
+    });
+  });
+
+  it("omits reset cards when none are available", () => {
+    expect(
+      observeCodexRateLimitResetCredits({
+        result: { rateLimitResetCredits: { availableCount: 0, credits: [] } },
+      }),
+    ).toBeNull();
+  });
+
+  it("projects reset-card inventory onto the Credits snapshot", () => {
+    expect(
+      projectCodexRateLimitsToCredits(
+        {
+          planFiveHourUsedPercent: 15,
+          planFiveHourResetsAtUnix: 1_800,
+        },
+        { availableCount: 2, nextExpiresAtUnix: 2_400, expiresAtUnix: [2_400, 4_000] },
+      ),
+    ).toEqual({
+      usedPercent: 15,
+      periodType: "five_hour",
+      resetsAt: new Date(1_800 * 1000).toISOString(),
+      resetCredits: {
+        availableCount: 2,
+        nextExpiresAt: new Date(2_400 * 1000).toISOString(),
+        expiresAt: [new Date(2_400 * 1000).toISOString(), new Date(4_000 * 1000).toISOString()],
+      },
     });
   });
 

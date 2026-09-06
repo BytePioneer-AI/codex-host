@@ -1069,6 +1069,11 @@ export function installCurrentRendererAdapter(): {
       }
       return client.consumeCodexAccountResetCredit(input);
     },
+    listHarnessAccounts: () => {
+      const client = currentModelClient();
+      if (!client.listHarnessAccounts) throw new Error("Harness account inspection is unavailable");
+      return client.listHarnessAccounts();
+    },
     listCodexAccounts: () => currentModelClient().listCodexAccounts(),
     refreshCodexAccounts: () => {
       const client = currentModelClient();

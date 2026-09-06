@@ -1,4 +1,6 @@
 import {
+  harnessAccountListResultSchema,
+  type HarnessAccountListResult,
   codexAccountUsageParamsSchema,
   codexAccountUsageResultSchema,
   codexAccountResetCreditConsumeParamsSchema,
@@ -181,6 +183,7 @@ export interface RendererModelClient extends Partial<RendererSessionImportClient
   consumeCodexAccountResetCredit?(
     input: CodexAccountResetCreditConsumeParams,
   ): Promise<CodexAccountResetCreditConsumeResult>;
+  listHarnessAccounts?(): Promise<HarnessAccountListResult>;
   listCodexAccounts(): Promise<CodexAccountListResult>;
   refreshCodexAccounts(): Promise<CodexAccountListResult>;
   createCodexAccount(input: CodexAccountCreateParams): Promise<CodexAccountMutationResult>;
@@ -443,6 +446,11 @@ export function createRendererModelClient(
         codexAccountResetCreditConsumeParamsSchema.parse(input),
       );
       return codexAccountResetCreditConsumeResultSchema.parse(result);
+    },
+    async listHarnessAccounts(): Promise<HarnessAccountListResult> {
+      return harnessAccountListResultSchema.parse(
+        await manager.sendRequest("codexhost/harness/accounts/list", {}),
+      );
     },
     async listCodexAccounts(): Promise<CodexAccountListResult> {
       const result = await manager.sendRequest(CODEX_ACCOUNT_LIST_METHOD, {});

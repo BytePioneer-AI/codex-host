@@ -751,7 +751,7 @@ export function renderComposerAgentControl(
   control.harnessCommands.root.hidden = state.agent === "codex";
   control.harnessCommands.root.style.display = state.agent === "codex" ? "none" : "inline-flex";
   if (state.agent === "codex") control.harnessCommands.close();
-  renderRendererCreditsControl(control.credits, accountCredits);
+  renderRendererCreditsControl(control.credits, accountCredits, locale);
 }
 
 export function disposeComposerAgentControl(control: ComposerAgentControl): void {

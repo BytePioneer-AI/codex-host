@@ -22,12 +22,13 @@ import {
   createAccountsTable,
   renderAccountRows,
 } from "./accounts-list.js";
+import { mountHarnessAccounts, type RendererHarnessAccountClient } from "./harness-accounts.js";
 import type { AccountUsageDisplay, AccountUsageViewState } from "./accounts-usage.js";
 import type { RendererSettingsPageDefinition, RendererSettingsPageMountContext } from "./core.js";
 import { createRendererSettingsIcon } from "./icons.js";
 import type { RendererSettingsMessages } from "./localization.js";
 
-export interface RendererCodexAccountClient {
+export interface RendererCodexAccountClient extends RendererHarnessAccountClient {
   listCodexAccounts(): Promise<CodexAccountListResult>;
   refreshCodexAccounts?(): Promise<CodexAccountListResult>;
   inspectCodexAccountUsage?(input: CodexAccountUsageParams): Promise<CodexAccountUsageResult>;
@@ -153,6 +154,7 @@ export function createAccountsSettingsPage(
       refreshUsage.addEventListener("click", () => {
         usageByAccountId.clear();
         loadUsage(accounts);
+        void harnessAccounts?.refresh();
       });
       search.addEventListener("input", () => render());
       toolbar.append(connected, searchWrapper, displayControls, refreshUsage);
@@ -172,7 +174,7 @@ export function createAccountsSettingsPage(
       let loginRefreshTimer: number | undefined;
       const usageByAccountId = new Map<string, AccountUsageViewState>();
       let usingResetAccountId: string | null = null;
-      let usageDisplay: AccountUsageDisplay = "used";
+      let usageDisplay: AccountUsageDisplay = "remaining";
       const expandedResetAccounts = new Set<string>();
       // Mutations share runLatest; do not let a second action discard the
       // completion handler of an in-flight login, deletion, or reset.
@@ -228,11 +230,13 @@ export function createAccountsSettingsPage(
           button.setAttribute("aria-pressed", String(display === usageDisplay));
         }
         refreshUsage.disabled =
-          !getClient()?.inspectCodexAccountUsage ||
-          !accounts.some((account) => account.email) ||
+          ((!getClient()?.inspectCodexAccountUsage || !accounts.some((account) => account.email)) &&
+            !getClient()?.listHarnessAccounts) ||
+          harnessAccounts?.refreshing === true ||
           [...usageByAccountId.values()].some((usage) => usage.status === "loading") ||
           accountBusy();
         const query = search.value.trim().toLocaleLowerCase();
+        harnessAccounts?.update(query, usageDisplay);
         const visibleAccounts = accounts.filter((account) =>
           `${account.email ?? ""} ${account.label}`.toLocaleLowerCase().includes(query),
         );
@@ -569,6 +573,8 @@ export function createAccountsSettingsPage(
       } catch {
         // Login remains usable even when the renderer bridge cannot subscribe.
       }
+      const harnessAccounts = mountHarnessAccounts(context, messages, getClient, render);
+      void harnessAccounts.refresh();
       load();
       return () => {
         clearLoginRefresh();

@@ -116,6 +116,26 @@ const FAKE_MODELS = [
 ] as const;
 
 describe("Antigravity Adapter", () => {
+  it("reads account quota without a Thread and hides it after native authentication stops returning data", async () => {
+    const fixture = await fakeAgy([
+      JSON.stringify({ event: "command_result", command: USAGE_COMMAND }),
+    ]);
+    const adapter = new AntigravityAdapter({ command: fixture.command, environment: process.env });
+    try {
+      expect(await adapter.inspectAccount()).toMatchObject({
+        credits: { label: "Gemini Models · Weekly window", usedPercent: 2.65 },
+      });
+      expect(adapter.credits()).not.toBeNull();
+      await writeFile(
+        fixture.command,
+        process.platform === "win32" ? "@echo off\r\nexit /b 0\r\n" : "#!/bin/sh\nexit 0\n",
+      );
+      expect(await adapter.inspectAccount()).toBeNull();
+    } finally {
+      await adapter.close();
+      await fixture.cleanup();
+    }
+  });
   it("refuses Desktop approval execution when the native CLI cannot confirm the Hook configuration", async () => {
     const { command, cwd, cleanup } = await fakeAgy(FAKE_MODELS);
     const adapter = new AntigravityAdapter({ command });
@@ -379,6 +399,7 @@ describe("Antigravity Adapter", () => {
     // Labels come from the window, not the CLI's "… Remaining" naming, because
     // the values are consumed percentages.
     expect(snapshot).toEqual({
+      label: "Gemini Models · Weekly window",
       usedPercent: 2.65,
       periodType: "weekly",
       resetsAt: "2026-09-01T03:17:57Z",

@@ -73,6 +73,7 @@ export interface RendererSettingsMessages {
   readonly accountEmpty: string;
   readonly accountNoMatches: string;
   readonly accountLoginHelp: string;
+  readonly harnessAccountsTitle: string;
   readonly accountCreditsRemaining: string;
   readonly accountCreditsLoading: string;
   readonly accountCreditsEmpty: string;
@@ -275,6 +276,7 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   accountEmpty: "No accounts yet. Add an account to get started.",
   accountNoMatches: "No matching accounts.",
   accountLoginHelp: "Before signing in",
+  harnessAccountsTitle: "Other detected accounts",
   accountCreditsRemaining: "Remaining",
   accountCreditsLoading: "Loading limits…",
   accountCreditsEmpty: "No limit data available",
@@ -491,6 +493,7 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   accountEmpty: "还没有账号，添加一个账号即可开始。",
   accountNoMatches: "没有匹配的账号。",
   accountLoginHelp: "登录前须知",
+  harnessAccountsTitle: "其他已识别账号",
   accountCreditsRemaining: "剩余",
   accountCreditsLoading: "正在读取额度…",
   accountCreditsEmpty: "暂无额度数据",

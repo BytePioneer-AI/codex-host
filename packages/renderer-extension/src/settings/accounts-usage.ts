@@ -103,7 +103,7 @@ export function renderAccountUsage(
   // window is evidence of zero usage, unlimited access, or a synthetic 5h limit.
   const windows = [
     {
-      label: creditsPeriodLabel(credits.periodType, messages),
+      label: credits.label ?? creditsPeriodLabel(credits.periodType, messages),
       usedPercent: credits.usedPercent,
       resetsAt: credits.resetsAt,
     },

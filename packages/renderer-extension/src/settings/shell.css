@@ -1792,10 +1792,13 @@ button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: fit-content;
+  flex: none;
+  width: max-content;
+  max-width: 100%;
   min-height: 30px;
   gap: 6px;
   padding: 5px 10px;
+  white-space: nowrap;
   color: var(--settings-primary-text);
   font: inherit;
   font-size: 12px;

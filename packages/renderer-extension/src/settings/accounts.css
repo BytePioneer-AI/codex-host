@@ -1,3 +1,58 @@
+.settings-harness-accounts {
+  margin-top: 32px;
+}
+
+.settings-harness-accounts__title {
+  margin: 0 0 16px;
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.settings-harness-account__identity {
+  min-width: 0;
+}
+
+.settings-harness-account__identity > .settings-account-email {
+  display: block;
+  max-width: 24ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-harness-account__logo {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  flex: none;
+}
+
+.settings-harness-account {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) minmax(0, 2fr);
+  align-items: center;
+  gap: 24px;
+  padding: 24px;
+}
+
+.settings-harness-account + .settings-harness-account {
+  border-top: 1px solid var(--settings-border);
+}
+
+.settings-harness-account > div {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 700px) {
+  .settings-harness-account {
+    grid-template-columns: minmax(0, 1fr);
+    padding: 16px;
+  }
+}
+
 .settings-account-header {
   display: flex;
   align-items: flex-start;
@@ -244,13 +299,37 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.settings-account-domain {
-  display: block;
-  overflow: hidden;
+.settings-account-metadata {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  gap: 7px;
   margin-top: 4px;
   color: var(--settings-muted);
+}
+.settings-account-domain {
+  min-width: 0;
+  overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.settings-account-plan-separator {
+  flex: none;
+}
+.settings-account-plan {
+  flex: none;
+  padding: 1px 6px;
+  color: var(--settings-muted);
+  border: 1px solid var(--settings-border);
+  border-radius: 5px;
+  font-size: 11px;
+  white-space: nowrap;
+}
+.settings-account-plan--highlighted {
+  color: light-dark(#654f91, #c8bfff);
+  background: light-dark(#f2edf9, #a99bff18);
+  border-color: light-dark(#d9ccea, #a99bff52);
+  font-weight: 600;
 }
 .settings-account-active {
   flex: none;

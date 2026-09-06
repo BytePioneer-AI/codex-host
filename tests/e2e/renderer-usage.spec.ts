@@ -69,6 +69,16 @@ const { outputFiles } = await build({
             ],
           });
         };
+        globalThis.updateRendererCreditsChinese = () => {
+          renderRendererCreditsControl(credits, {
+            usedPercent: 27,
+            periodType: "five_hour",
+            resetsAt: "2026-08-31T16:00:00.000Z",
+            productUsage: [
+              { product: "7-day window", usagePercent: 73, resetsAt: "2026-09-05T18:00:00.000Z" },
+            ],
+          }, "zh-CN");
+        };
         globalThis.updateRendererUsagePlanWindow = () => {
           renderRendererUsageControl(usage, {
             cacheHitRatePercent: 99,
@@ -214,8 +224,8 @@ test("keeps Usage in place and shows credits after the leading composer control"
   });
   await expect(usage).toHaveText("CH 99.3% · $0.822");
   await expect(credits).toBeVisible();
-  await expect(credits).toHaveText("47%");
-  await expect(credits.locator("button")).toHaveAttribute("aria-label", "Weekly limit 47%");
+  await expect(credits).toHaveText("53%");
+  await expect(credits.locator("button")).toHaveAttribute("aria-label", "Weekly limit 53%");
   await expect(credits.locator("[data-codexhost-credits-ring] svg")).toHaveCount(1);
   await expect(trigger).toHaveCSS("max-width", "180px");
   await expect(usage.locator("xpath=following-sibling::*[1]")).toHaveAttribute(
@@ -235,14 +245,40 @@ test("keeps Usage in place and shows credits after the leading composer control"
   const popover = page.locator('[role="dialog"][aria-label="Account limit details"]');
   await expect(popover).toBeVisible();
   await expect(popover).toContainText("Weekly limit");
-  await expect(popover).toContainText("47%");
+  await expect(popover).toContainText("Remaining 53%");
   await expect(popover).toContainText("Build");
-  await expect(popover).toContainText("82%");
+  await expect(popover).toContainText("Remaining 18%");
   await expect(popover).toContainText("Chat");
   // The headline percent gets its own progress bar too, alongside each product's.
   await expect(popover.locator("[data-codexhost-credits-bar]")).toHaveCount(3);
-  // One "resets" line under the headline, one under the Build tile (Chat has none).
-  await expect(popover.getByText("resets", { exact: false })).toHaveCount(2);
+  // One "Resets" line under the headline, one under the Build tile (Chat has none).
+  await expect(popover.getByText("Resets", { exact: false })).toHaveCount(2);
+});
+
+test("renders remaining five-hour and seven-day credits clearly in Chinese", async ({ page }) => {
+  await page.setContent('<!doctype html><body style="margin:0"></body>');
+  await page.addScriptTag({ content: browserBundle });
+  await page.evaluate(() => {
+    const setup = Reflect.get(globalThis, "setupRendererUsage");
+    if (typeof setup !== "function") throw new Error("Usage setup is unavailable");
+    setup();
+    const update = Reflect.get(globalThis, "updateRendererCreditsChinese");
+    if (typeof update !== "function") throw new Error("Chinese Credits update is unavailable");
+    update();
+  });
+
+  const credits = page.locator('[data-codexhost-credits-control="usage-composer"]');
+  await expect(credits).toHaveText("73%");
+  await credits.hover();
+  const popover = page.locator('[role="dialog"][aria-label="账号额度详情"]');
+  await expect(popover).toBeVisible();
+  await expect(popover).toContainText("5 小时额度");
+  await expect(popover).toContainText("剩余 73%");
+  await expect(popover).toContainText("7 天额度");
+  await expect(popover).toContainText("剩余 27%");
+  await expect(popover.getByText("重置", { exact: false })).toHaveCount(2);
+  await expect(popover).not.toContainText("5-hour limit");
+  await expect(popover).not.toContainText("7-day window");
 });
 
 test("renders the Usage popover in Chinese when the settings locale is Chinese", async ({

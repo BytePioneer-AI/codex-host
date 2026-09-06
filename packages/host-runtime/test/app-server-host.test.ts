@@ -476,6 +476,7 @@ describe("AppServerHost installed Harness plugins", () => {
       import { writeFileSync } from "node:fs";
       export function createHarnessAdapter() {
         const adapter = new FakeHarnessAdapter("sample-agent");
+        adapter.inspectAccount = async () => ({ email: "sample@example.com", credits: { usedPercent: 25, periodType: "weekly" } });
         const close = adapter.close.bind(adapter);
         adapter.close = async () => { await close(); writeFileSync(new URL("closed", import.meta.url), "yes"); };
         return adapter;
@@ -499,6 +500,31 @@ describe("AppServerHost installed Harness plugins", () => {
       });
       expect(await fixture.collector.waitFor((message) => requestId(message, 902))).toMatchObject({
         result: { status: "ready" },
+      });
+      writeRequest(fixture.desktopInput, {
+        id: 905,
+        method: "codexhost/harness/accounts/list",
+        params: {},
+      });
+      expect(await fixture.collector.waitFor((message) => requestId(message, 905))).toMatchObject({
+        result: {
+          accounts: [
+            {
+              harnessId: "sample-agent",
+              harnessName: "Sample Agent",
+              email: "sample@example.com",
+              credits: { usedPercent: 25 },
+            },
+          ],
+        },
+      });
+      writeRequest(fixture.desktopInput, {
+        id: 906,
+        method: "codexhost/harness/accounts/list",
+        params: { token: "invalid" },
+      });
+      expect(await fixture.collector.waitFor((message) => requestId(message, 906))).toMatchObject({
+        error: { code: -32602 },
       });
       const model = encodeHarnessPluginRoute(
         harnessPluginRouteSchema.parse({ harnessId: "sample-agent" }),
@@ -922,6 +948,7 @@ describe("AppServerHost HarnessAdapter projection", () => {
           accountCredits: { usedPercent: 1 },
         },
       });
+
       writeRequest(fixture.desktopInput, {
         id: 132,
         method: "codexhost/thread/usage/inspect",
@@ -1274,9 +1301,9 @@ describe("AppServerHost HarnessAdapter projection", () => {
       ).resolves.toMatchObject({
         result: {
           accounts: [
-            { accountId: "account-a", email: "account-a@example.com" },
-            { accountId: "account-b", email: "account-b@example.com" },
-            { accountId: createdAccountId, email: "account-c@example.com" },
+            { accountId: "account-a", email: "account-a@example.com", planType: "plus" },
+            { accountId: "account-b", email: "account-b@example.com", planType: "plus" },
+            { accountId: createdAccountId, email: "account-c@example.com", planType: "plus" },
           ],
         },
       });

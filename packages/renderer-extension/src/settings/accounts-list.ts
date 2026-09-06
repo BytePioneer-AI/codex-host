@@ -12,6 +12,23 @@ import type { RendererSettingsMessages } from "./localization.js";
 
 let resetDetailsSequence = 0;
 
+function accountPlanLabel(planType: CodexAccountSummary["planType"]): string | null {
+  if (!planType || planType === "unknown") return null;
+  if (planType === "free") return "Free";
+  if (planType === "go") return "Go";
+  if (planType === "plus") return "Plus";
+  if (planType === "pro") return "Pro 20x";
+  if (planType === "prolite") return "Pro 5x";
+  if (planType === "team") return "Team";
+  if (planType === "self_serve_business_prolite") return "Business Pro Lite";
+  if (planType === "self_serve_business_usage_based") return "Business";
+  if (planType === "business") return "Business";
+  if (planType === "edu") return "Edu";
+  if (planType === "edu_plus") return "Edu Plus";
+  if (planType === "edu_pro") return "Edu Pro";
+  return "Enterprise";
+}
+
 /** Preserve keyboard position when an async update replaces the table body. */
 export function accountListFocusRestorer(list: HTMLElement, fallback: HTMLElement): () => void {
   const active = (list.getRootNode() as Document | ShadowRoot).activeElement;
@@ -109,12 +126,32 @@ export function renderAccountRows(
     title.append(badge);
   }
   identity.append(title);
+  const metadata = document.createElement("div");
+  metadata.className = "settings-account-metadata";
   if (name.domain) {
     const domain = document.createElement("span");
     domain.className = "settings-account-domain";
     domain.textContent = `@${name.domain}`;
-    identity.append(domain);
+    metadata.append(domain);
   }
+  const planLabel = accountPlanLabel(account.planType);
+  if (planLabel) {
+    if (name.domain) {
+      const separator = document.createElement("span");
+      separator.className = "settings-account-plan-separator";
+      separator.textContent = "·";
+      separator.setAttribute("aria-hidden", "true");
+      metadata.append(separator);
+    }
+    const plan = document.createElement("span");
+    plan.className =
+      account.planType === "pro" || account.planType === "prolite"
+        ? "settings-account-plan settings-account-plan--highlighted"
+        : "settings-account-plan";
+    plan.textContent = planLabel;
+    metadata.append(plan);
+  }
+  if (metadata.childElementCount > 0) identity.append(metadata);
   person.append(mark, identity);
   personCell.append(person);
 

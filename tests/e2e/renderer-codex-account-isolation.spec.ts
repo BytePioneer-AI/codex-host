@@ -315,11 +315,11 @@ test("late local Account and quota responses cannot overwrite the remote Compose
   await action(page, "switchHost", "remote");
   await expect(page.locator(trigger)).toHaveAttribute("title", /remote-default/);
   const credits = page.locator("[data-codexhost-credits-label]");
-  await expect(credits).toHaveText("83%");
+  await expect(credits).toHaveText("17%");
   await action(page, "release", "local:accounts");
   await action(page, "release", "local:usage:default");
   await expect(page.locator(trigger)).toHaveAttribute("title", /remote-default/);
-  await expect(credits).toHaveText("83%");
+  await expect(credits).toHaveText("17%");
 });
 
 test("a replacement client for the same Host does not inherit old Account responses or overrides", async ({

@@ -2,10 +2,13 @@ import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 
+import { codexAccountPlanTypeSchema, type CodexAccountPlanType } from "@codexhost/shared-contracts";
+
 export interface CodexAccount {
   accountId: string;
   codexHome: string;
   email?: string;
+  planType?: CodexAccountPlanType;
   label: string;
   createdAt: string;
   updatedAt: string;
@@ -29,6 +32,7 @@ export interface AccountRepositoryLike {
     accountId: string;
     codexHome: string;
     email?: string;
+    planType?: CodexAccountPlanType | null;
     label?: string;
   }): Promise<CodexAccount>;
 }
@@ -43,7 +47,7 @@ function cloneAccount(account: CodexAccount): CodexAccount {
   return { ...account };
 }
 
-/** Persists account routing metadata only. Credentials remain owned by each CODEX_HOME. */
+/** Persists non-secret account metadata and routing. Credentials remain owned by each CODEX_HOME. */
 export class AccountRepository implements AccountRepositoryLike {
   readonly #file: string;
   readonly #defaultAccount: { accountId: string; codexHome: string; label: string };
@@ -146,6 +150,7 @@ export class AccountRepository implements AccountRepositoryLike {
     accountId: string;
     codexHome: string;
     email?: string;
+    planType?: CodexAccountPlanType | null;
     label?: string;
   }): Promise<CodexAccount> {
     this.#requireInitialized();
@@ -156,10 +161,12 @@ export class AccountRepository implements AccountRepositoryLike {
       const previous = this.#accounts.get(input.accountId);
       const now = new Date().toISOString();
       const email = input.email ?? previous?.email;
+      const planType = input.planType === null ? undefined : (input.planType ?? previous?.planType);
       const account: CodexAccount = {
         accountId: input.accountId,
         codexHome: path.normalize(input.codexHome),
         ...(email ? { email } : {}),
+        ...(planType ? { planType } : {}),
         label: input.label ?? previous?.label ?? input.accountId,
         createdAt: previous?.createdAt ?? now,
         updatedAt: now,
@@ -175,6 +182,9 @@ export class AccountRepository implements AccountRepositoryLike {
     if (!path.isAbsolute(account.codexHome)) throw new Error("Stored CODEX_HOME must be absolute");
     if (account.email && (!account.email.includes("@") || account.email.length > 320)) {
       throw new Error("Stored Codex Account email is invalid");
+    }
+    if (account.planType && !codexAccountPlanTypeSchema.safeParse(account.planType).success) {
+      throw new Error("Stored Codex Account plan type is invalid");
     }
     if (
       !account.label ||

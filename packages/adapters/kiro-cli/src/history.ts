@@ -11,6 +11,7 @@ import type {
 import {
   harnessIdSchema,
   harnessModelRefSchema,
+  harnessThinkingOptionIdSchema,
   hostItemIdSchema,
   nativeCheckpointRefSchema,
   nativeSessionRefSchema,
@@ -35,6 +36,9 @@ export interface KiroSessionMeta {
   autopilot?: boolean | string | undefined;
   schemaVersion?: string | undefined;
   dataModelVersion?: number | undefined;
+  parentSessionId?: string | undefined;
+  agentMode?: string | undefined;
+  effortLevel?: string | undefined;
 }
 
 export interface KiroNativeSessionLocation {
@@ -57,7 +61,7 @@ export async function locateKiroNativeSession(
 ): Promise<KiroNativeSessionLocation | null> {
   if (!sessionId || sessionId.trim().length === 0) return null;
 
-  const root = path.join(kiroHomeDir(input.environment), "sessions");
+  const root = path.join(input.homeDirectory ?? kiroHomeDir(input.environment), "sessions");
   let entries: Array<{ name: string; isDirectory(): boolean }>;
   try {
     entries = await readdir(root, { withFileTypes: true });
@@ -134,11 +138,53 @@ function historyText(payload: KiroHistoryRow["payload"]): string {
   return typeof payload.content === "string" ? payload.content : (payload.text ?? "");
 }
 
+/** Forks retain effective context only; recover the displayed prefix from native lineage. */
+export async function readKiroSessionMessages(
+  location: KiroNativeSessionLocation,
+  ancestors = new Set<string>(),
+): Promise<KiroHistoryRow[]> {
+  if (ancestors.has(location.sessionMeta.id))
+    throw new Error("Kiro history lineage contains a cycle");
+  ancestors.add(location.sessionMeta.id);
+  const rows = await readKiroNativeMessages(location.sessionDirectory);
+  const first = rows.find((row) => ["user", "assistant"].includes(row.payload.type));
+  if (first?.payload.operationType !== "Summary" || !location.sessionMeta.parentSessionId) {
+    return rows;
+  }
+  const parent = await locateKiroNativeSession(
+    { homeDirectory: path.resolve(location.sessionDirectory, "../../..") },
+    location.sessionMeta.parentSessionId,
+  );
+  if (!parent) throw new Error("Kiro fork's archived parent history was not found");
+  const parentRows = await readKiroSessionMessages(parent, ancestors);
+  const boundary = parentRows.findIndex((row) => row.id === first.id);
+  if (boundary < 0) throw new Error("Kiro fork's summary boundary was not found in parent history");
+  return [...parentRows.slice(0, boundary), ...rows.slice(rows.indexOf(first))];
+}
+
+function effectiveHistory(rows: KiroHistoryRow[], keepSummarized: boolean): KiroHistoryRow[] {
+  const effective: KiroHistoryRow[] = [];
+  for (const row of rows) {
+    const { type, kind, effectiveFromMessageId } = row.payload;
+    if (
+      type === "tombstone" &&
+      (kind === "checkpoint_revert" || (kind === "summarization" && !keepSummarized))
+    ) {
+      const index = effective.findIndex((entry) => entry.id === effectiveFromMessageId);
+      if (index >= 0) effective.splice(index);
+    } else {
+      effective.push(row);
+    }
+  }
+  return effective;
+}
+
 export interface KiroTurnBoundary {
   turnIndex: number;
   userMessageId: string;
   userPromptText: string;
   turnEndMessageId?: string | undefined;
+  forkMessageId?: string | undefined;
   rows: KiroHistoryRow[];
 }
 
@@ -151,8 +197,9 @@ export function parseKiroHistory(rows: KiroHistoryRow[]): KiroHistorySummary {
   let bootstrapMessageId: string | undefined;
   const turns: KiroTurnBoundary[] = [];
   let currentTurn: KiroTurnBoundary | null = null;
+  const visibleRows = effectiveHistory(rows, true);
 
-  for (const row of rows) {
+  for (const row of visibleRows) {
     const type = row.payload?.type;
 
     if (!currentTurn && turns.length === 0 && type !== "user") {
@@ -175,7 +222,12 @@ export function parseKiroHistory(rows: KiroHistoryRow[]): KiroHistorySummary {
     }
 
     if (currentTurn) {
-      if (currentTurn.turnEndMessageId && type !== "tombstone") continue;
+      if (
+        currentTurn.turnEndMessageId &&
+        type !== "tombstone" &&
+        !(type === "assistant" && row.payload.operationType === "Summary")
+      )
+        continue;
       currentTurn.rows.push(row);
       if (type === "turn_end") {
         currentTurn.turnEndMessageId = row.id;
@@ -187,6 +239,16 @@ export function parseKiroHistory(rows: KiroHistoryRow[]): KiroHistorySummary {
     turns.push(currentTurn);
   }
 
+  const effectiveIds = new Set(effectiveHistory(visibleRows, false).map((row) => row.id));
+  for (const turn of turns) {
+    if (!turn.turnEndMessageId) continue;
+    turn.forkMessageId = effectiveIds.has(turn.turnEndMessageId)
+      ? turn.turnEndMessageId
+      : turn.rows.findLast(
+          (row) => row.payload.operationType === "Summary" && effectiveIds.has(row.id),
+        )?.id;
+  }
+  if (bootstrapMessageId && !effectiveIds.has(bootstrapMessageId)) bootstrapMessageId = undefined;
   return { turns, ...(bootstrapMessageId ? { bootstrapMessageId } : {}) };
 }
 
@@ -200,7 +262,7 @@ export function findForkBoundary(
 
   if (!targetCheckpointId) {
     const last = summary.turns[summary.turns.length - 1];
-    return last?.turnEndMessageId ?? last?.userMessageId ?? null;
+    return last?.forkMessageId ?? null;
   }
 
   if (targetCheckpointId === summary.bootstrapMessageId) {
@@ -209,11 +271,14 @@ export function findForkBoundary(
 
   for (const turn of summary.turns) {
     if (turn.turnEndMessageId === targetCheckpointId || turn.userMessageId === targetCheckpointId) {
-      return turn.turnEndMessageId ?? turn.userMessageId;
+      return turn.forkMessageId ?? null;
     }
     // Also check inside turn rows
     if (turn.rows.some((r) => r.id === targetCheckpointId)) {
-      return targetCheckpointId;
+      return turn.forkMessageId === turn.turnEndMessageId ||
+        turn.forkMessageId === targetCheckpointId
+        ? targetCheckpointId
+        : null;
     }
   }
 
@@ -224,7 +289,7 @@ export function findRollbackBoundary(summary: KiroHistorySummary): string | null
   if (summary.turns.length >= 2) {
     // Drop the last turn, fork at the end of the previous turn
     const prevTurn = summary.turns[summary.turns.length - 2];
-    return prevTurn?.turnEndMessageId ?? prevTurn?.userMessageId ?? null;
+    return prevTurn?.forkMessageId ?? null;
   }
 
   if (summary.turns.length === 1) {
@@ -238,7 +303,7 @@ export function findRollbackBoundary(summary: KiroHistorySummary): string | null
 export async function readKiroSnapshot(
   location: KiroNativeSessionLocation,
 ): Promise<HostThreadSnapshot> {
-  const rows = await readKiroNativeMessages(location.sessionDirectory);
+  const rows = await readKiroSessionMessages(location);
   const summary = parseKiroHistory(rows);
   const turns: HostTurnSnapshot[] = [];
 
@@ -253,11 +318,11 @@ export async function readKiroSnapshot(
       formatVersion: 1,
     });
 
-    const checkpoint: NativeCheckpointRef | undefined = turn.turnEndMessageId
+    const checkpoint: NativeCheckpointRef | undefined = turn.forkMessageId
       ? nativeCheckpointRefSchema.parse({
           harnessId,
           nativeSessionId,
-          checkpointId: turn.turnEndMessageId,
+          checkpointId: turn.forkMessageId,
           formatVersion: 1,
         })
       : undefined;
@@ -292,15 +357,29 @@ export async function readKiroSnapshot(
       startedAtMs >= 0 &&
       completedAtMs >= startedAtMs;
     // A trailing assistant row is the final response; pre-tool messages remain progress.
-    const lastContent = turn.rows.findLast((row) =>
-      ["assistant", "tool_call"].includes(row.payload.type),
+    const lastContent = turn.rows.findLast(
+      (row) =>
+        row.payload.type === "tool_call" ||
+        (row.payload.type === "assistant" &&
+          !["Reasoning", "Summary"].includes(String(row.payload.operationType))),
     );
 
-    for (const [index, row] of turn.rows.entries()) {
+    for (const row of turn.rows) {
       const type = row.payload?.type;
-      const itemId = hostItemIdSchema.parse(`item-${turn.turnIndex}-${index}`);
+      const itemId = hostItemIdSchema.parse(`kiro-${nativeSessionId}-${row.id}`);
 
       if (type === "assistant") {
+        if (row.payload.operationType === "Summary") continue;
+        if (row.payload.operationType === "Reasoning") {
+          const text = historyText(row.payload);
+          if (text.trim() && !/^[.\s\u2026]+$/u.test(text)) {
+            items.push({
+              item: { type: "reasoning", itemId, text },
+              outcome: { status: "succeeded" },
+            });
+          }
+          continue;
+        }
         items.push({
           item: {
             type: "agentMessage",
@@ -397,6 +476,13 @@ export async function readKiroSnapshot(
         ? { effectiveModel: harnessModelRefSchema.parse({ id: location.sessionMeta.modelId }) }
         : {}),
       effectivePermissionModeId: encodeKiroPermissionMode(location.sessionMeta.autopilot),
+      ...(location.sessionMeta.effortLevel && location.sessionMeta.modelId !== "auto"
+        ? {
+            effectiveThinkingOptionId: harnessThinkingOptionIdSchema.parse(
+              location.sessionMeta.effortLevel,
+            ),
+          }
+        : {}),
     },
   };
 }

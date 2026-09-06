@@ -451,9 +451,10 @@ export function restoredThreadOwnership(inspection: ThreadInspection): RestoredT
     }
     const model = inspection.effectiveModel ?? route.model;
     const thinkingOptionId =
-      selectableThinkingOptionId(inspection) ?? route.thinkingOptionId;
-    const permissionModeId =
-      inspection.effectivePermissionModeId ?? route.permissionModeId;
+      inspection.availableThinkingOptions !== undefined
+        ? selectableThinkingOptionId(inspection)
+        : (inspection.effectiveThinkingOptionId ?? route.thinkingOptionId);
+    const permissionModeId = inspection.effectivePermissionModeId ?? route.permissionModeId;
     return {
       agent: "kiro-cli",
       ...(model ? { model } : {}),

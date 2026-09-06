@@ -96,6 +96,7 @@ class FakeKiroTransport implements KiroAcpTransportLike {
     if (this.confirmOpen) {
       if (input.modelId) this.setCurrent("model", input.modelId);
       if (input.autopilot) this.setCurrent("autopilot", input.autopilot);
+      if (input.effortLevel) this.setCurrent("effortLevel", input.effortLevel);
     }
     return this.openResult;
   }
@@ -206,6 +207,387 @@ function projectOutputs(outputs: HarnessOutput[]): void {
 }
 
 describe("Kiro regression lifecycle", () => {
+  function effortTransport() {
+    const fake = new FakeKiroTransport();
+    fake.openResult.configOptions = [
+      {
+        id: "model",
+        currentValue: "adjustable",
+        options: [
+          {
+            value: "adjustable",
+            name: "Adjustable",
+            _meta: { kiro: { effortLevels: ["low", "high"], defaultEffortLevel: "low" } },
+          },
+          { value: "fixed-paid", name: "Fixed Paid", _meta: { kiro: { hasEffort: false } } },
+        ],
+      },
+      {
+        id: "effortLevel",
+        currentValue: "low",
+        options: [
+          { value: "low", name: "Low" },
+          { value: "high", name: "High" },
+        ],
+      },
+      { id: "autopilot", currentValue: "on" },
+    ];
+    return fake;
+  }
+
+  it("selects effort through the picker and slash command, and clears it for fixed models", async () => {
+    const fake = effortTransport();
+    const adapter = new KiroAdapter({}, { createTransport: () => fake });
+    const opened = await adapter.open({
+      kind: "create",
+      cwd: "/workspace",
+      model: { id: "adjustable" as HarnessModelRef["id"] },
+      thinkingOptionId: "high" as HarnessThinkingOptionId,
+    });
+    if (!opened.ok) throw new Error(opened.error.message);
+    const session = opened.value;
+    const outputs: HarnessOutput[] = [];
+    let completed!: () => void;
+    const done = new Promise<void>((resolve) => {
+      completed = resolve;
+    });
+    const consume = (async () => {
+      for await (const output of session.outputs) {
+        outputs.push(output);
+        if (output.kind === "event" && output.event.type === "turn.completed") completed();
+      }
+    })();
+    try {
+      expect(session.initialState.effectiveThinkingOptionId).toBe("high");
+      expect(fake.openCalls[0]).toMatchObject({ effortLevel: "high" });
+      expect(
+        (
+          await session.execute({
+            type: "thinking.select",
+            thinkingOptionId: "max" as HarnessThinkingOptionId,
+          })
+        ).ok,
+      ).toBe(false);
+      expect(fake.configCalls).toEqual([]);
+      expect(
+        (
+          await session.execute({
+            type: "thinking.select",
+            thinkingOptionId: "low" as HarnessThinkingOptionId,
+          })
+        ).ok,
+      ).toBe(true);
+      if (!session.commands) throw new Error("Missing commands");
+      expect(
+        (
+          await session.commands.execute({
+            commandId: "kiro.effort",
+            arguments: { text: "high" },
+            turnId: hostTurnIdSchema.parse("regression-turn"),
+          })
+        ).ok,
+      ).toBe(true);
+      await done;
+      expect(outputs).toContainEqual(
+        expect.objectContaining({
+          event: expect.objectContaining({
+            type: "session.state.changed",
+            state: expect.objectContaining({ effectiveThinkingOptionId: "high" }),
+          }),
+        }),
+      );
+      expect(JSON.stringify(outputs)).toContain("**Effort:** high");
+      fake.openResult.configOptions = fake.openResult.configOptions?.filter(
+        (value) => (value as { id: string }).id !== "effortLevel",
+      );
+      expect(
+        (
+          await session.execute({
+            type: "model.select",
+            model: { id: "fixed-paid" as HarnessModelRef["id"] },
+          })
+        ).ok,
+      ).toBe(true);
+      const rejected = await session.execute({
+        type: "thinking.select",
+        thinkingOptionId: "high" as HarnessThinkingOptionId,
+      });
+      expect(rejected).toMatchObject({ ok: false, error: { code: "unsupported" } });
+      expect(
+        (
+          await session.commands.execute({
+            commandId: "kiro.effort",
+            arguments: { text: "high" },
+            turnId: hostTurnIdSchema.parse("rejected-effort"),
+          })
+        ).ok,
+      ).toBe(false);
+    } finally {
+      await adapter.close();
+      await consume;
+    }
+    const states = outputs.flatMap((output) =>
+      output.kind === "event" && output.event.type === "session.state.changed"
+        ? [output.event.state]
+        : [],
+    );
+    expect(states.at(-1)).toMatchObject({
+      effectiveModel: { id: "fixed-paid" },
+      availableThinkingOptions: [],
+    });
+    expect(states.at(-1)?.effectiveThinkingOptionId).toBeUndefined();
+  });
+
+  it("restores native effort and refuses unconfirmed or busy changes", async () => {
+    const fake = effortTransport();
+    fake.setCurrent("effortLevel", "high");
+    const adapter = new KiroAdapter({}, { createTransport: () => fake });
+    try {
+      const opened = await adapter.open({
+        kind: "resume",
+        cwd: "/workspace",
+        nativeRef: nativeSessionRefSchema.parse({
+          harnessId: "kiro-cli",
+          nativeSessionId: "native",
+          formatVersion: 1,
+        }),
+      });
+      if (!opened.ok) throw new Error(opened.error.message);
+      const session = opened.value;
+      expect(session.initialState.effectiveThinkingOptionId).toBe("high");
+      fake.configResult = { configOptions: fake.openResult.configOptions };
+      const rejected = await session.execute({
+        type: "thinking.select",
+        thinkingOptionId: "low" as HarnessThinkingOptionId,
+      });
+      expect(rejected).toMatchObject({ ok: false, error: { code: "nativeFailure" } });
+      fake.blockRunTurn = true;
+      await session.execute({
+        type: "turn.start",
+        turnId: hostTurnIdSchema.parse("busy"),
+        input: [{ type: "text", text: "test" }],
+      });
+      expect(
+        await session.execute({
+          type: "thinking.select",
+          thinkingOptionId: "low" as HarnessThinkingOptionId,
+        }),
+      ).toMatchObject({ ok: false, error: { code: "sessionBusy" } });
+    } finally {
+      await adapter.close();
+    }
+  });
+
+  it.each(["fork", "rollbackLastTurn"] as const)(
+    "preserves persisted effort on %s",
+    async (kind) => {
+      const directory = await fs.mkdtemp(path.join(os.tmpdir(), "kiro-effort-history-"));
+      const fake = effortTransport();
+      const adapter = new KiroAdapter(
+        {},
+        {
+          createTransport: () => fake,
+          locateSession: async (_options, sessionId) => ({
+            sessionDirectory: directory,
+            cwd: directory,
+            sessionMeta: {
+              id: sessionId,
+              workspacePaths: [directory],
+              modelId: "adjustable",
+              autopilot: true,
+              effortLevel: "high",
+            },
+          }),
+        },
+      );
+      try {
+        await fs.writeFile(
+          path.join(directory, "messages.jsonl"),
+          [
+            { id: "bootstrap", payload: { type: "system" } },
+            { id: "user", payload: { type: "user", content: "test" } },
+            { id: "end", payload: { type: "turn_end", stopReason: "end_turn" } },
+          ]
+            .map((row) => JSON.stringify(row))
+            .join("\n"),
+          "utf8",
+        );
+        const sourceRef = nativeSessionRefSchema.parse({
+          harnessId: "kiro-cli",
+          nativeSessionId: "source",
+          formatVersion: 1,
+        });
+        const opened = await adapter.open(
+          kind === "fork"
+            ? {
+                kind,
+                cwd: directory,
+                sourceRef,
+                checkpoint: nativeCheckpointRefSchema.parse({ ...sourceRef, checkpointId: "end" }),
+              }
+            : { kind, cwd: directory, sourceRef },
+        );
+        if (!opened.ok) throw new Error(opened.error.message);
+        expect(fake.openCalls[0]).toMatchObject({
+          kind,
+          modelId: "adjustable",
+          effortLevel: "high",
+        });
+        expect(opened.value.initialState.effectiveThinkingOptionId).toBe("high");
+        const snapshot = await opened.value.readSnapshot();
+        if (!snapshot.ok) throw new Error(snapshot.error.message);
+        expect(snapshot.value.state?.effectiveThinkingOptionId).toBe("high");
+        expect(snapshot.value.state?.availableThinkingOptions?.map(({ id }) => id)).toEqual([
+          "low",
+          "high",
+        ]);
+      } finally {
+        await adapter.close();
+        await fs.rm(directory, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it.each(["create", "resume"] as const)(
+    "handles unpublished history only for a pristine create, not %s history loss",
+    async (kind) => {
+      const fake = new FakeKiroTransport();
+      const missing = Object.assign(new Error("History is not yet published"), { code: "ENOENT" });
+      const adapter = new KiroAdapter(
+        {},
+        {
+          createTransport: () => fake,
+          locateSession: async () => ({
+            sessionDirectory: "/missing-kiro-history",
+            cwd: "/workspace",
+            sessionMeta: { id: fake.sessionId, workspacePaths: ["/workspace"] },
+          }),
+          readSnapshot: async () => {
+            throw missing;
+          },
+        },
+      );
+      try {
+        const opened = await adapter.open(
+          kind === "create"
+            ? { kind, cwd: "/workspace" }
+            : {
+                kind,
+                cwd: "/workspace",
+                nativeRef: nativeSessionRefSchema.parse({
+                  harnessId: "kiro-cli",
+                  nativeSessionId: fake.sessionId,
+                  formatVersion: 1,
+                }),
+                knownTurnRefs: [],
+              },
+        );
+        if (!opened.ok) throw new Error(opened.error.message);
+        expect((await opened.value.readSnapshot()).ok).toBe(kind === "create");
+        await collectTurn(opened.value);
+        expect((await opened.value.readSnapshot()).ok).toBe(false);
+      } finally {
+        await adapter.close();
+      }
+    },
+  );
+
+  it.each(["success", "failure", "close"] as const)(
+    "acknowledges compaction before it finishes and closes its Item on %s",
+    async (mode) => {
+      const fake = new FakeKiroTransport();
+      let finish!: (result: unknown) => void;
+      fake.compact = () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        });
+      const { session } = await open(fake);
+      if (!session.commands) throw new Error("Kiro commands are missing");
+      const stream = session.outputs[Symbol.asyncIterator]();
+      const turnId = hostTurnIdSchema.parse("regression-turn");
+      const accepted = await session.commands.execute({ commandId: "kiro.compact", turnId });
+      expect(accepted).toEqual({ ok: true, value: { turnId } });
+      const outputs: HarnessOutput[] = [];
+      outputs.push((await stream.next()).value, (await stream.next()).value);
+      expect(outputs).toMatchObject([
+        { event: { type: "turn.started" } },
+        { event: { type: "item.started", item: { type: "contextCompaction" } } },
+      ]);
+      const closing = mode === "close" ? session.close() : undefined;
+      if (mode !== "close") finish({ success: mode === "success" });
+      outputs.push((await stream.next()).value, (await stream.next()).value);
+      const status = mode === "success" ? "succeeded" : mode === "failure" ? "failed" : "cancelled";
+      expect(outputs[2]).toMatchObject({
+        event: { type: "item.completed", snapshot: { outcome: { status } } },
+      });
+      expect(outputs[3]).toMatchObject({ event: { type: "turn.completed", outcome: { status } } });
+      expect(() => projectOutputs(outputs)).not.toThrow();
+      await (closing ?? session.close());
+    },
+  );
+
+  it("edits the sole compacted Turn by creating an empty Session with the same configuration", async () => {
+    const directory = await fs.mkdtemp(path.join(os.tmpdir(), "kiro-empty-rollback-"));
+    try {
+      await fs.writeFile(
+        path.join(directory, "messages.jsonl"),
+        [
+          { id: "u1", payload: { type: "user", content: "Only turn" } },
+          { id: "a1", payload: { type: "assistant", operationType: "Say", content: "Answer" } },
+          { id: "e1", payload: { type: "turn_end", stopReason: "end_turn" } },
+          {
+            id: "compact",
+            payload: { type: "tombstone", kind: "summarization", effectiveFromMessageId: "u1" },
+          },
+          {
+            id: "summary",
+            payload: { type: "assistant", operationType: "Summary", content: "Summary" },
+          },
+        ]
+          .map((row) => JSON.stringify(row))
+          .join("\n"),
+        "utf8",
+      );
+      const fake = new FakeKiroTransport();
+      const adapter = new KiroAdapter(
+        {},
+        {
+          createTransport: () => fake,
+          locateSession: async () => ({
+            sessionDirectory: directory,
+            cwd: directory,
+            sessionMeta: {
+              id: "source",
+              workspacePaths: [directory],
+              modelId: "claude-sonnet-4.5",
+              autopilot: false,
+              agentMode: "spec",
+            },
+          }),
+        },
+      );
+      try {
+        const result = await adapter.open({
+          kind: "rollbackLastTurn",
+          cwd: directory,
+          sourceRef: nativeSessionRefSchema.parse({
+            harnessId: "kiro-cli",
+            nativeSessionId: "source",
+            formatVersion: 1,
+          }),
+        });
+        expect(result.ok).toBe(true);
+        expect(fake.openCalls).toEqual([
+          { kind: "create", modelId: "claude-sonnet-4.5", autopilot: "off", modeId: "spec" },
+        ]);
+      } finally {
+        await adapter.close();
+      }
+    } finally {
+      await fs.rm(directory, { recursive: true, force: true });
+    }
+  });
+
   it("loads credits on resume and publishes exact refresh and idle context updates", async () => {
     const directory = await fs.mkdtemp(path.join(os.tmpdir(), "kiro-usage-"));
     try {
@@ -751,7 +1133,7 @@ describe("KiroAdapter", () => {
         expect(inspection.catalog.thinkingOptions).toEqual([]);
         expect(inspection.capabilities.history.fork).toBe(true);
         expect(inspection.capabilities.history.rollbackLastTurn).toBe(true);
-        expect(inspection.capabilities.configuration.selectThinkingOption).toBe(false);
+        expect(inspection.capabilities.configuration.selectThinkingOption).toBe(true);
       }
     });
 

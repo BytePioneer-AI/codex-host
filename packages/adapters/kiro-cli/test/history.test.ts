@@ -16,6 +16,124 @@ import {
 } from "../src/history.js";
 
 describe("kiro native history", () => {
+  it("preserves visible answers and native lineage when forking compacted history", async () => {
+    const home = await fs.mkdtemp(path.join(os.tmpdir(), "kiro-compacted-fork-"));
+    const parentDirectory = path.join(home, "sessions", "bucket", "parent");
+    const childDirectory = path.join(home, "sessions", "bucket", "child");
+    const rows: KiroHistoryRow[] = [
+      { id: "bootstrap", payload: { type: "system" } },
+      { id: "u1", payload: { type: "user", content: "First question" } },
+      { id: "a1", payload: { type: "assistant", operationType: "Say", content: "First answer" } },
+      { id: "e1", payload: { type: "turn_end", stopReason: "end_turn" } },
+      { id: "u2", payload: { type: "user", content: "Second question" } },
+      { id: "r1", payload: { type: "assistant", operationType: "Reasoning", content: "..." } },
+      {
+        id: "a2",
+        payload: { type: "assistant", operationType: "Say", content: "Full final answer" },
+      },
+      { id: "r2", payload: { type: "assistant", operationType: "Reasoning", content: "..." } },
+      { id: "e2", payload: { type: "turn_end", stopReason: "end_turn" } },
+      {
+        id: "compact",
+        payload: { type: "tombstone", kind: "summarization", effectiveFromMessageId: "bootstrap" },
+      },
+      {
+        id: "summary",
+        payload: { type: "assistant", operationType: "Summary", content: "Native context summary" },
+      },
+    ];
+    try {
+      for (const [directory, id, messages] of [
+        [parentDirectory, "parent", rows],
+        [childDirectory, "child", rows.slice(-1)],
+      ] as const) {
+        await fs.mkdir(directory, { recursive: true });
+        await fs.writeFile(
+          path.join(directory, "session.json"),
+          JSON.stringify({
+            id,
+            workspacePaths: [home],
+            ...(id === "child" ? { parentSessionId: "parent" } : {}),
+          }),
+          "utf8",
+        );
+        await fs.writeFile(
+          path.join(directory, "messages.jsonl"),
+          messages.map((row) => JSON.stringify(row)).join("\n"),
+          "utf8",
+        );
+      }
+      const summary = parseKiroHistory(rows);
+      expect(findForkBoundary(summary, "e1")).toBeNull();
+      expect(findForkBoundary(summary, "e2")).toBe("summary");
+      expect(findForkBoundary(summary, "summary")).toBe("summary");
+      expect(findRollbackBoundary(summary)).toBeNull();
+
+      const parent = await locateKiroNativeSession({ environment: { KIRO_HOME: home } }, "parent");
+      const child = await locateKiroNativeSession({ environment: { KIRO_HOME: home } }, "child");
+      if (!parent || !child) throw new Error("Missing test session");
+      const original = await readKiroSnapshot(parent);
+      const restored = await readKiroSnapshot(child);
+      expect(restored.turns.map((turn) => turn.input)).toEqual(
+        original.turns.map((turn) => turn.input),
+      );
+      expect(restored.turns).toHaveLength(2);
+      expect(restored.turns[0]?.checkpoint).toBeUndefined();
+      expect(restored.turns[1]?.checkpoint?.checkpointId).toBe("summary");
+      expect(restored.turns[1]?.items.map(({ item }) => item)).toEqual([
+        {
+          type: "agentMessage",
+          itemId: "kiro-child-a2",
+          text: "Full final answer",
+          phase: "final_answer",
+        },
+        { type: "contextCompaction", itemId: "kiro-child-compact" },
+      ]);
+      expect(restored.turns.every((turn) => turn.nativeTurnRef.nativeSessionId === "child")).toBe(
+        true,
+      );
+      expect(await readKiroSnapshot(child)).toEqual(restored);
+      const restoredTurn = restored.turns[1];
+      if (!restoredTurn) throw new Error("Missing restored turn");
+      const projected = projectHistoricalTurn({
+        turnId: hostTurnIdSchema.parse("restored"),
+        cwd: home,
+        snapshot: restoredTurn,
+      });
+      expect(projected.items).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            type: "agentMessage",
+            text: "Full final answer",
+            phase: "final_answer",
+          }),
+        ]),
+      );
+    } finally {
+      await fs.rm(home, { recursive: true, force: true });
+    }
+  });
+
+  it("removes reverted turns without confusing compaction with deleted display history", () => {
+    const rows: KiroHistoryRow[] = [
+      { id: "init", payload: { type: "system" } },
+      { id: "u1", payload: { type: "user", content: "Kept" } },
+      { id: "e1", payload: { type: "turn_end", stopReason: "end_turn" } },
+      { id: "u2", payload: { type: "user", content: "Removed" } },
+      { id: "e2", payload: { type: "turn_end", stopReason: "end_turn" } },
+      {
+        id: "revert",
+        payload: { type: "tombstone", kind: "checkpoint_revert", effectiveFromMessageId: "u2" },
+      },
+      { id: "u3", payload: { type: "user", content: "Replacement" } },
+      { id: "e3", payload: { type: "turn_end", stopReason: "end_turn" } },
+    ];
+    const summary = parseKiroHistory(rows);
+    expect(summary.turns.map((turn) => turn.userPromptText)).toEqual(["Kept", "Replacement"]);
+    expect(findForkBoundary(summary, "e2")).toBeNull();
+    expect(findForkBoundary(summary)).toBe("e3");
+  });
+
   it("preserves native turn outcomes, tool results and message order across repeated reads", async () => {
     const directory = await fs.mkdtemp(path.join(os.tmpdir(), "kiro-native-history-"));
     try {

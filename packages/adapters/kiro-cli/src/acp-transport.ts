@@ -23,7 +23,7 @@ import {
 
 import { KiroExecutableError, kiroInvocation, resolveKiroExecutable } from "./command.js";
 import type { KiroUserInputParams, KiroUserInputResult } from "./projection.js";
-import { confirmedKiroConfig, parseKiroCliModels } from "./models.js";
+import { confirmedKiroConfig, parseKiroCliModels, kiroThinkingState } from "./models.js";
 
 export type KiroTransportFaultKind =
   | "notInstalled"
@@ -31,7 +31,9 @@ export type KiroTransportFaultKind =
   | "unavailable"
   | "protocolError"
   | "processExited"
-  | "checkpointNotFound";
+  | "checkpointNotFound"
+  | "unsupported"
+  | "invalidRequest";
 
 export class KiroTransportError extends Error {
   readonly diagnostic: string | undefined;
@@ -120,6 +122,7 @@ export interface KiroForkOpenInput {
   checkpointMessageId: string;
   modelId?: string | undefined;
   autopilot?: "on" | "off" | undefined;
+  effortLevel?: string | undefined;
 }
 
 export interface KiroRollbackOpenInput {
@@ -129,15 +132,23 @@ export interface KiroRollbackOpenInput {
   checkpointMessageId: string;
   modelId?: string | undefined;
   autopilot?: "on" | "off" | undefined;
+  effortLevel?: string | undefined;
 }
 
 export type KiroOpenInput =
-  | { kind: "create"; modelId?: string | undefined; autopilot?: "on" | "off" | undefined }
+  | {
+      kind: "create";
+      modelId?: string | undefined;
+      autopilot?: "on" | "off" | undefined;
+      modeId?: string | undefined;
+      effortLevel?: string | undefined;
+    }
   | {
       kind: "resume";
       sessionId: string;
       modelId?: string | undefined;
       autopilot?: "on" | "off" | undefined;
+      effortLevel?: string | undefined;
     }
   | KiroForkOpenInput
   | KiroRollbackOpenInput;
@@ -312,6 +323,13 @@ export class KiroAcpTransport {
         sessionId = created.sessionId;
         configOptions = (created as { configOptions?: unknown[] }).configOptions;
 
+        if (input.modeId) {
+          await withTimeout(
+            connection.setSessionMode({ sessionId, modeId: input.modeId }),
+            this.#commandTimeoutMs,
+            "Kiro initial mode",
+          );
+        }
         // Apply initial config options if provided
         if (input.modelId) {
           configOptions = await this.#setConfigOptionOnSession(
@@ -398,6 +416,22 @@ export class KiroAcpTransport {
 
       if (typeof sessionId !== "string" || sessionId.length === 0) {
         throw new KiroTransportError("protocolError", "Kiro ACP returned no Session identity");
+      }
+
+      if (input.effortLevel !== undefined) {
+        const available = kiroThinkingState(configOptions).availableThinkingOptions ?? [];
+        if (!available.some(({ id }) => id === input.effortLevel)) {
+          throw new KiroTransportError(
+            available.length === 0 ? "unsupported" : "invalidRequest",
+            "The current Kiro model does not support the requested effort level",
+          );
+        }
+        configOptions = await this.#setConfigOptionOnSession(
+          connection,
+          sessionId,
+          "effortLevel",
+          input.effortLevel,
+        );
       }
 
       this.#sessionId = sessionId;
@@ -497,8 +531,16 @@ export class KiroAcpTransport {
             cause: error,
           });
         }
-        if (error.message.includes("not found") || error.message.includes("message")) {
-          throw new KiroTransportError("checkpointNotFound", error.message, { cause: error });
+        const detail =
+          isRecord(error.data) && typeof error.data.details === "string"
+            ? error.data.details
+            : error.message;
+        if (/message.*not found/iu.test(detail)) {
+          throw new KiroTransportError(
+            "checkpointNotFound",
+            "Kiro no longer retains this fork position after compaction or rewind. Refresh history and fork from the latest retained position.",
+            { cause: error },
+          );
         }
       }
       throw new KiroTransportError("unavailable", "Kiro Native Fork failed", { cause: error });

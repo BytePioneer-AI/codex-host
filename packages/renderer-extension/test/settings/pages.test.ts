@@ -688,7 +688,9 @@ describe("Renderer Codex Accounts page", () => {
       runLatest: (operation, handlers) => scope.runLatest(operation, handlers),
     });
     await vi.waitFor(() => expect(visibleText(content)).toContain("Personal"));
-    expect(visibleText(content)).toContain("Existing tasks stay with their original Account");
+    expect(visibleText(content)).toContain(
+      "Existing tasks keep the account they were created with",
+    );
     expect(visibleText(content)).toContain("Enable device code authorization for Codex");
     expect(visibleText(content)).not.toContain("token");
     expect(
@@ -698,13 +700,13 @@ describe("Renderer Codex Accounts page", () => {
     ).toHaveLength(1);
 
     const useWork = descendants(content).find(
-      ({ tagName, textContent }) => tagName === "button" && textContent === "Use for new tasks",
+      ({ tagName, textContent }) => tagName === "button" && textContent === "Set as default",
     );
     useWork?.dispatch("click");
     await vi.waitFor(() =>
       expect(client.activateCodexAccount).toHaveBeenCalledWith({ accountId: "work" }),
     );
-    await vi.waitFor(() => expect(visibleText(content)).toContain("Active"));
+    await vi.waitFor(() => expect(visibleText(content)).toContain("Default"));
 
     const signIn = descendants(content).find(
       ({ tagName, textContent }) => tagName === "button" && textContent === "Sign in",

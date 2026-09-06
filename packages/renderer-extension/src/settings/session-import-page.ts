@@ -52,7 +52,7 @@ export function createSessionImportSettingsPage(
   return Object.freeze({
     id: "session-import",
     label: messages.pageLabels["session-import"],
-    icon: "download",
+    icon: "session-import",
     mount(context: RendererSettingsPageMountContext) {
       const document = context.content.ownerDocument;
       const header = document.createElement("div");

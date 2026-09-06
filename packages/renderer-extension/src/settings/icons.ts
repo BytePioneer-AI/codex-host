@@ -6,10 +6,12 @@ import ChevronDown from "lucide/dist/esm/icons/chevron-down.mjs";
 import ChevronLeft from "lucide/dist/esm/icons/chevron-left.mjs";
 import ChevronRight from "lucide/dist/esm/icons/chevron-right.mjs";
 import ChevronUp from "lucide/dist/esm/icons/chevron-up.mjs";
+import CircleArrowUp from "lucide/dist/esm/icons/circle-arrow-up.mjs";
 import CircleOff from "lucide/dist/esm/icons/circle-off.mjs";
 import Copy from "lucide/dist/esm/icons/copy.mjs";
 import Download from "lucide/dist/esm/icons/download.mjs";
 import ExternalLink from "lucide/dist/esm/icons/external-link.mjs";
+import FolderInput from "lucide/dist/esm/icons/folder-input.mjs";
 import GripVertical from "lucide/dist/esm/icons/grip-vertical.mjs";
 import Info from "lucide/dist/esm/icons/info.mjs";
 import Languages from "lucide/dist/esm/icons/languages.mjs";
@@ -34,6 +36,7 @@ export const RENDERER_SETTINGS_ICON_NAMES = [
   "language",
   "connections",
   "accounts",
+  "session-import",
   "add",
   "model-pool",
   "routes",
@@ -65,11 +68,12 @@ const iconNodes = {
   language: Languages,
   connections: PlugZap,
   accounts: Users,
+  "session-import": FolderInput,
   add: Plus,
   "model-pool": Boxes,
   routes: Route,
   gateway: Network,
-  updates: Download,
+  updates: CircleArrowUp,
   about: Info,
   "external-link": ExternalLink,
   refresh: RefreshCw,

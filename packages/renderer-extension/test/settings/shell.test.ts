@@ -30,7 +30,7 @@ describe("Renderer settings foundation", () => {
     expect(pages.map(({ icon }) => icon)).toEqual([
       "connections",
       "accounts",
-      "download",
+      "session-import",
       "updates",
       "about",
     ]);

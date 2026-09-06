@@ -68,8 +68,8 @@ button {
 }
 
 .codexhost-settings-dialog {
-  width: min(840px, calc(100vw - 56px));
-  height: min(600px, calc(100vh - 56px));
+  width: min(1120px, calc(100vw - 32px));
+  height: min(780px, calc(100vh - 32px));
   max-width: none;
   max-height: none;
   margin: auto;
@@ -304,7 +304,7 @@ button {
 }
 
 .settings-page__content {
-  width: min(608px, calc(100% - 40px));
+  width: min(930px, calc(100% - 80px));
   margin-inline: auto;
 }
 
@@ -860,9 +860,9 @@ button {
 
 .settings-connections-layout {
   display: grid;
-  grid-template-columns: minmax(0, 1.35fr) minmax(232px, 0.95fr);
+  grid-template-columns: minmax(0, 1.55fr) minmax(280px, 0.85fr);
   align-items: start;
-  gap: 14px;
+  gap: 18px;
 }
 
 .settings-connection-list,

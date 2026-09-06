@@ -41,8 +41,8 @@ describe("Codex Thread Usage projection", () => {
           last: {
             totalTokens: 240,
             inputTokens: 240,
-            cachedInputTokens: 0,
-            cacheWriteInputTokens: 0,
+            cachedInputTokens: 20,
+            cacheWriteInputTokens: 5,
             outputTokens: 0,
             reasoningOutputTokens: 0,
           },
@@ -51,6 +51,65 @@ describe("Codex Thread Usage projection", () => {
       },
     });
     expect(usage).toEqual(original);
+  });
+
+  it("clamps the context cache split so it never exceeds the used context", () => {
+    const turnId = hostTurnIdSchema.parse("turn-clamped");
+
+    expect(
+      projectCodexThreadUsage({
+        threadId: "thread-clamped",
+        turnId,
+        usage: {
+          inputTokens: 900,
+          cachedInputTokens: 500,
+          cacheWriteInputTokens: 700,
+          totalTokens: 1_600,
+          contextUsedTokens: 600,
+          contextWindowTokens: 2_000,
+        },
+      }),
+    ).toMatchObject({
+      params: {
+        tokenUsage: {
+          total: {
+            inputTokens: 900,
+            cachedInputTokens: 500,
+            cacheWriteInputTokens: 700,
+          },
+          last: {
+            totalTokens: 600,
+            inputTokens: 600,
+            cachedInputTokens: 500,
+            cacheWriteInputTokens: 100,
+          },
+        },
+      },
+    });
+
+    expect(
+      projectCodexThreadUsage({
+        threadId: "thread-clamped",
+        turnId,
+        usage: {
+          cachedInputTokens: 800,
+          cacheWriteInputTokens: 50,
+          contextUsedTokens: 600,
+          contextWindowTokens: 2_000,
+        },
+      }),
+    ).toMatchObject({
+      params: {
+        tokenUsage: {
+          last: {
+            totalTokens: 600,
+            inputTokens: 600,
+            cachedInputTokens: 600,
+            cacheWriteInputTokens: 0,
+          },
+        },
+      },
+    });
   });
 
   it("fills required aggregate carrier components without changing canonical unknowns", () => {

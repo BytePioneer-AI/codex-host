@@ -104,6 +104,7 @@ describe("Codex UI projector", () => {
           type: "reasoning",
           summary: ["visible analysis"],
           content: [],
+          durationMs: null,
         },
         {
           id: "historical-reasoning",
@@ -124,6 +125,7 @@ describe("Codex UI projector", () => {
           text: "answer",
           phase: null,
           memoryCitation: null,
+          durationMs: null,
         },
         expect.objectContaining({
           id: "historical-tool",
@@ -145,6 +147,76 @@ describe("Codex UI projector", () => {
       durationMs: null,
       itemsView: "full",
     });
+  });
+
+  it("projects historical Snapshot timings, Item durations, and image input echo", () => {
+    const snapshot: HostThreadSnapshot["turns"][number] = {
+      nativeTurnRef: nativeTurnRefSchema.parse({
+        harnessId: "pi",
+        nativeSessionId: "session-1",
+        nativeTurnKey: "native-turn-1",
+        formatVersion: 1,
+      }),
+      input: [
+        { type: "text", text: "what is in this image?" },
+        { type: "image", mimeType: "image/png", base64Data: "aW1hZ2U=" },
+      ],
+      items: [
+        {
+          item: {
+            type: "reasoning",
+            itemId: itemId("timed-reasoning"),
+            text: "analysis",
+            durationMs: 1_500,
+          },
+          outcome: { status: "succeeded" },
+        },
+        {
+          item: {
+            type: "agentMessage",
+            itemId: itemId("timed-agent"),
+            text: "answer",
+            durationMs: 2_500,
+          },
+          outcome: { status: "succeeded" },
+        },
+      ],
+      outcome: { status: "succeeded" },
+      startedAtMs: 1_700_000_001_234,
+      completedAtMs: 1_700_000_009_876,
+    };
+
+    expect(projectHistoricalTurn({ turnId, cwd: "/workspace", snapshot })).toMatchObject({
+      startedAt: 1_700_000_001,
+      completedAt: 1_700_000_009,
+      durationMs: 8_642,
+      items: [
+        {
+          id: "turn-1-user",
+          type: "userMessage",
+          content: [
+            { type: "text", text: "what is in this image?", text_elements: [] },
+            { type: "inputImage", imageUrl: "data:image/png;base64,aW1hZ2U=" },
+          ],
+        },
+        { id: "timed-reasoning-summary", type: "reasoning", durationMs: 1_500 },
+        {
+          id: "timed-reasoning",
+          type: "commandExecution",
+          command: "thinking",
+          durationMs: 1_500,
+        },
+        { id: "timed-agent", type: "agentMessage", durationMs: 2_500 },
+      ],
+    });
+
+    expect(
+      projectHistoricalTurn({
+        turnId,
+        cwd: "/workspace",
+        snapshot: { ...snapshot, startedAtMs: 5_000, completedAtMs: 4_000 },
+      }),
+    ).toMatchObject({ startedAt: 5, completedAt: 4, durationMs: 0 });
   });
 
   it("projects Agent Message and Command Execution lifecycles", () => {
@@ -431,6 +503,135 @@ describe("Codex UI projector", () => {
             type: "commandExecution",
             command: "thinking",
             durationMs: 1_500,
+          },
+        },
+      },
+    ]);
+  });
+
+  it("prefers the completed Item duration for Reasoning and Agent Message", () => {
+    const value = projector();
+    const reasoningId = itemId("native-duration-reasoning");
+    const agentId = itemId("native-duration-agent");
+    value.project({ type: "turn.started", turnId });
+
+    value.project(
+      {
+        type: "item.started",
+        turnId,
+        item: { type: "reasoning", itemId: reasoningId, text: "deep thought" },
+      },
+      2_000,
+    );
+    const reasoningCompleted = value.project(
+      {
+        type: "item.completed",
+        turnId,
+        snapshot: {
+          item: { type: "reasoning", itemId: reasoningId, text: "deep thought", durationMs: 120 },
+          outcome: { status: "succeeded" },
+        },
+      },
+      9_000,
+    );
+    expect(reasoningCompleted.messages).toMatchObject([
+      {
+        method: "item/completed",
+        params: {
+          startedAtMs: 2_000,
+          completedAtMs: 9_000,
+          item: { id: `${reasoningId}-summary`, type: "reasoning", durationMs: 120 },
+        },
+      },
+      {
+        method: "item/completed",
+        params: {
+          item: {
+            id: reasoningId,
+            type: "commandExecution",
+            command: "thinking",
+            durationMs: 120,
+          },
+        },
+      },
+    ]);
+
+    value.project(
+      {
+        type: "item.started",
+        turnId,
+        item: { type: "agentMessage", itemId: agentId, text: "answer" },
+      },
+      10_000,
+    );
+    expect(
+      value.project(
+        {
+          type: "item.completed",
+          turnId,
+          snapshot: {
+            item: { type: "agentMessage", itemId: agentId, text: "answer", durationMs: 340 },
+            outcome: { status: "succeeded" },
+          },
+        },
+        20_000,
+      ).messages,
+    ).toMatchObject([
+      {
+        method: "item/completed",
+        params: { item: { id: agentId, type: "agentMessage", durationMs: 340 } },
+      },
+    ]);
+  });
+
+  it("uses the native turn.completed time for Turn timing", () => {
+    const value = projector();
+    value.project({ type: "turn.started", turnId });
+
+    const completed = value.project(
+      {
+        type: "turn.completed",
+        turnId,
+        outcome: { status: "succeeded" },
+        completedAtMs: 61_000,
+      },
+      999_000,
+    );
+    expect(completed.completedTurn).toMatchObject({
+      startedAt: 1,
+      completedAt: 61,
+      durationMs: 60_000,
+    });
+    expect(completed.messages).toMatchObject([{ method: "turn/completed", emittedAtMs: 999_000 }]);
+  });
+
+  it("echoes image input parts in the live user message", () => {
+    const value = new CodexTurnProjector({
+      threadId: "thread-1",
+      turnId,
+      cwd: "/workspace",
+      startedAtMs: 1_000,
+      initialInput: [
+        { type: "text", text: "describe this" },
+        { type: "image", mimeType: "image/png", base64Data: "aW1hZ2U=" },
+      ],
+    });
+
+    expect(value.project({ type: "turn.started", turnId }).messages).toMatchObject([
+      {
+        method: "turn/started",
+        params: {
+          turn: {
+            items: [
+              {
+                id: `${turnId}-user`,
+                type: "userMessage",
+                content: [
+                  { type: "text", text: "describe this", text_elements: [] },
+                  { type: "inputImage", imageUrl: "data:image/png;base64,aW1hZ2U=" },
+                ],
+              },
+            ],
           },
         },
       },

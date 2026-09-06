@@ -5,6 +5,7 @@ import type {
   HostItemOutcome,
   HostItemUpdate,
   HostQuestionInteraction,
+  HostTurnInput,
   HostTurnSnapshot,
   HistoricalTurnOutcome,
   InteractionClosedEvent,
@@ -77,7 +78,10 @@ function resolvedItemDurationMs(
   completedAtMs: number,
 ): number {
   if (
-    (item.type === "commandExecution" || item.type === "toolExecution") &&
+    (item.type === "commandExecution" ||
+      item.type === "toolExecution" ||
+      item.type === "reasoning" ||
+      item.type === "agentMessage") &&
     item.durationMs !== undefined
   ) {
     return item.durationMs;
@@ -86,7 +90,14 @@ function resolvedItemDurationMs(
 }
 
 function withResolvedDuration(item: HostItem, durationMs: number): HostItem {
-  if (item.type !== "commandExecution" && item.type !== "toolExecution") return item;
+  if (
+    item.type !== "commandExecution" &&
+    item.type !== "toolExecution" &&
+    item.type !== "reasoning" &&
+    item.type !== "agentMessage"
+  ) {
+    return item;
+  }
   return { ...item, durationMs };
 }
 
@@ -423,6 +434,22 @@ function toolContentItems(item: Extract<HostItem, { type: "toolExecution" }>): J
   );
 }
 
+/**
+ * Codex renders a user Turn as the echo of its input parts. Image parts must
+ * reuse the same `inputImage` data-URL shape as Tool output images so pasted
+ * or attached images stay visible in the transcript.
+ */
+function userInputContent(input: HostTurnInput[]): JsonValue[] {
+  return input.map((part) =>
+    part.type === "image"
+      ? {
+          type: "inputImage",
+          imageUrl: `data:${part.mimeType};base64,${part.base64Data}`,
+        }
+      : { type: "text", text: part.text, text_elements: [] },
+  );
+}
+
 function collabAgentStatus(
   status: Extract<HostItem, { type: "subagentDelegation" }>["subagents"][number]["status"],
 ): string {
@@ -455,6 +482,7 @@ function projectItem(
         text: item.text,
         phase: null,
         memoryCitation: null,
+        durationMs: item.durationMs ?? null,
       };
     case "reasoning":
       return {
@@ -462,6 +490,7 @@ function projectItem(
         type: "reasoning",
         summary: item.text.length > 0 ? [item.text] : [],
         content: [],
+        durationMs: item.durationMs ?? null,
       };
     case "contextCompaction":
       return { id: item.itemId, type: "contextCompaction" };
@@ -606,6 +635,7 @@ export function projectHistoricalTurn(input: HistoricalTurnProjectionInput): Jso
           additionalDetails: null,
         }
       : null;
+  const { startedAtMs, completedAtMs } = snapshot;
   return {
     id: turnId,
     status: historicalStatus(snapshot.outcome),
@@ -614,7 +644,7 @@ export function projectHistoricalTurn(input: HistoricalTurnProjectionInput): Jso
         id: `${turnId}-user`,
         type: "userMessage",
         clientId: null,
-        content: snapshot.input.map(({ text }) => ({ type: "text", text, text_elements: [] })),
+        content: userInputContent(snapshot.input),
       },
       ...snapshot.items.flatMap(({ item, outcome }) => {
         if (item.type === "toolExecution") {
@@ -637,15 +667,18 @@ export function projectHistoricalTurn(input: HistoricalTurnProjectionInput): Jso
         return item.type === "reasoning"
           ? [
               projectItem(item, outcome, cwd, true, ""),
-              projectReasoningTranscriptItem(item, outcome, cwd),
+              projectReasoningTranscriptItem(item, outcome, cwd, item.durationMs ?? null),
             ]
           : [projectItem(item, outcome, cwd, true, "")];
       }),
     ],
     error,
-    startedAt: null,
-    completedAt: null,
-    durationMs: null,
+    startedAt: startedAtMs === undefined ? null : Math.floor(startedAtMs / 1000),
+    completedAt: completedAtMs === undefined ? null : Math.floor(completedAtMs / 1000),
+    durationMs:
+      startedAtMs === undefined || completedAtMs === undefined
+        ? null
+        : Math.max(0, completedAtMs - startedAtMs),
     itemsView: "full",
   };
 }
@@ -1095,7 +1128,7 @@ export class CodexTurnProjector {
     );
   }
 
-  #completeTurn(event: TurnCompletedEvent, completedAtMs: number): CodexTurnProjection {
+  #completeTurn(event: TurnCompletedEvent, emittedAtMs: number): CodexTurnProjection {
     this.#requireStarted();
     if (this.#interactions.size > 0) {
       throw new Error("Host Turn completed with pending Interactions");
@@ -1103,6 +1136,9 @@ export class CodexTurnProjector {
     const active = [...this.#items.values()].filter(({ outcome }) => outcome === null);
     if (active.length > 0) throw new Error("Host Turn completed with active Items");
     this.#completed = true;
+    // A replayed or buffered Turn carries its native completion time; only fall
+    // back to the emission wall clock when the adapter could not observe it.
+    const completedAtMs = event.completedAtMs ?? emittedAtMs;
     const completedAt = Math.floor(completedAtMs / 1000);
     const error = turnError(event.outcome);
     const turn: JsonObject = {
@@ -1158,7 +1194,7 @@ export class CodexTurnProjector {
           : []),
         {
           method: "turn/completed",
-          emittedAtMs: completedAtMs,
+          emittedAtMs,
           params: { threadId: this.#threadId, turn },
         },
       ],
@@ -1173,7 +1209,7 @@ export class CodexTurnProjector {
             id: `${this.#turnId}-user`,
             type: "userMessage",
             clientId: null,
-            content: this.#input.map(({ text }) => ({ type: "text", text, text_elements: [] })),
+            content: userInputContent(this.#input),
           },
         ];
   }

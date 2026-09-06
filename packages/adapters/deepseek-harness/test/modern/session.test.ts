@@ -613,7 +613,7 @@ describe("DeepSeek Harness Modern Session", () => {
     await session.close();
   });
 
-  it("uses exact prompt wire, preserves text parts, and projects text/reasoning/Tool/Diff/Usage", async () => {
+  it("uses exact prompt wire, ignores image parts, and projects text/reasoning/Tool/Diff/Usage", async () => {
     const test = setup([() => accepted()], [], ["request-1"]);
     const outputs = test.session.outputs[Symbol.asyncIterator]();
     const id = turnId("host-turn-1");
@@ -622,10 +622,12 @@ describe("DeepSeek Harness Modern Session", () => {
       turnId: id,
       input: [
         { type: "text", text: "first" },
+        { type: "image", mimeType: "image/png", base64Data: "aW1hZ2U=" },
         { type: "text", text: "second" },
       ],
     });
     expect(result).toEqual({ ok: true, value: { turnId: id } });
+    // The DSH prompt wire carries text blocks only; the image part is ignored.
     expect(test.remote.calls[0]).toMatchObject({
       endpoint: "session/prompt",
       args: {
@@ -689,6 +691,21 @@ describe("DeepSeek Harness Modern Session", () => {
         .filter((item) => item.type === "item.completed")
         .map((item) => (item.type === "item.completed" ? item.snapshot.item.type : "")),
     ).toEqual(["reasoning", "agentMessage", "toolExecution", "fileChange"]);
+    // The reasoning preview streams live instead of materializing at block-end,
+    // and native journal time brackets it (delta at seq 3, message at seq 6).
+    expect(
+      emitted.some(
+        (item) =>
+          item.type === "item.updated" &&
+          item.update.type === "text.append" &&
+          item.update.text === "think",
+      ),
+    ).toBe(true);
+    expect(
+      emitted.find(
+        (item) => item.type === "item.completed" && item.snapshot.item.type === "reasoning",
+      ),
+    ).toMatchObject({ snapshot: { item: { text: "think", durationMs: 3 } } });
     expect(emitted.at(-1)).toMatchObject({
       type: "turn.completed",
       turnId: id,
@@ -704,7 +721,26 @@ describe("DeepSeek Harness Modern Session", () => {
     await test.session.close();
   });
 
-  it("publishes only final reasoning across revised, delta-free, and repeated Turns", async () => {
+  it("rejects an image-only Turn input with an explanatory diagnostic", async () => {
+    const test = setup([], [], []);
+    const result = await test.session.execute({
+      type: "turn.start",
+      turnId: turnId("host-turn-image-only"),
+      input: [{ type: "image", mimeType: "image/png", base64Data: "aW1hZ2U=" }],
+    });
+    expect(result).toEqual({
+      ok: false,
+      error: {
+        code: "invalidRequest",
+        message: "DeepSeek Harness Turn input must contain text",
+        retryable: false,
+        diagnostic: "DeepSeek Harness prompts accept text only; image parts were ignored",
+      },
+    });
+    await test.session.close();
+  });
+
+  it("streams reasoning previews and republishes revised authoritative text", async () => {
     const test = setup(
       [() => accepted(), () => accepted(), () => accepted(), () => accepted()],
       [],
@@ -716,11 +752,13 @@ describe("DeepSeek Harness Modern Session", () => {
         chunks: [{ type: "reasoning-delta", index: 0, text: "first thought\n\n" }],
         final: "first thought",
         text: "answer one",
+        preview: "first thought\n\n",
       },
       {
         chunks: [{ type: "reasoning-delta", index: 0, text: "use path A" }],
         final: "used path B",
         text: "answer two",
+        preview: "use path A",
       },
       {
         chunks: [
@@ -729,11 +767,13 @@ describe("DeepSeek Harness Modern Session", () => {
         ],
         final: "final block",
         text: "answer three",
+        preview: null,
       },
       {
         chunks: [{ type: "block-end", index: 0, block: { type: "reasoning", text: "end only" } }],
         final: "end only",
         text: "answer four",
+        preview: null,
       },
     ];
     let seq = 0;
@@ -767,19 +807,38 @@ describe("DeepSeek Harness Modern Session", () => {
       test.feed.push(event(seq++, "turn/end", { turn: nativeTurn, reason: { kind: "completed" } }));
 
       const emitted = await eventsThrough(outputs, "turn.completed");
-      expect(
-        emitted.flatMap((item) => (item.type === "item.started" ? [item.item.type] : [])),
-      ).toEqual(["agentMessage", "reasoning"]);
+      const reasoningItems = emitted.flatMap((item) =>
+        item.type === "item.completed" && item.snapshot.item.type === "reasoning"
+          ? [item.snapshot.item]
+          : [],
+      );
+      if (value.preview === null) {
+        // Delta-free Turns materialize the authoritative text as a single Item.
+        expect(
+          emitted.flatMap((item) => (item.type === "item.started" ? [item.item.type] : [])),
+        ).toEqual(["agentMessage", "reasoning"]);
+        expect(reasoningItems).toHaveLength(1);
+        expect(reasoningItems[0]).toMatchObject({ text: value.final });
+        expect(reasoningItems[0]?.durationMs).toBeUndefined();
+      } else {
+        // The streamed preview is live on the Host and cannot be retracted: a
+        // revised authoritative text completes the preview and restarts as its
+        // own Item. Journal time brackets both (delta seq → message seq).
+        expect(
+          emitted.flatMap((item) => (item.type === "item.started" ? [item.item.type] : [])),
+        ).toEqual(["reasoning", "agentMessage", "reasoning"]);
+        expect(reasoningItems.map(({ text }) => text)).toEqual([value.preview, value.final]);
+        expect(reasoningItems.every((item) => item.durationMs === 2)).toBe(true);
+      }
       expect(
         emitted.flatMap((item) =>
           item.type === "item.completed" ? [item.snapshot.item.type] : [],
         ),
-      ).toEqual(["reasoning", "agentMessage"]);
-      expect(
-        emitted.find(
-          (item) => item.type === "item.completed" && item.snapshot.item.type === "reasoning",
-        ),
-      ).toMatchObject({ snapshot: { item: { text: value.final } } });
+      ).toEqual(
+        value.preview === null
+          ? ["reasoning", "agentMessage"]
+          : ["reasoning", "reasoning", "agentMessage"],
+      );
       expect(emitted.at(-1)).toMatchObject({
         type: "turn.completed",
         outcome: { status: "succeeded" },
@@ -795,7 +854,7 @@ describe("DeepSeek Harness Modern Session", () => {
     await test.session.close();
   });
 
-  it("omits empty final reasoning and does not carry it into later steps", async () => {
+  it("streams step-scoped reasoning previews and keeps only authoritative history", async () => {
     const test = setup([() => accepted()], [], ["request-1"]);
     const outputs = test.session.outputs[Symbol.asyncIterator]();
     const id = turnId("host-turn-empty-reasoning");
@@ -866,11 +925,16 @@ describe("DeepSeek Harness Modern Session", () => {
         ? [item.snapshot.item]
         : [],
     );
-    expect(reasoningItems).toHaveLength(1);
-    expect(reasoningItems[0]).toMatchObject({
-      text: "final thought",
-      itemId: expect.stringContaining("step:2"),
-    });
+    // Step 1's empty delta-free reasoning stays omitted. Step 2 streams a
+    // preview that the revised authoritative text completes and restarts;
+    // step 3's discarded preview still completes because it is already live.
+    expect(reasoningItems.map(({ text }) => text)).toEqual([
+      "draft",
+      "final thought",
+      "removed provisional thought",
+    ]);
+    expect(reasoningItems[1]?.itemId).toContain("step:2");
+    expect(reasoningItems[2]?.itemId).toContain("step:3");
     const snapshot = await test.session.readSnapshot();
     expect(snapshot).toMatchObject({ ok: true });
     if (!snapshot.ok) throw new Error("expected multi-step Modern history Snapshot");
@@ -1036,17 +1100,25 @@ describe("DeepSeek Harness Modern Session", () => {
     test.feed.finish();
     const emitted = await eventsThrough(outputs, "turn.completed");
     expect(test.remote.streamCalls).toBe(1);
+    // The replayed reasoning delta streams as a live preview; the replacement's
+    // authoritative text diverges, so the preview completes and restarts.
     expect(
       emitted.flatMap((item) => (item.type === "item.started" ? [item.item.type] : [])),
-    ).toEqual(["agentMessage", "reasoning"]);
+    ).toEqual(["reasoning", "agentMessage", "reasoning"]);
     expect(
       emitted.flatMap((item) => (item.type === "item.completed" ? [item.snapshot.item.type] : [])),
-    ).toEqual(["reasoning", "agentMessage"]);
-    expect(
-      emitted.find(
-        (item) => item.type === "item.completed" && item.snapshot.item.type === "reasoning",
-      ),
-    ).toMatchObject({ snapshot: { item: { text: "authoritative thought" } } });
+    ).toEqual(["reasoning", "reasoning", "agentMessage"]);
+    const reasoningItems = emitted.flatMap((item) =>
+      item.type === "item.completed" && item.snapshot.item.type === "reasoning"
+        ? [item.snapshot.item]
+        : [],
+    );
+    expect(reasoningItems.map(({ text }) => text)).toEqual([
+      "obsolete draft\n\n",
+      "authoritative thought",
+    ]);
+    // Native journal time brackets the Item (delta at seq 3, block end at seq 5).
+    expect(reasoningItems.every((item) => item.durationMs === 2)).toBe(true);
     expect(emitted.at(-1)).toMatchObject({
       type: "turn.completed",
       outcome: { status: "succeeded" },

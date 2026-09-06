@@ -760,7 +760,11 @@ class DeepSeekHarnessSession implements HarnessSession, DeepSeekHostSubscriber {
         },
       };
     }
-    const text = command.input.map((input) => input.text).join("\n");
+    // The Legacy prompt wire carries a single text block, so image parts of a
+    // Turn input are ignored rather than degraded into a textual placeholder.
+    const text = command.input
+      .flatMap((part) => (part.type === "text" ? [part.text] : []))
+      .join("\n");
     if (!text) {
       return {
         ok: false,

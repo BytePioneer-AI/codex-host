@@ -3,16 +3,17 @@ import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-import type { HostThreadSnapshot } from "@codexhost/harness-adapter";
+import type { HostTextInput, HostThreadSnapshot, HostUsage } from "@codexhost/harness-adapter";
 import {
   harnessModelRefSchema,
   harnessThinkingOptionIdSchema,
   hostItemIdSchema,
   jsonValueSchema,
   nativeTurnRefSchema,
+  threadUsageSnapshotSchema,
   type HarnessModelRef,
   type HarnessThinkingOptionId,
-  type JsonValue,
+  type JsonObject,
   type NativeTurnRef,
 } from "@codexhost/shared-contracts";
 import { z } from "zod";
@@ -113,6 +114,8 @@ const turnSchema = z.strictObject({
   items: z.array(z.strictObject({ item: hostItemSchema, outcome: itemOutcomeSchema })),
   outcome: turnOutcomeSchema,
   model: harnessModelRefSchema.optional(),
+  /** Per-Turn Usage total, kept so a resumed Session can restore cumulative totals. */
+  usage: threadUsageSnapshotSchema.optional(),
 });
 
 const historySchema = z.strictObject({
@@ -143,14 +146,16 @@ function historyPath(environment: NodeJS.ProcessEnv): string | null {
   return threadId ? path.join(historyRoot(environment), `${threadId}.json`) : null;
 }
 
-function jsonTurn(turn: AntigravityTurn): JsonValue {
-  return JSON.parse(JSON.stringify(turn)) as JsonValue;
+function jsonTurn(turn: AntigravityTurn): JsonObject {
+  return JSON.parse(JSON.stringify(turn)) as JsonObject;
 }
 
 export class AntigravityHistory {
   readonly #file: string | null;
   #nativeSessionId: string | null;
   #turns: AntigravityTurn[];
+  /** Per-Turn Usage keyed by Native Turn key; persisted inside each Turn record. */
+  #turnUsages: Map<string, HostUsage>;
   #model: HarnessModelRef | undefined;
   #thinkingOptionId: HarnessThinkingOptionId | undefined;
   #write: Promise<void> = Promise.resolve();
@@ -159,12 +164,14 @@ export class AntigravityHistory {
     file: string | null;
     nativeSessionId: string | null;
     turns: AntigravityTurn[];
+    turnUsages: Map<string, HostUsage>;
     model?: HarnessModelRef;
     thinkingOptionId?: HarnessThinkingOptionId;
   }) {
     this.#file = input.file;
     this.#nativeSessionId = input.nativeSessionId;
     this.#turns = input.turns;
+    this.#turnUsages = input.turnUsages;
     this.#model = input.model;
     this.#thinkingOptionId = input.thinkingOptionId;
   }
@@ -177,13 +184,22 @@ export class AntigravityHistory {
     const file = historyPath(input.environment);
     const nativeSessionId = input.nativeSessionId ?? null;
     let turns: AntigravityTurn[] = [];
+    const turnUsages = new Map<string, HostUsage>();
     let model: HarnessModelRef | undefined;
     let thinkingOptionId: HarnessThinkingOptionId | undefined;
     if (file && nativeSessionId) {
       try {
         const parsed = historySchema.safeParse(JSON.parse(await readFile(file, "utf8")));
         if (parsed.success && parsed.data.nativeSessionId === nativeSessionId) {
-          turns = parsed.data.turns as AntigravityTurn[];
+          // Usage rides inside the Turn record on disk but is not part of the
+          // Host Turn snapshot, so lift it out before exposing the Turns.
+          turns = parsed.data.turns.map((turn) => {
+            if (turn.usage !== undefined) {
+              turnUsages.set(turn.nativeTurnRef.nativeTurnKey, turn.usage as HostUsage);
+              delete turn.usage;
+            }
+            return turn as AntigravityTurn;
+          });
           model = parsed.data.model;
           thinkingOptionId = parsed.data.thinkingOptionId;
         }
@@ -206,6 +222,7 @@ export class AntigravityHistory {
       file,
       nativeSessionId,
       turns,
+      turnUsages,
       ...(model ? { model } : {}),
       ...(thinkingOptionId ? { thinkingOptionId } : {}),
     });
@@ -223,9 +240,18 @@ export class AntigravityHistory {
     return [...this.#turns];
   }
 
+  /** Persisted per-Turn Usage totals in Turn order, for cumulative Session Usage. */
+  get turnUsages(): HostUsage[] {
+    return this.#turns.flatMap((turn) => {
+      const usage = this.#turnUsages.get(turn.nativeTurnRef.nativeTurnKey);
+      return usage ? [usage] : [];
+    });
+  }
+
   bindNativeSession(nativeSessionId: string): void {
     if (this.#nativeSessionId && this.#nativeSessionId !== nativeSessionId) {
       this.#turns = [];
+      this.#turnUsages.clear();
     }
     this.#nativeSessionId = nativeSessionId;
     this.#queueWrite();
@@ -242,10 +268,11 @@ export class AntigravityHistory {
 
   append(input: {
     nativeTurnRef: NativeTurnRef;
-    turnInput: AntigravityTurn["input"];
+    turnInput: HostTextInput[];
     items: AntigravityTurn["items"];
     outcome: AntigravityTurn["outcome"];
     model?: HarnessModelRef;
+    usage?: HostUsage;
   }): void {
     const turn: AntigravityTurn = {
       nativeTurnRef: input.nativeTurnRef,
@@ -259,6 +286,7 @@ export class AntigravityHistory {
     );
     if (index >= 0) this.#turns[index] = turn;
     else this.#turns.push(turn);
+    if (input.usage) this.#turnUsages.set(input.nativeTurnRef.nativeTurnKey, input.usage);
     this.#queueWrite();
   }
 
@@ -270,7 +298,11 @@ export class AntigravityHistory {
     if (!this.#file || !this.#nativeSessionId) return;
     const file = this.#file;
     const nativeSessionId = this.#nativeSessionId;
-    const turns = this.#turns.map(jsonTurn);
+    const turns = this.#turns.map((turn) => {
+      const json = jsonTurn(turn);
+      const usage = this.#turnUsages.get(turn.nativeTurnRef.nativeTurnKey);
+      return usage ? { ...json, usage } : json;
+    });
     const model = this.#model;
     const thinkingOptionId = this.#thinkingOptionId;
     this.#write = this.#write

@@ -8,6 +8,7 @@ import {
   harnessModelRefSchema,
   harnessThinkingOptionIdSchema,
   hostTurnIdSchema,
+  nativeSessionRefSchema,
 } from "@codexhost/shared-contracts";
 import { describe, expect, it } from "vitest";
 
@@ -1132,13 +1133,19 @@ if (process.argv.includes("models")) {
 }
 const runsDir = ${JSON.stringify(runsDir)};
 fs.mkdirSync(runsDir, { recursive: true });
-const count = fs.readdirSync(runsDir).length;
-fs.writeFileSync(path.join(runsDir, "run-" + count + ".txt"), "");
+// Only a Turn consumes a scripted response; the quota probe also runs this
+// shim with stream-json output but without stream-json input, and it must not
+// shift the per-Turn script counter.
+const isTurn = process.argv.includes("--input-format");
+const count = isTurn ? fs.readdirSync(runsDir).length : -1;
+if (isTurn) fs.writeFileSync(path.join(runsDir, "run-" + count + ".txt"), "");
 
-if (count === 0) {
+if (!isTurn) {
+  process.stdout.write(JSON.stringify({ event: "result", result: { conversation_id: "", status: "SUCCESS", num_turns: 0 } }) + "\\n");
+} else if (count === 0) {
   process.stdout.write(JSON.stringify({ event: "init", conversation_id: "conv-switch", init: { permission_mode: "dangerously-skip-permissions" } }) + "\\n");
-  process.stdout.write(JSON.stringify({ event: "step_update", step_update: { conversation_id: "conv-switch", step_index: 1, state: "DONE", step_type: "agent_response", text_delta: "Hello from Gemini", usage: { input_tokens: 100, output_tokens: 20, cache_read_tokens: 0, total_tokens: 120 } } }) + "\\n");
-  process.stdout.write(JSON.stringify({ event: "result", result: { conversation_id: "conv-switch", status: "SUCCESS", num_turns: 1, response: "Hello from Gemini", usage: { input_tokens: 100, output_tokens: 20, cache_read_tokens: 0, total_tokens: 120 } } }) + "\\n");
+  process.stdout.write(JSON.stringify({ event: "step_update", step_update: { conversation_id: "conv-switch", step_index: 1, state: "DONE", step_type: "agent_response", text_delta: "Hello from Gemini", usage: { input_tokens: 100, output_tokens: 20, cache_read_tokens: 25, total_tokens: 145 } } }) + "\\n");
+  process.stdout.write(JSON.stringify({ event: "result", result: { conversation_id: "conv-switch", status: "SUCCESS", num_turns: 1, response: "Hello from Gemini", usage: { input_tokens: 100, output_tokens: 20, cache_read_tokens: 25, total_tokens: 145 } } }) + "\\n");
 } else if (count === 1) {
   process.stdout.write(JSON.stringify({ event: "init", conversation_id: "conv-switch", init: { permission_mode: "dangerously-skip-permissions" } }) + "\\n");
   process.stdout.write(JSON.stringify({ event: "step_update", step_update: { conversation_id: "conv-switch", step_index: 2, state: "DONE", step_type: "agent_response", text_delta: "Hello from Claude", usage: { input_tokens: 250, output_tokens: 40, total_tokens: 290 } } }) + "\\n");
@@ -1188,8 +1195,10 @@ if (count === 0) {
         }
         expect(turn1Usage).not.toBeNull();
         expect(turn1Usage?.contextWindowTokens).toBe(1_048_576);
-        expect(turn1Usage).not.toHaveProperty("cachedInputTokens");
-        expect(turn1Usage).not.toHaveProperty("cacheHitRatePercent");
+        // agy's `cache_read_tokens` propagates as cachedInputTokens, and the
+        // hit rate is derived from the cumulative counters: 25 of 100+25.
+        expect(turn1Usage?.cachedInputTokens).toBe(25);
+        expect(turn1Usage?.cacheHitRatePercent).toBeCloseTo(20, 10);
 
         // Switch to Claude (200k window)
         const selectClaude = await session.execute({
@@ -1214,6 +1223,12 @@ if (count === 0) {
         }
         expect(turn2Usage).not.toBeNull();
         expect(turn2Usage?.contextWindowTokens).toBe(200_000);
+        // Session Usage accumulates across Turns: Turn 2's Claude tokens add to
+        // Turn 1 instead of replacing them, and Turn 1's cache read is kept.
+        expect(turn2Usage?.inputTokens).toBe(350);
+        expect(turn2Usage?.outputTokens).toBe(60);
+        expect(turn2Usage?.totalTokens).toBe(435);
+        expect(turn2Usage?.cachedInputTokens).toBe(25);
 
         // Switch back to Gemini
         const selectGemini = await session.execute({
@@ -1238,11 +1253,202 @@ if (count === 0) {
         }
         expect(turn3Usage).not.toBeNull();
         expect(turn3Usage?.contextWindowTokens).toBe(1_048_576);
+        expect(turn3Usage?.inputTokens).toBe(650);
 
         await session.close();
       } finally {
         await adapter.close();
         await cleanup();
+      }
+    });
+
+    it("completes the agent message before a tool card so post-tool text renders below it", async () => {
+      const streamLines = [
+        JSON.stringify({
+          event: "init",
+          init: { permission_mode: "dangerously-skip-permissions" },
+          conversation_id: "conv-order",
+        }),
+        JSON.stringify({
+          event: "step_update",
+          step_update: {
+            conversation_id: "conv-order",
+            step_index: 1,
+            state: "ACTIVE",
+            step_type: "agent_response",
+            text_delta: "Running the tests.",
+          },
+        }),
+        JSON.stringify({
+          event: "step_update",
+          step_update: {
+            conversation_id: "conv-order",
+            step_index: 2,
+            state: "ACTIVE",
+            step_type: "tool",
+            tool_name: "run_command",
+            tool_info: { parameters: { CommandLine: "npm test", Cwd: "/workspace" } },
+          },
+        }),
+        JSON.stringify({
+          event: "step_update",
+          step_update: {
+            conversation_id: "conv-order",
+            step_index: 2,
+            state: "DONE",
+            step_type: "tool",
+            tool_info: { output: "PASS\n" },
+          },
+        }),
+        JSON.stringify({
+          event: "step_update",
+          step_update: {
+            conversation_id: "conv-order",
+            step_index: 3,
+            state: "ACTIVE",
+            step_type: "agent_response",
+            text_delta: "All tests passed.",
+          },
+        }),
+        JSON.stringify({
+          event: "result",
+          result: {
+            conversation_id: "conv-order",
+            status: "SUCCESS",
+            num_turns: 1,
+            response: "Running the tests.All tests passed.",
+          },
+        }),
+      ];
+
+      const { command, cwd, cleanup } = await fakeStreamingAgy(streamLines);
+      const adapter = new AntigravityAdapter({ command });
+      try {
+        const opened = await adapter.open({ kind: "create", cwd });
+        expect(opened.ok).toBe(true);
+        if (!opened.ok) return;
+
+        const session = opened.value;
+        const iterator = session.outputs[Symbol.asyncIterator]();
+        const turnId = hostTurnIdSchema.parse("turn-order");
+        await session.execute({
+          type: "turn.start",
+          turnId,
+          input: [{ type: "text", text: "run the tests" }],
+        });
+
+        const events: HostEvent[] = [];
+        while (events.at(-1)?.type !== "turn.completed") events.push(await nextEvent(iterator));
+        // Text spoken before the tool completes before the tool card starts,
+        // and post-tool text opens a fresh message Item below the tool.
+        expect(
+          events.map((event) => {
+            if (event.type === "item.started") return `started:${event.item.type}`;
+            if (event.type === "item.completed") return `completed:${event.snapshot.item.type}`;
+            return event.type;
+          }),
+        ).toEqual([
+          "turn.started",
+          "session.state.changed",
+          "started:agentMessage",
+          "completed:agentMessage",
+          "started:commandExecution",
+          "completed:commandExecution",
+          "started:agentMessage",
+          "completed:agentMessage",
+          "turn.completed",
+        ]);
+        expect(
+          events.flatMap((event) =>
+            event.type === "item.completed" && event.snapshot.item.type === "agentMessage"
+              ? [event.snapshot.item.text]
+              : [],
+          ),
+        ).toEqual(["Running the tests.", "All tests passed."]);
+
+        await session.close();
+      } finally {
+        await adapter.close();
+        await cleanup();
+      }
+    });
+
+    it("restores cumulative session usage from persisted history on resume", async () => {
+      const dataDirectory = await mkdtemp(path.join(os.tmpdir(), "codexhost-agy-usage-"));
+      const environment = {
+        ...process.env,
+        CODEXHOST_DATA_DIR: dataDirectory,
+        CODEXHOST_THREAD_ID: "thread-agy-usage",
+      };
+      const streamLines = [
+        JSON.stringify({
+          event: "init",
+          init: { permission_mode: "default" },
+          conversation_id: "conv-resume-usage",
+        }),
+        JSON.stringify({
+          event: "result",
+          result: {
+            conversation_id: "conv-resume-usage",
+            status: "SUCCESS",
+            num_turns: 1,
+            response: "done",
+            usage: {
+              input_tokens: 60,
+              output_tokens: 10,
+              cache_read_tokens: 40,
+              total_tokens: 110,
+            },
+          },
+        }),
+      ];
+
+      const { command, cwd, cleanup } = await fakeStreamingAgy(streamLines);
+      const adapter = new AntigravityAdapter({ command });
+      try {
+        const created = await adapter.open({ kind: "create", cwd, environment });
+        expect(created.ok).toBe(true);
+        if (!created.ok) return;
+        const iterator = created.value.outputs[Symbol.asyncIterator]();
+        await created.value.execute({
+          type: "turn.start",
+          turnId: hostTurnIdSchema.parse("turn-resume-usage"),
+          input: [{ type: "text", text: "hello" }],
+        });
+        while (true) {
+          const event = await nextEvent(iterator);
+          if (event.type === "turn.completed") break;
+        }
+        await created.value.close();
+
+        const resumed = await adapter.open({
+          kind: "resume",
+          nativeRef: nativeSessionRefSchema.parse({
+            harnessId: "antigravity",
+            nativeSessionId: "conv-resume-usage",
+            formatVersion: 1,
+          }),
+          cwd,
+          environment,
+        });
+        expect(resumed.ok).toBe(true);
+        if (!resumed.ok) return;
+        // The completed Turn's totals survive the resume instead of vanishing,
+        // with the cache hit rate derived from the persisted counters.
+        expect(resumed.value.initialUsage).toEqual({
+          inputTokens: 60,
+          outputTokens: 10,
+          cachedInputTokens: 40,
+          totalTokens: 110,
+          contextUsedTokens: 60,
+          contextWindowTokens: 1_048_576,
+          cacheHitRatePercent: 40,
+        });
+        await resumed.value.close();
+      } finally {
+        await adapter.close();
+        await cleanup();
+        await rm(dataDirectory, { recursive: true, force: true });
       }
     });
   });

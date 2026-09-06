@@ -185,6 +185,8 @@ interface NativeTurnBuffer {
 interface LiveTextItem<T extends HostAgentMessageItem | HostReasoningItem> {
   item: T;
   text: string;
+  /** Native journal time of the first streamed delta, used for durationMs. */
+  startedAtMs?: number;
 }
 
 interface LiveTool {
@@ -886,18 +888,21 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
   }
 
   async #start(command: TurnStartCommand): Promise<HarnessResult<TurnStartAccepted>> {
-    if (
-      !Array.isArray(command.input) ||
-      command.input.length === 0 ||
-      command.input.some((part) => part.type !== "text" || typeof part.text !== "string") ||
-      !command.input.some(({ text }) => text.length > 0)
-    ) {
+    // The DSH prompt wire carries text blocks only, so image parts are ignored;
+    // a Turn still has to keep at least one non-empty text part.
+    const text = textInputs(command.input);
+    if (!Array.isArray(command.input) || command.input.length === 0 || !text.some(hasText)) {
       return {
         ok: false,
         error: {
           code: "invalidRequest",
           message: "DeepSeek Harness Turn input must contain text",
           retryable: false,
+          ...(command.input.some((part) => part.type === "image")
+            ? {
+                diagnostic: "DeepSeek Harness prompts accept text only; image parts were ignored",
+              }
+            : {}),
         },
       };
     }
@@ -961,7 +966,7 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
               requestId,
               sessionId: this.#sessionId,
               mode: "queue",
-              content: command.input.map(({ text }) => ({ type: "text", text })),
+              content: text.map((part) => ({ type: "text", text: part.text })),
             },
           },
           abort.signal,
@@ -1572,7 +1577,13 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
           this.#buffer === buffer &&
           !buffer.active
         ) {
-          this.#materialize(buffer, pending.command.turnId, pending.command.input, false, false);
+          this.#materialize(
+            buffer,
+            pending.command.turnId,
+            textInputs(pending.command.input),
+            false,
+            false,
+          );
         }
       }),
     );
@@ -1693,13 +1704,16 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
         if (data.chunk.type === "text-delta") {
           this.#appendAgent(active, data.chunk.text as string, data.step as number);
         } else if (data.chunk.type === "reasoning-delta") {
-          // DSH may revise this provisional text in block-end; assistant/message is authoritative.
+          // Stream the provisional text as a live preview; the block-end
+          // assistant/message stays authoritative and #completeReasoning
+          // reconciles the two when the revision diverges.
+          this.#appendReasoning(active, data.chunk.text as string, data.step as number, event.time);
         } else if (data.chunk.type === "usage" && !initialReplay) {
           this.#publishUsageChanges(active.turnId);
         }
         return;
       case "assistant/message":
-        if (event.surfaceOp === "append") this.#completeAssistant(active, data);
+        if (event.surfaceOp === "append") this.#completeAssistant(active, data, event.time);
         if (event.surfaceOp === "append" && data.usage !== undefined && !initialReplay) {
           this.#publishUsageChanges(active.turnId);
         }
@@ -1752,9 +1766,12 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
     return active.reasoning;
   }
 
-  #appendReasoning(active: ActiveHostTurn, text: string, step: number): void {
+  #appendReasoning(active: ActiveHostTurn, text: string, step: number, startedAtMs?: number): void {
     if (!text) return;
     const reasoning = this.#startReasoning(active, step);
+    if (startedAtMs !== undefined && reasoning.startedAtMs === undefined) {
+      reasoning.startedAtMs = startedAtMs;
+    }
     reasoning.text += text;
     reasoning.item = { ...reasoning.item, text: reasoning.text };
     this.#emit({
@@ -1765,13 +1782,17 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
     });
   }
 
-  #completeAssistant(active: ActiveHostTurn, data: Record<string, unknown>): void {
+  #completeAssistant(
+    active: ActiveHostTurn,
+    data: Record<string, unknown>,
+    endedAtMs: number,
+  ): void {
     const message = data.message as Record<string, unknown>;
     const step = data.step as number;
     const reasoning = contentText(message.content, "reasoning");
     const text = contentText(message.content, "text");
     this.#assertAgentPrefix(active, text);
-    this.#completeReasoning(active, reasoning, step);
+    this.#completeReasoning(active, reasoning, step, endedAtMs);
     this.#completeAgentPrefix(active, text, step);
   }
 
@@ -1785,12 +1806,56 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
     }
   }
 
-  #completeReasoning(active: ActiveHostTurn, finalText: string, step: number): void {
-    if (finalText) this.#appendReasoning(active, finalText, step);
+  /**
+   * Reconciles the streamed reasoning preview with the authoritative block-end
+   * text. A preview already started on the Host cannot be retracted: when the
+   * authoritative text matches or extends it, the preview completes as-is;
+   * when it diverges, the preview completes and the authoritative text
+   * restarts as its own Item. durationMs keeps native journal time
+   * (first reasoning delta → block end) whenever both are known.
+   */
+  #completeReasoning(
+    active: ActiveHostTurn,
+    finalText: string,
+    step: number,
+    endedAtMs: number,
+  ): void {
     const current = active.reasoning;
-    if (!current) return;
+    if (!current) {
+      if (!finalText) return;
+      this.#appendReasoning(active, finalText, step);
+      const materialized = active.reasoning;
+      delete active.reasoning;
+      if (materialized) {
+        this.#completeItem(active, materialized.item, { status: "succeeded" });
+      }
+      return;
+    }
+    const durationMs =
+      current.startedAtMs === undefined ? undefined : Math.max(0, endedAtMs - current.startedAtMs);
+    if (finalText.startsWith(current.text)) {
+      this.#appendReasoning(active, finalText.slice(current.text.length), step);
+      const item = withReasoningDuration(current.item, durationMs);
+      delete active.reasoning;
+      this.#completeItem(active, item, { status: "succeeded" });
+      return;
+    }
     delete active.reasoning;
-    this.#completeItem(active, current.item, { status: "succeeded" });
+    this.#completeItem(active, withReasoningDuration(current.item, durationMs), {
+      status: "succeeded",
+    });
+    if (!finalText) return;
+    const authoritative: HostReasoningItem = {
+      type: "reasoning",
+      itemId: modernItemId(
+        this.#sessionId,
+        `turn:${active.nativeTurn}:step:${step}:reasoning:final`,
+      ),
+      text: finalText,
+      ...(durationMs === undefined ? {} : { durationMs }),
+    };
+    this.#emit({ type: "item.started", turnId: active.turnId, item: authoritative });
+    this.#completeItem(active, authoritative, { status: "succeeded" });
   }
 
   #completeAgentPrefix(active: ActiveHostTurn, finalText: string, step: number): void {
@@ -1994,7 +2059,7 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
       active = {
         turnId,
         nativeTurn: buffer.nativeTurn,
-        input: hostBound ? [...pending.command.input] : [...buffer.input],
+        input: hostBound ? textInputs(pending.command.input) : [...buffer.input],
         autonomous: !hostBound,
         tools: new Map(),
         interactions: new Set(),
@@ -2503,6 +2568,11 @@ function toItemOutcome(outcome: TurnOutcome): HostItemOutcome {
   return { status: "failed", error: outcome.error };
 }
 
+/**
+ * Keeps only the text parts of a Turn input or journal message content. The
+ * DSH wire accepts text blocks only, so image parts are ignored rather than
+ * degraded into a textual placeholder.
+ */
 function textInputs(value: unknown): HostTextInput[] {
   return Array.isArray(value)
     ? value.flatMap((block) =>
@@ -2513,6 +2583,10 @@ function textInputs(value: unknown): HostTextInput[] {
     : [];
 }
 
+function hasText(part: HostTextInput): boolean {
+  return part.text.length > 0;
+}
+
 function contentText(value: unknown, type: "text" | "reasoning"): string {
   return Array.isArray(value)
     ? value
@@ -2520,6 +2594,13 @@ function contentText(value: unknown, type: "text" | "reasoning"): string {
         .map((block) => (block as { text: string }).text)
         .join("")
     : "";
+}
+
+function withReasoningDuration(
+  item: HostReasoningItem,
+  durationMs: number | undefined,
+): HostReasoningItem {
+  return durationMs === undefined ? item : { ...item, durationMs };
 }
 
 function isVisibleWork(event: ModernJournalEvent): boolean {

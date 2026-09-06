@@ -862,6 +862,11 @@ function selectionFromHeader(data: Record<string, unknown>): {
   return selectionFrom(header.config as Record<string, unknown>);
 }
 
+/**
+ * Keeps only the text parts of journal message content. The DSH wire accepts
+ * text blocks only, so image blocks are ignored rather than degraded into a
+ * textual placeholder.
+ */
 function textInputs(value: unknown): HostTextInput[] {
   return Array.isArray(value)
     ? value.flatMap((block) =>

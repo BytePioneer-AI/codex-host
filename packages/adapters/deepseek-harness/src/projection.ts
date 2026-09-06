@@ -153,9 +153,11 @@ export function parseDeepSeekUsage(value: unknown, contextWindowTokens?: number)
   const reasoningTokens = nonNegativeSafeInteger(value.reasoningTokens);
   const windowTokens = parseDeepSeekContextWindow(contextWindowTokens);
   const billedInput = (inputTokens ?? 0) + (cacheReadTokens ?? 0) + (cacheWriteTokens ?? 0);
+  // The hit rate is a measurement of the cache counters: when the harness
+  // omits cacheReadTokens it must be omitted too, never projected as 0%.
   const cacheHitRatePercent =
-    inputTokens !== undefined && billedInput > 0
-      ? ((cacheReadTokens ?? 0) / billedInput) * 100
+    inputTokens !== undefined && cacheReadTokens !== undefined && billedInput > 0
+      ? (cacheReadTokens / billedInput) * 100
       : undefined;
   try {
     return parseHostUsage({

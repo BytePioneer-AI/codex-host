@@ -28,6 +28,7 @@ import {
   type HostItem,
   type HostItemOutcome,
   type HostItemSnapshot,
+  type HostTextInput,
   type HostThreadSnapshot,
   type HostUsage,
   type InteractionRespondAccepted,
@@ -95,6 +96,7 @@ import {
   startAntigravityToolItem,
   toolTargetFile,
 } from "./tool-projection.js";
+import { addAntigravityTurnUsage, withAntigravityCacheHitRate } from "./usage.js";
 
 export interface AntigravityAdapterOptions {
   command?: string;
@@ -109,6 +111,7 @@ interface ActiveTurn {
   process: ChildProcessByStdio<Writable, Readable, Readable>;
   logPath: string;
   agentItem: HostAgentMessageItem | null;
+  /** All agent text of the Turn, across the message Items split at tool boundaries. */
   agentText: string;
   tools: Map<number, HostItem>;
   completedItems: HostItemSnapshot[];
@@ -119,6 +122,7 @@ interface ActiveTurn {
   nativePermissionMode: string | null;
   /** First tool denial of the Turn, kept to explain an otherwise empty result. */
   permissionDenial: string | null;
+  /** Latest Usage reported during this Turn, folded into Session Usage when it ends. */
   latestUsage: HostUsage | null;
   contextUsagePromise: Promise<Pick<
     HostUsage,
@@ -370,6 +374,7 @@ function hostUsage(value: AntigravityUsage | undefined, modelId?: string): HostU
   const inputTokens = safeToken(value.input_tokens);
   const outputTokens = safeToken(value.output_tokens);
   const reasoningOutputTokens = safeToken(value.thinking_tokens);
+  const cachedInputTokens = safeToken(value.cache_read_tokens);
   const totalTokens = safeToken(value.total_tokens);
   const contextUsedTokens = safeToken(
     value.context_used_tokens ?? value.estimated_tokens_used ?? value.input_tokens,
@@ -383,6 +388,7 @@ function hostUsage(value: AntigravityUsage | undefined, modelId?: string): HostU
     ...(inputTokens !== undefined ? { inputTokens } : {}),
     ...(outputTokens !== undefined ? { outputTokens } : {}),
     ...(reasoningOutputTokens !== undefined ? { reasoningOutputTokens } : {}),
+    ...(cachedInputTokens !== undefined ? { cachedInputTokens } : {}),
     ...(totalTokens !== undefined ? { totalTokens } : {}),
     ...(contextUsedTokens !== undefined &&
     contextWindowTokens !== undefined &&
@@ -450,7 +456,7 @@ async function runBuffered(
 class AntigravitySession implements HarnessSession {
   readonly harnessId: HarnessId = antigravityHarnessId;
   readonly capabilities = CAPABILITIES;
-  readonly initialUsage: HostUsage | null = null;
+  readonly initialUsage: HostUsage | null;
   readonly outputs: AsyncIterable<HarnessOutput>;
   readonly #channel = new HarnessOutputChannel<HarnessOutput>();
   readonly #cwd: string;
@@ -467,6 +473,8 @@ class AntigravitySession implements HarnessSession {
   #permissionMode: AntigravityPermissionMode;
   #thinkingOptionId: HarnessThinkingOptionId | undefined;
   readonly #catalog: HarnessModelCatalog | undefined;
+  /** Cumulative Usage of every completed Turn, seeded from persisted history. */
+  #settledUsage: HostUsage | null;
 
   constructor(input: {
     catalog?: HarnessModelCatalog;
@@ -494,6 +502,14 @@ class AntigravitySession implements HarnessSession {
     this.#thinkingOptionId = input.thinkingOptionId ?? input.history.thinkingOptionId;
     this.#toolOutputLimit = input.toolOutputLimit;
     this.#onClosed = input.onClosed;
+    // The Host replaces Thread Usage wholesale, so a resumed Session has to
+    // carry the cumulative totals of its persisted Turns instead of starting
+    // from nothing and regressing them on the next Turn.
+    this.#settledUsage = input.history.turnUsages.reduce<HostUsage | null>(
+      (total, usage) => addAntigravityTurnUsage(total, usage),
+      null,
+    );
+    this.initialUsage = withAntigravityCacheHitRate(this.#settledUsage);
     this.initialState = this.#state();
     this.outputs = this.#channel.outputs;
   }
@@ -546,14 +562,26 @@ class AntigravitySession implements HarnessSession {
         },
       };
     }
+    // agy's stream-json input carries plain text, so image parts are ignored;
+    // an image-only Turn has no text left and is refused as empty.
     const text = command.input
-      .map(({ text: part }) => part)
+      .flatMap((part) => (part.type === "text" ? [part.text] : []))
       .join("\n")
       .trim();
     if (!text) {
       return {
         ok: false,
-        error: { code: "invalidRequest", message: "Antigravity Turn is empty", retryable: false },
+        error: {
+          code: "invalidRequest",
+          message: "Antigravity Turn is empty",
+          retryable: false,
+          ...(command.input.some((part) => part.type === "image")
+            ? {
+                diagnostic:
+                  "Antigravity headless prompts accept text only; image parts were ignored",
+              }
+            : {}),
+        },
       };
     }
 
@@ -765,7 +793,9 @@ class AntigravitySession implements HarnessSession {
         nativeTurnRef,
       );
     } else if (event.result.status === "SUCCESS") {
-      if (active.permissionDenial !== null && !active.agentItem) {
+      // Only a Turn that never said anything is explained by the denial; text
+      // streamed before the denied tool already completed its own message Item.
+      if (active.permissionDenial !== null && !active.agentText) {
         this.#completeTurn(
           active,
           {
@@ -794,9 +824,15 @@ class AntigravitySession implements HarnessSession {
 
   #publishUsage(active: ActiveTurn, usage: HostUsage): void {
     active.latestUsage = { ...(active.latestUsage ?? {}), ...usage };
+    // agy reports per-Turn Usage while the Host replaces Thread Usage wholesale,
+    // so publish the session-cumulative total: summed token counters plus the
+    // latest gauges, with the cache hit rate derived from the summed counters.
+    const published = withAntigravityCacheHitRate(
+      addAntigravityTurnUsage(this.#settledUsage, active.latestUsage),
+    );
     this.#event({
       type: "session.usage.changed",
-      usage: active.latestUsage,
+      usage: published,
       observedForTurnId: active.command.turnId,
     });
   }
@@ -835,6 +871,10 @@ class AntigravitySession implements HarnessSession {
     const merged = mergePendingStep(active.pendingSteps.get(step.step_index), step);
     let item = active.tools.get(step.step_index);
     if (!item) {
+      // Text spoken before a Tool belongs above its card: close the open agent
+      // message when the tool step opens (pi-adapter's tool.started pattern);
+      // the next agent_response delta opens a fresh one below.
+      this.#completeAgentItem(active, { status: "succeeded" });
       const started = await this.#startToolItem(active, merged);
       if (!started) {
         active.pendingSteps.set(step.step_index, merged);
@@ -930,10 +970,12 @@ class AntigravitySession implements HarnessSession {
 
   #appendOrSyncAgentText(active: ActiveTurn, text: string, isExplicitDelta: boolean): void {
     if (!text) return;
-    if (isExplicitDelta || !active.agentItem) {
+    if (isExplicitDelta) {
       this.#appendAgentText(active, text);
       return;
     }
+    // Cumulative snapshots are compared against everything the Turn has said
+    // so far, which can span several message Items split at tool boundaries.
     if (text === active.agentText) return;
     if (text.startsWith(active.agentText)) {
       const delta = text.slice(active.agentText.length);
@@ -944,20 +986,27 @@ class AntigravitySession implements HarnessSession {
   }
 
   #appendAgentText(active: ActiveTurn, text: string): void {
+    active.agentText += text;
     if (!active.agentItem) {
       active.agentItem = { type: "agentMessage", itemId: this.#newItemId(), text };
-      active.agentText = text;
       this.#event({ type: "item.started", turnId: active.command.turnId, item: active.agentItem });
       return;
     }
-    active.agentText += text;
-    active.agentItem = { ...active.agentItem, text: active.agentText };
+    active.agentItem = { ...active.agentItem, text: active.agentItem.text + text };
     this.#event({
       type: "item.updated",
       turnId: active.command.turnId,
       itemId: active.agentItem.itemId,
       update: { type: "text.append", text },
     });
+  }
+
+  /** Closes the open agent message, if any; the next delta opens a fresh Item. */
+  #completeAgentItem(active: ActiveTurn, outcome: HostItemOutcome): void {
+    const item = active.agentItem;
+    if (!item) return;
+    active.agentItem = null;
+    this.#completeItem(active, item, outcome);
   }
 
   #completeTurn(active: ActiveTurn, outcome: TurnOutcome, nativeTurnRef?: NativeTurnRef): void {
@@ -969,7 +1018,7 @@ class AntigravitySession implements HarnessSession {
         : outcome.status === "cancelled"
           ? { status: "cancelled", ...(outcome.reason ? { reason: outcome.reason } : {}) }
           : { status: "succeeded" };
-    if (active.agentItem) this.#completeItem(active, active.agentItem, itemOutcome);
+    this.#completeAgentItem(active, itemOutcome);
     // A step whose patch never resolved still ran, so an interrupted Turn
     // reports it as a Tool Execution rather than dropping it silently.
     for (const step of active.pendingSteps.values()) {
@@ -980,10 +1029,15 @@ class AntigravitySession implements HarnessSession {
     active.pendingSteps.clear();
     for (const item of active.tools.values()) this.#completeItem(active, item, itemOutcome);
     active.tools.clear();
+    this.#settledUsage = addAntigravityTurnUsage(this.#settledUsage, active.latestUsage);
     if (nativeTurnRef) {
       this.#history.append({
         nativeTurnRef,
-        turnInput: active.command.input,
+        // The sidecar records what agy actually received: text parts only,
+        // because image parts are ignored by the headless wire.
+        turnInput: active.command.input.filter(
+          (part): part is HostTextInput => part.type === "text",
+        ),
         items: active.completedItems,
         outcome:
           outcome.status === "failed"
@@ -992,6 +1046,7 @@ class AntigravitySession implements HarnessSession {
               ? { status: "cancelled", ...(outcome.reason ? { reason: outcome.reason } : {}) }
               : { status: "succeeded" },
         ...(this.#model ? { model: this.#model } : {}),
+        ...(active.latestUsage ? { usage: active.latestUsage } : {}),
       });
     }
     this.#event({

@@ -13,9 +13,14 @@ import {
   externalThreadForkParamsSchema,
   externalThreadForkResultSchema,
   harnessCommandCatalogSchema,
+  harnessCommandsInspectParamsSchema,
   harnessConfigurationStateSchema,
   harnessInspectParamsSchema,
   harnessInspectionSchema,
+  harnessPluginListResultSchema,
+  type HarnessPluginListResult,
+  harnessWebUiOpenParamsSchema,
+  harnessWebUiOpenResultSchema,
   harnessModelSelectionStateSchema,
   hostThreadIdSchema,
   threadInspectionParamsSchema,
@@ -48,9 +53,11 @@ import {
   type CodexAccountLoginStartResult,
   type CodexAccountMutationResult,
   type HarnessCommandCatalog,
+  type HarnessCommandsInspectParams,
   type HarnessConfigurationState,
   type HarnessInspection,
   type HarnessInspectParams,
+  type HarnessWebUiOpenParams,
   type HarnessModelSelectionState,
   type ThreadInspection,
   type ThreadInspectionParams,
@@ -69,9 +76,17 @@ import {
   type UpdateStatusResult,
 } from "@codexhost/shared-contracts";
 
+import {
+  createRendererSessionImportClient,
+  type RendererSessionImportClient,
+} from "./renderer-session-import-client.js";
+
 export const HARNESS_INSPECT_METHOD = "codexhost/harness/inspect";
+export const HARNESS_PLUGIN_LIST_METHOD = "codexhost/harness/plugins/list";
+export const HARNESS_WEB_UI_OPEN_METHOD = "codexhost/harness/web-ui/open";
 export const THREAD_FORK_METHOD = "codexhost/thread/fork";
 export const THREAD_INSPECT_METHOD = "codexhost/thread/inspect";
+export const HARNESS_COMMANDS_INSPECT_METHOD = "codexhost/harness/commands/inspect";
 export const THREAD_COMMANDS_INSPECT_METHOD = "codexhost/thread/commands/inspect";
 export const THREAD_COMMAND_EXECUTE_METHOD = "codexhost/thread/command/execute";
 export const THREAD_MODEL_SELECT_METHOD = "codexhost/thread/model/select";
@@ -126,12 +141,15 @@ function notificationTarget(manager: RequestManagerCandidate): RequestManagerCan
   return nested && typeof nested.addNotificationCallback === "function" ? nested : null;
 }
 
-export interface RendererModelClient {
+export interface RendererModelClient extends Partial<RendererSessionImportClient> {
   currentHostId?(): string | null;
+  listHarnessPlugins?(): Promise<HarnessPluginListResult>;
   clientForHost?(hostId: string): RendererModelClient | null;
   forkThread(input: ExternalThreadForkParams): Promise<ExternalThreadForkResult>;
   inspectHarness(input: HarnessInspectParams): Promise<HarnessInspection>;
+  openHarnessWebUi?(input: HarnessWebUiOpenParams): Promise<void>;
   inspectThread(input: ThreadInspectionParams): Promise<ThreadInspection>;
+  inspectHarnessCommands(input: HarnessCommandsInspectParams): Promise<HarnessCommandCatalog>;
   inspectThreadCommands(input: ThreadCommandsInspectParams): Promise<HarnessCommandCatalog>;
   executeThreadCommand(input: ThreadCommandExecuteParams): Promise<ThreadCommandExecuteResult>;
   listThreadOwnership(input: ThreadOwnershipListParams): Promise<ThreadOwnershipListResult>;
@@ -213,6 +231,13 @@ export function createRendererModelClient(
     const result = await manager.sendRequest(HARNESS_INSPECT_METHOD, params);
     return harnessInspectionSchema.parse(result);
   };
+  const inspectHarnessCommands = async (
+    input: HarnessCommandsInspectParams,
+  ): Promise<HarnessCommandCatalog> => {
+    const params = harnessCommandsInspectParamsSchema.parse(input);
+    const result = await manager.sendRequest(HARNESS_COMMANDS_INSPECT_METHOD, params);
+    return harnessCommandCatalogSchema.parse(result);
+  };
   const inspectThreadCommands = async (
     input: ThreadCommandsInspectParams,
   ): Promise<HarnessCommandCatalog> => {
@@ -257,17 +282,31 @@ export function createRendererModelClient(
   };
 
   return Object.freeze({
+    ...createRendererSessionImportClient(async (method, params) =>
+      manager.sendRequest(method, params),
+    ),
     async forkThread(input: ExternalThreadForkParams): Promise<ExternalThreadForkResult> {
       const params = externalThreadForkParamsSchema.parse(input);
       const result = await manager.sendRequest(THREAD_FORK_METHOD, params);
       return externalThreadForkResultSchema.parse(result);
     },
     inspectHarness,
+    async listHarnessPlugins(): Promise<HarnessPluginListResult> {
+      return harnessPluginListResultSchema.parse(
+        await manager.sendRequest(HARNESS_PLUGIN_LIST_METHOD, {}),
+      );
+    },
+    async openHarnessWebUi(input: HarnessWebUiOpenParams): Promise<void> {
+      const params = harnessWebUiOpenParamsSchema.parse(input);
+      const result = await manager.sendRequest(HARNESS_WEB_UI_OPEN_METHOD, params);
+      harnessWebUiOpenResultSchema.parse(result);
+    },
     async inspectThread(input: ThreadInspectionParams): Promise<ThreadInspection> {
       const params = threadInspectionParamsSchema.parse(input);
       const result = await manager.sendRequest(THREAD_INSPECT_METHOD, params);
       return threadInspectionSchema.parse(result);
     },
+    inspectHarnessCommands,
     inspectThreadCommands,
     executeThreadCommand,
     async listThreadOwnership(

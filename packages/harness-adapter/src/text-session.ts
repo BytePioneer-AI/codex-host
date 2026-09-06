@@ -5,6 +5,7 @@ import type {
   HarnessModelRef,
   HarnessPermissionModeId,
   HarnessSessionCapabilities,
+  HarnessSessionImportCandidate,
   HarnessThinkingOption,
   HarnessThinkingOptionId,
   HostInteractionId,
@@ -28,6 +29,7 @@ export type {
   HarnessPermissionModeCatalog,
   HarnessPermissionModeId,
   HarnessSessionCapabilities,
+  HarnessSessionImportCandidate,
   HarnessThinkingOption,
   HarnessThinkingOptionId,
 } from "@codexhost/shared-contracts";
@@ -82,6 +84,7 @@ export interface ResumeSessionInput {
   cwd: string;
   environment?: Record<string, string | undefined>;
   knownTurnRefs?: NativeTurnRef[];
+  permissionModeId?: HarnessPermissionModeId;
 }
 
 export interface ForkSessionInput {
@@ -514,9 +517,30 @@ export interface HarnessSubagentCapability {
   }): Promise<HarnessResult<HostThreadSnapshot>>;
 }
 
+export interface HarnessWebUiAction {
+  open(): Promise<HarnessResult<void>>;
+}
+
+/** Fresh native metadata and the complete resumable identity; never sent to Renderer. */
+export interface HarnessSessionImportSource {
+  candidate: HarnessSessionImportCandidate;
+  nativeRef: NativeSessionRef;
+}
+
+/** Optional discovery of existing Native Sessions that codexhost can map and resume. */
+export interface HarnessSessionImportCapability {
+  listCandidates(): Promise<HarnessResult<readonly HarnessSessionImportCandidate[]>>;
+  /** Read-only revalidation. Omission keeps older discovery-only plugins valid, not importable. */
+  resolveCandidate?(nativeSessionId: string): Promise<HarnessResult<HarnessSessionImportSource>>;
+}
+
 export interface HarnessAdapter {
   readonly harnessId: HarnessId;
+  /** Static command metadata. Reading it must not inspect, connect to, or open a Native Session. */
+  readonly commandCatalog?: HarnessCommandCatalog;
+  readonly sessionImport?: HarnessSessionImportCapability;
   readonly subagents?: HarnessSubagentCapability;
+  readonly webUi?: HarnessWebUiAction;
 
   inspect(input?: InspectHarnessInput): Promise<HarnessInspection>;
   open(input: OpenSessionInput): Promise<HarnessResult<HarnessSession>>;

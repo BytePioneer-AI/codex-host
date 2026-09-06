@@ -17,6 +17,7 @@ import {
 } from "../src/omp-adapter.js";
 import type {
   OmpCompactResult,
+  OmpInteractionResponse,
   OmpRpcSessionOptions,
   OmpSessionHistory,
   OmpSessionState,
@@ -40,6 +41,13 @@ class FakeOmpTransport implements OmpTurnTransport {
   history: OmpSessionHistory = { entries: [], leafId: null };
   onEvent: ((event: OmpTurnEvent) => void) | null = null;
   onSubagentEvent: ((event: OmpTurnEvent) => void) | null = null;
+  readonly respondToInteraction = vi.fn(async (response: OmpInteractionResponse) => {
+    this.onEvent?.({
+      type: "interaction.closed",
+      requestId: response.requestId,
+      reason: "cancelled" in response ? "cancelled" : "responded",
+    });
+  });
   autoCompleteTurn = true;
   #resolveTurn: ((result: OmpTurnResult) => void) | null = null;
 
@@ -192,8 +200,6 @@ class FakeOmpTransport implements OmpTurnTransport {
       });
     });
   }
-
-  async respondToInteraction(): Promise<void> {}
 
   async abort(): Promise<void> {
     this.#resolveTurn?.({ text: "", cancelled: true });
@@ -840,6 +846,65 @@ describe("OMP Adapter Subagents", () => {
       );
     expect(completed).toHaveLength(1);
     expect(completed[0]).toMatchObject({ outcome: { status: "failed" } });
+    await opened.value.close();
+    await adapter.close();
+  });
+
+  it("projects OMP tool approval requests and returns the selected native option", async () => {
+    const transport = new FakeOmpTransport();
+    transport.autoCompleteTurn = false;
+    const adapter = new OmpAdapter({}, { createTransport: () => transport });
+    const opened = await adapter.open({ kind: "create", cwd: "/synthetic" });
+    expect(opened.ok).toBe(true);
+    if (!opened.ok) return;
+    const iterator = opened.value.outputs[Symbol.asyncIterator]();
+    await opened.value.execute({
+      type: "turn.start",
+      turnId: "turn-approval" as HostTurnId,
+      input: [{ type: "text", text: "write" }],
+    });
+    const started = await nextEvent(iterator);
+    if (started.type === "session.state.changed") await nextEvent(iterator);
+    await nextEvent(iterator);
+
+    transport.event({
+      type: "interaction.requested",
+      request: {
+        requestId: "approval-1",
+        method: "select",
+        title: "Approve write?",
+        options: ["Approve", "Deny"],
+      },
+    });
+    const output = await nextOutput(iterator);
+    expect(output.kind).toBe("interaction");
+    if (output.kind !== "interaction") return;
+    expect(output.interaction).toMatchObject({
+      type: "approval",
+      title: "Approve write?",
+      actions: [
+        { id: "allow-once", label: "Approve", effect: "allowOnce" },
+        { id: "deny", label: "Deny", effect: "deny" },
+      ],
+    });
+    await expect(
+      opened.value.execute({
+        type: "interaction.respond",
+        interactionId: output.interaction.interactionId,
+        response: { type: "approval", actionId: "allow-once" },
+      }),
+    ).resolves.toEqual({ ok: true, value: { accepted: true } });
+    expect(transport.respondToInteraction).toHaveBeenCalledWith({
+      requestId: "approval-1",
+      value: "Approve",
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "interaction.closed",
+      interactionId: output.interaction.interactionId,
+      reason: "responded",
+    });
+
+    transport.succeed("changed");
     await opened.value.close();
     await adapter.close();
   });

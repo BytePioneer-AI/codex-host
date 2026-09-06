@@ -1255,6 +1255,7 @@ class GrokHarnessSession implements HarnessSession {
 }
 
 export class GrokAdapter implements HarnessAdapter {
+  readonly commandCatalog = grokCommandCatalog;
   readonly harnessId: HarnessId = grokHarnessId;
   readonly #closeTimeoutMs: number;
   readonly #dependencies: GrokAdapterDependencies;
@@ -1378,7 +1379,9 @@ export class GrokAdapter implements HarnessAdapter {
           (input.executionPolicy === "unattended-full-access"
             ? harnessPermissionModeIdSchema.parse("always-approve")
             : GROK_DEFAULT_PERMISSION_MODE_ID))
-        : GROK_DEFAULT_PERMISSION_MODE_ID;
+        : input.kind === "resume"
+          ? (input.permissionModeId ?? GROK_DEFAULT_PERMISSION_MODE_ID)
+          : GROK_DEFAULT_PERMISSION_MODE_ID;
     try {
       decodeGrokPermissionModeId(requestedPermissionModeId);
     } catch {
@@ -1386,7 +1389,7 @@ export class GrokAdapter implements HarnessAdapter {
         ok: false,
         error: {
           code: "invalidRequest",
-          message: "Grok create Permission Mode is invalid",
+          message: "Grok Permission Mode is invalid",
           retryable: false,
         },
       };
@@ -1493,7 +1496,11 @@ export class GrokAdapter implements HarnessAdapter {
       } else {
         opened = await transport.open(
           parsedRef?.success
-            ? { kind: "resume", sessionId: parsedRef.data.nativeSessionId }
+            ? {
+                kind: "resume",
+                sessionId: parsedRef.data.nativeSessionId,
+                permissionModeId: requestedPermissionModeId,
+              }
             : { kind: "create", permissionModeId: requestedPermissionModeId },
         );
       }

@@ -122,6 +122,31 @@ const INSTALL_RENDERER_POLICY_FUNCTION = `function(requestClient, hostId, prewar
 const REQUEST_MANAGER_WAIT_TIMEOUT_MS = 60_000;
 const REQUEST_MANAGER_POLL_INTERVAL_MS = 25;
 
+function directRendererInstaller(): string {
+  return `(async () => {
+    const selected = ${FIND_REQUEST_MANAGER_EXPRESSION};
+    if (
+      selected.candidateCount !== 1 ||
+      typeof selected.hostId !== 'string' ||
+      selected.hostId.length === 0 ||
+      selected.manager == null ||
+      selected.requestClient == null
+    ) {
+      throw new Error('Renderer request manager is ambiguous');
+    }
+    if (selected.prewarmedThreadManager == null) {
+      throw new Error('Renderer prewarmed Thread manager is unavailable');
+    }
+    return (${installDraftPrewarmPolicyBridge.toString()})(
+      selected.manager,
+      selected.requestClient,
+      selected.hostId,
+      window,
+      selected.prewarmedThreadManager,
+    );
+  })()`;
+}
+
 function mainProcessInstaller(rendererWebContentsId: number): string {
   return `async function () {
     const mainModule = process.mainModule;
@@ -137,18 +162,14 @@ function mainProcessInstaller(rendererWebContentsId: number): string {
   }`;
 }
 
-export async function installRendererDraftPrewarmPolicy(
-  inspector: Pick<CdpClient, "evaluate"> | InspectorEvaluator,
-  rendererWebContentsId: number,
+async function waitForDraftPrewarmPolicy(
+  evaluate: (expression: string) => Promise<unknown>,
+  expression: string,
 ): Promise<RendererDraftPrewarmPolicyStatus> {
-  if (!Number.isInteger(rendererWebContentsId) || rendererWebContentsId <= 0) {
-    throw new Error("Renderer webContents ID must be a positive integer");
-  }
-  const installer = mainProcessInstaller(rendererWebContentsId);
   const deadline = Date.now() + REQUEST_MANAGER_WAIT_TIMEOUT_MS;
   while (true) {
     try {
-      const value = await inspector.evaluate<unknown>(`(${installer})()`);
+      const value = await evaluate(expression);
       if (!isRecord(value) || value.state !== "ready" || value.reason !== "owned-request-bridge") {
         throw new Error("Renderer draft prewarm policy returned an invalid status");
       }
@@ -162,4 +183,27 @@ export async function installRendererDraftPrewarmPolicy(
       });
     }
   }
+}
+
+export function installRendererDraftPrewarmPolicyDirect(
+  renderer: Pick<CdpClient, "evaluate"> | InspectorEvaluator,
+): Promise<RendererDraftPrewarmPolicyStatus> {
+  return waitForDraftPrewarmPolicy(
+    (expression) => renderer.evaluate<unknown>(expression),
+    directRendererInstaller(),
+  );
+}
+
+export async function installRendererDraftPrewarmPolicy(
+  inspector: Pick<CdpClient, "evaluate"> | InspectorEvaluator,
+  rendererWebContentsId: number,
+): Promise<RendererDraftPrewarmPolicyStatus> {
+  if (!Number.isInteger(rendererWebContentsId) || rendererWebContentsId <= 0) {
+    throw new Error("Renderer webContents ID must be a positive integer");
+  }
+  const installer = mainProcessInstaller(rendererWebContentsId);
+  return waitForDraftPrewarmPolicy(
+    (expression) => inspector.evaluate<unknown>(expression),
+    `(${installer})()`,
+  );
 }

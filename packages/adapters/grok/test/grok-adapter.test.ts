@@ -412,6 +412,42 @@ describe("Grok Adapter ACP projection", () => {
     await adapter.close();
   });
 
+  it.each(["auto", "always-approve"] as const)(
+    "restores %s Permission Mode when resuming a Native Session",
+    async (permissionMode) => {
+      const transport = new FakeGrokTransport();
+      const adapter = new GrokAdapter(
+        {},
+        {
+          randomUUID: () => "grok-id",
+          createTransport: () => transport,
+          fetchCredits: async () => null,
+        },
+      );
+      const permissionModeId = harnessPermissionModeIdSchema.parse(permissionMode);
+      const opened = await adapter.open({
+        kind: "resume",
+        cwd: "/synthetic",
+        nativeRef: {
+          harnessId: adapter.harnessId,
+          nativeSessionId: transport.sessionId,
+          formatVersion: 1,
+        },
+        permissionModeId,
+      });
+      if (!opened.ok) throw new Error(opened.error.message);
+
+      expect(transport.openCalls).toContainEqual({
+        kind: "resume",
+        sessionId: transport.sessionId,
+        permissionModeId,
+      });
+      expect(opened.value.initialState.effectivePermissionModeId).toBe(permissionModeId);
+
+      await adapter.close();
+    },
+  );
+
   it("keeps Native Turn identity stable across live completion and resume", async () => {
     const liveTransport = new FakeGrokTransport();
     const live = await openedSession(liveTransport);

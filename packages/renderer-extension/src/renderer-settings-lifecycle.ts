@@ -10,6 +10,10 @@ import {
   type RendererCodexAccountClient,
   type RendererUpdateClient,
 } from "./settings/pages.js";
+import type {
+  RendererSessionImportClient,
+  RendererImportedThreadOpener,
+} from "./settings/session-import-page.js";
 import { installRendererSettingsShell, type RendererSettingsShell } from "./settings/shell.js";
 import {
   installRendererSettingsHeaderTrigger,
@@ -23,6 +27,8 @@ export interface RendererSettingsLifecycleOptions {
   getUpdateClient?(): RendererUpdateClient | null;
   getConnectionDiagnostics?(): RendererConnectionDiagnostics | null;
   getAccountClient?(): RendererCodexAccountClient | null;
+  getSessionImportClient?(): RendererSessionImportClient | null;
+  openImportedThread?: RendererImportedThreadOpener;
   onLocaleChange?(locale: RendererSettingsLocale): void;
 }
 
@@ -60,6 +66,14 @@ export function installRendererSettingsLifecycle(
       options.getUpdateClient ?? (() => null),
       options.getConnectionDiagnostics ?? (() => null),
       options.getAccountClient ?? (() => null),
+      options.getSessionImportClient ?? (() => null),
+      async (threadId, signal) => {
+        if (!options.openImportedThread) {
+          throw new Error("Imported Thread navigation is unavailable");
+        }
+        await options.openImportedThread(threadId, signal);
+        if (!disposed && !signal.aborted) shell?.close();
+      },
     );
     const nextShell = installRendererSettingsShell(definitions, messages, ownerWindow.document);
     const nextTrigger = installRendererSettingsHeaderTrigger({

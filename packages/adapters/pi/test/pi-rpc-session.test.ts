@@ -9,6 +9,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   PiRpcSession,
   piRpcProcessCommand,
+  type PiAutonomousTurn,
   type PiRpcProcessAdapter,
   type PiRpcProcessOptions,
   type PiTurnEvent,
@@ -77,6 +78,94 @@ class FakePiRpcProcess extends EventEmitter {
       this.emit("exit", 0, null);
     });
     queueMicrotask(() => this.emit("spawn"));
+  }
+
+  emitAutonomousTurn(
+    options: {
+      responseId?: string | null;
+      stopReason?: "stop" | "aborted" | "error";
+      includeTool?: boolean;
+      streamingAtSettle?: boolean;
+    } = {},
+  ): void {
+    const responseId =
+      options.responseId === undefined ? "autonomous-response" : options.responseId;
+    const stopReason = options.stopReason ?? "stop";
+    const message = {
+      role: "assistant",
+      ...(responseId ? { responseId } : {}),
+      stopReason,
+      ...(stopReason === "error" ? { errorMessage: "autonomous failure" } : {}),
+      content: [
+        { type: "thinking", thinking: "autonomous reasoning" },
+        { type: "text", text: "autonomous text" },
+      ],
+    };
+    this.#isStreaming = true;
+    this.#output({ type: "message_start", message });
+    this.#output({
+      type: "message_update",
+      assistantMessageEvent: { type: "thinking_delta", delta: "autonomous reasoning" },
+      message,
+    });
+    this.#output({
+      type: "message_update",
+      assistantMessageEvent: { type: "text_delta", delta: "autonomous text" },
+      message,
+    });
+    if (options.includeTool) {
+      this.#output({
+        type: "tool_execution_start",
+        toolCallId: "autonomous-tool",
+        toolName: "read",
+        args: { path: "status.txt" },
+      });
+      this.#output({
+        type: "tool_execution_update",
+        toolCallId: "autonomous-tool",
+        partialResult: { content: [{ type: "text", text: "working" }] },
+      });
+      this.#output({
+        type: "tool_execution_end",
+        toolCallId: "autonomous-tool",
+        toolName: "read",
+        result: { content: [{ type: "text", text: "done" }] },
+        isError: false,
+      });
+    }
+    this.#output({ type: "message_end", message });
+    this.#isStreaming = options.streamingAtSettle === true;
+    this.#output({ type: "agent_settled" });
+  }
+
+  emitAutonomousStart(responseId = "autonomous-pending"): void {
+    this.#isStreaming = true;
+    const message = {
+      role: "assistant",
+      responseId,
+      content: [{ type: "text", text: "partial" }],
+    };
+    this.#output({ type: "message_start", message });
+    this.#output({
+      type: "message_update",
+      assistantMessageEvent: { type: "text_delta", delta: "partial" },
+      message,
+    });
+  }
+
+  emitBlockingInteraction(): void {
+    this.#output({
+      type: "extension_ui_request",
+      id: "autonomous-question",
+      method: "select",
+      title: "Blocked",
+      options: ["yes", "no"],
+    });
+  }
+
+  emitAgentSettled(streaming = false): void {
+    this.#isStreaming = streaming;
+    this.#output({ type: "agent_settled" });
   }
 
   #push(chunk: Buffer): void {
@@ -634,6 +723,36 @@ function session(
   );
 }
 
+function autonomousSession(onFault = vi.fn()): {
+  rpc: PiRpcSession;
+  process(): FakePiRpcProcess;
+  onFault: ReturnType<typeof vi.fn>;
+} {
+  let fake: FakePiRpcProcess | null = null;
+  const rpc = new PiRpcSession(
+    {
+      cwd: process.cwd(),
+      commandTimeoutMs: 2_000,
+      closeTimeoutMs: 500,
+      onFault,
+    },
+    {
+      spawn() {
+        fake = new FakePiRpcProcess("final-only");
+        return fake as unknown as ChildProcessWithoutNullStreams;
+      },
+    },
+  );
+  return {
+    rpc,
+    process() {
+      if (!fake) throw new Error("Fake Pi process has not started");
+      return fake;
+    },
+    onFault,
+  };
+}
+
 async function waitFor(predicate: () => boolean): Promise<void> {
   const deadline = Date.now() + 2_000;
   while (!predicate()) {
@@ -643,6 +762,116 @@ async function waitFor(predicate: () => boolean): Promise<void> {
 }
 
 describe("Pi RPC Turn aggregation", () => {
+  it("aggregates an idle autonomous Assistant/Tool Turn once with response identity", async () => {
+    const { rpc, process: fakeProcess, onFault } = autonomousSession();
+    const turns: PiAutonomousTurn[] = [];
+    rpc.setAutonomousTurnHandler((turn) => turns.push(turn));
+    await rpc.start();
+
+    fakeProcess().emitAutonomousTurn({ includeTool: true });
+    await waitFor(() => turns.length === 1);
+
+    expect(turns[0]).toMatchObject({
+      nativeTurnKey: "autonomous-response",
+      result: { status: "succeeded", text: "autonomous text" },
+    });
+    expect(turns[0]?.events.map(({ type }) => type)).toEqual([
+      "reasoning.delta",
+      "text.delta",
+      "tool.started",
+      "tool.updated",
+      "tool.completed",
+      "reasoning.completed",
+      "message.completed",
+    ]);
+    fakeProcess().emitAgentSettled();
+    await Promise.resolve();
+    expect(turns).toHaveLength(1);
+    expect(onFault).not.toHaveBeenCalled();
+    await rpc.close();
+  });
+
+  it("generates one stable autonomous key without responseId and classifies native abort", async () => {
+    const { rpc, process: fakeProcess } = autonomousSession();
+    const turns: PiAutonomousTurn[] = [];
+    rpc.setAutonomousTurnHandler((turn) => turns.push(turn));
+    await rpc.start();
+
+    fakeProcess().emitAutonomousTurn({ responseId: null, stopReason: "aborted" });
+    await waitFor(() => turns.length === 1);
+
+    expect(turns[0]?.nativeTurnKey).toMatch(/^[0-9a-f-]{36}$/);
+    expect(turns[0]?.result).toEqual({
+      status: "cancelled",
+      text: "autonomous text",
+      reason: "Pi autonomous Assistant was aborted",
+    });
+    await rpc.close();
+  });
+
+  it("never misclassifies a requested Turn as autonomous", async () => {
+    const rpc = session("final-only");
+    const autonomous = vi.fn();
+    rpc.setAutonomousTurnHandler(autonomous);
+    await rpc.start();
+
+    await expect(rpc.runTurn("requested", () => undefined)).resolves.toEqual({
+      text: "synthetic final text",
+      cancelled: false,
+    });
+    expect(autonomous).not.toHaveBeenCalled();
+    await rpc.close();
+  });
+
+  it("fails closed for autonomous blocking UI and streaming disagreement", async () => {
+    const blocking = autonomousSession();
+    const blockedTurns: PiAutonomousTurn[] = [];
+    blocking.rpc.setAutonomousTurnHandler((turn) => blockedTurns.push(turn));
+    await blocking.rpc.start();
+    blocking.process().emitAutonomousStart();
+    blocking.process().emitBlockingInteraction();
+    await waitFor(() => blockedTurns.length === 1);
+    expect(blockedTurns[0]?.result).toMatchObject({
+      status: "failed",
+      error: { message: expect.stringContaining("blocking Extension UI") },
+    });
+    expect(blocking.onFault).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: "protocolError" }),
+    );
+    await blocking.rpc.close();
+
+    const streaming = autonomousSession();
+    const streamingTurns: PiAutonomousTurn[] = [];
+    streaming.rpc.setAutonomousTurnHandler((turn) => streamingTurns.push(turn));
+    await streaming.rpc.start();
+    streaming.process().emitAutonomousTurn({ streamingAtSettle: true });
+    await waitFor(() => streamingTurns.length === 1);
+    expect(streamingTurns[0]?.result).toMatchObject({
+      status: "failed",
+      error: { message: expect.stringContaining("still Streaming") },
+    });
+    expect(streaming.onFault).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: "protocolError" }),
+    );
+    await streaming.rpc.close();
+  });
+
+  it("reports an unfinished autonomous Turn as failed on close", async () => {
+    const { rpc, process: fakeProcess } = autonomousSession();
+    const turns: PiAutonomousTurn[] = [];
+    rpc.setAutonomousTurnHandler((turn) => turns.push(turn));
+    await rpc.start();
+    fakeProcess().emitAutonomousStart();
+
+    await rpc.close();
+
+    expect(turns).toHaveLength(1);
+    expect(turns[0]?.result).toMatchObject({
+      status: "failed",
+      error: { message: "Pi RPC Session closed" },
+    });
+  });
+
   it("starts the native process without a codexhost Extension option", async () => {
     const spawnProcess = vi.fn((options: PiRpcProcessOptions) => {
       expect(options.cwd).toBe(process.cwd());

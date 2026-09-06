@@ -1,4 +1,7 @@
 import {
+  decodeHarnessPluginRoute,
+  encodeHarnessPluginRoute,
+  harnessPluginIdSchema,
   harnessModelRefSchema,
   harnessPermissionModeIdSchema,
   harnessThinkingOptionIdSchema,
@@ -20,6 +23,8 @@ export const GROK_NATIVE_TRANSPORT_MODEL_ID = "codexhost/grok-native";
 export const GROK_NATIVE_TRANSPORT_MODEL_PREFIX = `${GROK_NATIVE_TRANSPORT_MODEL_ID}@`;
 export const OMP_NATIVE_TRANSPORT_MODEL_ID = "codexhost/omp-native";
 export const OMP_NATIVE_TRANSPORT_MODEL_PREFIX = `${OMP_NATIVE_TRANSPORT_MODEL_ID}@`;
+export const ANTIGRAVITY_NATIVE_TRANSPORT_MODEL_ID = "codexhost/antigravity-native";
+export const ANTIGRAVITY_NATIVE_TRANSPORT_MODEL_PREFIX = `${ANTIGRAVITY_NATIVE_TRANSPORT_MODEL_ID}@`;
 export const EXTERNAL_HARNESS_IDS = [
   "pi",
   "claude-code",
@@ -27,18 +32,21 @@ export const EXTERNAL_HARNESS_IDS = [
   "opencode",
   "grok",
   "omp",
+  "antigravity",
 ] as const;
 
-export type ExternalHarnessId = (typeof EXTERNAL_HARNESS_IDS)[number];
+/** Open identity space; the Host Registry, not this legacy list, validates installation. */
+export type ExternalHarnessId = string;
 export type RoutedHarnessId = "codex" | ExternalHarnessId;
 
-const transportModelByHarness = {
+const transportModelByHarness: Readonly<Record<string, string>> = {
   pi: PI_NATIVE_TRANSPORT_MODEL_ID,
   "claude-code": CLAUDE_CODE_NATIVE_TRANSPORT_MODEL_ID,
   "deepseek-harness": DEEPSEEK_HARNESS_NATIVE_TRANSPORT_MODEL_ID,
   opencode: OPENCODE_NATIVE_TRANSPORT_MODEL_ID,
   grok: GROK_NATIVE_TRANSPORT_MODEL_ID,
   omp: OMP_NATIVE_TRANSPORT_MODEL_ID,
+  antigravity: ANTIGRAVITY_NATIVE_TRANSPORT_MODEL_ID,
 } as const satisfies Record<ExternalHarnessId, string>;
 
 const harnessByTransportModel = new Map<string, ExternalHarnessId>(
@@ -48,23 +56,24 @@ const harnessByTransportModel = new Map<string, ExternalHarnessId>(
   ]),
 );
 
-export type CreateRoute =
-  | { harnessId: "codex"; transportModelId: string }
-  | {
-      harnessId: ExternalHarnessId;
-      routeMode: "native";
-      transportModelId: string;
-      model?: HarnessModelRef;
-      thinkingOptionId?: HarnessThinkingOptionId;
-      permissionModeId?: HarnessPermissionModeId;
-    };
+export interface CreateRoute {
+  harnessId: RoutedHarnessId;
+  routeMode?: "native";
+  transportModelId: string;
+  model?: HarnessModelRef;
+  thinkingOptionId?: HarnessThinkingOptionId;
+  permissionModeId?: HarnessPermissionModeId;
+}
 
 function isJsonObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 export function transportModelIdForHarness(harnessId: ExternalHarnessId): string {
-  return transportModelByHarness[harnessId];
+  const legacy = Object.hasOwn(transportModelByHarness, harnessId)
+    ? transportModelByHarness[harnessId]
+    : undefined;
+  return legacy ?? encodeHarnessPluginRoute({ harnessId: harnessPluginIdSchema.parse(harnessId) });
 }
 
 export interface ExternalConfigurationSelection {
@@ -91,16 +100,88 @@ export function encodePiTransportModel(
 export function encodeOmpTransportModel(
   model?: HarnessModelRef,
   thinkingOptionId?: HarnessThinkingOptionId,
+  permissionModeId?: HarnessPermissionModeId,
 ): string {
   if (!model) {
-    if (thinkingOptionId) throw new Error("OMP transport Thinking requires a Model Ref");
+    if (permissionModeId || thinkingOptionId) {
+      throw new Error("OMP transport configuration requires a Model Ref");
+    }
     return OMP_NATIVE_TRANSPORT_MODEL_ID;
   }
   const parsedModel = harnessModelRefSchema.parse(model);
+  const parsedPermissionMode = permissionModeId
+    ? harnessPermissionModeIdSchema.parse(permissionModeId)
+    : undefined;
   const parsedThinking = thinkingOptionId
     ? harnessThinkingOptionIdSchema.parse(thinkingOptionId)
     : undefined;
+  if (parsedPermissionMode) {
+    return `${OMP_NATIVE_TRANSPORT_MODEL_PREFIX}${parsedModel.id}@${parsedPermissionMode}@${parsedThinking ?? ""}`;
+  }
   return `${OMP_NATIVE_TRANSPORT_MODEL_PREFIX}${parsedModel.id}${parsedThinking ? `@${parsedThinking}` : ""}`;
+}
+
+export function encodeAntigravityTransportModel(
+  model?: HarnessModelRef,
+  permissionModeId?: HarnessPermissionModeId,
+  thinkingOptionId?: HarnessThinkingOptionId,
+): string {
+  if (!model) {
+    if (permissionModeId || thinkingOptionId) {
+      throw new Error("Antigravity transport configuration requires a Model Ref");
+    }
+    return ANTIGRAVITY_NATIVE_TRANSPORT_MODEL_ID;
+  }
+  const parsedModel = harnessModelRefSchema.parse(model);
+  const parsedPermission = permissionModeId
+    ? harnessPermissionModeIdSchema.parse(permissionModeId)
+    : undefined;
+  const parsedThinking = thinkingOptionId
+    ? harnessThinkingOptionIdSchema.parse(thinkingOptionId)
+    : undefined;
+  if (parsedThinking) {
+    return `${ANTIGRAVITY_NATIVE_TRANSPORT_MODEL_PREFIX}${parsedModel.id}@${parsedPermission ?? ""}@${parsedThinking}`;
+  }
+  return `${ANTIGRAVITY_NATIVE_TRANSPORT_MODEL_PREFIX}${parsedModel.id}${parsedPermission ? `@${parsedPermission}` : ""}`;
+}
+
+export function decodeAntigravityTransportSelection(
+  value: unknown,
+): ExternalConfigurationSelection | null {
+  if (value === ANTIGRAVITY_NATIVE_TRANSPORT_MODEL_ID) return {};
+  if (typeof value !== "string" || !value.startsWith(ANTIGRAVITY_NATIVE_TRANSPORT_MODEL_PREFIX)) {
+    return null;
+  }
+  const components = value.slice(ANTIGRAVITY_NATIVE_TRANSPORT_MODEL_PREFIX.length).split("@");
+  if (components.length < 1 || components.length > 3) {
+    throw new Error("Antigravity transport configuration has an invalid component count");
+  }
+  const [modelId, permissionModeId, thinkingOptionId] = components;
+  if (components.length === 2 && !permissionModeId) {
+    throw new Error("Antigravity transport configuration has an empty Permission Mode");
+  }
+  if (components.length === 3 && !thinkingOptionId) {
+    throw new Error("Antigravity transport configuration has an empty Thinking option");
+  }
+  const model = harnessModelRefSchema.safeParse({ id: modelId });
+  if (!model.success) throw new Error("Antigravity transport Model contains an invalid Model Ref");
+  const permissionMode = permissionModeId
+    ? harnessPermissionModeIdSchema.safeParse(permissionModeId)
+    : null;
+  if (permissionMode && !permissionMode.success) {
+    throw new Error("Antigravity transport configuration contains an invalid Permission Mode");
+  }
+  const thinking = thinkingOptionId
+    ? harnessThinkingOptionIdSchema.safeParse(thinkingOptionId)
+    : null;
+  if (thinking && !thinking.success) {
+    throw new Error("Antigravity transport configuration contains an invalid Thinking option");
+  }
+  return {
+    model: model.data,
+    ...(permissionMode?.success ? { permissionModeId: permissionMode.data } : {}),
+    ...(thinking?.success ? { thinkingOptionId: thinking.data } : {}),
+  };
 }
 
 export function decodeOmpTransportSelection(value: unknown): ExternalConfigurationSelection | null {
@@ -108,17 +189,34 @@ export function decodeOmpTransportSelection(value: unknown): ExternalConfigurati
   if (typeof value !== "string" || !value.startsWith(OMP_NATIVE_TRANSPORT_MODEL_PREFIX))
     return null;
   const components = value.slice(OMP_NATIVE_TRANSPORT_MODEL_PREFIX.length).split("@");
-  if (components.length < 1 || components.length > 2)
+  if (components.length < 1 || components.length > 3)
     throw new Error("OMP transport configuration has an invalid component count");
-  const [modelId, thinkingOptionId] = components;
+  const [modelId, permissionOrThinkingId, thinkingOptionId] = components;
+  if (components.length === 2 && !permissionOrThinkingId)
+    throw new Error("OMP transport configuration has an empty Thinking option");
+  if (components.length === 3 && !permissionOrThinkingId)
+    throw new Error("OMP transport configuration has an empty Permission Mode");
   const model = harnessModelRefSchema.safeParse({ id: modelId });
   if (!model.success) throw new Error("OMP transport Model contains an invalid Model Ref");
-  const thinking = thinkingOptionId
-    ? harnessThinkingOptionIdSchema.safeParse(thinkingOptionId)
-    : null;
+  const permissionMode =
+    components.length === 3
+      ? harnessPermissionModeIdSchema.safeParse(permissionOrThinkingId)
+      : null;
+  if (permissionMode && !permissionMode.success)
+    throw new Error("OMP transport configuration contains an invalid Permission Mode");
+  const thinking =
+    components.length === 2
+      ? harnessThinkingOptionIdSchema.safeParse(permissionOrThinkingId)
+      : thinkingOptionId
+        ? harnessThinkingOptionIdSchema.safeParse(thinkingOptionId)
+        : null;
   if (thinking && !thinking.success)
     throw new Error("OMP transport configuration contains an invalid Thinking option");
-  return { model: model.data, ...(thinking?.success ? { thinkingOptionId: thinking.data } : {}) };
+  return {
+    model: model.data,
+    ...(permissionMode?.success ? { permissionModeId: permissionMode.data } : {}),
+    ...(thinking?.success ? { thinkingOptionId: thinking.data } : {}),
+  };
 }
 
 export function decodeOmpTransportModel(value: unknown): HarnessModelRef | null | undefined {
@@ -426,7 +524,22 @@ export function encodeExternalTransportSelection(
         selection.thinkingOptionId,
       );
     case "omp":
-      return encodeOmpTransportModel(selection.model, selection.thinkingOptionId);
+      return encodeOmpTransportModel(
+        selection.model,
+        selection.thinkingOptionId,
+        selection.permissionModeId,
+      );
+    case "antigravity":
+      return encodeAntigravityTransportModel(
+        selection.model,
+        selection.permissionModeId,
+        selection.thinkingOptionId,
+      );
+    default:
+      return encodeHarnessPluginRoute({
+        harnessId: harnessPluginIdSchema.parse(harnessId),
+        ...selection,
+      });
   }
 }
 
@@ -434,6 +547,15 @@ export function decodeExternalTransportSelection(
   harnessId: ExternalHarnessId,
   value: unknown,
 ): ExternalConfigurationSelection | null {
+  const route = decodeHarnessPluginRoute(value);
+  if (route) {
+    if (route.harnessId !== harnessId) return null;
+    return {
+      ...(route.model ? { model: route.model } : {}),
+      ...(route.thinkingOptionId ? { thinkingOptionId: route.thinkingOptionId } : {}),
+      ...(route.permissionModeId ? { permissionModeId: route.permissionModeId } : {}),
+    };
+  }
   switch (harnessId) {
     case "pi":
       return decodePiTransportSelection(value);
@@ -447,6 +569,10 @@ export function decodeExternalTransportSelection(
       return decodeGrokTransportSelection(value);
     case "omp":
       return decodeOmpTransportSelection(value);
+    case "antigravity":
+      return decodeAntigravityTransportSelection(value);
+    default:
+      return null;
   }
 }
 
@@ -462,6 +588,18 @@ export function decodeCreateRoute(request: JsonRpcRequest): CreateRoute | null {
   if (request.method !== "thread/start") return null;
   if (!isJsonObject(request.params) || typeof request.params.model !== "string") {
     throw new Error("thread/start params.model must be text");
+  }
+
+  const pluginRoute = decodeHarnessPluginRoute(request.params.model);
+  if (pluginRoute) {
+    return {
+      harnessId: pluginRoute.harnessId,
+      routeMode: "native",
+      transportModelId: request.params.model,
+      ...(pluginRoute.model ? { model: pluginRoute.model } : {}),
+      ...(pluginRoute.thinkingOptionId ? { thinkingOptionId: pluginRoute.thinkingOptionId } : {}),
+      ...(pluginRoute.permissionModeId ? { permissionModeId: pluginRoute.permissionModeId } : {}),
+    };
   }
 
   const piSelection = decodePiTransportSelection(request.params.model);
@@ -516,6 +654,15 @@ export function decodeCreateRoute(request: JsonRpcRequest): CreateRoute | null {
       routeMode: "native",
       transportModelId: request.params.model,
       ...ompSelection,
+    };
+  }
+  const antigravitySelection = decodeAntigravityTransportSelection(request.params.model);
+  if (antigravitySelection !== null) {
+    return {
+      harnessId: "antigravity",
+      routeMode: "native",
+      transportModelId: request.params.model,
+      ...antigravitySelection,
     };
   }
 

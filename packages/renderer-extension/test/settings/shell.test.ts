@@ -23,10 +23,17 @@ describe("Renderer settings foundation", () => {
     expect(pages.map(({ label }) => label)).toEqual([
       "Connections",
       "Accounts",
+      "Session Import",
       "Updates",
       "About",
     ]);
-    expect(pages.map(({ icon }) => icon)).toEqual(["connections", "accounts", "updates", "about"]);
+    expect(pages.map(({ icon }) => icon)).toEqual([
+      "connections",
+      "accounts",
+      "download",
+      "updates",
+      "about",
+    ]);
     expect(registry.defaultPageId).toBe("connections");
     expect(Object.isFrozen(pages)).toBe(true);
     expect(pages.every((page) => Object.isFrozen(page))).toBe(true);
@@ -53,7 +60,13 @@ describe("Renderer settings foundation", () => {
   it("publishes only available settings pages", () => {
     const pages = createDefaultRendererSettingsPages();
 
-    expect(pages.map(({ id }) => id)).toEqual(["connections", "accounts", "updates", "about"]);
+    expect(pages.map(({ id }) => id)).toEqual([
+      "connections",
+      "accounts",
+      "session-import",
+      "updates",
+      "about",
+    ]);
     expect(pages.find(({ id }) => id === "connections")?.mount.toString()).toContain(
       "connectionRefresh",
     );

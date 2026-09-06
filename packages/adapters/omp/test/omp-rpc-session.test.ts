@@ -27,7 +27,7 @@ class FakeOmpProcess extends EventEmitter {
   constructor(
     readonly compactMode: "complete" | "stalled" = "complete",
     readonly sessionFile?: string,
-    readonly terminalMessageMode: "none" | "replay" | "fallback" = "none",
+    readonly terminalMessageMode: "none" | "replay" | "fallback" | "approval" = "none",
   ) {
     super();
     this.stdin.on("data", (chunk: Buffer) => {
@@ -78,6 +78,24 @@ class FakeOmpProcess extends EventEmitter {
 
   #handle(command: Record<string, unknown>): void {
     this.commands.push(command);
+    if (command.type === "extension_ui_response") {
+      if (this.terminalMessageMode === "approval") {
+        const message = {
+          role: "assistant",
+          responseId: "assistant-1",
+          content: [{ type: "text", text: "PONG" }],
+        };
+        this.#output({ type: "message_start", message });
+        this.#output({
+          type: "message_update",
+          message,
+          assistantMessageEvent: { type: "text_delta", delta: "PONG" },
+        });
+        this.#output({ type: "message_end", message: { ...message, stopReason: "stop" } });
+        this.#output({ type: "agent_end", isTerminal: true });
+      }
+      return;
+    }
     if (command.type === "negotiate_protocol")
       return this.#response(command, { protocolVersion: 2 });
     if (command.type === "get_state") return this.#response(command, this.#state());
@@ -123,6 +141,16 @@ class FakeOmpProcess extends EventEmitter {
     if (command.type === "prompt") {
       this.#response(command);
       queueMicrotask(() => {
+        if (this.terminalMessageMode === "approval") {
+          this.#output({
+            type: "extension_ui_request",
+            id: "approval-1",
+            method: "select",
+            title: "Approve write?",
+            options: ["Approve", "Deny"],
+          });
+          return;
+        }
         this.#output({
           type: "subagent_lifecycle",
           payload: {
@@ -302,6 +330,39 @@ describe("OMP RPC session", () => {
     expect(events.filter((event) => event.type === "message.completed")).toEqual([
       { type: "message.completed", messageId: "assistant-1" },
     ]);
+    await session.close();
+  });
+
+  it("bridges blocking OMP RPC UI requests and sends the selected response", async () => {
+    const process = new FakeOmpProcess("complete", undefined, "approval");
+    const adapter: OmpRpcProcessAdapter = { spawn: () => process as never };
+    const session = new OmpRpcSession({ cwd: "/synthetic", commandTimeoutMs: 2_000 }, adapter);
+    await session.start();
+    const events: OmpTurnEvent[] = [];
+    const turn = session.runTurn("write", (event) => events.push(event));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(events).toContainEqual({
+      type: "interaction.requested",
+      request: {
+        requestId: "approval-1",
+        method: "select",
+        title: "Approve write?",
+        options: ["Approve", "Deny"],
+      },
+    });
+
+    await session.respondToInteraction({ requestId: "approval-1", value: "Approve" });
+    expect(process.commands).toContainEqual({
+      type: "extension_ui_response",
+      id: "approval-1",
+      value: "Approve",
+    });
+    expect(events).toContainEqual({
+      type: "interaction.closed",
+      requestId: "approval-1",
+      reason: "responded",
+    });
+    await turn;
     await session.close();
   });
 

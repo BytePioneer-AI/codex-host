@@ -48,7 +48,7 @@ const { outputFiles } = await build({
             memoCache: {
               data: [
                 [undefined, modelState, modelState],
-                [{}, {}, null, modelState],
+                [{}, {}, "client-new-thread:startup", modelState, undefined, modelState, modelState],
               ],
             },
           },
@@ -65,9 +65,11 @@ const { outputFiles } = await build({
       const unavailable = async () => {
         throw new Error("unused fixed control");
       };
+      globalThis.threadCommandRequests = [];
+      globalThis.commandCatalogRequests = [];
       const binding = installRendererBindingProbe({
-        enabledAgents: ["codex", "pi"],
-        defaultAgent: "pi",
+        enabledAgents: ["codex", "pi", "deepseek-harness", "opencode", "claude-code", "grok", "omp"],
+        defaultAgent: globalThis.startupAgent ?? "pi",
       });
       binding.setAdapter(
         { state: "ready", reason: "ready", modelUpdates: 0, hook: "model-state" },
@@ -75,6 +77,20 @@ const { outputFiles } = await build({
         () => true,
         {
           inspectHarness: async () => inspection,
+          inspectHarnessCommands: async (input) => {
+            globalThis.commandCatalogRequests.push(input);
+            return { commands: globalThis.startupCommands ?? [{
+              id: "pi.compact", invocation: "/compact", label: "Compact", argumentMode: "text",
+            }] };
+          },
+          inspectThreadCommands: async (input) => {
+            globalThis.threadCommandRequests.push(input);
+            throw new Error("must not inspect a Thread for commands");
+          },
+          executeThreadCommand: async (input) => {
+            globalThis.threadCommandRequests.push(input);
+            throw new Error("must not execute a command before submit");
+          },
           inspectThread: unavailable,
           forkThread: unavailable,
           inspectThreadUsage: unavailable,
@@ -94,6 +110,8 @@ const { outputFiles } = await build({
       setTimeout(() => {
         window.__codexhostDraftPrewarmPolicyV1 = {
           state: "ready",
+          hostId: "local",
+          select: async () => undefined,
           clear: async () => undefined,
         };
       }, 100);
@@ -106,12 +124,74 @@ const { outputFiles } = await build({
   format: "iife",
   platform: "browser",
   target: "es2024",
-  loader: { ".css": "text", ".png": "dataurl" },
+  loader: { ".css": "text", ".png": "dataurl", ".svg": "dataurl" },
   write: false,
 });
 
 const browserBundle = outputFiles[0]?.text;
 if (!browserBundle) throw new Error("Renderer binding startup E2E bundle was not generated");
+
+test("a new conversation shows the Harness command button before a Thread exists", async ({
+  page,
+}) => {
+  await page.setContent("<!doctype html><body></body>");
+  await page.addScriptTag({ content: browserBundle });
+
+  const trigger = page.locator("[data-codexhost-harness-command-control] > button");
+  await expect(page.locator("[data-codexhost-harness-command-control]")).not.toHaveAttribute(
+    "hidden",
+    "",
+  );
+  await expect(trigger).toBeVisible();
+  await expect(trigger).toBeEnabled();
+  await trigger.click();
+  const menu = page.locator("[data-codexhost-harness-command-menu]");
+  await expect(menu).toBeVisible();
+  await menu.locator('[data-command-id="pi.compact"]').click();
+  await expect(page.locator("[data-codex-composer]")).toHaveText("/compact ");
+  expect(await page.evaluate(() => Reflect.get(globalThis, "threadCommandRequests"))).toEqual([]);
+});
+
+test("a DSH draft offers goal and plan but explains why compact cannot run", async ({ page }) => {
+  await page.setContent("<!doctype html><body></body>");
+  await page.evaluate(() => {
+    Reflect.set(globalThis, "startupAgent", "deepseek-harness");
+    Reflect.set(globalThis, "startupCommands", [
+      { id: "dsh.compact", invocation: "/compact", label: "Compact", argumentMode: "none" },
+      { id: "dsh.goal", invocation: "/dsh-goal", label: "Goal", argumentMode: "text" },
+      { id: "dsh.plan", invocation: "/plan", label: "Plan", argumentMode: "text" },
+    ]);
+  });
+  await page.addScriptTag({ content: browserBundle });
+  const trigger = page.locator("[data-codexhost-harness-command-control] > button");
+  const menu = page.locator("[data-codexhost-harness-command-menu]");
+  await trigger.click();
+  await expect(menu.locator('[role="menuitem"]')).toHaveCount(3);
+  await expect(menu.locator('[data-command-id="dsh.compact"]')).toBeDisabled();
+  await expect(menu).toContainText("Start a conversation before running this command");
+  for (const [id, invocation] of [
+    ["dsh.goal", "/dsh-goal"],
+    ["dsh.plan", "/plan"],
+  ] as const) {
+    await trigger.click();
+    await menu.locator(`[data-command-id="${id}"]`).click();
+    await expect(page.locator("[data-codex-composer]")).toContainText(invocation);
+  }
+  expect(await page.evaluate(() => Reflect.get(globalThis, "threadCommandRequests"))).toEqual([]);
+  expect(
+    await page.evaluate(() => Reflect.get(globalThis, "commandCatalogRequests")),
+  ).toContainEqual({ harnessId: "deepseek-harness" });
+});
+
+test("a native Codex draft hides the external Harness command button", async ({ page }) => {
+  await page.setContent("<!doctype html><body></body>");
+  await page.evaluate(() => Reflect.set(globalThis, "startupAgent", "codex"));
+  await page.addScriptTag({ content: browserBundle });
+
+  const root = page.locator("[data-codexhost-harness-command-control]");
+  await expect(root).toHaveAttribute("hidden", "");
+  await expect(root).toBeHidden();
+});
 
 test("a draft waits for the Desktop prewarm policy before applying its Model", async ({ page }) => {
   await page.setContent("<!doctype html><body></body>");

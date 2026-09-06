@@ -12,6 +12,7 @@ export const KNOWN_RENDERER_AGENTS = [
   "opencode",
   "grok",
   "omp",
+  "antigravity",
 ] as const;
 export const DEFAULT_RENDERER_AGENTS = KNOWN_RENDERER_AGENTS;
 export type RendererAgent = (typeof KNOWN_RENDERER_AGENTS)[number];
@@ -35,6 +36,8 @@ export interface DraftComposerState {
   grokThinkingOptionId?: HarnessThinkingOptionId;
   ompModel?: HarnessModelRef;
   ompThinkingOptionId?: HarnessThinkingOptionId;
+  antigravityModel?: HarnessModelRef;
+  antigravityThinkingOptionId?: HarnessThinkingOptionId;
   permissionModeByAgent?: Partial<Record<ExternalRendererAgent, HarnessPermissionModeId>>;
 }
 
@@ -198,6 +201,7 @@ export class DraftAgentController<Composer extends object> {
     if (agent === "opencode" && model) state.openCodeModel = model;
     if (agent === "grok" && model) state.grokModel = model;
     if (agent === "omp" && model) state.ompModel = model;
+    if (agent === "antigravity" && model) state.antigravityModel = model;
     if (agent === "pi" && thinkingOptionId) state.piThinkingOptionId = thinkingOptionId;
     else if (agent === "pi") delete state.piThinkingOptionId;
     if (agent === "claude-code" && thinkingOptionId) {
@@ -210,6 +214,9 @@ export class DraftAgentController<Composer extends object> {
     } else if (agent === "opencode") delete state.openCodeThinkingOptionId;
     if (agent === "omp" && thinkingOptionId) state.ompThinkingOptionId = thinkingOptionId;
     else if (agent === "omp") delete state.ompThinkingOptionId;
+    if (agent === "antigravity" && thinkingOptionId) {
+      state.antigravityThinkingOptionId = thinkingOptionId;
+    } else if (agent === "antigravity") delete state.antigravityThinkingOptionId;
     if (agent !== "codex") {
       const permissionModeByAgent: NonNullable<DraftComposerState["permissionModeByAgent"]> = {};
       for (const candidate of [
@@ -219,6 +226,7 @@ export class DraftAgentController<Composer extends object> {
         "opencode",
         "grok",
         "omp",
+        "antigravity",
       ] as const) {
         const current = state.permissionModeByAgent?.[candidate];
         if (candidate !== agent && current) permissionModeByAgent[candidate] = current;
@@ -240,7 +248,8 @@ export class DraftAgentController<Composer extends object> {
     if (agent === "deepseek-harness") return state.deepSeekHarnessModel;
     if (agent === "opencode") return state.openCodeModel;
     if (agent === "grok") return state.grokModel;
-    return state.ompModel;
+    if (agent === "omp") return state.ompModel;
+    return state.antigravityModel;
   }
 
   thinkingOptionForAgent(
@@ -252,7 +261,8 @@ export class DraftAgentController<Composer extends object> {
     if (agent === "claude-code") return state.claudeThinkingOptionId;
     if (agent === "grok") return state.grokThinkingOptionId;
     if (agent === "opencode") return state.openCodeThinkingOptionId;
-    return state.ompThinkingOptionId;
+    if (agent === "omp") return state.ompThinkingOptionId;
+    return agent === "antigravity" ? state.antigravityThinkingOptionId : undefined;
   }
 
   permissionModeForAgent(
@@ -286,7 +296,8 @@ export class DraftAgentController<Composer extends object> {
     else if (agent === "deepseek-harness") state.deepSeekHarnessModel = model;
     else if (agent === "opencode") state.openCodeModel = model;
     else if (agent === "grok") state.grokModel = model;
-    else state.ompModel = model;
+    else if (agent === "omp") state.ompModel = model;
+    else state.antigravityModel = model;
     return state;
   }
 
@@ -330,6 +341,10 @@ export class DraftAgentController<Composer extends object> {
       state.ompThinkingOptionId = thinkingOptionId;
     } else if (agent === "omp") {
       delete state.ompThinkingOptionId;
+    } else if (agent === "antigravity" && thinkingOptionId) {
+      state.antigravityThinkingOptionId = thinkingOptionId;
+    } else if (agent === "antigravity") {
+      delete state.antigravityThinkingOptionId;
     }
     return state;
   }

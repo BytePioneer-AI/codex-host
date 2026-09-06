@@ -130,7 +130,7 @@ OpenCodeAdapter
 
 ## codexhost 现有 Harness 是怎样接入的
 
-codexhost 没有让 Renderer 直接理解某个 Harness 的 wire protocol。所有外部 Harness 最终都实现 [`HarnessAdapter` / `HarnessSession`](../packages/harness-adapter/src/text-session.ts)，再输出统一的 Turn、Item、Question、Approval、Usage、Subagent、Checkpoint 和历史 Snapshot；注册与路由分别位于 [`adapter-composition.ts`](../packages/host-runtime/src/adapter-composition.ts) 和 [`model-routing.ts`](../packages/protocol-core/src/model-routing.ts)。
+codexhost 没有让 Renderer 直接理解某个 Harness 的 wire protocol。所有外部 Harness 最终都实现 [`HarnessAdapter` / `HarnessSession`](../packages/harness-adapter/src/text-session.ts)，再输出统一的 Turn、Item、Question、Approval、Usage、Subagent、Checkpoint 和历史 Snapshot；分析时注册位于 `adapter-composition.ts`，后续已迁入 [`harness-plugin-loader.ts`](../packages/host-runtime/src/harness-plugin-loader.ts)；路由仍由 [`model-routing.ts`](../packages/protocol-core/src/model-routing.ts) 承接。
 
 当前仓库有五种有代表性的接入形态：
 

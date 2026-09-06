@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  formatRendererContextSummary,
   formatRendererPlanReset,
   formatRendererPlanWindow,
   formatRendererTokenCount,
@@ -40,6 +41,12 @@ describe("Renderer Usage token-count formatting", () => {
     expect(formatRendererTokenCount(999_999_999)).toBe("1000M");
     expect(formatRendererTokenCount(1_000_000_000)).toBe("1B");
     expect(formatRendererTokenCount(-1_250_000_000)).toBe("-1.3B");
+  });
+});
+
+describe("Renderer Usage context-summary formatting", () => {
+  it("shows the used percentage and the context window", () => {
+    expect(formatRendererContextSummary(15_000, 934_500)).toBe("1.6% / 934.5k");
   });
 });
 

@@ -11,4 +11,13 @@ declare global {
 
 const configuration = window.__codexhostProductionConfigV1;
 delete window.__codexhostProductionConfigV1;
-installRendererBinding(DEFAULT_RENDERER_AGENTS, configuration?.defaultAgent ?? "codex");
+
+const install = (): void => {
+  installRendererBinding(DEFAULT_RENDERER_AGENTS, configuration?.defaultAgent ?? "codex");
+};
+
+if (document.documentElement && document.body) {
+  install();
+} else {
+  window.addEventListener("DOMContentLoaded", install, { once: true });
+}

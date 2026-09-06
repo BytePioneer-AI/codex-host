@@ -2162,7 +2162,14 @@ export function installRendererBindingProbe(
 
   function reconcileHarnessAvailabilityHost(): void {
     const hostId = activeModelHostId();
-    if (!hostId || hostId === activeAvailabilityHostId) return;
+    if (
+      !hostId ||
+      (hostId === activeAvailabilityHostId &&
+        [...mountedByComposer.values()].every((mounted) => mounted.hostId !== null))
+    )
+      return;
+    // The first Composer can mount before the route is ready. The availability
+    // cache starts at "local", but that does not establish the Composer's Host.
     activeAvailabilityHostId = hostId;
     hostHarnessAvailabilityState(hostId);
     reloadMountedOwnershipForHost(hostId);

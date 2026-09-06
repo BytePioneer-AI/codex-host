@@ -11,7 +11,8 @@ const { outputFiles } = await build({
       import { installRendererBindingProbe } from "./packages/renderer-extension/src/renderer-binding-probe.ts";
       import { createRendererModelClient } from "./packages/renderer-extension/src/renderer-model-client.ts";
 
-      let hostId = "local";
+      let hostId = globalThis.startRemote ? "remote" : "local";
+      let routeReady = !globalThis.delayedHost;
       const calls = [];
       const pending = new Map();
       const paused = new Set();
@@ -73,7 +74,7 @@ const { outputFiles } = await build({
       const facade = Object.fromEntries(Object.keys(clients.local).map(method => [
         method, (...args) => clients[hostId][method](...args),
       ]));
-      facade.currentHostId = () => hostId;
+      facade.currentHostId = () => routeReady ? hostId : null;
       facade.clientForHost = (host) => clients[host];
       let selectedAccount = null;
       const installPolicy = () => {
@@ -118,12 +119,18 @@ const { outputFiles } = await build({
       });
       document.body.append(composer);
       const binding = installRendererBindingProbe({ enabledAgents: ["codex", "pi"], defaultAgent: "codex" });
+      const adapterStatus = { state: routeReady ? "ready" : "installing", reason: "ready", modelUpdates: 0, hook: "request-bridge" };
       binding.setAdapter(
-        { state: "ready", reason: "ready", modelUpdates: 0, hook: "request-bridge" },
+        adapterStatus,
         undefined, () => true, facade,
       );
       globalThis.accountsFixture = {
         calls,
+        ready: (event) => {
+          routeReady = true;
+          adapterStatus.state = "ready";
+          window.dispatchEvent(new Event(event));
+        },
         pause: (key) => paused.add(key),
         pending: (key) => pending.get(key)?.length ?? 0,
         reconnectLocal: () => {
@@ -169,6 +176,7 @@ async function setup(page: Page, options: Record<string, boolean> = {}): Promise
   await page.setContent("<!doctype html><body></body>");
   await page.evaluate((flags) => Object.assign(globalThis, flags), options);
   await page.addScriptTag({ content: browserBundleText });
+  if (options.delayedHost) return;
   await expect(page.locator('[data-codex-account-id="default"]')).toHaveAttribute(
     "aria-label",
     "Codex: local-default@example.com",
@@ -203,6 +211,34 @@ async function waitForPending(page: Page, key: string): Promise<void> {
     )
     .toBeGreaterThan(0);
 }
+
+for (const host of ["local", "remote"]) {
+  for (const event of [
+    "codexhost:renderer-adapter-status",
+    "codexhost:draft-prewarm-policy-changed",
+  ]) {
+    test(`the first ${host} draft shows Accounts when its Host becomes ready via ${event}`, async ({
+      page,
+    }) => {
+      await setup(page, { delayedHost: true, startRemote: host === "remote" });
+      await expect(page.locator("[data-codex-account-id]")).toHaveCount(0);
+      await action(page, "ready", event);
+      await expect.poll(() => calls(page)).toContainEqual({ host, method: "accounts" });
+      await expect(page.locator("[data-codex-account-id]")).toHaveCount(2);
+      await expect(page.locator(trigger)).toHaveAttribute("title", new RegExp(host + "-default"));
+    });
+  }
+}
+
+test("a cold remote draft with no Account API never adopts local Accounts", async ({ page }) => {
+  await setup(page, { delayedHost: true, startRemote: true, remoteUnsupported: true });
+  await action(page, "ready", "codexhost:renderer-adapter-status");
+  await expect.poll(() => calls(page)).toContainEqual({ host: "remote", method: "accounts" });
+  await expect(page.locator("[data-codex-account-id]")).toHaveCount(0);
+  await page.locator(trigger).click();
+  await expect(page.getByRole("menuitemradio", { name: "Codex", exact: true })).toBeVisible();
+  expect(await calls(page)).not.toContainEqual({ host: "local", method: "accounts" });
+});
 
 test("an unsupported remote Account API does not retain the local Account menu", async ({
   page,

@@ -2485,7 +2485,6 @@ export function installRendererBindingProbe(
   const prepareComposer = (composer: Element): boolean | null => {
     const mounted = mountedByComposer.get(composer);
     if (!mounted) return null;
-    refreshMountedConversationTarget(mounted);
     const current = controller.get(composer);
     if (
       codexAccountSwitching ||

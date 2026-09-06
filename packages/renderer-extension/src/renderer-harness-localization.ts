@@ -8,6 +8,9 @@ export interface RendererHarnessMessages {
   readonly commandsUnavailable: string;
   readonly commandRequiresConversation: string;
   readonly textArgument: string;
+  readonly skills: string;
+  readonly filterSkills: string;
+  readonly back: string;
   readonly permissionMode: string;
   readonly permissions: string;
   readonly loadingPermissions: string;
@@ -22,6 +25,9 @@ const ENGLISH_HARNESS_MESSAGES: RendererHarnessMessages = Object.freeze({
   commandsUnavailable: "No Harness commands available yet",
   commandRequiresConversation: "Start a conversation before running this command",
   textArgument: "Text",
+  skills: "Skills",
+  filterSkills: "Filter skills",
+  back: "Back",
   permissionMode: "Permission mode",
   permissions: "Permissions",
   loadingPermissions: "Loading permissions...",
@@ -37,6 +43,9 @@ const CHINESE_HARNESS_MESSAGES: RendererHarnessMessages = Object.freeze({
   commandsUnavailable: "暂无可用的 Harness 命令",
   commandRequiresConversation: "请先开始对话，再执行此命令",
   textArgument: "文本",
+  skills: "技能",
+  filterSkills: "过滤技能",
+  back: "返回",
   permissionMode: "权限模式",
   permissions: "权限",
   loadingPermissions: "正在加载权限...",

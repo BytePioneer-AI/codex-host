@@ -4,6 +4,7 @@ import type { Readable, Writable } from "node:stream";
 
 import type {
   HarnessAdapter,
+  HarnessCommandCapability,
   HarnessOutput,
   HarnessSession,
   HostApprovalInteraction,
@@ -830,6 +831,10 @@ export class AppServerHost {
       }
       if (request.method === "codexhost/thread/commands/inspect") {
         await this.#inspectThreadCommands(request);
+        continue;
+      }
+      if (request.method === "codexhost/thread/skills/inspect") {
+        this.#dispatchDesktopRequest(() => this.#inspectThreadSkills(request));
         continue;
       }
       if (request.method === "codexhost/thread/command/execute") {
@@ -2127,6 +2132,38 @@ export class AppServerHost {
     }
   }
 
+  async #inspectThreadSkills(request: JsonRpcRequest): Promise<void> {
+    const params = threadCommandsInspectParamsSchema.safeParse(request.params);
+    if (!params.success) {
+      await this.#writer.json(
+        rpcError(request, -32602, "Invalid Thread command inspection params"),
+      );
+      return;
+    }
+    const resolution = await this.#resolveExternalThread(params.data.threadId);
+    if (await this.#writeResolutionError(request, resolution)) return;
+    if (resolution.kind !== "external" || !resolution.thread.session.skills) {
+      await this.#writer.json(rpcEnvelope(request, { result: { commands: [] } }));
+      return;
+    }
+    const result = await resolution.thread.session.skills.list();
+    if (!result.ok) {
+      await this.#writer.json(rpcError(request, -32078, result.error.message));
+      return;
+    }
+    try {
+      await this.#writer.json(
+        rpcEnvelope(request, {
+          result: jsonValueSchema.parse(harnessCommandCatalogSchema.parse(result.value)),
+        }),
+      );
+    } catch (error) {
+      await this.#writer.json(
+        rpcError(request, -32078, `Harness command catalog is invalid: ${errorMessage(error)}`),
+      );
+    }
+  }
+
   async #executeThreadCommand(request: JsonRpcRequest): Promise<void> {
     const params = threadCommandExecuteParamsSchema.safeParse(request.params);
     if (!params.success) {
@@ -2149,32 +2186,57 @@ export class AppServerHost {
     this.#pendingExternalCommandRequests.add(thread.id);
     try {
       const commands = thread.session.commands;
-      if (!commands) {
+      const skills = thread.session.skills;
+      if (!commands && !skills) {
         await this.#writer.json(
           rpcError(request, -32078, "External Harness does not expose commands"),
         );
         return;
       }
-      const catalog = await commands.list();
-      if (!catalog.ok) {
-        await this.#writer.json(rpcError(request, -32078, catalog.error.message));
-        return;
+      let capability: HarnessCommandCapability | undefined;
+      if (commands) {
+        const catalog = await commands.list();
+        if (!catalog.ok) {
+          await this.#writer.json(rpcError(request, -32078, catalog.error.message));
+          return;
+        }
+        if (catalog.value.commands.some(({ id }) => id === params.data.commandId)) {
+          capability = commands;
+        }
       }
-      const descriptor = catalog.value.commands.find(({ id }) => id === params.data.commandId);
-      if (!descriptor) {
-        await this.#writer.json(
-          rpcError(
-            request,
-            -32078,
-            `External Harness does not expose command '${params.data.commandId}'`,
-          ),
-        );
-        return;
+      if (!capability) {
+        if (!skills) {
+          await this.#writer.json(
+            rpcError(
+              request,
+              -32078,
+              `External Harness does not expose command '${params.data.commandId}'`,
+            ),
+          );
+          return;
+        }
+        const listed = await skills.list();
+        if (!listed.ok) {
+          await this.#writer.json(rpcError(request, -32078, listed.error.message));
+          return;
+        }
+        if (!listed.value.commands.some(({ id }) => id === params.data.commandId)) {
+          await this.#writer.json(
+            rpcError(
+              request,
+              -32078,
+              `External Harness does not expose command '${params.data.commandId}'`,
+            ),
+          );
+          return;
+        }
+        capability = skills;
       }
       try {
         await this.#startExternalCommand(
           request,
           thread,
+          capability,
           params.data.commandId,
           params.data.arguments,
           params.data.turnId,
@@ -2194,18 +2256,12 @@ export class AppServerHost {
   async #startExternalCommand(
     request: JsonRpcRequest,
     thread: ExternalThread,
+    capability: HarnessCommandCapability,
     commandId: string,
     arguments_: JsonObject | undefined,
     requestedTurnId: HostTurnId | undefined,
     responseKind: "command" | "turn",
   ): Promise<void> {
-    const commands = thread.session.commands;
-    if (!commands) {
-      await this.#writer.json(
-        rpcError(request, -32078, "External Harness does not expose commands"),
-      );
-      return;
-    }
     if (thread.running) {
       await this.#writer.json(
         rpcError(request, -32072, "External Thread already has an active operation"),
@@ -2228,9 +2284,9 @@ export class AppServerHost {
     thread.responseGates.set(turnId, gate);
     thread.ephemeralTurnIds.add(turnId);
 
-    let result: Awaited<ReturnType<NonNullable<HarnessSession["commands"]>["execute"]>>;
+    let result: Awaited<ReturnType<HarnessCommandCapability["execute"]>>;
     try {
-      result = await commands.execute({
+      result = await capability.execute({
         turnId,
         commandId,
         ...(arguments_ ? { arguments: arguments_ } : {}),
@@ -3120,41 +3176,68 @@ export class AppServerHost {
       return;
     }
     const commandCandidate = text.trimStart();
-    if (thread.session.commands && /^\/[^\s/]+(?:\s|$)/u.test(commandCandidate)) {
+    if (
+      (thread.session.commands || thread.session.skills) &&
+      /^\/[^\s/]+(?:\s|$)/u.test(commandCandidate)
+    ) {
       const commandText = commandCandidate.trimEnd();
+      const interceptionCapabilities: Array<{
+        kind: "commands" | "skills";
+        capability: HarnessCommandCapability;
+      }> = [];
+      if (thread.session.commands) {
+        interceptionCapabilities.push({ kind: "commands", capability: thread.session.commands });
+      }
+      if (thread.session.skills) {
+        interceptionCapabilities.push({ kind: "skills", capability: thread.session.skills });
+      }
       this.#pendingExternalCommandRequests.add(thread.id);
       try {
-        const catalog = await thread.session.commands.list();
-        if (!catalog.ok) {
-          await this.#writer.json(rpcError(request, -32073, catalog.error.message));
-          return;
-        }
-        const matched = catalog.value.commands
-          .toSorted((left, right) => right.invocation.length - left.invocation.length)
-          .find((command) => {
-            if (commandText === command.invocation) return true;
-            return (
-              command.argumentMode === "text" && commandText.startsWith(`${command.invocation} `)
+        for (const { kind, capability } of interceptionCapabilities) {
+          const catalog = await capability.list();
+          if (!catalog.ok) {
+            if (kind === "commands") {
+              await this.#writer.json(rpcError(request, -32073, catalog.error.message));
+              return;
+            }
+            console.error(
+              `codexhost skills catalog failed during text interception: ${catalog.error.message}`,
             );
-          });
-        if (matched) {
-          const argumentText = commandText.slice(matched.invocation.length).trimStart();
-          try {
-            await this.#startExternalCommand(
-              request,
-              thread,
-              matched.id,
-              argumentText.length > 0 ? { text: argumentText } : undefined,
-              undefined,
-              "turn",
-            );
-          } catch (error) {
-            this.#diagnose(error);
-            await this.#writer.json(
-              rpcError(request, -32073, `External Harness command failed: ${errorMessage(error)}`),
-            );
+            continue;
           }
-          return;
+          const matched = catalog.value.commands
+            .toSorted((left, right) => right.invocation.length - left.invocation.length)
+            .find((command) => {
+              if (commandText === command.invocation) return true;
+              return (
+                command.argumentMode === "text" &&
+                commandText.startsWith(`${command.invocation} `)
+              );
+            });
+          if (matched) {
+            const argumentText = commandText.slice(matched.invocation.length).trimStart();
+            try {
+              await this.#startExternalCommand(
+                request,
+                thread,
+                capability,
+                matched.id,
+                argumentText.length > 0 ? { text: argumentText } : undefined,
+                undefined,
+                "turn",
+              );
+            } catch (error) {
+              this.#diagnose(error);
+              await this.#writer.json(
+                rpcError(
+                  request,
+                  -32073,
+                  `External Harness command failed: ${errorMessage(error)}`,
+                ),
+              );
+            }
+            return;
+          }
         }
         await this.#writer.json(
           rpcError(request, -32078, "External Harness does not expose the requested command"),

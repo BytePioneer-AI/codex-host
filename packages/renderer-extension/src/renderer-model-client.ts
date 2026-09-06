@@ -66,6 +66,7 @@ export const THREAD_FORK_METHOD = "codexhost/thread/fork";
 export const THREAD_INSPECT_METHOD = "codexhost/thread/inspect";
 export const HARNESS_COMMANDS_INSPECT_METHOD = "codexhost/harness/commands/inspect";
 export const THREAD_COMMANDS_INSPECT_METHOD = "codexhost/thread/commands/inspect";
+export const THREAD_SKILLS_INSPECT_METHOD = "codexhost/thread/skills/inspect";
 export const THREAD_COMMAND_EXECUTE_METHOD = "codexhost/thread/command/execute";
 export const THREAD_MODEL_SELECT_METHOD = "codexhost/thread/model/select";
 export const THREAD_THINKING_SELECT_METHOD = "codexhost/thread/thinking/select";
@@ -121,6 +122,7 @@ export interface RendererModelClient extends Partial<RendererSessionImportClient
   inspectThread(input: ThreadInspectionParams): Promise<ThreadInspection>;
   inspectHarnessCommands(input: HarnessCommandsInspectParams): Promise<HarnessCommandCatalog>;
   inspectThreadCommands(input: ThreadCommandsInspectParams): Promise<HarnessCommandCatalog>;
+  inspectThreadSkills(input: ThreadCommandsInspectParams): Promise<HarnessCommandCatalog>;
   executeThreadCommand(input: ThreadCommandExecuteParams): Promise<ThreadCommandExecuteResult>;
   listThreadOwnership(input: ThreadOwnershipListParams): Promise<ThreadOwnershipListResult>;
   inspectThreadUsage(input: ThreadUsageInspectionParams): Promise<ThreadUsageInspection>;
@@ -203,6 +205,13 @@ export function createRendererModelClient(
     const result = await manager.sendRequest(THREAD_COMMANDS_INSPECT_METHOD, params);
     return harnessCommandCatalogSchema.parse(result);
   };
+  const inspectThreadSkills = async (
+    input: ThreadCommandsInspectParams,
+  ): Promise<HarnessCommandCatalog> => {
+    const params = threadCommandsInspectParamsSchema.parse(input);
+    const result = await manager.sendRequest(THREAD_SKILLS_INSPECT_METHOD, params);
+    return harnessCommandCatalogSchema.parse(result);
+  };
   const executeThreadCommand = async (
     input: ThreadCommandExecuteParams,
   ): Promise<ThreadCommandExecuteResult> => {
@@ -266,6 +275,7 @@ export function createRendererModelClient(
     },
     inspectHarnessCommands,
     inspectThreadCommands,
+    inspectThreadSkills,
     executeThreadCommand,
     async listThreadOwnership(
       input: ThreadOwnershipListParams,

@@ -3893,6 +3893,309 @@ describe("AppServerHost HarnessAdapter projection", () => {
     }
   });
 
+  it("returns an empty skills catalog for Harnesses without the capability", async () => {
+    const fixture = createFixture();
+    const threadId = await startPiThread(fixture);
+    writeRequest(fixture.desktopInput, {
+      id: 3,
+      method: "codexhost/thread/skills/inspect",
+      params: { threadId },
+    });
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 3)),
+    ).resolves.toMatchObject({ result: { commands: [] } });
+    await stopFixture(fixture);
+  });
+
+  it("inspects and executes a skill through the unified command route", async () => {
+    const fixture = createFixture();
+    const threadId = await startPiThread(fixture);
+    const session = fixture.adapter.sessions[0];
+    if (!session) throw new Error("Fake Pi Session was not opened");
+    let skillsExecuted = false;
+    session.commands = {
+      list: async () => ({
+        ok: true,
+        value: {
+          commands: [
+            harnessCommandDescriptorSchema.parse({
+              id: "fake.compact",
+              invocation: "/compact",
+              label: "Compact",
+              argumentMode: "none" as const,
+            }),
+          ],
+        },
+      }),
+      execute: async ({ turnId }) => ({ ok: true, value: { turnId } }),
+    };
+    session.skills = {
+      list: async () => ({
+        ok: true,
+        value: {
+          commands: [
+            harnessCommandDescriptorSchema.parse({
+              id: "fake.skill.render",
+              invocation: "/render",
+              label: "render",
+              argumentMode: "text" as const,
+            }),
+          ],
+        },
+      }),
+      execute: async ({ turnId, commandId, arguments: arguments_ }) => {
+        skillsExecuted = true;
+        expect(commandId).toBe("fake.skill.render");
+        expect(arguments_).toEqual({ text: "a.html" });
+        session.publishEphemeralCommand(turnId, {
+          type: "contextCompaction",
+          itemId: hostItemIdSchema.parse("fake-skill-item"),
+        });
+        return { ok: true, value: { turnId } };
+      },
+    };
+
+    writeRequest(fixture.desktopInput, {
+      id: 4,
+      method: "codexhost/thread/command/execute",
+      params: {
+        threadId,
+        commandId: "fake.skill.render",
+        arguments: { text: "a.html" },
+      },
+    });
+    const executeResponse = await fixture.collector.waitFor((message) => requestId(message, 4));
+    expect(executeResponse).toMatchObject({ result: { accepted: true } });
+    const acceptedTurnId = String((executeResponse.result as JsonObject).turnId);
+    await fixture.collector.waitFor((message) =>
+      turnEvent(message, "turn/completed", acceptedTurnId),
+    );
+
+    writeRequest(fixture.desktopInput, {
+      id: 5,
+      method: "codexhost/thread/skills/inspect",
+      params: { threadId },
+    });
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 5)),
+    ).resolves.toMatchObject({
+      result: { commands: [{ id: "fake.skill.render", invocation: "/render" }] },
+    });
+    expect(skillsExecuted).toBe(true);
+    await stopFixture(fixture);
+  });
+
+  it("rejects command execution absent from both catalogs", async () => {
+    const fixture = createFixture();
+    const threadId = await startPiThread(fixture);
+    const session = fixture.adapter.sessions[0];
+    if (!session) throw new Error("Fake Pi Session was not opened");
+    let skillsExecuted = false;
+    session.commands = {
+      list: async () => ({
+        ok: true,
+        value: {
+          commands: [
+            harnessCommandDescriptorSchema.parse({
+              id: "fake.compact",
+              invocation: "/compact",
+              label: "Compact",
+              argumentMode: "none" as const,
+            }),
+          ],
+        },
+      }),
+      execute: async ({ turnId }) => ({ ok: true, value: { turnId } }),
+    };
+    session.skills = {
+      list: async () => ({
+        ok: true,
+        value: {
+          commands: [
+            harnessCommandDescriptorSchema.parse({
+              id: "fake.skill.render",
+              invocation: "/render",
+              label: "render",
+              argumentMode: "text" as const,
+            }),
+          ],
+        },
+      }),
+      execute: async ({ turnId }) => {
+        skillsExecuted = true;
+        return { ok: true, value: { turnId } };
+      },
+    };
+
+    writeRequest(fixture.desktopInput, {
+      id: 6,
+      method: "codexhost/thread/command/execute",
+      params: { threadId, commandId: "fake.ghost" },
+    });
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 6)),
+    ).resolves.toMatchObject({
+      error: {
+        code: -32078,
+        message: "External Harness does not expose command 'fake.ghost'",
+      },
+    });
+    expect(skillsExecuted).toBe(false);
+    await stopFixture(fixture);
+  });
+
+  it("intercepts a skill invocation typed as a text Turn without forwarding the raw text", async () => {
+    const fixture = createFixture();
+    const threadId = await startPiThread(fixture);
+    const session = fixture.adapter.sessions[0];
+    if (!session) throw new Error("Fake Pi Session was not opened");
+    let skillsExecuted = false;
+    session.commands = {
+      list: async () => ({
+        ok: true,
+        value: {
+          commands: [
+            harnessCommandDescriptorSchema.parse({
+              id: "fake.compact",
+              invocation: "/compact",
+              label: "Compact",
+              argumentMode: "none" as const,
+            }),
+          ],
+        },
+      }),
+      execute: async ({ turnId }) => ({ ok: true, value: { turnId } }),
+    };
+    session.skills = {
+      list: async () => ({
+        ok: true,
+        value: {
+          commands: [
+            harnessCommandDescriptorSchema.parse({
+              id: "fake.skill.render",
+              invocation: "/render",
+              label: "render",
+              argumentMode: "text" as const,
+            }),
+          ],
+        },
+      }),
+      execute: async ({ turnId, commandId, arguments: arguments_ }) => {
+        skillsExecuted = true;
+        expect(commandId).toBe("fake.skill.render");
+        expect(arguments_).toEqual({ text: "a.html" });
+        session.publishEphemeralCommand(turnId, {
+          type: "contextCompaction",
+          itemId: hostItemIdSchema.parse("fake-skill-item"),
+        });
+        return { ok: true, value: { turnId } };
+      },
+    };
+
+    writeRequest(fixture.desktopInput, {
+      id: 2,
+      method: "turn/start",
+      params: { threadId, input: [{ type: "text", text: "/render a.html" }] },
+    });
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 2)),
+    ).resolves.toMatchObject({ result: { turn: { status: "inProgress" } } });
+    await fixture.collector.waitFor((message) => method(message, "turn/completed"));
+    expect(skillsExecuted).toBe(true);
+    expect(session.persistedSnapshot().turns).toHaveLength(0);
+    await stopFixture(fixture);
+  });
+
+  it("still forwards text matching no catalog entry as an ordinary Turn", async () => {
+    const fixture = createFixture();
+    const threadId = await startPiThread(fixture);
+    const session = fixture.adapter.sessions[0];
+    if (!session) throw new Error("Fake Pi Session was not opened");
+    let skillsExecuted = false;
+    session.commands = {
+      list: async () => ({
+        ok: true,
+        value: {
+          commands: [
+            harnessCommandDescriptorSchema.parse({
+              id: "fake.compact",
+              invocation: "/compact",
+              label: "Compact",
+              argumentMode: "none" as const,
+            }),
+          ],
+        },
+      }),
+      execute: async ({ turnId }) => ({ ok: true, value: { turnId } }),
+    };
+    session.skills = {
+      list: async () => ({
+        ok: true,
+        value: {
+          commands: [
+            harnessCommandDescriptorSchema.parse({
+              id: "fake.skill.render",
+              invocation: "/render",
+              label: "render",
+              argumentMode: "text" as const,
+            }),
+          ],
+        },
+      }),
+      execute: async ({ turnId }) => {
+        skillsExecuted = true;
+        return { ok: true, value: { turnId } };
+      },
+    };
+
+    writeRequest(fixture.desktopInput, {
+      id: 2,
+      method: "turn/start",
+      params: { threadId, input: [{ type: "text", text: "just a question" }] },
+    });
+    const response = await fixture.collector.waitFor((message) => requestId(message, 2));
+    const turnId = String(((response.result as JsonObject).turn as JsonObject).id);
+    await fixture.collector.waitFor((message) => turnEvent(message, "turn/started", turnId));
+    session.appendText("answer");
+    session.succeedTurn();
+    await fixture.collector.waitFor((message) => turnEvent(message, "turn/completed", turnId));
+    expect(skillsExecuted).toBe(false);
+    await stopFixture(fixture);
+  });
+
+  it("completes an ordinary text Turn when the skills catalog fails to list", async () => {
+    const fixture = createFixture();
+    const threadId = await startPiThread(fixture);
+    const session = fixture.adapter.sessions[0];
+    if (!session) throw new Error("Fake Pi Session was not opened");
+    session.skills = {
+      list: async () => ({
+        ok: false,
+        error: {
+          code: "nativeFailure" as const,
+          message: "synthetic catalog failure",
+          retryable: false,
+        },
+      }),
+      execute: async ({ turnId }) => ({ ok: true, value: { turnId } }),
+    };
+
+    writeRequest(fixture.desktopInput, {
+      id: 2,
+      method: "turn/start",
+      params: { threadId, input: [{ type: "text", text: "just a question" }] },
+    });
+    const response = await fixture.collector.waitFor((message) => requestId(message, 2));
+    const turnId = String(((response.result as JsonObject).turn as JsonObject).id);
+    await fixture.collector.waitFor((message) => turnEvent(message, "turn/started", turnId));
+    session.appendText("answer");
+    session.succeedTurn();
+    await fixture.collector.waitFor((message) => turnEvent(message, "turn/completed", turnId));
+    expect(response.error).toBeUndefined();
+    await stopFixture(fixture);
+  });
+
+
   it("projects a Harness command's native compaction Item through the existing UI lane", async () => {
     const fixture = createFixture();
     const threadId = await startPiThread(fixture);

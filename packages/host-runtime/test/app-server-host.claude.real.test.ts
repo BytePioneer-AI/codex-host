@@ -157,6 +157,7 @@ describe("AppServerHost hermetic Claude projection", () => {
           setIdleTurnHandler: () => undefined,
           setIdleLive: () => undefined,
           start: async () => undefined,
+          listSkills: async () => [],
           getContextUsage: async () => ({
             usedTokens: 30,
             maxTokens: 200,

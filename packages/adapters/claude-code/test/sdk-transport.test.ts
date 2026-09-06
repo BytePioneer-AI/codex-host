@@ -1,7 +1,12 @@
 import path from "node:path";
 
 import { describe, expect, it, vi } from "vitest";
-import type { PermissionUpdate, Query, SDKMessage } from "@anthropic-ai/claude-agent-sdk";
+import type {
+  PermissionUpdate,
+  Query,
+  SDKMessage,
+  SlashCommand,
+} from "@anthropic-ai/claude-agent-sdk";
 import { harnessThinkingOptionIdSchema } from "@codexhost/shared-contracts";
 
 import {
@@ -43,6 +48,13 @@ class FakeQuery {
   readonly setModel = vi.fn(async () => undefined);
   readonly applyFlagSettings = vi.fn(async () => undefined);
   readonly setPermissionMode = vi.fn(async () => undefined);
+  supportedCommands = vi.fn(async (): Promise<SlashCommand[]> => [
+    { name: "render-html", description: "Render HTML", argumentHint: "<file>", aliases: [] },
+    { name: "compact", description: "built-in", argumentHint: "", aliases: [] },
+  ]);
+  reloadSkills = vi.fn(async (): Promise<{ skills: SlashCommand[] }> => {
+    throw new Error("FakeQuery does not implement reloadSkills");
+  });
   #closed = false;
   #messages: SDKMessage[] = [];
   #waiters: Array<(result: IteratorResult<SDKMessage>) => void> = [];
@@ -203,6 +215,118 @@ describe("ClaudeSdkTransport context Usage", () => {
     value.fakeQuery.getContextUsage.mockRejectedValueOnce(new Error("context unavailable"));
     await expect(value.transport.getContextUsage()).rejects.toThrow("context unavailable");
     await value.transport.close();
+  });
+});
+
+describe("ClaudeSdkTransport skill enumeration", () => {
+  it("starts the session with CLI-aligned setting sources", async () => {
+    const value = fixture();
+    await value.transport.start();
+    expect(options(value).settingSources).toEqual(["user", "project", "local"]);
+  });
+
+  it("listSkills returns only natively reported skill names", async () => {
+    const value = fixture();
+    await value.transport.start();
+    value.fakeQuery.push({
+      type: "system",
+      subtype: "init",
+      skills: ["render-html"],
+      slash_commands: ["/compact"],
+      session_id: "s1",
+      uuid: "u1",
+    } as unknown as SDKMessage);
+    await vi.waitFor(async () => {
+      await expect(value.transport.listSkills()).resolves.toEqual([
+        { name: "render-html", description: "Render HTML", argumentHint: "<file>" },
+      ]);
+    });
+  });
+
+  it("listSkills includes skills announced by commands_changed pushes", async () => {
+    const value = fixture();
+    await value.transport.start();
+    value.fakeQuery.push({
+      type: "system",
+      subtype: "init",
+      skills: ["render-html"],
+      slash_commands: ["/compact"],
+      session_id: "s1",
+      uuid: "u1",
+    } as unknown as SDKMessage);
+    value.fakeQuery.supportedCommands.mockResolvedValue([
+      { name: "render-html", description: "Render HTML", argumentHint: "<file>" },
+      { name: "pdf-tools:extract", description: "Extract text", argumentHint: "" },
+      { name: "compact", description: "built-in", argumentHint: "" },
+    ]);
+    value.fakeQuery.push({
+      type: "system",
+      subtype: "commands_changed",
+      commands: [
+        { name: "render-html", description: "Render HTML", argumentHint: "<file>" },
+        { name: "pdf-tools:extract", description: "Extract text", argumentHint: "" },
+        { name: "compact", description: "built-in", argumentHint: "" },
+      ],
+      session_id: "s1",
+      uuid: "u2",
+    } as unknown as SDKMessage);
+    await vi.waitFor(async () => {
+      await expect(value.transport.listSkills()).resolves.toEqual([
+        { name: "render-html", description: "Render HTML", argumentHint: "<file>" },
+        { name: "pdf-tools:extract", description: "Extract text", argumentHint: "" },
+      ]);
+    });
+  });
+
+  it("listSkills degrades to empty when the installed CLI lacks enumeration", async () => {
+    const value = fixture();
+    delete (value.fakeQuery as { supportedCommands?: unknown }).supportedCommands;
+    delete (value.fakeQuery as { reloadSkills?: unknown }).reloadSkills;
+    await value.transport.start();
+    await expect(value.transport.listSkills()).resolves.toEqual([]);
+  });
+
+  it("listSkills returns native skills before the first user message is queued", async () => {
+    // The real CLI only flushes the stream init message once a user message is
+    // queued, so the old stream-init path cannot serve the inspect-before-first-turn
+    // case; reloadSkills answers on the control channel instead.
+    const value = fixture();
+    await value.transport.start();
+    value.fakeQuery.reloadSkills.mockResolvedValue({
+      skills: [
+        { name: "render-html", description: "Render HTML", argumentHint: "<file>", aliases: [] },
+        {
+          name: "smoke-project",
+          description: "Project skill (project)",
+          argumentHint: "",
+          aliases: [],
+        },
+      ],
+    });
+    await expect(value.transport.listSkills()).resolves.toEqual([
+      { name: "render-html", description: "Render HTML", argumentHint: "<file>" },
+      { name: "smoke-project", description: "Project skill (project)", argumentHint: "" },
+    ]);
+    expect(value.fakeQuery.supportedCommands).not.toHaveBeenCalled();
+  });
+
+  it("listSkills keeps stream-init filtering when the CLI lacks reloadSkills", async () => {
+    const value = fixture();
+    delete (value.fakeQuery as { reloadSkills?: unknown }).reloadSkills;
+    await value.transport.start();
+    value.fakeQuery.push({
+      type: "system",
+      subtype: "init",
+      skills: ["render-html"],
+      slash_commands: ["/compact"],
+      session_id: "s1",
+      uuid: "u1",
+    } as unknown as SDKMessage);
+    await vi.waitFor(async () => {
+      await expect(value.transport.listSkills()).resolves.toEqual([
+        { name: "render-html", description: "Render HTML", argumentHint: "<file>" },
+      ]);
+    });
   });
 });
 
@@ -1015,7 +1139,7 @@ describe("ClaudeSdkTransport Model control", () => {
       persistSession: false,
       includePartialMessages: false,
       tools: [],
-      settingSources: ["user"],
+      settingSources: ["user", "project", "local"],
     });
     expect(options(value).env?.PATH?.split(path.delimiter)).toContain(
       path.dirname(process.execPath),

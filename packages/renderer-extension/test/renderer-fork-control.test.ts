@@ -38,6 +38,7 @@ function clientWith(inspection: ThreadInspection): RendererModelClient {
     inspectThread: vi.fn(async () => inspection),
     inspectHarnessCommands: vi.fn(),
     inspectThreadCommands: vi.fn(),
+    inspectThreadSkills: vi.fn(),
     executeThreadCommand: vi.fn(),
     inspectThreadUsage: vi.fn(),
     listThreadOwnership: vi.fn(),

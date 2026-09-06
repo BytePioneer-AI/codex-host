@@ -29,6 +29,9 @@ describe("Renderer Harness command localization", () => {
       commands: "命令",
       harnessCommands: "Harness 命令",
       textArgument: "文本",
+      skills: "技能",
+      filterSkills: "过滤技能",
+      back: "返回",
     });
     expect(rendererHarnessCommandPresentation(compactCommand, "zh-CN")).toEqual({
       label: "压缩上下文",
@@ -41,6 +44,9 @@ describe("Renderer Harness command localization", () => {
       commands: "Commands",
       harnessCommands: "Harness commands",
       textArgument: "Text",
+      skills: "Skills",
+      filterSkills: "Filter skills",
+      back: "Back",
     });
     expect(rendererHarnessCommandPresentation(compactCommand, "en")).toEqual({
       label: "Compact context",

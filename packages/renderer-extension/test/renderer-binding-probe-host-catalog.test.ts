@@ -46,6 +46,16 @@ vi.mock("../src/renderer-composer-dom.js", async (importOriginal) => {
         placeBefore: vi.fn(),
         dispose: vi.fn(),
       },
+      harnessSkills: {
+        setSkills: vi.fn(),
+        setExecuting: vi.fn(),
+        setLocale: vi.fn(),
+        placeBefore: vi.fn(),
+        open: vi.fn(),
+        hasSkills: () => false,
+        close: vi.fn(),
+        dispose: vi.fn(),
+      },
       sendButton: testState.sendButton,
       sendDisabledBeforeSwitch: null,
     }),
@@ -362,6 +372,7 @@ describe("Renderer binding Host-scoped Claude catalogs", () => {
         locked: true,
       })),
       inspectThreadCommands: vi.fn(async () => ({ commands: [] })),
+      inspectThreadSkills: vi.fn(async () => ({ commands: [] })),
       inspectThreadUsage: vi.fn(async () => ({
         threadId: "thread-a",
         usage: null,
@@ -377,6 +388,7 @@ describe("Renderer binding Host-scoped Claude catalogs", () => {
       inspectHarness: genericHostB.inspectHarness,
       inspectThread: vi.fn(),
       inspectThreadCommands: vi.fn(async () => ({ commands: [] })),
+      inspectThreadSkills: vi.fn(async () => ({ commands: [] })),
       inspectThreadUsage: vi.fn(),
       subscribeThreadUsage: () => () => undefined,
     };
@@ -432,6 +444,7 @@ describe("Renderer binding Host-scoped Claude catalogs", () => {
         locked: true,
       })),
       inspectThreadCommands: vi.fn(async () => ({ commands: [] })),
+      inspectThreadSkills: vi.fn(async () => ({ commands: [] })),
       inspectThreadUsage: vi.fn(async () => ({
         threadId: "thread-a",
         usage: null,
@@ -448,6 +461,7 @@ describe("Renderer binding Host-scoped Claude catalogs", () => {
       inspectHarness: originalHost.inspectHarness,
       inspectThread: vi.fn(),
       inspectThreadCommands: vi.fn(async () => ({ commands: [] })),
+      inspectThreadSkills: vi.fn(async () => ({ commands: [] })),
       inspectThreadUsage: vi.fn(),
       subscribeThreadUsage: () => () => undefined,
     };
@@ -493,6 +507,7 @@ describe("Renderer binding Host-scoped Claude catalogs", () => {
       inspectHarness: hostA.inspectHarness,
       inspectThread: vi.fn(),
       inspectThreadCommands: vi.fn(async () => ({ commands: [] })),
+      inspectThreadSkills: vi.fn(async () => ({ commands: [] })),
       inspectThreadUsage: vi.fn(),
       subscribeThreadUsage: () => () => undefined,
     };
@@ -531,6 +546,7 @@ describe("Renderer binding Host-scoped Claude catalogs", () => {
         locked: true,
       })),
       inspectThreadCommands: vi.fn(async () => ({ commands: [] })),
+      inspectThreadSkills: vi.fn(async () => ({ commands: [] })),
       inspectThreadUsage: vi.fn(async () => ({
         threadId: "thread-a",
         usage: null,
@@ -544,6 +560,7 @@ describe("Renderer binding Host-scoped Claude catalogs", () => {
       inspectHarness: local.inspectHarness,
       inspectThread: vi.fn(),
       inspectThreadCommands: vi.fn(async () => ({ commands: [] })),
+      inspectThreadSkills: vi.fn(async () => ({ commands: [] })),
       inspectThreadUsage: vi.fn(),
       subscribeThreadUsage: () => () => undefined,
     };

@@ -111,6 +111,25 @@ OpenCode exposes only the fixed `/compact` command, implemented through native S
 
 The public `/dsh-goal` invocation avoids Codex Desktop's built-in `/goal` command and maps only inside the Adapter to native DSH `/goal`. `/dsh-goal` and `/plan` accept text arguments only. DSH remains the owner of goal and plan state and any model-visible follow-up.
 
+## Skill catalog (Claude Code)
+
+Harness Skills are a second, independent catalog: the Adapter enumerates them from the
+Harness's native discovery surface (Claude Code: `reloadSkills()` on the control channel,
+which answers before the first user message; older CLIs fall back to `supportedCommands()`
+filtered by the stream init skill list), never by scanning disk. Skills execute through the same `thread/command/execute`
+Host route; the Host validates against the union of the Thread's Commands and Skills
+catalogs. The Renderer presents them in a separate Composer Skills control — SKILL.md
+files must still never be parsed or executed in the Renderer.
+
+### Claude Code context loading
+
+As of the Skills catalog change, the Claude Code Adapter runs with
+`settingSources: ["user", "project", "local"]` — matching the Claude Code CLI. Project
+`.claude/settings.json`, `.claude/skills/`, and project CLAUDE.md now load for every
+Claude Code Thread, including untrusted repositories. Reviewers of the Desktop
+integration should treat this as a trust-boundary change; the behavior is called out in
+release notes.
+
 ## Boundaries
 
 - The Adapter owns Harness-specific semantics.

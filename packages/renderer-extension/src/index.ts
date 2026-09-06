@@ -65,6 +65,8 @@ export {
 export type { RendererHarnessMessages } from "./renderer-harness-localization.js";
 export { mountRendererHarnessCommandControl } from "./renderer-harness-command-control.js";
 export type { RendererHarnessCommandControl } from "./renderer-harness-command-control.js";
+export { mountRendererHarnessSkillControl } from "./renderer-harness-skill-control.js";
+export type { RendererHarnessSkillControl } from "./renderer-harness-skill-control.js";
 export {
   creditsPeriodLabel,
   formatRendererCreditsReset,

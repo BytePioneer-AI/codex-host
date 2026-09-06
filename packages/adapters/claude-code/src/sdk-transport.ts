@@ -27,6 +27,7 @@ import type {
   ClaudeModelInspector,
   ClaudePlanLimitEvent,
   ClaudeQuestion,
+  ClaudeSkillCommand,
   ClaudeTransportContextUsage,
   ClaudeTransportTurnResult,
   ClaudeTurnEvent,
@@ -368,6 +369,8 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
   #interactionOrdinal = 0;
   #provider: string | undefined;
   #query: Query | null = null;
+  #skillNames = new Set<string>();
+  #builtInCommandNames = new Set<string>();
   #started = false;
 
   constructor(options: ClaudeSdkTransportOptions) {
@@ -425,7 +428,7 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
           : { type: "disabled" },
         ...(thinking.effort ? { effort: thinking.effort } : {}),
         pathToClaudeCodeExecutable: executable,
-        settingSources: ["user"],
+        settingSources: ["user", "project", "local"],
         permissionMode: this.#permissionMode,
         ...(allowsDangerouslySkipPermissions() ? { allowDangerouslySkipPermissions: true } : {}),
         canUseTool: (toolName, input, options) => this.#canUseTool(toolName, input, options),
@@ -513,6 +516,42 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
     onEvent: (event: ClaudeTurnEvent) => void,
   ): Promise<ClaudeTransportTurnResult> {
     return this.runTurn("/recap", userMessageId, onEvent);
+  }
+
+  async listSkills(): Promise<readonly ClaudeSkillCommand[]> {
+    const activeQuery = this.#query;
+    if (!this.#started || !activeQuery) return [];
+    // Preferred: the native skill-list request. It answers on the control
+    // channel, so it works before the first queued user message — the real
+    // CLI does not flush the stream init message until then, which used to
+    // leave a freshly opened Thread with an empty Skills catalog.
+    const reload = (activeQuery as Partial<Pick<Query, "reloadSkills">>).reloadSkills;
+    if (typeof reload === "function") {
+      try {
+        const { skills } = await reload.call(activeQuery);
+        return skills
+          .filter(
+            (skill) =>
+              typeof skill.name === "string" &&
+              typeof skill.description === "string" &&
+              typeof skill.argumentHint === "string",
+          )
+          .map(({ name, description, argumentHint }) => ({ name, description, argumentHint }));
+      } catch {
+        // Fall through to the supportedCommands() seam for diagnosis below.
+        console.error("codexhost Claude reloadSkills() failed; falling back to init filtering");
+      }
+    }
+    const supported = (activeQuery as Partial<Pick<Query, "supportedCommands">>).supportedCommands;
+    if (typeof supported !== "function") return [];
+    try {
+      const commands = await supported.call(activeQuery);
+      return commands
+        .filter((command) => this.#skillNames.has(command.name))
+        .map(({ name, description, argumentHint }) => ({ name, description, argumentHint }));
+    } catch {
+      return [];
+    }
   }
 
   runTurn(
@@ -784,6 +823,31 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
           this.#permissionMode = permissionMode;
           this.#onPermissionModeChanged(permissionMode);
         }
+        if (isRecord(message) && message.type === "system") {
+          if (
+            message.subtype === "init" &&
+            Array.isArray(message.skills) &&
+            Array.isArray(message.slash_commands)
+          ) {
+            this.#skillNames = new Set(
+              message.skills.filter((name: unknown): name is string => typeof name === "string"),
+            );
+            this.#builtInCommandNames = new Set(
+              (message.slash_commands as unknown[])
+                .filter((name: unknown): name is string => typeof name === "string")
+                .map((name) => (name.startsWith("/") ? name.slice(1) : name)),
+            );
+          } else if (message.subtype === "commands_changed" && Array.isArray(message.commands)) {
+            for (const command of message.commands as readonly Record<string, unknown>[]) {
+              if (
+                typeof command.name === "string" &&
+                !this.#builtInCommandNames.has(command.name)
+              ) {
+                this.#skillNames.add(command.name);
+              }
+            }
+          }
+        }
         const planLimit = parseClaudePlanLimitEvent(message);
         if (planLimit) this.#onPlanLimit(planLimit);
         const active = this.#active;
@@ -912,7 +976,7 @@ export class ClaudeSdkModelInspector implements ClaudeModelInspector {
       options: {
         cwd: this.#cwd,
         pathToClaudeCodeExecutable: executable,
-        settingSources: ["user"],
+        settingSources: ["user", "project", "local"],
         permissionMode: "default",
         tools: [],
         persistSession: false,

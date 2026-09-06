@@ -23,6 +23,7 @@ import type {
   ClaudeInteractionResponse,
   ClaudePlanLimitEvent,
   ClaudeQuestionRequest,
+  ClaudeSkillCommand,
   ClaudeTransportContextUsage,
   ClaudeTransportTurnResult,
   ClaudeTurnEvent,
@@ -65,6 +66,8 @@ class FakeClaudeTransport implements ClaudeTurnTransport {
     });
   });
   readonly start = vi.fn(async () => undefined);
+  skills: ClaudeSkillCommand[] = [];
+  readonly listSkills = vi.fn(async () => this.skills);
   readonly compactCalls: Array<{ userMessageId: string; customInstructions: string | undefined }> =
     [];
   readonly initCalls: string[] = [];
@@ -1369,6 +1372,222 @@ describe("Claude Code HarnessAdapter", () => {
     });
     expect(transport.recapCalls).toEqual([expect.any(String)]);
     expect(transport.turns).toEqual([]);
+    await session.close();
+  });
+
+  it("projects native skills into a claude.skill catalog", async () => {
+    const { adapter, transports } = fixture();
+    const session = await openSession(adapter);
+    const commands = session.commands;
+    if (!commands) throw new Error("Claude Code Session did not expose commands");
+    const skills = session.skills;
+    if (!skills) throw new Error("Claude Code Session did not expose skills");
+    await commands.execute({
+      turnId: hostTurnIdSchema.parse("prime"),
+      commandId: "claude.recap",
+    }); // force transport creation through any command path
+    const transport = transports[0];
+    if (!transport) throw new Error("Fake transport missing");
+    transport.finish({ status: "succeeded" });
+    transport.skills = [
+      { name: "render-html", description: "Render HTML", argumentHint: "<file>" },
+      { name: "no-arg.skill", description: "Dots escape", argumentHint: "" },
+    ];
+    await expect(skills.list()).resolves.toMatchObject({
+      ok: true,
+      value: {
+        commands: [
+          {
+            id: "claude.skill.render-html",
+            invocation: "/render-html",
+            label: "render-html",
+            description: "Render HTML",
+            argumentMode: "text",
+          },
+          {
+            id: "claude.skill.no-arg..skill",
+            invocation: "/no-arg.skill",
+            label: "no-arg.skill",
+            description: "Dots escape",
+            argumentMode: "none",
+          },
+        ],
+      },
+    });
+    await session.close();
+  });
+
+  it("bounds overlong native skill descriptions instead of rejecting the catalog", async () => {
+    // Real user/project skills carry multi-paragraph trigger descriptions
+    // beyond the 512-char contract limit; the catalog must still project.
+    const { adapter, transports } = fixture();
+    const session = await openSession(adapter);
+    const commands = session.commands;
+    if (!commands) throw new Error("Claude Code Session did not expose commands");
+    const skills = session.skills;
+    if (!skills) throw new Error("Claude Code Session did not expose skills");
+    await commands.execute({
+      turnId: hostTurnIdSchema.parse("prime"),
+      commandId: "claude.recap",
+    });
+    const transport = transports[0];
+    if (!transport) throw new Error("Fake transport missing");
+    transport.finish({ status: "succeeded" });
+    transport.skills = [
+      { name: "short", description: "Fine", argumentHint: "" },
+      { name: "verbose", description: "x".repeat(600), argumentHint: "" },
+    ];
+    const listed = await skills.list();
+    expect(listed.ok).toBe(true);
+    if (!listed.ok) throw new Error("projection rejected: " + JSON.stringify(listed.error));
+    const verbose = listed.value.commands.find((entry) => entry.label === "verbose");
+    expect(verbose?.description).toHaveLength(512);
+    expect(verbose?.description).toBe("x".repeat(512));
+    await session.close();
+  });
+
+  it("rejects duplicate projected skill IDs instead of dropping entries", async () => {
+    const { adapter, transports } = fixture();
+    const session = await openSession(adapter);
+    const skills = session.skills;
+    if (!skills) throw new Error("Claude Code Session did not expose skills");
+    await skills.list(); // lazily creates transports[0]
+    const transport = transports[0];
+    if (!transport) throw new Error("Fake transport missing");
+    transport.skills = [
+      { name: "dup", description: "A", argumentHint: "" },
+      { name: "dup", description: "B", argumentHint: "" },
+    ];
+    await expect(skills.list()).resolves.toMatchObject({
+      ok: false,
+      error: { code: "protocolError" },
+    });
+    await session.close();
+  });
+
+  it("executes a skill as a native slash turn with optional text argument", async () => {
+    const { adapter, transports } = fixture();
+    const session = await openSession(adapter);
+    const skills = session.skills;
+    if (!skills) throw new Error("Claude Code Session did not expose skills");
+    await skills.list();
+    const transport = transports[0];
+    if (!transport) throw new Error("Fake transport missing");
+    transport.skills = [{ name: "render-html", description: "d", argumentHint: "<file>" }];
+    const iterator = session.outputs[Symbol.asyncIterator]();
+    await expect(
+      skills.execute({
+        turnId: hostTurnIdSchema.parse("skill-turn-1"),
+        commandId: "claude.skill.render-html",
+        arguments: { text: "report.html" },
+      }),
+    ).resolves.toEqual({ ok: true, value: { turnId: "skill-turn-1" } });
+    expect(transport.turns.at(-1)?.text).toBe("/render-html report.html");
+    // The earlier `skills.list()` lazily started the Transport and published state.
+    expect((await nextEvent(iterator)).type).toBe("session.state.changed");
+    // A skill Turn is a normal visible agent reply, never an ephemeral compaction lane.
+    expect(await nextEvent(iterator)).toEqual({ type: "turn.started", turnId: "skill-turn-1" });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.started",
+      turnId: "skill-turn-1",
+      item: { type: "agentMessage", text: "" },
+    });
+    transport.delta("Rendered report", "skill-assistant");
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.updated",
+      update: { type: "text.append", text: "Rendered report" },
+    });
+    transport.finish({ status: "succeeded" });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.completed",
+      snapshot: { item: { type: "agentMessage", text: "Rendered report" } },
+    });
+    expect(await nextEvent(iterator)).toEqual({
+      type: "turn.completed",
+      turnId: "skill-turn-1",
+      outcome: { status: "succeeded" },
+    });
+    await session.close();
+  });
+
+  it("rejects skill execution for unknown id and for arguments on a none skill", async () => {
+    const { adapter, transports } = fixture();
+    const session = await openSession(adapter);
+    const skills = session.skills;
+    if (!skills) throw new Error("Claude Code Session did not expose skills");
+    await skills.list();
+    const transport = transports[0];
+    if (!transport) throw new Error("Fake transport missing");
+    transport.skills = [{ name: "plain", description: "d", argumentHint: "" }];
+    await expect(
+      skills.execute({
+        turnId: hostTurnIdSchema.parse("t0"),
+        commandId: "claude.skill.ghost",
+      }),
+    ).resolves.toMatchObject({ ok: false, error: { code: "unsupported" } });
+    await expect(
+      skills.execute({
+        turnId: hostTurnIdSchema.parse("t1"),
+        commandId: "claude.skill.plain",
+        arguments: { text: "nope" },
+      }),
+    ).resolves.toMatchObject({ ok: false, error: { code: "invalidRequest" } });
+    await session.close();
+  });
+
+  it("reports sessionBusy when a skill executes during an active Turn", async () => {
+    const { adapter, transports } = fixture();
+    const session = await openSession(adapter);
+    void session.execute(textTurn("busy-turn")); // file helper at :288
+    const skills = session.skills;
+    if (!skills) throw new Error("Claude Code Session did not expose skills");
+    await skills.list(); // ensure transports exist
+    const transport = transports[0];
+    if (!transport) throw new Error("Fake transport missing");
+    transport.skills = [{ name: "plain", description: "d", argumentHint: "" }];
+    await expect(
+      skills.execute({
+        turnId: hostTurnIdSchema.parse("t2"),
+        commandId: "claude.skill.plain",
+      }),
+    ).resolves.toMatchObject({ ok: false, error: { code: "sessionBusy" } });
+    expect(transports).toHaveLength(1);
+    transport.finish({ status: "succeeded" });
+    await session.close();
+  });
+
+  it("publishes the initial state when listing skills lazily starts a create-mode Transport", async () => {
+    const { adapter } = fixture();
+    const session = await openSession(adapter);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+    const skills = session.skills;
+    if (!skills) throw new Error("Claude Code Session did not expose skills");
+    await expect(skills.list()).resolves.toMatchObject({
+      ok: true,
+      value: { commands: [] },
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "session.state.changed",
+      state: { nativeRef: { harnessId: "claude-code", nativeSessionId: expect.any(String) } },
+    });
+    await session.close();
+  });
+
+  it("reports retryable sessionBusy when a skill executes during startup before the Transport is bound", async () => {
+    const { adapter, transports } = fixture();
+    const session = await openSession(adapter);
+    // `execute` suspends inside `#ensureTransport` awaiting `transport.start()`,
+    // so `#acceptingTurn` is set while `#transport` is still unbound.
+    void session.execute(textTurn("startup-window"));
+    const skills = session.skills;
+    if (!skills) throw new Error("Claude Code Session did not expose skills");
+    await expect(
+      skills.execute({
+        turnId: hostTurnIdSchema.parse("t3"),
+        commandId: "claude.skill.any",
+      }),
+    ).resolves.toMatchObject({ ok: false, error: { code: "sessionBusy", retryable: true } });
+    transports[0]?.finish({ status: "succeeded" });
     await session.close();
   });
 
@@ -4643,6 +4862,7 @@ describe("Claude Code HarnessAdapter", () => {
         start: async () => {
           throw new ClaudeCodeExecutableError("Claude Code is not installed");
         },
+        listSkills: async () => [],
         getContextUsage: async () => null,
         getPermissionMode: () => "default",
         setModel: async () => undefined,

@@ -157,6 +157,7 @@ export class FakeHarnessSession implements HarnessSession {
   readonly initialState: HarnessSessionState;
   readonly initialUsage: HostUsage | null;
   commands?: HarnessCommandCapability;
+  skills?: HarnessCommandCapability;
   readonly interactionResponses: InteractionRespondCommand[] = [];
   readonly outputs: AsyncIterable<HarnessOutput>;
   snapshotReads = 0;

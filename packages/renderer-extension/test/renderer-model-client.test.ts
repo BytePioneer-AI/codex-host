@@ -16,6 +16,7 @@ import {
   THREAD_FORK_METHOD,
   THREAD_INSPECT_METHOD,
   THREAD_MODEL_SELECT_METHOD,
+  THREAD_SKILLS_INSPECT_METHOD,
   THREAD_PERMISSION_MODE_SELECT_METHOD,
   THREAD_THINKING_SELECT_METHOD,
   THREAD_OWNERSHIP_LIST_METHOD,
@@ -173,6 +174,7 @@ describe("Renderer fixed Model request client", () => {
       "inspectHarnessCommands",
       "inspectThread",
       "inspectThreadCommands",
+      "inspectThreadSkills",
       "inspectThreadUsage",
       "listHarnessPlugins",
       "listHarnessSessions",
@@ -471,6 +473,30 @@ describe("Renderer fixed Model request client", () => {
     unsubscribe();
     expect(removeNotification).toHaveBeenCalledOnce();
     relay.dispose();
+  });
+
+  it("inspects the Thread skills catalog through the fixed skills method", async () => {
+    const catalog = {
+      commands: [
+        {
+          id: "claude.skill.commit",
+          invocation: "/commit",
+          label: "Commit",
+          description: "Create a git commit",
+          argumentMode: "text",
+        },
+      ],
+    };
+    const sendRequest = vi.fn(async () => catalog);
+    const client = createRendererModelClient([{ sendRequest }]);
+    if (!client) throw new Error("Synthetic Model client was not created");
+
+    await expect(
+      client.inspectThreadSkills({ threadId: hostThreadIdSchema.parse("thread-1") }),
+    ).resolves.toEqual(catalog);
+    expect(sendRequest).toHaveBeenCalledWith(THREAD_SKILLS_INSPECT_METHOD, {
+      threadId: "thread-1",
+    });
   });
 
   it("fails closed when request manager ownership is absent or ambiguous", () => {

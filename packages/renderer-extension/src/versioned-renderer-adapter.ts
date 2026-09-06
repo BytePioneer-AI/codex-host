@@ -1013,6 +1013,8 @@ export function installCurrentRendererAdapter(): {
       currentModelClient().inspectHarnessCommands(input),
     inspectThreadCommands: (input: ThreadCommandsInspectParams) =>
       currentModelClient().inspectThreadCommands(input),
+    inspectThreadSkills: (input: ThreadCommandsInspectParams) =>
+      currentModelClient().inspectThreadSkills(input),
     executeThreadCommand: (input: ThreadCommandExecuteParams) =>
       currentModelClient().executeThreadCommand(input),
     inspectThreadUsage: (input: ThreadUsageInspectionParams) =>

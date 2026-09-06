@@ -825,6 +825,59 @@ export function installRendererBindingProbe(
     console.error("codexhost Harness command could not claim the current Composer editor");
   };
 
+  const refreshSkills = async (mounted: MountedComposer): Promise<void> => {
+    const state = controller.get(mounted.composer);
+    const threadId = threadIdFromComposerModelTarget(mounted.modelTarget);
+    if (state.agent === "codex" || !threadId || !modelControl) {
+      mounted.control.harnessSkills.setSkills([]);
+      return;
+    }
+    try {
+      const catalog = await modelControl.inspectThreadSkills({ threadId });
+      if (
+        disposed ||
+        mountedByComposer.get(mounted.composer) !== mounted ||
+        threadIdFromComposerModelTarget(mounted.modelTarget) !== threadId ||
+        controller.get(mounted.composer).agent === "codex"
+      ) {
+        return;
+      }
+      mounted.control.harnessSkills.setSkills(catalog.commands);
+    } catch (error) {
+      console.error(
+        "codexhost Harness skills catalog failed",
+        error instanceof Error ? error.message : String(error),
+      );
+      if (mountedByComposer.get(mounted.composer) === mounted) {
+        mounted.control.harnessSkills.setSkills([]);
+      }
+    }
+  };
+
+  const executeSkill = async (
+    mounted: MountedComposer,
+    skill: HarnessCommandDescriptor,
+    argument: string | undefined,
+  ): Promise<void> => {
+    const threadId = threadIdFromComposerModelTarget(mounted.modelTarget);
+    if (!threadId || !modelControl || controller.get(mounted.composer).agent === "codex") return;
+    mounted.control.harnessSkills.setExecuting(skill.id);
+    try {
+      await modelControl.executeThreadCommand({
+        threadId,
+        commandId: skill.id,
+        ...(argument === undefined ? {} : { arguments: { text: argument } }),
+      });
+    } catch (error) {
+      console.error(
+        "codexhost Harness skill failed",
+        error instanceof Error ? error.message : String(error),
+      );
+    } finally {
+      mounted.control.harnessSkills.setExecuting(null);
+    }
+  };
+
   const applyThreadUsageUpdate = (update: ThreadUsageInspection): void => {
     for (const mounted of mountedByComposer.values()) {
       if (threadIdFromComposerModelTarget(mounted.modelTarget) !== update.threadId) continue;
@@ -1006,7 +1059,10 @@ export function installRendererBindingProbe(
     } finally {
       if (isCurrentOwnershipRequest(mounted, generation)) {
         renderMounted(mounted);
-        if (mounted.ownershipStatus !== "error") void refreshCommands(mounted);
+        if (mounted.ownershipStatus !== "error") {
+          void refreshCommands(mounted);
+          void refreshSkills(mounted);
+        }
         sidebarAgentIcons.refresh();
         if (mounted.ownershipStatus !== "error") {
           const agent = controller.get(mounted.composer).agent;
@@ -2115,6 +2171,11 @@ export function installRendererBindingProbe(
         const mounted = mountedByComposer.get(composer);
         if (mounted) selectCommand(mounted, command);
       },
+      (skill, argument) => {
+        const mounted = mountedByComposer.get(composer);
+        if (!composer.isConnected || !mounted) return;
+        void executeSkill(mounted, skill, argument);
+      },
     );
     const mounted: MountedComposer = {
       composer,
@@ -2169,6 +2230,7 @@ export function installRendererBindingProbe(
       void loadExternalCatalog(mounted);
     }
     void refreshCommands(mounted);
+    void refreshSkills(mounted);
   };
 
   const scan = (): void => {
@@ -2363,6 +2425,20 @@ export function installRendererBindingProbe(
     notifySubmission(composer, "submit");
   };
   const onKeyDown = (event: KeyboardEvent): void => {
+    if (
+      (event.metaKey || event.ctrlKey) &&
+      event.shiftKey &&
+      event.key.toLowerCase() === "s" &&
+      !event.isComposing
+    ) {
+      const composer = composerForTarget(event.target);
+      const mounted = composer ? mountedByComposer.get(composer) : undefined;
+      if (mounted && mounted.control.harnessSkills.hasSkills()) {
+        blockEvent(event);
+        mounted.control.harnessSkills.open();
+        return;
+      }
+    }
     const composer = isComposerInputIntent(event) ? composerForTarget(event.target) : null;
     const mounted = composer ? mountedByComposer.get(composer) : undefined;
     if (composer && controller.isSwitching(composer)) {

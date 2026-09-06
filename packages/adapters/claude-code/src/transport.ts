@@ -162,6 +162,12 @@ export interface ClaudePlanLimitEvent {
   sevenDay?: ClaudePlanLimitWindow;
 }
 
+export interface ClaudeSkillCommand {
+  readonly name: string;
+  readonly description: string;
+  readonly argumentHint: string;
+}
+
 export interface ClaudeAutonomousTurn {
   nativeTurnKey: string;
   events: ClaudeTurnEvent[];
@@ -179,6 +185,7 @@ export interface ClaudeTurnTransport {
   setIdleTurnHandler(handler: ClaudeIdleTurnHandler | null): void;
   setIdleLive(live: boolean): void;
   start(): Promise<void>;
+  listSkills(): Promise<readonly ClaudeSkillCommand[]>; // [] when transport unstarted or enumeration unsupported
   getContextUsage(): Promise<ClaudeTransportContextUsage | null>;
   getPermissionMode(): ClaudePermissionMode;
   setModel(model?: string): Promise<void>;

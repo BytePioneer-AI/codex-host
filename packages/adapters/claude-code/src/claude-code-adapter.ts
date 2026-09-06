@@ -61,6 +61,7 @@ import {
   nativeSessionRefSchema,
   nativeTurnRefSchema,
   type AccountCreditsSnapshot,
+  type HarnessCommandCatalog,
   type HarnessId,
   type HarnessThinkingOptionId,
   type HostInteractionId,
@@ -108,6 +109,7 @@ import type {
   ClaudePlanApprovalRequest,
   ClaudePlanLimitEvent,
   ClaudeQuestionRequest,
+  ClaudeSkillCommand,
   ClaudeTransportFailureKind,
   ClaudeTransportTurnResult,
   ClaudeTurnEvent,
@@ -267,6 +269,57 @@ function parseClaudeHarnessCommand(
   }
   return { ok: true, value: { id: "claude.compact", text: customInstructions } };
 }
+
+type ClaudeCommandTurn =
+  | { kind: "native"; native: ClaudeHarnessCommand }
+  | { kind: "skill"; name: string; text: string | undefined };
+
+function claudeSkillCommandId(name: string): string {
+  return `claude.skill.${name.replaceAll(".", "..")}`;
+}
+
+// Mirrors the harnessCommandCatalogSchema description limit (shared-contracts
+// keeps it private); real user/project skills routinely exceed it, and one
+// overlong description must not reject the whole catalog.
+const SKILL_DESCRIPTION_LIMIT = 512;
+
+function boundedSkillDescription(description: string): string | undefined {
+  const trimmed = description.trim();
+  if (trimmed.length === 0) return undefined;
+  return trimmed.slice(0, SKILL_DESCRIPTION_LIMIT);
+}
+
+export function projectClaudeSkillCatalog(
+  skills: readonly ClaudeSkillCommand[],
+): HarnessResult<HarnessCommandCatalog> {
+  try {
+    return {
+      ok: true,
+      value: harnessCommandCatalogSchema.parse({
+        commands: skills.map((skill) => {
+          const description = boundedSkillDescription(skill.description);
+          return {
+            id: claudeSkillCommandId(skill.name),
+            invocation: `/${skill.name}`,
+            label: skill.name,
+            ...(description ? { description } : {}),
+            argumentMode: skill.argumentHint.trim().length > 0 ? "text" : "none",
+          };
+        }),
+      }),
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      error: {
+        code: "protocolError",
+        message: `Claude skill catalog is invalid: ${error instanceof Error ? error.message : String(error)}`,
+        retryable: true,
+      },
+    };
+  }
+}
+
 const DEFAULT_CLOSE_TIMEOUT_MS = 7_000;
 const DEFAULT_CANCEL_TIMEOUT_MS = 2_000;
 const DEFAULT_TOOL_OUTPUT_LIMIT = 64_000;
@@ -491,6 +544,7 @@ class ClaudeHarnessSession implements HarnessSession {
     subagents: { observe: true, readTranscript: true },
   };
   readonly commands: HarnessCommandCapability;
+  readonly skills: HarnessCommandCapability;
   readonly initialState: HarnessSessionState;
   readonly initialUsage = null;
   readonly outputs: AsyncIterable<HarnessOutput>;
@@ -582,6 +636,38 @@ class ClaudeHarnessSession implements HarnessSession {
     this.commands = {
       list: async () => ({ ok: true, value: claudeCommandCatalog }),
       execute: (command) => this.#executeHarnessCommand(command),
+    };
+    this.skills = {
+      list: async () => {
+        if (this.#phase !== "open") {
+          return { ok: false, error: invalidState("Claude Code Session is not open") };
+        }
+        const transport = this.#transport;
+        if (!transport) {
+          if (
+            this.#acceptingTurn ||
+            this.#active ||
+            this.#configurationTask ||
+            this.#readingHistory
+          ) {
+            return { ok: true, value: { commands: [] } };
+          }
+          this.#acceptingTurn = true;
+          const startingTransport = this.#transport === null;
+          try {
+            await this.#ensureTransport();
+            if (startingTransport && this.#phase === "open") this.#publishState();
+          } catch {
+            return { ok: true, value: { commands: [] } };
+          } finally {
+            this.#acceptingTurn = false;
+          }
+        }
+        const active = this.#transport;
+        if (!active) return { ok: true, value: { commands: [] } };
+        return projectClaudeSkillCatalog(await active.listSkills());
+      },
+      execute: (command) => this.#executeSkillCommand(command),
     };
     this.initialState = this.#openMode === "resume" ? { nativeRef: this.#nativeRef } : {};
     this.#state = this.initialState;
@@ -797,6 +883,92 @@ class ClaudeHarnessSession implements HarnessSession {
     }
     const parsed = parseClaudeHarnessCommand(command);
     if (!parsed.ok) return parsed;
+    return this.#beginCommandTurn(command, { kind: "native", native: parsed.value });
+  }
+
+  async #executeSkillCommand(
+    command: HarnessCommandInvocation,
+  ): Promise<HarnessResult<HarnessCommandAccepted>> {
+    if (!command.commandId.startsWith("claude.skill.")) {
+      return {
+        ok: false,
+        error: { code: "unsupported", message: "Not a Claude skill command", retryable: false },
+      };
+    }
+    // Match the native command path: a busy Session is retryable `sessionBusy`,
+    // never a permanent `unsupported` from an empty startup-window catalog.
+    if (this.#acceptingTurn || this.#active || this.#configurationTask || this.#readingHistory) {
+      return {
+        ok: false,
+        error: {
+          code: "sessionBusy",
+          message: "Claude Code Session already has an active operation",
+          retryable: true,
+        },
+      };
+    }
+    const listed = await this.skills.list();
+    if (!listed.ok) return listed;
+    const descriptor = listed.value.commands.find(({ id }) => id === command.commandId);
+    if (!descriptor) {
+      return {
+        ok: false,
+        error: {
+          code: "unsupported",
+          message: `Claude Code does not expose skill '${command.commandId}'`,
+          retryable: false,
+        },
+      };
+    }
+    const name = descriptor.invocation.slice(1);
+    const args = command.arguments;
+    if (descriptor.argumentMode === "none" && args && Object.keys(args).length > 0) {
+      return {
+        ok: false,
+        error: {
+          code: "invalidRequest",
+          message: `Claude Code skill '${name}' does not accept arguments`,
+          retryable: false,
+        },
+      };
+    }
+    if (args && Object.keys(args).some((key) => key !== "text")) {
+      return {
+        ok: false,
+        error: {
+          code: "invalidRequest",
+          message: `Claude Code skill '${name}' has an unknown argument`,
+          retryable: false,
+        },
+      };
+    }
+    const text = args?.text;
+    if (text !== undefined && typeof text !== "string") {
+      return {
+        ok: false,
+        error: {
+          code: "invalidRequest",
+          message: `Claude Code skill '${name}' argument 'text' must be a string`,
+          retryable: false,
+        },
+      };
+    }
+    // #beginCommandTurn repeats the phase check after its first await; the listing
+    // above is asynchronous, so the Session may have closed in the meantime.
+    return this.#beginCommandTurn(command, {
+      kind: "skill",
+      name,
+      text: typeof text === "string" ? text : undefined,
+    });
+  }
+
+  async #beginCommandTurn(
+    command: HarnessCommandInvocation,
+    parsed: ClaudeCommandTurn,
+  ): Promise<HarnessResult<HarnessCommandAccepted>> {
+    if (this.#phase !== "open") {
+      return { ok: false, error: invalidState("Claude Code Session is not open") };
+    }
     if (this.#acceptingTurn || this.#active || this.#configurationTask || this.#readingHistory) {
       return {
         ok: false,
@@ -830,7 +1002,7 @@ class ClaudeHarnessSession implements HarnessSession {
       resolveCompletion = resolve;
     });
     const nativeTurnKey = this.#randomUUID();
-    const startAgentItem = parsed.value.id !== "claude.compact";
+    const startAgentItem = parsed.kind === "skill" || parsed.native.id !== "claude.compact";
     const item: HostAgentMessageItem | null = startAgentItem
       ? {
           type: "agentMessage",
@@ -879,13 +1051,19 @@ class ClaudeHarnessSession implements HarnessSession {
     this.#event({ type: "turn.started", turnId: command.turnId });
     if (item) this.#event({ type: "item.started", turnId: command.turnId, item });
     const running =
-      parsed.value.id === "claude.compact"
-        ? transport.compact(nativeTurnKey, parsed.value.text, (event) =>
-            this.#handleTurnEvent(active, event),
+      parsed.kind === "skill"
+        ? transport.runTurn(
+            parsed.text ? `/${parsed.name} ${parsed.text}` : `/${parsed.name}`,
+            nativeTurnKey,
+            (event) => this.#handleTurnEvent(active, event),
           )
-        : parsed.value.id === "claude.init"
-          ? transport.init(nativeTurnKey, (event) => this.#handleTurnEvent(active, event))
-          : transport.recap(nativeTurnKey, (event) => this.#handleTurnEvent(active, event));
+        : parsed.native.id === "claude.compact"
+          ? transport.compact(nativeTurnKey, parsed.native.text, (event) =>
+              this.#handleTurnEvent(active, event),
+            )
+          : parsed.native.id === "claude.init"
+            ? transport.init(nativeTurnKey, (event) => this.#handleTurnEvent(active, event))
+            : transport.recap(nativeTurnKey, (event) => this.#handleTurnEvent(active, event));
     try {
       void running.then(
         (result) => this.#finishResult(active, result),

@@ -110,7 +110,7 @@ export class DelegationControlRegistry implements DelegationControlApi {
         { matchingRuntimeCount: 0 },
       );
     }
-    // ponytail: single runtime handles unknown threads so official read can return THREAD_NOT_FOUND
+    // When only one runtime session exists, forward unknown thread IDs to it so it can attempt official fallback (or return THREAD_NOT_FOUND).
     if (registrations.length === 1) return registrations[0] as DelegationControlRegistration;
     throw new DelegationControlError("THREAD_NOT_FOUND", "Thread was not found", {
       matchingRuntimeCount: 0,

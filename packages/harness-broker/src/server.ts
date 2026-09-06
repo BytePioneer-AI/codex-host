@@ -267,6 +267,10 @@ export async function startHarnessBrokerServer(input: {
       closed: false,
     };
     connections.add(state);
+    socket.on("error", () => {
+      state.closed = true;
+      socket.destroy();
+    });
 
     const send = async (frame: object): Promise<void> => {
       state.outputSequence += 1;

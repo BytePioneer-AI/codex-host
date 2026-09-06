@@ -34,7 +34,6 @@ interface RendererUsageMessages {
   readonly sessionCostEstimate: string;
   readonly threadUsage: string;
   readonly threadUsageDetails: string;
-  readonly contextSummary: string;
   readonly tokensSummary: string;
   readonly tokensPerSecond: string;
   readonly fiveHourSummary: string;
@@ -56,7 +55,6 @@ const ENGLISH_USAGE_MESSAGES: RendererUsageMessages = Object.freeze({
   sessionCostEstimate: "Session cost estimate",
   threadUsage: "Thread Usage",
   threadUsageDetails: "Thread Usage details",
-  contextSummary: "context",
   tokensSummary: "tokens",
   tokensPerSecond: "tok/s",
   fiveHourSummary: "5h",
@@ -78,7 +76,6 @@ const CHINESE_USAGE_MESSAGES: RendererUsageMessages = Object.freeze({
   sessionCostEstimate: "会话费用估算",
   threadUsage: "对话用量",
   threadUsageDetails: "对话用量详情",
-  contextSummary: "上下文",
   tokensSummary: "Token",
   tokensPerSecond: "Token/秒",
   fiveHourSummary: "5 小时",
@@ -115,6 +112,10 @@ export function formatRendererTokenCount(value: number): string {
   if (absolute < 1_000_000) return `${sign}${decimal(absolute / 1_000, 1)}k`;
   if (absolute < 1_000_000_000) return `${sign}${decimal(absolute / 1_000_000, 1)}M`;
   return `${sign}${decimal(absolute / 1_000_000_000, 1)}B`;
+}
+
+export function formatRendererContextSummary(usedTokens: number, windowTokens: number): string {
+  return `${decimal((usedTokens / windowTokens) * 100, 1)}% / ${formatRendererTokenCount(windowTokens)}`;
 }
 
 export function formatRendererCreditsPercent(value: number): string {
@@ -585,7 +586,7 @@ export function renderRendererUsageControl(
     usage.contextWindowTokens > 0
   ) {
     summary.push(
-      `${decimal(((usage.contextUsedTokens ?? 0) / usage.contextWindowTokens) * 100, 1)}% ${messages.contextSummary}`,
+      formatRendererContextSummary(usage.contextUsedTokens ?? 0, usage.contextWindowTokens),
     );
   }
   if (summary.length === 0 && usage?.totalTokens !== undefined) {

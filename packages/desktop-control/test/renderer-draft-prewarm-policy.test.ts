@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   installRendererDraftPrewarmPolicy,
+  installRendererDraftPrewarmPolicyDirect,
   selectRendererRequestManager,
 } from "../src/renderer-draft-prewarm-policy.js";
 import {
@@ -917,6 +918,30 @@ describe("Renderer draft prewarm policy", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("installs the owned request bridge through direct Renderer evaluation", async () => {
+    const evaluate = vi.fn(async (expression: string): Promise<unknown> => {
+      void expression;
+      return {
+        state: "ready",
+        reason: "owned-request-bridge",
+      };
+    });
+    const renderer = {
+      async evaluate<T>(expression: string): Promise<T> {
+        return (await evaluate(expression)) as T;
+      },
+    };
+
+    await expect(installRendererDraftPrewarmPolicyDirect(renderer)).resolves.toEqual({
+      state: "ready",
+      reason: "owned-request-bridge",
+    });
+    const expression = evaluate.mock.calls[0]?.[0];
+    expect(expression).toContain("document.querySelectorAll");
+    expect(expression).toContain("installDraftPrewarmPolicyBridge");
+    expect(expression).not.toContain("webContents.fromId");
   });
 
   it("rejects an invalid Renderer identity before inspecting the Desktop", async () => {

@@ -6,13 +6,16 @@ import {
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  ANTIGRAVITY_TRANSPORT_MODEL_ID,
   CLAUDE_CODE_TRANSPORT_MODEL_ID,
   DEEPSEEK_HARNESS_TRANSPORT_MODEL_ID,
   GROK_TRANSPORT_MODEL_ID,
   OPENCODE_TRANSPORT_MODEL_ID,
   PI_TRANSPORT_MODEL_ID,
   activeRendererDraftPrewarmPolicy,
+  antigravityTransportModelId,
   claudeTransportModelId,
+  decodeAntigravityTransportModelId,
   decodeClaudeTransportModelId,
   decodeDeepSeekHarnessTransportModelId,
   decodeGrokTransportModelId,
@@ -20,6 +23,7 @@ import {
   decodePiTransportModelId,
   findActivePrewarmTargets,
   findComposerModelTarget,
+  isAntigravityTransportModelId,
   isClaudeTransportModelId,
   isGrokTransportModelId,
   isOpenCodeTransportModelId,
@@ -34,10 +38,15 @@ import {
   threadIdFromComposerModelTarget,
 } from "../src/index.js";
 import {
+  OMP_TRANSPORT_MODEL_ID,
   createRendererRequestRouteResolver,
+  decodeOmpTransportModelId,
+  isOmpTransportModelId,
+  ompTransportModelId,
   rendererRequestTargetsForHost,
   resolveRendererRequestRoute,
   transitionRendererAdapterStatus,
+  installCurrentRendererAdapter,
 } from "../src/versioned-renderer-adapter.js";
 
 function composerWithFiber(fiber: object): Element {
@@ -395,7 +404,69 @@ describe("current Codex Renderer Agent adapter", () => {
     expect(findComposerModelTarget(conflictingConversation)).toBeNull();
   });
 
-  it("requires both current-version policy readiness markers", () => {
+  it("installs without synthesizing a main-process title policy marker", () => {
+    const requestTarget = {
+      hostId: "local",
+      sendRequest: vi.fn(),
+      prewarmThreadStart: vi.fn(),
+      enqueueRequest: vi.fn(),
+    };
+    const policy = {
+      state: "ready" as const,
+      hostId: "local",
+      requestTarget: () => requestTarget,
+      select: vi.fn(() => true),
+      clear: vi.fn(async () => {}),
+    };
+    const listeners = new Map<string, EventListener>();
+    const fakeWindow = {
+      __codexhostDraftPrewarmPolicyV1: policy,
+      dispatchEvent: vi.fn(),
+      addEventListener: vi.fn((type: string, listener: EventListener) => {
+        listeners.set(type, listener);
+      }),
+      removeEventListener: vi.fn(),
+      setInterval: vi.fn(() => 1),
+      clearInterval: vi.fn(),
+    };
+    const fakeDocument = {
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      querySelector: vi.fn(),
+      documentElement: {},
+    };
+    const priorWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
+    const priorDocument = Object.getOwnPropertyDescriptor(globalThis, "document");
+    const priorCustomEvent = Object.getOwnPropertyDescriptor(globalThis, "CustomEvent");
+    Object.defineProperties(globalThis, {
+      window: { configurable: true, value: fakeWindow },
+      document: { configurable: true, value: fakeDocument },
+      CustomEvent: {
+        configurable: true,
+        value: class CustomEvent {
+          constructor(readonly type: string) {}
+        },
+      },
+    });
+
+    try {
+      const adapter = installCurrentRendererAdapter();
+      expect(adapter.status).toMatchObject({ state: "ready", reason: "ready" });
+      expect("__codexhostMainProcessTitlePolicyV1" in fakeWindow).toBe(false);
+      adapter.dispose();
+    } finally {
+      for (const [name, descriptor] of [
+        ["window", priorWindow],
+        ["document", priorDocument],
+        ["CustomEvent", priorCustomEvent],
+      ] as const) {
+        if (descriptor) Object.defineProperty(globalThis, name, descriptor);
+        else Reflect.deleteProperty(globalThis, name);
+      }
+    }
+  });
+
+  it("recognizes current-version policy readiness markers independently", () => {
     expect(isMainProcessTitlePolicyReady({ state: "ready" })).toBe(true);
     expect(isMainProcessTitlePolicyReady({ state: "installing" })).toBe(false);
     expect(
@@ -472,6 +543,26 @@ describe("current Codex Renderer Agent adapter", () => {
     ).toEqual({ model, thinkingOptionId });
   });
 
+  it("encodes OMP Model, Permission Mode, and Thinking in the transport carrier", () => {
+    const model = harnessModelRefSchema.parse({ id: "omp-model-v1.synthetic" });
+    const thinkingOptionId = harnessThinkingOptionIdSchema.parse("high");
+    const permissionModeId = harnessPermissionModeIdSchema.parse("write");
+    const carrier = ompTransportModelId(model, thinkingOptionId, permissionModeId);
+
+    expect(carrier).toBe(
+      `${OMP_TRANSPORT_MODEL_ID}@${model.id}@${permissionModeId}@${thinkingOptionId}`,
+    );
+    expect(isOmpTransportModelId(carrier)).toBe(true);
+    expect(decodeOmpTransportModelId(carrier)).toEqual({
+      model,
+      permissionModeId,
+      thinkingOptionId,
+    });
+    expect(
+      modelSelectionForAgent(null, null, "omp", model, thinkingOptionId, permissionModeId)?.model,
+    ).toBe(carrier);
+  });
+
   it("encodes Claude Model, Permission Mode, and Thinking in the transport carrier", () => {
     const model = harnessModelRefSchema.parse({ id: "claude-model-v1.c29ubmV0" });
     const thinkingOptionId = harnessThinkingOptionIdSchema.parse("xhigh");
@@ -546,6 +637,41 @@ describe("current Codex Renderer Agent adapter", () => {
       modelSelectionForAgent(null, null, "opencode", model, thinkingOptionId, permissionModeId)
         ?.model,
     ).toBe(carrier);
+  });
+
+  it("round-trips an Antigravity carrier carrying Permission Mode and effort", () => {
+    const model = harnessModelRefSchema.parse({ id: "gemini-3.1-pro" });
+    const thinkingOptionId = harnessThinkingOptionIdSchema.parse("low");
+    const permissionModeId = harnessPermissionModeIdSchema.parse("configured");
+    const carrier = antigravityTransportModelId(model, permissionModeId, thinkingOptionId);
+
+    // The composer encodes three components, so the decoder in the same file
+    // has to read them back or Thread ownership fails on reload.
+    expect(isAntigravityTransportModelId(carrier)).toBe(true);
+    expect(decodeAntigravityTransportModelId(carrier)).toEqual({
+      model,
+      permissionModeId,
+      thinkingOptionId,
+    });
+    expect(
+      modelSelectionForAgent(null, null, "antigravity", model, thinkingOptionId, permissionModeId)
+        ?.model,
+    ).toBe(carrier);
+    expect(
+      decodeAntigravityTransportModelId(
+        `${ANTIGRAVITY_TRANSPORT_MODEL_ID}@${model.id}@@${thinkingOptionId}`,
+      ),
+    ).toEqual({ model, thinkingOptionId });
+  });
+
+  it("still accepts Antigravity carriers written before efforts existed", () => {
+    const model = harnessModelRefSchema.parse({ id: "gemini-3.7-flash-high" });
+    expect(
+      decodeAntigravityTransportModelId(`${ANTIGRAVITY_TRANSPORT_MODEL_ID}@${model.id}@configured`),
+    ).toEqual({ model, permissionModeId: "configured" });
+    expect(
+      decodeAntigravityTransportModelId(`${ANTIGRAVITY_TRANSPORT_MODEL_ID}@${model.id}`),
+    ).toEqual({ model });
   });
 
   it("extracts only a validated conversation Thread identity", () => {

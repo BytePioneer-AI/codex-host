@@ -901,7 +901,7 @@ describe("ClaudeSdkTransport Thinking control", () => {
     const value = fixture();
 
     await value.transport.start();
-    expect(options(value).thinking).toEqual({ type: "adaptive" });
+    expect(options(value).thinking).toEqual({ type: "adaptive", display: "summarized" });
     expect(options(value).effort).toBeUndefined();
 
     await value.transport.setThinkingOption(harnessThinkingOptionIdSchema.parse("high"));
@@ -924,7 +924,7 @@ describe("ClaudeSdkTransport Thinking control", () => {
   it("passes explicit and disabled Thinking when creating the Query", async () => {
     const explicit = fixture("create", "default", harnessThinkingOptionIdSchema.parse("xhigh"));
     await explicit.transport.start();
-    expect(options(explicit).thinking).toEqual({ type: "adaptive" });
+    expect(options(explicit).thinking).toEqual({ type: "adaptive", display: "summarized" });
     expect(options(explicit).effort).toBe("xhigh");
     await explicit.transport.close();
 
@@ -1342,6 +1342,92 @@ describe("ClaudeSdkTransport Question callbacks", () => {
 });
 
 describe("ClaudeSdkTransport Tool Approval callbacks", () => {
+  it.each(["allowOnce", "deny"] as const)(
+    "separates ExitPlanMode from ordinary approvals and returns %s without permission updates",
+    async (decision) => {
+      const value = fixture("create", "plan");
+      await value.transport.start();
+      const canUseTool = options(value).canUseTool;
+      if (!canUseTool) throw new Error("SDK canUseTool callback was not configured");
+      const events: ClaudeTurnEvent[] = [];
+      const turn = value.transport.runTurn("synthetic", "plan-turn", (event) => events.push(event));
+      const input = {
+        plan: `# Plan\n${"Review the change.\n".repeat(80)}`,
+        planFilePath: "/private/plan.md",
+      };
+      const permission = canUseTool("ExitPlanMode", input, {
+        signal: new AbortController().signal,
+        toolUseID: "exit-tool",
+        requestId: "exit-control",
+        title: "Allow once",
+        suggestions: [{ type: "setMode", mode: "bypassPermissions", destination: "session" }],
+      });
+      expect(events).toContainEqual({
+        type: "interaction.requested",
+        request: { type: "planApproval", requestId: "claude-approval-1", plan: input.plan },
+      });
+      await expect(
+        value.transport.respondToInteraction({
+          type: "approval",
+          requestId: "claude-approval-1",
+          decision: "allowForSession",
+        }),
+      ).rejects.toThrow("scope is not pending");
+      await value.transport.respondToInteraction({
+        type: "approval",
+        requestId: "claude-approval-1",
+        decision,
+      });
+      const result = await permission;
+      if (!result) throw new Error("Expected an explicit permission decision");
+      expect(result.behavior).toBe(decision === "allowOnce" ? "allow" : "deny");
+      expect(result).not.toHaveProperty("updatedPermissions");
+      if (result.behavior === "allow") expect(result.updatedInput).toBe(input);
+      expect(value.fakeQuery.setPermissionMode).not.toHaveBeenCalled();
+      completeTurn(value.fakeQuery);
+      await turn;
+      await value.transport.close();
+    },
+  );
+
+  it.each([undefined, "", "   ", 42])(
+    "marks unavailable ExitPlanMode plan text explicitly: %s",
+    async (plan) => {
+      const value = fixture("create", "plan");
+      await value.transport.start();
+      const canUseTool = options(value).canUseTool;
+      if (!canUseTool) throw new Error("SDK canUseTool callback was not configured");
+      const events: ClaudeTurnEvent[] = [];
+      const turn = value.transport.runTurn("synthetic", "plan-turn", (event) => events.push(event));
+      const signal = new AbortController();
+      const permission = canUseTool(
+        "ExitPlanMode",
+        { plan, planFilePath: "/must/not/read" },
+        {
+          signal: signal.signal,
+          toolUseID: "exit-tool",
+          requestId: "exit-control",
+        },
+      );
+      expect(events).toContainEqual({
+        type: "interaction.requested",
+        request: { type: "planApproval", requestId: "claude-approval-1", plan: null },
+      });
+      await expect(
+        value.transport.respondToInteraction({
+          type: "approval",
+          requestId: "claude-approval-1",
+          decision: "allowOnce",
+        }),
+      ).rejects.toThrow("plan text is unavailable");
+      signal.abort();
+      await expect(permission).resolves.toMatchObject({ behavior: "deny" });
+      completeTurn(value.fakeQuery);
+      await turn;
+      await value.transport.close();
+    },
+  );
+
   it("resolves independent Edit and Bash callbacks with exact one-shot SDK results", async () => {
     const value = fixture();
     await value.transport.start();

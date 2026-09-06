@@ -22,12 +22,14 @@ const HARNESS_INSTALL_URLS: Readonly<Record<ExternalRendererAgent, string>> = Ob
   opencode: "https://opencode.ai/docs/",
   grok: "https://grok.com/",
   omp: "https://github.com/can1357/oh-my-pi",
+  antigravity: "https://antigravity.google/product/antigravity-cli",
 });
 
 export interface RendererConnectionAgentSnapshot {
   readonly agent: ExternalRendererAgent;
   readonly availability: RendererAgentAvailability;
   readonly error: CodexhostError | null;
+  readonly webUiAvailable?: true;
 }
 
 export interface RendererConnectionHostSnapshot {
@@ -44,6 +46,7 @@ export interface RendererConnectionSnapshot {
 export interface RendererConnectionDiagnostics {
   snapshot(): RendererConnectionSnapshot;
   refresh(): Promise<void>;
+  openWebUi?(hostId: string, agent: ExternalRendererAgent): Promise<void>;
   subscribe(listener: () => void): () => void;
 }
 
@@ -56,6 +59,7 @@ interface ConnectionListItem {
   readonly availability: ConnectionAvailability;
   readonly error: CodexhostError | null;
   readonly agentSnapshot?: RendererConnectionAgentSnapshot;
+  readonly openWebUi?: () => Promise<void>;
 }
 
 function connectionStatusLabel(
@@ -489,6 +493,27 @@ function renderConnectionInspector(
         : messages.connectionUnavailableDescription;
     status.append(title, description);
     body.append(status);
+    if (item.openWebUi) {
+      const open = document.createElement("button");
+      open.type = "button";
+      open.className = "settings-command-button settings-command-button--secondary";
+      open.dataset.connectionAction = "open-web-ui";
+      open.append(
+        messages.connectionOpenHarnessWeb,
+        createRendererSettingsIcon("external-link", 14),
+      );
+      open.addEventListener("click", () => {
+        if (open.disabled) return;
+        open.disabled = true;
+        void item
+          .openWebUi?.()
+          .catch(() => undefined)
+          .finally(() => {
+            open.disabled = false;
+          });
+      });
+      body.append(open);
+    }
   }
 
   inspector.append(body);
@@ -498,6 +523,7 @@ function connectionItems(
   snapshot: RendererConnectionSnapshot,
   host: RendererConnectionHostSnapshot,
   messages: RendererSettingsMessages,
+  diagnostics: RendererConnectionDiagnostics | null,
 ): ConnectionListItem[] {
   return [
     {
@@ -512,6 +538,11 @@ function connectionItems(
       availability: agent.availability,
       error: agent.availability === "notInstalled" ? null : agent.error,
       agentSnapshot: agent,
+      ...(host.hostId === "local" && agent.webUiAvailable && diagnostics?.openWebUi
+        ? {
+            openWebUi: () => diagnostics.openWebUi?.(host.hostId, agent.agent) ?? Promise.resolve(),
+          }
+        : {}),
     })),
   ];
 }
@@ -741,7 +772,7 @@ export function createConnectionsSettingsPage(
         const inspector = document.createElement("aside");
         inspector.className = "settings-connection-inspector";
         inspector.setAttribute("aria-live", "polite");
-        const items = connectionItems(snapshot, selectedHost, messages);
+        const items = connectionItems(snapshot, selectedHost, messages, diagnostics);
         if (!items.some((item) => item.key === selectedItemKey)) {
           const requestedFocus = pendingFocusAgent;
           pendingFocusAgent = null;

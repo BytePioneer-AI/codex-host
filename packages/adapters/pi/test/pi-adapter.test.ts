@@ -1,3 +1,7 @@
+import { mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+
 import { describe, expect, it, vi } from "vitest";
 import {
   harnessPermissionModeIdSchema,
@@ -24,6 +28,7 @@ import type { PiSessionHistory } from "../src/pi-history.js";
 import { encodePiModelRef } from "../src/pi-model-catalog.js";
 import {
   PiRpcFaultError,
+  type PiAutonomousTurn,
   type PiCompactResult,
   type PiInteractionResponse,
   type PiRpcSessionOptions,
@@ -34,6 +39,10 @@ import {
 
 class FakePiTransport implements PiTurnTransport {
   readonly stderrTail = "Pi could not read ~/.pi/agent/settings.json";
+  autonomousHandler: ((turn: PiAutonomousTurn) => void) | null = null;
+  readonly setAutonomousTurnHandler = vi.fn((handler: (turn: PiAutonomousTurn) => void) => {
+    this.autonomousHandler = handler;
+  });
   state: PiSessionState = {
     sessionId: "pi-session-1",
     sessionFile: "/synthetic/pi-session.jsonl",
@@ -143,6 +152,11 @@ class FakePiTransport implements PiTurnTransport {
   event(event: PiTurnEvent): void {
     if (!this.onEvent) throw new Error("No active fake Pi Turn");
     this.onEvent(event);
+  }
+
+  autonomous(turn: PiAutonomousTurn): void {
+    if (!this.autonomousHandler) throw new Error("No autonomous Pi Turn handler");
+    this.autonomousHandler(turn);
   }
 
   delta(text: string, messageId?: string): void {
@@ -302,6 +316,20 @@ function cancelTurn(id: string) {
   return { type: "turn.cancel" as const, turnId: hostTurnIdSchema.parse(id) };
 }
 
+function autonomousTurn(
+  nativeTurnKey: string,
+  result: PiAutonomousTurn["result"] = { status: "succeeded", text: "autonomous answer" },
+): PiAutonomousTurn {
+  return {
+    nativeTurnKey,
+    events: [
+      { type: "text.delta", messageId: nativeTurnKey, delta: "autonomous answer" },
+      { type: "message.completed", messageId: nativeTurnKey },
+    ],
+    result,
+  };
+}
+
 async function nextOutput(iterator: AsyncIterator<HarnessOutput>): Promise<HarnessOutput> {
   const result = await iterator.next();
   if (result.done) throw new Error("Harness output stream ended unexpectedly");
@@ -373,6 +401,7 @@ describe("Pi HarnessAdapter Session", () => {
       capabilities: {
         configuration: { selectModel: true, selectThinkingOption: true },
         history: { fork: true, forkAcrossCwd: true, rollbackLastTurn: true },
+        autonomousTurns: { observe: true },
       },
     });
     expect(dependencies.createTransport).toHaveBeenCalledOnce();
@@ -569,6 +598,70 @@ describe("Pi HarnessAdapter Session", () => {
     });
     await opened.value.close();
     await adapter.close();
+  });
+
+  it("resumes an import-discovered locator, projects history, and continues the same native session", async () => {
+    const cwd = await realpath(
+      await mkdtemp(path.join(os.tmpdir(), "codexhost-pi-import-resume-")),
+    );
+    const sessionFile = path.join(cwd, "original.jsonl");
+    const history = sourceHistory();
+    const { adapter, dependencies, transports } = fixture({
+      environment: { PI_CODING_AGENT_SESSION_DIR: cwd },
+    });
+    try {
+      await writeFile(
+        sessionFile,
+        [{ type: "session", version: 3, id: "import-source", cwd }, ...history.entries]
+          .map((entry) => JSON.stringify(entry))
+          .join("\n") + "\n",
+      );
+      const source = await adapter.sessionImport.resolveCandidate("import-source");
+      if (!source.ok) throw new Error(source.error.message);
+      expect(dependencies.createTransport).not.toHaveBeenCalled();
+      vi.mocked(dependencies.createTransport).mockImplementationOnce((options) => {
+        const transport = new FakePiTransport();
+        transport.options = options;
+        transport.state = { ...transport.state, sessionId: "import-source", sessionFile };
+        transport.history = structuredClone(history);
+        transports.push(transport);
+        return transport;
+      });
+      const opened = await adapter.open({
+        kind: "resume",
+        cwd: source.value.candidate.cwd,
+        nativeRef: source.value.nativeRef,
+      });
+      if (!opened.ok) throw new Error(opened.error.message);
+      expect(dependencies.createTransport).toHaveBeenCalledWith(
+        expect.objectContaining({ sessionFile, cwd }),
+      );
+      expect(await opened.value.readSnapshot()).toMatchObject({
+        ok: true,
+        value: {
+          turns: [
+            { nativeTurnRef: { nativeTurnKey: "source-user-1" } },
+            { nativeTurnRef: { nativeTurnKey: "source-user-2" } },
+          ],
+        },
+      });
+      const iterator = opened.value.outputs[Symbol.asyncIterator]();
+      expect(await opened.value.execute(textTurn("continue-imported"))).toMatchObject({ ok: true });
+      transports[0]?.succeed("continued answer");
+      let terminal = await nextEvent(iterator);
+      while (terminal.type !== "turn.completed") terminal = await nextEvent(iterator);
+      expect(await opened.value.readSnapshot()).toMatchObject({
+        ok: true,
+        value: {
+          state: { nativeRef: source.value.nativeRef },
+          turns: [{}, {}, { input: [{ type: "text", text: "continue-imported" }] }],
+        },
+      });
+      await opened.value.close();
+    } finally {
+      await adapter.close();
+      await rm(cwd, { recursive: true, force: true });
+    }
   });
 
   it("rolls back the last Pi Turn and restores current Model and Thinking", async () => {
@@ -865,6 +958,173 @@ describe("Pi HarnessAdapter Session", () => {
       }),
     ).resolves.toMatchObject({ ok: false, error: { code: "unsupported" } });
     expect(dependencies.createTransport).toHaveBeenCalledOnce();
+    await session.close();
+  });
+
+  it("projects a lazy-transport autonomous Turn with native identity and no Checkpoint", async () => {
+    const { adapter, transports } = fixture();
+    const session = await openSession(adapter);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+    expect(session.capabilities.autonomousTurns).toEqual({ observe: true });
+
+    await session.execute(textTurn("bootstrap"));
+    const transport = transports[0];
+    if (!transport) throw new Error("Fake transport was not created");
+    expect(transport.setAutonomousTurnHandler).toHaveBeenCalledOnce();
+    expect(transport.setAutonomousTurnHandler.mock.invocationCallOrder[0]).toBeLessThan(
+      transport.start.mock.invocationCallOrder[0] as number,
+    );
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    transport.succeed("bootstrap answer");
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+
+    transport.autonomous(autonomousTurn("pi-autonomous-response"));
+
+    const autonomousStarted = await nextEvent(iterator);
+    expect(autonomousStarted).toMatchObject({
+      type: "turn.autonomous.started",
+      input: [],
+    });
+    if (autonomousStarted.type !== "turn.autonomous.started") {
+      throw new Error("Autonomous Pi Turn did not start");
+    }
+    const turnId = autonomousStarted.turnId;
+    expect(await nextEvent(iterator)).toEqual({ type: "turn.started", turnId });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.started",
+      turnId,
+      item: { type: "agentMessage", text: "" },
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.updated",
+      turnId,
+      update: { type: "text.append", text: "autonomous answer" },
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.completed",
+      turnId,
+      snapshot: { item: { type: "agentMessage", text: "autonomous answer" } },
+    });
+    const completed = await nextEvent(iterator);
+    expect(completed).toMatchObject({
+      type: "turn.completed",
+      turnId,
+      nativeTurnRef: {
+        harnessId: "pi",
+        nativeSessionId: "pi-session-1",
+        nativeTurnKey: "pi-autonomous-response",
+      },
+      outcome: { status: "succeeded" },
+    });
+    expect(completed).not.toHaveProperty("outcome.checkpoint");
+    await session.close();
+  });
+
+  it("binds autonomous observation for an already-started resumed transport", async () => {
+    const { adapter, transports } = fixture();
+    const sourceRef = nativeSessionRefSchema.parse({
+      harnessId: "pi",
+      nativeSessionId: "pi-session-1",
+      locator: { sessionFile: "/synthetic/pi-session.jsonl" },
+      formatVersion: 1,
+    });
+    const opened = await adapter.open({ kind: "resume", cwd: "/synthetic", nativeRef: sourceRef });
+    if (!opened.ok) throw new Error(opened.error.message);
+    const iterator = opened.value.outputs[Symbol.asyncIterator]();
+    const transport = transports[0];
+    if (!transport) throw new Error("Started fake transport was not created");
+    expect(transport.start).toHaveBeenCalledOnce();
+    expect(transport.setAutonomousTurnHandler).toHaveBeenCalledOnce();
+
+    transport.autonomous(autonomousTurn("resumed-autonomous"));
+    expect(await nextEvent(iterator)).toMatchObject({ type: "turn.autonomous.started", input: [] });
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "turn.completed",
+      nativeTurnRef: { nativeTurnKey: "resumed-autonomous" },
+      outcome: { status: "succeeded" },
+    });
+    await opened.value.close();
+    await adapter.close();
+  });
+
+  it("projects autonomous cancellation and failure without manufacturing Checkpoints", async () => {
+    const { adapter, transports } = fixture();
+    const session = await openSession(adapter);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+    await session.execute(textTurn("bootstrap-outcomes"));
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    const transport = transports[0];
+    if (!transport) throw new Error("Fake transport was not created");
+    transport.succeed("ready");
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+
+    for (const [key, result, expectedStatus] of [
+      [
+        "autonomous-cancelled",
+        { status: "cancelled", text: "autonomous answer", reason: "native aborted" },
+        "cancelled",
+      ],
+      [
+        "autonomous-failed",
+        { status: "failed", text: "autonomous answer", error: new Error("native failed") },
+        "failed",
+      ],
+    ] as const) {
+      transport.autonomous(autonomousTurn(key, result));
+      await nextEvent(iterator);
+      await nextEvent(iterator);
+      await nextEvent(iterator);
+      await nextEvent(iterator);
+      await nextEvent(iterator);
+      const completed = await nextEvent(iterator);
+      expect(completed).toMatchObject({
+        type: "turn.completed",
+        nativeTurnRef: { nativeTurnKey: key },
+        outcome: { status: expectedStatus },
+      });
+      expect(completed).not.toHaveProperty("outcome.checkpoint");
+    }
+    await session.close();
+  });
+
+  it("faults instead of merging an autonomous callback with a requested Host Turn", async () => {
+    const { adapter, transports } = fixture();
+    const session = await openSession(adapter);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+    await session.execute(textTurn("overlap"));
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    const transport = transports[0];
+    if (!transport) throw new Error("Fake transport was not created");
+
+    transport.autonomous(autonomousTurn("overlap-autonomous"));
+
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.completed",
+      snapshot: { outcome: { status: "failed", error: { code: "protocolError" } } },
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "turn.completed",
+      outcome: { status: "failed", error: { message: expect.stringContaining("overlapped") } },
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "session.faulted",
+      error: { code: "protocolError", message: expect.stringContaining("overlapped") },
+    });
+    await expect(iterator.next()).resolves.toEqual({ done: true, value: undefined });
     await session.close();
   });
 

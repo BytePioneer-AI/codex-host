@@ -1,5 +1,6 @@
 import type { HarnessCommandDescriptor } from "@codexhost/shared-contracts";
 
+import { rendererHarnessCommandExecutesDirectly } from "./renderer-harness-command-claim.js";
 import {
   rendererHarnessCommandPresentation,
   rendererHarnessMessages,
@@ -38,7 +39,7 @@ export interface RendererHarnessCommandControl {
   root: HTMLElement;
   trigger: HTMLButtonElement;
   menu: HTMLElement;
-  setCommands(commands: readonly HarnessCommandDescriptor[]): void;
+  setCommands(commands: readonly HarnessCommandDescriptor[], hasSession?: boolean): void;
   setExecuting(commandId: string | null): void;
   setLocale(locale: RendererSettingsLocale): void;
   placeBefore(reference: Element | null): boolean;
@@ -52,10 +53,16 @@ function menuItem(
   locale: RendererSettingsLocale,
   messages: RendererHarnessMessages,
   onSelect: () => void,
+  disabledReason?: string,
 ): HTMLButtonElement {
   const presentation = rendererHarnessCommandPresentation(command, locale);
   const item = ownerDocument.createElement("button");
   item.type = "button";
+  if (disabledReason) {
+    item.disabled = true;
+    item.title = disabledReason;
+    item.style.opacity = "0.5";
+  }
   item.setAttribute("role", "menuitem");
   item.setAttribute("data-command-id", command.id);
   item.setAttribute("aria-label", `${command.invocation} ${presentation.label}`);
@@ -93,7 +100,7 @@ function menuItem(
   title.style.whiteSpace = "nowrap";
 
   const description = ownerDocument.createElement("span");
-  description.textContent = presentation.description;
+  description.textContent = disabledReason ?? presentation.description;
   description.style.overflow = "hidden";
   description.style.color = "rgba(127, 127, 127, 0.9)";
   description.style.font = "400 11px/16px system-ui, sans-serif";
@@ -101,7 +108,7 @@ function menuItem(
   description.style.whiteSpace = "nowrap";
 
   const hint = ownerDocument.createElement("span");
-  hint.textContent = command.argumentMode === "text" ? messages.textArgument : "↵";
+  hint.textContent = rendererHarnessCommandExecutesDirectly(command) ? "↵" : messages.textArgument;
   hint.style.flex = "0 0 auto";
   hint.style.color = "rgba(127, 127, 127, 0.75)";
   hint.style.font = "400 11px/16px ui-monospace, SFMono-Regular, Menlo, monospace";
@@ -183,6 +190,7 @@ export function mountRendererHarnessCommandControl(
   let items: HTMLButtonElement[] = [];
   let activeIndex = 0;
   let executingCommandId: string | null = null;
+  let hasSession = true;
   let triggerHovered = false;
   let disposed = false;
 
@@ -201,9 +209,13 @@ export function mountRendererHarnessCommandControl(
       : `${Math.min(window.innerHeight - menuHeight - VIEWPORT_MARGIN, rect.bottom + MENU_GAP)}px`;
   };
 
-  const focusActive = (): void => {
+  const focusActive = (direction = 1): void => {
+    if (items.length === 0 || items.every((item) => item.disabled)) return;
+    while (items[activeIndex]?.disabled) {
+      activeIndex = (activeIndex + direction + items.length) % items.length;
+    }
     const item = items[activeIndex];
-    if (!item || item.disabled) return;
+    if (!item) return;
     item.focus();
     item.scrollIntoView({ block: "nearest" });
   };
@@ -213,6 +225,13 @@ export function mountRendererHarnessCommandControl(
       !trigger.disabled && (triggerHovered || !menu.hidden)
         ? "rgba(127, 127, 127, 0.16)"
         : "transparent";
+  };
+
+  const syncTriggerState = (): void => {
+    trigger.disabled = commands.length === 0 || executingCommandId !== null;
+    trigger.style.opacity = trigger.disabled ? "0.65" : "1";
+    trigger.title = commands.length === 0 ? messages.commandsUnavailable : messages.harnessCommands;
+    syncTriggerBackground();
   };
 
   const close = (): void => {
@@ -258,7 +277,16 @@ export function mountRendererHarnessCommandControl(
     header.style.font = "600 11px/16px system-ui, sans-serif";
     menu.append(header);
     items = commands.map((command) =>
-      menuItem(ownerDocument, command, locale, messages, () => select(command)),
+      menuItem(
+        ownerDocument,
+        command,
+        locale,
+        messages,
+        () => select(command),
+        !hasSession && rendererHarnessCommandExecutesDirectly(command)
+          ? messages.commandRequiresConversation
+          : undefined,
+      ),
     );
     menu.append(...items);
     activeIndex = Math.min(activeIndex, Math.max(0, items.length - 1));
@@ -289,7 +317,7 @@ export function mountRendererHarnessCommandControl(
       event.preventDefault();
       const delta = event.key === "ArrowDown" ? 1 : -1;
       activeIndex = (activeIndex + delta + items.length) % items.length;
-      focusActive();
+      focusActive(delta);
       return;
     }
     if (event.key === "Enter") {
@@ -345,33 +373,26 @@ export function mountRendererHarnessCommandControl(
       reference.parentElement.insertBefore(root, reference);
       return true;
     },
-    setCommands(nextCommands) {
+    setCommands(nextCommands, nextHasSession = true) {
       commands = [...nextCommands];
-      root.hidden = commands.length === 0;
+      hasSession = nextHasSession;
       if (commands.length === 0) close();
       renderItems();
+      syncTriggerState();
     },
     setExecuting(commandId) {
       executingCommandId = commandId;
-      for (const item of items) {
-        const isExecuting = item.dataset.commandId === commandId;
-        item.disabled = commandId !== null;
-        item.style.opacity = commandId !== null && !isExecuting ? "0.5" : "1";
-        if (isExecuting) item.setAttribute("aria-busy", "true");
-        else item.removeAttribute("aria-busy");
-      }
-      trigger.disabled = commandId !== null;
-      trigger.style.opacity = commandId !== null ? "0.65" : "1";
-      syncTriggerBackground();
+      renderItems();
+      syncTriggerState();
     },
     setLocale(nextLocale) {
       if (locale === nextLocale) return;
       locale = nextLocale;
       messages = rendererHarnessMessages(locale);
       trigger.setAttribute("aria-label", messages.harnessCommands);
-      trigger.title = messages.harnessCommands;
       menu.setAttribute("aria-label", messages.harnessCommands);
       renderItems();
+      syncTriggerState();
     },
     close,
     dispose() {
@@ -391,6 +412,6 @@ export function mountRendererHarnessCommandControl(
     },
   };
 
-  root.hidden = true;
+  syncTriggerState();
   return control;
 }

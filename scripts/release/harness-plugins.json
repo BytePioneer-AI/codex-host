@@ -1,0 +1,22 @@
+{
+  "plugins": [
+    "packages/adapters/pi",
+    "packages/adapters/claude-code",
+    "packages/adapters/deepseek-harness",
+    "packages/adapters/opencode",
+    "packages/adapters/grok",
+    "packages/adapters/omp",
+    "packages/adapters/antigravity"
+  ],
+  "runtimePackages": [
+    "@agentclientprotocol/sdk",
+    "@anthropic-ai/claude-agent-sdk",
+    "@deepseek-ai/cosmokit",
+    "@deepseek-ai/dsh-host-apiproxy",
+    "@deepseek-ai/schemastery",
+    "@opencode-ai/sdk",
+    "diff",
+    "ws",
+    "zod"
+  ]
+}

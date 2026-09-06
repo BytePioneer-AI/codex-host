@@ -213,12 +213,21 @@ export type HarnessConfigurationState = z.infer<typeof harnessConfigurationState
 export const harnessModelSelectionStateSchema = harnessConfigurationStateSchema;
 export type HarnessModelSelectionState = HarnessConfigurationState;
 
+export const harnessWebUiCapabilitySchema = z
+  .object({
+    open: z.literal(true),
+  })
+  .strict();
+
+export type HarnessWebUiCapability = z.infer<typeof harnessWebUiCapabilitySchema>;
+
 const readyHarnessInspectionSchema = z
   .object({
     status: z.literal("ready"),
     catalog: harnessModelCatalogSchema,
     permissionModes: harnessPermissionModeCatalogSchema.optional(),
     capabilities: harnessSessionCapabilitiesSchema,
+    webUi: harnessWebUiCapabilitySchema.optional(),
   })
   .strict()
   .superRefine((inspection, context) => {
@@ -257,6 +266,18 @@ export const harnessInspectParamsSchema = z
   .strict();
 
 export type HarnessInspectParams = z.infer<typeof harnessInspectParamsSchema>;
+
+export const harnessWebUiOpenParamsSchema = z
+  .object({
+    harnessId: harnessIdSchema,
+  })
+  .strict();
+
+export type HarnessWebUiOpenParams = z.infer<typeof harnessWebUiOpenParamsSchema>;
+
+export const harnessWebUiOpenResultSchema = z.object({}).strict();
+
+export type HarnessWebUiOpenResult = z.infer<typeof harnessWebUiOpenResultSchema>;
 
 export const threadModelSelectParamsSchema = z
   .object({

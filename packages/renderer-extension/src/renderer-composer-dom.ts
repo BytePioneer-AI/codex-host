@@ -734,6 +734,9 @@ export function renderComposerAgentControl(
   );
   if (control.usage) renderRendererUsageControl(control.usage, usage, locale);
   control.harnessCommands.setLocale(locale);
+  control.harnessCommands.root.hidden = state.agent === "codex";
+  control.harnessCommands.root.style.display = state.agent === "codex" ? "none" : "inline-flex";
+  if (state.agent === "codex") control.harnessCommands.close();
   renderRendererCreditsControl(control.credits, accountCredits);
 }
 

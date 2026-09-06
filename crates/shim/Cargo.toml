@@ -13,6 +13,10 @@ name = "codexhost-shim"
 path = "src/main.rs"
 
 [[bin]]
+name = "codexhost-node-repl"
+path = "src/node_repl_main.rs"
+
+[[bin]]
 name = "fake-codex-cli"
 path = "tests/fixtures/fake-codex-cli.rs"
 required-features = ["test-utils"]

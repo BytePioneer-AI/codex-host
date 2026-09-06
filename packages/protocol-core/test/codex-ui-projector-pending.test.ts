@@ -27,7 +27,7 @@ describe("CodexTurnProjector pending Turn", () => {
               {
                 id: `${turnId}-user`,
                 type: "userMessage",
-                content: [{ type: "text", text: "Review auth" }],
+                content: [{ type: "text", text: "Review auth", text_elements: [] }],
               },
             ],
           },
@@ -39,7 +39,7 @@ describe("CodexTurnProjector pending Turn", () => {
         {
           id: `${turnId}-user`,
           type: "userMessage",
-          content: [{ type: "text", text: "Review auth" }],
+          content: [{ type: "text", text: "Review auth", text_elements: [] }],
         },
       ],
     });

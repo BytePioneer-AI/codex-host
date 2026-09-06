@@ -29,6 +29,37 @@ export interface RendererSettingsMessages {
   readonly inDevelopment: string;
   readonly notAvailable: string;
   readonly runtimeCapabilityNotInstalled: string;
+  readonly sessionImportHarness: string;
+  readonly sessionImportDescription: string;
+  readonly sessionImportAvailabilityNote: string;
+  readonly sessionImportRefresh: string;
+  readonly sessionImportRefreshing: string;
+  readonly sessionImportUnavailable: string;
+  readonly sessionImportEmpty: string;
+  readonly sessionImportSearch: string;
+  readonly sessionImportSearchPlaceholder: string;
+  readonly sessionImportNoMatches: string;
+  readonly sessionImportPageSize: string;
+  readonly sessionImportPrevious: string;
+  readonly sessionImportNext: string;
+  readonly sessionImportPageSummary: string;
+  readonly sessionImportLoadFailed: string;
+  readonly sessionImportFailed: string;
+  readonly sessionImportUntitled: string;
+  readonly sessionImportUpdatedAt: string;
+  readonly sessionImportSessionId: string;
+  readonly sessionImportRunning: string;
+  readonly sessionImportRunningUnknown: string;
+  readonly sessionImportRunningHint: string;
+  readonly sessionImportAction: string;
+  readonly sessionImportImporting: string;
+  readonly sessionImportImported: string;
+  readonly sessionImportOpenFailed: string;
+  readonly sessionImportCopyProjectPath: string;
+  readonly sessionImportPathCopied: string;
+  readonly sessionImportPathCopyFailed: string;
+  readonly sessionImportRetryOpen: string;
+  readonly sessionImportRetrying: string;
   readonly connectionsDescription: string;
   readonly connectionAdapter: string;
   readonly connectionHosts: string;
@@ -61,6 +92,7 @@ export interface RendererSettingsMessages {
   readonly connectionHostsScrollLeft: string;
   readonly connectionHostsScrollRight: string;
   readonly connectionOpenInstallation: string;
+  readonly connectionOpenHarnessWeb: string;
   readonly connectionInstall: string;
   readonly connectionInstallDescription: string;
   readonly connectionErrorTitle: string;
@@ -136,6 +168,43 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   inDevelopment: "In development",
   notAvailable: "Not available",
   runtimeCapabilityNotInstalled: "This runtime capability is not installed yet.",
+  sessionImportHarness: "Harness",
+  sessionImportDescription:
+    "Sessions keep their original project path. If a folder is not in the Codex sidebar, add it as a project first. Original history remains managed by the Harness.",
+  sessionImportAvailabilityNote:
+    "Available Harnesses come from the local Host. If activity is unknown, close the session in its native client before importing to avoid concurrent writes.",
+  sessionImportRefresh: "Refresh",
+  sessionImportRefreshing: "Loading local sessions...",
+  sessionImportUnavailable:
+    "Session import is unavailable for this local Harness or its current protocol. Update the Host/plugin or choose another Harness.",
+  sessionImportEmpty: "No local sessions are available to import.",
+  sessionImportSearch: "Search",
+  sessionImportSearchPlaceholder: "Search titles, session IDs or project paths",
+  sessionImportNoMatches: "No sessions match your search.",
+  sessionImportPageSize: "Per page",
+  sessionImportPrevious: "Previous",
+  sessionImportNext: "Next",
+  sessionImportPageSummary: "Page {page} of {pages} · {total} sessions",
+  sessionImportLoadFailed:
+    "Local sessions could not be loaded. Check directory access or duplicate session IDs, then retry.",
+  sessionImportFailed: "The session could not be imported.",
+  sessionImportUntitled: "Untitled session",
+  sessionImportUpdatedAt: "Updated",
+  sessionImportSessionId: "Session ID",
+  sessionImportRunning: "Running",
+  sessionImportRunningUnknown: "Activity unknown",
+  sessionImportRunningHint:
+    "Close this session in its native client before importing, then refresh.",
+  sessionImportAction: "Import and open",
+  sessionImportImporting: "Importing...",
+  sessionImportImported: "Session imported",
+  sessionImportOpenFailed:
+    "The Codex sidebar has not shown it yet. Make sure the folder below is added as a project, then try opening it again.",
+  sessionImportCopyProjectPath: "Copy project path",
+  sessionImportPathCopied: "Copied",
+  sessionImportPathCopyFailed: "Copy failed",
+  sessionImportRetryOpen: "Try opening again",
+  sessionImportRetrying: "Opening...",
   connectionsDescription:
     "View runtime status by Host. Select an item to inspect details or complete its setup.",
   connectionAdapter: "Renderer adapter",
@@ -169,6 +238,7 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   connectionHostsScrollLeft: "Show previous Hosts",
   connectionHostsScrollRight: "Show more Hosts",
   connectionOpenInstallation: "Open official installation page",
+  connectionOpenHarnessWeb: "Open DeepSeek Harness Web",
   connectionInstall: "Install",
   connectionInstallDescription:
     "This Harness was not detected. Follow its official installation guide, then return here and run the check again.",
@@ -242,6 +312,7 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   aboutRepository: "Open-source repository",
   pageLabels: Object.freeze({
     connections: "Connections",
+    "session-import": "Session Import",
     updates: "Updates",
     about: "About",
   }),
@@ -259,6 +330,40 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   inDevelopment: "开发中",
   notAvailable: "暂不可用",
   runtimeCapabilityNotInstalled: "运行时尚未安装该项能力，因此暂不可用。",
+  sessionImportHarness: "Harness",
+  sessionImportDescription:
+    "会话将保留原始项目路径；若该文件夹尚未出现在 Codex 侧栏，请先将其添加为项目。原始历史仍由 Harness 管理。",
+  sessionImportAvailabilityNote:
+    "可选 Harness 来自本地 Host。运行状态未知时，请先在原生客户端关闭该会话再导入，避免同时写入。",
+  sessionImportRefresh: "刷新",
+  sessionImportRefreshing: "正在读取本地会话……",
+  sessionImportUnavailable:
+    "本地 Harness 或当前协议暂不支持会话导入，请更新 Host/插件或选择其他 Harness。",
+  sessionImportEmpty: "没有可导入的本地会话。",
+  sessionImportSearch: "搜索",
+  sessionImportSearchPlaceholder: "搜索标题、会话 ID 或项目路径",
+  sessionImportNoMatches: "没有匹配的会话。",
+  sessionImportPageSize: "每页",
+  sessionImportPrevious: "上一页",
+  sessionImportNext: "下一页",
+  sessionImportPageSummary: "第 {page} / {pages} 页 · 共 {total} 条",
+  sessionImportLoadFailed: "无法读取本地会话，请检查目录访问权限或重复的会话 ID 后重试。",
+  sessionImportFailed: "无法导入该会话。",
+  sessionImportUntitled: "未命名会话",
+  sessionImportUpdatedAt: "更新时间",
+  sessionImportSessionId: "会话 ID",
+  sessionImportRunning: "运行中",
+  sessionImportRunningUnknown: "运行状态未知",
+  sessionImportRunningHint: "请先在原生客户端关闭该会话，再刷新并导入。",
+  sessionImportAction: "导入并打开",
+  sessionImportImporting: "正在导入……",
+  sessionImportImported: "会话已导入",
+  sessionImportOpenFailed: "Codex 侧栏尚未显示该会话。请确认以下文件夹已添加为项目，然后重试打开。",
+  sessionImportCopyProjectPath: "复制项目路径",
+  sessionImportPathCopied: "已复制",
+  sessionImportPathCopyFailed: "复制失败",
+  sessionImportRetryOpen: "重试打开",
+  sessionImportRetrying: "正在打开……",
   connectionsDescription: "按 Host 查看运行时状态。选择一项，在右侧检查详情或完成配置。",
   connectionAdapter: "Renderer 适配器",
   connectionHosts: "Host 列表",
@@ -291,6 +396,7 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   connectionHostsScrollLeft: "查看前面的 Host",
   connectionHostsScrollRight: "查看更多 Host",
   connectionOpenInstallation: "前往官方安装页面",
+  connectionOpenHarnessWeb: "打开 DeepSeek Harness Web",
   connectionInstall: "安装",
   connectionInstallDescription:
     "尚未检测到该 Harness。请按照官方安装指南完成安装，然后返回此页面重新检查。",
@@ -362,6 +468,7 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   aboutRepository: "开源仓库",
   pageLabels: Object.freeze({
     connections: "连接",
+    "session-import": "会话导入",
     updates: "更新",
     about: "关于",
   }),

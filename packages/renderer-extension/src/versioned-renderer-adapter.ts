@@ -10,6 +10,7 @@ import {
   type HarnessThinkingOptionId,
   type HostThreadId,
   type ThreadCommandExecuteParams,
+  type HarnessCommandsInspectParams,
   type ThreadCommandsInspectParams,
   type ThreadInspectionParams,
   type ThreadModelSelectParams,
@@ -40,6 +41,8 @@ export const GROK_TRANSPORT_MODEL_ID = "codexhost/grok-native";
 export const GROK_TRANSPORT_MODEL_PREFIX = `${GROK_TRANSPORT_MODEL_ID}@`;
 export const OMP_TRANSPORT_MODEL_ID = "codexhost/omp-native";
 export const OMP_TRANSPORT_MODEL_PREFIX = `${OMP_TRANSPORT_MODEL_ID}@`;
+export const ANTIGRAVITY_TRANSPORT_MODEL_ID = "codexhost/antigravity-native";
+export const ANTIGRAVITY_TRANSPORT_MODEL_PREFIX = `${ANTIGRAVITY_TRANSPORT_MODEL_ID}@`;
 
 export type RendererAdapterState = "installing" | "ready" | "unsupported";
 
@@ -59,7 +62,6 @@ export interface RendererAdapterStatus {
     | "ready"
     | "asset-import-failed"
     | "installation-failed"
-    | "title-policy-unavailable"
     | "draft-prewarm-clear-failed"
     | "draft-routing-policy-unavailable";
   modelUpdates: number;
@@ -136,6 +138,7 @@ function transportModelIdForAgent(agent: RendererAgent): string | null {
   if (agent === "opencode") return OPENCODE_TRANSPORT_MODEL_ID;
   if (agent === "grok") return GROK_TRANSPORT_MODEL_ID;
   if (agent === "omp") return OMP_TRANSPORT_MODEL_ID;
+  if (agent === "antigravity") return ANTIGRAVITY_TRANSPORT_MODEL_ID;
   return null;
 }
 
@@ -161,16 +164,49 @@ export function piTransportModelId(
 export function ompTransportModelId(
   model?: HarnessModelRef,
   thinkingOptionId?: HarnessThinkingOptionId,
+  permissionModeId?: HarnessPermissionModeId,
 ): string {
   if (!model) {
-    if (thinkingOptionId) throw new Error("OMP transport Thinking requires a Model Ref");
+    if (permissionModeId || thinkingOptionId) {
+      throw new Error("OMP transport configuration requires a Model Ref");
+    }
     return OMP_TRANSPORT_MODEL_ID;
   }
   const parsedModel = harnessModelRefSchema.parse(model);
+  const parsedPermissionMode = permissionModeId
+    ? harnessPermissionModeIdSchema.parse(permissionModeId)
+    : undefined;
   const parsedThinking = thinkingOptionId
     ? harnessThinkingOptionIdSchema.parse(thinkingOptionId)
     : undefined;
+  if (parsedPermissionMode) {
+    return `${OMP_TRANSPORT_MODEL_PREFIX}${parsedModel.id}@${parsedPermissionMode}@${parsedThinking ?? ""}`;
+  }
   return `${OMP_TRANSPORT_MODEL_PREFIX}${parsedModel.id}${parsedThinking ? `@${parsedThinking}` : ""}`;
+}
+
+export function antigravityTransportModelId(
+  model?: HarnessModelRef,
+  permissionModeId?: HarnessPermissionModeId,
+  thinkingOptionId?: HarnessThinkingOptionId,
+): string {
+  if (!model) {
+    if (permissionModeId || thinkingOptionId) {
+      throw new Error("Antigravity transport configuration requires a Model Ref");
+    }
+    return ANTIGRAVITY_TRANSPORT_MODEL_ID;
+  }
+  const parsedModel = harnessModelRefSchema.parse(model);
+  const parsedPermission = permissionModeId
+    ? harnessPermissionModeIdSchema.parse(permissionModeId)
+    : undefined;
+  const parsedThinking = thinkingOptionId
+    ? harnessThinkingOptionIdSchema.parse(thinkingOptionId)
+    : undefined;
+  if (parsedThinking) {
+    return `${ANTIGRAVITY_TRANSPORT_MODEL_PREFIX}${parsedModel.id}@${parsedPermission ?? ""}@${parsedThinking}`;
+  }
+  return `${ANTIGRAVITY_TRANSPORT_MODEL_PREFIX}${parsedModel.id}${parsedPermission ? `@${parsedPermission}` : ""}`;
 }
 
 export function openCodeTransportModelId(
@@ -418,25 +454,73 @@ export function isPiTransportModelId(value: unknown): value is string {
 
 export function decodeOmpTransportModelId(value: unknown): {
   model?: HarnessModelRef;
+  permissionModeId?: HarnessPermissionModeId;
   thinkingOptionId?: HarnessThinkingOptionId;
 } | null {
   if (value === OMP_TRANSPORT_MODEL_ID) return {};
   if (typeof value !== "string" || !value.startsWith(OMP_TRANSPORT_MODEL_PREFIX)) return null;
   const components = value.slice(OMP_TRANSPORT_MODEL_PREFIX.length).split("@");
-  if (components.length < 1 || components.length > 2) return null;
-  const [modelId, thinkingOptionId] = components;
-  if (components.length === 2 && !thinkingOptionId) return null;
+  if (components.length < 1 || components.length > 3) return null;
+  const [modelId, permissionOrThinkingId, thinkingOptionId] = components;
+  if (components.length === 2 && !permissionOrThinkingId) return null;
+  if (components.length === 3 && !permissionOrThinkingId) return null;
   const model = harnessModelRefSchema.safeParse({ id: modelId });
   if (!model.success) return null;
-  const thinking = thinkingOptionId
-    ? harnessThinkingOptionIdSchema.safeParse(thinkingOptionId)
-    : null;
+  const permissionMode =
+    components.length === 3
+      ? harnessPermissionModeIdSchema.safeParse(permissionOrThinkingId)
+      : null;
+  if (permissionMode && !permissionMode.success) return null;
+  const thinking =
+    components.length === 2
+      ? harnessThinkingOptionIdSchema.safeParse(permissionOrThinkingId)
+      : thinkingOptionId
+        ? harnessThinkingOptionIdSchema.safeParse(thinkingOptionId)
+        : null;
   if (thinking && !thinking.success) return null;
-  return { model: model.data, ...(thinking?.success ? { thinkingOptionId: thinking.data } : {}) };
+  return {
+    model: model.data,
+    ...(permissionMode?.success ? { permissionModeId: permissionMode.data } : {}),
+    ...(thinking?.success ? { thinkingOptionId: thinking.data } : {}),
+  };
 }
 
 export function isOmpTransportModelId(value: unknown): value is string {
   return decodeOmpTransportModelId(value) !== null;
+}
+
+export function decodeAntigravityTransportModelId(value: unknown): {
+  model?: HarnessModelRef;
+  permissionModeId?: HarnessPermissionModeId;
+  thinkingOptionId?: HarnessThinkingOptionId;
+} | null {
+  if (value === ANTIGRAVITY_TRANSPORT_MODEL_ID) return {};
+  if (typeof value !== "string" || !value.startsWith(ANTIGRAVITY_TRANSPORT_MODEL_PREFIX)) {
+    return null;
+  }
+  const components = value.slice(ANTIGRAVITY_TRANSPORT_MODEL_PREFIX.length).split("@");
+  if (components.length < 1 || components.length > 3) return null;
+  const [modelId, permissionModeId, thinkingOptionId] = components;
+  if (components.length === 2 && !permissionModeId) return null;
+  if (components.length === 3 && !thinkingOptionId) return null;
+  const model = harnessModelRefSchema.safeParse({ id: modelId });
+  const permission = permissionModeId
+    ? harnessPermissionModeIdSchema.safeParse(permissionModeId)
+    : null;
+  if (!model.success || (permission && !permission.success)) return null;
+  const thinking = thinkingOptionId
+    ? harnessThinkingOptionIdSchema.safeParse(thinkingOptionId)
+    : null;
+  if (thinking && !thinking.success) return null;
+  return {
+    model: model.data,
+    ...(permission?.success ? { permissionModeId: permission.data } : {}),
+    ...(thinking?.success ? { thinkingOptionId: thinking.data } : {}),
+  };
+}
+
+export function isAntigravityTransportModelId(value: unknown): value is string {
+  return decodeAntigravityTransportModelId(value) !== null;
 }
 
 export function threadIdFromComposerModelTarget(
@@ -833,8 +917,10 @@ export function modelSelectionForAgent(
             : agent === "grok"
               ? grokTransportModelId(model, permissionModeId, thinkingOptionId)
               : agent === "omp"
-                ? ompTransportModelId(model, thinkingOptionId)
-                : transportModelIdForAgent(agent);
+                ? ompTransportModelId(model, thinkingOptionId, permissionModeId)
+                : agent === "antigravity"
+                  ? antigravityTransportModelId(model, permissionModeId, thinkingOptionId)
+                  : transportModelIdForAgent(agent);
   return transportModelId ? { model: transportModelId, reasoningEffort } : officialSelection;
 }
 
@@ -869,12 +955,6 @@ export function installCurrentRendererAdapter(): {
     });
   };
 
-  const unsupportedResult = () => ({
-    status: liveStatus,
-    modelControl: null,
-    applyAgent: () => false,
-    dispose() {},
-  });
   const usageSubscription = createThreadUsageSubscriptionRelay();
   const requestRouteResolver = createRendererRequestRouteResolver(
     () => window.__codexhostDraftPrewarmPolicyV1,
@@ -921,9 +1001,16 @@ export function installCurrentRendererAdapter(): {
       const targets = rendererRequestTargetsForHost(findActivePrewarmTargets(document), hostId);
       return modelClientForTargets(targets ?? []);
     },
+    listHarnessPlugins: async () => {
+      const client = currentModelClient();
+      if (!client.listHarnessPlugins) throw new Error("Harness plugin directory is unavailable");
+      return client.listHarnessPlugins();
+    },
     forkThread: (input: ExternalThreadForkParams) => currentModelClient().forkThread(input),
     inspectHarness: (input: HarnessInspectParams) => currentModelClient().inspectHarness(input),
     inspectThread: (input: ThreadInspectionParams) => currentModelClient().inspectThread(input),
+    inspectHarnessCommands: (input: HarnessCommandsInspectParams) =>
+      currentModelClient().inspectHarnessCommands(input),
     inspectThreadCommands: (input: ThreadCommandsInspectParams) =>
       currentModelClient().inspectThreadCommands(input),
     executeThreadCommand: (input: ThreadCommandExecuteParams) =>
@@ -944,10 +1031,6 @@ export function installCurrentRendererAdapter(): {
     startUpdate: () => currentModelClient().startUpdate(),
     readUpdateStatus: () => currentModelClient().readUpdateStatus(),
   });
-  if (!isMainProcessTitlePolicyReady(window.__codexhostMainProcessTitlePolicyV1)) {
-    updateStatus("unsupported", "title-policy-unavailable", null);
-    return unsupportedResult();
-  }
   const forkControl = installRendererForkControl({
     getClient: () => modelControl,
     reportError: (error) => {

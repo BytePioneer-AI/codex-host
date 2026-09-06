@@ -1,203 +1,107 @@
-# 输出、Item 与 Interaction
+# 输出与交互
 
-本文说明 Adapter 如何把原生 Agent 行为转换为 `HarnessOutput`。权威类型位于 `packages/harness-adapter/src/text-session.ts`，投影约束位于 `packages/protocol-core/src/codex-ui-projector.ts`。
+所有插件读取输出、Turn 和故障规则；按原生能力实现 Item、Interaction、自主 Turn 和 Subagent。类型以 `packages/harness-adapter/src/text-session.ts` 为准，投影约束可在 `packages/protocol-core/src/codex-ui-projector.ts` 核实。
 
-## 输出流
+## 一个有序输出流
 
-`HarnessSession.outputs` 是单消费者、有序的异步流。建议使用 `HarnessOutputChannel`。
+`HarnessSession.outputs` 是单消费者异步流，可复用公共 `HarnessOutputChannel`：
 
-输出分为：
+- `{ kind: "event", event }`：Session、Turn、Item、Subagent 变化。
+- `{ kind: "interaction", interaction }`：等待用户回答的 Approval 或 Question。
 
-- `{ kind: "event", event }`：Session、Turn、Item 和 Subagent 状态变化；
-- `{ kind: "interaction", interaction }`：等待 Desktop 回答的 Approval 或 Question。
+插件负责原生请求/回调关联和归一化，Host 负责公共交互到 Desktop 的关联与投影。不要新增原生事件透传通道或让 Renderer 解释原生 SDK 对象。
 
-顺序是公共契约的一部分。Host 会验证事件引用的 Turn、Item 和 Interaction 是否已经存在及是否仍处于活动状态。
-
-## 标准 Turn 生命周期
-
-成功接受的普通 Turn 应遵循：
+## Turn 生命周期
 
 ```text
-turn.started
+接受 turn.start（拒绝的调用不输出生命周期事件）
+  → turn.started
   → item.started
-  → item.updated（零次或多次）
+  → item.updated（零次或多次，可与其他 Item 交错）
   → item.completed
-  → turn.completed
+  → 所有 Interaction 关闭、所有 Item 终结
+  → 唯一 turn.completed
 ```
 
-一个 Turn 可以有多个并行或交错 Item，但必须满足：
+- 接受与完成不同；RPC 请求返回或 SDK 文本结束，不一定代表 Agent/工具已完全结束。
+- 同一个 Turn 只开始和完成一次；Item ID 在 Turn 内唯一，更新/完成只能引用活动 Item。
+- 每个接受的 Turn 都终结，包括失败、取消和关闭；终态后不再为它发 Item 更新。
+- 完成快照与累计流式内容一致；原生同时返回 delta 和完整消息时避免重复文本。
+- Tool 失败不自动等于 Turn 失败；Agent 恢复后仍可能成功。按原生最终状态决定 outcome。
+- NativeTurnRef 和 checkpoint 的要求见[身份与历史](thread-lifecycle-and-history.md)。
 
-- `turn.started` 只出现一次；
-- Item ID 在该 Turn 中唯一；
-- `item.updated` 和 `item.completed` 只能引用已开始且未完成的 Item；
-- 每个 Item 最多完成一次；
-- 所有 Interaction 关闭、所有 Item 完成后才能发 `turn.completed`；
-- 每个被接受的 Turn恰好有一个 `turn.completed`；
-- Turn 终态后不能继续发该 Turn 的 Item 事件。
+## 原生内容映射
 
-Turn 在 `execute()` 返回失败前不得发任何事件。`execute()` 返回成功后，完成可以异步发生。
+| 原生内容 | 公共 Item | 必须保留的语义 |
+|---|---|---|
+| 可见回答、需要对外观察的进度 | `agentMessage` | 流式 text.append；完成文本与累计内容一致 |
+| 明确公开的 Reasoning/摘要 | `reasoning` | 仅转换原生公开内容，不推测隐藏推理 |
+| Shell/明确命令 | `commandExecution` | 命令、适用 cwd、输出、退出码/时长、截断信息 |
+| 其他工具 | `toolExecution` | 名称、结构化参数、文本/图片输出与实际结果 |
+| 实际文件修改 | `fileChange` | 路径、add/update/delete、unified diff；不是工具描述文字 |
+| 自动或手动压缩 | `contextCompaction` | 与普通 Item 一样有开始和终态 |
+| 原生 Harness 的子 Agent 调用 | `subagentDelegation` | spawn/send、稳定子身份、状态、后台标记和结果摘要 |
 
-## Item 类型
+按公共 Item 对应 update 类型更新；为工具输出与 diff 设合理边界，使用类型支持的截断标记或明确的受限处理，不无限缓存流。最终结果和需要委派观察的文本使用 agentMessage；不要把 Reasoning/工具输出提升成最终回答。
 
-### `agentMessage`
+## 双向 Interaction
 
-用于 Agent 对用户可见的文本：
+### Approval
 
-- 流式文本用 `text.append`；
-- 初始文本为空时，Host 可以等第一段文本再向 Desktop 开始 Item；
-- `item.completed.snapshot.item.text` 必须与所有 append 后的完整文本一致；
-- 最终答案和希望委派观察看到的进度必须是该类型。
+使用 `HostApprovalInteraction`；actions 只表达能映射到原生决策的 effect。提供明确允许/拒绝行为，session/always 范围仅在原生实际支持时提供，不把“允许一次”升级成永久授权。
 
-### `reasoning`
+使用公共 `validateHostApprovalResponse()` 验证 action，调用原生决策回调，再发布对应关闭事件。插件拥有 action ID 到原生决策的映射，展示文本不是不受校验的协议 ID。
 
-只投影原生系统明确提供的可见 Reasoning 或摘要，不推断隐藏推理。用 `text.append` 流式更新。
+### Question
 
-### `commandExecution`
+使用 `HostQuestionInteraction`，按原生表达能力选择 choice/text、多选、自由输入、optional、secret、prefill 等字段，不宣称原生无法接受的答案形式。
 
-用于明确的 Shell/命令执行：
+使用 `validateHostQuestionResponse()`：校验必填、选项范围、单/多值与取消语义。取消不能同时携带答案；secret 答案不写入诊断。
 
-- `command` 是可展示命令；
-- 可提供 `cwd`、输出、截断、退出码和时长；
-- 流式输出用 `output.append`。
-
-### `toolExecution`
-
-用于非 Shell 的通用工具：
-
-- 提供稳定 `toolName`、可选 `namespace` 和结构化参数；
-- 输出由文本或图片组成；
-- 完整替换输出使用 `output.replace`；
-- 设置输出大小上限并标记 `truncated`。
-
-### `fileChange`
-
-用于实际文件变化：
-
-- 每项包含路径、add/update/delete 和 unified diff；
-- 多次修正使用 `fileChanges.replace`；
-- 不要把普通工具描述误投影为文件变化。
-
-### `contextCompaction`
-
-用于原生上下文压缩。它可以来自自动压缩或 Harness Command，但仍按普通 Item 生命周期完成。
-
-### `subagentDelegation`
-
-用于原生 Harness 自己创建的 Subagent，不是 codexhost 跨 Harness 委派记录：
-
-- `operation` 为 spawn 或 send；
-- 每个 Subagent 提供状态、描述、是否后台运行和可选结果摘要；
-- 状态集合变化使用 `subagents.replace`；
-- 详细语义优先参考 OMP，其次 Claude Code。
-
-## Item 和 Turn outcome
-
-Item outcome 与 Turn outcome 分开：
-
-- 某个 Tool 可以失败，而 Agent 处理失败后让 Turn 成功；
-- Turn outcome 应反映原生 Turn 的最终状态；
-- 取消映射为 `cancelled`，不要伪装为普通失败；
-- 原生错误必须转换为 `HarnessError`；
-- 在 `turn.completed` 前完成所有仍活动的 Item。
-
-## Approval
-
-Approval 通过 `HostApprovalInteraction` 表达：
-
-- 必须属于当前活动 Turn；
-- `interactionId` 唯一；
-- 至少提供 allow-once 和 deny 的可映射行为；
-- 原生系统支持时可提供 session 或 always scope；
-- Action ID 是 Adapter 与原生响应之间的稳定映射，不应直接使用不受控展示文本；
-- 使用 `validateHostApprovalResponse()` 验证 Host 响应；
-- 原生确认响应后发 `interaction.closed`；
-- Turn 取消、Session fault、超时或关闭时也必须关闭 Interaction。
-
-参考 Claude Code 的完整 scope 映射；原生 Host RPC 可参考 DeepSeek Harness；ACP Permission 可参考 Grok。
-
-## Question
-
-Question 通过 `HostQuestionInteraction` 表达，支持：
-
-- 单选或多选 `choice`；
-- 单行、多行或 secret `text`；
-- 必填、可选、自由输入、placeholder 和 prefill；
-- 一个 Interaction 中多个问题。
-
-规则：
-
-- 使用 `validateHostQuestionResponse()`；
-- 取消响应不能同时包含答案；
-- 非 optional 问题必须有答案；
-- 单选和文本问题不得返回多个值；
-- `allowOther` 为 false 时只能返回已声明选项；
-- 原生系统只支持一种简单输入时，应收窄公共 Question，而不是假装支持全部结构。
-
-参考 Claude Code 和 DeepSeek Harness 的完整 Question；简单确认和文本输入可参考 Pi。
-
-## Interaction 生命周期
+### 共同生命周期
 
 ```text
-Turn 已开始
-  → 输出 kind=interaction
-  → Host 返回 interaction.respond
-  → Adapter 验证并调用原生响应
-  → event interaction.closed
-  → Item/Turn 才可完成
+活动 Turn
+  → interaction 输出
+  → Host execute(interaction.respond)
+  → 验证 Session/Interaction 和回答
+  → 原生处理响应
+  → interaction.closed
 ```
 
-`interaction.closed.reason` 应准确使用：
+- Interaction ID 唯一且属于当前活动上下文；迟到、重复、跨 Session 或类型错误的响应明确拒绝。
+- 关闭原因用 responded、cancelled、expired、superseded，不把超时说成用户回答。
+- Turn 取消、超时、Session fault 和 close 都关闭待处理交互并解除原生等待。
+- 响应失败与取消竞态不能把答案交给下一次交互；每项只关闭一次。
+- 原生没有审批并不意味着必须伪造审批 UI；原生确有交互也不能退化成普通文本或自动作答。
 
-- `responded`
-- `cancelled`
-- `expired`
-- `superseded`
+## Session 状态、Usage 与故障
 
-重复、迟到或引用其他 Session 的响应返回 `invalidState` 或 `invalidRequest`，不能错误路由到当前 Interaction。
+state/Usage 事件是 Session 级完整状态，不是普通 Item；字段要求见[公共行为](public-adapter-contract.md)。它们可以独立于普通 Turn 更新。
 
-## Session 状态、Usage 和 Fault
+不可恢复 Session fault 按顺序处理：
 
-这些事件不进入普通 Turn projector：
+1. 关闭待处理 Interaction，终结活动 Item。
+2. 如果有活动 Turn，发出其唯一失败终态。
+3. 发布唯一 session.faulted，结束输出流，关闭原生资源。
 
-- `session.state.changed`：完整已确认配置；Host 同时持久化 Native identity。
-- `session.usage.changed`：完整 Usage 替换。
-- `session.faulted`：Session 级不可恢复故障。
+close 同样必须终结活动生命周期且幂等；可恢复的单次操作失败不应无条件升级成 Session fault。普通取消要保留可继续的 Session 和历史。
 
-发生 fault 时：
+## Autonomous Turn 与原生 Subagent
 
-1. 关闭所有 Interaction；
-2. 完成或失败所有活动 Item；
-3. 以失败终结活动 Turn；
-4. 发唯一 `session.faulted`；
-5. 结束输出流并关闭 Transport。
+原生可能在没有 Host turn.start 的情况下产生输出。能完整观测时声明 `autonomousTurns.observe`，使用 turn.autonomous.started 分配公共 Turn 身份、提供原生可见输入，后续遵循普通 Item/Turn 规则。没有可见输入可为空数组；不能与另一活动 Turn 混写。
 
-## Autonomous Turn 和 Subagent 通知
+不能只因漏声明能力而丢弃原生后台结果；若当前实现无法安全投影自主行为，明确记录限制并处理相关原生模式，不伪装完整支持。
 
-原生 Agent 可能在没有 Host `turn.start` 的情况下继续工作。只有声明 `autonomousTurns.observe` 时才能用 `turn.autonomous.started`：
+Subagent 的 observe/readTranscript 分别声明。原生后台子任务可在父 Turn 终态后继续，使用稳定身份及 `subagent.state.changed` / `subagent.transcript.changed` 通知，而不是向已完成父 Turn 继续追加 Item。支持 Transcript 时实现 Adapter 的只读 subagents 接口。
 
-- Adapter 创建新的 Host Turn ID；
-- 提供原生可见输入，没有输入时使用空数组；
-- 后续使用普通 Item 与 Turn 生命周期；
-- 不能与另一个活动 Turn 重叠。
+原生 Subagent 不等于 codexhost 跨 Harness 委派；后者见[委派清单](cross-harness-delegation.md)。
 
-Subagent Transcript 或状态变化可独立发：
+## 验收
 
-- `subagent.transcript.changed`
-- `subagent.state.changed`
-
-这些事件用于刷新已经物化的只读 Subagent Thread。Adapter 只有在可以稳定定位原生 Subagent 时才应声明相关能力。
-
-## 验证重点
-
-至少测试：
-
-1. 成功、失败、取消和 fault 的完整事件顺序。
-2. 被拒绝的 Turn 无输出。
-3. 并发 Turn 不破坏活动生命周期。
-4. 每种受支持 Item 的 start/update/complete 对齐。
-5. Tool 失败与 Turn 结果相互独立。
-6. Approval 和 Question 的合法、非法、重复、取消和过期响应。
-7. 关闭和 fault 会先关闭 Interaction，再结束 Turn。
-8. Autonomous Turn 和 Subagent 事件不会与普通 Turn 冲突。
-9. Tool Output 与 File Diff 的大小限制和截断标记。
-10. 最终 Agent Message 可在实时投影和历史快照中一致读取。
+- 成功/失败/取消/fault/close 的完整顺序；被拒绝的 Turn 无输出；重复开始和迟到事件不会污染下一轮。
+- 每种受支持 Item 的 start/update/complete、交错、内容一致性和输出边界。
+- 原生 Tool 失败后恢复，最终 Turn outcome 仍正确。
+- Interaction 合法/非法/重复/过期/取消响应，以及响应与关闭竞态。
+- 支持时，自主 Turn、后台 Subagent 与普通 Turn 不串用身份、不吞事件、不破坏唯一终态。
+- 同一最终回答在实时投影和只读历史中一致可见。

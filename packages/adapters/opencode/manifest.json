@@ -1,0 +1,10 @@
+{
+  "manifestVersion": 1,
+  "id": "opencode",
+  "name": "OpenCode",
+  "version": "0.0.0",
+  "adapterApiVersion": 1,
+  "entry": "./dist/plugin.js",
+  "icon": "./assets/icon.png",
+  "links": { "installation": "https://opencode.ai/docs/" }
+}

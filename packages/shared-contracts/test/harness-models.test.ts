@@ -10,6 +10,8 @@ import {
   harnessModelRefSchema,
   harnessModelSelectionStateSchema,
   harnessThinkingOptionIdSchema,
+  harnessWebUiOpenParamsSchema,
+  harnessWebUiOpenResultSchema,
   threadInspectionParamsSchema,
   threadInspectionSchema,
   threadModelSelectParamsSchema,
@@ -54,6 +56,22 @@ function readyInspection() {
 }
 
 describe("Harness Model runtime contracts", () => {
+  it("exposes only a credential-free Harness Web UI action", () => {
+    expect(
+      harnessInspectionSchema.parse({
+        ...readyInspection(),
+        webUi: { open: true },
+      }),
+    ).toMatchObject({ webUi: { open: true } });
+    expect(harnessWebUiOpenParamsSchema.parse({ harnessId: "deepseek-harness" })).toEqual({
+      harnessId: "deepseek-harness",
+    });
+    expect(harnessWebUiOpenResultSchema.parse({})).toEqual({});
+    expect(
+      harnessWebUiOpenResultSchema.safeParse({ url: "http://127.0.0.1/?token=secret" }).success,
+    ).toBe(false);
+  });
+
   it("accepts a strict browser-safe ready inspection", () => {
     expect(harnessInspectionSchema.parse(readyInspection())).toEqual(readyInspection());
     expect(

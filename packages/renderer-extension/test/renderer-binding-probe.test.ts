@@ -20,6 +20,7 @@ import {
   harnessAvailabilityDuringInspect,
   passiveHarnessAvailabilityAgents,
   refreshConnectionHosts,
+  rendererOwnershipRetryDelay,
   restoredThreadOwnership,
   retryableHarnessAvailabilityAgents,
   rendererUsageRefreshDelay,
@@ -841,6 +842,123 @@ describe("Renderer Composer DOM behavior", () => {
 
     expect(insertBefore).toHaveBeenCalledWith(modelRoot, pause);
     expect(insertBefore).toHaveBeenCalledWith(agentRoot, pause);
+  });
+
+  it("re-queries the send button and self-heals a detached trailing anchor", () => {
+    const detachedSend = {
+      type: "submit",
+      isConnected: false,
+      hasAttribute: () => false,
+      getAttribute: (name: string) => (name === "aria-label" ? "Send" : null),
+      contains: () => false,
+      parentElement: null,
+    };
+    const liveSend = {
+      type: "submit",
+      isConnected: true,
+      hasAttribute: () => false,
+      getAttribute: (name: string) => (name === "aria-label" ? "Send" : null),
+      contains: () => false,
+    };
+    const insertBefore = vi.fn();
+    const toolbar = {
+      children: [liveSend],
+      querySelectorAll: (selector: string) => (selector === "button" ? [liveSend] : []),
+      insertBefore,
+    };
+    Object.assign(liveSend, { parentElement: toolbar });
+    const composer = {
+      isConnected: true,
+      contains: (element: unknown) => element === liveSend,
+      querySelectorAll: (selector: string) => (selector === "button" ? [liveSend] : []),
+    };
+    const modelRoot = { parentElement: null, nextElementSibling: null, remove: vi.fn() };
+    const agentRoot = { parentElement: null, nextElementSibling: null, remove: vi.fn() };
+    const control = {
+      composer,
+      sendButton: detachedSend,
+      root: agentRoot,
+      picker: { root: agentRoot },
+      modelPicker: { root: modelRoot, trigger: {} },
+      nativeModelControl: null,
+      nativePermissionModeControl: null,
+      nativeContextUsageControl: null,
+      harnessCommands: { root: { remove: vi.fn() }, close: vi.fn(), placeBefore: vi.fn() },
+      credits: { anchor: null, place: vi.fn(), root: { remove: vi.fn() } },
+      usage: { anchor: null, place: vi.fn(), root: { remove: vi.fn() } },
+    } as unknown as ComposerAgentControl;
+
+    reconcileComposerNativeControls(control, true, false);
+
+    expect(control.sendButton).toBe(liveSend);
+    expect(insertBefore).toHaveBeenCalledWith(modelRoot, liveSend);
+    expect(insertBefore).toHaveBeenCalledWith(agentRoot, liveSend);
+    expect(modelRoot.remove).not.toHaveBeenCalled();
+    expect(agentRoot.remove).not.toHaveBeenCalled();
+  });
+
+  it("removes stranded chips when the composer has no submit-class button", () => {
+    const detachedSend = {
+      type: "submit",
+      isConnected: false,
+      hasAttribute: () => false,
+      getAttribute: () => null,
+      contains: () => false,
+      parentElement: null,
+    };
+    // A leading, non-submit control remains; it must not be adopted as anchor.
+    const leadingButton = {
+      type: "button",
+      isConnected: true,
+      hasAttribute: () => false,
+      getAttribute: (name: string) => (name === "aria-label" ? "Attach files" : null),
+      contains: () => false,
+    };
+    const composer = {
+      isConnected: true,
+      contains: () => false,
+      querySelectorAll: (selector: string) => (selector === "button" ? [leadingButton] : []),
+    };
+    const harnessClose = vi.fn();
+    const harnessRemove = vi.fn();
+    const modelRoot = { parentElement: {}, nextElementSibling: null, remove: vi.fn() };
+    const agentRoot = { parentElement: {}, nextElementSibling: null, remove: vi.fn() };
+    const control = {
+      composer,
+      sendButton: detachedSend,
+      root: agentRoot,
+      picker: { root: agentRoot },
+      modelPicker: { root: modelRoot, trigger: {} },
+      nativeModelControl: null,
+      nativePermissionModeControl: null,
+      nativeContextUsageControl: null,
+      harnessCommands: {
+        root: { remove: harnessRemove },
+        close: harnessClose,
+        placeBefore: vi.fn(),
+      },
+      credits: { anchor: null, place: vi.fn(), root: { remove: vi.fn() } },
+      usage: { anchor: null, place: vi.fn(), root: { remove: vi.fn() } },
+    } as unknown as ComposerAgentControl;
+
+    reconcileComposerNativeControls(control, true, false);
+
+    expect(modelRoot.remove).toHaveBeenCalledOnce();
+    expect(agentRoot.remove).toHaveBeenCalledOnce();
+    expect(harnessClose).toHaveBeenCalledOnce();
+    expect(harnessRemove).toHaveBeenCalledOnce();
+    // The detached, non-submit anchor was never adopted.
+    expect(control.sendButton).toBe(detachedSend);
+  });
+
+  it("bounds Ownership inspection retries to a finite ladder", () => {
+    expect(rendererOwnershipRetryDelay(0)).toBe(2_000);
+    expect(rendererOwnershipRetryDelay(1)).toBe(5_000);
+    expect(rendererOwnershipRetryDelay(2)).toBe(10_000);
+    expect(rendererOwnershipRetryDelay(3)).toBeNull();
+    expect(rendererOwnershipRetryDelay(99)).toBeNull();
+    expect(rendererOwnershipRetryDelay(-1)).toBeNull();
+    expect(rendererOwnershipRetryDelay(Number.NaN)).toBeNull();
   });
 
   it("freezes only on a non-composing Enter without Shift", () => {

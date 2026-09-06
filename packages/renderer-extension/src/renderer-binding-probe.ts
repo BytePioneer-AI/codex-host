@@ -169,6 +169,19 @@ export function rendererUsageRefreshDelay(attempt: number): number {
   return rendererUsageRefreshDelays[index] ?? rendererUsageRefreshDelays[0];
 }
 
+const rendererOwnershipRetryDelays = [2_000, 5_000, 10_000] as const;
+
+/**
+ * Bounded retry ladder for Thread ownership inspection. A child-thread
+ * transcript can fail inspection while it is still settling; a finite ladder
+ * recovers the Composer from the blocked ownership spinner without probing an
+ * unavailable Thread forever. Returns null once the retry budget is exhausted.
+ */
+export function rendererOwnershipRetryDelay(attempt: number): number | null {
+  if (!Number.isFinite(attempt) || attempt < 0) return null;
+  return rendererOwnershipRetryDelays[Math.trunc(attempt)] ?? null;
+}
+
 /**
  * Agents that can produce account-wide Credits independently of a Thread
  * Usage snapshot. These are the only ones where it is worth retrying purely
@@ -457,6 +470,8 @@ interface MountedComposer {
   permissionModeView: ExternalPermissionModeControlView;
   ownershipStatus: ComposerOwnershipStatus;
   threadConfiguration: HarnessModelSelectionState | undefined;
+  /** True while the bound Thread is a read-only child thread of a subagent. */
+  subagentThread: boolean;
   usage: ThreadUsageSnapshot | null;
   accountCredits: AccountCreditsSnapshot | null;
   hostId: string | null;
@@ -696,6 +711,8 @@ export function installRendererBindingProbe(
   const availabilityRetryDelays = [500, 1000, 2000, 4000, 8000] as const;
   const usageRefreshTimers = new Map<Element, number>();
   const usageRefreshAttempts = new Map<Element, number>();
+  const ownershipRetryTimers = new Map<Element, number>();
+  const ownershipRetryAttempts = new Map<Element, number>();
 
   const isMountedComposer = (composer: Element): boolean =>
     composer.isConnected &&
@@ -740,7 +757,7 @@ export function installRendererBindingProbe(
   const renderMounted = (mounted: MountedComposer): void => {
     renderComposerAgentControl(
       mounted.control,
-      controller.get(mounted.composer),
+      { ...controller.get(mounted.composer), subagentThread: mounted.subagentThread },
       adapterStatus.state,
       controller.isSwitching(mounted.composer) ||
         isOwnershipSubmissionBlocked(mounted.ownershipStatus),
@@ -904,6 +921,33 @@ export function installRendererBindingProbe(
     usageRefreshTimers.set(mounted.composer, timer);
   };
 
+  const clearThreadOwnershipRetryTimer = (composer: Element): void => {
+    const timer = ownershipRetryTimers.get(composer);
+    if (timer !== undefined) {
+      window.clearTimeout(timer);
+      ownershipRetryTimers.delete(composer);
+    }
+  };
+
+  const cancelThreadOwnershipRetry = (composer: Element): void => {
+    clearThreadOwnershipRetryTimer(composer);
+    ownershipRetryAttempts.delete(composer);
+  };
+
+  const scheduleThreadOwnershipRetry = (mounted: MountedComposer): void => {
+    if (disposed || ownershipRetryTimers.has(mounted.composer)) return;
+    const attempt = ownershipRetryAttempts.get(mounted.composer) ?? 0;
+    const delay = rendererOwnershipRetryDelay(attempt);
+    if (delay === null) return;
+    ownershipRetryAttempts.set(mounted.composer, attempt + 1);
+    const timer = window.setTimeout(() => {
+      ownershipRetryTimers.delete(mounted.composer);
+      if (disposed || mountedByComposer.get(mounted.composer) !== mounted) return;
+      void loadThreadOwnership(mounted);
+    }, delay);
+    ownershipRetryTimers.set(mounted.composer, timer);
+  };
+
   const isExternalConfigurationReady = (mounted: MountedComposer): boolean => {
     const current = controller.get(mounted.composer);
     if (current.agent === "codex") return true;
@@ -934,8 +978,10 @@ export function installRendererBindingProbe(
     const threadId = threadIdFromComposerModelTarget(mounted.modelTarget);
     if (!threadId) {
       mounted.ownershipStatus = "not-required";
+      cancelThreadOwnershipRetry(mounted.composer);
       return;
     }
+    clearThreadOwnershipRetryTimer(mounted.composer);
     const requestModelControl = modelControl;
     const requestHostId = activeModelHostId();
     const client = modelClientForHostFrom(requestModelControl, requestHostId);
@@ -949,16 +995,26 @@ export function installRendererBindingProbe(
       const inspection = await client.inspectThread({ threadId });
       if (
         !isCurrentOwnershipRequest(mounted, generation) ||
-        mountedByComposer.get(mounted.composer) !== mounted ||
+        mountedByComposer.get(mounted.composer) !== mounted
+      ) {
+        // A newer ownership request or a replacement mount owns the status.
+        return;
+      }
+      if (
         threadIdFromComposerModelTarget(mounted.modelTarget) !== threadId ||
         mounted.hostId !== requestHostId ||
         modelControl !== requestModelControl ||
         activeModelHostId() !== requestHostId
       ) {
+        // The Composer or Host identity moved while the request was in
+        // flight. Surface the error state and let the bounded retry re-arm
+        // instead of leaving the ownership spinner running forever.
+        mounted.ownershipStatus = "error";
         return;
       }
       const { agent, model, thinkingOptionId, permissionModeId } =
         restoredThreadOwnership(inspection);
+      mounted.subagentThread = inspection.owner === "external" && inspection.subagent === true;
       if (mounted.usageRequestGeneration === usageGeneration) {
         mounted.usage = inspection.owner === "external" ? (inspection.usage ?? null) : null;
       }
@@ -1006,9 +1062,12 @@ export function installRendererBindingProbe(
     } finally {
       if (isCurrentOwnershipRequest(mounted, generation)) {
         renderMounted(mounted);
-        if (mounted.ownershipStatus !== "error") void refreshCommands(mounted);
         sidebarAgentIcons.refresh();
-        if (mounted.ownershipStatus !== "error") {
+        if (mounted.ownershipStatus === "error") {
+          scheduleThreadOwnershipRetry(mounted);
+        } else {
+          ownershipRetryAttempts.delete(mounted.composer);
+          void refreshCommands(mounted);
           const agent = controller.get(mounted.composer).agent;
           if (agent === "codex" && mounted.usage === null) {
             void refreshThreadUsage(mounted);
@@ -1055,11 +1114,13 @@ export function installRendererBindingProbe(
       mounted.modelView = { status: "idle" };
       mounted.permissionModeView = { status: "idle" };
       mounted.threadConfiguration = undefined;
+      mounted.subagentThread = false;
       mounted.ownershipStatus = "loading";
       mounted.usage = null;
       mounted.accountCredits = null;
       mounted.usageRequestGeneration += 1;
       usageRefreshAttempts.delete(mounted.composer);
+      cancelThreadOwnershipRetry(mounted.composer);
       if (previousTarget?.[0] === "conversation") renderMounted(mounted);
       void loadThreadOwnership(mounted);
     }
@@ -1979,11 +2040,13 @@ export function installRendererBindingProbe(
       mounted.modelView = { status: "idle" };
       mounted.permissionModeView = { status: "idle" };
       mounted.threadConfiguration = undefined;
+      mounted.subagentThread = false;
       mounted.ownershipStatus = "loading";
       mounted.usage = null;
       mounted.accountCredits = null;
       mounted.usageRequestGeneration += 1;
       usageRefreshAttempts.delete(mounted.composer);
+      cancelThreadOwnershipRetry(mounted.composer);
       const timer = usageRefreshTimers.get(mounted.composer);
       if (timer !== undefined) {
         window.clearTimeout(timer);
@@ -2072,8 +2135,12 @@ export function installRendererBindingProbe(
     ) {
       return;
     }
-    const allButtons = [...composer.querySelectorAll<HTMLButtonElement>("button")];
-    const sendButton = sendButtonWithin(composer) ?? allButtons.at(-1) ?? null;
+    // Require a submit-class send button: it anchors the trailing action
+    // cluster. A Composer without one (e.g. a read-only child-thread
+    // transcript) offers no trailing cluster, and latching an arbitrary
+    // button injects the Model/Agent chips into the leading controls where
+    // they overlap. Skip mounting; scan() retries on later mutation batches.
+    const sendButton = sendButtonWithin(composer);
     if (!sendButton) return;
     const modelTarget = findComposerModelTarget(composer);
     const hostId = activeModelHostId();
@@ -2129,6 +2196,7 @@ export function installRendererBindingProbe(
           : "loading"
         : "not-required",
       threadConfiguration: inherited?.threadConfiguration,
+      subagentThread: inherited?.subagentThread ?? false,
       usage: inherited?.usage ?? null,
       accountCredits: inherited?.accountCredits ?? null,
       hostId: inherited?.hostId ?? hostId,
@@ -2210,6 +2278,7 @@ export function installRendererBindingProbe(
           window.clearTimeout(timer);
           usageRefreshTimers.delete(composer);
         }
+        cancelThreadOwnershipRetry(composer);
         disposeComposerAgentControl(mounted.control);
         mountedByComposer.delete(composer);
         continue;
@@ -2550,6 +2619,7 @@ export function installRendererBindingProbe(
             threadIdFromComposerModelTarget(mounted.modelTarget) &&
             mounted.ownershipStatus !== "ready"
           ) {
+            cancelThreadOwnershipRetry(mounted.composer);
             void loadThreadOwnership(mounted);
           } else if (state.agent !== "codex") {
             void loadExternalCatalog(mounted);
@@ -2589,6 +2659,9 @@ export function installRendererBindingProbe(
       harnessAvailabilityByHost.clear();
       for (const timer of usageRefreshTimers.values()) window.clearTimeout(timer);
       usageRefreshTimers.clear();
+      for (const timer of ownershipRetryTimers.values()) window.clearTimeout(timer);
+      ownershipRetryTimers.clear();
+      ownershipRetryAttempts.clear();
       for (const mounted of mountedByComposer.values()) {
         mounted.usageRequestGeneration += 1;
         usageRefreshAttempts.delete(mounted.composer);

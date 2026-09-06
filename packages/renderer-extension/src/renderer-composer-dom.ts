@@ -481,14 +481,55 @@ export function creditsPlacementAnchor(control: ComposerAgentControl): HTMLEleme
   return root?.parentElement ? root : null;
 }
 
+function isTrailingClusterSendButton(
+  control: ComposerAgentControl,
+  sendButton: HTMLButtonElement,
+): boolean {
+  // A usable trailing anchor must still be attached to this Composer and must
+  // be a submit-class button. Mount once latched an arbitrary trailing button;
+  // on read-only child-thread Composers that captured a leading-cluster control
+  // and the chips kept overlapping the leading row.
+  return (
+    sendButton.isConnected !== false &&
+    isComposerSubmitButton(sendButton) &&
+    (typeof control.composer.contains !== "function" ||
+      control.composer.contains(sendButton) ||
+      !control.composer.isConnected)
+  );
+}
+
+/**
+ * Detach the trailing-cluster chips when the Composer no longer offers any
+ * submit button. Leaving them stranded in a stale cluster overlaps the leading
+ * controls; the next scan unmounts the detached control and a later mount
+ * re-creates it once a submit button returns.
+ */
+function detachTrailingClusterPlacement(control: ComposerAgentControl): void {
+  control.modelPicker?.root.remove();
+  (control.root ?? control.picker?.root)?.remove();
+  control.harnessCommands?.close();
+  control.harnessCommands?.root.remove();
+}
+
 function refreshTrailingClusterPlacement(control: ComposerAgentControl): void {
   const sendButton = control.sendButton;
   const modelRoot = control.modelPicker?.root;
   const agentRoot = control.root ?? control.picker?.root;
   if (!sendButton || !modelRoot || !agentRoot) return;
-  const anchor = trailingActionAnchor(sendButton);
+  if (!isTrailingClusterSendButton(control, sendButton)) {
+    const replacement = sendButtonWithin(control.composer);
+    if (!replacement || !isTrailingClusterSendButton(control, replacement)) {
+      detachTrailingClusterPlacement(control);
+      return;
+    }
+    control.sendButton = replacement;
+  }
+  const anchor = trailingActionAnchor(control.sendButton);
   const parent = anchor.parentElement;
   if (!parent || typeof parent.insertBefore !== "function") return;
+  // The anchor is re-derived from the validated send button on every pass, so
+  // this early return only accepts a placement inside the current trailing
+  // cluster; a wrong-parent placement falls through and self-heals.
   if (
     modelRoot.parentElement === parent &&
     agentRoot.parentElement === parent &&
@@ -666,7 +707,12 @@ export function mountComposerAgentControl(
 
 export function renderComposerAgentControl(
   control: ComposerAgentControl,
-  state: { agent: RendererAgent; phase: ComposerAgentPhase },
+  state: {
+    agent: RendererAgent;
+    phase: ComposerAgentPhase;
+    /** True while the bound Thread is a read-only child thread of a subagent. */
+    subagentThread?: boolean;
+  },
   adapterState: RendererAdapterStatus["state"],
   switching: boolean,
   availability: Partial<Record<ExternalRendererAgent, RendererAgentAvailability>> = {},
@@ -679,6 +725,10 @@ export function renderComposerAgentControl(
   if (control.usage === null) {
     control.usage = mountRendererUsageControl(control.composerId, locale);
   }
+  // A subagent's child thread is read-only: hide every interactive chip
+  // (Model picker, Permission-mode picker, Harness commands) while keeping the
+  // Usage/Credits displays and the Agent icon that identify the thread.
+  const readOnlySubagent = state.subagentThread === true;
 
   const selectedModel = modelView.selected;
   const selectedCatalogModel = modelView.catalog?.models.find(
@@ -719,8 +769,13 @@ export function renderComposerAgentControl(
     pickerView.nativeModelHidden,
     switching || state.agent !== "codex",
   );
-  renderRendererModelPicker(control.modelPicker, modelView, state.agent !== "codex");
+  renderRendererModelPicker(
+    control.modelPicker,
+    modelView,
+    state.agent !== "codex" && !readOnlySubagent,
+  );
   const permissionModeVisible =
+    !readOnlySubagent &&
     state.agent !== "codex" &&
     permissionModeView.status !== "idle" &&
     permissionModeView.status !== "loading" &&
@@ -734,9 +789,10 @@ export function renderComposerAgentControl(
   );
   if (control.usage) renderRendererUsageControl(control.usage, usage, locale);
   control.harnessCommands.setLocale(locale);
-  control.harnessCommands.root.hidden = state.agent === "codex";
-  control.harnessCommands.root.style.display = state.agent === "codex" ? "none" : "inline-flex";
-  if (state.agent === "codex") control.harnessCommands.close();
+  const harnessCommandsVisible = state.agent !== "codex" && !readOnlySubagent;
+  control.harnessCommands.root.hidden = !harnessCommandsVisible;
+  control.harnessCommands.root.style.display = harnessCommandsVisible ? "inline-flex" : "none";
+  if (!harnessCommandsVisible) control.harnessCommands.close();
   renderRendererCreditsControl(control.credits, accountCredits);
 }
 

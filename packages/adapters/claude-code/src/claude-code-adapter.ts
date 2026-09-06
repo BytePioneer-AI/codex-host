@@ -73,7 +73,7 @@ import { ClaudeCodeExecutableError, resolveClaudeCodeExecutable } from "./comman
 import { forkClaudeSession } from "./claude-fork.js";
 import { mapClaudeSnapshot, mapClaudeSubagentSnapshot } from "./claude-history.js";
 import { claudeTranscriptItemId } from "./item-identity.js";
-import { readClaudeTranscript } from "./claude-transcript.js";
+import { readClaudeSubagentTranscript, readClaudeTranscript } from "./claude-transcript.js";
 import {
   CLAUDE_DEFAULT_MODEL_REF,
   decodeClaudeModelRef,
@@ -111,6 +111,8 @@ import type {
   ClaudeTransportFailureKind,
   ClaudeTransportTurnResult,
   ClaudeTurnEvent,
+  ClaudeTurnInput,
+  ClaudeTurnInputPart,
   ClaudeTurnTransport,
 } from "./transport.js";
 
@@ -173,13 +175,21 @@ interface ActiveTurn {
   nativeTurnKey: string;
   nativeTurnRef: NativeTurnRef | null;
   cancellationRequested: boolean;
+  /** Unix epoch milliseconds when the native terminal was observed, for replayed Turns. */
+  completedAtMs?: number;
   usageRequestIds: Set<string>;
   estimatedInputTokens: number;
+  estimatedCachedInputTokens: number;
+  estimatedCacheWriteInputTokens: number;
   estimatedOutputTokens: number;
   estimatedCostUsd: number;
   estimatedCostAvailable: boolean;
   usageTokensCalibrated: boolean;
   usageCostCalibrated: boolean;
+  /** Replay observation time of the current agentMessage Item's first delta, when replaying. */
+  agentMessageStartedAtMs: number | null;
+  /** Replay observation time of each in-flight reasoning Item's first delta, by messageId. */
+  reasoningStartedAtMs: Map<string, number>;
   held: boolean;
   completion: Promise<void>;
   resolveCompletion(): void;
@@ -487,6 +497,7 @@ class ClaudeHarnessSession implements HarnessSession {
       selectPermissionMode: true,
       permissionModeScope: "live",
     },
+    input: { image: true },
     history: { fork: true, forkAcrossCwd: false, rollbackLastTurn: true },
     subagents: { observe: true, readTranscript: true },
   };
@@ -525,6 +536,8 @@ class ClaudeHarnessSession implements HarnessSession {
   #latestUsage: HostUsage | null = null;
   #minimumContextUsedTokens: number | null = null;
   #calibratedInputTokens = 0;
+  #calibratedCachedInputTokens = 0;
+  #calibratedCacheWriteInputTokens = 0;
   #calibratedOutputTokens = 0;
   #calibratedCostUsd = 0;
   #contextRefreshInFlight: Promise<void> | null = null;
@@ -534,6 +547,12 @@ class ClaudeHarnessSession implements HarnessSession {
   #contextUsageCooldownUntilMs = 0;
   #requestUsageBoundary = 0;
   #autonomousOrdinal = 0;
+  /**
+   * Wall-clock observation time of the native message currently being replayed
+   * from a buffered autonomous Turn; null during live delivery. Read by the Item
+   * lifecycle to stamp replayed reasoning/agentMessage durations.
+   */
+  #replayObservedAtMs: number | null = null;
   #occupancy = new ClaudeBackgroundOccupancy();
   #cancelEscalation: ReturnType<typeof setTimeout> | null = null;
   #continuationQuiescence: ReturnType<typeof setTimeout> | null = null;
@@ -688,17 +707,30 @@ class ClaudeHarnessSession implements HarnessSession {
         },
       };
     }
-    const text = command.input.map((input) => input.text).join("\n");
-    if (text.length === 0) {
+    const textParts: string[] = [];
+    const imageParts: ClaudeTurnInputPart[] = [];
+    for (const part of command.input) {
+      if (part.type === "image") {
+        imageParts.push({ type: "image", mimeType: part.mimeType, base64Data: part.base64Data });
+      } else {
+        textParts.push(part.text);
+      }
+    }
+    const text = textParts.join("\n");
+    if (text.length === 0 && imageParts.length === 0) {
       return {
         ok: false,
         error: {
           code: "invalidRequest",
-          message: "Claude Code text Turn must not be empty",
+          message: "Claude Code Turn must not be empty",
           retryable: false,
         },
       };
     }
+    const turnInput: ClaudeTurnInput =
+      imageParts.length === 0
+        ? text
+        : [...(text.length > 0 ? ([{ type: "text", text }] as const) : []), ...imageParts];
 
     this.#acceptingTurn = true;
     const startingTransport = this.#transport === null;
@@ -755,11 +787,15 @@ class ClaudeHarnessSession implements HarnessSession {
       cancellationRequested: false,
       usageRequestIds: new Set(),
       estimatedInputTokens: 0,
+      estimatedCachedInputTokens: 0,
+      estimatedCacheWriteInputTokens: 0,
       estimatedOutputTokens: 0,
       estimatedCostUsd: 0,
       estimatedCostAvailable: false,
       usageTokensCalibrated: false,
       usageCostCalibrated: false,
+      agentMessageStartedAtMs: null,
+      reasoningStartedAtMs: new Map(),
       held: false,
       completion,
       resolveCompletion,
@@ -774,7 +810,7 @@ class ClaudeHarnessSession implements HarnessSession {
         nativeTurnKey,
         formatVersion: 1,
       });
-      const running = transport.runTurn(text, nativeTurnRef.nativeTurnKey, (event) => {
+      const running = transport.runTurn(turnInput, nativeTurnRef.nativeTurnKey, (event) => {
         this.#handleTurnEvent(active, event);
       });
       // Claude preserves caller-assigned User Message UUIDs in native history.
@@ -866,11 +902,15 @@ class ClaudeHarnessSession implements HarnessSession {
       cancellationRequested: false,
       usageRequestIds: new Set(),
       estimatedInputTokens: 0,
+      estimatedCachedInputTokens: 0,
+      estimatedCacheWriteInputTokens: 0,
       estimatedOutputTokens: 0,
       estimatedCostUsd: 0,
       estimatedCostAvailable: false,
       usageTokensCalibrated: false,
       usageCostCalibrated: false,
+      agentMessageStartedAtMs: null,
+      reasoningStartedAtMs: new Map(),
       held: false,
       completion,
       resolveCompletion,
@@ -1432,9 +1472,11 @@ class ClaudeHarnessSession implements HarnessSession {
           active.cancellationRequested,
         );
         if (subagent.status === "running") {
-          if (subagent.nativeSubagentId) {
-            this.#occupancy.bind(event.callId, subagent.nativeSubagentId);
-          }
+          // An async launch acknowledgement continues in the background. bind()
+          // is a no-op for a call this Session never occupied (a foreground
+          // spawn that turned out to be async), so occupy the spawn here;
+          // occupySpawn() rebinds an already-occupied call in place.
+          this.#occupancy.occupySpawn(event.callId, subagent.nativeSubagentId);
           return;
         }
         this.#occupancy.release(event.callId, subagent.nativeSubagentId);
@@ -1635,6 +1677,9 @@ class ClaudeHarnessSession implements HarnessSession {
     if (this.#active !== active || delta.length === 0) return;
     this.#activateAssistantMessage(active, messageId);
     if (!active.item) throw new Error("Claude Assistant text has no active Item");
+    if (active.agentMessageStartedAtMs === null && this.#replayObservedAtMs !== null) {
+      active.agentMessageStartedAtMs = this.#replayObservedAtMs;
+    }
     active.item = { ...active.item, text: active.item.text + delta };
     this.#event({
       type: "item.updated",
@@ -1649,11 +1694,24 @@ class ClaudeHarnessSession implements HarnessSession {
     const item = active.item;
     if (!item || (!completeEmpty && item.text.length === 0)) return;
     active.item = null;
+    const durationMs = this.#replayDurationMs(active.agentMessageStartedAtMs);
+    active.agentMessageStartedAtMs = null;
     this.#event({
       type: "item.completed",
       turnId: active.command.turnId,
-      snapshot: { item, outcome },
+      snapshot: { item: durationMs === undefined ? item : { ...item, durationMs }, outcome },
     });
+  }
+
+  /**
+   * Elapsed milliseconds for a replayed reasoning/agentMessage Item, measured
+   * between the observation of its first delta and the current replayed
+   * observation. Undefined for live delivery or when either endpoint is unknown.
+   */
+  #replayDurationMs(startedAtMs: number | null): number | undefined {
+    if (startedAtMs === null || this.#replayObservedAtMs === null) return undefined;
+    const durationMs = this.#replayObservedAtMs - startedAtMs;
+    return durationMs >= 0 ? durationMs : undefined;
   }
 
   #appendReasoning(active: ActiveTurn, messageId: string, delta: string): void {
@@ -1667,6 +1725,9 @@ class ClaudeHarnessSession implements HarnessSession {
         text: "",
       };
       active.reasoningItems.set(messageId, item);
+      if (this.#replayObservedAtMs !== null) {
+        active.reasoningStartedAtMs.set(messageId, this.#replayObservedAtMs);
+      }
       this.#event({ type: "item.started", turnId: active.command.turnId, item });
     }
     item = { ...item, text: item.text + delta };
@@ -1683,10 +1744,12 @@ class ClaudeHarnessSession implements HarnessSession {
     const item = active.reasoningItems.get(messageId);
     if (!item) return;
     active.reasoningItems.delete(messageId);
+    const durationMs = this.#replayDurationMs(active.reasoningStartedAtMs.get(messageId) ?? null);
+    active.reasoningStartedAtMs.delete(messageId);
     this.#event({
       type: "item.completed",
       turnId: active.command.turnId,
-      snapshot: { item, outcome },
+      snapshot: { item: durationMs === undefined ? item : { ...item, durationMs }, outcome },
     });
   }
 
@@ -1743,25 +1806,51 @@ class ClaudeHarnessSession implements HarnessSession {
       cancellationRequested: false,
       usageRequestIds: new Set(),
       estimatedInputTokens: 0,
+      estimatedCachedInputTokens: 0,
+      estimatedCacheWriteInputTokens: 0,
       estimatedOutputTokens: 0,
       estimatedCostUsd: 0,
       estimatedCostAvailable: false,
       usageTokensCalibrated: false,
       usageCostCalibrated: false,
+      agentMessageStartedAtMs: null,
+      reasoningStartedAtMs: new Map(),
       held: false,
       completion,
       resolveCompletion,
     };
     this.#active = active;
-    this.#event({ type: "turn.autonomous.started", turnId, input: [] });
+    this.#event({
+      type: "turn.autonomous.started",
+      turnId,
+      input: [],
+      ...(turn.startedAtMs !== undefined ? { startedAtMs: turn.startedAtMs } : {}),
+    });
     this.#event({ type: "turn.started", turnId });
     this.#event({ type: "item.started", turnId, item });
-    for (const event of turn.events) this.#handleTurnEvent(active, event);
-    this.#finishResult(active, turn.result);
+    this.#replayAutonomousEvents(active, turn);
   }
 
   #continueHeldTurn(active: ActiveTurn, turn: ClaudeAutonomousTurn): void {
-    for (const event of turn.events) this.#handleTurnEvent(active, event);
+    this.#replayAutonomousEvents(active, turn);
+  }
+
+  /**
+   * Replays buffered autonomous events as though they were just observed. The
+   * replay clock is set per event so reasoning/agentMessage Items are stamped
+   * with native elapsed time instead of the near-zero replay interval, and the
+   * native terminal observation is recorded for the completed Turn.
+   */
+  #replayAutonomousEvents(active: ActiveTurn, turn: ClaudeAutonomousTurn): void {
+    if (turn.completedAtMs !== undefined) active.completedAtMs = turn.completedAtMs;
+    try {
+      for (const event of turn.events) {
+        this.#replayObservedAtMs = event.observedAtMs ?? null;
+        this.#handleTurnEvent(active, event);
+      }
+    } finally {
+      this.#replayObservedAtMs = null;
+    }
     this.#finishResult(active, turn.result);
   }
 
@@ -1856,13 +1945,17 @@ class ClaudeHarnessSession implements HarnessSession {
         if (context === null) continue;
         this.#contextUsageFreshUntilMs = Date.now() + CONTEXT_USAGE_TTL_MS;
         this.#contextUsageCooldownUntilMs = 0;
-        this.#mergeAndPublishUsage(
-          {
-            contextUsedTokens: Math.max(context.usedTokens, this.#minimumContextUsedTokens ?? 0),
-            contextWindowTokens: context.maxTokens,
-          },
-          request.turnId,
-        );
+        const delta: Partial<HostUsage> = {
+          contextUsedTokens: Math.max(context.usedTokens, this.#minimumContextUsedTokens ?? 0),
+          contextWindowTokens: context.maxTokens,
+        };
+        // Restore the cache hit rate from the session-cumulative API usage the
+        // context response carries when no latest-request measurement exists.
+        if (context.apiUsage && this.#latestUsage?.cacheHitRatePercent === undefined) {
+          const cacheHitRatePercent = this.#cacheHitRatePercent(context.apiUsage);
+          if (cacheHitRatePercent !== undefined) delta.cacheHitRatePercent = cacheHitRatePercent;
+        }
+        this.#mergeAndPublishUsage(delta, request.turnId);
         return;
       } catch {
         // Context Usage is an independent, best-effort projection.
@@ -1932,12 +2025,35 @@ class ClaudeHarnessSession implements HarnessSession {
     }
   }
 
+  /**
+   * Cache hit rate, suppressed for a cold cache write — a request that creates
+   * cache without reading any — until the Session has published a real
+   * measurement. The first write's 0% would otherwise latch misleadingly as the
+   * Session's hit rate; once a measurement exists, sticky merge preserves it.
+   */
+  #cacheHitRatePercent(usage: {
+    inputTokens: number;
+    cacheCreationInputTokens: number;
+    cacheReadInputTokens: number;
+  }): number | undefined {
+    const cacheHitRatePercent = claudeCacheHitRatePercent(usage);
+    if (cacheHitRatePercent === undefined) return undefined;
+    const coldWrite =
+      usage.cacheReadInputTokens === 0 &&
+      usage.cacheCreationInputTokens > 0 &&
+      this.#latestUsage?.cacheHitRatePercent === undefined;
+    return coldWrite ? undefined : cacheHitRatePercent;
+  }
+
   #applyLatestRequestUsage(active: ActiveTurn, usage: ClaudeLastRequestUsage): void {
     const requestId = usage.requestId ?? `${active.nativeTurnKey}:${usage.model ?? "unknown"}`;
     if (active.usageRequestIds.has(requestId)) return;
     active.usageRequestIds.add(requestId);
-    active.estimatedInputTokens +=
-      usage.inputTokens + usage.cacheCreationInputTokens + usage.cacheReadInputTokens;
+    // Published inputTokens are exclusive of cache; cache reads and writes are
+    // tracked as their own session-cumulative fields.
+    active.estimatedInputTokens += usage.inputTokens;
+    active.estimatedCachedInputTokens += usage.cacheReadInputTokens;
+    active.estimatedCacheWriteInputTokens += usage.cacheCreationInputTokens;
     active.estimatedOutputTokens += usage.outputTokens;
     const estimatedCostUsd = estimateClaudeRequestCostUsd(usage);
     if (estimatedCostUsd !== undefined) {
@@ -1948,12 +2064,15 @@ class ClaudeHarnessSession implements HarnessSession {
     const promptTokens =
       usage.inputTokens + usage.cacheCreationInputTokens + usage.cacheReadInputTokens;
     if (promptTokens > 0) this.#minimumContextUsedTokens = promptTokens;
-    const cacheHitRatePercent = claudeCacheHitRatePercent(usage);
+    const cacheHitRatePercent = this.#cacheHitRatePercent(usage);
     const contextWindowTokens = this.#latestUsage?.contextWindowTokens;
     this.#mergeAndPublishUsage(
       {
         ...(cacheHitRatePercent !== undefined ? { cacheHitRatePercent } : {}),
         inputTokens: this.#calibratedInputTokens + active.estimatedInputTokens,
+        cachedInputTokens: this.#calibratedCachedInputTokens + active.estimatedCachedInputTokens,
+        cacheWriteInputTokens:
+          this.#calibratedCacheWriteInputTokens + active.estimatedCacheWriteInputTokens,
         outputTokens: this.#calibratedOutputTokens + active.estimatedOutputTokens,
         ...(active.estimatedCostAvailable
           ? { totalCostUsd: this.#calibratedCostUsd + active.estimatedCostUsd }
@@ -1981,9 +2100,13 @@ class ClaudeHarnessSession implements HarnessSession {
     if (event.modelUsage !== undefined) {
       let inputTokens = 0;
       let outputTokens = 0;
+      let cachedInputTokens = 0;
+      let cacheWriteInputTokens = 0;
       for (const model of event.modelUsage) {
         inputTokens += model.inputTokens;
         outputTokens += model.outputTokens;
+        cachedInputTokens += model.cacheReadInputTokens;
+        cacheWriteInputTokens += model.cacheCreationInputTokens;
       }
       if (Number.isSafeInteger(inputTokens) && Number.isSafeInteger(outputTokens)) {
         this.#calibratedInputTokens = inputTokens;
@@ -1994,9 +2117,27 @@ class ClaudeHarnessSession implements HarnessSession {
         delta.inputTokens = inputTokens;
         delta.outputTokens = outputTokens;
       }
+      if (Number.isSafeInteger(cachedInputTokens) && Number.isSafeInteger(cacheWriteInputTokens)) {
+        this.#calibratedCachedInputTokens = cachedInputTokens;
+        this.#calibratedCacheWriteInputTokens = cacheWriteInputTokens;
+        active.estimatedCachedInputTokens = 0;
+        active.estimatedCacheWriteInputTokens = 0;
+        delta.cachedInputTokens = cachedInputTokens;
+        delta.cacheWriteInputTokens = cacheWriteInputTokens;
+      }
+      // Without a per-request observation, fall back to the session-cumulative
+      // cache hit rate derived from the calibrated model totals.
+      if (!event.lastRequestUsage) {
+        const cumulative = this.#cacheHitRatePercent({
+          inputTokens,
+          cacheCreationInputTokens: cacheWriteInputTokens,
+          cacheReadInputTokens: cachedInputTokens,
+        });
+        if (cumulative !== undefined) delta.cacheHitRatePercent = cumulative;
+      }
     }
     if (event.lastRequestUsage) {
-      const cacheHitRatePercent = claudeCacheHitRatePercent(event.lastRequestUsage);
+      const cacheHitRatePercent = this.#cacheHitRatePercent(event.lastRequestUsage);
       if (cacheHitRatePercent !== undefined) delta.cacheHitRatePercent = cacheHitRatePercent;
     }
     this.#mergeAndPublishUsage(delta, active.command.turnId);
@@ -2139,6 +2280,7 @@ class ClaudeHarnessSession implements HarnessSession {
       type: "turn.completed",
       turnId: active.command.turnId,
       ...(active.nativeTurnRef ? { nativeTurnRef: active.nativeTurnRef } : {}),
+      ...(active.completedAtMs !== undefined ? { completedAtMs: active.completedAtMs } : {}),
       outcome: checkpoint ? { ...outcome, checkpoint } : outcome,
     });
     this.#active = null;
@@ -2328,8 +2470,18 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
         });
         return transcript ?? [];
       },
-      readSubagentMessages: ({ cwd, sessionId, nativeSubagentId }) =>
-        getSubagentMessages(sessionId, nativeSubagentId, { dir: cwd }),
+      readSubagentMessages: async ({ cwd, sessionId, nativeSubagentId }) => {
+        // Prefer the raw subagent transcript file (complete, in file order);
+        // fall back to the SDK branch walker only when that file is absent.
+        const transcript = await readClaudeSubagentTranscript({
+          cwd,
+          environment: options.environment ?? process.env,
+          sessionId,
+          nativeSubagentId,
+        });
+        if (transcript) return transcript;
+        return getSubagentMessages(sessionId, nativeSubagentId, { dir: cwd });
+      },
     };
   }
 
@@ -2399,6 +2551,7 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
             selectPermissionMode: snapshot.canSelectPermissionMode,
             permissionModeScope: "live",
           },
+          input: { image: true },
           history: { fork: true, forkAcrossCwd: false, rollbackLastTurn: true },
           subagents: { observe: true, readTranscript: true },
         },

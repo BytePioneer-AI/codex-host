@@ -18,6 +18,7 @@ interface ClaudeHistoryMessage {
   type: "user" | "assistant";
   uuid: string;
   message: Record<string, unknown>;
+  timestampMs: number | undefined;
   syntheticUser: boolean;
 }
 
@@ -25,6 +26,34 @@ const claudeCodeHarnessId: HarnessId = harnessIdSchema.parse("claude-code");
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isoToMs(value: unknown): number | undefined {
+  if (typeof value !== "string" || value.length === 0) return undefined;
+  const ms = Date.parse(value);
+  return Number.isFinite(ms) ? ms : undefined;
+}
+
+/** Elapsed milliseconds between two timestamps, when both parse and are ordered. */
+function elapsedMs(fromMs: number | undefined, toMs: number | undefined): number | undefined {
+  if (fromMs === undefined || toMs === undefined) return undefined;
+  const durationMs = toMs - fromMs;
+  return durationMs >= 0 ? durationMs : undefined;
+}
+
+/**
+ * Maps each record's uuid to the span between its own timestamp and the next
+ * record's timestamp, used to duration reasoning/agentMessage Items whose native
+ * elapsed time is the gap until the following transcript record.
+ */
+function recordDurationsMs(messages: ClaudeHistoryMessage[]): Map<string, number> {
+  const durations = new Map<string, number>();
+  for (const [index, current] of messages.entries()) {
+    const next = messages[index + 1];
+    const durationMs = elapsedMs(current.timestampMs, next?.timestampMs);
+    if (durationMs !== undefined) durations.set(current.uuid, durationMs);
+  }
+  return durations;
 }
 
 function textParts(value: unknown): string[] {
@@ -114,6 +143,7 @@ function conversationMessages(values: unknown[], sessionId: string): ClaudeHisto
       type: value.type,
       uuid: value.uuid,
       message: value.message,
+      timestampMs: isoToMs(value.timestamp),
       syntheticUser:
         value.type === "user" &&
         (value.isSynthetic === true ||
@@ -163,6 +193,7 @@ function itemOutcome(outcome: HistoricalTurnOutcome): HostItemOutcome {
 
 export function mapClaudeSnapshot(values: unknown[], sessionId: string): HostThreadSnapshot {
   const messages = conversationMessages(values, sessionId);
+  const durationsMs = recordDurationsMs(messages);
   const turns: HostThreadSnapshot["turns"] = [];
   for (let index = 0; index < messages.length;) {
     const user = messages[index];
@@ -176,6 +207,8 @@ export function mapClaudeSnapshot(values: unknown[], sessionId: string): HostThr
     const outcome = turnOutcome(turnMessages);
     const results = toolResultBlocks(turnMessages);
     const checkpointMessage = turnMessages.findLast(({ type }) => type === "assistant");
+    const startedAtMs = turnMessages[0]?.timestampMs;
+    const completedAtMs = turnMessages.at(-1)?.timestampMs;
     let agentMessageOrdinal = 0;
     let reasoningOrdinal = 0;
     turns.push({
@@ -195,11 +228,14 @@ export function mapClaudeSnapshot(values: unknown[], sessionId: string): HostThr
             }),
           }
         : {}),
+      ...(startedAtMs !== undefined ? { startedAtMs } : {}),
+      ...(completedAtMs !== undefined ? { completedAtMs } : {}),
       input: visibleUserTextParts(user).map((text) => ({
         type: "text",
         text: displayedUserText(text),
       })),
       items: turnMessages.flatMap((message) => {
+        const recordDurationMs = durationsMs.get(message.uuid);
         if (message.type === "user") {
           const recapOutput = visibleUserTextParts(user).some((text) =>
             isNamedCommandEnvelope(text, recapCommandNamePattern),
@@ -219,6 +255,7 @@ export function mapClaudeSnapshot(values: unknown[], sessionId: string): HostThr
                   (agentMessageOrdinal += 1),
                 ),
                 text: recapOutput,
+                ...(recordDurationMs !== undefined ? { durationMs: recordDurationMs } : {}),
               },
               outcome: itemOutcome(outcome),
             },
@@ -240,6 +277,7 @@ export function mapClaudeSnapshot(values: unknown[], sessionId: string): HostThr
                       (agentMessageOrdinal += 1),
                     ),
                     text,
+                    ...(recordDurationMs !== undefined ? { durationMs: recordDurationMs } : {}),
                   },
                   outcome: itemOutcome(outcome),
                 },
@@ -257,6 +295,7 @@ export function mapClaudeSnapshot(values: unknown[], sessionId: string): HostThr
                 type: "reasoning" as const,
                 itemId: claudeTranscriptItemId(user.uuid, "reasoning", (reasoningOrdinal += 1)),
                 text: reasoning,
+                ...(recordDurationMs !== undefined ? { durationMs: recordDurationMs } : {}),
               },
               outcome: itemOutcome(outcome),
             });
@@ -273,6 +312,7 @@ export function mapClaudeSnapshot(values: unknown[], sessionId: string): HostThr
                   (agentMessageOrdinal += 1),
                 ),
                 text,
+                ...(recordDurationMs !== undefined ? { durationMs: recordDurationMs } : {}),
               },
               outcome: itemOutcome(outcome),
             });
@@ -288,8 +328,9 @@ export function mapClaudeSnapshot(values: unknown[], sessionId: string): HostThr
           }
           const result = results.get(block.id);
           if (!result) continue;
-          const output = toolResultOutput(result);
-          const failed = result.is_error === true;
+          const output = toolResultOutput(result.block);
+          const failed = result.block.is_error === true;
+          const toolDurationMs = elapsedMs(message.timestampMs, result.timestampMs);
           const toolOutcome: HostItemOutcome = failed
             ? {
                 status: "failed",
@@ -314,6 +355,7 @@ export function mapClaudeSnapshot(values: unknown[], sessionId: string): HostThr
                 itemId,
                 command: block.input.command,
                 ...(output ? { output } : {}),
+                ...(toolDurationMs !== undefined ? { durationMs: toolDurationMs } : {}),
               },
               outcome: toolOutcome,
             });
@@ -327,6 +369,7 @@ export function mapClaudeSnapshot(values: unknown[], sessionId: string): HostThr
               toolName: block.name,
               arguments: argumentsResult.success ? argumentsResult.data : null,
               ...(output ? { output: { content: [{ type: "text" as const, text: output }] } } : {}),
+              ...(toolDurationMs !== undefined ? { durationMs: toolDurationMs } : {}),
             },
             outcome: toolOutcome,
           });
@@ -340,8 +383,13 @@ export function mapClaudeSnapshot(values: unknown[], sessionId: string): HostThr
   return { turns };
 }
 
-function toolResultBlocks(messages: ClaudeHistoryMessage[]): Map<string, Record<string, unknown>> {
-  const results = new Map<string, Record<string, unknown>>();
+function toolResultBlocks(
+  messages: ClaudeHistoryMessage[],
+): Map<string, { block: Record<string, unknown>; timestampMs: number | undefined }> {
+  const results = new Map<
+    string,
+    { block: Record<string, unknown>; timestampMs: number | undefined }
+  >();
   for (const message of messages) {
     if (message.type !== "user" || !Array.isArray(message.message.content)) continue;
     for (const block of message.message.content) {
@@ -350,7 +398,7 @@ function toolResultBlocks(messages: ClaudeHistoryMessage[]): Map<string, Record<
         block.type === "tool_result" &&
         typeof block.tool_use_id === "string"
       ) {
-        results.set(block.tool_use_id, block);
+        results.set(block.tool_use_id, { block, timestampMs: message.timestampMs });
       }
     }
   }
@@ -414,6 +462,7 @@ export function mapClaudeSubagentSnapshot(
     values.map((value) => (isRecord(value) ? { ...value, session_id: parentSessionId } : value)),
     parentSessionId,
   );
+  const durationsMs = recordDurationsMs(messages);
   const turns: HostThreadSnapshot["turns"] = [];
   for (let index = 0; index < messages.length;) {
     const first = messages[index];
@@ -427,6 +476,8 @@ export function mapClaudeSubagentSnapshot(
     while (end < messages.length && !isHumanUser(messages[end] as ClaudeHistoryMessage)) end += 1;
     const turnMessages = messages.slice(index, end);
     const results = toolResultBlocks(turnMessages);
+    const startedAtMs = turnMessages[0]?.timestampMs;
+    const completedAtMs = turnMessages.at(-1)?.timestampMs;
     const outcome: HistoricalTurnOutcome = {
       status: "unknown",
       reason: "Claude Subagent history does not include complete Result terminal evidence",
@@ -434,6 +485,7 @@ export function mapClaudeSubagentSnapshot(
     const items: HostThreadSnapshot["turns"][number]["items"] = [];
     for (const message of turnMessages) {
       if (message.type !== "assistant") continue;
+      const recordDurationMs = durationsMs.get(message.uuid);
       const content = Array.isArray(message.message.content)
         ? message.message.content
         : [{ type: "text", text: message.message.content }];
@@ -446,7 +498,12 @@ export function mapClaudeSubagentSnapshot(
         if (block.type === "thinking" && typeof block.thinking === "string") {
           if (block.thinking.length > 0) {
             items.push({
-              item: { type: "reasoning", itemId, text: block.thinking },
+              item: {
+                type: "reasoning",
+                itemId,
+                text: block.thinking,
+                ...(recordDurationMs !== undefined ? { durationMs: recordDurationMs } : {}),
+              },
               outcome: itemOutcome(outcome),
             });
           }
@@ -455,7 +512,12 @@ export function mapClaudeSubagentSnapshot(
         if (block.type === "text" && typeof block.text === "string") {
           if (block.text.length > 0) {
             items.push({
-              item: { type: "agentMessage", itemId, text: block.text },
+              item: {
+                type: "agentMessage",
+                itemId,
+                text: block.text,
+                ...(recordDurationMs !== undefined ? { durationMs: recordDurationMs } : {}),
+              },
               outcome: itemOutcome(outcome),
             });
           }
@@ -470,8 +532,9 @@ export function mapClaudeSubagentSnapshot(
         }
         const result = results.get(block.id);
         if (!result) continue;
-        const output = toolResultOutput(result);
-        const failed = result.is_error === true;
+        const output = toolResultOutput(result.block);
+        const failed = result.block.is_error === true;
+        const toolDurationMs = elapsedMs(message.timestampMs, result.timestampMs);
         const toolOutcome: HostItemOutcome = failed
           ? {
               status: "failed",
@@ -493,7 +556,8 @@ export function mapClaudeSubagentSnapshot(
               itemId,
               command: block.input.command,
               ...(output ? { output } : {}),
-              exitCode: result ? (failed ? 1 : 0) : null,
+              ...(toolDurationMs !== undefined ? { durationMs: toolDurationMs } : {}),
+              exitCode: failed ? 1 : 0,
             },
             outcome: toolOutcome,
           });
@@ -507,6 +571,7 @@ export function mapClaudeSubagentSnapshot(
             toolName: block.name,
             arguments: argumentsResult.success ? argumentsResult.data : null,
             ...(output ? { output: { content: [{ type: "text" as const, text: output }] } } : {}),
+            ...(toolDurationMs !== undefined ? { durationMs: toolDurationMs } : {}),
           },
           outcome: toolOutcome,
         });
@@ -533,6 +598,8 @@ export function mapClaudeSubagentSnapshot(
             }),
           }
         : {}),
+      ...(startedAtMs !== undefined ? { startedAtMs } : {}),
+      ...(completedAtMs !== undefined ? { completedAtMs } : {}),
       input: user
         ? visibleUserTextParts(user).map((text) => ({ type: "text", text }))
         : turns.length === 0

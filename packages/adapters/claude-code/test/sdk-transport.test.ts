@@ -34,6 +34,12 @@ class FakeQuery {
       totalTokens: number;
       maxTokens: number;
       model: string;
+      apiUsage?: {
+        input_tokens?: number;
+        output_tokens?: number;
+        cache_creation_input_tokens?: number;
+        cache_read_input_tokens?: number;
+      } | null;
     }> => ({
       totalTokens: 40,
       maxTokens: 200,
@@ -202,6 +208,59 @@ describe("ClaudeSdkTransport context Usage", () => {
 
     value.fakeQuery.getContextUsage.mockRejectedValueOnce(new Error("context unavailable"));
     await expect(value.transport.getContextUsage()).rejects.toThrow("context unavailable");
+    await value.transport.close();
+  });
+
+  it("restores session-cumulative apiUsage and ignores a null or malformed observation", async () => {
+    const value = fixture();
+    await value.transport.start();
+
+    value.fakeQuery.getContextUsage.mockResolvedValueOnce({
+      totalTokens: 40,
+      maxTokens: 200,
+      model: "runtime-model",
+      apiUsage: {
+        input_tokens: 100,
+        output_tokens: 20,
+        cache_creation_input_tokens: 30,
+        cache_read_input_tokens: 70,
+      },
+    });
+    await expect(value.transport.getContextUsage()).resolves.toEqual({
+      usedTokens: 40,
+      maxTokens: 200,
+      model: "runtime-model",
+      apiUsage: {
+        inputTokens: 100,
+        outputTokens: 20,
+        cacheCreationInputTokens: 30,
+        cacheReadInputTokens: 70,
+      },
+    });
+
+    value.fakeQuery.getContextUsage.mockResolvedValueOnce({
+      totalTokens: 40,
+      maxTokens: 200,
+      model: "runtime-model",
+      apiUsage: null,
+    });
+    await expect(value.transport.getContextUsage()).resolves.toEqual({
+      usedTokens: 40,
+      maxTokens: 200,
+      model: "runtime-model",
+    });
+
+    value.fakeQuery.getContextUsage.mockResolvedValueOnce({
+      totalTokens: 40,
+      maxTokens: 200,
+      model: "runtime-model",
+      apiUsage: { input_tokens: -1, output_tokens: 0 },
+    });
+    await expect(value.transport.getContextUsage()).resolves.toEqual({
+      usedTokens: 40,
+      maxTokens: 200,
+      model: "runtime-model",
+    });
     await value.transport.close();
   });
 });
@@ -474,6 +533,62 @@ describe("ClaudeSdkTransport text reconciliation", () => {
     expect(value.onFault).not.toHaveBeenCalled();
     await value.transport.close();
   });
+
+  it("sends image Turn input as an SDK content-block array", async () => {
+    const value = fixture();
+    await value.transport.start();
+    const prompt = value.queryInput().prompt;
+    if (typeof prompt === "string" || prompt === undefined) {
+      throw new Error("SDK image prompt stream was not configured");
+    }
+    const iterator = prompt[Symbol.asyncIterator]();
+
+    const turn = value.transport.runTurn(
+      [
+        { type: "text", text: "What is in this image?" },
+        { type: "image", mimeType: "image/png", base64Data: "AAAA" },
+      ],
+      "00000000-0000-4000-8000-000000000046",
+      () => undefined,
+    );
+    expect((await iterator.next()).value).toMatchObject({
+      type: "user",
+      uuid: "00000000-0000-4000-8000-000000000046",
+      message: {
+        role: "user",
+        content: [
+          { type: "text", text: "What is in this image?" },
+          { type: "image", source: { type: "base64", media_type: "image/png", data: "AAAA" } },
+        ],
+      },
+    });
+    completeTurn(value.fakeQuery);
+    await expect(turn).resolves.toEqual({ status: "succeeded" });
+    await value.transport.close();
+  });
+
+  it("sends plain text Turn input as a bare string", async () => {
+    const value = fixture();
+    await value.transport.start();
+    const prompt = value.queryInput().prompt;
+    if (typeof prompt === "string" || prompt === undefined) {
+      throw new Error("SDK text prompt stream was not configured");
+    }
+    const iterator = prompt[Symbol.asyncIterator]();
+
+    const turn = value.transport.runTurn(
+      "just text",
+      "00000000-0000-4000-8000-000000000047",
+      () => undefined,
+    );
+    expect((await iterator.next()).value).toMatchObject({
+      type: "user",
+      message: { role: "user", content: "just text" },
+    });
+    completeTurn(value.fakeQuery);
+    await expect(turn).resolves.toEqual({ status: "succeeded" });
+    await value.transport.close();
+  });
 });
 
 describe("ClaudeSdkTransport Tool interpretation", () => {
@@ -743,17 +858,27 @@ describe("ClaudeSdkTransport autonomous task continuation", () => {
     expect(autonomous[0]).toMatchObject({
       nativeTurnKey: "00000000-0000-4000-8000-000000000040",
       result: { status: "succeeded" },
+      startedAtMs: expect.any(Number),
+      completedAtMs: expect.any(Number),
       events: [
         {
           type: "subagent.settled",
           nativeSubagentId: "native-agent-1",
           status: "completed",
           resultSummary: "Analysis complete",
+          observedAtMs: expect.any(Number),
         },
-        { type: "text.delta", delta: "Background analysis result" },
-        { type: "message.completed" },
+        {
+          type: "text.delta",
+          delta: "Background analysis result",
+          observedAtMs: expect.any(Number),
+        },
+        { type: "message.completed", observedAtMs: expect.any(Number) },
       ],
     });
+    expect(autonomous[0]?.completedAtMs ?? 0).toBeGreaterThanOrEqual(
+      autonomous[0]?.startedAtMs ?? 0,
+    );
     await value.transport.close();
   });
 
@@ -783,12 +908,15 @@ describe("ClaudeSdkTransport autonomous task continuation", () => {
     completeTurn(value.fakeQuery);
 
     await vi.waitFor(() => expect(autonomous).toHaveLength(1));
-    expect(autonomous[0]?.events.filter((event) => event.type === "subagent.settled")).toEqual([
+    expect(
+      autonomous[0]?.events.filter((event) => event.type === "subagent.settled"),
+    ).toMatchObject([
       {
         type: "subagent.settled",
         nativeSubagentId: "a78414260bd2f9554",
         status: "failed",
         resultSummary: "Agent failed",
+        observedAtMs: expect.any(Number),
       },
     ]);
     await value.transport.close();

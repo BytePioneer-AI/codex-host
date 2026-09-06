@@ -525,6 +525,83 @@ describe("Claude history mapping", () => {
     });
   });
 
+  it("projects Turn and Item timings from main-session transcript timestamps", () => {
+    const base = Date.parse("2026-01-01T00:00:00.000Z");
+    const history = [
+      { ...message("user", "user-1", "inspect"), timestamp: "2026-01-01T00:00:00.000Z" },
+      {
+        ...message("assistant", "assistant-1", [
+          { type: "thinking", thinking: "check", signature: "ignored" },
+          { type: "text", text: "checking" },
+          { type: "tool_use", id: "read-1", name: "Read", input: {} },
+        ]),
+        timestamp: "2026-01-01T00:00:01.000Z",
+      },
+      {
+        ...message("user", "tool-result-1", [
+          { type: "tool_result", tool_use_id: "read-1", content: "data" },
+        ]),
+        timestamp: "2026-01-01T00:00:03.000Z",
+      },
+      {
+        ...message("assistant", "assistant-2", [{ type: "text", text: "done" }]),
+        timestamp: "2026-01-01T00:00:05.000Z",
+      },
+    ];
+
+    const snapshot = mapClaudeSnapshot(history, sessionId);
+    expect(snapshot.turns[0]).toMatchObject({
+      startedAtMs: base,
+      completedAtMs: base + 5_000,
+      items: [
+        // reasoning/agentMessage: next record (+3s) − own (+1s)
+        { item: { type: "reasoning", text: "check", durationMs: 2_000 } },
+        { item: { type: "agentMessage", text: "checking", durationMs: 2_000 } },
+        // toolExecution: tool_result (+3s) − tool_use message (+1s)
+        { item: { type: "toolExecution", toolName: "Read", durationMs: 2_000 } },
+        // final agentMessage has no following record → no duration
+        { item: { type: "agentMessage", text: "done" } },
+      ],
+    });
+    expect(snapshot.turns[0]?.items[3]?.item).not.toHaveProperty("durationMs");
+  });
+
+  it("projects Subagent Turn and Item timings from transcript timestamps", () => {
+    const base = Date.parse("2026-01-01T00:00:00.000Z");
+    const history = [
+      { ...message("user", "sub-user", "inspect"), timestamp: "2026-01-01T00:00:00.000Z" },
+      {
+        ...message("assistant", "sub-a1", [
+          { type: "thinking", thinking: "check", signature: "ignored" },
+          { type: "tool_use", id: "bash-1", name: "Bash", input: { command: "pwd" } },
+        ]),
+        timestamp: "2026-01-01T00:00:02.000Z",
+      },
+      {
+        ...message("user", "sub-result", [
+          { type: "tool_result", tool_use_id: "bash-1", content: "/work" },
+        ]),
+        timestamp: "2026-01-01T00:00:04.000Z",
+      },
+      {
+        ...message("assistant", "sub-a2", [{ type: "text", text: "done" }]),
+        timestamp: "2026-01-01T00:00:06.000Z",
+      },
+    ];
+
+    const snapshot = mapClaudeSubagentSnapshot(history, sessionId, "native-agent-1");
+    expect(snapshot.turns[0]).toMatchObject({
+      startedAtMs: base,
+      completedAtMs: base + 6_000,
+      items: [
+        { item: { type: "reasoning", text: "check", durationMs: 2_000 } },
+        { item: { type: "commandExecution", command: "pwd", durationMs: 2_000 } },
+        { item: { type: "agentMessage", text: "done" } },
+      ],
+    });
+    expect(snapshot.turns[0]?.items[2]?.item).not.toHaveProperty("durationMs");
+  });
+
   it("rejects mismatched Sessions and duplicate native message identities", () => {
     const wrongSession = { ...message("user", "user-1", "first"), session_id: "other" };
     expect(() => mapClaudeSnapshot([wrongSession], sessionId)).toThrow("invalid message identity");

@@ -21,6 +21,7 @@ import type {
   ClaudeApprovalRequest,
   ClaudeApprovalSuggestionScope,
   ClaudeAutonomousTurn,
+  ClaudeAutonomousTurnEvent,
   ClaudeIdleTurnHandler,
   ClaudeInteractionRequest,
   ClaudeInteractionResponse,
@@ -30,6 +31,7 @@ import type {
   ClaudeTransportContextUsage,
   ClaudeTransportTurnResult,
   ClaudeTurnEvent,
+  ClaudeTurnInput,
   ClaudeTurnTransport,
 } from "./transport.js";
 
@@ -148,6 +150,34 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+function safeNonNegativeInteger(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+}
+
+/**
+ * Builds the Claude Agent SDK user-message content. Plain text stays a bare
+ * string; a Turn carrying images becomes a content-block array so the SDK
+ * receives `{type:"image",source:{type:"base64",media_type,data}}` blocks after
+ * the text block. `mimeType` is Host-provided, so the array is asserted into
+ * the SDK's narrower `media_type` literal union.
+ */
+function userMessageContent(input: ClaudeTurnInput): SDKUserMessage["message"]["content"] {
+  if (typeof input === "string") return input;
+  const blocks = input.map((part) =>
+    part.type === "text"
+      ? { type: "text" as const, text: part.text }
+      : {
+          type: "image" as const,
+          source: {
+            type: "base64" as const,
+            media_type: part.mimeType,
+            data: part.base64Data,
+          },
+        },
+  );
+  return blocks as SDKUserMessage["message"]["content"];
+}
+
 function permissionModeFromMessage(value: unknown): ClaudePermissionMode | undefined {
   if (
     !isRecord(value) ||
@@ -159,6 +189,25 @@ function permissionModeFromMessage(value: unknown): ClaudePermissionMode | undef
     return undefined;
   }
   return isClaudePermissionMode(value.permissionMode) ? value.permissionMode : undefined;
+}
+
+function parseContextApiUsage(value: unknown): ClaudeTransportContextUsage["apiUsage"] | undefined {
+  // The SDK reports apiUsage as nullable; a missing or malformed observation
+  // simply leaves the cumulative cache projection unavailable.
+  if (!isRecord(value)) return undefined;
+  const inputTokens = value.input_tokens;
+  const outputTokens = value.output_tokens;
+  const cacheCreationInputTokens = value.cache_creation_input_tokens;
+  const cacheReadInputTokens = value.cache_read_input_tokens;
+  if (
+    !safeNonNegativeInteger(inputTokens) ||
+    !safeNonNegativeInteger(outputTokens) ||
+    !safeNonNegativeInteger(cacheCreationInputTokens) ||
+    !safeNonNegativeInteger(cacheReadInputTokens)
+  ) {
+    return undefined;
+  }
+  return { inputTokens, outputTokens, cacheCreationInputTokens, cacheReadInputTokens };
 }
 
 function parseContextUsage(value: unknown): ClaudeTransportContextUsage {
@@ -179,7 +228,8 @@ function parseContextUsage(value: unknown): ClaudeTransportContextUsage {
   ) {
     throw new Error("Claude SDK context Usage contains invalid values");
   }
-  return { usedTokens, maxTokens, model };
+  const apiUsage = parseContextApiUsage(value.apiUsage);
+  return { usedTokens, maxTokens, model, ...(apiUsage ? { apiUsage } : {}) };
 }
 
 function parseQuestions(input: Record<string, unknown>): ClaudeQuestion[] | null {
@@ -355,8 +405,10 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
   #active: ActiveTurn | null = null;
   #autonomous: {
     accumulator: ClaudeNativeTurnAccumulator;
-    events: ClaudeTurnEvent[];
+    events: ClaudeAutonomousTurnEvent[];
     nativeTurnKey: string | null;
+    /** Wall-clock observation of the first buffered native message. */
+    startedAtMs: number;
   } | null = null;
   #autonomousTurnHandler: ((turn: ClaudeAutonomousTurn) => void) | null = null;
   #idleHandler: ClaudeIdleTurnHandler | null = null;
@@ -516,7 +568,7 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
   }
 
   runTurn(
-    text: string,
+    input: ClaudeTurnInput,
     userMessageId: string,
     onEvent: (event: ClaudeTurnEvent) => void,
   ): Promise<ClaudeTransportTurnResult> {
@@ -538,7 +590,7 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
     });
     this.#input.push({
       type: "user",
-      message: { role: "user", content: text },
+      message: { role: "user", content: userMessageContent(input) },
       parent_tool_use_id: null,
       session_id: this.sessionId,
       uuid: userMessageId as `${string}-${string}-${string}-${string}-${string}`,
@@ -812,6 +864,7 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
           continue;
         }
         if (!this.#autonomousTurnHandler) continue;
+        const observedAtMs = Date.now();
         const autonomous =
           this.#autonomous ??
           (this.#autonomous = {
@@ -820,6 +873,7 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
             ),
             events: [],
             nativeTurnKey: null,
+            startedAtMs: observedAtMs,
           });
         if (
           autonomous.nativeTurnKey === null &&
@@ -832,7 +886,7 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
           autonomous.nativeTurnKey = message.uuid;
         }
         const interpreted = autonomous.accumulator.consume(message);
-        autonomous.events.push(...interpreted.events);
+        for (const event of interpreted.events) autonomous.events.push({ ...event, observedAtMs });
         if (interpreted.terminal) {
           this.#autonomous = null;
           const nativeTurnKey = autonomous.nativeTurnKey ?? `autonomous-${Date.now()}`;
@@ -840,6 +894,8 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
             nativeTurnKey,
             events: autonomous.events,
             result: interpreted.terminal,
+            startedAtMs: autonomous.startedAtMs,
+            completedAtMs: observedAtMs,
           });
         }
       }

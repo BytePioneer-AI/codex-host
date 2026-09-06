@@ -26,6 +26,7 @@ import type {
   ClaudeTransportContextUsage,
   ClaudeTransportTurnResult,
   ClaudeTurnEvent,
+  ClaudeTurnInput,
   ClaudeTurnTransport,
 } from "../src/transport.js";
 
@@ -69,7 +70,7 @@ class FakeClaudeTransport implements ClaudeTurnTransport {
     [];
   readonly initCalls: string[] = [];
   readonly recapCalls: string[] = [];
-  readonly turns: Array<{ text: string; userMessageId: string }> = [];
+  readonly turns: Array<{ text: string; input: ClaudeTurnInput; userMessageId: string }> = [];
   #assistantMessageId: string | null = null;
   #active:
     | {
@@ -135,11 +136,15 @@ class FakeClaudeTransport implements ClaudeTurnTransport {
   }
 
   runTurn(
-    text: string,
+    input: ClaudeTurnInput,
     userMessageId: string,
     onEvent: (event: ClaudeTurnEvent) => void,
   ): Promise<ClaudeTransportTurnResult> {
-    this.turns.push({ text, userMessageId });
+    const text =
+      typeof input === "string"
+        ? input
+        : input.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("\n");
+    this.turns.push({ text, input, userMessageId });
     this.#assistantMessageId = null;
     return new Promise((resolve, reject) => {
       this.#active = { onEvent, resolve, reject };
@@ -510,6 +515,7 @@ describe("Claude Code HarnessAdapter", () => {
           selectThinkingOption: true,
           selectPermissionMode: true,
         },
+        input: { image: true },
         history: { fork: true, forkAcrossCwd: false, rollbackLastTurn: true },
         subagents: { observe: true, readTranscript: true },
       },
@@ -531,6 +537,7 @@ describe("Claude Code HarnessAdapter", () => {
         selectPermissionMode: true,
         permissionModeScope: "live",
       },
+      input: { image: true },
       history: { fork: true, forkAcrossCwd: false, rollbackLastTurn: true },
       subagents: { observe: true, readTranscript: true },
     });
@@ -2006,6 +2013,90 @@ describe("Claude Code HarnessAdapter", () => {
     await session.close();
   });
 
+  it("holds a foreground spawn whose launch Tool Result reports it went async", async () => {
+    const { adapter, transports } = fixture();
+    const session = await openSession(adapter);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+
+    await session.execute(textTurn("delegate in foreground"));
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    const transport = transports[0];
+    if (!transport) throw new Error("Fake Claude transport was not created");
+    // A foreground spawn is not occupied when it starts.
+    transport.event({
+      type: "subagent.started",
+      operation: "spawn",
+      callId: "agent-fg",
+      description: "Inspect implementation",
+      background: false,
+    });
+    await nextEvent(iterator);
+    // Its launch Tool Result then reports the agent is working in the background.
+    transport.event({
+      type: "subagent.completed",
+      callId: "agent-fg",
+      isError: false,
+      continuesInBackground: true,
+      nativeSubagentId: "native-agent-fg",
+      resultSummary: "Async agent launched successfully",
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.updated",
+      update: { type: "subagents.replace", subagents: [{ status: "running" }] },
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.completed",
+      snapshot: { item: { type: "subagentDelegation", subagents: [{ status: "running" }] } },
+    });
+    transport.finish({ status: "succeeded" });
+    // The Turn is held for the async agent even though it was never occupied at
+    // start: occupySpawn() on the async ack holds it where bind() would not.
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.completed",
+      snapshot: { item: { type: "agentMessage" } },
+    });
+    await expect(session.execute(textTurn("follow-up"))).resolves.toMatchObject({
+      ok: false,
+      error: { code: "sessionBusy" },
+    });
+    transport.autonomousTurnHandler?.({
+      nativeTurnKey: "task-notification-fg",
+      events: [
+        {
+          type: "subagent.settled",
+          nativeSubagentId: "native-agent-fg",
+          status: "completed",
+          resultSummary: "Inspection complete",
+        },
+        { type: "text.delta", messageId: "fg-continuation", delta: "Inspection complete" },
+        { type: "message.completed", messageId: "fg-continuation" },
+      ],
+      result: { status: "succeeded" },
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "subagent.state.changed",
+      nativeSubagentId: "native-agent-fg",
+      status: "completed",
+    });
+    expect(await nextEvent(iterator)).toMatchObject({ type: "item.started" });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.updated",
+      update: { type: "text.append", text: "Inspection complete" },
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.completed",
+      snapshot: { item: { type: "agentMessage", text: "Inspection complete" } },
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "turn.completed",
+      outcome: { status: "succeeded" },
+      nativeTurnRef: { nativeTurnKey: transport.turns[0]?.userMessageId },
+    });
+    await session.close();
+  });
+
   it("cancels a held Root Turn without waiting for background Subagents", async () => {
     const { adapter, transports } = fixture();
     const session = await openSession(adapter);
@@ -2204,6 +2295,58 @@ describe("Claude Code HarnessAdapter", () => {
       type: "turn.completed",
       outcome: { status: "succeeded" },
       nativeTurnRef: { nativeTurnKey: "task-notification-1" },
+    });
+    await session.close();
+  });
+
+  it("projects native timing for a replayed autonomous Root Turn", async () => {
+    const { adapter, transports } = fixture();
+    const session = await openSession(adapter);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+
+    await session.execute(textTurn("background-timed"));
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    const transport = transports[0];
+    if (!transport) throw new Error("Fake Claude transport was not created");
+    transport.finish({ status: "succeeded" });
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+
+    transport.autonomousTurnHandler?.({
+      nativeTurnKey: "task-notification-timed",
+      startedAtMs: 1_000,
+      completedAtMs: 5_000,
+      events: [
+        { type: "text.delta", messageId: "timed-assistant", delta: "Result", observedAtMs: 2_000 },
+        { type: "message.completed", messageId: "timed-assistant", observedAtMs: 4_000 },
+      ],
+      result: { status: "succeeded" },
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "turn.autonomous.started",
+      input: [],
+      startedAtMs: 1_000,
+    });
+    expect(await nextEvent(iterator)).toMatchObject({ type: "turn.started" });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.started",
+      item: { type: "agentMessage", text: "" },
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.updated",
+      update: { type: "text.append", text: "Result" },
+    });
+    // agentMessage durationMs = completing observation (4000) − first delta (2000).
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.completed",
+      snapshot: { item: { type: "agentMessage", text: "Result", durationMs: 2_000 } },
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "turn.completed",
+      outcome: { status: "succeeded" },
+      completedAtMs: 5_000,
     });
     await session.close();
   });
@@ -3310,7 +3453,13 @@ describe("Claude Code HarnessAdapter", () => {
     });
     expect(await nextEvent(iterator)).toMatchObject({
       type: "session.usage.changed",
-      usage: { cacheHitRatePercent: 70, inputTokens: 100, outputTokens: 5 },
+      usage: {
+        cacheHitRatePercent: 70,
+        inputTokens: 10,
+        cachedInputTokens: 70,
+        cacheWriteInputTokens: 20,
+        outputTokens: 5,
+      },
     });
 
     transport.event({
@@ -3364,7 +3513,13 @@ describe("Claude Code HarnessAdapter", () => {
     const estimate = await nextEvent(iterator);
     expect(estimate).toMatchObject({
       type: "session.usage.changed",
-      usage: { inputTokens: 100, outputTokens: 5, cacheHitRatePercent: 70 },
+      usage: {
+        inputTokens: 10,
+        cachedInputTokens: 70,
+        cacheWriteInputTokens: 20,
+        outputTokens: 5,
+        cacheHitRatePercent: 70,
+      },
     });
     transport.event({
       type: "message.completed",
@@ -3377,8 +3532,13 @@ describe("Claude Code HarnessAdapter", () => {
       type: "usage.result",
       totalCostUsd: 1.373,
       modelUsage: [
-        { inputTokens: 100, outputTokens: 40 },
-        { inputTokens: 20, outputTokens: 5 },
+        {
+          inputTokens: 100,
+          outputTokens: 40,
+          cacheReadInputTokens: 60,
+          cacheCreationInputTokens: 5,
+        },
+        { inputTokens: 20, outputTokens: 5, cacheReadInputTokens: 10, cacheCreationInputTokens: 0 },
       ],
       lastRequestUsage: {
         inputTokens: 10,
@@ -3393,6 +3553,8 @@ describe("Claude Code HarnessAdapter", () => {
       usage: {
         totalCostUsd: 1.373,
         inputTokens: 120,
+        cachedInputTokens: 70,
+        cacheWriteInputTokens: 5,
         outputTokens: 45,
         cacheHitRatePercent: 99,
       },
@@ -3447,10 +3609,10 @@ describe("Claude Code HarnessAdapter", () => {
       },
     });
     expect(await nextEvent(iteratorA)).toMatchObject({
-      usage: { inputTokens: 100, outputTokens: 1, cacheHitRatePercent: 90 },
+      usage: { inputTokens: 10, cachedInputTokens: 90, outputTokens: 1, cacheHitRatePercent: 90 },
     });
     expect(await nextEvent(iteratorB)).toMatchObject({
-      usage: { inputTokens: 100, outputTokens: 7, cacheHitRatePercent: 20 },
+      usage: { inputTokens: 80, cachedInputTokens: 20, outputTokens: 7, cacheHitRatePercent: 20 },
     });
 
     transportA.finish({ status: "succeeded" });
@@ -3628,7 +3790,13 @@ describe("Claude Code HarnessAdapter", () => {
       await vi.advanceTimersByTimeAsync(100);
       expect(await nextEvent(iterator)).toMatchObject({
         type: "session.usage.changed",
-        usage: { cacheHitRatePercent: 70, inputTokens: 100, outputTokens: 2 },
+        usage: {
+          cacheHitRatePercent: 70,
+          inputTokens: 10,
+          cachedInputTokens: 70,
+          cacheWriteInputTokens: 20,
+          outputTokens: 2,
+        },
       });
       transport.finish({ status: "succeeded" });
       for (;;) {
@@ -3640,12 +3808,12 @@ describe("Claude Code HarnessAdapter", () => {
     }
   });
 
-  it("omits cache hit rate when last-request cache fields are incomplete", async () => {
+  it("falls back to session-cumulative cache hit rate when the Result omits last-request Usage", async () => {
     const { adapter, transports } = fixture();
     const session = await openSession(adapter);
     const iterator = session.outputs[Symbol.asyncIterator]();
 
-    await session.execute(textTurn("usage-incomplete-cache"));
+    await session.execute(textTurn("usage-cumulative-cache"));
     await nextEvent(iterator);
     await nextEvent(iterator);
     await nextEvent(iterator);
@@ -3654,16 +3822,125 @@ describe("Claude Code HarnessAdapter", () => {
     transport.event({
       type: "usage.result",
       totalCostUsd: 0.5,
-      modelUsage: [{ inputTokens: 10, outputTokens: 2 }],
+      modelUsage: [
+        {
+          inputTokens: 10,
+          outputTokens: 2,
+          cacheReadInputTokens: 30,
+          cacheCreationInputTokens: 10,
+        },
+      ],
     });
     expect(await nextEvent(iterator)).toEqual({
       type: "session.usage.changed",
-      observedForTurnId: "usage-incomplete-cache",
-      usage: { totalCostUsd: 0.5, inputTokens: 10, outputTokens: 2 },
+      observedForTurnId: "usage-cumulative-cache",
+      usage: {
+        totalCostUsd: 0.5,
+        inputTokens: 10,
+        cachedInputTokens: 30,
+        cacheWriteInputTokens: 10,
+        outputTokens: 2,
+        cacheHitRatePercent: 60,
+      },
     });
     transport.finish({ status: "succeeded" });
     expect((await nextEvent(iterator)).type).toBe("item.completed");
     expect((await nextEvent(iterator)).type).toBe("turn.completed");
+    await session.close();
+  });
+
+  it("withholds cache hit rate on a cold cache write until a real measurement arrives", async () => {
+    const { adapter, transports } = fixture();
+    const session = await openSession(adapter);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+
+    await session.execute(textTurn("cold-write"));
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    const transport = transports[0];
+    if (!transport) throw new Error("Fake Claude transport was not created");
+
+    // A cold write (cache created, none read) is not a hit-rate measurement, so
+    // the 0% it would compute is withheld while no rate has been published yet.
+    transport.event({
+      type: "message.completed",
+      messageId: "assistant-cold",
+      lastRequestUsage: {
+        requestId: "request-cold",
+        inputTokens: 10,
+        outputTokens: 5,
+        cacheCreationInputTokens: 20,
+        cacheReadInputTokens: 0,
+      },
+    });
+    expect(await nextEvent(iterator)).toEqual({
+      type: "session.usage.changed",
+      observedForTurnId: "cold-write",
+      usage: {
+        inputTokens: 10,
+        cachedInputTokens: 0,
+        cacheWriteInputTokens: 20,
+        outputTokens: 5,
+      },
+    });
+
+    // The next request reads from cache: a real measurement publishes normally.
+    transport.event({
+      type: "message.completed",
+      messageId: "assistant-warm",
+      lastRequestUsage: {
+        requestId: "request-warm",
+        inputTokens: 10,
+        outputTokens: 5,
+        cacheCreationInputTokens: 0,
+        cacheReadInputTokens: 40,
+      },
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "session.usage.changed",
+      usage: { cacheHitRatePercent: 80, cachedInputTokens: 40 },
+    });
+    transport.finish({ status: "succeeded" });
+    for (;;) {
+      if ((await nextEvent(iterator)).type === "turn.completed") break;
+    }
+    await session.close();
+  });
+
+  it("restores cache hit rate from context apiUsage when no request measurement exists", async () => {
+    const { adapter, transports } = fixture();
+    const session = await openSession(adapter);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+
+    await session.execute(textTurn("context-api-usage"));
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    const transport = transports[0];
+    if (!transport) throw new Error("Fake Claude transport was not created");
+    transport.contextUsage = {
+      usedTokens: 80,
+      maxTokens: 200,
+      model: "runtime-default",
+      apiUsage: {
+        inputTokens: 100,
+        outputTokens: 0,
+        cacheCreationInputTokens: 50,
+        cacheReadInputTokens: 50,
+      },
+    };
+
+    await session.refreshUsage?.();
+    expect(await nextEvent(iterator)).toEqual({
+      type: "session.usage.changed",
+      observedForTurnId: "context-api-usage",
+      usage: { contextUsedTokens: 80, contextWindowTokens: 200, cacheHitRatePercent: 25 },
+    });
+    transport.finish({ status: "succeeded" });
+    for (;;) {
+      if ((await nextEvent(iterator)).type === "turn.completed") break;
+    }
     await session.close();
   });
 
@@ -3916,6 +4193,65 @@ describe("Claude Code HarnessAdapter", () => {
     expect(transports[0]?.start).toHaveBeenCalledOnce();
     expect(transports[0]?.turns.map(({ text }) => text)).toEqual(["turn-1", "turn-2"]);
     expect(new Set(transports[0]?.turns.map(({ userMessageId }) => userMessageId)).size).toBe(2);
+    await session.close();
+  });
+
+  it("forwards image Turn input to the transport as content parts", async () => {
+    const { adapter, transports } = fixture();
+    const session = await openSession(adapter);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+
+    await session.execute({
+      type: "turn.start",
+      turnId: hostTurnIdSchema.parse("image-turn"),
+      input: [
+        { type: "text", text: "What is in this image?" },
+        { type: "image", mimeType: "image/png", base64Data: "AAAA", sourcePath: "/tmp/a.png" },
+      ],
+    });
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    // sourcePath is a Host-side detail and is not forwarded to the SDK.
+    expect(transports[0]?.turns[0]?.input).toEqual([
+      { type: "text", text: "What is in this image?" },
+      { type: "image", mimeType: "image/png", base64Data: "AAAA" },
+    ]);
+    expect(transports[0]?.turns[0]?.text).toBe("What is in this image?");
+    transports[0]?.finish({ status: "succeeded" });
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    await session.close();
+  });
+
+  it("accepts an image-only Turn and rejects one with neither text nor image", async () => {
+    const { adapter, transports } = fixture();
+    const session = await openSession(adapter);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+
+    await expect(
+      session.execute({
+        type: "turn.start",
+        turnId: hostTurnIdSchema.parse("empty-turn"),
+        input: [],
+      }),
+    ).resolves.toMatchObject({ ok: false, error: { code: "invalidRequest" } });
+
+    await session.execute({
+      type: "turn.start",
+      turnId: hostTurnIdSchema.parse("image-only"),
+      input: [{ type: "image", mimeType: "image/png", base64Data: "AAAA" }],
+    });
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    expect(transports[0]?.turns[0]?.input).toEqual([
+      { type: "image", mimeType: "image/png", base64Data: "AAAA" },
+    ]);
+    expect(transports[0]?.turns[0]?.text).toBe("");
+    transports[0]?.finish({ status: "succeeded" });
+    await nextEvent(iterator);
+    await nextEvent(iterator);
     await session.close();
   });
 

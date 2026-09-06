@@ -138,7 +138,12 @@ export type ClaudeTurnEvent =
   | {
       type: "usage.result";
       totalCostUsd?: number;
-      modelUsage?: Array<{ inputTokens: number; outputTokens: number }>;
+      modelUsage?: Array<{
+        inputTokens: number;
+        outputTokens: number;
+        cacheReadInputTokens: number;
+        cacheCreationInputTokens: number;
+      }>;
       lastRequestUsage?: ClaudeLastRequestUsage;
     };
 
@@ -146,6 +151,13 @@ export interface ClaudeTransportContextUsage {
   usedTokens: number;
   maxTokens: number;
   model: string;
+  /** Session-cumulative API token usage from the context-usage control response, when reported. */
+  apiUsage?: {
+    inputTokens: number;
+    outputTokens: number;
+    cacheCreationInputTokens: number;
+    cacheReadInputTokens: number;
+  };
 }
 
 export interface ClaudePlanLimitWindow {
@@ -162,9 +174,23 @@ export interface ClaudePlanLimitEvent {
   sevenDay?: ClaudePlanLimitWindow;
 }
 
+/**
+ * A buffered native Turn event plus the wall-clock time the producing native
+ * message was observed. Multiple events from one message share its time.
+ */
+export type ClaudeAutonomousTurnEvent = ClaudeTurnEvent & { observedAtMs?: number };
+
 export interface ClaudeAutonomousTurn {
   nativeTurnKey: string;
-  events: ClaudeTurnEvent[];
+  /**
+   * Unix epoch milliseconds when the first native message of this buffered work
+   * was observed. Replayed turns publish it so projected durations reflect
+   * native time instead of replay time.
+   */
+  startedAtMs?: number;
+  /** Unix epoch milliseconds when the terminal native message was observed. */
+  completedAtMs?: number;
+  events: ClaudeAutonomousTurnEvent[];
   result: ClaudeTransportTurnResult;
 }
 
@@ -172,6 +198,12 @@ export interface ClaudeIdleTurnHandler {
   onEvent(event: ClaudeTurnEvent): void;
   onTerminal(result: ClaudeTransportTurnResult): void;
 }
+
+export type ClaudeTurnInputPart =
+  { type: "text"; text: string } | { type: "image"; mimeType: string; base64Data: string };
+
+/** Slash-command text, or Host Turn input parts when the Turn carries images. */
+export type ClaudeTurnInput = string | ClaudeTurnInputPart[];
 
 export interface ClaudeTurnTransport {
   readonly sessionId: string;
@@ -198,7 +230,7 @@ export interface ClaudeTurnTransport {
     onEvent: (event: ClaudeTurnEvent) => void,
   ): Promise<ClaudeTransportTurnResult>;
   runTurn(
-    text: string,
+    input: ClaudeTurnInput,
     userMessageId: string,
     onEvent: (event: ClaudeTurnEvent) => void,
   ): Promise<ClaudeTransportTurnResult>;

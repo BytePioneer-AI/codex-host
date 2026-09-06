@@ -4,7 +4,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { mapClaudeSnapshot } from "../src/claude-history.js";
-import { readClaudeTranscript } from "../src/claude-transcript.js";
+import { readClaudeSubagentTranscript, readClaudeTranscript } from "../src/claude-transcript.js";
 
 const directories: string[] = [];
 
@@ -88,5 +88,106 @@ describe("Claude transcript reader", () => {
         items: [{ item: { type: "agentMessage", text: "second response" } }],
       },
     ]);
+  });
+});
+
+describe("Claude subagent transcript reader", () => {
+  it("reads every subagent record in file order with interleaved attachments", async () => {
+    const configDirectory = await mkdtemp(path.join(os.tmpdir(), "codexhost-claude-sub-"));
+    directories.push(configDirectory);
+    const cwd = "/work/project";
+    const sessionId = "session-1";
+    const nativeSubagentId = "native-agent-1";
+    const subagentDirectory = path.join(
+      configDirectory,
+      "projects",
+      projectDirectoryName(cwd),
+      sessionId,
+      "subagents",
+    );
+    await mkdir(subagentDirectory, { recursive: true });
+    await writeFile(
+      path.join(subagentDirectory, `agent-${nativeSubagentId}.jsonl`),
+      [
+        message("user", "sub-user-1", "inspect the directory"),
+        { type: "attachment", uuid: "attachment-1", parentUuid: "sub-user-1" },
+        message("assistant", "sub-assistant-1", [{ type: "text", text: "listing files" }]),
+        message("user", "sub-tool-result", [
+          { type: "tool_result", tool_use_id: "bash-1", content: "a.txt\nb.txt" },
+        ]),
+        message("assistant", "sub-assistant-2", [{ type: "text", text: "found two files" }]),
+      ]
+        .map((entry) => JSON.stringify(entry))
+        .join("\n"),
+      "utf8",
+    );
+
+    const transcript = await readClaudeSubagentTranscript({
+      cwd,
+      environment: { CLAUDE_CONFIG_DIR: configDirectory },
+      sessionId,
+      nativeSubagentId,
+    });
+
+    expect(transcript).toEqual([
+      { ...message("user", "sub-user-1", "inspect the directory"), session_id: sessionId },
+      {
+        ...message("assistant", "sub-assistant-1", [{ type: "text", text: "listing files" }]),
+        session_id: sessionId,
+      },
+      {
+        ...message("user", "sub-tool-result", [
+          { type: "tool_result", tool_use_id: "bash-1", content: "a.txt\nb.txt" },
+        ]),
+        session_id: sessionId,
+      },
+      {
+        ...message("assistant", "sub-assistant-2", [{ type: "text", text: "found two files" }]),
+        session_id: sessionId,
+      },
+    ]);
+  });
+
+  it("falls back to scanning sibling project directories and returns null when absent", async () => {
+    const configDirectory = await mkdtemp(path.join(os.tmpdir(), "codexhost-claude-sub-"));
+    directories.push(configDirectory);
+    const sessionId = "session-2";
+    const nativeSubagentId = "native-agent-2";
+    // The file lives under a project directory name that does not match cwd.
+    const subagentDirectory = path.join(
+      configDirectory,
+      "projects",
+      "some-other-project",
+      sessionId,
+      "subagents",
+    );
+    await mkdir(subagentDirectory, { recursive: true });
+    await writeFile(
+      path.join(subagentDirectory, `agent-${nativeSubagentId}.jsonl`),
+      JSON.stringify(message("assistant", "sub-assistant-only", [{ type: "text", text: "hi" }])),
+      "utf8",
+    );
+
+    const found = await readClaudeSubagentTranscript({
+      cwd: "/work/unmatched",
+      environment: { CLAUDE_CONFIG_DIR: configDirectory },
+      sessionId,
+      nativeSubagentId,
+    });
+    expect(found).toEqual([
+      {
+        ...message("assistant", "sub-assistant-only", [{ type: "text", text: "hi" }]),
+        session_id: sessionId,
+      },
+    ]);
+
+    await expect(
+      readClaudeSubagentTranscript({
+        cwd: "/work/unmatched",
+        environment: { CLAUDE_CONFIG_DIR: configDirectory },
+        sessionId,
+        nativeSubagentId: "missing-agent",
+      }),
+    ).resolves.toBeNull();
   });
 });

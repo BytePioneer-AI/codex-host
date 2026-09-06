@@ -143,11 +143,21 @@ function finiteNonNegativeNumber(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value) && value >= 0;
 }
 
-function parseResultModelUsage(
-  value: unknown,
-): Array<{ inputTokens: number; outputTokens: number }> | undefined {
+function parseResultModelUsage(value: unknown):
+  | Array<{
+      inputTokens: number;
+      outputTokens: number;
+      cacheReadInputTokens: number;
+      cacheCreationInputTokens: number;
+    }>
+  | undefined {
   if (!isRecord(value)) return undefined;
-  const usage: Array<{ inputTokens: number; outputTokens: number }> = [];
+  const usage: Array<{
+    inputTokens: number;
+    outputTokens: number;
+    cacheReadInputTokens: number;
+    cacheCreationInputTokens: number;
+  }> = [];
   for (const entry of Object.values(value)) {
     if (
       !isRecord(entry) ||
@@ -156,7 +166,18 @@ function parseResultModelUsage(
     ) {
       return undefined;
     }
-    usage.push({ inputTokens: entry.inputTokens, outputTokens: entry.outputTokens });
+    usage.push({
+      inputTokens: entry.inputTokens,
+      outputTokens: entry.outputTokens,
+      // Cache totals are optional in older payloads; default to zero so the
+      // session-cumulative cache hit rate can still be derived per entry.
+      cacheReadInputTokens: safeNonNegativeInteger(entry.cacheReadInputTokens)
+        ? entry.cacheReadInputTokens
+        : 0,
+      cacheCreationInputTokens: safeNonNegativeInteger(entry.cacheCreationInputTokens)
+        ? entry.cacheCreationInputTokens
+        : 0,
+    });
   }
   return usage;
 }

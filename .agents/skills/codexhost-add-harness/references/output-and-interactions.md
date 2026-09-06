@@ -30,6 +30,12 @@
 - Tool 失败不自动等于 Turn 失败；Agent 恢复后仍可能成功。按原生最终状态决定 outcome。
 - NativeTurnRef 和 checkpoint 的要求见[身份与历史](thread-lifecycle-and-history.md)。
 
+## 取消与后续 Turn
+
+- `turn.cancel` 返回成功表示取消已受理，不代表旧轮已终结。根据原生可确认的信号关闭旧轮 Interaction、终结 Item，再发布唯一终态；不能为尽快续跑伪造完成。
+- 普通取消保留可继续的 Session 和历史，随后能接受新的 `turn.start`；旧轮回调、输出和取消标记不能污染新轮。若需重建原生执行进程，由 Adapter 按原生恢复语义处理。
+- 取消无法确认或 Session 已不可用时，按公共错误与故障规则报告。区分旧轮终态与原生进程、工具、后台子任务全部退出，明确仍继续运行的范围和限制。
+
 ## 原生内容映射
 
 | 原生内容 | 公共 Item | 必须保留的语义 |
@@ -85,7 +91,7 @@ state/Usage 事件是 Session 级完整状态，不是普通 Item；字段要求
 2. 如果有活动 Turn，发出其唯一失败终态。
 3. 发布唯一 session.faulted，结束输出流，关闭原生资源。
 
-close 同样必须终结活动生命周期且幂等；可恢复的单次操作失败不应无条件升级成 Session fault。普通取消要保留可继续的 Session 和历史。
+close 同样必须终结活动生命周期且幂等；可恢复的单次操作失败不应无条件升级成 Session fault。
 
 ## Autonomous Turn 与原生 Subagent
 
@@ -100,6 +106,7 @@ Subagent 的 observe/readTranscript 分别声明。原生后台子任务可在�
 ## 验收
 
 - 成功/失败/取消/fault/close 的完整顺序；被拒绝的 Turn 无输出；重复开始和迟到事件不会污染下一轮。
+- 支持取消时，验证取消确认与终态先后到达、取消后立即开始下一轮、取消失败/超时，以及迟到输出的隔离；分别覆盖流式输出、工具运行和待处理 Interaction。
 - 每种受支持 Item 的 start/update/complete、交错、内容一致性和输出边界。
 - 原生 Tool 失败后恢复，最终 Turn outcome 仍正确。
 - Interaction 合法/非法/重复/过期/取消响应，以及响应与关闭竞态。

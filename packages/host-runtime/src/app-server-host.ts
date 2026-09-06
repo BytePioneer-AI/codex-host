@@ -95,6 +95,7 @@ import {
   type ExternalThreadLocation,
   type ExternalThreadResolution,
 } from "./external-thread-runtime.js";
+import { ExternalSteerError, ExternalTurnSteering } from "./external-turn-steering.js";
 import {
   DELEGATION_CLI_PATH_ENV,
   DELEGATION_RUNTIME_ENDPOINT_ENV,
@@ -491,6 +492,7 @@ export class AppServerHost {
   #externalAdapters: Map<ExternalHarnessId, HarnessAdapter>;
   #pluginDescriptors: HarnessPluginDescriptor[] = [];
   #externalRuntime: ExternalThreadRuntime;
+  readonly #externalSteering = new ExternalTurnSteering();
   #repository: ExternalThreadRepository;
   #pendingDesktopApprovals = new Map<HostApprovalRequestId, PendingDesktopApproval>();
   #pendingDesktopQuestions = new Map<HostQuestionRequestId, PendingDesktopQuestion>();
@@ -625,6 +627,7 @@ export class AppServerHost {
   close(): void {
     if (this.#closeRequested) return;
     this.#closeRequested = true;
+    this.#externalSteering.close();
     this.#signalActiveWorkChanged();
     this.#options.desktopInput.destroy();
     void this.#codexRuntimePool.close();
@@ -633,6 +636,7 @@ export class AppServerHost {
   disconnect(): void {
     if (this.#closeRequested || this.#desktopInputEnded || this.#drainActiveWorkOnInputEnd) return;
     this.#drainActiveWorkOnInputEnd = true;
+    this.#externalSteering.close();
     const desktopInput = this.#options.desktopInput as Readable & { end?: () => void };
     if (typeof desktopInput.end === "function") desktopInput.end();
     else desktopInput.destroy();
@@ -699,6 +703,7 @@ export class AppServerHost {
       await this.#codexRuntimePool.close();
       return this.#closeRequested ? 0 : 1;
     } finally {
+      this.#externalSteering.close();
       const threads = this.#externalRuntime.values();
       await Promise.allSettled(threads.map(({ session }) => session.close()));
       await Promise.allSettled(threads.map(({ outputTask }) => outputTask));
@@ -731,6 +736,7 @@ export class AppServerHost {
 
   #hasActiveWork(): boolean {
     return (
+      this.#externalSteering.hasPending() ||
       this.#pendingOfficialTurnStarts.size > 0 ||
       this.#activeOfficialTurns.size > 0 ||
       this.#runningSubagentsByParent.size > 0 ||
@@ -1092,6 +1098,18 @@ export class AppServerHost {
           this.#pendingOfficialTurnStarts.set(request.id, threadId);
         }
       }
+      if (request.method === "turn/steer") {
+        const params = requestObject(request);
+        const resolution =
+          typeof params.threadId === "string"
+            ? await this.#resolveExternalThread(params.threadId)
+            : ({ kind: "official" } as const);
+        if (await this.#writeResolutionError(request, resolution)) continue;
+        if (resolution.kind === "external") {
+          this.#dispatchDesktopRequest(() => this.#steerExternalTurn(request, resolution.thread));
+          continue;
+        }
+      }
       if (request.method === "turn/interrupt") {
         const params = requestObject(request);
         const resolution =
@@ -1208,6 +1226,7 @@ export class AppServerHost {
       await this.#forwardOfficialRequest(request, frame);
     }
     this.#desktopInputEnded = true;
+    this.#externalSteering.close();
     if (this.#drainActiveWorkOnInputEnd) await this.#waitForActiveWorkToDrain();
     await this.#codexRuntimePool.close();
   }
@@ -2612,7 +2631,11 @@ export class AppServerHost {
       return;
     }
     const thread = resolution.thread;
-    if (thread.running || this.#pendingExternalCommandRequests.has(thread.id)) {
+    if (
+      thread.running ||
+      this.#externalSteering.hasPending(thread.id) ||
+      this.#pendingExternalCommandRequests.has(thread.id)
+    ) {
       await this.#writer.json(
         rpcError(request, -32072, "External Thread already has an active operation"),
       );
@@ -2678,7 +2701,7 @@ export class AppServerHost {
       );
       return;
     }
-    if (thread.running) {
+    if (thread.running || this.#externalSteering.hasPending(thread.id)) {
       await this.#writer.json(
         rpcError(request, -32072, "External Thread already has an active operation"),
       );
@@ -3526,7 +3549,7 @@ export class AppServerHost {
     text: string,
     requestedTurnId: string,
   ): Promise<void> {
-    if (thread.running) {
+    if (thread.running || this.#externalSteering.hasPending(thread.id)) {
       throw new Error("External Thread already has an active Turn");
     }
     const turnId = hostTurnIdSchema.parse(requestedTurnId);
@@ -3562,7 +3585,11 @@ export class AppServerHost {
   }
 
   async #startExternalTurn(request: JsonRpcRequest, thread: ExternalThread): Promise<void> {
-    if (thread.running || this.#pendingExternalCommandRequests.has(thread.id)) {
+    if (
+      thread.running ||
+      this.#externalSteering.hasPending(thread.id) ||
+      this.#pendingExternalCommandRequests.has(thread.id)
+    ) {
       await this.#writer.json(
         rpcError(request, -32072, "External Thread already has an active Turn"),
       );
@@ -3636,11 +3663,68 @@ export class AppServerHost {
         this.#pendingExternalCommandRequests.delete(thread.id);
       }
     }
-    if (thread.running || thread.activeTurnId) {
-      await this.#writer.json(
-        rpcError(request, -32072, "External Thread already has an active Turn"),
-      );
+    if (this.#externalSteering.hasPending(thread.id)) {
+      await this.#writer.json(rpcError(request, -32072, "External Thread is changing direction"));
       return;
+    }
+    try {
+      const started = await this.#beginExternalTurn(thread, text);
+      try {
+        await this.#writer.json(rpcEnvelope(request, { result: { turn: started.turn } }));
+      } finally {
+        started.gate.resolve();
+      }
+    } catch (error) {
+      await this.#writer.json(
+        rpcError(
+          request,
+          error instanceof ExternalSteerError ? error.code : -32073,
+          errorMessage(error),
+        ),
+      );
+    }
+  }
+
+  async #steerExternalTurn(request: JsonRpcRequest, thread: ExternalThread): Promise<void> {
+    try {
+      const started = await this.#externalSteering.run(thread, requestObject(request), (text) =>
+        this.#beginExternalTurn(thread, text),
+      );
+      try {
+        await this.#writer.json(rpcEnvelope(request, { result: { turnId: started.turnId } }));
+      } finally {
+        started.gate.resolve();
+      }
+    } catch (error) {
+      await this.#writer.json(
+        rpcError(
+          request,
+          error instanceof ExternalSteerError ? error.code : -32074,
+          errorMessage(error),
+        ),
+      );
+    } finally {
+      this.#signalActiveWorkChanged();
+    }
+  }
+
+  async #beginExternalTurn(
+    thread: ExternalThread,
+    text: string,
+  ): Promise<{
+    turnId: HostTurnId;
+    turn: JsonObject;
+    gate: TurnProjectionGate;
+  }> {
+    if (this.#closeRequested || this.#externalRuntime.get(thread.id) !== thread) {
+      throw new ExternalSteerError(-32073, "External Thread is no longer available");
+    }
+    if (
+      thread.running ||
+      thread.activeTurnId ||
+      this.#pendingExternalCommandRequests.has(thread.id)
+    ) {
+      throw new ExternalSteerError(-32072, "External Thread already has an active Turn");
     }
     const turnId = hostTurnIdSchema.parse(randomUUID());
     const startedAtMs = Date.now();
@@ -3658,27 +3742,22 @@ export class AppServerHost {
     thread.projectedTurns.set(turnId, projection);
     thread.responseGates.set(turnId, gate);
 
-    const result = await thread.session.execute({
-      type: "turn.start",
-      turnId,
-      input: [{ type: "text", text }],
-    });
-    if (!result.ok) {
+    try {
+      const result = await thread.session.execute({
+        type: "turn.start",
+        turnId,
+        input: [{ type: "text", text }],
+      });
+      if (!result.ok) throw new ExternalSteerError(-32073, result.error.message);
+      return { turnId, turn: projection.projector.pendingTurn(), gate };
+    } catch (error) {
       thread.running = false;
       thread.activeTurnId = null;
       thread.projectedTurns.delete(turnId);
       thread.responseGates.delete(turnId);
       gate.resolve();
       this.#signalActiveWorkChanged();
-      await this.#writer.json(rpcError(request, -32073, result.error.message));
-      return;
-    }
-    try {
-      await this.#writer.json(
-        rpcEnvelope(request, { result: { turn: projection.projector.pendingTurn() } }),
-      );
-    } finally {
-      gate.resolve();
+      throw error;
     }
   }
 
@@ -3687,6 +3766,8 @@ export class AppServerHost {
     thread: ExternalThread,
     requestedTurnId: JsonValue | undefined,
   ): Promise<void> {
+    if (typeof requestedTurnId === "string")
+      this.#externalSteering.interrupt(thread.id, requestedTurnId);
     if (
       typeof requestedTurnId !== "string" ||
       !thread.running ||
@@ -3730,6 +3811,11 @@ export class AppServerHost {
       }
     } catch (error) {
       this.#diagnose(error);
+    } finally {
+      this.#externalSteering.fault(
+        thread.id,
+        new Error("External Harness output ended before replacement"),
+      );
     }
   }
 
@@ -3859,6 +3945,7 @@ export class AppServerHost {
       return;
     }
     if (event.type === "session.faulted") {
+      this.#externalSteering.fault(thread.id, new Error(event.error.message));
       thread.stateObserver.fault(new Error(event.error.message));
       this.#diagnose(`${thread.harnessId} Harness Session faulted: ${event.error.message}`);
       return;
@@ -3957,6 +4044,7 @@ export class AppServerHost {
           ? { type: "active", activeFlags: [] }
           : { type: "idle" },
       );
+      this.#externalSteering.terminal(thread.id, event.turnId, event.outcome);
     }
   }
 

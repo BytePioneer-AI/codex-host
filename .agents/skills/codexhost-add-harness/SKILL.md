@@ -97,7 +97,7 @@ Host
 
 - **所有插件**：按[加载、发行与验证](references/registration-and-validation.md)构建可搬移的插件，在隔离根目录显式启用，通过真实 Loader 验证；直接 `new Adapter()` 的测试不能替代插件加载。
 - **仓库内实现或预装发行**：读取该参考中的 Workspace/发行分支。用户独立插件不需要修改预装清单；Host 包不得增加具体 Adapter 依赖。
-- **Desktop 产品接入**：读取[Renderer 产品接入](references/renderer-product-integration.md)，处理当前静态 UI 边界；新插件路由仍用共享 codec，不新增专用编码。
+- **Desktop 产品接入**：读取[Renderer 产品接入](references/renderer-product-integration.md)，处理当前静态 UI 边界；新插件路由仍用共享 codec，不新增专用编码。「调整方向」沿用公共路径，插件侧验证[取消与后续 Turn](references/output-and-interactions.md#取消与后续-turn)。
 - **接收委派、继续向下委派或声明完整 Agent 协调**：读取[跨 Harness 委派](references/cross-harness-delegation.md)。它复用普通可写 Thread，不另建一套执行接口。
 - **新增公共能力**：同时核对类型、schema、Host 投影、使用方和测试。浏览器共享契约保持 Node-free，Renderer 不导入原生 SDK 或 Electron 私有 API。
 

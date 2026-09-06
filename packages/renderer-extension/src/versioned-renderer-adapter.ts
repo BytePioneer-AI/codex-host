@@ -23,6 +23,7 @@ import {
 
 import type { RendererAgent } from "./agent-selection-state.js";
 import { installRendererForkControl } from "./renderer-fork-control.js";
+import { installRendererExternalSteering } from "./renderer-external-steering.js";
 import {
   createRendererModelClient,
   createThreadUsageSubscriptionRelay,
@@ -962,13 +963,18 @@ export function installCurrentRendererAdapter(): {
     () => findActivePrewarmTargets(document),
   );
   const clientsByTarget = new WeakMap<PrewarmTarget, RendererModelClient>();
+  const steeringCleanups = new Set<() => void>();
   const modelClientForTargets = (targets: readonly PrewarmTarget[]): RendererModelClient | null => {
     const target = targets[0];
     if (targets.length !== 1 || !target) return null;
     const cached = clientsByTarget.get(target);
     if (cached) return cached;
     const client = createRendererModelClient([target]);
-    if (client) clientsByTarget.set(target, client);
+    if (client) {
+      const cleanup = installRendererExternalSteering(target);
+      if (cleanup) steeringCleanups.add(cleanup);
+      clientsByTarget.set(target, client);
+    }
     return client;
   };
   let activeRoutePolicy: RendererDraftPrewarmPolicy | null = null;
@@ -1206,6 +1212,7 @@ export function installCurrentRendererAdapter(): {
         () => activeRoutingPolicy?.select(null),
         () => syncActiveRoute(null),
         () => forkControl.dispose(),
+        ...steeringCleanups,
         () => usageSubscription.dispose(),
       ];
       for (const cleanup of cleanups) {

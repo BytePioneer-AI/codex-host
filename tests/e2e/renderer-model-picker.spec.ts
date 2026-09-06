@@ -48,7 +48,6 @@ const { outputFiles } = await build({
         let control;
         control = mountRendererModelPicker(
           "test-composer",
-          undefined,
           (modelId) => {
             view = { ...view, status: "selecting" };
             renderRendererModelPicker(control, view, true);
@@ -62,7 +61,6 @@ const { outputFiles } = await build({
               renderRendererModelPicker(control, view, true);
             }, 250);
           },
-          () => {},
         );
         document.body.append(control.root);
         renderRendererModelPicker(control, view, true);
@@ -98,12 +96,7 @@ const { outputFiles } = await build({
           resolvedModelLabel: "Runtime custom",
           thinkingSelectionSupported: false,
         };
-        const control = mountRendererModelPicker(
-          "claude-composer",
-          "native-model-trigger",
-          () => {},
-          () => {},
-        );
+        const control = mountRendererModelPicker("claude-composer", () => {}, () => {});
         document.body.append(control.root);
         renderRendererModelPicker(control, view, true);
       };
@@ -122,9 +115,7 @@ const { outputFiles } = await build({
 const browserBundle = outputFiles[0]?.text;
 if (!browserBundle) throw new Error("Renderer Model picker E2E bundle was not generated");
 
-test("selecting a Model keeps the main menu open and refreshes Thinking options", async ({
-  page,
-}) => {
+test("selecting a Model closes the picker and refreshes Thinking options", async ({ page }) => {
   await page.setContent(
     '<!doctype html><body style="display:flex;align-items:flex-end;min-height:100vh;margin:0"></body>',
   );
@@ -137,15 +128,15 @@ test("selecting a Model keeps the main menu open and refreshes Thinking options"
 
   const root = page.locator('[data-codexhost-model-control="test-composer"]');
   const trigger = root.locator(':scope > button[aria-haspopup="menu"]');
-  const mainMenu = root.locator('[aria-label="Model and Thinking"]');
-  const modelMenu = root.locator('[aria-label="Model"]');
+  const mainMenu = page.locator("#test-composer-model-menu");
+  const modelMenu = page.locator("#test-composer-model-submenu");
 
   await trigger.click();
   await expect(mainMenu).toBeVisible();
   const [triggerBox, mainBox] = await Promise.all([trigger.boundingBox(), mainMenu.boundingBox()]);
   if (!triggerBox || !mainBox) throw new Error("Model picker main menu geometry is unavailable");
   expect(mainBox.y + mainBox.height).toBeLessThanOrEqual(triggerBox.y + 1);
-  await root.locator("button[data-open-model-menu]").click();
+  await mainMenu.locator("button[data-open-model-menu]").click();
   await expect(modelMenu).toBeVisible();
   const [openedMainBox, modelBox] = await Promise.all([
     mainMenu.boundingBox(),
@@ -157,14 +148,15 @@ test("selecting a Model keeps the main menu open and refreshes Thinking options"
   expect(modelBox.height).toBeLessThanOrEqual(360);
   await modelMenu.locator('button[data-model-id="model-b"]').click();
 
+  // Selecting a Model dismisses the picker while the selection is applied;
+  // the refreshed Thinking options are confirmed on the next open.
   await expect(modelMenu).toBeHidden();
-  await expect(mainMenu).toBeVisible();
-  await expect(trigger).toBeDisabled();
-  await expect(root.locator("button[data-thinking-option-id]:not(:disabled)")).toHaveCount(0);
+  await expect(mainMenu).toBeHidden();
 
   await expect(trigger).toBeEnabled();
+  await trigger.click();
   await expect(mainMenu).toBeVisible();
-  const thinkingOptions = root.locator("button[data-thinking-option-id]");
+  const thinkingOptions = mainMenu.locator("button[data-thinking-option-id]");
   await expect(thinkingOptions).toHaveCount(3);
   await expect
     .poll(() =>
@@ -212,25 +204,21 @@ test("Claude aliases show actual runtime Model without exposing Thinking", async
     labelTriggerBox.x + labelTriggerBox.width - (secondaryLabelBox.x + secondaryLabelBox.width);
   expect(trailingSpace).toBeLessThanOrEqual(16);
 
+  // Thinking selection is unsupported for Claude, so opening jumps straight
+  // to the Model submenu without the Thinking stage.
   await trigger.click();
-  await expect(root.locator("button[data-thinking-option-id]")).toHaveCount(0);
-  await root.locator("button[data-open-model-menu]").click();
-  const mainMenu = root.locator('[aria-label="Model and Thinking"]');
-  const modelMenu = root.locator('[aria-label="Model"]');
+  const mainMenu = page.locator("#claude-composer-model-menu");
+  const modelMenu = page.locator("#claude-composer-model-submenu");
+  await expect(mainMenu).toBeHidden();
+  await expect(modelMenu).toBeVisible();
   await expect(modelMenu.locator("button[data-model-id]")).toHaveCount(2);
   const geometry = await Promise.all([
     trigger.boundingBox(),
-    mainMenu.boundingBox(),
     modelMenu.boundingBox(),
     page.evaluate(() => ({ height: window.innerHeight, width: window.innerWidth })),
   ]);
-  const [claudeTriggerBox, mainBox, modelBox, viewport] = geometry;
-  if (!claudeTriggerBox || !mainBox || !modelBox)
-    throw new Error("Model picker geometry is unavailable");
-  expect(mainBox.y + mainBox.height).toBeLessThanOrEqual(claudeTriggerBox.y + 1);
-  expect(modelBox.x).toBeCloseTo(mainBox.x + mainBox.width + 4, 0);
-  expect(modelBox.y + modelBox.height).toBeCloseTo(mainBox.y + mainBox.height, 0);
-  expect(modelBox.height).toBeLessThanOrEqual(360);
+  const [claudeTriggerBox, modelBox, viewport] = geometry;
+  if (!claudeTriggerBox || !modelBox) throw new Error("Model picker geometry is unavailable");
   expect(modelBox.x + modelBox.width).toBeLessThanOrEqual(viewport.width - 8);
   expect(modelBox.y).toBeGreaterThanOrEqual(8);
   expect(modelBox.y + modelBox.height).toBeLessThanOrEqual(viewport.height - 8);

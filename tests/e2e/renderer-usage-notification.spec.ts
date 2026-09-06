@@ -45,6 +45,7 @@ const { outputFiles } = await build({
       Object.defineProperty(editor, "__reactFiber$usage", {
         configurable: true,
         value: {
+          memoizedProps: { conversationId: threadId },
           updateQueue: {
             memoCache: {
               data: [
@@ -128,7 +129,7 @@ const { outputFiles } = await build({
   format: "iife",
   platform: "browser",
   target: "es2024",
-  loader: { ".css": "text", ".png": "dataurl" },
+  loader: { ".css": "text", ".png": "dataurl", ".svg": "dataurl" },
   write: false,
 });
 

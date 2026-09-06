@@ -48,10 +48,6 @@ import {
   mountRendererHarnessCommandControl,
   type RendererHarnessCommandControl,
 } from "./renderer-harness-command-control.js";
-import {
-  mountRendererHarnessMentionControl,
-  type RendererHarnessMentionControl,
-} from "./renderer-harness-mention-control.js";
 
 export { CONTROL_ATTRIBUTE };
 export type ExternalModelControlView = RendererModelControlView;
@@ -97,7 +93,6 @@ export interface ComposerAgentControl {
   usage: RendererUsageControl | null;
   composerId: string;
   harnessCommands: RendererHarnessCommandControl;
-  harnessMentions: RendererHarnessMentionControl;
   sendButton: HTMLButtonElement;
   sendDisabledBeforeSwitch: boolean | null;
 }
@@ -606,14 +601,10 @@ export function mountComposerAgentControl(
   composer: Element,
   composerId: string,
   sendButton: HTMLButtonElement,
-  editor: HTMLElement,
   enabledAgents: readonly RendererAgent[],
   onSelect: (agent: RendererAgent) => void,
   onDownload: (agent: ExternalRendererAgent) => void,
   onSelectCodexAccount: (accountId: string) => Promise<void> | void,
-  onSelectCodexMentionAccount: (
-    accountId: string,
-  ) => boolean | undefined | Promise<boolean | undefined>,
   onOpenProviderPicker: () => void,
   onSelectModel: (modelId: string) => void,
   onSelectThinking: (thinkingOptionId: string) => void,
@@ -651,12 +642,6 @@ export function mountComposerAgentControl(
     trailingActionAnchor(sendButton),
     onSelectCommand,
   );
-  const harnessMentions = mountRendererHarnessMentionControl(
-    editor,
-    composerId,
-    enabledAgents,
-    onSelectCodexMentionAccount,
-  );
 
   const permissionParent = nativePermissionModeControl?.element.parentElement;
   if (permissionParent && nativePermissionModeControl && nativePermissionModeControlVerified) {
@@ -680,7 +665,6 @@ export function mountComposerAgentControl(
     credits,
     usage: null,
     harnessCommands,
-    harnessMentions,
     sendButton,
     sendDisabledBeforeSwitch: null,
   } satisfies ComposerAgentControl;
@@ -742,10 +726,6 @@ export function renderComposerAgentControl(
     availability,
     codexAccounts,
   );
-  control.harnessMentions.setAgents(
-    control.picker.agents.filter((agent) => agent === "codex" || availability[agent] === "ready"),
-  );
-  control.harnessMentions.setCodexAccounts(codexAccounts);
   reconcileComposerNativeControls(
     control,
     pickerView.nativeModelHidden,
@@ -783,7 +763,6 @@ export function disposeComposerAgentControl(control: ComposerAgentControl): void
   control.usage?.dispose();
   control.usage = null;
   control.harnessCommands.dispose();
-  control.harnessMentions.dispose();
   control.permissionModePicker.dispose();
   control.modelPicker.dispose();
   control.picker.dispose();

@@ -1945,38 +1945,6 @@ export function installRendererBindingProbe(
     }
   };
 
-  const selectCodexMentionAccount = (accountId: string): Promise<boolean> => {
-    if (codexAccountSwitching) return Promise.resolve(false);
-    const client = modelControl;
-    if (!client || !codexAccounts.some((account) => account.accountId === accountId)) {
-      return Promise.resolve(false);
-    }
-    codexAccountSwitching = true;
-    for (const candidate of mountedByComposer.values()) {
-      renderMounted(candidate);
-      void refreshDraftCodexUsage(candidate);
-    }
-    return (async () => {
-      try {
-        const policy = await waitForRendererDraftPrewarmPolicy(window);
-        await policy.clear();
-        if (!policy.selectAccount) throw new Error("Codex Account selection is unavailable");
-        codexAccountOverrideId = accountId === activeCodexAccountId ? null : accountId;
-        policy.selectAccount(codexAccountOverrideId);
-        return true;
-      } catch {
-        void loadCodexAccounts();
-        return false;
-      } finally {
-        codexAccountSwitching = false;
-        for (const candidate of mountedByComposer.values()) {
-          renderMounted(candidate);
-          void refreshDraftCodexUsage(candidate);
-        }
-      }
-    })();
-  };
-
   const openInstallPage = (agent: ExternalRendererAgent): void => {
     const url = RENDERER_AGENT_INSTALL_URLS[agent];
     window.open(url, "_blank", "noopener,noreferrer");
@@ -2274,7 +2242,6 @@ export function installRendererBindingProbe(
       composer,
       state.composerId,
       sendButton,
-      editor,
       enabledAgents,
       (agent) => {
         const mounted = mountedByComposer.get(composer);
@@ -2287,7 +2254,6 @@ export function installRendererBindingProbe(
         if (!composer.isConnected || !mounted) return;
         await selectCodexAccount(mounted, accountId);
       },
-      selectCodexMentionAccount,
       () => {
         void loadCodexAccounts();
       },
@@ -2563,15 +2529,7 @@ export function installRendererBindingProbe(
     notifySubmission(composer, "submit");
   };
   const onKeyDown = (event: KeyboardEvent): void => {
-    const eventComposer = composerForTarget(event.target);
-    const mentionControl = eventComposer
-      ? mountedByComposer.get(eventComposer)?.control.harnessMentions
-      : undefined;
-    if (mentionControl?.handleKeyDown(event)) {
-      blockEvent(event);
-      return;
-    }
-    const composer = isComposerInputIntent(event) ? eventComposer : null;
+    const composer = isComposerInputIntent(event) ? composerForTarget(event.target) : null;
     const mounted = composer ? mountedByComposer.get(composer) : undefined;
     if (composer && (codexAccountSwitching || controller.isSwitching(composer))) {
       blockEvent(event);

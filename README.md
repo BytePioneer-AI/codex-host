@@ -162,8 +162,6 @@ xattr -dr com.apple.quarantine /Applications/codexhost.app
 >
 > 让 `opencode` 在独立 Thread 中验证这个修复，并运行相关测试。
 
-在 Codex Desktop 输入框中键入 `@` 会显示当前可用 Harness 的补全候选；也可以直接输入完整的 `@<harness>` 名称。
-
 CodexHost 会为目标 Harness 创建独立的 Native Session。委派会话将出现在 Codex Desktop 的会话列表中，你可以随时打开、查看进度或继续对话。
 
 <details>

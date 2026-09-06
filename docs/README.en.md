@@ -162,8 +162,6 @@ You can ask the current Agent to hand an independent task to another Harness. Fo
 >
 > Ask `opencode` to verify this fix in an independent Thread and run the related tests.
 
-Typing `@` in the Codex Desktop composer shows completion candidates for currently available Harnesses. You can also type the complete `@<harness>` name directly.
-
 codexhost creates a separate Native Session for the target Harness. The delegated session appears in the Codex Desktop conversation list, where you can open it, inspect progress, or continue the conversation.
 
 <details>

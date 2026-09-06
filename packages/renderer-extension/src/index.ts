@@ -66,22 +66,6 @@ export type { RendererHarnessMessages } from "./renderer-harness-localization.js
 export { mountRendererHarnessCommandControl } from "./renderer-harness-command-control.js";
 export type { RendererHarnessCommandControl } from "./renderer-harness-command-control.js";
 export {
-  harnessMentionCandidates,
-  harnessMentionMatch,
-  harnessMentionLabel,
-  insertHarnessMention,
-  injectNativeHarnessCommands,
-  isNativeComposerCommandRegistry,
-  matchingHarnessMentions,
-  mountRendererHarnessMentionControl,
-  textWithHarnessMention,
-} from "./renderer-harness-mention-control.js";
-export type {
-  HarnessMentionCandidate,
-  HarnessMentionMatch,
-  RendererHarnessMentionControl,
-} from "./renderer-harness-mention-control.js";
-export {
   creditsPeriodLabel,
   formatRendererCreditsReset,
   rendererCreditsTone,

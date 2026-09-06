@@ -29,6 +29,8 @@ export type {
 } from "./harness-plugins.js";
 export { codexhostErrorSchema } from "./errors.js";
 export {
+  codexAccountUsageParamsSchema,
+  codexAccountUsageResultSchema,
   codexAccountActivateParamsSchema,
   codexAccountCreateParamsSchema,
   codexAccountDeleteParamsSchema,
@@ -43,6 +45,8 @@ export {
   codexAccountSchema,
 } from "./codex-accounts.js";
 export type {
+  CodexAccountUsageParams,
+  CodexAccountUsageResult,
   CodexAccountActivateParams,
   CodexAccountCreateParams,
   CodexAccountDeleteParams,

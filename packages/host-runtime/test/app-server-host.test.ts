@@ -843,6 +843,48 @@ describe("AppServerHost HarnessAdapter projection", () => {
         id: 12,
         method: "account/read",
       });
+      // Draft quota reads and locked Thread quota must keep their Account identity.
+      for (const [accountId, connection, usedPercent, id] of [
+        ["account-a", accountA, 17, 130],
+        ["account-b", accountB, 83, 131],
+      ] as const) {
+        writeRequest(fixture.desktopInput, {
+          id,
+          method: "codexhost/account/usage/inspect",
+          params: { accountId },
+        });
+        const quotaRead = await readJsonLine(connection.stdin as PassThrough);
+        expect(quotaRead).toMatchObject({ method: "account/rateLimits/read", params: {} });
+        writeRequest(connection.stdout as PassThrough, {
+          id: requiredMessageId(quotaRead),
+          result: { rateLimits: { primary: { usedPercent, windowDurationMins: 300 } } },
+        });
+        await expect(
+          fixture.collector.waitFor((message) => requestId(message, id)),
+        ).resolves.toMatchObject({
+          result: {
+            accountId,
+            accountCredits: { usedPercent },
+            usage: { planFiveHourUsedPercent: usedPercent },
+          },
+        });
+      }
+      writeRequest(fixture.desktopInput, {
+        id: 132,
+        method: "codexhost/thread/usage/inspect",
+        params: { threadId: "official-thread-a" },
+      });
+      await expect(
+        fixture.collector.waitFor((message) => requestId(message, 132)),
+      ).resolves.toMatchObject({
+        result: {
+          threadId: "official-thread-a",
+          accountCredits: { usedPercent: 17 },
+          usage: { planFiveHourUsedPercent: 17 },
+        },
+      });
+      await expect(accountRepository.getActiveAccountId()).resolves.toBe("account-b");
+
       writeRequest(fixture.desktopInput, { id: 13, method: "account/read", params: {} });
       await expect(readJsonLine(accountB.stdin as PassThrough)).resolves.toMatchObject({ id: 13 });
       expect(createOfficialConnection).toHaveBeenCalledTimes(2);
@@ -3089,6 +3131,7 @@ describe("AppServerHost HarnessAdapter projection", () => {
       },
     });
 
+    await fixture.threadAccountStore.bind("official-thread", "account-b");
     writeRequest(fixture.desktopInput, {
       id: 41,
       method: "codexhost/thread/inspect",
@@ -3096,7 +3139,7 @@ describe("AppServerHost HarnessAdapter projection", () => {
     });
     await expect(fixture.collector.waitFor((message) => requestId(message, 41))).resolves.toEqual({
       id: 41,
-      result: { owner: "codex", locked: true },
+      result: { owner: "codex", locked: true, accountId: "account-b" },
     });
     writeRequest(fixture.desktopInput, {
       id: 42,
@@ -3117,11 +3160,8 @@ describe("AppServerHost HarnessAdapter projection", () => {
       fixture.collector.waitFor((message) => requestId(message, 43)),
     ).resolves.toMatchObject({ error: { code: -32602 } });
 
-    expect(officialWrite).toHaveBeenCalledTimes(1);
-    expect(JSON.parse(officialWrite.mock.calls[0]?.[0]?.toString() ?? "{}")).toMatchObject({
-      method: "account/rateLimits/read",
-      params: {},
-    });
+    // An unavailable bound Account must never query the default runtime quota.
+    expect(officialWrite).not.toHaveBeenCalled();
     await stopFixture(fixture);
   });
 

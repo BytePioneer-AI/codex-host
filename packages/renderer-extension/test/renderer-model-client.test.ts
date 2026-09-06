@@ -73,6 +73,22 @@ const inspection = {
 };
 
 describe("Renderer fixed Model request client", () => {
+  it("reads draft quota for the selected Account without activating it", async () => {
+    const result = {
+      accountId: "account-b",
+      usage: { planFiveHourUsedPercent: 83 },
+      accountCredits: { usedPercent: 83, periodType: "five_hour" },
+    };
+    const sendRequest = vi.fn().mockResolvedValue(result);
+    const client = createRendererModelClient([{ sendRequest }]);
+    await expect(client?.inspectCodexAccountUsage?.({ accountId: "account-b" })).resolves.toEqual(
+      result,
+    );
+    expect(sendRequest).toHaveBeenCalledExactlyOnceWith("codexhost/account/usage/inspect", {
+      accountId: "account-b",
+    });
+  });
+
   it("validates Account controls and relays device-login completion", async () => {
     let notify: ((notification: unknown) => void) | undefined;
     const remove = vi.fn();
@@ -258,6 +274,7 @@ describe("Renderer fixed Model request client", () => {
       "executeThreadCommand",
       "forkThread",
       "importHarnessSession",
+      "inspectCodexAccountUsage",
       "inspectHarness",
       "inspectHarnessCommands",
       "inspectThread",

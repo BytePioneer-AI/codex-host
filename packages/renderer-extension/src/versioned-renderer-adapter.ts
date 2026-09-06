@@ -1031,6 +1031,13 @@ export function installCurrentRendererAdapter(): {
     checkUpdate: () => currentModelClient().checkUpdate(),
     startUpdate: () => currentModelClient().startUpdate(),
     readUpdateStatus: () => currentModelClient().readUpdateStatus(),
+    inspectCodexAccountUsage: (
+      input: Parameters<NonNullable<RendererModelClient["inspectCodexAccountUsage"]>>[0],
+    ) => {
+      const client = currentModelClient();
+      if (!client.inspectCodexAccountUsage) throw new Error("Codex Account Usage is unavailable");
+      return client.inspectCodexAccountUsage(input);
+    },
     listCodexAccounts: () => currentModelClient().listCodexAccounts(),
     refreshCodexAccounts: () => {
       const client = currentModelClient();

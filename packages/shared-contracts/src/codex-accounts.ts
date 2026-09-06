@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { accountCreditsSnapshotSchema, threadUsageSnapshotSchema } from "./thread-usage.js";
 
 const accountIdSchema = z
   .string()
@@ -73,3 +74,14 @@ export const codexAccountLoginCompletedSchema = z
   })
   .strict();
 export type CodexAccountLoginCompleted = z.infer<typeof codexAccountLoginCompletedSchema>;
+
+export const codexAccountUsageParamsSchema = z.object({ accountId: accountIdSchema }).strict();
+export type CodexAccountUsageParams = z.infer<typeof codexAccountUsageParamsSchema>;
+export const codexAccountUsageResultSchema = z
+  .object({
+    accountId: accountIdSchema,
+    usage: threadUsageSnapshotSchema.nullable(),
+    accountCredits: accountCreditsSnapshotSchema.optional(),
+  })
+  .strict();
+export type CodexAccountUsageResult = z.infer<typeof codexAccountUsageResultSchema>;

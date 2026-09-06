@@ -1,4 +1,8 @@
 import {
+  codexAccountUsageParamsSchema,
+  codexAccountUsageResultSchema,
+  type CodexAccountUsageParams,
+  type CodexAccountUsageResult,
   codexAccountActivateParamsSchema,
   codexAccountCreateParamsSchema,
   codexAccountDeleteParamsSchema,
@@ -163,6 +167,7 @@ export interface RendererModelClient extends Partial<RendererSessionImportClient
   checkUpdate(): Promise<UpdateCheckResult>;
   startUpdate(): Promise<UpdateStartResult>;
   readUpdateStatus(): Promise<UpdateStatusResult>;
+  inspectCodexAccountUsage?(input: CodexAccountUsageParams): Promise<CodexAccountUsageResult>;
   listCodexAccounts(): Promise<CodexAccountListResult>;
   refreshCodexAccounts(): Promise<CodexAccountListResult>;
   createCodexAccount(input: CodexAccountCreateParams): Promise<CodexAccountMutationResult>;
@@ -375,6 +380,15 @@ export function createRendererModelClient(
         updateEmptyParamsSchema.parse({}),
       );
       return updateStatusResultSchema.parse(result);
+    },
+    async inspectCodexAccountUsage(
+      input: CodexAccountUsageParams,
+    ): Promise<CodexAccountUsageResult> {
+      const result = await manager.sendRequest(
+        "codexhost/account/usage/inspect",
+        codexAccountUsageParamsSchema.parse(input),
+      );
+      return codexAccountUsageResultSchema.parse(result);
     },
     async listCodexAccounts(): Promise<CodexAccountListResult> {
       const result = await manager.sendRequest(CODEX_ACCOUNT_LIST_METHOD, {});

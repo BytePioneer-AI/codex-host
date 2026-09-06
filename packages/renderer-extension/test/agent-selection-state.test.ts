@@ -15,6 +15,23 @@ function controller(): DraftAgentController<object> {
 }
 
 describe("Renderer draft Agent controller", () => {
+  it("retains the submitted Codex Account across locking and Composer replacement", () => {
+    const agents = controller();
+    const draft = {};
+    const replacement = {};
+    agents.mount(draft, ["default"]);
+    agents.markSubmissionPending(draft);
+    agents.recordSubmission(draft, "account-b");
+    expect(agents.transfer(draft, replacement, ["conversation", "thread-b"])).toBe(true);
+    expect(agents.get(replacement)).toMatchObject({ phase: "locked", codexAccountId: "account-b" });
+    agents.recordSubmission(replacement, "account-a");
+    expect(agents.get(replacement).codexAccountId).toBe("account-b");
+    expect(agents.mount({}, ["default"]).codexAccountId).toBeUndefined();
+    const reopened = {};
+    agents.restore(reopened, "codex", undefined, undefined, undefined, "account-b");
+    expect(agents.get(reopened)).toMatchObject({ phase: "locked", codexAccountId: "account-b" });
+  });
+
   it("isolates Agent selection by Composer", async () => {
     const firstComposer = {};
     const secondComposer = {};

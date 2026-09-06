@@ -1,3 +1,4 @@
+import { AccountRateLimits } from "./codex-runtime/account-rate-limits.js";
 import type { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { rm } from "node:fs/promises";
@@ -19,6 +20,8 @@ import type { HarnessPluginContext } from "@codexhost/harness-adapter/plugin";
 import type { StoredThreadRecordV1 } from "@codexhost/mapping-store";
 import {
   accountCreditsSnapshotSchema,
+  codexAccountUsageParamsSchema,
+  codexAccountUsageResultSchema,
   codexAccountActivateParamsSchema,
   codexAccountCreateParamsSchema,
   codexAccountDeleteParamsSchema,
@@ -140,7 +143,6 @@ const SUBAGENT_TERMINAL_REFRESH_DELAYS_MS = [0, 50, 100, 150] as const;
 const THREAD_USAGE_UPDATED_METHOD = "codexhost/thread/usage/updated";
 // Native Codex account quota is still pulled through its official API; keep
 // that reading briefly cached so concurrent Composer inspections coalesce.
-const OFFICIAL_RATE_LIMIT_TTL_MS = 15_000;
 
 function delay(milliseconds: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
@@ -500,10 +502,8 @@ export class AppServerHost {
   #pendingOfficialDelegationThreads = new Set<string>();
   #pendingOfficialTerminalStatuses = new Map<string, DelegationStartResult["status"]>();
   #officialUsageByThread = new Map<string, HostUsage>();
-  #officialRateLimitUsage: Partial<HostUsage> | null = null;
-  #officialRateLimitRefresh: Promise<void> | null = null;
-  #officialRateLimitFreshUntilMs = 0;
-  #officialAccountGeneration = 0;
+  readonly #officialRateLimits = new AccountRateLimits();
+  readonly #officialUsageAccountByThread = new Map<string, string>();
   #routeObservationTracker = new RequestRouteObservationTracker();
   #pendingOfficialThreadBindings = new Map<
     string,
@@ -801,6 +801,7 @@ export class AppServerHost {
         continue;
       }
       if (
+        request.method === "codexhost/account/usage/inspect" ||
         request.method === "codexhost/account/list" ||
         request.method === "codexhost/account/refresh" ||
         request.method === "codexhost/account/create" ||
@@ -1389,12 +1390,11 @@ export class AppServerHost {
       typeof parsed.method === "string" &&
       (parsed.method === "account/updated" || parsed.method.startsWith("account/rateLimits/"));
     if (accountScopedNotification) {
-      const activeAccountId = await this.#accountRepository.getActiveAccountId();
-      if (input.accountId !== activeAccountId) return;
-      if (parsed.method === "account/updated") this.#resetOfficialUsageState();
+      if (parsed.method === "account/updated") this.#resetOfficialUsageState(input.accountId);
     }
     const tokenUsage = observeCodexTokenUsage(parsed);
     if (tokenUsage) {
+      this.#officialUsageAccountByThread.set(tokenUsage.threadId, input.accountId);
       const previous = this.#officialUsageByThread.get(tokenUsage.threadId);
       try {
         this.#officialUsageByThread.set(
@@ -1406,7 +1406,12 @@ export class AppServerHost {
       }
     }
     const rateLimits = observeCodexRateLimits(parsed);
-    if (rateLimits) this.#mergeOfficialRateLimits(rateLimits, "push");
+    if (rateLimits) this.#officialRateLimits.observe(input.accountId, rateLimits);
+    if (
+      accountScopedNotification &&
+      input.accountId !== (await this.#accountRepository.getActiveAccountId())
+    )
+      return;
     try {
       await this.#observeOfficialTurnLifecycle(parsed);
     } catch (error) {
@@ -1425,6 +1430,22 @@ export class AppServerHost {
 
   async #handleCodexAccountRequest(request: JsonRpcRequest): Promise<void> {
     try {
+      if (request.method === "codexhost/account/usage/inspect") {
+        const { accountId } = codexAccountUsageParamsSchema.parse(requestObject(request));
+        if (!(await this.#accountRepository.get(accountId)))
+          throw new Error("Unknown Codex Account");
+        await this.#refreshOfficialRateLimits(accountId);
+        const usage = this.#officialRateLimits.get(accountId);
+        const accountCredits = projectCodexRateLimitsToCredits(usage);
+        const result = codexAccountUsageResultSchema.parse({
+          accountId,
+          usage,
+          ...(accountCredits ? { accountCredits } : {}),
+        });
+        await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(result) }));
+        return;
+      }
+
       if (
         request.method === "codexhost/account/list" ||
         request.method === "codexhost/account/refresh"
@@ -1478,7 +1499,7 @@ export class AppServerHost {
       if (request.method === "codexhost/account/activate") {
         const params = codexAccountActivateParamsSchema.parse(requestObject(request));
         await this.#accountRepository.setActiveAccountId(params.accountId);
-        this.#resetOfficialUsageState();
+
         const account = await this.#accountRepository.get(params.accountId);
         if (!account) throw new Error(`Unknown Codex Account '${params.accountId}'`);
         await this.#writer.json(
@@ -1522,7 +1543,7 @@ export class AppServerHost {
             this.#diagnose(error);
           }
         }
-        this.#resetOfficialUsageState();
+        this.#resetOfficialUsageState(params.accountId);
         await this.#writer.json(
           rpcEnvelope(request, { result: { deletedAccountId: params.accountId } }),
         );
@@ -2363,7 +2384,12 @@ export class AppServerHost {
     }
     const inspection = threadInspectionSchema.parse(
       resolution.kind === "official"
-        ? { owner: "codex", locked: true }
+        ? {
+            owner: "codex",
+            locked: true,
+            accountId:
+              (await this.#codexRuntimePool.accountIdForThread(params.data.threadId)) ?? undefined,
+          }
         : {
             owner: "external",
             harnessId: resolution.thread.harnessId,
@@ -2418,19 +2444,23 @@ export class AppServerHost {
         );
         return;
       }
-      // A native Codex thread may have no token-usage observation yet, but its
-      // account quota is still useful to the Credits pill. Start a refresh for
-      // that case without blocking the first inspection; subsequent renderer
-      // retries will observe the populated snapshot. When token usage already
-      // exists, await the refresh so Usage and Credits arrive together.
-      const rateLimitRefresh = this.#refreshOfficialRateLimits();
-      if (this.#officialUsageByThread.has(params.data.threadId)) {
-        await rateLimitRefresh;
-      }
-      const accountCredits = projectCodexRateLimitsToCredits(this.#officialRateLimitUsage);
+      // Resolve quota from the Thread binding, including before its first token update.
+      const accountId =
+        (await this.#codexRuntimePool.accountIdForThread(params.data.threadId)) ??
+        this.#officialUsageAccountByThread.get(params.data.threadId);
+      const rateLimitRefresh = accountId
+        ? this.#refreshOfficialRateLimits(accountId)
+        : Promise.resolve();
+      await rateLimitRefresh;
+      const accountCredits = projectCodexRateLimitsToCredits(
+        accountId ? this.#officialRateLimits.get(accountId) : null,
+      );
       const result = threadUsageInspectionSchema.parse({
         threadId: params.data.threadId,
-        usage: this.#combinedOfficialUsage(this.#officialUsageByThread.get(params.data.threadId)),
+        usage: this.#combinedOfficialUsage(
+          this.#officialUsageByThread.get(params.data.threadId),
+          accountId,
+        ),
         ...(accountCredits ? { accountCredits } : {}),
       });
       await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(result) }));
@@ -2449,70 +2479,30 @@ export class AppServerHost {
     await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(result) }));
   }
 
-  /**
-   * Native Codex reports account quota the same two ways the Claude Code
-   * Adapter does, and arbitrates them the same way: the on-demand
-   * `account/rateLimits/read` pull is authoritative, while a notification push
-   * may only fill an empty snapshot or expire the cached one. Letting both
-   * write freely made the credits pill flip between readings taken at
-   * different moments. See `ClaudeCodeAdapter#recordPlanLimit`.
-   */
-  #mergeOfficialRateLimits(rateLimits: Partial<HostUsage>, source: "push" | "pull"): void {
-    if (source === "push" && this.#officialRateLimitUsage) {
-      this.#officialRateLimitFreshUntilMs = 0;
-      return;
-    }
-    try {
-      this.#officialRateLimitUsage = parseHostUsage({
-        ...(this.#officialRateLimitUsage ?? {}),
-        ...rateLimits,
-      });
-      this.#officialRateLimitFreshUntilMs =
-        source === "pull" ? Date.now() + OFFICIAL_RATE_LIMIT_TTL_MS : 0;
-    } catch {
-      // Ignore a malformed sparse update while preserving the last valid snapshot.
+  #resetOfficialUsageState(accountId: string): void {
+    this.#officialRateLimits.reset(accountId);
+    for (const [threadId, owner] of this.#officialUsageAccountByThread) {
+      if (owner !== accountId) continue;
+      this.#officialUsageByThread.delete(threadId);
+      this.#officialUsageAccountByThread.delete(threadId);
     }
   }
 
-  #resetOfficialUsageState(): void {
-    // Native Codex can change accounts without restarting the app-server. Do
-    // not carry the previous account's thread or quota snapshot into the next
-    // account's Usage popover.
-    this.#officialAccountGeneration += 1;
-    this.#officialUsageByThread.clear();
-    this.#officialRateLimitUsage = null;
-    this.#officialRateLimitFreshUntilMs = 0;
-  }
-
-  #combinedOfficialUsage(usage: HostUsage | undefined): HostUsage | null {
-    const combined = { ...(usage ?? {}), ...(this.#officialRateLimitUsage ?? {}) };
+  #combinedOfficialUsage(usage: HostUsage | undefined, accountId?: string): HostUsage | null {
+    const quota = accountId ? this.#officialRateLimits.get(accountId) : null;
+    const combined = { ...(usage ?? {}), ...(quota ?? {}) };
     if (Object.keys(combined).length === 0) return null;
     try {
       return parseHostUsage(combined);
     } catch {
-      return usage ?? this.#officialRateLimitUsage;
+      return usage ?? quota;
     }
   }
 
-  async #refreshOfficialRateLimits(): Promise<void> {
-    // Serve the cached snapshot only while it is still fresh. This used to
-    // return on any non-null snapshot, which made the refresh a permanent
-    // no-op after the first success: the pill then froze at that first reading
-    // for the rest of the process, and only a push could ever move it again.
-    if (this.#officialRateLimitUsage && Date.now() < this.#officialRateLimitFreshUntilMs) return;
-    if (this.#officialRateLimitRefresh) return this.#officialRateLimitRefresh;
-    const accountGeneration = this.#officialAccountGeneration;
-    this.#officialRateLimitRefresh = this.#requestOfficial("account/rateLimits/read", {})
-      .then((response) => {
-        if (accountGeneration !== this.#officialAccountGeneration) return;
-        const rateLimits = observeCodexRateLimits(response);
-        if (rateLimits) this.#mergeOfficialRateLimits(rateLimits, "pull");
-      })
-      .catch(() => undefined)
-      .finally(() => {
-        this.#officialRateLimitRefresh = null;
-      });
-    return this.#officialRateLimitRefresh;
+  #refreshOfficialRateLimits(accountId: string): Promise<void> {
+    return this.#officialRateLimits.refresh(accountId, async () =>
+      (await this.#codexRuntimePool.get(accountId)).request("account/rateLimits/read", {}),
+    );
   }
 
   async #listThreadOwnership(request: JsonRpcRequest): Promise<void> {

@@ -1,4 +1,4 @@
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "macos"))]
 use std::env;
 #[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
 use std::fs::File;
@@ -56,11 +56,12 @@ pub(super) fn sha256_file(path: &Path) -> Result<String, PlatformError> {
     }
     Ok(format!("sha256:{:x}", digest.finalize()))
 }
+#[cfg(any(target_os = "windows", target_os = "macos"))]
+use super::CUSTOM_INSTALL_ROOT_ENV;
 #[cfg(target_os = "windows")]
 use super::{
-    CUSTOM_INSTALL_ROOT_ENV, PROBE_APP_USER_MODEL_ID_ENV, PROBE_DESKTOP_VERSION_ENV,
-    PROBE_INSTALL_ROOT_ENV, PROBE_PACKAGE_FAMILY_ENV, PROBE_PACKAGE_FULL_NAME_ENV,
-    PROBE_PACKAGE_NAME_ENV,
+    PROBE_APP_USER_MODEL_ID_ENV, PROBE_DESKTOP_VERSION_ENV, PROBE_INSTALL_ROOT_ENV,
+    PROBE_PACKAGE_FAMILY_ENV, PROBE_PACKAGE_FULL_NAME_ENV, PROBE_PACKAGE_NAME_ENV,
 };
 
 #[cfg(target_os = "windows")]
@@ -317,7 +318,7 @@ fn windows_installation(
 /// This is deliberately independent of the Gate A `CODEXHOST_PROBE_*` set: it
 /// names an installation root on its own, so an unpacked Desktop can be located
 /// without supplying package identity and version as well.
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "macos"))]
 fn custom_install_root(
     value: impl Fn(&'static str) -> Option<std::ffi::OsString>,
 ) -> Option<PathBuf> {
@@ -1009,6 +1010,23 @@ pub fn discover_codex_desktop() -> Result<DesktopInstallation, PlatformError> {
         candidates.push(applications.join("ChatGPT.app"));
     }
     discover_from_candidates(candidates)
+}
+
+/// Resolve a helper's official CLI from a validated Desktop bundle, never PATH.
+/// An explicit installation root is authoritative, including when invalid.
+#[cfg(target_os = "macos")]
+pub fn discover_desktop_managed_codex_cli() -> Result<PathBuf, PlatformError> {
+    let installation = match custom_install_root(env::var_os) {
+        Some(root) => inspect_bundle(&root)?,
+        None => discover_codex_desktop()?,
+    };
+    Ok(installation.executable_codex_cli)
+}
+
+/// Inspect an explicit macOS bundle without selecting another installation.
+#[cfg(target_os = "macos")]
+pub fn discover_codex_desktop_from_root(root: &Path) -> Result<DesktopInstallation, PlatformError> {
+    inspect_bundle(root)
 }
 
 #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]

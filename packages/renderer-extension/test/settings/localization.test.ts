@@ -51,12 +51,16 @@ describe("Renderer settings localization", () => {
     expect(chinese.updateDownloadWindowsInstaller).toBe("下载 Windows 安装包");
     expect(chinese.pageLabels.about).toBe("关于");
     expect(chinese.pageLabels["session-import"]).toBe("会话导入");
-    expect(chinese.sessionImportAvailabilityNote).toContain(
-      "当前仅支持导入 DeepSeek Harness Modern 会话",
+    expect(chinese.sessionImportAvailabilityNote).toContain("可选 Harness 来自本地 Host");
+    expect(chinese.sessionImportAvailabilityNote).toContain("先在原生客户端关闭该会话再导入");
+    expect(chinese.sessionImportAvailabilityNote).toContain("避免同时写入");
+    expect(english.sessionImportAvailabilityNote).toContain(
+      "Available Harnesses come from the local Host",
     );
     expect(english.sessionImportAvailabilityNote).toContain(
-      "only DeepSeek Harness Modern sessions",
+      "close the session in its native client before importing",
     );
+    expect(english.sessionImportAvailabilityNote).toContain("avoid concurrent writes");
     expect(chinese.aboutTagline).toBe("在 Codex Desktop 中运行 Pi 和其他 Harness");
     expect(chinese.aboutParagraphs).toHaveLength(3);
     expect(chinese.aboutStarCallout).toContain("请给我们一个 Star");

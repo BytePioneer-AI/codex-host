@@ -4,7 +4,7 @@
 #[cfg(any(target_os = "windows", test))]
 use codexhost_platform::ProcessSnapshot;
 
-pub(crate) fn is_desktop_helper() -> bool {
+pub(crate) fn is_desktop_helper(_stock_codex_path: &std::path::Path) -> bool {
     #[cfg(target_os = "windows")]
     {
         let Some(launcher_id) = std::env::var(super::LAUNCHER_PID_ENV)
@@ -18,8 +18,50 @@ pub(crate) fn is_desktop_helper() -> bool {
             codexhost_platform::process_snapshot(id).ok()
         })
     }
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(target_os = "macos")]
+    {
+        is_macos_desktop_helper(_stock_codex_path).unwrap_or(false)
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
     false
+}
+
+#[cfg(target_os = "macos")]
+fn is_macos_desktop_helper(stock_codex_path: &std::path::Path) -> Option<bool> {
+    use codexhost_platform::{discover_codex_desktop_from_root, process_snapshot};
+    use std::path::PathBuf;
+
+    let launcher_id = std::env::var(super::LAUNCHER_PID_ENV).ok()?.parse().ok()?;
+    let launcher = process_snapshot(launcher_id).ok()?;
+    let expected_launcher = PathBuf::from(std::env::var_os("CODEXHOST_LAUNCHER_EXECUTABLE")?)
+        .canonicalize()
+        .ok()?;
+    if launcher.executable != expected_launcher {
+        return None;
+    }
+    // LaunchServices reparents Desktop to launchd, so the launcher cannot be an
+    // ancestor. Match the exact Desktop in the already-resolved official CLI's
+    // validated bundle instead; direct Desktop -> shim must still start Host.
+    let bundle = stock_codex_path.parent()?.parent()?.parent()?;
+    let installation = discover_codex_desktop_from_root(bundle).ok()?;
+    if installation.executable_codex_cli != stock_codex_path {
+        return None;
+    }
+    let mut child = process_snapshot(std::process::id()).ok()?;
+    for depth in 1..=32 {
+        if child.parent_id <= 1 || child.parent_id == child.id {
+            return None;
+        }
+        let parent = process_snapshot(child.parent_id).ok()?;
+        if parent.started_at_micros > child.started_at_micros {
+            return None;
+        }
+        if parent.executable == installation.desktop_executable {
+            return (parent.started_at_micros >= launcher.started_at_micros).then_some(depth > 1);
+        }
+        child = parent;
+    }
+    None
 }
 
 #[cfg(any(target_os = "windows", test))]

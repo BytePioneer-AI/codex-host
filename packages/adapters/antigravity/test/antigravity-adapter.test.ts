@@ -6,17 +6,20 @@ import type { HarnessOutput, HostEvent } from "@codexhost/harness-adapter";
 import {
   accountCreditsSnapshotSchema,
   harnessModelRefSchema,
+  harnessPermissionModeIdSchema,
   harnessThinkingOptionIdSchema,
   hostTurnIdSchema,
 } from "@codexhost/shared-contracts";
 import { describe, expect, it } from "vitest";
 
 import {
+  ANTIGRAVITY_WORKSPACE_FILE_INSTRUCTION,
   AntigravityAdapter,
   antigravityAvailableThinkingOptions,
   antigravityModelArguments,
   antigravityToolErrorMessage,
   fetchAntigravityQuota,
+  formatAntigravityTurnPrompt,
   isAntigravityPermissionDenial,
   parseAntigravityContextUsage,
   parseAntigravityModels,
@@ -113,6 +116,37 @@ const FAKE_MODELS = [
 ] as const;
 
 describe("Antigravity Adapter", () => {
+  it("refuses Desktop approval execution when the native CLI cannot confirm the Hook configuration", async () => {
+    const { command, cwd, cleanup } = await fakeAgy(FAKE_MODELS);
+    const adapter = new AntigravityAdapter({ command });
+    try {
+      const opened = await adapter.open({
+        kind: "create",
+        cwd,
+        permissionModeId: harnessPermissionModeIdSchema.parse("desktop-approvals"),
+      });
+      if (!opened.ok) throw new Error(opened.error.message);
+      const iterator = opened.value.outputs[Symbol.asyncIterator]();
+      expect(
+        await opened.value.execute({
+          type: "turn.start",
+          turnId: hostTurnIdSchema.parse("missing-approval-hook"),
+          input: [{ type: "text", text: "Do not execute without an approval Hook" }],
+        }),
+      ).toMatchObject({
+        ok: false,
+        error: {
+          message: expect.stringContaining("no tools were started"),
+        },
+      });
+      await opened.value.close();
+      expect((await iterator.next()).done).toBe(true);
+    } finally {
+      await adapter.close();
+      await cleanup();
+    }
+  });
+
   it("parses the CLI Model catalog", () => {
     expect(
       parseAntigravityModels(
@@ -1244,6 +1278,18 @@ if (count === 0) {
         await adapter.close();
         await cleanup();
       }
+    });
+
+    it("formats turn prompt with workspace file instructions and leaves slash commands untouched", () => {
+      const normalPrompt = "Create a hello world python file";
+      const formatted = formatAntigravityTurnPrompt(normalPrompt);
+      expect(formatted).toBe(`${ANTIGRAVITY_WORKSPACE_FILE_INSTRUCTION}${normalPrompt}`);
+
+      const slashCommand = "/plan refactor authentication";
+      expect(formatAntigravityTurnPrompt(slashCommand)).toBe(slashCommand);
+
+      // Idempotency: does not double-inject if instruction already present
+      expect(formatAntigravityTurnPrompt(formatted)).toBe(formatted);
     });
   });
 });

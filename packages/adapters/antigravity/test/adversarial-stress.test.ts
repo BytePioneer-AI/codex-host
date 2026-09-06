@@ -355,8 +355,10 @@ describe("Antigravity Adversarial & Stress Testing", () => {
       const scriptContent = `
 const fs = require('fs');
 const path = require('path');
-if (process.argv.includes("models")) {
-  process.stdout.write("gemini-3.7-flash-high\\tGemini 3.7 Flash High\\ngemini-3.1-pro-high\\tGemini 3.1 Pro High\\n");
+if (process.argv.includes("models") || process.argv.some((arg) => arg.includes("/usage"))) {
+  if (process.argv.includes("models")) {
+    process.stdout.write("gemini-3.7-flash-high\\tGemini 3.7 Flash High\\ngemini-3.1-pro-high\\tGemini 3.1 Pro High\\n");
+  }
   process.exit(0);
 }
 const runsDir = ${JSON.stringify(runsDir)};

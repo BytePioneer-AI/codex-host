@@ -102,7 +102,11 @@ describe("Codex Account routing persistence", () => {
 
     await pool.initialize();
     await pool.active();
-    expect((await stat(codexHome)).mode & 0o777).toBe(0o700);
+    const created = await stat(codexHome);
+    expect(created.isDirectory()).toBe(true);
+    if (process.platform !== "win32") {
+      expect(created.mode & 0o777).toBe(0o700);
+    }
     await pool.close();
   });
 

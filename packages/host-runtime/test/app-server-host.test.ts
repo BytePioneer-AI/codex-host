@@ -780,13 +780,15 @@ describe("AppServerHost HarnessAdapter projection", () => {
       const created = await fixture.collector.waitFor((message) => requestId(message, 8));
       expect(created.result).toMatchObject({ account: { label: "Third Account", active: false } });
       const createdAccount = (created.result as JsonObject).account as JsonObject;
-      expect(createdAccount.codexHome).toMatch(/codex-homes\/.+/u);
       if (typeof createdAccount.accountId !== "string") {
         throw new Error("Created Account has no ID");
       }
       if (typeof createdAccount.codexHome !== "string") {
         throw new Error("Created Account has no CODEX_HOME");
       }
+      expect(createdAccount.codexHome).toBe(
+        path.join(fixture.mappingStoreDirectory, "codex-homes", createdAccount.accountId),
+      );
       const createdAccountId = createdAccount.accountId;
       const createdCodexHome = createdAccount.codexHome;
       expect(createOfficialConnection).toHaveBeenCalledTimes(1);

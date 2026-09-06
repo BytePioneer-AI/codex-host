@@ -6658,6 +6658,82 @@ describe("AppServerHost HarnessAdapter projection", () => {
     await stopFixture(fixture);
   });
 
+  it.each([{}, { model: null }])(
+    "preserves native default Model and configuration (%j)",
+    async (model) => {
+      const fixture = createFixture();
+      const officialRequests = new JsonLineCollector(fixture.official.stdin);
+      const request = {
+        id: 901,
+        method: "thread/start",
+        params: {
+          ...model,
+          cwd: "/native/project",
+          config: {
+            model: "configured-model",
+            model_reasoning_effort: "high",
+            futureSetting: { value: 7 },
+          },
+          approvalPolicy: "on-request",
+          sandbox: "workspace-write",
+          developerInstructions: "Preserve native instructions",
+        },
+      };
+      try {
+        writeRequest(fixture.desktopInput, request);
+        await expect(officialRequests.waitFor((value) => value.id === 901)).resolves.toEqual(
+          request,
+        );
+        expect(fixture.adapter.sessions).toHaveLength(0);
+      } finally {
+        await stopFixture(fixture);
+      }
+    },
+  );
+
+  it.each(["thread/resume", "turn/start"])(
+    "preserves native session settings in %s and its response",
+    async (method) => {
+      const fixture = createFixture();
+      const officialRequests = new JsonLineCollector(fixture.official.stdin);
+      const request = {
+        id: 902,
+        method,
+        params: {
+          threadId: "official-thread",
+          model: "native-model",
+          effort: "high",
+          approvalPolicy: "on-request",
+          config: { model_reasoning_effort: "high" },
+          developerInstructions: "Keep native session instructions",
+        },
+      };
+      const response = {
+        id: 902,
+        result: {
+          model: "native-model",
+          reasoningEffort: "high",
+          approvalPolicy: "on-request",
+          sandbox: { type: "workspaceWrite", networkAccess: false },
+          thread: { id: "official-thread", futureSessionSetting: "preserved" },
+        },
+      };
+      try {
+        writeRequest(fixture.desktopInput, request);
+        await expect(officialRequests.waitFor((value) => value.id === 902)).resolves.toEqual(
+          request,
+        );
+        fixture.official.stdout.write(`${JSON.stringify(response)}\n`);
+        await expect(fixture.collector.waitFor((value) => value.id === 902)).resolves.toEqual(
+          response,
+        );
+        expect(fixture.adapter.sessions).toHaveLength(0);
+      } finally {
+        await stopFixture(fixture);
+      }
+    },
+  );
+
   it("forwards Codex-owned requests without opening a Pi Session", async () => {
     const fixture = createFixture();
     fixture.official.stdin.once("data", (chunk: Buffer) => {

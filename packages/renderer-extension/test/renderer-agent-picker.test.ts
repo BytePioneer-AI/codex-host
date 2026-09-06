@@ -2,6 +2,10 @@ import { describe, expect, it } from "vitest";
 
 import { isNativeModelControlCandidate } from "../src/renderer-composer-dom.js";
 import {
+  codexAccountDisplayName,
+  codexAccountPresentationSignature,
+} from "../src/renderer-codex-account-options.js";
+import {
   rendererAgentMenuPlacement,
   rendererAgentPickerTooltip,
   rendererAgentPickerView,
@@ -15,7 +19,7 @@ describe("Renderer Agent picker presentation", () => {
         { width: 1_920, height: 1_440 },
         1.6,
       ),
-    ).toEqual({ left: 700, bottom: 86 });
+    ).toEqual({ left: 676, bottom: 86 });
   });
 
   it("falls back to unscaled positioning when the Codex window zoom is unavailable", () => {
@@ -25,7 +29,41 @@ describe("Renderer Agent picker presentation", () => {
         { width: 1_200, height: 900 },
         Number.NaN,
       ),
-    ).toEqual({ left: 700, bottom: 86 });
+    ).toEqual({ left: 676, bottom: 86 });
+  });
+
+  it("splits Codex Account email names from their muted domains", () => {
+    const account = {
+      accountId: "reviewer",
+      label: "Reviewer",
+      email: "reviewer@example.com",
+      codexHome: "/tmp/reviewer",
+      active: true,
+      isDefault: false,
+    };
+    expect(codexAccountDisplayName(account)).toEqual({
+      local: "reviewer",
+      domain: "example.com",
+      full: "reviewer@example.com",
+    });
+    expect(codexAccountDisplayName({ ...account, email: undefined })).toEqual({
+      local: "Reviewer",
+      domain: null,
+      full: "Reviewer",
+    });
+  });
+
+  it("refreshes Account presentation when live email metadata arrives", () => {
+    const account = {
+      accountId: "reviewer",
+      label: "Reviewer",
+      codexHome: "/tmp/reviewer",
+      active: true,
+      isDefault: false,
+    };
+    expect(codexAccountPresentationSignature([account])).not.toBe(
+      codexAccountPresentationSignature([{ ...account, email: "reviewer@example.com" }]),
+    );
   });
 
   it("includes the active Codex Account in the locked hover detail", () => {

@@ -2,6 +2,8 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
+import { hostTurnIdSchema } from "@codexhost/shared-contracts";
+import { projectHistoricalTurn } from "../../../protocol-core/src/codex-ui-projector.js";
 
 import {
   findForkBoundary,
@@ -19,6 +21,7 @@ describe("kiro native history", () => {
     try {
       const rows: KiroHistoryRow[] = [
         { id: "u1", payload: { type: "user", content: "first input" } },
+        { id: "s1", timestamp: "2026-09-06T09:00:00.000Z", payload: { type: "turn_start" } },
         { id: "a1", payload: { type: "assistant", content: "before tool" } },
         {
           id: "t1",
@@ -39,7 +42,11 @@ describe("kiro native history", () => {
           },
         },
         { id: "a2", payload: { type: "assistant", content: "after tool" } },
-        { id: "e1", payload: { type: "turn_end", stopReason: "end_turn" } },
+        {
+          id: "e1",
+          timestamp: "2026-09-06T09:01:43.000Z",
+          payload: { type: "turn_end", stopReason: "end_turn" },
+        },
         { id: "init", payload: { type: "tool_call", toolName: "fetch_cloud_config" } },
         { id: "u2", payload: { type: "user", content: "second input" } },
         {
@@ -85,6 +92,27 @@ describe("kiro native history", () => {
         output: { content: [{ type: "text", text: "native result" }] },
       });
       expect(snapshot.turns[1]?.items[0]?.outcome.status).toBe("failed");
+      const firstTurn = snapshot.turns[0];
+      if (!firstTurn) throw new Error("Missing first turn");
+      expect(firstTurn.items[0]?.item).toMatchObject({ phase: "commentary" });
+      expect(firstTurn.items[2]?.item).toMatchObject({ phase: "final_answer" });
+      expect(
+        projectHistoricalTurn({
+          turnId: hostTurnIdSchema.parse("restored"),
+          cwd: directory,
+          snapshot: firstTurn,
+        }),
+      ).toMatchObject({
+        startedAt: Date.parse("2026-09-06T09:00:00.000Z") / 1000,
+        completedAt: Date.parse("2026-09-06T09:01:43.000Z") / 1000,
+        durationMs: 103_000,
+        items: [
+          { type: "userMessage" },
+          { type: "agentMessage", text: "before tool", phase: "commentary" },
+          { type: "commandExecution" },
+          { type: "agentMessage", text: "after tool", phase: "final_answer" },
+        ],
+      });
       expect(await readKiroSnapshot(location)).toEqual(snapshot);
       await fs.writeFile(path.join(directory, "messages.jsonl"), "{broken", "utf8");
       await expect(readKiroSnapshot(location)).rejects.toThrow();

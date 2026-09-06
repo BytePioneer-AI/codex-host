@@ -64,6 +64,7 @@ import {
 import { KiroExecutableError, resolveKiroExecutable } from "./command.js";
 import { KIRO_COMMAND_CATALOG } from "./commands.js";
 import { KiroTurnOutput } from "./turn-output.js";
+import { KiroUsage } from "./usage.js";
 import {
   findForkBoundary,
   findRollbackBoundary,
@@ -249,8 +250,15 @@ export class KiroAdapter implements HarnessAdapter {
 
     const environment = { ...this.#options.environment, ...input.environment };
     let session: KiroSession | undefined;
-    const transport = this.#createTransport(input.cwd, environment, (error) =>
-      session?.fault(error),
+    const usage = new KiroUsage();
+    const transport = this.#createTransport(
+      input.cwd,
+      environment,
+      (error) => session?.fault(error),
+      (event) => {
+        if (session) session.observeUsage(event);
+        else usage.observe(event.metadata?.kiro);
+      },
     );
     const locateSessionFn = this.#deps.locateSession ?? locateKiroNativeSession;
     const readSnapshotFn = this.#deps.readSnapshot ?? readKiroSnapshot;
@@ -390,12 +398,22 @@ export class KiroAdapter implements HarnessAdapter {
         throw new Error("Kiro did not confirm the requested initial permission mode");
       }
 
+      try {
+        const location = await locateSessionFn({ environment }, openResult.sessionId);
+        if (location) usage.load(await readKiroNativeMessages(location.sessionDirectory));
+      } catch {
+        // Usage is optional; an unreadable ledger must not prevent opening a writable Session.
+      }
+      for (const event of openResult.replay ?? []) {
+        if (event.type === "usage") usage.observe(event.metadata?.kiro);
+      }
       session = new KiroSession({
         harnessId: this.harnessId,
         transport,
         cwd: input.cwd,
         sessionId: openResult.sessionId,
         modelCatalog,
+        usage,
         initialModel,
         initialPermissionModeId,
         randomUUID: this.#deps.randomUUID ?? randomUUID,
@@ -441,12 +459,14 @@ export class KiroAdapter implements HarnessAdapter {
     cwd: string,
     environment = this.#options.environment,
     onFault?: (error: KiroTransportError) => void,
+    onUsage?: (event: Extract<KiroTransportEvent, { type: "usage" }>) => void,
   ): KiroAcpTransportLike {
     const opts: KiroAcpTransportOptions = {
       cwd,
       ...(this.#options.command ? { command: this.#options.command } : {}),
       ...(environment ? { environment } : {}),
       ...(onFault ? { onFault } : {}),
+      ...(onUsage ? { onUsage } : {}),
       ...(this.#options.commandTimeoutMs !== undefined
         ? { commandTimeoutMs: this.#options.commandTimeoutMs }
         : {}),
@@ -467,6 +487,7 @@ interface KiroSessionOptions {
   cwd: string;
   sessionId: string;
   modelCatalog: HarnessModelCatalog;
+  usage?: KiroUsage;
   initialModel: HarnessModelRef | undefined;
   initialPermissionModeId: HarnessPermissionModeId | undefined;
   onClose?: () => void;
@@ -497,7 +518,7 @@ export class KiroSession implements HarnessSession {
   readonly harnessId: HarnessId;
   readonly capabilities: HarnessSessionCapabilities = KIRO_SESSION_CAPABILITIES;
   readonly initialState: HarnessSessionState;
-  readonly initialUsage: HostUsage | null = null;
+  readonly initialUsage: HostUsage | null;
   readonly outputs: AsyncIterable<HarnessOutput>;
   readonly commands: HarnessCommandCapability;
 
@@ -525,6 +546,9 @@ export class KiroSession implements HarnessSession {
   #faultError: KiroTransportError | null = null;
   #configBusy = false;
   readonly #onClose: (() => void) | undefined;
+  readonly #usage: KiroUsage;
+  #publishedUsage: string;
+  #usageRefresh: Promise<void> | null = null;
 
   constructor(options: KiroSessionOptions) {
     this.harnessId = options.harnessId;
@@ -539,6 +563,9 @@ export class KiroSession implements HarnessSession {
     this.#readSnapshotFn = options.readSnapshot;
     this.#environment = options.environment;
     this.#onClose = options.onClose;
+    this.#usage = options.usage ?? new KiroUsage();
+    this.initialUsage = this.#usage.snapshot();
+    this.#publishedUsage = JSON.stringify(this.initialUsage);
 
     const nativeRef: NativeSessionRef = nativeSessionRefSchema.parse({
       harnessId: this.harnessId,
@@ -561,6 +588,53 @@ export class KiroSession implements HarnessSession {
       list: async () => ({ ok: true, value: KIRO_COMMAND_CATALOG }),
       execute: async (cmd: HarnessCommandInvocation) => this.#executeHarnessCommand(cmd),
     };
+  }
+
+  observeUsage(event: Extract<KiroTransportEvent, { type: "usage" }>): void {
+    if (this.#closed) return;
+    this.#usage.observe(event.metadata?.kiro);
+    this.#publishUsage();
+  }
+
+  #publishUsage(): void {
+    if (this.#closed) return;
+    const usage = this.#usage.snapshot();
+    const serialized = JSON.stringify(usage);
+    if (serialized === this.#publishedUsage) return;
+    this.#publishedUsage = serialized;
+    this.#channel.emit({ kind: "event", event: { type: "session.usage.changed", usage } });
+  }
+
+  refreshUsage(): Promise<void> {
+    if (this.#closed) return Promise.resolve();
+    if (this.#usageRefresh) return this.#usageRefresh;
+    this.#usageRefresh = (async () => {
+      try {
+        const location = await this.#locateSession(
+          { environment: this.#environment },
+          this.#sessionId,
+        );
+        if (location) this.#usage.load(await readKiroNativeMessages(location.sessionDirectory));
+      } catch {
+        /* Keep known usage when optional history is unavailable. */
+      }
+      this.#publishUsage();
+      if (!this.#closed && this.#activeTurnId === null && !this.#configBusy) {
+        try {
+          const result = await this.#transport.sendExtensionRequest("_kiro/session/context", {
+            sessionId: this.#sessionId,
+            subcommand: "show",
+          });
+          if (!this.#closed) this.#usage.context(result);
+        } catch {
+          /* A Usage refresh must not fault a working Session. */
+        }
+        this.#publishUsage();
+      }
+    })().finally(() => {
+      this.#usageRefresh = null;
+    });
+    return this.#usageRefresh;
   }
 
   async readSnapshot(): Promise<HarnessResult<HostThreadSnapshot>> {
@@ -687,6 +761,7 @@ export class KiroSession implements HarnessSession {
               if (this.#closed || this.#activeTurnId !== turnId) return;
               output.accept(event);
               if (event.type === "usage") {
+                this.observeUsage(event);
                 const meta = event.metadata?.kiro;
                 if (
                   isRecord(meta) &&
@@ -822,6 +897,7 @@ export class KiroSession implements HarnessSession {
 
         this.#activeTurnId = null;
         this.#stopTurn = null;
+        if (!this.#closed) void this.refreshUsage();
       }
     })();
 
@@ -1133,7 +1209,11 @@ export class KiroSession implements HarnessSession {
               JSON.stringify(
                 result,
                 (key, value: unknown) =>
-                  /token|password|secret|authorization|api.?key/iu.test(key) ? "[redacted]" : value,
+                  /^(?:(?:access|refresh|auth|id)[_-]?)?token$|password|secret|authorization|api.?key/iu.test(
+                    key,
+                  )
+                    ? "[redacted]"
+                    : value,
                 2,
               ),
             ),

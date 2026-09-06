@@ -274,6 +274,8 @@ export interface HostAgentMessageItem {
   type: "agentMessage";
   itemId: HostItemId;
   text: string;
+  /** Omit when the Harness cannot distinguish progress from its final answer. */
+  phase?: "commentary" | "final_answer";
 }
 
 export interface HostReasoningItem {
@@ -386,6 +388,9 @@ export interface HostTurnSnapshot {
   items: HostItemSnapshot[];
   outcome: HistoricalTurnOutcome;
   model?: HarnessModelRef;
+  /** Native wall-clock timestamps; omit when unavailable. */
+  startedAtMs?: number;
+  completedAtMs?: number;
 }
 
 export interface HostThreadSnapshot {

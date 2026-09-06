@@ -30,6 +30,27 @@ function projector(): CodexTurnProjector {
 }
 
 describe("Codex UI projector", () => {
+  it("does not invent historical duration from invalid native timing", () => {
+    const snapshot: HostThreadSnapshot["turns"][number] = {
+      nativeTurnRef: nativeTurnRefSchema.parse({
+        harnessId: "kiro-cli",
+        nativeSessionId: "native",
+        nativeTurnKey: "user",
+        formatVersion: 1,
+      }),
+      input: [],
+      items: [],
+      outcome: { status: "succeeded" },
+      startedAtMs: 2_000,
+      completedAtMs: 1_000,
+    };
+    expect(projectHistoricalTurn({ turnId, cwd: "/workspace", snapshot })).toMatchObject({
+      startedAt: null,
+      completedAt: null,
+      durationMs: null,
+    });
+  });
+
   it("projects a complete historical Snapshot without replaying notifications", () => {
     const snapshot: HostThreadSnapshot["turns"][number] = {
       nativeTurnRef: nativeTurnRefSchema.parse({

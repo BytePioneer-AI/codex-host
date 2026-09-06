@@ -110,6 +110,7 @@ export interface KiroAcpTransportOptions {
   commandTimeoutMs?: number | undefined;
   closeTimeoutMs?: number | undefined;
   onFault?: ((error: KiroTransportError) => void) | undefined;
+  onUsage?: ((event: Extract<KiroTransportEvent, { type: "usage" }>) => void) | undefined;
 }
 
 export interface KiroForkOpenInput {
@@ -292,10 +293,7 @@ export class KiroAcpTransport {
       const connection = this.#connection;
       if (!connection) throw new KiroTransportError("unavailable", "Kiro ACP is unavailable");
 
-      this.#replay =
-        input.kind === "resume" || input.kind === "fork" || input.kind === "rollbackLastTurn"
-          ? []
-          : null;
+      this.#replay = [];
 
       let session: NewSessionResponse | LoadSessionResponse;
       let sessionId: string;
@@ -682,7 +680,12 @@ export class KiroAcpTransport {
         event = {
           type: "agent.text",
           text,
-          messageId: typeof kiroMeta?.messageId === "string" ? kiroMeta.messageId : undefined,
+          messageId:
+            typeof kiroMeta?.replayId === "string"
+              ? kiroMeta.replayId
+              : typeof kiroMeta?.messageId === "string"
+                ? kiroMeta.messageId
+                : undefined,
           metadata: { isReplay },
         };
       }
@@ -743,6 +746,8 @@ export class KiroAcpTransport {
         this.#replay.push(event);
       } else if (this.#activePrompt) {
         this.#activePrompt.onEvent(event);
+      } else if (event.type === "usage") {
+        this.#options.onUsage?.(event);
       }
     }
   }

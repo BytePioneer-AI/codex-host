@@ -15,6 +15,8 @@ type ToolEvent = Extract<KiroTransportEvent, { type: "tool.call" | "tool.update"
 export class KiroTurnOutput {
   readonly #tools = new Map<string, { event: ToolEvent; item: HostItem; done: boolean }>();
   #message: Extract<HostItem, { type: "agentMessage" }> | undefined;
+  #messageId: string | undefined;
+  #messageIndex = 0;
   #finished = false;
 
   constructor(
@@ -38,17 +40,33 @@ export class KiroTurnOutput {
     });
   }
 
+  #completeMessage(outcome: HostItemOutcome, phase: "commentary" | "final_answer"): void {
+    if (!this.#message) return;
+    this.#complete({ ...this.#message, phase }, outcome);
+    this.#message = undefined;
+    this.#messageId = undefined;
+  }
+
   accept(event: KiroTransportEvent): void {
     if (this.#finished) return;
     if (event.type === "agent.text") {
+      if (
+        event.messageId !== undefined &&
+        this.#messageId !== undefined &&
+        event.messageId !== this.#messageId
+      ) {
+        this.#completeMessage({ status: "succeeded" }, "commentary");
+      }
       if (!this.#message) {
         this.#message = {
           type: "agentMessage",
-          itemId: hostItemIdSchema.parse(`agent-${this.turnId}`),
+          itemId: hostItemIdSchema.parse(`agent-${this.turnId}-${this.#messageIndex++}`),
           text: "",
+          phase: "commentary",
         };
         this.#start(this.#message);
       }
+      if (event.messageId !== undefined) this.#messageId = event.messageId;
       this.#message = { ...this.#message, text: this.#message.text + event.text };
       this.emit({
         kind: "event",
@@ -63,6 +81,7 @@ export class KiroTurnOutput {
       const previous = this.#tools.get(event.callId);
       // A completion without a start belongs to Session initialization, not this Prompt.
       if (previous?.done || (!previous && event.type === "tool.update")) return;
+      if (!previous) this.#completeMessage({ status: "succeeded" }, "commentary");
       const merged = {
         ...previous?.event,
         ...Object.fromEntries(
@@ -104,7 +123,7 @@ export class KiroTurnOutput {
   finish(outcome: TurnOutcome): void {
     if (this.#finished) return;
     this.#finished = true;
-    if (this.#message) this.#complete(this.#message, outcome);
+    this.#completeMessage(outcome, outcome.status === "succeeded" ? "final_answer" : "commentary");
     for (const tool of this.#tools.values()) {
       if (!tool.done)
         this.#complete(

@@ -94,6 +94,7 @@ export async function locateKiroNativeSession(
 
 export interface KiroHistoryRow {
   id: string;
+  timestamp?: string;
   payload: {
     type: string;
     text?: string | undefined;
@@ -282,6 +283,18 @@ export async function readKiroSnapshot(
                 error: { code: "nativeFailure", message: "Kiro turn failed", retryable: false },
               }
             : { status: "unknown", reason: "Kiro history has no recognized terminal stopReason" };
+    const start = turn.rows.find((row) => row.payload.type === "turn_start") ?? turn.rows[0];
+    const startedAtMs = Date.parse(start?.timestamp ?? "");
+    const completedAtMs = Date.parse(end?.timestamp ?? "");
+    const hasTiming =
+      Number.isFinite(startedAtMs) &&
+      Number.isFinite(completedAtMs) &&
+      startedAtMs >= 0 &&
+      completedAtMs >= startedAtMs;
+    // A trailing assistant row is the final response; pre-tool messages remain progress.
+    const lastContent = turn.rows.findLast((row) =>
+      ["assistant", "tool_call"].includes(row.payload.type),
+    );
 
     for (const [index, row] of turn.rows.entries()) {
       const type = row.payload?.type;
@@ -289,7 +302,13 @@ export async function readKiroSnapshot(
 
       if (type === "assistant") {
         items.push({
-          item: { type: "agentMessage", itemId, text: historyText(row.payload) },
+          item: {
+            type: "agentMessage",
+            itemId,
+            text: historyText(row.payload),
+            phase:
+              row === lastContent && outcome.status === "succeeded" ? "final_answer" : "commentary",
+          },
           outcome: { status: "succeeded" },
         });
       } else if (type === "tool_call") {
@@ -354,6 +373,7 @@ export async function readKiroSnapshot(
       input: [{ type: "text", text: turn.userPromptText }],
       items,
       outcome,
+      ...(hasTiming ? { startedAtMs, completedAtMs } : {}),
       ...(modelRef ? { model: modelRef } : {}),
     });
   }

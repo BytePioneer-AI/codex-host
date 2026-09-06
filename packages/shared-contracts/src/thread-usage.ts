@@ -16,6 +16,8 @@ export const threadUsageSnapshotSchema = z
     reasoningOutputTokens: nonNegativeSafeIntegerSchema.optional(),
     totalTokens: nonNegativeSafeIntegerSchema.optional(),
     totalCostUsd: finiteNonNegativeNumberSchema.optional(),
+    totalCredits: finiteNonNegativeNumberSchema.optional(),
+    contextUsagePercent: finiteNonNegativeNumberSchema.optional(),
     cacheHitRatePercent: cacheHitRatePercentSchema.optional(),
     contextWindowTokens: nonNegativeSafeIntegerSchema.optional(),
     contextUsedTokens: nonNegativeSafeIntegerSchema.optional(),

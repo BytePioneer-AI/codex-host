@@ -3,6 +3,16 @@ import { describe, expect, it } from "vitest";
 import { parseHostUsage } from "../src/index.js";
 
 describe("Harness Usage", () => {
+  it("accepts native credits and independent context percent without fake tokens", () => {
+    expect(parseHostUsage({ totalCredits: 0.125, contextUsagePercent: 102 })).toEqual({
+      totalCredits: 0.125,
+      contextUsagePercent: 102,
+    });
+    for (const value of [-1, Infinity, NaN]) {
+      expect(() => parseHostUsage({ totalCredits: value })).toThrow();
+      expect(() => parseHostUsage({ contextUsagePercent: value })).toThrow();
+    }
+  });
   it("accepts reliable native aggregate and context fields", () => {
     const input = {
       inputTokens: 10,

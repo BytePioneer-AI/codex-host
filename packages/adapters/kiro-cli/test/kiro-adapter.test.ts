@@ -206,6 +206,123 @@ function projectOutputs(outputs: HarnessOutput[]): void {
 }
 
 describe("Kiro regression lifecycle", () => {
+  it("loads credits on resume and publishes exact refresh and idle context updates", async () => {
+    const directory = await fs.mkdtemp(path.join(os.tmpdir(), "kiro-usage-"));
+    try {
+      const record = {
+        id: "usage",
+        payload: {
+          type: "usage_summary",
+          executionId: "execution",
+          requestIds: ["request"],
+          promptTurnSummaries: [{ unit: "credit", usage: 0.125 }],
+        },
+      };
+      await fs.writeFile(path.join(directory, "messages.jsonl"), JSON.stringify(record), "utf8");
+      const fake = new FakeKiroTransport();
+      fake.extensionResult = { contextUsage: { usagePercentage: 9.5 } };
+      let idleUsage: ((event: Extract<KiroTransportEvent, { type: "usage" }>) => void) | undefined;
+      const adapter = new KiroAdapter(
+        {},
+        {
+          createTransport: (options) => {
+            idleUsage = options.onUsage;
+            return fake;
+          },
+          locateSession: async () => ({
+            sessionDirectory: directory,
+            cwd: directory,
+            sessionMeta: { id: fake.sessionId, workspacePaths: [directory] },
+          }),
+        },
+      );
+      const opened = await adapter.open({
+        kind: "resume",
+        cwd: directory,
+        nativeRef: nativeSessionRefSchema.parse({
+          harnessId: "kiro-cli",
+          nativeSessionId: fake.sessionId,
+          formatVersion: 1,
+        }),
+      });
+      if (!opened.ok) throw new Error(opened.error.message);
+      const session = opened.value;
+      expect(session.initialUsage).toEqual({ totalCredits: 0.125 });
+      const outputs: HarnessOutput[] = [];
+      const consume = (async () => {
+        for await (const output of session.outputs) outputs.push(output);
+      })();
+      await Promise.all([session.refreshUsage?.(), session.refreshUsage?.()]);
+      expect(fake.extensionRequests).toHaveLength(1);
+      if (!idleUsage) throw new Error("Idle usage callback missing");
+      idleUsage({
+        type: "usage",
+        update: { sessionUpdate: "session_info_update" },
+        metadata: { kiro: { kind: "context_usage", contextUsage: { usagePercentage: 10 } } },
+      });
+      idleUsage({
+        type: "usage",
+        update: { sessionUpdate: "session_info_update" },
+        metadata: { kiro: { ...record.payload, kind: "turn_completion" } },
+      });
+      await adapter.close();
+      await consume;
+      expect(outputs).toEqual([
+        {
+          kind: "event",
+          event: {
+            type: "session.usage.changed",
+            usage: { totalCredits: 0.125, contextUsagePercent: 9.5 },
+          },
+        },
+        {
+          kind: "event",
+          event: {
+            type: "session.usage.changed",
+            usage: { totalCredits: 0.125, contextUsagePercent: 10 },
+          },
+        },
+      ]);
+    } finally {
+      await fs.rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("publishes live usage without duplicating credits or pretending to know tokens", async () => {
+    const fake = new FakeKiroTransport();
+    const event: KiroTransportEvent = {
+      type: "usage",
+      update: { sessionUpdate: "session_info_update" },
+      metadata: {
+        kiro: {
+          kind: "turn_completion",
+          requestIds: ["native-request"],
+          promptTurnSummaries: [{ unit: "credit", usage: 0.05 }],
+        },
+      },
+    };
+    fake.eventsToEmit = [
+      {
+        type: "usage",
+        update: { sessionUpdate: "session_info_update" },
+        metadata: { kiro: { kind: "context_usage", usagePercentage: 8 } },
+      },
+      event,
+      event,
+    ];
+    const { session } = await open(fake);
+    const outputs = await collectTurn(session);
+    const updates = outputs.flatMap((output) =>
+      output.kind === "event" && output.event.type === "session.usage.changed"
+        ? [output.event.usage]
+        : [],
+    );
+    expect(updates).toEqual([
+      { contextUsagePercent: 8 },
+      { totalCredits: 0.05, contextUsagePercent: 8 },
+    ]);
+  });
+
   async function open(fake: FakeKiroTransport) {
     const adapter = new KiroAdapter({}, { createTransport: () => fake });
     const result = await adapter.open({ kind: "create", cwd: "/workspace" });
@@ -366,7 +483,11 @@ describe("Kiro regression lifecycle", () => {
     "publishes %s results without native identity",
     async (commandId) => {
       const fake = new FakeKiroTransport();
-      fake.extensionResult = { summary: "VISIBLE_QUERY_RESULT", accessToken: "do-not-show" };
+      fake.extensionResult = {
+        summary: "VISIBLE_QUERY_RESULT",
+        accessToken: "do-not-show",
+        inputTokens: 123,
+      };
       const { session } = await open(fake);
       const outputs: HarnessOutput[] = [];
       const consume = (async () => {
@@ -383,6 +504,7 @@ describe("Kiro regression lifecycle", () => {
       expect(() => projectOutputs(outputs)).not.toThrow();
       expect(JSON.stringify(outputs)).toContain("VISIBLE_QUERY_RESULT");
       expect(JSON.stringify(outputs)).not.toContain("do-not-show");
+      expect(JSON.stringify(outputs)).toContain("123");
       expect(JSON.stringify(outputs)).not.toContain("nativeTurnRef");
     },
   );
@@ -488,6 +610,7 @@ describe("Kiro regression lifecycle", () => {
         } as Parameters<KiroAdapter["open"]>[0]);
         expect(result.ok).toBe(true);
         expect(environments).toEqual([
+          { MARKER: "thread", CODEXHOST_THREAD_ID: "child" },
           { MARKER: "thread", CODEXHOST_THREAD_ID: "child" },
           { MARKER: "thread", CODEXHOST_THREAD_ID: "child" },
         ]);

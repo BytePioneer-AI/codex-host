@@ -9,10 +9,91 @@ import {
   locateKiroNativeSession,
   parseKiroHistory,
   readKiroSnapshot,
+  readKiroNativeMessages,
   type KiroHistoryRow,
 } from "../src/history.js";
 
 describe("kiro native history", () => {
+  it("preserves native turn outcomes, tool results and message order across repeated reads", async () => {
+    const directory = await fs.mkdtemp(path.join(os.tmpdir(), "kiro-native-history-"));
+    try {
+      const rows: KiroHistoryRow[] = [
+        { id: "u1", payload: { type: "user", content: "first input" } },
+        { id: "a1", payload: { type: "assistant", content: "before tool" } },
+        {
+          id: "t1",
+          payload: {
+            type: "tool_call",
+            toolCallId: "call1",
+            toolName: "read_file",
+            args: { path: "a.txt" },
+          },
+        },
+        {
+          id: "r1",
+          payload: {
+            type: "tool_result",
+            toolCallId: "call1",
+            content: "native result",
+            success: true,
+          },
+        },
+        { id: "a2", payload: { type: "assistant", content: "after tool" } },
+        { id: "e1", payload: { type: "turn_end", stopReason: "end_turn" } },
+        { id: "init", payload: { type: "tool_call", toolName: "fetch_cloud_config" } },
+        { id: "u2", payload: { type: "user", content: "second input" } },
+        {
+          id: "t2",
+          payload: { type: "tool_call", toolCallId: "call2", toolName: "edit", args: {} },
+        },
+        {
+          id: "r2",
+          payload: { type: "tool_result", toolCallId: "call2", content: "denied", success: false },
+        },
+        { id: "e2", payload: { type: "turn_end", stopReason: "cancelled" } },
+        { id: "u3", payload: { type: "user", content: "incomplete input" } },
+      ];
+      await fs.writeFile(
+        path.join(directory, "messages.jsonl"),
+        rows.map((row) => JSON.stringify(row)).join("\n"),
+        "utf8",
+      );
+      const location = {
+        sessionDirectory: directory,
+        sessionMeta: { id: "native", workspacePaths: [directory] },
+        cwd: directory,
+      };
+      const snapshot = await readKiroSnapshot(location);
+      expect(snapshot.turns.map((t) => t.outcome.status)).toEqual([
+        "succeeded",
+        "cancelled",
+        "unknown",
+      ]);
+      expect(snapshot.turns.map((t) => t.input[0]?.text)).toEqual([
+        "first input",
+        "second input",
+        "incomplete input",
+      ]);
+      expect(snapshot.turns[0]?.items.map((i) => i.item.type)).toEqual([
+        "agentMessage",
+        "toolExecution",
+        "agentMessage",
+      ]);
+      expect(snapshot.turns[0]?.items[1]?.item).toMatchObject({
+        toolName: "read_file",
+        arguments: { path: "a.txt" },
+        output: { content: [{ type: "text", text: "native result" }] },
+      });
+      expect(snapshot.turns[1]?.items[0]?.outcome.status).toBe("failed");
+      expect(await readKiroSnapshot(location)).toEqual(snapshot);
+      await fs.writeFile(path.join(directory, "messages.jsonl"), "{broken", "utf8");
+      await expect(readKiroSnapshot(location)).rejects.toThrow();
+      await expect(readKiroNativeMessages(path.join(directory, "missing"))).rejects.toThrow();
+    } finally {
+      await fs.rm(directory, { recursive: true, force: true });
+    }
+  });
+
   describe("parseKiroHistory and boundaries", () => {
     const sampleRows: KiroHistoryRow[] = [
       {
@@ -94,7 +175,11 @@ describe("kiro native history", () => {
 
     it("returns null rollback boundary when no turns or no bootstrap exists", () => {
       expect(findRollbackBoundary({ turns: [] })).toBeNull();
-      expect(findRollbackBoundary({ turns: [{ turnIndex: 0, userMessageId: "u1", userPromptText: "", rows: [] }] })).toBeNull();
+      expect(
+        findRollbackBoundary({
+          turns: [{ turnIndex: 0, userMessageId: "u1", userPromptText: "", rows: [] }],
+        }),
+      ).toBeNull();
     });
   });
 
@@ -115,29 +200,36 @@ describe("kiro native history", () => {
         modelId: "claude-sonnet-4.5",
         autopilot: "on",
       };
-      await fs.writeFile(path.join(sessionDir, "session.json"), JSON.stringify(sessionMeta), "utf8");
+      await fs.writeFile(
+        path.join(sessionDir, "session.json"),
+        JSON.stringify(sessionMeta),
+        "utf8",
+      );
 
       const messages = [
         JSON.stringify({
           id: "m-user-1",
-          payload: { type: "user", text: "Hello" },
+          payload: { type: "user", content: "Hello" },
         }),
         JSON.stringify({
           id: "m-asst-1",
-          payload: { type: "assistant", text: "Greetings!" },
+          payload: { type: "assistant", content: "Greetings!" },
         }),
         JSON.stringify({
           id: "m-tool-1",
           payload: {
             type: "tool_call",
-            name: "diff_tool",
-            rawInput: {},
+            toolCallId: "call-1",
+            toolName: "diff_tool",
+            args: { path: "file.txt" },
           },
         }),
         JSON.stringify({
           id: "m-result-1",
           payload: {
             type: "tool_result",
+            toolCallId: "call-1",
+            success: true,
             content: [
               {
                 type: "diff",
@@ -150,7 +242,7 @@ describe("kiro native history", () => {
         }),
         JSON.stringify({
           id: "m-end-1",
-          payload: { type: "turn_end" },
+          payload: { type: "turn_end", stopReason: "end_turn" },
         }),
       ].join("\n");
 
@@ -179,12 +271,17 @@ describe("kiro native history", () => {
 
         const toolExec = snapshot.turns[0]?.items.find((i) => i.item.type === "toolExecution");
         expect(toolExec).toBeDefined();
+        expect(toolExec?.item).toMatchObject({
+          toolName: "diff_tool",
+          arguments: { path: "file.txt" },
+        });
+        expect(snapshot.turns[0]?.outcome.status).toBe("succeeded");
 
         const fileChange = snapshot.turns[0]?.items.find((i) => i.item.type === "fileChange");
         expect(fileChange).toBeDefined();
 
-        expect(snapshot.state.effectiveModel?.id).toBe("claude-sonnet-4.5");
-        expect(snapshot.state.effectivePermissionModeId).toBe("autopilot");
+        expect(snapshot.state?.effectiveModel?.id).toBe("claude-sonnet-4.5");
+        expect(snapshot.state?.effectivePermissionModeId).toBe("autopilot");
       }
 
       await fs.rm(tmpDir, { recursive: true, force: true });

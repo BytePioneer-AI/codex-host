@@ -1,9 +1,6 @@
 import { randomUUID } from "node:crypto";
 
-import type {
-  RequestPermissionRequest,
-  RequestPermissionResponse,
-} from "@agentclientprotocol/sdk";
+import type { RequestPermissionRequest, RequestPermissionResponse } from "@agentclientprotocol/sdk";
 import type {
   HarnessAdapter,
   HarnessCommandAccepted,
@@ -17,11 +14,8 @@ import type {
   HarnessSession,
   HarnessSessionCapabilities,
   HarnessSessionState,
-  HostAgentMessageItem,
   HostCommand,
   HostContextCompactionItem,
-  HostFileChangeItem,
-  HostItem,
   HostQuestionResponse,
   HostThreadSnapshot,
   HostUsage,
@@ -43,6 +37,7 @@ import type {
 } from "@codexhost/harness-adapter";
 import {
   HarnessOutputChannel as OutputChannel,
+  sanitizeDiagnosticTail,
 } from "@codexhost/harness-adapter";
 import {
   harnessIdSchema,
@@ -56,7 +51,6 @@ import {
   type HostInteractionId,
   type HostTurnId,
   type NativeSessionRef,
-  type NativeTurnRef,
 } from "@codexhost/shared-contracts";
 
 import {
@@ -69,7 +63,7 @@ import {
 } from "./acp-transport.js";
 import { KiroExecutableError, resolveKiroExecutable } from "./command.js";
 import { KIRO_COMMAND_CATALOG } from "./commands.js";
-import { projectKiroFileChanges } from "./file-diff.js";
+import { KiroTurnOutput } from "./turn-output.js";
 import {
   findForkBoundary,
   findRollbackBoundary,
@@ -79,19 +73,14 @@ import {
   readKiroSnapshot,
   type KiroNativeSessionLocation,
 } from "./history.js";
+import { confirmedKiroConfig, kiroConfigValue, parseKiroModelCatalog } from "./models.js";
 import {
-  KIRO_DEFAULT_MODEL_CATALOG,
-  parseKiroModelCatalog,
-} from "./models.js";
-import {
-  KIRO_DEFAULT_PERMISSION_MODE_ID,
   KIRO_PERMISSION_MODE_CATALOG,
   decodeKiroPermissionMode,
   encodeKiroPermissionMode,
 } from "./permission-modes.js";
 import {
   projectKiroPermission,
-  projectKiroToolCall,
   projectKiroUserInput,
   type KiroUserInputParams,
   type KiroUserInputResult,
@@ -150,7 +139,10 @@ export interface KiroAdapterOptions {
 export interface KiroAdapterDependencies {
   createTransport?(options: KiroAcpTransportOptions): KiroAcpTransportLike;
   randomUUID?(): string;
-  locateSession?(options: { environment?: NodeJS.ProcessEnv | undefined; homeDirectory?: string | undefined }, sessionId: string): Promise<KiroNativeSessionLocation | null>;
+  locateSession?(
+    options: { environment?: NodeJS.ProcessEnv | undefined; homeDirectory?: string | undefined },
+    sessionId: string,
+  ): Promise<KiroNativeSessionLocation | null>;
   readSnapshot?(location: KiroNativeSessionLocation): Promise<HostThreadSnapshot>;
   inspectInstallation?(): void;
 }
@@ -161,6 +153,7 @@ export class KiroAdapter implements HarnessAdapter {
 
   readonly #options: KiroAdapterOptions;
   readonly #deps: KiroAdapterDependencies;
+  readonly #sessions = new Set<KiroSession>();
 
   constructor(options: KiroAdapterOptions = {}, deps: KiroAdapterDependencies = {}) {
     this.#options = options;
@@ -191,13 +184,15 @@ export class KiroAdapter implements HarnessAdapter {
       }
     }
 
-    const transport = this.#createTransport(process.cwd());
+    const transport = this.#createTransport(_input.cwd ?? process.cwd());
     try {
       const initialize = await transport.inspect();
-      let modelCatalog = KIRO_DEFAULT_MODEL_CATALOG;
-      if (typeof initialize === "object" && initialize !== null && "configOptions" in initialize) {
-        modelCatalog = parseKiroModelCatalog((initialize as { configOptions: unknown }).configOptions);
-      }
+      const modelCatalog =
+        isRecord(initialize) && isRecord(initialize.catalog)
+          ? (initialize.catalog as unknown as HarnessModelCatalog)
+          : parseKiroModelCatalog(isRecord(initialize) ? initialize.configOptions : undefined);
+      if (modelCatalog.models.length === 0)
+        throw new Error("Kiro returned no native model catalog");
       return {
         status: "ready",
         catalog: modelCatalog,
@@ -252,40 +247,42 @@ export class KiroAdapter implements HarnessAdapter {
       };
     }
 
-    const transport = this.#createTransport(input.cwd);
+    const environment = { ...this.#options.environment, ...input.environment };
+    let session: KiroSession | undefined;
+    const transport = this.#createTransport(input.cwd, environment, (error) =>
+      session?.fault(error),
+    );
     const locateSessionFn = this.#deps.locateSession ?? locateKiroNativeSession;
     const readSnapshotFn = this.#deps.readSnapshot ?? readKiroSnapshot;
 
     let openResult: KiroOpenResult;
-    let initialModel: HarnessModelRef =
-      input.kind === "create" && input.model
-        ? input.model
-        : (KIRO_DEFAULT_MODEL_CATALOG.defaultModel ?? { id: "claude-haiku-4.5" as HarnessModelRef["id"] });
-    let initialPermissionModeId: HarnessPermissionModeId =
-      input.kind === "create" && input.permissionModeId
-        ? input.permissionModeId
-        : KIRO_DEFAULT_PERMISSION_MODE_ID;
+    let initialModel: HarnessModelRef | undefined;
+    let initialPermissionModeId: HarnessPermissionModeId | undefined;
 
     try {
       if (input.kind === "create") {
         openResult = await transport.open({
           kind: "create",
-          modelId: initialModel.id,
-          autopilot: decodeKiroPermissionMode(initialPermissionModeId),
+          ...(input.model ? { modelId: input.model.id } : {}),
+          ...(input.permissionModeId
+            ? { autopilot: decodeKiroPermissionMode(input.permissionModeId) }
+            : {}),
         });
       } else if (input.kind === "resume") {
         const sessionId = input.nativeRef.nativeSessionId;
         openResult = await transport.open({
           kind: "resume",
           sessionId,
-          autopilot: input.permissionModeId ? decodeKiroPermissionMode(input.permissionModeId) : undefined,
+          autopilot: input.permissionModeId
+            ? decodeKiroPermissionMode(input.permissionModeId)
+            : undefined,
         });
         if (input.permissionModeId) {
           initialPermissionModeId = input.permissionModeId;
         }
       } else if (input.kind === "fork") {
         const sourceSessionId = input.sourceRef.nativeSessionId;
-        const location = await locateSessionFn({ environment: this.#options.environment }, sourceSessionId);
+        const location = await locateSessionFn({ environment }, sourceSessionId);
         if (!location) {
           await transport.close().catch(() => undefined);
           return {
@@ -331,7 +328,7 @@ export class KiroAdapter implements HarnessAdapter {
       } else {
         // rollbackLastTurn
         const sourceSessionId = input.sourceRef.nativeSessionId;
-        const location = await locateSessionFn({ environment: this.#options.environment }, sourceSessionId);
+        const location = await locateSessionFn({ environment }, sourceSessionId);
         if (!location) {
           await transport.close().catch(() => undefined);
           return {
@@ -377,8 +374,23 @@ export class KiroAdapter implements HarnessAdapter {
       }
 
       const modelCatalog = parseKiroModelCatalog(openResult.configOptions);
+      const modelId = kiroConfigValue(openResult.configOptions, "model");
+      const autopilot = kiroConfigValue(openResult.configOptions, "autopilot");
+      initialModel = modelId ? harnessModelRefSchema.parse({ id: modelId }) : undefined;
+      initialPermissionModeId =
+        autopilot === "on" || autopilot === "off" ? encodeKiroPermissionMode(autopilot) : undefined;
+      if (input.kind === "create" && input.model && initialModel?.id !== input.model.id) {
+        throw new Error("Kiro did not confirm the requested initial model");
+      }
+      if (
+        (input.kind === "create" || input.kind === "resume") &&
+        input.permissionModeId &&
+        initialPermissionModeId !== input.permissionModeId
+      ) {
+        throw new Error("Kiro did not confirm the requested initial permission mode");
+      }
 
-      const session = new KiroSession({
+      session = new KiroSession({
         harnessId: this.harnessId,
         transport,
         cwd: input.cwd,
@@ -389,9 +401,13 @@ export class KiroAdapter implements HarnessAdapter {
         randomUUID: this.#deps.randomUUID ?? randomUUID,
         locateSession: locateSessionFn,
         readSnapshot: readSnapshotFn,
-        environment: this.#options.environment,
+        environment,
+        onClose: () => {
+          if (session) this.#sessions.delete(session);
+        },
       });
 
+      this.#sessions.add(session);
       return { ok: true, value: session };
     } catch (error) {
       await transport.close().catch(() => undefined);
@@ -418,16 +434,25 @@ export class KiroAdapter implements HarnessAdapter {
   }
 
   async close(): Promise<void> {
-    // No shared pool resources
+    await Promise.all([...this.#sessions].map((session) => session.close()));
   }
 
-  #createTransport(cwd: string): KiroAcpTransportLike {
+  #createTransport(
+    cwd: string,
+    environment = this.#options.environment,
+    onFault?: (error: KiroTransportError) => void,
+  ): KiroAcpTransportLike {
     const opts: KiroAcpTransportOptions = {
       cwd,
       ...(this.#options.command ? { command: this.#options.command } : {}),
-      ...(this.#options.environment ? { environment: this.#options.environment } : {}),
-      ...(this.#options.commandTimeoutMs !== undefined ? { commandTimeoutMs: this.#options.commandTimeoutMs } : {}),
-      ...(this.#options.closeTimeoutMs !== undefined ? { closeTimeoutMs: this.#options.closeTimeoutMs } : {}),
+      ...(environment ? { environment } : {}),
+      ...(onFault ? { onFault } : {}),
+      ...(this.#options.commandTimeoutMs !== undefined
+        ? { commandTimeoutMs: this.#options.commandTimeoutMs }
+        : {}),
+      ...(this.#options.closeTimeoutMs !== undefined
+        ? { closeTimeoutMs: this.#options.closeTimeoutMs }
+        : {}),
     };
     if (this.#deps.createTransport) {
       return this.#deps.createTransport(opts);
@@ -442,10 +467,14 @@ interface KiroSessionOptions {
   cwd: string;
   sessionId: string;
   modelCatalog: HarnessModelCatalog;
-  initialModel: HarnessModelRef;
-  initialPermissionModeId: HarnessPermissionModeId;
+  initialModel: HarnessModelRef | undefined;
+  initialPermissionModeId: HarnessPermissionModeId | undefined;
+  onClose?: () => void;
   randomUUID: () => string;
-  locateSession: (options: { environment?: NodeJS.ProcessEnv | undefined; homeDirectory?: string | undefined }, sessionId: string) => Promise<KiroNativeSessionLocation | null>;
+  locateSession: (
+    options: { environment?: NodeJS.ProcessEnv | undefined; homeDirectory?: string | undefined },
+    sessionId: string,
+  ) => Promise<KiroNativeSessionLocation | null>;
   readSnapshot: (location: KiroNativeSessionLocation) => Promise<HostThreadSnapshot>;
   environment?: NodeJS.ProcessEnv | undefined;
 }
@@ -477,16 +506,25 @@ export class KiroSession implements HarnessSession {
   readonly #cwd: string;
   readonly #sessionId: string;
   readonly #randomUUID: () => string;
-  readonly #locateSession: (options: { environment?: NodeJS.ProcessEnv | undefined; homeDirectory?: string | undefined }, sessionId: string) => Promise<KiroNativeSessionLocation | null>;
+  readonly #locateSession: (
+    options: { environment?: NodeJS.ProcessEnv | undefined; homeDirectory?: string | undefined },
+    sessionId: string,
+  ) => Promise<KiroNativeSessionLocation | null>;
   readonly #readSnapshotFn: (location: KiroNativeSessionLocation) => Promise<HostThreadSnapshot>;
   readonly #environment?: NodeJS.ProcessEnv | undefined;
 
   #activeTurnId: HostTurnId | null = null;
-  #currentModel: HarnessModelRef;
-  #currentPermissionModeId: HarnessPermissionModeId;
+  #currentModel: HarnessModelRef | undefined;
+  #currentPermissionModeId: HarnessPermissionModeId | undefined;
   #modelCatalog: HarnessModelCatalog;
   #pendingInteraction: PendingInteraction | null = null;
   #closed = false;
+  #activeTask: Promise<void> | null = null;
+  #stopTurn: (() => void) | null = null;
+  #closeTask: Promise<void> | null = null;
+  #faultError: KiroTransportError | null = null;
+  #configBusy = false;
+  readonly #onClose: (() => void) | undefined;
 
   constructor(options: KiroSessionOptions) {
     this.harnessId = options.harnessId;
@@ -500,6 +538,7 @@ export class KiroSession implements HarnessSession {
     this.#locateSession = options.locateSession;
     this.#readSnapshotFn = options.readSnapshot;
     this.#environment = options.environment;
+    this.#onClose = options.onClose;
 
     const nativeRef: NativeSessionRef = nativeSessionRefSchema.parse({
       harnessId: this.harnessId,
@@ -509,8 +548,10 @@ export class KiroSession implements HarnessSession {
 
     this.initialState = {
       nativeRef,
-      effectiveModel: this.#currentModel,
-      effectivePermissionModeId: this.#currentPermissionModeId,
+      ...(this.#currentModel ? { effectiveModel: this.#currentModel } : {}),
+      ...(this.#currentPermissionModeId
+        ? { effectivePermissionModeId: this.#currentPermissionModeId }
+        : {}),
       availableThinkingOptions: [],
     };
 
@@ -523,10 +564,26 @@ export class KiroSession implements HarnessSession {
   }
 
   async readSnapshot(): Promise<HarnessResult<HostThreadSnapshot>> {
+    if (this.#activeTurnId !== null || this.#configBusy) {
+      return {
+        ok: false,
+        error: { code: "sessionBusy", message: "Kiro is writing history", retryable: true },
+      };
+    }
     try {
-      const location = await this.#locateSession({ environment: this.#environment }, this.#sessionId);
+      const location = await this.#locateSession(
+        { environment: this.#environment },
+        this.#sessionId,
+      );
       if (!location) {
-        return { ok: true, value: { turns: [] } };
+        return {
+          ok: false,
+          error: {
+            code: "sessionNotFound",
+            message: "Kiro history was not found",
+            retryable: false,
+          },
+        };
       }
       const snapshot = await this.#readSnapshotFn(location);
       return { ok: true, value: snapshot };
@@ -544,10 +601,14 @@ export class KiroSession implements HarnessSession {
 
   async execute(command: TurnStartCommand): Promise<HarnessResult<TurnStartAccepted>>;
   async execute(command: TurnCancelCommand): Promise<HarnessResult<TurnCancelAccepted>>;
-  async execute(command: InteractionRespondCommand): Promise<HarnessResult<InteractionRespondAccepted>>;
+  async execute(
+    command: InteractionRespondCommand,
+  ): Promise<HarnessResult<InteractionRespondAccepted>>;
   async execute(command: ModelSelectCommand): Promise<HarnessResult<ModelSelectCompleted>>;
   async execute(command: ThinkingSelectCommand): Promise<HarnessResult<ThinkingSelectCompleted>>;
-  async execute(command: PermissionModeSelectCommand): Promise<HarnessResult<PermissionModeSelectCompleted>>;
+  async execute(
+    command: PermissionModeSelectCommand,
+  ): Promise<HarnessResult<PermissionModeSelectCompleted>>;
   async execute(command: HostCommand): Promise<HarnessResult<unknown>> {
     if (this.#closed) {
       return {
@@ -589,10 +650,14 @@ export class KiroSession implements HarnessSession {
   }
 
   async #runTurn(command: TurnStartCommand): Promise<HarnessResult<TurnStartAccepted>> {
-    if (this.#activeTurnId !== null) {
+    if (this.#activeTurnId !== null || this.#configBusy) {
       return {
         ok: false,
-        error: { code: "sessionBusy", message: "Session is busy with another turn", retryable: false },
+        error: {
+          code: "sessionBusy",
+          message: "Session is busy with another turn",
+          retryable: false,
+        },
       };
     }
 
@@ -605,87 +670,45 @@ export class KiroSession implements HarnessSession {
     });
 
     const userText = command.input.map((i) => i.text).join("\n");
-    let agentMessageItem: HostAgentMessageItem | null = null;
+    const output = new KiroTurnOutput(turnId, this.#cwd, (event) => this.#channel.emit(event));
     let assignedUserMessageId: string | undefined;
+    const stopped = new Promise<never>((_resolve, reject) => {
+      this.#stopTurn = () => reject(this.#faultError ?? new Error("Session closed"));
+    });
 
-    // Run in background / async
-    void (async () => {
+    this.#activeTask = (async () => {
       let turnOutcome: TurnOutcome = { status: "succeeded" };
       try {
-        const promptResult = await this.#transport.runTurn(
-          userText,
-          (event: KiroTransportEvent) => {
-            if (event.type === "agent.text") {
-              if (!agentMessageItem) {
-                const itemId = hostItemIdSchema.parse(`agent-${turnId}-${this.#randomUUID()}`);
-                agentMessageItem = {
-                  type: "agentMessage",
-                  itemId,
-                  text: "",
+        const promptResult = await Promise.race([
+          stopped,
+          this.#transport.runTurn(
+            userText,
+            (event: KiroTransportEvent) => {
+              if (this.#closed || this.#activeTurnId !== turnId) return;
+              output.accept(event);
+              if (event.type === "usage") {
+                const meta = event.metadata?.kiro;
+                if (
+                  isRecord(meta) &&
+                  meta.kind === "user_message_id_assigned" &&
+                  typeof meta.userMessageId === "string"
+                ) {
+                  assignedUserMessageId = meta.userMessageId;
+                }
+              } else if (event.type === "compaction.completed") {
+                const compactionItemId = hostItemIdSchema.parse(
+                  `compact-${turnId}-${this.#randomUUID()}`,
+                );
+                const compactionItem: HostContextCompactionItem = {
+                  type: "contextCompaction",
+                  itemId: compactionItemId,
                 };
                 this.#channel.emit({
                   kind: "event",
                   event: {
                     type: "item.started",
                     turnId,
-                    item: agentMessageItem,
-                  },
-                });
-              }
-              agentMessageItem.text += event.text;
-              this.#channel.emit({
-                kind: "event",
-                event: {
-                  type: "item.updated",
-                  turnId,
-                  itemId: agentMessageItem.itemId,
-                  update: { type: "text.append", text: event.text },
-                },
-              });
-            } else if (event.type === "tool.call") {
-              const toolItem = projectKiroToolCall(event.callId, {
-                toolCallId: event.callId,
-                title: event.title,
-                name: event.name,
-                kind: event.kind,
-                status: event.status,
-                rawInput: event.rawInput,
-                rawOutput: event.rawOutput,
-                metadata: event.metadata,
-              });
-              this.#channel.emit({
-                kind: "event",
-                event: {
-                  type: "item.started",
-                  turnId,
-                  item: toolItem as HostItem,
-                },
-              });
-            } else if (event.type === "tool.update") {
-              const toolItem = projectKiroToolCall(event.callId, {
-                toolCallId: event.callId,
-                title: event.title,
-                name: event.name,
-                kind: event.kind,
-                status: event.status,
-                rawInput: event.rawInput,
-                rawOutput: event.rawOutput,
-                metadata: event.metadata,
-              });
-              const changes = projectKiroFileChanges(event.content, this.#cwd);
-              if (changes && changes.length > 0) {
-                const fileItemId = hostItemIdSchema.parse(`file-${turnId}-${this.#randomUUID()}`);
-                const fileItem: HostFileChangeItem = {
-                  type: "fileChange",
-                  itemId: fileItemId,
-                  changes,
-                };
-                this.#channel.emit({
-                  kind: "event",
-                  event: {
-                    type: "item.started",
-                    turnId,
-                    item: fileItem,
+                    item: compactionItem,
                   },
                 });
                 this.#channel.emit({
@@ -694,107 +717,54 @@ export class KiroSession implements HarnessSession {
                     type: "item.completed",
                     turnId,
                     snapshot: {
-                      item: fileItem,
+                      item: compactionItem,
                       outcome: { status: "succeeded" },
                     },
                   },
                 });
               }
-
-              this.#channel.emit({
-                kind: "event",
-                event: {
-                  type: "item.completed",
-                  turnId,
-                  snapshot: {
-                    item: toolItem as HostItem,
-                    outcome: { status: "succeeded" },
-                  },
-                },
-              });
-            } else if (event.type === "usage") {
-              const meta = event.metadata;
-              if (meta && typeof meta.userMessageId === "string") {
-                assignedUserMessageId = meta.userMessageId;
-              }
-            } else if (event.type === "compaction.completed") {
-              const compactionItemId = hostItemIdSchema.parse(`compact-${turnId}-${this.#randomUUID()}`);
-              const compactionItem: HostContextCompactionItem = {
-                type: "contextCompaction",
-                itemId: compactionItemId,
-              };
-              this.#channel.emit({
-                kind: "event",
-                event: {
-                  type: "item.started",
-                  turnId,
-                  item: compactionItem,
-                },
-              });
-              this.#channel.emit({
-                kind: "event",
-                event: {
-                  type: "item.completed",
-                  turnId,
-                  snapshot: {
-                    item: compactionItem,
-                    outcome: { status: "succeeded" },
-                  },
-                },
-              });
-            }
-          },
-          async (request: RequestPermissionRequest) => {
-            const interactionId = this.#randomUUID();
-            const projected = projectKiroPermission(interactionId, turnId, request);
-            this.#channel.emit({
-              kind: "interaction",
-              interaction: projected.interaction,
-            });
-
-            return new Promise<RequestPermissionResponse>((resolve) => {
-              this.#pendingInteraction = {
-                type: "approval",
-                id: projected.interaction.interactionId,
-                resolve: (actionId: string, cancelled?: boolean) => {
-                  resolve(projected.resolve(actionId, cancelled));
-                },
-              };
-            });
-          },
-          async (params: KiroUserInputParams) => {
-            const interactionId = this.#randomUUID();
-            const projected = projectKiroUserInput(interactionId, turnId, params);
-            this.#channel.emit({
-              kind: "interaction",
-              interaction: projected.interaction,
-            });
-
-            return new Promise((resolve) => {
-              this.#pendingInteraction = {
-                type: "question",
-                id: projected.interaction.interactionId,
-                resolve: (response: HostQuestionResponse) => {
-                  resolve(projected.resolve(response));
-                },
-              };
-            });
-          },
-        );
-
-        if (agentMessageItem) {
-          this.#channel.emit({
-            kind: "event",
-            event: {
-              type: "item.completed",
-              turnId,
-              snapshot: {
-                item: agentMessageItem,
-                outcome: { status: "succeeded" },
-              },
             },
-          });
-        }
+            async (request: RequestPermissionRequest) => {
+              if (this.#closed || this.#activeTurnId !== turnId)
+                return { outcome: { outcome: "cancelled" } };
+              const interactionId = this.#randomUUID();
+              const projected = projectKiroPermission(interactionId, turnId, request);
+              this.#channel.emit({
+                kind: "interaction",
+                interaction: projected.interaction,
+              });
+
+              return new Promise<RequestPermissionResponse>((resolve) => {
+                this.#pendingInteraction = {
+                  type: "approval",
+                  id: projected.interaction.interactionId,
+                  resolve: (actionId: string, cancelled?: boolean) => {
+                    resolve(projected.resolve(actionId, cancelled));
+                  },
+                };
+              });
+            },
+            async (params: KiroUserInputParams) => {
+              if (this.#closed || this.#activeTurnId !== turnId) return { action: "dismissed" };
+              const interactionId = this.#randomUUID();
+              const projected = projectKiroUserInput(interactionId, turnId, params);
+              this.#channel.emit({
+                kind: "interaction",
+                interaction: projected.interaction,
+              });
+
+              return new Promise((resolve) => {
+                this.#pendingInteraction = {
+                  type: "question",
+                  id: projected.interaction.interactionId,
+                  resolve: (response: HostQuestionResponse) => {
+                    resolve(projected.resolve(response));
+                  },
+                };
+              });
+            },
+          ),
+        ]);
 
         if (isRecord(promptResult) && promptResult.stopReason === "cancelled") {
           turnOutcome = { status: "cancelled", reason: "User cancelled" };
@@ -802,18 +772,23 @@ export class KiroSession implements HarnessSession {
           turnOutcome = { status: "succeeded" };
         }
       } catch (error) {
-        turnOutcome = {
-          status: "failed",
-          error: {
-            code: "nativeFailure",
-            message: error instanceof Error ? error.message : "Kiro prompt failed",
-            retryable: false,
-          },
-        };
+        turnOutcome =
+          this.#closed && !this.#faultError
+            ? { status: "cancelled", reason: "Session closed" }
+            : {
+                status: "failed",
+                error: {
+                  code: "nativeFailure",
+                  message: error instanceof Error ? error.message : "Kiro prompt failed",
+                  retryable: false,
+                },
+              };
       } finally {
         if (this.#pendingInteraction) {
           const pending = this.#pendingInteraction;
           this.#pendingInteraction = null;
+          if (pending.type === "approval") pending.resolve("", true);
+          else pending.resolve({ type: "question", cancelled: true, answers: {} });
           this.#channel.emit({
             kind: "event",
             event: {
@@ -825,25 +800,28 @@ export class KiroSession implements HarnessSession {
           });
         }
 
-        const nativeTurnKey = assignedUserMessageId ?? `turn-${this.#randomUUID()}`;
-        const nativeTurnRef: NativeTurnRef = nativeTurnRefSchema.parse({
-          harnessId: this.harnessId,
-          nativeSessionId: this.#sessionId,
-          nativeTurnKey,
-          formatVersion: 1,
-        });
+        output.finish(turnOutcome);
+        const nativeTurnRef = assignedUserMessageId
+          ? nativeTurnRefSchema.parse({
+              harnessId: this.harnessId,
+              nativeSessionId: this.#sessionId,
+              nativeTurnKey: assignedUserMessageId,
+              formatVersion: 1,
+            })
+          : undefined;
 
         this.#channel.emit({
           kind: "event",
           event: {
             type: "turn.completed",
             turnId,
-            nativeTurnRef,
+            ...(nativeTurnRef ? { nativeTurnRef } : {}),
             outcome: turnOutcome,
           },
         });
 
         this.#activeTurnId = null;
+        this.#stopTurn = null;
       }
     })();
 
@@ -875,32 +853,47 @@ export class KiroSession implements HarnessSession {
     return { ok: true, value: { cancellationRequested: true } };
   }
 
-  async #respondInteraction(command: InteractionRespondCommand): Promise<HarnessResult<InteractionRespondAccepted>> {
+  async #respondInteraction(
+    command: InteractionRespondCommand,
+  ): Promise<HarnessResult<InteractionRespondAccepted>> {
     if (!this.#pendingInteraction || this.#pendingInteraction.id !== command.interactionId) {
       return {
         ok: false,
-        error: { code: "invalidRequest", message: "No matching pending interaction", retryable: false },
+        error: {
+          code: "invalidRequest",
+          message: "No matching pending interaction",
+          retryable: false,
+        },
       };
     }
 
     const pending = this.#pendingInteraction;
-    this.#pendingInteraction = null;
 
     if (pending.type === "approval") {
       if (command.response.type !== "approval") {
         return {
           ok: false,
-          error: { code: "invalidRequest", message: "Expected approval response", retryable: false },
+          error: {
+            code: "invalidRequest",
+            message: "Expected approval response",
+            retryable: false,
+          },
         };
       }
+      this.#pendingInteraction = null;
       pending.resolve(command.response.actionId);
     } else {
       if (command.response.type !== "question") {
         return {
           ok: false,
-          error: { code: "invalidRequest", message: "Expected question response", retryable: false },
+          error: {
+            code: "invalidRequest",
+            message: "Expected question response",
+            retryable: false,
+          },
         };
       }
+      this.#pendingInteraction = null;
       pending.resolve(command.response);
     }
 
@@ -911,7 +904,10 @@ export class KiroSession implements HarnessSession {
           type: "interaction.closed",
           interactionId: command.interactionId,
           turnId: this.#activeTurnId,
-          reason: command.response.type === "question" && command.response.cancelled ? "cancelled" : "responded",
+          reason:
+            command.response.type === "question" && command.response.cancelled
+              ? "cancelled"
+              : "responded",
         },
       });
     }
@@ -920,21 +916,27 @@ export class KiroSession implements HarnessSession {
   }
 
   async #selectModel(command: ModelSelectCommand): Promise<HarnessResult<ModelSelectCompleted>> {
-    if (this.#activeTurnId !== null) {
+    if (this.#activeTurnId !== null || this.#configBusy) {
       return {
         ok: false,
-        error: { code: "sessionBusy", message: "Cannot change model while turn is active", retryable: false },
+        error: {
+          code: "sessionBusy",
+          message: "Cannot change model while turn is active",
+          retryable: false,
+        },
       };
     }
 
+    this.#configBusy = true;
     try {
-      await this.#transport.setConfigOption("model", command.model.id);
-      this.#currentModel = command.model;
+      const result = await this.#transport.setConfigOption("model", command.model.id);
+      const options = confirmedKiroConfig(result, "model", command.model.id);
+      this.#updateConfig(options);
       this.#channel.emit({
         kind: "event",
         event: {
           type: "session.state.changed",
-          state: { effectiveModel: this.#currentModel },
+          state: this.#state(),
         },
       });
       return { ok: true, value: { completed: true } };
@@ -947,28 +949,35 @@ export class KiroSession implements HarnessSession {
           retryable: false,
         },
       };
+    } finally {
+      this.#configBusy = false;
     }
   }
 
   async #selectPermissionMode(
     command: PermissionModeSelectCommand,
   ): Promise<HarnessResult<PermissionModeSelectCompleted>> {
-    if (this.#activeTurnId !== null) {
+    if (this.#activeTurnId !== null || this.#configBusy) {
       return {
         ok: false,
-        error: { code: "sessionBusy", message: "Cannot change permission mode while turn is active", retryable: false },
+        error: {
+          code: "sessionBusy",
+          message: "Cannot change permission mode while turn is active",
+          retryable: false,
+        },
       };
     }
 
+    this.#configBusy = true;
     try {
       const autopilot = decodeKiroPermissionMode(command.permissionModeId);
-      await this.#transport.setConfigOption("autopilot", autopilot);
-      this.#currentPermissionModeId = command.permissionModeId;
+      const result = await this.#transport.setConfigOption("autopilot", autopilot);
+      this.#updateConfig(confirmedKiroConfig(result, "autopilot", autopilot));
       this.#channel.emit({
         kind: "event",
         event: {
           type: "session.state.changed",
-          state: { effectivePermissionModeId: this.#currentPermissionModeId },
+          state: this.#state(),
         },
       });
       return { ok: true, value: { completed: true } };
@@ -981,12 +990,58 @@ export class KiroSession implements HarnessSession {
           retryable: false,
         },
       };
+    } finally {
+      this.#configBusy = false;
     }
+  }
+
+  #updateConfig(options: unknown[]): void {
+    if (this.#closed) throw new Error("Session closed during configuration");
+    const model = kiroConfigValue(options, "model");
+    const autopilot = kiroConfigValue(options, "autopilot");
+    this.#currentModel = model ? harnessModelRefSchema.parse({ id: model }) : undefined;
+    this.#currentPermissionModeId =
+      autopilot === "on" || autopilot === "off" ? encodeKiroPermissionMode(autopilot) : undefined;
+    this.#modelCatalog = parseKiroModelCatalog(options);
+  }
+
+  #state(): HarnessSessionState {
+    return {
+      ...(this.initialState.nativeRef ? { nativeRef: this.initialState.nativeRef } : {}),
+      ...(this.#currentModel ? { effectiveModel: this.#currentModel } : {}),
+      ...(this.#currentPermissionModeId
+        ? { effectivePermissionModeId: this.#currentPermissionModeId }
+        : {}),
+      availableThinkingOptions: [],
+    };
   }
 
   async #executeHarnessCommand(
     command: HarnessCommandInvocation,
   ): Promise<HarnessResult<HarnessCommandAccepted>> {
+    if (this.#closed)
+      return {
+        ok: false,
+        error: { code: "invalidState", message: "Session is closed", retryable: false },
+      };
+    if (this.#activeTurnId !== null || this.#configBusy)
+      return {
+        ok: false,
+        error: { code: "sessionBusy", message: "Session is busy", retryable: true },
+      };
+    if (
+      !KIRO_COMMAND_CATALOG.commands.some((entry) => entry.id === command.commandId) ||
+      Object.keys(command.arguments ?? {}).length > 0
+    ) {
+      return {
+        ok: false,
+        error: {
+          code: "invalidRequest",
+          message: "Unknown command or unsupported arguments",
+          retryable: false,
+        },
+      };
+    }
     const turnId = command.turnId
       ? hostTurnIdSchema.parse(command.turnId)
       : hostTurnIdSchema.parse(`cmd-${this.#randomUUID()}`);
@@ -994,110 +1049,184 @@ export class KiroSession implements HarnessSession {
       kind: "event",
       event: { type: "turn.started", turnId },
     });
-
-    try {
-      if (command.commandId === "kiro.compact") {
-        await this.#transport.compact();
-        const compactionItemId = hostItemIdSchema.parse(`compact-${turnId}-${this.#randomUUID()}`);
-        const compactionItem: HostContextCompactionItem = {
-          type: "contextCompaction",
-          itemId: compactionItemId,
-        };
-        this.#channel.emit({
-          kind: "event",
-          event: {
-            type: "item.started",
-            turnId,
-            item: compactionItem,
-          },
-        });
-        this.#channel.emit({
-          kind: "event",
-          event: {
-            type: "item.completed",
-            turnId,
-            snapshot: {
+    this.#activeTurnId = turnId;
+    const stopped = new Promise<never>((_resolve, reject) => {
+      this.#stopTurn = () => reject(this.#faultError ?? new Error("Session closed"));
+    });
+    const execute = async (): Promise<HarnessResult<HarnessCommandAccepted>> => {
+      try {
+        let result: unknown;
+        if (command.commandId === "kiro.compact") {
+          await Promise.race([stopped, this.#transport.compact()]);
+          const compactionItemId = hostItemIdSchema.parse(
+            `compact-${turnId}-${this.#randomUUID()}`,
+          );
+          const compactionItem: HostContextCompactionItem = {
+            type: "contextCompaction",
+            itemId: compactionItemId,
+          };
+          this.#channel.emit({
+            kind: "event",
+            event: {
+              type: "item.started",
+              turnId,
               item: compactionItem,
-              outcome: { status: "succeeded" },
             },
+          });
+          this.#channel.emit({
+            kind: "event",
+            event: {
+              type: "item.completed",
+              turnId,
+              snapshot: {
+                item: compactionItem,
+                outcome: { status: "succeeded" },
+              },
+            },
+          });
+        } else if (command.commandId === "kiro.context") {
+          result = await Promise.race([
+            stopped,
+            this.#transport.sendExtensionRequest("_kiro/session/context", {
+              sessionId: this.#sessionId,
+              subcommand: "show",
+            }),
+          ]);
+        } else if (command.commandId === "kiro.usage") {
+          result = await Promise.race([
+            stopped,
+            this.#transport.sendExtensionRequest("_kiro/account/getUsage", {
+              sessionId: this.#sessionId,
+            }),
+          ]);
+        } else if (command.commandId === "kiro.plan") {
+          await Promise.race([
+            stopped,
+            this.#transport.sendExtensionRequest("session/set_mode", {
+              sessionId: this.#sessionId,
+              modeId: "plan",
+            }),
+          ]);
+        } else if (command.commandId === "kiro.spec") {
+          await Promise.race([
+            stopped,
+            this.#transport.sendExtensionRequest("session/set_mode", {
+              sessionId: this.#sessionId,
+              modeId: "spec",
+            }),
+          ]);
+        } else if (command.commandId === "kiro.vibe") {
+          await Promise.race([
+            stopped,
+            this.#transport.sendExtensionRequest("session/set_mode", {
+              sessionId: this.#sessionId,
+              modeId: "vibe",
+            }),
+          ]);
+        }
+
+        if (result !== undefined) {
+          const item = {
+            type: "agentMessage" as const,
+            itemId: hostItemIdSchema.parse(`query-${turnId}`),
+            text: sanitizeDiagnosticTail(
+              JSON.stringify(
+                result,
+                (key, value: unknown) =>
+                  /token|password|secret|authorization|api.?key/iu.test(key) ? "[redacted]" : value,
+                2,
+              ),
+            ),
+          };
+          this.#channel.emit({ kind: "event", event: { type: "item.started", turnId, item } });
+          this.#channel.emit({
+            kind: "event",
+            event: {
+              type: "item.completed",
+              turnId,
+              snapshot: { item, outcome: { status: "succeeded" } },
+            },
+          });
+        }
+        this.#channel.emit({
+          kind: "event",
+          event: {
+            type: "turn.completed",
+            turnId,
+            outcome: { status: "succeeded" },
           },
         });
-      } else if (command.commandId === "kiro.context") {
-        await this.#transport.sendExtensionRequest("_kiro/session/context", {
-          sessionId: this.#sessionId,
-          subcommand: "show",
+
+        return { ok: true, value: { turnId } };
+      } catch (error) {
+        this.#channel.emit({
+          kind: "event",
+          event: {
+            type: "turn.completed",
+            turnId,
+            outcome:
+              this.#closed && !this.#faultError
+                ? { status: "cancelled", reason: "Session closed" }
+                : {
+                    status: "failed",
+                    error: {
+                      code: "nativeFailure",
+                      message: error instanceof Error ? error.message : "Command execution failed",
+                      retryable: false,
+                    },
+                  },
+          },
         });
-      } else if (command.commandId === "kiro.usage") {
-        await this.#transport.sendExtensionRequest("_kiro/account/getUsage", {
-          sessionId: this.#sessionId,
-        });
-      } else if (command.commandId === "kiro.plan") {
-        await this.#transport.sendExtensionRequest("session/set_mode", {
-          sessionId: this.#sessionId,
-          modeId: "plan",
-        });
-      } else if (command.commandId === "kiro.spec") {
-        await this.#transport.sendExtensionRequest("session/set_mode", {
-          sessionId: this.#sessionId,
-          modeId: "spec",
-        });
-      } else if (command.commandId === "kiro.vibe") {
-        await this.#transport.sendExtensionRequest("session/set_mode", {
-          sessionId: this.#sessionId,
-          modeId: "vibe",
-        });
+        return {
+          ok: false,
+          error: {
+            code: "nativeFailure",
+            message: error instanceof Error ? error.message : "Command execution failed",
+            retryable: false,
+          },
+        };
+      } finally {
+        this.#activeTurnId = null;
+        this.#stopTurn = null;
       }
-
-      this.#channel.emit({
-        kind: "event",
-        event: {
-          type: "turn.completed",
-          turnId,
-          outcome: { status: "succeeded" },
-        },
-      });
-
-      return { ok: true, value: { turnId } };
-    } catch (error) {
-      this.#channel.emit({
-        kind: "event",
-        event: {
-          type: "turn.completed",
-          turnId,
-          outcome: {
-            status: "failed",
-            error: {
-              code: "nativeFailure",
-              message: error instanceof Error ? error.message : "Command execution failed",
-              retryable: false,
-            },
-          },
-        },
-      });
-      return {
-        ok: false,
-        error: {
-          code: "nativeFailure",
-          message: error instanceof Error ? error.message : "Command execution failed",
-          retryable: false,
-        },
-      };
-    }
+    };
+    const task = execute();
+    this.#activeTask = task.then(() => undefined);
+    return task;
   }
 
-  async close(): Promise<void> {
+  fault(error: KiroTransportError): void {
     if (this.#closed) return;
+    this.#faultError = error;
+    void this.close().catch(() => undefined);
+  }
+
+  close(): Promise<void> {
+    if (this.#closeTask) return this.#closeTask;
     this.#closed = true;
-    if (this.#pendingInteraction) {
-      const pending = this.#pendingInteraction;
-      this.#pendingInteraction = null;
-      if (pending.type === "approval") {
-        pending.resolve("", true);
-      } else {
-        pending.resolve({ type: "question", cancelled: true, answers: {} });
+    this.#stopTurn?.();
+    this.#closeTask = (async () => {
+      try {
+        await this.#activeTask;
+        if (this.#faultError) {
+          this.#channel.emit({
+            kind: "event",
+            event: {
+              type: "session.faulted",
+              error: {
+                code: this.#faultError.kind,
+                message: this.#faultError.message,
+                retryable: false,
+              },
+            },
+          });
+        }
+        await this.#transport.close();
+      } finally {
+        this.#channel.end();
+        this.#onClose?.();
       }
-    }
-    this.#channel.end();
-    await this.#transport.close();
+    })();
+    return this.#closeTask;
   }
 }

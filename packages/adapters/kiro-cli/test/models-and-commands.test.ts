@@ -1,13 +1,12 @@
 import { describe, expect, it } from "vitest";
+import { harnessPermissionModeIdSchema } from "@codexhost/shared-contracts";
 
-import {
-  KIRO_COMMANDS,
-  KIRO_COMMAND_CATALOG,
-} from "../src/commands.js";
+import { KIRO_COMMANDS, KIRO_COMMAND_CATALOG } from "../src/commands.js";
 import {
   KIRO_DEFAULT_MODELS,
   KIRO_DEFAULT_MODEL_CATALOG,
   parseKiroModelCatalog,
+  parseKiroCliModels,
 } from "../src/models.js";
 import {
   KIRO_DEFAULT_PERMISSION_MODE_ID,
@@ -21,13 +20,22 @@ describe("kiro models catalog", () => {
   it("provides default model catalog with empty thinking options", () => {
     expect(KIRO_DEFAULT_MODEL_CATALOG.models).toEqual(KIRO_DEFAULT_MODELS);
     expect(KIRO_DEFAULT_MODEL_CATALOG.thinkingOptions).toEqual([]);
-    expect(KIRO_DEFAULT_MODEL_CATALOG.defaultModel?.id).toBe("claude-haiku-4.5");
+    expect(KIRO_DEFAULT_MODEL_CATALOG.defaultModel).toBeUndefined();
+    expect(KIRO_DEFAULT_MODELS).toEqual([]);
+  });
 
-    const modelIds = KIRO_DEFAULT_MODELS.map((m) => m.ref.id);
-    expect(modelIds).toContain("auto");
-    expect(modelIds).toContain("claude-haiku-4.5");
-    expect(modelIds).toContain("claude-sonnet-4.5");
-    expect(modelIds).toContain("claude-opus-4.5");
+  it("reads native CLI field names without inventing a catalog or a default", () => {
+    const models = Array.from({ length: 9 }, (_, i) => ({
+      model_id: `native-${i}`,
+      model_name: `Native ${i}`,
+      rate_multiplier: 1,
+    }));
+    const catalog = parseKiroCliModels({ models, default_model: "native-4" });
+    expect(catalog.models).toHaveLength(9);
+    expect(catalog.models[0]).toEqual({ ref: { id: "native-0" }, label: "Native 0" });
+    expect(catalog.defaultModel?.id).toBe("native-4");
+    expect(parseKiroCliModels({ models }).defaultModel).toBeUndefined();
+    expect(() => parseKiroCliModels({ models: [] })).toThrow();
   });
 
   it("parses model catalog dynamically from ACP config options", () => {
@@ -68,8 +76,8 @@ describe("kiro permission modes", () => {
   });
 
   it("decodes permission mode to native autopilot on/off switch", () => {
-    expect(decodeKiroPermissionMode("autopilot")).toBe("on");
-    expect(decodeKiroPermissionMode("supervised")).toBe("off");
+    expect(decodeKiroPermissionMode(harnessPermissionModeIdSchema.parse("autopilot"))).toBe("on");
+    expect(decodeKiroPermissionMode(harnessPermissionModeIdSchema.parse("supervised"))).toBe("off");
   });
 
   it("encodes native value to permission mode id", () => {

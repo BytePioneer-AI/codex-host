@@ -15,7 +15,6 @@ import {
   nativeCheckpointRefSchema,
   nativeSessionRefSchema,
   nativeTurnRefSchema,
-  type JsonValue,
   type NativeCheckpointRef,
   type NativeSessionRef,
   type NativeTurnRef,
@@ -23,6 +22,7 @@ import {
 
 import { projectKiroFileChanges } from "./file-diff.js";
 import { encodeKiroPermissionMode } from "./permission-modes.js";
+import { projectKiroToolCall } from "./projection.js";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -102,27 +102,35 @@ export interface KiroHistoryRow {
     command?: string | undefined;
     rawInput?: unknown;
     rawOutput?: unknown;
-    content?: unknown[] | undefined;
+    content?: unknown;
     status?: string | undefined;
     kind?: string | undefined;
     [key: string]: unknown;
   };
 }
 
-export async function readKiroNativeMessages(
-  sessionDirectory: string,
-): Promise<KiroHistoryRow[]> {
+export async function readKiroNativeMessages(sessionDirectory: string): Promise<KiroHistoryRow[]> {
   const messagesFile = path.join(sessionDirectory, "messages.jsonl");
-  try {
-    const raw = await readFile(messagesFile, "utf8");
-    return raw
-      .split("\n")
-      .map((line) => line.trim())
-      .filter((line) => line.length > 0)
-      .map((line) => JSON.parse(line) as KiroHistoryRow);
-  } catch {
-    return [];
-  }
+  const raw = await readFile(messagesFile, "utf8");
+  return raw
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0)
+    .map((line) => {
+      const row: unknown = JSON.parse(line);
+      if (
+        !isRecord(row) ||
+        typeof row.id !== "string" ||
+        !isRecord(row.payload) ||
+        typeof row.payload.type !== "string"
+      )
+        throw new Error("Invalid Kiro history row");
+      return row as unknown as KiroHistoryRow;
+    });
+}
+
+function historyText(payload: KiroHistoryRow["payload"]): string {
+  return typeof payload.content === "string" ? payload.content : (payload.text ?? "");
 }
 
 export interface KiroTurnBoundary {
@@ -159,13 +167,14 @@ export function parseKiroHistory(rows: KiroHistoryRow[]): KiroHistorySummary {
       currentTurn = {
         turnIndex: turns.length,
         userMessageId: row.id,
-        userPromptText: typeof row.payload.text === "string" ? row.payload.text : "",
+        userPromptText: historyText(row.payload),
         rows: [row],
       };
       continue;
     }
 
     if (currentTurn) {
+      if (currentTurn.turnEndMessageId && type !== "tombstone") continue;
       currentTurn.rows.push(row);
       if (type === "turn_end") {
         currentTurn.turnEndMessageId = row.id;
@@ -210,9 +219,7 @@ export function findForkBoundary(
   return null;
 }
 
-export function findRollbackBoundary(
-  summary: KiroHistorySummary,
-): string | null {
+export function findRollbackBoundary(summary: KiroHistorySummary): string | null {
   if (summary.turns.length >= 2) {
     // Drop the last turn, fork at the end of the previous turn
     const prevTurn = summary.turns[summary.turns.length - 2];
@@ -255,30 +262,65 @@ export async function readKiroSnapshot(
       : undefined;
 
     const items: HostItemSnapshot[] = [];
-    let assistantText = "";
-    let assistantItemId: string | undefined;
+    const results = new Map(
+      turn.rows
+        .filter(
+          (row) => row.payload.type === "tool_result" && typeof row.payload.toolCallId === "string",
+        )
+        .map((row) => [row.payload.toolCallId, row]),
+    );
+    const end = turn.rows.findLast((row) => row.payload.type === "turn_end");
+    const stopReason = end?.payload.stopReason;
+    const outcome: HostTurnSnapshot["outcome"] =
+      stopReason === "cancelled"
+        ? { status: "cancelled" }
+        : stopReason === "end_turn"
+          ? { status: "succeeded" }
+          : stopReason === "error" || stopReason === "failed"
+            ? {
+                status: "failed",
+                error: { code: "nativeFailure", message: "Kiro turn failed", retryable: false },
+              }
+            : { status: "unknown", reason: "Kiro history has no recognized terminal stopReason" };
 
     for (const [index, row] of turn.rows.entries()) {
       const type = row.payload?.type;
       const itemId = hostItemIdSchema.parse(`item-${turn.turnIndex}-${index}`);
 
       if (type === "assistant") {
-        if (typeof row.payload.text === "string") {
-          assistantText += row.payload.text;
-          assistantItemId = itemId;
-        }
-      } else if (type === "tool_call") {
         items.push({
-          item: {
-            type: "toolExecution",
-            itemId,
-            toolName: row.payload.name ?? "tool",
-            arguments: (isRecord(row.payload.rawInput) ? row.payload.rawInput : {}) as JsonValue,
-          },
+          item: { type: "agentMessage", itemId, text: historyText(row.payload) },
           outcome: { status: "succeeded" },
         });
+      } else if (type === "tool_call") {
+        const result = results.get(row.payload.toolCallId);
+        const succeeded = result?.payload.success === true;
+        const toolOutcome: HostItemSnapshot["outcome"] = succeeded
+          ? { status: "succeeded" }
+          : result?.payload.success === false
+            ? {
+                status: "failed",
+                error: { code: "nativeFailure", message: "Kiro tool failed", retryable: false },
+              }
+            : { status: "cancelled", reason: "No confirmed tool result" };
+        items.push({
+          item: projectKiroToolCall(itemId, {
+            toolCallId: row.payload.toolCallId ?? row.id,
+            name:
+              typeof row.payload.toolName === "string" ? row.payload.toolName : row.payload.name,
+            kind: row.payload.kind,
+            rawInput: row.payload.args ?? row.payload.rawInput,
+            rawOutput: result?.payload.content ?? result?.payload.rawOutput,
+            ...(isRecord(row.payload._meta) ? { metadata: row.payload._meta } : {}),
+            status: succeeded ? "completed" : "failed",
+          }),
+          outcome: toolOutcome,
+        });
       } else if (type === "tool_result") {
-        const changes = projectKiroFileChanges(row.payload.content, location.cwd);
+        const changes =
+          row.payload.success === true
+            ? projectKiroFileChanges(row.payload.content, location.cwd)
+            : null;
         if (changes) {
           items.push({
             item: {
@@ -300,17 +342,6 @@ export async function readKiroSnapshot(
       }
     }
 
-    if (assistantText.length > 0 && assistantItemId) {
-      items.unshift({
-        item: {
-          type: "agentMessage",
-          itemId: hostItemIdSchema.parse(assistantItemId),
-          text: assistantText,
-        },
-        outcome: { status: "succeeded" },
-      });
-    }
-
     let modelRef: HarnessModelRef | undefined;
     if (location.sessionMeta.modelId) {
       const parsedModel = harnessModelRefSchema.safeParse({ id: location.sessionMeta.modelId });
@@ -322,7 +353,7 @@ export async function readKiroSnapshot(
       ...(checkpoint ? { checkpoint } : {}),
       input: [{ type: "text", text: turn.userPromptText }],
       items,
-      outcome: { status: "succeeded" },
+      outcome,
       ...(modelRef ? { model: modelRef } : {}),
     });
   }

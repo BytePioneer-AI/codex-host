@@ -31,10 +31,10 @@ describe("kiro command discovery and invocation", () => {
     expect(kiroDiscoverySpec.id).toBe("kiro-cli");
     expect(kiroDiscoverySpec.command).toBe("kiro-cli");
     expect(kiroDiscoverySpec.commandEnvironmentVariable).toBe("CODEXHOST_KIRO_COMMAND");
-    expect(kiroDiscoverySpec.installRoots.windows).toContain("${LOCALAPPDATA}/Kiro-Cli");
-    expect(kiroDiscoverySpec.installRoots.windows).toContain("~/.kiro/bin");
-    expect(kiroDiscoverySpec.installRoots.posix).toContain("~/.kiro/bin");
-    expect(kiroDiscoverySpec.installRoots.posix).toContain("~/.local/bin");
+    expect(kiroDiscoverySpec.installRoots?.windows).toContain("${LOCALAPPDATA}/Kiro-Cli");
+    expect(kiroDiscoverySpec.installRoots?.windows).toContain("~/.kiro/bin");
+    expect(kiroDiscoverySpec.installRoots?.posix).toContain("~/.kiro/bin");
+    expect(kiroDiscoverySpec.installRoots?.posix).toContain("~/.local/bin");
   });
 
   it("resolves explicit command override when provided", () => {
@@ -87,7 +87,6 @@ describe("kiro command discovery and invocation", () => {
     expect(() =>
       resolveKiroExecutable(
         {
-          command: undefined,
           environment: {
             PATH: "",
             LOCALAPPDATA: "C:\\NonExistent",

@@ -3,38 +3,17 @@ import type {
   HarnessModelCatalog,
   HarnessModelRef,
 } from "@codexhost/harness-adapter";
-import {
-  harnessModelCatalogSchema,
-  harnessModelRefSchema,
-} from "@codexhost/shared-contracts";
+import { harnessModelCatalogSchema, harnessModelRefSchema } from "@codexhost/shared-contracts";
 
 export interface KiroModelState {
   catalog: HarnessModelCatalog;
   currentModel: HarnessModelRef;
 }
 
-export const KIRO_DEFAULT_MODELS: HarnessModel[] = [
-  {
-    ref: { id: "auto" as HarnessModelRef["id"] },
-    label: "Auto",
-  },
-  {
-    ref: { id: "claude-haiku-4.5" as HarnessModelRef["id"] },
-    label: "Claude 3.5 Haiku",
-  },
-  {
-    ref: { id: "claude-sonnet-4.5" as HarnessModelRef["id"] },
-    label: "Claude 3.5 Sonnet",
-  },
-  {
-    ref: { id: "claude-opus-4.5" as HarnessModelRef["id"] },
-    label: "Claude 3.5 Opus",
-  },
-];
+export const KIRO_DEFAULT_MODELS: HarnessModel[] = [];
 
 export const KIRO_DEFAULT_MODEL_CATALOG: HarnessModelCatalog = {
   models: KIRO_DEFAULT_MODELS,
-  defaultModel: { id: "claude-haiku-4.5" as HarnessModelRef["id"] },
   thinkingOptions: [],
 };
 
@@ -52,9 +31,7 @@ export function parseKiroModelCatalog(
 ): HarnessModelCatalog {
   if (!Array.isArray(configOptions)) return fallback;
 
-  const modelConfig = configOptions.find(
-    (opt) => isRecord(opt) && opt.id === "model",
-  );
+  const modelConfig = configOptions.find((opt) => isRecord(opt) && opt.id === "model");
   if (!modelConfig || !isRecord(modelConfig)) return fallback;
 
   const rawOptions = modelConfig.options;
@@ -91,10 +68,6 @@ export function parseKiroModelCatalog(
     }
   }
 
-  if (!defaultModel && models.length > 0) {
-    defaultModel = models[0]?.ref;
-  }
-
   const catalogCandidate = {
     models,
     ...(defaultModel ? { defaultModel } : {}),
@@ -103,4 +76,34 @@ export function parseKiroModelCatalog(
 
   const parsed = harnessModelCatalogSchema.safeParse(catalogCandidate);
   return parsed.success ? parsed.data : fallback;
+}
+
+export function kiroConfigValue(configOptions: unknown, id: string): string | undefined {
+  if (!Array.isArray(configOptions)) return undefined;
+  const option = configOptions.find((value) => isRecord(value) && value.id === id);
+  return isRecord(option) && nonBlank(option.currentValue) ? option.currentValue : undefined;
+}
+
+export function confirmedKiroConfig(result: unknown, id: string, value: string): unknown[] {
+  const options = isRecord(result) ? result.configOptions : undefined;
+  if (!Array.isArray(options) || kiroConfigValue(options, id) !== value) {
+    throw new Error(`Kiro did not confirm ${id}=${value}`);
+  }
+  return options;
+}
+
+export function parseKiroCliModels(result: unknown): HarnessModelCatalog {
+  const rows = isRecord(result) ? result.models : result;
+  if (!Array.isArray(rows)) throw new Error("Kiro returned an invalid model catalog");
+  const catalog = parseKiroModelCatalog([
+    {
+      id: "model",
+      options: rows.map((row) =>
+        isRecord(row) ? { value: row.model_id, name: row.model_name } : row,
+      ),
+      ...(isRecord(result) ? { currentValue: result.default_model } : {}),
+    },
+  ]);
+  if (catalog.models.length === 0) throw new Error("Kiro returned no valid models");
+  return catalog;
 }

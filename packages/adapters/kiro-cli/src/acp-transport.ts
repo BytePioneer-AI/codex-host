@@ -1,5 +1,8 @@
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { Readable, Writable } from "node:stream";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+import { commandInvocation } from "@codexhost/harness-discovery";
 
 import { sanitizeDiagnosticTail } from "@codexhost/harness-adapter";
 import {
@@ -20,6 +23,7 @@ import {
 
 import { KiroExecutableError, kiroInvocation, resolveKiroExecutable } from "./command.js";
 import type { KiroUserInputParams, KiroUserInputResult } from "./projection.js";
+import { confirmedKiroConfig, parseKiroCliModels } from "./models.js";
 
 export type KiroTransportFaultKind =
   | "notInstalled"
@@ -44,9 +48,24 @@ export class KiroTransportError extends Error {
 }
 
 export type KiroTransportEvent =
-  | { type: "user.text"; text: string; messageId?: string | undefined; metadata?: Record<string, unknown> | undefined }
-  | { type: "agent.text"; text: string; messageId?: string | undefined; metadata?: Record<string, unknown> | undefined }
-  | { type: "agent.thought"; text: string; messageId?: string | undefined; metadata?: Record<string, unknown> | undefined }
+  | {
+      type: "user.text";
+      text: string;
+      messageId?: string | undefined;
+      metadata?: Record<string, unknown> | undefined;
+    }
+  | {
+      type: "agent.text";
+      text: string;
+      messageId?: string | undefined;
+      metadata?: Record<string, unknown> | undefined;
+    }
+  | {
+      type: "agent.thought";
+      text: string;
+      messageId?: string | undefined;
+      metadata?: Record<string, unknown> | undefined;
+    }
   | {
       type: "tool.call";
       callId: string;
@@ -113,7 +132,12 @@ export interface KiroRollbackOpenInput {
 
 export type KiroOpenInput =
   | { kind: "create"; modelId?: string | undefined; autopilot?: "on" | "off" | undefined }
-  | { kind: "resume"; sessionId: string; modelId?: string | undefined; autopilot?: "on" | "off" | undefined }
+  | {
+      kind: "resume";
+      sessionId: string;
+      modelId?: string | undefined;
+      autopilot?: "on" | "off" | undefined;
+    }
   | KiroForkOpenInput
   | KiroRollbackOpenInput;
 
@@ -152,11 +176,9 @@ function classifyStartupError(error: unknown): KiroTransportError {
     text.includes("sign in") ||
     text.includes("unauthorized")
   ) {
-    return new KiroTransportError(
-      "authenticationRequired",
-      "Kiro CLI authentication is required",
-      { cause: error },
-    );
+    return new KiroTransportError("authenticationRequired", "Kiro CLI authentication is required", {
+      cause: error,
+    });
   }
   return new KiroTransportError("unavailable", "Kiro CLI could not start", { cause: error });
 }
@@ -229,11 +251,31 @@ export class KiroAcpTransport {
     return this.#stderrTail;
   }
 
-  async inspect(): Promise<InitializeResponse> {
+  async inspect(): Promise<unknown> {
     if (this.#sessionId) throw new Error("Kiro ACP inspection cannot reuse an open Session");
     try {
       const initialize = await this.#ensureInitialized();
-      return initialize;
+      const environment = { ...process.env, ...this.#options.environment };
+      const executable = resolveKiroExecutable({
+        ...(this.#options.command ? { command: this.#options.command } : {}),
+        environment,
+      });
+      const invocation = commandInvocation(
+        executable,
+        ["chat", "--list-models", "--format", "json"],
+        environment,
+        process.platform,
+      );
+      const { stdout } = await promisify(execFile)(invocation.command, invocation.arguments, {
+        cwd: this.#options.cwd,
+        env: environment,
+        windowsHide: true,
+        windowsVerbatimArguments: invocation.windowsVerbatimArguments,
+        timeout: this.#commandTimeoutMs,
+        maxBuffer: 1024 * 1024,
+        encoding: "utf8",
+      });
+      return { ...initialize, catalog: parseKiroCliModels(JSON.parse(stdout)) };
     } catch (error) {
       const classified = classifyStartupError(error);
       await this.close().catch(() => undefined);
@@ -250,7 +292,10 @@ export class KiroAcpTransport {
       const connection = this.#connection;
       if (!connection) throw new KiroTransportError("unavailable", "Kiro ACP is unavailable");
 
-      this.#replay = input.kind === "resume" || input.kind === "fork" || input.kind === "rollbackLastTurn" ? [] : null;
+      this.#replay =
+        input.kind === "resume" || input.kind === "fork" || input.kind === "rollbackLastTurn"
+          ? []
+          : null;
 
       let session: NewSessionResponse | LoadSessionResponse;
       let sessionId: string;
@@ -271,10 +316,20 @@ export class KiroAcpTransport {
 
         // Apply initial config options if provided
         if (input.modelId) {
-          await this.#setConfigOptionOnSession(connection, sessionId, "model", input.modelId);
+          configOptions = await this.#setConfigOptionOnSession(
+            connection,
+            sessionId,
+            "model",
+            input.modelId,
+          );
         }
         if (input.autopilot) {
-          await this.#setConfigOptionOnSession(connection, sessionId, "autopilot", input.autopilot);
+          configOptions = await this.#setConfigOptionOnSession(
+            connection,
+            sessionId,
+            "autopilot",
+            input.autopilot,
+          );
         }
       } else if (input.kind === "fork" || input.kind === "rollbackLastTurn") {
         const forked = await this.#forkSession({
@@ -297,10 +352,20 @@ export class KiroAcpTransport {
 
         // Crucial: Child session resets config to defaults; restore model and autopilot!
         if (input.modelId) {
-          await this.#setConfigOptionOnSession(connection, sessionId, "model", input.modelId);
+          configOptions = await this.#setConfigOptionOnSession(
+            connection,
+            sessionId,
+            "model",
+            input.modelId,
+          );
         }
         if (input.autopilot) {
-          await this.#setConfigOptionOnSession(connection, sessionId, "autopilot", input.autopilot);
+          configOptions = await this.#setConfigOptionOnSession(
+            connection,
+            sessionId,
+            "autopilot",
+            input.autopilot,
+          );
         }
       } else {
         session = await withTimeout(
@@ -316,10 +381,20 @@ export class KiroAcpTransport {
         configOptions = (session as { configOptions?: unknown[] }).configOptions;
 
         if (input.modelId) {
-          await this.#setConfigOptionOnSession(connection, sessionId, "model", input.modelId);
+          configOptions = await this.#setConfigOptionOnSession(
+            connection,
+            sessionId,
+            "model",
+            input.modelId,
+          );
         }
         if (input.autopilot) {
-          await this.#setConfigOptionOnSession(connection, sessionId, "autopilot", input.autopilot);
+          configOptions = await this.#setConfigOptionOnSession(
+            connection,
+            sessionId,
+            "autopilot",
+            input.autopilot,
+          );
         }
       }
 
@@ -350,7 +425,14 @@ export class KiroAcpTransport {
     if (!connection || !this.#sessionId || this.#closed || this.#closing) {
       throw new KiroTransportError("unavailable", "Kiro ACP Session is unavailable");
     }
-    return this.#setConfigOptionOnSession(connection, this.#sessionId, configId, value);
+    return {
+      configOptions: await this.#setConfigOptionOnSession(
+        connection,
+        this.#sessionId,
+        configId,
+        value,
+      ),
+    };
   }
 
   async #setConfigOptionOnSession(
@@ -358,9 +440,9 @@ export class KiroAcpTransport {
     sessionId: string,
     configId: string,
     value: string,
-  ): Promise<unknown> {
+  ): Promise<unknown[]> {
     try {
-      return await withTimeout(
+      const result = await withTimeout(
         connection.setSessionConfigOption({
           sessionId,
           configId,
@@ -369,6 +451,7 @@ export class KiroAcpTransport {
         this.#commandTimeoutMs,
         `Kiro set_config_option (${configId})`,
       );
+      return confirmedKiroConfig(result, configId, value);
     } catch (error) {
       throw new KiroTransportError("unavailable", `Failed to set ${configId} config option`, {
         cause: error,
@@ -402,7 +485,10 @@ export class KiroAcpTransport {
         throw new KiroTransportError("protocolError", "Kiro Fork returned no valid sessionId");
       }
       if (raw.sessionId === params.sourceSessionId) {
-        throw new KiroTransportError("protocolError", "Kiro Fork returned the source Session identity");
+        throw new KiroTransportError(
+          "protocolError",
+          "Kiro Fork returned the source Session identity",
+        );
       }
       return { sessionId: raw.sessionId };
     } catch (error) {
@@ -581,9 +667,10 @@ export class KiroAcpTransport {
 
   #handleUpdate(params: SessionNotification): void {
     const update = params.update;
-    const meta = isRecord(update) && isRecord((update as Record<string, unknown>)._meta)
-      ? ((update as Record<string, unknown>)._meta as Record<string, unknown>)
-      : undefined;
+    const meta =
+      isRecord(update) && isRecord((update as Record<string, unknown>)._meta)
+        ? ((update as Record<string, unknown>)._meta as Record<string, unknown>)
+        : undefined;
     const kiroMeta = meta && isRecord(meta.kiro) ? meta.kiro : undefined;
 
     let event: KiroTransportEvent | null = null;
@@ -673,7 +760,9 @@ export class KiroAcpTransport {
   ): Promise<Record<string, unknown>> {
     if (method === "_kiro/userInput") {
       if (this.#activePrompt) {
-        const result = await this.#activePrompt.onQuestion(params as unknown as KiroUserInputParams);
+        const result = await this.#activePrompt.onQuestion(
+          params as unknown as KiroUserInputParams,
+        );
         return result as unknown as Record<string, unknown>;
       }
       return { action: "dismissed" };

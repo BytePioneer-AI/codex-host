@@ -1,7 +1,5 @@
 import type { RequestPermissionRequest } from "@agentclientprotocol/sdk";
-import {
-  hostTurnIdSchema,
-} from "@codexhost/shared-contracts";
+import { hostTurnIdSchema } from "@codexhost/shared-contracts";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -15,18 +13,14 @@ describe("kiro projection", () => {
 
   describe("user input question projection", () => {
     it("projects choice question when options are provided", () => {
-      const projected = projectKiroUserInput(
-        "inter-1",
-        turnId,
-        {
-          sessionId: "sess-1",
-          question: "Which option do you prefer?",
-          options: [
-            { title: "Option A", description: "Use approach A" },
-            { title: "Option B", description: "Use approach B" },
-          ],
-        },
-      );
+      const projected = projectKiroUserInput("inter-1", turnId, {
+        sessionId: "sess-1",
+        question: "Which option do you prefer?",
+        options: [
+          { title: "Option A", description: "Use approach A" },
+          { title: "Option B", description: "Use approach B" },
+        ],
+      });
 
       expect(projected.interaction.type).toBe("question");
       expect(projected.interaction.interactionId).toBe("inter-1");
@@ -43,6 +37,7 @@ describe("kiro projection", () => {
 
       // Test resolution on answered
       const resolved = projected.resolve({
+        type: "question",
         cancelled: false,
         answers: { "q-0": ["opt-0"] },
       });
@@ -50,6 +45,7 @@ describe("kiro projection", () => {
 
       // Test resolution on cancelled
       const cancelled = projected.resolve({
+        type: "question",
         cancelled: true,
         answers: {},
       });
@@ -57,14 +53,10 @@ describe("kiro projection", () => {
     });
 
     it("projects text question when options are not provided", () => {
-      const projected = projectKiroUserInput(
-        "inter-2",
-        turnId,
-        {
-          sessionId: "sess-1",
-          question: "Enter API key:",
-        },
-      );
+      const projected = projectKiroUserInput("inter-2", turnId, {
+        sessionId: "sess-1",
+        question: "Enter API key:",
+      });
 
       expect(projected.interaction.questions).toHaveLength(1);
       const question = projected.interaction.questions[0];
@@ -74,6 +66,7 @@ describe("kiro projection", () => {
       }
 
       const resolved = projected.resolve({
+        type: "question",
         cancelled: false,
         answers: { "q-0": ["sk-12345"] },
       });
@@ -84,6 +77,7 @@ describe("kiro projection", () => {
   describe("permission request projection", () => {
     it("projects permission options with allow once and deny", () => {
       const req: RequestPermissionRequest = {
+        toolCall: { toolCallId: "tool-1", title: "Tool" },
         sessionId: "sess-1",
         options: [
           { optionId: "opt-allow", name: "Allow this time", kind: "allow_once" },
@@ -116,10 +110,9 @@ describe("kiro projection", () => {
 
     it("detects two-stage turn approval metadata", () => {
       const req: RequestPermissionRequest = {
+        toolCall: { toolCallId: "tool-2", title: "Tool" },
         sessionId: "sess-1",
-        options: [
-          { optionId: "allow", name: "Accept changes", kind: "allow_once" },
-        ],
+        options: [{ optionId: "allow", name: "Accept changes", kind: "allow_once" }],
         _meta: {
           kiro: {
             type: "turn_approval",

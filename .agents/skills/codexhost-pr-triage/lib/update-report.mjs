@@ -21,7 +21,7 @@ export function summarize(report) {
 
 /** Incoming identities replace both verdicts and skipped entries; absent identities stay unchanged. */
 export function mergeReports(previous, incoming) {
-  validateReport(incoming);
+  validateReport(incoming, { requireCardSummary: true });
   if (previous) validateReport(previous);
   const updated = new Set([...incoming.prs, ...incoming.skipped].map(identity));
   const retain = (entries) => (entries ?? []).filter((pr) => !updated.has(identity(pr)));
@@ -58,7 +58,7 @@ async function regularFile(path) {
 
 /** Publish a project-local report, preserving the previous pair and serializing writers. */
 export async function updateProjectReport(incoming, projectDirectory = process.cwd()) {
-  validateReport(incoming);
+  validateReport(incoming, { requireCardSummary: true });
   const root = execFileSync("git", ["rev-parse", "--show-toplevel"], {
     cwd: resolve(projectDirectory),
     encoding: "utf8",

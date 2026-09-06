@@ -45,6 +45,16 @@ test("replaces selected identities, preserves other snapshots, and does not muta
   assert.deepEqual(mergeReports(result, incoming), result);
 });
 
+test("retains legacy records without card summary fields until that PR is re-evaluated", () => {
+  const old = createReport();
+  delete old.prs[1].originalTitle;
+  delete old.prs[1].effect;
+  const result = mergeReports(old, batch());
+  const retained = result.prs.find((pr) => pr.number === 2);
+  assert.equal(retained.originalTitle, undefined);
+  assert.equal(retained.effect, undefined);
+});
+
 test("keys include repository, ignore case, and allow transitions to and from skipped", () => {
   const old = createReport();
   const incoming = batch();

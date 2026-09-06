@@ -16,10 +16,11 @@ function check(condition, path, message) {
   if (!condition) throw new Error(`${path}: ${message}`);
 }
 
-function object(value, path, keys) {
+function object(value, path, keys, optional = []) {
   check(value !== null && typeof value === "object" && !Array.isArray(value), path, "必须是对象");
   for (const key of keys) check(Object.hasOwn(value, key), `${path}.${key}`, "缺少字段");
-  for (const key of Object.keys(value)) check(keys.includes(key), `${path}.${key}`, "不支持的字段");
+  for (const key of Object.keys(value))
+    check([...keys, ...optional].includes(key), `${path}.${key}`, "不支持的字段");
 }
 
 function text(value, path) {
@@ -88,7 +89,7 @@ function identity(pr, path, repositories, identities) {
 }
 
 /** Validate without filling fields, changing verdicts, or modifying the input. */
-export function validateReport(report) {
+export function validateReport(report, { requireCardSummary = false } = {}) {
   object(report, "report", [
     "schemaVersion",
     "generatedAt",
@@ -114,30 +115,47 @@ export function validateReport(report) {
   );
   const identities = new Set();
   list(report.prs, "report.prs", (pr, path) => {
-    object(pr, path, [
-      "repository",
-      "number",
-      "title",
-      "url",
-      "baseSha",
-      "headSha",
-      "verdict",
-      "reason",
-      "value",
-      "scope",
-      "cost",
-      "action",
-      "stats",
-      "integration",
-      "evidence",
-      "questions",
-      "simplifications",
-    ]);
+    object(
+      pr,
+      path,
+      [
+        "repository",
+        "number",
+        "title",
+        "url",
+        "baseSha",
+        "headSha",
+        "verdict",
+        "reason",
+        "value",
+        "scope",
+        "cost",
+        "action",
+        "stats",
+        "integration",
+        "evidence",
+        "questions",
+        "simplifications",
+      ],
+      ["originalTitle", "effect"],
+    );
+    if (requireCardSummary) {
+      check(
+        Object.hasOwn(pr, "originalTitle"),
+        `${path}.originalTitle`,
+        "新评估必须提供原始 PR 标题",
+      );
+      check(Object.hasOwn(pr, "effect"), `${path}.effect`, "新评估必须先说明 PR 的作用");
+    }
+    for (const field of ["originalTitle", "effect"])
+      if (pr[field] !== undefined) text(pr[field], `${path}.${field}`);
     identity(pr, path, repositories, identities);
     check(VERDICTS.includes(pr.verdict), `${path}.verdict`, `必须是 ${VERDICTS.join(" / ")}`);
     for (const field of ["reason", "value", "scope", "cost", "action"])
       text(pr[field], `${path}.${field}`);
-    check(!/[\r\n]/u.test(pr.reason), `${path}.reason`, "理由必须是一行");
+    for (const field of ["title", "originalTitle", "effect", "value", "reason", "action"])
+      if (pr[field] !== undefined)
+        check(!/[\r\n]/u.test(pr[field]), `${path}.${field}`, "卡片字段必须是一行");
     for (const field of ["baseSha", "headSha"]) {
       if (pr[field] === null) {
         check(pr.verdict === "DISCUSS", `${path}.${field}`, "缺少版本证据只能标为 DISCUSS");

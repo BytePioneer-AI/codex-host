@@ -417,11 +417,27 @@ h1 {
   line-height: 1.65;
   margin: 0 0 12px;
 }
-.card-reason {
+.card-original {
+  color: #87949a;
+  font-size: 10px;
+  line-height: 1.5;
+  margin: -7px 0 12px;
+  overflow-wrap: anywhere;
+}
+.card-copy {
   font-size: 12px;
+  color: #536972;
+  margin: 0 0 10px;
+  line-height: 1.7;
+}
+.card-copy strong,
+.table-copy strong {
+  color: var(--tone);
+  font-weight: 600;
+}
+.card-reason {
   color: #56676f;
-  margin: 0 0 13px;
-  line-height: 1.8;
+  margin-bottom: 13px;
 }
 .next {
   background: var(--wash);
@@ -593,6 +609,21 @@ td:nth-child(3) {
   display: block;
   font-weight: 600;
   margin-top: 5px;
+}
+.table-original {
+  display: block;
+  color: #849198;
+  font-size: 10px;
+  margin-top: 5px;
+  overflow-wrap: anywhere;
+}
+.table-copy {
+  color: #536972;
+  line-height: 1.65;
+  margin: 0 0 8px;
+}
+.table-copy:last-child {
+  margin-bottom: 0;
 }
 .table-ci {
   white-space: nowrap;
@@ -874,10 +905,10 @@ dialog::backdrop {
   margin: 0 0 12px;
 }
 .card h3,
-.card-reason,
+.card-copy,
 .next-text,
 .detail-section p,
-.intro,
+.original-title,
 .table-title {
   overflow-wrap: anywhere;
 }
@@ -895,14 +926,10 @@ dialog::backdrop {
   flex-wrap: wrap;
   gap: 8px;
 }
-.card-value {
+.original-title {
+  color: #7b898f;
   font-size: 12px;
-  color: #536972;
-  margin: 0 0 12px;
-}
-.card-value strong {
-  font-weight: 500;
-  color: #78868e;
+  margin: -7px 0 10px;
 }
 .drawer-actions {
   display: flex;

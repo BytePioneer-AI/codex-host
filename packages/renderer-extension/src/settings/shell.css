@@ -558,7 +558,7 @@ button {
 }
 
 .settings-session-import-harness__option[aria-pressed="true"] {
-  color: #e8f3ff;
+  color: var(--settings-text);
   background: var(--settings-active);
   border-color: rgb(51 156 255 / 50%);
 }

@@ -75,6 +75,6 @@ describe("Renderer settings localization", () => {
       createDefaultRendererSettingsPages(rendererSettingsMessages("zh-CN")).map(
         ({ label }) => label,
       ),
-    ).toEqual(["连接", "会话导入", "更新", "关于"]);
+    ).toEqual(["连接", "账号", "会话导入", "更新", "关于"]);
   });
 });

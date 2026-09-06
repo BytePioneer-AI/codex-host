@@ -234,18 +234,22 @@ export async function inspectElectronWebContents(
   const value = await inspector.evaluate<unknown>(`(async () => {
     const { webContents } = ${electronModuleExpression};
     const result = await Promise.all(webContents.getAllWebContents().map(async (contents) => {
+      const type = contents.getType();
+      const surface = contents.getURL().includes('avatar-overlay') ? 'overlay' : 'primary';
       let runtime = { available: false, elementCount: null };
-      try {
-        const evaluation = contents.executeJavaScript(${JSON.stringify(webContentsRuntimeExpression)}, true);
-        const timeout = new Promise((_, reject) => {
-          setTimeout(() => reject(new Error('Renderer inspection timed out')), 2_000);
-        });
-        runtime = { available: true, ...(await Promise.race([evaluation, timeout])) };
-      } catch {}
+      if (type === 'window' && surface === 'primary') {
+        try {
+          const evaluation = contents.executeJavaScript(${JSON.stringify(webContentsRuntimeExpression)}, true);
+          const timeout = new Promise((_, reject) => {
+            setTimeout(() => reject(new Error('Renderer inspection timed out')), 2_000);
+          });
+          runtime = { available: true, ...(await Promise.race([evaluation, timeout])) };
+        } catch {}
+      }
       return {
         id: contents.id,
-        type: contents.getType(),
-        surface: contents.getURL().includes('avatar-overlay') ? 'overlay' : 'primary',
+        type,
+        surface,
         runtime,
       };
     }));

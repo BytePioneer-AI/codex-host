@@ -28,6 +28,38 @@ export type {
   HarnessPluginManifest,
 } from "./harness-plugins.js";
 export { codexhostErrorSchema } from "./errors.js";
+export {
+  codexAccountUsageParamsSchema,
+  codexAccountUsageResultSchema,
+  codexAccountActivateParamsSchema,
+  codexAccountCreateParamsSchema,
+  codexAccountDeleteParamsSchema,
+  codexAccountDeleteResultSchema,
+  codexAccountListResultSchema,
+  codexAccountLoginCancelParamsSchema,
+  codexAccountLoginCancelResultSchema,
+  codexAccountLoginCompletedSchema,
+  codexAccountLoginStartParamsSchema,
+  codexAccountLoginStartResultSchema,
+  codexAccountMutationResultSchema,
+  codexAccountSchema,
+} from "./codex-accounts.js";
+export type {
+  CodexAccountUsageParams,
+  CodexAccountUsageResult,
+  CodexAccountActivateParams,
+  CodexAccountCreateParams,
+  CodexAccountDeleteParams,
+  CodexAccountDeleteResult,
+  CodexAccountListResult,
+  CodexAccountLoginCancelParams,
+  CodexAccountLoginCancelResult,
+  CodexAccountLoginCompleted,
+  CodexAccountLoginStartParams,
+  CodexAccountLoginStartResult,
+  CodexAccountMutationResult,
+  CodexAccountSummary,
+} from "./codex-accounts.js";
 export { REASONING_TRANSCRIPT_COMMAND } from "./reasoning-transcript.js";
 export type { CodexhostError } from "./errors.js";
 export {

@@ -22,6 +22,8 @@ import {
   refreshConnectionHosts,
   restoredThreadOwnership,
   retryableHarnessAvailabilityAgents,
+  resolveCodexAccountSelection,
+  shouldRefreshCodexAccountsForAdapterState,
   rendererUsageRefreshDelay,
   shouldApplyDraftAgentCarrier,
   shouldPersistNewThreadConfigurationSelection,
@@ -50,6 +52,29 @@ import {
 } from "../src/renderer-usage-control.js";
 
 describe("Renderer connection diagnostics", () => {
+  it("adopts a newly active Codex Account unless the draft has an explicit override", () => {
+    const accounts = [
+      { accountId: "old", label: "Old", codexHome: "/old", active: false, isDefault: true },
+      { accountId: "new", label: "New", codexHome: "/new", active: true, isDefault: false },
+    ];
+    expect(resolveCodexAccountSelection(accounts, null)).toEqual({
+      activeAccountId: "new",
+      overrideAccountId: null,
+      selectedAccountId: "new",
+    });
+    expect(resolveCodexAccountSelection(accounts, "old")).toEqual({
+      activeAccountId: "new",
+      overrideAccountId: "old",
+      selectedAccountId: "old",
+    });
+  });
+
+  it("retries the Codex Account list when the request adapter becomes ready", () => {
+    expect(shouldRefreshCodexAccountsForAdapterState("installing")).toBe(false);
+    expect(shouldRefreshCodexAccountsForAdapterState("unsupported")).toBe(false);
+    expect(shouldRefreshCodexAccountsForAdapterState("ready")).toBe(true);
+  });
+
   it("waits for every Host refresh before completing", async () => {
     let resolveLocal!: () => void;
     let resolveRemote!: () => void;

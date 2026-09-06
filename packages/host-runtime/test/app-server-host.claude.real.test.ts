@@ -205,6 +205,7 @@ describe("AppServerHost hermetic Claude projection", () => {
       desktopInput,
       desktopOutput,
       diagnosticOutput,
+      environment: { CODEXHOST_DATA_DIR: mappingStoreDirectory },
       externalAdapters: new Map([["claude-code", claudeAdapter]]),
       mappingStore,
       spawnOfficial: (() =>

@@ -5,9 +5,16 @@ import {
   createDefaultRendererSettingsPages,
   createDefaultRendererSettingsRegistry,
 } from "../../src/settings/pages.js";
-import { isRendererSettingsDialogSupported } from "../../src/settings/shell.js";
+import {
+  RENDERER_SETTINGS_COLOR_SCHEME,
+  isRendererSettingsDialogSupported,
+} from "../../src/settings/shell.js";
 
 describe("Renderer settings foundation", () => {
+  it("inherits the Codex theme instead of forcing a dark settings surface", () => {
+    expect(RENDERER_SETTINGS_COLOR_SCHEME).toBe("inherit");
+  });
+
   it("publishes deterministic product sections with Connections as the default", () => {
     const pages = createDefaultRendererSettingsPages();
     const registry = createDefaultRendererSettingsRegistry();
@@ -15,11 +22,18 @@ describe("Renderer settings foundation", () => {
     expect(pages.map(({ id }) => id)).toEqual(DEFAULT_RENDERER_SETTINGS_PAGE_IDS);
     expect(pages.map(({ label }) => label)).toEqual([
       "Connections",
+      "Accounts",
       "Session Import",
       "Updates",
       "About",
     ]);
-    expect(pages.map(({ icon }) => icon)).toEqual(["connections", "download", "updates", "about"]);
+    expect(pages.map(({ icon }) => icon)).toEqual([
+      "connections",
+      "accounts",
+      "download",
+      "updates",
+      "about",
+    ]);
     expect(registry.defaultPageId).toBe("connections");
     expect(Object.isFrozen(pages)).toBe(true);
     expect(pages.every((page) => Object.isFrozen(page))).toBe(true);
@@ -48,6 +62,7 @@ describe("Renderer settings foundation", () => {
 
     expect(pages.map(({ id }) => id)).toEqual([
       "connections",
+      "accounts",
       "session-import",
       "updates",
       "about",

@@ -117,6 +117,7 @@ xattr -dr com.apple.quarantine /Applications/codexhost.app
   <tr>
     <td colspan="2" valign="top">
       <img src="docs/imgs/grok-usage-limits.png" alt="五小时与七天窗口的剩余额度和重置时间">
+      <p>macOS 会在原生 ChatGPT 菜单栏图标内追加剩余额度百分比，Windows 则使用任务栏覆盖图标；优先使用 5 小时窗口，没有时回退到 7 天窗口。</p>
     </td>
   </tr>
   <tr>

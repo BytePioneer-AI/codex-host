@@ -74,6 +74,10 @@ class FakeElement {
     this.focused = true;
   }
 
+  getRootNode(): FakeDocument {
+    return this.ownerDocument;
+  }
+
   scrollBy(options: ScrollToOptions): void {
     this.scrollLeft += Number(options.left ?? 0);
     this.dispatch("scroll");
@@ -531,7 +535,11 @@ describe("Renderer Codex Accounts page", () => {
     });
     await vi.waitFor(() => expect(client.listCodexAccounts).toHaveBeenCalledTimes(1));
 
-    expect(descendants(content).some(({ tagName }) => tagName === "input")).toBe(false);
+    expect(
+      descendants(content)
+        .filter(({ tagName }) => tagName === "input")
+        .map(({ type }) => type),
+    ).toEqual(["search"]);
     const add = descendants(content).find(
       ({ tagName, children }) => tagName === "button" && children.includes("Add Account"),
     );
@@ -595,7 +603,8 @@ describe("Renderer Codex Accounts page", () => {
     await vi.waitFor(() => expect(visibleText(content)).toContain("Work"));
 
     const deleteButtons = descendants(content).filter(
-      ({ tagName, textContent }) => tagName === "button" && textContent === "Delete",
+      (element) =>
+        element.tagName === "button" && element.getAttribute("aria-label")?.startsWith("Delete:"),
     );
     expect(deleteButtons).toHaveLength(1);
     deleteButtons[0]?.dispatch("click");

@@ -24,6 +24,11 @@ import Settings from "lucide/dist/esm/icons/settings.mjs";
 import Stethoscope from "lucide/dist/esm/icons/stethoscope.mjs";
 import Star from "lucide/dist/esm/icons/star.mjs";
 import TriangleAlert from "lucide/dist/esm/icons/triangle-alert.mjs";
+import Ticket from "lucide/dist/esm/icons/ticket.mjs";
+import Trash from "lucide/dist/esm/icons/trash-2.mjs";
+import Terminal from "lucide/dist/esm/icons/terminal.mjs";
+import Search from "lucide/dist/esm/icons/search.mjs";
+import CircleHelp from "lucide/dist/esm/icons/circle-question-mark.mjs";
 import X from "lucide/dist/esm/icons/x.mjs";
 import Users from "lucide/dist/esm/icons/users.mjs";
 import Plus from "lucide/dist/esm/icons/plus.mjs";
@@ -58,6 +63,11 @@ export const RENDERER_SETTINGS_ICON_NAMES = [
   "chevron-up",
   "grip-vertical",
   "undo",
+  "ticket",
+  "trash",
+  "terminal",
+  "search",
+  "help",
 ] as const;
 
 export type RendererSettingsIconName = (typeof RENDERER_SETTINGS_ICON_NAMES)[number];
@@ -91,6 +101,11 @@ const iconNodes = {
   "chevron-up": ChevronUp,
   "grip-vertical": GripVertical,
   undo: RotateCcw,
+  ticket: Ticket,
+  trash: Trash,
+  terminal: Terminal,
+  search: Search,
+  help: CircleHelp,
 } satisfies Record<RendererSettingsIconName, IconNode>;
 
 export function isRendererSettingsIconName(value: string): value is RendererSettingsIconName {

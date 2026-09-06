@@ -63,6 +63,23 @@ export interface RendererSettingsMessages {
   readonly connectionsDescription: string;
   readonly accountsDescription: string;
   readonly accountAdd: string;
+  readonly accountColumnAccount: string;
+  readonly accountTaskHint: string;
+  readonly accountConnected: string;
+  readonly accountDefaultBadge: string;
+  readonly accountColumnUsage: string;
+  readonly accountColumnActions: string;
+  readonly accountSearch: string;
+  readonly accountEmpty: string;
+  readonly accountNoMatches: string;
+  readonly accountLoginHelp: string;
+  readonly accountCreditsRemaining: string;
+  readonly accountCreditsLoading: string;
+  readonly accountCreditsEmpty: string;
+  readonly accountCreditsFailed: string;
+  readonly accountCreditsRetry: string;
+  readonly accountCreditsRefresh: string;
+  readonly accountResetCreditsUnknown: string;
   readonly accountCreateFailed: string;
   readonly accountDelete: string;
   readonly accountDeleteConfirm: string;
@@ -245,9 +262,26 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   sessionImportRetrying: "Opening...",
   connectionsDescription:
     "View runtime status by Host. Select an item to inspect details or complete its setup.",
-  accountsDescription:
-    "New Codex tasks start with this account. Existing tasks keep the account they were created with. Multi-account is currently available for Codex; other Harnesses will follow in a later update.",
+  accountsDescription: "Choose the default account for new Codex tasks and check account limits.",
+  accountTaskHint:
+    "Existing tasks keep the account they were created with. Multi-account is currently available for Codex.",
+  accountConnected: "Connected accounts",
+  accountDefaultBadge: "Default",
   accountAdd: "Add Account",
+  accountColumnAccount: "Account",
+  accountColumnUsage: "Limits",
+  accountColumnActions: "Actions",
+  accountSearch: "Search accounts…",
+  accountEmpty: "No accounts yet. Add an account to get started.",
+  accountNoMatches: "No matching accounts.",
+  accountLoginHelp: "Before signing in",
+  accountCreditsRemaining: "Remaining",
+  accountCreditsLoading: "Loading limits…",
+  accountCreditsEmpty: "No limit data available",
+  accountCreditsFailed: "Could not load limits",
+  accountCreditsRetry: "Retry",
+  accountCreditsRefresh: "Refresh limits",
+  accountResetCreditsUnknown: "No reset card data available",
   accountCreateFailed: "Could not add the Account.",
   accountDelete: "Delete",
   accountDeleteConfirm: "Delete this Account and its local data? This cannot be undone.",
@@ -445,9 +479,25 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   sessionImportRetryOpen: "重试打开",
   sessionImportRetrying: "正在打开……",
   connectionsDescription: "按 Host 查看运行时状态。选择一项，在右侧检查详情或完成配置。",
-  accountsDescription:
-    "这里决定之后新建 Codex 任务默认用哪个账号。已经开过的任务不会换号。当前支持 Codex 多账号，其他 Harness 敬请期待后续更新。",
+  accountsDescription: "选择新建 Codex 任务的默认账号，并查看各账号额度。",
+  accountTaskHint: "切换默认账号不会影响已开始的任务。目前仅支持 Codex 多账号。",
+  accountConnected: "已连接账号",
+  accountDefaultBadge: "默认",
   accountAdd: "添加账号",
+  accountColumnAccount: "账号",
+  accountColumnUsage: "额度",
+  accountColumnActions: "操作",
+  accountSearch: "搜索账号…",
+  accountEmpty: "还没有账号，添加一个账号即可开始。",
+  accountNoMatches: "没有匹配的账号。",
+  accountLoginHelp: "登录前须知",
+  accountCreditsRemaining: "剩余",
+  accountCreditsLoading: "正在读取额度…",
+  accountCreditsEmpty: "暂无额度数据",
+  accountCreditsFailed: "额度读取失败",
+  accountCreditsRetry: "重试",
+  accountCreditsRefresh: "刷新额度",
+  accountResetCreditsUnknown: "暂无重置卡数据",
   accountCreateFailed: "添加账号失败。",
   accountDelete: "删除",
   accountDeleteConfirm: "删除此账号及其本地数据？此操作无法撤销。",

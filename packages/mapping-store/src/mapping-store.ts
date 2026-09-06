@@ -782,7 +782,15 @@ export class MappingStore {
   }
 
   async #readRecord(file: string, expectedName: string): Promise<StoredThreadRecordV1> {
-    const parsed = storedThreadRecordV1Schema.safeParse(JSON.parse(await readFile(file, "utf8")));
+    let raw: unknown;
+    try {
+      raw = JSON.parse(await readFile(file, "utf8"));
+    } catch (error) {
+      throw new MappingStoreError("INVALID_RECORD", "Mapping Store record is not valid JSON", {
+        cause: error,
+      });
+    }
+    const parsed = storedThreadRecordV1Schema.safeParse(raw);
     if (!parsed.success) {
       throw new MappingStoreError("INVALID_RECORD", "Mapping Store record is invalid", {
         cause: parsed.error,

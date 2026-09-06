@@ -16,11 +16,10 @@ function check(condition, path, message) {
   if (!condition) throw new Error(`${path}: ${message}`);
 }
 
-function object(value, path, keys, optional = []) {
+function object(value, path, keys) {
   check(value !== null && typeof value === "object" && !Array.isArray(value), path, "必须是对象");
   for (const key of keys) check(Object.hasOwn(value, key), `${path}.${key}`, "缺少字段");
-  for (const key of Object.keys(value))
-    check([...keys, ...optional].includes(key), `${path}.${key}`, "不支持的字段");
+  for (const key of Object.keys(value)) check(keys.includes(key), `${path}.${key}`, "不支持的字段");
 }
 
 function text(value, path) {
@@ -115,32 +114,25 @@ export function validateReport(report) {
   );
   const identities = new Set();
   list(report.prs, "report.prs", (pr, path) => {
-    object(
-      pr,
-      path,
-      [
-        "repository",
-        "number",
-        "title",
-        "url",
-        "baseSha",
-        "headSha",
-        "verdict",
-        "reason",
-        "value",
-        "scope",
-        "cost",
-        "action",
-        "stats",
-        "integration",
-        "evidence",
-        "questions",
-        "simplifications",
-      ],
-      ["evaluatedAt"],
-    );
-    if (pr.evaluatedAt !== undefined && pr.evaluatedAt !== null)
-      timestamp(pr.evaluatedAt, `${path}.evaluatedAt`);
+    object(pr, path, [
+      "repository",
+      "number",
+      "title",
+      "url",
+      "baseSha",
+      "headSha",
+      "verdict",
+      "reason",
+      "value",
+      "scope",
+      "cost",
+      "action",
+      "stats",
+      "integration",
+      "evidence",
+      "questions",
+      "simplifications",
+    ]);
     identity(pr, path, repositories, identities);
     check(VERDICTS.includes(pr.verdict), `${path}.verdict`, `必须是 ${VERDICTS.join(" / ")}`);
     for (const field of ["reason", "value", "scope", "cost", "action"])
@@ -187,9 +179,7 @@ export function validateReport(report) {
     check(pr.evidence.length <= 5, `${path}.evidence`, "最多 5 个关键证据");
   });
   list(report.skipped, "report.skipped", (pr, path) => {
-    object(pr, path, ["repository", "number", "title", "url", "reason"], ["evaluatedAt"]);
-    if (pr.evaluatedAt !== undefined && pr.evaluatedAt !== null)
-      timestamp(pr.evaluatedAt, `${path}.evaluatedAt`);
+    object(pr, path, ["repository", "number", "title", "url", "reason"]);
     identity(pr, path, repositories, identities);
     text(pr.reason, `${path}.reason`);
   });

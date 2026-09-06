@@ -14,7 +14,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { mergeReports, updateProjectReport } from "../lib/update-report.mjs";
-import { validateReport } from "../lib/report.mjs";
 import { createReport } from "./fixtures.mjs";
 
 function batch() {
@@ -35,16 +34,12 @@ async function project(t, ignored = true) {
 
 test("replaces selected identities, preserves other snapshots, and does not mutate input", () => {
   const old = createReport();
-  old.prs[1].evaluatedAt = old.generatedAt;
   const original = structuredClone(old);
   const incoming = batch();
   incoming.prs[0].reason = "新的评估";
   const result = mergeReports(old, incoming);
   assert.equal(result.prs.length, 4);
   assert.equal(result.prs[0].reason, "新的评估");
-  assert.equal(result.prs[0].evaluatedAt, incoming.generatedAt);
-  assert.equal(result.prs[1].evaluatedAt, old.generatedAt);
-  assert.equal(result.prs[2].evaluatedAt, null);
   assert.deepEqual(result.prs[1].integration, old.prs[1].integration);
   assert.deepEqual(old, original);
   assert.deepEqual(mergeReports(result, incoming), result);
@@ -82,16 +77,11 @@ test("keys include repository, ignore case, and allow transitions to and from sk
   assert.equal(result.prs.length, 5);
 });
 
-test("preserves partial collection errors and rejects stale replacement and invalid timestamps", () => {
+test("preserves partial collection errors when newer records are merged", () => {
   const old = mergeReports(null, createReport());
   old.complete = false;
   old.errors = ["历史分页缺失，剩余数量未知"];
   assert.equal(mergeReports(old, batch()).complete, false);
-  const stale = batch();
-  stale.generatedAt = "2025-01-01T00:00:00Z";
-  assert.throws(() => mergeReports(old, stale), /更旧/);
-  old.prs[0].evaluatedAt = "invalid";
-  assert.throws(() => validateReport(old), /evaluatedAt/);
 });
 
 test("publishes to ignored Git root, backs up exact old files, and keeps unrelated records", async (t) => {

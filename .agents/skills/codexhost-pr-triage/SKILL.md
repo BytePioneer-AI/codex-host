@@ -127,7 +127,7 @@ gh pr view <N> -R <OWNER/REPO> --json statusCheckRollup,mergeable
 node <skill绝对路径>/scripts/update-report.mjs <本次评估.json绝对路径> <当前项目根目录>
 ```
 
-入口读取旧 JSON，以不区分大小写的 `repository + number` 合并：本次记录替换同身份的评估或跳过项，其他记录保留。未出现在本次列表中不等于已关闭，不自动删除。旧 HEAD、CI、理由与评估时间均保留；旧格式缺少评估时间时显示未知。历史采集缺口保守保留，不能因本次采集成功就宣称旧缺口已补齐。
+入口读取旧 JSON，以不区分大小写的 `repository + number` 合并：本次记录替换同身份的评估或跳过项，其他记录保留。未出现在本次列表中不等于已关闭，不自动删除。旧 HEAD、CI、理由与结论均保留。历史采集缺口保守保留，不能因本次采集成功就宣称旧缺口已补齐。
 
 入口校验完整合并数据、生成 HTML 后备份旧文件，再发布新 JSON/HTML。损坏 JSON、只有 HTML、未被 Git 忽略或已有更新锁时停止并说明原因，不自动清空重建。恢复方式与文件一致性边界见 report-format。它不访问 GitHub、不改变裁决。
 

@@ -23,29 +23,8 @@ export function summarize(report) {
 export function mergeReports(previous, incoming) {
   validateReport(incoming);
   if (previous) validateReport(previous);
-  const prior = new Map(
-    [...(previous?.prs ?? []), ...(previous?.skipped ?? [])].map((pr) => [identity(pr), pr]),
-  );
-  for (const pr of [...incoming.prs, ...incoming.skipped]) {
-    const oldTime = prior.get(identity(pr))?.evaluatedAt;
-    const newTime = pr.evaluatedAt === undefined ? incoming.generatedAt : pr.evaluatedAt;
-    if (oldTime && (!newTime || Date.parse(newTime) < Date.parse(oldTime)))
-      throw new Error(`拒绝用更旧或未知时间的评估覆盖 ${identity(pr)}`);
-  }
   const updated = new Set([...incoming.prs, ...incoming.skipped].map(identity));
-  const retain = (entries) =>
-    (entries ?? [])
-      .filter((pr) => !updated.has(identity(pr)))
-      .map((pr) => ({
-        ...pr,
-        // Legacy reports may already contain mixed snapshots. Never infer their assessment time.
-        evaluatedAt: pr.evaluatedAt ?? null,
-      }));
-  const stamp = (entries) =>
-    entries.map((pr) => ({
-      ...pr,
-      evaluatedAt: pr.evaluatedAt === undefined ? incoming.generatedAt : pr.evaluatedAt,
-    }));
+  const retain = (entries) => (entries ?? []).filter((pr) => !updated.has(identity(pr)));
   const retainedPrs = retain(previous?.prs);
   const retainedSkipped = retain(previous?.skipped);
   const repositories = new Map();
@@ -57,11 +36,11 @@ export function mergeReports(previous, incoming) {
   const report = {
     ...incoming,
     repositories: [...repositories.values()],
-    scope: `本次范围：${incoming.scope}\n增量看板：本次评估 ${incoming.prs.length} 条、跳过 ${incoming.skipped.length} 条；保留未复评记录 ${retainedPrs.length + retainedSkipped.length} 条。卡片评估时间与 HEAD/CI 各自属于其原快照；旧格式未知时间不会补成当前时间。历史采集缺口保守保留。`,
+    scope: `本次范围：${incoming.scope}\n增量看板：本次评估 ${incoming.prs.length} 条、跳过 ${incoming.skipped.length} 条；保留未复评记录 ${retainedPrs.length + retainedSkipped.length} 条。保留项沿用原 HEAD、CI 和结论。历史采集缺口保守保留。`,
     complete: errors.length === 0,
     errors,
-    prs: [...stamp(incoming.prs), ...retainedPrs],
-    skipped: [...stamp(incoming.skipped), ...retainedSkipped],
+    prs: [...incoming.prs, ...retainedPrs],
+    skipped: [...incoming.skipped, ...retainedSkipped],
   };
   return validateReport(report);
 }
@@ -89,17 +68,14 @@ export async function updateProjectReport(incoming, projectDirectory = process.c
     if (error.code !== "EEXIST") throw error;
   });
   const info = await lstat(directory);
-  if (!info.isDirectory() || info.isSymbolicLink())
-    throw new Error(`拒绝非本地目录：${directory}`);
+  if (!info.isDirectory() || info.isSymbolicLink()) throw new Error(`拒绝非本地目录：${directory}`);
   const jsonPath = join(directory, "report.json");
   const htmlPath = join(directory, "index.html");
   for (const path of [jsonPath, htmlPath, join(directory, "backups", "probe")]) {
     try {
       execFileSync("git", ["check-ignore", "-q", "--", path], { cwd: root });
     } catch {
-      throw new Error(
-        "报告目录必须被 Git 忽略且未被跟踪；请先在 .gitignore 添加 /pr-triage/",
-      );
+      throw new Error("报告目录必须被 Git 忽略且未被跟踪；请先在 .gitignore 添加 /pr-triage/");
     }
   }
   const lock = join(directory, ".update-lock");

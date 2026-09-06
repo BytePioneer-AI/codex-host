@@ -572,7 +572,7 @@ export function readModernPermissionModeState(
   if (!row) {
     throw permissionError("protocolError", "DeepSeek Harness permissions projection is missing");
   }
-  if (!Number.isSafeInteger(row.seq) || row.seq < 0 || Object.is(row.seq, -0)) {
+  if (!Number.isSafeInteger(row.seq) || row.seq < -1 || Object.is(row.seq, -0)) {
     throw permissionError(
       "protocolError",
       "DeepSeek Harness permissions projection has an invalid sequence",

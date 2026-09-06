@@ -145,7 +145,7 @@ Fully quit Codex Desktop, open a new terminal, and start codexhost.
 | Fork | Native | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — |
 | Context compaction | Native | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — |
 | Slash commands | Native | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — |
-| Edit previous message | Native | ✅ | ✅ | ✅ | ✅ | ✅ | — | — |
+| Edit previous message | Native | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — |
 
 > **Antigravity current status:** Integration is still being completed. The working directory is currently fixed to `~/.gemini/antigravity-cli/scratch`.
 

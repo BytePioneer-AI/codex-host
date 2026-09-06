@@ -156,7 +156,7 @@ function parseOptionalSelection(value: unknown, area: string): DeepSeekModelSele
 
 function validSeq(value: unknown): value is number {
   return (
-    typeof value === "number" && Number.isSafeInteger(value) && value >= 0 && !Object.is(value, -0)
+    typeof value === "number" && Number.isSafeInteger(value) && value >= -1 && !Object.is(value, -0)
   );
 }
 

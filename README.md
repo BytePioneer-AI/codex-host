@@ -145,7 +145,7 @@ xattr -dr com.apple.quarantine /Applications/codexhost.app
 | Fork | 原生 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | 上下文压缩 | 原生 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — |
 | 斜杠命令 | 原生 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| 修订上一条消息 | 原生 | ✅ | ✅ | ✅ | ✅ | ✅ | — | ✅ |
+| 修订上一条消息 | 原生 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 
 > **Antigravity：**¹ 工具审批需选择 **Desktop approvals**，支持允许一次或拒绝；该模式使用进程级自动执行配合审批 Hook，启动前校验 Hook 已加载，现有权限模式保持不变。提问支持单选和文本，子代理支持原生卡片与只读过程记录。详见[工具审批](docs/antigravity-tool-approval.md)和[子代理说明](docs/antigravity-subagents.md)。
 

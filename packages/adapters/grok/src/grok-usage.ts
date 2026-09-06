@@ -24,17 +24,22 @@ export function combineUsage(base: HostUsage | null, next: HostUsage | null): Ho
 
 export function usageFromNative(value: unknown): HostUsage | null {
   if (!isRecord(value)) return null;
-  const inputTokens = optionalToken(value.inputTokens);
+  const nativeInputTokens = optionalToken(value.inputTokens);
   const cachedRead = optionalToken(value.cachedReadTokens);
   const cachedWrite = optionalToken(value.cacheCreationTokens ?? value.cachedWriteTokens);
   const reasoning = optionalToken(value.reasoningTokens ?? value.thoughtTokens);
   const totalCostUsd = optionalCostUsd(value.costUsdTicks);
+  // Grok reports `inputTokens` inclusive of cached read/write tokens. The Host convention is
+  // cache-exclusive input, so subtract the cached portions before publishing.
+  const inputTokens =
+    nativeInputTokens !== undefined
+      ? Math.max(0, nativeInputTokens - (cachedRead ?? 0) - (cachedWrite ?? 0))
+      : undefined;
+  const promptTokens =
+    inputTokens !== undefined ? inputTokens + (cachedRead ?? 0) + (cachedWrite ?? 0) : undefined;
   const cacheHitRatePercent =
-    inputTokens !== undefined &&
-    cachedRead !== undefined &&
-    inputTokens > 0 &&
-    cachedRead <= inputTokens
-      ? (cachedRead / inputTokens) * 100
+    cachedRead !== undefined && promptTokens !== undefined && promptTokens > 0
+      ? (cachedRead / promptTokens) * 100
       : undefined;
   try {
     return parseHostUsage({

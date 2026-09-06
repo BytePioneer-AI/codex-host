@@ -70,6 +70,7 @@ class FakeGrokTransport implements GrokAcpTransportLike {
   replay: GrokTransportEvent[] = [];
   signals: unknown;
   methodNotFound = false;
+  failHistory = false;
   forkImpl?: (input: Extract<GrokOpenInput, { kind: "fork" }>) => Promise<{ sessionId: string }>;
   rewindImpl?: (input: Extract<GrokOpenInput, { kind: "rewind" }>) => Promise<void>;
   #activePromptEvents: GrokTransportEvent[] = [];
@@ -132,6 +133,9 @@ class FakeGrokTransport implements GrokAcpTransportLike {
   }
 
   async getHistory(): Promise<GrokTransportEvent[]> {
+    if (this.failHistory) {
+      throw new GrokTransportError("unavailable", "Grok history re-read failed");
+    }
     return this.readHistory(this.sessionId);
   }
 
@@ -1045,7 +1049,7 @@ describe("Grok Adapter ACP projection", () => {
       usage: {
         contextUsedTokens: 7734,
         contextWindowTokens: 500000,
-        inputTokens: 330555,
+        inputTokens: 34107,
         outputTokens: 3737,
         totalTokens: 334292,
         cachedInputTokens: 296448,
@@ -1094,7 +1098,7 @@ describe("Grok Adapter ACP projection", () => {
       expect.objectContaining({
         type: "session.usage.changed",
         usage: {
-          inputTokens: 100,
+          inputTokens: 20,
           cachedInputTokens: 80,
           cacheWriteInputTokens: 0,
           outputTokens: 10,
@@ -1135,7 +1139,7 @@ describe("Grok Adapter ACP projection", () => {
     };
     const { adapter, session } = await openedSession(transport, "resume");
     expect(session.initialUsage).toEqual({
-      inputTokens: 100,
+      inputTokens: 20,
       outputTokens: 10,
       totalTokens: 110,
       cachedInputTokens: 80,
@@ -1210,7 +1214,7 @@ describe("Grok Adapter ACP projection", () => {
       expect.objectContaining({
         type: "session.usage.changed",
         usage: {
-          inputTokens: 150,
+          inputTokens: 23,
           cachedInputTokens: 125,
           cacheWriteInputTokens: 2,
           outputTokens: 15,
@@ -1267,7 +1271,7 @@ describe("Grok Adapter ACP projection", () => {
     };
     const { adapter, session } = await openedSession(transport, "resume");
     expect(session.initialUsage).toEqual({
-      inputTokens: 150,
+      inputTokens: 23,
       outputTokens: 15,
       totalTokens: 165,
       cachedInputTokens: 125,
@@ -1371,9 +1375,12 @@ describe("Grok Adapter ACP projection", () => {
     await adapter.close();
   });
 
-  it("refreshes Grok account credits after a Turn settles", async () => {
-    let fetches = 0;
+  it("emits turn.completed without waiting for the credits refresh", async () => {
     let uuid = 0;
+    let releaseCredits: (() => void) | undefined;
+    const creditsGate = new Promise<void>((resolve) => {
+      releaseCredits = resolve;
+    });
     const transport = new FakeGrokTransport();
     const adapter = new GrokAdapter(
       {},
@@ -1381,9 +1388,9 @@ describe("Grok Adapter ACP projection", () => {
         randomUUID: () => `grok-id-${++uuid}`,
         createTransport: () => transport,
         fetchCredits: async () => {
-          fetches += 1;
+          await creditsGate;
           return {
-            usedPercent: Math.min(fetches * 10, 100),
+            usedPercent: 42,
             periodType: "weekly",
             fetchedAt: "2026-08-15T00:00:00.000Z",
           };
@@ -1392,31 +1399,117 @@ describe("Grok Adapter ACP projection", () => {
     );
     const opened = await adapter.open({ kind: "create", cwd: "/synthetic" });
     if (!opened.ok) throw new Error(opened.error.message);
-    await adapter.refreshCredits();
-    const fetchesAfterOpen = fetches;
-    expect(fetchesAfterOpen).toBeGreaterThan(0);
-
     const session = opened.value;
     const iterator = session.outputs[Symbol.asyncIterator]();
-    const turnId = hostTurnIdSchema.parse("turn-credits-refresh");
+    const turnId = hostTurnIdSchema.parse("turn-credits-deferred");
     await expect(
       session.execute({ type: "turn.start", turnId, input: [{ type: "text", text: "hello" }] }),
     ).resolves.toEqual({ ok: true, value: { turnId } });
     expect((await nextEvent(iterator)).type).toBe("turn.started");
     transport.finish(
       { stopReason: "end_turn" },
+      { inputTokens: 10, outputTokens: 2, totalTokens: 12, costUsdTicks: 1000 },
+    );
+    // turn.completed must arrive even though the billing fetch is still blocked on the gate.
+    for (;;) {
+      const event = await nextEvent(iterator);
+      if (event.type === "turn.completed") {
+        expect(event).toMatchObject({ turnId, outcome: { status: "succeeded" } });
+        break;
+      }
+    }
+    expect(adapter.credits()).toBeNull();
+    releaseCredits?.();
+    await expect(adapter.refreshCredits()).resolves.toMatchObject({ usedPercent: 42 });
+    await adapter.close();
+  });
+
+  it("throttles repeated credits refreshes within the TTL", async () => {
+    let fetches = 0;
+    const adapter = new GrokAdapter(
+      {},
       {
-        inputTokens: 10,
-        outputTokens: 2,
-        totalTokens: 12,
-        costUsdTicks: 1000,
+        randomUUID: vi.fn(() => "id"),
+        createTransport: () => new FakeGrokTransport(),
+        fetchCredits: async () => {
+          fetches += 1;
+          return {
+            usedPercent: 10,
+            periodType: "weekly",
+            fetchedAt: "2026-08-15T00:00:00.000Z",
+          };
+        },
       },
     );
+    await expect(adapter.refreshCredits()).resolves.toMatchObject({ usedPercent: 10 });
+    expect(fetches).toBe(1);
+    // A second refresh inside the TTL window reuses the cached snapshot without a billing call.
+    await expect(adapter.refreshCredits()).resolves.toMatchObject({ usedPercent: 10 });
+    expect(fetches).toBe(1);
+    await adapter.close();
+  });
+
+  it("keeps a succeeded Turn when the settle history re-read fails", async () => {
+    const transport = new FakeGrokTransport();
+    const { adapter, session } = await openedSession(transport);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+    const turnId = hostTurnIdSchema.parse("turn-history-reread-fails");
+    await expect(
+      session.execute({ type: "turn.start", turnId, input: [{ type: "text", text: "hello" }] }),
+    ).resolves.toEqual({ ok: true, value: { turnId } });
+    expect((await nextEvent(iterator)).type).toBe("turn.started");
+    // Fail the settle-time history re-read; the succeeded native outcome must survive.
+    transport.failHistory = true;
+    transport.finish(
+      { stopReason: "end_turn" },
+      { inputTokens: 10, outputTokens: 2, totalTokens: 12, costUsdTicks: 1000 },
+    );
     for (;;) {
-      if ((await nextEvent(iterator)).type === "turn.completed") break;
+      const event = await nextEvent(iterator);
+      if (event.type === "turn.completed") {
+        expect(event).toMatchObject({ turnId, outcome: { status: "succeeded" } });
+        break;
+      }
     }
-    expect(fetches).toBeGreaterThan(fetchesAfterOpen);
-    expect(adapter.credits()?.usedPercent).toBe(Math.min(fetches * 10, 100));
+    await adapter.close();
+  });
+
+  it("closes pending approvals immediately when the Turn is cancelled", async () => {
+    const transport = new FakeGrokTransport();
+    const { adapter, session } = await openedSession(transport);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+    const turnId = hostTurnIdSchema.parse("turn-cancel-approval");
+    await expect(
+      session.execute({ type: "turn.start", turnId, input: [{ type: "text", text: "run" }] }),
+    ).resolves.toEqual({ ok: true, value: { turnId } });
+    expect((await nextEvent(iterator)).type).toBe("turn.started");
+
+    const permission = transport.permission();
+    const interactionOutput = await nextOutput(iterator);
+    if (interactionOutput.kind !== "interaction") throw new Error("Expected Grok Approval");
+    const interactionId = interactionOutput.interaction.interactionId;
+
+    await expect(session.execute({ type: "turn.cancel", turnId })).resolves.toEqual({
+      ok: true,
+      value: { cancellationRequested: true },
+    });
+    // interaction.closed is emitted at cancel time, before the Turn settles.
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "interaction.closed",
+      interactionId,
+      turnId,
+      reason: "cancelled",
+    });
+    await expect(permission).resolves.toEqual({ outcome: { outcome: "cancelled" } });
+
+    transport.finish({ stopReason: "cancelled" });
+    for (;;) {
+      const event = await nextEvent(iterator);
+      if (event.type === "turn.completed") {
+        expect(event).toMatchObject({ turnId, outcome: { status: "cancelled" } });
+        break;
+      }
+    }
     await adapter.close();
   });
 

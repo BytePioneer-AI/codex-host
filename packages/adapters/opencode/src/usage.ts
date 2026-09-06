@@ -30,9 +30,10 @@ export function projectOpenCodeUsage(
     totalCostUsd += message.cost;
   }
   const latest = messages.at(-1) as AssistantMessage;
+  // Cache hit rate and context occupancy both describe the latest request only; the token sums
+  // above stay session-cumulative for the billing totals.
   const contextUsedTokens =
     latest.tokens.input + latest.tokens.cache.read + latest.tokens.cache.write;
-  const promptTokens = inputTokens + cachedInputTokens + cacheWriteInputTokens;
   return parseHostUsage({
     inputTokens,
     cachedInputTokens,
@@ -41,7 +42,9 @@ export function projectOpenCodeUsage(
     reasoningOutputTokens,
     totalTokens,
     totalCostUsd,
-    ...(promptTokens > 0 ? { cacheHitRatePercent: (cachedInputTokens / promptTokens) * 100 } : {}),
+    ...(contextUsedTokens > 0
+      ? { cacheHitRatePercent: (latest.tokens.cache.read / contextUsedTokens) * 100 }
+      : {}),
     ...(contextWindowTokens
       ? {
           contextUsedTokens,

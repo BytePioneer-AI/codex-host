@@ -38,6 +38,7 @@ import {
   type HostItemOutcome,
   type HostQuestionInteraction,
   type HostReasoningItem,
+  type HostTextInput,
   type HostThreadSnapshot,
   type HostToolExecutionItem,
   type HostToolOutput,
@@ -577,6 +578,11 @@ class OpenCodeHarnessSession implements HarnessSession, OpenCodeTransportListene
     }
   }
 
+  refreshUsage(): Promise<void> {
+    if (this.#phase !== "open") return Promise.resolve();
+    return this.#refreshProjection(this.#active?.turnId);
+  }
+
   execute(command: TurnStartCommand): Promise<HarnessResult<TurnStartAccepted>>;
   execute(command: TurnCancelCommand): Promise<HarnessResult<TurnCancelAccepted>>;
   execute(command: InteractionRespondCommand): Promise<HarnessResult<InteractionRespondAccepted>>;
@@ -615,7 +621,10 @@ class OpenCodeHarnessSession implements HarnessSession, OpenCodeTransportListene
         },
       };
     }
-    const text = command.input.map(({ text: part }) => part).join("\n");
+    const text = command.input
+      .filter((input): input is HostTextInput => input.type === "text")
+      .map((input) => input.text)
+      .join("\n");
     if (!text) {
       return {
         ok: false,

@@ -56,6 +56,9 @@ describe("OpenCode Usage projection", () => {
       contextWindowTokens: 1_000,
     });
     expect(usage?.totalCostUsd).toBeCloseTo(0.3, 12);
+    // Cache hit rate reflects only the latest Assistant request, matching the "Latest cache hit"
+    // renderer label, while the token sums above stay session-cumulative.
+    expect(usage?.cacheHitRatePercent).toBeCloseTo((80 / 220) * 100, 12);
   });
 
   it("returns null without Assistant usage", () => {

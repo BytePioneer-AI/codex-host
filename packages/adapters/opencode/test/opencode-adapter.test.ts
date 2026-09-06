@@ -518,6 +518,29 @@ describe("OpenCode HarnessAdapter", () => {
     await adapter.close();
   });
 
+  it("exposes refreshUsage to re-project Usage on demand", async () => {
+    const { adapter, session, transport } = await openFixture();
+    expect(typeof session.refreshUsage).toBe("function");
+    const iterator = session.outputs[Symbol.asyncIterator]();
+    // Seed a completed Assistant message after open so the on-demand refresh has Usage to publish.
+    transport.messages
+      .get("session-1")
+      ?.push(userMessage("user-1", "hello"), assistantMessage("assistant-1", "user-1"));
+    await session.refreshUsage?.();
+    let sawUsage = false;
+    for (let i = 0; i < 5 && !sawUsage; i += 1) {
+      const event = await nextEvent(iterator);
+      if (event.type === "session.usage.changed") {
+        expect(event).toMatchObject({
+          usage: expect.objectContaining({ inputTokens: 10, outputTokens: 5 }),
+        });
+        sawUsage = true;
+      }
+    }
+    expect(sawUsage).toBe(true);
+    await adapter.close();
+  });
+
   it("persists unattended execution policy through resume, fork, and rollback", async () => {
     const transport = new FakeOpenCodeTransport();
     transport.messages.set("session-1", [

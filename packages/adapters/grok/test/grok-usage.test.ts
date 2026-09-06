@@ -50,7 +50,7 @@ describe("sessionUsageFromHistory", () => {
         },
       ]),
     ).toEqual({
-      inputTokens: 150,
+      inputTokens: 23,
       outputTokens: 15,
       totalTokens: 165,
       cachedInputTokens: 125,

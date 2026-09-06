@@ -31,6 +31,7 @@ import {
   type HostItemOutcome,
   type HostItemSnapshot,
   type HostReasoningItem,
+  type HostTextInput,
   type HostThreadSnapshot,
   type HostUsage,
   type InspectHarnessInput,
@@ -207,6 +208,9 @@ function capabilitiesForModels(modelState: GrokModelState): HarnessSessionCapabi
   };
 }
 const DEFAULT_CLOSE_TIMEOUT_MS = 2_000;
+
+/** Minimum interval between Grok credits fetches; the billing round trip never gates a Turn. */
+const GROK_CREDITS_TTL_MS = 60_000;
 
 function invalidState(message: string): HarnessError {
   return { code: "invalidState", message, retryable: false };
@@ -446,7 +450,10 @@ class GrokHarnessSession implements HarnessSession {
         },
       };
     }
-    const text = command.input.map(({ text }) => text).join("\n");
+    const text = command.input
+      .filter((input): input is HostTextInput => input.type === "text")
+      .map((input) => input.text)
+      .join("\n");
     if (text.length === 0) {
       return {
         ok: false,
@@ -777,8 +784,15 @@ class GrokHarnessSession implements HarnessSession {
     }
     if (active.cancellationRequested) return { ok: true, value: { cancellationRequested: true } };
     active.cancellationRequested = true;
-    for (const approval of active.approvals.values()) {
-      approval.resolve({ outcome: { outcome: "cancelled" } });
+    for (const [interactionId, pending] of active.approvals) {
+      active.approvals.delete(interactionId);
+      pending.resolve({ outcome: { outcome: "cancelled" } });
+      this.#event({
+        type: "interaction.closed",
+        interactionId,
+        turnId: active.command.turnId,
+        reason: "cancelled",
+      });
     }
     try {
       await this.#transport.cancel();
@@ -1152,18 +1166,21 @@ class GrokHarnessSession implements HarnessSession {
       }
       nativeTurnRef = created[0]?.nativeTurnRef;
       checkpoint = created[0]?.checkpoint;
-    } catch (error) {
-      if (outcome.status === "succeeded") {
-        outcome = { status: "failed", error: normalizeError(error, "protocolError") };
-      }
+    } catch {
+      // A history re-read failure must not overturn an already-succeeded Native Turn: the native
+      // outcome is authoritative and the re-read is only a projection convenience. Settle with the
+      // outcome and Usage still on hand.
     }
-    await this.#refreshCredits().catch(() => undefined);
     this.#finish(
       active,
       checkpoint ? { ...outcome, checkpoint } : outcome,
       sessionUsageFromHistory(history) ?? (response ? usageFromPrompt(response) : null),
       nativeTurnRef,
     );
+    // Credits are billing telemetry and must never gate the terminal Turn event. Refresh only
+    // after turn.completed is emitted; the adapter TTL throttles repeated billing round trips and
+    // any failure is swallowed.
+    void this.#refreshCredits().catch(() => undefined);
   }
 
   #finish(
@@ -1268,6 +1285,7 @@ export class GrokAdapter implements HarnessAdapter {
   readonly #toolOutputLimit: number;
   #closePromise: Promise<void> | null = null;
   #credits: GrokCreditsSnapshot | null = null;
+  #creditsFetchedAt = 0;
   #creditsRefresh: Promise<GrokCreditsSnapshot | null> | null = null;
 
   constructor(options: GrokAdapterOptions = {}, dependencies?: GrokAdapterDependencies) {
@@ -1298,6 +1316,9 @@ export class GrokAdapter implements HarnessAdapter {
   refreshCredits(): Promise<GrokCreditsSnapshot | null> {
     if (this.#closePromise) return Promise.resolve(this.#credits);
     if (this.#creditsRefresh) return this.#creditsRefresh;
+    if (this.#credits && Date.now() - this.#creditsFetchedAt < GROK_CREDITS_TTL_MS) {
+      return Promise.resolve(this.#credits);
+    }
     this.#creditsRefresh = this.#loadCredits().finally(() => {
       this.#creditsRefresh = null;
     });
@@ -1313,7 +1334,10 @@ export class GrokAdapter implements HarnessAdapter {
       const snapshot = await this.#fetchCredits(
         this.#environment ? { environment: this.#environment } : {},
       );
-      if (snapshot) this.#credits = snapshot;
+      if (snapshot) {
+        this.#credits = snapshot;
+        this.#creditsFetchedAt = Date.now();
+      }
     } catch {
       // Credits are optional account telemetry; keep the last good snapshot.
     }

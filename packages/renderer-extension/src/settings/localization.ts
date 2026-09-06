@@ -80,6 +80,14 @@ export interface RendererSettingsMessages {
   readonly accountLoginSucceeded: string;
   readonly accountLoginFailed: string;
   readonly accountLoadFailed: string;
+  readonly accountCreditsUsed: string;
+  readonly accountCreditsReset: string;
+  readonly accountCreditsPeriodWeekly: string;
+  readonly accountCreditsPeriodMonthly: string;
+  readonly accountCreditsPeriodFiveHour: string;
+  readonly accountCreditsPeriodSevenDay: string;
+  readonly accountCreditsPeriodUnknown: string;
+  readonly accountCreditsBuild: string;
   readonly connectionAdapter: string;
   readonly connectionHosts: string;
   readonly connectionLocalHost: string;
@@ -227,7 +235,7 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   connectionsDescription:
     "View runtime status by Host. Select an item to inspect details or complete its setup.",
   accountsDescription:
-    "New Codex tasks start with this account. Existing tasks keep the account they were created with.",
+    "New Codex tasks start with this account. Existing tasks keep the account they were created with. Multi-account is currently available for Codex; other Harnesses will follow in a later update.",
   accountAdd: "Add Account",
   accountCreateFailed: "Could not add the Account.",
   accountDelete: "Delete",
@@ -247,6 +255,14 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   accountLoginSucceeded: "Sign-in completed.",
   accountLoginFailed: "Sign-in failed.",
   accountLoadFailed: "Could not load Codex Accounts.",
+  accountCreditsUsed: "Used",
+  accountCreditsReset: "reset",
+  accountCreditsPeriodWeekly: "Weekly limit",
+  accountCreditsPeriodMonthly: "Monthly limit",
+  accountCreditsPeriodFiveHour: "5-hour",
+  accountCreditsPeriodSevenDay: "7-day",
+  accountCreditsPeriodUnknown: "Limit",
+  accountCreditsBuild: "Build",
   connectionAdapter: "Renderer adapter",
   connectionHosts: "Hosts",
   connectionLocalHost: "Local",
@@ -406,7 +422,8 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   sessionImportRetryOpen: "重试打开",
   sessionImportRetrying: "正在打开……",
   connectionsDescription: "按 Host 查看运行时状态。选择一项，在右侧检查详情或完成配置。",
-  accountsDescription: "这里决定之后新建 Codex 任务默认用哪个账号。已经开过的任务不会换号。",
+  accountsDescription:
+    "这里决定之后新建 Codex 任务默认用哪个账号。已经开过的任务不会换号。当前支持 Codex 多账号，其他 Harness 敬请期待后续更新。",
   accountAdd: "添加账号",
   accountCreateFailed: "添加账号失败。",
   accountDelete: "删除",
@@ -426,6 +443,14 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   accountLoginSucceeded: "登录成功。",
   accountLoginFailed: "登录失败。",
   accountLoadFailed: "无法加载 Codex 账号。",
+  accountCreditsUsed: "已用",
+  accountCreditsReset: "重置",
+  accountCreditsPeriodWeekly: "周额度",
+  accountCreditsPeriodMonthly: "月额度",
+  accountCreditsPeriodFiveHour: "5 小时",
+  accountCreditsPeriodSevenDay: "7 天",
+  accountCreditsPeriodUnknown: "额度",
+  accountCreditsBuild: "Build",
   connectionAdapter: "Renderer 适配器",
   connectionHosts: "Host 列表",
   connectionLocalHost: "本地",

@@ -438,12 +438,42 @@ button {
 }
 
 .settings-account-row {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 16px 0;
+  border-bottom: 1px solid var(--settings-divider);
+}
+
+.settings-account-row__head {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   gap: 16px;
-  padding: 14px 0;
-  border-bottom: 1px solid var(--settings-divider);
+}
+
+.settings-account-row__person {
+  display: grid;
+  grid-template-columns: 36px minmax(0, 1fr);
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.settings-account-row__mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  flex: none;
+}
+
+.settings-account-row__mark img,
+.settings-account-row__mark .codexhost-settings-icon {
+  width: 36px;
+  height: 36px;
+  object-fit: contain;
 }
 
 .settings-account-row__identity {
@@ -456,15 +486,141 @@ button {
 .settings-account-row__identity > div {
   display: flex;
   align-items: center;
+  min-height: 36px;
   gap: 10px;
 }
 
-.settings-account-row__identity code {
+.settings-account-email {
+  display: flex;
+  align-items: baseline;
+  min-width: 0;
+  gap: 5px;
+}
+
+.settings-account-email strong {
   overflow: hidden;
-  color: var(--settings-muted);
-  font-size: 12px;
+  font-size: 13px;
+  font-weight: 600;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.settings-account-email span {
+  overflow: hidden;
+  flex: none;
+  max-width: 48%;
+  color: var(--settings-muted);
+  font-size: 12px;
+  font-weight: 400;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-account-usage {
+  padding: 12px 14px 8px;
+  background: var(--settings-surface);
+  border: 1px solid var(--settings-border);
+  border-radius: 16px;
+  background-image: radial-gradient(
+    220px 110px at 12% -18%,
+    color-mix(in srgb, var(--credits-glow, var(--settings-success)) 18%, transparent),
+    transparent 70%
+  );
+}
+
+.settings-account-usage__meter {
+  margin-bottom: 11px;
+}
+
+.settings-account-usage__meter:last-child {
+  margin-bottom: 0;
+}
+
+.settings-account-usage__meter-top {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 5px;
+}
+
+.settings-account-usage__title {
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.settings-account-usage__meter--secondary .settings-account-usage__title {
+  font-size: 12px;
+  font-weight: 400;
+}
+
+.settings-account-usage__sub {
+  color: color-mix(in srgb, currentColor 60%, transparent);
+  font-size: 11px;
+  font-weight: 400;
+}
+
+.settings-account-usage__percent {
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+
+.settings-account-usage__meter--primary .settings-account-usage__percent {
+  font-size: 26px;
+}
+
+.settings-account-usage__meter--secondary .settings-account-usage__percent {
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.settings-account-usage__percent--ok {
+  color: #3d9a64;
+}
+
+.settings-account-usage__percent--warn {
+  color: #c9a227;
+}
+
+.settings-account-usage__percent--hot {
+  color: #c45c4a;
+}
+
+.settings-account-usage__bar {
+  height: 6px;
+  overflow: hidden;
+  background: color-mix(in srgb, currentColor 16%, transparent);
+  border-radius: 9999px;
+}
+
+.settings-account-usage__bar > span {
+  display: block;
+  height: 100%;
+  border-radius: 9999px;
+}
+
+.settings-account-usage--loading {
+  background-image: none;
+}
+
+.settings-account-usage__skeleton {
+  border-radius: 6px;
+  background: color-mix(in srgb, currentColor 10%, transparent);
+}
+
+.settings-account-usage__skeleton--label {
+  width: 96px;
+  height: 12px;
+}
+
+.settings-account-usage__skeleton--percent {
+  width: 48px;
+  height: 24px;
+}
+
+.settings-account-usage__bar--skeleton {
+  background: color-mix(in srgb, currentColor 8%, transparent);
 }
 
 .settings-account-active {
@@ -479,8 +635,11 @@ button {
   gap: 8px;
 }
 
+.settings-account-actions {
+  min-height: 36px;
+}
+
 .settings-account-verification {
-  grid-column: 1 / -1;
   flex-wrap: wrap;
   padding: 14px;
   color: var(--settings-muted);

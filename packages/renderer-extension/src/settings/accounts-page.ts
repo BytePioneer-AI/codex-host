@@ -11,8 +11,13 @@ import type {
   CodexAccountLoginStartResult,
   CodexAccountMutationResult,
   CodexAccountSummary,
+  CodexAccountUsageParams,
+  CodexAccountUsageResult,
 } from "@codexhost/shared-contracts";
 
+import { createRendererAgentIcon } from "../renderer-agent-icon.js";
+import { codexAccountDisplayName } from "../renderer-codex-account-options.js";
+import { renderAccountUsageCard, type AccountUsageViewState } from "./accounts-usage.js";
 import type { RendererSettingsPageDefinition, RendererSettingsPageMountContext } from "./core.js";
 import { createRendererSettingsIcon } from "./icons.js";
 import type { RendererSettingsMessages } from "./localization.js";
@@ -20,6 +25,7 @@ import type { RendererSettingsMessages } from "./localization.js";
 export interface RendererCodexAccountClient {
   listCodexAccounts(): Promise<CodexAccountListResult>;
   refreshCodexAccounts?(): Promise<CodexAccountListResult>;
+  inspectCodexAccountUsage?(input: CodexAccountUsageParams): Promise<CodexAccountUsageResult>;
   createCodexAccount(input: CodexAccountCreateParams): Promise<CodexAccountMutationResult>;
   deleteCodexAccount(input: CodexAccountDeleteParams): Promise<CodexAccountDeleteResult>;
   activateCodexAccount(input: CodexAccountActivateParams): Promise<CodexAccountMutationResult>;
@@ -85,6 +91,8 @@ export function createAccountsSettingsPage(
       let loginStartingAccountId: string | null = null;
       let loginMessage: string | null = null;
       let loginRefreshTimer: number | undefined;
+      const usageByAccountId = new Map<string, AccountUsageViewState>();
+      let usageGeneration = 0;
 
       const clearLoginRefresh = (): void => {
         if (loginRefreshTimer === undefined) return;
@@ -102,15 +110,14 @@ export function createAccountsSettingsPage(
             () => client().refreshCodexAccounts?.() ?? client().listCodexAccounts(),
             {
               success(result) {
-                accounts = result.accounts;
-                const signedIn = accounts.some(
+                const signedIn = result.accounts.some(
                   (account) => account.accountId === login?.accountId && account.email,
                 );
                 if (signedIn) {
                   login = null;
                   loginMessage = messages.accountLoginSucceeded;
                 }
-                render();
+                setAccounts(result.accounts);
                 scheduleLoginRefresh();
               },
               failure() {
@@ -133,22 +140,38 @@ export function createAccountsSettingsPage(
           const row = document.createElement("section");
           row.className = "settings-account-row";
           row.dataset.accountId = account.accountId;
+          const head = document.createElement("div");
+          head.className = "settings-account-row__head";
+          const person = document.createElement("div");
+          person.className = "settings-account-row__person";
+          const mark = document.createElement("div");
+          mark.className = "settings-account-row__mark";
+          mark.setAttribute("aria-hidden", "true");
+          mark.append(createRendererAgentIcon("codex", 36, document));
           const identity = document.createElement("div");
           identity.className = "settings-account-row__identity";
           const titleLine = document.createElement("div");
-          const title = document.createElement("strong");
-          title.textContent = account.email ?? account.label;
-          titleLine.append(title);
+          const displayName = codexAccountDisplayName(account);
+          const email = document.createElement("span");
+          email.className = "settings-account-email";
+          email.title = displayName.full;
+          const local = document.createElement("strong");
+          local.textContent = displayName.local;
+          email.append(local);
+          if (displayName.domain) {
+            const domain = document.createElement("span");
+            domain.textContent = displayName.domain;
+            email.append(domain);
+          }
+          titleLine.append(email);
           if (account.active) {
             const badge = document.createElement("span");
             badge.className = "settings-status-badge settings-account-active";
             badge.textContent = messages.accountActive;
             titleLine.append(badge);
           }
-          const home = document.createElement("code");
-          home.textContent = account.codexHome;
-          home.title = account.codexHome;
-          identity.append(titleLine, home);
+          identity.append(titleLine);
+          person.append(mark, identity);
           const actions = document.createElement("div");
           actions.className = "settings-account-actions";
           if (!account.active) {
@@ -185,7 +208,14 @@ export function createAccountsSettingsPage(
             remove.addEventListener("click", () => deleteAccount(account.accountId));
             actions.append(remove);
           }
-          row.append(identity, actions);
+          head.append(person, actions);
+          row.append(head);
+          const usage = renderAccountUsageCard(
+            document,
+            usageByAccountId.get(account.accountId),
+            messages,
+          );
+          if (usage) row.append(usage);
 
           if (login?.accountId === account.accountId) {
             const verification = document.createElement("div");
@@ -244,14 +274,54 @@ export function createAccountsSettingsPage(
         if (!value) throw new Error(messages.runtimeCapabilityNotInstalled);
         return value;
       };
+      const loadUsage = (nextAccounts: readonly CodexAccountSummary[]): void => {
+        const inspect = getClient()?.inspectCodexAccountUsage;
+        const signedIn = nextAccounts.filter((account) => account.email);
+        const keep = new Set(signedIn.map((account) => account.accountId));
+        for (const accountId of [...usageByAccountId.keys()]) {
+          if (!keep.has(accountId)) usageByAccountId.delete(accountId);
+        }
+        if (!inspect) return;
+        const pending = signedIn.filter((account) => !usageByAccountId.has(account.accountId));
+        if (pending.length === 0) return;
+        const generation = ++usageGeneration;
+        for (const account of pending) {
+          usageByAccountId.set(account.accountId, { status: "loading" });
+        }
+        render();
+        void Promise.all(
+          pending.map(async (account) => {
+            try {
+              const result = await inspect({ accountId: account.accountId });
+              if (context.signal.aborted || generation !== usageGeneration) return;
+              usageByAccountId.set(
+                account.accountId,
+                result.accountCredits
+                  ? { status: "ready", credits: result.accountCredits }
+                  : { status: "empty" },
+              );
+            } catch {
+              if (context.signal.aborted || generation !== usageGeneration) return;
+              usageByAccountId.set(account.accountId, { status: "empty" });
+            }
+          }),
+        ).then(() => {
+          if (context.signal.aborted || generation !== usageGeneration) return;
+          render();
+        });
+      };
+      const setAccounts = (nextAccounts: readonly CodexAccountSummary[]): void => {
+        accounts = nextAccounts;
+        render();
+        loadUsage(nextAccounts);
+      };
       const refreshInBackground = (): void => {
         if (!client().refreshCodexAccounts) return;
         void context.runLatest(
           () => client().refreshCodexAccounts?.() ?? client().listCodexAccounts(),
           {
             success(result) {
-              accounts = result.accounts;
-              render();
+              setAccounts(result.accounts);
             },
             failure() {
               // Keep showing the cached Account list when live metadata refresh fails.
@@ -262,9 +332,8 @@ export function createAccountsSettingsPage(
       const load = (): void => {
         void context.runLatest(() => client().listCodexAccounts(), {
           success(result) {
-            accounts = result.accounts;
             loginMessage = null;
-            render();
+            setAccounts(result.accounts);
             refreshInBackground();
           },
           failure(error) {
@@ -276,12 +345,13 @@ export function createAccountsSettingsPage(
       const mutate = (operation: () => Promise<CodexAccountMutationResult>): void => {
         void context.runLatest(() => operation(), {
           success(result) {
-            accounts = accounts.map((account) => ({
-              ...(account.accountId === result.account.accountId ? result.account : account),
-              active: account.accountId === result.account.accountId,
-            }));
             loginMessage = null;
-            render();
+            setAccounts(
+              accounts.map((account) => ({
+                ...(account.accountId === result.account.accountId ? result.account : account),
+                active: account.accountId === result.account.accountId,
+              })),
+            );
           },
           failure(error) {
             loginMessage = errorMessage(error, messages.accountLoadFailed);
@@ -329,12 +399,11 @@ export function createAccountsSettingsPage(
         void context.runLatest(() => client().createCodexAccount({}), {
           success(result) {
             accountCreating = false;
-            accounts = [
+            loginMessage = null;
+            setAccounts([
               ...accounts.filter(({ accountId }) => accountId !== result.account.accountId),
               result.account,
-            ];
-            loginMessage = null;
-            render();
+            ]);
             startLogin(result.account.accountId);
           },
           failure(error) {
@@ -354,14 +423,15 @@ export function createAccountsSettingsPage(
         void context.runLatest(() => client().deleteCodexAccount({ accountId }), {
           success() {
             deletingAccountId = null;
-            accounts = accounts
-              .filter((candidate) => candidate.accountId !== accountId)
-              .map((candidate) => ({
-                ...candidate,
-                active: account.active ? candidate.isDefault : candidate.active,
-              }));
             loginMessage = null;
-            render();
+            setAccounts(
+              accounts
+                .filter((candidate) => candidate.accountId !== accountId)
+                .map((candidate) => ({
+                  ...candidate,
+                  active: account.active ? candidate.isDefault : candidate.active,
+                })),
+            );
           },
           failure(error) {
             deletingAccountId = null;

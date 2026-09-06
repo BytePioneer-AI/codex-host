@@ -480,7 +480,14 @@ describe("Renderer Codex Accounts page", () => {
     expect(client.refreshCodexAccounts).toHaveBeenCalledOnce();
 
     refresh.resolve({ accounts: [{ ...cachedAccount, email: "cached@example.com" }] });
-    await vi.waitFor(() => expect(visibleText(content)).toContain("cached@example.com"));
+    await vi.waitFor(() =>
+      expect(descendants(content).some((element) => element.title === "cached@example.com")).toBe(
+        true,
+      ),
+    );
+    expect(visibleText(content)).toContain("cached");
+    expect(visibleText(content)).toContain("example.com");
+    expect(visibleText(content)).not.toContain("/tmp/default");
 
     scope.dispose();
   });
@@ -598,6 +605,93 @@ describe("Renderer Codex Accounts page", () => {
     await vi.waitFor(() => expect(deleteCodexAccount).toHaveBeenCalledWith({ accountId: "work" }));
     await vi.waitFor(() => expect(visibleText(content)).not.toContain("Work"));
     expect(visibleText(content)).toContain("Default");
+    expect(visibleText(content)).not.toContain("/tmp/work");
+
+    scope.dispose();
+  });
+
+  it("renders usage cards for signed-in Accounts and omits unsigned quota and CODEX_HOME", async () => {
+    const inspectCodexAccountUsage = vi.fn(async ({ accountId }: { accountId: string }) => {
+      if (accountId !== "work") throw new Error(`unexpected account ${accountId}`);
+      return {
+        accountId,
+        usage: null,
+        accountCredits: {
+          usedPercent: 27,
+          periodType: "weekly" as const,
+          resetsAt: "2026-09-10T03:32:00.000Z",
+          productUsage: [
+            {
+              product: "GrokBuild",
+              usagePercent: 27,
+              resetsAt: "2026-09-10T03:32:00.000Z",
+            },
+          ],
+        },
+      };
+    });
+    const client = {
+      listCodexAccounts: vi.fn(async () => ({
+        accounts: [
+          {
+            accountId: "work",
+            label: "Work",
+            email: "work@example.com",
+            codexHome: "/tmp/secret-home",
+            active: true,
+            isDefault: true,
+          },
+          {
+            accountId: "pending",
+            label: "Pending",
+            codexHome: "/tmp/pending-home",
+            active: false,
+            isDefault: false,
+          },
+        ],
+      })),
+      inspectCodexAccountUsage,
+      createCodexAccount: vi.fn(),
+      deleteCodexAccount: vi.fn(),
+      activateCodexAccount: vi.fn(),
+      startCodexAccountLogin: vi.fn(),
+      cancelCodexAccountLogin: vi.fn(),
+    };
+    const page = createDefaultRendererSettingsPages(
+      rendererSettingsMessages("zh-CN"),
+      () => null,
+      () => null,
+      () => client,
+    ).find(({ id }) => id === "accounts");
+    if (!page) throw new Error("Accounts page is not registered");
+
+    const document = new FakeDocument();
+    const content = document.createElement("main");
+    const scope = new RendererSettingsPageScope();
+    page.mount({
+      content: content as unknown as HTMLElement,
+      signal: scope.signal,
+      runLatest: (operation, handlers) => scope.runLatest(operation, handlers),
+    });
+
+    await vi.waitFor(() =>
+      expect(inspectCodexAccountUsage).toHaveBeenCalledWith({ accountId: "work" }),
+    );
+    expect(inspectCodexAccountUsage).toHaveBeenCalledTimes(1);
+    await vi.waitFor(() => expect(visibleText(content)).toContain("周额度"));
+    expect(visibleText(content)).toContain("Build");
+    expect(visibleText(content)).toContain("已用");
+    expect(visibleText(content)).toContain("work");
+    expect(visibleText(content)).toContain("example.com");
+    expect(visibleText(content)).toContain("Pending");
+    expect(visibleText(content)).not.toContain("work@example.com");
+    expect(visibleText(content)).not.toContain("/tmp/secret-home");
+    expect(visibleText(content)).not.toContain("/tmp/pending-home");
+    expect(
+      descendants(content).filter((element) =>
+        element.className.split(" ").includes("settings-account-usage"),
+      ),
+    ).toHaveLength(1);
 
     scope.dispose();
   });

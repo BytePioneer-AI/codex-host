@@ -40,6 +40,8 @@ test("offline board renders actual input, safe details, cross-repo identities an
   const report = createReport();
   const hostile =
     '</script><script>window.pwned=true</script><img src=x onerror="window.pwned=true">';
+  report.prs[0].evaluatedAt = report.generatedAt;
+  report.prs[1].evaluatedAt = "2026-01-01T00:00:00Z";
   report.prs[0].title = hostile;
   report.prs[0].evidence[0].label = hostile;
   const other = structuredClone(report.prs[0]);
@@ -61,6 +63,8 @@ test("offline board renders actual input, safe details, cross-repo identities an
   assert.equal(await page.locator("img").count(), 0);
   assert.equal(await page.locator("#generated-time").getAttribute("datetime"), report.generatedAt);
   assert.match(await page.locator("#summary").innerText(), /已评估 5 个 PR/u);
+  assert.match(await page.locator("#board").innerText(), /历史快照，非本次复评/u);
+  assert.match(await page.locator("#board").innerText(), /历史评估时间未知/u);
 
   await page
     .getByRole("button", { name: "查看 example/other-fixture#1 评估详情", exact: true })
@@ -80,6 +84,7 @@ test("offline board renders actual input, safe details, cross-repo identities an
     .first()
     .click();
   assert.match(await page.locator("#detail-body").innerText(), /删除重复配置/u);
+  assert.match(await page.locator("#detail-body").innerText(), /2026-01-01T00:00:00Z · 历史快照/u);
   assert.equal(
     await page.locator(".evidence-file a").getAttribute("href"),
     report.prs[1].evidence[0].url,

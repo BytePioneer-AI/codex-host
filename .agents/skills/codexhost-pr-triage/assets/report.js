@@ -88,6 +88,12 @@
       ]),
     );
 
+    function assessmentLabel(pr) {
+      return pr.evaluatedAt
+        ? `评估于 ${pr.evaluatedAt}${pr.evaluatedAt !== report.generatedAt ? " · 历史快照，非本次复评" : ""}`
+        : "历史评估时间未知 · 旧格式未补记";
+    }
+
     function showDetail(pr) {
       const verdict = verdicts.find((item) => item.key === pr.verdict);
       const badge = element("div", verdict.className);
@@ -99,6 +105,7 @@
         badge,
         heading,
         element("div", "mono muted", `${pr.repository}#${pr.number}`),
+        element("p", "snapshot-details", assessmentLabel(pr)),
         element(
           "p",
           "snapshot-details mono",
@@ -173,6 +180,7 @@
       );
       node.append(
         element("p", "snapshot-details mono", `HEAD ${pr.headSha?.slice(0, 8) ?? "未知"}`),
+        element("p", "snapshot-details", assessmentLabel(pr)),
       );
       if ($("show-ci").checked) node.append(integration(pr));
       const footer = element("div", "card-footer");
@@ -209,6 +217,7 @@
         identity.append(
           link(`${pr.repository}#${pr.number}`, pr.url, "mono"),
           element("span", "table-title", pr.title),
+          element("p", "snapshot-details", assessmentLabel(pr)),
         );
         const verdict = verdicts.find((item) => item.key === pr.verdict);
         const badge = element("td", verdict.className);

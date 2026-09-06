@@ -117,23 +117,26 @@ gh pr view <N> -R <OWNER/REPO> --json statusCheckRollup,mergeable
 
 ## 5. 报告与 HTML 看板
 
-默认输出聊天摘要、本地 `report.json` 和独立 `index.html`。用系统临时目录下的新建目录保存并返回实际路径，不覆盖用户文件，不提交报告。不需要服务器、数据库或部署。
+默认将累计 `report.json` 和独立 `index.html` 保存到**当前 Git 项目根目录的一级目录 `pr-triage/`**，每次复用该目录。先用 `git check-ignore` 确认目录被忽略；未忽略时在项目 `.gitignore` 添加 `/pr-triage/`，不提交报告。采集材料和本次输入可放在此目录新建的 `runs/` 子目录中，不另建临时看板。
 
 **生成报告前必须完整读取 [references/report-format.md](references/report-format.md)**，按版本 1 契约写入真实评估数据。不要把文档示例或测试 fixture 当作真实 PR；缺失材料明确记录为缺口，不编造 SHA、证据或结论。
 
-使用 skill 自带的固定模板和渲染器，不在每次评估时重写 HTML。将下列 skill 路径解析成绝对路径后执行：
+本次输入只包含本次选取并完成处理的 PR/跳过项，使用新的文件名，如 `runs/<唯一批次>/report.json`；`generatedAt` 是本次真实快照时间。不要把累计报告当成本次输入，否则会把旧记录误标成本次处理。使用固定增量入口：
 
 ```bash
-node <skill绝对路径>/scripts/render-report.mjs <report.json绝对路径> <index.html绝对路径>
+node <skill绝对路径>/scripts/update-report.mjs <本次评估.json绝对路径> <当前项目根目录>
 ```
 
-渲染器校验数据，内嵌 JSON、样式和浏览器脚本，输出可双击离线打开的 HTML；不访问 GitHub、不调整裁决。成功后 stdout 返回已评估数、跳过数和四档计数，聊天摘要直接采用这些值。校验失败按字段提示修正数据，不绕过校验或改写结论以凑通过。
+入口读取旧 JSON，以不区分大小写的 `repository + number` 合并：本次记录替换同身份的评估或跳过项，其他记录保留。未出现在本次列表中不等于已关闭，不自动删除。旧 HEAD、CI、理由与评估时间均保留；旧格式缺少评估时间时显示未知。历史采集缺口保守保留，不能因本次采集成功就宣称旧缺口已补齐。
 
-聊天先给计数，再给每 PR 一行的简表和报告链接：
+入口校验完整合并数据、生成 HTML 后备份旧文件，再发布新 JSON/HTML。损坏 JSON、只有 HTML、未被 Git 忽略或已有更新锁时停止并说明原因，不自动清空重建。恢复方式与文件一致性边界见 report-format。它不访问 GitHub、不改变裁决。
+
+聊天采用更新入口 stdout 的 `current` 本次计数与 `cumulative` 累计计数，分别标明；再给本次每 PR 一行简表和固定报告链接：
 
 ```text
-已评估 N 个 PR · 跳过 D 个 · 采集完整/部分结果
-建议合入 a · 精简后合入 b · 需要讨论 c · 不建议合入 d
+本次评估 N 个 PR · 跳过 D 个 · 采集完整/部分结果
+本次建议合入 a · 精简后合入 b · 需要讨论 c · 不建议合入 d
+累计看板 M 条评估 · 保留项未复评
 ```
 
 | PR | 建议 | 一句话理由 | CI / 冲突（辅助） | 下一步 |

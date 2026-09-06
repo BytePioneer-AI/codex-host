@@ -398,7 +398,10 @@ export class FakeHarnessSession implements HarnessSession {
         },
       };
     }
-    const text = command.input.map((input) => input.text).join("\n");
+    const text = command.input
+      .filter((input): input is Extract<typeof input, { type: "text" }> => input.type === "text")
+      .map((input) => input.text)
+      .join("\n");
     if (text.length === 0) {
       return {
         ok: false,

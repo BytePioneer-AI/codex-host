@@ -120,10 +120,20 @@ export interface HostTextInput {
   text: string;
 }
 
+export interface HostImageInput {
+  type: "image";
+  mimeType: string;
+  base64Data: string;
+  /** Original filesystem path when the image arrived as a Desktop `localImage` input. */
+  sourcePath?: string;
+}
+
+export type HostTurnInput = HostTextInput | HostImageInput;
+
 export interface TurnStartCommand {
   type: "turn.start";
   turnId: HostTurnId;
-  input: HostTextInput[];
+  input: HostTurnInput[];
 }
 
 export interface TurnCancelCommand {
@@ -274,12 +284,14 @@ export interface HostAgentMessageItem {
   type: "agentMessage";
   itemId: HostItemId;
   text: string;
+  durationMs?: number;
 }
 
 export interface HostReasoningItem {
   type: "reasoning";
   itemId: HostItemId;
   text: string;
+  durationMs?: number;
 }
 
 export interface HostContextCompactionItem {
@@ -382,10 +394,14 @@ export type HistoricalTurnOutcome =
 export interface HostTurnSnapshot {
   nativeTurnRef: NativeTurnRef;
   checkpoint?: NativeCheckpointRef;
-  input: HostTextInput[];
+  input: HostTurnInput[];
   items: HostItemSnapshot[];
   outcome: HistoricalTurnOutcome;
   model?: HarnessModelRef;
+  /** Unix epoch milliseconds of the first native record of this turn, when known. */
+  startedAtMs?: number;
+  /** Unix epoch milliseconds of the last native record of this turn, when known. */
+  completedAtMs?: number;
 }
 
 export interface HostThreadSnapshot {
@@ -430,7 +446,13 @@ export interface TurnStartedEvent {
 export interface AutonomousTurnStartedEvent {
   type: "turn.autonomous.started";
   turnId: HostTurnId;
-  input: HostTextInput[];
+  input: HostTurnInput[];
+  /**
+   * Unix epoch milliseconds when the native autonomous work actually began, when the
+   * adapter can observe it. Replayed/buffered turns must carry this so projected
+   * durations reflect native time instead of replay time.
+   */
+  startedAtMs?: number;
 }
 
 export interface ItemStartedEvent {
@@ -457,6 +479,12 @@ export interface TurnCompletedEvent {
   turnId: HostTurnId;
   nativeTurnRef?: NativeTurnRef;
   outcome: TurnOutcome;
+  /**
+   * Unix epoch milliseconds when the native turn actually ended, when the adapter can
+   * observe it. Buffered/replayed turns must carry this so projected durations reflect
+   * native time instead of replay time.
+   */
+  completedAtMs?: number;
 }
 
 export interface InteractionClosedEvent {

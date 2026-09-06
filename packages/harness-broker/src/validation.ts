@@ -199,12 +199,12 @@ const eventKeys = new Map<string, ReadonlySet<string>>([
   ["subagent.state.changed", new Set(["type", "nativeSubagentId", "status", "resultSummary"])],
   ["subagent.transcript.changed", new Set(["type", "nativeSubagentId"])],
   ["turn.started", new Set(["type", "turnId"])],
-  ["turn.autonomous.started", new Set(["type", "turnId", "input"])],
+  ["turn.autonomous.started", new Set(["type", "turnId", "input", "startedAtMs"])],
   ["item.started", new Set(["type", "turnId", "item"])],
   ["item.updated", new Set(["type", "turnId", "itemId", "update"])],
   ["item.completed", new Set(["type", "turnId", "snapshot"])],
   ["interaction.closed", new Set(["type", "interactionId", "turnId", "reason"])],
-  ["turn.completed", new Set(["type", "turnId", "nativeTurnRef", "outcome"])],
+  ["turn.completed", new Set(["type", "turnId", "nativeTurnRef", "outcome", "completedAtMs"])],
   ["session.faulted", new Set(["type", "error"])],
 ]);
 const interactionKeys = new Map<string, ReadonlySet<string>>([

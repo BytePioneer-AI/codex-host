@@ -93,10 +93,28 @@ export class DelegationControlRegistry implements DelegationControlApi {
   }
 
   async #registrationForThread(threadId: string): Promise<DelegationControlRegistration> {
-    return only(
-      await this.#matching((registration) => registration.ownsThread(threadId)),
-      "Thread is not owned by exactly one active Host Runtime session",
-    );
+    const registrations = [...this.#registrations];
+    const matches = await this.#matching((registration) => registration.ownsThread(threadId));
+    if (matches.length === 1) return matches[0] as DelegationControlRegistration;
+    if (matches.length > 1) {
+      throw new DelegationControlError(
+        "PARENT_THREAD_AMBIGUOUS",
+        "Thread is not owned by exactly one active Host Runtime session",
+        { matchingRuntimeCount: matches.length },
+      );
+    }
+    if (registrations.length === 0) {
+      throw new DelegationControlError(
+        "PARENT_THREAD_AMBIGUOUS",
+        "Thread is not owned by exactly one active Host Runtime session",
+        { matchingRuntimeCount: 0 },
+      );
+    }
+    // ponytail: single runtime handles unknown threads so official read can return THREAD_NOT_FOUND
+    if (registrations.length === 1) return registrations[0] as DelegationControlRegistration;
+    throw new DelegationControlError("THREAD_NOT_FOUND", "Thread was not found", {
+      matchingRuntimeCount: 0,
+    });
   }
 
   #compareThreads(

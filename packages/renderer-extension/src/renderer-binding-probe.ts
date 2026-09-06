@@ -1,4 +1,5 @@
 import {
+  decodeHarnessPluginRoute,
   harnessIdSchema,
   permissionModeFixedAtCreate,
   type HarnessCommandDescriptor,
@@ -91,6 +92,7 @@ const externalHarnessIds = {
   grok: harnessIdSchema.parse("grok"),
   omp: harnessIdSchema.parse("omp"),
   antigravity: harnessIdSchema.parse("antigravity"),
+  "kiro-cli": harnessIdSchema.parse("kiro-cli"),
 } as const;
 
 const externalAgents: readonly ExternalRendererAgent[] = [
@@ -101,6 +103,7 @@ const externalAgents: readonly ExternalRendererAgent[] = [
   "grok",
   "omp",
   "antigravity",
+  "kiro-cli",
 ];
 type HarnessAvailability = Partial<Record<ExternalRendererAgent, RendererAgentAvailability>>;
 type HarnessAvailabilityErrors = Record<ExternalRendererAgent, CodexhostError | undefined>;
@@ -441,6 +444,23 @@ export function restoredThreadOwnership(inspection: ThreadInspection): RestoredT
       ...(permissionModeId ? { permissionModeId } : {}),
     };
   }
+  if (inspection.harnessId === "kiro-cli") {
+    const route = decodeHarnessPluginRoute(inspection.transportModelId);
+    if (!route || route.harnessId !== "kiro-cli") {
+      throw new Error("Kiro CLI Thread reported an incompatible transport Model");
+    }
+    const model = inspection.effectiveModel ?? route.model;
+    const thinkingOptionId =
+      selectableThinkingOptionId(inspection) ?? route.thinkingOptionId;
+    const permissionModeId =
+      inspection.effectivePermissionModeId ?? route.permissionModeId;
+    return {
+      agent: "kiro-cli",
+      ...(model ? { model } : {}),
+      ...(thinkingOptionId ? { thinkingOptionId } : {}),
+      ...(permissionModeId ? { permissionModeId } : {}),
+    };
+  }
   throw new Error("Thread owner is not a Renderer Agent");
 }
 
@@ -668,6 +688,7 @@ export function installRendererBindingProbe(
       grok: undefined,
       omp: undefined,
       antigravity: undefined,
+      "kiro-cli": undefined,
     },
     webUi: Object.fromEntries(
       externalAgents.map((agent) => [agent, false]),

@@ -269,6 +269,7 @@ describe("Renderer fixed Model request client", () => {
       "activateCodexAccount",
       "cancelCodexAccountLogin",
       "checkUpdate",
+      "consumeCodexAccountResetCredit",
       "createCodexAccount",
       "deleteCodexAccount",
       "executeThreadCommand",

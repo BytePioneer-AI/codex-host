@@ -3099,6 +3099,56 @@ describe("AppServerHost HarnessAdapter projection", () => {
     await stopFixture(fixture);
   });
 
+  it.each([1, 2])(
+    "keeps the Host alive when inspecting a Thread without a local binding with %i Codex Accounts",
+    async (accountCount) => {
+      const fixture = createFixture();
+      const officialWrite = vi.fn();
+      fixture.official.stdin.on("data", officialWrite);
+      try {
+        await bindOfficialThread(fixture, "bound-local-thread");
+        if (accountCount === 2) {
+          await fixture.accountRepository.upsert({
+            accountId: "account-b",
+            codexHome: path.join(fixture.mappingStoreDirectory, "codex-home-b"),
+          });
+        }
+        expect(await fixture.accountRepository.list()).toHaveLength(accountCount);
+        writeRequest(fixture.desktopInput, {
+          id: 40,
+          method: "codexhost/thread/inspect",
+          params: { threadId: "remote-thread-without-local-account" },
+        });
+        const response = await Promise.race([
+          fixture.collector.waitFor((message) => requestId(message, 40)),
+          fixture.running.then((exitCode) => ({ hostExited: exitCode })),
+        ]);
+        expect(response).toEqual({ id: 40, result: { owner: "codex", locked: true } });
+        expect(
+          await fixture.threadAccountStore.getAccountId("remote-thread-without-local-account"),
+        ).toBeNull();
+
+        // Inspection must not invent a local Account binding or break later requests.
+        writeRequest(fixture.desktopInput, {
+          id: 41,
+          method: "codexhost/thread/inspect",
+          params: { threadId: "bound-local-thread" },
+        });
+        await expect(
+          fixture.collector.waitFor((message) => requestId(message, 41)),
+        ).resolves.toEqual({
+          id: 41,
+          result: { owner: "codex", locked: true, accountId: "default" },
+        });
+        expect(officialWrite).not.toHaveBeenCalled();
+      } finally {
+        fixture.desktopInput.end();
+        await fixture.running;
+        rmSync(fixture.mappingStoreDirectory, { recursive: true, force: true });
+      }
+    },
+  );
+
   it("projects official Codex token Usage and account rate limits for inspection", async () => {
     const fixture = createFixture();
     fixture.official.stdin.on("data", (chunk: Buffer) => {

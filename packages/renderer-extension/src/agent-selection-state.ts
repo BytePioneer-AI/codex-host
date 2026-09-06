@@ -378,7 +378,9 @@ export class DraftAgentController<Composer extends object> {
   }
 
   clearPendingSubmission(composer: Composer): void {
-    this.#pendingSubmissions.delete(this.#state(composer));
+    const state = this.#state(composer);
+    this.#pendingSubmissions.delete(state);
+    if (state.phase === "draft") delete state.codexAccountId;
   }
 
   recordSubmission(composer: Composer, codexAccountId?: string): Readonly<DraftComposerState> {

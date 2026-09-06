@@ -2434,13 +2434,18 @@ export class AppServerHost {
       await this.#writer.json(rpcError(request, resolution.error.code, resolution.error.message));
       return;
     }
+    // A remote or not-yet-bound Thread has no local Account. Omit the optional
+    // field rather than emitting undefined (invalid JSON) or guessing an Account.
+    const accountId =
+      resolution.kind === "official"
+        ? await this.#codexRuntimePool.accountIdForThread(params.data.threadId)
+        : null;
     const inspection = threadInspectionSchema.parse(
       resolution.kind === "official"
         ? {
             owner: "codex",
             locked: true,
-            accountId:
-              (await this.#codexRuntimePool.accountIdForThread(params.data.threadId)) ?? undefined,
+            ...(accountId ? { accountId } : {}),
           }
         : {
             owner: "external",

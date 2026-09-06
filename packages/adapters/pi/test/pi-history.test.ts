@@ -143,6 +143,81 @@ describe("Pi active-branch history", () => {
     expect(mapPiSnapshot(history, state)).toEqual(snapshot);
   });
 
+  it("reads a missing isError as Tool success and only isError true as failure", () => {
+    const polarityHistory: PiSessionHistory = {
+      entries: [
+        {
+          id: "user",
+          parentId: null,
+          type: "message",
+          message: { role: "user", content: [{ type: "text", text: "run tools" }] },
+        },
+        {
+          id: "assistant-1",
+          parentId: "user",
+          type: "message",
+          message: {
+            role: "assistant",
+            stopReason: "toolUse",
+            content: [
+              { type: "toolCall", id: "call-implicit", name: "bash", arguments: {} },
+              { type: "toolCall", id: "call-failed", name: "read", arguments: {} },
+            ],
+          },
+        },
+        {
+          id: "tool-1",
+          parentId: "assistant-1",
+          type: "message",
+          message: {
+            role: "toolResult",
+            toolCallId: "call-implicit",
+            toolName: "bash",
+            content: [{ type: "text", text: "ok" }],
+          },
+        },
+        {
+          id: "tool-2",
+          parentId: "tool-1",
+          type: "message",
+          message: {
+            role: "toolResult",
+            toolCallId: "call-failed",
+            toolName: "read",
+            isError: true,
+            content: [{ type: "text", text: "boom" }],
+          },
+        },
+        {
+          id: "assistant-2",
+          parentId: "tool-2",
+          type: "message",
+          message: {
+            role: "assistant",
+            stopReason: "stop",
+            content: [{ type: "text", text: "done" }],
+          },
+        },
+      ],
+      leafId: "assistant-2",
+    };
+
+    const tools = (mapPiSnapshot(polarityHistory, state).turns[0]?.items ?? []).filter(
+      ({ item }) => item.type === "toolExecution",
+    );
+    expect(tools.map(({ outcome }) => outcome)).toEqual([
+      { status: "succeeded" },
+      {
+        status: "failed",
+        error: {
+          code: "nativeFailure",
+          message: "Pi Tool 'read' failed",
+          retryable: false,
+        },
+      },
+    ]);
+  });
+
   it("replays interleaved Assistant messages and Tools in native order", () => {
     const ids = ["user", "assistant-1", "tool-1", "assistant-2", "tool-2", "assistant-3"];
     const messages = [

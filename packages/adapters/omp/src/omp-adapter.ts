@@ -35,6 +35,7 @@ import {
   type HostSubagentDelegationItem,
   type HostSubagentState,
   type HostSubagentStatus,
+  type HostTextInput,
   type HostToolOutput,
   type InteractionRespondAccepted,
   type InteractionRespondCommand,
@@ -856,6 +857,10 @@ class OmpHarnessSession implements HarnessSession {
     }
   }
 
+  refreshUsage(): Promise<void> {
+    return this.#refreshUsage(this.#active?.command.turnId);
+  }
+
   execute(command: TurnStartCommand): Promise<HarnessResult<TurnStartAccepted>>;
   execute(command: TurnCancelCommand): Promise<HarnessResult<TurnCancelAccepted>>;
   execute(command: InteractionRespondCommand): Promise<HarnessResult<InteractionRespondAccepted>>;
@@ -894,7 +899,10 @@ class OmpHarnessSession implements HarnessSession {
         },
       };
     }
-    const text = command.input.map((input) => input.text).join("\n");
+    const text = command.input
+      .filter((input): input is HostTextInput => input.type === "text")
+      .map((input) => input.text)
+      .join("\n");
     if (text.length === 0) {
       return {
         ok: false,

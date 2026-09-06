@@ -232,19 +232,19 @@ function snapshotItems(entries: OmpEntry[], outcome: HistoricalTurnOutcome): Hos
       }),
       ...(output ? { output: textContent(output.content) } : {}),
     };
-    const toolSucceeded = nativeMessage.isError === false;
+    const toolFailed = nativeMessage.isError === true;
     snapshots.push({
       item,
-      outcome: toolSucceeded
-        ? { status: "succeeded" }
-        : {
+      outcome: toolFailed
+        ? {
             status: "failed",
             error: {
               code: "nativeFailure",
               message: `Omp Tool '${call.name}' failed`,
               retryable: false,
             },
-          },
+          }
+        : { status: "succeeded" },
     });
   }
   return snapshots;

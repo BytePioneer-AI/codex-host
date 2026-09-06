@@ -1482,6 +1482,25 @@ describe("Pi HarnessAdapter Session", () => {
     await session.close();
   });
 
+  it("refreshes exact Usage on demand through the public refreshUsage contract", async () => {
+    const { adapter, transports } = fixture();
+    const session = await openSession(adapter);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+    await session.readSnapshot();
+    const transport = transports[0];
+    if (!transport) throw new Error("Fake transport was not created");
+
+    await expect(session.refreshUsage?.()).resolves.toBeUndefined();
+    expect(transport.getSessionUsage).toHaveBeenCalledOnce();
+    let usage = await nextEvent(iterator);
+    if (usage.type === "session.state.changed") usage = await nextEvent(iterator);
+    expect(usage).toMatchObject({
+      type: "session.usage.changed",
+      usage: { totalTokens: 30, contextUsedTokens: 40, contextWindowTokens: 200 },
+    });
+    await session.close();
+  });
+
   it("retains reliable Usage when a later refresh fails", async () => {
     const { adapter, transports } = fixture();
     const session = await openSession(adapter);

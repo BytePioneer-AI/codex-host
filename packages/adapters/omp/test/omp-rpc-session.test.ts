@@ -76,6 +76,58 @@ class FakeOmpProcess extends EventEmitter {
     };
   }
 
+  #toolFrames(scenario: "async tool job" | "tool frame gaps"): void {
+    if (scenario === "async tool job") {
+      this.#output({
+        type: "tool_execution_start",
+        toolCallId: "async-tool",
+        toolName: "bash",
+        args: { command: "sleep 1" },
+      });
+      this.#output({
+        type: "tool_execution_end",
+        toolCallId: "async-tool",
+        toolName: "bash",
+        result: { state: "running" },
+        isError: false,
+      });
+      this.#output({
+        type: "tool_execution_update",
+        toolCallId: "async-tool",
+        partialResult: { state: "completed" },
+      });
+      this.#output({
+        type: "tool_execution_end",
+        toolCallId: "async-tool",
+        toolName: "bash",
+        result: { state: "completed" },
+        isError: false,
+      });
+    } else {
+      this.#output({
+        type: "tool_execution_start",
+        toolCallId: "gap-tool",
+        toolName: "bash",
+        args: {},
+      });
+      this.#output({ type: "tool_execution_update", toolCallId: "gap-tool" });
+      this.#output({
+        type: "tool_execution_end",
+        toolCallId: "gap-tool",
+        toolName: "bash",
+        result: { content: [{ type: "text", text: "done" }] },
+      });
+    }
+    const message = {
+      role: "assistant",
+      responseId: "assistant-tool",
+      content: [{ type: "text", text: "TOOL DONE" }],
+    };
+    this.#output({ type: "message_start", message });
+    this.#output({ type: "message_end", message: { ...message, stopReason: "stop" } });
+    this.#output({ type: "agent_end", isTerminal: true });
+  }
+
   #handle(command: Record<string, unknown>): void {
     this.commands.push(command);
     if (command.type === "extension_ui_response") {
@@ -139,6 +191,13 @@ class FakeOmpProcess extends EventEmitter {
       return;
     }
     if (command.type === "prompt") {
+      if (command.message === "async tool job" || command.message === "tool frame gaps") {
+        this.#response(command);
+        queueMicrotask(() =>
+          this.#toolFrames(command.message as "async tool job" | "tool frame gaps"),
+        );
+        return;
+      }
       this.#response(command);
       queueMicrotask(() => {
         if (this.terminalMessageMode === "approval") {
@@ -290,6 +349,61 @@ describe("OMP RPC session", () => {
       cancelled: false,
     });
     expect(events).toContainEqual({ type: "text.delta", messageId: "assistant-1", delta: "PONG" });
+    await session.close();
+  });
+
+  it("ignores the late update and duplicate end of an async Tool job without faulting", async () => {
+    const process = new FakeOmpProcess();
+    const adapter: OmpRpcProcessAdapter = { spawn: () => process as never };
+    const onFault = vi.fn();
+    const session = new OmpRpcSession(
+      { cwd: "/synthetic", commandTimeoutMs: 2_000, onFault },
+      adapter,
+    );
+    await session.start();
+    const events: OmpTurnEvent[] = [];
+
+    await expect(session.runTurn("async tool job", (event) => events.push(event))).resolves.toEqual(
+      { text: "TOOL DONE", cancelled: false },
+    );
+    expect(onFault).not.toHaveBeenCalled();
+    expect(events.filter((event) => event.type.startsWith("tool."))).toEqual([
+      {
+        type: "tool.started",
+        callId: "async-tool",
+        toolName: "bash",
+        arguments: { command: "sleep 1" },
+      },
+      {
+        type: "tool.completed",
+        callId: "async-tool",
+        toolName: "bash",
+        result: { state: "running" },
+        isError: false,
+      },
+    ]);
+    await session.close();
+  });
+
+  it("tolerates a missing partialResult and a missing isError on live Tool frames", async () => {
+    const process = new FakeOmpProcess();
+    const adapter: OmpRpcProcessAdapter = { spawn: () => process as never };
+    const onFault = vi.fn();
+    const session = new OmpRpcSession(
+      { cwd: "/synthetic", commandTimeoutMs: 2_000, onFault },
+      adapter,
+    );
+    await session.start();
+    const events: OmpTurnEvent[] = [];
+
+    await expect(
+      session.runTurn("tool frame gaps", (event) => events.push(event)),
+    ).resolves.toEqual({ text: "TOOL DONE", cancelled: false });
+    expect(onFault).not.toHaveBeenCalled();
+    expect(events).toContainEqual({ type: "tool.updated", callId: "gap-tool", output: null });
+    expect(events).toContainEqual(
+      expect.objectContaining({ type: "tool.completed", callId: "gap-tool", isError: false }),
+    );
     await session.close();
   });
 

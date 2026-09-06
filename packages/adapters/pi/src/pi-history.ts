@@ -231,19 +231,19 @@ function snapshotItems(entries: PiEntry[], outcome: HistoricalTurnOutcome): Host
       arguments: call.arguments,
       ...(output ? { output } : {}),
     };
-    const toolSucceeded = nativeMessage.isError === false;
+    const toolFailed = nativeMessage.isError === true;
     snapshots.push({
       item,
-      outcome: toolSucceeded
-        ? { status: "succeeded" }
-        : {
+      outcome: toolFailed
+        ? {
             status: "failed",
             error: {
               code: "nativeFailure",
               message: `Pi Tool '${call.name}' failed`,
               retryable: false,
             },
-          },
+          }
+        : { status: "succeeded" },
     });
   }
   return snapshots;

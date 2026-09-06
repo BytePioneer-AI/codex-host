@@ -1403,8 +1403,14 @@ export class OmpRpcSession {
 
   #updateTool(active: ActiveTurn, value: Record<string, unknown>): void {
     const callId = value.toolCallId;
-    const outputResult = jsonValueSchema.safeParse(value.partialResult);
-    if (typeof callId !== "string" || !active.tools.has(callId) || !outputResult.success) {
+    if (typeof callId !== "string" || callId.length === 0) {
+      throw new OmpRpcFaultError("protocolError", "Omp RPC returned an invalid Tool update");
+    }
+    // Omp allows tool_execution_update after tool_execution_end for async jobs;
+    // a late update references an already-completed call and is ignored.
+    if (!active.tools.has(callId)) return;
+    const outputResult = jsonValueSchema.safeParse(value.partialResult ?? null);
+    if (!outputResult.success) {
       throw new OmpRpcFaultError("protocolError", "Omp RPC returned an invalid Tool update");
     }
     active.onEvent({ type: "tool.updated", callId, output: outputResult.data });
@@ -1413,10 +1419,14 @@ export class OmpRpcSession {
   #completeTool(active: ActiveTurn, value: Record<string, unknown>): void {
     const callId = value.toolCallId;
     const toolName = value.toolName;
+    if (typeof callId !== "string" || callId.length === 0) {
+      throw new OmpRpcFaultError("protocolError", "Omp RPC returned an invalid Tool end");
+    }
+    const expectedName = active.tools.get(callId);
+    // A duplicate or late tool_execution_end for an unknown call is ignored.
+    if (expectedName === undefined) return;
     const result = jsonValueSchema.safeParse(value.result);
-    const expectedName = typeof callId === "string" ? active.tools.get(callId) : undefined;
     if (
-      typeof callId !== "string" ||
       typeof toolName !== "string" ||
       expectedName !== toolName ||
       (value.isError !== undefined && typeof value.isError !== "boolean") ||

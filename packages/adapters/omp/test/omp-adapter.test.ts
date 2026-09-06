@@ -430,6 +430,34 @@ describe("OMP Adapter Session environment", () => {
     );
     await adapter.close();
   });
+
+  it("refreshes exact Usage on demand through the public refreshUsage contract", async () => {
+    const transport = new FakeOmpTransport();
+    vi.spyOn(transport, "getSessionUsage").mockResolvedValue({
+      inputTokens: 20,
+      outputTokens: 10,
+      totalTokens: 30,
+      contextUsedTokens: 40,
+      contextWindowTokens: 200,
+    });
+    const adapter = new OmpAdapter({}, { createTransport: () => transport });
+    const opened = await adapter.open({ kind: "create", cwd: "/synthetic" });
+    expect(opened.ok).toBe(true);
+    if (!opened.ok) return;
+    const iterator = opened.value.outputs[Symbol.asyncIterator]();
+
+    await opened.value.readSnapshot();
+    await expect(opened.value.refreshUsage?.()).resolves.toBeUndefined();
+    expect(transport.getSessionUsage).toHaveBeenCalledOnce();
+    let usage = await nextEvent(iterator);
+    if (usage.type === "session.state.changed") usage = await nextEvent(iterator);
+    expect(usage).toMatchObject({
+      type: "session.usage.changed",
+      usage: { totalTokens: 30, contextUsedTokens: 40, contextWindowTokens: 200 },
+    });
+    await opened.value.close();
+    await adapter.close();
+  });
 });
 
 describe("OMP Adapter inspection", () => {
@@ -996,5 +1024,95 @@ describe("OMP Adapter Subagents", () => {
     });
     await opened.value.close();
     await adapter.close();
+  });
+});
+
+describe("OMP Adapter history projection", () => {
+  it("reads a missing history isError as Tool success and only isError true as failure", async () => {
+    const transport = new FakeOmpTransport();
+    transport.history = {
+      entries: [
+        {
+          id: "user-1",
+          parentId: null,
+          type: "message",
+          message: { role: "user", content: [{ type: "text", text: "run tools" }] },
+        },
+        {
+          id: "assistant-1",
+          parentId: "user-1",
+          type: "message",
+          message: {
+            role: "assistant",
+            stopReason: "toolUse",
+            content: [
+              { type: "toolCall", id: "call-implicit", name: "bash", arguments: {} },
+              { type: "toolCall", id: "call-failed", name: "read", arguments: {} },
+            ],
+          },
+        },
+        {
+          id: "tool-1",
+          parentId: "assistant-1",
+          type: "message",
+          message: {
+            role: "toolResult",
+            toolCallId: "call-implicit",
+            toolName: "bash",
+            content: [{ type: "text", text: "ok" }],
+          },
+        },
+        {
+          id: "tool-2",
+          parentId: "tool-1",
+          type: "message",
+          message: {
+            role: "toolResult",
+            toolCallId: "call-failed",
+            toolName: "read",
+            isError: true,
+            content: [{ type: "text", text: "boom" }],
+          },
+        },
+        {
+          id: "assistant-2",
+          parentId: "tool-2",
+          type: "message",
+          message: {
+            role: "assistant",
+            stopReason: "stop",
+            content: [{ type: "text", text: "done" }],
+          },
+        },
+      ],
+      leafId: "assistant-2",
+    };
+    const adapter = new OmpAdapter({}, { createTransport: () => transport });
+    const opened = await adapter.open({ kind: "create", cwd: "/synthetic" });
+    expect(opened.ok).toBe(true);
+    if (!opened.ok) return;
+
+    try {
+      const snapshot = await opened.value.readSnapshot();
+      expect(snapshot.ok).toBe(true);
+      if (!snapshot.ok) return;
+      const tools = (snapshot.value.turns[0]?.items ?? []).filter(
+        ({ item }) => item.type === "commandExecution",
+      );
+      expect(tools.map(({ outcome }) => outcome)).toEqual([
+        { status: "succeeded" },
+        {
+          status: "failed",
+          error: {
+            code: "nativeFailure",
+            message: "Omp Tool 'read' failed",
+            retryable: false,
+          },
+        },
+      ]);
+    } finally {
+      await opened.value.close();
+      await adapter.close();
+    }
   });
 });

@@ -31,7 +31,9 @@ type Scenario =
   | "long-running"
   | "cancel"
   | "cancel-no-settle"
-  | "malformed-tool"
+  | "late-tool-frames"
+  | "tool-frame-gaps"
+  | "tool-name-mismatch"
   | "interaction"
   | "interaction-timeout"
   | "interaction-cancel"
@@ -542,11 +544,82 @@ class FakePiRpcProcess extends EventEmitter {
       this.#settleAgent();
       return;
     }
-    if (this.#scenario === "malformed-tool") {
+    if (this.#scenario === "late-tool-frames") {
       this.#output({
         type: "tool_execution_update",
         toolCallId: "missing",
         partialResult: { content: [{ type: "text", text: "orphan" }] },
+      });
+      this.#output({
+        type: "tool_execution_start",
+        toolCallId: "async-tool",
+        toolName: "bash",
+        args: { command: "sleep 1" },
+      });
+      this.#output({
+        type: "tool_execution_end",
+        toolCallId: "async-tool",
+        toolName: "bash",
+        result: { state: "running" },
+        isError: false,
+      });
+      this.#output({
+        type: "tool_execution_update",
+        toolCallId: "async-tool",
+        partialResult: { state: "completed" },
+      });
+      this.#output({
+        type: "tool_execution_end",
+        toolCallId: "async-tool",
+        toolName: "bash",
+        result: { state: "completed" },
+        isError: false,
+      });
+      const message = {
+        role: "assistant",
+        content: [{ type: "text", text: "late frames tolerated" }],
+      };
+      this.#output({ type: "message_start", message });
+      this.#output({ type: "message_end", message });
+      this.#settleAgent();
+      return;
+    }
+    if (this.#scenario === "tool-frame-gaps") {
+      this.#output({
+        type: "tool_execution_start",
+        toolCallId: "gap-tool",
+        toolName: "bash",
+        args: {},
+      });
+      this.#output({ type: "tool_execution_update", toolCallId: "gap-tool" });
+      this.#output({
+        type: "tool_execution_end",
+        toolCallId: "gap-tool",
+        toolName: "bash",
+        result: { content: [{ type: "text", text: "done" }] },
+      });
+      const message = {
+        role: "assistant",
+        content: [{ type: "text", text: "gaps tolerated" }],
+      };
+      this.#output({ type: "message_start", message });
+      this.#output({ type: "message_end", message });
+      this.#settleAgent();
+      return;
+    }
+    if (this.#scenario === "tool-name-mismatch") {
+      this.#output({
+        type: "tool_execution_start",
+        toolCallId: "mismatch-tool",
+        toolName: "read",
+        args: {},
+      });
+      this.#output({
+        type: "tool_execution_end",
+        toolCallId: "mismatch-tool",
+        toolName: "write",
+        result: null,
+        isError: false,
       });
       return;
     }
@@ -1591,16 +1664,60 @@ describe("Pi RPC Turn aggregation", () => {
     }
   });
 
-  it("faults a known malformed Tool lifecycle instead of leaving the Turn pending", async () => {
+  it("ignores orphan and late Tool frames for completed calls and settles the Turn", async () => {
     const onFault = vi.fn();
-    const rpc = session("malformed-tool", onFault);
+    const rpc = session("late-tool-frames", onFault);
+    const events: PiTurnEvent[] = [];
     await rpc.start();
 
-    await expect(rpc.runTurn("synthetic", () => undefined)).rejects.toThrow("invalid Tool update");
+    await expect(rpc.runTurn("synthetic", (event) => events.push(event))).resolves.toEqual({
+      text: "late frames tolerated",
+      cancelled: false,
+    });
+    expect(onFault).not.toHaveBeenCalled();
+    expect(events.map(({ type }) => type)).toEqual([
+      "tool.started",
+      "tool.completed",
+      "text.delta",
+      "message.completed",
+    ]);
+    expect(events[1]).toMatchObject({
+      type: "tool.completed",
+      callId: "async-tool",
+      result: { state: "running" },
+      isError: false,
+    });
+    await rpc.close();
+  });
+
+  it("tolerates a missing partialResult and a missing isError on live Tool frames", async () => {
+    const onFault = vi.fn();
+    const rpc = session("tool-frame-gaps", onFault);
+    const events: PiTurnEvent[] = [];
+    await rpc.start();
+
+    await expect(rpc.runTurn("synthetic", (event) => events.push(event))).resolves.toEqual({
+      text: "gaps tolerated",
+      cancelled: false,
+    });
+    expect(onFault).not.toHaveBeenCalled();
+    expect(events).toContainEqual({ type: "tool.updated", callId: "gap-tool", output: null });
+    expect(events).toContainEqual(
+      expect.objectContaining({ type: "tool.completed", callId: "gap-tool", isError: false }),
+    );
+    await rpc.close();
+  });
+
+  it("still faults a live Tool end whose name does not match the started Tool", async () => {
+    const onFault = vi.fn();
+    const rpc = session("tool-name-mismatch", onFault);
+    await rpc.start();
+
+    await expect(rpc.runTurn("synthetic", () => undefined)).rejects.toThrow("invalid Tool end");
     expect(onFault).toHaveBeenCalledWith(
       expect.objectContaining({
         kind: "protocolError",
-        message: "Pi RPC returned an invalid Tool update",
+        message: "Pi RPC returned an invalid Tool end",
       }),
     );
     await rpc.close();

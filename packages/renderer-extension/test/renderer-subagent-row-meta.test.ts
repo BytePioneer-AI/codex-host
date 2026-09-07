@@ -4,7 +4,9 @@ import {
   formatSubagentRowMeta,
   prettySubagentModel,
   prettySubagentStatus,
+  subagentGroupFromProps,
   subagentRowMetaFromProps,
+  withInheritedThreadModel,
 } from "../src/renderer-subagent-row-meta.js";
 
 describe("Subagent row meta", () => {
@@ -102,6 +104,48 @@ describe("Subagent row meta", () => {
       reasoningEffort: "high",
       status: "done",
     });
+  });
+
+  it("expands official v2 collapsed backgroundAgents into named rows", () => {
+    expect(
+      subagentGroupFromProps({
+        backgroundAgents: [
+          {
+            conversationId: "child-1",
+            displayName: "Einstein",
+            showInlineActivity: true,
+            spawnModel: null,
+            status: "done",
+          },
+          {
+            conversationId: "child-2",
+            displayName: "Gibbs",
+            showInlineActivity: true,
+            spawnModel: null,
+            status: "done",
+          },
+          {
+            conversationId: "child-3",
+            displayName: "Bohr",
+            showInlineActivity: true,
+            spawnModel: null,
+            status: "done",
+          },
+        ],
+      }).map((row) => row.displayName),
+    ).toEqual(["Einstein", "Gibbs", "Bohr"]);
+  });
+
+  it("fills official v2 spawnModel gaps from the parent Thread Model", () => {
+    const row = withInheritedThreadModel(
+      {
+        displayName: "Einstein",
+        conversationId: "child-1",
+        status: "done",
+      },
+      { model: "gpt-5.4", reasoningEffort: "high" },
+    );
+    expect(formatSubagentRowMeta(row)).toBe("GPT-5.4 · High · 已完成");
   });
 
   it("does not recurse through arbitrary nested React props", () => {

@@ -1,6 +1,11 @@
 export const SUBAGENT_ROW_META_ATTRIBUTE = "data-codexhost-subagent-meta";
 export const SUBAGENT_ITEM_BUTTON_SELECTOR = 'button[data-slot="thread-summary-panel-item-button"]';
 export const SUBAGENT_ITEM_LABEL_SELECTOR = '[data-slot="thread-summary-panel-item-label"]';
+export const SUBAGENT_AVATAR_GROUP_SELECTOR = '[data-slot="thread-summary-panel-item-avatar-group"]';
+export const SUBAGENT_AVATAR_BUTTON_SELECTOR = '[data-slot="thread-summary-panel-item-avatar-button"]';
+export const SUBAGENT_EXPANDED_LIST_ATTRIBUTE = "data-codexhost-subagent-expanded-list";
+export const SUBAGENT_EXPANDED_ROW_ATTRIBUTE = "data-codexhost-subagent-expanded-row";
+export const SUBAGENT_COLLAPSED_HIDDEN_ATTRIBUTE = "data-codexhost-subagent-collapsed-hidden";
 
 export interface SubagentRowMeta {
   displayName: string;
@@ -130,6 +135,13 @@ function contribute(target: Partial<SubagentRowMeta>, source: Record<string, unk
   if (nonBlank(source.status) && !target.status) {
     target.status = source.status.trim();
   }
+  if (isRecord(source.agentState) && nonBlank(source.agentState.status) && !target.status) {
+    target.status = source.agentState.status.trim();
+  }
+  if (source.kind === "started" && !target.status) target.status = "running";
+  if (source.kind === "completed" && !target.status) target.status = "completed";
+  if (source.kind === "interrupted" && !target.status) target.status = "interrupted";
+  if (source.kind === "interacted" && !target.status) target.status = "running";
 }
 
 function collabMatches(item: Record<string, unknown>, conversationId: string | undefined): boolean {
@@ -171,14 +183,19 @@ function harvestFromValue(value: unknown, target: Partial<SubagentRowMeta>): voi
   for (const item of items) {
     if (!isRecord(item)) continue;
     if (collabMatches(item, target.conversationId)) contribute(target, item);
+    if (
+      item.type === "subAgentActivity" &&
+      nonBlank(item.agentThreadId) &&
+      item.agentThreadId === target.conversationId
+    ) {
+      contribute(target, item);
+    }
     if (isRecord(item.backgroundAgent)) contribute(target, item.backgroundAgent);
     else contribute(target, item);
   }
 }
 
-export function subagentRowMetaFromProps(value: unknown): SubagentRowMeta | null {
-  const target: Partial<SubagentRowMeta> = {};
-  harvestFromValue(value, target);
+function finalizeRow(target: Partial<SubagentRowMeta>): SubagentRowMeta | null {
   if (!nonBlank(target.displayName)) return null;
   if (
     !nonBlank(target.conversationId) &&
@@ -197,6 +214,58 @@ export function subagentRowMetaFromProps(value: unknown): SubagentRowMeta | null
     ...(nonBlank(target.status) ? { status: target.status.trim() } : {}),
     ...(nonBlank(target.conversationId) ? { conversationId: target.conversationId.trim() } : {}),
   };
+}
+
+export function parentThreadModelFromProps(value: unknown): {
+  model?: string;
+  reasoningEffort?: string;
+} {
+  const target: Partial<SubagentRowMeta> = {};
+  harvestFromValue(value, target);
+  return {
+    ...(nonBlank(target.model) ? { model: target.model.trim() } : {}),
+    ...(nonBlank(target.reasoningEffort) ? { reasoningEffort: target.reasoningEffort.trim() } : {}),
+  };
+}
+
+export function withInheritedThreadModel(
+  row: SubagentRowMeta,
+  parent: { model?: string; reasoningEffort?: string },
+): SubagentRowMeta {
+  return {
+    ...row,
+    ...(!row.spawnModel && !row.model && nonBlank(parent.model) ? { model: parent.model.trim() } : {}),
+    ...(!row.reasoningEffort && nonBlank(parent.reasoningEffort)
+      ? { reasoningEffort: parent.reasoningEffort.trim() }
+      : {}),
+  };
+}
+
+export function subagentGroupFromProps(value: unknown): SubagentRowMeta[] {
+  if (!isRecord(value)) return [];
+  const lists: unknown[] = [];
+  if (Array.isArray(value.backgroundAgents)) lists.push(...value.backgroundAgents);
+  if (Array.isArray(value.agents)) lists.push(...value.agents);
+  const rows: SubagentRowMeta[] = [];
+  const seen = new Set<string>();
+  for (const entry of lists) {
+    const row =
+      subagentRowMetaFromProps(
+        isRecord(entry) && isRecord(entry.backgroundAgent) ? entry : { backgroundAgent: entry },
+      ) ?? subagentRowMetaFromProps(entry);
+    if (!row) continue;
+    const key = row.conversationId ?? row.displayName;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    rows.push(row);
+  }
+  return rows;
+}
+
+export function subagentRowMetaFromProps(value: unknown): SubagentRowMeta | null {
+  const target: Partial<SubagentRowMeta> = {};
+  harvestFromValue(value, target);
+  return finalizeRow(target);
 }
 
 function fiberFromElement(element: HTMLElement): Record<string, unknown> | null {
@@ -272,6 +341,65 @@ export function subagentRowMetaFromElement(element: HTMLElement): SubagentRowMet
   return found;
 }
 
+function rememberAgent(rows: SubagentRowMeta[], row: SubagentRowMeta | null): void {
+  if (!row) return;
+  const key = row.conversationId ?? row.displayName;
+  if (rows.some((existing) => (existing.conversationId ?? existing.displayName) === key)) {
+    const index = rows.findIndex(
+      (existing) => (existing.conversationId ?? existing.displayName) === key,
+    );
+    if (index >= 0) rows[index] = mergeRow(rows[index] ?? null, row) ?? row;
+    return;
+  }
+  rows.push(row);
+}
+
+function collectGroupFromProps(
+  value: unknown,
+  rows: SubagentRowMeta[],
+  parent: { model?: string; reasoningEffort?: string },
+): { model?: string; reasoningEffort?: string } {
+  const inherited = { ...parent, ...parentThreadModelFromProps(value) };
+  for (const row of subagentGroupFromProps(value)) rememberAgent(rows, row);
+  return inherited;
+}
+
+export function subagentGroupFromElement(element: HTMLElement): SubagentRowMeta[] {
+  const rows: SubagentRowMeta[] = [];
+  let parent: { model?: string; reasoningEffort?: string } = {};
+  let fiber = fiberFromElement(element);
+  const stack: Array<Record<string, unknown>> = [];
+  if (fiber && isRecord(fiber.child)) stack.push(fiber.child);
+  const seen = new Set<Record<string, unknown>>();
+  let steps = 0;
+  while (stack.length > 0 && steps < 80) {
+    const current = stack.pop();
+    if (!current || seen.has(current)) continue;
+    seen.add(current);
+    steps += 1;
+    parent = collectGroupFromProps(
+      current.memoizedProps ?? current.pendingProps,
+      rows,
+      parent,
+    );
+    if (isRecord(current.child)) stack.push(current.child);
+    if (isRecord(current.sibling)) stack.push(current.sibling);
+  }
+  for (let depth = 0; fiber && depth < 16; depth += 1) {
+    parent = collectGroupFromProps(fiber.memoizedProps ?? fiber.pendingProps, rows, parent);
+    fiber = isRecord(fiber.return) ? fiber.return : null;
+  }
+  if (rows.length === 0) {
+    for (const avatar of element.querySelectorAll<HTMLElement>(SUBAGENT_AVATAR_BUTTON_SELECTOR)) {
+      const label = avatar.getAttribute("aria-label")?.trim();
+      const fromFiber = subagentRowMetaFromElement(avatar);
+      if (fromFiber) rememberAgent(rows, fromFiber);
+      else if (label) rememberAgent(rows, { displayName: label, status: "done" });
+    }
+  }
+  return rows.map((row) => withInheritedThreadModel(row, parent));
+}
+
 function findNameNode(button: HTMLElement): HTMLElement | null {
   return button.querySelector<HTMLElement>(SUBAGENT_ITEM_LABEL_SELECTOR);
 }
@@ -305,10 +433,109 @@ function isOwnMetaMutation(mutations: MutationRecord[]): boolean {
       if (!(node instanceof Element)) return mutation.type === "characterData";
       return (
         node.getAttribute?.(SUBAGENT_ROW_META_ATTRIBUTE) === "true" ||
-        Boolean(node.closest?.(`[${SUBAGENT_ROW_META_ATTRIBUTE}]`))
+        node.getAttribute?.(SUBAGENT_EXPANDED_LIST_ATTRIBUTE) === "true" ||
+        node.getAttribute?.(SUBAGENT_EXPANDED_ROW_ATTRIBUTE) != null ||
+        Boolean(node.closest?.(`[${SUBAGENT_ROW_META_ATTRIBUTE}]`)) ||
+        Boolean(node.closest?.(`[${SUBAGENT_EXPANDED_LIST_ATTRIBUTE}]`))
       );
     });
   });
+}
+
+function ensureExpandedList(button: HTMLElement): HTMLElement {
+  const next = button.nextElementSibling;
+  if (
+    next instanceof HTMLElement &&
+    next.getAttribute(SUBAGENT_EXPANDED_LIST_ATTRIBUTE) === "true"
+  ) {
+    return next;
+  }
+  const list = button.ownerDocument.createElement("div");
+  list.setAttribute(SUBAGENT_EXPANDED_LIST_ATTRIBUTE, "true");
+  list.style.display = "flex";
+  list.style.flexDirection = "column";
+  list.style.gap = "2px";
+  list.style.width = "100%";
+  list.style.minWidth = "0";
+  button.insertAdjacentElement("afterend", list);
+  return list;
+}
+
+function openCollapsedAgent(button: HTMLElement, row: SubagentRowMeta): void {
+  const avatars = button.querySelectorAll<HTMLElement>(SUBAGENT_AVATAR_BUTTON_SELECTOR);
+  const match = [...avatars].find(
+    (avatar) => avatar.getAttribute("aria-label")?.trim() === row.displayName,
+  );
+  (match ?? button).click();
+}
+
+function renderExpandedRow(list: HTMLElement, row: SubagentRowMeta, button: HTMLElement): void {
+  const key = row.conversationId ?? row.displayName;
+  let item = list.querySelector<HTMLButtonElement>(
+    `[${SUBAGENT_EXPANDED_ROW_ATTRIBUTE}="${CSS.escape(key)}"]`,
+  );
+  if (!item) {
+    item = list.ownerDocument.createElement("button");
+    item.setAttribute(SUBAGENT_EXPANDED_ROW_ATTRIBUTE, key);
+    item.type = "button";
+    item.style.display = "flex";
+    item.style.flexDirection = "column";
+    item.style.alignItems = "flex-start";
+    item.style.gap = "1px";
+    item.style.width = "100%";
+    item.style.minWidth = "0";
+    item.style.margin = "0";
+    item.style.padding = "4px 0";
+    item.style.border = "0";
+    item.style.background = "transparent";
+    item.style.color = "inherit";
+    item.style.font = "inherit";
+    item.style.textAlign = "left";
+    item.style.cursor = "pointer";
+    const name = list.ownerDocument.createElement("span");
+    name.setAttribute("data-codexhost-subagent-expanded-name", "true");
+    name.style.display = "block";
+    name.style.maxWidth = "100%";
+    name.style.overflow = "hidden";
+    name.style.textOverflow = "ellipsis";
+    name.style.whiteSpace = "nowrap";
+    const meta = list.ownerDocument.createElement("span");
+    meta.setAttribute(SUBAGENT_ROW_META_ATTRIBUTE, "true");
+    meta.style.display = "block";
+    meta.style.maxWidth = "100%";
+    meta.style.fontSize = "11px";
+    meta.style.lineHeight = "1.35";
+    meta.style.color = "var(--text-tertiary, #8a8a8a)";
+    meta.style.whiteSpace = "normal";
+    item.append(name, meta);
+    item.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      openCollapsedAgent(button, row);
+    });
+    list.append(item);
+  }
+  const name = item.querySelector<HTMLElement>("[data-codexhost-subagent-expanded-name]");
+  const meta = item.querySelector<HTMLElement>(`[${SUBAGENT_ROW_META_ATTRIBUTE}]`);
+  if (name && name.textContent !== row.displayName) name.textContent = row.displayName;
+  const text = formatSubagentRowMeta(row);
+  if (meta) meta.textContent = text ?? "";
+}
+
+export function expandCollapsedSubagentGroup(button: HTMLElement): boolean {
+  if (!button.querySelector(SUBAGENT_AVATAR_GROUP_SELECTOR)) return false;
+  const agents = subagentGroupFromElement(button);
+  if (agents.length === 0) return false;
+  const list = ensureExpandedList(button);
+  const keys = new Set(agents.map((row) => row.conversationId ?? row.displayName));
+  for (const stale of list.querySelectorAll<HTMLElement>(`[${SUBAGENT_EXPANDED_ROW_ATTRIBUTE}]`)) {
+    const key = stale.getAttribute(SUBAGENT_EXPANDED_ROW_ATTRIBUTE);
+    if (key && !keys.has(key)) stale.remove();
+  }
+  for (const row of agents) renderExpandedRow(list, row, button);
+  button.setAttribute(SUBAGENT_COLLAPSED_HIDDEN_ATTRIBUTE, "true");
+  button.style.display = "none";
+  return true;
 }
 
 export function decorateSubagentRow(element: HTMLElement): boolean {
@@ -332,6 +559,11 @@ export function decorateSubagentRows(root: ParentNode = document): number {
   if (buttons.length === 0) return 0;
   let decorated = 0;
   for (const element of buttons) {
+    if (element.closest(`[${SUBAGENT_EXPANDED_LIST_ATTRIBUTE}]`)) continue;
+    if (element.querySelector(SUBAGENT_AVATAR_GROUP_SELECTOR)) {
+      if (expandCollapsedSubagentGroup(element)) decorated += 1;
+      continue;
+    }
     if (decorateSubagentRow(element)) decorated += 1;
   }
   return decorated;
@@ -379,7 +611,15 @@ export function installRendererSubagentRowMeta(
       observer.disconnect();
       if (root instanceof Element || root instanceof Document) {
         for (const meta of root.querySelectorAll(`[${SUBAGENT_ROW_META_ATTRIBUTE}]`)) {
+          if (meta.closest(`[${SUBAGENT_EXPANDED_LIST_ATTRIBUTE}]`)) continue;
           meta.remove();
+        }
+        for (const list of root.querySelectorAll(`[${SUBAGENT_EXPANDED_LIST_ATTRIBUTE}]`)) {
+          list.remove();
+        }
+        for (const hidden of root.querySelectorAll(`[${SUBAGENT_COLLAPSED_HIDDEN_ATTRIBUTE}]`)) {
+          if (hidden instanceof HTMLElement) hidden.style.display = "";
+          hidden.removeAttribute(SUBAGENT_COLLAPSED_HIDDEN_ATTRIBUTE);
         }
       }
     },

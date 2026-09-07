@@ -51,6 +51,12 @@ The settings shell SHALL render inside an owned Shadow Root with owned CSS and b
 - **THEN** navigation and content SHALL render as a stable two-column settings layout
 - **AND** dynamic page content SHALL scroll without resizing or shifting the dialog controls
 
+#### Scenario: Native titlebar overlays the Renderer viewport
+- **WHEN** the browser exposes a nonzero `titlebar-area-height` environment value
+- **THEN** the dialog SHALL be centered in the remaining viewport below the titlebar and its height SHALL exclude that area at desktop and narrow widths
+- **AND** the backdrop SHALL start below the titlebar and the dialog SHALL be a non-draggable interaction region
+- **AND** environments without a titlebar overlay SHALL retain the existing viewport-centered layout
+
 #### Scenario: Narrow window opens settings
 - **WHEN** available width cannot contain the two-column layout
 - **THEN** navigation SHALL become a horizontally scrollable compact row and content SHALL remain readable without overlapping the close control

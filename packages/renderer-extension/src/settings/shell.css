@@ -1,4 +1,5 @@
 :host {
+  --settings-titlebar-height: env(titlebar-area-height, 0px);
   --settings-bg: light-dark(#ffffff, #202020);
   --settings-sidebar: light-dark(#f7f7f8, #191919);
   --settings-panel: light-dark(#ffffff, #232323);
@@ -68,8 +69,11 @@ button {
 }
 
 .codexhost-settings-dialog {
+  /* Native window controls sit above the DOM top layer. Center below them. */
+  inset: var(--settings-titlebar-height) 0 0;
   width: min(1120px, calc(100vw - 32px));
-  height: min(780px, calc(100vh - 32px));
+  height: min(780px, calc(100vh - var(--settings-titlebar-height) - 32px));
+  -webkit-app-region: no-drag;
   max-width: none;
   max-height: none;
   margin: auto;
@@ -83,6 +87,9 @@ button {
 }
 
 .codexhost-settings-dialog::backdrop {
+  /* Backdrops do not inherit the shell's custom properties. */
+  top: env(titlebar-area-height, 0px);
+  -webkit-app-region: no-drag;
   background: light-dark(rgb(0 0 0 / 24%), rgb(0 0 0 / 56%));
   backdrop-filter: blur(1px);
 }
@@ -1864,7 +1871,7 @@ button {
 @media (max-width: 720px) {
   .codexhost-settings-dialog {
     width: calc(100vw - 16px);
-    height: calc(100vh - 16px);
+    height: calc(100vh - var(--settings-titlebar-height) - 16px);
     border-radius: 10px;
   }
 

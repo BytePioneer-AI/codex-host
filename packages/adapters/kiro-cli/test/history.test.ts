@@ -16,6 +16,51 @@ import {
 } from "../src/history.js";
 
 describe("kiro native history", () => {
+  it("hides leaked preambles in restored answers without changing user or tool content", async () => {
+    const directory = await fs.mkdtemp(path.join(os.tmpdir(), "kiro-dsml-"));
+    const marker = "<\uff5cDSML\uff5cfunction_calls";
+    try {
+      await fs.writeFile(
+        path.join(directory, "messages.jsonl"),
+        [
+          { id: "u", payload: { type: "user", content: marker } },
+          { id: "a", payload: { type: "assistant", content: `Checking.\n\n${marker}` } },
+          { id: "t", payload: { type: "tool_call", toolCallId: "tool", toolName: "read" } },
+          {
+            id: "r",
+            payload: { type: "tool_result", toolCallId: "tool", success: true, content: marker },
+          },
+          { id: "final", payload: { type: "assistant", content: "Actual answer" } },
+          { id: "noise", payload: { type: "assistant", content: `\n\n${marker}` } },
+          { id: "e", payload: { type: "turn_end", stopReason: "end_turn" } },
+        ]
+          .map((row) => JSON.stringify(row))
+          .join("\n"),
+        "utf8",
+      );
+      const snapshot = await readKiroSnapshot({
+        sessionDirectory: directory,
+        cwd: directory,
+        sessionMeta: { id: "session", workspacePaths: [directory] },
+      });
+      expect(snapshot.turns[0]?.input[0]?.text).toBe(marker);
+      expect(snapshot.turns[0]?.items.map(({ item }) => item.type)).toEqual([
+        "agentMessage",
+        "toolExecution",
+        "agentMessage",
+      ]);
+      expect(snapshot.turns[0]?.items.at(-1)?.item).toMatchObject({
+        text: "Actual answer",
+        phase: "final_answer",
+      });
+      expect(snapshot.turns[0]?.items[1]?.item).toMatchObject({
+        output: { content: [{ text: marker }] },
+      });
+    } finally {
+      await fs.rm(directory, { recursive: true, force: true });
+    }
+  });
+
   it("preserves visible answers and native lineage when forking compacted history", async () => {
     const home = await fs.mkdtemp(path.join(os.tmpdir(), "kiro-compacted-fork-"));
     const parentDirectory = path.join(home, "sessions", "bucket", "parent");

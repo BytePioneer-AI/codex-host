@@ -8,6 +8,7 @@ import { hostItemIdSchema, type HostTurnId } from "@codexhost/shared-contracts";
 import type { KiroTransportEvent } from "./acp-transport.js";
 import { projectKiroFileChanges } from "./file-diff.js";
 import { projectKiroToolCall } from "./projection.js";
+import { KiroVisibleText } from "./visible-text.js";
 
 type ToolEvent = Extract<KiroTransportEvent, { type: "tool.call" | "tool.update" }>;
 
@@ -18,6 +19,8 @@ export class KiroTurnOutput {
   #messageId: string | undefined;
   #messageIndex = 0;
   #finished = false;
+  readonly #text = new KiroVisibleText();
+  #leadingWhitespace = "";
 
   constructor(
     readonly turnId: HostTurnId,
@@ -41,10 +44,40 @@ export class KiroTurnOutput {
   }
 
   #completeMessage(outcome: HostItemOutcome, phase: "commentary" | "final_answer"): void {
-    if (!this.#message) return;
-    this.#complete({ ...this.#message, phase }, outcome);
+    this.#appendText(this.#text.finish());
+    if (this.#message) this.#complete({ ...this.#message, phase }, outcome);
     this.#message = undefined;
     this.#messageId = undefined;
+    this.#leadingWhitespace = "";
+  }
+
+  #appendText(text: string): void {
+    if (!text) return;
+    if (!this.#message) {
+      text = this.#leadingWhitespace + text;
+      if (!text.trim()) {
+        this.#leadingWhitespace = text;
+        return;
+      }
+      this.#leadingWhitespace = "";
+      this.#message = {
+        type: "agentMessage",
+        itemId: hostItemIdSchema.parse(`agent-${this.turnId}-${this.#messageIndex++}`),
+        text: "",
+        phase: "commentary",
+      };
+      this.#start(this.#message);
+    }
+    this.#message = { ...this.#message, text: this.#message.text + text };
+    this.emit({
+      kind: "event",
+      event: {
+        type: "item.updated",
+        turnId: this.turnId,
+        itemId: this.#message.itemId,
+        update: { type: "text.append", text },
+      },
+    });
   }
 
   accept(event: KiroTransportEvent): void {
@@ -57,26 +90,8 @@ export class KiroTurnOutput {
       ) {
         this.#completeMessage({ status: "succeeded" }, "commentary");
       }
-      if (!this.#message) {
-        this.#message = {
-          type: "agentMessage",
-          itemId: hostItemIdSchema.parse(`agent-${this.turnId}-${this.#messageIndex++}`),
-          text: "",
-          phase: "commentary",
-        };
-        this.#start(this.#message);
-      }
       if (event.messageId !== undefined) this.#messageId = event.messageId;
-      this.#message = { ...this.#message, text: this.#message.text + event.text };
-      this.emit({
-        kind: "event",
-        event: {
-          type: "item.updated",
-          turnId: this.turnId,
-          itemId: this.#message.itemId,
-          update: { type: "text.append", text: event.text },
-        },
-      });
+      this.#appendText(this.#text.push(event.text));
     } else if (event.type === "tool.call" || event.type === "tool.update") {
       const previous = this.#tools.get(event.callId);
       // A completion without a start belongs to Session initialization, not this Prompt.

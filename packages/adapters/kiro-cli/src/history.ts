@@ -24,6 +24,7 @@ import {
 import { projectKiroFileChanges } from "./file-diff.js";
 import { encodeKiroPermissionMode } from "./permission-modes.js";
 import { projectKiroToolCall } from "./projection.js";
+import { kiroVisibleText } from "./visible-text.js";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -361,6 +362,7 @@ export async function readKiroSnapshot(
       (row) =>
         row.payload.type === "tool_call" ||
         (row.payload.type === "assistant" &&
+          kiroVisibleText(historyText(row.payload)).trim().length > 0 &&
           !["Reasoning", "Summary"].includes(String(row.payload.operationType))),
     );
 
@@ -380,11 +382,13 @@ export async function readKiroSnapshot(
           }
           continue;
         }
+        const text = kiroVisibleText(historyText(row.payload));
+        if (!text.trim()) continue;
         items.push({
           item: {
             type: "agentMessage",
             itemId,
-            text: historyText(row.payload),
+            text,
             phase:
               row === lastContent && outcome.status === "succeeded" ? "final_answer" : "commentary",
           },

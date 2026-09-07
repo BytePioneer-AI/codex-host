@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { HarnessOutput } from "@codexhost/harness-adapter";
 import { hostTurnIdSchema } from "@codexhost/shared-contracts";
-import { CodexTurnProjector } from "../../../protocol-core/src/codex-ui-projector.js";
+import { CodexTurnProjector } from "@codexhost/protocol-core";
 import { KiroTurnOutput } from "../src/turn-output.js";
 
 const turnId = hostTurnIdSchema.parse("message-phases");

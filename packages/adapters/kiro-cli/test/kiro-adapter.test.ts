@@ -14,8 +14,7 @@ import {
   nativeCheckpointRefSchema,
   nativeSessionRefSchema,
 } from "@codexhost/shared-contracts";
-import { CodexTurnProjector } from "../../../protocol-core/src/codex-ui-projector.js";
-import { projectCodexApprovalRequest } from "../../../protocol-core/src/codex-approval.js";
+import { CodexTurnProjector, projectCodexApprovalRequest } from "@codexhost/protocol-core";
 import { describe, expect, it } from "vitest";
 import fs from "node:fs/promises";
 import os from "node:os";

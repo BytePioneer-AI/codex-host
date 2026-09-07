@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { hostTurnIdSchema } from "@codexhost/shared-contracts";
-import { projectHistoricalTurn } from "../../../protocol-core/src/codex-ui-projector.js";
+import { projectHistoricalTurn } from "@codexhost/protocol-core";
 
 import {
   findForkBoundary,

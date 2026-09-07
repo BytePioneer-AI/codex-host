@@ -3,7 +3,7 @@ import { KiroVisibleText, kiroVisibleText } from "../src/visible-text.js";
 import { KiroTurnOutput } from "../src/turn-output.js";
 import { hostTurnIdSchema } from "@codexhost/shared-contracts";
 import type { HarnessOutput } from "@codexhost/harness-adapter";
-import { CodexTurnProjector } from "../../../protocol-core/src/codex-ui-projector.js";
+import { CodexTurnProjector } from "@codexhost/protocol-core";
 
 const marker = "<\uff5cDSML\uff5cfunction_calls";
 

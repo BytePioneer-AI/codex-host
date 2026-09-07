@@ -18,11 +18,7 @@ import {
 import { HermesExecutableError, hermesInvocation, resolveHermesExecutable } from "./command.js";
 
 export type HermesTransportFaultKind =
-  | "notInstalled"
-  | "authenticationRequired"
-  | "unavailable"
-  | "protocolError"
-  | "processExited";
+  "notInstalled" | "authenticationRequired" | "unavailable" | "protocolError" | "processExited";
 
 export class HermesTransportError extends Error {
   readonly diagnostic: string | undefined;
@@ -170,11 +166,10 @@ function classifyStartupError(error: unknown): HermesTransportError {
     text.includes("not configured") ||
     text.includes("no provider")
   ) {
-    return new HermesTransportError(
-      "authenticationRequired",
-      detail,
-      { cause: error, diagnostic: detail },
-    );
+    return new HermesTransportError("authenticationRequired", detail, {
+      cause: error,
+      diagnostic: detail,
+    });
   }
   return new HermesTransportError("unavailable", detail, {
     cause: error,
@@ -307,7 +302,8 @@ export class HermesAcpTransport {
    */
   async probeConnection(): Promise<ClientSideConnection> {
     await this.#ensureInitialized();
-    if (!this.#connection) throw new HermesTransportError("unavailable", "Hermes ACP is unavailable");
+    if (!this.#connection)
+      throw new HermesTransportError("unavailable", "Hermes ACP is unavailable");
     return this.#connection;
   }
 
@@ -341,8 +337,15 @@ export class HermesAcpTransport {
           this.#options.commandTimeoutMs,
           "Hermes Session fork",
         )) as unknown;
-        if (!isRecord(forked) || typeof forked.sessionId !== "string" || forked.sessionId.length === 0) {
-          throw new HermesTransportError("protocolError", "Hermes fork returned no Session identity");
+        if (
+          !isRecord(forked) ||
+          typeof forked.sessionId !== "string" ||
+          forked.sessionId.length === 0
+        ) {
+          throw new HermesTransportError(
+            "protocolError",
+            "Hermes fork returned no Session identity",
+          );
         }
         if (forked.sessionId === input.sourceSessionId) {
           throw new HermesTransportError(
@@ -486,7 +489,8 @@ export class HermesAcpTransport {
 
   async #ensureInitialized(): Promise<InitializeResponse> {
     if (this.#initialize) return this.#initialize;
-    if (this.#child || this.#closed) throw new Error("Hermes ACP Transport cannot be started twice");
+    if (this.#child || this.#closed)
+      throw new Error("Hermes ACP Transport cannot be started twice");
     const executable = resolveHermesExecutable({
       ...(this.#options.command ? { command: this.#options.command } : {}),
       environment: this.#options.environment ?? process.env,
@@ -560,8 +564,7 @@ export class HermesAcpTransport {
 
 function traceAcpStream(stdout: NodeJS.ReadableStream): NodeJS.ReadableStream {
   if (process.env.CODEXHOST_HERMES_TRACE !== "1") return stdout;
-  const tracePath =
-    process.env.CODEXHOST_HERMES_TRACE_FILE ?? "/tmp/codexhost-hermes-wire.log";
+  const tracePath = process.env.CODEXHOST_HERMES_TRACE_FILE ?? "/tmp/codexhost-hermes-wire.log";
   const traced = new Readable({ read() {} });
   let buffered = Buffer.alloc(0);
   stdout.on("data", (chunk: Buffer) => {

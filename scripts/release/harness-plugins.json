@@ -6,7 +6,8 @@
     "packages/adapters/opencode",
     "packages/adapters/grok",
     "packages/adapters/omp",
-    "packages/adapters/antigravity"
+    "packages/adapters/antigravity",
+    "packages/adapters/hermes"
   ],
   "runtimePackages": [
     "@agentclientprotocol/sdk",

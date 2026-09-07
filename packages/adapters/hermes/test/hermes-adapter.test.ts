@@ -1,8 +1,8 @@
-import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { HarnessOutput } from "@codexhost/harness-adapter";
 import {
@@ -158,6 +158,77 @@ for await (const line of lines) {
   return executable;
 }
 
+async function countingHermesExecutable(): Promise<string> {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "hermes-adapter-warm-test-"));
+  temporaryDirectories.push(directory);
+  const executable = path.join(directory, "fake-hermes");
+  await writeFile(
+    executable,
+    `#!/usr/bin/env node
+import { appendFileSync } from "node:fs";
+import readline from "node:readline";
+appendFileSync(process.env.FAKE_HERMES_STARTS, "started\\n");
+const lines = readline.createInterface({ input: process.stdin });
+for await (const line of lines) {
+  const request = JSON.parse(line);
+  let result = {};
+  if (request.method === "initialize") {
+    result = {
+      protocolVersion: 1,
+      agentCapabilities: { loadSession: true },
+      agentInfo: { name: "fake-hermes", version: "1.0.0" },
+      authMethods: [],
+    };
+  } else if (request.method === "session/new") {
+    result = { sessionId: "fake-session-" + process.pid };
+  }
+  process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: request.id, result }) + "\\n");
+}
+`,
+  );
+  await chmod(executable, 0o755);
+  return executable;
+}
+
+async function modelSelectionHermesExecutable(): Promise<string> {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "hermes-adapter-model-counter-"));
+  temporaryDirectories.push(directory);
+  const executable = path.join(directory, "fake-hermes");
+  await writeFile(
+    executable,
+    `#!/usr/bin/env node
+import { appendFileSync } from "node:fs";
+import readline from "node:readline";
+const lines = readline.createInterface({ input: process.stdin });
+for await (const line of lines) {
+  const request = JSON.parse(line);
+  let result = {};
+  if (request.method === "initialize") {
+    result = {
+      protocolVersion: 1,
+      agentCapabilities: { loadSession: true },
+      agentInfo: { name: "fake-hermes", version: "1.0.0" },
+      authMethods: [],
+    };
+  } else if (request.method === "session/new") {
+    result = {
+      sessionId: "fake-session",
+      models: {
+        availableModels: [{ modelId: "zai:glm-5-turbo", name: "GLM 5 Turbo" }],
+        currentModelId: "zai:glm-5-turbo",
+      },
+    };
+  } else if (request.method === "session/set_model") {
+    appendFileSync(process.env.FAKE_HERMES_MODEL_CALLS, request.params.modelId + "\\n");
+  }
+  process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: request.id, result }) + "\\n");
+}
+`,
+  );
+  await chmod(executable, 0o755);
+  return executable;
+}
+
 describe("HermesSession text projection", () => {
   it("completes streamed text with exactly the text sent through append updates", async () => {
     const session = new HermesSession({
@@ -237,6 +308,63 @@ describe("HermesAdapter model selection", () => {
         message: "Hermes provider is not configured",
       },
     });
+    await adapter.close();
+  });
+
+  it("prewarms the next ACP process after opening a Session", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "hermes-adapter-warm-counter-"));
+    temporaryDirectories.push(directory);
+    const counterPath = path.join(directory, "starts.log");
+    const command = await countingHermesExecutable();
+    const adapter = new HermesAdapter({
+      command,
+      environment: { ...process.env, FAKE_HERMES_STARTS: counterPath },
+    });
+
+    const first = await adapter.open({ kind: "create", cwd: process.cwd() });
+    expect(first.ok).toBe(true);
+    await vi.waitFor(
+      async () => {
+        const starts = await readFile(counterPath, "utf8");
+        expect(starts.trim().split("\n")).toHaveLength(2);
+      },
+      { timeout: 1_000 },
+    );
+
+    const second = await adapter.open({ kind: "create", cwd: process.cwd() });
+    expect(second.ok).toBe(true);
+    if (first.ok && second.ok) {
+      expect(second.value.initialState.nativeRef?.nativeSessionId).not.toBe(
+        first.value.initialState.nativeRef?.nativeSessionId,
+      );
+    }
+    await vi.waitFor(async () => {
+      const starts = await readFile(counterPath, "utf8");
+      expect(starts.trim().split("\n")).toHaveLength(3);
+    });
+
+    if (first.ok) await first.value.close();
+    if (second.ok) await second.value.close();
+    await adapter.close();
+  });
+
+  it("does not rebuild the Hermes Agent when the requested model is already active", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "hermes-adapter-model-calls-"));
+    temporaryDirectories.push(directory);
+    const counterPath = path.join(directory, "model-calls.log");
+    const command = await modelSelectionHermesExecutable();
+    const adapter = new HermesAdapter({
+      command,
+      environment: { ...process.env, FAKE_HERMES_MODEL_CALLS: counterPath },
+    });
+    const requested = encodeHermesModelRef("zai:glm-5-turbo");
+    if (!requested) throw new Error("Expected a valid Hermes Model Ref");
+
+    const opened = await adapter.open({ kind: "create", cwd: process.cwd(), model: requested });
+
+    expect(opened.ok).toBe(true);
+    expect(await readFile(counterPath, "utf8").catch(() => "")).toBe("");
+    if (opened.ok) await opened.value.close();
     await adapter.close();
   });
 });

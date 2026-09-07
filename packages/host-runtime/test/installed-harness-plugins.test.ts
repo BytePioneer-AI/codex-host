@@ -18,6 +18,7 @@ const classes = {
   grok: "GrokAdapter",
   omp: "OmpAdapter",
   antigravity: "AntigravityAdapter",
+  hermes: "HermesAdapter",
 };
 
 const unavailable: HarnessInspection = {
@@ -61,7 +62,7 @@ describe("installed Harness composition", () => {
   );
 
   // Cold bundle imports can exceed Vitest's 5s default on CI; the loader retains its 10s budget.
-  it("loads all seven preinstalled plugin factories without static registration or executable discovery", async () => {
+  it("loads all eight preinstalled plugin factories without static registration or executable discovery", async () => {
     const registry = await load();
     try {
       expect(
@@ -94,6 +95,7 @@ describe("installed Harness composition", () => {
       grok: ["/compact"],
       omp: ["/compact"],
       antigravity: [],
+      hermes: [],
     };
     const registry = await load();
     try {
@@ -118,6 +120,7 @@ describe("installed Harness composition", () => {
     ["opencode", "CODEXHOST_OPENCODE_COMMAND"],
     ["omp", "CODEXHOST_OMP_COMMAND"],
     ["antigravity", "CODEXHOST_ANTIGRAVITY_COMMAND"],
+    ["hermes", "CODEXHOST_HERMES_COMMAND"],
   ])(
     "preserves the explicit %s command rather than finding another local installation",
     async (id, commandVariable) => {
@@ -126,7 +129,7 @@ describe("installed Harness composition", () => {
         const adapter = [...registry.adapters].find(([key]) => key === id)?.[1];
         expect(await adapter?.inspect()).toMatchObject({
           status: "notInstalled",
-          error: { code: "notInstalled" },
+          error: { code: id === "hermes" ? "HERMES_NOT_FOUND" : "notInstalled" },
         });
       } finally {
         await registry.close();
@@ -167,7 +170,7 @@ describe("installed Harness composition", () => {
     try {
       for (const [id, adapter] of first.adapters) expect(adapter).not.toBe(second.adapters.get(id));
       await first.close();
-      expect(second.list()).toHaveLength(7);
+      expect(second.list()).toHaveLength(8);
     } finally {
       await Promise.all([first.close(), second.close()]);
     }

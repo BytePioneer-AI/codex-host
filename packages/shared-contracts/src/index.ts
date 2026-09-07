@@ -1,9 +1,117 @@
 import { z } from "zod";
 import { WORKSPACE_CONTRACT_VERSION } from "./version.js";
 
+export {
+  HARNESS_PLUGIN_ROUTE_PREFIX,
+  decodeHarnessPluginRoute,
+  encodeHarnessPluginRoute,
+  harnessPluginRouteSchema,
+} from "./harness-route.js";
+export type { HarnessPluginRoute } from "./harness-route.js";
+export {
+  HARNESS_PLUGIN_API_VERSION,
+  HARNESS_PLUGIN_ICON_MAX_BYTES,
+  HARNESS_PLUGIN_LIMIT,
+  HARNESS_PLUGIN_MANIFEST_MAX_BYTES,
+  harnessPluginConfigurationSchema,
+  harnessPluginDescriptorSchema,
+  harnessPluginIconSchema,
+  harnessPluginIdSchema,
+  harnessPluginListParamsSchema,
+  harnessPluginListResultSchema,
+  harnessPluginManifestSchema,
+} from "./harness-plugins.js";
+export type {
+  HarnessPluginConfiguration,
+  HarnessPluginDescriptor,
+  HarnessPluginListResult,
+  HarnessPluginManifest,
+} from "./harness-plugins.js";
 export { codexhostErrorSchema } from "./errors.js";
+export {
+  codexAccountUsageParamsSchema,
+  codexAccountUsageResultSchema,
+  codexAccountResetCreditConsumeParamsSchema,
+  codexAccountResetCreditConsumeOutcomeSchema,
+  codexAccountResetCreditConsumeResultSchema,
+  codexAccountActivateParamsSchema,
+  codexAccountCreateParamsSchema,
+  codexAccountDeleteParamsSchema,
+  codexAccountDeleteResultSchema,
+  codexAccountListResultSchema,
+  codexAccountLoginCancelParamsSchema,
+  codexAccountLoginCancelResultSchema,
+  codexAccountLoginCompletedSchema,
+  codexAccountLoginStartParamsSchema,
+  codexAccountLoginStartResultSchema,
+  codexAccountMutationResultSchema,
+  codexAccountSchema,
+} from "./codex-accounts.js";
+export type {
+  CodexAccountUsageParams,
+  CodexAccountUsageResult,
+  CodexAccountResetCreditConsumeParams,
+  CodexAccountResetCreditConsumeOutcome,
+  CodexAccountResetCreditConsumeResult,
+  CodexAccountActivateParams,
+  CodexAccountCreateParams,
+  CodexAccountDeleteParams,
+  CodexAccountDeleteResult,
+  CodexAccountListResult,
+  CodexAccountLoginCancelParams,
+  CodexAccountLoginCancelResult,
+  CodexAccountLoginCompleted,
+  CodexAccountLoginStartParams,
+  CodexAccountLoginStartResult,
+  CodexAccountMutationResult,
+  CodexAccountSummary,
+} from "./codex-accounts.js";
 export { REASONING_TRANSCRIPT_COMMAND } from "./reasoning-transcript.js";
 export type { CodexhostError } from "./errors.js";
+export {
+  HARNESS_SESSION_IMPORT_CWD_MAX_LENGTH,
+  HARNESS_SESSION_IMPORT_ID_MAX_LENGTH,
+  HARNESS_SESSION_IMPORT_LIST_MAX_LENGTH,
+  HARNESS_SESSION_IMPORT_TITLE_MAX_LENGTH,
+  HARNESS_SESSION_IMPORT_UPDATED_AT_MAX,
+  harnessSessionImportCandidateSchema,
+  HARNESS_SESSION_IMPORT_DEFAULT_PAGE_SIZE,
+  harnessSessionImportIdSchema,
+  harnessSessionImportSourcesParamsSchema,
+  harnessSessionImportSourcesResultSchema,
+  harnessSessionListParamsSchema,
+  harnessSessionListResultSchema,
+  harnessSessionImportParamsSchema,
+  harnessSessionImportResultSchema,
+} from "./harness-session-import.js";
+export type {
+  HarnessSessionImportCandidate,
+  HarnessSessionImportSourcesResult,
+  HarnessSessionListParams,
+  HarnessSessionListResult,
+  HarnessSessionImportParams,
+  HarnessSessionImportResult,
+} from "./harness-session-import.js";
+export {
+  DEEPSEEK_MODERN_HOST_THREAD_ID_MAX_LENGTH,
+  DEEPSEEK_MODERN_SESSION_CWD_MAX_LENGTH,
+  DEEPSEEK_MODERN_SESSION_ID_MAX_LENGTH,
+  DEEPSEEK_MODERN_SESSION_LIST_MAX_LENGTH,
+  DEEPSEEK_MODERN_SESSION_TITLE_MAX_LENGTH,
+  DEEPSEEK_MODERN_SESSION_UPDATED_AT_MAX,
+  deepSeekModernSessionCandidateSchema,
+  deepSeekModernSessionImportParamsSchema,
+  deepSeekModernSessionImportResultSchema,
+  deepSeekModernSessionListParamsSchema,
+  deepSeekModernSessionListResultSchema,
+} from "./deepseek-modern-sessions.js";
+export type {
+  DeepSeekModernSessionCandidate,
+  DeepSeekModernSessionImportParams,
+  DeepSeekModernSessionImportResult,
+  DeepSeekModernSessionListParams,
+  DeepSeekModernSessionListResult,
+} from "./deepseek-modern-sessions.js";
 export {
   externalThreadForkParamsSchema,
   externalThreadForkResultSchema,
@@ -43,6 +151,9 @@ export {
   harnessSessionCapabilitiesSchema,
   harnessThinkingOptionIdSchema,
   harnessThinkingOptionSchema,
+  harnessWebUiCapabilitySchema,
+  harnessWebUiOpenParamsSchema,
+  harnessWebUiOpenResultSchema,
   permissionModeFixedAtCreate,
   threadInspectionParamsSchema,
   threadInspectionSchema,
@@ -64,6 +175,9 @@ export type {
   HarnessSessionCapabilities,
   HarnessThinkingOption,
   HarnessThinkingOptionId,
+  HarnessWebUiCapability,
+  HarnessWebUiOpenParams,
+  HarnessWebUiOpenResult,
   ThreadInspection,
   ThreadInspectionParams,
   ThreadModelSelectParams,
@@ -75,6 +189,7 @@ export type {
 export {
   harnessCommandCatalogSchema,
   harnessCommandDescriptorSchema,
+  harnessCommandsInspectParamsSchema,
   threadCommandExecuteParamsSchema,
   threadCommandExecuteResultSchema,
   threadCommandsInspectParamsSchema,
@@ -82,12 +197,14 @@ export {
 export type {
   HarnessCommandCatalog,
   HarnessCommandDescriptor,
+  HarnessCommandsInspectParams,
   ThreadCommandExecuteParams,
   ThreadCommandExecuteResult,
   ThreadCommandsInspectParams,
 } from "./harness-commands.js";
 export {
   accountCreditsProductUsageSchema,
+  accountResetCreditsSchema,
   accountCreditsSnapshotSchema,
   threadUsageInspectionParamsSchema,
   threadUsageInspectionSchema,
@@ -95,6 +212,7 @@ export {
 } from "./thread-usage.js";
 export type {
   AccountCreditsSnapshot,
+  AccountResetCredits,
   ThreadUsageInspection,
   ThreadUsageInspectionParams,
   ThreadUsageSnapshot,

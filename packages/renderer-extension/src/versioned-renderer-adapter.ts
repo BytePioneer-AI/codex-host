@@ -10,6 +10,7 @@ import {
   type HarnessThinkingOptionId,
   type HostThreadId,
   type ThreadCommandExecuteParams,
+  type HarnessCommandsInspectParams,
   type ThreadCommandsInspectParams,
   type ThreadInspectionParams,
   type ThreadModelSelectParams,
@@ -22,6 +23,7 @@ import {
 
 import type { RendererAgent } from "./agent-selection-state.js";
 import { installRendererForkControl } from "./renderer-fork-control.js";
+import { installRendererExternalSteering } from "./renderer-external-steering.js";
 import {
   createRendererModelClient,
   createThreadUsageSubscriptionRelay,
@@ -114,6 +116,7 @@ export interface RendererDraftPrewarmPolicy {
   hostId: string;
   readonly requestTarget?: () => unknown;
   select(model: string | null): boolean;
+  readonly selectAccount?: (accountId: string | null) => boolean;
   clear(): Promise<void>;
 }
 
@@ -1009,13 +1012,18 @@ export function installCurrentRendererAdapter(): {
     () => findActivePrewarmTargets(document),
   );
   const clientsByTarget = new WeakMap<PrewarmTarget, RendererModelClient>();
+  const steeringCleanups = new Set<() => void>();
   const modelClientForTargets = (targets: readonly PrewarmTarget[]): RendererModelClient | null => {
     const target = targets[0];
     if (targets.length !== 1 || !target) return null;
     const cached = clientsByTarget.get(target);
     if (cached) return cached;
     const client = createRendererModelClient([target]);
-    if (client) clientsByTarget.set(target, client);
+    if (client) {
+      const cleanup = installRendererExternalSteering(target);
+      if (cleanup) steeringCleanups.add(cleanup);
+      clientsByTarget.set(target, client);
+    }
     return client;
   };
   let activeRoutePolicy: RendererDraftPrewarmPolicy | null = null;
@@ -1049,9 +1057,16 @@ export function installCurrentRendererAdapter(): {
       const targets = rendererRequestTargetsForHost(findActivePrewarmTargets(document), hostId);
       return modelClientForTargets(targets ?? []);
     },
+    listHarnessPlugins: async () => {
+      const client = currentModelClient();
+      if (!client.listHarnessPlugins) throw new Error("Harness plugin directory is unavailable");
+      return client.listHarnessPlugins();
+    },
     forkThread: (input: ExternalThreadForkParams) => currentModelClient().forkThread(input),
     inspectHarness: (input: HarnessInspectParams) => currentModelClient().inspectHarness(input),
     inspectThread: (input: ThreadInspectionParams) => currentModelClient().inspectThread(input),
+    inspectHarnessCommands: (input: HarnessCommandsInspectParams) =>
+      currentModelClient().inspectHarnessCommands(input),
     inspectThreadCommands: (input: ThreadCommandsInspectParams) =>
       currentModelClient().inspectThreadCommands(input),
     executeThreadCommand: (input: ThreadCommandExecuteParams) =>
@@ -1071,6 +1086,41 @@ export function installCurrentRendererAdapter(): {
     checkUpdate: () => currentModelClient().checkUpdate(),
     startUpdate: () => currentModelClient().startUpdate(),
     readUpdateStatus: () => currentModelClient().readUpdateStatus(),
+    inspectCodexAccountUsage: (
+      input: Parameters<NonNullable<RendererModelClient["inspectCodexAccountUsage"]>>[0],
+    ) => {
+      const client = currentModelClient();
+      if (!client.inspectCodexAccountUsage) throw new Error("Codex Account Usage is unavailable");
+      return client.inspectCodexAccountUsage(input);
+    },
+    consumeCodexAccountResetCredit: (
+      input: Parameters<NonNullable<RendererModelClient["consumeCodexAccountResetCredit"]>>[0],
+    ) => {
+      const client = currentModelClient();
+      if (!client.consumeCodexAccountResetCredit) {
+        throw new Error("Codex Account reset-credit consume is unavailable");
+      }
+      return client.consumeCodexAccountResetCredit(input);
+    },
+    listCodexAccounts: () => currentModelClient().listCodexAccounts(),
+    refreshCodexAccounts: () => {
+      const client = currentModelClient();
+      return client.refreshCodexAccounts?.() ?? client.listCodexAccounts();
+    },
+    createCodexAccount: (input: Parameters<RendererModelClient["createCodexAccount"]>[0]) =>
+      currentModelClient().createCodexAccount(input),
+    deleteCodexAccount: (input: Parameters<RendererModelClient["deleteCodexAccount"]>[0]) =>
+      currentModelClient().deleteCodexAccount(input),
+    activateCodexAccount: (input: Parameters<RendererModelClient["activateCodexAccount"]>[0]) =>
+      currentModelClient().activateCodexAccount(input),
+    startCodexAccountLogin: (input: Parameters<RendererModelClient["startCodexAccountLogin"]>[0]) =>
+      currentModelClient().startCodexAccountLogin(input),
+    cancelCodexAccountLogin: (
+      input: Parameters<RendererModelClient["cancelCodexAccountLogin"]>[0],
+    ) => currentModelClient().cancelCodexAccountLogin(input),
+    subscribeCodexAccountLogin: (
+      listener: Parameters<RendererModelClient["subscribeCodexAccountLogin"]>[0],
+    ) => currentModelClient().subscribeCodexAccountLogin(listener),
   });
   const forkControl = installRendererForkControl({
     getClient: () => modelControl,
@@ -1211,6 +1261,7 @@ export function installCurrentRendererAdapter(): {
         () => activeRoutingPolicy?.select(null),
         () => syncActiveRoute(null),
         () => forkControl.dispose(),
+        ...steeringCleanups,
         () => usageSubscription.dispose(),
       ];
       for (const cleanup of cleanups) {

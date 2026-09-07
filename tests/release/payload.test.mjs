@@ -16,6 +16,7 @@ import {
   validatePayload,
 } from "../../scripts/release/prepare-payload.mjs";
 import { releaseTarget } from "../../scripts/release/targets.mjs";
+import { preinstalledHarnessPluginPaths } from "../../scripts/release/harness-plugins.mjs";
 
 async function temporaryDirectory() {
   return mkdtemp(path.join(os.tmpdir(), "codexhost-payload-"));
@@ -67,15 +68,23 @@ describe("release Payload", () => {
     await expect(prepareReleasePayload({ target })).rejects.toThrow("requires host platform");
   });
 
-  it("validates the platform allowlists without internal manifests", async () => {
+  it("validates the platform allowlists including preinstalled plugin resources", async () => {
     const root = await temporaryDirectory();
     const target = releaseTarget("macos-arm64");
     try {
       await createPayload(root, target);
       const paths = await validatePayload({ payloadRoot: root, target, root: "/repo/source" });
       expect(paths).toEqual(expectedPayloadPaths(target));
-      expect(paths).toHaveLength(19);
-      expect(expectedPayloadPaths(releaseTarget("windows-x64"))).toHaveLength(20);
+      expect(paths).toHaveLength(19 + preinstalledHarnessPluginPaths().length);
+      expect(expectedPayloadPaths(releaseTarget("windows-x64"))).toHaveLength(
+        21 + preinstalledHarnessPluginPaths().length,
+      );
+      expect(paths).toContain("app/plugins/enabled.json");
+      expect(paths).toContain("app/plugins/claude-code/plugin.mjs");
+      expect(expectedPayloadPaths(releaseTarget("windows-x64"))).toContain(
+        "libexec/codexhost-node-repl.exe",
+      );
+      expect(paths).not.toContain("libexec/codexhost-node-repl");
       expect(expectedPayloadPaths(releaseTarget("windows-x64"))).toContain(
         "bin/codexhost-start.exe",
       );

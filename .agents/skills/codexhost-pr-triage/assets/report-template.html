@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="referrer" content="no-referrer" />
+    <title>codexhost · PR 合入看板</title>
+    <style>
+      /* REPORT_STYLES */
+    </style>
+  </head>
+  <body>
+    <svg aria-hidden="true" style="position: absolute; width: 0; height: 0; overflow: hidden">
+      <defs>
+        <symbol id="i-board" viewBox="0 0 24 24">
+          <rect x="3" y="4" width="18" height="16" rx="2"></rect>
+          <path d="M9 4v16m6-16v16M6 8v5m6-5v8m6-8v3"></path>
+        </symbol>
+        <symbol id="i-table" viewBox="0 0 24 24">
+          <rect x="3" y="4" width="18" height="16" rx="2"></rect>
+          <path d="M3 9h18M3 14h18M10 9v11"></path>
+        </symbol>
+        <symbol id="i-search" viewBox="0 0 24 24">
+          <circle cx="10.5" cy="10.5" r="6.5"></circle>
+          <path d="m16 16 5 5"></path>
+        </symbol>
+        <symbol id="i-download" viewBox="0 0 24 24">
+          <path d="M12 3v12m-4-4 4 4 4-4M4 16v4h16v-4"></path>
+        </symbol>
+        <symbol id="i-filter" viewBox="0 0 24 24"><path d="M4 6h16M7 12h10m-7 6h4"></path></symbol>
+        <symbol id="i-close" viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"></path></symbol>
+        <symbol id="i-clock" viewBox="0 0 24 24">
+          <circle cx="12" cy="12" r="9"></circle>
+          <path d="M12 7v5l3 2"></path>
+        </symbol>
+      </defs>
+    </svg>
+    <header class="topbar">
+      <div class="identity">
+        <div class="brand"><span class="brandmark">c_</span>codexhost</div>
+        <span class="divider"></span><span class="workspace">维护者工作台</span>
+      </div>
+      <div class="top-actions">
+        <span class="snapshot-pill" id="completeness">未载入数据</span>
+        <button class="button" id="export" disabled>
+          <svg aria-hidden="true"><use href="#i-download"></use></svg><span>导出 JSON</span>
+        </button>
+      </div>
+    </header>
+    <main>
+      <section class="page-head" aria-labelledby="page-title">
+        <div class="title-line">
+          <svg class="title-icon" aria-hidden="true"><use href="#i-board"></use></svg>
+          <h1 id="page-title">PR 合入看板</h1>
+        </div>
+        <p class="subtitle">
+          先看功能值不值得做，再看实现是否克制。CI 和冲突仅作集成参考，不是一票否决。
+        </p>
+        <p class="report-scope" id="report-scope"></p>
+        <div class="summary" id="summary" aria-label="队列摘要"></div>
+        <div class="viewbar">
+          <div class="tabs" role="group" aria-label="切换视图">
+            <button class="tab" id="board-tab" aria-pressed="true">
+              <svg aria-hidden="true"><use href="#i-board"></use></svg>看板视图
+            </button>
+            <button class="tab" id="table-tab" aria-pressed="false">
+              <svg aria-hidden="true"><use href="#i-table"></use></svg>表格视图
+            </button>
+          </div>
+          <div class="snapshot">
+            <svg aria-hidden="true"><use href="#i-clock"></use></svg><span>评估快照 · </span
+            ><time id="generated-time"></time>
+          </div>
+        </div>
+      </section>
+      <section class="main-surface" aria-label="PR 评估结果">
+        <p class="load-notice" id="load-notice">
+          这是无数据模板。请用 scripts/render-report.mjs 生成报告，并在浏览器中启用 JavaScript。
+        </p>
+        <div class="collection-note" id="collection-note" hidden></div>
+        <div class="toolbar">
+          <div class="tools-left">
+            <span class="group-label"
+              ><svg aria-hidden="true"><use href="#i-filter"></use></svg>按合入建议分组</span
+            >
+            <span class="toolbar-divider"></span>
+            <label class="switch-label"
+              ><input type="checkbox" id="show-ci" checked />显示 CI / 冲突</label
+            >
+          </div>
+          <div class="tools-right">
+            <label class="search"
+              ><svg aria-hidden="true"><use href="#i-search"></use></svg
+              ><input
+                type="search"
+                id="search"
+                aria-label="搜索 PR 编号、标题或仓库"
+                placeholder="搜索 PR、标题或仓库…"
+            /></label>
+            <select class="sort" id="sort" aria-label="排序方式">
+              <option value="desc">编号：从新到旧</option>
+              <option value="asc">编号：从旧到新</option>
+            </select>
+          </div>
+        </div>
+        <div class="board" id="board"></div>
+        <div class="table-wrap" id="table-view" hidden></div>
+        <div class="result-line" aria-live="polite" id="results"></div>
+        <details class="drafts" id="skipped">
+          <summary id="skipped-summary"></summary>
+          <div class="drafts-list" id="skipped-list"></div>
+        </details>
+      </section>
+    </main>
+    <footer>
+      <span>仅为价值与实现克制的评估快照。CI/冲突不是实时状态或硬阻断；不替代逐行正确性审查。</span>
+      <div class="repository-links" id="repository-links"></div>
+    </footer>
+    <dialog id="detail" aria-labelledby="detail-title">
+      <div class="drawer-top">
+        <span class="muted">评估详情</span
+        ><button class="close" id="close-detail" aria-label="关闭详情">
+          <svg aria-hidden="true"><use href="#i-close"></use></svg>
+        </button>
+      </div>
+      <div class="drawer-body" id="detail-body"></div>
+    </dialog>
+    <div class="toast" id="toast" role="status" hidden></div>
+    <!-- REPORT_DATA -->
+    <script>
+      /* REPORT_SCRIPT */
+    </script>
+  </body>
+</html>

@@ -1,8 +1,10 @@
-import type { UpdateCheckResult } from "@codexhost/shared-contracts";
+import { harnessIdSchema } from "@codexhost/shared-contracts";
+import { hostThreadIdSchema, type UpdateCheckResult } from "@codexhost/shared-contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 const triggerRefresh = vi.fn(() => true);
 const triggerSetUpdateAvailable = vi.fn();
+const shellClose = vi.fn();
 
 vi.mock("../src/codex-locale-adapter.js", () => ({
   readCodexLocaleSettings: vi.fn(async () => ({ preferredLocale: "en" })),
@@ -25,6 +27,7 @@ vi.mock("../src/settings/shell.js", () => ({
     open: false,
     activePageId: undefined,
     openSettings: vi.fn(),
+    close: shellClose,
     dispose: vi.fn(),
   })),
 }));
@@ -39,6 +42,7 @@ vi.mock("../src/settings/trigger.js", () => ({
 }));
 
 import { installRendererSettingsLifecycle } from "../src/renderer-settings-lifecycle.js";
+import { createDefaultRendererSettingsPages } from "../src/settings/pages.js";
 
 function failedUpdateCheck(): UpdateCheckResult {
   return {
@@ -109,6 +113,44 @@ describe("Renderer Settings lifecycle", () => {
     await vi.advanceTimersByTimeAsync(1);
     expect(checkUpdate).toHaveBeenCalledTimes(2);
 
+    lifecycle.dispose();
+  });
+
+  it("binds Session import to its narrow client and closes only after navigation", async () => {
+    const events: string[] = [];
+    const client = {
+      listSessionImportSources: vi.fn(async () => ({
+        harnesses: [
+          { harnessId: harnessIdSchema.parse("deepseek-harness"), name: "DeepSeek Harness" },
+        ],
+      })),
+      listHarnessSessions: vi.fn(),
+      importHarnessSession: vi.fn(),
+    };
+    const openImportedThread = vi.fn(async () => {
+      events.push("opened");
+    });
+    shellClose.mockImplementation(() => events.push("closed"));
+    const ownerWindow = {
+      navigator: { languages: ["en"] },
+      document: {},
+      setTimeout,
+      clearTimeout,
+    } as unknown as Window;
+    const lifecycle = installRendererSettingsLifecycle(ownerWindow, {
+      getSessionImportClient: () => client,
+      openImportedThread,
+    });
+    const call = vi.mocked(createDefaultRendererSettingsPages).mock.calls.at(-1);
+    const getClient = call?.[4];
+    const open = call?.[5];
+    if (!getClient || !open) throw new Error("Session Import settings seams were not installed");
+
+    expect(getClient()).toBe(client);
+    await open(hostThreadIdSchema.parse("imported-thread"), new AbortController().signal);
+
+    expect(openImportedThread).toHaveBeenCalledWith("imported-thread", expect.any(AbortSignal));
+    expect(events).toEqual(["opened", "closed"]);
     lifecycle.dispose();
   });
 });

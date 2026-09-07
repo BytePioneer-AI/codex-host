@@ -29,7 +29,76 @@ export interface RendererSettingsMessages {
   readonly inDevelopment: string;
   readonly notAvailable: string;
   readonly runtimeCapabilityNotInstalled: string;
+  readonly sessionImportHarness: string;
+  readonly sessionImportDescription: string;
+  readonly sessionImportAvailabilityNote: string;
+  readonly sessionImportRefresh: string;
+  readonly sessionImportRefreshing: string;
+  readonly sessionImportUnavailable: string;
+  readonly sessionImportEmpty: string;
+  readonly sessionImportSearch: string;
+  readonly sessionImportSearchPlaceholder: string;
+  readonly sessionImportNoMatches: string;
+  readonly sessionImportPageSize: string;
+  readonly sessionImportPrevious: string;
+  readonly sessionImportNext: string;
+  readonly sessionImportPageSummary: string;
+  readonly sessionImportLoadFailed: string;
+  readonly sessionImportFailed: string;
+  readonly sessionImportUntitled: string;
+  readonly sessionImportUpdatedAt: string;
+  readonly sessionImportSessionId: string;
+  readonly sessionImportRunning: string;
+  readonly sessionImportRunningUnknown: string;
+  readonly sessionImportRunningHint: string;
+  readonly sessionImportAction: string;
+  readonly sessionImportImporting: string;
+  readonly sessionImportImported: string;
+  readonly sessionImportOpenFailed: string;
+  readonly sessionImportCopyProjectPath: string;
+  readonly sessionImportPathCopied: string;
+  readonly sessionImportPathCopyFailed: string;
+  readonly sessionImportRetryOpen: string;
+  readonly sessionImportRetrying: string;
   readonly connectionsDescription: string;
+  readonly accountsDescription: string;
+  readonly accountAdd: string;
+  readonly accountCreateFailed: string;
+  readonly accountDelete: string;
+  readonly accountDeleteConfirm: string;
+  readonly accountDeleting: string;
+  readonly accountDeleteFailed: string;
+  readonly accountActive: string;
+  readonly accountUse: string;
+  readonly accountSignIn: string;
+  readonly accountSigningIn: string;
+  readonly accountDeviceCodePrerequisite: string;
+  readonly accountVerificationDescription: string;
+  readonly accountCopyCode: string;
+  readonly accountCopied: string;
+  readonly accountLoginCancel: string;
+  readonly accountLoginSucceeded: string;
+  readonly accountLoginFailed: string;
+  readonly accountLoadFailed: string;
+  readonly accountCreditsUsed: string;
+  readonly accountCreditsReset: string;
+  readonly accountCreditsPeriodWeekly: string;
+  readonly accountCreditsPeriodMonthly: string;
+  readonly accountCreditsPeriodFiveHour: string;
+  readonly accountCreditsPeriodSevenDay: string;
+  readonly accountCreditsPeriodUnknown: string;
+  readonly accountCreditsBuild: string;
+  readonly accountResetCredits: string;
+  readonly accountResetCreditsUse: string;
+  readonly accountResetCreditsConfirm: string;
+  readonly accountResetCreditsUsing: string;
+  readonly accountResetCreditsFailed: string;
+  readonly accountResetCreditsNothingToReset: string;
+  readonly accountResetCreditsNoCredit: string;
+  readonly accountResetCreditsAlreadyRedeemed: string;
+  readonly accountResetCreditsSucceeded: string;
+  readonly accountResetCreditsDetails: string;
+  readonly accountResetCreditsCardExpiry: string;
   readonly connectionAdapter: string;
   readonly connectionHosts: string;
   readonly connectionLocalHost: string;
@@ -61,6 +130,7 @@ export interface RendererSettingsMessages {
   readonly connectionHostsScrollLeft: string;
   readonly connectionHostsScrollRight: string;
   readonly connectionOpenInstallation: string;
+  readonly connectionOpenHarnessWeb: string;
   readonly connectionInstall: string;
   readonly connectionInstallDescription: string;
   readonly connectionErrorTitle: string;
@@ -136,8 +206,86 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   inDevelopment: "In development",
   notAvailable: "Not available",
   runtimeCapabilityNotInstalled: "This runtime capability is not installed yet.",
+  sessionImportHarness: "Harness",
+  sessionImportDescription:
+    "Sessions keep their original project path. If a folder is not in the Codex sidebar, add it as a project first. Original history remains managed by the Harness.",
+  sessionImportAvailabilityNote:
+    "Available Harnesses come from the local Host. If activity is unknown, close the session in its native client before importing to avoid concurrent writes.",
+  sessionImportRefresh: "Refresh",
+  sessionImportRefreshing: "Loading local sessions...",
+  sessionImportUnavailable:
+    "Session import is unavailable for this local Harness or its current protocol. Update the Host/plugin or choose another Harness.",
+  sessionImportEmpty: "No local sessions are available to import.",
+  sessionImportSearch: "Search",
+  sessionImportSearchPlaceholder: "Search titles, session IDs or project paths",
+  sessionImportNoMatches: "No sessions match your search.",
+  sessionImportPageSize: "Per page",
+  sessionImportPrevious: "Previous",
+  sessionImportNext: "Next",
+  sessionImportPageSummary: "Page {page} of {pages} · {total} sessions",
+  sessionImportLoadFailed:
+    "Local sessions could not be loaded. Check directory access or duplicate session IDs, then retry.",
+  sessionImportFailed: "The session could not be imported.",
+  sessionImportUntitled: "Untitled session",
+  sessionImportUpdatedAt: "Updated",
+  sessionImportSessionId: "Session ID",
+  sessionImportRunning: "Running",
+  sessionImportRunningUnknown: "Activity unknown",
+  sessionImportRunningHint:
+    "Close this session in its native client before importing, then refresh.",
+  sessionImportAction: "Import and open",
+  sessionImportImporting: "Importing...",
+  sessionImportImported: "Session imported",
+  sessionImportOpenFailed:
+    "The Codex sidebar has not shown it yet. Make sure the folder below is added as a project, then try opening it again.",
+  sessionImportCopyProjectPath: "Copy project path",
+  sessionImportPathCopied: "Copied",
+  sessionImportPathCopyFailed: "Copy failed",
+  sessionImportRetryOpen: "Try opening again",
+  sessionImportRetrying: "Opening...",
   connectionsDescription:
     "View runtime status by Host. Select an item to inspect details or complete its setup.",
+  accountsDescription:
+    "New Codex tasks start with this account. Existing tasks keep the account they were created with. Multi-account is currently available for Codex; other Harnesses will follow in a later update.",
+  accountAdd: "Add Account",
+  accountCreateFailed: "Could not add the Account.",
+  accountDelete: "Delete",
+  accountDeleteConfirm: "Delete this Account and its local data? This cannot be undone.",
+  accountDeleting: "Deleting Account...",
+  accountDeleteFailed: "Could not delete the Account.",
+  accountActive: "Default",
+  accountUse: "Set as default",
+  accountSignIn: "Sign in",
+  accountSigningIn: "Starting device sign-in...",
+  accountDeviceCodePrerequisite:
+    "Before signing in, enable “Enable device code authorization for Codex” in Web Settings → Account security & sign-in.",
+  accountVerificationDescription: "Open the verification page and enter this one-time code:",
+  accountCopyCode: "Copy code",
+  accountCopied: "Copied",
+  accountLoginCancel: "Cancel sign-in",
+  accountLoginSucceeded: "Sign-in completed.",
+  accountLoginFailed: "Sign-in failed.",
+  accountLoadFailed: "Could not load Codex Accounts.",
+  accountCreditsUsed: "Used",
+  accountCreditsReset: "reset",
+  accountCreditsPeriodWeekly: "Weekly limit",
+  accountCreditsPeriodMonthly: "Monthly limit",
+  accountCreditsPeriodFiveHour: "5-hour",
+  accountCreditsPeriodSevenDay: "7-day",
+  accountCreditsPeriodUnknown: "Limit",
+  accountCreditsBuild: "Build",
+  accountResetCredits: "Reset cards",
+  accountResetCreditsUse: "Use reset",
+  accountResetCreditsConfirm:
+    "This uses 1 reset card and resets both the 5-hour and 7-day limits. This cannot be undone.",
+  accountResetCreditsUsing: "Using reset card...",
+  accountResetCreditsFailed: "Could not use the reset card.",
+  accountResetCreditsNothingToReset: "Usage does not need a reset right now.",
+  accountResetCreditsNoCredit: "No reset cards are available.",
+  accountResetCreditsAlreadyRedeemed: "That reset card was already used.",
+  accountResetCreditsSucceeded: "Limits were reset.",
+  accountResetCreditsDetails: "Reset card details",
+  accountResetCreditsCardExpiry: "Card {index} · expires {time}",
   connectionAdapter: "Renderer adapter",
   connectionHosts: "Hosts",
   connectionLocalHost: "Local",
@@ -169,6 +317,7 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   connectionHostsScrollLeft: "Show previous Hosts",
   connectionHostsScrollRight: "Show more Hosts",
   connectionOpenInstallation: "Open official installation page",
+  connectionOpenHarnessWeb: "Open DeepSeek Harness Web",
   connectionInstall: "Install",
   connectionInstallDescription:
     "This Harness was not detected. Follow its official installation guide, then return here and run the check again.",
@@ -242,6 +391,8 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   aboutRepository: "Open-source repository",
   pageLabels: Object.freeze({
     connections: "Connections",
+    accounts: "Accounts",
+    "session-import": "Session Import",
     updates: "Updates",
     about: "About",
   }),
@@ -259,7 +410,81 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   inDevelopment: "开发中",
   notAvailable: "暂不可用",
   runtimeCapabilityNotInstalled: "运行时尚未安装该项能力，因此暂不可用。",
+  sessionImportHarness: "Harness",
+  sessionImportDescription:
+    "会话将保留原始项目路径；若该文件夹尚未出现在 Codex 侧栏，请先将其添加为项目。原始历史仍由 Harness 管理。",
+  sessionImportAvailabilityNote:
+    "可选 Harness 来自本地 Host。运行状态未知时，请先在原生客户端关闭该会话再导入，避免同时写入。",
+  sessionImportRefresh: "刷新",
+  sessionImportRefreshing: "正在读取本地会话……",
+  sessionImportUnavailable:
+    "本地 Harness 或当前协议暂不支持会话导入，请更新 Host/插件或选择其他 Harness。",
+  sessionImportEmpty: "没有可导入的本地会话。",
+  sessionImportSearch: "搜索",
+  sessionImportSearchPlaceholder: "搜索标题、会话 ID 或项目路径",
+  sessionImportNoMatches: "没有匹配的会话。",
+  sessionImportPageSize: "每页",
+  sessionImportPrevious: "上一页",
+  sessionImportNext: "下一页",
+  sessionImportPageSummary: "第 {page} / {pages} 页 · 共 {total} 条",
+  sessionImportLoadFailed: "无法读取本地会话，请检查目录访问权限或重复的会话 ID 后重试。",
+  sessionImportFailed: "无法导入该会话。",
+  sessionImportUntitled: "未命名会话",
+  sessionImportUpdatedAt: "更新时间",
+  sessionImportSessionId: "会话 ID",
+  sessionImportRunning: "运行中",
+  sessionImportRunningUnknown: "运行状态未知",
+  sessionImportRunningHint: "请先在原生客户端关闭该会话，再刷新并导入。",
+  sessionImportAction: "导入并打开",
+  sessionImportImporting: "正在导入……",
+  sessionImportImported: "会话已导入",
+  sessionImportOpenFailed: "Codex 侧栏尚未显示该会话。请确认以下文件夹已添加为项目，然后重试打开。",
+  sessionImportCopyProjectPath: "复制项目路径",
+  sessionImportPathCopied: "已复制",
+  sessionImportPathCopyFailed: "复制失败",
+  sessionImportRetryOpen: "重试打开",
+  sessionImportRetrying: "正在打开……",
   connectionsDescription: "按 Host 查看运行时状态。选择一项，在右侧检查详情或完成配置。",
+  accountsDescription:
+    "这里决定之后新建 Codex 任务默认用哪个账号。已经开过的任务不会换号。当前支持 Codex 多账号，其他 Harness 敬请期待后续更新。",
+  accountAdd: "添加账号",
+  accountCreateFailed: "添加账号失败。",
+  accountDelete: "删除",
+  accountDeleteConfirm: "删除此账号及其本地数据？此操作无法撤销。",
+  accountDeleting: "正在删除账号...",
+  accountDeleteFailed: "删除账号失败。",
+  accountActive: "默认账号",
+  accountUse: "设为默认",
+  accountSignIn: "登录",
+  accountSigningIn: "正在启动设备登录...",
+  accountDeviceCodePrerequisite:
+    "登录前，请先在 Web 端的“设置 → 账号安全与登录”中开启“为 Codex 启用设备代码授权”。",
+  accountVerificationDescription: "打开验证页面并输入以下一次性代码：",
+  accountCopyCode: "复制代码",
+  accountCopied: "已复制",
+  accountLoginCancel: "取消登录",
+  accountLoginSucceeded: "登录成功。",
+  accountLoginFailed: "登录失败。",
+  accountLoadFailed: "无法加载 Codex 账号。",
+  accountCreditsUsed: "已用",
+  accountCreditsReset: "重置",
+  accountCreditsPeriodWeekly: "周额度",
+  accountCreditsPeriodMonthly: "月额度",
+  accountCreditsPeriodFiveHour: "5 小时",
+  accountCreditsPeriodSevenDay: "7 天",
+  accountCreditsPeriodUnknown: "额度",
+  accountCreditsBuild: "Build",
+  accountResetCredits: "重置卡",
+  accountResetCreditsUse: "使用重置",
+  accountResetCreditsConfirm: "将消耗 1 张重置卡，同时重置 5 小时和 7 天额度。此操作无法撤销。",
+  accountResetCreditsUsing: "正在使用重置卡...",
+  accountResetCreditsFailed: "使用重置卡失败。",
+  accountResetCreditsNothingToReset: "当前额度不需要重置。",
+  accountResetCreditsNoCredit: "没有可用的重置卡。",
+  accountResetCreditsAlreadyRedeemed: "这张重置卡已经使用过。",
+  accountResetCreditsSucceeded: "额度已重置。",
+  accountResetCreditsDetails: "重置卡详情",
+  accountResetCreditsCardExpiry: "第 {index} 张 · {time}到期",
   connectionAdapter: "Renderer 适配器",
   connectionHosts: "Host 列表",
   connectionLocalHost: "本地",
@@ -291,6 +516,7 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   connectionHostsScrollLeft: "查看前面的 Host",
   connectionHostsScrollRight: "查看更多 Host",
   connectionOpenInstallation: "前往官方安装页面",
+  connectionOpenHarnessWeb: "打开 DeepSeek Harness Web",
   connectionInstall: "安装",
   connectionInstallDescription:
     "尚未检测到该 Harness。请按照官方安装指南完成安装，然后返回此页面重新检查。",
@@ -362,6 +588,8 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   aboutRepository: "开源仓库",
   pageLabels: Object.freeze({
     connections: "连接",
+    accounts: "账号",
+    "session-import": "会话导入",
     updates: "更新",
     about: "关于",
   }),

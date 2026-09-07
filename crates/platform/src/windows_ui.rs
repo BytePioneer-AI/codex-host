@@ -7,6 +7,8 @@ use windows::Win32::UI::Controls::{
     TASKDIALOG_BUTTON, TASKDIALOGCONFIG, TASKDIALOGCONFIG_0, TD_INFORMATION_ICON,
     TDF_ALLOW_DIALOG_CANCELLATION, TDF_SIZE_TO_CONTENT,
 };
+use windows::Win32::UI::Shell::ShellExecuteW;
+use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
 use windows::core::PCWSTR;
 
 const LOCALE_NAME_MAX_LENGTH: usize = 85;
@@ -75,6 +77,32 @@ unsafe extern "system" {
 
 fn wide_null(value: &str) -> Vec<u16> {
     value.encode_utf16().chain([0]).collect()
+}
+
+fn shell_execute_result(code: usize) -> io::Result<()> {
+    if code > 32 {
+        Ok(())
+    } else {
+        Err(io::Error::other(format!(
+            "ShellExecuteW failed with code {code}"
+        )))
+    }
+}
+
+pub fn open_external_url(url: &str) -> io::Result<()> {
+    let operation = wide_null("open");
+    let url = wide_null(url);
+    let result = unsafe {
+        ShellExecuteW(
+            None,
+            PCWSTR(operation.as_ptr()),
+            PCWSTR(url.as_ptr()),
+            PCWSTR::null(),
+            PCWSTR::null(),
+            SW_SHOWNORMAL,
+        )
+    };
+    shell_execute_result(result.0 as usize)
 }
 
 fn user_locale_name() -> String {
@@ -218,7 +246,16 @@ pub fn show_error_dialog(message: &str) {
 
 #[cfg(test)]
 mod tests {
-    use super::{IDCANCEL, RESTART_BUTTON_ID, RETRY_BUTTON_ID, running_desktop_text_for_locale};
+    use super::{
+        IDCANCEL, RESTART_BUTTON_ID, RETRY_BUTTON_ID, running_desktop_text_for_locale,
+        shell_execute_result,
+    };
+
+    #[test]
+    fn shell_execute_requires_a_result_above_the_documented_error_range() {
+        assert!(shell_execute_result(32).is_err());
+        assert!(shell_execute_result(33).is_ok());
+    }
 
     #[test]
     fn running_desktop_actions_use_distinct_button_ids() {

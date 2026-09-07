@@ -20,7 +20,7 @@ import {
   nativeCheckpointRefSchema,
   nativeSessionRefSchema,
 } from "@codexhost/shared-contracts";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import type { OpenCodeMessageWithParts } from "../src/history.js";
 import {
@@ -31,12 +31,20 @@ import {
 } from "../src/model-catalog.js";
 import { OpenCodeAdapter, type OpenCodeAdapterDependencies } from "../src/opencode-adapter.js";
 import type {
-  OpenCodeCommandInput,
   OpenCodePromptInput,
   OpenCodeTransport,
   OpenCodeTransportListener,
 } from "../src/protocol.js";
 import type { OpenCodeServerOptions } from "../src/sdk-transport.js";
+
+// The fake retains the removed native command API so regression tests can detect calls to it.
+interface OpenCodeCommandInput {
+  sessionID: string;
+  command: string;
+  arguments: string;
+  model?: OpenCodeNativeModelRef;
+  variant?: string;
+}
 
 const cwd = "/synthetic";
 
@@ -964,7 +972,7 @@ describe("OpenCode HarnessAdapter", () => {
     await adapter.close();
   });
 
-  it("lists and executes native slash commands and context compaction", async () => {
+  it("lists only static compaction without native discovery and rejects dynamic commands", async () => {
     const transport = new FakeOpenCodeTransport();
     transport.commandsValue = [
       {
@@ -974,69 +982,27 @@ describe("OpenCode HarnessAdapter", () => {
         hints: ["focus"],
       },
     ];
+    const discover = vi
+      .spyOn(transport, "commands")
+      .mockRejectedValue(new Error("must not discover commands"));
     const { adapter, session } = await openFixture(transport);
     const commands = session.commands;
     if (!commands) throw new Error("OpenCode Session did not expose commands");
     const catalog = await commands.list();
-    if (!catalog.ok) throw new Error(catalog.error.message);
-    expect(catalog.value.commands).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ id: "opencode.compact", invocation: "/compact" }),
-        expect.objectContaining({ invocation: "/review", argumentMode: "text" }),
-      ]),
-    );
-    const review = catalog.value.commands.find(({ invocation }) => invocation === "/review");
-    if (!review) throw new Error("OpenCode did not publish the review command");
-    expect(review.description).toBe("Review the workspace");
-
-    transport.commandsValue = [
-      {
-        name: "long-description",
-        description: `${"x".repeat(600)}   `,
-        template: "Long $ARGUMENTS",
-        hints: [],
-      },
-    ];
-    const longCatalog = await commands.list();
-    if (!longCatalog.ok) throw new Error(longCatalog.error.message);
-    const longCommand = longCatalog.value.commands.find(
-      ({ invocation }) => invocation === "/long-description",
-    );
-    expect(longCommand?.description).toHaveLength(512);
-    expect(longCommand?.description?.endsWith("...")).toBe(true);
-    transport.commandsValue = [
-      {
-        name: "review",
-        description: "Review the workspace",
-        template: "Review $ARGUMENTS",
-        hints: ["focus"],
-      },
-    ];
-    const iterator = session.outputs[Symbol.asyncIterator]();
-
+    expect(catalog).toEqual({ ok: true, value: adapter.commandCatalog });
+    expect(adapter.commandCatalog.commands).toEqual([
+      expect.objectContaining({ id: "opencode.compact", invocation: "/compact" }),
+    ]);
     await expect(
       commands.execute({
         turnId: hostTurnIdSchema.parse("native-command"),
-        commandId: review.id,
+        commandId: "opencode.command.cmV2aWV3",
         arguments: { text: "security" },
       }),
-    ).resolves.toEqual({ ok: true, value: { turnId: "native-command" } });
-    expect(transport.commandCalls).toEqual([
-      expect.objectContaining({ command: "review", arguments: "security" }),
-    ]);
-    expect(await nextEvent(iterator)).toMatchObject({ type: "turn.started" });
-    const command = transport.commandCalls.at(-1);
-    if (!command?.messageID) throw new Error("OpenCode native command has no Message ID");
-    transport.messages
-      .get(command.sessionID)
-      ?.push(assistantMessage("assistant-command", command.messageID));
-    transport.status = { type: "idle" };
-    transport.emit({
-      id: "command-idle",
-      type: "session.idle",
-      properties: { sessionID: command.sessionID },
-    });
-    expect(await nextEvent(iterator)).toMatchObject({ type: "turn.completed" });
+    ).resolves.toMatchObject({ ok: false, error: { code: "unsupported" } });
+    expect(discover).not.toHaveBeenCalled();
+    expect(transport.commandCalls).toEqual([]);
+    const iterator = session.outputs[Symbol.asyncIterator]();
 
     await expect(
       commands.execute({

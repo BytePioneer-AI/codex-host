@@ -94,6 +94,7 @@ function clientWith(
     forkThread: vi.fn(),
     inspectHarness: vi.fn(),
     inspectThread: vi.fn(),
+    inspectHarnessCommands: vi.fn(),
     inspectThreadCommands: vi.fn(),
     executeThreadCommand: vi.fn(),
     inspectThreadUsage: vi.fn(),
@@ -104,6 +105,14 @@ function clientWith(
     checkUpdate: vi.fn(),
     startUpdate: vi.fn(),
     readUpdateStatus: vi.fn(),
+    listCodexAccounts: vi.fn(),
+    refreshCodexAccounts: vi.fn(),
+    createCodexAccount: vi.fn(),
+    deleteCodexAccount: vi.fn(),
+    activateCodexAccount: vi.fn(),
+    startCodexAccountLogin: vi.fn(),
+    cancelCodexAccountLogin: vi.fn(),
+    subscribeCodexAccountLogin: vi.fn(),
   };
 }
 

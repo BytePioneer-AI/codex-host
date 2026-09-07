@@ -1,5 +1,9 @@
+import { AccountRateLimits } from "./codex-runtime/account-rate-limits.js";
 import type { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
+import { rm } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import type { Readable, Writable } from "node:stream";
 
 import type {
@@ -12,11 +16,27 @@ import type {
   HostQuestionInteraction,
 } from "@codexhost/harness-adapter";
 import { parseHostUsage, type HostUsage } from "@codexhost/harness-adapter";
+import type { HarnessPluginContext } from "@codexhost/harness-adapter/plugin";
 import type { StoredThreadRecordV1 } from "@codexhost/mapping-store";
 import {
   accountCreditsSnapshotSchema,
+  codexAccountUsageParamsSchema,
+  codexAccountUsageResultSchema,
+  codexAccountResetCreditConsumeParamsSchema,
+  codexAccountResetCreditConsumeOutcomeSchema,
+  codexAccountResetCreditConsumeResultSchema,
+  codexAccountActivateParamsSchema,
+  codexAccountCreateParamsSchema,
+  codexAccountDeleteParamsSchema,
+  codexAccountLoginCancelParamsSchema,
+  codexAccountLoginStartParamsSchema,
+  harnessPluginListParamsSchema,
+  harnessPluginListResultSchema,
+  type HarnessPluginDescriptor,
   externalThreadForkParamsSchema,
   harnessCommandCatalogSchema,
+  harnessCommandsInspectParamsSchema,
+  type HarnessId,
   harnessIdSchema,
   threadCommandExecuteParamsSchema,
   threadCommandExecuteResultSchema,
@@ -25,6 +45,8 @@ import {
   harnessInspectParamsSchema,
   harnessConfigurationStateSchema,
   harnessInspectionSchema,
+  harnessWebUiOpenParamsSchema,
+  harnessWebUiOpenResultSchema,
   harnessModelSelectionStateSchema,
   harnessThinkingOptionIdSchema,
   hostItemIdSchema,
@@ -53,6 +75,7 @@ import {
   type HostTurnId,
 } from "@codexhost/shared-contracts";
 import { executeExternalThreadFork } from "./external-thread-fork.js";
+import { isSessionImportRequest, SessionImportRequests } from "./session-import-requests.js";
 import {
   ExternalHistoryRequestError,
   listExternalItems,
@@ -72,6 +95,7 @@ import {
   type ExternalThreadLocation,
   type ExternalThreadResolution,
 } from "./external-thread-runtime.js";
+import { ExternalSteerError, ExternalTurnSteering } from "./external-turn-steering.js";
 import {
   DELEGATION_CLI_PATH_ENV,
   DELEGATION_RUNTIME_ENDPOINT_ENV,
@@ -80,6 +104,7 @@ import {
   DelegationControlError,
 } from "./delegation-types.js";
 import { HarnessDelegationCoordinator } from "./harness-delegation-coordinator.js";
+import { loadHarnessPlugins } from "./harness-plugin-loader.js";
 import type {
   DelegationControlRegistration,
   DelegationStartInput,
@@ -96,7 +121,6 @@ import type {
   ThreadSendResult,
 } from "./delegation-types.js";
 import { projectDelegationThreadSnapshot } from "./delegation-snapshot.js";
-import { OfficialRequestBroker } from "./official-request-broker.js";
 import {
   canonicalizeOfficialCodexModelRef,
   decodeOfficialCodexModelRef,
@@ -106,15 +130,23 @@ import {
   spawnOfficialAppServerConnection,
   type OfficialAppServerConnection,
 } from "./official-app-server-connection.js";
+import {
+  AccountRepository,
+  type AccountRepositoryLike,
+  type CodexAccount,
+} from "./account/account-repository.js";
+import { ThreadAccountStore, type ThreadAccountStoreLike } from "./account/thread-account-store.js";
+import {
+  CodexRuntimePool,
+  UnknownCodexThreadAccountError,
+} from "./codex-runtime/codex-runtime-pool.js";
+import { aggregateOfficialAccountThreadListPage } from "./multi-account-thread-list.js";
 import type { HostUpdateCoordinator } from "./update-coordinator.js";
 
 const SUBAGENT_TERMINAL_REFRESH_DELAYS_MS = [0, 50, 100, 150] as const;
 const THREAD_USAGE_UPDATED_METHOD = "codexhost/thread/usage/updated";
 // Native Codex account quota is still pulled through its official API; keep
 // that reading briefly cached so concurrent Composer inspections coalesce.
-const OFFICIAL_RATE_LIMIT_TTL_MS = 15_000;
-const OFFICIAL_OUTPUT_DRAIN_TIMEOUT_MS = 250;
-const NEVER_SETTLES = new Promise<never>(() => undefined);
 
 function delay(milliseconds: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
@@ -166,6 +198,7 @@ import {
   type CodexQuestionRequestProjection,
   type ExternalHarnessId,
   type JsonObject,
+  type JsonRpcId,
   type JsonRpcRequest,
   type JsonValue,
   type ProjectableHostEvent,
@@ -179,13 +212,18 @@ export interface AppServerHostOptions {
   desktopInput?: Readable;
   desktopOutput?: Writable;
   diagnosticOutput?: Writable;
-  externalAdapters: ReadonlyMap<ExternalHarnessId, HarnessAdapter>;
+  externalAdapters?: ReadonlyMap<ExternalHarnessId, HarnessAdapter>;
+  pluginRoots?: readonly string[];
+  pluginContext?: HarnessPluginContext;
   mappingStore?: ExternalThreadStore;
   /** Defaults to true. A listener that shares one store across sessions owns closing it. */
   closeMappingStoreOnExit?: boolean;
   spawnOfficial?: typeof spawn;
-  createOfficialConnection?: () =>
-    OfficialAppServerConnection | Promise<OfficialAppServerConnection>;
+  createOfficialConnection?: (
+    account: CodexAccount,
+  ) => OfficialAppServerConnection | Promise<OfficialAppServerConnection>;
+  accountRepository?: AccountRepositoryLike;
+  threadAccountStore?: ThreadAccountStoreLike;
   onCreateRequestRoute?: (observation: CreateRequestRouteObservation) => void;
   onRequestRoute?: (observation: RequestRouteObservation) => void;
   updateCoordinator?: HostUpdateCoordinator;
@@ -215,6 +253,13 @@ interface PendingDesktopQuestion {
   interaction: HostQuestionInteraction;
   projection: CodexQuestionRequestProjection;
   timeout: NodeJS.Timeout | null;
+}
+
+interface CodexLoginSession {
+  accountId: string;
+  loginId: string;
+  verificationUrl?: string;
+  userCode?: string;
 }
 
 type ExternalThreadStatus = { type: "active"; activeFlags: [] } | { type: "idle" };
@@ -274,6 +319,13 @@ export function officialEnvironment(source: NodeJS.ProcessEnv): NodeJS.ProcessEn
   );
 }
 
+export function officialAccountEnvironment(
+  source: NodeJS.ProcessEnv,
+  account: Pick<CodexAccount, "codexHome">,
+): NodeJS.ProcessEnv {
+  return { ...officialEnvironment(source), CODEX_HOME: account.codexHome };
+}
+
 function rpcEnvelope(request: JsonRpcRequest, value: JsonObject): JsonObject {
   return {
     ...(request.jsonrpc === "2.0" ? { jsonrpc: "2.0" } : {}),
@@ -308,6 +360,8 @@ function approvalServerName(harnessId: ExternalHarnessId): string {
       return "CodeBuddy";
     case "antigravity":
       return "Antigravity CLI";
+    default:
+      return harnessId;
   }
 }
 
@@ -433,30 +487,48 @@ export class AppServerHost {
     Pick<AppServerHostOptions, "desktopInput" | "desktopOutput" | "diagnosticOutput">
   > &
     AppServerHostOptions;
-  #official: OfficialAppServerConnection | null = null;
+  #codexRuntimePool: CodexRuntimePool;
+  #accountRepository: AccountRepositoryLike;
+  #threadAccountStore: ThreadAccountStoreLike;
+  #accountDataDirectory: string;
   #externalAdapters: Map<ExternalHarnessId, HarnessAdapter>;
+  #pluginDescriptors: HarnessPluginDescriptor[] = [];
   #externalRuntime: ExternalThreadRuntime;
+  readonly #externalSteering = new ExternalTurnSteering();
   #repository: ExternalThreadRepository;
   #pendingDesktopApprovals = new Map<HostApprovalRequestId, PendingDesktopApproval>();
   #pendingDesktopQuestions = new Map<HostQuestionRequestId, PendingDesktopQuestion>();
   #nextApprovalRequestId = HOST_APPROVAL_REQUEST_ID_MAX;
   #nextQuestionRequestId = HOST_QUESTION_REQUEST_ID_MAX;
-  #officialRequestBroker: OfficialRequestBroker;
   #delegationCoordinator: HarnessDelegationCoordinator;
+  #sessionImportRequests: SessionImportRequests | undefined;
   #unregisterDelegationApi: (() => void) | undefined;
   #activeOfficialTurns = new Map<string, string>();
+  #pendingOfficialTurnStarts = new Map<unknown, string>();
+  #activeWorkDrainWaiters = new Set<() => void>();
   #pendingOfficialDelegationThreads = new Set<string>();
   #pendingOfficialTerminalStatuses = new Map<string, DelegationStartResult["status"]>();
   #officialUsageByThread = new Map<string, HostUsage>();
-  #officialRateLimitUsage: Partial<HostUsage> | null = null;
-  #officialRateLimitRefresh: Promise<void> | null = null;
-  #officialRateLimitFreshUntilMs = 0;
-  #officialAccountGeneration = 0;
+  readonly #officialRateLimits = new AccountRateLimits();
+  readonly #officialUsageAccountByThread = new Map<string, string>();
   #routeObservationTracker = new RequestRouteObservationTracker();
+  #pendingOfficialThreadBindings = new Map<
+    string,
+    { accountId: string; request: JsonRpcRequest }
+  >();
+  #officialServerRequestAccounts = new Map<
+    JsonRpcId,
+    { accountId: string; originalId: JsonRpcId }
+  >();
+  #nextOfficialServerRequestId = 0;
+  #pendingOfficialLoginStarts = new Map<string, string>();
+  #officialLoginSessions = new Map<string, CodexLoginSession>();
   #writer: OrderedWriter;
   #subagentThreadStatuses = new Map<string, "active" | "idle">();
   #runningSubagentsByParent = new Map<string, Set<string>>();
+  #pendingExternalCommandRequests = new Set<string>();
   #closeRequested = false;
+  #drainActiveWorkOnInputEnd = false;
   #desktopInputEnded = false;
 
   constructor(options: AppServerHostOptions) {
@@ -467,12 +539,43 @@ export class AppServerHost {
       ...options,
     };
     this.#writer = new OrderedWriter(this.#options.desktopOutput);
-    this.#officialRequestBroker = new OfficialRequestBroker({
-      send: async (request) => {
-        const official = this.#official;
-        if (!official) throw new Error("official app-server is unavailable");
-        await writeJsonFrame(official.stdin, request);
-      },
+    const environment = this.#options.environment ?? process.env;
+    const dataDirectory = path.resolve(
+      environment.CODEXHOST_DATA_DIR ?? path.join(os.homedir(), ".codexhost"),
+    );
+    const accountRepository =
+      options.accountRepository ??
+      new AccountRepository({
+        directory: path.join(dataDirectory, "codex-accounts"),
+        defaultAccount: {
+          accountId: "default",
+          codexHome: path.resolve(environment.CODEX_HOME ?? path.join(os.homedir(), ".codex")),
+          label: "Default Codex Account",
+        },
+      });
+    const threadAccountStore =
+      options.threadAccountStore ??
+      new ThreadAccountStore({ directory: path.join(dataDirectory, "codex-accounts") });
+    this.#accountRepository = accountRepository;
+    this.#threadAccountStore = threadAccountStore;
+    this.#accountDataDirectory = dataDirectory;
+    this.#codexRuntimePool = new CodexRuntimePool({
+      accounts: accountRepository,
+      threadAccounts: threadAccountStore,
+      diagnosticOutput: this.#options.diagnosticOutput,
+      createConnection: async (account) =>
+        options.createOfficialConnection
+          ? options.createOfficialConnection(account)
+          : spawnOfficialAppServerConnection({
+              stockCodexPath: this.#options.stockCodexPath,
+              arguments: this.#options.arguments,
+              environment: officialAccountEnvironment(environment, account),
+              ...(this.#options.spawnOfficial
+                ? { spawnOfficial: this.#options.spawnOfficial }
+                : {}),
+            }),
+      onOutput: (output) => this.#handleOfficialOutput(output),
+      diagnose: (error) => this.#diagnose(error),
     });
     this.#repository = new ExternalThreadRepository(
       options.mappingStore ??
@@ -526,94 +629,90 @@ export class AppServerHost {
   close(): void {
     if (this.#closeRequested) return;
     this.#closeRequested = true;
+    this.#externalSteering.close();
+    this.#signalActiveWorkChanged();
     this.#options.desktopInput.destroy();
-    this.#terminateOfficial();
+    void this.#codexRuntimePool.close();
+  }
+
+  disconnect(): void {
+    if (this.#closeRequested || this.#desktopInputEnded || this.#drainActiveWorkOnInputEnd) return;
+    this.#drainActiveWorkOnInputEnd = true;
+    this.#externalSteering.close();
+    const desktopInput = this.#options.desktopInput as Readable & { end?: () => void };
+    if (typeof desktopInput.end === "function") desktopInput.end();
+    else desktopInput.destroy();
   }
 
   async run(): Promise<number> {
     try {
-      await this.#repository.initialize();
+      if (this.#options.pluginRoots) {
+        const plugins = await loadHarnessPlugins({
+          roots: this.#options.pluginRoots,
+          context: this.#options.pluginContext ?? {
+            environment: this.#options.environment ?? process.env,
+            platform: process.platform,
+            managedRemoteHost: false,
+          },
+          reservedIds: new Set(this.#externalAdapters.keys()),
+          diagnose: (diagnostic) => this.#diagnose(`Harness plugin: ${JSON.stringify(diagnostic)}`),
+        });
+        this.#pluginDescriptors = plugins.list();
+        for (const [id, adapter] of plugins.adapters) this.#externalAdapters.set(id, adapter);
+      }
+      await Promise.all([this.#repository.initialize(), this.#codexRuntimePool.initialize()]);
     } catch (error) {
-      this.#diagnose(`Mapping Store initialization failed: ${errorMessage(error)}`);
-      return 1;
+      this.#diagnose(`Host initialization failed: ${errorMessage(error)}`);
+      await Promise.allSettled(
+        [...new Set(this.#externalAdapters.values())].map((adapter) =>
+          Promise.resolve().then(() => adapter.close()),
+        ),
+      );
+      this.#unregisterDelegationApi?.();
+      this.#unregisterDelegationApi = undefined;
+      if (this.#options.closeMappingStoreOnExit !== false) {
+        await this.#repository.close().catch((closeError) => this.#diagnose(closeError));
+      }
+      await this.#codexRuntimePool.close();
+      return this.#closeRequested ? 0 : 1;
     }
-    let official: OfficialAppServerConnection;
     try {
-      official = this.#options.createOfficialConnection
-        ? await this.#options.createOfficialConnection()
-        : spawnOfficialAppServerConnection({
-            stockCodexPath: this.#options.stockCodexPath,
-            arguments: this.#options.arguments,
-            environment: officialEnvironment(this.#options.environment ?? process.env),
-            ...(this.#options.spawnOfficial ? { spawnOfficial: this.#options.spawnOfficial } : {}),
-          });
+      await this.#codexRuntimePool.active();
     } catch (error) {
       this.#diagnose(`Official app-server connection failed: ${errorMessage(error)}`);
       await Promise.allSettled(
-        [...new Set(this.#externalAdapters.values())].map((adapter) => adapter.close()),
+        [...new Set(this.#externalAdapters.values())].map((adapter) =>
+          Promise.resolve().then(() => adapter.close()),
+        ),
       );
       if (this.#options.closeMappingStoreOnExit !== false) {
         await this.#repository.close().catch((closeError) => this.#diagnose(closeError));
       }
-      return 1;
+      this.#unregisterDelegationApi?.();
+      this.#unregisterDelegationApi = undefined;
+      return this.#closeRequested ? 0 : 1;
     }
-    official.stderr.pipe(this.#options.diagnosticOutput, { end: false });
-    this.#official = official;
-    const exited = official.closed;
-    if (this.#closeRequested) this.#terminateOfficial();
-    const forwardDesktop = this.#forwardDesktop();
-    const forwardOfficial = this.#forwardOfficial();
-    const officialOutput = forwardOfficial.then(() => {
-      if (!this.#closeRequested && !this.#desktopInputEnded) {
-        throw new Error("official app-server output closed before Desktop input ended");
-      }
-    });
-    const officialExit = exited.then((result) => {
-      if (!this.#closeRequested && !this.#desktopInputEnded) {
-        const status = result.error
-          ? result.error.message
-          : result.signal
-            ? `signal ${result.signal}`
-            : `code ${String(result.code ?? "unknown")}`;
-        throw new Error(`official app-server exited before Desktop input ended (${status})`);
-      }
-      return result;
-    });
+    if (this.#closeRequested) await this.#codexRuntimePool.close();
     try {
-      const [, , result] = await Promise.all([forwardDesktop, officialOutput, officialExit]);
-      if (result.error) throw result.error;
-      if (result.signal) {
-        if (this.#closeRequested) return 0;
-        throw new Error(`official app-server exited by signal ${result.signal}`);
-      }
-      return result.code ?? 1;
+      const runtimeFailure = this.#codexRuntimePool.failure().then((error) => {
+        throw error;
+      });
+      await Promise.race([this.#forwardDesktop(), runtimeFailure]);
+      return 0;
     } catch (error) {
       if (!this.#closeRequested) this.#diagnose(error);
       this.#options.desktopInput.destroy();
-      this.#terminateOfficial();
-      let forwardingSettled = false;
-      const forwarding = Promise.allSettled([forwardDesktop, forwardOfficial]).then(() => {
-        forwardingSettled = true;
-      });
-      let drainTimer: NodeJS.Timeout | null = null;
-      const drainTimeout = new Promise<void>((resolve) => {
-        drainTimer = setTimeout(resolve, OFFICIAL_OUTPUT_DRAIN_TIMEOUT_MS);
-      });
-      await Promise.race([forwarding, drainTimeout]);
-      if (drainTimer) clearTimeout(drainTimer);
-      if (!forwardingSettled) {
-        official.stdin.destroy();
-        official.stdout.destroy();
-        this.#options.desktopOutput.destroy();
-      }
-      void exited.catch(() => undefined);
+      await this.#codexRuntimePool.close();
       return this.#closeRequested ? 0 : 1;
     } finally {
+      this.#externalSteering.close();
       const threads = this.#externalRuntime.values();
       await Promise.allSettled(threads.map(({ session }) => session.close()));
       await Promise.allSettled(threads.map(({ outputTask }) => outputTask));
       await Promise.allSettled(
-        [...new Set(this.#externalAdapters.values())].map((adapter) => adapter.close()),
+        [...new Set(this.#externalAdapters.values())].map((adapter) =>
+          Promise.resolve().then(() => adapter.close()),
+        ),
       );
       for (const pending of [...this.#pendingDesktopApprovals.values()]) {
         await this.#resolveDesktopApproval(pending.interaction.interactionId).catch(
@@ -625,8 +724,9 @@ export class AppServerHost {
           () => undefined,
         );
       }
-      this.#officialRequestBroker.failAll(new Error("codexhost Host Runtime closed"));
+      await this.#codexRuntimePool.close();
       this.#externalRuntime.clear();
+      this.#pendingOfficialTurnStarts.clear();
       this.#routeObservationTracker.clear();
       this.#unregisterDelegationApi?.();
       this.#unregisterDelegationApi = undefined;
@@ -636,25 +736,73 @@ export class AppServerHost {
     }
   }
 
-  #terminateOfficial(): void {
-    const official = this.#official;
-    if (!official) return;
-    official.close();
+  #hasActiveWork(): boolean {
+    return (
+      this.#externalSteering.hasPending() ||
+      this.#pendingOfficialTurnStarts.size > 0 ||
+      this.#activeOfficialTurns.size > 0 ||
+      this.#runningSubagentsByParent.size > 0 ||
+      this.#externalRuntime
+        .values()
+        .some((thread) => thread.running || thread.activeTurnId !== null)
+    );
+  }
+
+  async #waitForActiveWorkToDrain(): Promise<void> {
+    while (!this.#closeRequested && this.#hasActiveWork()) {
+      await new Promise<void>((resolve) => this.#activeWorkDrainWaiters.add(resolve));
+    }
+  }
+
+  #signalActiveWorkChanged(): void {
+    if (!this.#closeRequested && this.#hasActiveWork()) return;
+    const waiters = [...this.#activeWorkDrainWaiters];
+    this.#activeWorkDrainWaiters.clear();
+    for (const resolve of waiters) resolve();
+  }
+
+  #observeOfficialTurnStartResponse(value: JsonValue): void {
+    if (!isRecord(value) || !("id" in value)) return;
+    const threadId = this.#pendingOfficialTurnStarts.get(value.id);
+    if (!threadId) return;
+    this.#pendingOfficialTurnStarts.delete(value.id);
+    const result = isRecord(value.result) ? value.result : null;
+    const turn = result && isRecord(result.turn) ? result.turn : null;
+    if (turn && typeof turn.id === "string") {
+      this.#activeOfficialTurns.set(threadId, turn.id);
+    }
+    this.#signalActiveWorkChanged();
+  }
+
+  #forgetPendingOfficialTurnStarts(threadId: string): void {
+    for (const [requestId, pendingThreadId] of this.#pendingOfficialTurnStarts) {
+      if (pendingThreadId === threadId) this.#pendingOfficialTurnStarts.delete(requestId);
+    }
   }
 
   async #forwardDesktop(): Promise<void> {
-    const official = this.#official;
-    if (!official) throw new Error("official app-server is unavailable");
     for await (const frame of readLfFrames(this.#options.desktopInput)) {
       const parsed = parseJsonFrame(frame);
+      if (isRecord(parsed) && parsed.method === "initialized" && !("id" in parsed)) {
+        continue;
+      }
       if (await this.#handleDesktopApprovalResponse(parsed)) continue;
       if (await this.#handleDesktopQuestionResponse(parsed)) continue;
       const requestResult = jsonRpcRequestSchema.safeParse(parsed);
       if (!requestResult.success) {
-        await writeFrame(official.stdin, frame);
+        await this.#forwardOfficialNonRequest(parsed, frame);
         continue;
       }
       const request = requestResult.data;
+      if (request.method === "initialize") {
+        try {
+          const response = await this.#codexRuntimePool.initializeProtocol(requestObject(request));
+          await this.#writer.json({ ...response, id: request.id });
+        } catch (error) {
+          await this.#writer.json(rpcError(request, -32087, errorMessage(error)));
+        }
+        continue;
+      }
       if (
         request.method === "codexhost/update/check" ||
         request.method === "codexhost/update/start" ||
@@ -663,8 +811,43 @@ export class AppServerHost {
         this.#dispatchDesktopRequest(() => this.#handleUpdateRequest(request));
         continue;
       }
+      if (
+        request.method === "codexhost/account/usage/inspect" ||
+        request.method === "codexhost/account/list" ||
+        request.method === "codexhost/account/refresh" ||
+        request.method === "codexhost/account/create" ||
+        request.method === "codexhost/account/delete" ||
+        request.method === "codexhost/account/activate" ||
+        request.method === "codexhost/account/login/start" ||
+        request.method === "codexhost/account/login/cancel" ||
+        request.method === "codexhost/account/rate-limit-reset/consume"
+      ) {
+        this.#dispatchDesktopRequest(() => this.#handleCodexAccountRequest(request));
+        continue;
+      }
       if (request.method === "codexhost/harness/inspect") {
         this.#dispatchDesktopRequest(() => this.#inspectHarness(request));
+        continue;
+      }
+      if (request.method === "codexhost/harness/web-ui/open") {
+        this.#dispatchDesktopRequest(() => this.#openHarnessWebUi(request));
+        continue;
+      }
+      if (request.method === "codexhost/harness/plugins/list") {
+        this.#dispatchDesktopRequest(async () => {
+          if (!harnessPluginListParamsSchema.safeParse(request.params).success) {
+            await this.#writer.json(
+              rpcError(request, -32602, "Invalid Harness plugin list params"),
+            );
+            return;
+          }
+          const result = harnessPluginListResultSchema.parse({ plugins: this.#pluginDescriptors });
+          await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(result) }));
+        });
+        continue;
+      }
+      if (isSessionImportRequest(request.method)) {
+        this.#dispatchDesktopRequest(() => this.#handleSessionImport(request));
         continue;
       }
       if (request.method === "codexhost/thread/fork") {
@@ -695,12 +878,23 @@ export class AppServerHost {
         await this.#selectThreadPermissionMode(request);
         continue;
       }
+      if (request.method === "codexhost/harness/commands/inspect") {
+        const params = harnessCommandsInspectParamsSchema.safeParse(request.params);
+        if (!params.success) {
+          await this.#writer.json(
+            rpcError(request, -32602, "Invalid Harness command inspection params"),
+          );
+        } else {
+          await this.#writeHarnessCommandCatalog(request, params.data.harnessId);
+        }
+        continue;
+      }
       if (request.method === "codexhost/thread/commands/inspect") {
         await this.#inspectThreadCommands(request);
         continue;
       }
       if (request.method === "codexhost/thread/command/execute") {
-        await this.#executeThreadCommand(request);
+        this.#dispatchDesktopRequest(() => this.#executeThreadCommand(request));
         continue;
       }
       if (request.method === "thread/list") {
@@ -714,7 +908,7 @@ export class AppServerHost {
           continue;
         }
         if (!listRequest.supportsExternal) {
-          await writeFrame(official.stdin, frame);
+          await this.#forwardOfficialRequest(request, frame);
           continue;
         }
         this.#dispatchDesktopRequest(() => this.#listThreads(request, listRequest));
@@ -733,7 +927,7 @@ export class AppServerHost {
         const location = await this.#locateExternalThread(threadId);
         if (await this.#writeResolutionError(request, location)) continue;
         if (location.kind === "official") {
-          await writeFrame(official.stdin, frame);
+          await this.#forwardOfficialRequest(request, frame);
           continue;
         }
         if (location.kind === "external") {
@@ -758,7 +952,7 @@ export class AppServerHost {
         const location = await this.#locateExternalThread(threadId);
         if (await this.#writeResolutionError(request, location)) continue;
         if (location.kind === "official") {
-          await writeFrame(official.stdin, frame);
+          await this.#forwardOfficialRequest(request, frame);
           continue;
         }
         await this.#writer.json(
@@ -899,7 +1093,22 @@ export class AppServerHost {
         }
         if (await this.#writeResolutionError(request, resolution)) continue;
         if (resolution.kind === "external") {
-          await this.#startExternalTurn(request, resolution.thread);
+          this.#dispatchDesktopRequest(() => this.#startExternalTurn(request, resolution.thread));
+          continue;
+        }
+        if (typeof threadId === "string") {
+          this.#pendingOfficialTurnStarts.set(request.id, threadId);
+        }
+      }
+      if (request.method === "turn/steer") {
+        const params = requestObject(request);
+        const resolution =
+          typeof params.threadId === "string"
+            ? await this.#resolveExternalThread(params.threadId)
+            : ({ kind: "official" } as const);
+        if (await this.#writeResolutionError(request, resolution)) continue;
+        if (resolution.kind === "external") {
+          this.#dispatchDesktopRequest(() => this.#steerExternalTurn(request, resolution.thread));
           continue;
         }
       }
@@ -926,7 +1135,7 @@ export class AppServerHost {
           continue;
         }
         if (location.kind === "official") {
-          await writeFrame(official.stdin, frame);
+          await this.#forwardOfficialRequest(request, frame);
           continue;
         }
         if (params.includeTurns !== true) {
@@ -972,7 +1181,7 @@ export class AppServerHost {
           const location = await this.#locateExternalThread(params.threadId);
           if (await this.#writeResolutionError(request, location)) continue;
           if (location.kind === "official") {
-            await writeFrame(official.stdin, frame);
+            await this.#forwardOfficialRequest(request, frame);
             continue;
           }
           if (location.kind === "external") {
@@ -1016,58 +1225,490 @@ export class AppServerHost {
           continue;
         }
       }
-      await writeFrame(official.stdin, frame);
+      await this.#forwardOfficialRequest(request, frame);
     }
     this.#desktopInputEnded = true;
-    official.stdin.end();
+    this.#externalSteering.close();
+    if (this.#drainActiveWorkOnInputEnd) await this.#waitForActiveWorkToDrain();
+    await this.#codexRuntimePool.close();
   }
 
-  async #forwardOfficial(): Promise<void> {
-    const official = this.#official;
-    if (!official) throw new Error("official app-server is unavailable");
+  async #forwardOfficialNonRequest(
+    value: JsonValue,
+    frame: Buffer<ArrayBufferLike>,
+  ): Promise<void> {
+    const response = isRecord(value) ? value : null;
+    const request =
+      response && (typeof response.id === "string" || typeof response.id === "number")
+        ? this.#officialServerRequestAccounts.get(response.id)
+        : null;
+    if (request && response) {
+      this.#officialServerRequestAccounts.delete(response.id as JsonRpcId);
+      await (
+        await this.#codexRuntimePool.get(request.accountId)
+      ).send({
+        ...response,
+        id: request.originalId,
+      });
+      return;
+    }
+    await (await this.#codexRuntimePool.active()).sendFrame(frame);
+  }
+
+  async #forwardOfficialRequest(
+    request: JsonRpcRequest,
+    frame: Buffer<ArrayBufferLike>,
+  ): Promise<void> {
     try {
-      const frames = readLfFrames(official.stdout)[Symbol.asyncIterator]();
-      let current = await frames.next();
-      while (!current.done) {
-        const frame = current.value;
-        const following = frames.next();
-        const parsed = parseJsonFrame(frame);
-        if (isRecord(parsed) && parsed.method === "account/updated")
-          this.#resetOfficialUsageState();
-        if (this.#officialRequestBroker.handle(parsed)) {
-          current = await following;
-          continue;
+      const params = isRecord(request.params) ? request.params : null;
+      const requestedAccountId =
+        request.method === "thread/start" && typeof params?.__codexhostAccountId === "string"
+          ? params.__codexhostAccountId
+          : null;
+      const threadId = params && typeof params.threadId === "string" ? params.threadId : null;
+      const loginId = params && typeof params.loginId === "string" ? params.loginId : null;
+      const loginAccountId = loginId ? await this.#resolveLoginAccountId(loginId) : undefined;
+      const runtime = threadId
+        ? await this.#codexRuntimePool.forThread(threadId)
+        : loginAccountId
+          ? await this.#codexRuntimePool.get(loginAccountId)
+          : requestedAccountId
+            ? await this.#codexRuntimePool.get(requestedAccountId)
+            : await this.#codexRuntimePool.active();
+      if (request.method === "thread/start" || request.method === "thread/fork") {
+        this.#pendingOfficialThreadBindings.set(
+          this.#officialRequestKey(runtime.account.accountId, request.id),
+          {
+            accountId: runtime.account.accountId,
+            request,
+          },
+        );
+      }
+      if (request.method === "account/login/start") {
+        this.#pendingOfficialLoginStarts.set(
+          this.#officialRequestKey(runtime.account.accountId, request.id),
+          runtime.account.accountId,
+        );
+      }
+      try {
+        if (requestedAccountId && params) {
+          const officialParams = { ...params };
+          delete officialParams.__codexhostAccountId;
+          await runtime.send({ id: request.id, method: request.method, params: officialParams });
+        } else {
+          await runtime.sendFrame(frame);
         }
-        const tokenUsage = observeCodexTokenUsage(parsed);
-        if (tokenUsage) {
-          const previous = this.#officialUsageByThread.get(tokenUsage.threadId);
+      } catch (error) {
+        const requestKey = this.#officialRequestKey(runtime.account.accountId, request.id);
+        this.#pendingOfficialThreadBindings.delete(requestKey);
+        this.#pendingOfficialLoginStarts.delete(requestKey);
+        throw error;
+      }
+    } catch (error) {
+      if (request.method === "turn/start") {
+        this.#pendingOfficialTurnStarts.delete(request.id);
+        this.#signalActiveWorkChanged();
+      }
+      if (error instanceof UnknownCodexThreadAccountError) {
+        await this.#writer.json(rpcError(request, -32084, error.message));
+        return;
+      }
+      throw error;
+    }
+  }
+
+  async #handleOfficialOutput(input: {
+    accountId: string;
+    frame: Buffer<ArrayBufferLike>;
+    value: JsonValue;
+  }): Promise<void> {
+    const parsed = input.value;
+    this.#observeOfficialTurnStartResponse(parsed);
+    let forwarded: JsonValue = parsed;
+    if (isRecord(parsed) && typeof parsed.method === "string" && "id" in parsed) {
+      const originalId = parsed.id;
+      if (typeof originalId === "string" || typeof originalId === "number") {
+        const forwardedId = `codexhost:official:${++this.#nextOfficialServerRequestId}`;
+        this.#officialServerRequestAccounts.set(forwardedId, {
+          accountId: input.accountId,
+          originalId,
+        });
+        forwarded = { ...parsed, id: forwardedId };
+      }
+    }
+    if (isRecord(parsed) && !("method" in parsed) && "id" in parsed) {
+      const requestKey = this.#officialRequestKey(input.accountId, parsed.id);
+      const loginAccountId = this.#pendingOfficialLoginStarts.get(requestKey);
+      if (loginAccountId) {
+        this.#pendingOfficialLoginStarts.delete(requestKey);
+        const result = isRecord(parsed.result) ? parsed.result : null;
+        const loginId = result && typeof result.loginId === "string" ? result.loginId : null;
+        if (result && loginId) {
+          this.#officialLoginSessions.set(this.#loginSessionKey(loginAccountId, loginId), {
+            accountId: loginAccountId,
+            loginId,
+            ...(typeof result.verificationUrl === "string"
+              ? { verificationUrl: result.verificationUrl }
+              : {}),
+            ...(typeof result.userCode === "string" ? { userCode: result.userCode } : {}),
+          });
+        }
+      }
+      const pending = this.#pendingOfficialThreadBindings.get(requestKey);
+      if (pending) {
+        this.#pendingOfficialThreadBindings.delete(requestKey);
+        const result = isRecord(parsed.result) ? parsed.result : null;
+        const thread = result && isRecord(result.thread) ? result.thread : null;
+        const threadId = thread && typeof thread.id === "string" ? thread.id : null;
+        if (threadId) {
           try {
-            this.#officialUsageByThread.set(
-              tokenUsage.threadId,
-              parseHostUsage({ ...(previous ?? {}), ...tokenUsage.usage }),
+            await this.#codexRuntimePool.bindThread(threadId, pending.accountId);
+          } catch (error) {
+            await this.#writer.json(
+              rpcError(pending.request, -32085, "Official Thread account binding failed"),
             );
-          } catch {
-            // Ignore an invalid native observation while preserving the official frame.
+            this.#diagnose(error);
+            return;
           }
         }
-        const rateLimits = observeCodexRateLimits(parsed);
-        if (rateLimits) this.#mergeOfficialRateLimits(rateLimits, "push");
-        try {
-          await this.#observeOfficialTurnLifecycle(parsed);
-        } catch (error) {
-          this.#diagnose(error);
-        }
-        this.#routeObservationTracker.bindOfficialResponse(parsed);
-        const prematureOutputEnd = following.then((result) => {
-          if (!result.done || this.#closeRequested || this.#desktopInputEnded) return NEVER_SETTLES;
-          throw new Error("official app-server output closed before Desktop input ended");
-        });
-        await Promise.race([this.#writer.frame(frame), prematureOutputEnd]);
-        current = await following;
       }
-    } finally {
-      this.#officialRequestBroker.failAll(new Error("official app-server output closed"));
     }
+    if (
+      isRecord(parsed) &&
+      parsed.method === "account/login/completed" &&
+      isRecord(parsed.params)
+    ) {
+      const notificationLoginId =
+        typeof parsed.params.loginId === "string" ? parsed.params.loginId : null;
+      const accountSessions = notificationLoginId
+        ? []
+        : [...this.#officialLoginSessions.values()].filter(
+            (candidate) => candidate.accountId === input.accountId,
+          );
+      const session = notificationLoginId
+        ? this.#officialLoginSessions.get(
+            this.#loginSessionKey(input.accountId, notificationLoginId),
+          )
+        : accountSessions.length === 1
+          ? accountSessions[0]
+          : undefined;
+      if (session) {
+        this.#officialLoginSessions.delete(
+          this.#loginSessionKey(session.accountId, session.loginId),
+        );
+        await this.#writer.json({
+          method: "codexhost/account/login/completed",
+          params: {
+            accountId: session.accountId,
+            loginId: session.loginId,
+            success: parsed.params.success === true,
+            error: typeof parsed.params.error === "string" ? parsed.params.error : null,
+          },
+        });
+      }
+      // Login control-plane state is account-scoped. Desktop consumes the
+      // codexhost notification above instead of a runtime-global native event.
+      return;
+    }
+    const accountScopedNotification =
+      isRecord(parsed) &&
+      typeof parsed.method === "string" &&
+      (parsed.method === "account/updated" || parsed.method.startsWith("account/rateLimits/"));
+    if (accountScopedNotification) {
+      if (parsed.method === "account/updated") this.#resetOfficialUsageState(input.accountId);
+    }
+    const tokenUsage = observeCodexTokenUsage(parsed);
+    if (tokenUsage) {
+      this.#officialUsageAccountByThread.set(tokenUsage.threadId, input.accountId);
+      const previous = this.#officialUsageByThread.get(tokenUsage.threadId);
+      try {
+        this.#officialUsageByThread.set(
+          tokenUsage.threadId,
+          parseHostUsage({ ...(previous ?? {}), ...tokenUsage.usage }),
+        );
+      } catch {
+        // Ignore an invalid native observation while preserving the official frame.
+      }
+    }
+    const rateLimits = observeCodexRateLimits(parsed);
+    if (rateLimits) this.#officialRateLimits.observe(input.accountId, rateLimits);
+    if (
+      accountScopedNotification &&
+      input.accountId !== (await this.#accountRepository.getActiveAccountId())
+    )
+      return;
+    try {
+      await this.#observeOfficialTurnLifecycle(parsed);
+    } catch (error) {
+      this.#diagnose(error);
+    }
+    this.#routeObservationTracker.bindOfficialResponse(parsed);
+    if (forwarded === parsed) await this.#writer.frame(input.frame);
+    else await this.#writer.json(forwarded);
+  }
+
+  async #requestOfficial(method: string, params: JsonObject): Promise<JsonObject> {
+    return typeof params.threadId === "string"
+      ? this.#codexRuntimePool.requestForThread(params.threadId, method, params)
+      : this.#codexRuntimePool.requestActive(method, params);
+  }
+
+  async #handleCodexAccountRequest(request: JsonRpcRequest): Promise<void> {
+    try {
+      if (request.method === "codexhost/account/usage/inspect") {
+        const { accountId } = codexAccountUsageParamsSchema.parse(requestObject(request));
+        if (!(await this.#accountRepository.get(accountId)))
+          throw new Error("Unknown Codex Account");
+        await this.#refreshOfficialRateLimits(accountId);
+        const usage = this.#officialRateLimits.get(accountId);
+        const accountCredits = this.#officialAccountCredits(accountId);
+        const result = codexAccountUsageResultSchema.parse({
+          accountId,
+          usage,
+          ...(accountCredits ? { accountCredits } : {}),
+        });
+        await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(result) }));
+        return;
+      }
+
+      if (request.method === "codexhost/account/rate-limit-reset/consume") {
+        const params = codexAccountResetCreditConsumeParamsSchema.parse(requestObject(request));
+        if (!(await this.#accountRepository.get(params.accountId)))
+          throw new Error("Unknown Codex Account");
+        const runtime = await this.#codexRuntimePool.get(params.accountId);
+        const response = await runtime.request("account/rateLimitResetCredit/consume", {
+          idempotencyKey: params.idempotencyKey ?? randomUUID(),
+        });
+        if (isRecord(response.error)) {
+          await this.#writer.json(rpcEnvelope(request, { error: response.error }));
+          return;
+        }
+        const result = isRecord(response.result) ? response.result : null;
+        const outcome = codexAccountResetCreditConsumeOutcomeSchema.safeParse(result?.outcome);
+        if (!outcome.success) throw new Error("Official reset-credit consume response is invalid");
+        this.#officialRateLimits.reset(params.accountId);
+        if (outcome.data === "reset") await this.#refreshOfficialRateLimits(params.accountId);
+        const accountCredits = this.#officialAccountCredits(params.accountId);
+        const consumeResult = codexAccountResetCreditConsumeResultSchema.parse({
+          accountId: params.accountId,
+          outcome: outcome.data,
+          ...(accountCredits ? { accountCredits } : {}),
+        });
+        await this.#writer.json(
+          rpcEnvelope(request, { result: jsonValueSchema.parse(consumeResult) }),
+        );
+        return;
+      }
+
+      if (
+        request.method === "codexhost/account/list" ||
+        request.method === "codexhost/account/refresh"
+      ) {
+        if (request.method === "codexhost/account/refresh") {
+          await this.#refreshCodexAccountMetadata();
+        }
+        const activeAccountId = await this.#accountRepository.getActiveAccountId();
+        const accounts = await this.#accountRepository.list();
+        await this.#writer.json(
+          rpcEnvelope(request, {
+            result: {
+              accounts: accounts.map((account) => ({
+                accountId: account.accountId,
+                label: account.label,
+                ...(account.email ? { email: account.email } : {}),
+                codexHome: account.codexHome,
+                active: account.accountId === activeAccountId,
+                isDefault: this.#accountRepository.isDefaultAccount(account.accountId),
+              })),
+            },
+          }),
+        );
+        return;
+      }
+      if (request.method === "codexhost/account/create") {
+        const params = codexAccountCreateParamsSchema.parse(requestObject(request));
+        const accountId = randomUUID();
+        const account = await this.#accountRepository.upsert({
+          accountId,
+          codexHome: path.join(this.#accountDataDirectory, "codex-homes", accountId),
+          label: params.label ?? `Codex Account ${accountId.slice(0, 8)}`,
+        });
+        const activeAccountId = await this.#accountRepository.getActiveAccountId();
+        await this.#writer.json(
+          rpcEnvelope(request, {
+            result: {
+              account: {
+                accountId: account.accountId,
+                label: account.label,
+                ...(account.email ? { email: account.email } : {}),
+                codexHome: account.codexHome,
+                active: account.accountId === activeAccountId,
+                isDefault: this.#accountRepository.isDefaultAccount(account.accountId),
+              },
+            },
+          }),
+        );
+        return;
+      }
+      if (request.method === "codexhost/account/activate") {
+        const params = codexAccountActivateParamsSchema.parse(requestObject(request));
+        await this.#accountRepository.setActiveAccountId(params.accountId);
+
+        const account = await this.#accountRepository.get(params.accountId);
+        if (!account) throw new Error(`Unknown Codex Account '${params.accountId}'`);
+        await this.#writer.json(
+          rpcEnvelope(request, {
+            result: {
+              account: {
+                accountId: account.accountId,
+                label: account.label,
+                ...(account.email ? { email: account.email } : {}),
+                codexHome: account.codexHome,
+                active: true,
+                isDefault: this.#accountRepository.isDefaultAccount(account.accountId),
+              },
+            },
+          }),
+        );
+        return;
+      }
+      if (request.method === "codexhost/account/delete") {
+        const params = codexAccountDeleteParamsSchema.parse(requestObject(request));
+        if (this.#accountRepository.isDefaultAccount(params.accountId)) {
+          throw new Error("The default Codex Account cannot be deleted");
+        }
+        const account = await this.#accountRepository.get(params.accountId);
+        if (!account) throw new Error(`Unknown Codex Account '${params.accountId}'`);
+        await this.#codexRuntimePool.remove(params.accountId);
+        await this.#accountRepository.remove(params.accountId);
+        await this.#threadAccountStore.removeByAccount(params.accountId);
+        for (const [key, session] of this.#officialLoginSessions) {
+          if (session.accountId === params.accountId) this.#officialLoginSessions.delete(key);
+        }
+        const managedCodexHome = path.join(
+          this.#accountDataDirectory,
+          "codex-homes",
+          params.accountId,
+        );
+        if (path.resolve(account.codexHome) === path.resolve(managedCodexHome)) {
+          try {
+            await rm(managedCodexHome, { recursive: true, force: true });
+          } catch (error) {
+            this.#diagnose(error);
+          }
+        }
+        this.#resetOfficialUsageState(params.accountId);
+        await this.#writer.json(
+          rpcEnvelope(request, { result: { deletedAccountId: params.accountId } }),
+        );
+        return;
+      }
+      if (request.method === "codexhost/account/login/start") {
+        const params = codexAccountLoginStartParamsSchema.parse(requestObject(request));
+        const runtime = await this.#codexRuntimePool.get(params.accountId);
+        const response = await runtime.request("account/login/start", {
+          type: "chatgptDeviceCode",
+        });
+        if (isRecord(response.error)) {
+          await this.#writer.json(rpcEnvelope(request, { error: response.error }));
+          return;
+        }
+        const result = isRecord(response.result) ? response.result : null;
+        if (
+          !result ||
+          result.type !== "chatgptDeviceCode" ||
+          typeof result.loginId !== "string" ||
+          typeof result.verificationUrl !== "string" ||
+          typeof result.userCode !== "string"
+        ) {
+          throw new Error("Official account/login/start response is invalid");
+        }
+        this.#officialLoginSessions.set(this.#loginSessionKey(params.accountId, result.loginId), {
+          accountId: params.accountId,
+          loginId: result.loginId,
+          verificationUrl: result.verificationUrl,
+          userCode: result.userCode,
+        });
+        await this.#writer.json(
+          rpcEnvelope(request, {
+            result: {
+              accountId: params.accountId,
+              loginId: result.loginId,
+              verificationUrl: result.verificationUrl,
+              userCode: result.userCode,
+            },
+          }),
+        );
+        return;
+      }
+      const params = codexAccountLoginCancelParamsSchema.parse(requestObject(request));
+      const session = params.accountId
+        ? this.#officialLoginSessions.get(this.#loginSessionKey(params.accountId, params.loginId))
+        : this.#uniqueLoginSession(params.loginId);
+      if (!session) {
+        await this.#writer.json(rpcEnvelope(request, { result: { cancelled: false } }));
+        return;
+      }
+      const response = await (
+        await this.#codexRuntimePool.get(session.accountId)
+      ).request("account/login/cancel", { loginId: params.loginId });
+      if (isRecord(response.error)) {
+        await this.#writer.json(rpcEnvelope(request, { error: response.error }));
+        return;
+      }
+      this.#officialLoginSessions.delete(this.#loginSessionKey(session.accountId, session.loginId));
+      await this.#writer.json(rpcEnvelope(request, { result: { cancelled: true } }));
+    } catch (error) {
+      await this.#writer.json(rpcError(request, -32086, errorMessage(error)));
+    }
+  }
+
+  #officialRequestKey(accountId: string, requestId: unknown): string {
+    return `${accountId}\u0000${typeof requestId}\u0000${String(requestId)}`;
+  }
+
+  async #refreshCodexAccountMetadata(): Promise<void> {
+    for (const account of await this.#accountRepository.list()) {
+      try {
+        const response = await (
+          await this.#codexRuntimePool.get(account.accountId)
+        ).request("account/read", { refreshToken: false });
+        const result = isRecord(response.result) ? response.result : null;
+        const officialAccount = result && isRecord(result.account) ? result.account : null;
+        const email =
+          officialAccount && typeof officialAccount.email === "string"
+            ? officialAccount.email.trim()
+            : "";
+        if (!email || email === account.email) continue;
+        await this.#accountRepository.upsert({
+          accountId: account.accountId,
+          codexHome: account.codexHome,
+          email,
+          label: account.label,
+        });
+      } catch (error) {
+        this.#diagnose(error);
+      }
+    }
+  }
+
+  #loginSessionKey(accountId: string, loginId: string): string {
+    return `${accountId}\u0000${loginId}`;
+  }
+
+  #uniqueLoginSession(loginId: string): CodexLoginSession | undefined {
+    const matches = [...this.#officialLoginSessions.values()].filter(
+      (session) => session.loginId === loginId,
+    );
+    return matches.length === 1 ? matches[0] : undefined;
+  }
+
+  async #resolveLoginAccountId(loginId: string): Promise<string | undefined> {
+    const activeAccountId = await this.#accountRepository.getActiveAccountId();
+    if (this.#officialLoginSessions.has(this.#loginSessionKey(activeAccountId, loginId))) {
+      return activeAccountId;
+    }
+    return this.#uniqueLoginSession(loginId)?.accountId;
   }
 
   async #observeOfficialTurnLifecycle(value: JsonValue): Promise<void> {
@@ -1075,11 +1716,15 @@ export class AppServerHost {
     const params = value.params;
     if (value.method === "turn/started" && typeof params.threadId === "string") {
       const turn = isRecord(params.turn) ? params.turn : null;
-      if (turn && typeof turn.id === "string")
+      if (turn && typeof turn.id === "string") {
+        this.#forgetPendingOfficialTurnStarts(params.threadId);
         this.#activeOfficialTurns.set(params.threadId, turn.id);
+      }
     }
     if (value.method === "turn/completed" && typeof params.threadId === "string") {
+      this.#forgetPendingOfficialTurnStarts(params.threadId);
       this.#activeOfficialTurns.delete(params.threadId);
+      this.#signalActiveWorkChanged();
       const delegation = await this.#repository.getDelegationByChild(
         hostThreadIdSchema.parse(params.threadId),
       );
@@ -1125,7 +1770,7 @@ export class AppServerHost {
   async #inspectOfficialDelegationTarget(
     input: HarnessInspectInput,
   ): Promise<HarnessInspectResult> {
-    const response = await this.#officialRequestBroker.request("model/list", {});
+    const response = await this.#requestOfficial("model/list", {});
     if (isRecord(response.error)) {
       throw new DelegationControlError(
         "DELEGATION_FAILED",
@@ -1292,7 +1937,8 @@ export class AppServerHost {
         }
       }
     }
-    const started = await this.#officialRequestBroker.request("thread/start", {
+    const activeRuntime = await this.#codexRuntimePool.active();
+    const started = await activeRuntime.request("thread/start", {
       cwd: input.cwd,
       ...(nativeModelId ? { model: nativeModelId } : {}),
       approvalPolicy: "never",
@@ -1304,10 +1950,11 @@ export class AppServerHost {
     const thread = startedResult && isRecord(startedResult.thread) ? startedResult.thread : null;
     const threadId = thread && typeof thread.id === "string" ? thread.id : null;
     if (!threadId) throw new Error("Official thread/start returned no Thread identity");
+    await this.#codexRuntimePool.bindThread(threadId, activeRuntime.account.accountId);
     this.#pendingOfficialDelegationThreads.add(threadId);
     let turnId: string;
     try {
-      const turn = await this.#officialRequestBroker.request("turn/start", {
+      const turn = await this.#requestOfficial("turn/start", {
         threadId,
         input: [{ type: "text", text: input.task }],
         ...(nativeModelId ? { model: nativeModelId } : {}),
@@ -1321,9 +1968,7 @@ export class AppServerHost {
     } catch (error) {
       this.#pendingOfficialDelegationThreads.delete(threadId);
       this.#pendingOfficialTerminalStatuses.delete(threadId);
-      await this.#officialRequestBroker
-        .request("thread/delete", { threadId })
-        .catch(() => undefined);
+      await this.#requestOfficial("thread/delete", { threadId }).catch(() => undefined);
       throw error;
     }
     this.#activeOfficialTurns.set(threadId, turnId);
@@ -1370,9 +2015,8 @@ export class AppServerHost {
       };
     } catch (error) {
       this.#activeOfficialTurns.delete(threadId);
-      await this.#officialRequestBroker
-        .request("thread/delete", { threadId })
-        .catch(() => undefined);
+      this.#signalActiveWorkChanged();
+      await this.#requestOfficial("thread/delete", { threadId }).catch(() => undefined);
       throw error;
     } finally {
       this.#pendingOfficialDelegationThreads.delete(threadId);
@@ -1387,7 +2031,7 @@ export class AppServerHost {
     if (this.#activeOfficialTurns.has(input.threadId)) {
       throw new DelegationControlError("THREAD_BUSY", "Thread already has an active Turn");
     }
-    const current = await this.#officialRequestBroker.request("thread/read", {
+    const current = await this.#requestOfficial("thread/read", {
       threadId: input.threadId,
       includeTurns: true,
     });
@@ -1405,7 +2049,7 @@ export class AppServerHost {
     ) {
       throw new DelegationControlError("THREAD_BUSY", "Thread already has an active Turn");
     }
-    const response = await this.#officialRequestBroker.request("turn/start", {
+    const response = await this.#requestOfficial("turn/start", {
       threadId: input.threadId,
       input: [{ type: "text", text: input.message }],
     });
@@ -1435,7 +2079,7 @@ export class AppServerHost {
   async #cancelOfficialDelegationThread(input: ThreadCancelInput): Promise<ThreadCancelResult> {
     let turnId = this.#activeOfficialTurns.get(input.threadId);
     if (!turnId) {
-      const current = await this.#officialRequestBroker.request("thread/read", {
+      const current = await this.#requestOfficial("thread/read", {
         threadId: input.threadId,
         includeTurns: true,
       });
@@ -1457,7 +2101,7 @@ export class AppServerHost {
         return { threadId: input.threadId, turnId: null, harnessId: "codex", cancelled: false };
       }
     }
-    const response = await this.#officialRequestBroker.request("turn/interrupt", {
+    const response = await this.#requestOfficial("turn/interrupt", {
       threadId: input.threadId,
       turnId,
     });
@@ -1471,7 +2115,7 @@ export class AppServerHost {
   }
 
   async #readOfficialDelegationThread(input: ThreadReadInput): Promise<DelegationThreadSnapshot> {
-    const response = await this.#officialRequestBroker.request("thread/read", {
+    const response = await this.#requestOfficial("thread/read", {
       threadId: input.threadId,
       includeTurns: true,
     });
@@ -1528,6 +2172,9 @@ export class AppServerHost {
     const decoded = decodeThreadListRequest(request);
     if (!decoded) throw new Error("Delegation thread/list request could not be decoded");
     const records = await this.#repository.list();
+    const accountIds = (await this.#codexRuntimePool.listAccounts()).map(
+      (account) => account.accountId,
+    );
     const result = await aggregateThreadList({
       query: decoded,
       records,
@@ -1535,10 +2182,20 @@ export class AppServerHost {
         const thread = this.#externalRuntime.get(threadId);
         return thread ? { running: thread.running } : null;
       },
-      requestOfficialPage: async (params) =>
-        officialThreadListPageFromResponse(
-          await this.#officialRequestBroker.request("thread/list", params),
-        ),
+      requestOfficialPage: (params) =>
+        aggregateOfficialAccountThreadListPage({
+          query: decoded,
+          accountIds,
+          params,
+          requestAccountPage: async (accountId, accountParams) =>
+            officialThreadListPageFromResponse(
+              await (
+                await this.#codexRuntimePool.get(accountId)
+              ).request("thread/list", accountParams),
+            ),
+          observeThread: (threadId, accountId) =>
+            this.#codexRuntimePool.bindThread(threadId, accountId),
+        }),
     });
     return {
       threads: result.data.flatMap((entry) => {
@@ -1571,6 +2228,9 @@ export class AppServerHost {
   ): Promise<void> {
     try {
       const records = await this.#repository.list();
+      const accountIds = (await this.#codexRuntimePool.listAccounts()).map(
+        (account) => account.accountId,
+      );
       const result = await aggregateThreadList({
         query: listRequest,
         records,
@@ -1578,10 +2238,20 @@ export class AppServerHost {
           const thread = this.#externalRuntime.get(threadId);
           return thread ? { running: thread.running } : null;
         },
-        requestOfficialPage: async (params) =>
-          officialThreadListPageFromResponse(
-            await this.#officialRequestBroker.request("thread/list", params),
-          ),
+        requestOfficialPage: (params) =>
+          aggregateOfficialAccountThreadListPage({
+            query: listRequest,
+            accountIds,
+            params,
+            requestAccountPage: async (accountId, accountParams) =>
+              officialThreadListPageFromResponse(
+                await (
+                  await this.#codexRuntimePool.get(accountId)
+                ).request("thread/list", accountParams),
+              ),
+            observeThread: (threadId, accountId) =>
+              this.#codexRuntimePool.bindThread(threadId, accountId),
+          }),
       });
       await this.#writer.json(rpcEnvelope(request, { result }));
     } catch (error) {
@@ -1715,6 +2385,46 @@ export class AppServerHost {
     );
   }
 
+  async #openHarnessWebUi(request: JsonRpcRequest): Promise<void> {
+    const params = harnessWebUiOpenParamsSchema.safeParse(request.params);
+    if (!params.success) {
+      await this.#writer.json(rpcError(request, -32602, "Invalid Harness Web UI params"));
+      return;
+    }
+    const adapter = [...this.#externalAdapters].find(
+      ([harnessId]) => harnessId === params.data.harnessId,
+    )?.[1];
+    const webUi = adapter?.webUi;
+    if (!webUi) {
+      await this.#writer.json(rpcError(request, -32092, "Harness Web UI is unavailable"));
+      return;
+    }
+    try {
+      const result = await webUi.open();
+      if (!result.ok) {
+        await this.#writer.json(rpcError(request, -32092, "Harness Web UI could not be opened"));
+        return;
+      }
+      await this.#writer.json(
+        rpcEnvelope(request, { result: harnessWebUiOpenResultSchema.parse({}) }),
+      );
+    } catch {
+      await this.#writer.json(rpcError(request, -32092, "Harness Web UI could not be opened"));
+    }
+  }
+
+  async #handleSessionImport(request: JsonRpcRequest): Promise<void> {
+    this.#sessionImportRequests ??= new SessionImportRequests({
+      adapters: this.#externalAdapters,
+      descriptors: () => this.#pluginDescriptors,
+      repository: this.#repository,
+      diagnose: (error) => this.#diagnose(error),
+    });
+    const response = await this.#sessionImportRequests.handle(request);
+    await this.#writer.json(rpcEnvelope(request, response.body));
+    if (response.importedThread) await this.#notifyExternalThreadStarted(response.importedThread);
+  }
+
   async #inspectThread(request: JsonRpcRequest): Promise<void> {
     const params = threadInspectionParamsSchema.safeParse(request.params);
     if (!params.success) {
@@ -1728,7 +2438,12 @@ export class AppServerHost {
     }
     const inspection = threadInspectionSchema.parse(
       resolution.kind === "official"
-        ? { owner: "codex", locked: true }
+        ? {
+            owner: "codex",
+            locked: true,
+            accountId:
+              (await this.#codexRuntimePool.accountIdForThread(params.data.threadId)) ?? undefined,
+          }
         : {
             owner: "external",
             harnessId: resolution.thread.harnessId,
@@ -1783,19 +2498,21 @@ export class AppServerHost {
         );
         return;
       }
-      // A native Codex thread may have no token-usage observation yet, but its
-      // account quota is still useful to the Credits pill. Start a refresh for
-      // that case without blocking the first inspection; subsequent renderer
-      // retries will observe the populated snapshot. When token usage already
-      // exists, await the refresh so Usage and Credits arrive together.
-      const rateLimitRefresh = this.#refreshOfficialRateLimits();
-      if (this.#officialUsageByThread.has(params.data.threadId)) {
-        await rateLimitRefresh;
-      }
-      const accountCredits = projectCodexRateLimitsToCredits(this.#officialRateLimitUsage);
+      // Resolve quota from the Thread binding, including before its first token update.
+      const accountId =
+        (await this.#codexRuntimePool.accountIdForThread(params.data.threadId)) ??
+        this.#officialUsageAccountByThread.get(params.data.threadId);
+      const rateLimitRefresh = accountId
+        ? this.#refreshOfficialRateLimits(accountId)
+        : Promise.resolve();
+      await rateLimitRefresh;
+      const accountCredits = this.#officialAccountCredits(accountId);
       const result = threadUsageInspectionSchema.parse({
         threadId: params.data.threadId,
-        usage: this.#combinedOfficialUsage(this.#officialUsageByThread.get(params.data.threadId)),
+        usage: this.#combinedOfficialUsage(
+          this.#officialUsageByThread.get(params.data.threadId),
+          accountId,
+        ),
         ...(accountCredits ? { accountCredits } : {}),
       });
       await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(result) }));
@@ -1814,71 +2531,38 @@ export class AppServerHost {
     await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(result) }));
   }
 
-  /**
-   * Native Codex reports account quota the same two ways the Claude Code
-   * Adapter does, and arbitrates them the same way: the on-demand
-   * `account/rateLimits/read` pull is authoritative, while a notification push
-   * may only fill an empty snapshot or expire the cached one. Letting both
-   * write freely made the credits pill flip between readings taken at
-   * different moments. See `ClaudeCodeAdapter#recordPlanLimit`.
-   */
-  #mergeOfficialRateLimits(rateLimits: Partial<HostUsage>, source: "push" | "pull"): void {
-    if (source === "push" && this.#officialRateLimitUsage) {
-      this.#officialRateLimitFreshUntilMs = 0;
-      return;
-    }
-    try {
-      this.#officialRateLimitUsage = parseHostUsage({
-        ...(this.#officialRateLimitUsage ?? {}),
-        ...rateLimits,
-      });
-      this.#officialRateLimitFreshUntilMs =
-        source === "pull" ? Date.now() + OFFICIAL_RATE_LIMIT_TTL_MS : 0;
-    } catch {
-      // Ignore a malformed sparse update while preserving the last valid snapshot.
+  #resetOfficialUsageState(accountId: string): void {
+    this.#officialRateLimits.reset(accountId);
+    for (const [threadId, owner] of this.#officialUsageAccountByThread) {
+      if (owner !== accountId) continue;
+      this.#officialUsageByThread.delete(threadId);
+      this.#officialUsageAccountByThread.delete(threadId);
     }
   }
 
-  #resetOfficialUsageState(): void {
-    // Native Codex can change accounts without restarting the app-server. Do
-    // not carry the previous account's thread or quota snapshot into the next
-    // account's Usage popover.
-    this.#officialAccountGeneration += 1;
-    this.#officialUsageByThread.clear();
-    this.#officialRateLimitUsage = null;
-    this.#officialRateLimitFreshUntilMs = 0;
-  }
-
-  #combinedOfficialUsage(usage: HostUsage | undefined): HostUsage | null {
-    const combined = { ...(usage ?? {}), ...(this.#officialRateLimitUsage ?? {}) };
+  #combinedOfficialUsage(usage: HostUsage | undefined, accountId?: string): HostUsage | null {
+    const quota = accountId ? this.#officialRateLimits.get(accountId) : null;
+    const combined = { ...(usage ?? {}), ...(quota ?? {}) };
     if (Object.keys(combined).length === 0) return null;
     try {
       return parseHostUsage(combined);
     } catch {
-      return usage ?? this.#officialRateLimitUsage;
+      return usage ?? quota;
     }
   }
 
-  async #refreshOfficialRateLimits(): Promise<void> {
-    // Serve the cached snapshot only while it is still fresh. This used to
-    // return on any non-null snapshot, which made the refresh a permanent
-    // no-op after the first success: the pill then froze at that first reading
-    // for the rest of the process, and only a push could ever move it again.
-    if (this.#officialRateLimitUsage && Date.now() < this.#officialRateLimitFreshUntilMs) return;
-    if (this.#officialRateLimitRefresh) return this.#officialRateLimitRefresh;
-    const accountGeneration = this.#officialAccountGeneration;
-    this.#officialRateLimitRefresh = this.#officialRequestBroker
-      .request("account/rateLimits/read", {})
-      .then((response) => {
-        if (accountGeneration !== this.#officialAccountGeneration) return;
-        const rateLimits = observeCodexRateLimits(response);
-        if (rateLimits) this.#mergeOfficialRateLimits(rateLimits, "pull");
-      })
-      .catch(() => undefined)
-      .finally(() => {
-        this.#officialRateLimitRefresh = null;
-      });
-    return this.#officialRateLimitRefresh;
+  #refreshOfficialRateLimits(accountId: string): Promise<void> {
+    return this.#officialRateLimits.refresh(accountId, async () =>
+      (await this.#codexRuntimePool.get(accountId)).request("account/rateLimits/read", {}),
+    );
+  }
+
+  #officialAccountCredits(accountId: string | undefined): AccountCreditsSnapshot | null {
+    if (!accountId) return null;
+    return projectCodexRateLimitsToCredits(
+      this.#officialRateLimits.get(accountId),
+      this.#officialRateLimits.getResetCredits(accountId),
+    );
   }
 
   async #listThreadOwnership(request: JsonRpcRequest): Promise<void> {
@@ -1913,27 +2597,26 @@ export class AppServerHost {
       );
       return;
     }
-    const resolution = await this.#resolveExternalThread(params.data.threadId);
-    if (await this.#writeResolutionError(request, resolution)) return;
-    if (resolution.kind !== "external" || !resolution.thread.session.commands) {
+    const location = await this.#locateExternalThread(params.data.threadId);
+    if (await this.#writeResolutionError(request, location)) return;
+    if (location.kind !== "external") {
       await this.#writer.json(rpcEnvelope(request, { result: { commands: [] } }));
       return;
     }
-    const result = await resolution.thread.session.commands.list();
-    if (!result.ok) {
-      await this.#writer.json(rpcError(request, -32078, result.error.message));
+    await this.#writeHarnessCommandCatalog(request, location.record.harnessId);
+  }
+
+  async #writeHarnessCommandCatalog(request: JsonRpcRequest, harnessId: HarnessId): Promise<void> {
+    const adapter = this.#externalAdapters.get(harnessId);
+    if (!adapter) {
+      await this.#writer.json(rpcError(request, -32077, `Harness '${harnessId}' is unavailable`));
       return;
     }
     try {
-      await this.#writer.json(
-        rpcEnvelope(request, {
-          result: jsonValueSchema.parse(harnessCommandCatalogSchema.parse(result.value)),
-        }),
-      );
-    } catch (error) {
-      await this.#writer.json(
-        rpcError(request, -32078, `Harness command catalog is invalid: ${errorMessage(error)}`),
-      );
+      const catalog = harnessCommandCatalogSchema.parse(adapter.commandCatalog ?? { commands: [] });
+      await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(catalog) }));
+    } catch {
+      await this.#writer.json(rpcError(request, -32078, "Harness command catalog is invalid"));
     }
   }
 
@@ -1950,49 +2633,58 @@ export class AppServerHost {
       return;
     }
     const thread = resolution.thread;
-    if (thread.running) {
+    if (
+      thread.running ||
+      this.#externalSteering.hasPending(thread.id) ||
+      this.#pendingExternalCommandRequests.has(thread.id)
+    ) {
       await this.#writer.json(
         rpcError(request, -32072, "External Thread already has an active operation"),
       );
       return;
     }
-    const commands = thread.session.commands;
-    if (!commands) {
-      await this.#writer.json(
-        rpcError(request, -32078, "External Harness does not expose commands"),
-      );
-      return;
-    }
-    const catalog = await commands.list();
-    if (!catalog.ok) {
-      await this.#writer.json(rpcError(request, -32078, catalog.error.message));
-      return;
-    }
-    if (!catalog.value.commands.some(({ id }) => id === params.data.commandId)) {
-      await this.#writer.json(
-        rpcError(
-          request,
-          -32078,
-          `External Harness does not expose command '${params.data.commandId}'`,
-        ),
-      );
-      return;
-    }
-
+    this.#pendingExternalCommandRequests.add(thread.id);
     try {
-      await this.#startExternalCommand(
-        request,
-        thread,
-        params.data.commandId,
-        params.data.arguments,
-        params.data.turnId,
-        "command",
-      );
-    } catch (error) {
-      this.#diagnose(error);
-      await this.#writer.json(
-        rpcError(request, -32073, `External Harness command failed: ${errorMessage(error)}`),
-      );
+      const commands = thread.session.commands;
+      if (!commands) {
+        await this.#writer.json(
+          rpcError(request, -32078, "External Harness does not expose commands"),
+        );
+        return;
+      }
+      const catalog = await commands.list();
+      if (!catalog.ok) {
+        await this.#writer.json(rpcError(request, -32078, catalog.error.message));
+        return;
+      }
+      const descriptor = catalog.value.commands.find(({ id }) => id === params.data.commandId);
+      if (!descriptor) {
+        await this.#writer.json(
+          rpcError(
+            request,
+            -32078,
+            `External Harness does not expose command '${params.data.commandId}'`,
+          ),
+        );
+        return;
+      }
+      try {
+        await this.#startExternalCommand(
+          request,
+          thread,
+          params.data.commandId,
+          params.data.arguments,
+          params.data.turnId,
+          "command",
+        );
+      } catch (error) {
+        this.#diagnose(error);
+        await this.#writer.json(
+          rpcError(request, -32073, `External Harness command failed: ${errorMessage(error)}`),
+        );
+      }
+    } finally {
+      this.#pendingExternalCommandRequests.delete(thread.id);
     }
   }
 
@@ -2011,7 +2703,7 @@ export class AppServerHost {
       );
       return;
     }
-    if (thread.running) {
+    if (thread.running || this.#externalSteering.hasPending(thread.id)) {
       await this.#writer.json(
         rpcError(request, -32072, "External Thread already has an active operation"),
       );
@@ -2047,6 +2739,7 @@ export class AppServerHost {
       thread.responseGates.delete(turnId);
       thread.ephemeralTurnIds.delete(turnId);
       gate.resolve();
+      this.#signalActiveWorkChanged();
       throw error;
     }
     if (!result.ok) {
@@ -2056,6 +2749,7 @@ export class AppServerHost {
       thread.responseGates.delete(turnId);
       thread.ephemeralTurnIds.delete(turnId);
       gate.resolve();
+      this.#signalActiveWorkChanged();
       await this.#writer.json(rpcError(request, -32073, result.error.message));
       return;
     }
@@ -2857,7 +3551,7 @@ export class AppServerHost {
     text: string,
     requestedTurnId: string,
   ): Promise<void> {
-    if (thread.running) {
+    if (thread.running || this.#externalSteering.hasPending(thread.id)) {
       throw new Error("External Thread already has an active Turn");
     }
     const turnId = hostTurnIdSchema.parse(requestedTurnId);
@@ -2873,7 +3567,10 @@ export class AppServerHost {
     thread.running = true;
     thread.activeTurnId = turnId;
     thread.projectedTurns.set(turnId, projection);
-    thread.responseGates.set(turnId, { promise: Promise.resolve(), resolve: () => undefined });
+    thread.responseGates.set(turnId, {
+      promise: Promise.resolve(),
+      resolve: () => undefined,
+    });
     const result = await thread.session.execute({
       type: "turn.start",
       turnId,
@@ -2884,12 +3581,17 @@ export class AppServerHost {
       thread.activeTurnId = null;
       thread.projectedTurns.delete(turnId);
       thread.responseGates.delete(turnId);
+      this.#signalActiveWorkChanged();
       throw new Error(result.error.message);
     }
   }
 
   async #startExternalTurn(request: JsonRpcRequest, thread: ExternalThread): Promise<void> {
-    if (thread.running) {
+    if (
+      thread.running ||
+      this.#externalSteering.hasPending(thread.id) ||
+      this.#pendingExternalCommandRequests.has(thread.id)
+    ) {
       await this.#writer.json(
         rpcError(request, -32072, "External Thread already has an active Turn"),
       );
@@ -2918,37 +3620,113 @@ export class AppServerHost {
       await this.#writer.json(rpcError(request, -32602, errorMessage(error)));
       return;
     }
-    if (thread.session.commands) {
-      const catalog = await thread.session.commands.list();
-      if (!catalog.ok) {
-        await this.#writer.json(rpcError(request, -32073, catalog.error.message));
-        return;
-      }
-      const matched = catalog.value.commands
-        .toSorted((left, right) => right.invocation.length - left.invocation.length)
-        .find((command) => {
-          if (text === command.invocation) return true;
-          return command.argumentMode === "text" && text.startsWith(`${command.invocation} `);
-        });
-      if (matched) {
-        const argumentText = text.slice(matched.invocation.length).trimStart();
-        try {
-          await this.#startExternalCommand(
-            request,
-            thread,
-            matched.id,
-            argumentText.length > 0 ? { text: argumentText } : undefined,
-            undefined,
-            "turn",
-          );
-        } catch (error) {
-          this.#diagnose(error);
-          await this.#writer.json(
-            rpcError(request, -32073, `External Harness command failed: ${errorMessage(error)}`),
-          );
+    const commandCandidate = text.trimStart();
+    if (thread.session.commands && /^\/[^\s/]+(?:\s|$)/u.test(commandCandidate)) {
+      const commandText = commandCandidate.trimEnd();
+      this.#pendingExternalCommandRequests.add(thread.id);
+      try {
+        const catalog = await thread.session.commands.list();
+        if (!catalog.ok) {
+          await this.#writer.json(rpcError(request, -32073, catalog.error.message));
+          return;
         }
+        const matched = catalog.value.commands
+          .toSorted((left, right) => right.invocation.length - left.invocation.length)
+          .find((command) => {
+            if (commandText === command.invocation) return true;
+            return (
+              command.argumentMode === "text" && commandText.startsWith(`${command.invocation} `)
+            );
+          });
+        if (matched) {
+          const argumentText = commandText.slice(matched.invocation.length).trimStart();
+          try {
+            await this.#startExternalCommand(
+              request,
+              thread,
+              matched.id,
+              argumentText.length > 0 ? { text: argumentText } : undefined,
+              undefined,
+              "turn",
+            );
+          } catch (error) {
+            this.#diagnose(error);
+            await this.#writer.json(
+              rpcError(request, -32073, `External Harness command failed: ${errorMessage(error)}`),
+            );
+          }
+          return;
+        }
+        await this.#writer.json(
+          rpcError(request, -32078, "External Harness does not expose the requested command"),
+        );
         return;
+      } finally {
+        this.#pendingExternalCommandRequests.delete(thread.id);
       }
+    }
+    if (this.#externalSteering.hasPending(thread.id)) {
+      await this.#writer.json(rpcError(request, -32072, "External Thread is changing direction"));
+      return;
+    }
+    try {
+      const started = await this.#beginExternalTurn(thread, text);
+      try {
+        await this.#writer.json(rpcEnvelope(request, { result: { turn: started.turn } }));
+      } finally {
+        started.gate.resolve();
+      }
+    } catch (error) {
+      await this.#writer.json(
+        rpcError(
+          request,
+          error instanceof ExternalSteerError ? error.code : -32073,
+          errorMessage(error),
+        ),
+      );
+    }
+  }
+
+  async #steerExternalTurn(request: JsonRpcRequest, thread: ExternalThread): Promise<void> {
+    try {
+      const started = await this.#externalSteering.run(thread, requestObject(request), (text) =>
+        this.#beginExternalTurn(thread, text),
+      );
+      try {
+        await this.#writer.json(rpcEnvelope(request, { result: { turnId: started.turnId } }));
+      } finally {
+        started.gate.resolve();
+      }
+    } catch (error) {
+      await this.#writer.json(
+        rpcError(
+          request,
+          error instanceof ExternalSteerError ? error.code : -32074,
+          errorMessage(error),
+        ),
+      );
+    } finally {
+      this.#signalActiveWorkChanged();
+    }
+  }
+
+  async #beginExternalTurn(
+    thread: ExternalThread,
+    text: string,
+  ): Promise<{
+    turnId: HostTurnId;
+    turn: JsonObject;
+    gate: TurnProjectionGate;
+  }> {
+    if (this.#closeRequested || this.#externalRuntime.get(thread.id) !== thread) {
+      throw new ExternalSteerError(-32073, "External Thread is no longer available");
+    }
+    if (
+      thread.running ||
+      thread.activeTurnId ||
+      this.#pendingExternalCommandRequests.has(thread.id)
+    ) {
+      throw new ExternalSteerError(-32072, "External Thread already has an active Turn");
     }
     const turnId = hostTurnIdSchema.parse(randomUUID());
     const startedAtMs = Date.now();
@@ -2966,26 +3744,22 @@ export class AppServerHost {
     thread.projectedTurns.set(turnId, projection);
     thread.responseGates.set(turnId, gate);
 
-    const result = await thread.session.execute({
-      type: "turn.start",
-      turnId,
-      input: [{ type: "text", text }],
-    });
-    if (!result.ok) {
+    try {
+      const result = await thread.session.execute({
+        type: "turn.start",
+        turnId,
+        input: [{ type: "text", text }],
+      });
+      if (!result.ok) throw new ExternalSteerError(-32073, result.error.message);
+      return { turnId, turn: projection.projector.pendingTurn(), gate };
+    } catch (error) {
       thread.running = false;
       thread.activeTurnId = null;
       thread.projectedTurns.delete(turnId);
       thread.responseGates.delete(turnId);
       gate.resolve();
-      await this.#writer.json(rpcError(request, -32073, result.error.message));
-      return;
-    }
-    try {
-      await this.#writer.json(
-        rpcEnvelope(request, { result: { turn: projection.projector.pendingTurn() } }),
-      );
-    } finally {
-      gate.resolve();
+      this.#signalActiveWorkChanged();
+      throw error;
     }
   }
 
@@ -2994,6 +3768,8 @@ export class AppServerHost {
     thread: ExternalThread,
     requestedTurnId: JsonValue | undefined,
   ): Promise<void> {
+    if (typeof requestedTurnId === "string")
+      this.#externalSteering.interrupt(thread.id, requestedTurnId);
     if (
       typeof requestedTurnId !== "string" ||
       !thread.running ||
@@ -3005,12 +3781,22 @@ export class AppServerHost {
       return;
     }
     const turnId = thread.activeTurnId;
-    const gate = turnProjectionGate();
+    const cancellationGate = turnProjectionGate();
+    const gate: TurnProjectionGate = {
+      promise: Promise.all([
+        thread.responseGates.get(turnId)?.promise ?? Promise.resolve(),
+        cancellationGate.promise,
+      ]).then(() => undefined),
+      resolve: cancellationGate.resolve,
+    };
     thread.responseGates.set(turnId, gate);
     const result = await thread.session.execute({ type: "turn.cancel", turnId });
     if (!result.ok) {
-      gate.resolve();
-      await this.#writer.json(rpcError(request, -32074, result.error.message));
+      try {
+        await this.#writer.json(rpcError(request, -32074, result.error.message));
+      } finally {
+        gate.resolve();
+      }
       return;
     }
     try {
@@ -3027,6 +3813,11 @@ export class AppServerHost {
       }
     } catch (error) {
       this.#diagnose(error);
+    } finally {
+      this.#externalSteering.fault(
+        thread.id,
+        new Error("External Harness output ended before replacement"),
+      );
     }
   }
 
@@ -3156,6 +3947,7 @@ export class AppServerHost {
       return;
     }
     if (event.type === "session.faulted") {
+      this.#externalSteering.fault(thread.id, new Error(event.error.message));
       thread.stateObserver.fault(new Error(event.error.message));
       this.#diagnose(`${thread.harnessId} Harness Session faulted: ${event.error.message}`);
       return;
@@ -3171,6 +3963,7 @@ export class AppServerHost {
           turnId: event.turnId,
           cwd: thread.cwd,
           startedAtMs: Date.now(),
+          initialInput: event.input,
         }),
       };
       thread.running = true;
@@ -3233,6 +4026,7 @@ export class AppServerHost {
       thread.activeTurnId = null;
       thread.projectedTurns.delete(event.turnId);
       thread.responseGates.delete(event.turnId);
+      this.#signalActiveWorkChanged();
       const delegation = await this.#repository.getDelegationByChild(thread.record.hostThreadId);
       if (delegation) {
         const status =
@@ -3252,6 +4046,7 @@ export class AppServerHost {
           ? { type: "active", activeFlags: [] }
           : { type: "idle" },
       );
+      this.#externalSteering.terminal(thread.id, event.turnId, event.outcome);
     }
   }
 
@@ -3399,6 +4194,7 @@ export class AppServerHost {
     if (!running) return;
     running.delete(childThreadId);
     if (running.size === 0) this.#runningSubagentsByParent.delete(parentThreadId);
+    this.#signalActiveWorkChanged();
   }
 
   #hasRunningSubagents(parentThreadId: string): boolean {
@@ -3449,7 +4245,8 @@ export class AppServerHost {
     try {
       result = projection.projector.projectApproval(
         interaction,
-        approvalServerName(thread.harnessId),
+        this.#pluginDescriptors.find(({ id }) => id === thread.harnessId)?.name ??
+          approvalServerName(thread.harnessId),
       );
     } catch (error) {
       this.#diagnose(error);

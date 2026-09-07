@@ -19,7 +19,8 @@ const catalog = harnessPermissionModeCatalogSchema.parse({
     {
       id: "plan",
       label: "Plan mode",
-      description: "Analyze and plan without executing tools.",
+      description:
+        "Explore and prepare a plan; approval exits planning and resumes the previous permission mode.",
     },
     { id: "default", label: "Default" },
     { id: "bypassPermissions", label: "Bypass permissions", dangerous: true },
@@ -108,11 +109,12 @@ describe("Renderer Permission Mode picker presentation", () => {
     if (!plan) throw new Error("Plan mode fixture is unavailable");
     expect(rendererPermissionModePresentation(plan, "zh-CN")).toEqual({
       label: "规划模式",
-      description: "仅分析和规划，不执行工具。",
+      description: "探索并制定计划；批准计划后退出规划，恢复此前的权限模式。",
     });
     expect(rendererPermissionModePresentation(plan, "en")).toEqual({
       label: "Plan mode",
-      description: "Analyze and plan without executing tools.",
+      description:
+        "Explore and prepare a plan; approval exits planning and resumes the previous permission mode.",
     });
     expect(plan.label).toBe("Plan mode");
 
@@ -126,6 +128,110 @@ describe("Renderer Permission Mode picker presentation", () => {
       description: "Provider-owned policy.",
     });
   });
+
+  it.each([
+    {
+      harness: "OpenCode",
+      id: "default",
+      nativeLabel: "Default",
+      en: "Default",
+      zh: "默认",
+      description: "Use OpenCode's configured permission rules.",
+      zhDescription: "使用 OpenCode 已配置的权限规则。",
+    },
+    {
+      harness: "OpenCode",
+      id: "ask",
+      nativeLabel: "Ask",
+      en: "Ask",
+      zh: "询问",
+      description: "Ask before protected OpenCode actions.",
+      zhDescription: "执行受保护的 OpenCode 操作前询问。",
+    },
+    {
+      harness: "OpenCode",
+      id: "allow",
+      nativeLabel: "Allow all",
+      en: "Allow all",
+      zh: "全部允许",
+      description: "Allow OpenCode actions without approval prompts.",
+      zhDescription: "允许 OpenCode 操作，无需批准提示。",
+    },
+    {
+      harness: "DSH",
+      id: "read-only",
+      nativeLabel: "read-only",
+      en: "Read only",
+      zh: "只读",
+      description: undefined,
+      zhDescription: undefined,
+    },
+    {
+      harness: "DSH",
+      id: "read-only",
+      nativeLabel: "Read only",
+      en: "Read only",
+      zh: "只读",
+      description: undefined,
+      zhDescription: undefined,
+    },
+    {
+      harness: "DSH",
+      id: "workspace-write",
+      nativeLabel: "workspace-write",
+      en: "Workspace write",
+      zh: "工作区写入",
+      description: undefined,
+      zhDescription: undefined,
+    },
+    {
+      harness: "DSH",
+      id: "danger-full-access",
+      nativeLabel: "danger-full-access",
+      en: "Full access (dangerous)",
+      zh: "完全访问（危险）",
+      description: undefined,
+      zhDescription: undefined,
+    },
+    {
+      harness: "AGY",
+      id: "configured",
+      nativeLabel: "Configured permissions",
+      en: "Configured permissions",
+      zh: "使用已配置权限",
+      description: "Use Antigravity CLI permission rules; headless prompts are denied safely.",
+      zhDescription: "使用 Antigravity CLI 权限规则；无界面运行时安全拒绝需要交互确认的请求。",
+    },
+    {
+      harness: "AGY",
+      id: "dangerously-skip-permissions",
+      nativeLabel: "Skip permissions",
+      en: "Skip permissions",
+      zh: "跳过权限检查",
+      description: "Auto-approve every Antigravity CLI tool action.",
+      zhDescription: "自动批准所有 Antigravity CLI 工具操作。",
+    },
+  ])(
+    "localizes $harness $nativeLabel in both the menu and selected control",
+    ({ id, nativeLabel, en, zh, description, zhDescription }) => {
+      const modeCatalog = harnessPermissionModeCatalogSchema.parse({
+        modes: [{ id, label: nativeLabel, ...(description ? { description } : {}) }],
+        defaultModeId: id,
+      });
+      const mode = modeCatalog.modes[0];
+      if (!mode) throw new Error("Permission Mode fixture is unavailable");
+      const original = { ...mode };
+      expect(rendererPermissionModePresentation(mode, "zh-CN")).toEqual({
+        label: zh,
+        description: zhDescription,
+      });
+      expect(rendererPermissionModePresentation(mode, "en")).toEqual({ label: en, description });
+      const view = { status: "ready" as const, catalog: modeCatalog, selected: mode.id };
+      expect(rendererPermissionModeLabel(view, "zh-CN")).toBe(zh);
+      expect(rendererPermissionModeLabel(view, "en")).toBe(en);
+      expect(mode).toEqual(original);
+    },
+  );
 
   it("uses localized stable pending/error labels", () => {
     expect(

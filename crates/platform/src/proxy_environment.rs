@@ -6,11 +6,26 @@ use std::ffi::{OsStr, OsString};
 use crate::{SystemProxySettings, system_proxy_settings};
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-struct ProxySettings {
-    http_proxy: Option<String>,
-    https_proxy: Option<String>,
-    all_proxy: Option<String>,
-    exceptions: Vec<String>,
+pub(crate) struct ProxySettings {
+    pub(crate) http_proxy: Option<String>,
+    pub(crate) https_proxy: Option<String>,
+    pub(crate) all_proxy: Option<String>,
+    pub(crate) exceptions: Vec<String>,
+}
+
+/// Windows Desktop tool servers may retain CODEX_CLI_PATH but discard proxy
+/// variables. Restore only the current user's static system proxy in that
+/// scoped helper path; explicit environment values (including empty) win.
+#[cfg(target_os = "windows")]
+pub fn desktop_helper_proxy_environment() -> Vec<(OsString, OsString)> {
+    let system = match crate::windows_proxy::static_proxy_settings() {
+        Ok(settings) => settings,
+        Err(_) => {
+            eprintln!("codexhost: could not read Windows helper proxy settings");
+            None
+        }
+    };
+    proxy_environment_from(env::vars_os(), system.as_ref())
 }
 
 /// Returns the proxy environment that should be passed to a codexhost child.
@@ -212,6 +227,28 @@ mod tests {
     #[test]
     fn omits_proxy_variables_when_neither_source_has_one() {
         assert!(proxy_environment_from([], None).is_empty());
+    }
+
+    #[test]
+    fn explicit_empty_proxy_urls_disable_system_fallbacks() {
+        let environment = proxy_environment_from(
+            ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"]
+                .map(|name| (OsString::from(name), OsString::new())),
+            Some(&ProxySettings {
+                http_proxy: Some("http://system:3128".into()),
+                https_proxy: Some("http://system:3128".into()),
+                all_proxy: Some("socks5://system:1080".into()),
+                exceptions: vec![],
+            }),
+        );
+        for name in ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"] {
+            assert!(environment.contains(&(OsString::from(name), OsString::new())));
+        }
+        assert!(
+            !environment
+                .iter()
+                .any(|(name, _)| name == "NODE_USE_ENV_PROXY")
+        );
     }
 
     #[test]

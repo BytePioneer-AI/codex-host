@@ -40,7 +40,15 @@ export interface ClaudeQuestionRequest {
   questions: ClaudeQuestion[];
 }
 
-export type ClaudeInteractionRequest = ClaudeApprovalRequest | ClaudeQuestionRequest;
+export interface ClaudePlanApprovalRequest {
+  type: "planApproval";
+  requestId: string;
+  /** Full SDK-provided plan text; null means no reviewable plan was provided. */
+  plan: string | null;
+}
+
+export type ClaudeInteractionRequest =
+  ClaudeApprovalRequest | ClaudeQuestionRequest | ClaudePlanApprovalRequest;
 
 export type ClaudeInteractionResponse =
   | {

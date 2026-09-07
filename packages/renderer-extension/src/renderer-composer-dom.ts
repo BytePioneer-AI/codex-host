@@ -6,6 +6,7 @@ import type {
 } from "./agent-selection-state.js";
 import type {
   AccountCreditsSnapshot,
+  CodexAccountSummary,
   HarnessCommandDescriptor,
   ThreadUsageSnapshot,
 } from "@codexhost/shared-contracts";
@@ -603,6 +604,8 @@ export function mountComposerAgentControl(
   enabledAgents: readonly RendererAgent[],
   onSelect: (agent: RendererAgent) => void,
   onDownload: (agent: ExternalRendererAgent) => void,
+  onSelectCodexAccount: (accountId: string) => Promise<void> | void,
+  onOpenProviderPicker: () => void,
   onSelectModel: (modelId: string) => void,
   onSelectThinking: (thinkingOptionId: string) => void,
   onSelectPermissionMode: (permissionModeId: string) => void,
@@ -618,7 +621,14 @@ export function mountComposerAgentControl(
   const nativePermissionModeControlVerified =
     semanticNativePermissionModeControl !== null &&
     nativePermissionModeControlForComposer(composer) === semanticNativePermissionModeControl;
-  const picker = mountRendererAgentPicker(composerId, enabledAgents, onSelect, onDownload);
+  const picker = mountRendererAgentPicker(
+    composerId,
+    enabledAgents,
+    onSelect,
+    onDownload,
+    onSelectCodexAccount,
+    onOpenProviderPicker,
+  );
   const modelPicker = mountRendererModelPicker(composerId, onSelectModel, onSelectThinking);
   const permissionModePicker = mountRendererPermissionModePicker(
     composerId,
@@ -675,6 +685,7 @@ export function renderComposerAgentControl(
   usage: ThreadUsageSnapshot | null = null,
   accountCredits: AccountCreditsSnapshot | null = null,
   locale: RendererSettingsLocale = "en",
+  codexAccounts: readonly CodexAccountSummary[] = [],
 ): void {
   if (control.usage === null) {
     control.usage = mountRendererUsageControl(control.composerId, locale);
@@ -713,6 +724,7 @@ export function renderComposerAgentControl(
     adapterState,
     switching,
     availability,
+    codexAccounts,
   );
   reconcileComposerNativeControls(
     control,
@@ -734,6 +746,9 @@ export function renderComposerAgentControl(
   );
   if (control.usage) renderRendererUsageControl(control.usage, usage, locale);
   control.harnessCommands.setLocale(locale);
+  control.harnessCommands.root.hidden = state.agent === "codex";
+  control.harnessCommands.root.style.display = state.agent === "codex" ? "none" : "inline-flex";
+  if (state.agent === "codex") control.harnessCommands.close();
   renderRendererCreditsControl(control.credits, accountCredits);
 }
 

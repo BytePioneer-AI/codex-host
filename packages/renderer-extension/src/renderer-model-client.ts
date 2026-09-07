@@ -1,10 +1,34 @@
 import {
+  codexAccountUsageParamsSchema,
+  codexAccountUsageResultSchema,
+  codexAccountResetCreditConsumeParamsSchema,
+  codexAccountResetCreditConsumeResultSchema,
+  type CodexAccountUsageParams,
+  type CodexAccountUsageResult,
+  type CodexAccountResetCreditConsumeParams,
+  type CodexAccountResetCreditConsumeResult,
+  codexAccountActivateParamsSchema,
+  codexAccountCreateParamsSchema,
+  codexAccountDeleteParamsSchema,
+  codexAccountDeleteResultSchema,
+  codexAccountListResultSchema,
+  codexAccountLoginCancelParamsSchema,
+  codexAccountLoginCancelResultSchema,
+  codexAccountLoginCompletedSchema,
+  codexAccountLoginStartParamsSchema,
+  codexAccountLoginStartResultSchema,
+  codexAccountMutationResultSchema,
   externalThreadForkParamsSchema,
   externalThreadForkResultSchema,
   harnessCommandCatalogSchema,
+  harnessCommandsInspectParamsSchema,
   harnessConfigurationStateSchema,
   harnessInspectParamsSchema,
   harnessInspectionSchema,
+  harnessPluginListResultSchema,
+  type HarnessPluginListResult,
+  harnessWebUiOpenParamsSchema,
+  harnessWebUiOpenResultSchema,
   harnessModelSelectionStateSchema,
   hostThreadIdSchema,
   threadInspectionParamsSchema,
@@ -25,10 +49,23 @@ import {
   updateStatusResultSchema,
   type ExternalThreadForkParams,
   type ExternalThreadForkResult,
+  type CodexAccountActivateParams,
+  type CodexAccountCreateParams,
+  type CodexAccountDeleteParams,
+  type CodexAccountDeleteResult,
+  type CodexAccountListResult,
+  type CodexAccountLoginCancelParams,
+  type CodexAccountLoginCancelResult,
+  type CodexAccountLoginCompleted,
+  type CodexAccountLoginStartParams,
+  type CodexAccountLoginStartResult,
+  type CodexAccountMutationResult,
   type HarnessCommandCatalog,
+  type HarnessCommandsInspectParams,
   type HarnessConfigurationState,
   type HarnessInspection,
   type HarnessInspectParams,
+  type HarnessWebUiOpenParams,
   type HarnessModelSelectionState,
   type ThreadInspection,
   type ThreadInspectionParams,
@@ -47,9 +84,17 @@ import {
   type UpdateStatusResult,
 } from "@codexhost/shared-contracts";
 
+import {
+  createRendererSessionImportClient,
+  type RendererSessionImportClient,
+} from "./renderer-session-import-client.js";
+
 export const HARNESS_INSPECT_METHOD = "codexhost/harness/inspect";
+export const HARNESS_PLUGIN_LIST_METHOD = "codexhost/harness/plugins/list";
+export const HARNESS_WEB_UI_OPEN_METHOD = "codexhost/harness/web-ui/open";
 export const THREAD_FORK_METHOD = "codexhost/thread/fork";
 export const THREAD_INSPECT_METHOD = "codexhost/thread/inspect";
+export const HARNESS_COMMANDS_INSPECT_METHOD = "codexhost/harness/commands/inspect";
 export const THREAD_COMMANDS_INSPECT_METHOD = "codexhost/thread/commands/inspect";
 export const THREAD_COMMAND_EXECUTE_METHOD = "codexhost/thread/command/execute";
 export const THREAD_MODEL_SELECT_METHOD = "codexhost/thread/model/select";
@@ -62,6 +107,16 @@ export const THREAD_TOKEN_USAGE_UPDATED_METHOD = "thread/tokenUsage/updated";
 export const UPDATE_CHECK_METHOD = "codexhost/update/check";
 export const UPDATE_START_METHOD = "codexhost/update/start";
 export const UPDATE_STATUS_METHOD = "codexhost/update/status";
+export const CODEX_ACCOUNT_LIST_METHOD = "codexhost/account/list";
+export const CODEX_ACCOUNT_REFRESH_METHOD = "codexhost/account/refresh";
+export const CODEX_ACCOUNT_CREATE_METHOD = "codexhost/account/create";
+export const CODEX_ACCOUNT_DELETE_METHOD = "codexhost/account/delete";
+export const CODEX_ACCOUNT_ACTIVATE_METHOD = "codexhost/account/activate";
+export const CODEX_ACCOUNT_LOGIN_START_METHOD = "codexhost/account/login/start";
+export const CODEX_ACCOUNT_LOGIN_CANCEL_METHOD = "codexhost/account/login/cancel";
+export const CODEX_ACCOUNT_LOGIN_COMPLETED_METHOD = "codexhost/account/login/completed";
+export const CODEX_ACCOUNT_RESET_CREDIT_CONSUME_METHOD =
+  "codexhost/account/rate-limit-reset/consume";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -96,12 +151,15 @@ function notificationTarget(manager: RequestManagerCandidate): RequestManagerCan
   return nested && typeof nested.addNotificationCallback === "function" ? nested : null;
 }
 
-export interface RendererModelClient {
+export interface RendererModelClient extends Partial<RendererSessionImportClient> {
   currentHostId?(): string | null;
+  listHarnessPlugins?(): Promise<HarnessPluginListResult>;
   clientForHost?(hostId: string): RendererModelClient | null;
   forkThread(input: ExternalThreadForkParams): Promise<ExternalThreadForkResult>;
   inspectHarness(input: HarnessInspectParams): Promise<HarnessInspection>;
+  openHarnessWebUi?(input: HarnessWebUiOpenParams): Promise<void>;
   inspectThread(input: ThreadInspectionParams): Promise<ThreadInspection>;
+  inspectHarnessCommands(input: HarnessCommandsInspectParams): Promise<HarnessCommandCatalog>;
   inspectThreadCommands(input: ThreadCommandsInspectParams): Promise<HarnessCommandCatalog>;
   executeThreadCommand(input: ThreadCommandExecuteParams): Promise<ThreadCommandExecuteResult>;
   listThreadOwnership(input: ThreadOwnershipListParams): Promise<ThreadOwnershipListResult>;
@@ -115,6 +173,22 @@ export interface RendererModelClient {
   checkUpdate(): Promise<UpdateCheckResult>;
   startUpdate(): Promise<UpdateStartResult>;
   readUpdateStatus(): Promise<UpdateStatusResult>;
+  inspectCodexAccountUsage?(input: CodexAccountUsageParams): Promise<CodexAccountUsageResult>;
+  consumeCodexAccountResetCredit?(
+    input: CodexAccountResetCreditConsumeParams,
+  ): Promise<CodexAccountResetCreditConsumeResult>;
+  listCodexAccounts(): Promise<CodexAccountListResult>;
+  refreshCodexAccounts(): Promise<CodexAccountListResult>;
+  createCodexAccount(input: CodexAccountCreateParams): Promise<CodexAccountMutationResult>;
+  deleteCodexAccount(input: CodexAccountDeleteParams): Promise<CodexAccountDeleteResult>;
+  activateCodexAccount(input: CodexAccountActivateParams): Promise<CodexAccountMutationResult>;
+  startCodexAccountLogin(
+    input: CodexAccountLoginStartParams,
+  ): Promise<CodexAccountLoginStartResult>;
+  cancelCodexAccountLogin(
+    input: CodexAccountLoginCancelParams,
+  ): Promise<CodexAccountLoginCancelResult>;
+  subscribeCodexAccountLogin(listener: (result: CodexAccountLoginCompleted) => void): () => void;
 }
 
 export function createThreadUsageSubscriptionRelay(): {
@@ -171,6 +245,13 @@ export function createRendererModelClient(
     const result = await manager.sendRequest(HARNESS_INSPECT_METHOD, params);
     return harnessInspectionSchema.parse(result);
   };
+  const inspectHarnessCommands = async (
+    input: HarnessCommandsInspectParams,
+  ): Promise<HarnessCommandCatalog> => {
+    const params = harnessCommandsInspectParamsSchema.parse(input);
+    const result = await manager.sendRequest(HARNESS_COMMANDS_INSPECT_METHOD, params);
+    return harnessCommandCatalogSchema.parse(result);
+  };
   const inspectThreadCommands = async (
     input: ThreadCommandsInspectParams,
   ): Promise<HarnessCommandCatalog> => {
@@ -215,17 +296,31 @@ export function createRendererModelClient(
   };
 
   return Object.freeze({
+    ...createRendererSessionImportClient(async (method, params) =>
+      manager.sendRequest(method, params),
+    ),
     async forkThread(input: ExternalThreadForkParams): Promise<ExternalThreadForkResult> {
       const params = externalThreadForkParamsSchema.parse(input);
       const result = await manager.sendRequest(THREAD_FORK_METHOD, params);
       return externalThreadForkResultSchema.parse(result);
     },
     inspectHarness,
+    async listHarnessPlugins(): Promise<HarnessPluginListResult> {
+      return harnessPluginListResultSchema.parse(
+        await manager.sendRequest(HARNESS_PLUGIN_LIST_METHOD, {}),
+      );
+    },
+    async openHarnessWebUi(input: HarnessWebUiOpenParams): Promise<void> {
+      const params = harnessWebUiOpenParamsSchema.parse(input);
+      const result = await manager.sendRequest(HARNESS_WEB_UI_OPEN_METHOD, params);
+      harnessWebUiOpenResultSchema.parse(result);
+    },
     async inspectThread(input: ThreadInspectionParams): Promise<ThreadInspection> {
       const params = threadInspectionParamsSchema.parse(input);
       const result = await manager.sendRequest(THREAD_INSPECT_METHOD, params);
       return threadInspectionSchema.parse(result);
     },
+    inspectHarnessCommands,
     inspectThreadCommands,
     executeThreadCommand,
     async listThreadOwnership(
@@ -294,6 +389,92 @@ export function createRendererModelClient(
         updateEmptyParamsSchema.parse({}),
       );
       return updateStatusResultSchema.parse(result);
+    },
+    async inspectCodexAccountUsage(
+      input: CodexAccountUsageParams,
+    ): Promise<CodexAccountUsageResult> {
+      const result = await manager.sendRequest(
+        "codexhost/account/usage/inspect",
+        codexAccountUsageParamsSchema.parse(input),
+      );
+      return codexAccountUsageResultSchema.parse(result);
+    },
+    async consumeCodexAccountResetCredit(
+      input: CodexAccountResetCreditConsumeParams,
+    ): Promise<CodexAccountResetCreditConsumeResult> {
+      const result = await manager.sendRequest(
+        CODEX_ACCOUNT_RESET_CREDIT_CONSUME_METHOD,
+        codexAccountResetCreditConsumeParamsSchema.parse(input),
+      );
+      return codexAccountResetCreditConsumeResultSchema.parse(result);
+    },
+    async listCodexAccounts(): Promise<CodexAccountListResult> {
+      const result = await manager.sendRequest(CODEX_ACCOUNT_LIST_METHOD, {});
+      return codexAccountListResultSchema.parse(result);
+    },
+    async refreshCodexAccounts(): Promise<CodexAccountListResult> {
+      const result = await manager.sendRequest(CODEX_ACCOUNT_REFRESH_METHOD, {});
+      return codexAccountListResultSchema.parse(result);
+    },
+    async createCodexAccount(input: CodexAccountCreateParams): Promise<CodexAccountMutationResult> {
+      const result = await manager.sendRequest(
+        CODEX_ACCOUNT_CREATE_METHOD,
+        codexAccountCreateParamsSchema.parse(input),
+      );
+      return codexAccountMutationResultSchema.parse(result);
+    },
+    async deleteCodexAccount(input: CodexAccountDeleteParams): Promise<CodexAccountDeleteResult> {
+      const result = await manager.sendRequest(
+        CODEX_ACCOUNT_DELETE_METHOD,
+        codexAccountDeleteParamsSchema.parse(input),
+      );
+      return codexAccountDeleteResultSchema.parse(result);
+    },
+    async activateCodexAccount(
+      input: CodexAccountActivateParams,
+    ): Promise<CodexAccountMutationResult> {
+      const result = await manager.sendRequest(
+        CODEX_ACCOUNT_ACTIVATE_METHOD,
+        codexAccountActivateParamsSchema.parse(input),
+      );
+      return codexAccountMutationResultSchema.parse(result);
+    },
+    async startCodexAccountLogin(
+      input: CodexAccountLoginStartParams,
+    ): Promise<CodexAccountLoginStartResult> {
+      const result = await manager.sendRequest(
+        CODEX_ACCOUNT_LOGIN_START_METHOD,
+        codexAccountLoginStartParamsSchema.parse(input),
+      );
+      return codexAccountLoginStartResultSchema.parse(result);
+    },
+    async cancelCodexAccountLogin(
+      input: CodexAccountLoginCancelParams,
+    ): Promise<CodexAccountLoginCancelResult> {
+      const result = await manager.sendRequest(
+        CODEX_ACCOUNT_LOGIN_CANCEL_METHOD,
+        codexAccountLoginCancelParamsSchema.parse(input),
+      );
+      return codexAccountLoginCancelResultSchema.parse(result);
+    },
+    subscribeCodexAccountLogin(listener: (result: CodexAccountLoginCompleted) => void): () => void {
+      const notifications = notificationTarget(manager);
+      if (!notifications?.addNotificationCallback) {
+        throw new Error("Renderer Account login notification callback is unavailable");
+      }
+      return notifications.addNotificationCallback(
+        CODEX_ACCOUNT_LOGIN_COMPLETED_METHOD,
+        (notification) => {
+          if (
+            !isRecord(notification) ||
+            notification.method !== CODEX_ACCOUNT_LOGIN_COMPLETED_METHOD
+          ) {
+            return;
+          }
+          const result = codexAccountLoginCompletedSchema.safeParse(notification.params);
+          if (result.success) listener(result.data);
+        },
+      );
     },
   });
 }

@@ -1,11 +1,3 @@
-import { packageMetadata as claudeCodeAdapter } from "@codexhost/adapter-claude-code";
-import { packageMetadata as codeBuddyAdapter } from "@codexhost/adapter-codebuddy";
-import { packageMetadata as antigravityAdapter } from "@codexhost/adapter-antigravity";
-import { packageMetadata as deepSeekHarnessAdapter } from "@codexhost/adapter-deepseek-harness";
-import { packageMetadata as grokAdapter } from "@codexhost/adapter-grok";
-import { packageMetadata as openCodeAdapter } from "@codexhost/adapter-opencode";
-import { packageMetadata as piAdapter } from "@codexhost/adapter-pi";
-import { packageMetadata as ompAdapter } from "@codexhost/adapter-omp";
 import { packageMetadata as desktopControl } from "@codexhost/desktop-control";
 import { packageMetadata as harnessAdapter } from "@codexhost/harness-adapter";
 import { packageMetadata as harnessBroker } from "@codexhost/harness-broker";
@@ -14,26 +6,29 @@ import { packageMetadata as protocolCore } from "@codexhost/protocol-core";
 import { packageMetadata as sharedContracts } from "@codexhost/shared-contracts";
 import { packageMetadata as updateManager } from "@codexhost/update-manager";
 
-export {
-  CLAUDE_CODE_COMMAND_ENV,
-  CODEBUDDY_COMMAND_ENV,
-  ANTIGRAVITY_COMMAND_ENV,
-  DEEPSEEK_HARNESS_COMMAND_ENV,
-  DEEPSEEK_HARNESS_ENDPOINT_ENV,
-  GROK_COMMAND_ENV,
-  OMP_COMMAND_ENV,
-  OPENCODE_COMMAND_ENV,
-  PI_COMMAND_ENV,
-  createExternalHarnessAdapters,
-  prefetchAntigravityModelCatalog,
-  prefetchClaudeCodeModelCatalog,
-} from "./adapter-composition.js";
+export { loadHarnessPlugins } from "./harness-plugin-loader.js";
+export type {
+  LoadHarnessPluginsOptions,
+  HarnessPluginDiagnostic,
+} from "./harness-plugin-loader.js";
+export { HarnessPluginRegistry } from "./harness-plugin-registry.js";
+export { installedHarnessPluginOptions } from "./installed-harness-plugins.js";
 export {
   AppServerHost,
   classifyCreateRequestRoute,
+  officialAccountEnvironment,
   officialEnvironment,
 } from "./app-server-host.js";
 export type { AppServerHostOptions } from "./app-server-host.js";
+export { AccountRepository } from "./account/account-repository.js";
+export type { AccountRepositoryLike, CodexAccount } from "./account/account-repository.js";
+export { ThreadAccountStore } from "./account/thread-account-store.js";
+export type { ThreadAccountStoreLike } from "./account/thread-account-store.js";
+export { CodexRuntime } from "./codex-runtime/codex-runtime.js";
+export {
+  CodexRuntimePool,
+  UnknownCodexThreadAccountError,
+} from "./codex-runtime/codex-runtime-pool.js";
 export {
   createRemoteAppServerWebSocketListener,
   isRemoteUnixListenerInvocation,
@@ -120,18 +115,10 @@ export const packageMetadata = {
   name: "@codexhost/host-runtime",
   dependencies: [
     protocolCore.name,
-    claudeCodeAdapter.name,
-    codeBuddyAdapter.name,
-    antigravityAdapter.name,
-    deepSeekHarnessAdapter.name,
     desktopControl.name,
     harnessAdapter.name,
     harnessBroker.name,
-    grokAdapter.name,
     mappingStore.name,
-    piAdapter.name,
-    ompAdapter.name,
-    openCodeAdapter.name,
     sharedContracts.name,
     updateManager.name,
   ],

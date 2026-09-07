@@ -1,7 +1,10 @@
+import { harnessIdSchema } from "@codexhost/shared-contracts";
 import { harnessModelRefSchema } from "@codexhost/shared-contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type * as RendererComposerDom from "../src/renderer-composer-dom.js";
+import type { RendererConnectionDiagnostics } from "../src/settings/connections-page.js";
+import type { RendererSessionImportClient } from "../src/settings/session-import-page.js";
 import type * as VersionedRendererAdapter from "../src/versioned-renderer-adapter.js";
 
 const testState = vi.hoisted(() => ({
@@ -9,7 +12,8 @@ const testState = vi.hoisted(() => ({
   editor: null as unknown as Element,
   sendButton: null as unknown as HTMLButtonElement,
   renderedModelViews: [] as Array<{ status: string; error?: string }>,
-  getConnectionDiagnostics: null as null | (() => { refresh(): Promise<void> } | null),
+  getConnectionDiagnostics: null as null | (() => RendererConnectionDiagnostics | null),
+  getSessionImportClient: null as null | (() => RendererSessionImportClient | null),
   documentListeners: new Map<string, EventListener>(),
   modelTarget: ["conversation", "thread-a"] as readonly unknown[],
 }));
@@ -77,9 +81,13 @@ vi.mock("../src/renderer-sidebar-agent-icons.js", () => ({
 vi.mock("../src/renderer-settings-lifecycle.js", () => ({
   installRendererSettingsLifecycle: (
     _window: unknown,
-    options: { getConnectionDiagnostics(): { refresh(): Promise<void> } | null },
+    options: {
+      getConnectionDiagnostics(): RendererConnectionDiagnostics | null;
+      getSessionImportClient(): RendererSessionImportClient | null;
+    },
   ) => {
     testState.getConnectionDiagnostics = options.getConnectionDiagnostics;
+    testState.getSessionImportClient = options.getSessionImportClient;
     return {
       locale: "en",
       refresh: vi.fn(),
@@ -145,6 +153,7 @@ function installFakeBrowser(): void {
   testState.sendButton = sendButton;
   testState.renderedModelViews = [];
   testState.getConnectionDiagnostics = null;
+  testState.getSessionImportClient = null;
   testState.documentListeners.clear();
   testState.modelTarget = ["conversation", "thread-a"];
   const window_ = {
@@ -201,6 +210,134 @@ afterEach(() => {
 });
 
 describe("Renderer binding Host-scoped Claude catalogs", () => {
+  it("routes Session import to local while the current Composer Host is remote", async () => {
+    installFakeBrowser();
+    const local = {
+      inspectHarness: vi.fn(async () => readyInspection()),
+      listSessionImportSources: vi.fn(async () => ({
+        harnesses: [
+          { harnessId: harnessIdSchema.parse("deepseek-harness"), name: "DeepSeek Harness" },
+        ],
+      })),
+      listHarnessSessions: vi.fn(async () => ({ candidates: [] })),
+      importHarnessSession: vi.fn(async () => ({ threadId: "local-thread" })),
+    };
+    const remote = {
+      inspectHarness: vi.fn(async () => readyInspection()),
+      listSessionImportSources: vi.fn(async () => ({
+        harnesses: [
+          { harnessId: harnessIdSchema.parse("deepseek-harness"), name: "DeepSeek Harness" },
+        ],
+      })),
+      listHarnessSessions: vi.fn(),
+      importHarnessSession: vi.fn(),
+    };
+    const modelControl = {
+      ...remote,
+      currentHostId: () => "remote-1",
+      clientForHost: vi.fn((hostId: string) => (hostId === "local" ? local : remote)),
+      inspectThread: vi.fn(),
+      inspectThreadCommands: vi.fn(async () => ({ commands: [] })),
+      inspectThreadUsage: vi.fn(),
+      subscribeThreadUsage: () => () => undefined,
+    };
+    const { installRendererBindingProbe } = await import("../src/renderer-binding-probe.js");
+    const probe = installRendererBindingProbe({
+      enabledAgents: ["codex", "deepseek-harness"],
+      defaultAgent: "codex",
+    });
+    probe.setAdapter(
+      { state: "ready", reason: "ready", modelUpdates: 0, hook: "request-bridge" },
+      undefined,
+      undefined,
+      modelControl as never,
+    );
+
+    const client = testState.getSessionImportClient?.();
+    if (!client) throw new Error("Local Session import client was not installed");
+    await client.listSessionImportSources();
+    await client.listHarnessSessions({ harnessId: harnessIdSchema.parse("pi") });
+    await client.importHarnessSession({
+      harnessId: harnessIdSchema.parse("pi"),
+      nativeSessionId: "native-session",
+    });
+
+    expect(modelControl.clientForHost).toHaveBeenCalledWith("local");
+    expect(local.listSessionImportSources).toHaveBeenCalledOnce();
+    expect(local.listHarnessSessions).toHaveBeenCalledWith({ harnessId: "pi" });
+    expect(local.importHarnessSession).toHaveBeenCalledWith({
+      harnessId: "pi",
+      nativeSessionId: "native-session",
+    });
+    expect(remote.listHarnessSessions).not.toHaveBeenCalled();
+    expect(remote.importHarnessSession).not.toHaveBeenCalled();
+  });
+
+  it("invalidates and refreshes a stale managed Web capability after open fails", async () => {
+    installFakeBrowser();
+    let dshAvailable = true;
+    let dshInspections = 0;
+    const local = {
+      inspectHarness: vi.fn(async ({ harnessId }: { harnessId: string }) => {
+        if (harnessId !== "deepseek-harness") return readyInspection();
+        dshInspections += 1;
+        return dshAvailable
+          ? { ...readyInspection("deepseek-model-v1.bW9kZWw"), webUi: { open: true as const } }
+          : {
+              status: "unavailable" as const,
+              error: { code: "processExited", message: "managed DSH exited", retryable: true },
+            };
+      }),
+      openHarnessWebUi: vi.fn(async () => {
+        throw new Error("managed DSH exited");
+      }),
+      inspectThread: vi.fn(),
+      inspectThreadCommands: vi.fn(async () => ({ commands: [] })),
+      inspectThreadUsage: vi.fn(),
+      subscribeThreadUsage: () => () => undefined,
+    };
+    const modelControl = {
+      ...local,
+      currentHostId: () => "local",
+      clientForHost: vi.fn(() => local),
+    };
+    const { installRendererBindingProbe } = await import("../src/renderer-binding-probe.js");
+    const probe = installRendererBindingProbe({
+      enabledAgents: ["codex", "deepseek-harness"],
+      defaultAgent: "codex",
+    });
+    probe.setAdapter(
+      { state: "ready", reason: "ready", modelUpdates: 0, hook: "request-bridge" },
+      undefined,
+      undefined,
+      modelControl as never,
+    );
+
+    await vi.waitFor(() => {
+      const diagnostics = testState.getConnectionDiagnostics?.();
+      const dsh = diagnostics
+        ?.snapshot()
+        .hosts.find(({ hostId }) => hostId === "local")
+        ?.agents.find(({ agent }) => agent === "deepseek-harness");
+      expect(dsh?.webUiAvailable).toBe(true);
+    });
+    const inspectionsBeforeFailure = dshInspections;
+    dshAvailable = false;
+    const diagnostics = testState.getConnectionDiagnostics?.();
+    await expect(diagnostics?.openWebUi?.("local", "deepseek-harness")).rejects.toThrow(
+      "managed DSH exited",
+    );
+    expect(
+      diagnostics
+        ?.snapshot()
+        .hosts.find(({ hostId }) => hostId === "local")
+        ?.agents.find(({ agent }) => agent === "deepseek-harness")?.webUiAvailable,
+    ).toBeUndefined();
+    await vi.waitFor(() => expect(dshInspections).toBeGreaterThan(inspectionsBeforeFailure));
+
+    probe.dispose();
+  });
+
   it("does not let a stale remote Host response mark a locked Claude Model unavailable", async () => {
     installFakeBrowser();
     let currentHostId = "host-a";

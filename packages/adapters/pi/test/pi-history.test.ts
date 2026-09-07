@@ -208,6 +208,64 @@ describe("Pi active-branch history", () => {
     ]);
   });
 
+  it("keeps control messages out of human input and folds later Assistant output into the prior Turn", () => {
+    const controlHistory: PiSessionHistory = {
+      entries: [
+        {
+          id: "human-user",
+          parentId: null,
+          type: "message",
+          message: { role: "user", content: [{ type: "text", text: "human request" }] },
+        },
+        {
+          id: "assistant-before-control",
+          parentId: "human-user",
+          type: "message",
+          message: {
+            role: "assistant",
+            content: [{ type: "text", text: "before control" }],
+          },
+        },
+        {
+          id: "intercom-control",
+          parentId: "assistant-before-control",
+          type: "message",
+          message: {
+            role: "custom",
+            customType: "intercom_message",
+            content: "subAgent completed",
+          },
+        },
+        {
+          id: "assistant-after-control",
+          parentId: "intercom-control",
+          type: "message",
+          message: {
+            role: "assistant",
+            stopReason: "stop",
+            content: [{ type: "text", text: "autonomous follow-up" }],
+          },
+        },
+      ],
+      leafId: "assistant-after-control",
+    };
+
+    const snapshot = mapPiSnapshot(controlHistory, state);
+
+    expect(snapshot.turns).toHaveLength(1);
+    expect(snapshot.turns[0]).toMatchObject({
+      nativeTurnRef: { nativeTurnKey: "human-user" },
+      checkpoint: { checkpointId: "human-user" },
+      input: [{ type: "text", text: "human request" }],
+      items: [
+        { item: { type: "agentMessage", text: "before control" } },
+        { item: { type: "agentMessage", text: "autonomous follow-up" } },
+      ],
+      outcome: { status: "succeeded" },
+    });
+    expect(JSON.stringify(snapshot.turns[0]?.input)).not.toContain("subAgent completed");
+  });
+
   it("does not infer success from reasoning-only history", () => {
     const reasoningOnly: PiSessionHistory = {
       entries: [

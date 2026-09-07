@@ -6,10 +6,12 @@ import ChevronDown from "lucide/dist/esm/icons/chevron-down.mjs";
 import ChevronLeft from "lucide/dist/esm/icons/chevron-left.mjs";
 import ChevronRight from "lucide/dist/esm/icons/chevron-right.mjs";
 import ChevronUp from "lucide/dist/esm/icons/chevron-up.mjs";
+import CircleArrowUp from "lucide/dist/esm/icons/circle-arrow-up.mjs";
 import CircleOff from "lucide/dist/esm/icons/circle-off.mjs";
 import Copy from "lucide/dist/esm/icons/copy.mjs";
 import Download from "lucide/dist/esm/icons/download.mjs";
 import ExternalLink from "lucide/dist/esm/icons/external-link.mjs";
+import FolderInput from "lucide/dist/esm/icons/folder-input.mjs";
 import GripVertical from "lucide/dist/esm/icons/grip-vertical.mjs";
 import Info from "lucide/dist/esm/icons/info.mjs";
 import Languages from "lucide/dist/esm/icons/languages.mjs";
@@ -23,6 +25,8 @@ import Stethoscope from "lucide/dist/esm/icons/stethoscope.mjs";
 import Star from "lucide/dist/esm/icons/star.mjs";
 import TriangleAlert from "lucide/dist/esm/icons/triangle-alert.mjs";
 import X from "lucide/dist/esm/icons/x.mjs";
+import Users from "lucide/dist/esm/icons/users.mjs";
+import Plus from "lucide/dist/esm/icons/plus.mjs";
 import codexLogoUrl from "../assets/codex-logo-bright.png";
 
 export const RENDERER_SETTINGS_ICON_NAMES = [
@@ -31,11 +35,15 @@ export const RENDERER_SETTINGS_ICON_NAMES = [
   "star",
   "language",
   "connections",
+  "accounts",
+  "session-import",
+  "add",
   "model-pool",
   "routes",
   "gateway",
   "updates",
   "about",
+  "info",
   "external-link",
   "refresh",
   "unavailable",
@@ -60,11 +68,15 @@ const iconNodes = {
   star: Star,
   language: Languages,
   connections: PlugZap,
+  accounts: Users,
+  "session-import": FolderInput,
+  add: Plus,
   "model-pool": Boxes,
   routes: Route,
   gateway: Network,
-  updates: Download,
+  updates: CircleArrowUp,
   about: Info,
+  info: Info,
   "external-link": ExternalLink,
   refresh: RefreshCw,
   unavailable: CircleOff,

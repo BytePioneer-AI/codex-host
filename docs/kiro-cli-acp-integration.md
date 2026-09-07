@@ -41,6 +41,19 @@ Usage 面板补记：现已复用输入框的公共用量控件，新增可选 `
 - 创建时先应用模型，再校验及应用显式 Effort；恢复时读取原生生效配置；Fork/编辑上一条消息时保留持久化 Effort，并再次通过原生目录校验与配置确认。历史快照中的当前配置使用会话已确认状态，避免旧元数据复活无效档位。
 - 回归覆盖混合支持目录、额外/无效档位、原生不生效响应、设置顺序、恢复及派生保留、`/effort` 和界面状态往返。可调整模型的成功路径使用合成 ACP 数据验证；本机当前账号实测返回 9 个模型、0 个 Effort 档位，`/effort` 正确提示不支持，`/effort high` 被拒绝，未提交模型 Prompt。本机无对应付费模型权限，尚未完成真实高级模型 Effort 生效验收。
 
+### 自动压缩终态与 trust-all 复核（2026-09-06）
+
+- 自动压缩通知现在保留原生成功/失败结果，失败发布 `nativeFailure`，不再固定显示成功；整轮结果仍由原生 Prompt 的最终状态决定，不因一次压缩失败强制失败。回归覆盖两种压缩结果、唯一 Item 生命周期及后续对话成功。
+- 本机 Kiro CLI `2.21.1` 的 `acp --help` 虽列出 `--trust-all-tools`，实际 `acp --agent-engine v3 --auth-method cli --trust-all-tools` 仍明确拒绝该参数。新建隔离 ACP 会话返回的配置仅有 `mode`、`model`、`autopilot`、`contentCollection`，没有 trust-all。该次探针未提交 Prompt，进程已清理。
+- `/tools trust-all` 或交互终端的 trust-all 行为不能直接等同于 ACP v3 的原生权限模式。本机终端实现包含客户端自动应答工具审批的逻辑，并对 KAS 审批类别作筛选；这不是可经 `session/set_config_option` 确认的全权限开关。本次不新增假定等价的 YOLO 模式，不自动答复审批，不写用户全局权限配置，`unattended-full-access` 仍明确拒绝。
+
+### 原生审批范围与持久化接入（2026-09-06）
+
+- 原生请求中的 `allow_always` 不等于自动保存到磁盘：KAS 默认使用 `session`；Adapter 现在依据 `_meta.kiro.consent` 提供会话、工作区和用户级选项，将选中的 `scope`、`resource`、`workspaceRoot` 随原生 option ID 返回。规则写入、匹配和生效仍由 Kiro 负责，Host 不新增权限存储或自动审批。
+- 有可持久化 consent 时，保留当前资源和整个工具范围；对不含引号、换行或 shell 运算符的简单命令，额外展示明确的程序/子命令前缀，例如 `git *`、`git add *`。这些都是需要用户单独选择的扩大范围，不会从“本次允许”自动推导授权。复杂命令不猜测前缀；原生禁止持久化或显式 ask 时不提供持久化允许。原生持久化拒绝选项同样保留。
+- 多个同类 action 使用 Desktop 标准 elicitation 单选表单，完整标签区分匹配范围与保存范围，默认本次允许；取消/关闭只返回本次拒绝，不生成持久化拒绝。其他只有单个同类 action 的 Harness 保留原来的紧凑审批样式。未声明的 action ID 被拒绝且不清除待处理审批。
+- 本机 KAS 实现沿用已有 `permissions.yaml` / `permissions.json`，无已有文件时默认 YAML；用户级位于原生 home 的 `.kiro/settings`，工作区级使用原生 home 下 `.kiro/workspace-roots` 的目录绑定。Adapter 不强制 JSON，不直接写这些文件。验证包括原生请求记录、已安装 CLI/Desktop 的相关实现、SDK 表单 schema、Adapter 到公共审批协议的往返和定向测试；尚未复测最终 Desktop 弹窗及真实持久化写入，未提交模型 Prompt 或更改现有用户权限。
+
 ## 1. 结论
 
 ### DSML 显示泄漏修复（2026-09-06）

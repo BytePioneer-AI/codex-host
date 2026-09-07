@@ -16,6 +16,7 @@ import type {
   HarnessSessionCapabilities,
   HarnessSessionState,
   HostCommand,
+  HostApprovalInteraction,
   HostContextCompactionItem,
   HostQuestionResponse,
   HostThreadSnapshot,
@@ -36,7 +37,10 @@ import type {
   TurnStartAccepted,
   TurnStartCommand,
 } from "@codexhost/harness-adapter";
-import { HarnessOutputChannel as OutputChannel } from "@codexhost/harness-adapter";
+import {
+  HarnessOutputChannel as OutputChannel,
+  validateHostApprovalResponse,
+} from "@codexhost/harness-adapter";
 import {
   harnessIdSchema,
   harnessModelRefSchema,
@@ -543,6 +547,7 @@ interface KiroSessionOptions {
 interface PendingApproval {
   type: "approval";
   id: HostInteractionId;
+  interaction: HostApprovalInteraction;
   resolve: (actionId: string, cancelled?: boolean) => void;
 }
 
@@ -843,7 +848,17 @@ export class KiroSession implements HarnessSession {
                     turnId,
                     snapshot: {
                       item: compactionItem,
-                      outcome: { status: "succeeded" },
+                      outcome:
+                        event.outcome === "succeeded"
+                          ? { status: "succeeded" }
+                          : {
+                              status: "failed",
+                              error: {
+                                code: "nativeFailure",
+                                message: "Kiro context compaction failed",
+                                retryable: false,
+                              },
+                            },
                     },
                   },
                 });
@@ -863,6 +878,7 @@ export class KiroSession implements HarnessSession {
                 this.#pendingInteraction = {
                   type: "approval",
                   id: projected.interaction.interactionId,
+                  interaction: projected.interaction,
                   resolve: (actionId: string, cancelled?: boolean) => {
                     resolve(projected.resolve(actionId, cancelled));
                   },
@@ -1006,6 +1022,8 @@ export class KiroSession implements HarnessSession {
           },
         };
       }
+      const error = validateHostApprovalResponse(pending.interaction, command.response);
+      if (error) return { ok: false, error };
       this.#pendingInteraction = null;
       pending.resolve(command.response.actionId);
     } else {

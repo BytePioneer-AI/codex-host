@@ -138,6 +138,34 @@ export interface ProjectedApproval {
   resolve(actionId: string, cancelled?: boolean): RequestPermissionResponse;
 }
 
+function consentResources(
+  consent: Record<string, unknown>,
+): Array<{ label: string; resource: string }> {
+  const resource = consent.triggeringResource ?? consent.resource;
+  if (typeof resource !== "string" || !resource.trim()) {
+    return [{ label: "Entire tool (*)", resource: "*" }];
+  }
+  const resources = new Map<string, string>([[resource, `Requested: ${resource}`]]);
+  if (["shell", "exec", "shell:exec"].includes(String(consent.capability))) {
+    // Only suggest prefixes for simple commands; Kiro remains the policy parser and enforcer.
+    const words = resource.trim().split(/\s+/u);
+    const program = words[0];
+    if (
+      program &&
+      /^[A-Za-z0-9_. -]+$/u.test(resource) &&
+      words.length > 1 &&
+      !["sudo", "doas", "env"].includes(program)
+    ) {
+      if (words.length > 2 && /^[A-Za-z][A-Za-z0-9_-]*$/u.test(words[1] ?? "")) {
+        resources.set(`${program} ${words[1]} *`, `Command prefix: ${program} ${words[1]} *`);
+      }
+      resources.set(`${program} *`, `Program prefix: ${program} *`);
+    }
+  }
+  resources.set("*", "Entire tool (*)");
+  return [...resources].map(([resource, label]) => ({ label, resource }));
+}
+
 export function projectKiroPermission(
   interactionId: string,
   turnId: HostTurnId,
@@ -146,51 +174,87 @@ export function projectKiroPermission(
   const hostInteractionId = hostInteractionIdSchema.parse(interactionId);
   const options = request.options;
   const actions: HostApprovalAction[] = [];
-
-  const allowOption = options.find((opt) => opt.kind === "allow_once");
-  const denyOption = options.find((opt) => opt.kind === "reject_once");
-
-  if (allowOption) {
-    actions.push({
-      id: allowOption.optionId,
-      label: "Allow Once",
-      effect: "allowOnce",
-    });
-  }
-
-  if (denyOption) {
-    actions.push({
-      id: denyOption.optionId,
-      label: "Deny",
-      effect: "deny",
-    });
-  }
-
-  // Fallback if neither found
-  if (actions.length === 0) {
-    for (const opt of options) {
-      actions.push({
-        id: opt.optionId,
-        label: opt.name || opt.optionId,
-        effect: opt.kind === "allow_once" || opt.kind === "allow_always" ? "allowOnce" : "deny",
-      });
-    }
-  }
-
+  const scopedActions: HostApprovalAction[] = [];
+  const responses = new Map<string, RequestPermissionResponse>();
   let description: string | undefined;
   const rawRequest = request as Record<string, unknown>;
-  const meta = isRecord(rawRequest._meta) ? (rawRequest._meta as Record<string, unknown>) : undefined;
+  const meta = isRecord(rawRequest._meta)
+    ? (rawRequest._meta as Record<string, unknown>)
+    : undefined;
   const kiroMeta = meta && isRecord(meta.kiro) ? (meta.kiro as Record<string, unknown>) : undefined;
 
   if (kiroMeta && kiroMeta.type === "turn_approval") {
     description = "Review modified files for this turn";
   }
+  const consent = kiroMeta && isRecord(kiroMeta.consent) ? kiroMeta.consent : undefined;
+  const resources = consent ? consentResources(consent) : [];
+  for (const option of options) {
+    if (option.kind === "allow_once" || option.kind === "reject_once") {
+      actions.push({
+        id: option.optionId,
+        label: option.name || option.optionId,
+        effect: option.kind === "allow_once" ? "allowOnce" : "deny",
+      });
+      responses.set(option.optionId, {
+        outcome: { outcome: "selected", optionId: option.optionId },
+      });
+    } else if (
+      (option.kind === "allow_always" || option.kind === "reject_always") &&
+      consent &&
+      typeof consent.capability === "string" &&
+      consent.capability.trim() &&
+      consent.persistableConsent !== false &&
+      (option.kind !== "allow_always" || consent.askType !== "explicit")
+    ) {
+      for (const scope of ["session", "workspace", "user"] as const) {
+        if (scope === "workspace" && typeof consent.workspaceRoot !== "string") continue;
+        for (const [index, choice] of resources.entries()) {
+          const id = `kiro-consent:${JSON.stringify([option.optionId, scope, index])}`;
+          const scopeLabel =
+            scope === "session"
+              ? "this session"
+              : scope === "workspace"
+                ? "save for workspace"
+                : "save for user";
+          scopedActions.push({
+            id,
+            label: `${option.kind === "allow_always" ? "Allow" : "Deny"} (${scopeLabel}) - ${choice.label}`,
+            effect:
+              option.kind === "reject_always"
+                ? "deny"
+                : scope === "session"
+                  ? "allowForSession"
+                  : "allowAlways",
+          });
+          responses.set(id, {
+            outcome: { outcome: "selected", optionId: option.optionId },
+            _meta: {
+              kiro: {
+                consent: {
+                  capability: consent.capability,
+                  scope,
+                  resource: choice.resource,
+                  ...(typeof consent.workspaceRoot === "string"
+                    ? { workspaceRoot: consent.workspaceRoot }
+                    : {}),
+                },
+              },
+            },
+          });
+        }
+      }
+    }
+  }
+  // Cancellation must remain one-shot even when native persistent denials are offered.
+  actions.push(...scopedActions);
+  if (responses.size !== actions.length)
+    throw new Error("Kiro returned duplicate approval action IDs");
 
   const interaction: HostApprovalInteraction = {
     type: "approval",
     interactionId: hostInteractionId,
     turnId,
-    title: (request as { title?: string }).title || "Permission Request",
+    title: (request as { title?: string }).title || request.toolCall.title || "Permission Request",
     ...(description ? { description } : {}),
     subject: { type: "nativeAction" },
     actions,
@@ -202,11 +266,7 @@ export function projectKiroPermission(
       if (cancelled) {
         return { outcome: { outcome: "cancelled" } };
       }
-      const matched = options.find((opt) => opt.optionId === actionId);
-      if (matched) {
-        return { outcome: { outcome: "selected", optionId: matched.optionId } };
-      }
-      return { outcome: { outcome: "cancelled" } };
+      return responses.get(actionId) ?? { outcome: { outcome: "cancelled" } };
     },
   };
 }

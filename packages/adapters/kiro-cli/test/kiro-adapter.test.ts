@@ -15,6 +15,7 @@ import {
   nativeSessionRefSchema,
 } from "@codexhost/shared-contracts";
 import { CodexTurnProjector } from "../../../protocol-core/src/codex-ui-projector.js";
+import { projectCodexApprovalRequest } from "../../../protocol-core/src/codex-approval.js";
 import { describe, expect, it } from "vitest";
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -37,6 +38,7 @@ class FakeKiroTransport implements KiroAcpTransportLike {
   readonly openCalls: KiroOpenInput[] = [];
   readonly configCalls: Array<{ id: string; value: string }> = [];
   readonly extensionRequests: Array<{ method: string; params: Record<string, unknown> }> = [];
+  readonly permissionResponses: RequestPermissionResponse[] = [];
   cancelled = false;
   closed = false;
   compactCalled = false;
@@ -126,7 +128,7 @@ class FakeKiroTransport implements KiroAcpTransportLike {
     }
     if (this.runError) throw this.runError;
     if (this.permissionToRequest) {
-      await onPermission(this.permissionToRequest);
+      this.permissionResponses.push(await onPermission(this.permissionToRequest));
     }
     if (this.questionToRequest) {
       await onQuestion(this.questionToRequest);
@@ -526,6 +528,42 @@ describe("Kiro regression lifecycle", () => {
     },
   );
 
+  it.each(["succeeded", "failed"] as const)(
+    "preserves automatic compaction outcome %s without overriding the native Turn outcome",
+    async (status) => {
+      const fake = new FakeKiroTransport();
+      fake.eventsToEmit = [
+        { type: "compaction.completed", outcome: status },
+        { type: "agent.text", text: "Continued after compaction" },
+      ];
+      const { session } = await open(fake);
+      const outputs = await collectTurn(session);
+      expect(() => projectOutputs(outputs)).not.toThrow();
+      const events = outputs.flatMap((output) => (output.kind === "event" ? [output.event] : []));
+      const starts = events.filter(
+        (event) => event.type === "item.started" && event.item.type === "contextCompaction",
+      );
+      const completed = events.filter(
+        (event) =>
+          event.type === "item.completed" && event.snapshot.item.type === "contextCompaction",
+      );
+      expect(starts).toHaveLength(1);
+      expect(completed).toHaveLength(1);
+      expect(completed[0]).toMatchObject({
+        snapshot: {
+          item: { type: "contextCompaction" },
+          outcome:
+            status === "succeeded"
+              ? { status }
+              : { status, error: { code: "nativeFailure", retryable: false } },
+        },
+      });
+      expect(events.find((event) => event.type === "turn.completed")).toMatchObject({
+        outcome: { status: "succeeded" },
+      });
+    },
+  );
+
   it("edits the sole compacted Turn by creating an empty Session with the same configuration", async () => {
     const directory = await fs.mkdtemp(path.join(os.tmpdir(), "kiro-empty-rollback-"));
     try {
@@ -793,6 +831,105 @@ describe("Kiro regression lifecycle", () => {
       );
     },
   );
+
+  it("routes a persisted approval choice to Kiro and leaves invalid responses pending", async () => {
+    const fake = new FakeKiroTransport();
+    fake.permissionToRequest = {
+      sessionId: fake.sessionId,
+      toolCall: { toolCallId: "git", title: "git add sample.txt" },
+      options: [
+        { kind: "allow_once", name: "Allow", optionId: "accept" },
+        { kind: "allow_always", name: "Always allow", optionId: "always-accept" },
+        { kind: "reject_once", name: "Deny", optionId: "reject" },
+      ],
+      _meta: {
+        kiro: {
+          consent: {
+            capability: "shell",
+            resource: "git add sample.txt",
+            workspaceRoot: "/workspace",
+            askType: "implicit",
+          },
+        },
+      },
+    };
+    const { session, adapter } = await open(fake);
+    const outputs: HarnessOutput[] = [];
+    let notifyInteraction!: (interaction: HostInteraction) => void;
+    const ready = new Promise<HostInteraction>((resolve) => {
+      notifyInteraction = resolve;
+    });
+    let notifyDone!: () => void;
+    const done = new Promise<void>((resolve) => {
+      notifyDone = resolve;
+    });
+    const consume = (async () => {
+      for await (const output of session.outputs) {
+        outputs.push(output);
+        if (output.kind === "interaction") notifyInteraction(output.interaction);
+        else if (output.event.type === "turn.completed") notifyDone();
+      }
+    })();
+    try {
+      await session.execute({
+        type: "turn.start",
+        turnId: hostTurnIdSchema.parse("regression-turn"),
+        input: [{ type: "text", text: "test" }],
+      });
+      const interaction = await ready;
+      if (interaction.type !== "approval") throw new Error("Expected approval");
+      expect(
+        await session.execute({
+          type: "interaction.respond",
+          interactionId: interaction.interactionId,
+          response: { type: "approval", actionId: "forged" },
+        }),
+      ).toMatchObject({ ok: false, error: { code: "invalidRequest" } });
+      expect(fake.permissionResponses).toEqual([]);
+      expect(
+        outputs.some(
+          (output) => output.kind === "event" && output.event.type === "interaction.closed",
+        ),
+      ).toBe(false);
+      const choice = interaction.actions.find(
+        (action) => action.label === "Allow (save for workspace) - Command prefix: git add *",
+      );
+      expect(choice).toBeDefined();
+      if (!choice) throw new Error("Expected workspace command prefix approval");
+      const wire = projectCodexApprovalRequest({
+        threadId: "thread",
+        interaction,
+        serverName: "Kiro CLI",
+      });
+      const command = {
+        type: "interaction.respond" as const,
+        interactionId: interaction.interactionId,
+        response: wire.parseResponse({ action: "accept", content: { actionId: choice.id } }),
+      };
+      expect((await session.execute(command)).ok).toBe(true);
+      await done;
+      expect(fake.permissionResponses).toEqual([
+        {
+          outcome: { outcome: "selected", optionId: "always-accept" },
+          _meta: {
+            kiro: {
+              consent: {
+                capability: "shell",
+                scope: "workspace",
+                resource: "git add *",
+                workspaceRoot: "/workspace",
+              },
+            },
+          },
+        },
+      ]);
+      expect((await session.execute(command)).ok).toBe(false);
+      expect(() => projectOutputs(outputs)).not.toThrow();
+    } finally {
+      await adapter.close();
+      await consume;
+    }
+  });
 
   it("closes pending approvals and active Turns through Adapter.close, exactly once", async () => {
     const fake = new FakeKiroTransport();

@@ -75,6 +75,107 @@ describe("kiro projection", () => {
   });
 
   describe("permission request projection", () => {
+    function scopedRequest() {
+      return {
+        sessionId: "sess-1",
+        toolCall: { toolCallId: "git-1", title: "git add sample.txt" },
+        options: [
+          { optionId: "accept", name: "Allow", kind: "allow_once" },
+          { optionId: "always-accept", name: "Always allow", kind: "allow_always" },
+          { optionId: "reject", name: "Deny", kind: "reject_once" },
+          { optionId: "always-reject", name: "Always deny", kind: "reject_always" },
+        ],
+        _meta: {
+          kiro: {
+            toolId: "execute_bash",
+            consent: {
+              capability: "shell",
+              resource: "git add sample.txt",
+              askType: "implicit",
+              workspaceRoot: "/workspace",
+            },
+          },
+        },
+      } satisfies RequestPermissionRequest;
+    }
+
+    it("round-trips exact, command, program and tool scopes without writing policy itself", () => {
+      const projected = projectKiroPermission("scoped", turnId, scopedRequest());
+      for (const action of projected.interaction.actions) {
+        const response = projected.resolve(action.id);
+        if (action.id === "accept" || action.id === "reject") {
+          expect(response).toEqual({ outcome: { outcome: "selected", optionId: action.id } });
+          continue;
+        }
+        const [optionId, scope] = JSON.parse(action.id.slice("kiro-consent:".length));
+        expect(response).toMatchObject({
+          outcome: { outcome: "selected", optionId },
+          _meta: { kiro: { consent: { scope, capability: "shell", workspaceRoot: "/workspace" } } },
+        });
+        expect(action.effect).toBe(
+          optionId === "always-reject"
+            ? "deny"
+            : scope === "session"
+              ? "allowForSession"
+              : "allowAlways",
+        );
+        const consent = response._meta?.kiro as { consent: { resource: string } };
+        expect(["git add sample.txt", "git add *", "git *", "*"]).toContain(
+          consent.consent.resource,
+        );
+        expect(action.label).toContain(consent.consent.resource);
+      }
+      const grants = projected.interaction.actions.filter((action) =>
+        ["allowForSession", "allowAlways"].includes(action.effect),
+      );
+      expect(grants).toHaveLength(12);
+      expect(projected.resolve("not-offered")).toEqual({ outcome: { outcome: "cancelled" } });
+      const grant = grants[0];
+      if (!grant) throw new Error("Expected a persistent grant");
+      expect(projected.resolve(grant.id, true)).toEqual({ outcome: { outcome: "cancelled" } });
+      expect(projected.interaction.actions.find((action) => action.effect === "deny")?.id).toBe(
+        "reject",
+      );
+    });
+
+    it.each([
+      ["explicit ask", { askType: "explicit" }],
+      ["non-persistable consent", { persistableConsent: false }],
+    ])("does not offer persistent allows for %s", (_name, restrictions) => {
+      const request = scopedRequest();
+      const kiro = request._meta.kiro;
+      Object.assign(kiro.consent, restrictions);
+      const projected = projectKiroPermission("restricted", turnId, request);
+      expect(
+        projected.interaction.actions.some((action) =>
+          ["allowForSession", "allowAlways"].includes(action.effect),
+        ),
+      ).toBe(false);
+    });
+
+    it.each(["sudo git add sample.txt", "git add a; rm b", 'git add "a b"', "git add a\nrm b"])(
+      "does not guess a shell prefix for %s",
+      (command) => {
+        const request = scopedRequest();
+        const kiro = request._meta.kiro;
+        kiro.consent.resource = command;
+        const projected = projectKiroPermission("complex", turnId, request);
+        expect(
+          projected.interaction.actions.some((action) => action.label.includes("prefix:")),
+        ).toBe(false);
+      },
+    );
+
+    it("rejects duplicate native action IDs", () => {
+      const request = scopedRequest();
+      const option = request.options[0];
+      if (!option) throw new Error("Expected a native option");
+      request.options.push(option);
+      expect(() => projectKiroPermission("duplicate", turnId, request)).toThrow(
+        "duplicate approval",
+      );
+    });
+
     it("projects permission options with allow once and deny", () => {
       const req: RequestPermissionRequest = {
         toolCall: { toolCallId: "tool-1", title: "Tool" },

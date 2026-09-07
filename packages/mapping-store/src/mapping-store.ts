@@ -467,7 +467,6 @@ export class MappingStore {
     });
     if (!result) throw new MappingStoreError("IO_ERROR", "Provisional create produced no result");
     return result;
-
   }
 
   async commitReady(input: CommitReadyThreadInput): Promise<StoredThreadRecordV1> {

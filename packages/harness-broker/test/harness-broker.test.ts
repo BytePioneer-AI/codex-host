@@ -67,7 +67,13 @@ describe("macOS Aqua Harness broker", () => {
       process.platform === "win32"
         ? `\\\\.\\pipe\\codexhost-harness-broker-${process.pid}-${randomUUID()}`
         : path.join(root, "broker.sock");
-    const native = new FakeHarnessAdapter(harnessIdSchema.parse("claude-code"));
+    const account = {
+      email: "broker@example.com",
+      credits: { usedPercent: 20, periodType: "five_hour" as const },
+    };
+    const native = Object.assign(new FakeHarnessAdapter(harnessIdSchema.parse("claude-code")), {
+      inspectAccount: vi.fn(async () => account),
+    });
     const nativeOpen = vi.spyOn(native, "open");
     const server = await startHarnessBrokerServer({ descriptorPath, socketPath, adapter: native });
     const adapter = new BrokeredHarnessAdapter({ descriptorPath });
@@ -75,6 +81,9 @@ describe("macOS Aqua Harness broker", () => {
     await expect(adapter.inspect({ cwd: root })).resolves.toMatchObject({
       status: "ready",
     });
+    await expect(adapter.inspectAccount()).resolves.toEqual(account);
+    expect(native.inspectAccount).toHaveBeenCalledWith();
+    expect(nativeOpen).not.toHaveBeenCalled();
     const opened = await adapter.open({
       kind: "create",
       cwd: root,

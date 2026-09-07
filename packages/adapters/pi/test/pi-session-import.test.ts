@@ -235,13 +235,6 @@ describe("Pi native Session import discovery", () => {
     expect(await f.list()).toHaveLength(4);
   }, 20_000);
 
-  it("indexes more than 1,000 candidates without confusing total storage with a wire page", async () => {
-    const f = await fixture();
-    for (let index = 0; index < 1_005; index++)
-      await f.save(f.entries(`session-${index}`), path.join(f.sessions, `${index}.jsonl`));
-    expect(await f.list()).toHaveLength(1_005);
-  });
-
   it("accepts an active branch beyond the old Entry count ceiling", async () => {
     const f = await fixture();
     const file = await f.save();

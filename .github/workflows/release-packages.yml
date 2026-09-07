@@ -173,6 +173,9 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Build TypeScript prerequisites
+        run: npm run build:typescript
+
       - name: Build installer package
         if: runner.os != 'Linux'
         run: npm run release:package -- --target ${{ matrix.target }}
@@ -235,6 +238,12 @@ jobs:
 
       - name: Setup npm
         run: npm install --global npm@11.8.0
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build TypeScript prerequisites
+        run: npm run build:typescript
 
       - name: Download npm artifacts
         uses: actions/download-artifact@v4

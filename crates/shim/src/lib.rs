@@ -138,7 +138,9 @@ struct ChildOutcome {
     desktop_input_closed: bool,
 }
 
-#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[cfg(target_os = "macos")]
+const PROCESS_TREE_REFRESH_INTERVAL: Duration = Duration::from_millis(20);
+#[cfg(target_os = "linux")]
 const PROCESS_TREE_REFRESH_INTERVAL: Duration = Duration::from_millis(500);
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
@@ -174,9 +176,10 @@ fn wait_for_child(
             root_status = child.try_wait()?;
         }
         // `has_live_processes` takes a full system process snapshot so escaped descendants can
-        // still be attributed to this launch. Keep the 20 ms root/signal poll responsive, but do
-        // not repeat that expensive snapshot on every idle iteration. Root exit and lifecycle
-        // signals still trigger immediate snapshots through this branch or the signal operations.
+        // still be attributed to this launch. Preserve the responsive macOS observation needed
+        // for descendants that create a new process group; throttle Linux snapshots to avoid the
+        // measured idle CPU regression. Root exit and lifecycle signals still trigger immediate
+        // snapshots through this branch or the signal operations.
         let now = Instant::now();
         let refresh_process_tree =
             process_tree_refresh_due(last_process_tree_refresh, now, root_status.is_some());
@@ -892,7 +895,7 @@ mod tests {
 
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     #[test]
-    fn throttles_idle_process_tree_refreshes_but_refreshes_immediately_after_root_exit() {
+    fn refreshes_process_tree_at_platform_interval_and_immediately_after_root_exit() {
         let started = Instant::now();
 
         assert!(process_tree_refresh_due(None, started, false));

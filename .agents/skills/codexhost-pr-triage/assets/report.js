@@ -88,6 +88,12 @@
       ]),
     );
 
+    function labeledText(label, text, className = "card-copy") {
+      const node = element("p", className);
+      node.append(element("strong", "", `${label} · `), document.createTextNode(text));
+      return node;
+    }
+
     function showDetail(pr) {
       const verdict = verdicts.find((item) => item.key === pr.verdict);
       const badge = element("div", verdict.className);
@@ -98,14 +104,18 @@
       body.replaceChildren(
         badge,
         heading,
+        ...(pr.originalTitle
+          ? [element("p", "original-title", `原始标题 · ${pr.originalTitle}`)]
+          : []),
         element("div", "mono muted", `${pr.repository}#${pr.number}`),
         element(
           "p",
           "snapshot-details mono",
           `BASE ${pr.baseSha ?? "未知"} · HEAD ${pr.headSha ?? "未知"}`,
         ),
-        element("p", "intro", pr.reason),
-        textSection("功能价值", pr.value),
+        ...(pr.effect ? [textSection("作用", pr.effect)] : []),
+        textSection("价值", pr.value),
+        textSection("判断理由", pr.reason),
         textSection("实现克制", pr.scope),
         textSection("维护代价", pr.cost),
       );
@@ -162,13 +172,14 @@
       );
       const next = element("div", "next");
       next.append(element("span", "next-label", "下一步"), element("span", "next-text", pr.action));
-      const value = element("p", "card-value");
-      value.append(element("strong", "", "价值 · "), document.createTextNode(pr.value));
+      const hasEffect = typeof pr.effect === "string";
       node.append(
         meta,
         element("h3", "", pr.title),
-        element("p", "card-reason", pr.reason),
-        value,
+        ...(pr.originalTitle ? [element("p", "card-original", pr.originalTitle)] : []),
+        labeledText("作用", hasEffect ? pr.effect : pr.value, "card-copy card-effect"),
+        ...(hasEffect ? [labeledText("价值", pr.value, "card-copy card-value")] : []),
+        labeledText("判断", pr.reason, "card-copy card-reason"),
         next,
       );
       node.append(
@@ -191,7 +202,8 @@
       const labels = [
         "PR / 仓库",
         "合入建议",
-        "评估理由",
+        "作用 / 价值",
+        "判断理由",
         ...($("show-ci").checked ? ["CI / 冲突 · 辅助"] : []),
         "下一步",
         "详情",
@@ -209,11 +221,17 @@
         identity.append(
           link(`${pr.repository}#${pr.number}`, pr.url, "mono"),
           element("span", "table-title", pr.title),
+          ...(pr.originalTitle ? [element("span", "table-original", pr.originalTitle)] : []),
         );
         const verdict = verdicts.find((item) => item.key === pr.verdict);
         const badge = element("td", verdict.className);
         badge.append(element("span", "verdict-pill", verdict.label));
-        row.append(identity, badge, element("td", "", pr.reason));
+        const summary = element("td");
+        summary.append(
+          labeledText("作用", pr.effect ?? pr.value, "table-copy"),
+          ...(pr.effect ? [labeledText("价值", pr.value, "table-copy")] : []),
+        );
+        row.append(identity, badge, summary, element("td", "", pr.reason));
         if ($("show-ci").checked) {
           const cell = element("td", "table-ci");
           cell.append(integration(pr));
@@ -238,7 +256,11 @@
     function render() {
       const query = $("search").value.trim().toLowerCase().replace(/^#/u, "");
       const prs = report.prs
-        .filter((pr) => `${pr.repository}#${pr.number} ${pr.title}`.toLowerCase().includes(query))
+        .filter((pr) =>
+          `${pr.repository}#${pr.number} ${pr.title} ${pr.originalTitle ?? ""} ${pr.effect ?? ""} ${pr.value} ${pr.reason}`
+            .toLowerCase()
+            .includes(query),
+        )
         .sort((a, b) => {
           const order = a.number - b.number || a.repository.localeCompare(b.repository);
           return $("sort").value === "asc" ? order : -order;

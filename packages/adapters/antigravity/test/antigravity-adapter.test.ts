@@ -6,17 +6,20 @@ import type { HarnessOutput, HostEvent } from "@codexhost/harness-adapter";
 import {
   accountCreditsSnapshotSchema,
   harnessModelRefSchema,
+  harnessPermissionModeIdSchema,
   harnessThinkingOptionIdSchema,
   hostTurnIdSchema,
 } from "@codexhost/shared-contracts";
 import { describe, expect, it } from "vitest";
 
 import {
+  ANTIGRAVITY_WORKSPACE_FILE_INSTRUCTION,
   AntigravityAdapter,
   antigravityAvailableThinkingOptions,
   antigravityModelArguments,
   antigravityToolErrorMessage,
   fetchAntigravityQuota,
+  formatAntigravityTurnPrompt,
   isAntigravityPermissionDenial,
   parseAntigravityContextUsage,
   parseAntigravityModels,
@@ -113,6 +116,57 @@ const FAKE_MODELS = [
 ] as const;
 
 describe("Antigravity Adapter", () => {
+  it("reads account quota without a Thread and hides it after native authentication stops returning data", async () => {
+    const fixture = await fakeAgy([
+      JSON.stringify({ event: "command_result", command: USAGE_COMMAND }),
+    ]);
+    const adapter = new AntigravityAdapter({ command: fixture.command, environment: process.env });
+    try {
+      expect(await adapter.inspectAccount()).toMatchObject({
+        credits: { label: "Gemini Models · Weekly window", usedPercent: 2.65 },
+      });
+      expect(adapter.credits()).not.toBeNull();
+      await writeFile(
+        fixture.command,
+        process.platform === "win32" ? "@echo off\r\nexit /b 0\r\n" : "#!/bin/sh\nexit 0\n",
+      );
+      expect(await adapter.inspectAccount()).toBeNull();
+    } finally {
+      await adapter.close();
+      await fixture.cleanup();
+    }
+  });
+  it("refuses Desktop approval execution when the native CLI cannot confirm the Hook configuration", async () => {
+    const { command, cwd, cleanup } = await fakeAgy(FAKE_MODELS);
+    const adapter = new AntigravityAdapter({ command });
+    try {
+      const opened = await adapter.open({
+        kind: "create",
+        cwd,
+        permissionModeId: harnessPermissionModeIdSchema.parse("desktop-approvals"),
+      });
+      if (!opened.ok) throw new Error(opened.error.message);
+      const iterator = opened.value.outputs[Symbol.asyncIterator]();
+      expect(
+        await opened.value.execute({
+          type: "turn.start",
+          turnId: hostTurnIdSchema.parse("missing-approval-hook"),
+          input: [{ type: "text", text: "Do not execute without an approval Hook" }],
+        }),
+      ).toMatchObject({
+        ok: false,
+        error: {
+          message: expect.stringContaining("no tools were started"),
+        },
+      });
+      await opened.value.close();
+      expect((await iterator.next()).done).toBe(true);
+    } finally {
+      await adapter.close();
+      await cleanup();
+    }
+  });
+
   it("parses the CLI Model catalog", () => {
     expect(
       parseAntigravityModels(
@@ -345,6 +399,7 @@ describe("Antigravity Adapter", () => {
     // Labels come from the window, not the CLI's "… Remaining" naming, because
     // the values are consumed percentages.
     expect(snapshot).toEqual({
+      label: "Gemini Models · Weekly window",
       usedPercent: 2.65,
       periodType: "weekly",
       resetsAt: "2026-09-01T03:17:57Z",
@@ -1244,6 +1299,18 @@ if (count === 0) {
         await adapter.close();
         await cleanup();
       }
+    });
+
+    it("formats turn prompt with workspace file instructions and leaves slash commands untouched", () => {
+      const normalPrompt = "Create a hello world python file";
+      const formatted = formatAntigravityTurnPrompt(normalPrompt);
+      expect(formatted).toBe(`${ANTIGRAVITY_WORKSPACE_FILE_INSTRUCTION}${normalPrompt}`);
+
+      const slashCommand = "/plan refactor authentication";
+      expect(formatAntigravityTurnPrompt(slashCommand)).toBe(slashCommand);
+
+      // Idempotency: does not double-inject if instruction already present
+      expect(formatAntigravityTurnPrompt(formatted)).toBe(formatted);
     });
   });
 });

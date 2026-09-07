@@ -59,6 +59,12 @@ Host 已有插件目录和通用路由，但 Renderer 尚未完全目录驱动�
 
 目录查询结果包含已加载的描述，也可能对应 unavailable Adapter；目录存在不代表原生安装、认证或运行就绪。旧 Host 不支持目录方法时显式显示兼容限制，不把错误伪装成空目录。
 
+## 运行中调整方向
+
+外部 Thread 的「调整方向」复用公共 Host／Renderer 路径：`turn.cancel` → 等旧轮终态 → `turn.start`。插件提供[取消与后续 Turn](output-and-interactions.md#取消与后续-turn)的基础行为，不另建 steer 命令、capability 或 Harness 专用 Renderer 分支；官方 Codex Thread 保留原生 steer。
+
+对目标 Harness 验证新输入只展示、执行一次，成功后可继续跟进；失败时保留输入，既有队列和旧轮消息不会被错误恢复或重复发送。分别验证取消失败、超时和交付结果未确认，不能把客户端超时当作输入未被接受。共享实现、当前输入限制和版本化绑定见[外部 Thread 调整方向](../../../../docs/external-thread-steering.md)，不在插件中复制协调逻辑。
+
 ## Desktop Control 与发布
 
 正式产品接入还检查：
@@ -69,13 +75,15 @@ Host 已有插件目录和通用路由，但 Renderer 尚未完全目录驱动�
 
 工具名单按实际用途维护，不要求所有诊断工具复制生产名单。Renderer 是浏览器包，不能引入 Node.js built-ins、Harness SDK 或 Electron 私有 API。
 
+若修改共享 Desktop 方法绑定，按真实 `RpcTarget` 契约保留跨组件 RPC 可访问性：实例自身的函数属性不能替代可导出的类方法。覆盖安装、卸载和待定请求清理，并回归模型／权限列表读取及新会话提交就绪状态；普通对象的直接调用测试不能代替 RPC 验证。未修改共享绑定时复用已有回归，不为每个新 Harness 复制整套基础设施测试。
+
 ## 产品验收
 
 1. 正确目标 Host 上能看到、选择并创建该 Harness 的 Thread，且 carrier 使用共享格式。
 2. 未安装、认证失败、不可用、旧 Host 不兼容与刷新重试状态准确。
 3. 新/旧 Thread 的 Model、Thinking、权限、ownership、Sidebar 和偏好一致。
 4. Host/Thread 切换、Composer 重挂和异步响应乱序不会串配置或图标。
-5. 受支持的工具、审批、提问、取消、Usage、Commands 和历史操作经真实 UI 验证。
+5. 受支持的工具、审批、提问、取消、[调整方向](#运行中调整方向)、Usage、Commands 和历史操作经真实 UI 验证。
 6. 缺失插件不把原 Thread 交给 Codex；重新安装后的历史恢复按原生能力验证。
 7. Desktop Control、生产 Renderer 构建和浏览器边界检查通过；截图只用于可见 UI 变化。
 

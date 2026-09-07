@@ -12,11 +12,12 @@ DSH `sessions.fork` 的 `atSeq` 不是严格相等匹配：它选择第一个 `s
 - 只在源 cwd 与目标 cwd 相同时执行原生 Fork，并精确包含所选完成 Turn及其 between-turn 状态。
 - 对原生返回、partial success 和派生历史执行失败关闭验证。
 - 保持源 Session 可继续运行，派生 Session 后续输入只进入 child。
+- 使用相同原语为 Modern Session 创建精确少一轮的 replacement，并交给现有 Host 回滚事务提交。
 - 保持 DSH RPC、事件和错误细节只存在于 DeepSeek Adapter 包内。
 
 **Non-Goals:**
 
-- 不实现跨 cwd Fork、rollback、Worktree 或项目文件回退。
+- 不实现跨 cwd Fork、任意多轮当前 Thread 回滚、Worktree 或项目文件回退。
 - 不新增 Session delete/discard、幂等 Fork key 或失败后的自动清理重试；当前 DSH 未提供这些原语。
 - 不修改公共 Fork 契约、Host 路由或 Renderer 控件。
 - 不在 Fork 后调用 `selectModel` 覆盖 child 的原生历史配置。
@@ -81,13 +82,22 @@ DSH 从 seed 内最新的已记录 Model/Thinking 选择恢复 child。Adapter �
 
 原生 Fork 调用后的失败均不声明可重试，因为 DSH 不能以调用方提供的 child ID 或幂等 key 对账一次未知结果。
 
+### 8. Last-Turn Rollback 复用 Fork 与 Create
+
+该能力只由 exact `dsh-v0.1.2-rc.1` Modern Adapter 声明，Legacy `dsh-v0.1.1-rc.2` 继续报告不支持。Adapter 先读取并严格投影来源 journal；存在未完成 Turn 时返回可重试的 `sessionBusy`，零个完成 Turn 时返回 `invalidState`，且两者都不创建 Native Session。
+
+来源有两轮及以上时，Adapter 取倒数第二轮的 `turn/end` Checkpoint，直接复用相同的 `session/fork` 调用和 child 后验验证。来源只有一轮时，rc.1 没有零 Turn Fork boundary，因此调用 `session/create` 创建新 ID，并从来源 journal 的 `projections.values.agentPreset` 读取当前 Agent Preset 显式传入；不能使用可能已经过时的 header。新 ID 必须与来源不同，新 journal 必须确认同一 Preset、零个完成 Turn且没有未完成 Turn，否则失败关闭。真正空 Session 的 journal/projection baseline 使用合法的 `cursor=-1`，配置读取必须接受该 baseline，后续 Model/Thinking/Permission 仍由 Host 恢复。
+
+Adapter 只返回 replacement Session，不关闭或修改来源。Host 继续使用现有 Last-Turn Rollback 事务恢复并验证 Model、Thinking 与 Permission，确认 Snapshot 恰好少一轮后原子替换 mapping。该流程不复制可见文本、不修改 DSH 原始历史，也不回退上一轮对工作区文件造成的改动。
+
 ## Risks / Trade-offs
 
 - [Fork 响应丢失或后验验证失败留下孤儿 Session] → 失败关闭且禁止自动重试；待 DSH 提供幂等 child ID/key 或 delete API 后再补偿清理。
 - [源在预读与 Fork 之间追加事件] → 原始 seed 检查拒绝无法证明的边界，不静默放宽到后一个 Turn。
 - [Agent setup 在 marker 后追加权限等状态] → 允许 child-owned log-only 事件，但拒绝任何额外 `turn/start` 并要求投影 Turn 数精确。
 - [Session list 缺少 cwd] → 返回协议错误；不能在无法证明同 cwd 时宣称安全 Fork。
+- [回滚后用户误以为原 DSH Session 或文件被改写] → 明确 replacement 语义；来源 Session 与工作区文件均保持不变。
 
 ## Migration Plan
 
-无持久化迁移。已有 DeepSeek Thread 在下一次 Snapshot read 后获得稳定 Checkpoint；新 Fork 继续使用现有 Mapping Store 与 Host Runtime 提交流程。回滚时将能力恢复为 false 并停止发布 Checkpoint，不删除任何 Native Session。
+无持久化迁移。已有 DeepSeek Thread 在下一次 Snapshot read 后获得稳定 Checkpoint；新 Fork 和 Last-Turn Rollback 继续使用现有 Mapping Store 与 Host Runtime 提交流程。撤销本变更时将对应能力恢复为 false 并停止发布 Checkpoint，不删除任何 Native Session。

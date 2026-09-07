@@ -29,10 +29,23 @@ describe("Thread Usage contracts", () => {
           usedPercent: 33,
           resetsAt: "2026-08-20T03:32:07.498525+00:00",
           periodType: "weekly",
+          resetCredits: {
+            availableCount: 2,
+            nextExpiresAt: "2026-09-12T12:00:00.000Z",
+            expiresAt: ["2026-09-12T12:00:00.000Z", "2026-09-18T08:00:00.000Z"],
+          },
         },
       }),
     ).toMatchObject({
-      accountCredits: { usedPercent: 33, periodType: "weekly" },
+      accountCredits: {
+        usedPercent: 33,
+        periodType: "weekly",
+        resetCredits: {
+          availableCount: 2,
+          nextExpiresAt: "2026-09-12T12:00:00.000Z",
+          expiresAt: ["2026-09-12T12:00:00.000Z", "2026-09-18T08:00:00.000Z"],
+        },
+      },
     });
   });
 

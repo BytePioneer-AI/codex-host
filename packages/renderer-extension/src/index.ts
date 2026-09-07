@@ -94,6 +94,7 @@ export {
   isOwnershipSubmissionBlocked,
   permissionModeSelectionLocked,
   restoredThreadOwnership,
+  shouldRefreshCodexAccountsForAdapterState,
   shouldTransferComposerState,
 } from "./renderer-binding-probe.js";
 export type {
@@ -213,6 +214,7 @@ export type {
   RendererConnectionDiagnostics,
   RendererConnectionHostSnapshot,
   RendererConnectionSnapshot,
+  RendererCodexAccountClient,
   RendererUpdateClient,
 } from "./settings/pages.js";
 export {

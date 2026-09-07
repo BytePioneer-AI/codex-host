@@ -1,4 +1,8 @@
-import type { HarnessThinkingOptionId, JsonValue } from "@codexhost/shared-contracts";
+import type {
+  HarnessAccountSnapshot,
+  HarnessThinkingOptionId,
+  JsonValue,
+} from "@codexhost/shared-contracts";
 
 import type { ClaudeNativeFileChange } from "./file-change.js";
 import type { ClaudeModelInspectionSnapshot } from "./model-catalog.js";
@@ -223,6 +227,7 @@ export interface ClaudeTransportFactoryInput {
 export interface ClaudeModelInspector {
   readonly stderrTail?: string;
   inspect(): Promise<ClaudeModelInspectionSnapshot>;
+  inspectAccount?(): Promise<HarnessAccountSnapshot | null>;
   close(): Promise<void>;
 }
 

@@ -10,6 +10,14 @@ import {
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  CODEX_ACCOUNT_ACTIVATE_METHOD,
+  CODEX_ACCOUNT_CREATE_METHOD,
+  CODEX_ACCOUNT_DELETE_METHOD,
+  CODEX_ACCOUNT_LIST_METHOD,
+  CODEX_ACCOUNT_REFRESH_METHOD,
+  CODEX_ACCOUNT_LOGIN_CANCEL_METHOD,
+  CODEX_ACCOUNT_LOGIN_COMPLETED_METHOD,
+  CODEX_ACCOUNT_LOGIN_START_METHOD,
   HARNESS_INSPECT_METHOD,
   HARNESS_PLUGIN_LIST_METHOD,
   HARNESS_WEB_UI_OPEN_METHOD,
@@ -66,6 +74,113 @@ const inspection = {
 };
 
 describe("Renderer fixed Model request client", () => {
+  it("reads draft quota for the selected Account without activating it", async () => {
+    const result = {
+      accountId: "account-b",
+      usage: { planFiveHourUsedPercent: 83 },
+      accountCredits: { usedPercent: 83, periodType: "five_hour" },
+    };
+    const sendRequest = vi.fn().mockResolvedValue(result);
+    const client = createRendererModelClient([{ sendRequest }]);
+    await expect(client?.inspectCodexAccountUsage?.({ accountId: "account-b" })).resolves.toEqual(
+      result,
+    );
+    expect(sendRequest).toHaveBeenCalledExactlyOnceWith("codexhost/account/usage/inspect", {
+      accountId: "account-b",
+    });
+  });
+
+  it("validates Account controls and relays device-login completion", async () => {
+    let notify: ((notification: unknown) => void) | undefined;
+    const remove = vi.fn();
+    const addNotificationCallback = vi.fn(
+      (_method: string | readonly string[], callback: (notification: unknown) => void) => {
+        notify = callback;
+        return remove;
+      },
+    );
+    const account = {
+      accountId: "work",
+      label: "Work",
+      codexHome: "/tmp/codex-work",
+      active: true,
+      isDefault: false,
+    };
+    const sendRequest = vi
+      .fn<(method: string, params: unknown) => Promise<unknown>>()
+      .mockResolvedValueOnce({ accounts: [account] })
+      .mockResolvedValueOnce({ accounts: [account] })
+      .mockResolvedValueOnce({ account })
+      .mockResolvedValueOnce({ deletedAccountId: "work" })
+      .mockResolvedValueOnce({ account })
+      .mockResolvedValueOnce({
+        accountId: "work",
+        loginId: "login-1",
+        verificationUrl: "https://example.com/device",
+        userCode: "ABCD-EFGH",
+      })
+      .mockResolvedValueOnce({ cancelled: true });
+    const client = createRendererModelClient([{ addNotificationCallback, sendRequest }]);
+    if (!client) throw new Error("Synthetic Account client was not created");
+
+    await expect(client.listCodexAccounts()).resolves.toEqual({ accounts: [account] });
+    await expect(client.refreshCodexAccounts?.()).resolves.toEqual({ accounts: [account] });
+    await expect(client.createCodexAccount({ label: "Work" })).resolves.toEqual({ account });
+    await expect(client.deleteCodexAccount({ accountId: "work" })).resolves.toEqual({
+      deletedAccountId: "work",
+    });
+    await expect(client.activateCodexAccount({ accountId: "work" })).resolves.toEqual({ account });
+    await expect(client.startCodexAccountLogin({ accountId: "work" })).resolves.toMatchObject({
+      loginId: "login-1",
+      userCode: "ABCD-EFGH",
+    });
+    await expect(client.cancelCodexAccountLogin({ loginId: "login-1" })).resolves.toEqual({
+      cancelled: true,
+    });
+    expect(sendRequest.mock.calls).toEqual([
+      [CODEX_ACCOUNT_LIST_METHOD, {}],
+      [CODEX_ACCOUNT_REFRESH_METHOD, {}],
+      [CODEX_ACCOUNT_CREATE_METHOD, { label: "Work" }],
+      [CODEX_ACCOUNT_DELETE_METHOD, { accountId: "work" }],
+      [CODEX_ACCOUNT_ACTIVATE_METHOD, { accountId: "work" }],
+      [CODEX_ACCOUNT_LOGIN_START_METHOD, { accountId: "work" }],
+      [CODEX_ACCOUNT_LOGIN_CANCEL_METHOD, { loginId: "login-1" }],
+    ]);
+
+    const listener = vi.fn();
+    const unsubscribe = client.subscribeCodexAccountLogin(listener);
+    expect(addNotificationCallback).toHaveBeenCalledWith(
+      CODEX_ACCOUNT_LOGIN_COMPLETED_METHOD,
+      expect.any(Function),
+    );
+    notify?.({
+      method: CODEX_ACCOUNT_LOGIN_COMPLETED_METHOD,
+      params: { accountId: "work", loginId: "login-1", success: true, error: null },
+    });
+    expect(listener).toHaveBeenCalledWith({
+      accountId: "work",
+      loginId: "login-1",
+      success: true,
+      error: null,
+    });
+    unsubscribe();
+    expect(remove).toHaveBeenCalledOnce();
+  });
+
+  it("reads and validates read-only accounts from the bound Host without a Thread ID", async () => {
+    const account = {
+      harnessId: "sample-agent",
+      harnessName: "Sample Agent",
+      credits: { usedPercent: 0, periodType: "weekly" },
+    };
+    const sendRequest = vi.fn().mockResolvedValue({ accounts: [account] });
+    const client = createRendererModelClient([{ sendRequest }]);
+    expect(await client?.listHarnessAccounts?.()).toEqual({ accounts: [account] });
+    expect(sendRequest).toHaveBeenCalledExactlyOnceWith("codexhost/harness/accounts/list", {});
+    sendRequest.mockResolvedValueOnce({ accounts: [{ ...account, token: "private" }] });
+    await expect(client?.listHarnessAccounts?.()).rejects.toThrow();
+  });
+
   it("reads plugin descriptors from its own target and rejects backend or executable metadata", async () => {
     const sendLocal = vi
       .fn()
@@ -166,25 +281,36 @@ describe("Renderer fixed Model request client", () => {
     const client = createRendererModelClient([{ addNotificationCallback, sendRequest }]);
     if (!client) throw new Error("Synthetic Model client was not created");
     expect(Object.keys(client).sort()).toEqual([
+      "activateCodexAccount",
+      "cancelCodexAccountLogin",
       "checkUpdate",
+      "consumeCodexAccountResetCredit",
+      "createCodexAccount",
+      "deleteCodexAccount",
       "executeThreadCommand",
       "forkThread",
       "importHarnessSession",
+      "inspectCodexAccountUsage",
       "inspectHarness",
       "inspectHarnessCommands",
       "inspectThread",
       "inspectThreadCommands",
       "inspectThreadUsage",
+      "listCodexAccounts",
+      "listHarnessAccounts",
       "listHarnessPlugins",
       "listHarnessSessions",
       "listSessionImportSources",
       "listThreadOwnership",
       "openHarnessWebUi",
       "readUpdateStatus",
+      "refreshCodexAccounts",
       "selectThreadModel",
       "selectThreadPermissionMode",
       "selectThreadThinking",
+      "startCodexAccountLogin",
       "startUpdate",
+      "subscribeCodexAccountLogin",
       "subscribeThreadUsage",
       "updateThreadPinned",
     ]);

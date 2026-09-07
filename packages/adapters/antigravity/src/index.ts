@@ -2,7 +2,9 @@ import { packageMetadata as harnessAdapter } from "@codexhost/harness-adapter";
 import { WORKSPACE_CONTRACT_VERSION } from "@codexhost/shared-contracts";
 
 export {
+  ANTIGRAVITY_WORKSPACE_FILE_INSTRUCTION,
   AntigravityAdapter,
+  formatAntigravityTurnPrompt,
   parseAntigravityContextUsage,
   permissionDeniedTurnError,
   resolveAntigravityContextWindow,
@@ -41,6 +43,11 @@ export {
   synthesizeAntigravityCommand,
   toolTargetFile,
 } from "./tool-projection.js";
+export {
+  ANTIGRAVITY_COMMAND_CATALOG,
+  findAntigravityCommandDescriptor,
+  parseAndFormatAntigravityCommand,
+} from "./slash-commands.js";
 
 export const packageMetadata = {
   name: "@codexhost/adapter-antigravity",

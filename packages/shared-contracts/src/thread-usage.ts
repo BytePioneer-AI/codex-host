@@ -81,15 +81,27 @@ export const accountCreditsProductUsageSchema = z
   })
   .strict();
 
+export const accountResetCreditsSchema = z
+  .object({
+    availableCount: z.number().int().safe().positive(),
+    nextExpiresAt: z.string().min(1).optional(),
+    expiresAt: z.array(z.string().min(1)).min(1).max(32).optional(),
+  })
+  .strict();
+
 export const accountCreditsSnapshotSchema = z
   .object({
+    /** Native label when the primary limit is scoped to a model or product group. */
+    label: z.string().min(1).optional(),
     usedPercent: usagePercentSchema,
     resetsAt: z.string().min(1).optional(),
     periodType: z.enum(["weekly", "monthly", "five_hour", "seven_day", "unknown"]),
     productUsage: z.array(accountCreditsProductUsageSchema).min(1).optional(),
+    resetCredits: accountResetCreditsSchema.optional(),
   })
   .strict();
 
+export type AccountResetCredits = z.infer<typeof accountResetCreditsSchema>;
 export type AccountCreditsSnapshot = z.infer<typeof accountCreditsSnapshotSchema>;
 
 export const threadUsageInspectionParamsSchema = z

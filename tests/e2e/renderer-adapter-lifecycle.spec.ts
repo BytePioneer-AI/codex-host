@@ -252,6 +252,50 @@ async function publishRouteChange(page: Page): Promise<void> {
   });
 }
 
+for (const replacement of ["policy", "bridge"]) {
+  test(`a replacement connection ${replacement} rechecks unsupported methods even when the request manager is reused`, async ({
+    page,
+  }) => {
+    await page.setContent("<!doctype html><body></body>");
+    await page.addScriptTag({ content: browserBundleText });
+    const result = await page.evaluate(async (replacement) => {
+      Reflect.get(globalThis, "setupAdapterLifecycle")();
+      const state = Reflect.get(globalThis, "__adapterLifecycleState");
+      let supported = false;
+      let requests = 0;
+      state.initialManager.sendRequest = async () => {
+        requests += 1;
+        if (!supported) throw Object.assign(new Error("Method not found"), { code: -32601 });
+        return { threadId: "thread-lifecycle", usage: null };
+      };
+      const inspect = () =>
+        state.adapter.modelControl.inspectThreadUsage({ threadId: "thread-lifecycle" });
+      await inspect().catch(() => undefined);
+      supported = true;
+      await inspect().catch(() => undefined);
+      const beforeReconnect = requests;
+      if (replacement === "policy") {
+        Reflect.set(window, "__codexhostDraftPrewarmPolicyV1", {
+          ...state.initialPolicy,
+          requestTarget: () => state.initialManager,
+        });
+      } else {
+        state.initialManager.requestClient = { ...state.initialManager };
+      }
+      try {
+        return { beforeReconnect, result: await inspect(), requests };
+      } finally {
+        state.adapter.dispose();
+      }
+    }, replacement);
+    expect(result).toEqual({
+      beforeReconnect: 1,
+      result: { threadId: "thread-lifecycle", usage: null },
+      requests: 2,
+    });
+  });
+}
+
 test("an active-route read moves requests to the resolved request manager", async ({ page }) => {
   const initial = await setup(page);
   const replacement = await replaceRoute(page, true);

@@ -544,6 +544,62 @@ describe("DeepSeekHarnessAdapter local Host", () => {
     await adapter.close();
   });
 
+  it("lists importable Legacy Sessions from the local Host Session API", async () => {
+    const { adapter, connection } = fixture();
+    connection.calls.list.mockResolvedValueOnce(
+      success({
+        items: [
+          {
+            sessionId: "session-legacy-1",
+            updatedAt: 42,
+            running: false,
+            blank: false,
+            cwd: "/workspace",
+            projections: { asOfSeq: 12, values: { title: "Importable session" } },
+          },
+          {
+            sessionId: "session-blank",
+            updatedAt: 41,
+            running: false,
+            blank: true,
+            cwd: "/workspace",
+          },
+          {
+            sessionId: "session-subagent",
+            updatedAt: 40,
+            running: false,
+            blank: false,
+            origin: "subagent",
+            cwd: "/workspace",
+          },
+          {
+            sessionId: "session-relative-cwd",
+            updatedAt: 39,
+            running: false,
+            blank: false,
+            cwd: "relative/project",
+          },
+        ],
+      }),
+    );
+
+    await expect(adapter.sessionImport.listCandidates()).resolves.toEqual({
+      ok: true,
+      value: [
+        {
+          nativeSessionId: "session-legacy-1",
+          title: "Importable session",
+          updatedAt: 42,
+          cwd: "/workspace",
+          running: false,
+        },
+      ],
+    });
+    expect(connection.connected).toBe(true);
+    expect(connection.calls.list).toHaveBeenCalledWith({});
+    await adapter.close();
+  });
+
   it("publishes stable live and historical Checkpoints for every native Turn outcome", async () => {
     const { adapter, connection } = fixture();
     await expect(adapter.inspect()).resolves.toMatchObject({

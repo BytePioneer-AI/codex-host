@@ -202,17 +202,22 @@ export class DeepSeekHarnessAdapter implements HarnessAdapter {
     try {
       const selected = await this.#select(false);
       if (this.#closed) return { ok: false, error: closedError() };
-      if (selected.generation !== "modern") {
+      const capability = (
+        selected.adapter as HarnessAdapter & {
+          sessionImport?: HarnessSessionImportCapability;
+        }
+      ).sessionImport;
+      if (!capability) {
         return {
           ok: false,
           error: {
             code: "unsupported",
-            message: "DeepSeek Harness Session import requires the Modern protocol",
+            message: "DeepSeek Harness Session import is unsupported",
             retryable: false,
           },
         };
       }
-      return (selected.adapter as ModernDelegateAdapter).sessionImport.listCandidates();
+      return capability.listCandidates();
     } catch (error) {
       return { ok: false, error: this.#selectionError(error) };
     }

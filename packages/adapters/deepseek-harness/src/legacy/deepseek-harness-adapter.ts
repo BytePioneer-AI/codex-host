@@ -27,6 +27,7 @@ import {
   type HarnessResult,
   type HarnessSession,
   type HarnessSessionCapabilities,
+  type HarnessSessionImportCapability,
   type HarnessSessionState,
   type HostAgentMessageItem,
   type HostApprovalInteraction,
@@ -67,6 +68,7 @@ import {
   nativeCheckpointRefSchema,
   nativeSessionRefSchema,
   nativeTurnRefSchema,
+  type DeepSeekModernSessionCandidate,
   type HarnessId,
   type HarnessPermissionModeCatalog,
   type HarnessPermissionModeId,
@@ -94,6 +96,7 @@ import {
   projectDeepSeekHistory,
   resolveDeepSeekForkBoundary,
 } from "./history.js";
+import { parseLegacySessionCandidates } from "./session-list.js";
 import {
   decodeDeepSeekHarnessModelRef,
   encodeDeepSeekHarnessModelRef,
@@ -1987,6 +1990,9 @@ class DeepSeekHarnessSession implements HarnessSession, DeepSeekHostSubscriber {
 export class DeepSeekHarnessAdapter implements HarnessAdapter {
   readonly commandCatalog = deepSeekHarnessCommandCatalog();
   readonly harnessId: HarnessId = deepSeekHarnessId;
+  readonly sessionImport: HarnessSessionImportCapability = Object.freeze({
+    listCandidates: () => this.#listSessionImportCandidates(),
+  });
   readonly #connection: DeepSeekHostConnectionLike;
   readonly #dependencies: DeepSeekHarnessAdapterDependencies;
   readonly #options: DeepSeekHarnessAdapterOptions;
@@ -2005,6 +2011,21 @@ export class DeepSeekHarnessAdapter implements HarnessAdapter {
       createConnection: (connectionOptions) => new DeepSeekHostConnection(connectionOptions),
     };
     this.#connection = this.#dependencies.createConnection(options);
+  }
+
+  async #listSessionImportCandidates(): Promise<
+    HarnessResult<readonly DeepSeekModernSessionCandidate[]>
+  > {
+    if (this.#closePromise) {
+      return { ok: false, error: invalidState("DeepSeek Harness Adapter is closing") };
+    }
+    try {
+      await this.#connection.connect();
+      const listed = unwrapRpc(await this.#connection.client.sessions.list({}), "session.list");
+      return { ok: true, value: parseLegacySessionCandidates(listed.items) };
+    } catch (error) {
+      return { ok: false, error: normalizedError(error, "unavailable") };
+    }
   }
 
   async inspect(): Promise<HarnessInspection> {

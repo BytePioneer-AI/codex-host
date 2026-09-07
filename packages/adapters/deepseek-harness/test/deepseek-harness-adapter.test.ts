@@ -228,7 +228,7 @@ describe("DeepSeek public generation selector", () => {
     await adapter.close();
   });
 
-  it("rejects Session discovery on Legacy without calling its Session API", async () => {
+  it("forwards Session discovery to the selected Legacy generation", async () => {
     const legacy = new FakeAdapter();
     const adapter = new DeepSeekHarnessAdapter(
       {},
@@ -238,15 +238,61 @@ describe("DeepSeek public generation selector", () => {
       },
     );
 
-    await expect(adapter.sessionImport.listCandidates()).resolves.toMatchObject({
-      ok: false,
-      error: { code: "unsupported", retryable: false },
+    await expect(adapter.sessionImport.listCandidates()).resolves.toEqual({
+      ok: true,
+      value: [],
     });
-    await expect(adapter.sessionImport.resolveCandidate("native")).resolves.toMatchObject({
-      ok: false,
-      error: { code: "unsupported" },
+    expect(legacy.listCalls).toBe(1);
+    await adapter.close();
+  });
+
+  it("revalidates Legacy import metadata through the same public resolver", async () => {
+    const legacy = new FakeAdapter();
+    const list = vi
+      .spyOn(legacy.sessionImport, "listCandidates")
+      .mockResolvedValueOnce({
+        ok: true,
+        value: [
+          {
+            nativeSessionId: "legacy-native",
+            cwd: "/project",
+            title: "Legacy session",
+            updatedAt: 2,
+            running: false,
+          },
+        ],
+      })
+      .mockResolvedValueOnce({ ok: true, value: [] });
+    const adapter = new DeepSeekHarnessAdapter(
+      {},
+      {
+        probeExecutable: () => Promise.resolve(legacyExecutable),
+        createLegacyAdapter: () => legacy,
+      },
+    );
+
+    expect(await adapter.sessionImport.resolveCandidate("legacy-native")).toEqual({
+      ok: true,
+      value: {
+        candidate: {
+          nativeSessionId: "legacy-native",
+          cwd: "/project",
+          title: "Legacy session",
+          updatedAt: 2,
+          running: false,
+        },
+        nativeRef: {
+          harnessId: "deepseek-harness",
+          nativeSessionId: "legacy-native",
+          formatVersion: 1,
+        },
+      },
     });
-    expect(legacy.listCalls).toBe(0);
+    expect(await adapter.sessionImport.resolveCandidate("legacy-native")).toMatchObject({
+      ok: false,
+      error: { code: "sessionNotFound" },
+    });
+    expect(list).toHaveBeenCalledTimes(2);
     await adapter.close();
   });
 

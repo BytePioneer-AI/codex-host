@@ -2,12 +2,12 @@
 
 ## 当前范围
 
-设置 → 会话导入可登记 **Pi 原生 v3 Session** 和 **DSH Modern Session**。导入只建立 Host Thread 与原生 Session 的映射，不复制 Transcript、不转换 Harness、不发送用户 Turn；打开后仍通过对应 Adapter 的 `open({ kind: "resume" })` 恢复历史并继续会话。
+设置 → 会话导入可登记 **Pi 原生 v3 Session**、**DSH Modern Session** 和 **DSH Legacy Session**。导入只建立 Host Thread 与原生 Session 的映射，不复制 Transcript、不转换 Harness、不发送用户 Turn；打开后仍通过对应 Adapter 的 `open({ kind: "resume" })` 恢复历史并继续会话。
 
 - 设置页始终使用本地 Host，即使 Composer 当前连接远程工作区。
 - 可选 Harness 来自该 Host 已加载、同时提供发现和解析能力的 Adapter，不使用 Renderer 内置 Harness 名单。
-- 目录表示“实现了导入接口”，不保证当前原生运行时可用。DSH Legacy、旧 Host、缺失插件或不可用存储会明确失败，不伪装成无候选。
-- DSH 仍保留原先本机、codexhost 管理的 exact `dsh-v0.1.2-rc.1` Modern 限定。
+- 目录表示“实现了导入接口”，不保证当前原生运行时可用。旧 Host、缺失插件或不可用存储会明确失败，不伪装成无候选。
+- DSH Modern 保留本机、codexhost 管理的 exact `dsh-v0.1.2-rc.1` 限定；DSH Legacy 通过 `dsh-v0.1.1-rc.2` 的 Host `session.list` 发现会话，并用同一原生 ID 恢复。
 - 本次没有增加远程扫描、CC direct/Broker 导入，也没有完成整个 Agent Picker 的动态插件化。
 
 ## Adapter 契约与职责

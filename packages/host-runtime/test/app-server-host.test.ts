@@ -4818,8 +4818,8 @@ describe("AppServerHost HarnessAdapter projection", () => {
         method(message, "thread/tokenUsage/updated") &&
         ((messageParams(message).tokenUsage as JsonObject).total as JsonObject).totalTokens === 44,
     );
-    expect(idleIndex).toBeGreaterThan(terminalIndex);
-    expect(terminalUsageIndex).toBeGreaterThan(idleIndex);
+    expect(idleIndex).toBeLessThan(terminalIndex);
+    expect(terminalUsageIndex).toBeGreaterThan(terminalIndex);
 
     writeRequest(fixture.desktopInput, {
       id: 3,
@@ -6229,7 +6229,7 @@ describe("AppServerHost HarnessAdapter projection", () => {
         threadStatus(message, threadId, "idle") ? [messageIndex] : [],
       );
       expect(completedIndex).toBeGreaterThanOrEqual(0);
-      expect(idleIndexes[turnIndex]).toBeGreaterThan(completedIndex);
+      expect(idleIndexes[turnIndex]).toBeLessThan(completedIndex);
     }
 
     writeRequest(fixture.desktopInput, {
@@ -7061,6 +7061,45 @@ describe("AppServerHost HarnessAdapter projection", () => {
     );
     expect(questionClosedIndex).toBeGreaterThan(responseIndex);
     expect(turnIndex).toBeGreaterThan(questionClosedIndex);
+    await stopFixture(fixture);
+  });
+
+  it("returns a cancelled external Thread to idle after the terminal Turn", async () => {
+    const fixture = createFixture();
+    const threadId = await startPiThread(fixture);
+    const turnId = await startPiTurn(fixture, threadId);
+    const session = fixture.adapter.sessions[0];
+    if (!session) throw new Error("Fake Pi Session was not opened");
+    session.completeCancellationOnRequest();
+
+    writeRequest(fixture.desktopInput, {
+      id: 103,
+      method: "turn/interrupt",
+      params: { threadId, turnId },
+    });
+
+    await fixture.collector.waitFor((message) => requestId(message, 103));
+    await fixture.collector.waitFor((message) => turnEvent(message, "turn/completed", turnId));
+    await expect(
+      fixture.collector.waitFor((message) => threadStatus(message, threadId, "idle")),
+    ).resolves.toBeTruthy();
+    const idleIndex = fixture.collector.messages.findIndex((message) =>
+      threadStatus(message, threadId, "idle"),
+    );
+    const completedIndex = fixture.collector.messages.findIndex((message) =>
+      turnEvent(message, "turn/completed", turnId),
+    );
+    expect(idleIndex).toBeGreaterThanOrEqual(0);
+    expect(idleIndex).toBeLessThan(completedIndex);
+
+    writeRequest(fixture.desktopInput, {
+      id: 104,
+      method: "thread/read",
+      params: { threadId },
+    });
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 104)),
+    ).resolves.toMatchObject({ result: { thread: { status: { type: "idle" } } } });
     await stopFixture(fixture);
   });
 

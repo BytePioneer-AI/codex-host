@@ -236,7 +236,7 @@ describe("Kiro regression lifecycle", () => {
     return fake;
   }
 
-  it("selects effort through the picker and slash command, and clears it for fixed models", async () => {
+  it("selects effort through the picker without a command Turn, and clears it for fixed models", async () => {
     const fake = effortTransport();
     const adapter = new KiroAdapter({}, { createTransport: () => fake });
     const opened = await adapter.open({
@@ -248,14 +248,9 @@ describe("Kiro regression lifecycle", () => {
     if (!opened.ok) throw new Error(opened.error.message);
     const session = opened.value;
     const outputs: HarnessOutput[] = [];
-    let completed!: () => void;
-    const done = new Promise<void>((resolve) => {
-      completed = resolve;
-    });
     const consume = (async () => {
       for await (const output of session.outputs) {
         outputs.push(output);
-        if (output.kind === "event" && output.event.type === "turn.completed") completed();
       }
     })();
     try {
@@ -281,23 +276,16 @@ describe("Kiro regression lifecycle", () => {
       if (!session.commands) throw new Error("Missing commands");
       expect(
         (
-          await session.commands.execute({
-            commandId: "kiro.effort",
-            arguments: { text: "high" },
-            turnId: hostTurnIdSchema.parse("regression-turn"),
+          await session.execute({
+            type: "thinking.select",
+            thinkingOptionId: "high" as HarnessThinkingOptionId,
           })
         ).ok,
       ).toBe(true);
-      await done;
-      expect(outputs).toContainEqual(
-        expect.objectContaining({
-          event: expect.objectContaining({
-            type: "session.state.changed",
-            state: expect.objectContaining({ effectiveThinkingOptionId: "high" }),
-          }),
-        }),
-      );
-      expect(JSON.stringify(outputs)).toContain("**Effort:** high");
+      expect(fake.configCalls).toEqual([
+        { id: "effortLevel", value: "low" },
+        { id: "effortLevel", value: "high" },
+      ]);
       fake.openResult.configOptions = fake.openResult.configOptions?.filter(
         (value) => (value as { id: string }).id !== "effortLevel",
       );
@@ -332,6 +320,10 @@ describe("Kiro regression lifecycle", () => {
         ? [output.event.state]
         : [],
     );
+    expect(states).toContainEqual(expect.objectContaining({ effectiveThinkingOptionId: "high" }));
+    expect(
+      outputs.some((output) => output.kind === "event" && output.event.type === "turn.started"),
+    ).toBe(false);
     expect(states.at(-1)).toMatchObject({
       effectiveModel: { id: "fixed-paid" },
       availableThinkingOptions: [],

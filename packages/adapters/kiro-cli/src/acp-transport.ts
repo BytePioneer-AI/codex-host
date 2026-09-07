@@ -2,6 +2,7 @@ import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from "node:chil
 import { Readable, Writable } from "node:stream";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { setTimeout as delay } from "node:timers/promises";
 import { commandInvocation } from "@codexhost/harness-discovery";
 
 import { sanitizeDiagnosticTail } from "@codexhost/harness-adapter";
@@ -23,7 +24,12 @@ import {
 
 import { KiroExecutableError, kiroInvocation, resolveKiroExecutable } from "./command.js";
 import type { KiroUserInputParams, KiroUserInputResult } from "./projection.js";
-import { confirmedKiroConfig, parseKiroCliModels, kiroThinkingState } from "./models.js";
+import {
+  confirmedKiroConfig,
+  parseKiroCliModels,
+  parseKiroModelCatalog,
+  kiroThinkingState,
+} from "./models.js";
 
 export type KiroTransportFaultKind =
   | "notInstalled"
@@ -267,6 +273,42 @@ export class KiroAcpTransport {
     if (this.#sessionId) throw new Error("Kiro ACP inspection cannot reuse an open Session");
     try {
       const initialize = await this.#ensureInitialized();
+      const kiro = initialize.agentCapabilities?._meta?.kiro;
+      if (
+        isRecord(kiro) &&
+        Array.isArray(kiro.extensionMethods) &&
+        kiro.extensionMethods.includes("_kiro/config/template")
+      ) {
+        const connection = this.#connection;
+        const method = initialize.authMethods?.[0];
+        if (!connection || !method) {
+          throw new KiroTransportError(
+            "unavailable",
+            "Kiro configuration discovery is unavailable",
+          );
+        }
+        await withTimeout(
+          connection.authenticate({ methodId: method.id }),
+          this.#commandTimeoutMs,
+          "Kiro authentication",
+        );
+        // Authentication starts an asynchronous catalog refresh. The template is
+        // session-free and preserves effort metadata omitted by CLI --list-models.
+        const deadline = Date.now() + this.#commandTimeoutMs;
+        while (Date.now() < deadline) {
+          const template = await withTimeout(
+            connection.request("_kiro/config/template", {}),
+            Math.max(1, deadline - Date.now()),
+            "Kiro configuration discovery",
+          );
+          const catalog = parseKiroModelCatalog(
+            isRecord(template) ? template.configOptions : undefined,
+          );
+          if (catalog.models.length > 0) return { ...initialize, catalog };
+          await delay(Math.min(250, Math.max(0, deadline - Date.now())));
+        }
+        throw new KiroTransportError("unavailable", "Kiro returned no native model catalog");
+      }
       const environment = { ...process.env, ...this.#options.environment };
       const executable = resolveKiroExecutable({
         ...(this.#options.command ? { command: this.#options.command } : {}),

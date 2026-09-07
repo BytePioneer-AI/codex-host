@@ -9,6 +9,7 @@ const native = vi.hoisted(() => ({
   model: "adjustable",
   effort: "low",
   ignoreEffort: false,
+  emptyTemplates: 0,
   requests: [] as Array<{ method: string; params: Record<string, unknown> }>,
 }));
 
@@ -20,8 +21,14 @@ function configOptions() {
       name: "Model",
       currentValue: native.model,
       options: [
-        { value: "adjustable", name: "Adjustable" },
-        { value: "fixed", name: "Fixed" },
+        {
+          value: "adjustable",
+          name: "Adjustable",
+          _meta: {
+            kiro: { hasEffort: true, effortLevels: ["low", "high"], defaultEffortLevel: "low" },
+          },
+        },
+        { value: "fixed", name: "Fixed", _meta: { kiro: { hasEffort: false } } },
       ],
     },
     ...(native.model === "adjustable"
@@ -66,7 +73,20 @@ vi.mock("node:child_process", async (original) => ({
         pending = pending.slice(index + 1);
         native.requests.push(request);
         let result: unknown;
-        if (request.method === "initialize") result = { protocolVersion: 1, agentCapabilities: {} };
+        if (request.method === "initialize")
+          result = {
+            protocolVersion: 1,
+            authMethods: [{ id: "aws-builder-id", name: "AWS Builder ID" }],
+            agentCapabilities: { _meta: { kiro: { extensionMethods: ["_kiro/config/template"] } } },
+          };
+        if (request.method === "authenticate") result = {};
+        if (request.method === "_kiro/config/template")
+          result = {
+            configOptions:
+              native.emptyTemplates-- > 0
+                ? []
+                : configOptions().filter((option) => option.id === "model"),
+          };
         if (request.method === "session/new")
           result = { sessionId: "native", configOptions: configOptions() };
         if (request.method === "session/set_config_option") {
@@ -94,6 +114,7 @@ beforeEach(() => {
   native.model = "adjustable";
   native.effort = "low";
   native.ignoreEffort = false;
+  native.emptyTemplates = 0;
   native.requests.length = 0;
   transport = new KiroAcpTransport({ cwd: process.cwd() });
 });
@@ -102,6 +123,37 @@ afterEach(async () => {
 });
 
 describe("Kiro native effort configuration", () => {
+  it("discovers per-model draft Thinking through the session-free native template", async () => {
+    native.model = "fixed";
+    native.emptyTemplates = 1;
+    await expect(transport.inspect()).resolves.toMatchObject({
+      catalog: {
+        models: [
+          { ref: { id: "adjustable" }, supportedThinkingOptionIds: ["low", "high"] },
+          { ref: { id: "fixed" }, supportedThinkingOptionIds: [] },
+        ],
+        thinkingOptions: [
+          { id: "low", label: "Low" },
+          { id: "high", label: "High" },
+        ],
+      },
+    });
+    expect(native.requests.map(({ method }) => method)).toEqual([
+      "initialize",
+      "authenticate",
+      "_kiro/config/template",
+      "_kiro/config/template",
+    ]);
+  });
+
+  it("bounds an empty native template instead of publishing false no-effort support", async () => {
+    native.emptyTemplates = Infinity;
+    await transport.close();
+    transport = new KiroAcpTransport({ cwd: process.cwd(), commandTimeoutMs: 30 });
+    await expect(transport.inspect()).rejects.toThrow("Kiro returned no native model catalog");
+    expect(native.requests.some(({ method }) => method === "session/new")).toBe(false);
+  });
+
   it("applies effort after model selection and returns native confirmation", async () => {
     const result = await transport.open({
       kind: "create",

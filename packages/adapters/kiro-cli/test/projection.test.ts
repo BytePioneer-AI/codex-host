@@ -1,5 +1,6 @@
 import type { RequestPermissionRequest } from "@agentclientprotocol/sdk";
 import { hostTurnIdSchema } from "@codexhost/shared-contracts";
+import { projectCodexApprovalRequest } from "@codexhost/protocol-core";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -99,8 +100,33 @@ describe("kiro projection", () => {
       } satisfies RequestPermissionRequest;
     }
 
-    it("round-trips exact, command, program and tool scopes without writing policy itself", () => {
+    it("offers only command-specific approvals without a scope cross-product", () => {
       const projected = projectKiroPermission("scoped", turnId, scopedRequest());
+      expect(projected.interaction.actions.map(({ label }) => label)).toEqual([
+        "Allow",
+        "Deny",
+        "Allow (this session) - Exact command: git add sample.txt",
+        "Allow (save for workspace) - Exact command: git add sample.txt",
+        "Allow (save for workspace) - Command prefix: git add *",
+        "Allow (save for workspace) - Program prefix: git *",
+      ]);
+      const wire = projectCodexApprovalRequest({
+        threadId: "thread-1",
+        interaction: projected.interaction,
+        serverName: "Kiro CLI",
+      });
+      expect(wire.request.params).toMatchObject({
+        requestedSchema: {
+          properties: {
+            actionId: {
+              oneOf: projected.interaction.actions.map(({ id, label }) => ({
+                const: id,
+                title: label,
+              })),
+            },
+          },
+        },
+      });
       for (const action of projected.interaction.actions) {
         const response = projected.resolve(action.id);
         if (action.id === "accept" || action.id === "reject") {
@@ -120,15 +146,13 @@ describe("kiro projection", () => {
               : "allowAlways",
         );
         const consent = response._meta?.kiro as { consent: { resource: string } };
-        expect(["git add sample.txt", "git add *", "git *", "*"]).toContain(
-          consent.consent.resource,
-        );
+        expect(["git add sample.txt", "git add *", "git *"]).toContain(consent.consent.resource);
         expect(action.label).toContain(consent.consent.resource);
       }
       const grants = projected.interaction.actions.filter((action) =>
         ["allowForSession", "allowAlways"].includes(action.effect),
       );
-      expect(grants).toHaveLength(12);
+      expect(grants).toHaveLength(4);
       expect(projected.resolve("not-offered")).toEqual({ outcome: { outcome: "cancelled" } });
       const grant = grants[0];
       if (!grant) throw new Error("Expected a persistent grant");
@@ -136,6 +160,72 @@ describe("kiro projection", () => {
       expect(projected.interaction.actions.find((action) => action.effect === "deny")?.id).toBe(
         "reject",
       );
+    });
+
+    it("keeps Write File approval to tool choices, not file or command rules", () => {
+      const request = scopedRequest();
+      request.toolCall.title = "Write File";
+      request._meta.kiro.toolId = "fs_write";
+      request._meta.kiro.consent.capability = "fs:write";
+      request._meta.kiro.consent.resource = "test_tool_demo.py";
+      const projected = projectKiroPermission("write", turnId, request);
+      expect(projected.interaction.actions.map(({ label }) => label)).toEqual([
+        "Allow",
+        "Deny",
+        "Allow (this session) - Entire tool (*)",
+        "Allow (save for workspace) - Entire tool (*)",
+      ]);
+      const saved = projected.interaction.actions.find(({ effect }) => effect === "allowAlways");
+      if (!saved) throw new Error("Missing saved tool approval");
+      const wire = projectCodexApprovalRequest({
+        threadId: "thread-1",
+        interaction: projected.interaction,
+        serverName: "Kiro CLI",
+      });
+      expect(wire.request.params).toMatchObject({
+        requestedSchema: { type: "object", properties: {} },
+        _meta: { codex_approval_kind: "mcp_tool_call", persist: ["session", "always"] },
+      });
+      expect(wire.parseResponse({ action: "accept", _meta: { persist: "always" } })).toEqual({
+        type: "approval",
+        actionId: saved.id,
+      });
+      expect(wire.parseResponse({ action: "cancel" })).toEqual({
+        type: "approval",
+        actionId: "reject",
+      });
+      expect(projected.resolve(saved.id)).toEqual({
+        outcome: { outcome: "selected", optionId: "always-accept" },
+        _meta: {
+          kiro: {
+            consent: {
+              capability: "fs:write",
+              resource: "*",
+              scope: "workspace",
+              workspaceRoot: "/workspace",
+            },
+          },
+        },
+      });
+      expect(projected.resolve("always-reject")).toEqual({ outcome: { outcome: "cancelled" } });
+    });
+
+    it("does not replace an absent workspace with a global saved rule", () => {
+      const request = scopedRequest();
+      request._meta.kiro.consent.workspaceRoot = "";
+      const projected = projectKiroPermission("no-workspace", turnId, request);
+      expect(projected.interaction.actions.map(({ label }) => label)).toEqual([
+        "Allow",
+        "Deny",
+        "Allow (this session) - Exact command: git add sample.txt",
+      ]);
+    });
+
+    it.each(["", "*"])("does not offer blanket shell access for resource %j", (resource) => {
+      const request = scopedRequest();
+      request._meta.kiro.consent.resource = resource;
+      const projected = projectKiroPermission("missing-command", turnId, request);
+      expect(projected.interaction.actions.map(({ label }) => label)).toEqual(["Allow", "Deny"]);
     });
 
     it.each([

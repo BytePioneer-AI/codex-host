@@ -6,13 +6,6 @@ import {
 
 export const KIRO_COMMANDS: HarnessCommandDescriptor[] = [
   {
-    id: "kiro.effort" as HarnessCommandDescriptor["id"],
-    invocation: "/effort",
-    label: "Thinking Effort",
-    description: "Show or set the current model's native effort level",
-    argumentMode: "text",
-  },
-  {
     id: "kiro.compact" as HarnessCommandDescriptor["id"],
     invocation: "/compact",
     label: "Compact Conversation",
@@ -84,19 +77,6 @@ function table(headers: string[], rows: unknown[][]): string {
 }
 
 export function formatKiroCommandResult(commandId: string, result: unknown): string {
-  if (commandId === "kiro.effort" && isRecord(result)) {
-    const options = result.availableThinkingOptions;
-    if (!Array.isArray(options) || options.length === 0) {
-      return "The current Kiro model does not expose an effort setting.";
-    }
-    return [
-      `**Effort:** ${cell(result.effectiveThinkingOptionId ?? "Not reported")}`,
-      table(
-        ["Available level", "Name"],
-        options.filter(isRecord).map((option) => [option.id, option.label]),
-      ),
-    ].join("\n\n");
-  }
   if (["kiro.plan", "kiro.spec", "kiro.vibe"].includes(commandId)) {
     return `**Kiro mode:** ${cell(result)}`;
   }

@@ -95,7 +95,6 @@ describe("installed Harness composition", () => {
       omp: ["/compact"],
       antigravity: [],
       "kiro-cli": [
-        "/effort",
         "/compact",
         "/kiro-context",
         "/kiro-usage",

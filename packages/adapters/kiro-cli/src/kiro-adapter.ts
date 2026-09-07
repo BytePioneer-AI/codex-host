@@ -1229,13 +1229,9 @@ export class KiroSession implements HarnessSession {
         ok: false,
         error: { code: "sessionBusy", message: "Session is busy", retryable: true },
       };
-    const effort = command.commandId === "kiro.effort" ? command.arguments?.text : undefined;
     if (
       !KIRO_COMMAND_CATALOG.commands.some((entry) => entry.id === command.commandId) ||
-      Object.keys(command.arguments ?? {}).some(
-        (key) => command.commandId !== "kiro.effort" || key !== "text",
-      ) ||
-      (effort !== undefined && typeof effort !== "string")
+      Object.keys(command.arguments ?? {}).length > 0
     ) {
       return {
         ok: false,
@@ -1245,11 +1241,6 @@ export class KiroSession implements HarnessSession {
           retryable: false,
         },
       };
-    }
-    const requestedEffort = typeof effort === "string" ? effort.trim() : "";
-    if (requestedEffort) {
-      const error = this.#thinkingSelectionError(requestedEffort);
-      if (error) return { ok: false, error };
     }
     const turnId = command.turnId
       ? hostTurnIdSchema.parse(command.turnId)
@@ -1266,10 +1257,7 @@ export class KiroSession implements HarnessSession {
     const execute = async (): Promise<void> => {
       try {
         let result: unknown;
-        if (command.commandId === "kiro.effort") {
-          if (requestedEffort) await Promise.race([stopped, this.#applyThinking(requestedEffort)]);
-          result = this.#thinking;
-        } else if (command.commandId === "kiro.compact") {
+        if (command.commandId === "kiro.compact") {
           const compactionItemId = hostItemIdSchema.parse(
             `compact-${turnId}-${this.#randomUUID()}`,
           );

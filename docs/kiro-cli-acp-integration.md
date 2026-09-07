@@ -8,7 +8,7 @@
 
 以上说明及证据摘要保留原始调研时点，不代表后续实现状态。本次针对 PR #8 修复了流式文本共享对象、工具终态与 Diff 预览重复发布、原生 Turn 身份、历史正文/工具字段和取消状态、关闭时终态丢失、Thread 环境覆盖、模型目录与默认选择、配置生效确认，以及查询命令无可见结果的问题；补齐 Sidebar ownership 的 Kiro 映射。
 
-- `inspect` 使用无 Session、无 Prompt 的原生模型列表命令；创建时省略的模型保持省略，初始与切换后状态来自原生确认。
+- `inspect` 优先使用无 Session、无 Prompt 的 ACP 配置模板目录，旧引擎未声明该接口时使用 CLI 模型列表；创建时省略的模型保持省略，初始与切换后状态来自原生确认。
 - 工具保留前序参数及类型，只结束一次；只有成功终态携带的 Diff 才发布文件修改，孤立的初始化工具更新不归入当前 Turn。
 - 历史读取保留原生正文、工具结果、顺序、身份和终态；缺少终态为 unknown，缺失或损坏的历史明确报错，不返回伪造空快照。
 - `/kiro-usage` 与 `/kiro-context` 通过普通消息展示脱敏的原生查询结果，不伪造持久化 Native Turn，也不将 credits 换算成 USD/token。本次未新增 Usage 面板契约。
@@ -33,13 +33,14 @@ Usage 面板补记：现已复用输入框的公共用量控件，新增可选 `
 - **编辑上一条消息**：只有一轮且压缩已移除旧边界时，创建保留模型、权限和原生模式的空 Session，再由 Host 完成替换。原生刚创建 Session 时可能先返回身份、后写 `messages.jsonl`；仅本次明确新建且从未开始 Turn 的 Session 可将这段 `ENOENT` 窗口视为空历史，旧会话或执行过 Turn 的会话仍报错。通过隔离 Mapping Store 和真实 Host 替换流程复测压缩单轮 `1→0`、普通单轮 `1→0`、压缩历史后的最新轮 `3→2`，源历史不变。压缩覆盖了多轮且待保留边界已经消失时，仍不能精确编辑其中的旧轮次。
 - 本轮执行了三个隔离模型 Prompt（含一次提问取消），产生少量 Kiro 用量；没有重启 Desktop 或修改业务工作区文件。原生交互与 Host 事务实测不替代最终 Desktop 画面验收。
 
-### 模型级 Thinking / Effort 接入（2026-09-06）
+### 模型级 Thinking / Effort 接入（2026-09-07 修正 GUI 入口）
 
 - 适配器现已实现 Thinking 选择，替代早期的全局禁用。能力声明表示存在选择接口，不表示每个模型都支持：目录中的每个模型都有独立的 `supportedThinkingOptionIds`，没有原生档位的模型明确为空，不能继承其他模型的档位。付费身份或模型名称不作为开放条件，`auto` 不提供 Effort。
-- 模型目录解析保留原生 `_meta.kiro.effortLevels` / `defaultEffortLevel`；会话内的选项和生效值以原生 `effortLevel` 配置为准。CLI 模型列表如果没有附带档位元数据，新线程草稿不猜测档位，创建/恢复会话后按 ACP 返回的选项展示。切到不支持的模型时，清空旧 Thinking；Renderer 不再从旧 carrier 恢复原生已经明确清空的档位。
-- `/effort` 显示当前档位和实际可选值，`/effort <档位>` 与 Thinking 选择器共用同一原生配置写入。当前模型不支持、档位非法或会话忙碌时拒绝设置；收到 RPC 响应不等于生效，必须确认返回值及可选目录一致才发布新状态。
+- 模型目录通过 ACP `authenticate` 触发原生刷新，再读取 `_kiro/config/template`，保留每个模型的 `_meta.kiro.effortLevels` / `defaultEffortLevel`。刷新尚未完成时有界等待，不创建 Session 或提交 Prompt；仅旧引擎未声明模板接口时回退到 CLI 模型列表，不猜测缺失档位。此前仅使用 CLI 模型列表会丢失 Effort 元数据，导致新线程草稿中没有 Thinking。
+- GUI 直接复用 AGY 使用的公共 Model/Thinking 联合选择器：支持的模型在模型菜单中显示档位，所选档位显示在模型按钮旁；不支持的模型隐藏档位。已移除多余的 `/effort` 命令入口及执行分支。会话内通过 `thinking.select` 写入原生 `effortLevel`，必须确认返回值及可选目录一致才发布新状态；模型不支持、档位非法或会话忙碌时拒绝设置。
+- 切到不支持的模型时清空旧 Thinking；Renderer 不从旧 carrier 恢复原生已经明确清空的档位。
 - 创建时先应用模型，再校验及应用显式 Effort；恢复时读取原生生效配置；Fork/编辑上一条消息时保留持久化 Effort，并再次通过原生目录校验与配置确认。历史快照中的当前配置使用会话已确认状态，避免旧元数据复活无效档位。
-- 回归覆盖混合支持目录、额外/无效档位、原生不生效响应、设置顺序、恢复及派生保留、`/effort` 和界面状态往返。可调整模型的成功路径使用合成 ACP 数据验证；本机当前账号实测返回 9 个模型、0 个 Effort 档位，`/effort` 正确提示不支持，`/effort high` 被拒绝，未提交模型 Prompt。本机无对应付费模型权限，尚未完成真实高级模型 Effort 生效验收。
+- 回归覆盖模板目录延迟与超时、混合支持目录、额外/无效档位、原生不生效响应、设置顺序、恢复及派生保留和界面状态往返。真实浏览器中使用合成原生模型目录，验证新线程选择模型、显示 Thinking、点击 High、按钮回显和切换固定模型清空档位；全过程不执行命令或创建 Thread。构建后的插件经本机只读检查返回 9 个模型、0 个 Effort 档位，命令目录不再包含 `/effort`。尚未完成真实高级模型 Effort 生效验收；未提交模型 Prompt 或重启 Desktop。
 
 ### 自动压缩终态与 trust-all 复核（2026-09-06）
 
@@ -47,11 +48,12 @@ Usage 面板补记：现已复用输入框的公共用量控件，新增可选 `
 - 本机 Kiro CLI `2.21.1` 的 `acp --help` 虽列出 `--trust-all-tools`，实际 `acp --agent-engine v3 --auth-method cli --trust-all-tools` 仍明确拒绝该参数。新建隔离 ACP 会话返回的配置仅有 `mode`、`model`、`autopilot`、`contentCollection`，没有 trust-all。该次探针未提交 Prompt，进程已清理。
 - `/tools trust-all` 或交互终端的 trust-all 行为不能直接等同于 ACP v3 的原生权限模式。本机终端实现包含客户端自动应答工具审批的逻辑，并对 KAS 审批类别作筛选；这不是可经 `session/set_config_option` 确认的全权限开关。本次不新增假定等价的 YOLO 模式，不自动答复审批，不写用户全局权限配置，`unattended-full-access` 仍明确拒绝。
 
-### 原生审批范围与持久化接入（2026-09-06）
+### 原生审批范围与持久化接入（2026-09-07 精简选项）
 
-- 原生请求中的 `allow_always` 不等于自动保存到磁盘：KAS 默认使用 `session`；Adapter 现在依据 `_meta.kiro.consent` 提供会话、工作区和用户级选项，将选中的 `scope`、`resource`、`workspaceRoot` 随原生 option ID 返回。规则写入、匹配和生效仍由 Kiro 负责，Host 不新增权限存储或自动审批。
-- 有可持久化 consent 时，保留当前资源和整个工具范围；对不含引号、换行或 shell 运算符的简单命令，额外展示明确的程序/子命令前缀，例如 `git *`、`git add *`。这些都是需要用户单独选择的扩大范围，不会从“本次允许”自动推导授权。复杂命令不猜测前缀；原生禁止持久化或显式 ask 时不提供持久化允许。原生持久化拒绝选项同样保留。
-- 多个同类 action 使用 Desktop 标准 elicitation 单选表单，完整标签区分匹配范围与保存范围，默认本次允许；取消/关闭只返回本次拒绝，不生成持久化拒绝。其他只有单个同类 action 的 Harness 保留原来的紧凑审批样式。未声明的 action ID 被拒绝且不清除待处理审批。
+- 原生请求中的 `allow_always` 不等于自动保存到磁盘：KAS 默认使用 `session`；Adapter 根据当前审批对象提供会话或工作区保存选项，将选中的 `scope`、`resource`、`workspaceRoot` 随原生 option ID 返回。规则写入、匹配和生效仍由 Kiro 负责，Host 不新增权限存储或自动审批。
+- 普通工具只显示本次允许、本会话允许整个工具、保存整个工具权限到工作区和本次拒绝；不把文件路径、命令前缀、用户级全局规则或持久化拒绝铺进工具审批。命令审批按原生 `shell` / `exec` / `shell:exec` capability 区分：本会话只允许精确命令，工作区保存可选择精确命令及简单命令的程序/子命令前缀，例如 `git *`、`git add *`，不提供整个 shell 的 `*` 授权。复杂命令不猜测前缀；原生禁止持久化或显式 ask 时不提供持久化允许。没有工作区时不退化为用户级全局保存。
+- 普通工具恢复 Desktop 原生紧凑工具审批控件；命令有多个匹配范围时才使用标准 elicitation 单选表单，完整标签区分匹配范围与保存范围，默认本次允许。取消/关闭只返回本次拒绝，不生成持久化拒绝。未声明的 action ID 被拒绝且不清除待处理审批。
+- 审批栏布局保留原生按钮及下拉行为，仅移除右侧操作组的自动起始边距，让“始终允许 / 拒绝 / 允许一次”在宽屏靠右相邻排列；窄屏继续使用原生纵向布局，不改变审批选项或响应。
 - 本机 KAS 实现沿用已有 `permissions.yaml` / `permissions.json`，无已有文件时默认 YAML；用户级位于原生 home 的 `.kiro/settings`，工作区级使用原生 home 下 `.kiro/workspace-roots` 的目录绑定。Adapter 不强制 JSON，不直接写这些文件。验证包括原生请求记录、已安装 CLI/Desktop 的相关实现、SDK 表单 schema、Adapter 到公共审批协议的往返和定向测试；尚未复测最终 Desktop 弹窗及真实持久化写入，未提交模型 Prompt 或更改现有用户权限。
 
 ## 1. 结论

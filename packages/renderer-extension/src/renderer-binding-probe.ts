@@ -60,6 +60,7 @@ import {
 } from "./versioned-renderer-adapter.js";
 import type { RendererModelClient } from "./renderer-model-client.js";
 import { thinkingOptionsForModel } from "./renderer-model-picker.js";
+import { installRendererApprovalStyle } from "./renderer-approval-style.js";
 import { RENDERER_AGENT_INSTALL_URLS } from "./renderer-agent-picker.js";
 import {
   readClaudePermissionModePreference,
@@ -601,6 +602,7 @@ export function installRendererBindingProbe(
   const existing = window.__codexhostRendererBindingProbeV1;
   if (existing) return existing;
 
+  const disposeApprovalStyle = installRendererApprovalStyle(document);
   const enabledAgents = [...new Set(options.enabledAgents ?? DEFAULT_RENDERER_AGENTS)];
   const enabledAgentSet = new Set(enabledAgents);
   const controller = new DraftAgentController<Element>({
@@ -2588,6 +2590,7 @@ export function installRendererBindingProbe(
     dispose() {
       if (disposed) return;
       disposed = true;
+      disposeApprovalStyle();
       usageNotificationDispose?.();
       usageNotificationDispose = null;
       adapterDispose?.();

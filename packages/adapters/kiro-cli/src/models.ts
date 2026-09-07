@@ -34,7 +34,10 @@ function nonBlank(value: unknown): value is string {
 function thinkingOptions(values: unknown): HarnessThinkingOption[] {
   const options = new Map<string, HarnessThinkingOption>();
   for (const value of Array.isArray(values) ? values : []) {
-    const option = typeof value === "string" ? { value, name: value } : value;
+    const option =
+      typeof value === "string"
+        ? { value, name: value.charAt(0).toUpperCase() + value.slice(1) }
+        : value;
     if (!isRecord(option)) continue;
     const parsed = harnessThinkingOptionSchema.safeParse({
       id: option.value,

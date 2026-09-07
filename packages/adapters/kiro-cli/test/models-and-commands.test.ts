@@ -204,7 +204,7 @@ describe("kiro slash commands", () => {
     const invocations = KIRO_COMMANDS.map((c) => c.invocation);
 
     expect(invocations).toContain("/compact");
-    expect(invocations).toContain("/effort");
+    expect(invocations).not.toContain("/effort");
     expect(invocations).toContain("/kiro-context");
     expect(invocations).toContain("/kiro-usage");
     expect(invocations).toContain("/kiro-plan");

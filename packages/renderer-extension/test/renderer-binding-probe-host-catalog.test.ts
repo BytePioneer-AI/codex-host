@@ -7,6 +7,10 @@ import type { RendererConnectionDiagnostics } from "../src/settings/connections-
 import type { RendererSessionImportClient } from "../src/settings/session-import-page.js";
 import type * as VersionedRendererAdapter from "../src/versioned-renderer-adapter.js";
 
+vi.mock("../src/renderer-approval-style.js", () => ({
+  installRendererApprovalStyle: () => vi.fn(),
+}));
+
 const testState = vi.hoisted(() => ({
   composer: null as unknown as Element,
   editor: null as unknown as Element,

@@ -141,28 +141,28 @@ export interface ProjectedApproval {
 function consentResources(
   consent: Record<string, unknown>,
 ): Array<{ label: string; resource: string }> {
-  const resource = consent.triggeringResource ?? consent.resource;
-  if (typeof resource !== "string" || !resource.trim()) {
+  if (!["shell", "exec", "shell:exec"].includes(String(consent.capability))) {
     return [{ label: "Entire tool (*)", resource: "*" }];
   }
-  const resources = new Map<string, string>([[resource, `Requested: ${resource}`]]);
-  if (["shell", "exec", "shell:exec"].includes(String(consent.capability))) {
-    // Only suggest prefixes for simple commands; Kiro remains the policy parser and enforcer.
-    const words = resource.trim().split(/\s+/u);
-    const program = words[0];
-    if (
-      program &&
-      /^[A-Za-z0-9_. -]+$/u.test(resource) &&
-      words.length > 1 &&
-      !["sudo", "doas", "env"].includes(program)
-    ) {
-      if (words.length > 2 && /^[A-Za-z][A-Za-z0-9_-]*$/u.test(words[1] ?? "")) {
-        resources.set(`${program} ${words[1]} *`, `Command prefix: ${program} ${words[1]} *`);
-      }
-      resources.set(`${program} *`, `Program prefix: ${program} *`);
-    }
+  const resource = consent.triggeringResource ?? consent.resource;
+  if (typeof resource !== "string" || !resource.trim() || resource.trim() === "*") {
+    return [];
   }
-  resources.set("*", "Entire tool (*)");
+  const resources = new Map<string, string>([[resource, `Exact command: ${resource}`]]);
+  // Only suggest prefixes for simple commands; Kiro remains the policy parser and enforcer.
+  const words = resource.trim().split(/\s+/u);
+  const program = words[0];
+  if (
+    program &&
+    /^[A-Za-z0-9_. -]+$/u.test(resource) &&
+    words.length > 1 &&
+    !["sudo", "doas", "env"].includes(program)
+  ) {
+    if (words.length > 2 && /^[A-Za-z][A-Za-z0-9_-]*$/u.test(words[1] ?? "")) {
+      resources.set(`${program} ${words[1]} *`, `Command prefix: ${program} ${words[1]} *`);
+    }
+    resources.set(`${program} *`, `Program prefix: ${program} *`);
+  }
   return [...resources].map(([resource, label]) => ({ label, resource }));
 }
 
@@ -199,32 +199,28 @@ export function projectKiroPermission(
         outcome: { outcome: "selected", optionId: option.optionId },
       });
     } else if (
-      (option.kind === "allow_always" || option.kind === "reject_always") &&
+      option.kind === "allow_always" &&
       consent &&
       typeof consent.capability === "string" &&
       consent.capability.trim() &&
       consent.persistableConsent !== false &&
-      (option.kind !== "allow_always" || consent.askType !== "explicit")
+      consent.askType !== "explicit"
     ) {
-      for (const scope of ["session", "workspace", "user"] as const) {
-        if (scope === "workspace" && typeof consent.workspaceRoot !== "string") continue;
-        for (const [index, choice] of resources.entries()) {
+      for (const scope of ["session", "workspace"] as const) {
+        if (
+          scope === "workspace" &&
+          (typeof consent.workspaceRoot !== "string" || !consent.workspaceRoot.trim())
+        ) {
+          continue;
+        }
+        const choices = scope === "session" ? resources.slice(0, 1) : resources;
+        for (const [index, choice] of choices.entries()) {
           const id = `kiro-consent:${JSON.stringify([option.optionId, scope, index])}`;
-          const scopeLabel =
-            scope === "session"
-              ? "this session"
-              : scope === "workspace"
-                ? "save for workspace"
-                : "save for user";
+          const scopeLabel = scope === "session" ? "this session" : "save for workspace";
           scopedActions.push({
             id,
-            label: `${option.kind === "allow_always" ? "Allow" : "Deny"} (${scopeLabel}) - ${choice.label}`,
-            effect:
-              option.kind === "reject_always"
-                ? "deny"
-                : scope === "session"
-                  ? "allowForSession"
-                  : "allowAlways",
+            label: `Allow (${scopeLabel}) - ${choice.label}`,
+            effect: scope === "session" ? "allowForSession" : "allowAlways",
           });
           responses.set(id, {
             outcome: { outcome: "selected", optionId: option.optionId },
@@ -245,7 +241,7 @@ export function projectKiroPermission(
       }
     }
   }
-  // Cancellation must remain one-shot even when native persistent denials are offered.
+  // Keep policy administration out of a single tool approval.
   actions.push(...scopedActions);
   if (responses.size !== actions.length)
     throw new Error("Kiro returned duplicate approval action IDs");

@@ -76,6 +76,7 @@ export const RENDERER_AGENT_INSTALL_URLS: Readonly<Record<ExternalRendererAgent,
   grok: "https://grok.com/",
   omp: "https://github.com/can1357/oh-my-pi",
   antigravity: "https://antigravity.google/product/antigravity-cli",
+  hermes: "https://hermes-agent.nousresearch.com/docs",
 };
 
 type AgentAvailability = Partial<Record<ExternalRendererAgent, RendererAgentAvailability>>;

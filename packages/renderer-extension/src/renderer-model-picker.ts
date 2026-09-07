@@ -158,7 +158,6 @@ export function rendererModelPickerPresentation(
   const showThinkingSection =
     thinkingOptions.length > 0 &&
     !(thinkingOptions.length === 1 && thinkingOptions[0]?.id === "off");
-  const resolvedModelLabel = view.resolvedModelLabel ?? selectedModel?.resolvedModelLabel;
   let modelLabel = "Select model";
   if (selectedModel) modelLabel = selectedModel.label;
   else if (view.status === "waitingForAdapter" || view.status === "loading") {
@@ -168,7 +167,6 @@ export function rendererModelPickerPresentation(
   else if (view.status === "error") modelLabel = "Models unavailable";
   return {
     modelLabel,
-    ...(resolvedModelLabel && resolvedModelLabel !== modelLabel ? { resolvedModelLabel } : {}),
     thinkingOptions,
     showThinkingSection,
     thinkingSelectionEnabled: thinkingOptions.length > 1,

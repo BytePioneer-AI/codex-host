@@ -1,4 +1,6 @@
 import {
+  encodeHarnessPluginRoute,
+  harnessIdSchema,
   harnessModelRefSchema,
   harnessPermissionModeIdSchema,
   harnessThinkingOptionIdSchema,
@@ -44,6 +46,22 @@ export const OMP_TRANSPORT_MODEL_ID = "codexhost/omp-native";
 export const OMP_TRANSPORT_MODEL_PREFIX = `${OMP_TRANSPORT_MODEL_ID}@`;
 export const ANTIGRAVITY_TRANSPORT_MODEL_ID = "codexhost/antigravity-native";
 export const ANTIGRAVITY_TRANSPORT_MODEL_PREFIX = `${ANTIGRAVITY_TRANSPORT_MODEL_ID}@`;
+
+/** Hermes rides the shared harness-plugin route codec instead of a private prefix. */
+export const HERMES_PLUGIN_ROUTE_PREFIX = "codexhost/plugin-v1@";
+
+export function hermesTransportModelId(
+  model?: HarnessModelRef,
+  permissionModeId?: HarnessPermissionModeId,
+): string {
+  return encodeHarnessPluginRoute({
+    harnessId: harnessIdSchema.parse("hermes"),
+    ...(model ? { model: harnessModelRefSchema.parse(model) } : {}),
+    ...(permissionModeId
+      ? { permissionModeId: harnessPermissionModeIdSchema.parse(permissionModeId) }
+      : {}),
+  });
+}
 
 export type RendererAdapterState = "installing" | "ready" | "unsupported";
 
@@ -922,7 +940,9 @@ export function modelSelectionForAgent(
                 ? ompTransportModelId(model, thinkingOptionId, permissionModeId)
                 : agent === "antigravity"
                   ? antigravityTransportModelId(model, permissionModeId, thinkingOptionId)
-                  : transportModelIdForAgent(agent);
+                  : agent === "hermes"
+                    ? hermesTransportModelId(model, permissionModeId)
+                    : transportModelIdForAgent(agent);
   return transportModelId ? { model: transportModelId, reasoningEffort } : officialSelection;
 }
 

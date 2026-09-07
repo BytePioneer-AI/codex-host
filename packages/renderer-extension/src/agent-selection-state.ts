@@ -13,6 +13,7 @@ export const KNOWN_RENDERER_AGENTS = [
   "grok",
   "omp",
   "antigravity",
+  "hermes",
 ] as const;
 export const DEFAULT_RENDERER_AGENTS = KNOWN_RENDERER_AGENTS;
 export type RendererAgent = (typeof KNOWN_RENDERER_AGENTS)[number];
@@ -39,6 +40,7 @@ export interface DraftComposerState {
   ompThinkingOptionId?: HarnessThinkingOptionId;
   antigravityModel?: HarnessModelRef;
   antigravityThinkingOptionId?: HarnessThinkingOptionId;
+  hermesModel?: HarnessModelRef;
   permissionModeByAgent?: Partial<Record<ExternalRendererAgent, HarnessPermissionModeId>>;
 }
 
@@ -206,6 +208,7 @@ export class DraftAgentController<Composer extends object> {
     if (agent === "grok" && model) state.grokModel = model;
     if (agent === "omp" && model) state.ompModel = model;
     if (agent === "antigravity" && model) state.antigravityModel = model;
+    if (agent === "hermes" && model) state.hermesModel = model;
     if (agent === "pi" && thinkingOptionId) state.piThinkingOptionId = thinkingOptionId;
     else if (agent === "pi") delete state.piThinkingOptionId;
     if (agent === "claude-code" && thinkingOptionId) {
@@ -231,6 +234,7 @@ export class DraftAgentController<Composer extends object> {
         "grok",
         "omp",
         "antigravity",
+        "hermes",
       ] as const) {
         const current = state.permissionModeByAgent?.[candidate];
         if (candidate !== agent && current) permissionModeByAgent[candidate] = current;
@@ -253,6 +257,7 @@ export class DraftAgentController<Composer extends object> {
     if (agent === "opencode") return state.openCodeModel;
     if (agent === "grok") return state.grokModel;
     if (agent === "omp") return state.ompModel;
+    if (agent === "hermes") return state.hermesModel;
     return state.antigravityModel;
   }
 
@@ -301,6 +306,7 @@ export class DraftAgentController<Composer extends object> {
     else if (agent === "opencode") state.openCodeModel = model;
     else if (agent === "grok") state.grokModel = model;
     else if (agent === "omp") state.ompModel = model;
+    else if (agent === "hermes") state.hermesModel = model;
     else state.antigravityModel = model;
     return state;
   }

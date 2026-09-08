@@ -17,6 +17,9 @@ import {
 import { FakeHarnessAdapter, FakeHarnessSession } from "@codexhost/harness-adapter/testing";
 import {
   harnessIdSchema,
+  harnessModelRefSchema,
+  harnessThinkingOptionIdSchema,
+  harnessPermissionModeIdSchema,
   harnessPermissionModeCatalogSchema,
   hostTurnIdSchema,
 } from "@codexhost/shared-contracts";
@@ -110,6 +113,29 @@ describe("macOS Aqua Harness broker", () => {
     expect(native.sessions).toHaveLength(1);
     expect(native.sessions[0]?.cwd).toBe(root);
     expect(nativeOpen).toHaveBeenCalledWith({ kind: "create", cwd: root });
+    const sourceRef = opened.value.initialState.nativeRef;
+    if (!sourceRef) throw new Error("Fixture Session has no native identity");
+    const rollback = {
+      kind: "rollbackLastTurn" as const,
+      cwd: root,
+      sourceRef: { ...sourceRef, nativeSessionId: "separate-id" },
+      model: harnessModelRefSchema.parse({ id: "custom-model" }),
+      thinkingOptionId: harnessThinkingOptionIdSchema.parse("high"),
+      permissionModeId: harnessPermissionModeIdSchema.parse("default"),
+    };
+    nativeOpen.mockResolvedValueOnce({
+      ok: false,
+      error: {
+        code: "unsupported",
+        message: "Synthetic rollback",
+        retryable: false,
+      },
+    });
+    await expect(adapter.open(rollback)).resolves.toMatchObject({
+      ok: false,
+      error: { code: "unsupported" },
+    });
+    expect(nativeOpen).toHaveBeenLastCalledWith(rollback);
     await opened.value.close();
     await adapter.close();
     await server.close();

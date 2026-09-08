@@ -470,6 +470,10 @@ export class ExternalThreadRuntime {
       environment: { ...this.#environment, [DELEGATION_THREAD_ID_ENV]: record.hostThreadId },
       nativeRef: record.nativeSessionRef as NativeSessionRef,
       knownTurnRefs: record.turnMappings.map(({ nativeTurnRef }) => nativeTurnRef),
+      ...(restoredSelection?.model ? { model: restoredSelection.model } : {}),
+      ...(restoredSelection?.thinkingOptionId
+        ? { thinkingOptionId: restoredSelection.thinkingOptionId }
+        : {}),
       ...(harnessId === "grok" && restoredSelection?.permissionModeId
         ? { permissionModeId: restoredSelection.permissionModeId }
         : {}),

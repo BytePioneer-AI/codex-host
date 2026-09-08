@@ -538,6 +538,13 @@ describe("Renderer sidebar Agent ownership", () => {
   it("maps only known external Harness ownership to Renderer Agents", () => {
     expect(
       rendererAgentForThreadOwnership({
+        threadId: "kiro-thread" as HostThreadId,
+        owner: "external",
+        harnessId: harnessIdSchema.parse("kiro-cli"),
+      }),
+    ).toBe("kiro-cli");
+    expect(
+      rendererAgentForThreadOwnership({
         threadId: "pi-thread" as HostThreadId,
         owner: "external",
         harnessId: PI_HARNESS_ID,

@@ -21,6 +21,9 @@ does not depend on a local extension path or a network request.
 square mark with its dark outer plate. Both are bundled locally so the Renderer
 does not depend on a network request.
 
+`kiro-agent.svg` is the unmodified official Kiro icon from
+`https://kiro.dev/icon.svg`, bundled locally as a data URL.
+
 The Agent picker uses the official Pi mark from `https://pi.dev/logo-auto.svg`
 and the Claude mark distributed in Anthropic's official `anthropic.claude-code`
 VS Code extension as inline vector paths. The DeepSeek Harness whale mark is

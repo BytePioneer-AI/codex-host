@@ -924,6 +924,51 @@ describe("HermesAdapter model selection", () => {
     await adapter.close();
   });
 
+  it("resolves the post-selection label from the SessionState inventory", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "hermes-adapter-select-label-"));
+    temporaryDirectories.push(directory);
+    const counterPath = path.join(directory, "model-calls.log");
+    const command = await modelSelectionHermesExecutable();
+    const adapter = new HermesAdapter({
+      command,
+      environment: { ...process.env, FAKE_HERMES_MODEL_CALLS: counterPath },
+    });
+
+    const opened = await adapter.open({ kind: "create", cwd: process.cwd() });
+    expect(opened.ok).toBe(true);
+    if (!opened.ok) return;
+
+    const stateEvents: { resolvedModelLabel?: string }[] = [];
+    void (async () => {
+      for await (const output of opened.value.outputs) {
+        if (
+          output.kind === "event" &&
+          output.event.type === "session.state.changed"
+        ) {
+          stateEvents.push(output.event.state);
+        }
+      }
+    })();
+
+    const requestedRef = encodeHermesModelRef("zai:glm-5-turbo");
+    if (!requestedRef) throw new Error("Expected a valid Hermes Model Ref");
+    const selected = await opened.value.execute({
+      type: "model.select",
+      model: requestedRef,
+    });
+    expect(selected.ok).toBe(true);
+    await new Promise((resolve) => setTimeout(resolve, 150));
+
+    // The label must come from the SessionState name (catalog-aligned), never
+    // the bare native id — a differing label renders a duplicate gray chip.
+    const last = stateEvents.at(-1);
+    expect(last?.resolvedModelLabel).toBe("GLM 5 Turbo");
+    expect(last?.resolvedModelLabel).not.toContain("zai:");
+
+    await opened.value.close();
+    await adapter.close();
+  });
+
   it("does not rebuild the Hermes Agent when the requested model is already active", async () => {
     const directory = await mkdtemp(path.join(os.tmpdir(), "hermes-adapter-model-calls-"));
     temporaryDirectories.push(directory);

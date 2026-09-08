@@ -60,6 +60,7 @@ import {
   type HermesTransportEvent,
 } from "./acp-transport.js";
 import {
+  catalogAlignedModelLabel,
   decodeHermesModelRefId,
   isHermesModeId,
   projectHermesModelState,
@@ -513,6 +514,7 @@ export class HermesSession implements HarnessSession {
   #state: HarnessSessionState;
   #faulted: HarnessError | null = null;
   #closed = false;
+  #availableModels: { modelId: string; name: string }[] = [];
 
   #activeTurn: ActiveTurn | null = null;
   #activeTurnId: ReturnType<typeof hostTurnIdSchema.parse> | null = null;
@@ -527,6 +529,10 @@ export class HermesSession implements HarnessSession {
     this.#onSettle = options.onSettle;
     const projected = projectHermesModelState(options.open.session.models);
     const modes = options.open.session.modes;
+    // Kept for set_model: ACP returns no state after a switch, so the label is
+    // re-projected from the same SessionState inventory that seeded this
+    // session.
+    this.#availableModels = options.open.session.models?.availableModels ?? [];
     this.#state = {
       nativeRef: this.#nativeRef,
       ...(projected.effectiveModel ? { effectiveModel: projected.effectiveModel } : {}),
@@ -946,10 +952,17 @@ export class HermesSession implements HarnessSession {
         error instanceof Error ? error.message : "Hermes rejected Model selection",
       );
     }
+    // The ACP set_model call returns no state, so resolve the label from the
+    // same SessionState the initial projection used. Falling back to the
+    // native id would surface a bogus "resolved route" chip in the picker.
+    const projectedAfterSelect = projectHermesModelState({
+      availableModels: this.#availableModels,
+      currentModelId: native,
+    });
     this.#state = {
       ...this.#state,
       effectiveModel: command.model,
-      resolvedModelLabel: native,
+      resolvedModelLabel: projectedAfterSelect.resolvedModelLabel ?? catalogAlignedModelLabel(native),
     };
     this.#emit({ type: "session.state.changed", state: { ...this.#state } });
     return ok({ completed: true });

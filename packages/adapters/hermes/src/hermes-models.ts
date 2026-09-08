@@ -92,7 +92,7 @@ interface HermesModelChoice {
  * differing resolved label as an alias route worth surfacing next to the
  * selected entry, so normalize the native separator to keep one spelling.
  */
-function catalogAlignedModelLabel(name: string): string {
+export function catalogAlignedModelLabel(name: string): string {
   return name.replace(/\s+·\s+/g, " / ");
 }
 

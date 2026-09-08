@@ -762,6 +762,33 @@ async function waitFor(predicate: () => boolean): Promise<void> {
 }
 
 describe("Pi RPC Turn aggregation", () => {
+  it("shares pending close confirmation between concurrent callers", async () => {
+    const child = new FakePiRpcProcess("final-only");
+    const rpc = new PiRpcSession(
+      { cwd: process.cwd(), closeTimeoutMs: 500 },
+      {
+        spawn: () => child as unknown as ChildProcessWithoutNullStreams,
+      },
+    );
+    await rpc.start();
+    child.stdin.removeAllListeners("finish");
+    const first = rpc.close();
+    let confirmed = false;
+    const second = rpc.close().then(() => {
+      confirmed = true;
+    });
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(confirmed).toBe(false);
+    } finally {
+      child.exitCode = 0;
+      child.stdout.end();
+      child.stderr.end();
+      child.emit("exit", 0, null);
+      await Promise.all([first, second]);
+    }
+  });
+
   it("aggregates an idle autonomous Assistant/Tool Turn once with response identity", async () => {
     const { rpc, process: fakeProcess, onFault } = autonomousSession();
     const turns: PiAutonomousTurn[] = [];

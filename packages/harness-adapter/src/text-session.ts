@@ -80,6 +80,9 @@ export interface CreateSessionInput {
 }
 
 export interface ResumeSessionInput {
+  /** Saved selection hints for Harnesses that initialize configuration lazily. */
+  model?: HarnessModelRef;
+  thinkingOptionId?: HarnessThinkingOptionId;
   kind: "resume";
   nativeRef: NativeSessionRef;
   cwd: string;
@@ -98,6 +101,10 @@ export interface ForkSessionInput {
 }
 
 export interface RollbackLastTurnSessionInput {
+  /** Current settings required by a derived Session before it can start native work. */
+  model?: HarnessModelRef;
+  thinkingOptionId?: HarnessThinkingOptionId;
+  permissionModeId?: HarnessPermissionModeId;
   kind: "rollbackLastTurn";
   sourceRef: NativeSessionRef;
   cwd: string;

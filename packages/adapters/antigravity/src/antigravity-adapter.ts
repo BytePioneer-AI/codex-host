@@ -1422,6 +1422,7 @@ function historySubagentState(
 }
 
 export class AntigravityAdapter implements HarnessAdapter {
+  readonly commandCatalog = ANTIGRAVITY_COMMAND_CATALOG;
   readonly harnessId: HarnessId = antigravityHarnessId;
   readonly subagents = {
     readSnapshot: async (input: {

@@ -29,6 +29,8 @@ const createSchema = z
 const resumeSchema = z
   .object({
     kind: z.literal("resume"),
+    model: harnessModelRefSchema.optional(),
+    thinkingOptionId: harnessThinkingOptionIdSchema.optional(),
     nativeRef: nativeSessionRefSchema,
     cwd: cwdSchema,
     knownTurnRefs: z.array(nativeTurnRefSchema).max(100_000).optional(),
@@ -45,6 +47,9 @@ const forkSchema = z
 const rollbackSchema = z
   .object({
     kind: z.literal("rollbackLastTurn"),
+    model: harnessModelRefSchema.optional(),
+    thinkingOptionId: harnessThinkingOptionIdSchema.optional(),
+    permissionModeId: harnessPermissionModeIdSchema.optional(),
     sourceRef: nativeSessionRefSchema,
     cwd: cwdSchema,
   })

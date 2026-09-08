@@ -746,7 +746,18 @@ export function renderComposerAgentControl(
     permissionModeVisible,
     locale,
   );
-  if (control.usage) renderRendererUsageControl(control.usage, usage, locale);
+  const selectedCodexAccount =
+    state.agent === "codex" && !ownershipError
+      ? codexAccounts.find((account) => account.active)
+      : undefined;
+  if (control.usage) {
+    renderRendererUsageControl(
+      control.usage,
+      usage,
+      locale,
+      selectedCodexAccount?.email ?? selectedCodexAccount?.label ?? null,
+    );
+  }
   control.harnessCommands.setLocale(locale);
   control.harnessCommands.root.hidden = state.agent === "codex";
   control.harnessCommands.root.style.display = state.agent === "codex" ? "none" : "inline-flex";

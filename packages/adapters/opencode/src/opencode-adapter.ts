@@ -9,7 +9,6 @@ import type {
   PermissionRequest,
   QuestionRequest,
   Session,
-  SnapshotFileDiff,
   ToolPart,
 } from "@opencode-ai/sdk/v2";
 
@@ -74,13 +73,9 @@ import {
 } from "@codexhost/shared-contracts";
 
 import {
-  openCodeAssistantMessages,
   openCodeNativeSessionRef,
   parseOpenCodeSessionRef,
-  projectOpenCodeHistory,
   reliableOpenCodeFileChanges,
-  resolveOpenCodeForkBoundary,
-  resolveOpenCodeLastTurnBoundary,
   type OpenCodeExecutionPolicy,
   type OpenCodeMessageWithParts,
 } from "./history.js";
@@ -90,7 +85,6 @@ import {
   encodeOpenCodeModelRef,
   encodeOpenCodeVariant,
   normalizeOpenCodeModelCatalog,
-  openCodeContextWindow,
   type OpenCodeNativeModelRef,
   type OpenCodeProviderCatalog,
 } from "./model-catalog.js";
@@ -114,7 +108,14 @@ import {
   type OpenCodeServerConnectionLike,
   type OpenCodeServerOptions,
 } from "./sdk-transport.js";
-import { projectOpenCodeUsage } from "./usage.js";
+import {
+  readProjection,
+  readTurnDiff,
+  selectionMetadata,
+  turnNativePatchFiles,
+  type OpenCodeSnapshotProjection,
+} from "./history-projection.js";
+import { deriveOpenCodeHistory } from "./history-derivation.js";
 
 export interface OpenCodeAdapterOptions extends OpenCodeServerOptions {
   toolOutputLimit?: number;
@@ -183,23 +184,10 @@ interface ActiveTurn {
   admissionSequence: number;
 }
 
-interface OpenCodeSnapshotProjection {
-  session: Session;
-  messages: OpenCodeMessageWithParts[];
-  snapshot: HostThreadSnapshot;
-  usage: HostUsage | null;
-  model?: OpenCodeNativeModelRef;
-  variant?: string;
-}
-
 const openCodeHarnessId = harnessIdSchema.parse("opencode");
 const DEFAULT_TOOL_OUTPUT_LIMIT = 64_000;
 const DEFAULT_CLOSE_TIMEOUT_MS = 3_000;
-// OpenCode persists session.diff in a background summary after emitting the
-// terminal Patch Part. Reconcile briefly so FileChange precedes Turn completion.
-const DIFF_RECONCILIATION_DELAYS_MS = [25, 50, 100, 200, 400, 800] as const;
 const COMPACT_COMMAND_ID = "opencode.compact";
-const SELECTION_METADATA_KEY = "codexhost.selection.v1";
 
 function invalidState(message: string): HarnessError {
   return { code: "invalidState", message, retryable: false };
@@ -244,151 +232,6 @@ function sameCwd(left: string, right: string): boolean {
     }
   };
   return canonical(left) === canonical(right);
-}
-
-function storedSelection(
-  session: Session,
-): (OpenCodeNativeModelRef & { variant?: string }) | undefined {
-  const value = session.metadata?.[SELECTION_METADATA_KEY];
-  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
-  const providerID = Reflect.get(value, "providerID");
-  const modelID = Reflect.get(value, "modelID");
-  const variant = Reflect.get(value, "variant");
-  if (
-    typeof providerID !== "string" ||
-    !providerID ||
-    typeof modelID !== "string" ||
-    !modelID ||
-    (variant !== undefined && (typeof variant !== "string" || !variant))
-  ) {
-    return undefined;
-  }
-  return { providerID, modelID, ...(typeof variant === "string" ? { variant } : {}) };
-}
-
-function selectionMetadata(
-  session: Session,
-  model: OpenCodeNativeModelRef,
-  variant: string | undefined,
-): Record<string, unknown> {
-  return {
-    ...session.metadata,
-    [SELECTION_METADATA_KEY]: {
-      providerID: model.providerID,
-      modelID: model.modelID,
-      ...(variant ? { variant } : {}),
-    },
-  };
-}
-
-function nativeModelFromSession(
-  session: Session,
-  messages: readonly OpenCodeMessageWithParts[],
-): OpenCodeNativeModelRef | undefined {
-  const stored = storedSelection(session);
-  if (stored) return { providerID: stored.providerID, modelID: stored.modelID };
-  if (session.model) {
-    return { providerID: session.model.providerID, modelID: session.model.id };
-  }
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    const info = messages[index]?.info;
-    if (info?.role === "user") return info.model;
-  }
-  return undefined;
-}
-
-function nativeVariantFromSession(
-  session: Session,
-  messages: readonly OpenCodeMessageWithParts[],
-): string | undefined {
-  const stored = storedSelection(session);
-  if (stored) return stored.variant;
-  if (session.model?.variant) return session.model.variant;
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    const info = messages[index]?.info;
-    if (info?.role === "user") return info.model.variant;
-  }
-  return undefined;
-}
-
-function turnHasNativePatch(
-  messages: readonly OpenCodeMessageWithParts[],
-  userMessageID: string,
-): boolean {
-  const start = messages.findIndex(({ info }) => info.id === userMessageID);
-  if (start < 0) return false;
-  let end = start + 1;
-  while (end < messages.length && messages[end]?.info.role !== "user") end += 1;
-  return messages
-    .slice(start + 1, end)
-    .some(({ parts }) => parts.some((part) => part.type === "patch" && part.files.length > 0));
-}
-
-async function readTurnDiff(
-  transport: OpenCodeTransport,
-  sessionID: string,
-  userMessageID: string,
-  nativePatchObserved: boolean,
-): Promise<SnapshotFileDiff[]> {
-  for (let attempt = 0; ; attempt += 1) {
-    const diffs = await transport.getDiff(sessionID, userMessageID).catch(() => []);
-    if (
-      reliableOpenCodeFileChanges(diffs).length > 0 ||
-      !nativePatchObserved ||
-      attempt >= DIFF_RECONCILIATION_DELAYS_MS.length
-    ) {
-      return diffs;
-    }
-    await new Promise<void>((resolve) =>
-      setTimeout(resolve, DIFF_RECONCILIATION_DELAYS_MS[attempt]),
-    );
-  }
-}
-
-async function readProjection(
-  transport: OpenCodeTransport,
-  sessionID: string,
-  providerCatalog: OpenCodeProviderCatalog,
-  toolOutputLimit: number,
-): Promise<OpenCodeSnapshotProjection> {
-  const [session, messages] = await Promise.all([
-    transport.getSession(sessionID),
-    transport.getMessages(sessionID),
-  ]);
-  const userMessageIds = messages
-    .filter(({ info }) => info.role === "user")
-    .map(({ info }) => info.id);
-  const diffEntries = await Promise.all(
-    userMessageIds.map(async (messageID) => {
-      const diffs = await readTurnDiff(
-        transport,
-        sessionID,
-        messageID,
-        turnHasNativePatch(messages, messageID),
-      );
-      return [messageID, diffs] as const;
-    }),
-  );
-  const snapshot = projectOpenCodeHistory({
-    session,
-    messages,
-    diffsByUserMessageId: new Map(diffEntries),
-    toolOutputLimit,
-  });
-  const model = nativeModelFromSession(session, messages);
-  const variant = nativeVariantFromSession(session, messages);
-  const usage = projectOpenCodeUsage(
-    openCodeAssistantMessages(session, messages),
-    model ? openCodeContextWindow(providerCatalog, model) : undefined,
-  );
-  return {
-    session,
-    messages,
-    snapshot,
-    usage,
-    ...(model ? { model } : {}),
-    ...(variant ? { variant } : {}),
-  };
 }
 
 function sessionState(
@@ -1049,6 +892,11 @@ class OpenCodeHarnessSession implements HarnessSession, OpenCodeTransportListene
       active
     ) {
       const error = event.properties.error;
+      if (active.cancellationRequested || error?.name === "MessageAbortedError") {
+        active.cancellationRequested = true;
+        void this.#reconcileAndFinish(active);
+        return;
+      }
       this.#completeTurn(active, {
         status: active.cancellationRequested ? "cancelled" : "failed",
         ...(active.cancellationRequested
@@ -1334,6 +1182,22 @@ class OpenCodeHarnessSession implements HarnessSession, OpenCodeTransportListene
           !terminal.error &&
           !active.nativeCompleted)
       ) {
+        if (active.cancellationRequested) {
+          for (const entry of assistants) {
+            for (const part of entry.parts) this.#projectPart(active, part);
+          }
+          this.#completeTurn(
+            active,
+            { status: "cancelled", reason: "Cancelled by user" },
+            {
+              harnessId: this.harnessId,
+              nativeSessionId: this.#session.id,
+              nativeTurnKey: active.userMessageID as string,
+              formatVersion: 1,
+            },
+          );
+          void this.#refreshProjection(active.turnId);
+        }
         return;
       }
       for (const entry of assistants) {
@@ -1346,7 +1210,7 @@ class OpenCodeHarnessSession implements HarnessSession, OpenCodeTransportListene
           this.#transport,
           this.#session.id,
           userMessageID,
-          turnHasNativePatch(messages, userMessageID),
+          turnNativePatchFiles(messages, userMessageID),
         ),
       );
       if (changes.length > 0) {
@@ -1786,7 +1650,6 @@ export class OpenCodeAdapter implements HarnessAdapter {
     let connection: OpenCodeServerConnectionLike | undefined;
     let transport: OpenCodeTransport | undefined;
     let createdForCleanup: Session | undefined;
-    let revertedForCleanup: string | undefined;
     try {
       const sourceRef =
         input.kind === "create"
@@ -1886,73 +1749,17 @@ export class OpenCodeAdapter implements HarnessAdapter {
         }
         if (input.kind === "resume") {
           session = source;
-        } else if (input.kind === "fork") {
-          const checkpoint = nativeCheckpointRefSchema.parse(input.checkpoint);
-          if (checkpoint.harnessId !== this.harnessId || checkpoint.nativeSessionId !== source.id) {
-            throw new OpenCodeTransportError(
-              "protocolError",
-              "OpenCode Checkpoint does not belong to the source Session",
-            );
-          }
-          const sourceMessages = await transport.getMessages(source.id);
-          const boundary = resolveOpenCodeForkBoundary(source, sourceMessages, checkpoint);
-          if (!boundary) {
-            await transport.close().catch(() => undefined);
-            await connection.close().catch(() => undefined);
-            return {
-              ok: false,
-              error: {
-                code: "checkpointNotFound",
-                message: "OpenCode Checkpoint is not on the source Session transcript",
-                retryable: false,
-              },
-            };
-          }
-          session = await transport.forkSession(source.id, boundary.messageID);
-          createdForCleanup = session;
-          if (session.id === source.id) {
-            throw new OpenCodeTransportError(
-              "protocolError",
-              "OpenCode Fork did not create a distinct Native Session",
-            );
-          }
-          const derivedMessages = await transport.getMessages(session.id);
-          const derived = projectOpenCodeHistory({
-            session,
-            messages: derivedMessages,
-            toolOutputLimit: this.#toolOutputLimit,
-          });
-          if (derived.turns.length !== boundary.sourceTurnCount) {
-            throw new OpenCodeTransportError(
-              "protocolError",
-              "OpenCode Fork derived history does not match the requested Checkpoint",
-            );
-          }
         } else {
-          const sourceMessages = await transport.getMessages(source.id);
-          const boundary = resolveOpenCodeLastTurnBoundary(source, sourceMessages);
-          if (!boundary) {
-            await transport.close().catch(() => undefined);
-            await connection.close().catch(() => undefined);
-            return {
-              ok: false,
-              error: invalidState("OpenCode Native Session has no Turn to roll back"),
-            };
-          }
-          session = await transport.revertSession(source.id, boundary.lastUserMessageID);
-          revertedForCleanup = source.id;
-          const afterMessages = await transport.getMessages(session.id);
-          const after = projectOpenCodeHistory({
-            session,
-            messages: afterMessages,
+          session = await deriveOpenCodeHistory({
+            transport,
+            source,
+            input,
+            providers,
             toolOutputLimit: this.#toolOutputLimit,
+            onCreated: (candidate) => {
+              createdForCleanup = candidate;
+            },
           });
-          if (after.turns.length !== boundary.sourceTurnCount - 1) {
-            throw new OpenCodeTransportError(
-              "protocolError",
-              "OpenCode rollback did not remove exactly the last Turn",
-            );
-          }
         }
       }
       const projection = await readProjection(
@@ -1977,12 +1784,8 @@ export class OpenCodeAdapter implements HarnessAdapter {
       await harnessSession.start();
       this.#sessions.add(harnessSession);
       createdForCleanup = undefined;
-      revertedForCleanup = undefined;
       return { ok: true, value: harnessSession };
     } catch (error) {
-      if (revertedForCleanup && transport) {
-        await transport.unrevertSession(revertedForCleanup).catch(() => undefined);
-      }
       if (createdForCleanup && transport) {
         await transport.deleteSession(createdForCleanup.id).catch(() => undefined);
       }

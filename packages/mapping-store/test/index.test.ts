@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -887,6 +887,20 @@ describe("mapping-store package", () => {
       expect.objectContaining<Partial<MappingStoreError>>({ code: "STORE_LOCKED" }),
     );
     await first.close();
+  });
+
+  it("removes lock files left aside by earlier runs", async () => {
+    const directory = await temporaryStoreDirectory();
+    await mkdir(directory, { recursive: true });
+    await writeFile(path.join(directory, "store.lock.stale-1"), "{}\n", "utf8");
+    await writeFile(path.join(directory, "store.lock.stale-2"), "{}\n", "utf8");
+    // An unparsable lock cannot prove a live owner, so initialization renames it aside.
+    await writeFile(path.join(directory, "store.lock"), "not json\n", "utf8");
+
+    const store = new MappingStore({ directory, instanceId: "recovered" });
+    await store.initialize();
+    expect((await readdir(directory)).filter((name) => name.startsWith("store.lock."))).toEqual([]);
+    await store.close();
   });
 
   it("recovers a Windows lock whose PID was reused by another executable", async () => {

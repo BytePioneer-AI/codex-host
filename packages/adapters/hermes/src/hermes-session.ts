@@ -451,7 +451,7 @@ export class HermesSession implements HarnessSession {
   #activeTurnId: ReturnType<typeof hostTurnIdSchema.parse> | null = null;
   #completedTurns: HostTurnSnapshot[] = [];
   #historyTurns: HostTurnSnapshot[];
-  #approvalWaiters = new Map<string, ApprovalWaiter>();
+  #approvalWaiters = new Map<ReturnType<typeof hostInteractionIdSchema.parse>, ApprovalWaiter>();
 
   constructor(options: HermesSessionOptions) {
     this.#transport = options.transport;

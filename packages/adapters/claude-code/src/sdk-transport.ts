@@ -10,7 +10,8 @@ import {
   type SpawnOptions,
 } from "@anthropic-ai/claude-agent-sdk";
 import { sanitizeDiagnosticTail } from "@codexhost/harness-adapter";
-import type { HarnessThinkingOptionId } from "@codexhost/shared-contracts";
+import type { HarnessAccountSnapshot, HarnessThinkingOptionId } from "@codexhost/shared-contracts";
+import { projectClaudeAccountUsage } from "./account-usage.js";
 
 import { resolveClaudeCodeExecutable, withNodeRuntimeOnPath } from "./command.js";
 import type { ClaudeModelInspectionSnapshot } from "./model-catalog.js";
@@ -901,7 +902,7 @@ export class ClaudeSdkModelInspector implements ClaudeModelInspector {
     this.#queryFactory = options.queryFactory ?? query;
   }
 
-  async inspect(): Promise<ClaudeModelInspectionSnapshot> {
+  #createQuery(): Query {
     if (this.#closePromise) throw new Error("Claude SDK Model inspector is closing");
     const executable = resolveClaudeCodeExecutable({
       ...(this.#command ? { command: this.#command } : {}),
@@ -925,6 +926,33 @@ export class ClaudeSdkModelInspector implements ClaudeModelInspector {
       },
     });
     this.#query = activeQuery;
+    return activeQuery;
+  }
+
+  async inspectAccount(): Promise<HarnessAccountSnapshot | null> {
+    const timeout = rejectAfter(10_000, "Claude SDK account inspection timed out");
+    try {
+      const activeQuery = this.#createQuery();
+      return await Promise.race([
+        (async () => {
+          await activeQuery.initializationResult();
+          const getUsage = activeQuery.usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET;
+          if (typeof getUsage !== "function") return null;
+          const usage = await getUsage.call(activeQuery);
+          if (!usage.rate_limits_available || !usage.rate_limits) return null;
+          const account = await activeQuery.accountInfo();
+          return projectClaudeAccountUsage(usage, account);
+        })(),
+        timeout.promise,
+      ]);
+    } finally {
+      timeout.cancel();
+      await this.close();
+    }
+  }
+
+  async inspect(): Promise<ClaudeModelInspectionSnapshot> {
+    const activeQuery = this.#createQuery();
     try {
       const initialized = await activeQuery.initializationResult();
       const candidate = activeQuery as unknown as Record<string, unknown>;

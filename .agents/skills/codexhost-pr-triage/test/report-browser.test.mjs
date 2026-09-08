@@ -57,6 +57,11 @@ test("offline board renders actual input, safe details, cross-repo identities an
   assert.match(await page.locator(".column.accept").innerText(), /CI 失败/u);
   assert.match(await page.locator(".column.accept").innerText(), /有冲突/u);
   assert.equal(await page.locator(".card h3").filter({ hasText: hostile }).count(), 1);
+  const firstCard = await page.locator("#board .card").filter({ hasText: hostile }).innerText();
+  assert.match(firstCard, /test: fixture PR 1/u);
+  assert.match(firstCard, /作用 · 测试用户可见作用/u);
+  assert.match(firstCard, /价值 · 测试价值说明/u);
+  assert.match(firstCard, /判断 · 仅用于验证数据渲染/u);
   assert.equal(await page.evaluate(() => globalThis.pwned), undefined);
   assert.equal(await page.locator("img").count(), 0);
   assert.equal(await page.locator("#generated-time").getAttribute("datetime"), report.generatedAt);
@@ -67,6 +72,9 @@ test("offline board renders actual input, safe details, cross-repo identities an
     .first()
     .click();
   assert.equal(await page.locator("#detail-title").innerText(), other.title);
+  assert.match(await page.locator("#detail-body").innerText(), /原始标题 · test: fixture PR 1/u);
+  assert.match(await page.locator("#detail-body").innerText(), /作用\s+测试用户可见作用/u);
+  assert.match(await page.locator("#detail-body").innerText(), /判断理由\s+仅用于验证数据渲染/u);
   assert.equal(
     await page.getByRole("link", { name: "打开 PR ↗", exact: true }).getAttribute("href"),
     other.url,

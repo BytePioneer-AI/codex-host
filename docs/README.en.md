@@ -117,6 +117,7 @@ Fully quit Codex Desktop, open a new terminal, and start codexhost.
   <tr>
     <td colspan="2" valign="top">
       <img src="imgs/grok-usage-limits.png" alt="Remaining allowance and reset times for the five-hour and seven-day windows">
+      <p>The macOS menu bar icon and Windows taskbar icon show the remaining allowance percentage, preferring the five-hour window and falling back to the seven-day window.</p>
     </td>
   </tr>
   <tr>
@@ -145,7 +146,7 @@ Fully quit Codex Desktop, open a new terminal, and start codexhost.
 | Fork | Native | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — |
 | Context compaction | Native | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — |
 | Slash commands | Native | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — |
-| Edit previous message | Native | ✅ | ✅ | ✅ | ✅ | ✅ | — | — |
+| Edit previous message | Native | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — |
 
 > **Antigravity current status:** Integration is still being completed. The working directory is currently fixed to `~/.gemini/antigravity-cli/scratch`.
 
@@ -161,7 +162,7 @@ You can ask the current Agent to hand an independent task to another Harness. Fo
 >
 > Ask `opencode` to verify this fix in an independent Thread and run the related tests.
 
-CodexHost creates a separate Native Session for the target Harness. The delegated session appears in the Codex Desktop conversation list, where you can open it, inspect progress, or continue the conversation.
+codexhost creates a separate Native Session for the target Harness. The delegated session appears in the Codex Desktop conversation list, where you can open it, inspect progress, or continue the conversation.
 
 <details>
 <summary><h3 id="remote-harness">Remote Harness</h3></summary>

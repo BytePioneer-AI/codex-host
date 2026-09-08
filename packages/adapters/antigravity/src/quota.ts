@@ -23,6 +23,7 @@ export interface AntigravityQuotaBucket {
  * which the Host strips before validating.
  */
 export interface AntigravityQuotaSnapshot {
+  label: string;
   usedPercent: number;
   periodType: "weekly" | "five_hour" | "unknown";
   resetsAt?: string;
@@ -117,6 +118,7 @@ export function parseAntigravityUsageCommand(
   if (!leading) return null;
   const others = buckets.filter((bucket) => bucket !== leading);
   return {
+    label: leading.product,
     usedPercent: leading.usagePercent,
     periodType: periodTypeFrom(leading.window),
     fetchedAt,

@@ -117,6 +117,7 @@ Codex Desktop을 완전히 종료한 뒤, 새 터미널을 열고 codexhost를 �
   <tr>
     <td colspan="2" valign="top">
       <img src="imgs/grok-usage-limits.png" alt="5시간 및 7일 기간의 남은 한도와 초기화 시간">
+      <p>macOS 메뉴 막대 아이콘 및 Windows 작업 표시줄 아이콘에는 남은 한도 비율이 표시되며, 5시간 창을 우선 사용하고 없으면 7일 창으로 대체합니다.</p>
     </td>
   </tr>
   <tr>
@@ -145,7 +146,7 @@ Codex Desktop을 완전히 종료한 뒤, 새 터미널을 열고 codexhost를 �
 | Fork | 기본 제공 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — |
 | 컨텍스트 압축 | 기본 제공 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — |
 | 슬래시 명령 | 기본 제공 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — |
-| 이전 메시지 수정 | 기본 제공 | ✅ | ✅ | ✅ | ✅ | ✅ | — | — |
+| 이전 메시지 수정 | 기본 제공 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — |
 
 > **Antigravity 현재 상태:** 연동은 아직 보완 중이며, 작업 디렉터리는 현재 `~/.gemini/antigravity-cli/scratch`로 고정되어 있습니다.
 
@@ -161,7 +162,7 @@ Codex Desktop을 완전히 종료한 뒤, 새 터미널을 열고 codexhost를 �
 >
 > `opencode`에게 독립 Thread에서 이 수정을 검증하고 관련 테스트를 실행하도록 요청하세요.
 
-CodexHost는 대상 Harness를 위한 별도의 Native Session을 만듭니다. 위임된 Session은 Codex Desktop의 대화 목록에 표시되며, 언제든 열어서 진행 상황을 확인하거나 대화를 이어갈 수 있습니다.
+codexhost는 대상 Harness를 위한 별도의 Native Session을 만듭니다. 위임된 Session은 Codex Desktop의 대화 목록에 표시되며, 언제든 열어서 진행 상황을 확인하거나 대화를 이어갈 수 있습니다.
 
 <details>
 <summary><h3 id="원격-harness">원격 Harness</h3></summary>

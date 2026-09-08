@@ -23,6 +23,11 @@ describe("Renderer credits control", () => {
     expect(creditsPeriodLabel("five_hour")).toBe("5-hour limit");
     expect(creditsPeriodLabel("seven_day")).toBe("7-day limit");
     expect(creditsPeriodLabel("unknown")).toBe("Account limit");
+    expect(creditsPeriodLabel("weekly", "zh-CN")).toBe("周额度");
+    expect(creditsPeriodLabel("monthly", "zh-CN")).toBe("月额度");
+    expect(creditsPeriodLabel("five_hour", "zh-CN")).toBe("5 小时额度");
+    expect(creditsPeriodLabel("seven_day", "zh-CN")).toBe("7 天额度");
+    expect(creditsPeriodLabel("unknown", "zh-CN")).toBe("账号额度");
     expect(formatRendererCreditsReset("not-a-date")).toBe("not-a-date");
   });
 
@@ -36,6 +41,9 @@ describe("Renderer credits control", () => {
 
     expect(formatRendererCreditsReset(sameDayReset.toISOString(), now)).toBe(
       `${sameDayReset.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })} today`,
+    );
+    expect(formatRendererCreditsReset(sameDayReset.toISOString(), now, "zh-CN")).toBe(
+      `今天 ${sameDayReset.toLocaleTimeString("zh-CN", { hour: "numeric", minute: "2-digit" })}`,
     );
     expect(formatRendererCreditsReset(nextWeekReset.toISOString(), now)).toBe(
       nextWeekReset.toLocaleString(undefined, {

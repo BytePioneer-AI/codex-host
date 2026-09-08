@@ -221,6 +221,10 @@ describe("DeepSeek Harness Modern Permission Mode boundary", () => {
       permissionModeId: "workspace-write",
       projectionSeq: 12,
     });
+    expect(readModernPermissionModeState({ value: projection(), seq: -1 }, catalog)).toEqual({
+      permissionModeId: "workspace-write",
+      projectionSeq: -1,
+    });
 
     const custom = projection("custom", [
       ...PRESETS.map(presetOption),
@@ -269,7 +273,7 @@ describe("DeepSeek Harness Modern Permission Mode boundary", () => {
         seq: 1,
       },
     ],
-    ["invalid sequence", { value: projection(), seq: -1 }],
+    ["invalid sequence", { value: projection(), seq: -2 }],
   ])("fails closed on a %s permissions row", (_label, row) => {
     const catalog = parseModernPermissionModeCatalog(settingsValue());
     expect(() => readModernPermissionModeState(row, catalog)).toThrowError(

@@ -241,7 +241,7 @@ export class MappingStore {
     ]);
     await this.#acquireLock();
     try {
-      await this.#cleanupTemps();
+      await this.#cleanupResidue();
       const names = (await readdir(this.#threadsDirectory)).filter((name) =>
         name.endsWith(".json"),
       );
@@ -788,10 +788,11 @@ export class MappingStore {
     return parsed.data as StoredThreadRecordV1;
   }
 
-  async #cleanupTemps(): Promise<void> {
-    const [threadNames, delegationNames] = await Promise.all([
+  async #cleanupResidue(): Promise<void> {
+    const [threadNames, delegationNames, rootNames] = await Promise.all([
       readdir(this.#threadsDirectory),
       readdir(this.#delegationsDirectory),
+      readdir(this.#directory),
     ]);
     await Promise.all([
       ...threadNames
@@ -800,6 +801,10 @@ export class MappingStore {
       ...delegationNames
         .filter((name) => name.includes(".tmp-"))
         .map((name) => rm(path.join(this.#delegationsDirectory, name), { force: true })),
+      // Renamed aside by #acquireLock; nothing reads them back, and they accumulate one per run.
+      ...rootNames
+        .filter((name) => name.startsWith(`${path.basename(this.#lockPath)}.stale-`))
+        .map((name) => rm(path.join(this.#directory, name), { force: true })),
     ]);
   }
 

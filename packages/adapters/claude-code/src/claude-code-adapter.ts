@@ -61,6 +61,7 @@ import {
   nativeSessionRefSchema,
   nativeTurnRefSchema,
   type AccountCreditsSnapshot,
+  type HarnessAccountSnapshot,
   type HarnessId,
   type HarnessThinkingOptionId,
   type HostInteractionId,
@@ -2270,6 +2271,7 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
   readonly #sessions = new Set<ClaudeHarnessSession>();
   #closePromise: Promise<void> | null = null;
   #latestPlanLimit: ClaudePlanLimitEvent | null = null;
+  #accountInspection: Promise<HarnessAccountSnapshot | null> | null = null;
 
   constructor(options: ClaudeCodeAdapterOptions = {}, dependencies?: ClaudeAdapterDependencies) {
     this.#closeTimeoutMs = options.closeTimeoutMs ?? DEFAULT_CLOSE_TIMEOUT_MS;
@@ -2358,6 +2360,32 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
       }
     });
     return inspection;
+  }
+
+  inspectAccount(): Promise<HarnessAccountSnapshot | null> {
+    if (this.#closePromise) return Promise.resolve(null);
+    if (this.#accountInspection) return this.#accountInspection;
+    this.#accountInspection = this.#readAccount().finally(() => {
+      this.#accountInspection = null;
+    });
+    return this.#accountInspection;
+  }
+
+  async #readAccount(): Promise<HarnessAccountSnapshot | null> {
+    let inspector: ClaudeModelInspector | undefined;
+    try {
+      this.#dependencies.inspectInstallation();
+      inspector = this.#dependencies.createInspector({ cwd: process.cwd() });
+      this.#inspectors.add(inspector);
+      return (await inspector.inspectAccount?.()) ?? null;
+    } catch {
+      return null;
+    } finally {
+      if (inspector) {
+        await inspector.close().catch(() => undefined);
+        this.#inspectors.delete(inspector);
+      }
+    }
   }
 
   async #inspectModels(cwd: string): Promise<HarnessInspection> {

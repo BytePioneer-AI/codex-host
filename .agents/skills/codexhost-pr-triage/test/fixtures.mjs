@@ -12,7 +12,9 @@ export function createReport() {
     prs: ["ACCEPT", "SIMPLIFY", "DISCUSS", "DECLINE"].map((verdict, index) => ({
       repository,
       number: index + 1,
-      title: `测试 PR ${index + 1}`,
+      title: `测试功能 ${index + 1}`,
+      originalTitle: `test: fixture PR ${index + 1}`,
+      effect: "测试用户可见作用。",
       url: `https://github.com/${repository}/pull/${index + 1}`,
       baseSha: "a".repeat(40),
       headSha: "b".repeat(40),

@@ -6,6 +6,7 @@ import type {
 } from "./agent-selection-state.js";
 import type {
   AccountCreditsSnapshot,
+  CodexAccountSummary,
   HarnessCommandDescriptor,
   ThreadUsageSnapshot,
 } from "@codexhost/shared-contracts";
@@ -485,7 +486,6 @@ function refreshTrailingClusterPlacement(control: ComposerAgentControl): void {
   const sendButton = control.sendButton;
   const modelRoot = control.modelPicker?.root;
   const agentRoot = control.root ?? control.picker?.root;
-  const commandRoot = control.harnessCommands?.root;
   if (!sendButton || !modelRoot || !agentRoot) return;
   const anchor = trailingActionAnchor(sendButton);
   const parent = anchor.parentElement;
@@ -493,20 +493,13 @@ function refreshTrailingClusterPlacement(control: ComposerAgentControl): void {
   if (
     modelRoot.parentElement === parent &&
     agentRoot.parentElement === parent &&
-    (!commandRoot || commandRoot.parentElement === parent) &&
     modelRoot.nextElementSibling === agentRoot &&
-    (!commandRoot || agentRoot.nextElementSibling === commandRoot) &&
-    (commandRoot
-      ? commandRoot.nextElementSibling === anchor
-      : agentRoot.nextElementSibling === anchor)
+    agentRoot.nextElementSibling === anchor
   ) {
     return;
   }
   parent.insertBefore(modelRoot, anchor);
   parent.insertBefore(agentRoot, anchor);
-  if (commandRoot) {
-    parent.insertBefore(commandRoot, anchor);
-  }
 }
 
 function refreshUsagePlacement(control: ComposerAgentControl): void {
@@ -611,6 +604,8 @@ export function mountComposerAgentControl(
   enabledAgents: readonly RendererAgent[],
   onSelect: (agent: RendererAgent) => void,
   onDownload: (agent: ExternalRendererAgent) => void,
+  onSelectCodexAccount: (accountId: string) => Promise<void> | void,
+  onOpenProviderPicker: () => void,
   onSelectModel: (modelId: string) => void,
   onSelectThinking: (thinkingOptionId: string) => void,
   onSelectPermissionMode: (permissionModeId: string) => void,
@@ -626,7 +621,14 @@ export function mountComposerAgentControl(
   const nativePermissionModeControlVerified =
     semanticNativePermissionModeControl !== null &&
     nativePermissionModeControlForComposer(composer) === semanticNativePermissionModeControl;
-  const picker = mountRendererAgentPicker(composerId, enabledAgents, onSelect, onDownload);
+  const picker = mountRendererAgentPicker(
+    composerId,
+    enabledAgents,
+    onSelect,
+    onDownload,
+    onSelectCodexAccount,
+    onOpenProviderPicker,
+  );
   const modelPicker = mountRendererModelPicker(composerId, onSelectModel, onSelectThinking);
   const permissionModePicker = mountRendererPermissionModePicker(
     composerId,
@@ -634,11 +636,10 @@ export function mountComposerAgentControl(
   );
   const credits = mountRendererCreditsControl(composerId);
 
-  const anchor = trailingActionAnchor(sendButton);
-  const toolbar = anchor.parentElement ?? sendButton.parentElement;
+  const toolbar = sendButton.parentElement;
   const harnessCommands = mountRendererHarnessCommandControl(
     toolbar ?? composer,
-    anchor,
+    trailingActionAnchor(sendButton),
     onSelectCommand,
   );
 
@@ -684,6 +685,8 @@ export function renderComposerAgentControl(
   usage: ThreadUsageSnapshot | null = null,
   accountCredits: AccountCreditsSnapshot | null = null,
   locale: RendererSettingsLocale = "en",
+  codexAccounts: readonly CodexAccountSummary[] = [],
+  ownershipError = false,
 ): void {
   if (control.usage === null) {
     control.usage = mountRendererUsageControl(control.composerId, locale);
@@ -708,7 +711,7 @@ export function renderComposerAgentControl(
     (!isPermissionModeControlReady(permissionModeView) ||
       (permissionModeView.status !== "unsupported" &&
         !control.nativePermissionModeControlVerified));
-  const submissionBlocked = switching || modelBlocked || permissionModeBlocked;
+  const submissionBlocked = switching || ownershipError || modelBlocked || permissionModeBlocked;
   if (submissionBlocked && control.sendDisabledBeforeSwitch === null) {
     control.sendDisabledBeforeSwitch = control.sendButton.disabled;
     control.sendButton.disabled = true;
@@ -722,6 +725,8 @@ export function renderComposerAgentControl(
     adapterState,
     switching,
     availability,
+    codexAccounts,
+    ownershipError,
   );
   reconcileComposerNativeControls(
     control,
@@ -741,12 +746,23 @@ export function renderComposerAgentControl(
     permissionModeVisible,
     locale,
   );
-  if (control.usage) renderRendererUsageControl(control.usage, usage, locale);
+  const selectedCodexAccount =
+    state.agent === "codex" && !ownershipError
+      ? codexAccounts.find((account) => account.active)
+      : undefined;
+  if (control.usage) {
+    renderRendererUsageControl(
+      control.usage,
+      usage,
+      locale,
+      selectedCodexAccount?.email ?? selectedCodexAccount?.label ?? null,
+    );
+  }
   control.harnessCommands.setLocale(locale);
   control.harnessCommands.root.hidden = state.agent === "codex";
   control.harnessCommands.root.style.display = state.agent === "codex" ? "none" : "inline-flex";
   if (state.agent === "codex") control.harnessCommands.close();
-  renderRendererCreditsControl(control.credits, accountCredits);
+  renderRendererCreditsControl(control.credits, accountCredits, locale);
 }
 
 export function disposeComposerAgentControl(control: ComposerAgentControl): void {

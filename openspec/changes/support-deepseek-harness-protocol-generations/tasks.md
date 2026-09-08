@@ -101,3 +101,11 @@
 - [x] 9.13 将开发期提交整理为 20 个逻辑提交，每个行为携带测试并保留 #71 的四个来源
 - [x] 9.14 推送 fork 并创建详细 Draft PR；正文写明 `Supersedes #71 per prior discussion with the owner.`
 - [x] 9.15 用户在 Windows 实机点击设置页动作，确认 `ShellExecuteW` 在默认浏览器打开已认证的 DSH Web，而不是回退打开文件夹
+
+## 10. Modern Last-Turn Rollback
+
+- [x] 10.1 核对 exact rc.1 `session/fork`、`session/create.agentPreset` 与 CH 通用回滚事务原语
+- [x] 10.2 实现多轮 Fork、单轮空 Session replacement、合法 `cursor=-1` baseline，以及零轮/活动 Turn 失败关闭
+- [x] 10.3 覆盖当前 Agent Preset、精确 retained prefix、能力声明和来源 Native Session 不变的聚焦测试
+- [x] 10.4 同步 OpenSpec、README 与当前 Harness 实现参考
+- [x] 10.5 对 exact rc.1 compiled artifact 完成多轮、单轮、配置恢复及继续对话实机验收

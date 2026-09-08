@@ -1,5 +1,7 @@
 import type { AccountCreditsSnapshot } from "@codexhost/shared-contracts";
 
+import type { RendererSettingsLocale } from "./settings/localization.js";
+
 import {
   applyRendererPopoverChrome,
   createRendererUsageRing,
@@ -27,14 +29,52 @@ export function rendererCreditsTone(usedPercent: number): RendererCreditsTone {
   return "ok";
 }
 
+interface RendererCreditsMessages {
+  readonly remaining: string;
+  readonly resets: string;
+  readonly details: string;
+  readonly weekly: string;
+  readonly monthly: string;
+  readonly fiveHour: string;
+  readonly sevenDay: string;
+  readonly account: string;
+}
+
+const ENGLISH_CREDITS_MESSAGES: RendererCreditsMessages = Object.freeze({
+  remaining: "Remaining",
+  resets: "Resets",
+  details: "Account limit details",
+  weekly: "Weekly limit",
+  monthly: "Monthly limit",
+  fiveHour: "5-hour limit",
+  sevenDay: "7-day limit",
+  account: "Account limit",
+});
+
+const CHINESE_CREDITS_MESSAGES: RendererCreditsMessages = Object.freeze({
+  remaining: "剩余",
+  resets: "重置",
+  details: "账号额度详情",
+  weekly: "周额度",
+  monthly: "月额度",
+  fiveHour: "5 小时额度",
+  sevenDay: "7 天额度",
+  account: "账号额度",
+});
+
+function rendererCreditsMessages(locale: RendererSettingsLocale): RendererCreditsMessages {
+  return locale === "zh-CN" ? CHINESE_CREDITS_MESSAGES : ENGLISH_CREDITS_MESSAGES;
+}
+
 /**
- * A same-day reset reads as a precise time ("4:12 PM today") — the moment is
- * imminent and worth being exact about. Every other reset — tomorrow, or a
- * full week out — still carries its exact time alongside the date ("Aug 28,
- * 6:00 PM"): the source data is precise to the minute for both the 5-hour
- * and 7-day windows, so the display never throws that away.
+ * Keep the source's minute precision, while making same-day resets easier to
+ * scan and formatting both English and Chinese popovers in one presentation layer.
  */
-export function formatRendererCreditsReset(value: string, now: Date = new Date()): string {
+export function formatRendererCreditsReset(
+  value: string,
+  now: Date = new Date(),
+  locale: RendererSettingsLocale = "en",
+): string {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
   const isToday =
@@ -42,29 +82,46 @@ export function formatRendererCreditsReset(value: string, now: Date = new Date()
     date.getMonth() === now.getMonth() &&
     date.getDate() === now.getDate();
   if (isToday) {
-    return `${date.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })} today`;
+    const time = date.toLocaleTimeString(locale === "zh-CN" ? "zh-CN" : undefined, {
+      hour: "numeric",
+      minute: "2-digit",
+    });
+    return locale === "zh-CN" ? `今天 ${time}` : `${time} today`;
   }
-  return date.toLocaleString(undefined, {
-    month: "short",
+  return date.toLocaleString(locale === "zh-CN" ? "zh-CN" : undefined, {
+    month: locale === "zh-CN" ? "long" : "short",
     day: "numeric",
     hour: "numeric",
     minute: "2-digit",
   });
 }
 
-export function creditsPeriodLabel(periodType: AccountCreditsSnapshot["periodType"]): string {
-  if (periodType === "weekly") return "Weekly limit";
-  if (periodType === "monthly") return "Monthly limit";
-  if (periodType === "five_hour") return "5-hour limit";
-  if (periodType === "seven_day") return "7-day limit";
-  return "Account limit";
+export function creditsPeriodLabel(
+  periodType: AccountCreditsSnapshot["periodType"],
+  locale: RendererSettingsLocale = "en",
+): string {
+  const messages = rendererCreditsMessages(locale);
+  if (periodType === "weekly") return messages.weekly;
+  if (periodType === "monthly") return messages.monthly;
+  if (periodType === "five_hour") return messages.fiveHour;
+  if (periodType === "seven_day") return messages.sevenDay;
+  return messages.account;
 }
 
-function productLabel(product: string): string {
+function productLabel(product: string, locale: RendererSettingsLocale): string {
   if (product === "GrokBuild") return "Build";
   if (product === "GrokChat") return "Chat";
   if (product === "GrokImagine") return "Imagine";
   if (product === "GrokVoice") return "Voice";
+  const messages = rendererCreditsMessages(locale);
+  if (product === "5-hour window") return messages.fiveHour;
+  if (product === "7-day window") return messages.sevenDay;
+  if (product.endsWith(" · 5-hour window")) {
+    return `${product.slice(0, -"5-hour window".length)}${messages.fiveHour}`;
+  }
+  if (product.endsWith(" · 7-day window")) {
+    return `${product.slice(0, -"7-day window".length)}${messages.sevenDay}`;
+  }
   return product;
 }
 
@@ -72,6 +129,10 @@ function toneColor(tone: RendererCreditsTone): string {
   if (tone === "hot") return "#c45c4a";
   if (tone === "warn") return "#c9a227";
   return "#3d9a64";
+}
+
+function remainingPercent(usedPercent: number): number {
+  return Math.min(100, Math.max(0, 100 - usedPercent));
 }
 
 function renderCreditsBar(usagePercent: number, color: string): HTMLDivElement {
@@ -91,7 +152,20 @@ function renderCreditsBar(usagePercent: number, color: string): HTMLDivElement {
   return track;
 }
 
-function renderCreditsHeader(credits: AccountCreditsSnapshot): HTMLDivElement {
+function resetLabel(
+  resetsAt: string,
+  locale: RendererSettingsLocale,
+  messages: RendererCreditsMessages,
+): string {
+  const formatted = formatRendererCreditsReset(resetsAt, new Date(), locale);
+  return locale === "zh-CN" ? `${formatted} ${messages.resets}` : `${messages.resets} ${formatted}`;
+}
+
+function renderCreditsHeader(
+  credits: AccountCreditsSnapshot,
+  locale: RendererSettingsLocale,
+  messages: RendererCreditsMessages,
+): HTMLDivElement {
   const wrapper = document.createElement("div");
   wrapper.style.marginBottom = "11px";
 
@@ -106,34 +180,53 @@ function renderCreditsHeader(credits: AccountCreditsSnapshot): HTMLDivElement {
   // reset line always lands under its own label instead of zig-zagging sides.
   const left = document.createElement("div");
   const label = document.createElement("div");
-  label.textContent = creditsPeriodLabel(credits.periodType);
+  label.textContent = creditsPeriodLabel(credits.periodType, locale);
   label.style.fontSize = "12.5px";
   label.style.fontWeight = "600";
   left.append(label);
   if (credits.resetsAt) {
     const reset = document.createElement("div");
-    reset.textContent = `resets ${formatRendererCreditsReset(credits.resetsAt)}`;
+    reset.textContent = resetLabel(credits.resetsAt, locale, messages);
     reset.style.fontSize = "11px";
     reset.style.color = "color-mix(in srgb, currentColor 62%, transparent)";
     left.append(reset);
   }
 
   const color = toneColor(rendererCreditsTone(credits.usedPercent));
+  const remaining = remainingPercent(credits.usedPercent);
   const percent = document.createElement("span");
-  percent.textContent = formatRendererCreditsPercent(credits.usedPercent);
-  percent.style.fontSize = "26px";
-  percent.style.fontWeight = "700";
-  percent.style.fontVariantNumeric = "tabular-nums";
+  percent.style.display = "inline-flex";
+  percent.style.alignItems = "baseline";
+  percent.style.gap = "4px";
+  percent.style.whiteSpace = "nowrap";
   percent.style.color = color;
+  const remainingLabel = document.createElement("span");
+  remainingLabel.textContent = `${messages.remaining} `;
+  remainingLabel.style.fontSize = "11px";
+  remainingLabel.style.fontWeight = "600";
+  remainingLabel.style.opacity = "0.8";
+  const remainingValue = document.createElement("span");
+  remainingValue.textContent = formatRendererCreditsPercent(remaining);
+  remainingValue.style.fontSize = "26px";
+  remainingValue.style.fontWeight = "700";
+  remainingValue.style.fontVariantNumeric = "tabular-nums";
+  percent.append(remainingLabel, remainingValue);
 
   top.append(left, percent);
 
-  wrapper.append(top, renderCreditsBar(credits.usedPercent, color));
+  wrapper.append(top, renderCreditsBar(remaining, color));
   return wrapper;
 }
 
-function renderCreditsTile(label: string, usagePercent: number, resetsAt?: string): HTMLDivElement {
+function renderCreditsTile(
+  label: string,
+  usagePercent: number,
+  locale: RendererSettingsLocale,
+  messages: RendererCreditsMessages,
+  resetsAt?: string,
+): HTMLDivElement {
   const color = toneColor(rendererCreditsTone(usagePercent));
+  const remaining = remainingPercent(usagePercent);
 
   const tile = document.createElement("div");
   tile.style.marginBottom = "11px";
@@ -152,30 +245,42 @@ function renderCreditsTile(label: string, usagePercent: number, resetsAt?: strin
   left.append(name);
   if (resetsAt) {
     const reset = document.createElement("div");
-    reset.textContent = `resets ${formatRendererCreditsReset(resetsAt)}`;
+    reset.textContent = resetLabel(resetsAt, locale, messages);
     reset.style.fontSize = "10.5px";
     reset.style.color = "color-mix(in srgb, currentColor 62%, transparent)";
     left.append(reset);
   }
 
   const percent = document.createElement("span");
-  percent.textContent = formatRendererCreditsPercent(usagePercent);
+  percent.textContent = `${messages.remaining} ${formatRendererCreditsPercent(remaining)}`;
   percent.style.fontSize = "12px";
   percent.style.fontVariantNumeric = "tabular-nums";
   percent.style.color = color;
   top.append(left, percent);
 
-  tile.append(top, renderCreditsBar(usagePercent, color));
+  tile.append(top, renderCreditsBar(remaining, color));
   return tile;
 }
 
-function renderDetails(popover: HTMLDivElement, credits: AccountCreditsSnapshot): void {
+function renderDetails(
+  popover: HTMLDivElement,
+  credits: AccountCreditsSnapshot,
+  locale: RendererSettingsLocale,
+): void {
+  const messages = rendererCreditsMessages(locale);
   const glowColor = toneColor(rendererCreditsTone(credits.usedPercent));
   popover.style.backgroundImage = `radial-gradient(160px 100px at 18% -10%, color-mix(in srgb, ${glowColor} 20%, transparent), transparent 70%)`;
+  popover.setAttribute("aria-label", messages.details);
   popover.replaceChildren();
-  popover.append(renderCreditsHeader(credits));
+  popover.append(renderCreditsHeader(credits, locale, messages));
   const tiles = (credits.productUsage ?? []).map((product) =>
-    renderCreditsTile(productLabel(product.product), product.usagePercent, product.resetsAt),
+    renderCreditsTile(
+      productLabel(product.product, locale),
+      product.usagePercent,
+      locale,
+      messages,
+      product.resetsAt,
+    ),
   );
   const lastTile = tiles.at(-1);
   if (lastTile) lastTile.style.marginBottom = "0";
@@ -364,20 +469,22 @@ export function mountRendererCreditsControl(composerId: string): RendererCredits
 export function renderRendererCreditsControl(
   control: RendererCreditsControl,
   accountCredits: AccountCreditsSnapshot | null,
+  locale: RendererSettingsLocale = "en",
 ): boolean {
   if (accountCredits === null) {
     control.root.style.display = "none";
     closePopover(control);
     return false;
   }
-  const percent = formatRendererCreditsPercent(accountCredits.usedPercent);
+  const remaining = remainingPercent(accountCredits.usedPercent);
+  const percent = formatRendererCreditsPercent(remaining);
   const title = `${creditsPeriodLabel(accountCredits.periodType)} ${percent}`;
   const tone = rendererCreditsTone(accountCredits.usedPercent);
   const ringSlot = control.trigger.querySelector<HTMLElement>("[data-codexhost-credits-ring]");
   const label = control.trigger.querySelector<HTMLElement>("[data-codexhost-credits-label]");
   if (ringSlot) {
     ringSlot.replaceChildren(
-      createRendererUsageRing(accountCredits.usedPercent, {
+      createRendererUsageRing(remaining, {
         size: 14,
         strokeWidth: 2.4,
         color: toneColor(tone),
@@ -388,6 +495,6 @@ export function renderRendererCreditsControl(
   control.root.style.display = "inline-flex";
   control.trigger.setAttribute("aria-label", title);
   control.trigger.title = title;
-  renderDetails(control.popover, accountCredits);
+  renderDetails(control.popover, accountCredits, locale);
   return true;
 }

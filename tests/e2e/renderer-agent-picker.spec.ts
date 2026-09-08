@@ -82,6 +82,6 @@ test("keeps the Agent menu anchored inside the Codex window zoom", async ({ page
   if (!triggerBox || !menuBox) throw new Error("Agent picker geometry is unavailable");
 
   expect(menuBox.x + menuBox.width).toBeCloseTo(triggerBox.x + triggerBox.width, 0);
-  expect(menuBox.width).toBeCloseTo(200 * 1.6, 0);
+  expect(menuBox.width).toBeCloseTo(224 * 1.6, 0);
   expect(triggerBox.y - (menuBox.y + menuBox.height)).toBeCloseTo(6 * 1.6, 0);
 });

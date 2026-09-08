@@ -3,9 +3,10 @@ import { mkdir, open, readFile, rename, rm, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-const SKILL_VERSION = 4;
+const SKILL_VERSION = 5;
 const SKILL_RELATIVE_PATH = path.join("skills", "codexhost-delegation", "SKILL.md");
 const PREVIOUS_MANAGED_DIGESTS: readonly string[] = [
+  "aff258622dc8ff321f32b15620d081e578cb9c9ed1134d6a57f35ca8e7762c0a",
   "ba509f57e5448e796b3dfdd5031dcb08672eded50b61c0a54de84cfa02c49dd3",
   "d3ddf6db9bc5c5df825479c885bbbf0ca08da66f7057a12e02e1fdf57525149e",
   "15eb63519ff867e1536c97188a0c43738d7a49d38d4d6adeb7a1036726e7246d",
@@ -15,12 +16,12 @@ export const CODEXHOST_DELEGATION_SKILL = `---
 name: codexhost-delegation
 version: ${SKILL_VERSION}
 description: >
-  Delegate work to another coding agent. Use when the user explicitly asks
-  Claude Code, Pi, Codex/OpenAI, OMP, Grok, another agent, or an agent mentioned
-  as @<agent> to independently review, investigate, implement, test, or verify
-  something. Do not use when the user is merely discussing, comparing, or
-  configuring agents, choosing a Model or Provider, or asking the current agent
-  to role-play as another agent.
+  Delegate tasks to other coding agents, or read and follow up on existing
+  external agent sessions. Use when the user asks another agent (including
+  @agent) to independently perform a task, or asks to view a specified external
+  session's content, progress, or results, send follow-up messages, wait, or
+  cancel a task. Not for recapping the current conversation, discussing or
+  configuring agents, or role-playing.
 ---
 
 # Execute the task
@@ -45,9 +46,14 @@ When the user asks for a specific Model or Thinking level, inspect the target
 Harness first and use the exact opaque IDs returned by the authoritative CLI.
 When they do not specify either setting, omit it so the target keeps its default.
 
-Create an independent child session and submit the requested task.
+For a new delegation, create an independent child session and submit the
+requested task. For an existing external session, resolve the target from the
+user-provided session link, identifier, or context and operate on that Thread
+directly; it need not have been created by the current assistant. If the target
+is ambiguous, ask the user to identify it. Keep requests to view or summarize a
+session read-only.
 
-After starting the task, choose the appropriate next action based on the
+For a new or existing task, choose the appropriate next action based on the
 user’s request and the task:
 
 - send a follow-up message to the same Thread;
@@ -57,10 +63,11 @@ user’s request and the task:
 - check it again later;
 - leave it running in the background.
 
-When the result is needed, explicitly read the child Thread. Report only the
+When the result is needed, explicitly read the target Thread. Report only the
 visible result returned by that Thread.
 
-Provide the user with the necessary tracking information, including:
+Provide the user with the necessary tracking information available from the
+CLI; omit unavailable fields rather than inventing them:
 
 - target agent;
 - \`delegationId\`;

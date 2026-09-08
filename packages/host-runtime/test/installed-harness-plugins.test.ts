@@ -94,7 +94,16 @@ describe("installed Harness composition", () => {
       opencode: ["/compact"],
       grok: ["/compact"],
       omp: ["/compact"],
-      antigravity: [],
+      antigravity: [
+        "/plan",
+        "/goal",
+        "/browser",
+        "/grill-me",
+        "/boost",
+        "/learn",
+        "/schedule",
+        "/help",
+      ],
       hermes: [],
     };
     const registry = await load();

@@ -67,8 +67,9 @@ describe("Renderer Usage plan-window formatting", () => {
 });
 
 describe("Renderer Usage Claude plan windows", () => {
-  it("keeps a plan-only snapshot eligible for the Usage popover", () => {
-    expect(rendererUsageHasDisplayData({ planFiveHourUsedPercent: 45 })).toBe(true);
+  it("does not show Usage for a plan-only snapshot", () => {
+    expect(rendererUsageHasDisplayData({ planFiveHourUsedPercent: 45 })).toBe(false);
+    expect(rendererUsageHasDisplayData({ planSevenDayUsedPercent: 12 })).toBe(false);
   });
 });
 

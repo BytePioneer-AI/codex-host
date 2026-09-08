@@ -84,6 +84,7 @@ const { outputFiles } = await build({
             cacheHitRatePercent: 99,
             totalCostUsd: 1.373,
             planFiveHourUsedPercent: 45,
+            planSevenDayUsedPercent: 12,
             planFiveHourResetsAtUnix: 1_756_130_400,
           });
         };
@@ -314,7 +315,7 @@ test("renders the Usage popover in Chinese when the settings locale is Chinese",
   await expect(popover).not.toContainText("Latest cache hit");
 });
 
-test("shows a Claude.ai five-hour plan window only in the Usage popover", async ({ page }) => {
+test("omits plan limits from the Usage trigger and popover", async ({ page }) => {
   await page.setContent('<!doctype html><body style="margin:0"></body>');
   await page.addScriptTag({ content: browserBundle });
   await page.evaluate(() => {
@@ -335,7 +336,8 @@ test("shows a Claude.ai five-hour plan window only in the Usage popover", async 
   await usage.hover();
   const popover = page.locator('[role="dialog"][aria-label="Thread Usage details"]');
   await expect(popover).toBeVisible();
-  await expect(popover).toContainText("5-hour limit");
-  await expect(popover).toContainText("45%");
+  await expect(popover).not.toContainText("5-hour limit");
+  await expect(popover).not.toContainText("45%");
+  await expect(popover).not.toContainText("12%");
   await expect(popover).not.toContainText("7-day limit");
 });

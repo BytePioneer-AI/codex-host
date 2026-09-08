@@ -35,6 +35,12 @@ import {
   type ExternalThreadRepository,
 } from "./external-thread-repository.js";
 import { DELEGATION_THREAD_ID_ENV } from "./delegation-types.js";
+import {
+  ExternalSessionAccess,
+  settleHistoryResource,
+  type ExternalSessionLease,
+} from "./external-session-access.js";
+
 import { SessionStateObserver } from "./session-state-observer.js";
 
 export interface TurnProjectionGate {
@@ -216,6 +222,12 @@ export class ExternalThreadRuntime {
     return [...this.#threads.values()];
   }
 
+  readonly #sessionAccess = new WeakMap<ExternalThread, ExternalSessionAccess>();
+  readonly #candidates = new Map<
+    ExternalSessionLease,
+    { session: HarnessSession; nativeRef: NativeSessionRef }
+  >();
+
   remove(threadId: string): void {
     this.#threads.delete(threadId);
   }
@@ -253,11 +265,12 @@ export class ExternalThreadRuntime {
       ...(effectiveThinkingOptionId ? { effectiveThinkingOptionId } : {}),
       ...(effectivePermissionModeId ? { effectivePermissionModeId } : {}),
     };
+    const access = new ExternalSessionAccess(input.session);
     const externalThread: ExternalThread = {
       id: input.record.hostThreadId,
       cwd: input.record.cwd,
       harnessId,
-      session: input.session,
+      session: access,
       outputTask: Promise.resolve(),
       ...(effectiveModel ? { requestedModel: effectiveModel } : {}),
       ...(effectiveThinkingOptionId
@@ -283,9 +296,135 @@ export class ExternalThreadRuntime {
       persistenceError: null,
       ignoredInteractionIds: new Set(),
     };
+    this.#sessionAccess.set(externalThread, access);
     externalThread.outputTask = this.#consumeOutputs(externalThread);
     this.#threads.set(externalThread.id, externalThread);
     return externalThread;
+  }
+
+  beginHistoryReplacement(thread: ExternalThread): ExternalSessionLease | null {
+    if (
+      this.#threads.get(thread.id) !== thread ||
+      thread.running ||
+      thread.activeTurnId ||
+      thread.persistenceError
+    )
+      return null;
+    return this.#sessionAccess.get(thread)?.acquire() ?? null;
+  }
+
+  #candidateOwned(
+    session: HarnessSession,
+    ref?: NativeSessionRef,
+    except?: ExternalThread,
+  ): boolean {
+    for (const thread of this.#threads.values()) {
+      if (thread.session === session || this.#sessionAccess.get(thread)?.native === session)
+        return true;
+      const current = thread.record.nativeSessionRef;
+      if (
+        thread !== except &&
+        ref &&
+        current?.harnessId === ref.harnessId &&
+        current.nativeSessionId === ref.nativeSessionId
+      )
+        return true;
+    }
+    return [...this.#candidates.values()].some(
+      (candidate) =>
+        candidate.session === session ||
+        (ref &&
+          candidate.nativeRef.harnessId === ref.harnessId &&
+          candidate.nativeRef.nativeSessionId === ref.nativeSessionId),
+    );
+  }
+
+  reserveHistoryCandidate(
+    thread: ExternalThread,
+    lease: ExternalSessionLease,
+    session: HarnessSession,
+    ref: NativeSessionRef,
+  ): boolean {
+    if (
+      !this.#sessionAccess.get(thread)?.owns(lease) ||
+      lease.invalidated ||
+      this.#candidates.has(lease) ||
+      this.#candidateOwned(session, ref, thread)
+    )
+      return false;
+    this.#candidates.set(lease, { session, nativeRef: ref });
+    return true;
+  }
+
+  async closeUnownedCandidate(session: HarnessSession, ref?: NativeSessionRef): Promise<void> {
+    if (this.#candidateOwned(session, ref)) return;
+    await settleHistoryResource(session.close()).catch((error: unknown) => this.#diagnose(error));
+  }
+
+  async prepareHistoryCommit(
+    thread: ExternalThread,
+    lease: ExternalSessionLease,
+    expected: StoredThreadRecordV1,
+  ): Promise<ExternalThreadRpcError | null> {
+    const access = this.#sessionAccess.get(thread);
+    if (
+      !access?.owns(lease) ||
+      lease.invalidated ||
+      this.#threads.get(thread.id) !== thread ||
+      thread.running ||
+      !this.#candidates.has(lease)
+    ) {
+      return { code: -32072, message: "External Thread changed during history replacement" };
+    }
+    const current = await this.#repository.find(thread.id);
+    if (!current || current.revision !== expected.revision || thread.record !== expected) {
+      return { code: -32081, message: "External rollback preparation is stale" };
+    }
+    if (lease.invalidated)
+      return {
+        code: -32072,
+        message: "External Thread produced output during history replacement",
+      };
+    // Public calls remain blocked while close releases queued outputs for the single consumer.
+    access.retire();
+    access.drain(lease);
+    try {
+      await settleHistoryResource(
+        (async () => {
+          await lease.source.close();
+          await thread.outputTask;
+          // A stopped process can still have queued projections. Keep its retired wrapper owned
+          // until those finish, so a restored wrapper cannot race the old consumer.
+          lease.sourceClosed = true;
+        })(),
+      );
+    } catch (error) {
+      this.#diagnose(error);
+      return { code: -32076, message: "External Session shutdown could not be confirmed" };
+    }
+    if (lease.invalidated || thread.running || this.#threads.get(thread.id) !== thread) {
+      return { code: -32072, message: "External Thread changed while its Session closed" };
+    }
+    return null;
+  }
+
+  async finishHistoryReplacement(
+    thread: ExternalThread,
+    lease: ExternalSessionLease,
+  ): Promise<void> {
+    const candidate = this.#candidates.get(lease);
+    if (candidate) {
+      try {
+        await settleHistoryResource(candidate.session.close());
+        this.#candidates.delete(lease);
+      } catch (error) {
+        this.#diagnose(error);
+      }
+    }
+    // After successful source close, the persisted record is the only recovery authority.
+    if (lease.sourceClosed && this.#threads.get(thread.id) === thread)
+      this.#threads.delete(thread.id);
+    this.#sessionAccess.get(thread)?.release(lease);
   }
 
   async replace(
@@ -298,22 +437,23 @@ export class ExternalThreadRuntime {
       turns: JsonObject[];
       restoredState?: HarnessSessionState;
     },
+    lease: ExternalSessionLease,
   ): Promise<ExternalThread> {
     if (
-      current.running ||
+      !lease.sourceClosed ||
+      lease.invalidated ||
+      !this.#sessionAccess.get(current)?.owns(lease) ||
       this.#threads.get(current.id) !== current ||
-      input.record.hostThreadId !== current.id
+      current.running ||
+      input.record.hostThreadId !== current.id ||
+      this.#candidates.get(lease)?.session !== input.session
     ) {
-      throw new Error("External Thread runtime cannot replace an active or stale Session");
-    }
-    try {
-      await current.session.close();
-      await current.outputTask;
-    } catch (error) {
-      this.#diagnose(error);
+      throw new Error("External Thread runtime cannot publish this history replacement");
     }
     this.#threads.delete(current.id);
-    return this.register(input);
+    const replacement = this.register(input);
+    this.#candidates.delete(lease);
+    return replacement;
   }
 
   async locate(threadId: string): Promise<ExternalThreadLocation> {
@@ -367,11 +507,22 @@ export class ExternalThreadRuntime {
     }
   }
 
-  async refresh(thread: ExternalThread): Promise<ExternalThreadRpcError | null> {
-    const snapshot = await thread.session.readSnapshot();
-    if (!snapshot.ok) return mapExternalThreadHarnessError(snapshot.error, "read");
+  async refresh(
+    thread: ExternalThread,
+    existingLease?: ExternalSessionLease,
+  ): Promise<ExternalThreadRpcError | null> {
+    const access = this.#sessionAccess.get(thread);
+    const lease = existingLease ?? access?.acquire();
+    if (!lease || !access?.owns(lease))
+      return { code: -32072, message: "External Session is busy" };
     try {
-      const aligned = await this.#repository.alignSnapshot(thread.record, snapshot.value);
+      const record = thread.record;
+      const snapshot = await lease.source.readSnapshot();
+      if (!snapshot.ok) return mapExternalThreadHarnessError(snapshot.error, "read");
+      if (lease.invalidated || thread.record !== record)
+        return { code: -32072, message: "External history changed while reading" };
+      lease.snapshot = snapshot.value;
+      const aligned = await this.#repository.alignSnapshot(record, snapshot.value);
       thread.record = aligned.record;
       thread.turns = aligned.turns;
       thread.historyHydrated = true;
@@ -381,9 +532,13 @@ export class ExternalThreadRuntime {
         sessionId: thread.sessionId,
         running: thread.running,
       });
-      return null;
+      return lease.invalidated
+        ? { code: -32072, message: "External history changed while reading" }
+        : null;
     } catch {
       return { code: -32081, message: "External Thread history could not be persisted" };
+    } finally {
+      if (!existingLease) access.release(lease);
     }
   }
 

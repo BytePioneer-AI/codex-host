@@ -322,6 +322,10 @@ export class FakeHarnessSession implements HarnessSession {
     };
   }
 
+  get closed(): boolean {
+    return this.#closed;
+  }
+
   persistedSnapshot(): HostThreadSnapshot {
     return cloneJson(this.#snapshot);
   }
@@ -1146,7 +1150,28 @@ export class FakeHarnessAdapter implements HarnessAdapter {
         },
       };
     }
-    if (input.kind === "resume") return { ok: true, value: source };
+    if (input.kind === "resume") {
+      if (!source.closed) return { ok: true, value: source };
+      const resumed = new FakeHarnessSession(
+        this.harnessId,
+        this.catalog,
+        source.state.effectiveModel,
+        sourceRef,
+        source.persistedSnapshot(),
+        this.supportsFork,
+        input.cwd,
+        this.supportsForkAcrossCwd,
+        source.state.effectiveThinkingOptionId,
+        this.initialUsage,
+        this.permissionModes,
+        source.state.effectivePermissionModeId,
+        this.supportsRollbackLastTurn,
+        this.permissionModeScope,
+      );
+      this.sessions.push(resumed);
+      this.#sessionsByNativeId.set(sourceRef.nativeSessionId, resumed);
+      return { ok: true, value: resumed };
+    }
     if (input.kind === "rollbackLastTurn") {
       const current = await source.readSnapshot();
       if (!current.ok) return current;

@@ -11,6 +11,5 @@
     "emitDeclarationOnly": true
   },
   "references": [{ "path": "../shared-contracts/tsconfig.json" }],
-  "include": ["src/**/*.ts"],
-  "exclude": ["src/versioned-renderer-adapter 2.ts"]
+  "include": ["src/**/*.ts"]
 }

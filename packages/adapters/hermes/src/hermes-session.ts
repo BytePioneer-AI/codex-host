@@ -1,18 +1,4 @@
 import { randomUUID } from "node:crypto";
-import fs from "node:fs";
-
-function traceTurnPoint(point: string, detail: string = ""): void {
-  if (process.env.CODEXHOST_HERMES_TRACE !== "1") return;
-  try {
-    const tracePath = process.env.CODEXHOST_HERMES_TRACE_FILE ?? "/tmp/codexhost-hermes-wire.log";
-    fs.appendFileSync(
-      tracePath,
-      `[${new Date().toISOString()}] TURN ${point}${detail ? ` ${detail}` : ""}\n`,
-    );
-  } catch {
-    // tracing must never break the session
-  }
-}
 
 import type {
   PromptResponse,
@@ -314,6 +300,7 @@ function toolOutputFromUpdate(update: ToolCallUpdate): HostToolOutput | null {
 function historyTurnsFromReplay(
   replay: HermesTransportEvent[],
   nativeRef: NativeSessionRef,
+  knownTurnRefs: readonly NativeTurnRef[] = [],
 ): HostTurnSnapshot[] {
   const turns: HostTurnSnapshot[] = [];
   let current: {
@@ -327,13 +314,19 @@ function historyTurnsFromReplay(
       current = null;
       return;
     }
+    const known = knownTurnRefs[turns.length];
+    const nativeTurnRef =
+      known?.harnessId === nativeRef.harnessId &&
+      known.nativeSessionId === nativeRef.nativeSessionId
+        ? known
+        : nativeTurnRefSchema.parse({
+            harnessId: nativeRef.harnessId,
+            nativeSessionId: nativeRef.nativeSessionId,
+            nativeTurnKey: current.turnKey,
+            formatVersion: 1,
+          });
     turns.push({
-      nativeTurnRef: nativeTurnRefSchema.parse({
-        harnessId: nativeRef.harnessId,
-        nativeSessionId: nativeRef.nativeSessionId,
-        nativeTurnKey: current.turnKey,
-        formatVersion: 1,
-      }),
+      nativeTurnRef,
       input: [{ type: "text", text: current.inputText }],
       items: current.items,
       outcome: { status: "succeeded" },
@@ -342,7 +335,8 @@ function historyTurnsFromReplay(
   };
 
   const pushText = (kind: "reasoning" | "agentMessage", text: string) => {
-    if (!current) current = { inputText: "(resumed)", items: [], turnKey: randomUUID() };
+    if (!current)
+      current = { inputText: "(resumed)", items: [], turnKey: `history-${turns.length + 1}` };
     const last = current.items.at(-1);
     if (last && last.item.type === kind) {
       if (kind === "reasoning") {
@@ -365,7 +359,7 @@ function historyTurnsFromReplay(
     switch (event.type) {
       case "user.text": {
         closeTurn();
-        current = { inputText: event.text, items: [], turnKey: randomUUID() };
+        current = { inputText: event.text, items: [], turnKey: `history-${turns.length + 1}` };
         break;
       }
       case "agent.thought":
@@ -375,7 +369,8 @@ function historyTurnsFromReplay(
         pushText("agentMessage", event.text);
         break;
       case "tool.call": {
-        if (!current) current = { inputText: "(resumed)", items: [], turnKey: randomUUID() };
+        if (!current)
+          current = { inputText: "(resumed)", items: [], turnKey: `history-${turns.length + 1}` };
         const update = event.update as ToolCallUpdate;
         const toolName =
           (typeof update.title === "string" && update.title.trim()) ||
@@ -416,6 +411,7 @@ export interface HermesSessionOptions {
   nativeRef: NativeSessionRef;
   transport: HermesAcpTransport;
   open: HermesOpenResult;
+  knownTurnRefs?: readonly NativeTurnRef[];
   onSettle: (session: HermesSession) => void;
 }
 
@@ -472,7 +468,11 @@ export class HermesSession implements HarnessSession {
         : {}),
     };
     this.initialState = { ...this.#state };
-    this.#historyTurns = historyTurnsFromReplay(options.open.replay, this.#nativeRef);
+    this.#historyTurns = historyTurnsFromReplay(
+      options.open.replay,
+      this.#nativeRef,
+      options.knownTurnRefs,
+    );
     this.initialUsage = lastUsageFromReplay(options.open.replay);
     this.outputs = this.#channel.outputs;
     this.#transport.onFault = (error) => this.#fault(transportErrorToHarness(error));
@@ -604,10 +604,6 @@ export class HermesSession implements HarnessSession {
           ? transportErrorToHarness(error)
           : harnessError("nativeFailure", error instanceof Error ? error.message : String(error));
     }
-    traceTurnPoint(
-      "prompt-resolved",
-      failure ? `failure=${failure.message}` : `stopReason=${String(promptResponse?.stopReason)}`,
-    );
     if (this.#activeTurn !== active) {
       // Session closed or faulted mid-turn; events were already finalized.
       return;
@@ -650,7 +646,6 @@ export class HermesSession implements HarnessSession {
       this.#emit({ type: "session.usage.changed", usage, observedForTurnId: active.turnId });
     }
     this.#emit({ type: "turn.completed", turnId: active.turnId, nativeTurnRef, outcome });
-    traceTurnPoint("turn-completed-emitted", `outcome=${outcome.status}`);
     this.#completedTurns.push(turnSnapshot);
   }
 
@@ -812,12 +807,32 @@ export class HermesSession implements HarnessSession {
     return ok({ accepted: true });
   }
 
-  #cancelTurn(command: TurnCancelCommand): HarnessResult<TurnCancelAccepted> {
+  async #cancelTurn(command: TurnCancelCommand): Promise<HarnessResult<TurnCancelAccepted>> {
     if (!this.#activeTurn || this.#activeTurnId !== command.turnId) {
       return err("invalidRequest", `No active Turn ${command.turnId}`);
     }
-    void this.#transport.cancel().catch(() => undefined);
-    return ok({ cancellationRequested: true });
+    try {
+      await this.#transport.cancel();
+      for (const [interactionId, waiter] of this.#approvalWaiters) {
+        if (waiter.turnId !== command.turnId) continue;
+        this.#approvalWaiters.delete(interactionId);
+        waiter.resolve({ outcome: { outcome: "cancelled" } });
+        this.#emit({
+          type: "interaction.closed",
+          interactionId,
+          turnId: waiter.turnId,
+          reason: "cancelled",
+        });
+      }
+      return ok({ cancellationRequested: true });
+    } catch (error) {
+      const failure =
+        error instanceof HermesTransportError
+          ? transportErrorToHarness(error)
+          : harnessError("nativeFailure", error instanceof Error ? error.message : String(error));
+      this.#fault(failure);
+      return { ok: false, error: failure };
+    }
   }
 
   async #selectModel(command: ModelSelectCommand): Promise<HarnessResult<ModelSelectCompleted>> {
@@ -831,6 +846,9 @@ export class HermesSession implements HarnessSession {
     try {
       await this.#transport.setModel(native);
     } catch (error) {
+      if (error instanceof HermesTransportError) {
+        return { ok: false, error: transportErrorToHarness(error) };
+      }
       return err(
         "nativeFailure",
         error instanceof Error ? error.message : "Hermes rejected Model selection",
@@ -857,6 +875,9 @@ export class HermesSession implements HarnessSession {
     try {
       await this.#transport.setPermissionMode(command.permissionModeId);
     } catch (error) {
+      if (error instanceof HermesTransportError) {
+        return { ok: false, error: transportErrorToHarness(error) };
+      }
       return err(
         "nativeFailure",
         error instanceof Error ? error.message : "Hermes rejected Permission Mode selection",

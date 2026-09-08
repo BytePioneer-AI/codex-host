@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { readFile } from "node:fs/promises";
+import { access, readFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -38,6 +38,8 @@ available_provider_slugs = {
     str(row.get("slug") or "").strip().lower()
     for row in payload.get("providers") or []
     if str(row.get("slug") or "").strip().lower() != "moa"
+    and row.get("authenticated") is not False
+    and row.get("available") is not False
 }
 moa_availability = {}
 try:
@@ -111,14 +113,34 @@ async function venvPythonFromShim(hermesExecutable: string): Promise<string | nu
   }
 }
 
-function fallbackVenvPython(hermesExecutable: string): string {
-  const agentDir = path.resolve(path.dirname(hermesExecutable), "../../.hermes/hermes-agent");
-  return path.join(agentDir, "venv/bin/python");
+export function inventoryPythonCandidates(
+  hermesExecutable: string,
+  platform: NodeJS.Platform = process.platform,
+): string[] {
+  const pathApi = platform === "win32" ? path.win32 : path.posix;
+  const executableDirectory = pathApi.dirname(hermesExecutable);
+  const environmentDirectory = pathApi.basename(executableDirectory).toLowerCase();
+  const candidates: string[] = [];
+  if (environmentDirectory === "scripts") {
+    candidates.push(pathApi.join(executableDirectory, "python.exe"));
+  } else if (environmentDirectory === "bin") {
+    candidates.push(pathApi.join(executableDirectory, "python"));
+  }
+  const agentDir = pathApi.resolve(executableDirectory, "../../.hermes/hermes-agent");
+  candidates.push(
+    pathApi.join(agentDir, platform === "win32" ? "venv/Scripts/python.exe" : "venv/bin/python"),
+  );
+  return [...new Set(candidates)];
 }
 
-function runProbe(pythonExecutable: string, timeoutMs: number): Promise<HermesInventory> {
+function runProbe(
+  pythonExecutable: string,
+  timeoutMs: number,
+  environment?: NodeJS.ProcessEnv,
+): Promise<HermesInventory> {
   return new Promise((resolve, reject) => {
     const child = spawn(pythonExecutable, ["-c", INVENTORY_PROBE_SCRIPT], {
+      env: { ...process.env, ...environment },
       stdio: ["ignore", "pipe", "pipe"],
     });
     let stdout = "";
@@ -177,10 +199,24 @@ function runProbe(pythonExecutable: string, timeoutMs: number): Promise<HermesIn
 export async function readHermesModelInventory(
   hermesExecutable: string,
   timeoutMs = 20_000,
+  options: { environment?: NodeJS.ProcessEnv; platform?: NodeJS.Platform } = {},
 ): Promise<HermesInventory> {
-  const pythonExecutable =
-    (await venvPythonFromShim(hermesExecutable)) ?? fallbackVenvPython(hermesExecutable);
-  return runProbe(pythonExecutable, timeoutMs);
+  const candidates = [
+    ...(options.platform === "win32" ? [] : [(await venvPythonFromShim(hermesExecutable)) ?? ""]),
+    ...inventoryPythonCandidates(hermesExecutable, options.platform),
+  ].filter((candidate, index, all) => candidate.length > 0 && all.indexOf(candidate) === index);
+  let pythonExecutable = candidates[0];
+  for (const candidate of candidates) {
+    try {
+      await access(candidate);
+      pythonExecutable = candidate;
+      break;
+    } catch {
+      // Try the next supported Hermes installation layout.
+    }
+  }
+  if (!pythonExecutable) throw new HermesInventoryError("Hermes inventory interpreter not found");
+  return runProbe(pythonExecutable, timeoutMs, options.environment);
 }
 
 export interface HermesCatalogModel {

@@ -24,7 +24,11 @@ import {
   type HermesInventory,
 } from "./hermes-inventory.js";
 import { listHermesSessionCandidates, resolveHermesSessionCandidate } from "./hermes-import.js";
-import { decodeHermesModelRefId, hermesPermissionModeCatalog } from "./hermes-models.js";
+import {
+  decodeHermesModelRefId,
+  hermesPermissionModeCatalog,
+  isHermesModeId,
+} from "./hermes-models.js";
 import { HermesSession } from "./hermes-session.js";
 import { resolveHermesExecutable } from "./command.js";
 
@@ -56,6 +60,7 @@ export class HermesAdapter implements HarnessAdapter {
   #inspectionCacheScope: string | null = null;
   #sessions = new Set<HermesSession>();
   #warmTransports = new Map<string, Promise<HermesAcpTransport | null>>();
+  #transports = new Set<HermesAcpTransport>();
   #closed = false;
 
   constructor(options: HermesAdapterOptions = {}) {
@@ -111,7 +116,7 @@ export class HermesAdapter implements HarnessAdapter {
     } catch (error) {
       return inspectionFromTransportError(error);
     } finally {
-      if (!retainedForOpen) await transport.close().catch(() => undefined);
+      if (!retainedForOpen) await this.#releaseTransport(transport);
     }
   }
 
@@ -120,7 +125,9 @@ export class HermesAdapter implements HarnessAdapter {
       ...(this.#options.command ? { command: this.#options.command } : {}),
       ...(this.#options.environment ? { environment: this.#options.environment } : {}),
     });
-    return readHermesModelInventory(executable);
+    return readHermesModelInventory(executable, 20_000, {
+      ...(this.#options.environment ? { environment: this.#options.environment } : {}),
+    });
   }
 
   async open(input: OpenSessionInput): Promise<HarnessResult<HarnessSession>> {
@@ -144,12 +151,20 @@ export class HermesAdapter implements HarnessAdapter {
     }
 
     const transport = await this.#takeTransport(cwd);
+    if (this.#closed) {
+      await this.#releaseTransport(transport);
+      return failure("invalidState", "Hermes Adapter is closed");
+    }
     try {
       const open = await transport.open(transportOpen);
+      if (this.#closed) {
+        await this.#releaseTransport(transport);
+        return failure("invalidState", "Hermes Adapter is closed");
+      }
       if (input.kind === "create" && input.model) {
         const nativeModelId = decodeHermesModelRefId(input.model.id);
         if (!nativeModelId) {
-          await transport.close().catch(() => undefined);
+          await this.#releaseTransport(transport);
           return failure("invalidRequest", "Model Ref does not belong to Hermes");
         }
         if (open.session.models?.currentModelId !== nativeModelId) {
@@ -167,6 +182,19 @@ export class HermesAdapter implements HarnessAdapter {
           currentModelId: nativeModelId,
         };
       }
+      if (input.permissionModeId) {
+        if (!isHermesModeId(input.permissionModeId)) {
+          await this.#releaseTransport(transport);
+          return failure("invalidRequest", "Permission Mode does not belong to Hermes");
+        }
+        if (open.session.modes?.currentModeId !== input.permissionModeId) {
+          await transport.setPermissionMode(input.permissionModeId);
+        }
+        open.session.modes = {
+          currentModeId: input.permissionModeId,
+          availableModes: open.session.modes?.availableModes ?? [],
+        };
+      }
       const session = new HermesSession({
         nativeRef: {
           harnessId: hermesHarnessId,
@@ -175,13 +203,20 @@ export class HermesAdapter implements HarnessAdapter {
         },
         transport,
         open,
-        onSettle: (settled) => this.#sessions.delete(settled),
+        ...(input.kind === "resume" && input.knownTurnRefs
+          ? { knownTurnRefs: input.knownTurnRefs }
+          : {}),
+        onSettle: (settled) => {
+          this.#sessions.delete(settled);
+          this.#transports.delete(transport);
+        },
       });
       this.#sessions.add(session);
       this.#primeTransport(cwd);
       return { ok: true, value: session };
     } catch (error) {
-      await transport.close().catch(() => undefined);
+      await this.#releaseTransport(transport);
+      if (this.#closed) return failure("invalidState", "Hermes Adapter is closed");
       if (error instanceof HermesTransportError) {
         if (error.kind === "notInstalled") {
           return failure("notInstalled", error.message);
@@ -204,15 +239,9 @@ export class HermesAdapter implements HarnessAdapter {
     this.#inspectionCache = null;
     const sessions = [...this.#sessions];
     this.#sessions.clear();
-    const warmTransports = [...this.#warmTransports.values()];
     this.#warmTransports.clear();
-    await Promise.all([
-      ...sessions.map((session) => session.close().catch(() => undefined)),
-      ...warmTransports.map(async (pending) => {
-        const transport = await pending;
-        await transport?.close().catch(() => undefined);
-      }),
-    ]);
+    await Promise.all(sessions.map((session) => session.close().catch(() => undefined)));
+    await Promise.all([...this.#transports].map((transport) => this.#releaseTransport(transport)));
   }
 
   async #takeTransport(cwd: string): Promise<HermesAcpTransport> {
@@ -224,10 +253,16 @@ export class HermesAdapter implements HarnessAdapter {
 
   #keepWarmTransport(cwd: string, transport: HermesAcpTransport): void {
     if (this.#closed) {
-      void transport.close().catch(() => undefined);
+      void this.#releaseTransport(transport);
       return;
     }
+    const previous = this.#warmTransports.get(cwd);
     this.#warmTransports.set(cwd, Promise.resolve(transport));
+    if (previous) {
+      void previous.then((losing) => {
+        if (losing && losing !== transport) return this.#releaseTransport(losing);
+      });
+    }
   }
 
   #primeTransport(cwd: string): void {
@@ -237,7 +272,7 @@ export class HermesAdapter implements HarnessAdapter {
       .inspect()
       .then(() => transport)
       .catch(async () => {
-        await transport.close().catch(() => undefined);
+        await this.#releaseTransport(transport);
         return null;
       });
     this.#warmTransports.set(cwd, pending);
@@ -245,13 +280,20 @@ export class HermesAdapter implements HarnessAdapter {
 
   #createTransport(cwd: string): HermesAcpTransport {
     const { command, environment, commandTimeoutMs, closeTimeoutMs } = this.#options;
-    return new HermesAcpTransport({
+    const transport = new HermesAcpTransport({
       cwd,
       ...(command !== undefined && command.length > 0 ? { command } : {}),
       ...(environment !== undefined ? { environment } : {}),
       ...(commandTimeoutMs !== undefined ? { commandTimeoutMs } : {}),
       ...(closeTimeoutMs !== undefined ? { closeTimeoutMs } : {}),
     });
+    this.#transports.add(transport);
+    return transport;
+  }
+
+  async #releaseTransport(transport: HermesAcpTransport): Promise<void> {
+    this.#transports.delete(transport);
+    await transport.close().catch(() => undefined);
   }
 
   /**

@@ -130,7 +130,7 @@ describe("Renderer combined Model and Thinking picker presentation", () => {
     expect(view.thinkingOptions.map(({ id }) => id)).not.toContain("max");
   });
 
-  it("does not show a runtime-resolved Model label after the selected Model", () => {
+  it("shows a runtime-resolved Model label after the selected Model", () => {
     const claudeModel = harnessModelRefSchema.parse({ id: "claude-model-v1.c29ubmV0" });
     const claudeCatalog = harnessModelCatalogSchema.parse({
       models: [
@@ -157,6 +157,7 @@ describe("Renderer combined Model and Thinking picker presentation", () => {
       }),
     ).toEqual({
       modelLabel: "Family alias",
+      resolvedModelLabel: "runtime-custom",
       thinkingOptions: [],
       showThinkingSection: false,
       thinkingSelectionEnabled: false,

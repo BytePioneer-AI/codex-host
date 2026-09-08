@@ -1,5 +1,4 @@
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from "node:child_process";
-import fs from "node:fs";
 import { Readable, Writable } from "node:stream";
 
 import { sanitizeDiagnosticTail } from "@codexhost/harness-adapter";
@@ -164,7 +163,8 @@ function classifyStartupError(error: unknown): HermesTransportError {
     text.includes("auth_required") ||
     text.includes("authentication") ||
     text.includes("not configured") ||
-    text.includes("no provider")
+    text.includes("no provider") ||
+    text.includes("no llm provider")
   ) {
     return new HermesTransportError("authenticationRequired", detail, {
       cause: error,
@@ -394,28 +394,36 @@ export class HermesAcpTransport {
   async setModel(modelId: string): Promise<void> {
     const connection = this.#connection;
     if (!connection || !this.#sessionId) throw new Error("Hermes ACP Session is unavailable");
-    const response = (await withTimeout(
-      connection.request("session/set_model", { sessionId: this.#sessionId, modelId }),
-      this.#options.commandTimeoutMs,
-      "Hermes Model selection",
-    )) as unknown;
-    // Hermes answers null when the Session is gone; the SDK throws -32602
-    // for unknown models, which surfaces as a rejection here.
-    if (response === null || response === undefined) {
-      throw new HermesTransportError("unavailable", "Hermes rejected Model selection");
+    try {
+      const response = (await withTimeout(
+        connection.request("session/set_model", { sessionId: this.#sessionId, modelId }),
+        this.#options.commandTimeoutMs,
+        "Hermes Model selection",
+      )) as unknown;
+      // Hermes answers null when the Session is gone; the SDK throws -32602
+      // for unknown models, which surfaces as a rejection here.
+      if (response === null || response === undefined) {
+        throw new HermesTransportError("unavailable", "Hermes rejected Model selection");
+      }
+    } catch (error) {
+      throw classifyStartupError(error);
     }
   }
 
   async setPermissionMode(modeId: string): Promise<void> {
     const connection = this.#connection;
     if (!connection || !this.#sessionId) throw new Error("Hermes ACP Session is unavailable");
-    const response = (await withTimeout(
-      connection.request("session/set_mode", { sessionId: this.#sessionId, modeId }),
-      this.#options.commandTimeoutMs,
-      "Hermes Permission Mode selection",
-    )) as unknown;
-    if (response === null || response === undefined) {
-      throw new HermesTransportError("unavailable", "Hermes rejected Permission Mode selection");
+    try {
+      const response = (await withTimeout(
+        connection.request("session/set_mode", { sessionId: this.#sessionId, modeId }),
+        this.#options.commandTimeoutMs,
+        "Hermes Permission Mode selection",
+      )) as unknown;
+      if (response === null || response === undefined) {
+        throw new HermesTransportError("unavailable", "Hermes rejected Permission Mode selection");
+      }
+    } catch (error) {
+      throw classifyStartupError(error);
     }
   }
 
@@ -446,7 +454,11 @@ export class HermesAcpTransport {
     if (!connection || !this.#sessionId || !this.#activePrompt) {
       throw new HermesTransportError("unavailable", "Hermes ACP Session has no cancellable Turn");
     }
-    await connection.cancel({ sessionId: this.#sessionId });
+    try {
+      await connection.cancel({ sessionId: this.#sessionId });
+    } catch (error) {
+      throw classifyStartupError(error);
+    }
   }
 
   async close(): Promise<void> {
@@ -518,7 +530,7 @@ export class HermesAcpTransport {
     );
     const stream = ndJsonStream(
       Writable.toWeb(child.stdin) as WritableStream<Uint8Array>,
-      Readable.toWeb(traceAcpStream(child.stdout) as Readable) as ReadableStream<Uint8Array>,
+      Readable.toWeb(child.stdout) as ReadableStream<Uint8Array>,
     );
     const connection = new ClientSideConnection(
       () =>
@@ -560,34 +572,4 @@ export class HermesAcpTransport {
     this.#initialize = initialize;
     return initialize;
   }
-}
-
-function traceAcpStream(stdout: NodeJS.ReadableStream): NodeJS.ReadableStream {
-  if (process.env.CODEXHOST_HERMES_TRACE !== "1") return stdout;
-  const tracePath = process.env.CODEXHOST_HERMES_TRACE_FILE ?? "/tmp/codexhost-hermes-wire.log";
-  const traced = new Readable({ read() {} });
-  let buffered = Buffer.alloc(0);
-  stdout.on("data", (chunk: Buffer) => {
-    try {
-      fs.appendFileSync(
-        tracePath,
-        `[${new Date().toISOString()}] IN ${chunk.length}B ${JSON.stringify(
-          chunk.toString("utf8").slice(0, 2000),
-        )}\n`,
-      );
-    } catch {
-      // tracing must never break the transport
-    }
-    buffered = Buffer.concat([buffered, chunk]);
-    let index = buffered.indexOf(0x0a);
-    while (index >= 0) {
-      traced.push(buffered.subarray(0, index));
-      traced.push(Buffer.from("\n"));
-      buffered = buffered.subarray(index + 1);
-      index = buffered.indexOf(0x0a);
-    }
-  });
-  stdout.once("end", () => traced.push(null));
-  stdout.once("error", (error) => traced.destroy(error));
-  return traced;
 }

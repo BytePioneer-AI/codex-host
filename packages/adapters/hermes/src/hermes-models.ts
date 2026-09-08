@@ -92,10 +92,9 @@ export function projectHermesModelState(
   if (!models || models.availableModels.length === 0) {
     return { effectiveModel: null, resolvedModelLabel: null };
   }
-  const current =
-    (models.currentModelId
-      ? models.availableModels.find(({ modelId }) => modelId === models.currentModelId)
-      : undefined) ?? models.availableModels[0];
+  const current = models.currentModelId
+    ? models.availableModels.find(({ modelId }) => modelId === models.currentModelId)
+    : undefined;
   if (!current) return { effectiveModel: null, resolvedModelLabel: null };
   return {
     effectiveModel: encodeHermesModelRef(current.modelId),

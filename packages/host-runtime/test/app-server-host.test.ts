@@ -2007,6 +2007,8 @@ describe("AppServerHost HarnessAdapter projection", () => {
       mappingStore,
       mappingStoreDirectory: directory,
       closeMappingStoreOnExit: false,
+      accountRepository: first.accountRepository,
+      threadAccountStore: first.threadAccountStore,
     });
 
     try {

@@ -139,7 +139,8 @@ function runProbe(
   environment?: NodeJS.ProcessEnv,
 ): Promise<HermesInventory> {
   return new Promise((resolve, reject) => {
-    const child = spawn(pythonExecutable, ["-c", INVENTORY_PROBE_SCRIPT], {
+    const child = spawn(pythonExecutable, ["-I", "-c", INVENTORY_PROBE_SCRIPT], {
+      cwd: path.dirname(pythonExecutable),
       env: { ...process.env, ...environment },
       stdio: ["ignore", "pipe", "pipe"],
     });

@@ -593,6 +593,32 @@ describe("HermesAdapter model selection", () => {
     await adapter.close();
   });
 
+  it("does not retain an unused warm process for a Thread-specific environment", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "hermes-adapter-thread-warm-counter-"));
+    temporaryDirectories.push(directory);
+    const counterPath = path.join(directory, "starts.log");
+    const command = await countingHermesExecutable();
+    const adapter = new HermesAdapter({
+      command,
+      environment: { ...process.env, FAKE_HERMES_STARTS: counterPath },
+    });
+
+    try {
+      const opened = await adapter.open({
+        kind: "create",
+        cwd: process.cwd(),
+        environment: { CODEXHOST_THREAD_ID: "thread-with-private-environment" },
+      });
+      expect(opened.ok).toBe(true);
+      await new Promise((resolve) => setTimeout(resolve, 200));
+
+      const starts = (await readFile(counterPath, "utf8")).trim().split("\n");
+      expect(starts).toHaveLength(1);
+    } finally {
+      await adapter.close();
+    }
+  });
+
   it("prewarms the next ACP process after opening a Session", async () => {
     const directory = await mkdtemp(path.join(os.tmpdir(), "hermes-adapter-warm-counter-"));
     temporaryDirectories.push(directory);
@@ -750,6 +776,64 @@ describe("HermesSession recovery", () => {
 });
 
 describe("HermesSession terminal events", () => {
+  it("immediately terminalizes a failed tool_call carrying its initial output", async () => {
+    const transport = {
+      onFault: () => undefined,
+      runTurn: async (_text: string, onEvent: (event: HermesTransportEvent) => void) => {
+        onEvent({
+          type: "tool.call",
+          toolCallId: "terminal-tool-call",
+          update: {
+            sessionUpdate: "tool_call",
+            toolCallId: "terminal-tool-call",
+            title: "Run command",
+            status: "failed",
+            rawOutput: "exit code 1",
+          },
+        } as HermesTransportEvent);
+        return { stopReason: "end_turn" as const };
+      },
+      cancel: async () => undefined,
+      close: async () => undefined,
+      setModel: async () => undefined,
+      setPermissionMode: async () => undefined,
+    } as unknown as HermesAcpTransport;
+    const session = new HermesSession({
+      nativeRef: nativeSessionRefSchema.parse({
+        harnessId: "hermes",
+        nativeSessionId: "native-session-1",
+        formatVersion: 1,
+      }),
+      transport,
+      open: openResult(),
+      onSettle: () => undefined,
+    });
+
+    const outputsPromise = collectUntilTurnCompleted(session.outputs);
+    await session.execute({
+      type: "turn.start",
+      turnId: hostTurnIdSchema.parse("turn-initial-terminal-tool"),
+      input: [{ type: "text", text: "run" }],
+    });
+    const outputs = await outputsPromise;
+    const completed = outputs.filter(
+      (output) => output.kind === "event" && output.event.type === "item.completed",
+    );
+
+    expect(completed).toHaveLength(1);
+    expect(completed[0]).toMatchObject({
+      kind: "event",
+      event: {
+        type: "item.completed",
+        snapshot: {
+          item: { output: { content: [{ type: "text", text: "exit code 1" }] } },
+          outcome: { status: "failed" },
+        },
+      },
+    });
+    await session.close();
+  });
+
   it("emits a completed tool item only once", async () => {
     const transport = {
       onFault: () => undefined,

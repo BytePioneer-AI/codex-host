@@ -737,6 +737,7 @@ export class HermesSession implements HarnessSession {
           typeof update.name === "string" ? update.name : null,
           update.rawInput,
         );
+        this.#updateToolItem(active, update);
         return;
       }
       case "tool.update":

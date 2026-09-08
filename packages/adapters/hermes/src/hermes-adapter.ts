@@ -232,7 +232,11 @@ export class HermesAdapter implements HarnessAdapter {
         },
       });
       this.#sessions.add(session);
-      this.#primeTransport(cwd, environment);
+      // Per-open environments are normally Thread-specific. A process warmed
+      // with that identity cannot be reused safely by another Thread.
+      if (!input.environment || Object.keys(input.environment).length === 0) {
+        this.#primeTransport(cwd, environment);
+      }
       return { ok: true, value: session };
     } catch (error) {
       await this.#releaseTransport(transport);

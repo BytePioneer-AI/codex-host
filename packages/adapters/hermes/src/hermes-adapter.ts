@@ -1,4 +1,5 @@
 import type { ClientSideConnection } from "@agentclientprotocol/sdk";
+import { createHash } from "node:crypto";
 import type {
   HarnessAdapter,
   HarnessError,
@@ -10,7 +11,12 @@ import type {
   InspectHarnessInput,
   OpenSessionInput,
 } from "@codexhost/harness-adapter";
-import { harnessIdSchema, type HarnessId } from "@codexhost/shared-contracts";
+import {
+  harnessIdSchema,
+  harnessPermissionModeIdSchema,
+  type HarnessId,
+  type HarnessPermissionModeId,
+} from "@codexhost/shared-contracts";
 
 import {
   HermesAcpTransport,
@@ -26,6 +32,7 @@ import {
 import { listHermesSessionCandidates, resolveHermesSessionCandidate } from "./hermes-import.js";
 import {
   decodeHermesModelRefId,
+  HERMES_MODE_DONT_ASK,
   hermesPermissionModeCatalog,
   isHermesModeId,
 } from "./hermes-models.js";
@@ -72,7 +79,8 @@ export class HermesAdapter implements HarnessAdapter {
     if (!input.refresh && this.#inspectionCache && this.#inspectionCacheScope === cwd) {
       return this.#inspectionCache;
     }
-    const transport = await this.#takeTransport(cwd);
+    const environment = this.#effectiveEnvironment();
+    const transport = await this.#takeTransport(cwd, environment);
     let retainedForOpen = false;
     try {
       await transport.inspect();
@@ -110,7 +118,7 @@ export class HermesAdapter implements HarnessAdapter {
       };
       this.#inspectionCache = inspection;
       this.#inspectionCacheScope = cwd;
-      this.#keepWarmTransport(cwd, transport);
+      this.#keepWarmTransport(cwd, environment, transport);
       retainedForOpen = true;
       return inspection;
     } catch (error) {
@@ -139,9 +147,21 @@ export class HermesAdapter implements HarnessAdapter {
       return failure("invalidRequest", "open requires a cwd");
     }
     let transportOpen: HermesOpenInput;
+    let permissionModeId: HarnessPermissionModeId | undefined;
     if (input.kind === "create") {
       transportOpen = { kind: "create" };
+      permissionModeId = input.permissionModeId;
+      if (input.executionPolicy === "unattended-full-access") {
+        if (permissionModeId && permissionModeId !== HERMES_MODE_DONT_ASK) {
+          return failure(
+            "invalidRequest",
+            "unattended-full-access requires the Hermes dont_ask Permission Mode",
+          );
+        }
+        permissionModeId = harnessPermissionModeIdSchema.parse(HERMES_MODE_DONT_ASK);
+      }
     } else if (input.kind === "resume") {
+      permissionModeId = input.permissionModeId;
       if (!input.nativeRef || input.nativeRef.harnessId !== this.harnessId) {
         return failure("invalidRequest", "Native Ref does not belong to Hermes");
       }
@@ -150,7 +170,11 @@ export class HermesAdapter implements HarnessAdapter {
       return failure("unsupported", `Hermes does not support ${input.kind}`);
     }
 
-    const transport = await this.#takeTransport(cwd);
+    if (permissionModeId && !isHermesModeId(permissionModeId)) {
+      return failure("invalidRequest", "Permission Mode does not belong to Hermes");
+    }
+    const environment = this.#effectiveEnvironment(input.environment);
+    const transport = await this.#takeTransport(cwd, environment);
     if (this.#closed) {
       await this.#releaseTransport(transport);
       return failure("invalidState", "Hermes Adapter is closed");
@@ -182,16 +206,12 @@ export class HermesAdapter implements HarnessAdapter {
           currentModelId: nativeModelId,
         };
       }
-      if (input.permissionModeId) {
-        if (!isHermesModeId(input.permissionModeId)) {
-          await this.#releaseTransport(transport);
-          return failure("invalidRequest", "Permission Mode does not belong to Hermes");
-        }
-        if (open.session.modes?.currentModeId !== input.permissionModeId) {
-          await transport.setPermissionMode(input.permissionModeId);
+      if (permissionModeId) {
+        if (open.session.modes?.currentModeId !== permissionModeId) {
+          await transport.setPermissionMode(permissionModeId);
         }
         open.session.modes = {
-          currentModeId: input.permissionModeId,
+          currentModeId: permissionModeId,
           availableModes: open.session.modes?.availableModes ?? [],
         };
       }
@@ -212,7 +232,7 @@ export class HermesAdapter implements HarnessAdapter {
         },
       });
       this.#sessions.add(session);
-      this.#primeTransport(cwd);
+      this.#primeTransport(cwd, environment);
       return { ok: true, value: session };
     } catch (error) {
       await this.#releaseTransport(transport);
@@ -244,20 +264,37 @@ export class HermesAdapter implements HarnessAdapter {
     await Promise.all([...this.#transports].map((transport) => this.#releaseTransport(transport)));
   }
 
-  async #takeTransport(cwd: string): Promise<HermesAcpTransport> {
-    const pending = this.#warmTransports.get(cwd);
-    if (!pending) return this.#createTransport(cwd);
-    this.#warmTransports.delete(cwd);
-    return (await pending) ?? this.#createTransport(cwd);
+  #effectiveEnvironment(environment?: Record<string, string | undefined>): NodeJS.ProcessEnv {
+    return { ...(this.#options.environment ?? process.env), ...(environment ?? {}) };
   }
 
-  #keepWarmTransport(cwd: string, transport: HermesAcpTransport): void {
+  #transportScope(cwd: string, environment: NodeJS.ProcessEnv): string {
+    const serialized = JSON.stringify(
+      Object.entries(environment).sort(([left], [right]) => left.localeCompare(right)),
+    );
+    return `${cwd}\0${createHash("sha256").update(serialized).digest("hex")}`;
+  }
+
+  async #takeTransport(cwd: string, environment: NodeJS.ProcessEnv): Promise<HermesAcpTransport> {
+    const scope = this.#transportScope(cwd, environment);
+    const pending = this.#warmTransports.get(scope);
+    if (!pending) return this.#createTransport(cwd, environment);
+    this.#warmTransports.delete(scope);
+    return (await pending) ?? this.#createTransport(cwd, environment);
+  }
+
+  #keepWarmTransport(
+    cwd: string,
+    environment: NodeJS.ProcessEnv,
+    transport: HermesAcpTransport,
+  ): void {
     if (this.#closed) {
       void this.#releaseTransport(transport);
       return;
     }
-    const previous = this.#warmTransports.get(cwd);
-    this.#warmTransports.set(cwd, Promise.resolve(transport));
+    const scope = this.#transportScope(cwd, environment);
+    const previous = this.#warmTransports.get(scope);
+    this.#warmTransports.set(scope, Promise.resolve(transport));
     if (previous) {
       void previous.then((losing) => {
         if (losing && losing !== transport) return this.#releaseTransport(losing);
@@ -265,9 +302,10 @@ export class HermesAdapter implements HarnessAdapter {
     }
   }
 
-  #primeTransport(cwd: string): void {
-    if (this.#closed || this.#warmTransports.has(cwd)) return;
-    const transport = this.#createTransport(cwd);
+  #primeTransport(cwd: string, environment: NodeJS.ProcessEnv): void {
+    const scope = this.#transportScope(cwd, environment);
+    if (this.#closed || this.#warmTransports.has(scope)) return;
+    const transport = this.#createTransport(cwd, environment);
     const pending = transport
       .inspect()
       .then(() => transport)
@@ -275,11 +313,11 @@ export class HermesAdapter implements HarnessAdapter {
         await this.#releaseTransport(transport);
         return null;
       });
-    this.#warmTransports.set(cwd, pending);
+    this.#warmTransports.set(scope, pending);
   }
 
-  #createTransport(cwd: string): HermesAcpTransport {
-    const { command, environment, commandTimeoutMs, closeTimeoutMs } = this.#options;
+  #createTransport(cwd: string, environment = this.#effectiveEnvironment()): HermesAcpTransport {
+    const { command, commandTimeoutMs, closeTimeoutMs } = this.#options;
     const transport = new HermesAcpTransport({
       cwd,
       ...(command !== undefined && command.length > 0 ? { command } : {}),

@@ -14,6 +14,8 @@ import type {
 import {
   harnessAccountListParamsSchema,
   harnessAccountSnapshotSchema,
+  harnessSessionImportCandidateSchema,
+  type HarnessSessionImportCandidate,
 } from "@codexhost/shared-contracts";
 import { consumeBrokerFrames, writeBrokerFrame } from "./framing.js";
 import {
@@ -31,6 +33,8 @@ import {
   brokerHostCommandSchema,
   brokerInspectInputSchema,
   brokerOpenInputSchema,
+  brokerSessionImportListParamsSchema,
+  brokerSessionImportResolveParamsSchema,
   sessionCommandExecuteParamsSchema,
   sessionExecuteParamsSchema,
   sessionParamsSchema,
@@ -66,6 +70,7 @@ interface ConnectionState {
   inputSequence: number;
   outputSequence: number;
   sessions: Set<string>;
+  sessionImportCandidates?: readonly HarnessSessionImportCandidate[];
   queue: Promise<void>;
   queuedFrames: number;
   closed: boolean;
@@ -463,6 +468,50 @@ export async function startHarnessBrokerServer(input: {
         if (!subagents)
           return { ok: false, error: harnessError("Claude subagents are unavailable", false) };
         return subagents.readSnapshot(subagentReadSnapshotSchema.parse(request.params));
+      }
+      if (request.method === "adapter.sessionImport.list") {
+        const { limit, offset } = brokerSessionImportListParamsSchema.parse(request.params);
+        const sessionImport = input.adapter.sessionImport;
+        if (!sessionImport?.resolveCandidate) {
+          return {
+            ok: false,
+            error: harnessError("Claude Session import is unavailable", false),
+          };
+        }
+        if (offset === 0) {
+          const result = await sessionImport.listCandidates();
+          if (!result.ok) return result;
+          state.sessionImportCandidates = result.value.map((candidate) =>
+            harnessSessionImportCandidateSchema.parse(candidate),
+          );
+        }
+        const candidates = state.sessionImportCandidates;
+        if (!candidates) {
+          return {
+            ok: false,
+            error: {
+              code: "invalidState",
+              message: "Claude Session import page snapshot is unavailable",
+              retryable: true,
+              stage: "harnessBroker.sessionImport",
+            },
+          };
+        }
+        const page = candidates.slice(offset, offset + limit);
+        const total = candidates.length;
+        if (offset + page.length >= total) delete state.sessionImportCandidates;
+        return { ok: true, value: { candidates: page, total } };
+      }
+      if (request.method === "adapter.sessionImport.resolve") {
+        const { nativeSessionId } = brokerSessionImportResolveParamsSchema.parse(request.params);
+        const resolveCandidate = input.adapter.sessionImport?.resolveCandidate;
+        if (!resolveCandidate) {
+          return {
+            ok: false,
+            error: harnessError("Claude Session import is unavailable", false),
+          };
+        }
+        return resolveCandidate(nativeSessionId);
       }
       if (request.method === "adapter.open") {
         const openInput = brokerOpenInputSchema.parse(request.params) as OpenSessionInput;

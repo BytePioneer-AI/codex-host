@@ -15,6 +15,9 @@ import {
   type HarnessResult,
   type HarnessSession,
   type HarnessSessionCapabilities,
+  type HarnessSessionImportCapability,
+  type HarnessSessionImportCandidate,
+  type HarnessSessionImportSource,
   type HarnessSessionState,
   type HostCommand,
   type HostThreadSnapshot,
@@ -49,6 +52,7 @@ import {
   HARNESS_BROKER_MAX_PENDING_REQUESTS,
   HARNESS_BROKER_PROTOCOL_VERSION,
   HARNESS_BROKER_REQUEST_TIMEOUT_MS,
+  HARNESS_BROKER_SESSION_IMPORT_PAGE_SIZE,
   harnessBrokerDescriptorSchema,
   harnessBrokerServerFrameSchema,
   type HarnessBrokerDescriptorV1,
@@ -57,6 +61,8 @@ import {
 import {
   harnessErrorSchema,
   harnessOutputSchema,
+  brokerSessionImportPageSchema,
+  brokerSessionImportSourceSchema,
   harnessSessionStateSchema,
 } from "./validation.js";
 
@@ -494,6 +500,8 @@ export class BrokeredHarnessAdapter implements HarnessAdapter {
   readonly #descriptorPath: string;
   #connection: Promise<BrokerConnection> | null = null;
   #closed = false;
+  #sessionImportListing: Promise<HarnessResult<readonly HarnessSessionImportCandidate[]>> | null =
+    null;
 
   readonly subagents = {
     readSnapshot: async (
@@ -511,6 +519,98 @@ export class BrokeredHarnessAdapter implements HarnessAdapter {
       }
     },
   };
+  readonly sessionImport = Object.freeze({
+    listCandidates: () => {
+      this.#sessionImportListing ??= this.#listSessionImportCandidates().finally(() => {
+        this.#sessionImportListing = null;
+      });
+      return this.#sessionImportListing;
+    },
+    resolveCandidate: async (
+      nativeSessionId: string,
+    ): Promise<HarnessResult<HarnessSessionImportSource>> => {
+      if (this.#closed) {
+        return {
+          ok: false,
+          error: unavailable("Claude Aqua broker adapter is closed", false),
+        };
+      }
+      try {
+        const result = parseHarnessResult<unknown>(
+          await (
+            await this.#connect()
+          ).request("adapter.sessionImport.resolve", {
+            nativeSessionId,
+          }),
+        );
+        if (!result.ok) return result;
+        const parsed = brokerSessionImportSourceSchema.safeParse(result.value);
+        if (!parsed.success || parsed.data.candidate.nativeSessionId !== nativeSessionId) {
+          return {
+            ok: false,
+            error: {
+              ...unavailable("Harness broker returned an invalid Session source", false),
+              code: "protocolError",
+            },
+          };
+        }
+        return { ok: true, value: parsed.data };
+      } catch (error) {
+        this.#connection = null;
+        return {
+          ok: false,
+          error: unavailable(error instanceof Error ? error.message : String(error)),
+        };
+      }
+    },
+  } satisfies HarnessSessionImportCapability);
+
+  async #listSessionImportCandidates(): Promise<
+    HarnessResult<readonly HarnessSessionImportCandidate[]>
+  > {
+    if (this.#closed) {
+      return {
+        ok: false,
+        error: unavailable("Claude Aqua broker adapter is closed", false),
+      };
+    }
+    try {
+      const candidates: HarnessSessionImportCandidate[] = [];
+      for (;;) {
+        const result = parseHarnessResult<unknown>(
+          await (
+            await this.#connect()
+          ).request("adapter.sessionImport.list", {
+            offset: candidates.length,
+            limit: HARNESS_BROKER_SESSION_IMPORT_PAGE_SIZE,
+          }),
+        );
+        if (!result.ok) return result;
+        const parsed = brokerSessionImportPageSchema.safeParse(result.value);
+        if (
+          !parsed.success ||
+          parsed.data.total < candidates.length + parsed.data.candidates.length ||
+          (parsed.data.candidates.length === 0 && candidates.length < parsed.data.total)
+        ) {
+          return {
+            ok: false,
+            error: {
+              ...unavailable("Harness broker returned invalid Session candidates", false),
+              code: "protocolError",
+            },
+          };
+        }
+        candidates.push(...parsed.data.candidates);
+        if (candidates.length === parsed.data.total) return { ok: true, value: candidates };
+      }
+    } catch (error) {
+      this.#connection = null;
+      return {
+        ok: false,
+        error: unavailable(error instanceof Error ? error.message : String(error)),
+      };
+    }
+  }
 
   constructor(
     input: {

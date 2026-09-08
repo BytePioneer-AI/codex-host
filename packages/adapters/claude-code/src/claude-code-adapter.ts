@@ -6,6 +6,7 @@ import {
   forkSession as forkClaudeNativeSession,
   getSessionInfo as getClaudeSessionInfo,
   getSubagentMessages,
+  listSessions as listClaudeSessions,
 } from "@anthropic-ai/claude-agent-sdk";
 import {
   HarnessOutputChannel,
@@ -24,6 +25,8 @@ import {
   type HarnessResult,
   type HarnessSession,
   type HarnessSessionCapabilities,
+  type HarnessSessionImportCapability,
+  type HarnessSessionImportSource,
   type HarnessSessionState,
   type HostAgentMessageItem,
   type HostApprovalInteraction,
@@ -72,6 +75,7 @@ import {
 import { ClaudeBackgroundOccupancy } from "./background-occupancy.js";
 import { ClaudeCodeExecutableError, resolveClaudeCodeExecutable } from "./command.js";
 import { forkClaudeSession } from "./claude-fork.js";
+import { ClaudeSessionImportIndex } from "./claude-session-import.js";
 import { mapClaudeSnapshot, mapClaudeSubagentSnapshot } from "./claude-history.js";
 import { claudeTranscriptItemId } from "./item-identity.js";
 import { readClaudeTranscript } from "./claude-transcript.js";
@@ -495,6 +499,10 @@ class ClaudeHarnessSession implements HarnessSession {
   readonly initialState: HarnessSessionState;
   readonly initialUsage = null;
   readonly outputs: AsyncIterable<HarnessOutput>;
+
+  get nativeSessionId(): string {
+    return this.#sessionId;
+  }
   readonly #channel = new HarnessOutputChannel<HarnessOutput>();
   readonly #cancelTimeoutMs: number;
   readonly #closeTimeoutMs: number;
@@ -2260,9 +2268,38 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
       }
     },
   };
+  readonly sessionImport = Object.freeze({
+    listCandidates: async () => {
+      const result = await this.#readImport((signal) => this.#importIndex.list(signal));
+      return result.ok
+        ? { ok: true as const, value: result.value.map(({ candidate }) => candidate) }
+        : result;
+    },
+    resolveCandidate: async (
+      nativeSessionId: string,
+    ): Promise<HarnessResult<HarnessSessionImportSource>> => {
+      const result = await this.#readImport((signal) =>
+        this.#importIndex.resolve(nativeSessionId, signal),
+      );
+      if (!result.ok) return result;
+      return result.value
+        ? { ok: true, value: result.value }
+        : {
+            ok: false,
+            error: {
+              code: "sessionNotFound",
+              message: "Claude Code Session is no longer importable",
+              retryable: false,
+            },
+          };
+    },
+  } satisfies HarnessSessionImportCapability);
   readonly #cancelTimeoutMs: number;
   readonly #closeTimeoutMs: number;
   readonly #dependencies: ClaudeAdapterDependencies;
+  readonly #importAbort = new AbortController();
+  readonly #importIndex: ClaudeSessionImportIndex;
+  readonly #importRequests = new Set<Promise<unknown>>();
   readonly #toolOutputLimit: number;
   readonly #continuationQuiescenceMs: number;
   readonly #inspectionCache = new Map<string, HarnessInspection>();
@@ -2319,9 +2356,10 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
         forkClaudeNativeSession(sourceSessionId, { dir: cwd, upToMessageId: checkpointId }),
       getSessionInfo: async ({ sessionId }) => {
         const info = await getClaudeSessionInfo(sessionId);
-        if (!info) return undefined;
-        return info.cwd ? { cwd: info.cwd } : {};
+        return info;
       },
+      // Include SDK-origin Sessions so an orphaned codexhost mapping can also be recovered.
+      listSessions: () => listClaudeSessions(),
       readSessionMessages: async ({ cwd, sessionId }) => {
         const transcript = await readClaudeTranscript({
           cwd,
@@ -2333,6 +2371,36 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
       readSubagentMessages: ({ cwd, sessionId, nativeSubagentId }) =>
         getSubagentMessages(sessionId, nativeSubagentId, { dir: cwd }),
     };
+    this.#importIndex = new ClaudeSessionImportIndex({
+      getSessionInfo: (input) => this.#dependencies.getSessionInfo(input),
+      isRunning: (nativeSessionId) =>
+        [...this.#sessions].some((session) => session.nativeSessionId === nativeSessionId),
+      listSessions: () => this.#dependencies.listSessions(),
+      readSessionMessages: (input) => this.#dependencies.readSessionMessages(input),
+    });
+  }
+
+  #readImport<T>(operation: (signal: AbortSignal) => Promise<T>): Promise<HarnessResult<T>> {
+    if (this.#importAbort.signal.aborted) {
+      return Promise.resolve({
+        ok: false,
+        error: invalidState("Claude Code Adapter is closed"),
+      });
+    }
+    const request = operation(this.#importAbort.signal)
+      .then((value): HarnessResult<T> => ({ ok: true, value }))
+      .catch((): HarnessResult<T> => ({
+        ok: false,
+        error: {
+          code: "unavailable",
+          message:
+            "Claude Code Session discovery failed; check native storage access and duplicate Session identities, then retry after closing native clients",
+          retryable: true,
+        },
+      }))
+      .finally(() => this.#importRequests.delete(request));
+    this.#importRequests.add(request);
+    return request;
   }
 
   async inspect(input: InspectHarnessInput = {}): Promise<HarnessInspection> {
@@ -2673,8 +2741,10 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
 
   close(): Promise<void> {
     if (!this.#closePromise) {
+      this.#importAbort.abort();
       this.#inspectionCache.clear();
       this.#closePromise = Promise.all([
+        ...this.#importRequests,
         ...[...this.#inspectors].map((inspector) => inspector.close()),
         ...[...this.#sessions].map((session) => session.close()),
         ...this.#inspectionInFlight.values(),

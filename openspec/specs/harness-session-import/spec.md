@@ -2,7 +2,7 @@
 
 ## Purpose
 
-定义由公共 Adapter 驱动的本地原生 Session 导入。Pi 与 DSH Modern 共用 Host/RPC/Renderer 流程；本规范扩展原 DeepSeek 导入页面的单 Harness 范围，但不放宽 DSH Modern 的运行时限定。
+定义由公共 Adapter 驱动、按当前 Host 隔离的原生 Session 导入。Claude Code、Pi 与 DSH Modern 共用 Host/RPC/Renderer 流程；本规范扩展原 DeepSeek 导入页面的单 Harness 范围，但不放宽 DSH Modern 的运行时限定。
 
 ## Requirements
 
@@ -59,6 +59,23 @@ Pi SHALL discover v3 JSONL Sessions in the default per-project agent storage or 
 - **AND** Renderer SHALL show unknown activity and instruct the user to close the native client before importing
 - **AND** the implementation SHALL NOT claim exclusive ownership or cross-process locking
 
+### Requirement: Claude discovery uses native resumable metadata in every supported Host mode
+
+Claude Code SHALL discover native Sessions through the Claude Agent SDK across projects, including recoverable SDK-origin Sessions, reject invalid or missing project directories and re-query a selected identity before import. It SHALL NOT copy Transcript content or manufacture a native file locator. Direct adapters and the macOS Aqua Broker SHALL expose equivalent import capability on the target Host; Broker transport SHALL page bounded metadata without imposing a total candidate ceiling.
+
+#### Scenario: Claude activity cannot be observed across processes
+
+- **WHEN** the target Claude Session is not open through the current Adapter but may be open in another native client
+- **THEN** its candidate SHALL report `running: null`, never false
+- **AND** a Session open through the current Adapter SHALL report `running: true`
+
+#### Scenario: Managed remote macOS Host imports Claude
+
+- **WHEN** Session Import targets a managed remote macOS Host
+- **THEN** discovery and fresh resolution SHALL execute through the owner-only Aqua Broker
+- **AND** only browser-safe metadata and the validated native reference SHALL cross the Broker
+- **AND** the imported Thread SHALL resume that same remote native Claude Session
+
 ### Requirement: Generic Session lists support search and configurable pagination
 
 Host SHALL filter ordinary mapped Sessions and search all candidate titles, native IDs and project paths case-insensitively before sorting and paging. The generic list RPC SHALL accept optional `query`, `offset` and `limit`, and return `{ candidates, total }`. The default page size SHALL be 20; Renderer SHALL offer 20/50/100, previous/next navigation and the filtered total. A wire page bound SHALL NOT limit total native storage.
@@ -81,14 +98,15 @@ Host SHALL filter ordinary mapped Sessions and search all candidate titles, nati
 - **WHEN** the requested offset exceeds the new result count
 - **THEN** Renderer SHALL return to a valid page rather than leave the user stuck on an empty page
 
-### Requirement: Renderer uses fixed local generic APIs
+### Requirement: Renderer uses fixed Host-scoped generic APIs
 
-Renderer SHALL obtain import sources from the local Host and use strict fixed sources/list/import RPCs. Source availability SHALL be distinguished from current native protocol availability. Harness switching or page disposal SHALL invalidate stale results and prevent stale navigation.
+Renderer SHALL obtain import sources from the current Composer Host and use strict fixed sources/list/import RPCs. Source availability SHALL be distinguished from current native protocol availability. A displayed list, its import request and imported Thread navigation SHALL remain fixed to the same captured Host. Harness switching or page disposal SHALL invalidate stale results and prevent stale navigation.
 
 #### Scenario: Composer is on a remote Host
 
 - **WHEN** the user opens Session Import while Composer targets a remote Host
-- **THEN** discovery, import and imported Thread navigation SHALL remain local
+- **THEN** discovery, import and imported Thread navigation SHALL use that remote Host
+- **AND** native paths and mappings SHALL remain remote rather than leaking into the local Host
 
 #### Scenario: Unsupported runtime or older Host
 

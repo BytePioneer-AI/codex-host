@@ -4,11 +4,15 @@ export const HARNESS_BROKER_PROTOCOL_VERSION = 1 as const;
 export const HARNESS_BROKER_MAX_FRAME_BYTES = 8 * 1024 * 1024;
 export const HARNESS_BROKER_MAX_PENDING_REQUESTS = 32;
 export const HARNESS_BROKER_REQUEST_TIMEOUT_MS = 15_000;
+/** Keeps worst-case bounded Session metadata below the Broker frame limit. */
+export const HARNESS_BROKER_SESSION_IMPORT_PAGE_SIZE = 100;
 
 export const harnessBrokerMethodSchema = z.enum([
   "adapter.inspect",
   "adapter.inspectAccount",
   "adapter.open",
+  "adapter.sessionImport.list",
+  "adapter.sessionImport.resolve",
   "adapter.subagent.readSnapshot",
   "session.readSnapshot",
   "session.refreshUsage",

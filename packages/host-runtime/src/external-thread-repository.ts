@@ -57,6 +57,7 @@ export interface ExternalThreadStore {
     mappings: StoredTurnMappingV1[],
   ): Promise<StoredThreadRecordV1>;
   setTitle(hostThreadId: HostThreadId, title: string): Promise<StoredThreadRecordV1>;
+  setCwd(hostThreadId: HostThreadId, cwd: string): Promise<StoredThreadRecordV1>;
   setTransportModelId(
     hostThreadId: HostThreadId,
     transportModelId: string,
@@ -167,6 +168,10 @@ export class ExternalThreadRepository {
 
   setTitle(hostThreadId: HostThreadId, title: string): Promise<StoredThreadRecordV1> {
     return this.store.setTitle(hostThreadId, title);
+  }
+
+  setCwd(hostThreadId: HostThreadId, cwd: string): Promise<StoredThreadRecordV1> {
+    return this.store.setCwd(hostThreadId, cwd);
   }
 
   setTransportModelId(

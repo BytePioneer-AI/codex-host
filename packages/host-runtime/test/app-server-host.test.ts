@@ -3433,12 +3433,19 @@ describe("AppServerHost HarnessAdapter projection", () => {
     writeRequest(fixture.desktopInput, {
       id: 45,
       method: "thread/list",
-      params: { limit: 10, sortKey: "created_at", sortDirection: "desc" },
+      params: {
+        limit: 10,
+        modelProviders: [],
+        sortKey: "created_at",
+        sortDirection: "desc",
+      },
     });
-    await expect(internalRequest).resolves.toMatchObject({
+    const forwarded = await internalRequest;
+    expect(forwarded).toMatchObject({
       method: "thread/list",
       params: { cursor: null, limit: 10, sortKey: "created_at", sortDirection: "desc" },
     });
+    expect(forwarded.params).not.toHaveProperty("modelProviders");
     const response = await fixture.collector.waitFor((message) => requestId(message, 45));
     const result = response.result as JsonObject;
     const data = result.data as JsonObject[];

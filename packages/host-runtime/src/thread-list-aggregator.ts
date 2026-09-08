@@ -59,7 +59,14 @@ function officialParams(
   cursor: string | null,
   limit: number,
 ): JsonObject {
-  return { ...query.params, cursor, limit };
+  const params: JsonObject = { ...query.params, cursor, limit };
+  // Desktop uses an empty modelProviders array to mean "all providers". Older
+  // official app-server builds reject that field instead of treating it as an
+  // unfiltered query, so omit the no-op filter while preserving non-empty ones.
+  if (Array.isArray(params.modelProviders) && params.modelProviders.length === 0) {
+    delete params.modelProviders;
+  }
+  return params;
 }
 
 function cursorValue(input: {

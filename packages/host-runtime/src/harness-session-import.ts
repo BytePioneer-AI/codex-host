@@ -166,8 +166,32 @@ export class HarnessSessionImporter {
       return { ok: false, error: fixedError(-32081, "Session mappings could not be read") };
     }
     const existing = this.#mappedRecord(records, nativeSessionId);
-    if (existing) return importedThread(existing);
     const capability = this.#capability;
+    if (existing) {
+      if (!capability?.resolveCandidate) return importedThread(existing);
+      try {
+        const resolved = await capability.resolveCandidate(nativeSessionId);
+        if (!resolved.ok) return importedThread(existing);
+        const metadata = harnessSessionImportCandidateSchema.safeParse(resolved.value.candidate);
+        const ref = nativeSessionRefSchema.safeParse(resolved.value.nativeRef);
+        if (
+          !metadata.success ||
+          !ref.success ||
+          ref.data.harnessId !== this.#harnessId ||
+          ref.data.nativeSessionId !== nativeSessionId ||
+          metadata.data.nativeSessionId !== nativeSessionId ||
+          metadata.data.cwd === existing.cwd
+        ) {
+          return importedThread(existing);
+        }
+        return importedThread(
+          await this.#repository.setCwd(existing.hostThreadId, metadata.data.cwd),
+        );
+      } catch (error) {
+        this.#diagnose(error);
+        return importedThread(existing);
+      }
+    }
     if (!capability?.resolveCandidate) return { ok: false, error: this.#unavailable() };
 
     let source;

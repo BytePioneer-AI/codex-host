@@ -26,10 +26,13 @@ const { outputFiles } = await build({
   write: false,
 });
 
+const bundle = outputFiles[0]?.text;
+if (!bundle) throw new Error("Titlebar settings fixture bundle missing");
+
 for (const titlebarHeight of [0, 36, 54]) {
   test(`keeps settings below a ${titlebarHeight}px titlebar when resizing`, async ({ page }) => {
     await page.setContent('<!doctype html><button id="opener">Settings</button>');
-    await page.addScriptTag({ content: outputFiles[0]!.text });
+    await page.addScriptTag({ content: bundle });
     // Browser fixtures have no native overlay; supply its measured CSS input.
     // The installed Electron window separately verifies the env() integration.
     if (titlebarHeight) {

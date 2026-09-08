@@ -18,6 +18,7 @@ const classes = {
   grok: "GrokAdapter",
   omp: "OmpAdapter",
   antigravity: "AntigravityAdapter",
+  "kiro-cli": "KiroAdapter",
 };
 
 const unavailable: HarnessInspection = {
@@ -61,7 +62,7 @@ describe("installed Harness composition", () => {
   );
 
   // Cold bundle imports can exceed Vitest's 5s default on CI; the loader retains its 10s budget.
-  it("loads all seven preinstalled plugin factories without static registration or executable discovery", async () => {
+  it("loads all preinstalled plugin factories without static registration or executable discovery", async () => {
     const registry = await load();
     try {
       expect(
@@ -103,6 +104,14 @@ describe("installed Harness composition", () => {
         "/schedule",
         "/help",
       ],
+      "kiro-cli": [
+        "/compact",
+        "/kiro-context",
+        "/kiro-usage",
+        "/kiro-plan",
+        "/kiro-spec",
+        "/kiro-vibe",
+      ],
     };
     const registry = await load();
     try {
@@ -127,6 +136,7 @@ describe("installed Harness composition", () => {
     ["opencode", "CODEXHOST_OPENCODE_COMMAND"],
     ["omp", "CODEXHOST_OMP_COMMAND"],
     ["antigravity", "CODEXHOST_ANTIGRAVITY_COMMAND"],
+    ["kiro-cli", "CODEXHOST_KIRO_COMMAND"],
   ])(
     "preserves the explicit %s command rather than finding another local installation",
     async (id, commandVariable) => {
@@ -176,7 +186,7 @@ describe("installed Harness composition", () => {
     try {
       for (const [id, adapter] of first.adapters) expect(adapter).not.toBe(second.adapters.get(id));
       await first.close();
-      expect(second.list()).toHaveLength(7);
+      expect(second.list()).toHaveLength(Object.keys(classes).length);
     } finally {
       await Promise.all([first.close(), second.close()]);
     }

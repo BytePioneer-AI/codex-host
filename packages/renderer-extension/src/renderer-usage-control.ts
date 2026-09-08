@@ -23,6 +23,7 @@ interface RendererUsageMessages {
   readonly usage: string;
   readonly account: string;
   readonly context: string;
+  readonly recordedCredits: string;
   readonly latestCacheHit: string;
   readonly outputSpeed: string;
   readonly cacheRead: string;
@@ -41,6 +42,7 @@ const ENGLISH_USAGE_MESSAGES: RendererUsageMessages = Object.freeze({
   usage: "Usage",
   account: "Account",
   context: "Context",
+  recordedCredits: "Recorded usage",
   latestCacheHit: "Latest cache hit",
   outputSpeed: "Output speed",
   cacheRead: "Cache read",
@@ -59,6 +61,7 @@ const CHINESE_USAGE_MESSAGES: RendererUsageMessages = Object.freeze({
   usage: "用量",
   account: "账号",
   context: "上下文",
+  recordedCredits: "已记录消耗",
   latestCacheHit: "最近缓存命中率",
   outputSpeed: "输出速度",
   cacheRead: "缓存读取",
@@ -87,6 +90,10 @@ export function formatRendererCacheHitRate(value: number): string {
 
 export function formatRendererCost(value: number): string {
   return `$${value.toFixed(3)}`;
+}
+
+export function formatRendererCredits(value: number): string {
+  return `${value > 0 && value < 0.001 ? "<0.001" : decimal(value, 3)} credits`;
 }
 
 export function formatRendererTokenRate(
@@ -202,6 +209,8 @@ export function rendererUsageHasDisplayData(usage: ThreadUsageSnapshot | null): 
     usage?.cacheHitRatePercent !== undefined ||
     usage?.outputTokensPerSecond !== undefined ||
     usage?.totalCostUsd !== undefined ||
+    usage?.totalCredits !== undefined ||
+    usage?.contextUsagePercent !== undefined ||
     (usage?.contextUsedTokens !== undefined && usage.contextWindowTokens !== undefined) ||
     usage?.totalTokens !== undefined ||
     usage?.inputTokens !== undefined ||
@@ -274,7 +283,9 @@ function renderDetails(
 
   if (accountName) addDetailRow(popover, messages.account, accountName, true);
 
-  if (usage?.contextUsedTokens !== undefined && usage.contextWindowTokens !== undefined) {
+  if (usage?.contextUsagePercent !== undefined) {
+    addDetailRow(popover, messages.context, `${decimal(usage.contextUsagePercent, 1)}%`);
+  } else if (usage?.contextUsedTokens !== undefined && usage.contextWindowTokens !== undefined) {
     const contextPercent =
       usage.contextWindowTokens > 0
         ? (usage.contextUsedTokens / usage.contextWindowTokens) * 100
@@ -325,11 +336,14 @@ function renderDetails(
     addDetailRow(
       popover,
       messages.inputOutput,
-      `${formatRendererTokenCount(usage.inputTokens ?? 0)} / ${formatRendererTokenCount(usage.outputTokens ?? 0)}`,
+      `${usage.inputTokens === undefined ? "-" : formatRendererTokenCount(usage.inputTokens)} / ${usage.outputTokens === undefined ? "-" : formatRendererTokenCount(usage.outputTokens)}`,
     );
   }
   if (usage?.totalCostUsd !== undefined) {
     addDetailRow(popover, messages.sessionCostEstimate, formatRendererCost(usage.totalCostUsd));
+  }
+  if (usage?.totalCredits !== undefined) {
+    addDetailRow(popover, messages.recordedCredits, formatRendererCredits(usage.totalCredits));
   }
 }
 
@@ -436,6 +450,8 @@ export function mountRendererUsageControl(
   popover.setAttribute("popover", "auto");
   popover.hidden = typeof popover.showPopover !== "function";
   popover.style.position = "fixed";
+  popover.style.boxSizing = "border-box";
+  popover.style.margin = "0";
   popover.style.inset = "auto";
   popover.style.width = "260px";
   popover.style.maxWidth = "min(320px, calc(100vw - 24px))";
@@ -546,12 +562,15 @@ export function renderRendererUsageControl(
   }
 
   const summary = [
+    usage?.totalCredits !== undefined ? formatRendererCredits(usage.totalCredits) : null,
     cacheHitRatePercent !== undefined ? formatRendererCacheHitRate(cacheHitRatePercent) : null,
     outputTokensPerSecond !== undefined
       ? formatRendererTokenRate(outputTokensPerSecond, locale)
       : null,
     totalCostUsd !== undefined ? formatRendererCost(totalCostUsd) : null,
   ].filter((value): value is string => value !== null);
+  const contextPercent = usage?.contextUsagePercent;
+  if (contextPercent !== undefined && summary.length === 0) summary.push(messages.usage);
   if (
     summary.length === 0 &&
     hasContext &&
@@ -571,7 +590,9 @@ export function renderRendererUsageControl(
     );
   }
   const compactSummary = summary.join(" · ") || messages.usage;
-  const accessibleSummary = `${messages.threadUsage}: ${compactSummary}`;
+  const accessibleSummary = `${messages.threadUsage}: ${compactSummary}${
+    contextPercent !== undefined ? `; ${messages.context} ${decimal(contextPercent, 1)}%` : ""
+  }`;
   control.trigger.style.maxWidth = rendererUsageTriggerMaxWidth();
   control.trigger.setAttribute("aria-label", accessibleSummary);
   control.trigger.title = accessibleSummary;

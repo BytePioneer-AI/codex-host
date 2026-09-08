@@ -444,6 +444,7 @@ async function bindOfficialThread(
 ): Promise<void> {
   await vi.waitFor(async () => {
     expect(await fixture.accountRepository.getActiveAccountId()).toBeTruthy();
+    await fixture.threadAccountStore.getAccountId(threadId);
   });
   const accountId = await fixture.accountRepository.getActiveAccountId();
   await fixture.threadAccountStore.bind(threadId, accountId);
@@ -2006,6 +2007,8 @@ describe("AppServerHost HarnessAdapter projection", () => {
       mappingStore,
       mappingStoreDirectory: directory,
       closeMappingStoreOnExit: false,
+      accountRepository: first.accountRepository,
+      threadAccountStore: first.threadAccountStore,
     });
 
     try {

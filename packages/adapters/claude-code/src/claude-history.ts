@@ -19,6 +19,7 @@ interface ClaudeHistoryMessage {
   uuid: string;
   message: Record<string, unknown>;
   syntheticUser: boolean;
+  interrupted: boolean;
 }
 
 const claudeCodeHarnessId: HarnessId = harnessIdSchema.parse("claude-code");
@@ -92,9 +93,30 @@ function visibleUserTextParts(message: ClaudeHistoryMessage): string[] {
   return parts.filter((part) => !isLocalCommandRecord(part) && !isTaskNotificationRecord(part));
 }
 
+function isInterruptionRecord(value: Record<string, unknown>, promptId: string | null): boolean {
+  if (
+    value.type !== "user" ||
+    promptId === null ||
+    value.promptId !== promptId ||
+    value.promptSource !== undefined ||
+    !isRecord(value.message)
+  )
+    return false;
+  const content = value.message.content;
+  if (!Array.isArray(content) || content.length !== 1) return false;
+  const part: unknown = content[0];
+  return (
+    isRecord(part) &&
+    part.type === "text" &&
+    (part.text === "[Request interrupted by user]" ||
+      part.text === "[Request interrupted by user for tool use]")
+  );
+}
+
 function conversationMessages(values: unknown[], sessionId: string): ClaudeHistoryMessage[] {
   const messages: ClaudeHistoryMessage[] = [];
   const ids = new Set<string>();
+  let promptId: string | null = null;
   for (const value of values) {
     if (!isRecord(value)) throw new Error("Claude history contains a malformed message");
     if (value.type === "system") continue;
@@ -110,17 +132,27 @@ function conversationMessages(values: unknown[], sessionId: string): ClaudeHisto
     }
     if (ids.has(value.uuid)) throw new Error("Claude history contains duplicate message IDs");
     ids.add(value.uuid);
-    messages.push({
+    // Native interruption records reuse the human promptId and omit promptSource. Their role is
+    // user, but they terminate that prompt rather than starting another Host Turn.
+    const interrupted = isInterruptionRecord(value, promptId);
+    const message: ClaudeHistoryMessage = {
       type: value.type,
       uuid: value.uuid,
       message: value.message,
+      interrupted,
       syntheticUser:
         value.type === "user" &&
-        (value.isSynthetic === true ||
+        (interrupted ||
+          value.isSynthetic === true ||
           value.isMeta === true ||
           isTaskNotificationOrigin(value) ||
           (value.toolUseResult !== undefined && value.toolUseResult !== null)),
-    });
+    };
+    messages.push(message);
+    if (isHumanUser(message)) {
+      promptId =
+        typeof value.promptId === "string" && value.promptId.length > 0 ? value.promptId : null;
+    }
   }
   return messages;
 }
@@ -130,6 +162,8 @@ function isHumanUser(message: ClaudeHistoryMessage): boolean {
 }
 
 function turnOutcome(messages: ClaudeHistoryMessage[]): HistoricalTurnOutcome {
+  if (messages.some(({ interrupted }) => interrupted))
+    return { status: "cancelled", reason: "Cancelled by user" };
   const assistants = messages.filter(({ type }) => type === "assistant");
   const failed = assistants.some(({ message }) => typeof message.error === "string");
   if (failed) {
@@ -175,7 +209,9 @@ export function mapClaudeSnapshot(values: unknown[], sessionId: string): HostThr
     const turnMessages = messages.slice(index, end);
     const outcome = turnOutcome(turnMessages);
     const results = toolResultBlocks(turnMessages);
-    const checkpointMessage = turnMessages.findLast(({ type }) => type === "assistant");
+    const checkpointMessage = turnMessages.findLast(
+      ({ type, interrupted }) => type === "assistant" || interrupted,
+    );
     let agentMessageOrdinal = 0;
     let reasoningOrdinal = 0;
     turns.push({

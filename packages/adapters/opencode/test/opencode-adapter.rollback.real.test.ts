@@ -97,7 +97,10 @@ async function startModelServer(filePath: string): Promise<TestModelServer> {
       }
       const input = await readJson(request);
       const editTool = input.tools?.find(({ function: candidate }) => candidate?.name === "edit");
-      const shouldEdit = Boolean(editTool) && !input.messages?.some(({ role }) => role === "tool");
+      const shouldEdit =
+        Boolean(editTool) &&
+        !input.messages?.some(({ role }) => role === "tool") &&
+        (await fs.readFile(filePath, "utf8")) === "before\n";
       const toolArguments = JSON.stringify({
         filePath,
         oldString: "before\n",
@@ -239,7 +242,7 @@ async function waitForTurn(session: HarnessSession, turnId: string): Promise<Har
 }
 
 describe.runIf(Boolean(command))("OpenCode Adapter real rollback", () => {
-  it("restores a real Edit Tool change and preserves exact Fork history", async () => {
+  it("preserves current files and source history across rollback and restart", async () => {
     if (!command) throw new Error("CODEXHOST_OPENCODE_REAL_COMMAND is required");
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "codexhost-opencode-rollback-"));
     const workspace = path.join(root, "workspace");
@@ -294,6 +297,8 @@ describe.runIf(Boolean(command))("OpenCode Adapter real rollback", () => {
         OPENCODE_CONFIG_DIR: path.join(root, "config"),
         OPENCODE_DISABLE_PROJECT_CONFIG: "true",
         OPENCODE_TEST_HOME: path.join(root, "home"),
+        XDG_CONFIG_HOME: path.join(root, "xdg-config"),
+        CODEWIZ_AUTO_UPDATE: "0",
         XDG_DATA_HOME: path.join(root, "data"),
         XDG_CACHE_HOME: path.join(root, "cache"),
         XDG_STATE_HOME: path.join(root, "state"),
@@ -352,10 +357,10 @@ describe.runIf(Boolean(command))("OpenCode Adapter real rollback", () => {
         cwd: workspace,
       });
       if (!rolledBack.ok) throw new Error(rolledBack.error.message);
-      expect(rolledBack.value.initialState.nativeRef?.nativeSessionId).toBe(
-        sourceRef.nativeSessionId,
-      );
-      expect(await fs.readFile(fixture, "utf8")).toBe("before\n");
+      const candidateRef = rolledBack.value.initialState.nativeRef;
+      if (!candidateRef) throw new Error("Rollback returned no Native Ref");
+      expect(candidateRef.nativeSessionId).not.toBe(sourceRef.nativeSessionId);
+      expect(await fs.readFile(fixture, "utf8")).toBe("after\n");
       await expect(rolledBack.value.readSnapshot()).resolves.toMatchObject({
         ok: true,
         value: { turns: [] },
@@ -364,7 +369,16 @@ describe.runIf(Boolean(command))("OpenCode Adapter real rollback", () => {
 
       await adapter.close();
       adapter = new OpenCodeAdapter(adapterOptions);
-      const resumed = await adapter.open({ kind: "resume", nativeRef: sourceRef, cwd: workspace });
+      const original = await adapter.open({ kind: "resume", nativeRef: sourceRef, cwd: workspace });
+      if (!original.ok) throw new Error(original.error.message);
+      const originalSnapshot = await original.value.readSnapshot();
+      expect(originalSnapshot).toEqual(snapshot);
+      await original.value.close();
+      const resumed = await adapter.open({
+        kind: "resume",
+        nativeRef: candidateRef,
+        cwd: workspace,
+      });
       if (!resumed.ok) throw new Error(resumed.error.message);
       expect(resumed.value.initialState.nativeRef?.locator).toMatchObject({
         executionPolicy: "unattended-full-access",
@@ -383,14 +397,14 @@ describe.runIf(Boolean(command))("OpenCode Adapter real rollback", () => {
 
       const rolledBackAgain = await adapter.open({
         kind: "rollbackLastTurn",
-        sourceRef,
+        sourceRef: candidateRef,
         cwd: workspace,
       });
       if (!rolledBackAgain.ok) throw new Error(rolledBackAgain.error.message);
-      expect(rolledBackAgain.value.initialState.nativeRef?.nativeSessionId).toBe(
-        sourceRef.nativeSessionId,
+      expect(rolledBackAgain.value.initialState.nativeRef?.nativeSessionId).not.toBe(
+        candidateRef.nativeSessionId,
       );
-      expect(await fs.readFile(fixture, "utf8")).toBe("before\n");
+      expect(await fs.readFile(fixture, "utf8")).toBe("after\n");
       await expect(rolledBackAgain.value.readSnapshot()).resolves.toMatchObject({
         ok: true,
         value: { turns: [] },

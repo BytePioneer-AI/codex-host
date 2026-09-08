@@ -19,11 +19,13 @@ class Feed implements AsyncIterable<unknown>, AsyncIterator<unknown> {
   #done = false;
   #returned = false;
   returnCalls = 0;
+  readonly seen: unknown[] = [];
 
   constructor(readonly onReturn: () => void = () => undefined) {}
 
   push(value: unknown): void {
     if (this.#done) return;
+    this.seen.push(value);
     this.#deliver({ done: false, value });
   }
 
@@ -213,6 +215,32 @@ class FakeConnection implements ModernConnectionLike {
     }
     if (endpoint === "session/cancel" && this.cancelResponse) {
       return this.cancelResponse as Promise<ModernRemoteResult<T>>;
+    }
+    if (endpoint === "session/cancel") {
+      const request = args.request as { sessionId: string };
+      const feed = this.follows.get(request.sessionId);
+      const entries = (feed?.seen ?? [])
+        .map(
+          (value) =>
+            (value as { event: { seq: number; type: string; data: Record<string, unknown> } })
+              .event,
+        )
+        .filter(Boolean);
+      const turn = entries.findLast((entry) => entry.type === "turn/start");
+      const ended = entries.findLast((entry) => entry.type === "turn/end");
+      if (feed && turn && (!ended || turn.seq > ended.seq)) {
+        let seq = (entries.at(-1)?.seq ?? 0) + 1;
+        const step = entries.findLast((entry) => entry.type === "step/start");
+        const stepEnd = entries.findLast((entry) => entry.type === "step/end");
+        if (step && (!stepEnd || step.seq > stepEnd.seq))
+          feed.push(liveEvent(seq++, "step/end", { turn: turn.data.turn, step: step.data.step }));
+        feed.push(
+          liveEvent(seq, "turn/end", {
+            turn: turn.data.turn,
+            reason: { kind: "aborted", reason: { kind: "user" } },
+          }),
+        );
+      }
     }
     if (endpoint === "session/prompt" || endpoint === "session/cancel") {
       return Promise.resolve({ ok: true, value: { accepted: true } } as ModernRemoteResult<T>);
@@ -762,7 +790,7 @@ describe("Modern DeepSeek Harness Adapter", () => {
     await adapter.close();
   });
 
-  it("sends next before Session close retires a pending interaction and Turn", async () => {
+  it("cancels native execution before Session close retires a pending interaction and Turn", async () => {
     const { adapter, connection } = setup(["created", "request-close", "interaction-close"]);
     const cwd = path.resolve("fixture-interaction-close");
     connection.expectedCwds.set("session-created", cwd);
@@ -812,7 +840,7 @@ describe("Modern DeepSeek Harness Adapter", () => {
       args: {
         clientId: "client-1",
         eventId: "approval-close",
-        outcome: { kind: "next" },
+        outcome: { kind: "result", value: "cancelled" },
       },
     });
     await expect(outputs.next()).resolves.toMatchObject({

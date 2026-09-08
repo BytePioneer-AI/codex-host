@@ -50,6 +50,14 @@ export interface HermesAdapterOptions {
 
 const IMPORT_TIMEOUT_MS = 20_000;
 
+/**
+ * Host bookkeeping identity (DELEGATION_THREAD_ID_ENV) varies per Thread and
+ * is not Hermes configuration — the Hermes ACP process never reads it.
+ * Keeping it out of the spawn environment lets warm transports be reused
+ * across Threads; forwarding it would shard the warm pool per Thread.
+ */
+const HERMES_THREAD_ID_ENV = "CODEXHOST_THREAD_ID";
+
 export class HermesAdapter implements HarnessAdapter {
   readonly harnessId: HarnessId = hermesHarnessId;
 
@@ -232,9 +240,14 @@ export class HermesAdapter implements HarnessAdapter {
         },
       });
       this.#sessions.add(session);
-      // Per-open environments are normally Thread-specific. A process warmed
-      // with that identity cannot be reused safely by another Thread.
-      if (!input.environment || Object.keys(input.environment).length === 0) {
+      // Host bookkeeping identity does not reach the Hermes process (see
+      // #effectiveEnvironment), so it alone must not block warming. Any other
+      // Thread-specific environment key still forbids a warm process: such a
+      // process cannot be reused safely by another Thread.
+      const threadSpecificKeys = Object.keys(input.environment ?? {}).filter(
+        (key) => key !== HERMES_THREAD_ID_ENV,
+      );
+      if (threadSpecificKeys.length === 0) {
         this.#primeTransport(cwd, environment);
       }
       return { ok: true, value: session };
@@ -269,7 +282,10 @@ export class HermesAdapter implements HarnessAdapter {
   }
 
   #effectiveEnvironment(environment?: Record<string, string | undefined>): NodeJS.ProcessEnv {
-    return { ...(this.#options.environment ?? process.env), ...(environment ?? {}) };
+    const merged = { ...(this.#options.environment ?? process.env), ...(environment ?? {}) };
+    return Object.fromEntries(
+      Object.entries(merged).filter(([key]) => key !== HERMES_THREAD_ID_ENV),
+    );
   }
 
   #transportScope(cwd: string, environment: NodeJS.ProcessEnv): string {

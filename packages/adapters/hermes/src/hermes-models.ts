@@ -86,6 +86,16 @@ interface HermesModelChoice {
   name: string;
 }
 
+/**
+ * The ACP SessionState names models as `{provider} · {model}` while the
+ * inventory catalog renders `{provider} / {model}`. The Host picker treats a
+ * differing resolved label as an alias route worth surfacing next to the
+ * selected entry, so normalize the native separator to keep one spelling.
+ */
+function catalogAlignedModelLabel(name: string): string {
+  return name.replace(/\s+·\s+/g, " / ");
+}
+
 export function projectHermesModelState(
   models: { availableModels: HermesModelChoice[]; currentModelId?: string } | null,
 ): HermesSessionModelStateProjection {
@@ -98,6 +108,6 @@ export function projectHermesModelState(
   if (!current) return { effectiveModel: null, resolvedModelLabel: null };
   return {
     effectiveModel: encodeHermesModelRef(current.modelId),
-    resolvedModelLabel: current.name,
+    resolvedModelLabel: catalogAlignedModelLabel(current.name),
   };
 }

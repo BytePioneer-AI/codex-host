@@ -232,7 +232,10 @@ async function environmentAwareHermesExecutable(): Promise<string> {
     `#!/usr/bin/env node
 import { appendFileSync } from "node:fs";
 import readline from "node:readline";
-appendFileSync(process.env.FAKE_HERMES_ENVIRONMENTS, (process.env.CODEXHOST_THREAD_ID || "missing") + "\\n");
+if (process.env.FAKE_HERMES_STARTS) appendFileSync(process.env.FAKE_HERMES_STARTS, "started\\n");
+const identityVar = process.env.FAKE_HERMES_IDENTITY_VAR || "CODEXHOST_THREAD_ID";
+const identity = process.env[identityVar] || "missing";
+appendFileSync(process.env.FAKE_HERMES_ENVIRONMENTS, identity + "\\n");
 const lines = readline.createInterface({ input: process.stdin });
 for await (const line of lines) {
   const request = JSON.parse(line);
@@ -245,7 +248,7 @@ for await (const line of lines) {
       authMethods: [],
     };
   } else if (request.method === "session/new") {
-    result = { sessionId: "fake-session-" + process.env.CODEXHOST_THREAD_ID };
+    result = { sessionId: "fake-session-" + identity };
   }
   process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: request.id, result }) + "\\n");
 }
@@ -699,8 +702,8 @@ describe("HermesAdapter model selection", () => {
     await adapter.close();
   });
 
-  it("forwards and isolates per-Session environments", async () => {
-    const directory = await mkdtemp(path.join(os.tmpdir(), "hermes-adapter-environments-"));
+  it("does not forward Host Thread identity to the Hermes process", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "hermes-adapter-thread-id-forward-"));
     temporaryDirectories.push(directory);
     const environmentsPath = path.join(directory, "environments.log");
     const command = await environmentAwareHermesExecutable();
@@ -709,29 +712,64 @@ describe("HermesAdapter model selection", () => {
       environment: { ...process.env, FAKE_HERMES_ENVIRONMENTS: environmentsPath },
     });
 
+    try {
+      const opened = await adapter.open({
+        kind: "create",
+        cwd: process.cwd(),
+        environment: { CODEXHOST_THREAD_ID: "thread-should-not-forward" },
+      });
+      expect(opened.ok).toBe(true);
+      if (opened.ok) await opened.value.close();
+
+      await vi.waitFor(async () => {
+        const environments = (await readFile(environmentsPath, "utf8")).trim().split("\n");
+        // "missing" = the Hermes process never saw CODEXHOST_THREAD_ID.
+        expect(environments.length).toBeGreaterThan(0);
+        expect(environments).toContain("missing");
+        expect(environments).not.toContain("thread-should-not-forward");
+      });
+    } finally {
+      await adapter.close();
+    }
+  });
+
+  it("forwards and isolates per-Session environments", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "hermes-adapter-environments-"));
+    temporaryDirectories.push(directory);
+    const environmentsPath = path.join(directory, "environments.log");
+    const command = await environmentAwareHermesExecutable();
+    const adapter = new HermesAdapter({
+      command,
+      environment: {
+        ...process.env,
+        FAKE_HERMES_ENVIRONMENTS: environmentsPath,
+        FAKE_HERMES_IDENTITY_VAR: "CODEXHOST_SECRET_TOKEN",
+      },
+    });
+
     const first = await adapter.open({
       kind: "create",
       cwd: process.cwd(),
-      environment: { CODEXHOST_THREAD_ID: "thread-one" },
+      environment: { CODEXHOST_THREAD_ID: "thread-one", CODEXHOST_SECRET_TOKEN: "token-one" },
     });
     const second = await adapter.open({
       kind: "create",
       cwd: process.cwd(),
-      environment: { CODEXHOST_THREAD_ID: "thread-two" },
+      environment: { CODEXHOST_THREAD_ID: "thread-two", CODEXHOST_SECRET_TOKEN: "token-two" },
     });
 
     expect(first.ok).toBe(true);
     expect(second.ok).toBe(true);
     if (first.ok && second.ok) {
-      expect(first.value.initialState.nativeRef?.nativeSessionId).toBe("fake-session-thread-one");
-      expect(second.value.initialState.nativeRef?.nativeSessionId).toBe("fake-session-thread-two");
+      expect(first.value.initialState.nativeRef?.nativeSessionId).toBe("fake-session-token-one");
+      expect(second.value.initialState.nativeRef?.nativeSessionId).toBe("fake-session-token-two");
       await first.value.close();
       await second.value.close();
     }
     await vi.waitFor(async () => {
       const environments = (await readFile(environmentsPath, "utf8")).trim().split("\n");
-      expect(environments).toContain("thread-one");
-      expect(environments).toContain("thread-two");
+      expect(environments).toContain("token-one");
+      expect(environments).toContain("token-two");
     });
     await adapter.close();
   });
@@ -750,13 +788,69 @@ describe("HermesAdapter model selection", () => {
       const opened = await adapter.open({
         kind: "create",
         cwd: process.cwd(),
-        environment: { CODEXHOST_THREAD_ID: "thread-with-private-environment" },
+        environment: { CODEXHOST_THREAD_ID: "thread", CODEXHOST_SECRET_TOKEN: "private" },
       });
       expect(opened.ok).toBe(true);
       await new Promise((resolve) => setTimeout(resolve, 200));
 
       const starts = (await readFile(counterPath, "utf8")).trim().split("\n");
       expect(starts).toHaveLength(1);
+    } finally {
+      await adapter.close();
+    }
+  });
+
+  it("reuses a warm ACP process across Host Threads", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "hermes-adapter-thread-warm-reuse-"));
+    temporaryDirectories.push(directory);
+    const counterPath = path.join(directory, "starts.log");
+    const command = await countingHermesExecutable();
+    const adapter = new HermesAdapter({
+      command,
+      environment: { ...process.env, FAKE_HERMES_STARTS: counterPath },
+    });
+
+    try {
+      const first = await adapter.open({
+        kind: "create",
+        cwd: process.cwd(),
+        environment: { CODEXHOST_THREAD_ID: "thread-one" },
+      });
+      expect(first.ok).toBe(true);
+      // The open re-supplies the warm pool despite the Thread identity: process 2.
+      await vi.waitFor(
+        async () => {
+          const starts = await readFile(counterPath, "utf8");
+          expect(starts.trim().split("\n")).toHaveLength(2);
+        },
+        { timeout: 2_000 },
+      );
+
+      const second = await adapter.open({
+        kind: "create",
+        cwd: process.cwd(),
+        environment: { CODEXHOST_THREAD_ID: "thread-two" },
+      });
+      expect(second.ok).toBe(true);
+      if (first.ok && second.ok) {
+        // Session 1 ran on process A, Session 2 reused the warmed process B.
+        expect(first.value.initialState.nativeRef?.nativeSessionId).toMatch(/^fake-session-/);
+        expect(second.value.initialState.nativeRef?.nativeSessionId).toMatch(/^fake-session-/);
+        await first.value.close();
+        await second.value.close();
+      }
+      await adapter.close();
+
+      // The second Thread also re-arms the pool (process 3). With a per-Thread
+      // sharded pool the count would stall at 2: the second open would spawn
+      // its own process and never warm another.
+      await vi.waitFor(
+        async () => {
+          const starts = await readFile(counterPath, "utf8");
+          expect(starts.trim().split("\n")).toHaveLength(3);
+        },
+        { timeout: 2_000 },
+      );
     } finally {
       await adapter.close();
     }

@@ -9,7 +9,7 @@ import {
   inventoryPythonCandidates,
   readHermesModelInventory,
 } from "../src/hermes-inventory.js";
-import { projectHermesModelState } from "../src/hermes-models.js";
+import { encodeHermesModelRef, projectHermesModelState } from "../src/hermes-models.js";
 
 const temporaryDirectories: string[] = [];
 
@@ -151,4 +151,16 @@ describe("Hermes Session Model projection", () => {
       ).toEqual({ effectiveModel: null, resolvedModelLabel: null });
     },
   );
+
+  it("aligns the native provider separator with the inventory catalog label", () => {
+    expect(
+      projectHermesModelState({
+        availableModels: [{ modelId: "zai:glm-5.3", name: "Z.AI · GLM · glm-5.3" }],
+        currentModelId: "zai:glm-5.3",
+      }),
+    ).toEqual({
+      effectiveModel: encodeHermesModelRef("zai:glm-5.3"),
+      resolvedModelLabel: "Z.AI / GLM / glm-5.3",
+    });
+  });
 });

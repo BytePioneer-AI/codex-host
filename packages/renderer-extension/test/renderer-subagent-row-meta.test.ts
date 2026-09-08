@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   formatSubagentRowMeta,
   prettySubagentAgentPath,
+  prettySubagentEffort,
   prettySubagentModel,
   prettySubagentStatus,
   subagentGroupFromProps,
@@ -23,7 +24,14 @@ describe("Subagent row meta", () => {
   it("pretty-prints official Codex Model slugs", () => {
     expect(prettySubagentModel("gpt-5.2-codex")).toBe("GPT-5.2 Codex");
     expect(prettySubagentModel("gpt-5.6-sol")).toBe("GPT-5.6 Sol");
+    expect(prettySubagentModel("gpt-6-astra")).toBe("GPT-6 Astra");
     expect(prettySubagentModel("xai/grok-4.6")).toBe("Grok 4.6");
+  });
+
+  it("labels official reasoning effort, including Ultra", () => {
+    expect(prettySubagentEffort("high")).toBe("High");
+    expect(prettySubagentEffort("xhigh")).toBe("xHigh");
+    expect(prettySubagentEffort("ultra")).toBe("超高");
   });
 
   it("shows model, effort, and status on one untruncated subtitle", () => {
@@ -185,6 +193,18 @@ describe("Subagent row meta", () => {
       { model: "gpt-5.4", reasoningEffort: "high" },
     );
     expect(formatSubagentRowMeta(row)).toBe("GPT-5.4 · High · 已完成");
+    expect(
+      formatSubagentRowMeta(
+        withInheritedThreadModel(
+          {
+            displayName: "Repo structure",
+            conversationId: "child-2",
+            status: "running",
+          },
+          { model: "gpt-6-astra", reasoningEffort: "ultra" },
+        ),
+      ),
+    ).toBe("GPT-6 Astra · 超高 · 進行中");
   });
 
   it("does not recurse through arbitrary nested React props", () => {

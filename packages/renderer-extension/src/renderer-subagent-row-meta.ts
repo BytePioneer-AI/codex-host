@@ -80,7 +80,9 @@ export function prettySubagentStatus(status: string | undefined): string | undef
 export function prettySubagentEffort(value: string | undefined): string | undefined {
   const trimmed = value?.trim();
   if (!trimmed) return undefined;
-  if (trimmed.toLowerCase() === "xhigh") return "xHigh";
+  const lower = trimmed.toLowerCase();
+  if (lower === "xhigh") return "xHigh";
+  if (lower === "ultra") return "超高";
   return trimmed.charAt(0).toUpperCase() + trimmed.slice(1);
 }
 
@@ -149,6 +151,7 @@ function contribute(target: Partial<SubagentRowMeta>, source: Record<string, unk
     target.spawnModel = source.spawnModel.trim();
   }
   if (nonBlank(source.model) && !target.model) target.model = source.model.trim();
+  if (nonBlank(source.modelLabel) && !target.model) target.model = source.modelLabel.trim();
   if (nonBlank(source.latestModel) && !target.model) {
     target.model = source.latestModel.trim();
   }
@@ -270,6 +273,55 @@ export function withInheritedThreadModel(
   };
 }
 
+function snapshotFromModelProps(source: Record<string, unknown>): {
+  model?: string;
+  reasoningEffort?: string;
+} {
+  const model = nonBlank(source.modelLabel)
+    ? source.modelLabel.trim()
+    : nonBlank(source.latestModel)
+      ? source.latestModel.trim()
+      : nonBlank(source.model) && /gpt-|codex|grok|sol|astra/iu.test(source.model)
+        ? source.model.trim()
+        : undefined;
+  const reasoningEffort = nonBlank(source.latestReasoningEffort)
+    ? source.latestReasoningEffort.trim()
+    : nonBlank(source.reasoningEffort)
+      ? source.reasoningEffort.trim()
+      : undefined;
+  return {
+    ...(model ? { model } : {}),
+    ...(reasoningEffort ? { reasoningEffort } : {}),
+  };
+}
+
+export function parentThreadModelFromComposer(
+  root: ParentNode | undefined = typeof document === "undefined" ? undefined : document,
+): { model?: string; reasoningEffort?: string } {
+  if (!root) return {};
+  const trigger = root.querySelector<HTMLElement>(
+    '[data-codex-intelligence-trigger], [data-composer-navigation-target="reasoning"]',
+  );
+  if (!trigger) return {};
+  let fiber = fiberFromElement(trigger);
+  let found: { model?: string; reasoningEffort?: string } = {};
+  for (let depth = 0; fiber && depth < 20; depth += 1) {
+    const props = fiber.memoizedProps;
+    if (isRecord(props)) {
+      const snapshot = snapshotFromModelProps(props);
+      found = {
+        ...(found.model || snapshot.model ? { model: found.model ?? snapshot.model } : {}),
+        ...(found.reasoningEffort || snapshot.reasoningEffort
+          ? { reasoningEffort: found.reasoningEffort ?? snapshot.reasoningEffort }
+          : {}),
+      };
+      if (found.model && found.reasoningEffort) return found;
+    }
+    fiber = isRecord(fiber.return) ? fiber.return : null;
+  }
+  return found;
+}
+
 export function subagentGroupFromProps(value: unknown): SubagentRowMeta[] {
   if (!isRecord(value)) return [];
   const lists: unknown[] = [];
@@ -311,11 +363,25 @@ export function subagentRowsFromActivities(values: readonly unknown[]): Subagent
           ? prettySubagentAgentPath(path)
           : "Subagent";
       const status = activityStatusFromKind(kind);
+      const model = nonBlank(value.modelLabel)
+        ? value.modelLabel.trim()
+        : nonBlank(value.model)
+          ? value.model.trim()
+          : nonBlank(value.latestModel)
+            ? value.latestModel.trim()
+            : undefined;
+      const reasoningEffort = nonBlank(value.latestReasoningEffort)
+        ? value.latestReasoningEffort.trim()
+        : nonBlank(value.reasoningEffort)
+          ? value.reasoningEffort.trim()
+          : undefined;
       byId.set(value.agentThreadId, {
         displayName,
         conversationId: value.agentThreadId.trim(),
         rank,
         ...(status ? { status } : {}),
+        ...(model ? { model } : {}),
+        ...(reasoningEffort ? { reasoningEffort } : {}),
       });
       return;
     }
@@ -462,7 +528,8 @@ export function subagentGroupFromElement(element: HTMLElement): SubagentRowMeta[
       else if (label) rememberAgent(rows, { displayName: label, status: "done" });
     }
   }
-  return rows.map((row) => withInheritedThreadModel(row, parent));
+  const inherited = { ...parentThreadModelFromComposer(element.ownerDocument), ...parent };
+  return rows.map((row) => withInheritedThreadModel(row, inherited));
 }
 
 function reactContainerFiber(): Record<string, unknown> | null {
@@ -517,7 +584,9 @@ export function harvestSubagentActivitiesFromRoot(): SubagentRowMeta[] {
     if (isRecord(current.child)) stack.push(current.child);
     if (isRecord(current.sibling)) stack.push(current.sibling);
   }
-  return subagentRowsFromActivities(bucket);
+  return subagentRowsFromActivities(bucket).map((row) =>
+    withInheritedThreadModel(row, parentThreadModelFromComposer()),
+  );
 }
 
 function artifactsColumn(root: ParentNode): HTMLElement | null {

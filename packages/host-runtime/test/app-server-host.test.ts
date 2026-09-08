@@ -2393,6 +2393,7 @@ describe("AppServerHost HarnessAdapter projection", () => {
       },
     });
     session.appendText("Checking auth.");
+    await fixture.collector.waitFor((message) => method(message, "item/agentMessage/delta"));
     await expect(
       delegationApi.read({ threadId: started.threadId, view: "result" }),
     ).resolves.toMatchObject({
@@ -5457,7 +5458,7 @@ describe("AppServerHost HarnessAdapter projection", () => {
     await stopFixture(fixture);
   });
 
-  it("keeps the current Session authoritative when last-Turn persistence fails", async () => {
+  it("cold-resumes the original persisted identity when last-Turn persistence fails", async () => {
     const directory = mkdtempSync(path.join(tmpdir(), "codexhost-host-last-turn-failure-"));
     let failRollbackCommit = false;
     const mappingStore = new MappingStore({
@@ -5492,14 +5493,16 @@ describe("AppServerHost HarnessAdapter projection", () => {
       before,
     );
     await expect(adapter.sessions[0]?.readSnapshot()).resolves.toMatchObject({
-      ok: true,
-      value: { turns: [{}, {}] },
+      ok: false,
+      error: { code: "invalidState" },
     });
     await expect(adapter.sessions[1]?.readSnapshot()).resolves.toMatchObject({
       ok: false,
       error: { code: "invalidState" },
     });
-    await completePiTurn(fixture, threadId, 11, 0);
+    failRollbackCommit = false;
+    await completePiTurn(fixture, threadId, 11, 2);
+    expect(adapter.sessions[2]?.initialState.nativeRef).toEqual(before?.nativeSessionRef);
     await stopFixture(fixture);
   });
 
@@ -6131,7 +6134,7 @@ describe("AppServerHost HarnessAdapter projection", () => {
     await stopFixture(fixture);
   });
 
-  it("keeps the temporary derived Session authoritative when rollback commit fails", async () => {
+  it("cold-resumes the persisted derived identity when rollback commit fails", async () => {
     const directory = mkdtempSync(path.join(tmpdir(), "codexhost-host-rollback-failure-"));
     let failRollbackCommit = false;
     const mappingStore = new MappingStore({
@@ -6174,8 +6177,8 @@ describe("AppServerHost HarnessAdapter projection", () => {
       error: { code: "invalidState" },
     });
     await expect(fixture.adapter.sessions[1]?.readSnapshot()).resolves.toMatchObject({
-      ok: true,
-      value: { turns: [{}, {}, {}] },
+      ok: false,
+      error: { code: "invalidState" },
     });
 
     writeRequest(fixture.desktopInput, {

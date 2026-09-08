@@ -2,10 +2,12 @@ import { describe, expect, it } from "vitest";
 
 import {
   formatSubagentRowMeta,
+  prettySubagentAgentPath,
   prettySubagentModel,
   prettySubagentStatus,
   subagentGroupFromProps,
   subagentRowMetaFromProps,
+  subagentRowsFromActivities,
   withInheritedThreadModel,
 } from "../src/renderer-subagent-row-meta.js";
 
@@ -134,6 +136,43 @@ describe("Subagent row meta", () => {
         ],
       }).map((row) => row.displayName),
     ).toEqual(["Einstein", "Gibbs", "Bohr"]);
+  });
+
+  it("turns official subAgentActivity items into named running rows", () => {
+    expect(prettySubagentAgentPath("/root/workflow_summary_v2")).toBe("Workflow summary v2");
+    expect(
+      subagentRowsFromActivities([
+        {
+          type: "subAgentActivity",
+          kind: "started",
+          agentPath: "/root/workflow_summary_v2",
+          agentThreadId: "child-1",
+        },
+        {
+          type: "subAgentActivity",
+          kind: "started",
+          agentPath: "/root/explore_repo_map_v2",
+          agentThreadId: "child-2",
+        },
+        {
+          type: "subAgentActivity",
+          kind: "completed",
+          agentPath: "/root/explore_repo_map_v2",
+          agentThreadId: "child-2",
+        },
+      ]),
+    ).toEqual([
+      {
+        displayName: "Workflow summary v2",
+        conversationId: "child-1",
+        status: "running",
+      },
+      {
+        displayName: "Explore repo map v2",
+        conversationId: "child-2",
+        status: "completed",
+      },
+    ]);
   });
 
   it("fills official v2 spawnModel gaps from the parent Thread Model", () => {

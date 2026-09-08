@@ -1226,6 +1226,111 @@ describe("OpenCode HarnessAdapter", () => {
     await adapter.close();
   });
 
+  it.each(["text", "reasoning"] as const)(
+    "streams %s deltas after an empty initial Part",
+    async (type) => {
+      const { adapter, session, transport } = await openFixture();
+      const outputs: HarnessOutput[] = [];
+      const consumed = (async () => {
+        for await (const output of session.outputs) outputs.push(output);
+      })();
+      try {
+        await session.execute(turn("empty-part-stream"));
+        const promptID = transport.promptCalls.at(-1)?.messageID;
+        if (!promptID) throw new Error("OpenCode prompt has no Message ID");
+        const info = assistantMessage("assistant-live", promptID).info;
+        if (info.role !== "assistant") throw new Error("Expected an Assistant Message");
+        info.time = { created: 2 };
+        delete info.finish;
+        transport.emit({
+          id: "assistant-stream",
+          type: "message.updated",
+          properties: { sessionID: "session-1", info },
+        });
+        const part: Extract<Part, { type: "text" | "reasoning" }> = {
+          id: "empty-part",
+          sessionID: "session-1",
+          messageID: "assistant-live",
+          type,
+          text: "",
+          time: { start: 1 },
+        };
+        transport.emit({
+          id: "part-start",
+          type: "message.part.updated",
+          properties: { sessionID: "session-1", part, time: 1 },
+        });
+        for (const delta of ["first", " second"]) {
+          transport.emit({
+            id: `delta-${delta}`,
+            type: "message.part.delta",
+            properties: {
+              sessionID: "session-1",
+              messageID: "assistant-live",
+              partID: part.id,
+              field: "text",
+              delta,
+            },
+          });
+        }
+        await vi.waitFor(() =>
+          expect(
+            outputs.filter(
+              (output) => output.kind === "event" && output.event.type === "item.updated",
+            ),
+          ).toHaveLength(2),
+        );
+        expect(
+          outputs.some(
+            (output) => output.kind === "event" && output.event.type === "turn.completed",
+          ),
+        ).toBe(false);
+        expect(
+          outputs.filter(
+            (output) => output.kind === "event" && output.event.type === "item.updated",
+          ),
+        ).toMatchObject([
+          { event: { update: { type: "text.append", text: "first" } } },
+          { event: { update: { type: "text.append", text: " second" } } },
+        ]);
+        transport.emit({
+          id: "part-end",
+          type: "message.part.updated",
+          properties: {
+            sessionID: "session-1",
+            part: { ...part, text: "first second", time: { start: 1, end: 2 } },
+            time: 2,
+          },
+        });
+        await vi.waitFor(() =>
+          expect(
+            outputs.some(
+              (output) => output.kind === "event" && output.event.type === "item.completed",
+            ),
+          ).toBe(true),
+        );
+        expect(
+          outputs.filter(
+            (output) => output.kind === "event" && output.event.type === "item.updated",
+          ),
+        ).toHaveLength(2);
+        appendTerminal(transport, [{ ...part, text: "first second", time: { start: 1, end: 2 } }]);
+        await completeAfterBusy(transport);
+        await vi.waitFor(() =>
+          expect(
+            outputs.some(
+              (output) => output.kind === "event" && output.event.type === "turn.completed",
+            ),
+          ).toBe(true),
+        );
+      } finally {
+        await session.close();
+        await adapter.close();
+        await consumed;
+      }
+    },
+  );
+
   it("waits for Part identity before projecting an early delta", async () => {
     const { adapter, session, transport } = await openFixture();
     const iterator = session.outputs[Symbol.asyncIterator]();

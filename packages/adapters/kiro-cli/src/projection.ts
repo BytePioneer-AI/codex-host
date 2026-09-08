@@ -1,7 +1,4 @@
-import type {
-  RequestPermissionRequest,
-  RequestPermissionResponse,
-} from "@agentclientprotocol/sdk";
+import type { RequestPermissionRequest, RequestPermissionResponse } from "@agentclientprotocol/sdk";
 import type {
   HostApprovalAction,
   HostApprovalInteraction,
@@ -329,9 +326,7 @@ export function projectKiroPermission(
 }
 
 export type ProjectedToolItem =
-  | HostToolExecutionItem
-  | HostCommandExecutionItem
-  | HostSubagentDelegationItem;
+  HostToolExecutionItem | HostCommandExecutionItem | HostSubagentDelegationItem;
 
 export function projectKiroToolCall(
   itemId: string,
@@ -352,13 +347,19 @@ export function projectKiroToolCall(
 
   // Subagent delegation
   if (kiroMeta && kiroMeta.kind === "agent-subtask") {
-    const subtaskId = typeof kiroMeta.agentSubtaskId === "string" ? kiroMeta.agentSubtaskId : toolCall.toolCallId;
+    const subtaskId =
+      typeof kiroMeta.agentSubtaskId === "string" ? kiroMeta.agentSubtaskId : toolCall.toolCallId;
     const input = isRecord(toolCall.rawInput) ? toolCall.rawInput : {};
     const subagentState: HostSubagentState = {
       subagentId: subtaskId,
       description: typeof input.prompt === "string" ? input.prompt : "Subagent task",
       background: false,
-      status: toolCall.status === "completed" ? "completed" : toolCall.status === "failed" ? "failed" : "running",
+      status:
+        toolCall.status === "completed"
+          ? "completed"
+          : toolCall.status === "failed"
+            ? "failed"
+            : "running",
       ...(typeof input.name === "string" ? { role: input.name } : {}),
       ...(typeof toolCall.rawOutput === "string" ? { resultSummary: toolCall.rawOutput } : {}),
     };
@@ -372,7 +373,10 @@ export function projectKiroToolCall(
   }
 
   // Command execution
-  if (toolCall.kind === "execute" || (typeof toolCall.name === "string" && toolCall.name.toLowerCase().includes("execute"))) {
+  if (
+    toolCall.kind === "execute" ||
+    (typeof toolCall.name === "string" && toolCall.name.toLowerCase().includes("execute"))
+  ) {
     let command = "execute";
     if (isRecord(toolCall.rawInput) && typeof toolCall.rawInput.command === "string") {
       command = toolCall.rawInput.command;

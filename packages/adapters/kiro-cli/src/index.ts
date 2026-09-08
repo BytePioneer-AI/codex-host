@@ -7,10 +7,7 @@ export type {
   KiroAcpTransportLike,
 } from "./kiro-adapter.js";
 
-export {
-  KiroAcpTransport,
-  KiroTransportError,
-} from "./acp-transport.js";
+export { KiroAcpTransport, KiroTransportError } from "./acp-transport.js";
 export type {
   KiroAcpTransportOptions,
   KiroForkOpenInput,
@@ -47,11 +44,7 @@ export { KIRO_COMMANDS, KIRO_COMMAND_CATALOG } from "./commands.js";
 
 export { projectKiroFileChanges, DEFAULT_KIRO_FILE_CHANGE_TEXT_LIMIT } from "./file-diff.js";
 
-export {
-  projectKiroPermission,
-  projectKiroToolCall,
-  projectKiroUserInput,
-} from "./projection.js";
+export { projectKiroPermission, projectKiroToolCall, projectKiroUserInput } from "./projection.js";
 export type {
   KiroUserInputParams,
   KiroUserInputResult,

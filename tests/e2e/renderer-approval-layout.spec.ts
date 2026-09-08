@@ -87,8 +87,8 @@ test("native approval actions stay together without changing their controls", as
   await page.setViewportSize({ width: 375, height: 420 });
   for (const button of [always, deny, once]) {
     const box = await button.boundingBox();
-    expect(box).not.toBeNull();
-    expect(box!.x + box!.width).toBeLessThanOrEqual(375);
+    if (!box) throw new Error("Approval control missing at narrow viewport");
+    expect(box.x + box.width).toBeLessThanOrEqual(375);
   }
   await page.evaluate(() => Reflect.get(window, "removeApprovalStyle")());
   await expect(page.locator("style[data-codexhost-approval-style]")).toHaveCount(0);

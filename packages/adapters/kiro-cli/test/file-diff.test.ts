@@ -2,10 +2,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { describe, expect, it } from "vitest";
 
-import {
-  DEFAULT_KIRO_FILE_CHANGE_TEXT_LIMIT,
-  projectKiroFileChanges,
-} from "../src/file-diff.js";
+import { DEFAULT_KIRO_FILE_CHANGE_TEXT_LIMIT, projectKiroFileChanges } from "../src/file-diff.js";
 
 describe("kiro file diff projection", () => {
   const workspaceDir = path.resolve("/workspace");
@@ -166,10 +163,7 @@ describe("kiro file diff projection", () => {
     expect(projectKiroFileChanges("not-an-array", workspaceDir)).toBeNull();
     expect(projectKiroFileChanges([], workspaceDir)).toBeNull();
     expect(
-      projectKiroFileChanges(
-        [{ type: "not-a-diff", path: "file.txt" }],
-        workspaceDir,
-      ),
+      projectKiroFileChanges([{ type: "not-a-diff", path: "file.txt" }], workspaceDir),
     ).toBeNull();
   });
 

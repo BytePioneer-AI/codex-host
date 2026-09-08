@@ -23,6 +23,7 @@ import {
   GrokTransportError,
   GROK_SESSION_FORK_METHOD,
   type GrokAcpTransportLike,
+  type GrokExtensionRequest,
   type GrokOpenInput,
   type GrokOpenResult,
   type GrokPermissionRequest,
@@ -77,6 +78,7 @@ class FakeGrokTransport implements GrokAcpTransportLike {
   #onEvent: ((event: GrokTransportEvent) => void) | null = null;
   #onPermission: ((request: GrokPermissionRequest) => Promise<RequestPermissionResponse>) | null =
     null;
+  #onExtension: ((request: GrokExtensionRequest) => Promise<Record<string, unknown>>) | null = null;
   #resolve: ((response: PromptResponse) => void) | null = null;
   #compactResolve: ((result: GrokCompactResult) => void) | null = null;
   #compactOnEvent: ((event: GrokTransportEvent) => void) | null = null;
@@ -156,11 +158,13 @@ class FakeGrokTransport implements GrokAcpTransportLike {
     text: string,
     onEvent: (event: GrokTransportEvent) => void,
     onPermission: (request: GrokPermissionRequest) => Promise<RequestPermissionResponse>,
+    onExtension: (request: GrokExtensionRequest) => Promise<Record<string, unknown>>,
   ): Promise<PromptResponse> {
     this.#activePromptText = text;
     this.#activePromptEvents = [];
     this.#onEvent = onEvent;
     this.#onPermission = onPermission;
+    this.#onExtension = onExtension;
     return new Promise((resolve) => {
       this.#resolve = resolve;
     });
@@ -207,6 +211,14 @@ class FakeGrokTransport implements GrokAcpTransportLike {
       },
       options,
     });
+  }
+
+  async extension(
+    method: string,
+    params: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    if (!this.#onExtension) throw new Error("No active Grok Prompt");
+    return await this.#onExtension({ method, params });
   }
 
   finish(response: PromptResponse = { stopReason: "end_turn" }, historyUsage?: unknown): void {
@@ -717,6 +729,203 @@ describe("Grok Adapter ACP projection", () => {
       outcome: { outcome: "selected", optionId: "allow-command" },
     });
 
+    transport.finish();
+    for (;;) {
+      if ((await nextEvent(iterator)).type === "turn.completed") break;
+    }
+    await adapter.close();
+  });
+
+  it("projects native ask_user_question as a Host Question and returns accepted answers", async () => {
+    const transport = new FakeGrokTransport();
+    const { adapter, session } = await openedSession(transport);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+    const turnId = hostTurnIdSchema.parse("turn-grok-question");
+    await session.execute({
+      type: "turn.start",
+      turnId,
+      input: [{ type: "text", text: "ask" }],
+    });
+    expect((await nextEvent(iterator)).type).toBe("turn.started");
+
+    const native = transport.extension("_x.ai/ask_user_question", {
+      sessionId: transport.sessionId,
+      questions: [
+        {
+          question: "Which path?",
+          options: [
+            { label: "Alpha", description: "First" },
+            { label: "Beta", description: "Second" },
+          ],
+        },
+      ],
+    });
+    const output = await nextOutput(iterator);
+    if (output.kind !== "interaction" || output.interaction.type !== "question") {
+      throw new Error("Expected Grok Question");
+    }
+    expect(output.interaction).toMatchObject({
+      type: "question",
+      title: "Which path?",
+      questions: [
+        {
+          id: "question-1",
+          type: "choice",
+          prompt: "Which path?",
+          multiple: false,
+          allowOther: true,
+          options: [
+            { value: "Alpha", label: "Alpha" },
+            { value: "Beta", label: "Beta" },
+          ],
+        },
+      ],
+    });
+    await expect(
+      session.execute({
+        type: "interaction.respond",
+        interactionId: output.interaction.interactionId,
+        response: { type: "approval", actionId: "allow-once" },
+      }),
+    ).resolves.toMatchObject({ ok: false, error: { code: "invalidRequest" } });
+    await expect(
+      session.execute({
+        type: "interaction.respond",
+        interactionId: output.interaction.interactionId,
+        response: { type: "question", answers: { "question-1": ["Alpha"] } },
+      }),
+    ).resolves.toEqual({ ok: true, value: { accepted: true } });
+    await expect(native).resolves.toEqual({
+      outcome: "accepted",
+      answers: { "Which path?": "Alpha" },
+      annotations: {},
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "interaction.closed",
+      interactionId: output.interaction.interactionId,
+      reason: "responded",
+    });
+    await expect(
+      session.execute({
+        type: "interaction.respond",
+        interactionId: output.interaction.interactionId,
+        response: { type: "question", answers: { "question-1": ["Beta"] } },
+      }),
+    ).resolves.toMatchObject({ ok: false, error: { code: "invalidState" } });
+    transport.finish();
+    for (;;) {
+      if ((await nextEvent(iterator)).type === "turn.completed") break;
+    }
+    await adapter.close();
+  });
+
+  it("skips a pending Grok Question when the user cancels it", async () => {
+    const transport = new FakeGrokTransport();
+    const { adapter, session } = await openedSession(transport);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+    const turnId = hostTurnIdSchema.parse("turn-grok-question-cancel");
+    await session.execute({
+      type: "turn.start",
+      turnId,
+      input: [{ type: "text", text: "ask" }],
+    });
+    expect((await nextEvent(iterator)).type).toBe("turn.started");
+    const native = transport.extension("x.ai/ask_user_question", {
+      questions: [{ question: "Continue?", options: [{ label: "Yes" }, { label: "No" }] }],
+    });
+    const output = await nextOutput(iterator);
+    if (output.kind !== "interaction") throw new Error("Expected Grok Question");
+    await expect(
+      session.execute({
+        type: "interaction.respond",
+        interactionId: output.interaction.interactionId,
+        response: { type: "question", answers: {}, cancelled: true },
+      }),
+    ).resolves.toEqual({ ok: true, value: { accepted: true } });
+    await expect(native).resolves.toEqual({ outcome: "skip_interview" });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "interaction.closed",
+      reason: "cancelled",
+    });
+    transport.finish();
+    for (;;) {
+      if ((await nextEvent(iterator)).type === "turn.completed") break;
+    }
+    await adapter.close();
+  });
+
+  it("presents exit_plan_mode as an explicit plan review", async () => {
+    const transport = new FakeGrokTransport();
+    const { adapter, session } = await openedSession(transport);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+    const turnId = hostTurnIdSchema.parse("turn-grok-plan");
+    await session.execute({
+      type: "turn.start",
+      turnId,
+      input: [{ type: "text", text: "plan" }],
+    });
+    expect((await nextEvent(iterator)).type).toBe("turn.started");
+    const plan = "# Implementation plan\nEdit grok-adapter.ts.";
+    const native = transport.extension("_x.ai/exit_plan_mode", {
+      sessionId: transport.sessionId,
+      planContent: plan,
+      planFilePath: "/tmp/plan.md",
+    });
+    const output = await nextOutput(iterator);
+    if (output.kind !== "interaction" || output.interaction.type !== "question") {
+      throw new Error("Expected Grok Plan review");
+    }
+    expect(output.interaction).toMatchObject({
+      type: "question",
+      title: "Review plan",
+      questions: [
+        {
+          id: "plan-decision",
+          type: "choice",
+          multiple: false,
+          allowOther: false,
+          options: [
+            { value: "stay", label: "Stay in plan mode" },
+            { value: "approve", label: "Approve plan and exit plan mode" },
+          ],
+        },
+      ],
+    });
+    const planQuestion = output.interaction.questions[0];
+    if (planQuestion?.type !== "choice") throw new Error("Expected a choice Question");
+    expect(planQuestion.prompt).toContain(plan);
+    await expect(
+      session.execute({
+        type: "interaction.respond",
+        interactionId: output.interaction.interactionId,
+        response: { type: "question", answers: { "plan-decision": ["approve"] } },
+      }),
+    ).resolves.toEqual({ ok: true, value: { accepted: true } });
+    await expect(native).resolves.toEqual({ approved: true, feedback: "" });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "interaction.closed",
+      reason: "responded",
+    });
+    transport.finish();
+    for (;;) {
+      if ((await nextEvent(iterator)).type === "turn.completed") break;
+    }
+    await adapter.close();
+  });
+
+  it("rejects an unknown Grok extension method without hanging the Turn", async () => {
+    const transport = new FakeGrokTransport();
+    const { adapter, session } = await openedSession(transport);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+    await session.execute({
+      type: "turn.start",
+      turnId: hostTurnIdSchema.parse("turn-unknown-ext"),
+      input: [{ type: "text", text: "run" }],
+    });
+    expect((await nextEvent(iterator)).type).toBe("turn.started");
+    await expect(transport.extension("_x.ai/mcp/elicit", { sessionId: "session" })).rejects.toThrow(
+      /Method not found/,
+    );
     transport.finish();
     for (;;) {
       if ((await nextEvent(iterator)).type === "turn.completed") break;
@@ -1417,6 +1626,41 @@ describe("Grok Adapter ACP projection", () => {
     }
     expect(fetches).toBeGreaterThan(fetchesAfterOpen);
     expect(adapter.credits()?.usedPercent).toBe(Math.min(fetches * 10, 100));
+    await adapter.close();
+  });
+
+  it("closes pending Grok Questions immediately when the Turn is cancelled", async () => {
+    const transport = new FakeGrokTransport();
+    const { adapter, session } = await openedSession(transport);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+    const turnId = hostTurnIdSchema.parse("turn-cancel-question");
+    await expect(
+      session.execute({ type: "turn.start", turnId, input: [{ type: "text", text: "ask" }] }),
+    ).resolves.toEqual({ ok: true, value: { turnId } });
+    expect((await nextEvent(iterator)).type).toBe("turn.started");
+    const native = transport.extension("_x.ai/ask_user_question", {
+      questions: [{ question: "Continue?", options: [{ label: "Yes" }, { label: "No" }] }],
+    });
+    const interactionOutput = await nextOutput(iterator);
+    if (interactionOutput.kind !== "interaction") throw new Error("Expected Grok Question");
+    await expect(session.execute({ type: "turn.cancel", turnId })).resolves.toEqual({
+      ok: true,
+      value: { cancellationRequested: true },
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "interaction.closed",
+      interactionId: interactionOutput.interaction.interactionId,
+      reason: "cancelled",
+    });
+    await expect(native).resolves.toEqual({ outcome: "skip_interview" });
+    transport.finish({ stopReason: "cancelled" });
+    for (;;) {
+      const event = await nextEvent(iterator);
+      if (event.type === "turn.completed") {
+        expect(event).toMatchObject({ turnId, outcome: { status: "cancelled" } });
+        break;
+      }
+    }
     await adapter.close();
   });
 

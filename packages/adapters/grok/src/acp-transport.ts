@@ -46,6 +46,13 @@ import {
   parseGrokRewindResponse,
   type GrokRewindParams,
 } from "./grok-rewind.js";
+import { grokPlanRejectedResponse } from "./grok-plan-review.js";
+import {
+  GROK_ACP_CLIENT_CAPABILITIES,
+  grokSkipInterviewResponse,
+  isGrokAskUserQuestionMethod,
+  isGrokExitPlanModeMethod,
+} from "./grok-question.js";
 import { decodeGrokPermissionModeId, grokPermissionModeSessionMeta } from "./permission-modes.js";
 
 export type GrokTransportFaultKind =
@@ -165,9 +172,15 @@ export interface GrokOpenResult {
   replay: GrokTransportEvent[];
   signals?: unknown;
 }
+export interface GrokExtensionRequest {
+  method: string;
+  params: Record<string, unknown>;
+}
+
 interface ActivePrompt {
   onEvent(event: GrokTransportEvent): void;
   onPermission(request: GrokPermissionRequest): Promise<RequestPermissionResponse>;
+  onExtension(request: GrokExtensionRequest): Promise<Record<string, unknown>>;
 }
 
 interface ActiveCompact {
@@ -753,6 +766,7 @@ export class GrokAcpTransport {
         ({
           sessionUpdate: (params) => this.#handleUpdate(params),
           requestPermission: (params) => this.#handlePermission(params),
+          extMethod: (method, params) => this.#handleExtensionRequest(method, params),
           extNotification: (method, params) => this.#handleExtensionNotification(method, params),
         }) satisfies Client,
       stream,
@@ -774,7 +788,7 @@ export class GrokAcpTransport {
     const initialize = await withTimeout(
       connection.initialize({
         protocolVersion: PROTOCOL_VERSION,
-        clientCapabilities: {},
+        clientCapabilities: GROK_ACP_CLIENT_CAPABILITIES,
         clientInfo: { name: "codexhost", version: "0.1.6" },
       }),
       this.#options.commandTimeoutMs,
@@ -794,13 +808,14 @@ export class GrokAcpTransport {
     text: string,
     onEvent: ActivePrompt["onEvent"],
     onPermission: ActivePrompt["onPermission"],
+    onExtension: ActivePrompt["onExtension"],
   ): Promise<PromptResponse> {
     const connection = this.#connection;
     if (!connection || !this.#sessionId || this.#closed || this.#closing) {
       throw new GrokTransportError("unavailable", "Grok ACP Session is unavailable");
     }
     if (this.#activePrompt) throw new Error("Grok ACP Session already has an active Prompt");
-    const active = { onEvent, onPermission };
+    const active = { onEvent, onPermission, onExtension };
     this.#activePrompt = active;
     try {
       return await connection.prompt({
@@ -929,6 +944,18 @@ export class GrokAcpTransport {
       return Promise.resolve({ outcome: { outcome: "cancelled" } });
     }
     return this.#activePrompt.onPermission({ request: params, options: params.options });
+  }
+
+  #handleExtensionRequest(
+    method: string,
+    params: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    if (this.#activePrompt) {
+      return this.#activePrompt.onExtension({ method, params });
+    }
+    if (isGrokAskUserQuestionMethod(method)) return Promise.resolve(grokSkipInterviewResponse());
+    if (isGrokExitPlanModeMethod(method)) return Promise.resolve(grokPlanRejectedResponse());
+    throw RequestError.methodNotFound(method);
   }
 
   #fault(error: GrokTransportError): void {

@@ -2,6 +2,8 @@
 
 The Subagent list shows a subtitle in the order `status · Model · reasoning effort`, for example `已完成 · Grok 4.6 · High`. It supports waiting, running, completed, failed, and interrupted states. Missing Model or effort values are omitted.
 
+![Local macOS Subagent status, Model, and reasoning effort](imgs/subagent-status-model-effort.png)
+
 ## Native Codex
 
 The renderer supports existing child rows and collapsed `subAgentActivity` rows, preserving child names and seed avatars. It reads the exact child Thread for Model, reasoning effort, and terminal status. It never substitutes the parent Composer Model for an unknown child Model. Saved parent activities restore the list when a Thread is reopened.

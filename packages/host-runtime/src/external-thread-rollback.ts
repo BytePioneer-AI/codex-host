@@ -111,13 +111,15 @@ async function executeCurrentLastTurnRollback(input: {
   environment?: NodeJS.ProcessEnv;
 }): Promise<ExternalThreadRollbackResult> {
   const { current, adapters, repository, runtime } = input;
-  if (current.record.turnMappings.length === 0) {
+  // Keep the preparation version even if another Host operation replaces current.record.
+  const currentRecord = current.record;
+  if (currentRecord.turnMappings.length === 0) {
     return {
       ok: false,
       error: { code: -32076, message: "External Thread has no Turn to roll back" },
     };
   }
-  const currentNativeRef = current.record.nativeSessionRef;
+  const currentNativeRef = currentRecord.nativeSessionRef;
   const adapter = adapters.get(current.harnessId);
   if (!currentNativeRef || !adapter) {
     return {
@@ -164,7 +166,7 @@ async function executeCurrentLastTurnRollback(input: {
     await session.close().catch(() => undefined);
     return { ok: false, error: mapExternalThreadHarnessError(snapshot.error, "read") };
   }
-  if (snapshot.value.turns.length !== current.record.turnMappings.length - 1) {
+  if (snapshot.value.turns.length !== currentRecord.turnMappings.length - 1) {
     await session.close().catch(() => undefined);
     return {
       ok: false,
@@ -183,7 +185,7 @@ async function executeCurrentLastTurnRollback(input: {
   let aligned;
   try {
     aligned = await repository.commitLastTurnRollback(
-      current.record,
+      currentRecord,
       finalNativeRef as NativeSessionRef,
       snapshot.value,
     );
@@ -244,7 +246,8 @@ export async function executeExternalThreadRollback(input: {
     });
   }
 
-  const forkSource = derived.record.forkSource;
+  const derivedRecord = derived.record;
+  const forkSource = derivedRecord.forkSource;
   if (!forkSource) {
     return {
       ok: false,
@@ -281,10 +284,11 @@ export async function executeExternalThreadRollback(input: {
     if (sourceRefreshError) return { ok: false, error: sourceRefreshError };
   }
 
-  const sourceBoundaryIndex = source.record.turnMappings.findIndex(
+  const sourceRecord = source.record;
+  const sourceBoundaryIndex = sourceRecord.turnMappings.findIndex(
     ({ hostTurnId }) => hostTurnId === forkSource.hostTurnId,
   );
-  if (sourceBoundaryIndex < 0 || derived.record.turnMappings.length !== sourceBoundaryIndex + 1) {
+  if (sourceBoundaryIndex < 0 || derivedRecord.turnMappings.length !== sourceBoundaryIndex + 1) {
     return {
       ok: false,
       error: {
@@ -294,22 +298,20 @@ export async function executeExternalThreadRollback(input: {
     };
   }
   const excludedActiveTurnCount =
-    source.running || source.record.turnMappings.length > derived.record.turnMappings.length
-      ? 1
-      : 0;
+    source.running || sourceRecord.turnMappings.length > derivedRecord.turnMappings.length ? 1 : 0;
   const retainedCount =
-    derived.record.turnMappings.length - rollback.numTurns + excludedActiveTurnCount;
-  if (retainedCount === derived.record.turnMappings.length) {
+    derivedRecord.turnMappings.length - rollback.numTurns + excludedActiveTurnCount;
+  if (retainedCount === derivedRecord.turnMappings.length) {
     return { ok: true, thread: derived.thread };
   }
-  const boundary = source.record.turnMappings[retainedCount - 1];
+  const boundary = sourceRecord.turnMappings[retainedCount - 1];
   if (retainedCount < 1 || !boundary?.nativeCheckpointRef) {
     return {
       ok: false,
       error: { code: -32080, message: "External Fork Checkpoint is unavailable" },
     };
   }
-  const sourceNativeRef = source.record.nativeSessionRef;
+  const sourceNativeRef = sourceRecord.nativeSessionRef;
   const adapter = adapters.get(source.harnessId);
   if (!sourceNativeRef || !adapter) {
     return {
@@ -342,7 +344,7 @@ export async function executeExternalThreadRollback(input: {
   if (
     !finalNativeRef ||
     finalNativeRef.nativeSessionId === sourceNativeRef.nativeSessionId ||
-    finalNativeRef.nativeSessionId === derived.record.nativeSessionRef?.nativeSessionId
+    finalNativeRef.nativeSessionId === derivedRecord.nativeSessionRef?.nativeSessionId
   ) {
     await session.close().catch(() => undefined);
     return {
@@ -366,8 +368,8 @@ export async function executeExternalThreadRollback(input: {
   let aligned;
   try {
     aligned = await repository.commitForkRollback(
-      derived.record,
-      source.record,
+      derivedRecord,
+      sourceRecord,
       finalNativeRef as NativeSessionRef,
       snapshot.value,
     );

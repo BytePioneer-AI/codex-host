@@ -318,6 +318,8 @@ export class ExternalThreadRepository {
     });
     const nextRecord = await this.store.replaceReadySession({
       hostThreadId: derived.hostThreadId,
+      expectedRevision: derived.revision,
+      expectedNativeSessionRef: derived.nativeSessionRef,
       nativeSessionRef,
       turnMappings: mappings,
       forkSource: {
@@ -372,6 +374,8 @@ export class ExternalThreadRepository {
     });
     const nextRecord = await this.store.replaceReadySessionAfterLastTurn({
       hostThreadId: current.hostThreadId,
+      expectedRevision: current.revision,
+      expectedNativeSessionRef: current.nativeSessionRef,
       nativeSessionRef,
       turnMappings: mappings,
     });

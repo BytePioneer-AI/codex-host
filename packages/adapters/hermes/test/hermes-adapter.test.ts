@@ -624,6 +624,13 @@ describe("HermesSession cancellation", () => {
     });
 
     expect(cancelled).toMatchObject({ ok: false, error: { message: "cancel RPC failed" } });
+    await expect(
+      session.execute({
+        type: "turn.start",
+        turnId: hostTurnIdSchema.parse("turn-after-failed-cancel"),
+        input: [{ type: "text", text: "must remain blocked" }],
+      }),
+    ).resolves.toMatchObject({ ok: false, error: { code: "sessionBusy" } });
     rejectTurn?.(new Error("cancelled by test"));
     await session.close();
   });

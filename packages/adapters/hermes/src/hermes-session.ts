@@ -830,7 +830,6 @@ export class HermesSession implements HarnessSession {
         error instanceof HermesTransportError
           ? transportErrorToHarness(error)
           : harnessError("nativeFailure", error instanceof Error ? error.message : String(error));
-      this.#fault(failure);
       return { ok: false, error: failure };
     }
   }

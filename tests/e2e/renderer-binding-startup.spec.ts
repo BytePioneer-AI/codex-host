@@ -149,7 +149,7 @@ const { outputFiles } = await build({
 const browserBundle = outputFiles[0]?.text;
 if (!browserBundle) throw new Error("Renderer binding startup E2E bundle was not generated");
 
-test("a new conversation shows the Harness command button before a Thread exists", async ({
+test("a new conversation shows Harness commands but disables compact before a Thread exists", async ({
   page,
 }) => {
   await page.setContent("<!doctype html><body></body>");
@@ -165,8 +165,13 @@ test("a new conversation shows the Harness command button before a Thread exists
   await trigger.click();
   const menu = page.locator("[data-codexhost-harness-command-menu]");
   await expect(menu).toBeVisible();
-  await menu.locator('[data-command-id="pi.compact"]').click();
-  await expect(page.locator("[data-codex-composer]")).toHaveText("/compact ");
+  const compact = menu.locator('[data-command-id="pi.compact"]');
+  await expect(compact).toBeDisabled();
+  await expect(compact).toHaveAttribute(
+    "title",
+    "Start a conversation before running this command",
+  );
+  await expect(page.locator("[data-codex-composer]")).toBeEmpty();
   expect(await page.evaluate(() => Reflect.get(globalThis, "threadCommandRequests"))).toEqual([]);
 });
 

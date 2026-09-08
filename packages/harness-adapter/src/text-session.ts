@@ -1,4 +1,5 @@
 import type {
+  HarnessAccountSnapshot,
   HarnessCommandCatalog,
   HarnessId,
   HarnessInspection,
@@ -546,6 +547,11 @@ export interface HarnessAdapter {
   readonly sessionImport?: HarnessSessionImportCapability;
   readonly subagents?: HarnessSubagentCapability;
   readonly webUi?: HarnessWebUiAction;
+  /** Fresh read-only quota for current native authentication. Return null when unavailable;
+   * never return session spend, old authentication caches, or start a model Turn.
+   * Implementations must bound requests and release inspection resources on close.
+   */
+  inspectAccount?(): Promise<HarnessAccountSnapshot | null>;
 
   inspect(input?: InspectHarnessInput): Promise<HarnessInspection>;
   open(input: OpenSessionInput): Promise<HarnessResult<HarnessSession>>;

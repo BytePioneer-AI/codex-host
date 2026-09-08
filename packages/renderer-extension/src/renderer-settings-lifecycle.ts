@@ -7,6 +7,7 @@ import {
 import {
   createDefaultRendererSettingsPages,
   type RendererConnectionDiagnostics,
+  type RendererCodexAccountClient,
   type RendererUpdateClient,
 } from "./settings/pages.js";
 import type {
@@ -25,6 +26,7 @@ const UPDATE_RETRY_DELAYS_MS = [1_000, 3_000, 10_000, 30_000] as const;
 export interface RendererSettingsLifecycleOptions {
   getUpdateClient?(): RendererUpdateClient | null;
   getConnectionDiagnostics?(): RendererConnectionDiagnostics | null;
+  getAccountClient?(): RendererCodexAccountClient | null;
   getSessionImportClient?(): RendererSessionImportClient | null;
   openImportedThread?: RendererImportedThreadOpener;
   onLocaleChange?(locale: RendererSettingsLocale): void;
@@ -63,6 +65,7 @@ export function installRendererSettingsLifecycle(
       messages,
       options.getUpdateClient ?? (() => null),
       options.getConnectionDiagnostics ?? (() => null),
+      options.getAccountClient ?? (() => null),
       options.getSessionImportClient ?? (() => null),
       async (threadId, signal) => {
         if (!options.openImportedThread) {

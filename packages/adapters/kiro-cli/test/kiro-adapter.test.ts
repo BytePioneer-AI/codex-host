@@ -1742,9 +1742,10 @@ describe("KiroAdapter", () => {
       }
     });
 
-    it("cancels active turn via transport", async () => {
+    it("cancels an active turn and accepts a replacement in the same native Session", async () => {
       const fakeTransport = new FakeKiroTransport();
       fakeTransport.blockRunTurn = true;
+      fakeTransport.stopReason = "cancelled";
 
       const adapter = new KiroAdapter(
         { command: dummyBin },
@@ -1752,26 +1753,64 @@ describe("KiroAdapter", () => {
       );
 
       const openResult = await adapter.open({ kind: "create", cwd: "/workspace" });
-      if (!openResult.ok) return;
+      if (!openResult.ok) throw new Error(openResult.error.message);
 
       const session = openResult.value;
       const turnId = hostTurnIdSchema.parse("turn-cancel-test");
+      const completed: HarnessOutput[] = [];
+      const consume = (async () => {
+        for await (const output of session.outputs) {
+          if (output.kind === "event" && output.event.type === "turn.completed") {
+            completed.push(output);
+          }
+        }
+      })();
 
-      // Start turn
-      await session.execute({
-        type: "turn.start",
-        turnId,
-        input: [{ type: "text", text: "Long running task" }],
-      });
+      try {
+        // Start turn
+        await session.execute({
+          type: "turn.start",
+          turnId,
+          input: [{ type: "text", text: "Long running task" }],
+        });
 
-      // Cancel turn while running
-      const cancelRes = await session.execute({
-        type: "turn.cancel",
-        turnId,
-      });
+        // Cancel turn while running
+        const cancelRes = await session.execute({
+          type: "turn.cancel",
+          turnId,
+        });
 
-      expect(cancelRes.ok).toBe(true);
-      expect(fakeTransport.cancelled).toBe(true);
+        expect(cancelRes.ok).toBe(true);
+        expect(fakeTransport.cancelled).toBe(true);
+        await vi.waitFor(() => expect(completed).toHaveLength(1));
+        expect(completed[0]).toMatchObject({
+          event: { type: "turn.completed", turnId, outcome: { status: "cancelled" } },
+        });
+
+        fakeTransport.blockRunTurn = false;
+        fakeTransport.stopReason = "end_turn";
+        const replacementId = hostTurnIdSchema.parse("turn-replacement");
+        await expect(
+          session.execute({
+            type: "turn.start",
+            turnId: replacementId,
+            input: [{ type: "text", text: "Change direction" }],
+          }),
+        ).resolves.toEqual({ ok: true, value: { turnId: replacementId } });
+        await vi.waitFor(() => expect(completed).toHaveLength(2));
+        expect(completed[1]).toMatchObject({
+          event: {
+            type: "turn.completed",
+            turnId: replacementId,
+            outcome: { status: "succeeded" },
+          },
+        });
+        expect(fakeTransport.openCalls).toHaveLength(1);
+      } finally {
+        await session.close();
+        await consume;
+        await adapter.close();
+      }
     });
 
     it("executes /compact slash command via transport.compact()", async () => {

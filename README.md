@@ -106,8 +106,10 @@ xattr -dr com.apple.quarantine /Applications/codexhost.app
   </tr>
   <tr>
     <td width="50%" valign="top">
-      <p><strong>Agent 与 Model 选择</strong></p>
-      <img src="docs/imgs/agent-harness-selector.png" alt="提交前选择真正执行任务的 Agent 与 Model，Codex、Pi、Claude Code、OpenCode、DeepSeek Harness、Grok 和 Oh My Pi 均可选择">
+      <p><strong>Agent、账号与 Model 选择</strong></p>
+      <div align="center">
+        <img width="70%" src="docs/imgs/harness-account-selector.png" alt="在输入框中选择 Codex 账号，或切换到 Pi、Claude Code、DeepSeek Harness、OpenCode、Grok、Oh My Pi 和 Antigravity CLI">
+      </div>
     </td>
     <td width="50%" valign="top">
       <p><strong>Usage 与费用信息</strong></p>
@@ -116,7 +118,16 @@ xattr -dr com.apple.quarantine /Applications/codexhost.app
   </tr>
   <tr>
     <td colspan="2" valign="top">
+      <p><strong>多账号与额度管理</strong></p>
+      <div align="center">
+        <img width="90%" src="docs/imgs/account-management.png" alt="统一管理多个 Codex 账号，并查看 Codex、Claude Code 和 Grok 账号的剩余额度与重置时间">
+      </div>
+    </td>
+  </tr>
+  <tr>
+    <td colspan="2" valign="top">
       <img src="docs/imgs/grok-usage-limits.png" alt="五小时与七天窗口的剩余额度和重置时间">
+      <p>macOS 会在原生 ChatGPT 菜单栏图标内追加剩余额度百分比，Windows 则使用任务栏覆盖图标；优先使用 5 小时窗口，没有时回退到 7 天窗口。</p>
     </td>
   </tr>
   <tr>
@@ -145,7 +156,7 @@ xattr -dr com.apple.quarantine /Applications/codexhost.app
 | Fork | 原生 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | 上下文压缩 | 原生 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — |
 | 斜杠命令 | 原生 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| 修订上一条消息 | 原生 | ✅ | ✅ | ✅ | ✅ | ✅ | — | ✅ |
+| 修订上一条消息 | 原生 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 
 > **Antigravity：**¹ 工具审批需选择 **Desktop approvals**，支持允许一次或拒绝；该模式使用进程级自动执行配合审批 Hook，启动前校验 Hook 已加载，现有权限模式保持不变。提问支持单选和文本，子代理支持原生卡片与只读过程记录。详见[工具审批](docs/antigravity-tool-approval.md)和[子代理说明](docs/antigravity-subagents.md)。
 

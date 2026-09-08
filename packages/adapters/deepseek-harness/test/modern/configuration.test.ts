@@ -206,6 +206,26 @@ function initialControl(): FakeControl {
 }
 
 describe("DeepSeek Harness Modern configuration projection", () => {
+  it("accepts the -1 projection baseline of an empty Session", () => {
+    const catalog = modelCatalog();
+    const snapshot = readModernConfigurationSnapshot({
+      control: new FakeControl({
+        [MODERN_MODEL_SELECTION_PROJECTION_KEY]: { value: modelValue(null), seq: -1 },
+      }),
+      sessionId: SESSION_ID,
+      nativeRef: nativeSessionRefSchema.parse({
+        formatVersion: 1,
+        harnessId: "deepseek-harness",
+        nativeSessionId: SESSION_ID,
+      }),
+      modelCatalog: catalog,
+      permissionModes: null,
+    });
+
+    expect(snapshot.model).toMatchObject({ projectionSeq: -1, explicit: false });
+    expect(snapshot.state.effectiveModel).toEqual(catalog.catalog.defaultModel);
+  });
+
   it("merges authoritative Model and Permission rows into one Session state", () => {
     const catalog = modelCatalog();
     const snapshot = readModernConfigurationSnapshot({

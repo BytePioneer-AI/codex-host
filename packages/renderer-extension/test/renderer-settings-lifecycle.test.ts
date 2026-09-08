@@ -142,8 +142,8 @@ describe("Renderer Settings lifecycle", () => {
       openImportedThread,
     });
     const call = vi.mocked(createDefaultRendererSettingsPages).mock.calls.at(-1);
-    const getClient = call?.[3];
-    const open = call?.[4];
+    const getClient = call?.[4];
+    const open = call?.[5];
     if (!getClient || !open) throw new Error("Session Import settings seams were not installed");
 
     expect(getClient()).toBe(client);

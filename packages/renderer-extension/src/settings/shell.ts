@@ -1,4 +1,5 @@
 import settingsCss from "./shell.css";
+import accountsCss from "./accounts.css";
 import {
   RendererSettingsNavigationState,
   RendererSettingsPageScope,
@@ -14,6 +15,7 @@ import {
 import { CODEXHOST_GITHUB_REPOSITORY_URL, createDefaultRendererSettingsRegistry } from "./pages.js";
 
 export const SETTINGS_SHELL_ATTRIBUTE = "data-codexhost-settings-shell";
+export const RENDERER_SETTINGS_COLOR_SCHEME = "inherit";
 
 export interface RendererSettingsShell {
   readonly root: HTMLElement;
@@ -63,10 +65,10 @@ export function mountRendererSettingsShell(
   const root = ownerDocument.createElement("div");
   root.setAttribute(SETTINGS_SHELL_ATTRIBUTE, "v1");
   root.lang = messages.locale;
-  root.dataset.theme = "dark";
+  root.style.colorScheme = RENDERER_SETTINGS_COLOR_SCHEME;
   const shadow = root.attachShadow({ mode: "open" });
   const style = ownerDocument.createElement("style");
-  style.textContent = settingsCss;
+  style.textContent = `${settingsCss}\n${accountsCss}`;
 
   const dialog = ownerDocument.createElement("dialog");
   dialog.className = "codexhost-settings-dialog";
@@ -213,7 +215,9 @@ export function mountRendererSettingsShell(
   navigation.append(starLink);
   const supported = isRendererSettingsDialogSupported(dialog);
   const focusActiveNavigation = (): void => {
-    navigationButtons.get(navigationState.activePageId)?.focus();
+    navigationButtons
+      .get(navigationState.activePageId)
+      ?.focus({ preventScroll: true, focusVisible: false });
   };
   const finishClose = (): void => {
     disposeActivePage();

@@ -191,6 +191,58 @@ export function observeCodexRateLimits(value: unknown): Partial<HostUsage> | nul
   }
 }
 
+export interface CodexRateLimitResetCredits {
+  availableCount: number;
+  nextExpiresAtUnix?: number;
+  expiresAtUnix?: number[];
+}
+
+function parseAvailableCount(value: unknown): number | undefined {
+  if (typeof value === "number" && Number.isSafeInteger(value) && value >= 0) return value;
+  if (typeof value === "bigint" && value >= 0n && value <= BigInt(Number.MAX_SAFE_INTEGER)) {
+    return Number(value);
+  }
+  return undefined;
+}
+
+function rateLimitResetCreditsSummary(value: unknown): Record<string, unknown> | null {
+  if (!isRecord(value)) return null;
+  const result = isRecord(value.result) ? value.result : value;
+  const fromResult =
+    isRecord(result) && isRecord(result.rateLimitResetCredits)
+      ? result.rateLimitResetCredits
+      : null;
+  if (fromResult) return fromResult;
+  const params = isRecord(value.params) ? value.params : undefined;
+  return isRecord(params?.rateLimitResetCredits) ? params.rateLimitResetCredits : null;
+}
+
+export function observeCodexRateLimitResetCredits(
+  value: unknown,
+): CodexRateLimitResetCredits | null {
+  const summary = rateLimitResetCreditsSummary(value);
+  if (!summary) return null;
+  const availableCount = parseAvailableCount(summary.availableCount);
+  if (availableCount === undefined || availableCount === 0) return null;
+  const expiresAtUnix: number[] = [];
+  if (Array.isArray(summary.credits)) {
+    for (const credit of summary.credits) {
+      if (!isRecord(credit)) continue;
+      if (credit.status !== undefined && credit.status !== "available") continue;
+      const expiresAt = optionalReset(credit.expiresAt);
+      if (expiresAt === undefined) continue;
+      expiresAtUnix.push(expiresAt);
+    }
+  }
+  expiresAtUnix.sort((left, right) => left - right);
+  const nextExpiresAtUnix = expiresAtUnix[0];
+  return {
+    availableCount,
+    ...(nextExpiresAtUnix !== undefined ? { nextExpiresAtUnix } : {}),
+    ...(expiresAtUnix.length > 0 ? { expiresAtUnix } : {}),
+  };
+}
+
 function isoFromUnix(unixSeconds: number): string {
   return new Date(unixSeconds * 1000).toISOString();
 }
@@ -202,6 +254,7 @@ function isoFromUnix(unixSeconds: number): string {
  */
 export function projectCodexRateLimitsToCredits(
   usage: Partial<HostUsage> | null | undefined,
+  resetCredits?: CodexRateLimitResetCredits | null,
 ): AccountCreditsSnapshot | null {
   if (!usage) return null;
   const hasFiveHour = usage.planFiveHourUsedPercent !== undefined;
@@ -223,11 +276,24 @@ export function projectCodexRateLimitsToCredits(
             : {}),
         }
       : undefined;
+  const projectedResetCredits =
+    resetCredits && resetCredits.availableCount > 0
+      ? {
+          availableCount: resetCredits.availableCount,
+          ...(resetCredits.nextExpiresAtUnix !== undefined
+            ? { nextExpiresAt: isoFromUnix(resetCredits.nextExpiresAtUnix) }
+            : {}),
+          ...(resetCredits.expiresAtUnix && resetCredits.expiresAtUnix.length > 0
+            ? { expiresAt: resetCredits.expiresAtUnix.map(isoFromUnix) }
+            : {}),
+        }
+      : undefined;
 
   return {
     usedPercent,
     periodType: hasFiveHour ? "five_hour" : "seven_day",
     ...(resetsAtUnix !== undefined ? { resetsAt: isoFromUnix(resetsAtUnix) } : {}),
     ...(secondary ? { productUsage: [secondary] } : {}),
+    ...(projectedResetCredits ? { resetCredits: projectedResetCredits } : {}),
   };
 }

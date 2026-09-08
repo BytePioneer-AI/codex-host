@@ -138,7 +138,7 @@ class FakeConnection implements ModernConnectionLike {
       } as ModernRemoteResult<T>);
     }
     if (endpoint === "session/create") {
-      const request = args.request as { sessionId: string };
+      const request = args.request as { sessionId: string; agentPreset?: string };
       this.modelSelections.set(request.sessionId, null);
       if (this.permissionModesEnabled) {
         this.permissionSelections.set(request.sessionId, "workspace-write");
@@ -154,7 +154,10 @@ class FakeConnection implements ModernConnectionLike {
       }
       return Promise.resolve({
         ok: true,
-        value: { sessionId: request.sessionId },
+        value: {
+          sessionId: request.sessionId,
+          ...(request.agentPreset === undefined ? {} : { agentPreset: request.agentPreset }),
+        },
       } as ModernRemoteResult<T>);
     }
     if (endpoint === "session/fork") {
@@ -443,6 +446,8 @@ function exactJournalSnapshot(input: {
   readonly events: readonly Record<string, unknown>[];
   readonly parentSession?: string;
   readonly seedLength?: number;
+  readonly headerAgentPreset?: string;
+  readonly agentPreset?: string | null;
 }): Record<string, unknown> {
   const cursor = input.events.length - 1;
   return {
@@ -454,13 +459,17 @@ function exactJournalSnapshot(input: {
       cwd: input.cwd,
       ...(input.parentSession ? { parentSession: input.parentSession } : {}),
       ...(input.seedLength === undefined ? {} : { seedLength: input.seedLength }),
+      ...(input.headerAgentPreset === undefined ? {} : { agentPreset: input.headerAgentPreset }),
     },
     cursor,
     records: input.events.map((event) => ({ type: "event", event })),
     hasMore: false,
     projections: {
       asOfSeq: cursor,
-      values: { modelSelection: { lastUsed: null, next: null } },
+      values: {
+        modelSelection: { lastUsed: null, next: null },
+        ...(input.agentPreset === undefined ? {} : { agentPreset: input.agentPreset }),
+      },
     },
   };
 }
@@ -1276,7 +1285,7 @@ describe("Modern DeepSeek Harness Adapter", () => {
       expect(opened.value.capabilities.history).toEqual({
         fork: true,
         forkAcrossCwd: false,
-        rollbackLastTurn: false,
+        rollbackLastTurn: true,
       });
       expect(opened.value.initialState.nativeRef?.nativeSessionId).toBe("session-forked");
       const snapshot = await opened.value.readSnapshot();
@@ -1301,6 +1310,292 @@ describe("Modern DeepSeek Harness Adapter", () => {
       await opened.value.close();
     }
     await adapter.close();
+  });
+
+  it("rolls back a multi-Turn Session through the penultimate native checkpoint", async () => {
+    const { adapter, connection } = setup();
+    const cwd = path.resolve("fixture-rollback-fork");
+    const sourceSessionId = "session-rollback-source";
+    const sourceEvents = [
+      ...forkSourceEvents(),
+      exactJournalEvent(7, "turn/end", { turn: 2, reason: { kind: "completed" } }),
+    ];
+    const inherited = sourceEvents.slice(0, 5);
+    const sourceSnapshot = exactJournalSnapshot({
+      sessionId: sourceSessionId,
+      cwd,
+      headerAgentPreset: "minimal",
+      agentPreset: "minimal",
+      events: sourceEvents,
+    });
+    connection.journalSnapshots.set(sourceSessionId, sourceSnapshot);
+    connection.journalSnapshots.set(
+      "session-forked",
+      exactJournalSnapshot({
+        sessionId: "session-forked",
+        cwd,
+        parentSession: sourceSessionId,
+        seedLength: inherited.length,
+        headerAgentPreset: "minimal",
+        agentPreset: "minimal",
+        events: [...inherited, exactJournalEvent(5, "session/end-seed", {})],
+      }),
+    );
+
+    const opened = await adapter.open({
+      kind: "rollbackLastTurn",
+      sourceRef: forkRefs(sourceSessionId, 2).sourceRef,
+      cwd,
+    });
+
+    expect(opened.ok).toBe(true);
+    expect(connection.calls).toContainEqual({
+      endpoint: "session/fork",
+      args: { request: { sessionId: sourceSessionId, atSeq: 2 } },
+    });
+    expect(connection.calls.some(({ endpoint }) => endpoint === "session/create")).toBe(false);
+    expect(connection.journalSnapshots.get(sourceSessionId)).toBe(sourceSnapshot);
+    if (opened.ok) {
+      await expect(opened.value.readSnapshot()).resolves.toMatchObject({
+        ok: true,
+        value: {
+          turns: [{ nativeTurnRef: { nativeSessionId: "session-forked" } }],
+        },
+      });
+      await opened.value.close();
+    }
+    await adapter.close();
+  });
+
+  it("rolls back a single-Turn Session by creating an empty Session with its current Agent Preset", async () => {
+    const { adapter, connection } = setup(["rollback-empty"]);
+    const cwd = path.resolve("fixture-rollback-create");
+    const sourceSessionId = "session-single-turn";
+    const sourceSnapshot = exactJournalSnapshot({
+      sessionId: sourceSessionId,
+      cwd,
+      headerAgentPreset: "standard",
+      agentPreset: "minimal",
+      events: [
+        exactJournalEvent(0, "agent-preset/selected", { agentPreset: "minimal" }),
+        exactJournalEvent(1, "turn/start", { turn: 1 }),
+        exactJournalEvent(2, "turn/end", { turn: 1, reason: { kind: "completed" } }),
+      ],
+    });
+    connection.journalSnapshots.set(sourceSessionId, sourceSnapshot);
+    connection.journalSnapshots.set(
+      "session-rollback-empty",
+      exactJournalSnapshot({
+        sessionId: "session-rollback-empty",
+        cwd,
+        headerAgentPreset: "minimal",
+        agentPreset: "minimal",
+        events: [],
+      }),
+    );
+
+    const opened = await adapter.open({
+      kind: "rollbackLastTurn",
+      sourceRef: forkRefs(sourceSessionId, 2).sourceRef,
+      cwd,
+    });
+
+    expect(opened.ok).toBe(true);
+    expect(connection.calls).toContainEqual({
+      endpoint: "session/create",
+      args: {
+        request: {
+          sessionId: "session-rollback-empty",
+          cwd,
+          agentPreset: "minimal",
+        },
+      },
+    });
+    expect(connection.calls.some(({ endpoint }) => endpoint === "session/fork")).toBe(false);
+    expect(connection.journalSnapshots.get(sourceSessionId)).toBe(sourceSnapshot);
+    if (opened.ok) {
+      expect(opened.value.initialState.nativeRef?.nativeSessionId).toBe("session-rollback-empty");
+      await expect(opened.value.readSnapshot()).resolves.toMatchObject({
+        ok: true,
+        value: { turns: [] },
+      });
+      await opened.value.close();
+    }
+    await adapter.close();
+  });
+
+  it("fails closed when a multi-Turn Fork changes the current Agent Preset", async () => {
+    const { adapter, connection } = setup();
+    const cwd = path.resolve("fixture-rollback-fork-preset");
+    const sourceSessionId = "session-rollback-preset-source";
+    const sourceEvents = [
+      ...forkSourceEvents(),
+      exactJournalEvent(7, "turn/end", { turn: 2, reason: { kind: "completed" } }),
+    ];
+    const inherited = sourceEvents.slice(0, 5);
+    connection.journalSnapshots.set(
+      sourceSessionId,
+      exactJournalSnapshot({
+        sessionId: sourceSessionId,
+        cwd,
+        headerAgentPreset: "minimal",
+        agentPreset: "minimal",
+        events: sourceEvents,
+      }),
+    );
+    connection.journalSnapshots.set(
+      "session-forked",
+      exactJournalSnapshot({
+        sessionId: "session-forked",
+        cwd,
+        parentSession: sourceSessionId,
+        seedLength: inherited.length,
+        headerAgentPreset: "standard",
+        agentPreset: "standard",
+        events: [...inherited, exactJournalEvent(5, "session/end-seed", {})],
+      }),
+    );
+
+    await expect(
+      adapter.open({
+        kind: "rollbackLastTurn",
+        sourceRef: forkRefs(sourceSessionId, 2).sourceRef,
+        cwd,
+      }),
+    ).resolves.toMatchObject({ ok: false, error: { code: "protocolError" } });
+    await adapter.close();
+  });
+
+  it("fails closed when a single-Turn replacement is not empty", async () => {
+    const { adapter, connection } = setup(["rollback-not-empty"]);
+    const cwd = path.resolve("fixture-rollback-not-empty");
+    const sourceSessionId = "session-single-turn-nonempty-child";
+    const completedTurn = [
+      exactJournalEvent(0, "turn/start", { turn: 1 }),
+      exactJournalEvent(1, "turn/end", { turn: 1, reason: { kind: "completed" } }),
+    ];
+    connection.journalSnapshots.set(
+      sourceSessionId,
+      exactJournalSnapshot({
+        sessionId: sourceSessionId,
+        cwd,
+        agentPreset: "standard",
+        events: completedTurn,
+      }),
+    );
+    connection.journalSnapshots.set(
+      "session-rollback-not-empty",
+      exactJournalSnapshot({
+        sessionId: "session-rollback-not-empty",
+        cwd,
+        agentPreset: "standard",
+        events: completedTurn,
+      }),
+    );
+
+    await expect(
+      adapter.open({
+        kind: "rollbackLastTurn",
+        sourceRef: forkRefs(sourceSessionId, 1).sourceRef,
+        cwd,
+      }),
+    ).resolves.toMatchObject({ ok: false, error: { code: "protocolError" } });
+    await adapter.close();
+  });
+
+  it("rejects a single-Turn rollback when the generated Session ID matches the source", async () => {
+    const { adapter, connection } = setup(["rollback-collision"]);
+    const cwd = path.resolve("fixture-rollback-collision");
+    const sourceSessionId = "session-rollback-collision";
+    connection.journalSnapshots.set(
+      sourceSessionId,
+      exactJournalSnapshot({
+        sessionId: sourceSessionId,
+        cwd,
+        agentPreset: "standard",
+        events: [
+          exactJournalEvent(0, "turn/start", { turn: 1 }),
+          exactJournalEvent(1, "turn/end", { turn: 1, reason: { kind: "completed" } }),
+        ],
+      }),
+    );
+
+    await expect(
+      adapter.open({
+        kind: "rollbackLastTurn",
+        sourceRef: forkRefs(sourceSessionId, 1).sourceRef,
+        cwd,
+      }),
+    ).resolves.toMatchObject({ ok: false, error: { code: "sessionBusy" } });
+    expect(connection.calls.some(({ endpoint }) => endpoint === "session/create")).toBe(false);
+    await adapter.close();
+  });
+
+  it("rejects empty, active, missing-preset, and malformed-preset rollback sources before mutation", async () => {
+    const cwd = path.resolve("fixture-rollback-rejected");
+    const cases: Array<{
+      readonly name: string;
+      readonly events: readonly Record<string, unknown>[];
+      readonly agentPreset?: unknown;
+      readonly code: string;
+    }> = [
+      { name: "empty", events: [], code: "invalidState" },
+      {
+        name: "active",
+        events: [exactJournalEvent(0, "turn/start", { turn: 1 })],
+        code: "sessionBusy",
+      },
+      {
+        name: "missing preset",
+        events: [
+          exactJournalEvent(0, "turn/start", { turn: 1 }),
+          exactJournalEvent(1, "turn/end", { turn: 1, reason: { kind: "completed" } }),
+        ],
+        code: "protocolError",
+      },
+      {
+        name: "malformed preset",
+        events: [
+          exactJournalEvent(0, "turn/start", { turn: 1 }),
+          exactJournalEvent(1, "turn/end", { turn: 1, reason: { kind: "completed" } }),
+        ],
+        agentPreset: 42,
+        code: "protocolError",
+      },
+    ];
+
+    for (const testCase of cases) {
+      const { adapter, connection } = setup();
+      const sourceSessionId = `session-${testCase.name.replace(" ", "-")}`;
+      const snapshot = exactJournalSnapshot({
+        sessionId: sourceSessionId,
+        cwd,
+        events: testCase.events,
+      });
+      if (testCase.agentPreset !== undefined) {
+        const projections = snapshot.projections as { values: Record<string, unknown> };
+        projections.values.agentPreset = testCase.agentPreset;
+      }
+      connection.journalSnapshots.set(sourceSessionId, snapshot);
+
+      const opened = await adapter.open({
+        kind: "rollbackLastTurn",
+        sourceRef: forkRefs(sourceSessionId, 0).sourceRef,
+        cwd,
+      });
+
+      expect(opened, testCase.name).toMatchObject({
+        ok: false,
+        error: { code: testCase.code },
+      });
+      expect(
+        connection.calls.some(
+          ({ endpoint }) => endpoint === "session/create" || endpoint === "session/fork",
+        ),
+        testCase.name,
+      ).toBe(false);
+      await adapter.close();
+    }
   });
 
   it("uses child seedLength when cold promotion and concurrent configuration extend the source", async () => {
@@ -1849,7 +2144,10 @@ describe("Modern DeepSeek Harness Adapter", () => {
         modes: [{ id: "workspace-write" }, { id: "danger-full-access" }],
         defaultModeId: "workspace-write",
       },
-      capabilities: { configuration: { selectPermissionMode: true } },
+      capabilities: {
+        configuration: { selectPermissionMode: true },
+        history: { fork: true, forkAcrossCwd: false, rollbackLastTurn: true },
+      },
     });
     await adapter.close();
   });
@@ -1956,6 +2254,17 @@ describe("Modern DeepSeek Harness Adapter", () => {
         executionPolicy: "unattended-full-access",
       }),
     ).resolves.toMatchObject({ ok: false, error: { code: "invalidRequest" } });
+    expect(connection.connectCalls).toBe(0);
+    await adapter.close();
+  });
+
+  it("rejects an unknown open kind before startup", async () => {
+    const { adapter, connection } = setup();
+
+    await expect(adapter.open({ kind: "future", cwd: "fixture" } as never)).resolves.toMatchObject({
+      ok: false,
+      error: { code: "unsupported" },
+    });
     expect(connection.connectCalls).toBe(0);
     await adapter.close();
   });

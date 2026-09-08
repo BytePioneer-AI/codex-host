@@ -52,6 +52,19 @@ test("empty, skipped-only and incomplete reports are supported without fabricate
   assert.throws(() => validateReport(report), /report.errors/u);
 });
 
+test("new incremental inputs require the card summary while legacy cumulative records still render", () => {
+  const report = createReport();
+  const legacy = structuredClone(report);
+  delete legacy.prs[0].originalTitle;
+  delete legacy.prs[0].effect;
+  assert.doesNotThrow(() => validateReport(legacy));
+  assert.throws(
+    () => validateReport(legacy, { requireCardSummary: true }),
+    /originalTitle|effect/u,
+  );
+  assert.doesNotThrow(() => validateReport(report, { requireCardSummary: true }));
+});
+
 test("missing evidence or SHA is representable only as DISCUSS with concrete questions", () => {
   const report = createReport();
   report.prs = [report.prs[2]];
@@ -112,6 +125,12 @@ test("invalid contract fields fail with field paths", () => {
         r.prs[0].reason = "two\nlines";
       },
       /reason/u,
+    ],
+    [
+      (r) => {
+        r.prs[0].effect = "two\nlines";
+      },
+      /effect/u,
     ],
     [
       (r) => {

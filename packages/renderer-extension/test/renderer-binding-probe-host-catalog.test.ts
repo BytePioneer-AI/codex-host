@@ -1,6 +1,6 @@
 import { harnessIdSchema } from "@codexhost/shared-contracts";
 import { harnessModelRefSchema } from "@codexhost/shared-contracts";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, assert, describe, expect, it, vi } from "vitest";
 
 import type * as RendererComposerDom from "../src/renderer-composer-dom.js";
 import {
@@ -38,7 +38,7 @@ vi.mock("../src/renderer-composer-dom.js", async (importOriginal) => {
     mountComposerAgentControl: (
       ...args: Parameters<typeof RendererComposerDom.mountComposerAgentControl>
     ) => {
-      testState.selectModel = args[6];
+      testState.selectModel = args[8];
       return {
         composer: testState.composer,
         composerId: "composer-1",
@@ -287,7 +287,9 @@ describe("Renderer binding Host-scoped Claude catalogs", () => {
     const expectSubmissionBlocked = (blocked: boolean) => {
       const preventDefault = vi.fn();
       const stopImmediatePropagation = vi.fn();
-      testState.documentListeners.get("submit")!({
+      const submit = testState.documentListeners.get("submit");
+      assert(submit);
+      submit({
         target: testState.composer,
         preventDefault,
         stopImmediatePropagation,
@@ -296,7 +298,8 @@ describe("Renderer binding Host-scoped Claude catalogs", () => {
       expect(stopImmediatePropagation).toHaveBeenCalledTimes(blocked ? 1 : 0);
     };
     const expectRecoverableView = (error: string) => {
-      const view = testState.renderedModelViews.at(-1)!;
+      const view = testState.renderedModelViews.at(-1);
+      assert(view);
       expect(view).toMatchObject({
         status: "error",
         catalog: inspection.catalog,
@@ -315,14 +318,16 @@ describe("Renderer binding Host-scoped Claude catalogs", () => {
     expect(host.selectThreadModel).not.toHaveBeenCalled();
     expect(applyAgent).not.toHaveBeenCalled();
 
-    testState.selectModel!(newModel.id);
+    const selectModel = testState.selectModel;
+    assert(selectModel);
+    selectModel(newModel.id);
     await vi.waitFor(() => expectRecoverableView("Model selection failed"));
     expect(host.selectThreadModel).toHaveBeenCalledExactlyOnceWith({
       threadId: "thread-a",
       model: newModel,
     });
 
-    testState.selectModel!(newModel.id);
+    selectModel(newModel.id);
     expect(testState.renderedModelViews.at(-1)).toMatchObject({
       status: "selecting",
       selected: oldModel,

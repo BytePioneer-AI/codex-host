@@ -61,6 +61,7 @@ describe("installed Harness composition", () => {
     },
   );
 
+  // Cold bundle imports can exceed Vitest's 5s default on CI; the loader retains its 10s budget.
   it("loads all preinstalled plugin factories without static registration or executable discovery", async () => {
     const registry = await load();
     try {
@@ -83,7 +84,7 @@ describe("installed Harness composition", () => {
     } finally {
       await registry.close();
     }
-  });
+  }, 15_000);
 
   it("provides every built-in command catalog before inspection or Session creation", async () => {
     const expected = {
@@ -93,7 +94,16 @@ describe("installed Harness composition", () => {
       opencode: ["/compact"],
       grok: ["/compact"],
       omp: ["/compact"],
-      antigravity: [],
+      antigravity: [
+        "/plan",
+        "/goal",
+        "/browser",
+        "/grill-me",
+        "/boost",
+        "/learn",
+        "/schedule",
+        "/help",
+      ],
       "kiro-cli": [
         "/compact",
         "/kiro-context",

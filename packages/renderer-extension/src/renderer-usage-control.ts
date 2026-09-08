@@ -21,6 +21,7 @@ export interface RendererUsageControl {
 
 interface RendererUsageMessages {
   readonly usage: string;
+  readonly account: string;
   readonly context: string;
   readonly recordedCredits: string;
   readonly latestCacheHit: string;
@@ -30,19 +31,16 @@ interface RendererUsageMessages {
   readonly reasoning: string;
   readonly totalTokens: string;
   readonly inputOutput: string;
-  readonly fiveHourLimit: string;
-  readonly sevenDayLimit: string;
   readonly sessionCostEstimate: string;
   readonly threadUsage: string;
   readonly threadUsageDetails: string;
   readonly tokensSummary: string;
   readonly tokensPerSecond: string;
-  readonly fiveHourSummary: string;
-  readonly sevenDaySummary: string;
 }
 
 const ENGLISH_USAGE_MESSAGES: RendererUsageMessages = Object.freeze({
   usage: "Usage",
+  account: "Account",
   context: "Context",
   recordedCredits: "Recorded usage",
   latestCacheHit: "Latest cache hit",
@@ -52,19 +50,16 @@ const ENGLISH_USAGE_MESSAGES: RendererUsageMessages = Object.freeze({
   reasoning: "Reasoning",
   totalTokens: "Total tokens",
   inputOutput: "Input / output",
-  fiveHourLimit: "5-hour limit",
-  sevenDayLimit: "7-day limit",
   sessionCostEstimate: "Session cost estimate",
   threadUsage: "Thread Usage",
   threadUsageDetails: "Thread Usage details",
   tokensSummary: "tokens",
   tokensPerSecond: "tok/s",
-  fiveHourSummary: "5h",
-  sevenDaySummary: "7d",
 });
 
 const CHINESE_USAGE_MESSAGES: RendererUsageMessages = Object.freeze({
   usage: "用量",
+  account: "账号",
   context: "上下文",
   recordedCredits: "已记录消耗",
   latestCacheHit: "最近缓存命中率",
@@ -74,15 +69,11 @@ const CHINESE_USAGE_MESSAGES: RendererUsageMessages = Object.freeze({
   reasoning: "推理",
   totalTokens: "Token 总数",
   inputOutput: "输入 / 输出",
-  fiveHourLimit: "5 小时限额",
-  sevenDayLimit: "7 天限额",
   sessionCostEstimate: "会话费用估算",
   threadUsage: "对话用量",
   threadUsageDetails: "对话用量详情",
   tokensSummary: "Token",
   tokensPerSecond: "Token/秒",
-  fiveHourSummary: "5 小时",
-  sevenDaySummary: "7 天",
 });
 
 export function rendererUsageMessages(locale: RendererSettingsLocale): RendererUsageMessages {
@@ -226,9 +217,7 @@ export function rendererUsageHasDisplayData(usage: ThreadUsageSnapshot | null): 
     usage?.cachedInputTokens !== undefined ||
     usage?.cacheWriteInputTokens !== undefined ||
     usage?.outputTokens !== undefined ||
-    usage?.reasoningOutputTokens !== undefined ||
-    usage?.planFiveHourUsedPercent !== undefined ||
-    usage?.planSevenDayUsedPercent !== undefined
+    usage?.reasoningOutputTokens !== undefined
   );
 }
 
@@ -257,10 +246,10 @@ export function applyRendererPopoverChrome(popover: HTMLElement): void {
     "light-dark(0 10px 24px rgba(15, 23, 42, 0.12), 0 20px 45px rgba(0, 0, 0, 0.42)), 0 2px 8px light-dark(rgba(15, 23, 42, 0.06), rgba(0, 0, 0, 0.28))";
 }
 
-function addDetailRow(parent: HTMLElement, label: string, value: string): void {
+function addDetailRow(parent: HTMLElement, label: string, value: string, wrap = false): void {
   const row = document.createElement("div");
   row.style.display = "grid";
-  row.style.gridTemplateColumns = "minmax(0, 1fr) auto";
+  row.style.gridTemplateColumns = wrap ? "auto minmax(0, 1fr)" : "minmax(0, 1fr) auto";
   row.style.gap = "20px";
   row.style.padding = "4px 0";
   const labelElement = document.createElement("span");
@@ -270,6 +259,10 @@ function addDetailRow(parent: HTMLElement, label: string, value: string): void {
   valueElement.textContent = value;
   valueElement.style.fontVariantNumeric = "tabular-nums";
   valueElement.style.textAlign = "right";
+  if (wrap) {
+    valueElement.style.overflowWrap = "anywhere";
+    valueElement.title = value;
+  }
   row.append(labelElement, valueElement);
   parent.append(row);
 }
@@ -279,6 +272,7 @@ function renderDetails(
   usage: ThreadUsageSnapshot | null,
   messages: RendererUsageMessages,
   locale: RendererSettingsLocale,
+  accountName: string | null,
 ): void {
   popover.replaceChildren();
   const heading = document.createElement("div");
@@ -286,6 +280,8 @@ function renderDetails(
   heading.style.fontWeight = "600";
   heading.style.marginBottom = "6px";
   popover.append(heading);
+
+  if (accountName) addDetailRow(popover, messages.account, accountName, true);
 
   if (usage?.contextUsagePercent !== undefined) {
     addDetailRow(popover, messages.context, `${decimal(usage.contextUsagePercent, 1)}%`);
@@ -341,28 +337,6 @@ function renderDetails(
       popover,
       messages.inputOutput,
       `${usage.inputTokens === undefined ? "-" : formatRendererTokenCount(usage.inputTokens)} / ${usage.outputTokens === undefined ? "-" : formatRendererTokenCount(usage.outputTokens)}`,
-    );
-  }
-  if (usage?.planFiveHourUsedPercent !== undefined) {
-    addDetailRow(
-      popover,
-      messages.fiveHourLimit,
-      formatRendererPlanWindow(
-        usage.planFiveHourUsedPercent,
-        usage.planFiveHourResetsAtUnix,
-        locale,
-      ),
-    );
-  }
-  if (usage?.planSevenDayUsedPercent !== undefined) {
-    addDetailRow(
-      popover,
-      messages.sevenDayLimit,
-      formatRendererPlanWindow(
-        usage.planSevenDayUsedPercent,
-        usage.planSevenDayResetsAtUnix,
-        locale,
-      ),
     );
   }
   if (usage?.totalCostUsd !== undefined) {
@@ -563,6 +537,7 @@ export function renderRendererUsageControl(
   control: RendererUsageControl,
   usage: ThreadUsageSnapshot | null,
   locale: RendererSettingsLocale = control.locale,
+  accountName: string | null = null,
 ): boolean {
   control.locale = locale;
   const messages = rendererUsageMessages(locale);
@@ -579,9 +554,7 @@ export function renderRendererUsageControl(
     usage?.cacheWriteInputTokens !== undefined ||
     usage?.outputTokens !== undefined ||
     usage?.reasoningOutputTokens !== undefined;
-  const hasPlanLimit =
-    usage?.planFiveHourUsedPercent !== undefined || usage?.planSevenDayUsedPercent !== undefined;
-  const visible = rendererUsageHasDisplayData(usage);
+  const visible = rendererUsageHasDisplayData(usage) || Boolean(accountName);
   control.root.style.display = visible ? "inline-flex" : "none";
   if (!visible) {
     closePopover(control);
@@ -616,14 +589,7 @@ export function renderRendererUsageControl(
       `${formatRendererTokenCount((usage?.inputTokens ?? 0) + (usage?.outputTokens ?? 0))} ${messages.tokensSummary}`,
     );
   }
-  if (summary.length === 0 && hasPlanLimit) {
-    summary.push(
-      usage?.planFiveHourUsedPercent !== undefined
-        ? `${messages.fiveHourSummary} ${formatRendererCreditsPercent(usage.planFiveHourUsedPercent)}`
-        : `${messages.sevenDaySummary} ${formatRendererCreditsPercent(usage?.planSevenDayUsedPercent ?? 0)}`,
-    );
-  }
-  const compactSummary = summary.join(" · ");
+  const compactSummary = summary.join(" · ") || messages.usage;
   const accessibleSummary = `${messages.threadUsage}: ${compactSummary}${
     contextPercent !== undefined ? `; ${messages.context} ${decimal(contextPercent, 1)}%` : ""
   }`;
@@ -631,6 +597,6 @@ export function renderRendererUsageControl(
   control.trigger.setAttribute("aria-label", accessibleSummary);
   control.trigger.title = accessibleSummary;
   control.label.textContent = compactSummary;
-  renderDetails(control.popover, usage, messages, locale);
+  renderDetails(control.popover, usage, messages, locale, accountName);
   return true;
 }

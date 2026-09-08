@@ -25,6 +25,7 @@ import {
 
 import type { RendererAgent } from "./agent-selection-state.js";
 import { installRendererForkControl } from "./renderer-fork-control.js";
+import { installRendererExternalSteering } from "./renderer-external-steering.js";
 import {
   createRendererModelClient,
   createThreadUsageSubscriptionRelay,
@@ -115,6 +116,7 @@ export interface RendererDraftPrewarmPolicy {
   hostId: string;
   readonly requestTarget?: () => unknown;
   select(model: string | null): boolean;
+  readonly selectAccount?: (accountId: string | null) => boolean;
   clear(): Promise<void>;
 }
 
@@ -972,21 +974,41 @@ export function installCurrentRendererAdapter(): {
     () => window.__codexhostDraftPrewarmPolicyV1,
     () => findActivePrewarmTargets(document),
   );
-  const clientsByTarget = new WeakMap<PrewarmTarget, RendererModelClient>();
-  const modelClientForTargets = (targets: readonly PrewarmTarget[]): RendererModelClient | null => {
+  const clientsByTarget = new WeakMap<
+    PrewarmTarget,
+    {
+      client: RendererModelClient;
+      policy: RendererDraftPrewarmPolicy | null;
+      requestClient: PrewarmTarget["requestClient"];
+    }
+  >();
+  const steeringCleanups = new Set<() => void>();
+  const modelClientForTargets = (
+    targets: readonly PrewarmTarget[],
+    policy: RendererDraftPrewarmPolicy | null = null,
+  ): RendererModelClient | null => {
     const target = targets[0];
     if (targets.length !== 1 || !target) return null;
     const cached = clientsByTarget.get(target);
-    if (cached) return cached;
+    if (cached?.policy === policy && cached.requestClient === target.requestClient)
+      return cached.client;
     const client = createRendererModelClient([target]);
-    if (client) clientsByTarget.set(target, client);
+    if (client) {
+      // A new connection must not inherit unsupported-method observations.
+      // Steering belongs to the manager, so do not install duplicate hooks.
+      if (!cached) {
+        const cleanup = installRendererExternalSteering(target);
+        if (cleanup) steeringCleanups.add(cleanup);
+      }
+      clientsByTarget.set(target, { client, policy, requestClient: target.requestClient });
+    }
     return client;
   };
   let activeRoutePolicy: RendererDraftPrewarmPolicy | null = null;
   let activeRouteClient: RendererModelClient | null = null;
   const syncActiveRoute = (route: RendererRequestRoute | null): RendererModelClient | null => {
     const policy = route?.policy ?? null;
-    const client = route ? modelClientForTargets(route.targets) : null;
+    const client = route ? modelClientForTargets(route.targets, route.policy) : null;
     if (activeRoutePolicy === policy && activeRouteClient === client) return client;
     activeRoutePolicy = policy;
     activeRouteClient = client;
@@ -1007,7 +1029,8 @@ export function installCurrentRendererAdapter(): {
     currentHostId: () => currentRequestRoute()?.policy.hostId ?? null,
     clientForHost(hostId: string): RendererModelClient | null {
       const route = currentRequestRoute();
-      if (route?.policy.hostId === hostId) return modelClientForTargets(route.targets);
+      if (route?.policy.hostId === hostId)
+        return modelClientForTargets(route.targets, route.policy);
       const policy = window.__codexhostDraftPrewarmPolicyV1;
       if (isDraftPrewarmPolicyReady(policy) && hasPolicyRequestTarget(policy)) return null;
       const targets = rendererRequestTargetsForHost(findActivePrewarmTargets(document), hostId);
@@ -1042,6 +1065,46 @@ export function installCurrentRendererAdapter(): {
     checkUpdate: () => currentModelClient().checkUpdate(),
     startUpdate: () => currentModelClient().startUpdate(),
     readUpdateStatus: () => currentModelClient().readUpdateStatus(),
+    inspectCodexAccountUsage: (
+      input: Parameters<NonNullable<RendererModelClient["inspectCodexAccountUsage"]>>[0],
+    ) => {
+      const client = currentModelClient();
+      if (!client.inspectCodexAccountUsage) throw new Error("Codex Account Usage is unavailable");
+      return client.inspectCodexAccountUsage(input);
+    },
+    consumeCodexAccountResetCredit: (
+      input: Parameters<NonNullable<RendererModelClient["consumeCodexAccountResetCredit"]>>[0],
+    ) => {
+      const client = currentModelClient();
+      if (!client.consumeCodexAccountResetCredit) {
+        throw new Error("Codex Account reset-credit consume is unavailable");
+      }
+      return client.consumeCodexAccountResetCredit(input);
+    },
+    listHarnessAccounts: () => {
+      const client = currentModelClient();
+      if (!client.listHarnessAccounts) throw new Error("Harness account inspection is unavailable");
+      return client.listHarnessAccounts();
+    },
+    listCodexAccounts: () => currentModelClient().listCodexAccounts(),
+    refreshCodexAccounts: () => {
+      const client = currentModelClient();
+      return client.refreshCodexAccounts?.() ?? client.listCodexAccounts();
+    },
+    createCodexAccount: (input: Parameters<RendererModelClient["createCodexAccount"]>[0]) =>
+      currentModelClient().createCodexAccount(input),
+    deleteCodexAccount: (input: Parameters<RendererModelClient["deleteCodexAccount"]>[0]) =>
+      currentModelClient().deleteCodexAccount(input),
+    activateCodexAccount: (input: Parameters<RendererModelClient["activateCodexAccount"]>[0]) =>
+      currentModelClient().activateCodexAccount(input),
+    startCodexAccountLogin: (input: Parameters<RendererModelClient["startCodexAccountLogin"]>[0]) =>
+      currentModelClient().startCodexAccountLogin(input),
+    cancelCodexAccountLogin: (
+      input: Parameters<RendererModelClient["cancelCodexAccountLogin"]>[0],
+    ) => currentModelClient().cancelCodexAccountLogin(input),
+    subscribeCodexAccountLogin: (
+      listener: Parameters<RendererModelClient["subscribeCodexAccountLogin"]>[0],
+    ) => currentModelClient().subscribeCodexAccountLogin(listener),
   });
   const forkControl = installRendererForkControl({
     getClient: () => modelControl,
@@ -1182,6 +1245,7 @@ export function installCurrentRendererAdapter(): {
         () => activeRoutingPolicy?.select(null),
         () => syncActiveRoute(null),
         () => forkControl.dispose(),
+        ...steeringCleanups,
         () => usageSubscription.dispose(),
       ];
       for (const cleanup of cleanups) {

@@ -210,6 +210,13 @@ Modern create, prompt, cancel, Model/Thinking selection, Permission selection, c
 - **THEN** the Adapter SHALL preserve the supported Modern release's fork-unavailable result
 - **AND** it MUST NOT silently fall back to the previous completed Turn
 
+#### Scenario: Modern Last-Turn Rollback is requested
+
+- **WHEN** Host requests `rollbackLastTurn` for an idle exact rc.1 Modern Session
+- **THEN** the Adapter SHALL return a distinct Session containing exactly the completed history before the final Turn
+- **AND** it SHALL use the penultimate `turn/end` Fork boundary for multi-Turn history or create an empty Session with the current projected Agent Preset for single-Turn history
+- **AND** it SHALL leave the source Session and project files unchanged
+
 ### Requirement: Modern interactions SHALL respect Remote Event client ownership and replacement
 
 The Modern implementation SHALL consume only valid loaded-Session `approval/request` and `user-questions/request` waterfalls from an established `$events` generation. It SHALL return `next` for unowned or unhandled valid requests, map claimed requests to standard Host interactions, and settle the exact event once through `$events/result`.

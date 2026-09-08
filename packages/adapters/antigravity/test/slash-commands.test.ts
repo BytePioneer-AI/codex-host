@@ -2,7 +2,7 @@ import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-import type { HarnessOutput, HostEvent } from "@codexhost/harness-adapter";
+import type { HarnessAdapter, HarnessOutput, HostEvent } from "@codexhost/harness-adapter";
 import { harnessCommandCatalogSchema, hostTurnIdSchema } from "@codexhost/shared-contracts";
 import { describe, expect, it } from "vitest";
 
@@ -60,6 +60,15 @@ async function drainEvents(outputs: AsyncIterable<HarnessOutput>): Promise<HostE
 
 describe("Antigravity Slash Commands Capability", () => {
   describe("Catalog Definition", () => {
+    it("exposes the command catalog before inspection or Session creation", async () => {
+      const adapter: HarnessAdapter = new AntigravityAdapter({ environment: { PATH: "" } });
+      try {
+        expect(adapter.commandCatalog).toEqual(ANTIGRAVITY_COMMAND_CATALOG);
+      } finally {
+        await adapter.close();
+      }
+    });
+
     it("conforms to harnessCommandCatalogSchema and includes all required commands", () => {
       const parsed = harnessCommandCatalogSchema.safeParse(ANTIGRAVITY_COMMAND_CATALOG);
       expect(parsed.success).toBe(true);

@@ -1,6 +1,7 @@
 import type {
   HarnessOutput,
   HostItem,
+  HostFileChangeItem,
   HostItemOutcome,
   TurnOutcome,
 } from "@codexhost/harness-adapter";
@@ -11,10 +12,11 @@ import { projectKiroToolCall } from "./projection.js";
 import { KiroVisibleText } from "./visible-text.js";
 
 type ToolEvent = Extract<KiroTransportEvent, { type: "tool.call" | "tool.update" }>;
+type ToolState = { event: ToolEvent; item: HostItem; done: boolean; file?: HostFileChangeItem };
 
 /** Owns one Prompt's Items; published objects are never mutated afterwards. */
 export class KiroTurnOutput {
-  readonly #tools = new Map<string, { event: ToolEvent; item: HostItem; done: boolean }>();
+  readonly #tools = new Map<string, ToolState>();
   #message: Extract<HostItem, { type: "agentMessage" }> | undefined;
   #messageId: string | undefined;
   #messageIndex = 0;
@@ -49,6 +51,38 @@ export class KiroTurnOutput {
     this.#message = undefined;
     this.#messageId = undefined;
     this.#leadingWhitespace = "";
+  }
+
+  #fileOutput(tool: ToolState, content: unknown, outcome?: HostItemOutcome): void {
+    const changes =
+      !outcome || outcome.status === "succeeded" ? projectKiroFileChanges(content, this.cwd) : null;
+    if (changes || (outcome && tool.file)) {
+      const file: HostFileChangeItem = {
+        type: "fileChange",
+        itemId: hostItemIdSchema.parse(`file-${tool.item.itemId}`),
+        changes: changes ?? [],
+      };
+      if (tool.file) {
+        this.emit({
+          kind: "event",
+          event: {
+            type: "item.updated",
+            turnId: this.turnId,
+            itemId: file.itemId,
+            update: { type: "fileChanges.replace", changes: file.changes },
+          },
+        });
+      } else this.#start(file);
+      tool.file = file;
+    }
+    // A preview is not a committed change. Clear it unless the terminal update confirms its Diff.
+    if (outcome && tool.file)
+      this.#complete(
+        tool.file,
+        outcome.status === "succeeded" && !changes
+          ? { status: "cancelled", reason: "Kiro did not confirm the previewed modification" }
+          : outcome,
+      );
   }
 
   #appendText(text: string): void {
@@ -110,8 +144,12 @@ export class KiroTurnOutput {
       }
       if (!previous) this.#start(item);
       const done = merged.status === "completed" || merged.status === "failed";
-      this.#tools.set(event.callId, { event: merged, item, done });
-      if (!done) return;
+      const tool: ToolState = { ...previous, event: merged, item, done };
+      this.#tools.set(event.callId, tool);
+      if (!done) {
+        this.#fileOutput(tool, event.content);
+        return;
+      }
       const outcome: HostItemOutcome =
         merged.status === "completed"
           ? { status: "succeeded" }
@@ -120,18 +158,7 @@ export class KiroTurnOutput {
               error: { code: "nativeFailure", message: "Kiro tool failed", retryable: false },
             };
       this.#complete(item, outcome);
-      // Only the terminal update's Diff is evidence of a committed modification.
-      const changes =
-        outcome.status === "succeeded" ? projectKiroFileChanges(event.content, this.cwd) : null;
-      if (changes) {
-        const file: HostItem = {
-          type: "fileChange",
-          itemId: hostItemIdSchema.parse(`file-${itemId}`),
-          changes,
-        };
-        this.#start(file);
-        this.#complete(file, { status: "succeeded" });
-      }
+      this.#fileOutput(tool, event.content, outcome);
     }
   }
 
@@ -140,13 +167,15 @@ export class KiroTurnOutput {
     this.#finished = true;
     this.#completeMessage(outcome, outcome.status === "succeeded" ? "final_answer" : "commentary");
     for (const tool of this.#tools.values()) {
-      if (!tool.done)
+      if (!tool.done) {
+        this.#fileOutput(tool, undefined, outcome);
         this.#complete(
           tool.item,
           outcome.status === "succeeded"
             ? { status: "cancelled", reason: "Kiro ended the turn without a tool result" }
             : outcome,
         );
+      }
     }
   }
 }

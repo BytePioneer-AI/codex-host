@@ -790,7 +790,7 @@ describe("Kiro regression lifecycle", () => {
   });
 
   it.each(["failed", "cancelled", "close", "fault"] as const)(
-    "finishes active Items on %s without publishing a preview or inventing identity",
+    "finishes active Items on %s and retracts unconfirmed previews without inventing identity",
     async (mode) => {
       const fake = new FakeKiroTransport();
       fake.eventsToEmit = [
@@ -816,10 +816,99 @@ describe("Kiro regression lifecycle", () => {
       expect(terminal?.outcome.status).toBe(
         mode === "close" ? "cancelled" : mode === "fault" ? "failed" : mode,
       );
-      expect(events.filter((e) => e.type === "item.completed")).toHaveLength(2);
-      expect(events.some((e) => e.type === "item.started" && e.item.type === "fileChange")).toBe(
-        false,
+      expect(events.filter((e) => e.type === "item.completed")).toHaveLength(3);
+      const file = events.find(
+        (e) => e.type === "item.completed" && e.snapshot.item.type === "fileChange",
       );
+      expect(file).toMatchObject({
+        snapshot: { item: { changes: [] }, outcome: { status: terminal?.outcome.status } },
+      });
+    },
+  );
+
+  it.each(["answer", "dismiss", "cancel", "close"] as const)(
+    "routes native requirements choices through Question and handles %s",
+    async (action) => {
+      const fake = new FakeKiroTransport();
+      fake.permissionToRequest = {
+        sessionId: fake.sessionId,
+        toolCall: { toolCallId: "requirement-q1", title: "Which authentication flow?" },
+        options: [
+          { optionId: "native-a", name: "Same label", kind: "allow_once" },
+          { optionId: "native-b", name: "Same label", kind: "allow_once" },
+        ],
+        _meta: { kiro: { kind: "analyze-requirements" } },
+      };
+      const { session, adapter } = await open(fake);
+      const outputs: HarnessOutput[] = [];
+      const consume = (async () => {
+        for await (const output of session.outputs) outputs.push(output);
+      })();
+      try {
+        await session.execute({
+          type: "turn.start",
+          turnId: hostTurnIdSchema.parse("regression-turn"),
+          input: [{ type: "text", text: "Clarify requirements" }],
+        });
+        await vi.waitFor(() => expect(outputs.some((o) => o.kind === "interaction")).toBe(true));
+        const output = outputs.find((o) => o.kind === "interaction");
+        if (output?.kind !== "interaction" || output.interaction.type !== "question")
+          throw new Error("Expected Question, not Approval");
+        const interaction = output.interaction;
+        expect(interaction.questions[0]).toMatchObject({
+          options: [{ value: "native-a" }, { value: "native-b" }],
+        });
+        for (const response of [
+          { type: "question" as const, cancelled: false, answers: { "q-0": ["not-offered"] } },
+          { type: "question" as const, cancelled: true, answers: { "q-0": ["native-b"] } },
+        ]) {
+          expect(
+            await session.execute({
+              type: "interaction.respond",
+              interactionId: interaction.interactionId,
+              response,
+            }),
+          ).toMatchObject({ ok: false, error: { code: "invalidRequest" } });
+        }
+        expect(fake.permissionResponses).toEqual([]);
+        if (action === "close") await session.close();
+        else if (action === "cancel")
+          await session.execute({
+            type: "turn.cancel",
+            turnId: hostTurnIdSchema.parse("regression-turn"),
+          });
+        else
+          expect(
+            (
+              await session.execute({
+                type: "interaction.respond",
+                interactionId: interaction.interactionId,
+                response: {
+                  type: "question",
+                  cancelled: action === "dismiss",
+                  answers: action === "dismiss" ? {} : { "q-0": ["native-b"] },
+                },
+              })
+            ).ok,
+          ).toBe(true);
+        await vi.waitFor(() =>
+          expect(outputs.some((o) => o.kind === "event" && o.event.type === "turn.completed")).toBe(
+            true,
+          ),
+        );
+        expect(fake.permissionResponses).toEqual([
+          action === "answer"
+            ? { outcome: { outcome: "selected", optionId: "native-b" } }
+            : { outcome: { outcome: "cancelled" } },
+        ]);
+        expect(
+          outputs.filter((o) => o.kind === "event" && o.event.type === "interaction.closed"),
+        ).toHaveLength(1);
+        expect(() => projectOutputs(outputs)).not.toThrow();
+      } finally {
+        await adapter.close();
+        await consume;
+      }
     },
   );
 

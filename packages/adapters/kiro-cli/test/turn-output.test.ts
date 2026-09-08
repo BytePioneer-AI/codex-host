@@ -7,6 +7,88 @@ import { KiroTurnOutput } from "../src/turn-output.js";
 const turnId = hostTurnIdSchema.parse("message-phases");
 
 describe("Kiro progress and final answer presentation", () => {
+  it.each(["confirmed", "failed", "cancelled", "missing-diff"] as const)(
+    "shows pending native diffs before approval and settles preview on %s",
+    (result) => {
+      const outputs: HarnessOutput[] = [];
+      const messages: Array<{ method?: unknown; params?: unknown }> = [];
+      const projector = new CodexTurnProjector({
+        threadId: "thread",
+        turnId,
+        cwd: "/workspace",
+        startedAtMs: 0,
+      });
+      projector.project({ type: "turn.started", turnId });
+      const turn = new KiroTurnOutput(turnId, "/workspace", (output) => {
+        outputs.push(output);
+        if (
+          output.kind === "event" &&
+          "turnId" in output.event &&
+          output.event.type !== "turn.autonomous.started"
+        )
+          messages.push(...projector.project(output.event).messages);
+      });
+      const content = [
+        { type: "diff", path: "/workspace/a.txt", oldText: "alpha\n", newText: "beta\n" },
+      ];
+      turn.accept({
+        type: "tool.call",
+        callId: "edit",
+        title: "Replace in File",
+        kind: "edit",
+        status: "in_progress",
+      });
+      turn.accept({ type: "tool.update", callId: "edit", status: "pending", content });
+      expect(outputs).toContainEqual(
+        expect.objectContaining({
+          event: expect.objectContaining({
+            type: "item.started",
+            item: expect.objectContaining({ type: "fileChange" }),
+          }),
+        }),
+      );
+      expect(outputs.some((o) => o.kind === "event" && o.event.type === "item.completed")).toBe(
+        false,
+      );
+      expect(
+        messages.find((m) => m.method === "item/fileChange/patchUpdated")?.params,
+      ).toMatchObject({
+        changes: [expect.objectContaining({ diff: expect.stringContaining("+beta") })],
+      });
+      if (result !== "cancelled")
+        turn.accept({
+          type: "tool.update",
+          callId: "edit",
+          status: result === "failed" ? "failed" : "completed",
+          ...(result === "confirmed" ? { content: [{ ...content[0], newText: "gamma\n" }] } : {}),
+        });
+      turn.finish(result === "cancelled" ? { status: "cancelled" } : { status: "succeeded" });
+      const files = outputs.flatMap((o) =>
+        o.kind === "event" &&
+        o.event.type === "item.completed" &&
+        o.event.snapshot.item.type === "fileChange"
+          ? [o.event.snapshot]
+          : [],
+      );
+      expect(files).toHaveLength(1);
+      expect(files[0]?.outcome.status).toBe(
+        result === "confirmed" ? "succeeded" : result === "failed" ? "failed" : "cancelled",
+      );
+      if (result !== "confirmed") {
+        expect(files[0]?.item).toMatchObject({ changes: [] });
+        expect(
+          messages.filter((m) => m.method === "turn/diff/updated").at(-1)?.params,
+        ).toMatchObject({ diff: "" });
+      } else
+        expect(files[0]?.item).toMatchObject({
+          changes: [expect.objectContaining({ unifiedDiff: expect.stringContaining("+gamma") })],
+        });
+      expect(() =>
+        projector.project({ type: "turn.completed", turnId, outcome: { status: "succeeded" } }),
+      ).not.toThrow();
+    },
+  );
+
   it("keeps progress and tools before the final answer and projects the native duration header", () => {
     const outputs: HarnessOutput[] = [];
     const turn = new KiroTurnOutput(turnId, "/workspace", (output) => outputs.push(output));

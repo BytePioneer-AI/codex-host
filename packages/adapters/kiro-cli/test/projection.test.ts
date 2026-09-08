@@ -76,6 +76,38 @@ describe("kiro projection", () => {
   });
 
   describe("permission request projection", () => {
+    it("includes native file names in final review and resources in consent", () => {
+      const request: RequestPermissionRequest = {
+        sessionId: "native",
+        toolCall: { toolCallId: "review", title: "Review changes" },
+        options: [
+          { optionId: "accept", name: "Accept changes", kind: "allow_once" },
+          { optionId: "reject", name: "Reject changes", kind: "reject_once" },
+        ],
+        _meta: {
+          kiro: {
+            type: "turn_approval",
+            files: [{ path: "/workspace/a.txt" }, { path: "/workspace/b.txt" }],
+          },
+        },
+      };
+      const interaction = projectKiroPermission("review", turnId, request).interaction;
+      const wire = projectCodexApprovalRequest({
+        threadId: "thread",
+        interaction,
+        serverName: "Kiro CLI",
+      });
+      expect(wire.request.params).toMatchObject({
+        _meta: {
+          reason: "Review modified files for this turn\n/workspace/a.txt\n/workspace/b.txt",
+        },
+      });
+      request._meta = { kiro: { consent: { resource: "/workspace/a.txt" } } };
+      expect(projectKiroPermission("consent", turnId, request).interaction.description).toBe(
+        "/workspace/a.txt",
+      );
+    });
+
     function scopedRequest() {
       return {
         sessionId: "sess-1",

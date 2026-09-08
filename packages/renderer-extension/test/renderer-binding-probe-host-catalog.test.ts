@@ -3,6 +3,10 @@ import { harnessModelRefSchema } from "@codexhost/shared-contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type * as RendererComposerDom from "../src/renderer-composer-dom.js";
+import {
+  isRendererModelPickerDisabled,
+  type RendererModelControlView,
+} from "../src/renderer-model-picker.js";
 import type { RendererConnectionDiagnostics } from "../src/settings/connections-page.js";
 import type { RendererSessionImportClient } from "../src/settings/session-import-page.js";
 import type * as VersionedRendererAdapter from "../src/versioned-renderer-adapter.js";
@@ -15,7 +19,8 @@ const testState = vi.hoisted(() => ({
   composer: null as unknown as Element,
   editor: null as unknown as Element,
   sendButton: null as unknown as HTMLButtonElement,
-  renderedModelViews: [] as Array<{ status: string; error?: string }>,
+  renderedModelViews: [] as RendererModelControlView[],
+  selectModel: null as null | ((modelId: string) => void),
   getConnectionDiagnostics: null as null | (() => RendererConnectionDiagnostics | null),
   getSessionImportClient: null as null | (() => RendererSessionImportClient | null),
   documentListeners: new Map<string, EventListener>(),
@@ -30,36 +35,41 @@ vi.mock("../src/renderer-composer-dom.js", async (importOriginal) => {
     composerForElement: () => testState.composer,
     editorForElement: () => testState.editor,
     eventElement: () => testState.composer,
-    mountComposerAgentControl: () => ({
-      composer: testState.composer,
-      composerId: "composer-1",
-      root: { isConnected: true, remove: vi.fn() },
-      picker: { root: { isConnected: true } },
-      modelPicker: { root: { isConnected: true }, trigger: {} },
-      permissionModePicker: { root: { isConnected: true } },
-      nativeModelControl: null,
-      nativePermissionModeControl: null,
-      nativeContextUsageControl: null,
-      nativePermissionModeControlVerified: false,
-      credits: { anchor: null, place: vi.fn(), root: { remove: vi.fn() } },
-      usage: null,
-      harnessCommands: {
-        setCommands: vi.fn(),
-        setExecuting: vi.fn(),
-        setLocale: vi.fn(),
-        placeBefore: vi.fn(),
-        dispose: vi.fn(),
-      },
-      sendButton: testState.sendButton,
-      sendDisabledBeforeSwitch: null,
-    }),
+    mountComposerAgentControl: (
+      ...args: Parameters<typeof RendererComposerDom.mountComposerAgentControl>
+    ) => {
+      testState.selectModel = args[6];
+      return {
+        composer: testState.composer,
+        composerId: "composer-1",
+        root: { isConnected: true, remove: vi.fn() },
+        picker: { root: { isConnected: true } },
+        modelPicker: { root: { isConnected: true }, trigger: {} },
+        permissionModePicker: { root: { isConnected: true } },
+        nativeModelControl: null,
+        nativePermissionModeControl: null,
+        nativeContextUsageControl: null,
+        nativePermissionModeControlVerified: false,
+        credits: { anchor: null, place: vi.fn(), root: { remove: vi.fn() } },
+        usage: null,
+        harnessCommands: {
+          setCommands: vi.fn(),
+          setExecuting: vi.fn(),
+          setLocale: vi.fn(),
+          placeBefore: vi.fn(),
+          dispose: vi.fn(),
+        },
+        sendButton: testState.sendButton,
+        sendDisabledBeforeSwitch: null,
+      };
+    },
     renderComposerAgentControl: (
       _control: unknown,
       _selection: unknown,
       _adapter: unknown,
       _switching: unknown,
       _availability: unknown,
-      modelView: { status: string; error?: string },
+      modelView: RendererModelControlView,
     ) => {
       testState.renderedModelViews.push({ ...modelView });
     },
@@ -156,6 +166,7 @@ function installFakeBrowser(): void {
   testState.editor = editor;
   testState.sendButton = sendButton;
   testState.renderedModelViews = [];
+  testState.selectModel = null;
   testState.getConnectionDiagnostics = null;
   testState.getSessionImportClient = null;
   testState.documentListeners.clear();
@@ -214,6 +225,124 @@ afterEach(() => {
 });
 
 describe("Renderer binding Host-scoped Claude catalogs", () => {
+  it("keeps the latest catalog selectable until a locked Thread explicitly replaces its missing Model", async () => {
+    installFakeBrowser();
+    const oldModel = harnessModelRefSchema.parse({ id: "claude-model-v1.b3B1cw" });
+    const inspection = {
+      ...readyInspection("claude-model-v1.c29ubmV0"),
+      permissionModes: {
+        modes: [{ id: "bypassPermissions", label: "Bypass permissions" }],
+        defaultModeId: "bypassPermissions",
+      },
+    };
+    inspection.capabilities.configuration.selectThinkingOption = true;
+    inspection.capabilities.configuration.selectPermissionMode = true;
+    const newModel = inspection.catalog.defaultModel;
+    let resolveSelection!: (state: { effectiveModel: typeof newModel }) => void;
+    const host = {
+      inspectHarness: vi.fn(async () => inspection),
+      inspectThread: vi.fn(async () => ({
+        owner: "external" as const,
+        harnessId: "claude-code",
+        transportModelId:
+          "codexhost/claude-code-native@claude-model-v1.b3B1cw@bypassPermissions@auto",
+        effectiveModel: oldModel,
+        history: { fork: true, forkAcrossCwd: false, rollbackLastTurn: true },
+        locked: true,
+      })),
+      inspectThreadCommands: vi.fn(async () => ({ commands: [] })),
+      inspectThreadUsage: vi.fn(async () => ({
+        threadId: "thread-a",
+        usage: null,
+        accountCredits: null,
+      })),
+      selectThreadModel: vi
+        .fn()
+        .mockRejectedValueOnce(new Error("Model selection failed"))
+        .mockImplementationOnce(
+          () =>
+            new Promise((resolve) => {
+              resolveSelection = resolve;
+            }),
+        ),
+      subscribeThreadUsage: () => () => undefined,
+    };
+    const modelControl = {
+      ...host,
+      currentHostId: () => "local",
+      clientForHost: () => host,
+    };
+    const applyAgent = vi.fn(() => true);
+    const { installRendererBindingProbe } = await import("../src/renderer-binding-probe.js");
+    const probe = installRendererBindingProbe({
+      enabledAgents: ["codex", "claude-code"],
+      defaultAgent: "codex",
+    });
+    probe.setAdapter(
+      { state: "ready", reason: "ready", modelUpdates: 0, hook: "request-bridge" },
+      undefined,
+      applyAgent,
+      modelControl as never,
+    );
+    const expectSubmissionBlocked = (blocked: boolean) => {
+      const preventDefault = vi.fn();
+      const stopImmediatePropagation = vi.fn();
+      testState.documentListeners.get("submit")!({
+        target: testState.composer,
+        preventDefault,
+        stopImmediatePropagation,
+      } as unknown as Event);
+      expect(preventDefault).toHaveBeenCalledTimes(blocked ? 1 : 0);
+      expect(stopImmediatePropagation).toHaveBeenCalledTimes(blocked ? 1 : 0);
+    };
+    const expectRecoverableView = (error: string) => {
+      const view = testState.renderedModelViews.at(-1)!;
+      expect(view).toMatchObject({
+        status: "error",
+        catalog: inspection.catalog,
+        selected: oldModel,
+        thinkingSelectionSupported: true,
+        error,
+      });
+      expect(isRendererModelPickerDisabled(view)).toBe(false);
+      expect(probe.lockedSelection()?.model).toEqual(oldModel);
+      expectSubmissionBlocked(true);
+    };
+
+    await vi.waitFor(() => {
+      expectRecoverableView("Existing Thread Model is absent from the current Catalog");
+    });
+    expect(host.selectThreadModel).not.toHaveBeenCalled();
+    expect(applyAgent).not.toHaveBeenCalled();
+
+    testState.selectModel!(newModel.id);
+    await vi.waitFor(() => expectRecoverableView("Model selection failed"));
+    expect(host.selectThreadModel).toHaveBeenCalledExactlyOnceWith({
+      threadId: "thread-a",
+      model: newModel,
+    });
+
+    testState.selectModel!(newModel.id);
+    expect(testState.renderedModelViews.at(-1)).toMatchObject({
+      status: "selecting",
+      selected: oldModel,
+    });
+    expect(probe.lockedSelection()?.model).toEqual(oldModel);
+    expectSubmissionBlocked(true);
+    resolveSelection({ effectiveModel: newModel });
+    await vi.waitFor(() => {
+      expect(testState.renderedModelViews.at(-1)).toMatchObject({
+        status: "ready",
+        catalog: inspection.catalog,
+        selected: newModel,
+      });
+    });
+    expect(host.selectThreadModel).toHaveBeenCalledTimes(2);
+    expect(probe.lockedSelection()?.model).toEqual(newModel);
+    expectSubmissionBlocked(false);
+    expect(applyAgent).not.toHaveBeenCalled();
+  });
+
   it("routes Session import to local while the current Composer Host is remote", async () => {
     installFakeBrowser();
     const local = {
@@ -516,7 +645,7 @@ describe("Renderer binding Host-scoped Claude catalogs", () => {
     expect(testState.renderedModelViews.at(-1)).not.toMatchObject({ status: "error" });
   });
 
-  it("keeps a same-Host empty Claude catalog terminal across availability refreshes", async () => {
+  it("reloads a same-Host empty Claude catalog on explicit refresh", async () => {
     installFakeBrowser();
     let claudeInspections = 0;
     const hostA = {
@@ -583,7 +712,10 @@ describe("Renderer binding Host-scoped Claude catalogs", () => {
     await new Promise((resolve) => setTimeout(resolve, 25));
 
     expect(claudeInspections).toBe(inspectionsAfterRefresh);
-    expect(testState.renderedModelViews.at(-1)).toMatchObject({ status: "empty" });
+    expect(testState.renderedModelViews.at(-1)).toMatchObject({
+      status: "ready",
+      catalog: readyInspection().catalog,
+    });
     expect(testState.renderedModelViews).not.toContainEqual(
       expect.objectContaining({ status: "error" }),
     );

@@ -20,6 +20,7 @@ import type {
   HostApprovalInteraction,
   HostContextCompactionItem,
   HostQuestionResponse,
+  HostQuestionInteraction,
   HostThreadSnapshot,
   HostUsage,
   InspectHarnessInput,
@@ -41,6 +42,7 @@ import type {
 import {
   HarnessOutputChannel as OutputChannel,
   validateHostApprovalResponse,
+  validateHostQuestionResponse,
 } from "@codexhost/harness-adapter";
 import {
   harnessIdSchema,
@@ -91,6 +93,7 @@ import {
 } from "./permission-modes.js";
 import {
   projectKiroPermission,
+  projectKiroRequirementQuestion,
   projectKiroUserInput,
   type KiroUserInputParams,
   type KiroUserInputResult,
@@ -610,6 +613,7 @@ interface PendingApproval {
 interface PendingQuestion {
   type: "question";
   id: HostInteractionId;
+  interaction: HostQuestionInteraction;
   resolve: (response: HostQuestionResponse) => void;
 }
 
@@ -924,6 +928,18 @@ export class KiroSession implements HarnessSession {
               if (this.#closed || this.#activeTurnId !== turnId)
                 return { outcome: { outcome: "cancelled" } };
               const interactionId = this.#randomUUID();
+              const question = projectKiroRequirementQuestion(interactionId, turnId, request);
+              if (question) {
+                return new Promise<RequestPermissionResponse>((resolve) => {
+                  this.#pendingInteraction = {
+                    type: "question",
+                    id: question.interaction.interactionId,
+                    interaction: question.interaction,
+                    resolve: (response) => resolve(question.resolve(response)),
+                  };
+                  this.#channel.emit({ kind: "interaction", interaction: question.interaction });
+                });
+              }
               const projected = projectKiroPermission(interactionId, turnId, request);
               this.#channel.emit({
                 kind: "interaction",
@@ -954,6 +970,7 @@ export class KiroSession implements HarnessSession {
                 this.#pendingInteraction = {
                   type: "question",
                   id: projected.interaction.interactionId,
+                  interaction: projected.interaction,
                   resolve: (response: HostQuestionResponse) => {
                     resolve(projected.resolve(response));
                   },
@@ -1093,6 +1110,8 @@ export class KiroSession implements HarnessSession {
           },
         };
       }
+      const error = validateHostQuestionResponse(pending.interaction, command.response);
+      if (error) return { ok: false, error };
       this.#pendingInteraction = null;
       pending.resolve(command.response);
     }

@@ -138,6 +138,58 @@ export interface ProjectedApproval {
   resolve(actionId: string, cancelled?: boolean): RequestPermissionResponse;
 }
 
+export function projectKiroRequirementQuestion(
+  interactionId: string,
+  turnId: HostTurnId,
+  request: RequestPermissionRequest,
+): {
+  interaction: HostQuestionInteraction;
+  resolve(response: HostQuestionResponse): RequestPermissionResponse;
+} | null {
+  const meta = request._meta?.kiro;
+  if (!isRecord(meta) || meta.kind !== "analyze-requirements") return null;
+  if (
+    request.options.length === 0 ||
+    request.options.some(
+      (option) => option.kind !== "allow_once" || !option.optionId.trim() || !option.name.trim(),
+    ) ||
+    new Set(request.options.map((option) => option.optionId)).size !== request.options.length
+  )
+    throw new Error("Kiro returned invalid requirement choices");
+  const duplicateLabels =
+    new Set(request.options.map((option) => option.name)).size !== request.options.length;
+  return {
+    interaction: {
+      type: "question",
+      interactionId: hostInteractionIdSchema.parse(interactionId),
+      turnId,
+      title: "Requirements",
+      questions: [
+        {
+          id: "q-0",
+          type: "choice",
+          prompt: request.toolCall.title || String(meta.question ?? "Requirements"),
+          options: request.options.map((option, index) => ({
+            value: option.optionId,
+            label: duplicateLabels ? `${index + 1}. ${option.name}` : option.name,
+          })),
+          multiple: false,
+          allowOther: false,
+          optional: false,
+        },
+      ],
+    },
+    resolve(response) {
+      const optionId = response.answers["q-0"]?.[0];
+      return !response.cancelled &&
+        typeof optionId === "string" &&
+        request.options.some((option) => option.optionId === optionId)
+        ? { outcome: { outcome: "selected", optionId } }
+        : { outcome: { outcome: "cancelled" } };
+    },
+  };
+}
+
 function consentResources(
   consent: Record<string, unknown>,
 ): Array<{ label: string; resource: string }> {
@@ -184,9 +236,18 @@ export function projectKiroPermission(
   const kiroMeta = meta && isRecord(meta.kiro) ? (meta.kiro as Record<string, unknown>) : undefined;
 
   if (kiroMeta && kiroMeta.type === "turn_approval") {
-    description = "Review modified files for this turn";
+    const files = Array.isArray(kiroMeta.files)
+      ? kiroMeta.files.flatMap((file) =>
+          isRecord(file) && typeof file.path === "string" ? [file.path] : [],
+        )
+      : [];
+    description = ["Review modified files for this turn", ...files].join("\n");
   }
   const consent = kiroMeta && isRecord(kiroMeta.consent) ? kiroMeta.consent : undefined;
+  if (consent) {
+    const resource = consent.triggeringResource ?? consent.resource;
+    if (typeof resource === "string" && resource.trim()) description = resource;
+  }
   const resources = consent ? consentResources(consent) : [];
   for (const option of options) {
     if (option.kind === "allow_once" || option.kind === "reject_once") {

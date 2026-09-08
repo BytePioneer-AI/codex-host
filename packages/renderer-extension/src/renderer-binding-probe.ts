@@ -1240,7 +1240,22 @@ export function installRendererBindingProbe(
         return;
       }
       if (current.phase === "locked" && previousModel && !previousModelAvailable) {
-        throw new Error("Existing Thread Model is absent from the current Catalog");
+        mounted.modelView = {
+          status: "error",
+          catalog: inspection.catalog,
+          selected: previousModel,
+          thinkingSelectionSupported: inspection.capabilities.configuration.selectThinkingOption,
+          error: "Existing Thread Model is absent from the current Catalog",
+        };
+        if (selectedPermissionModeId && mounted.permissionModeView.catalog) {
+          mounted.permissionModeView = {
+            status: "ready",
+            catalog: mounted.permissionModeView.catalog,
+            selected: selectedPermissionModeId,
+            ...permissionModeLock,
+          };
+        }
+        return;
       }
 
       const selected = previousModelAvailable

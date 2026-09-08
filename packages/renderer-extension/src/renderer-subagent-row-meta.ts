@@ -1,3 +1,5 @@
+import { subagentAvatarSrc } from "./subagent-avatars.js";
+
 export const SUBAGENT_ROW_META_ATTRIBUTE = "data-codexhost-subagent-meta";
 export const SUBAGENT_ITEM_BUTTON_SELECTOR = 'button[data-slot="thread-summary-panel-item-button"]';
 export const SUBAGENT_ITEM_LABEL_SELECTOR = '[data-slot="thread-summary-panel-item-label"]';
@@ -7,6 +9,7 @@ export const SUBAGENT_EXPANDED_LIST_ATTRIBUTE = "data-codexhost-subagent-expande
 export const SUBAGENT_EXPANDED_ROW_ATTRIBUTE = "data-codexhost-subagent-expanded-row";
 export const SUBAGENT_COLLAPSED_HIDDEN_ATTRIBUTE = "data-codexhost-subagent-collapsed-hidden";
 export const SUBAGENT_PANEL_ATTRIBUTE = "data-codexhost-subagent-panel";
+export const SUBAGENT_AVATAR_ATTRIBUTE = "data-codexhost-subagent-avatar";
 
 export interface SubagentRowMeta {
   displayName: string;
@@ -736,9 +739,9 @@ function renderExpandedRow(list: HTMLElement, row: SubagentRowMeta, button: HTML
     item.setAttribute(SUBAGENT_EXPANDED_ROW_ATTRIBUTE, key);
     item.type = "button";
     item.style.display = "flex";
-    item.style.flexDirection = "column";
+    item.style.flexDirection = "row";
     item.style.alignItems = "flex-start";
-    item.style.gap = "1px";
+    item.style.gap = "8px";
     item.style.width = "100%";
     item.style.minWidth = "0";
     item.style.margin = "0";
@@ -749,6 +752,21 @@ function renderExpandedRow(list: HTMLElement, row: SubagentRowMeta, button: HTML
     item.style.font = "inherit";
     item.style.textAlign = "left";
     item.style.cursor = "pointer";
+    const avatar = list.ownerDocument.createElement("img");
+    avatar.setAttribute(SUBAGENT_AVATAR_ATTRIBUTE, "true");
+    avatar.alt = "";
+    avatar.draggable = false;
+    avatar.style.width = "14px";
+    avatar.style.height = "14px";
+    avatar.style.flex = "0 0 14px";
+    avatar.style.marginTop = "2px";
+    avatar.style.pointerEvents = "none";
+    const copy = list.ownerDocument.createElement("span");
+    copy.style.display = "flex";
+    copy.style.flexDirection = "column";
+    copy.style.alignItems = "flex-start";
+    copy.style.minWidth = "0";
+    copy.style.flex = "1";
     const name = list.ownerDocument.createElement("span");
     name.setAttribute("data-codexhost-subagent-expanded-name", "true");
     name.style.display = "block";
@@ -764,7 +782,8 @@ function renderExpandedRow(list: HTMLElement, row: SubagentRowMeta, button: HTML
     meta.style.lineHeight = "1.35";
     meta.style.color = "var(--text-tertiary, #8a8a8a)";
     meta.style.whiteSpace = "normal";
-    item.append(name, meta);
+    copy.append(name, meta);
+    item.append(avatar, copy);
     item.addEventListener("click", (event) => {
       event.preventDefault();
       event.stopPropagation();
@@ -772,6 +791,10 @@ function renderExpandedRow(list: HTMLElement, row: SubagentRowMeta, button: HTML
     });
     list.append(item);
   }
+  const avatar = item.querySelector<HTMLImageElement>(`img[${SUBAGENT_AVATAR_ATTRIBUTE}]`);
+  const seed = row.conversationId ?? row.displayName;
+  const src = subagentAvatarSrc(seed);
+  if (avatar && src && avatar.src !== src) avatar.src = src;
   const name = item.querySelector<HTMLElement>("[data-codexhost-subagent-expanded-name]");
   const meta = item.querySelector<HTMLElement>(`[${SUBAGENT_ROW_META_ATTRIBUTE}]`);
   if (name && name.textContent !== row.displayName) name.textContent = row.displayName;

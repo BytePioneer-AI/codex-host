@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 
+import { subagentAvatarIndex, subagentAvatarSrc } from "../src/subagent-avatars.js";
 import {
   formatSubagentRowMeta,
   prettySubagentAgentPath,
@@ -13,6 +14,14 @@ import {
 } from "../src/renderer-subagent-row-meta.js";
 
 describe("Subagent row meta", () => {
+  it("picks a stable official Subagent avatar from the conversation id", () => {
+    expect(subagentAvatarIndex("01a07e45-ab00-7033-83e4-2f46d9ff3bcd")).toBe(
+      subagentAvatarIndex("01a07e45-ab00-7033-83e4-2f46d9ff3bcd"),
+    );
+    expect(subagentAvatarSrc("child-1", false).startsWith("data:image/svg+xml")).toBe(true);
+    expect(subagentAvatarSrc("child-1", true)).not.toBe(subagentAvatarSrc("child-2", true));
+  });
+
   it("labels Codex Subagent statuses in Traditional Chinese", () => {
     expect(prettySubagentStatus("active")).toBe("進行中");
     expect(prettySubagentStatus("waiting")).toBe("等待中");

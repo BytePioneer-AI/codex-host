@@ -247,7 +247,7 @@ export function transportEvent(update: SessionUpdate): HermesTransportEvent | nu
 }
 
 export class HermesAcpTransport {
-  readonly #options: Required<
+  #options: Required<
     Pick<HermesAcpTransportOptions, "commandTimeoutMs" | "closeTimeoutMs">
   > &
     HermesAcpTransportOptions;
@@ -280,6 +280,20 @@ export class HermesAcpTransport {
 
   get stderrTail(): string {
     return this.#stderrTail;
+  }
+
+  /**
+   * Point subsequent session creation at a different working directory.
+   * The spawn cwd is process-launch state and cannot change after the fact,
+   * but Hermes derives all session cwd behavior from the session/new
+   * parameter (agent.session_cwd, task env overrides, turn-time session
+   * vars), never from the process cwd — so a warm transport spawned in one
+   * directory can safely host a Session for another.
+   */
+  retarget(cwd: string): void {
+    if (this.#sessionId)
+      throw new Error("Hermes ACP Transport cannot retarget an open Session");
+    this.#options = { ...this.#options, cwd };
   }
 
   async inspect(): Promise<InitializeResponse> {

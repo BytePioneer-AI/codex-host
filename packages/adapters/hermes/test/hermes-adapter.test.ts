@@ -1,4 +1,4 @@
-import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -288,6 +288,39 @@ for await (const line of lines) {
     };
   } else if (request.method === "session/set_model") {
     appendFileSync(process.env.FAKE_HERMES_MODEL_CALLS, request.params.modelId + "\\n");
+  }
+  process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: request.id, result }) + "\\n");
+}
+`,
+  );
+  await chmod(executable, 0o755);
+  return executable;
+}
+
+async function cwdAwareHermesExecutable(): Promise<string> {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "hermes-adapter-cwd-aware-"));
+  temporaryDirectories.push(directory);
+  const executable = path.join(directory, "fake-hermes");
+  await writeFile(
+    executable,
+    `#!/usr/bin/env node
+import { appendFileSync } from "node:fs";
+import readline from "node:readline";
+if (process.env.FAKE_HERMES_STARTS) appendFileSync(process.env.FAKE_HERMES_STARTS, "started\\n");
+const lines = readline.createInterface({ input: process.stdin });
+for await (const line of lines) {
+  const request = JSON.parse(line);
+  let result = {};
+  if (request.method === "initialize") {
+    result = {
+      protocolVersion: 1,
+      agentCapabilities: { loadSession: true },
+      agentInfo: { name: "fake-hermes", version: "1.0.0" },
+      authMethods: [],
+    };
+  } else if (request.method === "session/new") {
+    appendFileSync(process.env.FAKE_HERMES_SESSIONS, request.params.cwd + "\\n");
+    result = { sessionId: "fake-session-" + Math.random().toString(36).slice(2) };
   }
   process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: request.id, result }) + "\\n");
 }
@@ -891,6 +924,62 @@ describe("HermesAdapter model selection", () => {
     if (first.ok) await first.value.close();
     if (second.ok) await second.value.close();
     await adapter.close();
+  });
+
+  it("reuses a warm ACP process for a Session opened in a different directory", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "hermes-adapter-cwd-warm-"));
+    temporaryDirectories.push(directory);
+    const firstCwd = path.join(directory, "alpha");
+    const secondCwd = path.join(directory, "beta");
+    await mkdir(firstCwd, { recursive: true });
+    await mkdir(secondCwd, { recursive: true });
+    const sessionsPath = path.join(directory, "sessions.log");
+    const startsPath = path.join(directory, "starts.log");
+    const command = await cwdAwareHermesExecutable();
+    const adapter = new HermesAdapter({
+      command,
+      environment: {
+        ...process.env,
+        FAKE_HERMES_SESSIONS: sessionsPath,
+        FAKE_HERMES_STARTS: startsPath,
+      },
+    });
+
+    try {
+      const first = await adapter.open({ kind: "create", cwd: firstCwd });
+      expect(first.ok).toBe(true);
+      // open#1 arms a warm replacement: process 2.
+      await vi.waitFor(
+        async () => {
+          const starts = await readFile(startsPath, "utf8");
+          expect(starts.trim().split("\n")).toHaveLength(2);
+        },
+        { timeout: 2_000 },
+      );
+
+      // A Session in a different directory must reuse the warmed process and
+      // receive ITS cwd in session/new — not the directory the warm process
+      // was spawned for.
+      const second = await adapter.open({ kind: "create", cwd: secondCwd });
+      expect(second.ok).toBe(true);
+      if (second.ok) await second.value.close();
+      if (first.ok) await first.value.close();
+      await adapter.close();
+
+      // Reuse + re-arm: exactly three processes, and the second Session's
+      // session/new carried the second cwd.
+      await vi.waitFor(
+        async () => {
+          const starts = await readFile(startsPath, "utf8");
+          expect(starts.trim().split("\n")).toHaveLength(3);
+        },
+        { timeout: 2_000 },
+      );
+      const cwds = (await readFile(sessionsPath, "utf8")).trim().split("\n");
+      expect(cwds).toEqual([firstCwd, secondCwd]);
+    } finally {
+      await adapter.close();
+    }
   });
 
   it("replaces a warm ACP process that exits before the next Session opens", async () => {

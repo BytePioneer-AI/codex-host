@@ -85,6 +85,8 @@ export class HermesAdapter implements HarnessAdapter {
   async inspect(input: InspectHarnessInput = {}): Promise<HarnessInspection> {
     const cwd = input.cwd ?? process.cwd();
     if (!input.refresh && this.#inspectionCache && this.#inspectionCacheScope === cwd) {
+      // Inspection caches the model catalog and capability advertisement,
+      // neither of which depends on the cwd; a different-cwd hit is fine.
       return this.#inspectionCache;
     }
     const environment = this.#effectiveEnvironment();
@@ -288,11 +290,15 @@ export class HermesAdapter implements HarnessAdapter {
     );
   }
 
-  #transportScope(cwd: string, environment: NodeJS.ProcessEnv): string {
+  #transportScope(_cwd: string, environment: NodeJS.ProcessEnv): string {
+    // The cwd deliberately does not participate: warm transports are retargeted
+    // to the requesting directory on reuse (see #takeTransport), because Hermes
+    // derives session cwd behavior from the session/new parameter rather than
+    // the process cwd. Environment still scopes the pool.
     const serialized = JSON.stringify(
       Object.entries(environment).sort(([left], [right]) => left.localeCompare(right)),
     );
-    return `${cwd}\0${createHash("sha256").update(serialized).digest("hex")}`;
+    return createHash("sha256").update(serialized).digest("hex");
   }
 
   async #takeTransport(cwd: string, environment: NodeJS.ProcessEnv): Promise<HermesAcpTransport> {
@@ -300,7 +306,13 @@ export class HermesAdapter implements HarnessAdapter {
     const pending = this.#warmTransports.get(scope);
     if (!pending) return this.#createTransport(cwd, environment);
     this.#warmTransports.delete(scope);
-    return (await pending) ?? this.#createTransport(cwd, environment);
+    const warmed = await pending;
+    if (!warmed) return this.#createTransport(cwd, environment);
+    // A warm transport may have been spawned for another directory. Hermes
+    // binds session cwd behavior to the session/new parameter, not the
+    // process cwd, so retargeting before opening is sufficient.
+    warmed.retarget(cwd);
+    return warmed;
   }
 
   #keepWarmTransport(

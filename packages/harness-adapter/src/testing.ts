@@ -180,6 +180,7 @@ export class FakeHarnessSession implements HarnessSession {
     options: { itemId?: HostItemId; title?: string; expiresAt?: string };
   } | null = null;
   #nextRejection: HarnessError | null = null;
+  #nextCancelRejection: HarnessError | null = null;
   #state: HarnessSessionState;
   #snapshot: HostThreadSnapshot;
   #turnOrdinal = 0;
@@ -328,6 +329,30 @@ export class FakeHarnessSession implements HarnessSession {
 
   rejectNextTurn(error: HarnessError): void {
     this.#nextRejection = error;
+  }
+
+  rejectNextCancel(
+    error: HarnessError = {
+      code: "invalidRequest",
+      message: "No matching Turn",
+      retryable: false,
+    },
+  ): void {
+    this.#nextCancelRejection = error;
+  }
+
+  completeAgentMessageWithText(text: string): void {
+    const active = this.#requireActive();
+    const item = [...active.items.values()].find(
+      (candidate): candidate is HostAgentMessageItem => candidate.type === "agentMessage",
+    );
+    if (!item) throw new Error("Fake Harness Session has no Agent Message Item");
+    active.items.delete(item.itemId);
+    this.#event({
+      type: "item.completed",
+      turnId: active.command.turnId,
+      snapshot: { item: { ...item, text }, outcome: { status: "succeeded" } },
+    });
   }
 
   rejectNextModelSelection(error: HarnessError): void {
@@ -871,6 +896,11 @@ export class FakeHarnessSession implements HarnessSession {
   }
 
   #cancel(command: TurnCancelCommand): HarnessResult<TurnCancelAccepted> {
+    if (this.#nextCancelRejection) {
+      const error = this.#nextCancelRejection;
+      this.#nextCancelRejection = null;
+      return { ok: false, error };
+    }
     const active = this.#active;
     if (!active || active.command.turnId !== command.turnId) {
       return { ok: false, error: invalidState("Turn Cancel must reference the active Turn") };

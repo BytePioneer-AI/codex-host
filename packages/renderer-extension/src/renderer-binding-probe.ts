@@ -1,4 +1,5 @@
 import {
+  decodeHarnessPluginRoute,
   harnessIdSchema,
   permissionModeFixedAtCreate,
   type HarnessCommandDescriptor,
@@ -93,6 +94,7 @@ const externalHarnessIds = {
   grok: harnessIdSchema.parse("grok"),
   omp: harnessIdSchema.parse("omp"),
   antigravity: harnessIdSchema.parse("antigravity"),
+  muse: harnessIdSchema.parse("muse"),
 } as const;
 
 const externalAgents: readonly ExternalRendererAgent[] = [
@@ -103,6 +105,7 @@ const externalAgents: readonly ExternalRendererAgent[] = [
   "grok",
   "omp",
   "antigravity",
+  "muse",
 ];
 type HarnessAvailability = Partial<Record<ExternalRendererAgent, RendererAgentAvailability>>;
 type HarnessAvailabilityErrors = Record<ExternalRendererAgent, CodexhostError | undefined>;
@@ -452,6 +455,23 @@ export function restoredThreadOwnership(inspection: ThreadInspection): RestoredT
       ...(permissionModeId ? { permissionModeId } : {}),
     };
   }
+  if (inspection.harnessId === "muse") {
+    const transportSelection = decodeHarnessPluginRoute(inspection.transportModelId);
+    if (!transportSelection || transportSelection.harnessId !== "muse") {
+      throw new Error("Meta Muse Code Thread reported an incompatible transport Model");
+    }
+    const model = inspection.effectiveModel ?? transportSelection.model;
+    const thinkingOptionId =
+      selectableThinkingOptionId(inspection) ?? transportSelection.thinkingOptionId;
+    const permissionModeId =
+      inspection.effectivePermissionModeId ?? transportSelection.permissionModeId;
+    return {
+      agent: "muse",
+      ...(model ? { model } : {}),
+      ...(thinkingOptionId ? { thinkingOptionId } : {}),
+      ...(permissionModeId ? { permissionModeId } : {}),
+    };
+  }
   throw new Error("Thread owner is not a Renderer Agent");
 }
 
@@ -681,6 +701,7 @@ export function installRendererBindingProbe(
       grok: undefined,
       omp: undefined,
       antigravity: undefined,
+      muse: undefined,
     },
     webUi: Object.fromEntries(
       externalAgents.map((agent) => [agent, false]),

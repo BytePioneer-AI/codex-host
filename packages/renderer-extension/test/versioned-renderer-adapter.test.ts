@@ -1,4 +1,5 @@
 import {
+  decodeHarnessPluginRoute,
   harnessModelRefSchema,
   harnessPermissionModeIdSchema,
   harnessThinkingOptionIdSchema,
@@ -542,6 +543,33 @@ describe("current Codex Renderer Agent adapter", () => {
       decodePiTransportModelId(`${PI_TRANSPORT_MODEL_ID}@${model.id}@${thinkingOptionId}`),
     ).toEqual({ model, thinkingOptionId });
   });
+
+  it.each(["onRequest", "allowAll"])(
+    "routes Muse Model, Thinking, and %s permissions through the shared plugin carrier",
+    (permission) => {
+      const model = harnessModelRefSchema.parse({ id: "muse-spark-1.3-contributor" });
+      const thinkingOptionId = harnessThinkingOptionIdSchema.parse("high");
+      const permissionModeId = harnessPermissionModeIdSchema.parse(permission);
+      const selected = modelSelectionForAgent(
+        { model: "official-model", reasoningEffort: "low" },
+        "low",
+        "muse",
+        model,
+        thinkingOptionId,
+        permissionModeId,
+      );
+
+      expect(decodeHarnessPluginRoute(selected?.model)).toEqual({
+        harnessId: "muse",
+        model,
+        thinkingOptionId,
+        permissionModeId,
+      });
+      expect(decodeHarnessPluginRoute(modelSelectionForAgent(null, null, "muse")?.model)).toEqual({
+        harnessId: "muse",
+      });
+    },
+  );
 
   it("encodes OMP Model, Permission Mode, and Thinking in the transport carrier", () => {
     const model = harnessModelRefSchema.parse({ id: "omp-model-v1.synthetic" });

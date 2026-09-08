@@ -17,6 +17,7 @@ import { FakeHarnessAdapter, FakeHarnessSession } from "@codexhost/harness-adapt
 import { MappingStore } from "@codexhost/mapping-store";
 import {
   CLAUDE_CODE_NATIVE_TRANSPORT_MODEL_ID,
+  CodexTurnProjector,
   encodeClaudeTransportModel,
   encodeGrokTransportModel,
   encodePiTransportModel,
@@ -7062,6 +7063,157 @@ describe("AppServerHost HarnessAdapter projection", () => {
     expect(questionClosedIndex).toBeGreaterThan(responseIndex);
     expect(turnIndex).toBeGreaterThan(questionClosedIndex);
     await stopFixture(fixture);
+  });
+
+  it("fails an external Turn visibly when textual Item completion does not match streamed text", async () => {
+    const fixture = createFixture();
+    const threadId = await startPiThread(fixture);
+    const turnId = await startPiTurn(fixture, threadId);
+    const session = fixture.adapter.sessions[0];
+    if (!session) throw new Error("Fake Pi Session was not opened");
+    await fixture.collector.waitFor((message) => turnEvent(message, "turn/started", turnId));
+    session.appendText("你好");
+    await fixture.collector.waitFor((message) => method(message, "item/agentMessage/delta"));
+    session.completeAgentMessageWithText("你好你好");
+    session.succeedTurn();
+    await expect(
+      fixture.collector.waitFor((message) => turnEvent(message, "turn/completed", turnId)),
+    ).resolves.toMatchObject({
+      params: {
+        turn: {
+          status: "failed",
+          error: { message: expect.stringContaining("textual Item completion") },
+        },
+      },
+    });
+    expect(fixture.collector.messages.find((message) => method(message, "error"))).toMatchObject({
+      params: { threadId, turnId, willRetry: false },
+    });
+    await expect(
+      fixture.mappingStore.getThread(hostThreadIdSchema.parse(threadId)),
+    ).resolves.toMatchObject({
+      nativeSessionRef: { nativeSessionId: session.initialState.nativeRef?.nativeSessionId },
+    });
+    writeRequest(fixture.desktopInput, {
+      id: 3,
+      method: "turn/start",
+      params: { threadId, input: [{ type: "text", text: "next" }] },
+    });
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 3)),
+    ).resolves.toMatchObject({ result: { turn: { status: "inProgress" } } });
+    fixture.adapter.sessions[0]?.succeedTurn();
+    await stopFixture(fixture);
+  });
+
+  it("keeps an external Turn active when native cancellation fails", async () => {
+    const fixture = createFixture();
+    const threadId = await startPiThread(fixture);
+    const turnId = await startPiTurn(fixture, threadId);
+    const session = fixture.adapter.sessions[0];
+    if (!session) throw new Error("Fake Pi Session was not opened");
+    await fixture.collector.waitFor((message) => turnEvent(message, "turn/started", turnId));
+    session.rejectNextCancel();
+    writeRequest(fixture.desktopInput, {
+      id: 3,
+      method: "turn/interrupt",
+      params: { threadId, turnId },
+    });
+    await expect(fixture.collector.waitFor((message) => requestId(message, 3))).resolves.toEqual({
+      id: 3,
+      error: { code: -32074, message: "No matching Turn" },
+    });
+    writeRequest(fixture.desktopInput, {
+      id: 4,
+      method: "turn/start",
+      params: { threadId, input: [{ type: "text", text: "must remain busy" }] },
+    });
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 4)),
+    ).resolves.toMatchObject({ error: { code: -32072 } });
+    expect(
+      fixture.collector.messages.some((message) => turnEvent(message, "turn/completed", turnId)),
+    ).toBe(false);
+    session.appendText("still running");
+    await fixture.collector.waitFor((message) => method(message, "item/agentMessage/delta"));
+    session.succeedTurn();
+    await expect(
+      fixture.collector.waitFor((message) => turnEvent(message, "turn/completed", turnId)),
+    ).resolves.toMatchObject({ params: { turn: { status: "completed" } } });
+    await stopFixture(fixture);
+  });
+
+  it.each(["item.completed", "turn.completed"])(
+    "reports a visible failed Turn after %s projection throws",
+    async (eventType) => {
+      const fixture = createFixture();
+      const threadId = await startPiThread(fixture);
+      const turnId = await startPiTurn(fixture, threadId);
+      const session = fixture.adapter.sessions[0];
+      if (!session) throw new Error("Fake Pi Session was not opened");
+      await fixture.collector.waitFor((message) => turnEvent(message, "turn/started", turnId));
+      const project = CodexTurnProjector.prototype.project;
+      const projection = vi
+        .spyOn(CodexTurnProjector.prototype, "project")
+        .mockImplementation(function (this: CodexTurnProjector, event, emittedAtMs) {
+          const result = project.call(this, event, emittedAtMs);
+          if (event.type === eventType) throw new Error("Synthetic projection failure");
+          return result;
+        });
+      try {
+        session.appendText("answer");
+        session.succeedTurn();
+        await expect(
+          fixture.collector.waitFor((message) => turnEvent(message, "turn/completed", turnId)),
+        ).resolves.toMatchObject({
+          params: {
+            turn: {
+              status: "failed",
+              error: { message: expect.stringContaining("Synthetic projection failure") },
+            },
+          },
+        });
+        const errorIndex = fixture.collector.messages.findIndex((message) =>
+          method(message, "error"),
+        );
+        const terminalIndex = fixture.collector.messages.findIndex((message) =>
+          turnEvent(message, "turn/completed", turnId),
+        );
+        expect(errorIndex).toBeGreaterThanOrEqual(0);
+        expect(terminalIndex).toBeGreaterThan(errorIndex);
+      } finally {
+        projection.mockRestore();
+        await stopFixture(fixture);
+      }
+    },
+  );
+
+  it("reports thrown cancellation errors without blocking later native output", async () => {
+    const fixture = createFixture();
+    const threadId = await startPiThread(fixture);
+    const turnId = await startPiTurn(fixture, threadId);
+    const session = fixture.adapter.sessions[0];
+    if (!session) throw new Error("Fake Pi Session was not opened");
+    await fixture.collector.waitFor((message) => turnEvent(message, "turn/started", turnId));
+    vi.spyOn(session, "execute").mockRejectedValueOnce(new Error("Synthetic cancellation failure"));
+    try {
+      writeRequest(fixture.desktopInput, {
+        id: 3,
+        method: "turn/interrupt",
+        params: { threadId, turnId },
+      });
+      await expect(fixture.collector.waitFor((message) => requestId(message, 3))).resolves.toEqual({
+        id: 3,
+        error: { code: -32074, message: "Synthetic cancellation failure" },
+      });
+      session.appendText("still running");
+      session.succeedTurn();
+      await expect(
+        fixture.collector.waitFor((message) => turnEvent(message, "turn/completed", turnId)),
+      ).resolves.toMatchObject({ params: { turn: { status: "completed" } } });
+    } finally {
+      await stopFixture(fixture);
+    }
   });
 
   it("rejects an interrupt that does not reference the active Pi Turn", async () => {

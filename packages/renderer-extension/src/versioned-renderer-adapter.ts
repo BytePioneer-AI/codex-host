@@ -1,4 +1,6 @@
 import {
+  encodeHarnessPluginRoute,
+  harnessPluginIdSchema,
   harnessModelRefSchema,
   harnessPermissionModeIdSchema,
   harnessThinkingOptionIdSchema,
@@ -141,7 +143,8 @@ function transportModelIdForAgent(agent: RendererAgent): string | null {
   if (agent === "grok") return GROK_TRANSPORT_MODEL_ID;
   if (agent === "omp") return OMP_TRANSPORT_MODEL_ID;
   if (agent === "antigravity") return ANTIGRAVITY_TRANSPORT_MODEL_ID;
-  return null;
+  if (agent === "codex") return null;
+  return encodeHarnessPluginRoute({ harnessId: harnessPluginIdSchema.parse(agent) });
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -922,7 +925,16 @@ export function modelSelectionForAgent(
                 ? ompTransportModelId(model, thinkingOptionId, permissionModeId)
                 : agent === "antigravity"
                   ? antigravityTransportModelId(model, permissionModeId, thinkingOptionId)
-                  : transportModelIdForAgent(agent);
+                  : agent === "codex"
+                    ? null
+                    : model || thinkingOptionId || permissionModeId
+                      ? encodeHarnessPluginRoute({
+                          harnessId: harnessPluginIdSchema.parse(agent),
+                          ...(model ? { model } : {}),
+                          ...(thinkingOptionId ? { thinkingOptionId } : {}),
+                          ...(permissionModeId ? { permissionModeId } : {}),
+                        })
+                      : transportModelIdForAgent(agent);
   return transportModelId ? { model: transportModelId, reasoningEffort } : officialSelection;
 }
 

@@ -1,14 +1,14 @@
-# 本地 Harness 会话导入
+# Harness 原生会话导入
 
 ## 当前范围
 
-设置 → 会话导入可登记 **Pi 原生 v3 Session** 和 **DSH Modern Session**。导入只建立 Host Thread 与原生 Session 的映射，不复制 Transcript、不转换 Harness、不发送用户 Turn；打开后仍通过对应 Adapter 的 `open({ kind: "resume" })` 恢复历史并继续会话。
+设置 → 会话导入可登记 **Claude Code Session**、**Pi 原生 v3 Session** 和 **DSH Modern Session**。导入只建立 Host Thread 与原生 Session 的映射，不复制 Transcript、不转换 Harness、不发送用户 Turn；打开后仍通过对应 Adapter 的 `open({ kind: "resume" })` 恢复历史并继续会话。
 
-- 设置页始终使用本地 Host，即使 Composer 当前连接远程工作区。
-- 可选 Harness 来自该 Host 已加载、同时提供发现和解析能力的 Adapter，不使用 Renderer 内置 Harness 名单。
+- 设置页使用当前 Composer 选中的 Host；本地 Composer 扫描本机，远程 Composer 只扫描并登记远端 Host 上的原生会话。列表与导入锁定同一个 Host，切换 Host 不会把旧列表导入到另一个环境。
+- 可选 Harness 来自目标 Host 已加载、同时提供发现和解析能力的 Adapter，不使用 Renderer 内置 Harness 名单。
 - 目录表示“实现了导入接口”，不保证当前原生运行时可用。DSH Legacy、旧 Host、缺失插件或不可用存储会明确失败，不伪装成无候选。
 - DSH 仍保留原先本机、codexhost 管理的 exact `dsh-v0.1.2-rc.1` Modern 限定。
-- 本次没有增加远程扫描、CC direct/Broker 导入，也没有完成整个 Agent Picker 的动态插件化。
+- Claude Code 直连 Adapter 与 macOS Aqua Broker 都提供同一导入能力；整个 Agent Picker 的动态插件化仍不在本功能范围内。
 
 ## Adapter 契约与职责
 
@@ -32,9 +32,9 @@ interface HarnessSessionImportSource {
 - `resolveCandidate`：只读地重新发现/验证选中的 ID，确认可恢复的项目和完整原生引用。会话消失返回 `sessionNotFound`，当前协议不支持返回 `unsupported`；不能信任上次列表的缓存元数据。
 - `candidate.nativeSessionId`、`nativeRef.nativeSessionId` 和所属 Harness 必须相符。
 - `running: true` 表示已知忙碌，Host 拒绝；`false` 表示可可靠确认空闲；`null` 表示无法可靠确认。未知不能降为 false。
-- Adapter 关闭后不能启动新的发现；正在进行的本地扫描要取消并收尾。插件不得直接操作 Host 映射库。
+- Adapter 关闭后不能启动新的发现；正在进行的目标 Host 扫描要取消并收尾。插件不得直接操作 Host 映射库。
 
-对于已经接入 Desktop 的 Harness，以后增加这两个方法、验证原生 resume 并补齐 Adapter 测试即可复用本地 Host/RPC/导入页面；无需再创建专属导入器或 Renderer 开关。新的插件整体产品接入仍受 [Renderer 边界](harness-plugin-runtime.md) 约束。
+对于已经接入 Desktop 的 Harness，以后增加这两个方法、验证原生 resume 并补齐 Adapter 测试即可复用当前 Host/RPC/导入页面；无需再创建专属导入器或 Renderer 开关。新的插件整体产品接入仍受 [Renderer 边界](harness-plugin-runtime.md) 约束。
 
 ## Host 与浏览器边界
 
@@ -48,7 +48,7 @@ interface HarnessSessionImportSource {
 
 列表默认每页 20 条；页面可选 20 / 50 / 100 条，显示总数和上一页/下一页。搜索按标题、会话 ID、项目路径进行不区分大小写的子串匹配，覆盖所有候选而非仅当前页；提交搜索或切换 Harness/每页数量后回到第一页。Host 先过滤已映射会话、搜索、按活动时间与稳定 ID 排序，再分页；`total` 是过滤后的总数。单次响应最多 1,000 条只是 wire page 保护，不限制存储总量或总候选数。
 
-旧 `codexhost/deepseek/modern-session/list` / `import` 作为兼容别名保留在 Host，复用同一个 DSH importer 和通知去重集合；旧 list 仍返回 `{ candidates }`，不改变原 DSH 协议限定。新 Renderer 只使用公共 RPC。旧 Host 未实现公共入口时显示不可用，不改走未经验证的原生桥接。存储读取失败显示“无法读取本地会话”，不再误报“不支持导入”。
+旧 `codexhost/deepseek/modern-session/list` / `import` 作为兼容别名保留在 Host，复用同一个 DSH importer 和通知去重集合；旧 list 仍返回 `{ candidates }`，不改变原 DSH 协议限定。新 Renderer 只使用公共 RPC。旧 Host 未实现公共入口时显示不可用，不改走未经验证的原生桥接。存储读取失败显示“无法读取当前 Host 上的会话”，不再误报“不支持导入”。
 
 `HarnessSessionImporter` 负责：
 
@@ -59,6 +59,17 @@ interface HarnessSessionImportSource {
 5. 返回 Host Thread ID。Renderer 导航失败不能回滚已提交的映射；保留项目路径、重试打开，重挂载和过期请求不能重复导航。
 
 Host 不承诺在 resolver 与 resume 之间锁住外部客户端；当前没有跨进程 Session 所有权转移协议。
+
+## Claude Code 原生规则
+
+实现位于 `packages/adapters/claude-code/src/claude-session-import.ts`：
+
+- 使用 Claude Agent SDK 的 `listSessions()` 读取跨项目会话目录，也保留 SDK 来源的会话，以便恢复映射已丢失的 codexhost 会话；只消费 SDK 返回的元数据，不读取或传输 Transcript 正文。
+- 候选必须有非空原生 Session ID、有效更新时间和存在的绝对项目目录。标题依次使用自定义标题、摘要和首条提示，移除 NUL 并遵守公共标题上限；项目目录解析为真实路径。
+- 导入时通过 SDK `getSessionInfo(sessionId)` 跨项目重新查询选中项，拒绝消失、身份不符或已知正在由同一 Adapter 打开的会话。原生引用仅保存 Claude Session ID，不伪造文件 locator。
+- Adapter 能确认自己已打开的会话时返回 `running: true`；对其他 Claude 客户端没有可靠跨进程活动信号，因此返回 `running: null`，而不是错误声称空闲。导入前仍应关闭原生 Claude 客户端中的该会话。
+- Linux/普通 SSH Host 在目标 Host 进程内直接发现和解析；macOS 受管远程 Host 通过用户 Aqua 会话中的 owner-only Broker 转发同一能力。Broker 只传输有界元数据和原生引用，并对大列表分块，不转发凭据或 Transcript。
+- `remote install` 会受控重启打包 Broker。客户端和远端必须安装同一 codexhost 版本；升级后重新连接远程工作区，避免旧 Broker 进程保留旧协议实现。
 
 ## Pi 原生规则
 
@@ -79,8 +90,8 @@ Host 不承诺在 resolver 与 resume 之间锁住外部客户端；当前没有
 
 ## 验证
 
-定向测试覆盖 Pi 目录规则、活动分支、坏文件、消失/歧义、取消、只读发现，以及超过旧 64 MiB/256 MiB 和 100,000 Entry 限制的有效数据、缓存失效和按选中项复查；Host locator 持久化与重启、跨 Harness 相同 ID、旧 DSH RPC、幂等/竞争/忙碌/失败清理、过滤后分页与跨页搜索；Renderer 动态来源、分页大小/边界、搜索旧响应失效、导入期间控件锁定、未知状态、导入去重和导航失败恢复。
+定向测试覆盖 Claude SDK 元数据规范化、坏目录、身份歧义、新鲜解析、取消和已知运行状态，以及 Broker 分块列表、解析、原生 resume 与当前远程 Host 路由；Pi 目录规则、活动分支、坏文件、消失/歧义、取消、只读发现，以及超过旧 64 MiB/256 MiB 和 100,000 Entry 限制的有效数据、缓存失效和按选中项复查；Host locator 持久化与重启、跨 Harness 相同 ID、旧 DSH RPC、幂等/竞争/忙碌/失败清理、过滤后分页与跨页搜索；Renderer 动态来源、分页大小/边界、搜索旧响应失效、导入期间控件锁定、未知状态、导入去重和导航失败恢复。
 
 还使用 Pi **0.85.0** 的真实 `SessionManager` 创建隔离临时会话，经公共 Host importer 登记，再用真实 `pi --mode rpc --session ...` 恢复历史并继续一轮，验证同一 Session ID 与同一 JSONL 文件。该检查使用回环地址上的模拟 Provider，不调用付费 Model 服务，也不读取/修改用户原有会话。
 
-这不是 Codex Desktop 端到端验收，也不代表 Windows、远程或 DSH 真机已在本次验证。
+自动化测试不等同于所有平台的 Codex Desktop 端到端验收；发布前仍应分别执行本地、Linux SSH 和 macOS Aqua Broker 真机冒烟测试。

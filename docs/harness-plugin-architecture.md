@@ -96,7 +96,7 @@ Codex Desktop 协议、官方 app-server、Renderer 兼容绑定仍是 codexhost
 
 ### 2.4 可选能力尚未贯通
 
-**Session Import：**本地共享 RPC、Host Importer 和设置页面已通用化，Pi 与 DSH Modern 共用同一路径。Adapter 通过 `listCandidates()` 提供元数据，通过 `resolveCandidate(id)` 重新验证完整原生引用；Host 保留去重、并发、忙碌检查与临时记录清理。远程和 CC Broker 导入尚未扩展，见[当前导入契约](harness-session-import.md)。
+**Session Import：**共享 RPC、Host Importer 和设置页面已通用化，Claude Code、Pi 与 DSH Modern 共用同一路径。Adapter 通过 `listCandidates()` 提供元数据，通过 `resolveCandidate(id)` 重新验证完整原生引用；Host 保留去重、并发、忙碌检查与临时记录清理。Renderer 将列表、导入和导航固定到当前 Host，Claude 的直连与 macOS Aqua Broker 承载都已转发该能力，见[当前导入契约](harness-session-import.md)。
 
 **Credits：**Host 通过结构探测读取 `credits()`、`refreshCredits()`，它们不是正式 Adapter 成员。Renderer 还通过 Codex/Grok/Claude 名单决定是否等待 Credits，而 Antigravity 也有对应方法。这是能力提供与消费的双重接线，不等于本轮已证明具体 UI 故障。
 

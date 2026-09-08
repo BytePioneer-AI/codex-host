@@ -2,6 +2,8 @@ import { z } from "zod";
 
 import {
   harnessConfigurationStateSchema,
+  harnessSessionImportCandidateSchema,
+  harnessSessionImportIdSchema,
   harnessModelRefSchema,
   harnessPermissionModeIdSchema,
   harnessThinkingOptionIdSchema,
@@ -13,6 +15,7 @@ import {
   nativeTurnRefSchema,
 } from "@codexhost/shared-contracts";
 import type { HarnessError, HarnessOutput, HarnessSessionState } from "@codexhost/harness-adapter";
+import { HARNESS_BROKER_SESSION_IMPORT_PAGE_SIZE } from "./protocol.js";
 
 const cwdSchema = z.string().min(1).max(16_384);
 
@@ -60,6 +63,46 @@ export const brokerOpenInputSchema = z.discriminatedUnion("kind", [
 export const brokerInspectInputSchema = z
   .object({ cwd: cwdSchema.optional(), refresh: z.boolean().optional() })
   .strict();
+
+export const brokerSessionImportListParamsSchema = z
+  .object({
+    offset: z.number().int().nonnegative().safe(),
+    limit: z.number().int().min(1).max(HARNESS_BROKER_SESSION_IMPORT_PAGE_SIZE),
+  })
+  .strict();
+
+export const brokerSessionImportResolveParamsSchema = z
+  .object({ nativeSessionId: harnessSessionImportIdSchema })
+  .strict();
+
+export const brokerSessionImportCandidatesSchema = z.array(harnessSessionImportCandidateSchema);
+
+export const brokerSessionImportPageSchema = z
+  .object({
+    candidates: z
+      .array(harnessSessionImportCandidateSchema)
+      .max(HARNESS_BROKER_SESSION_IMPORT_PAGE_SIZE),
+    total: z.number().int().nonnegative().safe(),
+  })
+  .strict();
+
+export const brokerSessionImportSourceSchema = z
+  .object({
+    candidate: harnessSessionImportCandidateSchema,
+    nativeRef: nativeSessionRefSchema,
+  })
+  .strict()
+  .superRefine((source, context) => {
+    if (
+      source.nativeRef.harnessId !== "claude-code" ||
+      source.nativeRef.nativeSessionId !== source.candidate.nativeSessionId
+    ) {
+      context.addIssue({
+        code: "custom",
+        message: "Claude Session import source identity does not match",
+      });
+    }
+  });
 
 const textInputSchema = z
   .object({ type: z.literal("text"), text: z.string().max(4_000_000) })

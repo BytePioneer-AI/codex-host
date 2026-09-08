@@ -126,6 +126,7 @@ describe("AppServerHost hermetic Claude projection", () => {
       deleteSession: async () => undefined,
       forkSession: async () => ({ sessionId: "claude-hermetic-derived" }),
       getSessionInfo: async () => ({ cwd: "/synthetic" }),
+      listSessions: async () => [],
       readSessionMessages: async ({ sessionId }) => {
         if (sessionId !== nativeSessionId || !nativeTurnKey) return [];
         return [

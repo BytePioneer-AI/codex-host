@@ -83,6 +83,8 @@ JavaScript；正在执行的 Claude Harness 请求会在重启期间失败关闭
 
 输入框中的 Codex 账号列表、临时账号选择和额度按 Host 隔离；本地账号不会出现在远程输入框中。切换 Host 或更换连接客户端后，旧请求的结果不能覆盖当前输入框。远程没有提供账号管理接口时，保留普通 Codex 入口，不把本地默认账号绑定到远程 Thread；已有会话保持原来的账号归属。
 
+设置 → 会话导入也按同一个当前 Host 隔离。选中远程输入框时，页面只列出和登记 SSH 开发机上保存的 Session，并通过该远程 Host 打开导入后的 Thread。Linux SSH Host 直接执行 Claude 会话发现；受管 macOS Host 通过 Aqua broker 执行，broker 只传递有界会话元数据和经验证的原生身份，不传输 Transcript 正文或凭据。运行状态显示未知时，应先在 Claude 原生客户端中关闭该会话再导入。两台机器需要安装相同 codexhost 版本；升级后重新连接远程工作区，确保远程 runtime 与 broker 提供匹配的导入方法。
+
 原生 Codex 端点明确返回“不支持 `codexhost/thread/inspect`”时，会通过同一 Host 连接的原生 `thread/read` 核对 Thread ID、CLI 版本和 Provider 元数据，排除 codexhost 的外部 Thread 标记；验证成功后保留普通 Codex 和远程原生认证，不创建账号绑定。超时、断线、无效响应或无法确认归属时，Agent 控件显示 `!` 和错误说明，而不是持续显示加载动画；重新聚焦窗口会重试。归属尚未确认时仍阻止提交，不把外部 Harness 或连接故障静默改判为 Codex。
 
 明确不支持的扩展接口只在当前 Host 请求客户端内、按具体接口记录；后续调用在本地返回不支持，不重复发送网络探测，Harness 发现、侧边栏归属和额度查询也不为这种错误安排自动重试。账号接口不支持不会禁用 Harness 接口，某个 Harness 未安装也不会禁用其他 Harness。超时、认证失败和参数错误不会被当作接口不支持。请求客户端、底层桥接或活动连接策略替换后重新判断；正常请求保持并发，不缓存其返回结果。

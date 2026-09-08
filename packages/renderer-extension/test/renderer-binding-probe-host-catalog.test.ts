@@ -210,7 +210,7 @@ afterEach(() => {
 });
 
 describe("Renderer binding Host-scoped Claude catalogs", () => {
-  it("routes Session import to local while the current Composer Host is remote", async () => {
+  it("routes Session import to the current remote Composer Host", async () => {
     installFakeBrowser();
     const local = {
       inspectHarness: vi.fn(async () => readyInspection()),
@@ -254,7 +254,8 @@ describe("Renderer binding Host-scoped Claude catalogs", () => {
     );
 
     const client = testState.getSessionImportClient?.();
-    if (!client) throw new Error("Local Session import client was not installed");
+    if (!client) throw new Error("Remote Session import client was not installed");
+    expect(client.hostId).toBe("remote-1");
     await client.listSessionImportSources();
     await client.listHarnessSessions({ harnessId: harnessIdSchema.parse("pi") });
     await client.importHarnessSession({
@@ -262,15 +263,15 @@ describe("Renderer binding Host-scoped Claude catalogs", () => {
       nativeSessionId: "native-session",
     });
 
-    expect(modelControl.clientForHost).toHaveBeenCalledWith("local");
-    expect(local.listSessionImportSources).toHaveBeenCalledOnce();
-    expect(local.listHarnessSessions).toHaveBeenCalledWith({ harnessId: "pi" });
-    expect(local.importHarnessSession).toHaveBeenCalledWith({
+    expect(modelControl.clientForHost).toHaveBeenCalledWith("remote-1");
+    expect(remote.listSessionImportSources).toHaveBeenCalledOnce();
+    expect(remote.listHarnessSessions).toHaveBeenCalledWith({ harnessId: "pi" });
+    expect(remote.importHarnessSession).toHaveBeenCalledWith({
       harnessId: "pi",
       nativeSessionId: "native-session",
     });
-    expect(remote.listHarnessSessions).not.toHaveBeenCalled();
-    expect(remote.importHarnessSession).not.toHaveBeenCalled();
+    expect(local.listHarnessSessions).not.toHaveBeenCalled();
+    expect(local.importHarnessSession).not.toHaveBeenCalled();
   });
 
   it("invalidates and refreshes a stale managed Web capability after open fails", async () => {

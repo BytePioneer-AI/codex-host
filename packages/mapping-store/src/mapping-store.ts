@@ -591,6 +591,12 @@ export class MappingStore {
     return this.#update(hostThreadId, (current) => ({ ...current, title }));
   }
 
+  async setCwd(hostThreadId: HostThreadId, cwd: string): Promise<StoredThreadRecordV1> {
+    return this.#update(hostThreadId, (current) =>
+      current.cwd === cwd ? null : { ...current, cwd },
+    );
+  }
+
   async setTransportModelId(
     hostThreadId: HostThreadId,
     transportModelId: string,

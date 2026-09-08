@@ -149,7 +149,11 @@ describe("Renderer Settings lifecycle", () => {
     expect(getClient()).toBe(client);
     await open(hostThreadIdSchema.parse("imported-thread"), new AbortController().signal);
 
-    expect(openImportedThread).toHaveBeenCalledWith("imported-thread", expect.any(AbortSignal));
+    expect(openImportedThread).toHaveBeenCalledWith(
+      "imported-thread",
+      expect.any(AbortSignal),
+      undefined,
+    );
     expect(events).toEqual(["opened", "closed"]);
     lifecycle.dispose();
   });

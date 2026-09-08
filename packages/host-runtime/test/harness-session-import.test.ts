@@ -217,4 +217,27 @@ describe("Generic native Session import", () => {
       expect(await f.repository.list()).toEqual([]);
     },
   );
+
+  it("refreshes an existing imported mapping when the native Session cwd moves", async () => {
+    const f = await fixture();
+    const adapter = dshAdapter(f.cwd);
+    const importer = new HarnessSessionImporter({
+      harnessId: adapter.harnessId,
+      adapter,
+      repository: f.repository,
+    });
+    const first = await importer.import("same-native-id");
+    if (!first.ok) throw new Error("Initial import failed");
+    const movedCwd = path.join(f.root, "moved-project");
+    await mkdir(movedCwd);
+    const resolved = await adapter.sessionImport.resolveCandidate();
+    resolved.value.candidate.cwd = movedCwd;
+
+    await expect(importer.import("same-native-id")).resolves.toMatchObject({
+      ok: true,
+      threadId: first.threadId,
+      thread: { cwd: movedCwd },
+    });
+    await expect(f.repository.find(first.threadId)).resolves.toMatchObject({ cwd: movedCwd });
+  });
 });

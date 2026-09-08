@@ -256,7 +256,7 @@ class ActiveTurn {
     }
     for (const [, entry] of this.#toolItems) {
       this.#finishedItems.push({
-        item: entry.item,
+        item: { ...entry.item, ...(entry.output ? { output: entry.output } : {}) },
         outcome: { status: "cancelled", reason: "Turn ended" },
       });
     }
@@ -628,11 +628,8 @@ export class HermesSession implements HarnessSession {
     if (this.#activeTurn) {
       return err("sessionBusy", "Hermes Session already has an active Turn", true);
     }
-    const text = command.input
-      .map((chunk) => chunk.text)
-      .join("\n")
-      .trim();
-    if (text.length === 0) {
+    const text = command.input.map((chunk) => chunk.text).join("\n");
+    if (text.trim().length === 0) {
       return err("invalidRequest", "turn.start requires non-empty text input");
     }
     const turnKey = randomUUID();

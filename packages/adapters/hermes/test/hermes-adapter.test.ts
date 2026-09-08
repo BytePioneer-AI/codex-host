@@ -13,12 +13,8 @@ import {
   nativeTurnRefSchema,
 } from "@codexhost/shared-contracts";
 
-import type {
-  HermesAcpTransport,
-  HermesOpenResult,
-  HermesTransportEvent,
-} from "../src/acp-transport.js";
-import { HermesTransportError } from "../src/acp-transport.js";
+import type { HermesOpenResult, HermesTransportEvent } from "../src/acp-transport.js";
+import { HermesAcpTransport, HermesTransportError } from "../src/acp-transport.js";
 import { HermesAdapter } from "../src/hermes-adapter.js";
 import { encodeHermesModelRef } from "../src/hermes-models.js";
 import { HermesSession } from "../src/hermes-session.js";
@@ -688,6 +684,28 @@ describe("HermesAdapter model selection", () => {
   });
 });
 
+describe("HermesAdapter import probes", () => {
+  it("removes a closed one-shot probe from Adapter ownership", async () => {
+    const command = await fakeHermesExecutable();
+    const close = vi.spyOn(HermesAcpTransport.prototype, "close");
+    const adapter = new HermesAdapter({ command });
+
+    try {
+      await expect(adapter.sessionImport.listCandidates()).resolves.toEqual({
+        ok: true,
+        value: [],
+      });
+      expect(close).toHaveBeenCalledTimes(1);
+
+      await adapter.close();
+      expect(close).toHaveBeenCalledTimes(1);
+    } finally {
+      await adapter.close();
+      close.mockRestore();
+    }
+  });
+});
+
 describe("HermesSession recovery", () => {
   it("reuses known native Turn refs when replaying the same history", async () => {
     const knownTurnRef = nativeTurnRefSchema.parse({
@@ -776,6 +794,109 @@ describe("HermesSession recovery", () => {
 });
 
 describe("HermesSession terminal events", () => {
+  it("preserves partial tool output when the Turn ends without a terminal update", async () => {
+    const transport = {
+      onFault: () => undefined,
+      runTurn: async (_text: string, onEvent: (event: HermesTransportEvent) => void) => {
+        onEvent({
+          type: "tool.call",
+          toolCallId: "partial-tool-call",
+          update: {
+            sessionUpdate: "tool_call",
+            toolCallId: "partial-tool-call",
+            title: "Long command",
+            status: "in_progress",
+          },
+        } as HermesTransportEvent);
+        onEvent({
+          type: "tool.update",
+          toolCallId: "partial-tool-call",
+          update: {
+            sessionUpdate: "tool_call_update",
+            toolCallId: "partial-tool-call",
+            status: "in_progress",
+            rawOutput: "partial output",
+          },
+        } as HermesTransportEvent);
+        return { stopReason: "end_turn" as const };
+      },
+      cancel: async () => undefined,
+      close: async () => undefined,
+      setModel: async () => undefined,
+      setPermissionMode: async () => undefined,
+    } as unknown as HermesAcpTransport;
+    const session = new HermesSession({
+      nativeRef: nativeSessionRefSchema.parse({
+        harnessId: "hermes",
+        nativeSessionId: "native-session-1",
+        formatVersion: 1,
+      }),
+      transport,
+      open: openResult(),
+      onSettle: () => undefined,
+    });
+
+    const outputsPromise = collectUntilTurnCompleted(session.outputs);
+    await session.execute({
+      type: "turn.start",
+      turnId: hostTurnIdSchema.parse("turn-partial-tool-output"),
+      input: [{ type: "text", text: "run" }],
+    });
+    const outputs = await outputsPromise;
+    const completed = outputs.find(
+      (output) => output.kind === "event" && output.event.type === "item.completed",
+    );
+
+    expect(completed).toMatchObject({
+      kind: "event",
+      event: {
+        type: "item.completed",
+        snapshot: {
+          item: { output: { content: [{ type: "text", text: "partial output" }] } },
+          outcome: { status: "cancelled" },
+        },
+      },
+    });
+    await session.close();
+  });
+
+  it("sends leading and trailing prompt whitespace to Hermes unchanged", async () => {
+    let receivedText = "";
+    const transport = {
+      onFault: () => undefined,
+      runTurn: async (text: string) => {
+        receivedText = text;
+        return { stopReason: "end_turn" as const };
+      },
+      cancel: async () => undefined,
+      close: async () => undefined,
+      setModel: async () => undefined,
+      setPermissionMode: async () => undefined,
+    } as unknown as HermesAcpTransport;
+    const session = new HermesSession({
+      nativeRef: nativeSessionRefSchema.parse({
+        harnessId: "hermes",
+        nativeSessionId: "native-session-1",
+        formatVersion: 1,
+      }),
+      transport,
+      open: openResult(),
+      onSettle: () => undefined,
+    });
+    const input = "  indented prompt\n\n";
+
+    const outputsPromise = collectUntilTurnCompleted(session.outputs);
+    await session.execute({
+      type: "turn.start",
+      turnId: hostTurnIdSchema.parse("turn-preserve-whitespace"),
+      input: [{ type: "text", text: input }],
+    });
+    await outputsPromise;
+
+    expect(receivedText).toBe(input);
+    await session.close();
+  });
+
   it("immediately terminalizes a failed tool_call carrying its initial output", async () => {
     const transport = {
       onFault: () => undefined,

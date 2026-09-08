@@ -350,7 +350,7 @@ export class HermesAdapter implements HarnessAdapter {
       const connection = await transport.probeConnection();
       return await withTimeout(action(connection), IMPORT_TIMEOUT_MS, "Hermes import discovery");
     } finally {
-      await transport.close().catch(() => undefined);
+      await this.#releaseTransport(transport);
     }
   }
 

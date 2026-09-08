@@ -31,4 +31,21 @@ describe("Hermes model catalog", () => {
 
     expect(catalog.defaultModel).toBeNull();
   });
+
+  it("hides a virtual MoA preset whose backing providers are unavailable", () => {
+    const catalog = catalogModelsFromInventory({
+      models: [
+        {
+          modelId: "moa:default",
+          label: "default",
+          provider: "Mixture of Agents",
+          available: false,
+        },
+        { modelId: "zai:glm-5-turbo", label: "glm-5-turbo", provider: "Z.AI" },
+      ],
+      currentModelId: "zai:glm-5-turbo",
+    });
+
+    expect(catalog.models.map(({ label }) => label)).toEqual(["Z.AI / glm-5-turbo"]);
+  });
 });

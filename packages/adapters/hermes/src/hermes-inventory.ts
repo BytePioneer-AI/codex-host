@@ -34,6 +34,32 @@ payload = build_models_payload(
     probe_current_custom_provider=False,
     max_models=64,
 )
+available_provider_slugs = {
+    str(row.get("slug") or "").strip().lower()
+    for row in payload.get("providers") or []
+    if str(row.get("slug") or "").strip().lower() != "moa"
+}
+moa_availability = {}
+try:
+    from hermes_cli.config import load_config
+    from hermes_cli.moa_config import normalize_moa_config
+
+    moa = normalize_moa_config(load_config().get("moa") or {})
+    for preset_name, preset in (moa.get("presets") or {}).items():
+        required_providers = []
+        for slot in preset.get("reference_models") or []:
+            if isinstance(slot, dict) and slot.get("enabled", True):
+                required_providers.append(str(slot.get("provider") or "").strip().lower())
+        aggregator = preset.get("aggregator") or {}
+        if isinstance(aggregator, dict):
+            required_providers.append(str(aggregator.get("provider") or "").strip().lower())
+        moa_availability[str(preset_name)] = bool(preset.get("enabled", True)) and bool(required_providers) and all(
+            provider and provider in available_provider_slugs for provider in required_providers
+        )
+except Exception:
+    # A virtual preset is unsafe to advertise when its backing providers
+    # cannot be verified. Normal providers remain available.
+    moa_availability = {}
 rows = []
 for row in payload.get("providers") or []:
     slug = str(row.get("slug") or "").strip()
@@ -45,7 +71,13 @@ for row in payload.get("providers") or []:
             else str(entry).strip()
         )
         if slug and model_id:
-            rows.append({"modelId": slug + ":" + model_id, "label": model_id, "provider": provider})
+            available = slug.lower() != "moa" or bool(moa_availability.get(model_id, False))
+            rows.append({
+                "modelId": slug + ":" + model_id,
+                "label": model_id,
+                "provider": provider,
+                "available": available,
+            })
 current_provider = str(getattr(context, "current_provider", "") or "").strip()
 current_model = str(getattr(context, "current_model", "") or "").strip()
 current_model_id = current_provider + ":" + current_model if current_provider and current_model else None
@@ -57,6 +89,8 @@ export interface HermesInventoryModel {
   modelId: string;
   label: string;
   provider: string;
+  /** False when a virtual model depends on providers Hermes cannot currently use. */
+  available?: boolean;
 }
 
 export interface HermesInventory {
@@ -163,6 +197,7 @@ export function catalogModelsFromInventory(inventory: HermesInventory): {
   const models: HermesCatalogModel[] = [];
   let defaultModel: HarnessModelRef | null = null;
   for (const model of inventory.models) {
+    if (model.available === false) continue;
     const ref = encodeHermesModelRef(model.modelId);
     if (!ref) continue;
     if (inventory.currentModelId && model.modelId === inventory.currentModelId) {

@@ -363,6 +363,8 @@ function approvalServerName(harnessId: ExternalHarnessId): string {
       return "Oh My Pi";
     case "antigravity":
       return "Antigravity CLI";
+    case "kiro-cli":
+      return "Kiro CLI";
     default:
       return harnessId;
   }

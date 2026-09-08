@@ -298,7 +298,9 @@ export class HermesAdapter implements HarnessAdapter {
     }
     const scope = this.#transportScope(cwd, environment);
     const previous = this.#warmTransports.get(scope);
-    this.#warmTransports.set(scope, Promise.resolve(transport));
+    const entry = Promise.resolve(transport);
+    this.#watchWarmTransport(scope, entry, transport);
+    this.#warmTransports.set(scope, entry);
     if (previous) {
       void previous.then((losing) => {
         if (losing && losing !== transport) return this.#releaseTransport(losing);
@@ -317,7 +319,20 @@ export class HermesAdapter implements HarnessAdapter {
         await this.#releaseTransport(transport);
         return null;
       });
+    this.#watchWarmTransport(scope, pending, transport);
     this.#warmTransports.set(scope, pending);
+  }
+
+  #watchWarmTransport(
+    scope: string,
+    entry: Promise<HermesAcpTransport | null>,
+    transport: HermesAcpTransport,
+  ): void {
+    transport.onFault = () => {
+      if (this.#warmTransports.get(scope) !== entry) return;
+      this.#warmTransports.delete(scope);
+      void this.#releaseTransport(transport);
+    };
   }
 
   #createTransport(cwd: string, environment = this.#effectiveEnvironment()): HermesAcpTransport {

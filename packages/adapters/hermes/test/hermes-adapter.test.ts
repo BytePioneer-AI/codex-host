@@ -189,6 +189,40 @@ for await (const line of lines) {
   return executable;
 }
 
+async function exitingWarmHermesExecutable(): Promise<string> {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "hermes-adapter-exiting-warm-test-"));
+  temporaryDirectories.push(directory);
+  const executable = path.join(directory, "fake-hermes");
+  await writeFile(
+    executable,
+    `#!/usr/bin/env node
+import { appendFileSync, readFileSync } from "node:fs";
+import readline from "node:readline";
+const starts = readFileSync(process.env.FAKE_HERMES_STARTS, "utf8").trim().split("\\n").filter(Boolean).length + 1;
+appendFileSync(process.env.FAKE_HERMES_STARTS, "started\\n");
+const lines = readline.createInterface({ input: process.stdin });
+for await (const line of lines) {
+  const request = JSON.parse(line);
+  let result = {};
+  if (request.method === "initialize") {
+    result = {
+      protocolVersion: 1,
+      agentCapabilities: { loadSession: true },
+      agentInfo: { name: "fake-hermes", version: "1.0.0" },
+      authMethods: [],
+    };
+  } else if (request.method === "session/new") {
+    result = { sessionId: "fake-session-" + process.pid };
+  }
+  process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: request.id, result }) + "\\n");
+  if (request.method === "initialize" && starts === 2) setTimeout(() => process.exit(0), 25);
+}
+`,
+  );
+  await chmod(executable, 0o755);
+  return executable;
+}
+
 async function environmentAwareHermesExecutable(): Promise<string> {
   const directory = await mkdtemp(path.join(os.tmpdir(), "hermes-adapter-environment-test-"));
   temporaryDirectories.push(directory);
@@ -427,6 +461,119 @@ describe("HermesSession text projection", () => {
 
     await session.close();
   });
+
+  it("keeps streamed text items ordered around a tool call", async () => {
+    const transport = {
+      onFault: () => undefined,
+      runTurn: async (
+        _text: string,
+        onEvent: (event: HermesTransportEvent) => void,
+      ): Promise<{ stopReason: "end_turn" }> => {
+        onEvent({ type: "agent.text", text: "before" });
+        onEvent({
+          type: "tool.call",
+          toolCallId: "tool-between-text",
+          update: {
+            sessionUpdate: "tool_call",
+            toolCallId: "tool-between-text",
+            title: "Run command",
+            status: "completed",
+          },
+        } as HermesTransportEvent);
+        onEvent({ type: "agent.text", text: "after" });
+        return { stopReason: "end_turn" };
+      },
+      close: async () => undefined,
+      cancel: async () => undefined,
+      setModel: async () => undefined,
+      setPermissionMode: async () => undefined,
+    } as unknown as HermesAcpTransport;
+    const session = new HermesSession({
+      nativeRef: nativeSessionRefSchema.parse({
+        harnessId: "hermes",
+        nativeSessionId: "native-session-1",
+        formatVersion: 1,
+      }),
+      transport,
+      open: openResult(),
+      onSettle: () => undefined,
+    });
+
+    const outputsPromise = collectUntilTurnCompleted(session.outputs);
+    await session.execute({
+      type: "turn.start",
+      turnId: hostTurnIdSchema.parse("turn-text-tool-text"),
+      input: [{ type: "text", text: "go" }],
+    });
+    const outputs = await outputsPromise;
+    const completedTypes = outputs.flatMap((output) =>
+      output.kind === "event" && output.event.type === "item.completed"
+        ? [output.event.snapshot.item.type]
+        : [],
+    );
+    expect(completedTypes).toEqual(["agentMessage", "toolExecution", "agentMessage"]);
+
+    const snapshot = await session.readSnapshot();
+    expect(snapshot.ok).toBe(true);
+    if (snapshot.ok) {
+      expect(snapshot.value.turns[0]?.items.map(({ item }) => item.type)).toEqual([
+        "agentMessage",
+        "toolExecution",
+        "agentMessage",
+      ]);
+      expect(snapshot.value.turns[0]?.items[0]?.item).toMatchObject({ text: "before" });
+      expect(snapshot.value.turns[0]?.items[2]?.item).toMatchObject({ text: "after" });
+    }
+    await session.close();
+  });
+
+  it("merges terminal token totals with the latest context usage", async () => {
+    const transport = {
+      onFault: () => undefined,
+      runTurn: async (_text: string, onEvent: (event: HermesTransportEvent) => void) => {
+        onEvent({ type: "usage", used: 120, size: 1_000 });
+        return {
+          stopReason: "end_turn" as const,
+          usage: { inputTokens: 80, outputTokens: 40, totalTokens: 120 },
+        };
+      },
+      close: async () => undefined,
+      cancel: async () => undefined,
+      setModel: async () => undefined,
+      setPermissionMode: async () => undefined,
+    } as unknown as HermesAcpTransport;
+    const session = new HermesSession({
+      nativeRef: nativeSessionRefSchema.parse({
+        harnessId: "hermes",
+        nativeSessionId: "native-session-1",
+        formatVersion: 1,
+      }),
+      transport,
+      open: openResult(),
+      onSettle: () => undefined,
+    });
+
+    const outputsPromise = collectUntilTurnCompleted(session.outputs);
+    await session.execute({
+      type: "turn.start",
+      turnId: hostTurnIdSchema.parse("turn-merged-usage"),
+      input: [{ type: "text", text: "go" }],
+    });
+    const outputs = await outputsPromise;
+    const usages = outputs.flatMap((output) =>
+      output.kind === "event" && output.event.type === "session.usage.changed"
+        ? [output.event.usage]
+        : [],
+    );
+    expect(usages.at(-1)).toEqual({
+      contextUsedTokens: 120,
+      contextWindowTokens: 1_000,
+      inputTokens: 80,
+      outputTokens: 40,
+      totalTokens: 120,
+    });
+    await session.close();
+  });
 });
 
 describe("HermesAdapter model selection", () => {
@@ -652,6 +799,37 @@ describe("HermesAdapter model selection", () => {
     await adapter.close();
   });
 
+  it("replaces a warm ACP process that exits before the next Session opens", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "hermes-adapter-warm-exit-counter-"));
+    temporaryDirectories.push(directory);
+    const counterPath = path.join(directory, "starts.log");
+    await writeFile(counterPath, "");
+    const command = await exitingWarmHermesExecutable();
+    const adapter = new HermesAdapter({
+      command,
+      environment: { ...process.env, FAKE_HERMES_STARTS: counterPath },
+    });
+
+    const first = await adapter.open({ kind: "create", cwd: process.cwd() });
+    expect(first.ok).toBe(true);
+    await vi.waitFor(async () => {
+      const starts = await readFile(counterPath, "utf8");
+      expect(starts.trim().split("\n")).toHaveLength(2);
+    });
+    await new Promise((resolve) => setTimeout(resolve, 75));
+
+    const second = await adapter.open({ kind: "create", cwd: process.cwd() });
+    expect(second.ok).toBe(true);
+    await vi.waitFor(async () => {
+      const starts = await readFile(counterPath, "utf8");
+      expect(starts.trim().split("\n").length).toBeGreaterThanOrEqual(3);
+    });
+
+    if (first.ok) await first.value.close();
+    if (second.ok) await second.value.close();
+    await adapter.close();
+  });
+
   it("does not rebuild the Hermes Agent when the requested model is already active", async () => {
     const directory = await mkdtemp(path.join(os.tmpdir(), "hermes-adapter-model-calls-"));
     temporaryDirectories.push(directory);
@@ -707,6 +885,60 @@ describe("HermesAdapter import probes", () => {
 });
 
 describe("HermesSession recovery", () => {
+  it("accumulates replayed user chunks into one restored prompt", async () => {
+    const session = new HermesSession({
+      nativeRef: nativeSessionRefSchema.parse({
+        harnessId: "hermes",
+        nativeSessionId: "native-session-1",
+        formatVersion: 1,
+      }),
+      transport: new FakeTurnTransport() as unknown as HermesAcpTransport,
+      open: {
+        ...openResult(),
+        replay: [
+          { type: "user.text", text: "first " },
+          { type: "user.text", text: "second" },
+          { type: "agent.text", text: "answer" },
+        ],
+      },
+      onSettle: () => undefined,
+    });
+
+    const snapshot = await session.readSnapshot();
+    expect(snapshot.ok).toBe(true);
+    if (snapshot.ok) {
+      expect(snapshot.value.turns).toHaveLength(1);
+      expect(snapshot.value.turns[0]?.input).toEqual([{ type: "text", text: "first second" }]);
+    }
+    await session.close();
+  });
+
+  it("restores replayed Turns with an unknown outcome", async () => {
+    const session = new HermesSession({
+      nativeRef: nativeSessionRefSchema.parse({
+        harnessId: "hermes",
+        nativeSessionId: "native-session-1",
+        formatVersion: 1,
+      }),
+      transport: new FakeTurnTransport() as unknown as HermesAcpTransport,
+      open: {
+        ...openResult(),
+        replay: [
+          { type: "user.text", text: "hello" },
+          { type: "agent.text", text: "partial answer" },
+        ],
+      },
+      onSettle: () => undefined,
+    });
+
+    const snapshot = await session.readSnapshot();
+    expect(snapshot.ok).toBe(true);
+    if (snapshot.ok) {
+      expect(snapshot.value.turns[0]?.outcome).toMatchObject({ status: "unknown" });
+    }
+    await session.close();
+  });
+
   it("reuses known native Turn refs when replaying the same history", async () => {
     const knownTurnRef = nativeTurnRefSchema.parse({
       harnessId: "hermes",

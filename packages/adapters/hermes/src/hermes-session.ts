@@ -212,6 +212,18 @@ class ActiveTurn {
     return { startedItem: item, item: appended };
   }
 
+  completeCurrentText(): HostItemSnapshot | null {
+    if (!this.#currentText) return null;
+    const snapshot: HostItemSnapshot = {
+      item: this.#currentText.item,
+      outcome: { status: "succeeded" },
+    };
+    this.#currentText = null;
+    this.#finishedItems.push(snapshot);
+    this.#emittedTerminalItemIds.add(snapshot.item.itemId);
+    return snapshot;
+  }
+
   addToolItem(toolCallId: string, entry: { item: HostToolExecutionItem; startedAt: number }): void {
     this.#toolItems.set(toolCallId, entry);
   }
@@ -343,7 +355,10 @@ function historyTurnsFromReplay(
       nativeTurnRef,
       input: [{ type: "text", text: current.inputText }],
       items: current.items,
-      outcome: { status: "succeeded" },
+      outcome: {
+        status: "unknown",
+        reason: "Hermes replay does not include terminal Turn outcome metadata",
+      },
     });
     current = null;
     toolItemIndexes = new Map();
@@ -373,8 +388,12 @@ function historyTurnsFromReplay(
   for (const event of replay) {
     switch (event.type) {
       case "user.text": {
-        closeTurn();
-        current = { inputText: event.text, items: [], turnKey: `history-${turns.length + 1}` };
+        if (current && current.items.length === 0) {
+          current.inputText += event.text;
+        } else {
+          closeTurn();
+          current = { inputText: event.text, items: [], turnKey: `history-${turns.length + 1}` };
+        }
         break;
       }
       case "agent.thought":
@@ -499,6 +518,7 @@ export class HermesSession implements HarnessSession {
   #activeTurnId: ReturnType<typeof hostTurnIdSchema.parse> | null = null;
   #completedTurns: HostTurnSnapshot[] = [];
   #historyTurns: HostTurnSnapshot[];
+  #latestUsage: HostUsage | null;
   #approvalWaiters = new Map<ReturnType<typeof hostInteractionIdSchema.parse>, ApprovalWaiter>();
 
   constructor(options: HermesSessionOptions) {
@@ -522,6 +542,7 @@ export class HermesSession implements HarnessSession {
       options.knownTurnRefs,
     );
     this.initialUsage = lastUsageFromReplay(options.open.replay);
+    this.#latestUsage = this.initialUsage;
     this.outputs = this.#channel.outputs;
     this.#transport.onFault = (error) => this.#fault(transportErrorToHarness(error));
   }
@@ -677,7 +698,8 @@ export class HermesSession implements HarnessSession {
       outcome = { status: "succeeded" };
     }
 
-    const usage = promptResponse ? usageFromPromptResponse(promptResponse.usage) : null;
+    const terminalUsage = promptResponse ? usageFromPromptResponse(promptResponse.usage) : null;
+    const usage = terminalUsage ? this.#mergeUsage(terminalUsage) : null;
     this.#completeActiveTurn(active, outcome, usage);
   }
 
@@ -712,9 +734,10 @@ export class HermesSession implements HarnessSession {
       case "usage": {
         const usage = usageFromContext(event.used, event.size);
         if (!usage) return;
+        const mergedUsage = this.#mergeUsage(usage);
         this.#emit({
           type: "session.usage.changed",
-          usage,
+          usage: mergedUsage,
           observedForTurnId: active.turnId,
         });
         return;
@@ -766,6 +789,10 @@ export class HermesSession implements HarnessSession {
     name: string | null,
     rawInput: unknown,
   ): void {
+    const completedText = active.completeCurrentText();
+    if (completedText) {
+      this.#emit({ type: "item.completed", turnId: active.turnId, snapshot: completedText });
+    }
     const item: HostToolExecutionItem = {
       type: "toolExecution",
       itemId: hostItemIdSchema.parse(randomUUID()),
@@ -776,6 +803,12 @@ export class HermesSession implements HarnessSession {
     };
     active.addToolItem(toolCallId, { item, startedAt: Date.now() });
     this.#emit({ type: "item.started", turnId: active.turnId, item });
+  }
+
+  #mergeUsage(usage: HostUsage): HostUsage {
+    const merged = { ...(this.#latestUsage ?? {}), ...usage };
+    this.#latestUsage = merged;
+    return merged;
   }
 
   #updateToolItem(active: ActiveTurn, update: ToolCallUpdate): void {

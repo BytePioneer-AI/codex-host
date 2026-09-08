@@ -1,6 +1,7 @@
 import codexAgentIconUrl from "./assets/codex-agent.png";
 import grokAgentIconUrl from "./assets/grok-agent.png";
 import antigravityAgentIconUrl from "./assets/antigravity-agent.svg";
+import kiroAgentIconUrl from "./assets/kiro-agent.svg";
 import ompAgentIconUrl from "./assets/omp-agent.svg";
 import openCodeAgentIconUrl from "./assets/opencode-agent.png";
 import type { RendererAgent } from "./agent-selection-state.js";
@@ -23,21 +24,6 @@ const PI_PATHS = [
     fillRule: "evenodd",
   },
   { d: "M17.5 12H23v11h-5.5V12z" },
-] as const;
-
-const KIRO_PATHS = [
-  {
-    d: "M4 3.5C4 2.67157 4.67157 2 5.5 2H8.5C9.32843 2 10 2.67157 10 3.5V20.5C10 21.3284 9.32843 22 8.5 22H5.5C4.67157 22 4 21.3284 4 20.5V3.5Z",
-    fill: "#7C3AED",
-  },
-  {
-    d: "M10 11.5L16.2 3.8C16.8 3.1 17.8 3 18.5 3.6C19.2 4.2 19.3 5.2 18.7 5.9L13.8 12L19.2 18.2C19.8 18.9 19.7 19.9 19 20.5C18.3 21.1 17.3 21 16.7 20.3L10 12.5V11.5Z",
-    fill: "#A78BFA",
-  },
-  {
-    d: "M15.5 12a2 2 0 1 0 4 0 2 2 0 1 0 -4 0",
-    fill: "#C4B5FD",
-  },
 ] as const;
 
 // DeepSeek Harness whale mark, exact extract from the official dsh web
@@ -125,9 +111,9 @@ export function createRendererAgentIcon(
     image.style.flex = "none";
     return image;
   }
-  if (agent === "antigravity") {
+  if (agent === "antigravity" || agent === "kiro-cli") {
     const image = ownerDocument.createElement("img");
-    image.src = antigravityAgentIconUrl;
+    image.src = agent === "kiro-cli" ? kiroAgentIconUrl : antigravityAgentIconUrl;
     image.alt = "";
     image.draggable = false;
     image.style.width = `${size}px`;
@@ -135,9 +121,6 @@ export function createRendererAgentIcon(
     image.style.objectFit = "contain";
     image.style.flex = "none";
     return image;
-  }
-  if (agent === "kiro-cli") {
-    return createSvgIcon(KIRO_PATHS, "#7C3AED", size, ownerDocument);
   }
   const mark = ownerDocument.createElement("img");
   mark.src = grokAgentIconUrl;

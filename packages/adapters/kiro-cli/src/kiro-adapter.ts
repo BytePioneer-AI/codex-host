@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import path from "node:path";
 
 import type { RequestPermissionRequest, RequestPermissionResponse } from "@agentclientprotocol/sdk";
 import type {
@@ -163,14 +164,62 @@ export class KiroAdapter implements HarnessAdapter {
   readonly #options: KiroAdapterOptions;
   readonly #deps: KiroAdapterDependencies;
   readonly #sessions = new Set<KiroSession>();
+  readonly #inspectionCache = new Map<
+    string,
+    { result: Extract<HarnessInspection, { status: "ready" }>; refreshAfter: number }
+  >();
+  readonly #inspectionInFlight = new Map<string, Promise<HarnessInspection>>();
 
   constructor(options: KiroAdapterOptions = {}, deps: KiroAdapterDependencies = {}) {
     this.#options = options;
     this.#deps = deps;
   }
 
-  async inspect(_input: InspectHarnessInput = {}): Promise<HarnessInspection> {
-    void _input;
+  async inspect(input: InspectHarnessInput = {}): Promise<HarnessInspection> {
+    const cwd = path.resolve(input.cwd ?? process.cwd());
+    const cached = this.#inspectionCache.get(cwd);
+    if (!input.refresh && cached) {
+      if (cached.refreshAfter <= Date.now()) {
+        void this.#refreshInspection(cwd).catch(() => undefined);
+      }
+      return cached.result;
+    }
+    return this.#refreshInspection(cwd);
+  }
+
+  #refreshInspection(cwd: string): Promise<HarnessInspection> {
+    const inFlight = this.#inspectionInFlight.get(cwd);
+    if (inFlight) return inFlight;
+    const cached = this.#inspectionCache.get(cwd);
+    if (cached) cached.refreshAfter = Date.now() + 5 * 60_000;
+
+    const inspection = this.#inspectCwd(cwd)
+      .then((result) => {
+        if (result.status === "ready") {
+          const now = Date.now();
+          const date = new Date(now);
+          const nextMonth = Date.UTC(date.getUTCFullYear(), date.getUTCMonth() + 1, 1);
+          // ponytail: daily/month-boundary revalidation is demand-driven, not a polling timer.
+          this.#inspectionCache.set(cwd, {
+            result,
+            refreshAfter: Math.min(now + 24 * 60 * 60_000, nextMonth),
+          });
+        } else if (
+          result.status === "notInstalled" ||
+          result.error.code === "authenticationRequired"
+        ) {
+          this.#inspectionCache.delete(cwd);
+        }
+        return result;
+      })
+      .finally(() => {
+        this.#inspectionInFlight.delete(cwd);
+      });
+    this.#inspectionInFlight.set(cwd, inspection);
+    return inspection;
+  }
+
+  async #inspectCwd(cwd: string): Promise<HarnessInspection> {
     try {
       if (this.#deps.inspectInstallation) {
         this.#deps.inspectInstallation();
@@ -193,7 +242,7 @@ export class KiroAdapter implements HarnessAdapter {
       }
     }
 
-    const transport = this.#createTransport(_input.cwd ?? process.cwd());
+    const transport = this.#createTransport(cwd);
     try {
       const initialize = await transport.inspect();
       const modelCatalog =
@@ -494,7 +543,14 @@ export class KiroAdapter implements HarnessAdapter {
   }
 
   async close(): Promise<void> {
-    await Promise.all([...this.#sessions].map((session) => session.close()));
+    try {
+      await Promise.all([
+        ...this.#inspectionInFlight.values(),
+        ...[...this.#sessions].map((session) => session.close()),
+      ]);
+    } finally {
+      this.#inspectionCache.clear();
+    }
   }
 
   #createTransport(

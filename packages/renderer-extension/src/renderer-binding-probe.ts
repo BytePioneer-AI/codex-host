@@ -195,8 +195,9 @@ export function shouldReloadExternalCatalogAfterAvailabilityRefresh(
   previous: RendererAgentAvailability | undefined,
   next: RendererAgentAvailability,
   configurationReady: boolean,
+  explicitRefresh = false,
 ): boolean {
-  return previous !== next || !configurationReady;
+  return explicitRefresh || previous !== next || !configurationReady;
 }
 
 function isExternalConfigurationReadyView(
@@ -1958,6 +1959,7 @@ export function installRendererBindingProbe(
                 previousStatus,
                 status,
                 isExternalConfigurationStable(mounted.modelView, mounted.permissionModeView),
+                refresh && force,
               )
             ) {
               void loadExternalCatalog(mounted);

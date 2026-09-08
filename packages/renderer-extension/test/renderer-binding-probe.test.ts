@@ -305,6 +305,9 @@ describe("Renderer Composer DOM behavior", () => {
     expect(shouldReloadExternalCatalogAfterAvailabilityRefresh("ready", "ready", false)).toBe(true);
     expect(shouldReloadExternalCatalogAfterAvailabilityRefresh("error", "ready", true)).toBe(true);
     expect(shouldReloadExternalCatalogAfterAvailabilityRefresh("ready", "error", true)).toBe(true);
+    expect(shouldReloadExternalCatalogAfterAvailabilityRefresh("ready", "ready", true, true)).toBe(
+      true,
+    );
   });
 
   it("retries external Usage after an early empty inspection", () => {

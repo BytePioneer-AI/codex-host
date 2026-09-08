@@ -15,7 +15,7 @@ import {
   nativeSessionRefSchema,
 } from "@codexhost/shared-contracts";
 import { CodexTurnProjector, projectCodexApprovalRequest } from "@codexhost/protocol-core";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -1229,6 +1229,209 @@ describe("KiroAdapter", () => {
   const dummyBin = "/fake/bin/kiro-cli";
 
   describe("inspect()", () => {
+    afterEach(() => vi.restoreAllMocks());
+
+    it("coalesces startup requests and reuses the native catalog per cwd", async () => {
+      const transports: FakeKiroTransport[] = [];
+      const createTransport = vi.fn(() => {
+        const transport = new FakeKiroTransport();
+        transports.push(transport);
+        return transport;
+      });
+      const adapter = new KiroAdapter(
+        {},
+        {
+          inspectInstallation: () => undefined,
+          createTransport,
+        },
+      );
+      const [first, concurrent] = await Promise.all([
+        adapter.inspect(),
+        adapter.inspect({ cwd: path.join(process.cwd(), ".") }),
+      ]);
+      expect(first.status).toBe("ready");
+      expect(concurrent).toBe(first);
+      expect(await adapter.inspect()).toBe(first);
+      expect(createTransport).toHaveBeenCalledTimes(1);
+      expect(transports[0]?.closed).toBe(true);
+      expect(transports[0]?.openCalls).toEqual([]);
+
+      await adapter.inspect({ cwd: path.join(process.cwd(), "other-project") });
+      expect(createTransport).toHaveBeenCalledTimes(2);
+      await adapter.close();
+      await adapter.inspect();
+      expect(createTransport).toHaveBeenCalledTimes(3);
+      await adapter.close();
+    });
+
+    it("refreshes changed native entitlements without blocking cached reads", async () => {
+      let availableModels = ["free-model"];
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const createTransport = vi.fn(() => {
+        const transport = new FakeKiroTransport();
+        transport.inspectResult = {
+          configOptions: [
+            {
+              id: "model",
+              currentValue: availableModels[0],
+              options: availableModels.map((value) => ({ value, name: value })),
+            },
+          ],
+        };
+        if (availableModels.length > 1) {
+          transport.inspect = async () => {
+            await gate;
+            return transport.inspectResult;
+          };
+        }
+        return transport;
+      });
+      const adapter = new KiroAdapter(
+        {},
+        {
+          inspectInstallation: () => undefined,
+          createTransport,
+        },
+      );
+      const free = await adapter.inspect();
+      availableModels = ["free-model", "paid-model"];
+      const refresh = adapter.inspect({ refresh: true });
+      expect(await adapter.inspect()).toBe(free);
+      expect(createTransport).toHaveBeenCalledTimes(2);
+      release();
+      const paid = await refresh;
+      expect(paid).toMatchObject({
+        catalog: { models: [{ ref: { id: "free-model" } }, { ref: { id: "paid-model" } }] },
+      });
+      expect(await adapter.inspect()).toBe(paid);
+      expect(createTransport).toHaveBeenCalledTimes(2);
+      await adapter.close();
+    });
+
+    it.each([
+      ["daily", "2026-09-08T10:00:00Z", "2026-09-09T10:00:00Z"],
+      ["month", "2026-09-30T23:59:00Z", "2026-10-01T00:00:00Z"],
+      ["year", "2026-12-31T23:59:00Z", "2027-01-01T00:00:00Z"],
+      ["leap month", "2028-02-29T23:59:00Z", "2028-03-01T00:00:00Z"],
+    ])(
+      "revalidates at the %s boundary without delaying a new picker",
+      async (_label, start, due) => {
+        const clock = vi.spyOn(Date, "now").mockReturnValue(Date.parse(start));
+        let release!: () => void;
+        const gate = new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        const createTransport = vi.fn(() => {
+          const transport = new FakeKiroTransport();
+          if (createTransport.mock.calls.length > 1) {
+            transport.inspectResult = {
+              configOptions: [
+                {
+                  id: "model",
+                  currentValue: "changed-plan-model",
+                  options: [{ value: "changed-plan-model", name: "Changed plan model" }],
+                },
+              ],
+            };
+            transport.inspect = async () => {
+              await gate;
+              return transport.inspectResult;
+            };
+          }
+          return transport;
+        });
+        const adapter = new KiroAdapter(
+          {},
+          {
+            inspectInstallation: () => undefined,
+            createTransport,
+          },
+        );
+        const cached = await adapter.inspect();
+        clock.mockReturnValue(Date.parse(due) - 1);
+        expect(await adapter.inspect()).toBe(cached);
+        expect(createTransport).toHaveBeenCalledTimes(1);
+
+        clock.mockReturnValue(Date.parse(due));
+        expect(await adapter.inspect()).toBe(cached);
+        expect(await adapter.inspect()).toBe(cached);
+        expect(createTransport).toHaveBeenCalledTimes(2);
+        const refreshed = adapter.inspect({ refresh: true });
+        release();
+        expect(await refreshed).toMatchObject({
+          catalog: { models: [{ ref: { id: "changed-plan-model" } }] },
+        });
+        expect(await adapter.inspect()).not.toBe(cached);
+        expect(createTransport).toHaveBeenCalledTimes(2);
+        await adapter.close();
+      },
+    );
+
+    it("keeps the catalog through transient failures and backs off background retries", async () => {
+      const start = Date.parse("2026-09-08T10:00:00Z");
+      const clock = vi.spyOn(Date, "now").mockReturnValue(start);
+      let fail = false;
+      const createTransport = vi.fn(() => {
+        const transport = new FakeKiroTransport();
+        if (fail) transport.inspectError = new KiroTransportError("unavailable", "Offline");
+        return transport;
+      });
+      const adapter = new KiroAdapter(
+        {},
+        {
+          inspectInstallation: () => undefined,
+          createTransport,
+        },
+      );
+      const cached = await adapter.inspect();
+      const due = start + 24 * 60 * 60_000;
+      clock.mockReturnValue(due);
+      fail = true;
+      expect(await adapter.inspect()).toBe(cached);
+      expect((await adapter.inspect({ refresh: true })).status).toBe("unavailable");
+      expect(createTransport).toHaveBeenCalledTimes(2);
+      clock.mockReturnValue(due + 5 * 60_000 - 1);
+      expect(await adapter.inspect()).toBe(cached);
+      expect(createTransport).toHaveBeenCalledTimes(2);
+      clock.mockReturnValue(due + 5 * 60_000);
+      fail = false;
+      expect(await adapter.inspect()).toBe(cached);
+      expect((await adapter.inspect({ refresh: true })).status).toBe("ready");
+      expect(createTransport).toHaveBeenCalledTimes(3);
+      await adapter.close();
+    });
+
+    it("discards an old catalog on failed refresh and retries the next request", async () => {
+      let fail = false;
+      const createTransport = vi.fn(() => {
+        const transport = new FakeKiroTransport();
+        if (fail)
+          transport.inspectError = new KiroTransportError(
+            "authenticationRequired",
+            "Login required",
+          );
+        return transport;
+      });
+      const adapter = new KiroAdapter(
+        {},
+        {
+          inspectInstallation: () => undefined,
+          createTransport,
+        },
+      );
+      expect((await adapter.inspect()).status).toBe("ready");
+      fail = true;
+      expect((await adapter.inspect({ refresh: true })).status).toBe("error");
+      expect((await adapter.inspect()).status).toBe("error");
+      fail = false;
+      expect((await adapter.inspect()).status).toBe("ready");
+      expect(createTransport).toHaveBeenCalledTimes(4);
+      await adapter.close();
+    });
+
     it("returns notInstalled when executable cannot be resolved", async () => {
       const adapter = new KiroAdapter(
         { command: dummyBin },

@@ -644,7 +644,7 @@ export class KiroSession implements HarnessSession {
   #currentPermissionModeId: HarnessPermissionModeId | undefined;
   #thinking: Pick<HarnessSessionState, "effectiveThinkingOptionId" | "availableThinkingOptions">;
   #modelCatalog: HarnessModelCatalog;
-  #pendingInteraction: PendingInteraction | null = null;
+  readonly #pendingInteractions = new Map<HostInteractionId, PendingInteraction>();
   #closed = false;
   #activeTask: Promise<void> | null = null;
   #stopTurn: (() => void) | null = null;
@@ -931,50 +931,42 @@ export class KiroSession implements HarnessSession {
               const question = projectKiroRequirementQuestion(interactionId, turnId, request);
               if (question) {
                 return new Promise<RequestPermissionResponse>((resolve) => {
-                  this.#pendingInteraction = {
+                  this.#pendingInteractions.set(question.interaction.interactionId, {
                     type: "question",
                     id: question.interaction.interactionId,
                     interaction: question.interaction,
                     resolve: (response) => resolve(question.resolve(response)),
-                  };
+                  });
                   this.#channel.emit({ kind: "interaction", interaction: question.interaction });
                 });
               }
               const projected = projectKiroPermission(interactionId, turnId, request);
-              this.#channel.emit({
-                kind: "interaction",
-                interaction: projected.interaction,
-              });
-
               return new Promise<RequestPermissionResponse>((resolve) => {
-                this.#pendingInteraction = {
+                this.#pendingInteractions.set(projected.interaction.interactionId, {
                   type: "approval",
                   id: projected.interaction.interactionId,
                   interaction: projected.interaction,
                   resolve: (actionId: string, cancelled?: boolean) => {
                     resolve(projected.resolve(actionId, cancelled));
                   },
-                };
+                });
+                this.#channel.emit({ kind: "interaction", interaction: projected.interaction });
               });
             },
             async (params: KiroUserInputParams) => {
               if (this.#closed || this.#activeTurnId !== turnId) return { action: "dismissed" };
               const interactionId = this.#randomUUID();
               const projected = projectKiroUserInput(interactionId, turnId, params);
-              this.#channel.emit({
-                kind: "interaction",
-                interaction: projected.interaction,
-              });
-
               return new Promise((resolve) => {
-                this.#pendingInteraction = {
+                this.#pendingInteractions.set(projected.interaction.interactionId, {
                   type: "question",
                   id: projected.interaction.interactionId,
                   interaction: projected.interaction,
                   resolve: (response: HostQuestionResponse) => {
                     resolve(projected.resolve(response));
                   },
-                };
+                });
+                this.#channel.emit({ kind: "interaction", interaction: projected.interaction });
               });
             },
           ),
@@ -998,21 +990,7 @@ export class KiroSession implements HarnessSession {
                 },
               };
       } finally {
-        if (this.#pendingInteraction) {
-          const pending = this.#pendingInteraction;
-          this.#pendingInteraction = null;
-          if (pending.type === "approval") pending.resolve("", true);
-          else pending.resolve({ type: "question", cancelled: true, answers: {} });
-          this.#channel.emit({
-            kind: "event",
-            event: {
-              type: "interaction.closed",
-              interactionId: pending.id,
-              turnId,
-              reason: "cancelled",
-            },
-          });
-        }
+        this.#cancelInteractions(turnId);
 
         output.finish(turnOutcome);
         const nativeTurnRef = assignedUserMessageId
@@ -1046,32 +1024,35 @@ export class KiroSession implements HarnessSession {
   async #cancelTurn(command: TurnCancelCommand): Promise<HarnessResult<TurnCancelAccepted>> {
     if (this.#activeTurnId !== null && this.#activeTurnId === command.turnId) {
       await this.#transport.cancel();
-      if (this.#pendingInteraction) {
-        const pending = this.#pendingInteraction;
-        this.#pendingInteraction = null;
-        if (pending.type === "approval") {
-          pending.resolve("", true);
-        } else {
-          pending.resolve({ type: "question", cancelled: true, answers: {} });
-        }
-        this.#channel.emit({
-          kind: "event",
-          event: {
-            type: "interaction.closed",
-            interactionId: pending.id,
-            turnId: command.turnId,
-            reason: "cancelled",
-          },
-        });
-      }
+      // The native cancellation notification can settle the Prompt before it returns.
+      if (this.#activeTurnId === command.turnId) this.#cancelInteractions(command.turnId);
     }
     return { ok: true, value: { cancellationRequested: true } };
+  }
+
+  #cancelInteractions(turnId: HostTurnId): void {
+    const interactions = [...this.#pendingInteractions.values()];
+    this.#pendingInteractions.clear();
+    for (const pending of interactions) {
+      if (pending.type === "approval") pending.resolve("", true);
+      else pending.resolve({ type: "question", cancelled: true, answers: {} });
+      this.#channel.emit({
+        kind: "event",
+        event: {
+          type: "interaction.closed",
+          interactionId: pending.id,
+          turnId,
+          reason: "cancelled",
+        },
+      });
+    }
   }
 
   async #respondInteraction(
     command: InteractionRespondCommand,
   ): Promise<HarnessResult<InteractionRespondAccepted>> {
-    if (!this.#pendingInteraction || this.#pendingInteraction.id !== command.interactionId) {
+    const pending = this.#pendingInteractions.get(command.interactionId);
+    if (!pending) {
       return {
         ok: false,
         error: {
@@ -1081,8 +1062,6 @@ export class KiroSession implements HarnessSession {
         },
       };
     }
-
-    const pending = this.#pendingInteraction;
 
     if (pending.type === "approval") {
       if (command.response.type !== "approval") {
@@ -1097,7 +1076,7 @@ export class KiroSession implements HarnessSession {
       }
       const error = validateHostApprovalResponse(pending.interaction, command.response);
       if (error) return { ok: false, error };
-      this.#pendingInteraction = null;
+      this.#pendingInteractions.delete(command.interactionId);
       pending.resolve(command.response.actionId);
     } else {
       if (command.response.type !== "question") {
@@ -1112,7 +1091,7 @@ export class KiroSession implements HarnessSession {
       }
       const error = validateHostQuestionResponse(pending.interaction, command.response);
       if (error) return { ok: false, error };
-      this.#pendingInteraction = null;
+      this.#pendingInteractions.delete(command.interactionId);
       pending.resolve(command.response);
     }
 

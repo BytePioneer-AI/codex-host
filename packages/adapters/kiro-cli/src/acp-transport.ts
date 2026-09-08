@@ -201,13 +201,15 @@ function classifyStartupError(error: unknown): KiroTransportError {
   return new KiroTransportError("unavailable", "Kiro CLI could not start", { cause: error });
 }
 
+class KiroRequestTimeoutError extends KiroTransportError {}
+
 function withTimeout<T>(promise: Promise<T>, milliseconds: number, operation: string): Promise<T> {
   let timeout: NodeJS.Timeout | undefined;
   return Promise.race([
     promise,
     new Promise<never>((_resolve, reject) => {
       timeout = setTimeout(
-        () => reject(new KiroTransportError("unavailable", `${operation} timed out`)),
+        () => reject(new KiroRequestTimeoutError("unavailable", `${operation} timed out`)),
         milliseconds,
       );
     }),
@@ -527,6 +529,12 @@ export class KiroAcpTransport {
       );
       return confirmedKiroConfig(result, configId, value);
     } catch (error) {
+      if (error instanceof KiroRequestTimeoutError) {
+        // A local timeout cannot undo a native write. Do not reuse this connection
+        // with stale Model/Thinking/Permission Mode state, even if a reply arrives later.
+        this.#fault(error);
+        await this.close().catch(() => undefined);
+      }
       throw new KiroTransportError("unavailable", `Failed to set ${configId} config option`, {
         cause: error,
       });

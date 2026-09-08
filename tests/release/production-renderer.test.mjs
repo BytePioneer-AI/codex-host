@@ -47,6 +47,7 @@ describe("production Renderer release chain", () => {
     expect(RENDERER_PROBE_AGENTS).toContain("opencode");
     expect(RENDERER_PROBE_AGENTS).toContain("grok");
     expect(RENDERER_PROBE_AGENTS).toContain("antigravity");
+    expect(RENDERER_PROBE_AGENTS).toContain("muse");
     expect(status.selections).toEqual([
       { composerId: "composer-grok", agent: "grok", phase: "draft" },
     ]);

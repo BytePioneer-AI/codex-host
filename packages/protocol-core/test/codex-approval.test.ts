@@ -120,7 +120,7 @@ describe("Codex native Approval wire projection", () => {
     );
   });
 
-  it("requires exactly one bounded Allow Once and Deny action", () => {
+  it("requires a Deny action and at least one allow effect", () => {
     expect(() =>
       projectCodexApprovalRequest({
         threadId: "thread-1",
@@ -129,7 +129,16 @@ describe("Codex native Approval wire projection", () => {
         }),
         serverName: "Claude Code",
       }),
-    ).toThrow("exactly one allowOnce action");
+    ).toThrow("allowOnce, allowForSession, or allowAlways");
+    expect(() =>
+      projectCodexApprovalRequest({
+        threadId: "thread-1",
+        interaction: interaction({
+          actions: [{ id: "allow", label: "Allow once", effect: "allowOnce" }],
+        }),
+        serverName: "Claude Code",
+      }),
+    ).toThrow("exactly one deny action");
     expect(() =>
       projectCodexApprovalRequest({
         threadId: "thread-1",
@@ -137,6 +146,34 @@ describe("Codex native Approval wire projection", () => {
         serverName: "Claude Code",
       }),
     ).toThrow("title must contain at least 1 character");
+  });
+
+  it("projects Always + Deny without a dedicated Allow once action", () => {
+    const projected = projectCodexApprovalRequest({
+      threadId: "thread-1",
+      interaction: interaction({
+        actions: [
+          { id: "choice-always", label: "Always allow", effect: "allowAlways" },
+          { id: "choice-deny", label: "Deny", effect: "deny" },
+        ],
+      }),
+      serverName: "Meta Muse Code",
+    });
+    expect(projected.parseResponse({ action: "accept", content: {}, _meta: null })).toEqual({
+      type: "approval",
+      actionId: "choice-always",
+    });
+    expect(
+      projected.parseResponse({
+        action: "accept",
+        content: {},
+        _meta: { persist: "always" },
+      }),
+    ).toEqual({ type: "approval", actionId: "choice-always" });
+    expect(projected.parseResponse({ action: "decline" })).toEqual({
+      type: "approval",
+      actionId: "choice-deny",
+    });
   });
 
   it("truncates long display text instead of rejecting the Approval", () => {

@@ -9,6 +9,7 @@ import type { Readable, Writable } from "node:stream";
 
 import type {
   HarnessAdapter,
+  HarnessError,
   HarnessOutput,
   HarnessSession,
   HostApprovalInteraction,
@@ -194,6 +195,7 @@ import {
   transportModelIdForHarness,
   type CodexApprovalProjection,
   type CodexQuestionProjection,
+  type CodexTurnProjection,
   type DecodedThreadForkRequest,
   type DecodedThreadListRequest,
   type DecodedThreadRevertRequest,
@@ -242,6 +244,7 @@ interface TurnProjectionGate {
 
 interface ProjectedTurn {
   projector: CodexTurnProjector;
+  projectionError?: HarnessError;
 }
 
 type HostApprovalRequestId = number;
@@ -3827,17 +3830,17 @@ export class AppServerHost {
       resolve: cancellationGate.resolve,
     };
     thread.responseGates.set(turnId, gate);
-    const result = await thread.session.execute({ type: "turn.cancel", turnId });
-    if (!result.ok) {
-      try {
-        await this.#writer.json(rpcError(request, -32074, result.error.message));
-      } finally {
-        gate.resolve();
-      }
-      return;
+    let response: JsonObject;
+    try {
+      const result = await thread.session.execute({ type: "turn.cancel", turnId });
+      response = result.ok
+        ? rpcEnvelope(request, { result: {} })
+        : rpcError(request, -32074, result.error.message);
+    } catch (error) {
+      response = rpcError(request, -32074, errorMessage(error));
     }
     try {
-      await this.#writer.json(rpcEnvelope(request, { result: {} }));
+      await this.#writer.json(response);
     } finally {
       gate.resolve();
     }
@@ -3846,7 +3849,21 @@ export class AppServerHost {
   async #consumeHarnessOutputs(thread: ExternalThread): Promise<void> {
     try {
       for await (const output of thread.session.outputs) {
-        await this.#projectHarnessOutput(thread, output);
+        try {
+          await this.#projectHarnessOutput(thread, output);
+        } catch (error) {
+          this.#diagnose(error);
+          const value = output.kind === "event" ? output.event : output.interaction;
+          const projection: ProjectedTurn | undefined =
+            "turnId" in value ? thread.projectedTurns.get(value.turnId) : undefined;
+          if (projection) {
+            projection.projectionError ??= {
+              code: "internalError",
+              message: `External Turn output could not be projected: ${errorMessage(error)}`,
+              retryable: false,
+            };
+          }
+        }
       }
     } catch (error) {
       this.#diagnose(error);
@@ -4044,7 +4061,26 @@ export class AppServerHost {
         };
       }
     }
-    const result = projection.projector.project(event as ProjectableHostEvent);
+    if (event.type === "turn.completed" && projection.projectionError) {
+      event = { ...event, outcome: { status: "failed", error: projection.projectionError } };
+    }
+    let result: CodexTurnProjection;
+    try {
+      result = projection.projector.project(event as ProjectableHostEvent);
+    } catch (error) {
+      if (event.type !== "turn.completed") throw error;
+      this.#diagnose(error);
+      projection.projectionError ??= {
+        code: "internalError",
+        message: `External Turn output could not be projected: ${errorMessage(error)}`,
+        retryable: false,
+      };
+      event = { ...event, outcome: { status: "failed", error: projection.projectionError } };
+      result = this.#recoverFailedTurnCompletion(thread.id, projection, {
+        turnId: event.turnId,
+        error: projection.projectionError,
+      });
+    }
     if (event.type === "turn.started") {
       await this.#setThreadStatus(thread, { type: "active", activeFlags: [] });
     }
@@ -4528,6 +4564,50 @@ export class AppServerHost {
       emittedAtMs: Date.now(),
       params: { threadId: thread.id, status },
     });
+  }
+
+  #recoverFailedTurnCompletion(
+    threadId: string,
+    projection: ProjectedTurn,
+    failure: { turnId: HostTurnId; error: HarnessError },
+  ): CodexTurnProjection {
+    const emittedAtMs = Date.now();
+    const pending = projection.projector.pendingTurn();
+    const error = {
+      message: failure.error.message,
+      codexErrorInfo: "other",
+      additionalDetails: null,
+    };
+    const startedAtMs =
+      typeof pending.startedAt === "number" && pending.startedAt > 0
+        ? pending.startedAt * 1000
+        : emittedAtMs;
+    const turn: JsonObject = {
+      ...pending,
+      status: "failed",
+      completedAt: Math.floor(emittedAtMs / 1000),
+      durationMs: Math.max(0, emittedAtMs - startedAtMs),
+      error,
+    };
+    return {
+      completedTurn: turn,
+      messages: [
+        {
+          method: "error",
+          params: {
+            error,
+            willRetry: false,
+            threadId,
+            turnId: failure.turnId,
+          },
+        },
+        {
+          method: "turn/completed",
+          emittedAtMs,
+          params: { threadId, turn },
+        },
+      ],
+    };
   }
 
   #projectedTurn(thread: ExternalThread, turnId: HostTurnId): ProjectedTurn {

@@ -1,0 +1,10 @@
+{
+  "manifestVersion": 1,
+  "id": "muse",
+  "name": "Meta Muse Code",
+  "version": "0.0.0",
+  "adapterApiVersion": 1,
+  "entry": "./dist/plugin.js",
+  "icon": "./assets/icon.svg",
+  "links": { "installation": "https://www.meta.ai/" }
+}

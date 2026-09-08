@@ -14,6 +14,7 @@ export const RENDERER_AGENT_LABELS: Record<RendererAgent, string> = {
   grok: "Grok",
   omp: "Oh My Pi",
   antigravity: "Antigravity CLI",
+  muse: "Meta Muse Code",
 };
 
 const PI_PATHS = [
@@ -118,6 +119,18 @@ export function createRendererAgentIcon(
     image.style.objectFit = "contain";
     image.style.flex = "none";
     return image;
+  }
+  if (agent === "muse") {
+    return createSvgIcon(
+      [
+        {
+          d: "M12 2.2c-1.9 3.4-4.8 6.4-8.6 8.4 3.8 2 6.7 5 8.6 8.4 1.9-3.4 4.8-6.4 8.6-8.4C16.8 8.6 13.9 5.6 12 2.2z",
+        },
+      ],
+      "#0668E1",
+      size,
+      ownerDocument,
+    );
   }
   const mark = ownerDocument.createElement("img");
   mark.src = grokAgentIconUrl;

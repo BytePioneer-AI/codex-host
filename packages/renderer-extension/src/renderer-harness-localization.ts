@@ -71,6 +71,10 @@ const CHINESE_PERMISSION_MODE_LABELS = new Map<string, string>([
   ["Full access (dangerous)", "完全访问（危险）"],
   ["Configured permissions", "使用已配置权限"],
   ["Skip permissions", "跳过权限检查"],
+  ["On request", "按请求询问"],
+  ["Prompt unmatched", "未匹配时询问"],
+  ["Deny unmatched", "未匹配时拒绝"],
+  ["Allow all", "全部允许"],
 ]);
 
 const CHINESE_PERMISSION_MODE_DESCRIPTIONS = new Map<string, string>([

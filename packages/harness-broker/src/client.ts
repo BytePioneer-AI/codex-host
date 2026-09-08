@@ -36,6 +36,8 @@ import {
 } from "@codexhost/harness-adapter";
 import {
   harnessIdSchema,
+  harnessAccountSnapshotSchema,
+  type HarnessAccountSnapshot,
   harnessInspectionSchema,
   harnessSessionCapabilitiesSchema,
   type HarnessCommandCatalog,
@@ -520,6 +522,16 @@ export class BrokeredHarnessAdapter implements HarnessAdapter {
     if (input.commandCatalog) this.commandCatalog = input.commandCatalog;
     this.#descriptorPath =
       input.descriptorPath ?? defaultHarnessBrokerDescriptorPath(input.environment);
+  }
+
+  async inspectAccount(): Promise<HarnessAccountSnapshot | null> {
+    if (this.#closed) return null;
+    try {
+      const value = await (await this.#connect()).request("adapter.inspectAccount", {});
+      return harnessAccountSnapshotSchema.nullable().parse(value);
+    } catch {
+      return null;
+    }
   }
 
   async inspect(input: InspectHarnessInput = {}): Promise<HarnessInspection> {

@@ -7,6 +7,7 @@ import {
 import type { RendererAgent } from "./agent-selection-state.js";
 import { createRendererAgentIcon, RENDERER_AGENT_LABELS } from "./renderer-agent-icon.js";
 import type { RendererModelClient } from "./renderer-model-client.js";
+import { RendererMethodUnavailableError } from "./renderer-request-sender.js";
 
 export const SIDEBAR_THREAD_ROW_ATTRIBUTE = "data-app-action-sidebar-thread-row";
 export const SIDEBAR_THREAD_ROW_SELECTOR = `[${SIDEBAR_THREAD_ROW_ATTRIBUTE}]`;
@@ -312,6 +313,7 @@ export function installRendererSidebarAgentIcons(options: {
   ): void => {
     for (const threadId of threadIds) pending.add(ownershipKey(hostId, threadId));
     let succeeded = false;
+    let retryable = true;
     void Promise.resolve()
       .then(() => client.listThreadOwnership({ threadIds }))
       .then(({ threads }) => {
@@ -329,13 +331,16 @@ export function installRendererSidebarAgentIcons(options: {
         }
         succeeded = true;
       })
-      .catch(() => {
+      .catch((error) => {
         if (disposed) return;
+        retryable = !(error instanceof RendererMethodUnavailableError);
         for (const threadId of threadIds) failed.add(ownershipKey(hostId, threadId));
       })
       .finally(() => {
         for (const threadId of threadIds) pending.delete(ownershipKey(hostId, threadId));
-        for (const threadId of threadIds) scheduleOwnershipRetry(hostId, threadId);
+        if (retryable) {
+          for (const threadId of threadIds) scheduleOwnershipRetry(hostId, threadId);
+        }
         if (succeeded) scheduleScan();
       });
   };

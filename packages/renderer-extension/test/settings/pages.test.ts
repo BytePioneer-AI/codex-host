@@ -1,6 +1,7 @@
 import {
   harnessIdSchema,
   hostThreadIdSchema,
+  type HarnessAccountListResult,
   type HarnessSessionListParams,
   type UpdateCheckResult,
   type UpdateStatus,
@@ -13,6 +14,7 @@ vi.mock("../../src/settings/icons.js", () => ({
 }));
 
 import { RendererSettingsPageScope } from "../../src/settings/core.js";
+import { mountHarnessAccounts } from "../../src/settings/harness-accounts.js";
 import { rendererSettingsMessages } from "../../src/settings/localization.js";
 import { createRendererModelClient } from "../../src/renderer-model-client.js";
 import { RendererSessionImportUnavailableError } from "../../src/renderer-session-import-client.js";
@@ -66,12 +68,20 @@ class FakeElement {
     this.children.push(...children);
   }
 
+  get childElementCount(): number {
+    return this.children.filter((child) => child instanceof FakeElement).length;
+  }
+
   dispatch(name: string, event?: unknown): void {
     this.#listeners.get(name)?.(event);
   }
 
   focus(): void {
     this.focused = true;
+  }
+
+  getRootNode(): FakeDocument {
+    return this.ownerDocument;
   }
 
   scrollBy(options: ScrollToOptions): void {
@@ -198,6 +208,82 @@ function visibleText(root: FakeElement): string {
     .filter(Boolean)
     .join(" ");
 }
+
+describe("Read-only Harness accounts", () => {
+  const result: HarnessAccountListResult = {
+    accounts: [
+      {
+        harnessId: harnessIdSchema.parse("grok"),
+        harnessName: "Grok Build",
+        email: "person@example.com",
+        credits: { usedPercent: 25, periodType: "weekly" },
+      },
+    ],
+  };
+  it("shows only returned accounts with searchable read-only quota and shared display mode", async () => {
+    const document = new FakeDocument();
+    const content = document.createElement("main");
+    const scope = new RendererSettingsPageScope();
+    const listHarnessAccounts = vi.fn(async () => result);
+    const mounted = mountHarnessAccounts(
+      {
+        content: content as unknown as HTMLElement,
+        signal: scope.signal,
+        runLatest: (op, handlers) => scope.runLatest(op, handlers),
+      },
+      rendererSettingsMessages("en"),
+      () => ({ listHarnessAccounts }),
+      vi.fn(),
+    );
+    expect(descendants(content).find((node) => node.tagName === "section")?.hidden).toBe(true);
+    await mounted.refresh();
+    expect(visibleText(content)).toContain("Grok Build");
+    expect(visibleText(content)).toContain("person@example.com");
+    expect(descendants(content).filter((node) => node.tagName === "button")).toHaveLength(0);
+    expect(
+      descendants(content)
+        .find((node) => node.attributes.get("role") === "meter")
+        ?.attributes.get("aria-valuenow"),
+    ).toBe("75");
+    mounted.update("grok", "used");
+    expect(
+      descendants(content)
+        .find((node) => node.attributes.get("role") === "meter")
+        ?.attributes.get("aria-valuenow"),
+    ).toBe("25");
+    mounted.update("not-found", "used");
+    expect(descendants(content).filter((node) => node.tagName === "article")).toHaveLength(0);
+    listHarnessAccounts.mockResolvedValueOnce({ accounts: [] });
+    await mounted.refresh();
+    expect(descendants(content).find((node) => node.tagName === "section")?.hidden).toBe(true);
+    expect(visibleText(content)).not.toContain("person@example.com");
+  });
+
+  it("coalesces refreshes and discards late results after page disposal", async () => {
+    const document = new FakeDocument();
+    const content = document.createElement("main");
+    const scope = new RendererSettingsPageScope();
+    const pending = deferred<HarnessAccountListResult>();
+    const listHarnessAccounts = vi.fn(() => pending.promise);
+    const mounted = mountHarnessAccounts(
+      {
+        content: content as unknown as HTMLElement,
+        signal: scope.signal,
+        runLatest: (op, handlers) => scope.runLatest(op, handlers),
+      },
+      rendererSettingsMessages("en"),
+      () => ({ listHarnessAccounts }),
+      vi.fn(),
+    );
+    const refresh = mounted.refresh();
+    await mounted.refresh();
+    expect(listHarnessAccounts).toHaveBeenCalledOnce();
+    scope.dispose();
+    pending.resolve(result);
+    await refresh;
+    expect(visibleText(content)).not.toContain("person@example.com");
+  });
+});
 
 describe("Renderer Connections page", () => {
   it("opens managed DSH Web only for the local Host and coalesces repeated clicks", async () => {
@@ -531,7 +617,11 @@ describe("Renderer Codex Accounts page", () => {
     });
     await vi.waitFor(() => expect(client.listCodexAccounts).toHaveBeenCalledTimes(1));
 
-    expect(descendants(content).some(({ tagName }) => tagName === "input")).toBe(false);
+    expect(
+      descendants(content)
+        .filter(({ tagName }) => tagName === "input")
+        .map(({ type }) => type),
+    ).toEqual(["search"]);
     const add = descendants(content).find(
       ({ tagName, children }) => tagName === "button" && children.includes("Add Account"),
     );
@@ -595,7 +685,8 @@ describe("Renderer Codex Accounts page", () => {
     await vi.waitFor(() => expect(visibleText(content)).toContain("Work"));
 
     const deleteButtons = descendants(content).filter(
-      ({ tagName, textContent }) => tagName === "button" && textContent === "Delete",
+      (element) =>
+        element.tagName === "button" && element.getAttribute("aria-label")?.startsWith("Delete:"),
     );
     expect(deleteButtons).toHaveLength(1);
     deleteButtons[0]?.dispatch("click");

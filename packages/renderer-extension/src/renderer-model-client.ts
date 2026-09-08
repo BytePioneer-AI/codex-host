@@ -1,4 +1,6 @@
 import {
+  harnessAccountListResultSchema,
+  type HarnessAccountListResult,
   codexAccountUsageParamsSchema,
   codexAccountUsageResultSchema,
   codexAccountResetCreditConsumeParamsSchema,
@@ -84,6 +86,10 @@ import {
   type UpdateStatusResult,
 } from "@codexhost/shared-contracts";
 
+import {
+  createRendererRequestSender,
+  RendererMethodUnavailableError,
+} from "./renderer-request-sender.js";
 import {
   createRendererSessionImportClient,
   type RendererSessionImportClient,
@@ -177,6 +183,7 @@ export interface RendererModelClient extends Partial<RendererSessionImportClient
   consumeCodexAccountResetCredit?(
     input: CodexAccountResetCreditConsumeParams,
   ): Promise<CodexAccountResetCreditConsumeResult>;
+  listHarnessAccounts?(): Promise<HarnessAccountListResult>;
   listCodexAccounts(): Promise<CodexAccountListResult>;
   refreshCodexAccounts(): Promise<CodexAccountListResult>;
   createCodexAccount(input: CodexAccountCreateParams): Promise<CodexAccountMutationResult>;
@@ -237,8 +244,13 @@ export function createRendererModelClient(
       Required<Pick<RequestManagerCandidate, "sendRequest">> =>
       typeof candidate.sendRequest === "function",
   );
-  const manager = managers[0];
-  if (managers.length !== 1 || !manager) return null;
+  const source = managers[0];
+  if (managers.length !== 1 || !source) return null;
+  const manager = {
+    sendRequest: createRendererRequestSender((method, params) =>
+      source.sendRequest(method, params),
+    ),
+  };
 
   const inspectHarness = async (input: HarnessInspectParams): Promise<HarnessInspection> => {
     const params = harnessInspectParamsSchema.parse(input);
@@ -317,7 +329,34 @@ export function createRendererModelClient(
     },
     async inspectThread(input: ThreadInspectionParams): Promise<ThreadInspection> {
       const params = threadInspectionParamsSchema.parse(input);
-      const result = await manager.sendRequest(THREAD_INSPECT_METHOD, params);
+      let result: unknown;
+      try {
+        result = await manager.sendRequest(THREAD_INSPECT_METHOD, params);
+      } catch (error) {
+        if (!(error instanceof RendererMethodUnavailableError)) throw error;
+
+        // Stock Codex has no Host inspection API. Verify its native Thread on
+        // this same connection; neither an RPC failure nor a missing Account
+        // establishes ownership. Match the external markers used by the Host.
+        const native = await manager.sendRequest("thread/read", {
+          threadId: params.threadId,
+          includeTurns: false,
+        });
+        const thread = isRecord(native) ? native.thread : null;
+        if (
+          !isRecord(thread) ||
+          thread.id !== params.threadId ||
+          typeof thread.modelProvider !== "string" ||
+          !thread.modelProvider ||
+          thread.modelProvider === "codexhost" ||
+          typeof thread.cliVersion !== "string" ||
+          !thread.cliVersion ||
+          thread.cliVersion === "codexhost"
+        ) {
+          throw new Error("Native Thread response cannot establish Codex ownership");
+        }
+        return { owner: "codex", locked: true };
+      }
       return threadInspectionSchema.parse(result);
     },
     inspectHarnessCommands,
@@ -339,7 +378,7 @@ export function createRendererModelClient(
     },
     inspectThreadUsage,
     subscribeThreadUsage(listener: (update: ThreadUsageInspection) => void): () => void {
-      const notifications = notificationTarget(manager);
+      const notifications = notificationTarget(source);
       if (!notifications?.addNotificationCallback) {
         throw new Error("Renderer Usage notification callback is unavailable");
       }
@@ -408,6 +447,11 @@ export function createRendererModelClient(
       );
       return codexAccountResetCreditConsumeResultSchema.parse(result);
     },
+    async listHarnessAccounts(): Promise<HarnessAccountListResult> {
+      return harnessAccountListResultSchema.parse(
+        await manager.sendRequest("codexhost/harness/accounts/list", {}),
+      );
+    },
     async listCodexAccounts(): Promise<CodexAccountListResult> {
       const result = await manager.sendRequest(CODEX_ACCOUNT_LIST_METHOD, {});
       return codexAccountListResultSchema.parse(result);
@@ -458,7 +502,7 @@ export function createRendererModelClient(
       return codexAccountLoginCancelResultSchema.parse(result);
     },
     subscribeCodexAccountLogin(listener: (result: CodexAccountLoginCompleted) => void): () => void {
-      const notifications = notificationTarget(manager);
+      const notifications = notificationTarget(source);
       if (!notifications?.addNotificationCallback) {
         throw new Error("Renderer Account login notification callback is unavailable");
       }

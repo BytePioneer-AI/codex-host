@@ -11,6 +11,10 @@ import type {
   OpenSessionInput,
 } from "@codexhost/harness-adapter";
 
+import {
+  harnessAccountListParamsSchema,
+  harnessAccountSnapshotSchema,
+} from "@codexhost/shared-contracts";
 import { consumeBrokerFrames, writeBrokerFrame } from "./framing.js";
 import {
   HARNESS_BROKER_MAX_PENDING_REQUESTS,
@@ -441,6 +445,12 @@ export async function startHarnessBrokerServer(input: {
 
     const handleRequest = async (request: HarnessBrokerRequest): Promise<unknown> => {
       if (closed || state.closed) throw new Error("Harness broker connection is closed");
+      if (request.method === "adapter.inspectAccount") {
+        harnessAccountListParamsSchema.parse(request.params);
+        return harnessAccountSnapshotSchema
+          .nullable()
+          .parse((await input.adapter.inspectAccount?.()) ?? null);
+      }
       if (request.method === "adapter.inspect") {
         const parsed = brokerInspectInputSchema.parse(request.params);
         return input.adapter.inspect({

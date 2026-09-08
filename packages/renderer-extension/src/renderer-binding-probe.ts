@@ -10,7 +10,6 @@ import {
   type HarnessPermissionModeScope,
   type HarnessThinkingOptionId,
   type AccountCreditsSnapshot,
-  type CodexAccountSummary,
   type ThreadInspection,
   type ThreadUsageInspection,
   type ThreadUsageSnapshot,
@@ -44,6 +43,7 @@ import {
   type ExternalPermissionModeControlView,
 } from "./renderer-composer-dom.js";
 import { rendererHarnessMessages } from "./renderer-harness-localization.js";
+import { RendererCodexAccountState } from "./renderer-codex-account-state.js";
 import {
   decodeAntigravityTransportModelId,
   decodeClaudeTransportModelId,
@@ -60,6 +60,7 @@ import {
   type RendererAdapterStatus,
 } from "./versioned-renderer-adapter.js";
 import type { RendererModelClient } from "./renderer-model-client.js";
+import { RendererMethodUnavailableError } from "./renderer-request-sender.js";
 import { thinkingOptionsForModel } from "./renderer-model-picker.js";
 import { RENDERER_AGENT_INSTALL_URLS } from "./renderer-agent-picker.js";
 import {
@@ -155,26 +156,10 @@ export function shouldRefreshCodexAccountsForAdapterState(
   return state === "ready";
 }
 
-export function resolveCodexAccountSelection(
-  accounts: readonly CodexAccountSummary[],
-  overrideAccountId: string | null,
-): {
-  activeAccountId: string | null;
-  overrideAccountId: string | null;
-  selectedAccountId: string | null;
-} {
-  const activeAccountId = accounts.find((account) => account.active)?.accountId ?? null;
-  const validOverrideAccountId = accounts.some((account) => account.accountId === overrideAccountId)
-    ? overrideAccountId
-    : null;
-  return {
-    activeAccountId,
-    overrideAccountId: validOverrideAccountId,
-    selectedAccountId: validOverrideAccountId ?? activeAccountId,
-  };
-}
+export { resolveCodexAccountSelection } from "./renderer-codex-account-state.js";
 
 interface HostHarnessAvailabilityState {
+  codexAccounts: RendererCodexAccountState | null;
   availability: HarnessAvailability;
   errors: HarnessAvailabilityErrors;
   webUi: HarnessWebUiAvailability;
@@ -637,11 +622,6 @@ export function installRendererBindingProbe(
   let adapterDispose: (() => void) | null = null;
   let applyAdapterAgent: ApplyAdapterAgent | null = null;
   let modelControl: RendererModelClient | null = null;
-  let codexAccounts: readonly CodexAccountSummary[] = [];
-  let activeCodexAccountId: string | null = null;
-  let codexAccountOverrideId: string | null = null;
-  let codexAccountSwitching = false;
-  let codexAccountRequestGeneration = 0;
   const activeModelHostId = (): string | null => {
     if (!modelControl) return null;
     return modelControl.currentHostId ? modelControl.currentHostId() : "local";
@@ -706,6 +686,7 @@ export function installRendererBindingProbe(
     hook: null,
   };
   const createHostHarnessAvailabilityState = (): HostHarnessAvailabilityState => ({
+    codexAccounts: null,
     availability: Object.fromEntries(
       externalAgents.map((agent) => [agent, "checking"]),
     ) as HarnessAvailability,
@@ -736,6 +717,18 @@ export function installRendererBindingProbe(
     }
     return state;
   };
+  const codexAccountsForHost = (hostId: string | null): RendererCodexAccountState | null => {
+    if (!hostId) return null;
+    const client = modelClientForHost(hostId);
+    if (!client) return null;
+    const state = hostHarnessAvailabilityState(hostId);
+    if (state.codexAccounts?.client !== client) {
+      state.codexAccounts = new RendererCodexAccountState(client);
+    }
+    return state.codexAccounts;
+  };
+  const composerCodexAccounts = (composer: Element): RendererCodexAccountState | null =>
+    codexAccountsForHost(mountedByComposer.get(composer)?.hostId ?? null);
   let activeAvailabilityHostId = "local";
   const activeHarnessAvailabilityState = (): HostHarnessAvailabilityState =>
     hostHarnessAvailabilityState(activeAvailabilityHostId);
@@ -763,12 +756,12 @@ export function installRendererBindingProbe(
     controller.isCurrentOwnershipRequest(mounted.composer, generation);
 
   const notifySubmission = (composer: Element, trigger: SubmissionTrigger): void => {
+    const accounts = composerCodexAccounts(composer);
     const state = controller.recordSubmission(
       composer,
-      resolveCodexAccountSelection(codexAccounts, codexAccountOverrideId).selectedAccountId ??
-        undefined,
+      accounts?.selection.selectedAccountId ?? undefined,
     );
-    if (state.agent === "codex") codexAccountOverrideId = null;
+    if (state.agent === "codex" && accounts) accounts.overrideAccountId = null;
     writeNewThreadAgentPreference(state.agent);
     if (state.agent !== "codex") {
       const model = controller.modelForAgent(composer, state.agent);
@@ -794,28 +787,30 @@ export function installRendererBindingProbe(
 
   const renderMounted = (mounted: MountedComposer): void => {
     const state = controller.get(mounted.composer);
+    const accounts = composerCodexAccounts(mounted.composer);
     const selectedCodexAccountId =
       state.phase === "locked" ||
       (controller.isSubmissionPending(mounted.composer) && state.codexAccountId)
         ? state.codexAccountId
-        : resolveCodexAccountSelection(codexAccounts, codexAccountOverrideId).selectedAccountId;
+        : accounts?.selection.selectedAccountId;
     renderComposerAgentControl(
       mounted.control,
       controller.get(mounted.composer),
       adapterStatus.state,
-      codexAccountSwitching ||
+      accounts?.switching === true ||
         controller.isSwitching(mounted.composer) ||
-        isOwnershipSubmissionBlocked(mounted.ownershipStatus),
+        mounted.ownershipStatus === "loading",
       activeHarnessAvailabilityState().availability,
       mounted.modelView,
       mounted.permissionModeView,
       mounted.usage,
       mounted.accountCredits,
       settingsLifecycle.locale,
-      codexAccounts.map((account) => ({
+      (accounts?.accounts ?? []).map((account) => ({
         ...account,
         active: account.accountId === selectedCodexAccountId,
       })),
+      mounted.ownershipStatus === "error",
     );
     if (mounted.control.usage) {
       mounted.control.usage.onOpen = () => {
@@ -913,21 +908,21 @@ export function installRendererBindingProbe(
       threadIdFromComposerModelTarget(mounted.modelTarget)
     )
       return;
-    const client = modelControl;
-    const accountId = resolveCodexAccountSelection(
-      codexAccounts,
-      codexAccountOverrideId,
-    ).selectedAccountId;
+    const accounts = composerCodexAccounts(mounted.composer);
+    const client = accounts?.client;
+    const accountId = accounts?.selection.selectedAccountId;
+    const hostId = mounted.hostId;
     const generation = ++mounted.usageRequestGeneration;
     mounted.usage = null;
     mounted.accountCredits = null;
     renderMounted(mounted);
-    if (codexAccountSwitching || !accountId || !client?.inspectCodexAccountUsage) return;
+    if (accounts?.switching || !accountId || !client?.inspectCodexAccountUsage) return;
     try {
       const result = await client.inspectCodexAccountUsage({ accountId });
       if (
         disposed ||
-        modelControl !== client ||
+        mounted.hostId !== hostId ||
+        composerCodexAccounts(mounted.composer) !== accounts ||
         !mounted.composer.isConnected ||
         mountedByComposer.get(mounted.composer) !== mounted ||
         mounted.usageRequestGeneration !== generation ||
@@ -935,8 +930,7 @@ export function installRendererBindingProbe(
         controller.get(mounted.composer).phase !== "draft" ||
         controller.isSubmissionPending(mounted.composer) ||
         threadIdFromComposerModelTarget(mounted.modelTarget) ||
-        resolveCodexAccountSelection(codexAccounts, codexAccountOverrideId).selectedAccountId !==
-          accountId ||
+        accounts.selection.selectedAccountId !== accountId ||
         result.accountId !== accountId
       )
         return;
@@ -996,13 +990,16 @@ export function installRendererBindingProbe(
       ) {
         scheduleThreadUsageRefresh(mounted);
       }
-    } catch {
+    } catch (error) {
       if (
         mountedByComposer.get(mounted.composer) === mounted &&
         mounted.usageRequestGeneration === generation
       ) {
         renderMounted(mounted);
-        if (shouldRetryExternalThreadUsage(controller.get(mounted.composer).agent, null, null)) {
+        if (
+          !(error instanceof RendererMethodUnavailableError) &&
+          shouldRetryExternalThreadUsage(controller.get(mounted.composer).agent, null, null)
+        ) {
           scheduleThreadUsageRefresh(mounted);
         }
       }
@@ -1910,32 +1907,38 @@ export function installRendererBindingProbe(
   };
 
   const loadCodexAccounts = async (): Promise<void> => {
-    const client = modelControl;
-    if (!client) return;
-    const generation = ++codexAccountRequestGeneration;
-    try {
-      const result = await client.listCodexAccounts();
-      if (disposed || modelControl !== client || generation !== codexAccountRequestGeneration) {
-        return;
-      }
-      codexAccounts = result.accounts;
-      const selection = resolveCodexAccountSelection(result.accounts, codexAccountOverrideId);
-      activeCodexAccountId = selection.activeAccountId;
-      codexAccountOverrideId = selection.overrideAccountId;
-      for (const mounted of mountedByComposer.values()) {
-        renderMounted(mounted);
-        void refreshDraftCodexUsage(mounted);
-      }
-    } catch {
-      // Provider selection remains usable for other Harnesses when Accounts are unavailable.
+    const hostId = activeModelHostId();
+    const accounts = codexAccountsForHost(hostId);
+    if (!accounts) return;
+    await accounts.refresh();
+    if (disposed || codexAccountsForHost(hostId) !== accounts) return;
+    for (const mounted of mountedByComposer.values()) {
+      if (mounted.hostId !== hostId) continue;
+      renderMounted(mounted);
+      void refreshDraftCodexUsage(mounted);
     }
   };
 
   const selectCodexAccount = async (mounted: MountedComposer, accountId: string): Promise<void> => {
-    if (codexAccountSwitching || controller.get(mounted.composer).phase === "locked") return;
-    const client = modelControl;
-    if (!client || !codexAccounts.some((account) => account.accountId === accountId)) return;
-    codexAccountSwitching = true;
+    const hostId = mounted.hostId;
+    const accounts = composerCodexAccounts(mounted.composer);
+    if (
+      !accounts ||
+      accounts.switching ||
+      controller.get(mounted.composer).phase === "locked" ||
+      !accounts.accounts.some((account) => account.accountId === accountId)
+    )
+      return;
+    const isCurrent = (): boolean =>
+      !disposed &&
+      mounted.composer.isConnected &&
+      mountedByComposer.get(mounted.composer) === mounted &&
+      controller.get(mounted.composer).phase !== "locked" &&
+      accounts.accounts.some((account) => account.accountId === accountId) &&
+      mounted.hostId === hostId &&
+      activeModelHostId() === hostId &&
+      composerCodexAccounts(mounted.composer) === accounts;
+    accounts.switching = true;
     for (const candidate of mountedByComposer.values()) {
       renderMounted(candidate);
       void refreshDraftCodexUsage(candidate);
@@ -1948,14 +1951,17 @@ export function installRendererBindingProbe(
         return;
       }
       const policy = await waitForRendererDraftPrewarmPolicy(window);
+      if (!isCurrent() || policy.hostId !== hostId) return;
       await policy.clear();
+      if (!isCurrent() || window.__codexhostDraftPrewarmPolicyV1 !== policy) return;
       if (!policy.selectAccount) throw new Error("Codex Account selection is unavailable");
-      codexAccountOverrideId = accountId === activeCodexAccountId ? null : accountId;
-      policy.selectAccount(codexAccountOverrideId);
+      const override = accountId === accounts.selection.activeAccountId ? null : accountId;
+      policy.selectAccount(override);
+      accounts.overrideAccountId = override;
     } catch {
-      void loadCodexAccounts();
+      if (isCurrent()) void loadCodexAccounts();
     } finally {
-      codexAccountSwitching = false;
+      accounts.switching = false;
       for (const candidate of mountedByComposer.values()) {
         renderMounted(candidate);
         void refreshDraftCodexUsage(candidate);
@@ -2073,7 +2079,7 @@ export function installRendererBindingProbe(
             nextError = {
               code: "internalError",
               message: error instanceof Error ? error.message : String(error),
-              retryable: true,
+              retryable: !(error instanceof RendererMethodUnavailableError),
               stage: "request",
             };
           }
@@ -2136,7 +2142,13 @@ export function installRendererBindingProbe(
 
   const reloadMountedOwnershipForHost = (hostId: string): void => {
     for (const mounted of mountedByComposer.values()) {
-      if (mounted.hostId === hostId || !threadIdFromComposerModelTarget(mounted.modelTarget)) {
+      if (mounted.hostId === hostId) continue;
+      if (!threadIdFromComposerModelTarget(mounted.modelTarget)) {
+        controller.clearPendingSubmission(mounted.composer);
+        mounted.hostId = hostId;
+        mounted.usage = null;
+        mounted.accountCredits = null;
+        mounted.usageRequestGeneration += 1;
         continue;
       }
       const target = controllerTarget(mounted.modelTarget, hostId);
@@ -2168,7 +2180,14 @@ export function installRendererBindingProbe(
 
   function reconcileHarnessAvailabilityHost(): void {
     const hostId = activeModelHostId();
-    if (!hostId || hostId === activeAvailabilityHostId) return;
+    if (
+      !hostId ||
+      (hostId === activeAvailabilityHostId &&
+        [...mountedByComposer.values()].every((mounted) => mounted.hostId !== null))
+    )
+      return;
+    // The first Composer can mount before the route is ready. The availability
+    // cache starts at "local", but that does not establish the Composer's Host.
     activeAvailabilityHostId = hostId;
     hostHarnessAvailabilityState(hostId);
     reloadMountedOwnershipForHost(hostId);
@@ -2505,7 +2524,7 @@ export function installRendererBindingProbe(
     if (!mounted) return null;
     const current = controller.get(composer);
     if (
-      codexAccountSwitching ||
+      composerCodexAccounts(composer)?.switching ||
       controller.isSwitching(composer) ||
       isOwnershipSubmissionBlocked(mounted.ownershipStatus)
     ) {
@@ -2514,6 +2533,25 @@ export function installRendererBindingProbe(
     if (!isExternalConfigurationReady(mounted)) return false;
     if (current.phase === "locked") return true;
     if (!applyComposerAgent(composer)) return false;
+    if (current.agent === "codex") {
+      // A Host switch may replace its policy while retaining this Host's draft
+      // override. Apply it to the matching policy at submission, not another Host.
+      const selection = composerCodexAccounts(composer)?.selection;
+      const accountId =
+        controller.isSubmissionPending(composer) && current.codexAccountId
+          ? current.codexAccountId
+          : selection?.selectedAccountId;
+      const override = accountId === selection?.activeAccountId ? null : (accountId ?? null);
+      const policy = window.__codexhostDraftPrewarmPolicyV1;
+      if (override !== null && (policy?.hostId !== mounted.hostId || !policy.selectAccount)) {
+        return false;
+      }
+      try {
+        if (policy?.hostId === mounted.hostId) policy.selectAccount?.(override);
+      } catch {
+        return false;
+      }
+    }
     controller.markSubmissionPending(composer);
     renderMounted(mounted);
     return true;
@@ -2548,7 +2586,10 @@ export function installRendererBindingProbe(
   const onKeyDown = (event: KeyboardEvent): void => {
     const composer = isComposerInputIntent(event) ? composerForTarget(event.target) : null;
     const mounted = composer ? mountedByComposer.get(composer) : undefined;
-    if (composer && (codexAccountSwitching || controller.isSwitching(composer))) {
+    if (
+      composer &&
+      (composerCodexAccounts(composer)?.switching || controller.isSwitching(composer))
+    ) {
       blockEvent(event);
       return;
     }
@@ -2587,6 +2628,7 @@ export function installRendererBindingProbe(
     scheduleScan(mutations.some(mutationMayChangeComposerTarget));
   });
   const onHostRouteChange = (): void => {
+    sidebarAgentIcons.refresh();
     reconcileHarnessAvailabilityHost();
     void loadCodexAccounts();
     void refreshHarnessAvailability();
@@ -2631,6 +2673,11 @@ export function installRendererBindingProbe(
   const onWindowFocus = (): void => {
     reconcileHarnessAvailabilityHost();
     void loadCodexAccounts();
+    for (const mounted of mountedByComposer.values()) {
+      if (mounted.hostId === activeModelHostId() && mounted.ownershipStatus === "error") {
+        void loadThreadOwnership(mounted);
+      }
+    }
     const local = hostHarnessAvailabilityState("local");
     if (externalAgents.some((agent) => local.availability[agent] !== "ready")) {
       void refreshHarnessAvailabilityForHost("local", true);
@@ -2697,10 +2744,6 @@ export function installRendererBindingProbe(
       adapterDispose = dispose ?? null;
       applyAdapterAgent = applyAgent ?? null;
       modelControl = nextModelControl ?? null;
-      codexAccounts = [];
-      activeCodexAccountId = null;
-      codexAccountOverrideId = null;
-      codexAccountRequestGeneration += 1;
       try {
         usageNotificationDispose =
           modelControl?.subscribeThreadUsage?.(applyThreadUsageUpdate) ?? null;
@@ -2710,7 +2753,6 @@ export function installRendererBindingProbe(
       adapterStatus = status;
       publishConnectionStatus();
       const installedModelControl = modelControl;
-      void loadCodexAccounts();
       queueMicrotask(() => {
         if (disposed || modelControl !== installedModelControl) return;
         try {
@@ -2729,6 +2771,7 @@ export function installRendererBindingProbe(
       sidebarAgentIcons.refresh();
       void refreshHarnessAvailabilityForHost("local");
       reconcileHarnessAvailabilityHost();
+      void loadCodexAccounts();
       const connected = connectedComposers();
       if (connected.length === 1) {
         const mounted = connected[0];
@@ -2763,8 +2806,6 @@ export function installRendererBindingProbe(
       adapterDispose = null;
       applyAdapterAgent = null;
       modelControl = null;
-      codexAccounts = [];
-      codexAccountRequestGeneration += 1;
       mutationObserver.disconnect();
       sidebarAgentIcons.dispose();
       settingsLifecycle.dispose();

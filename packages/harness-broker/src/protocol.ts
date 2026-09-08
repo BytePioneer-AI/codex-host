@@ -7,6 +7,7 @@ export const HARNESS_BROKER_REQUEST_TIMEOUT_MS = 15_000;
 
 export const harnessBrokerMethodSchema = z.enum([
   "adapter.inspect",
+  "adapter.inspectAccount",
   "adapter.open",
   "adapter.subagent.readSnapshot",
   "session.readSnapshot",

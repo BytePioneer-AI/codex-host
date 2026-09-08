@@ -2,6 +2,13 @@ import { z } from "zod";
 import { WORKSPACE_CONTRACT_VERSION } from "./version.js";
 
 export {
+  harnessAccountSnapshotSchema,
+  harnessAccountListParamsSchema,
+  harnessAccountListResultSchema,
+} from "./harness-accounts.js";
+export type { HarnessAccountSnapshot, HarnessAccountListResult } from "./harness-accounts.js";
+
+export {
   HARNESS_PLUGIN_ROUTE_PREFIX,
   decodeHarnessPluginRoute,
   encodeHarnessPluginRoute,
@@ -45,6 +52,7 @@ export {
   codexAccountLoginStartParamsSchema,
   codexAccountLoginStartResultSchema,
   codexAccountMutationResultSchema,
+  codexAccountPlanTypeSchema,
   codexAccountSchema,
 } from "./codex-accounts.js";
 export type {
@@ -64,6 +72,7 @@ export type {
   CodexAccountLoginStartParams,
   CodexAccountLoginStartResult,
   CodexAccountMutationResult,
+  CodexAccountPlanType,
   CodexAccountSummary,
 } from "./codex-accounts.js";
 export { REASONING_TRANSCRIPT_COMMAND } from "./reasoning-transcript.js";

@@ -686,6 +686,7 @@ export function renderComposerAgentControl(
   accountCredits: AccountCreditsSnapshot | null = null,
   locale: RendererSettingsLocale = "en",
   codexAccounts: readonly CodexAccountSummary[] = [],
+  ownershipError = false,
 ): void {
   if (control.usage === null) {
     control.usage = mountRendererUsageControl(control.composerId, locale);
@@ -710,7 +711,7 @@ export function renderComposerAgentControl(
     (!isPermissionModeControlReady(permissionModeView) ||
       (permissionModeView.status !== "unsupported" &&
         !control.nativePermissionModeControlVerified));
-  const submissionBlocked = switching || modelBlocked || permissionModeBlocked;
+  const submissionBlocked = switching || ownershipError || modelBlocked || permissionModeBlocked;
   if (submissionBlocked && control.sendDisabledBeforeSwitch === null) {
     control.sendDisabledBeforeSwitch = control.sendButton.disabled;
     control.sendButton.disabled = true;
@@ -725,6 +726,7 @@ export function renderComposerAgentControl(
     switching,
     availability,
     codexAccounts,
+    ownershipError,
   );
   reconcileComposerNativeControls(
     control,
@@ -749,7 +751,7 @@ export function renderComposerAgentControl(
   control.harnessCommands.root.hidden = state.agent === "codex";
   control.harnessCommands.root.style.display = state.agent === "codex" ? "none" : "inline-flex";
   if (state.agent === "codex") control.harnessCommands.close();
-  renderRendererCreditsControl(control.credits, accountCredits);
+  renderRendererCreditsControl(control.credits, accountCredits, locale);
 }
 
 export function disposeComposerAgentControl(control: ComposerAgentControl): void {

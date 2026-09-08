@@ -59,6 +59,7 @@ import {
   nativeSessionRefSchema,
   nativeTurnRefSchema,
   type HarnessId,
+  type HarnessAccountSnapshot,
   type HarnessPermissionModeId,
   type HarnessThinkingOptionId,
   type HostItemId,
@@ -437,12 +438,14 @@ async function runBuffered(
   cwd: string,
   environment: NodeJS.ProcessEnv,
   timeoutMs: number,
+  signal?: AbortSignal,
 ): Promise<{ stdout: string; stderr: string }> {
   const invocation = commandInvocation(executable, arguments_, environment);
   return await new Promise((resolve, reject) => {
     const child = spawn(invocation.command, invocation.arguments, {
       cwd,
       env: environment,
+      ...(signal ? { signal, killSignal: "SIGKILL" as const } : {}),
       windowsHide: true,
       windowsVerbatimArguments: invocation.windowsVerbatimArguments,
       stdio: ["ignore", "pipe", "pipe"],
@@ -1470,6 +1473,7 @@ export class AntigravityAdapter implements HarnessAdapter {
   #quota: AntigravityQuotaSnapshot | null = null;
   #quotaCwd: string | null = null;
   #quotaRefresh: Promise<AntigravityQuotaSnapshot | null> | null = null;
+  readonly #quotaAbort = new AbortController();
 
   constructor(options: AntigravityAdapterOptions = {}) {
     this.#command = options.command;
@@ -1546,6 +1550,22 @@ export class AntigravityAdapter implements HarnessAdapter {
     }
   }
 
+  async inspectAccount(): Promise<HarnessAccountSnapshot | null> {
+    // The native /usage command resolves authentication itself. Never fall back
+    // to the last quota observation when authentication has changed or failed.
+    const snapshot = await this.refreshCredits();
+    if (!snapshot) return null;
+    return {
+      credits: {
+        label: snapshot.label,
+        usedPercent: snapshot.usedPercent,
+        periodType: snapshot.periodType,
+        ...(snapshot.resetsAt ? { resetsAt: snapshot.resetsAt } : {}),
+        ...(snapshot.productUsage ? { productUsage: [...snapshot.productUsage] } : {}),
+      },
+    };
+  }
+
   /** Duck-typed by the Host Runtime to populate the account credits surface. */
   credits(): AntigravityQuotaSnapshot | null {
     return this.#quota;
@@ -1573,7 +1593,8 @@ export class AntigravityAdapter implements HarnessAdapter {
         [...arguments_],
         cwd,
         this.#environment,
-        this.#inspectTimeoutMs,
+        Math.min(this.#inspectTimeoutMs, 10_000),
+        this.#quotaAbort.signal,
       );
       return stdout;
     });
@@ -1772,6 +1793,7 @@ export class AntigravityAdapter implements HarnessAdapter {
     this.#inspectionCache.clear();
     this.#quota = null;
     this.#quotaCwd = null;
+    this.#quotaAbort.abort();
     await Promise.all([...this.#sessions].map((session) => session.close()));
   }
 }

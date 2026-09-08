@@ -25,11 +25,25 @@ describe("Renderer draft Agent controller", () => {
     expect(agents.transfer(draft, replacement, ["conversation", "thread-b"])).toBe(true);
     expect(agents.get(replacement)).toMatchObject({ phase: "locked", codexAccountId: "account-b" });
     agents.recordSubmission(replacement, "account-a");
+    agents.clearPendingSubmission(replacement);
     expect(agents.get(replacement).codexAccountId).toBe("account-b");
     expect(agents.mount({}, ["default"]).codexAccountId).toBeUndefined();
     const reopened = {};
     agents.restore(reopened, "codex", undefined, undefined, undefined, "account-b");
     expect(agents.get(reopened)).toMatchObject({ phase: "locked", codexAccountId: "account-b" });
+  });
+
+  it("discards the Account captured by a cancelled draft submission", () => {
+    const agents = controller();
+    const draft = {};
+    agents.mount(draft, ["default"]);
+    agents.markSubmissionPending(draft);
+    agents.recordSubmission(draft, "account-a");
+    agents.clearPendingSubmission(draft);
+    expect(agents.isSubmissionPending(draft)).toBe(false);
+    expect(agents.get(draft).codexAccountId).toBeUndefined();
+    agents.recordSubmission(draft, "account-b");
+    expect(agents.get(draft).codexAccountId).toBe("account-b");
   });
 
   it("isolates Agent selection by Composer", async () => {

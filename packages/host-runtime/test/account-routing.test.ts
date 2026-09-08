@@ -36,6 +36,7 @@ describe("Codex Account routing persistence", () => {
       accountId: "account-b",
       codexHome: path.join(directory, "home-b"),
       email: "second@example.com",
+      planType: "team",
       label: "Second Account",
     });
     await firstAccounts.setActiveAccountId("account-b");
@@ -55,6 +56,7 @@ describe("Codex Account routing persistence", () => {
     await expect(restoredAccounts.get("account-b")).resolves.toMatchObject({
       codexHome: path.join(directory, "home-b"),
       email: "second@example.com",
+      planType: "team",
       label: "Second Account",
     });
     await expect(restoredThreads.getAccountId("thread-b")).resolves.toBe("account-b");

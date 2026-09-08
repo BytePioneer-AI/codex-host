@@ -461,7 +461,7 @@ describe("Claude Code HarnessAdapter", () => {
 
     await expect(
       adapter.open({ kind: "rollbackLastTurn", sourceRef, cwd: "/synthetic" }),
-    ).resolves.toMatchObject({ ok: false, error: { code: "invalidState" } });
+    ).resolves.toMatchObject({ ok: false, error: { code: "sessionNotFound" } });
     expect(dependencies.createTransport).not.toHaveBeenCalled();
     expect(transports).toHaveLength(0);
     await adapter.close();
@@ -1448,6 +1448,60 @@ describe("Claude Code HarnessAdapter", () => {
       liveStarted.item.itemId,
     ]);
     await session.close();
+  });
+
+  it.each([false, true])("waits for transcript persistence (timeout: %s)", async (timeout) => {
+    const { adapter, transports, history, dependencies } = fixture();
+    const session = await openSession(adapter);
+    try {
+      await session.execute(textTurn("delayed-history"));
+      const transport = transports[0];
+      if (!transport) throw new Error("Fake Claude transport was not created");
+      transport.event({ type: "message.completed", messageId: "answer", checkpointId: "answer" });
+      transport.finish({ status: "succeeded" });
+      await Promise.resolve();
+      const sent = transport.turns[0];
+      if (!sent) throw new Error("Fake Claude Turn was not submitted");
+      const persisted = [
+        {
+          type: "user",
+          uuid: sent.userMessageId,
+          session_id: transport.sessionId,
+          message: { role: "user", content: "delayed-history" },
+        },
+        {
+          type: "assistant",
+          uuid: "answer",
+          session_id: transport.sessionId,
+          message: { role: "assistant", content: "done" },
+        },
+      ];
+      vi.mocked(dependencies.readSessionMessages).mockClear();
+      if (!timeout)
+        vi.mocked(dependencies.readSessionMessages)
+          .mockResolvedValueOnce([])
+          .mockResolvedValue(persisted);
+      const result = await session.readSnapshot();
+      if (timeout) {
+        expect(result).toMatchObject({
+          ok: false,
+          error: { code: "sessionBusy", retryable: true },
+        });
+        history.push(...persisted);
+        await expect(session.readSnapshot()).resolves.toMatchObject({
+          ok: true,
+          value: { turns: [{ input: [{ text: "delayed-history" }] }] },
+        });
+      } else {
+        expect(result).toMatchObject({
+          ok: true,
+          value: { turns: [{ input: [{ text: "delayed-history" }] }] },
+        });
+        expect(dependencies.readSessionMessages).toHaveBeenCalledTimes(2);
+      }
+    } finally {
+      await adapter.close();
+    }
   });
 
   it("projects automatic Compaction and defers Usage refresh until Turn completion", async () => {
@@ -4563,6 +4617,91 @@ describe("Claude Code HarnessAdapter", () => {
     expect((await nextEvent(iterator)).type).toBe("item.completed");
     expect((await nextEvent(iterator)).type).toBe("turn.completed");
     await session.close();
+  });
+
+  it("keeps an escalated cancellation busy until the old Transport closes", async () => {
+    const { adapter, transports } = fixture({ cancelTimeoutMs: 10 });
+    const session = await openSession(adapter);
+    const events: HarnessOutput[] = [];
+    const consuming = (async () => {
+      for await (const output of session.outputs) events.push(output);
+    })();
+    await session.execute(textTurn("retiring"));
+    const transport = transports[0];
+    if (!transport) throw new Error("Expected an active Transport");
+    const stopped = Promise.withResolvers<undefined>();
+    transport.close.mockImplementation(() => stopped.promise);
+    await session.execute({ type: "turn.cancel", turnId: hostTurnIdSchema.parse("retiring") });
+    await vi.waitFor(() => expect(transport.close).toHaveBeenCalled());
+    // A late cancelled frame also does not prove that owned processes have exited.
+    transport.finish({ status: "cancelled", reason: "aborted_streaming" });
+    await Promise.resolve();
+    try {
+      await expect(session.readSnapshot()).resolves.toMatchObject({
+        ok: false,
+        error: { code: "sessionBusy" },
+      });
+      expect(
+        events.some((output) => output.kind === "event" && output.event.type === "turn.completed"),
+      ).toBe(false);
+      await expect(session.execute(textTurn("too-early"))).resolves.toMatchObject({
+        ok: false,
+        error: { code: "sessionBusy" },
+      });
+      expect(transports).toHaveLength(1);
+    } finally {
+      stopped.resolve(undefined);
+      await session.close();
+      await consuming;
+    }
+  });
+
+  it("does not confirm Session close while a hard-cancelled Transport is still stopping", async () => {
+    const { adapter, transports } = fixture({ cancelTimeoutMs: 10 });
+    const session = await openSession(adapter);
+    await session.execute(textTurn("retiring-close"));
+    const transport = transports[0];
+    if (!transport) throw new Error("Expected an active Transport");
+    const stopped = Promise.withResolvers<undefined>();
+    transport.close.mockImplementation(() => stopped.promise);
+    await session.execute({
+      type: "turn.cancel",
+      turnId: hostTurnIdSchema.parse("retiring-close"),
+    });
+    await vi.waitFor(() => expect(transport.close).toHaveBeenCalled());
+    let closed = false;
+    const closing = session.close().then(() => {
+      closed = true;
+    });
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(closed).toBe(false);
+    } finally {
+      stopped.resolve(undefined);
+      await closing;
+    }
+  });
+
+  it("retains a failed hard-cancel Transport and rejects reuse and confirmed close", async () => {
+    const { adapter, transports } = fixture({ cancelTimeoutMs: 10 });
+    const session = await openSession(adapter);
+    const events: HarnessOutput[] = [];
+    const consuming = (async () => {
+      for await (const output of session.outputs) events.push(output);
+    })();
+    await session.execute(textTurn("failed-close"));
+    const transport = transports[0];
+    if (!transport) throw new Error("Expected an active Transport");
+    transport.close.mockRejectedValue(new Error("native process remains alive"));
+    await session.execute({ type: "turn.cancel", turnId: hostTurnIdSchema.parse("failed-close") });
+    await vi.waitFor(() => expect(transport.close).toHaveBeenCalled());
+    await expect(session.execute(textTurn("unsafe-retry"))).resolves.toMatchObject({ ok: false });
+    expect(transports).toHaveLength(1);
+    await expect(session.close()).rejects.toThrow("could not stop safely");
+    await consuming;
+    expect(
+      events.some((output) => output.kind === "event" && output.event.type === "session.faulted"),
+    ).toBe(true);
   });
 
   it("maps failed native results without faulting a reusable Session", async () => {

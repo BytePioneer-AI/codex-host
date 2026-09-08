@@ -1,10 +1,25 @@
 import { subagentAvatarSrc } from "./subagent-avatars.js";
+import {
+  createSubagentActivityHistoryResolver,
+  createSubagentThreadModelResolver,
+  createSubagentThreadStatusResolver,
+  readRendererSubagentActivities,
+  readRendererSubagentStatus,
+  readRendererSubagentThreadModel,
+  type SubagentActivityHistoryResolver,
+  type SubagentThreadModel,
+  type SubagentThreadModelResolver,
+  type SubagentThreadStatus,
+  type SubagentThreadStatusResolver,
+} from "./renderer-subagent-thread-model.js";
 
 export const SUBAGENT_ROW_META_ATTRIBUTE = "data-codexhost-subagent-meta";
 export const SUBAGENT_ITEM_BUTTON_SELECTOR = 'button[data-slot="thread-summary-panel-item-button"]';
 export const SUBAGENT_ITEM_LABEL_SELECTOR = '[data-slot="thread-summary-panel-item-label"]';
-export const SUBAGENT_AVATAR_GROUP_SELECTOR = '[data-slot="thread-summary-panel-item-avatar-group"]';
-export const SUBAGENT_AVATAR_BUTTON_SELECTOR = '[data-slot="thread-summary-panel-item-avatar-button"]';
+export const SUBAGENT_AVATAR_GROUP_SELECTOR =
+  '[data-slot="thread-summary-panel-item-avatar-group"]';
+export const SUBAGENT_AVATAR_BUTTON_SELECTOR =
+  '[data-slot="thread-summary-panel-item-avatar-button"]';
 export const SUBAGENT_EXPANDED_LIST_ATTRIBUTE = "data-codexhost-subagent-expanded-list";
 export const SUBAGENT_EXPANDED_ROW_ATTRIBUTE = "data-codexhost-subagent-expanded-row";
 export const SUBAGENT_COLLAPSED_HIDDEN_ATTRIBUTE = "data-codexhost-subagent-collapsed-hidden";
@@ -136,33 +151,39 @@ export function formatSubagentRowMeta(row: SubagentRowMeta): string | undefined 
   const modelLine =
     model && effort && !includesEffort(model, effort) ? `${model} · ${effort}` : model || effort;
   const parts = [
+    prettySubagentStatus(row.status),
     modelLine,
     modelLine ? undefined : row.agentRole?.trim(),
-    prettySubagentStatus(row.status),
   ].filter((value): value is string => typeof value === "string" && value.length > 0);
   return parts.length > 0 ? parts.join(" · ") : undefined;
 }
 
-function contribute(target: Partial<SubagentRowMeta>, source: Record<string, unknown>): void {
+function contribute(
+  target: Partial<SubagentRowMeta>,
+  source: Record<string, unknown>,
+  allowUnscopedModel = false,
+): void {
   const sourceId = nonBlank(source.conversationId) ? source.conversationId.trim() : undefined;
   if (target.conversationId && sourceId && sourceId !== target.conversationId) return;
   if (nonBlank(source.displayName) && !target.displayName) {
     target.displayName = source.displayName.trim();
   }
   if (sourceId && !target.conversationId) target.conversationId = sourceId;
-  if (nonBlank(source.spawnModel) && !target.spawnModel) {
-    target.spawnModel = source.spawnModel.trim();
-  }
-  if (nonBlank(source.model) && !target.model) target.model = source.model.trim();
-  if (nonBlank(source.modelLabel) && !target.model) target.model = source.modelLabel.trim();
-  if (nonBlank(source.latestModel) && !target.model) {
-    target.model = source.latestModel.trim();
-  }
-  if (nonBlank(source.reasoningEffort) && !target.reasoningEffort) {
-    target.reasoningEffort = source.reasoningEffort.trim();
-  }
-  if (nonBlank(source.latestReasoningEffort) && !target.reasoningEffort) {
-    target.reasoningEffort = source.latestReasoningEffort.trim();
+  if (sourceId || allowUnscopedModel) {
+    if (nonBlank(source.spawnModel) && !target.spawnModel) {
+      target.spawnModel = source.spawnModel.trim();
+    }
+    if (nonBlank(source.model) && !target.model) target.model = source.model.trim();
+    if (nonBlank(source.modelLabel) && !target.model) target.model = source.modelLabel.trim();
+    if (nonBlank(source.latestModel) && !target.model) {
+      target.model = source.latestModel.trim();
+    }
+    if (nonBlank(source.reasoningEffort) && !target.reasoningEffort) {
+      target.reasoningEffort = source.reasoningEffort.trim();
+    }
+    if (nonBlank(source.latestReasoningEffort) && !target.reasoningEffort) {
+      target.reasoningEffort = source.latestReasoningEffort.trim();
+    }
   }
   if (nonBlank(source.agentRole) && !target.agentRole) {
     target.agentRole = source.agentRole.trim();
@@ -217,7 +238,7 @@ function harvestFromValue(value: unknown, target: Partial<SubagentRowMeta>): voi
         : [];
   for (const item of items) {
     if (!isRecord(item)) continue;
-    if (collabMatches(item, target.conversationId)) contribute(target, item);
+    if (collabMatches(item, target.conversationId)) contribute(target, item, true);
     if (
       item.type === "subAgentActivity" &&
       nonBlank(item.agentThreadId) &&
@@ -251,78 +272,50 @@ function finalizeRow(target: Partial<SubagentRowMeta>): SubagentRowMeta | null {
   };
 }
 
-export function parentThreadModelFromProps(value: unknown): {
-  model?: string;
-  reasoningEffort?: string;
-} {
-  const target: Partial<SubagentRowMeta> = {};
-  harvestFromValue(value, target);
-  return {
-    ...(nonBlank(target.model) ? { model: target.model.trim() } : {}),
-    ...(nonBlank(target.reasoningEffort) ? { reasoningEffort: target.reasoningEffort.trim() } : {}),
-  };
-}
-
-export function withInheritedThreadModel(
+export function withResolvedThreadModel(
   row: SubagentRowMeta,
-  parent: { model?: string; reasoningEffort?: string },
+  thread: SubagentThreadModel,
 ): SubagentRowMeta {
   return {
     ...row,
-    ...(!row.spawnModel && !row.model && nonBlank(parent.model) ? { model: parent.model.trim() } : {}),
-    ...(!row.reasoningEffort && nonBlank(parent.reasoningEffort)
-      ? { reasoningEffort: parent.reasoningEffort.trim() }
+    ...(!row.spawnModel && !row.model && nonBlank(thread.model)
+      ? { model: thread.model.trim() }
+      : {}),
+    ...(!row.reasoningEffort && nonBlank(thread.reasoningEffort)
+      ? { reasoningEffort: thread.reasoningEffort.trim() }
       : {}),
   };
 }
 
-function snapshotFromModelProps(source: Record<string, unknown>): {
-  model?: string;
-  reasoningEffort?: string;
-} {
-  const model = nonBlank(source.modelLabel)
-    ? source.modelLabel.trim()
-    : nonBlank(source.latestModel)
-      ? source.latestModel.trim()
-      : nonBlank(source.model) && /gpt-|codex|grok|sol|astra/iu.test(source.model)
-        ? source.model.trim()
-        : undefined;
-  const reasoningEffort = nonBlank(source.latestReasoningEffort)
-    ? source.latestReasoningEffort.trim()
-    : nonBlank(source.reasoningEffort)
-      ? source.reasoningEffort.trim()
-      : undefined;
-  return {
-    ...(model ? { model } : {}),
-    ...(reasoningEffort ? { reasoningEffort } : {}),
-  };
+export function withResolvedThreadStatus(
+  row: SubagentRowMeta,
+  status: SubagentThreadStatus,
+): SubagentRowMeta {
+  return { ...row, status };
 }
 
-export function parentThreadModelFromComposer(
-  root: ParentNode | undefined = typeof document === "undefined" ? undefined : document,
-): { model?: string; reasoningEffort?: string } {
-  if (!root) return {};
-  const trigger = root.querySelector<HTMLElement>(
-    '[data-codex-intelligence-trigger], [data-composer-navigation-target="reasoning"]',
-  );
-  if (!trigger) return {};
-  let fiber = fiberFromElement(trigger);
-  let found: { model?: string; reasoningEffort?: string } = {};
-  for (let depth = 0; fiber && depth < 20; depth += 1) {
-    const props = fiber.memoizedProps;
-    if (isRecord(props)) {
-      const snapshot = snapshotFromModelProps(props);
-      found = {
-        ...(found.model || snapshot.model ? { model: found.model ?? snapshot.model } : {}),
-        ...(found.reasoningEffort || snapshot.reasoningEffort
-          ? { reasoningEffort: found.reasoningEffort ?? snapshot.reasoningEffort }
-          : {}),
-      };
-      if (found.model && found.reasoningEffort) return found;
-    }
-    fiber = isRecord(fiber.return) ? fiber.return : null;
+function resolveSubagentRow(
+  row: SubagentRowMeta,
+  modelResolver?: SubagentThreadModelResolver,
+  statusResolver?: SubagentThreadStatusResolver,
+): SubagentRowMeta {
+  if (!row.conversationId) return row;
+  const resolvedStatus = statusResolver?.get(row.conversationId);
+  let enriched = resolvedStatus ? withResolvedThreadStatus(row, resolvedStatus) : row;
+  const visibleStatus = prettySubagentStatus(enriched.status);
+  if (!visibleStatus || visibleStatus === "進行中" || visibleStatus === "等待中") {
+    statusResolver?.ensure(row.conversationId);
   }
-  return found;
+  const resolvedModel = modelResolver?.get(row.conversationId);
+  if (resolvedModel) enriched = withResolvedThreadModel(enriched, resolvedModel);
+  const modelIncludesEffort = Boolean(enriched.spawnModel?.includes(" · "));
+  if (
+    (!enriched.spawnModel && !enriched.model) ||
+    (!enriched.reasoningEffort && !modelIncludesEffort)
+  ) {
+    modelResolver?.ensure(row.conversationId);
+  }
+  return enriched;
 }
 
 export function subagentGroupFromProps(value: unknown): SubagentRowMeta[] {
@@ -393,7 +386,22 @@ export function subagentRowsFromActivities(values: readonly unknown[]): Subagent
     if (isRecord(value.item)) visit(value.item);
   };
   visit(values);
-  return [...byId.values()].map(({ rank: _rank, ...row }) => row);
+  return [...byId.values()].map((value) => ({
+    displayName: value.displayName,
+    ...(value.conversationId ? { conversationId: value.conversationId } : {}),
+    ...(value.status ? { status: value.status } : {}),
+    ...(value.model ? { model: value.model } : {}),
+    ...(value.reasoningEffort ? { reasoningEffort: value.reasoningEffort } : {}),
+  }));
+}
+
+export function currentSubagentParentThreadId(root: ParentNode): string | undefined {
+  const ids = new Set(
+    [...root.querySelectorAll<HTMLElement>("[data-above-composer-conversation-id]")]
+      .map((element) => element.getAttribute("data-above-composer-conversation-id")?.trim())
+      .filter((value): value is string => Boolean(value)),
+  );
+  return ids.size === 1 ? [...ids][0] : undefined;
 }
 
 export function subagentRowMetaFromProps(value: unknown): SubagentRowMeta | null {
@@ -488,19 +496,12 @@ function rememberAgent(rows: SubagentRowMeta[], row: SubagentRowMeta | null): vo
   rows.push(row);
 }
 
-function collectGroupFromProps(
-  value: unknown,
-  rows: SubagentRowMeta[],
-  parent: { model?: string; reasoningEffort?: string },
-): { model?: string; reasoningEffort?: string } {
-  const inherited = { ...parent, ...parentThreadModelFromProps(value) };
+function collectGroupFromProps(value: unknown, rows: SubagentRowMeta[]): void {
   for (const row of subagentGroupFromProps(value)) rememberAgent(rows, row);
-  return inherited;
 }
 
 export function subagentGroupFromElement(element: HTMLElement): SubagentRowMeta[] {
   const rows: SubagentRowMeta[] = [];
-  let parent: { model?: string; reasoningEffort?: string } = {};
   let fiber = fiberFromElement(element);
   const stack: Array<Record<string, unknown>> = [];
   if (fiber && isRecord(fiber.child)) stack.push(fiber.child);
@@ -511,16 +512,12 @@ export function subagentGroupFromElement(element: HTMLElement): SubagentRowMeta[
     if (!current || seen.has(current)) continue;
     seen.add(current);
     steps += 1;
-    parent = collectGroupFromProps(
-      current.memoizedProps ?? current.pendingProps,
-      rows,
-      parent,
-    );
+    collectGroupFromProps(current.memoizedProps ?? current.pendingProps, rows);
     if (isRecord(current.child)) stack.push(current.child);
     if (isRecord(current.sibling)) stack.push(current.sibling);
   }
   for (let depth = 0; fiber && depth < 16; depth += 1) {
-    parent = collectGroupFromProps(fiber.memoizedProps ?? fiber.pendingProps, rows, parent);
+    collectGroupFromProps(fiber.memoizedProps ?? fiber.pendingProps, rows);
     fiber = isRecord(fiber.return) ? fiber.return : null;
   }
   if (rows.length === 0) {
@@ -531,8 +528,7 @@ export function subagentGroupFromElement(element: HTMLElement): SubagentRowMeta[
       else if (label) rememberAgent(rows, { displayName: label, status: "done" });
     }
   }
-  const inherited = { ...parentThreadModelFromComposer(element.ownerDocument), ...parent };
-  return rows.map((row) => withInheritedThreadModel(row, inherited));
+  return rows;
 }
 
 function reactContainerFiber(): Record<string, unknown> | null {
@@ -570,7 +566,7 @@ function collectActivitiesFromProps(value: unknown, bucket: unknown[]): void {
   }
 }
 
-export function harvestSubagentActivitiesFromRoot(): SubagentRowMeta[] {
+function harvestSubagentActivityValuesFromRoot(): readonly unknown[] {
   const fiber = reactContainerFiber();
   if (!fiber) return [];
   const bucket: unknown[] = [];
@@ -587,9 +583,11 @@ export function harvestSubagentActivitiesFromRoot(): SubagentRowMeta[] {
     if (isRecord(current.child)) stack.push(current.child);
     if (isRecord(current.sibling)) stack.push(current.sibling);
   }
-  return subagentRowsFromActivities(bucket).map((row) =>
-    withInheritedThreadModel(row, parentThreadModelFromComposer()),
-  );
+  return bucket;
+}
+
+export function harvestSubagentActivitiesFromRoot(): SubagentRowMeta[] {
+  return subagentRowsFromActivities(harvestSubagentActivityValuesFromRoot());
 }
 
 function artifactsColumn(root: ParentNode): HTMLElement | null {
@@ -600,7 +598,9 @@ function artifactsColumn(root: ParentNode): HTMLElement | null {
 
 function columnHasNativeSubagents(column: HTMLElement): boolean {
   if (column.querySelector(SUBAGENT_AVATAR_GROUP_SELECTOR)) return true;
-  if (column.querySelector(`[${SUBAGENT_EXPANDED_LIST_ATTRIBUTE}]`)) return true;
+  for (const list of column.querySelectorAll(`[${SUBAGENT_EXPANDED_LIST_ATTRIBUTE}]`)) {
+    if (!list.closest(`[${SUBAGENT_PANEL_ATTRIBUTE}]`)) return true;
+  }
   for (const section of column.querySelectorAll("section")) {
     if (section.getAttribute(SUBAGENT_PANEL_ATTRIBUTE) === "true") continue;
     const title = (section.innerText || "").trim().split("\n")[0] ?? "";
@@ -633,14 +633,25 @@ function ensureInjectedPanel(column: HTMLElement): HTMLElement {
   return section;
 }
 
-export function injectActivitySubagentPanel(root: ParentNode = document): boolean {
+export function injectActivitySubagentPanel(
+  root: ParentNode = document,
+  resolver?: SubagentThreadModelResolver,
+  historyResolver?: SubagentActivityHistoryResolver,
+  statusResolver?: SubagentThreadStatusResolver,
+): boolean {
   const column = artifactsColumn(root);
   if (!column) return false;
   if (columnHasNativeSubagents(column)) {
     column.querySelector(`[${SUBAGENT_PANEL_ATTRIBUTE}]`)?.remove();
     return false;
   }
-  const rows = harvestSubagentActivitiesFromRoot();
+  const parentThreadId = currentSubagentParentThreadId(root);
+  if (parentThreadId) historyResolver?.ensure(parentThreadId);
+  const history = parentThreadId ? historyResolver?.get(parentThreadId) : undefined;
+  const rows = subagentRowsFromActivities([
+    ...(history ?? []),
+    ...harvestSubagentActivityValuesFromRoot(),
+  ]).map((row) => resolveSubagentRow(row, resolver, statusResolver));
   if (rows.length === 0) {
     column.querySelector(`[${SUBAGENT_PANEL_ATTRIBUTE}]`)?.remove();
     return false;
@@ -802,9 +813,15 @@ function renderExpandedRow(list: HTMLElement, row: SubagentRowMeta, button: HTML
   if (meta) meta.textContent = text ?? "";
 }
 
-export function expandCollapsedSubagentGroup(button: HTMLElement): boolean {
+export function expandCollapsedSubagentGroup(
+  button: HTMLElement,
+  resolver?: SubagentThreadModelResolver,
+  statusResolver?: SubagentThreadStatusResolver,
+): boolean {
   if (!button.querySelector(SUBAGENT_AVATAR_GROUP_SELECTOR)) return false;
-  const agents = subagentGroupFromElement(button);
+  const agents = subagentGroupFromElement(button).map((row) =>
+    resolveSubagentRow(row, resolver, statusResolver),
+  );
   if (agents.length === 0) return false;
   const list = ensureExpandedList(button);
   const keys = new Set(agents.map((row) => row.conversationId ?? row.displayName));
@@ -818,11 +835,16 @@ export function expandCollapsedSubagentGroup(button: HTMLElement): boolean {
   return true;
 }
 
-export function decorateSubagentRow(element: HTMLElement): boolean {
+export function decorateSubagentRow(
+  element: HTMLElement,
+  resolver?: SubagentThreadModelResolver,
+  statusResolver?: SubagentThreadStatusResolver,
+): boolean {
   const label = element.querySelector<HTMLElement>(SUBAGENT_ITEM_LABEL_SELECTOR);
-  const row =
+  const harvested =
     subagentRowMetaFromElement(element) ?? (label ? subagentRowMetaFromElement(label) : null);
-  if (!row) return false;
+  if (!harvested) return false;
+  const row = resolveSubagentRow(harvested, resolver, statusResolver);
   const text = formatSubagentRowMeta(row);
   const nameNode = findNameNode(element);
   if (!nameNode || !text) {
@@ -834,19 +856,24 @@ export function decorateSubagentRow(element: HTMLElement): boolean {
   return true;
 }
 
-export function decorateSubagentRows(root: ParentNode = document): number {
+export function decorateSubagentRows(
+  root: ParentNode = document,
+  resolver?: SubagentThreadModelResolver,
+  historyResolver?: SubagentActivityHistoryResolver,
+  statusResolver?: SubagentThreadStatusResolver,
+): number {
   const buttons = root.querySelectorAll<HTMLElement>(SUBAGENT_ITEM_BUTTON_SELECTOR);
   let decorated = 0;
   for (const element of buttons) {
     if (element.closest(`[${SUBAGENT_EXPANDED_LIST_ATTRIBUTE}]`)) continue;
     if (element.closest(`[${SUBAGENT_PANEL_ATTRIBUTE}]`)) continue;
     if (element.querySelector(SUBAGENT_AVATAR_GROUP_SELECTOR)) {
-      if (expandCollapsedSubagentGroup(element)) decorated += 1;
+      if (expandCollapsedSubagentGroup(element, resolver, statusResolver)) decorated += 1;
       continue;
     }
-    if (decorateSubagentRow(element)) decorated += 1;
+    if (decorateSubagentRow(element, resolver, statusResolver)) decorated += 1;
   }
-  if (injectActivitySubagentPanel(root)) decorated += 1;
+  if (injectActivitySubagentPanel(root, resolver, historyResolver, statusResolver)) decorated += 1;
   return decorated;
 }
 
@@ -863,7 +890,7 @@ export function installRendererSubagentRowMeta(
     if (disposed) return;
     mutating = true;
     try {
-      decorateSubagentRows(root);
+      decorateSubagentRows(root, resolver, historyResolver, statusResolver);
     } finally {
       mutating = false;
     }
@@ -877,6 +904,18 @@ export function installRendererSubagentRowMeta(
       scan();
     }, 250);
   };
+  const resolver = createSubagentThreadModelResolver({
+    read: readRendererSubagentThreadModel,
+    onUpdate: schedule,
+  });
+  const historyResolver = createSubagentActivityHistoryResolver({
+    read: readRendererSubagentActivities,
+    onUpdate: schedule,
+  });
+  const statusResolver = createSubagentThreadStatusResolver({
+    read: readRendererSubagentStatus,
+    onUpdate: schedule,
+  });
   const observer = new MutationObserver((mutations) => {
     if (mutating || isOwnMetaMutation(mutations)) return;
     schedule();
@@ -885,12 +924,21 @@ export function installRendererSubagentRowMeta(
   observer.observe(root, { childList: true, subtree: true });
   schedule();
   return {
-    refresh: schedule,
+    refresh() {
+      resolver.refresh();
+      statusResolver.refresh();
+      const parentThreadId = currentSubagentParentThreadId(root);
+      if (parentThreadId) historyResolver.refresh(parentThreadId);
+      schedule();
+    },
     dispose() {
       if (disposed) return;
       disposed = true;
       if (debounce !== undefined) clearTimeout(debounce);
       observer.disconnect();
+      resolver.dispose();
+      historyResolver.dispose();
+      statusResolver.dispose();
       if (root instanceof Element || root instanceof Document) {
         for (const meta of root.querySelectorAll(`[${SUBAGENT_ROW_META_ATTRIBUTE}]`)) {
           if (meta.closest(`[${SUBAGENT_EXPANDED_LIST_ATTRIBUTE}]`)) continue;

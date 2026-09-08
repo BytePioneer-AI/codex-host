@@ -23,7 +23,7 @@ describe("official collab spawn model labels", () => {
     expect(formatCollabSpawnModel("gpt-5.6-sol", "xhigh")).toBe("GPT-5.6 Sol · xHigh");
   });
 
-  it("rewrites official spawnAgent items and fills from the parent Thread", () => {
+  it("rewrites official spawnAgent items and fills from the exact child Thread", () => {
     const value = {
       method: "item/started",
       params: {
@@ -47,6 +47,7 @@ describe("official collab spawn model labels", () => {
           type: "collabAgentToolCall",
           tool: "spawnAgent",
           senderThreadId: "parent-1",
+          receiverThreadIds: ["child-1"],
           model: null,
           reasoningEffort: null,
         },
@@ -54,10 +55,40 @@ describe("official collab spawn model labels", () => {
     };
     expect(
       decorateOfficialCollabSpawnModels(inherited, (threadId) =>
-        threadId === "parent-1" ? { model: "gpt-5.6-sol", reasoningEffort: "medium" } : undefined,
+        threadId === "child-1" ? { model: "xai/grok-4.6", reasoningEffort: "high" } : undefined,
       ),
     ).toBe(true);
-    expect(inherited.params.item.model).toBe("GPT-5.6 Sol · Medium");
+    expect(inherited.params.item.model).toBe("Grok 4.6 · High");
+  });
+
+  it("does not substitute the parent or combine different child Thread Models", () => {
+    const value = {
+      params: {
+        item: {
+          type: "collabAgentToolCall",
+          tool: "spawnAgent",
+          senderThreadId: "parent-1",
+          receiverThreadIds: ["child-1", "child-2"],
+          model: null,
+          reasoningEffort: null,
+        },
+      },
+    };
+    expect(
+      decorateOfficialCollabSpawnModels(value, (threadId) => {
+        if (threadId === "parent-1") {
+          return { model: "gpt-5.6-sol", reasoningEffort: "ultra" };
+        }
+        if (threadId === "child-1") {
+          return { model: "xai/grok-4.6", reasoningEffort: "high" };
+        }
+        if (threadId === "child-2") {
+          return { model: "gpt-5.6-sol", reasoningEffort: "high" };
+        }
+        return undefined;
+      }),
+    ).toBe(false);
+    expect(value.params.item.model).toBeNull();
   });
 
   it("observes latest Model from official Thread objects", () => {

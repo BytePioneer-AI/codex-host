@@ -179,6 +179,7 @@ class BrowserSidebarAgentIconRow implements SidebarAgentIconRow {
       return;
     }
     this.clear();
+    if (title.parentElement !== titleTrigger) return;
 
     const label = `${RENDERER_AGENT_LABELS[agent]} Agent`;
     const marker = this.element.ownerDocument.createElement("span");

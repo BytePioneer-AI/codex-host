@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { subagentAvatarIndex, subagentAvatarSrc } from "../src/subagent-avatars.js";
 import {
+  currentSubagentParentThreadId,
   formatSubagentRowMeta,
   prettySubagentAgentPath,
   prettySubagentEffort,
@@ -10,10 +11,26 @@ import {
   subagentGroupFromProps,
   subagentRowMetaFromProps,
   subagentRowsFromActivities,
-  withInheritedThreadModel,
+  withResolvedThreadModel,
+  withResolvedThreadStatus,
 } from "../src/renderer-subagent-row-meta.js";
 
 describe("Subagent row meta", () => {
+  it("reads the one active parent Thread id from the Composer marker", () => {
+    const marker = {
+      getAttribute: () => "parent-1",
+    };
+    const root = {
+      querySelectorAll: () => [marker],
+    } as unknown as ParentNode;
+    expect(currentSubagentParentThreadId(root)).toBe("parent-1");
+
+    const ambiguous = {
+      querySelectorAll: () => [marker, { getAttribute: () => "parent-2" }],
+    } as unknown as ParentNode;
+    expect(currentSubagentParentThreadId(ambiguous)).toBeUndefined();
+  });
+
   it("picks a stable official Subagent avatar from the conversation id", () => {
     expect(subagentAvatarIndex("01a07e45-ab00-7033-83e4-2f46d9ff3bcd")).toBe(
       subagentAvatarIndex("01a07e45-ab00-7033-83e4-2f46d9ff3bcd"),
@@ -43,21 +60,21 @@ describe("Subagent row meta", () => {
     expect(prettySubagentEffort("ultra")).toBe("超高");
   });
 
-  it("shows model, effort, and status on one untruncated subtitle", () => {
+  it("shows status, model, and effort on one untruncated subtitle", () => {
     expect(
       formatSubagentRowMeta({
         displayName: "Find test run commands",
         spawnModel: "Grok 4.6 · High",
         status: "done",
       }),
-    ).toBe("Grok 4.6 · High · 已完成");
+    ).toBe("已完成 · Grok 4.6 · High");
     expect(
       formatSubagentRowMeta({
         displayName: "Scan repo entry points",
         spawnModel: "Grok 4.6 · High",
         status: "active",
       }),
-    ).toBe("Grok 4.6 · High · 進行中");
+    ).toBe("進行中 · Grok 4.6 · High");
   });
 
   it("shows official Codex spawn Model, reasoning effort, and status", () => {
@@ -68,7 +85,7 @@ describe("Subagent row meta", () => {
         reasoningEffort: "high",
         status: "done",
       }),
-    ).toBe("GPT-5.2 Codex · High · 已完成");
+    ).toBe("已完成 · GPT-5.2 Codex · High");
     expect(
       formatSubagentRowMeta({
         displayName: "Gibbs",
@@ -76,7 +93,7 @@ describe("Subagent row meta", () => {
         reasoningEffort: "xhigh",
         status: "active",
       }),
-    ).toBe("GPT-5.6 Sol · xHigh · 進行中");
+    ).toBe("進行中 · GPT-5.6 Sol · xHigh");
   });
 
   it("reads nested backgroundAgent props used by the artifacts popover", () => {
@@ -192,8 +209,8 @@ describe("Subagent row meta", () => {
     ]);
   });
 
-  it("fills official v2 spawnModel gaps from the parent Thread Model", () => {
-    const row = withInheritedThreadModel(
+  it("fills official v2 spawnModel gaps from the exact child Thread Model", () => {
+    const row = withResolvedThreadModel(
       {
         displayName: "Einstein",
         conversationId: "child-1",
@@ -201,10 +218,10 @@ describe("Subagent row meta", () => {
       },
       { model: "gpt-5.4", reasoningEffort: "high" },
     );
-    expect(formatSubagentRowMeta(row)).toBe("GPT-5.4 · High · 已完成");
+    expect(formatSubagentRowMeta(row)).toBe("已完成 · GPT-5.4 · High");
     expect(
       formatSubagentRowMeta(
-        withInheritedThreadModel(
+        withResolvedThreadModel(
           {
             displayName: "Repo structure",
             conversationId: "child-2",
@@ -213,7 +230,39 @@ describe("Subagent row meta", () => {
           { model: "gpt-6-astra", reasoningEffort: "ultra" },
         ),
       ),
-    ).toBe("GPT-6 Astra · 超高 · 進行中");
+    ).toBe("進行中 · GPT-6 Astra · 超高");
+  });
+
+  it("does not copy an unscoped parent Thread Model into a child row", () => {
+    expect(
+      subagentRowMetaFromProps({
+        model: "gpt-5.6-sol",
+        reasoningEffort: "ultra",
+        backgroundAgent: {
+          conversationId: "child-1",
+          displayName: "Einstein",
+          status: "done",
+        },
+      }),
+    ).toEqual({
+      displayName: "Einstein",
+      conversationId: "child-1",
+      status: "done",
+    });
+  });
+
+  it("replaces a stale running label with the exact child failure", () => {
+    const row = withResolvedThreadStatus(
+      {
+        displayName: "Review patch",
+        conversationId: "child-1",
+        model: "xai/grok-4.6",
+        reasoningEffort: "high",
+        status: "running",
+      },
+      "failed",
+    );
+    expect(formatSubagentRowMeta(row)).toBe("失敗 · Grok 4.6 · High");
   });
 
   it("does not recurse through arbitrary nested React props", () => {

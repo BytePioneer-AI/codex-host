@@ -465,7 +465,7 @@ describe("Grok Adapter ACP projection", () => {
     const opened = await adapter.open({
       kind: "create",
       cwd: "/synthetic",
-      model: { id: "grok-4.6" },
+      model: harnessModelRefSchema.parse({ id: "grok-4.6" }),
     });
     if (!opened.ok) throw new Error(opened.error.message);
     expect(transport.openCalls).toContainEqual({

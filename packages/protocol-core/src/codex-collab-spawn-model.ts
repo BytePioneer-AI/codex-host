@@ -183,12 +183,24 @@ export function observeOfficialThreadModels(
 
 function decorateCollabItem(
   item: Record<string, unknown>,
-  fallbackForSender?: (senderThreadId: string) => OfficialThreadModel | undefined,
+  modelForThread?: (threadId: string) => OfficialThreadModel | undefined,
 ): boolean {
   if (item.type !== "collabAgentToolCall" || item.tool !== "spawnAgent") return false;
+  const receiverThreadIds = Array.isArray(item.receiverThreadIds)
+    ? item.receiverThreadIds.filter(nonBlank).map((threadId) => threadId.trim())
+    : [];
+  const receiverModels = modelForThread
+    ? receiverThreadIds.map((threadId) => modelForThread(threadId))
+    : [];
   const fallback =
-    nonBlank(item.senderThreadId) && fallbackForSender
-      ? fallbackForSender(item.senderThreadId)
+    receiverModels.length > 0 &&
+    receiverModels.every(
+      (snapshot) =>
+        snapshot !== undefined &&
+        snapshot.model === receiverModels[0]?.model &&
+        snapshot.reasoningEffort === receiverModels[0]?.reasoningEffort,
+    )
+      ? receiverModels[0]
       : undefined;
   const formatted = formatCollabSpawnModel(
     nonBlank(item.model) ? item.model : fallback?.model,
@@ -201,7 +213,7 @@ function decorateCollabItem(
 
 export function decorateOfficialCollabSpawnModels(
   value: JsonValue,
-  fallbackForSender?: (senderThreadId: string) => OfficialThreadModel | undefined,
+  modelForThread?: (threadId: string) => OfficialThreadModel | undefined,
 ): boolean {
   const stack: unknown[] = [value];
   const seen = new Set<unknown>();
@@ -219,7 +231,7 @@ export function decorateOfficialCollabSpawnModels(
       continue;
     }
     if (!isRecord(current)) continue;
-    if (decorateCollabItem(current, fallbackForSender)) mutated = true;
+    if (decorateCollabItem(current, modelForThread)) mutated = true;
     for (const nested of Object.values(current)) stack.push(nested);
   }
   return mutated;

@@ -204,6 +204,27 @@ async function calls(page: Page) {
   return page.evaluate(() => Reflect.get(globalThis, "accountsFixture").calls);
 }
 
+test("Usage shows the selected Account and follows Host changes without token data", async ({
+  page,
+}) => {
+  await setup(page);
+  const details = page.getByRole("dialog", { name: "Thread Usage details" });
+  await page.getByRole("button", { name: "Thread Usage: Usage", exact: true }).hover();
+  await expect(details).toBeVisible();
+  await expect(details).toContainText("local-default@example.com");
+  await page.keyboard.press("Escape");
+  await selectOtherAccount(page);
+  await page.getByRole("button", { name: "Thread Usage: Usage", exact: true }).hover();
+  await expect(details).toContainText("local-other@example.com");
+  await expect(details).not.toContainText("local-default@example.com");
+  await page.mouse.move(0, 0);
+  await action(page, "switchHost", "remote");
+  await expect(page.locator(trigger)).toHaveAttribute("title", /remote-default/);
+  await page.getByRole("button", { name: "Thread Usage: Usage", exact: true }).hover();
+  await expect(details).toContainText("remote-default@example.com");
+  await expect(details).not.toContainText("local-other@example.com");
+});
+
 async function waitForPending(page: Page, key: string): Promise<void> {
   await expect
     .poll(() =>

@@ -106,12 +106,22 @@ xattr -dr com.apple.quarantine /Applications/codexhost.app
   </tr>
   <tr>
     <td width="50%" valign="top">
-      <p><strong>Agent 与 Model 选择</strong></p>
-      <img src="docs/imgs/agent-harness-selector.png" alt="提交前选择真正执行任务的 Agent 与 Model，Codex、Pi、Claude Code、OpenCode、DeepSeek Harness、Grok 和 Oh My Pi 均可选择">
+      <p><strong>Agent、账号与 Model 选择</strong></p>
+      <div align="center">
+        <img width="70%" src="docs/imgs/harness-account-selector.png" alt="在输入框中选择 Codex 账号，或切换到 Pi、Claude Code、DeepSeek Harness、OpenCode、Grok、Oh My Pi 和 Antigravity CLI">
+      </div>
     </td>
     <td width="50%" valign="top">
       <p><strong>Usage 与费用信息</strong></p>
       <img src="docs/imgs/usage-panel.png" alt="Usage 面板展示上下文、缓存命中与费用估算">
+    </td>
+  </tr>
+  <tr>
+    <td colspan="2" valign="top">
+      <p><strong>多账号与额度管理</strong></p>
+      <div align="center">
+        <img width="90%" src="docs/imgs/account-management.png" alt="统一管理多个 Codex 账号，并查看 Codex、Claude Code 和 Grok 账号的剩余额度与重置时间">
+      </div>
     </td>
   </tr>
   <tr>

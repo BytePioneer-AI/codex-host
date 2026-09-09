@@ -486,6 +486,7 @@ describe("Antigravity Adapter", () => {
     expect(error.diagnostic).not.toContain("sk-live-abc123");
     expect(error.diagnostic).toContain("[redacted]");
     expect(error.message).toContain("'request-review'");
+    expect(error.message).toContain("matching allow rule");
     expect(error.retryable).toBe(false);
   });
 

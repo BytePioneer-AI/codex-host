@@ -1,5 +1,5 @@
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { readdir, readFile, writeFile } from "node:fs/promises";
+import { readdir, readFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { Readable, Writable } from "node:stream";
@@ -357,14 +357,6 @@ function transportEvent(
         ? { type: "usage", update, metadata }
         : null;
   }
-}
-
-function grokIdentityLabel(modelId: string): string {
-  const version = modelId
-    .trim()
-    .replace(/^grok-/i, "")
-    .replace(/-build$/i, "");
-  return version.length > 0 ? `Grok ${version}` : "Grok";
 }
 
 function grokHomeDir(options: Pick<GrokAcpTransportOptions, "environment">): string {
@@ -909,56 +901,6 @@ export class GrokAcpTransport {
     const selected = response._meta.model.Ok;
     if (typeof selected !== "string" || selected.trim().length === 0) {
       throw new GrokTransportError("protocolError", "Grok rejected Model configuration");
-    }
-    await this.#rewriteNativeIdentity(modelId);
-  }
-
-  async #rewriteNativeIdentity(modelId: string): Promise<void> {
-    const sessionId = this.#sessionId;
-    if (!sessionId) return;
-    const label = grokIdentityLabel(modelId);
-    const promptPath = nativeSessionFile(this.#options, sessionId, "system_prompt.txt");
-    const contextPath = nativeSessionFile(this.#options, sessionId, "prompt_context.json");
-    const historyPath = nativeSessionFile(this.#options, sessionId, "chat_history.jsonl");
-    try {
-      const prompt = await readFile(promptPath, "utf8");
-      const nextPrompt = prompt.replace(/^You are Grok [0-9.]+/, `You are ${label}`);
-      if (nextPrompt !== prompt) await writeFile(promptPath, nextPrompt, "utf8");
-    } catch (error) {
-      if (!isMissingFile(error)) throw error;
-    }
-    try {
-      const raw = JSON.parse(await readFile(contextPath, "utf8")) as unknown;
-      if (isRecord(raw) && raw.system_prompt_label !== label) {
-        raw.system_prompt_label = label;
-        await writeFile(contextPath, `${JSON.stringify(raw, null, 2)}\n`, "utf8");
-      }
-    } catch (error) {
-      if (!isMissingFile(error)) throw error;
-    }
-    try {
-      const contents = await readFile(historyPath, "utf8");
-      const lines = contents.split("\n");
-      let changed = false;
-      const rewritten = lines.map((line) => {
-        if (line.length === 0 || changed) return line;
-        let record: unknown;
-        try {
-          record = JSON.parse(line);
-        } catch {
-          return line;
-        }
-        if (!isRecord(record) || record.type !== "system" || typeof record.content !== "string") {
-          return line;
-        }
-        const next = record.content.replace(/^You are Grok [0-9.]+/, `You are ${label}`);
-        if (next === record.content) return line;
-        changed = true;
-        return JSON.stringify({ ...record, content: next });
-      });
-      if (changed) await writeFile(historyPath, rewritten.join("\n"), "utf8");
-    } catch (error) {
-      if (!isMissingFile(error)) throw error;
     }
   }
 

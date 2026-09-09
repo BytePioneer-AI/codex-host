@@ -242,6 +242,46 @@ describe("Grok history Fork mapping", () => {
     ]);
   });
 
+  it.each([
+    { model: undefined, reportedModel: undefined },
+    { model: "grok-4.5", reportedModel: undefined },
+    { model: "grok-4.5", reportedModel: "grok-4.6" },
+    { model: undefined, reportedModel: "provider/child-model" },
+  ])("restores only explicit child Model metadata: %j", ({ model, reportedModel }) => {
+    const replay: Parameters<typeof mapGrokReplay>[0] = [
+      { type: "user.text", text: "delegate", metadata: { eventId: "user-1" } },
+      {
+        type: "tool.call",
+        callId: "spawn-1",
+        title: "spawn_subagent",
+        name: "spawn_subagent",
+        rawInput: {
+          description: "Inspect",
+          subagent_id: "child-session",
+          ...(model ? { model } : {}),
+        },
+      },
+      ...(reportedModel
+        ? [
+            {
+              type: "subagent.spawned" as const,
+              nativeSubagentId: "child-session",
+              model: reportedModel,
+            },
+          ]
+        : []),
+      { type: "subagent.finished", nativeSubagentId: "child-session", status: "completed" },
+      { type: "turn.completed", nativeTurnKey: "prompt-1", stopReason: "end_turn" },
+    ];
+    const snapshot = mapGrokReplay(replay, grokHarnessId, "session-1", "/workspace");
+    expect(mapGrokReplay(replay, grokHarnessId, "session-1", "/workspace")).toEqual(snapshot);
+    const item = snapshot.turns[0]?.items[0]?.item;
+    if (item?.type !== "subagentDelegation") throw new Error("Expected Subagent delegation");
+    expect(item.subagents[0]?.model).toBe(reportedModel ?? model);
+    expect(item.subagents[0]).not.toHaveProperty("reasoningEffort");
+    if (!reportedModel && !model) expect(item.subagents[0]).not.toHaveProperty("model");
+  });
+
   it("restores Command output and Generic Tool results from Native history", () => {
     const snapshot = mapGrokReplay(
       [

@@ -342,7 +342,9 @@ export interface HostSubagentState {
   nativeSubagentId?: string;
   description: string;
   role?: string;
+  /** Native child Model ID, when explicitly supplied or reported; not a display label. */
   model?: string;
+  /** Native child reasoning effort, when known; do not infer from parent settings. */
   reasoningEffort?: string;
   background: boolean;
   status: HostSubagentStatus;

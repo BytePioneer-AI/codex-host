@@ -1,23 +1,32 @@
-# Subagent status, Model, and reasoning effort
+# Grok Subagents and native Desktop projection
 
-The Subagent list shows a subtitle in the order `status · Model · reasoning effort`, for example `已完成 · Grok 4.6 · High`. It supports waiting, running, completed, failed, and interrupted states. Missing Model or effort values are omitted.
+## Scope
 
-![Local macOS Subagent status, Model, and reasoning effort](imgs/subagent-status-model-effort.png)
+The Grok Adapter maps native spawn/task tools to the existing Host `subagentDelegation` contract. Desktop receives the existing `collabAgentToolCall` projection and remains responsible for its Subagent list, collapse behavior, navigation, and visual presentation.
 
-## Native Codex
+This integration does not inject a replacement list, custom status subtitles, avatars, or a history panel. It does not inspect React Fiber, add child `thread/read` requests, or scan and rewrite official Codex protocol frames. Native Codex Subagent behavior is unchanged.
 
-The renderer supports existing child rows and collapsed `subAgentActivity` rows, preserving child names and seed avatars. It reads the exact child Thread for Model, reasoning effort, and terminal status. It never substitutes the parent Composer Model for an unknown child Model. Saved parent activities restore the list when a Thread is reopened.
+## Lifecycle and transcripts
 
-Reads are deduplicated and cached, with bounded retries. Renderer observation is debounced and avoids responding indefinitely to its own DOM updates. This integration depends on Desktop row bindings and its request bridge; a Desktop update can require binding changes.
+- Spawn/send tools expose child identity, description, role, background execution, and status through the public Subagent contract.
+- A completed background spawn tool does not mean the child has completed. Observed native completion events, terminal wait results, and successful kill tools settle child states. A failed kill tool does not imply that the child stopped.
+- Child transcripts are read-only snapshots of the child Native Session; they are not separate writable Host Sessions.
+- Parent Native history is projected back into Subagent Items when the Thread is reopened. Presentation uses the existing Desktop history path rather than a Renderer-maintained copy of the list.
 
-## Grok
+## Model and reasoning effort
 
-The Adapter projects native spawn/task tools into Host Subagent delegation items and exposes child transcripts through the public Subagent capability. Native completion events, single-result waits, multi-result waits, and kill results settle child states. A completed spawn tool alone does not mean its background child has completed.
+The public `HostSubagentState` has optional `model` and `reasoningEffort` fields. Adapters must omit unknown values rather than infer them from parent Session settings.
 
-Grok Model labels use explicit spawn metadata when available and the session selection as a fallback; reasoning effort comes from the parent session setting. These fallback values are not independent verification of a child's inference configuration.
+Grok supplies the raw child Model ID when explicitly present in spawn arguments or a native spawned event. A reported child Model supersedes the spawn argument. An explicit argument describes the requested child configuration; it is not independent verification of the inference backend. Grok does not currently supply independently observed child reasoning effort, so that field is omitted.
 
-New Grok sessions receive the requested startup Model. Switching Models updates native identity metadata, and each Turn carries an active-Model reminder. This changes native prompt/history identity text and should be reviewed separately from display-only changes; self-reported identity is not proof of the backend Model.
+The protocol projector passes these values in separate native `model` and `reasoningEffort` fields without formatting an ID into a display label. Since a native collaboration Item has only one configuration slot, a multi-child Item supplies it only when all children have the same configuration. Missing or heterogeneous configurations are not guessed. Adapters that omit both optional fields retain the previous null projection.
+
+Whether and where those fields are visible depends on the installed Desktop version; this integration does not promise a custom `status · Model · effort` subtitle.
+
+## Session configuration
+
+New Grok Sessions receive an explicitly requested startup Model through the native `--model` flag. Subsequent changes continue to use `session/set_model`. codexhost does not rewrite `system_prompt.txt`, `prompt_context.json`, or `chat_history.jsonl` to change Model identity, and does not append identity reminders to user Turns.
 
 ## Validation scope
 
-Focused tests cover Grok tool/event projection, history, Model startup/reminders, native Codex child identity checks, status handling, cached reads, and history restoration. The local macOS Desktop UI was inspected for completed and failed child subtitles. Waiting and interrupted states have automated coverage but were not reproduced live. Windows and Linux live UI validation is outstanding.
+Focused automated tests cover tool/event mapping, lifecycle projection, child transcript reads, history replay, explicit versus unknown child Model metadata, startup arguments, unchanged user input, and native protocol projection for missing and heterogeneous configurations. These checks do not replace live Grok/Desktop validation; the removed custom UI screenshot is not evidence for this native-only version.

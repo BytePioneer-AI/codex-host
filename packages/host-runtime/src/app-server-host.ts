@@ -178,12 +178,10 @@ import {
   decodeThreadMetadataUpdateRequest,
   decodeThreadRevertRequest,
   decodeThreadRollbackRequest,
-  decorateOfficialCollabSpawnModels,
   mapExternalThreadHarnessError,
   projectCodexRateLimitsToCredits,
   observeCodexRateLimits,
   observeCodexTokenUsage,
-  observeOfficialThreadModels,
   parseJsonFrame,
   projectCodexThreadUsage,
   readLfFrames,
@@ -196,7 +194,6 @@ import {
   transportModelIdForHarness,
   type CodexApprovalProjection,
   type CodexQuestionProjection,
-  type OfficialThreadModel,
   type DecodedThreadForkRequest,
   type DecodedThreadListRequest,
   type DecodedThreadRevertRequest,
@@ -518,7 +515,6 @@ export class AppServerHost {
   #officialUsageByThread = new Map<string, HostUsage>();
   readonly #officialRateLimits = new AccountRateLimits();
   readonly #officialUsageAccountByThread = new Map<string, string>();
-  #officialThreadModels = new Map<string, OfficialThreadModel>();
   #routeObservationTracker = new RequestRouteObservationTracker();
   #pendingOfficialThreadBindings = new Map<
     string,
@@ -1470,15 +1466,8 @@ export class AppServerHost {
       this.#diagnose(error);
     }
     this.#routeObservationTracker.bindOfficialResponse(parsed);
-    observeOfficialThreadModels(parsed, (threadId, snapshot) => {
-      const previous = this.#officialThreadModels.get(threadId) ?? {};
-      this.#officialThreadModels.set(threadId, { ...previous, ...snapshot });
-    });
-    const decorated = decorateOfficialCollabSpawnModels(parsed, (threadId) =>
-      this.#officialThreadModels.get(threadId),
-    );
-    if (decorated || forwarded !== parsed) await this.#writer.json(forwarded);
-    else await this.#writer.frame(input.frame);
+    if (forwarded === parsed) await this.#writer.frame(input.frame);
+    else await this.#writer.json(forwarded);
   }
 
   async #requestOfficial(method: string, params: JsonObject): Promise<JsonObject> {

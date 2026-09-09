@@ -113,8 +113,6 @@ import {
   type GrokProjectedToolItem,
 } from "./grok-tool-output.js";
 import {
-  grokActiveModelReminder,
-  grokModelDisplayLabel,
   modelStateFromInitialize,
   modelStateFromSessionResponse,
   stateForGrokModel,
@@ -514,13 +512,9 @@ class GrokHarnessSession implements HarnessSession {
     };
     this.#active = active;
     this.#event({ type: "turn.started", turnId: command.turnId });
-    const modelLabel = grokModelDisplayLabel(this.#modelState, this.#state.effectiveModel?.id);
-    const thinkingLabel = this.#state.availableThinkingOptions?.find(
-      (option) => option.id === this.#state.effectiveThinkingOptionId,
-    )?.label;
     void this.#transport
       .runTurn(
-        `${text}\n\n${grokActiveModelReminder(modelLabel, thinkingLabel)}`,
+        text,
         (event) => this.#handleEvent(active, event),
         (request) => this.#requestPermission(active, request),
       )
@@ -759,9 +753,6 @@ class GrokHarnessSession implements HarnessSession {
     this.#configuring = true;
     try {
       await this.#transport.setModel(model.id, thinkingOptionId);
-      this.#modelState.currentModel = model;
-      if (thinkingOptionId) this.#modelState.currentThinkingOptionId = thinkingOptionId;
-      else delete this.#modelState.currentThinkingOptionId;
       this.#state = stateForGrokModel(
         this.#modelState,
         { nativeRef: nativeRef(this.#transport.sessionId) },
@@ -1037,12 +1028,6 @@ class GrokHarnessSession implements HarnessSession {
     });
   }
 
-  #subagentModelLabel(modelId?: string): string | undefined {
-    const id = modelId ?? this.#state.effectiveModel?.id;
-    if (!id) return undefined;
-    return this.#modelState.catalog.models.find((model) => model.ref.id === id)?.label ?? id;
-  }
-
   #startTool(active: ActiveTurn, event: Extract<GrokTransportEvent, { type: "tool.call" }>): void {
     this.#completeReasoning(active, { status: "succeeded" });
     this.#completeAgent(active, { status: "succeeded" });
@@ -1051,8 +1036,7 @@ class GrokHarnessSession implements HarnessSession {
       const prompt = grokSubagentPrompt(event.rawInput);
       const role = grokSubagentRole(event.rawInput);
       const nativeSubagentId = grokNativeSubagentId(event.rawInput);
-      const model = this.#subagentModelLabel(grokSubagentModel(event.rawInput));
-      const reasoningEffort = this.#state.effectiveThinkingOptionId;
+      const model = grokSubagentModel(event.rawInput);
       active.subagents.start(active.command.turnId, {
         callId: event.callId,
         operation,
@@ -1060,7 +1044,6 @@ class GrokHarnessSession implements HarnessSession {
         ...(prompt ? { prompt } : {}),
         ...(role ? { role } : {}),
         ...(model ? { model } : {}),
-        ...(reasoningEffort ? { reasoningEffort } : {}),
         background: grokSubagentBackground(event.rawInput),
         ...(nativeSubagentId ? { nativeSubagentId } : {}),
       });
@@ -1184,8 +1167,8 @@ class GrokHarnessSession implements HarnessSession {
           }
         : { status: "succeeded" };
     this.#completeItem(active, tool.item, outcome);
-    this.#completeWatchedSubagents(active, tool.item, content, rawOutput);
     if (status !== "completed") return;
+    this.#completeWatchedSubagents(active, tool.item, content, rawOutput);
     const changes = projectGrokFileChanges(content, this.#cwd);
     if (!changes) return;
     const fileItem: HostFileChangeItem = {
@@ -1251,12 +1234,11 @@ class GrokHarnessSession implements HarnessSession {
     active: ActiveTurn,
     event: Extract<GrokTransportEvent, { type: "subagent.spawned" }>,
   ): void {
-    const model = event.model ? this.#subagentModelLabel(event.model) : undefined;
     active.subagents.bindNativeId(active.command.turnId, {
       nativeSubagentId: event.nativeSubagentId,
       ...(event.description ? { description: event.description } : {}),
       ...(event.role ? { role: event.role } : {}),
-      ...(model ? { model } : {}),
+      ...(event.model ? { model: event.model } : {}),
     });
   }
 

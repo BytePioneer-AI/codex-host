@@ -10,7 +10,7 @@ describe("Grok invocation", () => {
     });
   });
 
-  it("passes --model so session/new bakes the selected identity prompt", () => {
+  it("passes the requested startup Model through the native CLI flag", () => {
     expect(grokInvocation("/opt/grok", "darwin", "grok-4.5")).toMatchObject({
       command: "/opt/grok",
       arguments: ["agent", "--no-leader", "--model", "grok-4.5", "stdio"],

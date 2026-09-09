@@ -285,12 +285,14 @@ export function mapGrokReplay(
             },
           }
         : { status: "succeeded" };
-    settleWatchedSubagents(
-      tool.type === "toolExecution" ? tool.toolName : tool.command,
-      tool.type === "toolExecution" ? tool.arguments : undefined,
-      content,
-      rawOutput,
-    );
+    if (status === "completed") {
+      settleWatchedSubagents(
+        tool.type === "toolExecution" ? tool.toolName : tool.command,
+        tool.type === "toolExecution" ? tool.arguments : undefined,
+        content,
+        rawOutput,
+      );
+    }
     items.push({ item: tool, outcome });
     if (status !== "completed") return;
     const changes = projectGrokFileChanges(content, cwd);

@@ -31,7 +31,6 @@ import {
   projectCodexQuestionRequest,
   type CodexQuestionRequestProjection,
 } from "./codex-question.js";
-import { formatCollabSpawnModel } from "./codex-collab-spawn-model.js";
 
 export type ProjectableHostEvent =
   | TurnStartedEvent
@@ -441,12 +440,6 @@ function collabAgentStatus(
   }
 }
 
-function collabAgentModel(
-  subagent: Extract<HostItem, { type: "subagentDelegation" }>["subagents"][number] | undefined,
-): string | null {
-  return formatCollabSpawnModel(subagent?.model, subagent?.reasoningEffort);
-}
-
 function projectItem(
   item: HostItem,
   outcome: HostItemOutcome | null,
@@ -525,6 +518,13 @@ function projectItem(
       };
     case "subagentDelegation": {
       const primary = item.subagents[0];
+      // Codex exposes one configuration per Item, not per receiver. Do not
+      // attribute the first child's configuration to a heterogeneous group.
+      const sameConfiguration = item.subagents.every(
+        (subagent) =>
+          subagent.model === primary?.model &&
+          subagent.reasoningEffort === primary?.reasoningEffort,
+      );
       return {
         id: item.itemId,
         type: "collabAgentToolCall",
@@ -533,8 +533,8 @@ function projectItem(
         senderThreadId: senderThreadId ?? "",
         receiverThreadIds: item.subagents.map(({ subagentId }) => subagentId),
         prompt: item.prompt ?? null,
-        model: collabAgentModel(primary),
-        reasoningEffort: primary?.reasoningEffort ?? null,
+        model: sameConfiguration ? (primary?.model ?? null) : null,
+        reasoningEffort: sameConfiguration ? (primary?.reasoningEffort ?? null) : null,
         agentsStates: Object.fromEntries(
           item.subagents.map(({ subagentId, status, resultSummary }) => [
             subagentId,

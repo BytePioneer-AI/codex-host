@@ -107,6 +107,7 @@ import {
   DELEGATION_RUNTIME_TOKEN_ENV,
   DELEGATION_THREAD_ID_ENV,
   DelegationControlError,
+  delegationNextCommands,
 } from "./delegation-types.js";
 import { HarnessDelegationCoordinator } from "./harness-delegation-coordinator.js";
 import { loadHarnessPlugins } from "./harness-plugin-loader.js";
@@ -1880,6 +1881,10 @@ export class AppServerHost {
     };
   }
 
+  #delegationNext(threadId: string): { read: string; wait: string } {
+    return delegationNextCommands(this.#options.environment ?? process.env, threadId);
+  }
+
   async #startOfficialDelegation(
     input: DelegationStartInput & { parentThreadId: string },
   ): Promise<DelegationStartResult> {
@@ -1927,10 +1932,7 @@ export class AppServerHost {
         harnessId: "codex",
         deepLink: `codex://threads/${existing.childHostThreadId}`,
         status: existing.status,
-        next: {
-          read: `codexhost thread read ${existing.childHostThreadId}`,
-          wait: `codexhost thread wait ${existing.childHostThreadId} --timeout-ms 30000`,
-        },
+        next: this.#delegationNext(existing.childHostThreadId),
       };
     }
     if (requestedModel || input.thinkingOptionId) {
@@ -2042,10 +2044,7 @@ export class AppServerHost {
               },
             }
           : {}),
-        next: {
-          read: `codexhost thread read ${threadId}`,
-          wait: `codexhost thread wait ${threadId} --timeout-ms 30000`,
-        },
+        next: this.#delegationNext(threadId),
       };
     } catch (error) {
       this.#activeOfficialTurns.delete(threadId);
@@ -2103,10 +2102,7 @@ export class AppServerHost {
       turnId,
       harnessId: "codex",
       status: "running",
-      next: {
-        read: `codexhost thread read ${input.threadId}`,
-        wait: `codexhost thread wait ${input.threadId} --timeout-ms 30000`,
-      },
+      next: this.#delegationNext(input.threadId),
     };
   }
 

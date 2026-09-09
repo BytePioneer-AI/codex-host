@@ -54,7 +54,13 @@ import {
 } from "@codexhost/shared-contracts";
 
 import { deepSeekHarnessCommandCatalog, parseDeepSeekHarnessCommand } from "../harness-commands.js";
-import { isRecord, parseArguments, projectToolResult, structuredDiffs } from "../projection.js";
+import {
+  isRecord,
+  mergeStructuredDiffs,
+  parseArguments,
+  projectToolResult,
+  type StructuredDiffState,
+} from "../projection.js";
 import type { ModernModelCatalogSnapshot } from "./catalog.js";
 import { executeModernCommand, ModernCommandError } from "./commands.js";
 import {
@@ -202,6 +208,8 @@ interface ActiveHostTurn {
   readonly autonomous: boolean;
   agent?: LiveTextItem<HostAgentMessageItem>;
   reasoning?: LiveTextItem<HostReasoningItem>;
+  fileChange?: HostFileChangeItem;
+  fileChangeState: StructuredDiffState[];
   readonly tools: Map<string, LiveTool>;
   readonly interactions: Set<HostInteractionId>;
   terminal: boolean;
@@ -1684,6 +1692,7 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
       nativeTurn: buffer.nativeTurn,
       input: [...input],
       autonomous,
+      fileChangeState: [],
       tools: new Map(),
       interactions: new Set(),
       terminal: false,
@@ -1891,15 +1900,28 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
         : { status: "succeeded" },
     );
     if (!failed) {
-      const changes = structuredDiffs(data.meta);
-      if (changes) {
-        const fileItem: HostFileChangeItem = {
-          type: "fileChange",
-          itemId: modernItemId(this.#sessionId, `event:${seq}:file-change`),
-          changes,
-        };
-        this.#emit({ type: "item.started", turnId: active.turnId, item: fileItem });
-        this.#completeItem(active, fileItem, { status: "succeeded" });
+      const merged = mergeStructuredDiffs(active.fileChangeState, data.meta);
+      if (merged) {
+        active.fileChangeState = merged.state;
+        if (active.fileChange) {
+          active.fileChange = {
+            ...active.fileChange,
+            changes: merged.changes,
+          };
+          this.#emit({
+            type: "item.updated",
+            turnId: active.turnId,
+            itemId: active.fileChange.itemId,
+            update: { type: "fileChanges.replace", changes: active.fileChange.changes },
+          });
+        } else {
+          active.fileChange = {
+            type: "fileChange",
+            itemId: modernItemId(this.#sessionId, `event:${seq}:file-change`),
+            changes: merged.changes,
+          };
+          this.#emit({ type: "item.started", turnId: active.turnId, item: active.fileChange });
+        }
       }
     }
   }
@@ -1942,6 +1964,10 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
     }
     for (const tool of active.tools.values()) this.#completeItem(active, tool.item, outcome);
     active.tools.clear();
+    if (active.fileChange) {
+      this.#completeItem(active, active.fileChange, { status: "succeeded" });
+      delete active.fileChange;
+    }
   }
 
   #completeItem(active: ActiveHostTurn, item: HostItem, outcome: HostItemOutcome): void {
@@ -2035,6 +2061,7 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
         nativeTurn: buffer.nativeTurn,
         input: hostBound ? [...pending.command.input] : [...buffer.input],
         autonomous: !hostBound,
+        fileChangeState: [],
         tools: new Map(),
         interactions: new Set(),
         terminal: false,

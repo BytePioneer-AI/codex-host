@@ -1426,6 +1426,94 @@ describe("DeepSeekHarnessAdapter local Host", () => {
     expect(connection.closed).toBe(true);
   });
 
+  it("coalesces repeated live file diffs by path within one Turn", async () => {
+    const { adapter, connection } = fixture();
+    const session = await openCreated(adapter);
+    const sessionId = session.initialState.nativeRef?.nativeSessionId as string;
+    const turnId = hostTurnIdSchema.parse("host-turn-file-changes");
+    await session.execute({
+      type: "turn.start",
+      turnId,
+      input: [{ type: "text", text: "edit files" }],
+    });
+    const collecting = collectUntilTurn(session);
+    connection.sessionEvent(sessionId, 1, "turn/start", { turn: 1 });
+    const edit = (
+      seq: number,
+      callId: string,
+      diff: { path: string; oldText: string | null; newText: string | null },
+    ): void => {
+      connection.sessionEvent(sessionId, seq, "tool/call", {
+        turn: 1,
+        step: 1,
+        callId,
+        name: "edit",
+        arguments: JSON.stringify({ file_path: diff.path }),
+      });
+      connection.sessionEvent(sessionId, seq + 1, "tool/result", {
+        turn: 1,
+        step: 1,
+        message: {
+          source: { kind: "tool", callId },
+          content: [
+            {
+              type: "tool-result",
+              toolCallId: callId,
+              content: [{ type: "text", text: "done" }],
+              isError: false,
+            },
+          ],
+        },
+        meta: { diffs: [diff] },
+      });
+    };
+    edit(2, "edit-a-1", { path: "a.txt", oldText: "zero\n", newText: "one\n" });
+    edit(4, "edit-a-2", { path: "a.txt", oldText: "one\n", newText: "two\n" });
+    edit(6, "edit-b", { path: "b.txt", oldText: null, newText: "new\n" });
+    connection.sessionEvent(sessionId, 8, "turn/end", {
+      turn: 1,
+      reason: { kind: "completed" },
+    });
+
+    const outputs = await collecting;
+    const fileStarts = outputs.filter(
+      (output) =>
+        output.kind === "event" &&
+        output.event.type === "item.started" &&
+        output.event.item.type === "fileChange",
+    );
+    expect(fileStarts).toHaveLength(1);
+    expect(
+      outputs.filter(
+        (output) =>
+          output.kind === "event" &&
+          output.event.type === "item.updated" &&
+          output.event.update.type === "fileChanges.replace",
+      ),
+    ).toHaveLength(2);
+    const fileCompletion = outputs.find(
+      (output) =>
+        output.kind === "event" &&
+        output.event.type === "item.completed" &&
+        output.event.snapshot.item.type === "fileChange",
+    );
+    if (
+      fileCompletion?.kind !== "event" ||
+      fileCompletion.event.type !== "item.completed" ||
+      fileCompletion.event.snapshot.item.type !== "fileChange"
+    ) {
+      throw new Error("No completed file change");
+    }
+    expect(fileCompletion.event.snapshot.item.changes.map(({ path }) => path)).toEqual([
+      "a.txt",
+      "b.txt",
+    ]);
+    expect(fileCompletion.event.snapshot.item.changes[0]?.unifiedDiff).toContain("-zero");
+    expect(fileCompletion.event.snapshot.item.changes[0]?.unifiedDiff).toContain("+two");
+    expect(fileCompletion.event.snapshot.item.changes[0]?.unifiedDiff).not.toContain("-one");
+    await adapter.close();
+  });
+
   it("uses danger-full-access only for unattended delegated Sessions", async () => {
     const { adapter, connection } = fixture();
 

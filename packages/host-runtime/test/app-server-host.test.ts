@@ -4311,6 +4311,54 @@ describe("AppServerHost HarnessAdapter projection", () => {
     await stopFixture(fixture);
   });
 
+  it("discovers live prompt commands and persists typed invocations as ordinary Turns", async () => {
+    const fixture = createFixture();
+    const threadId = await startPiThread(fixture);
+    const session = fixture.adapter.sessions[0];
+    if (!session) throw new Error("Missing session");
+    const execute = vi.fn();
+    const catalog = {
+      commands: [
+        harnessCommandDescriptorSchema.parse({
+          id: "fake.probe",
+          invocation: "/fake:probe",
+          label: "Probe",
+          argumentMode: "text",
+          executionMode: "prompt",
+        }),
+      ],
+    };
+    session.commands = { list: async () => ({ ok: true, value: catalog }), execute };
+    writeRequest(fixture.desktopInput, {
+      id: 2,
+      method: "codexhost/thread/commands/inspect",
+      params: { threadId },
+    });
+    await expect(fixture.collector.waitFor((m) => requestId(m, 2))).resolves.toMatchObject({
+      result: catalog,
+    });
+    writeRequest(fixture.desktopInput, {
+      id: 3,
+      method: "turn/start",
+      params: { threadId, input: [{ type: "text", text: "/fake:probe alpha  beta" }] },
+    });
+    await fixture.collector.waitFor((m) => requestId(m, 3));
+    session.appendText("PROMPT_OK");
+    session.succeedTurn();
+    await fixture.collector.waitFor((m) => method(m, "turn/completed"));
+    expect(execute).not.toHaveBeenCalled();
+    expect(session.persistedSnapshot().turns).toHaveLength(1);
+    writeRequest(fixture.desktopInput, {
+      id: 4,
+      method: "codexhost/thread/command/execute",
+      params: { threadId, commandId: "fake.probe" },
+    });
+    await expect(fixture.collector.waitFor((m) => requestId(m, 4))).resolves.toMatchObject({
+      error: { code: -32602 },
+    });
+    await stopFixture(fixture);
+  });
+
   it("reads static Harness command catalogs without inspection or opening a Session", async () => {
     const fixture = createFixture();
     const catalog = {

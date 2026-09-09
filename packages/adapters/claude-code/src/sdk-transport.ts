@@ -1,3 +1,4 @@
+import type { ClaudeNativeCommand } from "./claude-commands.js";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 
 import {
@@ -453,6 +454,11 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
     }
     this.#started = true;
     this.#consumeTask = this.#consume(activeQuery);
+  }
+
+  async getAvailableCommands(): Promise<ClaudeNativeCommand[]> {
+    if (!this.#started || !this.#query) return [];
+    return this.#query.supportedCommands();
   }
 
   async getContextUsage(): Promise<ClaudeTransportContextUsage | null> {

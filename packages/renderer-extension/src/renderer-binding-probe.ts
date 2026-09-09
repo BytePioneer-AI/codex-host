@@ -817,6 +817,9 @@ export function installRendererBindingProbe(
       })),
       mounted.ownershipStatus === "error",
     );
+    mounted.control.harnessCommands.onOpen = () => {
+      void refreshCommands(mounted);
+    };
     if (mounted.control.usage) {
       mounted.control.usage.onOpen = () => {
         void refreshThreadUsage(
@@ -838,11 +841,15 @@ export function installRendererBindingProbe(
     mounted.control.harnessCommands.setCommands([]);
     if (agent === "codex" || !client) return;
     try {
-      const catalog = await client.inspectHarnessCommands({ harnessId: externalHarnessIds[agent] });
+      const threadId = threadIdFromComposerModelTarget(mounted.modelTarget);
+      const catalog = threadId
+        ? await client.inspectThreadCommands({ threadId })
+        : await client.inspectHarnessCommands({ harnessId: externalHarnessIds[agent] });
       if (
         disposed ||
         mountedByComposer.get(mounted.composer) !== mounted ||
         mounted.commandRequestGeneration !== generation ||
+        threadId !== threadIdFromComposerModelTarget(mounted.modelTarget) ||
         requestControl !== modelControl ||
         (threadIdFromComposerModelTarget(mounted.modelTarget)
           ? mounted.hostId
@@ -2583,7 +2590,28 @@ export function installRendererBindingProbe(
     const composer = editor ? composerForEditor(editor) : null;
     return composer && isMountedComposer(composer) ? composer : null;
   };
+  const openSlashMenu = (event: InputEvent | KeyboardEvent): boolean => {
+    if (event.isComposing) return false;
+    const slash =
+      event instanceof window.InputEvent
+        ? event.inputType === "insertText" && event.data === "/"
+        : event.key === "/" && !event.ctrlKey && !event.metaKey && !event.altKey;
+    if (!slash) return false;
+    const composer = composerForTarget(event.target);
+    if (!composer || controller.isSwitching(composer) || controller.get(composer).agent === "codex")
+      return false;
+    const mounted = mountedByComposer.get(composer);
+    if (!mounted || isOwnershipSubmissionBlocked(mounted.ownershipStatus)) return false;
+    const editor = composer.querySelector<HTMLElement>(EDITOR_SELECTOR);
+    const text = editor instanceof window.HTMLTextAreaElement ? editor.value : editor?.textContent;
+    if (text?.trim()) return false;
+    if (!mounted.control.harnessCommands.openSearch()) return false;
+    blockEvent(event);
+    return true;
+  };
+
   const onBeforeInput = (event: InputEvent): void => {
+    if (openSlashMenu(event)) return;
     const composer = composerForTarget(event.target);
     if (!composer) return;
     controller.clearPendingSubmission(composer);
@@ -2605,6 +2633,7 @@ export function installRendererBindingProbe(
     notifySubmission(composer, "submit");
   };
   const onKeyDown = (event: KeyboardEvent): void => {
+    if (openSlashMenu(event)) return;
     const composer = isComposerInputIntent(event) ? composerForTarget(event.target) : null;
     const mounted = composer ? mountedByComposer.get(composer) : undefined;
     if (

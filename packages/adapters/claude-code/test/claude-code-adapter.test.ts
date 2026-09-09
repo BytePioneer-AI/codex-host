@@ -64,6 +64,10 @@ class FakeClaudeTransport implements ClaudeTurnTransport {
       reason: "cancelled" in response ? "cancelled" : "responded",
     });
   });
+  nativeCommands: Array<{ name: string; description: string; argumentHint: string }> = [];
+  async getAvailableCommands() {
+    return this.nativeCommands;
+  }
   readonly start = vi.fn(async () => undefined);
   readonly compactCalls: Array<{ userMessageId: string; customInstructions: string | undefined }> =
     [];
@@ -1129,6 +1133,56 @@ describe("Claude Code HarnessAdapter", () => {
         },
       },
     });
+    await session.close();
+  });
+
+  it("discovers SDK prompt commands without creating a transport just to inspect metadata", async () => {
+    const { adapter, transports } = fixture();
+    const session = await openSession(adapter);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+    await session.commands?.list();
+    expect(transports).toHaveLength(0);
+    await session.execute({
+      type: "turn.start",
+      turnId: hostTurnIdSchema.parse("warm"),
+      input: [{ type: "text", text: "warm" }],
+    });
+    const transport = transports[0];
+    if (!transport) throw new Error("No transport");
+    transport.nativeCommands = [{ name: "probe", description: "Probe", argumentHint: "<message>" }];
+    transport.delta("READY");
+    transport.finish({ status: "succeeded" });
+    while ((await nextEvent(iterator)).type !== "turn.completed") {
+      /* drain warmup */
+    }
+    await expect(session.commands?.list()).resolves.toMatchObject({
+      ok: true,
+      value: {
+        commands: expect.arrayContaining([
+          expect.objectContaining({ invocation: "/claude:probe", executionMode: "prompt" }),
+        ]),
+      },
+    });
+    await session.execute({
+      type: "turn.start",
+      turnId: hostTurnIdSchema.parse("probe"),
+      input: [{ type: "text", text: "/claude:probe ARG42" }],
+    });
+    expect(transport.turns.at(-1)?.text).toBe("/probe ARG42");
+    transport.delta("SLASH_OK ARG42");
+    transport.finish({ status: "succeeded" });
+    while ((await nextEvent(iterator)).type !== "turn.completed") {
+      /* drain command */
+    }
+    transport.nativeCommands = [];
+    await expect(
+      session.execute({
+        type: "turn.start",
+        turnId: hostTurnIdSchema.parse("removed"),
+        input: [{ type: "text", text: "/claude:probe ARG42" }],
+      }),
+    ).resolves.toMatchObject({ ok: false });
+    expect(transport.turns).toHaveLength(2);
     await session.close();
   });
 

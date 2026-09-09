@@ -53,6 +53,11 @@ class FakeOmpTransport implements OmpTurnTransport {
 
   async start(): Promise<void> {}
 
+  nativeCommands: Array<{ name: string; description?: string; source: string }> = [];
+  async getAvailableCommands() {
+    return this.nativeCommands;
+  }
+
   async getAvailableModels(): Promise<OmpNativeModel[]> {
     return [{ provider: "synthetic", id: "model", reasoning: true }];
   }
@@ -626,6 +631,35 @@ describe("OMP Adapter Subagents", () => {
       nativeSubagentId: "subagent-1",
     });
     await opened.value.close();
+    await adapter.close();
+  });
+
+  it("uses the live OMP catalog and revalidates native prompt names before execution", async () => {
+    const transport = new FakeOmpTransport();
+    transport.nativeCommands = [{ name: "probe", description: "Test", source: "file" }];
+    const createTransport = vi.fn(() => transport);
+    const adapter = new OmpAdapter({}, { createTransport });
+    const opened = await adapter.open({ kind: "create", cwd: "/synthetic" });
+    if (!opened.ok) throw new Error(opened.error.message);
+    const session = opened.value;
+    await session.commands?.list();
+    expect(createTransport).not.toHaveBeenCalled();
+    await session.readSnapshot();
+    await expect(session.commands?.list()).resolves.toMatchObject({
+      ok: true,
+      value: {
+        commands: expect.arrayContaining([
+          expect.objectContaining({ invocation: "/omp:probe", executionMode: "prompt" }),
+        ]),
+      },
+    });
+    const run = vi.spyOn(transport, "runTurn");
+    await session.execute({
+      type: "turn.start",
+      turnId: "native-probe" as HostTurnId,
+      input: [{ type: "text", text: "/omp:probe ARG42" }],
+    });
+    expect(run).toHaveBeenCalledWith("/probe ARG42", expect.any(Function));
     await adapter.close();
   });
 

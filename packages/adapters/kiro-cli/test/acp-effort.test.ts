@@ -9,6 +9,8 @@ const native = vi.hoisted(() => ({
   model: "adjustable",
   effort: "low",
   ignoreEffort: false,
+  ignoreModel: false,
+  modelReply: "complete" as "complete" | "before" | "after" | "never" | "wrongSession",
   emptyTemplates: 0,
   requests: [] as Array<{ method: string; params: Record<string, unknown> }>,
 }));
@@ -87,13 +89,32 @@ vi.mock("node:child_process", async (original) => ({
                 ? []
                 : configOptions().filter((option) => option.id === "model"),
           };
-        if (request.method === "session/new")
+        if (request.method === "session/fork") result = { sessionId: "native" };
+        if (request.method === "session/new" || request.method === "session/load")
           result = { sessionId: "native", configOptions: configOptions() };
         if (request.method === "session/set_config_option") {
-          if (request.params.configId === "model") native.model = request.params.value;
+          if (request.params.configId === "model" && !native.ignoreModel)
+            native.model = request.params.value;
           if (request.params.configId === "effortLevel" && !native.ignoreEffort)
             native.effort = request.params.value;
           result = { configOptions: configOptions() };
+          if (request.params.configId === "model") {
+            if (native.modelReply !== "complete")
+              result = { configOptions: configOptions().filter((option) => option.id !== "model") };
+            const notification =
+              JSON.stringify({
+                jsonrpc: "2.0",
+                method: "session/update",
+                params: {
+                  sessionId: native.modelReply === "wrongSession" ? "other" : "native",
+                  update: { sessionUpdate: "config_option_update", configOptions: configOptions() },
+                },
+              }) + "\n";
+            if (native.modelReply === "before" || native.modelReply === "complete")
+              child.stdout.write(notification);
+            if (native.modelReply === "after" || native.modelReply === "wrongSession")
+              setTimeout(() => child.stdout.write(notification), 5);
+          }
         }
         child.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: request.id, result }) + "\n");
       }
@@ -114,12 +135,97 @@ beforeEach(() => {
   native.model = "adjustable";
   native.effort = "low";
   native.ignoreEffort = false;
+  native.ignoreModel = false;
+  native.modelReply = "complete";
   native.emptyTemplates = 0;
   native.requests.length = 0;
   transport = new KiroAcpTransport({ cwd: process.cwd() });
 });
 afterEach(async () => {
   await transport.close();
+});
+
+describe("Kiro asynchronous Model confirmation", () => {
+  it.each(["before", "after"] as const)(
+    "restores the rollback Model when native confirmation arrives %s the RPC reply",
+    async (timing) => {
+      native.modelReply = timing;
+      const result = await transport.open({
+        kind: "rollbackLastTurn",
+        sourceSessionId: "source",
+        sourceCwd: process.cwd(),
+        checkpointMessageId: "previous-turn-end",
+        modelId: "adjustable",
+        effortLevel: "high",
+      });
+      expect(result.configOptions).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ id: "model", currentValue: "adjustable" }),
+          expect.objectContaining({ id: "effortLevel", currentValue: "high" }),
+        ]),
+      );
+      expect(
+        native.requests.filter((request) => request.params?.configId === "model"),
+      ).toHaveLength(1);
+      expect(native.requests.find((request) => request.method === "session/fork")?.params).toEqual({
+        sessionId: "source",
+        cwd: process.cwd(),
+        _meta: { kiro: { messageId: "previous-turn-end" } },
+      });
+    },
+  );
+
+  it.each(["never", "wrongSession", "mismatch"] as const)(
+    "faults a live Session when Model confirmation is %s, without accepting earlier config",
+    async (timing) => {
+      await transport.close();
+      const onFault = vi.fn();
+      transport = new KiroAcpTransport({ cwd: process.cwd(), commandTimeoutMs: 50, onFault });
+      await transport.open({ kind: "create", modelId: "adjustable" });
+      native.modelReply = timing === "mismatch" ? "after" : timing;
+      native.ignoreModel = timing === "mismatch";
+      await expect(
+        transport.setConfigOption("model", timing === "mismatch" ? "fixed" : "adjustable"),
+      ).rejects.toThrow("Failed to set model");
+      expect(onFault).toHaveBeenCalledOnce();
+      await expect(transport.setConfigOption("model", "fixed")).rejects.toThrow(
+        "Session is unavailable",
+      );
+    },
+  );
+
+  it("closes promptly while awaiting missing Model confirmation", async () => {
+    await transport.open({ kind: "create" });
+    native.modelReply = "never";
+    const pending = expect(transport.setConfigOption("model", "fixed")).rejects.toThrow(
+      "Failed to set model",
+    );
+    await vi.waitFor(() =>
+      expect(native.requests.some((request) => request.params?.configId === "model")).toBe(true),
+    );
+    await transport.close();
+    await pending;
+  });
+
+  it("confirms a live Model selection from a native update without retrying the write", async () => {
+    await transport.open({ kind: "create" });
+    native.modelReply = "after";
+    await expect(transport.setConfigOption("model", "fixed")).resolves.toMatchObject({
+      configOptions: expect.arrayContaining([
+        expect.objectContaining({ id: "model", currentValue: "fixed" }),
+      ]),
+    });
+    expect(native.requests.filter((request) => request.params?.configId === "model")).toHaveLength(
+      1,
+    );
+  });
+
+  it("still rejects an explicit mismatched Model confirmation", async () => {
+    native.ignoreModel = true;
+    await expect(transport.open({ kind: "create", modelId: "fixed" })).rejects.toThrow(
+      "Failed to set model",
+    );
+  });
 });
 
 describe("Kiro native effort configuration", () => {

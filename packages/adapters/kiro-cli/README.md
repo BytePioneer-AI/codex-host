@@ -3,6 +3,30 @@
 This plugin connects to Kiro CLI's native ACP v3 engine. Protocol handling,
 configuration confirmation and native interaction responses stay inside the Adapter.
 
+## Asynchronous Model confirmation
+
+Kiro CLI 2.21.2 can finish loading a forked Session before its native Model
+catalog refresh completes. A subsequent Model write may succeed while its RPC
+response temporarily omits the `model` configuration option. This previously
+made last-message edits fail after the native Fork had already succeeded.
+
+The Transport subscribes before the write and, only when the Model option is
+absent from an otherwise valid response, waits for a matching
+`config_option_update` from the same Session within the existing configuration
+request timeout. Notifications from earlier requests or other Sessions cannot
+confirm the write. An explicit mismatched response or RPC rejection still fails;
+the Adapter does not retry the write, substitute a default Model, or manufacture
+confirmation. Closing the Transport cancels the wait. Keeping this wait inside
+the existing configuration request lifecycle ensures timeout faulting and cleanup
+remain the same as for the RPC itself.
+
+`test/acp-effort.test.ts` covers rollback Model restoration with notifications on
+either side of the RPC reply, live selection, missing/wrong-Session/mismatched
+confirmation, close, and preservation of explicit rejection behavior. Native
+verification on 2.21.2 reproduced the missing-option response and confirmed that
+rollback retained exactly one fewer Turn after the fix; Desktop click-through
+acceptance remains a separate check.
+
 ## Configuration failure and recovery
 
 Model, Thinking and Permission Mode writes are effective only after native

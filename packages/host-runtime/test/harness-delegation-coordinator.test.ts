@@ -104,9 +104,8 @@ class FailingTurnAdapter extends FakeHarnessAdapter {
 describe("HarnessDelegationCoordinator", () => {
   it("builds follow-up commands from the Host-provided CLI path", async () => {
     const adapter = new RecordingAdapter(harnessIdSchema.parse("pi"));
-    const value = await fixture(adapter, {
-      CODEXHOST_CLI_PATH: "/Applications/My codexhost.app/Contents/MacOS/codexhost",
-    });
+    const cliPath = "/Applications/codexhost.app/Contents/MacOS/codexhost";
+    const value = await fixture(adapter, { CODEXHOST_CLI_PATH: cliPath });
     try {
       const result = await value.coordinator.start({
         harnessId: "pi",
@@ -114,11 +113,9 @@ describe("HarnessDelegationCoordinator", () => {
         cwd: "/synthetic",
         parentThreadId: "parent-thread",
       });
-      expect(result.next.read).toBe(
-        `"/Applications/My codexhost.app/Contents/MacOS/codexhost" thread read ${result.threadId}`,
-      );
+      expect(result.next.read).toBe(`${cliPath} thread read ${result.threadId}`);
       expect(result.next.wait).toBe(
-        `"/Applications/My codexhost.app/Contents/MacOS/codexhost" thread wait ${result.threadId} --timeout-ms 30000`,
+        `${cliPath} thread wait ${result.threadId} --timeout-ms 30000`,
       );
     } finally {
       await value.close();

@@ -34,15 +34,17 @@ description: >
 # Execute the task
 
 The \`CODEXHOST_CLI_PATH\` environment variable holds the absolute path of the CLI
-for this Host. Always invoke the CLI through that variable, using the syntax your
-shell requires. Do not run a bare \`codexhost\`: it is absent from \`PATH\` in some
-installations and may resolve to a different Host's CLI. If the variable is not
-set, report that delegation is unavailable from this session instead of searching
-\`PATH\`.
+for this Host. Always invoke the CLI through that path. Do not run a bare
+\`codexhost\`: it is absent from \`PATH\` in some installations and may resolve to a
+different Host's CLI. If the variable is not set, report that delegation is
+unavailable from this session instead of searching \`PATH\`.
 
-Before acting, run:
+Before acting, run the help command, using the syntax of the shell you execute
+commands in:
 
-\`"$CODEXHOST_CLI_PATH" delegate --help\`
+- POSIX shells: \`"$CODEXHOST_CLI_PATH" delegate --help\`
+- PowerShell: \`& $env:CODEXHOST_CLI_PATH delegate --help\`
+- cmd: \`"%CODEXHOST_CLI_PATH%" delegate --help\`
 
 Treat its output as the sole authoritative source for:
 

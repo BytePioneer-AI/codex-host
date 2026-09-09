@@ -105,6 +105,14 @@ describe("delegation Skill installation", () => {
     expect(CODEXHOST_DELEGATION_SKILL).not.toMatch(/(^|[^"])`codexhost /mu);
   });
 
+  it("gives a runnable bootstrap example for every supported shell", () => {
+    // A POSIX-only example is not executable on Windows, where PowerShell needs
+    // the `&` call operator and `$env:` scoping, and cmd needs `%VAR%`.
+    expect(CODEXHOST_DELEGATION_SKILL).toContain('"$CODEXHOST_CLI_PATH" delegate --help');
+    expect(CODEXHOST_DELEGATION_SKILL).toContain("& $env:CODEXHOST_CLI_PATH delegate --help");
+    expect(CODEXHOST_DELEGATION_SKILL).toContain('"%CODEXHOST_CLI_PATH%" delegate --help');
+  });
+
   it("keeps every previously shipped digest recognized as a managed copy", async () => {
     const { createHash } = await import("node:crypto");
     // v4 shipped in 0.6.0; its digest was previously absent, which pinned those

@@ -21,6 +21,7 @@ import { harnessIdSchema, hostThreadIdSchema, hostTurnIdSchema } from "@codexhos
 import {
   DELEGATION_THREAD_ID_ENV,
   DelegationControlError,
+  delegationNextCommands,
   type DelegationConfigurationResult,
   type DelegationStartInput,
   type DelegationStartResult,
@@ -602,16 +603,17 @@ export class HarnessDelegationCoordinator {
     );
   }
 
+  #next(threadId: string): { read: string; wait: string } {
+    return delegationNextCommands(this.#environment, threadId);
+  }
+
   #turnResult(threadId: string, turnId: string, harnessId: RoutedHarnessId): ThreadSendResult {
     return {
       threadId,
       turnId,
       harnessId,
       status: "running",
-      next: {
-        read: `codexhost thread read ${threadId}`,
-        wait: `codexhost thread wait ${threadId} --timeout-ms 30000`,
-      },
+      next: this.#next(threadId),
     };
   }
 
@@ -635,10 +637,7 @@ export class HarnessDelegationCoordinator {
         Object.keys(configuration.effective ?? {}).length > 0)
         ? { configuration }
         : {}),
-      next: {
-        read: `codexhost thread read ${threadId}`,
-        wait: `codexhost thread wait ${threadId} --timeout-ms 30000`,
-      },
+      next: this.#next(threadId),
     };
   }
 }

@@ -4,7 +4,11 @@ import path from "node:path";
 
 import { describe, expect, it } from "vitest";
 
-import { CODEXHOST_DELEGATION_SKILL, installDelegationSkills } from "../src/delegation-skill.js";
+import {
+  CODEXHOST_DELEGATION_SKILL,
+  PREVIOUS_MANAGED_DIGESTS,
+  installDelegationSkills,
+} from "../src/delegation-skill.js";
 
 async function home(): Promise<string> {
   return mkdtemp(path.join(os.tmpdir(), "codexhost-skill-test-"));
@@ -83,15 +87,34 @@ describe("delegation Skill installation", () => {
   });
 
   it("routes natural agent requests and points execution to the authoritative help", () => {
-    expect(CODEXHOST_DELEGATION_SKILL).toContain("version: 5");
+    expect(CODEXHOST_DELEGATION_SKILL).toContain("version: 6");
     expect(CODEXHOST_DELEGATION_SKILL).toContain("@agent) to independently perform a task");
     expect(CODEXHOST_DELEGATION_SKILL).toContain("session's content, progress, or results");
     expect(CODEXHOST_DELEGATION_SKILL).toContain("Not for recapping the current conversation");
-    expect(CODEXHOST_DELEGATION_SKILL).toContain("codexhost delegate --help");
+    expect(CODEXHOST_DELEGATION_SKILL).toContain('"$CODEXHOST_CLI_PATH" delegate --help');
     expect(CODEXHOST_DELEGATION_SKILL).toContain("sole authoritative source");
     expect(CODEXHOST_DELEGATION_SKILL).toContain("send a follow-up message");
     expect(CODEXHOST_DELEGATION_SKILL).toContain("cancel its current Turn");
     expect(CODEXHOST_DELEGATION_SKILL).toContain("target keeps its default");
     expect(CODEXHOST_DELEGATION_SKILL).not.toContain("--timeout-ms");
+  });
+
+  it("directs the CLI invocation through the Host-provided absolute path", () => {
+    expect(CODEXHOST_DELEGATION_SKILL).toContain("CODEXHOST_CLI_PATH");
+    expect(CODEXHOST_DELEGATION_SKILL).toContain("Do not run a bare");
+    expect(CODEXHOST_DELEGATION_SKILL).not.toMatch(/(^|[^"])`codexhost /mu);
+  });
+
+  it("keeps every previously shipped digest recognized as a managed copy", async () => {
+    const { createHash } = await import("node:crypto");
+    // v4 shipped in 0.6.0; its digest was previously absent, which pinned those
+    // installations to a stale Skill because updates were reported as conflicts.
+    expect(PREVIOUS_MANAGED_DIGESTS).toContain(
+      "fa7944cd1e72ffbaf932fca2074bdb78aad4670d8990b6711220dd83c39509a0",
+    );
+    expect(PREVIOUS_MANAGED_DIGESTS).not.toContain(
+      createHash("sha256").update(CODEXHOST_DELEGATION_SKILL).digest("hex"),
+    );
+    expect(new Set(PREVIOUS_MANAGED_DIGESTS).size).toBe(PREVIOUS_MANAGED_DIGESTS.length);
   });
 });

@@ -12,7 +12,10 @@ import { HarnessDelegationCoordinator } from "../src/harness-delegation-coordina
 import { ExternalThreadRepository } from "../src/external-thread-repository.js";
 import { ExternalThreadRuntime } from "../src/external-thread-runtime.js";
 
-async function fixture(adapter = new FakeHarnessAdapter(harnessIdSchema.parse("pi"))) {
+async function fixture(
+  adapter = new FakeHarnessAdapter(harnessIdSchema.parse("pi")),
+  environment: NodeJS.ProcessEnv = {},
+) {
   const directory = await mkdtemp(path.join(os.tmpdir(), "codexhost-delegation-coordinator-"));
   const store = new MappingStore({ directory });
   await store.initialize();
@@ -28,7 +31,7 @@ async function fixture(adapter = new FakeHarnessAdapter(harnessIdSchema.parse("p
   });
   const coordinator = new HarnessDelegationCoordinator({
     adapters,
-    environment: {},
+    environment,
     externalRuntime: runtime,
     repository,
     registerExternalThread: (input) => {
@@ -99,6 +102,29 @@ class FailingTurnAdapter extends FakeHarnessAdapter {
 }
 
 describe("HarnessDelegationCoordinator", () => {
+  it("builds follow-up commands from the Host-provided CLI path", async () => {
+    const adapter = new RecordingAdapter(harnessIdSchema.parse("pi"));
+    const value = await fixture(adapter, {
+      CODEXHOST_CLI_PATH: "/Applications/My codexhost.app/Contents/MacOS/codexhost",
+    });
+    try {
+      const result = await value.coordinator.start({
+        harnessId: "pi",
+        task: "review auth",
+        cwd: "/synthetic",
+        parentThreadId: "parent-thread",
+      });
+      expect(result.next.read).toBe(
+        `"/Applications/My codexhost.app/Contents/MacOS/codexhost" thread read ${result.threadId}`,
+      );
+      expect(result.next.wait).toBe(
+        `"/Applications/My codexhost.app/Contents/MacOS/codexhost" thread wait ${result.threadId} --timeout-ms 30000`,
+      );
+    } finally {
+      await value.close();
+    }
+  });
+
   it("creates a normal writable child Thread and publishes it only after initial delivery", async () => {
     const adapter = new RecordingAdapter(harnessIdSchema.parse("pi"));
     const value = await fixture(adapter);

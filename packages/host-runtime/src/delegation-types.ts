@@ -11,6 +11,25 @@ export const DELEGATION_RUNTIME_TOKEN_ENV = "CODEXHOST_RUNTIME_TOKEN";
 export const DELEGATION_CLI_PATH_ENV = "CODEXHOST_CLI_PATH";
 export const DELEGATION_THREAD_ID_ENV = "CODEXHOST_THREAD_ID";
 
+/**
+ * Follow-up commands are executed by the caller Agent, which reaches this CLI
+ * through the Host-provided absolute path rather than `PATH`: the packaged
+ * application never places `codexhost` on `PATH`, and an npm installation that
+ * does may belong to a different Host. Quoting keeps installation directories
+ * containing spaces usable verbatim.
+ */
+export function delegationNextCommands(
+  environment: NodeJS.ProcessEnv,
+  threadId: string,
+): { read: string; wait: string } {
+  const cliPath = environment[DELEGATION_CLI_PATH_ENV];
+  const cli = cliPath ? JSON.stringify(cliPath) : "codexhost";
+  return {
+    read: `${cli} thread read ${threadId}`,
+    wait: `${cli} thread wait ${threadId} --timeout-ms 30000`,
+  };
+}
+
 export type DelegationThreadStatus =
   "creating" | "running" | "completed" | "failed" | "interrupted";
 

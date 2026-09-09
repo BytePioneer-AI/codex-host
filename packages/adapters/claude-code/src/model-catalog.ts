@@ -9,6 +9,8 @@ import {
   type HarnessModel,
   type HarnessModelCatalog,
   type HarnessModelRef,
+  type HarnessThinkingOption,
+  type HarnessThinkingOptionId,
 } from "@codexhost/shared-contracts";
 import { z } from "zod";
 
@@ -25,6 +27,11 @@ const modelInfoSchema = z.object({
   value: z.string().trim().min(1).max(CLAUDE_MODEL_VALUE_MAX_LENGTH),
   displayName: z.string().trim().min(1).max(HARNESS_MODEL_LABEL_MAX_LENGTH),
   resolvedModel: harnessResolvedModelLabelSchema.optional(),
+  // Capability rows are advisory: an unreadable shape from a future runtime is
+  // dropped rather than failing the whole catalog.
+  supportsEffort: z.boolean().optional().catch(undefined),
+  supportedEffortLevels: z.array(z.string()).optional().catch(undefined),
+  supportsAdaptiveThinking: z.boolean().optional().catch(undefined),
 });
 
 export interface ClaudeModelInspectionSnapshot {
@@ -97,7 +104,10 @@ function uniqueDisplayLabels(rows: Array<z.infer<typeof modelInfoSchema>>): Map<
   return labels;
 }
 
-function normalizeRows(value: unknown): Array<z.infer<typeof modelInfoSchema>> {
+function normalizeRows(value: unknown): {
+  rows: Array<z.infer<typeof modelInfoSchema>>;
+  syntheticDefault: boolean;
+} {
   if (!Array.isArray(value)) throw new Error("Claude Code Model catalog is not an array");
   const byValue = new Map<string, z.infer<typeof modelInfoSchema>>();
   for (const nativeRow of value) {
@@ -109,24 +119,56 @@ function normalizeRows(value: unknown): Array<z.infer<typeof modelInfoSchema>> {
     if (!existing) byValue.set(row.value, row);
   }
   if (byValue.size === 0) throw new Error("Claude Code Model catalog is empty");
-  if (!byValue.has("default")) {
+  const syntheticDefault = !byValue.has("default");
+  if (syntheticDefault) {
     byValue.set("default", { value: "default", displayName: "Default" });
   }
-  return [...byValue.values()];
+  return { rows: [...byValue.values()], syntheticDefault };
+}
+
+/**
+ * Thinking options a single Model can actually honour. `off` and `auto` always
+ * apply — every Model can run without extended Thinking, and `auto` just leaves
+ * the depth to Claude Code. Explicit effort levels only apply to Models that
+ * report effort support: Claude Code silently downgrades an unsupported level,
+ * so offering one would misreport how hard the Model is about to think.
+ *
+ * Installations that report no capabilities at all (older Claude Code builds)
+ * keep the full list rather than losing levels that do work there.
+ */
+function thinkingOptionIdsForModel(
+  row: z.infer<typeof modelInfoSchema>,
+  capabilitiesReported: boolean,
+): HarnessThinkingOptionId[] {
+  if (!capabilitiesReported) return [...CLAUDE_THINKING_OPTION_IDS];
+  const levels = new Set(row.supportsEffort === false ? [] : (row.supportedEffortLevels ?? []));
+  return CLAUDE_THINKING_OPTION_IDS.filter(
+    (id) => id === "off" || id === CLAUDE_DEFAULT_THINKING_OPTION_ID || levels.has(id),
+  );
 }
 
 export function normalizeClaudeModelCatalog(
   snapshot: ClaudeModelInspectionSnapshot,
 ): NormalizedClaudeModelCatalog {
   if (!snapshot.canSelectModel) throw new Error("Claude Code Model selection is unavailable");
-  const rows = normalizeRows(snapshot.models);
+  const { rows, syntheticDefault } = normalizeRows(snapshot.models);
   const labels = uniqueDisplayLabels(rows);
+  const capabilitiesReported = rows.some(
+    (row) =>
+      row.supportsEffort !== undefined ||
+      row.supportedEffortLevels !== undefined ||
+      row.supportsAdaptiveThinking !== undefined,
+  );
   const models: HarnessModel[] = rows.map((row) => {
+    // A `default` row this Adapter synthesized carries no capabilities of its
+    // own, so it keeps the full list instead of being read as "supports nothing".
+    const rowCapabilitiesReported =
+      capabilitiesReported && !(syntheticDefault && row.value === "default");
     return {
       ref: encodeClaudeModelRef(row.value),
       label: labels.get(row.value) ?? row.displayName,
       ...(row.resolvedModel ? { resolvedModelLabel: row.resolvedModel } : {}),
-      supportedThinkingOptionIds: [...CLAUDE_THINKING_OPTION_IDS],
+      supportedThinkingOptionIds: thinkingOptionIdsForModel(row, rowCapabilitiesReported),
     };
   });
   models.sort((left, right) => {
@@ -141,4 +183,20 @@ export function normalizeClaudeModelCatalog(
     defaultThinkingOptionId: CLAUDE_DEFAULT_THINKING_OPTION_ID,
   });
   return { catalog, defaultModel: CLAUDE_DEFAULT_MODEL_REF };
+}
+
+/**
+ * Thinking options a Session may offer while the given Model is selected. Falls
+ * back to the full list for a Model the catalog doesn't cover, which keeps a
+ * Session opened before the first inspection behaving as it did before.
+ */
+export function claudeThinkingOptionsForModel(
+  catalog: HarnessModelCatalog,
+  model: HarnessModelRef | undefined,
+): HarnessThinkingOption[] {
+  const supported = model
+    ? catalog.models.find(({ ref }) => ref.id === model.id)?.supportedThinkingOptionIds
+    : undefined;
+  if (!supported) return [...CLAUDE_THINKING_OPTIONS];
+  return CLAUDE_THINKING_OPTIONS.filter(({ id }) => supported.includes(id));
 }

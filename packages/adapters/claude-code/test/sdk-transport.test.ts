@@ -12,6 +12,7 @@ import {
   ClaudeSdkTransport,
   type ClaudeSdkTransportOptions,
 } from "../src/sdk-transport.js";
+import { CLAUDE_THINKING_BUDGET_TOKENS } from "../src/thinking-options.js";
 import type {
   ClaudeAutonomousTurn,
   ClaudeTransportTurnResult,
@@ -51,7 +52,15 @@ class FakeQuery {
     }),
   );
   readonly setModel = vi.fn(async () => undefined);
-  readonly applyFlagSettings = vi.fn(async () => undefined);
+  readonly applyFlagSettings = vi.fn(async (settings: Record<string, unknown>) => {
+    void settings;
+  });
+  readonly setMaxThinkingTokens = vi.fn(
+    async (maxThinkingTokens: number | null, thinkingDisplay?: string | null) => {
+      void maxThinkingTokens;
+      void thinkingDisplay;
+    },
+  );
   readonly setPermissionMode = vi.fn(async () => undefined);
   #closed = false;
   #messages: SDKMessage[] = [];
@@ -907,7 +916,7 @@ describe("ClaudeSdkTransport Permission Mode control", () => {
 });
 
 describe("ClaudeSdkTransport Thinking control", () => {
-  it("maps Auto, explicit effort, and Off through structured SDK settings", async () => {
+  it("maps Auto, explicit effort, and Off through the budget and the Settings switch", async () => {
     const value = fixture();
 
     await value.transport.start();
@@ -917,17 +926,34 @@ describe("ClaudeSdkTransport Thinking control", () => {
     await value.transport.setThinkingOption(harnessThinkingOptionIdSchema.parse("high"));
     await value.transport.setThinkingOption(harnessThinkingOptionIdSchema.parse("off"));
     await value.transport.setThinkingOption(harnessThinkingOptionIdSchema.parse("auto"));
-    expect(value.fakeQuery.applyFlagSettings).toHaveBeenNthCalledWith(1, {
-      alwaysThinkingEnabled: true,
-      effortLevel: "high",
-    });
-    expect(value.fakeQuery.applyFlagSettings).toHaveBeenNthCalledWith(2, {
-      alwaysThinkingEnabled: false,
-    });
-    expect(value.fakeQuery.applyFlagSettings).toHaveBeenNthCalledWith(3, {
-      alwaysThinkingEnabled: true,
-      effortLevel: null,
-    });
+    expect(value.fakeQuery.setMaxThinkingTokens.mock.calls).toEqual([
+      [CLAUDE_THINKING_BUDGET_TOKENS, "summarized"],
+      [0],
+      [CLAUDE_THINKING_BUDGET_TOKENS, "summarized"],
+    ]);
+    expect(value.fakeQuery.applyFlagSettings.mock.calls).toEqual([
+      [{ alwaysThinkingEnabled: true, effortLevel: "high" }],
+      [{ alwaysThinkingEnabled: false, effortLevel: null }],
+      [{ alwaysThinkingEnabled: true, effortLevel: null }],
+    ]);
+    await value.transport.close();
+  });
+
+  it("re-arms Thinking with a display mode on a Session that started with Thinking off", async () => {
+    const value = fixture("create", "default", harnessThinkingOptionIdSchema.parse("off"));
+
+    await value.transport.start();
+    expect(options(value).thinking).toEqual({ type: "disabled" });
+
+    await value.transport.setThinkingOption(harnessThinkingOptionIdSchema.parse("max"));
+    // Without the budget the Session would keep its startup `--thinking disabled`
+    // decision and never think again, whatever effort level it reported.
+    expect(value.fakeQuery.setMaxThinkingTokens.mock.calls).toEqual([
+      [CLAUDE_THINKING_BUDGET_TOKENS, "summarized"],
+    ]);
+    expect(value.fakeQuery.applyFlagSettings.mock.calls).toEqual([
+      [{ alwaysThinkingEnabled: true, effortLevel: "max" }],
+    ]);
     await value.transport.close();
   });
 

@@ -18,7 +18,11 @@ import type { ClaudeModelInspectionSnapshot } from "./model-catalog.js";
 import { ClaudeNativeTurnAccumulator, parseClaudePlanLimitEvent } from "./native-message.js";
 import { isClaudePermissionMode, type ClaudePermissionMode } from "./permission-modes.js";
 import { closeClaudeProcessGroup } from "./process-fence.js";
-import { claudeThinkingConfiguration, parseClaudeThinkingOptionId } from "./thinking-options.js";
+import {
+  CLAUDE_THINKING_BUDGET_TOKENS,
+  claudeThinkingConfiguration,
+  parseClaudeThinkingOptionId,
+} from "./thinking-options.js";
 import type {
   ClaudeApprovalRequest,
   ClaudeApprovalSuggestionScope,
@@ -477,11 +481,24 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
     if (!this.#started || !activeQuery) throw new Error("Claude SDK transport is not started");
     const id = parseClaudeThinkingOptionId(thinkingOptionId);
     const thinking = claudeThinkingConfiguration(id);
-    await activeQuery.applyFlagSettings(
-      thinking.enabled
-        ? { alwaysThinkingEnabled: true, effortLevel: thinking.effort ?? null }
-        : { alwaysThinkingEnabled: false },
-    );
+    // The Settings switch alone cannot re-arm Thinking: a Session started with
+    // `--thinking disabled` keeps that startup decision, so switching from Off to
+    // any level used to change the effort level while the Session stayed unable to
+    // think for the rest of its life. Setting a Thinking budget is what lifts it,
+    // and adaptive Models read a non-zero budget as "adaptive" — they keep
+    // choosing depth themselves under the effort level. The display mode rides
+    // along because a Session that started with Thinking off carries none, and
+    // the API's default (redacted) display streams Thinking frames that never
+    // carry text for the Renderer to open a Reasoning Item with.
+    if (thinking.enabled) {
+      await activeQuery.setMaxThinkingTokens(CLAUDE_THINKING_BUDGET_TOKENS, "summarized");
+    } else {
+      await activeQuery.setMaxThinkingTokens(0);
+    }
+    await activeQuery.applyFlagSettings({
+      alwaysThinkingEnabled: thinking.enabled,
+      effortLevel: thinking.effort ?? null,
+    });
     this.#thinkingOptionId = id;
   }
 

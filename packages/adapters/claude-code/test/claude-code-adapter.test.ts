@@ -225,6 +225,9 @@ function fixture(options: ClaudeCodeAdapterOptions = {}) {
               description: "ignored",
               resolvedModel: "runtime-default",
               supportsAutoMode: true,
+              supportsEffort: true,
+              supportedEffortLevels: ["low", "medium", "high", "xhigh", "max"],
+              supportsAdaptiveThinking: true,
             },
             {
               value: "sonnet",

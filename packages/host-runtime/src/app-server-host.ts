@@ -524,6 +524,7 @@ export class AppServerHost {
       cancelOfficial: (input) => this.#cancelOfficialDelegationThread(input),
       startOfficial: (input) => this.#startOfficialDelegation(input),
       listOfficial: (input) => this.#listDelegationThreads(input),
+      officialThreadCwd: (threadId) => this.#readOfficialThreadCwd(threadId),
       activeOfficialParents: () => [...this.#activeOfficialTurns.keys()],
     });
     const unregisterDelegationApi = options.onDelegationApi?.({
@@ -1272,6 +1273,14 @@ export class AppServerHost {
     return thread !== null || childDelegation !== null || delegation !== null;
   }
 
+  async #readOfficialThreadCwd(threadId: string): Promise<string | undefined> {
+    const response = await this.#requestOfficial("thread/read", { threadId });
+    if (isRecord(response.error)) return undefined;
+    const result = isRecord(response.result) ? response.result : null;
+    const thread = result && isRecord(result.thread) ? result.thread : null;
+    return thread && typeof thread.cwd === "string" && thread.cwd.trim() ? thread.cwd : undefined;
+  }
+
   async #inspectOfficialDelegationTarget(
     input: HarnessInspectInput,
   ): Promise<HarnessInspectResult> {
@@ -1352,7 +1361,7 @@ export class AppServerHost {
   }
 
   async #startOfficialDelegation(
-    input: DelegationStartInput & { parentThreadId: string },
+    input: DelegationStartInput & { parentThreadId: string; cwd: string },
   ): Promise<DelegationStartResult> {
     let requestedModel: HarnessModelRef | undefined;
     try {

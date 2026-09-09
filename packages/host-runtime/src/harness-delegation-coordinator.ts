@@ -79,11 +79,14 @@ function statusFromThread(thread: ExternalThread): StoredDelegationRecordV1["sta
 }
 
 function validateStart(input: DelegationStartInput): void {
-  if (!input.task?.trim())
+  if (typeof input.task !== "string" || !input.task.trim())
     throw new DelegationControlError("INVALID_ARGUMENT", "Task must not be empty");
-  if (input.cwd !== undefined && !input.cwd.trim())
+  if (input.cwd !== undefined && (typeof input.cwd !== "string" || !input.cwd.trim()))
     throw new DelegationControlError("INVALID_ARGUMENT", "cwd must not be empty");
-  if (input.requestId !== undefined && !input.requestId.trim()) {
+  if (
+    input.requestId !== undefined &&
+    (typeof input.requestId !== "string" || !input.requestId.trim())
+  ) {
     throw new DelegationControlError("INVALID_ARGUMENT", "Request ID must not be empty");
   }
 }
@@ -117,6 +120,7 @@ export class HarnessDelegationCoordinator {
     input: DelegationStartInput & { parentThreadId: string; cwd: string },
   ) => Promise<DelegationStartResult>;
   readonly #listOfficial: (input: ThreadListInput) => Promise<DelegationThreadListResult>;
+  readonly #officialThreadCwd: (threadId: string) => Promise<string | undefined>;
   readonly #activeOfficialParents: () => string[];
 
   constructor(input: {
@@ -144,6 +148,7 @@ export class HarnessDelegationCoordinator {
       input: DelegationStartInput & { parentThreadId: string; cwd: string },
     ): Promise<DelegationStartResult>;
     listOfficial(input: ThreadListInput): Promise<DelegationThreadListResult>;
+    officialThreadCwd(threadId: string): Promise<string | undefined>;
     activeOfficialParents(): string[];
   }) {
     this.#adapters = input.adapters;
@@ -159,6 +164,7 @@ export class HarnessDelegationCoordinator {
     this.#cancelOfficial = input.cancelOfficial;
     this.#startOfficial = input.startOfficial;
     this.#listOfficial = input.listOfficial;
+    this.#officialThreadCwd = input.officialThreadCwd;
     this.#activeOfficialParents = input.activeOfficialParents;
   }
 
@@ -593,8 +599,9 @@ export class HarnessDelegationCoordinator {
     parentThreadId: string,
   ): Promise<{ harnessId: RoutedHarnessId; cwd?: string }> {
     const record = await this.#repository.find(parentThreadId);
-    if (!record) return { harnessId: "codex" };
-    return { harnessId: record.harnessId as RoutedHarnessId, cwd: record.cwd };
+    if (record) return { harnessId: record.harnessId as RoutedHarnessId, cwd: record.cwd };
+    const cwd = await this.#officialThreadCwd(parentThreadId).catch(() => undefined);
+    return { harnessId: "codex", ...(cwd ? { cwd } : {}) };
   }
 
   async #existingResult(delegation: StoredDelegationRecordV1): Promise<DelegationStartResult> {

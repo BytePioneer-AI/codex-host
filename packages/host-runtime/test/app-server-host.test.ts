@@ -4195,7 +4195,6 @@ describe("AppServerHost HarnessAdapter projection", () => {
     await stopFixture(fixture);
   });
 
-
   it("projects a Harness command's native compaction Item through the existing UI lane", async () => {
     const fixture = createFixture();
     const threadId = await startPiThread(fixture);

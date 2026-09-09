@@ -150,7 +150,10 @@ test("a new conversation shows the Harness command button before a Thread exists
   // A draft has no Thread yet, so direct-executable commands stay disabled.
   const compact = menu.locator('[data-command-id="pi.compact"]');
   await expect(compact).toBeDisabled();
-  await expect(compact).toHaveAttribute("title", "Start a conversation before running this command");
+  await expect(compact).toHaveAttribute(
+    "title",
+    "Start a conversation before running this command",
+  );
   await expect(menu.locator('[role="menuitem"]')).toHaveCount(1);
   expect(await page.evaluate(() => Reflect.get(globalThis, "threadCommandRequests"))).toEqual([]);
 });

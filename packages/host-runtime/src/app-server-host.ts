@@ -3210,8 +3210,7 @@ export class AppServerHost {
             .find((command) => {
               if (commandText === command.invocation) return true;
               return (
-                command.argumentMode === "text" &&
-                commandText.startsWith(`${command.invocation} `)
+                command.argumentMode === "text" && commandText.startsWith(`${command.invocation} `)
               );
             });
           if (matched) {

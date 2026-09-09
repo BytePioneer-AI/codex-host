@@ -1,3 +1,4 @@
+import { persistEmptyPiSession, readPiEmptySessionConfiguration } from "./pi-empty-session.js";
 import { createTwoFilesPatch, parsePatch } from "diff";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
@@ -2100,8 +2101,14 @@ export class PiAdapter implements HarnessAdapter {
           });
         }
       }
+      const emptySessionConfiguration =
+        input.kind === "resume"
+          ? await readPiEmptySessionConfiguration(sourceSessionFile)
+          : undefined;
       transport = this.#createTransport({
         cwd: input.cwd,
+        ...(input.environment ? { environment: input.environment } : {}),
+        ...(emptySessionConfiguration ? { emptySessionConfiguration } : {}),
         ...(input.kind === "resume"
           ? { sessionFile: sourceSessionFile }
           : { forkSessionFile: sourceSessionFile }),
@@ -2167,6 +2174,48 @@ export class PiAdapter implements HarnessAdapter {
             message: "Pi Native Session has no Turn to roll back",
             retryable: false,
           });
+        }
+        if (rolledBack.unpersisted) {
+          const state = transport.state;
+          const history = await transport.getEntries();
+          // Pi defers writing an empty fork until its first Assistant message. Stop this writer
+          // before publishing native history, then resume so Pi observes the already flushed file.
+          await transport.close();
+          await persistEmptyPiSession({
+            state,
+            history,
+            sourceSessionFile,
+            sourceSessionId: sourceRef.nativeSessionId,
+            cwd: input.cwd,
+          });
+          if (!state.sessionFile) throw new Error("Pi empty fork has no Session file");
+          const configuration = await readPiEmptySessionConfiguration(state.sessionFile);
+          if (!configuration) throw new Error("Pi empty fork has no restorable configuration");
+          transport = this.#createTransport({
+            cwd: input.cwd,
+            ...(input.environment ? { environment: input.environment } : {}),
+            sessionFile: state.sessionFile,
+            emptySessionConfiguration: configuration,
+            onFault: (error) => session?.handleTransportFault(error),
+          });
+          await transport.start();
+          if (transport.state.sessionId !== state.sessionId) {
+            throw new Error("Pi empty fork resumed with a different identity");
+          }
+          const model = nativeModelFromState(state);
+          if (model && !samePiModel(nativeModelFromState(transport.state), model)) {
+            await transport.selectModel(model);
+          }
+          if (state.thinkingLevel && transport.state.thinkingLevel !== state.thinkingLevel) {
+            await transport.selectThinkingOption(state.thinkingLevel);
+          }
+          if (
+            !samePiModel(nativeModelFromState(transport.state), model) ||
+            transport.state.thinkingLevel !== state.thinkingLevel
+          ) {
+            throw new Error("Pi empty fork could not restore its configuration");
+          }
+          await transport.verifySessionCwd(input.cwd);
         }
       }
 

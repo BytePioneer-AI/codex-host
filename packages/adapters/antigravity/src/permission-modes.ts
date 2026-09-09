@@ -17,7 +17,7 @@ export const ANTIGRAVITY_PERMISSION_MODE_CATALOG: HarnessPermissionModeCatalog =
       {
         id: "configured",
         label: "Configured permissions",
-        description: "Use Antigravity CLI permission rules; headless prompts are denied safely.",
+        description: "Use Antigravity CLI permission rules with headless-safe tool approvals.",
       },
       {
         id: "desktop-approvals",

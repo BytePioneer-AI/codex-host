@@ -29,7 +29,14 @@ const input = {
   },
 };
 
-async function fixture(timeoutMs = 5_000, approvals = false) {
+async function fixture(
+  timeoutMs = 5_000,
+  approvals = false,
+  configuredPermissions?: {
+    workspaceRoot: string;
+    permissions: { allow: string[]; ask: string[]; deny: string[] };
+  },
+) {
   const outputs: HarnessOutput[] = [];
   const bridge = await AntigravityQuestionBridge.create({
     turnId: hostTurnIdSchema.parse("turn-test"),
@@ -38,6 +45,7 @@ async function fixture(timeoutMs = 5_000, approvals = false) {
     emit: (output) => outputs.push(output),
     timeoutMs,
     approvals,
+    ...(configuredPermissions ? { configuredPermissions } : {}),
     ownsApprovalSession: (id) => id === "owned-child",
   });
   const url = bridge.environment.CODEXHOST_AGY_QUESTION_URL;
@@ -86,6 +94,56 @@ async function question(outputs: HarnessOutput[]): Promise<HostQuestionInteracti
 }
 
 describe("Antigravity question Hook bridge", () => {
+  it("auto-allows safe configured calls and asks Desktop for unmatched tool approval", async () => {
+    const { bridge, outputs } = await fixture(5_000, false, {
+      workspaceRoot: path.win32.resolve("C:/workspace/project"),
+      permissions: { allow: [], ask: [], deny: [] },
+    });
+    try {
+      const config = JSON.parse(
+        await readFile(path.join(bridge.directory, ".agents", "hooks.json"), "utf8"),
+      );
+      expect(config["codexhost-question-bridge"].PreToolUse[0].matcher).toBe(".*");
+      const done = runHook(bridge, {
+        ...input,
+        toolCall: { name: "view_file", args: { AbsolutePath: "C:/workspace/project/README.md" } },
+      });
+      expect(JSON.parse((await done).stdout)).toMatchObject({ decision: "allow" });
+      expect(outputs).toEqual([]);
+      const approval = runHook(bridge, {
+        ...input,
+        stepIdx: 3,
+        toolCall: { name: "run_command", args: { CommandLine: "git status" } },
+      });
+      await vi.waitFor(() =>
+        expect(
+          outputs.some(
+            (output) => output.kind === "interaction" && output.interaction.type === "approval",
+          ),
+        ).toBe(true),
+      );
+      const output = outputs.find(
+        (candidate) =>
+          candidate.kind === "interaction" && candidate.interaction.type === "approval",
+      );
+      if (output?.kind !== "interaction" || output.interaction.type !== "approval") {
+        throw new Error("No Approval");
+      }
+      expect(
+        bridge.respond({
+          type: "interaction.respond",
+          interactionId: output.interaction.interactionId,
+          response: { type: "approval", actionId: "allow-once" },
+        }),
+      ).toMatchObject({ ok: true });
+      expect(JSON.parse((await approval).stdout)).toMatchObject({
+        decision: "allow",
+      });
+    } finally {
+      await bridge.dispose();
+    }
+  });
+
   it.each(["allow-once", "deny"])(
     "returns a scoped %s tool decision without changing Question semantics",
     async (actionId) => {

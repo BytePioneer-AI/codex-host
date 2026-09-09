@@ -152,9 +152,11 @@ class EventFeed implements AsyncIterable<ModernJournalEvent>, AsyncIterator<Mode
   readonly #items: IteratorResult<ModernJournalEvent>[] = [];
   #pending: ((item: IteratorResult<ModernJournalEvent>) => void) | undefined;
   #done = false;
+  readonly seen: ModernJournalEvent[] = [];
 
   push(value: ModernJournalEvent): void {
     if (this.#done) return;
+    this.seen.push(value);
     this.#deliver({ done: false, value });
   }
 
@@ -205,6 +207,7 @@ class FakeRemote implements ModernJournalRemote {
     options: ModernRemoteCallOptions | undefined;
   }> = [];
   streamCalls = 0;
+  onUnscriptedCancel?: () => void;
 
   constructor(
     readonly handlers: CallHandler[],
@@ -219,6 +222,10 @@ class FakeRemote implements ModernJournalRemote {
   ): Promise<ModernRemoteResult<T>> {
     this.calls.push({ endpoint, args, signal, options });
     const handler = this.handlers.shift();
+    if (!handler && endpoint === "session/cancel" && this.onUnscriptedCancel) {
+      this.onUnscriptedCancel();
+      return Promise.resolve(accepted()) as Promise<ModernRemoteResult<T>>;
+    }
     if (!handler) return Promise.reject(new Error(`unexpected call: ${endpoint}`));
     return Promise.resolve(handler(endpoint, args, signal, options)) as Promise<
       ModernRemoteResult<T>
@@ -440,6 +447,23 @@ function setup(
       feed.finish();
       return Promise.resolve();
     },
+  };
+  // Native cancellation completes the journal before the transport detaches.
+  remote.onUnscriptedCancel = () => {
+    const entries = [...history, ...feed.seen];
+    let seq = (entries.at(-1)?.seq ?? -1) + 1;
+    const start = entries.findLast((entry) => entry.type === "turn/start");
+    const turn = (start?.data as { turn?: number } | undefined)?.turn;
+    const step = entries.findLast((entry) => entry.type === "step/start");
+    const stepEnd = entries.findLast((entry) => entry.type === "step/end");
+    const turnEnd = entries.findLast((entry) => entry.type === "turn/end");
+    if (turn !== undefined && start && (!turnEnd || start.seq > turnEnd.seq)) {
+      if (step && (!stepEnd || step.seq > stepEnd.seq))
+        feed.push(event(seq++, "step/end", { turn, step: (step.data as { step: number }).step }));
+      feed.push(
+        event(seq, "turn/end", { turn, reason: { kind: "aborted", reason: { kind: "user" } } }),
+      );
+    }
   };
   let uuidIndex = 0;
   const session = new ModernHarnessSession({
@@ -922,7 +946,9 @@ describe("DeepSeek Harness Modern Session", () => {
           (item.type === "item.completed" && item.snapshot.item.type === "reasoning"),
       ),
     ).toBe(false);
-    await test.session.close();
+    await expect(test.session.close()).rejects.toThrow(
+      "native execution stop was not confirmed before the Session fault",
+    );
   });
 
   it("ignores live surface replacement copies for correlation and visible output", async () => {
@@ -1273,7 +1299,9 @@ describe("DeepSeek Harness Modern Session", () => {
       ok: true,
       value: { turns: [{ input: [{ type: "text", text: "visible history" }] }] },
     });
-    await test.session.close();
+    await expect(test.session.close()).rejects.toThrow(
+      "cannot confirm stop before the native Turn is correlated",
+    );
     await expect(outputs.next()).resolves.toEqual({ done: true, value: undefined });
   });
 
@@ -1488,7 +1516,9 @@ describe("DeepSeek Harness Modern Session", () => {
     ).resolves.toMatchObject({ ok: true });
     expect(vi.getTimerCount()).toBe(1);
 
-    await test.session.close();
+    await expect(test.session.close()).rejects.toThrow(
+      "cannot confirm stop before the native Turn is correlated",
+    );
     expect(vi.getTimerCount()).toBe(0);
     expect(await nextEvent(outputs)).toMatchObject({
       type: "turn.completed",
@@ -1550,9 +1580,14 @@ describe("DeepSeek Harness Modern Session", () => {
       input: [{ type: "text", text: "close" }],
     });
     await waitForGraceTimer();
-    await test.session.close();
+    await expect(test.session.close()).rejects.toThrow(
+      "cannot confirm stop before the native Turn is correlated",
+    );
     await expect(execution).resolves.toMatchObject({ ok: false, error: { code: "invalidState" } });
-    expect(test.remote.calls).toHaveLength(1);
+    expect(test.remote.calls.map(({ endpoint }) => endpoint)).toEqual([
+      "session/prompt",
+      "session/cancel",
+    ]);
     expect(vi.getTimerCount()).toBe(0);
     await expect(outputs.next()).resolves.toEqual({ done: true, value: undefined });
   });
@@ -1715,7 +1750,9 @@ describe("DeepSeek Harness Modern Session", () => {
       turnId: turnId("host-turn-1"),
       input: [{ type: "text", text: "queued" }],
     });
-    await test.session.close();
+    await expect(test.session.close()).rejects.toThrow(
+      "cannot confirm stop before the native Turn is correlated",
+    );
     expect(await nextEvent(outputs)).toMatchObject({
       type: "turn.completed",
       turnId: "host-turn-1",
@@ -1737,7 +1774,9 @@ describe("DeepSeek Harness Modern Session", () => {
     test.feed.push(event(1, "step/start", { turn: 1, step: 1 }));
     test.feed.push(userMessage(2, "mine", "request-1"));
     await new Promise<void>((resolve) => setImmediate(resolve));
-    await test.session.close();
+    await expect(test.session.close()).rejects.toThrow(
+      "cannot confirm stop before the native Turn is correlated",
+    );
     await expect(execution).resolves.toMatchObject({ ok: false, error: { code: "invalidState" } });
     expect(await nextEvent(outputs)).toMatchObject({
       type: "turn.completed",
@@ -1763,6 +1802,161 @@ describe("DeepSeek Harness Modern Session", () => {
       turnId: "host-turn-1",
       outcome: { status: "failed" },
     });
+  });
+
+  it("rejects uncorrelated accepted closure instead of claiming native stop", async () => {
+    const test = setup([() => accepted()]);
+    await test.session.execute({
+      type: "turn.start",
+      turnId: turnId("uncorrelated-close"),
+      input: [{ type: "text", text: "go" }],
+    });
+    await expect(test.session.close()).rejects.toThrow(
+      "cannot confirm stop before the native Turn is correlated",
+    );
+    expect(test.remote.calls.filter(({ endpoint }) => endpoint === "session/cancel")).toHaveLength(
+      1,
+    );
+  });
+
+  it("ends outputs when a native cancel fault races close", async () => {
+    const test = setup([() => ({ ok: true, value: { accepted: false } })]);
+    const outputs = test.session.outputs[Symbol.asyncIterator]();
+    beginAutonomousTurn(test);
+    await nextEvent(outputs);
+    await expect(test.session.close()).rejects.toThrow("invalid receipt");
+    const remaining: HarnessOutput[] = [];
+    for (;;) {
+      const next = await outputs.next();
+      if (next.done) break;
+      remaining.push(next.value);
+    }
+    expect(remaining).toContainEqual(
+      expect.objectContaining({
+        kind: "event",
+        event: expect.objectContaining({ type: "session.faulted" }),
+      }),
+    );
+    expect(test.journal.closeCalls).toBe(1);
+  });
+
+  it("rejects stop confirmation when an active Session faults before close", async () => {
+    const test = setup([() => accepted()], [], ["request-1"]);
+    const outputs = test.session.outputs[Symbol.asyncIterator]();
+    await test.session.execute({
+      type: "turn.start",
+      turnId: turnId("fault-first"),
+      input: [{ type: "text", text: "mine" }],
+    });
+    test.feed.push(event(0, "turn/start", { turn: 1 }));
+    test.feed.push(event(1, "step/start", { turn: 1, step: 1 }));
+    test.feed.push(userMessage(2, "mine", "request-1"));
+    await nextEvent(outputs);
+    test.session.fault({ code: "protocolError", message: "broken journal", retryable: false });
+    await eventsThrough(outputs, "session.faulted");
+    await expect(test.session.close()).rejects.toThrow(
+      "native execution stop was not confirmed before the Session fault",
+    );
+    await expect(test.session.close()).rejects.toThrow(
+      "native execution stop was not confirmed before the Session fault",
+    );
+    expect(test.feed.seen.some(({ type }) => type === "turn/end")).toBe(false);
+    await expect(outputs.next()).resolves.toEqual({ done: true, value: undefined });
+  });
+
+  it("does not let an autonomous terminal confirm an unrelated uncertain prompt stopped", async () => {
+    const test = setup(
+      [() => Promise.reject(new Error("lost receipt"))],
+      [],
+      ["request-1", "autonomous-1"],
+      50_000,
+    );
+    const outputs = test.session.outputs[Symbol.asyncIterator]();
+    const execution = test.session.execute({
+      type: "turn.start",
+      turnId: turnId("uncertain"),
+      input: [{ type: "text", text: "mine" }],
+    });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    test.feed.push(event(0, "turn/start", { turn: 1 }));
+    test.feed.push(event(1, "step/start", { turn: 1, step: 1 }));
+    test.feed.push(sourcedUserMessage(2, "plugin context", { kind: "plugin", plugin: "fixture" }));
+    test.feed.push(requestHeader(3));
+    expect(await nextEvent(outputs)).toMatchObject({ type: "turn.autonomous.started" });
+    expect(await nextEvent(outputs)).toMatchObject({ type: "turn.started" });
+    await expect(test.session.close()).rejects.toThrow(
+      "cannot confirm stop before the native Turn is correlated",
+    );
+    await expect(execution).resolves.toMatchObject({ ok: false });
+    expect(test.remote.calls.map(({ endpoint }) => endpoint)).toEqual([
+      "session/prompt",
+      "session/cancel",
+    ]);
+  });
+
+  it("settles a prompt accepted during close when a subsequent fault owns cleanup", async () => {
+    const receipt = deferred<ModernRemoteResult<unknown>>();
+    const cancel = deferred<ModernRemoteResult<unknown>>();
+    const test = setup([() => receipt.promise, () => cancel.promise], [], ["request-1"]);
+    const outputs = test.session.outputs[Symbol.asyncIterator]();
+    const execution = test.session.execute({
+      type: "turn.start",
+      turnId: turnId("late-accepted"),
+      input: [{ type: "text", text: "mine" }],
+    });
+    const rejected = expect(test.session.close()).rejects.toThrow();
+    receipt.resolve(accepted());
+    await expect(execution).resolves.toMatchObject({ ok: true });
+    test.session.fault({
+      code: "protocolError",
+      message: "fault after late admission",
+      retryable: false,
+    });
+    await rejected;
+    const emitted = await eventsThrough(outputs, "session.faulted");
+    expect(emitted.map(({ type }) => type)).toEqual(["turn.completed", "session.faulted"]);
+    expect(emitted[0]).toMatchObject({ turnId: "late-accepted", outcome: { status: "failed" } });
+    await expect(outputs.next()).resolves.toEqual({ done: true, value: undefined });
+  });
+
+  it("waits for native stop after a cancel receipt and shares close confirmation", async () => {
+    const test = setup([() => accepted()]);
+    const outputs = test.session.outputs[Symbol.asyncIterator]();
+    beginAutonomousTurn(test);
+    await nextEvent(outputs);
+    let closed = false;
+    const first = test.session.close().then(() => {
+      closed = true;
+    });
+    const second = test.session.close();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(closed).toBe(false);
+    await expect(
+      test.session.execute({
+        type: "turn.start",
+        turnId: turnId("after-close"),
+        input: [{ type: "text", text: "blocked" }],
+      }),
+    ).resolves.toMatchObject({ ok: false, error: { code: "invalidState" } });
+    expect(test.remote.calls.filter(({ endpoint }) => endpoint === "session/cancel")).toHaveLength(
+      1,
+    );
+    finishNativeTurn(test);
+    await Promise.all([first, second]);
+    expect(closed).toBe(true);
+  });
+
+  it("rejects close when a cancel receipt never becomes a native terminal", async () => {
+    vi.useFakeTimers();
+    const test = setup([() => accepted()]);
+    const outputs = test.session.outputs[Symbol.asyncIterator]();
+    beginAutonomousTurn(test);
+    await nextEvent(outputs);
+    const result = expect(test.session.close()).rejects.toThrow("did not confirm native Turn stop");
+    await vi.advanceTimersByTimeAsync(5000);
+    await result;
+    await expect(test.session.close()).rejects.toThrow("did not confirm native Turn stop");
   });
 
   it("closes an active Turn exactly once and ignores late terminal history", async () => {
@@ -2190,7 +2384,9 @@ describe("DeepSeek Harness Modern Session", () => {
     test.feed.push(event(5, "turn/end", { turn: 1, reason: { kind: "completed" } }));
     await new Promise<void>((resolve) => setImmediate(resolve));
 
-    await test.session.close();
+    await expect(test.session.close()).rejects.toThrow(
+      "cannot confirm stop before the native Turn is correlated",
+    );
     expect(test.remote.calls[0]?.signal?.aborted).toBe(true);
     expect(await nextEvent(outputs)).toMatchObject({
       type: "item.completed",
@@ -2231,7 +2427,9 @@ describe("DeepSeek Harness Modern Session", () => {
     expect(test.remote.calls.map(({ endpoint }) => endpoint)).toEqual(["commands/execute"]);
     expect(test.remote.calls[0]).toMatchObject({ options: { timeoutMs: null } });
     await expect(outputs.next()).resolves.toEqual({ done: true, value: undefined });
-    await test.session.close();
+    await expect(test.session.close()).rejects.toThrow(
+      "native execution stop was not confirmed before the Session fault",
+    );
   });
 
   it("publishes an early Host-bound Approval and delivers allow/deny exactly", async () => {
@@ -2738,7 +2936,13 @@ describe("DeepSeek Harness Modern Session", () => {
         turnId: "terminal-order-turn",
         reason: "cancelled",
       });
-      await test.session.close();
+      if (terminal === "Session fault") {
+        await expect(test.session.close()).rejects.toThrow(
+          "native execution stop was not confirmed before the Session fault",
+        );
+      } else {
+        await test.session.close();
+      }
       await expect(outputs.next()).resolves.toEqual({ done: true, value: undefined });
     },
   );

@@ -704,10 +704,14 @@ describe("Pi HarnessAdapter Session", () => {
       kind: "rollbackLastTurn",
       cwd: "/synthetic",
       sourceRef,
+      environment: { CODEXHOST_THREAD_ID: "edited-thread" },
     });
     if (!opened.ok) throw new Error(opened.error.message);
     expect(dependencies.createTransport).toHaveBeenCalledWith(
-      expect.objectContaining({ forkSessionFile: "/synthetic/source.jsonl" }),
+      expect.objectContaining({
+        forkSessionFile: "/synthetic/source.jsonl",
+        environment: { CODEXHOST_THREAD_ID: "edited-thread" },
+      }),
     );
     expect(transports[0]?.fork).toHaveBeenCalledWith("source-user-2");
     expect(transports[0]?.selectModel).toHaveBeenCalledWith({

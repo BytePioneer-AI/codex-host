@@ -25,6 +25,10 @@ import {
 import { z } from "zod";
 
 import { ANTIGRAVITY_QUESTION_HOOK_CLIENT } from "./question-hook-client.js";
+import {
+  configuredPermissionDecision,
+  type AntigravityConfiguredPermissionPolicy,
+} from "./configured-permissions.js";
 
 const MAX_BYTES = 131_072;
 const QUESTION_TIMEOUT_MS = 10 * 60_000;
@@ -76,6 +80,7 @@ interface BridgeOptions {
   emit(output: HarnessOutput): void;
   timeoutMs?: number;
   approvals?: boolean;
+  configuredPermissions?: AntigravityConfiguredPermissionPolicy;
   ownsApprovalSession?(nativeSessionId: string): boolean;
 }
 
@@ -115,7 +120,8 @@ export class AntigravityQuestionBridge {
     this.environment = {
       CODEXHOST_AGY_QUESTION_TOKEN: this.#token,
       CODEXHOST_AGY_QUESTION_TIMEOUT_MS: String(options.timeoutMs ?? QUESTION_TIMEOUT_MS),
-      CODEXHOST_AGY_QUESTION_APPROVALS: options.approvals ? "1" : "0",
+      CODEXHOST_AGY_QUESTION_APPROVALS:
+        options.approvals || options.configuredPermissions ? "1" : "0",
     };
     this.#server.on("request", (request, response) => this.#receive(request, response));
   }
@@ -154,7 +160,8 @@ export class AntigravityQuestionBridge {
           "codexhost-question-bridge": {
             PreToolUse: [
               {
-                matcher: options.approvals ? ".*" : "^ask_question$",
+                matcher:
+                  options.approvals || options.configuredPermissions ? ".*" : "^ask_question$",
                 hooks: [
                   {
                     type: "command",
@@ -176,7 +183,7 @@ export class AntigravityQuestionBridge {
   }
 
   verifyApprovalHooks(stdout: string): boolean {
-    if (!this.#options.approvals) return false;
+    if (!this.#options.approvals && !this.#options.configuredPermissions) return false;
     const hookSchema = z.object({
       event: z.literal("command_result"),
       command: z.object({
@@ -259,7 +266,7 @@ export class AntigravityQuestionBridge {
         return;
       }
       if (!parsed.success) {
-        if (this.#options.approvals) {
+        if (this.#options.approvals || this.#options.configuredPermissions) {
           const approval = approvalRequestSchema.safeParse(JSON.parse(body));
           if (approval.success) {
             this.#options.schedule(() => this.#approve(approval.data, response));
@@ -297,6 +304,17 @@ export class AntigravityQuestionBridge {
       return;
     }
     this.#seenSteps.add(stepKey);
+    if (this.#options.configuredPermissions) {
+      const decision = configuredPermissionDecision(
+        payload.toolCall.name,
+        payload.toolCall.args,
+        this.#options.configuredPermissions,
+      );
+      if (decision.decision !== "prompt") {
+        deny(response, decision.reason, 200, decision.decision);
+        return;
+      }
+    }
     const interaction: HostApprovalInteraction = {
       type: "approval",
       interactionId: hostInteractionIdSchema.parse(randomUUID()),

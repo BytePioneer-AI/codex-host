@@ -11,15 +11,16 @@ import {
   nativeCheckpointRefSchema,
   nativeSessionRefSchema,
   type HarnessId,
+  type HarnessConfigurationState,
   type NativeCheckpointRef,
   type NativeSessionRef,
 } from "@codexhost/shared-contracts";
 
 import { mapClaudeSnapshot } from "./claude-history.js";
+import type { ClaudePendingSessions } from "./pending-session.js";
 import type { ClaudeAdapterDependencies } from "./transport.js";
 
-interface ClaudeForkInput {
-  checkpoint: NativeCheckpointRef;
+interface ClaudeForkBase {
   cwd: string;
   dependencies: Pick<
     ClaudeAdapterDependencies,
@@ -28,6 +29,16 @@ interface ClaudeForkInput {
   harnessId: HarnessId;
   sourceRef: NativeSessionRef;
 }
+
+type ClaudeForkInput = ClaudeForkBase &
+  (
+    | { kind: "fork"; checkpoint: NativeCheckpointRef }
+    | {
+        kind: "rollbackLastTurn";
+        pendingSessions: ClaudePendingSessions;
+        configuration: HarnessConfigurationState;
+      }
+  );
 
 function error(code: HarnessError["code"], message: string, retryable: boolean): HarnessError {
   return { code, message, retryable };
@@ -41,6 +52,7 @@ function comparableTurn(turn: HostTurnSnapshot): unknown {
       outcome,
     })),
     outcome: turn.outcome,
+    hasCheckpoint: turn.checkpoint !== undefined,
     ...(turn.model ? { model: turn.model } : {}),
   };
 }
@@ -86,15 +98,19 @@ async function readSnapshot(
 
 export async function forkClaudeSession(
   input: ClaudeForkInput,
-): Promise<HarnessResult<{ sessionId: string }>> {
+): Promise<
+  HarnessResult<{ sessionId: string; nativeRef?: NativeSessionRef; openMode?: "create" }>
+> {
   const sourceRef = nativeSessionRefSchema.safeParse(input.sourceRef);
-  const checkpoint = nativeCheckpointRefSchema.safeParse(input.checkpoint);
+  const checkpoint =
+    input.kind === "fork" ? nativeCheckpointRefSchema.safeParse(input.checkpoint) : null;
   if (
     !sourceRef.success ||
-    !checkpoint.success ||
     sourceRef.data.harnessId !== input.harnessId ||
-    checkpoint.data.harnessId !== input.harnessId ||
-    checkpoint.data.nativeSessionId !== sourceRef.data.nativeSessionId
+    (checkpoint &&
+      (!checkpoint.success ||
+        checkpoint.data.harnessId !== input.harnessId ||
+        checkpoint.data.nativeSessionId !== sourceRef.data.nativeSessionId))
   ) {
     return {
       ok: false,
@@ -138,10 +154,51 @@ export async function forkClaudeSession(
 
   const source = await readSnapshot(input.dependencies, input.cwd, sourceRef.data.nativeSessionId);
   if (!source.ok) return source;
-  const boundaryIndex = source.value.turns.findIndex(
-    (turn) => turn.checkpoint?.checkpointId === checkpoint.data.checkpointId,
-  );
-  if (boundaryIndex < 0) {
+  if (input.kind === "rollbackLastTurn" && source.value.turns.length === 0) {
+    return {
+      ok: false,
+      error: error("invalidRequest", "Claude Code Session has no Turn to roll back", false),
+    };
+  }
+  if (input.kind === "rollbackLastTurn" && source.value.turns.length === 1) {
+    let nativeRef: NativeSessionRef;
+    try {
+      nativeRef = await input.pendingSessions.create(input.cwd, input.configuration);
+    } catch {
+      return {
+        ok: false,
+        error: error("nativeFailure", "Claude Code empty rollback could not be persisted", true),
+      };
+    }
+    const sourceAfter = await readSnapshot(
+      input.dependencies,
+      input.cwd,
+      sourceRef.data.nativeSessionId,
+    );
+    if (!sourceAfter.ok || !isDeepStrictEqual(sourceAfter.value, source.value)) {
+      await input.pendingSessions.discard(nativeRef, input.cwd).catch(() => undefined);
+      return {
+        ok: false,
+        error: error("protocolError", "Claude Code source history changed during rollback", false),
+      };
+    }
+    return {
+      ok: true,
+      value: { sessionId: nativeRef.nativeSessionId, nativeRef, openMode: "create" },
+    };
+  }
+  const boundaryIndex =
+    input.kind === "rollbackLastTurn"
+      ? source.value.turns.length - 2
+      : source.value.turns.findIndex(
+          (turn) =>
+            checkpoint?.success && turn.checkpoint?.checkpointId === checkpoint.data.checkpointId,
+        );
+  const retained = source.value.turns[boundaryIndex];
+  const boundaryId =
+    retained?.checkpoint?.checkpointId ??
+    (input.kind === "rollbackLastTurn" ? retained?.nativeTurnRef.nativeTurnKey : undefined);
+  if (boundaryIndex < 0 || !boundaryId) {
     return {
       ok: false,
       error: error("checkpointNotFound", "Claude Code Fork Checkpoint is unavailable", false),
@@ -151,7 +208,7 @@ export async function forkClaudeSession(
   let derivedSessionId: string;
   try {
     const forked = await input.dependencies.forkSession({
-      checkpointId: checkpoint.data.checkpointId,
+      checkpointId: boundaryId,
       cwd: input.cwd,
       sourceSessionId: sourceRef.data.nativeSessionId,
     });
@@ -195,7 +252,13 @@ export async function forkClaudeSession(
   const sourceIds = nativeIds(source.value);
   const derivedIds = nativeIds(derived.value);
   if (
-    !isDeepStrictEqual(sourceAfter.value.turns.slice(0, boundaryIndex + 1), sourcePrefix) ||
+    (input.kind === "rollbackLastTurn" &&
+      sourceAfter.value.turns.length !== source.value.turns.length) ||
+    sourceAfter.value.turns.length < source.value.turns.length ||
+    !isDeepStrictEqual(
+      sourceAfter.value.turns.slice(0, source.value.turns.length),
+      source.value.turns,
+    ) ||
     !isDeepStrictEqual(derivedContent, expectedPrefix) ||
     derivedIds.size === 0 ||
     [...derivedIds].some((id) => sourceIds.has(id))

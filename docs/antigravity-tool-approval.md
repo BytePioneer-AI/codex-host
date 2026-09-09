@@ -1,16 +1,19 @@
 # Antigravity Tool Approval
 
 Select **Desktop approvals** in the Permission Mode picker to approve tool
-actions through Desktop. The existing **Configured permissions** and
-**Skip permissions** modes retain their previous behavior.
+actions through Desktop. **Configured permissions** also uses the private Hook
+in headless mode: configured `deny` rules still deny, configured `allow` rules
+are honored, workspace-safe reads and file edits are auto-approved, and
+`ask`/unmatched calls open a one-shot Desktop approval. **Skip permissions**
+retains its previous behavior.
 
 ## Execution Boundary
 
 Native agy 1.1.27 print mode cannot consume interactive permission responses.
 A real probe confirmed that a PreToolUse `allow` decision alone still leaves a
-command subject to native headless denial. Therefore this opt-in mode uses
-`--dangerously-skip-permissions` for that CLI process and gates execution with
-the private PreToolUse Hook.
+command subject to native headless denial. Desktop approvals and configured
+headless decisions therefore use `--dangerously-skip-permissions` for that CLI
+process and gate execution with the private PreToolUse Hook.
 
 Before sending any model input, the Adapter asks the CLI for its effective Hook
 configuration using the same workspace and private Hook directory. It requires

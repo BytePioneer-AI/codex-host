@@ -17,6 +17,7 @@ import { CLAUDE_DEFAULT_MODEL_REF, encodeClaudeModelRef } from "../src/model-cat
 import type { ClaudePermissionMode } from "../src/permission-modes.js";
 import type {
   ClaudeAdapterDependencies,
+  ClaudeGoalSignal,
   ClaudeApprovalRequest,
   ClaudeAutonomousTurn,
   ClaudeIdleTurnHandler,
@@ -73,6 +74,8 @@ class FakeClaudeTransport implements ClaudeTurnTransport {
     [];
   readonly initCalls: string[] = [];
   readonly recapCalls: string[] = [];
+  readonly goalCalls: Array<{ objective: string; userMessageId: string }> = [];
+  readonly clearGoalCalls: string[] = [];
   readonly turns: Array<{ text: string; userMessageId: string }> = [];
   #assistantMessageId: string | null = null;
   #active:
@@ -84,17 +87,24 @@ class FakeClaudeTransport implements ClaudeTurnTransport {
     | undefined;
 
   readonly #onPlanLimit: (planLimit: ClaudePlanLimitEvent) => void;
+  readonly #onGoalSignal: (signal: ClaudeGoalSignal) => void;
 
   constructor(
     sessionId: string,
     permissionMode: ClaudePermissionMode,
     onPermissionModeChanged: (permissionMode: ClaudePermissionMode) => void,
     onPlanLimit: (planLimit: ClaudePlanLimitEvent) => void,
+    onGoalSignal: (signal: ClaudeGoalSignal) => void = () => undefined,
   ) {
     this.sessionId = sessionId;
     this.permissionMode = permissionMode;
     this.#onPermissionModeChanged = onPermissionModeChanged;
     this.#onPlanLimit = onPlanLimit;
+    this.#onGoalSignal = onGoalSignal;
+  }
+
+  goalSignal(signal: ClaudeGoalSignal): void {
+    this.#onGoalSignal(signal);
   }
 
   changePermissionMode(permissionMode: ClaudePermissionMode): void {
@@ -143,6 +153,10 @@ class FakeClaudeTransport implements ClaudeTurnTransport {
     userMessageId: string,
     onEvent: (event: ClaudeTurnEvent) => void,
   ): Promise<ClaudeTransportTurnResult> {
+    if (text.startsWith("/goal ")) {
+      if (text === "/goal clear") this.clearGoalCalls.push(userMessageId);
+      else this.goalCalls.push({ objective: text.slice("/goal ".length), userMessageId });
+    }
     this.turns.push({ text, userMessageId });
     this.#assistantMessageId = null;
     return new Promise((resolve, reject) => {
@@ -218,6 +232,7 @@ function fixture(options: ClaudeCodeAdapterOptions = {}) {
     inspect: ReturnType<typeof vi.fn>;
   }> = [];
   const inspectInstallation = vi.fn();
+  const goalRecords: unknown[] = [];
   let uuid = 0;
   const dependencies: ClaudeAdapterDependencies = {
     randomUUID: () => `claude-id-${++uuid}`,
@@ -253,6 +268,7 @@ function fixture(options: ClaudeCodeAdapterOptions = {}) {
     forkSession: vi.fn(async () => ({ sessionId: "derived-session" })),
     getSessionInfo: vi.fn(async () => ({ cwd: "/synthetic" })),
     readSessionMessages: vi.fn(async () => structuredClone(history)),
+    readGoalRecords: vi.fn(async () => structuredClone(goalRecords)),
     readSubagentMessages: vi.fn(async () => []),
     createTransport: vi.fn((input) => {
       const transport = new FakeClaudeTransport(
@@ -260,6 +276,7 @@ function fixture(options: ClaudeCodeAdapterOptions = {}) {
         input.permissionMode,
         input.onPermissionModeChanged,
         input.onPlanLimit,
+        input.onGoalSignal,
       );
       transports.push(transport);
       return transport;
@@ -269,7 +286,22 @@ function fixture(options: ClaudeCodeAdapterOptions = {}) {
     { closeTimeoutMs: 50, continuationQuiescenceMs: 50, cancelTimeoutMs: 5_000, ...options },
     dependencies,
   );
-  return { adapter, dependencies, history, inspectors, inspectInstallation, transports };
+  return {
+    adapter,
+    dependencies,
+    goalRecords,
+    history,
+    inspectors,
+    inspectInstallation,
+    transports,
+  };
+}
+
+function goalStatusRecord(
+  attachment: Record<string, unknown>,
+  timestamp = "2026-09-08T17:14:17.801Z",
+): unknown {
+  return { type: "attachment", uuid: `goal-${timestamp}`, timestamp, attachment };
 }
 
 async function openSession(
@@ -520,6 +552,7 @@ describe("Claude Code HarnessAdapter", () => {
         },
         history: { fork: true, forkAcrossCwd: false, rollbackLastTurn: true },
         subagents: { observe: true, readTranscript: true },
+        fileChanges: { reliable: true },
       },
     });
     await expect(adapter.inspect({ cwd: "/synthetic" })).resolves.toEqual(first);
@@ -541,6 +574,7 @@ describe("Claude Code HarnessAdapter", () => {
       },
       history: { fork: true, forkAcrossCwd: false, rollbackLastTurn: true },
       subagents: { observe: true, readTranscript: true },
+      fileChanges: { reliable: true },
     });
     const iterator = session.outputs[Symbol.asyncIterator]();
     await expect(
@@ -4939,6 +4973,7 @@ describe("Claude Code HarnessAdapter", () => {
       forkSession: async () => ({ sessionId: "derived-session" }),
       getSessionInfo: async () => ({ cwd: "/synthetic" }),
       readSessionMessages: async () => [],
+      readGoalRecords: async () => [],
       readSubagentMessages: async () => [],
       createTransport: () => ({
         sessionId: "claude-id",
@@ -5016,5 +5051,205 @@ describe("Claude Code HarnessAdapter", () => {
       undefined,
       undefined,
     ]);
+  });
+});
+
+describe("Claude Code native Goal", () => {
+  const objective = "count.txt contains exactly the number 3";
+
+  it("releases a transport when the Goal acknowledgement times out", async () => {
+    vi.useFakeTimers();
+    try {
+      const { adapter, transports } = fixture();
+      const session = await openSession(adapter);
+      const goal = session.goal;
+      if (!goal) throw new Error("Claude Code Session did not expose Goal control");
+
+      const setting = goal.set({
+        turnId: hostTurnIdSchema.parse("timed-out-goal"),
+        objective,
+      });
+      await vi.advanceTimersByTimeAsync(15_000);
+      await expect(setting).resolves.toMatchObject({
+        ok: false,
+        error: { code: "nativeFailure" },
+      });
+      expect(transports[0]?.abort).toHaveBeenCalledOnce();
+      expect(transports[0]?.close).toHaveBeenCalledOnce();
+
+      await expect(session.execute(textTurn("after-timeout"))).resolves.toMatchObject({ ok: true });
+      expect(transports).toHaveLength(2);
+      transports[1]?.finish({ status: "succeeded" });
+      await session.close();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("starts after native acknowledgement and waits for the terminal transcript record", async () => {
+    const { adapter, transports, goalRecords } = fixture();
+    const session = await openSession(adapter);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+    const goal = session.goal;
+    if (!goal) throw new Error("Claude Code Session did not expose Goal control");
+    const turnId = hostTurnIdSchema.parse("goal-turn");
+
+    const setting = goal.set({ turnId, objective });
+    expect((await nextEvent(iterator)).type).toBe("session.state.changed");
+    const transport = transports[0];
+    if (!transport) throw new Error("Fake Claude transport was not created");
+    await vi.waitFor(() => expect(transport.goalCalls).toHaveLength(1));
+    expect(transport.goalCalls[0]?.objective).toBe(objective);
+    // Native work before the acknowledgement stays buffered.
+    transport.delta("Working…", "goal-assistant");
+    transport.goalSignal({ type: "command", output: `Goal set: ${objective}` });
+    await expect(setting).resolves.toEqual({ ok: true, value: { turnId } });
+    expect(await nextEvent(iterator)).toEqual({ type: "turn.started", turnId });
+    expect((await nextEvent(iterator)).type).toBe("item.started");
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.updated",
+      update: { type: "text.append", text: "Working…" },
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "session.goal.changed",
+      goal: { objective },
+    });
+
+    goalRecords.push(
+      goalStatusRecord({ type: "goal_status", met: false, sentinel: true, condition: objective }),
+      goalStatusRecord({
+        type: "goal_status",
+        met: false,
+        condition: objective,
+        reason: "count.txt is 1",
+      }),
+    );
+    setTimeout(
+      () =>
+        goalRecords.push(
+          goalStatusRecord({
+            type: "goal_status",
+            met: true,
+            condition: objective,
+            reason: "count.txt is 3",
+          }),
+        ),
+      150,
+    );
+    transport.finish({ status: "succeeded" });
+    expect((await nextEvent(iterator)).type).toBe("item.completed");
+    expect(await nextEvent(iterator)).toMatchObject({ type: "turn.completed", turnId });
+    expect(await nextEvent(iterator)).toEqual({
+      type: "session.goal.changed",
+      goal: null,
+      outcome: "achieved",
+      reason: "count.txt is 3",
+    });
+    await session.close();
+  });
+
+  it("withdraws the Goal Turn silently when Claude refuses /goal", async () => {
+    const { adapter, transports } = fixture();
+    const session = await openSession(adapter);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+    const goal = session.goal;
+    if (!goal) throw new Error("Claude Code Session did not expose Goal control");
+
+    const setting = goal.set({ turnId: hostTurnIdSchema.parse("refused-goal"), objective });
+    expect((await nextEvent(iterator)).type).toBe("session.state.changed");
+    const transport = transports[0];
+    if (!transport) throw new Error("Fake Claude transport was not created");
+    await vi.waitFor(() => expect(transport.goalCalls).toHaveLength(1));
+    transport.goalSignal({
+      type: "command",
+      output:
+        "/goal is only available in trusted workspaces. Restart, accept the trust dialog, and try again.",
+    });
+    transport.finish({ status: "succeeded" });
+    await expect(setting).resolves.toMatchObject({ ok: false, error: { code: "unsupported" } });
+
+    // The Session is free again and Host saw no Turn for the refused Goal.
+    const turnId = hostTurnIdSchema.parse("after-refusal");
+    await expect(session.execute(textTurn("after-refusal"))).resolves.toEqual({
+      ok: true,
+      value: { turnId },
+    });
+    expect(await nextEvent(iterator)).toEqual({ type: "turn.started", turnId });
+    await session.close();
+  });
+
+  it("rejects objectives Claude would refuse before touching the transport", async () => {
+    const { adapter, transports } = fixture();
+    const session = await openSession(adapter);
+    const goal = session.goal;
+    if (!goal) throw new Error("Claude Code Session did not expose Goal control");
+    await expect(
+      goal.set({ turnId: hostTurnIdSchema.parse("too-long"), objective: "x".repeat(4_001) }),
+    ).resolves.toMatchObject({ ok: false, error: { code: "invalidRequest" } });
+    await expect(
+      goal.set({ turnId: hostTurnIdSchema.parse("blank"), objective: "   " }),
+    ).resolves.toMatchObject({ ok: false, error: { code: "invalidRequest" } });
+    expect(transports).toHaveLength(0);
+    await session.close();
+  });
+
+  it("clears the native Goal without projecting a Turn", async () => {
+    const { adapter, transports } = fixture();
+    const session = await openSession(adapter);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+    const goal = session.goal;
+    if (!goal) throw new Error("Claude Code Session did not expose Goal control");
+    const turnId = hostTurnIdSchema.parse("goal-turn");
+    const setting = goal.set({ turnId, objective });
+    expect((await nextEvent(iterator)).type).toBe("session.state.changed");
+    const transport = transports[0];
+    if (!transport) throw new Error("Fake Claude transport was not created");
+    await vi.waitFor(() => expect(transport.goalCalls).toHaveLength(1));
+    transport.goalSignal({ type: "command", output: `Goal set: ${objective}` });
+    await setting;
+    expect(await nextEvent(iterator)).toEqual({ type: "turn.started", turnId });
+    expect((await nextEvent(iterator)).type).toBe("item.started");
+    expect((await nextEvent(iterator)).type).toBe("session.goal.changed");
+    transport.finish({ status: "cancelled", reason: "aborted_streaming" });
+    expect((await nextEvent(iterator)).type).toBe("item.completed");
+    expect((await nextEvent(iterator)).type).toBe("turn.completed");
+
+    const clearing = goal.clear();
+    await vi.waitFor(() => expect(transport.clearGoalCalls).toHaveLength(1));
+    transport.goalSignal({ type: "command", output: `Goal cleared: ${objective}` });
+    transport.finish({ status: "succeeded" });
+    await expect(clearing).resolves.toEqual({ ok: true, value: true });
+    expect(await nextEvent(iterator)).toEqual({
+      type: "session.goal.changed",
+      goal: null,
+      outcome: "cleared",
+    });
+    await expect(goal.read()).resolves.toEqual({ ok: true, value: null });
+    await session.close();
+  });
+
+  it("reads a Goal Claude restored from its transcript", async () => {
+    const { adapter, goalRecords, transports } = fixture();
+    goalRecords.push(
+      goalStatusRecord({ type: "goal_status", met: false, sentinel: true, condition: objective }),
+      goalStatusRecord({
+        type: "goal_status",
+        met: false,
+        condition: objective,
+        reason: "not yet",
+      }),
+    );
+    const session = await openSession(adapter);
+    const goal = session.goal;
+    if (!goal) throw new Error("Claude Code Session did not expose Goal control");
+    await expect(goal.read()).resolves.toEqual({
+      ok: true,
+      value: {
+        objective,
+        setAtMs: Date.parse("2026-09-08T17:14:17.801Z"),
+      },
+    });
+    expect(transports).toHaveLength(0);
+    await session.close();
   });
 });

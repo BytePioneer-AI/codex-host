@@ -118,6 +118,7 @@ describe("Claude history mapping", () => {
 
     expect(repeated).toEqual(first);
     expect(first).toEqual({
+      fileChangesReliable: true,
       turns: [
         {
           nativeTurnRef: {
@@ -258,6 +259,65 @@ describe("Claude history mapping", () => {
     });
   });
 
+  it("restores authoritative native File Changes beside their Tools", () => {
+    const history = [
+      message("user", "user-1", "update the file"),
+      message("assistant", "assistant-1", [
+        {
+          type: "tool_use",
+          id: "write-1",
+          name: "Write",
+          input: { file_path: "/work/sample.txt", content: "new\n" },
+        },
+      ]),
+      {
+        ...message("user", "tool-result-1", [
+          { type: "tool_result", tool_use_id: "write-1", content: "wrote file" },
+        ]),
+        tool_use_result: {
+          filePath: "/work/sample.txt",
+          type: "update",
+          originalFile: "old\n",
+          content: "new\n",
+          userModified: false,
+          structuredPatch: [
+            {
+              oldStart: 1,
+              oldLines: 1,
+              newStart: 1,
+              newLines: 1,
+              lines: ["-old", "+new"],
+            },
+          ],
+        },
+      },
+    ];
+
+    expect(mapClaudeSnapshot(history, sessionId, "/work")).toMatchObject({
+      fileChangesReliable: true,
+      turns: [
+        {
+          items: [
+            { item: { type: "toolExecution", toolName: "Write" } },
+            {
+              item: {
+                type: "fileChange",
+                changes: [
+                  {
+                    path: "sample.txt",
+                    kind: "update",
+                    unifiedDiff: expect.stringContaining("-old\n+new"),
+                    snapshot: { before: "old\n", after: "new\n" },
+                  },
+                ],
+              },
+            },
+          ],
+        },
+      ],
+    });
+  });
+
   it("omits Claude model controls and metadata without hiding other human commands", () => {
     const synthetic = {
       ...message("user", "synthetic", "synthetic prompt"),
@@ -380,6 +440,68 @@ describe("Claude history mapping", () => {
               type: "agentMessage",
               itemId: "claude-item-v2-recap-command-agentMessage-1",
               text: "Built compact command and subagent projection.",
+            },
+          },
+        ],
+      },
+      {
+        nativeTurnRef: { nativeTurnKey: "user-2" },
+        input: [{ type: "text", text: "next" }],
+      },
+    ]);
+  });
+
+  it("shows /goal objectives as Turn input and hides Goal status and clear control records", () => {
+    const history = [
+      message(
+        "user",
+        "goal-status",
+        "<command-name>/goal</command-name>\n<command-message>goal</command-message>\n<command-args></command-args>",
+      ),
+      message(
+        "user",
+        "goal-status-output",
+        "<local-command-stdout>No goal set. Usage: `/goal <condition>`</local-command-stdout>",
+      ),
+      message(
+        "user",
+        "goal-set",
+        "<command-name>/goal</command-name>\n<command-message>goal</command-message>\n<command-args>count.txt contains 3</command-args>",
+      ),
+      message(
+        "user",
+        "goal-set-output",
+        "<local-command-stdout>Goal set: count.txt contains 3</local-command-stdout>",
+      ),
+      {
+        ...message("user", "goal-directive", "A session-scoped Stop hook is now active"),
+        isMeta: true,
+      },
+      message("assistant", "assistant-goal", "Created count.txt with 1", "end_turn"),
+      message(
+        "user",
+        "goal-clear",
+        "<command-name>/goal</command-name>\n<command-message>goal</command-message>\n<command-args>clear</command-args>",
+      ),
+      message(
+        "user",
+        "goal-clear-output",
+        "<local-command-stdout>Goal cleared: count.txt contains 3</local-command-stdout>",
+      ),
+      message("user", "user-2", "next"),
+      message("assistant", "assistant-2", "ok", "end_turn"),
+    ];
+
+    expect(mapClaudeSnapshot(history, sessionId).turns).toMatchObject([
+      {
+        nativeTurnRef: { nativeTurnKey: "goal-set" },
+        input: [{ type: "text", text: "/goal count.txt contains 3" }],
+        items: [
+          {
+            item: {
+              type: "agentMessage",
+              itemId: "claude-item-v2-goal-set-agentMessage-1",
+              text: "Created count.txt with 1",
             },
           },
         ],

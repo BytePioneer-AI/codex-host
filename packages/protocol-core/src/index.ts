@@ -18,6 +18,7 @@ export {
 } from "./codex-native-usage.js";
 export type { CodexRateLimitResetCredits } from "./codex-native-usage.js";
 export { CodexTurnProjector, projectHistoricalTurn } from "./codex-ui-projector.js";
+export { mergeFileChangesByPath } from "./file-change-merge.js";
 export type {
   CodexApprovalProjection,
   CodexQuestionProjection,

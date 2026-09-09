@@ -20,12 +20,13 @@ import { CodexTurnProjector, projectHistoricalTurn } from "../src/index.js";
 const turnId = hostTurnIdSchema.parse("turn-1");
 const itemId = (value: string) => hostItemIdSchema.parse(value);
 
-function projector(): CodexTurnProjector {
+function projector(inferFileChangesFromTools = true): CodexTurnProjector {
   return new CodexTurnProjector({
     threadId: "thread-1",
     turnId,
     cwd: "/workspace",
     startedAtMs: 1_000,
+    inferFileChangesFromTools,
   });
 }
 
@@ -49,6 +50,61 @@ describe("Codex UI projector", () => {
       completedAt: null,
       durationMs: null,
     });
+  });
+
+  it("keeps native historical File Changes and their Tools when inference is disabled", () => {
+    const snapshot: HostThreadSnapshot["turns"][number] = {
+      nativeTurnRef: nativeTurnRefSchema.parse({
+        harnessId: "claude-code",
+        nativeSessionId: "native",
+        nativeTurnKey: "user",
+        formatVersion: 1,
+      }),
+      input: [],
+      items: [
+        {
+          item: {
+            type: "toolExecution",
+            itemId: itemId("write-tool"),
+            toolName: "Write",
+            arguments: { file_path: "sample.txt", content: "new" },
+          },
+          outcome: { status: "succeeded" },
+        },
+        {
+          item: {
+            type: "fileChange",
+            itemId: itemId("native-change"),
+            changes: [
+              {
+                path: "sample.txt",
+                kind: "update",
+                unifiedDiff: "--- a/sample.txt\n+++ b/sample.txt\n@@ -1 +1 @@\n-old\n+new\n",
+              },
+            ],
+          },
+          outcome: { status: "succeeded" },
+        },
+      ],
+      outcome: { status: "succeeded" },
+    };
+
+    expect(
+      projectHistoricalTurn({
+        turnId,
+        cwd: "/workspace",
+        snapshot,
+        inferFileChanges: false,
+      }).items,
+    ).toMatchObject([
+      { type: "userMessage" },
+      { id: "write-tool", type: "dynamicToolCall", tool: "Write" },
+      {
+        id: "native-change",
+        type: "fileChange",
+        changes: [{ kind: { type: "update" }, diff: expect.stringContaining("-old") }],
+      },
+    ]);
   });
 
   it("projects a complete historical Snapshot without replaying notifications", () => {
@@ -1347,6 +1403,25 @@ describe("Codex UI projector", () => {
         { type: "fileChange", id: "file-2", status: "completed" },
       ],
     });
+  });
+
+  it("keeps a mutating Tool visible when the Harness owns File Changes", () => {
+    const value = projector(false);
+    value.project({ type: "turn.started", turnId });
+    const started = value.project({
+      type: "item.started",
+      turnId,
+      item: {
+        type: "toolExecution",
+        itemId: itemId("edit-native"),
+        toolName: "Edit",
+        arguments: { path: "src/app.ts", old_string: "a", new_string: "b" },
+      },
+    });
+
+    expect(started.messages).toMatchObject([
+      { method: "item/started", params: { item: { type: "dynamicToolCall" } } },
+    ]);
   });
 
   it("projects standalone Questions through a synthetic Generic Tool lifecycle", () => {

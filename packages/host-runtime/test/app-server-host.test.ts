@@ -6031,6 +6031,45 @@ describe("AppServerHost HarnessAdapter projection", () => {
     await stopFixture(fixture);
   });
 
+  it("recovers an unbound legacy Thread through the delegation thread read", async () => {
+    let delegationApi: DelegationControlApi | undefined;
+    const fixture = createFixture({
+      onDelegationApi: (api) => {
+        delegationApi = api;
+        return undefined;
+      },
+    });
+    await vi.waitFor(() => expect(delegationApi).toBeDefined());
+    await vi.waitFor(async () => expect(await fixture.mappingStore.listThreads()).toEqual([]));
+    if (!delegationApi) throw new Error("Delegation API was not registered");
+
+    const read = delegationApi.read({ threadId: "legacy-thread", view: "result" });
+    const probe = await readJsonLine(fixture.official.stdin);
+    expect(probe).toMatchObject({
+      method: "thread/read",
+      params: { threadId: "legacy-thread", includeTurns: false },
+    });
+    writeRequest(fixture.official.stdout, {
+      id: requiredMessageId(probe),
+      result: { thread: { id: "legacy-thread" } },
+    });
+    const forwarded = await readJsonLine(fixture.official.stdin);
+    expect(forwarded).toMatchObject({
+      method: "thread/read",
+      params: { threadId: "legacy-thread", includeTurns: true },
+    });
+    writeRequest(fixture.official.stdout, {
+      id: requiredMessageId(forwarded),
+      result: { thread: { id: "legacy-thread", turns: [] } },
+    });
+    await expect(read).resolves.toMatchObject({
+      threadId: "legacy-thread",
+      harnessId: "codex",
+    });
+    await expect(fixture.threadAccountStore.getAccountId("legacy-thread")).resolves.toBe("default");
+    await stopFixture(fixture);
+  });
+
   it("tail-Forks the latest completed Checkpoint while the source Turn is active", async () => {
     const fixture = createFixture();
     const officialWrite = vi.fn();

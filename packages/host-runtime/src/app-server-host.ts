@@ -1479,9 +1479,13 @@ export class AppServerHost {
     else await this.#writer.json(forwarded);
   }
 
-  async #requestOfficial(method: string, params: JsonObject): Promise<JsonObject> {
+  async #requestOfficial(
+    method: string,
+    params: JsonObject,
+    options?: { recoverUnboundThread?: boolean },
+  ): Promise<JsonObject> {
     return typeof params.threadId === "string"
-      ? this.#codexRuntimePool.requestForThread(params.threadId, method, params)
+      ? this.#codexRuntimePool.requestForThread(params.threadId, method, params, options)
       : this.#codexRuntimePool.requestActive(method, params);
   }
 
@@ -2165,10 +2169,14 @@ export class AppServerHost {
   }
 
   async #readOfficialDelegationThread(input: ThreadReadInput): Promise<DelegationThreadSnapshot> {
-    const response = await this.#requestOfficial("thread/read", {
-      threadId: input.threadId,
-      includeTurns: true,
-    });
+    const response = await this.#requestOfficial(
+      "thread/read",
+      {
+        threadId: input.threadId,
+        includeTurns: true,
+      },
+      { recoverUnboundThread: true },
+    );
     if (isRecord(response.error)) {
       throw new DelegationControlError(
         "THREAD_NOT_FOUND",

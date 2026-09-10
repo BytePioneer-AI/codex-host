@@ -345,6 +345,37 @@ describe("Codex Account routing persistence", () => {
     await pool.close();
   });
 
+  it("reports an unbound Thread instead of crashing when recovery cannot persist the binding", async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), "codexhost-history-discovery-test-"));
+    directories.push(directory);
+    const metadata = path.join(directory, "metadata");
+    const accounts = new AccountRepository({
+      directory: metadata,
+      defaultAccount: { accountId: "account-a", codexHome: path.join(directory, "home-a") },
+    });
+    const threadAccounts = new ThreadAccountStore({ directory: metadata });
+    const diagnosed: unknown[] = [];
+    const pool = new CodexRuntimePool({
+      accounts,
+      threadAccounts,
+      createConnection: async () => fakeAppServerConnection(["historical-thread"]),
+      diagnosticOutput: new PassThrough(),
+      onOutput: async () => undefined,
+      diagnose: (error) => diagnosed.push(error),
+    });
+
+    await pool.initialize();
+    threadAccounts.bind = async () => {
+      throw new Error("disk is read-only");
+    };
+    await expect(
+      pool.forThread("historical-thread", { recoverUnboundThread: true }),
+    ).rejects.toBeInstanceOf(UnknownCodexThreadAccountError);
+    expect(diagnosed.map(String)).toEqual([expect.stringContaining("disk is read-only")]);
+    await expect(pool.active()).resolves.toMatchObject({ account: { accountId: "account-a" } });
+    await pool.close();
+  });
+
   it("fails fast for an unbound Thread in a single-Account installation without recovery", async () => {
     const directory = await mkdtemp(path.join(tmpdir(), "codexhost-history-discovery-test-"));
     directories.push(directory);

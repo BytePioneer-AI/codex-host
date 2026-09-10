@@ -130,8 +130,9 @@ export class CodexRuntimePool {
     threadId: string,
     method: string,
     params: JsonObject,
+    options?: { recoverUnboundThread?: boolean },
   ): Promise<JsonObject> {
-    return (await this.forThread(threadId)).request(method, params);
+    return (await this.forThread(threadId, options)).request(method, params);
   }
 
   async close(): Promise<void> {
@@ -257,7 +258,14 @@ export class CodexRuntimePool {
       if (matches.length > 1) return null;
       const accountId = matches[0];
       if (!accountId) continue;
-      await this.#threadAccounts.bind(threadId, accountId);
+      try {
+        await this.#threadAccounts.bind(threadId, accountId);
+      } catch (error) {
+        // A failed binding write must not kill the Host or leave the caller
+        // hanging: report the Thread as unbound so the request fails cleanly.
+        this.#diagnose(error);
+        return null;
+      }
       return accountId;
     }
     return null;

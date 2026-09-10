@@ -2,6 +2,8 @@
 
 > 调研基线：OpenCode `v1.18.25`（2026-08-28 发布）。本文只把 OpenCode 官方仓库、官方文档、官方 Release、官方 npm 包和本机实际运行结果作为能力证据。
 
+> 下文 DeepSeek Host API 对比保留调研时的历史基线；当前 DSH Legacy 已移除，仅支持 `0.1.2-rc.1` / `0.1.5-rc.1` 托管 Web，现行范围见[连接流程](harness-executable-discovery.md#deepseek-harness-的特殊性)和[消息修订与恢复](dsh-edit-recovery.md)。
+
 本文同时记录接入设计、官方能力证据和 `codex/opencode-harness` 分支的第一版实现。下文单独区分“官方接口存在”“当前已实现”“当前已对外声明”和“仍需真实 Gate”，避免把类型或 endpoint 的存在误报成平台能力。
 
 ## 结论

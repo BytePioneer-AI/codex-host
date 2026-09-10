@@ -1784,7 +1784,16 @@ export class AppServerHost {
         this.#pendingOfficialTerminalStatuses.set(params.threadId, status);
       }
       if (delegation) {
-        await this.#repository.setDelegationStatus(delegation.delegationId, status);
+        const completedTurnId =
+          turn && typeof turn.id === "string" ? hostTurnIdSchema.safeParse(turn.id) : null;
+        if (completedTurnId?.success) {
+          await this.#repository.setDelegationTurnState(delegation.delegationId, {
+            latestHostTurnId: completedTurnId.data,
+            status,
+          });
+        } else {
+          await this.#repository.setDelegationStatus(delegation.delegationId, status);
+        }
       }
     }
   }

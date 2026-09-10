@@ -80,6 +80,10 @@ function cloneRecord<T>(record: T): T {
   return JSON.parse(JSON.stringify(record)) as T;
 }
 
+function isTerminalDelegationStatus(status: DelegationStatus): boolean {
+  return status === "completed" || status === "failed" || status === "interrupted";
+}
+
 function nativeSessionKey(ref: { harnessId: string; nativeSessionId: string }): string {
   return `${ref.harnessId}\u0000${ref.nativeSessionId}`;
 }
@@ -439,24 +443,11 @@ export class MappingStore {
     delegationId: HostThreadId,
     latestHostTurnId: HostTurnId,
   ): Promise<StoredDelegationRecordV1> {
-    this.#requireInitialized();
-    const current = this.#delegations.get(delegationId);
-    if (!current) {
-      throw new MappingStoreError("DELEGATION_NOT_FOUND", "Delegation was not found");
-    }
-    if (current.latestHostTurnId === latestHostTurnId) return cloneRecord(current);
-    const next = storedDelegationRecordV1Schema.parse({
-      ...current,
-      revision: current.revision + 1,
-      latestHostTurnId,
-      updatedAt: this.#now().toISOString(),
-    }) as StoredDelegationRecordV1;
-    await this.#enqueue(async () => {
-      await this.#replaceDelegationFile(next);
-      this.#delegations.set(delegationId, next);
-      this.#rebuildIndexes();
+    return this.#updateDelegation(delegationId, (current) => {
+      if (current.latestHostTurnId === latestHostTurnId) return null;
+      if (current.latestHostTurnId && current.latestHostTurnId !== latestHostTurnId) return null;
+      return { ...current, latestHostTurnId };
     });
-    return cloneRecord(next);
   }
 
   async addPendingHostTurn(
@@ -508,66 +499,52 @@ export class MappingStore {
     delegationId: HostThreadId,
     input: { latestHostTurnId: HostTurnId; status: DelegationStatus },
   ): Promise<StoredDelegationRecordV1> {
-    this.#requireInitialized();
-    const current = this.#delegations.get(delegationId);
-    if (!current) {
-      throw new MappingStoreError("DELEGATION_NOT_FOUND", "Delegation was not found");
-    }
-    const sameTurn = current.latestHostTurnId === input.latestHostTurnId;
-    const terminal = new Set<DelegationStatus>(["completed", "failed", "interrupted"]);
-    if (sameTurn && terminal.has(current.status) && !terminal.has(input.status)) {
-      return cloneRecord(current);
-    }
-    if (
-      current.latestHostTurnId &&
-      !sameTurn &&
-      terminal.has(input.status) &&
-      !terminal.has(current.status)
-    ) {
-      return cloneRecord(current);
-    }
-    if (current.status === input.status && current.latestHostTurnId === input.latestHostTurnId) {
-      return cloneRecord(current);
-    }
-    const next = storedDelegationRecordV1Schema.parse({
-      ...current,
-      revision: current.revision + 1,
-      latestHostTurnId: input.latestHostTurnId,
-      status: input.status,
-      updatedAt: this.#now().toISOString(),
-    }) as StoredDelegationRecordV1;
-    await this.#enqueue(async () => {
-      await this.#replaceDelegationFile(next);
-      this.#delegations.set(delegationId, next);
-      this.#rebuildIndexes();
+    return this.#updateDelegation(delegationId, (current) => {
+      const sameTurn = current.latestHostTurnId === input.latestHostTurnId;
+      if (
+        sameTurn &&
+        isTerminalDelegationStatus(current.status) &&
+        !isTerminalDelegationStatus(input.status)
+      ) {
+        return null;
+      }
+      if (
+        current.latestHostTurnId &&
+        !sameTurn &&
+        isTerminalDelegationStatus(input.status) &&
+        !isTerminalDelegationStatus(current.status)
+      ) {
+        return null;
+      }
+      if (current.status === input.status && current.latestHostTurnId === input.latestHostTurnId) {
+        return null;
+      }
+      return {
+        ...current,
+        latestHostTurnId: input.latestHostTurnId,
+        status: input.status,
+      };
     });
-    return cloneRecord(next);
   }
 
   async setDelegationStatus(
     delegationId: HostThreadId,
     status: DelegationStatus,
   ): Promise<StoredDelegationRecordV1> {
-    this.#requireInitialized();
-    const current = this.#delegations.get(delegationId);
-    if (!current) {
-      throw new MappingStoreError("DELEGATION_NOT_FOUND", "Delegation was not found");
-    }
-    if (current.status === status) return cloneRecord(current);
-    const terminal = new Set<DelegationStatus>(["completed", "failed", "interrupted"]);
-    if (terminal.has(current.status) && !terminal.has(status)) {
-      return cloneRecord(current);
-    }
-    const next = storedDelegationRecordV1Schema.parse({
-      ...current,
-      revision: current.revision + 1,
-      status,
-      updatedAt: this.#now().toISOString(),
-    }) as StoredDelegationRecordV1;
-    await this.#replaceDelegationFile(next);
-    this.#delegations.set(delegationId, next);
-    this.#rebuildIndexes();
-    return cloneRecord(next);
+    return this.#updateDelegation(delegationId, (current) => {
+      if (current.status === status) return null;
+      if (isTerminalDelegationStatus(current.status) && !isTerminalDelegationStatus(status)) {
+        return null;
+      }
+      if (
+        current.latestHostTurnId &&
+        !isTerminalDelegationStatus(current.status) &&
+        isTerminalDelegationStatus(status)
+      ) {
+        return null;
+      }
+      return { ...current, status };
+    });
   }
 
   async removeDelegation(delegationId: HostThreadId): Promise<void> {
@@ -801,6 +778,36 @@ export class MappingStore {
       result = cloneRecord(next);
     });
     if (!result) throw new MappingStoreError("IO_ERROR", "Thread update produced no result");
+    return result;
+  }
+
+  async #updateDelegation(
+    delegationId: HostThreadId,
+    change: (current: StoredDelegationRecordV1) => StoredDelegationRecordV1 | null,
+  ): Promise<StoredDelegationRecordV1> {
+    this.#requireInitialized();
+    let result: StoredDelegationRecordV1 | null = null;
+    await this.#enqueue(async () => {
+      const current = this.#delegations.get(delegationId);
+      if (!current) {
+        throw new MappingStoreError("DELEGATION_NOT_FOUND", "Delegation was not found");
+      }
+      const changed = change(current);
+      if (!changed) {
+        result = cloneRecord(current);
+        return;
+      }
+      const next = storedDelegationRecordV1Schema.parse({
+        ...changed,
+        revision: current.revision + 1,
+        updatedAt: this.#now().toISOString(),
+      }) as StoredDelegationRecordV1;
+      await this.#replaceDelegationFile(next);
+      this.#delegations.set(delegationId, next);
+      this.#rebuildIndexes();
+      result = cloneRecord(next);
+    });
+    if (!result) throw new MappingStoreError("IO_ERROR", "Delegation update produced no result");
     return result;
   }
 

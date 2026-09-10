@@ -46,6 +46,8 @@ export class CodeBuddyAcpClient implements CodeBuddyClient {
   readonly #exited: Promise<void>;
   #closing: Promise<void> | undefined;
   #failure: unknown;
+  #exitFailure: CodeBuddyError | undefined;
+  #exitDrainTimer: ReturnType<typeof setTimeout> | undefined;
   #rejectFailure!: (error: unknown) => void;
   readonly #failed = new Promise<never>((_, reject) => {
     this.#rejectFailure = reject;
@@ -73,9 +75,15 @@ export class CodeBuddyAcpClient implements CodeBuddyClient {
       this.#fault(error);
     });
     this.#child.once("exit", (code, signal) => {
-      this.#fault(
-        new CodeBuddyError("processExited", `ACP process exited (${code ?? signal ?? "unknown"})`),
+      if (this.#closing || this.#failure) return;
+      const error = new CodeBuddyError(
+        "processExited",
+        `ACP process exited (${code ?? signal ?? "unknown"})`,
       );
+      this.#exitFailure = error;
+      // Pipe data can arrive after exit. Briefly drain already-written updates,
+      // but do not wait indefinitely for EOF held open by a descendant.
+      this.#exitDrainTimer = setTimeout(() => this.#fault(error), 250);
     });
     this.#child.stdin.on("error", () => {
       /* The connection/close path owns failures. */
@@ -85,9 +93,13 @@ export class CodeBuddyAcpClient implements CodeBuddyClient {
         sessionUpdate: async (notification) => {
           if (!this.#closing && !this.#failure) options.handlers.update(notification);
         },
-        requestPermission: (request) => options.handlers.permission(request),
+        requestPermission: (request) =>
+          !this.#exitFailure && !this.#closing && !this.#failure
+            ? options.handlers.permission(request)
+            : Promise.resolve({ outcome: { outcome: "cancelled" } }),
         extMethod: async (method, params) => {
           if (method !== "_codebuddy.ai/question") throw RequestError.methodNotFound(method);
+          if (this.#exitFailure || this.#closing || this.#failure) return { outcome: "cancelled" };
           return options.handlers.question(params);
         },
       }),
@@ -107,6 +119,7 @@ export class CodeBuddyAcpClient implements CodeBuddyClient {
 
   #fault(error: unknown) {
     if (this.#closing || this.#failure) return;
+    clearTimeout(this.#exitDrainTimer);
     this.#failure = error;
     this.#rejectFailure(error);
     this.options.handlers.fault(error);
@@ -119,6 +132,7 @@ export class CodeBuddyAcpClient implements CodeBuddyClient {
     timeout = this.operationTimeoutMs,
   ): Promise<T> {
     if (this.#failure) throw this.#failure;
+    if (this.#exitFailure) throw this.#exitFailure;
     if (this.#closing) throw new CodeBuddyError("invalidState", "ACP client is closed");
     const work = Promise.race([operation(), this.#failed]);
     return label ? bounded(work, timeout, label, (error) => this.#fault(error)) : work;
@@ -191,6 +205,7 @@ export class CodeBuddyAcpClient implements CodeBuddyClient {
   }
 
   close(): Promise<void> {
+    clearTimeout(this.#exitDrainTimer);
     this.#rejectFailure(new CodeBuddyError("invalidState", "ACP client is closed"));
     this.#closing ??= this.#closeProcess();
     return this.#closing;

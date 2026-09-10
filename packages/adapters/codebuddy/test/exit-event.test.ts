@@ -27,11 +27,12 @@ describe("CodeBuddy independent process exit signal", () => {
       child.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: m.id, result }) + "\n");
     });
     const fault = vi.fn(),
+      update = vi.fn(),
       client = new CodeBuddyAcpClient({
         cwd: process.cwd(),
         environment: {},
         ephemeral: false,
-        handlers: { update: vi.fn(), permission: vi.fn(), question: vi.fn(), fault },
+        handlers: { update, permission: vi.fn(), question: vi.fn(), fault },
       });
     try {
       await client.initialize();
@@ -40,9 +41,26 @@ describe("CodeBuddy independent process exit signal", () => {
       const prompt = client.prompt("native", "pending").catch(rejected);
       child.exitCode = 1;
       child.emit("exit", 1, null);
-      await vi.waitFor(() => expect(fault).toHaveBeenCalledOnce(), { timeout: 200 });
+      const notification = {
+        jsonrpc: "2.0",
+        method: "session/update",
+        params: {
+          sessionId: "native",
+          update: {
+            sessionUpdate: "agent_message_chunk",
+            content: { type: "text", text: "buffered before EOF" },
+          },
+        },
+      };
+      child.stdout.write(JSON.stringify(notification) + "\n");
+      await vi.waitFor(() => expect(update).toHaveBeenCalledOnce());
+      await expect(client.prompt("native", "must not start after exit")).rejects.toThrow("exited");
+      await vi.waitFor(() => expect(fault).toHaveBeenCalledOnce(), { timeout: 1000 });
       await prompt;
       expect(rejected).toHaveBeenCalledOnce();
+      child.stdout.write(JSON.stringify(notification) + "\n");
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(update).toHaveBeenCalledOnce();
       expect(child.stdout.destroyed).toBe(false);
     } finally {
       child.stdout.end();

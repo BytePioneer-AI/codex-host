@@ -723,6 +723,10 @@ export class CodexTurnProjector {
     this.#startedAt = Math.floor(input.startedAtMs / 1000);
   }
 
+  get pendingInteractionCount(): number {
+    return this.#interactions.size;
+  }
+
   pendingTurn(startedAt: number | null = null): JsonObject {
     return {
       id: this.#turnId,

@@ -1,3 +1,4 @@
+import { setTimeout as cancellableDelay } from "node:timers/promises";
 import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
 
@@ -8,7 +9,11 @@ import type {
   HarnessSessionState,
   HarnessThinkingOptionId,
 } from "@codexhost/harness-adapter";
-import type { StoredDelegationRecordV1, StoredThreadRecordV1 } from "@codexhost/mapping-store";
+import {
+  MappingStoreError,
+  type StoredDelegationRecordV1,
+  type StoredThreadRecordV1,
+} from "@codexhost/mapping-store";
 import {
   encodeExternalTransportSelection,
   transportModelIdForHarness,
@@ -21,6 +26,7 @@ import { harnessIdSchema, hostThreadIdSchema, hostTurnIdSchema } from "@codexhos
 import {
   DELEGATION_THREAD_ID_ENV,
   DelegationControlError,
+  delegationNextCommands,
   type DelegationConfigurationResult,
   type DelegationStartInput,
   type DelegationStartResult,
@@ -35,8 +41,27 @@ import {
   type ThreadSendInput,
   type ThreadSendResult,
   type ThreadWaitInput,
+  type ThreadStatusInput,
+  type DelegationThreadStatusView,
+  type ThreadWaitManyInput,
+  type ThreadWaitManyResult,
+  type ThreadWaitManyStatusView,
+  type ThreadEvidenceInput,
+  type ThreadEvidenceResult,
+  type ThreadConfigurationInput,
+  type ThreadReleaseInput,
+  type ThreadReleaseResult,
+  type DelegationReconcileInput,
+  type DelegationReconcileResult,
+  type DelegationUnknownConfigField,
+  type JobQuiescence,
 } from "./delegation-types.js";
-import { projectDelegationThreadSnapshot, validateReadOptions } from "./delegation-snapshot.js";
+import {
+  projectDelegationEvidence,
+  projectDelegationThreadSnapshot,
+  validateReadOptions,
+} from "./delegation-snapshot.js";
+import { decodeThreadRevision } from "./thread-change-hub.js";
 import {
   createExternalThreadRecordInput,
   externalThreadValue,
@@ -76,6 +101,36 @@ function statusFromThread(thread: ExternalThread): StoredDelegationRecordV1["sta
   if (last?.status === "failed") return "failed";
   if (last?.status === "interrupted") return "interrupted";
   return last ? "completed" : "creating";
+}
+
+async function persistDelegationFromSnapshot(
+  repository: ExternalThreadRepository,
+  delegationId: StoredDelegationRecordV1["delegationId"],
+  snapshot: DelegationThreadSnapshot,
+): Promise<void> {
+  const turnId = snapshot.turn?.turnId;
+  const parsed = turnId ? hostTurnIdSchema.safeParse(turnId) : null;
+  if (parsed?.success) {
+    await repository.setDelegationTurnState(delegationId, {
+      latestHostTurnId: parsed.data,
+      status: snapshot.status,
+    });
+    return;
+  }
+  await repository.setDelegationStatus(delegationId, snapshot.status);
+}
+
+function compactWaitManyStatus(status: DelegationThreadStatusView): ThreadWaitManyStatusView {
+  return {
+    threadId: status.threadId,
+    harnessId: status.harnessId,
+    status: status.status,
+    turn: status.turn,
+    revision: status.revision,
+    ...(status.pendingInteractions !== undefined
+      ? { pendingInteractions: status.pendingInteractions }
+      : {}),
+  };
 }
 
 function validateStart(input: DelegationStartInput): void {
@@ -122,6 +177,15 @@ export class HarnessDelegationCoordinator {
   readonly #listOfficial: (input: ThreadListInput) => Promise<DelegationThreadListResult>;
   readonly #officialThreadCwd: (threadId: string) => Promise<string | undefined>;
   readonly #activeOfficialParents: () => string[];
+  readonly #inflight = new Map<
+    string,
+    { input: DelegationStartInput; promise: Promise<DelegationStartResult> }
+  >();
+  readonly #inflightSends = new Map<
+    string,
+    { message: string; promise: Promise<ThreadSendResult> }
+  >();
+  readonly #sendResults = new Map<string, { message: string; result: ThreadSendResult }>();
 
   constructor(input: {
     adapters: Map<ExternalHarnessId, HarnessAdapter>;
@@ -189,6 +253,27 @@ export class HarnessDelegationCoordinator {
 
   async start(input: DelegationStartInput): Promise<DelegationStartResult> {
     validateStart(input);
+    if (input.requestId) {
+      const current = this.#inflight.get(input.requestId);
+      if (current) {
+        this.#assertSameStartIdentity(current.input, input);
+        return current.promise;
+      }
+    }
+    const pending: {
+      input: DelegationStartInput;
+      promise: Promise<DelegationStartResult>;
+    } = { input, promise: Promise.resolve() as unknown as Promise<DelegationStartResult> };
+    pending.promise = this.#deliverStart(input).finally(() => {
+      if (input.requestId && this.#inflight.get(input.requestId) === pending) {
+        this.#inflight.delete(input.requestId);
+      }
+    });
+    if (input.requestId) this.#inflight.set(input.requestId, pending);
+    return pending.promise;
+  }
+
+  async #deliverStart(input: DelegationStartInput): Promise<DelegationStartResult> {
     const parentThreadId = await this.#resolveParent(input.parentThreadId);
     const parent = await this.#parentMetadata(parentThreadId);
     const selectedCwd = input.cwd ?? parent.cwd ?? process.cwd();
@@ -213,15 +298,12 @@ export class HarnessDelegationCoordinator {
           taskDigest: digest,
           since: new Date(Date.now() - IMPLICIT_DEDUPLICATION_MS),
         });
-    if (
-      duplicate &&
-      input.requestId &&
-      (duplicate.targetHarnessId !== targetHarnessId || duplicate.taskDigest !== digest)
-    ) {
-      throw new DelegationControlError(
-        "INVALID_ARGUMENT",
-        "Request ID is already associated with another Delegation configuration",
-      );
+    if (duplicate && input.requestId) {
+      this.#assertStoredIdentity(duplicate, {
+        parentThreadId,
+        targetHarnessId,
+        digest,
+      });
     }
     if (duplicate) return this.#existingResult(duplicate);
 
@@ -230,9 +312,7 @@ export class HarnessDelegationCoordinator {
       throw new DelegationControlError(
         "HARNESS_NOT_FOUND",
         `Harness '${targetHarnessId}' is unavailable`,
-        {
-          validHarnessIds: ["codex", ...this.#adapters.keys()],
-        },
+        { validHarnessIds: ["codex", ...this.#adapters.keys()] },
       );
     }
     if (input.model || input.thinkingOptionId) {
@@ -246,41 +326,51 @@ export class HarnessDelegationCoordinator {
     const childThreadId = hostThreadIdSchema.parse(randomUUID());
     const turnId = hostTurnIdSchema.parse(randomUUID());
     const createRequestId = input.requestId ? `delegation:${input.requestId}` : randomUUID();
-    let record = await this.#repository.createProvisional(
-      createExternalThreadRecordInput({
-        hostThreadId: childThreadId,
-        createRequestId,
-        harnessId: harnessIdSchema.parse(targetHarnessId),
-        cwd: startInput.cwd,
-        title: input.task.trim().slice(0, 120),
-        transportModelId:
-          input.model || input.thinkingOptionId
-            ? encodeExternalTransportSelection(targetHarnessId, {
-                ...(input.model ? { model: input.model } : {}),
-                ...(input.thinkingOptionId ? { thinkingOptionId: input.thinkingOptionId } : {}),
-              })
-            : transportModelIdForHarness(targetHarnessId),
-        ephemeral: false,
-        historyMode: "paginated",
-      }),
-    );
-    let delegation: StoredDelegationRecordV1 | null = null;
+    const cwd = startInput.cwd;
+    let createdHere = false;
+    let nativeCommitted = false;
+    let record: StoredThreadRecordV1 | undefined;
+    let delegation: StoredDelegationRecordV1 | undefined;
     let session: HarnessSession | null = null;
     try {
-      delegation = await this.#repository.createDelegation({
-        delegationId,
-        parentHostThreadId: hostThreadIdSchema.parse(parentThreadId),
-        childHostThreadId: childThreadId,
-        sourceHarnessId: harnessIdSchema.parse(parent.harnessId),
-        targetHarnessId: harnessIdSchema.parse(targetHarnessId),
-        status: "creating",
-        ...(input.requestId ? { requestId: input.requestId } : {}),
-        taskDigest: digest,
+      const created = await this.#repository.createDelegatedThread({
+        thread: createExternalThreadRecordInput({
+          hostThreadId: childThreadId,
+          createRequestId,
+          harnessId: harnessIdSchema.parse(targetHarnessId),
+          cwd,
+          title: input.task.trim().slice(0, 120),
+          transportModelId:
+            input.model || input.thinkingOptionId
+              ? encodeExternalTransportSelection(targetHarnessId, {
+                  ...(input.model ? { model: input.model } : {}),
+                  ...(input.thinkingOptionId ? { thinkingOptionId: input.thinkingOptionId } : {}),
+                })
+              : transportModelIdForHarness(targetHarnessId),
+          ephemeral: false,
+          historyMode: "paginated",
+        }),
+        delegation: {
+          delegationId,
+          parentHostThreadId: hostThreadIdSchema.parse(parentThreadId),
+          childHostThreadId: childThreadId,
+          sourceHarnessId: harnessIdSchema.parse(parent.harnessId),
+          targetHarnessId: harnessIdSchema.parse(targetHarnessId),
+          status: "creating",
+          ...(input.requestId ? { requestId: input.requestId } : {}),
+          taskDigest: digest,
+          latestHostTurnId: turnId,
+        },
       });
+      record = created.thread;
+      delegation = created.delegation;
+      createdHere = !created.reused;
+      if (created.reused) return this.#existingResult(delegation);
+      record = await this.#repository.addPendingHostTurn(record.hostThreadId, turnId);
       const opened = await adapter.open({
         kind: "create",
         cwd: record.cwd,
-        environment: { ...this.#environment, [DELEGATION_THREAD_ID_ENV]: childThreadId },
+        environment: { ...this.#environment, [DELEGATION_THREAD_ID_ENV]: record.hostThreadId },
         executionPolicy: "unattended-full-access",
         ...(input.model ? { model: input.model } : {}),
         ...(input.thinkingOptionId ? { thinkingOptionId: input.thinkingOptionId } : {}),
@@ -292,6 +382,7 @@ export class HarnessDelegationCoordinator {
           record.hostThreadId,
           session.initialState.nativeRef,
         );
+        nativeCommitted = true;
       }
       const threadValue = externalThreadValue({
         record,
@@ -311,6 +402,11 @@ export class HarnessDelegationCoordinator {
       });
       const beforeRevision = thread.stateObserver.revision;
       await this.#startExternalTurn(thread, input.task, turnId);
+      await this.#repository.setDelegationTurnState(delegation.delegationId, {
+        latestHostTurnId: turnId,
+        status:
+          thread.running && thread.activeTurnId === turnId ? "running" : statusFromThread(thread),
+      });
       if (!thread.record.nativeSessionRef) {
         const deadline = Date.now() + NATIVE_REF_TIMEOUT_MS;
         let revision = beforeRevision;
@@ -322,32 +418,53 @@ export class HarnessDelegationCoordinator {
           await thread.stateObserver.waitForChange(revision, remaining);
           revision = thread.stateObserver.revision;
         }
+        nativeCommitted = true;
       }
-      await this.#repository.setDelegationStatus(delegationId, "running");
       await this.#notifyThreadStarted(thread.thread);
-      return this.#result(delegationId, childThreadId, turnId, targetHarnessId, "running", {
-        requested: {
-          ...(input.model ? { model: input.model } : {}),
-          ...(input.thinkingOptionId ? { thinkingOptionId: input.thinkingOptionId } : {}),
+      thread.changes.bump();
+      return this.#result(
+        delegation.delegationId,
+        record.hostThreadId,
+        turnId,
+        targetHarnessId,
+        "running",
+        {
+          requested: {
+            ...(input.model ? { model: input.model } : {}),
+            ...(input.thinkingOptionId ? { thinkingOptionId: input.thinkingOptionId } : {}),
+          },
+          effective: {
+            ...(thread.stateObserver.state.effectiveModel
+              ? { effectiveModel: thread.stateObserver.state.effectiveModel }
+              : {}),
+            ...(thread.stateObserver.state.resolvedModelLabel
+              ? { resolvedModelLabel: thread.stateObserver.state.resolvedModelLabel }
+              : {}),
+            ...(thread.stateObserver.state.effectiveThinkingOptionId
+              ? {
+                  effectiveThinkingOptionId: thread.stateObserver.state.effectiveThinkingOptionId,
+                }
+              : {}),
+          },
         },
-        effective: {
-          ...(thread.stateObserver.state.effectiveModel
-            ? { effectiveModel: thread.stateObserver.state.effectiveModel }
-            : {}),
-          ...(thread.stateObserver.state.resolvedModelLabel
-            ? { resolvedModelLabel: thread.stateObserver.state.resolvedModelLabel }
-            : {}),
-          ...(thread.stateObserver.state.effectiveThinkingOptionId
-            ? { effectiveThinkingOptionId: thread.stateObserver.state.effectiveThinkingOptionId }
-            : {}),
-        },
-      });
+      );
     } catch (error) {
-      if (session) await session.close().catch(() => undefined);
-      this.#externalRuntime.remove(childThreadId);
-      if (delegation)
-        await this.#repository.removeDelegation(delegation.delegationId).catch(() => undefined);
-      await this.#repository.removeThread(childThreadId).catch(() => undefined);
+      if (error instanceof MappingStoreError && error.code === "MAPPING_CONFLICT") {
+        throw new DelegationControlError("INVALID_ARGUMENT", error.message);
+      }
+      const keep =
+        nativeCommitted ||
+        (session?.initialState.nativeRef !== undefined && session.initialState.nativeRef !== null);
+      if (!keep) {
+        if (session) await session.close().catch(() => undefined);
+        this.#externalRuntime.remove(childThreadId);
+        if (createdHere && delegation) {
+          await this.#repository.removeDelegation(delegation.delegationId).catch(() => undefined);
+          await this.#repository
+            .removeThread(record?.hostThreadId ?? childThreadId)
+            .catch(() => undefined);
+        }
+      }
       if (error instanceof DelegationControlError) throw error;
       throw new DelegationControlError(
         "DELEGATION_FAILED",
@@ -360,6 +477,35 @@ export class HarnessDelegationCoordinator {
     if (!input.message?.trim()) {
       throw new DelegationControlError("INVALID_ARGUMENT", "Message must not be empty");
     }
+    const key = input.requestId ? `${input.threadId}:${input.requestId}` : undefined;
+    if (key) {
+      const remembered = this.#sendResults.get(key);
+      if (remembered) {
+        if (this.#externalRuntime.get(input.threadId)) {
+          this.#assertSameSendIdentity(remembered.message, input.message);
+          return remembered.result;
+        }
+        this.#sendResults.delete(key);
+      }
+      const current = this.#inflightSends.get(key);
+      if (current) {
+        this.#assertSameSendIdentity(current.message, input.message);
+        return current.promise;
+      }
+    }
+    const pending = this.#deliverSend(input)
+      .then((result) => {
+        if (key) this.#sendResults.set(key, { message: input.message, result });
+        return result;
+      })
+      .finally(() => {
+        if (key) this.#inflightSends.delete(key);
+      });
+    if (key) this.#inflightSends.set(key, { message: input.message, promise: pending });
+    return pending;
+  }
+
+  async #deliverSend(input: ThreadSendInput): Promise<ThreadSendResult> {
     const location = await this.#externalRuntime.locate(input.threadId);
     if (location.kind === "official") return this.#sendOfficial(input);
     if (location.kind === "error") {
@@ -373,12 +519,61 @@ export class HarnessDelegationCoordinator {
     if (thread.record.subagent) {
       throw new DelegationControlError("DELEGATION_FAILED", "Thread is read-only");
     }
+    if (
+      input.expectedTurnId &&
+      thread.activeTurnId &&
+      thread.activeTurnId !== input.expectedTurnId
+    ) {
+      throw new DelegationControlError(
+        "STALE_TURN",
+        "expected-turn does not match the active Turn",
+        { expectedTurnId: input.expectedTurnId, activeTurnId: thread.activeTurnId },
+      );
+    }
+    if (input.expectedTurnId && !thread.running && !thread.activeTurnId) {
+      const last = thread.turns.at(-1);
+      const lastId = typeof last?.id === "string" ? last.id : undefined;
+      if (lastId && lastId !== input.expectedTurnId) {
+        throw new DelegationControlError(
+          "STALE_TURN",
+          "expected-turn does not match the latest Turn",
+          { expectedTurnId: input.expectedTurnId, latestTurnId: lastId },
+        );
+      }
+    }
     if (thread.running || thread.activeTurnId) {
       throw new DelegationControlError("THREAD_BUSY", "Thread already has an active Turn");
     }
     const turnId = hostTurnIdSchema.parse(randomUUID());
+    thread.record = await this.#repository.addPendingHostTurn(thread.record.hostThreadId, turnId);
     try {
       await this.#startExternalTurn(thread, input.message, turnId);
+    } catch (error) {
+      await this.#repository
+        .consumePendingHostTurn(thread.record.hostThreadId, turnId)
+        .then((record) => {
+          thread.record = record;
+        })
+        .catch(() => undefined);
+      if (thread.activeTurnId === turnId) {
+        thread.running = false;
+        thread.activeTurnId = null;
+      }
+      throw new DelegationControlError(
+        "DELEGATION_FAILED",
+        error instanceof Error ? error.message : String(error),
+      );
+    }
+    try {
+      const delegation = await this.#repository.getDelegationByChild(thread.record.hostThreadId);
+      if (delegation) {
+        await this.#repository.setDelegationTurnState(delegation.delegationId, {
+          latestHostTurnId: turnId,
+          status:
+            thread.running && thread.activeTurnId === turnId ? "running" : statusFromThread(thread),
+        });
+      }
+      thread.changes.bump();
     } catch (error) {
       throw new DelegationControlError(
         "DELEGATION_FAILED",
@@ -403,6 +598,18 @@ export class HarnessDelegationCoordinator {
       throw new DelegationControlError("DELEGATION_FAILED", "Thread is read-only");
     }
     const turnId = thread.activeTurnId;
+    const latestTurnId =
+      turnId ??
+      (typeof thread.turns.at(-1)?.id === "string"
+        ? (thread.turns.at(-1)?.id as string)
+        : undefined);
+    if (input.expectedTurnId && latestTurnId && latestTurnId !== input.expectedTurnId) {
+      throw new DelegationControlError(
+        "STALE_TURN",
+        "expected-turn does not match the active Turn",
+        { expectedTurnId: input.expectedTurnId, activeTurnId: latestTurnId },
+      );
+    }
     if (!thread.running || !turnId) {
       return { threadId: thread.id, turnId: null, harnessId: thread.harnessId, cancelled: false };
     }
@@ -447,8 +654,8 @@ export class HarnessDelegationCoordinator {
     const delegation = await this.#repository.getDelegationByChild(
       hostThreadIdSchema.parse(thread.id),
     );
-    if (delegation && delegation.status !== statusFromThread(thread)) {
-      await this.#repository.setDelegationStatus(delegation.delegationId, statusFromThread(thread));
+    if (delegation && delegation.status !== snapshot.status) {
+      await persistDelegationFromSnapshot(this.#repository, delegation.delegationId, snapshot);
     }
     return snapshot;
   }
@@ -463,7 +670,12 @@ export class HarnessDelegationCoordinator {
       if (terminal(snapshot.status)) return { ...snapshot, timedOut: false };
       const remaining = deadline - Date.now();
       if (remaining <= 0) return { ...snapshot, timedOut: true };
-      await delay(Math.min(100, remaining));
+      const resolution = await this.#externalRuntime.resolve(input.threadId).catch(() => null);
+      if (resolution && resolution.kind === "external") {
+        await resolution.thread.changes.wait(resolution.thread.changes.revision, remaining);
+      } else {
+        await delay(Math.min(100, remaining));
+      }
     }
   }
 
@@ -530,7 +742,8 @@ export class HarnessDelegationCoordinator {
 
   async #resolveParent(explicit?: string): Promise<string> {
     if (explicit) return explicit;
-    const environmentThreadId = this.#environment[DELEGATION_THREAD_ID_ENV];
+    const environmentThreadId =
+      this.#environment[DELEGATION_THREAD_ID_ENV] ?? this.#environment.CODEX_THREAD_ID;
     if (environmentThreadId) return environmentThreadId;
     const external = this.#externalRuntime
       .values()
@@ -606,7 +819,17 @@ export class HarnessDelegationCoordinator {
 
   async #existingResult(delegation: StoredDelegationRecordV1): Promise<DelegationStartResult> {
     const record = await this.#repository.find(delegation.childHostThreadId);
-    const turnId = record?.turnMappings.at(-1)?.hostTurnId ?? "pending";
+    const turnId =
+      delegation.latestHostTurnId ??
+      record?.pendingHostTurnIds?.at(-1) ??
+      record?.turnMappings.at(-1)?.hostTurnId;
+    if (!turnId) {
+      throw new DelegationControlError(
+        "DELEGATION_FAILED",
+        "Delegation exists but has no confirmed Turn identity",
+        { threadId: delegation.childHostThreadId, status: delegation.status },
+      );
+    }
     return this.#result(
       delegation.delegationId,
       delegation.childHostThreadId,
@@ -616,16 +839,49 @@ export class HarnessDelegationCoordinator {
     );
   }
 
+  #assertSameStartIdentity(left: DelegationStartInput, right: DelegationStartInput): void {
+    if (
+      left.parentThreadId !== right.parentThreadId ||
+      left.harnessId !== right.harnessId ||
+      left.task !== right.task ||
+      (left.cwd ?? "") !== (right.cwd ?? "") ||
+      (left.model?.id ?? null) !== (right.model?.id ?? null) ||
+      (left.thinkingOptionId ?? null) !== (right.thinkingOptionId ?? null)
+    ) {
+      throw new DelegationControlError(
+        "INVALID_ARGUMENT",
+        "Request ID is already associated with another Delegation configuration",
+      );
+    }
+  }
+
+  #assertStoredIdentity(
+    stored: StoredDelegationRecordV1,
+    expected: { parentThreadId: string; targetHarnessId: ExternalHarnessId; digest: string },
+  ): void {
+    if (
+      stored.parentHostThreadId !== expected.parentThreadId ||
+      stored.targetHarnessId !== expected.targetHarnessId ||
+      stored.taskDigest !== expected.digest
+    ) {
+      throw new DelegationControlError(
+        "INVALID_ARGUMENT",
+        "Request ID is already associated with another Delegation configuration",
+      );
+    }
+  }
+
+  #next(threadId: string): { read: string; wait: string } {
+    return delegationNextCommands(this.#environment, threadId);
+  }
+
   #turnResult(threadId: string, turnId: string, harnessId: RoutedHarnessId): ThreadSendResult {
     return {
       threadId,
       turnId,
       harnessId,
       status: "running",
-      next: {
-        read: `codexhost thread read ${threadId}`,
-        wait: `codexhost thread wait ${threadId} --timeout-ms 30000`,
-      },
+      next: this.#next(threadId),
     };
   }
 
@@ -649,10 +905,393 @@ export class HarnessDelegationCoordinator {
         Object.keys(configuration.effective ?? {}).length > 0)
         ? { configuration }
         : {}),
-      next: {
-        read: `codexhost thread read ${threadId}`,
-        wait: `codexhost thread wait ${threadId} --timeout-ms 30000`,
+      next: this.#next(threadId),
+    };
+  }
+
+  async status(input: ThreadStatusInput): Promise<DelegationThreadStatusView> {
+    return this.#statusView(input.threadId);
+  }
+
+  async configuration(
+    input: ThreadConfigurationInput,
+  ): Promise<DelegationThreadStatusView["configuration"]> {
+    return (await this.#statusView(input.threadId)).configuration;
+  }
+
+  async waitMany(input: ThreadWaitManyInput): Promise<ThreadWaitManyResult> {
+    if (!Array.isArray(input.targets) || input.targets.length === 0) {
+      throw new DelegationControlError(
+        "INVALID_ARGUMENT",
+        "wait-many requires at least one target",
+      );
+    }
+    if (!Number.isSafeInteger(input.timeoutMs) || input.timeoutMs < 0 || input.timeoutMs > 60_000) {
+      throw new DelegationControlError("INVALID_ARGUMENT", "timeoutMs must be between 0 and 60000");
+    }
+    const deadline = Date.now() + input.timeoutMs;
+    const collect = async (): Promise<ThreadWaitManyResult> => {
+      const results = await Promise.all(
+        input.targets.map(async (target) => this.#waitManyTarget(target)),
+      );
+      const changed = results.some(
+        (result) =>
+          result.outcome === "changed" || result.outcome === "resync" || result.outcome === "error",
+      );
+      return { timedOut: !changed, results };
+    };
+    let snapshot = await collect();
+    if (!snapshot.timedOut || input.timeoutMs === 0)
+      return { ...snapshot, timedOut: snapshot.timedOut };
+    while (Date.now() < deadline) {
+      const remaining = deadline - Date.now();
+      const waiters: Promise<unknown>[] = [];
+      const round = new AbortController();
+      let hasNonExternal = false;
+      try {
+        for (const target of input.targets) {
+          const resolution = await this.#externalRuntime.resolve(target.threadId).catch(() => null);
+          if (resolution && resolution.kind === "external") {
+            const observed = snapshot.results.find((row) => row.threadId === target.threadId);
+            const cursor =
+              observed && observed.outcome !== "error"
+                ? decodeThreadRevision(target.threadId, observed.revision)
+                : undefined;
+            // Use the collected revision: an event between collect and subscribe must wake this wait.
+            const seq =
+              cursor && !("invalid" in cursor) ? cursor.seq : resolution.thread.changes.revision;
+            waiters.push(resolution.thread.changes.wait(seq, remaining, round.signal));
+          } else {
+            hasNonExternal = true;
+          }
+        }
+        await Promise.race([
+          cancellableDelay(hasNonExternal ? Math.min(100, remaining) : remaining, undefined, {
+            signal: round.signal,
+          }),
+          ...waiters,
+        ]);
+      } finally {
+        // A progress event in one Thread must not leave all other waiters alive for 60 seconds.
+        round.abort();
+      }
+      snapshot = await collect();
+      if (!snapshot.timedOut) return snapshot;
+    }
+    return snapshot;
+  }
+
+  async evidence(input: ThreadEvidenceInput): Promise<ThreadEvidenceResult> {
+    await this.read({ threadId: input.threadId, view: "result" });
+    const resolution = await this.#externalRuntime.resolve(input.threadId);
+    const turns =
+      resolution.kind === "external"
+        ? resolution.thread.activeTurnId
+          ? [
+              ...resolution.thread.turns,
+              resolution.thread.projectedTurns
+                .get(resolution.thread.activeTurnId)
+                ?.projector.pendingTurn() ?? {},
+            ]
+          : resolution.thread.turns
+        : [];
+    return projectDelegationEvidence({
+      threadId: input.threadId,
+      turns,
+      ...(input.turnId ? { turnId: input.turnId } : {}),
+      ...(input.itemId ? { itemId: input.itemId } : {}),
+      includeOutput: input.includeOutput === true,
+      ...(input.cursor ? { cursor: input.cursor } : {}),
+      ...(input.limit !== undefined ? { limit: input.limit } : {}),
+    });
+  }
+
+  async release(input: ThreadReleaseInput): Promise<ThreadReleaseResult> {
+    const resolution = await this.#externalRuntime.resolve(input.threadId);
+    if (resolution.kind !== "external") {
+      throw new DelegationControlError("THREAD_NOT_FOUND", "Thread was not found");
+    }
+    const thread = resolution.thread;
+    if (
+      input.expectedTurnId &&
+      thread.activeTurnId &&
+      thread.activeTurnId !== input.expectedTurnId
+    ) {
+      throw new DelegationControlError(
+        "STALE_TURN",
+        "expected-turn does not match the active Turn",
+        { expectedTurnId: input.expectedTurnId, activeTurnId: thread.activeTurnId },
+      );
+    }
+    if (input.expectedTurnId && !thread.running && !thread.activeTurnId) {
+      const last = thread.turns.at(-1);
+      const lastId = typeof last?.id === "string" ? last.id : undefined;
+      if (lastId && lastId !== input.expectedTurnId) {
+        throw new DelegationControlError(
+          "STALE_TURN",
+          "expected-turn does not match the latest Turn",
+          { expectedTurnId: input.expectedTurnId, latestTurnId: lastId },
+        );
+      }
+    }
+    if (thread.running || thread.activeTurnId) {
+      return {
+        threadId: thread.id,
+        released: false,
+        busy: true,
+        quiescence: "unknown",
+      };
+    }
+    const adapter = this.#adapters.get(thread.harnessId);
+    const releasable = adapter && isOwnedJobAdapter(adapter) ? adapter : undefined;
+    let quiescence: JobQuiescence = releasable ? "unknown" : "unsupported";
+    let proof: ThreadReleaseResult["proof"];
+    if (releasable) {
+      const stopped = await releasable.stopOwnedJobs(thread.session);
+      quiescence = stopped.quiescence;
+      proof = stopped.proof;
+    }
+    if (quiescence !== "confirmed") {
+      return {
+        threadId: thread.id,
+        released: false,
+        busy: false,
+        quiescence,
+        ...(proof ? { proof } : {}),
+      };
+    }
+    await thread.session.close().catch(() => undefined);
+    this.#forgetSendResults(thread.id);
+    this.#externalRuntime.remove(thread.id);
+    return {
+      threadId: thread.id,
+      released: true,
+      busy: false,
+      quiescence,
+      ...(proof ? { proof } : {}),
+    };
+  }
+
+  async reconcile(input: DelegationReconcileInput): Promise<DelegationReconcileResult> {
+    const parsed = hostThreadIdSchema.safeParse(input.threadId);
+    if (!parsed.success) {
+      throw new DelegationControlError("INVALID_ARGUMENT", "Thread identifier is invalid");
+    }
+    const thread = await this.#repository.find(parsed.data);
+    const delegation = await this.#repository.getDelegationByChild(parsed.data);
+    if (!thread && !delegation) {
+      throw new DelegationControlError("THREAD_NOT_FOUND", "Thread was not found");
+    }
+    const loaded = this.#externalRuntime.get(input.threadId);
+    const nativeUnknown = Boolean(
+      thread && (thread.state !== "ready" || !thread.nativeSessionRef) && !loaded,
+    );
+    const active = Boolean(loaded?.running);
+    if (active || nativeUnknown) {
+      return {
+        threadId: input.threadId,
+        dryRun: input.apply !== true,
+        applied: false,
+        action: "rejected",
+        writes: 0,
+        reason: active
+          ? "Thread still has active work"
+          : "Native side effects are unknown; apply is refused",
+      };
+    }
+    if (input.apply !== true) {
+      return {
+        threadId: input.threadId,
+        dryRun: true,
+        applied: false,
+        action: thread?.state === "ready" ? "reload" : "mark-unconfirmed",
+        writes: 0,
+      };
+    }
+    if (thread?.state === "ready" && thread.nativeSessionRef) {
+      await this.#externalRuntime.resolve(input.threadId);
+      return {
+        threadId: input.threadId,
+        dryRun: false,
+        applied: true,
+        action: "reload",
+        writes: 0,
+      };
+    }
+    return {
+      threadId: input.threadId,
+      dryRun: false,
+      applied: false,
+      action: "rejected",
+      writes: 0,
+      reason: "Record cannot be applied without confirmed native inactivity",
+    };
+  }
+
+  async #statusView(threadId: string): Promise<DelegationThreadStatusView> {
+    const snapshot = await this.read({ threadId, view: "result" });
+    const resolution = await this.#externalRuntime.resolve(threadId).catch(() => null);
+    const thread = resolution && resolution.kind === "external" ? resolution.thread : undefined;
+    const delegation = await this.#repository.getDelegationByChild(
+      hostThreadIdSchema.parse(threadId),
+    );
+    const record = await this.#repository.find(threadId);
+    const unknown: DelegationUnknownConfigField[] = [];
+    const requested = thread
+      ? {
+          ...(thread.requestedModel ? { model: thread.requestedModel } : {}),
+          ...(thread.requestedThinkingOptionId
+            ? { thinkingOptionId: thread.requestedThinkingOptionId }
+            : {}),
+          ...(thread.requestedPermissionModeId
+            ? { permissionModeId: thread.requestedPermissionModeId }
+            : {}),
+        }
+      : undefined;
+    const effective = thread
+      ? {
+          ...(thread.stateObserver.state.effectiveModel
+            ? { effectiveModel: thread.stateObserver.state.effectiveModel }
+            : {}),
+          ...(thread.stateObserver.state.resolvedModelLabel
+            ? { resolvedModelLabel: thread.stateObserver.state.resolvedModelLabel }
+            : {}),
+          ...(thread.stateObserver.state.effectiveThinkingOptionId
+            ? { effectiveThinkingOptionId: thread.stateObserver.state.effectiveThinkingOptionId }
+            : {}),
+          ...(thread.stateObserver.state.effectivePermissionModeId
+            ? { effectivePermissionModeId: thread.stateObserver.state.effectivePermissionModeId }
+            : {}),
+        }
+      : undefined;
+    if (!snapshot.harnessId) unknown.push("harness");
+    if (!effective?.effectiveModel) unknown.push("model");
+    if (!effective?.effectiveThinkingOptionId) unknown.push("thinking");
+    if (!effective?.effectivePermissionModeId) unknown.push("permissionMode");
+    if (!record?.cwd && !thread?.cwd) unknown.push("cwd");
+    if (!delegation?.parentHostThreadId) unknown.push("parent");
+    if (!snapshot.turn) unknown.push("turn");
+    if (!delegation) unknown.push("delegation");
+    const revision = thread
+      ? thread.changes.encode({
+          threadId,
+          turnId: snapshot.turn?.turnId ?? null,
+          status: snapshot.status,
+        })
+      : `codexhost:thread-revision:v1:${Buffer.from(
+          JSON.stringify({
+            version: 1,
+            epoch: this.#externalRuntime.epoch,
+            seq: 0,
+            threadId,
+            turnId: snapshot.turn?.turnId ?? null,
+            status: snapshot.status,
+          }),
+        ).toString("base64url")}`;
+    const cwd = record?.cwd ?? thread?.cwd;
+    return {
+      threadId,
+      harnessId: snapshot.harnessId,
+      status: snapshot.status,
+      turn: snapshot.turn,
+      revision,
+      ...(thread && (!thread.activeTurnId || thread.projectedTurns.has(thread.activeTurnId))
+        ? {
+            pendingInteractions: thread.activeTurnId
+              ? (thread.projectedTurns.get(thread.activeTurnId)?.projector
+                  .pendingInteractionCount ?? 0)
+              : 0,
+          }
+        : {}),
+      ...(cwd ? { cwd } : {}),
+      ...(delegation
+        ? { parentThreadId: delegation.parentHostThreadId, delegationId: delegation.delegationId }
+        : {}),
+      configuration: {
+        ...(requested && Object.keys(requested).length > 0 ? { requested } : {}),
+        ...(effective && Object.keys(effective).length > 0 ? { effective } : {}),
+        unknown,
       },
     };
   }
+
+  async #waitManyTarget(
+    target: ThreadWaitManyInput["targets"][number],
+  ): Promise<ThreadWaitManyResult["results"][number]> {
+    try {
+      const status = await this.#statusView(target.threadId);
+      const decoded = decodeThreadRevision(target.threadId, target.afterRevision);
+      if (decoded && "invalid" in decoded) {
+        return {
+          threadId: target.threadId,
+          outcome: "resync",
+          revision: status.revision,
+          status: compactWaitManyStatus(status),
+        };
+      }
+      if (decoded && decoded.epoch !== this.#externalRuntime.epoch) {
+        return {
+          threadId: target.threadId,
+          outcome: "resync",
+          revision: status.revision,
+          status: compactWaitManyStatus(status),
+        };
+      }
+      if (!target.afterRevision || status.revision !== target.afterRevision) {
+        return {
+          threadId: target.threadId,
+          outcome: "changed",
+          revision: status.revision,
+          status: compactWaitManyStatus(status),
+        };
+      }
+      return {
+        threadId: target.threadId,
+        outcome: "timedOut",
+        revision: status.revision,
+        status: compactWaitManyStatus(status),
+      };
+    } catch (error) {
+      const normalized =
+        error instanceof DelegationControlError
+          ? error
+          : new DelegationControlError(
+              "INTERNAL_ERROR",
+              error instanceof Error ? error.message : String(error),
+            );
+      return {
+        threadId: target.threadId,
+        outcome: "error",
+        error: { code: normalized.code, message: normalized.message },
+      };
+    }
+  }
+
+  #assertSameSendIdentity(left: string, right: string): void {
+    if (left !== right) {
+      throw new DelegationControlError(
+        "INVALID_ARGUMENT",
+        "Request ID is already associated with another send payload",
+      );
+    }
+  }
+
+  #forgetSendResults(threadId: string): void {
+    const prefix = `${threadId}:`;
+    for (const key of [...this.#sendResults.keys()]) {
+      if (key.startsWith(prefix)) this.#sendResults.delete(key);
+    }
+    for (const key of [...this.#inflightSends.keys()]) {
+      if (key.startsWith(prefix)) this.#inflightSends.delete(key);
+    }
+  }
+}
+
+function isOwnedJobAdapter(adapter: HarnessAdapter): adapter is HarnessAdapter & {
+  stopOwnedJobs(session: HarnessSession): Promise<{
+    quiescence: JobQuiescence;
+    proof?: ThreadReleaseResult["proof"];
+  }>;
+} {
+  return typeof (adapter as { stopOwnedJobs?: unknown }).stopOwnedJobs === "function";
 }

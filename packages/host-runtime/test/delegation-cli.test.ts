@@ -1,3 +1,6 @@
+import { mkdtemp, realpath, rm } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { PassThrough } from "node:stream";
 
 import { describe, expect, it, vi } from "vitest";
@@ -57,44 +60,49 @@ describe("delegation CLI", () => {
       [DELEGATION_RUNTIME_ENDPOINT_ENV]: "http://127.0.0.1:4321",
       [DELEGATION_RUNTIME_TOKEN_ENV]: "token",
     };
-    await expect(
-      runDelegationCli({
-        arguments: [
-          "delegate",
-          "start",
-          "--harness",
-          "claude-code",
-          "--task",
-          "review auth",
-          "--cwd",
-          "/workspace/project",
-          "--model",
-          "model-ref",
-          "--thinking",
-          "high",
-          "--parent-thread",
-          "codex://threads/parent-1",
-          "--request-id",
-          "request-1",
-        ],
-        environment,
-        output,
-        fetchImpl,
-      }),
-    ).resolves.toBe(0);
-    const firstCall = vi.mocked(fetchImpl).mock.calls[0];
-    if (!firstCall) throw new Error("Runtime fetch was not called");
-    const [, init] = firstCall;
-    expect(JSON.parse(String(init?.body))).toMatchObject({
-      harnessId: "claude-code",
-      task: "review auth",
-      cwd: "/workspace/project",
-      parentThreadId: "parent-1",
-      requestId: "request-1",
-      model: { id: "model-ref" },
-      thinkingOptionId: "high",
-    });
-    expect(JSON.parse(outputText(output))).toEqual({ threadId: "child-1" });
+    const cwd = await realpath(await mkdtemp(path.join(os.tmpdir(), "codexhost-cli-cwd-")));
+    try {
+      await expect(
+        runDelegationCli({
+          arguments: [
+            "delegate",
+            "start",
+            "--harness",
+            "claude-code",
+            "--task",
+            "review auth",
+            "--cwd",
+            cwd,
+            "--model",
+            "model-ref",
+            "--thinking",
+            "high",
+            "--parent-thread",
+            "codex://threads/parent-1",
+            "--request-id",
+            "request-1",
+          ],
+          environment,
+          output,
+          fetchImpl,
+        }),
+      ).resolves.toBe(0);
+      const firstCall = vi.mocked(fetchImpl).mock.calls[0];
+      if (!firstCall) throw new Error("Runtime fetch was not called");
+      const [, init] = firstCall;
+      expect(JSON.parse(String(init?.body))).toMatchObject({
+        harnessId: "claude-code",
+        task: "review auth",
+        cwd,
+        parentThreadId: "parent-1",
+        requestId: "request-1",
+        model: { id: "model-ref" },
+        thinkingOptionId: "high",
+      });
+      expect(JSON.parse(outputText(output))).toEqual({ threadId: "child-1" });
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
   });
 
   it("uses the Host-provided current Thread when --parent-thread is omitted", async () => {

@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import {
   createRemoteControlOfficialAppServerPlan,
   createRemoteOfficialAppServerPlan,
+  delegationCliPath,
   hasLauncherManagedUpdateRuntime,
   MANAGED_REMOTE_APP_SERVER_PROCESS_TITLE,
 } from "../src/run-host-runtime.js";
@@ -54,6 +55,60 @@ describe("Host Runtime composition", () => {
         "--analytics-default-enabled",
       ],
     });
+  });
+
+  it("advertises the npm Node launcher instead of its native launcher", () => {
+    // An npm installation ships no `runtime/` directory, so the native launcher
+    // aborts with a missing-file error before it reaches the delegation CLI.
+    // The Node launcher resolves its own Node runtime and works.
+    const npmLauncher = path.resolve(
+      "npm",
+      "node_modules",
+      "@codexhost",
+      "cli",
+      "bin",
+      "codexhost.js",
+    );
+    const nativeLauncher = path.resolve(
+      "npm",
+      "node_modules",
+      "@codexhost",
+      "cli-darwin-arm64",
+      "bin",
+      "codexhost",
+    );
+
+    expect(
+      delegationCliPath({
+        CODEXHOST_NPM_LAUNCHER_PATH: npmLauncher,
+        CODEXHOST_LAUNCHER_EXECUTABLE: nativeLauncher,
+      }),
+    ).toBe(npmLauncher);
+  });
+
+  it("keeps the packaged launcher when npm did not provide one", () => {
+    const packaged = path.resolve(
+      "Applications",
+      "codexhost.app",
+      "Contents",
+      "MacOS",
+      "codexhost",
+    );
+
+    expect(delegationCliPath({ CODEXHOST_LAUNCHER_EXECUTABLE: packaged })).toBe(packaged);
+    expect(delegationCliPath({})).toBeUndefined();
+  });
+
+  it("lets an explicit CLI path override every launcher", () => {
+    const explicit = path.resolve("custom", "codexhost");
+
+    expect(
+      delegationCliPath({
+        CODEXHOST_CLI_PATH: explicit,
+        CODEXHOST_NPM_LAUNCHER_PATH: path.resolve("npm", "codexhost.js"),
+        CODEXHOST_LAUNCHER_EXECUTABLE: path.resolve("native", "codexhost"),
+      }),
+    ).toBe(explicit);
   });
 
   it("disables launcher-owned updates for a direct SSH Host invocation", () => {

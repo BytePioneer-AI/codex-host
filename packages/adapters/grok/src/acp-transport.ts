@@ -252,6 +252,59 @@ function waitForExit(child: ChildProcessWithoutNullStreams, timeoutMs: number): 
   ]);
 }
 
+function processIsAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return isRecord(error) && error.code === "EPERM" ? true : false;
+  }
+}
+
+function processStartToken(pid: number): string {
+  try {
+    const result = spawnSync("ps", ["-p", String(pid), "-o", "lstart="], {
+      encoding: "utf8",
+      timeout: 1_000,
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+    return result.stdout.trim();
+  } catch {
+    return "";
+  }
+}
+
+function processIsSame(pid: number, startToken: string): boolean {
+  if (!processIsAlive(pid)) return false;
+  if (!startToken) return true;
+  return processStartToken(pid) === startToken;
+}
+
+function processGroupIsAlive(pgid: number): boolean {
+  if (process.platform === "win32") return processIsAlive(Math.abs(pgid));
+  try {
+    process.kill(pgid, 0);
+    return true;
+  } catch (error) {
+    return isRecord(error) && error.code === "EPERM" ? true : false;
+  }
+}
+
+function signalProcessGroup(pgid: number, signal: NodeJS.Signals): void {
+  if (process.platform === "win32") {
+    spawnSync("taskkill.exe", ["/pid", String(Math.abs(pgid)), "/t", "/f"], {
+      stdio: "ignore",
+      windowsHide: true,
+    });
+    return;
+  }
+  try {
+    process.kill(pgid, signal);
+  } catch (error) {
+    if (!isRecord(error) || error.code !== "ESRCH") throw error;
+  }
+}
+
 function signalProcessTree(child: ChildProcessWithoutNullStreams, signal: NodeJS.Signals): void {
   if (!child.pid) return;
   if (process.platform === "win32") {
@@ -520,6 +573,11 @@ export class GrokAcpTransport {
   #sessionId: string | null = null;
   #startupModelId: string | undefined;
   #stderrTail = "";
+  #owned: {
+    pid: number;
+    startedAtMs: number;
+    startToken: string;
+  } | null = null;
 
   constructor(options: GrokAcpTransportOptions) {
     this.#options = {
@@ -765,6 +823,13 @@ export class GrokAcpTransport {
       windowsVerbatimArguments: invocation.windowsVerbatimArguments,
     });
     this.#child = child;
+    if (typeof child.pid === "number") {
+      this.#owned = {
+        pid: child.pid,
+        startedAtMs: Date.now(),
+        startToken: processStartToken(child.pid),
+      };
+    }
     child.stderr.on("data", (chunk: Buffer | string) => {
       this.#stderrTail = sanitizeDiagnosticTail(`${this.#stderrTail}${chunk.toString()}`);
     });
@@ -904,6 +969,43 @@ export class GrokAcpTransport {
     }
   }
 
+  ownedProcess(): { pid: number; pgid: number; startedAtMs: number } | null {
+    const owned = this.#owned;
+    const child = this.#child;
+    if (!owned || !child?.pid) return null;
+    return {
+      pid: owned.pid,
+      pgid: process.platform === "win32" ? owned.pid : -owned.pid,
+      startedAtMs: owned.startedAtMs,
+    };
+  }
+
+  async stopOwnedJobs(timeoutMs = this.#options.closeTimeoutMs): Promise<{
+    quiescence: "confirmed" | "unknown";
+    proof?: { pid: number; pgid: number; scope: string };
+  }> {
+    const owned = this.ownedProcess();
+    await this.close();
+    if (!owned) return { quiescence: "unknown" };
+    const proof = { pid: owned.pid, pgid: owned.pgid, scope: "grok-acp-child" };
+    const groupAlive = () =>
+      processGroupIsAlive(owned.pgid) || processIsSame(owned.pid, this.#owned?.startToken ?? "");
+    if (groupAlive()) {
+      signalProcessGroup(owned.pgid, "SIGTERM");
+      const deadline = Date.now() + Math.max(1, timeoutMs);
+      while (Date.now() < deadline && groupAlive()) {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      if (groupAlive()) signalProcessGroup(owned.pgid, "SIGKILL");
+      const killDeadline = Date.now() + Math.max(1, timeoutMs);
+      while (Date.now() < killDeadline && groupAlive()) {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+    }
+    if (groupAlive()) return { quiescence: "unknown", proof };
+    return { quiescence: "confirmed", proof };
+  }
+
   cancel(): Promise<void> {
     const connection = this.#connection;
     if (!connection || !this.#sessionId || (!this.#activePrompt && !this.#activeCompact)) {
@@ -926,11 +1028,17 @@ export class GrokAcpTransport {
       await connection.closeSession({ sessionId: this.#sessionId }).catch(() => undefined);
     }
     if (child?.stdin.writable) child.stdin.end();
-    if (child && !(await waitForExit(child, this.#options.closeTimeoutMs))) {
-      signalProcessTree(child, "SIGTERM");
-      if (!(await waitForExit(child, this.#options.closeTimeoutMs))) {
-        signalProcessTree(child, "SIGKILL");
-        await waitForExit(child, this.#options.closeTimeoutMs);
+    if (child) {
+      const leaderExited = await waitForExit(child, this.#options.closeTimeoutMs);
+      if (!leaderExited) {
+        signalProcessTree(child, "SIGTERM");
+        if (!(await waitForExit(child, this.#options.closeTimeoutMs))) {
+          signalProcessTree(child, "SIGKILL");
+          await waitForExit(child, this.#options.closeTimeoutMs);
+        }
+      } else if (child.pid) {
+        signalProcessGroup(process.platform === "win32" ? child.pid : -child.pid, "SIGTERM");
+        signalProcessGroup(process.platform === "win32" ? child.pid : -child.pid, "SIGKILL");
       }
     }
     this.#closed = true;

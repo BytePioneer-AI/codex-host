@@ -60,6 +60,7 @@ export interface MappingStoreOptions {
   instanceId?: string;
   now?: () => Date;
   beforeReplace?: (record: StoredThreadRecordV1) => Promise<void> | void;
+  beforeWriteDelegation?: (record: StoredDelegationRecordV1) => Promise<void> | void;
 }
 
 interface LockRecord {
@@ -77,6 +78,10 @@ interface ProcessIdentity {
 
 function cloneRecord<T>(record: T): T {
   return JSON.parse(JSON.stringify(record)) as T;
+}
+
+function isTerminalDelegationStatus(status: DelegationStatus): boolean {
+  return status === "completed" || status === "failed" || status === "interrupted";
 }
 
 function nativeSessionKey(ref: { harnessId: string; nativeSessionId: string }): string {
@@ -200,6 +205,7 @@ export class MappingStore {
   readonly #backupsDirectory: string;
   readonly #delegationsDirectory: string;
   readonly #beforeReplace: MappingStoreOptions["beforeReplace"];
+  readonly #beforeWriteDelegation: MappingStoreOptions["beforeWriteDelegation"];
   readonly #directory: string;
   readonly #instanceId: string;
   readonly #lockPath: string;
@@ -229,6 +235,7 @@ export class MappingStore {
     this.#instanceId = options.instanceId ?? randomUUID();
     this.#now = options.now ?? (() => new Date());
     this.#beforeReplace = options.beforeReplace;
+    this.#beforeWriteDelegation = options.beforeWriteDelegation;
   }
 
   async initialize(): Promise<void> {
@@ -363,55 +370,181 @@ export class MappingStore {
 
   async createDelegation(input: CreateDelegationInput): Promise<StoredDelegationRecordV1> {
     this.#requireInitialized();
-    if (this.#delegations.has(input.delegationId)) {
-      throw new MappingStoreError("DUPLICATE_DELEGATION_ID", "Delegation ID already exists");
-    }
-    if (this.#delegationChildren.has(input.childHostThreadId)) {
-      throw new MappingStoreError("MAPPING_CONFLICT", "Child Thread already has a Delegation");
-    }
-    if (input.requestId && this.#delegationRequests.has(input.requestId)) {
-      throw new MappingStoreError(
-        "DUPLICATE_CREATE_REQUEST",
-        "Delegation Request ID already exists",
-      );
-    }
-    const timestamp = this.#now().toISOString();
-    const record = storedDelegationRecordV1Schema.parse({
-      formatVersion: 1,
-      revision: 1,
-      ...input,
-      status: input.status ?? "creating",
-      createdAt: timestamp,
-      updatedAt: timestamp,
-    }) as StoredDelegationRecordV1;
-    await this.#replaceDelegationFile(record);
-    this.#delegations.set(record.delegationId, record);
-    this.#rebuildIndexes();
-    return cloneRecord(record);
+    let result: StoredDelegationRecordV1 | null = null;
+    await this.#enqueue(async () => {
+      result = await this.#createDelegationUnlocked(input);
+    });
+    if (!result) throw new MappingStoreError("IO_ERROR", "Delegation create produced no result");
+    return result;
+  }
+
+  async createDelegatedThread(input: {
+    thread: CreateProvisionalThreadInput;
+    delegation: CreateDelegationInput;
+  }): Promise<{
+    thread: StoredThreadRecordV1;
+    delegation: StoredDelegationRecordV1;
+    reused: boolean;
+  }> {
+    this.#requireInitialized();
+    let result: {
+      thread: StoredThreadRecordV1;
+      delegation: StoredDelegationRecordV1;
+      reused: boolean;
+    } | null = null;
+    await this.#enqueue(async () => {
+      if (input.delegation.requestId) {
+        const existingId = this.#delegationRequests.get(input.delegation.requestId);
+        if (existingId) {
+          const existing = this.#delegations.get(existingId);
+          if (!existing) {
+            throw new MappingStoreError("IO_ERROR", "Delegation request index is stale");
+          }
+          if (
+            existing.parentHostThreadId !== input.delegation.parentHostThreadId ||
+            existing.targetHarnessId !== input.delegation.targetHarnessId ||
+            existing.taskDigest !== input.delegation.taskDigest
+          ) {
+            throw new MappingStoreError(
+              "MAPPING_CONFLICT",
+              "Request ID is already associated with another Delegation configuration",
+            );
+          }
+          const existingThread = this.#records.get(existing.childHostThreadId);
+          if (!existingThread) {
+            throw new MappingStoreError("IO_ERROR", "Delegated Thread record is missing");
+          }
+          result = {
+            thread: cloneRecord(existingThread),
+            delegation: cloneRecord(existing),
+            reused: true,
+          };
+          return;
+        }
+      }
+      const thread = await this.#createProvisionalUnlocked(input.thread);
+      try {
+        const delegation = await this.#createDelegationUnlocked({
+          ...input.delegation,
+          childHostThreadId: thread.hostThreadId,
+        });
+        result = { thread, delegation, reused: false };
+      } catch (error) {
+        await this.#remove(thread.hostThreadId);
+        throw error;
+      }
+    });
+    if (!result)
+      throw new MappingStoreError("IO_ERROR", "Delegated Thread create produced no result");
+    return result;
+  }
+
+  async setDelegationLatestTurn(
+    delegationId: HostThreadId,
+    latestHostTurnId: HostTurnId,
+  ): Promise<StoredDelegationRecordV1> {
+    return this.#updateDelegation(delegationId, (current) => {
+      if (current.latestHostTurnId === latestHostTurnId) return null;
+      if (current.latestHostTurnId && current.latestHostTurnId !== latestHostTurnId) return null;
+      return { ...current, latestHostTurnId };
+    });
+  }
+
+  async addPendingHostTurn(
+    hostThreadId: HostThreadId,
+    hostTurnId: HostTurnId,
+  ): Promise<StoredThreadRecordV1> {
+    return this.#update(hostThreadId, (current) => {
+      const mapped = new Set(current.turnMappings.map((mapping) => mapping.hostTurnId));
+      if (mapped.has(hostTurnId)) return null;
+      const pending = (current.pendingHostTurnIds ?? []).filter((id) => !mapped.has(id));
+      if (pending.includes(hostTurnId)) {
+        if (pending.length === (current.pendingHostTurnIds ?? []).length) return null;
+        return { ...current, pendingHostTurnIds: pending };
+      }
+      return { ...current, pendingHostTurnIds: [...pending, hostTurnId] };
+    });
+  }
+
+  async consumePendingHostTurn(
+    hostThreadId: HostThreadId,
+    hostTurnId: HostTurnId,
+  ): Promise<StoredThreadRecordV1> {
+    return this.#update(hostThreadId, (current) => {
+      const pending = current.pendingHostTurnIds ?? [];
+      if (!pending.includes(hostTurnId)) return null;
+      const next = pending.filter((id) => id !== hostTurnId);
+      return {
+        ...current,
+        pendingHostTurnIds: next.length > 0 ? next : undefined,
+      };
+    });
+  }
+
+  async setPendingHostTurnIds(
+    hostThreadId: HostThreadId,
+    pendingHostTurnIds: readonly HostTurnId[],
+  ): Promise<StoredThreadRecordV1> {
+    return this.#update(hostThreadId, (current) => {
+      const next = [...pendingHostTurnIds];
+      if (JSON.stringify(current.pendingHostTurnIds ?? []) === JSON.stringify(next)) return null;
+      return {
+        ...current,
+        pendingHostTurnIds: next.length > 0 ? next : undefined,
+      };
+    });
+  }
+
+  async setDelegationTurnState(
+    delegationId: HostThreadId,
+    input: { latestHostTurnId: HostTurnId; status: DelegationStatus },
+  ): Promise<StoredDelegationRecordV1> {
+    return this.#updateDelegation(delegationId, (current) => {
+      const sameTurn = current.latestHostTurnId === input.latestHostTurnId;
+      if (
+        sameTurn &&
+        isTerminalDelegationStatus(current.status) &&
+        !isTerminalDelegationStatus(input.status)
+      ) {
+        return null;
+      }
+      if (
+        current.latestHostTurnId &&
+        !sameTurn &&
+        isTerminalDelegationStatus(input.status) &&
+        !isTerminalDelegationStatus(current.status)
+      ) {
+        return null;
+      }
+      if (current.status === input.status && current.latestHostTurnId === input.latestHostTurnId) {
+        return null;
+      }
+      return {
+        ...current,
+        latestHostTurnId: input.latestHostTurnId,
+        status: input.status,
+      };
+    });
   }
 
   async setDelegationStatus(
     delegationId: HostThreadId,
     status: DelegationStatus,
   ): Promise<StoredDelegationRecordV1> {
-    this.#requireInitialized();
-    const current = this.#delegations.get(delegationId);
-    if (!current) {
-      throw new MappingStoreError("DELEGATION_NOT_FOUND", "Delegation was not found");
-    }
-    if (current.status === status) return cloneRecord(current);
-    const terminal = new Set<DelegationStatus>(["completed", "failed", "interrupted"]);
-    if (terminal.has(current.status) && !terminal.has(status)) return cloneRecord(current);
-    const next = storedDelegationRecordV1Schema.parse({
-      ...current,
-      revision: current.revision + 1,
-      status,
-      updatedAt: this.#now().toISOString(),
-    }) as StoredDelegationRecordV1;
-    await this.#replaceDelegationFile(next);
-    this.#delegations.set(delegationId, next);
-    this.#rebuildIndexes();
-    return cloneRecord(next);
+    return this.#updateDelegation(delegationId, (current) => {
+      if (current.status === status) return null;
+      if (isTerminalDelegationStatus(current.status) && !isTerminalDelegationStatus(status)) {
+        return null;
+      }
+      if (
+        current.latestHostTurnId &&
+        !isTerminalDelegationStatus(current.status) &&
+        isTerminalDelegationStatus(status)
+      ) {
+        return null;
+      }
+      return { ...current, status };
+    });
   }
 
   async removeDelegation(delegationId: HostThreadId): Promise<void> {
@@ -431,38 +564,7 @@ export class MappingStore {
     this.#requireInitialized();
     let result: StoredThreadRecordV1 | null = null;
     await this.#enqueue(async () => {
-      const existingThreadId = this.#createRequests.get(input.createRequestId);
-      if (existingThreadId) {
-        const existing = this.#records.get(existingThreadId);
-        if (!existing) throw new MappingStoreError("IO_ERROR", "Create request index is stale");
-        result = cloneRecord(existing);
-        return;
-      }
-      if (this.#records.has(input.hostThreadId)) {
-        throw new MappingStoreError("DUPLICATE_THREAD_ID", "Host Thread ID already exists");
-      }
-      const timestamp = this.#now().toISOString();
-      const record = storedThreadRecordV1Schema.parse({
-        formatVersion: 1,
-        revision: 1,
-        hostThreadId: input.hostThreadId,
-        createRequestId: input.createRequestId,
-        harnessId: input.harnessId,
-        state: "creating",
-        cwd: input.cwd,
-        title: input.title ?? "",
-        archived: false,
-        transportModelId: input.transportModelId,
-        ephemeral: input.ephemeral,
-        historyMode: input.historyMode,
-        ...(input.forkSource ? { forkSource: input.forkSource } : {}),
-        ...(input.subagent ? { subagent: input.subagent } : {}),
-        turnMappings: [],
-        createdAt: timestamp,
-        updatedAt: timestamp,
-      }) as StoredThreadRecordV1;
-      await this.#writeNew(record);
-      result = cloneRecord(record);
+      result = await this.#createProvisionalUnlocked(input);
     });
     if (!result) throw new MappingStoreError("IO_ERROR", "Provisional create produced no result");
     return result;
@@ -679,6 +781,36 @@ export class MappingStore {
     return result;
   }
 
+  async #updateDelegation(
+    delegationId: HostThreadId,
+    change: (current: StoredDelegationRecordV1) => StoredDelegationRecordV1 | null,
+  ): Promise<StoredDelegationRecordV1> {
+    this.#requireInitialized();
+    let result: StoredDelegationRecordV1 | null = null;
+    await this.#enqueue(async () => {
+      const current = this.#delegations.get(delegationId);
+      if (!current) {
+        throw new MappingStoreError("DELEGATION_NOT_FOUND", "Delegation was not found");
+      }
+      const changed = change(current);
+      if (!changed) {
+        result = cloneRecord(current);
+        return;
+      }
+      const next = storedDelegationRecordV1Schema.parse({
+        ...changed,
+        revision: current.revision + 1,
+        updatedAt: this.#now().toISOString(),
+      }) as StoredDelegationRecordV1;
+      await this.#replaceDelegationFile(next);
+      this.#delegations.set(delegationId, next);
+      this.#rebuildIndexes();
+      result = cloneRecord(next);
+    });
+    if (!result) throw new MappingStoreError("IO_ERROR", "Delegation update produced no result");
+    return result;
+  }
+
   #mergeMappings(
     current: StoredTurnMappingV1[],
     updates: StoredTurnMappingV1[],
@@ -756,6 +888,7 @@ export class MappingStore {
     const temp = `${target}.tmp-${randomUUID()}`;
     let handle: FileHandle | null = null;
     try {
+      await this.#beforeWriteDelegation?.(cloneRecord(record));
       handle = await open(temp, "wx", constants.S_IRUSR | constants.S_IWUSR);
       await handle.writeFile(`${JSON.stringify(record, null, 2)}\n`, "utf8");
       await handle.sync();
@@ -902,6 +1035,70 @@ export class MappingStore {
         this.#nativeTurns.set(nativeTurnKey(mapping), mapping.hostTurnId);
       }
     }
+  }
+
+  async #createProvisionalUnlocked(
+    input: CreateProvisionalThreadInput,
+  ): Promise<StoredThreadRecordV1> {
+    const existingThreadId = this.#createRequests.get(input.createRequestId);
+    if (existingThreadId) {
+      const existing = this.#records.get(existingThreadId);
+      if (!existing) throw new MappingStoreError("IO_ERROR", "Create request index is stale");
+      return cloneRecord(existing);
+    }
+    if (this.#records.has(input.hostThreadId)) {
+      throw new MappingStoreError("DUPLICATE_THREAD_ID", "Host Thread ID already exists");
+    }
+    const timestamp = this.#now().toISOString();
+    const record = storedThreadRecordV1Schema.parse({
+      formatVersion: 1,
+      revision: 1,
+      hostThreadId: input.hostThreadId,
+      createRequestId: input.createRequestId,
+      harnessId: input.harnessId,
+      state: "creating",
+      cwd: input.cwd,
+      title: input.title ?? "",
+      archived: false,
+      transportModelId: input.transportModelId,
+      ephemeral: input.ephemeral,
+      historyMode: input.historyMode,
+      ...(input.forkSource ? { forkSource: input.forkSource } : {}),
+      ...(input.subagent ? { subagent: input.subagent } : {}),
+      turnMappings: [],
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    }) as StoredThreadRecordV1;
+    await this.#writeNew(record);
+    return cloneRecord(record);
+  }
+
+  async #createDelegationUnlocked(input: CreateDelegationInput): Promise<StoredDelegationRecordV1> {
+    if (this.#delegations.has(input.delegationId)) {
+      throw new MappingStoreError("DUPLICATE_DELEGATION_ID", "Delegation ID already exists");
+    }
+    if (this.#delegationChildren.has(input.childHostThreadId)) {
+      throw new MappingStoreError("MAPPING_CONFLICT", "Child Thread already has a Delegation");
+    }
+    if (input.requestId && this.#delegationRequests.has(input.requestId)) {
+      throw new MappingStoreError(
+        "DUPLICATE_CREATE_REQUEST",
+        "Delegation Request ID already exists",
+      );
+    }
+    const timestamp = this.#now().toISOString();
+    const record = storedDelegationRecordV1Schema.parse({
+      formatVersion: 1,
+      revision: 1,
+      ...input,
+      status: input.status ?? "creating",
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    }) as StoredDelegationRecordV1;
+    await this.#replaceDelegationFile(record);
+    this.#delegations.set(record.delegationId, record);
+    this.#rebuildIndexes();
+    return cloneRecord(record);
   }
 
   async #enqueue(operation: () => Promise<void>): Promise<void> {

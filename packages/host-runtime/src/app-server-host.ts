@@ -107,6 +107,7 @@ import {
   DELEGATION_RUNTIME_TOKEN_ENV,
   DELEGATION_THREAD_ID_ENV,
   DelegationControlError,
+  delegationNextCommands,
 } from "./delegation-types.js";
 import { HarnessDelegationCoordinator } from "./harness-delegation-coordinator.js";
 import { loadHarnessPlugins } from "./harness-plugin-loader.js";
@@ -233,6 +234,8 @@ export interface AppServerHostOptions {
   onRequestRoute?: (observation: RequestRouteObservation) => void;
   updateCoordinator?: HostUpdateCoordinator;
   onDelegationApi?: (api: DelegationControlRegistration) => (() => void) | undefined;
+  /** Opaque Runtime epoch used by compact status / wait-many cursors. */
+  runtimeEpoch?: string;
 }
 
 interface TurnProjectionGate {
@@ -599,6 +602,7 @@ export class AppServerHost {
       repository: this.#repository,
       consumeOutputs: (thread) => this.#consumeHarnessOutputs(thread),
       diagnose: (error) => this.#diagnose(error),
+      ...(options.runtimeEpoch ? { epoch: options.runtimeEpoch } : {}),
     });
     this.#delegationCoordinator = new HarnessDelegationCoordinator({
       adapters: this.#externalAdapters,
@@ -626,6 +630,12 @@ export class AppServerHost {
       read: (input) => this.#delegationCoordinator.read(input),
       wait: (input) => this.#delegationCoordinator.wait(input),
       list: (input) => this.#delegationCoordinator.list(input),
+      status: (input) => this.#delegationCoordinator.status(input),
+      waitMany: (input) => this.#delegationCoordinator.waitMany(input),
+      evidence: (input) => this.#delegationCoordinator.evidence(input),
+      configuration: (input) => this.#delegationCoordinator.configuration(input),
+      release: (input) => this.#delegationCoordinator.release(input),
+      reconcile: (input) => this.#delegationCoordinator.reconcile(input),
       canHandleStart: (input) => this.#canHandleDelegationStart(input),
       ownsThread: (threadId) => this.#ownsDelegationThread(threadId),
     });
@@ -1774,7 +1784,16 @@ export class AppServerHost {
         this.#pendingOfficialTerminalStatuses.set(params.threadId, status);
       }
       if (delegation) {
-        await this.#repository.setDelegationStatus(delegation.delegationId, status);
+        const completedTurnId =
+          turn && typeof turn.id === "string" ? hostTurnIdSchema.safeParse(turn.id) : null;
+        if (completedTurnId?.success) {
+          await this.#repository.setDelegationTurnState(delegation.delegationId, {
+            latestHostTurnId: completedTurnId.data,
+            status,
+          });
+        } else {
+          await this.#repository.setDelegationStatus(delegation.delegationId, status);
+        }
       }
     }
   }
@@ -1889,6 +1908,10 @@ export class AppServerHost {
     };
   }
 
+  #delegationNext(threadId: string): { read: string; wait: string } {
+    return delegationNextCommands(this.#options.environment ?? process.env, threadId);
+  }
+
   async #startOfficialDelegation(
     input: DelegationStartInput & { parentThreadId: string; cwd: string },
   ): Promise<DelegationStartResult> {
@@ -1936,10 +1959,7 @@ export class AppServerHost {
         harnessId: "codex",
         deepLink: `codex://threads/${existing.childHostThreadId}`,
         status: existing.status,
-        next: {
-          read: `codexhost thread read ${existing.childHostThreadId}`,
-          wait: `codexhost thread wait ${existing.childHostThreadId} --timeout-ms 30000`,
-        },
+        next: this.#delegationNext(existing.childHostThreadId),
       };
     }
     if (requestedModel || input.thinkingOptionId) {
@@ -2051,10 +2071,7 @@ export class AppServerHost {
               },
             }
           : {}),
-        next: {
-          read: `codexhost thread read ${threadId}`,
-          wait: `codexhost thread wait ${threadId} --timeout-ms 30000`,
-        },
+        next: this.#delegationNext(threadId),
       };
     } catch (error) {
       this.#activeOfficialTurns.delete(threadId);
@@ -2112,10 +2129,7 @@ export class AppServerHost {
       turnId,
       harnessId: "codex",
       status: "running",
-      next: {
-        read: `codexhost thread read ${input.threadId}`,
-        wait: `codexhost thread wait ${input.threadId} --timeout-ms 30000`,
-      },
+      next: this.#delegationNext(input.threadId),
     };
   }
 
@@ -2194,7 +2208,16 @@ export class AppServerHost {
       hostThreadIdSchema.parse(input.threadId),
     );
     if (delegation && delegation.status !== snapshot.status) {
-      await this.#repository.setDelegationStatus(delegation.delegationId, snapshot.status);
+      const turnId = snapshot.turn?.turnId;
+      const parsed = turnId ? hostTurnIdSchema.safeParse(turnId) : null;
+      if (parsed?.success) {
+        await this.#repository.setDelegationTurnState(delegation.delegationId, {
+          latestHostTurnId: parsed.data,
+          status: snapshot.status,
+        });
+      } else {
+        await this.#repository.setDelegationStatus(delegation.delegationId, snapshot.status);
+      }
     }
     return snapshot;
   }
@@ -3876,6 +3899,7 @@ export class AppServerHost {
       } else {
         await this.#projectQuestion(thread, output.interaction);
       }
+      thread.changes.bump();
       return;
     }
     let event = output.event;
@@ -3939,6 +3963,7 @@ export class AppServerHost {
         thread.stateObserver.fault(thread.persistenceError);
         this.#diagnose("External Session state could not be persisted");
       }
+      thread.changes.bump();
       return;
     }
     if (event.type === "session.usage.changed") {
@@ -4058,6 +4083,24 @@ export class AppServerHost {
     const result = projection.projector.project(event as ProjectableHostEvent);
     if (event.type === "turn.started") {
       await this.#setThreadStatus(thread, { type: "active", activeFlags: [] });
+      const startedDelegation = await this.#repository.getDelegationByChild(
+        thread.record.hostThreadId,
+      );
+      if (startedDelegation) {
+        const eventTurnId = hostTurnIdSchema.parse(event.turnId);
+        const latest = startedDelegation.latestHostTurnId;
+        const active = thread.activeTurnId;
+        const stale =
+          (active !== null && active !== eventTurnId) ||
+          (active === null && latest !== undefined && latest !== eventTurnId);
+        if (!stale) {
+          await this.#repository.setDelegationTurnState(startedDelegation.delegationId, {
+            latestHostTurnId: eventTurnId,
+            status: "running",
+          });
+        }
+      }
+      thread.changes.bump();
     }
     if (event.type === "turn.completed") {
       if (!result.completedTurn) throw new Error("Turn projector returned no completed Turn");
@@ -4077,13 +4120,20 @@ export class AppServerHost {
       this.#signalActiveWorkChanged();
       const delegation = await this.#repository.getDelegationByChild(thread.record.hostThreadId);
       if (delegation) {
-        const status =
-          result.completedTurn.status === "failed"
-            ? "failed"
-            : result.completedTurn.status === "interrupted"
-              ? "interrupted"
-              : "completed";
-        await this.#repository.setDelegationStatus(delegation.delegationId, status);
+        const eventTurnId = hostTurnIdSchema.parse(event.turnId);
+        const latest = delegation.latestHostTurnId;
+        if (!latest || latest === eventTurnId) {
+          const status =
+            result.completedTurn.status === "failed"
+              ? "failed"
+              : result.completedTurn.status === "interrupted"
+                ? "interrupted"
+                : "completed";
+          await this.#repository.setDelegationTurnState(delegation.delegationId, {
+            latestHostTurnId: eventTurnId,
+            status,
+          });
+        }
       }
     }
     for (const message of result.messages) await this.#writer.json(message);
@@ -4096,6 +4146,7 @@ export class AppServerHost {
       );
       this.#externalSteering.terminal(thread.id, event.turnId, event.outcome);
     }
+    thread.changes.bump();
   }
 
   async #materializeSubagent(

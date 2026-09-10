@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 
-import { projectDelegationThreadSnapshot } from "../src/delegation-snapshot.js";
+import {
+  projectDelegationEvidence,
+  projectDelegationThreadSnapshot,
+} from "../src/delegation-snapshot.js";
 
 const completedTurns = [
   {
@@ -155,5 +158,26 @@ describe("delegation snapshot", () => {
       result: { availability: "pending" },
       progress: [{ text: "Still checking." }],
     });
+  });
+
+  it("EVIDENCE-03 keeps default reads private and omits reasoning from evidence", () => {
+    const snapshot = projectDelegationThreadSnapshot({
+      threadId: "thread-1",
+      harnessId: "pi",
+      thread: { status: { type: "idle" } },
+      turns: completedTurns,
+      running: false,
+      view: "result",
+    });
+    expect(JSON.stringify(snapshot)).not.toContain("secret output");
+    expect(JSON.stringify(snapshot)).not.toContain("hidden");
+    const evidence = projectDelegationEvidence({
+      threadId: "thread-1",
+      turns: completedTurns,
+      includeOutput: true,
+    });
+    expect(evidence.items.some((item) => item.kind === "tool")).toBe(true);
+    expect(JSON.stringify(evidence)).not.toContain("hidden");
+    expect(JSON.stringify(evidence)).not.toContain("reason-1");
   });
 });

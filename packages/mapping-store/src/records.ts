@@ -64,6 +64,7 @@ export const storedThreadRecordV1Schema = z
       .strict()
       .optional(),
     turnMappings: z.array(storedTurnMappingV1Schema),
+    pendingHostTurnIds: z.array(hostTurnIdSchema).max(32).optional(),
     createdAt: isoDateSchema,
     updatedAt: isoDateSchema,
   })
@@ -153,6 +154,7 @@ export const storedDelegationRecordV1Schema = z
     status: delegationStatusSchema,
     requestId: nonBlankTextSchema.max(1_024).optional(),
     taskDigest: z.string().regex(/^[a-f0-9]{64}$/u),
+    latestHostTurnId: hostTurnIdSchema.optional(),
     createdAt: isoDateSchema,
     updatedAt: isoDateSchema,
   })
@@ -173,6 +175,7 @@ export interface CreateDelegationInput {
   status?: DelegationStatus;
   requestId?: string;
   taskDigest: string;
+  latestHostTurnId?: HostTurnId;
 }
 
 export interface FindRecentDelegationInput {

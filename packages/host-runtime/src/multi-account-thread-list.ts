@@ -117,6 +117,15 @@ export async function aggregateOfficialAccountThreadListPage(input: {
   requestAccountPage(accountId: string, params: JsonObject): Promise<OfficialThreadListPage>;
   observeThread?(threadId: string, accountId: string): Promise<void>;
 }): Promise<OfficialThreadListPage> {
+  // The caller asks for an exact row count when it resolves a partially
+  // consumed batch into a resumable cursor, and that count is smaller than the
+  // page size of the originating query. Honouring `query.limit` instead would
+  // over-deliver and break the caller's prefix accounting.
+  const requestedLimit = input.params.limit;
+  const pageLimit =
+    typeof requestedLimit === "number" && Number.isSafeInteger(requestedLimit) && requestedLimit > 0
+      ? requestedLimit
+      : input.query.limit;
   const cursorValue = typeof input.params.cursor === "string" ? input.params.cursor : null;
   const cursor = cursorValue
     ? decodeCursor(cursorValue)
@@ -155,7 +164,7 @@ export async function aggregateOfficialAccountThreadListPage(input: {
         if (source.done) return null;
       }
       source.batchStart = source.cursor;
-      const page = await request(source, source.cursor, Math.max(1, input.query.limit));
+      const page = await request(source, source.cursor, Math.max(1, pageLimit));
       if (!source.requestedThisPage) {
         source.backwardsCursor = page.backwardsCursor;
         source.requestedThisPage = true;
@@ -178,7 +187,7 @@ export async function aggregateOfficialAccountThreadListPage(input: {
 
   const output: JsonObject[] = [];
   const emitted = new Set<string>();
-  while (output.length < input.query.limit) {
+  while (output.length < pageLimit) {
     const candidates = await Promise.all(
       sources.map(async (source) => ({ source, entry: await ensure(source) })),
     );

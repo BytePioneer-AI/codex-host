@@ -218,6 +218,8 @@ CodexHost tries not to take that path:
 - **Harness side:** Integrate each Harness through its native interface. Pi uses official RPC, Claude Code uses the Agent SDK / CLI, then results are projected into Desktop’s existing streaming output, tools, diffs, approvals, and questions.
 - **Orchestration side:** Create a separate Native Session and regular writable Thread for the delegated Harness, and store the delegation relation separately. Creation and result observation stay separate, so the initiator explicitly chooses to read, wait, or leave the task running in the background.
 
+For sustained observation, `thread observe` renews bounded waits internally and filters ordinary progress before returning actionable changes. See [observer usage and outer-tool limitations](thread-observer.md).
+
 The goal is fidelity, not merely making the conversation work. Streaming, tool status, reliable patches, native approvals, and questions should come from the Harness itself whenever possible, rather than being guessed or fabricated by the Host.
 
 </details>

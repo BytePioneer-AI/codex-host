@@ -21,6 +21,7 @@ import {
   hostThreadIdSchema,
   hostTurnIdSchema,
   type HostThreadId,
+  type HostTurnId,
   type NativeCheckpointRef,
   type NativeSessionRef,
   type NativeTurnRef,
@@ -37,10 +38,38 @@ export interface ExternalThreadStore {
   findRecentDelegation(input: FindRecentDelegationInput): Promise<StoredDelegationRecordV1 | null>;
   listDelegations(parentHostThreadId?: HostThreadId): Promise<StoredDelegationRecordV1[]>;
   createDelegation(input: CreateDelegationInput): Promise<StoredDelegationRecordV1>;
+  createDelegatedThread(input: {
+    thread: CreateProvisionalThreadInput;
+    delegation: CreateDelegationInput;
+  }): Promise<{
+    thread: StoredThreadRecordV1;
+    delegation: StoredDelegationRecordV1;
+    reused: boolean;
+  }>;
   setDelegationStatus(
     delegationId: HostThreadId,
     status: DelegationStatus,
   ): Promise<StoredDelegationRecordV1>;
+  setDelegationTurnState(
+    delegationId: HostThreadId,
+    input: { latestHostTurnId: HostTurnId; status: DelegationStatus },
+  ): Promise<StoredDelegationRecordV1>;
+  setDelegationLatestTurn(
+    delegationId: HostThreadId,
+    latestHostTurnId: HostTurnId,
+  ): Promise<StoredDelegationRecordV1>;
+  addPendingHostTurn(
+    hostThreadId: HostThreadId,
+    hostTurnId: HostTurnId,
+  ): Promise<StoredThreadRecordV1>;
+  consumePendingHostTurn(
+    hostThreadId: HostThreadId,
+    hostTurnId: HostTurnId,
+  ): Promise<StoredThreadRecordV1>;
+  setPendingHostTurnIds(
+    hostThreadId: HostThreadId,
+    pendingHostTurnIds: readonly HostTurnId[],
+  ): Promise<StoredThreadRecordV1>;
   removeDelegation(delegationId: HostThreadId): Promise<void>;
   createProvisional(input: CreateProvisionalThreadInput): Promise<StoredThreadRecordV1>;
   commitReady(input: CommitReadyThreadInput): Promise<StoredThreadRecordV1>;
@@ -142,11 +171,57 @@ export class ExternalThreadRepository {
     return this.store.createDelegation(input);
   }
 
+  createDelegatedThread(input: {
+    thread: CreateProvisionalThreadInput;
+    delegation: CreateDelegationInput;
+  }): Promise<{
+    thread: StoredThreadRecordV1;
+    delegation: StoredDelegationRecordV1;
+    reused: boolean;
+  }> {
+    return this.store.createDelegatedThread(input);
+  }
+
+  setDelegationLatestTurn(
+    delegationId: HostThreadId,
+    latestHostTurnId: HostTurnId,
+  ): Promise<StoredDelegationRecordV1> {
+    return this.store.setDelegationLatestTurn(delegationId, latestHostTurnId);
+  }
+
+  addPendingHostTurn(
+    hostThreadId: HostThreadId,
+    hostTurnId: HostTurnId,
+  ): Promise<StoredThreadRecordV1> {
+    return this.store.addPendingHostTurn(hostThreadId, hostTurnId);
+  }
+
+  consumePendingHostTurn(
+    hostThreadId: HostThreadId,
+    hostTurnId: HostTurnId,
+  ): Promise<StoredThreadRecordV1> {
+    return this.store.consumePendingHostTurn(hostThreadId, hostTurnId);
+  }
+
+  setPendingHostTurnIds(
+    hostThreadId: HostThreadId,
+    pendingHostTurnIds: readonly HostTurnId[],
+  ): Promise<StoredThreadRecordV1> {
+    return this.store.setPendingHostTurnIds(hostThreadId, pendingHostTurnIds);
+  }
+
   setDelegationStatus(
     delegationId: HostThreadId,
     status: DelegationStatus,
   ): Promise<StoredDelegationRecordV1> {
     return this.store.setDelegationStatus(delegationId, status);
+  }
+
+  setDelegationTurnState(
+    delegationId: HostThreadId,
+    input: { latestHostTurnId: HostTurnId; status: DelegationStatus },
+  ): Promise<StoredDelegationRecordV1> {
+    return this.store.setDelegationTurnState(delegationId, input);
   }
 
   removeDelegation(delegationId: HostThreadId): Promise<void> {
@@ -428,12 +503,16 @@ export class ExternalThreadRepository {
         (mapping) => [nativeTurnKey(mapping.nativeTurnRef), mapping] as const,
       ),
     );
+    const alreadyMappedHostIds = new Set(record.turnMappings.map((mapping) => mapping.hostTurnId));
+    const pendingHostTurnIds = [...(record.pendingHostTurnIds ?? [])].filter(
+      (id) => !alreadyMappedHostIds.has(id),
+    );
     const aligned = snapshot.turns.map((turn) => {
       const existing = mappingsByNative.get(nativeTurnKey(turn.nativeTurnRef));
       const mapping =
         existing ??
         ({
-          hostTurnId: hostTurnIdSchema.parse(randomUUID()),
+          hostTurnId: hostTurnIdSchema.parse(pendingHostTurnIds.shift() ?? randomUUID()),
           nativeTurnRef: turn.nativeTurnRef,
           ...(turn.checkpoint ? { nativeCheckpointRef: turn.checkpoint } : {}),
         } satisfies StoredTurnMappingV1);
@@ -446,6 +525,8 @@ export class ExternalThreadRepository {
         },
       };
     });
+    const mappedHostTurnIds = new Set(aligned.map(({ mapping }) => mapping.hostTurnId));
+    const remainingPending = pendingHostTurnIds.filter((id) => !mappedHostTurnIds.has(id));
 
     const orderedMappings = aligned.map(({ mapping }) => mapping);
     const mappingsChanged =
@@ -454,9 +535,15 @@ export class ExternalThreadRepository {
         const persisted = record.turnMappings[index];
         return !persisted || !sameMapping(mapping, persisted);
       });
-    const nextRecord = mappingsChanged
+    let nextRecord = mappingsChanged
       ? await this.store.reconcileTurnMappings(record.hostThreadId, orderedMappings)
       : record;
+    if (JSON.stringify(remainingPending) !== JSON.stringify(record.pendingHostTurnIds ?? [])) {
+      nextRecord = await this.store.setPendingHostTurnIds(
+        nextRecord.hostThreadId,
+        remainingPending,
+      );
+    }
     return {
       record: nextRecord,
       turns: aligned.map(({ mapping, snapshot: turn }) =>

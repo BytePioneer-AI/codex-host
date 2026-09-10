@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -14,7 +15,9 @@ import { ExternalThreadRuntime } from "../src/external-thread-runtime.js";
 
 async function fixture(
   adapter = new FakeHarnessAdapter(harnessIdSchema.parse("pi")),
+  environment: NodeJS.ProcessEnv = {},
   officialThreadCwd: (threadId: string) => Promise<string | undefined> = async () => undefined,
+  completeTurnBeforeReturn = false,
 ) {
   const directory = await mkdtemp(path.join(os.tmpdir(), "codexhost-delegation-coordinator-"));
   const store = new MappingStore({ directory });
@@ -31,7 +34,7 @@ async function fixture(
   });
   const coordinator = new HarnessDelegationCoordinator({
     adapters,
-    environment: {},
+    environment,
     externalRuntime: runtime,
     repository,
     registerExternalThread: (input) => {
@@ -48,6 +51,20 @@ async function fixture(
         input: [{ type: "text", text }],
       });
       if (!result.ok) throw new Error(result.error.message);
+      if (completeTurnBeforeReturn) {
+        const session = adapter.sessions.at(-1);
+        session?.succeedTurn();
+        thread.running = false;
+        thread.activeTurnId = null;
+        thread.turns.push({ id: turnId, status: "completed" });
+        const delegation = await repository.getDelegationByChild(thread.record.hostThreadId);
+        if (delegation) {
+          await repository.setDelegationTurnState(delegation.delegationId, {
+            latestHostTurnId: hostTurnIdSchema.parse(turnId),
+            status: "completed",
+          });
+        }
+      }
     },
     notifyThreadStarted: async (thread) => {
       notifications.push(thread);
@@ -103,6 +120,24 @@ class FailingTurnAdapter extends FakeHarnessAdapter {
 }
 
 describe("HarnessDelegationCoordinator", () => {
+  it("builds follow-up commands from the Host-provided CLI path", async () => {
+    const adapter = new RecordingAdapter(harnessIdSchema.parse("pi"));
+    const cliPath = "/Applications/codexhost.app/Contents/MacOS/codexhost";
+    const value = await fixture(adapter, { CODEXHOST_CLI_PATH: cliPath });
+    try {
+      const result = await value.coordinator.start({
+        harnessId: "pi",
+        task: "review auth",
+        cwd: "/synthetic",
+        parentThreadId: "parent-thread",
+      });
+      expect(result.next.read).toBe(`${cliPath} thread read ${result.threadId}`);
+      expect(result.next.wait).toBe(`${cliPath} thread wait ${result.threadId} --timeout-ms 30000`);
+    } finally {
+      await value.close();
+    }
+  });
+
   it("creates a normal writable child Thread and publishes it only after initial delivery", async () => {
     const adapter = new RecordingAdapter(harnessIdSchema.parse("pi"));
     const value = await fixture(adapter);
@@ -145,7 +180,7 @@ describe("HarnessDelegationCoordinator", () => {
     const officialThreadCwd = vi.fn(async (threadId: string) =>
       threadId === "official-parent" ? "/official-workspace" : undefined,
     );
-    const value = await fixture(adapter, officialThreadCwd);
+    const value = await fixture(adapter, {}, officialThreadCwd);
     try {
       await value.repository.createProvisional({
         hostThreadId: hostThreadIdSchema.parse("stored-parent"),
@@ -315,7 +350,7 @@ describe("HarnessDelegationCoordinator", () => {
     }
   });
 
-  it("rolls back Session, Thread, and Delegation when initial task delivery fails", async () => {
+  it("keeps a manageable record when initial delivery fails after Native Session identity exists", async () => {
     const value = await fixture(new FailingTurnAdapter(harnessIdSchema.parse("pi")));
     try {
       await expect(
@@ -327,9 +362,14 @@ describe("HarnessDelegationCoordinator", () => {
         }),
       ).rejects.toMatchObject({ code: "DELEGATION_FAILED" });
       expect(value.notifications).toHaveLength(0);
-      expect(value.runtime.values()).toHaveLength(0);
-      await expect(value.repository.list()).resolves.toHaveLength(0);
-      await expect(value.repository.listDelegations()).resolves.toHaveLength(0);
+      const records = await value.repository.list();
+      expect(records).toHaveLength(1);
+      expect(records[0]?.state).toBe("ready");
+      const delegations = await value.repository.listDelegations();
+      expect(delegations).toHaveLength(1);
+      await expect(
+        value.coordinator.read({ threadId: records[0]?.hostThreadId ?? "", view: "result" }),
+      ).resolves.toMatchObject({ harnessId: "pi" });
     } finally {
       await value.close();
     }
@@ -409,6 +449,517 @@ describe("HarnessDelegationCoordinator", () => {
         }),
       ).resolves.toMatchObject({ timedOut: true, status: "running" });
       expect(running).toHaveBeenCalled();
+    } finally {
+      await value.close();
+    }
+  });
+
+  it("CREATION-01 delivers once for concurrent same request-id callers", async () => {
+    const value = await fixture();
+    try {
+      const original = value.adapter.open.bind(value.adapter);
+      let release: () => void = () => undefined;
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      let opens = 0;
+      value.adapter.open = async (input) => {
+        opens += 1;
+        if (opens === 1) await gate;
+        return original(input);
+      };
+      const input = {
+        harnessId: "pi",
+        task: "same task",
+        cwd: "/synthetic",
+        parentThreadId: "parent-thread",
+        requestId: "concurrent-1",
+      };
+      const first = value.coordinator.start(input);
+      const second = value.coordinator.start(input);
+      await Promise.resolve();
+      release();
+      const [left, right] = await Promise.all([first, second]);
+      expect(left.threadId).toBe(right.threadId);
+      expect(left.delegationId).toBe(right.delegationId);
+      expect(left.turnId).toBe(right.turnId);
+      expect(left.turnId).not.toBe("pending");
+      expect(opens).toBe(1);
+      expect(value.adapter.sessions).toHaveLength(1);
+      await expect(
+        value.coordinator.read({ threadId: left.threadId, view: "result" }),
+      ).resolves.toMatchObject({
+        threadId: left.threadId,
+      });
+    } finally {
+      await value.close();
+    }
+  });
+
+  it("CREATION-02 rejects the same request-id with a conflicting parent or task", async () => {
+    const value = await fixture();
+    try {
+      await value.coordinator.start({
+        harnessId: "pi",
+        task: "task one",
+        cwd: "/synthetic",
+        parentThreadId: "parent-a",
+        requestId: "conflict-1",
+      });
+      await expect(
+        value.coordinator.start({
+          harnessId: "pi",
+          task: "task one",
+          cwd: "/synthetic",
+          parentThreadId: "parent-b",
+          requestId: "conflict-1",
+        }),
+      ).rejects.toMatchObject({ code: "INVALID_ARGUMENT" });
+      await expect(
+        value.coordinator.start({
+          harnessId: "pi",
+          task: "task two",
+          cwd: "/synthetic",
+          parentThreadId: "parent-a",
+          requestId: "conflict-1",
+        }),
+      ).rejects.toMatchObject({ code: "INVALID_ARGUMENT" });
+      const left = value.coordinator.start({
+        harnessId: "pi",
+        task: "parallel-a",
+        cwd: "/synthetic",
+        parentThreadId: "parent-a",
+        requestId: "parallel-a",
+      });
+      const right = value.coordinator.start({
+        harnessId: "pi",
+        task: "parallel-b",
+        cwd: "/synthetic",
+        parentThreadId: "parent-a",
+        requestId: "parallel-b",
+      });
+      const [first, second] = await Promise.all([left, right]);
+      expect(first.threadId).not.toBe(second.threadId);
+    } finally {
+      await value.close();
+    }
+  });
+
+  it("TURN-05 rejects a stale expected-turn without cancelling the new Turn", async () => {
+    const value = await fixture();
+    try {
+      const started = await value.coordinator.start({
+        harnessId: "pi",
+        task: "first",
+        cwd: "/synthetic",
+        parentThreadId: "parent-thread",
+      });
+      const session = value.adapter.sessions[0];
+      if (!session) throw new Error("Missing session");
+      session.succeedTurn();
+      const thread = value.runtime.get(started.threadId);
+      if (!thread) throw new Error("Missing thread");
+      thread.running = false;
+      thread.activeTurnId = null;
+      const followUp = await value.coordinator.send({
+        threadId: started.threadId,
+        message: "second",
+      });
+      await expect(
+        value.coordinator.cancel({
+          threadId: started.threadId,
+          expectedTurnId: started.turnId,
+        }),
+      ).rejects.toMatchObject({ code: "STALE_TURN" });
+      expect(thread.activeTurnId).toBe(followUp.turnId);
+    } finally {
+      await value.close();
+    }
+  });
+
+  it("rejects thread release for Harnesses without owned-job quiescence", async () => {
+    const value = await fixture();
+    try {
+      const started = await value.coordinator.start({
+        harnessId: "pi",
+        task: "first",
+        cwd: "/synthetic",
+        parentThreadId: "parent-thread",
+      });
+      const session = value.adapter.sessions[0];
+      if (!session) throw new Error("Missing session");
+      session.succeedTurn();
+      const thread = value.runtime.get(started.threadId);
+      if (!thread) throw new Error("Missing thread");
+      thread.running = false;
+      thread.activeTurnId = null;
+      await expect(
+        value.coordinator.release({ threadId: started.threadId }),
+      ).resolves.toMatchObject({
+        released: false,
+        busy: false,
+        quiescence: "unsupported",
+      });
+      expect(value.runtime.get(started.threadId)).toBeDefined();
+    } finally {
+      await value.close();
+    }
+  });
+
+  it("rejects a stale expected-turn on release of an idle Thread", async () => {
+    const value = await fixture();
+    try {
+      const started = await value.coordinator.start({
+        harnessId: "pi",
+        task: "first",
+        cwd: "/synthetic",
+        parentThreadId: "parent-thread",
+      });
+      const session = value.adapter.sessions[0];
+      if (!session) throw new Error("Missing session");
+      session.succeedTurn();
+      const thread = value.runtime.get(started.threadId);
+      if (!thread) throw new Error("Missing thread");
+      thread.running = false;
+      thread.activeTurnId = null;
+      const followUp = await value.coordinator.send({
+        threadId: started.threadId,
+        message: "second",
+      });
+      session.succeedTurn();
+      thread.running = false;
+      thread.activeTurnId = null;
+      thread.turns = [{ id: followUp.turnId, status: "completed" }];
+      await expect(
+        value.coordinator.release({
+          threadId: started.threadId,
+          expectedTurnId: started.turnId,
+        }),
+      ).rejects.toMatchObject({ code: "STALE_TURN" });
+      expect(value.runtime.get(started.threadId)).toBeDefined();
+    } finally {
+      await value.close();
+    }
+  });
+
+  it("retries send with the same request-id instead of starting a second Turn", async () => {
+    const value = await fixture();
+    try {
+      const started = await value.coordinator.start({
+        harnessId: "pi",
+        task: "first",
+        cwd: "/synthetic",
+        parentThreadId: "parent-thread",
+      });
+      const session = value.adapter.sessions[0];
+      if (!session) throw new Error("Missing session");
+      session.succeedTurn();
+      const thread = value.runtime.get(started.threadId);
+      if (!thread) throw new Error("Missing thread");
+      thread.running = false;
+      thread.activeTurnId = null;
+      const first = await value.coordinator.send({
+        threadId: started.threadId,
+        message: "follow-up",
+        requestId: "send-1",
+      });
+      thread.running = false;
+      thread.activeTurnId = null;
+      const retry = await value.coordinator.send({
+        threadId: started.threadId,
+        message: "follow-up",
+        requestId: "send-1",
+      });
+      expect(retry.turnId).toBe(first.turnId);
+      expect(thread.activeTurnId).toBeNull();
+      await expect(
+        value.coordinator.send({
+          threadId: started.threadId,
+          message: "other payload",
+          requestId: "send-1",
+        }),
+      ).rejects.toMatchObject({ code: "INVALID_ARGUMENT" });
+    } finally {
+      await value.close();
+    }
+  });
+
+  it("does not assign a failed send Turn ID to the next successful send", async () => {
+    const value = await fixture();
+    try {
+      const started = await value.coordinator.start({
+        harnessId: "pi",
+        task: "first",
+        cwd: "/synthetic",
+        parentThreadId: "parent-thread",
+      });
+      const session = value.adapter.sessions[0];
+      if (!session) throw new Error("Missing session");
+      session.succeedTurn();
+      const thread = value.runtime.get(started.threadId);
+      if (!thread) throw new Error("Missing thread");
+      thread.running = false;
+      thread.activeTurnId = null;
+      session.rejectNextTurn({
+        code: "nativeFailure",
+        message: "synthetic follow-up failure",
+        retryable: false,
+      });
+      const pendingBefore = [...(thread.record.pendingHostTurnIds ?? [])];
+      await expect(
+        value.coordinator.send({ threadId: started.threadId, message: "failed payload" }),
+      ).rejects.toMatchObject({ code: "DELEGATION_FAILED" });
+      expect(thread.record.pendingHostTurnIds ?? []).toEqual(pendingBefore);
+      expect(thread.activeTurnId).toBeNull();
+      const success = await value.coordinator.send({
+        threadId: started.threadId,
+        message: "ok payload",
+      });
+      expect(thread.activeTurnId).toBe(success.turnId);
+      expect(success.turnId).not.toBe(started.turnId);
+    } finally {
+      await value.close();
+    }
+  });
+
+  it("does not keep a completed follow-up listed as running", async () => {
+    const value = await fixture(
+      new FakeHarnessAdapter(harnessIdSchema.parse("pi")),
+      {},
+      async () => undefined,
+      true,
+    );
+    try {
+      const started = await value.coordinator.start({
+        harnessId: "pi",
+        task: "first",
+        cwd: "/synthetic",
+        parentThreadId: "parent-thread",
+      });
+      const listedStart = await value.coordinator.list({
+        parentThreadId: "parent-thread",
+        limit: 25,
+        sort: "created-desc",
+      });
+      expect(listedStart.threads[0]?.status).toBe("completed");
+      const followUp = await value.coordinator.send({
+        threadId: started.threadId,
+        message: "second",
+      });
+      const listed = await value.coordinator.list({
+        parentThreadId: "parent-thread",
+        limit: 25,
+        sort: "created-desc",
+      });
+      expect(listed.threads[0]?.status).toBe("completed");
+      expect(followUp.turnId).not.toBe(started.turnId);
+    } finally {
+      await value.close();
+    }
+  });
+
+  it("read repairs leftover running Delegation from a recovered completed Turn", async () => {
+    const value = await fixture();
+    try {
+      const started = await value.coordinator.start({
+        harnessId: "pi",
+        task: "first",
+        cwd: "/synthetic",
+        parentThreadId: "parent-thread",
+      });
+      const thread = value.runtime.get(started.threadId);
+      if (!thread) throw new Error("Missing thread");
+      const session = value.adapter.sessions[0];
+      session?.succeedTurn();
+      thread.running = false;
+      thread.activeTurnId = null;
+      thread.turns = [{ id: started.turnId, status: "completed" }];
+      await expect(
+        value.repository.getDelegationByChild(hostThreadIdSchema.parse(started.threadId)),
+      ).resolves.toMatchObject({ status: "running", latestHostTurnId: started.turnId });
+      const snapshot = await value.coordinator.read({
+        threadId: started.threadId,
+        view: "result",
+      });
+      expect(snapshot.status).toBe("completed");
+      expect(snapshot.turn?.turnId).toBe(started.turnId);
+      await expect(
+        value.repository.getDelegationByChild(hostThreadIdSchema.parse(started.threadId)),
+      ).resolves.toMatchObject({
+        status: "completed",
+        latestHostTurnId: started.turnId,
+      });
+      const listed = await value.coordinator.list({
+        parentThreadId: "parent-thread",
+        limit: 25,
+        sort: "created-desc",
+      });
+      expect(listed.threads[0]?.status).toBe("completed");
+    } finally {
+      await value.close();
+    }
+  });
+
+  it("reopens Delegation status to running for a follow-up Turn", async () => {
+    const value = await fixture();
+    try {
+      const started = await value.coordinator.start({
+        harnessId: "pi",
+        task: "first",
+        cwd: "/synthetic",
+        parentThreadId: "parent-thread",
+      });
+      const session = value.adapter.sessions[0];
+      if (!session) throw new Error("Missing session");
+      session.succeedTurn();
+      const thread = value.runtime.get(started.threadId);
+      if (!thread) throw new Error("Missing thread");
+      thread.running = false;
+      thread.activeTurnId = null;
+      const delegation = await value.repository.getDelegationByChild(
+        hostThreadIdSchema.parse(started.threadId),
+      );
+      if (!delegation) throw new Error("Missing delegation");
+      await value.repository.setDelegationStatus(delegation.delegationId, "completed");
+      await value.coordinator.send({
+        threadId: started.threadId,
+        message: "second",
+      });
+      await expect(
+        value.repository.getDelegationByChild(hostThreadIdSchema.parse(started.threadId)),
+      ).resolves.toMatchObject({ status: "running" });
+    } finally {
+      await value.close();
+    }
+  });
+
+  it("does not hot-loop wait-many when a target is an official Thread", async () => {
+    const value = await fixture();
+    try {
+      const officialId = hostThreadIdSchema.parse(randomUUID());
+      const running = {
+        threadId: officialId,
+        harnessId: "codex" as const,
+        status: "running" as const,
+        turn: { turnId: "turn-1", status: "running" as const },
+        progress: [],
+        result: { availability: "pending" as const },
+        nextCursor: "cursor",
+      };
+      const completed = {
+        ...running,
+        status: "completed" as const,
+        turn: { turnId: "turn-1", status: "completed" as const },
+        result: { availability: "available" as const, text: "done" },
+      };
+      let reads = 0;
+      const read = vi.fn(async () => {
+        reads += 1;
+        return reads <= 2 ? running : completed;
+      });
+      Object.assign(value.coordinator, { read });
+      const first = await value.coordinator.waitMany({
+        timeoutMs: 0,
+        targets: [{ threadId: officialId }],
+      });
+      const afterRevision = first.results[0]?.revision;
+      if (!afterRevision) throw new Error("Missing official revision");
+      const started = Date.now();
+      const result = await value.coordinator.waitMany({
+        timeoutMs: 400,
+        targets: [{ threadId: officialId, afterRevision }],
+      });
+      const elapsed = Date.now() - started;
+      expect(elapsed).toBeLessThan(350);
+      expect(result.timedOut).toBe(false);
+      expect(result.results[0]).toMatchObject({ outcome: "changed" });
+    } finally {
+      await value.close();
+    }
+  });
+
+  it("keeps unchanged wait-many for three idle targets under 4KB without bodies", async () => {
+    const value = await fixture();
+    const cwd = `/synthetic/${"workspace".repeat(20)}`;
+    try {
+      const started = [];
+      for (const label of ["A", "B", "C"] as const) {
+        const row = await value.coordinator.start({
+          harnessId: "pi",
+          task: `OBSERVE04_BODY_${"x".repeat(1_000)}:${label}`,
+          cwd,
+          parentThreadId: "parent-thread",
+        });
+        const session = value.adapter.sessions.at(-1);
+        if (!session) throw new Error("Missing session");
+        session.appendText(`OBSERVE04_BODY_${"x".repeat(100_000)}:${label}`);
+        session.succeedTurn();
+        const thread = value.runtime.get(row.threadId);
+        if (!thread) throw new Error("Missing thread");
+        thread.running = false;
+        thread.activeTurnId = null;
+        started.push(row);
+      }
+      const statuses = await Promise.all(
+        started.map((row) => value.coordinator.status({ threadId: row.threadId })),
+      );
+      const result = await value.coordinator.waitMany({
+        timeoutMs: 0,
+        targets: started.map((row, index) => ({
+          threadId: row.threadId,
+          afterRevision: statuses[index]?.revision,
+        })),
+      });
+      const text = JSON.stringify(result);
+      expect(result.results).toHaveLength(3);
+      expect(result.results.every((row) => row.outcome === "timedOut")).toBe(true);
+      expect(result.results.every((row) => row.status && !("cwd" in row.status))).toBe(true);
+      expect(result.results.every((row) => row.status && !("configuration" in row.status))).toBe(
+        true,
+      );
+      expect(text.includes("OBSERVE04_BODY_")).toBe(false);
+      expect(Buffer.byteLength(text)).toBeLessThanOrEqual(4096);
+    } finally {
+      await value.close();
+    }
+  });
+
+  it("does not return a cached send after the Session is released", async () => {
+    const adapter = new FakeHarnessAdapter(harnessIdSchema.parse("pi"));
+    Object.assign(adapter, {
+      stopOwnedJobs: async () => ({ quiescence: "confirmed" as const }),
+    });
+    const value = await fixture(adapter);
+    try {
+      const started = await value.coordinator.start({
+        harnessId: "pi",
+        task: "first",
+        cwd: "/synthetic",
+        parentThreadId: "parent-thread",
+      });
+      const session = value.adapter.sessions[0];
+      if (!session) throw new Error("Missing session");
+      session.succeedTurn();
+      const thread = value.runtime.get(started.threadId);
+      if (!thread) throw new Error("Missing thread");
+      thread.running = false;
+      thread.activeTurnId = null;
+      const first = await value.coordinator.send({
+        threadId: started.threadId,
+        message: "follow-up",
+        requestId: "send-1",
+      });
+      thread.running = false;
+      thread.activeTurnId = null;
+      await expect(
+        value.coordinator.release({ threadId: started.threadId }),
+      ).resolves.toMatchObject({ released: true, quiescence: "confirmed" });
+      const retry = await value.coordinator.send({
+        threadId: started.threadId,
+        message: "follow-up",
+        requestId: "send-1",
+      });
+      expect(retry.turnId).not.toBe(first.turnId);
     } finally {
       await value.close();
     }

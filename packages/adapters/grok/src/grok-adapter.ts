@@ -168,6 +168,11 @@ export interface GrokAcpTransportLike {
   setModel(modelId: string, reasoningEffort?: string): Promise<void>;
   cancel(): Promise<void>;
   close(): Promise<void>;
+  ownedProcess?(): { pid: number; pgid: number; startedAtMs: number } | null;
+  stopOwnedJobs?(timeoutMs?: number): Promise<{
+    quiescence: "confirmed" | "unknown";
+    proof?: { pid: number; pgid: number; scope: string };
+  }>;
 }
 
 interface ActiveTool {
@@ -1402,6 +1407,14 @@ class GrokHarnessSession implements HarnessSession {
     this.#channel.end();
   }
 
+  async stopOwnedJobs(): Promise<{
+    quiescence: "confirmed" | "unknown" | "unsupported";
+    proof?: { pid: number; pgid: number; scope: string };
+  }> {
+    if (typeof this.#transport.stopOwnedJobs !== "function") return { quiescence: "unsupported" };
+    return this.#transport.stopOwnedJobs(this.#closeTimeoutMs);
+  }
+
   #fault(error: GrokTransportError): void {
     if (this.#phase !== "open") return;
     const normalized = normalizeError(error, "processExited");
@@ -1843,6 +1856,16 @@ export class GrokAdapter implements HarnessAdapter {
       await transport.close().catch(() => undefined);
       return { ok: false, error: normalizeError(error, "unavailable") };
     }
+  }
+
+  async stopOwnedJobs(session: HarnessSession): Promise<{
+    quiescence: "confirmed" | "unknown" | "unsupported";
+    proof?: { pid: number; pgid: number; scope: string };
+  }> {
+    if (!(session instanceof GrokHarnessSession)) {
+      return { quiescence: "unsupported" };
+    }
+    return session.stopOwnedJobs();
   }
 
   close(): Promise<void> {

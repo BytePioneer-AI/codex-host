@@ -11,6 +11,12 @@ import {
   type ThreadSendInput,
   type ThreadReadInput,
   type ThreadWaitInput,
+  type ThreadStatusInput,
+  type ThreadWaitManyInput,
+  type ThreadEvidenceInput,
+  type ThreadConfigurationInput,
+  type ThreadReleaseInput,
+  type DelegationReconcileInput,
 } from "./delegation-types.js";
 
 const MAX_REQUEST_BYTES = 2 * 1024 * 1024;
@@ -111,6 +117,40 @@ export async function startDelegationControlServer(input: {
           return;
         case "/v1/thread/list":
           writeJson(response, 200, await input.api.list(body as unknown as ThreadListInput));
+          return;
+        case "/v1/thread/status":
+          writeJson(response, 200, await input.api.status(body as unknown as ThreadStatusInput));
+          return;
+        case "/v1/thread/wait-many":
+          writeJson(
+            response,
+            200,
+            await input.api.waitMany(body as unknown as ThreadWaitManyInput),
+          );
+          return;
+        case "/v1/thread/evidence":
+          writeJson(
+            response,
+            200,
+            await input.api.evidence(body as unknown as ThreadEvidenceInput),
+          );
+          return;
+        case "/v1/thread/configuration":
+          writeJson(
+            response,
+            200,
+            await input.api.configuration(body as unknown as ThreadConfigurationInput),
+          );
+          return;
+        case "/v1/thread/release":
+          writeJson(response, 200, await input.api.release(body as unknown as ThreadReleaseInput));
+          return;
+        case "/v1/delegate/reconcile":
+          writeJson(
+            response,
+            200,
+            await input.api.reconcile(body as unknown as DelegationReconcileInput),
+          );
           return;
         default:
           throw new DelegationControlError("INVALID_ARGUMENT", "Unknown Runtime control route");

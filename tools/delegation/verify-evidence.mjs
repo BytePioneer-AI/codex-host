@@ -138,9 +138,7 @@ export function reviewMentionsPlant(text, leakToken) {
 
 export function requireSuccessfulThreadOutcome(cli, label, options = {}) {
   if (cli.status !== 0 || cli.error) {
-    throw new Error(
-      `${label} CLI failed: ${cli.error ?? ""} ${cli.stderr || cli.stdout}`.trim(),
-    );
+    throw new Error(`${label} CLI failed: ${cli.error ?? ""} ${cli.stderr || cli.stdout}`.trim());
   }
   const body = parseCliJsonStdout(cli);
   if (!body) throw new Error(`${label} stdout was not JSON`);
@@ -158,7 +156,10 @@ export function requireSuccessfulThreadOutcome(cli, label, options = {}) {
     if (!text.trim()) {
       throw new Error(`${label} has no canonical available result.text`);
     }
-  } else if (body.result?.availability === "unavailable" || body.result?.availability === "pending") {
+  } else if (
+    body.result?.availability === "unavailable" ||
+    body.result?.availability === "pending"
+  ) {
     throw new Error(`${label} result ${body.result.availability} is not a successful terminal`);
   }
   return body;

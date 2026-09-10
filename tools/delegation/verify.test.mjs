@@ -101,22 +101,26 @@ describe("delegation verify entry", () => {
     expect(
       commandUsesChildThreadCli(`printf '%s\\n' '$CODEXHOST_CLI_PATH thread wait ${child}'`, child),
     ).toBe(false);
-    expect(parseChildThreadCliInvocation(`printf '%s\\n' 'codexhost thread wait ${child}'`, child)).toEqual({
+    expect(
+      parseChildThreadCliInvocation(`printf '%s\\n' 'codexhost thread wait ${child}'`, child),
+    ).toEqual({
       action: null,
       unsupported: false,
     });
     expect(
-      commandUsesChildThreadCli(`$CODEXHOST_CLI_PATH thread wait ${child} --timeout-ms 30000`, child),
+      commandUsesChildThreadCli(
+        `$CODEXHOST_CLI_PATH thread wait ${child} --timeout-ms 30000`,
+        child,
+      ),
     ).toBe(true);
     expect(
-      parseChildThreadCliInvocation(`$CODEXHOST_CLI_PATH thread send ${child} --message hi`, child).action,
+      parseChildThreadCliInvocation(`$CODEXHOST_CLI_PATH thread send ${child} --message hi`, child)
+        .action,
     ).toBe("send");
   });
 
   it("FLOW-01 accepts only successful canonical reviewer results", () => {
-    expect(
-      reviewMentionsPlant("unable to read leak.py", "FLOW01_LEAKED_deadbeef"),
-    ).toBe(true);
+    expect(reviewMentionsPlant("unable to read leak.py", "FLOW01_LEAKED_deadbeef")).toBe(true);
     expect(
       canonicalReviewText({
         result: { availability: "unavailable", message: "unable to read leak.py" },
@@ -149,7 +153,10 @@ describe("delegation verify entry", () => {
         stdout: JSON.stringify({
           status: "completed",
           timedOut: false,
-          result: { availability: "available", text: "leak.py still contains FLOW01_LEAKED_deadbeef" },
+          result: {
+            availability: "available",
+            text: "leak.py still contains FLOW01_LEAKED_deadbeef",
+          },
         }),
       },
       "reviewer read",
@@ -161,7 +168,6 @@ describe("delegation verify entry", () => {
   it("FLOW-01 and SKILL-03 synthetic probes reject false-positive evidence", async () => {
     let scenario;
     let tasks = [];
-    let writerCwd;
     const server = createServer(async (req, res) => {
       try {
         let raw = "";
@@ -173,14 +179,21 @@ describe("delegation verify entry", () => {
           const turnId = randomUUID();
           tasks.push({ threadId: id, turnId, task: body.task });
           if (scenario === "FLOW-01" && String(body.task).includes("Make test_scheduler.py pass")) {
-            writerCwd = body.cwd;
             await writeFile(
               path.join(body.cwd, "scheduler.py"),
               "completed = set()\ndef mark_done(task_id, required=()):\n    if all(item in completed for item in required):\n        completed.add(task_id)\n",
             );
             for (const args of [
               ["add", "scheduler.py", "test_scheduler.py"],
-              ["-c", "user.name=Probe", "-c", "user.email=probe@example.com", "commit", "-m", "unrelated marker"],
+              [
+                "-c",
+                "user.name=Probe",
+                "-c",
+                "user.email=probe@example.com",
+                "commit",
+                "-m",
+                "unrelated marker",
+              ],
             ]) {
               const git = spawnSync("git", args, { cwd: body.cwd, encoding: "utf8" });
               if (git.status !== 0) throw new Error(git.stderr);
@@ -198,7 +211,10 @@ describe("delegation verify entry", () => {
         } else if (req.url === "/v1/thread/read" && scenario === "FLOW-01") {
           result = { error: { code: "INTERNAL_ERROR", message: "unable to read leak.py" } };
         } else if (req.url === "/v1/thread/list") {
-          result = { threads: tasks.map((task) => ({ threadId: task.threadId })), nextCursor: null };
+          result = {
+            threads: tasks.map((task) => ({ threadId: task.threadId })),
+            nextCursor: null,
+          };
         } else if (req.url === "/v1/thread/evidence") {
           result = {
             items: [
@@ -237,7 +253,6 @@ describe("delegation verify entry", () => {
       for (const id of ["FLOW-01", "SKILL-03"]) {
         scenario = id;
         tasks = [];
-        writerCwd = undefined;
         const dir = await mkdtemp(path.join(os.tmpdir(), "codexhost-contract-negative-"));
         try {
           await expect(

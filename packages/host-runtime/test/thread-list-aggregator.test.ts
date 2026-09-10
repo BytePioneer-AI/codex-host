@@ -12,6 +12,7 @@ import {
 } from "@codexhost/shared-contracts";
 import { describe, expect, it } from "vitest";
 
+import { aggregateOfficialAccountThreadListPage } from "../src/multi-account-thread-list.js";
 import {
   aggregateThreadList,
   officialThreadListPageFromResponse,
@@ -93,6 +94,39 @@ function directionalOfficialSource(rowsAscending: JsonObject[]) {
 }
 
 describe("aggregated Thread list", () => {
+  it("resolves a partially consumed official batch sourced through Account aggregation", async () => {
+    // `thread list` reaches the official source through the Account aggregator.
+    // An external Thread sorted ahead of the official rows leaves that batch
+    // partially consumed, so the aggregator re-requests the consumed prefix at
+    // a smaller limit than the query page size. Serving the query page size
+    // there failed the whole command with an exact-prefix error.
+    const decoded = query({ limit: 3, sortKey: "created_at", sortDirection: "desc" });
+    const source = officialSource([
+      official("codex-5", 5),
+      official("codex-4", 4),
+      official("codex-3", 3),
+      official("codex-2", 2),
+    ]);
+    const page = await aggregateThreadList({
+      query: decoded,
+      records: [external("aaaaaaaa-0000-4000-8000-00000000000e", 6)],
+      runtimeFor: () => null,
+      requestOfficialPage: (params) =>
+        aggregateOfficialAccountThreadListPage({
+          query: decoded,
+          accountIds: ["account-a"],
+          params,
+          requestAccountPage: async (_accountId, accountParams) => source.request(accountParams),
+        }),
+    });
+    expect(page.data.map((thread) => thread.id)).toEqual([
+      "aaaaaaaa-0000-4000-8000-00000000000e",
+      "codex-5",
+      "codex-4",
+    ]);
+    expect(page.nextCursor).not.toBeNull();
+  });
+
   it("terminates after an empty final official page", async () => {
     const source = officialSource([]);
     const page = await aggregateThreadList({

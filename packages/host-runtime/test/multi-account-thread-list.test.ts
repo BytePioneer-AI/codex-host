@@ -62,6 +62,28 @@ describe("Multi-Account official Thread list", () => {
     expect(observed).toEqual(["a-5:a", "b-4:b", "a-2:a", "b-1:b"]);
   });
 
+  it("returns exactly the requested row count when it differs from the query page size", async () => {
+    // The aggregator resolves a partially consumed batch by re-requesting the
+    // consumed prefix, so `params.limit` is smaller than `query.limit` and must
+    // win. Serving `query.limit` rows instead breaks its prefix accounting.
+    const decoded = query();
+    const requestAccountPage = source({
+      a: [
+        { id: "a-3", createdAt: 3, updatedAt: 3 },
+        { id: "a-2", createdAt: 2, updatedAt: 2 },
+        { id: "a-1", createdAt: 1, updatedAt: 1 },
+      ],
+    });
+    const page = await aggregateOfficialAccountThreadListPage({
+      query: decoded,
+      accountIds: ["a"],
+      params: { ...decoded.params, cursor: null, limit: 1 },
+      requestAccountPage,
+    });
+    expect(page.data.map((thread) => thread.id)).toEqual(["a-3"]);
+    expect(page.nextCursor).not.toBeNull();
+  });
+
   it("keeps the Account snapshot inside the opaque cursor", async () => {
     const decoded = query();
     const first = await aggregateOfficialAccountThreadListPage({

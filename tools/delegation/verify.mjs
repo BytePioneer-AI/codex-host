@@ -410,12 +410,17 @@ async function scenarioTurn01(context) {
 async function scenarioTurn05(context) {
   const cwd = await mkdtemp(path.join(context.runDirectory, "turn5-"));
   const started = await startTask(context, { task: "first turn", cwd });
-  await runCli(
-    context.childEnvironment,
-    ["thread", "wait", started.threadId, "--timeout-ms", "60000"],
-    cwd,
-    70_000,
+  const waited = parseJsonOutput(
+    await runCli(
+      context.childEnvironment,
+      ["thread", "wait", started.threadId, "--timeout-ms", "120000"],
+      cwd,
+      130_000,
+    ),
   );
+  if (waited.status === "running") {
+    throw new Error("TURN-05 first Turn still running after wait");
+  }
   const send = requireOk(
     await runCli(
       context.childEnvironment,

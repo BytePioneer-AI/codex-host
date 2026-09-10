@@ -94,6 +94,10 @@ Fully quit Codex Desktop, open a new terminal, and start codexhost.
 
 </details>
 
+### Appearance settings
+
+In `Settings → Appearance`, enable **Wrap thinking text** to wrap long lines in the persisted thinking transcript. It is off by default, saved locally, and takes effect immediately. Ordinary shell output is unchanged.
+
 ### Interaction examples
 
 <table>

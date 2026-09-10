@@ -26,6 +26,7 @@ import {
   type RendererSessionImportClient,
   type RendererImportedThreadOpener,
 } from "./session-import-page.js";
+import { createAppearanceSettingsPage } from "./appearance-page.js";
 import { createReleaseNotesElement } from "./release-notes.js";
 import { createAccountsSettingsPage, type RendererCodexAccountClient } from "./accounts-page.js";
 
@@ -71,6 +72,7 @@ function windowsInstallerDownloadUrl(window: Window | null | undefined, version:
 
 export const DEFAULT_RENDERER_SETTINGS_PAGE_IDS = [
   "connections",
+  "appearance",
   "accounts",
   "session-import",
   "updates",
@@ -585,6 +587,7 @@ export function createDefaultRendererSettingsPages(
 ): readonly RendererSettingsPageDefinition[] {
   return Object.freeze([
     createConnectionsSettingsPage(messages, getDiagnostics),
+    createAppearanceSettingsPage(messages),
     createAccountsSettingsPage(messages, getAccountClient),
     createSessionImportSettingsPage(messages, getSessionImportClient, openImportedThread),
     updatesPage(messages, getUpdateClient),

@@ -44,6 +44,7 @@ import {
   type ExternalPermissionModeControlView,
 } from "./renderer-composer-dom.js";
 import { rendererHarnessMessages } from "./renderer-harness-localization.js";
+import { installReasoningTranscriptSoftWrap } from "./renderer-transcript-dom.js";
 import { RendererCodexAccountState } from "./renderer-codex-account-state.js";
 import {
   decodeAntigravityTransportModelId,
@@ -622,6 +623,7 @@ export function installRendererBindingProbe(
   const mountedByComposer = new Map<Element, MountedComposer>();
   const pendingReplacements = new Map<Element, PendingComposerReplacement>();
   let disposed = false;
+  const disposeReasoningSoftWrap = installReasoningTranscriptSoftWrap(document);
   let scanScheduled = false;
   let refreshTargetsOnNextScan = false;
   let adapterDispose: (() => void) | null = null;
@@ -2828,6 +2830,7 @@ export function installRendererBindingProbe(
       applyAdapterAgent = null;
       modelControl = null;
       mutationObserver.disconnect();
+      disposeReasoningSoftWrap();
       sidebarAgentIcons.dispose();
       settingsLifecycle.dispose();
       document.removeEventListener("beforeinput", onBeforeInput, true);

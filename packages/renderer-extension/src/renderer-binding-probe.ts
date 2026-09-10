@@ -96,6 +96,7 @@ const externalHarnessIds = {
   omp: harnessIdSchema.parse("omp"),
   antigravity: harnessIdSchema.parse("antigravity"),
   "kiro-cli": harnessIdSchema.parse("kiro-cli"),
+  codebuddy: harnessIdSchema.parse("codebuddy"),
 } as const;
 
 const externalAgents: readonly ExternalRendererAgent[] = [
@@ -107,6 +108,7 @@ const externalAgents: readonly ExternalRendererAgent[] = [
   "omp",
   "antigravity",
   "kiro-cli",
+  "codebuddy",
 ];
 type HarnessAvailability = Partial<Record<ExternalRendererAgent, RendererAgentAvailability>>;
 type HarnessAvailabilityErrors = Record<ExternalRendererAgent, CodexhostError | undefined>;
@@ -457,10 +459,10 @@ export function restoredThreadOwnership(inspection: ThreadInspection): RestoredT
       ...(permissionModeId ? { permissionModeId } : {}),
     };
   }
-  if (inspection.harnessId === "kiro-cli") {
+  if (inspection.harnessId === "kiro-cli" || inspection.harnessId === "codebuddy") {
     const route = decodeHarnessPluginRoute(inspection.transportModelId);
-    if (!route || route.harnessId !== "kiro-cli") {
-      throw new Error("Kiro CLI Thread reported an incompatible transport Model");
+    if (!route || route.harnessId !== inspection.harnessId) {
+      throw new Error("Plugin Thread reported an incompatible transport Model");
     }
     const model = inspection.effectiveModel ?? route.model;
     const thinkingOptionId =
@@ -469,7 +471,7 @@ export function restoredThreadOwnership(inspection: ThreadInspection): RestoredT
         : (inspection.effectiveThinkingOptionId ?? route.thinkingOptionId);
     const permissionModeId = inspection.effectivePermissionModeId ?? route.permissionModeId;
     return {
-      agent: "kiro-cli",
+      agent: inspection.harnessId,
       ...(model ? { model } : {}),
       ...(thinkingOptionId ? { thinkingOptionId } : {}),
       ...(permissionModeId ? { permissionModeId } : {}),
@@ -706,6 +708,7 @@ export function installRendererBindingProbe(
       omp: undefined,
       antigravity: undefined,
       "kiro-cli": undefined,
+      codebuddy: undefined,
     },
     webUi: Object.fromEntries(
       externalAgents.map((agent) => [agent, false]),

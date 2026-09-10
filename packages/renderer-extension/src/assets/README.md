@@ -24,6 +24,9 @@ does not depend on a network request.
 `kiro-agent.svg` is the unmodified official Kiro icon from
 `https://kiro.dev/icon.svg`, bundled locally as a data URL.
 
+`codebuddy-agent.svg` is a neutral code glyph authored for this integration,
+matching the plugin's `assets/icon.svg`. It is not an official CodeBuddy logo.
+
 The Agent picker uses the official Pi mark from `https://pi.dev/logo-auto.svg`
 and the Claude mark distributed in Anthropic's official `anthropic.claude-code`
 VS Code extension as inline vector paths. The DeepSeek Harness whale mark is

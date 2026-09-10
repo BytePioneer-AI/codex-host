@@ -147,6 +147,8 @@ xattr -dr com.apple.quarantine /Applications/codexhost.app
 
 ## 功能状态
 
+**CodeBuddy（实验性）：** 已通过原生 ACP 接入当前插件架构，支持普通会话、恢复、流式输出、工具审批、提问，以及模型／思考／权限切换。Fork、历史回滚与 Teams 专用界面尚未接入。验证范围、原生版本差异和安装方式见 [CodeBuddy 接入说明](docs/codebuddy-harness-integration.md)。
+
 | 能力 | <a href="https://openai.com/codex/"><img alt="Codex" src="docs/imgs/badge-codex.svg" /></a> | <a href="https://pi.dev/"><img alt="Pi" src="https://img.shields.io/badge/Pi-000000?logo=pi&logoColor=white" /></a> | <a href="https://github.com/can1357/oh-my-pi"><img alt="Oh My Pi" src="docs/imgs/badge-omp-v5.svg" /></a> | <a href="https://code.claude.com/docs/en/quickstart"><img alt="Claude Code" src="https://img.shields.io/badge/Claude_Code-D97757?logo=claudecode&logoColor=white" /></a> | <a href="https://opencode.ai/docs/"><img alt="OpenCode" src="docs/imgs/badge-opencode.svg" /></a> | <a href="https://grok.com/"><img alt="Grok" src="https://img.shields.io/badge/Grok-000000?logo=x&logoColor=white" /></a> | <a href="https://github.com/deepseek-ai/deepseek-harness"><img alt="DeepSeek Harness" src="https://img.shields.io/badge/DeepSeek-4D6BFE?logo=deepseek&logoColor=white" /></a> | <a href="https://antigravity.google/product/antigravity-cli"><img alt="AGY" src="docs/imgs/badge-agy.svg" /></a> |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | 流式回复 | 原生 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |

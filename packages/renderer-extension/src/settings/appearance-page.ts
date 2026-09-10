@@ -15,7 +15,8 @@ export function createAppearanceSettingsPage(
     icon: "settings",
     mount(context: RendererSettingsPageMountContext) {
       const document = context.content.ownerDocument;
-      const ownerWindow = document.defaultView!;
+      const ownerWindow = document.defaultView;
+      if (!ownerWindow) return;
       const heading = document.createElement("div");
       heading.className = "settings-section-label";
       heading.textContent = messages.pageLabels.appearance;

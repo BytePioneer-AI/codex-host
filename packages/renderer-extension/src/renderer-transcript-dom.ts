@@ -16,7 +16,8 @@ export function setReasoningTranscriptSoftWrap(ownerWindow: Window, enabled: boo
 }
 
 export function installReasoningTranscriptSoftWrap(ownerDocument: Document): () => void {
-  const ownerWindow = ownerDocument.defaultView!;
+  const ownerWindow = ownerDocument.defaultView;
+  if (!ownerWindow) return () => {};
   const style = ownerDocument.createElement("style");
   style.setAttribute("data-codexhost-reasoning-soft-wrap", "true");
   // Scope to the sentinel command, not ordinary terminal output. The native

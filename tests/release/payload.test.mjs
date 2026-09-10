@@ -31,6 +31,22 @@ async function createPayload(root, target) {
 }
 
 describe("release Payload", () => {
+  it("accepts the ACP license actually written by third-party notice generation", async () => {
+    const root = await temporaryDirectory(),
+      target = releaseTarget("macos-arm64");
+    try {
+      await createPayload(root, target);
+      await writeFile(
+        path.join(root, "licenses/Agent-Client-Protocol-SDK-LICENSE.txt"),
+        "Apache-2.0 fixture",
+      );
+      await expect(
+        validatePayload({ payloadRoot: root, target, root: "/repo/source" }),
+      ).resolves.toContain("licenses/Agent-Client-Protocol-SDK-LICENSE.txt");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
   it("runs nested npm builds through Node on Windows", () => {
     const commands = releaseBuildCommands(
       releaseTarget("windows-arm64"),
@@ -75,9 +91,9 @@ describe("release Payload", () => {
       await createPayload(root, target);
       const paths = await validatePayload({ payloadRoot: root, target, root: "/repo/source" });
       expect(paths).toEqual(expectedPayloadPaths(target));
-      expect(paths).toHaveLength(19 + preinstalledHarnessPluginPaths().length);
+      expect(paths).toHaveLength(20 + preinstalledHarnessPluginPaths().length);
       expect(expectedPayloadPaths(releaseTarget("windows-x64"))).toHaveLength(
-        21 + preinstalledHarnessPluginPaths().length,
+        22 + preinstalledHarnessPluginPaths().length,
       );
       expect(paths).toContain("app/plugins/enabled.json");
       expect(paths).toContain("app/plugins/claude-code/plugin.mjs");

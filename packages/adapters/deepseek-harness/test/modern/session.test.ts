@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { CodexTurnProjector } from "@codexhost/protocol-core";
 
 import type { HarnessOutput, HostEvent, HostInteraction } from "@codexhost/harness-adapter";
 import {
@@ -3197,6 +3198,38 @@ describe("DeepSeek Harness Modern Session", () => {
     }
     expect(JSON.stringify(emitted)).not.toContain("unknown ghost");
     expect(emitted.filter(({ type }) => type === "item.started")).toHaveLength(3);
+    const ui = new CodexTurnProjector({
+      threadId: "stream-retry-thread",
+      turnId: turnId("autonomous-v015"),
+      cwd: "/fixture",
+      startedAtMs: 1_000,
+    });
+    const wire = emitted.flatMap((entry) => {
+      switch (entry.type) {
+        case "turn.started":
+        case "item.started":
+        case "item.updated":
+        case "item.completed":
+        case "turn.completed":
+          return ui.project(entry).messages;
+        default:
+          return [];
+      }
+    });
+    expect(
+      wire
+        .filter(({ method }) => method === "item/completed")
+        .map(({ params }) =>
+          params && typeof params === "object" && !Array.isArray(params) ? params.item : undefined,
+        ),
+    ).toMatchObject([
+      {
+        type: "agentMessage",
+        text: "retired ghost\n\n[生成尝试已取消 / Generation attempt cancelled]",
+      },
+      { type: "agentMessage", text: "ghost\n\n[生成尝试已取消 / Generation attempt cancelled]" },
+      { type: "agentMessage", text: "done" },
+    ]);
     expect(emitted.filter(({ type }) => type === "item.completed")).toEqual([
       expect.objectContaining({
         snapshot: {

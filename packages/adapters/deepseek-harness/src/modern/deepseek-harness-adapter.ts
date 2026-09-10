@@ -43,6 +43,7 @@ import {
 } from "./configuration.js";
 import { ModernControlStore, ModernControlStoreError } from "./control-store.js";
 import { ModernEventGateway, ModernEventGatewayError } from "./event-gateway.js";
+import { clearInheritedForkInbox, pendingForkInboxIds } from "./fork-inbox.js";
 import {
   matchesModernForkHistory,
   ModernHistoryError,
@@ -126,6 +127,7 @@ export interface ModernConnectionLike extends ModernJournalRemote {
   connect(): Promise<void>;
   onFault(listener: (error: ModernRemoteConnectionError) => void): () => void;
   openWebUi?(): Promise<void>;
+  flushSession(sessionId: string, signal?: AbortSignal): Promise<void>;
   close(): Promise<void>;
 }
 
@@ -407,7 +409,23 @@ export class ModernDeepSeekHarnessAdapter implements HarnessAdapter {
         this.#journalOptions(),
       );
       this.#assertAccepting();
-      if (forkExpectation) await this.#verifyForkJournal(forkExpectation, journal, cwd);
+      if (forkExpectation) {
+        await this.#verifyForkJournal(forkExpectation, journal, cwd);
+        if (
+          isDeepSeekV015(this.#profile) &&
+          (await clearInheritedForkInbox(this.#connection, journal, this.#lifetime.signal))
+        ) {
+          await journal.close();
+          journal = await openModernJournal(
+            this.#connection,
+            { sessionId, cwd },
+            this.#journalOptions(),
+          );
+          await this.#verifyForkJournal(forkExpectation, journal, cwd);
+          if (pendingForkInboxIds(journal).length !== 0) throw forkProtocolError();
+          await this.#connection.flushSession(sessionId, this.#lifetime.signal);
+        }
+      }
       if (rollbackPlan) {
         if (currentModernAgentPreset(journal) !== rollbackPlan.agentPreset) {
           throw rollbackProtocolError();
@@ -463,6 +481,9 @@ export class ModernDeepSeekHarnessAdapter implements HarnessAdapter {
         modelCatalog: catalog,
         permissionModes,
         sessionId,
+        ...(isDeepSeekV015(this.#profile)
+          ? { flushSession: () => this.#connection.flushSession(sessionId) }
+          : {}),
         randomUUID: this.#dependencies.randomUUID,
         now: this.#dependencies.now,
         ...(this.#options.toolOutputLimit === undefined
@@ -886,13 +907,15 @@ export class ModernDeepSeekHarnessAdapter implements HarnessAdapter {
       if (failure) session.fault(failure);
       return session.close();
     });
-    await Promise.allSettled(sessionClosures);
+    const sessionResults = await Promise.allSettled(sessionClosures);
     await this.#events.close().catch(() => undefined);
     await this.#control.close().catch(() => undefined);
     const connectionClose = this.#connection.close();
     const [connectionResult] = await Promise.allSettled([connectionClose]);
     await Promise.allSettled([...this.#inflight, this.#eventRecovery]);
     if (connectionResult.status === "rejected") throw connectionResult.reason;
+    const sessionFailure = sessionResults.find((result) => result.status === "rejected");
+    if (sessionFailure?.status === "rejected") throw sessionFailure.reason;
   }
 }
 

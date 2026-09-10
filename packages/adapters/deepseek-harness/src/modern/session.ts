@@ -271,6 +271,7 @@ export interface ModernHarnessSessionOptions {
   readonly promptCorrelationGraceMs?: number;
   readonly acceptedCorrelationTimeoutMs?: number;
   readonly onClosed?: () => void;
+  readonly flushSession?: () => Promise<void>;
 }
 
 export interface ModernSessionControl extends ModernConfigurationControl {
@@ -310,6 +311,7 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
   readonly #promptCorrelationGraceMs: number;
   readonly #acceptedCorrelationTimeoutMs: number;
   readonly #onClosed: () => void;
+  readonly #flushSession: (() => Promise<void>) | undefined;
   readonly #fallbackModel: HarnessModelRef;
   readonly #fallbackThinkingOptionId: HarnessThinkingOptionId | undefined;
   readonly #channel = new HarnessOutputChannel<HarnessOutput>();
@@ -396,6 +398,7 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
       "acceptedCorrelationTimeoutMs",
     );
     this.#onClosed = options.onClosed ?? (() => undefined);
+    this.#flushSession = options.flushSession;
     this.#events = [...options.journal.events];
     this.#historyBytes = journalHistoryBytes(this.#events, this.#maxHistoryBytes);
     this.#validator = new ModernEventValidator(this.#maxEvents, this.#profile);
@@ -2468,6 +2471,11 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
       this.#channel.end();
     }
     await Promise.allSettled([this.#journal.close(), this.#pumpPromise]);
+    try {
+      await this.#flushSession?.();
+    } catch (error) {
+      stopFailure ??= error;
+    }
     this.#notifyClosed();
     if (stopFailure) throw stopFailure;
   }

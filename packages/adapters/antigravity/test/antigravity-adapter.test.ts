@@ -532,6 +532,36 @@ for (const line of lines) {
       return result.value.event;
     }
 
+    async function runResultScenario(
+      streamLines: readonly string[],
+      turnIdText: string,
+    ): Promise<Extract<HostEvent, { type: "turn.completed" }>> {
+      const { command, cwd, cleanup } = await fakeStreamingAgy(streamLines);
+      const adapter = new AntigravityAdapter({ command });
+      try {
+        const opened = await adapter.open({ kind: "create", cwd });
+        if (!opened.ok) throw new Error(opened.error.message);
+        const session = opened.value;
+        const iterator = session.outputs[Symbol.asyncIterator]();
+        const turnId = hostTurnIdSchema.parse(turnIdText);
+        const executed = await session.execute({
+          type: "turn.start",
+          turnId,
+          input: [{ type: "text", text: "run scenario" }],
+        });
+        if (!executed.ok) throw new Error(executed.error.message);
+        while (true) {
+          const event = await nextEvent(iterator);
+          if (event.type !== "turn.completed") continue;
+          await session.close();
+          return event;
+        }
+      } finally {
+        await adapter.close();
+        await cleanup();
+      }
+    }
+
     it("executes a turn projecting write_to_file, run_command, and agentMessage", async () => {
       const streamLines = [
         JSON.stringify({
@@ -791,6 +821,256 @@ for (const line of lines) {
         await adapter.close();
         await cleanup();
       }
+    });
+
+    it("treats non-SUCCESS result as succeeded when agent response was delivered and no tools are pending", async () => {
+      const streamLines = [
+        JSON.stringify({
+          event: "init",
+          init: { permission_mode: "default" },
+          conversation_id: "conv-healed",
+        }),
+        JSON.stringify({
+          event: "step_update",
+          step_update: {
+            conversation_id: "conv-healed",
+            step_index: 1,
+            state: "DONE",
+            step_type: "agent_response",
+            text: "Task completed successfully after recovery.",
+          },
+        }),
+        JSON.stringify({
+          event: "result",
+          result: {
+            conversation_id: "conv-healed",
+            status: "ERROR",
+            num_turns: 1,
+          },
+        }),
+      ];
+
+      const { command, cwd, cleanup } = await fakeStreamingAgy(streamLines);
+      const adapter = new AntigravityAdapter({ command });
+      try {
+        const opened = await adapter.open({ kind: "create", cwd });
+        expect(opened.ok).toBe(true);
+        if (!opened.ok) return;
+
+        const session = opened.value;
+        const iterator = session.outputs[Symbol.asyncIterator]();
+        const turnId = hostTurnIdSchema.parse("turn-healed");
+
+        await session.execute({
+          type: "turn.start",
+          turnId,
+          input: [{ type: "text", text: "commit changes" }],
+        });
+
+        const started = await nextEvent(iterator);
+        expect(started.type).toBe("turn.started");
+
+        const stateChanged = await nextEvent(iterator);
+        expect(stateChanged.type).toBe("session.state.changed");
+
+        const itemStarted = await nextEvent(iterator);
+        expect(itemStarted).toMatchObject({
+          type: "item.started",
+          turnId,
+          item: {
+            type: "agentMessage",
+            text: "Task completed successfully after recovery.",
+          },
+        });
+
+        const itemCompleted = await nextEvent(iterator);
+        expect(itemCompleted).toMatchObject({
+          type: "item.completed",
+          turnId,
+          snapshot: {
+            item: {
+              type: "agentMessage",
+              text: "Task completed successfully after recovery.",
+            },
+            outcome: { status: "succeeded" },
+          },
+        });
+
+        const completed = await nextEvent(iterator);
+        expect(completed).toMatchObject({
+          type: "turn.completed",
+          turnId,
+          outcome: { status: "succeeded" },
+        });
+
+        await session.close();
+      } finally {
+        await adapter.close();
+        await cleanup();
+      }
+    });
+
+    it("treats non-SUCCESS result with transient stream interruption error detail as succeeded when response is present", async () => {
+      const streamLines = [
+        JSON.stringify({
+          event: "init",
+          init: { permission_mode: "default" },
+          conversation_id: "conv-transient",
+        }),
+        JSON.stringify({
+          event: "step_update",
+          step_update: {
+            conversation_id: "conv-transient",
+            step_index: 1,
+            state: "DONE",
+            step_type: "agent_response",
+            text: "All operations finished despite earlier stream interruption.",
+          },
+        }),
+        JSON.stringify({
+          event: "result",
+          result: {
+            conversation_id: "conv-transient",
+            status: "ERROR",
+            error:
+              "Error: The stream was interrupted. Please continue the task you were working on.",
+            num_turns: 1,
+          },
+        }),
+      ];
+
+      const { command, cwd, cleanup } = await fakeStreamingAgy(streamLines);
+      const adapter = new AntigravityAdapter({ command });
+      try {
+        const opened = await adapter.open({ kind: "create", cwd });
+        expect(opened.ok).toBe(true);
+        if (!opened.ok) return;
+
+        const session = opened.value;
+        const iterator = session.outputs[Symbol.asyncIterator]();
+        const turnId = hostTurnIdSchema.parse("turn-transient");
+
+        await session.execute({
+          type: "turn.start",
+          turnId,
+          input: [{ type: "text", text: "check work" }],
+        });
+
+        const started = await nextEvent(iterator);
+        expect(started.type).toBe("turn.started");
+
+        const stateChanged = await nextEvent(iterator);
+        expect(stateChanged.type).toBe("session.state.changed");
+
+        const itemStarted = await nextEvent(iterator);
+        expect(itemStarted).toMatchObject({
+          type: "item.started",
+          turnId,
+          item: {
+            type: "agentMessage",
+            text: "All operations finished despite earlier stream interruption.",
+          },
+        });
+
+        const itemCompleted = await nextEvent(iterator);
+        expect(itemCompleted).toMatchObject({
+          type: "item.completed",
+          turnId,
+          snapshot: {
+            item: {
+              type: "agentMessage",
+              text: "All operations finished despite earlier stream interruption.",
+            },
+            outcome: { status: "succeeded" },
+          },
+        });
+
+        const completed = await nextEvent(iterator);
+        expect(completed).toMatchObject({
+          type: "turn.completed",
+          turnId,
+          outcome: { status: "succeeded" },
+        });
+
+        await session.close();
+      } finally {
+        await adapter.close();
+        await cleanup();
+      }
+    });
+
+    it("keeps a partial agent response failed after a transient interruption", async () => {
+      const completed = await runResultScenario(
+        [
+          JSON.stringify({
+            event: "init",
+            init: { permission_mode: "default" },
+            conversation_id: "conv-partial",
+          }),
+          JSON.stringify({
+            event: "step_update",
+            step_update: {
+              conversation_id: "conv-partial",
+              step_index: 1,
+              state: "ACTIVE",
+              step_type: "agent_response",
+              text_delta: "The task started but was interrupted",
+            },
+          }),
+          JSON.stringify({
+            event: "result",
+            result: {
+              conversation_id: "conv-partial",
+              status: "ERROR",
+              error: "The stream was interrupted",
+              num_turns: 1,
+            },
+          }),
+        ],
+        "turn-partial",
+      );
+
+      expect(completed).toMatchObject({
+        turnId: "turn-partial",
+        outcome: { status: "failed", error: { code: "nativeFailure" } },
+      });
+    });
+
+    it("keeps an unknown non-SUCCESS result status failed", async () => {
+      const completed = await runResultScenario(
+        [
+          JSON.stringify({
+            event: "init",
+            init: { permission_mode: "default" },
+            conversation_id: "conv-cancelled",
+          }),
+          JSON.stringify({
+            event: "step_update",
+            step_update: {
+              conversation_id: "conv-cancelled",
+              step_index: 1,
+              state: "DONE",
+              step_type: "agent_response",
+              text: "The response was produced before cancellation.",
+            },
+          }),
+          JSON.stringify({
+            event: "result",
+            result: {
+              conversation_id: "conv-cancelled",
+              status: "CANCELLED",
+              response: "The response was produced before cancellation.",
+              num_turns: 1,
+            },
+          }),
+        ],
+        "turn-cancelled",
+      );
+
+      expect(completed).toMatchObject({
+        turnId: "turn-cancelled",
+        outcome: { status: "failed", error: { code: "nativeFailure" } },
+      });
     });
 
     it("emits turn.completed with cancelled outcome on session close while active", async () => {

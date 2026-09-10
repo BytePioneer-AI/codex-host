@@ -295,5 +295,31 @@ export class AntigravitySubagents {
     const snapshot = { item, outcome };
     this.#options.complete(snapshot);
     this.#options.emit({ type: "item.completed", turnId: this.#options.turnId, snapshot });
+    if (item.type === "subagentDelegation") this.#close(item.subagents);
+  }
+
+  /**
+   * Codex retires a receiver from its Subagent list when the Host closes the
+   * delegation, not when the receiver reports completion: a completed Agent is
+   * still addressable, so Codex keeps offering it. A failed or interrupted
+   * receiver is retired by its status alone.
+   *
+   * A child that outlives the step keeps running here, so it is not closed: its
+   * terminal state is observed by the poller after the Turn completed and can no
+   * longer be carried by an Item.
+   */
+  #close(subagents: HostSubagentState[]): void {
+    const closed = subagents.filter(({ status }) => status === "completed");
+    if (closed.length === 0) return;
+    const item: HostSubagentDelegationItem = {
+      type: "subagentDelegation",
+      itemId: hostItemIdSchema.parse(randomUUID()),
+      operation: "close",
+      subagents: closed,
+    };
+    const snapshot = { item, outcome: { status: "succeeded" } } satisfies HostItemSnapshot;
+    this.#options.emit({ type: "item.started", turnId: this.#options.turnId, item });
+    this.#options.complete(snapshot);
+    this.#options.emit({ type: "item.completed", turnId: this.#options.turnId, snapshot });
   }
 }

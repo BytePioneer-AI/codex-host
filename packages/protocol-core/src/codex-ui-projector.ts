@@ -528,7 +528,12 @@ function projectItem(
       return {
         id: item.itemId,
         type: "collabAgentToolCall",
-        tool: item.operation === "spawn" ? "spawnAgent" : "sendInput",
+        tool:
+          item.operation === "spawn"
+            ? "spawnAgent"
+            : item.operation === "close"
+              ? "closeAgent"
+              : "sendInput",
         status: itemStatus(outcome),
         senderThreadId: senderThreadId ?? "",
         receiverThreadIds: item.subagents.map(({ subagentId }) => subagentId),

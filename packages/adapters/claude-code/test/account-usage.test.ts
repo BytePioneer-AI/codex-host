@@ -53,7 +53,7 @@ describe("Claude Code native account Usage", () => {
         periodType: "five_hour",
         productUsage: [
           { product: "7-day window", usagePercent: 60 },
-          { product: "Sonnet · 7-day", usagePercent: 0 },
+          { product: "Sonnet · 7-day window", usagePercent: 0 },
         ],
       },
     });
@@ -101,7 +101,7 @@ describe("Claude Code native account Usage", () => {
         {},
       ),
     ).toMatchObject({
-      credits: { label: "Opus · 7-day", usedPercent: 0, periodType: "seven_day" },
+      credits: { label: "Opus · 7-day window", usedPercent: 0, periodType: "seven_day" },
     });
   });
 
@@ -146,7 +146,7 @@ describe("Claude Code native account Usage", () => {
         periodType: "five_hour",
         productUsage: [
           { product: "7-day window", usagePercent: 60 },
-          { product: "Sonnet · 7-day", usagePercent: 0 },
+          { product: "Sonnet · 7-day window", usagePercent: 0 },
           {
             product: "Fable · 7-day window",
             usagePercent: 32,
@@ -178,6 +178,34 @@ describe("Claude Code native account Usage", () => {
     );
     expect(projected?.credits.productUsage).toEqual([
       { product: "Fable · 7-day window", usagePercent: 30 },
+    ]);
+  });
+
+  it("labels every weekly window so the Renderer can localize it", () => {
+    const projected = projectClaudeAccountUsage(
+      {
+        ...usage,
+        rate_limits: {
+          five_hour: usage.rate_limits.five_hour,
+          seven_day: usage.rate_limits.seven_day,
+          seven_day_oauth_apps: { utilization: 1, resets_at: null },
+          seven_day_opus: { utilization: 2, resets_at: null },
+          seven_day_sonnet: { utilization: 3, resets_at: null },
+          // A model that already reported through a fixed key must not be listed twice.
+          limits: [
+            { kind: "weekly_scoped", percent: 99, scope: { model: { display_name: "Sonnet" } } },
+            { kind: "weekly_scoped", percent: 32, scope: { model: { display_name: "Fable" } } },
+          ],
+        } as never,
+      },
+      {},
+    );
+    expect(projected?.credits.productUsage).toEqual([
+      { product: "7-day window", usagePercent: 60, resetsAt: "2026-09-07T00:00:00Z" },
+      { product: "OAuth apps · 7-day window", usagePercent: 1 },
+      { product: "Opus · 7-day window", usagePercent: 2 },
+      { product: "Sonnet · 7-day window", usagePercent: 3 },
+      { product: "Fable · 7-day window", usagePercent: 32 },
     ]);
   });
 

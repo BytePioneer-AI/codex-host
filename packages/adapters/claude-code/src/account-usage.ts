@@ -93,9 +93,9 @@ export function projectClaudeAccountUsage(
   };
   add("5-hour window", "five_hour", limits.five_hour);
   add("7-day window", "seven_day", limits.seven_day);
-  add("OAuth apps · 7-day", "seven_day", limits.seven_day_oauth_apps);
-  add("Opus · 7-day", "seven_day", limits.seven_day_opus);
-  add("Sonnet · 7-day", "seven_day", limits.seven_day_sonnet);
+  add(claudeScopedWeeklyProduct("OAuth apps"), "seven_day", limits.seven_day_oauth_apps);
+  add(claudeScopedWeeklyProduct("Opus"), "seven_day", limits.seven_day_opus);
+  add(claudeScopedWeeklyProduct("Sonnet"), "seven_day", limits.seven_day_sonnet);
   for (const window of limits.model_scoped ?? [])
     add(claudeScopedWeeklyProduct(window.display_name), "seven_day", window);
   for (const scoped of parseClaudeScopedWeeklyLimits(limits)) {

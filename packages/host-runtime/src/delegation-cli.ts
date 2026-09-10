@@ -98,7 +98,7 @@ export const DELEGATION_HELP = `usage:
 Invoke this CLI through the absolute path in CODEXHOST_CLI_PATH, quoted as your own shell requires. A bare 'codexhost' is absent from PATH in some installations and may resolve to a different Host's CLI.
 Thread identifiers accept a bare ID or codex://threads/<id>. Output is JSON by default.
 harness inspect returns the target Model catalog, default Model, Thinking options, and configuration capabilities without creating a Thread. Use opaque IDs exactly as returned.
-delegate start requires --harness and a task from --task, --task-file, or --task - (stdin). --cwd is resolved with realpath before admission. --model and --thinking select values returned by harness inspect. Omit either option to preserve that target's current default behavior. --parent-thread overrides caller inference (CODEXHOST_THREAD_ID, then CODEX_THREAD_ID). Reuse --request-id for idempotent retries; without it, identical recent parent/target/task/configuration requests are deduplicated briefly. Conflicting parent/cwd/task/configuration with the same request-id is rejected.
+delegate start requires --harness and a task from --task, --task-file, or --task - (stdin). --cwd is resolved with realpath before admission when provided; omitted --cwd inherits the resolved parent Thread workspace, then the caller process cwd. --model and --thinking select values returned by harness inspect. Omit either option to preserve that target's current default behavior. --parent-thread overrides caller inference (CODEXHOST_THREAD_ID, then CODEX_THREAD_ID). Reuse --request-id for idempotent retries; without it, identical recent parent/target/task/configuration requests are deduplicated briefly. Conflicting parent/cwd/task/configuration with the same request-id is rejected.
 Successful start fields: delegationId, threadId, turnId, harnessId, deepLink, status, next.read, next.wait.
 thread send starts a new Turn in an idle writable Thread and returns immediately. It fails with THREAD_BUSY instead of queueing or starting a concurrent Turn. Optional --request-id retries the same send; --expected-turn rejects STALE_TURN when the active Turn has changed.
 thread cancel requests cancellation of the current Turn while preserving the Thread. An idle Thread returns cancelled=false. Cancel acknowledges only the cancel request and Turn terminal; it is not job quiescence. Use thread release after the Thread is idle to stop owned jobs.
@@ -288,9 +288,8 @@ export async function runDelegationCli(input: {
         value(parsed, "--parent-thread") ??
         environment[DELEGATION_THREAD_ID_ENV] ??
         environment.CODEX_THREAD_ID;
-      const cwd = value(parsed, "--cwd")
-        ? await realpath(value(parsed, "--cwd") as string)
-        : process.cwd();
+      const cwdOption = value(parsed, "--cwd");
+      const cwd = cwdOption ? await realpath(cwdOption) : undefined;
       writeJson(
         output,
         await requestRuntime({
@@ -299,7 +298,7 @@ export async function runDelegationCli(input: {
           body: {
             harnessId,
             task,
-            cwd,
+            ...(cwd ? { cwd } : {}),
             ...(value(parsed, "--model") ? { model: { id: value(parsed, "--model") } } : {}),
             ...(value(parsed, "--thinking")
               ? { thinkingOptionId: value(parsed, "--thinking") }

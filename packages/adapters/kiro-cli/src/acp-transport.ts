@@ -255,6 +255,10 @@ export class KiroAcpTransport {
   #replay: KiroTransportEvent[] | null = null;
   #sessionId: string | null = null;
   #stderrTail = "";
+  readonly #configUpdates = new Set<{
+    update(params: SessionNotification): void;
+    cancel(): void;
+  }>();
 
   constructor(options: KiroAcpTransportOptions) {
     this.#options = options;
@@ -517,17 +521,47 @@ export class KiroAcpTransport {
     configId: string,
     value: string,
   ): Promise<unknown[]> {
+    // Kiro can apply Model before its asynchronous catalog is ready, omitting
+    // the Model option from the reply. Subscribe before writing: confirmation
+    // may arrive on either side of the RPC response, but never from another Session.
+    const confirmation = Promise.withResolvers<unknown[]>();
+    const listener = {
+      update: (params: SessionNotification) => {
+        if (
+          params.sessionId !== sessionId ||
+          params.update.sessionUpdate !== "config_option_update"
+        )
+          return;
+        try {
+          confirmation.resolve(confirmedKiroConfig(params.update, configId, value));
+        } catch {
+          // Unrelated or mismatched updates cannot confirm this write.
+        }
+      },
+      cancel: () =>
+        confirmation.reject(
+          new KiroTransportError("unavailable", "Kiro Session closed during configuration"),
+        ),
+    };
+    // A rejected RPC may never consume the notification promise.
+    void confirmation.promise.catch(() => undefined);
+    this.#configUpdates.add(listener);
     try {
-      const result = await withTimeout(
-        connection.setSessionConfigOption({
-          sessionId,
-          configId,
-          value,
-        }),
+      return await withTimeout(
+        (async () => {
+          const result = await connection.setSessionConfigOption({ sessionId, configId, value });
+          if (
+            configId === "model" &&
+            Array.isArray(result.configOptions) &&
+            !result.configOptions.some((option) => option.id === "model")
+          ) {
+            return confirmation.promise;
+          }
+          return confirmedKiroConfig(result, configId, value);
+        })(),
         this.#commandTimeoutMs,
         `Kiro set_config_option (${configId})`,
       );
-      return confirmedKiroConfig(result, configId, value);
     } catch (error) {
       if (error instanceof KiroRequestTimeoutError) {
         // A local timeout cannot undo a native write. Do not reuse this connection
@@ -538,6 +572,8 @@ export class KiroAcpTransport {
       throw new KiroTransportError("unavailable", `Failed to set ${configId} config option`, {
         cause: error,
       });
+    } finally {
+      this.#configUpdates.delete(listener);
     }
   }
 
@@ -756,6 +792,7 @@ export class KiroAcpTransport {
   }
 
   #handleUpdate(params: SessionNotification): void {
+    for (const listener of this.#configUpdates) listener.update(params);
     const update = params.update;
     const meta =
       isRecord(update) && isRecord((update as Record<string, unknown>)._meta)
@@ -880,6 +917,8 @@ export class KiroAcpTransport {
     if (this.#closed) return;
     this.#closed = true;
     this.#closing = true;
+    for (const listener of this.#configUpdates) listener.cancel();
+    this.#configUpdates.clear();
 
     try {
       if (this.#child) {

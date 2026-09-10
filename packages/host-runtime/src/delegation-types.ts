@@ -84,7 +84,7 @@ export interface DelegationThreadSnapshot {
 export interface DelegationStartInput {
   harnessId: RoutedHarnessId;
   task: string;
-  cwd: string;
+  cwd?: string;
   parentThreadId?: string;
   requestId?: string;
   model?: HarnessModelRef;

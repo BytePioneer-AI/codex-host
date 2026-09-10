@@ -15,6 +15,7 @@ import { ExternalThreadRuntime } from "../src/external-thread-runtime.js";
 async function fixture(
   adapter = new FakeHarnessAdapter(harnessIdSchema.parse("pi")),
   environment: NodeJS.ProcessEnv = {},
+  officialThreadCwd: (threadId: string) => Promise<string | undefined> = async () => undefined,
 ) {
   const directory = await mkdtemp(path.join(os.tmpdir(), "codexhost-delegation-coordinator-"));
   const store = new MappingStore({ directory });
@@ -58,6 +59,7 @@ async function fixture(
     cancelOfficial: vi.fn(),
     startOfficial: vi.fn(),
     listOfficial: vi.fn(async () => ({ threads: [], nextCursor: null })),
+    officialThreadCwd,
     activeOfficialParents: () => [],
   });
   return {
@@ -152,6 +154,61 @@ describe("HarnessDelegationCoordinator", () => {
         childHostThreadId: result.threadId,
         status: "running",
       });
+    } finally {
+      await value.close();
+    }
+  });
+
+  it("resolves delegated cwd from explicit input, external and official parents, then process cwd", async () => {
+    const adapter = new RecordingAdapter(harnessIdSchema.parse("pi"));
+    const officialThreadCwd = vi.fn(async (threadId: string) =>
+      threadId === "official-parent" ? "/official-workspace" : undefined,
+    );
+    const value = await fixture(adapter, {}, officialThreadCwd);
+    try {
+      await value.repository.createProvisional({
+        hostThreadId: hostThreadIdSchema.parse("stored-parent"),
+        createRequestId: "stored-parent-request",
+        harnessId: harnessIdSchema.parse("pi"),
+        cwd: "/parent-workspace",
+        title: "parent",
+        transportModelId: "codexhost/pi-native",
+        ephemeral: false,
+        historyMode: "paginated",
+      });
+
+      await value.coordinator.start({
+        harnessId: "pi",
+        task: "inherit external cwd",
+        parentThreadId: "stored-parent",
+      });
+      await value.coordinator.start({
+        harnessId: "pi",
+        task: "explicit cwd",
+        cwd: "/explicit-workspace",
+        parentThreadId: "stored-parent",
+      });
+      await value.coordinator.start({
+        harnessId: "pi",
+        task: "inherit official cwd",
+        parentThreadId: "official-parent",
+      });
+      await value.coordinator.start({
+        harnessId: "pi",
+        task: "fallback cwd",
+        parentThreadId: "missing-parent",
+      });
+
+      expect(adapter.openInputs.map((input) => input.cwd)).toEqual([
+        path.resolve("/parent-workspace"),
+        path.resolve("/explicit-workspace"),
+        path.resolve("/official-workspace"),
+        path.resolve(process.cwd()),
+      ]);
+      expect(officialThreadCwd.mock.calls.map(([threadId]) => threadId)).toEqual([
+        "official-parent",
+        "missing-parent",
+      ]);
     } finally {
       await value.close();
     }

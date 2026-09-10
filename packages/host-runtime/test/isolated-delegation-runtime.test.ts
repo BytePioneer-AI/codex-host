@@ -32,8 +32,7 @@ describe("isolated delegation runtime", () => {
       expect(child[DELEGATION_RUNTIME_ENDPOINT_ENV]).toBe(runtime.endpoint);
       expect(child.CODEXHOST_DATA_DIR).toBe(path.resolve(dataDirectory));
     } finally {
-      if (inherited === undefined) delete process.env[DELEGATION_RUNTIME_ENDPOINT_ENV];
-      else process.env[DELEGATION_RUNTIME_ENDPOINT_ENV] = inherited;
+      process.env[DELEGATION_RUNTIME_ENDPOINT_ENV] = inherited ?? "";
       if (runtime) await runtime.close();
       await rm(dataDirectory, { recursive: true, force: true });
     }

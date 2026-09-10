@@ -268,7 +268,36 @@ describe("mapping-store package", () => {
     });
     await second.setDelegationStatus(delegationId, "running");
     await expect(second.getDelegationByChild(childThreadId)).resolves.toMatchObject({
+      status: "completed",
+    });
+    const followUp = hostTurnIdSchema.parse("turn-follow-up");
+    await second.setDelegationTurnState(delegationId, {
+      latestHostTurnId: followUp,
       status: "running",
+    });
+    await expect(second.getDelegationByChild(childThreadId)).resolves.toMatchObject({
+      status: "running",
+      latestHostTurnId: followUp,
+    });
+    const staleTurn = hostTurnIdSchema.parse("turn-stale");
+    await second.setDelegationTurnState(delegationId, {
+      latestHostTurnId: staleTurn,
+      status: "completed",
+    });
+    await expect(second.getDelegationByChild(childThreadId)).resolves.toMatchObject({
+      status: "running",
+      latestHostTurnId: followUp,
+    });
+    await second.setDelegationTurnState(delegationId, {
+      latestHostTurnId: followUp,
+      status: "completed",
+    });
+    await second.setDelegationTurnState(delegationId, {
+      latestHostTurnId: followUp,
+      status: "running",
+    });
+    await expect(second.getDelegationByChild(childThreadId)).resolves.toMatchObject({
+      status: "completed",
     });
     await second.close();
   });

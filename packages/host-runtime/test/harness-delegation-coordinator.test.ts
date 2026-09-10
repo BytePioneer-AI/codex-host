@@ -17,6 +17,7 @@ async function fixture(
   adapter = new FakeHarnessAdapter(harnessIdSchema.parse("pi")),
   environment: NodeJS.ProcessEnv = {},
   officialThreadCwd: (threadId: string) => Promise<string | undefined> = async () => undefined,
+  completeTurnBeforeReturn = false,
 ) {
   const directory = await mkdtemp(path.join(os.tmpdir(), "codexhost-delegation-coordinator-"));
   const store = new MappingStore({ directory });
@@ -50,6 +51,20 @@ async function fixture(
         input: [{ type: "text", text }],
       });
       if (!result.ok) throw new Error(result.error.message);
+      if (completeTurnBeforeReturn) {
+        const session = adapter.sessions.at(-1);
+        session?.succeedTurn();
+        thread.running = false;
+        thread.activeTurnId = null;
+        thread.turns.push({ id: turnId, status: "completed" });
+        const delegation = await repository.getDelegationByChild(thread.record.hostThreadId);
+        if (delegation) {
+          await repository.setDelegationTurnState(delegation.delegationId, {
+            latestHostTurnId: hostTurnIdSchema.parse(turnId),
+            status: "completed",
+          });
+        }
+      }
     },
     notifyThreadStarted: async (thread) => {
       notifications.push(thread);
@@ -707,6 +722,42 @@ describe("HarnessDelegationCoordinator", () => {
     }
   });
 
+  it("does not keep a completed follow-up listed as running", async () => {
+    const value = await fixture(
+      new FakeHarnessAdapter(harnessIdSchema.parse("pi")),
+      {},
+      async () => undefined,
+      true,
+    );
+    try {
+      const started = await value.coordinator.start({
+        harnessId: "pi",
+        task: "first",
+        cwd: "/synthetic",
+        parentThreadId: "parent-thread",
+      });
+      const listedStart = await value.coordinator.list({
+        parentThreadId: "parent-thread",
+        limit: 25,
+        sort: "created-desc",
+      });
+      expect(listedStart.threads[0]?.status).toBe("completed");
+      const followUp = await value.coordinator.send({
+        threadId: started.threadId,
+        message: "second",
+      });
+      const listed = await value.coordinator.list({
+        parentThreadId: "parent-thread",
+        limit: 25,
+        sort: "created-desc",
+      });
+      expect(listed.threads[0]?.status).toBe("completed");
+      expect(followUp.turnId).not.toBe(started.turnId);
+    } finally {
+      await value.close();
+    }
+  });
+
   it("reopens Delegation status to running for a follow-up Turn", async () => {
     const value = await fixture();
     try {
@@ -780,6 +831,52 @@ describe("HarnessDelegationCoordinator", () => {
       expect(elapsed).toBeLessThan(350);
       expect(result.timedOut).toBe(false);
       expect(result.results[0]).toMatchObject({ outcome: "changed" });
+    } finally {
+      await value.close();
+    }
+  });
+
+  it("keeps unchanged wait-many for three idle targets under 4KB without bodies", async () => {
+    const value = await fixture();
+    const cwd = `/synthetic/${"workspace".repeat(20)}`;
+    try {
+      const started = [];
+      for (const label of ["A", "B", "C"] as const) {
+        const row = await value.coordinator.start({
+          harnessId: "pi",
+          task: `OBSERVE04_BODY_${"x".repeat(1_000)}:${label}`,
+          cwd,
+          parentThreadId: "parent-thread",
+        });
+        const session = value.adapter.sessions.at(-1);
+        if (!session) throw new Error("Missing session");
+        session.appendText(`OBSERVE04_BODY_${"x".repeat(100_000)}:${label}`);
+        session.succeedTurn();
+        const thread = value.runtime.get(row.threadId);
+        if (!thread) throw new Error("Missing thread");
+        thread.running = false;
+        thread.activeTurnId = null;
+        started.push(row);
+      }
+      const statuses = await Promise.all(
+        started.map((row) => value.coordinator.status({ threadId: row.threadId })),
+      );
+      const result = await value.coordinator.waitMany({
+        timeoutMs: 0,
+        targets: started.map((row, index) => ({
+          threadId: row.threadId,
+          afterRevision: statuses[index]?.revision,
+        })),
+      });
+      const text = JSON.stringify(result);
+      expect(result.results).toHaveLength(3);
+      expect(result.results.every((row) => row.outcome === "timedOut")).toBe(true);
+      expect(result.results.every((row) => row.status && !("cwd" in row.status))).toBe(true);
+      expect(result.results.every((row) => row.status && !("configuration" in row.status))).toBe(
+        true,
+      );
+      expect(text.includes("OBSERVE04_BODY_")).toBe(false);
+      expect(Buffer.byteLength(text)).toBeLessThanOrEqual(4096);
     } finally {
       await value.close();
     }

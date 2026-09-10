@@ -232,12 +232,17 @@ export interface ThreadWaitManyInput {
   timeoutMs: number;
 }
 
+export type ThreadWaitManyStatusView = Pick<
+  DelegationThreadStatusView,
+  "threadId" | "harnessId" | "status" | "turn" | "revision"
+>;
+
 export type ThreadWaitManyTargetResult =
   | {
       threadId: string;
       outcome: "changed" | "timedOut" | "resync";
       revision: string;
-      status: DelegationThreadStatusView;
+      status: ThreadWaitManyStatusView;
     }
   | {
       threadId: string;

@@ -504,6 +504,46 @@ export class MappingStore {
     });
   }
 
+  async setDelegationTurnState(
+    delegationId: HostThreadId,
+    input: { latestHostTurnId: HostTurnId; status: DelegationStatus },
+  ): Promise<StoredDelegationRecordV1> {
+    this.#requireInitialized();
+    const current = this.#delegations.get(delegationId);
+    if (!current) {
+      throw new MappingStoreError("DELEGATION_NOT_FOUND", "Delegation was not found");
+    }
+    const sameTurn = current.latestHostTurnId === input.latestHostTurnId;
+    const terminal = new Set<DelegationStatus>(["completed", "failed", "interrupted"]);
+    if (sameTurn && terminal.has(current.status) && !terminal.has(input.status)) {
+      return cloneRecord(current);
+    }
+    if (
+      current.latestHostTurnId &&
+      !sameTurn &&
+      terminal.has(input.status) &&
+      !terminal.has(current.status)
+    ) {
+      return cloneRecord(current);
+    }
+    if (current.status === input.status && current.latestHostTurnId === input.latestHostTurnId) {
+      return cloneRecord(current);
+    }
+    const next = storedDelegationRecordV1Schema.parse({
+      ...current,
+      revision: current.revision + 1,
+      latestHostTurnId: input.latestHostTurnId,
+      status: input.status,
+      updatedAt: this.#now().toISOString(),
+    }) as StoredDelegationRecordV1;
+    await this.#enqueue(async () => {
+      await this.#replaceDelegationFile(next);
+      this.#delegations.set(delegationId, next);
+      this.#rebuildIndexes();
+    });
+    return cloneRecord(next);
+  }
+
   async setDelegationStatus(
     delegationId: HostThreadId,
     status: DelegationStatus,
@@ -515,7 +555,7 @@ export class MappingStore {
     }
     if (current.status === status) return cloneRecord(current);
     const terminal = new Set<DelegationStatus>(["completed", "failed", "interrupted"]);
-    if (terminal.has(current.status) && !terminal.has(status) && status !== "running") {
+    if (terminal.has(current.status) && !terminal.has(status)) {
       return cloneRecord(current);
     }
     const next = storedDelegationRecordV1Schema.parse({

@@ -44,6 +44,7 @@ import {
   type DelegationThreadStatusView,
   type ThreadWaitManyInput,
   type ThreadWaitManyResult,
+  type ThreadWaitManyStatusView,
   type ThreadEvidenceInput,
   type ThreadEvidenceResult,
   type ThreadConfigurationInput,
@@ -99,6 +100,16 @@ function statusFromThread(thread: ExternalThread): StoredDelegationRecordV1["sta
   if (last?.status === "failed") return "failed";
   if (last?.status === "interrupted") return "interrupted";
   return last ? "completed" : "creating";
+}
+
+function compactWaitManyStatus(status: DelegationThreadStatusView): ThreadWaitManyStatusView {
+  return {
+    threadId: status.threadId,
+    harnessId: status.harnessId,
+    status: status.status,
+    turn: status.turn,
+    revision: status.revision,
+  };
 }
 
 function validateStart(input: DelegationStartInput): void {
@@ -370,7 +381,11 @@ export class HarnessDelegationCoordinator {
       });
       const beforeRevision = thread.stateObserver.revision;
       await this.#startExternalTurn(thread, input.task, turnId);
-      await this.#repository.setDelegationLatestTurn(delegation.delegationId, turnId);
+      await this.#repository.setDelegationTurnState(delegation.delegationId, {
+        latestHostTurnId: turnId,
+        status:
+          thread.running && thread.activeTurnId === turnId ? "running" : statusFromThread(thread),
+      });
       if (!thread.record.nativeSessionRef) {
         const deadline = Date.now() + NATIVE_REF_TIMEOUT_MS;
         let revision = beforeRevision;
@@ -384,7 +399,6 @@ export class HarnessDelegationCoordinator {
         }
         nativeCommitted = true;
       }
-      await this.#repository.setDelegationStatus(delegation.delegationId, "running");
       await this.#notifyThreadStarted(thread.thread);
       thread.changes.bump();
       return this.#result(
@@ -532,8 +546,11 @@ export class HarnessDelegationCoordinator {
     try {
       const delegation = await this.#repository.getDelegationByChild(thread.record.hostThreadId);
       if (delegation) {
-        await this.#repository.setDelegationLatestTurn(delegation.delegationId, turnId);
-        await this.#repository.setDelegationStatus(delegation.delegationId, "running");
+        await this.#repository.setDelegationTurnState(delegation.delegationId, {
+          latestHostTurnId: turnId,
+          status:
+            thread.running && thread.activeTurnId === turnId ? "running" : statusFromThread(thread),
+        });
       }
       thread.changes.bump();
     } catch (error) {
@@ -1165,7 +1182,7 @@ export class HarnessDelegationCoordinator {
           threadId: target.threadId,
           outcome: "resync",
           revision: status.revision,
-          status,
+          status: compactWaitManyStatus(status),
         };
       }
       if (decoded && decoded.epoch !== this.#externalRuntime.epoch) {
@@ -1173,7 +1190,7 @@ export class HarnessDelegationCoordinator {
           threadId: target.threadId,
           outcome: "resync",
           revision: status.revision,
-          status,
+          status: compactWaitManyStatus(status),
         };
       }
       if (!target.afterRevision || status.revision !== target.afterRevision) {
@@ -1181,14 +1198,14 @@ export class HarnessDelegationCoordinator {
           threadId: target.threadId,
           outcome: "changed",
           revision: status.revision,
-          status,
+          status: compactWaitManyStatus(status),
         };
       }
       return {
         threadId: target.threadId,
         outcome: "timedOut",
         revision: status.revision,
-        status,
+        status: compactWaitManyStatus(status),
       };
     } catch (error) {
       const normalized =

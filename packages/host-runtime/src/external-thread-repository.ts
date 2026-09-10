@@ -50,6 +50,10 @@ export interface ExternalThreadStore {
     delegationId: HostThreadId,
     status: DelegationStatus,
   ): Promise<StoredDelegationRecordV1>;
+  setDelegationTurnState(
+    delegationId: HostThreadId,
+    input: { latestHostTurnId: HostTurnId; status: DelegationStatus },
+  ): Promise<StoredDelegationRecordV1>;
   setDelegationLatestTurn(
     delegationId: HostThreadId,
     latestHostTurnId: HostTurnId,
@@ -211,6 +215,13 @@ export class ExternalThreadRepository {
     status: DelegationStatus,
   ): Promise<StoredDelegationRecordV1> {
     return this.store.setDelegationStatus(delegationId, status);
+  }
+
+  setDelegationTurnState(
+    delegationId: HostThreadId,
+    input: { latestHostTurnId: HostTurnId; status: DelegationStatus },
+  ): Promise<StoredDelegationRecordV1> {
+    return this.store.setDelegationTurnState(delegationId, input);
   }
 
   removeDelegation(delegationId: HostThreadId): Promise<void> {

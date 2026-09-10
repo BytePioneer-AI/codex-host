@@ -4067,8 +4067,19 @@ export class AppServerHost {
       const startedDelegation = await this.#repository.getDelegationByChild(
         thread.record.hostThreadId,
       );
-      if (startedDelegation && startedDelegation.status !== "running") {
-        await this.#repository.setDelegationStatus(startedDelegation.delegationId, "running");
+      if (startedDelegation) {
+        const eventTurnId = hostTurnIdSchema.parse(event.turnId);
+        const latest = startedDelegation.latestHostTurnId;
+        const active = thread.activeTurnId;
+        const stale =
+          (active !== null && active !== eventTurnId) ||
+          (active === null && latest !== undefined && latest !== eventTurnId);
+        if (!stale) {
+          await this.#repository.setDelegationTurnState(startedDelegation.delegationId, {
+            latestHostTurnId: eventTurnId,
+            status: "running",
+          });
+        }
       }
       thread.changes.bump();
     }
@@ -4090,13 +4101,20 @@ export class AppServerHost {
       this.#signalActiveWorkChanged();
       const delegation = await this.#repository.getDelegationByChild(thread.record.hostThreadId);
       if (delegation) {
-        const status =
-          result.completedTurn.status === "failed"
-            ? "failed"
-            : result.completedTurn.status === "interrupted"
-              ? "interrupted"
-              : "completed";
-        await this.#repository.setDelegationStatus(delegation.delegationId, status);
+        const eventTurnId = hostTurnIdSchema.parse(event.turnId);
+        const latest = delegation.latestHostTurnId;
+        if (!latest || latest === eventTurnId) {
+          const status =
+            result.completedTurn.status === "failed"
+              ? "failed"
+              : result.completedTurn.status === "interrupted"
+                ? "interrupted"
+                : "completed";
+          await this.#repository.setDelegationTurnState(delegation.delegationId, {
+            latestHostTurnId: eventTurnId,
+            status,
+          });
+        }
       }
     }
     for (const message of result.messages) await this.#writer.json(message);

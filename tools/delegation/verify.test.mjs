@@ -6,7 +6,12 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 import { listScenarioIds } from "./matrix.mjs";
-import { configurationFingerprint, HANDLERS, runVerify } from "./verify.mjs";
+import {
+  commandUsesChildThreadCli,
+  configurationFingerprint,
+  HANDLERS,
+  runVerify,
+} from "./verify.mjs";
 
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const verifyPath = path.join(repositoryRoot, "tools/delegation/verify.mjs");
@@ -66,6 +71,95 @@ describe("delegation verify entry", () => {
       thinking: "high",
       permission: "always-approve",
     });
+  });
+
+  it("SKILL-03 requires a real child send/wait command, not echo or the wrong target", () => {
+    const child = "11111111-1111-4111-8111-111111111111";
+    const other = "22222222-2222-4222-8222-222222222222";
+    expect(commandUsesChildThreadCli(`echo $CODEXHOST_CLI_PATH`, child)).toBe(false);
+    expect(commandUsesChildThreadCli(`echo CODEXHOST_CLI_PATH thread send ${child}`, child)).toBe(
+      false,
+    );
+    expect(commandUsesChildThreadCli(`$CODEXHOST_CLI_PATH thread read ${child}`, child)).toBe(
+      false,
+    );
+    expect(
+      commandUsesChildThreadCli(`$CODEXHOST_CLI_PATH thread send ${other} --message hi`, child),
+    ).toBe(false);
+    expect(
+      commandUsesChildThreadCli(`$CODEXHOST_CLI_PATH thread send ${child} --message hi`, child),
+    ).toBe(true);
+    expect(commandUsesChildThreadCli(`codexhost thread wait ${child}`, child)).toBe(true);
+  });
+
+  it("FLOW-01 immutable acceptance tests fail the planted scheduler", async () => {
+    const cwd = await mkdtemp(path.join(os.tmpdir(), "codexhost-flow01-plant-"));
+    try {
+      await writeFile(
+        path.join(cwd, "scheduler.py"),
+        "completed = set()\n\ndef mark_done(task_id, required=()):\n    completed.add(task_id)\n",
+      );
+      const oracle = spawnSync("python3", ["-m", "unittest", "test_acceptance.py", "-q"], {
+        cwd: path.join(repositoryRoot, "tools/delegation/fixtures/flow01"),
+        env: { ...process.env, PYTHONPATH: cwd },
+        encoding: "utf8",
+      });
+      expect(oracle.status).not.toBe(0);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("FLOW-01 immutable acceptance tests reject a weakened workspace test", async () => {
+    const cwd = await mkdtemp(path.join(os.tmpdir(), "codexhost-flow01-weak-"));
+    try {
+      await writeFile(
+        path.join(cwd, "scheduler.py"),
+        "completed = set()\n\ndef mark_done(task_id, required=()):\n    completed.add(task_id)\n",
+      );
+      await writeFile(
+        path.join(cwd, "test_scheduler.py"),
+        "import unittest\nclass SelectionTest(unittest.TestCase):\n    def test_batch_does_not_complete_dependency(self):\n        self.assertTrue(True)\n",
+      );
+      const weakened = spawnSync("python3", ["-m", "unittest", "test_scheduler.py", "-q"], {
+        cwd,
+        encoding: "utf8",
+      });
+      expect(weakened.status).toBe(0);
+      const oracle = spawnSync("python3", ["-m", "unittest", "test_acceptance.py", "-q"], {
+        cwd: path.join(repositoryRoot, "tools/delegation/fixtures/flow01"),
+        env: { ...process.env, PYTHONPATH: cwd },
+        encoding: "utf8",
+      });
+      expect(oracle.status).not.toBe(0);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("FLOW-01 immutable acceptance tests pass a correct scheduler the writer cannot edit", async () => {
+    const cwd = await mkdtemp(path.join(os.tmpdir(), "codexhost-flow01-fixed-"));
+    try {
+      await writeFile(
+        path.join(cwd, "scheduler.py"),
+        [
+          "completed = set()",
+          "",
+          "def mark_done(task_id, required=()):",
+          "    if all(item in completed for item in required):",
+          "        completed.add(task_id)",
+          "",
+        ].join("\n"),
+      );
+      const oracle = spawnSync("python3", ["-m", "unittest", "test_acceptance.py", "-q"], {
+        cwd: path.join(repositoryRoot, "tools/delegation/fixtures/flow01"),
+        env: { ...process.env, PYTHONPATH: cwd },
+        encoding: "utf8",
+      });
+      expect(oracle.status).toBe(0);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
   });
 
   it("FLOW-01 plant is a real failing unittest, not an idempotent set.add", async () => {

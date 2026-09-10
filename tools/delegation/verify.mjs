@@ -303,18 +303,10 @@ function requireOk(cli, label) {
 }
 
 async function startTask(context, input) {
-  const args = [
-    "delegate",
-    "start",
-    "--harness",
-    "grok",
-    "--task",
-    input.task,
-    "--cwd",
-    input.cwd,
-    "--parent-thread",
-    input.parent ?? PARENT,
-  ];
+  const args = ["delegate", "start", "--harness", "grok", "--task", input.task, "--cwd", input.cwd];
+  if (input.parent !== false) {
+    args.push("--parent-thread", input.parent ?? PARENT);
+  }
   if (input.requestId) args.push("--request-id", input.requestId);
   if (input.model) args.push("--model", input.model);
   if (input.thinking) args.push("--thinking", input.thinking);
@@ -364,6 +356,14 @@ function modelId(configuration) {
   const value = configuration?.effective?.effectiveModel;
   if (!value) return null;
   return typeof value === "object" && value !== null && "id" in value ? value.id : value;
+}
+
+export function commandUsesChildThreadCli(command, childThreadId) {
+  const text = String(command ?? "");
+  if (!text || /^\s*echo\b/iu.test(text)) return false;
+  if (!/codexhost|CODEXHOST_CLI_PATH/iu.test(text)) return false;
+  if (!/\bthread\s+(send|wait)\b/iu.test(text)) return false;
+  return text.includes(childThreadId);
 }
 
 export function configurationFingerprint(status) {
@@ -896,9 +896,15 @@ async function scenarioFlow01(context) {
   if (afterWriter.status !== 0) {
     throw new Error("FLOW-01 writer left tests failing");
   }
-  const tests = await readFile(path.join(cwd, "test_scheduler.py"), "utf8");
-  if (!tests.includes("test_batch_does_not_complete_dependency")) {
-    throw new Error("FLOW-01 writer removed the planted test");
+  const oracle = spawnSync(python3(), ["-m", "unittest", "test_acceptance.py", "-q"], {
+    cwd: path.join(repositoryRoot, "tools/delegation/fixtures/flow01"),
+    env: { ...process.env, PYTHONPATH: cwd },
+    encoding: "utf8",
+  });
+  if (oracle.status !== 0) {
+    throw new Error(
+      `FLOW-01 writer failed immutable acceptance tests: ${oracle.stderr || oracle.stdout}`,
+    );
   }
   if (!(await readFile(path.join(cwd, "leak.py"), "utf8")).includes(leakToken)) {
     throw new Error("FLOW-01 writer removed the planted leak");
@@ -1078,18 +1084,34 @@ async function scenarioSkill03(context) {
   if (items.length === 0) {
     throw new Error("SKILL-03 operator produced no user-visible tool/command evidence");
   }
-  const usedCli = items.some(
+  const cliItems = items.filter(
     (item) =>
-      (item.kind === "command" || item.kind === "tool") &&
-      /thread (send|wait|status|read)|CODEXHOST_CLI_PATH/u.test(
-        `${item.command ?? ""} ${item.toolName ?? ""} ${item.path ?? ""}`,
-      ),
+      item.kind === "command" &&
+      item.completed !== false &&
+      (item.exitCode == null || item.exitCode === 0) &&
+      commandUsesChildThreadCli(item.command, child.threadId),
   );
-  if (!usedCli) {
-    throw new Error("SKILL-03 evidence does not show Host CLI use from the managed skill");
+  const usedSend = cliItems.some((item) => /\bthread\s+send\b/iu.test(item.command ?? ""));
+  const usedWait = cliItems.some((item) => /\bthread\s+wait\b/iu.test(item.command ?? ""));
+  if (!usedSend && !usedWait) {
+    throw new Error(
+      "SKILL-03 evidence does not show a Host CLI send/wait against the child Thread",
+    );
   }
   if (items.some((item) => /thread release|delegate start/iu.test(`${item.command ?? ""}`))) {
     throw new Error("SKILL-03 evidence shows release or a new delegation");
+  }
+  const childAfter = await threadMessages(context, child.threadId, cwd);
+  const sentFollowUp =
+    messageTurnIds(childAfter).length > 1 ||
+    childAfter.messages?.some(
+      (message) => message.role === "user" && message.text?.includes("are you done"),
+    );
+  if (usedSend && !sentFollowUp) {
+    throw new Error("SKILL-03 claimed send but the child has no follow-up Turn");
+  }
+  if (!sentFollowUp && !usedWait) {
+    throw new Error("SKILL-03 did not wait or send on the existing child Thread");
   }
   await runCli(context.childEnvironment, ["thread", "cancel", child.threadId], cwd);
   return {
@@ -1177,16 +1199,44 @@ async function scenarioTurn03(context) {
 
 async function scenarioRelease02(context) {
   const cwd = await mkdtemp(path.join(context.runDirectory, "release2-"));
-  const started = await startTask(context, { task: "RELEASE-02 idle", cwd });
+  const startedFile = path.join(cwd, "started.json");
+  const lateFile = path.join(cwd, "late.txt");
+  const started = await startTask(context, {
+    task: `DELAYED_WRITE PROBE_STARTED:${startedFile} PROBE_LATE:${lateFile} PROBE_DELAY:3`,
+    cwd,
+  });
+  const deadline = Date.now() + 4_000;
+  while (Date.now() < deadline) {
+    try {
+      await stat(startedFile);
+      break;
+    } catch {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+  }
+  let probe;
+  try {
+    probe = JSON.parse(await readFile(startedFile, "utf8"));
+  } catch {
+    throw new ScenarioIncomplete("RELEASE-02 owned-job probe did not start");
+  }
+  await runCli(context.childEnvironment, ["thread", "cancel", started.threadId], cwd);
   await waitIdle(context, started.threadId, cwd);
   const first = requireOk(
     await runCli(context.childEnvironment, ["thread", "release", started.threadId], cwd),
     "release-1",
   );
-  if (first.released !== true) {
+  if (first.released !== true || first.quiescence !== "confirmed") {
     throw new ScenarioIncomplete(
-      `RELEASE-02 first release did not confirm (quiescence=${first.quiescence ?? "unknown"})`,
+      `RELEASE-02 did not confirm owned-job stop (released=${first.released} quiescence=${first.quiescence})`,
     );
+  }
+  await new Promise((resolve) => setTimeout(resolve, 3_500));
+  try {
+    await readFile(lateFile, "utf8");
+    throw new Error("RELEASE-02 late write occurred after release");
+  } catch (error) {
+    if (error instanceof Error && error.message.includes("late write")) throw error;
   }
   const second = parseJsonOutput(
     await runCli(context.childEnvironment, ["thread", "release", started.threadId], cwd),
@@ -1194,19 +1244,40 @@ async function scenarioRelease02(context) {
   if (second.error && second.error.code !== "THREAD_NOT_FOUND") {
     throw new Error(`RELEASE-02 repeat release failed: ${JSON.stringify(second.error)}`);
   }
-  return { threadId: started.threadId, first, second };
+  return { threadId: started.threadId, pid: probe.pid, first, second };
 }
 
 async function scenarioRelease03(context) {
   const cwd = await mkdtemp(path.join(context.runDirectory, "release3-"));
+  const leftStarted = path.join(cwd, "left-started.json");
+  const leftLate = path.join(cwd, "left-late.txt");
+  const rightStarted = path.join(cwd, "right-started.json");
+  const rightLate = path.join(cwd, "right-late.txt");
   const [left, right] = await Promise.all([
-    startTask(context, { task: "RELEASE-03 left", cwd }),
-    startTask(context, { task: "RELEASE-03 right", cwd }),
+    startTask(context, {
+      task: `DELAYED_WRITE PROBE_STARTED:${leftStarted} PROBE_LATE:${leftLate} PROBE_DELAY:8`,
+      cwd,
+    }),
+    startTask(context, {
+      task: `DELAYED_WRITE PROBE_STARTED:${rightStarted} PROBE_LATE:${rightLate} PROBE_DELAY:8`,
+      cwd,
+    }),
   ]);
-  await Promise.all([
-    waitIdle(context, left.threadId, cwd),
-    waitIdle(context, right.threadId, cwd),
-  ]);
+  const waitStarted = async (file) => {
+    const deadline = Date.now() + 4_000;
+    while (Date.now() < deadline) {
+      try {
+        return JSON.parse(await readFile(file, "utf8"));
+      } catch {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+    }
+    throw new Error(`RELEASE-03 probe did not start: ${file}`);
+  };
+  const leftProbe = await waitStarted(leftStarted);
+  const rightProbe = await waitStarted(rightStarted);
+  await runCli(context.childEnvironment, ["thread", "cancel", left.threadId], cwd);
+  await waitIdle(context, left.threadId, cwd);
   const released = requireOk(
     await runCli(context.childEnvironment, ["thread", "release", left.threadId], cwd),
     "release-left",
@@ -1216,37 +1287,60 @@ async function scenarioRelease03(context) {
       `RELEASE-03 could not release the first Session (quiescence=${released.quiescence ?? "unknown"})`,
     );
   }
-  const surviving = await threadStatus(context, right.threadId, cwd);
-  if (!surviving.threadId) throw new Error("RELEASE-03 terminated the sibling Session");
-  return { released: left.threadId, surviving: right.threadId };
+  const leftAlive = (() => {
+    try {
+      process.kill(leftProbe.pid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  })();
+  const rightAlive = (() => {
+    try {
+      process.kill(rightProbe.pid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  })();
+  if (leftAlive) throw new Error("RELEASE-03 left owned job still alive");
+  if (!rightAlive) throw new Error("RELEASE-03 killed the sibling Session job");
+  await runCli(context.childEnvironment, ["thread", "cancel", right.threadId], cwd);
+  await waitIdle(context, right.threadId, cwd);
+  await runCli(context.childEnvironment, ["thread", "release", right.threadId], cwd);
+  return {
+    released: left.threadId,
+    surviving: right.threadId,
+    leftPid: leftProbe.pid,
+    rightPid: rightProbe.pid,
+  };
 }
 
 async function scenarioObserve02(context) {
   const cwd = await mkdtemp(path.join(context.runDirectory, "observe2-"));
-  const started = await startTask(context, { task: "OBSERVE-02 race", cwd });
+  const gate = path.join(cwd, "release-gate");
+  const started = await startTask(context, { task: `OBSERVE_HOLD:${gate}`, cwd });
   const status = await threadStatus(context, started.threadId, cwd);
+  if (status.status !== "running") {
+    throw new ScenarioIncomplete("OBSERVE-02 thread completed before the wait race started");
+  }
   const targetsFile = path.join(cwd, "targets.json");
   await writeFile(
     targetsFile,
     `${JSON.stringify([{ threadId: started.threadId, afterRevision: status.revision }])}\n`,
   );
-  const result = requireOk(
-    await runCli(
-      context.childEnvironment,
-      ["thread", "wait-many", "--targets-file", targetsFile, "--timeout-ms", "2000"],
-      cwd,
-      8_000,
-    ),
-    "wait-many-race",
+  const waiting = runCli(
+    context.childEnvironment,
+    ["thread", "wait-many", "--targets-file", targetsFile, "--timeout-ms", "3000"],
+    cwd,
+    8_000,
   );
+  await writeFile(gate, "go");
+  const result = requireOk(await waiting, "wait-many-race");
   const row = result.results?.[0];
-  if (
-    !row ||
-    (row.outcome !== "changed" && row.outcome !== "timedOut" && row.outcome !== "resync")
-  ) {
-    throw new Error("OBSERVE-02 wait-many lost the target");
+  if (row?.outcome !== "changed") {
+    throw new Error(`OBSERVE-02 expected changed, got ${row?.outcome ?? "missing"}`);
   }
-  await waitIdle(context, started.threadId, cwd);
   return { threadId: started.threadId, outcome: row.outcome };
 }
 
@@ -1269,47 +1363,93 @@ async function scenarioObserve03(context) {
     ),
     "wait-many-mix",
   );
-  const outcomes = (result.results ?? []).map((row) => row.outcome);
-  if (!outcomes.includes("resync") && !outcomes.includes("error")) {
-    throw new Error(`OBSERVE-03 mixed wait-many outcomes were ${outcomes.join(",")}`);
+  const rows = result.results ?? [];
+  const byId = Object.fromEntries(rows.map((row) => [row.threadId, row.outcome]));
+  if (byId[started.threadId] !== "resync") {
+    throw new Error(
+      `OBSERVE-03 expected resync for the live target, got ${byId[started.threadId]}`,
+    );
   }
-  return { outcomes };
+  if (byId["00000000-0000-4000-8000-ffffffffffff"] !== "error") {
+    throw new Error("OBSERVE-03 expected error for the missing target");
+  }
+  return { outcomes: rows.map((row) => row.outcome) };
 }
 
 async function scenarioObserve04(context) {
   const cwd = await mkdtemp(path.join(context.runDirectory, "observe4-"));
-  const payload = "OBSERVE04_BODY_".padEnd(12_000, "x");
-  const started = await startTask(context, { task: payload, cwd });
-  await waitIdle(context, started.threadId, cwd);
+  const payload = `OBSERVE04_BODY_${"x".repeat(100_000)}`;
+  const tasks = await Promise.all([
+    startTask(context, { task: `${payload}:A`, cwd }),
+    startTask(context, { task: `${payload}:B`, cwd }),
+    startTask(context, { task: `${payload}:C`, cwd }),
+  ]);
+  await Promise.all(tasks.map((task) => waitIdle(context, task.threadId, cwd)));
+  const reads = await Promise.all(
+    tasks.map(async (task) =>
+      requireOk(
+        await runCli(context.childEnvironment, ["thread", "read", task.threadId], cwd),
+        "observe04-read",
+      ),
+    ),
+  );
+  for (const read of reads) {
+    const body = read.result?.text ?? "";
+    if (!body.includes("OBSERVE04_BODY_") || body.length < 100_000) {
+      throw new Error("OBSERVE-04 read did not contain the 100KB completed body");
+    }
+  }
+  const statuses = await Promise.all(
+    tasks.map((task) => threadStatus(context, task.threadId, cwd)),
+  );
+  const statusText = JSON.stringify(statuses);
+  if (statusText.includes("OBSERVE04_BODY_")) {
+    throw new Error("OBSERVE-04 status resent historical body");
+  }
   const targetsFile = path.join(cwd, "targets.json");
-  await writeFile(targetsFile, `${JSON.stringify([{ threadId: started.threadId }])}\n`);
-  const first = requireOk(
+  await writeFile(
+    targetsFile,
+    `${JSON.stringify(
+      tasks.map((task, index) => ({
+        threadId: task.threadId,
+        afterRevision: statuses[index]?.revision,
+      })),
+    )}\n`,
+  );
+  const snapshot = requireOk(
     await runCli(
       context.childEnvironment,
       ["thread", "wait-many", "--targets-file", targetsFile, "--timeout-ms", "0"],
       cwd,
     ),
-    "wait-many-size-1",
+    "wait-many-consumed",
   );
-  const second = requireOk(
-    await runCli(
-      context.childEnvironment,
-      ["thread", "wait-many", "--targets-file", targetsFile, "--timeout-ms", "0"],
-      cwd,
-    ),
-    "wait-many-size-2",
-  );
-  const text = JSON.stringify(second);
+  const text = JSON.stringify(snapshot);
   if (text.includes("OBSERVE04_BODY_")) {
     throw new Error("OBSERVE-04 wait-many resent historical body");
   }
   if (Buffer.byteLength(text) > 4096) {
     throw new Error(`OBSERVE-04 unchanged wait-many JSON was ${Buffer.byteLength(text)} bytes`);
   }
-  return {
-    firstBytes: Buffer.byteLength(JSON.stringify(first)),
-    secondBytes: Buffer.byteLength(text),
-  };
+  const rows = snapshot.results ?? [];
+  if (rows.length !== 3) {
+    throw new Error("OBSERVE-04 did not return three targets");
+  }
+  if (rows.some((row) => row.outcome !== "timedOut")) {
+    throw new Error(
+      `OBSERVE-04 expected three timedOut rows, got ${rows.map((row) => row.outcome)}`,
+    );
+  }
+  if (
+    rows.some(
+      (row) =>
+        row.status &&
+        ("cwd" in row.status || "configuration" in row.status || "parentThreadId" in row.status),
+    )
+  ) {
+    throw new Error("OBSERVE-04 wait-many included non-compact status fields");
+  }
+  return { secondBytes: Buffer.byteLength(text), targets: 3 };
 }
 
 async function scenarioInput02(context) {
@@ -1331,17 +1471,47 @@ async function scenarioInput02(context) {
   if (!(listed.threads ?? []).some((row) => row.threadId === started.threadId)) {
     throw new Error("INPUT-02 explicit parent was not recorded");
   }
-  const inferred = await startTask(context, {
-    task: "INPUT-02 inferred",
-    cwd,
+  const inferredHost = requireOk(
+    await runCli(
+      { ...context.childEnvironment, CODEXHOST_THREAD_ID: explicit },
+      ["delegate", "start", "--harness", "grok", "--task", "INPUT-02 inferred-host", "--cwd", cwd],
+      cwd,
+    ),
+    "inferred-host",
+  );
+  const inferredCodexEnv = { ...context.childEnvironment, CODEX_THREAD_ID: explicit };
+  delete inferredCodexEnv.CODEXHOST_THREAD_ID;
+  const inferredCodex = requireOk(
+    await runCli(
+      inferredCodexEnv,
+      ["delegate", "start", "--harness", "grok", "--task", "INPUT-02 inferred-codex", "--cwd", cwd],
+      cwd,
+    ),
+    "inferred-codex",
+  );
+  const listedAfter = requireOk(
+    await runCli(
+      context.childEnvironment,
+      ["thread", "list", "--parent", explicit, "--limit", "25"],
+      cwd,
+    ),
+    "list-inferred",
+  );
+  const ids = (listedAfter.threads ?? []).map((row) => row.threadId);
+  if (!ids.includes(inferredHost.threadId) || !ids.includes(inferredCodex.threadId)) {
+    throw new Error("INPUT-02 environment parent inference was not recorded");
+  }
+  return {
+    explicit: started.threadId,
+    inferredHost: inferredHost.threadId,
+    inferredCodex: inferredCodex.threadId,
     parent: explicit,
-  });
-  return { explicit: started.threadId, inferred: inferred.threadId, parent: explicit };
+  };
 }
 
 async function scenarioEvidence02(context) {
   const cwd = await mkdtemp(path.join(context.runDirectory, "evidence2-"));
-  const started = await startTask(context, { task: "EVIDENCE-02 cursor", cwd });
+  const started = await startTask(context, { task: "EVIDENCE_TOOL cursor", cwd });
   await waitIdle(context, started.threadId, cwd);
   const first = requireOk(
     await runCli(
@@ -1372,6 +1542,29 @@ async function scenarioEvidence02(context) {
     cwd,
   );
   if (invalid.status === 0) throw new Error("EVIDENCE-02 accepted an invalid cursor");
+  if ((first.items?.length ?? 0) !== 1) {
+    throw new Error("EVIDENCE-02 first page did not contain a tool item");
+  }
+  if (!first.nextCursor) {
+    throw new Error("EVIDENCE-02 first page did not paginate");
+  }
+  if ((second.items?.length ?? 0) < 1) {
+    throw new Error("EVIDENCE-02 second page was empty despite a cursor");
+  }
+  if (second.items[0]?.itemId === first.items[0]?.itemId) {
+    throw new Error("EVIDENCE-02 pages returned the same item");
+  }
+  const missing = requireOk(
+    await runCli(
+      context.childEnvironment,
+      ["thread", "evidence", started.threadId, "--item", "missing-item"],
+      cwd,
+    ),
+    "evidence-missing",
+  );
+  if (!missing.items?.[0]?.unavailable) {
+    throw new Error("EVIDENCE-02 missing item was not marked unavailable");
+  }
   return {
     threadId: started.threadId,
     first: first.items?.length ?? 0,
@@ -1381,21 +1574,42 @@ async function scenarioEvidence02(context) {
 
 async function scenarioEvidence03(context) {
   const cwd = await mkdtemp(path.join(context.runDirectory, "evidence3-"));
-  const started = await startTask(context, { task: "EVIDENCE-03 privacy", cwd });
+  const started = await startTask(context, { task: "EVIDENCE_PRIVACY", cwd });
   await waitIdle(context, started.threadId, cwd);
   const read = requireOk(
     await runCli(context.childEnvironment, ["thread", "read", started.threadId], cwd),
     "default-read",
   );
   const blob = JSON.stringify(read);
-  if (/reasoning|thought/iu.test(blob)) {
+  if (blob.includes("secret-thought-xyz") || /"type":"reasoning"/u.test(blob)) {
     throw new Error("EVIDENCE-03 default read leaked reasoning");
+  }
+  const status = await threadStatus(context, started.threadId, cwd);
+  if (JSON.stringify(status).includes("secret-thought-xyz")) {
+    throw new Error("EVIDENCE-03 status leaked planted reasoning");
+  }
+  const targetsFile = path.join(cwd, "targets.json");
+  await writeFile(
+    targetsFile,
+    `${JSON.stringify([{ threadId: started.threadId, afterRevision: status.revision }])}\n`,
+  );
+  const waited = requireOk(
+    await runCli(
+      context.childEnvironment,
+      ["thread", "wait-many", "--targets-file", targetsFile, "--timeout-ms", "0"],
+      cwd,
+    ),
+    "evidence03-wait-many",
+  );
+  if (JSON.stringify(waited).includes("secret-thought-xyz")) {
+    throw new Error("EVIDENCE-03 wait-many leaked planted reasoning");
   }
   const evidence = requireOk(
     await runCli(context.childEnvironment, ["thread", "evidence", started.threadId], cwd),
     "evidence",
   );
-  if (/reasoning|thought/iu.test(JSON.stringify(evidence))) {
+  const evidenceBlob = JSON.stringify(evidence);
+  if (evidenceBlob.includes("secret-thought-xyz") || /"type":"reasoning"/u.test(evidenceBlob)) {
     throw new Error("EVIDENCE-03 evidence leaked reasoning");
   }
   return { threadId: started.threadId };

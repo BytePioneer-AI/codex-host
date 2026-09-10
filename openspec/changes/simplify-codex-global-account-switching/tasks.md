@@ -59,10 +59,11 @@
 
 - [x] 7.1 删除 `renderer-codex-account-state.ts` 草稿 override 与 `agent-selection-state.ts` 固定 Account 字段，保留 Harness owner/locked 语义及原有草稿功能。
 - [x] 7.2 删除 `renderer-binding-probe.ts`、`versioned-renderer-adapter.ts`、`renderer-draft-prewarm-runtime.ts` 中账号选择注入、提交记忆和 `__codexhostAccountId` 生产路径，补 Harness carrier 不受影响测试。
-- [x] 7.3 复用账号显示组件，将设置页与既有 Codex 会话账号菜单接到同一个全局 switch；明确作用范围、跨账号上下文及“添加时暂停 Codex”的提示。
+- [x] 7.3 复用账号显示组件，由设置页提供唯一保存账号列表和全局 switch；Composer 只读同步当前身份，明确作用范围、跨账号上下文及“添加时暂停 Codex”的提示。
 - [x] 7.4 更新各语言“当前账号／切换账号”文案、busy/恢复错误、未登录状态、非当前额度与删除交互；移除“只影响新任务”的陈旧承诺。
 - [x] 7.5 同步该 Host 的多窗口设置、所有 Codex Composer、Model 与用量浮窗；测试旧请求晚到、快速切 Host 和切换失败不显示假成功。
 - [x] 7.6 增加 Renderer E2E：已有 Codex Thread 能换账号但不能换 Harness、添加取消无重复条目、非当前额度显示 direct-live 或 last-good 新鲜度、其他 Harness 账号区保持原行为。
+- [x] 7.7 从 Harness 选择器删除 Codex 保存账号列表、账号点击切换与多账号徽标；始终保留单一 Codex Harness 选项，并验证设置式全局切换仍同步 Composer 当前身份和额度。
 
 ## 8. 旧数据迁移与 SSH 单账号
 

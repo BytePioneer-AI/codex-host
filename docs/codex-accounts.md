@@ -26,6 +26,7 @@ SSH Host 保留服务器原生的单账号认证。SSH 对账号添加、登录�
 - 默认可按剩余或已用显示；风险颜色按已用比例判断，每个窗口保留自己的重置时间。
 - `planType` 只用于显示，不用于推断 Model、Provider、产品能力或 Billing Source。
 - 账号状态通知带单调修订号；多窗口和所有 Codex Composer 共享同一当前账号，并忽略旧代次结果。
+- Harness 选择器始终只显示一个 Codex Harness，不把保存账号展开成多个 Harness／Thread 选项；账号列表、额度和切换操作统一放在「设置 → 账号」。Composer tooltip 与用量区域只读显示当前账号。
 
 ## 添加、重新登录、取消和删除
 

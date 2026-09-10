@@ -6,6 +6,7 @@ import type {
 } from "./agent-selection-state.js";
 import type {
   AccountCreditsSnapshot,
+  CodexAccountSummary,
   HarnessCommandDescriptor,
   ThreadUsageSnapshot,
 } from "@codexhost/shared-contracts";
@@ -14,7 +15,6 @@ import {
   mountRendererAgentPicker,
   renderRendererAgentPicker,
   type RendererAgentPickerControl,
-  type RendererCodexAccountView,
 } from "./renderer-agent-picker.js";
 import {
   mountRendererModelPicker,
@@ -604,7 +604,6 @@ export function mountComposerAgentControl(
   enabledAgents: readonly RendererAgent[],
   onSelect: (agent: RendererAgent) => void,
   onDownload: (agent: ExternalRendererAgent) => void,
-  onSelectCodexAccount: (accountId: string) => Promise<void> | void,
   onOpenProviderPicker: () => void,
   onSelectModel: (modelId: string) => void,
   onSelectThinking: (thinkingOptionId: string) => void,
@@ -626,7 +625,6 @@ export function mountComposerAgentControl(
     enabledAgents,
     onSelect,
     onDownload,
-    onSelectCodexAccount,
     onOpenProviderPicker,
   );
   const modelPicker = mountRendererModelPicker(composerId, onSelectModel, onSelectThinking);
@@ -685,7 +683,7 @@ export function renderComposerAgentControl(
   usage: ThreadUsageSnapshot | null = null,
   accountCredits: AccountCreditsSnapshot | null = null,
   locale: RendererSettingsLocale = "en",
-  codexAccounts: readonly RendererCodexAccountView[] = [],
+  currentCodexAccount: CodexAccountSummary | null = null,
   ownershipError = false,
 ): void {
   if (control.usage === null) {
@@ -725,7 +723,7 @@ export function renderComposerAgentControl(
     adapterState,
     switching,
     availability,
-    codexAccounts,
+    currentCodexAccount,
     ownershipError,
   );
   reconcileComposerNativeControls(
@@ -746,16 +744,14 @@ export function renderComposerAgentControl(
     permissionModeVisible,
     locale,
   );
-  const selectedCodexAccount =
-    state.agent === "codex" && !ownershipError
-      ? codexAccounts.find((account) => account.active)
-      : undefined;
+  const displayedCodexAccount =
+    state.agent === "codex" && !ownershipError ? currentCodexAccount : null;
   if (control.usage) {
     renderRendererUsageControl(
       control.usage,
       usage,
       locale,
-      selectedCodexAccount?.email ?? selectedCodexAccount?.label ?? null,
+      displayedCodexAccount?.email ?? displayedCodexAccount?.label ?? null,
     );
   }
   control.harnessCommands.setLocale(locale);

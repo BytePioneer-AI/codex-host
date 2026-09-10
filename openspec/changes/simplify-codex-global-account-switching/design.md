@@ -140,7 +140,7 @@ Remote Control ┘             │
 - 元数据中的已提交当前账号与“后台此刻已就绪”不得混为一谈：changing 可以显示“正在从 A 切换”，只有 ready 才表示当前身份可接收工作；unavailable 不显示成功当前标记。广播带 Host 归属及单调递增修订，丢弃旧 Host、旧连接代次的刷新结果。
 - 同步替换 Renderer 客户端、版本绑定和测试。旧 `activate`、旧账号草稿参数被明确拒绝为不支持／需要更新，而不是偷偷重新解释为全局切换。删除 `__codexhostAccountId` 的生产者与解析器，兼容拦截只用于安全拒绝，不用于路由。
 - Thread inspection 保留 owner/locked 的 Harness 归属意义，删除固定 Account 字段；用独立的 Host 当前账号快照显示 Codex 身份，不把所有旧 Thread 重写为新绑定。
-- 设置页和现有 Codex 账号菜单调用同一个全局 switch。Harness 锁定不再阻止已存在 Codex 会话切换账号；切账号不能切 Harness。保留现有头像／邮箱组件，仅删除 per-draft 选择状态。
+- 设置页是已保存 Codex 账号列表及全局 switch 的操作入口。Harness 选择器始终只展示一个 Codex Harness，不展开保存账号、不提供 per-Thread／per-draft 账号选项；Composer tooltip 与用量区域可只读显示当前身份。Harness 锁定不影响设置页的 Host 全局账号操作，切账号不能切 Harness。
 - 更新全部“默认／设为默认／只影响新任务”文案。切换成功后，所有该 Host Composer、设置页和用量浮窗显示同一当前账号，其他 Host 不变。
 - 当前账号的额度、重置卡和可用 Model 重新读取。非当前账号 inspect 使用其私有凭据直接读取 WHAM，可并发但有总量上限、超时和 per-account single-flight；不启动辅助进程、不切换共享认证。所有成功结果按账号原子持久化并带获取时间，失败返回 last-good 快照。非当前账号 consume 仍在后端拒绝。
 - Thread 累计 Token／上下文用量仍来自原生 Thread，跨账号继续时不清零；它不是某个账号的历史账单。账户级额度必须跟随当前身份，不从旧 Thread→Account Map 查询。
@@ -161,7 +161,7 @@ Remote Control ┘             │
 | `AccountRepository` v1 每账号 codexHome、default 删除回退 | 替换 v2 元数据；v1 只在迁移 reader | 本地账号 ID、稳定身份、当前指针，不秘密落元数据 |
 | `renderer-codex-account-state.ts` 的草稿 override、`agent-selection-state.ts` 的固定 Account | 删除状态和恢复路径 | 复用 Harness 状态、Host 当前账号快照 |
 | `renderer-binding-probe.ts`、`versioned-renderer-adapter.ts`、`renderer-draft-prewarm-runtime.ts` 的 selectAccount／提交覆盖 | 删除注入和绑定 | 不影响 Harness carrier、权限、Model 及草稿预热本身 |
-| `renderer-codex-account-options.ts`、settings accounts 组件 | 保留展示，替换行为与文案 | 全局切换、当前账号状态和 stale 配额 |
+| `renderer-codex-account-options.ts`、settings accounts 组件 | Picker 侧仅保留共享显示格式；账号列表与操作归设置页 | Harness 选择器单一 Codex 入口、设置页全局切换、当前账号状态和 stale 配额 |
 | `codex-accounts.ts` 旧 `activate`、`codexHome`、`active/isDefault` 和 inspection Account 语义 | 原子升级契约及调用者 | 当前账号／能力／状态；不把旧字段永久留作别名 |
 | pool / binding / multi-account-list / renderer-account-isolation 测试 | 删除过时断言，改写测试 | 单实例、跨窗口全局切换、历史连续性及其他 Harness 不受影响 |
 
@@ -177,7 +177,7 @@ Remote Control ┘             │
 - [账号权限不同导致历史无法继续或 Model 不可用] → 原样展示原生失败，更新 Model 目录但不偷偷选替代 Model、不丢弃历史、不自动改账号。
 - [新账号可见原会话上下文] → 全局切换范围与跨账号上下文提示明确可见，不声称切换能隔离历史。
 - [丢失项目／归档等附加信息] → 分类盘点与一致性备份、受支持类型逐项验证，未知类型阻断自动迁移完成。
-- [多账号直接额度读取导致 Token 竞争或秘密泄漏] → 仅使用严格私有槽位，额度请求进入全局准入计数；非当前 Token 刷新使用 single-flight、槽位摘要 CAS、身份复核和原子写回，当前账号继续走官方后台；RPC、日志和磁盘额度快照不含凭据。
+- [多账号直接额度读取导致 Token 竞争或秘密泄漏] → 仅使用严格私有槽位；普通 WHAM 读取保持只读，非当前 Token 刷新／写回才进入全局准入并使用 single-flight、槽位摘要 CAS、身份复核和原子写回，当前账号继续走官方后台；RPC、日志和磁盘额度快照不含凭据。
 
 ## Migration Plan
 

@@ -707,8 +707,15 @@ export function installRendererBindingProbe(
     if (state.codexAccounts?.client !== client) {
       state.codexAccounts?.dispose();
       state.codexAccounts = new RendererCodexAccountState(client, () => {
-        for (const mounted of mountedByComposer.values())
-          if (mounted.hostId === hostId) renderMounted(mounted);
+        queueMicrotask(() => {
+          if (disposed || hostHarnessAvailabilityState(hostId).codexAccounts?.client !== client)
+            return;
+          for (const mounted of mountedByComposer.values()) {
+            if (mounted.hostId !== hostId) continue;
+            renderMounted(mounted);
+            void refreshDraftCodexUsage(mounted);
+          }
+        });
       });
     }
     return state.codexAccounts;
@@ -768,7 +775,9 @@ export function installRendererBindingProbe(
 
   const renderMounted = (mounted: MountedComposer): void => {
     const accounts = composerCodexAccounts(mounted.composer);
-    const currentCodexAccountId = accounts?.readyAccountId;
+    const currentCodexAccount = accounts?.accounts.find(
+      ({ accountId }) => accountId === accounts.readyAccountId,
+    );
     renderComposerAgentControl(
       mounted.control,
       controller.get(mounted.composer),
@@ -782,10 +791,7 @@ export function installRendererBindingProbe(
       mounted.usage,
       mounted.accountCredits,
       settingsLifecycle.locale,
-      (accounts?.accounts ?? []).map((account) => ({
-        ...account,
-        active: account.accountId === currentCodexAccountId,
-      })),
+      currentCodexAccount ?? null,
       mounted.ownershipStatus === "error",
     );
     if (mounted.control.usage) {
@@ -1894,45 +1900,6 @@ export function installRendererBindingProbe(
     }
   };
 
-  const selectCodexAccount = async (mounted: MountedComposer, accountId: string): Promise<void> => {
-    const hostId = mounted.hostId;
-    const accounts = composerCodexAccounts(mounted.composer);
-    if (
-      !accounts ||
-      accounts.switching ||
-      controller.get(mounted.composer).phase === "locked" ||
-      !accounts.accounts.some((account) => account.accountId === accountId)
-    )
-      return;
-    const isCurrent = (): boolean =>
-      !disposed &&
-      mounted.composer.isConnected &&
-      mountedByComposer.get(mounted.composer) === mounted &&
-      controller.get(mounted.composer).phase !== "locked" &&
-      accounts.accounts.some((account) => account.accountId === accountId) &&
-      mounted.hostId === hostId &&
-      activeModelHostId() === hostId &&
-      composerCodexAccounts(mounted.composer) === accounts;
-    accounts.switching = true;
-    for (const candidate of mountedByComposer.values()) {
-      renderMounted(candidate);
-      void refreshDraftCodexUsage(candidate);
-    }
-    try {
-      if (!accounts.capabilities.switch) return;
-      await accounts.client.switchCodexAccount({ accountId });
-      await accounts.refresh();
-    } catch {
-      if (isCurrent()) void loadCodexAccounts();
-    } finally {
-      accounts.switching = false;
-      for (const candidate of mountedByComposer.values()) {
-        renderMounted(candidate);
-        void refreshDraftCodexUsage(candidate);
-      }
-    }
-  };
-
   const openInstallPage = (agent: ExternalRendererAgent): void => {
     const url = RENDERER_AGENT_INSTALL_URLS[agent];
     window.open(url, "_blank", "noopener,noreferrer");
@@ -2250,11 +2217,6 @@ export function installRendererBindingProbe(
         void switchComposerAgent(mounted, agent);
       },
       openInstallPage,
-      async (accountId) => {
-        const mounted = mountedByComposer.get(composer);
-        if (!composer.isConnected || !mounted) return;
-        await selectCodexAccount(mounted, accountId);
-      },
       () => {
         void loadCodexAccounts();
       },

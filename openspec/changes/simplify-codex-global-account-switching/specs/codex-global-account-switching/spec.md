@@ -104,15 +104,22 @@ Host SHALL 对新官方连接重新初始化并隔离连接代次，保持 Deskt
 - **THEN** 两者连接同一官方后台，由原生机制共享 loaded Thread
 - **AND** 不创建竞争写入者或把恢复转换成 Fork
 
-### Requirement: Account UI SHALL express one Host-wide current identity
+### Requirement: Account UI SHALL separate Harness selection from Host-wide identity
 
-账号设置与 Codex Composer 的账号入口 SHALL 调用同一个全局切换操作，明确说明作用范围和跨账号继续使用已有上下文的含义。界面 SHALL 区分 ready、changing、unavailable，只有确认成功才更新成功状态。已存在 Codex Thread 的 Harness 锁定 MUST NOT 被误用为禁止账号切换；不同 Host 的状态 SHALL 隔离。
+账号设置 SHALL 是保存账号列表和全局切换操作入口，并明确说明作用范围和跨账号继续使用已有上下文的含义。Harness 选择器 SHALL 始终把 Codex 表达为一个 Harness，不得将多个保存账号展开为 Harness 选项、Thread 选项或草稿选项。Composer MAY 只读显示当前账号身份。界面 SHALL 区分 ready、changing、unavailable，只有确认成功才更新成功状态；不同 Host 的状态 SHALL 隔离。
 
-#### Scenario: Switching from an existing conversation
+#### Scenario: Multiple Codex Accounts are saved
 
-- **WHEN** 用户在已绑定 Codex Harness 的会话里选择另一个账号
-- **THEN** 操作是该 Host 全局账号切换，不更换 Harness
-- **AND** 显示全局范围，移除“仅影响新任务／设为默认”的旧含义
+- **GIVEN** 当前 Host 保存了账号 A 和 B
+- **WHEN** 用户打开 Harness 选择器
+- **THEN** 只显示一个 Codex Harness 选项，不显示 A、B 账号行或账号选择徽标
+- **AND** 账号 A、B 及其额度仍在设置账号页展示
+
+#### Scenario: Switching while an existing conversation is open
+
+- **WHEN** 用户从设置账号页选择另一个账号
+- **THEN** 操作是该 Host 全局账号切换，已存在 Codex 会话继续保持 Codex Harness
+- **AND** Composer 只同步确认后的当前身份，不产生 per-Thread／per-draft 账号选择
 
 #### Scenario: All windows receive a confirmed identity change
 

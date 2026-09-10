@@ -166,6 +166,17 @@ const { outputFiles } = await build({
           revision[host] = next.revision;
           for (const listener of subscribers[host]) listener(next);
         },
+        switchAccount: (accountId) => {
+          const owner = hostId;
+          revision[owner]++;
+          const changing = { ...accountList(owner), phase: "changing", revision: revision[owner] };
+          for (const listener of subscribers[owner]) listener(changing);
+          void clients[owner].switchCodexAccount({ accountId }).catch(() => {
+            revision[owner]++;
+            const restored = accountList(owner);
+            for (const listener of subscribers[owner]) listener(restored);
+          });
+        },
         failSwitch: () => { failNextSwitch = true; },
         switchHost: (next) => {
           hostId = next;
@@ -195,10 +206,8 @@ async function setup(page: Page, options: Record<string, boolean> = {}): Promise
   await page.evaluate((flags) => Object.assign(globalThis, flags), options);
   await page.addScriptTag({ content: browserBundleText });
   if (options.delayedHost) return;
-  await expect(page.locator('[data-codex-account-id="default"]')).toHaveAttribute(
-    "aria-label",
-    "Codex: local-default@example.com",
-  );
+  await expect(page.locator(trigger)).toHaveAttribute("title", /local-default@example.com/);
+  await expect(page.locator("[data-codex-account-id]")).toHaveCount(0);
 }
 
 async function action(page: Page, method: string, value?: unknown): Promise<void> {
@@ -213,20 +222,23 @@ async function action(page: Page, method: string, value?: unknown): Promise<void
 
 const trigger = '[data-codexhost-agent-control] > button[aria-haspopup="menu"]';
 
-async function selectOtherAccount(page: Page): Promise<void> {
-  await page.locator(trigger).click();
-  await page.locator('[data-codex-account-id="other"]').click();
+async function switchToOtherAccount(page: Page): Promise<void> {
+  await action(page, "switchAccount", "other");
 }
 
 async function calls(page: Page) {
   return page.evaluate(() => Reflect.get(globalThis, "accountsFixture").calls);
 }
 
-test("switching the Host current Account updates the Composer and live quota without draft routing", async ({
+test("a Settings-style Host Account switch updates the Composer without adding Account choices", async ({
   page,
 }) => {
   await setup(page);
-  await selectOtherAccount(page);
+  await page.locator(trigger).click();
+  await expect(page.locator('button[data-agent="codex"]')).toBeVisible();
+  await expect(page.locator("[data-codex-account-id]")).toHaveCount(0);
+  await page.locator(trigger).click();
+  await switchToOtherAccount(page);
   await expect(page.locator(trigger)).toHaveAttribute("title", /local-other/);
   await expect.poll(() => calls(page)).toContainEqual({ host: "local", method: "switch:other" });
   await expect.poll(() => calls(page)).toContainEqual({ host: "local", method: "usage:other" });
@@ -239,7 +251,7 @@ test("current Accounts stay isolated by Host and never become cross-Host draft o
   page,
 }) => {
   await setup(page);
-  await selectOtherAccount(page);
+  await switchToOtherAccount(page);
   await action(page, "switchHost", "remote");
   await expect(page.locator(trigger)).toHaveAttribute("title", /remote-default/);
   await expect.poll(() => calls(page)).toContainEqual({ host: "remote", method: "usage:default" });
@@ -273,10 +285,8 @@ test("SSH-style unsupported Account management does not retain local Account con
   await expect(page.locator("[data-codex-account-id]")).toHaveCount(0);
   await expect(page.locator(trigger)).toHaveAttribute("aria-busy", "false");
   await action(page, "switchHost", "local");
-  await expect(page.locator('[data-codex-account-id="default"]')).toHaveAttribute(
-    "aria-label",
-    "Codex: local-default@example.com",
-  );
+  await expect(page.locator(trigger)).toHaveAttribute("title", /local-default@example.com/);
+  await expect(page.locator("[data-codex-account-id]")).toHaveCount(0);
 });
 
 test("a busy Account switch stays visible and is never replayed as a second switch", async ({
@@ -284,7 +294,7 @@ test("a busy Account switch stays visible and is never replayed as a second swit
 }) => {
   await setup(page);
   await action(page, "pause", "local:switch:other");
-  await selectOtherAccount(page);
+  await switchToOtherAccount(page);
   await expect
     .poll(() =>
       page.evaluate(() => Reflect.get(globalThis, "accountsFixture").pending("local:switch:other")),
@@ -303,7 +313,7 @@ test("a failed replacement or rollback does not display a false current Account"
 }) => {
   await setup(page);
   await action(page, "failSwitch");
-  await selectOtherAccount(page);
+  await switchToOtherAccount(page);
   await expect.poll(() => calls(page)).toContainEqual({ host: "local", method: "switch:other" });
   await expect(page.locator(trigger)).toHaveAttribute("title", /local-default/);
 });

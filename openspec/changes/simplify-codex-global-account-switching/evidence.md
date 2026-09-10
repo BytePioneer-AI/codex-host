@@ -8,6 +8,8 @@
 
 账号额度边界随后按用户确认改为 OpenCodex 风格：新增 Host 级 `ManagedCodexAccountQuotas`，当前账号仍经唯一官方后台读取，非当前账号使用私有槽位直接请求 `https://chatgpt.com/backend-api/wham/usage`。实现包含 4 路有界并发、8 秒超时、5 分钟内存 TTL、per-account single-flight、401 后一次 OAuth 刷新重放、JWT 用户＋工作区身份复核、槽位摘要 CAS 和原子写回；成功快照按稳定账号 ID 持久化六小时，文件与 RPC 只包含归一化窗口、重置卡和时间，不含 Token、原始响应或私有路径。网络、认证、解析或 CAS 失败保留 last-good 快照；普通 WHAM 读取不阻塞整个账号库，只有 OAuth 刷新／写回阶段由共享 gate 登记，切换不能与非当前 Refresh Token 旋转交错。Renderer 切换只等待源与目标账号的在途读取。聚焦测试覆盖重启恢复、同账号合并、旋转写回、迟到刷新不覆盖新槽位、当前 Native／非当前 WHAM 路由和 Renderer 手动刷新保留。
 
+Harness 选择器随后按产品语义收敛：不再创建 Codex 账号分组、账号行、账号点击切换或多账号徽标，始终只保留一个 Codex Harness 选项；当前账号只用于 Composer tooltip 与用量身份展示，设置页继续承担保存账号列表和全局切换。设置式切换通知会刷新所有相关草稿 Composer 的当前额度。针对该收敛执行 `typecheck`、`lint`、6 个 Renderer 聚焦文件 **119 项测试**和 3 个 Playwright 文件 **15 项测试**，全部通过；E2E 明确断言 Harness 菜单不存在 `[data-codex-account-id]`，同时设置式全局切换仍同步当前身份、额度、多 Host 隔离、busy 和失败恢复。
+
 生产迁移现实现保留源 home 的 rollout-only／credential-only 支持路径：私有 prepared/committed 记录、共享原凭据私有备份、身份去重、旧 active 恢复、`sessions`／`archived_sessions` 原子 no-overwrite 复制、同内容跳过、冲突阻断和中断重试。现场 v1 布局盘点为两个账号、一个次要 credential-only home，满足该支持路径；盘点与验证未输出认证内容。附件、记忆、项目、关系、工具及其他原生数据库状态仍按支持矩阵阻断。
 
 多 home 生产迁移只接受仍存活且出生身份可核对的 native launcher 接管链；无该证明的直接 Host 启动在迁移写入前失败。测试覆盖证明缺失、WAL/SQLite 读取失败和目标冲突阻断。

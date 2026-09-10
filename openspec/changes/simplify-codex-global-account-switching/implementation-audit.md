@@ -5,7 +5,7 @@
 - 本地 stdio、Windows Desktop/Remote Control 和 SSH 监听器均已改为显式共享 `OfficialRuntimeScope`。本地与 Windows 使用 native `supervise-process`、私有退出 receipt、`OfficialProcessRecord` 和一个共享 `CODEX_HOME`；Windows 多客户端使用唯一受保护 loopback 后台。SSH 使用服务器原生单账号、共享逻辑 Owner，并通过能力契约拒绝账号 mutation。
 - `AppServerHost` 不再拥有或导出 v1 `AccountRepository`，不再按 Thread/账号选择后台。生产入口均注入 v2 `CodexAccountControl`；无法完成权限、版本、恢复或旧布局预检时只把 Codex 标记为 unavailable，Desktop 输入、External Harness、Mapping Store 和委派服务继续运行。
 - 已删除 `codex-runtime-pool.ts`、`account-official-listeners.ts`、`thread-account-store.ts`、`multi-account-thread-list.ts` 及旧路由测试。保留单官方源＋External Thread 聚合、per-client RPC 相关性、旧多账号 cursor 的显式失效和旧 draft 参数的显式拒绝。
-- v2 公共契约现返回 `version/currentAccountId/phase/revision/capabilities/accounts`，不包含 `codexHome/active/isDefault`。Renderer 设置页、Composer 账号菜单、Model client 和版本适配器使用 Host 全局 current Account；删除草稿 override/提交注入，并通过单调 revision 通知同步多窗口。旧 create/activate 不再作为 Renderer API 或 switch 别名。
+- v2 公共契约现返回 `version/currentAccountId/phase/revision/capabilities/accounts`，不包含 `codexHome/active/isDefault`。Renderer 设置页、Model client 和版本适配器使用 Host 全局 current Account；Harness 选择器只保留一个 Codex Harness 选项，Composer 仅只读显示当前身份。草稿 override/提交注入已删除，并通过单调 revision 通知同步多窗口。旧 create/activate 不再作为 Renderer API 或 switch 别名。
 - `ManagedCodexAccounts` 已接通唯一 Owner 的设备代码登录、取消入口、身份去重、当前账号重新登录、非当前删除和登录事务恢复记录。添加账号时有源账号则保存新账号后恢复源账号；无源账号时首次登录成为当前账号。直接 native login/logout 热转发仍被拒绝。
 - `ManagedCodexAccountQuotas` 参照 OpenCodex 为非当前账号直接请求 WHAM，使用 5 分钟缓存、4 路有界并发、8 秒超时、per-account single-flight、401 后一次 OAuth 刷新重放、稳定身份复核及槽位摘要 CAS。成功额度按账号原子持久化且不含 Token；失败保留六小时内 last-good 快照。当前账号仍通过唯一官方后台读取；普通非当前 WHAM 探测不阻塞整个账号库，只有 OAuth 刷新／槽位写回进入共享 gate，不创建第二个官方后台或请求级账号路由。
 - 切换生产链路使用 `OfficialAccountRuntime` 与 `CodexAccountSwitcher`：关闭 gate、原生 idle 核对、完整进程树退出、保存最新源凭据、安装目标、重新初始化、认证/身份验证、提交当前账号与广播。失败保全目标轮换并回滚；无法证明回滚时仅 Codex unavailable。
@@ -18,10 +18,10 @@
 - 账号/Host/Owner/Renderer 聚焦测试最近一次 **272 项通过**；额外 `ManagedCodexAccounts` 两项登录测试通过。
 - 使用真实 launcher 与 Codex CLI 0.153.4 执行 `native-bootstrap.test.ts`：stdio、loopback、plugins-enabled 共 **3 项通过**。
 - `cargo check --workspace`、`cargo clippy --workspace --all-targets -- -D warnings`：通过。
-- Account Renderer Playwright 覆盖全局切换、Host 隔离、所有保存账号额度保留、取消登录无重复、其他 Harness quota 不变、busy 单次提交、切换失败不假报成功和协议客户端替换后的迟到响应隔离；尚未完成本轮更新后的最终重跑及真实 Desktop 多窗口验收。
+- Account Renderer Playwright 覆盖设置式全局切换、Harness 菜单单一 Codex 入口、Host 隔离、所有保存账号额度保留、取消登录无重复、其他 Harness quota 不变、busy 单次提交、切换失败不假报成功和协议客户端替换后的迟到响应隔离。本轮 3 个相关 Playwright 文件共 15 项通过；真实 Desktop 多窗口验收仍未完成。
 - `native-private-files.test.ts` 使用真实 Windows launcher 的 5 项通过，覆盖实际私有存储、竞争锁、进程身份和 relay 边界。WSL Ubuntu 24.04 又实际验证目录 0700、slot/snapshot/backup/temp 0600、宽权限拒绝且失败前无文件落盘；platform 私有文件 4 项和 launcher 私有 IPC 2 项通过。真实 Refresh Token 轮换、macOS、真实 Linux Codex/SSH 和完整 Desktop 验收仍未执行。
 
-当前任务勾选 **58/62**。剩余为 10.3–10.6，集中在真实 Desktop/PID/外部 Harness 连续性、完整 A→B→A 内容连续性与真实 Refresh Token 轮换、macOS／真实 Linux SSH 验收以及最终证据对账。
+当前任务勾选 **63/67**。剩余为 10.3–10.6，集中在真实 Desktop/PID/外部 Harness 连续性、完整 A→B→A 内容连续性与真实 Refresh Token 轮换、macOS／真实 Linux SSH 验收以及最终证据对账。
 
 ## 生产生命周期接线进展（任务 2.3，尚未完成）
 

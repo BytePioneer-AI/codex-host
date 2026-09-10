@@ -27,20 +27,23 @@ const receipt = {
   nativeRef: null,
 };
 let session;
+const failed = Promise.withResolvers();
+void failed.promise.catch(() => {});
+const guarded = (promise) => Promise.race([promise, failed.promise]);
 const deadline = setTimeout(() => {
-  console.error("Control smoke timeout");
-  void registry.close();
-  process.exitCode = 1;
+  failed.reject(new Error("Control smoke timeout"));
 }, 120_000);
 try {
-  const inspection = await adapter.inspect({ cwd });
+  const inspection = await guarded(adapter.inspect({ cwd }));
   assert.equal(inspection.status, "ready");
   const composer = inspection.catalog.models.find((model) => model.label === "composer-2.5");
-  const opened = await adapter.open({
-    kind: "create",
-    cwd,
-    ...(composer ? { model: composer.ref } : {}),
-  });
+  const opened = await guarded(
+    adapter.open({
+      kind: "create",
+      cwd,
+      ...(composer ? { model: composer.ref } : {}),
+    }),
+  );
   assert.equal(opened.ok, true, JSON.stringify(opened.ok ? {} : opened.error));
   session = opened.value;
   receipt.nativeRef = session.initialState.nativeRef;
@@ -77,6 +80,7 @@ try {
       }
     }
   })();
+  void collect.catch((error) => failed.reject(error));
   const run = async (text) => {
     const terminal = new Promise((resolve) => {
       resolveTurn = resolve;
@@ -91,7 +95,7 @@ try {
       ).ok,
       true,
     );
-    return terminal;
+    return guarded(terminal);
   };
   const permission = await run(
     "Use the Shell tool once to run this harmless PowerShell command: Write-Output CURSOR_PERMISSION_OK. If approval is denied, do not retry or use another tool; reply DENIED and stop.",

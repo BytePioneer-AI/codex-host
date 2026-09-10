@@ -7,6 +7,24 @@ import { CursorSubagents, cursorTaskHandle, cursorTaskAddress } from "../src/sub
 
 const update = (value: unknown) => ({ sessionId: "parent", update: value }) as SessionNotification;
 describe("Cursor native Task cards", () => {
+  it("settles background state before the completed snapshot is captured by history replay", () => {
+    const input = { _toolName: "task", description: "Background", prompt: "Read files" };
+    const replay = [
+      update({ sessionUpdate: "user_message_chunk", content: { type: "text", text: "delegate" } }),
+      update({
+        sessionUpdate: "tool_call",
+        toolCallId: "replay-0-0",
+        rawInput: input,
+        status: "completed",
+        rawOutput: { isBackground: true },
+      }),
+    ];
+    const history = cursorSnapshot("parent", [{ id: "native-turn", text: "delegate" }], replay);
+    expect(history.turns[0]?.items[0]).toMatchObject({
+      item: { type: "subagentDelegation", subagents: [{ status: "interrupted" }] },
+      outcome: { status: "succeeded" },
+    });
+  });
   it("retains native Task identity when Cursor rewrites live call IDs during replay", () => {
     const input = { _toolName: "task", description: "Read files", prompt: "Read A and B" };
     const live = new CursorSubagents(hostTurnIdSchema.parse("host-turn"), () => {});

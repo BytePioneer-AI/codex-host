@@ -134,19 +134,25 @@ export class CursorSubagents {
       },
     };
   }
-  #complete(task: Task) {
+  #complete(task: Task, observationEnded = false) {
     if (task.done || !task.terminal) return;
     const child = task.item.subagents[0];
     if (!child) return;
+    // Native background launch is not child completion. Keep the Item open
+    // until parent settlement can publish a consistent interrupted snapshot.
+    if (child.background && task.terminal.status === "succeeded" && !observationEnded) return;
     child.status =
       task.terminal.status === "failed"
         ? "failed"
         : task.terminal.status === "cancelled"
           ? "interrupted"
           : child.background
-            ? "running"
+            ? "interrupted"
             : "completed";
     if (task.output) child.resultSummary = task.output.slice(0, 2000);
+    if (child.background && task.terminal.status === "succeeded")
+      child.resultSummary =
+        "Parent Turn ended; native background child completion was not confirmed";
     this.emit({
       type: "item.updated",
       turnId: this.turnId,
@@ -176,19 +182,7 @@ export class CursorSubagents {
         outcome.status === "succeeded"
           ? { status: "cancelled", reason: "Native Task completion unavailable" }
           : outcome;
-      this.#complete(task);
-      const child = task.item.subagents[0];
-      if (child?.status === "running") {
-        child.status = "interrupted";
-        child.resultSummary =
-          "Parent Turn ended; native background child completion was not confirmed";
-        this.emit({
-          type: "subagent.state.changed",
-          nativeSubagentId: child.nativeSubagentId ?? child.subagentId,
-          status: "interrupted",
-          resultSummary: child.resultSummary,
-        });
-      }
+      this.#complete(task, true);
     }
   }
   snapshot(parentId: string, handle: string): HostThreadSnapshot {

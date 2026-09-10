@@ -166,10 +166,11 @@ export class CursorAdapter implements HarnessAdapter {
       }
     })();
     // Cache negative results as well; discovery never starts a polling/retry timer.
-    const entry = { expires: Date.now() + 5 * 60_000, pending: true, result };
+    const entry = { expires: Number.POSITIVE_INFINITY, pending: true, result };
     this.#inspections.set(cwd, entry);
     void result.finally(() => {
       entry.pending = false;
+      entry.expires = Date.now() + 5 * 60_000;
     });
     return result;
   }
@@ -303,7 +304,7 @@ export class CursorSession implements HarnessSession {
     try {
       const before = this.#native(this.#fresh);
       if (before.length === 0 && this.#fresh)
-        return { ok: true, value: { turns: [], state: this.initialState } };
+        return { ok: true, value: { turns: [], state: structuredClone(this.initialState) } };
       await replay.open(this.transport.sessionId);
       const after = this.#native();
       if (JSON.stringify(before) !== JSON.stringify(after))
@@ -312,7 +313,7 @@ export class CursorSession implements HarnessSession {
         ok: true,
         value: {
           ...cursorSnapshot(this.transport.sessionId, after, replay.replay),
-          state: this.initialState,
+          state: structuredClone(this.initialState),
         },
       };
     } catch (error) {
@@ -418,6 +419,7 @@ export class CursorSession implements HarnessSession {
     }
   }
   async #run(command: TurnStartCommand, before: CursorNativeTurn[]) {
+    let fault: HarnessError | undefined;
     const output = new CursorTurnOutput(
       command.turnId,
       (event) => this.#channel.emit({ kind: "event", event }),
@@ -460,6 +462,7 @@ export class CursorSession implements HarnessSession {
                 },
               };
     } catch (error) {
+      fault = cursorError(error);
       outcome = this.#active?.cancelled
         ? { status: "cancelled" }
         : { status: "failed", error: cursorError(error) };
@@ -496,6 +499,10 @@ export class CursorSession implements HarnessSession {
         ...(nativeTurnRef ? { nativeTurnRef } : {}),
       },
     });
+    if (fault && !this.#closed) {
+      this.#channel.emit({ kind: "event", event: { type: "session.faulted", error: fault } });
+      void this.close().catch(() => {});
+    }
   }
   async close() {
     if (this.#closed) return;
@@ -503,9 +510,12 @@ export class CursorSession implements HarnessSession {
     const active = this.#active;
     if (active) active.cancelled = true;
     this.#interactions.cancel();
-    await this.transport.close();
-    await active?.task;
-    this.#channel.end();
-    this.onClose();
+    try {
+      await this.transport.close();
+      await active?.task;
+    } finally {
+      this.#channel.end();
+      this.onClose();
+    }
   }
 }

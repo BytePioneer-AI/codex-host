@@ -83,6 +83,67 @@ afterEach(() => {
 });
 
 describe("Cursor native configuration", () => {
+  it("starts inspection cache expiry at completion, including slow native startup", async () => {
+    const clock = vi.spyOn(Date, "now").mockReturnValue(0),
+      gate = Promise.withResolvers<typeof info>();
+    const open = vi.spyOn(CursorTransport.prototype, "open").mockImplementation(() => gate.promise);
+    vi.spyOn(CursorTransport.prototype, "close").mockResolvedValue();
+    const adapter = new CursorAdapter();
+    try {
+      const first = adapter.inspect();
+      clock.mockReturnValue(400_000);
+      gate.resolve(info);
+      await first;
+      await adapter.inspect();
+      expect(open).toHaveBeenCalledTimes(1);
+      clock.mockReturnValue(699_999);
+      await adapter.inspect();
+      expect(open).toHaveBeenCalledTimes(1);
+      clock.mockReturnValue(700_001);
+      await adapter.inspect();
+      expect(open).toHaveBeenCalledTimes(2);
+    } finally {
+      await adapter.close();
+    }
+  });
+  it.each([false, true])(
+    "does not mutate a previously returned snapshot after mode changes (history=%s)",
+    async (history) => {
+      const f = session();
+      vi.spyOn(CursorTransport.prototype, "open").mockImplementation(async function (
+        this: CursorTransport,
+      ) {
+        this.replay = native.turns.map((turn) => ({
+          sessionId: info.sessionId,
+          update: {
+            sessionUpdate: "user_message_chunk",
+            content: { type: "text", text: turn.text },
+          },
+        }));
+        return info;
+      });
+      try {
+        if (history) {
+          await f.session.execute(start);
+          await vi.waitFor(() =>
+            expect(
+              f.output.some((x) => x.kind === "event" && x.event.type === "turn.completed"),
+            ).toBe(true),
+          );
+        }
+        const snapshot = await f.session.readSnapshot();
+        if (!snapshot.ok) throw Error(snapshot.error.message);
+        await f.session.execute({
+          type: "permissionMode.select",
+          permissionModeId: harnessPermissionModeIdSchema.parse("plan"),
+        });
+        expect(snapshot.value.state?.effectivePermissionModeId).toBe("agent");
+      } finally {
+        await f.session.close();
+        await f.done;
+      }
+    },
+  );
   it("preserves the complete parameterized native model behind an opaque Host ref", () => {
     const ref = cursorModelRef("model[effort=high]");
     expect(ref.id).toMatch(/^[A-Za-z0-9._~-]+$/u);
@@ -122,6 +183,28 @@ describe("Cursor native configuration", () => {
 });
 
 describe("Cursor turn lifecycle", () => {
+  it("faults and closes a dead ACP session instead of accepting further turns", async () => {
+    const f = session();
+    f.transport.action = async () => {
+      throw new Error("Cursor ACP process exited (1)");
+    };
+    const close = vi.spyOn(f.transport, "close");
+    await f.session.execute(start);
+    await vi.waitFor(() =>
+      expect(f.output.some((x) => x.kind === "event" && x.event.type === "turn.completed")).toBe(
+        true,
+      ),
+    );
+    expect(
+      (await f.session.execute({ ...start, turnId: hostTurnIdSchema.parse("after-exit") })).ok,
+    ).toBe(false);
+    expect(f.output.some((x) => x.kind === "event" && x.event.type === "session.faulted")).toBe(
+      true,
+    );
+    expect(close).toHaveBeenCalled();
+    await f.session.close();
+    await f.done;
+  });
   it("emits a single terminal with durable native identity and refuses duplicate submission", async () => {
     const f = session();
     expect((await f.session.execute(start)).ok).toBe(true);

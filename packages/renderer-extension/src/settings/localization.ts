@@ -25,6 +25,9 @@ export interface RendererSettingsMessages {
   readonly sectionsLabel: string;
   readonly generalSection: string;
   readonly otherSection: string;
+  readonly appearanceDescription: string;
+  readonly reasoningSoftWrapTitle: string;
+  readonly reasoningSoftWrapDescription: string;
   readonly pageUnavailable: string;
   readonly inDevelopment: string;
   readonly notAvailable: string;
@@ -222,6 +225,10 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   sectionsLabel: "Settings sections",
   generalSection: "General",
   otherSection: "Other",
+  appearanceDescription: "Adjust how thinking text is displayed in the conversation.",
+  reasoningSoftWrapTitle: "Wrap thinking text",
+  reasoningSoftWrapDescription:
+    "Wrap long thinking lines in the transcript. Ordinary shell output is unaffected. Off by default.",
   pageUnavailable: "Page unavailable",
   inDevelopment: "In development",
   notAvailable: "Not available",
@@ -431,6 +438,7 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   aboutRepository: "Open-source repository",
   pageLabels: Object.freeze({
     connections: "Connections",
+    appearance: "Appearance",
     accounts: "Accounts",
     "session-import": "Session Import",
     updates: "Updates",
@@ -446,6 +454,9 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   sectionsLabel: "设置分类",
   generalSection: "通用",
   otherSection: "其他",
+  appearanceDescription: "调整会话中思考文本的显示方式。",
+  reasoningSoftWrapTitle: "换行显示思考文本",
+  reasoningSoftWrapDescription: "让思考块中的长行自动换行。普通 Shell 输出不受影响。默认关闭。",
   pageUnavailable: "页面不可用",
   inDevelopment: "开发中",
   notAvailable: "暂不可用",
@@ -647,6 +658,7 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   aboutRepository: "开源仓库",
   pageLabels: Object.freeze({
     connections: "连接",
+    appearance: "外观",
     accounts: "账号",
     "session-import": "会话导入",
     updates: "更新",

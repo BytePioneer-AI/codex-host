@@ -375,13 +375,11 @@ async function scenarioRecovery01(context) {
   const cwd = await mkdtemp(path.join(context.runDirectory, "recovery-"));
   const requestId = `recovery-${randomUUID()}`;
   const first = await startTask(context, { task: "recovery ping", cwd, requestId });
-  const childEnv = context.childEnvironment;
   await context.runtime.close();
   context.runtime = await startRuntime(context.mode, context.dataDirectory);
   context.childEnvironment = context.runtime.childEnvironment();
   const second = await startTask(context, { task: "recovery ping", cwd, requestId });
   if (second.threadId !== first.threadId) throw new Error("RECOVERY-01 re-delivered the request");
-  context.childEnvironment = childEnv;
   return { threadId: first.threadId, reopened: true };
 }
 

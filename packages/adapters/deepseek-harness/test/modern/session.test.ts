@@ -12,8 +12,14 @@ import {
   ModernJournalError,
   type ModernJournal,
   type ModernJournalEvent,
+  type ModernJournalLiveItem,
   type ModernJournalRemote,
 } from "../../src/modern/journal.js";
+import {
+  DEEPSEEK_V012_PROFILE,
+  DEEPSEEK_V015_PROFILE,
+  type DeepSeekModernProfile,
+} from "../../src/profiles/profile.js";
 import { parseModernModelCatalog } from "../../src/modern/catalog.js";
 import type {
   ModernControlJsonValue,
@@ -148,15 +154,17 @@ class FakeControl implements ModernSessionControl {
   }
 }
 
-class EventFeed implements AsyncIterable<ModernJournalEvent>, AsyncIterator<ModernJournalEvent> {
-  readonly #items: IteratorResult<ModernJournalEvent>[] = [];
-  #pending: ((item: IteratorResult<ModernJournalEvent>) => void) | undefined;
+class EventFeed
+  implements AsyncIterable<ModernJournalLiveItem>, AsyncIterator<ModernJournalLiveItem>
+{
+  readonly #items: IteratorResult<ModernJournalLiveItem>[] = [];
+  #pending: ((item: IteratorResult<ModernJournalLiveItem>) => void) | undefined;
   #done = false;
   readonly seen: ModernJournalEvent[] = [];
 
-  push(value: ModernJournalEvent): void {
+  push(value: ModernJournalLiveItem): void {
     if (this.#done) return;
-    this.seen.push(value);
+    if (!("frame" in value)) this.seen.push(value);
     this.#deliver({ done: false, value });
   }
 
@@ -166,7 +174,7 @@ class EventFeed implements AsyncIterable<ModernJournalEvent>, AsyncIterator<Mode
     this.#deliver({ done: true, value: undefined });
   }
 
-  next(): Promise<IteratorResult<ModernJournalEvent>> {
+  next(): Promise<IteratorResult<ModernJournalLiveItem>> {
     const item = this.#items.shift();
     if (item) return Promise.resolve(item);
     if (this.#done) return Promise.resolve({ done: true, value: undefined });
@@ -175,16 +183,16 @@ class EventFeed implements AsyncIterable<ModernJournalEvent>, AsyncIterator<Mode
     });
   }
 
-  return(): Promise<IteratorResult<ModernJournalEvent>> {
+  return(): Promise<IteratorResult<ModernJournalLiveItem>> {
     this.finish();
     return Promise.resolve({ done: true, value: undefined });
   }
 
-  [Symbol.asyncIterator](): AsyncIterator<ModernJournalEvent> {
+  [Symbol.asyncIterator](): AsyncIterator<ModernJournalLiveItem> {
     return this;
   }
 
-  #deliver(item: IteratorResult<ModernJournalEvent>): void {
+  #deliver(item: IteratorResult<ModernJournalLiveItem>): void {
     const pending = this.#pending;
     this.#pending = undefined;
     if (pending) pending(item);
@@ -425,6 +433,8 @@ function setup(
   maxHistoryBytes?: number,
   acceptedCorrelationTimeoutMs = MODERN_ACCEPTED_CORRELATION_TIMEOUT_MS,
   replacementFeeds: AsyncIterable<unknown>[] = [],
+  profile: DeepSeekModernProfile = DEEPSEEK_V012_PROFILE,
+  maxBufferedLiveBytes?: number,
 ): {
   feed: EventFeed;
   remote: FakeRemote;
@@ -436,7 +446,11 @@ function setup(
   const remote = new FakeRemote(handlers, replacementFeeds);
   const control = new FakeControl(permissionModes ? permissionModes.defaultModeId : undefined);
   const journal: ModernJournal & { closeCalls: number } = {
-    header: { version: 0, id: SESSION_ID, createdAt: 1 },
+    profile,
+    header:
+      profile.sessionFormatVersion === 3
+        ? { version: 3, id: SESSION_ID, createdAt: 1, isSeeded: false }
+        : { version: 0, id: SESSION_ID, createdAt: 1 },
     cursor: history.length - 1,
     projections: { asOfSeq: history.length - 1, values: {} },
     events: history,
@@ -479,6 +493,7 @@ function setup(
     promptCorrelationGraceMs,
     acceptedCorrelationTimeoutMs,
     ...(maxHistoryBytes === undefined ? {} : { maxHistoryBytes }),
+    ...(maxBufferedLiveBytes === undefined ? {} : { maxBufferedLiveBytes }),
   });
   return { feed, remote, control, journal, session };
 }
@@ -2962,6 +2977,982 @@ describe("DeepSeek Harness Modern Session", () => {
         response: { type: "approval", actionId: "allow" },
       }),
     ).resolves.toMatchObject({ ok: false, error: { code: "invalidState" } });
+    await test.session.close();
+  });
+
+  it("bounds v015 attempt buffering even while its live feed is being consumed", async () => {
+    const history = [
+      event(0, "turn/start", { turn: 1 }),
+      event(1, "step/start", { turn: 1, step: 1 }),
+      userMessage(2, "bounded"),
+    ];
+    const test = setup(
+      [],
+      history,
+      ["bounded-v015"],
+      5000,
+      null,
+      undefined,
+      MODERN_ACCEPTED_CORRELATION_TIMEOUT_MS,
+      [],
+      DEEPSEEK_V015_PROFILE,
+      200,
+    );
+    const outputs = test.session.outputs[Symbol.asyncIterator]();
+    test.feed.push({
+      type: "assistant-stream",
+      frame: { type: "start", attemptId: "a", revision: 1, startedAfterSeq: 2, turn: 1, step: 1 },
+    });
+    for (let index = 0; index < 2; index += 1) {
+      test.feed.push({
+        type: "assistant-stream",
+        frame: {
+          type: "chunk",
+          attemptId: "a",
+          revision: index + 2,
+          index,
+          time: 1,
+          chunk: { type: "text-delta", index: 0, text: "hello" },
+        },
+      });
+    }
+    const emitted = await eventsThrough(outputs, "session.faulted");
+    expect(emitted.at(-1)).toMatchObject({
+      type: "session.faulted",
+      error: { diagnostic: "limitExceeded" },
+    });
+    await expect(test.session.close()).rejects.toThrow("native execution stop was not confirmed");
+  });
+
+  it("streams v0.1.5 attempts and cancels failed retry text before the successful message", async () => {
+    const history = [
+      event(0, "turn/start", { turn: 1 }),
+      event(1, "step/start", { turn: 1, step: 1 }),
+      userMessage(2, "retry this"),
+    ];
+    const test = setup(
+      [],
+      history,
+      ["autonomous-v015"],
+      5_000,
+      null,
+      undefined,
+      MODERN_ACCEPTED_CORRELATION_TIMEOUT_MS,
+      [],
+      DEEPSEEK_V015_PROFILE,
+    );
+    const outputs = test.session.outputs[Symbol.asyncIterator]();
+    await Promise.resolve();
+
+    test.feed.push({
+      type: "assistant-stream",
+      frame: {
+        type: "chunk",
+        attemptId: "unknown-attempt",
+        revision: 5,
+        index: 0,
+        time: 1_001,
+        chunk: { type: "text-delta", index: 0, text: "unknown ghost" },
+      },
+    });
+    test.feed.push({
+      type: "assistant-stream",
+      frame: {
+        type: "end",
+        attemptId: "unknown-attempt",
+        revision: 6,
+        index: 1,
+        outcome: { kind: "abandoned" },
+      },
+    });
+    test.feed.push({
+      type: "assistant-stream",
+      frame: {
+        type: "start",
+        attemptId: "retired-agent-attempt",
+        revision: 7,
+        startedAfterSeq: 2,
+        turn: 1,
+        step: 1,
+      },
+    });
+    test.feed.push({
+      type: "assistant-stream",
+      frame: {
+        type: "chunk",
+        attemptId: "retired-agent-attempt",
+        revision: 8,
+        index: 0,
+        time: 1_002,
+        chunk: { type: "text-delta", index: 0, text: "retired ghost" },
+      },
+    });
+    test.feed.push({
+      type: "assistant-stream",
+      frame: {
+        type: "start",
+        attemptId: "attempt-failed",
+        revision: 1,
+        startedAfterSeq: 2,
+        turn: 1,
+        step: 1,
+      },
+    });
+    test.feed.push({
+      type: "assistant-stream",
+      frame: {
+        type: "chunk",
+        attemptId: "attempt-failed",
+        revision: 2,
+        index: 0,
+        time: 1_003,
+        chunk: { type: "text-delta", index: 0, text: "ghost" },
+      },
+    });
+    test.feed.push(
+      event(3, "assistant/attempt", {
+        turn: 1,
+        step: 1,
+        stream: [{ type: "text-chunks", time0: 1_003, index: 0, dt: [], texts: ["ghost"] }],
+      }),
+    );
+    test.feed.push({
+      type: "assistant-stream",
+      frame: {
+        type: "end",
+        attemptId: "attempt-failed",
+        revision: 3,
+        index: 1,
+        outcome: { kind: "committed", eventType: "assistant/attempt", seq: 3 },
+      },
+    });
+    test.feed.push({
+      type: "assistant-stream",
+      frame: {
+        type: "start",
+        attemptId: "attempt-visible",
+        revision: 4,
+        startedAfterSeq: 3,
+        turn: 1,
+        step: 1,
+      },
+    });
+    test.feed.push({
+      type: "assistant-stream",
+      frame: {
+        type: "chunk",
+        attemptId: "attempt-visible",
+        revision: 5,
+        index: 0,
+        time: 1_004,
+        chunk: { type: "text-delta", index: 0, text: "done" },
+      },
+    });
+    const emitted: HostEvent[] = [];
+    while (
+      !emitted.some(
+        (entry) =>
+          entry.type === "item.updated" &&
+          entry.update.type === "text.append" &&
+          entry.update.text === "done",
+      )
+    ) {
+      emitted.push(await nextEvent(outputs));
+    }
+    expect(test.feed.seen.some((entry) => entry.type === "assistant/message")).toBe(false);
+    test.feed.push(
+      event(
+        4,
+        "assistant/message",
+        {
+          turn: 1,
+          step: 1,
+          message: {
+            id: "assistant-4",
+            role: "assistant",
+            content: [{ type: "text", text: "done" }],
+            source: { kind: "model", provider: "deepseek", model: "deepseek-v4" },
+          },
+          stream: [{ type: "text-chunks", time0: 1_004, index: 0, dt: [], texts: ["done"] }],
+          usage: { inputTokens: 2, outputTokens: 1 },
+        },
+        true,
+      ),
+    );
+    test.feed.push({
+      type: "assistant-stream",
+      frame: {
+        type: "end",
+        attemptId: "attempt-visible",
+        revision: 6,
+        index: 1,
+        outcome: { kind: "committed", eventType: "assistant/message", seq: 4 },
+      },
+    });
+    test.feed.push(event(5, "step/end", { turn: 1, step: 1 }));
+    test.feed.push(event(6, "turn/end", { turn: 1, reason: { kind: "completed" } }));
+
+    while (!emitted.some(({ type }) => type === "turn.completed")) {
+      emitted.push(await nextEvent(outputs));
+    }
+    expect(JSON.stringify(emitted)).not.toContain("unknown ghost");
+    expect(emitted.filter(({ type }) => type === "item.started")).toHaveLength(3);
+    expect(emitted.filter(({ type }) => type === "item.completed")).toEqual([
+      expect.objectContaining({
+        snapshot: {
+          item: expect.objectContaining({
+            text: "retired ghost\n\n[生成尝试已取消 / Generation attempt cancelled]",
+          }),
+          outcome: { status: "cancelled" },
+        },
+      }),
+      expect.objectContaining({
+        snapshot: {
+          item: expect.objectContaining({
+            text: "ghost\n\n[生成尝试已取消 / Generation attempt cancelled]",
+          }),
+          outcome: { status: "cancelled" },
+        },
+      }),
+      expect.objectContaining({
+        snapshot: {
+          item: expect.objectContaining({ text: "done" }),
+          outcome: { status: "succeeded" },
+        },
+      }),
+    ]);
+    expect(emitted).toContainEqual(
+      expect.objectContaining({
+        type: "item.updated",
+        update: { type: "text.append", text: "done" },
+      }),
+    );
+    expect(emitted).toContainEqual(
+      expect.objectContaining({
+        type: "turn.completed",
+        outcome: expect.objectContaining({
+          checkpoint: expect.objectContaining({ checkpointId: "v3-turn-end:6" }),
+        }),
+      }),
+    );
+    const snapshot = await test.session.readSnapshot();
+    expect(snapshot.ok).toBe(true);
+    if (snapshot.ok) {
+      expect(snapshot.value.turns[0]?.items.map(({ item }) => item)).toEqual([
+        expect.objectContaining({ type: "agentMessage", text: "done" }),
+      ]);
+    }
+    await test.session.close();
+  });
+
+  it("publishes buffered v0.1.5 chunks as soon as the correlated Host Turn is admitted", async () => {
+    const receipt = deferred<ModernRemoteResult<unknown>>();
+    const test = setup(
+      [() => receipt.promise],
+      [],
+      ["stream-request"],
+      5_000,
+      null,
+      undefined,
+      MODERN_ACCEPTED_CORRELATION_TIMEOUT_MS,
+      [],
+      DEEPSEEK_V015_PROFILE,
+    );
+    const outputs = test.session.outputs[Symbol.asyncIterator]();
+    const started = test.session.execute({
+      type: "turn.start",
+      turnId: turnId("bound-stream"),
+      input: [{ type: "text", text: "stream" }],
+    });
+    test.feed.push(event(0, "turn/start", { turn: 1 }));
+    test.feed.push(event(1, "step/start", { turn: 1, step: 1 }));
+    test.feed.push(userMessage(2, "stream", "stream-request"));
+    test.feed.push({
+      type: "assistant-stream",
+      frame: {
+        type: "start",
+        attemptId: "pending-stream",
+        revision: 1,
+        startedAfterSeq: 2,
+        turn: 1,
+        step: 1,
+      },
+    });
+    test.feed.push({
+      type: "assistant-stream",
+      frame: {
+        type: "chunk",
+        attemptId: "pending-stream",
+        revision: 2,
+        index: 0,
+        time: 1_003,
+        chunk: { type: "text-delta", index: 0, text: "before settlement" },
+      },
+    });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    receipt.resolve(accepted());
+    await expect(started).resolves.toMatchObject({ ok: true });
+    const emitted = await eventsThrough(outputs, "item.updated");
+    expect(emitted).toEqual([
+      { type: "turn.started", turnId: "bound-stream" },
+      expect.objectContaining({ type: "item.started", turnId: "bound-stream" }),
+      expect.objectContaining({
+        type: "item.updated",
+        turnId: "bound-stream",
+        update: { type: "text.append", text: "before settlement" },
+      }),
+    ]);
+    expect(test.feed.seen.some((entry) => entry.type === "assistant/message")).toBe(false);
+    await test.session.close();
+  });
+
+  it("cancels a partial attempt when the replacement journal has no active assistant baseline", async () => {
+    const history = [
+      event(0, "turn/start", { turn: 1 }),
+      event(1, "step/start", { turn: 1, step: 1 }),
+      userMessage(2, "no baseline"),
+    ];
+    const replacement = new EventFeed();
+    replacement.push({
+      type: "snapshot",
+      header: { version: 3, id: SESSION_ID, createdAt: 1, isSeeded: false },
+      cursor: 2,
+      records: history.map((entry) => ({ type: "event", event: entry })),
+      hasMore: false,
+      projections: { asOfSeq: 2, values: {} },
+      assistantStream: { revision: 0 },
+    } as never);
+    const test = setup(
+      [],
+      history,
+      ["lost-attempt"],
+      5_000,
+      null,
+      undefined,
+      MODERN_ACCEPTED_CORRELATION_TIMEOUT_MS,
+      [replacement],
+      DEEPSEEK_V015_PROFILE,
+    );
+    const outputs = test.session.outputs[Symbol.asyncIterator]();
+    test.feed.push({
+      type: "assistant-stream",
+      frame: {
+        type: "start",
+        attemptId: "lost",
+        revision: 1,
+        startedAfterSeq: 2,
+        turn: 1,
+        step: 1,
+      },
+    });
+    test.feed.push({
+      type: "assistant-stream",
+      frame: {
+        type: "chunk",
+        attemptId: "lost",
+        revision: 2,
+        index: 0,
+        time: 1_003,
+        chunk: { type: "text-delta", index: 0, text: "partial" },
+      },
+    });
+    const emitted = await eventsThrough(outputs, "item.updated");
+    test.feed.finish();
+    await vi.waitFor(() => expect(test.remote.streamCalls).toBe(1));
+    replacement.push({ type: "event", event: event(3, "step/end", { turn: 1, step: 1 }) } as never);
+    replacement.push({
+      type: "event",
+      event: event(4, "turn/end", { turn: 1, reason: { kind: "completed" } }),
+    } as never);
+    emitted.push(...(await eventsThrough(outputs, "turn.completed")));
+    expect(emitted.filter(({ type }) => type === "item.completed")).toEqual([
+      expect.objectContaining({
+        snapshot: {
+          item: expect.objectContaining({
+            text: "partial\n\n[生成尝试已取消 / Generation attempt cancelled]",
+          }),
+          outcome: { status: "cancelled" },
+        },
+      }),
+    ]);
+    expect(emitted.some(({ type }) => type === "session.faulted")).toBe(false);
+    await test.session.close();
+  });
+
+  it.each([false, true])(
+    "deduplicates a reconnected v0.1.5 attempt when settlement is in the replacement snapshot: %s",
+    async (settled) => {
+      const history = [
+        event(0, "turn/start", { turn: 1 }),
+        event(1, "step/start", { turn: 1, step: 1 }),
+        userMessage(2, "reconnect"),
+      ];
+      const message = event(
+        3,
+        "assistant/message",
+        {
+          turn: 1,
+          step: 1,
+          message: {
+            id: "reconnected-message",
+            role: "assistant",
+            content: [{ type: "text", text: "partial!" }],
+            source: { kind: "model", provider: "deepseek", model: "deepseek-v4" },
+          },
+          stream: [
+            { type: "text-chunks", time0: 1_003, index: 0, dt: [1], texts: ["par", "tial"] },
+          ],
+        },
+        true,
+      );
+      const replacement = new EventFeed();
+      replacement.push({
+        type: "snapshot",
+        header: { version: 3, id: SESSION_ID, createdAt: 1, isSeeded: false },
+        cursor: settled ? 3 : 2,
+        records: [...history, ...(settled ? [message] : [])].map((entry) => ({
+          type: "event",
+          event: entry,
+        })),
+        hasMore: false,
+        projections: { asOfSeq: settled ? 3 : 2, values: {} },
+        assistantStream: {
+          revision: 3,
+          activeAttempt: {
+            attemptId: "reconnected",
+            startedAfterSeq: 2,
+            turn: 1,
+            step: 1,
+            nextIndex: 2,
+            stream: [
+              { type: "text-chunks", time0: 1_003, index: 0, dt: [1], texts: ["par", "tial"] },
+            ],
+          },
+        },
+      } as never);
+      const test = setup(
+        [],
+        history,
+        ["reconnect-turn"],
+        5_000,
+        null,
+        undefined,
+        MODERN_ACCEPTED_CORRELATION_TIMEOUT_MS,
+        [replacement],
+        DEEPSEEK_V015_PROFILE,
+      );
+      const outputs = test.session.outputs[Symbol.asyncIterator]();
+      test.feed.push({
+        type: "assistant-stream",
+        frame: {
+          type: "start",
+          attemptId: "reconnected",
+          revision: 1,
+          startedAfterSeq: 2,
+          turn: 1,
+          step: 1,
+        },
+      });
+      test.feed.push({
+        type: "assistant-stream",
+        frame: {
+          type: "chunk",
+          attemptId: "reconnected",
+          revision: 2,
+          index: 0,
+          time: 1_003,
+          chunk: { type: "text-delta", index: 0, text: "par" },
+        },
+      });
+      const emitted = await eventsThrough(outputs, "item.updated");
+      expect(emitted.at(-1)).toMatchObject({ update: { text: "par" } });
+      test.feed.finish();
+      await vi.waitFor(() => expect(test.remote.streamCalls).toBe(1));
+      if (!settled) {
+        emitted.push(...(await eventsThrough(outputs, "item.updated")));
+        expect(emitted.at(-1)).toMatchObject({ update: { text: "tial" } });
+        replacement.push({ type: "event", event: message } as never);
+      }
+      replacement.push({
+        type: "assistant-stream",
+        frame: {
+          type: "end",
+          attemptId: "reconnected",
+          revision: 4,
+          index: 2,
+          outcome: { kind: "committed", eventType: "assistant/message", seq: 3 },
+        },
+      });
+      replacement.push({
+        type: "event",
+        event: event(4, "step/end", { turn: 1, step: 1 }),
+      } as never);
+      replacement.push({
+        type: "event",
+        event: event(5, "turn/end", { turn: 1, reason: { kind: "completed" } }),
+      } as never);
+      emitted.push(...(await eventsThrough(outputs, "turn.completed")));
+      expect(emitted.filter(({ type }) => type === "item.started")).toHaveLength(1);
+      expect(emitted.filter(({ type }) => type === "item.completed")).toEqual([
+        expect.objectContaining({
+          snapshot: {
+            item: expect.objectContaining({ text: "partial!" }),
+            outcome: { status: "succeeded" },
+          },
+        }),
+      ]);
+      expect(
+        emitted
+          .flatMap((entry) =>
+            entry.type === "item.updated" && entry.update.type === "text.append"
+              ? [entry.update.text]
+              : [],
+          )
+          .join(""),
+      ).toBe("partial!");
+      expect(emitted.some(({ type }) => type === "session.faulted")).toBe(false);
+      await test.session.close();
+    },
+  );
+
+  it.each([1, 2])(
+    "recovers across %s failed attempts and a successful same-step retry when stream end frames were lost",
+    async (failures) => {
+      const history = [
+        event(0, "turn/start", { turn: 1 }),
+        event(1, "step/start", { turn: 1, step: 1 }),
+        userMessage(2, "retry while offline"),
+      ];
+      const settled = Array.from({ length: failures }, (_, index) =>
+        event(3 + index, "assistant/attempt", { turn: 1, step: 1, stream: [] }),
+      );
+      const messageSeq = 3 + failures;
+      settled.push(
+        event(
+          messageSeq,
+          "assistant/message",
+          {
+            turn: 1,
+            step: 1,
+            message: {
+              id: "retry-message",
+              role: "assistant",
+              content: [{ type: "text", text: "retry succeeded" }],
+              source: { kind: "model", provider: "deepseek", model: "deepseek-v4" },
+            },
+            stream: [],
+          },
+          true,
+        ),
+      );
+      settled.push(event(messageSeq + 1, "step/end", { turn: 1, step: 1 }));
+      settled.push(event(messageSeq + 2, "turn/end", { turn: 1, reason: { kind: "completed" } }));
+      const replacement = new EventFeed();
+      replacement.push({
+        type: "snapshot",
+        header: { version: 3, id: SESSION_ID, createdAt: 1, isSeeded: false },
+        cursor: messageSeq + 2,
+        records: [...history, ...settled].map((entry) => ({ type: "event", event: entry })),
+        hasMore: false,
+        projections: { asOfSeq: messageSeq + 2, values: {} },
+        assistantStream: { revision: 0 },
+      } as never);
+      const test = setup(
+        [],
+        history,
+        ["offline-retry"],
+        5_000,
+        null,
+        undefined,
+        MODERN_ACCEPTED_CORRELATION_TIMEOUT_MS,
+        [replacement],
+        DEEPSEEK_V015_PROFILE,
+      );
+      const outputs = test.session.outputs[Symbol.asyncIterator]();
+      test.feed.push({
+        type: "assistant-stream",
+        frame: {
+          type: "start",
+          attemptId: "old-failed-attempt",
+          revision: 1,
+          startedAfterSeq: 2,
+          turn: 1,
+          step: 1,
+        },
+      });
+      test.feed.push({
+        type: "assistant-stream",
+        frame: {
+          type: "chunk",
+          attemptId: "old-failed-attempt",
+          revision: 2,
+          index: 0,
+          time: 1_003,
+          chunk: { type: "text-delta", index: 0, text: "failed partial" },
+        },
+      });
+      const emitted = await eventsThrough(outputs, "item.updated");
+      test.feed.finish();
+      emitted.push(...(await eventsThrough(outputs, "turn.completed")));
+      expect(emitted.at(-1)).toMatchObject({
+        type: "turn.completed",
+        outcome: { status: "succeeded" },
+      });
+      expect(emitted.some(({ type }) => type === "session.faulted")).toBe(false);
+      expect(
+        emitted.flatMap((entry) => (entry.type === "item.completed" ? [entry.snapshot] : [])),
+      ).toEqual([
+        {
+          item: expect.objectContaining({
+            text: "failed partial\n\n[生成尝试已取消 / Generation attempt cancelled]",
+          }),
+          outcome: { status: "cancelled" },
+        },
+        {
+          item: expect.objectContaining({ text: "retry succeeded" }),
+          outcome: { status: "succeeded" },
+        },
+      ]);
+      const snapshot = await test.session.readSnapshot();
+      expect(snapshot.ok).toBe(true);
+      if (snapshot.ok)
+        expect(snapshot.value.turns[0]?.items).toEqual([
+          {
+            item: expect.objectContaining({ text: "retry succeeded" }),
+            outcome: { status: "succeeded" },
+          },
+        ]);
+      await test.session.close();
+    },
+  );
+
+  it("cancels an abandoned v0.1.5 attempt and preserves a revised final message without prefix pollution", async () => {
+    const history = [
+      event(0, "turn/start", { turn: 1 }),
+      event(1, "step/start", { turn: 1, step: 1 }),
+      userMessage(2, "retry"),
+    ];
+    const test = setup(
+      [],
+      history,
+      ["abandoned-turn"],
+      5_000,
+      null,
+      undefined,
+      MODERN_ACCEPTED_CORRELATION_TIMEOUT_MS,
+      [],
+      DEEPSEEK_V015_PROFILE,
+    );
+    const outputs = test.session.outputs[Symbol.asyncIterator]();
+    test.feed.push({
+      type: "assistant-stream",
+      frame: {
+        type: "start",
+        attemptId: "abandoned",
+        revision: 1,
+        startedAfterSeq: 2,
+        turn: 1,
+        step: 1,
+      },
+    });
+    test.feed.push({
+      type: "assistant-stream",
+      frame: {
+        type: "chunk",
+        attemptId: "abandoned",
+        revision: 2,
+        index: 0,
+        time: 1_003,
+        chunk: { type: "text-delta", index: 0, text: "discarded" },
+      },
+    });
+    const emitted = await eventsThrough(outputs, "item.updated");
+    test.feed.push({
+      type: "assistant-stream",
+      frame: {
+        type: "end",
+        attemptId: "abandoned",
+        revision: 3,
+        index: 1,
+        outcome: { kind: "abandoned" },
+      },
+    });
+    test.feed.push({
+      type: "assistant-stream",
+      frame: {
+        type: "start",
+        attemptId: "revised",
+        revision: 4,
+        startedAfterSeq: 2,
+        turn: 1,
+        step: 1,
+      },
+    });
+    test.feed.push({
+      type: "assistant-stream",
+      frame: {
+        type: "chunk",
+        attemptId: "revised",
+        revision: 5,
+        index: 0,
+        time: 1_004,
+        chunk: { type: "text-delta", index: 0, text: "provisional" },
+      },
+    });
+    while (
+      !emitted.some(
+        (entry) =>
+          entry.type === "item.updated" &&
+          entry.update.type === "text.append" &&
+          entry.update.text === "provisional",
+      )
+    ) {
+      emitted.push(await nextEvent(outputs));
+    }
+    test.feed.push(
+      event(
+        3,
+        "assistant/message",
+        {
+          turn: 1,
+          step: 1,
+          message: {
+            id: "revised-message",
+            role: "assistant",
+            content: [{ type: "text", text: "authoritative" }],
+            source: { kind: "model", provider: "deepseek", model: "deepseek-v4" },
+          },
+          stream: [{ type: "text-chunks", time0: 1_004, index: 0, dt: [], texts: ["provisional"] }],
+        },
+        true,
+      ),
+    );
+    test.feed.push({
+      type: "assistant-stream",
+      frame: {
+        type: "end",
+        attemptId: "revised",
+        revision: 6,
+        index: 1,
+        outcome: { kind: "committed", eventType: "assistant/message", seq: 3 },
+      },
+    });
+    test.feed.push(event(4, "step/end", { turn: 1, step: 1 }));
+    test.feed.push(event(5, "turn/end", { turn: 1, reason: { kind: "completed" } }));
+    emitted.push(...(await eventsThrough(outputs, "turn.completed")));
+    const completed = emitted.flatMap((entry) =>
+      entry.type === "item.completed" ? [entry.snapshot] : [],
+    );
+    expect(completed).toEqual([
+      {
+        item: expect.objectContaining({
+          text: "discarded\n\n[生成尝试已取消 / Generation attempt cancelled]",
+        }),
+        outcome: { status: "cancelled" },
+      },
+      {
+        item: expect.objectContaining({
+          text: "provisional\n\n[生成尝试已取消 / Generation attempt cancelled]",
+        }),
+        outcome: { status: "cancelled" },
+      },
+      {
+        item: expect.objectContaining({ text: "authoritative" }),
+        outcome: { status: "succeeded" },
+      },
+    ]);
+    expect(new Set(completed.map(({ item }) => item.itemId)).size).toBe(3);
+    expect(
+      emitted.filter(
+        (entry) =>
+          entry.type === "item.updated" &&
+          entry.update.type === "text.append" &&
+          entry.update.text === "\n\n[生成尝试已取消 / Generation attempt cancelled]",
+      ),
+    ).toHaveLength(2);
+    expect(emitted.some(({ type }) => type === "session.faulted")).toBe(false);
+    await test.session.close();
+  });
+
+  it("reopens v0.1.5 journal state after a known attempt index gap", async () => {
+    const history = [
+      event(0, "turn/start", { turn: 1 }),
+      event(1, "step/start", { turn: 1, step: 1 }),
+      userMessage(2, "recover stream"),
+    ];
+    const replacement = new EventFeed();
+    replacement.push({
+      type: "snapshot",
+      header: { version: 3, id: SESSION_ID, createdAt: 1, isSeeded: false },
+      cursor: 2,
+      records: history.map((entry) => ({ type: "event", event: entry })),
+      hasMore: false,
+      projections: { asOfSeq: 2, values: {} },
+      assistantStream: { revision: 0 },
+    } as never);
+    const test = setup(
+      [],
+      history,
+      ["desync-recovery"],
+      5_000,
+      null,
+      undefined,
+      MODERN_ACCEPTED_CORRELATION_TIMEOUT_MS,
+      [replacement],
+      DEEPSEEK_V015_PROFILE,
+    );
+    const outputs = test.session.outputs[Symbol.asyncIterator]();
+    expect(await nextEvent(outputs)).toMatchObject({ type: "turn.autonomous.started" });
+    expect(await nextEvent(outputs)).toMatchObject({ type: "turn.started" });
+
+    test.feed.push({
+      type: "assistant-stream",
+      frame: {
+        type: "start",
+        attemptId: "gapped-attempt",
+        revision: 1,
+        startedAfterSeq: 2,
+        turn: 1,
+        step: 1,
+      },
+    });
+    test.feed.push({
+      type: "assistant-stream",
+      frame: {
+        type: "chunk",
+        attemptId: "gapped-attempt",
+        revision: 2,
+        index: 1,
+        time: 1_003,
+        chunk: { type: "text-delta", index: 0, text: "missed zero" },
+      },
+    });
+    await vi.waitFor(() => expect(test.remote.streamCalls).toBe(1));
+
+    replacement.push({
+      type: "event",
+      event: event(
+        3,
+        "assistant/message",
+        {
+          turn: 1,
+          step: 1,
+          message: {
+            id: "assistant-3",
+            role: "assistant",
+            content: [{ type: "text", text: "recovered" }],
+            source: { kind: "model", provider: "deepseek", model: "deepseek-v4" },
+          },
+          stream: [],
+          usage: { inputTokens: 2, outputTokens: 1 },
+        },
+        true,
+      ),
+    } as never);
+    replacement.push({
+      type: "event",
+      event: event(4, "step/end", { turn: 1, step: 1 }),
+    } as never);
+    replacement.push({
+      type: "event",
+      event: event(5, "turn/end", { turn: 1, reason: { kind: "completed" } }),
+    } as never);
+
+    const emitted = await eventsThrough(outputs, "turn.completed");
+    expect(JSON.stringify(emitted)).not.toContain("missed zero");
+    expect(emitted).toContainEqual(
+      expect.objectContaining({
+        type: "item.updated",
+        update: { type: "text.append", text: "recovered" },
+      }),
+    );
+    await test.session.close();
+  });
+
+  it("accepts an end frame when its v0.1.5 settlement was already in the opening snapshot", async () => {
+    const history = [
+      event(0, "turn/start", { turn: 1 }),
+      event(1, "step/start", { turn: 1, step: 1 }),
+      userMessage(2, "resume this"),
+      event(
+        3,
+        "assistant/message",
+        {
+          turn: 1,
+          step: 1,
+          message: {
+            id: "assistant-3",
+            role: "assistant",
+            content: [{ type: "text", text: "settled" }],
+            source: { kind: "model", provider: "deepseek", model: "deepseek-v4" },
+          },
+          stream: [{ type: "text-chunks", time0: 1_003, index: 0, dt: [], texts: ["settled"] }],
+          usage: { inputTokens: 2, outputTokens: 1 },
+        },
+        true,
+      ),
+    ];
+    const test = setup(
+      [],
+      history,
+      ["opening-settlement"],
+      5_000,
+      null,
+      undefined,
+      MODERN_ACCEPTED_CORRELATION_TIMEOUT_MS,
+      [],
+      DEEPSEEK_V015_PROFILE,
+    );
+    const outputs = test.session.outputs[Symbol.asyncIterator]();
+    await Promise.resolve();
+    test.feed.push({
+      type: "assistant-stream",
+      frame: {
+        type: "start",
+        attemptId: "opening-attempt",
+        revision: 4,
+        startedAfterSeq: 2,
+        turn: 1,
+        step: 1,
+      },
+    });
+    test.feed.push({
+      type: "assistant-stream",
+      frame: {
+        type: "chunk",
+        attemptId: "opening-attempt",
+        revision: 4,
+        index: 0,
+        time: 1_003,
+        chunk: { type: "text-delta", index: 0, text: "settled" },
+      },
+    });
+    test.feed.push({
+      type: "assistant-stream",
+      frame: {
+        type: "end",
+        attemptId: "opening-attempt",
+        revision: 5,
+        index: 1,
+        outcome: { kind: "committed", eventType: "assistant/message", seq: 3 },
+      },
+    });
+    test.feed.push(event(4, "step/end", { turn: 1, step: 1 }));
+    test.feed.push(event(5, "turn/end", { turn: 1, reason: { kind: "completed" } }));
+
+    const emitted: HostEvent[] = [];
+    while (!emitted.some(({ type }) => type === "turn.completed")) {
+      emitted.push(await nextEvent(outputs));
+    }
+    expect(emitted).not.toContainEqual(expect.objectContaining({ type: "session.faulted" }));
+    expect(
+      emitted.filter(
+        (output) =>
+          output.type === "item.updated" &&
+          output.update.type === "text.append" &&
+          output.update.text === "settled",
+      ),
+    ).toHaveLength(1);
     await test.session.close();
   });
 });

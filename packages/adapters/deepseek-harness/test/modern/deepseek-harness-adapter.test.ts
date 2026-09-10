@@ -601,6 +601,168 @@ function setup(
   return { adapter, connection };
 }
 
+function v015Snapshot(input: Parameters<typeof exactJournalSnapshot>[0]): Record<string, unknown> {
+  const snapshot = exactJournalSnapshot(input);
+  const header = { ...(snapshot.header as Record<string, unknown>) };
+  delete header.seedLength;
+  return {
+    ...snapshot,
+    header: { ...header, version: 3, isSeeded: input.parentSession !== undefined },
+    assistantStream: { revision: 0 },
+  };
+}
+
+describe("DSH 0.1.5-rc.1 session operations", () => {
+  const locator = { dshVersion: "0.1.5-rc.1" };
+
+  it("creates, selects native permissions and resumes a V3 Session", async () => {
+    const cwd = path.resolve("fixture-v015-create");
+    const { adapter, connection } = setup(["v015"], { version: "0.1.5-rc.1" });
+    connection.permissionModesEnabled = true;
+    connection.journalSnapshots.set("session-v015", {
+      ...v015Snapshot({ sessionId: "session-v015", cwd, events: [] }),
+      projections: {
+        asOfSeq: -1,
+        values: { modelSelection: { lastUsed: null, next: null } },
+      },
+    });
+    const created = await adapter.open({
+      kind: "create",
+      cwd,
+      permissionModeId: "danger-full-access" as never,
+    });
+    expect(created).toMatchObject({ ok: true });
+    if (!created.ok) throw new Error(created.error.message);
+    const ref = created.value.initialState.nativeRef;
+    if (!ref) throw new Error("missing native Session reference");
+    expect(ref).toMatchObject({ nativeSessionId: "session-v015", locator });
+    expect(connection.streams).toContainEqual({
+      endpoint: "session/follow",
+      args: {
+        request: {
+          address: { kind: "session", sessionId: "session-v015" },
+          maxMessages: 200,
+          assistantStream: true,
+        },
+      },
+    });
+    expect(connection.calls).toContainEqual({
+      endpoint: "commands/execute",
+      args: {
+        agentId: "session-v015",
+        line: "/permission danger-full-access",
+        submittedAttachments: [],
+      },
+    });
+    await created.value.close();
+    connection.journalSnapshots.set("session-v015", {
+      ...v015Snapshot({
+        sessionId: "session-v015",
+        cwd,
+        events: [exactJournalEvent(0, "permission/preset", { preset: "danger-full-access" })],
+      }),
+      projections: {
+        asOfSeq: 0,
+        values: {
+          modelSelection: { lastUsed: null, next: null },
+          permissions: permissionProjection("danger-full-access"),
+        },
+      },
+    });
+    const resumed = await adapter.open({ kind: "resume", nativeRef: ref, cwd });
+    if (!resumed.ok) throw new Error(resumed.error.message);
+    expect(resumed).toMatchObject({ ok: true });
+    expect(connection.calls.filter(({ endpoint }) => endpoint === "session/create")).toHaveLength(
+      1,
+    );
+    if (resumed.ok) await resumed.value.close();
+    await adapter.close();
+  });
+
+  it.each(["fork", "rollbackLastTurn"] as const)(
+    "uses the V3 checkpoint and inherited marker for %s",
+    async (kind) => {
+      const cwd = path.resolve("fixture-v015-fork");
+      const { adapter, connection } = setup([], { version: "0.1.5-rc.1" });
+      const sourceEvents = [
+        ...forkSourceEvents(),
+        exactJournalEvent(7, "turn/end", { turn: 2, reason: { kind: "completed" } }),
+      ];
+      connection.journalSnapshots.set(
+        "session-source",
+        v015Snapshot({
+          sessionId: "session-source",
+          cwd,
+          events: sourceEvents,
+          headerAgentPreset: "standard",
+          agentPreset: "standard",
+        }),
+      );
+      connection.journalSnapshots.set(
+        "session-forked",
+        v015Snapshot({
+          sessionId: "session-forked",
+          cwd,
+          parentSession: "session-source",
+          headerAgentPreset: "standard",
+          agentPreset: "standard",
+          events: [
+            ...sourceEvents.slice(0, 5),
+            exactJournalEvent(5, "session/end-seed", { inherited: true }),
+          ],
+        }),
+      );
+      const refs = forkRefs("session-source", 2);
+      const sourceRef = { ...refs.sourceRef, locator };
+      const opened = await adapter.open(
+        kind === "fork"
+          ? {
+              kind,
+              sourceRef,
+              cwd,
+              checkpoint: { ...refs.checkpoint, checkpointId: "v3-turn-end:2", locator },
+            }
+          : { kind, sourceRef, cwd },
+      );
+      expect(opened).toMatchObject({ ok: true });
+      if (!opened.ok) throw new Error(opened.error.message);
+      expect(connection.calls).toContainEqual({
+        endpoint: "session/fork",
+        args: { request: { sessionId: "session-source", atSeq: 2 } },
+      });
+      await expect(opened.value.readSnapshot()).resolves.toMatchObject({
+        ok: true,
+        value: { turns: [{ checkpoint: { checkpointId: "v3-turn-end:2", locator } }] },
+      });
+      await opened.value.close();
+      await adapter.close();
+    },
+  );
+
+  it("rejects V0 checkpoints before native mutation and V3 refs on 012", async () => {
+    const cwd = path.resolve("fixture-v015-references");
+    const { adapter, connection } = setup([], { version: "0.1.5-rc.1" });
+    await expect(
+      adapter.open({ kind: "fork", ...forkRefs("session-old", 2), cwd }),
+    ).resolves.toMatchObject({
+      ok: false,
+      error: { code: "invalidRequest" },
+    });
+    expect(connection.calls.some(({ endpoint }) => endpoint === "session/fork")).toBe(false);
+    await adapter.close();
+    const older = setup();
+    await expect(
+      older.adapter.open({
+        kind: "resume",
+        cwd,
+        nativeRef: { ...forkRefs("session-new", 2).sourceRef, locator },
+      }),
+    ).resolves.toMatchObject({ ok: false, error: { code: "invalidRequest" } });
+    expect(older.connection.calls).toEqual([]);
+    await older.adapter.close();
+  });
+});
+
 describe("Modern DeepSeek Harness Adapter", () => {
   it("lists exact Modern Session candidates through the managed connection", async () => {
     const { adapter, connection } = setup();

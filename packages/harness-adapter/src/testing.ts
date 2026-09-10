@@ -1270,23 +1270,29 @@ export class FakeHarnessAdapter implements HarnessAdapter {
         ...cloneJson(snapshot),
         item: {
           ...cloneJson(snapshot.item),
-          itemId: hostItemIdSchema.parse(
-            `fake-derived-item-${this.#sessionOrdinal}-${index + 1}-${itemIndex + 1}`,
-          ),
+          itemId: nativeSessionRef
+            ? snapshot.item.itemId
+            : hostItemIdSchema.parse(
+                `fake-derived-item-${this.#sessionOrdinal}-${index + 1}-${itemIndex + 1}`,
+              ),
         },
       })),
-      nativeTurnRef: {
-        ...turn.nativeTurnRef,
-        nativeSessionId: nativeRef.nativeSessionId,
-        nativeTurnKey: `fake-derived-turn-${index + 1}`,
-      },
+      nativeTurnRef: nativeSessionRef
+        ? cloneJson(turn.nativeTurnRef)
+        : {
+            ...turn.nativeTurnRef,
+            nativeSessionId: nativeRef.nativeSessionId,
+            nativeTurnKey: `fake-derived-turn-${index + 1}`,
+          },
       ...(turn.checkpoint
         ? {
-            checkpoint: {
-              ...turn.checkpoint,
-              nativeSessionId: nativeRef.nativeSessionId,
-              checkpointId: `fake-checkpoint-${index + 1}`,
-            },
+            checkpoint: nativeSessionRef
+              ? cloneJson(turn.checkpoint)
+              : {
+                  ...turn.checkpoint,
+                  nativeSessionId: nativeRef.nativeSessionId,
+                  checkpointId: `fake-checkpoint-${index + 1}`,
+                },
           }
         : {}),
     }));

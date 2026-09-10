@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 import { listScenarioIds } from "./matrix.mjs";
-import { HANDLERS, runVerify } from "./verify.mjs";
+import { configurationFingerprint, HANDLERS, runVerify } from "./verify.mjs";
 
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const verifyPath = path.join(repositoryRoot, "tools/delegation/verify.mjs");
@@ -28,6 +28,44 @@ describe("delegation verify entry", () => {
     expect(HANDLERS["RELEASE-04"]).not.toBe(HANDLERS["RELEASE-01"]);
     expect(HANDLERS["EVIDENCE-04"]).not.toBe(HANDLERS["EVIDENCE-01"]);
     expect(HANDLERS["SKILL-03"]).not.toBe(HANDLERS["TURN-01"]);
+    expect(HANDLERS["TURN-02"]).not.toBe(HANDLERS["TURN-01"]);
+    expect(HANDLERS["TURN-03"]).not.toBe(HANDLERS["TURN-01"]);
+    expect(HANDLERS["RELEASE-02"]).not.toBe(HANDLERS["RELEASE-01"]);
+    expect(HANDLERS["RELEASE-03"]).not.toBe(HANDLERS["RELEASE-01"]);
+    expect(HANDLERS["OBSERVE-02"]).not.toBe(HANDLERS["OBSERVE-01"]);
+    expect(HANDLERS["OBSERVE-03"]).not.toBe(HANDLERS["OBSERVE-01"]);
+    expect(HANDLERS["OBSERVE-04"]).not.toBe(HANDLERS["OBSERVE-01"]);
+    expect(HANDLERS["INPUT-02"]).not.toBe(HANDLERS["INPUT-01"]);
+    expect(HANDLERS["EVIDENCE-02"]).not.toBe(HANDLERS["EVIDENCE-01"]);
+    expect(HANDLERS["EVIDENCE-03"]).not.toBe(HANDLERS["EVIDENCE-01"]);
+    expect(HANDLERS["SKILL-02"]).not.toBe(HANDLERS["SKILL-01"]);
+    expect(HANDLERS["SKILL-04"]).not.toBe(HANDLERS["EVIDENCE-01"]);
+    expect(HANDLERS["FLOW-02"]).not.toBe(HANDLERS["RECOVERY-01"]);
+    expect(HANDLERS["FLOW-03"]).not.toBe(HANDLERS["OBSERVE-01"]);
+  });
+
+  it("configuration fingerprints use status.harnessId, not the configuration payload", () => {
+    const status = {
+      harnessId: "grok",
+      cwd: "/workspace",
+      configuration: {
+        effective: {
+          effectiveModel: { id: "model-a" },
+          effectiveThinkingOptionId: "high",
+          effectivePermissionModeId: "always-approve",
+        },
+        unknown: ["turn"],
+      },
+    };
+    const configOnly = status.configuration;
+    expect(configOnly.harnessId).toBeUndefined();
+    expect(configurationFingerprint(status)).toEqual({
+      harnessId: "grok",
+      cwd: "/workspace",
+      model: "model-a",
+      thinking: "high",
+      permission: "always-approve",
+    });
   });
 
   it("FLOW-01 plant is a real failing unittest, not an idempotent set.add", async () => {

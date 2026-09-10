@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { spawn, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -316,11 +316,89 @@ async function startTask(context, input) {
     input.parent ?? PARENT,
   ];
   if (input.requestId) args.push("--request-id", input.requestId);
+  if (input.model) args.push("--model", input.model);
+  if (input.thinking) args.push("--thinking", input.thinking);
   if (input.taskFile) {
     args.splice(args.indexOf("--task"), 2);
     args.push("--task-file", input.taskFile);
   }
   return requireOk(await runCli(context.childEnvironment, args, input.cwd), "delegate start");
+}
+
+function waitTimeout(context) {
+  return context.mode === "live" ? 60_000 : 2_000;
+}
+
+function waitBudget(context) {
+  return context.mode === "live" ? 70_000 : 5_000;
+}
+
+async function waitIdle(context, threadId, cwd) {
+  await runCli(
+    context.childEnvironment,
+    ["thread", "wait", threadId, "--timeout-ms", String(waitTimeout(context))],
+    cwd,
+    waitBudget(context),
+  );
+}
+
+async function threadStatus(context, threadId, cwd) {
+  return requireOk(
+    await runCli(context.childEnvironment, ["thread", "status", threadId], cwd),
+    "thread status",
+  );
+}
+
+async function threadMessages(context, threadId, cwd) {
+  return requireOk(
+    await runCli(
+      context.childEnvironment,
+      ["thread", "read", threadId, "--view", "messages", "--limit", "100"],
+      cwd,
+    ),
+    "thread messages",
+  );
+}
+
+function modelId(configuration) {
+  const value = configuration?.effective?.effectiveModel;
+  if (!value) return null;
+  return typeof value === "object" && value !== null && "id" in value ? value.id : value;
+}
+
+export function configurationFingerprint(status) {
+  return {
+    harnessId: status.harnessId ?? null,
+    cwd: status.cwd ?? null,
+    model: modelId(status.configuration) ?? null,
+    thinking: status.configuration?.effective?.effectiveThinkingOptionId ?? null,
+    permission: status.configuration?.effective?.effectivePermissionModeId ?? null,
+  };
+}
+
+function assertRestoredConfiguration(before, after, label) {
+  const left = configurationFingerprint(before);
+  const right = configurationFingerprint(after);
+  if (!left.harnessId && !left.model && !left.thinking) {
+    throw new Error(`${label} had empty configuration; restoration cannot be proved`);
+  }
+  for (const key of Object.keys(left)) {
+    if (left[key] !== right[key]) {
+      throw new Error(
+        `${label} ${key} drifted: ${JSON.stringify(left[key])} -> ${JSON.stringify(right[key])}`,
+      );
+    }
+  }
+}
+
+function messageTurnIds(snapshot) {
+  return [
+    ...new Set(
+      (snapshot.messages ?? [])
+        .map((message) => message.turnId)
+        .filter((value) => typeof value === "string" && value.length > 0),
+    ),
+  ];
 }
 
 async function scenarioCreation01(context) {
@@ -763,10 +841,23 @@ function python3() {
   return found.status === 0 ? "python3" : "python";
 }
 
+function schedulerSource(cwd) {
+  return readFile(path.join(cwd, "scheduler.py"), "utf8");
+}
+
+function runSchedulerTests(cwd) {
+  return spawnSync(python3(), ["-m", "unittest", "test_scheduler.py", "-q"], {
+    cwd,
+    encoding: "utf8",
+  });
+}
+
 async function scenarioFlow01(context) {
   if (context.mode !== "live") throw new Error("FLOW-01 is live-only");
   const cwd = await mkdtemp(path.join(context.runDirectory, "flow1-"));
   await writeFlow01Plant(cwd);
+  const leakToken = `FLOW01_LEAKED_${randomUUID().slice(0, 8)}`;
+  await writeFile(path.join(cwd, "leak.py"), `API_KEY = "${leakToken}"\n`);
   const git = (args) => {
     const result = spawnSync("git", args, { cwd, encoding: "utf8" });
     if (result.status !== 0) {
@@ -777,15 +868,43 @@ async function scenarioFlow01(context) {
   git(["init"]);
   git(["add", "."]);
   git(["-c", "user.email=flow@example.com", "-c", "user.name=FLOW", "commit", "-m", "plant"]);
-  const planted = spawnSync(python3(), ["-m", "unittest", "test_scheduler.py", "-q"], {
-    cwd,
-    encoding: "utf8",
-  });
+  const planted = runSchedulerTests(cwd);
   if (planted.status === 0) {
     throw new Error("FLOW-01 plant is not a real defect; unittest unexpectedly passed");
   }
+  const plantScheduler = await schedulerSource(cwd);
+  const writer = await startTask(context, {
+    task: "Make test_scheduler.py pass. Run python3 -m unittest test_scheduler.py. Commit only if tests pass. Do not delete tests.",
+    cwd,
+  });
+  await runCli(
+    context.childEnvironment,
+    ["thread", "wait", writer.threadId, "--timeout-ms", "180000"],
+    cwd,
+    190_000,
+  );
+  const log = git(["log", "--oneline"]).trim().split("\n");
+  if (log.length < 2) throw new Error("FLOW-01 writer did not produce a follow-up commit");
+  const headFiles = git(["diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD"]);
+  if (!headFiles.includes("scheduler.py")) {
+    throw new Error("FLOW-01 writer commit did not change scheduler.py");
+  }
+  if ((await schedulerSource(cwd)) === plantScheduler) {
+    throw new Error("FLOW-01 writer commit left scheduler.py unchanged");
+  }
+  const afterWriter = runSchedulerTests(cwd);
+  if (afterWriter.status !== 0) {
+    throw new Error("FLOW-01 writer left tests failing");
+  }
+  const tests = await readFile(path.join(cwd, "test_scheduler.py"), "utf8");
+  if (!tests.includes("test_batch_does_not_complete_dependency")) {
+    throw new Error("FLOW-01 writer removed the planted test");
+  }
+  if (!(await readFile(path.join(cwd, "leak.py"), "utf8")).includes(leakToken)) {
+    throw new Error("FLOW-01 writer removed the planted leak");
+  }
   const reviewerPrompt =
-    "Independent review of this git worktree. Run the tests. Report failing test names and the code defect that causes them. If tests fail, do not claim there is no defect.";
+    "Independent review of the current git worktree after the writer finished. Read every file. Report remaining security or correctness defects. If a secret remains, name the file. Do not claim the tree is clean if tests were deleted or secrets remain.";
   const [reviewerA, reviewerB] = await Promise.all([
     startTask(context, { task: `${reviewerPrompt} You are reviewer A.`, cwd }),
     startTask(context, { task: `${reviewerPrompt} You are reviewer B.`, cwd }),
@@ -800,67 +919,43 @@ async function scenarioFlow01(context) {
       ),
     ),
   );
-  const reads = await Promise.all(
-    [reviewerA, reviewerB].map((started) =>
-      runCli(context.childEnvironment, ["thread", "read", started.threadId], cwd),
-    ),
+  const reports = await Promise.all(
+    [reviewerA, reviewerB].map(async (started) => {
+      const read = await runCli(
+        context.childEnvironment,
+        ["thread", "read", started.threadId],
+        cwd,
+      );
+      return `${read.stdout}\n${read.stderr}`;
+    }),
   );
-  const reports = reads.map((cli) => `${cli.stdout}\n${cli.stderr}`);
-  const caught = reports.some((text) =>
-    /test_batch_does_not_complete_dependency|required.*(ignored|skip|without)|dependenc/iu.test(
-      text,
-    ),
-  );
+  const caught = reports.some((text) => text.includes(leakToken) || /leak\.py/u.test(text));
   const denied = reports.every((text) =>
-    /no defect|没有缺陷|looks good|lgtm|no issue/iu.test(text),
+    /no defect|没有缺陷|looks good|lgtm|no issue|clean/iu.test(text),
   );
   if (!caught || denied) {
-    throw new Error("FLOW-01 reviewers did not identify the planted dependency defect");
-  }
-  const writer = await startTask(context, {
-    task: "Read the tests. Make them pass. Run python3 -m unittest. Commit only if tests pass.",
-    cwd,
-  });
-  await runCli(
-    context.childEnvironment,
-    ["thread", "wait", writer.threadId, "--timeout-ms", "180000"],
-    cwd,
-    190_000,
-  );
-  const log = git(["log", "--oneline"]);
-  if (log.trim().split("\n").length < 2) {
-    throw new Error("FLOW-01 writer did not produce a follow-up commit");
+    throw new Error(
+      "FLOW-01 independent reviewers did not report the planted leak after the writer",
+    );
   }
   return {
     threads: [writer.threadId, reviewerA.threadId, reviewerB.threadId],
     plantedCaught: true,
-    writerCommitted: true,
+    writerTestsPassed: true,
+    writerChangedScheduler: true,
   };
 }
 
 async function scenarioRelease04(context) {
   const cwd = await mkdtemp(path.join(context.runDirectory, "release4-"));
   const started = await startTask(context, { task: "RELEASE-04 baseline", cwd });
-  await runCli(
-    context.childEnvironment,
-    [
-      "thread",
-      "wait",
-      started.threadId,
-      "--timeout-ms",
-      context.mode === "live" ? "60000" : "2000",
-    ],
-    cwd,
-    context.mode === "live" ? 70_000 : 5_000,
-  );
-  const before = requireOk(
-    await runCli(context.childEnvironment, ["thread", "configuration", started.threadId], cwd),
-    "configuration-before",
-  );
-  const history = requireOk(
-    await runCli(context.childEnvironment, ["thread", "read", started.threadId], cwd),
-    "read-before",
-  );
+  await waitIdle(context, started.threadId, cwd);
+  const before = await threadStatus(context, started.threadId, cwd);
+  const history = await threadMessages(context, started.threadId, cwd);
+  const originalTurns = messageTurnIds(history);
+  if (!started.turnId || !originalTurns.includes(started.turnId)) {
+    throw new Error("RELEASE-04 pre-release history is missing the original Turn");
+  }
   const released = requireOk(
     await runCli(context.childEnvironment, ["thread", "release", started.threadId], cwd),
     "release",
@@ -878,91 +973,66 @@ async function scenarioRelease04(context) {
     ),
     "send-after-release",
   );
-  await runCli(
-    context.childEnvironment,
-    [
-      "thread",
-      "wait",
-      started.threadId,
-      "--timeout-ms",
-      context.mode === "live" ? "60000" : "2000",
-    ],
-    cwd,
-    context.mode === "live" ? 70_000 : 5_000,
-  );
-  const after = requireOk(
-    await runCli(context.childEnvironment, ["thread", "configuration", started.threadId], cwd),
-    "configuration-after",
-  );
-  const historyAfter = requireOk(
-    await runCli(context.childEnvironment, ["thread", "read", started.threadId], cwd),
-    "read-after",
-  );
-  if (before.harnessId && after.harnessId && before.harnessId !== after.harnessId) {
-    throw new Error("RELEASE-04 harness drifted after release");
+  await waitIdle(context, started.threadId, cwd);
+  const after = await threadStatus(context, started.threadId, cwd);
+  const historyAfter = await threadMessages(context, started.threadId, cwd);
+  const restoredTurns = messageTurnIds(historyAfter);
+  assertRestoredConfiguration(before, after, "RELEASE-04");
+  if (!send.turnId || send.turnId === started.turnId) {
+    throw new Error("RELEASE-04 send did not create a new Turn");
   }
-  if (send.turnId && send.turnId === started.turnId) {
-    throw new Error("RELEASE-04 send reused the pre-release Turn");
+  if (!restoredTurns.includes(started.turnId)) {
+    throw new Error("RELEASE-04 lost pre-release history");
+  }
+  if (!restoredTurns.includes(send.turnId)) {
+    throw new Error("RELEASE-04 follow-up Turn is missing from history");
   }
   return {
     threadId: started.threadId,
     released: true,
+    fingerprint: configurationFingerprint(after),
+    originalTurnId: started.turnId,
     resumedTurnId: send.turnId,
-    historyBefore: history.turn?.turnId ?? null,
-    historyAfter: historyAfter.turn?.turnId ?? null,
   };
 }
 
 async function scenarioEvidence04(context) {
   const cwd = await mkdtemp(path.join(context.runDirectory, "evidence4-"));
   const started = await startTask(context, { task: "EVIDENCE-04 configuration", cwd });
-  await runCli(
-    context.childEnvironment,
-    [
-      "thread",
-      "wait",
-      started.threadId,
-      "--timeout-ms",
-      context.mode === "live" ? "60000" : "2000",
-    ],
-    cwd,
-    context.mode === "live" ? 70_000 : 5_000,
-  );
-  const before = requireOk(
-    await runCli(context.childEnvironment, ["thread", "configuration", started.threadId], cwd),
-    "configuration-before",
-  );
-  const unknownBefore = new Set(before.unknown ?? []);
-  if (unknownBefore.has("model") && before.effective?.effectiveModel) {
+  await waitIdle(context, started.threadId, cwd);
+  const before = await threadStatus(context, started.threadId, cwd);
+  const unknownBefore = new Set(before.configuration?.unknown ?? []);
+  if (unknownBefore.has("model") && before.configuration?.effective?.effectiveModel) {
     throw new Error("EVIDENCE-04 filled unknown model with a default");
   }
   await context.runtime.close();
   context.runtime = await startRuntime(context.mode, context.dataDirectory);
   context.childEnvironment = context.runtime.childEnvironment();
-  const after = requireOk(
-    await runCli(context.childEnvironment, ["thread", "configuration", started.threadId], cwd),
-    "configuration-after",
-  );
-  if (before.harnessId && after.harnessId && before.harnessId !== after.harnessId) {
-    throw new Error("EVIDENCE-04 harness drifted after recovery");
-  }
-  const beforeModel = before.effective?.effectiveModel?.id ?? before.effective?.effectiveModel;
-  const afterModel = after.effective?.effectiveModel?.id ?? after.effective?.effectiveModel;
-  if (beforeModel && afterModel && beforeModel !== afterModel) {
-    throw new Error("EVIDENCE-04 model drifted after recovery");
-  }
-  const unknownAfter = new Set(after.unknown ?? []);
-  if (unknownAfter.has("thinking") && after.effective?.effectiveThinkingOptionId) {
+  const after = await threadStatus(context, started.threadId, cwd);
+  assertRestoredConfiguration(before, after, "EVIDENCE-04");
+  const unknownAfter = new Set(after.configuration?.unknown ?? []);
+  if (unknownAfter.has("thinking") && after.configuration?.effective?.effectiveThinkingOptionId) {
     throw new Error("EVIDENCE-04 filled unknown thinking after recovery");
   }
-  return { threadId: started.threadId, before, after, recovered: true };
+  return {
+    threadId: started.threadId,
+    before: configurationFingerprint(before),
+    after: configurationFingerprint(after),
+    recovered: true,
+  };
 }
 
 async function scenarioSkill03(context) {
   if (context.mode !== "live") throw new Error("SKILL-03 is live-only");
   const cwd = await mkdtemp(path.join(context.runDirectory, "skill3-"));
+  const skillModule = await import(
+    pathToFileURL(path.join(repositoryRoot, "packages/host-runtime/dist/delegation-skill.js")).href
+  );
+  const skillDir = path.join(cwd, ".agents", "skills", "codexhost-delegation");
+  await mkdir(skillDir, { recursive: true });
+  await writeFile(path.join(skillDir, "SKILL.md"), skillModule.CODEXHOST_DELEGATION_SKILL);
   const child = await startTask(context, {
-    task: "Count slowly from 1 to 50 without stopping.",
+    task: "Count slowly from 1 to 80 without stopping.",
     cwd,
   });
   const busy = await runCli(
@@ -976,17 +1046,8 @@ async function scenarioSkill03(context) {
       `SKILL-03 could not observe THREAD_BUSY before testing skill usage (${busyBody.error?.code ?? busy.status})`,
     );
   }
-  await writeFile(
-    path.join(cwd, "SKILL.md"),
-    [
-      "Follow Host delegation skill.",
-      "If THREAD_BUSY, wait. Do not mint a new request-id.",
-      "Do not release until quiescence is confirmed.",
-      "",
-    ].join("\n"),
-  );
   const operator = await startTask(context, {
-    task: `Read ${path.join(cwd, "SKILL.md")}. The existing child thread is ${child.threadId}. Send a follow-up. If busy, wait. Do not start a new delegation. Do not release resources.`,
+    task: `Follow ${path.join(skillDir, "SKILL.md")} exactly. Existing child thread: ${child.threadId}. Use CODEXHOST_CLI_PATH to send a follow-up or wait. If THREAD_BUSY, wait. Do not mint a new request-id. Do not run thread release.`,
     cwd,
   });
   await runCli(
@@ -1009,15 +1070,446 @@ async function scenarioSkill03(context) {
   if (extraStarts.length > 0) {
     throw new Error("SKILL-03 started an extra child instead of waiting on the busy Thread");
   }
-  const evidence = parseJsonOutput(
+  const evidence = requireOk(
     await runCli(context.childEnvironment, ["thread", "evidence", operator.threadId], cwd),
+    "operator-evidence",
   );
-  const blob = JSON.stringify(evidence);
-  if (/thread release|delegate start/iu.test(blob)) {
+  const items = evidence.items ?? [];
+  if (items.length === 0) {
+    throw new Error("SKILL-03 operator produced no user-visible tool/command evidence");
+  }
+  const usedCli = items.some(
+    (item) =>
+      (item.kind === "command" || item.kind === "tool") &&
+      /thread (send|wait|status|read)|CODEXHOST_CLI_PATH/u.test(
+        `${item.command ?? ""} ${item.toolName ?? ""} ${item.path ?? ""}`,
+      ),
+  );
+  if (!usedCli) {
+    throw new Error("SKILL-03 evidence does not show Host CLI use from the managed skill");
+  }
+  if (items.some((item) => /thread release|delegate start/iu.test(`${item.command ?? ""}`))) {
     throw new Error("SKILL-03 evidence shows release or a new delegation");
   }
   await runCli(context.childEnvironment, ["thread", "cancel", child.threadId], cwd);
-  return { child: child.threadId, operator: operator.threadId, busy: busyBody.error };
+  return {
+    child: child.threadId,
+    operator: operator.threadId,
+    evidenceItems: items.length,
+    busy: busyBody.error,
+  };
+}
+
+async function scenarioTurn02(context) {
+  const cwd = await mkdtemp(path.join(context.runDirectory, "turn2-"));
+  const started = await startTask(context, { task: "TURN-02 cancel identity", cwd });
+  const cancel = requireOk(
+    await runCli(context.childEnvironment, ["thread", "cancel", started.threadId], cwd),
+    "cancel",
+  );
+  const first = requireOk(
+    await runCli(context.childEnvironment, ["thread", "read", started.threadId], cwd),
+    "read-1",
+  );
+  await context.runtime.close();
+  context.runtime = await startRuntime(context.mode, context.dataDirectory);
+  context.childEnvironment = context.runtime.childEnvironment();
+  const second = requireOk(
+    await runCli(context.childEnvironment, ["thread", "read", started.threadId], cwd),
+    "read-2",
+  );
+  const ids = [started.turnId, cancel.turnId, first.turn?.turnId, second.turn?.turnId].filter(
+    Boolean,
+  );
+  if (new Set(ids).size !== 1) {
+    throw new Error(`TURN-02 Host Turn ID drifted: ${ids.join(",")}`);
+  }
+  return { threadId: started.threadId, turnId: started.turnId };
+}
+
+async function scenarioTurn03(context) {
+  const cwd = await mkdtemp(path.join(context.runDirectory, "turn3-"));
+  const started = await startTask(context, { task: "TURN-03 first", cwd });
+  await waitIdle(context, started.threadId, cwd);
+  const send = requireOk(
+    await runCli(
+      context.childEnvironment,
+      ["thread", "send", started.threadId, "--message", "TURN-03 follow-up"],
+      cwd,
+    ),
+    "follow-up",
+  );
+  const listedRunning = requireOk(
+    await runCli(
+      context.childEnvironment,
+      ["thread", "list", "--parent", PARENT, "--limit", "25"],
+      cwd,
+    ),
+    "list-running",
+  );
+  const row = (listedRunning.threads ?? []).find((item) => item.threadId === started.threadId);
+  const readRunning = await threadStatus(context, started.threadId, cwd);
+  if (!row || row.status !== readRunning.status) {
+    throw new Error(
+      `TURN-03 list/read disagreed during follow-up (${row?.status} vs ${readRunning.status})`,
+    );
+  }
+  await waitIdle(context, started.threadId, cwd);
+  const listedDone = requireOk(
+    await runCli(
+      context.childEnvironment,
+      ["thread", "list", "--parent", PARENT, "--limit", "25"],
+      cwd,
+    ),
+    "list-done",
+  );
+  const done = (listedDone.threads ?? []).find((item) => item.threadId === started.threadId);
+  const readDone = await threadStatus(context, started.threadId, cwd);
+  if (!done || done.status !== readDone.status) {
+    throw new Error("TURN-03 list/read disagreed after terminal");
+  }
+  const history = await threadMessages(context, started.threadId, cwd);
+  if (!messageTurnIds(history).includes(send.turnId)) {
+    throw new Error("TURN-03 follow-up Turn is missing from history");
+  }
+  return { threadId: started.threadId, followUp: send.turnId, status: readDone.status };
+}
+
+async function scenarioRelease02(context) {
+  const cwd = await mkdtemp(path.join(context.runDirectory, "release2-"));
+  const started = await startTask(context, { task: "RELEASE-02 idle", cwd });
+  await waitIdle(context, started.threadId, cwd);
+  const first = requireOk(
+    await runCli(context.childEnvironment, ["thread", "release", started.threadId], cwd),
+    "release-1",
+  );
+  if (first.released !== true) {
+    throw new ScenarioIncomplete(
+      `RELEASE-02 first release did not confirm (quiescence=${first.quiescence ?? "unknown"})`,
+    );
+  }
+  const second = parseJsonOutput(
+    await runCli(context.childEnvironment, ["thread", "release", started.threadId], cwd),
+  );
+  if (second.error && second.error.code !== "THREAD_NOT_FOUND") {
+    throw new Error(`RELEASE-02 repeat release failed: ${JSON.stringify(second.error)}`);
+  }
+  return { threadId: started.threadId, first, second };
+}
+
+async function scenarioRelease03(context) {
+  const cwd = await mkdtemp(path.join(context.runDirectory, "release3-"));
+  const [left, right] = await Promise.all([
+    startTask(context, { task: "RELEASE-03 left", cwd }),
+    startTask(context, { task: "RELEASE-03 right", cwd }),
+  ]);
+  await Promise.all([
+    waitIdle(context, left.threadId, cwd),
+    waitIdle(context, right.threadId, cwd),
+  ]);
+  const released = requireOk(
+    await runCli(context.childEnvironment, ["thread", "release", left.threadId], cwd),
+    "release-left",
+  );
+  if (released.released !== true) {
+    throw new ScenarioIncomplete(
+      `RELEASE-03 could not release the first Session (quiescence=${released.quiescence ?? "unknown"})`,
+    );
+  }
+  const surviving = await threadStatus(context, right.threadId, cwd);
+  if (!surviving.threadId) throw new Error("RELEASE-03 terminated the sibling Session");
+  return { released: left.threadId, surviving: right.threadId };
+}
+
+async function scenarioObserve02(context) {
+  const cwd = await mkdtemp(path.join(context.runDirectory, "observe2-"));
+  const started = await startTask(context, { task: "OBSERVE-02 race", cwd });
+  const status = await threadStatus(context, started.threadId, cwd);
+  const targetsFile = path.join(cwd, "targets.json");
+  await writeFile(
+    targetsFile,
+    `${JSON.stringify([{ threadId: started.threadId, afterRevision: status.revision }])}\n`,
+  );
+  const result = requireOk(
+    await runCli(
+      context.childEnvironment,
+      ["thread", "wait-many", "--targets-file", targetsFile, "--timeout-ms", "2000"],
+      cwd,
+      8_000,
+    ),
+    "wait-many-race",
+  );
+  const row = result.results?.[0];
+  if (
+    !row ||
+    (row.outcome !== "changed" && row.outcome !== "timedOut" && row.outcome !== "resync")
+  ) {
+    throw new Error("OBSERVE-02 wait-many lost the target");
+  }
+  await waitIdle(context, started.threadId, cwd);
+  return { threadId: started.threadId, outcome: row.outcome };
+}
+
+async function scenarioObserve03(context) {
+  const cwd = await mkdtemp(path.join(context.runDirectory, "observe3-"));
+  const started = await startTask(context, { task: "OBSERVE-03 mix", cwd });
+  const targetsFile = path.join(cwd, "targets.json");
+  await writeFile(
+    targetsFile,
+    `${JSON.stringify([
+      { threadId: started.threadId, afterRevision: "not-a-revision" },
+      { threadId: "00000000-0000-4000-8000-ffffffffffff" },
+    ])}\n`,
+  );
+  const result = requireOk(
+    await runCli(
+      context.childEnvironment,
+      ["thread", "wait-many", "--targets-file", targetsFile, "--timeout-ms", "0"],
+      cwd,
+    ),
+    "wait-many-mix",
+  );
+  const outcomes = (result.results ?? []).map((row) => row.outcome);
+  if (!outcomes.includes("resync") && !outcomes.includes("error")) {
+    throw new Error(`OBSERVE-03 mixed wait-many outcomes were ${outcomes.join(",")}`);
+  }
+  return { outcomes };
+}
+
+async function scenarioObserve04(context) {
+  const cwd = await mkdtemp(path.join(context.runDirectory, "observe4-"));
+  const payload = "OBSERVE04_BODY_".padEnd(12_000, "x");
+  const started = await startTask(context, { task: payload, cwd });
+  await waitIdle(context, started.threadId, cwd);
+  const targetsFile = path.join(cwd, "targets.json");
+  await writeFile(targetsFile, `${JSON.stringify([{ threadId: started.threadId }])}\n`);
+  const first = requireOk(
+    await runCli(
+      context.childEnvironment,
+      ["thread", "wait-many", "--targets-file", targetsFile, "--timeout-ms", "0"],
+      cwd,
+    ),
+    "wait-many-size-1",
+  );
+  const second = requireOk(
+    await runCli(
+      context.childEnvironment,
+      ["thread", "wait-many", "--targets-file", targetsFile, "--timeout-ms", "0"],
+      cwd,
+    ),
+    "wait-many-size-2",
+  );
+  const text = JSON.stringify(second);
+  if (text.includes("OBSERVE04_BODY_")) {
+    throw new Error("OBSERVE-04 wait-many resent historical body");
+  }
+  if (Buffer.byteLength(text) > 4096) {
+    throw new Error(`OBSERVE-04 unchanged wait-many JSON was ${Buffer.byteLength(text)} bytes`);
+  }
+  return {
+    firstBytes: Buffer.byteLength(JSON.stringify(first)),
+    secondBytes: Buffer.byteLength(text),
+  };
+}
+
+async function scenarioInput02(context) {
+  const cwd = await mkdtemp(path.join(context.runDirectory, "input2-"));
+  const explicit = "00000000-0000-4000-8000-0000000000aa";
+  const started = await startTask(context, {
+    task: "INPUT-02 parent",
+    cwd,
+    parent: explicit,
+  });
+  const listed = requireOk(
+    await runCli(
+      context.childEnvironment,
+      ["thread", "list", "--parent", explicit, "--limit", "25"],
+      cwd,
+    ),
+    "list-explicit-parent",
+  );
+  if (!(listed.threads ?? []).some((row) => row.threadId === started.threadId)) {
+    throw new Error("INPUT-02 explicit parent was not recorded");
+  }
+  const inferred = await startTask(context, {
+    task: "INPUT-02 inferred",
+    cwd,
+    parent: explicit,
+  });
+  return { explicit: started.threadId, inferred: inferred.threadId, parent: explicit };
+}
+
+async function scenarioEvidence02(context) {
+  const cwd = await mkdtemp(path.join(context.runDirectory, "evidence2-"));
+  const started = await startTask(context, { task: "EVIDENCE-02 cursor", cwd });
+  await waitIdle(context, started.threadId, cwd);
+  const first = requireOk(
+    await runCli(
+      context.childEnvironment,
+      ["thread", "evidence", started.threadId, "--limit", "1"],
+      cwd,
+    ),
+    "evidence-page-1",
+  );
+  const second = requireOk(
+    await runCli(
+      context.childEnvironment,
+      [
+        "thread",
+        "evidence",
+        started.threadId,
+        "--limit",
+        "1",
+        ...(first.nextCursor ? ["--cursor", first.nextCursor] : []),
+      ],
+      cwd,
+    ),
+    "evidence-page-2",
+  );
+  const invalid = await runCli(
+    context.childEnvironment,
+    ["thread", "evidence", started.threadId, "--cursor", "not-a-cursor"],
+    cwd,
+  );
+  if (invalid.status === 0) throw new Error("EVIDENCE-02 accepted an invalid cursor");
+  return {
+    threadId: started.threadId,
+    first: first.items?.length ?? 0,
+    second: second.items?.length ?? 0,
+  };
+}
+
+async function scenarioEvidence03(context) {
+  const cwd = await mkdtemp(path.join(context.runDirectory, "evidence3-"));
+  const started = await startTask(context, { task: "EVIDENCE-03 privacy", cwd });
+  await waitIdle(context, started.threadId, cwd);
+  const read = requireOk(
+    await runCli(context.childEnvironment, ["thread", "read", started.threadId], cwd),
+    "default-read",
+  );
+  const blob = JSON.stringify(read);
+  if (/reasoning|thought/iu.test(blob)) {
+    throw new Error("EVIDENCE-03 default read leaked reasoning");
+  }
+  const evidence = requireOk(
+    await runCli(context.childEnvironment, ["thread", "evidence", started.threadId], cwd),
+    "evidence",
+  );
+  if (/reasoning|thought/iu.test(JSON.stringify(evidence))) {
+    throw new Error("EVIDENCE-03 evidence leaked reasoning");
+  }
+  return { threadId: started.threadId };
+}
+
+async function scenarioSkill02(context) {
+  const help = await runCli(context.childEnvironment, ["delegate", "--help"], context.runDirectory);
+  const text = `${help.stdout}\n${help.stderr}`;
+  for (const command of [
+    "delegate start",
+    "thread send",
+    "thread wait-many",
+    "thread evidence",
+    "thread release",
+    "delegate reconcile",
+  ]) {
+    if (!text.includes(command.split(" ").at(-1))) {
+      throw new Error(`SKILL-02 help is missing ${command}`);
+    }
+  }
+  if (/\/Users\/|C:\\\\Users\\/u.test(text)) {
+    throw new Error("SKILL-02 help contains a machine-local path");
+  }
+  return { helpBytes: Buffer.byteLength(text) };
+}
+
+async function scenarioSkill04(context) {
+  const inspect = requireOk(
+    await runCli(context.childEnvironment, ["harness", "inspect", "grok"], context.runDirectory),
+    "inspect",
+  );
+  const model = inspect.inspection?.catalog?.models?.[0]?.ref?.id;
+  const thinking =
+    inspect.inspection?.catalog?.models?.[0]?.supportedThinkingOptionIds?.[0] ??
+    inspect.inspection?.catalog?.thinkingOptions?.[0]?.id;
+  if (!model) throw new Error("SKILL-04 inspect returned no Model");
+  const cwd = await mkdtemp(path.join(context.runDirectory, "skill4-"));
+  const started = await startTask(context, {
+    task: "SKILL-04 preserve model",
+    cwd,
+    model,
+    ...(thinking ? { thinking } : {}),
+  });
+  await waitIdle(context, started.threadId, cwd);
+  const status = await threadStatus(context, started.threadId, cwd);
+  if (status.harnessId !== "grok") {
+    throw new Error(`SKILL-04 harness drifted to ${status.harnessId}`);
+  }
+  if (modelId(status.configuration) !== model) {
+    throw new Error("SKILL-04 did not preserve the selected Model");
+  }
+  return { threadId: started.threadId, model, harnessId: status.harnessId };
+}
+
+async function scenarioFlow02(context) {
+  const cwd = await mkdtemp(path.join(context.runDirectory, "flow2-"));
+  const requestId = `flow2-${randomUUID()}`;
+  const started = await startTask(context, { task: "FLOW-02 persist", cwd, requestId });
+  await waitIdle(context, started.threadId, cwd);
+  const before = await threadStatus(context, started.threadId, cwd);
+  await context.runtime.close();
+  context.runtime = await startRuntime(context.mode, context.dataDirectory);
+  context.childEnvironment = context.runtime.childEnvironment();
+  const recovered = await startTask(context, { task: "FLOW-02 persist", cwd, requestId });
+  if (recovered.threadId !== started.threadId) {
+    throw new Error("FLOW-02 re-delivered after Runtime reopen");
+  }
+  const send = requireOk(
+    await runCli(
+      context.childEnvironment,
+      ["thread", "send", started.threadId, "--message", "continue after reopen"],
+      cwd,
+    ),
+    "continue",
+  );
+  await waitIdle(context, started.threadId, cwd);
+  const after = await threadStatus(context, started.threadId, cwd);
+  assertRestoredConfiguration(before, after, "FLOW-02");
+  const history = await threadMessages(context, started.threadId, cwd);
+  if (!messageTurnIds(history).includes(started.turnId)) {
+    throw new Error("FLOW-02 lost history after reopen");
+  }
+  return { threadId: started.threadId, continued: send.turnId };
+}
+
+async function scenarioFlow03(context) {
+  const cwd = await mkdtemp(path.join(context.runDirectory, "flow3-"));
+  const tasks = await Promise.all([
+    startTask(context, { task: "FLOW-03 A", cwd }),
+    startTask(context, { task: "FLOW-03 B", cwd }),
+  ]);
+  const targetsFile = path.join(cwd, "targets.json");
+  await writeFile(
+    targetsFile,
+    `${JSON.stringify(tasks.map((task) => ({ threadId: task.threadId })))}\n`,
+  );
+  const waits = [];
+  for (let index = 0; index < 3; index += 1) {
+    waits.push(
+      requireOk(
+        await runCli(
+          context.childEnvironment,
+          ["thread", "wait-many", "--targets-file", targetsFile, "--timeout-ms", "0"],
+          cwd,
+        ),
+        `wait-many-${index}`,
+      ),
+    );
+  }
+  const last = JSON.stringify(waits.at(-1));
+  if (/"text"\s*:/u.test(last) && last.includes("FLOW-03")) {
+    throw new Error("FLOW-03 later wait-many resent historical bodies");
+  }
+  return { waitCalls: waits.length, lastBytes: Buffer.byteLength(last) };
 }
 
 export const HANDLERS = {
@@ -1031,31 +1523,31 @@ export const HANDLERS = {
   "RECOVERY-01": scenarioRecovery01,
   "RECOVERY-02": scenarioRecovery02,
   "TURN-01": scenarioTurn01,
-  "TURN-02": scenarioTurn01,
-  "TURN-03": scenarioTurn01,
+  "TURN-02": scenarioTurn02,
+  "TURN-03": scenarioTurn03,
   "TURN-04": scenarioTurn04,
   "TURN-05": scenarioTurn05,
   "RELEASE-01": scenarioRelease01,
-  "RELEASE-02": scenarioRelease01,
-  "RELEASE-03": scenarioRelease01,
+  "RELEASE-02": scenarioRelease02,
+  "RELEASE-03": scenarioRelease03,
   "RELEASE-04": scenarioRelease04,
   "OBSERVE-01": scenarioObserve01,
-  "OBSERVE-02": scenarioObserve01,
-  "OBSERVE-03": scenarioObserve01,
-  "OBSERVE-04": scenarioObserve01,
+  "OBSERVE-02": scenarioObserve02,
+  "OBSERVE-03": scenarioObserve03,
+  "OBSERVE-04": scenarioObserve04,
   "INPUT-01": scenarioInput01,
-  "INPUT-02": scenarioInput01,
+  "INPUT-02": scenarioInput02,
   "EVIDENCE-01": scenarioEvidence01,
-  "EVIDENCE-02": scenarioEvidence01,
-  "EVIDENCE-03": scenarioEvidence01,
+  "EVIDENCE-02": scenarioEvidence02,
+  "EVIDENCE-03": scenarioEvidence03,
   "EVIDENCE-04": scenarioEvidence04,
   "SKILL-01": scenarioSkill01,
-  "SKILL-02": scenarioSkill01,
+  "SKILL-02": scenarioSkill02,
   "SKILL-03": scenarioSkill03,
-  "SKILL-04": scenarioEvidence01,
+  "SKILL-04": scenarioSkill04,
   "FLOW-01": scenarioFlow01,
-  "FLOW-02": scenarioRecovery01,
-  "FLOW-03": scenarioObserve01,
+  "FLOW-02": scenarioFlow02,
+  "FLOW-03": scenarioFlow03,
 };
 
 export async function runVerify(argv = process.argv.slice(2)) {

@@ -1295,8 +1295,13 @@ export class AppServerHost {
       const threadId = params && typeof params.threadId === "string" ? params.threadId : null;
       const loginId = params && typeof params.loginId === "string" ? params.loginId : null;
       const loginAccountId = loginId ? await this.#resolveLoginAccountId(loginId) : undefined;
+      // Legacy pre-pool Threads may lack an Account binding. Reading or
+      // resuming such a Thread may recover ownership via official discovery;
+      // other requests on unbound Threads keep failing fast.
+      const recoverUnboundThread =
+        request.method === "thread/read" || request.method === "thread/resume";
       const runtime = threadId
-        ? await this.#codexRuntimePool.forThread(threadId)
+        ? await this.#codexRuntimePool.forThread(threadId, { recoverUnboundThread })
         : loginAccountId
           ? await this.#codexRuntimePool.get(loginAccountId)
           : requestedAccountId

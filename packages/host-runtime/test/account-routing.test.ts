@@ -4,14 +4,56 @@ import path from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
+import type { JsonObject } from "@codexhost/protocol-core";
+
 import {
   AccountRepository,
   CodexRuntimePool,
   ThreadAccountStore,
+  UnknownCodexThreadAccountError,
   type CodexAccount,
 } from "../src/index.js";
 import type { OfficialAppServerConnection } from "../src/official-app-server-connection.js";
 import { PassThrough } from "node:stream";
+
+function fakeAppServerConnection(
+  knownThreadIds: readonly string[],
+  receivedRequests?: string[],
+): OfficialAppServerConnection {
+  const stdin = new PassThrough();
+  const stdout = new PassThrough();
+  const stderr = new PassThrough();
+  const closed = Promise.withResolvers<{ code: number | null; signal: NodeJS.Signals | null }>();
+  stdin.setEncoding("utf8");
+  stdin.on("data", (chunk: string) => {
+    for (const line of chunk.split("\n").filter(Boolean)) {
+      const request = JSON.parse(line) as { id?: string; method?: string; params?: JsonObject };
+      if (request.method) receivedRequests?.push(request.method);
+      if (request.method !== "thread/read" || !request.id) continue;
+      const threadId = (request.params as { threadId?: unknown } | undefined)?.threadId;
+      const found = typeof threadId === "string" && knownThreadIds.includes(threadId);
+      stdout.write(
+        `${JSON.stringify(
+          found
+            ? { id: request.id, result: { thread: { id: threadId } } }
+            : { id: request.id, error: { code: -32000, message: "not found" } },
+        )}\n`,
+      );
+    }
+  });
+  return {
+    stdin,
+    stdout,
+    stderr,
+    closed: closed.promise,
+    close() {
+      stdin.end();
+      stdout.end();
+      stderr.end();
+      closed.resolve({ code: 0, signal: null });
+    },
+  };
+}
 
 describe("Codex Account routing persistence", () => {
   const directories: string[] = [];
@@ -242,6 +284,93 @@ describe("Codex Account routing persistence", () => {
     });
     expect(spawned).toEqual(["account-a", "account-b"]);
     await expect(threadAccounts.getAccountId("historical-thread-b")).resolves.toBe("account-b");
+    await pool.close();
+  });
+
+  it("discovers a historical Thread that predates bindings in a single-Account installation", async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), "codexhost-history-discovery-test-"));
+    directories.push(directory);
+    const metadata = path.join(directory, "metadata");
+    const accounts = new AccountRepository({
+      directory: metadata,
+      defaultAccount: { accountId: "account-a", codexHome: path.join(directory, "home-a") },
+    });
+    const threadAccounts = new ThreadAccountStore({ directory: metadata });
+    const pool = new CodexRuntimePool({
+      accounts,
+      threadAccounts,
+      createConnection: async () => fakeAppServerConnection(["historical-thread"]),
+      diagnosticOutput: new PassThrough(),
+      onOutput: async () => undefined,
+      diagnose: () => undefined,
+    });
+
+    await pool.initialize();
+    await pool.active();
+    await expect(
+      pool.forThread("historical-thread", { recoverUnboundThread: true }),
+    ).resolves.toMatchObject({
+      account: { accountId: "account-a" },
+    });
+    await expect(threadAccounts.getAccountId("historical-thread")).resolves.toBe("account-a");
+    await pool.close();
+  });
+
+  it("rejects an unknown Thread in a single-Account installation without inventing a binding", async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), "codexhost-history-discovery-test-"));
+    directories.push(directory);
+    const metadata = path.join(directory, "metadata");
+    const accounts = new AccountRepository({
+      directory: metadata,
+      defaultAccount: { accountId: "account-a", codexHome: path.join(directory, "home-a") },
+    });
+    const threadAccounts = new ThreadAccountStore({ directory: metadata });
+    const probedRequests: string[] = [];
+    const pool = new CodexRuntimePool({
+      accounts,
+      threadAccounts,
+      createConnection: async () => fakeAppServerConnection([], probedRequests),
+      diagnosticOutput: new PassThrough(),
+      onOutput: async () => undefined,
+      diagnose: () => undefined,
+    });
+
+    await pool.initialize();
+    await pool.active();
+    await expect(
+      pool.forThread("unknown-thread", { recoverUnboundThread: true }),
+    ).rejects.toBeInstanceOf(UnknownCodexThreadAccountError);
+    expect(probedRequests).toEqual(["thread/read"]);
+    await expect(threadAccounts.getAccountId("unknown-thread")).resolves.toBeNull();
+    await pool.close();
+  });
+
+  it("fails fast for an unbound Thread in a single-Account installation without recovery", async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), "codexhost-history-discovery-test-"));
+    directories.push(directory);
+    const metadata = path.join(directory, "metadata");
+    const accounts = new AccountRepository({
+      directory: metadata,
+      defaultAccount: { accountId: "account-a", codexHome: path.join(directory, "home-a") },
+    });
+    const threadAccounts = new ThreadAccountStore({ directory: metadata });
+    const probedRequests: string[] = [];
+    const pool = new CodexRuntimePool({
+      accounts,
+      threadAccounts,
+      createConnection: async () => fakeAppServerConnection([], probedRequests),
+      diagnosticOutput: new PassThrough(),
+      onOutput: async () => undefined,
+      diagnose: () => undefined,
+    });
+
+    await pool.initialize();
+    await pool.active();
+    await expect(pool.forThread("unknown-thread")).rejects.toBeInstanceOf(
+      UnknownCodexThreadAccountError,
+    );
+    expect(probedRequests).toEqual([]);
+    await expect(threadAccounts.getAccountId("unknown-thread")).resolves.toBeNull();
     await pool.close();
   });
 });

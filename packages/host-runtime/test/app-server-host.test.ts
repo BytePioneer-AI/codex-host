@@ -5996,6 +5996,41 @@ describe("AppServerHost HarnessAdapter projection", () => {
     await stopFixture(fixture);
   });
 
+  it("recovers an unbound legacy Codex Thread on thread/read via single-Account discovery", async () => {
+    const fixture = createFixture();
+    writeRequest(fixture.desktopInput, {
+      id: 90,
+      method: "thread/read",
+      params: { threadId: "legacy-thread", includeTurns: true },
+    });
+
+    const discoveryProbe = await readJsonLine(fixture.official.stdin);
+    expect(discoveryProbe).toMatchObject({
+      method: "thread/read",
+      params: { threadId: "legacy-thread", includeTurns: false },
+    });
+    writeRequest(fixture.official.stdout, {
+      id: requiredMessageId(discoveryProbe),
+      result: { thread: { id: "legacy-thread" } },
+    });
+
+    const forwarded = await readJsonLine(fixture.official.stdin);
+    expect(forwarded).toMatchObject({
+      method: "thread/read",
+      params: { threadId: "legacy-thread", includeTurns: true },
+    });
+    writeRequest(fixture.official.stdout, {
+      id: requiredMessageId(forwarded),
+      result: { thread: { id: "legacy-thread", turns: [] } },
+    });
+
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 90)),
+    ).resolves.toMatchObject({ result: { thread: { id: "legacy-thread" } } });
+    await expect(fixture.threadAccountStore.getAccountId("legacy-thread")).resolves.toBe("default");
+    await stopFixture(fixture);
+  });
+
   it("tail-Forks the latest completed Checkpoint while the source Turn is active", async () => {
     const fixture = createFixture();
     const officialWrite = vi.fn();

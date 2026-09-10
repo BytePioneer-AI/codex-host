@@ -318,12 +318,14 @@ export async function startHarnessBrokerServer(input: {
             const observedNativeId = state.nativeRef?.nativeSessionId;
             if (
               state.nativeRef &&
-              record.nativeRef &&
-              (record.nativeRef.harnessId !== state.nativeRef.harnessId ||
-                record.nativeRef.nativeSessionId !== state.nativeRef.nativeSessionId ||
-                record.nativeRef.formatVersion !== state.nativeRef.formatVersion)
+              (state.nativeRef.harnessId !== input.adapter.harnessId ||
+                (record.nativeRef &&
+                  (record.nativeRef.harnessId !== state.nativeRef.harnessId ||
+                    record.nativeRef.nativeSessionId !== state.nativeRef.nativeSessionId ||
+                    record.nativeRef.formatVersion !== state.nativeRef.formatVersion)))
             ) {
               record.faulted = true;
+              releaseProvisionalWriter(record);
               await send({
                 kind: "output",
                 sessionId: record.id,

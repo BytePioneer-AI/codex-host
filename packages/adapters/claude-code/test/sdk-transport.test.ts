@@ -722,7 +722,9 @@ describe("ClaudeSdkTransport autonomous task continuation", () => {
   it("publishes Root output produced after a background task notification", async () => {
     const value = fixture();
     const autonomous: ClaudeAutonomousTurn[] = [];
+    const threadEvents: ClaudeTurnEvent[] = [];
     value.transport.setAutonomousTurnHandler((turn) => autonomous.push(turn));
+    value.transport.setThreadEventHandler((event) => threadEvents.push(event));
     await value.transport.start();
 
     value.fakeQuery.push({
@@ -750,16 +752,19 @@ describe("ClaudeSdkTransport autonomous task continuation", () => {
     completeTurn(value.fakeQuery);
 
     await vi.waitFor(() => expect(autonomous).toHaveLength(1));
+    expect(threadEvents).toEqual([
+      {
+        type: "subagent.settled",
+        callId: "send-1",
+        nativeSubagentId: "native-agent-1",
+        status: "completed",
+        resultSummary: "Analysis complete",
+      },
+    ]);
     expect(autonomous[0]).toMatchObject({
       nativeTurnKey: "00000000-0000-4000-8000-000000000040",
       result: { status: "succeeded" },
       events: [
-        {
-          type: "subagent.settled",
-          nativeSubagentId: "native-agent-1",
-          status: "completed",
-          resultSummary: "Analysis complete",
-        },
         { type: "text.delta", delta: "Background analysis result" },
         { type: "message.completed" },
       ],
@@ -770,7 +775,9 @@ describe("ClaudeSdkTransport autonomous task continuation", () => {
   it("preserves a failed task-notification whose user content is text blocks", async () => {
     const value = fixture();
     const autonomous: ClaudeAutonomousTurn[] = [];
+    const threadEvents: ClaudeTurnEvent[] = [];
     value.transport.setAutonomousTurnHandler((turn) => autonomous.push(turn));
+    value.transport.setThreadEventHandler((event) => threadEvents.push(event));
     await value.transport.start();
 
     value.fakeQuery.push({
@@ -793,7 +800,7 @@ describe("ClaudeSdkTransport autonomous task continuation", () => {
     completeTurn(value.fakeQuery);
 
     await vi.waitFor(() => expect(autonomous).toHaveLength(1));
-    expect(autonomous[0]?.events.filter((event) => event.type === "subagent.settled")).toEqual([
+    expect(threadEvents).toEqual([
       {
         type: "subagent.settled",
         nativeSubagentId: "a78414260bd2f9554",
@@ -801,6 +808,45 @@ describe("ClaudeSdkTransport autonomous task continuation", () => {
         resultSummary: "Agent failed",
       },
     ]);
+    expect(autonomous[0]?.events.filter((event) => event.type === "subagent.settled")).toEqual([]);
+    await value.transport.close();
+  });
+
+  it("delivers a background task settlement whose Segment never produces a Terminal", async () => {
+    const value = fixture();
+    const autonomous: ClaudeAutonomousTurn[] = [];
+    const threadEvents: ClaudeTurnEvent[] = [];
+    value.transport.setAutonomousTurnHandler((turn) => autonomous.push(turn));
+    value.transport.setThreadEventHandler((event) => threadEvents.push(event));
+    await value.transport.start();
+
+    // Claude may enqueue the notification without a continuation Turn: no
+    // Assistant output and no Result follow. The settlement is Thread-level
+    // and must still be delivered instead of being swallowed by Turn batching.
+    value.fakeQuery.push({
+      type: "user",
+      uuid: "00000000-0000-4000-8000-000000000060",
+      session_id: "00000000-0000-4000-8000-000000000001",
+      parent_tool_use_id: null,
+      origin: { kind: "task-notification" },
+      message: {
+        role: "user",
+        content:
+          "<task-notification><task-id>native-agent-late</task-id><summary>Late analysis</summary></task-notification>",
+      },
+    } as unknown as SDKMessage);
+
+    await vi.waitFor(() =>
+      expect(threadEvents).toEqual([
+        {
+          type: "subagent.settled",
+          nativeSubagentId: "native-agent-late",
+          status: "completed",
+          resultSummary: "Late analysis",
+        },
+      ]),
+    );
+    expect(autonomous).toEqual([]);
     await value.transport.close();
   });
 

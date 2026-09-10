@@ -33,12 +33,16 @@ class FakeClaudeTransport implements ClaudeTurnTransport {
   readonly sessionId: string;
   autonomousTurnHandler: ((turn: ClaudeAutonomousTurn) => void) | null = null;
   idleHandler: ClaudeIdleTurnHandler | null = null;
+  threadHandler: ((event: ClaudeTurnEvent) => void) | null = null;
   idleLive = false;
   setAutonomousTurnHandler(handler: (turn: ClaudeAutonomousTurn) => void): void {
     this.autonomousTurnHandler = handler;
   }
   setIdleTurnHandler(handler: ClaudeIdleTurnHandler | null): void {
     this.idleHandler = handler;
+  }
+  setThreadEventHandler(handler: ((event: ClaudeTurnEvent) => void) | null): void {
+    this.threadHandler = handler;
   }
   setIdleLive(live: boolean): void {
     this.idleLive = live;
@@ -156,6 +160,10 @@ class FakeClaudeTransport implements ClaudeTurnTransport {
       return;
     }
     throw new Error("No active fake Claude Turn");
+  }
+
+  threadEvent(event: ClaudeTurnEvent): void {
+    this.threadHandler?.(event);
   }
 
   approval(request: ClaudeApprovalRequest): void {
@@ -2258,6 +2266,40 @@ describe("Claude Code HarnessAdapter", () => {
       type: "turn.completed",
       outcome: { status: "succeeded" },
       nativeTurnRef: { nativeTurnKey: "task-notification-1" },
+    });
+    await session.close();
+  });
+
+  it("publishes a background Subagent settlement that arrives outside any Turn", async () => {
+    const { adapter, transports } = fixture();
+    const session = await openSession(adapter);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+
+    await session.execute(textTurn("delegate in background"));
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    const transport = transports[0];
+    if (!transport) throw new Error("Fake Claude transport was not created");
+    transport.delta("Background task launched");
+    await nextEvent(iterator);
+    transport.finish({ status: "succeeded" });
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+
+    // The Turn is complete and idle. Claude may enqueue the task notification
+    // without a continuation, so the settlement no longer rides a Turn.
+    transport.threadEvent({
+      type: "subagent.settled",
+      nativeSubagentId: "native-agent-late",
+      status: "completed",
+      resultSummary: "Analysis complete",
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "subagent.state.changed",
+      nativeSubagentId: "native-agent-late",
+      status: "completed",
+      resultSummary: "Analysis complete",
     });
     await session.close();
   });
@@ -4778,6 +4820,7 @@ describe("Claude Code HarnessAdapter", () => {
         sessionId: "claude-id",
         setAutonomousTurnHandler: () => undefined,
         setIdleTurnHandler: () => undefined,
+        setThreadEventHandler: () => undefined,
         setIdleLive: () => undefined,
         start: async () => {
           throw new ClaudeCodeExecutableError("Claude Code is not installed");

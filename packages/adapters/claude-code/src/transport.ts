@@ -181,6 +181,13 @@ export interface ClaudeTurnTransport {
   readonly sessionId: string;
   setAutonomousTurnHandler(handler: (turn: ClaudeAutonomousTurn) => void): void;
   setIdleTurnHandler(handler: ClaudeIdleTurnHandler | null): void;
+  /**
+   * Receives Thread-level events the moment they are observed, independent of
+   * Turn or Segment boundaries. A background Subagent's settlement arrives in
+   * a task-notification Segment that may never produce a Terminal, so Turn
+   * batching would swallow it.
+   */
+  setThreadEventHandler(handler: ((event: ClaudeTurnEvent) => void) | null): void;
   setIdleLive(live: boolean): void;
   start(): Promise<void>;
   getContextUsage(): Promise<ClaudeTransportContextUsage | null>;

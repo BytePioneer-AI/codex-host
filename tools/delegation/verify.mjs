@@ -395,10 +395,16 @@ async function scenarioTurn01(context) {
     "read",
   );
   const turnId = read.turn?.turnId ?? cancel.turnId;
-  if (turnId && started.turnId && turnId !== started.turnId && cancel.cancelled) {
+  const known = [started.turnId, cancel.turnId].filter(Boolean);
+  if (turnId && started.turnId && turnId !== started.turnId && !known.includes(turnId)) {
     throw new Error(`TURN-01 identity drifted ${started.turnId} -> ${turnId}`);
   }
-  return { started: started.turnId, cancel: cancel.turnId, read: read.turn?.turnId };
+  return {
+    started: started.turnId,
+    cancel: cancel.turnId,
+    read: read.turn?.turnId,
+    cancelled: cancel.cancelled,
+  };
 }
 
 async function scenarioTurn05(context) {

@@ -269,14 +269,13 @@ export class ExternalThreadRepository {
     ) {
       throw new Error("Live Turn identity does not belong to the stored Thread");
     }
-    const next = await this.store.upsertTurnMappings(record.hostThreadId, [
+    return this.store.upsertTurnMappings(record.hostThreadId, [
       {
         hostTurnId,
         nativeTurnRef,
         ...(nativeCheckpointRef ? { nativeCheckpointRef } : {}),
       },
     ]);
-    return this.store.consumePendingHostTurn(next.hostThreadId, hostTurnId);
   }
 
   async commitDerivedSnapshot(

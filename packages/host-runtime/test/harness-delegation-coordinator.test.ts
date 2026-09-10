@@ -385,8 +385,8 @@ describe("HarnessDelegationCoordinator", () => {
     const value = await fixture();
     try {
       const original = value.adapter.open.bind(value.adapter);
-      let release;
-      const gate = new Promise((resolve) => {
+      let release: () => void = () => undefined;
+      const gate = new Promise<void>((resolve) => {
         release = resolve;
       });
       let opens = 0;

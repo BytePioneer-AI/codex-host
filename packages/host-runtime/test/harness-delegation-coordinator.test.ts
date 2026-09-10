@@ -758,6 +758,48 @@ describe("HarnessDelegationCoordinator", () => {
     }
   });
 
+  it("read repairs leftover running Delegation from a recovered completed Turn", async () => {
+    const value = await fixture();
+    try {
+      const started = await value.coordinator.start({
+        harnessId: "pi",
+        task: "first",
+        cwd: "/synthetic",
+        parentThreadId: "parent-thread",
+      });
+      const thread = value.runtime.get(started.threadId);
+      if (!thread) throw new Error("Missing thread");
+      const session = value.adapter.sessions[0];
+      session?.succeedTurn();
+      thread.running = false;
+      thread.activeTurnId = null;
+      thread.turns = [{ id: started.turnId, status: "completed" }];
+      await expect(
+        value.repository.getDelegationByChild(hostThreadIdSchema.parse(started.threadId)),
+      ).resolves.toMatchObject({ status: "running", latestHostTurnId: started.turnId });
+      const snapshot = await value.coordinator.read({
+        threadId: started.threadId,
+        view: "result",
+      });
+      expect(snapshot.status).toBe("completed");
+      expect(snapshot.turn?.turnId).toBe(started.turnId);
+      await expect(
+        value.repository.getDelegationByChild(hostThreadIdSchema.parse(started.threadId)),
+      ).resolves.toMatchObject({
+        status: "completed",
+        latestHostTurnId: started.turnId,
+      });
+      const listed = await value.coordinator.list({
+        parentThreadId: "parent-thread",
+        limit: 25,
+        sort: "created-desc",
+      });
+      expect(listed.threads[0]?.status).toBe("completed");
+    } finally {
+      await value.close();
+    }
+  });
+
   it("reopens Delegation status to running for a follow-up Turn", async () => {
     const value = await fixture();
     try {

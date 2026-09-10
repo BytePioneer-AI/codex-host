@@ -6,6 +6,14 @@ import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { expandScenarios, listScenarioIds, SCENARIOS } from "./matrix.mjs";
+import {
+  canonicalReviewText,
+  completedChildCliEvidence,
+  requireSuccessfulThreadOutcome,
+  reviewMentionsPlant,
+} from "./verify-evidence.mjs";
+
+export { commandUsesChildThreadCli } from "./verify-evidence.mjs";
 
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const cliWrapper = path.join(repositoryRoot, "tools/delegation/cli-wrapper.mjs");
@@ -356,14 +364,6 @@ function modelId(configuration) {
   const value = configuration?.effective?.effectiveModel;
   if (!value) return null;
   return typeof value === "object" && value !== null && "id" in value ? value.id : value;
-}
-
-export function commandUsesChildThreadCli(command, childThreadId) {
-  const text = String(command ?? "");
-  if (!text || /^\s*echo\b/iu.test(text)) return false;
-  if (!/codexhost|CODEXHOST_CLI_PATH/iu.test(text)) return false;
-  if (!/\bthread\s+(send|wait)\b/iu.test(text)) return false;
-  return text.includes(childThreadId);
 }
 
 export function configurationFingerprint(status) {
@@ -877,12 +877,19 @@ async function scenarioFlow01(context) {
     task: "Make test_scheduler.py pass. Run python3 -m unittest test_scheduler.py. Commit only if tests pass. Do not delete tests.",
     cwd,
   });
-  await runCli(
-    context.childEnvironment,
-    ["thread", "wait", writer.threadId, "--timeout-ms", "180000"],
-    cwd,
-    190_000,
+  requireSuccessfulThreadOutcome(
+    await runCli(
+      context.childEnvironment,
+      ["thread", "wait", writer.threadId, "--timeout-ms", "180000"],
+      cwd,
+      190_000,
+    ),
+    "FLOW-01 writer wait",
   );
+  const frozenHead = git(["rev-parse", "HEAD"]).trim();
+  if (!frozenHead || frozenHead === "unknown") {
+    throw new Error("FLOW-01 writer did not produce a frozen commit");
+  }
   const log = git(["log", "--oneline"]).trim().split("\n");
   if (log.length < 2) throw new Error("FLOW-01 writer did not produce a follow-up commit");
   const headFiles = git(["diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD"]);
@@ -916,27 +923,33 @@ async function scenarioFlow01(context) {
     startTask(context, { task: `${reviewerPrompt} You are reviewer B.`, cwd }),
   ]);
   await Promise.all(
-    [reviewerA, reviewerB].map((started) =>
-      runCli(
-        context.childEnvironment,
-        ["thread", "wait", started.threadId, "--timeout-ms", "180000"],
-        cwd,
-        190_000,
+    [reviewerA, reviewerB].map(async (started) => {
+      requireSuccessfulThreadOutcome(
+        await runCli(
+          context.childEnvironment,
+          ["thread", "wait", started.threadId, "--timeout-ms", "180000"],
+          cwd,
+          190_000,
+        ),
+        `FLOW-01 reviewer wait ${started.threadId}`,
+      );
+    }),
+  );
+  if (git(["rev-parse", "HEAD"]).trim() !== frozenHead) {
+    throw new Error("FLOW-01 worktree moved after the frozen writer commit");
+  }
+  const reports = await Promise.all(
+    [reviewerA, reviewerB].map(async (started) =>
+      requireSuccessfulThreadOutcome(
+        await runCli(context.childEnvironment, ["thread", "read", started.threadId], cwd),
+        `FLOW-01 reviewer read ${started.threadId}`,
+        { requireAvailableResult: true },
       ),
     ),
   );
-  const reports = await Promise.all(
-    [reviewerA, reviewerB].map(async (started) => {
-      const read = await runCli(
-        context.childEnvironment,
-        ["thread", "read", started.threadId],
-        cwd,
-      );
-      return `${read.stdout}\n${read.stderr}`;
-    }),
-  );
-  const caught = reports.some((text) => text.includes(leakToken) || /leak\.py/u.test(text));
-  const denied = reports.every((text) =>
+  const texts = reports.map((snapshot) => canonicalReviewText(snapshot));
+  const caught = texts.some((text) => reviewMentionsPlant(text, leakToken));
+  const denied = texts.every((text) =>
     /no defect|没有缺陷|looks good|lgtm|no issue|clean/iu.test(text),
   );
   if (!caught || denied) {
@@ -949,6 +962,7 @@ async function scenarioFlow01(context) {
     plantedCaught: true,
     writerTestsPassed: true,
     writerChangedScheduler: true,
+    frozenHead,
   };
 }
 
@@ -1056,11 +1070,14 @@ async function scenarioSkill03(context) {
     task: `Follow ${path.join(skillDir, "SKILL.md")} exactly. Existing child thread: ${child.threadId}. Use CODEXHOST_CLI_PATH to send a follow-up or wait. If THREAD_BUSY, wait. Do not mint a new request-id. Do not run thread release.`,
     cwd,
   });
-  await runCli(
-    context.childEnvironment,
-    ["thread", "wait", operator.threadId, "--timeout-ms", "180000"],
-    cwd,
-    190_000,
+  requireSuccessfulThreadOutcome(
+    await runCli(
+      context.childEnvironment,
+      ["thread", "wait", operator.threadId, "--timeout-ms", "180000"],
+      cwd,
+      190_000,
+    ),
+    "SKILL-03 operator wait",
   );
   const listed = requireOk(
     await runCli(
@@ -1084,18 +1101,17 @@ async function scenarioSkill03(context) {
   if (items.length === 0) {
     throw new Error("SKILL-03 operator produced no user-visible tool/command evidence");
   }
-  const cliItems = items.filter(
-    (item) =>
-      item.kind === "command" &&
-      item.completed !== false &&
-      (item.exitCode == null || item.exitCode === 0) &&
-      commandUsesChildThreadCli(item.command, child.threadId),
-  );
-  const usedSend = cliItems.some((item) => /\bthread\s+send\b/iu.test(item.command ?? ""));
-  const usedWait = cliItems.some((item) => /\bthread\s+wait\b/iu.test(item.command ?? ""));
+  const parsedItems = items.map((item) => completedChildCliEvidence(item, child.threadId));
+  const usedSend = parsedItems.some((item) => item.action === "send");
+  const usedWait = parsedItems.some((item) => item.action === "wait");
   if (!usedSend && !usedWait) {
+    if (parsedItems.some((item) => item.unsupported)) {
+      throw new ScenarioIncomplete(
+        "SKILL-03 command evidence is not a supported Host CLI send/wait invocation",
+      );
+    }
     throw new Error(
-      "SKILL-03 evidence does not show a Host CLI send/wait against the child Thread",
+      "SKILL-03 evidence does not show a completed Host CLI send/wait against the child Thread",
     );
   }
   if (items.some((item) => /thread release|delegate start/iu.test(`${item.command ?? ""}`))) {

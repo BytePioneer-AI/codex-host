@@ -2208,7 +2208,16 @@ export class AppServerHost {
       hostThreadIdSchema.parse(input.threadId),
     );
     if (delegation && delegation.status !== snapshot.status) {
-      await this.#repository.setDelegationStatus(delegation.delegationId, snapshot.status);
+      const turnId = snapshot.turn?.turnId;
+      const parsed = turnId ? hostTurnIdSchema.safeParse(turnId) : null;
+      if (parsed?.success) {
+        await this.#repository.setDelegationTurnState(delegation.delegationId, {
+          latestHostTurnId: parsed.data,
+          status: snapshot.status,
+        });
+      } else {
+        await this.#repository.setDelegationStatus(delegation.delegationId, snapshot.status);
+      }
     }
     return snapshot;
   }

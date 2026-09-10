@@ -379,6 +379,47 @@ describe("mapping-store package", () => {
     await store.close();
   });
 
+  it("assigns latestHostTurnId once and repairs the same Turn through turn-state", async () => {
+    const directory = await temporaryStoreDirectory();
+    const store = new MappingStore({ directory, instanceId: "delegation-latest" });
+    await store.initialize();
+    const childThreadId = hostThreadIdSchema.parse("thread-child-latest");
+    const delegationId = hostThreadIdSchema.parse("delegation-latest");
+    const firstTurn = hostTurnIdSchema.parse("turn-latest-1");
+    const secondTurn = hostTurnIdSchema.parse("turn-latest-2");
+    await store.createDelegation({
+      delegationId,
+      parentHostThreadId: threadId,
+      childHostThreadId: childThreadId,
+      sourceHarnessId: harnessId,
+      targetHarnessId: harnessIdSchema.parse("claude-code"),
+      status: "running",
+      taskDigest: "d".repeat(64),
+    });
+    await expect(store.setDelegationLatestTurn(delegationId, firstTurn)).resolves.toMatchObject({
+      latestHostTurnId: firstTurn,
+      status: "running",
+    });
+    await expect(store.setDelegationLatestTurn(delegationId, secondTurn)).resolves.toMatchObject({
+      latestHostTurnId: firstTurn,
+      status: "running",
+    });
+    await expect(store.setDelegationStatus(delegationId, "completed")).resolves.toMatchObject({
+      latestHostTurnId: firstTurn,
+      status: "running",
+    });
+    await expect(
+      store.setDelegationTurnState(delegationId, {
+        latestHostTurnId: firstTurn,
+        status: "completed",
+      }),
+    ).resolves.toMatchObject({
+      latestHostTurnId: firstTurn,
+      status: "completed",
+    });
+    await store.close();
+  });
+
   it("finds recent implicit Delegation duplicates by parent, target and task digest", async () => {
     const directory = await temporaryStoreDirectory();
     let now = new Date("2026-01-01T00:00:00.000Z");

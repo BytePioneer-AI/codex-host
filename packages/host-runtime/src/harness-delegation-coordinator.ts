@@ -102,6 +102,23 @@ function statusFromThread(thread: ExternalThread): StoredDelegationRecordV1["sta
   return last ? "completed" : "creating";
 }
 
+async function persistDelegationFromSnapshot(
+  repository: ExternalThreadRepository,
+  delegationId: StoredDelegationRecordV1["delegationId"],
+  snapshot: DelegationThreadSnapshot,
+): Promise<void> {
+  const turnId = snapshot.turn?.turnId;
+  const parsed = turnId ? hostTurnIdSchema.safeParse(turnId) : null;
+  if (parsed?.success) {
+    await repository.setDelegationTurnState(delegationId, {
+      latestHostTurnId: parsed.data,
+      status: snapshot.status,
+    });
+    return;
+  }
+  await repository.setDelegationStatus(delegationId, snapshot.status);
+}
+
 function compactWaitManyStatus(status: DelegationThreadStatusView): ThreadWaitManyStatusView {
   return {
     threadId: status.threadId,
@@ -633,8 +650,8 @@ export class HarnessDelegationCoordinator {
     const delegation = await this.#repository.getDelegationByChild(
       hostThreadIdSchema.parse(thread.id),
     );
-    if (delegation && delegation.status !== statusFromThread(thread)) {
-      await this.#repository.setDelegationStatus(delegation.delegationId, statusFromThread(thread));
+    if (delegation && delegation.status !== snapshot.status) {
+      await persistDelegationFromSnapshot(this.#repository, delegation.delegationId, snapshot);
     }
     return snapshot;
   }

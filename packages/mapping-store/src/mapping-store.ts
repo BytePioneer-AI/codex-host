@@ -60,6 +60,7 @@ export interface MappingStoreOptions {
   instanceId?: string;
   now?: () => Date;
   beforeReplace?: (record: StoredThreadRecordV1) => Promise<void> | void;
+  beforeWriteDelegation?: (record: StoredDelegationRecordV1) => Promise<void> | void;
 }
 
 interface LockRecord {
@@ -200,6 +201,7 @@ export class MappingStore {
   readonly #backupsDirectory: string;
   readonly #delegationsDirectory: string;
   readonly #beforeReplace: MappingStoreOptions["beforeReplace"];
+  readonly #beforeWriteDelegation: MappingStoreOptions["beforeWriteDelegation"];
   readonly #directory: string;
   readonly #instanceId: string;
   readonly #lockPath: string;
@@ -229,6 +231,7 @@ export class MappingStore {
     this.#instanceId = options.instanceId ?? randomUUID();
     this.#now = options.now ?? (() => new Date());
     this.#beforeReplace = options.beforeReplace;
+    this.#beforeWriteDelegation = options.beforeWriteDelegation;
   }
 
   async initialize(): Promise<void> {
@@ -416,11 +419,16 @@ export class MappingStore {
         }
       }
       const thread = await this.#createProvisionalUnlocked(input.thread);
-      const delegation = await this.#createDelegationUnlocked({
-        ...input.delegation,
-        childHostThreadId: thread.hostThreadId,
-      });
-      result = { thread, delegation, reused: false };
+      try {
+        const delegation = await this.#createDelegationUnlocked({
+          ...input.delegation,
+          childHostThreadId: thread.hostThreadId,
+        });
+        result = { thread, delegation, reused: false };
+      } catch (error) {
+        await this.#remove(thread.hostThreadId);
+        throw error;
+      }
     });
     if (!result)
       throw new MappingStoreError("IO_ERROR", "Delegated Thread create produced no result");
@@ -833,6 +841,7 @@ export class MappingStore {
     const temp = `${target}.tmp-${randomUUID()}`;
     let handle: FileHandle | null = null;
     try {
+      await this.#beforeWriteDelegation?.(cloneRecord(record));
       handle = await open(temp, "wx", constants.S_IRUSR | constants.S_IWUSR);
       await handle.writeFile(`${JSON.stringify(record, null, 2)}\n`, "utf8");
       await handle.sync();

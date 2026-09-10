@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 import { listScenarioIds } from "./matrix.mjs";
-import { runVerify } from "./verify.mjs";
+import { HANDLERS, runVerify } from "./verify.mjs";
 
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const verifyPath = path.join(repositoryRoot, "tools/delegation/verify.mjs");
@@ -20,6 +20,13 @@ function run(args, env = process.env) {
 }
 
 describe("delegation verify entry", () => {
+  it("does not alias CREATION-03, TURN-04, or FLOW-01 onto unrelated handlers", () => {
+    expect(HANDLERS["CREATION-03"]).not.toBe(HANDLERS["CREATION-02"]);
+    expect(HANDLERS["TURN-04"]).not.toBe(HANDLERS["CREATION-01"]);
+    expect(HANDLERS["FLOW-01"]).not.toBe(HANDLERS["CREATION-01"]);
+    expect(HANDLERS["RECOVERY-02"]).not.toBe(HANDLERS["RECOVERY-01"]);
+  });
+
   it("ENTRY-01 lists unique scenarios and rejects invalid mode/scenario/output", async () => {
     const listed = run(["--list"]);
     expect(listed.status).toBe(0);

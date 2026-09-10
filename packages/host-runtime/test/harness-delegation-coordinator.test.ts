@@ -657,6 +657,51 @@ describe("HarnessDelegationCoordinator", () => {
       });
       expect(retry.turnId).toBe(first.turnId);
       expect(thread.activeTurnId).toBeNull();
+      await expect(
+        value.coordinator.send({
+          threadId: started.threadId,
+          message: "other payload",
+          requestId: "send-1",
+        }),
+      ).rejects.toMatchObject({ code: "INVALID_ARGUMENT" });
+    } finally {
+      await value.close();
+    }
+  });
+
+  it("does not assign a failed send Turn ID to the next successful send", async () => {
+    const value = await fixture();
+    try {
+      const started = await value.coordinator.start({
+        harnessId: "pi",
+        task: "first",
+        cwd: "/synthetic",
+        parentThreadId: "parent-thread",
+      });
+      const session = value.adapter.sessions[0];
+      if (!session) throw new Error("Missing session");
+      session.succeedTurn();
+      const thread = value.runtime.get(started.threadId);
+      if (!thread) throw new Error("Missing thread");
+      thread.running = false;
+      thread.activeTurnId = null;
+      session.rejectNextTurn({
+        code: "nativeFailure",
+        message: "synthetic follow-up failure",
+        retryable: false,
+      });
+      const pendingBefore = [...(thread.record.pendingHostTurnIds ?? [])];
+      await expect(
+        value.coordinator.send({ threadId: started.threadId, message: "failed payload" }),
+      ).rejects.toMatchObject({ code: "DELEGATION_FAILED" });
+      expect(thread.record.pendingHostTurnIds ?? []).toEqual(pendingBefore);
+      expect(thread.activeTurnId).toBeNull();
+      const success = await value.coordinator.send({
+        threadId: started.threadId,
+        message: "ok payload",
+      });
+      expect(thread.activeTurnId).toBe(success.turnId);
+      expect(success.turnId).not.toBe(started.turnId);
     } finally {
       await value.close();
     }

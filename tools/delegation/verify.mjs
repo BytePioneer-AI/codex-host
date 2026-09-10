@@ -668,20 +668,132 @@ async function scenarioViaVitest(id) {
   return { vitestStatus: child.status };
 }
 
-const HANDLERS = {
+async function scenarioCreation03() {
+  return scenarioViaVitest("CREATION-03");
+}
+
+async function scenarioTurn04(context) {
+  const cwd = await mkdtemp(path.join(context.runDirectory, "turn4-"));
+  const started = await startTask(context, { task: "TURN-04 idle", cwd });
+  await runCli(
+    context.childEnvironment,
+    [
+      "thread",
+      "wait",
+      started.threadId,
+      "--timeout-ms",
+      context.mode === "live" ? "60000" : "2000",
+    ],
+    cwd,
+    context.mode === "live" ? 70_000 : 5_000,
+  );
+  const requestId = `send-${randomUUID()}`;
+  const message = "TURN-04 same payload";
+  const send = (text) =>
+    runCli(
+      context.childEnvironment,
+      ["thread", "send", started.threadId, "--message", text, "--request-id", requestId],
+      cwd,
+    );
+  const [left, right] = await Promise.all([send(message), send(message)]);
+  const leftBody = parseJsonOutput(left);
+  const rightBody = parseJsonOutput(right);
+  if (left.status !== 0 || right.status !== 0 || leftBody.turnId !== rightBody.turnId) {
+    throw new Error("TURN-04 same request-id did not coalesce to one Turn");
+  }
+  const conflict = await send("TURN-04 different payload");
+  const conflictBody = parseJsonOutput(conflict);
+  if (conflict.status === 0 || conflictBody.error?.code !== "INVALID_ARGUMENT") {
+    throw new Error("TURN-04 expected INVALID_ARGUMENT for a conflicting send payload");
+  }
+  return { threadId: started.threadId, turnId: leftBody.turnId, conflict: conflictBody.error };
+}
+
+async function scenarioRecovery02(context) {
+  const cwd = await mkdtemp(path.join(context.runDirectory, "recovery2-"));
+  const started = await startTask(context, { task: "recovery reconcile", cwd });
+  const dry = requireOk(
+    await runCli(context.childEnvironment, ["delegate", "reconcile", started.threadId], cwd),
+    "reconcile-dry-run",
+  );
+  if (dry.applied === true || dry.writes > 0) {
+    throw new Error("RECOVERY-02 dry-run must not apply writes");
+  }
+  return { threadId: started.threadId, dryRun: true, writes: dry.writes ?? 0 };
+}
+
+async function scenarioFlow01(context) {
+  if (context.mode !== "live") throw new Error("FLOW-01 is live-only");
+  const cwd = await mkdtemp(path.join(context.runDirectory, "flow1-"));
+  await writeFile(
+    path.join(cwd, "scheduler.py"),
+    ["completed = set()", "def mark_done(task_id):", "    completed.add(task_id)", ""].join("\n"),
+  );
+  await writeFile(
+    path.join(cwd, "test_scheduler.py"),
+    [
+      "from scheduler import mark_done, completed",
+      "def test_mark_done_is_idempotent():",
+      "    mark_done('a')",
+      "    mark_done('a')",
+      "    assert list(completed) == ['a']",
+      "",
+    ].join("\n"),
+  );
+  const git = (args) => {
+    const result = spawnSync("git", args, { cwd, encoding: "utf8" });
+    if (result.status !== 0) {
+      throw new Error(`FLOW-01 git ${args.join(" ")} failed: ${result.stderr || result.stdout}`);
+    }
+  };
+  git(["init"]);
+  git(["add", "."]);
+  git(["-c", "user.email=flow@example.com", "-c", "user.name=FLOW", "commit", "-m", "plant"]);
+  const prompt =
+    "Review scheduler.py. Find the defect in mark_done/completed.add. Do not modify files. Reply with the defect.";
+  const [writer, reviewer] = await Promise.all([
+    startTask(context, { task: `${prompt} You are reviewer A.`, cwd }),
+    startTask(context, { task: `${prompt} You are reviewer B.`, cwd }),
+  ]);
+  await Promise.all(
+    [writer, reviewer].map((started) =>
+      runCli(
+        context.childEnvironment,
+        ["thread", "wait", started.threadId, "--timeout-ms", "180000"],
+        cwd,
+        190_000,
+      ),
+    ),
+  );
+  const reads = await Promise.all(
+    [writer, reviewer].map((started) =>
+      runCli(context.childEnvironment, ["thread", "read", started.threadId], cwd),
+    ),
+  );
+  const blob = reads.map((cli) => `${cli.stdout}\n${cli.stderr}`).join("\n");
+  if (!/mark_done|completed\.add/u.test(blob)) {
+    throw new Error("FLOW-01 reviewers did not report the planted mark_done defect");
+  }
+  return {
+    threads: [writer.threadId, reviewer.threadId],
+    plantedCaught: true,
+  };
+}
+
+export const HANDLERS = {
   "ENTRY-01": scenarioEntry01,
   "ENTRY-02": scenarioEntry02,
   "ENTRY-03": scenarioEntry03,
   "SMOKE-01": scenarioSmoke01,
   "CREATION-01": scenarioCreation01,
   "CREATION-02": scenarioCreation02,
-  "CREATION-03": scenarioCreation02,
+  "CREATION-03": scenarioCreation03,
   "RECOVERY-01": scenarioRecovery01,
-  "RECOVERY-02": scenarioRecovery01,
+  "RECOVERY-02": scenarioRecovery02,
   "TURN-01": scenarioTurn01,
   "TURN-02": scenarioTurn01,
   "TURN-03": scenarioTurn01,
-  "TURN-04": scenarioCreation01,
+  "TURN-04": scenarioTurn04,
   "TURN-05": scenarioTurn05,
   "RELEASE-01": scenarioRelease01,
   "RELEASE-02": scenarioRelease01,
@@ -701,7 +813,7 @@ const HANDLERS = {
   "SKILL-02": scenarioSkill01,
   "SKILL-03": scenarioTurn01,
   "SKILL-04": scenarioEvidence01,
-  "FLOW-01": scenarioCreation01,
+  "FLOW-01": scenarioFlow01,
   "FLOW-02": scenarioRecovery01,
   "FLOW-03": scenarioObserve01,
 };
@@ -762,7 +874,9 @@ export async function runVerify(argv = process.argv.slice(2)) {
       let details;
       const dataDirectory = path.join(runDirectory, id, "data");
       lastDataDirectory = dataDirectory;
-      const needsRuntime = id !== "ENTRY-01" && id !== "SKILL-01" && id !== "SKILL-02";
+      const needsRuntime =
+        id !== "ENTRY-01" && id !== "SKILL-01" && id !== "SKILL-02" && id !== "CREATION-03";
+      let context;
       try {
         if (mode === "live" && SCENARIOS[id] && !SCENARIOS[id].live) {
           throw new Error(`${id} is not a live scenario`);
@@ -777,7 +891,7 @@ export async function runVerify(argv = process.argv.slice(2)) {
           }
         }
         const childEnvironment = runtime ? runtime.childEnvironment() : { ...process.env };
-        const context = {
+        context = {
           mode,
           runDirectory,
           dataDirectory,
@@ -787,19 +901,24 @@ export async function runVerify(argv = process.argv.slice(2)) {
         };
         const handler = HANDLERS[id];
         details = handler ? await handler(context) : await scenarioViaVitest(id);
-        if (runtime) {
-          const closed = await runtime.close();
+        const toClose = context.runtime;
+        runtime = undefined;
+        context.runtime = undefined;
+        if (toClose) {
+          const closed = await toClose.close();
           cleanupErrors.push(...closed.cleanupErrors);
-          runtime = undefined;
         }
       } catch (error) {
         result = "FAIL";
         details = { error: error instanceof Error ? error.message : String(error) };
         scenarioError = error;
-        if (runtime) {
+        const toClose = context?.runtime ?? runtime;
+        runtime = undefined;
+        if (context) context.runtime = undefined;
+        if (toClose) {
           try {
             const closed = await Promise.race([
-              runtime.close(),
+              toClose.close(),
               new Promise((_, reject) =>
                 setTimeout(() => reject(new Error("runtime close timed out")), 10_000),
               ),
@@ -812,7 +931,6 @@ export async function runVerify(argv = process.argv.slice(2)) {
               closeError instanceof Error ? closeError.message : String(closeError),
             );
           }
-          runtime = undefined;
         }
       }
       const record = redact(

@@ -149,8 +149,11 @@ export class HarnessDelegationCoordinator {
     string,
     { input: DelegationStartInput; promise: Promise<DelegationStartResult> }
   >();
-  readonly #inflightSends = new Map<string, Promise<ThreadSendResult>>();
-  readonly #sendResults = new Map<string, ThreadSendResult>();
+  readonly #inflightSends = new Map<
+    string,
+    { message: string; promise: Promise<ThreadSendResult> }
+  >();
+  readonly #sendResults = new Map<string, { message: string; result: ThreadSendResult }>();
 
   constructor(input: {
     adapters: Map<ExternalHarnessId, HarnessAdapter>;
@@ -443,21 +446,27 @@ export class HarnessDelegationCoordinator {
     if (key) {
       const remembered = this.#sendResults.get(key);
       if (remembered) {
-        if (this.#externalRuntime.get(input.threadId)) return remembered;
+        if (this.#externalRuntime.get(input.threadId)) {
+          this.#assertSameSendIdentity(remembered.message, input.message);
+          return remembered.result;
+        }
         this.#sendResults.delete(key);
       }
       const current = this.#inflightSends.get(key);
-      if (current) return current;
+      if (current) {
+        this.#assertSameSendIdentity(current.message, input.message);
+        return current.promise;
+      }
     }
     const pending = this.#deliverSend(input)
       .then((result) => {
-        if (key) this.#sendResults.set(key, result);
+        if (key) this.#sendResults.set(key, { message: input.message, result });
         return result;
       })
       .finally(() => {
         if (key) this.#inflightSends.delete(key);
       });
-    if (key) this.#inflightSends.set(key, pending);
+    if (key) this.#inflightSends.set(key, { message: input.message, promise: pending });
     return pending;
   }
 
@@ -501,9 +510,26 @@ export class HarnessDelegationCoordinator {
       throw new DelegationControlError("THREAD_BUSY", "Thread already has an active Turn");
     }
     const turnId = hostTurnIdSchema.parse(randomUUID());
+    thread.record = await this.#repository.addPendingHostTurn(thread.record.hostThreadId, turnId);
     try {
-      thread.record = await this.#repository.addPendingHostTurn(thread.record.hostThreadId, turnId);
       await this.#startExternalTurn(thread, input.message, turnId);
+    } catch (error) {
+      await this.#repository
+        .consumePendingHostTurn(thread.record.hostThreadId, turnId)
+        .then((record) => {
+          thread.record = record;
+        })
+        .catch(() => undefined);
+      if (thread.activeTurnId === turnId) {
+        thread.running = false;
+        thread.activeTurnId = null;
+      }
+      throw new DelegationControlError(
+        "DELEGATION_FAILED",
+        error instanceof Error ? error.message : String(error),
+      );
+    }
+    try {
       const delegation = await this.#repository.getDelegationByChild(thread.record.hostThreadId);
       if (delegation) {
         await this.#repository.setDelegationLatestTurn(delegation.delegationId, turnId);
@@ -1177,6 +1203,15 @@ export class HarnessDelegationCoordinator {
         outcome: "error",
         error: { code: normalized.code, message: normalized.message },
       };
+    }
+  }
+
+  #assertSameSendIdentity(left: string, right: string): void {
+    if (left !== right) {
+      throw new DelegationControlError(
+        "INVALID_ARGUMENT",
+        "Request ID is already associated with another send payload",
+      );
     }
   }
 

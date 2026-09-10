@@ -1026,4 +1026,49 @@ describe("mapping-store package", () => {
     ).rejects.toMatchObject({ code: "MAPPING_CONFLICT" });
     await store.close();
   });
+
+  it("CREATION-03 rolls back the Thread when Delegation persist fails", async () => {
+    const directory = await temporaryStoreDirectory();
+    let failDelegation = true;
+    const store = new MappingStore({
+      directory,
+      beforeWriteDelegation() {
+        if (failDelegation) {
+          failDelegation = false;
+          throw new Error("injected delegation persist failure");
+        }
+      },
+    });
+    await store.initialize();
+    const thread = {
+      hostThreadId: hostThreadIdSchema.parse("child-orphan"),
+      createRequestId: "delegation:req-orphan",
+      harnessId,
+      cwd: "/synthetic",
+      title: "orphan",
+      transportModelId: "codexhost/pi-native",
+      ephemeral: false,
+      historyMode: "paginated" as const,
+    };
+    const delegation = {
+      delegationId: hostThreadIdSchema.parse("delegation-orphan"),
+      parentHostThreadId: hostThreadIdSchema.parse("parent-1"),
+      childHostThreadId: hostThreadIdSchema.parse("child-orphan"),
+      sourceHarnessId: harnessIdSchema.parse("codex"),
+      targetHarnessId: harnessId,
+      status: "creating" as const,
+      requestId: "req-orphan",
+      taskDigest: "c".repeat(64),
+    };
+    await expect(store.createDelegatedThread({ thread, delegation })).rejects.toMatchObject({
+      code: "IO_ERROR",
+    });
+    expect(await store.listThreads()).toEqual([]);
+    expect(await store.listDelegations()).toEqual([]);
+    const created = await store.createDelegatedThread({ thread, delegation });
+    expect(created.reused).toBe(false);
+    expect(created.thread.state).toBe("creating");
+    expect(created.delegation.status).toBe("creating");
+    await store.close();
+  });
 });

@@ -3,13 +3,20 @@ import { mkdir, open, readFile, rename, rm, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-const SKILL_VERSION = 5;
+const SKILL_VERSION = 6;
 const SKILL_RELATIVE_PATH = path.join("skills", "codexhost-delegation", "SKILL.md");
-const PREVIOUS_MANAGED_DIGESTS: readonly string[] = [
+/**
+ * Digests of every previously shipped managed Skill. A released digest missing
+ * from this list makes the installer treat that copy as user-modified, so the
+ * affected installations silently stop receiving Skill updates.
+ */
+export const PREVIOUS_MANAGED_DIGESTS: readonly string[] = [
   "aff258622dc8ff321f32b15620d081e578cb9c9ed1134d6a57f35ca8e7762c0a",
   "ba509f57e5448e796b3dfdd5031dcb08672eded50b61c0a54de84cfa02c49dd3",
   "d3ddf6db9bc5c5df825479c885bbbf0ca08da66f7057a12e02e1fdf57525149e",
   "15eb63519ff867e1536c97188a0c43738d7a49d38d4d6adeb7a1036726e7246d",
+  "fa7944cd1e72ffbaf932fca2074bdb78aad4670d8990b6711220dd83c39509a0",
+  "2bb0aebb9b06febbc6c0c0bcdb0b32506c7cdbf8dc3b734cc6b2a86621270e4e",
 ];
 
 export const CODEXHOST_DELEGATION_SKILL = `---
@@ -26,9 +33,18 @@ description: >
 
 # Execute the task
 
-Before acting, run:
+The \`CODEXHOST_CLI_PATH\` environment variable holds the absolute path of the CLI
+for this Host. Always invoke the CLI through that path. Do not run a bare
+\`codexhost\`: it is absent from \`PATH\` in some installations and may resolve to a
+different Host's CLI. If the variable is not set, report that delegation is
+unavailable from this session instead of searching \`PATH\`.
 
-\`codexhost delegate --help\`
+Before acting, run the help command, using the syntax of the shell you execute
+commands in:
+
+- POSIX shells: \`"$CODEXHOST_CLI_PATH" delegate --help\`
+- PowerShell: \`& $env:CODEXHOST_CLI_PATH delegate --help\`
+- cmd: \`"%CODEXHOST_CLI_PATH%" delegate --help\`
 
 Treat its output as the sole authoritative source for:
 

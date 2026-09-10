@@ -77,6 +77,7 @@ export const DELEGATION_HELP = `usage:
   codexhost thread wait <thread> [--timeout-ms <n>] [--view result|messages] [--cursor <cursor>] [--limit <n>]
   codexhost thread list [--cwd <path>] [--parent <thread>] [--limit <n>] [--cursor <cursor>] [--sort created-asc|created-desc|updated-asc|updated-desc|recency-asc|recency-desc]
 
+Invoke this CLI through the absolute path in CODEXHOST_CLI_PATH, quoted as your own shell requires. A bare 'codexhost' is absent from PATH in some installations and may resolve to a different Host's CLI.
 Thread identifiers accept a bare ID or codex://threads/<id>. Output is JSON by default.
 harness inspect returns the target Model catalog, default Model, Thinking options, and configuration capabilities without creating a Thread. Use opaque IDs exactly as returned.
 delegate start requires --harness and --task, creates and submits the child Thread, then returns immediately. --model and --thinking select values returned by harness inspect. Omit either option to preserve that target's current default behavior. --parent-thread overrides caller inference. Reuse --request-id for idempotent retries; without it, identical recent parent/target/task/configuration requests are deduplicated briefly.

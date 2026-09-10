@@ -514,7 +514,9 @@ export class HarnessDelegationCoordinator {
     const turnId = thread.activeTurnId;
     const latestTurnId =
       turnId ??
-      (typeof thread.turns.at(-1)?.id === "string" ? (thread.turns.at(-1)?.id as string) : undefined);
+      (typeof thread.turns.at(-1)?.id === "string"
+        ? (thread.turns.at(-1)?.id as string)
+        : undefined);
     if (input.expectedTurnId && latestTurnId && latestTurnId !== input.expectedTurnId) {
       throw new DelegationControlError(
         "STALE_TURN",

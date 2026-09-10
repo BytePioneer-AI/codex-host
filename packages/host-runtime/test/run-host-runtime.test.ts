@@ -61,8 +61,22 @@ describe("Host Runtime composition", () => {
     // An npm installation ships no `runtime/` directory, so the native launcher
     // aborts with a missing-file error before it reaches the delegation CLI.
     // The Node launcher resolves its own Node runtime and works.
-    const npmLauncher = path.resolve("npm", "node_modules", "@codexhost", "cli", "bin", "codexhost.js");
-    const nativeLauncher = path.resolve("npm", "node_modules", "@codexhost", "cli-darwin-arm64", "bin", "codexhost");
+    const npmLauncher = path.resolve(
+      "npm",
+      "node_modules",
+      "@codexhost",
+      "cli",
+      "bin",
+      "codexhost.js",
+    );
+    const nativeLauncher = path.resolve(
+      "npm",
+      "node_modules",
+      "@codexhost",
+      "cli-darwin-arm64",
+      "bin",
+      "codexhost",
+    );
 
     expect(
       delegationCliPath({
@@ -73,7 +87,13 @@ describe("Host Runtime composition", () => {
   });
 
   it("keeps the packaged launcher when npm did not provide one", () => {
-    const packaged = path.resolve("Applications", "codexhost.app", "Contents", "MacOS", "codexhost");
+    const packaged = path.resolve(
+      "Applications",
+      "codexhost.app",
+      "Contents",
+      "MacOS",
+      "codexhost",
+    );
 
     expect(delegationCliPath({ CODEXHOST_LAUNCHER_EXECUTABLE: packaged })).toBe(packaged);
     expect(delegationCliPath({})).toBeUndefined();

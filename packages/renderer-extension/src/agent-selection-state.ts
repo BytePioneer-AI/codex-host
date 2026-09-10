@@ -14,6 +14,7 @@ export const KNOWN_RENDERER_AGENTS = [
   "omp",
   "antigravity",
   "kiro-cli",
+  "cursor-cli",
 ] as const;
 export const DEFAULT_RENDERER_AGENTS = KNOWN_RENDERER_AGENTS;
 export type RendererAgent = (typeof KNOWN_RENDERER_AGENTS)[number];
@@ -42,6 +43,7 @@ export interface DraftComposerState {
   antigravityThinkingOptionId?: HarnessThinkingOptionId;
   kiroCliModel?: HarnessModelRef;
   kiroCliThinkingOptionId?: HarnessThinkingOptionId;
+  cursorCliModel?: HarnessModelRef;
   permissionModeByAgent?: Partial<Record<ExternalRendererAgent, HarnessPermissionModeId>>;
 }
 
@@ -210,6 +212,7 @@ export class DraftAgentController<Composer extends object> {
     if (agent === "omp" && model) state.ompModel = model;
     if (agent === "antigravity" && model) state.antigravityModel = model;
     if (agent === "kiro-cli" && model) state.kiroCliModel = model;
+    if (agent === "cursor-cli" && model) state.cursorCliModel = model;
     if (agent === "pi" && thinkingOptionId) state.piThinkingOptionId = thinkingOptionId;
     else if (agent === "pi") delete state.piThinkingOptionId;
     if (agent === "claude-code" && thinkingOptionId) {
@@ -239,6 +242,7 @@ export class DraftAgentController<Composer extends object> {
         "omp",
         "antigravity",
         "kiro-cli",
+        "cursor-cli",
       ] as const) {
         const current = state.permissionModeByAgent?.[candidate];
         if (candidate !== agent && current) permissionModeByAgent[candidate] = current;
@@ -263,6 +267,7 @@ export class DraftAgentController<Composer extends object> {
     if (agent === "omp") return state.ompModel;
     if (agent === "antigravity") return state.antigravityModel;
     if (agent === "kiro-cli") return state.kiroCliModel;
+    if (agent === "cursor-cli") return state.cursorCliModel;
     return undefined;
   }
 
@@ -315,6 +320,7 @@ export class DraftAgentController<Composer extends object> {
     else if (agent === "omp") state.ompModel = model;
     else if (agent === "antigravity") state.antigravityModel = model;
     else if (agent === "kiro-cli") state.kiroCliModel = model;
+    else if (agent === "cursor-cli") state.cursorCliModel = model;
     return state;
   }
 

@@ -24,6 +24,9 @@ does not depend on a network request.
 `kiro-agent.svg` is the unmodified official Kiro icon from
 `https://kiro.dev/icon.svg`, bundled locally as a data URL.
 
+`cursor-agent.svg` is a neutral pointer glyph authored for this integration,
+matching the plugin icon. It is not an official Cursor logo.
+
 The Agent picker uses the official Pi mark from `https://pi.dev/logo-auto.svg`
 and the Claude mark distributed in Anthropic's official `anthropic.claude-code`
 VS Code extension as inline vector paths. The DeepSeek Harness whale mark is

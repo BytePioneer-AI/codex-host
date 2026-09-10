@@ -252,6 +252,7 @@ export async function runDesktopController(
           "omp",
           "antigravity",
           "kiro-cli",
+          "cursor-cli",
         ],
         timeoutMs: PRODUCTION_INSTALL_TIMEOUT_MS,
       },

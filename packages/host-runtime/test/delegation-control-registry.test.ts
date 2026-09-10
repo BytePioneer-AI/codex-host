@@ -67,6 +67,30 @@ function registration(threadId: string): DelegationControlRegistration {
       timedOut: true,
     })),
     list: vi.fn(async () => ({ threads: [], nextCursor: null })),
+    status: vi.fn(async () => ({
+      threadId,
+      harnessId: "pi" as const,
+      status: "running" as const,
+      turn: null,
+      revision: "rev",
+      configuration: { unknown: [] },
+    })),
+    waitMany: vi.fn(async () => ({ timedOut: true, results: [] })),
+    evidence: vi.fn(async () => ({ threadId, items: [], nextCursor: null })),
+    configuration: vi.fn(async () => ({ unknown: [] })),
+    release: vi.fn(async () => ({
+      threadId,
+      released: false,
+      busy: false,
+      quiescence: "unsupported" as const,
+    })),
+    reconcile: vi.fn(async () => ({
+      threadId,
+      dryRun: true,
+      applied: false,
+      action: "none" as const,
+      writes: 0,
+    })),
   };
 }
 

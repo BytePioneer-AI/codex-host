@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+
 import type {
   HarnessAdapter,
   HarnessModelRef,
@@ -22,6 +24,7 @@ import {
 import { HarnessOutputChannel } from "@codexhost/harness-adapter";
 import {
   permissionModeFixedAtCreate,
+  hostThreadIdSchema,
   type HarnessId,
   type HarnessPermissionModeId,
   type HarnessThinkingOptionId,
@@ -36,6 +39,7 @@ import {
 } from "./external-thread-repository.js";
 import { DELEGATION_THREAD_ID_ENV } from "./delegation-types.js";
 import { SessionStateObserver } from "./session-state-observer.js";
+import { ThreadChangeHub } from "./thread-change-hub.js";
 
 export interface TurnProjectionGate {
   promise: Promise<void>;
@@ -67,6 +71,7 @@ export interface ExternalThread {
   ephemeralTurnIds: Set<HostTurnId>;
   persistenceError: Error | null;
   ignoredInteractionIds: Set<HostInteractionId>;
+  changes: ThreadChangeHub;
 }
 
 export type ExternalThreadLocation =
@@ -193,6 +198,7 @@ export class ExternalThreadRuntime {
   readonly #repository: ExternalThreadRepository;
   readonly #restores = new Map<string, Promise<ExternalThread>>();
   readonly #threads = new Map<string, ExternalThread>();
+  readonly #epoch: string;
 
   constructor(input: {
     adapters: Map<ExternalHarnessId, HarnessAdapter>;
@@ -200,12 +206,18 @@ export class ExternalThreadRuntime {
     repository: ExternalThreadRepository;
     consumeOutputs(thread: ExternalThread): Promise<void>;
     diagnose(error: unknown): void;
+    epoch?: string;
   }) {
     this.#adapters = input.adapters;
     this.#environment = input.environment ?? process.env;
     this.#repository = input.repository;
     this.#consumeOutputs = input.consumeOutputs;
     this.#diagnose = input.diagnose;
+    this.#epoch = input.epoch ?? randomUUID();
+  }
+
+  get epoch(): string {
+    return this.#epoch;
   }
 
   get(threadId: string): ExternalThread | undefined {
@@ -282,6 +294,7 @@ export class ExternalThreadRuntime {
       ephemeralTurnIds: new Set(),
       persistenceError: null,
       ignoredInteractionIds: new Set(),
+      changes: new ThreadChangeHub(this.#epoch),
     };
     externalThread.outputTask = this.#consumeOutputs(externalThread);
     this.#threads.set(externalThread.id, externalThread);
@@ -328,12 +341,24 @@ export class ExternalThreadRuntime {
         error: { code: -32081, message: "External Thread ownership could not be read" },
       };
     }
-    if (!record) return { kind: "official" };
+    if (!record) {
+      const parsed = hostThreadIdSchema.safeParse(threadId);
+      const delegation = parsed.success
+        ? await this.#repository.getDelegationByChild(parsed.data)
+        : null;
+      if (delegation) {
+        return {
+          kind: "error",
+          error: {
+            code: -32079,
+            message: "External Delegation exists but its Thread is not ready",
+          },
+        };
+      }
+      return { kind: "official" };
+    }
     if (record.state !== "ready" || !record.nativeSessionRef) {
-      return {
-        kind: "error",
-        error: { code: -32079, message: "External Native Session is unavailable" },
-      };
+      return { kind: "external", record, thread: loaded ?? null };
     }
     return { kind: "external", record, thread: null };
   }
@@ -345,6 +370,12 @@ export class ExternalThreadRuntime {
       return { kind: "external", thread: location.thread, historyFresh: false };
     }
     const { record } = location;
+    if (record.state !== "ready" || !record.nativeSessionRef) {
+      return {
+        kind: "error",
+        error: { code: -32079, message: "External Native Session is unavailable" },
+      };
+    }
     let restoring = this.#restores.get(threadId);
     if (!restoring) {
       const restored = this.#threads.get(threadId);

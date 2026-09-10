@@ -234,6 +234,8 @@ export interface AppServerHostOptions {
   onRequestRoute?: (observation: RequestRouteObservation) => void;
   updateCoordinator?: HostUpdateCoordinator;
   onDelegationApi?: (api: DelegationControlRegistration) => (() => void) | undefined;
+  /** Opaque Runtime epoch used by compact status / wait-many cursors. */
+  runtimeEpoch?: string;
 }
 
 interface TurnProjectionGate {
@@ -600,6 +602,7 @@ export class AppServerHost {
       repository: this.#repository,
       consumeOutputs: (thread) => this.#consumeHarnessOutputs(thread),
       diagnose: (error) => this.#diagnose(error),
+      ...(options.runtimeEpoch ? { epoch: options.runtimeEpoch } : {}),
     });
     this.#delegationCoordinator = new HarnessDelegationCoordinator({
       adapters: this.#externalAdapters,
@@ -626,6 +629,12 @@ export class AppServerHost {
       read: (input) => this.#delegationCoordinator.read(input),
       wait: (input) => this.#delegationCoordinator.wait(input),
       list: (input) => this.#delegationCoordinator.list(input),
+      status: (input) => this.#delegationCoordinator.status(input),
+      waitMany: (input) => this.#delegationCoordinator.waitMany(input),
+      evidence: (input) => this.#delegationCoordinator.evidence(input),
+      configuration: (input) => this.#delegationCoordinator.configuration(input),
+      release: (input) => this.#delegationCoordinator.release(input),
+      reconcile: (input) => this.#delegationCoordinator.reconcile(input),
       canHandleStart: (input) => this.#canHandleDelegationStart(input),
       ownsThread: (threadId) => this.#ownsDelegationThread(threadId),
     });
@@ -3926,6 +3935,7 @@ export class AppServerHost {
         thread.stateObserver.fault(thread.persistenceError);
         this.#diagnose("External Session state could not be persisted");
       }
+      thread.changes.bump();
       return;
     }
     if (event.type === "session.usage.changed") {
@@ -4045,6 +4055,13 @@ export class AppServerHost {
     const result = projection.projector.project(event as ProjectableHostEvent);
     if (event.type === "turn.started") {
       await this.#setThreadStatus(thread, { type: "active", activeFlags: [] });
+      const startedDelegation = await this.#repository.getDelegationByChild(
+        thread.record.hostThreadId,
+      );
+      if (startedDelegation && startedDelegation.status !== "running") {
+        await this.#repository.setDelegationStatus(startedDelegation.delegationId, "running");
+      }
+      thread.changes.bump();
     }
     if (event.type === "turn.completed") {
       if (!result.completedTurn) throw new Error("Turn projector returned no completed Turn");
@@ -4083,6 +4100,7 @@ export class AppServerHost {
       );
       this.#externalSteering.terminal(thread.id, event.turnId, event.outcome);
     }
+    thread.changes.bump();
   }
 
   async #materializeSubagent(

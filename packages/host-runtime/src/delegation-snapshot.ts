@@ -5,9 +5,11 @@ import type { RoutedHarnessId } from "@codexhost/protocol-core";
 
 import {
   DelegationControlError,
+  type DelegationEvidenceItem,
   type DelegationMessage,
   type DelegationThreadSnapshot,
   type DelegationThreadStatus,
+  type ThreadEvidenceResult,
   type ThreadReadInput,
 } from "./delegation-types.js";
 
@@ -192,5 +194,171 @@ export function projectDelegationThreadSnapshot(input: {
     result,
     ...(page ? { messages: page } : {}),
     nextCursor: encodeCursor(input.threadId, nextOffset),
+  };
+}
+
+const EVIDENCE_PREFIX = "codexhost:thread-evidence:v1:";
+const DEFAULT_EVIDENCE_LIMIT = 25;
+const MAX_EVIDENCE_OUTPUT_BYTES = 8_192;
+
+function encodeEvidenceCursor(threadId: string, offset: number): string {
+  const payload = JSON.stringify({ version: 1, fingerprint: cursorFingerprint(threadId), offset });
+  return `${EVIDENCE_PREFIX}${Buffer.from(payload).toString("base64url")}`;
+}
+
+function decodeEvidenceCursor(threadId: string, cursor: string | undefined): number {
+  if (!cursor) return 0;
+  if (!cursor.startsWith(EVIDENCE_PREFIX)) {
+    throw new DelegationControlError("INVALID_ARGUMENT", "Evidence cursor is invalid");
+  }
+  try {
+    const value = JSON.parse(
+      Buffer.from(cursor.slice(EVIDENCE_PREFIX.length), "base64url").toString("utf8"),
+    ) as { version?: unknown; fingerprint?: unknown; offset?: unknown };
+    if (
+      value.version !== 1 ||
+      value.fingerprint !== cursorFingerprint(threadId) ||
+      !Number.isSafeInteger(value.offset) ||
+      (value.offset as number) < 0
+    ) {
+      throw new Error("invalid cursor");
+    }
+    return value.offset as number;
+  } catch {
+    throw new DelegationControlError("INVALID_ARGUMENT", "Evidence cursor is invalid");
+  }
+}
+
+function evidenceFromItem(turnId: string, item: JsonObject): DelegationEvidenceItem | null {
+  const id = stringValue(item.id) ?? stringValue(item.itemId);
+  if (!id) return null;
+  if (item.type === "commandExecution" && typeof item.command === "string") {
+    return {
+      itemId: id,
+      turnId,
+      kind: "command",
+      command: item.command,
+      ...(typeof item.cwd === "string" ? { cwd: item.cwd } : {}),
+      ...(typeof item.exitCode === "number" || item.exitCode === null
+        ? { exitCode: item.exitCode as number | null }
+        : {}),
+      completed: item.status === "completed" || item.exitCode !== undefined,
+      outputTruncated: item.outputTruncated === true,
+    };
+  }
+  if (item.type === "dynamicToolCall" || item.type === "toolExecution") {
+    const toolName =
+      typeof item.tool === "string"
+        ? item.tool
+        : typeof item.toolName === "string"
+          ? item.toolName
+          : undefined;
+    return {
+      itemId: id,
+      turnId,
+      kind: "tool",
+      ...(toolName ? { toolName } : {}),
+      completed: item.status === "completed" || item.success === true,
+      outputTruncated: false,
+    };
+  }
+  if (item.type === "fileChange") {
+    const firstPath =
+      Array.isArray(item.changes) &&
+      isRecord(item.changes[0]) &&
+      typeof item.changes[0].path === "string"
+        ? item.changes[0].path
+        : undefined;
+    return {
+      itemId: id,
+      turnId,
+      kind: "fileChange",
+      ...(firstPath ? { path: firstPath } : {}),
+      completed: true,
+      outputTruncated: false,
+    };
+  }
+  return null;
+}
+
+function evidenceOutput(
+  item: JsonObject,
+  includeOutput: boolean,
+): { output?: string; truncated: boolean } {
+  if (!includeOutput) return { truncated: false };
+  const raw =
+    typeof item.output === "string"
+      ? item.output
+      : typeof item.aggregatedOutput === "string"
+        ? item.aggregatedOutput
+        : Array.isArray(item.contentItems)
+          ? item.contentItems
+              .flatMap((part) =>
+                isRecord(part) && typeof part.text === "string" ? [part.text] : [],
+              )
+              .join("\n")
+          : "";
+  if (!raw) return { truncated: false };
+  if (Buffer.byteLength(raw, "utf8") <= MAX_EVIDENCE_OUTPUT_BYTES) {
+    return { output: raw, truncated: false };
+  }
+  let truncated = raw;
+  while (Buffer.byteLength(truncated, "utf8") > MAX_EVIDENCE_OUTPUT_BYTES) {
+    truncated = truncated.slice(0, Math.max(0, truncated.length - 32));
+  }
+  return { output: truncated, truncated: true };
+}
+
+export function projectDelegationEvidence(input: {
+  threadId: string;
+  turns: readonly JsonObject[];
+  turnId?: string;
+  itemId?: string;
+  includeOutput: boolean;
+  cursor?: string;
+  limit?: number;
+}): ThreadEvidenceResult {
+  const limit = input.limit ?? DEFAULT_EVIDENCE_LIMIT;
+  if (!Number.isSafeInteger(limit) || limit <= 0 || limit > MAX_MESSAGE_LIMIT) {
+    throw new DelegationControlError(
+      "INVALID_ARGUMENT",
+      `Evidence limit must be between 1 and ${MAX_MESSAGE_LIMIT}`,
+    );
+  }
+  const items: DelegationEvidenceItem[] = [];
+  for (const turn of input.turns) {
+    const turnId = stringValue(turn.id);
+    if (!turnId || !Array.isArray(turn.items)) continue;
+    if (input.turnId && turnId !== input.turnId) continue;
+    for (const item of turn.items) {
+      if (!isRecord(item)) continue;
+      const projected = evidenceFromItem(turnId, item);
+      if (!projected) continue;
+      if (input.itemId && projected.itemId !== input.itemId) continue;
+      const output = evidenceOutput(item, input.includeOutput);
+      items.push({
+        ...projected,
+        outputTruncated: projected.outputTruncated || output.truncated,
+        ...(output.output !== undefined ? { output: output.output } : {}),
+      });
+    }
+  }
+  if (input.itemId && items.length === 0) {
+    items.push({
+      itemId: input.itemId,
+      turnId: input.turnId ?? "",
+      kind: "tool",
+      completed: false,
+      outputTruncated: false,
+      unavailable: true,
+    });
+  }
+  const offset = decodeEvidenceCursor(input.threadId, input.cursor);
+  const page = items.slice(offset, offset + limit);
+  const nextOffset = offset + page.length;
+  return {
+    threadId: input.threadId,
+    items: page,
+    nextCursor: nextOffset < items.length ? encodeEvidenceCursor(input.threadId, nextOffset) : null,
   };
 }

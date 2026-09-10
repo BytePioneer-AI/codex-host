@@ -228,6 +228,34 @@ function waitForExit(child: ChildProcessWithoutNullStreams, timeoutMs: number): 
   ]);
 }
 
+function processIsAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return isRecord(error) && error.code === "EPERM" ? true : false;
+  }
+}
+
+function processStartToken(pid: number): string {
+  try {
+    const result = spawnSync("ps", ["-p", String(pid), "-o", "lstart="], {
+      encoding: "utf8",
+      timeout: 1_000,
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+    return result.stdout.trim();
+  } catch {
+    return "";
+  }
+}
+
+function processIsSame(pid: number, startToken: string): boolean {
+  if (!processIsAlive(pid)) return false;
+  if (!startToken) return true;
+  return processStartToken(pid) === startToken;
+}
+
 function signalProcessTree(child: ChildProcessWithoutNullStreams, signal: NodeJS.Signals): void {
   if (!child.pid) return;
   if (process.platform === "win32") {
@@ -489,6 +517,11 @@ export class GrokAcpTransport {
   #replay: GrokTransportEvent[] | null = null;
   #sessionId: string | null = null;
   #stderrTail = "";
+  #owned: {
+    pid: number;
+    startedAtMs: number;
+    startToken: string;
+  } | null = null;
 
   constructor(options: GrokAcpTransportOptions) {
     this.#options = {
@@ -733,6 +766,13 @@ export class GrokAcpTransport {
       windowsVerbatimArguments: invocation.windowsVerbatimArguments,
     });
     this.#child = child;
+    if (typeof child.pid === "number") {
+      this.#owned = {
+        pid: child.pid,
+        startedAtMs: Date.now(),
+        startToken: processStartToken(child.pid),
+      };
+    }
     child.stderr.on("data", (chunk: Buffer | string) => {
       this.#stderrTail = sanitizeDiagnosticTail(`${this.#stderrTail}${chunk.toString()}`);
     });
@@ -870,6 +910,38 @@ export class GrokAcpTransport {
     if (typeof selected !== "string" || selected.trim().length === 0) {
       throw new GrokTransportError("protocolError", "Grok rejected Model configuration");
     }
+  }
+
+  ownedProcess(): { pid: number; pgid: number; startedAtMs: number } | null {
+    const owned = this.#owned;
+    const child = this.#child;
+    if (!owned || !child?.pid) return null;
+    return {
+      pid: owned.pid,
+      pgid: process.platform === "win32" ? owned.pid : -owned.pid,
+      startedAtMs: owned.startedAtMs,
+    };
+  }
+
+  async stopOwnedJobs(timeoutMs = this.#options.closeTimeoutMs): Promise<{
+    quiescence: "confirmed" | "unknown";
+    proof?: { pid: number; pgid: number; scope: string };
+  }> {
+    const owned = this.ownedProcess();
+    await this.close();
+    if (!owned) return { quiescence: "unknown" };
+    const stillOwned = processIsSame(owned.pid, this.#owned?.startToken ?? "");
+    if (stillOwned && processIsAlive(owned.pid)) {
+      return {
+        quiescence: "unknown",
+        proof: { pid: owned.pid, pgid: owned.pgid, scope: "grok-acp-child" },
+      };
+    }
+    void timeoutMs;
+    return {
+      quiescence: "confirmed",
+      proof: { pid: owned.pid, pgid: owned.pgid, scope: "grok-acp-child" },
+    };
   }
 
   cancel(): Promise<void> {

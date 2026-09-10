@@ -114,9 +114,7 @@ describe("HarnessDelegationCoordinator", () => {
         parentThreadId: "parent-thread",
       });
       expect(result.next.read).toBe(`${cliPath} thread read ${result.threadId}`);
-      expect(result.next.wait).toBe(
-        `${cliPath} thread wait ${result.threadId} --timeout-ms 30000`,
-      );
+      expect(result.next.wait).toBe(`${cliPath} thread wait ${result.threadId} --timeout-ms 30000`);
     } finally {
       await value.close();
     }
@@ -279,7 +277,7 @@ describe("HarnessDelegationCoordinator", () => {
     }
   });
 
-  it("rolls back Session, Thread, and Delegation when initial task delivery fails", async () => {
+  it("keeps a manageable record when initial delivery fails after Native Session identity exists", async () => {
     const value = await fixture(new FailingTurnAdapter(harnessIdSchema.parse("pi")));
     try {
       await expect(
@@ -291,9 +289,14 @@ describe("HarnessDelegationCoordinator", () => {
         }),
       ).rejects.toMatchObject({ code: "DELEGATION_FAILED" });
       expect(value.notifications).toHaveLength(0);
-      expect(value.runtime.values()).toHaveLength(0);
-      await expect(value.repository.list()).resolves.toHaveLength(0);
-      await expect(value.repository.listDelegations()).resolves.toHaveLength(0);
+      const records = await value.repository.list();
+      expect(records).toHaveLength(1);
+      expect(records[0]?.state).toBe("ready");
+      const delegations = await value.repository.listDelegations();
+      expect(delegations).toHaveLength(1);
+      await expect(
+        value.coordinator.read({ threadId: records[0]?.hostThreadId ?? "", view: "result" }),
+      ).resolves.toMatchObject({ harnessId: "pi" });
     } finally {
       await value.close();
     }
@@ -373,6 +376,129 @@ describe("HarnessDelegationCoordinator", () => {
         }),
       ).resolves.toMatchObject({ timedOut: true, status: "running" });
       expect(running).toHaveBeenCalled();
+    } finally {
+      await value.close();
+    }
+  });
+
+  it("CREATION-01 delivers once for concurrent same request-id callers", async () => {
+    const value = await fixture();
+    try {
+      const original = value.adapter.open.bind(value.adapter);
+      let release;
+      const gate = new Promise((resolve) => {
+        release = resolve;
+      });
+      let opens = 0;
+      value.adapter.open = async (input) => {
+        opens += 1;
+        if (opens === 1) await gate;
+        return original(input);
+      };
+      const input = {
+        harnessId: "pi",
+        task: "same task",
+        cwd: "/synthetic",
+        parentThreadId: "parent-thread",
+        requestId: "concurrent-1",
+      };
+      const first = value.coordinator.start(input);
+      const second = value.coordinator.start(input);
+      await Promise.resolve();
+      release();
+      const [left, right] = await Promise.all([first, second]);
+      expect(left.threadId).toBe(right.threadId);
+      expect(left.delegationId).toBe(right.delegationId);
+      expect(left.turnId).toBe(right.turnId);
+      expect(left.turnId).not.toBe("pending");
+      expect(opens).toBe(1);
+      expect(value.adapter.sessions).toHaveLength(1);
+      await expect(
+        value.coordinator.read({ threadId: left.threadId, view: "result" }),
+      ).resolves.toMatchObject({
+        threadId: left.threadId,
+      });
+    } finally {
+      await value.close();
+    }
+  });
+
+  it("CREATION-02 rejects the same request-id with a conflicting parent or task", async () => {
+    const value = await fixture();
+    try {
+      await value.coordinator.start({
+        harnessId: "pi",
+        task: "task one",
+        cwd: "/synthetic",
+        parentThreadId: "parent-a",
+        requestId: "conflict-1",
+      });
+      await expect(
+        value.coordinator.start({
+          harnessId: "pi",
+          task: "task one",
+          cwd: "/synthetic",
+          parentThreadId: "parent-b",
+          requestId: "conflict-1",
+        }),
+      ).rejects.toMatchObject({ code: "INVALID_ARGUMENT" });
+      await expect(
+        value.coordinator.start({
+          harnessId: "pi",
+          task: "task two",
+          cwd: "/synthetic",
+          parentThreadId: "parent-a",
+          requestId: "conflict-1",
+        }),
+      ).rejects.toMatchObject({ code: "INVALID_ARGUMENT" });
+      const left = value.coordinator.start({
+        harnessId: "pi",
+        task: "parallel-a",
+        cwd: "/synthetic",
+        parentThreadId: "parent-a",
+        requestId: "parallel-a",
+      });
+      const right = value.coordinator.start({
+        harnessId: "pi",
+        task: "parallel-b",
+        cwd: "/synthetic",
+        parentThreadId: "parent-a",
+        requestId: "parallel-b",
+      });
+      const [first, second] = await Promise.all([left, right]);
+      expect(first.threadId).not.toBe(second.threadId);
+    } finally {
+      await value.close();
+    }
+  });
+
+  it("TURN-05 rejects a stale expected-turn without cancelling the new Turn", async () => {
+    const value = await fixture();
+    try {
+      const started = await value.coordinator.start({
+        harnessId: "pi",
+        task: "first",
+        cwd: "/synthetic",
+        parentThreadId: "parent-thread",
+      });
+      const session = value.adapter.sessions[0];
+      if (!session) throw new Error("Missing session");
+      session.succeedTurn();
+      const thread = value.runtime.get(started.threadId);
+      if (!thread) throw new Error("Missing thread");
+      thread.running = false;
+      thread.activeTurnId = null;
+      const followUp = await value.coordinator.send({
+        threadId: started.threadId,
+        message: "second",
+      });
+      await expect(
+        value.coordinator.cancel({
+          threadId: started.threadId,
+          expectedTurnId: started.turnId,
+        }),
+      ).rejects.toMatchObject({ code: "STALE_TURN" });
+      expect(thread.activeTurnId).toBe(followUp.turnId);
     } finally {
       await value.close();
     }

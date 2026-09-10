@@ -3,7 +3,7 @@ import { mkdir, open, readFile, rename, rm, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-const SKILL_VERSION = 6;
+const SKILL_VERSION = 7;
 const SKILL_RELATIVE_PATH = path.join("skills", "codexhost-delegation", "SKILL.md");
 /**
  * Digests of every previously shipped managed Skill. A released digest missing
@@ -17,6 +17,7 @@ export const PREVIOUS_MANAGED_DIGESTS: readonly string[] = [
   "15eb63519ff867e1536c97188a0c43738d7a49d38d4d6adeb7a1036726e7246d",
   "fa7944cd1e72ffbaf932fca2074bdb78aad4670d8990b6711220dd83c39509a0",
   "2bb0aebb9b06febbc6c0c0bcdb0b32506c7cdbf8dc3b734cc6b2a86621270e4e",
+  "b56eed6ba542100284e0cd77f97a4feb2e522c2048b43bb8c9aed642950fc32a",
 ];
 
 export const CODEXHOST_DELEGATION_SKILL = `---
@@ -91,6 +92,26 @@ CLI; omit unavailable fields rather than inventing them:
 - \`turnId\`;
 - \`deepLink\`;
 - current or final status.
+
+Reuse \`--request-id\` for the same parent, Harness, cwd, task, and configuration.
+A conflicting parent, cwd, task, or configuration with that ID must be rejected;
+do not invent a new request-id to retry an UNKNOWN or cancelled task.
+
+Default coordination uses compact \`thread status\` and \`thread wait-many\` with
+per-target revisions. Unchanged waits must not resend historical message or
+result bodies. Need tool/file/command proof? Call \`thread evidence\` explicitly.
+File hashes and agent self-reports are not proof that a tool ran.
+
+Cancel only acknowledges the cancel request and Turn terminal. It is not job
+quiescence. Do not release a worktree, process, or business resource until
+\`thread release\` reports owned-job quiescence \`confirmed\`. \`unknown\` and
+\`unsupported\` stay fail-closed. \`always-approve\` is the Grok unattended
+permission mode; it is not an OS read-only sandbox. Independent review requires
+a new task plus prompt/readback, not a sandbox flag.
+
+Inspect the target Harness before selecting Model or Thinking. Preserve the
+caller-specified Harness and Model; never silently switch to Codex. Recover a
+creating or unreadable child with \`delegate reconcile\` (dry-run first).
 `;
 
 const CURRENT_DIGEST = createHash("sha256").update(CODEXHOST_DELEGATION_SKILL).digest("hex");

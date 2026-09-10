@@ -44,6 +44,16 @@ export type {
 export { runDelegationCli, DELEGATION_HELP } from "./delegation-cli.js";
 export { DelegationControlRegistry } from "./delegation-control-registry.js";
 export { startDelegationControlServer } from "./delegation-control-server.js";
+export {
+  startIsolatedDelegationRuntime,
+  isolatedDelegationEnvironment,
+  createFixtureOfficialConnection,
+} from "./isolated-delegation-runtime.js";
+export type {
+  IsolatedDelegationRuntime,
+  IsolatedDelegationRuntimeOptions,
+  IsolatedDelegationMode,
+} from "./isolated-delegation-runtime.js";
 export { installDelegationSkills, CODEXHOST_DELEGATION_SKILL } from "./delegation-skill.js";
 export {
   DELEGATION_CLI_PATH_ENV,
@@ -61,6 +71,11 @@ export type {
   ThreadListInput,
   ThreadReadInput,
   ThreadWaitInput,
+  ThreadStatusInput,
+  ThreadWaitManyInput,
+  ThreadEvidenceInput,
+  ThreadReleaseInput,
+  DelegationReconcileInput,
 } from "./delegation-types.js";
 export { hasLauncherManagedUpdateRuntime, runHostRuntime } from "./run-host-runtime.js";
 export { runClaudeAquaHarnessBroker } from "./aqua-harness-broker.js";

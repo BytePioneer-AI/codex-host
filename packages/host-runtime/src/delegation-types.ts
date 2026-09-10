@@ -124,6 +124,8 @@ export interface DelegationStartResult {
 export interface ThreadSendInput {
   threadId: string;
   message: string;
+  requestId?: string;
+  expectedTurnId?: string;
 }
 
 export interface ThreadSendResult {
@@ -136,6 +138,7 @@ export interface ThreadSendResult {
 
 export interface ThreadCancelInput {
   threadId: string;
+  expectedTurnId?: string;
 }
 
 export interface ThreadCancelResult {
@@ -186,6 +189,132 @@ export interface DelegationThreadListResult {
   nextCursor: string | null;
 }
 
+export type DelegationUnknownConfigField =
+  "harness" | "model" | "thinking" | "permissionMode" | "cwd" | "parent" | "turn" | "delegation";
+
+export interface DelegationThreadStatusView {
+  threadId: string;
+  harnessId: RoutedHarnessId;
+  status: DelegationThreadStatus;
+  turn: { turnId: string; status: DelegationThreadStatus } | null;
+  revision: string;
+  cwd?: string;
+  parentThreadId?: string;
+  delegationId?: string;
+  configuration: {
+    requested?: {
+      model?: HarnessModelRef;
+      thinkingOptionId?: HarnessThinkingOptionId;
+      permissionModeId?: string;
+    };
+    effective?: Pick<
+      HarnessSessionState,
+      | "effectiveModel"
+      | "resolvedModelLabel"
+      | "effectiveThinkingOptionId"
+      | "effectivePermissionModeId"
+    >;
+    unknown: DelegationUnknownConfigField[];
+  };
+}
+
+export interface ThreadStatusInput {
+  threadId: string;
+}
+
+export interface ThreadWaitManyTarget {
+  threadId: string;
+  afterRevision?: string;
+}
+
+export interface ThreadWaitManyInput {
+  targets: ThreadWaitManyTarget[];
+  timeoutMs: number;
+}
+
+export type ThreadWaitManyTargetResult =
+  | {
+      threadId: string;
+      outcome: "changed" | "timedOut" | "resync";
+      revision: string;
+      status: DelegationThreadStatusView;
+    }
+  | {
+      threadId: string;
+      outcome: "error";
+      error: { code: DelegationControlErrorCode; message: string };
+    };
+
+export interface ThreadWaitManyResult {
+  timedOut: boolean;
+  results: ThreadWaitManyTargetResult[];
+}
+
+export type DelegationEvidenceKind = "command" | "tool" | "fileChange";
+
+export interface DelegationEvidenceItem {
+  itemId: string;
+  turnId: string;
+  kind: DelegationEvidenceKind;
+  command?: string;
+  toolName?: string;
+  path?: string;
+  cwd?: string;
+  exitCode?: number | null;
+  completed: boolean;
+  outputTruncated: boolean;
+  output?: string;
+  unavailable?: boolean;
+}
+
+export interface ThreadEvidenceInput {
+  threadId: string;
+  turnId?: string;
+  itemId?: string;
+  cursor?: string;
+  limit?: number;
+  includeOutput?: boolean;
+}
+
+export interface ThreadEvidenceResult {
+  threadId: string;
+  items: DelegationEvidenceItem[];
+  nextCursor: string | null;
+}
+
+export interface ThreadConfigurationInput {
+  threadId: string;
+}
+
+export type JobQuiescence = "confirmed" | "unknown" | "unsupported";
+
+export interface ThreadReleaseInput {
+  threadId: string;
+  expectedTurnId?: string;
+}
+
+export interface ThreadReleaseResult {
+  threadId: string;
+  released: boolean;
+  busy: boolean;
+  quiescence: JobQuiescence;
+  proof?: { pid?: number; pgid?: number; scope: string };
+}
+
+export interface DelegationReconcileInput {
+  threadId: string;
+  apply?: boolean;
+}
+
+export interface DelegationReconcileResult {
+  threadId: string;
+  dryRun: boolean;
+  applied: boolean;
+  action: "none" | "reload" | "mark-unconfirmed" | "rejected";
+  writes: number;
+  reason?: string;
+}
+
 export interface DelegationControlApi {
   inspect(input: HarnessInspectInput): Promise<HarnessInspectResult>;
   start(input: DelegationStartInput): Promise<DelegationStartResult>;
@@ -194,6 +323,14 @@ export interface DelegationControlApi {
   read(input: ThreadReadInput): Promise<DelegationThreadSnapshot>;
   wait(input: ThreadWaitInput): Promise<DelegationThreadSnapshot & { timedOut: boolean }>;
   list(input: ThreadListInput): Promise<DelegationThreadListResult>;
+  status(input: ThreadStatusInput): Promise<DelegationThreadStatusView>;
+  waitMany(input: ThreadWaitManyInput): Promise<ThreadWaitManyResult>;
+  evidence(input: ThreadEvidenceInput): Promise<ThreadEvidenceResult>;
+  configuration(
+    input: ThreadConfigurationInput,
+  ): Promise<DelegationThreadStatusView["configuration"]>;
+  release(input: ThreadReleaseInput): Promise<ThreadReleaseResult>;
+  reconcile(input: DelegationReconcileInput): Promise<DelegationReconcileResult>;
 }
 
 export interface DelegationControlRegistration extends DelegationControlApi {
@@ -209,6 +346,7 @@ export type DelegationControlErrorCode =
   | "PARENT_THREAD_AMBIGUOUS"
   | "RUNTIME_UNREACHABLE"
   | "DELEGATION_FAILED"
+  | "STALE_TURN"
   | "INTERNAL_ERROR";
 
 export class DelegationControlError extends Error {

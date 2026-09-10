@@ -944,4 +944,82 @@ describe("mapping-store package", () => {
     await store.initialize();
     await store.close();
   });
+
+  it("reuses a Delegation for the same request-id and rejects configuration conflicts", async () => {
+    const directory = await temporaryStoreDirectory();
+    const store = new MappingStore({ directory });
+    await store.initialize();
+    const first = await store.createDelegatedThread({
+      thread: {
+        hostThreadId: hostThreadIdSchema.parse("child-1"),
+        createRequestId: "delegation:req-1",
+        harnessId,
+        cwd: "/synthetic",
+        title: "one",
+        transportModelId: "codexhost/pi-native",
+        ephemeral: false,
+        historyMode: "paginated",
+      },
+      delegation: {
+        delegationId: hostThreadIdSchema.parse("delegation-1"),
+        parentHostThreadId: hostThreadIdSchema.parse("parent-1"),
+        childHostThreadId: hostThreadIdSchema.parse("child-1"),
+        sourceHarnessId: harnessIdSchema.parse("codex"),
+        targetHarnessId: harnessId,
+        status: "creating",
+        requestId: "req-1",
+        taskDigest: "a".repeat(64),
+      },
+    });
+    expect(first.reused).toBe(false);
+    const second = await store.createDelegatedThread({
+      thread: {
+        hostThreadId: hostThreadIdSchema.parse("child-2"),
+        createRequestId: "delegation:req-1",
+        harnessId,
+        cwd: "/synthetic",
+        title: "one",
+        transportModelId: "codexhost/pi-native",
+        ephemeral: false,
+        historyMode: "paginated",
+      },
+      delegation: {
+        delegationId: hostThreadIdSchema.parse("delegation-2"),
+        parentHostThreadId: hostThreadIdSchema.parse("parent-1"),
+        childHostThreadId: hostThreadIdSchema.parse("child-2"),
+        sourceHarnessId: harnessIdSchema.parse("codex"),
+        targetHarnessId: harnessId,
+        status: "creating",
+        requestId: "req-1",
+        taskDigest: "a".repeat(64),
+      },
+    });
+    expect(second.reused).toBe(true);
+    expect(second.thread.hostThreadId).toBe("child-1");
+    await expect(
+      store.createDelegatedThread({
+        thread: {
+          hostThreadId: hostThreadIdSchema.parse("child-3"),
+          createRequestId: "delegation:req-1",
+          harnessId,
+          cwd: "/other",
+          title: "other",
+          transportModelId: "codexhost/pi-native",
+          ephemeral: false,
+          historyMode: "paginated",
+        },
+        delegation: {
+          delegationId: hostThreadIdSchema.parse("delegation-3"),
+          parentHostThreadId: hostThreadIdSchema.parse("parent-2"),
+          childHostThreadId: hostThreadIdSchema.parse("child-3"),
+          sourceHarnessId: harnessIdSchema.parse("codex"),
+          targetHarnessId: harnessId,
+          status: "creating",
+          requestId: "req-1",
+          taskDigest: "b".repeat(64),
+        },
+      }),
+    ).rejects.toMatchObject({ code: "MAPPING_CONFLICT" });
+    await store.close();
+  });
 });

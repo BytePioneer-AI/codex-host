@@ -59,6 +59,41 @@ export class DelegationControlRegistry implements DelegationControlApi {
     return (await this.#registrationForThread(input.threadId)).wait(input);
   }
 
+  async status(input: Parameters<DelegationControlApi["status"]>[0]) {
+    return (await this.#registrationForThread(input.threadId)).status(input);
+  }
+
+  async waitMany(input: Parameters<DelegationControlApi["waitMany"]>[0]) {
+    if (input.targets.length === 1 && input.targets[0]) {
+      return (await this.#registrationForThread(input.targets[0].threadId)).waitMany(input);
+    }
+    const registrations = [...this.#registrations];
+    if (registrations.length === 1) {
+      return only(registrations, "unreachable").waitMany(input);
+    }
+    throw new DelegationControlError(
+      "PARENT_THREAD_AMBIGUOUS",
+      "wait-many across multiple Host Runtime sessions is unsupported",
+      { matchingRuntimeCount: registrations.length },
+    );
+  }
+
+  async evidence(input: Parameters<DelegationControlApi["evidence"]>[0]) {
+    return (await this.#registrationForThread(input.threadId)).evidence(input);
+  }
+
+  async configuration(input: Parameters<DelegationControlApi["configuration"]>[0]) {
+    return (await this.#registrationForThread(input.threadId)).configuration(input);
+  }
+
+  async release(input: Parameters<DelegationControlApi["release"]>[0]) {
+    return (await this.#registrationForThread(input.threadId)).release(input);
+  }
+
+  async reconcile(input: Parameters<DelegationControlApi["reconcile"]>[0]) {
+    return (await this.#registrationForThread(input.threadId)).reconcile(input);
+  }
+
   async list(input: ThreadListInput) {
     if (input.parentThreadId) {
       return (await this.#registrationForThread(input.parentThreadId)).list(input);

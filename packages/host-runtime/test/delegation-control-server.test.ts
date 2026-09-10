@@ -4,6 +4,17 @@ import { startDelegationControlServer } from "../src/delegation-control-server.j
 
 const token = "synthetic-token";
 
+function extraApi() {
+  return {
+    status: vi.fn(),
+    waitMany: vi.fn(),
+    evidence: vi.fn(),
+    configuration: vi.fn(),
+    release: vi.fn(),
+    reconcile: vi.fn(),
+  };
+}
+
 function authorized(body: unknown): RequestInit {
   return {
     method: "POST",
@@ -33,6 +44,7 @@ describe("delegation control server", () => {
         read: vi.fn(),
         wait: vi.fn(),
         list: vi.fn(),
+        ...extraApi(),
       },
     });
     try {
@@ -85,6 +97,7 @@ describe("delegation control server", () => {
         read: vi.fn(),
         wait: vi.fn(),
         list: vi.fn(),
+        ...extraApi(),
       },
     });
     try {
@@ -123,6 +136,7 @@ describe("delegation control server", () => {
         read: vi.fn(),
         wait: vi.fn(),
         list: vi.fn(),
+        ...extraApi(),
       },
     });
     try {
@@ -151,6 +165,7 @@ describe("delegation control server", () => {
         }),
         wait: vi.fn(),
         list: vi.fn(),
+        ...extraApi(),
       },
     });
     try {

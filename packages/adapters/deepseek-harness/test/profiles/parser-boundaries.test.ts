@@ -53,6 +53,7 @@ describe.each([DEEPSEEK_V012_PROFILE, DEEPSEEK_V015_PROFILE])(
         { type: "block-start", index: 0, blockType: "" },
         { type: "block-start", index: -1, blockType: "text" },
         { type: "text-delta", index: 0, text: 1 },
+        { type: "text-delta", index: 1.5, text: "x" },
         { type: "reasoning-delta", index: 0, text: null },
         { type: "tool-call-delta", index: 0, id: "call", argumentsDelta: {} },
         { type: "tool-call-delta", index: 0, id: "call", argumentsDelta: "{", name: 1 },
@@ -67,11 +68,20 @@ describe.each([DEEPSEEK_V012_PROFILE, DEEPSEEK_V015_PROFILE])(
         },
         {
           type: "finish",
+          reason: {
+            kind: "error",
+            failure: { code: "RETRY", message: "failed", providerRetryAfterMs: 1.5 },
+          },
+        },
+        {
+          type: "finish",
           reason: { kind: "error", failure: { code: "AUTH", message: "denied", requestId: "" } },
         },
       ].map((value) => [value]),
     )("rejects malformed stream chunk %j", (value) => {
-      expect(() => profile.validateChunk(value)).toThrow();
+      expect(() => profile.validateChunk(value)).toThrow(
+        expect.objectContaining({ code: "protocolError" }),
+      );
     });
 
     it("accepts native chunk lifecycle and provider failure diagnostics", () => {

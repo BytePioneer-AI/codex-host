@@ -4,14 +4,14 @@
 
 ## 自动化测试与覆盖率
 
-执行 `npm run test:deepseek:coverage`，整个 DSH Adapter 的 **813 项测试 / 22 个文件全部通过**。范围为 `packages/adapters/deepseek-harness/src/**/*.ts`，包含未执行文件；未把统计缩小到新增代码，四项门槛均为 80%。
+执行 `npm run test:deepseek:coverage`，整个 DSH Adapter 的 **820 项测试 / 22 个文件全部通过**。范围为 `packages/adapters/deepseek-harness/src/**/*.ts`，包含未执行文件；未把统计缩小到新增代码，四项门槛均为 80%。
 
 | 指标 | 覆盖率 | 已覆盖 / 总数 |
 | --- | --- | --- |
-| 语句 | 86.52% | 5533 / 6395 |
-| 分支 | 81.94% | 4743 / 5788 |
-| 函数 | 92.99% | 889 / 956 |
-| 行 | 89.01% | 5136 / 5770 |
+| 语句 | 86.52% | 5537 / 6399 |
+| 分支 | 81.95% | 4746 / 5791 |
+| 函数 | 92.98% | 888 / 955 |
+| 行 | 89.01% | 5139 / 5773 |
 
 HTML 和 JSON 摘要由同一命令生成到 `coverage/deepseek-harness/`，不纳入 Git。函数覆盖率超过 90% 保留，不删除有效测试来降低数字。
 
@@ -56,3 +56,9 @@ npx vitest run --config tests/vitest.config.js tools/gate-dsh/lifecycle.real.tes
 - `session-query/session-log-export/src/index.ts`、`archive.ts`：认证 HEAD 响应之前等待原生 flush。
 
 未使用浏览器自动化、computer use 或真实计费模型；未启动用户桌面、修改参考 DSH 源码或用户会话。未运行未受影响的 Rust 全套测试；模型提供商、第三方客户端和全部操作系统的组合不包含在本次验证内。
+
+## CodeRabbit 复核修复
+
+整数校验现通过既有协议错误类型失败，非法 chunk 索引及 finish 的 status/providerRetryAfterMs 保持 `protocolError`，不触发 journal 重连。Assistant start 的结算查找改为从 `startedAfterSeq + 1` 按索引遍历，保留匹配条件，不复制历史数组。
+
+补充测试先复现旧实现的错误，再验证修复；167 项聚焦回归与上述 820 项全 Adapter 测试通过。性能回归断言不访问已排除的历史前缀，不使用依赖机器速度的耗时阈值。本轮未重复运行此前已通过的真实 CLI 生命周期 Gate。

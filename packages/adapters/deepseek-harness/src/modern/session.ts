@@ -1461,15 +1461,22 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
         }
         this.#discardAssistantAttempt();
         this.#assistantRebaseline = false;
-        const settlement = this.#events.find(
-          (event) =>
+        let settlement: ModernJournalEvent | undefined;
+        for (let index = frame.startedAfterSeq + 1; index < this.#events.length; index += 1) {
+          const event = this.#events[index];
+          if (
+            event &&
             event.seq > frame.startedAfterSeq &&
             isRecord(event.data) &&
             event.data.turn === frame.turn &&
             event.data.step === frame.step &&
             (event.type === "assistant/attempt" ||
-              (event.type === "assistant/message" && event.surfaceOp === "append")),
-        );
+              (event.type === "assistant/message" && event.surfaceOp === "append"))
+          ) {
+            settlement = event;
+            break;
+          }
+        }
         this.#assistantAttempt = {
           attemptId: frame.attemptId,
           startedAfterSeq: frame.startedAfterSeq,

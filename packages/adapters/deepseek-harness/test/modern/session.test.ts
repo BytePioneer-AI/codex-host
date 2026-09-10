@@ -11,6 +11,7 @@ import {
 
 import {
   ModernJournalError,
+  openModernJournal,
   type ModernJournal,
   type ModernJournalEvent,
   type ModernJournalLiveItem,
@@ -574,6 +575,139 @@ async function waitForGraceTimer(): Promise<void> {
 }
 
 describe("DeepSeek Harness Modern Session", () => {
+  it.each(["status", "providerRetryAfterMs"])(
+    "does not reconnect when a V3 finish contains an invalid %s",
+    async (field) => {
+      const follow = new EventFeed();
+      follow.push({
+        type: "snapshot",
+        header: { version: 3, id: SESSION_ID, createdAt: 1, isSeeded: false },
+        cursor: -1,
+        records: [],
+        hasMore: false,
+        projections: { asOfSeq: -1, values: {} },
+        assistantStream: { revision: 0 },
+      } as never);
+      const remote = new FakeRemote([], [follow]);
+      const journal = await openModernJournal(
+        remote,
+        { sessionId: SESSION_ID },
+        { profile: DEEPSEEK_V015_PROFILE },
+      );
+      const session = new ModernHarnessSession({
+        remote,
+        journal,
+        control: new FakeControl(),
+        eventGateway: new ModernEventGateway(remote),
+        modelCatalog: MODEL_CATALOG,
+        permissionModes: null,
+        sessionId: SESSION_ID,
+      });
+      const outputs = session.outputs[Symbol.asyncIterator]();
+      try {
+        follow.push({
+          type: "assistant-stream",
+          frame: {
+            type: "start",
+            attemptId: "a",
+            revision: 1,
+            startedAfterSeq: -1,
+            turn: 1,
+            step: 1,
+          },
+        });
+        follow.push({
+          type: "assistant-stream",
+          frame: {
+            type: "chunk",
+            attemptId: "a",
+            revision: 2,
+            index: 0,
+            time: 1,
+            chunk: {
+              type: "finish",
+              reason: {
+                kind: "error",
+                failure: { message: "fixture", code: "fixture", [field]: 1.5 },
+              },
+            },
+          },
+        });
+        const emitted = await eventsThrough(outputs, "session.faulted");
+        expect(emitted.at(-1)).toMatchObject({
+          type: "session.faulted",
+          error: { code: "protocolError", retryable: false },
+        });
+        expect(remote.streamCalls).toBe(1);
+      } finally {
+        await session.close();
+      }
+    },
+  );
+
+  it("does not revisit the excluded durable prefix when a V3 attempt starts at the tail", async () => {
+    const history = [
+      event(0, "agent-preset/selected", { agentPreset: "standard" }),
+      event(1, "turn/start", { turn: 1 }),
+      event(2, "step/start", { turn: 1, step: 1 }),
+      userMessage(3, "continue"),
+    ];
+    const test = setup(
+      [],
+      history,
+      ["cursor-test"],
+      5_000,
+      null,
+      undefined,
+      MODERN_ACCEPTED_CORRELATION_TIMEOUT_MS,
+      [],
+      DEEPSEEK_V015_PROFILE,
+    );
+    const outputs = test.session.outputs[Symbol.asyncIterator]();
+    await eventsThrough(outputs, "turn.started");
+    const readPrefix = vi.fn();
+    for (const entry of history) {
+      const seq = entry.seq;
+      Object.defineProperty(entry, "seq", {
+        configurable: true,
+        get: () => {
+          readPrefix();
+          return seq;
+        },
+      });
+    }
+    try {
+      test.feed.push({
+        type: "assistant-stream",
+        frame: {
+          type: "start",
+          attemptId: "tail",
+          revision: 1,
+          startedAfterSeq: 3,
+          turn: 1,
+          step: 1,
+        },
+      });
+      test.feed.push({
+        type: "assistant-stream",
+        frame: {
+          type: "chunk",
+          attemptId: "tail",
+          revision: 2,
+          index: 0,
+          time: 1,
+          chunk: { type: "text-delta", index: 0, text: "live" },
+        },
+      });
+      expect((await eventsThrough(outputs, "item.updated")).at(-1)).toMatchObject({
+        update: { type: "text.append", text: "live" },
+      });
+      expect(readPrefix).not.toHaveBeenCalled();
+    } finally {
+      await test.session.close();
+    }
+  });
+
   it("retains live history at the exact byte bound and faults without replacement past it", async () => {
     const first = event(0, "agent-preset/selected", { agentPreset: "standard" });
     const second = event(1, "model/selection", {

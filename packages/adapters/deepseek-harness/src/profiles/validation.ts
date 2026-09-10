@@ -155,7 +155,7 @@ export function nonNegativeSafeInteger(value: unknown): value is number {
 
 export function boundedInteger(value: unknown, label: string, minimum: number): number {
   if (typeof value !== "number" || !Number.isSafeInteger(value) || value < minimum) {
-    throw new TypeError(`${label} must be a safe integer greater than or equal to ${minimum}`);
+    fail(`${label} must be a safe integer greater than or equal to ${minimum}`);
   }
   return value;
 }

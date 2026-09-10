@@ -36,7 +36,11 @@ describe("release Payload", () => {
       target = releaseTarget("macos-arm64");
     try {
       await createPayload(root, target);
+      await rm(path.join(root, "licenses/Agent-Client-Protocol-SDK-LICENSE.txt"));
       await writeThirdPartyNotices(process.cwd(), root);
+      expect(
+        await readFile(path.join(root, "licenses/Agent-Client-Protocol-SDK-LICENSE.txt"), "utf8"),
+      ).toContain("Apache License");
       await expect(
         validatePayload({ payloadRoot: root, target, root: "/repo/source" }),
       ).resolves.toContain("licenses/Agent-Client-Protocol-SDK-LICENSE.txt");

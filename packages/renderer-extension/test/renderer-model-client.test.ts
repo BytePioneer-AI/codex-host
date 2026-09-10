@@ -10,7 +10,17 @@ import {
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  CODEX_ACCOUNT_ACTIVATE_METHOD,
+  CODEX_ACCOUNT_CREATE_METHOD,
+  CODEX_ACCOUNT_DELETE_METHOD,
+  CODEX_ACCOUNT_LIST_METHOD,
+  CODEX_ACCOUNT_REFRESH_METHOD,
+  CODEX_ACCOUNT_LOGIN_CANCEL_METHOD,
+  CODEX_ACCOUNT_LOGIN_COMPLETED_METHOD,
+  CODEX_ACCOUNT_LOGIN_START_METHOD,
   HARNESS_INSPECT_METHOD,
+  HARNESS_PLUGIN_LIST_METHOD,
+  HARNESS_WEB_UI_OPEN_METHOD,
   THREAD_FORK_METHOD,
   THREAD_INSPECT_METHOD,
   THREAD_MODEL_SELECT_METHOD,
@@ -26,6 +36,8 @@ import {
   createRendererModelClient,
   createThreadUsageSubscriptionRelay,
 } from "../src/renderer-model-client.js";
+
+import { RendererSessionImportUnavailableError } from "../src/renderer-session-import-client.js";
 
 const piHarnessId = harnessIdSchema.parse("pi");
 const model = harnessModelRefSchema.parse({ id: "pi-model-v1.synthetic" });
@@ -61,6 +73,138 @@ const inspection = {
 };
 
 describe("Renderer fixed Model request client", () => {
+  it("reads draft quota for the selected Account without activating it", async () => {
+    const result = {
+      accountId: "account-b",
+      usage: { planFiveHourUsedPercent: 83 },
+      accountCredits: { usedPercent: 83, periodType: "five_hour" },
+    };
+    const sendRequest = vi.fn().mockResolvedValue(result);
+    const client = createRendererModelClient([{ sendRequest }]);
+    await expect(client?.inspectCodexAccountUsage?.({ accountId: "account-b" })).resolves.toEqual(
+      result,
+    );
+    expect(sendRequest).toHaveBeenCalledExactlyOnceWith("codexhost/account/usage/inspect", {
+      accountId: "account-b",
+    });
+  });
+
+  it("validates Account controls and relays device-login completion", async () => {
+    let notify: ((notification: unknown) => void) | undefined;
+    const remove = vi.fn();
+    const addNotificationCallback = vi.fn(
+      (_method: string | readonly string[], callback: (notification: unknown) => void) => {
+        notify = callback;
+        return remove;
+      },
+    );
+    const account = {
+      accountId: "work",
+      label: "Work",
+      codexHome: "/tmp/codex-work",
+      active: true,
+      isDefault: false,
+    };
+    const sendRequest = vi
+      .fn<(method: string, params: unknown) => Promise<unknown>>()
+      .mockResolvedValueOnce({ accounts: [account] })
+      .mockResolvedValueOnce({ accounts: [account] })
+      .mockResolvedValueOnce({ account })
+      .mockResolvedValueOnce({ deletedAccountId: "work" })
+      .mockResolvedValueOnce({ account })
+      .mockResolvedValueOnce({
+        accountId: "work",
+        loginId: "login-1",
+        verificationUrl: "https://example.com/device",
+        userCode: "ABCD-EFGH",
+      })
+      .mockResolvedValueOnce({ cancelled: true });
+    const client = createRendererModelClient([{ addNotificationCallback, sendRequest }]);
+    if (!client) throw new Error("Synthetic Account client was not created");
+
+    await expect(client.listCodexAccounts()).resolves.toEqual({ accounts: [account] });
+    await expect(client.refreshCodexAccounts?.()).resolves.toEqual({ accounts: [account] });
+    await expect(client.createCodexAccount({ label: "Work" })).resolves.toEqual({ account });
+    await expect(client.deleteCodexAccount({ accountId: "work" })).resolves.toEqual({
+      deletedAccountId: "work",
+    });
+    await expect(client.activateCodexAccount({ accountId: "work" })).resolves.toEqual({ account });
+    await expect(client.startCodexAccountLogin({ accountId: "work" })).resolves.toMatchObject({
+      loginId: "login-1",
+      userCode: "ABCD-EFGH",
+    });
+    await expect(client.cancelCodexAccountLogin({ loginId: "login-1" })).resolves.toEqual({
+      cancelled: true,
+    });
+    expect(sendRequest.mock.calls).toEqual([
+      [CODEX_ACCOUNT_LIST_METHOD, {}],
+      [CODEX_ACCOUNT_REFRESH_METHOD, {}],
+      [CODEX_ACCOUNT_CREATE_METHOD, { label: "Work" }],
+      [CODEX_ACCOUNT_DELETE_METHOD, { accountId: "work" }],
+      [CODEX_ACCOUNT_ACTIVATE_METHOD, { accountId: "work" }],
+      [CODEX_ACCOUNT_LOGIN_START_METHOD, { accountId: "work" }],
+      [CODEX_ACCOUNT_LOGIN_CANCEL_METHOD, { loginId: "login-1" }],
+    ]);
+
+    const listener = vi.fn();
+    const unsubscribe = client.subscribeCodexAccountLogin(listener);
+    expect(addNotificationCallback).toHaveBeenCalledWith(
+      CODEX_ACCOUNT_LOGIN_COMPLETED_METHOD,
+      expect.any(Function),
+    );
+    notify?.({
+      method: CODEX_ACCOUNT_LOGIN_COMPLETED_METHOD,
+      params: { accountId: "work", loginId: "login-1", success: true, error: null },
+    });
+    expect(listener).toHaveBeenCalledWith({
+      accountId: "work",
+      loginId: "login-1",
+      success: true,
+      error: null,
+    });
+    unsubscribe();
+    expect(remove).toHaveBeenCalledOnce();
+  });
+
+  it("reads and validates read-only accounts from the bound Host without a Thread ID", async () => {
+    const account = {
+      harnessId: "sample-agent",
+      harnessName: "Sample Agent",
+      credits: { usedPercent: 0, periodType: "weekly" },
+    };
+    const sendRequest = vi.fn().mockResolvedValue({ accounts: [account] });
+    const client = createRendererModelClient([{ sendRequest }]);
+    expect(await client?.listHarnessAccounts?.()).toEqual({ accounts: [account] });
+    expect(sendRequest).toHaveBeenCalledExactlyOnceWith("codexhost/harness/accounts/list", {});
+    sendRequest.mockResolvedValueOnce({ accounts: [{ ...account, token: "private" }] });
+    await expect(client?.listHarnessAccounts?.()).rejects.toThrow();
+  });
+
+  it("reads plugin descriptors from its own target and rejects backend or executable metadata", async () => {
+    const sendLocal = vi
+      .fn()
+      .mockResolvedValue({ plugins: [{ id: "local-agent", name: "Local Agent", version: "1" }] });
+    const sendRemote = vi
+      .fn()
+      .mockResolvedValue({ plugins: [{ id: "remote-agent", name: "Remote Agent", version: "2" }] });
+    const local = createRendererModelClient([{ sendRequest: sendLocal }]);
+    const remote = createRendererModelClient([{ sendRequest: sendRemote }]);
+    expect(await local?.listHarnessPlugins?.()).toMatchObject({ plugins: [{ id: "local-agent" }] });
+    expect(await remote?.listHarnessPlugins?.()).toMatchObject({
+      plugins: [{ id: "remote-agent" }],
+    });
+    expect(sendLocal).toHaveBeenCalledExactlyOnceWith(HARNESS_PLUGIN_LIST_METHOD, {});
+    expect(sendRemote).toHaveBeenCalledExactlyOnceWith(HARNESS_PLUGIN_LIST_METHOD, {});
+    sendRemote.mockResolvedValue({
+      plugins: [{ id: "remote-agent", name: "Remote", version: "1", icon: "javascript:alert(1)" }],
+    });
+    await expect(remote?.listHarnessPlugins?.()).rejects.toThrow();
+    sendRemote.mockResolvedValue({
+      plugins: [{ id: "remote-agent", name: "Remote", version: "1", entry: "/private/plugin.js" }],
+    });
+    await expect(remote?.listHarnessPlugins?.()).rejects.toThrow();
+  });
+
   it("calls only the fixed inspect and select methods with validated params", async () => {
     let usageNotification: ((notification: unknown) => void) | undefined;
     const removeUsageNotification = vi.fn();
@@ -136,19 +280,36 @@ describe("Renderer fixed Model request client", () => {
     const client = createRendererModelClient([{ addNotificationCallback, sendRequest }]);
     if (!client) throw new Error("Synthetic Model client was not created");
     expect(Object.keys(client).sort()).toEqual([
+      "activateCodexAccount",
+      "cancelCodexAccountLogin",
       "checkUpdate",
+      "consumeCodexAccountResetCredit",
+      "createCodexAccount",
+      "deleteCodexAccount",
       "executeThreadCommand",
       "forkThread",
+      "importHarnessSession",
+      "inspectCodexAccountUsage",
       "inspectHarness",
+      "inspectHarnessCommands",
       "inspectThread",
       "inspectThreadCommands",
       "inspectThreadUsage",
+      "listCodexAccounts",
+      "listHarnessAccounts",
+      "listHarnessPlugins",
+      "listHarnessSessions",
+      "listSessionImportSources",
       "listThreadOwnership",
+      "openHarnessWebUi",
       "readUpdateStatus",
+      "refreshCodexAccounts",
       "selectThreadModel",
       "selectThreadPermissionMode",
       "selectThreadThinking",
+      "startCodexAccountLogin",
       "startUpdate",
+      "subscribeCodexAccountLogin",
       "subscribeThreadUsage",
     ]);
 
@@ -269,6 +430,146 @@ describe("Renderer fixed Model request client", () => {
     expect(sendRequest).toHaveBeenNthCalledWith(10, UPDATE_CHECK_METHOD, {});
     expect(sendRequest).toHaveBeenNthCalledWith(11, UPDATE_START_METHOD, {});
     expect(sendRequest).toHaveBeenNthCalledWith(12, UPDATE_STATUS_METHOD, {});
+  });
+
+  it("uses fixed generic Session import methods and never accepts a browser-supplied locator", async () => {
+    const sendRequest = vi
+      .fn()
+      .mockResolvedValueOnce({ harnesses: [{ harnessId: "pi", name: "Pi" }] })
+      .mockResolvedValueOnce({
+        total: 1,
+        candidates: [
+          {
+            nativeSessionId: "native-1",
+            title: null,
+            updatedAt: 1_000,
+            cwd: "C:\\work",
+            running: null,
+          },
+        ],
+      })
+      .mockResolvedValueOnce({ threadId: "thread-1" });
+    const client = createRendererModelClient([{ sendRequest }]);
+    if (
+      !client?.listSessionImportSources ||
+      !client.listHarnessSessions ||
+      !client.importHarnessSession
+    )
+      throw new Error("Session import client missing");
+    expect(await client.listSessionImportSources()).toEqual({
+      harnesses: [{ harnessId: "pi", name: "Pi" }],
+    });
+    expect(await client.listHarnessSessions({ harnessId: piHarnessId })).toMatchObject({
+      candidates: [{ nativeSessionId: "native-1", running: null }],
+    });
+    expect(
+      await client.importHarnessSession({ harnessId: piHarnessId, nativeSessionId: "native-1" }),
+    ).toEqual({ threadId: "thread-1" });
+    expect(sendRequest.mock.calls).toEqual([
+      ["codexhost/harness/session-import/sources", {}],
+      ["codexhost/harness/session-import/list", { harnessId: "pi" }],
+      ["codexhost/harness/session-import/import", { harnessId: "pi", nativeSessionId: "native-1" }],
+    ]);
+    for (const extra of [{ cwd: "C:\\injected" }, { locator: { sessionFile: "/injected" } }]) {
+      await expect(
+        client.importHarnessSession({
+          harnessId: piHarnessId,
+          nativeSessionId: "native-2",
+          ...extra,
+        }),
+      ).rejects.toThrow();
+    }
+    expect(sendRequest).toHaveBeenCalledTimes(3);
+  });
+
+  it("coalesces per Harness and native ID across remounts without colliding with other Harnesses", async () => {
+    const response = Promise.withResolvers<unknown>();
+    const sendRequest = vi.fn(() => response.promise);
+    const client = createRendererModelClient([{ sendRequest }]);
+    if (!client?.importHarnessSession) throw new Error("Session import client missing");
+    const first = client.importHarnessSession({
+      harnessId: piHarnessId,
+      nativeSessionId: "native-1",
+    });
+    const remounted = client.importHarnessSession({
+      harnessId: piHarnessId,
+      nativeSessionId: "native-1",
+    });
+    const other = client.importHarnessSession({
+      harnessId: harnessIdSchema.parse("deepseek-harness"),
+      nativeSessionId: "native-1",
+    });
+    expect(sendRequest).toHaveBeenCalledTimes(2);
+    response.resolve({ threadId: "thread-1" });
+    await expect(Promise.all([first, remounted, other])).resolves.toEqual(
+      Array(3).fill({ threadId: "thread-1" }),
+    );
+  });
+
+  it.each([-32601, -32076])("normalizes unavailable code %s, including old Hosts", async (code) => {
+    const sendRequest = vi.fn(async () => {
+      throw Object.assign(new Error("private detail"), { code });
+    });
+    const client = createRendererModelClient([{ sendRequest }]);
+    if (
+      !client?.listSessionImportSources ||
+      !client.listHarnessSessions ||
+      !client.importHarnessSession
+    )
+      throw new Error("Session import client missing");
+    await expect(client.listSessionImportSources()).rejects.toBeInstanceOf(
+      RendererSessionImportUnavailableError,
+    );
+    await expect(client.listHarnessSessions({ harnessId: piHarnessId })).rejects.toBeInstanceOf(
+      RendererSessionImportUnavailableError,
+    );
+    await expect(
+      client.importHarnessSession({ harnessId: piHarnessId, nativeSessionId: "native-1" }),
+    ).rejects.toBeInstanceOf(RendererSessionImportUnavailableError);
+  });
+
+  it("keeps storage failures distinct from unsupported import and validates paging/search requests", async () => {
+    const failure = Object.assign(new Error("private storage detail"), { code: -32077 });
+    const sendRequest = vi.fn(async () => {
+      throw failure;
+    });
+    const client = createRendererModelClient([{ sendRequest }]);
+    if (!client?.listHarnessSessions) throw new Error("Import client missing");
+    await expect(
+      client.listHarnessSessions({
+        harnessId: piHarnessId,
+        query: "needle",
+        offset: 40,
+        limit: 20,
+      }),
+    ).rejects.toBe(failure);
+    expect(sendRequest).toHaveBeenCalledWith("codexhost/harness/session-import/list", {
+      harnessId: "pi",
+      query: "needle",
+      offset: 40,
+      limit: 20,
+    });
+    await expect(
+      client.listHarnessSessions({ harnessId: piHarnessId, offset: -1 }),
+    ).rejects.toThrow();
+    await expect(
+      client.listHarnessSessions({ harnessId: piHarnessId, limit: 0 }),
+    ).rejects.toThrow();
+    expect(sendRequest).toHaveBeenCalledOnce();
+  });
+
+  it("opens Harness Web through the pathless Host action", async () => {
+    const sendRequest = vi.fn(() => Promise.resolve({}));
+    const client = createRendererModelClient([{ sendRequest }]);
+    if (!client?.openHarnessWebUi) throw new Error("Harness Web UI client was not created");
+    const harnessId = harnessIdSchema.parse("deepseek-harness");
+
+    await expect(client.openHarnessWebUi({ harnessId })).resolves.toBeUndefined();
+    expect(sendRequest).toHaveBeenCalledWith(HARNESS_WEB_UI_OPEN_METHOD, { harnessId });
+    await expect(
+      client.openHarnessWebUi({ harnessId, url: "http://127.0.0.1/?token=secret" } as never),
+    ).rejects.toThrow();
+    expect(sendRequest).toHaveBeenCalledOnce();
   });
 
   it("defers Usage notification registration until a request manager is available", () => {

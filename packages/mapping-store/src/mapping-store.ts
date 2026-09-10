@@ -214,7 +214,8 @@ export class MappingStore {
   readonly #nativeSessions = new Map<string, HostThreadId>();
   readonly #hostTurns = new Map<HostTurnId, HostThreadId>();
   readonly #nativeTurns = new Map<string, HostTurnId>();
-  readonly #writeTails = new Map<HostThreadId, Promise<void>>();
+  // ponytail: A Store-wide queue caps write concurrency at one; shard only if measured throughput requires it.
+  #writeTail: Promise<void> = Promise.resolve();
   #initialized = false;
   #lockHandle: FileHandle | null = null;
 
@@ -240,7 +241,7 @@ export class MappingStore {
     ]);
     await this.#acquireLock();
     try {
-      await this.#cleanupTemps();
+      await this.#cleanupResidue();
       const names = (await readdir(this.#threadsDirectory)).filter((name) =>
         name.endsWith(".json"),
       );
@@ -428,37 +429,43 @@ export class MappingStore {
 
   async createProvisional(input: CreateProvisionalThreadInput): Promise<StoredThreadRecordV1> {
     this.#requireInitialized();
-    const existingThreadId = this.#createRequests.get(input.createRequestId);
-    if (existingThreadId) {
-      const existing = this.#records.get(existingThreadId);
-      if (!existing) throw new MappingStoreError("IO_ERROR", "Create request index is stale");
-      return cloneRecord(existing);
-    }
-    if (this.#records.has(input.hostThreadId)) {
-      throw new MappingStoreError("DUPLICATE_THREAD_ID", "Host Thread ID already exists");
-    }
-    const timestamp = this.#now().toISOString();
-    const record = storedThreadRecordV1Schema.parse({
-      formatVersion: 1,
-      revision: 1,
-      hostThreadId: input.hostThreadId,
-      createRequestId: input.createRequestId,
-      harnessId: input.harnessId,
-      state: "creating",
-      cwd: input.cwd,
-      title: input.title ?? "",
-      archived: false,
-      transportModelId: input.transportModelId,
-      ephemeral: input.ephemeral,
-      historyMode: input.historyMode,
-      ...(input.forkSource ? { forkSource: input.forkSource } : {}),
-      ...(input.subagent ? { subagent: input.subagent } : {}),
-      turnMappings: [],
-      createdAt: timestamp,
-      updatedAt: timestamp,
-    }) as StoredThreadRecordV1;
-    await this.#writeNew(record);
-    return cloneRecord(record);
+    let result: StoredThreadRecordV1 | null = null;
+    await this.#enqueue(async () => {
+      const existingThreadId = this.#createRequests.get(input.createRequestId);
+      if (existingThreadId) {
+        const existing = this.#records.get(existingThreadId);
+        if (!existing) throw new MappingStoreError("IO_ERROR", "Create request index is stale");
+        result = cloneRecord(existing);
+        return;
+      }
+      if (this.#records.has(input.hostThreadId)) {
+        throw new MappingStoreError("DUPLICATE_THREAD_ID", "Host Thread ID already exists");
+      }
+      const timestamp = this.#now().toISOString();
+      const record = storedThreadRecordV1Schema.parse({
+        formatVersion: 1,
+        revision: 1,
+        hostThreadId: input.hostThreadId,
+        createRequestId: input.createRequestId,
+        harnessId: input.harnessId,
+        state: "creating",
+        cwd: input.cwd,
+        title: input.title ?? "",
+        archived: false,
+        transportModelId: input.transportModelId,
+        ephemeral: input.ephemeral,
+        historyMode: input.historyMode,
+        ...(input.forkSource ? { forkSource: input.forkSource } : {}),
+        ...(input.subagent ? { subagent: input.subagent } : {}),
+        turnMappings: [],
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      }) as StoredThreadRecordV1;
+      await this.#writeNew(record);
+      result = cloneRecord(record);
+    });
+    if (!result) throw new MappingStoreError("IO_ERROR", "Provisional create produced no result");
+    return result;
   }
 
   async commitReady(input: CommitReadyThreadInput): Promise<StoredThreadRecordV1> {
@@ -601,35 +608,35 @@ export class MappingStore {
 
   async removeProvisional(hostThreadId: HostThreadId): Promise<void> {
     this.#requireInitialized();
-    const record = this.#records.get(hostThreadId);
-    if (record?.state === "ready") {
-      throw new MappingStoreError(
-        "MAPPING_CONFLICT",
-        "Ready Thread cannot be removed as provisional",
-      );
-    }
-    await this.#remove(hostThreadId);
+    await this.#enqueue(async () => {
+      const record = this.#records.get(hostThreadId);
+      if (record?.state === "ready") {
+        throw new MappingStoreError(
+          "MAPPING_CONFLICT",
+          "Ready Thread cannot be removed as provisional",
+        );
+      }
+      await this.#remove(hostThreadId);
+    });
   }
 
   async removeThread(hostThreadId: HostThreadId): Promise<void> {
     this.#requireInitialized();
-    await this.#remove(hostThreadId);
+    await this.#enqueue(() => this.#remove(hostThreadId));
   }
 
   async #remove(hostThreadId: HostThreadId): Promise<void> {
-    await this.#enqueue(hostThreadId, async () => {
-      if (!this.#records.has(hostThreadId)) return;
-      await Promise.all([
-        rm(this.#recordPath(hostThreadId), { force: true }),
-        rm(this.#backupPath(hostThreadId), { force: true }),
-      ]);
-      this.#records.delete(hostThreadId);
-      this.#rebuildIndexes();
-    });
+    if (!this.#records.has(hostThreadId)) return;
+    await Promise.all([
+      rm(this.#recordPath(hostThreadId), { force: true }),
+      rm(this.#backupPath(hostThreadId), { force: true }),
+    ]);
+    this.#records.delete(hostThreadId);
+    this.#rebuildIndexes();
   }
 
   async close(): Promise<void> {
-    await Promise.allSettled(this.#writeTails.values());
+    await this.#writeTail;
     const handle = this.#lockHandle;
     this.#lockHandle = null;
     this.#initialized = false;
@@ -648,7 +655,7 @@ export class MappingStore {
   ): Promise<StoredThreadRecordV1> {
     this.#requireInitialized();
     let result: StoredThreadRecordV1 | null = null;
-    await this.#enqueue(hostThreadId, async () => {
+    await this.#enqueue(async () => {
       const current = this.#records.get(hostThreadId);
       if (!current)
         throw new MappingStoreError("THREAD_NOT_FOUND", "External Thread was not found");
@@ -781,10 +788,11 @@ export class MappingStore {
     return parsed.data as StoredThreadRecordV1;
   }
 
-  async #cleanupTemps(): Promise<void> {
-    const [threadNames, delegationNames] = await Promise.all([
+  async #cleanupResidue(): Promise<void> {
+    const [threadNames, delegationNames, rootNames] = await Promise.all([
       readdir(this.#threadsDirectory),
       readdir(this.#delegationsDirectory),
+      readdir(this.#directory),
     ]);
     await Promise.all([
       ...threadNames
@@ -793,6 +801,10 @@ export class MappingStore {
       ...delegationNames
         .filter((name) => name.includes(".tmp-"))
         .map((name) => rm(path.join(this.#delegationsDirectory, name), { force: true })),
+      // Renamed aside by #acquireLock; nothing reads them back, and they accumulate one per run.
+      ...rootNames
+        .filter((name) => name.startsWith(`${path.basename(this.#lockPath)}.stale-`))
+        .map((name) => rm(path.join(this.#directory, name), { force: true })),
     ]);
   }
 
@@ -892,16 +904,10 @@ export class MappingStore {
     }
   }
 
-  async #enqueue(hostThreadId: HostThreadId, operation: () => Promise<void>): Promise<void> {
-    const prior = this.#writeTails.get(hostThreadId) ?? Promise.resolve();
-    const next = prior.then(operation, operation);
-    const settled = next.catch(() => undefined);
-    this.#writeTails.set(hostThreadId, settled);
-    try {
-      await next;
-    } finally {
-      if (this.#writeTails.get(hostThreadId) === settled) this.#writeTails.delete(hostThreadId);
-    }
+  async #enqueue(operation: () => Promise<void>): Promise<void> {
+    const next = this.#writeTail.then(operation);
+    this.#writeTail = next.catch(() => undefined);
+    await next;
   }
 
   #recordPath(hostThreadId: HostThreadId): string {

@@ -1,4 +1,8 @@
-import type { HarnessThinkingOptionId, JsonValue } from "@codexhost/shared-contracts";
+import type {
+  HarnessAccountSnapshot,
+  HarnessThinkingOptionId,
+  JsonValue,
+} from "@codexhost/shared-contracts";
 
 import type { ClaudeNativeFileChange } from "./file-change.js";
 import type { ClaudeModelInspectionSnapshot } from "./model-catalog.js";
@@ -40,7 +44,15 @@ export interface ClaudeQuestionRequest {
   questions: ClaudeQuestion[];
 }
 
-export type ClaudeInteractionRequest = ClaudeApprovalRequest | ClaudeQuestionRequest;
+export interface ClaudePlanApprovalRequest {
+  type: "planApproval";
+  requestId: string;
+  /** Full SDK-provided plan text; null means no reviewable plan was provided. */
+  plan: string | null;
+}
+
+export type ClaudeInteractionRequest =
+  ClaudeApprovalRequest | ClaudeQuestionRequest | ClaudePlanApprovalRequest;
 
 export type ClaudeInteractionResponse =
   | {
@@ -215,6 +227,7 @@ export interface ClaudeTransportFactoryInput {
 export interface ClaudeModelInspector {
   readonly stderrTail?: string;
   inspect(): Promise<ClaudeModelInspectionSnapshot>;
+  inspectAccount?(): Promise<HarnessAccountSnapshot | null>;
   close(): Promise<void>;
 }
 

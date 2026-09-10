@@ -1,0 +1,6 @@
+interface:
+  display_name: "codexhost Issue / PR 增量分诊"
+  short_description: "手动处理新增或更新条目，生成只读分诊与合入建议看板"
+  default_prompt: "用 $codexhost-pr-triage 增量分诊当前仓库的 Issue 和 PR，每批最多 10 个。运行 prepare-run 选取新增、有新进展或未完成条目；Issue 明确证据、信息缺口、关联与下一步，PR 沿用价值与实现克制的四档建议。填写真实报告和未发布回复草稿，通过 update-report --selection 复核来源后记录进度并更新本地 HTML 看板。CI/冲突不决定 PR 档位；不执行 GitHub 写操作。"
+policy:
+  allow_implicit_invocation: false

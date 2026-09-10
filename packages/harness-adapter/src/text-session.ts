@@ -1,10 +1,12 @@
 import type {
+  HarnessAccountSnapshot,
   HarnessCommandCatalog,
   HarnessId,
   HarnessInspection,
   HarnessModelRef,
   HarnessPermissionModeId,
   HarnessSessionCapabilities,
+  HarnessSessionImportCandidate,
   HarnessThinkingOption,
   HarnessThinkingOptionId,
   HostInteractionId,
@@ -28,6 +30,7 @@ export type {
   HarnessPermissionModeCatalog,
   HarnessPermissionModeId,
   HarnessSessionCapabilities,
+  HarnessSessionImportCandidate,
   HarnessThinkingOption,
   HarnessThinkingOptionId,
 } from "@codexhost/shared-contracts";
@@ -77,6 +80,9 @@ export interface CreateSessionInput {
 }
 
 export interface ResumeSessionInput {
+  /** Saved selection hints for Harnesses that initialize configuration lazily. */
+  model?: HarnessModelRef;
+  thinkingOptionId?: HarnessThinkingOptionId;
   kind: "resume";
   nativeRef: NativeSessionRef;
   cwd: string;
@@ -95,6 +101,10 @@ export interface ForkSessionInput {
 }
 
 export interface RollbackLastTurnSessionInput {
+  /** Current settings required by a derived Session before it can start native work. */
+  model?: HarnessModelRef;
+  thinkingOptionId?: HarnessThinkingOptionId;
+  permissionModeId?: HarnessPermissionModeId;
   kind: "rollbackLastTurn";
   sourceRef: NativeSessionRef;
   cwd: string;
@@ -272,6 +282,8 @@ export interface HostAgentMessageItem {
   type: "agentMessage";
   itemId: HostItemId;
   text: string;
+  /** Omit when the Harness cannot distinguish progress from its final answer. */
+  phase?: "commentary" | "final_answer";
 }
 
 export interface HostReasoningItem {
@@ -332,6 +344,10 @@ export interface HostSubagentState {
   nativeSubagentId?: string;
   description: string;
   role?: string;
+  /** Native child Model ID, when explicitly supplied or reported; not a display label. */
+  model?: string;
+  /** Native child reasoning effort, when known; do not infer from parent settings. */
+  reasoningEffort?: string;
   background: boolean;
   status: HostSubagentStatus;
   resultSummary?: string;
@@ -384,6 +400,9 @@ export interface HostTurnSnapshot {
   items: HostItemSnapshot[];
   outcome: HistoricalTurnOutcome;
   model?: HarnessModelRef;
+  /** Native wall-clock timestamps; omit when unavailable. */
+  startedAtMs?: number;
+  completedAtMs?: number;
 }
 
 export interface HostThreadSnapshot {
@@ -515,9 +534,35 @@ export interface HarnessSubagentCapability {
   }): Promise<HarnessResult<HostThreadSnapshot>>;
 }
 
+export interface HarnessWebUiAction {
+  open(): Promise<HarnessResult<void>>;
+}
+
+/** Fresh native metadata and the complete resumable identity; never sent to Renderer. */
+export interface HarnessSessionImportSource {
+  candidate: HarnessSessionImportCandidate;
+  nativeRef: NativeSessionRef;
+}
+
+/** Optional discovery of existing Native Sessions that codexhost can map and resume. */
+export interface HarnessSessionImportCapability {
+  listCandidates(): Promise<HarnessResult<readonly HarnessSessionImportCandidate[]>>;
+  /** Read-only revalidation. Omission keeps older discovery-only plugins valid, not importable. */
+  resolveCandidate?(nativeSessionId: string): Promise<HarnessResult<HarnessSessionImportSource>>;
+}
+
 export interface HarnessAdapter {
   readonly harnessId: HarnessId;
+  /** Static command metadata. Reading it must not inspect, connect to, or open a Native Session. */
+  readonly commandCatalog?: HarnessCommandCatalog;
+  readonly sessionImport?: HarnessSessionImportCapability;
   readonly subagents?: HarnessSubagentCapability;
+  readonly webUi?: HarnessWebUiAction;
+  /** Fresh read-only quota for current native authentication. Return null when unavailable;
+   * never return session spend, old authentication caches, or start a model Turn.
+   * Implementations must bound requests and release inspection resources on close.
+   */
+  inspectAccount?(): Promise<HarnessAccountSnapshot | null>;
 
   inspect(input?: InspectHarnessInput): Promise<HarnessInspection>;
   open(input: OpenSessionInput): Promise<HarnessResult<HarnessSession>>;

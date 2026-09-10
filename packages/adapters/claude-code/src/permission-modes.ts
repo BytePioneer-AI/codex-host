@@ -23,7 +23,8 @@ const claudePermissionModes = [
   {
     id: "plan",
     label: "Plan mode",
-    description: "Analyze and plan without executing tools.",
+    description:
+      "Explore and prepare a plan; approval exits planning and resumes the previous permission mode.",
   },
   {
     id: "default",

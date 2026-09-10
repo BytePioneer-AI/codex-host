@@ -7,6 +7,16 @@ import {
 } from "@codexhost/shared-contracts";
 
 describe("Thread Usage contracts", () => {
+  it("carries credits and independent context percent through usage inspection", () => {
+    const usage = { totalCredits: 0.125, contextUsagePercent: 102 };
+    expect(threadUsageInspectionSchema.parse({ threadId: "kiro", usage }).usage).toEqual(usage);
+    for (const value of [-1, Infinity, NaN]) {
+      expect(threadUsageSnapshotSchema.safeParse({ totalCredits: value }).success).toBe(false);
+      expect(threadUsageSnapshotSchema.safeParse({ contextUsagePercent: value }).success).toBe(
+        false,
+      );
+    }
+  });
   it("accepts reliable cache and cost fields", () => {
     const usage = {
       cachedInputTokens: 32_000,
@@ -29,10 +39,23 @@ describe("Thread Usage contracts", () => {
           usedPercent: 33,
           resetsAt: "2026-08-20T03:32:07.498525+00:00",
           periodType: "weekly",
+          resetCredits: {
+            availableCount: 2,
+            nextExpiresAt: "2026-09-12T12:00:00.000Z",
+            expiresAt: ["2026-09-12T12:00:00.000Z", "2026-09-18T08:00:00.000Z"],
+          },
         },
       }),
     ).toMatchObject({
-      accountCredits: { usedPercent: 33, periodType: "weekly" },
+      accountCredits: {
+        usedPercent: 33,
+        periodType: "weekly",
+        resetCredits: {
+          availableCount: 2,
+          nextExpiresAt: "2026-09-12T12:00:00.000Z",
+          expiresAt: ["2026-09-12T12:00:00.000Z", "2026-09-18T08:00:00.000Z"],
+        },
+      },
     });
   });
 

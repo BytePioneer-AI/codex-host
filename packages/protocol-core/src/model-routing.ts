@@ -1,4 +1,7 @@
 import {
+  decodeHarnessPluginRoute,
+  encodeHarnessPluginRoute,
+  harnessPluginIdSchema,
   harnessModelRefSchema,
   harnessPermissionModeIdSchema,
   harnessThinkingOptionIdSchema,
@@ -32,10 +35,11 @@ export const EXTERNAL_HARNESS_IDS = [
   "antigravity",
 ] as const;
 
-export type ExternalHarnessId = (typeof EXTERNAL_HARNESS_IDS)[number];
+/** Open identity space; the Host Registry, not this legacy list, validates installation. */
+export type ExternalHarnessId = string;
 export type RoutedHarnessId = "codex" | ExternalHarnessId;
 
-const transportModelByHarness = {
+const transportModelByHarness: Readonly<Record<string, string>> = {
   pi: PI_NATIVE_TRANSPORT_MODEL_ID,
   "claude-code": CLAUDE_CODE_NATIVE_TRANSPORT_MODEL_ID,
   "deepseek-harness": DEEPSEEK_HARNESS_NATIVE_TRANSPORT_MODEL_ID,
@@ -52,23 +56,24 @@ const harnessByTransportModel = new Map<string, ExternalHarnessId>(
   ]),
 );
 
-export type CreateRoute =
-  | { harnessId: "codex"; transportModelId: string }
-  | {
-      harnessId: ExternalHarnessId;
-      routeMode: "native";
-      transportModelId: string;
-      model?: HarnessModelRef;
-      thinkingOptionId?: HarnessThinkingOptionId;
-      permissionModeId?: HarnessPermissionModeId;
-    };
+export interface CreateRoute {
+  harnessId: RoutedHarnessId;
+  routeMode?: "native";
+  transportModelId: string;
+  model?: HarnessModelRef;
+  thinkingOptionId?: HarnessThinkingOptionId;
+  permissionModeId?: HarnessPermissionModeId;
+}
 
 function isJsonObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 export function transportModelIdForHarness(harnessId: ExternalHarnessId): string {
-  return transportModelByHarness[harnessId];
+  const legacy = Object.hasOwn(transportModelByHarness, harnessId)
+    ? transportModelByHarness[harnessId]
+    : undefined;
+  return legacy ?? encodeHarnessPluginRoute({ harnessId: harnessPluginIdSchema.parse(harnessId) });
 }
 
 export interface ExternalConfigurationSelection {
@@ -530,6 +535,11 @@ export function encodeExternalTransportSelection(
         selection.permissionModeId,
         selection.thinkingOptionId,
       );
+    default:
+      return encodeHarnessPluginRoute({
+        harnessId: harnessPluginIdSchema.parse(harnessId),
+        ...selection,
+      });
   }
 }
 
@@ -537,6 +547,15 @@ export function decodeExternalTransportSelection(
   harnessId: ExternalHarnessId,
   value: unknown,
 ): ExternalConfigurationSelection | null {
+  const route = decodeHarnessPluginRoute(value);
+  if (route) {
+    if (route.harnessId !== harnessId) return null;
+    return {
+      ...(route.model ? { model: route.model } : {}),
+      ...(route.thinkingOptionId ? { thinkingOptionId: route.thinkingOptionId } : {}),
+      ...(route.permissionModeId ? { permissionModeId: route.permissionModeId } : {}),
+    };
+  }
   switch (harnessId) {
     case "pi":
       return decodePiTransportSelection(value);
@@ -552,6 +571,8 @@ export function decodeExternalTransportSelection(
       return decodeOmpTransportSelection(value);
     case "antigravity":
       return decodeAntigravityTransportSelection(value);
+    default:
+      return null;
   }
 }
 
@@ -567,6 +588,18 @@ export function decodeCreateRoute(request: JsonRpcRequest): CreateRoute | null {
   if (request.method !== "thread/start") return null;
   if (!isJsonObject(request.params) || typeof request.params.model !== "string") {
     throw new Error("thread/start params.model must be text");
+  }
+
+  const pluginRoute = decodeHarnessPluginRoute(request.params.model);
+  if (pluginRoute) {
+    return {
+      harnessId: pluginRoute.harnessId,
+      routeMode: "native",
+      transportModelId: request.params.model,
+      ...(pluginRoute.model ? { model: pluginRoute.model } : {}),
+      ...(pluginRoute.thinkingOptionId ? { thinkingOptionId: pluginRoute.thinkingOptionId } : {}),
+      ...(pluginRoute.permissionModeId ? { permissionModeId: pluginRoute.permissionModeId } : {}),
+    };
   }
 
   const piSelection = decodePiTransportSelection(request.params.model);

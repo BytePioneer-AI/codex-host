@@ -1,15 +1,24 @@
+import { harnessIdSchema } from "@codexhost/shared-contracts";
 import { harnessModelRefSchema } from "@codexhost/shared-contracts";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, assert, describe, expect, it, vi } from "vitest";
 
 import type * as RendererComposerDom from "../src/renderer-composer-dom.js";
+import {
+  isRendererModelPickerDisabled,
+  type RendererModelControlView,
+} from "../src/renderer-model-picker.js";
+import type { RendererConnectionDiagnostics } from "../src/settings/connections-page.js";
+import type { RendererSessionImportClient } from "../src/settings/session-import-page.js";
 import type * as VersionedRendererAdapter from "../src/versioned-renderer-adapter.js";
 
 const testState = vi.hoisted(() => ({
   composer: null as unknown as Element,
   editor: null as unknown as Element,
   sendButton: null as unknown as HTMLButtonElement,
-  renderedModelViews: [] as Array<{ status: string; error?: string }>,
-  getConnectionDiagnostics: null as null | (() => { refresh(): Promise<void> } | null),
+  renderedModelViews: [] as RendererModelControlView[],
+  selectModel: null as null | ((modelId: string) => void),
+  getConnectionDiagnostics: null as null | (() => RendererConnectionDiagnostics | null),
+  getSessionImportClient: null as null | (() => RendererSessionImportClient | null),
   documentListeners: new Map<string, EventListener>(),
   modelTarget: ["conversation", "thread-a"] as readonly unknown[],
 }));
@@ -22,36 +31,41 @@ vi.mock("../src/renderer-composer-dom.js", async (importOriginal) => {
     composerForElement: () => testState.composer,
     editorForElement: () => testState.editor,
     eventElement: () => testState.composer,
-    mountComposerAgentControl: () => ({
-      composer: testState.composer,
-      composerId: "composer-1",
-      root: { isConnected: true, remove: vi.fn() },
-      picker: { root: { isConnected: true } },
-      modelPicker: { root: { isConnected: true }, trigger: {} },
-      permissionModePicker: { root: { isConnected: true } },
-      nativeModelControl: null,
-      nativePermissionModeControl: null,
-      nativeContextUsageControl: null,
-      nativePermissionModeControlVerified: false,
-      credits: { anchor: null, place: vi.fn(), root: { remove: vi.fn() } },
-      usage: null,
-      harnessCommands: {
-        setCommands: vi.fn(),
-        setExecuting: vi.fn(),
-        setLocale: vi.fn(),
-        placeBefore: vi.fn(),
-        dispose: vi.fn(),
-      },
-      sendButton: testState.sendButton,
-      sendDisabledBeforeSwitch: null,
-    }),
+    mountComposerAgentControl: (
+      ...args: Parameters<typeof RendererComposerDom.mountComposerAgentControl>
+    ) => {
+      testState.selectModel = args[8];
+      return {
+        composer: testState.composer,
+        composerId: "composer-1",
+        root: { isConnected: true, remove: vi.fn() },
+        picker: { root: { isConnected: true } },
+        modelPicker: { root: { isConnected: true }, trigger: {} },
+        permissionModePicker: { root: { isConnected: true } },
+        nativeModelControl: null,
+        nativePermissionModeControl: null,
+        nativeContextUsageControl: null,
+        nativePermissionModeControlVerified: false,
+        credits: { anchor: null, place: vi.fn(), root: { remove: vi.fn() } },
+        usage: null,
+        harnessCommands: {
+          setCommands: vi.fn(),
+          setExecuting: vi.fn(),
+          setLocale: vi.fn(),
+          placeBefore: vi.fn(),
+          dispose: vi.fn(),
+        },
+        sendButton: testState.sendButton,
+        sendDisabledBeforeSwitch: null,
+      };
+    },
     renderComposerAgentControl: (
       _control: unknown,
       _selection: unknown,
       _adapter: unknown,
       _switching: unknown,
       _availability: unknown,
-      modelView: { status: string; error?: string },
+      modelView: RendererModelControlView,
     ) => {
       testState.renderedModelViews.push({ ...modelView });
     },
@@ -77,9 +91,13 @@ vi.mock("../src/renderer-sidebar-agent-icons.js", () => ({
 vi.mock("../src/renderer-settings-lifecycle.js", () => ({
   installRendererSettingsLifecycle: (
     _window: unknown,
-    options: { getConnectionDiagnostics(): { refresh(): Promise<void> } | null },
+    options: {
+      getConnectionDiagnostics(): RendererConnectionDiagnostics | null;
+      getSessionImportClient(): RendererSessionImportClient | null;
+    },
   ) => {
     testState.getConnectionDiagnostics = options.getConnectionDiagnostics;
+    testState.getSessionImportClient = options.getSessionImportClient;
     return {
       locale: "en",
       refresh: vi.fn(),
@@ -144,7 +162,9 @@ function installFakeBrowser(): void {
   testState.editor = editor;
   testState.sendButton = sendButton;
   testState.renderedModelViews = [];
+  testState.selectModel = null;
   testState.getConnectionDiagnostics = null;
+  testState.getSessionImportClient = null;
   testState.documentListeners.clear();
   testState.modelTarget = ["conversation", "thread-a"];
   const window_ = {
@@ -201,6 +221,257 @@ afterEach(() => {
 });
 
 describe("Renderer binding Host-scoped Claude catalogs", () => {
+  it("keeps the latest catalog selectable until a locked Thread explicitly replaces its missing Model", async () => {
+    installFakeBrowser();
+    const oldModel = harnessModelRefSchema.parse({ id: "claude-model-v1.b3B1cw" });
+    const inspection = {
+      ...readyInspection("claude-model-v1.c29ubmV0"),
+      permissionModes: {
+        modes: [{ id: "bypassPermissions", label: "Bypass permissions" }],
+        defaultModeId: "bypassPermissions",
+      },
+    };
+    inspection.capabilities.configuration.selectThinkingOption = true;
+    inspection.capabilities.configuration.selectPermissionMode = true;
+    const newModel = inspection.catalog.defaultModel;
+    let resolveSelection!: (state: { effectiveModel: typeof newModel }) => void;
+    const host = {
+      inspectHarness: vi.fn(async () => inspection),
+      inspectThread: vi.fn(async () => ({
+        owner: "external" as const,
+        harnessId: "claude-code",
+        transportModelId:
+          "codexhost/claude-code-native@claude-model-v1.b3B1cw@bypassPermissions@auto",
+        effectiveModel: oldModel,
+        history: { fork: true, forkAcrossCwd: false, rollbackLastTurn: true },
+        locked: true,
+      })),
+      inspectThreadCommands: vi.fn(async () => ({ commands: [] })),
+      inspectThreadUsage: vi.fn(async () => ({
+        threadId: "thread-a",
+        usage: null,
+        accountCredits: null,
+      })),
+      selectThreadModel: vi
+        .fn()
+        .mockRejectedValueOnce(new Error("Model selection failed"))
+        .mockImplementationOnce(
+          () =>
+            new Promise((resolve) => {
+              resolveSelection = resolve;
+            }),
+        ),
+      subscribeThreadUsage: () => () => undefined,
+    };
+    const modelControl = {
+      ...host,
+      currentHostId: () => "local",
+      clientForHost: () => host,
+    };
+    const applyAgent = vi.fn(() => true);
+    const { installRendererBindingProbe } = await import("../src/renderer-binding-probe.js");
+    const probe = installRendererBindingProbe({
+      enabledAgents: ["codex", "claude-code"],
+      defaultAgent: "codex",
+    });
+    probe.setAdapter(
+      { state: "ready", reason: "ready", modelUpdates: 0, hook: "request-bridge" },
+      undefined,
+      applyAgent,
+      modelControl as never,
+    );
+    const expectSubmissionBlocked = (blocked: boolean) => {
+      const preventDefault = vi.fn();
+      const stopImmediatePropagation = vi.fn();
+      const submit = testState.documentListeners.get("submit");
+      assert(submit);
+      submit({
+        target: testState.composer,
+        preventDefault,
+        stopImmediatePropagation,
+      } as unknown as Event);
+      expect(preventDefault).toHaveBeenCalledTimes(blocked ? 1 : 0);
+      expect(stopImmediatePropagation).toHaveBeenCalledTimes(blocked ? 1 : 0);
+    };
+    const expectRecoverableView = (error: string) => {
+      const view = testState.renderedModelViews.at(-1);
+      assert(view);
+      expect(view).toMatchObject({
+        status: "error",
+        catalog: inspection.catalog,
+        selected: oldModel,
+        thinkingSelectionSupported: true,
+        error,
+      });
+      expect(isRendererModelPickerDisabled(view)).toBe(false);
+      expect(probe.lockedSelection()?.model).toEqual(oldModel);
+      expectSubmissionBlocked(true);
+    };
+
+    await vi.waitFor(() => {
+      expectRecoverableView("Existing Thread Model is absent from the current Catalog");
+    });
+    expect(host.selectThreadModel).not.toHaveBeenCalled();
+    expect(applyAgent).not.toHaveBeenCalled();
+
+    const selectModel = testState.selectModel;
+    assert(selectModel);
+    selectModel(newModel.id);
+    await vi.waitFor(() => expectRecoverableView("Model selection failed"));
+    expect(host.selectThreadModel).toHaveBeenCalledExactlyOnceWith({
+      threadId: "thread-a",
+      model: newModel,
+    });
+
+    selectModel(newModel.id);
+    expect(testState.renderedModelViews.at(-1)).toMatchObject({
+      status: "selecting",
+      selected: oldModel,
+    });
+    expect(probe.lockedSelection()?.model).toEqual(oldModel);
+    expectSubmissionBlocked(true);
+    resolveSelection({ effectiveModel: newModel });
+    await vi.waitFor(() => {
+      expect(testState.renderedModelViews.at(-1)).toMatchObject({
+        status: "ready",
+        catalog: inspection.catalog,
+        selected: newModel,
+      });
+    });
+    expect(host.selectThreadModel).toHaveBeenCalledTimes(2);
+    expect(probe.lockedSelection()?.model).toEqual(newModel);
+    expectSubmissionBlocked(false);
+    expect(applyAgent).not.toHaveBeenCalled();
+  });
+
+  it("routes Session import to local while the current Composer Host is remote", async () => {
+    installFakeBrowser();
+    const local = {
+      inspectHarness: vi.fn(async () => readyInspection()),
+      listSessionImportSources: vi.fn(async () => ({
+        harnesses: [
+          { harnessId: harnessIdSchema.parse("deepseek-harness"), name: "DeepSeek Harness" },
+        ],
+      })),
+      listHarnessSessions: vi.fn(async () => ({ candidates: [] })),
+      importHarnessSession: vi.fn(async () => ({ threadId: "local-thread" })),
+    };
+    const remote = {
+      inspectHarness: vi.fn(async () => readyInspection()),
+      listSessionImportSources: vi.fn(async () => ({
+        harnesses: [
+          { harnessId: harnessIdSchema.parse("deepseek-harness"), name: "DeepSeek Harness" },
+        ],
+      })),
+      listHarnessSessions: vi.fn(),
+      importHarnessSession: vi.fn(),
+    };
+    const modelControl = {
+      ...remote,
+      currentHostId: () => "remote-1",
+      clientForHost: vi.fn((hostId: string) => (hostId === "local" ? local : remote)),
+      inspectThread: vi.fn(),
+      inspectThreadCommands: vi.fn(async () => ({ commands: [] })),
+      inspectThreadUsage: vi.fn(),
+      subscribeThreadUsage: () => () => undefined,
+    };
+    const { installRendererBindingProbe } = await import("../src/renderer-binding-probe.js");
+    const probe = installRendererBindingProbe({
+      enabledAgents: ["codex", "deepseek-harness"],
+      defaultAgent: "codex",
+    });
+    probe.setAdapter(
+      { state: "ready", reason: "ready", modelUpdates: 0, hook: "request-bridge" },
+      undefined,
+      undefined,
+      modelControl as never,
+    );
+
+    const client = testState.getSessionImportClient?.();
+    if (!client) throw new Error("Local Session import client was not installed");
+    await client.listSessionImportSources();
+    await client.listHarnessSessions({ harnessId: harnessIdSchema.parse("pi") });
+    await client.importHarnessSession({
+      harnessId: harnessIdSchema.parse("pi"),
+      nativeSessionId: "native-session",
+    });
+
+    expect(modelControl.clientForHost).toHaveBeenCalledWith("local");
+    expect(local.listSessionImportSources).toHaveBeenCalledOnce();
+    expect(local.listHarnessSessions).toHaveBeenCalledWith({ harnessId: "pi" });
+    expect(local.importHarnessSession).toHaveBeenCalledWith({
+      harnessId: "pi",
+      nativeSessionId: "native-session",
+    });
+    expect(remote.listHarnessSessions).not.toHaveBeenCalled();
+    expect(remote.importHarnessSession).not.toHaveBeenCalled();
+  });
+
+  it("invalidates and refreshes a stale managed Web capability after open fails", async () => {
+    installFakeBrowser();
+    let dshAvailable = true;
+    let dshInspections = 0;
+    const local = {
+      inspectHarness: vi.fn(async ({ harnessId }: { harnessId: string }) => {
+        if (harnessId !== "deepseek-harness") return readyInspection();
+        dshInspections += 1;
+        return dshAvailable
+          ? { ...readyInspection("deepseek-model-v1.bW9kZWw"), webUi: { open: true as const } }
+          : {
+              status: "unavailable" as const,
+              error: { code: "processExited", message: "managed DSH exited", retryable: true },
+            };
+      }),
+      openHarnessWebUi: vi.fn(async () => {
+        throw new Error("managed DSH exited");
+      }),
+      inspectThread: vi.fn(),
+      inspectThreadCommands: vi.fn(async () => ({ commands: [] })),
+      inspectThreadUsage: vi.fn(),
+      subscribeThreadUsage: () => () => undefined,
+    };
+    const modelControl = {
+      ...local,
+      currentHostId: () => "local",
+      clientForHost: vi.fn(() => local),
+    };
+    const { installRendererBindingProbe } = await import("../src/renderer-binding-probe.js");
+    const probe = installRendererBindingProbe({
+      enabledAgents: ["codex", "deepseek-harness"],
+      defaultAgent: "codex",
+    });
+    probe.setAdapter(
+      { state: "ready", reason: "ready", modelUpdates: 0, hook: "request-bridge" },
+      undefined,
+      undefined,
+      modelControl as never,
+    );
+
+    await vi.waitFor(() => {
+      const diagnostics = testState.getConnectionDiagnostics?.();
+      const dsh = diagnostics
+        ?.snapshot()
+        .hosts.find(({ hostId }) => hostId === "local")
+        ?.agents.find(({ agent }) => agent === "deepseek-harness");
+      expect(dsh?.webUiAvailable).toBe(true);
+    });
+    const inspectionsBeforeFailure = dshInspections;
+    dshAvailable = false;
+    const diagnostics = testState.getConnectionDiagnostics?.();
+    await expect(diagnostics?.openWebUi?.("local", "deepseek-harness")).rejects.toThrow(
+      "managed DSH exited",
+    );
+    expect(
+      diagnostics
+        ?.snapshot()
+        .hosts.find(({ hostId }) => hostId === "local")
+        ?.agents.find(({ agent }) => agent === "deepseek-harness")?.webUiAvailable,
+    ).toBeUndefined();
+    await vi.waitFor(() => expect(dshInspections).toBeGreaterThan(inspectionsBeforeFailure));
+
+    probe.dispose();
+  });
+
   it("does not let a stale remote Host response mark a locked Claude Model unavailable", async () => {
     installFakeBrowser();
     let currentHostId = "host-a";
@@ -375,7 +646,7 @@ describe("Renderer binding Host-scoped Claude catalogs", () => {
     expect(testState.renderedModelViews.at(-1)).not.toMatchObject({ status: "error" });
   });
 
-  it("keeps a same-Host empty Claude catalog terminal across availability refreshes", async () => {
+  it("reloads a same-Host empty Claude catalog on explicit refresh", async () => {
     installFakeBrowser();
     let claudeInspections = 0;
     const hostA = {
@@ -442,7 +713,10 @@ describe("Renderer binding Host-scoped Claude catalogs", () => {
     await new Promise((resolve) => setTimeout(resolve, 25));
 
     expect(claudeInspections).toBe(inspectionsAfterRefresh);
-    expect(testState.renderedModelViews.at(-1)).toMatchObject({ status: "empty" });
+    expect(testState.renderedModelViews.at(-1)).toMatchObject({
+      status: "ready",
+      catalog: readyInspection().catalog,
+    });
     expect(testState.renderedModelViews).not.toContainEqual(
       expect.objectContaining({ status: "error" }),
     );

@@ -17,6 +17,7 @@ use std::ffi::OsString;
 #[cfg(any(target_os = "windows", target_os = "linux"))]
 use std::fmt::{self, Display, Formatter};
 use std::io::{Read, Write};
+use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 #[cfg(target_os = "windows")]
 use std::process::ExitStatus;
@@ -124,6 +125,50 @@ fn usage() {
     eprintln!(
         "usage:\n  codexhost\n  codexhost inspect [--custom-install <absolute-directory>]\n  codexhost launch [--shim <absolute-file>] [--node <absolute-file>] [--host-runtime <absolute-file>] [--desktop-controller <absolute-file>] [--renderer <absolute-file>] [--pi <absolute-file>] [--custom-install <absolute-directory>]\n  codexhost broker install|status|stop|uninstall\n  codexhost delegate --help\n  codexhost harness inspect ...\n  codexhost delegate start ...\n  codexhost thread send|cancel|read|wait|list ..."
     );
+}
+
+const LOOPBACK_URL_MAX_BYTES: u64 = 4096;
+
+fn validate_loopback_root_url(value: &str) -> Result<(), &'static str> {
+    let authority_and_path = value
+        .strip_prefix("http://")
+        .or_else(|| value.strip_prefix("https://"))
+        .ok_or("native URL must use HTTP or HTTPS")?;
+    let (authority, path) = authority_and_path
+        .split_once('/')
+        .ok_or("native URL must include a root path")?;
+    if authority.contains('@') || path.contains('#') || !(path.is_empty() || path.starts_with('?'))
+    {
+        return Err("native URL must be an uncredentialed loopback root");
+    }
+    let loopback = authority
+        .parse::<SocketAddr>()
+        .map(|address| address.port() != 0 && address.ip().is_loopback())
+        .unwrap_or_else(|_| {
+            authority.rsplit_once(':').is_some_and(|(host, port)| {
+                host.eq_ignore_ascii_case("localhost")
+                    && port.parse::<u16>().is_ok_and(|port| port != 0)
+            })
+        });
+    if !loopback {
+        return Err("native URL must target a loopback authority with an explicit port");
+    }
+    Ok(())
+}
+
+fn read_bounded_loopback_url(reader: impl Read) -> Result<String, Box<dyn Error>> {
+    let mut bytes = Vec::new();
+    reader
+        .take(LOOPBACK_URL_MAX_BYTES + 1)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > LOOPBACK_URL_MAX_BYTES {
+        return Err("native URL exceeds its byte limit".into());
+    }
+    let value = String::from_utf8(bytes)?;
+    if value.is_empty() || value.contains('\r') || value.contains('\n') {
+        return Err("native URL must be one non-empty line".into());
+    }
+    Ok(value)
 }
 
 fn run_delegation_cli(arguments: &[String]) -> Result<(), Box<dyn Error>> {
@@ -1160,6 +1205,12 @@ fn run(arguments: &[String]) -> Result<(), Box<dyn Error>> {
             inspect(custom_install_root.as_deref())
         }
         Some("launch") => launch(parse_launch_options(&arguments[1..])?, false),
+        Some("open-loopback-url") if arguments.len() == 1 => {
+            let url = read_bounded_loopback_url(std::io::stdin().lock())?;
+            validate_loopback_root_url(&url)?;
+            codexhost_platform::open_external_url(&url).map_err(Into::into)
+        }
+        Some("open-loopback-url") => Err("open-loopback-url accepts no arguments".into()),
         Some("broker") => run_native_harness_broker_cli(&arguments[1..]),
         Some("harness") | Some("delegate") | Some("thread") => run_delegation_cli(arguments),
         _ => {
@@ -1233,7 +1284,8 @@ mod tests {
         ResolvedLaunchOptions, RuntimeControl, STARTUP_TRACE_ENV, absolute_directory,
         allocate_runtime_control, desktop_controller_command, desktop_environment, emit_ready_line,
         managed_desktop_data_directory, npm_update_runtime_environment, parse_inspect_options,
-        parse_launch_options, read_bounded_controller_line,
+        parse_launch_options, read_bounded_controller_line, read_bounded_loopback_url,
+        validate_loopback_root_url,
     };
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     use super::{DESKTOP_TREE_REFRESH_INTERVAL, desktop_tree_refresh_due};
@@ -1250,6 +1302,43 @@ mod tests {
             started,
             started + DESKTOP_TREE_REFRESH_INTERVAL,
         ));
+    }
+
+    #[test]
+    fn native_url_handoff_accepts_only_loopback_roots() {
+        let token = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+        for accepted in [
+            format!("http://127.0.0.1:43123/?token={token}"),
+            format!("https://localhost:43123/?token={token}"),
+            format!("http://[::1]:43123/?token={token}"),
+            "http://127.0.0.1:43123/".into(),
+            "http://127.0.0.1:43123/?service=local".into(),
+        ] {
+            assert!(validate_loopback_root_url(&accepted).is_ok(), "{accepted}");
+        }
+        for rejected in [
+            format!("https://example.com:43123/?token={token}"),
+            format!("http://user@127.0.0.1:43123/?token={token}"),
+            format!("http://127.0.0.1:43123/path?token={token}"),
+            format!("http://127.0.0.1/?token={token}"),
+            format!("file:///tmp/page?token={token}"),
+            format!("http://127.0.0.1:43123/?token={token}#fragment"),
+            format!("http://user%40name@127.0.0.1:43123/?token={token}"),
+            format!("http://127%2e0%2e0%2e1:43123/?token={token}"),
+        ] {
+            assert!(validate_loopback_root_url(&rejected).is_err(), "{rejected}");
+        }
+    }
+
+    #[test]
+    fn native_url_handoff_bounds_stdin() {
+        assert_eq!(
+            read_bounded_loopback_url(std::io::Cursor::new(b"http://127.0.0.1:43123/"))
+                .expect("bounded URL"),
+            "http://127.0.0.1:43123/"
+        );
+        assert!(read_bounded_loopback_url(std::io::Cursor::new(vec![b'a'; 4097])).is_err());
+        assert!(read_bounded_loopback_url(std::io::Cursor::new(b"one\ntwo")).is_err());
     }
 
     #[test]

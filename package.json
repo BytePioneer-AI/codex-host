@@ -1,6 +1,6 @@
 {
   "name": "codexhost",
-  "version": "0.4.4",
+  "version": "0.6.1",
   "private": true,
   "license": "MIT",
   "type": "module",
@@ -24,8 +24,10 @@
   },
   "scripts": {
     "start": "node tools/dev-desktop/run.mjs",
+    "install:local": "bash scripts/install-local.sh",
     "build": "npm run build:typescript && npm run build:renderer && npm run build:rust",
-    "build:typescript": "tsc -b",
+    "build:typescript": "tsc -b && npm run build:plugins",
+    "build:plugins": "node scripts/release/harness-plugins.mjs --output packages/host-runtime/dist/plugins",
     "build:renderer": "npm run build --workspace=@codexhost/renderer-extension",
     "build:rust": "cargo build --locked --package codexhost-launcher --package codexhost-platform --package codexhost-shim --package codexhost-updater",
     "release:prepare": "node scripts/release/prepare-version.mjs",
@@ -42,6 +44,7 @@
     "test:rust": "cargo test --workspace --locked --features codexhost-shim/test-utils,codexhost-gate-a-native/gate-tools",
     "test": "npm run test:typescript && npm run test:rust",
     "test:e2e": "playwright test --config tests/e2e/playwright.config.js",
+    "test:triage": "node --test .agents/skills/codexhost-pr-triage/test/*.test.mjs",
     "gate:a:preflight": "node tools/gate-a/run.mjs preflight",
     "gate:a:probe": "node tools/gate-a/run.mjs probe",
     "gate:a:differential": "node tools/gate-a/run.mjs differential",

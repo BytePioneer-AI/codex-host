@@ -6,6 +6,46 @@ const rendererDirectory = "/repo/packages/renderer-extension";
 const sharedContractsDirectory = "/repo/packages/shared-contracts/src";
 
 describe("source boundary checks", () => {
+  it.each([
+    'import { createHarnessAdapter } from "@codexhost/adapter-pi/plugin";',
+    'export { packageMetadata } from "@codexhost/adapter-claude-code";',
+    'const plugin = await import("@codexhost/adapter-new-agent/plugin");',
+  ])("rejects concrete plugin package imports in Host source: %s", (sourceText) => {
+    const violations = findSourceBoundaryViolations({
+      filePath: "/repo/packages/host-runtime/src/composition.ts",
+      packageRoot: "/repo/packages/host-runtime",
+      packagesDirectory,
+      rendererDirectory,
+      sharedContractsDirectory,
+      sourceText,
+    });
+    expect(violations).toHaveLength(1);
+    expect(violations[0]).toContain("Host Runtime must load installed plugins");
+  });
+
+  it("allows the generic loader and test-only plugin references", () => {
+    const input = {
+      packageRoot: "/repo/packages/host-runtime",
+      packagesDirectory,
+      rendererDirectory,
+      sharedContractsDirectory,
+    };
+    expect(
+      findSourceBoundaryViolations({
+        ...input,
+        filePath: "/repo/packages/host-runtime/src/loader.ts",
+        sourceText: "const plugin = await import(entryUrl);",
+      }),
+    ).toEqual([]);
+    expect(
+      findSourceBoundaryViolations({
+        ...input,
+        filePath: "/repo/packages/host-runtime/test/plugins.test.ts",
+        sourceText: 'import { warmup } from "@codexhost/adapter-pi/plugin";',
+      }),
+    ).toEqual([]);
+  });
+
   it("rejects Node.js built-ins in the Renderer", () => {
     const violations = findSourceBoundaryViolations({
       filePath: "/repo/packages/renderer-extension/src/index.ts",

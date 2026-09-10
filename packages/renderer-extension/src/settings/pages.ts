@@ -21,7 +21,13 @@ import {
   createConnectionsSettingsPage,
   type RendererConnectionDiagnostics,
 } from "./connections-page.js";
+import {
+  createSessionImportSettingsPage,
+  type RendererSessionImportClient,
+  type RendererImportedThreadOpener,
+} from "./session-import-page.js";
 import { createReleaseNotesElement } from "./release-notes.js";
+import { createAccountsSettingsPage, type RendererCodexAccountClient } from "./accounts-page.js";
 
 export type {
   RendererConnectionAgentSnapshot,
@@ -63,7 +69,13 @@ function windowsInstallerDownloadUrl(window: Window | null | undefined, version:
   return `https://github.com/BytePioneer-AI/codex-host/releases/download/v${version}/codexhost-${version}-windows-${architecture}.exe`;
 }
 
-export const DEFAULT_RENDERER_SETTINGS_PAGE_IDS = ["connections", "updates", "about"] as const;
+export const DEFAULT_RENDERER_SETTINGS_PAGE_IDS = [
+  "connections",
+  "accounts",
+  "session-import",
+  "updates",
+  "about",
+] as const;
 
 export type DefaultRendererSettingsPageId = (typeof DEFAULT_RENDERER_SETTINGS_PAGE_IDS)[number];
 
@@ -566,9 +578,15 @@ export function createDefaultRendererSettingsPages(
   messages: RendererSettingsMessages = DEFAULT_RENDERER_SETTINGS_MESSAGES,
   getUpdateClient: () => RendererUpdateClient | null = () => null,
   getDiagnostics: () => RendererConnectionDiagnostics | null = () => null,
+  getAccountClient: () => RendererCodexAccountClient | null = () => null,
+  getSessionImportClient: () => RendererSessionImportClient | null = () => null,
+  openImportedThread: RendererImportedThreadOpener = () =>
+    Promise.reject(new Error("Imported Thread navigation is unavailable")),
 ): readonly RendererSettingsPageDefinition[] {
   return Object.freeze([
     createConnectionsSettingsPage(messages, getDiagnostics),
+    createAccountsSettingsPage(messages, getAccountClient),
+    createSessionImportSettingsPage(messages, getSessionImportClient, openImportedThread),
     updatesPage(messages, getUpdateClient),
     aboutPage(messages),
   ]);
@@ -578,8 +596,20 @@ export function createDefaultRendererSettingsRegistry(
   messages: RendererSettingsMessages = DEFAULT_RENDERER_SETTINGS_MESSAGES,
   getUpdateClient: () => RendererUpdateClient | null = () => null,
   getDiagnostics: () => RendererConnectionDiagnostics | null = () => null,
+  getAccountClient: () => RendererCodexAccountClient | null = () => null,
+  getSessionImportClient: () => RendererSessionImportClient | null = () => null,
+  openImportedThread?: RendererImportedThreadOpener,
 ): RendererSettingsPageRegistry {
   return createRendererSettingsPageRegistry(
-    createDefaultRendererSettingsPages(messages, getUpdateClient, getDiagnostics),
+    createDefaultRendererSettingsPages(
+      messages,
+      getUpdateClient,
+      getDiagnostics,
+      getAccountClient,
+      getSessionImportClient,
+      openImportedThread,
+    ),
   );
 }
+
+export type { RendererCodexAccountClient } from "./accounts-page.js";

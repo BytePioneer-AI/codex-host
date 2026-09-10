@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  formatRendererContextSummary,
+  formatRendererCredits,
   formatRendererPlanReset,
   formatRendererPlanWindow,
   formatRendererTokenCount,
@@ -10,6 +12,14 @@ import {
 } from "../src/renderer-usage-control.js";
 
 describe("Renderer Usage localization", () => {
+  it("shows credit-only and context-only data without dollar conversion", () => {
+    expect(rendererUsageHasDisplayData({ totalCredits: 0.05 })).toBe(true);
+    expect(rendererUsageHasDisplayData({ contextUsagePercent: 9.5 })).toBe(true);
+    expect(formatRendererCredits(0.058778444510779446)).toBe("0.059 credits");
+    expect(formatRendererCredits(0.00001)).toBe("<0.001 credits");
+    expect(formatRendererCredits(0)).toBe("0 credits");
+    expect(rendererUsageMessages("zh-CN").recordedCredits).toBe("已记录消耗");
+  });
   it("uses Chinese copy only for the Chinese settings locale", () => {
     expect(rendererUsageMessages("zh-CN")).toMatchObject({
       usage: "用量",
@@ -43,6 +53,12 @@ describe("Renderer Usage token-count formatting", () => {
   });
 });
 
+describe("Renderer Usage context-summary formatting", () => {
+  it("shows the used percentage and the context window", () => {
+    expect(formatRendererContextSummary(15_000, 934_500)).toBe("1.6% / 934.5k");
+  });
+});
+
 describe("Renderer Usage plan-window formatting", () => {
   it("formats a used percent with no reset", () => {
     expect(formatRendererPlanWindow(45)).toBe("45%");
@@ -60,8 +76,9 @@ describe("Renderer Usage plan-window formatting", () => {
 });
 
 describe("Renderer Usage Claude plan windows", () => {
-  it("keeps a plan-only snapshot eligible for the Usage popover", () => {
-    expect(rendererUsageHasDisplayData({ planFiveHourUsedPercent: 45 })).toBe(true);
+  it("does not show Usage for a plan-only snapshot", () => {
+    expect(rendererUsageHasDisplayData({ planFiveHourUsedPercent: 45 })).toBe(false);
+    expect(rendererUsageHasDisplayData({ planSevenDayUsedPercent: 12 })).toBe(false);
   });
 });
 

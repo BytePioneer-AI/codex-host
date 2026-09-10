@@ -15,8 +15,13 @@ function normalizedModel(model: string): string {
 
 function firstPartyPrice(model: string): ClaudeTokenPrice | null {
   const value = normalizedModel(model);
-  if (/claude-opus-4-(5|6|7|8)(?:-|$)/u.test(value)) {
+  if (/claude-opus-(?:5|4-(?:5|6|7|8))(?:-|$)/u.test(value)) {
     return { input: 5, cacheWrite: 6.25, cacheRead: 0.5, output: 25 };
+  }
+  if (/claude-fable-5(?:-1)?(?:-|$)/u.test(value)) {
+    return value.includes("fable-5-1")
+      ? { input: 10, cacheWrite: 12.5, cacheRead: 0.25, output: 50 }
+      : { input: 10, cacheWrite: 12.5, cacheRead: 1, output: 50 };
   }
   if (/claude-opus-4-(0|1)(?:-|$)/u.test(value) || /claude-opus-4-2025/u.test(value)) {
     return { input: 15, cacheWrite: 18.75, cacheRead: 1.5, output: 75 };

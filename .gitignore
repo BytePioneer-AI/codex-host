@@ -4,6 +4,7 @@
 /.pi/
 /downloads/
 /.codexhost/
+/pr-triage/
 /.claude/
 
 # Environment and secrets

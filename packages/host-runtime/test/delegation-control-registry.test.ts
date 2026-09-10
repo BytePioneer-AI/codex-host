@@ -5,6 +5,7 @@ import type { DelegationControlRegistration } from "../src/delegation-types.js";
 
 function registration(threadId: string): DelegationControlRegistration {
   return {
+    listHarnesses: vi.fn(async () => ({ harnesses: ["codex" as const, "pi" as const] })),
     inspect: vi.fn(async (input) => ({
       harnessId: input.harnessId,
       inspection: {
@@ -71,6 +72,17 @@ function registration(threadId: string): DelegationControlRegistration {
 }
 
 describe("DelegationControlRegistry", () => {
+  it("discovers targets from the active session without inspecting Models", async () => {
+    const registry = new DelegationControlRegistry();
+    const session = registration("parent");
+    registry.register(session);
+    await expect(registry.listHarnesses()).resolves.toEqual({ harnesses: ["codex", "pi"] });
+    expect(session.inspect).not.toHaveBeenCalled();
+    registry.register(registration("another-parent"));
+    await expect(registry.listHarnesses()).rejects.toMatchObject({
+      code: "PARENT_THREAD_AMBIGUOUS",
+    });
+  });
   it("routes explicit parent and Thread operations to the owning Host session", async () => {
     const registry = new DelegationControlRegistry();
     const first = registration("parent-a");

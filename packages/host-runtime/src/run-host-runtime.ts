@@ -1,16 +1,19 @@
 import { randomBytes } from "node:crypto";
 import path from "node:path";
+import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 
 import { UPDATE_RUNTIME_ENV } from "@codexhost/update-manager";
 
 import {
-  createExternalHarnessAdapters,
-  prefetchAntigravityModelCatalog,
-  prefetchClaudeCodeModelCatalog,
-} from "./adapter-composition.js";
-import { AppServerHost, officialEnvironment } from "./app-server-host.js";
+  AppServerHost,
+  officialAccountEnvironment,
+  officialEnvironment,
+} from "./app-server-host.js";
+import type { CodexAccount } from "./account/account-repository.js";
+import { AccountOfficialListeners } from "./codex-runtime/account-official-listeners.js";
 import { DelegationControlRegistry } from "./delegation-control-registry.js";
+import { installedHarnessPluginOptions } from "./installed-harness-plugins.js";
 import { startDelegationControlServer } from "./delegation-control-server.js";
 import { installDelegationSkills } from "./delegation-skill.js";
 import type { DelegationControlRegistration } from "./delegation-types.js";
@@ -44,6 +47,7 @@ import { createHostUpdateCoordinator, type HostUpdateCoordinator } from "./updat
 
 const STOCK_CODEX_PATH_ENV = "CODEXHOST_STOCK_CODEX_PATH";
 const DEFAULT_AGENT_ENV = "CODEXHOST_DEFAULT_AGENT";
+export const MANAGED_REMOTE_APP_SERVER_PROCESS_TITLE = "codexhost remote app-server listener";
 
 export function createRemoteOfficialAppServerPlan(
   arguments_: readonly string[],
@@ -161,18 +165,15 @@ export async function runHostRuntime(input: {
       return prepareDelegationRuntime({
         environment,
         createHost: async (delegationEnvironment, onDelegationApi) => {
-          const externalAdapters = createExternalHarnessAdapters(delegationEnvironment);
           const host = new AppServerHost({
             stockCodexPath,
             arguments: input.arguments,
             defaultAgent,
             environment: delegationEnvironment,
-            externalAdapters,
+            ...installedHarnessPluginOptions(delegationEnvironment, false, input.hostRuntimeUrl),
             onDelegationApi,
             ...(updateCoordinator ? { updateCoordinator } : {}),
           });
-          void prefetchClaudeCodeModelCatalog(externalAdapters);
-          void prefetchAntigravityModelCatalog(externalAdapters);
           return host.run();
         },
       });
@@ -184,28 +185,24 @@ export async function runHostRuntime(input: {
         const officialPlan = createRemoteControlOfficialAppServerPlan(
           remoteControlPlan.officialArguments,
         );
-        const officialListener = createLoopbackOfficialAppServerListener({
-          stockCodexPath,
-          arguments: officialPlan.listenerArguments,
-          environment: officialEnvironment(delegationEnvironment),
-          diagnosticOutput: process.stderr,
-        });
-        let officialEndpoint: string | null = null;
-        const createOfficialConnection = () => {
-          if (!officialEndpoint) {
-            throw new Error("Shared official app-server endpoint is unavailable");
-          }
-          return createRemoteOfficialAppServerConnection(officialEndpoint);
-        };
+        const officialListeners = new AccountOfficialListeners((account) =>
+          createLoopbackOfficialAppServerListener({
+            stockCodexPath,
+            arguments: officialPlan.listenerArguments,
+            environment: officialAccountEnvironment(delegationEnvironment, account),
+            diagnosticOutput: process.stderr,
+          }),
+        );
+        const createOfficialConnection = async (account: CodexAccount) =>
+          createRemoteOfficialAppServerConnection(await officialListeners.endpoint(account));
         const mappingStore = createProductionExternalThreadStore(delegationEnvironment);
         await mappingStore.initialize();
-        const externalAdapters = createExternalHarnessAdapters(delegationEnvironment);
         const host = new AppServerHost({
           stockCodexPath,
           arguments: input.arguments,
           defaultAgent,
           environment: delegationEnvironment,
-          externalAdapters,
+          ...installedHarnessPluginOptions(delegationEnvironment, false, input.hostRuntimeUrl),
           mappingStore,
           closeMappingStoreOnExit: false,
           createOfficialConnection,
@@ -216,9 +213,6 @@ export async function runHostRuntime(input: {
           socketPath: remoteControlPlan.pipePath,
           diagnosticOutput: process.stderr,
           createSession: ({ input: desktopInput, output: desktopOutput, diagnosticOutput }) => {
-            const sessionAdapters = createExternalHarnessAdapters(delegationEnvironment);
-            void prefetchClaudeCodeModelCatalog(sessionAdapters);
-            void prefetchAntigravityModelCatalog(sessionAdapters);
             return new AppServerHost({
               stockCodexPath,
               arguments: [],
@@ -227,7 +221,7 @@ export async function runHostRuntime(input: {
               desktopInput,
               desktopOutput,
               diagnosticOutput,
-              externalAdapters: sessionAdapters,
+              ...installedHarnessPluginOptions(delegationEnvironment, false, input.hostRuntimeUrl),
               mappingStore,
               closeMappingStoreOnExit: false,
               createOfficialConnection,
@@ -236,26 +230,22 @@ export async function runHostRuntime(input: {
             });
           },
         });
-        void prefetchClaudeCodeModelCatalog(externalAdapters);
-        void prefetchAntigravityModelCatalog(externalAdapters);
-        let hostStarted = false;
+
         try {
-          officialEndpoint = await officialListener.listen();
+          await officialListeners.endpoint({
+            codexHome: path.resolve(
+              delegationEnvironment.CODEX_HOME ?? path.join(homedir(), ".codex"),
+            ),
+          });
           await listener.listen();
           await publishRemoteControlAppServerDescriptor(remoteControlPlan);
-          hostStarted = true;
           return await host.run();
         } finally {
-          if (!hostStarted) {
-            await Promise.allSettled(
-              [...new Set(externalAdapters.values())].map((adapter) => adapter.close()),
-            );
-          }
           try {
             await listener.close();
           } finally {
             try {
-              await officialListener.close();
+              await officialListeners.close();
             } finally {
               await mappingStore.close();
             }
@@ -288,11 +278,6 @@ export async function runHostRuntime(input: {
         socketPath,
         diagnosticOutput: process.stderr,
         createSession: ({ input: desktopInput, output: desktopOutput, diagnosticOutput }) => {
-          const externalAdapters = createExternalHarnessAdapters(delegationEnvironment, {
-            managedRemoteHost: true,
-          });
-          void prefetchClaudeCodeModelCatalog(externalAdapters);
-          void prefetchAntigravityModelCatalog(externalAdapters);
           return new AppServerHost({
             stockCodexPath,
             arguments: [],
@@ -301,7 +286,7 @@ export async function runHostRuntime(input: {
             desktopInput,
             desktopOutput,
             diagnosticOutput,
-            externalAdapters,
+            ...installedHarnessPluginOptions(delegationEnvironment, true, input.hostRuntimeUrl),
             mappingStore,
             closeMappingStoreOnExit: false,
             createOfficialConnection: () =>
@@ -329,7 +314,7 @@ export async function runHostRuntime(input: {
           officialState.unexpectedExit = result;
           void listener.close();
         });
-        process.title = "codex app-server desktop-ssh-websocket-v0.sock";
+        process.title = MANAGED_REMOTE_APP_SERVER_PROCESS_TITLE;
         process.once("SIGINT", stop);
         process.once("SIGTERM", stop);
         await listener.closed;

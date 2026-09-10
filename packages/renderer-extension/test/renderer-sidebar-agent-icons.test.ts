@@ -8,6 +8,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import type { RendererAgent } from "../src/agent-selection-state.js";
 import type { RendererModelClient } from "../src/renderer-model-client.js";
+import { RendererMethodUnavailableError } from "../src/renderer-request-sender.js";
 import {
   installRendererSidebarAgentIcons,
   draftIdFromSidebarRowElement,
@@ -94,6 +95,7 @@ function clientWith(
     forkThread: vi.fn(),
     inspectHarness: vi.fn(),
     inspectThread: vi.fn(),
+    inspectHarnessCommands: vi.fn(),
     inspectThreadCommands: vi.fn(),
     executeThreadCommand: vi.fn(),
     inspectThreadUsage: vi.fn(),
@@ -104,6 +106,14 @@ function clientWith(
     checkUpdate: vi.fn(),
     startUpdate: vi.fn(),
     readUpdateStatus: vi.fn(),
+    listCodexAccounts: vi.fn(),
+    refreshCodexAccounts: vi.fn(),
+    createCodexAccount: vi.fn(),
+    deleteCodexAccount: vi.fn(),
+    activateCodexAccount: vi.fn(),
+    startCodexAccountLogin: vi.fn(),
+    cancelCodexAccountLogin: vi.fn(),
+    subscribeCodexAccountLogin: vi.fn(),
   };
 }
 
@@ -383,6 +393,38 @@ describe("Renderer sidebar Agent ownership", () => {
     control.dispose();
   });
 
+  it("does not schedule retries for an unsupported ownership API and can recover after connection refresh", async () => {
+    vi.useFakeTimers();
+    try {
+      const row = new FakeRow("pi-thread");
+      const dom = new FakeDom([row]);
+      let client = clientWith(
+        vi
+          .fn()
+          .mockRejectedValue(
+            new RendererMethodUnavailableError("codexhost/thread/ownership/list", { code: -32601 }),
+          ),
+      );
+      const control = installRendererSidebarAgentIcons({ getClient: () => client, dom });
+      await vi.runAllTimersAsync();
+      expect(client.listThreadOwnership).toHaveBeenCalledTimes(1);
+      expect(vi.getTimerCount()).toBe(0);
+      client = clientWith(async ({ threadIds }) => ({
+        threads: threadIds.map((threadId) => ({
+          threadId,
+          owner: "external",
+          harnessId: PI_HARNESS_ID,
+        })),
+      }));
+      control.refresh();
+      await vi.runAllTimersAsync();
+      expect(row.agent).toBe("pi");
+      control.dispose();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("retries failed ownership requests without requiring an explicit refresh", async () => {
     vi.useFakeTimers();
     try {
@@ -494,6 +536,13 @@ describe("Renderer sidebar Agent ownership", () => {
   });
 
   it("maps only known external Harness ownership to Renderer Agents", () => {
+    expect(
+      rendererAgentForThreadOwnership({
+        threadId: "kiro-thread" as HostThreadId,
+        owner: "external",
+        harnessId: harnessIdSchema.parse("kiro-cli"),
+      }),
+    ).toBe("kiro-cli");
     expect(
       rendererAgentForThreadOwnership({
         threadId: "pi-thread" as HostThreadId,

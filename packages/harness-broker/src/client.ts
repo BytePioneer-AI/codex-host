@@ -36,8 +36,11 @@ import {
 } from "@codexhost/harness-adapter";
 import {
   harnessIdSchema,
+  harnessAccountSnapshotSchema,
+  type HarnessAccountSnapshot,
   harnessInspectionSchema,
   harnessSessionCapabilitiesSchema,
+  type HarnessCommandCatalog,
 } from "@codexhost/shared-contracts";
 
 import { consumeBrokerFrames, writeBrokerFrame } from "./framing.js";
@@ -486,6 +489,7 @@ class BrokeredHarnessSession implements HarnessSession {
 }
 
 export class BrokeredHarnessAdapter implements HarnessAdapter {
+  readonly commandCatalog?: HarnessCommandCatalog;
   readonly harnessId = harnessIdSchema.parse("claude-code");
   readonly #descriptorPath: string;
   #connection: Promise<BrokerConnection> | null = null;
@@ -508,9 +512,26 @@ export class BrokeredHarnessAdapter implements HarnessAdapter {
     },
   };
 
-  constructor(input: { descriptorPath?: string; environment?: NodeJS.ProcessEnv } = {}) {
+  constructor(
+    input: {
+      descriptorPath?: string;
+      environment?: NodeJS.ProcessEnv;
+      commandCatalog?: HarnessCommandCatalog;
+    } = {},
+  ) {
+    if (input.commandCatalog) this.commandCatalog = input.commandCatalog;
     this.#descriptorPath =
       input.descriptorPath ?? defaultHarnessBrokerDescriptorPath(input.environment);
+  }
+
+  async inspectAccount(): Promise<HarnessAccountSnapshot | null> {
+    if (this.#closed) return null;
+    try {
+      const value = await (await this.#connect()).request("adapter.inspectAccount", {});
+      return harnessAccountSnapshotSchema.nullable().parse(value);
+    } catch {
+      return null;
+    }
   }
 
   async inspect(input: InspectHarnessInput = {}): Promise<HarnessInspection> {

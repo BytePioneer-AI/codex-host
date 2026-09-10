@@ -17,6 +17,9 @@ import {
 import { FakeHarnessAdapter, FakeHarnessSession } from "@codexhost/harness-adapter/testing";
 import {
   harnessIdSchema,
+  harnessModelRefSchema,
+  harnessThinkingOptionIdSchema,
+  harnessPermissionModeIdSchema,
   harnessPermissionModeCatalogSchema,
   hostTurnIdSchema,
 } from "@codexhost/shared-contracts";
@@ -67,7 +70,13 @@ describe("macOS Aqua Harness broker", () => {
       process.platform === "win32"
         ? `\\\\.\\pipe\\codexhost-harness-broker-${process.pid}-${randomUUID()}`
         : path.join(root, "broker.sock");
-    const native = new FakeHarnessAdapter(harnessIdSchema.parse("claude-code"));
+    const account = {
+      email: "broker@example.com",
+      credits: { usedPercent: 20, periodType: "five_hour" as const },
+    };
+    const native = Object.assign(new FakeHarnessAdapter(harnessIdSchema.parse("claude-code")), {
+      inspectAccount: vi.fn(async () => account),
+    });
     const nativeOpen = vi.spyOn(native, "open");
     const server = await startHarnessBrokerServer({ descriptorPath, socketPath, adapter: native });
     const adapter = new BrokeredHarnessAdapter({ descriptorPath });
@@ -75,6 +84,9 @@ describe("macOS Aqua Harness broker", () => {
     await expect(adapter.inspect({ cwd: root })).resolves.toMatchObject({
       status: "ready",
     });
+    await expect(adapter.inspectAccount()).resolves.toEqual(account);
+    expect(native.inspectAccount).toHaveBeenCalledWith();
+    expect(nativeOpen).not.toHaveBeenCalled();
     const opened = await adapter.open({
       kind: "create",
       cwd: root,
@@ -101,6 +113,29 @@ describe("macOS Aqua Harness broker", () => {
     expect(native.sessions).toHaveLength(1);
     expect(native.sessions[0]?.cwd).toBe(root);
     expect(nativeOpen).toHaveBeenCalledWith({ kind: "create", cwd: root });
+    const sourceRef = opened.value.initialState.nativeRef;
+    if (!sourceRef) throw new Error("Fixture Session has no native identity");
+    const rollback = {
+      kind: "rollbackLastTurn" as const,
+      cwd: root,
+      sourceRef: { ...sourceRef, nativeSessionId: "separate-id" },
+      model: harnessModelRefSchema.parse({ id: "custom-model" }),
+      thinkingOptionId: harnessThinkingOptionIdSchema.parse("high"),
+      permissionModeId: harnessPermissionModeIdSchema.parse("default"),
+    };
+    nativeOpen.mockResolvedValueOnce({
+      ok: false,
+      error: {
+        code: "unsupported",
+        message: "Synthetic rollback",
+        retryable: false,
+      },
+    });
+    await expect(adapter.open(rollback)).resolves.toMatchObject({
+      ok: false,
+      error: { code: "unsupported" },
+    });
+    expect(nativeOpen).toHaveBeenLastCalledWith(rollback);
     await opened.value.close();
     await adapter.close();
     await server.close();

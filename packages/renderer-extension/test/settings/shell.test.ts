@@ -22,17 +22,17 @@ describe("Renderer settings foundation", () => {
     expect(pages.map(({ id }) => id)).toEqual(DEFAULT_RENDERER_SETTINGS_PAGE_IDS);
     expect(pages.map(({ label }) => label)).toEqual([
       "Connections",
-      "Appearance",
       "Accounts",
       "Session Import",
+      "Appearance",
       "Updates",
       "About",
     ]);
     expect(pages.map(({ icon }) => icon)).toEqual([
       "connections",
-      "settings",
       "accounts",
       "session-import",
+      "settings",
       "updates",
       "about",
     ]);
@@ -64,9 +64,9 @@ describe("Renderer settings foundation", () => {
 
     expect(pages.map(({ id }) => id)).toEqual([
       "connections",
-      "appearance",
       "accounts",
       "session-import",
+      "appearance",
       "updates",
       "about",
     ]);

@@ -72,9 +72,9 @@ function windowsInstallerDownloadUrl(window: Window | null | undefined, version:
 
 export const DEFAULT_RENDERER_SETTINGS_PAGE_IDS = [
   "connections",
-  "appearance",
   "accounts",
   "session-import",
+  "appearance",
   "updates",
   "about",
 ] as const;
@@ -587,9 +587,9 @@ export function createDefaultRendererSettingsPages(
 ): readonly RendererSettingsPageDefinition[] {
   return Object.freeze([
     createConnectionsSettingsPage(messages, getDiagnostics),
-    createAppearanceSettingsPage(messages),
     createAccountsSettingsPage(messages, getAccountClient),
     createSessionImportSettingsPage(messages, getSessionImportClient, openImportedThread),
+    createAppearanceSettingsPage(messages),
     updatesPage(messages, getUpdateClient),
     aboutPage(messages),
   ]);

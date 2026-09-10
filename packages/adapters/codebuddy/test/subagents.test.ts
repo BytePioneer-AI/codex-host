@@ -7,6 +7,7 @@ import { mkdtemp, mkdir, writeFile, rm, symlink } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { readCodeBuddyChild } from "../src/subagent-history.js";
+import { codeBuddyChildId } from "../src/subagent-tool.js";
 
 const parent = nativeSessionRefSchema.parse({
   harnessId: "codebuddy",
@@ -27,6 +28,14 @@ const start = {
 };
 
 describe("CodeBuddy native Subagent projection", () => {
+  it.each([
+    "done\n[Agent ID: agent-child]",
+    [{ type: "text", text: "done\n[Agent ID: agent-child]" }],
+    { type: "text", text: "done\n[Agent ID: agent-child]" },
+  ])("extracts native child identity from every supported output shape", (output) => {
+    expect(codeBuddyChildId({ output })).toBe("agent-child");
+    expect(codeBuddyChildId({ rawOutput: output })).toBe("agent-child");
+  });
   it("does not emit stale progress after cancellation while a native file read is pending", async () => {
     const events: HostEvent[] = [];
     let resolve!: (id: string) => void;

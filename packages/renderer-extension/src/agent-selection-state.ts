@@ -206,14 +206,23 @@ export class DraftAgentController<Composer extends object> {
     if (agent === "codex" && codexAccountId) state.codexAccountId = codexAccountId;
     else delete state.codexAccountId;
     if (agent === "pi" && model) state.piModel = model;
+    else if (agent === "pi") delete state.piModel;
     if (agent === "claude-code" && model) state.claudeModel = model;
+    else if (agent === "claude-code") delete state.claudeModel;
     if (agent === "deepseek-harness" && model) state.deepSeekHarnessModel = model;
+    else if (agent === "deepseek-harness") delete state.deepSeekHarnessModel;
     if (agent === "opencode" && model) state.openCodeModel = model;
+    else if (agent === "opencode") delete state.openCodeModel;
     if (agent === "grok" && model) state.grokModel = model;
+    else if (agent === "grok") delete state.grokModel;
     if (agent === "omp" && model) state.ompModel = model;
+    else if (agent === "omp") delete state.ompModel;
     if (agent === "antigravity" && model) state.antigravityModel = model;
+    else if (agent === "antigravity") delete state.antigravityModel;
     if (agent === "kiro-cli" && model) state.kiroCliModel = model;
+    else if (agent === "kiro-cli") delete state.kiroCliModel;
     if (agent === "codebuddy" && model) state.codeBuddyModel = model;
+    else if (agent === "codebuddy") delete state.codeBuddyModel;
     if (agent === "pi" && thinkingOptionId) state.piThinkingOptionId = thinkingOptionId;
     else if (agent === "pi") delete state.piThinkingOptionId;
     if (agent === "claude-code" && thinkingOptionId) {

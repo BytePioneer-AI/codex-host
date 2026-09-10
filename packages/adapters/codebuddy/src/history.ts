@@ -28,8 +28,15 @@ export function validateNativeRef(ref: NativeSessionRef) {
 }
 
 async function sameCwd(left: string, right: string) {
-  const a = await realpath(left),
-    b = await realpath(right);
+  const b = await realpath(right);
+  const a = await realpath(left).catch((error) => {
+    if (["ENOENT", "ENOTDIR"].includes(String(record(error).code)))
+      throw new CodeBuddyError(
+        "invalidRequest",
+        "Native Session historical working directory is unavailable; ownership cannot be verified",
+      );
+    throw error;
+  });
   return process.platform === "win32" ? a.toLowerCase() === b.toLowerCase() : a === b;
 }
 

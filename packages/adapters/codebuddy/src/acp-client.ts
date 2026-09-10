@@ -45,8 +45,17 @@ export class CodeBuddyAcpClient implements CodeBuddyClient {
   readonly #connection: ClientSideConnection;
   readonly #exited: Promise<void>;
   #closing: Promise<void> | undefined;
+  #failure: unknown;
+  #rejectFailure!: (error: unknown) => void;
+  readonly #failed = new Promise<never>((_, reject) => {
+    this.#rejectFailure = reject;
+  });
 
-  constructor(options: Parameters<CodeBuddyClientFactory>[0]) {
+  constructor(
+    readonly options: Parameters<CodeBuddyClientFactory>[0],
+    readonly operationTimeoutMs = 15_000,
+  ) {
+    void this.#failed.catch(() => {});
     const invocation = codeBuddyInvocation(options.environment, options.ephemeral);
     this.#child = spawn(invocation.command, invocation.arguments, {
       cwd: options.cwd,
@@ -61,14 +70,21 @@ export class CodeBuddyAcpClient implements CodeBuddyClient {
       /* Native diagnostics can contain credentials. */
     });
     this.#child.on("error", (error) => {
-      if (!this.#closing) options.handlers.fault(error);
+      this.#fault(error);
+    });
+    this.#child.once("exit", (code, signal) => {
+      this.#fault(
+        new CodeBuddyError("processExited", `ACP process exited (${code ?? signal ?? "unknown"})`),
+      );
     });
     this.#child.stdin.on("error", () => {
       /* The connection/close path owns failures. */
     });
     this.#connection = new ClientSideConnection(
       () => ({
-        sessionUpdate: async (notification) => options.handlers.update(notification),
+        sessionUpdate: async (notification) => {
+          if (!this.#closing && !this.#failure) options.handlers.update(notification);
+        },
         requestPermission: (request) => options.handlers.permission(request),
         extMethod: async (method, params) => {
           if (method !== "_codebuddy.ai/question") throw RequestError.methodNotFound(method);
@@ -82,23 +98,42 @@ export class CodeBuddyAcpClient implements CodeBuddyClient {
     );
     void this.#connection.closed
       .then(() => {
-        if (!this.#closing)
-          options.handlers.fault(new CodeBuddyError("processExited", "ACP connection closed"));
+        this.#fault(new CodeBuddyError("processExited", "ACP connection closed"));
       })
       .catch((error) => {
-        if (!this.#closing) options.handlers.fault(error);
+        this.#fault(error);
       });
   }
 
+  #fault(error: unknown) {
+    if (this.#closing || this.#failure) return;
+    this.#failure = error;
+    this.#rejectFailure(error);
+    this.options.handlers.fault(error);
+    void this.close().catch(() => {});
+  }
+
+  async #request<T>(
+    operation: () => Promise<T>,
+    label?: string,
+    timeout = this.operationTimeoutMs,
+  ): Promise<T> {
+    if (this.#failure) throw this.#failure;
+    if (this.#closing) throw new CodeBuddyError("invalidState", "ACP client is closed");
+    const work = Promise.race([operation(), this.#failed]);
+    return label ? bounded(work, timeout, label, (error) => this.#fault(error)) : work;
+  }
+
   async initialize() {
-    const result = await bounded(
-      this.#connection.initialize({
-        protocolVersion: 1,
-        clientInfo: { name: "codexhost", version: "0.0.0" },
-        clientCapabilities: { _meta: { "codebuddy.ai": { question: true } } },
-      }),
-      15_000,
+    const result = await this.#request(
+      () =>
+        this.#connection.initialize({
+          protocolVersion: 1,
+          clientInfo: { name: "codexhost", version: "0.0.0" },
+          clientCapabilities: { _meta: { "codebuddy.ai": { question: true } } },
+        }),
       "ACP initialize",
+      15_000,
     );
     if (result.protocolVersion !== 1 || !result.agentCapabilities?.loadSession) {
       throw new CodeBuddyError("unsupported", "ACP v1 with session/load is required");
@@ -108,21 +143,21 @@ export class CodeBuddyAcpClient implements CodeBuddyClient {
 
   async open(cwd: string, sessionId?: string) {
     return record(
-      await bounded(
-        sessionId
-          ? this.#connection.loadSession({ cwd, sessionId, mcpServers: [] })
-          : this.#connection.newSession({ cwd, mcpServers: [] }),
-        20_000,
+      await this.#request(
+        () =>
+          sessionId
+            ? this.#connection.loadSession({ cwd, sessionId, mcpServers: [] })
+            : this.#connection.newSession({ cwd, mcpServers: [] }),
         "ACP Session open",
+        20_000,
       ),
     );
   }
 
   async configure(sessionId: string, configId: string, value: string) {
     return record(
-      await bounded(
-        this.#connection.setSessionConfigOption({ sessionId, configId, value }),
-        15_000,
+      await this.#request(
+        () => this.#connection.setSessionConfigOption({ sessionId, configId, value }),
         "ACP configuration",
       ),
     );
@@ -130,23 +165,25 @@ export class CodeBuddyAcpClient implements CodeBuddyClient {
 
   async prompt(sessionId: string, input: string) {
     return record(
-      await this.#connection.prompt({ sessionId, prompt: [{ type: "text", text: input }] }),
+      await this.#request(() =>
+        this.#connection.prompt({ sessionId, prompt: [{ type: "text", text: input }] }),
+      ),
     );
   }
 
   async cancel(sessionId: string) {
-    await this.#connection.cancel({ sessionId });
+    await this.#request(() => this.#connection.cancel({ sessionId }), "ACP cancel");
   }
 
   async answer(sessionId: string, toolCallId: string, answers: Record<string, string[]> | null) {
-    const response = await bounded(
-      this.#connection.extMethod("_codebuddy.ai/resolveInterruption", {
-        sessionId,
-        toolCallId,
-        decision: answers === null ? "deny" : "allow",
-        ...(answers ? { answers } : {}),
-      }),
-      15_000,
+    const response = await this.#request(
+      () =>
+        this.#connection.extMethod("_codebuddy.ai/resolveInterruption", {
+          sessionId,
+          toolCallId,
+          decision: answers === null ? "deny" : "allow",
+          ...(answers ? { answers } : {}),
+        }),
       "CodeBuddy question response",
     );
     if (record(response).resolved !== true)
@@ -154,6 +191,7 @@ export class CodeBuddyAcpClient implements CodeBuddyClient {
   }
 
   close(): Promise<void> {
+    this.#rejectFailure(new CodeBuddyError("invalidState", "ACP client is closed"));
     this.#closing ??= this.#closeProcess();
     return this.#closing;
   }

@@ -1,13 +1,14 @@
 import type { HostSubagentDelegationItem, HostSubagentStatus } from "@codexhost/harness-adapter";
 import { hostItemIdSchema } from "@codexhost/shared-contracts";
 import { record, text } from "./common.js";
+import { contentText } from "./projection.js";
 
 export const validCodeBuddyChildId = (id: string) => /^agent-[a-zA-Z0-9_-]{1,100}$/u.test(id);
 
 export function codeBuddyChildId(value: unknown): string | undefined {
   const row = record(value);
   const structured = text(record(record(record(row.providerData).toolResult).subAgent).sessionId);
-  const body = text(record(row.rawOutput ?? row.output).text);
+  const body = contentText(row.rawOutput ?? row.output);
   const id = structured || /\[Agent ID: (agent-[a-zA-Z0-9_-]+)\]\s*$/u.exec(body)?.[1];
   return id && validCodeBuddyChildId(id) ? id : undefined;
 }

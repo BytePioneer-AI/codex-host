@@ -25,6 +25,35 @@ const assistant = {
 const lines = (rows: unknown[]) => rows.map((row) => JSON.stringify(row)).join("\n");
 
 describe("CodeBuddy native history and output projection", () => {
+  it("retains every valid diff in one terminal tool result without duplicate items", () => {
+    const events: HostEvent[] = [];
+    const output = new CodeBuddyTurnOutput(
+      hostTurnIdSchema.parse("multi-diff"),
+      process.cwd(),
+      (event) => events.push(event),
+    );
+    const update = {
+      sessionUpdate: "tool_call",
+      toolCallId: "multi",
+      status: "completed",
+      content: [
+        { type: "diff", path: "a.txt", oldText: null, newText: "new A" },
+        { type: "diff", path: "b.txt", oldText: "old B", newText: "new B" },
+        { type: "diff", path: "invalid", oldText: "old" },
+      ],
+    };
+    output.update(update);
+    output.update(update);
+    output.finish("succeeded");
+    const changes = events.flatMap((e) =>
+      e.type === "item.completed" && e.snapshot.item.type === "fileChange" ? [e.snapshot.item] : [],
+    );
+    expect(changes).toHaveLength(1);
+    expect(changes[0]?.changes.map((c) => [c.path, c.kind])).toEqual([
+      ["a.txt", "add"],
+      ["b.txt", "update"],
+    ]);
+  });
   it("encodes native model IDs opaquely and derives configuration from the native catalog", () => {
     expect(nativeModel(modelRef("provider/model:variant"))).toBe("provider/model:variant");
     expect(configuration(configOptions()).catalog.defaultModel).toEqual(modelRef("native/model"));

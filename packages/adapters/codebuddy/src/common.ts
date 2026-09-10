@@ -54,16 +54,21 @@ export async function bounded<T>(
   operation: Promise<T>,
   milliseconds: number,
   label: string,
+  onTimeout?: (error: CodeBuddyError) => void,
 ): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     return await Promise.race([
       operation,
       new Promise<never>((_, reject) => {
-        timer = setTimeout(
-          () => reject(new CodeBuddyError("unavailable", `${label} timed out`)),
-          milliseconds,
-        );
+        timer = setTimeout(() => {
+          const error = new CodeBuddyError("unavailable", `${label} timed out`);
+          try {
+            onTimeout?.(error);
+          } finally {
+            reject(error);
+          }
+        }, milliseconds);
       }),
     ]);
   } finally {

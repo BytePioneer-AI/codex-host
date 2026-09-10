@@ -160,13 +160,13 @@ export class CodeBuddyTurnOutput {
       });
     }
     this.#finish(item, toolOutcome(update.status));
-    if (update.status === "completed")
+    if (update.status === "completed" && !this.#diffs.has(callId)) {
+      const changes: Extract<HostItem, { type: "fileChange" }>["changes"] = [];
       for (const diff of rows(merged.content)) {
         if (
           diff.type !== "diff" ||
           typeof diff.path !== "string" ||
-          typeof diff.newText !== "string" ||
-          this.#diffs.has(callId)
+          typeof diff.newText !== "string"
         )
           continue;
         const unifiedDiff = createTwoFilesPatch(
@@ -177,21 +177,23 @@ export class CodeBuddyTurnOutput {
         );
         // HostFileChange has no truncation marker; never publish a silently cut patch.
         if (unifiedDiff.length > OUTPUT_LIMIT) continue;
+        changes.push({
+          path: diff.path,
+          kind: diff.oldText === null ? "add" : "update",
+          unifiedDiff,
+        });
+      }
+      if (changes.length) {
         this.#diffs.add(callId);
         const change: HostItem = {
           type: "fileChange",
           itemId: hostItemIdSchema.parse(`diff-${callId}`),
-          changes: [
-            {
-              path: diff.path,
-              kind: diff.oldText === null ? "add" : "update",
-              unifiedDiff,
-            },
-          ],
+          changes,
         };
         this.#start(change);
         this.#finish(change, { status: "succeeded" });
       }
+    }
   }
 
   finish(status: "succeeded" | "failed" | "cancelled", error?: HarnessError) {

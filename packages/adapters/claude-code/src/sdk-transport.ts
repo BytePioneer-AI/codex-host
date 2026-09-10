@@ -337,6 +337,12 @@ function allowed(
   };
 }
 
+function isThreadLevelEvent(event: ClaudeTurnEvent): boolean {
+  // A background Subagent settles outside any Turn, and its task-notification
+  // Segment may never produce a Terminal; Turn batching would swallow it.
+  return event.type === "subagent.settled";
+}
+
 export class ClaudeSdkTransport implements ClaudeTurnTransport {
   readonly sessionId: string;
   readonly #children: ChildProcessWithoutNullStreams[] = [];
@@ -362,6 +368,7 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
   } | null = null;
   #autonomousTurnHandler: ((turn: ClaudeAutonomousTurn) => void) | null = null;
   #idleHandler: ClaudeIdleTurnHandler | null = null;
+  #threadEventHandler: ((event: ClaudeTurnEvent) => void) | null = null;
   #idleLive = false;
   #idleAccumulator: ClaudeNativeTurnAccumulator | null = null;
   #closePromise: Promise<void> | null = null;
@@ -396,6 +403,10 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
 
   setIdleTurnHandler(handler: ClaudeIdleTurnHandler | null): void {
     this.#idleHandler = handler;
+  }
+
+  setThreadEventHandler(handler: ((event: ClaudeTurnEvent) => void) | null): void {
+    this.#threadEventHandler = handler;
   }
 
   setIdleLive(live: boolean): void {
@@ -906,7 +917,13 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
           autonomous.nativeTurnKey = message.uuid;
         }
         const interpreted = autonomous.accumulator.consume(message);
-        autonomous.events.push(...interpreted.events);
+        for (const event of interpreted.events) {
+          if (isThreadLevelEvent(event)) {
+            this.#threadEventHandler?.(event);
+            continue;
+          }
+          autonomous.events.push(event);
+        }
         if (interpreted.terminal) {
           this.#autonomous = null;
           const nativeTurnKey = autonomous.nativeTurnKey ?? `autonomous-${Date.now()}`;

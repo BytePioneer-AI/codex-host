@@ -337,10 +337,28 @@ function allowed(
   };
 }
 
-function isThreadLevelEvent(event: ClaudeTurnEvent): boolean {
-  // A background Subagent settles outside any Turn, and its task-notification
-  // Segment may never produce a Terminal; Turn batching would swallow it.
-  return event.type === "subagent.settled";
+function canDeliverSettlementImmediately(
+  event: ClaudeTurnEvent,
+  pendingEvents: readonly ClaudeTurnEvent[],
+): boolean {
+  if (event.type !== "subagent.settled") return false;
+  // A notification without a continuation may never produce a Terminal. Deliver
+  // it now unless this batch still owes the child its creation/reactivation.
+  // Otherwise Host would discard the unknown child's terminal state and later
+  // replay its buffered lifecycle as running.
+  return !pendingEvents.some((pending) => {
+    if (
+      pending.type !== "subagent.started" &&
+      pending.type !== "subagent.updated" &&
+      pending.type !== "subagent.completed"
+    ) {
+      return false;
+    }
+    return (
+      (event.callId !== undefined && pending.callId === event.callId) ||
+      pending.nativeSubagentId === event.nativeSubagentId
+    );
+  });
 }
 
 export class ClaudeSdkTransport implements ClaudeTurnTransport {
@@ -918,7 +936,7 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
         }
         const interpreted = autonomous.accumulator.consume(message);
         for (const event of interpreted.events) {
-          if (isThreadLevelEvent(event)) {
+          if (canDeliverSettlementImmediately(event, autonomous.events)) {
             this.#threadEventHandler?.(event);
             continue;
           }

@@ -2270,6 +2270,79 @@ describe("Claude Code HarnessAdapter", () => {
     await session.close();
   });
 
+  it.each(["completed", "failed", "interrupted"] as const)(
+    "finishes an autonomous Turn after its newly created child is %s",
+    async (status) => {
+      const { adapter, transports } = fixture();
+      const session = await openSession(adapter);
+      const events: Array<Extract<HarnessOutput, { kind: "event" }>["event"]> = [];
+      const drain = (async () => {
+        for await (const output of session.outputs) {
+          if (output.kind === "event") events.push(output.event);
+        }
+      })();
+      try {
+        await session.execute(textTurn("initial"));
+        const transport = transports[0];
+        if (!transport) throw new Error("Fake Claude transport was not created");
+        transport.finish({ status: "succeeded" });
+        await vi.waitFor(() =>
+          expect(events.some((event) => event.type === "turn.completed")).toBe(true),
+        );
+        events.length = 0;
+        transport.autonomousTurnHandler?.({
+          nativeTurnKey: "continuation-with-child",
+          events: [
+            {
+              type: "subagent.started",
+              operation: "spawn",
+              callId: "spawn-child",
+              description: "Inspect",
+              background: true,
+            },
+            {
+              type: "subagent.completed",
+              callId: "spawn-child",
+              isError: false,
+              continuesInBackground: true,
+              nativeSubagentId: "fast-child",
+            },
+            {
+              type: "subagent.settled",
+              nativeSubagentId: "fast-child",
+              status,
+              resultSummary: "Child finished",
+            },
+          ],
+          result: { status: "succeeded" },
+        });
+        await vi.waitFor(() =>
+          expect(events.some((event) => event.type === "turn.completed")).toBe(true),
+        );
+        expect(events.filter((event) => event.type === "subagent.state.changed")).toEqual([
+          {
+            type: "subagent.state.changed",
+            nativeSubagentId: "fast-child",
+            status,
+            resultSummary: "Child finished",
+          },
+        ]);
+        const creation = events.findIndex(
+          (event) =>
+            event.type === "item.completed" && event.snapshot.item.type === "subagentDelegation",
+        );
+        const settlement = events.findIndex((event) => event.type === "subagent.state.changed");
+        expect(creation).toBeGreaterThanOrEqual(0);
+        expect(settlement).toBeGreaterThan(creation);
+        expect(await session.execute(textTurn("next-user-turn"))).toMatchObject({ ok: true });
+        transport.finish({ status: "succeeded" });
+      } finally {
+        await session.close();
+        await drain;
+      }
+    },
+  );
+
   it("publishes a background Subagent settlement that arrives outside any Turn", async () => {
     const { adapter, transports } = fixture();
     const session = await openSession(adapter);

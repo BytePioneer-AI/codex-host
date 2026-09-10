@@ -182,10 +182,10 @@ export interface ClaudeTurnTransport {
   setAutonomousTurnHandler(handler: (turn: ClaudeAutonomousTurn) => void): void;
   setIdleTurnHandler(handler: ClaudeIdleTurnHandler | null): void;
   /**
-   * Receives Thread-level events the moment they are observed, independent of
-   * Turn or Segment boundaries. A background Subagent's settlement arrives in
-   * a task-notification Segment that may never produce a Terminal, so Turn
-   * batching would swallow it.
+   * Receives settlements that have no preceding buffered Subagent lifecycle.
+   * A task-notification Segment may never produce a Terminal, so independent
+   * settlements must not wait for Turn batching. Settlements that depend on a
+   * buffered creation/reactivation stay in that batch to preserve causal order.
    */
   setThreadEventHandler(handler: ((event: ClaudeTurnEvent) => void) | null): void;
   setIdleLive(live: boolean): void;

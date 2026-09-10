@@ -44,6 +44,7 @@
     "test:rust": "cargo test --workspace --locked --features codexhost-shim/test-utils,codexhost-gate-a-native/gate-tools",
     "test": "npm run test:typescript && npm run test:rust",
     "test:e2e": "playwright test --config tests/e2e/playwright.config.js",
+    "test:triage": "node --test .agents/skills/codexhost-pr-triage/test/*.test.mjs",
     "gate:a:preflight": "node tools/gate-a/run.mjs preflight",
     "gate:a:probe": "node tools/gate-a/run.mjs probe",
     "gate:a:differential": "node tools/gate-a/run.mjs differential",

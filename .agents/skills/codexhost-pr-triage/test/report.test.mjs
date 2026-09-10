@@ -80,7 +80,7 @@ test("invalid contract fields fail with field paths", () => {
   const cases = [
     [
       (r) => {
-        r.schemaVersion = 2;
+        r.schemaVersion = 3;
       },
       /schemaVersion/u,
     ],

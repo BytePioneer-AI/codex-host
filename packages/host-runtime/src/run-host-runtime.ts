@@ -139,6 +139,14 @@ function unavailableAccountReason(
   return "recovery-required";
 }
 
+function reportUnavailableOfficialRuntime(error: unknown): void {
+  // Native failures can include private paths or authentication material. Keep the
+  // Host diagnostic actionable without logging the raw error.
+  process.stderr.write(
+    `codexhost managed official runtime is unavailable: ${unavailableAccountReason(error)}\n`,
+  );
+}
+
 function unavailableOfficialRuntime(
   reason: "unsupported-storage" | "unsupported-version" | "recovery-required" = "recovery-required",
 ): {
@@ -235,6 +243,14 @@ async function createManagedOfficialRuntime(input: {
               }),
         ),
     });
+    const runtime = new OfficialAccountRuntime({
+      owner: scope.owner,
+      credentials,
+      environment: processEnvironment,
+      nativeVersion: () => readOfficialCliVersion(input.stockCodexPath, processEnvironment),
+      reconcilePreviousWriter: () => processRecord.reconcile(),
+      persistentManagementClient: input.loopback,
+    });
     const legacyInventory = await inspectLegacyAccountLayout(dataDirectory, sharedCodexHome);
     const legacyRegistryFile =
       legacyInventory.kind === "legacy" && !canAdoptLegacyLayout(legacyInventory)
@@ -259,16 +275,9 @@ async function createManagedOfficialRuntime(input: {
         accounts: savedAccounts,
         credentials,
         oldOfficialBackendsExited: launcherTakeoverConfirmed,
+        validateMigratedThreads: (threadIds) => runtime.validateMigratedThreads(threadIds),
       });
     }
-    const runtime = new OfficialAccountRuntime({
-      owner: scope.owner,
-      credentials,
-      environment: processEnvironment,
-      nativeVersion: () => readOfficialCliVersion(input.stockCodexPath, processEnvironment),
-      reconcilePreviousWriter: () => processRecord.reconcile(),
-      persistentManagementClient: input.loopback,
-    });
     const journal = new FileCredentialSwitchJournal(privateFiles, accountDirectory);
     const runtimeGate = scope.gate;
     const switcher = new CodexAccountSwitcher({
@@ -392,7 +401,10 @@ export async function runHostRuntime(input: {
             arguments: input.arguments,
             environment: delegationEnvironment,
             loopback: false,
-          }).catch((error: unknown) => unavailableOfficialRuntime(unavailableAccountReason(error)));
+          }).catch((error: unknown) => {
+            reportUnavailableOfficialRuntime(error);
+            return unavailableOfficialRuntime(unavailableAccountReason(error));
+          });
           const host = new AppServerHost({
             stockCodexPath,
             arguments: input.arguments,
@@ -424,7 +436,10 @@ export async function runHostRuntime(input: {
           arguments: officialPlan.listenerArguments,
           environment: delegationEnvironment,
           loopback: true,
-        }).catch((error: unknown) => unavailableOfficialRuntime(unavailableAccountReason(error)));
+        }).catch((error: unknown) => {
+          reportUnavailableOfficialRuntime(error);
+          return unavailableOfficialRuntime(unavailableAccountReason(error));
+        });
         const mappingStore = createProductionExternalThreadStore(delegationEnvironment);
         await mappingStore.initialize();
         const host = new AppServerHost({

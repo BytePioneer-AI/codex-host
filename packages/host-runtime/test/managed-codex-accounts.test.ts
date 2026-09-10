@@ -291,9 +291,10 @@ describe("ManagedCodexAccounts login", () => {
         method: "account/login/completed",
         params: { loginId: started.loginId, success: true, error: null },
       });
-      await new Promise((resolve) => setTimeout(resolve, 10));
-      expect(managed.currentAccountId()).toBeNull();
-      expect(managed.snapshot()).toMatchObject({ phase: "ready", accounts: [] });
+      await vi.waitFor(() => {
+        expect(managed.currentAccountId()).toBeNull();
+        expect(managed.snapshot()).toMatchObject({ phase: "ready", accounts: [] });
+      });
     } finally {
       await lease.release();
       await rm(root, { recursive: true, force: true });

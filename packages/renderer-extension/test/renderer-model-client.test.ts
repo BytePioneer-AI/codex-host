@@ -11,6 +11,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   CODEX_ACCOUNT_SWITCH_METHOD,
+  CODEX_ACCOUNT_CHANGED_METHOD,
   CODEX_ACCOUNT_DELETE_METHOD,
   CODEX_ACCOUNT_LIST_METHOD,
   CODEX_ACCOUNT_REFRESH_METHOD,
@@ -165,6 +166,23 @@ describe("Renderer fixed Model request client", () => {
     });
     unsubscribe();
     expect(remove).toHaveBeenCalledOnce();
+
+    const accountListener = vi.fn();
+    if (!client.subscribeCodexAccounts) throw new Error("Account subscription is unavailable");
+    const unsubscribeAccounts = client.subscribeCodexAccounts(accountListener);
+    expect(addNotificationCallback).toHaveBeenLastCalledWith(
+      CODEX_ACCOUNT_CHANGED_METHOD,
+      expect.any(Function),
+    );
+    notify?.({
+      method: CODEX_ACCOUNT_CHANGED_METHOD,
+      params: { ...list, revision: 2 },
+    });
+    expect(accountListener).toHaveBeenCalledWith({ ...list, revision: 2 });
+    notify?.({ method: CODEX_ACCOUNT_CHANGED_METHOD, params: { malformed: true } });
+    expect(accountListener).toHaveBeenCalledOnce();
+    unsubscribeAccounts();
+    expect(remove).toHaveBeenCalledTimes(2);
   });
 
   it("reads and validates read-only accounts from the bound Host without a Thread ID", async () => {

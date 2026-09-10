@@ -1,13 +1,13 @@
 import { createHash, randomUUID } from "node:crypto";
-import { existsSync } from "node:fs";
-import { link, lstat, mkdir, open, readFile, readdir, rm } from "node:fs/promises";
+import { createReadStream, existsSync } from "node:fs";
+import { chmod, copyFile, link, lstat, mkdir, open, readFile, readdir, rm } from "node:fs/promises";
 import path from "node:path";
 
 import { DatabaseSync } from "node:sqlite";
 import { z } from "zod";
 import { privateFileDigest } from "../native-private-files.js";
 import type { CodexCredentialFiles, CredentialFileAccess } from "./codex-credential-files.js";
-import { NativeCodexCredentials } from "./native-codex-credentials.js";
+import { NativeCodexCredentials, sameCodexCredentialIdentity } from "./native-codex-credentials.js";
 import type { SavedCodexAccounts } from "./saved-codex-accounts.js";
 
 const legacyAccountSchema = z
@@ -276,6 +276,63 @@ export function canAdoptLegacyLayout(inventory: LegacyAccountLayoutInventory): b
 
 type RolloutCopy = { source: string; target: string; bytes: number };
 
+async function rolloutThreadId(file: string): Promise<string> {
+  let buffered = "";
+  let threadId: string | undefined;
+  const consume = (line: string): void => {
+    if (!line.trim()) return;
+    let value: unknown;
+    try {
+      value = JSON.parse(line);
+    } catch {
+      throw new Error("Legacy rollout is invalid");
+    }
+    if (
+      typeof value !== "object" ||
+      value === null ||
+      Array.isArray(value) ||
+      typeof (value as { id?: unknown }).id !== "string" ||
+      !(value as { id: string }).id
+    ) {
+      throw new Error("Legacy rollout has no stable Thread ID");
+    }
+    const id = (value as { id: string }).id;
+    if (threadId !== undefined && threadId !== id)
+      throw new Error("Legacy rollout has conflicting Thread IDs");
+    threadId = id;
+  };
+  try {
+    for await (const chunk of createReadStream(file, { encoding: "utf8" })) {
+      buffered += chunk;
+      let newline: number;
+      while ((newline = buffered.indexOf("\n")) >= 0) {
+        consume(buffered.slice(0, newline));
+        buffered = buffered.slice(newline + 1);
+      }
+      if (Buffer.byteLength(buffered, "utf8") > 1024 * 1024)
+        throw new Error("Legacy rollout line is too large");
+    }
+  } catch (error) {
+    if (error instanceof Error && "code" in error && error.code === "ENOENT")
+      throw new Error("Legacy rollout source is unavailable");
+    throw error;
+  }
+  consume(buffered);
+  if (threadId === undefined) throw new Error("Legacy rollout has no stable Thread ID");
+  return threadId;
+}
+
+async function rolloutDigest(file: string): Promise<string | null> {
+  const hash = createHash("sha256");
+  try {
+    for await (const chunk of createReadStream(file)) hash.update(chunk as Buffer);
+  } catch (error) {
+    if (error instanceof Error && "code" in error && error.code === "ENOENT") return null;
+    throw error;
+  }
+  return hash.digest("hex");
+}
+
 async function collectRolloutCopies(
   sourceHome: string,
   sharedHome: string,
@@ -310,7 +367,7 @@ async function collectRolloutCopies(
 
 async function mergeLegacyRollouts(
   inventory: Extract<LegacyAccountLayoutInventory, { kind: "legacy" }>,
-): Promise<number> {
+): Promise<{ migratedRolloutCount: number; threadIds: string[] }> {
   const shared = inventory.accounts.find(
     (account) => account.accountId === inventory.sharedAccountId,
   );
@@ -327,25 +384,51 @@ async function mergeLegacyRollouts(
   }
   let total = 0;
   const pending: RolloutCopy[] = [];
+  const threadTargets = new Map<string, string>();
+  for (const existing of await collectRolloutCopies(
+    path.resolve(shared.codexHome),
+    path.resolve(shared.codexHome),
+  )) {
+    const threadId = await rolloutThreadId(existing.source);
+    const previous = threadTargets.get(threadId);
+    if (previous !== undefined && previous !== existing.target)
+      throw new Error("Legacy rollout Thread ID collision");
+    threadTargets.set(threadId, existing.target);
+  }
+  const plannedTargets = new Map<string, { copy: RolloutCopy; digest: string; threadId: string }>();
   for (const copy of plan) {
     total += copy.bytes;
     if (total > 10 * 1024 * 1024 * 1024) throw new Error("Legacy rollout migration is too large");
-    try {
-      const [source, target] = await Promise.all([readFile(copy.source), readFile(copy.target)]);
-      if (!source.equals(target)) throw new Error("Legacy rollout collision");
-    } catch (error) {
-      if (error instanceof Error && "code" in error && error.code === "ENOENT") pending.push(copy);
-      else throw error;
+    const [source, threadId] = await Promise.all([
+      rolloutDigest(copy.source),
+      rolloutThreadId(copy.source),
+    ]);
+    if (source === null) throw new Error("Legacy rollout source is unavailable");
+    const priorTarget = threadTargets.get(threadId);
+    if (priorTarget !== undefined && priorTarget !== copy.target)
+      throw new Error("Legacy rollout Thread ID collision");
+    const priorCopy = plannedTargets.get(copy.target);
+    if (priorCopy) {
+      if (priorCopy.digest !== source || priorCopy.threadId !== threadId)
+        throw new Error("Legacy rollout collision");
+      continue;
     }
+    threadTargets.set(threadId, copy.target);
+    plannedTargets.set(copy.target, { copy, digest: source, threadId });
+  }
+  for (const { copy, digest } of plannedTargets.values()) {
+    const target = await rolloutDigest(copy.target);
+    if (target === null) pending.push(copy);
+    else if (digest !== target) throw new Error("Legacy rollout collision");
   }
   for (const copy of pending) {
     const directory = path.dirname(copy.target);
     await mkdir(directory, { recursive: true, mode: 0o700 });
-    const source = await readFile(copy.source);
     const temporary = path.join(directory, `.codexhost-migration-${randomUUID()}.tmp`);
-    const target = await open(temporary, "wx", 0o600);
+    await copyFile(copy.source, temporary);
+    await chmod(temporary, 0o600);
+    const target = await open(temporary, "r+");
     try {
-      await target.writeFile(source);
       await target.sync();
     } finally {
       await target.close();
@@ -357,7 +440,10 @@ async function mergeLegacyRollouts(
       await rm(temporary, { force: true });
     }
   }
-  return plan.length;
+  return {
+    migratedRolloutCount: pending.length,
+    threadIds: [...new Set([...plannedTargets.values()].map(({ threadId }) => threadId))],
+  };
 }
 
 /** Imports supported rollout-only or credential-only secondary homes. Originals remain the consistency backup. */
@@ -369,6 +455,8 @@ export async function adoptLegacyAccountLayout(input: {
   accounts: SavedCodexAccounts;
   credentials: CodexCredentialFiles;
   oldOfficialBackendsExited: boolean;
+  /** Native list/resume verification before v2 migration is committed. */
+  validateMigratedThreads?(threadIds: readonly string[]): Promise<void>;
 }): Promise<void> {
   const inventory = input.inventory;
   if (inventory.kind !== "legacy" || !canAdoptLegacyLayout(inventory))
@@ -378,6 +466,7 @@ export async function adoptLegacyAccountLayout(input: {
   const recordName = "legacy-migration.json";
   const previous = await input.files.read(input.migrationDirectory, recordName);
   let alreadyCommitted = false;
+  let preparedSharedCredentialDigest: string | null | undefined;
   if (previous !== null) {
     try {
       const record = JSON.parse(previous.toString("utf8")) as unknown;
@@ -389,6 +478,20 @@ export async function adoptLegacyAccountLayout(input: {
       )
         throw new Error("conflict");
       alreadyCommitted = "stage" in record && record.stage === "committed";
+      if (!alreadyCommitted) {
+        if (
+          !("sharedCredentialDigest" in record) ||
+          !(
+            record.sharedCredentialDigest === null ||
+            typeof record.sharedCredentialDigest === "string"
+          ) ||
+          !("activeAccountId" in record) ||
+          record.activeAccountId !== inventory.activeAccountId
+        ) {
+          throw new Error("conflict");
+        }
+        preparedSharedCredentialDigest = record.sharedCredentialDigest;
+      }
     } catch {
       throw new Error("Legacy migration record conflicts with the v1 registry");
     }
@@ -397,18 +500,24 @@ export async function adoptLegacyAccountLayout(input: {
     await input.accounts.initialize();
     return;
   }
-  const prepared = Buffer.from(
-    JSON.stringify({
-      version: 1,
-      sourceVersion: 1,
-      registryDigest: inventory.registryDigest,
-      accountCount: inventory.accountCount,
-      stage: "prepared",
-    }),
-  );
-  if (previous === null)
+  if (previous === null) {
+    const initial = await input.credentials.readCurrent();
+    preparedSharedCredentialDigest =
+      initial === null ? null : privateFileDigest(Buffer.from(initial.serializeForNativeStore()));
+    const prepared = Buffer.from(
+      JSON.stringify({
+        version: 1,
+        sourceVersion: 1,
+        registryDigest: inventory.registryDigest,
+        accountCount: inventory.accountCount,
+        activeAccountId: inventory.activeAccountId,
+        sharedCredentialDigest: preparedSharedCredentialDigest,
+        stage: "prepared",
+      }),
+    );
     await input.files.replace(input.migrationDirectory, recordName, prepared, null);
-  const migratedRolloutCount = await mergeLegacyRollouts(inventory);
+  }
+  const { migratedRolloutCount, threadIds } = await mergeLegacyRollouts(inventory);
   await input.accounts.initialize();
   const imported = new Map<string, string>();
   const nativeByLegacy = new Map<string, NativeCodexCredentials>();
@@ -437,22 +546,35 @@ export async function adoptLegacyAccountLayout(input: {
   }
   const currentAccountId = imported.get(inventory.activeAccountId) ?? null;
   const actual = await input.credentials.readCurrent();
-  if (actual) {
-    const backupName = "legacy-shared-auth.backup";
-    const backup = await input.files.read(input.migrationDirectory, backupName);
-    if (backup === null)
-      await input.files.replace(
-        input.migrationDirectory,
-        backupName,
-        Buffer.from(actual.serializeForNativeStore()),
-        null,
-      );
+  const actualDigest =
+    actual === null ? null : privateFileDigest(Buffer.from(actual.serializeForNativeStore()));
+  const targetNative = nativeByLegacy.get(inventory.activeAccountId) ?? null;
+  const sharedStillInstalled = actualDigest === preparedSharedCredentialDigest;
+  const targetAlreadyInstalled =
+    actual !== null &&
+    targetNative !== null &&
+    sameCodexCredentialIdentity(actual.identity, targetNative.identity);
+  // A crash after install but before metadata/commit leaves the prepared record
+  // beside the requested target auth.json. Its newest Tokens are authoritative.
+  if (!sharedStillInstalled && !targetAlreadyInstalled)
+    throw new Error("Legacy shared credential changed during migration");
+  const backupName = "legacy-shared-auth.backup";
+  const backup = await input.files.read(input.migrationDirectory, backupName);
+  if (backup === null && actual !== null) {
+    if (previous !== null && !sharedStillInstalled)
+      throw new Error("Legacy shared credential backup is unavailable");
+    await input.files.replace(
+      input.migrationDirectory,
+      backupName,
+      Buffer.from(actual.serializeForNativeStore()),
+      null,
+    );
   }
-  if (inventory.activeAccountId !== inventory.sharedAccountId) {
-    const sharedNative = nativeByLegacy.get(inventory.sharedAccountId ?? "") ?? null;
-    if (actual?.serializeForNativeStore() !== sharedNative?.serializeForNativeStore())
-      throw new Error("Legacy shared credential changed during migration");
-    await input.credentials.install(nativeByLegacy.get(inventory.activeAccountId) ?? null, actual);
+  if (!targetAlreadyInstalled) await input.credentials.install(targetNative, actual);
+  if (threadIds.length > 0) {
+    if (!input.validateMigratedThreads)
+      throw new Error("Legacy rollout migration cannot verify native Threads");
+    await input.validateMigratedThreads(threadIds);
   }
   await input.accounts.setCurrentAccountId(currentAccountId);
   const committed = Buffer.from(

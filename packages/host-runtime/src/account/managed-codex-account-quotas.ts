@@ -50,8 +50,9 @@ class BoundedConcurrency {
   constructor(private readonly limit: number) {}
 
   async run<T>(operation: () => Promise<T>): Promise<T> {
-    if (this.#active >= this.limit)
+    while (this.#active >= this.limit) {
       await new Promise<void>((resolve) => this.#waiters.push(resolve));
+    }
     this.#active++;
     try {
       return await operation();
@@ -450,7 +451,19 @@ export class ManagedCodexAccountQuotas {
       );
       const content = Buffer.from(`${JSON.stringify({ version: 1, snapshots })}\n`);
       const expected = this.#cacheBytes ? privateFileDigest(this.#cacheBytes) : null;
-      await this.#files.replace(this.#directory, QUOTA_CACHE_FILE, content, expected);
+      try {
+        await this.#files.replace(this.#directory, QUOTA_CACHE_FILE, content, expected);
+      } catch {
+        // A separate recovered Host may have advanced the best-effort cache. Rebase
+        // the CAS precondition once so subsequent local snapshots are not stranded.
+        const observed = await this.#files.read(this.#directory, QUOTA_CACHE_FILE);
+        await this.#files.replace(
+          this.#directory,
+          QUOTA_CACHE_FILE,
+          content,
+          observed === null ? null : privateFileDigest(observed),
+        );
+      }
       this.#cacheBytes = content;
     });
     this.#mutations = pending.catch(() => undefined);

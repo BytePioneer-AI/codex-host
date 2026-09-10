@@ -117,6 +117,7 @@ export const CODEX_ACCOUNT_LIST_METHOD = "codexhost/account/list";
 export const CODEX_ACCOUNT_REFRESH_METHOD = "codexhost/account/refresh";
 export const CODEX_ACCOUNT_DELETE_METHOD = "codexhost/account/delete";
 export const CODEX_ACCOUNT_SWITCH_METHOD = "codexhost/account/switch";
+export const CODEX_ACCOUNT_CHANGED_METHOD = "codexhost/account/changed";
 export const CODEX_ACCOUNT_LOGIN_START_METHOD = "codexhost/account/login/start";
 export const CODEX_ACCOUNT_LOGIN_CANCEL_METHOD = "codexhost/account/login/cancel";
 export const CODEX_ACCOUNT_LOGIN_COMPLETED_METHOD = "codexhost/account/login/completed";
@@ -477,9 +478,13 @@ export function createRendererModelClient(
       const notifications = notificationTarget(source);
       if (!notifications?.addNotificationCallback)
         throw new Error("Renderer Account notification callback is unavailable");
-      return notifications.addNotificationCallback("codexhost/account/changed", (value) =>
-        listener(codexAccountChangedSchema.parse(value)),
-      );
+      return notifications.addNotificationCallback(CODEX_ACCOUNT_CHANGED_METHOD, (notification) => {
+        if (!isRecord(notification) || notification.method !== CODEX_ACCOUNT_CHANGED_METHOD) {
+          return;
+        }
+        const state = codexAccountChangedSchema.safeParse(notification.params);
+        if (state.success) listener(state.data);
+      });
     },
     async startCodexAccountLogin(
       input: CodexAccountLoginStartParams,

@@ -67,6 +67,20 @@ async function fixture(persistentManagementClient = false) {
 }
 
 describe("official native account checks", () => {
+  it("verifies migrated rollout IDs with native list, resume, and read before commit", async () => {
+    const f = await fixture();
+    f.responses["thread/resume"] = { thread: { id: "migrated-thread" } };
+    f.responses["thread/read"] = { thread: { id: "migrated-thread" } };
+    await f.runtime.validateMigratedThreads(["migrated-thread"]);
+    expect(f.owner.controlRequest.mock.calls.map(([method]) => method)).toEqual([
+      "thread/list",
+      "thread/list",
+      "thread/resume",
+      "thread/read",
+    ]);
+    expect(f.owner.stop).toHaveBeenCalledOnce();
+  });
+
   it("initializes a persistent loopback management client before Desktop attaches", async () => {
     const f = await fixture(true);
     f.owner.running = false;

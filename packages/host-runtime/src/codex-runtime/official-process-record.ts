@@ -98,11 +98,21 @@ export class OfficialProcessRecord {
           Buffer.from(JSON.stringify({ version: 1, nonce, phase: "starting" })),
           null,
         );
+        let startError: unknown;
         try {
           await backend.start();
-        } finally {
-          await this.#recordStarted(backend.processId, nonce);
+        } catch (error) {
+          startError = error;
         }
+        try {
+          await this.#recordStarted(backend.processId, nonce);
+        } catch (recordError) {
+          if (startError !== undefined) {
+            throw new AggregateError([startError, recordError], "Official process start failed");
+          }
+          throw recordError;
+        }
+        if (startError !== undefined) throw startError;
       },
       connect: () => backend.connect(),
       stop: async () => {

@@ -30,9 +30,15 @@ export class RendererCodexAccountState {
     readonly client: RendererModelClient,
     changed: () => void = () => undefined,
   ) {
-    this.#unsubscribe = client.subscribeCodexAccounts?.((state) => {
-      if (this.#apply(state)) changed();
-    });
+    let unsubscribe: (() => void) | undefined;
+    try {
+      unsubscribe = client.subscribeCodexAccounts?.((state) => {
+        if (this.#apply(state)) changed();
+      });
+    } catch {
+      // Hosts without Account notifications remain usable through refresh polling.
+    }
+    this.#unsubscribe = unsubscribe;
   }
 
   get readyAccountId(): string | null {

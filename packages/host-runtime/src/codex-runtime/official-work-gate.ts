@@ -2,8 +2,11 @@ export type OfficialAccountPhase = "ready" | "changing" | "unavailable";
 export type OfficialAdmissionCode = "busy" | "changing" | "unavailable";
 
 export class OfficialAdmissionError extends Error {
-  constructor(readonly code: OfficialAdmissionCode) {
-    super(`Codex is ${code}`);
+  constructor(
+    readonly code: OfficialAdmissionCode,
+    cause?: unknown,
+  ) {
+    super(`Codex is ${code}`, cause === undefined ? undefined : { cause });
     this.name = "OfficialAdmissionError";
   }
 }

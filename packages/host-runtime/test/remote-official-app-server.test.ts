@@ -157,11 +157,16 @@ describe("shared remote official app-server", () => {
       vi.useFakeTimers();
       const child = new FakeOfficialListenerProcess();
       child.kill.mockImplementation(() => true);
+      const diagnosticOutput = new PassThrough();
+      let diagnostics = "";
+      diagnosticOutput.on("data", (chunk: Buffer) => {
+        diagnostics += chunk.toString();
+      });
       const input = {
         stockCodexPath: "synthetic-codex",
         arguments: ["app-server"],
         environment: {},
-        diagnosticOutput: new PassThrough(),
+        diagnosticOutput,
         spawnOfficial: vi.fn(() => child as unknown as ChildProcess) as unknown as typeof spawn,
         closeTimeoutMs: 10,
       };
@@ -184,6 +189,7 @@ describe("shared remote official app-server", () => {
       );
       await vi.advanceTimersByTimeAsync(20);
       await failure;
+      expect(diagnostics).toContain("exit unconfirmed");
       expect(exited).not.toHaveBeenCalled();
       child.emit("exit", null, "SIGKILL");
       await expect(listener.closed).resolves.toMatchObject({ signal: "SIGKILL" });

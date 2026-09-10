@@ -794,6 +794,60 @@ describe("Renderer Codex Accounts page", () => {
     scope.dispose();
   });
 
+  it("shows device verification for the first Account when the saved list is empty", async () => {
+    const loginStart = Promise.withResolvers<{
+      accountId: string;
+      loginId: string;
+      verificationUrl: string;
+      userCode: string;
+    }>();
+    const client = {
+      listCodexAccounts: vi.fn(async () => accountList([])),
+      refreshCodexAccounts: vi.fn(async () => accountList([])),
+      deleteCodexAccount: vi.fn(),
+      switchCodexAccount: vi.fn(),
+      startCodexAccountLogin: vi.fn(() => loginStart.promise),
+      cancelCodexAccountLogin: vi.fn(async () => ({ cancelled: true })),
+    };
+    const page = createDefaultRendererSettingsPages(
+      rendererSettingsMessages("en"),
+      () => null,
+      () => null,
+      () => client,
+    ).find(({ id }) => id === "accounts");
+    if (!page) throw new Error("Accounts page is not registered");
+
+    const document = new FakeDocument();
+    const content = document.createElement("main");
+    const scope = new RendererSettingsPageScope();
+    page.mount({
+      content: content as unknown as HTMLElement,
+      signal: scope.signal,
+      runLatest: (operation, handlers) => scope.runLatest(operation, handlers),
+    });
+    await vi.waitFor(() => expect(visibleText(content)).toContain("No accounts yet"));
+    const add = descendants(content).find(
+      ({ tagName, className }) => tagName === "button" && className === "settings-command-button",
+    );
+    if (!add) throw new Error("Add Account button is not rendered");
+    add.dispatch("click");
+    await vi.waitFor(() => expect(client.startCodexAccountLogin).toHaveBeenCalledOnce());
+    loginStart.resolve({
+      accountId: "first",
+      loginId: "login-first",
+      verificationUrl: "https://example.com/device",
+      userCode: "FIRST-CODE",
+    });
+    await vi.waitFor(() => expect(visibleText(content)).toContain("FIRST-CODE"));
+    expect(visibleText(content)).toContain("https://example.com/device");
+    expect(
+      descendants(content).some(
+        ({ tagName, textContent }) => tagName === "button" && textContent === "Cancel sign-in",
+      ),
+    ).toBe(true);
+    scope.dispose();
+  });
+
   it("hides login for valid Accounts and exposes device-code login for others", async () => {
     let active = "personal";
     const personal = { email: undefined as string | undefined };

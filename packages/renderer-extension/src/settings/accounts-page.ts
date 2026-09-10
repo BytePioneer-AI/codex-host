@@ -231,6 +231,61 @@ export function createAccountsSettingsPage(
         }, 750);
       };
 
+      const createVerificationRow = (
+        pendingLogin: CodexAccountLoginStartResult,
+      ): HTMLTableRowElement => {
+        const verification = document.createElement("div");
+        verification.className = "settings-account-verification";
+        const prompt = document.createElement("span");
+        prompt.textContent = messages.accountVerificationDescription;
+        const link = document.createElement("a");
+        link.href = pendingLogin.verificationUrl;
+        link.target = "_blank";
+        link.rel = "noopener noreferrer";
+        link.textContent = pendingLogin.verificationUrl;
+        link.addEventListener("click", (event) => {
+          const bridge = (document.defaultView as CodexDesktopLinkWindow | null)?.electronBridge;
+          if (typeof bridge?.sendMessageFromView !== "function") return;
+          event.preventDefault();
+          void Promise.resolve(
+            bridge.sendMessageFromView({
+              type: "open-in-browser",
+              url: pendingLogin.verificationUrl,
+              initiator: "open_in_browser_bridge",
+              openTarget: "external-browser",
+              source: "manual",
+            }),
+          ).catch(() => undefined);
+        });
+        const code = document.createElement("code");
+        code.textContent = pendingLogin.userCode;
+        const copyCode = document.createElement("button");
+        copyCode.type = "button";
+        copyCode.className = "settings-command-button settings-command-button--secondary";
+        copyCode.textContent = messages.accountCopyCode;
+        copyCode.addEventListener("click", () => {
+          void document.defaultView?.navigator.clipboard
+            ?.writeText(pendingLogin.userCode)
+            .then(() => {
+              copyCode.textContent = messages.accountCopied;
+            });
+        });
+        const cancel = document.createElement("button");
+        cancel.type = "button";
+        cancel.className = "settings-command-button settings-command-button--secondary";
+        cancel.textContent = messages.accountLoginCancel;
+        cancel.addEventListener("click", () =>
+          cancelLogin(pendingLogin.accountId, pendingLogin.loginId),
+        );
+        verification.append(prompt, link, code, copyCode, cancel);
+        const verificationRow = document.createElement("tr");
+        const verificationCell = document.createElement("td");
+        verificationCell.colSpan = 4;
+        verificationCell.append(verification);
+        verificationRow.append(verificationCell);
+        return verificationRow;
+      };
+
       const render = (): void => {
         const restoreFocus = accountListFocusRestorer(list, search);
         body.replaceChildren();
@@ -295,64 +350,10 @@ export function createAccountsSettingsPage(
             }),
           );
 
-          if (
-            login &&
-            (login.accountId === account.accountId ||
-              (account === visibleAccounts.at(-1) &&
-                !accounts.some((candidate) => candidate.accountId === login?.accountId)))
-          ) {
-            const verification = document.createElement("div");
-            verification.className = "settings-account-verification";
-            const prompt = document.createElement("span");
-            prompt.textContent = messages.accountVerificationDescription;
-            const link = document.createElement("a");
-            link.href = login.verificationUrl;
-            link.target = "_blank";
-            link.rel = "noopener noreferrer";
-            link.textContent = login.verificationUrl;
-            link.addEventListener("click", (event) => {
-              const bridge = (document.defaultView as CodexDesktopLinkWindow | null)
-                ?.electronBridge;
-              if (typeof bridge?.sendMessageFromView !== "function") return;
-              event.preventDefault();
-              void Promise.resolve(
-                bridge.sendMessageFromView({
-                  type: "open-in-browser",
-                  url: login?.verificationUrl ?? link.href,
-                  initiator: "open_in_browser_bridge",
-                  openTarget: "external-browser",
-                  source: "manual",
-                }),
-              ).catch(() => undefined);
-            });
-            const code = document.createElement("code");
-            code.textContent = login.userCode;
-            const copyCode = document.createElement("button");
-            copyCode.type = "button";
-            copyCode.className = "settings-command-button settings-command-button--secondary";
-            copyCode.textContent = messages.accountCopyCode;
-            copyCode.addEventListener("click", () => {
-              void document.defaultView?.navigator.clipboard
-                ?.writeText(login?.userCode ?? "")
-                .then(() => {
-                  copyCode.textContent = messages.accountCopied;
-                });
-            });
-            const cancel = document.createElement("button");
-            cancel.type = "button";
-            cancel.className = "settings-command-button settings-command-button--secondary";
-            cancel.textContent = messages.accountLoginCancel;
-            cancel.addEventListener("click", () =>
-              cancelLogin(login?.accountId ?? "", login?.loginId ?? ""),
-            );
-            verification.append(prompt, link, code, copyCode, cancel);
-            const verificationRow = document.createElement("tr");
-            const verificationCell = document.createElement("td");
-            verificationCell.colSpan = 4;
-            verificationCell.append(verification);
-            verificationRow.append(verificationCell);
-            body.append(verificationRow);
-          }
+          if (login?.accountId === account.accountId) body.append(createVerificationRow(login));
+        }
+        if (login && !accounts.some((account) => account.accountId === login?.accountId)) {
+          body.append(createVerificationRow(login));
         }
         restoreFocus();
       };

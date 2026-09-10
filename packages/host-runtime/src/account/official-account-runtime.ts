@@ -250,6 +250,45 @@ export class OfficialAccountRuntime implements SwitchingOfficialRuntime {
     return this.#owner.controlRequest(method, params);
   }
 
+  /** Verify migrated rollout IDs through the sole native backend before layout commit. */
+  async validateMigratedThreads(threadIds: readonly string[]): Promise<void> {
+    if (threadIds.length === 0) return;
+    if (this.#owner.gate.phase === "ready" || this.#owner.gate.busy)
+      throw new OfficialAdmissionError("busy");
+    this.#credentials.assertOwnership();
+    const control = this.#control ?? this.#owner.attach(async () => {});
+    control.configure(managementInitialization);
+    try {
+      await this.#owner.start(false);
+      await control.initialize(managementInitialization);
+      for (const archived of [false, true]) {
+        const listed = await this.#read("thread/list", {
+          archived,
+          modelProviders: [],
+          sourceKinds: sources,
+          cursor: null,
+          limit: 100,
+        });
+        if (!Array.isArray(listed.data) || listed.nextCursor === undefined)
+          throw new OfficialAccountVerificationError("invalid-native-response");
+      }
+      for (const threadId of threadIds) {
+        const resumed = await this.#read("thread/resume", { threadId });
+        if (!object(resumed.thread) || resumed.thread.id !== threadId)
+          throw new OfficialAccountVerificationError("invalid-native-response");
+        const read = await this.#read("thread/read", { threadId, includeTurns: false });
+        if (!object(read.thread) || read.thread.id !== threadId)
+          throw new OfficialAccountVerificationError("invalid-native-response");
+      }
+    } finally {
+      try {
+        await this.stop();
+      } finally {
+        if (control !== this.#control) control.close();
+      }
+    }
+  }
+
   async verify(identity: CodexCredentialIdentity | null): Promise<void> {
     await this.#configuration();
     const before = await this.#credentials.readCurrent();

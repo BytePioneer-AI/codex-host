@@ -9,6 +9,7 @@ import {
   inspectLegacyAccountLayout,
 } from "../src/account/legacy-account-layout.js";
 import { SavedCodexAccounts } from "../src/account/saved-codex-accounts.js";
+import { privateFileDigest } from "../src/native-private-files.js";
 import { syntheticNativeCredentials } from "./fixtures/codex-account-fixtures.js";
 import { MemoryCredentialFiles } from "./fixtures/memory-credential-files.js";
 
@@ -72,6 +73,74 @@ describe("legacy Codex Account layout inventory", () => {
     }
   });
 
+  it("recovers a prepared migration after the target credential was installed", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "codexhost-legacy-recover-"));
+    const shared = path.join(root, "shared");
+    const second = path.join(root, "second");
+    const metadata = path.join(root, "codex-accounts");
+    await Promise.all([mkdir(shared), mkdir(second), mkdir(metadata)]);
+    await writeFile(
+      path.join(metadata, "accounts.json"),
+      JSON.stringify({
+        formatVersion: 1,
+        activeAccountId: "b",
+        accounts: [account("default", shared), account("b", second)],
+      }),
+    );
+    const files = new MemoryCredentialFiles();
+    const sourceA = syntheticNativeCredentials({ subject: "legacy-recovery-a" });
+    const sourceB = syntheticNativeCredentials({ subject: "legacy-recovery-b" });
+    files.nativeWrite(shared, "auth.json", sourceB);
+    files.nativeWrite(second, "auth.json", sourceB);
+    const credentials = new CodexCredentialFiles({
+      files,
+      directory: path.join(root, "slots"),
+      sharedCodexHome: shared,
+    });
+    const lease = await credentials.initialize();
+    const accounts = new SavedCodexAccounts({
+      directory: path.join(root, "v2"),
+      sharedCodexHome: shared,
+    });
+    try {
+      const inventory = await inspectLegacyAccountLayout(root, shared);
+      files.nativeWrite(
+        path.join(root, "slots"),
+        "legacy-migration.json",
+        JSON.stringify({
+          version: 1,
+          sourceVersion: 1,
+          registryDigest: inventory.kind === "legacy" ? inventory.registryDigest : "invalid",
+          accountCount: 2,
+          activeAccountId: "b",
+          sharedCredentialDigest: privateFileDigest(Buffer.from(sourceA)),
+          stage: "prepared",
+        }),
+      );
+      files.nativeWrite(path.join(root, "slots"), "legacy-shared-auth.backup", sourceA);
+
+      await adoptLegacyAccountLayout({
+        inventory,
+        files,
+        migrationDirectory: path.join(root, "slots"),
+        accounts,
+        credentials,
+        oldOfficialBackendsExited: true,
+      });
+
+      expect(accounts.getCurrentAccountId()).toBe(
+        accounts.list().find((saved) => saved.identity.subject === "legacy-recovery-b")?.accountId,
+      );
+      expect(files.contents.get(`${shared}/auth.json`)?.toString()).toBe(sourceB);
+      expect(
+        files.contents.get(`${path.join(root, "slots")}/legacy-migration.json`)?.toString(),
+      ).toContain('"stage":"committed"');
+    } finally {
+      await lease.release();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("imports credential-only Accounts idempotently while retaining both source homes", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "codexhost-legacy-adopt-"));
     const shared = path.join(root, "shared");
@@ -116,7 +185,10 @@ describe("legacy Codex Account layout inventory", () => {
         }),
       ).rejects.toThrow("process-tree exit is unconfirmed");
       await mkdir(path.join(shared, "sessions", "2026"), { recursive: true });
-      await writeFile(path.join(shared, "sessions", "2026", "thread.jsonl"), "conflict\n");
+      await writeFile(
+        path.join(shared, "sessions", "2026", "thread.jsonl"),
+        '{"id":"different"}\n',
+      );
       await expect(
         adoptLegacyAccountLayout({
           inventory,
@@ -128,6 +200,19 @@ describe("legacy Codex Account layout inventory", () => {
         }),
       ).rejects.toThrow("Legacy rollout collision");
       await rm(path.join(shared, "sessions"), { recursive: true });
+      await writeFile(path.join(second, "sessions", "other.jsonl"), '{"id":"thread"}\n');
+      await expect(
+        adoptLegacyAccountLayout({
+          inventory,
+          files,
+          migrationDirectory: path.join(root, "slots"),
+          accounts,
+          credentials,
+          oldOfficialBackendsExited: true,
+          validateMigratedThreads: async () => undefined,
+        }),
+      ).rejects.toThrow("Thread ID collision");
+      await rm(path.join(second, "sessions", "other.jsonl"));
       await adoptLegacyAccountLayout({
         inventory,
         files,
@@ -135,6 +220,9 @@ describe("legacy Codex Account layout inventory", () => {
         accounts,
         credentials,
         oldOfficialBackendsExited: true,
+        validateMigratedThreads: async (threadIds) => {
+          expect(threadIds).toEqual(["thread"]);
+        },
       });
       await adoptLegacyAccountLayout({
         inventory,

@@ -138,9 +138,9 @@ export class OfficialRuntimeOwner {
         if (generation !== this.#generation || this.#phase !== "starting")
           throw new OfficialAdmissionError("unavailable");
         this.#phase = "running";
-      } catch {
+      } catch (error) {
         this.#unavailable();
-        throw new OfficialAdmissionError("unavailable");
+        throw new OfficialAdmissionError("unavailable", error);
       }
     })();
     this.#starting = starting;
@@ -367,9 +367,12 @@ export class OfficialRuntimeOwner {
       )
         throw new Error("Retired official server request");
       const key = String(value.id);
-      client.serverRequests.delete(key);
-      await client.runtime.send({ ...value, id: original });
-      this.gate.nativeWork(key, false);
+      try {
+        await client.runtime.send({ ...value, id: original });
+        client.serverRequests.delete(key);
+      } finally {
+        this.gate.nativeWork(key, false);
+      }
       return;
     }
     if (value.method === "initialized") return;

@@ -4,7 +4,10 @@ import { lstat, rm } from "node:fs/promises";
 import path from "node:path";
 import type { Writable } from "node:stream";
 
-import { OfficialProcessLifecycle } from "./official-process-lifecycle.js";
+import {
+  OfficialProcessLifecycle,
+  OfficialProcessStopTimeoutError,
+} from "./official-process-lifecycle.js";
 
 export interface RemoteOfficialAppServerExit {
   code: number | null;
@@ -126,7 +129,17 @@ export function createRemoteOfficialAppServerListener(input: {
   };
 
   const terminate = async (): Promise<void> => {
-    if (processLifecycle) await processLifecycle.stop();
+    if (!processLifecycle) return;
+    try {
+      await processLifecycle.stop();
+    } catch (error) {
+      if (error instanceof OfficialProcessStopTimeoutError) {
+        input.diagnosticOutput.write(
+          `codexhost shared official app-server exit unconfirmed: ${input.socketPath}\n`,
+        );
+      }
+      throw error;
+    }
   };
 
   const removeOwnedSocket = async (): Promise<void> => {
@@ -160,9 +173,15 @@ export function createRemoteOfficialAppServerListener(input: {
           await waitUntilReady(input.socketPath, closed.promise);
           ownedSocketIdentity = await socketIdentity(input.socketPath).catch(() => null);
         } catch (error) {
-          await terminate();
+          let stopFailed = false;
+          try {
+            await terminate();
+          } catch {
+            stopFailed = true;
+          }
           ownedSocketIdentity ??= await socketIdentity(input.socketPath).catch(() => null);
-          await removeOwnedSocket();
+          // A live process may still own the socket after an unconfirmed exit.
+          if (!stopFailed) await removeOwnedSocket();
           throw new Error(`Shared official app-server startup failed: ${errorMessage(error)}`);
         }
       })();
@@ -223,7 +242,15 @@ export function createLoopbackOfficialAppServerListener(input: {
   };
 
   const terminate = async (): Promise<void> => {
-    if (processLifecycle) await processLifecycle.stop();
+    if (!processLifecycle) return;
+    try {
+      await processLifecycle.stop();
+    } catch (error) {
+      if (error instanceof OfficialProcessStopTimeoutError) {
+        input.diagnosticOutput.write("codexhost loopback official app-server exit unconfirmed\n");
+      }
+      throw error;
+    }
   };
 
   return {
@@ -288,7 +315,11 @@ export function createLoopbackOfficialAppServerListener(input: {
           });
           return await Promise.race([ready.promise, timeout]);
         } catch (error) {
-          await terminate();
+          try {
+            await terminate();
+          } catch {
+            // terminate() already reports an unconfirmed exit; startup keeps its cause.
+          }
           throw new Error(`Shared official app-server startup failed: ${errorMessage(error)}`);
         } finally {
           if (timer) clearTimeout(timer);

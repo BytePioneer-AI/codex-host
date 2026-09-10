@@ -302,6 +302,33 @@ describe("single official runtime owner", () => {
     await f.owner.stop();
   });
 
+  it("clears native work when sending a server reply fails", async () => {
+    const f = fixture();
+    const a = f.attach();
+    try {
+      await f.owner.start();
+      await a.client.initialize(initialization);
+      f.gate.initialized();
+      f.connection().emit({
+        id: 7,
+        method: "item/commandExecution/requestApproval",
+        params: { threadId: "thread-one" },
+      });
+      await vi.waitFor(() => expect(a.output).toHaveLength(1));
+      const id = a.output[0]?.id;
+      if (typeof id !== "string") throw new Error("Missing projected server ID");
+      f.connection().stdin.destroy(new Error("synthetic reply send failure"));
+      await expect(a.client.send({ id, result: {} })).rejects.toThrow(
+        "synthetic reply send failure",
+      );
+      expect(f.gate.busy).toBe(false);
+      const change = f.gate.beginChange();
+      change.finish("ready");
+    } finally {
+      await f.owner.stop().catch(() => undefined);
+    }
+  });
+
   it("rejects retired server replies and does not close another Desktop client", async () => {
     const f = fixture();
     const a = f.attach();

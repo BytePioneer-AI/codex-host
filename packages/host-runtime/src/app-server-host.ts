@@ -305,6 +305,9 @@ function codexAccountRpcError(error: unknown): { code: number; message: string }
     "SSH Host Account switching is unsupported",
     "SSH Host Account management is unsupported",
     "Codex Account sign-in is already in progress",
+    "Inactive Codex Account quota is unavailable",
+    "Legacy Codex Account creation is no longer supported; start login directly",
+    "Legacy Account activation is no longer supported; use codexhost/account/switch",
   ]);
   return safe.has(message)
     ? { code: -32086, message }

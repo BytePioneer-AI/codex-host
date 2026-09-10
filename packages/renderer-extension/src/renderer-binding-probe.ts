@@ -2671,6 +2671,7 @@ export function installRendererBindingProbe(
       for (const state of harnessAvailabilityByHost.values()) {
         state.requestGeneration += 1;
         state.request = null;
+        state.codexAccounts?.dispose();
         if (state.retryTimer !== null) window.clearTimeout(state.retryTimer);
       }
       harnessAvailabilityByHost.clear();
@@ -2725,6 +2726,7 @@ export function installRendererBindingProbe(
       window.removeEventListener("focus", onWindowFocus);
       for (const state of harnessAvailabilityByHost.values()) {
         state.requestGeneration += 1;
+        state.codexAccounts?.dispose();
         if (state.retryTimer !== null) window.clearTimeout(state.retryTimer);
       }
       harnessAvailabilityByHost.clear();

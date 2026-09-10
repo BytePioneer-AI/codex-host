@@ -110,6 +110,18 @@ describe("shared-home process witness", () => {
     await expect(f.backend.stop()).rejects.toThrow("ownership changed");
     expect(f.files.contents.get(f.key)).toEqual(replacement);
   });
+  it("reports both backend and witness failures during start", async () => {
+    const f = fixture();
+    let replacements = 0;
+    f.files.beforeReplace = () => {
+      replacements++;
+      if (replacements === 2) throw new Error("witness write failed");
+    };
+    vi.mocked(f.native.start).mockRejectedValue(new Error("backend start failed"));
+    await expect(f.backend.start()).rejects.toThrow("Official process start failed");
+    await f.backend.stop();
+  });
+
   it("still records a process created by a failing start", async () => {
     const f = fixture();
     vi.mocked(f.native.start).mockRejectedValue(new Error("started but failed"));

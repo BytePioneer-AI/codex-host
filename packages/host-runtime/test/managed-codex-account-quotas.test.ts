@@ -140,6 +140,26 @@ describe("ManagedCodexAccountQuotas", () => {
     }
   });
 
+  it("rebases one quota-cache write after a concurrent cache update", async () => {
+    const { files, directory, credentials, lease, account } = await fixture("cache-cas-user");
+    let conflict = true;
+    files.beforeReplace = (targetDirectory, name) => {
+      if (targetDirectory !== directory || name !== "codex-quota-cache.json" || !conflict) return;
+      conflict = false;
+      files.nativeWrite(directory, name, JSON.stringify({ version: 1, snapshots: {} }));
+    };
+    const quotas = new ManagedCodexAccountQuotas({ files, directory, credentials });
+    await quotas.initialize(new Set([account.accountId]));
+    try {
+      await quotas.record(account.accountId, { usedPercent: 19, periodType: "five_hour" });
+      expect(files.contents.get(`${directory}/codex-quota-cache.json`)?.toString()).toContain(
+        '"usedPercent":19',
+      );
+    } finally {
+      await lease.release();
+    }
+  });
+
   it("merges partial successful snapshots and carries intermittent reset-credit data", async () => {
     const { files, directory, credentials, lease, account } = await fixture("merge-user");
     const quotas = new ManagedCodexAccountQuotas({ files, directory, credentials });

@@ -815,14 +815,12 @@ describe("HarnessDelegationCoordinator", () => {
       await expect(
         value.coordinator.release({ threadId: started.threadId }),
       ).resolves.toMatchObject({ released: true, quiescence: "confirmed" });
-      await expect(
-        value.coordinator.send({
-          threadId: started.threadId,
-          message: "follow-up",
-          requestId: "send-1",
-        }),
-      ).rejects.toMatchObject({ code: "THREAD_NOT_FOUND" });
-      expect(first.turnId).toBeTruthy();
+      const retry = await value.coordinator.send({
+        threadId: started.threadId,
+        message: "follow-up",
+        requestId: "send-1",
+      });
+      expect(retry.turnId).not.toBe(first.turnId);
     } finally {
       await value.close();
     }

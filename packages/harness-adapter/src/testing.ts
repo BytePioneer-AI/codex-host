@@ -159,6 +159,14 @@ export class FakeHarnessSession implements HarnessSession {
   commands?: HarnessCommandCapability;
   readonly interactionResponses: InteractionRespondCommand[] = [];
   readonly outputs: AsyncIterable<HarnessOutput>;
+  get closed(): boolean {
+    return this.#closed;
+  }
+
+  historyTurns(): HostTurnSnapshot[] {
+    return cloneJson(this.#snapshot.turns);
+  }
+
   snapshotReads = 0;
   usageRefreshes = 0;
   usageFailures = 0;
@@ -1137,6 +1145,19 @@ export class FakeHarnessAdapter implements HarnessAdapter {
     }
     const source = this.#sessionsByNativeId.get(sourceRef.nativeSessionId);
     if (!source) {
+      if (input.kind === "resume") {
+        return {
+          ok: true,
+          value: this.#createSession(
+            input.cwd,
+            input.model,
+            [],
+            input.thinkingOptionId,
+            input.permissionModeId,
+            sourceRef,
+          ),
+        };
+      }
       return {
         ok: false,
         error: {
@@ -1146,7 +1167,20 @@ export class FakeHarnessAdapter implements HarnessAdapter {
         },
       };
     }
-    if (input.kind === "resume") return { ok: true, value: source };
+    if (input.kind === "resume") {
+      if (!source.closed) return { ok: true, value: source };
+      return {
+        ok: true,
+        value: this.#createSession(
+          input.cwd,
+          input.model,
+          source.historyTurns(),
+          input.thinkingOptionId,
+          input.permissionModeId,
+          sourceRef,
+        ),
+      };
+    }
     if (input.kind === "rollbackLastTurn") {
       const current = await source.readSnapshot();
       if (!current.ok) return current;
@@ -1222,9 +1256,10 @@ export class FakeHarnessAdapter implements HarnessAdapter {
     sourceTurns: HostTurnSnapshot[] = [],
     thinkingOptionId?: HarnessThinkingOptionId,
     permissionModeId?: HarnessPermissionModeId,
+    nativeSessionRef?: NativeSessionRef,
   ): FakeHarnessSession {
     this.#sessionOrdinal += 1;
-    const nativeRef: NativeSessionRef = {
+    const nativeRef: NativeSessionRef = nativeSessionRef ?? {
       harnessId: this.harnessId,
       nativeSessionId: `fake-session-${this.#sessionOrdinal}`,
       formatVersion: 1,

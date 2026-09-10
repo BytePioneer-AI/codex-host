@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
@@ -25,6 +25,42 @@ describe("delegation verify entry", () => {
     expect(HANDLERS["TURN-04"]).not.toBe(HANDLERS["CREATION-01"]);
     expect(HANDLERS["FLOW-01"]).not.toBe(HANDLERS["CREATION-01"]);
     expect(HANDLERS["RECOVERY-02"]).not.toBe(HANDLERS["RECOVERY-01"]);
+    expect(HANDLERS["RELEASE-04"]).not.toBe(HANDLERS["RELEASE-01"]);
+    expect(HANDLERS["EVIDENCE-04"]).not.toBe(HANDLERS["EVIDENCE-01"]);
+    expect(HANDLERS["SKILL-03"]).not.toBe(HANDLERS["TURN-01"]);
+  });
+
+  it("FLOW-01 plant is a real failing unittest, not an idempotent set.add", async () => {
+    const cwd = await mkdtemp(path.join(os.tmpdir(), "codexhost-flow01-plant-"));
+    try {
+      await writeFile(
+        path.join(cwd, "scheduler.py"),
+        "completed = set()\n\ndef mark_done(task_id, required=()):\n    completed.add(task_id)\n",
+      );
+      await writeFile(
+        path.join(cwd, "test_scheduler.py"),
+        [
+          "import unittest",
+          "from scheduler import mark_done, completed",
+          "",
+          "class SelectionTest(unittest.TestCase):",
+          "    def test_batch_does_not_complete_dependency(self):",
+          "        mark_done('child', required=('parent',))",
+          "        self.assertNotIn('child', completed)",
+          "",
+        ].join("\n"),
+      );
+      const python = spawnSync("python3", ["-m", "unittest", "test_scheduler.py", "-q"], {
+        cwd,
+        encoding: "utf8",
+      });
+      expect(python.status).not.toBe(0);
+      expect(`${python.stderr}${python.stdout}`).toMatch(
+        /test_batch_does_not_complete_dependency/u,
+      );
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
   });
 
   it("ENTRY-01 lists unique scenarios and rejects invalid mode/scenario/output", async () => {

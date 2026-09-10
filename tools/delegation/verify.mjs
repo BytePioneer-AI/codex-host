@@ -282,6 +282,14 @@ async function scenarioSmoke01(context) {
   };
 }
 
+class ScenarioIncomplete extends Error {
+  constructor(message) {
+    super(message);
+    this.name = "ScenarioIncomplete";
+    this.code = "INCOMPLETE";
+  }
+}
+
 const PARENT = "00000000-0000-4000-8000-000000000010";
 
 function requireOk(cli, label) {
@@ -722,41 +730,68 @@ async function scenarioRecovery02(context) {
   return { threadId: started.threadId, dryRun: true, writes: dry.writes ?? 0 };
 }
 
+function writeFlow01Plant(cwd) {
+  return Promise.all([
+    writeFile(
+      path.join(cwd, "scheduler.py"),
+      [
+        "completed = set()",
+        "",
+        "def mark_done(task_id, required=()):",
+        "    completed.add(task_id)",
+        "",
+      ].join("\n"),
+    ),
+    writeFile(
+      path.join(cwd, "test_scheduler.py"),
+      [
+        "import unittest",
+        "from scheduler import mark_done, completed",
+        "",
+        "class SelectionTest(unittest.TestCase):",
+        "    def test_batch_does_not_complete_dependency(self):",
+        "        mark_done('child', required=('parent',))",
+        "        self.assertNotIn('child', completed)",
+        "",
+      ].join("\n"),
+    ),
+  ]);
+}
+
+function python3() {
+  const found = spawnSync("python3", ["-V"], { encoding: "utf8" });
+  return found.status === 0 ? "python3" : "python";
+}
+
 async function scenarioFlow01(context) {
   if (context.mode !== "live") throw new Error("FLOW-01 is live-only");
   const cwd = await mkdtemp(path.join(context.runDirectory, "flow1-"));
-  await writeFile(
-    path.join(cwd, "scheduler.py"),
-    ["completed = set()", "def mark_done(task_id):", "    completed.add(task_id)", ""].join("\n"),
-  );
-  await writeFile(
-    path.join(cwd, "test_scheduler.py"),
-    [
-      "from scheduler import mark_done, completed",
-      "def test_mark_done_is_idempotent():",
-      "    mark_done('a')",
-      "    mark_done('a')",
-      "    assert list(completed) == ['a']",
-      "",
-    ].join("\n"),
-  );
+  await writeFlow01Plant(cwd);
   const git = (args) => {
     const result = spawnSync("git", args, { cwd, encoding: "utf8" });
     if (result.status !== 0) {
       throw new Error(`FLOW-01 git ${args.join(" ")} failed: ${result.stderr || result.stdout}`);
     }
+    return result.stdout;
   };
   git(["init"]);
   git(["add", "."]);
   git(["-c", "user.email=flow@example.com", "-c", "user.name=FLOW", "commit", "-m", "plant"]);
-  const prompt =
-    "Review scheduler.py. Find the defect in mark_done/completed.add. Do not modify files. Reply with the defect.";
-  const [writer, reviewer] = await Promise.all([
-    startTask(context, { task: `${prompt} You are reviewer A.`, cwd }),
-    startTask(context, { task: `${prompt} You are reviewer B.`, cwd }),
+  const planted = spawnSync(python3(), ["-m", "unittest", "test_scheduler.py", "-q"], {
+    cwd,
+    encoding: "utf8",
+  });
+  if (planted.status === 0) {
+    throw new Error("FLOW-01 plant is not a real defect; unittest unexpectedly passed");
+  }
+  const reviewerPrompt =
+    "Independent review of this git worktree. Run the tests. Report failing test names and the code defect that causes them. If tests fail, do not claim there is no defect.";
+  const [reviewerA, reviewerB] = await Promise.all([
+    startTask(context, { task: `${reviewerPrompt} You are reviewer A.`, cwd }),
+    startTask(context, { task: `${reviewerPrompt} You are reviewer B.`, cwd }),
   ]);
   await Promise.all(
-    [writer, reviewer].map((started) =>
+    [reviewerA, reviewerB].map((started) =>
       runCli(
         context.childEnvironment,
         ["thread", "wait", started.threadId, "--timeout-ms", "180000"],
@@ -766,18 +801,223 @@ async function scenarioFlow01(context) {
     ),
   );
   const reads = await Promise.all(
-    [writer, reviewer].map((started) =>
+    [reviewerA, reviewerB].map((started) =>
       runCli(context.childEnvironment, ["thread", "read", started.threadId], cwd),
     ),
   );
-  const blob = reads.map((cli) => `${cli.stdout}\n${cli.stderr}`).join("\n");
-  if (!/mark_done|completed\.add/u.test(blob)) {
-    throw new Error("FLOW-01 reviewers did not report the planted mark_done defect");
+  const reports = reads.map((cli) => `${cli.stdout}\n${cli.stderr}`);
+  const caught = reports.some((text) =>
+    /test_batch_does_not_complete_dependency|required.*(ignored|skip|without)|dependenc/iu.test(
+      text,
+    ),
+  );
+  const denied = reports.every((text) =>
+    /no defect|没有缺陷|looks good|lgtm|no issue/iu.test(text),
+  );
+  if (!caught || denied) {
+    throw new Error("FLOW-01 reviewers did not identify the planted dependency defect");
+  }
+  const writer = await startTask(context, {
+    task: "Read the tests. Make them pass. Run python3 -m unittest. Commit only if tests pass.",
+    cwd,
+  });
+  await runCli(
+    context.childEnvironment,
+    ["thread", "wait", writer.threadId, "--timeout-ms", "180000"],
+    cwd,
+    190_000,
+  );
+  const log = git(["log", "--oneline"]);
+  if (log.trim().split("\n").length < 2) {
+    throw new Error("FLOW-01 writer did not produce a follow-up commit");
   }
   return {
-    threads: [writer.threadId, reviewer.threadId],
+    threads: [writer.threadId, reviewerA.threadId, reviewerB.threadId],
     plantedCaught: true,
+    writerCommitted: true,
   };
+}
+
+async function scenarioRelease04(context) {
+  const cwd = await mkdtemp(path.join(context.runDirectory, "release4-"));
+  const started = await startTask(context, { task: "RELEASE-04 baseline", cwd });
+  await runCli(
+    context.childEnvironment,
+    [
+      "thread",
+      "wait",
+      started.threadId,
+      "--timeout-ms",
+      context.mode === "live" ? "60000" : "2000",
+    ],
+    cwd,
+    context.mode === "live" ? 70_000 : 5_000,
+  );
+  const before = requireOk(
+    await runCli(context.childEnvironment, ["thread", "configuration", started.threadId], cwd),
+    "configuration-before",
+  );
+  const history = requireOk(
+    await runCli(context.childEnvironment, ["thread", "read", started.threadId], cwd),
+    "read-before",
+  );
+  const released = requireOk(
+    await runCli(context.childEnvironment, ["thread", "release", started.threadId], cwd),
+    "release",
+  );
+  if (released.released !== true) {
+    throw new ScenarioIncomplete(
+      `RELEASE-04 did not release the Session (quiescence=${released.quiescence ?? "unknown"})`,
+    );
+  }
+  const send = requireOk(
+    await runCli(
+      context.childEnvironment,
+      ["thread", "send", started.threadId, "--message", "continue after release"],
+      cwd,
+    ),
+    "send-after-release",
+  );
+  await runCli(
+    context.childEnvironment,
+    [
+      "thread",
+      "wait",
+      started.threadId,
+      "--timeout-ms",
+      context.mode === "live" ? "60000" : "2000",
+    ],
+    cwd,
+    context.mode === "live" ? 70_000 : 5_000,
+  );
+  const after = requireOk(
+    await runCli(context.childEnvironment, ["thread", "configuration", started.threadId], cwd),
+    "configuration-after",
+  );
+  const historyAfter = requireOk(
+    await runCli(context.childEnvironment, ["thread", "read", started.threadId], cwd),
+    "read-after",
+  );
+  if (before.harnessId && after.harnessId && before.harnessId !== after.harnessId) {
+    throw new Error("RELEASE-04 harness drifted after release");
+  }
+  if (send.turnId && send.turnId === started.turnId) {
+    throw new Error("RELEASE-04 send reused the pre-release Turn");
+  }
+  return {
+    threadId: started.threadId,
+    released: true,
+    resumedTurnId: send.turnId,
+    historyBefore: history.turn?.turnId ?? null,
+    historyAfter: historyAfter.turn?.turnId ?? null,
+  };
+}
+
+async function scenarioEvidence04(context) {
+  const cwd = await mkdtemp(path.join(context.runDirectory, "evidence4-"));
+  const started = await startTask(context, { task: "EVIDENCE-04 configuration", cwd });
+  await runCli(
+    context.childEnvironment,
+    [
+      "thread",
+      "wait",
+      started.threadId,
+      "--timeout-ms",
+      context.mode === "live" ? "60000" : "2000",
+    ],
+    cwd,
+    context.mode === "live" ? 70_000 : 5_000,
+  );
+  const before = requireOk(
+    await runCli(context.childEnvironment, ["thread", "configuration", started.threadId], cwd),
+    "configuration-before",
+  );
+  const unknownBefore = new Set(before.unknown ?? []);
+  if (unknownBefore.has("model") && before.effective?.effectiveModel) {
+    throw new Error("EVIDENCE-04 filled unknown model with a default");
+  }
+  await context.runtime.close();
+  context.runtime = await startRuntime(context.mode, context.dataDirectory);
+  context.childEnvironment = context.runtime.childEnvironment();
+  const after = requireOk(
+    await runCli(context.childEnvironment, ["thread", "configuration", started.threadId], cwd),
+    "configuration-after",
+  );
+  if (before.harnessId && after.harnessId && before.harnessId !== after.harnessId) {
+    throw new Error("EVIDENCE-04 harness drifted after recovery");
+  }
+  const beforeModel = before.effective?.effectiveModel?.id ?? before.effective?.effectiveModel;
+  const afterModel = after.effective?.effectiveModel?.id ?? after.effective?.effectiveModel;
+  if (beforeModel && afterModel && beforeModel !== afterModel) {
+    throw new Error("EVIDENCE-04 model drifted after recovery");
+  }
+  const unknownAfter = new Set(after.unknown ?? []);
+  if (unknownAfter.has("thinking") && after.effective?.effectiveThinkingOptionId) {
+    throw new Error("EVIDENCE-04 filled unknown thinking after recovery");
+  }
+  return { threadId: started.threadId, before, after, recovered: true };
+}
+
+async function scenarioSkill03(context) {
+  if (context.mode !== "live") throw new Error("SKILL-03 is live-only");
+  const cwd = await mkdtemp(path.join(context.runDirectory, "skill3-"));
+  const child = await startTask(context, {
+    task: "Count slowly from 1 to 50 without stopping.",
+    cwd,
+  });
+  const busy = await runCli(
+    context.childEnvironment,
+    ["thread", "send", child.threadId, "--message", "are you done?"],
+    cwd,
+  );
+  const busyBody = parseJsonOutput(busy);
+  if (busy.status === 0 || busyBody.error?.code !== "THREAD_BUSY") {
+    throw new ScenarioIncomplete(
+      `SKILL-03 could not observe THREAD_BUSY before testing skill usage (${busyBody.error?.code ?? busy.status})`,
+    );
+  }
+  await writeFile(
+    path.join(cwd, "SKILL.md"),
+    [
+      "Follow Host delegation skill.",
+      "If THREAD_BUSY, wait. Do not mint a new request-id.",
+      "Do not release until quiescence is confirmed.",
+      "",
+    ].join("\n"),
+  );
+  const operator = await startTask(context, {
+    task: `Read ${path.join(cwd, "SKILL.md")}. The existing child thread is ${child.threadId}. Send a follow-up. If busy, wait. Do not start a new delegation. Do not release resources.`,
+    cwd,
+  });
+  await runCli(
+    context.childEnvironment,
+    ["thread", "wait", operator.threadId, "--timeout-ms", "180000"],
+    cwd,
+    190_000,
+  );
+  const listed = requireOk(
+    await runCli(
+      context.childEnvironment,
+      ["thread", "list", "--parent", PARENT, "--limit", "25"],
+      cwd,
+    ),
+    "list",
+  );
+  const extraStarts = (listed.threads ?? []).filter(
+    (row) => row.threadId !== child.threadId && row.threadId !== operator.threadId,
+  );
+  if (extraStarts.length > 0) {
+    throw new Error("SKILL-03 started an extra child instead of waiting on the busy Thread");
+  }
+  const evidence = parseJsonOutput(
+    await runCli(context.childEnvironment, ["thread", "evidence", operator.threadId], cwd),
+  );
+  const blob = JSON.stringify(evidence);
+  if (/thread release|delegate start/iu.test(blob)) {
+    throw new Error("SKILL-03 evidence shows release or a new delegation");
+  }
+  await runCli(context.childEnvironment, ["thread", "cancel", child.threadId], cwd);
+  return { child: child.threadId, operator: operator.threadId, busy: busyBody.error };
 }
 
 export const HANDLERS = {
@@ -798,7 +1038,7 @@ export const HANDLERS = {
   "RELEASE-01": scenarioRelease01,
   "RELEASE-02": scenarioRelease01,
   "RELEASE-03": scenarioRelease01,
-  "RELEASE-04": scenarioRelease01,
+  "RELEASE-04": scenarioRelease04,
   "OBSERVE-01": scenarioObserve01,
   "OBSERVE-02": scenarioObserve01,
   "OBSERVE-03": scenarioObserve01,
@@ -808,10 +1048,10 @@ export const HANDLERS = {
   "EVIDENCE-01": scenarioEvidence01,
   "EVIDENCE-02": scenarioEvidence01,
   "EVIDENCE-03": scenarioEvidence01,
-  "EVIDENCE-04": scenarioEvidence01,
+  "EVIDENCE-04": scenarioEvidence04,
   "SKILL-01": scenarioSkill01,
   "SKILL-02": scenarioSkill01,
-  "SKILL-03": scenarioTurn01,
+  "SKILL-03": scenarioSkill03,
   "SKILL-04": scenarioEvidence01,
   "FLOW-01": scenarioFlow01,
   "FLOW-02": scenarioRecovery01,
@@ -909,9 +1149,15 @@ export async function runVerify(argv = process.argv.slice(2)) {
           cleanupErrors.push(...closed.cleanupErrors);
         }
       } catch (error) {
-        result = "FAIL";
-        details = { error: error instanceof Error ? error.message : String(error) };
-        scenarioError = error;
+        if (error && typeof error === "object" && error.code === "INCOMPLETE") {
+          result = "INCOMPLETE";
+          details = { incomplete: error instanceof Error ? error.message : String(error) };
+          scenarioError = scenarioError ?? error;
+        } else {
+          result = "FAIL";
+          details = { error: error instanceof Error ? error.message : String(error) };
+          scenarioError = error;
+        }
         const toClose = context?.runtime ?? runtime;
         runtime = undefined;
         if (context) context.runtime = undefined;

@@ -22,5 +22,6 @@ export function createHermeticGrokAdapter() {
     };
     return opened;
   };
+  adapter.stopOwnedJobs = async () => ({ quiescence: "confirmed" });
   return adapter;
 }

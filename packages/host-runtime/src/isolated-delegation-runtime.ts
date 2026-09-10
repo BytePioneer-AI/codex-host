@@ -335,7 +335,12 @@ export async function startIsolatedDelegationRuntime(
         cleanupErrors.push(errorMessage(error));
       }
       try {
-        await running;
+        await Promise.race([
+          running,
+          new Promise((_, reject) =>
+            setTimeout(() => reject(new Error("Isolated Host run() did not exit")), 8_000),
+          ),
+        ]);
       } catch (error) {
         cleanupErrors.push(errorMessage(error));
       }

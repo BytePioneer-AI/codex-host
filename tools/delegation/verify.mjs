@@ -558,19 +558,25 @@ async function scenarioRelease01(context) {
     task: `Run python3 ${script} in the background of this workspace. Environment: PROBE_STARTED=${startedPath} PROBE_LATE=${latePath} PROBE_DELAY=6. Do not wait for it in the Turn after it has started.`,
     cwd,
   });
-  await new Promise((resolve) => setTimeout(resolve, 1500));
+  await new Promise((resolve) => setTimeout(resolve, context.mode === "live" ? 1500 : 50));
   await runCli(context.childEnvironment, ["thread", "cancel", started.threadId], cwd);
   await runCli(
     context.childEnvironment,
-    ["thread", "wait", started.threadId, "--timeout-ms", "30000"],
+    [
+      "thread",
+      "wait",
+      started.threadId,
+      "--timeout-ms",
+      context.mode === "live" ? "30000" : "2000",
+    ],
     cwd,
-    40_000,
+    context.mode === "live" ? 40_000 : 5_000,
   );
   const released = requireOk(
     await runCli(context.childEnvironment, ["thread", "release", started.threadId], cwd),
     "release",
   );
-  await new Promise((resolve) => setTimeout(resolve, 7000));
+  await new Promise((resolve) => setTimeout(resolve, context.mode === "live" ? 7000 : 20));
   const late = await stat(latePath)
     .then(() => true)
     .catch(() => false);
@@ -732,33 +738,20 @@ export async function runVerify(argv = process.argv.slice(2)) {
   };
   const runDirectory = path.join(output, `${mode}-${process.pid}`);
   await mkdir(runDirectory, { recursive: true });
-  const dataDirectory = path.join(runDirectory, "data");
   let runtime;
   const cleanupErrors = [];
   let scenarioError;
+  let lastDataDirectory = path.join(runDirectory, "data");
   try {
-    const needsRuntime = expanded.some((id) => id !== "ENTRY-01");
-    if (needsRuntime) {
-      runtime = await startRuntime(mode, dataDirectory);
-      if (inheritedEndpoint && runtime.endpoint === inheritedEndpoint) {
-        throw new Error("Isolated Runtime used the inherited Desktop endpoint");
-      }
-    }
-    const childEnvironment = runtime ? runtime.childEnvironment() : { ...process.env };
-    const context = {
-      mode,
-      runDirectory,
-      dataDirectory,
-      runtime,
-      childEnvironment,
-      candidate,
-    };
     for (const id of expanded) {
       const started = Date.now();
       const logPath = path.join(output, `${id}.log`);
       const jsonPath = path.join(output, `${id}.json`);
       let result = "PASS";
       let details;
+      const dataDirectory = path.join(runDirectory, id, "data");
+      lastDataDirectory = dataDirectory;
+      const needsRuntime = id !== "ENTRY-01" && id !== "SKILL-01" && id !== "SKILL-02";
       try {
         if (mode === "live" && SCENARIOS[id] && !SCENARIOS[id].live) {
           throw new Error(`${id} is not a live scenario`);
@@ -766,12 +759,50 @@ export async function runVerify(argv = process.argv.slice(2)) {
         if (mode === "hermetic" && SCENARIOS[id] && !SCENARIOS[id].hermetic) {
           throw new Error(`${id} is not a hermetic scenario`);
         }
+        if (needsRuntime) {
+          runtime = await startRuntime(mode, dataDirectory);
+          if (inheritedEndpoint && runtime.endpoint === inheritedEndpoint) {
+            throw new Error("Isolated Runtime used the inherited Desktop endpoint");
+          }
+        }
+        const childEnvironment = runtime ? runtime.childEnvironment() : { ...process.env };
+        const context = {
+          mode,
+          runDirectory,
+          dataDirectory,
+          runtime,
+          childEnvironment,
+          candidate,
+        };
         const handler = HANDLERS[id];
         details = handler ? await handler(context) : await scenarioViaVitest(id);
+        if (runtime) {
+          const closed = await runtime.close();
+          cleanupErrors.push(...closed.cleanupErrors);
+          runtime = undefined;
+        }
       } catch (error) {
         result = "FAIL";
         details = { error: error instanceof Error ? error.message : String(error) };
         scenarioError = error;
+        if (runtime) {
+          try {
+            const closed = await Promise.race([
+              runtime.close(),
+              new Promise((_, reject) =>
+                setTimeout(() => reject(new Error("runtime close timed out")), 10_000),
+              ),
+            ]);
+            if (closed && typeof closed === "object" && "cleanupErrors" in closed) {
+              cleanupErrors.push(...closed.cleanupErrors);
+            }
+          } catch (closeError) {
+            cleanupErrors.push(
+              closeError instanceof Error ? closeError.message : String(closeError),
+            );
+          }
+          runtime = undefined;
+        }
       }
       const record = redact(
         {
@@ -784,17 +815,15 @@ export async function runVerify(argv = process.argv.slice(2)) {
           durationMs: Date.now() - started,
           logPath,
           jsonPath,
-          runtime: runtime
+          runtime: details
             ? {
-                endpoint: runtime.endpoint,
-                pid: runtime.pid,
-                dataDirectory: runtime.dataDirectory,
-                officialKind: runtime.officialKind,
+                dataDirectory,
+                officialKind: "fixture",
               }
             : null,
           details,
         },
-        inheritedToken ?? childEnvironment[TOKEN_ENV],
+        inheritedToken,
       );
       report.scenarios.push(record);
       await writeJson(jsonPath, record);
@@ -824,8 +853,7 @@ export async function runVerify(argv = process.argv.slice(2)) {
           expanded,
           candidate,
           pid: process.pid,
-          dataDirectory,
-          endpoint: runtime?.endpoint ?? null,
+          dataDirectory: lastDataDirectory,
           officialKind: "fixture",
           report: reportPath,
           cleanupErrors,

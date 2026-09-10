@@ -884,12 +884,13 @@ const invokedDirectly =
 if (invokedDirectly) {
   try {
     const result = await runVerify();
-    process.exitCode = result.exitCode;
+    process.exit(result.exitCode);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     process.stderr.write(`${message}\n`);
     if (!message.includes("usage:")) process.stderr.write(usage());
-    process.exitCode =
-      error && typeof error === "object" && "exitCode" in error ? Number(error.exitCode) || 1 : 1;
+    process.exit(
+      error && typeof error === "object" && "exitCode" in error ? Number(error.exitCode) || 1 : 1,
+    );
   }
 }

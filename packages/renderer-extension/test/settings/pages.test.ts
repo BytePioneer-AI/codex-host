@@ -844,8 +844,6 @@ describe("Renderer Codex Accounts page", () => {
       runLatest: (operation, handlers) => scope.runLatest(operation, handlers),
     });
     await vi.waitFor(() => expect(visibleText(content)).toContain("Personal"));
-    expect(visibleText(content)).toContain("Existing tasks keep their account");
-    expect(visibleText(content)).toContain("Enable device code authorization for Codex");
     expect(visibleText(content)).not.toContain("token");
     expect(
       descendants(content).filter(

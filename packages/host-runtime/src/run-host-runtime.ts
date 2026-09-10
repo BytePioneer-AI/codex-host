@@ -95,8 +95,18 @@ function requiredRuntimeConfiguration(environment: NodeJS.ProcessEnv): {
   return { stockCodexPath, defaultAgent };
 }
 
-function delegationCliPath(environment: NodeJS.ProcessEnv): string | undefined {
-  return environment[DELEGATION_CLI_PATH_ENV] ?? environment.CODEXHOST_LAUNCHER_EXECUTABLE;
+/**
+ * An npm installation has no bundled `runtime/` directory, so its native
+ * launcher cannot resolve the Node runtime that the delegation CLI needs and
+ * fails before parsing any subcommand. Its Node launcher already knows which
+ * Node to use, so prefer that entry point whenever npm provided one.
+ */
+export function delegationCliPath(environment: NodeJS.ProcessEnv): string | undefined {
+  return (
+    environment[DELEGATION_CLI_PATH_ENV] ??
+    environment.CODEXHOST_NPM_LAUNCHER_PATH ??
+    environment.CODEXHOST_LAUNCHER_EXECUTABLE
+  );
 }
 
 async function prepareDelegationRuntime(input: {

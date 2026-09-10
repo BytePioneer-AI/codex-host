@@ -11,7 +11,7 @@ import {
 } from "@anthropic-ai/claude-agent-sdk";
 import { sanitizeDiagnosticTail } from "@codexhost/harness-adapter";
 import type { HarnessAccountSnapshot, HarnessThinkingOptionId } from "@codexhost/shared-contracts";
-import { projectClaudeAccountUsage } from "./account-usage.js";
+import { parseClaudeScopedWeeklyLimits, projectClaudeAccountUsage } from "./account-usage.js";
 
 import { resolveClaudeCodeExecutable, withNodeRuntimeOnPath } from "./command.js";
 import type { ClaudeModelInspectionSnapshot } from "./model-catalog.js";
@@ -28,6 +28,7 @@ import type {
   ClaudeInteractionResponse,
   ClaudeModelInspector,
   ClaudePlanLimitEvent,
+  ClaudePlanLimitScopedWindow,
   ClaudeQuestion,
   ClaudeTransportContextUsage,
   ClaudeTransportTurnResult,
@@ -40,6 +41,9 @@ const APPROVAL_TITLE_MAX_LENGTH = 120;
 const APPROVAL_DESCRIPTION_MAX_LENGTH = 500;
 const DEFAULT_ABORT_TIMEOUT_MS = 2_000;
 const INTERRUPT_TIMEOUT_MESSAGE = "Claude SDK interrupt timed out";
+/** Plan windows move slowly; one `get_usage` per minute is enough to track them. */
+const SCOPED_WEEKLY_REFRESH_MS = 60_000;
+const SCOPED_WEEKLY_TIMEOUT_MS = 5_000;
 
 class PushableInput<T> implements AsyncIterable<T> {
   #closed = false;
@@ -372,6 +376,9 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
   #query: Query | null = null;
   #started = false;
   #backgroundTasks = new Set<string>();
+  #scopedWeekly: ClaudePlanLimitScopedWindow[] = [];
+  #scopedWeeklyProbedAt = Number.NEGATIVE_INFINITY;
+  #scopedWeeklyTask: Promise<ClaudePlanLimitScopedWindow[]> | null = null;
 
   constructor(options: ClaudeSdkTransportOptions) {
     this.sessionId = options.sessionId;
@@ -849,6 +856,61 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
     }
   }
 
+  /**
+   * `rate_limit_event` only ever carries the two unified windows. Per-model
+   * weekly windows (Fable, ...) live behind the same query's experimental
+   * `get_usage` control, so the push is enriched opportunistically. Every
+   * failure mode — control unsupported, rejected, slow, or a payload without
+   * `limits[]` — degrades to exactly the event this Transport forwarded before,
+   * and never drops it.
+   */
+  #emitPlanLimit(planLimit: ClaudePlanLimitEvent, activeQuery: Query): void {
+    void this.#scopedWeeklyWindows(activeQuery).then(
+      (scopedWeekly) => {
+        this.#onPlanLimit(scopedWeekly.length > 0 ? { ...planLimit, scopedWeekly } : planLimit);
+      },
+      () => this.#onPlanLimit(planLimit),
+    );
+  }
+
+  /** One `get_usage` per refresh interval; events in between reuse its result. */
+  #scopedWeeklyWindows(activeQuery: Query): Promise<ClaudePlanLimitScopedWindow[]> {
+    if (this.#scopedWeeklyTask) return this.#scopedWeeklyTask;
+    const now = Date.now();
+    if (now - this.#scopedWeeklyProbedAt < SCOPED_WEEKLY_REFRESH_MS)
+      return Promise.resolve(this.#scopedWeekly);
+    this.#scopedWeeklyProbedAt = now;
+    const task = this.#probeScopedWeekly(activeQuery)
+      .catch((): ClaudePlanLimitScopedWindow[] => [])
+      .then((scopedWeekly) => {
+        this.#scopedWeekly = scopedWeekly;
+        this.#scopedWeeklyTask = null;
+        return scopedWeekly;
+      });
+    this.#scopedWeeklyTask = task;
+    return task;
+  }
+
+  async #probeScopedWeekly(activeQuery: Query): Promise<ClaudePlanLimitScopedWindow[]> {
+    const getUsage = activeQuery.usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET;
+    if (typeof getUsage !== "function") return [];
+    const timeout = rejectAfter(SCOPED_WEEKLY_TIMEOUT_MS, "Claude SDK usage probe timed out");
+    try {
+      const usage = await Promise.race([getUsage.call(activeQuery), timeout.promise]);
+      return parseClaudeScopedWeeklyLimits(usage?.rate_limits).map((scoped) => {
+        const resetsAtUnix =
+          scoped.resetsAt === undefined ? undefined : Math.floor(Date.parse(scoped.resetsAt) / 1000);
+        return {
+          label: scoped.product,
+          utilizationPercent: scoped.usagePercent,
+          ...(resetsAtUnix !== undefined && Number.isFinite(resetsAtUnix) ? { resetsAtUnix } : {}),
+        };
+      });
+    } finally {
+      timeout.cancel();
+    }
+  }
+
   async #consume(activeQuery: Query): Promise<void> {
     try {
       for await (const message of activeQuery) {
@@ -859,7 +921,7 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
           this.#onPermissionModeChanged(permissionMode);
         }
         const planLimit = parseClaudePlanLimitEvent(message);
-        if (planLimit) this.#onPlanLimit(planLimit);
+        if (planLimit) this.#emitPlanLimit(planLimit, activeQuery);
         const active = this.#active;
         if (active) {
           const interpreted = active.accumulator.consume(message);

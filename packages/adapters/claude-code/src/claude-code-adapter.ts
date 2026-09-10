@@ -459,24 +459,28 @@ export function projectClaudePlanLimitToCredits(
   if (!primary) return null;
   const periodType: AccountCreditsSnapshot["periodType"] = fiveHour ? "five_hour" : "seven_day";
   const other = fiveHour && sevenDay ? sevenDay : undefined;
+  const productUsage: NonNullable<AccountCreditsSnapshot["productUsage"]> = [];
+  if (other) {
+    productUsage.push({
+      product: "7-day window",
+      usagePercent: other.utilizationPercent,
+      ...(other.resetsAtUnix !== undefined ? { resetsAt: isoFromUnix(other.resetsAtUnix) } : {}),
+    });
+  }
+  // Per-model weekly windows trail the global ones: they only narrow the 7-day view.
+  for (const scoped of planLimit.scopedWeekly ?? []) {
+    productUsage.push({
+      product: scoped.label,
+      usagePercent: scoped.utilizationPercent,
+      ...(scoped.resetsAtUnix !== undefined ? { resetsAt: isoFromUnix(scoped.resetsAtUnix) } : {}),
+    });
+  }
 
   return {
     usedPercent: primary.utilizationPercent,
     periodType,
     ...(primary.resetsAtUnix !== undefined ? { resetsAt: isoFromUnix(primary.resetsAtUnix) } : {}),
-    ...(other
-      ? {
-          productUsage: [
-            {
-              product: "7-day window",
-              usagePercent: other.utilizationPercent,
-              ...(other.resetsAtUnix !== undefined
-                ? { resetsAt: isoFromUnix(other.resetsAtUnix) }
-                : {}),
-            },
-          ],
-        }
-      : {}),
+    ...(productUsage.length > 0 ? { productUsage } : {}),
   };
 }
 
@@ -2843,6 +2847,7 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
     const next: ClaudePlanLimitEvent = { ...(this.#latestPlanLimit ?? {}) };
     if (planLimit.fiveHour) next.fiveHour = planLimit.fiveHour;
     if (planLimit.sevenDay) next.sevenDay = planLimit.sevenDay;
+    if (planLimit.scopedWeekly?.length) next.scopedWeekly = planLimit.scopedWeekly;
     this.#latestPlanLimit = next.fiveHour || next.sevenDay ? next : null;
     if (this.#latestPlanLimit) {
       for (const session of this.#sessions) {

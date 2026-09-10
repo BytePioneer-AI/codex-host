@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 import type { Query } from "@anthropic-ai/claude-agent-sdk";
-import { projectClaudeAccountUsage } from "../src/account-usage.js";
+import {
+  parseClaudeScopedWeeklyLimits,
+  projectClaudeAccountUsage,
+} from "../src/account-usage.js";
 import {
   ClaudeSdkModelInspector,
   type ClaudeSdkModelInspectorOptions,
@@ -100,6 +103,120 @@ describe("Claude Code native account Usage", () => {
     ).toMatchObject({
       credits: { label: "Opus · 7-day", usedPercent: 0, periodType: "seven_day" },
     });
+  });
+
+  it("surfaces per-model weekly windows that only exist in rate_limits.limits[]", () => {
+    expect(
+      projectClaudeAccountUsage(
+        {
+          ...usage,
+          rate_limits: {
+            ...usage.rate_limits,
+            limits: [
+              {
+                kind: "session",
+                group: "session",
+                percent: 25,
+                resets_at: "2026-09-01T05:00:00Z",
+                scope: null,
+              },
+              {
+                kind: "weekly_all",
+                group: "weekly",
+                percent: 60,
+                resets_at: "2026-09-07T00:00:00Z",
+                scope: null,
+              },
+              {
+                kind: "weekly_scoped",
+                group: "weekly",
+                percent: 32,
+                resets_at: "2026-09-10T16:59:59+00:00",
+                scope: { model: { id: null, display_name: "Fable" }, surface: null },
+                is_active: false,
+              },
+            ],
+          } as never,
+        },
+        {},
+      ),
+    ).toMatchObject({
+      credits: {
+        usedPercent: 25,
+        periodType: "five_hour",
+        productUsage: [
+          { product: "7-day window", usagePercent: 60 },
+          { product: "Sonnet · 7-day", usagePercent: 0 },
+          {
+            product: "Fable · 7-day window",
+            usagePercent: 32,
+            resetsAt: "2026-09-10T16:59:59+00:00",
+          },
+        ],
+      },
+    });
+  });
+
+  it("keeps one entry when a model reports through both model_scoped and limits[]", () => {
+    const projected = projectClaudeAccountUsage(
+      {
+        ...usage,
+        rate_limits: {
+          five_hour: usage.rate_limits.five_hour,
+          model_scoped: [{ display_name: "Fable", utilization: 30, resets_at: null }],
+          limits: [
+            {
+              kind: "weekly_scoped",
+              percent: 32,
+              resets_at: null,
+              scope: { model: { display_name: "Fable" } },
+            },
+          ],
+        } as never,
+      },
+      {},
+    );
+    expect(projected?.credits.productUsage).toEqual([
+      { product: "Fable · 7-day window", usagePercent: 30 },
+    ]);
+  });
+
+  it("ignores an absent, malformed or out-of-range limits[] entry", () => {
+    expect(parseClaudeScopedWeeklyLimits(null)).toEqual([]);
+    expect(parseClaudeScopedWeeklyLimits({})).toEqual([]);
+    expect(parseClaudeScopedWeeklyLimits({ limits: null })).toEqual([]);
+    expect(parseClaudeScopedWeeklyLimits({ limits: "weekly_scoped" })).toEqual([]);
+    expect(
+      parseClaudeScopedWeeklyLimits({
+        limits: [
+          null,
+          { kind: "weekly_all", percent: 60, scope: null },
+          { kind: "weekly_scoped", percent: 32, scope: null },
+          { kind: "weekly_scoped", percent: 32, scope: { model: { display_name: "  " } } },
+          { kind: "weekly_scoped", percent: "32", scope: { model: { display_name: "A" } } },
+          { kind: "weekly_scoped", percent: NaN, scope: { model: { display_name: "B" } } },
+          { kind: "weekly_scoped", percent: 101, scope: { model: { display_name: "C" } } },
+          { kind: "weekly_scoped", percent: -1, scope: { model: { display_name: "D" } } },
+          {
+            kind: "weekly_scoped",
+            percent: 0,
+            resets_at: "not-a-date",
+            scope: { model: { display_name: "E" } },
+          },
+        ],
+      }),
+    ).toEqual([{ product: "E · 7-day window", usagePercent: 0 }]);
+  });
+
+  it("projects a payload without limits[] exactly as before", () => {
+    expect(JSON.stringify(projectClaudeAccountUsage(usage, {}))).toBe(
+      JSON.stringify(
+        projectClaudeAccountUsage(
+          { ...usage, rate_limits: { ...usage.rate_limits, limits: [] } as never },
+          {},
+        ),
+      ),
+    );
   });
 
   it("closes inspection on an unsupported native operation or network error", async () => {

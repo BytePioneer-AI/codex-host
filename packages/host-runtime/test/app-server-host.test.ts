@@ -2641,6 +2641,7 @@ describe("AppServerHost HarnessAdapter projection", () => {
     await vi.waitFor(async () => expect(await fixture.mappingStore.listThreads()).toEqual([]));
     if (!delegationApi) throw new Error("Delegation API was not registered");
 
+    await vi.waitFor(() => expect(fixture.spawnOfficial).toHaveBeenCalled());
     const inspection = delegationApi.inspect({ harnessId: "codex" });
     const modelList = await readJsonLine(fixture.official.stdin);
     expect(modelList).toMatchObject({ method: "model/list", params: {} });
@@ -2925,6 +2926,7 @@ describe("AppServerHost HarnessAdapter projection", () => {
     await vi.waitFor(() => expect(delegationApi).toBeDefined());
     await vi.waitFor(async () => expect(await fixture.mappingStore.listThreads()).toEqual([]));
     if (!delegationApi) throw new Error("Delegation API was not registered");
+    await vi.waitFor(() => expect(fixture.spawnOfficial).toHaveBeenCalled());
     const pending = delegationApi.start({
       harnessId: "codex",
       task: "review auth",

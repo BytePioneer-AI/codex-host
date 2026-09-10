@@ -1,7 +1,11 @@
-import type { CodexAccountSummary } from "@codexhost/shared-contracts";
+import type { CodexAccountSummary, HarnessAccountListResult } from "@codexhost/shared-contracts";
 
+import { KNOWN_RENDERER_AGENTS } from "../agent-selection-state.js";
+import { createRendererAgentIcon } from "../renderer-agent-icon.js";
 import { codexAccountDisplayName } from "../renderer-codex-account-options.js";
+import { createAccountDetails } from "./accounts-details.js";
 import {
+  accountUsageColumnLabel,
   renderAccountResetCredits,
   renderAccountUsage,
   type AccountUsageDisplay,
@@ -12,7 +16,7 @@ import type { RendererSettingsMessages } from "./localization.js";
 
 let resetDetailsSequence = 0;
 
-function accountPlanLabel(planType: CodexAccountSummary["planType"]): string | null {
+export function accountPlanLabel(planType: CodexAccountSummary["planType"]): string | null {
   if (!planType || planType === "unknown") return null;
   if (planType === "free") return "Free";
   if (planType === "go") return "Go";
@@ -40,6 +44,8 @@ export function accountListFocusRestorer(list: HTMLElement, fallback: HTMLElemen
       ? list.querySelector<HTMLElement>(`[data-account-focus="${CSS.escape(key)}"]`)
       : null;
     if (target && !target.matches(":disabled")) {
+      const dialog = target.closest("dialog");
+      if (dialog && !dialog.open) dialog.showModal();
       target.focus({ preventScroll: true });
       return;
     }
@@ -60,21 +66,83 @@ export function createAccountsTable(document: Document, messages: RendererSettin
   table.setAttribute("aria-label", messages.pageLabels.accounts);
   const head = document.createElement("thead");
   const row = document.createElement("tr");
-  for (const label of [
-    messages.accountColumnAccount,
-    messages.accountColumnUsage,
-    messages.accountResetCredits,
-    messages.accountColumnActions,
-  ]) {
+  const headers = Array.from({ length: 4 }, () => {
     const cell = document.createElement("th");
     cell.scope = "col";
-    cell.textContent = label;
     row.append(cell);
-  }
+    return cell;
+  });
+  const updateDisplay = (display: AccountUsageDisplay): void => {
+    const labels = [
+      messages.accountColumnAccount,
+      accountUsageColumnLabel("five_hour", display, messages),
+      accountUsageColumnLabel("seven_day", display, messages),
+      messages.accountColumnActions,
+    ];
+    headers.forEach((cell, index) => {
+      cell.textContent = labels[index] ?? "";
+    });
+  };
+  updateDisplay("remaining");
   head.append(row);
   const body = document.createElement("tbody");
   table.append(head, body);
-  return { table, body };
+  return { table, body, updateDisplay };
+}
+
+function createAccountPerson(
+  document: Document,
+  messages: RendererSettingsMessages,
+  input: {
+    name: string;
+    agent: string;
+    plan: string | null;
+    highlighted?: boolean;
+    active?: boolean;
+    mark: HTMLElement;
+  },
+): HTMLElement {
+  const person = document.createElement("div");
+  person.className = "settings-account-row__person";
+  const identity = document.createElement("div");
+  identity.className = "settings-account-row__identity";
+  const title = document.createElement("strong");
+  title.className = "settings-account-email";
+  title.textContent = input.name;
+  title.title = input.name;
+  title.translate = false;
+  const metadata = document.createElement("div");
+  metadata.className = "settings-account-metadata";
+  const agent = document.createElement("span");
+  agent.textContent = input.agent;
+  agent.translate = false;
+  if (input.name !== input.agent) metadata.append(agent);
+  if (input.plan) {
+    if (metadata.childElementCount) {
+      const separator = document.createElement("span");
+      separator.textContent = "·";
+      separator.setAttribute("aria-hidden", "true");
+      metadata.append(separator);
+    }
+    const plan = document.createElement("span");
+    plan.className = input.highlighted
+      ? "settings-account-plan settings-account-plan--highlighted"
+      : "settings-account-plan";
+    plan.textContent = input.plan;
+    plan.translate = false;
+    metadata.append(plan);
+  }
+  if (input.active) {
+    const badge = document.createElement("span");
+    badge.className = "settings-account-active";
+    badge.textContent = messages.accountDefaultBadge;
+    badge.title = messages.accountDefaultHint;
+    metadata.append(badge);
+  }
+  identity.append(title);
+  if (metadata.childElementCount) identity.append(metadata);
+  person.append(input.mark, identity);
+  return person;
 }
 
 export function renderAccountRows(
@@ -104,66 +172,27 @@ export function renderAccountRows(
   const name = codexAccountDisplayName(account);
   row.setAttribute("aria-label", name.full);
   const personCell = document.createElement("td");
-  const person = document.createElement("div");
-  person.className = "settings-account-row__person";
+  personCell.className = "settings-account-person-cell";
   const mark = document.createElement("div");
   mark.className = "settings-account-row__mark";
   mark.setAttribute("aria-hidden", "true");
   mark.append(createRendererSettingsIcon("terminal", 17));
-  const identity = document.createElement("div");
-  identity.className = "settings-account-row__identity";
-  const title = document.createElement("div");
-  title.className = "settings-account-title";
-  const local = document.createElement("strong");
-  local.className = "settings-account-email";
-  local.textContent = name.local;
-  local.title = name.full;
-  title.append(local);
-  if (account.active) {
-    const badge = document.createElement("span");
-    badge.className = "settings-account-active";
-    badge.textContent = messages.accountDefaultBadge;
-    title.append(badge);
-  }
-  identity.append(title);
-  const metadata = document.createElement("div");
-  metadata.className = "settings-account-metadata";
-  if (name.domain) {
-    const domain = document.createElement("span");
-    domain.className = "settings-account-domain";
-    domain.textContent = `@${name.domain}`;
-    metadata.append(domain);
-  }
-  const planLabel = accountPlanLabel(account.planType);
-  if (planLabel) {
-    if (name.domain) {
-      const separator = document.createElement("span");
-      separator.className = "settings-account-plan-separator";
-      separator.textContent = "·";
-      separator.setAttribute("aria-hidden", "true");
-      metadata.append(separator);
-    }
-    const plan = document.createElement("span");
-    plan.className =
-      account.planType === "pro" || account.planType === "prolite"
-        ? "settings-account-plan settings-account-plan--highlighted"
-        : "settings-account-plan";
-    plan.textContent = planLabel;
-    metadata.append(plan);
-  }
-  if (metadata.childElementCount > 0) identity.append(metadata);
-  person.append(mark, identity);
-  personCell.append(person);
-
-  const usageCell = document.createElement("td");
+  personCell.append(
+    createAccountPerson(document, messages, {
+      name: name.full,
+      agent: "Codex",
+      plan: accountPlanLabel(account.planType),
+      highlighted: account.planType === "pro" || account.planType === "prolite",
+      active: account.active,
+      mark,
+    }),
+  );
   const usage = renderAccountUsage(document, input.usage, messages, input.display, input.onRetry);
-  if (usage) usageCell.append(usage);
-  const resetCell = document.createElement("td");
-  const resetLabel = document.createElement("span");
-  resetLabel.className = "settings-account-mobile-label";
-  resetLabel.textContent = messages.accountResetCredits;
-  resetCell.append(resetLabel);
+  if (usage.additional) personCell.append(usage.additional);
   const actionsCell = document.createElement("td");
+  actionsCell.className = "settings-account-management-cell";
+  const management = document.createElement("div");
+  management.className = "settings-account-management";
   const actions = document.createElement("div");
   actions.className = "settings-account-actions";
   if (!account.active) {
@@ -171,6 +200,7 @@ export function renderAccountRows(
     activate.type = "button";
     activate.className = "settings-account-action";
     activate.textContent = messages.accountUse;
+    activate.title = messages.accountDefaultHint;
     activate.dataset.accountFocus = `${account.accountId}:activate`;
     activate.disabled = input.actionsDisabled;
     activate.addEventListener("click", input.onActivate);
@@ -186,35 +216,49 @@ export function renderAccountRows(
     signIn.addEventListener("click", input.onSignIn);
     actions.append(signIn);
   }
-  // isDefault protects the native Account home; active selects the Account for
-  // new tasks. Preserve these distinct Host semantics when exposing deletion.
+  const more: HTMLButtonElement[] = [];
+  if (account.email && input.usage) {
+    const refresh = document.createElement("button");
+    refresh.type = "button";
+    refresh.className = "settings-account-action";
+    refresh.textContent = messages.accountCreditsRefresh;
+    refresh.dataset.accountFocus = `${account.accountId}:refresh`;
+    refresh.disabled = input.actionsDisabled || input.usage.status === "loading";
+    refresh.addEventListener("click", input.onRetry);
+    more.push(refresh);
+  }
+  // isDefault protects the native Account home; active selects the Account for new tasks.
   if (!account.isDefault) {
     const remove = document.createElement("button");
     remove.type = "button";
-    remove.className = "settings-icon-button settings-account-delete";
-    remove.title = messages.accountDelete;
+    remove.className = "settings-account-action settings-account-delete";
+    remove.textContent = messages.accountDelete;
     remove.dataset.accountFocus = `${account.accountId}:delete`;
     remove.setAttribute("aria-label", `${messages.accountDelete}: ${name.full}`);
     remove.disabled = input.actionsDisabled;
-    remove.append(createRendererSettingsIcon("trash", 16));
     remove.addEventListener("click", input.onDelete);
-    actions.append(remove);
+    more.push(remove);
   }
-  actionsCell.append(actions);
-  row.append(personCell, usageCell, resetCell, actionsCell);
+  if (more.length)
+    actions.append(
+      createAccountDetails(document, messages, {
+        label: messages.accountMore,
+        triggerLabel: `${name.full} · ${messages.accountMore}`,
+        description: name.full,
+        focusKey: `${account.accountId}:more`,
+        icon: "ellipsis",
+        disabled: input.actionsDisabled,
+        actions: more,
+      }),
+    );
+  management.append(actions);
+  actionsCell.append(management);
+  row.append(personCell, ...usage.cells, actionsCell);
   const reset =
     input.usage?.status === "ready"
       ? renderAccountResetCredits(document, input.usage.credits, messages, input)
       : null;
-  if (!reset) {
-    const unknown = document.createElement("span");
-    unknown.className = "settings-account-unknown";
-    unknown.textContent = "—";
-    unknown.title = messages.accountResetCreditsUnknown;
-    unknown.setAttribute("aria-label", messages.accountResetCreditsUnknown);
-    resetCell.append(unknown);
-    return [row];
-  }
+  if (!reset) return [row];
   const detailsRow = document.createElement("tr");
   detailsRow.className = "settings-account-details-row";
   detailsRow.id = `settings-account-reset-${++resetDetailsSequence}`;
@@ -231,6 +275,60 @@ export function renderAccountRows(
     reset.summary.setAttribute("aria-expanded", String(!detailsRow.hidden));
     input.onResetExpanded(!detailsRow.hidden);
   });
-  resetCell.append(reset.summary);
+  management.append(reset.summary);
   return [row, detailsRow];
+}
+
+export function renderHarnessAccountRow(
+  document: Document,
+  account: HarnessAccountListResult["accounts"][number],
+  messages: RendererSettingsMessages,
+  display: AccountUsageDisplay,
+): HTMLTableRowElement {
+  const row = document.createElement("tr");
+  row.className = "settings-account-row";
+  row.dataset.harnessId = account.harnessId;
+  row.tabIndex = -1;
+  const name = account.email ?? account.label ?? account.harnessName;
+  row.setAttribute("aria-label", name);
+  const personCell = document.createElement("td");
+  personCell.className = "settings-account-person-cell";
+  const logo = document.createElement("div");
+  logo.className = "settings-harness-account__logo";
+  logo.setAttribute("aria-hidden", "true");
+  const agent = KNOWN_RENDERER_AGENTS.find((agent) => agent === account.harnessId);
+  if (agent) logo.append(createRendererAgentIcon(agent, 26, document));
+  personCell.append(
+    createAccountPerson(document, messages, {
+      name,
+      agent: account.harnessName,
+      plan: account.plan ?? null,
+      mark: logo,
+    }),
+  );
+  const usage = renderAccountUsage(
+    document,
+    { status: "ready", credits: account.credits },
+    messages,
+    display,
+    () => undefined,
+  );
+  if (usage.additional) personCell.append(usage.additional);
+  const managementCell = document.createElement("td");
+  managementCell.className = "settings-account-management-cell";
+  const management = document.createElement("div");
+  management.className = "settings-account-native";
+  const label = document.createElement("span");
+  label.textContent = messages.accountNativeManaged;
+  const info = createAccountDetails(document, messages, {
+    label: `${account.harnessName} · ${messages.accountNativeManaged}`,
+    description: messages.accountNativeManagementHint.replace("{harness}", account.harnessName),
+    focusKey: `harness:${account.harnessId}:info`,
+    icon: "info",
+    actions: [],
+  });
+  management.append(label, info);
+  managementCell.append(management);
+  row.append(personCell, ...usage.cells, managementCell);
+  return row;
 }

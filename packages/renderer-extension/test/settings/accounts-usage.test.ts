@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import type { AccountCreditsSnapshot } from "@codexhost/shared-contracts";
 
 vi.mock("../../src/settings/icons.js", () => ({
   createRendererSettingsIcon: () => "icon",
@@ -6,14 +7,16 @@ vi.mock("../../src/settings/icons.js", () => ({
 
 import {
   renderAccountResetCredits,
-  renderAccountUsage,
+  renderAccountUsage as renderUsage,
   resetCreditDetailLine,
+  type AccountUsageViewState,
 } from "../../src/settings/accounts-usage.js";
 import { rendererSettingsMessages } from "../../src/settings/localization.js";
 
 class FakeElement {
   readonly children: unknown[] = [];
   readonly attributes = new Map<string, string>();
+  readonly dataset: Record<string, string> = {};
   readonly style: Record<string, string> = {};
   readonly listeners = new Map<string, () => void>();
   className = "";
@@ -57,7 +60,21 @@ const credits = {
   resetsAt: "2026-09-10T03:12:00.000Z",
 };
 
-function usage(snapshot = credits, display: "used" | "remaining" = "used") {
+function renderAccountUsage(
+  document: Document,
+  state: AccountUsageViewState | undefined,
+  messages: ReturnType<typeof rendererSettingsMessages>,
+  display: "used" | "remaining",
+  onRetry: () => void,
+): HTMLElement {
+  const result = renderUsage(document, state, messages, display, onRetry);
+  const root = document.createElement("div");
+  root.append(...result.cells);
+  if (result.additional) root.append(result.additional);
+  return root;
+}
+
+function usage(snapshot: AccountCreditsSnapshot = credits, display: "used" | "remaining" = "used") {
   const result = renderAccountUsage(
     document,
     { status: "ready", credits: snapshot },
@@ -80,8 +97,11 @@ describe("Account limit windows", () => {
     );
     if (!result) throw new Error("Expected limits");
     expect(text(result)).toContain("7 天");
-    expect(text(result)).not.toContain("5 小时");
-    expect(text(result)).not.toContain("未返回");
+    expect(text(result)).toContain("—");
+    expect(text(result)).not.toContain("未提供此窗口");
+    expect(
+      elements(result).filter((el) => el.className === "settings-account-usage__missing"),
+    ).toHaveLength(1);
     expect(elements(result).filter((el) => el.attributes.get("role") === "meter")).toHaveLength(1);
   });
 
@@ -115,9 +135,9 @@ describe("Account limit windows", () => {
     ).toHaveLength(1);
   });
 
-  it("places the display label beside the percent and keeps warnings based on used usage", () => {
+  it("keeps the display mode accessible and warnings based on used usage", () => {
     const result = usage(credits, "remaining");
-    expect(text(result)).toContain("剩余 9%");
+    expect(text(result)).toContain("9%");
     const meter = elements(result).find((el) => el.attributes.get("role") === "meter");
     expect(meter?.attributes.get("aria-valuenow")).toBe("9");
     expect(meter?.attributes.get("aria-label")).toBe("5 小时 · 剩余");
@@ -137,7 +157,11 @@ describe("Account limit windows", () => {
   });
 
   it("keeps unavailable, loading, empty, and failed states distinct from zero usage", () => {
-    expect(renderAccountUsage(document, undefined, messages, "used", vi.fn())).toBeNull();
+    expect(
+      elements(renderAccountUsage(document, undefined, messages, "used", vi.fn())).some(
+        (el) => el.attributes.get("role") === "meter",
+      ),
+    ).toBe(false);
     for (const status of ["loading", "empty", "error"] as const) {
       const retry = vi.fn();
       const result = renderAccountUsage(document, { status }, messages, "used", retry);
@@ -150,8 +174,84 @@ describe("Account limit windows", () => {
         expect(retry).toHaveBeenCalledOnce();
       } else expect(elements(result).some((el) => el.tagName === "button")).toBe(false);
       if (status === "loading")
-        expect((result as unknown as FakeElement).attributes.get("aria-busy")).toBe("true");
+        expect(elements(result).some((el) => el.attributes.get("aria-busy") === "true")).toBe(true);
     }
+  });
+});
+
+describe("Quota comparison columns", () => {
+  function columns(credits: AccountCreditsSnapshot) {
+    const result = renderUsage(
+      document,
+      { status: "ready", credits },
+      messages,
+      "remaining",
+      vi.fn(),
+    );
+    const [fiveHour, sevenDay] = result.cells;
+    if (!fiveHour || !sevenDay) throw new Error("Expected two comparison columns");
+    return { ...result, cells: [fiveHour, sevenDay] as const };
+  }
+
+  it("places weekly zero usage only in the 7-day column", () => {
+    const result = columns({ usedPercent: 0, periodType: "weekly" });
+    expect(elements(result.cells[0]).some((el) => el.attributes.get("role") === "meter")).toBe(
+      false,
+    );
+    expect(
+      elements(result.cells[1])
+        .find((el) => el.attributes.get("role") === "meter")
+        ?.attributes.get("aria-valuenow"),
+    ).toBe("100");
+    expect(result.additional).toBeNull();
+  });
+
+  it("places the exact secondary window in its column without merging duplicate reports", () => {
+    const result = columns({
+      ...credits,
+      productUsage: [
+        { product: "7-day window", usagePercent: 20 },
+        { product: "7-day window", usagePercent: 35 },
+      ],
+    });
+    expect(text(result.cells[0])).toContain("9%");
+    expect(text(result.cells[1])).toContain("80%");
+    expect(result.additional && text(result.additional)).toContain("65%");
+  });
+
+  it.each([
+    { usedPercent: 20, periodType: "monthly" as const },
+    { usedPercent: 20, periodType: "unknown" as const },
+    { usedPercent: 20, periodType: "seven_day" as const, label: "Opus · 7-day" },
+    { usedPercent: 20, periodType: "five_hour" as const, label: "Model group · 5-hour" },
+  ])(
+    "keeps monthly and scoped primary usage out of total columns: $periodType/$label",
+    (credits) => {
+      const result = columns(credits);
+      expect(
+        result.cells.flatMap(elements).some((el) => el.attributes.get("role") === "meter"),
+      ).toBe(false);
+      expect(result.additional && text(result.additional)).toContain(
+        credits.label ?? (credits.periodType === "monthly" ? "月额度" : "额度"),
+      );
+      expect(result.additional && text(result.additional)).toContain("80%");
+    },
+  );
+
+  it("retains model-specific, product and unknown reset data without inventing a window", () => {
+    const result = columns({
+      ...credits,
+      resetsAt: "invalid",
+      productUsage: [
+        { product: "Sonnet · 7-day", usagePercent: 25 },
+        { product: "GrokBuild", usagePercent: 0 },
+      ],
+    });
+    expect(text(result.cells[1])).toContain("—");
+    expect(text(result.cells[1])).not.toContain("未提供此窗口");
+    expect(result.additional && text(result.additional)).toContain("Sonnet · 7-day");
+    expect(result.additional && text(result.additional)).toContain("Build");
+    expect(elements(result.cells[0]).some((el) => el.tagName === "time")).toBe(false);
   });
 });
 

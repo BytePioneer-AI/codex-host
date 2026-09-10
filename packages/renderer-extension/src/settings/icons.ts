@@ -11,6 +11,7 @@ import CircleOff from "lucide/dist/esm/icons/circle-off.mjs";
 import Copy from "lucide/dist/esm/icons/copy.mjs";
 import Download from "lucide/dist/esm/icons/download.mjs";
 import ExternalLink from "lucide/dist/esm/icons/external-link.mjs";
+import Ellipsis from "lucide/dist/esm/icons/ellipsis.mjs";
 import FolderInput from "lucide/dist/esm/icons/folder-input.mjs";
 import GripVertical from "lucide/dist/esm/icons/grip-vertical.mjs";
 import Info from "lucide/dist/esm/icons/info.mjs";
@@ -68,6 +69,7 @@ export const RENDERER_SETTINGS_ICON_NAMES = [
   "terminal",
   "search",
   "help",
+  "ellipsis",
 ] as const;
 
 export type RendererSettingsIconName = (typeof RENDERER_SETTINGS_ICON_NAMES)[number];
@@ -106,6 +108,7 @@ const iconNodes = {
   terminal: Terminal,
   search: Search,
   help: CircleHelp,
+  ellipsis: Ellipsis,
 } satisfies Record<RendererSettingsIconName, IconNode>;
 
 export function isRendererSettingsIconName(value: string): value is RendererSettingsIconName {

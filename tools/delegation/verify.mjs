@@ -211,10 +211,7 @@ async function scenarioEntry03(context) {
   const scenarioError = new Error("synthetic scenario failure");
   let cleanupError;
   context.runtime.close = async () => {
-    const first = await originalClose();
-    throw new Error(
-      `synthetic cleanup failure${first.cleanupErrors.length ? `:${first.cleanupErrors.join(",")}` : ""}`,
-    );
+    throw new Error("synthetic cleanup failure");
   };
   try {
     await context.runtime.close();

@@ -3,7 +3,9 @@ import { EventEmitter } from "node:events";
 import path from "node:path";
 import { PassThrough } from "node:stream";
 
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+import { OfficialProcessStopTimeoutError } from "../src/official-process-lifecycle.js";
 
 import {
   createLoopbackOfficialAppServerListener,
@@ -12,6 +14,7 @@ import {
 } from "../src/remote-official-app-server.js";
 
 class FakeOfficialListenerProcess extends EventEmitter {
+  readonly pid = 123;
   readonly stderr = new PassThrough();
   readonly kill = vi.fn(() => {
     queueMicrotask(() => this.emit("exit", null, "SIGTERM"));
@@ -26,6 +29,8 @@ class StubbornOfficialListenerProcess extends EventEmitter {
     return true;
   });
 }
+
+afterEach(() => vi.useRealTimers());
 
 describe("shared remote official app-server", () => {
   it("uses a private sibling socket distinct from the Desktop control socket", () => {
@@ -145,4 +150,45 @@ describe("shared remote official app-server", () => {
     await listener.close();
     expect(child.kill).toHaveBeenCalledWith("SIGTERM");
   });
+
+  it.each(["unix", "loopback"])(
+    "does not report %s listener shutdown success without exit",
+    async (transport) => {
+      vi.useFakeTimers();
+      const child = new FakeOfficialListenerProcess();
+      child.kill.mockImplementation(() => true);
+      const input = {
+        stockCodexPath: "synthetic-codex",
+        arguments: ["app-server"],
+        environment: {},
+        diagnosticOutput: new PassThrough(),
+        spawnOfficial: vi.fn(() => child as unknown as ChildProcess) as unknown as typeof spawn,
+        closeTimeoutMs: 10,
+      };
+      const listener =
+        transport === "unix"
+          ? createRemoteOfficialAppServerListener({
+              ...input,
+              socketPath: "/synthetic/socket",
+              waitUntilReady: async () => undefined,
+            })
+          : createLoopbackOfficialAppServerListener(input);
+      const listening = listener.listen();
+      if (transport === "loopback") child.stderr.write("listening on: ws://127.0.0.1:40001\n");
+      await listening;
+      const exited = vi.fn();
+      void listener.closed.then(exited);
+      child.emit("error", new Error("kill EPERM"));
+      const failure = expect(listener.close()).rejects.toBeInstanceOf(
+        OfficialProcessStopTimeoutError,
+      );
+      await vi.advanceTimersByTimeAsync(20);
+      await failure;
+      expect(exited).not.toHaveBeenCalled();
+      child.emit("exit", null, "SIGKILL");
+      await expect(listener.closed).resolves.toMatchObject({ signal: "SIGKILL" });
+      await expect(listener.close()).resolves.toBeUndefined();
+      expect(child.kill).toHaveBeenCalledTimes(2);
+    },
+  );
 });

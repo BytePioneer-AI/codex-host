@@ -99,6 +99,8 @@ interface AgentOptionControl {
   action: HTMLButtonElement | null;
 }
 
+export type RendererCodexAccountView = CodexAccountSummary & { active: boolean };
+
 export interface RendererAgentPickerControl {
   root: HTMLElement;
   trigger: HTMLButtonElement;
@@ -713,7 +715,7 @@ export function renderRendererAgentPicker(
   adapterState: RendererAdapterStatus["state"],
   switching: boolean,
   availability: AgentAvailability = {},
-  codexAccounts: readonly CodexAccountSummary[] = [],
+  codexAccounts: readonly RendererCodexAccountView[] = [],
   ownershipError = false,
 ): RendererAgentPickerView {
   control.codexAccounts = [...codexAccounts];

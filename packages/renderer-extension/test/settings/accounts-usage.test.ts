@@ -60,7 +60,7 @@ const credits = {
 function usage(snapshot = credits, display: "used" | "remaining" = "used") {
   const result = renderAccountUsage(
     document,
-    { status: "ready", credits: snapshot },
+    { status: "ready", credits: snapshot, freshness: "live", observedAt: null },
     messages,
     display,
     vi.fn(),
@@ -73,7 +73,12 @@ describe("Account limit windows", () => {
   it("does not synthesize a 5h window for weekly-only accounts", () => {
     const result = renderAccountUsage(
       document,
-      { status: "ready", credits: { usedPercent: 9, periodType: "seven_day" } },
+      {
+        status: "ready",
+        credits: { usedPercent: 9, periodType: "seven_day" },
+        freshness: "live",
+        observedAt: null,
+      },
       messages,
       "used",
       vi.fn(),
@@ -90,6 +95,8 @@ describe("Account limit windows", () => {
       document,
       {
         status: "ready",
+        freshness: "live",
+        observedAt: null,
         credits: {
           ...credits,
           productUsage: [

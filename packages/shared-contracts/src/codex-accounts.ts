@@ -35,25 +35,55 @@ export const codexAccountSchema = z
     label: nonBlankTextSchema.max(256),
     email: z.string().email().max(320).optional(),
     planType: codexAccountPlanTypeSchema.optional(),
-    codexHome: nonBlankTextSchema.max(16_384),
-    active: z.boolean(),
-    isDefault: z.boolean(),
   })
   .strict();
 export type CodexAccountSummary = z.infer<typeof codexAccountSchema>;
 
+export const codexAccountPhaseSchema = z.enum(["ready", "changing", "unavailable"]);
+export type CodexAccountPhase = z.infer<typeof codexAccountPhaseSchema>;
+export const codexAccountCapabilitiesSchema = z
+  .object({
+    manage: z.boolean(),
+    switch: z.boolean(),
+    login: z.boolean(),
+    delete: z.boolean(),
+    reason: z
+      .enum([
+        "ssh-single-account",
+        "unsupported-storage",
+        "unsupported-version",
+        "recovery-required",
+      ])
+      .optional(),
+  })
+  .strict();
 export const codexAccountListResultSchema = z
-  .object({ accounts: z.array(codexAccountSchema).max(128) })
+  .object({
+    version: z.literal(2),
+    currentAccountId: accountIdSchema.nullable(),
+    phase: codexAccountPhaseSchema,
+    revision: z.number().int().nonnegative(),
+    capabilities: codexAccountCapabilitiesSchema,
+    accounts: z.array(codexAccountSchema).max(128),
+  })
   .strict();
 export type CodexAccountListResult = z.infer<typeof codexAccountListResultSchema>;
 
-export const codexAccountCreateParamsSchema = z
-  .object({ label: nonBlankTextSchema.max(256).optional() })
-  .strict();
-export type CodexAccountCreateParams = z.infer<typeof codexAccountCreateParamsSchema>;
-
+/** Parse only to return an explicit upgrade error; never alias this to switch. */
 export const codexAccountActivateParamsSchema = z.object({ accountId: accountIdSchema }).strict();
 export type CodexAccountActivateParams = z.infer<typeof codexAccountActivateParamsSchema>;
+export const codexAccountSwitchParamsSchema = z.object({ accountId: accountIdSchema }).strict();
+export type CodexAccountSwitchParams = z.infer<typeof codexAccountSwitchParamsSchema>;
+export const codexAccountSwitchResultSchema = z
+  .object({
+    currentAccountId: accountIdSchema,
+    phase: z.literal("ready"),
+    revision: z.number().int().nonnegative(),
+  })
+  .strict();
+export type CodexAccountSwitchResult = z.infer<typeof codexAccountSwitchResultSchema>;
+export const codexAccountChangedSchema = codexAccountListResultSchema;
+export type CodexAccountChanged = z.infer<typeof codexAccountChangedSchema>;
 
 export const codexAccountDeleteParamsSchema = z.object({ accountId: accountIdSchema }).strict();
 export type CodexAccountDeleteParams = z.infer<typeof codexAccountDeleteParamsSchema>;
@@ -63,10 +93,9 @@ export const codexAccountDeleteResultSchema = z
   .strict();
 export type CodexAccountDeleteResult = z.infer<typeof codexAccountDeleteResultSchema>;
 
-export const codexAccountMutationResultSchema = z.object({ account: codexAccountSchema }).strict();
-export type CodexAccountMutationResult = z.infer<typeof codexAccountMutationResultSchema>;
-
-export const codexAccountLoginStartParamsSchema = z.object({ accountId: accountIdSchema }).strict();
+export const codexAccountLoginStartParamsSchema = z
+  .object({ accountId: accountIdSchema.optional() })
+  .strict();
 export type CodexAccountLoginStartParams = z.infer<typeof codexAccountLoginStartParamsSchema>;
 
 export const codexAccountLoginStartResultSchema = z
@@ -97,13 +126,17 @@ export const codexAccountLoginCompletedSchema = z
   .strict();
 export type CodexAccountLoginCompleted = z.infer<typeof codexAccountLoginCompletedSchema>;
 
-export const codexAccountUsageParamsSchema = z.object({ accountId: accountIdSchema }).strict();
+export const codexAccountUsageParamsSchema = z
+  .object({ accountId: accountIdSchema, refresh: z.boolean().optional() })
+  .strict();
 export type CodexAccountUsageParams = z.infer<typeof codexAccountUsageParamsSchema>;
 export const codexAccountUsageResultSchema = z
   .object({
     accountId: accountIdSchema,
     usage: threadUsageSnapshotSchema.nullable(),
     accountCredits: accountCreditsSnapshotSchema.optional(),
+    freshness: z.enum(["live", "cached"]),
+    observedAt: z.string().datetime().nullable(),
   })
   .strict();
 export type CodexAccountUsageResult = z.infer<typeof codexAccountUsageResultSchema>;

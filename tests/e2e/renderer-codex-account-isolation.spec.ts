@@ -16,12 +16,19 @@ const { outputFiles } = await build({
       const calls = [];
       const pending = new Map();
       const paused = new Set();
+      const current = { local: "default", remote: "default" };
+      const revision = { local: 1, remote: 1 };
+      const subscribers = { local: new Set(), remote: new Set() };
+      let failNextSwitch = false;
       const accounts = (host) => ["default", "other"].map((accountId) => ({
         accountId, label: host + "-" + accountId,
         email: host + "-" + accountId + "@example.com",
-        codexHome: "/synthetic/" + host + "/" + accountId,
-        active: accountId === "default", isDefault: accountId === "default",
       }));
+      const accountList = (host) => ({
+        version: 2, currentAccountId: current[host], phase: "ready", revision: revision[host],
+        capabilities: { manage: true, switch: true, login: true, delete: true },
+        accounts: accounts(host),
+      });
       const unavailable = async () => { throw new Error("unsupported test control"); };
       const request = async (host, method, result) => {
         calls.push({ host, method });
@@ -36,11 +43,24 @@ const { outputFiles } = await build({
       const clients = Object.fromEntries(["local", "remote"].map(host => [host, {
         listCodexAccounts: () => request(host, "accounts", () => {
           if (host === "remote" && globalThis.remoteUnsupported) throw new Error("Method not found");
-          return { accounts: accounts(host) };
+          return accountList(host);
         }),
+        switchCodexAccount: ({accountId}) => request(host, "switch:" + accountId, () => {
+          if (failNextSwitch) { failNextSwitch = false; throw new Error("synthetic rollback failure"); }
+          current[host] = accountId;
+          revision[host]++;
+          const snapshot = accountList(host);
+          for (const listener of subscribers[host]) listener(snapshot);
+          return { currentAccountId: accountId, phase: "ready", revision: revision[host] };
+        }),
+        subscribeCodexAccounts: (listener) => {
+          subscribers[host].add(listener);
+          return () => subscribers[host].delete(listener);
+        },
         inspectCodexAccountUsage: (input) => request(host, "usage:" + input.accountId, () => ({
           accountId: input.accountId, usage: null,
-          accountCredits: { usedPercent: host === "local" ? 17 : 83 },
+          freshness: "live", observedAt: "2026-09-10T03:00:00.000Z",
+          accountCredits: { usedPercent: host === "local" ? 17 : 83, periodType: "weekly" },
         })),
         inspectHarness: createRendererModelClient([{
           sendRequest: (_method, params) => request(host, "harness:" + params.harnessId, () => {
@@ -59,9 +79,7 @@ const { outputFiles } = await build({
               throw Object.assign(new Error("Invalid request: unknown variant \`codexhost/thread/inspect\`"), { code: -32600 });
             }
             if (globalThis.ownershipError) throw new Error("Method not found");
-            return { owner: "codex", locked: true,
-              ...(host === "local" && globalThis.localBoundAccount ? { accountId: "other" } : {}),
-            };
+            return { owner: "codex", locked: true };
           }),
         }]).inspectThread,
         inspectThreadUsage: async ({ threadId }) => ({ threadId, usage: null }),
@@ -76,18 +94,11 @@ const { outputFiles } = await build({
       ]));
       facade.currentHostId = () => routeReady ? hostId : null;
       facade.clientForHost = (host) => clients[host];
-      let selectedAccount = null;
       const installPolicy = () => {
         const owner = hostId;
-        selectedAccount = null;
         window.__codexhostDraftPrewarmPolicyV1 = {
           state: "ready", hostId: owner,
           select: () => true,
-          selectAccount: (accountId) => {
-            selectedAccount = accountId;
-            calls.push({ host: owner, method: "select", accountId });
-            return true;
-          },
           clear: () => request(owner, "clear", () => undefined),
         };
       };
@@ -115,7 +126,7 @@ const { outputFiles } = await build({
       }
       composer.addEventListener("submit", (event) => {
         event.preventDefault();
-        calls.push({ host: hostId, method: "submit", accountId: selectedAccount });
+        calls.push({ host: hostId, method: "submit" });
       });
       document.body.append(composer);
       const binding = installRendererBindingProbe({ enabledAgents: ["codex", "pi"], defaultAgent: "codex" });
@@ -137,6 +148,7 @@ const { outputFiles } = await build({
           clients.local = {
             ...clients.local,
             listCodexAccounts: () => request("local", "replacement-accounts", () => ({
+              ...accountList("local"),
               accounts: [{ ...accounts("local")[0], email: "reconnected@example.com" }],
             })),
           };
@@ -149,6 +161,12 @@ const { outputFiles } = await build({
           pending.delete(key);
         },
         focus: () => window.dispatchEvent(new Event("focus")),
+        notify: ([host, next]) => {
+          current[host] = next.currentAccountId;
+          revision[host] = next.revision;
+          for (const listener of subscribers[host]) listener(next);
+        },
+        failSwitch: () => { failNextSwitch = true; },
         switchHost: (next) => {
           hostId = next;
           installPolicy();
@@ -183,7 +201,7 @@ async function setup(page: Page, options: Record<string, boolean> = {}): Promise
   );
 }
 
-async function action(page: Page, method: string, value?: string): Promise<void> {
+async function action(page: Page, method: string, value?: unknown): Promise<void> {
   await page.evaluate(
     ({ method, value }) => {
       const fixture = Reflect.get(globalThis, "accountsFixture");
@@ -204,74 +222,56 @@ async function calls(page: Page) {
   return page.evaluate(() => Reflect.get(globalThis, "accountsFixture").calls);
 }
 
-test("Usage shows the selected Account and follows Host changes without token data", async ({
+test("switching the Host current Account updates the Composer and live quota without draft routing", async ({
   page,
 }) => {
   await setup(page);
-  const details = page.getByRole("dialog", { name: "Thread Usage details" });
-  await page.getByRole("button", { name: "Thread Usage: Usage", exact: true }).hover();
-  await expect(details).toBeVisible();
-  await expect(details).toContainText("local-default@example.com");
-  await page.keyboard.press("Escape");
   await selectOtherAccount(page);
-  await page.getByRole("button", { name: "Thread Usage: Usage", exact: true }).hover();
-  await expect(details).toContainText("local-other@example.com");
-  await expect(details).not.toContainText("local-default@example.com");
-  await page.mouse.move(0, 0);
+  await expect(page.locator(trigger)).toHaveAttribute("title", /local-other/);
+  await expect.poll(() => calls(page)).toContainEqual({ host: "local", method: "switch:other" });
+  await expect.poll(() => calls(page)).toContainEqual({ host: "local", method: "usage:other" });
+  await page.locator('button[type="submit"]').click();
+  expect(await calls(page)).toContainEqual({ host: "local", method: "submit" });
+  expect(JSON.stringify(await calls(page))).not.toContain("accountId");
+});
+
+test("current Accounts stay isolated by Host and never become cross-Host draft overrides", async ({
+  page,
+}) => {
+  await setup(page);
+  await selectOtherAccount(page);
   await action(page, "switchHost", "remote");
   await expect(page.locator(trigger)).toHaveAttribute("title", /remote-default/);
-  await page.getByRole("button", { name: "Thread Usage: Usage", exact: true }).hover();
-  await expect(details).toContainText("remote-default@example.com");
-  await expect(details).not.toContainText("local-other@example.com");
+  await expect.poll(() => calls(page)).toContainEqual({ host: "remote", method: "usage:default" });
+  expect(await calls(page)).not.toContainEqual({ host: "remote", method: "usage:other" });
+  await action(page, "switchHost", "local");
+  await expect(page.locator(trigger)).toHaveAttribute("title", /local-other/);
 });
 
-async function waitForPending(page: Page, key: string): Promise<void> {
+test("a late Account refresh from the previous Host cannot overwrite the active Host", async ({
+  page,
+}) => {
+  await setup(page);
+  await action(page, "pause", "local:accounts");
+  await action(page, "focus");
   await expect
     .poll(() =>
-      page.evaluate((key) => Reflect.get(globalThis, "accountsFixture").pending(key), key),
+      page.evaluate(() => Reflect.get(globalThis, "accountsFixture").pending("local:accounts")),
     )
     .toBeGreaterThan(0);
-}
-
-for (const host of ["local", "remote"]) {
-  for (const event of [
-    "codexhost:renderer-adapter-status",
-    "codexhost:draft-prewarm-policy-changed",
-  ]) {
-    test(`the first ${host} draft shows Accounts when its Host becomes ready via ${event}`, async ({
-      page,
-    }) => {
-      await setup(page, { delayedHost: true, startRemote: host === "remote" });
-      await expect(page.locator("[data-codex-account-id]")).toHaveCount(0);
-      await action(page, "ready", event);
-      await expect.poll(() => calls(page)).toContainEqual({ host, method: "accounts" });
-      await expect(page.locator("[data-codex-account-id]")).toHaveCount(2);
-      await expect(page.locator(trigger)).toHaveAttribute("title", new RegExp(host + "-default"));
-    });
-  }
-}
-
-test("a cold remote draft with no Account API never adopts local Accounts", async ({ page }) => {
-  await setup(page, { delayedHost: true, startRemote: true, remoteUnsupported: true });
-  await action(page, "ready", "codexhost:renderer-adapter-status");
-  await expect.poll(() => calls(page)).toContainEqual({ host: "remote", method: "accounts" });
-  await expect(page.locator("[data-codex-account-id]")).toHaveCount(0);
-  await page.locator(trigger).click();
-  await expect(page.getByRole("menuitemradio", { name: "Codex", exact: true })).toBeVisible();
-  expect(await calls(page)).not.toContainEqual({ host: "local", method: "accounts" });
+  await action(page, "switchHost", "remote");
+  await expect(page.locator(trigger)).toHaveAttribute("title", /remote-default/);
+  await action(page, "release", "local:accounts");
+  await expect(page.locator(trigger)).toHaveAttribute("title", /remote-default/);
 });
 
-test("an unsupported remote Account API does not retain the local Account menu", async ({
+test("SSH-style unsupported Account management does not retain local Account controls", async ({
   page,
 }) => {
   await setup(page, { remoteUnsupported: true });
-  await action(page, "pause", "remote:accounts");
   await action(page, "switchHost", "remote");
   await expect(page.locator("[data-codex-account-id]")).toHaveCount(0);
-  await action(page, "release", "remote:accounts");
   await expect(page.locator(trigger)).toHaveAttribute("aria-busy", "false");
-  await page.locator(trigger).click();
-  await expect(page.getByRole("menuitemradio", { name: "Codex", exact: true })).toBeVisible();
   await action(page, "switchHost", "local");
   await expect(page.locator('[data-codex-account-id="default"]')).toHaveAttribute(
     "aria-label",
@@ -279,150 +279,77 @@ test("an unsupported remote Account API does not retain the local Account menu",
   );
 });
 
-test("Account overrides and quota requests stay on their Host even when IDs match", async ({
+test("a busy Account switch stays visible and is never replayed as a second switch", async ({
   page,
 }) => {
   await setup(page);
+  await action(page, "pause", "local:switch:other");
   await selectOtherAccount(page);
+  await expect
+    .poll(() =>
+      page.evaluate(() => Reflect.get(globalThis, "accountsFixture").pending("local:switch:other")),
+    )
+    .toBeGreaterThan(0);
+  await expect(page.locator(trigger)).toHaveAttribute("aria-busy", "true");
+  await action(page, "release", "local:switch:other");
   await expect(page.locator(trigger)).toHaveAttribute("title", /local-other/);
-  await action(page, "switchHost", "remote");
-  await expect(page.locator(trigger)).toHaveAttribute("title", /remote-default/);
-  await expect.poll(() => calls(page)).toContainEqual({ host: "remote", method: "usage:default" });
-  expect(await calls(page)).not.toContainEqual({ host: "remote", method: "usage:other" });
-  await action(page, "switchHost", "local");
-  await expect(page.locator(trigger)).toHaveAttribute("title", /local-other/);
-  await page.locator('button[type="submit"]').click();
-  expect(await calls(page)).toContainEqual({ host: "local", method: "submit", accountId: "other" });
-});
-
-test("switching Hosts does not carry an unbound submission's Account into the remote draft", async ({
-  page,
-}) => {
-  await setup(page);
-  await selectOtherAccount(page);
-  await expect(page.locator(trigger)).toHaveAttribute("title", /local-other/);
-  await page.locator('button[type="submit"]').click();
-  await action(page, "switchHost", "remote");
-  await expect(page.locator(trigger)).toHaveAttribute("title", /remote-default/);
-  await page.locator('button[type="submit"]').click();
-  expect(await calls(page)).toContainEqual({ host: "remote", method: "submit", accountId: null });
-});
-
-test("a delayed account selection cannot apply a local override to a new Host policy", async ({
-  page,
-}) => {
-  await setup(page);
-  await action(page, "pause", "local:clear");
-  await selectOtherAccount(page);
-  await action(page, "switchHost", "remote");
-  await expect(page.locator(trigger)).toHaveAttribute("aria-busy", "false");
-  await action(page, "release", "local:clear");
-  await expect(page.locator(trigger)).toHaveAttribute("title", /remote-default/);
   expect(
-    (await calls(page)).filter((call: { method: string }) => call.method === "select"),
-  ).toEqual([]);
+    (await calls(page)).filter((call: { method: string }) => call.method === "switch:other"),
+  ).toHaveLength(1);
 });
 
-test("late local Account and quota responses cannot overwrite the remote Composer", async ({
+test("a failed replacement or rollback does not display a false current Account", async ({
   page,
 }) => {
   await setup(page);
-  await action(page, "pause", "local:usage:default");
-  await action(page, "focus");
-  await waitForPending(page, "local:usage:default");
-  await action(page, "pause", "local:accounts");
-  await action(page, "focus");
-  await waitForPending(page, "local:accounts");
-  await action(page, "switchHost", "remote");
-  await expect(page.locator(trigger)).toHaveAttribute("title", /remote-default/);
-  const credits = page.locator("[data-codexhost-credits-label]");
-  await expect(credits).toHaveText("17%");
-  await action(page, "release", "local:accounts");
-  await action(page, "release", "local:usage:default");
-  await expect(page.locator(trigger)).toHaveAttribute("title", /remote-default/);
-  await expect(credits).toHaveText("17%");
-});
-
-test("a replacement client for the same Host does not inherit old Account responses or overrides", async ({
-  page,
-}) => {
-  await setup(page);
+  await action(page, "failSwitch");
   await selectOtherAccount(page);
-  await expect(page.locator(trigger)).toHaveAttribute("title", /local-other/);
+  await expect.poll(() => calls(page)).toContainEqual({ host: "local", method: "switch:other" });
+  await expect(page.locator(trigger)).toHaveAttribute("title", /local-default/);
+});
+
+test("a replacement protocol client discards the previous Account response", async ({ page }) => {
+  await setup(page);
   await action(page, "pause", "local:accounts");
   await action(page, "focus");
-  await waitForPending(page, "local:accounts");
+  await expect
+    .poll(() =>
+      page.evaluate(() => Reflect.get(globalThis, "accountsFixture").pending("local:accounts")),
+    )
+    .toBeGreaterThan(0);
   await action(page, "reconnectLocal");
   await expect(page.locator(trigger)).toHaveAttribute("title", /reconnected@example.com/);
   await action(page, "release", "local:accounts");
   await expect(page.locator(trigger)).toHaveAttribute("title", /reconnected@example.com/);
-  await expect(page.locator("[data-codex-account-id]")).toHaveCount(1);
 });
 
-test("a native remote Thread remains usable without codexhost ownership or Account APIs", async ({
+test("two Renderer windows consume the same Host current-Account revision", async ({
   page,
+  context,
 }) => {
-  await setup(page, { boundThread: true, remoteNative: true, remoteUnsupported: true });
-  await action(page, "switchHost", "remote");
-  await expect(page.locator(trigger)).toHaveAttribute("title", "Agent: Codex (locked)");
-  await expect(page.locator(trigger)).toHaveAttribute("aria-busy", "false");
-  await expect(page.locator("[data-codex-account-id]")).toHaveCount(0);
-  await expect.poll(() => calls(page)).toContainEqual({ host: "remote", method: "thread/read" });
-  await page.locator('button[type="submit"]').click();
-  expect(await calls(page)).toContainEqual({ host: "remote", method: "submit", accountId: null });
-  expect(await calls(page)).not.toContainEqual({ host: "local", method: "thread/read" });
-});
-
-test("a late native ownership read cannot replace the Composer after switching back to local", async ({
-  page,
-}) => {
-  await setup(page, {
-    boundThread: true,
-    remoteNative: true,
-    remoteUnsupported: true,
-    localBoundAccount: true,
-  });
-  await action(page, "pause", "remote:thread/read");
-  await action(page, "switchHost", "remote");
-  await waitForPending(page, "remote:thread/read");
-  await action(page, "switchHost", "local");
+  const second = await context.newPage();
+  await Promise.all([setup(page), setup(second)]);
+  const snapshot = {
+    version: 2,
+    currentAccountId: "other",
+    phase: "ready",
+    revision: 2,
+    capabilities: {
+      supportsMultipleAccounts: true,
+      supportsAddAccount: true,
+      supportsSwitchAccount: true,
+      supportsDeleteAccount: true,
+      supportsLiveQuota: true,
+    },
+    accounts: [
+      { accountId: "default", email: "local-default@example.com", label: "local-default" },
+      { accountId: "other", email: "local-other@example.com", label: "local-other" },
+    ],
+  };
+  await Promise.all([
+    action(page, "notify", ["local", snapshot]),
+    action(second, "notify", ["local", snapshot]),
+  ]);
   await expect(page.locator(trigger)).toHaveAttribute("title", /local-other/);
-  await action(page, "release", "remote:thread/read");
-  await expect(page.locator(trigger)).toHaveAttribute("title", /local-other/);
-  await expect(page.locator('button[type="submit"]')).toBeEnabled();
-});
-
-test("unsupported remote Harness probes are not resent by retries, focus, or Host switches", async ({
-  page,
-}) => {
-  await page.clock.install();
-  await setup(page, { remoteUnsupported: true, remoteHarnessUnsupported: true });
-  await action(page, "switchHost", "remote");
-  await expect.poll(() => calls(page)).toContainEqual({ host: "remote", method: "harness:pi" });
-  await page.clock.runFor(30_000);
-  await action(page, "focus");
-  await action(page, "switchHost", "local");
-  await action(page, "switchHost", "remote");
-  await page.clock.runFor(30_000);
-  expect(
-    (await calls(page)).filter(
-      (call: { host: string; method: string }) =>
-        call.host === "remote" && call.method === "harness:pi",
-    ),
-  ).toHaveLength(1);
-  await expect(page.locator(trigger)).toHaveAttribute("aria-busy", "false");
-});
-
-test("ownership errors stop spinning without permitting an unknown Thread to submit", async ({
-  page,
-}) => {
-  await setup(page, { boundThread: true, ownershipError: true });
-  await expect.poll(() => calls(page)).toContainEqual({ host: "local", method: "ownership" });
-  await expect(page.locator(trigger)).toHaveAttribute("aria-busy", "false");
-  await expect(page.locator(trigger)).toHaveAttribute("title", /unable|failed|无法|失败/i);
-  await expect(page.locator('button[type="submit"]')).toBeDisabled();
-  await page.evaluate(() => Reflect.set(globalThis, "ownershipError", false));
-  await action(page, "focus");
-  await expect(page.locator('button[type="submit"]')).toBeEnabled();
-  await expect(page.locator(trigger)).not.toHaveAttribute("title", /unable|failed|无法|失败/i);
+  await expect(second.locator(trigger)).toHaveAttribute("title", /local-other/);
 });

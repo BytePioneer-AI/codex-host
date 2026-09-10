@@ -74,7 +74,7 @@ export function mountHarnessAccounts(
       if (metadata.childElementCount) identity.append(metadata);
       const usage = renderAccountUsage(
         document,
-        { status: "ready", credits: account.credits },
+        { status: "ready", credits: account.credits, freshness: "live", observedAt: null },
         messages,
         display,
         () => undefined,

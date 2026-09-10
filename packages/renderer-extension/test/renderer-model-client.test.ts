@@ -10,8 +10,7 @@ import {
 import { describe, expect, it, vi } from "vitest";
 
 import {
-  CODEX_ACCOUNT_ACTIVATE_METHOD,
-  CODEX_ACCOUNT_CREATE_METHOD,
+  CODEX_ACCOUNT_SWITCH_METHOD,
   CODEX_ACCOUNT_DELETE_METHOD,
   CODEX_ACCOUNT_LIST_METHOD,
   CODEX_ACCOUNT_REFRESH_METHOD,
@@ -78,6 +77,8 @@ describe("Renderer fixed Model request client", () => {
       accountId: "account-b",
       usage: { planFiveHourUsedPercent: 83 },
       accountCredits: { usedPercent: 83, periodType: "five_hour" },
+      freshness: "live" as const,
+      observedAt: "2026-09-10T03:00:00.000Z",
     };
     const sendRequest = vi.fn().mockResolvedValue(result);
     const client = createRendererModelClient([{ sendRequest }]);
@@ -98,20 +99,22 @@ describe("Renderer fixed Model request client", () => {
         return remove;
       },
     );
-    const account = {
-      accountId: "work",
-      label: "Work",
-      codexHome: "/tmp/codex-work",
-      active: true,
-      isDefault: false,
+    const account = { accountId: "work", label: "Work" };
+    const list = {
+      version: 2 as const,
+      currentAccountId: "work",
+      phase: "ready" as const,
+      revision: 1,
+      capabilities: { manage: true, switch: true, login: true, delete: true },
+      accounts: [account],
     };
+    const switched = { currentAccountId: "work", phase: "ready" as const, revision: 2 };
     const sendRequest = vi
       .fn<(method: string, params: unknown) => Promise<unknown>>()
-      .mockResolvedValueOnce({ accounts: [account] })
-      .mockResolvedValueOnce({ accounts: [account] })
-      .mockResolvedValueOnce({ account })
+      .mockResolvedValueOnce(list)
+      .mockResolvedValueOnce(list)
       .mockResolvedValueOnce({ deletedAccountId: "work" })
-      .mockResolvedValueOnce({ account })
+      .mockResolvedValueOnce(switched)
       .mockResolvedValueOnce({
         accountId: "work",
         loginId: "login-1",
@@ -122,13 +125,12 @@ describe("Renderer fixed Model request client", () => {
     const client = createRendererModelClient([{ addNotificationCallback, sendRequest }]);
     if (!client) throw new Error("Synthetic Account client was not created");
 
-    await expect(client.listCodexAccounts()).resolves.toEqual({ accounts: [account] });
-    await expect(client.refreshCodexAccounts?.()).resolves.toEqual({ accounts: [account] });
-    await expect(client.createCodexAccount({ label: "Work" })).resolves.toEqual({ account });
+    await expect(client.listCodexAccounts()).resolves.toEqual(list);
+    await expect(client.refreshCodexAccounts?.()).resolves.toEqual(list);
     await expect(client.deleteCodexAccount({ accountId: "work" })).resolves.toEqual({
       deletedAccountId: "work",
     });
-    await expect(client.activateCodexAccount({ accountId: "work" })).resolves.toEqual({ account });
+    await expect(client.switchCodexAccount({ accountId: "work" })).resolves.toEqual(switched);
     await expect(client.startCodexAccountLogin({ accountId: "work" })).resolves.toMatchObject({
       loginId: "login-1",
       userCode: "ABCD-EFGH",
@@ -139,9 +141,8 @@ describe("Renderer fixed Model request client", () => {
     expect(sendRequest.mock.calls).toEqual([
       [CODEX_ACCOUNT_LIST_METHOD, {}],
       [CODEX_ACCOUNT_REFRESH_METHOD, {}],
-      [CODEX_ACCOUNT_CREATE_METHOD, { label: "Work" }],
       [CODEX_ACCOUNT_DELETE_METHOD, { accountId: "work" }],
-      [CODEX_ACCOUNT_ACTIVATE_METHOD, { accountId: "work" }],
+      [CODEX_ACCOUNT_SWITCH_METHOD, { accountId: "work" }],
       [CODEX_ACCOUNT_LOGIN_START_METHOD, { accountId: "work" }],
       [CODEX_ACCOUNT_LOGIN_CANCEL_METHOD, { loginId: "login-1" }],
     ]);
@@ -280,11 +281,9 @@ describe("Renderer fixed Model request client", () => {
     const client = createRendererModelClient([{ addNotificationCallback, sendRequest }]);
     if (!client) throw new Error("Synthetic Model client was not created");
     expect(Object.keys(client).sort()).toEqual([
-      "activateCodexAccount",
       "cancelCodexAccountLogin",
       "checkUpdate",
       "consumeCodexAccountResetCredit",
-      "createCodexAccount",
       "deleteCodexAccount",
       "executeThreadCommand",
       "forkThread",
@@ -310,7 +309,9 @@ describe("Renderer fixed Model request client", () => {
       "startCodexAccountLogin",
       "startUpdate",
       "subscribeCodexAccountLogin",
+      "subscribeCodexAccounts",
       "subscribeThreadUsage",
+      "switchCodexAccount",
     ]);
 
     await expect(client.inspectHarness({ harnessId: piHarnessId, refresh: true })).resolves.toEqual(

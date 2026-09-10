@@ -80,6 +80,10 @@ export interface RendererSettingsMessages {
   readonly accountCreditsFailed: string;
   readonly accountCreditsRetry: string;
   readonly accountCreditsRefresh: string;
+  readonly accountCreditsLive: string;
+  readonly accountCreditsLiveAt: string;
+  readonly accountCreditsCached: string;
+  readonly accountCreditsCachedAt: string;
   readonly accountResetCreditsUnknown: string;
   readonly accountCreateFailed: string;
   readonly accountDelete: string;
@@ -263,11 +267,11 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   sessionImportRetrying: "Opening...",
   connectionsDescription:
     "View runtime status by Host. Select an item to inspect details or complete its setup.",
-  accountsDescription: "Choose the default account for new Codex tasks and check account limits.",
+  accountsDescription: "Manage the current Codex account and view its live limits.",
   accountTaskHint:
-    "Existing tasks keep the account they were created with. Multi-account is currently available for Codex.",
+    "Switching changes Codex authentication for every conversation on this Host and briefly pauses Codex. Other harnesses keep running.",
   accountConnected: "Connected accounts",
-  accountDefaultBadge: "Default",
+  accountDefaultBadge: "Current",
   accountAdd: "Add Account",
   accountColumnAccount: "Account",
   accountColumnUsage: "Limits",
@@ -283,14 +287,18 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   accountCreditsFailed: "Could not load limits",
   accountCreditsRetry: "Retry",
   accountCreditsRefresh: "Refresh limits",
+  accountCreditsLive: "Live",
+  accountCreditsLiveAt: "Live · {time}",
+  accountCreditsCached: "Last confirmed",
+  accountCreditsCachedAt: "Last confirmed · {time}",
   accountResetCreditsUnknown: "No reset card data available",
   accountCreateFailed: "Could not add the Account.",
   accountDelete: "Delete",
   accountDeleteConfirm: "Delete this Account and its local data? This cannot be undone.",
   accountDeleting: "Deleting Account...",
   accountDeleteFailed: "Could not delete the Account.",
-  accountActive: "Default",
-  accountUse: "Set as default",
+  accountActive: "Current account",
+  accountUse: "Switch account",
   accountSignIn: "Sign in",
   accountSigningIn: "Starting device sign-in...",
   accountDeviceCodePrerequisite:
@@ -481,10 +489,11 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   sessionImportRetryOpen: "重试打开",
   sessionImportRetrying: "正在打开……",
   connectionsDescription: "按 Host 查看运行时状态。选择一项，在右侧检查详情或完成配置。",
-  accountsDescription: "选择新建 Codex 任务的默认账号，并查看各账号额度。",
-  accountTaskHint: "切换默认账号不会影响已开始的任务。目前仅支持 Codex 多账号。",
+  accountsDescription: "管理当前 Codex 账号并查看其实时额度。",
+  accountTaskHint:
+    "切换会全局更改此 Host 上所有 Codex 会话的认证，并短暂停止 Codex；其他 Harness 会继续运行。",
   accountConnected: "已连接账号",
-  accountDefaultBadge: "默认",
+  accountDefaultBadge: "当前",
   accountAdd: "添加账号",
   accountColumnAccount: "账号",
   accountColumnUsage: "额度",
@@ -500,14 +509,18 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   accountCreditsFailed: "额度读取失败",
   accountCreditsRetry: "重试",
   accountCreditsRefresh: "刷新额度",
+  accountCreditsLive: "实时",
+  accountCreditsLiveAt: "实时 · {time}",
+  accountCreditsCached: "上次确认",
+  accountCreditsCachedAt: "上次确认 · {time}",
   accountResetCreditsUnknown: "暂无重置卡数据",
   accountCreateFailed: "添加账号失败。",
   accountDelete: "删除",
   accountDeleteConfirm: "删除此账号及其本地数据？此操作无法撤销。",
   accountDeleting: "正在删除账号...",
   accountDeleteFailed: "删除账号失败。",
-  accountActive: "默认账号",
-  accountUse: "设为默认",
+  accountActive: "当前账号",
+  accountUse: "切换账号",
   accountSignIn: "登录",
   accountSigningIn: "正在启动设备登录...",
   accountDeviceCodePrerequisite:

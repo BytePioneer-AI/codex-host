@@ -1,6 +1,6 @@
 import type { ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -42,14 +42,8 @@ import type {
   DelegationControlApi,
   DelegationControlRegistration,
 } from "../src/delegation-types.js";
-import {
-  AccountRepository,
-  AppServerHost,
-  ThreadAccountStore,
-  officialAccountEnvironment,
-  type CodexAccount,
-  type HostUpdateCoordinator,
-} from "../src/index.js";
+import { AppServerHost, type HostUpdateCoordinator } from "../src/index.js";
+import type { CodexAccountControl } from "../src/account/managed-codex-accounts.js";
 import type { OfficialAppServerConnection } from "../src/official-app-server-connection.js";
 
 class FakeOfficialProcess extends EventEmitter {
@@ -292,12 +286,10 @@ function createFixture(
     mappingStoreDirectory?: string;
     closeMappingStoreOnExit?: boolean;
     desktopOutput?: PassThrough;
-    createOfficialConnection?: (
-      account: CodexAccount,
-    ) => OfficialAppServerConnection | Promise<OfficialAppServerConnection>;
-    accountRepository?: AccountRepository;
-    threadAccountStore?: ThreadAccountStore;
+    createOfficialConnection?: () =>
+      OfficialAppServerConnection | Promise<OfficialAppServerConnection>;
     updateCoordinator?: HostUpdateCoordinator;
+    accountControl?: CodexAccountControl;
     onDelegationApi?: (api: DelegationControlRegistration) => (() => void) | undefined;
   } = {},
 ) {
@@ -307,18 +299,6 @@ function createFixture(
     options.mappingStoreDirectory ?? mkdtempSync(path.join(tmpdir(), "codexhost-host-test-"));
   const mappingStore =
     options.mappingStore ?? new MappingStore({ directory: mappingStoreDirectory });
-  const accountRepository =
-    options.accountRepository ??
-    new AccountRepository({
-      directory: path.join(mappingStoreDirectory, "codex-accounts"),
-      defaultAccount: {
-        accountId: "default",
-        codexHome: path.join(mappingStoreDirectory, "codex-home"),
-      },
-    });
-  const threadAccountStore =
-    options.threadAccountStore ??
-    new ThreadAccountStore({ directory: path.join(mappingStoreDirectory, "codex-accounts") });
   const desktopInput = new PassThrough();
   const desktopOutput = options.desktopOutput ?? new PassThrough();
   const diagnosticOutput = new PassThrough();
@@ -347,9 +327,8 @@ function createFixture(
     ...(options.createOfficialConnection
       ? { createOfficialConnection: options.createOfficialConnection }
       : {}),
-    accountRepository,
-    threadAccountStore,
     ...(options.updateCoordinator ? { updateCoordinator: options.updateCoordinator } : {}),
+    ...(options.accountControl ? { accountControl: options.accountControl } : {}),
     ...(options.onDelegationApi ? { onDelegationApi: options.onDelegationApi } : {}),
   });
   const running = host.run();
@@ -363,8 +342,6 @@ function createFixture(
     official,
     running,
     mappingStore,
-    accountRepository,
-    threadAccountStore,
     mappingStoreDirectory,
     spawnOfficial,
   };
@@ -430,7 +407,8 @@ async function completePiTurn(
 
 async function closeFixture(fixture: ReturnType<typeof createFixture>): Promise<void> {
   fixture.desktopInput.end();
-  await expect(fixture.running).resolves.toBe(0);
+  const outcome = await fixture.running;
+  expect(outcome, fixture.diagnosticOutput.read()?.toString() ?? "").toBe(0);
 }
 
 async function stopFixture(fixture: ReturnType<typeof createFixture>): Promise<void> {
@@ -442,11 +420,8 @@ async function bindOfficialThread(
   fixture: ReturnType<typeof createFixture>,
   threadId: string,
 ): Promise<void> {
-  await vi.waitFor(async () => {
-    expect(await fixture.accountRepository.getActiveAccountId()).toBeTruthy();
-  });
-  const accountId = await fixture.accountRepository.getActiveAccountId();
-  await fixture.threadAccountStore.bind(threadId, accountId);
+  void threadId;
+  await vi.waitFor(() => expect(fixture.spawnOfficial).toHaveBeenCalledOnce());
 }
 
 describe("AppServerHost installed Harness plugins", () => {
@@ -691,648 +666,28 @@ describe("AppServerHost HarnessAdapter projection", () => {
     }
   });
 
-  it("isolates official runtimes by Account and preserves Thread ownership routing", async () => {
-    const directory = mkdtempSync(path.join(tmpdir(), "codexhost-account-routing-test-"));
-    const accountRepository = new AccountRepository({
-      directory: path.join(directory, "accounts"),
-      defaultAccount: {
-        accountId: "account-a",
-        codexHome: path.join(directory, "codex-home-a"),
-      },
+  it("keeps external Harness requests available after official startup failure", async () => {
+    const createOfficialConnection = vi.fn(() => {
+      throw new Error("synthetic startup failure");
     });
-    const threadAccountStore = new ThreadAccountStore({
-      directory: path.join(directory, "accounts"),
-    });
-    await accountRepository.initialize();
-    await accountRepository.upsert({
-      accountId: "account-b",
-      codexHome: path.join(directory, "codex-home-b"),
-    });
-    expect(
-      officialAccountEnvironment(
-        { SHARED: "yes" },
-        { codexHome: path.join(directory, "codex-home-a") },
-      ),
-    ).toMatchObject({ SHARED: "yes", CODEX_HOME: path.join(directory, "codex-home-a") });
-    expect(
-      officialAccountEnvironment(
-        { SHARED: "yes" },
-        { codexHome: path.join(directory, "codex-home-b") },
-      ),
-    ).toMatchObject({ SHARED: "yes", CODEX_HOME: path.join(directory, "codex-home-b") });
-    const connections = new Map<string, OfficialAppServerConnection>();
-    const createOfficialConnection = vi.fn((account: CodexAccount) => {
-      const stdin = new PassThrough();
-      const stdout = new PassThrough();
-      const stderr = new PassThrough();
-      const closed = Promise.withResolvers<{
-        code: number | null;
-        signal: NodeJS.Signals | null;
-      }>();
-      const connection: OfficialAppServerConnection = {
-        stdin,
-        stdout,
-        stderr,
-        closed: closed.promise,
-        close: vi.fn(() => {
-          stdin.destroy();
-          stdout.end();
-          stderr.end();
-          closed.resolve({ code: 0, signal: null });
-        }),
-      };
-      connections.set(account.accountId, connection);
-      return connection;
-    });
-    const fixture = createFixture({
-      mappingStoreDirectory: path.join(directory, "mapping"),
-      accountRepository,
-      threadAccountStore,
-      createOfficialConnection,
-    });
-
+    const fixture = createFixture({ createOfficialConnection });
     try {
-      await vi.waitFor(() => expect(connections.has("account-a")).toBe(true));
-      const accountA = connections.get("account-a");
-      if (!accountA) throw new Error("Account A runtime was not created");
-      expect(createOfficialConnection).toHaveBeenCalledTimes(1);
-      expect(createOfficialConnection.mock.calls[0]?.[0].codexHome).toBe(
-        path.join(directory, "codex-home-a"),
-      );
-
-      writeRequest(fixture.desktopInput, {
-        id: 6,
-        method: "initialize",
-        params: { clientInfo: { name: "codex-desktop", version: "synthetic" } },
-      });
-      const initializeA = await readJsonLine(accountA.stdin as PassThrough);
-      expect(initializeA).toMatchObject({
-        method: "initialize",
-        params: { clientInfo: { name: "codex-desktop", version: "synthetic" } },
-      });
-      if (initializeA.id === undefined) throw new Error("Initialize request has no id");
-      writeRequest(accountA.stdout as PassThrough, {
-        id: initializeA.id,
-        result: { userAgent: "codex-synthetic" },
-      });
+      const threadId = await startPiThread(fixture);
+      const turnId = await startPiTurn(fixture, threadId);
+      const session = fixture.adapter.sessions[0];
+      if (!session) throw new Error("Fake Pi Session was not opened");
+      session.succeedTurn();
+      await fixture.collector.waitFor((message) => turnEvent(message, "turn/completed", turnId));
+      writeRequest(fixture.desktopInput, { id: 902, method: "model/list", params: {} });
       await expect(
-        fixture.collector.waitFor((message) => requestId(message, 6)),
-      ).resolves.toMatchObject({ result: { userAgent: "codex-synthetic" } });
-      await expect(readJsonLine(accountA.stdin as PassThrough)).resolves.toEqual({
-        method: "initialized",
-      });
-      writeRequest(fixture.desktopInput, { method: "initialized" });
-
-      writeRequest(fixture.desktopInput, {
-        id: 7,
-        method: "codexhost/account/list",
-        params: {},
-      });
-      await expect(
-        fixture.collector.waitFor((message) => requestId(message, 7)),
-      ).resolves.toMatchObject({
-        result: {
-          accounts: [
-            { accountId: "account-a", active: true, isDefault: true },
-            { accountId: "account-b", active: false, isDefault: false },
-          ],
-        },
-      });
-      writeRequest(fixture.desktopInput, {
-        id: 8,
-        method: "codexhost/account/create",
-        params: { label: "Third Account" },
-      });
-      const created = await fixture.collector.waitFor((message) => requestId(message, 8));
-      expect(created.result).toMatchObject({ account: { label: "Third Account", active: false } });
-      const createdAccount = (created.result as JsonObject).account as JsonObject;
-      if (typeof createdAccount.accountId !== "string") {
-        throw new Error("Created Account has no ID");
-      }
-      if (typeof createdAccount.codexHome !== "string") {
-        throw new Error("Created Account has no CODEX_HOME");
-      }
-      expect(createdAccount.codexHome).toBe(
-        path.join(fixture.mappingStoreDirectory, "codex-homes", createdAccount.accountId),
-      );
-      const createdAccountId = createdAccount.accountId;
-      const createdCodexHome = createdAccount.codexHome;
-      expect(createOfficialConnection).toHaveBeenCalledTimes(1);
-
-      writeRequest(fixture.desktopInput, {
-        id: 10,
-        method: "thread/start",
-        params: { cwd: "/synthetic", model: "gpt-synthetic" },
-      });
-      await expect(readJsonLine(accountA.stdin as PassThrough)).resolves.toMatchObject({
-        id: 10,
-        method: "thread/start",
-      });
-      writeRequest(accountA.stdout as PassThrough, {
-        id: 10,
-        result: { thread: { id: "official-thread-a" } },
-      });
-      await fixture.collector.waitFor((message) => requestId(message, 10));
-      await expect(threadAccountStore.getAccountId("official-thread-a")).resolves.toBe("account-a");
-
-      await accountRepository.setActiveAccountId("account-b");
-      writeRequest(fixture.desktopInput, {
-        id: 11,
-        method: "thread/read",
-        params: { threadId: "official-thread-a", includeTurns: true },
-      });
-      await expect(readJsonLine(accountA.stdin as PassThrough)).resolves.toMatchObject({
-        id: 11,
-        method: "thread/read",
-      });
-      expect(connections.has("account-b")).toBe(false);
-
-      writeRequest(fixture.desktopInput, { id: 12, method: "account/read", params: {} });
-      await vi.waitFor(() => expect(connections.has("account-b")).toBe(true));
-      const accountB = connections.get("account-b");
-      if (!accountB) throw new Error("Account B runtime was not created");
-      expect(createOfficialConnection.mock.calls[1]?.[0].codexHome).toBe(
-        path.join(directory, "codex-home-b"),
-      );
-      const initializeB = await readJsonLine(accountB.stdin as PassThrough);
-      expect(initializeB).toMatchObject({
-        method: "initialize",
-        params: { clientInfo: { name: "codex-desktop", version: "synthetic" } },
-      });
-      if (initializeB.id === undefined) throw new Error("Initialize request has no id");
-      writeRequest(accountB.stdout as PassThrough, {
-        id: initializeB.id,
-        result: { userAgent: "codex-synthetic" },
-      });
-      await expect(readJsonLine(accountB.stdin as PassThrough)).resolves.toEqual({
-        method: "initialized",
-      });
-      await expect(readJsonLine(accountB.stdin as PassThrough)).resolves.toMatchObject({
-        id: 12,
-        method: "account/read",
-      });
-      // Draft quota reads and locked Thread quota must keep their Account identity.
-      for (const [accountId, connection, usedPercent, id] of [
-        ["account-a", accountA, 17, 130],
-        ["account-b", accountB, 83, 131],
-      ] as const) {
-        writeRequest(fixture.desktopInput, {
-          id,
-          method: "codexhost/account/usage/inspect",
-          params: { accountId },
-        });
-        const quotaRead = await readJsonLine(connection.stdin as PassThrough);
-        expect(quotaRead).toMatchObject({ method: "account/rateLimits/read", params: {} });
-        writeRequest(connection.stdout as PassThrough, {
-          id: requiredMessageId(quotaRead),
-          result: {
-            rateLimits: { primary: { usedPercent, windowDurationMins: 300 } },
-            rateLimitResetCredits: {
-              availableCount: 2,
-              credits: [
-                {
-                  id: "reset-soon",
-                  resetType: "codexRateLimits",
-                  status: "available",
-                  grantedAt: 1_000,
-                  expiresAt: 2_400,
-                  title: "Full reset",
-                  description: null,
-                },
-              ],
-            },
-          },
-        });
-        await expect(
-          fixture.collector.waitFor((message) => requestId(message, id)),
-        ).resolves.toMatchObject({
-          result: {
-            accountId,
-            accountCredits: {
-              usedPercent,
-              resetCredits: {
-                availableCount: 2,
-                nextExpiresAt: new Date(2_400 * 1000).toISOString(),
-              },
-            },
-            usage: { planFiveHourUsedPercent: usedPercent },
-          },
-        });
-      }
-      writeRequest(fixture.desktopInput, {
-        id: 133,
-        method: "codexhost/account/rate-limit-reset/consume",
-        params: { accountId: "account-b", idempotencyKey: "2f1d4a6c-8b90-4e12-a345-6789abcdef01" },
-      });
-      const consumeRead = await readJsonLine(accountB.stdin as PassThrough);
-      expect(consumeRead).toMatchObject({
-        method: "account/rateLimitResetCredit/consume",
-        params: { idempotencyKey: "2f1d4a6c-8b90-4e12-a345-6789abcdef01" },
-      });
-      writeRequest(accountB.stdout as PassThrough, {
-        id: requiredMessageId(consumeRead),
-        result: { outcome: "reset" },
-      });
-      const refreshedQuota = await readJsonLine(accountB.stdin as PassThrough);
-      expect(refreshedQuota).toMatchObject({ method: "account/rateLimits/read", params: {} });
-      writeRequest(accountB.stdout as PassThrough, {
-        id: requiredMessageId(refreshedQuota),
-        result: { rateLimits: { primary: { usedPercent: 1, windowDurationMins: 300 } } },
-      });
-      await expect(
-        fixture.collector.waitFor((message) => requestId(message, 133)),
-      ).resolves.toMatchObject({
-        result: {
-          accountId: "account-b",
-          outcome: "reset",
-          accountCredits: { usedPercent: 1 },
-        },
-      });
-
-      writeRequest(fixture.desktopInput, {
-        id: 132,
-        method: "codexhost/thread/usage/inspect",
-        params: { threadId: "official-thread-a" },
-      });
-      await expect(
-        fixture.collector.waitFor((message) => requestId(message, 132)),
-      ).resolves.toMatchObject({
-        result: {
-          threadId: "official-thread-a",
-          accountCredits: { usedPercent: 17 },
-          usage: { planFiveHourUsedPercent: 17 },
-        },
-      });
-      await expect(accountRepository.getActiveAccountId()).resolves.toBe("account-b");
-
-      writeRequest(fixture.desktopInput, { id: 13, method: "account/read", params: {} });
-      await expect(readJsonLine(accountB.stdin as PassThrough)).resolves.toMatchObject({ id: 13 });
-      expect(createOfficialConnection).toHaveBeenCalledTimes(2);
-
-      writeRequest(fixture.desktopInput, {
-        id: 1400,
-        method: "thread/start",
-        params: {
-          cwd: "/synthetic",
-          model: "gpt-synthetic",
-          __codexhostAccountId: "account-a",
-        },
-      });
-      await expect(readJsonLine(accountA.stdin as PassThrough)).resolves.toEqual({
-        id: 1400,
-        method: "thread/start",
-        params: { cwd: "/synthetic", model: "gpt-synthetic" },
-      });
-      writeRequest(accountA.stdout as PassThrough, {
-        id: 1400,
-        result: { thread: { id: "official-thread-explicit-a" } },
-      });
-      await fixture.collector.waitFor((message) => requestId(message, 1400));
-      await expect(threadAccountStore.getAccountId("official-thread-explicit-a")).resolves.toBe(
-        "account-a",
-      );
-      await expect(accountRepository.getActiveAccountId()).resolves.toBe("account-b");
-
-      writeRequest(fixture.desktopInput, {
-        id: 15,
-        method: "account/login/start",
-        params: { type: "chatgptDeviceCode" },
-      });
-      await expect(readJsonLine(accountB.stdin as PassThrough)).resolves.toMatchObject({ id: 15 });
-      writeRequest(accountB.stdout as PassThrough, {
-        id: 15,
-        result: {
-          type: "chatgptDeviceCode",
-          loginId: "login-b",
-          verificationUrl: "https://example.test/device",
-          userCode: "ABCD-EFGH",
-        },
-      });
-      await fixture.collector.waitFor((message) => requestId(message, 15));
-      await accountRepository.setActiveAccountId("account-a");
-      writeRequest(fixture.desktopInput, {
-        id: 16,
-        method: "account/login/cancel",
-        params: { loginId: "login-b" },
-      });
-      await expect(readJsonLine(accountB.stdin as PassThrough)).resolves.toMatchObject({
-        id: 16,
-        method: "account/login/cancel",
-      });
-
-      writeRequest(fixture.desktopInput, {
-        id: 17,
-        method: "codexhost/account/login/start",
-        params: { accountId: "account-a" },
-      });
-      const loginStart = await readJsonLine(accountA.stdin as PassThrough);
-      expect(loginStart).toMatchObject({
-        method: "account/login/start",
-        params: { type: "chatgptDeviceCode" },
-      });
-      if (loginStart.id === undefined) throw new Error("Account login request has no ID");
-      writeRequest(accountA.stdout as PassThrough, {
-        id: loginStart.id,
-        result: {
-          type: "chatgptDeviceCode",
-          loginId: "controlled-login-a",
-          verificationUrl: "https://example.test/device-a",
-          userCode: "WXYZ-1234",
-        },
-      });
-      await expect(
-        fixture.collector.waitFor((message) => requestId(message, 17)),
-      ).resolves.toMatchObject({
-        result: {
-          accountId: "account-a",
-          loginId: "controlled-login-a",
-          userCode: "WXYZ-1234",
-        },
-      });
-      writeRequest(accountA.stdout as PassThrough, {
-        method: "account/login/completed",
-        params: { loginId: null, success: true },
-      });
-      await expect(
-        fixture.collector.waitFor((message) =>
-          method(message, "codexhost/account/login/completed"),
-        ),
-      ).resolves.toMatchObject({
-        params: { accountId: "account-a", loginId: "controlled-login-a", success: true },
-      });
-
-      writeRequest(accountB.stdout as PassThrough, {
-        method: "account/updated",
-        params: { source: "inactive-account-b" },
-      });
-      writeRequest(accountB.stdout as PassThrough, {
-        method: "synthetic/barrier",
-        params: { source: "account-b" },
-      });
-      await fixture.collector.waitFor((message) => method(message, "synthetic/barrier"));
-      expect(
-        fixture.collector.messages.some(
-          (message) =>
-            method(message, "account/updated") &&
-            messageParams(message).source === "inactive-account-b",
-        ),
-      ).toBe(false);
-
-      writeRequest(fixture.desktopInput, {
-        id: 19,
-        method: "thread/start",
-        params: { cwd: "/synthetic", model: "gpt-synthetic" },
-      });
-      await expect(readJsonLine(accountA.stdin as PassThrough)).resolves.toMatchObject({
-        id: 19,
-        method: "thread/start",
-      });
-      writeRequest(accountB.stdout as PassThrough, {
-        id: 19,
-        method: "synthetic/server/request",
-        params: { source: "account-b-client-id-collision" },
-      });
-      const collidingServerRequest = await fixture.collector.waitFor(
-        (message) => messageParams(message).source === "account-b-client-id-collision",
-      );
-      writeRequest(fixture.desktopInput, {
-        id: requiredMessageId(collidingServerRequest),
-        result: { answer: "collision-safe" },
-      });
-      await expect(readJsonLine(accountB.stdin as PassThrough)).resolves.toEqual({
-        id: 19,
-        result: { answer: "collision-safe" },
-      });
-      writeRequest(accountA.stdout as PassThrough, {
-        id: 19,
-        result: { thread: { id: "official-thread-after-id-collision" } },
-      });
-      await fixture.collector.waitFor((message) => requestId(message, 19));
-      await expect(
-        threadAccountStore.getAccountId("official-thread-after-id-collision"),
-      ).resolves.toBe("account-a");
-
-      writeRequest(fixture.desktopInput, {
-        id: 20,
-        method: "codexhost/account/login/start",
-        params: { accountId: "account-a" },
-      });
-      const duplicateLoginA = await readJsonLine(accountA.stdin as PassThrough);
-      writeRequest(accountA.stdout as PassThrough, {
-        id: requiredMessageId(duplicateLoginA),
-        result: {
-          type: "chatgptDeviceCode",
-          loginId: "duplicate-login-id",
-          verificationUrl: "https://example.test/device-a",
-          userCode: "AAAA-BBBB",
-        },
-      });
-      await fixture.collector.waitFor((message) => requestId(message, 20));
-      writeRequest(fixture.desktopInput, {
-        id: 21,
-        method: "codexhost/account/login/start",
-        params: { accountId: "account-b" },
-      });
-      const duplicateLoginB = await readJsonLine(accountB.stdin as PassThrough);
-      writeRequest(accountB.stdout as PassThrough, {
-        id: requiredMessageId(duplicateLoginB),
-        result: {
-          type: "chatgptDeviceCode",
-          loginId: "duplicate-login-id",
-          verificationUrl: "https://example.test/device-b",
-          userCode: "CCCC-DDDD",
-        },
-      });
-      await fixture.collector.waitFor((message) => requestId(message, 21));
-      writeRequest(accountA.stdout as PassThrough, {
-        method: "account/login/completed",
-        params: { loginId: "duplicate-login-id", success: true },
-      });
-      await expect(
-        fixture.collector.waitFor(
-          (message) =>
-            method(message, "codexhost/account/login/completed") &&
-            messageParams(message).loginId === "duplicate-login-id" &&
-            messageParams(message).accountId === "account-a",
-        ),
-      ).resolves.toMatchObject({ params: { accountId: "account-a" } });
-      writeRequest(accountB.stdout as PassThrough, {
-        method: "account/login/completed",
-        params: { loginId: "duplicate-login-id", success: true },
-      });
-      await expect(
-        fixture.collector.waitFor(
-          (message) =>
-            method(message, "codexhost/account/login/completed") &&
-            messageParams(message).loginId === "duplicate-login-id" &&
-            messageParams(message).accountId === "account-b",
-        ),
-      ).resolves.toMatchObject({ params: { accountId: "account-b" } });
-
-      writeRequest(accountA.stdout as PassThrough, {
-        id: 1,
-        method: "synthetic/server/request",
-        params: { source: "account-a" },
-      });
-      writeRequest(accountB.stdout as PassThrough, {
-        id: 1,
-        method: "synthetic/server/request",
-        params: { source: "account-b" },
-      });
-      const serverRequestA = await fixture.collector.waitFor(
-        (message) =>
-          method(message, "synthetic/server/request") &&
-          messageParams(message).source === "account-a",
-      );
-      const serverRequestB = await fixture.collector.waitFor(
-        (message) =>
-          method(message, "synthetic/server/request") &&
-          messageParams(message).source === "account-b",
-      );
-      expect(serverRequestA.id).not.toBe(serverRequestB.id);
-      writeRequest(fixture.desktopInput, {
-        id: requiredMessageId(serverRequestB),
-        result: { answer: "b" },
-      });
-      writeRequest(fixture.desktopInput, {
-        id: requiredMessageId(serverRequestA),
-        result: { answer: "a" },
-      });
-      await expect(readJsonLine(accountB.stdin as PassThrough)).resolves.toEqual({
-        id: 1,
-        result: { answer: "b" },
-      });
-      await expect(readJsonLine(accountA.stdin as PassThrough)).resolves.toEqual({
-        id: 1,
-        result: { answer: "a" },
-      });
-
-      writeRequest(fixture.desktopInput, {
-        id: 18,
-        method: "turn/start",
-        params: { threadId: "historical-thread-b", input: [] },
-      });
-      const historicalReadA = await readJsonLine(accountA.stdin as PassThrough);
-      expect(historicalReadA).toMatchObject({
-        method: "thread/read",
-        params: { threadId: "historical-thread-b", includeTurns: false },
-      });
-      writeRequest(accountA.stdout as PassThrough, {
-        id: requiredMessageId(historicalReadA),
-        error: { code: -32000, message: "not found" },
-      });
-      const historicalReadB = await readJsonLine(accountB.stdin as PassThrough);
-      expect(historicalReadB).toMatchObject({
-        method: "thread/read",
-        params: { threadId: "historical-thread-b", includeTurns: false },
-      });
-      writeRequest(accountB.stdout as PassThrough, {
-        id: requiredMessageId(historicalReadB),
-        result: { thread: { id: "historical-thread-b" } },
-      });
-      await expect(readJsonLine(accountB.stdin as PassThrough)).resolves.toMatchObject({
-        id: 18,
-        method: "turn/start",
-        params: { threadId: "historical-thread-b" },
-      });
-      await expect(threadAccountStore.getAccountId("historical-thread-b")).resolves.toBe(
-        "account-b",
-      );
-
-      writeRequest(fixture.desktopInput, {
-        id: 14,
-        method: "turn/start",
-        params: { threadId: "unknown-official-thread", input: [] },
-      });
-      const unknownReadA = await readJsonLine(accountA.stdin as PassThrough);
-      writeRequest(accountA.stdout as PassThrough, {
-        id: requiredMessageId(unknownReadA),
-        error: { code: -32000, message: "not found" },
-      });
-      const unknownReadB = await readJsonLine(accountB.stdin as PassThrough);
-      writeRequest(accountB.stdout as PassThrough, {
-        id: requiredMessageId(unknownReadB),
-        error: { code: -32000, message: "not found" },
-      });
-      await vi.waitFor(() => expect(connections.has(createdAccountId)).toBe(true));
-      const createdAccountConnection = connections.get(createdAccountId);
-      if (!createdAccountConnection) throw new Error("Created Account runtime was not created");
-      const initializeCreated = await readJsonLine(createdAccountConnection.stdin as PassThrough);
-      writeRequest(createdAccountConnection.stdout as PassThrough, {
-        id: requiredMessageId(initializeCreated),
-        result: { userAgent: "codex-synthetic" },
-      });
-      await expect(readJsonLine(createdAccountConnection.stdin as PassThrough)).resolves.toEqual({
-        method: "initialized",
-      });
-      const unknownReadCreated = await readJsonLine(createdAccountConnection.stdin as PassThrough);
-      writeRequest(createdAccountConnection.stdout as PassThrough, {
-        id: requiredMessageId(unknownReadCreated),
-        error: { code: -32000, message: "not found" },
-      });
-      const unknown = await fixture.collector.waitFor((message) => requestId(message, 14));
-      expect(unknown.error).toMatchObject({
-        code: -32084,
-        message: "Official Thread 'unknown-official-thread' has no Codex Account binding",
-      });
-
-      writeRequest(fixture.desktopInput, {
-        id: 24,
-        method: "codexhost/account/refresh",
-        params: {},
-      });
-      for (const [connection, email] of [
-        [accountA, "account-a@example.com"],
-        [accountB, "account-b@example.com"],
-        [createdAccountConnection, "account-c@example.com"],
-      ] as const) {
-        const accountRead = await readJsonLine(connection.stdin as PassThrough);
-        expect(accountRead).toMatchObject({
-          method: "account/read",
-          params: { refreshToken: false },
-        });
-        writeRequest(connection.stdout as PassThrough, {
-          id: requiredMessageId(accountRead),
-          result: { account: { type: "chatgpt", email, planType: "plus" } },
-        });
-      }
-      await expect(
-        fixture.collector.waitFor((message) => requestId(message, 24)),
-      ).resolves.toMatchObject({
-        result: {
-          accounts: [
-            { accountId: "account-a", email: "account-a@example.com", planType: "plus" },
-            { accountId: "account-b", email: "account-b@example.com", planType: "plus" },
-            { accountId: createdAccountId, email: "account-c@example.com", planType: "plus" },
-          ],
-        },
-      });
-
-      writeRequest(fixture.desktopInput, {
-        id: 25,
-        method: "codexhost/account/delete",
-        params: { accountId: createdAccountId },
-      });
-      await expect(
-        fixture.collector.waitFor((message) => requestId(message, 25)),
-      ).resolves.toMatchObject({ result: { deletedAccountId: createdAccountId } });
-      await expect(accountRepository.get(createdAccountId)).resolves.toBeNull();
-      expect(createdAccountConnection.close).toHaveBeenCalled();
-      expect(existsSync(createdCodexHome)).toBe(false);
-
-      writeRequest(fixture.desktopInput, {
-        id: 26,
-        method: "codexhost/account/delete",
-        params: { accountId: "account-a" },
-      });
-      await expect(
-        fixture.collector.waitFor((message) => requestId(message, 26)),
-      ).resolves.toMatchObject({
-        error: { code: -32086, message: "The default Codex Account cannot be deleted" },
-      });
+        fixture.collector.waitFor((message) => message.id === 902),
+      ).resolves.toMatchObject({ error: { code: -32001 } });
+      expect(createOfficialConnection).toHaveBeenCalledOnce();
+      expect(fixture.desktopInput.destroyed).toBe(false);
     } finally {
-      await closeFixture(fixture);
-      rmSync(directory, { recursive: true, force: true });
+      fixture.host.close();
+      await fixture.running;
+      rmSync(fixture.mappingStoreDirectory, { recursive: true, force: true });
     }
   });
 
@@ -1889,7 +1244,37 @@ describe("AppServerHost HarnessAdapter projection", () => {
     }
   });
 
-  it("fails when official app-server output closes before Desktop input", async () => {
+  it("preserves an external Turn and rejects official retries after backend failure", async () => {
+    const fixture = createFixture();
+    try {
+      const threadId = await startPiThread(fixture);
+      const turnId = await startPiTurn(fixture, threadId);
+      const session = fixture.adapter.sessions[0];
+      if (!session) throw new Error("Fake Pi Session was not opened");
+      const close = vi.spyOn(session, "close");
+      fixture.official.emit("exit", 1, null);
+      await vi.waitFor(() => expect(fixture.official.stdout.destroyed).toBe(true));
+      writeRequest(fixture.desktopInput, { id: 901, method: "model/list", params: {} });
+      await expect(
+        fixture.collector.waitFor((message) => message.id === 901),
+      ).resolves.toMatchObject({ id: 901, error: { code: -32001 } });
+      expect(fixture.desktopInput.destroyed).toBe(false);
+      expect(close).not.toHaveBeenCalled();
+      expect(fixture.spawnOfficial).toHaveBeenCalledOnce();
+      session.appendText("external output after official exit");
+      session.succeedTurn();
+      await expect(
+        fixture.collector.waitFor((message) => turnEvent(message, "turn/completed", turnId)),
+      ).resolves.toBeTruthy();
+      expect(close).not.toHaveBeenCalled();
+    } finally {
+      fixture.host.close();
+      await fixture.running;
+      rmSync(fixture.mappingStoreDirectory, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps Host alive when official app-server output closes before Desktop input", async () => {
     const fixture = createFixture();
 
     try {
@@ -1903,8 +1288,8 @@ describe("AppServerHost HarnessAdapter projection", () => {
         }),
       ]);
 
-      expect(outcome).toBe(1);
-      expect(fixture.desktopInput.destroyed).toBe(true);
+      expect(outcome).toBe("timed-out");
+      expect(fixture.desktopInput.destroyed).toBe(false);
       expect(fixture.official.kill).toHaveBeenCalledWith("SIGTERM");
     } finally {
       fixture.host.close();
@@ -1913,7 +1298,7 @@ describe("AppServerHost HarnessAdapter projection", () => {
     }
   });
 
-  it("fails when official output closes while Desktop output is backpressured", async () => {
+  it("keeps Host alive when official output closes while Desktop output is backpressured", async () => {
     const fixture = createFixture({ desktopOutput: new PassThrough({ highWaterMark: 1 }) });
 
     try {
@@ -1934,8 +1319,8 @@ describe("AppServerHost HarnessAdapter projection", () => {
         }),
       ]);
 
-      expect(outcome).toBe(1);
-      expect(fixture.desktopInput.destroyed).toBe(true);
+      expect(outcome).toBe("timed-out");
+      expect(fixture.desktopInput.destroyed).toBe(false);
       expect(fixture.official.kill).toHaveBeenCalledWith("SIGTERM");
     } finally {
       fixture.host.close();
@@ -1945,7 +1330,7 @@ describe("AppServerHost HarnessAdapter projection", () => {
     }
   });
 
-  it("fails when the official app-server exits while its output stays open", async () => {
+  it("keeps Host alive when the official app-server exits while its output stays open", async () => {
     const fixture = createFixture();
 
     try {
@@ -1966,10 +1351,12 @@ describe("AppServerHost HarnessAdapter projection", () => {
         }),
       ]);
 
-      expect(outcome).toBe(1);
-      expect(fixture.desktopInput.destroyed).toBe(true);
+      expect(outcome).toBe("timed-out");
+      expect(fixture.desktopInput.destroyed).toBe(false);
+      expect(fixture.spawnOfficial).toHaveBeenCalledOnce();
       expect(fixture.official.stdout.destroyed).toBe(true);
-      expect(fixture.official.kill).toHaveBeenCalledWith("SIGTERM");
+      // A confirmed exit releases process ownership; do not signal it again.
+      expect(fixture.official.kill).not.toHaveBeenCalled();
     } finally {
       fixture.host.close();
       await fixture.running;
@@ -1997,6 +1384,7 @@ describe("AppServerHost HarnessAdapter projection", () => {
     const mappingStore = new MappingStore({ directory });
     await mappingStore.initialize();
     const close = vi.spyOn(mappingStore, "close");
+    // This checks shared Mapping Store lifetime, not official Account ownership.
     const first = createFixture({
       mappingStore,
       mappingStoreDirectory: directory,
@@ -3092,7 +2480,6 @@ describe("AppServerHost HarnessAdapter projection", () => {
       },
     });
 
-    await fixture.threadAccountStore.bind("official-thread", "account-b");
     writeRequest(fixture.desktopInput, {
       id: 41,
       method: "codexhost/thread/inspect",
@@ -3100,7 +2487,7 @@ describe("AppServerHost HarnessAdapter projection", () => {
     });
     await expect(fixture.collector.waitFor((message) => requestId(message, 41))).resolves.toEqual({
       id: 41,
-      result: { owner: "codex", locked: true, accountId: "account-b" },
+      result: { owner: "codex", locked: true },
     });
     writeRequest(fixture.desktopInput, {
       id: 42,
@@ -3126,55 +2513,41 @@ describe("AppServerHost HarnessAdapter projection", () => {
     await stopFixture(fixture);
   });
 
-  it.each([1, 2])(
-    "keeps the Host alive when inspecting a Thread without a local binding with %i Codex Accounts",
-    async (accountCount) => {
-      const fixture = createFixture();
-      const officialWrite = vi.fn();
-      fixture.official.stdin.on("data", officialWrite);
-      try {
-        await bindOfficialThread(fixture, "bound-local-thread");
-        if (accountCount === 2) {
-          await fixture.accountRepository.upsert({
-            accountId: "account-b",
-            codexHome: path.join(fixture.mappingStoreDirectory, "codex-home-b"),
-          });
-        }
-        expect(await fixture.accountRepository.list()).toHaveLength(accountCount);
-        writeRequest(fixture.desktopInput, {
+  it("keeps the Host alive when inspecting a Thread without a local Account binding", async () => {
+    const fixture = createFixture();
+    const officialWrite = vi.fn();
+    fixture.official.stdin.on("data", officialWrite);
+    try {
+      await bindOfficialThread(fixture, "bound-local-thread");
+      writeRequest(fixture.desktopInput, {
+        id: 40,
+        method: "codexhost/thread/inspect",
+        params: { threadId: "remote-thread-without-local-account" },
+      });
+      await expect(fixture.collector.waitFor((message) => requestId(message, 40))).resolves.toEqual(
+        {
           id: 40,
-          method: "codexhost/thread/inspect",
-          params: { threadId: "remote-thread-without-local-account" },
-        });
-        const response = await Promise.race([
-          fixture.collector.waitFor((message) => requestId(message, 40)),
-          fixture.running.then((exitCode) => ({ hostExited: exitCode })),
-        ]);
-        expect(response).toEqual({ id: 40, result: { owner: "codex", locked: true } });
-        expect(
-          await fixture.threadAccountStore.getAccountId("remote-thread-without-local-account"),
-        ).toBeNull();
-
-        // Inspection must not invent a local Account binding or break later requests.
-        writeRequest(fixture.desktopInput, {
+          result: { owner: "codex", locked: true },
+        },
+      );
+      writeRequest(fixture.desktopInput, {
+        id: 41,
+        method: "codexhost/thread/inspect",
+        params: { threadId: "bound-local-thread" },
+      });
+      await expect(fixture.collector.waitFor((message) => requestId(message, 41))).resolves.toEqual(
+        {
           id: 41,
-          method: "codexhost/thread/inspect",
-          params: { threadId: "bound-local-thread" },
-        });
-        await expect(
-          fixture.collector.waitFor((message) => requestId(message, 41)),
-        ).resolves.toEqual({
-          id: 41,
-          result: { owner: "codex", locked: true, accountId: "default" },
-        });
-        expect(officialWrite).not.toHaveBeenCalled();
-      } finally {
-        fixture.desktopInput.end();
-        await fixture.running;
-        rmSync(fixture.mappingStoreDirectory, { recursive: true, force: true });
-      }
-    },
-  );
+          result: { owner: "codex", locked: true },
+        },
+      );
+      expect(officialWrite).not.toHaveBeenCalled();
+    } finally {
+      fixture.desktopInput.end();
+      await fixture.running;
+      rmSync(fixture.mappingStoreDirectory, { recursive: true, force: true });
+    }
+  });
 
   it("projects official Codex token Usage and account rate limits for inspection", async () => {
     const fixture = createFixture();
@@ -3246,29 +2619,111 @@ describe("AppServerHost HarnessAdapter projection", () => {
           contextUsedTokens: 240,
           contextWindowTokens: 2_000,
           cacheHitRatePercent: 75,
-          planFiveHourUsedPercent: 3,
-          planFiveHourResetsAtUnix: 1_800,
-          planSevenDayUsedPercent: 9,
-          planSevenDayResetsAtUnix: 2_400,
-        },
-        accountCredits: {
-          usedPercent: 3,
-          periodType: "five_hour",
-          resetsAt: new Date(1_800 * 1000).toISOString(),
-          productUsage: [
-            {
-              product: "7-day window",
-              usagePercent: 9,
-              resetsAt: new Date(2_400 * 1000).toISOString(),
-            },
-          ],
         },
       },
     });
     await stopFixture(fixture);
   });
 
-  it("does not carry official Usage across a native account change", async () => {
+  it("reads inactive Account quota without the official backend and records current native quota", async () => {
+    const inactiveUsage = vi.fn(async (accountId: string) => ({
+      accountId,
+      usage: null,
+      accountCredits: { usedPercent: 61, periodType: "weekly" as const },
+      freshness: "cached" as const,
+      observedAt: "2026-09-10T03:00:00.000Z",
+    }));
+    const recordUsage = vi.fn(async (accountId: string, accountCredits: JsonObject) => ({
+      accountId,
+      usage: null,
+      accountCredits,
+      freshness: "live" as const,
+      observedAt: "2026-09-10T03:01:00.000Z",
+    }));
+    const snapshot = () => ({
+      version: 2 as const,
+      currentAccountId: "account-a",
+      phase: "ready" as const,
+      revision: 1,
+      capabilities: { manage: true, switch: true, login: true, delete: true },
+      accounts: [
+        { accountId: "account-a", label: "A", email: "a@example.com" },
+        { accountId: "account-b", label: "B", email: "b@example.com" },
+      ],
+    });
+    const accountControl = {
+      snapshot,
+      currentAccountId: () => "account-a",
+      switch: vi.fn(),
+      remove: vi.fn(),
+      startLogin: vi.fn(),
+      cancelLogin: vi.fn(),
+      observe: vi.fn(),
+      subscribeLogin: () => () => undefined,
+      inspectInactiveUsage: inactiveUsage,
+      recordUsage,
+      cachedUsage: vi.fn(() => null),
+    } as unknown as CodexAccountControl;
+    const fixture = createFixture({ accountControl });
+    fixture.official.stdin.on("data", (chunk: Buffer) => {
+      for (const line of chunk.toString("utf8").split("\n")) {
+        if (!line) continue;
+        const message = JSON.parse(line) as JsonObject;
+        if (message.method !== "account/rateLimits/read") continue;
+        fixture.official.stdout.write(
+          `${JSON.stringify({
+            id: message.id,
+            result: {
+              rateLimits: {
+                primary: { usedPercent: 12, windowDurationMins: 300 },
+                secondary: { usedPercent: 34, windowDurationMins: 10_080 },
+              },
+            },
+          })}\n`,
+        );
+      }
+    });
+    try {
+      writeRequest(fixture.desktopInput, {
+        id: 46,
+        method: "codexhost/account/usage/inspect",
+        params: { accountId: "account-b", refresh: true },
+      });
+      await expect(
+        fixture.collector.waitFor((message) => requestId(message, 46)),
+      ).resolves.toMatchObject({
+        id: 46,
+        result: {
+          accountId: "account-b",
+          freshness: "cached",
+          accountCredits: { usedPercent: 61 },
+        },
+      });
+      expect(inactiveUsage).toHaveBeenCalledWith("account-b", true);
+      expect(recordUsage).not.toHaveBeenCalled();
+
+      writeRequest(fixture.desktopInput, {
+        id: 47,
+        method: "codexhost/account/usage/inspect",
+        params: { accountId: "account-a" },
+      });
+      await expect(
+        fixture.collector.waitFor((message) => requestId(message, 47)),
+      ).resolves.toMatchObject({
+        id: 47,
+        result: {
+          accountId: "account-a",
+          freshness: "live",
+          accountCredits: { usedPercent: 12, periodType: "five_hour" },
+        },
+      });
+      expect(recordUsage).toHaveBeenCalledOnce();
+    } finally {
+      await stopFixture(fixture);
+    }
+  });
+
+  it("keeps cumulative Thread Usage independent from native Account changes", async () => {
     const fixture = createFixture();
     fixture.official.stdout.write(
       `${JSON.stringify({
@@ -3296,7 +2751,16 @@ describe("AppServerHost HarnessAdapter projection", () => {
     });
     await expect(fixture.collector.waitFor((message) => requestId(message, 45))).resolves.toEqual({
       id: 45,
-      result: { threadId: "official-thread", usage: null },
+      result: {
+        threadId: "official-thread",
+        usage: {
+          totalTokens: 100,
+          inputTokens: 80,
+          outputTokens: 20,
+          contextUsedTokens: 100,
+          contextWindowTokens: 1_000,
+        },
+      },
     });
     await stopFixture(fixture);
   });
@@ -5895,69 +5359,6 @@ describe("AppServerHost HarnessAdapter projection", () => {
     await stopFixture(fixture);
   });
 
-  it("rejects an unbound Codex thread/fork with an explicit ownership error", async () => {
-    const fixture = createFixture();
-    const request = {
-      id: 90,
-      method: "thread/fork",
-      params: {
-        threadId: "official-thread",
-        lastTurnId: "one",
-        beforeTurnId: "two",
-        cwd: "official-relative-worktree",
-        runtimeWorkspaceRoots: ["official-relative-worktree"],
-        extraOfficialField: { keep: true },
-      },
-    };
-    writeRequest(fixture.desktopInput, request);
-
-    await expect(
-      fixture.collector.waitFor((message) => requestId(message, 90)),
-    ).resolves.toMatchObject({ error: { code: -32084 } });
-    expect(fixture.adapter.sessions).toHaveLength(0);
-    await stopFixture(fixture);
-  });
-
-  it("rejects an unbound Codex thread/revert with an explicit ownership error", async () => {
-    const fixture = createFixture();
-    const request = {
-      id: 90,
-      method: "thread/revert",
-      params: {
-        threadId: "official-thread",
-        beforeTurnId: "official-turn",
-        extraOfficialField: { keep: true },
-      },
-    };
-    writeRequest(fixture.desktopInput, request);
-
-    await expect(
-      fixture.collector.waitFor((message) => requestId(message, 90)),
-    ).resolves.toMatchObject({ error: { code: -32084 } });
-    expect(fixture.adapter.sessions).toHaveLength(0);
-    await stopFixture(fixture);
-  });
-
-  it("rejects an unbound Codex thread/rollback with an explicit ownership error", async () => {
-    const fixture = createFixture();
-    const request = {
-      id: 91,
-      method: "thread/rollback",
-      params: {
-        threadId: "official-thread",
-        numTurns: "official-shape-is-transparent",
-        extraOfficialField: { keep: true },
-      },
-    };
-    writeRequest(fixture.desktopInput, request);
-
-    await expect(
-      fixture.collector.waitFor((message) => requestId(message, 91)),
-    ).resolves.toMatchObject({ error: { code: -32084 } });
-    expect(fixture.adapter.sessions).toHaveLength(0);
-    await stopFixture(fixture);
-  });
-
   it("tail-Forks the latest completed Checkpoint while the source Turn is active", async () => {
     const fixture = createFixture();
     const officialWrite = vi.fn();
@@ -6660,7 +6061,9 @@ describe("AppServerHost HarnessAdapter projection", () => {
     });
     writeRequest(fixture.desktopInput, { id: 999, result: { official: true } });
     await new Promise((resolve) => setTimeout(resolve, 0));
-    expect(forwarded.join("")).toContain(JSON.stringify({ id: 999, result: { official: true } }));
+    expect(forwarded.join("")).not.toContain(
+      JSON.stringify({ id: 999, result: { official: true } }),
+    );
     expect(forwarded.join("")).not.toContain(String(approvalRequestId));
     expect(forwarded.join("")).not.toContain("-1500000");
     expect(session.interactionResponses).toHaveLength(0);
@@ -6874,7 +6277,9 @@ describe("AppServerHost HarnessAdapter projection", () => {
     });
     writeRequest(fixture.desktopInput, { id: 999, result: { official: true } });
     await new Promise((resolve) => setTimeout(resolve, 0));
-    expect(forwarded.join("")).toContain(JSON.stringify({ id: 999, result: { official: true } }));
+    expect(forwarded.join("")).not.toContain(
+      JSON.stringify({ id: 999, result: { official: true } }),
+    );
     expect(forwarded.join("")).not.toContain(String(request.id));
 
     session.succeedTurn();

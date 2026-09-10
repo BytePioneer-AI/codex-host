@@ -72,7 +72,6 @@ export function installDraftPrewarmPolicyBridge(
   const originalOnNotification = manager.onNotification;
   const originalDispatchAppServerResponse = manager.dispatchAppServerResponse;
   let selectedModel: string | null = null;
-  let selectedCodexAccountId: string | null = null;
   const isRecord = (value: unknown): value is Record<string, unknown> =>
     typeof value === "object" && value !== null && !Array.isArray(value);
   const isRemoteControlHost = hostId.startsWith("remote-control:");
@@ -488,8 +487,8 @@ export function installDraftPrewarmPolicyBridge(
     if (method === "thread/start") {
       return (
         isRecord(parameters) &&
-        ((typeof parameters.model === "string" && parameters.model.startsWith("codexhost/")) ||
-          typeof parameters.__codexhostAccountId === "string")
+        typeof parameters.model === "string" &&
+        parameters.model.startsWith("codexhost/")
       );
     }
     const threadId = threadIdFromParameters(parameters);
@@ -504,13 +503,10 @@ export function installDraftPrewarmPolicyBridge(
     if (!isRecord(parameters) || parameters.ephemeral === true) {
       return parameters;
     }
-    const routed = {
+    return {
       ...parameters,
       ...(selectedModel === null ? {} : { model: selectedModel }),
-      ...(selectedCodexAccountId === null ? {} : { __codexhostAccountId: selectedCodexAccountId }),
     };
-    selectedCodexAccountId = null;
-    return routed;
   };
   const routedSend = (method: string, parameters: unknown, options?: unknown): unknown => {
     const routedParameters = method === "thread/start" ? routeThreadStart(parameters) : parameters;
@@ -610,14 +606,6 @@ export function installDraftPrewarmPolicyBridge(
       selectedModel = model;
       return true;
     },
-    selectAccount(accountId: string | null): boolean {
-      if (accountId !== null && !/^[A-Za-z0-9._~-]+$/u.test(accountId)) {
-        throw new Error("Draft Codex Account ID must be filename-safe");
-      }
-      if (selectedCodexAccountId === accountId) return false;
-      selectedCodexAccountId = accountId;
-      return true;
-    },
     clear(): Promise<void> {
       prewarmedThreadManager.discardAllPrewarmedThreads();
       return Promise.resolve();
@@ -652,7 +640,6 @@ export function installDraftPrewarmPolicyBridge(
       knownOfficialThreadIds.clear();
       threadOwnershipResolutions.clear();
       selectedModel = null;
-      selectedCodexAccountId = null;
     },
   });
   Object.defineProperty(target, "__codexhostDraftPrewarmPolicyV1", {

@@ -1,6 +1,7 @@
 import type {
-  CodexAccountActivateParams,
-  CodexAccountCreateParams,
+  CodexAccountChanged,
+  CodexAccountSwitchParams,
+  CodexAccountSwitchResult,
   CodexAccountDeleteParams,
   CodexAccountDeleteResult,
   CodexAccountListResult,
@@ -9,7 +10,6 @@ import type {
   CodexAccountLoginCompleted,
   CodexAccountLoginStartParams,
   CodexAccountLoginStartResult,
-  CodexAccountMutationResult,
   CodexAccountSummary,
   CodexAccountUsageParams,
   CodexAccountUsageResult,
@@ -35,9 +35,8 @@ export interface RendererCodexAccountClient extends RendererHarnessAccountClient
   consumeCodexAccountResetCredit?(
     input: CodexAccountResetCreditConsumeParams,
   ): Promise<CodexAccountResetCreditConsumeResult>;
-  createCodexAccount(input: CodexAccountCreateParams): Promise<CodexAccountMutationResult>;
   deleteCodexAccount(input: CodexAccountDeleteParams): Promise<CodexAccountDeleteResult>;
-  activateCodexAccount(input: CodexAccountActivateParams): Promise<CodexAccountMutationResult>;
+  switchCodexAccount(input: CodexAccountSwitchParams): Promise<CodexAccountSwitchResult>;
   startCodexAccountLogin(
     input: CodexAccountLoginStartParams,
   ): Promise<CodexAccountLoginStartResult>;
@@ -45,6 +44,7 @@ export interface RendererCodexAccountClient extends RendererHarnessAccountClient
     input: CodexAccountLoginCancelParams,
   ): Promise<CodexAccountLoginCancelResult>;
   subscribeCodexAccountLogin?(listener: (result: CodexAccountLoginCompleted) => void): () => void;
+  subscribeCodexAccounts?(listener: (result: CodexAccountChanged) => void): () => void;
 }
 
 interface CodexDesktopLinkWindow extends Window {
@@ -152,8 +152,7 @@ export function createAccountsSettingsPage(
       refreshUsage.setAttribute("aria-label", messages.accountCreditsRefresh);
       refreshUsage.append(createRendererSettingsIcon("refresh", 16));
       refreshUsage.addEventListener("click", () => {
-        usageByAccountId.clear();
-        loadUsage(accounts);
+        loadUsage(accounts, true);
         void harnessAccounts?.refresh();
       });
       search.addEventListener("input", () => render());
@@ -165,6 +164,15 @@ export function createAccountsSettingsPage(
       context.content.append(header, helpRow, deviceCodeNote, status, toolbar, list);
 
       let accounts: readonly CodexAccountSummary[] = [];
+      let currentAccountId: string | null = null;
+      let accountPhase: CodexAccountListResult["phase"] = "unavailable";
+      let accountRevision = 0;
+      let capabilities: CodexAccountListResult["capabilities"] = {
+        manage: false,
+        switch: false,
+        login: false,
+        delete: false,
+      };
       let accountCreating = false;
       let accountActivating = false;
       let deletingAccountId: string | null = null;
@@ -173,6 +181,9 @@ export function createAccountsSettingsPage(
       let loginMessage: string | null = null;
       let loginRefreshTimer: number | undefined;
       const usageByAccountId = new Map<string, AccountUsageViewState>();
+      const usageRequestByAccountId = new Map<string, symbol>();
+      const usagePromiseByAccountId = new Map<string, Promise<void>>();
+      let usageRefresh: Promise<void> | null = null;
       let usingResetAccountId: string | null = null;
       let usageDisplay: AccountUsageDisplay = "remaining";
       const expandedResetAccounts = new Set<string>();
@@ -209,7 +220,7 @@ export function createAccountsSettingsPage(
                   login = null;
                   loginMessage = messages.accountLoginSucceeded;
                 }
-                setAccounts(result.accounts);
+                setAccounts(result);
                 scheduleLoginRefresh();
               },
               failure() {
@@ -230,9 +241,10 @@ export function createAccountsSettingsPage(
           button.setAttribute("aria-pressed", String(display === usageDisplay));
         }
         refreshUsage.disabled =
-          ((!getClient()?.inspectCodexAccountUsage || !accounts.some((account) => account.email)) &&
+          ((!getClient()?.inspectCodexAccountUsage || accounts.length === 0) &&
             !getClient()?.listHarnessAccounts) ||
           harnessAccounts?.refreshing === true ||
+          usageRefresh !== null ||
           [...usageByAccountId.values()].some((usage) => usage.status === "loading") ||
           accountBusy();
         const query = search.value.trim().toLocaleLowerCase();
@@ -253,6 +265,7 @@ export function createAccountsSettingsPage(
         for (const account of visibleAccounts) {
           body.append(
             ...renderAccountRows(document, account, messages, {
+              current: accountPhase === "ready" && account.accountId === currentAccountId,
               usage: usageByAccountId.get(account.accountId),
               display: usageDisplay,
               actionsDisabled: accountBusy(),
@@ -260,7 +273,10 @@ export function createAccountsSettingsPage(
               resetDisabled: accountBusy(),
               resetExpanded: expandedResetAccounts.has(account.accountId),
               onActivate: () =>
-                mutate(() => client().activateCodexAccount({ accountId: account.accountId })),
+                mutate(
+                  () => client().switchCodexAccount({ accountId: account.accountId }),
+                  account.accountId,
+                ),
               onSignIn: () => startLogin(account.accountId),
               onDelete: () => deleteAccount(account.accountId),
               onRetry: () => {
@@ -271,13 +287,20 @@ export function createAccountsSettingsPage(
                 if (open) expandedResetAccounts.add(account.accountId);
                 else expandedResetAccounts.delete(account.accountId);
               },
-              ...(getClient()?.consumeCodexAccountResetCredit
+              ...(account.accountId === currentAccountId &&
+              accountPhase === "ready" &&
+              getClient()?.consumeCodexAccountResetCredit
                 ? { onUseReset: () => useReset(account.accountId) }
                 : {}),
             }),
           );
 
-          if (login?.accountId === account.accountId) {
+          if (
+            login &&
+            (login.accountId === account.accountId ||
+              (account === visibleAccounts.at(-1) &&
+                !accounts.some((candidate) => candidate.accountId === login?.accountId)))
+          ) {
             const verification = document.createElement("div");
             verification.className = "settings-account-verification";
             const prompt = document.createElement("span");
@@ -339,52 +362,106 @@ export function createAccountsSettingsPage(
         if (!value) throw new Error(messages.runtimeCapabilityNotInstalled);
         return value;
       };
-      const loadUsage = (nextAccounts: readonly CodexAccountSummary[]): void => {
+      const loadUsage = (
+        nextAccounts: readonly CodexAccountSummary[],
+        forceRefresh = false,
+      ): void => {
         const inspect = getClient()?.inspectCodexAccountUsage;
-        const signedIn = nextAccounts.filter((account) => account.email);
-        const keep = new Set(signedIn.map((account) => account.accountId));
+        const saved = [...nextAccounts];
+        const keep = new Set(saved.map((account) => account.accountId));
         for (const accountId of [...usageByAccountId.keys()]) {
-          if (!keep.has(accountId)) usageByAccountId.delete(accountId);
+          if (!keep.has(accountId)) {
+            usageByAccountId.delete(accountId);
+            usageRequestByAccountId.delete(accountId);
+            usagePromiseByAccountId.delete(accountId);
+          }
         }
-        const pending = signedIn.filter((account) => !usageByAccountId.has(account.accountId));
+        const pending = saved.filter(
+          (account) => forceRefresh || !usageByAccountId.has(account.accountId),
+        );
         if (!inspect || pending.length === 0) {
           render();
           return;
         }
         const requests = pending.map((account) => {
-          const loading: AccountUsageViewState = { status: "loading" };
-          usageByAccountId.set(account.accountId, loading);
-          return { account, loading };
+          const previous = usageByAccountId.get(account.accountId);
+          const request = Symbol(account.accountId);
+          usageRequestByAccountId.set(account.accountId, request);
+          if (!previous || previous.status !== "ready") {
+            usageByAccountId.set(account.accountId, { status: "loading" });
+          }
+          return { account, previous, request };
         });
         render();
-        void Promise.all(
-          requests.map(async ({ account, loading }) => {
-            try {
-              const result = await inspect({ accountId: account.accountId });
-              if (context.signal.aborted || usageByAccountId.get(account.accountId) !== loading)
-                return;
-              usageByAccountId.set(
-                account.accountId,
-                result.accountCredits
-                  ? { status: "ready", credits: result.accountCredits }
-                  : { status: "empty" },
-              );
-            } catch {
-              if (context.signal.aborted || usageByAccountId.get(account.accountId) !== loading)
-                return;
-              usageByAccountId.set(account.accountId, { status: "error" });
-            }
-            render();
+        const refresh = Promise.all(
+          requests.map(({ account, previous, request }) => {
+            const pending = (async () => {
+              try {
+                const result = await inspect({
+                  accountId: account.accountId,
+                  ...(forceRefresh ? { refresh: true } : {}),
+                });
+                if (
+                  context.signal.aborted ||
+                  usageRequestByAccountId.get(account.accountId) !== request
+                )
+                  return;
+                usageByAccountId.set(
+                  account.accountId,
+                  result.accountCredits
+                    ? {
+                        status: "ready",
+                        credits: result.accountCredits,
+                        freshness: result.freshness,
+                        observedAt: result.observedAt,
+                      }
+                    : { status: "empty" },
+                );
+              } catch {
+                if (
+                  context.signal.aborted ||
+                  usageRequestByAccountId.get(account.accountId) !== request
+                )
+                  return;
+                // OpenCodex-style last-good semantics: a failed refresh never erases a
+                // successful snapshot already visible in this window.
+                if (previous?.status === "ready") usageByAccountId.set(account.accountId, previous);
+                else usageByAccountId.set(account.accountId, { status: "error" });
+              } finally {
+                if (usageRequestByAccountId.get(account.accountId) === request) {
+                  usageRequestByAccountId.delete(account.accountId);
+                }
+              }
+              render();
+            })().finally(() => {
+              if (usagePromiseByAccountId.get(account.accountId) === pending) {
+                usagePromiseByAccountId.delete(account.accountId);
+              }
+            });
+            usagePromiseByAccountId.set(account.accountId, pending);
+            return pending;
           }),
-        );
+        ).then(() => undefined);
+        usageRefresh = refresh;
+        void refresh.finally(() => {
+          if (usageRefresh === refresh) {
+            usageRefresh = null;
+            render();
+          }
+        });
       };
-      const setAccounts = (nextAccounts: readonly CodexAccountSummary[]): void => {
-        accounts = nextAccounts;
+      const setAccounts = (result: CodexAccountListResult): void => {
+        if (result.revision < accountRevision) return;
+        accounts = result.accounts;
+        currentAccountId = result.currentAccountId;
+        accountPhase = result.phase;
+        accountRevision = result.revision;
+        capabilities = result.capabilities;
         for (const accountId of expandedResetAccounts) {
           if (!accounts.some((account) => account.accountId === accountId))
             expandedResetAccounts.delete(accountId);
         }
-        loadUsage(nextAccounts);
+        loadUsage(accounts);
       };
       const refreshInBackground = (): void => {
         if (!client().refreshCodexAccounts) return;
@@ -392,7 +469,7 @@ export function createAccountsSettingsPage(
           () => client().refreshCodexAccounts?.() ?? client().listCodexAccounts(),
           {
             success(result) {
-              setAccounts(result.accounts);
+              setAccounts(result);
             },
             failure() {
               // Keep showing the cached Account list when live metadata refresh fails.
@@ -404,7 +481,7 @@ export function createAccountsSettingsPage(
         void context.runLatest(() => client().listCodexAccounts(), {
           success(result) {
             loginMessage = null;
-            setAccounts(result.accounts);
+            setAccounts(result);
             refreshInBackground();
           },
           failure(error) {
@@ -413,70 +490,88 @@ export function createAccountsSettingsPage(
           },
         });
       };
-      const mutate = (operation: () => Promise<CodexAccountMutationResult>): void => {
+      const mutate = (
+        operation: () => Promise<CodexAccountSwitchResult>,
+        targetAccountId?: string,
+      ): void => {
         if (accountBusy()) return;
         accountActivating = true;
         render();
-        void context.runLatest(() => operation(), {
-          success(result) {
-            accountActivating = false;
-            loginMessage = null;
-            setAccounts(
-              accounts.map((account) => ({
-                ...(account.accountId === result.account.accountId ? result.account : account),
-                active: account.accountId === result.account.accountId,
-              })),
-            );
+        const pendingUsage = [currentAccountId, targetAccountId]
+          .filter((accountId): accountId is string => accountId !== null && accountId !== undefined)
+          .map((accountId) => usagePromiseByAccountId.get(accountId))
+          .filter((pending): pending is Promise<void> => pending !== undefined);
+        void context.runLatest(
+          async () => {
+            // Wait only for the source and target reads. Unrelated Account quota
+            // probes are read-only and must not make a global switch wait for the
+            // entire saved Account library.
+            await Promise.all(pendingUsage);
+            return operation();
           },
-          failure(error) {
-            accountActivating = false;
-            loginMessage = errorMessage(error, messages.accountLoadFailed);
-            render();
+          {
+            success() {
+              accountActivating = false;
+              loginMessage = null;
+              if (targetAccountId) usageByAccountId.delete(targetAccountId);
+              load();
+            },
+            failure(error) {
+              accountActivating = false;
+              loginMessage = errorMessage(error, messages.accountLoadFailed);
+              render();
+            },
           },
-        });
+        );
       };
-      const startLogin = (accountId: string): void => {
+      const startLogin = (accountId?: string): void => {
         if (accountBusy()) return;
-        loginStartingAccountId = accountId;
+        loginStartingAccountId = accountId ?? "new";
         loginMessage = messages.accountSigningIn;
         render();
-        void context.runLatest(() => client().startCodexAccountLogin({ accountId }), {
-          success(result) {
-            loginStartingAccountId = null;
-            login = result;
-            loginMessage = null;
-            render();
-            scheduleLoginRefresh();
-          },
-          failure(error) {
-            loginStartingAccountId = null;
-            loginMessage = errorMessage(error, messages.accountLoginFailed);
-            render();
-          },
-        });
+        void client()
+          .startCodexAccountLogin(accountId ? { accountId } : {})
+          .then(
+            (result) => {
+              if (context.signal.aborted) return;
+              loginStartingAccountId = null;
+              login = result;
+              loginMessage = null;
+              render();
+              scheduleLoginRefresh();
+            },
+            (error: unknown) => {
+              if (context.signal.aborted) return;
+              loginStartingAccountId = null;
+              loginMessage = errorMessage(error, messages.accountLoginFailed);
+              render();
+            },
+          );
       };
       const createAndLogin = (): void => {
         if (accountBusy()) return;
         accountCreating = true;
         loginMessage = messages.accountSigningIn;
         render();
-        void context.runLatest(() => client().createCodexAccount({}), {
-          success(result) {
-            accountCreating = false;
-            loginMessage = null;
-            search.value = "";
-            setAccounts([
-              ...accounts.filter(({ accountId }) => accountId !== result.account.accountId),
-              result.account,
-            ]);
-            startLogin(result.account.accountId);
-          },
-          failure(error) {
-            accountCreating = false;
-            loginMessage = errorMessage(error, messages.accountCreateFailed);
-            render();
-          },
-        });
+        void client()
+          .startCodexAccountLogin({})
+          .then(
+            (result) => {
+              if (context.signal.aborted) return;
+              accountCreating = false;
+              login = result;
+              loginMessage = null;
+              search.value = "";
+              render();
+              scheduleLoginRefresh();
+            },
+            (error: unknown) => {
+              if (context.signal.aborted) return;
+              accountCreating = false;
+              loginMessage = errorMessage(error, messages.accountLoginFailed);
+              render();
+            },
+          );
       };
       const resetOutcomeMessage = (
         outcome: CodexAccountResetCreditConsumeResult["outcome"],
@@ -501,6 +596,8 @@ export function createAccountsSettingsPage(
               usageByAccountId.set(accountId, {
                 status: "ready",
                 credits: result.accountCredits,
+                freshness: "live",
+                observedAt: new Date().toISOString(),
               });
             } else if (result.outcome === "reset") {
               usageByAccountId.delete(accountId);
@@ -517,7 +614,13 @@ export function createAccountsSettingsPage(
       };
       const deleteAccount = (accountId: string): void => {
         const account = accounts.find((candidate) => candidate.accountId === accountId);
-        if (!account || account.isDefault || accountBusy()) return;
+        if (
+          !account ||
+          account.accountId === currentAccountId ||
+          !capabilities.delete ||
+          accountBusy()
+        )
+          return;
         if (document.defaultView?.confirm?.(messages.accountDeleteConfirm) === false) return;
         deletingAccountId = accountId;
         loginMessage = messages.accountDeleting;
@@ -526,14 +629,7 @@ export function createAccountsSettingsPage(
           success() {
             deletingAccountId = null;
             loginMessage = null;
-            setAccounts(
-              accounts
-                .filter((candidate) => candidate.accountId !== accountId)
-                .map((candidate) => ({
-                  ...candidate,
-                  active: account.active ? candidate.isDefault : candidate.active,
-                })),
-            );
+            load();
           },
           failure(error) {
             deletingAccountId = null;
@@ -559,7 +655,12 @@ export function createAccountsSettingsPage(
 
       add.addEventListener("click", createAndLogin);
       let unsubscribe: (() => void) | undefined;
+      let unsubscribeAccounts: (() => void) | undefined;
       try {
+        unsubscribeAccounts = getClient()?.subscribeCodexAccounts?.((result) => {
+          setAccounts(result);
+          render();
+        });
         unsubscribe = getClient()?.subscribeCodexAccountLogin?.((result) => {
           if (result.loginId !== login?.loginId) return;
           clearLoginRefresh();
@@ -579,6 +680,7 @@ export function createAccountsSettingsPage(
       return () => {
         clearLoginRefresh();
         unsubscribe?.();
+        unsubscribeAccounts?.();
       };
     },
   });

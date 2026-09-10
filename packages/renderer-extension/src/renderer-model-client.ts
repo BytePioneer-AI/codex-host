@@ -5,12 +5,16 @@ import {
   codexAccountUsageResultSchema,
   codexAccountResetCreditConsumeParamsSchema,
   codexAccountResetCreditConsumeResultSchema,
+  type CodexAccountSwitchParams,
+  type CodexAccountSwitchResult,
+  type CodexAccountChanged,
   type CodexAccountUsageParams,
   type CodexAccountUsageResult,
   type CodexAccountResetCreditConsumeParams,
   type CodexAccountResetCreditConsumeResult,
-  codexAccountActivateParamsSchema,
-  codexAccountCreateParamsSchema,
+  codexAccountSwitchParamsSchema,
+  codexAccountSwitchResultSchema,
+  codexAccountChangedSchema,
   codexAccountDeleteParamsSchema,
   codexAccountDeleteResultSchema,
   codexAccountListResultSchema,
@@ -19,7 +23,6 @@ import {
   codexAccountLoginCompletedSchema,
   codexAccountLoginStartParamsSchema,
   codexAccountLoginStartResultSchema,
-  codexAccountMutationResultSchema,
   externalThreadForkParamsSchema,
   externalThreadForkResultSchema,
   harnessCommandCatalogSchema,
@@ -51,8 +54,6 @@ import {
   updateStatusResultSchema,
   type ExternalThreadForkParams,
   type ExternalThreadForkResult,
-  type CodexAccountActivateParams,
-  type CodexAccountCreateParams,
   type CodexAccountDeleteParams,
   type CodexAccountDeleteResult,
   type CodexAccountListResult,
@@ -61,7 +62,6 @@ import {
   type CodexAccountLoginCompleted,
   type CodexAccountLoginStartParams,
   type CodexAccountLoginStartResult,
-  type CodexAccountMutationResult,
   type HarnessCommandCatalog,
   type HarnessCommandsInspectParams,
   type HarnessConfigurationState,
@@ -115,9 +115,8 @@ export const UPDATE_START_METHOD = "codexhost/update/start";
 export const UPDATE_STATUS_METHOD = "codexhost/update/status";
 export const CODEX_ACCOUNT_LIST_METHOD = "codexhost/account/list";
 export const CODEX_ACCOUNT_REFRESH_METHOD = "codexhost/account/refresh";
-export const CODEX_ACCOUNT_CREATE_METHOD = "codexhost/account/create";
 export const CODEX_ACCOUNT_DELETE_METHOD = "codexhost/account/delete";
-export const CODEX_ACCOUNT_ACTIVATE_METHOD = "codexhost/account/activate";
+export const CODEX_ACCOUNT_SWITCH_METHOD = "codexhost/account/switch";
 export const CODEX_ACCOUNT_LOGIN_START_METHOD = "codexhost/account/login/start";
 export const CODEX_ACCOUNT_LOGIN_CANCEL_METHOD = "codexhost/account/login/cancel";
 export const CODEX_ACCOUNT_LOGIN_COMPLETED_METHOD = "codexhost/account/login/completed";
@@ -186,9 +185,9 @@ export interface RendererModelClient extends Partial<RendererSessionImportClient
   listHarnessAccounts?(): Promise<HarnessAccountListResult>;
   listCodexAccounts(): Promise<CodexAccountListResult>;
   refreshCodexAccounts(): Promise<CodexAccountListResult>;
-  createCodexAccount(input: CodexAccountCreateParams): Promise<CodexAccountMutationResult>;
   deleteCodexAccount(input: CodexAccountDeleteParams): Promise<CodexAccountDeleteResult>;
-  activateCodexAccount(input: CodexAccountActivateParams): Promise<CodexAccountMutationResult>;
+  switchCodexAccount(input: CodexAccountSwitchParams): Promise<CodexAccountSwitchResult>;
+  subscribeCodexAccounts?(listener: (state: CodexAccountChanged) => void): () => void;
   startCodexAccountLogin(
     input: CodexAccountLoginStartParams,
   ): Promise<CodexAccountLoginStartResult>;
@@ -460,13 +459,6 @@ export function createRendererModelClient(
       const result = await manager.sendRequest(CODEX_ACCOUNT_REFRESH_METHOD, {});
       return codexAccountListResultSchema.parse(result);
     },
-    async createCodexAccount(input: CodexAccountCreateParams): Promise<CodexAccountMutationResult> {
-      const result = await manager.sendRequest(
-        CODEX_ACCOUNT_CREATE_METHOD,
-        codexAccountCreateParamsSchema.parse(input),
-      );
-      return codexAccountMutationResultSchema.parse(result);
-    },
     async deleteCodexAccount(input: CodexAccountDeleteParams): Promise<CodexAccountDeleteResult> {
       const result = await manager.sendRequest(
         CODEX_ACCOUNT_DELETE_METHOD,
@@ -474,14 +466,20 @@ export function createRendererModelClient(
       );
       return codexAccountDeleteResultSchema.parse(result);
     },
-    async activateCodexAccount(
-      input: CodexAccountActivateParams,
-    ): Promise<CodexAccountMutationResult> {
+    async switchCodexAccount(input: CodexAccountSwitchParams): Promise<CodexAccountSwitchResult> {
       const result = await manager.sendRequest(
-        CODEX_ACCOUNT_ACTIVATE_METHOD,
-        codexAccountActivateParamsSchema.parse(input),
+        CODEX_ACCOUNT_SWITCH_METHOD,
+        codexAccountSwitchParamsSchema.parse(input),
       );
-      return codexAccountMutationResultSchema.parse(result);
+      return codexAccountSwitchResultSchema.parse(result);
+    },
+    subscribeCodexAccounts(listener: (state: CodexAccountChanged) => void): () => void {
+      const notifications = notificationTarget(source);
+      if (!notifications?.addNotificationCallback)
+        throw new Error("Renderer Account notification callback is unavailable");
+      return notifications.addNotificationCallback("codexhost/account/changed", (value) =>
+        listener(codexAccountChangedSchema.parse(value)),
+      );
     },
     async startCodexAccountLogin(
       input: CodexAccountLoginStartParams,

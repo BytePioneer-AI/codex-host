@@ -7,6 +7,7 @@ import {
   createRemoteOfficialAppServerPlan,
   hasLauncherManagedUpdateRuntime,
   MANAGED_REMOTE_APP_SERVER_PROCESS_TITLE,
+  officialAccountDeploymentKind,
 } from "../src/run-host-runtime.js";
 
 describe("Host Runtime composition", () => {
@@ -54,6 +55,19 @@ describe("Host Runtime composition", () => {
         "--analytics-default-enabled",
       ],
     });
+  });
+
+  it("selects Account capability by deployment transport rather than local operating system", () => {
+    for (const localArguments of [
+      ["app-server"],
+      ["-c", "features.code_mode_host=true", "app-server"],
+      ["app-server", "--listen", "ws://127.0.0.1:0"],
+    ]) {
+      expect(officialAccountDeploymentKind(localArguments)).toBe("managed-shared-home");
+    }
+    expect(officialAccountDeploymentKind(["app-server", "--listen", "unix://"])).toBe(
+      "ssh-single-account",
+    );
   });
 
   it("disables launcher-owned updates for a direct SSH Host invocation", () => {

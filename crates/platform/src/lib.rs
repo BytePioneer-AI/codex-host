@@ -15,7 +15,9 @@ mod installation;
 #[cfg(target_os = "linux")]
 mod linux_installation;
 mod macos_native_harness_broker;
+mod private_files;
 mod process;
+mod process_identity;
 mod process_supervision;
 mod process_termination;
 mod proxy_environment;
@@ -61,6 +63,7 @@ pub use macos_native_harness_broker::{
     NativeHarnessBrokerInstallOutcome, NativeHarnessBrokerStatus, inspect_native_harness_broker,
     install_native_harness_broker, stop_native_harness_broker, uninstall_native_harness_broker,
 };
+pub use private_files::{PRIVATE_FILE_LIMIT, PrivateDirectory, private_file_digest};
 #[cfg(target_os = "macos")]
 pub use process::force_stop_desktop;
 pub use process::{
@@ -74,6 +77,9 @@ pub use process::{desktop_process_ids, desktop_root_process_ids, process_started
 pub use process::{
     desktop_process_tree, desktop_root_snapshots_for_installation, process_snapshots,
 };
+pub use process_identity::process_identity;
+#[cfg(target_os = "windows")]
+pub use process_supervision::spawn_supervised_before_execution;
 pub use process_supervision::{ChildProcessGuard, SupervisedChild, spawn_supervised};
 pub use process_termination::{terminate_process_group_instance, terminate_process_instance};
 #[cfg(target_os = "windows")]

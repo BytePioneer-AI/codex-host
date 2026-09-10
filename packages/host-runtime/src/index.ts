@@ -16,19 +16,11 @@ export { installedHarnessPluginOptions } from "./installed-harness-plugins.js";
 export {
   AppServerHost,
   classifyCreateRequestRoute,
-  officialAccountEnvironment,
   officialEnvironment,
 } from "./app-server-host.js";
 export type { AppServerHostOptions } from "./app-server-host.js";
-export { AccountRepository } from "./account/account-repository.js";
-export type { AccountRepositoryLike, CodexAccount } from "./account/account-repository.js";
-export { ThreadAccountStore } from "./account/thread-account-store.js";
-export type { ThreadAccountStoreLike } from "./account/thread-account-store.js";
 export { CodexRuntime } from "./codex-runtime/codex-runtime.js";
-export {
-  CodexRuntimePool,
-  UnknownCodexThreadAccountError,
-} from "./codex-runtime/codex-runtime-pool.js";
+export { OfficialRuntimeScope } from "./codex-runtime/official-runtime-scope.js";
 export {
   createRemoteAppServerWebSocketListener,
   isRemoteUnixListenerInvocation,

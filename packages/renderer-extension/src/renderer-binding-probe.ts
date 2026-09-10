@@ -153,7 +153,7 @@ export function shouldRefreshCodexAccountsForAdapterState(
   return state === "ready";
 }
 
-export { resolveCodexAccountSelection } from "./renderer-codex-account-state.js";
+export { resolveCurrentCodexAccountId } from "./renderer-codex-account-state.js";
 
 interface HostHarnessAvailabilityState {
   codexAccounts: RendererCodexAccountState | null;
@@ -705,7 +705,11 @@ export function installRendererBindingProbe(
     if (!client) return null;
     const state = hostHarnessAvailabilityState(hostId);
     if (state.codexAccounts?.client !== client) {
-      state.codexAccounts = new RendererCodexAccountState(client);
+      state.codexAccounts?.dispose();
+      state.codexAccounts = new RendererCodexAccountState(client, () => {
+        for (const mounted of mountedByComposer.values())
+          if (mounted.hostId === hostId) renderMounted(mounted);
+      });
     }
     return state.codexAccounts;
   };
@@ -738,12 +742,7 @@ export function installRendererBindingProbe(
     controller.isCurrentOwnershipRequest(mounted.composer, generation);
 
   const notifySubmission = (composer: Element, trigger: SubmissionTrigger): void => {
-    const accounts = composerCodexAccounts(composer);
-    const state = controller.recordSubmission(
-      composer,
-      accounts?.selection.selectedAccountId ?? undefined,
-    );
-    if (state.agent === "codex" && accounts) accounts.overrideAccountId = null;
+    const state = controller.recordSubmission(composer);
     writeNewThreadAgentPreference(state.agent);
     if (state.agent !== "codex") {
       const model = controller.modelForAgent(composer, state.agent);
@@ -768,13 +767,8 @@ export function installRendererBindingProbe(
   };
 
   const renderMounted = (mounted: MountedComposer): void => {
-    const state = controller.get(mounted.composer);
     const accounts = composerCodexAccounts(mounted.composer);
-    const selectedCodexAccountId =
-      state.phase === "locked" ||
-      (controller.isSubmissionPending(mounted.composer) && state.codexAccountId)
-        ? state.codexAccountId
-        : accounts?.selection.selectedAccountId;
+    const currentCodexAccountId = accounts?.readyAccountId;
     renderComposerAgentControl(
       mounted.control,
       controller.get(mounted.composer),
@@ -790,7 +784,7 @@ export function installRendererBindingProbe(
       settingsLifecycle.locale,
       (accounts?.accounts ?? []).map((account) => ({
         ...account,
-        active: account.accountId === selectedCodexAccountId,
+        active: account.accountId === currentCodexAccountId,
       })),
       mounted.ownershipStatus === "error",
     );
@@ -892,7 +886,7 @@ export function installRendererBindingProbe(
       return;
     const accounts = composerCodexAccounts(mounted.composer);
     const client = accounts?.client;
-    const accountId = accounts?.selection.selectedAccountId;
+    const accountId = accounts?.readyAccountId;
     const hostId = mounted.hostId;
     const generation = ++mounted.usageRequestGeneration;
     mounted.usage = null;
@@ -912,7 +906,7 @@ export function installRendererBindingProbe(
         controller.get(mounted.composer).phase !== "draft" ||
         controller.isSubmissionPending(mounted.composer) ||
         threadIdFromComposerModelTarget(mounted.modelTarget) ||
-        accounts.selection.selectedAccountId !== accountId ||
+        accounts.readyAccountId !== accountId ||
         result.accountId !== accountId
       )
         return;
@@ -1063,7 +1057,6 @@ export function installRendererBindingProbe(
         model,
         thinkingOptionId,
         permissionModeId,
-        inspection.owner === "codex" ? inspection.accountId : undefined,
       );
       if (!restored) {
         throw new Error("Thread owner could not be applied to the Composer");
@@ -1926,20 +1919,9 @@ export function installRendererBindingProbe(
       void refreshDraftCodexUsage(candidate);
     }
     try {
-      if (
-        controller.get(mounted.composer).agent !== "codex" &&
-        !(await switchComposerAgent(mounted, "codex"))
-      ) {
-        return;
-      }
-      const policy = await waitForRendererDraftPrewarmPolicy(window);
-      if (!isCurrent() || policy.hostId !== hostId) return;
-      await policy.clear();
-      if (!isCurrent() || window.__codexhostDraftPrewarmPolicyV1 !== policy) return;
-      if (!policy.selectAccount) throw new Error("Codex Account selection is unavailable");
-      const override = accountId === accounts.selection.activeAccountId ? null : accountId;
-      policy.selectAccount(override);
-      accounts.overrideAccountId = override;
+      if (!accounts.capabilities.switch) return;
+      await accounts.client.switchCodexAccount({ accountId });
+      await accounts.refresh();
     } catch {
       if (isCurrent()) void loadCodexAccounts();
     } finally {
@@ -2515,25 +2497,6 @@ export function installRendererBindingProbe(
     if (!isExternalConfigurationReady(mounted)) return false;
     if (current.phase === "locked") return true;
     if (!applyComposerAgent(composer)) return false;
-    if (current.agent === "codex") {
-      // A Host switch may replace its policy while retaining this Host's draft
-      // override. Apply it to the matching policy at submission, not another Host.
-      const selection = composerCodexAccounts(composer)?.selection;
-      const accountId =
-        controller.isSubmissionPending(composer) && current.codexAccountId
-          ? current.codexAccountId
-          : selection?.selectedAccountId;
-      const override = accountId === selection?.activeAccountId ? null : (accountId ?? null);
-      const policy = window.__codexhostDraftPrewarmPolicyV1;
-      if (override !== null && (policy?.hostId !== mounted.hostId || !policy.selectAccount)) {
-        return false;
-      }
-      try {
-        if (policy?.hostId === mounted.hostId) policy.selectAccount?.(override);
-      } catch {
-        return false;
-      }
-    }
     controller.markSubmissionPending(composer);
     renderMounted(mounted);
     return true;

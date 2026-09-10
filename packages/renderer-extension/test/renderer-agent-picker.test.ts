@@ -37,9 +37,7 @@ describe("Renderer Agent picker presentation", () => {
       accountId: "reviewer",
       label: "Reviewer",
       email: "reviewer@example.com",
-      codexHome: "/tmp/reviewer",
       active: true,
-      isDefault: false,
     };
     expect(codexAccountDisplayName(account)).toEqual({
       local: "reviewer",
@@ -57,9 +55,7 @@ describe("Renderer Agent picker presentation", () => {
     const account = {
       accountId: "reviewer",
       label: "Reviewer",
-      codexHome: "/tmp/reviewer",
       active: true,
-      isDefault: false,
     };
     expect(codexAccountPresentationSignature([account])).not.toBe(
       codexAccountPresentationSignature([{ ...account, email: "reviewer@example.com" }]),
@@ -74,9 +70,6 @@ describe("Renderer Agent picker presentation", () => {
           accountId: "reviewer",
           label: "Reviewer",
           email: "reviewer@example.com",
-          codexHome: "/tmp/reviewer",
-          active: true,
-          isDefault: false,
         },
       ),
     ).toBe("Agent: Codex · reviewer@example.com (locked)");

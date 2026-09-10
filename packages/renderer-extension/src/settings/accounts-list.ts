@@ -82,6 +82,7 @@ export function renderAccountRows(
   account: CodexAccountSummary,
   messages: RendererSettingsMessages,
   input: {
+    current: boolean;
     usage: AccountUsageViewState | undefined;
     display: AccountUsageDisplay;
     actionsDisabled: boolean;
@@ -119,7 +120,7 @@ export function renderAccountRows(
   local.textContent = name.local;
   local.title = name.full;
   title.append(local);
-  if (account.active) {
+  if (input.current) {
     const badge = document.createElement("span");
     badge.className = "settings-account-active";
     badge.textContent = messages.accountDefaultBadge;
@@ -166,7 +167,7 @@ export function renderAccountRows(
   const actionsCell = document.createElement("td");
   const actions = document.createElement("div");
   actions.className = "settings-account-actions";
-  if (!account.active) {
+  if (!input.current) {
     const activate = document.createElement("button");
     activate.type = "button";
     activate.className = "settings-account-action";
@@ -186,9 +187,8 @@ export function renderAccountRows(
     signIn.addEventListener("click", input.onSignIn);
     actions.append(signIn);
   }
-  // isDefault protects the native Account home; active selects the Account for
-  // new tasks. Preserve these distinct Host semantics when exposing deletion.
-  if (!account.isDefault) {
+  // The current identity must be switched or signed out explicitly first.
+  if (!input.current) {
     const remove = document.createElement("button");
     remove.type = "button";
     remove.className = "settings-icon-button settings-account-delete";

@@ -22,7 +22,7 @@ import {
   refreshConnectionHosts,
   restoredThreadOwnership,
   retryableHarnessAvailabilityAgents,
-  resolveCodexAccountSelection,
+  resolveCurrentCodexAccountId,
   shouldRefreshCodexAccountsForAdapterState,
   rendererUsageRefreshDelay,
   shouldApplyDraftAgentCarrier,
@@ -52,21 +52,14 @@ import {
 } from "../src/renderer-usage-control.js";
 
 describe("Renderer connection diagnostics", () => {
-  it("adopts a newly active Codex Account unless the draft has an explicit override", () => {
+  it("uses only the Host current Codex Account", () => {
     const accounts = [
-      { accountId: "old", label: "Old", codexHome: "/old", active: false, isDefault: true },
-      { accountId: "new", label: "New", codexHome: "/new", active: true, isDefault: false },
+      { accountId: "old", label: "Old" },
+      { accountId: "new", label: "New" },
     ];
-    expect(resolveCodexAccountSelection(accounts, null)).toEqual({
-      activeAccountId: "new",
-      overrideAccountId: null,
-      selectedAccountId: "new",
-    });
-    expect(resolveCodexAccountSelection(accounts, "old")).toEqual({
-      activeAccountId: "new",
-      overrideAccountId: "old",
-      selectedAccountId: "old",
-    });
+    expect(resolveCurrentCodexAccountId(accounts, null)).toBeNull();
+    expect(resolveCurrentCodexAccountId(accounts, "old")).toBe("old");
+    expect(resolveCurrentCodexAccountId(accounts, "missing")).toBeNull();
   });
 
   it("retries the Codex Account list when the request adapter becomes ready", () => {

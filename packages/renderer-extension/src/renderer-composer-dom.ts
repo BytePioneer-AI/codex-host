@@ -6,7 +6,6 @@ import type {
 } from "./agent-selection-state.js";
 import type {
   AccountCreditsSnapshot,
-  CodexAccountSummary,
   HarnessCommandDescriptor,
   ThreadUsageSnapshot,
 } from "@codexhost/shared-contracts";
@@ -15,6 +14,7 @@ import {
   mountRendererAgentPicker,
   renderRendererAgentPicker,
   type RendererAgentPickerControl,
+  type RendererCodexAccountView,
 } from "./renderer-agent-picker.js";
 import {
   mountRendererModelPicker,
@@ -685,7 +685,7 @@ export function renderComposerAgentControl(
   usage: ThreadUsageSnapshot | null = null,
   accountCredits: AccountCreditsSnapshot | null = null,
   locale: RendererSettingsLocale = "en",
-  codexAccounts: readonly CodexAccountSummary[] = [],
+  codexAccounts: readonly RendererCodexAccountView[] = [],
   ownershipError = false,
 ): void {
   if (control.usage === null) {

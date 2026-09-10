@@ -25,7 +25,6 @@ export interface DraftComposerState {
   agent: RendererAgent;
   phase: ComposerAgentPhase;
   composerId: string;
-  codexAccountId?: string;
   piModel?: HarnessModelRef;
   piThinkingOptionId?: HarnessThinkingOptionId;
   claudeModel?: HarnessModelRef;
@@ -190,15 +189,12 @@ export class DraftAgentController<Composer extends object> {
     model?: HarnessModelRef,
     thinkingOptionId?: HarnessThinkingOptionId,
     permissionModeId?: HarnessPermissionModeId,
-    codexAccountId?: string,
   ): Readonly<DraftComposerState> | null {
     if (!this.#enabledAgents.has(agent)) return null;
     const state = this.#state(composer);
     this.#pendingSubmissions.delete(state);
     state.agent = agent;
     state.phase = "locked";
-    if (agent === "codex" && codexAccountId) state.codexAccountId = codexAccountId;
-    else delete state.codexAccountId;
     if (agent === "pi" && model) state.piModel = model;
     if (agent === "claude-code" && model) state.claudeModel = model;
     if (agent === "deepseek-harness" && model) state.deepSeekHarnessModel = model;
@@ -380,19 +376,10 @@ export class DraftAgentController<Composer extends object> {
   clearPendingSubmission(composer: Composer): void {
     const state = this.#state(composer);
     this.#pendingSubmissions.delete(state);
-    if (state.phase === "draft") delete state.codexAccountId;
   }
 
-  recordSubmission(composer: Composer, codexAccountId?: string): Readonly<DraftComposerState> {
+  recordSubmission(composer: Composer): Readonly<DraftComposerState> {
     const state = this.#state(composer);
-    if (
-      state.agent === "codex" &&
-      state.phase === "draft" &&
-      !state.codexAccountId &&
-      codexAccountId
-    ) {
-      state.codexAccountId = codexAccountId;
-    }
     this.#lastSubmittedAgent = state.agent;
     return state;
   }

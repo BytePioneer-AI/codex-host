@@ -9,7 +9,12 @@ export type AccountUsageViewState =
   | { readonly status: "loading" }
   | { readonly status: "empty" }
   | { readonly status: "error" }
-  | { readonly status: "ready"; readonly credits: AccountCreditsSnapshot };
+  | {
+      readonly status: "ready";
+      readonly credits: AccountCreditsSnapshot;
+      readonly freshness: "live" | "cached";
+      readonly observedAt: string | null;
+    };
 
 export type AccountUsageDisplay = "used" | "remaining";
 
@@ -151,6 +156,20 @@ export function renderAccountUsage(
     }
     usage.append(meter);
   }
+  const freshness = document.createElement("span");
+  freshness.className = "settings-account-usage__sub settings-account-usage__freshness";
+  const observed = state.observedAt
+    ? new Date(state.observedAt).toLocaleString(messages.locale)
+    : null;
+  freshness.textContent =
+    state.freshness === "live"
+      ? observed
+        ? messages.accountCreditsLiveAt.replace("{time}", observed)
+        : messages.accountCreditsLive
+      : observed
+        ? messages.accountCreditsCachedAt.replace("{time}", observed)
+        : messages.accountCreditsCached;
+  usage.append(freshness);
   return usage;
 }
 

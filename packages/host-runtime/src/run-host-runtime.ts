@@ -5,13 +5,35 @@ import { fileURLToPath } from "node:url";
 
 import { UPDATE_RUNTIME_ENV } from "@codexhost/update-manager";
 
+import { AppServerHost, officialEnvironment } from "./app-server-host.js";
+import { CodexCredentialFiles } from "./account/codex-credential-files.js";
+import { FileCredentialSwitchJournal } from "./account/credential-switch-journal.js";
 import {
-  AppServerHost,
-  officialAccountEnvironment,
-  officialEnvironment,
-} from "./app-server-host.js";
-import type { CodexAccount } from "./account/account-repository.js";
-import { AccountOfficialListeners } from "./codex-runtime/account-official-listeners.js";
+  adoptLegacyAccountLayout,
+  canAdoptLegacyLayout,
+  inspectLegacyAccountLayout,
+} from "./account/legacy-account-layout.js";
+import { CodexAccountSwitcher } from "./account/codex-account-switcher.js";
+import {
+  ManagedCodexAccounts,
+  SingleNativeCodexAccount,
+  UnavailableCodexAccounts,
+} from "./account/managed-codex-accounts.js";
+import { ManagedCodexAccountQuotas } from "./account/managed-codex-account-quotas.js";
+import { OfficialAccountRuntime } from "./account/official-account-runtime.js";
+import { SavedCodexAccounts } from "./account/saved-codex-accounts.js";
+import { readOfficialCliVersion } from "./codex-runtime/official-cli-version.js";
+import { OfficialProcessRecord } from "./codex-runtime/official-process-record.js";
+import {
+  createSharedConnectionBackend,
+  OfficialRuntimeScope,
+} from "./codex-runtime/official-runtime-scope.js";
+import {
+  createOwnedLoopbackBackend,
+  createOwnedStdioBackend,
+} from "./codex-runtime/owned-official-backends.js";
+import { NativePrivateFiles } from "./native-private-files.js";
+import { readNativeProcessIdentity } from "./native-process-identity.js";
 import { DelegationControlRegistry } from "./delegation-control-registry.js";
 import { installedHarnessPluginOptions } from "./installed-harness-plugins.js";
 import { startDelegationControlServer } from "./delegation-control-server.js";
@@ -37,7 +59,6 @@ import {
   remoteUnixListenerUrl,
 } from "./remote-app-server.js";
 import {
-  createLoopbackOfficialAppServerListener,
   createRemoteOfficialAppServerListener,
   remoteOfficialAppServerSocketPath,
   type RemoteOfficialAppServerExit,
@@ -48,6 +69,12 @@ import { createHostUpdateCoordinator, type HostUpdateCoordinator } from "./updat
 const STOCK_CODEX_PATH_ENV = "CODEXHOST_STOCK_CODEX_PATH";
 const DEFAULT_AGENT_ENV = "CODEXHOST_DEFAULT_AGENT";
 export const MANAGED_REMOTE_APP_SERVER_PROCESS_TITLE = "codexhost remote app-server listener";
+
+export function officialAccountDeploymentKind(
+  arguments_: readonly string[],
+): "managed-shared-home" | "ssh-single-account" {
+  return isRemoteUnixListenerInvocation(arguments_) ? "ssh-single-account" : "managed-shared-home";
+}
 
 export function createRemoteOfficialAppServerPlan(
   arguments_: readonly string[],
@@ -97,6 +124,201 @@ function requiredRuntimeConfiguration(environment: NodeJS.ProcessEnv): {
 
 function delegationCliPath(environment: NodeJS.ProcessEnv): string | undefined {
   return environment[DELEGATION_CLI_PATH_ENV] ?? environment.CODEXHOST_LAUNCHER_EXECUTABLE;
+}
+
+function unavailableAccountReason(
+  error: unknown,
+): "unsupported-storage" | "unsupported-version" | "recovery-required" {
+  if (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    (error.code === "unsupported-storage" || error.code === "unsupported-version")
+  )
+    return error.code;
+  return "recovery-required";
+}
+
+function unavailableOfficialRuntime(
+  reason: "unsupported-storage" | "unsupported-version" | "recovery-required" = "recovery-required",
+): {
+  scope: OfficialRuntimeScope;
+  accounts: UnavailableCodexAccounts;
+  close(): Promise<void>;
+} {
+  const scope = new OfficialRuntimeScope({
+    diagnosticOutput: process.stderr,
+    createBackend: () => {
+      throw new Error("Official Codex is unavailable");
+    },
+  });
+  return {
+    scope,
+    accounts: new UnavailableCodexAccounts(reason, () => ({
+      phase: scope.gate.phase,
+      revision: scope.gate.revision,
+    })),
+    close: () => scope.close(),
+  };
+}
+
+async function createManagedOfficialRuntime(input: {
+  stockCodexPath: string;
+  arguments: string[];
+  environment: NodeJS.ProcessEnv;
+  loopback: boolean;
+}): Promise<{
+  scope: OfficialRuntimeScope;
+  accounts: ManagedCodexAccounts;
+  close(): Promise<void>;
+}> {
+  const launcher = input.environment.CODEXHOST_LAUNCHER_EXECUTABLE;
+  if (!launcher || !path.isAbsolute(launcher))
+    throw new Error("Official process supervision is unavailable");
+  const dataDirectory = path.resolve(
+    input.environment.CODEXHOST_DATA_DIR ?? path.join(homedir(), ".codexhost"),
+  );
+  const sharedCodexHome = path.resolve(
+    input.environment.CODEX_HOME ?? path.join(homedir(), ".codex"),
+  );
+  const privateFiles = new NativePrivateFiles({ launcher });
+  // The official Windows home grants CodexSandboxUsers read/traverse access.
+  // Accept that native ACL only for files in CODEX_HOME; all Host-owned state
+  // stays below a separately created strict private directory.
+  const sharedHomeFiles = new NativePrivateFiles({
+    launcher,
+    allowReadOnlyAccess: process.platform === "win32",
+  });
+  const accountDirectory = path.join(dataDirectory, "codex-account-credentials");
+  const runtimePrivateDirectory = path.join(sharedCodexHome, ".codexhost-native-accounts");
+  const credentials = new CodexCredentialFiles({
+    files: privateFiles,
+    sharedHomeFiles,
+    directory: accountDirectory,
+    sharedCodexHome,
+    lockDirectory: runtimePrivateDirectory,
+  });
+  const credentialLease = await credentials.initialize();
+  let scope: OfficialRuntimeScope | undefined;
+  try {
+    const processRecord = new OfficialProcessRecord({
+      files: privateFiles,
+      sharedCodexHome: runtimePrivateDirectory,
+      identity: (pid) => readNativeProcessIdentity(launcher, pid),
+      assertOwnership: () => credentials.assertOwnership(),
+      supervisorExitClosesProcessTree: process.platform === "win32",
+    });
+    await processRecord.reconcile();
+    const processEnvironment = {
+      ...officialEnvironment(input.environment),
+      CODEX_HOME: sharedCodexHome,
+    };
+    scope = new OfficialRuntimeScope({
+      diagnosticOutput: process.stderr,
+      createBackend: () =>
+        processRecord.wrap((receipt) =>
+          input.loopback
+            ? createOwnedLoopbackBackend({
+                stockCodexPath: input.stockCodexPath,
+                arguments: input.arguments,
+                cwd: process.cwd(),
+                environment: processEnvironment,
+                diagnosticOutput: process.stderr,
+                supervision: { launcher, files: privateFiles, receipt },
+              })
+            : createOwnedStdioBackend({
+                stockCodexPath: input.stockCodexPath,
+                arguments: input.arguments,
+                cwd: process.cwd(),
+                environment: processEnvironment,
+                supervision: { launcher, files: privateFiles, receipt },
+              }),
+        ),
+    });
+    const legacyInventory = await inspectLegacyAccountLayout(dataDirectory, sharedCodexHome);
+    const legacyRegistryFile =
+      legacyInventory.kind === "legacy" && !canAdoptLegacyLayout(legacyInventory)
+        ? legacyInventory.registryFile
+        : undefined;
+    const savedAccounts = new SavedCodexAccounts({
+      directory: path.join(dataDirectory, "codex-global-accounts"),
+      sharedCodexHome,
+      ...(legacyRegistryFile ? { legacyRegistryFile } : {}),
+    });
+    if (legacyInventory.kind === "legacy" && canAdoptLegacyLayout(legacyInventory)) {
+      const launcherPid = Number(input.environment.CODEXHOST_LAUNCHER_PID);
+      const launcherTakeoverConfirmed =
+        Number.isSafeInteger(launcherPid) &&
+        launcherPid > 0 &&
+        (await readNativeProcessIdentity(launcher, launcherPid)) !== null;
+      await adoptLegacyAccountLayout({
+        inventory: legacyInventory,
+        files: privateFiles,
+        sourceCredentialFiles: sharedHomeFiles,
+        migrationDirectory: accountDirectory,
+        accounts: savedAccounts,
+        credentials,
+        oldOfficialBackendsExited: launcherTakeoverConfirmed,
+      });
+    }
+    const runtime = new OfficialAccountRuntime({
+      owner: scope.owner,
+      credentials,
+      environment: processEnvironment,
+      nativeVersion: () => readOfficialCliVersion(input.stockCodexPath, processEnvironment),
+      reconcilePreviousWriter: () => processRecord.reconcile(),
+      persistentManagementClient: input.loopback,
+    });
+    const journal = new FileCredentialSwitchJournal(privateFiles, accountDirectory);
+    const runtimeGate = scope.gate;
+    const switcher = new CodexAccountSwitcher({
+      accounts: savedAccounts,
+      credentials,
+      runtime,
+      journal,
+      gate: runtimeGate,
+    });
+    const quotas = new ManagedCodexAccountQuotas({
+      files: privateFiles,
+      directory: accountDirectory,
+      credentials,
+      admitCredentialRefresh: (accountId) => {
+        if (savedAccounts.getCurrentAccountId() === accountId) {
+          throw new Error("Current Codex Account credentials are owned by the official backend");
+        }
+        return runtimeGate.admit();
+      },
+    });
+    const accounts = new ManagedCodexAccounts({
+      accounts: savedAccounts,
+      credentials,
+      runtime,
+      switcher,
+      journal,
+      gate: runtimeGate,
+      quotas,
+    });
+    await accounts.initialize();
+    const readyScope = scope;
+    return {
+      scope: readyScope,
+      accounts,
+      async close() {
+        try {
+          await readyScope.close();
+        } finally {
+          await credentialLease.release();
+        }
+      },
+    };
+  } catch (error) {
+    try {
+      await scope?.close();
+    } finally {
+      await credentialLease.release();
+    }
+    throw error;
+  }
 }
 
 async function prepareDelegationRuntime(input: {
@@ -154,7 +376,7 @@ export async function runHostRuntime(input: {
         })
       : undefined);
 
-  if (!isRemoteUnixListenerInvocation(input.arguments)) {
+  if (officialAccountDeploymentKind(input.arguments) === "managed-shared-home") {
     const remoteControlPlan = createRemoteControlAppServerPlan({
       arguments: input.arguments,
       environment: input.environment,
@@ -165,16 +387,28 @@ export async function runHostRuntime(input: {
       return prepareDelegationRuntime({
         environment,
         createHost: async (delegationEnvironment, onDelegationApi) => {
+          const managed = await createManagedOfficialRuntime({
+            stockCodexPath,
+            arguments: input.arguments,
+            environment: delegationEnvironment,
+            loopback: false,
+          }).catch((error: unknown) => unavailableOfficialRuntime(unavailableAccountReason(error)));
           const host = new AppServerHost({
             stockCodexPath,
             arguments: input.arguments,
             defaultAgent,
             environment: delegationEnvironment,
             ...installedHarnessPluginOptions(delegationEnvironment, false, input.hostRuntimeUrl),
+            accountControl: managed.accounts,
+            officialRuntimeScope: managed.scope,
             onDelegationApi,
             ...(updateCoordinator ? { updateCoordinator } : {}),
           });
-          return host.run();
+          try {
+            return await host.run();
+          } finally {
+            await managed.close();
+          }
         },
       });
     }
@@ -185,16 +419,12 @@ export async function runHostRuntime(input: {
         const officialPlan = createRemoteControlOfficialAppServerPlan(
           remoteControlPlan.officialArguments,
         );
-        const officialListeners = new AccountOfficialListeners((account) =>
-          createLoopbackOfficialAppServerListener({
-            stockCodexPath,
-            arguments: officialPlan.listenerArguments,
-            environment: officialAccountEnvironment(delegationEnvironment, account),
-            diagnosticOutput: process.stderr,
-          }),
-        );
-        const createOfficialConnection = async (account: CodexAccount) =>
-          createRemoteOfficialAppServerConnection(await officialListeners.endpoint(account));
+        const managed = await createManagedOfficialRuntime({
+          stockCodexPath,
+          arguments: officialPlan.listenerArguments,
+          environment: delegationEnvironment,
+          loopback: true,
+        }).catch((error: unknown) => unavailableOfficialRuntime(unavailableAccountReason(error)));
         const mappingStore = createProductionExternalThreadStore(delegationEnvironment);
         await mappingStore.initialize();
         const host = new AppServerHost({
@@ -205,7 +435,8 @@ export async function runHostRuntime(input: {
           ...installedHarnessPluginOptions(delegationEnvironment, false, input.hostRuntimeUrl),
           mappingStore,
           closeMappingStoreOnExit: false,
-          createOfficialConnection,
+          accountControl: managed.accounts,
+          officialRuntimeScope: managed.scope,
           onDelegationApi,
           ...(updateCoordinator ? { updateCoordinator } : {}),
         });
@@ -224,7 +455,8 @@ export async function runHostRuntime(input: {
               ...installedHarnessPluginOptions(delegationEnvironment, false, input.hostRuntimeUrl),
               mappingStore,
               closeMappingStoreOnExit: false,
-              createOfficialConnection,
+              accountControl: managed.accounts,
+              officialRuntimeScope: managed.scope,
               onDelegationApi: (api) => registry.register(api),
               ...(updateCoordinator ? { updateCoordinator } : {}),
             });
@@ -232,11 +464,6 @@ export async function runHostRuntime(input: {
         });
 
         try {
-          await officialListeners.endpoint({
-            codexHome: path.resolve(
-              delegationEnvironment.CODEX_HOME ?? path.join(homedir(), ".codex"),
-            ),
-          });
           await listener.listen();
           await publishRemoteControlAppServerDescriptor(remoteControlPlan);
           return await host.run();
@@ -245,7 +472,7 @@ export async function runHostRuntime(input: {
             await listener.close();
           } finally {
             try {
-              await officialListeners.close();
+              await managed.close();
             } finally {
               await mappingStore.close();
             }
@@ -274,6 +501,33 @@ export async function runHostRuntime(input: {
       });
       const mappingStore = createProductionExternalThreadStore(delegationEnvironment);
       await mappingStore.initialize();
+      const officialScope = new OfficialRuntimeScope({
+        diagnosticOutput: process.stderr,
+        createBackend: () =>
+          createSharedConnectionBackend(
+            () => createRemoteOfficialAppServerConnection(officialPlan.socketPath),
+            officialListener.closed,
+          ),
+      });
+      const accountControl = new SingleNativeCodexAccount(() => ({
+        version: 2,
+        currentAccountId: "00000000-0000-4000-8000-000000000001",
+        phase: officialScope.gate.phase,
+        revision: officialScope.gate.revision,
+        capabilities: {
+          manage: false,
+          switch: false,
+          login: false,
+          delete: false,
+          reason: "ssh-single-account",
+        },
+        accounts: [
+          {
+            accountId: "00000000-0000-4000-8000-000000000001",
+            label: "SSH Codex Account",
+          },
+        ],
+      }));
       const listener = createRemoteAppServerWebSocketListener({
         socketPath,
         diagnosticOutput: process.stderr,
@@ -289,8 +543,8 @@ export async function runHostRuntime(input: {
             ...installedHarnessPluginOptions(delegationEnvironment, true, input.hostRuntimeUrl),
             mappingStore,
             closeMappingStoreOnExit: false,
-            createOfficialConnection: () =>
-              createRemoteOfficialAppServerConnection(officialPlan.socketPath),
+            accountControl,
+            officialRuntimeScope: officialScope,
             onDelegationApi: (api) => registry.register(api),
             ...(updateCoordinator ? { updateCoordinator } : {}),
           });
@@ -308,6 +562,8 @@ export async function runHostRuntime(input: {
       try {
         await prepareRemoteAppServerSocketDirectory(socketPath);
         await officialListener.listen();
+        await officialScope.start();
+        officialScope.gate.initialized();
         await listener.listen();
         void officialListener.closed.then((result) => {
           if (stopping) return;
@@ -327,9 +583,13 @@ export async function runHostRuntime(input: {
           await listener.close();
         } finally {
           try {
-            await officialListener.close();
+            await officialScope.close();
           } finally {
-            await mappingStore.close();
+            try {
+              await officialListener.close();
+            } finally {
+              await mappingStore.close();
+            }
           }
         }
       }

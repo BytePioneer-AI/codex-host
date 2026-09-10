@@ -2396,12 +2396,14 @@ describe("AppServerHost HarnessAdapter projection", () => {
       },
     });
     session.appendText("Checking auth.");
-    await expect(
-      delegationApi.read({ threadId: started.threadId, view: "result" }),
-    ).resolves.toMatchObject({
-      status: "running",
-      progress: [expect.objectContaining({ text: "Checking auth." })],
-      result: { availability: "pending" },
+    await vi.waitFor(async () => {
+      await expect(
+        delegationApi.read({ threadId: started.threadId, view: "result" }),
+      ).resolves.toMatchObject({
+        status: "running",
+        progress: [expect.objectContaining({ text: "Checking auth." })],
+        result: { availability: "pending" },
+      });
     });
     session.succeedTurn();
     const completed = await fixture.collector.waitFor(

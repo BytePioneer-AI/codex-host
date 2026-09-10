@@ -200,6 +200,20 @@ describe("Codex Account routing persistence", () => {
     await expect(accounts.list()).resolves.toMatchObject([{ accountId: "account-a" }]);
   });
 
+  it("rolls back an in-memory binding when its persistence fails", async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), "codexhost-account-binding-test-"));
+    directories.push(directory);
+    const storeDirectory = path.join(directory, "store");
+    const threads = new ThreadAccountStore({ directory: storeDirectory });
+    await threads.initialize();
+    await threads.bind("thread-a", "account-a");
+
+    await rm(storeDirectory, { recursive: true });
+    await expect(threads.bind("thread-b", "account-a")).rejects.toThrow();
+    await expect(threads.getAccountId("thread-b")).resolves.toBeNull();
+    await expect(threads.getAccountId("thread-a")).resolves.toBe("account-a");
+  });
+
   it("removes Thread ownership bindings for a deleted Account", async () => {
     const directory = await mkdtemp(path.join(tmpdir(), "codexhost-account-binding-delete-test-"));
     directories.push(directory);

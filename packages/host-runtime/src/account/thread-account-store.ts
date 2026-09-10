@@ -60,7 +60,13 @@ export class ThreadAccountStore implements ThreadAccountStoreLike {
     }
     if (existing === accountId) return;
     this.#bindings.set(threadId, accountId);
-    await this.#persist();
+    try {
+      await this.#persist();
+    } catch (error) {
+      // Roll back the in-memory binding: it must not outlive its own failed persistence.
+      this.#bindings.delete(threadId);
+      throw error;
+    }
   }
 
   async listByAccount(accountId: string): Promise<string[]> {

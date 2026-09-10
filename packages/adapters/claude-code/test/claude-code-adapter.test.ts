@@ -4005,6 +4005,16 @@ describe("Claude Code HarnessAdapter", () => {
         type: "interaction.requested",
         request: { type: "planApproval", requestId: "exit-plan", plan },
       });
+      const planStarted = await nextEvent(iterator);
+      expect(planStarted).toMatchObject({
+        type: "item.started",
+        item: { type: "agentMessage", text: plan },
+      });
+      if (planStarted.type !== "item.started") throw new Error("Expected plan Item");
+      expect(await nextEvent(iterator)).toMatchObject({
+        type: "item.completed",
+        snapshot: { item: planStarted.item, outcome: { status: "succeeded" } },
+      });
       const interaction = await nextInteraction(iterator);
       expect(interaction).toMatchObject({
         type: "question",
@@ -4024,7 +4034,8 @@ describe("Claude Code HarnessAdapter", () => {
         ],
       });
       if (interaction.type !== "question") throw new Error("Expected a plan review Question");
-      expect(interaction.questions[0]?.prompt).toContain(plan);
+      expect(interaction.questions[0]?.prompt).not.toContain(plan);
+      expect(interaction.questions[0]?.prompt.length).toBeLessThan(300);
       expect(interaction.questions[0]?.prompt).toContain(
         "restore the permission mode used before planning",
       );

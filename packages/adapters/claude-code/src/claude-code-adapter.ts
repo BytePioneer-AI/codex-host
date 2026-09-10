@@ -1697,6 +1697,21 @@ class ClaudeHarnessSession implements HarnessSession {
       };
       pending = { type: "approval", interaction, request };
     } else if (request.type === "planApproval") {
+      // Question prompts are plain text in a fixed composer panel. Keep the
+      // unabridged Markdown in the transcript so long plans remain readable.
+      if (request.plan) {
+        const item: HostAgentMessageItem = {
+          type: "agentMessage",
+          itemId: hostItemIdSchema.parse(this.#randomUUID()),
+          text: request.plan,
+        };
+        this.#event({ type: "item.started", turnId: active.command.turnId, item });
+        this.#event({
+          type: "item.completed",
+          turnId: active.command.turnId,
+          snapshot: { item, outcome: { status: "succeeded" } },
+        });
+      }
       pending = {
         type: "planApproval",
         interaction: createClaudePlanReview(request, interactionId, active.command.turnId),

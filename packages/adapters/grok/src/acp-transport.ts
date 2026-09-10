@@ -280,6 +280,31 @@ function processIsSame(pid: number, startToken: string): boolean {
   return processStartToken(pid) === startToken;
 }
 
+function processGroupIsAlive(pgid: number): boolean {
+  if (process.platform === "win32") return processIsAlive(Math.abs(pgid));
+  try {
+    process.kill(pgid, 0);
+    return true;
+  } catch (error) {
+    return isRecord(error) && error.code === "EPERM" ? true : false;
+  }
+}
+
+function signalProcessGroup(pgid: number, signal: NodeJS.Signals): void {
+  if (process.platform === "win32") {
+    spawnSync("taskkill.exe", ["/pid", String(Math.abs(pgid)), "/t", "/f"], {
+      stdio: "ignore",
+      windowsHide: true,
+    });
+    return;
+  }
+  try {
+    process.kill(pgid, signal);
+  } catch (error) {
+    if (!isRecord(error) || error.code !== "ESRCH") throw error;
+  }
+}
+
 function signalProcessTree(child: ChildProcessWithoutNullStreams, signal: NodeJS.Signals): void {
   if (!child.pid) return;
   if (process.platform === "win32") {
@@ -962,18 +987,23 @@ export class GrokAcpTransport {
     const owned = this.ownedProcess();
     await this.close();
     if (!owned) return { quiescence: "unknown" };
-    const stillOwned = processIsSame(owned.pid, this.#owned?.startToken ?? "");
-    if (stillOwned && processIsAlive(owned.pid)) {
-      return {
-        quiescence: "unknown",
-        proof: { pid: owned.pid, pgid: owned.pgid, scope: "grok-acp-child" },
-      };
+    const proof = { pid: owned.pid, pgid: owned.pgid, scope: "grok-acp-child" };
+    const groupAlive = () =>
+      processGroupIsAlive(owned.pgid) || processIsSame(owned.pid, this.#owned?.startToken ?? "");
+    if (groupAlive()) {
+      signalProcessGroup(owned.pgid, "SIGTERM");
+      const deadline = Date.now() + Math.max(1, timeoutMs);
+      while (Date.now() < deadline && groupAlive()) {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      if (groupAlive()) signalProcessGroup(owned.pgid, "SIGKILL");
+      const killDeadline = Date.now() + Math.max(1, timeoutMs);
+      while (Date.now() < killDeadline && groupAlive()) {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
     }
-    void timeoutMs;
-    return {
-      quiescence: "confirmed",
-      proof: { pid: owned.pid, pgid: owned.pgid, scope: "grok-acp-child" },
-    };
+    if (groupAlive()) return { quiescence: "unknown", proof };
+    return { quiescence: "confirmed", proof };
   }
 
   cancel(): Promise<void> {
@@ -998,11 +1028,17 @@ export class GrokAcpTransport {
       await connection.closeSession({ sessionId: this.#sessionId }).catch(() => undefined);
     }
     if (child?.stdin.writable) child.stdin.end();
-    if (child && !(await waitForExit(child, this.#options.closeTimeoutMs))) {
-      signalProcessTree(child, "SIGTERM");
-      if (!(await waitForExit(child, this.#options.closeTimeoutMs))) {
-        signalProcessTree(child, "SIGKILL");
-        await waitForExit(child, this.#options.closeTimeoutMs);
+    if (child) {
+      const leaderExited = await waitForExit(child, this.#options.closeTimeoutMs);
+      if (!leaderExited) {
+        signalProcessTree(child, "SIGTERM");
+        if (!(await waitForExit(child, this.#options.closeTimeoutMs))) {
+          signalProcessTree(child, "SIGKILL");
+          await waitForExit(child, this.#options.closeTimeoutMs);
+        }
+      } else if (child.pid) {
+        signalProcessGroup(process.platform === "win32" ? child.pid : -child.pid, "SIGTERM");
+        signalProcessGroup(process.platform === "win32" ? child.pid : -child.pid, "SIGKILL");
       }
     }
     this.#closed = true;

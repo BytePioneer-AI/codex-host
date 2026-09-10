@@ -456,8 +456,13 @@ export class MappingStore {
     hostTurnId: HostTurnId,
   ): Promise<StoredThreadRecordV1> {
     return this.#update(hostThreadId, (current) => {
-      const pending = current.pendingHostTurnIds ?? [];
-      if (pending.includes(hostTurnId)) return null;
+      const mapped = new Set(current.turnMappings.map((mapping) => mapping.hostTurnId));
+      if (mapped.has(hostTurnId)) return null;
+      const pending = (current.pendingHostTurnIds ?? []).filter((id) => !mapped.has(id));
+      if (pending.includes(hostTurnId)) {
+        if (pending.length === (current.pendingHostTurnIds ?? []).length) return null;
+        return { ...current, pendingHostTurnIds: pending };
+      }
       return { ...current, pendingHostTurnIds: [...pending, hostTurnId] };
     });
   }
@@ -502,7 +507,9 @@ export class MappingStore {
     }
     if (current.status === status) return cloneRecord(current);
     const terminal = new Set<DelegationStatus>(["completed", "failed", "interrupted"]);
-    if (terminal.has(current.status) && !terminal.has(status)) return cloneRecord(current);
+    if (terminal.has(current.status) && !terminal.has(status) && status !== "running") {
+      return cloneRecord(current);
+    }
     const next = storedDelegationRecordV1Schema.parse({
       ...current,
       revision: current.revision + 1,

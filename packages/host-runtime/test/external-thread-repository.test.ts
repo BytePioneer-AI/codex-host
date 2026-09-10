@@ -230,4 +230,78 @@ describe("ExternalThreadRepository", () => {
     );
     await repository.close();
   });
+
+  it("drops pending Host Turn IDs once persistTurn has bound a native mapping", async () => {
+    const directory = await temporaryStoreDirectory();
+    const store = new MappingStore({ directory });
+    const repository = new ExternalThreadRepository(store);
+    await repository.initialize();
+    await store.createProvisional({
+      hostThreadId,
+      createRequestId: "create-pending",
+      harnessId,
+      cwd: "/synthetic",
+      title: "Claude Thread",
+      transportModelId: "codexhost/claude-code-native",
+      ephemeral: false,
+      historyMode: "legacy",
+    });
+    const pendingId = hostTurnIdSchema.parse("host-pending");
+    let record = await store.commitReady({
+      hostThreadId,
+      nativeSessionRef,
+      turnMappings: [],
+    });
+    record = await repository.addPendingHostTurn(record.hostThreadId, pendingId);
+    record = await repository.persistTurn(
+      record,
+      pendingId,
+      snapshotTurn("native-a").nativeTurnRef,
+    );
+    expect(record.pendingHostTurnIds).toEqual([pendingId]);
+    expect(record.turnMappings).toHaveLength(1);
+
+    const aligned = await repository.alignSnapshot(record, {
+      turns: [snapshotTurn("native-a")],
+    });
+    expect(aligned.record.turnMappings[0]?.hostTurnId).toBe(pendingId);
+    expect(aligned.record.pendingHostTurnIds).toBeUndefined();
+    await repository.close();
+  });
+
+  it("does not reuse a persist-bound pending ID for a later Native Turn", async () => {
+    const directory = await temporaryStoreDirectory();
+    const store = new MappingStore({ directory });
+    const repository = new ExternalThreadRepository(store);
+    await repository.initialize();
+    await store.createProvisional({
+      hostThreadId,
+      createRequestId: "create-pending-shift",
+      harnessId,
+      cwd: "/synthetic",
+      title: "Claude Thread",
+      transportModelId: "codexhost/claude-code-native",
+      ephemeral: false,
+      historyMode: "legacy",
+    });
+    const pendingId = hostTurnIdSchema.parse("host-pending");
+    let record = await store.commitReady({
+      hostThreadId,
+      nativeSessionRef,
+      turnMappings: [],
+    });
+    record = await repository.addPendingHostTurn(record.hostThreadId, pendingId);
+    record = await repository.persistTurn(
+      record,
+      pendingId,
+      snapshotTurn("native-a").nativeTurnRef,
+    );
+    const aligned = await repository.alignSnapshot(record, {
+      turns: [snapshotTurn("native-a"), snapshotTurn("native-b")],
+    });
+    expect(aligned.record.turnMappings[0]?.hostTurnId).toBe(pendingId);
+    expect(aligned.record.turnMappings[1]?.hostTurnId).not.toBe(pendingId);
+    expect(aligned.record.pendingHostTurnIds).toBeUndefined();
+    await repository.close();
+  });
 });

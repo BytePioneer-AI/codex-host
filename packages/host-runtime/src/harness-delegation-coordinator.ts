@@ -150,6 +150,7 @@ export class HarnessDelegationCoordinator {
     { input: DelegationStartInput; promise: Promise<DelegationStartResult> }
   >();
   readonly #inflightSends = new Map<string, Promise<ThreadSendResult>>();
+  readonly #sendResults = new Map<string, ThreadSendResult>();
 
   constructor(input: {
     adapters: Map<ExternalHarnessId, HarnessAdapter>;
@@ -438,14 +439,25 @@ export class HarnessDelegationCoordinator {
     if (!input.message?.trim()) {
       throw new DelegationControlError("INVALID_ARGUMENT", "Message must not be empty");
     }
-    if (input.requestId) {
-      const current = this.#inflightSends.get(`${input.threadId}:${input.requestId}`);
+    const key = input.requestId ? `${input.threadId}:${input.requestId}` : undefined;
+    if (key) {
+      const remembered = this.#sendResults.get(key);
+      if (remembered) {
+        if (this.#externalRuntime.get(input.threadId)) return remembered;
+        this.#sendResults.delete(key);
+      }
+      const current = this.#inflightSends.get(key);
       if (current) return current;
     }
-    const pending = this.#deliverSend(input).finally(() => {
-      if (input.requestId) this.#inflightSends.delete(`${input.threadId}:${input.requestId}`);
-    });
-    if (input.requestId) this.#inflightSends.set(`${input.threadId}:${input.requestId}`, pending);
+    const pending = this.#deliverSend(input)
+      .then((result) => {
+        if (key) this.#sendResults.set(key, result);
+        return result;
+      })
+      .finally(() => {
+        if (key) this.#inflightSends.delete(key);
+      });
+    if (key) this.#inflightSends.set(key, pending);
     return pending;
   }
 
@@ -868,14 +880,21 @@ export class HarnessDelegationCoordinator {
       return { ...snapshot, timedOut: snapshot.timedOut };
     while (Date.now() < deadline) {
       const remaining = deadline - Date.now();
+      const waiters: Promise<unknown>[] = [];
+      let hasNonExternal = false;
+      for (const target of input.targets) {
+        const resolution = await this.#externalRuntime.resolve(target.threadId).catch(() => null);
+        if (resolution && resolution.kind === "external") {
+          waiters.push(
+            resolution.thread.changes.wait(resolution.thread.changes.revision, remaining),
+          );
+        } else {
+          hasNonExternal = true;
+        }
+      }
       await Promise.race([
-        delay(remaining),
-        ...input.targets.map(async (target) => {
-          const resolution = await this.#externalRuntime.resolve(target.threadId).catch(() => null);
-          if (resolution && resolution.kind === "external") {
-            await resolution.thread.changes.wait(resolution.thread.changes.revision, remaining);
-          }
-        }),
+        delay(hasNonExternal ? Math.min(100, remaining) : remaining),
+        ...waiters,
       ]);
       snapshot = await collect();
       if (!snapshot.timedOut) return snapshot;
@@ -925,6 +944,17 @@ export class HarnessDelegationCoordinator {
         { expectedTurnId: input.expectedTurnId, activeTurnId: thread.activeTurnId },
       );
     }
+    if (input.expectedTurnId && !thread.running && !thread.activeTurnId) {
+      const last = thread.turns.at(-1);
+      const lastId = typeof last?.id === "string" ? last.id : undefined;
+      if (lastId && lastId !== input.expectedTurnId) {
+        throw new DelegationControlError(
+          "STALE_TURN",
+          "expected-turn does not match the latest Turn",
+          { expectedTurnId: input.expectedTurnId, latestTurnId: lastId },
+        );
+      }
+    }
     if (thread.running || thread.activeTurnId) {
       return {
         threadId: thread.id,
@@ -942,7 +972,7 @@ export class HarnessDelegationCoordinator {
       quiescence = stopped.quiescence;
       proof = stopped.proof;
     }
-    if (quiescence !== "confirmed" && releasable) {
+    if (quiescence !== "confirmed") {
       return {
         threadId: thread.id,
         released: false,
@@ -952,12 +982,13 @@ export class HarnessDelegationCoordinator {
       };
     }
     await thread.session.close().catch(() => undefined);
+    this.#forgetSendResults(thread.id);
     this.#externalRuntime.remove(thread.id);
     return {
       threadId: thread.id,
       released: true,
       busy: false,
-      quiescence: releasable ? quiescence : "unsupported",
+      quiescence,
       ...(proof ? { proof } : {}),
     };
   }
@@ -1146,6 +1177,16 @@ export class HarnessDelegationCoordinator {
         outcome: "error",
         error: { code: normalized.code, message: normalized.message },
       };
+    }
+  }
+
+  #forgetSendResults(threadId: string): void {
+    const prefix = `${threadId}:`;
+    for (const key of [...this.#sendResults.keys()]) {
+      if (key.startsWith(prefix)) this.#sendResults.delete(key);
+    }
+    for (const key of [...this.#inflightSends.keys()]) {
+      if (key.startsWith(prefix)) this.#inflightSends.delete(key);
     }
   }
 }

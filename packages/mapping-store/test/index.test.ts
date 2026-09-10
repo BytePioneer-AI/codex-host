@@ -262,9 +262,13 @@ describe("mapping-store package", () => {
     });
     await expect(second.getThread(threadId)).resolves.not.toHaveProperty("delegation");
     await second.setDelegationStatus(delegationId, "completed");
-    await second.setDelegationStatus(delegationId, "running");
+    await second.setDelegationStatus(delegationId, "creating");
     await expect(second.getDelegationByChild(childThreadId)).resolves.toMatchObject({
       status: "completed",
+    });
+    await second.setDelegationStatus(delegationId, "running");
+    await expect(second.getDelegationByChild(childThreadId)).resolves.toMatchObject({
+      status: "running",
     });
     await second.close();
   });

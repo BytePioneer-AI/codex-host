@@ -492,7 +492,10 @@ export class ExternalThreadRepository {
         (mapping) => [nativeTurnKey(mapping.nativeTurnRef), mapping] as const,
       ),
     );
-    const pendingHostTurnIds = [...(record.pendingHostTurnIds ?? [])];
+    const alreadyMappedHostIds = new Set(record.turnMappings.map((mapping) => mapping.hostTurnId));
+    const pendingHostTurnIds = [...(record.pendingHostTurnIds ?? [])].filter(
+      (id) => !alreadyMappedHostIds.has(id),
+    );
     const aligned = snapshot.turns.map((turn) => {
       const existing = mappingsByNative.get(nativeTurnKey(turn.nativeTurnRef));
       const mapping =
@@ -511,6 +514,8 @@ export class ExternalThreadRepository {
         },
       };
     });
+    const mappedHostTurnIds = new Set(aligned.map(({ mapping }) => mapping.hostTurnId));
+    const remainingPending = pendingHostTurnIds.filter((id) => !mappedHostTurnIds.has(id));
 
     const orderedMappings = aligned.map(({ mapping }) => mapping);
     const mappingsChanged =
@@ -522,10 +527,10 @@ export class ExternalThreadRepository {
     let nextRecord = mappingsChanged
       ? await this.store.reconcileTurnMappings(record.hostThreadId, orderedMappings)
       : record;
-    if (JSON.stringify(pendingHostTurnIds) !== JSON.stringify(record.pendingHostTurnIds ?? [])) {
+    if (JSON.stringify(remainingPending) !== JSON.stringify(record.pendingHostTurnIds ?? [])) {
       nextRecord = await this.store.setPendingHostTurnIds(
         nextRecord.hostThreadId,
-        pendingHostTurnIds,
+        remainingPending,
       );
     }
     return {

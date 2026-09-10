@@ -319,9 +319,15 @@ export function officialEnvironment(source: NodeJS.ProcessEnv): NodeJS.ProcessEn
     "CODEXHOST_NPM_LAUNCHER_PATH",
     "CODEXHOST_NPM_PACKAGE_ROOT",
   ]);
-  return Object.fromEntries(
+  const environment = Object.fromEntries(
     Object.entries(source).filter(([key]) => !internal.has(key) || allowed.has(key)),
   );
+  // Bundled MCP launchers resolve the signed Node runtime beside the official
+  // CLI. Removing this path makes them fall back to an unsigned system Node.
+  if (source.CODEXHOST_STOCK_CODEX_PATH) {
+    environment.CODEX_CLI_PATH = source.CODEXHOST_STOCK_CODEX_PATH;
+  }
+  return environment;
 }
 
 export function officialAccountEnvironment(

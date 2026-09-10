@@ -586,7 +586,13 @@ export function decodeExternalTransportModel(
 
 export function decodeCreateRoute(request: JsonRpcRequest): CreateRoute | null {
   if (request.method !== "thread/start") return null;
-  if (!isJsonObject(request.params) || typeof request.params.model !== "string") {
+  if (!isJsonObject(request.params)) {
+    throw new Error("thread/start params must be an object");
+  }
+  // A missing/null Model asks official Codex to resolve its configured default.
+  // There is no external transport carrier to route in that case.
+  if (request.params.model === undefined || request.params.model === null) return null;
+  if (typeof request.params.model !== "string") {
     throw new Error("thread/start params.model must be text");
   }
 

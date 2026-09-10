@@ -10,7 +10,9 @@ import {
   harnessThinkingOptionIdSchema,
   hostTurnIdSchema,
 } from "@codexhost/shared-contracts";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+
+import * as nativeTrajectory from "../src/subagent-transcript.js";
 
 import {
   ANTIGRAVITY_WORKSPACE_FILE_INSTRUCTION,
@@ -490,7 +492,10 @@ describe("Antigravity Adapter", () => {
   });
 
   describe("Session Lifecycle & Tool Streaming", () => {
-    async function fakeStreamingAgy(streamLines: readonly string[]): Promise<{
+    async function fakeStreamingAgy(
+      streamLines: readonly string[],
+      writeLog = false,
+    ): Promise<{
       command: string;
       cwd: string;
       cleanup(): Promise<void>;
@@ -509,6 +514,10 @@ if (process.argv.includes("models")) {
   process.exit(0);
 }
 for (const line of lines) {
+  if (${writeLog} && process.argv.includes("--log-file")) {
+    require("node:fs").writeFileSync(process.argv[process.argv.indexOf("--log-file") + 1],
+      "Language server listening on random port at 12345 for HTTPS (gRPC)");
+  }
   process.stdout.write(line + "\\n");
 }
 `;
@@ -729,6 +738,73 @@ for (const line of lines) {
         await cleanup();
       }
     });
+
+    it.each([true, false])(
+      "checks native evidence before correcting a historical ERROR (%s)",
+      async (available) => {
+        const rpc = vi.spyOn(nativeTrajectory, "subagentRpc").mockImplementation(async () => {
+          if (!available) throw new Error("native trajectory unavailable");
+          return {
+            status: "CASCADE_RUN_STATUS_IDLE",
+            trajectory: {
+              cascadeId: "conv-history",
+              steps: ["USER_INPUT", "ERROR", "USER_INPUT", "PLANNER_RESPONSE"].map((type) => ({
+                type: `CORTEX_STEP_TYPE_${type}`,
+                status: "CORTEX_STEP_STATUS_DONE",
+              })),
+            },
+          };
+        });
+        const { command, cwd, cleanup } = await fakeStreamingAgy(
+          [
+            JSON.stringify({ event: "init", conversation_id: "conv-history" }),
+            JSON.stringify({
+              event: "step_update",
+              step_update: {
+                conversation_id: "conv-history",
+                step_index: 3,
+                state: "DONE",
+                step_type: "agent_response",
+                text: "Hello!",
+              },
+            }),
+            JSON.stringify({
+              event: "result",
+              result: {
+                conversation_id: "conv-history",
+                status: "ERROR",
+                response: "Hello!",
+                num_turns: 2,
+              },
+            }),
+          ],
+          true,
+        );
+        const adapter = new AntigravityAdapter({ command });
+        try {
+          const opened = await adapter.open({ kind: "create", cwd });
+          if (!opened.ok) throw new Error(opened.error.message);
+          const session = opened.value;
+          const iterator = session.outputs[Symbol.asyncIterator]();
+          await session.execute({
+            type: "turn.start",
+            turnId: hostTurnIdSchema.parse("history-error"),
+            input: [{ type: "text", text: "hi" }],
+          });
+          let event: HostEvent;
+          do {
+            event = await nextEvent(iterator);
+          } while (event.type !== "turn.completed");
+          expect(event).toMatchObject({ outcome: { status: available ? "succeeded" : "failed" } });
+          expect(rpc).toHaveBeenCalledWith(12345, "conv-history", "GetCascadeTrajectory");
+          await session.close();
+        } finally {
+          rpc.mockRestore();
+          await adapter.close();
+          await cleanup();
+        }
+      },
+    );
 
     it("emits turn.completed with failed outcome on CLI error", async () => {
       const streamLines = [

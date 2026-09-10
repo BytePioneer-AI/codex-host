@@ -100,6 +100,12 @@ describe("external Harness transport model routing", () => {
     expect(decodeCreateRoute({ id: 4, method: "model/list", params: {} })).toBeNull();
   });
 
+  it("leaves default Model resolution to official Codex", () => {
+    for (const params of [{}, { model: null }, { config: { model: "configured-model" } }]) {
+      expect(decodeCreateRoute({ id: 3, method: "thread/start", params })).toBeNull();
+    }
+  });
+
   it("round-trips a bounded opaque selected Pi Model Ref", () => {
     const model = harnessModelRefSchema.parse({ id: "pi-model-v1.cHJvdmlkZXItaWQ" });
     const transportModelId = encodePiTransportModel(model);

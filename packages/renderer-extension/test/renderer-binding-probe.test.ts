@@ -33,6 +33,7 @@ import {
   shouldRetryExternalThreadUsage,
   shouldTransferComposerState,
 } from "../src/renderer-binding-probe.js";
+import { hmHarnessTransportModelId } from "../src/versioned-renderer-adapter.js";
 import {
   editorForElement,
   isComposerInputIntent,
@@ -172,6 +173,7 @@ describe("Renderer Composer DOM behavior", () => {
           grok: undefined,
           omp: undefined,
           antigravity: undefined,
+          hmharness: undefined,
           "kiro-cli": undefined,
         },
       ),
@@ -200,6 +202,7 @@ describe("Renderer Composer DOM behavior", () => {
           grok: undefined,
           omp: undefined,
           antigravity: undefined,
+          hmharness: undefined,
           "kiro-cli": undefined,
         },
       ),
@@ -228,6 +231,7 @@ describe("Renderer Composer DOM behavior", () => {
           grok: undefined,
           omp: undefined,
           antigravity: undefined,
+          hmharness: undefined,
           "kiro-cli": undefined,
         },
       ),
@@ -245,6 +249,7 @@ describe("Renderer Composer DOM behavior", () => {
           grok: "checking",
           omp: "checking",
           antigravity: "checking",
+          hmharness: "checking",
         },
         {
           pi: undefined,
@@ -254,10 +259,20 @@ describe("Renderer Composer DOM behavior", () => {
           grok: undefined,
           omp: undefined,
           antigravity: undefined,
+          hmharness: undefined,
           "kiro-cli": undefined,
         },
       ),
-    ).toEqual(["pi", "claude-code", "deepseek-harness", "opencode", "grok", "omp", "antigravity"]);
+    ).toEqual([
+      "pi",
+      "claude-code",
+      "deepseek-harness",
+      "opencode",
+      "grok",
+      "omp",
+      "antigravity",
+      "hmharness",
+    ]);
 
     expect(
       passiveHarnessAvailabilityAgents(
@@ -282,6 +297,7 @@ describe("Renderer Composer DOM behavior", () => {
           grok: undefined,
           omp: undefined,
           antigravity: undefined,
+          hmharness: undefined,
           "kiro-cli": undefined,
         },
       ),
@@ -310,6 +326,7 @@ describe("Renderer Composer DOM behavior", () => {
           grok: undefined,
           omp: undefined,
           antigravity: undefined,
+          hmharness: undefined,
           "kiro-cli": undefined,
         },
       ),
@@ -1089,6 +1106,20 @@ describe("Renderer Composer DOM behavior", () => {
       model: { id: "gpt-5.6-sol" },
       thinkingOptionId: "high",
       permissionModeId: "configured",
+    });
+    expect(
+      restoredThreadOwnership({
+        owner: "external",
+        harnessId: "hmharness",
+        transportModelId: hmHarnessTransportModelId(
+          harnessModelRefSchema.parse({ id: "hmharness-configured-provider" }),
+        ),
+        history: { fork: false, forkAcrossCwd: false, rollbackLastTurn: false },
+        locked: true,
+      }),
+    ).toEqual({
+      agent: "hmharness",
+      model: { id: "hmharness-configured-provider" },
     });
     expect(() =>
       restoredThreadOwnership({

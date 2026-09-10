@@ -150,6 +150,7 @@ describe("production Desktop Controller", () => {
         "grok",
         "omp",
         "antigravity",
+        "hmharness",
         "kiro-cli",
       ],
       timeoutMs: 90_000,

@@ -3,6 +3,7 @@ import {
   harnessIdSchema,
   harnessModelRefSchema,
   harnessPermissionModeIdSchema,
+  harnessPluginIdSchema,
   harnessThinkingOptionIdSchema,
   hostThreadIdSchema,
   type ExternalThreadForkParams,
@@ -46,6 +47,7 @@ export const OMP_TRANSPORT_MODEL_ID = "codexhost/omp-native";
 export const OMP_TRANSPORT_MODEL_PREFIX = `${OMP_TRANSPORT_MODEL_ID}@`;
 export const ANTIGRAVITY_TRANSPORT_MODEL_ID = "codexhost/antigravity-native";
 export const ANTIGRAVITY_TRANSPORT_MODEL_PREFIX = `${ANTIGRAVITY_TRANSPORT_MODEL_ID}@`;
+export const HMHARNESS_PLUGIN_ID = "hmharness";
 
 export type RendererAdapterState = "installing" | "ready" | "unsupported";
 
@@ -145,6 +147,7 @@ function transportModelIdForAgent(agent: RendererAgent): string | null {
   if (agent === "grok") return GROK_TRANSPORT_MODEL_ID;
   if (agent === "omp") return OMP_TRANSPORT_MODEL_ID;
   if (agent === "antigravity") return ANTIGRAVITY_TRANSPORT_MODEL_ID;
+  if (agent === "hmharness") return hmHarnessTransportModelId();
   if (agent === "kiro-cli") return encodeHarnessPluginRoute({ harnessId: KIRO_CLI_HARNESS_ID });
   return null;
 }
@@ -214,6 +217,23 @@ export function antigravityTransportModelId(
     return `${ANTIGRAVITY_TRANSPORT_MODEL_PREFIX}${parsedModel.id}@${parsedPermission ?? ""}@${parsedThinking}`;
   }
   return `${ANTIGRAVITY_TRANSPORT_MODEL_PREFIX}${parsedModel.id}${parsedPermission ? `@${parsedPermission}` : ""}`;
+}
+
+export function hmHarnessTransportModelId(
+  model?: HarnessModelRef,
+  thinkingOptionId?: HarnessThinkingOptionId,
+  permissionModeId?: HarnessPermissionModeId,
+): string {
+  return encodeHarnessPluginRoute({
+    harnessId: harnessPluginIdSchema.parse(HMHARNESS_PLUGIN_ID),
+    ...(model ? { model: harnessModelRefSchema.parse(model) } : {}),
+    ...(thinkingOptionId
+      ? { thinkingOptionId: harnessThinkingOptionIdSchema.parse(thinkingOptionId) }
+      : {}),
+    ...(permissionModeId
+      ? { permissionModeId: harnessPermissionModeIdSchema.parse(permissionModeId) }
+      : {}),
+  });
 }
 
 export function openCodeTransportModelId(
@@ -912,6 +932,12 @@ export function modelSelectionForAgent(
   thinkingOptionId?: HarnessThinkingOptionId,
   permissionModeId?: HarnessPermissionModeId,
 ): ModelPowerSelection | null {
+  if (agent === "hmharness") {
+    return {
+      model: hmHarnessTransportModelId(model, thinkingOptionId, permissionModeId),
+      reasoningEffort,
+    };
+  }
   const transportModelId =
     agent === "pi"
       ? piTransportModelId(model, thinkingOptionId)

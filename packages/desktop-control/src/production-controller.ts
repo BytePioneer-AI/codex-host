@@ -251,6 +251,7 @@ export async function runDesktopController(
           "grok",
           "omp",
           "antigravity",
+          "hmharness",
           "kiro-cli",
         ],
         timeoutMs: PRODUCTION_INSTALL_TIMEOUT_MS,

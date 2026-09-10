@@ -95,6 +95,7 @@ const externalHarnessIds = {
   grok: harnessIdSchema.parse("grok"),
   omp: harnessIdSchema.parse("omp"),
   antigravity: harnessIdSchema.parse("antigravity"),
+  hmharness: harnessIdSchema.parse("hmharness"),
   "kiro-cli": harnessIdSchema.parse("kiro-cli"),
 } as const;
 
@@ -106,6 +107,7 @@ const externalAgents: readonly ExternalRendererAgent[] = [
   "grok",
   "omp",
   "antigravity",
+  "hmharness",
   "kiro-cli",
 ];
 type HarnessAvailability = Partial<Record<ExternalRendererAgent, RendererAgentAvailability>>;
@@ -457,6 +459,23 @@ export function restoredThreadOwnership(inspection: ThreadInspection): RestoredT
       ...(permissionModeId ? { permissionModeId } : {}),
     };
   }
+  if (inspection.harnessId === "hmharness") {
+    const transportSelection = decodeHarnessPluginRoute(inspection.transportModelId);
+    if (!transportSelection || transportSelection.harnessId !== "hmharness") {
+      throw new Error("HMHarness Thread reported an incompatible transport Model");
+    }
+    const model = inspection.effectiveModel ?? transportSelection.model;
+    const thinkingOptionId =
+      selectableThinkingOptionId(inspection) ?? transportSelection.thinkingOptionId;
+    const permissionModeId =
+      inspection.effectivePermissionModeId ?? transportSelection.permissionModeId;
+    return {
+      agent: "hmharness",
+      ...(model ? { model } : {}),
+      ...(thinkingOptionId ? { thinkingOptionId } : {}),
+      ...(permissionModeId ? { permissionModeId } : {}),
+    };
+  }
   if (inspection.harnessId === "kiro-cli") {
     const route = decodeHarnessPluginRoute(inspection.transportModelId);
     if (!route || route.harnessId !== "kiro-cli") {
@@ -705,6 +724,7 @@ export function installRendererBindingProbe(
       grok: undefined,
       omp: undefined,
       antigravity: undefined,
+      hmharness: undefined,
       "kiro-cli": undefined,
     },
     webUi: Object.fromEntries(

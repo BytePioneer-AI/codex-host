@@ -13,6 +13,7 @@ export const KNOWN_RENDERER_AGENTS = [
   "grok",
   "omp",
   "antigravity",
+  "hmharness",
   "kiro-cli",
 ] as const;
 export const DEFAULT_RENDERER_AGENTS = KNOWN_RENDERER_AGENTS;
@@ -40,6 +41,7 @@ export interface DraftComposerState {
   ompThinkingOptionId?: HarnessThinkingOptionId;
   antigravityModel?: HarnessModelRef;
   antigravityThinkingOptionId?: HarnessThinkingOptionId;
+  hmHarnessModel?: HarnessModelRef;
   kiroCliModel?: HarnessModelRef;
   kiroCliThinkingOptionId?: HarnessThinkingOptionId;
   permissionModeByAgent?: Partial<Record<ExternalRendererAgent, HarnessPermissionModeId>>;
@@ -209,6 +211,7 @@ export class DraftAgentController<Composer extends object> {
     if (agent === "grok" && model) state.grokModel = model;
     if (agent === "omp" && model) state.ompModel = model;
     if (agent === "antigravity" && model) state.antigravityModel = model;
+    if (agent === "hmharness" && model) state.hmHarnessModel = model;
     if (agent === "kiro-cli" && model) state.kiroCliModel = model;
     if (agent === "pi" && thinkingOptionId) state.piThinkingOptionId = thinkingOptionId;
     else if (agent === "pi") delete state.piThinkingOptionId;
@@ -238,6 +241,7 @@ export class DraftAgentController<Composer extends object> {
         "grok",
         "omp",
         "antigravity",
+        "hmharness",
         "kiro-cli",
       ] as const) {
         const current = state.permissionModeByAgent?.[candidate];
@@ -262,6 +266,7 @@ export class DraftAgentController<Composer extends object> {
     if (agent === "grok") return state.grokModel;
     if (agent === "omp") return state.ompModel;
     if (agent === "antigravity") return state.antigravityModel;
+    if (agent === "hmharness") return state.hmHarnessModel;
     if (agent === "kiro-cli") return state.kiroCliModel;
     return undefined;
   }
@@ -314,6 +319,7 @@ export class DraftAgentController<Composer extends object> {
     else if (agent === "grok") state.grokModel = model;
     else if (agent === "omp") state.ompModel = model;
     else if (agent === "antigravity") state.antigravityModel = model;
+    else if (agent === "hmharness") state.hmHarnessModel = model;
     else if (agent === "kiro-cli") state.kiroCliModel = model;
     return state;
   }

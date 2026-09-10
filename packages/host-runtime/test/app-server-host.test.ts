@@ -51,6 +51,7 @@ import {
   type HostUpdateCoordinator,
 } from "../src/index.js";
 import type { OfficialAppServerConnection } from "../src/official-app-server-connection.js";
+import { HMHarnessAdapter } from "@codexhost/adapter-hmharness";
 
 class FakeOfficialProcess extends EventEmitter {
   readonly stdin = new PassThrough();
@@ -6279,6 +6280,63 @@ describe("AppServerHost HarnessAdapter projection", () => {
       fixture.collector.waitFor((message) => requestId(message, 4)),
     ).resolves.toMatchObject({ result: { thread: { status: { type: "idle" } } } });
     await stopFixture(fixture);
+  });
+
+  it("persists and idles an HMHarness streaming Turn", async () => {
+    const directory = mkdtempSync(path.join(tmpdir(), "codexhost-hmharness-host-"));
+    const hmAdapter = new HMHarnessAdapter(
+      { command: process.execPath, environment: { PATH: process.env.PATH } },
+      {
+        runBridge: async (input) => {
+          if (input.arguments.includes("providers")) {
+            return {
+              stdout: `${JSON.stringify({
+                version: "0.5.2",
+                chat: "agnes",
+                providers: [{ name: "agnes", model: "agnes-model", purposes: ["chat"] }],
+              })}\n`,
+              stderr: "",
+              exitCode: 0,
+            };
+          }
+          input.onStdoutLine?.(JSON.stringify({ type: "delta", text: "partial " }));
+          input.onStdoutLine?.(JSON.stringify({ type: "delta", text: "progress" }));
+          return {
+            stdout:
+              [
+                JSON.stringify({ type: "delta", text: "partial " }),
+                JSON.stringify({ type: "delta", text: "progress" }),
+                JSON.stringify({ text: "HMH-DONE" }),
+              ].join("\n") + "\n",
+            stderr: "",
+            exitCode: 0,
+          };
+        },
+      },
+    );
+    const fixture = createFixture({
+      mappingStoreDirectory: directory,
+      externalAdapters: new Map([
+        [harnessIdSchema.parse("hmharness"), hmAdapter],
+      ]) as unknown as ReadonlyMap<ExternalHarnessId, FakeHarnessAdapter>,
+    });
+    try {
+      const threadId = await startExternalThread(
+        fixture,
+        encodeHarnessPluginRoute({ harnessId: harnessIdSchema.parse("hmharness") }),
+      );
+      const turnId = await startPiTurn(fixture, threadId, 2);
+      await fixture.collector.waitFor((message) => turnEvent(message, "turn/completed", turnId));
+      await fixture.collector.waitFor((message) => threadStatus(message, threadId, "idle"));
+
+      const stored = await fixture.mappingStore.getThread(hostThreadIdSchema.parse(threadId));
+      expect(stored).not.toBeNull();
+      if (!stored) throw new Error("HMHarness Thread mapping was not stored");
+      expect(stored.turnMappings).toHaveLength(1);
+      expect(stored.turnMappings[0]).toMatchObject({ hostTurnId: turnId });
+    } finally {
+      await stopFixture(fixture);
+    }
   });
 
   it("updates a Pi Thread name locally", async () => {

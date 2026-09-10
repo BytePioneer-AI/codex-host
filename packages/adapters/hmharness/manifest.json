@@ -1,0 +1,13 @@
+{
+  "manifestVersion": 1,
+  "id": "hmharness",
+  "name": "HMHarness",
+  "version": "0.0.0",
+  "adapterApiVersion": 1,
+  "entry": "./dist/plugin.js",
+  "icon": "./assets/icon.svg",
+  "links": {
+    "documentation": "https://swsgbl.github.io/hmharness/",
+    "installation": "https://www.npmjs.com/package/@hmharness/cli"
+  }
+}

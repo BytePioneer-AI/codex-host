@@ -139,6 +139,7 @@ export function rendererAgentForThreadOwnership(
   if (ownership.harnessId === "grok") return "grok";
   if (ownership.harnessId === "omp") return "omp";
   if (ownership.harnessId === "antigravity") return "antigravity";
+  if (ownership.harnessId === "hmharness") return "hmharness";
   if (ownership.harnessId === "kiro-cli") return "kiro-cli";
   return null;
 }

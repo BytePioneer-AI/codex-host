@@ -1013,15 +1013,9 @@ export class CodexTurnProjector {
     if (event.snapshot.item.type !== projected.item.type) {
       throw new Error("Host Item changed type before completion");
     }
-    if (projected.item.type === "agentMessage" || projected.item.type === "reasoning") {
-      const completedItem = event.snapshot.item;
-      if (
-        (completedItem.type !== "agentMessage" && completedItem.type !== "reasoning") ||
-        completedItem.text !== projected.item.text
-      ) {
-        throw new Error("Host textual Item completion does not match its append updates");
-      }
-    }
+    // A completed Item snapshot is authoritative. Streaming adapters may need to
+    // replace partial text (for example when a Harness final result differs
+    // from its progress deltas), and the terminal event must still be projected.
     projected.item = event.snapshot.item;
     projected.outcome = event.snapshot.outcome;
     const startedAtMs = projected.startedAtMs;

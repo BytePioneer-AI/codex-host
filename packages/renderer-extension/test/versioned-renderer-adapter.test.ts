@@ -1,4 +1,5 @@
 import {
+  decodeHarnessPluginRoute,
   harnessModelRefSchema,
   harnessPermissionModeIdSchema,
   harnessThinkingOptionIdSchema,
@@ -23,6 +24,7 @@ import {
   decodePiTransportModelId,
   findActivePrewarmTargets,
   findComposerModelTarget,
+  hmHarnessTransportModelId,
   isAntigravityTransportModelId,
   isClaudeTransportModelId,
   isGrokTransportModelId,
@@ -522,7 +524,22 @@ describe("current Codex Renderer Agent adapter", () => {
     );
     expect(modelSelectionForAgent(null, null, "grok")?.model).toBe(GROK_TRANSPORT_MODEL_ID);
     expect(modelSelectionForAgent(null, null, "opencode")?.model).toBe(OPENCODE_TRANSPORT_MODEL_ID);
+    expect(
+      decodeHarnessPluginRoute(modelSelectionForAgent(null, null, "hmharness")?.model),
+    ).toEqual({ harnessId: "hmharness" });
     expect(modelSelectionForAgent(null, null, "codex")).toBeNull();
+  });
+
+  it("encodes HMHarness with the shared plugin transport carrier", () => {
+    const model = harnessModelRefSchema.parse({ id: "hmharness-configured-provider" });
+    const carrier = hmHarnessTransportModelId(model);
+
+    expect(carrier.startsWith("codexhost/plugin-v1@")).toBe(true);
+    expect(decodeHarnessPluginRoute(carrier)).toEqual({
+      harnessId: "hmharness",
+      model,
+    });
+    expect(modelSelectionForAgent(null, null, "hmharness", model)?.model).toBe(carrier);
   });
 
   it("encodes selected Pi Model and Thinking in the transport carrier", () => {

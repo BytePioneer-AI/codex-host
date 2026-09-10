@@ -168,6 +168,62 @@ describe("Codex UI projector", () => {
     });
   });
 
+  it("lets a completed Agent Message replace streamed text with authoritative text", () => {
+    const value = projector();
+    const agentId = itemId("authoritative-agent");
+    value.project({ type: "turn.started", turnId });
+    value.project({
+      type: "item.started",
+      turnId,
+      item: { type: "agentMessage", itemId: agentId, text: "" },
+    });
+    value.project({
+      type: "item.updated",
+      turnId,
+      itemId: agentId,
+      update: { type: "text.append", text: "partial" },
+    });
+
+    expect(
+      value.project({
+        type: "item.completed",
+        turnId,
+        snapshot: {
+          item: { type: "agentMessage", itemId: agentId, text: "authoritative final" },
+          outcome: { status: "succeeded" },
+        },
+      }).messages,
+    ).toMatchObject([
+      {
+        method: "item/completed",
+        params: { item: { id: agentId, type: "agentMessage", text: "authoritative final" } },
+      },
+    ]);
+
+    const terminal = value.project({
+      type: "turn.completed",
+      turnId,
+      nativeTurnRef: nativeTurnRefSchema.parse({
+        harnessId: "hmharness",
+        nativeSessionId: "native-session",
+        nativeTurnKey: "native-turn",
+        formatVersion: 1,
+      }),
+      outcome: { status: "succeeded" },
+    });
+    expect(terminal.completedTurn).toMatchObject({
+      id: turnId,
+      status: "completed",
+      items: [
+        expect.objectContaining({
+          id: agentId,
+          type: "agentMessage",
+          text: "authoritative final",
+        }),
+      ],
+    });
+  });
+
   it("projects Agent Message and Command Execution lifecycles", () => {
     const value = projector();
     const agentId = itemId("agent-1");

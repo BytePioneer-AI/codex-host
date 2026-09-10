@@ -28,7 +28,12 @@ for (const [id, variable, Adapter] of [
       let overlapping = false;
       let heldClosed = false;
       let heldStarted = false;
+      const modelRequests = [];
       const server = http.createServer((request, response) => {
+        if (request.method === "GET") {
+          response.writeHead(404).end();
+          return;
+        }
         void (async () => {
           let input = "";
           for await (const chunk of request) input += chunk;
@@ -39,6 +44,7 @@ for (const [id, variable, Adapter] of [
           const text = JSON.stringify(user?.content ?? "");
           const held = text.includes("HOLD_INPUT");
           const main = /(?:FIRST|HOLD|THIRD)_INPUT/u.test(text);
+          modelRequests.push({ held, main, input: text.match(/(?:FIRST|HOLD|THIRD)_INPUT/u)?.[0] });
           if (main && responses.size > 0) overlapping = true;
           if (main) responses.add(response);
           if (held) heldStarted = true;
@@ -104,7 +110,13 @@ for (const [id, variable, Adapter] of [
         DEEPSEEK_API_KEY: "test-only",
         DEEPSEEK_BASE_URL: baseURL,
       };
-      const createAdapter = () => new Adapter({ command, environment, startupTimeoutMs: 30000 });
+      const createAdapter = () =>
+        new Adapter({
+          command,
+          environment,
+          endpoint: `${new URL(baseURL).origin}/`,
+          startupTimeoutMs: 30000,
+        });
       let adapter = createAdapter();
       let session;
       let events = [];
@@ -131,10 +143,13 @@ for (const [id, variable, Adapter] of [
         );
       };
       const terminal = (turnId) =>
-        waitFor(
-          () => events.find((event) => event.type === "turn.completed" && event.turnId === turnId),
-          `terminal ${turnId}`,
-        );
+        waitFor(() => {
+          const fault = events.find((event) => event.type === "session.faulted");
+          assert.equal(fault, undefined, JSON.stringify(fault));
+          return events.find((event) => event.type === "turn.completed" && event.turnId === turnId);
+        }, `terminal ${turnId}`).catch((error) => {
+          throw new Error(`${error.message}: ${JSON.stringify({ events, modelRequests })}`);
+        });
       const state = () =>
         [...events].reverse().find((event) => event.type === "session.state.changed")?.state ??
         session.initialState;

@@ -107,6 +107,8 @@ submitted as Host text Turns.
 
 DeepSeek declares exactly `/compact`, `/dsh-goal`, and `/plan` in its static Adapter catalog, for both new and existing Threads. Neither catalog display nor command admission queries native `commands/list`. Execution retains ID, argument, busy-state, cancellation, and native-result validation; an unsupported native deployment reports its execution error rather than being probed beforehand. Native `feedback`, `permission`, `export`, the Client-side `/model`, and unknown commands are not exposed through this surface.
 
+DeepSeek supports only `0.1.2-rc.1` and `0.1.5-rc.1`. The Adapter sends `images: []` with `commands/execute` for `0.1.2-rc.1`, or `submittedAttachments: []` for `0.1.5-rc.1`; this version-specific translation does not add attachment input or native descriptor discovery to the public command surface.
+
 OpenCode exposes only the fixed `/compact` command, implemented through native Session summarization. Dynamic native command discovery and execution are not part of its Host integration.
 
 The public `/dsh-goal` invocation avoids Codex Desktop's built-in `/goal` command and maps only inside the Adapter to native DSH `/goal`. `/dsh-goal` and `/plan` accept text arguments only. DSH remains the owner of goal and plan state and any model-visible follow-up.

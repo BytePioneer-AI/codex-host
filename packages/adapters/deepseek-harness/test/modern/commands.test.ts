@@ -11,6 +11,7 @@ import {
   type ModernRemoteConnectionErrorCode,
 } from "../../src/modern/remote-connection.js";
 import type { ModernRemoteResult } from "../../src/modern/wire.js";
+import { DEEPSEEK_V015_PROFILE } from "../../src/profiles/profile.js";
 
 interface RemoteCall {
   readonly endpoint: string;
@@ -38,6 +39,20 @@ class FakeRemote implements ModernCommandRemote {
 }
 
 describe("DeepSeek Harness Modern native commands", () => {
+  it("sends the 015 command attachment argument for slash and permission commands", async () => {
+    const signal = new AbortController().signal;
+    const remote = new FakeRemote({ ok: true, value: undefined });
+    for (const line of ["/compact", "/permission workspace-write"]) {
+      await executeModernCommand(remote, "session-1", line, signal, DEEPSEEK_V015_PROFILE);
+      expect(remote.calls.at(-1)).toEqual({
+        endpoint: "commands/execute",
+        args: { agentId: "session-1", line, submittedAttachments: [] },
+        signal,
+        options: { timeoutMs: null },
+      });
+    }
+  });
+
   it("executes the complete native line once with empty images and no transport timeout", async () => {
     const signal = new AbortController().signal;
     const line = "/goal edit  preserve spacing  ";

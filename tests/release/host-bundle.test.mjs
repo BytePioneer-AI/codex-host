@@ -174,7 +174,7 @@ describe("release Host and independent plugin Bundles", () => {
         "@opencode-ai/sdk",
       );
       expect(pluginAudits.find(({ id }) => id === "deepseek-harness").runtimePackages).toContain(
-        "@deepseek-ai/dsh-host-apiproxy",
+        "@deepseek-ai/schemastery",
       );
       const source = await readFile(path.join(app, "host-runtime.mjs"), "utf8");
       expect(source).not.toContain("class ClaudeCodeAdapter");

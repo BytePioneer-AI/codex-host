@@ -28,6 +28,7 @@ import {
   type DelegationThreadSnapshot,
   type HarnessInspectInput,
   type HarnessInspectResult,
+  type HarnessListResult,
   type ThreadCancelInput,
   type ThreadCancelResult,
   type ThreadListInput,
@@ -168,6 +169,10 @@ export class HarnessDelegationCoordinator {
     this.#activeOfficialParents = input.activeOfficialParents;
   }
 
+  async listHarnesses(): Promise<HarnessListResult> {
+    return { harnesses: ["codex", ...this.#adapters.keys()] };
+  }
+
   async inspect(input: HarnessInspectInput): Promise<HarnessInspectResult> {
     if (input.harnessId === "codex") return this.#inspectOfficial(input);
     const adapter = this.#adapters.get(input.harnessId as ExternalHarnessId);
@@ -193,7 +198,8 @@ export class HarnessDelegationCoordinator {
     const parent = await this.#parentMetadata(parentThreadId);
     const selectedCwd = input.cwd ?? parent.cwd ?? process.cwd();
     if (input.harnessId === "codex") {
-      return this.#startOfficial({ ...input, parentThreadId, cwd: selectedCwd });
+      const result = await this.#startOfficial({ ...input, parentThreadId, cwd: selectedCwd });
+      return { ...result, parentThreadId, cwd: result.cwd ?? selectedCwd };
     }
     const startInput = { ...input, parentThreadId, cwd: path.resolve(selectedCwd) };
     if (!this.#adapters.has(input.harnessId)) {
@@ -325,23 +331,27 @@ export class HarnessDelegationCoordinator {
       }
       await this.#repository.setDelegationStatus(delegationId, "running");
       await this.#notifyThreadStarted(thread.thread);
-      return this.#result(delegationId, childThreadId, turnId, targetHarnessId, "running", {
-        requested: {
-          ...(input.model ? { model: input.model } : {}),
-          ...(input.thinkingOptionId ? { thinkingOptionId: input.thinkingOptionId } : {}),
-        },
-        effective: {
-          ...(thread.stateObserver.state.effectiveModel
-            ? { effectiveModel: thread.stateObserver.state.effectiveModel }
-            : {}),
-          ...(thread.stateObserver.state.resolvedModelLabel
-            ? { resolvedModelLabel: thread.stateObserver.state.resolvedModelLabel }
-            : {}),
-          ...(thread.stateObserver.state.effectiveThinkingOptionId
-            ? { effectiveThinkingOptionId: thread.stateObserver.state.effectiveThinkingOptionId }
-            : {}),
-        },
-      });
+      return {
+        ...this.#result(delegationId, childThreadId, turnId, targetHarnessId, "running", {
+          requested: {
+            ...(input.model ? { model: input.model } : {}),
+            ...(input.thinkingOptionId ? { thinkingOptionId: input.thinkingOptionId } : {}),
+          },
+          effective: {
+            ...(thread.stateObserver.state.effectiveModel
+              ? { effectiveModel: thread.stateObserver.state.effectiveModel }
+              : {}),
+            ...(thread.stateObserver.state.resolvedModelLabel
+              ? { resolvedModelLabel: thread.stateObserver.state.resolvedModelLabel }
+              : {}),
+            ...(thread.stateObserver.state.effectiveThinkingOptionId
+              ? { effectiveThinkingOptionId: thread.stateObserver.state.effectiveThinkingOptionId }
+              : {}),
+          },
+        }),
+        cwd: record.cwd,
+        parentThreadId,
+      };
     } catch (error) {
       if (session) await session.close().catch(() => undefined);
       this.#externalRuntime.remove(childThreadId);
@@ -607,13 +617,17 @@ export class HarnessDelegationCoordinator {
   async #existingResult(delegation: StoredDelegationRecordV1): Promise<DelegationStartResult> {
     const record = await this.#repository.find(delegation.childHostThreadId);
     const turnId = record?.turnMappings.at(-1)?.hostTurnId ?? "pending";
-    return this.#result(
-      delegation.delegationId,
-      delegation.childHostThreadId,
-      turnId,
-      delegation.targetHarnessId as RoutedHarnessId,
-      delegation.status,
-    );
+    return {
+      ...this.#result(
+        delegation.delegationId,
+        delegation.childHostThreadId,
+        turnId,
+        delegation.targetHarnessId as RoutedHarnessId,
+        delegation.status,
+      ),
+      ...(record ? { cwd: record.cwd } : {}),
+      parentThreadId: delegation.parentHostThreadId,
+    };
   }
 
   #turnResult(threadId: string, turnId: string, harnessId: RoutedHarnessId): ThreadSendResult {

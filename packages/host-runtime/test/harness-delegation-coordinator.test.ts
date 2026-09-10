@@ -105,6 +105,7 @@ class FailingTurnAdapter extends FakeHarnessAdapter {
 describe("HarnessDelegationCoordinator", () => {
   it("creates a normal writable child Thread and publishes it only after initial delivery", async () => {
     const adapter = new RecordingAdapter(harnessIdSchema.parse("pi"));
+    const inspect = vi.spyOn(adapter, "inspect");
     const value = await fixture(adapter);
     try {
       const result = await value.coordinator.start({
@@ -113,7 +114,17 @@ describe("HarnessDelegationCoordinator", () => {
         cwd: "/synthetic",
         parentThreadId: "parent-thread",
       });
-      expect(result).toMatchObject({ harnessId: "pi", status: "running" });
+      expect(result).toMatchObject({
+        harnessId: "pi",
+        status: "running",
+        cwd: path.resolve("/synthetic"),
+        parentThreadId: "parent-thread",
+      });
+      expect(inspect).not.toHaveBeenCalled();
+      await expect(value.coordinator.listHarnesses()).resolves.toEqual({
+        harnesses: ["codex", "pi"],
+      });
+      expect(inspect).not.toHaveBeenCalled();
       expect(value.registered).toHaveLength(1);
       expect(value.notifications).toHaveLength(1);
       expect(value.adapter.sessions).toHaveLength(1);

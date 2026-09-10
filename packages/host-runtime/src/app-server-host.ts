@@ -619,6 +619,7 @@ export class AppServerHost {
       activeOfficialParents: () => [...this.#activeOfficialTurns.keys()],
     });
     const unregisterDelegationApi = options.onDelegationApi?.({
+      listHarnesses: () => this.#delegationCoordinator.listHarnesses(),
       inspect: (input) => this.#delegationCoordinator.inspect(input),
       start: (input) => this.#delegationCoordinator.start(input),
       send: (input) => this.#delegationCoordinator.send(input),
@@ -2036,6 +2037,7 @@ export class AppServerHost {
         harnessId: "codex",
         deepLink: `codex://threads/${threadId}`,
         status: pendingTerminal ?? "running",
+        cwd: thread && typeof thread.cwd === "string" ? thread.cwd : input.cwd,
         ...(requestedModel || input.thinkingOptionId
           ? {
               configuration: {

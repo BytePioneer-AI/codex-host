@@ -91,6 +91,9 @@ export async function startDelegationControlServer(input: {
       }
       const body = await jsonBody(request);
       switch (request.url) {
+        case "/v1/harness/list":
+          writeJson(response, 200, await input.api.listHarnesses());
+          return;
         case "/v1/harness/inspect":
           writeJson(response, 200, await input.api.inspect(body as unknown as HarnessInspectInput));
           return;

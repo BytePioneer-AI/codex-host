@@ -3899,6 +3899,7 @@ export class AppServerHost {
       } else {
         await this.#projectQuestion(thread, output.interaction);
       }
+      thread.changes.bump();
       return;
     }
     let event = output.event;

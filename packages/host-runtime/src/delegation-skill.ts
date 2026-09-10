@@ -3,7 +3,7 @@ import { mkdir, open, readFile, rename, rm, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-const SKILL_VERSION = 7;
+const SKILL_VERSION = 8;
 const SKILL_RELATIVE_PATH = path.join("skills", "codexhost-delegation", "SKILL.md");
 /**
  * Digests of every previously shipped managed Skill. A released digest missing
@@ -11,6 +11,7 @@ const SKILL_RELATIVE_PATH = path.join("skills", "codexhost-delegation", "SKILL.m
  * affected installations silently stop receiving Skill updates.
  */
 export const PREVIOUS_MANAGED_DIGESTS: readonly string[] = [
+  "20314c67b7be9cd9aaba81949ed87495d3b0f90760c1c43fdd62bfeaef069b86",
   "aff258622dc8ff321f32b15620d081e578cb9c9ed1134d6a57f35ca8e7762c0a",
   "ba509f57e5448e796b3dfdd5031dcb08672eded50b61c0a54de84cfa02c49dd3",
   "d3ddf6db9bc5c5df825479c885bbbf0ca08da66f7057a12e02e1fdf57525149e",
@@ -97,10 +98,25 @@ Reuse \`--request-id\` for the same parent, Harness, cwd, task, and configuratio
 A conflicting parent, cwd, task, or configuration with that ID must be rejected;
 do not invent a new request-id to retry an UNKNOWN or cancelled task.
 
-Default coordination uses compact \`thread status\` and \`thread wait-many\` with
-per-target revisions. Unchanged waits must not resend historical message or
-result bodies. Need tool/file/command proof? Call \`thread evidence\` explicitly.
-File hashes and agent self-reports are not proof that a tool ran.
+Use compact \`thread status\` for an immediate check and \`thread wait-many\`
+for one bounded batch wait. When only actionable changes are needed, prefer
+\`thread observe\`: it renews wait-many internally, tracks revisions, suppresses
+ordinary progress, and returns once on completion/failure, pending input, changed
+Turn, resync/error, a review deadline, or total timeout. It does not call a Model.
+Set per-target \`reviewAt\` deadlines and one bounded overall timeout from the
+current help. Consume \`result.targets\` to resume; remove handled terminal targets
+and advance handled deadlines. Read only changed Threads and request tool/file
+proof through \`thread evidence\`; hashes and self-reports are not execution proof.
+
+The outer shell/tool must itself support sustained waiting. Keep one observer
+process and its process handle when the tool yields; do not start duplicate
+observers. If programmatic tool orchestration is available, await all process-handle
+polls inside one tool invocation and allow that invocation to outlast the
+observer timeout. Repeated outer tool polling can still cause Model calls. Never claim
+zero coordinator wakeups from the observer process alone or promise it can wake
+a suspended parent. Missing \`pendingInteractions\` is reported as
+\`inputVisibilityUnavailable\`, not assumed to mean no input is needed. Observer
+SIGINT/SIGTERM stops observation only; it does not cancel or release child work.
 
 Cancel only acknowledges the cancel request and Turn terminal. It is not job
 quiescence. Do not release a worktree, process, or business resource until

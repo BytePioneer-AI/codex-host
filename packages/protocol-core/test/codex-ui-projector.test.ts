@@ -1372,7 +1372,9 @@ describe("Codex UI projector", () => {
       ],
     };
     value.project({ type: "turn.started", turnId });
+    expect(value.pendingInteractionCount).toBe(0);
     const opened = value.projectQuestion(question, itemId("synthetic-question"), 2_000);
+    expect(value.pendingInteractionCount).toBe(1);
     expect(opened.messages).toMatchObject([
       {
         method: "item/started",
@@ -1403,6 +1405,7 @@ describe("Codex UI projector", () => {
       },
       2_500,
     );
+    expect(value.pendingInteractionCount).toBe(0);
     expect(closed.messages).toMatchObject([
       {
         method: "item/completed",

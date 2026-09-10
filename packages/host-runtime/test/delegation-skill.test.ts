@@ -87,7 +87,7 @@ describe("delegation Skill installation", () => {
   });
 
   it("routes natural agent requests and points execution to the authoritative help", () => {
-    expect(CODEXHOST_DELEGATION_SKILL).toContain("version: 7");
+    expect(CODEXHOST_DELEGATION_SKILL).toContain("version: 8");
     expect(CODEXHOST_DELEGATION_SKILL).toContain("@agent) to independently perform a task");
     expect(CODEXHOST_DELEGATION_SKILL).toContain("session's content, progress, or results");
     expect(CODEXHOST_DELEGATION_SKILL).toContain("Not for recapping the current conversation");
@@ -97,6 +97,10 @@ describe("delegation Skill installation", () => {
     expect(CODEXHOST_DELEGATION_SKILL).toContain("cancel its current Turn");
     expect(CODEXHOST_DELEGATION_SKILL).toContain("target keeps its default");
     expect(CODEXHOST_DELEGATION_SKILL).toContain("thread wait-many");
+    expect(CODEXHOST_DELEGATION_SKILL).toContain("thread observe");
+    expect(CODEXHOST_DELEGATION_SKILL).toContain(
+      "outer shell/tool must itself support sustained waiting",
+    );
     expect(CODEXHOST_DELEGATION_SKILL).toContain("thread evidence");
     expect(CODEXHOST_DELEGATION_SKILL).toContain("not an OS read-only sandbox");
   });

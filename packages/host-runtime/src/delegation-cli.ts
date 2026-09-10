@@ -9,6 +9,13 @@ import {
   type DelegationControlErrorCode,
 } from "./delegation-types.js";
 
+import {
+  observeThreads,
+  parseObserveTargets,
+  DEFAULT_OBSERVE_TIMEOUT_MS,
+  MAX_OBSERVE_TIMEOUT_MS,
+} from "./thread-observer.js";
+
 const DEFAULT_WAIT_TIMEOUT_MS = 30_000;
 const DEFAULT_LIMIT = 25;
 const MAX_LIMIT = 100;
@@ -89,6 +96,7 @@ export const DELEGATION_HELP = `usage:
   codexhost thread read <thread> [--view result|messages] [--cursor <cursor>] [--limit <n>]
   codexhost thread wait <thread> [--timeout-ms <n>] [--view result|messages] [--cursor <cursor>] [--limit <n>]
   codexhost thread wait-many --targets-file <path> [--timeout-ms <n>]
+  codexhost thread observe --targets-file <path> [--timeout-ms <n>]
   codexhost thread status <thread>
   codexhost thread evidence <thread> [--turn <turn>] [--item <item>] [--cursor <cursor>] [--limit <n>] [--include-output true|false]
   codexhost thread configuration <thread>
@@ -107,6 +115,7 @@ thread read --view messages additionally returns paginated user/Agent-visible me
 thread status returns a compact view: thread, turn, status, opaque revision, cwd, and requested/effective/unknown configuration. It never includes historical message or result bodies.
 thread wait defaults to 30000 ms and waits only until the Thread reaches a terminal state or the bounded timeout expires. A timeout is a successful running checkpoint with timedOut=true; the child keeps running.
 thread wait-many reads a JSON array of {threadId, afterRevision?} from --targets-file. Default timeout is 30000 ms, 0 is an immediate snapshot, and the maximum is 60000 ms. Unchanged targets omit historical bodies, cwd, and configuration; three idle targets stay within 4KB. Cancelling wait-many does not cancel child Threads.
+thread observe runs a read-only client loop over wait-many: it renews waits internally and emits one compact JSON result only on terminal status, pending Host Interaction, changed Turn, resync/error, review deadline, total timeout, or cancellation. Ordinary progress revisions do not return control to the caller. Targets accept {threadId, afterRevision?, expectedTurnId?, reviewAt?}; reviewAt is an absolute ISO timestamp with a timezone. Default total timeout is 300000 ms, maximum 3600000 ms; each Runtime wait stays at most 60000 ms. Result.targets contains resumable cursors; remove consumed terminal targets and advance consumed review deadlines before observing again. Older Runtimes and official Threads may lack interaction visibility: see inputVisibilityUnavailable. This command never replies to approvals, starts or cancels child Turns, or wakes a suspended parent. The calling shell/tool must itself support sustained waiting; a yielded process handle is not proof of zero model wakeups. SIGINT/SIGTERM stops only the observer (exit 130/143).
 thread evidence returns user-visible command/tool/file-change items with identity and truncation flags. Default metadata omits output; --include-output true fetches bounded output. Reasoning, private transcripts, and credentials are never returned.
 thread configuration returns requested vs effective vs unknown harness/model/thinking/permission/cwd/parent/turn values without filling unknowns with defaults.
 thread release runs only on idle/terminal Threads matching --expected-turn when provided. busy Threads must cancel then wait. quiescence is confirmed only for owned jobs of this Session; unknown/unsupported stay fail-closed and do not release resources.
@@ -132,6 +141,7 @@ async function requestRuntime(input: {
   path: string;
   body: Record<string, unknown>;
   fetchImpl?: typeof fetch;
+  signal?: AbortSignal;
 }): Promise<unknown> {
   const endpoint = input.environment[DELEGATION_RUNTIME_ENDPOINT_ENV];
   const token = input.environment[DELEGATION_RUNTIME_TOKEN_ENV];
@@ -147,6 +157,7 @@ async function requestRuntime(input: {
       method: "POST",
       headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
       body: JSON.stringify(input.body),
+      ...(input.signal ? { signal: input.signal } : {}),
     });
   } catch (error) {
     throw new DelegationControlError(
@@ -623,6 +634,62 @@ export async function runDelegationCli(input: {
         }),
       );
       return 0;
+    }
+    if (group === "thread" && command === "observe") {
+      const parsed = options(rest);
+      rejectUnknown(parsed, ["--targets-file", "--timeout-ms"]);
+      if (parsed.positionals.length > 0)
+        throw new DelegationControlError(
+          "INVALID_ARGUMENT",
+          "thread observe accepts no positional arguments",
+        );
+      const targetsFile = value(parsed, "--targets-file");
+      if (!targetsFile)
+        throw new DelegationControlError("INVALID_ARGUMENT", "--targets-file is required");
+      let raw: unknown;
+      try {
+        raw = JSON.parse(await readUtf8(targetsFile, input.stdin ?? process.stdin));
+      } catch (error) {
+        if (error instanceof DelegationControlError) throw error;
+        throw new DelegationControlError("INVALID_ARGUMENT", "targets-file must be JSON");
+      }
+      const targets = parseObserveTargets(raw);
+      const timeoutMs =
+        value(parsed, "--timeout-ms") !== undefined
+          ? timeoutMsValue(value(parsed, "--timeout-ms"), "--timeout-ms", MAX_OBSERVE_TIMEOUT_MS)
+          : DEFAULT_OBSERVE_TIMEOUT_MS;
+      const controller = new AbortController();
+      let cancelledCode = 0;
+      const interrupt = () => {
+        cancelledCode = 130;
+        controller.abort();
+      };
+      const terminate = () => {
+        cancelledCode = 143;
+        controller.abort();
+      };
+      process.once("SIGINT", interrupt);
+      process.once("SIGTERM", terminate);
+      try {
+        const result = await observeThreads({
+          targets,
+          timeoutMs,
+          signal: controller.signal,
+          waitMany: (body, signal) =>
+            requestRuntime({
+              environment,
+              path: "/v1/thread/wait-many",
+              body: { ...body },
+              signal,
+              ...(input.fetchImpl ? { fetchImpl: input.fetchImpl } : {}),
+            }),
+        });
+        writeJson(output, result);
+        return cancelledCode;
+      } finally {
+        process.removeListener("SIGINT", interrupt);
+        process.removeListener("SIGTERM", terminate);
+      }
     }
     if (group === "thread" && command === "wait-many") {
       const parsed = options(rest);

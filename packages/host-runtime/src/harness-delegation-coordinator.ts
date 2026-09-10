@@ -1,3 +1,4 @@
+import { setTimeout as cancellableDelay } from "node:timers/promises";
 import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
 
@@ -126,6 +127,9 @@ function compactWaitManyStatus(status: DelegationThreadStatusView): ThreadWaitMa
     status: status.status,
     turn: status.turn,
     revision: status.revision,
+    ...(status.pendingInteractions !== undefined
+      ? { pendingInteractions: status.pendingInteractions }
+      : {}),
   };
 }
 
@@ -931,7 +935,8 @@ export class HarnessDelegationCoordinator {
         input.targets.map(async (target) => this.#waitManyTarget(target)),
       );
       const changed = results.some(
-        (result) => result.outcome === "changed" || result.outcome === "resync",
+        (result) =>
+          result.outcome === "changed" || result.outcome === "resync" || result.outcome === "error",
       );
       return { timedOut: !changed, results };
     };
@@ -941,21 +946,35 @@ export class HarnessDelegationCoordinator {
     while (Date.now() < deadline) {
       const remaining = deadline - Date.now();
       const waiters: Promise<unknown>[] = [];
+      const round = new AbortController();
       let hasNonExternal = false;
-      for (const target of input.targets) {
-        const resolution = await this.#externalRuntime.resolve(target.threadId).catch(() => null);
-        if (resolution && resolution.kind === "external") {
-          waiters.push(
-            resolution.thread.changes.wait(resolution.thread.changes.revision, remaining),
-          );
-        } else {
-          hasNonExternal = true;
+      try {
+        for (const target of input.targets) {
+          const resolution = await this.#externalRuntime.resolve(target.threadId).catch(() => null);
+          if (resolution && resolution.kind === "external") {
+            const observed = snapshot.results.find((row) => row.threadId === target.threadId);
+            const cursor =
+              observed && observed.outcome !== "error"
+                ? decodeThreadRevision(target.threadId, observed.revision)
+                : undefined;
+            // Use the collected revision: an event between collect and subscribe must wake this wait.
+            const seq =
+              cursor && !("invalid" in cursor) ? cursor.seq : resolution.thread.changes.revision;
+            waiters.push(resolution.thread.changes.wait(seq, remaining, round.signal));
+          } else {
+            hasNonExternal = true;
+          }
         }
+        await Promise.race([
+          cancellableDelay(hasNonExternal ? Math.min(100, remaining) : remaining, undefined, {
+            signal: round.signal,
+          }),
+          ...waiters,
+        ]);
+      } finally {
+        // A progress event in one Thread must not leave all other waiters alive for 60 seconds.
+        round.abort();
       }
-      await Promise.race([
-        delay(hasNonExternal ? Math.min(100, remaining) : remaining),
-        ...waiters,
-      ]);
       snapshot = await collect();
       if (!snapshot.timedOut) return snapshot;
     }
@@ -1176,6 +1195,14 @@ export class HarnessDelegationCoordinator {
       status: snapshot.status,
       turn: snapshot.turn,
       revision,
+      ...(thread && (!thread.activeTurnId || thread.projectedTurns.has(thread.activeTurnId))
+        ? {
+            pendingInteractions: thread.activeTurnId
+              ? (thread.projectedTurns.get(thread.activeTurnId)?.projector
+                  .pendingInteractionCount ?? 0)
+              : 0,
+          }
+        : {}),
       ...(cwd ? { cwd } : {}),
       ...(delegation
         ? { parentThreadId: delegation.parentHostThreadId, delegationId: delegation.delegationId }

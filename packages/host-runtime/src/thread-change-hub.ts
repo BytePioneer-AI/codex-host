@@ -4,6 +4,7 @@ interface ChangeWaiter {
   afterRevision: number;
   resolve(revision: number): void;
   timeout: ReturnType<typeof setTimeout> | null;
+  dispose(): void;
 }
 
 /**
@@ -27,32 +28,38 @@ export class ThreadChangeHub {
     this.#revision += 1;
     for (const waiter of [...this.#waiters]) {
       if (this.#revision <= waiter.afterRevision) continue;
-      if (waiter.timeout) clearTimeout(waiter.timeout);
-      this.#waiters.delete(waiter);
+      waiter.dispose();
       waiter.resolve(this.#revision);
     }
     return this.#revision;
   }
 
-  wait(afterRevision: number, timeoutMs: number): Promise<number> {
-    if (this.#revision > afterRevision) return Promise.resolve(this.#revision);
-    if (timeoutMs <= 0) return Promise.resolve(this.#revision);
+  wait(afterRevision: number, timeoutMs: number, signal?: AbortSignal): Promise<number> {
+    if (this.#revision > afterRevision || timeoutMs <= 0 || signal?.aborted)
+      return Promise.resolve(this.#revision);
     return new Promise((resolve) => {
+      const finish = () => {
+        waiter.dispose();
+        resolve(this.#revision);
+      };
       const waiter: ChangeWaiter = {
         afterRevision,
         resolve,
-        timeout: setTimeout(() => {
+        timeout: setTimeout(finish, timeoutMs),
+        dispose: () => {
+          if (waiter.timeout) clearTimeout(waiter.timeout);
           this.#waiters.delete(waiter);
-          resolve(this.#revision);
-        }, timeoutMs),
+          signal?.removeEventListener("abort", finish);
+        },
       };
       this.#waiters.add(waiter);
+      signal?.addEventListener("abort", finish, { once: true });
     });
   }
 
   close(): void {
     for (const waiter of this.#waiters) {
-      if (waiter.timeout) clearTimeout(waiter.timeout);
+      waiter.dispose();
       waiter.resolve(this.#revision);
     }
     this.#waiters.clear();

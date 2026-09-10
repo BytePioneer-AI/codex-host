@@ -198,6 +198,8 @@ export interface DelegationThreadStatusView {
   status: DelegationThreadStatus;
   turn: { turnId: string; status: DelegationThreadStatus } | null;
   revision: string;
+  /** Absent when pending Host Interaction visibility is unavailable. */
+  pendingInteractions?: number;
   cwd?: string;
   parentThreadId?: string;
   delegationId?: string;
@@ -234,7 +236,7 @@ export interface ThreadWaitManyInput {
 
 export type ThreadWaitManyStatusView = Pick<
   DelegationThreadStatusView,
-  "threadId" | "harnessId" | "status" | "turn" | "revision"
+  "threadId" | "harnessId" | "status" | "turn" | "revision" | "pendingInteractions"
 >;
 
 export type ThreadWaitManyTargetResult =

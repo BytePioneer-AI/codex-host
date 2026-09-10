@@ -175,6 +175,8 @@ xattr -dr com.apple.quarantine /Applications/codexhost.app
 
 CodexHost 会为目标 Harness 创建独立的 Native Session。委派会话将出现在 Codex Desktop 的会话列表中，你可以随时打开、查看进度或继续对话。
 
+需要持续观察多个任务时，`thread observe` 在程序内部续等并过滤普通进度，只在完成、失败、需要输入或到达复查时间等事件发生时返回。[观察器用法与外层等待限制](docs/thread-observer.md)。
+
 <details>
 <summary><h3 id="远程连接-harness">远程连接 Harness</h3></summary>
 

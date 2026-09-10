@@ -35,7 +35,8 @@ import {
   type TurnStartCommand,
 } from "@codexhost/harness-adapter";
 import {
-  harnessIdSchema,
+  harnessPluginIdSchema,
+  type HarnessId,
   harnessAccountSnapshotSchema,
   type HarnessAccountSnapshot,
   harnessInspectionSchema,
@@ -150,39 +151,45 @@ function parseSessionMetadata(value: unknown): SessionMetadata {
 async function readDescriptor(descriptorPath: string): Promise<HarnessBrokerDescriptorV1> {
   const metadata = await lstat(descriptorPath);
   if (metadata.isSymbolicLink())
-    throw new Error("Claude Aqua broker descriptor must not be a symlink");
-  if (!metadata.isFile()) throw new Error("Claude Aqua broker descriptor is not a file");
+    throw new Error("Aqua Harness broker descriptor must not be a symlink");
+  if (!metadata.isFile()) throw new Error("Aqua Harness broker descriptor is not a file");
   if (process.platform !== "win32") {
     if ((metadata.mode & 0o077) !== 0)
-      throw new Error("Claude Aqua broker descriptor is not owner-only");
+      throw new Error("Aqua Harness broker descriptor is not owner-only");
     if (process.getuid && metadata.uid !== process.getuid()) {
-      throw new Error("Claude Aqua broker descriptor belongs to another user");
+      throw new Error("Aqua Harness broker descriptor belongs to another user");
     }
   }
   const descriptor = harnessBrokerDescriptorSchema.parse(
     JSON.parse(await readFile(descriptorPath, "utf8")),
   );
   if (process.platform === "darwin" && Buffer.byteLength(descriptor.socketPath) > 103) {
-    throw new Error("Claude Aqua broker socket path is too long for macOS");
+    throw new Error("Aqua Harness broker socket path is too long for macOS");
   }
   if (process.platform !== "win32") {
     const socket = await lstat(descriptor.socketPath);
     if (socket.isSymbolicLink() || !socket.isSocket()) {
-      throw new Error("Claude Aqua broker endpoint is not a Unix socket");
+      throw new Error("Aqua Harness broker endpoint is not a Unix socket");
     }
     if ((socket.mode & 0o077) !== 0 || (process.getuid && socket.uid !== process.getuid())) {
-      throw new Error("Claude Aqua broker endpoint is not owner-only");
+      throw new Error("Aqua Harness broker endpoint is not owner-only");
     }
   }
   try {
     process.kill(descriptor.ownerPid, 0);
   } catch {
-    throw new Error("Claude Aqua broker owner process is unavailable");
+    throw new Error("Aqua Harness broker owner process is unavailable");
   }
   return descriptor;
 }
 
 class BrokerConnection {
+  #onClose: (() => void) | undefined;
+
+  onClose(callback: () => void): void {
+    this.#onClose = callback;
+    if (this.#closed) callback();
+  }
   readonly #descriptor: HarnessBrokerDescriptorV1;
   readonly #socket: Socket;
   readonly #pending = new Map<string, PendingRequest>();
@@ -200,16 +207,18 @@ class BrokerConnection {
       (raw) => this.#frame(raw),
       (error) => this.#fail(error),
     );
-    socket.once("close", () => this.#fail(new Error("Claude Aqua broker connection closed")));
+    socket.once("close", () => this.#fail(new Error("Aqua Harness broker connection closed")));
     socket.once("error", (error) => this.#fail(error));
   }
 
-  static async connect(descriptorPath: string): Promise<BrokerConnection> {
+  static async connect(descriptorPath: string, harnessId: HarnessId): Promise<BrokerConnection> {
     const descriptor = await readDescriptor(descriptorPath);
+    if (descriptor.harnessId !== harnessId)
+      throw new Error("Aqua broker belongs to another Harness");
     const socket = net.createConnection(descriptor.socketPath);
     await new Promise<void>((resolve, reject) => {
       const timeout = setTimeout(
-        () => reject(new Error("Timed out connecting to Claude Aqua broker")),
+        () => reject(new Error("Timed out connecting to Aqua Harness broker")),
         HARNESS_BROKER_REQUEST_TIMEOUT_MS,
       );
       socket.once("connect", () => {
@@ -239,7 +248,7 @@ class BrokerConnection {
       const id = "__hello__";
       const timeout = setTimeout(() => {
         this.#pending.delete(id);
-        reject(new Error("Claude Aqua broker authentication timed out"));
+        reject(new Error("Aqua Harness broker authentication timed out"));
       }, HARNESS_BROKER_REQUEST_TIMEOUT_MS);
       this.#pending.set(id, { resolve: () => resolve(), reject, timeout });
     });
@@ -253,17 +262,22 @@ class BrokerConnection {
     this.#sessions.delete(sessionId);
   }
 
+  async dispose(): Promise<void> {
+    await Promise.allSettled([...this.#sessions.values()].map((session) => session.close()));
+    this.close();
+  }
+
   async request(method: HarnessBrokerMethod, params: unknown): Promise<unknown> {
-    if (this.#closed) throw new Error("Claude Aqua broker connection is closed");
+    if (this.#closed) throw new Error("Aqua Harness broker connection is closed");
     if (this.#pending.size >= HARNESS_BROKER_MAX_PENDING_REQUESTS) {
-      throw new Error("Claude Aqua broker request limit exceeded");
+      throw new Error("Aqua Harness broker request limit exceeded");
     }
     this.#inputSequence += 1;
     const id = randomUUID();
     const response = new Promise<unknown>((resolve, reject) => {
       const timeout = setTimeout(() => {
         this.#pending.delete(id);
-        reject(new Error(`Claude Aqua broker ${method} timed out`));
+        reject(new Error(`Aqua Harness broker ${method} timed out`));
       }, HARNESS_BROKER_REQUEST_TIMEOUT_MS);
       this.#pending.set(id, { resolve, reject, timeout });
     });
@@ -283,7 +297,7 @@ class BrokerConnection {
     if (this.#closed) return;
     this.#closed = true;
     this.#socket.destroy();
-    this.#fail(new Error("Claude Aqua broker connection closed"));
+    this.#fail(new Error("Aqua Harness broker connection closed"));
   }
 
   #frame(raw: unknown): void {
@@ -292,7 +306,7 @@ class BrokerConnection {
       frame.generation !== this.#descriptor.generation ||
       frame.sequence !== this.#outputSequence + 1
     ) {
-      this.#fail(new Error("Claude Aqua broker response generation or sequence is invalid"));
+      this.#fail(new Error("Aqua Harness broker response generation or sequence is invalid"));
       return;
     }
     this.#outputSequence = frame.sequence;
@@ -312,7 +326,7 @@ class BrokerConnection {
     }
     const pending = this.#pending.get(frame.id);
     if (!pending) {
-      this.#fail(new Error("Claude Aqua broker returned an unknown response ID"));
+      this.#fail(new Error("Aqua Harness broker returned an unknown response ID"));
       return;
     }
     clearTimeout(pending.timeout);
@@ -325,6 +339,7 @@ class BrokerConnection {
     if (this.#failed) return;
     this.#failed = true;
     if (!this.#closed) this.#closed = true;
+    this.#onClose?.();
     for (const pending of this.#pending.values()) {
       clearTimeout(pending.timeout);
       pending.reject(error);
@@ -335,7 +350,7 @@ class BrokerConnection {
 }
 
 class BrokeredHarnessSession implements HarnessSession {
-  readonly harnessId = harnessIdSchema.parse("claude-code");
+  readonly harnessId: HarnessId;
   readonly outputs: AsyncIterable<HarnessOutput>;
   readonly #channel = new HarnessOutputChannel<HarnessOutput>();
   readonly #connection: BrokerConnection;
@@ -344,7 +359,10 @@ class BrokeredHarnessSession implements HarnessSession {
   #faulted = false;
   #closed = false;
 
-  constructor(connection: BrokerConnection, metadata: SessionMetadata) {
+  constructor(connection: BrokerConnection, metadata: SessionMetadata, harnessId: HarnessId) {
+    this.harnessId = harnessId;
+    if (metadata.initialState.nativeRef && metadata.initialState.nativeRef.harnessId !== harnessId)
+      throw new Error("Broker Session identity belongs to another Harness");
     this.#connection = connection;
     this.#metadata = metadata;
     this.outputs = this.#channel.outputs;
@@ -445,7 +463,7 @@ class BrokeredHarnessSession implements HarnessSession {
     >
   > {
     if (this.#closed)
-      return { ok: false, error: unavailable("Claude Aqua broker Session is closed", false) };
+      return { ok: false, error: unavailable("Aqua Harness broker Session is closed", false) };
     if (this.#faulted && command.type === "turn.start") {
       try {
         const reopened = parseHarnessResult<SessionMetadata>(
@@ -490,8 +508,9 @@ class BrokeredHarnessSession implements HarnessSession {
 
 export class BrokeredHarnessAdapter implements HarnessAdapter {
   readonly commandCatalog?: HarnessCommandCatalog;
-  readonly harnessId = harnessIdSchema.parse("claude-code");
+  readonly harnessId: HarnessId;
   readonly #descriptorPath: string;
+  readonly #forwardEnvironment: boolean;
   #connection: Promise<BrokerConnection> | null = null;
   #closed = false;
 
@@ -514,14 +533,18 @@ export class BrokeredHarnessAdapter implements HarnessAdapter {
 
   constructor(
     input: {
+      harnessId?: string;
+      forwardDelegationEnvironment?: boolean;
       descriptorPath?: string;
       environment?: NodeJS.ProcessEnv;
       commandCatalog?: HarnessCommandCatalog;
     } = {},
   ) {
+    this.harnessId = harnessPluginIdSchema.parse(input.harnessId ?? "claude-code");
+    this.#forwardEnvironment = input.forwardDelegationEnvironment === true;
     if (input.commandCatalog) this.commandCatalog = input.commandCatalog;
     this.#descriptorPath =
-      input.descriptorPath ?? defaultHarnessBrokerDescriptorPath(input.environment);
+      input.descriptorPath ?? defaultHarnessBrokerDescriptorPath(input.environment, this.harnessId);
   }
 
   async inspectAccount(): Promise<HarnessAccountSnapshot | null> {
@@ -535,7 +558,7 @@ export class BrokeredHarnessAdapter implements HarnessAdapter {
   }
 
   async inspect(input: InspectHarnessInput = {}): Promise<HarnessInspection> {
-    if (this.#closed) return failedInspection("Claude Aqua broker adapter is closed");
+    if (this.#closed) return failedInspection("Aqua Harness broker adapter is closed");
     try {
       return harnessInspectionSchema.parse(
         await (await this.#connect()).request("adapter.inspect", input),
@@ -548,12 +571,26 @@ export class BrokeredHarnessAdapter implements HarnessAdapter {
 
   async open(input: OpenSessionInput): Promise<HarnessResult<HarnessSession>> {
     if (this.#closed)
-      return { ok: false, error: unavailable("Claude Aqua broker adapter is closed", false) };
+      return { ok: false, error: unavailable("Aqua Harness broker adapter is closed", false) };
     try {
       const safeInput = { ...input } as OpenSessionInput & {
         environment?: Record<string, string | undefined>;
       };
       delete safeInput.environment;
+      if (this.#forwardEnvironment && input.environment) {
+        const allowed = [
+          "CODEXHOST_CLI_PATH",
+          "CODEXHOST_RUNTIME_ENDPOINT",
+          "CODEXHOST_RUNTIME_TOKEN",
+          "CODEXHOST_THREAD_ID",
+        ];
+        const environment = Object.fromEntries(
+          Object.entries(input.environment).filter(
+            ([key, value]) => allowed.includes(key) && value !== undefined,
+          ),
+        );
+        if (Object.keys(environment).length) safeInput.environment = environment;
+      }
       const result = parseHarnessResult<unknown>(
         await (await this.#connect()).request("adapter.open", safeInput),
       );
@@ -563,6 +600,7 @@ export class BrokeredHarnessAdapter implements HarnessAdapter {
         value: new BrokeredHarnessSession(
           await this.#connect(),
           parseSessionMetadata(result.value),
+          this.harnessId,
         ),
       };
     } catch (error) {
@@ -577,12 +615,27 @@ export class BrokeredHarnessAdapter implements HarnessAdapter {
   async close(): Promise<void> {
     this.#closed = true;
     const connection = await this.#connection?.catch(() => null);
-    connection?.close();
+    await connection?.dispose();
     this.#connection = null;
   }
 
   #connect(): Promise<BrokerConnection> {
-    if (!this.#connection) this.#connection = BrokerConnection.connect(this.#descriptorPath);
+    if (!this.#connection) {
+      // Re-read the descriptor on the next caller request after service restart or
+      // initial unavailability. Never start a background discovery/retry loop.
+      const pending = BrokerConnection.connect(this.#descriptorPath, this.harnessId)
+        .then((connection) => {
+          connection.onClose(() => {
+            if (this.#connection === pending) this.#connection = null;
+          });
+          return connection;
+        })
+        .catch((error) => {
+          if (this.#connection === pending) this.#connection = null;
+          throw error;
+        });
+      this.#connection = pending;
+    }
     return this.#connection;
   }
 }

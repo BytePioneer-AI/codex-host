@@ -24,6 +24,7 @@ pub enum NativeHarnessBrokerCliCommand {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NativeHarnessBrokerCli {
     pub command: NativeHarnessBrokerCliCommand,
+    pub harness_id: String,
     pub node: Option<PathBuf>,
     pub host_runtime: Option<PathBuf>,
 }
@@ -40,7 +41,7 @@ pub fn parse_native_harness_broker_cli(
 ) -> Result<NativeHarnessBrokerCli, String> {
     let Some(command) = arguments.first() else {
         return Err(
-            "usage: codexhost broker install|status|stop|uninstall [--node <absolute-file> --host-runtime <absolute-file>]".to_owned(),
+            "usage: codexhost broker install|status|stop|uninstall [--harness <id>] [--node <absolute-file> --host-runtime <absolute-file>]".to_owned(),
         );
     };
     let command = match command.as_str() {
@@ -54,18 +55,26 @@ pub fn parse_native_harness_broker_cli(
     };
     let mut node = None;
     let mut host_runtime = None;
+    let mut harness_id = None;
     let mut index = 1;
     while index < arguments.len() {
         let option = arguments[index].as_str();
         let value = arguments
             .get(index + 1)
-            .ok_or_else(|| format!("{option} requires an absolute path"))?;
+            .ok_or_else(|| format!("{option} requires a value"))?;
         match option {
             "--node" if node.is_none() => node = Some(macos_absolute_path(value, "--node")?),
             "--host-runtime" if host_runtime.is_none() => {
                 host_runtime = Some(macos_absolute_path(value, "--host-runtime")?)
             }
-            "--node" | "--host-runtime" => return Err(format!("duplicate option: {option}")),
+            "--harness" if harness_id.is_none() => {
+                codexhost_platform::native_harness_broker_label(value)
+                    .map_err(|e| e.to_string())?;
+                harness_id = Some(value.clone());
+            }
+            "--node" | "--host-runtime" | "--harness" => {
+                return Err(format!("duplicate option: {option}"));
+            }
             unknown => return Err(format!("unknown native Harness broker option: {unknown}")),
         }
         index += 2;
@@ -75,6 +84,7 @@ pub fn parse_native_harness_broker_cli(
     }
     Ok(NativeHarnessBrokerCli {
         command,
+        harness_id: harness_id.unwrap_or_else(|| "claude-code".to_owned()),
         node,
         host_runtime,
     })
@@ -110,6 +120,7 @@ pub fn run_native_harness_broker_cli(arguments: &[String]) -> Result<(), Box<dyn
         })
         .ok_or("native Harness broker Host Runtime is unavailable")?;
     let paths = NativeHarnessBrokerPaths {
+        harness_id: &cli.harness_id,
         home: &home,
         node,
         host_runtime,
@@ -172,6 +183,42 @@ mod tests {
     use std::path::Path;
 
     use super::{NativeHarnessBrokerCliCommand, parse_native_harness_broker_cli};
+
+    #[test]
+    fn selected_harness_is_explicit_and_defaults_to_legacy_claude() {
+        assert_eq!(
+            parse_native_harness_broker_cli(&["status".into()])
+                .unwrap()
+                .harness_id,
+            "claude-code"
+        );
+        for id in ["codebuddy", "cursor-cli"] {
+            assert_eq!(
+                parse_native_harness_broker_cli(&["install".into(), "--harness".into(), id.into()])
+                    .unwrap()
+                    .harness_id,
+                id
+            );
+        }
+        assert!(
+            parse_native_harness_broker_cli(&[
+                "stop".into(),
+                "--harness".into(),
+                "../claude-code".into()
+            ])
+            .is_err()
+        );
+        assert!(
+            parse_native_harness_broker_cli(&[
+                "stop".into(),
+                "--harness".into(),
+                "codebuddy".into(),
+                "--harness".into(),
+                "cursor-cli".into()
+            ])
+            .is_err()
+        );
+    }
 
     #[test]
     fn parses_the_broker_lifecycle_commands_without_accepting_extra_arguments() {

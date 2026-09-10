@@ -14,6 +14,12 @@ import { parseReleaseArguments, releaseUsage } from "./targets.mjs";
 const repositoryRoot = path.resolve(import.meta.dirname, "../..");
 const runtimeLicenses = [
   {
+    packageName: "@agentclientprotocol/sdk",
+    license: "Apache-2.0",
+    source: "LICENSE",
+    output: "Agent-Client-Protocol-SDK-LICENSE.txt",
+  },
+  {
     packageName: "@anthropic-ai/claude-agent-sdk",
     license: "SEE LICENSE IN README.md",
     source: "LICENSE.md",

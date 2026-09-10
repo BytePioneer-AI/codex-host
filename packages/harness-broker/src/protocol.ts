@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { harnessPluginIdSchema, type HarnessId } from "@codexhost/shared-contracts";
 
 export const HARNESS_BROKER_PROTOCOL_VERSION = 1 as const;
 export const HARNESS_BROKER_MAX_FRAME_BYTES = 8 * 1024 * 1024;
@@ -85,7 +86,7 @@ export type HarnessBrokerServerFrame = z.infer<typeof harnessBrokerServerFrameSc
 export interface HarnessBrokerDescriptorV1 {
   schemaVersion: 1;
   protocolVersion: 1;
-  harnessId: "claude-code";
+  harnessId: HarnessId;
   generation: string;
   ownerPid: number;
   socketPath: string;
@@ -96,7 +97,7 @@ export const harnessBrokerDescriptorSchema = z
   .object({
     schemaVersion: z.literal(1),
     protocolVersion: z.literal(HARNESS_BROKER_PROTOCOL_VERSION),
-    harnessId: z.literal("claude-code"),
+    harnessId: harnessPluginIdSchema,
     generation: z.string().uuid(),
     ownerPid: z.number().int().positive(),
     socketPath: z.string().min(1).max(512),

@@ -49,6 +49,9 @@ describe("Renderer credits control", () => {
     expect(productLabel("Claude and GPT models · 7-day window", "zh-CN")).toBe(
       "Claude and GPT models · 7 天额度",
     );
+    expect(productLabel("Opus · 7-day")).toBe("Opus · 7-day limit");
+    expect(productLabel("Opus · 7-day", "zh-CN")).toBe("Opus · 7 天额度");
+    expect(productLabel("Model group · 5-hour", "zh-CN")).toBe("Model group · 5 小时额度");
   });
 
   it("formats a same-day reset as a precise time and every other reset as a dated time", () => {

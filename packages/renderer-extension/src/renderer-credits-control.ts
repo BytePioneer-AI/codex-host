@@ -126,6 +126,12 @@ export function productLabel(product: string, locale: RendererSettingsLocale = "
   if (product.endsWith(" · Weekly window")) {
     return `${product.slice(0, -"Weekly window".length)}${messages.weekly}`;
   }
+  if (product.endsWith(" · 5-hour")) {
+    return `${product.slice(0, -"5-hour".length)}${messages.fiveHour}`;
+  }
+  if (product.endsWith(" · 7-day")) {
+    return `${product.slice(0, -"7-day".length)}${messages.sevenDay}`;
+  }
   return product;
 }
 

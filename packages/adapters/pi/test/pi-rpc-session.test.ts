@@ -714,7 +714,9 @@ function session(
     {
       cwd: process.cwd(),
       commandTimeoutMs: options.commandTimeoutMs ?? 2_000,
-      compactionTimeoutMs: options.compactionTimeoutMs ?? 300_000,
+      ...(options.compactionTimeoutMs === undefined
+        ? {}
+        : { compactionTimeoutMs: options.compactionTimeoutMs }),
       cancelTimeoutMs: options.cancelTimeoutMs ?? 500,
       closeTimeoutMs: 500,
       onFault,
@@ -1181,6 +1183,30 @@ describe("Pi RPC Turn aggregation", () => {
         { type: "compaction.started" },
         { type: "compaction.completed", outcome: "succeeded" },
       ]);
+    } finally {
+      await rpc.close();
+      vi.useRealTimers();
+    }
+  });
+
+  it("uses a seven-minute default compaction timeout", async () => {
+    vi.useFakeTimers();
+    const onFault = vi.fn();
+    const rpc = session("manual-compaction-stalled", onFault);
+
+    try {
+      await rpc.start();
+      const compact = rpc.compact(undefined, () => undefined).catch((error: unknown) => error);
+
+      await vi.advanceTimersByTimeAsync(419_999);
+      expect(onFault).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+
+      expect(await compact).toMatchObject({
+        kind: "protocolError",
+        message: "Pi RPC compaction timed out after 420000ms",
+      });
+      expect(onFault).toHaveBeenCalledOnce();
     } finally {
       await rpc.close();
       vi.useRealTimers();

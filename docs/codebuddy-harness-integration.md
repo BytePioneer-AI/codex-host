@@ -48,7 +48,9 @@ CodeBuddy 2.148.0 can retain cancellation state after returning a cancelled prom
 | Commands, compact, Teams | No dedicated Host UI/coordination capability. Member-tagged output is not mixed into the parent's answer. Native CodeBuddy configuration is not rewritten to disable these features. |
 | Images | Current public Turn input remains text. Native ACP image capability is not advertised as Host image support. |
 
-The plugin is preinstalled through `scripts/release/harness-plugins.json`; no new SDK dependency or proprietary CodeBuddy binary enters the distribution. Desktop's remaining static Agent list, per-Agent configuration, icon, settings link and production enabled list are updated. Routing uses `encodeHarnessPluginRoute`; no CodeBuddy-specific Host codec or ownership fallback is added. The icon is a neutral code glyph, not a claim of an official trademark asset.
+The plugin is preinstalled through `scripts/release/harness-plugins.json`; no new SDK dependency or proprietary CodeBuddy binary enters the distribution. Desktop's remaining static Agent list, per-Agent configuration, icon, settings link and production enabled list are updated. Routing uses `encodeHarnessPluginRoute`; no CodeBuddy-specific Host codec or ownership fallback is added. The plugin and Renderer use identical copies of the user-provided CodeBuddy mark captured from `https://www.codebuddy.cn/`, replacing the original neutral code glyph. The SVG is bundled locally without changing its colors, proportions or clipping; asset provenance is recorded in `packages/renderer-extension/src/assets/README.md`.
+
+The README badge uses the round gradient favicon declared by [CodeBuddy's homepage](https://www.codebuddy.cn/home/), rather than the square Desktop mark. The [original favicon](https://download.codebuddy.cn/web/website/423727b4d2d85eaaef1d5b8f9cef78abc8b2a1a7/assets/logo.svg) is preserved in `docs/imgs/codebuddy-favicon.svg`; `docs/imgs/badge-codebuddy.svg` embeds its original vector shapes, gradients and clipping in the existing README badge style. Both are local assets, with no external image dependency.
 
 ## Chinese permission-mode presentation
 

@@ -98,7 +98,7 @@ describe("Cursor native Task cards", () => {
       "cancelled",
     );
   });
-  it("streams running state then uses the confirmed native model and final status", () => {
+  it("preserves pending/running state then uses the confirmed native model and final status", () => {
     const events: HostEvent[] = [],
       output = new CursorTurnOutput(hostTurnIdSchema.parse("turn"), (e) => events.push(e));
     const start = update({
@@ -112,10 +112,25 @@ describe("Cursor native Task cards", () => {
         subagentType: { explore: {} },
       },
     });
+    const handle = cursorTaskHandle(0, 0, { description: "Explore", prompt: "read files" });
     output.update(start);
     output.update(start);
     expect(events.filter((e) => e.type === "item.started")).toMatchObject([
-      { item: { type: "subagentDelegation", subagents: [{ status: "running" }] } },
+      { item: { type: "subagentDelegation", subagents: [{ status: "pending" }] } },
+    ]);
+    expect(output.subagents.snapshot("parent", handle).turns[0]?.outcome).toMatchObject({
+      status: "unknown",
+      reason: expect.stringContaining("pending"),
+    });
+    const running = update({
+      sessionUpdate: "tool_call_update",
+      toolCallId: "native-task",
+      status: "in_progress",
+    });
+    output.update(running);
+    output.update(running);
+    expect(events.filter((e) => e.type === "item.updated")).toMatchObject([
+      { update: { type: "subagents.replace", subagents: [{ status: "running" }] } },
     ]);
     output.update(
       update({
@@ -145,20 +160,18 @@ describe("Cursor native Task cards", () => {
         },
       },
     ]);
-    const snapshot = output.subagents.snapshot(
-      "parent",
-      cursorTaskHandle(0, 0, { description: "Explore", prompt: "read files" }),
-    );
+    const snapshot = output.subagents.snapshot("parent", handle);
     expect(snapshot.turns[0]?.items).toEqual([]); // No invented internal child steps.
     expect(snapshot.turns[0]?.input).toEqual([{ type: "text", text: "read files" }]);
   });
-  it("uses stable parent-scoped native Task handles and keeps cancellation distinct", () => {
+  it.each(["pending", "in_progress"])("keeps cancellation distinct for a %s Task", (status) => {
     const events: HostEvent[] = [],
       tasks = new CursorSubagents(hostTurnIdSchema.parse("turn"), (e) => events.push(e));
     tasks.update(
       update({
         sessionUpdate: "tool_call",
         toolCallId: "native-task",
+        status,
         rawInput: { _toolName: "task" },
       }),
     );

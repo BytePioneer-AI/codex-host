@@ -49,7 +49,7 @@ import {
 import { readCursorNativeTurns, type CursorNativeTurn } from "./native-history.js";
 import { CursorTurnOutput, cursorSnapshot } from "./projection.js";
 import { CursorInteractions } from "./interactions.js";
-import { type CursorSubagents, cursorTaskAddress, cursorChildSnapshot } from "./subagents.js";
+import { type CursorSubagents, cursorTaskAddress } from "./subagents.js";
 import type { HarnessSubagentCapability } from "@codexhost/harness-adapter";
 
 export interface CursorAdapterOptions {
@@ -80,7 +80,7 @@ export class CursorAdapter implements HarnessAdapter {
         return rejected("invalidRequest", "Invalid Cursor parent");
       let replay: CursorTransport | undefined;
       try {
-        const address = cursorTaskAddress(nativeSubagentId);
+        cursorTaskAddress(nativeSubagentId);
         const session = [...this.#sessions].find(
           (s) => s.transport.sessionId === parent.nativeSessionId,
         );
@@ -95,22 +95,9 @@ export class CursorAdapter implements HarnessAdapter {
         const after = readCursorNativeTurns(parent.nativeSessionId, cwd, options.environment);
         if (JSON.stringify(before) !== JSON.stringify(after))
           throw new Error("Cursor native history changed during child read");
-        const parentHistory = cursorSnapshot(parent.nativeSessionId, after, replay.replay);
-        const task = parentHistory.turns[address.turnIndex]?.items.find(
-          ({ item }) =>
-            item.type === "subagentDelegation" &&
-            item.subagents[0]?.nativeSubagentId === nativeSubagentId,
-        );
-        if (!task || task.item.type !== "subagentDelegation")
-          throw new Error("Native Cursor Task not found in this parent");
         return {
           ok: true,
-          value: cursorChildSnapshot(
-            parent.nativeSessionId,
-            task.item,
-            task.outcome,
-            task.item.subagents[0]?.resultSummary,
-          ),
+          value: cursorSnapshot(parent.nativeSessionId, after, replay.replay, nativeSubagentId),
         };
       } catch (error) {
         return { ok: false, error: cursorError(error) };

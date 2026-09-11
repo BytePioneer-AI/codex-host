@@ -121,10 +121,12 @@ processes.
 Native Task pending/running/terminal events become Host collaboration cards and
 read-only child Threads. The `cursor/task` extension confirms final native model
 metadata. Current ACP does not expose the child's internal message/tool stream;
-the child view contains its real prompt and any result content ACP provides.
-Internal steps are not synthesized. A successful background launch is not child
-completion; observation ends as interrupted if parent exit leaves completion
-unconfirmed.
+the child view contains its real prompt and the full text result ACP provides,
+including after reconnect. The 2,000-character result limit applies only to card
+summaries, not child view content. Native pending and in-progress Task notifications
+remain distinct pending/running card states. Internal steps are not synthesized.
+A successful background launch is not child completion; observation ends as
+interrupted if parent exit leaves completion unconfirmed.
 
 Cursor rewrites live tool-call IDs to `replay-N-M` during `session/load`. Child
 inspection therefore uses a parent-scoped native invocation address: verified

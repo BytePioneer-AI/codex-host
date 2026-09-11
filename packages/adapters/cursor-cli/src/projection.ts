@@ -15,7 +15,7 @@ import {
   type HostTurnId,
 } from "@codexhost/shared-contracts";
 import type { CursorNativeTurn } from "./native-history.js";
-import { CursorSubagents } from "./subagents.js";
+import { CursorSubagents, cursorTaskAddress } from "./subagents.js";
 
 export class CursorTurnOutput {
   readonly subagents: CursorSubagents;
@@ -165,7 +165,10 @@ export function cursorSnapshot(
   sessionId: string,
   native: CursorNativeTurn[],
   replay: SessionNotification[],
+  nativeSubagentId?: string,
 ): HostThreadSnapshot {
+  const address = nativeSubagentId === undefined ? undefined : cursorTaskAddress(nativeSubagentId);
+  let childSnapshot: HostThreadSnapshot | undefined;
   const groups: Array<{ text: string; events: SessionNotification[] }> = [];
   for (const notification of replay) {
     if (notification.sessionId !== sessionId) throw new Error("Cursor replay session mismatch");
@@ -190,6 +193,10 @@ export function cursorSnapshot(
     );
     for (const event of group.events) output.update(event);
     output.finish({ status: "succeeded" });
+    if (address?.turnIndex === index && nativeSubagentId !== undefined) {
+      // Reuse the replayed Task's full output, not its abbreviated card summary.
+      childSnapshot = output.subagents.snapshot(sessionId, nativeSubagentId);
+    }
     return {
       nativeTurnRef: nativeTurnRefSchema.parse({
         harnessId: "cursor-cli",
@@ -205,5 +212,9 @@ export function cursorSnapshot(
       },
     };
   });
+  if (nativeSubagentId !== undefined) {
+    if (!childSnapshot) throw new Error("Native Cursor Task not found in this parent");
+    return childSnapshot;
+  }
   return { turns };
 }

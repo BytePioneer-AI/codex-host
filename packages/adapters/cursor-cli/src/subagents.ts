@@ -82,6 +82,12 @@ export class CursorSubagents {
       return false;
     const args = obj(update.rawInput),
       callId = update.toolCallId;
+    const status =
+      update.status === "pending"
+        ? "pending"
+        : update.status === "in_progress"
+          ? "running"
+          : undefined;
     let task = this.#tasks.get(callId);
     if (!task && args._toolName !== "task") return false;
     if (task?.done) return true;
@@ -93,10 +99,20 @@ export class CursorSubagents {
         ),
         done: false,
       };
+      if (status && task.item.subagents[0]) task.item.subagents[0].status = status;
       this.#tasks.set(callId, task);
       this.emit({ type: "item.started", turnId: this.turnId, item: structuredClone(task.item) });
     }
     const child = task.item.subagents[0];
+    if (child && status && child.status !== status) {
+      child.status = status;
+      this.emit({
+        type: "item.updated",
+        turnId: this.turnId,
+        itemId: task.item.itemId,
+        update: { type: "subagents.replace", subagents: structuredClone(task.item.subagents) },
+      });
+    }
     if (child && typeof obj(update.rawOutput).isBackground === "boolean")
       child.background = obj(update.rawOutput).isBackground === true;
     const body = update.content
@@ -228,11 +244,10 @@ export function cursorChildSnapshot(
             ]
           : [],
         outcome:
-          child?.status === "running"
+          child?.status === "pending" || child?.status === "running"
             ? {
                 status: "unknown",
-                reason:
-                  "Cursor native Task is running; ACP does not expose its internal step stream",
+                reason: `Cursor native Task is ${child.status}; ACP does not expose its internal step stream`,
               }
             : child?.status === "interrupted"
               ? {

@@ -9,7 +9,7 @@ await mkdir(root);
 const audit = await buildHarnessPlugin({
   pluginRoot: path.resolve("packages/adapters/cursor-cli"),
   outputRoot: path.join(root, "cursor-cli"),
-  allowedRuntimePackages: new Set(["@agentclientprotocol/sdk", "zod"]),
+  allowedRuntimePackages: new Set(["@agentclientprotocol/sdk", "diff", "zod"]),
 });
 await writeFile(
   path.join(root, "enabled.json"),

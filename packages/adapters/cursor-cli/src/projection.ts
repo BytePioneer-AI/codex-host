@@ -1,6 +1,8 @@
-import type { SessionNotification } from "@agentclientprotocol/sdk";
+import type { SessionNotification, ToolCallContent } from "@agentclientprotocol/sdk";
+import { createTwoFilesPatch } from "diff";
 import type {
   HostEvent,
+  HostFileChange,
   HostItem,
   HostItemOutcome,
   HostItemSnapshot,
@@ -17,11 +19,47 @@ import {
 import type { CursorNativeTurn } from "./native-history.js";
 import { CursorSubagents, cursorTaskAddress } from "./subagents.js";
 
+const TOOL_OUTPUT_LIMIT = 100_000;
+
+function cursorFileChanges(content: ToolCallContent[]): HostFileChange[] {
+  const changes: HostFileChange[] = [];
+  let remaining = TOOL_OUTPUT_LIMIT;
+  for (const entry of content) {
+    if (entry.type !== "diff" || entry.oldText === entry.newText) continue;
+    // Cursor 2026.09.10's new-file diffString fallback includes patch headers
+    // as content and loses newline information. Do not fabricate a repaired file.
+    const leakedHeader = `++ b/${entry.path}`;
+    if (
+      entry.oldText === "-- /dev/null" &&
+      (entry.newText === leakedHeader || entry.newText.startsWith(`${leakedHeader}\n`))
+    )
+      continue;
+    const kind = entry.oldText == null ? "add" : "update";
+    const unifiedDiff = createTwoFilesPatch(
+      kind === "add" ? "/dev/null" : entry.path,
+      entry.path,
+      entry.oldText ?? "",
+      entry.newText,
+      undefined,
+      undefined,
+      { timeout: 100 },
+    );
+    // A fileChange has no truncation marker. Keep whole patches or only tool output.
+    if (unifiedDiff === undefined || unifiedDiff.length > remaining) continue;
+    changes.push({ path: entry.path, kind, unifiedDiff });
+    remaining -= unifiedDiff.length;
+  }
+  return changes;
+}
+
 export class CursorTurnOutput {
   readonly subagents: CursorSubagents;
   #index = 0;
   #text: Extract<HostItem, { type: "agentMessage" | "reasoning" }> | undefined;
-  readonly #tools = new Map<string, Extract<HostItem, { type: "toolExecution" }>>();
+  readonly #tools = new Map<
+    string,
+    { item: Extract<HostItem, { type: "toolExecution" }>; changes: HostFileChange[] }
+  >();
   readonly #finishedTools = new Set<string>();
   constructor(
     readonly turnId: HostTurnId,
@@ -76,19 +114,23 @@ export class CursorTurnOutput {
     ) {
       this.#finishText();
       if (this.#finishedTools.has(update.toolCallId)) return;
-      let item = this.#tools.get(update.toolCallId);
-      if (!item) {
+      let tool = this.#tools.get(update.toolCallId);
+      if (!tool) {
         const args = jsonValueSchema.safeParse(update.rawInput ?? {});
-        item = {
+        const item: Extract<HostItem, { type: "toolExecution" }> = {
           type: "toolExecution",
           itemId: hostItemIdSchema.parse(`cursor-${this.turnId}-${++this.#index}`),
           toolName: update.title ?? "Cursor tool",
           arguments: args.success ? args.data : {},
         };
-        this.#tools.set(update.toolCallId, item);
+        tool = { item, changes: [] };
+        this.#tools.set(update.toolCallId, tool);
         this.emit({ type: "item.started", turnId: this.turnId, item: { ...item } });
       }
-      if (update.content?.length) {
+      const { item } = tool;
+      if (update.content != null) {
+        // ACP content replaces the collection; status-only updates retain it.
+        tool.changes = cursorFileChanges(update.content);
         const text = update.content
           .flatMap((content) =>
             content.type === "content" && content.content.type === "text"
@@ -98,18 +140,16 @@ export class CursorTurnOutput {
                 : [],
           )
           .join("\n");
-        if (text) {
-          item.output = {
-            content: [{ type: "text", text: text.slice(0, 100_000) }],
-            truncated: text.length > 100_000,
-          };
-          this.emit({
-            type: "item.updated",
-            turnId: this.turnId,
-            itemId: item.itemId,
-            update: { type: "output.replace", output: item.output },
-          });
-        }
+        item.output = {
+          content: [{ type: "text", text: text.slice(0, TOOL_OUTPUT_LIMIT) }],
+          truncated: text.length > TOOL_OUTPUT_LIMIT,
+        };
+        this.emit({
+          type: "item.updated",
+          turnId: this.turnId,
+          itemId: item.itemId,
+          update: { type: "output.replace", output: item.output },
+        });
       }
       if (update.status === "completed" || update.status === "failed") {
         this.emit({
@@ -130,6 +170,19 @@ export class CursorTurnOutput {
                   },
           },
         });
+        if (update.status === "completed" && tool.changes.length) {
+          const change: HostItem = {
+            type: "fileChange",
+            itemId: hostItemIdSchema.parse(`cursor-${this.turnId}-${++this.#index}`),
+            changes: tool.changes,
+          };
+          this.emit({ type: "item.started", turnId: this.turnId, item: change });
+          this.emit({
+            type: "item.completed",
+            turnId: this.turnId,
+            snapshot: { item: change, outcome: { status: "succeeded" } },
+          });
+        }
         this.#tools.delete(update.toolCallId);
         this.#finishedTools.add(update.toolCallId);
       }
@@ -138,7 +191,7 @@ export class CursorTurnOutput {
   finish(outcome: HostItemOutcome) {
     this.subagents.finish(outcome);
     this.#finishText(outcome);
-    for (const item of this.#tools.values())
+    for (const { item } of this.#tools.values())
       this.emit({
         type: "item.completed",
         turnId: this.turnId,

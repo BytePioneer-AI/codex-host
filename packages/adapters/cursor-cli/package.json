@@ -23,6 +23,7 @@
     "@codexhost/harness-adapter": "0.0.0",
     "@codexhost/harness-discovery": "0.0.0",
     "@codexhost/shared-contracts": "0.0.0",
-    "@codexhost/harness-broker": "0.0.0"
+    "@codexhost/harness-broker": "0.0.0",
+    "diff": "8.0.2"
   }
 }

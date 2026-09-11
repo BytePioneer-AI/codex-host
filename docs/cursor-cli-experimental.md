@@ -22,6 +22,8 @@ integration. [CLI ACP](https://cursor.com/docs/cli/acp) is the selected interfac
 ## Implemented boundary
 
 - Native create, text prompt, streaming text/reasoning, tool progress and cancellation.
+- Structured Edit Diff for successful tools carrying native ACP diff content,
+  including new files and updates, in live output and native history replay.
 - Dynamic native model catalog. Full bracketed model variants are encoded into
   transport-safe Host refs without losing native model parameters.
 - Native Agent, Plan and Ask configuration, confirmed by the ACP response before
@@ -68,13 +70,54 @@ contract investigation before release acceptance.
 - Fork, rollback, independent thinking selection, usage/account reporting, native
   session import, unattended full access and internal subagent transcript browsing are not
   advertised. Image/audio prompt inputs are outside the current Host text contract.
-- Tool changes are visible as tool output; complete native file-diff projection
-  and every Cursor notification extension are not implemented.
+- Edit Diff is partial: it requires native ACP diff content. Delete/rename semantics,
+  shell edits and missing historical diffs are not inferred. Other Cursor notification
+  extensions are not all implemented.
 - Model inspection opens one empty native ACP session per cache refresh because
   the catalog is returned by `session/new`. It submits no model prompt. Both
   successful and failed inspection results are cached for five minutes on demand.
 - The native history format and operating-system authentication behavior require
   platform/version acceptance before formal product support is claimed.
+
+## Native Edit Diff
+
+The adapter converts ACP `diff` content (`path`, `oldText`, `newText`) into public
+`fileChange` Items for the existing Desktop patch and Turn Diff projection. Absent
+or null `oldText` means a new file per ACP; an empty string means an existing empty
+file. Whitespace and line endings in accepted native bodies are preserved.
+Unchanged content is omitted.
+
+Diffs are published only after the native tool reports success. Pending proposals,
+failed tools and unconfirmed/cancelled calls do not create applied changes; changes
+from a tool that already succeeded remain visible if the rest of the Turn is cancelled.
+ACP content updates replace previous content, and repeated terminal notifications do
+not create extra file-change Items. Native `session/load` uses the same projection;
+it cannot recover diffs omitted by the native replay.
+
+Whole patches share a 100,000-character budget per tool, with a 100 ms generation
+budget per file. Oversized or timed-out patches are omitted rather than truncated;
+the existing bounded tool output remains available. No file watcher, Git comparison,
+filesystem baseline or separate diff history is added.
+
+The macOS arm64 CLI `2026.09.10-fd3934a`, using native `cursor_login` and Model
+`default[]`, was checked with real edits in an isolated workspace. An existing-file
+patch reproduced the actual file from its known previous contents. A relocated
+plugin loaded through the public Loader resumed that Session, completed another
+real edit, and emitted one Desktop File Change Item and patch update. A fresh
+Adapter/native process recovered identical patches and Native Turn IDs.
+
+That same CLI's new-file `diffString` fallback was observed to put `-- /dev/null`
+in `oldText` and `++ b/<path>` in `newText`, losing final-newline information. The
+same corruption appears in replay. This known malformed pair stays as tool output;
+it is not repaired from the current file or guessed into a File Change. Valid ACP
+new-file content remains supported, but this native creation case does not have a
+reliable Diff.
+
+Automated fixtures cover complete patches, content replacement, success/failure/
+cancellation, duplicate notifications, limits and the captured malformed creation
+case in live and history projection. These checks are not visual Desktop acceptance
+and do not establish coverage for every Cursor Edit/Write path or other versions
+and platforms.
 
 ## Build a separate candidate
 

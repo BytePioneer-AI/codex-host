@@ -151,6 +151,7 @@ describe("production Desktop Controller", () => {
         "omp",
         "antigravity",
         "kiro-cli",
+        "codebuddy",
         "cursor-cli",
       ],
       timeoutMs: 90_000,

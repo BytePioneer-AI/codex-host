@@ -3977,7 +3977,9 @@ export class AppServerHost {
       const record = (await this.#repository.list()).find(
         (candidate) =>
           candidate.subagent?.parentHostThreadId === thread.id &&
-          candidate.subagent.nativeSubagentId === nativeSubagentId,
+          candidate.subagent.nativeSubagentId === nativeSubagentId &&
+          candidate.nativeSessionRef?.nativeSessionId ===
+            thread.record.nativeSessionRef?.nativeSessionId,
       );
       if (record) await this.#refreshOpenSubagentThread(record.hostThreadId, false);
       return;
@@ -3987,7 +3989,9 @@ export class AppServerHost {
       const record = (await this.#repository.list()).find(
         (candidate) =>
           candidate.subagent?.parentHostThreadId === thread.id &&
-          candidate.subagent.nativeSubagentId === nativeSubagentId,
+          candidate.subagent.nativeSubagentId === nativeSubagentId &&
+          candidate.nativeSessionRef?.nativeSessionId ===
+            thread.record.nativeSessionRef?.nativeSessionId,
       );
       if (!record) return;
       const status = event.status === "pending" || event.status === "running" ? "active" : "idle";

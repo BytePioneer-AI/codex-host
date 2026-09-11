@@ -14,6 +14,7 @@ export type {
   CreateProvisionalThreadInput,
   DelegationStatus,
   FindRecentDelegationInput,
+  RebindSubagentSessionInput,
   ReplaceReadySessionAfterLastTurnInput,
   ReplaceReadySessionInput,
   StoredDelegationRecordV1,

@@ -96,6 +96,7 @@ const externalHarnessIds = {
   omp: harnessIdSchema.parse("omp"),
   antigravity: harnessIdSchema.parse("antigravity"),
   "kiro-cli": harnessIdSchema.parse("kiro-cli"),
+  codebuddy: harnessIdSchema.parse("codebuddy"),
   "cursor-cli": harnessIdSchema.parse("cursor-cli"),
 } as const;
 
@@ -108,6 +109,7 @@ const externalAgents: readonly ExternalRendererAgent[] = [
   "omp",
   "antigravity",
   "kiro-cli",
+  "codebuddy",
   "cursor-cli",
 ];
 type HarnessAvailability = Partial<Record<ExternalRendererAgent, RendererAgentAvailability>>;
@@ -459,7 +461,11 @@ export function restoredThreadOwnership(inspection: ThreadInspection): RestoredT
       ...(permissionModeId ? { permissionModeId } : {}),
     };
   }
-  if (inspection.harnessId === "kiro-cli" || inspection.harnessId === "cursor-cli") {
+  if (
+    inspection.harnessId === "kiro-cli" ||
+    inspection.harnessId === "codebuddy" ||
+    inspection.harnessId === "cursor-cli"
+  ) {
     const route = decodeHarnessPluginRoute(inspection.transportModelId);
     if (!route || route.harnessId !== inspection.harnessId) {
       throw new Error("Plugin Thread reported an incompatible transport Model");
@@ -710,6 +716,7 @@ export function installRendererBindingProbe(
       omp: undefined,
       antigravity: undefined,
       "kiro-cli": undefined,
+      codebuddy: undefined,
       "cursor-cli": undefined,
     },
     webUi: Object.fromEntries(

@@ -10,6 +10,7 @@ import {
   type CreateProvisionalThreadInput,
   type DelegationStatus,
   type FindRecentDelegationInput,
+  type RebindSubagentSessionInput,
   type ReplaceReadySessionAfterLastTurnInput,
   type ReplaceReadySessionInput,
   type StoredDelegationRecordV1,
@@ -48,6 +49,7 @@ export interface ExternalThreadStore {
   removeDelegation(delegationId: HostThreadId): Promise<void>;
   createProvisional(input: CreateProvisionalThreadInput): Promise<StoredThreadRecordV1>;
   commitReady(input: CommitReadyThreadInput): Promise<StoredThreadRecordV1>;
+  rebindSubagentSession(input: RebindSubagentSessionInput): Promise<StoredThreadRecordV1>;
   replaceReadySession(input: ReplaceReadySessionInput): Promise<StoredThreadRecordV1>;
   replaceReadySessionAfterLastTurn(
     input: ReplaceReadySessionAfterLastTurnInput,
@@ -327,7 +329,7 @@ export class ExternalThreadRepository {
     });
     return {
       record: nextRecord,
-      turns: await projectExternalSnapshot(this.store, nextRecord, snapshot),
+      turns: await projectExternalSnapshot(this.store, nextRecord, snapshot, derived),
     };
   }
 
@@ -369,7 +371,7 @@ export class ExternalThreadRepository {
     });
     return {
       record: nextRecord,
-      turns: await projectExternalSnapshot(this.store, nextRecord, snapshot),
+      turns: await projectExternalSnapshot(this.store, nextRecord, snapshot, current),
     };
   }
 

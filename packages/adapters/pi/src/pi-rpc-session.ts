@@ -512,7 +512,7 @@ export class PiRpcSession {
     }
     this.#options = {
       commandTimeoutMs: 30_000,
-      compactionTimeoutMs: 300_000,
+      compactionTimeoutMs: 420_000,
       cancelTimeoutMs: 2_000,
       closeTimeoutMs: 2_000,
       ...options,

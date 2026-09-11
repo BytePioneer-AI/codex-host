@@ -91,6 +91,23 @@ function includesExternalRecord(
   byId: ReadonlyMap<string, StoredThreadRecordV1>,
 ): boolean {
   if (record.state !== "ready" || !record.nativeSessionRef) return false;
+  // Rollback retains old records for historical links, but only rebound children
+  // belong to the parent's current Native Session (including nested children).
+  let current = record;
+  const owners = new Set<string>();
+  while (current.subagent) {
+    if (owners.has(current.hostThreadId)) return false;
+    owners.add(current.hostThreadId);
+    const parent = byId.get(current.subagent.parentHostThreadId);
+    if (
+      !parent ||
+      parent.state !== "ready" ||
+      parent.harnessId !== current.harnessId ||
+      parent.nativeSessionRef?.nativeSessionId !== current.nativeSessionRef?.nativeSessionId
+    )
+      return false;
+    current = parent;
+  }
   const sourceKind = record.subagent ? "subAgentThreadSpawn" : "vscode";
   const scoped = query.parentThreadId !== null || query.ancestorThreadId !== null;
   if (

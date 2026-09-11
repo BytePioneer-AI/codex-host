@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { cp, mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -71,6 +71,37 @@ afterEach(async () => {
 });
 
 describe("Harness plugin discovery and loading", () => {
+  it("loads the relocated CodeBuddy bundle without workspace dependencies and isolates factories", async () => {
+    const directory = await root(["codebuddy"]);
+    await cp(
+      path.resolve("packages/host-runtime/dist/plugins/codebuddy"),
+      path.join(directory, "codebuddy"),
+      { recursive: true },
+    );
+    const options = {
+      roots: [directory],
+      context: {
+        ...context,
+        environment: { CODEXHOST_CODEBUDDY_COMMAND: path.join(directory, "missing-codebuddy") },
+      },
+      warmup: false,
+    };
+    const first = await loadHarnessPlugins(options),
+      second = await loadHarnessPlugins(options);
+    try {
+      expect(first.list()).toMatchObject([{ id: "codebuddy", name: "CodeBuddy" }]);
+      const adapter = [...first.adapters.values()][0],
+        independent = [...second.adapters.values()][0];
+      expect(adapter).not.toBe(independent);
+      expect(await adapter?.inspect()).toMatchObject({ status: "notInstalled" });
+      await first.close();
+      expect(await independent?.inspect()).toMatchObject({ status: "notInstalled" });
+    } finally {
+      await first.close();
+      await second.close();
+    }
+  });
+
   it.each(["pi", "claude-code", "deepseek-harness", "opencode", "grok", "omp", "antigravity"])(
     "ships a valid %s manifest and resolvable compiled resources",
     async (id) => {

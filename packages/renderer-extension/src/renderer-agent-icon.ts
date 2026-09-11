@@ -2,6 +2,7 @@ import codexAgentIconUrl from "./assets/codex-agent.png";
 import grokAgentIconUrl from "./assets/grok-agent.png";
 import antigravityAgentIconUrl from "./assets/antigravity-agent.svg";
 import kiroAgentIconUrl from "./assets/kiro-agent.svg";
+import codeBuddyAgentIconUrl from "./assets/codebuddy-agent.svg";
 import cursorAgentIconUrl from "./assets/cursor-agent.svg";
 import ompAgentIconUrl from "./assets/omp-agent.svg";
 import openCodeAgentIconUrl from "./assets/opencode-agent.png";
@@ -17,6 +18,7 @@ export const RENDERER_AGENT_LABELS: Record<RendererAgent, string> = {
   omp: "Oh My Pi",
   antigravity: "Antigravity CLI",
   "kiro-cli": "Kiro CLI",
+  codebuddy: "CodeBuddy",
   "cursor-cli": "Cursor CLI (Experimental)",
 };
 
@@ -113,14 +115,21 @@ export function createRendererAgentIcon(
     image.style.flex = "none";
     return image;
   }
-  if (agent === "antigravity" || agent === "kiro-cli" || agent === "cursor-cli") {
+  if (
+    agent === "antigravity" ||
+    agent === "kiro-cli" ||
+    agent === "codebuddy" ||
+    agent === "cursor-cli"
+  ) {
     const image = ownerDocument.createElement("img");
     image.src =
-      agent === "cursor-cli"
-        ? cursorAgentIconUrl
-        : agent === "kiro-cli"
-          ? kiroAgentIconUrl
-          : antigravityAgentIconUrl;
+      agent === "codebuddy"
+        ? codeBuddyAgentIconUrl
+        : agent === "cursor-cli"
+          ? cursorAgentIconUrl
+          : agent === "kiro-cli"
+            ? kiroAgentIconUrl
+            : antigravityAgentIconUrl;
     image.alt = "";
     image.draggable = false;
     image.style.width = `${size}px`;

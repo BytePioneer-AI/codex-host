@@ -714,7 +714,9 @@ function session(
     {
       cwd: process.cwd(),
       commandTimeoutMs: options.commandTimeoutMs ?? 2_000,
-      compactionTimeoutMs: options.compactionTimeoutMs ?? 300_000,
+      ...(options.compactionTimeoutMs === undefined
+        ? {}
+        : { compactionTimeoutMs: options.compactionTimeoutMs }),
       cancelTimeoutMs: options.cancelTimeoutMs ?? 500,
       closeTimeoutMs: 500,
       onFault,

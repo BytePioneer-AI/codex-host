@@ -40,9 +40,11 @@ behavior. Native login files and keychain state stay in the user's home/session.
 Discovery reconnects on the next explicit caller request after service startup or
 connection loss. Existing wrappers can recover on snapshot read or a subsequent
 Turn start by resuming their confirmed native Session with its last observed
-model/Thinking/permission state and scoped delegation environment. Recovery is
-refused if no native identity was confirmed; it never creates a substitute Session
-or replays an interrupted Turn. There is no background model polling or native fallback.
+model/Thinking/permission state and scoped delegation environment. The filtered
+environment is retained per Session for native fault recovery on the same broker
+connection as well as for reconnection. Recovery is refused if no native identity
+was confirmed; it never creates a substitute Session or replays an interrupted Turn.
+There is no background model polling or native fallback.
 Closing a client also closes its owned sessions and output channels. A failed
 broker is reported as unavailable rather than routing the Thread to another
 Harness. A service restart is separate from restarting Desktop or Remote Host.

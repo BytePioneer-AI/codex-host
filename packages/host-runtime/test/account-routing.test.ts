@@ -1,8 +1,9 @@
 import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import type * as nodeFsPromises from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { JsonObject } from "@codexhost/protocol-core";
 
@@ -13,6 +14,22 @@ import {
   UnknownCodexThreadAccountError,
   type CodexAccount,
 } from "../src/index.js";
+
+const fsFailures = vi.hoisted(() => ({ remaining: 0 }));
+
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const actual = await importOriginal<typeof nodeFsPromises>();
+  return {
+    ...actual,
+    writeFile: vi.fn((...args: Parameters<typeof nodeFsPromises.writeFile>) => {
+      if (fsFailures.remaining > 0) {
+        fsFailures.remaining -= 1;
+        return Promise.reject(new Error("simulated persistence failure"));
+      }
+      return actual.writeFile(...args);
+    }),
+  };
+});
 import type { OfficialAppServerConnection } from "../src/official-app-server-connection.js";
 import { PassThrough } from "node:stream";
 
@@ -212,6 +229,28 @@ describe("Codex Account routing persistence", () => {
     await expect(threads.bind("thread-b", "account-a")).rejects.toThrow();
     await expect(threads.getAccountId("thread-b")).resolves.toBeNull();
     await expect(threads.getAccountId("thread-a")).resolves.toBe("account-a");
+  });
+
+  it("keeps memory and disk consistent when a raced persistence fails", async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), "codexhost-account-binding-test-"));
+    directories.push(directory);
+    const threads = new ThreadAccountStore({ directory });
+    await threads.initialize();
+
+    // The second bind queues its write before the first bind's failure is
+    // known; its write must not resurrect the rolled-back binding on disk.
+    fsFailures.remaining = 1;
+    const first = threads.bind("thread-a", "account-a");
+    const second = threads.bind("thread-b", "account-a");
+    await expect(first).rejects.toThrow("simulated persistence failure");
+    await expect(second).resolves.toBeUndefined();
+
+    await expect(threads.getAccountId("thread-a")).resolves.toBeNull();
+    await expect(threads.getAccountId("thread-b")).resolves.toBe("account-a");
+    const persisted = JSON.parse(
+      await readFile(path.join(directory, "thread-accounts.json"), "utf8"),
+    ) as { bindings: Record<string, string> };
+    expect(persisted.bindings).toEqual({ "thread-b": "account-a" });
   });
 
   it("removes Thread ownership bindings for a deleted Account", async () => {

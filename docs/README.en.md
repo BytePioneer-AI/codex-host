@@ -25,6 +25,7 @@ But **Codex** is not the only capable **Agent Harness**. Some people prefer **Cl
   <a href="https://github.com/deepseek-ai/deepseek-harness"><img alt="DeepSeek Harness" src="https://img.shields.io/badge/DeepSeek-4D6BFE?logo=deepseek&logoColor=white" /></a>
   <a href="https://grok.com/"><img alt="Grok" src="https://img.shields.io/badge/Grok-000000?logo=x&logoColor=white" /></a>
   <a href="https://github.com/can1357/oh-my-pi"><img alt="Oh My Pi" src="imgs/badge-omp-v5.svg" /></a>
+  <a href="https://www.codebuddy.ai/"><img alt="CodeBuddy" src="https://img.shields.io/badge/CodeBuddy-4A89FF" /></a>
   <a href="https://antigravity.google/product/antigravity-cli"><img alt="AGY" src="imgs/badge-agy.svg" /></a>
   <a href="https://kiro.dev/docs/cli/"><img alt="Kiro CLI" src="imgs/badge-kiro.svg" /></a>
 </p>
@@ -48,7 +49,7 @@ But **Codex** is not the only capable **Agent Harness**. Some people prefer **Cl
 
 ## Interface Preview
 
-No app switching required: **Pi, Claude Code, OpenCode, OMP, Grok Build, and DeepSeek Harness** can all run directly in the same Codex Desktop window.
+No app switching required: **Pi, Claude Code, OpenCode, OMP, Grok Build, DeepSeek Harness, and CodeBuddy CLI** can all run directly in the same Codex Desktop window.
 
 https://github.com/user-attachments/assets/c48192d7-23ff-4f6e-b61a-6345a655bb76
 

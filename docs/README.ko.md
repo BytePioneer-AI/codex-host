@@ -25,6 +25,7 @@
   <a href="https://github.com/deepseek-ai/deepseek-harness"><img alt="DeepSeek Harness" src="https://img.shields.io/badge/DeepSeek-4D6BFE?logo=deepseek&logoColor=white" /></a>
   <a href="https://grok.com/"><img alt="Grok" src="https://img.shields.io/badge/Grok-000000?logo=x&logoColor=white" /></a>
   <a href="https://github.com/can1357/oh-my-pi"><img alt="Oh My Pi" src="imgs/badge-omp-v5.svg" /></a>
+  <a href="https://www.codebuddy.ai/"><img alt="CodeBuddy" src="https://img.shields.io/badge/CodeBuddy-4A89FF" /></a>
   <a href="https://antigravity.google/product/antigravity-cli"><img alt="AGY" src="imgs/badge-agy.svg" /></a>
   <a href="https://kiro.dev/docs/cli/"><img alt="Kiro CLI" src="imgs/badge-kiro.svg" /></a>
 </p>
@@ -48,7 +49,7 @@
 
 ## 인터페이스 미리보기
 
-앱을 전환하지 않고도 **Pi, Claude Code, OpenCode, OMP, Grok Build, DeepSeek Harness**를 하나의 Codex Desktop 창에서 바로 사용할 수 있습니다.
+앱을 전환하지 않고도 **Pi, Claude Code, OpenCode, OMP, Grok Build, DeepSeek Harness, CodeBuddy CLI**를 하나의 Codex Desktop 창에서 바로 사용할 수 있습니다.
 
 https://github.com/user-attachments/assets/c48192d7-23ff-4f6e-b61a-6345a655bb76
 

@@ -1,0 +1,9 @@
+{
+  "manifestVersion": 1,
+  "id": "codebuddy",
+  "name": "CodeBuddy",
+  "version": "0.0.0",
+  "adapterApiVersion": 1,
+  "entry": "./dist/plugin.js",
+  "links": { "installation": "https://www.codebuddy.ai/" }
+}

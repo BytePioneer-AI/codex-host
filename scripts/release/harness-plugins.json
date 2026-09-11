@@ -6,6 +6,7 @@
     "packages/adapters/opencode",
     "packages/adapters/grok",
     "packages/adapters/omp",
+    "packages/adapters/codebuddy",
     "packages/adapters/antigravity",
     "packages/adapters/kiro-cli"
   ],

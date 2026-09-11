@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { HarnessInspection } from "@codexhost/harness-adapter";
 import { warmup as warmupClaude } from "@codexhost/adapter-claude-code/plugin";
 import { warmup as warmupAntigravity } from "@codexhost/adapter-antigravity/plugin";
+import { warmup as warmupCodeBuddy } from "@codexhost/adapter-codebuddy/plugin";
 
 import { installedHarnessPluginOptions, loadHarnessPlugins } from "../src/index.js";
 
@@ -17,6 +18,7 @@ const classes = {
   opencode: "OpenCodeAdapter",
   grok: "GrokAdapter",
   omp: "OmpAdapter",
+  codebuddy: "CodeBuddyAdapter",
   antigravity: "AntigravityAdapter",
   "kiro-cli": "KiroAdapter",
 };
@@ -42,6 +44,7 @@ describe("installed Harness composition", () => {
   it.each([
     ["Claude Code", warmupClaude],
     ["Antigravity", warmupAntigravity],
+    ["CodeBuddy", warmupCodeBuddy],
   ] as const)(
     "preserves %s best-effort asynchronous prefetch inside the plugin",
     async (_name, warmup) => {
@@ -94,6 +97,7 @@ describe("installed Harness composition", () => {
       opencode: ["/compact"],
       grok: ["/compact"],
       omp: ["/compact"],
+      codebuddy: [],
       antigravity: [
         "/plan",
         "/goal",
@@ -135,6 +139,7 @@ describe("installed Harness composition", () => {
     ["grok", "CODEXHOST_GROK_COMMAND"],
     ["opencode", "CODEXHOST_OPENCODE_COMMAND"],
     ["omp", "CODEXHOST_OMP_COMMAND"],
+    ["codebuddy", "CODEXHOST_CODEBUDDY_COMMAND"],
     ["antigravity", "CODEXHOST_ANTIGRAVITY_COMMAND"],
     ["kiro-cli", "CODEXHOST_KIRO_COMMAND"],
   ])(
@@ -143,10 +148,12 @@ describe("installed Harness composition", () => {
       const registry = await load({ [commandVariable]: path.resolve(".missing-fixture", id) });
       try {
         const adapter = [...registry.adapters].find(([key]) => key === id)?.[1];
-        expect(await adapter?.inspect()).toMatchObject({
-          status: "notInstalled",
-          error: { code: "notInstalled" },
-        });
+        const inspection = await adapter?.inspect();
+        expect(inspection).toMatchObject(
+          id === "codebuddy"
+            ? { status: "unavailable", error: { code: "unavailable" } }
+            : { status: "notInstalled", error: { code: "notInstalled" } },
+        );
       } finally {
         await registry.close();
       }

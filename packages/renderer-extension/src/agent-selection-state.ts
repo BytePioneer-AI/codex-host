@@ -12,6 +12,7 @@ export const KNOWN_RENDERER_AGENTS = [
   "opencode",
   "grok",
   "omp",
+  "codebuddy",
   "antigravity",
   "kiro-cli",
 ] as const;
@@ -38,6 +39,7 @@ export interface DraftComposerState {
   grokThinkingOptionId?: HarnessThinkingOptionId;
   ompModel?: HarnessModelRef;
   ompThinkingOptionId?: HarnessThinkingOptionId;
+  codebuddyModel?: HarnessModelRef;
   antigravityModel?: HarnessModelRef;
   antigravityThinkingOptionId?: HarnessThinkingOptionId;
   kiroCliModel?: HarnessModelRef;
@@ -208,6 +210,7 @@ export class DraftAgentController<Composer extends object> {
     if (agent === "opencode" && model) state.openCodeModel = model;
     if (agent === "grok" && model) state.grokModel = model;
     if (agent === "omp" && model) state.ompModel = model;
+    if (agent === "codebuddy" && model) state.codebuddyModel = model;
     if (agent === "antigravity" && model) state.antigravityModel = model;
     if (agent === "kiro-cli" && model) state.kiroCliModel = model;
     if (agent === "pi" && thinkingOptionId) state.piThinkingOptionId = thinkingOptionId;
@@ -237,6 +240,7 @@ export class DraftAgentController<Composer extends object> {
         "opencode",
         "grok",
         "omp",
+        "codebuddy",
         "antigravity",
         "kiro-cli",
       ] as const) {
@@ -260,8 +264,9 @@ export class DraftAgentController<Composer extends object> {
     if (agent === "deepseek-harness") return state.deepSeekHarnessModel;
     if (agent === "opencode") return state.openCodeModel;
     if (agent === "grok") return state.grokModel;
-    if (agent === "omp") return state.ompModel;
+    if (agent === "codebuddy") return state.codebuddyModel;
     if (agent === "antigravity") return state.antigravityModel;
+    if (agent === "omp") return state.ompModel;
     if (agent === "kiro-cli") return state.kiroCliModel;
     return undefined;
   }
@@ -275,8 +280,9 @@ export class DraftAgentController<Composer extends object> {
     if (agent === "claude-code") return state.claudeThinkingOptionId;
     if (agent === "grok") return state.grokThinkingOptionId;
     if (agent === "opencode") return state.openCodeThinkingOptionId;
-    if (agent === "omp") return state.ompThinkingOptionId;
+    if (agent === "codebuddy") return undefined;
     if (agent === "antigravity") return state.antigravityThinkingOptionId;
+    if (agent === "omp") return state.ompThinkingOptionId;
     if (agent === "kiro-cli") return state.kiroCliThinkingOptionId;
     return undefined;
   }
@@ -312,8 +318,9 @@ export class DraftAgentController<Composer extends object> {
     else if (agent === "deepseek-harness") state.deepSeekHarnessModel = model;
     else if (agent === "opencode") state.openCodeModel = model;
     else if (agent === "grok") state.grokModel = model;
-    else if (agent === "omp") state.ompModel = model;
+    else if (agent === "codebuddy") state.codebuddyModel = model;
     else if (agent === "antigravity") state.antigravityModel = model;
+    else if (agent === "omp") state.ompModel = model;
     else if (agent === "kiro-cli") state.kiroCliModel = model;
     return state;
   }

@@ -50,6 +50,7 @@ import {
   decodeAntigravityTransportModelId,
   decodeClaudeTransportModelId,
   decodeDeepSeekHarnessTransportModelId,
+  decodeCodeBuddyTransportModelId,
   decodeGrokTransportModelId,
   decodeOmpTransportModelId,
   decodeOpenCodeTransportModelId,
@@ -94,6 +95,7 @@ const externalHarnessIds = {
   opencode: harnessIdSchema.parse("opencode"),
   grok: harnessIdSchema.parse("grok"),
   omp: harnessIdSchema.parse("omp"),
+  codebuddy: harnessIdSchema.parse("codebuddy"),
   antigravity: harnessIdSchema.parse("antigravity"),
   "kiro-cli": harnessIdSchema.parse("kiro-cli"),
 } as const;
@@ -105,6 +107,7 @@ const externalAgents: readonly ExternalRendererAgent[] = [
   "opencode",
   "grok",
   "omp",
+  "codebuddy",
   "antigravity",
   "kiro-cli",
 ];
@@ -440,6 +443,20 @@ export function restoredThreadOwnership(inspection: ThreadInspection): RestoredT
       ...(permissionModeId ? { permissionModeId } : {}),
     };
   }
+  if (inspection.harnessId === "codebuddy") {
+    const transportSelection = decodeCodeBuddyTransportModelId(inspection.transportModelId);
+    if (!transportSelection) {
+      throw new Error("CodeBuddy Thread reported an incompatible transport Model");
+    }
+    const model = inspection.effectiveModel ?? transportSelection.model;
+    const permissionModeId =
+      inspection.effectivePermissionModeId ?? transportSelection.permissionModeId;
+    return {
+      agent: "codebuddy",
+      ...(model ? { model } : {}),
+      ...(permissionModeId ? { permissionModeId } : {}),
+    };
+  }
   if (inspection.harnessId === "antigravity") {
     const transportSelection = decodeAntigravityTransportModelId(inspection.transportModelId);
     if (!transportSelection) {
@@ -704,6 +721,7 @@ export function installRendererBindingProbe(
       opencode: undefined,
       grok: undefined,
       omp: undefined,
+      codebuddy: undefined,
       antigravity: undefined,
       "kiro-cli": undefined,
     },

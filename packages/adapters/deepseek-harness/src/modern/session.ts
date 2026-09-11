@@ -57,6 +57,7 @@ import { deepSeekHarnessCommandCatalog, parseDeepSeekHarnessCommand } from "../h
 import { isRecord, parseArguments, projectToolResult, structuredDiffs } from "../projection.js";
 import type { ModernModelCatalogSnapshot } from "./catalog.js";
 import { executeModernCommand, ModernCommandError } from "./commands.js";
+import { ModernObservation } from "./observation.js";
 import {
   modernConfigurationHarnessError,
   modernSelectionForModel,
@@ -134,6 +135,7 @@ export function modernSessionCapabilities(
       permissionModeScope: "live",
     },
     history: { fork: true, forkAcrossCwd: false, rollbackLastTurn: true },
+    subagents: { observe: true, readTranscript: true },
     autonomousTurns: { observe: true },
   };
 }
@@ -272,6 +274,13 @@ export interface ModernHarnessSessionOptions {
   readonly acceptedCorrelationTimeoutMs?: number;
   readonly onClosed?: () => void;
   readonly flushSession?: () => Promise<void>;
+  /** Passive child history: no command admission, approval ownership or native cancellation. */
+  readonly observationOnly?: boolean;
+  readonly captureActiveSnapshot?: boolean;
+  readonly subagentAddress?: {
+    readonly parentSessionId: string;
+    readonly mode: "one-shot" | "continuable";
+  };
 }
 
 export interface ModernSessionControl extends ModernConfigurationControl {
@@ -285,6 +294,9 @@ export interface ModernSessionControl extends ModernConfigurationControl {
 
 /** Directly constructible Modern Session core; Adapter lifecycle wiring stays outside this module. */
 export class ModernHarnessSession implements HarnessSession, ModernEventSink {
+  readonly #observation: ModernObservation | undefined;
+  readonly #activeView: ModernObservation | undefined;
+  readonly #subagentAddress: ModernHarnessSessionOptions["subagentAddress"];
   readonly harnessId: HarnessId;
   readonly capabilities: HarnessSessionCapabilities;
   readonly initialState: HarnessSessionState;
@@ -367,6 +379,10 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
     this.#modelCatalog = options.modelCatalog;
     this.#permissionModes = options.permissionModes;
     this.#sessionId = options.sessionId;
+    this.#observation = options.observationOnly ? new ModernObservation() : undefined;
+    this.#activeView =
+      this.#observation ?? (options.captureActiveSnapshot ? new ModernObservation() : undefined);
+    this.#subagentAddress = options.subagentAddress;
     this.#randomUUID = options.randomUUID ?? nodeRandomUUID;
     this.#now = options.now ?? Date.now;
     this.#toolOutputLimit = safeLimit(
@@ -426,7 +442,18 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
     this.#usage = this.initialUsage;
     this.#fallbackModel = configuration.state.effectiveModel as HarnessModelRef;
     this.#fallbackThinkingOptionId = configuration.state.effectiveThinkingOptionId;
-    this.capabilities = modernSessionCapabilities(this.#permissionModes);
+    this.capabilities = this.#observation
+      ? {
+          configuration: {
+            selectModel: false,
+            selectThinkingOption: false,
+            selectPermissionMode: false,
+            permissionModeScope: "live",
+          },
+          history: { fork: false, forkAcrossCwd: false, rollbackLastTurn: false },
+          autonomousTurns: { observe: true },
+        }
+      : modernSessionCapabilities(this.#permissionModes);
     this.outputs = this.#channel.outputs;
     this.commands = {
       list: () => this.#listHarnessCommands(),
@@ -459,7 +486,9 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
           this.#onConfigurationProjection(),
         ),
       );
-      this.#detachEvents = options.eventGateway.attach(this.#sessionId, this);
+      this.#detachEvents = this.#observation
+        ? async () => undefined
+        : options.eventGateway.attach(this.#sessionId, this);
     } catch (error) {
       for (const unsubscribe of removeControlSubscriptions.reverse()) unsubscribe();
       throw error;
@@ -476,15 +505,40 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
   }
 
   readSnapshot(): Promise<HarnessResult<HostThreadSnapshot>> {
+    return this.#readSnapshot(this.#observation !== undefined);
+  }
+
+  readObservationSnapshot(): Promise<HarnessResult<HostThreadSnapshot>> {
+    return this.#readSnapshot(true);
+  }
+
+  #readSnapshot(includeActive: boolean): Promise<HarnessResult<HostThreadSnapshot>> {
     if (this.#closed || this.#closing) return Promise.resolve({ ok: false, error: closedError() });
     if (this.#reading) return Promise.resolve({ ok: false, error: busyError("read history") });
     this.#reading = true;
     try {
       const projection = this.#project();
       const configuration = this.#readConfiguration();
+      const active = this.#active;
+      if (includeActive && this.#activeView && active && !active.terminal) {
+        projection.snapshot.turns.push({
+          nativeTurnRef: modernNativeTurnRef(this.harnessId, this.#sessionId, active.nativeTurn),
+          input: [...active.input],
+          items: this.#activeView.items(),
+          outcome: { status: "unknown", reason: "Native subagent Turn is still running" },
+          ...(configuration.state.effectiveModel
+            ? { model: configuration.state.effectiveModel }
+            : {}),
+        });
+      }
       return Promise.resolve({
         ok: true,
-        value: { ...projection.snapshot, state: configuration.state },
+        value: {
+          ...projection.snapshot,
+          state: this.#observation
+            ? { ...configuration.state, ...projection.snapshot.state }
+            : configuration.state,
+        },
       });
     } catch (error) {
       const failure = configurationOrProtocolError(
@@ -497,6 +551,18 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
       this.#reading = false;
       this.#activateBufferedAutonomous();
     }
+  }
+
+  /** Adapter-owned native facts used to verify child ownership and creation windows. */
+  observationJournal() {
+    return {
+      header: this.#journal.header,
+      events: this.#events as readonly ModernJournalEvent[],
+      inheritedEventCount:
+        this.#journal.inheritedEventCount ??
+        this.#profile.inheritedEventCount(this.#journal.header, this.#events) ??
+        0,
+    };
   }
 
   execute(command: TurnStartCommand): Promise<HarnessResult<TurnStartAccepted>>;
@@ -520,6 +586,8 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
     >
   > {
     if (this.#closed || this.#closing) return Promise.resolve({ ok: false, error: closedError() });
+    if (this.#observation)
+      return Promise.resolve({ ok: false, error: invalidState("Subagent history is read-only") });
     switch (command.type) {
       case "turn.start":
         return this.#start(command);
@@ -537,6 +605,10 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
   }
 
   close(): Promise<void> {
+    if (this.#observation) {
+      this.#closePromise ??= this.#closeObservation();
+      return this.#closePromise;
+    }
     const faultCleanup = this.#closePromise;
     if (this.#faultMayHaveNativeWork && !this.#closing && faultCleanup) {
       this.#closing = true;
@@ -591,11 +663,13 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
   }
 
   async cancelNative(): Promise<void> {
+    if (this.#observation) return;
     const active = this.#active;
     if (active?.cancelAcknowledged) return;
     const operation = active?.cancelPromise ?? this.#requestNativeCancel(active);
     if (active && !active.cancelPromise) active.cancelPromise = operation;
-    await operation;
+    const result = await operation;
+    if (!result.ok) throw new Error(result.error.message);
   }
 
   onFault(error: ModernEventGatewayError): void {
@@ -1144,6 +1218,8 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
   async #executeHarnessCommand(
     command: HarnessCommandInvocation,
   ): Promise<HarnessResult<HarnessCommandAccepted>> {
+    if (this.#observation)
+      return { ok: false, error: invalidState("Subagent history is read-only") };
     if (this.#closed || this.#closing) return { ok: false, error: closedError() };
     const parsed = parseDeepSeekHarnessCommand(command);
     if (!parsed.ok) return parsed;
@@ -1687,6 +1763,7 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
         this.#remote,
         {
           sessionId: this.#sessionId,
+          ...(this.#subagentAddress ? { subagent: this.#subagentAddress } : {}),
           ...(previous.header.cwd === undefined ? {} : { cwd: previous.header.cwd }),
         },
         options,
@@ -2487,6 +2564,17 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
     if (stopFailure) throw stopFailure;
   }
 
+  async #closeObservation(): Promise<void> {
+    this.#closed = true;
+    this.#closing = true;
+    this.#journalLifetime.abort(new Error("Subagent observation closed"));
+    this.#unsubscribeControl();
+    await this.#detachEvents();
+    await Promise.allSettled([this.#journal.close(), this.#pumpPromise]);
+    this.#channel.end();
+    this.#notifyClosed();
+  }
+
   #abortOperations(): void {
     for (const controller of this.#operationControllers) {
       controller.abort(new OperationAborted());
@@ -2543,6 +2631,7 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
   }
 
   #emit(event: Extract<HarnessOutput, { kind: "event" }>["event"]): void {
+    this.#activeView?.accept(event);
     this.#channel.emit({ kind: "event", event });
   }
 }

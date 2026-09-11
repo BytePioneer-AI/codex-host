@@ -106,6 +106,11 @@ export interface ModernJournalRemote {
 
 export interface ModernJournalOpenRequest {
   readonly sessionId: string;
+  /** Verified direct parent of a native child; ordinary Session addresses cannot read children. */
+  readonly subagent?: {
+    readonly parentSessionId: string;
+    readonly mode: "one-shot" | "continuable";
+  };
   /** Exact cwd expected from the durable Session header; undefined requires field absence. */
   readonly cwd?: string;
 }
@@ -164,7 +169,22 @@ export async function openModernJournal(
   }
   const limits = resolveOptions(options);
   const profile = options.profile ?? DEEPSEEK_V012_PROFILE;
-  const address = { kind: "session" as const, sessionId: request.sessionId };
+  if (
+    request.subagent &&
+    (!request.subagent.parentSessionId?.trim() ||
+      request.subagent.parentSessionId === request.sessionId ||
+      !["one-shot", "continuable"].includes(request.subagent.mode))
+  ) {
+    throw new TypeError("Invalid native subagent parent address");
+  }
+  const address = request.subagent
+    ? {
+        kind: "subagent" as const,
+        parentSessionId: request.subagent.parentSessionId,
+        childSessionId: request.sessionId,
+        mode: request.subagent.mode,
+      }
+    : { kind: "session" as const, sessionId: request.sessionId };
   const controller = new AbortController();
   const signal = options.signal
     ? AbortSignal.any([controller.signal, options.signal])
@@ -200,6 +220,13 @@ export async function openModernJournal(
     const first = await nextBeforeAbort(iterator, openingSignal);
     if (first.done) throw protocolError("journal follow ended before its opening snapshot");
     opening = parseOpeningSnapshot(first.value, request, limits, profile);
+    if (
+      request.subagent &&
+      (opening.header.origin !== "subagent" ||
+        opening.header.parentSession !== request.subagent.parentSessionId)
+    ) {
+      throw protocolError("journal child does not belong to its supplied parent");
+    }
   } catch (error) {
     controller.abort(error);
     await Promise.allSettled([returnFollow()]);

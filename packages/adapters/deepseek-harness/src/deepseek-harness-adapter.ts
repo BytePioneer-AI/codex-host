@@ -8,6 +8,7 @@ import type {
   HarnessSession,
   HarnessSessionImportCapability,
   HarnessSessionImportSource,
+  HarnessSubagentCapability,
   HarnessWebUiAction,
   InspectHarnessInput,
   OpenSessionInput,
@@ -82,6 +83,27 @@ class DelegateSelectionError extends Error {
 export class DeepSeekHarnessAdapter implements HarnessAdapter {
   readonly commandCatalog = deepSeekHarnessCommandCatalog();
   readonly harnessId: HarnessId = DEEPSEEK_HARNESS_ID;
+  readonly subagents: HarnessSubagentCapability = {
+    readSnapshot: async (input) => {
+      try {
+        const selected = await this.#select(false);
+        if (this.#closed) return { ok: false, error: closedError() };
+        if (!selected.adapter.subagents) {
+          return {
+            ok: false,
+            error: {
+              code: "unsupported",
+              message: "DeepSeek native child history is unavailable",
+              retryable: false,
+            },
+          };
+        }
+        return selected.adapter.subagents.readSnapshot(input);
+      } catch (error) {
+        return { ok: false, error: this.#selectionError(error) };
+      }
+    },
+  };
   readonly sessionImport = Object.freeze({
     listCandidates: () => this.#listSessionImportCandidates(),
     resolveCandidate: async (

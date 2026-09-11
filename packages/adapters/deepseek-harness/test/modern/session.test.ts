@@ -437,6 +437,7 @@ function setup(
   replacementFeeds: AsyncIterable<unknown>[] = [],
   profile: DeepSeekModernProfile = DEEPSEEK_V012_PROFILE,
   maxBufferedLiveBytes?: number,
+  observationOnly = false,
 ): {
   feed: EventFeed;
   remote: FakeRemote;
@@ -490,6 +491,7 @@ function setup(
     modelCatalog: MODEL_CATALOG,
     permissionModes,
     sessionId: SESSION_ID,
+    observationOnly,
     randomUUID: () => uuids[uuidIndex++] ?? `uuid-${uuidIndex}`,
     now: () => 10,
     promptCorrelationGraceMs,
@@ -1420,6 +1422,68 @@ describe("DeepSeek Harness Modern Session", () => {
       value: { turns: [] },
     });
     await test.session.close();
+  });
+
+  it("observes active text without acquiring native execution or cancelling it on close", async () => {
+    const history = [
+      event(0, "turn/start", { turn: 1 }),
+      event(1, "step/start", { turn: 1, step: 1 }),
+      userMessage(2, "child task"),
+      event(3, "assistant/chunk", {
+        turn: 1,
+        step: 1,
+        chunk: { type: "text-delta", index: 0, text: "partial" },
+      }),
+    ];
+    const test = setup(
+      [],
+      history,
+      ["observed-turn"],
+      undefined,
+      null,
+      undefined,
+      undefined,
+      [],
+      DEEPSEEK_V012_PROFILE,
+      undefined,
+      true,
+    );
+    const outputs = test.session.outputs[Symbol.asyncIterator]();
+    await eventsThrough(outputs, "item.updated");
+    const first = await test.session.readSnapshot();
+    expect(first).toMatchObject({
+      ok: true,
+      value: {
+        turns: [
+          {
+            input: [{ text: "child task" }],
+            outcome: { status: "unknown" },
+            items: [{ item: { text: "partial" } }],
+          },
+        ],
+      },
+    });
+    if (first.ok) first.value.turns[0]?.items.splice(0);
+    expect(await test.session.readSnapshot()).toMatchObject({
+      ok: true,
+      value: { turns: [{ items: [{ item: { text: "partial" } }] }] },
+    });
+    await expect(
+      test.session.execute({
+        type: "turn.start",
+        turnId: turnId("forbidden"),
+        input: [{ type: "text", text: "no" }],
+      }),
+    ).resolves.toMatchObject({ ok: false, error: { code: "invalidState" } });
+    await expect(
+      test.session.commands.execute({ turnId: turnId("command"), commandId: "dsh.compact" }),
+    ).resolves.toMatchObject({ ok: false });
+    await test.session.cancelNative();
+    await Promise.all([test.session.close(), test.session.close()]);
+    expect(test.remote.calls).toEqual([]);
+    expect(test.journal.closeCalls).toBe(1);
+    expect(await outputs.next()).toMatchObject({ done: true });
+    expect(test.session.observationJournal().events).toEqual(history);
   });
 
   it("does not resume incomplete history whose only assistant surface is a replacement", async () => {

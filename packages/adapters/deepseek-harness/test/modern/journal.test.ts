@@ -164,6 +164,58 @@ async function openWith(
 }
 
 describe("DeepSeek Harness Modern journal", () => {
+  it("keeps a verified child address on follow and every history page", async () => {
+    const feed = new FollowFeed();
+    feed.push(
+      snapshot(1, [eventRecord(1)], true, {
+        header: header({ origin: "subagent", parentSession: "parent" }),
+      }),
+    );
+    const remote = new FakeRemote(feed, [() => page([eventRecord(0)], false)]);
+    const journal = await openModernJournal(remote, {
+      sessionId: SESSION_ID,
+      cwd: CWD,
+      subagent: { parentSessionId: "parent", mode: "continuable" },
+    });
+    const expected = {
+      kind: "subagent",
+      parentSessionId: "parent",
+      childSessionId: SESSION_ID,
+      mode: "continuable",
+    };
+    expect(remote.followCalls[0]?.args).toMatchObject({ request: { address: expected } });
+    expect(remote.pageCalls[0]?.args).toMatchObject({ request: { address: expected } });
+    await journal.close();
+  });
+
+  it("rejects a child snapshot that belongs to another native parent", async () => {
+    const feed = new FollowFeed();
+    feed.push(
+      snapshot(-1, [], false, { header: header({ origin: "subagent", parentSession: "other" }) }),
+    );
+    const remote = new FakeRemote(feed);
+    await expect(
+      openModernJournal(remote, {
+        sessionId: SESSION_ID,
+        cwd: CWD,
+        subagent: { parentSessionId: "parent", mode: "one-shot" },
+      }),
+    ).rejects.toMatchObject({ code: "protocolError" });
+    expect(feed.returnCalls).toBeGreaterThan(0);
+  });
+
+  it.each([
+    { parentSessionId: "", mode: "continuable" },
+    { parentSessionId: SESSION_ID, mode: "one-shot" },
+    { parentSessionId: "parent", mode: "invalid" },
+  ])("rejects malformed child addresses before opening a stream", async (subagent) => {
+    const remote = new FakeRemote(new FollowFeed());
+    await expect(
+      openModernJournal(remote, { sessionId: SESSION_ID, subagent: subagent as never }),
+    ).rejects.toThrow(/parent address/);
+    expect(remote.followCalls).toEqual([]);
+  });
+
   it("opens follow first and pages a fixed opening cut backwards to zero", async () => {
     const setup = await openWith(snapshot(5, records(4, 5), true), [
       () =>

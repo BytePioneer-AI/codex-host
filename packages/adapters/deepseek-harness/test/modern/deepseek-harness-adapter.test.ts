@@ -12,6 +12,7 @@ import {
 } from "../../src/modern/deepseek-harness-adapter.js";
 import { ModernRemoteConnectionError } from "../../src/modern/remote-connection.js";
 import type { ModernRemoteFailure, ModernRemoteResult } from "../../src/modern/wire.js";
+import { encodeModernSubagentId } from "../../src/modern/subagent-projection.js";
 
 class Feed implements AsyncIterable<unknown>, AsyncIterator<unknown> {
   readonly #items: IteratorResult<unknown>[] = [];
@@ -83,6 +84,7 @@ class FakeConnection implements ModernConnectionLike {
   readonly followFailureQueues = new Map<string, Array<Error | undefined>>();
   readonly modelSelections = new Map<string, Record<string, string> | null>();
   readonly permissionSelections = new Map<string, string>();
+  readonly subagentCatalogs = new Map<string, unknown[]>();
   readonly faultListeners = new Set<(error: ModernRemoteConnectionError) => void>();
   connectCalls = 0;
   closeCalls = 0;
@@ -99,6 +101,7 @@ class FakeConnection implements ModernConnectionLike {
     value: { sessionId: "session-forked" },
   };
   sessionListResult: ModernRemoteResult<unknown> = { ok: true, value: { items: [] } };
+  subagentInterruptResult: ModernRemoteResult<unknown> = { ok: true, value: { accepted: true } };
   forkResponse: Promise<ModernRemoteResult<unknown>> | undefined;
   cancelResponse: Promise<ModernRemoteResult<unknown>> | undefined;
   closeError: Error | undefined;
@@ -134,6 +137,18 @@ class FakeConnection implements ModernConnectionLike {
     }
     if (endpoint === "session/list") {
       return Promise.resolve(this.sessionListResult as ModernRemoteResult<T>);
+    }
+    if (endpoint === "subagents/list") {
+      return Promise.resolve({
+        ok: true,
+        value: {
+          parentAvailable: true,
+          entries: this.subagentCatalogs.get(String(args.parentSessionId)) ?? [],
+        },
+      } as ModernRemoteResult<T>);
+    }
+    if (endpoint === "subagents/interruptByParent") {
+      return Promise.resolve(this.subagentInterruptResult as ModernRemoteResult<T>);
     }
     if (endpoint === "settings/describe") {
       return Promise.resolve({
@@ -271,9 +286,10 @@ class FakeConnection implements ModernConnectionLike {
     }
     if (endpoint === "session/follow") {
       const request = args.request as {
-        address: { sessionId: string };
+        address: { sessionId?: string; childSessionId?: string };
       };
-      const sessionId = request.address.sessionId;
+      const sessionId = request.address.childSessionId ?? request.address.sessionId;
+      if (!sessionId) throw new Error("missing journal address");
       const failure = this.followFailureQueues.get(sessionId)?.shift();
       if (failure) throw failure;
       const feed = new Feed(() => {
@@ -305,8 +321,8 @@ class FakeConnection implements ModernConnectionLike {
     if (!feed) throw new Error("missing follow feed");
     const follow = this.streams.findLast(({ endpoint, args }) => {
       if (endpoint !== "session/follow") return false;
-      const request = args.request as { address: { sessionId: string } };
-      return request.address.sessionId === sessionId;
+      const request = args.request as { address: { sessionId?: string; childSessionId?: string } };
+      return (request.address.childSessionId ?? request.address.sessionId) === sessionId;
     });
     const request = follow?.args.request as { address: { sessionId: string } } | undefined;
     if (!request) throw new Error("missing follow request");
@@ -616,6 +632,300 @@ function v015Snapshot(input: Parameters<typeof exactJournalSnapshot>[0]): Record
     assistantStream: { revision: 0 },
   };
 }
+
+describe.each(["0.1.2-rc.1", "0.1.5-rc.1"] as const)("DSH %s Adapter child history", (version) => {
+  function childFixture() {
+    const { adapter, connection } = setup([], { version });
+    const cwd = path.resolve("fixture-child-history");
+    const parent = nativeSessionRefSchema.parse({
+      harnessId: "deepseek-harness",
+      nativeSessionId: "parent",
+      formatVersion: 1,
+      ...(version === "0.1.5-rc.1" ? { locator: { dshVersion: version } } : {}),
+    });
+    const nativeSubagentId = encodeModernSubagentId("parent", [
+      { childSessionId: "child", mode: "continuable" },
+    ]);
+    const snapshot = version === "0.1.5-rc.1" ? v015Snapshot : exactJournalSnapshot;
+    connection.journalSnapshots.set("parent", snapshot({ sessionId: "parent", cwd, events: [] }));
+    const child = snapshot({
+      sessionId: "child",
+      cwd,
+      parentSession: "parent",
+      events: [
+        exactJournalEvent(0, "subagent/descriptor", {
+          version: 3,
+          mode: "continuable",
+          provider: "default",
+          label: "Inspect",
+        }),
+        exactJournalEvent(1, "turn/start", { turn: 1 }),
+        exactJournalEvent(
+          2,
+          "user/message",
+          {
+            id: "child-input",
+            role: "user",
+            content: [{ type: "text", text: "Inspect files" }],
+            source: { kind: "user" },
+          },
+          true,
+        ),
+        exactJournalEvent(3, "turn/end", { turn: 1, reason: { kind: "completed" } }),
+      ],
+    });
+    child.header = {
+      ...(child.header as Record<string, unknown>),
+      origin: "subagent",
+      ...(version === "0.1.5-rc.1" ? { isSeeded: false } : {}),
+    };
+    connection.journalSnapshots.set("child", child);
+    connection.subagentCatalogs.set("parent", [
+      {
+        kind: "child",
+        id: "child",
+        mode: "continuable",
+        label: "Inspect",
+        activity: "inactive",
+        hasChildren: false,
+      },
+    ]);
+    return {
+      adapter,
+      connection,
+      cwd,
+      parent,
+      nativeSubagentId,
+      read: (readCwd = cwd) =>
+        adapter.subagents.readSnapshot({ parent, nativeSubagentId, cwd: readCwd }),
+    };
+  }
+
+  it("rejects invalid or mismatched parent refs before any native access", async () => {
+    const f = childFixture();
+    try {
+      const other = version === "0.1.2-rc.1" ? "0.1.5-rc.1" : "0.1.2-rc.1";
+      for (const parent of [
+        nativeSessionRefSchema.parse({ ...f.parent, harnessId: "pi" }),
+        { ...f.parent, locator: "invalid" },
+        { ...f.parent, locator: [] },
+        { ...f.parent, locator: { dshVersion: other } },
+        { ...f.parent, locator: { dshVersion: version, unrelated: true } },
+      ]) {
+        await expect(
+          f.adapter.subagents.readSnapshot({
+            parent,
+            nativeSubagentId: f.nativeSubagentId,
+            cwd: f.cwd,
+          }),
+        ).resolves.toMatchObject({ ok: false, error: { code: "invalidRequest" } });
+      }
+      await expect(f.read(" ")).resolves.toMatchObject({
+        ok: false,
+        error: { code: "invalidRequest" },
+      });
+      expect(f.connection.calls).toEqual([]);
+      expect(f.connection.streams).toEqual([]);
+    } finally {
+      await f.adapter.close();
+    }
+  });
+
+  it("cold-reads verified child addresses with stable history and no native work", async () => {
+    const f = childFixture();
+    try {
+      const first = await f.read();
+      expect(first).toMatchObject({
+        ok: true,
+        value: {
+          turns: [
+            {
+              nativeTurnRef: { nativeSessionId: "child", nativeTurnKey: "turn:1" },
+              input: [{ text: "Inspect files" }],
+              outcome: { status: "succeeded" },
+            },
+          ],
+        },
+      });
+      await expect(f.read()).resolves.toEqual(first);
+      expect(f.connection.streams).toHaveLength(2);
+      expect(f.connection.streams[1]).toMatchObject({
+        endpoint: "session/follow",
+        args: {
+          request: {
+            address: {
+              kind: "subagent",
+              parentSessionId: "parent",
+              childSessionId: "child",
+              mode: "continuable",
+            },
+          },
+        },
+      });
+      expect(
+        f.connection.calls.some(({ endpoint }) =>
+          ["session/create", "session/prompt", "session/cancel"].includes(endpoint),
+        ),
+      ).toBe(false);
+      await expect(f.read(path.resolve("wrong-workspace"))).resolves.toMatchObject({
+        ok: false,
+        error: { code: "invalidRequest" },
+      });
+      expect(f.connection.streams).toHaveLength(2);
+    } finally {
+      await f.adapter.close();
+    }
+    expect([...f.connection.follows.values()].map((feed) => feed.returnCalls)).toEqual([1, 1]);
+    expect(f.connection.calls.some(({ endpoint }) => endpoint === "session/cancel")).toBe(false);
+  });
+
+  it("rejects a cold workspace mismatch before following the child", async () => {
+    const f = childFixture();
+    try {
+      await expect(f.read(path.resolve("wrong-workspace"))).resolves.toMatchObject({
+        ok: false,
+        error: { code: "protocolError" },
+      });
+      expect(f.connection.follows.has("child")).toBe(false);
+      expect(f.connection.follows.get("parent")?.returnCalls).toBe(1);
+    } finally {
+      await f.adapter.close();
+    }
+  });
+
+  it("keeps parent control usable after cold child reads become a live parent Session", async () => {
+    const f = childFixture();
+    try {
+      await expect(f.read()).resolves.toMatchObject({ ok: true });
+      const oldRoot = f.connection.follows.get("parent");
+      const oldChild = f.connection.follows.get("child");
+      const opened = await f.adapter.open({ kind: "resume", nativeRef: f.parent, cwd: f.cwd });
+      expect(opened).toMatchObject({ ok: true });
+      if (!opened.ok) throw new Error(opened.error.message);
+      expect(oldRoot?.returnCalls).toBe(1);
+      expect(oldChild?.returnCalls).toBe(1);
+      await expect(opened.value.readSnapshot()).resolves.toMatchObject({ ok: true });
+      const inspection = await f.adapter.inspect();
+      if (inspection.status !== "ready" || !inspection.catalog.defaultModel)
+        throw new Error("Missing fixture Model");
+      await expect(
+        opened.value.execute({ type: "model.select", model: inspection.catalog.defaultModel }),
+      ).resolves.toMatchObject({ ok: true });
+      await expect(opened.value.readSnapshot()).resolves.toMatchObject({
+        ok: true,
+        value: { state: { effectiveModel: inspection.catalog.defaultModel } },
+      });
+      await expect(f.read()).resolves.toMatchObject({ ok: true });
+      await opened.value.close();
+    } finally {
+      await f.adapter.close();
+    }
+  });
+
+  it("retains the live owner when an earlier cold opening finishes later", async () => {
+    const f = childFixture();
+    f.connection.autoOpenJournal = false;
+    try {
+      const reading = f.read();
+      await vi.waitFor(() => expect(f.connection.follows.has("parent")).toBe(true));
+      const coldRoot = f.connection.follows.get("parent");
+      if (!coldRoot) throw new Error("Missing cold parent follow");
+      f.connection.autoOpenJournal = true;
+      const opened = await f.adapter.open({ kind: "resume", nativeRef: f.parent, cwd: f.cwd });
+      if (!opened.ok) throw new Error(opened.error.message);
+      const liveRoot = f.connection.follows.get("parent");
+      expect(liveRoot).not.toBe(coldRoot);
+      f.connection.openJournal("parent", coldRoot);
+      await expect(reading).resolves.toMatchObject({ ok: true });
+      expect(coldRoot.returnCalls).toBe(1);
+      expect(liveRoot?.returnCalls).toBe(0);
+      await expect(opened.value.readSnapshot()).resolves.toMatchObject({ ok: true });
+      await opened.value.close();
+      expect(liveRoot?.returnCalls).toBe(1);
+      expect(f.connection.follows.get("child")?.returnCalls).toBe(1);
+    } finally {
+      await f.adapter.close();
+    }
+  });
+
+  it("rechecks cwd after concurrent cold reads share parent opening", async () => {
+    const f = childFixture();
+    f.connection.autoOpenJournal = false;
+    try {
+      const first = f.read();
+      await vi.waitFor(() => expect(f.connection.follows.has("parent")).toBe(true));
+      const wrong = f.read(path.resolve("other-workspace"));
+      f.connection.openJournal("parent");
+      await vi.waitFor(() => expect(f.connection.follows.has("child")).toBe(true));
+      f.connection.openJournal("child");
+      await expect(first).resolves.toMatchObject({ ok: true });
+      await expect(wrong).resolves.toMatchObject({ ok: false, error: { code: "invalidRequest" } });
+      expect(f.connection.streams).toHaveLength(2);
+    } finally {
+      await f.adapter.close();
+    }
+  });
+
+  it("stops owned children when the parent closes before any child observation", async () => {
+    const f = childFixture();
+    try {
+      const opened = await f.adapter.open({ kind: "resume", nativeRef: f.parent, cwd: f.cwd });
+      if (!opened.ok) throw new Error(opened.error.message);
+      expect(f.connection.follows.has("child")).toBe(false);
+      await opened.value.close();
+      expect(f.connection.calls).toContainEqual({
+        endpoint: "subagents/interruptByParent",
+        args: { parentSessionId: "parent", childSessionId: "child", mode: "continuable" },
+      });
+    } finally {
+      await f.adapter.close();
+    }
+  });
+
+  it.each(["session", "adapter"] as const)(
+    "rejects %s close when child interruption is refused while releasing resources",
+    async (owner) => {
+      const f = childFixture();
+      try {
+        const opened = await f.adapter.open({ kind: "resume", nativeRef: f.parent, cwd: f.cwd });
+        if (!opened.ok) throw new Error(opened.error.message);
+        await expect(f.read()).resolves.toMatchObject({ ok: true });
+        const followers = [...f.connection.follows.values()];
+        f.connection.subagentInterruptResult = { ok: true, value: { accepted: false } };
+        const close = owner === "session" ? () => opened.value.close() : () => f.adapter.close();
+        await expect(close()).rejects.toThrow("DeepSeek child interruption was not accepted");
+        await expect(close()).rejects.toThrow("DeepSeek child interruption was not accepted");
+        expect(followers.map((feed) => feed.returnCalls)).toEqual([1, 1]);
+        expect(
+          f.connection.calls.filter(({ endpoint }) => endpoint === "subagents/interruptByParent"),
+        ).toEqual([
+          {
+            endpoint: "subagents/interruptByParent",
+            args: { parentSessionId: "parent", childSessionId: "child", mode: "continuable" },
+          },
+        ]);
+        await expect(opened.value.readSnapshot()).resolves.toMatchObject({ ok: false });
+        if (owner === "adapter") expect(f.connection.closeCalls).toBe(1);
+      } finally {
+        // An explicitly rejected Adapter close remains rejected on repeated calls.
+        await f.adapter.close().catch(() => undefined);
+      }
+      expect(f.connection.closeCalls).toBe(1);
+    },
+  );
+
+  it("closes pending cold reads without native cancellation or leaked followers", async () => {
+    const f = childFixture();
+    f.connection.autoOpenJournal = false;
+    const reading = f.read();
+    await vi.waitFor(() => expect(f.connection.follows.has("parent")).toBe(true));
+    await f.adapter.close();
+    await expect(reading).resolves.toMatchObject({ ok: false });
+    expect(f.connection.follows.get("parent")?.returnCalls).toBe(1);
+    expect(f.connection.follows.has("child")).toBe(false);
+    expect(f.connection.calls.some(({ endpoint }) => endpoint === "session/cancel")).toBe(false);
+  });
+});
 
 describe("DSH 0.1.5-rc.1 session operations", () => {
   const locator = { dshVersion: "0.1.5-rc.1" };

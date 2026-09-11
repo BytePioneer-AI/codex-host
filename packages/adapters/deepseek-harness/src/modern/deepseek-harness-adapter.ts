@@ -11,6 +11,7 @@ import {
   type HarnessResult,
   type HarnessSession,
   type HarnessSessionImportCapability,
+  type HarnessSubagentCapability,
   type HarnessWebUiAction,
   type InspectHarnessInput,
   type OpenSessionInput,
@@ -24,6 +25,7 @@ import {
   type HarnessId,
   type HarnessPermissionModeCatalog,
   type HarnessPermissionModeId,
+  type NativeSessionRef,
 } from "@codexhost/shared-contracts";
 
 import type { DeepSeekModelSelection } from "../model-catalog.js";
@@ -72,6 +74,12 @@ import {
   type ModernRemoteConnectionOptions,
 } from "./remote-connection.js";
 import { modernSessionCapabilities, ModernHarnessSession } from "./session.js";
+import { ModernSubagents, withModernSubagents, type ModernSubagentPath } from "./subagents.js";
+import {
+  parseModernSubagentCatalog,
+  MODERN_SUBAGENT_MAX_CHILDREN,
+  MODERN_SUBAGENT_MAX_DEPTH,
+} from "./subagent-projection.js";
 import { loadModernSessionCandidates, ModernSessionListError } from "./session-list.js";
 import {
   redactModernCredential,
@@ -147,6 +155,9 @@ const DEFAULT_DEPENDENCIES: ModernDeepSeekHarnessAdapterDependencies = {
 export class ModernDeepSeekHarnessAdapter implements HarnessAdapter {
   readonly commandCatalog = deepSeekHarnessCommandCatalog();
   readonly harnessId: HarnessId = DEEPSEEK_HARNESS_ID;
+  readonly subagents: HarnessSubagentCapability = {
+    readSnapshot: (input) => this.#track(this.#readSubagent(input)),
+  };
   readonly sessionImport: HarnessSessionImportCapability = Object.freeze({
     listCandidates: () => this.#listSessionImportCandidates(),
   });
@@ -160,6 +171,12 @@ export class ModernDeepSeekHarnessAdapter implements HarnessAdapter {
   readonly #inflight = new Set<Promise<unknown>>();
   readonly #sessionIds = new Set<string>();
   readonly #sessions = new Set<ModernHarnessSession>();
+  readonly #managedClosers = new Map<ModernHarnessSession, () => Promise<void>>();
+  readonly #subagents = new Map<
+    string,
+    { cwd: string; monitor: ModernSubagents; observation?: ModernHarnessSession }
+  >();
+  readonly #openingSubagents = new Map<string, Promise<ModernSubagents>>();
   readonly #removeConnectionFaultListener: () => void;
   readonly #lifetime = new AbortController();
   #accepting = true;
@@ -474,6 +491,7 @@ export class ModernDeepSeekHarnessAdapter implements HarnessAdapter {
       }
 
       const openedSession = new ModernHarnessSession({
+        captureActiveSnapshot: true,
         remote: this.#connection,
         journal,
         control: this.#control,
@@ -510,6 +528,10 @@ export class ModernDeepSeekHarnessAdapter implements HarnessAdapter {
           detachControl = undefined;
           this.#sessionIds.delete(sessionId);
           this.#sessions.delete(openedSession);
+          this.#managedClosers.delete(openedSession);
+          const children = this.#subagents.get(sessionId);
+          this.#subagents.delete(sessionId);
+          if (children) void children.monitor.close();
         },
       });
       session = openedSession;
@@ -517,7 +539,49 @@ export class ModernDeepSeekHarnessAdapter implements HarnessAdapter {
       this.#sessions.add(openedSession);
       await this.#startEvents();
       this.#assertAccepting();
-      return { ok: true, value: openedSession };
+      const previousChildren = this.#subagents.get(sessionId);
+      if (previousChildren) {
+        await previousChildren.monitor.close();
+        await previousChildren.observation?.close();
+      }
+      this.#assertAccepting();
+      const monitor = this.#createSubagents(sessionId, cwd, openedSession);
+      this.#subagents.set(sessionId, { cwd, monitor });
+      const wrapped = withModernSubagents(openedSession, monitor, () =>
+        openedSession.readObservationSnapshot(),
+      );
+      let closing: Promise<void> | undefined;
+      const close = () =>
+        (closing ??= (async () => {
+          let failure: unknown;
+          const paths = monitor.observedPaths().map(({ path }) => path);
+          try {
+            await openedSession.cancelNative();
+            await this.#stopOwnedSubagents(sessionId, paths);
+            await monitor.refresh();
+          } catch (error) {
+            failure = error;
+          }
+          try {
+            await wrapped.close();
+          } catch (error) {
+            failure ??= error;
+          }
+          if (isDeepSeekV015(this.#profile)) {
+            for (const childId of new Set(
+              paths.flatMap((path) => path.slice(-1).map((child) => child.childSessionId)),
+            )) {
+              try {
+                await this.#connection.flushSession(childId);
+              } catch (error) {
+                failure ??= error;
+              }
+            }
+          }
+          if (failure) throw failure;
+        })());
+      this.#managedClosers.set(openedSession, close);
+      return { ok: true, value: { ...wrapped, close } };
     } catch (error) {
       await session?.close().catch(() => undefined);
       await journal?.close().catch(() => undefined);
@@ -547,6 +611,209 @@ export class ModernDeepSeekHarnessAdapter implements HarnessAdapter {
       return { ok: true, value: undefined };
     } catch (error) {
       return { ok: false, error: toHarnessError(error, "unavailable") };
+    }
+  }
+
+  #createSubagents(sessionId: string, cwd: string, root: ModernHarnessSession): ModernSubagents {
+    return new ModernSubagents({
+      rootSessionId: sessionId,
+      cwd,
+      remote: this.#connection,
+      profile: this.#profile,
+      rootJournal: () => root.observationJournal(),
+      openObservation: async (ancestry: ModernSubagentPath) => {
+        const leaf = ancestry.at(-1);
+        if (!leaf) throw new Error("Missing native child address");
+        const parentSessionId = ancestry.at(-2)?.childSessionId ?? sessionId;
+        const observation = await this.#openObservation(leaf.childSessionId, cwd, {
+          parentSessionId,
+          mode: leaf.mode,
+        });
+        return {
+          session: observation,
+          get header() {
+            return observation.observationJournal().header;
+          },
+          get events() {
+            return observation.observationJournal().events;
+          },
+          inheritedEventCount: observation.observationJournal().inheritedEventCount,
+        };
+      },
+    });
+  }
+
+  /** Explicit parent shutdown owns cancellation; passive child readers never call this path. */
+  async #stopOwnedSubagents(root: string, known: ModernSubagentPath[]): Promise<void> {
+    const deadline = Date.now() + 5000;
+    const interrupted = new Set<string>();
+    do {
+      let running = false;
+      const parents: ModernSubagentPath[] = [[]];
+      const seen = new Set([root]);
+      for (const ancestry of parents) {
+        const parentSessionId = ancestry.at(-1)?.childSessionId ?? root;
+        const response = await this.#connection.call<unknown>("subagents/list", {
+          parentSessionId,
+        });
+        if (!response.ok) throw new Error("DeepSeek child stop could not be confirmed");
+        if (
+          isRecord(response.value) &&
+          Array.isArray(response.value.entries) &&
+          response.value.entries.some((entry) => isRecord(entry) && entry.kind === "diagnostic")
+        ) {
+          throw new Error("DeepSeek child state is unreadable; stop could not be confirmed");
+        }
+        for (const entry of parseModernSubagentCatalog(response.value)) {
+          if (
+            seen.has(entry.id) ||
+            seen.size > MODERN_SUBAGENT_MAX_CHILDREN ||
+            ancestry.length >= MODERN_SUBAGENT_MAX_DEPTH
+          ) {
+            throw new Error("DeepSeek child shutdown exceeded its ownership bounds");
+          }
+          seen.add(entry.id);
+          const childPath = [...ancestry, { childSessionId: entry.id, mode: entry.mode }];
+          if (!known.some((path) => path.at(-1)?.childSessionId === entry.id))
+            known.push(childPath);
+          if (entry.hasChildren) parents.push(childPath);
+          running ||= entry.activity === "running";
+          if (entry.mode === "continuable" && !interrupted.has(entry.id)) {
+            const stopped = await this.#connection.call<unknown>("subagents/interruptByParent", {
+              childSessionId: entry.id,
+              parentSessionId,
+              mode: entry.mode,
+            });
+            if (!stopped.ok || !isRecord(stopped.value) || stopped.value.accepted !== true)
+              throw new Error("DeepSeek child interruption was not accepted");
+            interrupted.add(entry.id);
+          }
+        }
+      }
+      if (!running) return;
+      await new Promise((resolve) => setTimeout(resolve, 40));
+    } while (Date.now() < deadline);
+    throw new Error("DeepSeek native child execution did not stop before close");
+  }
+
+  async #openObservation(
+    sessionId: string,
+    cwd: string,
+    subagent?: { parentSessionId: string; mode: "one-shot" | "continuable" },
+  ): Promise<ModernHarnessSession> {
+    await this.#connection.connect();
+    this.#assertAccepting();
+    const [catalog, permissionModes] = await Promise.all([
+      this.#loadCatalog(false),
+      this.#loadPermissionModes(false),
+    ]);
+    // A passive read owns a separate projection store; closing it must not detach a live parent.
+    const control = new ModernControlStore(this.#connection);
+    control.attach(sessionId);
+    let journal: ModernJournal | undefined;
+    try {
+      journal = await openModernJournal(
+        this.#connection,
+        { sessionId, cwd, ...(subagent ? { subagent } : {}) },
+        this.#journalOptions(),
+      );
+      this.#assertAccepting();
+      control.seed(sessionId, journal.projections);
+      return new ModernHarnessSession({
+        remote: this.#connection,
+        journal,
+        control,
+        eventGateway: this.#events,
+        modelCatalog: catalog,
+        permissionModes,
+        sessionId,
+        observationOnly: true,
+        onClosed: () => {
+          void control.close();
+        },
+        ...(subagent ? { subagentAddress: subagent } : {}),
+        ...(this.#options.toolOutputLimit === undefined
+          ? {}
+          : { toolOutputLimit: this.#options.toolOutputLimit }),
+        ...(this.#options.maxEvents === undefined ? {} : { maxEvents: this.#options.maxEvents }),
+        ...(this.#options.maxHistoryBytes === undefined
+          ? {}
+          : { maxHistoryBytes: this.#options.maxHistoryBytes }),
+        ...(this.#options.maxBufferedLiveBytes === undefined
+          ? {}
+          : { maxBufferedLiveBytes: this.#options.maxBufferedLiveBytes }),
+      });
+    } catch (error) {
+      await journal?.close();
+      await control.close();
+      throw error;
+    }
+  }
+
+  async #readSubagent(input: { parent: NativeSessionRef; nativeSubagentId: string; cwd: string }) {
+    try {
+      this.#assertAccepting();
+      const parent = nativeSessionRefSchema.parse(input.parent);
+      if (!modernSessionId(parent, "resume", this.#profile) || !input.cwd?.trim()) {
+        throw new AdapterOperationError({
+          code: "invalidRequest",
+          message: "DeepSeek child reference or runtime is invalid",
+          retryable: false,
+        });
+      }
+      const existing = this.#subagents.get(parent.nativeSessionId);
+      if (existing && path.resolve(existing.cwd) !== path.resolve(input.cwd)) {
+        throw new AdapterOperationError({
+          code: "invalidRequest",
+          message: "DeepSeek child workspace differs from its parent",
+          retryable: false,
+        });
+      }
+      let monitor = existing?.monitor;
+      if (!monitor) {
+        let opening = this.#openingSubagents.get(parent.nativeSessionId);
+        if (!opening) {
+          opening = (async () => {
+            const root = await this.#openObservation(parent.nativeSessionId, input.cwd);
+            try {
+              this.#assertAccepting();
+            } catch (error) {
+              await root.close();
+              throw error;
+            }
+            const liveOwner = this.#subagents.get(parent.nativeSessionId);
+            if (liveOwner) {
+              await root.close();
+              return liveOwner.monitor;
+            }
+            const created = this.#createSubagents(parent.nativeSessionId, input.cwd, root);
+            this.#subagents.set(parent.nativeSessionId, {
+              cwd: input.cwd,
+              monitor: created,
+              observation: root,
+            });
+            // Root observations keep protocol state current but never create a Host Turn.
+            void (async () => {
+              for await (const output of root.outputs) void output;
+            })();
+            return created;
+          })().finally(() => this.#openingSubagents.delete(parent.nativeSessionId));
+          this.#openingSubagents.set(parent.nativeSessionId, opening);
+        }
+        monitor = await opening;
+      }
+      const owner = this.#subagents.get(parent.nativeSessionId);
+      if (!owner || path.resolve(owner.cwd) !== path.resolve(input.cwd)) {
+        throw new AdapterOperationError({
+          code: "invalidRequest",
+          message: "DeepSeek child workspace differs from its parent",
+          retryable: false,
+        });
+      }
+      monitor = owner.monitor;
+      return await monitor.readSnapshot(input.nativeSubagentId);
+    } catch (error) {
+      return { ok: false as const, error: toHarnessError(error, "protocolError") };
     }
   }
 
@@ -900,14 +1167,21 @@ export class ModernDeepSeekHarnessAdapter implements HarnessAdapter {
   }
 
   async #performClose(failure?: HarnessError): Promise<void> {
-    this.#lifetime.abort(new Error("DeepSeek Harness Adapter closed"));
     this.#removeConnectionFaultListener();
     const sessions = [...this.#sessions];
     const sessionClosures = sessions.map((session) => {
       if (failure) session.fault(failure);
-      return session.close();
+      return this.#managedClosers.get(session)?.() ?? session.close();
     });
     const sessionResults = await Promise.allSettled(sessionClosures);
+    this.#lifetime.abort(new Error("DeepSeek Harness Adapter closed"));
+    await Promise.allSettled(
+      [...this.#subagents.values()].map(async ({ monitor, observation }) => {
+        await monitor.close();
+        await observation?.close();
+      }),
+    );
+    this.#subagents.clear();
     await this.#events.close().catch(() => undefined);
     await this.#control.close().catch(() => undefined);
     const connectionClose = this.#connection.close();

@@ -1,129 +1,77 @@
 # 仓库维护自动化
 
-这套自动化不调用模型、不要求 Codex / CodeRabbit 订阅或模型 API Key。它借鉴 opencodex 的表单分类、确定性检查和提交绑定思路，按 codexhost 的领域与维护方式独立实现；不引入对方的自动关单或 Draft / Ready 状态机。
+PR 维护只做两件事：**明确标题自动标签、CI 结束后更新一条简短评论**。不调用模型，不执行 PR 代码，不重复运行 CI。
 
-## 范围与入口
+## 1. 明确标题自动标签
 
-| 功能 | 行为 |
+| 标题 | 标签 |
 | --- | --- |
-| Issue 表单 | Bug / Feature / Question；保留空白 Issue；未知值可明确说明 |
-| 自动类型标签 | Issue 模板 / 结构；PR Conventional Commit 标题，必要时回退到提交说明 |
-| 自动领域标签 | Issue 的 `Area` 下拉值映射到 `area:*`；不做模型或自由文本语义分类 |
-| 信息提示 | 缺少必要说明时在摘要中建议补充；不关闭、不阻止提交 |
-| CI / 审查快照 | 显示当前 HEAD 的官方 CI 运行及已有审查证据；不主动请求 AI 审查 |
-| 提交绑定 | 比较作者填写的 `Validated commit`、当前 HEAD 和审查记录的提交；旧记录明确提示需复核 |
-| 规范提示 | 扫描 Diff 新增行中的聚焦 / 跳过测试和检查抑制；允许指定 HEAD 的维护者例外 |
-| 长期等待 | `awaiting-author` 满 14 天或其他 Open 条目满 30 天无其他活动时显示提醒；永不自动关闭 |
-| 发布校验 | 标签 / 版本 / release notes / 确切提交的 CI 证据；构建和发布固定使用不可变 SHA |
+| `fix: 修复会话恢复` | `bug` |
+| `feat: 增加某个 Harness` | `enhancement` |
+| `docs: 更新安装说明` | `documentation` |
+| `调整会话处理` | 跳过，不猜测 |
 
-入口是 `.github/workflows/repository-maintenance.yml`，规则归属私有 Workspace 包 `@codexhost/repository-automation`。该包以源码 ESM 的公共 `index.mjs` 提供接口，便于可信工作流直接运行，不需要 `npm install` 或构建，也不被打包进 Host 产品。
+支持 Conventional Commit 的 `(scope)` 和 `!`。不从正文、提交列表、文件路径或历史讨论推断类型；其他前缀不处理。不处理 Issue，包括历史 Issue。
 
-GitHub App 若自行订阅某类标签或事件，仍可能按自己的配置触发模型任务；本自动化不发布 `@codex` / `@coderabbitai` 命令，不负责或绕过它们的额度。
+只同步有标签事件证明属于本机器人的三种类型标签。人工或其他工具改过这类标签后停止自动同步；来源不明的现有标签不覆盖。标题变得无法识别时不再修改标签。不会批量删除仓库原有标签或创建领域标签。
 
-## 标签规则
+## 2. CI 完成后的简短评论
 
-类型标签为 `bug`、`enhancement`、`question`、`documentation`、`chore`。
+成功示例：
 
-PR 标题：`fix:` → `bug`，`feat:` → `enhancement`，`docs:` → `documentation`，`test:` / `ci:` / `build:` / `refactor:` / `perf:` / `style:` / `chore:` → `chore`；支持 `(scope)` 和 `!`。标题无法识别时，读取提交前缀。维护类提交不会压过唯一的功能 / 修复类型；真正混合 `fix` 与 `feat` 时不猜测。
+> ✅ 提交 abc1234 的 CI 全部通过。
 
-| Issue Area | 标签 |
-| --- | --- |
-| Desktop / Renderer | `area:desktop` |
-| Harness Adapter | `area:adapter` |
-| Thread / History | `area:thread` |
-| Accounts / Usage | `area:accounts` |
-| Install / Update | `area:install-update` |
-| Remote | `area:remote` |
-| Documentation | `area:docs` |
-| Other / Unknown | 不添加领域标签 |
+失败示例：
 
-工作流首次实际运行时会创建缺失的受管标签，不覆盖已有标签的颜色或说明。记录到人工或其他工具添加 / 删除某类标签后，会停止自动同步该类别，避免覆盖非本自动化的选择。Issue 表单默认赋予的类型也视为明确选择。对于其他脚本用 `github-actions[bot]` 写入的同类标签，应避免同时管理这组标签。
+> ❌ Windows CI 失败。[查看日志](https://github.com/BytePioneer-AI/codex-host/actions)
+>
+> ```text
+> src/foo.ts(42,5): error TS2322: Type 'string' is not assignable to type 'number'.
+> ```
+>
+> 提交 abc1234。
 
-## 刷新与预览
+- 只读取 `.github/workflows/ci.yml` 中与 PR 当前 HEAD 对应的可信运行。等待工作流和所有 jobs 结束；排队、运行中或尚无运行时不新发评论。
+- 只有工作流和所有 jobs 成功，且四项基线 job 均有唯一成功证据，才报告全部通过：`Check ubuntu-22.04`、`Check macos-14`、`Check windows-latest`、`Check Linux ARM64`。
+- 等待批准、取消、跳过、超时、结果不完整分别说明，不能当作通过。CI API 读取失败不发布猜测结果。
+- 每个 PR 只更新一条 `github-actions[bot]` 自有评论，兼容此前摘要标记；不会接管人工伪造的同名标记。结果未变化不重复写入，失败恢复后用成功结果替换。
+- 评论显示短提交 SHA 并链接完整 SHA，避免新提交尚在运行时把上一轮结果误当成新结果；不会为了更新结果要求作者手填 SHA。
+- 失败任务最多展示四个，每项最多摘录五行、每行最多 500 字符。保留错误原文，不翻译、不推断根因。优先提取 TypeScript、Rust、测试、npm 等可识别诊断；有失败 step 时间时只取该时间段。
+- 移除日志时间戳和控制字符，脱敏凭据行、常见 Token、长疑似凭据、URL 和用户目录。脱敏是保守的模式匹配，不能保证发现所有未知秘密；CI 本身也不得输出秘密。
+- 日志不可用、超过 8 MiB、下载超时或没有可识别错误时，只展示任务状态和 GitHub 日志链接，不复制完整日志或临时签名下载地址。
 
-文件合入默认分支后，Issue 创建 / 编辑、PR 更新、讨论评论、CI 工作流事件、可信 CodeRabbit commit status 会触发刷新。每六小时扫描全部 Open 条目，补上遗漏的事件以及人工审查提交后的状态变化；人工 review 事件本身不直接运行写权限工作流。
+不再发布信息完整性、模板催补、审查汇总、规范风险、检查例外或长期等待提醒。不自动关闭、转 Draft、批准或合并。
 
-工作流串行写入，避免定时扫描和事件刷新互相创建重复摘要。GitHub 可能替换排队中的运行，定时扫描是最终一致性兜底，不承诺实时更新。
+## 触发与安全
 
-维护者可在 Actions 的 `Repository maintenance` 手动运行：
+入口：`.github/workflows/repository-maintenance.yml`。逻辑归属 `packages/repository-automation/`，可信工作流直接加载公共 `index.mjs`，无需安装依赖或构建。
 
-- `number` 指定一个 Issue / PR；留空扫描所有 Open 条目，列表使用分页，不只读取第一页。
-- `dry_run` 默认 `true`，不创建标签或修改评论。指定一个编号时，Actions Summary 展示完整评论草稿；批量预览展示每项标签变更计划。
-- 确认预览和目标范围后，选择 `dry_run=false` 才会实际写入。手动执行必须选默认分支。
+- PR 创建、编辑、重开、提交或标签变化时同步；CI `workflow_run: completed` 时按实时 PR HEAD 查找目标。
+- 不监听 Issue、讨论评论或 CodeRabbit status，不进行定时巡检。漏掉的事件可手动补跑。
+- 手动执行必须选默认分支。`number` 指定 PR；留空处理开放 PR。默认 `dry_run=true`，不写评论或标签；指定编号时 Actions Summary 展示评论草稿。
+- 已关闭、锁定或带 `automation:ignore` 的 PR 跳过。
+- 使用可信默认分支代码、固定 Action SHA 和最小权限。不会 checkout / 执行 PR head、安装 PR 依赖、执行日志内容或传递凭据到日志下载站点。
+- 评论和标签历史读取失败时不写入；写入前重新核对 PR 和 CI run/attempt，过期快照放弃。GitHub API 无跨接口事务，这不是分支保护或合并锁。
+- 在 GitHub 中手动暂停的工作流，不会因本地代码修改自动恢复。重新启用和批量实际写入应由维护者明确决定。
 
-每个条目只维护一条自有机器人评论；内容不变不重复写入。锁定、关闭或带 `automation:ignore` 的条目跳过。添加该标签不会删除已有评论。
+## 原有 CI 和发布校验
 
-状态以评论中的版本化 JSON 保存，仅认可 `github-actions[bot]` 自有标记，不接受贡献者伪造的状态。写入前重新读取条目，HEAD / 描述 / 状态发生变化时放弃旧快照，等待后续刷新。GitHub API 没有跨接口事务，仍不能把这份快照当成合并锁或分支保护。
+现有 `ci.yml` 仍负责测试、类型检查和 Lint；这次收缩不改动它，也不配置分支保护。
 
-## 如何理解 CI 和审查状态
+`release-packages.yml` 的发布校验继续保留，不属于 PR 评论功能：
 
-- CI 限定 `.github/workflows/ci.yml`，按当前 HEAD 读取官方运行和 jobs。区分未运行、排队、运行中、`action_required`、失败、取消、跳过与成功。
-- 四项基线是 `Check ubuntu-22.04`、`Check macos-14`、`Check windows-latest`、`Check Linux ARM64`。工作流显示 success、但其中某项缺少成功证据时，不能称为完整 CI 通过。
-- 普通 PR 摘要也可能展示同一 HEAD 的主仓库 push CI；它不是当前合并结果或 Desktop 实机验证的保证。
-- Fork CI 可能停在 `action_required`。维护者应先检查 workflow、依赖和安装脚本，再决定是否批准；本工作流不会自动批准 fork CI。
-- 人工审查显示明确批准 / 请求修改及其提交，后续纯评论不覆盖这类记录；没有这类记录时显示最近评论或撤销状态。Codex / CodeRabbit 还可读取明确绑定提交的机器人摘要；不认识的格式、仅有通过状态或不存在记录不推定已审。
-- CodeRabbit 限流 / 跳过提示优先于旧的完成标记；作者发布相同文字不会获得机器人身份。
-- `Validated commit` 必须是作者实际验证过的完整 SHA。缺失就提示未绑定；与 HEAD 不同就提示过期。不会自动将旧的“测试通过”声明绑定到新代码。
+1. 标签必须是合法 SemVer 的 annotated tag，正文包含 Release Notes；提交在 `main` 历史上。
+2. `package.json`、`package-lock.json` 根版本及 Cargo workspace 版本必须与标签一致。
+3. 确切发布 SHA 的主仓库 `main push` CI 和四项基线 job 必须成功。
+4. 构建和发布固定 commit SHA；发布前再次验证远端 tag object SHA、提交仍在 `main`、CI run ID / attempt 和结果。
+5. 校验失败就停止发布，不自动改版本、等待后重试或放宽条件；维护者核实后手动重新准备发布。
 
-如果 GitHub API 读取失败，评论显示未知 / 覆盖不完整，而不是 green。评论或标签历史无法读取时不写入，避免重复评论或覆盖人工标签。工作流成功只表示维护操作完成，不代表产品检查通过。
+标签推送使用标签提交里的工作流定义，新校验不会追溯改写旧标签的发布逻辑。这不是不可绕过的权限控制；未设置分支、标签或发布环境保护。
 
-## 规范提示和明确例外
-
-只检查修改后 Diff 的新增行；不再次实现 ESLint、TypeScript、Rust Clippy 或测试运行器。扫描 `test.only` / `describe.only`、`skip` / `todo` / `xit` 等测试模式，TypeScript / ESLint 抑制注释，以及 Rust `#[ignore]` / `#[allow(...)]`。
-
-这是有限的行模式检查，不是完整语法分析；显式 fixtures / generated / vendor / dist 目录和非代码文件排除。复杂或多行字符串可能误报，多行构造可能未命中；Diff 被 GitHub 截断或没有 patch 时会提示覆盖不完整。没有新增测试文件本身不会被判错。
-
-有合理原因时，有当前 `write` / `maintain` / `admin` 权限的维护者可以在 PR 评论第一行记录：
-
-```text
-/codexhost hygiene-exception <40位当前HEAD SHA> <至少5个字符的明确原因>
-```
-
-撤销：
-
-```text
-/codexhost hygiene-exception revoke <同一HEAD SHA>
-```
-
-读取实时权限，不使用 `author_association`、贡献者自勾选或任意标签替代授权；按最新维护者命令处理。新提交自然使旧例外失效。例外仅作为规范提示的处理记录，不跳过 CI、不修改批准状态；维护者处理自己的 PR 也不构成独立审查。
-
-## 长期等待
-
-提醒更新在同一条摘要里，不周期性创建新评论、不保证触发新的邮件通知。计时使用其他活动及条目更新时间，排除本工作流自己的摘要刷新；其他机器人评论也算活动，可能延后提醒。作者回复或编辑后重新计时。
-
-`awaiting-author` 由维护者设置 / 移除，自动信息检查不擅自决定负责人。普通条目 30 天无其他活动时也只提示维护者确认下一步，不以不活跃推断功能没有价值。
-
-## 发布前校验
-
-保留已有 `v*` 标签推送 / 手动发布入口，不增加自动打标签、自动版本升级或自动合并。
-
-GitHub 的标签推送使用标签提交中的工作流定义：新校验只保护包含这些工作流变更的新标签，以及从默认分支运行的新手动入口，不会追溯改写旧标签里的发布逻辑。这也不是不可绕过的仓库权限控制；本次没有设置分支、标签或发布环境保护。
-
-发布由维护者明确决定版本、标签和提交；验证失败后应先核对原因和证据，再决定是否重试，不自动放宽规则：
-
-1. 准备逻辑取自可信默认分支，标签内的内容只作为数据读取。手动发布必须从默认分支运行。
-2. 标签必须是合法非占位 SemVer 的 annotated tag，且注释 body 包含 release notes；标签提交必须已经在 `main` 历史上。
-3. 标签版本必须匹配 `package.json`、Cargo workspace 和 `package-lock.json` 根版本。工作区内部包的 `0.0.0` 不会被误当作产品版本。
-4. 必须找到主仓库 `main` push、确切 release SHA 的最新官方 CI 执行，且四个基线 jobs 全部 success。PR merge-ref 的成功、其他 workflow 的成功、旧提交的成功、跳过、待批准或 API 不可用均不能替代。
-5. 构建、npm 发布和 GitHub Release 步骤 checkout 固定 commit SHA，不再重新解析可移动标签。
-6. 发布前使用准备时固定的自动化代码 SHA，再核对远端 tag object SHA、提交仍在 `main` 上、CI run ID / attempt 和当前结果。标签移动、`main` 被改写移除该提交或 CI 被重跑后需停止，核对后重新准备发布。
-
-`release-notes` artifact 同时保存 `release-notes.md` 和 `release-evidence.json`，Actions Summary 链接到验证使用的 CI。正式 / 预发布 / `test` npm dist-tag 和现有安装包发布行为保持不变。
-
-若标签推送时确切提交的 CI 尚未完成，发布会停止在 prepare，不会自动等到未来某次成功后发布。确认 CI 通过后，可由维护者手动重新运行。旧发布如没有仍可读取的确切提交 CI 证据，也不会被自动豁免。
-
-## 安全与验证
-
-- 维护工作流仅从默认分支 checkout；不 checkout / 执行 PR head、不安装 PR 依赖、不运行 PR 指定命令。
-- 工作流声明最小权限；维护摘要没有 `contents:write`，不改分支保护、Draft、关闭或合并状态。
-- 新增及修改的发布工作流 Actions 固定 commit SHA；凭据不持久化到 checkout。
-- 用户正文、Diff 和机器人文本作为数据处理；不直接插入 shell、不执行其中指令，转义重新展示的名称、路径和理由。
-- 真实 GitHub 写入行为只能在可信分支部署后验证。本地测试使用纯函数、Git 临时仓库和模拟 GitHub API，不评论真实条目或调用真实 Harness。
-
-定向测试：
+## 验证
 
 ```bash
 npm run test --workspace=@codexhost/repository-automation
 ```
 
-这些测试也由根 `npm run test:typescript` 和现有 CI 执行。修改 CI job 名称时，应同时更新该包策略和测试。
+定向测试覆盖标题与标签所有权、CI 完整性、等待/失败/恢复、日志提取与脱敏、分页、只读预览、过期快照和发布校验。真实 Actions 写入测试需部署到可信分支并明确启用后执行。

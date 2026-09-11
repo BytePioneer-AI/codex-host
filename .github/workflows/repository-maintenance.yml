@@ -1,22 +1,15 @@
 name: Repository maintenance
 
 on:
-  issues:
-    types: [opened, edited, reopened, labeled, unlabeled]
   pull_request_target:
-    types: [opened, edited, reopened, synchronize, labeled, unlabeled, ready_for_review]
-  issue_comment:
-    types: [created, edited, deleted]
-  status:
+    types: [opened, edited, reopened, synchronize, labeled, unlabeled]
   workflow_run:
     workflows: [CI]
-    types: [requested, in_progress, completed]
-  schedule:
-    - cron: "17 */6 * * *"
+    types: [completed]
   workflow_dispatch:
     inputs:
       number:
-        description: "Issue / PR number; empty refreshes all open items"
+        description: "PR number; empty processes all open PRs"
         required: false
         type: string
       dry_run:
@@ -24,8 +17,7 @@ on:
         default: true
         type: boolean
 
-# One writer across event refreshes and scheduled sweeps. GitHub can replace a
-# pending run; the six-hour sweep reconciles missed events from live API data.
+# Serialize the single CI comment writer. No scheduled Issue/PR backlog reminders.
 concurrency:
   group: repository-maintenance
   cancel-in-progress: false
@@ -34,10 +26,6 @@ permissions: {}
 
 jobs:
   maintain:
-    if: >-
-      (github.event_name != 'issue_comment' || github.event.comment.user.login != 'github-actions[bot]') &&
-      (github.event_name != 'status' ||
-        (github.event.context == 'CodeRabbit' && github.event.sender.login == 'coderabbitai[bot]' && github.event.sender.id == 136622811))
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
@@ -46,8 +34,7 @@ jobs:
       pull-requests: write
       actions: read
     steps:
-      # Never checkout, install dependencies from, or execute the PR head.
-      # Issues, comments, diffs and review text are data, never shell/program input.
+      # Never checkout or execute the PR head. Titles and CI logs are data only.
       - name: Checkout trusted automation
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
@@ -55,7 +42,7 @@ jobs:
           persist-credentials: false
           sparse-checkout: packages/repository-automation
 
-      - name: Refresh labels and maintenance summaries
+      - name: Sync explicit PR labels and completed CI result
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
         env:
           ITEM_NUMBER: ${{ inputs.number }}

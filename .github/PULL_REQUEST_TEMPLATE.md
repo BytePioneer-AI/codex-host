@@ -13,10 +13,3 @@
 涉及 Desktop / Renderer / 真实 Harness 的行为时，分别记录自动测试与实机验证，注明版本和平台。
 UI 变化尽可能提供脱敏截图。不要上传账号文件、Token、Cookie 或未脱敏日志。
 -->
-
-## Validated commit
-
-<!-- 填写实际验证过的完整 40 位 HEAD SHA（git rev-parse HEAD）。
-可以先留空；新提交后旧声明会提示过期。不要为了消除提示而填写未验证的提交。
-本字段只是作者声明，不替代 CI 或独立审查。
--->

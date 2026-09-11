@@ -2,7 +2,7 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { format } from "prettier";
 import { describe, expect, it } from "vitest";
-import { AREAS, CI_JOBS } from "../src/policy.mjs";
+import { CI_JOBS } from "../src/policy.mjs";
 
 const root = path.resolve(import.meta.dirname, "../../..");
 const read = (file) => readFile(path.join(root, file), "utf8");
@@ -19,10 +19,9 @@ describe("workflow and form contracts", () => {
     await expect(format(await read(file), { parser: "yaml" })).resolves.toBeTypeOf("string");
   });
 
-  it("keeps every Area dropdown aligned with deterministic mappings", async () => {
+  it("retains human-readable Issue forms with unique field IDs", async () => {
     for (const name of ["bug_report", "feature_request", "question"]) {
       const source = await read(`.github/ISSUE_TEMPLATE/${name}.yml`);
-      for (const area of Object.keys(AREAS)) expect(source).toContain(`- ${area}\n`);
       const ids = [...source.matchAll(/^\s+id: (\S+)$/gmu)].map((match) => match[1]);
       expect(new Set(ids).size).toBe(ids.length);
     }
@@ -40,6 +39,9 @@ describe("workflow and form contracts", () => {
   it("runs write-capable maintenance only with trusted code and no dependency installation", async () => {
     const workflow = await read(".github/workflows/repository-maintenance.yml");
     expect(workflow).toContain("pull_request_target:");
+    expect(workflow).toContain("types: [completed]");
+    expect(workflow).not.toMatch(/^ {2}(?:issues|issue_comment|status|schedule):/mu);
+    expect(workflow).not.toContain("CodeRabbit");
     expect(workflow).not.toContain("  pull_request:");
     expect(workflow).not.toContain("  pull_request_review:");
     expect(workflow).toContain("ref: ${{ github.event.repository.default_branch }}");

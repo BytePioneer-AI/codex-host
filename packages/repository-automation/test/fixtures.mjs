@@ -2,11 +2,10 @@ import { CI_JOBS } from "../src/policy.mjs";
 
 export const head = "a".repeat(40);
 export const oldHead = "b".repeat(40);
-export const now = Date.parse("2026-09-10T12:00:00Z");
 export const repo = { owner: "example", repo: "codex-host" };
 export const human = { login: "contributor", type: "User" };
 export const bot = { login: "github-actions[bot]", type: "Bot" };
-export const body = `## Summary\nFix recovery.\n## Related issues\nN/A\n## Test plan\nnpm test: passed; Desktop not tested.\n## Validated commit\n${head}`;
+export const body = "Fix recovery. Verified locally.";
 
 export function item(overrides = {}) {
   return {
@@ -49,12 +48,13 @@ export function ci(overrides = {}) {
       html_url: "https://github.com/example/codex-host/actions/runs/42",
       ...overrides,
     },
-    jobs: CI_JOBS.map((name) => ({ name, status: "completed", conclusion: "success" })),
+    jobs: CI_JOBS.map((name, index) => ({
+      id: index + 1,
+      name,
+      status: "completed",
+      conclusion: "success",
+    })),
   };
-}
-
-export function data(overrides = {}) {
-  return { files: [], commits: [], reviews: [], ci: ci(), errors: [], ...overrides };
 }
 
 export function comment(overrides = {}) {

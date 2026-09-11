@@ -259,7 +259,7 @@ CodexHost 尽量不走这条路：
 
 ## 开发
 
-提交 Issue 或 PR 前可阅读[贡献说明](CONTRIBUTING.md)；分类标签、状态提示和发布前校验见[仓库维护自动化](docs/repository-maintenance.md)。
+提交 Issue 或 PR 前可阅读[贡献说明](CONTRIBUTING.md)；PR 标题标签、简短 CI 结果和发布前校验见[仓库维护自动化](docs/repository-maintenance.md)。
 
 环境要求：官方 Codex Desktop、Node.js 22.19+ 或 24、Rust。
 

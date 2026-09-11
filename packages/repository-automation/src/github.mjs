@@ -67,9 +67,6 @@ export async function resolveTargets({ github, repo, context, number }) {
       return [Number(number)];
     }
   }
-  if (context.eventName === "issue_comment" && event.comment.user?.login === "github-actions[bot]")
-    return [];
-  if (event.issue) return [event.issue.number];
   if (context.eventName === "pull_request_target") return [event.pull_request.number];
   let sha;
   if (context.eventName === "workflow_run") {
@@ -79,61 +76,13 @@ export async function resolveTargets({ github, repo, context, number }) {
     });
     if (event.workflow_run.workflow_id !== workflow.id) return [];
     sha = event.workflow_run.head_sha;
-  } else if (context.eventName === "status") {
-    if (
-      event.context !== "CodeRabbit" ||
-      event.sender?.login !== "coderabbitai[bot]" ||
-      event.sender?.id !== 136622811
-    )
-      return [];
-    sha = event.sha;
   }
   if (sha) {
     // A fork CI event can have an empty pull_requests array. Reconcile against live heads.
     const prs = await list(github, github.rest.pulls.list, { ...repo, state: "open" });
     return prs.filter((pr) => pr.head.sha === sha).map((pr) => pr.number);
   }
-  if (!["schedule", "workflow_dispatch"].includes(context.eventName)) return [];
-  const items = await list(github, github.rest.issues.listForRepo, {
-    ...repo,
-    state: "open",
-    sort: "created",
-    direction: "asc",
-  });
-  return items.map((item) => item.number);
-}
-
-export async function collectPr({ github, repo, pr }) {
-  const errors = [];
-  async function optional(name, operation, fallback) {
-    try {
-      return await operation();
-    } catch {
-      errors.push(`${name}读取失败，不能视为已通过`);
-      return fallback;
-    }
-  }
-  const [files, commits, reviews, ci] = await Promise.all([
-    optional(
-      "Diff",
-      () => list(github, github.rest.pulls.listFiles, { ...repo, pull_number: pr.number }),
-      [],
-    ),
-    optional(
-      "提交记录",
-      () => list(github, github.rest.pulls.listCommits, { ...repo, pull_number: pr.number }),
-      [],
-    ),
-    optional(
-      "审查记录",
-      () => list(github, github.rest.pulls.listReviews, { ...repo, pull_number: pr.number }),
-      [],
-    ),
-    optional("CI", () => readCi({ github, repo, sha: pr.head.sha, pr }), {
-      run: null,
-      jobs: [],
-      unavailable: true,
-    }),
-  ]);
-  return { files, commits, reviews, ci, errors };
+  if (context.eventName !== "workflow_dispatch") return [];
+  const prs = await list(github, github.rest.pulls.list, { ...repo, state: "open" });
+  return prs.map((pr) => pr.number);
 }

@@ -72,15 +72,20 @@ describe("live CI evidence and target routing", () => {
     await expect(readCi({ github, repo, sha: head })).rejects.toThrow("unavailable");
   });
 
-  it("uses a full paginated open-item sweep for scheduled and manual reconciliation", async () => {
+  it("uses a paginated open-PR list for manual reconciliation, never Issues", async () => {
     const github = githubFixture();
     const result = await resolveTargets({
       github,
       repo,
-      context: { eventName: "schedule", payload: {} },
+      context: {
+        eventName: "workflow_dispatch",
+        ref: "refs/heads/main",
+        payload: { repository: { default_branch: "main" } },
+      },
     });
-    expect(result).toEqual([1, 105]);
-    expect(github.rest.issues.listForRepo).toHaveBeenCalledWith(
+    expect(result).toEqual([7, 8]);
+    expect(github.rest.issues.listForRepo).not.toHaveBeenCalled();
+    expect(github.rest.pulls.list).toHaveBeenCalledWith(
       expect.objectContaining({ state: "open", per_page: 100 }),
     );
   });
@@ -105,7 +110,7 @@ describe("live CI evidence and target routing", () => {
     expect(github.paginate).not.toHaveBeenCalled();
   });
 
-  it("never reacts to its own comments or spoofed CodeRabbit statuses", async () => {
+  it("never reacts to discussion comments or CodeRabbit statuses", async () => {
     const github = githubFixture();
     expect(
       await resolveTargets({
@@ -144,7 +149,7 @@ describe("live CI evidence and target routing", () => {
           },
         },
       }),
-    ).toEqual([7]);
+    ).toEqual([]);
   });
 
   it("reconciles workflow_run by live head instead of trusting payload PR numbers or workflow names", async () => {

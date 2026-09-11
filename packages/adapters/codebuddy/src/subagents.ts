@@ -9,13 +9,15 @@ import type { NativeSessionRef, HostTurnId } from "@codexhost/shared-contracts";
 import { record, text } from "./common.js";
 import { contentText } from "./projection.js";
 import { codeBuddyChildId, codeBuddyDelegation } from "./subagent-tool.js";
-import { locateCodeBuddyChild, readCodeBuddyChild } from "./subagent-history.js";
+import { CodeBuddyChildObserver } from "./subagent-history.js";
+import type { locateCodeBuddyChild, readCodeBuddyChild } from "./subagent-history.js";
 import { nativeModel } from "./configuration.js";
 
 interface Delegation {
   turnId: HostTurnId;
   item: HostSubagentDelegationItem;
-  done: boolean;
+  itemCompleted: boolean;
+  observationDone: boolean;
   requestId?: string;
   signature?: string;
 }
@@ -27,6 +29,7 @@ export class CodeBuddySubagents {
   #timer: ReturnType<typeof setInterval> | undefined;
   #refreshing = false;
   #closed = false;
+  #observer: CodeBuddyChildObserver | undefined;
   constructor(
     readonly options: {
       parent(): NativeSessionRef | undefined;
@@ -62,7 +65,7 @@ export class CodeBuddySubagents {
     const parentCallId = text(meta["codebuddy.ai/parentToolCallId"]);
     if (parentCallId) {
       const call = this.#calls.get(parentCallId);
-      if (call && !call.done) {
+      if (call && !call.observationDone) {
         const requestId = text(meta["codebuddy.ai/conversationRequestId"]);
         if (requestId) call.requestId = requestId;
         const progress =
@@ -78,13 +81,14 @@ export class CodeBuddySubagents {
       name = text(meta["codebuddy.ai/toolName"]);
     let call = this.#calls.get(callId);
     if (!call && name !== "Agent" && meta["codebuddy.ai/isSubagent"] !== true) return false;
-    if (!this.#turnId || this.#closed || call?.done) return true;
+    if (!this.#turnId || this.#closed || call?.observationDone) return true;
     if (!call) {
       if (!meta["codebuddy.ai/toolArgumentsComplete"]) return true;
       call = {
         turnId: this.#turnId,
         item: codeBuddyDelegation(callId, update.rawInput, "running"),
-        done: false,
+        itemCompleted: false,
+        observationDone: false,
       };
       this.#calls.set(callId, call);
       this.options.emit({
@@ -96,20 +100,23 @@ export class CodeBuddySubagents {
     }
     if (update.status === "completed" || update.status === "failed") {
       const childId = codeBuddyChildId(update),
-        child = call.item.subagents[0];
+        child = call.item.subagents[0],
+        failed = update.status === "failed",
+        background = child?.background === true;
       this.#update(call, {
         ...(childId ? { nativeSubagentId: childId, subagentId: childId } : {}),
-        status: update.status === "failed" ? "failed" : child?.background ? "running" : "completed",
+        status: failed ? "failed" : background ? "running" : "completed",
         resultSummary: contentText(update.rawOutput ?? update.content).slice(0, 2000),
       });
-      call.done = true;
-      this.options.emit({
-        type: "item.completed",
-        turnId: call.turnId,
-        snapshot: {
-          item: structuredClone(call.item),
-          outcome:
-            update.status === "failed"
+      call.observationDone = failed || !background;
+      if (!call.itemCompleted) {
+        call.itemCompleted = true;
+        this.options.emit({
+          type: "item.completed",
+          turnId: call.turnId,
+          snapshot: {
+            item: structuredClone(call.item),
+            outcome: failed
               ? {
                   status: "failed",
                   error: {
@@ -119,8 +126,9 @@ export class CodeBuddySubagents {
                   },
                 }
               : { status: "succeeded" },
-        },
-      });
+          },
+        });
+      }
       const id = call.item.subagents[0]?.nativeSubagentId;
       if (id) this.options.emit({ type: "subagent.transcript.changed", nativeSubagentId: id });
     }
@@ -133,7 +141,7 @@ export class CodeBuddySubagents {
     const next = { ...current, ...changes };
     if (JSON.stringify(current) === JSON.stringify(next)) return;
     call.item = { ...call.item, subagents: [next] };
-    if (!call.done)
+    if (!call.itemCompleted)
       this.options.emit({
         type: "item.updated",
         turnId: call.turnId,
@@ -163,32 +171,35 @@ export class CodeBuddySubagents {
     if (this.#refreshing || this.#closed) return;
     const parent = this.options.parent();
     if (!parent) return;
+    this.#observer ??= new CodeBuddyChildObserver(
+      parent,
+      this.options.cwd,
+      this.options.environment,
+    );
     this.#refreshing = true;
     try {
       for (const call of this.#calls.values()) {
-        if (call.done) continue;
+        if (call.observationDone) continue;
         try {
           const id =
             call.item.subagents[0]?.nativeSubagentId ??
             (call.requestId
-              ? await (this.options.locate ?? locateCodeBuddyChild)(
-                  parent,
-                  this.options.cwd,
-                  this.options.environment,
-                  call.requestId,
-                )
+              ? await (this.options.locate
+                  ? this.options.locate(
+                      parent,
+                      this.options.cwd,
+                      this.options.environment,
+                      call.requestId,
+                    )
+                  : this.#observer.locate(call.requestId))
               : undefined);
-          if (!id || this.#closed || call.done) continue;
+          if (!id || this.#closed || call.observationDone) continue;
           if (!call.item.subagents[0]?.nativeSubagentId)
             this.#update(call, { nativeSubagentId: id, subagentId: id });
-          const snapshot = await (this.options.read ?? readCodeBuddyChild)(
-            parent,
-            id,
-            this.options.cwd,
-            this.options.environment,
-            "running",
-          );
-          if (this.#closed || call.done) continue;
+          const snapshot = await (this.options.read
+            ? this.options.read(parent, id, this.options.cwd, this.options.environment, "running")
+            : this.#observer.read(id, "running"));
+          if (this.#closed || call.observationDone) continue;
           const observedModel = snapshot.turns.at(-1)?.model;
           if (observedModel) this.#update(call, { model: nativeModel(observedModel) });
           const signature = JSON.stringify(snapshot);
@@ -216,8 +227,9 @@ export class CodeBuddySubagents {
         status: "interrupted",
         resultSummary: "Parent Turn ended; native child completion was not confirmed",
       });
-      if (!call.done) {
-        call.done = true;
+      call.observationDone = true;
+      if (!call.itemCompleted) {
+        call.itemCompleted = true;
         this.options.emit({
           type: "item.completed",
           turnId: call.turnId,
@@ -230,5 +242,7 @@ export class CodeBuddySubagents {
   close() {
     this.#closed = true;
     this.finish({ status: "cancelled", reason: "Session closed" });
+    this.#observer?.close();
+    this.#observer = undefined;
   }
 }

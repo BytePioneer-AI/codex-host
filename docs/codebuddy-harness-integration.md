@@ -43,7 +43,7 @@ CodeBuddy 2.148.0 can retain cancellation state after returning a cancelled prom
 | Native history | Read-only JSONL projection follows the current parent chain. Persisted user-message IDs identify Turns. Prompt completion and snapshots must agree on identity. Missing, ambiguous, corrupt or oversized history produces an explicit error. Incomplete native history remains `unknown`; it is not labeled successful. |
 | File diffs | Standard ACP diff content is understood when supplied. Native tools still expose their calls/results when no diff is available. This is not a claim that every CodeBuddy Edit/Write supplies a complete historical diff. |
 | Fork / rollback | Explicitly unsupported. SDK `forkSession` does not prove a precise ACP checkpoint operation satisfying the Host's prefix and source-isolation contracts. |
-| Native Agent subagents | Running/completed collaboration cards and read-only child Threads, with real child messages/tools read from the native transcript. Native Agent IDs survive resume. Background launch success is not child completion; observation becomes interrupted when the parent exits without confirmed child completion. |
+| Native Agent subagents | Running/completed collaboration cards and read-only child Threads, with real child messages/tools read from the native transcript. Native Agent IDs survive resume. A background launch acknowledgement completes its tool Item but not the child lifecycle; observation continues without mutating that completed Item, and becomes interrupted when the parent exits without a proven native child-completion signal. |
 | Commands, compact, Teams | No dedicated Host UI/coordination capability. Member-tagged output is not mixed into the parent's answer. Native CodeBuddy configuration is not rewritten to disable these features. |
 | Images | Current public Turn input remains text. Native ACP image capability is not advertised as Host image support. |
 
@@ -65,7 +65,16 @@ its native request ID to a child under the verified parent's `subagents/`
 directory. Only known active child calls are observed, at 750 ms intervals.
 Invalid IDs, redirected files/directories, different workspaces, mixed identities
 and oversized files are rejected. An incomplete final JSONL line can be ignored
-during a write; read failures never imply child completion.
+during live child observation, including parent validation, only while it remains
+unterminated; ordinary parent-history reads and malformed completed/interior lines
+remain strict. Each Session observer keeps a bounded file-fingerprint cache, skips
+unchanged full-file reads and parsing, and invalidates on path, inode, size or
+nanosecond timestamp changes. A reusable cache entry is installed only when file
+identity and metadata are stable before and after the read and the byte count agrees;
+changed files are reread in full rather than incrementally. Cache hits still
+revalidate canonical paths, workspace ownership and transcript identity. Read
+failures and assistant/file messages never imply child completion, and closing the
+parent prevents in-flight observations from emitting late events.
 
 Managed macOS remote execution uses the [native Aqua broker](native-aqua-broker.md):
 

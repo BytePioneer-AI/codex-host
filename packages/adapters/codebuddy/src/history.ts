@@ -1,4 +1,4 @@
-import { access, readFile, readdir, realpath, stat } from "node:fs/promises";
+import { access, readdir, realpath } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 import type {
@@ -16,6 +16,14 @@ import { CODEBUDDY_ID, CodeBuddyError, record, text } from "./common.js";
 import { modelRef } from "./configuration.js";
 import { contentText, toolItem, toolOutcome, toolOutput } from "./projection.js";
 import { codeBuddyChildId, codeBuddyDelegation } from "./subagent-tool.js";
+import { readCodeBuddyVersionedText, type CodeBuddyFileVersion } from "./file-observation.js";
+
+interface CodeBuddyHistorySource {
+  file: string;
+  contents: string;
+  historicalCwds: string[];
+  reusableVersion: CodeBuddyFileVersion | undefined;
+}
 
 export function validateNativeRef(ref: NativeSessionRef) {
   if (
@@ -44,7 +52,25 @@ export async function codeBuddyNativeHistory(
   cwd: string,
   ref: NativeSessionRef,
   environment: NodeJS.ProcessEnv,
-): Promise<{ file: string; contents: string }> {
+): Promise<CodeBuddyHistorySource> {
+  return codeBuddyHistory(cwd, ref, environment, false);
+}
+
+/** Live child observation may see one final record before CodeBuddy appends its newline. */
+export async function codeBuddyLiveNativeHistory(
+  cwd: string,
+  ref: NativeSessionRef,
+  environment: NodeJS.ProcessEnv,
+): Promise<CodeBuddyHistorySource> {
+  return codeBuddyHistory(cwd, ref, environment, true);
+}
+
+async function codeBuddyHistory(
+  cwd: string,
+  ref: NativeSessionRef,
+  environment: NodeJS.ProcessEnv,
+  tolerateIncompleteTail: boolean,
+) {
   validateNativeRef(ref);
   const configRoot =
     environment.CODEBUDDY_CONFIG_DIR ||
@@ -87,14 +113,14 @@ export async function codeBuddyNativeHistory(
     );
   const file = candidates[0];
   if (!file) throw new CodeBuddyError("sessionNotFound", "Native Session history was not found");
-  if ((await stat(file)).size > 64_000_000)
-    throw new CodeBuddyError(
-      "unsupported",
+  const source = await readCodeBuddyVersionedText(
+      file,
+      64_000_000,
       "Native history exceeds the supported 64 MB snapshot size",
-    );
-  const contents = await readFile(file, "utf8");
+    ),
+    parsed = parseJsonl(source.contents, tolerateIncompleteTail);
   const checkedDirectories = new Set<string>();
-  for (const row of parseRows(contents)) {
+  for (const row of parsed.rows) {
     if (row.sessionId && row.sessionId !== ref.nativeSessionId)
       throw new CodeBuddyError("protocolError", "Native history has a different Session identity");
     if (typeof row.cwd === "string" && !checkedDirectories.has(row.cwd)) {
@@ -106,7 +132,12 @@ export async function codeBuddyNativeHistory(
       checkedDirectories.add(row.cwd);
     }
   }
-  return { file, contents };
+  return {
+    file,
+    contents: parsed.contents,
+    historicalCwds: [...checkedDirectories],
+    reusableVersion: source.reusableVersion,
+  };
 }
 
 export async function readNativeHistory(
@@ -117,20 +148,32 @@ export async function readNativeHistory(
   return (await codeBuddyNativeHistory(cwd, ref, environment)).contents;
 }
 
-function parseRows(contents: string) {
-  return contents
-    .split(/\r?\n/u)
-    .filter((line) => line.trim())
-    .map((line) => {
-      try {
-        return record(JSON.parse(line));
-      } catch {
-        throw new CodeBuddyError(
-          "protocolError",
-          "Native history contains an incomplete or invalid record",
-        );
-      }
-    });
+function parseRows(contents: string, tolerateIncompleteTail = false) {
+  return parseJsonl(contents, tolerateIncompleteTail).rows;
+}
+
+function parseJsonl(contents: string, tolerateIncompleteTail: boolean) {
+  const lines = contents.split(/\r?\n/u);
+  const completeLines: string[] = [],
+    rows: Record<string, unknown>[] = [];
+  for (const [index, line] of lines.entries()) {
+    if (!line.trim()) continue;
+    try {
+      rows.push(record(JSON.parse(line)));
+      completeLines.push(line);
+    } catch {
+      if (tolerateIncompleteTail && index === lines.length - 1 && !contents.endsWith("\n"))
+        continue;
+      throw new CodeBuddyError(
+        "protocolError",
+        "Native history contains an incomplete or invalid record",
+      );
+    }
+  }
+  return {
+    rows,
+    contents: tolerateIncompleteTail ? completeLines.join("\n") : contents,
+  };
 }
 
 /** Follow the current native parent chain, not every branch in the append-only file. */

@@ -1,5 +1,30 @@
 # DSH 012rc1 / 015rc1 对接验证
 
+## 原生子智能体接入（2026-09-11）
+
+本轮基线为 upstream `23a9efa7`，Windows、Node.js `v24.11.0`、npm `11.8.0`、Vitest `4.1.10`。版本白名单保持精确 `0.1.2-rc.1` 与 `0.1.5-rc.1`；默认本地 `subagent`／`subagent_fork` 的能力与限制见 [DSH 原生子智能体](dsh-subagents.md)。下文旧版对接与 CodeRabbit 记录为此前验证，不计入本轮检查次数。
+
+完整 DSH Adapter 覆盖率范围和四项 80% 门槛保持不变；先执行 `npm run build:typescript`，再执行 `node node_modules/vitest/vitest.mjs run --config tests/vitest.deepseek-coverage.config.js`，**888 项测试／23 个文件通过**。
+
+| 指标 | 覆盖率 | 已覆盖 / 总数 |
+| --- | --- | --- |
+| 语句 | 87.08% | 6129 / 7038 |
+| 分支 | 82.59% | 5248 / 6354 |
+| 函数 | 92.58% | 986 / 1065 |
+| 行 | 89.60% | 5687 / 6347 |
+
+覆盖版本／父子身份拒绝、原生地址、实时子文本与工具、后台状态和真实终态、并发冷读／恢复父会话、目录发现与工具完成竞态，以及首次子观察前的父关闭和关闭失败。公共 Host 的 166 项聚焦回归通过，覆盖原生协作卡片、子列表、只读详情、运行状态、冷恢复快照更新与后代通知隔离。
+
+真实 CLI Gate `tools/gate-dsh/subagents.real.test.mjs` 在隔离 `DSH_HOME` 和本地 SSE 模型下分别验证两个准确 RC：**012 6/6、015 6/6 通过**，耗时分别为 44.85 秒、62.21 秒。覆盖默认后台、前台 Fork、失败、中断、父 Turn 取消保留子工作、父 Session 关闭及持久化、发送后续消息、冷读／恢复，以及临时搬移 Bundle 经真实 `loadHarnessPlugins` 工厂加载。012 快速失败和 015 搬移插件的直接 Adapter 关闭再各连续执行三次，全部通过；共 18 次实际场景执行。首次子观察前关闭另由双版本确定性回归验证。
+
+本轮 `npm run build:typescript`（含独立插件打包）、`npm run typecheck`、`npm run lint`（含包边界）、`npm run format:check`、`git diff --check` 和 OpenSpec strict 校验通过。生成的日志、覆盖率、CLI 安装和 Bundle 均不纳入 Git。
+
+PR 精简保留全部测试场景与断言，合并事件包装、输出收集、重复状态断言和生产代码中的完成事件转发，共减少 114 行代码（生产 14 行、测试 100 行）。精简后再次执行完整 DSH 覆盖率、两版真实 Gate（各 6/6）和上述静态检查均通过；上表为精简后的覆盖率。
+
+复用公共子智能体协议和现有预装插件加载机制，未修改 Renderer、Manifest 或发行依赖。未执行 Desktop 视觉操作、浏览器自动化、computer use、计费模型、SSH／Remote Control 或其他操作系统验证；未运行未受影响的 Rust 测试。跨进程 provider 的内部对话／工具流仅在 DSH 原生暴露记录时可见，不承诺补出缺失记录。
+
+## 此前 012rc1 / 015rc1 协议对接
+
 实现基线为 upstream `9d36363f`，在 Windows、Node.js `v24.11.0`、npm `11.8.0`、Vitest `4.1.10` 下验证。当前仅支持精确 `0.1.2-rc.1` 与 `0.1.5-rc.1`；旧 DSH Legacy 实现、SDK 和专属测试已删除。
 
 ## 自动化测试与覆盖率

@@ -65,6 +65,8 @@ display; only confirmed native information is projected.
 
 ## Session configuration
 
+DeepSeek Harness `0.1.2-rc.1` and `0.1.5-rc.1` now use the same native collaboration and read-only child Thread paths for their default session-backed subagents. Version-specific discovery, ancestry checks, background lifecycle and provider limits are documented in [DSH native subagents](dsh-subagents.md).
+
 New Grok Sessions receive an explicitly requested startup Model through the native `--model` flag. Subsequent changes continue to use `session/set_model`. codexhost does not rewrite `system_prompt.txt`, `prompt_context.json`, or `chat_history.jsonl` to change Model identity, and does not append identity reminders to user Turns.
 
 ## Validation scope

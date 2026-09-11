@@ -36,7 +36,7 @@ Pi 适合观察 CLI/RPC、延迟启动、history、模型/Thinking、Question、
 | `claude-code` | Claude Agent SDK；受管场景可经 Broker | `plugin.ts`、`claude-code-adapter.ts`、`sdk-transport.ts`、`transport.ts` | SDK、交互和生命周期参考；工厂中的直接/Broker 选择不代表所有插件都需要 Broker |
 | `opencode` | SDK 客户端与原生服务/事件流 | `plugin.ts`、`opencode-adapter.ts`、`sdk-transport.ts`、`server-connection.ts`、`protocol.ts` | 适合共享服务与事件关联；权限写入有增量规则，不能假定配置可全量替换 |
 | `grok` | ACP + 原生私有扩展 | `plugin.ts`、`grok-adapter.ts`、`acp-transport.ts` | 无可靠原生替代时才参考 ACP；权限创建期固定，私有历史扩展不能当标准 ACP |
-| `deepseek-harness` | 按原生版本选择 Legacy/Modern 协议 | `plugin.ts`、`deepseek-harness-adapter.ts`、`generation-selector.ts`，然后进入 `legacy/` 或 `modern/` | 两代是不同基线；必须分别读所选实现与测试，不混用旧能力表。Modern `0.1.2-rc.1` 支持 last-turn rollback（Fork 或空 Session replacement） |
+| `deepseek-harness` | 精确支持 `0.1.2-rc.1`／`0.1.5-rc.1` 的托管 Web Remote | `plugin.ts`、`deepseek-harness-adapter.ts`、`generation-selector.ts`、`profiles/`、`modern/` | Legacy 已删除。两版分别读取 V0／V3；支持同目录 Fork、last-turn rollback、原生子智能体观察及只读历史，不混用 profile |
 | `antigravity` | CLI stream-json | `plugin.ts`、`antigravity-adapter.ts`、`stream-events.ts`、`history.ts` | 适合流式 CLI 与插件持久化历史；当前明确不支持 Fork/Rollback |
 
 原生 Codex 走官方 app-server，不实现外部 HarnessAdapter，不作为新外部插件的模板。
@@ -48,11 +48,11 @@ Pi 适合观察 CLI/RPC、延迟启动、history、模型/Thinking、Question、
 | 公共错误、交互验证、Usage 解析、输出流 | `packages/harness-adapter/src/index.ts` 导出的工具及各自测试 |
 | CLI 搜索与调用 | `packages/harness-discovery/src/index.ts`、Pi `command.ts`；公共机制与插件规则分别拥有 |
 | 模型 opaque identity、Thinking 与历史 | Pi `pi-model-catalog.ts`、`pi-history.ts`、`pi-last-turn-rollback.ts` |
-| Last-Turn Rollback | Pi `pi-last-turn-rollback.ts`；DeepSeek Modern `modern/deepseek-harness-adapter.ts`（`0.1.2-rc.1`） |
+| Last-Turn Rollback | Pi `pi-last-turn-rollback.ts`；DeepSeek Modern `modern/deepseek-harness-adapter.ts`（`0.1.2-rc.1`／`0.1.5-rc.1`） |
 | SDK Approval/Question 与工具投影 | Claude `claude-code-adapter.ts`、`sdk-transport.ts` 及专项模块；按问题选择，不读完后整包复制 |
 | 原生权限确认和重启恢复 | OMP `omp-adapter.ts`；OpenCode `permission-modes.ts` 和 `opencode-adapter.ts`；Grok 创建期作用域 |
-| Subagent、自主 Turn、后台结果 | OMP/Claude Adapter 及生命周期模块；公共类型在 `text-session.ts` |
-| 常驻 Host RPC/共享订阅 | DeepSeek `legacy/host-client.ts`；Modern 读 `modern/remote-connection.ts`、`event-gateway.ts` 和 `session.ts` |
+| Subagent、自主 Turn、后台结果 | OMP/Claude Adapter 及生命周期模块；DSH 的 `modern/subagents.ts`、`subagent-projection.ts` 和 Session 只读观察；公共类型在 `text-session.ts` |
+| 常驻 Host RPC/共享订阅 | DeepSeek `modern/remote-connection.ts`、`event-gateway.ts`、`control-store.ts` 和 `session.ts`；子日志使用已验证的原生父子地址 |
 | 原生协议代际选择 | DeepSeek `generation-selector.ts`、顶层 Adapter；原生版本策略不等于插件 API 版本 |
 | 导入候选与本地 Web UI | DeepSeek 顶层 Adapter、`modern/session-list.ts`；Host 上层仍有专用边界 |
 | 插件工厂和非阻塞预取 | 七个 `src/plugin.ts`；只有确有预取需求时参考 Claude/Antigravity 的 warmup |

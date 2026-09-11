@@ -530,7 +530,7 @@ export async function startHarnessBrokerServer(input: {
         const openedRef = opened.value.initialState.nativeRef;
         if (openedRef && openedRef.harnessId !== input.adapter.harnessId) {
           releaseOpenReservations();
-          await opened.value.close();
+          await opened.value.close().catch(() => undefined);
           return {
             ok: false,
             error: protocolError("Adapter opened a Session for another Harness"),

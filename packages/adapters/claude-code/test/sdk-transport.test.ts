@@ -2037,6 +2037,38 @@ function pushSettlement(
 }
 
 describe("ClaudeSdkTransport autonomous Subagent settlement ordering", () => {
+  it.each(["unset", "cleared"])(
+    "keeps settlements in the autonomous batch when the Thread handler is %s",
+    async (handlerState) => {
+      const value = fixture();
+      const turns: ClaudeAutonomousTurn[] = [];
+      const immediate = vi.fn();
+      value.transport.setAutonomousTurnHandler((turn) => turns.push(turn));
+      if (handlerState === "cleared") {
+        value.transport.setThreadEventHandler(immediate);
+        value.transport.setThreadEventHandler(null);
+      }
+      await value.transport.start();
+      try {
+        pushSettlement(value.fakeQuery, "existing-child", "completed", "existing-call");
+        completeTurn(value.fakeQuery);
+        await vi.waitFor(() => expect(turns).toHaveLength(1));
+        expect(turns[0]?.events).toEqual([
+          {
+            type: "subagent.settled",
+            nativeSubagentId: "existing-child",
+            callId: "existing-call",
+            status: "completed",
+            resultSummary: "Analysis finished",
+          },
+        ]);
+        expect(immediate).not.toHaveBeenCalled();
+      } finally {
+        await value.transport.close();
+      }
+    },
+  );
+
   it.each(["completed", "failed", "stopped"])(
     "keeps a fast %s child settlement after its buffered creation",
     async (status) => {

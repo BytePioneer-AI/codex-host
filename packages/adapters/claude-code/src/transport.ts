@@ -186,6 +186,7 @@ export interface ClaudeTurnTransport {
    * A task-notification Segment may never produce a Terminal, so independent
    * settlements must not wait for Turn batching. Settlements that depend on a
    * buffered creation/reactivation stay in that batch to preserve causal order.
+   * Without a Thread handler, settlements remain in the autonomous Turn batch.
    */
   setThreadEventHandler(handler: ((event: ClaudeTurnEvent) => void) | null): void;
   setIdleLive(live: boolean): void;

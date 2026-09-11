@@ -936,8 +936,11 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
         }
         const interpreted = autonomous.accumulator.consume(message);
         for (const event of interpreted.events) {
-          if (canDeliverSettlementImmediately(event, autonomous.events)) {
-            this.#threadEventHandler?.(event);
+          if (
+            this.#threadEventHandler &&
+            canDeliverSettlementImmediately(event, autonomous.events)
+          ) {
+            this.#threadEventHandler(event);
             continue;
           }
           autonomous.events.push(event);

@@ -171,6 +171,18 @@ describe("codebuddyTranscriptPath", () => {
       "/home/demo/.codebuddy/projects/work-app/s-1.jsonl",
     );
   });
+
+  it("rejects session IDs that could escape the project directory", () => {
+    expect(() => codebuddyTranscriptPath("/home/demo", "/work/app", "../other")).toThrow(
+      "invalid path characters",
+    );
+    expect(() => codebuddyTranscriptPath("/home/demo", "/work/app", "nested/session")).toThrow(
+      "invalid path characters",
+    );
+    expect(() => codebuddyTranscriptPath("/home/demo", "/work/app", "nested\\session")).toThrow(
+      "invalid path characters",
+    );
+  });
 });
 
 describe("readCodeBuddyTranscript", () => {

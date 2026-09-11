@@ -74,6 +74,25 @@ describe("parseCodeBuddyStreamFrame", () => {
     expect(parseCodeBuddyStreamFrame("[1,2]")).toBeNull();
     expect(parseCodeBuddyStreamFrame('{"subtype":"init"}')).toBeNull();
   });
+
+  it("rejects frames with invalid nested content blocks", () => {
+    expect(
+      parseCodeBuddyStreamFrame(
+        JSON.stringify({
+          type: "assistant",
+          message: { content: [null] },
+        }),
+      ),
+    ).toBeNull();
+    expect(
+      parseCodeBuddyStreamFrame(
+        JSON.stringify({
+          type: "assistant",
+          message: { content: [{ type: "unknown", value: "bad" }] },
+        }),
+      ),
+    ).toBeNull();
+  });
 });
 
 describe("initInfoFromFrame", () => {
@@ -128,14 +147,18 @@ function frameLine(frame: Record<string, unknown>): string {
 function makeProcess() {
   const child = new FakeChild();
   const frames: CodeBuddyStreamFrame[] = [];
-  const exits: Array<{ code: number | null; signal: NodeJS.Signals | null; stderrTail: string }> =
-    [];
+  const exits: Array<{
+    process: CodeBuddyStreamProcess;
+    code: number | null;
+    signal: NodeJS.Signals | null;
+    stderrTail: string;
+  }> = [];
   const spawn = vi.fn(() => child) as unknown as SpawnDependency;
   const process = new CodeBuddyStreamProcess(
     { cwd: "/tmp", executable: "codebuddy", args: ["-p"], environment: {}, spawn },
     {
       onFrame: (frame) => frames.push(frame),
-      onExit: (exit) => exits.push(exit),
+      onExit: (process, exit) => exits.push({ process, ...exit }),
     },
   );
   return { child, frames, exits, process, spawn };
@@ -155,10 +178,11 @@ describe("CodeBuddyStreamProcess", () => {
   });
 
   it("collects stderr into a sanitized tail and reports it on close", () => {
-    const { child, exits } = makeProcess();
+    const { child, exits, process: streamProcess } = makeProcess();
     child.stderr.write("boom\n");
     child.close(1, null);
     expect(exits).toHaveLength(1);
+    expect(exits[0]?.process).toBe(streamProcess);
     expect(exits[0]?.code).toBe(1);
     expect(exits[0]?.stderrTail).toContain("boom");
   });

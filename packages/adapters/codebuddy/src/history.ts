@@ -231,6 +231,14 @@ export function codebuddyTranscriptPath(
   cwd: string,
   sessionId: string,
 ): string {
+  if (
+    sessionId.trim().length === 0 ||
+    sessionId.includes("/") ||
+    sessionId.includes("\\") ||
+    sessionId.includes("..")
+  ) {
+    throw new Error("CodeBuddy Session ID contains invalid path characters");
+  }
   return path.join(
     homeDirectory,
     ".codebuddy",

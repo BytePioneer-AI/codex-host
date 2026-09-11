@@ -1,6 +1,7 @@
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from "node:child_process";
 
 import { sanitizeDiagnosticTail } from "@codexhost/harness-adapter";
+import { z } from "zod";
 
 /**
  * Typed view of the CodeBuddy CLI `--output-format stream-json` frames. The
@@ -11,19 +12,19 @@ import { sanitizeDiagnosticTail } from "@codexhost/harness-adapter";
  * each turn.
  */
 export interface CodeBuddyStreamUsage {
-  input_tokens?: number;
-  output_tokens?: number;
-  cache_creation_input_tokens?: number | null;
-  cache_read_input_tokens?: number | null;
+  input_tokens?: number | undefined;
+  output_tokens?: number | undefined;
+  cache_creation_input_tokens?: number | null | undefined;
+  cache_read_input_tokens?: number | null | undefined;
 }
 
 export interface CodeBuddyModelUsage {
-  inputTokens?: number;
-  outputTokens?: number;
-  cacheReadInputTokens?: number;
-  cacheCreationInputTokens?: number;
-  contextWindow?: number;
-  maxOutputTokens?: number;
+  inputTokens?: number | undefined;
+  outputTokens?: number | undefined;
+  cacheReadInputTokens?: number | undefined;
+  cacheCreationInputTokens?: number | undefined;
+  contextWindow?: number | undefined;
+  maxOutputTokens?: number | undefined;
 }
 
 export type CodeBuddyContentBlock =
@@ -32,37 +33,45 @@ export type CodeBuddyContentBlock =
   | { type: "tool_use"; id: string; name: string; input: unknown }
   | {
       type: "tool_result";
-      tool_use_id?: string;
-      content?: unknown;
-      is_error?: boolean;
+      tool_use_id?: string | undefined;
+      content?: unknown | undefined;
+      is_error?: boolean | undefined;
     };
 
 export interface CodeBuddyAssistantMessage {
-  id?: string;
-  model?: string;
-  role?: string;
-  content?: CodeBuddyContentBlock[];
-  usage?: CodeBuddyStreamUsage;
+  id?: string | undefined;
+  model?: string | undefined;
+  role?: string | undefined;
+  content?: CodeBuddyContentBlock[] | undefined;
+  usage?: CodeBuddyStreamUsage | undefined;
 }
 
 export interface CodeBuddyStreamFrame {
   type: string;
-  subtype?: string;
-  session_id?: string;
-  model?: string;
-  permissionMode?: string;
-  message?: CodeBuddyAssistantMessage;
-  event?: {
-    type?: string;
-    index?: number;
-    delta?: { type?: string; text?: string; thinking?: string };
-  };
-  is_error?: boolean;
-  result?: string;
-  total_cost_usd?: number;
-  usage?: CodeBuddyStreamUsage;
-  modelUsage?: Record<string, CodeBuddyModelUsage>;
-  _meta?: Record<string, unknown>;
+  subtype?: string | undefined;
+  session_id?: string | undefined;
+  model?: string | undefined;
+  permissionMode?: string | undefined;
+  message?: CodeBuddyAssistantMessage | undefined;
+  event?:
+    | {
+        type?: string | undefined;
+        index?: number | undefined;
+        delta?:
+          | {
+              type?: string | undefined;
+              text?: string | undefined;
+              thinking?: string | undefined;
+            }
+          | undefined;
+      }
+    | undefined;
+  is_error?: boolean | undefined;
+  result?: string | undefined;
+  total_cost_usd?: number | undefined;
+  usage?: CodeBuddyStreamUsage | undefined;
+  modelUsage?: Record<string, CodeBuddyModelUsage> | undefined;
+  _meta?: Record<string, unknown> | undefined;
 }
 
 export interface CodeBuddyInitInfo {
@@ -81,6 +90,85 @@ export interface CodeBuddyTurnResult {
   meta: Record<string, unknown> | null;
   sessionId: string | null;
 }
+
+const codeBuddyUsageSchema = z
+  .object({
+    input_tokens: z.number().optional(),
+    output_tokens: z.number().optional(),
+    cache_creation_input_tokens: z.number().nullable().optional(),
+    cache_read_input_tokens: z.number().nullable().optional(),
+  })
+  .passthrough();
+
+const codeBuddyModelUsageSchema = z
+  .object({
+    inputTokens: z.number().optional(),
+    outputTokens: z.number().optional(),
+    cacheReadInputTokens: z.number().optional(),
+    cacheCreationInputTokens: z.number().optional(),
+    contextWindow: z.number().optional(),
+    maxOutputTokens: z.number().optional(),
+  })
+  .passthrough();
+
+const codeBuddyContentBlockSchema = z.discriminatedUnion("type", [
+  z.object({ type: z.literal("text"), text: z.string() }).passthrough(),
+  z.object({ type: z.literal("thinking"), thinking: z.string() }).passthrough(),
+  z
+    .object({ type: z.literal("tool_use"), id: z.string(), name: z.string(), input: z.unknown() })
+    .passthrough(),
+  z
+    .object({
+      type: z.literal("tool_result"),
+      tool_use_id: z.string().optional(),
+      content: z.unknown().optional(),
+      is_error: z.boolean().optional(),
+    })
+    .passthrough(),
+]);
+
+const codeBuddyAssistantMessageSchema = z
+  .object({
+    id: z.string().optional(),
+    model: z.string().optional(),
+    role: z.string().optional(),
+    content: z.array(codeBuddyContentBlockSchema).optional(),
+    usage: codeBuddyUsageSchema.optional(),
+  })
+  .passthrough();
+
+const codeBuddyStreamEventSchema = z
+  .object({
+    type: z.string().optional(),
+    index: z.number().optional(),
+    delta: z
+      .object({
+        type: z.string().optional(),
+        text: z.string().optional(),
+        thinking: z.string().optional(),
+      })
+      .passthrough()
+      .optional(),
+  })
+  .passthrough();
+
+const codeBuddyStreamFrameSchema = z
+  .object({
+    type: z.string().min(1),
+    subtype: z.string().optional(),
+    session_id: z.string().optional(),
+    model: z.string().optional(),
+    permissionMode: z.string().optional(),
+    message: codeBuddyAssistantMessageSchema.optional(),
+    event: codeBuddyStreamEventSchema.optional(),
+    is_error: z.boolean().optional(),
+    result: z.string().optional(),
+    total_cost_usd: z.number().optional(),
+    usage: codeBuddyUsageSchema.optional(),
+    modelUsage: z.record(z.string(), codeBuddyModelUsageSchema).optional(),
+    _meta: z.record(z.string(), z.unknown()).optional(),
+  })
+  .passthrough();
 
 const STDERR_TAIL_LIMIT = 8_000;
 
@@ -119,9 +207,8 @@ export function parseCodeBuddyStreamFrame(line: string): CodeBuddyStreamFrame | 
   try {
     const value: unknown = JSON.parse(trimmed);
     if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
-    const frame = value as Record<string, unknown>;
-    if (typeof frame.type !== "string") return null;
-    return frame as unknown as CodeBuddyStreamFrame;
+    const parsed = codeBuddyStreamFrameSchema.safeParse(value);
+    return parsed.success ? parsed.data : null;
   } catch {
     return null;
   }
@@ -154,7 +241,7 @@ export type SpawnDependency = typeof spawn;
 
 export interface CodeBuddyTransportListener {
   onFrame(frame: CodeBuddyStreamFrame): void;
-  onExit(exit: CodeBuddyProcessExit): void;
+  onExit(process: CodeBuddyStreamProcess, exit: CodeBuddyProcessExit): void;
 }
 
 const KILL_GRACE_MS = 1_000;
@@ -224,7 +311,7 @@ export class CodeBuddyStreamProcess {
         clearTimeout(this.#killTimer);
         this.#killTimer = null;
       }
-      listener.onExit({
+      listener.onExit(this, {
         code: null,
         signal: null,
         stderrTail: sanitizeDiagnosticTail(`${error.message}\n${this.stderrTail.value}`),
@@ -237,7 +324,7 @@ export class CodeBuddyStreamProcess {
         clearTimeout(this.#killTimer);
         this.#killTimer = null;
       }
-      listener.onExit({
+      listener.onExit(this, {
         code,
         signal,
         stderrTail: sanitizeDiagnosticTail(this.stderrTail.value),

@@ -189,6 +189,8 @@ function readHelpText(
     child.stdout?.on("data", (chunk: string) => {
       stdout += chunk;
     });
+    // Drain stderr so a verbose CLI cannot block this inspection subprocess.
+    child.stderr?.resume();
     child.on("error", (error: Error) => {
       if (settled) return;
       settled = true;

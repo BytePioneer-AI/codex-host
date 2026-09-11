@@ -208,6 +208,7 @@ describe("CodeBuddySession turn lifecycle", () => {
 
     const child = childRef.current;
     if (!child) throw new Error("child was not spawned");
+    expect(spawnCalls[0]?.command).toBe("codebuddy-fake");
     child.emitFrame({ type: "system", subtype: "init", session_id: "s-9", model: "gpt-5.6-sol" });
     child.emitFrame({
       type: "stream_event",

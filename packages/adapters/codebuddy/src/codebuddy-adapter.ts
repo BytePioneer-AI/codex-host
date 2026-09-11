@@ -95,6 +95,7 @@ export interface CodeBuddyAdapterOptions {
 }
 
 export interface CodeBuddyAdapterDependencies {
+  command?: string | undefined;
   environment: NodeJS.ProcessEnv;
   spawn: SpawnDependency;
 }
@@ -156,7 +157,7 @@ class CodeBuddySession implements HarnessSession {
   #initialUsage: HostUsage | null = null;
   #phase: "open" | "closed" | "faulted" = "open";
   #process: CodeBuddyStreamProcess | null = null;
-  #suppressProcessExit = false;
+  #suppressProcessExit: CodeBuddyStreamProcess | null = null;
   #state: HarnessSessionState;
   #turnCounter = 0;
   #usage: HostUsage | null = null;
@@ -458,6 +459,7 @@ class CodeBuddySession implements HarnessSession {
         {
           cwd: this.#cwd,
           executable: resolveCodeBuddyExecutable({
+            ...(this.#dependencies.command ? { command: this.#dependencies.command } : {}),
             environment: this.#dependencies.environment,
           }),
           args,
@@ -466,7 +468,7 @@ class CodeBuddySession implements HarnessSession {
         },
         {
           onFrame: (frame) => this.#handleFrame(frame),
-          onExit: (exit) => this.#handleExit(exit),
+          onExit: (process, exit) => this.#handleExit(process, exit),
         },
       );
     } catch {
@@ -482,20 +484,24 @@ class CodeBuddySession implements HarnessSession {
   }
 
   #restartProcessForConfiguration(): void {
-    if (!this.#process) return;
-    this.#suppressProcessExit = true;
-    this.#process.kill();
+    const process = this.#process;
+    if (!process) return;
+    this.#suppressProcessExit = process;
+    process.kill();
     this.#process = null;
   }
 
-  #handleExit(exit: {
-    code: number | null;
-    signal: NodeJS.Signals | null;
-    stderrTail: string;
-  }): void {
-    this.#process = null;
-    if (this.#suppressProcessExit) {
-      this.#suppressProcessExit = false;
+  #handleExit(
+    process: CodeBuddyStreamProcess,
+    exit: {
+      code: number | null;
+      signal: NodeJS.Signals | null;
+      stderrTail: string;
+    },
+  ): void {
+    if (this.#process === process) this.#process = null;
+    if (this.#suppressProcessExit === process) {
+      this.#suppressProcessExit = null;
       return;
     }
     const active = this.#active;
@@ -1001,6 +1007,7 @@ export class CodeBuddyAdapter implements HarnessAdapter {
 
   #dependencies(): CodeBuddyAdapterDependencies {
     return {
+      ...(this.#options.command ? { command: this.#options.command } : {}),
       environment: this.#options.environment ?? process.env,
       spawn: this.#options.spawn ?? spawn,
     };

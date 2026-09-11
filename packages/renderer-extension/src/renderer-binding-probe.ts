@@ -75,11 +75,15 @@ import {
   writeNewThreadAgentPreference,
   writeNewThreadExternalConfigurationPreference,
 } from "./renderer-new-thread-preference.js";
-import { installRendererSidebarAgentIcons } from "./renderer-sidebar-agent-icons.js";
+import {
+  installRendererSidebarAgentIcons,
+  installRendererSidebarExternalPinning,
+} from "./renderer-sidebar-agent-icons.js";
 import {
   rendererHarnessCommandExecutesDirectly,
   routeRendererHarnessCommandSelection,
 } from "./renderer-harness-command-claim.js";
+
 import { installRendererSettingsLifecycle } from "./renderer-settings-lifecycle.js";
 import { openRendererThread } from "./renderer-fork-control.js";
 import type {
@@ -662,6 +666,15 @@ export function installRendererBindingProbe(
   const sidebarAgentIcons = installRendererSidebarAgentIcons({
     getClient: (hostId) => modelClientForHost(hostId),
     getLocalAgent: localAgentForSidebarThread,
+  });
+  const stopSidebarExternalPinning = installRendererSidebarExternalPinning({
+    getClient: (hostId) => modelClientForHost(hostId),
+    reportError: (error) => {
+      console.error(
+        "codexhost External Thread pin update failed",
+        error instanceof Error ? error.message : String(error),
+      );
+    },
   });
   let connectionDiagnostics: RendererConnectionDiagnostics | null = null;
   const settingsLifecycle = installRendererSettingsLifecycle(window, {
@@ -2832,6 +2845,7 @@ export function installRendererBindingProbe(
       mutationObserver.disconnect();
       disposeReasoningSoftWrap();
       sidebarAgentIcons.dispose();
+      stopSidebarExternalPinning();
       settingsLifecycle.dispose();
       document.removeEventListener("beforeinput", onBeforeInput, true);
       document.removeEventListener("submit", onSubmit, true);

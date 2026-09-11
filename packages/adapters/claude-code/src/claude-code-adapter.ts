@@ -1399,10 +1399,33 @@ class ClaudeHarnessSession implements HarnessSession {
       });
       this.#transport = transport;
       transport.setAutonomousTurnHandler((turn) => this.#handleAutonomousTurn(turn));
+      transport.setThreadEventHandler((event) => {
+        // Thread-level events (e.g. a background Subagent settling) are not
+        // Turn-scoped and must not be gated on an active Turn.
+        if (event.type === "subagent.settled") {
+          this.#settleBackgroundSubagent(
+            event.status,
+            event.nativeSubagentId,
+            event.callId,
+            event.resultSummary,
+          );
+        }
+      });
       transport.setIdleTurnHandler({
         onEvent: (event) => {
           const active = this.#active;
-          if (active) this.#handleTurnEvent(active, event);
+          if (active) {
+            this.#handleTurnEvent(active, event);
+            return;
+          }
+          if (event.type === "subagent.settled") {
+            this.#settleBackgroundSubagent(
+              event.status,
+              event.nativeSubagentId,
+              event.callId,
+              event.resultSummary,
+            );
+          }
         },
         onTerminal: (result) => {
           const active = this.#active;

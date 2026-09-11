@@ -337,6 +337,30 @@ function allowed(
   };
 }
 
+function canDeliverSettlementImmediately(
+  event: ClaudeTurnEvent,
+  pendingEvents: readonly ClaudeTurnEvent[],
+): boolean {
+  if (event.type !== "subagent.settled") return false;
+  // A notification without a continuation may never produce a Terminal. Deliver
+  // it now unless this batch still owes the child its creation/reactivation.
+  // Otherwise Host would discard the unknown child's terminal state and later
+  // replay its buffered lifecycle as running.
+  return !pendingEvents.some((pending) => {
+    if (
+      pending.type !== "subagent.started" &&
+      pending.type !== "subagent.updated" &&
+      pending.type !== "subagent.completed"
+    ) {
+      return false;
+    }
+    return (
+      (event.callId !== undefined && pending.callId === event.callId) ||
+      pending.nativeSubagentId === event.nativeSubagentId
+    );
+  });
+}
+
 export class ClaudeSdkTransport implements ClaudeTurnTransport {
   readonly sessionId: string;
   readonly #children: ChildProcessWithoutNullStreams[] = [];
@@ -362,6 +386,7 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
   } | null = null;
   #autonomousTurnHandler: ((turn: ClaudeAutonomousTurn) => void) | null = null;
   #idleHandler: ClaudeIdleTurnHandler | null = null;
+  #threadEventHandler: ((event: ClaudeTurnEvent) => void) | null = null;
   #idleLive = false;
   #idleAccumulator: ClaudeNativeTurnAccumulator | null = null;
   #closePromise: Promise<void> | null = null;
@@ -396,6 +421,10 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
 
   setIdleTurnHandler(handler: ClaudeIdleTurnHandler | null): void {
     this.#idleHandler = handler;
+  }
+
+  setThreadEventHandler(handler: ((event: ClaudeTurnEvent) => void) | null): void {
+    this.#threadEventHandler = handler;
   }
 
   setIdleLive(live: boolean): void {
@@ -906,7 +935,16 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
           autonomous.nativeTurnKey = message.uuid;
         }
         const interpreted = autonomous.accumulator.consume(message);
-        autonomous.events.push(...interpreted.events);
+        for (const event of interpreted.events) {
+          if (
+            this.#threadEventHandler &&
+            canDeliverSettlementImmediately(event, autonomous.events)
+          ) {
+            this.#threadEventHandler(event);
+            continue;
+          }
+          autonomous.events.push(event);
+        }
         if (interpreted.terminal) {
           this.#autonomous = null;
           const nativeTurnKey = autonomous.nativeTurnKey ?? `autonomous-${Date.now()}`;

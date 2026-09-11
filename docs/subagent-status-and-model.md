@@ -23,6 +23,31 @@ The protocol projector passes these values in separate native `model` and `reaso
 
 Whether and where those fields are visible depends on the installed Desktop version; this integration does not promise a custom `status · Model · effort` subtitle.
 
+## Summary panel discovery and restored identity
+
+The native Desktop summary panel discovers descendants through `thread/list`
+with `ancestorThreadId` (or `parentThreadId` on older app-server versions) and
+`sourceKinds: ["subAgentThreadSpawn"]`. Host serves persisted external child
+metadata for these scoped queries, including `useStateDbOnly`, without opening
+child Harness Sessions or reading their transcripts. Ordinary unscoped task
+lists still omit native subagents unless a subagent source kind is requested.
+
+Live child state comes from observed native subagent lifecycle events even if
+the child transcript has never been opened. After Host restart, an unobserved
+child remains `notLoaded` until a real status observation is available.
+
+Live projection and parent history hydration reuse the same child Host Thread
+identity. Historical collaboration Items carry their parent Host Thread ID and
+resolved child receiver IDs, rather than raw CLI-native IDs. This also recovers
+children from history recorded before the Host had materialized them. Existing
+child mappings retain their IDs; concurrent hydration and live events cannot
+create duplicate children for one parent Native Session and native child ID.
+
+These paths are shared by CodeBuddy, Cursor, Grok, Claude Code, Antigravity and
+other Adapters using `subagentDelegation`. Cursor's lack of an internal child
+message/tool stream does not prevent summary list discovery and lifecycle
+display; only confirmed native information is projected.
+
 ## Session configuration
 
 New Grok Sessions receive an explicitly requested startup Model through the native `--model` flag. Subsequent changes continue to use `session/set_model`. codexhost does not rewrite `system_prompt.txt`, `prompt_context.json`, or `chat_history.jsonl` to change Model identity, and does not append identity reminders to user Turns.

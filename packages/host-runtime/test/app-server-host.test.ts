@@ -1358,6 +1358,109 @@ describe("AppServerHost HarnessAdapter projection", () => {
     }
   });
 
+  it("hydrates the native summary list and preserves Subagent identity through parent history", async () => {
+    const fixture = createFixture();
+    try {
+      const parentId = await startPiThread(fixture);
+      const turnId = await startPiTurn(fixture, parentId);
+      await fixture.collector.waitFor((message) => turnEvent(message, "turn/started", turnId));
+      const session = fixture.adapter.sessions[0];
+      if (!session) throw new Error("Missing fixture Session");
+      const child = {
+        subagentId: "call-child",
+        nativeSubagentId: "native-child",
+        description: "Summary child",
+        role: "explorer",
+        background: false,
+        status: "running" as const,
+      };
+      const itemId = session.startSubagentDelegation(child);
+      const started = await fixture.collector.waitFor(
+        (message) =>
+          method(message, "thread/started") &&
+          (messageParams(message).thread as JsonObject | undefined)?.parentThreadId === parentId,
+      );
+      const childId = (messageParams(started).thread as JsonObject).id;
+      const list = async (id: number, sourceParams: JsonObject) => {
+        writeRequest(fixture.desktopInput, {
+          id,
+          method: "thread/list",
+          params: {
+            limit: 200,
+            sourceKinds: ["subAgentThreadSpawn"],
+            useStateDbOnly: true,
+            ...sourceParams,
+          },
+        });
+        const official = await readJsonLine(fixture.official.stdin);
+        expect(official.method).toBe("thread/list");
+        writeRequest(fixture.official.stdout, {
+          id: requiredMessageId(official),
+          result: { data: [], nextCursor: null },
+        });
+        return fixture.collector.waitFor((message) => requestId(message, id));
+      };
+      expect(await list(90, { ancestorThreadId: parentId })).toMatchObject({
+        result: {
+          data: [
+            {
+              id: childId,
+              parentThreadId: parentId,
+              name: "Summary child",
+              agentRole: "explorer",
+              status: { type: "active" },
+              canAcceptDirectInput: false,
+            },
+          ],
+        },
+      });
+      session.replaceSubagents(itemId, [{ ...child, status: "completed" }]);
+      session.completeItem(itemId, { status: "succeeded" });
+      session.succeedTurn();
+      await fixture.collector.waitFor((message) => turnEvent(message, "turn/completed", turnId));
+      expect(await list(91, { parentThreadId: parentId })).toMatchObject({
+        result: {
+          data: [
+            {
+              id: childId,
+              status: { type: "idle" },
+            },
+          ],
+        },
+      });
+      writeRequest(fixture.desktopInput, {
+        id: 92,
+        method: "thread/turns/list",
+        params: {
+          threadId: parentId,
+          limit: 20,
+          itemsView: "full",
+        },
+      });
+      const history = await fixture.collector.waitFor((message) => requestId(message, 92));
+      expect(history).toMatchObject({
+        result: {
+          data: [
+            {
+              items: expect.arrayContaining([
+                expect.objectContaining({
+                  type: "collabAgentToolCall",
+                  senderThreadId: parentId,
+                  receiverThreadIds: [childId],
+                }),
+              ]),
+            },
+          ],
+        },
+      });
+      expect(
+        (await fixture.mappingStore.listThreads()).filter((record) => record.subagent),
+      ).toHaveLength(1);
+    } finally {
+      await stopFixture(fixture);
+    }
+  });
+
   it("materializes a Subagent receiver as a readable Child Host Thread", async () => {
     const base = new FakeHarnessAdapter(harnessIdSchema.parse("pi"));
     let subagentPhase: "started" | "temporarily-empty" | "working" | "completed" = "started";

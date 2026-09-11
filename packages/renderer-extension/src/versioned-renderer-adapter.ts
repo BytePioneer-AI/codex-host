@@ -117,7 +117,6 @@ export interface RendererDraftPrewarmPolicy {
   hostId: string;
   readonly requestTarget?: () => unknown;
   select(model: string | null): boolean;
-  readonly selectAccount?: (accountId: string | null) => boolean;
   clear(): Promise<void>;
 }
 
@@ -1096,12 +1095,21 @@ export function installCurrentRendererAdapter(): {
       const client = currentModelClient();
       return client.refreshCodexAccounts?.() ?? client.listCodexAccounts();
     },
-    createCodexAccount: (input: Parameters<RendererModelClient["createCodexAccount"]>[0]) =>
-      currentModelClient().createCodexAccount(input),
     deleteCodexAccount: (input: Parameters<RendererModelClient["deleteCodexAccount"]>[0]) =>
       currentModelClient().deleteCodexAccount(input),
-    activateCodexAccount: (input: Parameters<RendererModelClient["activateCodexAccount"]>[0]) =>
-      currentModelClient().activateCodexAccount(input),
+    switchCodexAccount: (input: Parameters<RendererModelClient["switchCodexAccount"]>[0]) =>
+      currentModelClient().switchCodexAccount(input),
+    logoutCodexAccount: (input?: Parameters<RendererModelClient["logoutCodexAccount"]>[0]) =>
+      currentModelClient().logoutCodexAccount(input),
+    recoverCodexAccounts: (input?: Parameters<RendererModelClient["recoverCodexAccounts"]>[0]) =>
+      currentModelClient().recoverCodexAccounts(input),
+    subscribeCodexAccounts: (
+      listener: Parameters<NonNullable<RendererModelClient["subscribeCodexAccounts"]>>[0],
+    ) => {
+      const client = currentModelClient();
+      if (!client.subscribeCodexAccounts) throw new Error("Codex Account updates are unavailable");
+      return client.subscribeCodexAccounts(listener);
+    },
     startCodexAccountLogin: (input: Parameters<RendererModelClient["startCodexAccountLogin"]>[0]) =>
       currentModelClient().startCodexAccountLogin(input),
     cancelCodexAccountLogin: (

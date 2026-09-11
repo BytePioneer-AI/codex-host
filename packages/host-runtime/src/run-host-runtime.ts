@@ -5,13 +5,11 @@ import { fileURLToPath } from "node:url";
 
 import { UPDATE_RUNTIME_ENV } from "@codexhost/update-manager";
 
-import {
-  AppServerHost,
-  officialAccountEnvironment,
-  officialEnvironment,
-} from "./app-server-host.js";
-import type { CodexAccount } from "./account/account-repository.js";
-import { AccountOfficialListeners } from "./codex-runtime/account-official-listeners.js";
+import { AppServerHost, officialEnvironment } from "./app-server-host.js";
+import { prepareLocalCodex } from "./native-account-host.js";
+import { SingleNativeCodexAccount } from "./account/codex-account-control.js";
+import { OfficialRuntimeScope } from "./codex-runtime/official-runtime-scope.js";
+import { createOwnedUnixBackend } from "./codex-runtime/owned-official-backends.js";
 import { DelegationControlRegistry } from "./delegation-control-registry.js";
 import { installedHarnessPluginOptions } from "./installed-harness-plugins.js";
 import { startDelegationControlServer } from "./delegation-control-server.js";
@@ -36,13 +34,7 @@ import {
   remoteAppServerSocketPath,
   remoteUnixListenerUrl,
 } from "./remote-app-server.js";
-import {
-  createLoopbackOfficialAppServerListener,
-  createRemoteOfficialAppServerListener,
-  remoteOfficialAppServerSocketPath,
-  type RemoteOfficialAppServerExit,
-} from "./remote-official-app-server.js";
-import { createRemoteOfficialAppServerConnection } from "./remote-official-connection.js";
+import { remoteOfficialAppServerSocketPath } from "./remote-official-app-server.js";
 import { createHostUpdateCoordinator, type HostUpdateCoordinator } from "./update-coordinator.js";
 
 const STOCK_CODEX_PATH_ENV = "CODEXHOST_STOCK_CODEX_PATH";
@@ -161,91 +153,79 @@ export async function runHostRuntime(input: {
       ...(hostRuntimePath ? { hostRuntimePath } : {}),
     });
     const environment = remoteControlPlan?.environment ?? input.environment;
-    if (!remoteControlPlan) {
-      return prepareDelegationRuntime({
-        environment,
-        createHost: async (delegationEnvironment, onDelegationApi) => {
-          const host = new AppServerHost({
-            stockCodexPath,
-            arguments: input.arguments,
-            defaultAgent,
-            environment: delegationEnvironment,
-            ...installedHarnessPluginOptions(delegationEnvironment, false, input.hostRuntimeUrl),
-            onDelegationApi,
-            ...(updateCoordinator ? { updateCoordinator } : {}),
-          });
-          return host.run();
-        },
-      });
-    }
-
     return prepareDelegationRuntime({
       environment,
       createHost: async (delegationEnvironment, onDelegationApi, registry) => {
-        const officialPlan = createRemoteControlOfficialAppServerPlan(
-          remoteControlPlan.officialArguments,
-        );
-        const officialListeners = new AccountOfficialListeners((account) =>
-          createLoopbackOfficialAppServerListener({
-            stockCodexPath,
-            arguments: officialPlan.listenerArguments,
-            environment: officialAccountEnvironment(delegationEnvironment, account),
-            diagnosticOutput: process.stderr,
-          }),
-        );
-        const createOfficialConnection = async (account: CodexAccount) =>
-          createRemoteOfficialAppServerConnection(await officialListeners.endpoint(account));
-        const mappingStore = createProductionExternalThreadStore(delegationEnvironment);
-        await mappingStore.initialize();
-        const host = new AppServerHost({
+        const official = await prepareLocalCodex({
           stockCodexPath,
-          arguments: input.arguments,
-          defaultAgent,
+          arguments: remoteControlPlan?.officialArguments ?? input.arguments,
           environment: delegationEnvironment,
-          ...installedHarnessPluginOptions(delegationEnvironment, false, input.hostRuntimeUrl),
-          mappingStore,
-          closeMappingStoreOnExit: false,
-          createOfficialConnection,
-          onDelegationApi,
-          ...(updateCoordinator ? { updateCoordinator } : {}),
-        });
-        const listener = createRemoteAppServerWebSocketListener({
-          socketPath: remoteControlPlan.pipePath,
+          sharedListener: !!remoteControlPlan,
           diagnosticOutput: process.stderr,
-          createSession: ({ input: desktopInput, output: desktopOutput, diagnosticOutput }) => {
-            return new AppServerHost({
+        });
+        const shared = {
+          officialRuntimeScope: official.officialRuntimeScope,
+          accountControl: official.accountControl,
+          allowNativeAuthPassthrough: official.allowNativeAuthPassthrough,
+        };
+        if (!remoteControlPlan) {
+          try {
+            return await new AppServerHost({
               stockCodexPath,
-              arguments: [],
+              arguments: input.arguments,
               defaultAgent,
               environment: delegationEnvironment,
-              desktopInput,
-              desktopOutput,
-              diagnosticOutput,
+              ...shared,
               ...installedHarnessPluginOptions(delegationEnvironment, false, input.hostRuntimeUrl),
-              mappingStore,
-              closeMappingStoreOnExit: false,
-              createOfficialConnection,
-              onDelegationApi: (api) => registry.register(api),
+              onDelegationApi,
               ...(updateCoordinator ? { updateCoordinator } : {}),
-            });
-          },
-        });
-
+            }).run();
+          } finally {
+            await official.close();
+          }
+        }
+        const mappingStore = createProductionExternalThreadStore(delegationEnvironment);
+        let listener: ReturnType<typeof createRemoteAppServerWebSocketListener> | undefined;
         try {
-          await officialListeners.endpoint({
-            codexHome: path.resolve(
-              delegationEnvironment.CODEX_HOME ?? path.join(homedir(), ".codex"),
-            ),
+          await mappingStore.initialize();
+          const common = {
+            stockCodexPath,
+            defaultAgent,
+            environment: delegationEnvironment,
+            ...shared,
+            ...installedHarnessPluginOptions(delegationEnvironment, false, input.hostRuntimeUrl),
+            mappingStore,
+            closeMappingStoreOnExit: false,
+            ...(updateCoordinator ? { updateCoordinator } : {}),
+          };
+          const host = new AppServerHost({
+            ...common,
+            arguments: input.arguments,
+            onDelegationApi,
+          });
+          listener = createRemoteAppServerWebSocketListener({
+            socketPath: remoteControlPlan.pipePath,
+            diagnosticOutput: process.stderr,
+            createSession: ({ input: desktopInput, output: desktopOutput, diagnosticOutput }) =>
+              new AppServerHost({
+                ...common,
+                arguments: [],
+                desktopInput,
+                desktopOutput,
+                diagnosticOutput,
+                onDelegationApi: (api) => registry.register(api),
+              }),
           });
           await listener.listen();
           await publishRemoteControlAppServerDescriptor(remoteControlPlan);
+          // Official failure/replacement must never close this listener or external Harnesses.
           return await host.run();
         } finally {
           try {
-            await listener.close();
+            await listener?.close();
           } finally {
             try {
-              await officialListeners.close();
+              await official.close();
             } finally {
               await mappingStore.close();
             }
@@ -265,13 +245,37 @@ export async function runHostRuntime(input: {
     createHost: async (delegationEnvironment, _onDelegationApi, registry) => {
       const socketPath = remoteAppServerSocketPath(delegationEnvironment, listenUrl);
       const officialPlan = createRemoteOfficialAppServerPlan(input.arguments, socketPath);
-      const officialListener = createRemoteOfficialAppServerListener({
-        stockCodexPath,
-        arguments: officialPlan.listenerArguments,
-        socketPath: officialPlan.socketPath,
-        environment: officialEnvironment(delegationEnvironment),
+      const officialRuntimeScope = new OfficialRuntimeScope({
+        permanentHome: path.resolve(
+          delegationEnvironment.CODEX_HOME ?? path.join(homedir(), ".codex"),
+        ),
+        allowNativeAuthPassthrough: true,
         diagnosticOutput: process.stderr,
+        createBackend: () =>
+          createOwnedUnixBackend({
+            stockCodexPath,
+            arguments: officialPlan.listenerArguments,
+            socketPath: officialPlan.socketPath,
+            environment: officialEnvironment(delegationEnvironment),
+            diagnosticOutput: process.stderr,
+          }),
       });
+      const accountControl = new SingleNativeCodexAccount(() => ({
+        version: 2,
+        currentAccountId: "remote-native",
+        phase: officialRuntimeScope.gate.phase,
+        revision: officialRuntimeScope.gate.revision,
+        capabilities: {
+          manage: false,
+          switch: false,
+          login: false,
+          delete: false,
+          recover: false,
+          logout: false,
+          reason: "ssh-single-account",
+        },
+        accounts: [{ accountId: "remote-native", label: "Remote native Codex Account" }],
+      }));
       const mappingStore = createProductionExternalThreadStore(delegationEnvironment);
       await mappingStore.initialize();
       const listener = createRemoteAppServerWebSocketListener({
@@ -289,8 +293,9 @@ export async function runHostRuntime(input: {
             ...installedHarnessPluginOptions(delegationEnvironment, true, input.hostRuntimeUrl),
             mappingStore,
             closeMappingStoreOnExit: false,
-            createOfficialConnection: () =>
-              createRemoteOfficialAppServerConnection(officialPlan.socketPath),
+            officialRuntimeScope,
+            accountControl,
+            allowNativeAuthPassthrough: true,
             onDelegationApi: (api) => registry.register(api),
             ...(updateCoordinator ? { updateCoordinator } : {}),
           });
@@ -298,21 +303,20 @@ export async function runHostRuntime(input: {
       });
 
       let stopping = false;
-      const officialState: { unexpectedExit: RemoteOfficialAppServerExit | null } = {
-        unexpectedExit: null,
-      };
+      const officialState: { unexpectedExit: Error | null } = { unexpectedExit: null };
       const stop = (): void => {
         stopping = true;
         void listener.close();
       };
       try {
         await prepareRemoteAppServerSocketDirectory(socketPath);
-        await officialListener.listen();
+        await officialRuntimeScope.start().catch(() => {
+          officialRuntimeScope.gate.unavailable();
+        });
         await listener.listen();
-        void officialListener.closed.then((result) => {
-          if (stopping) return;
-          officialState.unexpectedExit = result;
-          void listener.close();
+        void officialRuntimeScope.failure().then((result) => {
+          if (!stopping) officialState.unexpectedExit = result;
+          // Keep remote external Harness sessions alive when only native Codex fails.
         });
         process.title = MANAGED_REMOTE_APP_SERVER_PROCESS_TITLE;
         process.once("SIGINT", stop);
@@ -327,7 +331,7 @@ export async function runHostRuntime(input: {
           await listener.close();
         } finally {
           try {
-            await officialListener.close();
+            await officialRuntimeScope.close();
           } finally {
             await mappingStore.close();
           }

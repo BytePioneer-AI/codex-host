@@ -37,9 +37,6 @@ describe("Renderer Agent picker presentation", () => {
       accountId: "reviewer",
       label: "Reviewer",
       email: "reviewer@example.com",
-      codexHome: "/tmp/reviewer",
-      active: true,
-      isDefault: false,
     };
     expect(codexAccountDisplayName(account)).toEqual({
       local: "reviewer",
@@ -57,9 +54,6 @@ describe("Renderer Agent picker presentation", () => {
     const account = {
       accountId: "reviewer",
       label: "Reviewer",
-      codexHome: "/tmp/reviewer",
-      active: true,
-      isDefault: false,
     };
     expect(codexAccountPresentationSignature([account])).not.toBe(
       codexAccountPresentationSignature([{ ...account, email: "reviewer@example.com" }]),
@@ -74,9 +68,6 @@ describe("Renderer Agent picker presentation", () => {
           accountId: "reviewer",
           label: "Reviewer",
           email: "reviewer@example.com",
-          codexHome: "/tmp/reviewer",
-          active: true,
-          isDefault: false,
         },
       ),
     ).toBe("Agent: Codex · reviewer@example.com (locked)");
@@ -103,12 +94,12 @@ describe("Renderer Agent picker presentation", () => {
     });
   });
 
-  it("keeps the Provider picker enabled when Codex has multiple Accounts", () => {
+  it("does not turn multiple Codex Accounts into Harness picker entries", () => {
     expect(
-      rendererAgentPickerView({ agent: "codex", phase: "draft" }, "ready", false, ["codex"], {}, 2),
+      rendererAgentPickerView({ agent: "codex", phase: "draft" }, "ready", false, ["codex"]),
     ).toMatchObject({
       label: "Codex",
-      triggerDisabled: false,
+      triggerDisabled: true,
       optionDisabled: { codex: false },
     });
   });

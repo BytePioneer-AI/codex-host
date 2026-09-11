@@ -4,6 +4,11 @@ import { lstat, rm } from "node:fs/promises";
 import path from "node:path";
 import type { Writable } from "node:stream";
 
+import {
+  OfficialProcessLifecycle,
+  OfficialProcessStopTimeoutError,
+} from "./official-process-lifecycle.js";
+
 export interface RemoteOfficialAppServerExit {
   code: number | null;
   signal: NodeJS.Signals | null;
@@ -11,12 +16,14 @@ export interface RemoteOfficialAppServerExit {
 }
 
 export interface RemoteOfficialAppServerListener {
+  readonly processId?: number | undefined;
   readonly closed: Promise<RemoteOfficialAppServerExit>;
   listen(): Promise<void>;
   close(): Promise<void>;
 }
 
 export interface LoopbackOfficialAppServerListener {
+  readonly processId?: number | undefined;
   readonly closed: Promise<RemoteOfficialAppServerExit>;
   listen(): Promise<string>;
   close(): Promise<void>;
@@ -51,32 +58,6 @@ export function remoteOfficialAppServerSocketPath(
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
-}
-
-async function settlesWithin<T>(promise: Promise<T>, timeoutMs: number): Promise<boolean> {
-  return new Promise<boolean>((resolve) => {
-    let settled = false;
-    const timer = setTimeout(() => {
-      if (settled) return;
-      settled = true;
-      resolve(false);
-    }, timeoutMs);
-    timer.unref();
-    void promise.then(
-      () => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timer);
-        resolve(true);
-      },
-      () => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timer);
-        resolve(true);
-      },
-    );
-  });
 }
 
 async function socketIdentity(socketPath: string): Promise<UnixFileIdentity | null> {
@@ -139,6 +120,7 @@ export function createRemoteOfficialAppServerListener(input: {
   let closeRequested = false;
   let exitResult: RemoteOfficialAppServerExit | null = null;
   let ownedSocketIdentity: UnixFileIdentity | null = null;
+  let processLifecycle: OfficialProcessLifecycle | null = null;
 
   const settleExit = (result: RemoteOfficialAppServerExit): void => {
     if (exitResult !== null) return;
@@ -146,16 +128,18 @@ export function createRemoteOfficialAppServerListener(input: {
     closed.resolve(result);
   };
 
-  const terminate = async (spawned: ChildProcess): Promise<boolean> => {
-    if (exitResult !== null) return true;
-    spawned.kill("SIGTERM");
-    if (await settlesWithin(closed.promise, closeTimeoutMs)) return true;
-    spawned.kill("SIGKILL");
-    if (await settlesWithin(closed.promise, closeTimeoutMs)) return true;
-    input.diagnosticOutput.write(
-      `codexhost shared official app-server did not exit after SIGKILL: ${input.socketPath}\n`,
-    );
-    return false;
+  const terminate = async (): Promise<void> => {
+    if (!processLifecycle) return;
+    try {
+      await processLifecycle.stop();
+    } catch (error) {
+      if (error instanceof OfficialProcessStopTimeoutError) {
+        input.diagnosticOutput.write(
+          `codexhost shared official app-server exit unconfirmed: ${input.socketPath}\n`,
+        );
+      }
+      throw error;
+    }
   };
 
   const removeOwnedSocket = async (): Promise<void> => {
@@ -168,6 +152,9 @@ export function createRemoteOfficialAppServerListener(input: {
   };
 
   return {
+    get processId() {
+      return child?.pid;
+    },
     closed: closed.promise,
     listen() {
       if (listening) return listening;
@@ -179,22 +166,22 @@ export function createRemoteOfficialAppServerListener(input: {
           windowsHide: true,
         });
         child = spawned;
+        processLifecycle = new OfficialProcessLifecycle(spawned, { timeoutMs: closeTimeoutMs });
+        void processLifecycle.closed.then(settleExit);
         spawned.stderr?.pipe(input.diagnosticOutput, { end: false });
-        spawned.once("error", (error) => {
-          settleExit({ code: null, signal: null, error });
-        });
-        spawned.once("exit", (code, signal) => {
-          settleExit({ code, signal });
-        });
         try {
           await waitUntilReady(input.socketPath, closed.promise);
           ownedSocketIdentity = await socketIdentity(input.socketPath).catch(() => null);
         } catch (error) {
-          const exited = await terminate(spawned);
-          if (exited) {
-            ownedSocketIdentity ??= await socketIdentity(input.socketPath).catch(() => null);
-            await removeOwnedSocket();
+          let stopFailed = false;
+          try {
+            await terminate();
+          } catch {
+            stopFailed = true;
           }
+          ownedSocketIdentity ??= await socketIdentity(input.socketPath).catch(() => null);
+          // A live process may still own the socket after an unconfirmed exit.
+          if (!stopFailed) await removeOwnedSocket();
           throw new Error(`Shared official app-server startup failed: ${errorMessage(error)}`);
         }
       })();
@@ -209,14 +196,18 @@ export function createRemoteOfficialAppServerListener(input: {
           await removeOwnedSocket();
           return;
         }
-        if (await terminate(child)) await removeOwnedSocket();
+        await terminate();
+        await removeOwnedSocket();
       })();
+      void closing.catch(() => {
+        closing = null;
+      });
       return closing;
     },
   };
 }
 
-function loopbackEndpointFromStderrLine(line: string): string | null {
+export function loopbackEndpointFromStderrLine(line: string): string | null {
   const match = /^\s*listening on:\s+(ws:\/\/127\.0\.0\.1:(\d+))\s*$/u.exec(line);
   if (!match?.[1] || !match[2]) return null;
   const port = Number.parseInt(match[2], 10);
@@ -224,6 +215,7 @@ function loopbackEndpointFromStderrLine(line: string): string | null {
 }
 
 export function createLoopbackOfficialAppServerListener(input: {
+  cwd?: string;
   stockCodexPath: string;
   arguments: string[];
   environment: NodeJS.ProcessEnv;
@@ -235,6 +227,7 @@ export function createLoopbackOfficialAppServerListener(input: {
   const spawnOfficial = input.spawnOfficial ?? spawn;
   const closeTimeoutMs = input.closeTimeoutMs ?? DEFAULT_CLOSE_TIMEOUT_MS;
   const listenTimeoutMs = input.listenTimeoutMs ?? DEFAULT_LISTEN_TIMEOUT_MS;
+  let processLifecycle: OfficialProcessLifecycle | null = null;
   const closed = Promise.withResolvers<RemoteOfficialAppServerExit>();
   let child: ChildProcess | null = null;
   let listening: Promise<string> | null = null;
@@ -248,19 +241,22 @@ export function createLoopbackOfficialAppServerListener(input: {
     closed.resolve(result);
   };
 
-  const terminate = async (spawned: ChildProcess): Promise<boolean> => {
-    if (exitResult !== null) return true;
-    spawned.kill("SIGTERM");
-    if (await settlesWithin(closed.promise, closeTimeoutMs)) return true;
-    spawned.kill("SIGKILL");
-    if (await settlesWithin(closed.promise, closeTimeoutMs)) return true;
-    input.diagnosticOutput.write(
-      "codexhost shared loopback official app-server did not exit after SIGKILL\n",
-    );
-    return false;
+  const terminate = async (): Promise<void> => {
+    if (!processLifecycle) return;
+    try {
+      await processLifecycle.stop();
+    } catch (error) {
+      if (error instanceof OfficialProcessStopTimeoutError) {
+        input.diagnosticOutput.write("codexhost loopback official app-server exit unconfirmed\n");
+      }
+      throw error;
+    }
   };
 
   return {
+    get processId() {
+      return child?.pid;
+    },
     closed: closed.promise,
     listen() {
       if (listening) return listening;
@@ -281,10 +277,13 @@ export function createLoopbackOfficialAppServerListener(input: {
         };
         const spawned = spawnOfficial(input.stockCodexPath, input.arguments, {
           env: input.environment,
+          ...(input.cwd === undefined ? {} : { cwd: input.cwd }),
           stdio: ["ignore", "ignore", "pipe"],
           windowsHide: true,
         });
         child = spawned;
+        processLifecycle = new OfficialProcessLifecycle(spawned, { timeoutMs: closeTimeoutMs });
+        void processLifecycle.closed.then(settleExit);
         spawned.stderr?.on("data", (chunk: Buffer | string) => {
           input.diagnosticOutput.write(chunk);
           pendingStderr += chunk.toString();
@@ -297,12 +296,8 @@ export function createLoopbackOfficialAppServerListener(input: {
             if (endpoint) settleReady(endpoint);
           }
         });
-        spawned.once("error", (error) => {
-          settleExit({ code: null, signal: null, error });
-          failReady(error);
-        });
+        spawned.once("error", failReady);
         spawned.once("exit", (code, signal) => {
-          settleExit({ code, signal });
           failReady(
             new Error(
               `Shared official app-server exited before its endpoint was ready (code=${String(code)}, signal=${String(signal)})`,
@@ -320,7 +315,11 @@ export function createLoopbackOfficialAppServerListener(input: {
           });
           return await Promise.race([ready.promise, timeout]);
         } catch (error) {
-          await terminate(spawned);
+          try {
+            await terminate();
+          } catch {
+            // terminate() already reports an unconfirmed exit; startup keeps its cause.
+          }
           throw new Error(`Shared official app-server startup failed: ${errorMessage(error)}`);
         } finally {
           if (timer) clearTimeout(timer);
@@ -336,8 +335,11 @@ export function createLoopbackOfficialAppServerListener(input: {
           settleExit({ code: 0, signal: null });
           return;
         }
-        await terminate(child);
+        await terminate();
       })();
+      void closing.catch(() => {
+        closing = null;
+      });
       return closing;
     },
   };

@@ -308,7 +308,6 @@ export type ThreadInspectionParams = z.infer<typeof threadInspectionParamsSchema
 const codexThreadInspectionSchema = z
   .object({
     owner: z.literal("codex"),
-    accountId: nonBlankTextSchema.optional(),
     locked: z.literal(true),
   })
   .strict();

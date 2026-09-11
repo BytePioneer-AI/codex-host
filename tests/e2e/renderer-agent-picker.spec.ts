@@ -77,6 +77,8 @@ test("keeps the Agent menu anchored inside the Codex window zoom", async ({ page
   const menu = page.locator("#test-composer-agent-menu");
   await trigger.click();
   await expect(menu).toBeVisible();
+  await expect(menu.locator('button[data-agent="codex"]')).toHaveCount(1);
+  await expect(menu.locator("[data-codex-account-id]")).toHaveCount(0);
 
   const [triggerBox, menuBox] = await Promise.all([trigger.boundingBox(), menu.boundingBox()]);
   if (!triggerBox || !menuBox) throw new Error("Agent picker geometry is unavailable");

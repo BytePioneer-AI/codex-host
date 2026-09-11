@@ -91,6 +91,15 @@ export interface RendererSettingsMessages {
   readonly accountDeleteFailed: string;
   readonly accountActive: string;
   readonly accountUse: string;
+  readonly accountLogout: string;
+  readonly accountLogoutConfirm: string;
+  readonly accountLoggingOut: string;
+  readonly accountLoggedOut: string;
+  readonly accountLogoutFailed: string;
+  readonly accountRecover: string;
+  readonly accountRecovering: string;
+  readonly accountRecoveryRequired: string;
+  readonly accountCleanupRequired: string;
   readonly accountSignIn: string;
   readonly accountSigningIn: string;
   readonly accountVerificationDescription: string;
@@ -98,6 +107,7 @@ export interface RendererSettingsMessages {
   readonly accountCopied: string;
   readonly accountLoginCancel: string;
   readonly accountLoginSucceeded: string;
+  readonly accountLoginResultUnconfirmed: string;
   readonly accountLoginFailed: string;
   readonly accountLoadFailed: string;
   readonly accountCreditsUsed: string;
@@ -273,9 +283,9 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   connectionsDescription:
     "View runtime status by Host. Select an item to inspect details or complete its setup.",
   accountsDescription:
-    "View accounts and limits across Agents, and manage your Codex default account.",
+    "View accounts and limits across Agents, and manage the current Codex identity.",
   accountConnected: "Accounts",
-  accountDefaultBadge: "Codex default",
+  accountDefaultBadge: "Current",
   accountAdd: "Add Codex account",
   accountColumnAccount: "Account",
   accountColumnActions: "Manage",
@@ -287,7 +297,7 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
     "This account comes from {harness}'s native authentication. This page only displays identity and limits; manage sign-in, sign-out and switching in the native client.",
   accountMore: "Codex account actions",
   accountDetailsClose: "Close account details",
-  accountDefaultHint: "Use as the default for new Codex tasks only",
+  accountDefaultHint: "This is the current identity for all Codex Threads.",
   accountCreditsRemaining: "Remaining",
   accountCreditsLoading: "Loading limits…",
   accountCreditsEmpty: "No limit data available",
@@ -299,8 +309,18 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   accountDeleteConfirm: "Delete this Account and its local data? This cannot be undone.",
   accountDeleting: "Deleting Account...",
   accountDeleteFailed: "Could not delete the Account.",
-  accountActive: "Default",
-  accountUse: "Set as default",
+  accountActive: "Current",
+  accountUse: "Switch",
+  accountLogout: "Sign out",
+  accountLogoutConfirm: "Sign out the current Codex identity? Saved Accounts are retained.",
+  accountLoggingOut: "Signing out...",
+  accountLoggedOut: "Signed out. Saved Accounts are retained.",
+  accountLogoutFailed: "Could not sign out the current Codex identity.",
+  accountRecover: "Recover",
+  accountRecovering: "Recovering Codex...",
+  accountRecoveryRequired: "Codex Account recovery is required before work can continue.",
+  accountCleanupRequired:
+    "The Account change was saved, but cleanup or Codex recovery is still required.",
   accountSignIn: "Sign in",
   accountSigningIn: "Starting device sign-in...",
   accountVerificationDescription: "Open the verification page and enter this one-time code:",
@@ -308,6 +328,8 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   accountCopied: "Copied",
   accountLoginCancel: "Cancel sign-in",
   accountLoginSucceeded: "Sign-in completed.",
+  accountLoginResultUnconfirmed:
+    "Sign-in finished, but its result was not received. Inspect the saved Account state.",
   accountLoginFailed: "Sign-in failed.",
   accountLoadFailed: "Could not load Codex Accounts.",
   accountCreditsUsed: "Used",
@@ -496,9 +518,9 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   sessionImportRetryOpen: "重试打开",
   sessionImportRetrying: "正在打开……",
   connectionsDescription: "按 Host 查看运行时状态。选择一项，在右侧检查详情或完成配置。",
-  accountsDescription: "查看各 Agent 的账号与额度，管理 Codex 默认账号。",
+  accountsDescription: "查看各 Agent 的账号与额度，管理 Codex 当前身份。",
   accountConnected: "账号",
-  accountDefaultBadge: "Codex 默认",
+  accountDefaultBadge: "当前",
   accountAdd: "添加 Codex 账号",
   accountColumnAccount: "账号",
   accountColumnActions: "管理",
@@ -510,7 +532,7 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
     "此账号来自 {harness} 的原生登录。这里只读展示身份与额度；登录、退出和切换请在其原生客户端中完成。",
   accountMore: "Codex 账号操作",
   accountDetailsClose: "关闭账号详情",
-  accountDefaultHint: "仅设为新 Codex 任务的默认账号",
+  accountDefaultHint: "所有 Codex 会话当前使用此身份。",
   accountCreditsRemaining: "剩余",
   accountCreditsLoading: "正在读取额度…",
   accountCreditsEmpty: "暂无额度数据",
@@ -522,8 +544,17 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   accountDeleteConfirm: "删除此账号及其本地数据？此操作无法撤销。",
   accountDeleting: "正在删除账号...",
   accountDeleteFailed: "删除账号失败。",
-  accountActive: "默认账号",
-  accountUse: "设为默认",
+  accountActive: "当前账号",
+  accountUse: "切换",
+  accountLogout: "退出登录",
+  accountLogoutConfirm: "退出当前 Codex 身份？已保存的账号会保留。",
+  accountLoggingOut: "正在退出登录...",
+  accountLoggedOut: "已退出登录，保存的账号仍会保留。",
+  accountLogoutFailed: "无法退出当前 Codex 身份。",
+  accountRecover: "恢复",
+  accountRecovering: "正在恢复 Codex...",
+  accountRecoveryRequired: "继续工作前需要恢复 Codex 账号状态。",
+  accountCleanupRequired: "账号变更已保存，但仍需完成清理或恢复 Codex。",
   accountSignIn: "登录",
   accountSigningIn: "正在启动设备登录...",
   accountVerificationDescription: "打开验证页面并输入以下一次性代码：",
@@ -531,6 +562,7 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   accountCopied: "已复制",
   accountLoginCancel: "取消登录",
   accountLoginSucceeded: "登录成功。",
+  accountLoginResultUnconfirmed: "登录已结束，但未收到结果。请检查已保存的账号状态。",
   accountLoginFailed: "登录失败。",
   accountLoadFailed: "无法加载 Codex 账号。",
   accountCreditsUsed: "已用",

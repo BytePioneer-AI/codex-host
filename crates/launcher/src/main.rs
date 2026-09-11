@@ -5,9 +5,14 @@ mod compatibility;
 mod desktop_attachment;
 mod installation_layout;
 mod native_harness_broker;
+mod private_file_command;
+mod process_identity_command;
+mod process_inventory_command;
 mod runtime_instance;
+mod secret_key_command;
 #[cfg(target_os = "linux")]
 mod secure_storage;
+mod supervise_process_command;
 #[cfg(target_os = "macos")]
 mod system_proxy_environment;
 
@@ -1211,6 +1216,15 @@ fn run(arguments: &[String]) -> Result<(), Box<dyn Error>> {
             codexhost_platform::open_external_url(&url).map_err(Into::into)
         }
         Some("open-loopback-url") => Err("open-loopback-url accepts no arguments".into()),
+        Some("supervise-process") if arguments.len() == 1 => supervise_process_command::run(),
+        Some("supervise-process") => Err("supervise-process accepts no arguments".into()),
+        Some("process-identity") if arguments.len() == 1 => process_identity_command::run(),
+        Some("process-identity") => Err("process-identity accepts no arguments".into()),
+        Some("process-inventory") => process_inventory_command::run(&arguments[1..]),
+        Some("private-file") if arguments.len() == 1 => private_file_command::run(),
+        Some("private-file") => Err("private-file accepts no arguments".into()),
+        Some("secret-key") if arguments.len() == 1 => secret_key_command::run(),
+        Some("secret-key") => Err("secret-key accepts no arguments".into()),
         Some("broker") => run_native_harness_broker_cli(&arguments[1..]),
         Some("harness") | Some("delegate") | Some("thread") => run_delegation_cli(arguments),
         _ => {

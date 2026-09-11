@@ -324,7 +324,13 @@ function createFixture(
   const diagnosticOutput = new PassThrough();
   const official = new FakeOfficialProcess();
   const collector = new JsonLineCollector(desktopOutput);
-  const spawnOfficial = vi.fn(() => official as unknown as ChildProcessWithoutNullStreams);
+  const startup = Promise.withResolvers<undefined>();
+  void startup.promise.catch(() => undefined);
+  const spawnOfficial = vi.fn(() => {
+    startup.resolve(undefined);
+    return official as unknown as ChildProcessWithoutNullStreams;
+  });
+  const createOfficialConnection = options.createOfficialConnection;
   const host = new AppServerHost({
     stockCodexPath: "/synthetic/codex",
     arguments: ["app-server"],
@@ -344,8 +350,14 @@ function createFixture(
     externalAdapters:
       options.externalAdapters ?? new Map<ExternalHarnessId, HarnessAdapter>([["pi", adapter]]),
     spawnOfficial: spawnOfficial as unknown as typeof spawn,
-    ...(options.createOfficialConnection
-      ? { createOfficialConnection: options.createOfficialConnection }
+    ...(createOfficialConnection
+      ? {
+          createOfficialConnection: async (account: CodexAccount) => {
+            const connection = await createOfficialConnection(account);
+            startup.resolve(undefined);
+            return connection;
+          },
+        }
       : {}),
     accountRepository,
     threadAccountStore,
@@ -353,6 +365,10 @@ function createFixture(
     ...(options.onDelegationApi ? { onDelegationApi: options.onDelegationApi } : {}),
   });
   const running = host.run();
+  void running.then(
+    () => startup.reject(new Error("Host exited before fixture startup")),
+    (error) => startup.reject(error),
+  );
   return {
     adapter,
     collector,
@@ -362,6 +378,7 @@ function createFixture(
     host,
     official,
     running,
+    ready: startup.promise,
     mappingStore,
     accountRepository,
     threadAccountStore,
@@ -376,12 +393,14 @@ async function startExternalThread(
   id = 1,
   additionalParams: JsonObject = {},
 ): Promise<string> {
+  await fixture.ready;
   writeRequest(fixture.desktopInput, {
     id,
     method: "thread/start",
     params: { model, cwd: "/synthetic", ...additionalParams },
   });
   const response = await fixture.collector.waitFor((message) => requestId(message, id));
+  expect(response).not.toHaveProperty("error");
   const result = response.result as JsonObject;
   const thread = result.thread as JsonObject;
   if (typeof thread.id !== "string") throw new Error("Synthetic thread response has no ID");
@@ -451,6 +470,7 @@ async function bindOfficialThread(
 }
 
 describe("AppServerHost installed Harness plugins", () => {
+  // A cold plugin import has its own 10s loader budget; RPC checks remain 2s.
   it("discovers an unknown plugin, serves its descriptor, routes a Thread, and closes it", async () => {
     const directory = mkdtempSync(path.join(tmpdir(), "codexhost-plugin-host-"));
     const location = path.join(directory, "sample-agent");
@@ -486,6 +506,7 @@ describe("AppServerHost installed Harness plugins", () => {
     );
     const fixture = createFixture({ pluginDirectory: directory, externalAdapters: new Map() });
     try {
+      await fixture.ready;
       writeRequest(fixture.desktopInput, {
         id: 901,
         method: "codexhost/harness/plugins/list",
@@ -554,7 +575,7 @@ describe("AppServerHost installed Harness plugins", () => {
         rmSync(directory, { recursive: true, force: true });
       }
     }
-  });
+  }, 15_000);
 
   it("binds DeepSeek Session Import after its Adapter has been dynamically loaded", async () => {
     const directory = mkdtempSync(path.join(tmpdir(), "codexhost-dynamic-import-"));
@@ -2366,7 +2387,7 @@ describe("AppServerHost HarnessAdapter projection", () => {
         return undefined;
       },
     });
-    await vi.waitFor(() => expect(delegationApi).toBeDefined());
+    await fixture.ready;
     await vi.waitFor(async () => expect(await fixture.mappingStore.listThreads()).toEqual([]));
     if (!delegationApi) throw new Error("Delegation API was not registered");
     const started = await delegationApi.start({
@@ -2466,7 +2487,7 @@ describe("AppServerHost HarnessAdapter projection", () => {
         return undefined;
       },
     });
-    await vi.waitFor(() => expect(delegationApi).toBeDefined());
+    await fixture.ready;
     if (!delegationApi) throw new Error("Delegation API was not registered");
     await bindOfficialThread(fixture, "native-parent");
 
@@ -2501,7 +2522,7 @@ describe("AppServerHost HarnessAdapter projection", () => {
         return undefined;
       },
     });
-    await vi.waitFor(() => expect(delegationApi).toBeDefined());
+    await fixture.ready;
     await vi.waitFor(async () => expect(await fixture.mappingStore.listThreads()).toEqual([]));
     if (!delegationApi) throw new Error("Delegation API was not registered");
     const externalThreadId = await startPiThread(fixture);
@@ -2547,7 +2568,7 @@ describe("AppServerHost HarnessAdapter projection", () => {
         return undefined;
       },
     });
-    await vi.waitFor(() => expect(delegationApi).toBeDefined());
+    await fixture.ready;
     await vi.waitFor(async () => expect(await fixture.mappingStore.listThreads()).toEqual([]));
     if (!delegationApi) throw new Error("Delegation API was not registered");
     const started = await delegationApi.start({
@@ -2585,7 +2606,7 @@ describe("AppServerHost HarnessAdapter projection", () => {
         return undefined;
       },
     });
-    await vi.waitFor(() => expect(delegationApi).toBeDefined());
+    await fixture.ready;
     await vi.waitFor(async () => expect(await fixture.mappingStore.listThreads()).toEqual([]));
     if (!delegationApi) throw new Error("Delegation API was not registered");
     await bindOfficialThread(fixture, "native-child");
@@ -2637,11 +2658,10 @@ describe("AppServerHost HarnessAdapter projection", () => {
         return undefined;
       },
     });
-    await vi.waitFor(() => expect(delegationApi).toBeDefined());
+    await fixture.ready;
     await vi.waitFor(async () => expect(await fixture.mappingStore.listThreads()).toEqual([]));
     if (!delegationApi) throw new Error("Delegation API was not registered");
 
-    await vi.waitFor(() => expect(fixture.spawnOfficial).toHaveBeenCalled());
     const inspection = delegationApi.inspect({ harnessId: "codex" });
     const modelList = await readJsonLine(fixture.official.stdin);
     expect(modelList).toMatchObject({ method: "model/list", params: {} });
@@ -2754,7 +2774,7 @@ describe("AppServerHost HarnessAdapter projection", () => {
         return undefined;
       },
     });
-    await vi.waitFor(() => expect(delegationApi).toBeDefined());
+    await fixture.ready;
     await vi.waitFor(async () => expect(await fixture.mappingStore.listThreads()).toEqual([]));
     if (!delegationApi) throw new Error("Delegation API was not registered");
 
@@ -2812,7 +2832,7 @@ describe("AppServerHost HarnessAdapter projection", () => {
         return undefined;
       },
     });
-    await vi.waitFor(() => expect(delegationApi).toBeDefined());
+    await fixture.ready;
     await vi.waitFor(async () => expect(await fixture.mappingStore.listThreads()).toEqual([]));
     if (!delegationApi) throw new Error("Delegation API was not registered");
 
@@ -2923,10 +2943,9 @@ describe("AppServerHost HarnessAdapter projection", () => {
         return undefined;
       },
     });
-    await vi.waitFor(() => expect(delegationApi).toBeDefined());
+    await fixture.ready;
     await vi.waitFor(async () => expect(await fixture.mappingStore.listThreads()).toEqual([]));
     if (!delegationApi) throw new Error("Delegation API was not registered");
-    await vi.waitFor(() => expect(fixture.spawnOfficial).toHaveBeenCalled());
     const pending = delegationApi.start({
       harnessId: "codex",
       task: "review auth",
@@ -2959,7 +2978,7 @@ describe("AppServerHost HarnessAdapter projection", () => {
         return undefined;
       },
     });
-    await vi.waitFor(() => expect(delegationApi).toBeDefined());
+    await fixture.ready;
     await vi.waitFor(async () => expect(await fixture.mappingStore.listThreads()).toEqual([]));
     if (!delegationApi) throw new Error("Delegation API was not registered");
     const pending = delegationApi.start({
@@ -3001,7 +3020,7 @@ describe("AppServerHost HarnessAdapter projection", () => {
         return undefined;
       },
     });
-    await vi.waitFor(() => expect(delegationApi).toBeDefined());
+    await fixture.ready;
     await vi.waitFor(async () => expect(await fixture.mappingStore.listThreads()).toEqual([]));
     if (!delegationApi) throw new Error("Delegation API was not registered");
     await bindOfficialThread(fixture, "native-child");
@@ -3050,7 +3069,7 @@ describe("AppServerHost HarnessAdapter projection", () => {
         return undefined;
       },
     });
-    await vi.waitFor(() => expect(delegationApi).toBeDefined());
+    await fixture.ready;
     await vi.waitFor(async () => expect(await fixture.mappingStore.listThreads()).toEqual([]));
     if (!delegationApi) throw new Error("Delegation API was not registered");
     const pending = delegationApi.start({

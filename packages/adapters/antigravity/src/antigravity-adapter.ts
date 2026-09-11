@@ -1037,7 +1037,7 @@ class AntigravitySession implements HarnessSession {
             error: normalizedProcessError(
               errorDetail,
               `Antigravity Turn ended with status ${event.result.status}`,
-              nativeError !== undefined,
+              Boolean(nativeError),
             ),
             checkpoint,
           },
@@ -1086,9 +1086,11 @@ class AntigravitySession implements HarnessSession {
         this.#appendOrSyncAgentText(active, step.text_delta, true);
       } else {
         const fullOrDelta =
-          step.text ??
-          (typeof step.content === "string" ? step.content : undefined) ??
-          (typeof step.message === "string" ? step.message : undefined);
+          (typeof step.text === "string" && step.text.length > 0 ? step.text : undefined) ??
+          (typeof step.content === "string" && step.content.length > 0
+            ? step.content
+            : undefined) ??
+          (typeof step.message === "string" && step.message.length > 0 ? step.message : undefined);
         if (typeof fullOrDelta === "string" && fullOrDelta.length > 0) {
           this.#appendOrSyncAgentText(active, fullOrDelta, false);
         }

@@ -839,6 +839,49 @@ if (stderrLines.length > 0) {
       }
     });
 
+    it("does not leak unredacted stderr diagnostics into message when result.error is empty", async () => {
+      const completed = await runResultScenario(
+        [
+          JSON.stringify({
+            event: "init",
+            init: { permission_mode: "default" },
+            conversation_id: "conv-empty-error",
+          }),
+          JSON.stringify({
+            event: "result",
+            result: {
+              conversation_id: "conv-empty-error",
+              status: "ERROR",
+              error: "   ",
+              num_turns: 1,
+            },
+          }),
+        ],
+        "turn-empty-error",
+        {
+          stderrLines: [
+            "[INFO] ordinary diagnostic stderr log from CLI",
+            "[DEBUG] auth token secret_token_12345 in header",
+          ],
+        },
+      );
+
+      expect(completed).toMatchObject({
+        turnId: "turn-empty-error",
+        outcome: {
+          status: "failed",
+          error: {
+            code: "nativeFailure",
+            message: "Antigravity Turn ended with status ERROR",
+          },
+        },
+      });
+      if (completed.outcome.status === "failed") {
+        expect(completed.outcome.error.message).not.toContain("secret_token_12345");
+        expect(completed.outcome.error.stderrTail).toContain("ordinary diagnostic stderr log");
+      }
+    });
+
     it("treats non-SUCCESS result as succeeded when agent response was delivered and no tools are pending", async () => {
       const streamLines = [
         JSON.stringify({
@@ -964,6 +1007,132 @@ if (stderrLines.length > 0) {
 
       expect(completed).toMatchObject({
         turnId: "turn-stderr-diagnostics",
+        outcome: { status: "succeeded" },
+      });
+    });
+
+    it("falls back to content when step.text is empty string and treats event as agent text", async () => {
+      const streamLines = [
+        JSON.stringify({
+          event: "init",
+          init: { permission_mode: "default" },
+          conversation_id: "conv-empty-text-content",
+        }),
+        JSON.stringify({
+          event: "step_update",
+          step_update: {
+            conversation_id: "conv-empty-text-content",
+            step_index: 1,
+            state: "DONE",
+            step_type: "agent_response",
+            text: "",
+            content: "Recovered agent response from content fallback.",
+          },
+        }),
+        JSON.stringify({
+          event: "result",
+          result: {
+            conversation_id: "conv-empty-text-content",
+            status: "ERROR",
+            num_turns: 1,
+          },
+        }),
+      ];
+
+      const { command, cwd, cleanup } = await fakeStreamingAgy(streamLines);
+      const adapter = new AntigravityAdapter({ command });
+      try {
+        const opened = await adapter.open({ kind: "create", cwd });
+        expect(opened.ok).toBe(true);
+        if (!opened.ok) return;
+
+        const session = opened.value;
+        const iterator = session.outputs[Symbol.asyncIterator]();
+        const turnId = hostTurnIdSchema.parse("turn-empty-text-content");
+
+        await session.execute({
+          type: "turn.start",
+          turnId,
+          input: [{ type: "text", text: "trigger content fallback" }],
+        });
+
+        const started = await nextEvent(iterator);
+        expect(started.type).toBe("turn.started");
+
+        const stateChanged = await nextEvent(iterator);
+        expect(stateChanged.type).toBe("session.state.changed");
+
+        const itemStarted = await nextEvent(iterator);
+        expect(itemStarted).toMatchObject({
+          type: "item.started",
+          turnId,
+          item: {
+            type: "agentMessage",
+            text: "Recovered agent response from content fallback.",
+          },
+        });
+
+        const itemCompleted = await nextEvent(iterator);
+        expect(itemCompleted).toMatchObject({
+          type: "item.completed",
+          turnId,
+          snapshot: {
+            item: {
+              type: "agentMessage",
+              text: "Recovered agent response from content fallback.",
+            },
+            outcome: { status: "succeeded" },
+          },
+        });
+
+        const completed = await nextEvent(iterator);
+        expect(completed).toMatchObject({
+          type: "turn.completed",
+          turnId,
+          outcome: { status: "succeeded" },
+        });
+
+        await session.close();
+      } finally {
+        await adapter.close();
+        await cleanup();
+      }
+    });
+
+    it("falls back to message when step.text and content are empty strings", async () => {
+      const completed = await runResultScenario(
+        [
+          JSON.stringify({
+            event: "init",
+            init: { permission_mode: "default" },
+            conversation_id: "conv-empty-text-message",
+          }),
+          JSON.stringify({
+            event: "step_update",
+            step_update: {
+              conversation_id: "conv-empty-text-message",
+              step_index: 1,
+              state: "DONE",
+              step_type: "agent_response",
+              text: "",
+              content: "",
+              message: "Recovered agent response from message fallback.",
+            },
+          }),
+          JSON.stringify({
+            event: "result",
+            result: {
+              conversation_id: "conv-empty-text-message",
+              status: "ERROR",
+              num_turns: 1,
+            },
+          }),
+        ],
+        "turn-empty-text-message",
+      );
+
+      expect(completed).toMatchObject({
+        turnId: "turn-empty-text-message",
         outcome: { status: "succeeded" },
       });
     });

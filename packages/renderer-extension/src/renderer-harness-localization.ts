@@ -139,6 +139,12 @@ const CHINESE_PERMISSION_MODE_DESCRIPTIONS = new Map<string, string>([
     "为所有 Agent 跳过全部权限检查，包括危险命令。",
   ],
   ["Permissions managed by parent session", "由父会话管理权限。"],
+  [
+    "Native agent mode with Cursor tool approvals",
+    "执行任务，可修改文件和运行命令；需要审批的操作仍会请求确认。",
+  ],
+  ["Native read-only planning mode", "只读分析代码并制定实施计划，不修改项目文件。"],
+  ["Native read-only question mode", "只读查看代码并回答问题，不修改项目文件。"],
 ]);
 
 export function rendererHarnessMessages(locale: RendererSettingsLocale): RendererHarnessMessages {

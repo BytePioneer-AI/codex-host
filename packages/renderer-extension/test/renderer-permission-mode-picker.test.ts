@@ -289,6 +289,33 @@ describe("Renderer Permission Mode picker presentation", () => {
       description: "Permissions managed by parent session",
       zhDescription: "由父会话管理权限。",
     },
+    {
+      harness: "Cursor",
+      id: "agent",
+      nativeLabel: "Agent",
+      en: "Agent",
+      zh: "Agent",
+      description: "Native agent mode with Cursor tool approvals",
+      zhDescription: "执行任务，可修改文件和运行命令；需要审批的操作仍会请求确认。",
+    },
+    {
+      harness: "Cursor",
+      id: "plan",
+      nativeLabel: "Plan",
+      en: "Plan",
+      zh: "规划模式",
+      description: "Native read-only planning mode",
+      zhDescription: "只读分析代码并制定实施计划，不修改项目文件。",
+    },
+    {
+      harness: "Cursor",
+      id: "ask",
+      nativeLabel: "Ask",
+      en: "Ask",
+      zh: "询问",
+      description: "Native read-only question mode",
+      zhDescription: "只读查看代码并回答问题，不修改项目文件。",
+    },
   ])(
     "localizes $harness $nativeLabel in both the menu and selected control",
     ({ id, nativeLabel, en, zh, description, zhDescription, dangerous }) => {

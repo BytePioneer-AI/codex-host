@@ -150,7 +150,7 @@ xattr -dr com.apple.quarantine /Applications/codexhost.app
 | Edit Diff | 原生 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | 提问 / 取消 | 原生 | ✅ | — / ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Model / Thinking 选择 | 原生 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| 工具审批 | 原生 | ✅ | — | ✅ | ✅ | ✅ | ✅ | ✅¹ |
+| 工具审批 | 原生 | ✅ | — | ✅ | ✅ | ✅ | ✅ | —¹ |
 | 权限模式 | 原生 | — | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Agent 间任务协作 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Usage | 原生 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
@@ -159,7 +159,7 @@ xattr -dr com.apple.quarantine /Applications/codexhost.app
 | 斜杠命令 | 原生 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | 修订上一条消息 | 原生 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 
-> **Antigravity：**¹ 工具审批需选择 **Desktop approvals**，支持允许一次或拒绝；该模式使用进程级自动执行配合审批 Hook，启动前校验 Hook 已加载，现有权限模式保持不变。提问支持单选和文本，子代理支持原生卡片与只读过程记录。详见[工具审批](docs/antigravity-tool-approval.md)和[子代理说明](docs/antigravity-subagents.md)。
+> **Antigravity：**¹ 仅提供 **Skip permissions（危险）**，使用原生 `--dangerously-skip-permissions`；codexhost 不添加工具审批、权限规则或工作区读写限制，请仅在可信环境中使用。旧的 Configured permissions / Desktop approvals 不再支持，需明确选择 Skip permissions。提问仍支持单选和文本，子代理支持原生卡片与只读过程记录。详见[权限说明](docs/antigravity-tool-approval.md)和[子代理说明](docs/antigravity-subagents.md)。
 
 ## 跨 Agent 协作
 

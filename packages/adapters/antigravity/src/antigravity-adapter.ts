@@ -89,10 +89,6 @@ import {
 } from "./code-action-diff.js";
 import { fetchAntigravityQuota, type AntigravityQuotaSnapshot } from "./quota.js";
 import { AntigravityQuestionBridge } from "./question-bridge.js";
-import {
-  parseAntigravityConfiguredPermissions,
-  type AntigravityConfiguredPermissionPolicy,
-} from "./configured-permissions.js";
 import { AntigravitySubagents } from "./subagents.js";
 import { nativeSubagentIdSchema, readSubagentTranscript } from "./subagent-transcript.js";
 import {
@@ -263,8 +259,8 @@ export function permissionDeniedTurnError(nativeMode: string | null, denial: str
     code: "nativeFailure",
     message:
       `Antigravity denied a tool call under its${mode} permission mode and produced no response. ` +
-      "Headless Antigravity evaluates its own permission rules and cannot ask for approval; " +
-      "add a matching allow rule, use Desktop approvals, or retry with the Skip permissions Permission Mode.",
+      "codexhost uses native Skip permissions and does not enforce tool permissions. " +
+      "Check Antigravity CLI diagnostics and native Hooks for the denial; Desktop approvals and Configured permissions are not supported.",
     retryable: false,
     diagnostic: sanitizeDiagnosticTail(denial),
   };
@@ -631,78 +627,30 @@ class AntigravitySession implements HarnessSession {
     }
 
     let questions: AntigravityQuestionBridge;
-    this.#preparingQuestions = (async () => {
-      let configuredPermissions: AntigravityConfiguredPermissionPolicy | undefined;
-      if (this.#permissionMode === "configured") {
-        try {
-          const { stdout } = await runBuffered(
-            this.#executable,
-            ["--add-dir", this.#cwd, "--print=/config", "--output-format", "stream-json"],
-            this.#cwd,
-            this.#environment,
-            DEFAULT_INSPECT_TIMEOUT_MS,
-          );
-          const permissions = parseAntigravityConfiguredPermissions(stdout);
-          if (permissions) configuredPermissions = { permissions, workspaceRoot: this.#cwd };
-        } catch {
-          // Fall back to native configured mode when this CLI cannot expose its config.
+    this.#preparingQuestions = AntigravityQuestionBridge.create({
+      turnId: command.turnId,
+      nativeSessionId: () =>
+        this.#active?.command === command && !this.#active.cancellationRequested
+          ? this.#nativeRef?.nativeSessionId
+          : undefined,
+      schedule: (action) => {
+        if (this.#active?.command === command) this.#enqueue(this.#active, action);
+        else action();
+      },
+      emit: (output) => {
+        const active = this.#active;
+        if (!active || active.command !== command) return;
+        if (output.kind === "event" && output.event.type === "item.started" && active.agentItem) {
+          this.#completeItem(active, active.agentItem, { status: "succeeded" });
+          active.agentItem = null;
+          active.agentText = "";
         }
-      }
-      const bridge = await AntigravityQuestionBridge.create({
-        approvals: this.#permissionMode === "desktop-approvals",
-        ...(configuredPermissions ? { configuredPermissions } : {}),
-        ownsApprovalSession: (id) =>
-          this.#active?.command === command &&
-          !this.#active.cancellationRequested &&
-          this.#active.subagents.state(id) !== undefined,
-        turnId: command.turnId,
-        nativeSessionId: () =>
-          this.#active?.command === command && !this.#active.cancellationRequested
-            ? this.#nativeRef?.nativeSessionId
-            : undefined,
-        schedule: (action) => {
-          if (this.#active?.command === command) this.#enqueue(this.#active, action);
-          else action();
-        },
-        emit: (output) => {
-          const active = this.#active;
-          if (!active || active.command !== command) return;
-          if (output.kind === "event" && output.event.type === "item.started" && active.agentItem) {
-            this.#completeItem(active, active.agentItem, { status: "succeeded" });
-            active.agentItem = null;
-            active.agentText = "";
-          }
-          if (output.kind === "event" && output.event.type === "item.completed") {
-            active.completedItems.push(output.event.snapshot);
-          }
-          this.#channel.emit(output);
-        },
-      });
-      if (!configuredPermissions && this.#permissionMode !== "desktop-approvals") return bridge;
-      try {
-        const { stdout } = await runBuffered(
-          this.#executable,
-          [
-            "--add-dir",
-            this.#cwd,
-            "--add-dir",
-            bridge.directory,
-            "--print=/hooks",
-            "--output-format",
-            "stream-json",
-          ],
-          this.#cwd,
-          { ...this.#environment, ...bridge.environment },
-          DEFAULT_INSPECT_TIMEOUT_MS,
-        );
-        if (!bridge.verifyApprovalHooks(stdout))
-          throw new Error("Antigravity permission Hook was not loaded");
-        return bridge;
-      } catch {
-        await bridge.dispose();
-        throw new Error("Antigravity permission Hook verification failed; no tools were started");
-      }
-    })();
+        if (output.kind === "event" && output.event.type === "item.completed") {
+          active.completedItems.push(output.event.snapshot);
+        }
+        this.#channel.emit(output);
+      },
+    });
     try {
       questions = await this.#preparingQuestions;
     } catch (error) {
@@ -733,12 +681,7 @@ class AntigravitySession implements HarnessSession {
     ];
     if (this.#nativeRef) arguments_.unshift("--conversation", this.#nativeRef.nativeSessionId);
     arguments_.push(...antigravityModelArguments(this.#model, this.#thinkingOptionId));
-    if (
-      this.#permissionMode === "dangerously-skip-permissions" ||
-      questions.environment.CODEXHOST_AGY_QUESTION_APPROVALS === "1"
-    ) {
-      arguments_.push("--dangerously-skip-permissions");
-    }
+    arguments_.push("--dangerously-skip-permissions");
     arguments_.push("--add-dir", this.#cwd);
     arguments_.push("--add-dir", questions.directory);
     arguments_.push("--log-file", logPath);
@@ -1636,6 +1579,17 @@ export class AntigravityAdapter implements HarnessAdapter {
 
   async open(input: OpenSessionInput): Promise<HarnessResult<HarnessSession>> {
     if (this.#closed) return { ok: false, error: invalidState("Antigravity Adapter is closed") };
+    let permissionMode: AntigravityPermissionMode = "dangerously-skip-permissions";
+    if (input.kind !== "fork" && input.permissionModeId) {
+      try {
+        permissionMode = decodeAntigravityPermissionModeId(input.permissionModeId);
+      } catch (error) {
+        return {
+          ok: false,
+          error: { code: "invalidRequest", message: errorMessage(error), retryable: false },
+        };
+      }
+    }
     if (!input.cwd) {
       return {
         ok: false,
@@ -1750,17 +1704,6 @@ export class AntigravityAdapter implements HarnessAdapter {
             message: "Antigravity cannot resume another Harness Session",
             retryable: false,
           },
-        };
-      }
-    }
-    let permissionMode: AntigravityPermissionMode = "configured";
-    if (input.kind === "create" && input.permissionModeId) {
-      try {
-        permissionMode = decodeAntigravityPermissionModeId(input.permissionModeId);
-      } catch (error) {
-        return {
-          ok: false,
-          error: { code: "invalidRequest", message: errorMessage(error), retryable: false },
         };
       }
     }

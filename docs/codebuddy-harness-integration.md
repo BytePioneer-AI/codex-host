@@ -44,10 +44,30 @@ CodeBuddy 2.148.0 can retain cancellation state after returning a cancelled prom
 | File diffs | Standard ACP diff content is understood when supplied. Native tools still expose their calls/results when no diff is available. This is not a claim that every CodeBuddy Edit/Write supplies a complete historical diff. |
 | Fork / rollback | Explicitly unsupported. SDK `forkSession` does not prove a precise ACP checkpoint operation satisfying the Host's prefix and source-isolation contracts. |
 | Native Agent subagents | Running/completed collaboration cards and read-only child Threads, with real child messages/tools read from the native transcript. Native Agent IDs survive resume. A background launch acknowledgement completes its tool Item but not the child lifecycle; observation continues without mutating that completed Item, and becomes interrupted when the parent exits without a proven native child-completion signal. |
+| Cross-Harness delegation | Uses the shared Thread/delegation path and per-session environment forwarding. Full cross-Harness collaboration, including native visibility of delegation instructions and recursive delegation, still needs dedicated end-to-end acceptance; native Agent subagents alone do not establish it. |
 | Commands, compact, Teams | No dedicated Host UI/coordination capability. Member-tagged output is not mixed into the parent's answer. Native CodeBuddy configuration is not rewritten to disable these features. |
 | Images | Current public Turn input remains text. Native ACP image capability is not advertised as Host image support. |
 
 The plugin is preinstalled through `scripts/release/harness-plugins.json`; no new SDK dependency or proprietary CodeBuddy binary enters the distribution. Desktop's remaining static Agent list, per-Agent configuration, icon, settings link and production enabled list are updated. Routing uses `encodeHarnessPluginRoute`; no CodeBuddy-specific Host codec or ownership fallback is added. The icon is a neutral code glyph, not a claim of an official trademark asset.
+
+## Chinese permission-mode presentation
+
+The Renderer translates the known native labels and descriptions when Desktop uses Simplified Chinese. The menu and selected-mode label share the same translation; native IDs, catalog order, selection behavior and danger indicators stay unchanged. English retains the native wording, and unknown labels/descriptions fall back to their original text rather than being inferred from an ID.
+
+The following eight entries were confirmed by read-only ACP inspection of CodeBuddy CLI **2.149.0**, without sending a prompt or changing permissions:
+
+| Native ID | Native label | Chinese label |
+| --- | --- | --- |
+| `default` | Always Ask | 始终询问 |
+| `acceptEdits` | Accept Edits | 接受编辑 |
+| `plan` | Plan | 规划模式 |
+| `auto` | Auto | 自动 |
+| `dontAsk` | Don't Ask | 不询问 |
+| `bypassPermissions` | Bypass Permissions | 绕过权限 |
+| `fullAccess` | Full Access | 完全访问 |
+| `delegate` | Delegate | 由父会话管理 |
+
+The Chinese descriptions preserve the distinctions: Don't Ask denies actions that still require permission; Auto can fall back to asking, or denial if prompts are unavailable; Delegate means parent-session permission management, not cross-Harness task delegation. Bypass is described as skipping ordinary permission prompts because the CLI's help explicitly retains HIGH/CRITICAL checks, despite ACP's shorter “Skips all permission prompts” wording. Full Access also skips dangerous-command checks for all agents. This is presentation only, not a Host-defined permission policy.
 
 ## Build, installation and validation
 

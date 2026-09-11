@@ -119,6 +119,22 @@ case in live and history projection. These checks are not visual Desktop accepta
 and do not establish coverage for every Cursor Edit/Write path or other versions
 and platforms.
 
+## Brand assets
+
+`docs/imgs/badge-cursor.svg` embeds the original 2D Cube path, aspect ratio and
+`#EDECEC` fill from `General Logos/Cube/SVG/CUBE_2D_DARK.svg` in the
+[official brand kit](https://ptht05hbb1ssoooe.public.blob.vercel-storage.com/assets/brand/cursor-brand-assets.zip)
+linked by [Cursor's brand page](https://cursor.com/brand). It uses the existing
+20px README badge style and links to the Cursor CLI documentation.
+
+The Renderer and plugin icons are byte-identical copies of the
+[official favicon](https://cursor.com/favicon.svg), preserving its rounded dark
+plate and light Cube mark. They replace the integration's neutral pointer
+placeholder and are bundled locally without runtime network requests.
+
+The Cursor name and marks remain the property of Anysphere, Inc.; their public
+availability is not an open-source license or a claim of endorsement.
+
 ## Build a separate candidate
 
 From the repository root, after `cursor-agent login` has completed in the user's

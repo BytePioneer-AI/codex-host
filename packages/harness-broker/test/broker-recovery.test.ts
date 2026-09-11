@@ -40,6 +40,25 @@ async function fixture() {
 }
 const id = harnessIdSchema.parse("codebuddy");
 describe("broker recovery ownership", () => {
+  it("preserves the ownership error when closing a foreign Session rejects", async () => {
+    const f = await fixture();
+    const native = new FakeHarnessAdapter(id);
+    const foreign = new FakeHarnessSession(harnessIdSchema.parse("foreign"));
+    const close = vi.spyOn(foreign, "close").mockRejectedValueOnce(new Error("cleanup failed"));
+    cleanup.push(() => foreign.close());
+    vi.spyOn(native, "open").mockResolvedValueOnce({ ok: true, value: foreign });
+    const server = await startHarnessBrokerServer({ ...f, adapter: native });
+    cleanup.push(() => server.close());
+    const client = new BrokeredHarnessAdapter({ harnessId: id, descriptorPath: f.descriptorPath });
+    cleanup.push(() => client.close());
+
+    await expect(client.open({ kind: "create", cwd: f.root })).resolves.toMatchObject({
+      ok: false,
+      error: { code: "protocolError", message: "Adapter opened a Session for another Harness" },
+    });
+    expect(close).toHaveBeenCalledOnce();
+    expect((await client.open({ kind: "create", cwd: f.root })).ok).toBe(true);
+  });
   it("does not invent a replacement native Session when create had not confirmed identity", async () => {
     const f = await fixture();
     let native = new FakeHarnessAdapter(id);

@@ -962,7 +962,8 @@ export class HermesSession implements HarnessSession {
     this.#state = {
       ...this.#state,
       effectiveModel: command.model,
-      resolvedModelLabel: projectedAfterSelect.resolvedModelLabel ?? catalogAlignedModelLabel(native),
+      resolvedModelLabel:
+        projectedAfterSelect.resolvedModelLabel ?? catalogAlignedModelLabel(native),
     };
     this.#emit({ type: "session.state.changed", state: { ...this.#state } });
     return ok({ completed: true });

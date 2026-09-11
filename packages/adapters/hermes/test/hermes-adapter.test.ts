@@ -1030,10 +1030,7 @@ describe("HermesAdapter model selection", () => {
     const stateEvents: { resolvedModelLabel?: string }[] = [];
     void (async () => {
       for await (const output of opened.value.outputs) {
-        if (
-          output.kind === "event" &&
-          output.event.type === "session.state.changed"
-        ) {
+        if (output.kind === "event" && output.event.type === "session.state.changed") {
           stateEvents.push(output.event.state);
         }
       }

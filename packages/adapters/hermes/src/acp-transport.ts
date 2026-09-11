@@ -247,9 +247,7 @@ export function transportEvent(update: SessionUpdate): HermesTransportEvent | nu
 }
 
 export class HermesAcpTransport {
-  #options: Required<
-    Pick<HermesAcpTransportOptions, "commandTimeoutMs" | "closeTimeoutMs">
-  > &
+  #options: Required<Pick<HermesAcpTransportOptions, "commandTimeoutMs" | "closeTimeoutMs">> &
     HermesAcpTransportOptions;
   #activePrompt: ActivePrompt | null = null;
   #child: ChildProcessWithoutNullStreams | null = null;
@@ -291,8 +289,7 @@ export class HermesAcpTransport {
    * directory can safely host a Session for another.
    */
   retarget(cwd: string): void {
-    if (this.#sessionId)
-      throw new Error("Hermes ACP Transport cannot retarget an open Session");
+    if (this.#sessionId) throw new Error("Hermes ACP Transport cannot retarget an open Session");
     this.#options = { ...this.#options, cwd };
   }
 

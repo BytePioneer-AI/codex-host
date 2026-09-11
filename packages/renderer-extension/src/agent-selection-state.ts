@@ -15,6 +15,7 @@ export const KNOWN_RENDERER_AGENTS = [
   "antigravity",
   "kiro-cli",
   "codebuddy",
+  "cursor-cli",
 ] as const;
 export const DEFAULT_RENDERER_AGENTS = KNOWN_RENDERER_AGENTS;
 export type RendererAgent = (typeof KNOWN_RENDERER_AGENTS)[number];
@@ -45,6 +46,7 @@ export interface DraftComposerState {
   kiroCliThinkingOptionId?: HarnessThinkingOptionId;
   codeBuddyModel?: HarnessModelRef;
   codeBuddyThinkingOptionId?: HarnessThinkingOptionId;
+  cursorCliModel?: HarnessModelRef;
   permissionModeByAgent?: Partial<Record<ExternalRendererAgent, HarnessPermissionModeId>>;
 }
 
@@ -223,6 +225,8 @@ export class DraftAgentController<Composer extends object> {
     else if (agent === "kiro-cli") delete state.kiroCliModel;
     if (agent === "codebuddy" && model) state.codeBuddyModel = model;
     else if (agent === "codebuddy") delete state.codeBuddyModel;
+    if (agent === "cursor-cli" && model) state.cursorCliModel = model;
+    else if (agent === "cursor-cli") delete state.cursorCliModel;
     if (agent === "pi" && thinkingOptionId) state.piThinkingOptionId = thinkingOptionId;
     else if (agent === "pi") delete state.piThinkingOptionId;
     if (agent === "claude-code" && thinkingOptionId) {
@@ -256,6 +260,7 @@ export class DraftAgentController<Composer extends object> {
         "antigravity",
         "kiro-cli",
         "codebuddy",
+        "cursor-cli",
       ] as const) {
         const current = state.permissionModeByAgent?.[candidate];
         if (candidate !== agent && current) permissionModeByAgent[candidate] = current;
@@ -281,6 +286,7 @@ export class DraftAgentController<Composer extends object> {
     if (agent === "antigravity") return state.antigravityModel;
     if (agent === "kiro-cli") return state.kiroCliModel;
     if (agent === "codebuddy") return state.codeBuddyModel;
+    if (agent === "cursor-cli") return state.cursorCliModel;
     return undefined;
   }
 
@@ -335,6 +341,7 @@ export class DraftAgentController<Composer extends object> {
     else if (agent === "antigravity") state.antigravityModel = model;
     else if (agent === "kiro-cli") state.kiroCliModel = model;
     else if (agent === "codebuddy") state.codeBuddyModel = model;
+    else if (agent === "cursor-cli") state.cursorCliModel = model;
     return state;
   }
 

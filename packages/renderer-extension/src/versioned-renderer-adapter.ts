@@ -147,7 +147,7 @@ function transportModelIdForAgent(agent: RendererAgent): string | null {
   if (agent === "omp") return OMP_TRANSPORT_MODEL_ID;
   if (agent === "antigravity") return ANTIGRAVITY_TRANSPORT_MODEL_ID;
   if (agent === "kiro-cli") return encodeHarnessPluginRoute({ harnessId: KIRO_CLI_HARNESS_ID });
-  if (agent === "codebuddy")
+  if (agent === "codebuddy" || agent === "cursor-cli")
     return encodeHarnessPluginRoute({ harnessId: harnessIdSchema.parse(agent) });
   return null;
 }
@@ -930,11 +930,11 @@ export function modelSelectionForAgent(
                 ? ompTransportModelId(model, thinkingOptionId, permissionModeId)
                 : agent === "antigravity"
                   ? antigravityTransportModelId(model, permissionModeId, thinkingOptionId)
-                  : agent === "kiro-cli" || agent === "codebuddy"
+                  : agent === "kiro-cli" || agent === "codebuddy" || agent === "cursor-cli"
                     ? encodeHarnessPluginRoute({
                         harnessId: harnessIdSchema.parse(agent),
                         ...(model ? { model } : {}),
-                        ...(thinkingOptionId ? { thinkingOptionId } : {}),
+                        ...(thinkingOptionId && agent !== "cursor-cli" ? { thinkingOptionId } : {}),
                         ...(permissionModeId ? { permissionModeId } : {}),
                       })
                     : transportModelIdForAgent(agent);

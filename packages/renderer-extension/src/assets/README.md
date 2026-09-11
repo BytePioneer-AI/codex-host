@@ -30,6 +30,9 @@ mark, 40×40 viewBox and rounded clipping are preserved without modification.
 It matches `packages/adapters/codebuddy/assets/icon.svg` byte for byte; both
 copies are bundled locally so no network request is needed.
 
+`cursor-agent.svg` is a neutral pointer glyph authored for this integration,
+matching the plugin icon. It is not an official Cursor logo.
+
 The Agent picker uses the official Pi mark from `https://pi.dev/logo-auto.svg`
 and the Claude mark distributed in Anthropic's official `anthropic.claude-code`
 VS Code extension as inline vector paths. The DeepSeek Harness whale mark is

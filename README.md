@@ -150,6 +150,8 @@ xattr -dr com.apple.quarantine /Applications/codexhost.app
 
 **CodeBuddy（实验性）：** 通过原生 ACP 接入，需在实际执行任务的机器上安装并登录 [CodeBuddy CLI](https://www.codebuddy.ai/docs/zh/cli/overview)。codexhost 预装的是插件，不包含 CLI；仅安装 CodeBuddy App 不能替代 CLI。
 
+**Cursor CLI（实验性）：** 通过原生 ACP 接入，支持模型与 Agent／Plan／Ask 模式、会话恢复、子任务状态，以及 macOS Aqua 远程执行。原生历史格式与子任务过程可见性的限制见 [Cursor 接入说明](docs/cursor-cli-experimental.md)。
+
 | 能力 | <a href="https://openai.com/codex/"><img alt="Codex" src="docs/imgs/badge-codex.svg" /></a> | <a href="https://pi.dev/"><img alt="Pi" src="https://img.shields.io/badge/Pi-000000?logo=pi&logoColor=white" /></a> | <a href="https://github.com/can1357/oh-my-pi"><img alt="Oh My Pi" src="docs/imgs/badge-omp-v5.svg" /></a> | <a href="https://code.claude.com/docs/en/quickstart"><img alt="Claude Code" src="https://img.shields.io/badge/Claude_Code-D97757?logo=claudecode&logoColor=white" /></a> | <a href="https://opencode.ai/docs/"><img alt="OpenCode" src="docs/imgs/badge-opencode.svg" /></a> | <a href="https://grok.com/"><img alt="Grok" src="https://img.shields.io/badge/Grok-000000?logo=x&logoColor=white" /></a> | <a href="https://github.com/deepseek-ai/deepseek-harness"><img alt="DeepSeek Harness" src="https://img.shields.io/badge/DeepSeek-4D6BFE?logo=deepseek&logoColor=white" /></a> | <a href="https://antigravity.google/product/antigravity-cli"><img alt="AGY" src="docs/imgs/badge-agy.svg" /></a> | <a href="https://www.codebuddy.cn/home/"><img alt="CodeBuddy" src="docs/imgs/badge-codebuddy.svg" /></a> |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | 流式回复 | 原生 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |

@@ -180,6 +180,68 @@ describe("broker recovery ownership", () => {
       environment: { CODEXHOST_THREAD_ID: "parent" },
     });
   });
+  it.each([true, false])(
+    "retains each Session's scoped environment on same-connection reopen (forward=%s)",
+    async (forwardDelegationEnvironment) => {
+      const f = await fixture(),
+        native = new FakeHarnessAdapter(id);
+      const originalOpen = native.open.bind(native);
+      const open = vi.spyOn(native, "open").mockImplementation(async (input) => {
+        if (input.kind !== "resume") return originalOpen(input);
+        const session = new FakeHarnessSession(id, native.catalog, undefined, input.nativeRef);
+        native.sessions.push(session);
+        return { ok: true, value: session };
+      });
+      const server = await startHarnessBrokerServer({ ...f, adapter: native });
+      cleanup.push(() => server.close());
+      const client = new BrokeredHarnessAdapter({
+        harnessId: id,
+        descriptorPath: f.descriptorPath,
+        forwardDelegationEnvironment,
+      });
+      cleanup.push(() => client.close());
+      const sessions: HarnessSession[] = [];
+      const environments = ["first-parent", "second-parent"].map((threadId) => ({
+        CODEXHOST_THREAD_ID: threadId,
+        CODEXHOST_CLI_PATH: path.join(f.root, "codexhost"),
+        CODEXHOST_RUNTIME_ENDPOINT: "synthetic-runtime",
+        CODEXHOST_RUNTIME_TOKEN: "synthetic-token",
+      }));
+      for (const environment of environments) {
+        const created = await client.open({
+          kind: "create",
+          cwd: f.root,
+          environment: { ...environment, HOME: "must-not-forward", PATH: "must-not-forward" },
+        });
+        if (!created.ok) throw Error(created.error.message);
+        sessions.push(created.value);
+      }
+      const originals = [...native.sessions];
+      for (const [index, session] of sessions.entries()) {
+        const original = originals[index];
+        if (!original) throw Error("Missing native Session");
+        const iterator = session.outputs[Symbol.asyncIterator]();
+        original.fault({ code: "processExited", message: "Synthetic CLI exit", retryable: false });
+        expect(await iterator.next()).toMatchObject({
+          value: { event: { type: "session.faulted" } },
+        });
+        expect(
+          await session.execute({
+            type: "turn.start",
+            turnId: hostTurnIdSchema.parse(`after-fault-${index}`),
+            input: [{ type: "text", text: "continue" }],
+          }),
+        ).toMatchObject({ ok: true });
+        const resumedInput = open.mock.calls[index + sessions.length]?.[0];
+        expect(resumedInput).toEqual({
+          kind: "resume",
+          cwd: f.root,
+          nativeRef: session.initialState.nativeRef,
+          ...(forwardDelegationEnvironment ? { environment: environments[index] } : {}),
+        });
+      }
+    },
+  );
   it("rejects a foreign Harness identity first supplied after create and releases its provisional writer", async () => {
     const f = await fixture(),
       native = new FakeHarnessAdapter(id),

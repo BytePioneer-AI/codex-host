@@ -1,6 +1,9 @@
 import { PassThrough } from "node:stream";
 import { describe, expect, it, vi } from "vitest";
-import { OfficialRuntimeScope } from "../src/codex-runtime/official-runtime-scope.js";
+import {
+  OfficialRuntimeClient,
+  OfficialRuntimeScope,
+} from "../src/codex-runtime/official-runtime-scope.js";
 import type { OwnedOfficialBackend } from "../src/codex-runtime/official-runtime-owner.js";
 import type { OfficialAppServerExit } from "../src/official-app-server-connection.js";
 
@@ -24,6 +27,60 @@ function fixture() {
   });
   return { scope, backend, createBackend, exit };
 }
+
+describe("Desktop initialization without native admission", () => {
+  const params = { clientInfo: { name: "codex_desktop", version: "synthetic" } };
+
+  it("returns Host metadata without starting Codex or publishing ready", async () => {
+    const f = fixture();
+    const client = new OfficialRuntimeClient({ scope: f.scope, output: async () => {} });
+    try {
+      await expect(client.initializeProtocol(params)).resolves.toEqual({
+        result: {
+          userAgent: "codexhost",
+          codexHome: "/synthetic/home",
+          platformFamily: process.platform === "win32" ? "windows" : "unix",
+          platformOs:
+            process.platform === "darwin"
+              ? "macos"
+              : process.platform === "win32"
+                ? "windows"
+                : process.platform,
+        },
+      });
+      expect(f.scope.gate.phase).toBe("unavailable");
+      expect(f.createBackend).not.toHaveBeenCalled();
+      await expect(client.request("model/list", {})).rejects.toThrow("unavailable");
+      await f.scope.close();
+      await expect(client.initializeProtocol(params)).rejects.toThrow("unavailable");
+      await client.close();
+      await expect(client.initializeProtocol(params)).rejects.toThrow("unavailable");
+    } finally {
+      await client.close();
+      await f.scope.close();
+    }
+  });
+
+  it("does not attach a new Desktop client to the authentication-only staging backend", async () => {
+    const f = fixture();
+    f.scope.gate.initialized();
+    const change = f.scope.gate.beginChange();
+    const client = new OfficialRuntimeClient({ scope: f.scope, output: async () => {} });
+    const connect = vi.spyOn(f.backend, "connect");
+    try {
+      await f.scope.owner.start({ mode: "management-only", homeOverride: "/synthetic/staging" });
+      await expect(client.initializeProtocol(params)).resolves.toMatchObject({
+        result: { userAgent: "codexhost", codexHome: "/synthetic/home" },
+      });
+      expect(connect).not.toHaveBeenCalled();
+      expect(f.scope.gate.phase).toBe("changing");
+    } finally {
+      await client.close();
+      await f.scope.close();
+      change.finish("unavailable");
+    }
+  });
+});
 
 describe("official Runtime Scope terminal shutdown", () => {
   it("rejects a late Account-runtime owner start after Scope close", async () => {

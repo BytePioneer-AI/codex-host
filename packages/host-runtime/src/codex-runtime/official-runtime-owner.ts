@@ -44,6 +44,7 @@ interface Client {
   id: string;
   role: "task" | "management";
   output: CodexRuntimeOutput;
+  onBackendStopped?: () => void;
   runtime?: CodexRuntime;
   connecting?: Promise<CodexRuntime>;
   initializing?: Promise<JsonObject>;
@@ -197,6 +198,7 @@ export class OfficialRuntimeOwner {
 
   stop(): Promise<void> {
     if (this.#stopping) return this.#stopping;
+    let retired = false;
     const stopping = (async () => {
       if (this.#starting) await this.#starting.catch(() => undefined);
       const backend = this.#backend;
@@ -222,6 +224,7 @@ export class OfficialRuntimeOwner {
         this.#phase = "stopped";
         this.#work.retired();
         this.gate.retired();
+        retired = true;
       } catch {
         this.#unavailable();
         throw new OfficialAdmissionError("unavailable");
@@ -231,6 +234,16 @@ export class OfficialRuntimeOwner {
     void stopping.then(
       () => {
         this.#stopping = undefined;
+        // A process generation retires only after actual exit proof, not socket
+        // closure. Notify attached clients after releasing the stop barrier.
+        if (retired)
+          for (const client of [...this.#clients]) {
+            try {
+              client.onBackendStopped?.();
+            } catch {
+              /* observer isolation */
+            }
+          }
       },
       () => {
         this.#stopping = undefined;
@@ -239,19 +252,24 @@ export class OfficialRuntimeOwner {
     return stopping;
   }
 
-  attach(output: CodexRuntimeOutput): OfficialClientSession {
-    return this.#attach("task", output);
+  attach(output: CodexRuntimeOutput, onBackendStopped?: () => void): OfficialClientSession {
+    return this.#attach("task", output, onBackendStopped);
   }
 
   attachManagement(output: CodexRuntimeOutput): OfficialClientSession {
     return this.#attach("management", output);
   }
 
-  #attach(role: Client["role"], output: CodexRuntimeOutput): OfficialClientSession {
+  #attach(
+    role: Client["role"],
+    output: CodexRuntimeOutput,
+    onBackendStopped?: () => void,
+  ): OfficialClientSession {
     const client: Client = {
       id: randomUUID(),
       role,
       output,
+      ...(onBackendStopped ? { onBackendStopped } : {}),
       pending: new Map(),
       serverRequests: new Map(),
       threads: new Map(),

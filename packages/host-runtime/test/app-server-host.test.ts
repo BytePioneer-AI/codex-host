@@ -773,6 +773,30 @@ describe("AppServerHost HarnessAdapter projection", () => {
       verificationUrl: "https://example.test/device",
       userCode: "CODE",
     }));
+    const startNativeLogin = vi.fn(async (params: { type: string }) => {
+      const response =
+        params.type === "chatgptDeviceCode"
+          ? {
+              type: "chatgptDeviceCode" as const,
+              loginId: "login-one",
+              verificationUrl: "https://auth.openai.com/codex/device",
+              userCode: "CODE",
+            }
+          : {
+              type: "chatgpt" as const,
+              loginId: "native-oauth-operation",
+              authUrl: "https://auth.openai.com/authorize?synthetic=1",
+            };
+      return {
+        response,
+        completed: Promise.resolve({
+          loginId: response.loginId,
+          success: false,
+          error: "synthetic cancellation",
+          onboardingEntrypoint: null,
+        }),
+      };
+    });
     const snapshot = () => ({
       version: 2 as const,
       currentAccountId: null,
@@ -794,6 +818,7 @@ describe("AppServerHost HarnessAdapter projection", () => {
       switch: vi.fn(),
       remove: vi.fn(),
       startLogin,
+      startNativeLogin,
       cancelLogin: vi.fn(),
       logout,
       recover,
@@ -855,7 +880,31 @@ describe("AppServerHost HarnessAdapter projection", () => {
       ).resolves.toMatchObject({
         result: { type: "chatgptDeviceCode", loginId: "login-one", userCode: "CODE" },
       });
-      expect(startLogin).toHaveBeenCalledOnce();
+      expect(startLogin).not.toHaveBeenCalled();
+      expect(startNativeLogin).toHaveBeenCalledWith({ type: "chatgptDeviceCode" });
+
+      const nativeParams = {
+        type: "chatgpt",
+        codexStreamlinedLogin: true,
+        useHostedLoginSuccessPage: true,
+        appBrand: "codex",
+      };
+      writeRequest(managed.desktopInput, {
+        id: 909,
+        method: "account/login/start",
+        params: nativeParams,
+      });
+      await expect(
+        managed.collector.waitFor((message) => message.id === 909),
+      ).resolves.toMatchObject({
+        result: {
+          type: "chatgpt",
+          loginId: "native-oauth-operation",
+          authUrl: "https://auth.openai.com/authorize?synthetic=1",
+        },
+      });
+      expect(startNativeLogin).toHaveBeenCalledWith(nativeParams);
+      expect(managed.official.stdin.read()).toBeNull();
     } finally {
       await stopFixture(managed);
     }
@@ -1673,7 +1722,7 @@ describe("AppServerHost HarnessAdapter projection", () => {
     }
   });
 
-  it("keeps external Harnesses available after failed startup cleanup cannot prove exit", async () => {
+  it("keeps Desktop initialization and external Harnesses available after failed startup cleanup cannot prove exit", async () => {
     const exit = { code: 1, signal: null };
     const stopProcess = vi.fn(async (): Promise<OfficialAppServerExit> => {
       throw new Error("synthetic exit unconfirmed");
@@ -1696,6 +1745,17 @@ describe("AppServerHost HarnessAdapter projection", () => {
       await vi.waitFor(() => expect(stopProcess).toHaveBeenCalled());
       await new Promise<void>((resolve) => setImmediate(resolve));
       expect(outcomes).toEqual([]);
+      writeRequest(fixture.desktopInput, {
+        id: 901,
+        method: "initialize",
+        params: { clientInfo: { name: "codex_desktop", version: "synthetic" } },
+      });
+      const initializationResponse = await fixture.collector.waitFor(
+        (message) => message.id === 901,
+      );
+      expect(initializationResponse.error).toBeUndefined();
+      expect(initializationResponse).toMatchObject({ id: 901, result: expect.any(Object) });
+      writeRequest(fixture.desktopInput, { method: "initialized", params: {} });
       const threadId = await startPiThread(fixture);
       const turnId = await startPiTurn(fixture, threadId);
       const session = fixture.adapter.sessions[0];
@@ -1718,6 +1778,206 @@ describe("AppServerHost HarnessAdapter projection", () => {
       connection.stdin.destroy();
       connection.stdout.destroy();
       connection.stderr.destroy();
+      rmSync(fixture.mappingStoreDirectory, { recursive: true, force: true });
+    }
+  });
+
+  it("initializes a new Desktop without stopping or attaching to an active login backend", async () => {
+    const exit = Promise.withResolvers<OfficialAppServerExit>();
+    const stop = vi.fn(async () => exit.resolve({ code: 0, signal: null }));
+    const connect = vi.fn(async (): Promise<OfficialAppServerConnection> => {
+      throw new Error("Desktop must not connect to authentication staging");
+    });
+    const scope = new OfficialRuntimeScope({
+      permanentHome: "/synthetic/permanent",
+      managedAccounts: true,
+      diagnosticOutput: new PassThrough(),
+      createBackend: () => ({ closed: exit.promise, start: async () => {}, connect, stop }),
+    });
+    scope.gate.initialized();
+    const change = scope.gate.beginChange();
+    await scope.owner.start({ mode: "management-only", homeOverride: "/synthetic/login" });
+    const fixture = createFixture({ officialRuntimeScope: scope });
+    try {
+      writeRequest(fixture.desktopInput, {
+        id: 901,
+        method: "initialize",
+        params: { clientInfo: { name: "codex_desktop", version: "synthetic" } },
+      });
+      await expect(
+        fixture.collector.waitFor((message) => message.id === 901),
+      ).resolves.toMatchObject({
+        result: { userAgent: "codexhost", codexHome: "/synthetic/permanent" },
+      });
+      expect(scope.gate.phase).toBe("changing");
+      expect(scope.owner.running).toBe(true);
+      expect(stop).not.toHaveBeenCalled();
+      expect(connect).not.toHaveBeenCalled();
+      await startPiThread(fixture);
+    } finally {
+      fixture.host.close();
+      await fixture.running;
+      await scope.close();
+      change.finish("unavailable");
+      rmSync(fixture.mappingStoreDirectory, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps the initialized Desktop client attached through managed Account recovery", async () => {
+    const exit = Promise.withResolvers<OfficialAppServerExit>();
+    const stdin = new PassThrough();
+    const stdout = new PassThrough();
+    const stderr = new PassThrough();
+    const nativeRequests: JsonObject[] = [];
+    stdin.on("data", (chunk: Buffer) => {
+      const request = JSON.parse(chunk.toString()) as JsonObject;
+      nativeRequests.push(request);
+      if (!("id" in request)) return;
+      writeRequest(stdout, {
+        id: request.id ?? null,
+        result: request.method === "initialize" ? { userAgent: "synthetic-native" } : { data: [] },
+      });
+    });
+    const createBackend = vi.fn((): OwnedOfficialBackend => ({
+      closed: exit.promise,
+      start: async () => {},
+      connect: async () => ({
+        stdin,
+        stdout,
+        stderr,
+        closed: exit.promise,
+        close: () => {},
+      }),
+      stop: async () => {
+        stdin.end();
+        stdout.end();
+        stderr.end();
+        exit.resolve({ code: 0, signal: null });
+      },
+    }));
+    const scope = new OfficialRuntimeScope({
+      permanentHome: "/synthetic/permanent",
+      managedAccounts: true,
+      createBackend,
+      diagnosticOutput: new PassThrough(),
+    });
+    const accountControl = new SingleNativeCodexAccount(() => ({
+      version: 2,
+      currentAccountId: null,
+      phase: scope.gate.phase,
+      revision: scope.gate.revision,
+      capabilities: { manage: true, switch: false, login: false, delete: false, recover: true },
+      accounts: [],
+    }));
+    vi.spyOn(accountControl, "recover").mockImplementation(async () => {
+      await scope.owner.stop();
+      await scope.owner.start();
+      scope.gate.initialized();
+    });
+    const fixture = createFixture({ officialRuntimeScope: scope, accountControl });
+    const params = {
+      clientInfo: { name: "codex_desktop", version: "synthetic" },
+      capabilities: { experimentalApi: true },
+    };
+    try {
+      writeRequest(fixture.desktopInput, { id: 901, method: "initialize", params });
+      const initial = await fixture.collector.waitFor((message) => message.id === 901);
+      expect(initial.error).toBeUndefined();
+      expect(initial).toMatchObject({ result: { codexHome: "/synthetic/permanent" } });
+      expect(scope.gate.phase).toBe("unavailable");
+      expect(createBackend).not.toHaveBeenCalled();
+      writeRequest(fixture.desktopInput, { method: "initialized" });
+      writeRequest(fixture.desktopInput, {
+        id: 902,
+        method: "codexhost/account/recover",
+        params: {},
+      });
+      await expect(
+        fixture.collector.waitFor((message) => message.id === 902),
+      ).resolves.toMatchObject({
+        result: { phase: "ready" },
+      });
+      expect(nativeRequests).toContainEqual(
+        expect.objectContaining({ method: "initialize", params }),
+      );
+      expect(nativeRequests).toContainEqual({ method: "initialized" });
+      writeRequest(fixture.desktopInput, { id: 903, method: "model/list", params: {} });
+      await expect(
+        fixture.collector.waitFor((message) => message.id === 903),
+      ).resolves.toMatchObject({
+        result: { data: [] },
+      });
+      expect(fixture.collector.messages.filter((message) => message.id === 901)).toHaveLength(1);
+      expect(createBackend).toHaveBeenCalledOnce();
+    } finally {
+      fixture.host.close();
+      await fixture.running;
+      await scope.close();
+      rmSync(fixture.mappingStoreDirectory, { recursive: true, force: true });
+    }
+  });
+
+  it("drains recovered native work only after actual writer exit, not a one-shot startup failure", async () => {
+    const exit = Promise.withResolvers<OfficialAppServerExit>();
+    const proof = Promise.withResolvers<undefined>();
+    const stdin = new PassThrough();
+    const stdout = new PassThrough();
+    const stderr = new PassThrough();
+    stdin.on("data", (chunk: Buffer) => {
+      const request = JSON.parse(chunk.toString()) as JsonObject;
+      if ("id" in request)
+        writeRequest(stdout, { id: request.id ?? null, result: { userAgent: "synthetic-native" } });
+    });
+    const stop = vi.fn(async () => {
+      await proof.promise;
+      stdin.end();
+      stdout.end();
+      stderr.end();
+    });
+    const scope = new OfficialRuntimeScope({
+      permanentHome: "/synthetic/permanent",
+      managedAccounts: true,
+      diagnosticOutput: new PassThrough(),
+      createBackend: () => ({
+        closed: exit.promise,
+        start: async () => {},
+        stop,
+        connect: async () => ({ stdin, stdout, stderr, closed: exit.promise, close: () => {} }),
+      }),
+    });
+    const fixture = createFixture({ officialRuntimeScope: scope });
+    let finished = false;
+    void fixture.running.then(() => {
+      finished = true;
+    });
+    try {
+      writeRequest(fixture.desktopInput, { id: 901, method: "initialize", params: {} });
+      await fixture.collector.waitFor((message) => message.id === 901);
+      await scope.owner.start();
+      scope.gate.initialized();
+      writeRequest(stdout, {
+        method: "turn/started",
+        params: {
+          threadId: "synthetic-native-thread",
+          turn: { id: "synthetic-native-turn", status: "inProgress", items: [] },
+        },
+      });
+      await fixture.collector.waitFor((message) => message.method === "turn/started");
+      expect(scope.gate.busy).toBe(true);
+      exit.resolve({ code: 1, signal: null });
+      await vi.waitFor(() => expect(stop).toHaveBeenCalledOnce());
+      fixture.host.disconnect();
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(finished).toBe(false);
+      expect(scope.gate.busy).toBe(true);
+      proof.resolve(undefined);
+      await vi.waitFor(() => expect(scope.gate.busy).toBe(false));
+      await vi.waitFor(() => expect(finished).toBe(true));
+    } finally {
+      proof.resolve(undefined);
+      fixture.host.close();
+      await fixture.running;
+      await scope.close();
       rmSync(fixture.mappingStoreDirectory, { recursive: true, force: true });
     }
   });

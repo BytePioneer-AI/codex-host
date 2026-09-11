@@ -44,6 +44,8 @@ const stageSchema = z
     operationId: z.string().uuid(),
     sourceAccountId: z.string().uuid().nullable(),
     requestedAccountId: z.string().uuid().optional(),
+    /** Native Desktop login changes current identity; Settings add may only save it. */
+    activateOnSuccess: z.boolean().optional(),
     nativeLoginId: z.string().min(1).max(1024).optional(),
     /** Present only after a native login completion and stopped-file verification. */
     candidate: z.unknown().optional(),
@@ -304,6 +306,7 @@ export class NativeAccountStore {
   async createStage(
     requestedAccountId?: string,
     operationId: string = randomUUID(),
+    options: { activateOnSuccess?: boolean } = {},
   ): Promise<NativeLoginStage> {
     if (await this.readStage()) throw new NativeAccountError("cleanup-required");
     const stage: NativeLoginStage = {
@@ -312,6 +315,7 @@ export class NativeAccountStore {
       sourceAccountId: this.vault.currentAccountId,
       expiresAt: Date.now() + 10 * 60_000,
       ...(requestedAccountId ? { requestedAccountId } : {}),
+      ...(options.activateOnSuccess ? { activateOnSuccess: true } : {}),
     };
     // Register before creating anything: a crash cannot leave an untracked secret directory.
     await this.writeStage(stage);

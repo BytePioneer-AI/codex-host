@@ -448,7 +448,12 @@ describe("local native Account composition", () => {
     const f = await fixture({
       layout: { kind: "migration-required", reason: "multiple-homes", homes: [] },
     });
-    const prepared = await prepareLocalCodex(f.input());
+    const input = f.input();
+    const diagnostic = vi.spyOn(input.diagnosticOutput, "write");
+    const prepared = await prepareLocalCodex(input);
+    expect(diagnostic).toHaveBeenCalledWith(
+      "codexhost: Codex Account startup blocked (migration-required)\n",
+    );
     expect(prepared.accountControl.snapshot().capabilities.reason).toBe("migration-required");
     expect(native.state.fileConstructions).toBe(0);
     expect(native.state.keyConstructions).toBe(0);
@@ -538,6 +543,24 @@ describe("local native Account composition", () => {
     expect(native.current().events.indexOf("backend-stop")).toBeLessThan(
       native.current().events.indexOf("lease-release"),
     );
+  });
+
+  it("diagnoses other observable native processes without starting or killing a backend", async () => {
+    const f = await fixture();
+    native.current().inventory = [424242];
+    const input = f.input();
+    const diagnostic = vi.spyOn(input.diagnosticOutput, "write");
+    const prepared = await prepareLocalCodex(input);
+    try {
+      expect(diagnostic).toHaveBeenCalledWith(
+        "codexhost: Other native Codex processes were detected; refusing Account management\n",
+      );
+      expect(prepared.officialRuntimeScope.gate.phase).toBe("unavailable");
+      expect(native.current().events).toEqual([]);
+      expect(diagnostic.mock.calls.flat().join(" ")).not.toContain("424242");
+    } finally {
+      await prepared.close();
+    }
   });
 
   it("returns exactly one shared Scope and one Account control", async () => {

@@ -1,4 +1,5 @@
 import { AccountRateLimits } from "./codex-runtime/account-rate-limits.js";
+import { ManagedNativeAuth } from "./managed-native-auth.js";
 import { inspectHarnessAccounts } from "./harness-accounts.js";
 import type { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
@@ -518,6 +519,7 @@ export class AppServerHost {
   #ownsOfficialRuntimeScope: boolean;
   #accountControl: CodexAccountControl;
   #managedAccountControl: boolean;
+  #managedNativeAuth: ManagedNativeAuth | undefined;
   #externalAdapters: Map<ExternalHarnessId, HarnessAdapter>;
   #pluginDescriptors: HarnessPluginDescriptor[] = [];
   #accountInspection: Promise<HarnessAccountListResult> | null = null;
@@ -613,12 +615,25 @@ export class AppServerHost {
       }));
     this.#officialRuntime = new OfficialRuntimeClient({
       scope: this.#officialRuntimeScope,
+      onBackendStopped: () => {
+        this.#pendingOfficialTurnStarts.clear();
+        this.#activeOfficialTurns.clear();
+        this.#signalActiveWorkChanged();
+      },
       output: async (output) =>
         this.#handleOfficialOutput({
           ...output,
           accountId: (await this.#currentCodexAccountId()) ?? "signed-out",
         }),
     });
+    this.#managedNativeAuth = this.#managedAccountControl
+      ? new ManagedNativeAuth({
+          control: this.#accountControl,
+          scope: this.#officialRuntimeScope,
+          notify: (method, params) => this.#writer.json({ method, params }),
+          diagnose: () => this.#diagnose("Codex Account notification could not be delivered"),
+        })
+      : undefined;
     this.#unsubscribeAccountState = this.#officialRuntimeScope.gate.subscribe(() => {
       const snapshot = this.#accountControl.snapshot();
       void this.#writer
@@ -696,6 +711,7 @@ export class AppServerHost {
   }
 
   async #closeOfficialRuntime(): Promise<void> {
+    this.#managedNativeAuth?.close();
     if (this.#ownsOfficialRuntimeScope) await this.#officialRuntimeScope.close();
     await this.#officialRuntime.close();
   }
@@ -749,23 +765,25 @@ export class AppServerHost {
       await this.#officialRuntime.initialize();
     } catch (error) {
       this.#diagnose(`Official app-server connection failed: ${errorMessage(error)}`);
-      // Official startup is not the lifetime of Desktop or external Harnesses.
-      // Close admission before accepting further requests; never silently retry
-      // an uncertain official process through the legacy connection factory.
-      // Keep external Harnesses usable even if native cleanup cannot yet prove exit.
-      await this.#closeOfficialRuntime().catch((closeError: unknown) => this.#diagnose(closeError));
+      // Keep the Desktop client attached for Host initialization and later recovery.
+      // A shared Account coordinator owns its backend: a new Desktop arriving
+      // during login must not stop that coordinator's authentication-only process.
+      if (this.#ownsOfficialRuntimeScope) {
+        await this.#officialRuntimeScope.owner
+          .stop()
+          .catch((closeError: unknown) => this.#diagnose(closeError));
+      }
     }
     if (this.#closeRequested) await this.#closeOfficialRuntime();
     try {
       void this.#officialRuntime
         .failure()
         .then(async () => {
-          // The runtime already fails its pending protocol work. Retire only
-          // official resources; Desktop EOF/transport failure still owns finally.
-          await this.#closeOfficialRuntime();
-          this.#pendingOfficialTurnStarts.clear();
-          this.#activeOfficialTurns.clear();
-          this.#signalActiveWorkChanged();
+          // A recovered/shared Scope may have outlived this one-shot failure.
+          if (this.#officialRuntimeScope.gate.phase !== "unavailable") return;
+          // Prove exit without terminally closing the Scope or detaching Desktop.
+          // Account recovery must be able to reuse this same native client.
+          await this.#officialRuntimeScope.owner.stop();
         })
         .catch((error: unknown) => this.#diagnose(error));
       await this.#forwardDesktop();
@@ -873,8 +891,13 @@ export class AppServerHost {
       const request = requestResult.data;
       if (request.method === "initialize") {
         try {
+          const nativeGeneration =
+            this.#officialRuntimeScope.gate.phase === "ready"
+              ? this.#officialRuntimeScope.owner.generation
+              : undefined;
           const response = await this.#officialRuntime.initializeProtocol(requestObject(request));
           await this.#writer.json({ ...response, id: request.id });
+          this.#managedNativeAuth?.initialized(nativeGeneration);
         } catch (error) {
           await this.#writer.json(rpcError(request, -32087, errorMessage(error)));
         }
@@ -1395,33 +1418,10 @@ export class AppServerHost {
 
   async #handleManagedNativeAuthRequest(request: JsonRpcRequest): Promise<void> {
     try {
-      if (request.method === "account/login/start") {
-        const params = requestObject(request);
-        if (params.type !== "chatgptDeviceCode")
-          throw new Error("Unsupported native Account login type");
-        const result = await this.#accountControl.startLogin();
-        await this.#writer.json(
-          rpcEnvelope(request, {
-            result: {
-              type: "chatgptDeviceCode",
-              loginId: result.loginId,
-              verificationUrl: result.verificationUrl,
-              userCode: result.userCode,
-            },
-          }),
-        );
-        return;
-      }
-      if (request.method === "account/login/cancel") {
-        const params = requestObject(request);
-        if (typeof params.loginId !== "string" || params.loginId.length === 0)
-          throw new Error("Invalid Account login cancellation");
-        const cancelled = await this.#accountControl.cancelLogin(params.loginId);
-        await this.#writer.json(rpcEnvelope(request, { result: { cancelled } }));
-        return;
-      }
-      await this.#accountControl.logout();
-      await this.#writer.json(rpcEnvelope(request, { result: {} }));
+      if (!this.#managedNativeAuth) throw new Error("Native Account control is unavailable");
+      await this.#managedNativeAuth.request(request.method, requestObject(request), (result) =>
+        this.#writer.json(rpcEnvelope(request, { result })),
+      );
     } catch (error) {
       const failure = codexAccountRpcError(error);
       await this.#writer.json(rpcError(request, failure.code, failure.message));

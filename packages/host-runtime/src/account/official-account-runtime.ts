@@ -347,6 +347,17 @@ export class OfficialAccountRuntime implements NativeAccountRuntime {
     } catch {
       throw new OfficialAccountVerificationError("invalid-native-response");
     }
+    // Native 0.153.4 can report a planned path for an idle, non-ephemeral
+    // Thread whose rollout is not materialized yet. It cannot survive a restart;
+    // keep the writer alive and report admission refusal, not failed login.
+    if (
+      method === "thread/resume" &&
+      typeof params.threadId === "string" &&
+      object(result.error) &&
+      result.error.code === -32600 &&
+      result.error.message === `no rollout found for thread id ${params.threadId}`
+    )
+      throw new OfficialAdmissionError("busy");
     if (result.error || !object(result.result))
       throw new OfficialAccountVerificationError("invalid-native-response");
     return result.result;

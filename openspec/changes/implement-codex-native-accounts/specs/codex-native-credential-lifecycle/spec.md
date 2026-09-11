@@ -33,16 +33,23 @@ Switch, first activation, current re-login and logout SHALL share one native cre
 - **THEN** Host SHALL preserve evidence and reject the transition without first starting a writer that could refresh the unknown credentials
 
 ### Requirement: Login SHALL isolate staging and report saved state accurately
-Login SHALL register one short-lived operation and use a private authentication-only home. Permanent and staging processes MUST NOT overlap. A current A SHALL remain A after adding B. First successful login with no current Account SHALL activate through the common transaction. Completion and cancellation SHALL be associated with the operation and native login identity, not only a provisional Account ID.
+Login SHALL register one short-lived operation and use a private authentication-only home. Permanent and staging processes MUST NOT overlap. A current A SHALL remain A after Settings adds B. A native Desktop login SHALL instead retain the native intent to activate its signed-in identity. First successful login with no current Account SHALL activate through the common transaction. Completion and cancellation SHALL be associated with the operation and native login identity, not only a provisional Account ID.
 
 #### Scenario: Login start races cancellation or an early event
-- **WHEN** cancellation or completion arrives before start registration finishes
+- **WHEN** cancellation or completion arrives before start registration finishes, including after admission but before stage creation
 - **THEN** the operation SHALL settle once, wait for start/stop facts and prevent late writes to the permanent home
+- **AND** cancellation and terminal manager close SHALL recognize the already published operation ID before a stage object exists
 
 #### Scenario: First login stops between saving its candidate and activation
 - **WHEN** the first verified candidate is saved but activation has not committed
 - **THEN** its durable stage SHALL remain until activation completes so restart or recover can finish the same operation
 - **AND** activation failure with a stopped permanent backend SHALL report unavailable rather than ready
+
+#### Scenario: Native login saves B before activation fails
+- **WHEN** native login has saved B while A is current but activation has not completed
+- **THEN** its durable stage SHALL retain the activate-on-success intent through restart or recovery
+- **AND** recovery SHALL activate B through the same transaction instead of treating the operation as Settings-only addition
+- **AND** a native completion SHALL NOT report authentication success while permanent readiness or cleanup remains unconfirmed
 
 #### Scenario: Completion precedes the login start response
 - **WHEN** the UI receives a completion before the matching start response, possibly with a deduplicated Account ID

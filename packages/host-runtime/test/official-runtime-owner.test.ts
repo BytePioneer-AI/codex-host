@@ -157,6 +157,45 @@ const initialization = {
 };
 
 describe("single official runtime owner", () => {
+  it("notifies attached clients once per proved retirement, never on failed stop or client detach", async () => {
+    const f = fixture();
+    const retired = vi.fn();
+    const detachedRetired = vi.fn();
+    const brokenObserver = f.owner.attach(
+      async () => {},
+      () => {
+        throw new Error("synthetic observer");
+      },
+    );
+    const client = f.owner.attach(async () => {}, retired);
+    const detached = f.owner.attach(async () => {}, detachedRetired);
+    try {
+      await f.owner.start();
+      detached.close();
+      f.native().failStop(true);
+      f.native().closeUnexpectedly();
+      await expect(f.owner.stop()).rejects.toThrow("unavailable");
+      expect(retired).not.toHaveBeenCalled();
+      expect(detachedRetired).not.toHaveBeenCalled();
+      f.native().failStop(false);
+      await f.owner.stop();
+      expect(retired).toHaveBeenCalledOnce();
+      await f.owner.stop();
+      expect(retired).toHaveBeenCalledOnce();
+      await f.owner.start();
+      await f.owner.stop();
+      expect(retired).toHaveBeenCalledTimes(2);
+      expect(detachedRetired).not.toHaveBeenCalled();
+      expect(f.peak()).toBe(1);
+    } finally {
+      f.native().failStop(false);
+      await f.owner.stop();
+      client.close();
+      detached.close();
+      brokenObserver.close();
+    }
+  });
+
   it("does not create or publish a backend from managed scope startup", async () => {
     const closed = Promise.withResolvers<OfficialAppServerExit>();
     const createBackend = vi.fn((): OwnedOfficialBackend => ({

@@ -358,6 +358,34 @@ describe("official native account checks", () => {
     expect(f.owner.stop).not.toHaveBeenCalled();
   });
 
+  it.each([
+    { message: "no rollout found for thread id draft", expected: "busy" },
+    { message: "another native request failure", expected: "invalid-native-response" },
+  ])(
+    "classifies native resume refusal without stopping the writer: $expected",
+    async ({ message, expected }) => {
+      const f = await fixture();
+      f.runtime.gate.initialized();
+      const thread = {
+        id: "draft",
+        ephemeral: false,
+        status: { type: "idle" },
+        path: "/synthetic/home/sessions/planned-not-materialized.jsonl",
+      };
+      f.responses["thread/loaded/list"] = { data: [thread.id], nextCursor: null };
+      f.responses["thread/read"] = { thread };
+      f.owner.controlRequest.mockImplementation(async (method) =>
+        method === "thread/resume"
+          ? { error: { code: -32600, message } }
+          : { result: f.responses[method] ?? {} },
+      );
+      await expect(f.runtime.assertNativeIdle()).rejects.toMatchObject({ code: expected });
+      expect(f.runtime.gate.phase).toBe("ready");
+      expect(f.owner.stop).not.toHaveBeenCalled();
+      expect(f.owner.captureThreadSettings).not.toHaveBeenCalled();
+    },
+  );
+
   it("rejects a repeated native pagination cursor instead of looping or reporting idle", async () => {
     const f = await fixture();
     f.responses["thread/list"] = { data: [], nextCursor: "again" };

@@ -95,6 +95,7 @@ function blocked(
   output: Writable,
   reason: UnavailableCodexAccountReason,
 ): PreparedLocalCodex {
+  output.write(`codexhost: Codex Account startup blocked (${reason})\n`);
   const scope = new OfficialRuntimeScope({
     permanentHome: home,
     diagnosticOutput: output,
@@ -285,7 +286,12 @@ export async function prepareLocalCodex(input: LocalCodexOptions): Promise<Prepa
         executableNames: [path.basename(input.stockCodexPath), "codex", "codex.exe"],
         environment: input.environment,
       });
-      if (pids.length) throw new Error("Another native process may own the Codex home");
+      if (pids.length) {
+        input.diagnosticOutput.write(
+          "codexhost: Other native Codex processes were detected; refusing Account management\n",
+        );
+        throw new Error("Another native process may own the Codex home");
+      }
     };
     scope = new OfficialRuntimeScope({
       permanentHome: home,

@@ -32,6 +32,30 @@ The dedicated management connection SHALL initialize before Desktop clients. A m
 - **THEN** only Codex SHALL remain unavailable and existing external Harness work SHALL not be globally closed
 - **AND** recover SHALL be advertised only when the live control can actually retry it
 
+### Requirement: Desktop transport initialization SHALL remain independent of native readiness
+When native Account admission is unavailable or changing, Host SHALL acknowledge Desktop initialization using Host-owned transport metadata without claiming native readiness, authentication or Model capabilities. It SHALL retain the client's native initialization parameters and attachment for recovery. A terminally closed Host client or Scope MUST NOT acknowledge new initialization.
+
+#### Scenario: Desktop starts while native recovery is blocked
+- **WHEN** Desktop sends initialize while native startup is blocked
+- **THEN** Host SHALL return its own identity, permanent Codex home and runtime platform instead of turning native unavailability into a fatal initialization error
+- **AND** native work SHALL remain rejected while external Harness requests remain available
+
+#### Scenario: Desktop connects during authentication staging
+- **WHEN** an authentication-only staging backend is running
+- **THEN** Desktop initialization SHALL NOT connect a task client to that backend or stop it
+- **AND** initialization metadata SHALL identify the permanent home, not the staging directory
+
+#### Scenario: Recovery follows Host-only initialization
+- **WHEN** the Account coordinator safely restores native readiness
+- **THEN** the existing Desktop client SHALL initialize its native connection using the original negotiation parameters
+- **AND** Host SHALL NOT require Desktop restart or replay its earlier initialization response
+
+#### Scenario: A recovered native generation fails before Desktop disconnects
+- **WHEN** recovered native work loses its transport and Desktop requests active-work draining
+- **THEN** Host SHALL retain that work until the Owner proves the writer has stopped
+- **AND** every confirmed backend retirement SHALL settle attached clients' native work bookkeeping, independently of any one-shot startup failure notification
+- **AND** client detach, EOF and an unconfirmed stop SHALL NOT emit that retirement fact
+
 ### Requirement: Thread restoration SHALL preserve native settings and generation
 Account replacement SHALL retain native Thread IDs, history and Harness ownership, and preserve actual Model, Provider, reasoning and permission/workspace settings through native resume semantics. Host MUST NOT use stale initial draft values or fabricate replacement Threads. Unprovable restoration SHALL fail explicitly without dispatching the requested Turn.
 
@@ -39,6 +63,26 @@ Account replacement SHALL retain native Thread IDs, history and Harness ownershi
 - **WHEN** an idle Thread has more recent runtime settings than its original start request
 - **THEN** the replacement generation SHALL restore the actual latest settings before admitting subsequent work
 - **AND** late frames from a retired generation SHALL not update the new generation
+
+#### Scenario: A native path names an unmaterialized rollout
+- **WHEN** an idle loaded Thread reports a path but native resume confirms no rollout exists
+- **THEN** Host SHALL reject replacement as busy while preserving the live Thread and writer
+- **AND** it SHALL NOT infer persistence from the path field, fabricate a replacement Thread, or report failed authentication
+
+### Requirement: Native Desktop authentication SHALL retain its protocol semantics
+Managed native ChatGPT OAuth and device-code login SHALL use the same Account coordinator and transaction as Settings, but SHALL activate the signed-in identity. Native branding and streamlined-login parameters SHALL reach the native login backend. Unsupported token-injection and non-ChatGPT modes MUST NOT bypass managed credential ownership.
+
+#### Scenario: Native completion precedes the start response
+- **WHEN** native authentication completes before its start response can be delivered
+- **THEN** Host SHALL deliver the native response before its matching account/login/completed event
+- **AND** operation correlation and supported onboarding metadata SHALL be preserved
+- **AND** native cancellation SHALL return canceled/notFound status rather than the Settings boolean envelope
+
+#### Scenario: Permanent backend generation becomes ready
+- **WHEN** a replacement or recovered permanent backend is verified and ready
+- **THEN** Host SHALL notify initialized Desktop clients with account/updated derived from that backend's actual account/read result
+- **AND** staging, retired-generation results and saved-but-unavailable state SHALL NOT be announced as authenticated readiness
+- **AND** an observer failure or slow Desktop writer SHALL NOT roll back committed credentials or hold the credential-change admission lease
 
 ### Requirement: Public Account state SHALL express global committed facts
 The browser-safe v2 Account snapshot SHALL expose ready/changing/unavailable, revision and Host identity, capabilities, committed current metadata and necessary operation/cleanup status, but no credentials or private paths. Only Settings SHALL offer global switching. Composer SHALL not submit per-draft Account selectors; Harness locking SHALL remain independent.

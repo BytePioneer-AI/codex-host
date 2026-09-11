@@ -6,13 +6,13 @@
 - 工作目录：原 checkout 旁的独立 `codex-host-native-accounts` worktree。
 - opencodex：`2d4d7a22381a2e497c2442902104619e25f937c7`，MIT 资产与来源 notice 已加入两种发行布局。
 - 完整设计：[设计说明](../../../docs/codex-native-account-switching-design.md)；产品说明：[账号设置](../../../docs/codex-accounts.md)。
-- 测试只用临时目录、合成凭据、假密钥和假认证网络。未读取真实 auth/keyring、未启动用户 Desktop、未切换真实账号或运行推理。用户在验证后授权提交、推送和创建审查 PR；未进行发布。
+- PR 前测试只用临时目录、合成凭据、假密钥和假认证网络。用户随后授权提交、推送、普通审查 PR #262，并允许起停 Desktop 诊断。后续实际启动与隔离结果单独记录如下；未完成真实账号认证／切换、系统密钥生命周期或推理验收，未发布。
 
 ## 已执行验证
 
-以下为最后代码修正后的执行结果，不是全仓测试套件，也不是真实产品认证证明。
+下表是 PR 创建前的验证基线；后续启动／原生登录协议修正单独记录，不能用旧基线替代新改动的验证。它不是全仓测试套件，也不是真实产品认证证明。
 
-| 验证 | 当前执行结果 |
+| 验证 | PR 前执行结果 |
 | --- | --- |
 | `npm run build:typescript` | 通过，包含插件产物重建 |
 | `npm run typecheck` | 通过，生产与完整 test project |
@@ -61,6 +61,33 @@
 
 首次同步测试与 E2E 同时运行时，一项合成 private-file 队列测试在 helper 启动的 2 秒期限内超时；该项独立复查及完整聚焦集合复跑均通过。没有修改超时或队列断言，也没有把这次失败隐藏为全部一次通过；其时序稳定性仍需在 CI 观察。
 
+## PR #262 启动与原生协议后续
+
+用户报告 Desktop initialize 返回 `-32087 / Codex is unavailable` 后，加入真正发送 initialize 的组合测试取得相同 RED。修复将活 Host 的 transport 初始化与 native readiness 分开，保留客户端 attachment／协商；startup cleanup 不再 terminal-close 可恢复 Scope，也不停止其他客户端所属的 staging。
+
+实际起停 Desktop 时又发现两层启动配置问题：LaunchServices 未显式接收 home/profile 覆盖；只设置 Electron userData 环境也不足以改变 Chromium 的早期 session 存储。前两次尝试未实现完整隔离，已停止，不计入隔离验收，也不宣称它们从未接触默认 profile。加入绝对目录 allowlist 和匹配的 `--user-data-dir` 后，新 profile 确实创建，检查到的三个 profile 文件句柄均在临时根内。真实 Desktop `26.903.71938` 进入登录界面；该次两份自身日志未发现 fatal initialize 签名，停止后没有该临时根的存活文件句柄。未主动读取真实认证文件、打开授权网页或完成真实登录。
+
+读取已安装 Desktop 的代码和官方 `0.153.4` 完整 schema 还确认了原生协议缺口：Desktop 使用 `type:chatgpt` OAuth，完成依赖 `account/login/completed`／`account/updated`，取消响应应为 `status:canceled/notFound`。现保留原生 OAuth／设备代码输入、启动响应先于完成的顺序与 onboarding 字段；原生登录激活身份的 durable intent 与 Settings 仅添加分开，但共用一个 staging 和事务。正式后台的新 generation 才从实际 account/read 投递身份更新；慢客户端、退休响应和观察者失败不改凭据事实。
+
+本轮目前已执行：
+
+- Launcher 路径回归先 RED，再通过目录转发和 Chromium 参数测试及实际 macOS profile 检查。
+- 新原生登录协议、管理器及 AppServerHost／Scope 组合：6 文件，188 通过、1 个未启用 helper 的跳过；严格 typecheck 通过。与此前集合有重叠，不累加计数。
+- 真实官方 CLI＋compiled helper 的 opt-in 集成：受保护 listener 冷启动、保留同一 Desktop client、OAuth 开始后立即取消、回到未登录正式后台，通过。未打开或输出 OAuth URL；正式凭据始终为空，staging 清理，OAuth callback 端口释放，最多一个受控官方后台。Vault 使用假密钥，不触及真实 OS keyring；私有随机 home 的测试仅保留受控 writer reconciliation，不冒充生产的全机进程 inventory 验证。
+- 真实 CLI 揭示 idle 新 Thread 可先返回计划路径却尚无 rollout。原生 resume 的明确拒绝现映射为 busy，保留该内存 Thread 与后台；相关实际 CLI＋单元组合 28 通过。初次把这种未落盘 Thread 当作持久 Thread 的恢复测试前提已纠正，未据此伪造持久历史或修改 goal API。
+- 另取得“操作已准入但 stage 尚未建立时取消丢失”的 RED；开始 barrier 现从准入建立，取消和 close 在检查／注册阶段都有效。覆盖首次状态广播中的同步取消，不额外创建登录协调器。
+- 调用生产 `host.disconnect()` 的合成回归曾在恢复后等待已退出的旧 Turn。现在 Owner 在每次真实 stop proof 完成后通知仍附着的客户端，清理本客户端工作记账；failed stop、EOF 和 client detach 不触发该通知。回归先确认 native busy 已消失但 Host 仍不结束，再证明修复有效。初始探针误用了无效 fixture 选项，后续 gate-phase 观察也不能代替退出事件，两者都未作为成功修复保留。
+
+最后修正后的 build/plugins、严格 typecheck、lint/boundaries 通过；完整聚焦集合 **56 文件、759 通过、3 个 Windows-only skip**，包括显式启用的真实官方 CLI 和 compiled helper。Renderer build 与三份 E2E **43 通过**；相关 Rust **platform 56、launcher unit 52、CLI 4**，scoped clippy 与 fmt 通过。最后格式和 OpenSpec 对账另有检查日志。未运行全仓测试或跨平台 Desktop。
+
+最后代码另对真实官方 CLI 的隔离生命周期执行 **10/10** 次重复验证，记录为 `native-retirement-live-repeat-*.log`；结束后 OAuth callback 端口无 listener。每次仍是不打开授权 URL、不完成认证的开始／取消流程，不累加为十项新的功能覆盖。
+
+完整复跑中另一次未改动的 Cursor transport 测试在 1 秒初始化期限内超时；该文件独立检查和完整 56 文件复跑均通过，未修改其 timeout 或断言。不能将此前 757 项的通过当成最后两个退出回归已执行，也不把本次复跑描述为始终一次通过。
+
+相关日志：`desktop-initialize-red.log`、`desktop-path-{red,green}.log`、`chromium-profile-{red,green}.log`、`native-oauth-routing-red.log`、`native-login-admission-cancel-red.log`、`native-recovery-drain-proof-red.log`、`native-startup-tests-final-clean.log`、`native-startup-tests-final-recheck.log`、`native-startup-cursor-recheck.log` 及 `native-startup-*-final*.log`。测试见 `native-official-integration.test.ts`，需显式设置 `CODEXHOST_TEST_OFFICIAL_CODEX` 和 `CODEXHOST_TEST_NATIVE_LAUNCHER`；它不会打开授权 URL、完成认证或调用真实 Model。
+
+真实 Desktop 目前只证明隔离登录页能够显示，不等于已登录界面、阻断时的管理入口或其他 Harness GUI 已验收；原始用户启动的 unavailable 首因仍未取得那次原因日志。真实认证、系统密钥、同一真实 Thread A→B→A 与完整迁移仍是明确的后续门槛。本轮新的独立 pi 审查未启动：CLI 缺少合法 Host Runtime endpoint/token context；没有新子任务或审查结果。
+
 ## 原生协议证据的限度
 
 本轮用 `0.153.4` 的 `app-server generate-ts --experimental` 在隔离空 HOME 中离线生成完整协议。默认输出省略 experimental 接口，曾导致 settings／queue 接口缺失的误判；完整生成后已纠正，未据此删除有效 API。
@@ -73,7 +100,7 @@
 | --- | --- | --- |
 | macOS 私有文件、锁、ACL、退出 helper | 实际 compiled-helper＋合成数据测试 | 真实 keyring 授权／锁定和 Desktop A→B→A 已验证 |
 | Windows DACL／Job、Linux 原语 | 编译检查及可在本机运行的纯测试 | Windows/Linux native runtime 全通过 |
-| 官方 `0.153.4`＋明确 file 模式 | 离线完整协议、严格 fake backend 组合 | 所有版本、默认配置和 Provider 都支持管理 |
+| 官方 `0.153.4`＋明确 file 模式 | 离线协议、fake 组合、实际受保护 listener 与未认证 OAuth 取消链路 | 所有版本、默认配置、真实认证和 Provider 均已验证 |
 | 新安装／单一正式 home | 原地保留；不移动原生数据 | 多 home 已合并 |
 | 旧多 home／foreign／损坏元数据 | `migration-required`，保留原件 | 已完成数据库、附件、记忆、队列或项目迁移 |
 | 外部 Harness 连续性 | Host 路由及合成组合检查 | 真实多 Harness 长时间并行联合验收完成 |

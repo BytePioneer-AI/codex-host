@@ -8,7 +8,8 @@
 
 - 固定一个正式 `CODEX_HOME`、一个官方进程 Owner；本地托管使用受保护 loopback 和优先初始化的管理连接。
 - 一个原子 Vault 提交 metadata、current 和非当前密文；一个事务执行者处理切换、首次激活、当前重登、退出及事实恢复。
-- 短命认证 staging 与正式后台严格不并行。添加 B 不覆盖 A，业务提交和清理结果分开表达。
+- 短命认证 staging 与正式后台严格不并行。设置页添加 B 不覆盖 A；原生 Desktop OAuth／设备代码登录保留激活本次身份的语义，共用同一事务。业务提交和清理结果分开表达。
+- Desktop initialize 与 Codex readiness 分开；保留原生登录应答／完成／账号更新协议，不以局部 Codex 故障关闭整个 Desktop 或伪造认证。
 - v2 公开快照、Settings 全局切换和只读 Composer 身份；移除旧 per-draft 选择、后台池和 Thread→Account 执行路由。
 - 保留非当前额度和受控 OAuth 刷新；私有 I/O、OS 密钥和进程证明由通用 Rust 原语提供。
 - 旧多 home 尚无完整迁移时明确阻止启用，不丢弃历史后假报成功。
@@ -17,7 +18,7 @@
 
 - 模型请求代理、Header 替换、外部 Token 热登录、自动账号轮换或后台池。
 - 改变 Model、Provider、Thread ID、历史或实际 Billing Source 语义。
-- 本轮执行真实登录／推理、启动用户 Desktop、读取真实密钥或发布。提交、推送及审查 PR 已获用户后续授权。
+- 完成真实账号登录／推理、读取真实密钥或发布。提交、推送、普通审查 PR 及诊断用 Desktop 起停已获用户后续授权；隔离 CLI 的 OAuth 开始／取消不代表真实认证验收。
 - 假定全部官方版本、平台或旧数据布局已经验证；未确认阶段与采集值前不生成迁移向导。
 
 ## Capabilities

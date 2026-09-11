@@ -234,6 +234,15 @@ export class SyntheticNativeAccountRuntime implements NativeAccountRuntime {
 
   async controlRequest(method: string, params: JsonObject): Promise<JsonObject> {
     this.controlRequests.push({ method, params });
+    if (method === "account/login/start" && params.type === "chatgpt") {
+      return {
+        result: {
+          type: "chatgpt",
+          loginId: "native-login",
+          authUrl: "https://auth.openai.com/authorize?synthetic=1",
+        },
+      };
+    }
     if (method === "account/login/start") {
       return {
         result: {

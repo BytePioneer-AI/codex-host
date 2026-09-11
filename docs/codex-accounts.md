@@ -40,20 +40,25 @@
 
 「切换到此账号」作用于当前 Host 的所有 Codex Thread，包括已有 Thread 的后续 Turn。切换不改变 Thread ID、历史、Model、Provider、目录或权限；不改变其他 Harness。已有上下文会随下一次请求用于新账号，账号不再是独立数据空间，也不等于实际 Billing Source。
 
-只有空闲时才切换：关闭新工作准入，停止并确认官方进程树退出，保存实际最新凭据，原子替换原生凭据，再启动并验证。忙碌、审批、终端、队列等未结束时明确拒绝；不强制取消、不排队、不重放输入。Desktop 和 Host 不因切换重启。Harness picker 只有一个 Codex，Composer 不提供账号选择。
+只有空闲时才切换：关闭新工作准入，停止并确认官方进程树退出，保存实际最新凭据，原子替换原生凭据，再启动并验证。忙碌、审批、终端、队列等未结束时明确拒绝；不强制取消、不排队、不重放输入。已有、已完成且可恢复的 Thread 本身不算忙；临时或尚未落盘的内存 Thread 无法保证跨重启保留，也会拒绝切换。原生返回一个计划中的历史路径不代表已经落盘。Desktop 和 Host 不因切换重启。Harness picker 只有一个 Codex，Composer 不提供账号选择。
 
 删除仅允许非当前保存账号，保留确认，不删除任何 Thread 或 home，也不自动选择其他账号。受控「退出登录」保存当前最新凭据后清除原生登录，已保存账号仍可再次选择；退出和删除不同。
 
 「添加 Codex 账号」使用原生设备代码登录。开始前停止任务后台，在私有、短命的认证 staging 目录中启动唯一登录后台，不执行用户任务。添加 B 不覆盖正式 home 中的 A，结束后仍使用 A；此前未登录时，首次成功登录成为当前账号。当前账号重新登录也必须安装新授权，不能因为 ID 相同跳过。
 
+Desktop 原生「登录」保留 OAuth 和设备代码两种 ChatGPT 协议，复用同一个 staging 和事务；与设置页「添加」不同，原生登录成功会使用本次登录的身份。原生完成通知不会早于启动应答；只有正式后台确实就绪才报告原生登录成功，并从该后台读取账号信息通知 Desktop 更新。不能把已保存但待恢复的账号冒充已登录。
+
 已保存账号的「登录」入口可重新获取授权，邮箱缺失不代表未认证。完成事件按本次登录操作对账，即使早于启动应答也能处理；轮询只更新快照，不凭旧邮箱推断成功。操作已经结束但完成结果未收到时，显示「登录结果未确认」，请检查已保存账号状态。
 
 取消、超时和迟到事件绑定本次登录操作。账号已保存但清理或正式后台恢复失败时，页面明确显示已保存和待恢复，不能把它当成账号未保存。`recover` 重试事实恢复，不强制删除 Journal 或覆盖未知凭据；不能安全确定所有权时仅 Codex unavailable，其他 Harness 保持运行。
+
+Desktop 的 Host 连接初始化与 Codex 就绪状态分开：Codex unavailable 或正在切换时，Host 只返回自身身份、正式 home 和运行平台，不启动额外后台、不宣称认证成功，也不把 Desktop 接入认证 staging。原生请求仍受准入限制；恢复后同一个 Desktop 连接使用保留的原生初始化参数继续工作。终端会以固定原因说明启动被阻断或检测到其他原生 Codex 进程，不输出凭据。
 
 本地托管模式统一使用受保护的官方 loopback listener，专用管理连接先于 Desktop 初始化。多连接仍只有一个后台。SSH 维持远端原生单账号，不传输本地凭据。不支持管理但无未决事务时保留原生单账号认证；该模式不承诺托管账号库能跟踪原生客户端自行更换或删除的凭据。
 
 ## 存储、安全与升级边界
 
+- Launcher 显式传递所支持的绝对 home／配置路径；指定 `CODEX_ELECTRON_USER_DATA_PATH` 时也传递 Chromium 的 `--user-data-dir`，避免只隔离部分 Electron 数据。不会把 API Key 等秘密拼入启动参数，也不把 SSH 管理环境的目录覆盖带入本地 Desktop。
 - 正式 `CODEX_HOME` 固定。当前凭据的权威是原生文件；非当前凭据使用 OS 密钥和 AES-256-GCM 保存在 `.codexhost-native-accounts/vault.json`，不另建长期账号 home。
 - `transaction.json` 和 `login.json` 记录未决操作，秘密备份同样加密。已有 Vault 缺失密钥时不生成替代密钥、不退回明文。密钥命名空间为 `codexhost.native-accounts.v1`。
 - 文件 helper 持有 home 租约，并在同一进程中执行有界 I/O；退出未确认时不能让新写入者越过租约。可观察到的其他 Codex 进程会保守阻止托管操作，不杀未知进程。这个检查不能阻止任意外部 CLI 以后启动或同用户程序自行写文件。
@@ -77,6 +82,7 @@
 - `packages/host-runtime/src/account/native-profile-transaction.ts`：切换、退出、重登和事实恢复。
 - `packages/host-runtime/src/account/native-account-store.ts`：统一 Vault、加密 Journal 和 staging。
 - `packages/host-runtime/src/native-account-host.ts`：本地能力、所有权与降级组成。
+- `packages/host-runtime/src/managed-native-auth.ts`：原生登录协议、事件顺序和正式后台代次更新；不另持凭据或管理进程。
 - `packages/renderer-extension/src/settings/accounts-page.ts`：账号生命周期、查询、登录与操作。
 - `packages/renderer-extension/src/settings/accounts-list.ts`：统一账号行、管理入口与重置卡展开。
 - `packages/renderer-extension/src/settings/accounts-usage.ts`：额度窗口分列、额外具名额度和重置卡详情。

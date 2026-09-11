@@ -14,6 +14,7 @@ import { OfficialAdmissionError, OfficialWorkGate } from "./official-work-gate.j
 export class OfficialRuntimeScope {
   readonly owner: OfficialRuntimeOwner;
   readonly gate: OfficialWorkGate;
+  readonly permanentHome: string;
   readonly #failure = Promise.withResolvers<Error>();
   readonly #managedAccounts: boolean;
   #starting: Promise<void> | undefined;
@@ -21,6 +22,7 @@ export class OfficialRuntimeScope {
   #closed = false;
 
   constructor(input: Omit<OfficialRuntimeOwnerOptions, "gate"> & { managedAccounts?: boolean }) {
+    this.permanentHome = input.permanentHome;
     this.gate = new OfficialWorkGate();
     this.#managedAccounts = input.managedAccounts ?? false;
     this.owner = new OfficialRuntimeOwner({
@@ -39,6 +41,10 @@ export class OfficialRuntimeScope {
       if (this.#started && this.gate.phase === "unavailable")
         this.#failure.resolve(new Error("Official Codex is unavailable"));
     });
+  }
+
+  get closed(): boolean {
+    return this.#closed;
   }
 
   start(): Promise<void> {
@@ -72,8 +78,8 @@ export class OfficialRuntimeScope {
     return starting;
   }
 
-  attach(output: CodexRuntimeOutput): OfficialClientSession {
-    return this.owner.attach(output);
+  attach(output: CodexRuntimeOutput, onBackendStopped?: () => void): OfficialClientSession {
+    return this.owner.attach(output, onBackendStopped);
   }
   failure(): Promise<Error> {
     return this.#failure.promise;
@@ -93,9 +99,13 @@ export class OfficialRuntimeClient {
   readonly #session: OfficialClientSession;
   #closed = false;
 
-  constructor(input: { scope: OfficialRuntimeScope; output: CodexRuntimeOutput }) {
+  constructor(input: {
+    scope: OfficialRuntimeScope;
+    output: CodexRuntimeOutput;
+    onBackendStopped?: () => void;
+  }) {
     this.#scope = input.scope;
-    this.#session = input.scope.attach(input.output);
+    this.#session = input.scope.attach(input.output, input.onBackendStopped);
   }
 
   initialize(): Promise<void> {
@@ -104,8 +114,33 @@ export class OfficialRuntimeClient {
   failure(): Promise<Error> {
     return this.#scope.failure();
   }
-  initializeProtocol(params: JsonObject): Promise<JsonObject> {
-    return this.#session.initialize(params);
+  async initializeProtocol(params: JsonObject): Promise<JsonObject> {
+    if (this.#closed || this.#scope.closed) throw new OfficialAdmissionError("unavailable");
+    // Desktop initializes the Host transport, not Account readiness. Retain its
+    // native negotiation for recovery, but never attach it to a staging backend.
+    this.#session.configure(params);
+    if (this.#scope.gate.phase === "ready") {
+      try {
+        return await this.#session.initialize(params);
+      } catch (error) {
+        if (this.#closed || this.#scope.closed || this.#scope.gate.phase === "ready") throw error;
+      }
+    }
+    // These are Host-owned transport facts (InitializeResponse), not a fabricated
+    // native capability or authentication result. Native requests remain gated.
+    return {
+      result: {
+        userAgent: "codexhost",
+        codexHome: this.#scope.permanentHome,
+        platformFamily: process.platform === "win32" ? "windows" : "unix",
+        platformOs:
+          process.platform === "darwin"
+            ? "macos"
+            : process.platform === "win32"
+              ? "windows"
+              : process.platform,
+      },
+    };
   }
   request(method: string, params: JsonObject): Promise<JsonObject> {
     return this.#session.request(method, params);

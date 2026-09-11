@@ -10,6 +10,7 @@
 - [x] 2.2 持锁 helper 执行全部后续 I/O；共享 facade、64 项队列、20 MiB 文件预算和稳定路径校验。
 - [x] 2.3 验证 macOS 实际 helper／扩展 ACL 拒绝，完成 Windows/Linux 平台编译检查；不将编译等同于运行验证。
 - [x] 2.4 在 spawn intent 写入后重新检查租约；Scope 关闭后拒绝迟到启动，失败 close 的每次重试仍须证明退出。
+- [x] 2.5 显式传递所支持的绝对 home／profile 覆盖，并为 Chromium 同步 user-data-dir；以 macOS 实际文件句柄验证隔离，不把未成功透传的启动计为隔离验收。
 
 ## 3. 账号与 Runtime 核心
 
@@ -21,6 +22,8 @@
 - [x] 3.6 捕获原生有效设置，懒恢复并验证；连续无工作代次仍保留设置；拒绝临时／缺少持久路径的 Thread。
 - [x] 3.7 unavailable 恢复可重试旧进程退出证明，但不得清空未确认工作、打断健康的 busy 运行或越过在途凭据刷新。
 - [x] 3.8 本地／Remote Control 共享一个 Scope；SSH 保持远端原生认证；Codex 故障不关闭外部 Harness。
+- [x] 3.9 Host transport initialize 不依赖 Codex readiness，保留 Desktop attachment 与原生协商；恢复或 staging 期间不误关共享后台。每次真实后台退出独立通知客户端清理旧工作，不依赖一次性 startup failure。
+- [x] 3.10 原生 OAuth／设备代码登录、取消及完成事件复用唯一协调器；取消／关闭从准入起有效，持久保留原生激活意图，正式 generation 从原生 account/read 发布身份更新。
 
 ## 4. UI、额度与升级
 
@@ -38,5 +41,6 @@
 - [ ] 5.4 获得授权后，同一真实 Thread 完成 A→B→A，并验证 Desktop/Host PID 和外部 Harness 流式输出、审批、取消、保存不中断。
 - [ ] 5.5 证明官方默认凭据存储及更广版本／配置矩阵后，再扩展当前明确 `file` 的能力限制。
 - [ ] 5.6 完整迁移和上述门槛闭合后，才可宣称替代旧版本并进入发布；用户已另行授权提交、推送和审查 PR，但未授权发布。
+- [x] 5.7 在 macOS 隔离 home、假 Vault 密钥和真实官方 CLI／compiled helper 下验证受保护 listener、OAuth 开始／取消、退出清理和未物化 Thread 拒绝；不把这些计为真实认证或 OS keyring 验收。
 
 执行记录和限制见 [evidence.md](evidence.md)。未勾选的发布门槛不是测试已通过，也不授权真实账号操作或编写未经确认的迁移向导。

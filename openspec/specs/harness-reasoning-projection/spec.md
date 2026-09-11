@@ -3,9 +3,7 @@
 ## Purpose
 
 Define the minimal UI-independent Host Reasoning Item, its ordered lifecycle and Native history ownership, and its faithful projection through a Desktop-verified Codex native carrier.
-
 ## Requirements
-
 ### Requirement: HarnessSession exposes a minimal UI-independent Reasoning Item
 
 HarnessSession SHALL represent explicit user-visible native reasoning text as a `reasoning` Host Item containing only a stable Host Item ID and accumulated text. Reasoning SHALL use the existing ordered text-append update and SHALL NOT expose native Harness blocks, Codex app-server fields, Provider or Model identity, token counts, encrypted data, or inferred content.
@@ -46,26 +44,33 @@ Every started Reasoning Item SHALL start after its owning Turn, accept only orde
 
 ### Requirement: Protocol Core projects Reasoning through a proven Codex native carrier
 
-Protocol Core SHALL convert Host Reasoning lifecycle events and historical snapshots into the current Codex app-server `reasoning` Item and one Desktop-verified native Reasoning text lane. It SHALL keep Codex wire fields out of HarnessAdapter and SHALL NOT fall back to Agent Message text or a custom Renderer when no faithful native carrier is available.
+Protocol Core SHALL convert Host Reasoning lifecycle events and historical snapshots into the current Codex app-server `reasoning` Item and one Desktop-verified native Reasoning text lane when available. It SHALL keep Codex wire fields out of HarnessAdapter and SHALL NOT fall back to Agent Message text. When the controlled Desktop has no faithful native text lane, Renderer MAY provide the bounded opt-in summary surface defined by `renderer-reasoning-summary-surface`; that surface SHALL consume only the already-projected explicit summary lane and SHALL NOT replace or mutate Transcript Items. A concrete Adapter whose native reasoning stream is explicitly provisional and revisable MAY defer that Reasoning lifecycle until the authoritative native Assistant message; if ordinary Agent text must remain live, the deferred live Reasoning MAY appear after already-streamed Agent text while historical projection retains deterministic native message order.
 
-#### Scenario: Live Reasoning is projected
+#### Scenario: Live Reasoning is projected from a stable stream
 
-- **WHEN** an external Turn emits a Reasoning start, one or more text appends, and completion
+- **WHEN** an external Turn emits authoritative Reasoning text before the first Agent Message text
 - **THEN** the originating Codex Thread SHALL receive one Reasoning Item lifecycle with each character represented exactly once
-- **AND** Reasoning that natively precedes the first Agent Message text SHALL be visibly ordered before that text
+- **AND** the Reasoning SHALL remain ordered before that Agent text in the protocol lifecycle
+
+#### Scenario: Modern DSH revises provisional reasoning
+
+- **WHEN** Modern DSH emits provisional `reasoning-delta`, streams ordinary Agent text, and later publishes a different authoritative Reasoning block in `assistant/message`
+- **THEN** the Adapter SHALL keep the Agent text live, emit none of the provisional reasoning, and publish the authoritative Reasoning once after validating the complete event
+- **AND** live presentation MAY show that deferred Reasoning after the already-streamed Agent text while `readSnapshot()` preserves the authoritative native Reasoning-before-Agent order
 
 #### Scenario: Historical Reasoning is projected
 
 - **WHEN** `readSnapshot()` returns completed Reasoning Items for an external Thread
 - **THEN** historical Codex Turn projection SHALL include those Items in deterministic native order
 - **AND** reopening the Thread SHALL not require replaying live delta notifications
-- **AND** Desktop MAY use its stock duration-only completed presentation or omit historical Reasoning UI after reopen without keeping the earlier live summary text inspectable
+- **AND** the opt-in Renderer summary surface SHALL NOT create or persist a second historical Transcript
 
 #### Scenario: Current Desktop has no faithful Reasoning carrier
 
 - **WHEN** the controlled Desktop Gate cannot prove a native Reasoning lane with correct text, ordering, and completion behavior
-- **THEN** external Reasoning projection SHALL remain unavailable for that build
-- **AND** the implementation SHALL NOT inject a custom UI or merge reasoning into the final answer
+- **THEN** Protocol Core SHALL preserve the native Reasoning Item projection without merging it into final Agent Message text
+- **AND** Renderer MAY show explicit summary notifications only after the user opts in
+- **AND** disabling that preference SHALL leave no custom reasoning panel or retained display text
 
 ### Requirement: Reasoning remains presentation output owned by Native history
 
@@ -81,3 +86,4 @@ Reasoning content SHALL NOT determine Turn success, become a second persisted Tr
 - **WHEN** Host persists ownership metadata or later reopens an external Thread
 - **THEN** Mapping Store SHALL contain no Reasoning text and the Adapter SHALL reread supported Reasoning from Native Session history
 - **AND** diagnostics and committed Gate evidence SHALL omit the Reasoning content
+

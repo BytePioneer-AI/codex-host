@@ -30,6 +30,27 @@ function projector(): CodexTurnProjector {
 }
 
 describe("Codex UI projector", () => {
+  it("does not invent historical duration from invalid native timing", () => {
+    const snapshot: HostThreadSnapshot["turns"][number] = {
+      nativeTurnRef: nativeTurnRefSchema.parse({
+        harnessId: "kiro-cli",
+        nativeSessionId: "native",
+        nativeTurnKey: "user",
+        formatVersion: 1,
+      }),
+      input: [],
+      items: [],
+      outcome: { status: "succeeded" },
+      startedAtMs: 2_000,
+      completedAtMs: 1_000,
+    };
+    expect(projectHistoricalTurn({ turnId, cwd: "/workspace", snapshot })).toMatchObject({
+      startedAt: null,
+      completedAt: null,
+      durationMs: null,
+    });
+  });
+
   it("projects a complete historical Snapshot without replaying notifications", () => {
     const snapshot: HostThreadSnapshot["turns"][number] = {
       nativeTurnRef: nativeTurnRefSchema.parse({
@@ -449,6 +470,8 @@ describe("Codex UI projector", () => {
           subagentId: "claude-agent-1",
           description: "Inspect implementation",
           role: "Explore",
+          model: "grok-4.6",
+          reasoningEffort: "high",
           background: true,
           status: "pending",
         },
@@ -469,6 +492,8 @@ describe("Codex UI projector", () => {
             status: "inProgress",
             senderThreadId: "thread-1",
             receiverThreadIds: ["claude-agent-1"],
+            model: "grok-4.6",
+            reasoningEffort: "high",
             agentsStates: {
               "claude-agent-1": { status: "pendingInit", message: null },
             },
@@ -550,6 +575,78 @@ describe("Codex UI projector", () => {
       },
     ]);
   });
+
+  it.each([
+    { configurations: [{}], expected: { model: null, reasoningEffort: null } },
+    { configurations: [], expected: { model: null, reasoningEffort: null } },
+    {
+      configurations: [{ model: "provider/raw-model-id" }],
+      expected: { model: "provider/raw-model-id", reasoningEffort: null },
+    },
+    {
+      configurations: [{ reasoningEffort: "xhigh" }],
+      expected: { model: null, reasoningEffort: "xhigh" },
+    },
+    {
+      configurations: [
+        { model: "grok-4.6", reasoningEffort: "high" },
+        { model: "grok-4.6", reasoningEffort: "high" },
+      ],
+      expected: { model: "grok-4.6", reasoningEffort: "high" },
+    },
+    {
+      configurations: [{ model: "grok-4.6" }, {}],
+      expected: { model: null, reasoningEffort: null },
+    },
+    {
+      configurations: [{ model: "model-a" }, { model: "model-b" }],
+      expected: { model: null, reasoningEffort: null },
+    },
+    {
+      configurations: [
+        { model: "grok-4.6", reasoningEffort: "high" },
+        { model: "grok-4.6", reasoningEffort: "low" },
+      ],
+      expected: { model: null, reasoningEffort: null },
+    },
+  ])(
+    "preserves native Subagent configuration without formatting or group guesses: %j",
+    ({ configurations, expected }) => {
+      const value = projector();
+      const item: HostSubagentDelegationItem = {
+        type: "subagentDelegation",
+        itemId: itemId("child-config"),
+        operation: "spawn",
+        subagents: configurations.map((configuration, index) => ({
+          subagentId: `child-${index}`,
+          description: "Inspect",
+          background: true,
+          status: "completed",
+          ...configuration,
+        })),
+      };
+      value.project({ type: "turn.started", turnId });
+      expect(value.project({ type: "item.started", turnId, item }).messages).toMatchObject([
+        { method: "item/started", params: { item: expected } },
+      ]);
+      const historical = projectHistoricalTurn({
+        turnId,
+        cwd: "/workspace",
+        snapshot: {
+          nativeTurnRef: nativeTurnRefSchema.parse({
+            harnessId: "grok",
+            nativeSessionId: "parent",
+            nativeTurnKey: "turn-1",
+            formatVersion: 1,
+          }),
+          input: [{ type: "text", text: "delegate" }],
+          items: [{ item, outcome: { status: "succeeded" } }],
+          outcome: { status: "succeeded" },
+        },
+      });
+      expect(historical.items).toMatchObject([{ type: "userMessage" }, expected]);
+    },
+  );
 
   it("projects native context compaction before the continued Agent reply", () => {
     const value = projector();

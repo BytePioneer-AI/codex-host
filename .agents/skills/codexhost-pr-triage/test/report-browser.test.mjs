@@ -6,7 +6,7 @@ import { pathToFileURL } from "node:url";
 import test from "node:test";
 import { chromium } from "@playwright/test";
 import { renderReport } from "../lib/report.mjs";
-import { createReport } from "./fixtures.mjs";
+import { createReport, createV2Report } from "./fixtures.mjs";
 
 const assets = Object.fromEntries(
   await Promise.all(
@@ -147,6 +147,59 @@ test("offline board renders actual input, safe details, cross-repo identities an
   assert.equal(await page.locator(".column").count(), 4);
   assert.equal(await page.locator(".card").count(), 0);
   assert.match(await page.locator("#summary").innerText(), /已评估 0 个 PR/u);
+  assert.deepEqual(errors, []);
+  assert.deepEqual(network, []);
+});
+
+test("offline v2 Issue view shows pending sources, safe unpublished drafts, search and export", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "triage-issue-browser-test-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const browser = await chromium.launch({ headless: true });
+  t.after(() => browser.close());
+  const page = await browser.newPage({ offline: true, viewport: { width: 1280, height: 900 } });
+  const errors = [];
+  const network = [];
+  page.on("pageerror", (error) => errors.push(error.message));
+  page.on("request", (request) => {
+    if (/^https?:/u.test(request.url())) network.push(request.url());
+  });
+  const report = createV2Report();
+  const issue = report.issues[0];
+  issue.replyDraft = "</script><script>globalThis.pwned=true</script>\n请补充脱敏信息。";
+  issue.related = [{ url: report.prs[0].url, reason: "仅为关联候选，不确认重复。" }];
+  issue.source = null;
+  report.complete = false;
+  report.errors = ["测试来源未完成核验"];
+  const output = join(directory, "index.html");
+  await writeFile(output, renderReport(report, assets));
+  await page.goto(pathToFileURL(output).href);
+  assert.equal(await page.locator("#issues-section").isVisible(), true);
+  assert.equal(await page.locator("#issue-list .card").count(), 1);
+  assert.match(await page.locator("#issue-list").innerText(), /未完成/u);
+  assert.match(await page.locator("#board").innerText(), /已处理来源快照/u);
+  await page.locator("#issue-list button").click();
+  assert.equal(await page.locator("#detail-title").innerText(), issue.title);
+  assert.match(await page.locator("#detail-body").innerText(), /回复草稿 · 尚未发布/u);
+  assert.match(await page.locator("#detail-body").innerText(), /不是重复关单决定/u);
+  assert.ok((await page.locator("#detail-body").innerText()).includes(issue.replyDraft));
+  assert.equal(await page.evaluate(() => globalThis.pwned), undefined);
+  assert.equal(
+    await page.getByRole("link", { name: "打开 Issue ↗" }).getAttribute("href"),
+    issue.url,
+  );
+  await page.keyboard.press("Escape");
+  await page.locator("#search").fill("测试问题");
+  assert.equal(await page.locator("#board .card").count(), 0);
+  assert.equal(await page.locator("#issue-list .card").count(), 1);
+  await page.locator("#search").fill("不存在的内容");
+  assert.equal(await page.locator("#issue-list .card").count(), 0);
+  await page.locator("#search").fill("");
+  await page.setViewportSize({ width: 390, height: 844 });
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+  const downloading = page.waitForEvent("download");
+  await page.locator("#export").click();
+  const download = await downloading;
+  assert.deepEqual(JSON.parse(await readFile(await download.path(), "utf8")), report);
   assert.deepEqual(errors, []);
   assert.deepEqual(network, []);
 });

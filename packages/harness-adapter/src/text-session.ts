@@ -80,6 +80,9 @@ export interface CreateSessionInput {
 }
 
 export interface ResumeSessionInput {
+  /** Saved selection hints for Harnesses that initialize configuration lazily. */
+  model?: HarnessModelRef;
+  thinkingOptionId?: HarnessThinkingOptionId;
   kind: "resume";
   nativeRef: NativeSessionRef;
   cwd: string;
@@ -98,6 +101,10 @@ export interface ForkSessionInput {
 }
 
 export interface RollbackLastTurnSessionInput {
+  /** Current settings required by a derived Session before it can start native work. */
+  model?: HarnessModelRef;
+  thinkingOptionId?: HarnessThinkingOptionId;
+  permissionModeId?: HarnessPermissionModeId;
   kind: "rollbackLastTurn";
   sourceRef: NativeSessionRef;
   cwd: string;
@@ -275,6 +282,8 @@ export interface HostAgentMessageItem {
   type: "agentMessage";
   itemId: HostItemId;
   text: string;
+  /** Omit when the Harness cannot distinguish progress from its final answer. */
+  phase?: "commentary" | "final_answer";
 }
 
 export interface HostReasoningItem {
@@ -335,6 +344,10 @@ export interface HostSubagentState {
   nativeSubagentId?: string;
   description: string;
   role?: string;
+  /** Native child Model ID, when explicitly supplied or reported; not a display label. */
+  model?: string;
+  /** Native child reasoning effort, when known; do not infer from parent settings. */
+  reasoningEffort?: string;
   background: boolean;
   status: HostSubagentStatus;
   resultSummary?: string;
@@ -387,6 +400,9 @@ export interface HostTurnSnapshot {
   items: HostItemSnapshot[];
   outcome: HistoricalTurnOutcome;
   model?: HarnessModelRef;
+  /** Native wall-clock timestamps; omit when unavailable. */
+  startedAtMs?: number;
+  completedAtMs?: number;
 }
 
 export interface HostThreadSnapshot {

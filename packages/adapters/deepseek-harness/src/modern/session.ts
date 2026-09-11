@@ -95,13 +95,16 @@ import {
   MODERN_JOURNAL_MAX_BUFFERED_LIVE_BYTES,
   MODERN_JOURNAL_MAX_HISTORY_BYTES,
   MODERN_JOURNAL_RECOVERY_OPEN_TIMEOUT_MS,
+  ModernJournalDesyncError,
   ModernJournalError,
   openModernJournal,
   type ModernJournal,
+  type ModernJournalAssistantStream,
   type ModernJournalEvent,
   type ModernJournalOptions,
   type ModernJournalRemote,
 } from "./journal.js";
+import { DEEPSEEK_V012_PROFILE, type DeepSeekModernProfile } from "../profiles/profile.js";
 import { ModernRemoteConnectionError } from "./remote-connection.js";
 import {
   redactModernCredential,
@@ -110,6 +113,9 @@ import {
 } from "./wire.js";
 
 const DEEPSEEK_HARNESS_ID = harnessIdSchema.parse("deepseek-harness");
+const NATIVE_CLOSE_TIMEOUT_MS = 5_000;
+const CANCELLED_ASSISTANT_ATTEMPT_SUFFIX = "\n\n[生成尝试已取消 / Generation attempt cancelled]";
+
 export const MODERN_PROMPT_CORRELATION_GRACE_MS = 5_000;
 export const MODERN_ACCEPTED_CORRELATION_TIMEOUT_MS = 300_000;
 const MAX_TIMER_DELAY_MS = 2_147_483_647;
@@ -136,6 +142,7 @@ const CORRELATION_BOUNDARIES = new Set([
   "request/header",
   "request/context",
   "assistant/chunk",
+  "assistant/attempt",
   "assistant/message",
   "tool/call",
   "tool/result",
@@ -207,6 +214,23 @@ interface ActiveHostTurn {
   cancelPromise?: Promise<HarnessResult<TurnCancelAccepted>>;
 }
 
+interface BufferedAssistantAttempt {
+  readonly attemptId: string;
+  readonly startedAfterSeq: number;
+  readonly turn: number;
+  readonly step: number;
+  readonly chunks: Array<Extract<ModernJournalAssistantStream["frame"], { type: "chunk" }>>;
+  nextIndex: number;
+  projectedChunks: number;
+  retainedBytes: number;
+  settlement?: {
+    readonly eventType: "assistant/message" | "assistant/attempt";
+    readonly seq: number;
+  };
+  ended: boolean;
+  projected: boolean;
+}
+
 interface ActiveInteraction {
   readonly delivery: ModernEventDelivery;
   readonly interaction: HostInteraction;
@@ -247,6 +271,7 @@ export interface ModernHarnessSessionOptions {
   readonly promptCorrelationGraceMs?: number;
   readonly acceptedCorrelationTimeoutMs?: number;
   readonly onClosed?: () => void;
+  readonly flushSession?: () => Promise<void>;
 }
 
 export interface ModernSessionControl extends ModernConfigurationControl {
@@ -269,6 +294,7 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
 
   readonly #remote: ModernJournalRemote & ModernConfigurationRemote;
   #journal: ModernJournal;
+  readonly #profile: DeepSeekModernProfile;
   readonly #control: ModernSessionControl;
   readonly #modelCatalog: ModernModelCatalogSnapshot;
   readonly #permissionModes: HarnessPermissionModeCatalog | null;
@@ -285,6 +311,7 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
   readonly #promptCorrelationGraceMs: number;
   readonly #acceptedCorrelationTimeoutMs: number;
   readonly #onClosed: () => void;
+  readonly #flushSession: (() => Promise<void>) | undefined;
   readonly #fallbackModel: HarnessModelRef;
   readonly #fallbackThinkingOptionId: HarnessThinkingOptionId | undefined;
   readonly #channel = new HarnessOutputChannel<HarnessOutput>();
@@ -301,6 +328,8 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
   readonly #usedInteractionIds = new Set<HostInteractionId>();
   readonly #queuedDeliveries = new Map<string, ModernEventDelivery>();
   #buffer: NativeTurnBuffer | undefined;
+  #assistantAttempt: BufferedAssistantAttempt | undefined;
+  #assistantRebaseline = false;
   #active: ActiveHostTurn | undefined;
   #activeCommand: ActiveCommand | undefined;
   #commandAdmission: CommandAdmission | undefined;
@@ -312,8 +341,11 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
   #usage: HostUsage | null;
   #historyBytes: number;
   #closed = false;
+  #closing = false;
+  #nativeCloseTerminal: (() => void) | undefined;
   #closedNotified = false;
   #faulted?: HarnessError;
+  #faultMayHaveNativeWork = false;
   #closePromise?: Promise<void>;
   readonly #pumpPromise: Promise<void>;
 
@@ -330,6 +362,7 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
     this.harnessId = options.harnessId ?? DEEPSEEK_HARNESS_ID;
     this.#remote = options.remote;
     this.#journal = options.journal;
+    this.#profile = options.journal.profile ?? DEEPSEEK_V012_PROFILE;
     this.#control = options.control;
     this.#modelCatalog = options.modelCatalog;
     this.#permissionModes = options.permissionModes;
@@ -365,15 +398,17 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
       "acceptedCorrelationTimeoutMs",
     );
     this.#onClosed = options.onClosed ?? (() => undefined);
+    this.#flushSession = options.flushSession;
     this.#events = [...options.journal.events];
     this.#historyBytes = journalHistoryBytes(this.#events, this.#maxHistoryBytes);
-    this.#validator = new ModernEventValidator(this.#maxEvents);
+    this.#validator = new ModernEventValidator(this.#maxEvents, this.#profile);
     for (const event of this.#events) this.#validator.accept(event);
 
     const projection = projectModernHistory({
       harnessId: this.harnessId,
       sessionId: this.#sessionId,
       events: this.#events,
+      profile: this.#profile,
       toolOutputLimit: this.#toolOutputLimit,
       maxEvents: this.#maxEvents,
     });
@@ -433,7 +468,7 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
     this.#pumpPromise = this.#pump();
     if (resumedAutonomousBuffer) {
       queueMicrotask(() => {
-        if (!this.#closed && this.#buffer === resumedAutonomousBuffer) {
+        if (!this.#closed && !this.#closing && this.#buffer === resumedAutonomousBuffer) {
           this.#activateBufferedAutonomous(true);
         }
       });
@@ -441,7 +476,7 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
   }
 
   readSnapshot(): Promise<HarnessResult<HostThreadSnapshot>> {
-    if (this.#closed) return Promise.resolve({ ok: false, error: closedError() });
+    if (this.#closed || this.#closing) return Promise.resolve({ ok: false, error: closedError() });
     if (this.#reading) return Promise.resolve({ ok: false, error: busyError("read history") });
     this.#reading = true;
     try {
@@ -484,7 +519,7 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
       | PermissionModeSelectCompleted
     >
   > {
-    if (this.#closed) return Promise.resolve({ ok: false, error: closedError() });
+    if (this.#closed || this.#closing) return Promise.resolve({ ok: false, error: closedError() });
     switch (command.type) {
       case "turn.start":
         return this.#start(command);
@@ -502,6 +537,16 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
   }
 
   close(): Promise<void> {
+    const faultCleanup = this.#closePromise;
+    if (this.#faultMayHaveNativeWork && !this.#closing && faultCleanup) {
+      this.#closing = true;
+      // Fault cleanup retires local projection, but cannot certify native execution stopped.
+      this.#closePromise = faultCleanup.then(() => {
+        throw new Error(
+          "DeepSeek Harness native execution stop was not confirmed before the Session fault",
+        );
+      });
+    }
     this.#closePromise ??= this.#performClose();
     return this.#closePromise;
   }
@@ -527,7 +572,7 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
         "DeepSeek Harness event delivery was duplicated",
       );
     }
-    if (this.#closed) {
+    if (this.#closed || this.#closing) {
       this.#queuedDeliveries.set(delivery.eventId, delivery);
       return;
     }
@@ -847,6 +892,7 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
         this.#permissionModes,
         command.permissionModeId,
         signal,
+        this.#profile,
       );
       return { value: { completed: true } as const, changed: selected.changed };
     });
@@ -860,12 +906,12 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
     this.#operationControllers.add(abort);
     try {
       const result = await operation(abort.signal);
-      if (this.#closed) return { ok: false, error: closedError() };
+      if (this.#closed || this.#closing) return { ok: false, error: closedError() };
       this.#publishConfiguration(true);
       return { ok: true, value: result.value };
     } catch (error) {
       if (this.#faulted) return { ok: false, error: this.#faulted };
-      if (this.#closed) return { ok: false, error: closedError() };
+      if (this.#closed || this.#closing) return { ok: false, error: closedError() };
       const failure = configurationOrProtocolError(error, "DeepSeek Harness configuration failed");
       if (configurationFailureRequiresSessionFault(error)) this.#fault(failure);
       return { ok: false, error: failure };
@@ -890,7 +936,7 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
       !Array.isArray(command.input) ||
       command.input.length === 0 ||
       command.input.some((part) => part.type !== "text" || typeof part.text !== "string") ||
-      !command.input.some(({ text }) => text.length > 0)
+      !command.input.some(({ text }) => text.trim().length > 0)
     ) {
       return {
         ok: false,
@@ -999,7 +1045,7 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
       return this.#acceptPrompt(pending);
     } catch (error) {
       if (this.#faulted) return { ok: false, error: this.#faulted };
-      if (this.#closed) return { ok: false, error: closedError() };
+      if (this.#closed || this.#closing) return { ok: false, error: closedError() };
       if (pending.admissionObserved) return this.#acceptPrompt(pending);
 
       // The Modern protocol has no requestId idempotency guarantee. Do not resend an uncertain prompt:
@@ -1014,7 +1060,7 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
       );
       if (resolution.kind === "accepted") {
         if (this.#faulted) return { ok: false, error: this.#faulted };
-        if (this.#closed) return { ok: false, error: closedError() };
+        if (this.#closed || this.#closing) return { ok: false, error: closedError() };
         return this.#acceptPrompt(pending);
       }
       if (resolution.kind === "closed") return { ok: false, error: closedError() };
@@ -1091,14 +1137,14 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
   async #listHarnessCommands(): Promise<
     HarnessResult<ReturnType<typeof deepSeekHarnessCommandCatalog>>
   > {
-    if (this.#closed) return { ok: false, error: closedError() };
+    if (this.#closed || this.#closing) return { ok: false, error: closedError() };
     return { ok: true, value: deepSeekHarnessCommandCatalog() };
   }
 
   async #executeHarnessCommand(
     command: HarnessCommandInvocation,
   ): Promise<HarnessResult<HarnessCommandAccepted>> {
-    if (this.#closed) return { ok: false, error: closedError() };
+    if (this.#closed || this.#closing) return { ok: false, error: closedError() };
     const parsed = parseDeepSeekHarnessCommand(command);
     if (!parsed.ok) return parsed;
     if (this.#hasCommandConflict() || this.#acceptedTurnIds.has(command.turnId)) {
@@ -1116,7 +1162,7 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
     try {
       const catalog = await this.#listHarnessCommands();
       if (!catalog.ok) return catalog;
-      if (this.#closed) return { ok: false, error: closedError() };
+      if (this.#closed || this.#closing) return { ok: false, error: closedError() };
       if (admission.cancellationRequested) {
         return { ok: false, error: invalidState("DeepSeek Harness command was cancelled") };
       }
@@ -1183,6 +1229,7 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
         this.#sessionId,
         active.line,
         active.abort.signal,
+        this.#profile,
       );
       if (this.#activeCommand !== active) return;
       if (!execution) {
@@ -1342,15 +1389,20 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
     while (!this.#closed) {
       const journal = this.#journal;
       try {
-        for await (const event of journal.live) {
+        for await (const item of journal.live) {
           if (this.#closed) return;
-          this.#appendJournalEvent(event);
+          if (this.#assistantRebaseline && (!("frame" in item) || item.frame.type !== "start")) {
+            this.#discardAssistantAttempt();
+            this.#assistantRebaseline = false;
+          }
+          if ("frame" in item) this.#receiveAssistantFrame(item.frame);
+          else this.#appendJournalEvent(item);
         }
         if (this.#closed) return;
         throw new ModernJournalError("unavailable", "DeepSeek Harness journal ended unexpectedly");
       } catch (error) {
         if (this.#closed) return;
-        if (!replacementUsed && isUnavailableJournalFailure(error)) {
+        if (!replacementUsed && isRecoverableJournalFailure(error)) {
           replacementUsed = true;
           try {
             await this.#replaceJournal(journal);
@@ -1375,9 +1427,248 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
       );
     }
     this.#validator.accept(event);
+    this.#observeAssistantSettlement(event);
     this.#events.push(event);
     this.#historyBytes += bytes;
     this.#receive(event);
+  }
+
+  #receiveAssistantFrame(frame: ModernJournalAssistantStream["frame"]): void {
+    switch (frame.type) {
+      case "start": {
+        const previous = this.#assistantAttempt;
+        if (this.#assistantRebaseline && previous?.attemptId === frame.attemptId) {
+          if (
+            previous.startedAfterSeq !== frame.startedAfterSeq ||
+            previous.turn !== frame.turn ||
+            previous.step !== frame.step
+          ) {
+            throw new ModernJournalDesyncError(
+              "DSH v0.1.5 Assistant baseline changed attempt identity",
+            );
+          }
+          previous.nextIndex = 0;
+          this.#assistantRebaseline = false;
+          return;
+        }
+        if (previous && !previous.ended && !this.#assistantRebaseline && frame.revision !== 1) {
+          throw new ModernJournalDesyncError("DSH v0.1.5 Assistant attempts overlap");
+        }
+        if (frame.startedAfterSeq > this.#events.length - 1) {
+          throw new ModernJournalDesyncError(
+            "DSH v0.1.5 Assistant attempt starts after the durable cursor",
+          );
+        }
+        this.#discardAssistantAttempt();
+        this.#assistantRebaseline = false;
+        let settlement: ModernJournalEvent | undefined;
+        for (let index = frame.startedAfterSeq + 1; index < this.#events.length; index += 1) {
+          const event = this.#events[index];
+          if (
+            event &&
+            event.seq > frame.startedAfterSeq &&
+            isRecord(event.data) &&
+            event.data.turn === frame.turn &&
+            event.data.step === frame.step &&
+            (event.type === "assistant/attempt" ||
+              (event.type === "assistant/message" && event.surfaceOp === "append"))
+          ) {
+            settlement = event;
+            break;
+          }
+        }
+        this.#assistantAttempt = {
+          attemptId: frame.attemptId,
+          startedAfterSeq: frame.startedAfterSeq,
+          turn: frame.turn,
+          step: frame.step,
+          chunks: [],
+          nextIndex: 0,
+          projectedChunks: 0,
+          retainedBytes: 0,
+          ended: false,
+          projected: settlement !== undefined,
+          ...(settlement
+            ? {
+                settlement: {
+                  eventType: settlement.type as "assistant/message" | "assistant/attempt",
+                  seq: settlement.seq,
+                },
+              }
+            : {}),
+        };
+        const buffer = this.#buffer;
+        if (buffer?.nativeTurn === frame.turn && buffer.sawUserMessage) {
+          buffer.reachedCorrelationBoundary = true;
+          this.#activateBufferedAutonomous();
+        }
+        return;
+      }
+      case "chunk": {
+        const attempt = this.#assistantAttempt;
+        if (!attempt || attempt.ended || attempt.attemptId !== frame.attemptId) return;
+        if (frame.index !== attempt.nextIndex) {
+          throw new ModernJournalDesyncError(
+            "DSH v0.1.5 Assistant stream is not attempt-contiguous",
+          );
+        }
+        this.#profile.validateChunk(frame.chunk);
+        const replayed = attempt.chunks[frame.index];
+        if (replayed) {
+          if (replayed.time !== frame.time || !isDeepStrictEqual(replayed.chunk, frame.chunk)) {
+            throw new ModernJournalDesyncError(
+              "DSH v0.1.5 Assistant baseline conflicts with streamed chunks",
+            );
+          }
+          attempt.nextIndex += 1;
+          return;
+        }
+        const bytes = Buffer.byteLength(JSON.stringify(frame), "utf8");
+        if (bytes > this.#maxBufferedLiveBytes - attempt.retainedBytes) {
+          throw new ModernJournalError(
+            "limitExceeded",
+            "DSH v0.1.5 Assistant attempt exceeded maxBufferedLiveBytes",
+          );
+        }
+        attempt.retainedBytes += bytes;
+        attempt.chunks.push(frame);
+        attempt.nextIndex += 1;
+        this.#projectAssistantLiveChunks();
+        return;
+      }
+      case "end": {
+        const attempt = this.#assistantAttempt;
+        if (!attempt || attempt.attemptId !== frame.attemptId || attempt.ended) return;
+        if (frame.index !== attempt.nextIndex || frame.index !== attempt.chunks.length) {
+          throw new ModernJournalDesyncError(
+            "DSH v0.1.5 Assistant stream ended outside its attempt",
+          );
+        }
+        if (frame.outcome.kind === "abandoned") {
+          if (attempt.settlement) {
+            throw new ModernJournalDesyncError(
+              "DSH v0.1.5 abandoned Assistant attempt has a durable settlement",
+            );
+          }
+          this.#discardAssistantAttempt();
+          return;
+        }
+        if (
+          !attempt.settlement ||
+          attempt.settlement.eventType !== frame.outcome.eventType ||
+          attempt.settlement.seq !== frame.outcome.seq
+        ) {
+          if (this.#matchesDurableAssistantSettlement(attempt, frame.outcome)) {
+            this.#assistantAttempt = undefined;
+            return;
+          }
+          throw new ModernJournalDesyncError(
+            "DSH v0.1.5 Assistant settlement does not match its stream end",
+          );
+        }
+        attempt.ended = true;
+        if (attempt.projected) this.#assistantAttempt = undefined;
+      }
+    }
+  }
+
+  #discardAssistantAttempt(): void {
+    const attempt = this.#assistantAttempt;
+    const active = this.#active;
+    if (attempt && !attempt.projected && active?.nativeTurn === attempt.turn && active.agent) {
+      this.#cancelAgentItem(active);
+    }
+    this.#assistantAttempt = undefined;
+  }
+
+  #cancelAgentItem(active: ActiveHostTurn): void {
+    const agent = active.agent;
+    if (!agent) return;
+    agent.text += CANCELLED_ASSISTANT_ATTEMPT_SUFFIX;
+    agent.item = { ...agent.item, text: agent.text };
+    this.#emit({
+      type: "item.updated",
+      turnId: active.turnId,
+      itemId: agent.item.itemId,
+      update: { type: "text.append", text: CANCELLED_ASSISTANT_ATTEMPT_SUFFIX },
+    });
+    delete active.agent;
+    this.#completeItem(active, agent.item, { status: "cancelled" });
+  }
+
+  #projectAssistantLiveChunks(): void {
+    const attempt = this.#assistantAttempt;
+    const active = this.#active;
+    if (
+      !attempt ||
+      attempt.projected ||
+      !active ||
+      active.terminal ||
+      active.nativeTurn !== attempt.turn
+    )
+      return;
+    while (attempt.projectedChunks < attempt.chunks.length) {
+      const frame = attempt.chunks[attempt.projectedChunks++];
+      if (frame)
+        this.#projectAssistantChunk(active, frame.chunk, attempt.step, false, attempt.attemptId);
+    }
+  }
+
+  #matchesDurableAssistantSettlement(
+    attempt: BufferedAssistantAttempt,
+    outcome: Extract<
+      Extract<ModernJournalAssistantStream["frame"], { type: "end" }>["outcome"],
+      { kind: "committed" }
+    >,
+  ): boolean {
+    const event = this.#events[outcome.seq];
+    return Boolean(
+      event?.seq === outcome.seq &&
+      event.type === outcome.eventType &&
+      isRecord(event.data) &&
+      event.data.turn === attempt.turn &&
+      event.data.step === attempt.step &&
+      event.seq > attempt.startedAfterSeq &&
+      (event.type === "assistant/attempt" || event.surfaceOp === "append"),
+    );
+  }
+
+  #observeAssistantSettlement(event: ModernJournalEvent): void {
+    const attempt = this.#assistantAttempt;
+    if (
+      !attempt ||
+      !isRecord(event.data) ||
+      (event.type !== "assistant/attempt" &&
+        (event.type !== "assistant/message" || event.surfaceOp !== "append")) ||
+      event.data.turn !== attempt.turn ||
+      event.data.step !== attempt.step ||
+      event.seq <= attempt.startedAfterSeq
+    ) {
+      return;
+    }
+    if (attempt.settlement) {
+      throw new ModernHistoryError(
+        "protocolError",
+        "DSH v0.1.5 Assistant attempt has multiple durable settlements",
+      );
+    }
+    attempt.settlement = { eventType: event.type, seq: event.seq };
+  }
+
+  #projectAssistantSettlement(
+    active: ActiveHostTurn,
+    event: ModernJournalEvent,
+    initialReplay: boolean,
+  ): void {
+    const attempt = this.#assistantAttempt;
+    if (!attempt || attempt.settlement?.seq !== event.seq || attempt.projected) return;
+    if (event.type === "assistant/message") {
+      if (!initialReplay) this.#projectAssistantLiveChunks();
+    } else {
+      this.#cancelAgentItem(active);
+    }
+    attempt.projected = true;
+    if (attempt.ended) this.#assistantAttempt = undefined;
   }
 
   async #replaceJournal(previous: ModernJournal): Promise<void> {
@@ -1385,6 +1676,7 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
     let adopted = false;
     try {
       const options: ModernJournalOptions = {
+        profile: this.#profile,
         maxEvents: this.#maxEvents,
         maxHistoryBytes: this.#maxHistoryBytes,
         maxBufferedLiveBytes: this.#maxBufferedLiveBytes,
@@ -1421,7 +1713,7 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
         }
       }
 
-      const validator = new ModernEventValidator(this.#maxEvents);
+      const validator = new ModernEventValidator(this.#maxEvents, this.#profile);
       for (const event of replacement.events) validator.accept(event);
       journalHistoryBytes(replacement.events, this.#maxHistoryBytes);
       const suffix = replacement.events.slice(this.#events.length);
@@ -1432,8 +1724,11 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
       if (this.#closed) return;
       for (const event of suffix) {
         if (this.#closed) return;
+        // Recovery omits stream end frames; a durable settlement retires the old attempt.
+        if (this.#assistantAttempt?.settlement) this.#discardAssistantAttempt();
         this.#appendJournalEvent(event);
       }
+      this.#assistantRebaseline = true;
     } finally {
       const closing: Promise<void>[] = [previous.close()];
       if (replacement && !adopted) closing.push(replacement.close());
@@ -1556,7 +1851,14 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
 
   #scheduleBoundTurn(pending: PendingPrompt): void {
     const buffer = pending.buffer;
-    if (!buffer || !pending.admitted || pending.publishScheduled || buffer.active || this.#closed) {
+    if (
+      !buffer ||
+      !pending.admitted ||
+      pending.publishScheduled ||
+      buffer.active ||
+      this.#closed ||
+      this.#closing
+    ) {
       return;
     }
     pending.publishScheduled = true;
@@ -1567,6 +1869,7 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
         pending.publishScheduled = false;
         if (
           !this.#closed &&
+          !this.#closing &&
           pending.admitted &&
           pending.buffer === buffer &&
           this.#buffer === buffer &&
@@ -1589,7 +1892,13 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
       delete pending.buffer;
       if (buffer.reachedCorrelationBoundary || buffer.events.at(-1)?.type === "turn/end") {
         queueMicrotask(() => {
-          if (!this.#closed && this.#buffer === buffer && !buffer.active && !buffer.pending) {
+          if (
+            !this.#closed &&
+            !this.#closing &&
+            this.#buffer === buffer &&
+            !buffer.active &&
+            !buffer.pending
+          ) {
             this.#materializeAutonomous(buffer, false);
           }
         });
@@ -1615,6 +1924,7 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
     const buffer = this.#buffer;
     if (
       this.#closed ||
+      this.#closing ||
       !buffer ||
       buffer.active ||
       buffer.pending ||
@@ -1629,6 +1939,7 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
   }
 
   #materializeAutonomous(buffer: NativeTurnBuffer, initialReplay: boolean): void {
+    if (this.#closed || this.#closing) return;
     const turnId = hostTurnIdSchema.parse(this.#randomUUID());
     this.#emit({
       type: "turn.autonomous.started",
@@ -1669,6 +1980,7 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
       buffer.replayed += 1;
       this.#projectLiveEvent(buffer, event, initialReplay);
     }
+    this.#projectAssistantLiveChunks();
   }
 
   #projectLiveEvent(
@@ -1690,19 +2002,18 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
         return;
       case "assistant/chunk":
         if (!isRecord(data.chunk)) return;
-        if (data.chunk.type === "text-delta") {
-          this.#appendAgent(active, data.chunk.text as string, data.step as number);
-        } else if (data.chunk.type === "reasoning-delta") {
-          // DSH may revise this provisional text in block-end; assistant/message is authoritative.
-        } else if (data.chunk.type === "usage" && !initialReplay) {
-          this.#publishUsageChanges(active.turnId);
-        }
+        this.#projectAssistantChunk(active, data.chunk, data.step as number, initialReplay);
         return;
       case "assistant/message":
+        this.#projectAssistantSettlement(active, event, initialReplay);
         if (event.surfaceOp === "append") this.#completeAssistant(active, data);
         if (event.surfaceOp === "append" && data.usage !== undefined && !initialReplay) {
           this.#publishUsageChanges(active.turnId);
         }
+        return;
+      case "assistant/attempt":
+        this.#projectAssistantSettlement(active, event, initialReplay);
+        if (!initialReplay) this.#publishUsageChanges(active.turnId);
         return;
       case "tool/call":
         this.#startTool(active, data, event.seq);
@@ -1718,12 +2029,31 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
     }
   }
 
-  #appendAgent(active: ActiveHostTurn, text: string, step: number): void {
+  #projectAssistantChunk(
+    active: ActiveHostTurn,
+    chunk: Readonly<Record<string, unknown>>,
+    step: number,
+    initialReplay: boolean,
+    attemptId?: string,
+  ): void {
+    if (chunk.type === "text-delta") {
+      this.#appendAgent(active, chunk.text as string, step, attemptId);
+    } else if (chunk.type === "reasoning-delta") {
+      // DSH may revise this provisional text in block-end; assistant/message is authoritative.
+    } else if (chunk.type === "usage" && !initialReplay) {
+      this.#publishUsageChanges(active.turnId);
+    }
+  }
+
+  #appendAgent(active: ActiveHostTurn, text: string, step: number, attemptId?: string): void {
     if (!text) return;
     if (!active.agent) {
       const item: HostAgentMessageItem = {
         type: "agentMessage",
-        itemId: modernItemId(this.#sessionId, `turn:${active.nativeTurn}:step:${step}:assistant`),
+        itemId: modernItemId(
+          this.#sessionId,
+          `turn:${active.nativeTurn}:step:${step}:${attemptId ? `attempt:${attemptId}:` : ""}assistant`,
+        ),
         text: "",
       };
       active.agent = { item, text: "" };
@@ -1770,6 +2100,9 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
     const step = data.step as number;
     const reasoning = contentText(message.content, "reasoning");
     const text = contentText(message.content, "text");
+    if (this.#profile.assistantStream && active.agent && !text.startsWith(active.agent.text)) {
+      this.#cancelAgentItem(active);
+    }
     this.#assertAgentPrefix(active, text);
     this.#completeReasoning(active, reasoning, step);
     this.#completeAgentPrefix(active, text, step);
@@ -1882,11 +2215,13 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
     if (active.terminal) return;
     const projected = turnOutcome(reason);
     const itemOutcome = toItemOutcome(projected);
+    this.#discardAssistantAttempt();
     this.#closeActiveInteractions(active);
     this.#completeOpenItems(active, itemOutcome);
     active.terminal = true;
     if (buffer.pending) buffer.pending.terminal = true;
-    const checkpoint = modernCheckpointRef(this.harnessId, this.#sessionId, seq);
+    this.#nativeCloseTerminal?.();
+    const checkpoint = modernCheckpointRef(this.harnessId, this.#sessionId, seq, this.#profile);
     this.#emit({
       type: "turn.completed",
       turnId: active.turnId,
@@ -1937,6 +2272,7 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
       harnessId: this.harnessId,
       sessionId: this.#sessionId,
       events: this.#events,
+      profile: this.#profile,
       ...(this.#fallbackModel ? { fallbackModel: this.#fallbackModel } : {}),
       ...(this.#fallbackThinkingOptionId
         ? { fallbackThinkingOptionId: this.#fallbackThinkingOptionId }
@@ -1950,6 +2286,13 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
     if (this.#closed) return;
     const failure = sanitizedHarnessError(error);
     const acceptedPending = this.#acceptedPending();
+    this.#faultMayHaveNativeWork = Boolean(
+      (this.#active && !this.#active.terminal) ||
+      this.#pendingByRequestId.size > 0 ||
+      this.#buffer ||
+      this.#commandAdmission ||
+      this.#activeCommand,
+    );
     this.#faulted = failure;
     this.#closed = true;
     this.#journalLifetime.abort(new Error("DeepSeek Harness Session faulted"));
@@ -2028,6 +2371,60 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
   }
 
   async #performClose(): Promise<void> {
+    this.#closing = true;
+    let stopFailure: unknown;
+    const activeAtClose = this.#active;
+    const pendingAtClose = new Set(this.#pendingByRequestId.values());
+    if (this.#buffer?.pending) pendingAtClose.add(this.#buffer.pending);
+    const correlatedPending =
+      activeAtClose && this.#buffer?.active === activeAtClose ? this.#buffer.pending : undefined;
+    const uncorrelatedExecution =
+      [...pendingAtClose].some((pending) => !pending.terminal && pending !== correlatedPending) ||
+      (!activeAtClose && this.#buffer !== undefined) ||
+      this.#commandAdmission !== undefined ||
+      this.#activeCommand !== undefined;
+    if (!this.#closed && ((activeAtClose && !activeAtClose.terminal) || uncorrelatedExecution)) {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const terminal = new Promise<void>((resolve) => {
+        this.#nativeCloseTerminal = () => {
+          if (activeAtClose?.terminal) resolve();
+        };
+      });
+      try {
+        await Promise.race([
+          (async () => {
+            const result = await (activeAtClose?.cancelPromise ??
+              this.#requestNativeCancel(activeAtClose));
+            if (!result.ok) throw new Error(result.error.message);
+            if (uncorrelatedExecution) {
+              throw new Error(
+                "DeepSeek Harness cannot confirm stop before the native Turn is correlated",
+              );
+            }
+            // A cancel receipt only confirms admission. Keep consuming native history until
+            // turn/end establishes that execution stopped before detaching the Session.
+            await terminal;
+          })(),
+          new Promise<never>((_, reject) => {
+            timer = setTimeout(
+              () =>
+                reject(new Error("DeepSeek Harness did not confirm native Turn stop before close")),
+              NATIVE_CLOSE_TIMEOUT_MS,
+            );
+          }),
+        ]);
+      } catch (error) {
+        stopFailure = error;
+      } finally {
+        if (timer) clearTimeout(timer);
+        this.#nativeCloseTerminal = undefined;
+      }
+    }
+    if (this.#faulted) {
+      // A fault can close admission while this Promise already owns cleanup.
+      await this.#performFault(this.#faulted, this.#acceptedPending(pendingAtClose));
+      throw stopFailure ?? new Error(this.#faulted.message);
+    }
     if (!this.#closed) {
       const acceptedPending = this.#acceptedPending();
       this.#closed = true;
@@ -2081,7 +2478,13 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
       this.#channel.end();
     }
     await Promise.allSettled([this.#journal.close(), this.#pumpPromise]);
+    try {
+      await this.#flushSession?.();
+    } catch (error) {
+      stopFailure ??= error;
+    }
     this.#notifyClosed();
+    if (stopFailure) throw stopFailure;
   }
 
   #abortOperations(): void {
@@ -2096,8 +2499,7 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
     for (const unsubscribe of this.#removeControlSubscriptions.splice(0)) unsubscribe();
   }
 
-  #acceptedPending(): PendingPrompt[] {
-    const values = new Set(this.#pendingByRequestId.values());
+  #acceptedPending(values = new Set(this.#pendingByRequestId.values())): PendingPrompt[] {
     if (this.#buffer?.pending) values.add(this.#buffer.pending);
     return [...values].filter(
       (pending) =>
@@ -2227,8 +2629,11 @@ function journalFailure(error: unknown): HarnessError {
   return protocolError(error, "DeepSeek Harness journal failed");
 }
 
-function isUnavailableJournalFailure(error: unknown): boolean {
-  return error instanceof ModernJournalError && error.code === "unavailable";
+function isRecoverableJournalFailure(error: unknown): boolean {
+  return (
+    error instanceof ModernJournalDesyncError ||
+    (error instanceof ModernJournalError && error.code === "unavailable")
+  );
 }
 
 function journalHistoryBytes(events: readonly ModernJournalEvent[], maximum: number): number {

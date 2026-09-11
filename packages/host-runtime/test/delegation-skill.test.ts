@@ -71,14 +71,21 @@ describe("delegation Skill installation", () => {
     await expect(readFile(agents, "utf8")).resolves.toBe("user content\n");
   });
 
+  it("uses existing Threads directly and keeps viewing requests read-only", () => {
+    expect(CODEXHOST_DELEGATION_SKILL).toContain("For a new delegation, create an independent");
+    expect(CODEXHOST_DELEGATION_SKILL).toContain("operate on that Thread\ndirectly");
+    expect(CODEXHOST_DELEGATION_SKILL).toContain("is ambiguous, ask the user to identify it");
+    expect(CODEXHOST_DELEGATION_SKILL).toContain("session read-only");
+  });
+
   it("routes natural agent requests and points execution to the authoritative help", () => {
-    expect(CODEXHOST_DELEGATION_SKILL).toContain("version: 4");
-    expect(CODEXHOST_DELEGATION_SKILL).toContain("Claude Code, Pi, Codex/OpenAI, OMP, Grok");
+    expect(CODEXHOST_DELEGATION_SKILL).toContain("version: 7");
+    expect(CODEXHOST_DELEGATION_SKILL).toContain("@agent) to independently perform a task");
+    expect(CODEXHOST_DELEGATION_SKILL).toContain("session's content, progress, or results");
+    expect(CODEXHOST_DELEGATION_SKILL).toContain("Not for recapping the current conversation");
     expect(CODEXHOST_DELEGATION_SKILL).toContain("codexhost delegate --help");
-    expect(CODEXHOST_DELEGATION_SKILL).toContain("sole authoritative source");
     expect(CODEXHOST_DELEGATION_SKILL).toContain("send a follow-up message");
     expect(CODEXHOST_DELEGATION_SKILL).toContain("cancel its current Turn");
-    expect(CODEXHOST_DELEGATION_SKILL).toContain("target keeps its default");
     expect(CODEXHOST_DELEGATION_SKILL).not.toContain("--timeout-ms");
   });
 });

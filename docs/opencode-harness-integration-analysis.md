@@ -2,6 +2,8 @@
 
 > 调研基线：OpenCode `v1.18.25`（2026-08-28 发布）。本文只把 OpenCode 官方仓库、官方文档、官方 Release、官方 npm 包和本机实际运行结果作为能力证据。
 
+> 下文 DeepSeek Host API 对比保留调研时的历史基线；当前 DSH Legacy 已移除，仅支持 `0.1.2-rc.1` / `0.1.5-rc.1` 托管 Web，现行范围见[连接流程](harness-executable-discovery.md#deepseek-harness-的特殊性)和[消息修订与恢复](dsh-edit-recovery.md)。
+
 本文同时记录接入设计、官方能力证据和 `codex/opencode-harness` 分支的第一版实现。下文单独区分“官方接口存在”“当前已实现”“当前已对外声明”和“仍需真实 Gate”，避免把类型或 endpoint 的存在误报成平台能力。
 
 ## 结论
@@ -53,7 +55,7 @@ OpenCodeAdapter
 - Renderer 的 Agent picker、Model/Thinking 草稿状态、Thread ownership 恢复和 OpenCode 图标；
 - Text/Reasoning streaming、Tool lifecycle、Question、Approval once/deny、Cancel、Usage、完整 Diff、Native command、Compact、Model 与 variant；
 - transcript Snapshot、精确 Checkpoint Fork、SSE 重连后的 status/messages/pending interaction 对账；
-- Revert/unrevert、失败补偿和 `rollbackLastTurn` capability；已用 loopback 假模型驱动 OpenCode `1.18.4` 的真实 `edit` Tool，验证 Git-backed Diff、精确 Fork 和工作树恢复。
+- `rollbackLastTurn` 使用源保留的原生 Fork；编辑消息保留当前工作树文件，验证精确保留历史、配置与源未变。原生 Revert API 仍存在，但不用于消息编辑。
 
 当前明确不对外声明：
 
@@ -77,7 +79,7 @@ OpenCodeAdapter
 | ESLint + package boundary audit | 通过 |
 | Release Host Bundle 审计与真实 build | 通过 |
 | 隔离 OpenCode `1.18.25` real smoke | inspect、create、read、command list、close、resume 通过；没有调用付费/外部 Model |
-| Git-backed real Gate | loopback 假模型驱动原生 `edit` Tool；stream、Tool、Diff、精确 Fork、rollback 文件恢复通过 |
+| Git-backed real Gate | loopback 假模型驱动原生 `edit` Tool；stream、Tool、Diff、精确 Fork、源保留 rollback 和冷恢复；当前验证见下文编辑恢复说明 |
 | 进程清理 | real smoke 结束后没有残留受管 `opencode serve` 进程 |
 
 真实 smoke 还发现并修正了 macOS `/var` 与 `/private/var` realpath 别名导致的 Resume/Fork cwd 误拒绝。尚未执行 Desktop 启动，也没有覆盖本机 OpenCode `1.18.4`。
@@ -313,7 +315,7 @@ OpenCode `Session.fork({ messageID })` 会复制 **目标 message 之前**的消
 
 `forkAcrossCwd` 第一版应声明 `false`。OpenCode request 可以带另一个 directory，但复制的旧 assistant message 仍保存原 path，而且 transcript Fork 不复制文件系统；只有跨 cwd 的历史、工具路径和文件安全 Gate 全部通过后才能开启。
 
-`rollbackLastTurn` 在最后一个 User Message 边界调用 `session.revert()`：它在原 Native Session 上设置持久 revert boundary，并在 Git-backed workspace 通过 Snapshot 恢复该 Turn 的文件修改。Adapter 的 Snapshot 会立即隐藏被回滚 Turn；下一次 prompt/compact 时 OpenCode cleanup 会删除被放弃的 Message/Part。若 Session attach 或后续校验失败，Adapter 调用 `unrevert()` 恢复来源 Session 和工作树。
+`rollbackLastTurn` 在最后一个 User Message 的排他边界调用原生 `session.fork()`，创建独立 Native Session。当前文件不回滚，源历史不修改。派生前后校验源历史及配置，校验候选的完整保留内容和文件 Diff；空历史候选保存 Model/Thinking/Permission Mode，可在退出后恢复。失败只清理已确认独立创建的候选，不调用 `unrevert()`。详见 [OpenCode 消息编辑恢复](opencode-edit-recovery.md)。
 
 ### Diff、Usage 与 Subagent
 
@@ -528,7 +530,7 @@ OpenCode Console 还存在多 account/org 的隐藏实验功能，如 `opencode 
 | Fork | 支持但标明语义 | exact transcript checkpoint fork；不是文件系统 Fork |
 | Fork across cwd | 首版不支持 | 新旧 message path 和文件系统不随 transcript 一起 Fork |
 | Compact | 支持 | `session.summarize()` |
-| Revert/unrevert | 支持 | 原 Session 原生回滚 + Git-backed Snapshot/Diff/恢复 Gate |
+| 消息编辑 rollback | 支持 | 原生 Fork 派生独立历史；保留源会话与当前文件 |
 | Model selection | 支持 | provider/model API；凭据留在 OpenCode |
 | Permission Mode | 支持 | `default` / `ask` / `allow`；Session 原生 PermissionRuleset |
 | Thinking/effort | 按 Model 探测 | 只映射已验证的 variant |

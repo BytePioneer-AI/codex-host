@@ -27,6 +27,7 @@
   <a href="https://github.com/can1357/oh-my-pi"><img alt="Oh My Pi" src="docs/imgs/badge-omp-v5.svg" /></a>
   <a href="https://www.codebuddy.ai/"><img alt="CodeBuddy" src="https://img.shields.io/badge/CodeBuddy-4A89FF" /></a>
   <a href="https://antigravity.google/product/antigravity-cli"><img alt="AGY" src="docs/imgs/badge-agy.svg" /></a>
+  <a href="https://kiro.dev/docs/cli/"><img alt="Kiro CLI" src="docs/imgs/badge-kiro.svg" /></a>
 </p>
 
 <p align="center">
@@ -94,6 +95,10 @@ xattr -dr com.apple.quarantine /Applications/codexhost.app
 
 </details>
 
+### 外观设置
+
+在 `设置 → 外观` 中可以开启 **换行显示思考文本**，让思考块中的长行自动换行。该选项默认关闭，选择保存在本机并立即生效，普通 Shell 输出不受影响。
+
 ### 交互展示
 
 <table>
@@ -107,12 +112,22 @@ xattr -dr com.apple.quarantine /Applications/codexhost.app
   </tr>
   <tr>
     <td width="50%" valign="top">
-      <p><strong>Agent 与 Model 选择</strong></p>
-      <img src="docs/imgs/agent-harness-selector.png" alt="提交前选择真正执行任务的 Agent 与 Model，Codex、Pi、Claude Code、OpenCode、DeepSeek Harness、Grok 和 Oh My Pi 均可选择">
+      <p><strong>Agent、账号与 Model 选择</strong></p>
+      <div align="center">
+        <img width="70%" src="docs/imgs/harness-account-selector.png" alt="在输入框中选择 Codex 账号，或切换到 Pi、Claude Code、DeepSeek Harness、OpenCode、Grok、Oh My Pi 和 Antigravity CLI">
+      </div>
     </td>
     <td width="50%" valign="top">
       <p><strong>Usage 与费用信息</strong></p>
       <img src="docs/imgs/usage-panel.png" alt="Usage 面板展示上下文、缓存命中与费用估算">
+    </td>
+  </tr>
+  <tr>
+    <td colspan="2" valign="top">
+      <p><strong>多账号与额度管理</strong></p>
+      <div align="center">
+        <img width="90%" src="docs/imgs/account-management.png" alt="统一管理多个 Codex 账号，并查看 Codex、Claude Code 和 Grok 账号的剩余额度与重置时间">
+      </div>
     </td>
   </tr>
   <tr>
@@ -244,6 +259,8 @@ CodexHost 尽量不走这条路：
 </table>
 
 ## 开发
+
+提交 Issue 或 PR 前可阅读[贡献说明](CONTRIBUTING.md)；分类标签、状态提示和发布前校验见[仓库维护自动化](docs/repository-maintenance.md)。
 
 环境要求：官方 Codex Desktop、Node.js 22.19+ 或 24、Rust。
 

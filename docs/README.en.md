@@ -27,6 +27,7 @@ But **Codex** is not the only capable **Agent Harness**. Some people prefer **Cl
   <a href="https://github.com/can1357/oh-my-pi"><img alt="Oh My Pi" src="imgs/badge-omp-v5.svg" /></a>
   <a href="https://www.codebuddy.ai/"><img alt="CodeBuddy" src="https://img.shields.io/badge/CodeBuddy-4A89FF" /></a>
   <a href="https://antigravity.google/product/antigravity-cli"><img alt="AGY" src="imgs/badge-agy.svg" /></a>
+  <a href="https://kiro.dev/docs/cli/"><img alt="Kiro CLI" src="imgs/badge-kiro.svg" /></a>
 </p>
 
 <p align="center">
@@ -93,6 +94,10 @@ If you use a portable build, set `CODEXHOST_INSTALL_ROOT` to the extracted Codex
 Fully quit Codex Desktop, open a new terminal, and start codexhost.
 
 </details>
+
+### Appearance settings
+
+In `Settings → Appearance`, enable **Wrap thinking text** to wrap long lines in the persisted thinking transcript. It is off by default, saved locally, and takes effect immediately. Ordinary shell output is unchanged.
 
 ### Interaction examples
 

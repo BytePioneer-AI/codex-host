@@ -247,6 +247,171 @@ function harness(
 }
 
 describe("DeepSeek Harness Modern Web Remote connection", () => {
+  it("flushes a Session through authenticated HEAD without reading or downloading its archive", async () => {
+    const cancelled = vi.fn();
+    const response = new Response(new ReadableStream({ cancel: cancelled }), {
+      headers: { "content-type": "application/zip", "content-length": "999999999999" },
+    });
+    const read = vi.spyOn(response, "arrayBuffer");
+    const fetch = vi.fn<ModernRemoteConnectionDependencies["fetch"]>((_url, init) =>
+      Promise.resolve(init.method === "GET" ? authResponse() : response),
+    );
+    const setup = harness(fetch);
+    const sessionId = "session & #/?=中文";
+    await expect(setup.connection.flushSession(sessionId)).resolves.toBeUndefined();
+    expect(fetch).toHaveBeenCalledTimes(2);
+    const request = fetch.mock.calls[1];
+    if (!request) throw new Error("Expected an authenticated HEAD request");
+    const [url, init] = request;
+    expect(url.origin).toBe(`http://${AUTHORITY}`);
+    expect(url.pathname).toBe("/api/session.export");
+    expect([...url.searchParams]).toEqual([
+      ["sessionId", sessionId],
+      ["includeDescendants", "false"],
+    ]);
+    expect(init).toMatchObject({
+      method: "HEAD",
+      redirect: "manual",
+      headers: { cookie: COOKIE },
+      signal: expect.any(AbortSignal),
+    });
+    expect(init.body).toBeUndefined();
+    expect(url.href).not.toContain(TOKEN);
+    expect(cancelled).toHaveBeenCalledOnce();
+    expect(read).not.toHaveBeenCalled();
+    await setup.connection.close();
+  });
+
+  it.each([
+    [401, "application/zip", "authenticationRequired"],
+    [403, "application/zip", "authenticationRequired"],
+    [302, "application/zip", "protocolError"],
+    [307, "application/zip", "protocolError"],
+    [404, "application/zip", "unavailable"],
+    [500, "application/zip", "unavailable"],
+    [201, "application/zip", "protocolError"],
+    [204, "application/zip", "protocolError"],
+    [200, "application/json", "protocolError"],
+    [200, "text/plain", "protocolError"],
+    [200, null, "protocolError"],
+  ] as const)(
+    "rejects flush HTTP %s / %s as %s without reading its response",
+    async (status, contentType, code) => {
+      const cancelled = vi.fn();
+      const response = new Response(
+        status === 204 ? null : new ReadableStream({ cancel: cancelled }),
+        {
+          status,
+          headers: {
+            ...(contentType ? { "content-type": contentType } : {}),
+            location: `https://untrusted.invalid/?token=${TOKEN}`,
+          },
+        },
+      );
+      const fetch = vi.fn<ModernRemoteConnectionDependencies["fetch"]>((_url, init) =>
+        Promise.resolve(init.method === "GET" ? authResponse() : response),
+      );
+      const setup = harness(fetch);
+      await expect(setup.connection.flushSession("native")).rejects.toMatchObject({
+        code,
+        message: expect.not.stringContaining(TOKEN),
+      });
+      expect(fetch).toHaveBeenCalledTimes(2);
+      expect(fetch.mock.calls[1]?.[1].redirect).toBe("manual");
+      if (status !== 204) expect(cancelled).toHaveBeenCalledOnce();
+      await setup.connection.close();
+    },
+  );
+
+  it.each(["", "   ", "native\0session"])(
+    "rejects invalid flush Session id %j before starting DSH",
+    async (sessionId) => {
+      const setup = harness(vi.fn());
+      await expect(setup.connection.flushSession(sessionId)).rejects.toMatchObject({
+        code: "protocolError",
+      });
+      expect(setup.spawn).not.toHaveBeenCalled();
+      await setup.connection.close();
+    },
+  );
+
+  it("does not start DSH for a pre-cancelled Session flush", async () => {
+    const setup = harness(vi.fn());
+    await expect(
+      setup.connection.flushSession("native", AbortSignal.abort()),
+    ).rejects.toMatchObject({ code: "cancelled" });
+    expect(setup.spawn).not.toHaveBeenCalled();
+    await setup.connection.close();
+  });
+
+  it("does not issue HEAD when the caller cancels during startup", async () => {
+    const caller = new AbortController();
+    const fetch = vi.fn<ModernRemoteConnectionDependencies["fetch"]>(() => {
+      caller.abort();
+      return Promise.resolve(authResponse());
+    });
+    const setup = harness(fetch);
+    await expect(setup.connection.flushSession("native", caller.signal)).rejects.toMatchObject({
+      code: "cancelled",
+    });
+    expect(fetch).toHaveBeenCalledOnce();
+    await setup.connection.close();
+  });
+
+  it("redacts credentials from a flush network failure", async () => {
+    const setup = harness(
+      vi.fn((_url, init) =>
+        init.method === "GET"
+          ? Promise.resolve(authResponse())
+          : Promise.reject(new Error(`request failed with token=${TOKEN} Cookie: ${COOKIE}`)),
+      ),
+    );
+    const failure = await setup.connection.flushSession("native").catch((error: unknown) => error);
+    expect(failure).toMatchObject({ code: "unavailable" });
+    expect((failure as Error).message).not.toContain(TOKEN);
+    expect((failure as Error).message).not.toContain(COOKIE);
+    await setup.connection.close();
+  });
+
+  it.each(["caller", "close", "process", "timeout"] as const)(
+    "bounds an in-flight flush by %s",
+    async (cause) => {
+      const caller = new AbortController();
+      let enter!: () => void;
+      const entered = new Promise<void>((resolve) => {
+        enter = resolve;
+      });
+      const setup = harness(
+        vi.fn((_url, init) => {
+          if (init.method === "GET") return Promise.resolve(authResponse());
+          enter();
+          return new Promise<Response>((_resolve, reject) => {
+            const signal = init.signal as AbortSignal;
+            const abort = () => reject(signal.reason);
+            signal.addEventListener("abort", abort, { once: true });
+            if (signal.aborted) abort();
+          });
+        }),
+        { connectionOptions: { unaryTimeoutMs: cause === "timeout" ? 5 : 100 } },
+      );
+      const pending = setup.connection.flushSession("native", caller.signal);
+      const rejected = expect(pending).rejects.toMatchObject({
+        code:
+          cause === "caller" ? "cancelled" : cause === "process" ? "processExited" : "unavailable",
+        ...(cause === "timeout" ? { message: expect.stringContaining("timed out") } : {}),
+      });
+      await entered;
+      if (cause === "caller") caller.abort();
+      if (cause === "close") await setup.connection.close();
+      if (cause === "process") {
+        Object.assign(setup.child, { exitCode: 1 });
+        setup.child.emit("exit", 1, null);
+      }
+      await rejected;
+      await setup.connection.close();
+    },
+  );
+
   it("starts managed Web, exchanges the token, and sends an authenticated unary envelope", async () => {
     const requests: Array<{ url: string; init: RequestInit }> = [];
     const fetch = vi.fn<ModernRemoteConnectionDependencies["fetch"]>((url, init) => {

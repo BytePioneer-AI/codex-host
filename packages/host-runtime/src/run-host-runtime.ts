@@ -1,10 +1,17 @@
 import { randomBytes } from "node:crypto";
 import path from "node:path";
+import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 
 import { UPDATE_RUNTIME_ENV } from "@codexhost/update-manager";
 
-import { AppServerHost, officialEnvironment } from "./app-server-host.js";
+import {
+  AppServerHost,
+  officialAccountEnvironment,
+  officialEnvironment,
+} from "./app-server-host.js";
+import type { CodexAccount } from "./account/account-repository.js";
+import { AccountOfficialListeners } from "./codex-runtime/account-official-listeners.js";
 import { DelegationControlRegistry } from "./delegation-control-registry.js";
 import { installedHarnessPluginOptions } from "./installed-harness-plugins.js";
 import { startDelegationControlServer } from "./delegation-control-server.js";
@@ -178,19 +185,16 @@ export async function runHostRuntime(input: {
         const officialPlan = createRemoteControlOfficialAppServerPlan(
           remoteControlPlan.officialArguments,
         );
-        const officialListener = createLoopbackOfficialAppServerListener({
-          stockCodexPath,
-          arguments: officialPlan.listenerArguments,
-          environment: officialEnvironment(delegationEnvironment),
-          diagnosticOutput: process.stderr,
-        });
-        let officialEndpoint: string | null = null;
-        const createOfficialConnection = () => {
-          if (!officialEndpoint) {
-            throw new Error("Shared official app-server endpoint is unavailable");
-          }
-          return createRemoteOfficialAppServerConnection(officialEndpoint);
-        };
+        const officialListeners = new AccountOfficialListeners((account) =>
+          createLoopbackOfficialAppServerListener({
+            stockCodexPath,
+            arguments: officialPlan.listenerArguments,
+            environment: officialAccountEnvironment(delegationEnvironment, account),
+            diagnosticOutput: process.stderr,
+          }),
+        );
+        const createOfficialConnection = async (account: CodexAccount) =>
+          createRemoteOfficialAppServerConnection(await officialListeners.endpoint(account));
         const mappingStore = createProductionExternalThreadStore(delegationEnvironment);
         await mappingStore.initialize();
         const host = new AppServerHost({
@@ -228,7 +232,11 @@ export async function runHostRuntime(input: {
         });
 
         try {
-          officialEndpoint = await officialListener.listen();
+          await officialListeners.endpoint({
+            codexHome: path.resolve(
+              delegationEnvironment.CODEX_HOME ?? path.join(homedir(), ".codex"),
+            ),
+          });
           await listener.listen();
           await publishRemoteControlAppServerDescriptor(remoteControlPlan);
           return await host.run();
@@ -237,7 +245,7 @@ export async function runHostRuntime(input: {
             await listener.close();
           } finally {
             try {
-              await officialListener.close();
+              await officialListeners.close();
             } finally {
               await mappingStore.close();
             }

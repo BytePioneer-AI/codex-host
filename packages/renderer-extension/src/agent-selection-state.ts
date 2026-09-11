@@ -14,6 +14,7 @@ export const KNOWN_RENDERER_AGENTS = [
   "omp",
   "codebuddy",
   "antigravity",
+  "kiro-cli",
 ] as const;
 export const DEFAULT_RENDERER_AGENTS = KNOWN_RENDERER_AGENTS;
 export type RendererAgent = (typeof KNOWN_RENDERER_AGENTS)[number];
@@ -41,6 +42,8 @@ export interface DraftComposerState {
   codebuddyModel?: HarnessModelRef;
   antigravityModel?: HarnessModelRef;
   antigravityThinkingOptionId?: HarnessThinkingOptionId;
+  kiroCliModel?: HarnessModelRef;
+  kiroCliThinkingOptionId?: HarnessThinkingOptionId;
   permissionModeByAgent?: Partial<Record<ExternalRendererAgent, HarnessPermissionModeId>>;
 }
 
@@ -209,6 +212,7 @@ export class DraftAgentController<Composer extends object> {
     if (agent === "omp" && model) state.ompModel = model;
     if (agent === "codebuddy" && model) state.codebuddyModel = model;
     if (agent === "antigravity" && model) state.antigravityModel = model;
+    if (agent === "kiro-cli" && model) state.kiroCliModel = model;
     if (agent === "pi" && thinkingOptionId) state.piThinkingOptionId = thinkingOptionId;
     else if (agent === "pi") delete state.piThinkingOptionId;
     if (agent === "claude-code" && thinkingOptionId) {
@@ -224,6 +228,9 @@ export class DraftAgentController<Composer extends object> {
     if (agent === "antigravity" && thinkingOptionId) {
       state.antigravityThinkingOptionId = thinkingOptionId;
     } else if (agent === "antigravity") delete state.antigravityThinkingOptionId;
+    if (agent === "kiro-cli" && thinkingOptionId) {
+      state.kiroCliThinkingOptionId = thinkingOptionId;
+    } else if (agent === "kiro-cli") delete state.kiroCliThinkingOptionId;
     if (agent !== "codex") {
       const permissionModeByAgent: NonNullable<DraftComposerState["permissionModeByAgent"]> = {};
       for (const candidate of [
@@ -235,6 +242,7 @@ export class DraftAgentController<Composer extends object> {
         "omp",
         "codebuddy",
         "antigravity",
+        "kiro-cli",
       ] as const) {
         const current = state.permissionModeByAgent?.[candidate];
         if (candidate !== agent && current) permissionModeByAgent[candidate] = current;
@@ -258,7 +266,9 @@ export class DraftAgentController<Composer extends object> {
     if (agent === "grok") return state.grokModel;
     if (agent === "codebuddy") return state.codebuddyModel;
     if (agent === "antigravity") return state.antigravityModel;
-    return state.ompModel;
+    if (agent === "omp") return state.ompModel;
+    if (agent === "kiro-cli") return state.kiroCliModel;
+    return undefined;
   }
 
   thinkingOptionForAgent(
@@ -272,7 +282,9 @@ export class DraftAgentController<Composer extends object> {
     if (agent === "opencode") return state.openCodeThinkingOptionId;
     if (agent === "codebuddy") return undefined;
     if (agent === "antigravity") return state.antigravityThinkingOptionId;
-    return state.ompThinkingOptionId;
+    if (agent === "omp") return state.ompThinkingOptionId;
+    if (agent === "kiro-cli") return state.kiroCliThinkingOptionId;
+    return undefined;
   }
 
   permissionModeForAgent(
@@ -308,7 +320,8 @@ export class DraftAgentController<Composer extends object> {
     else if (agent === "grok") state.grokModel = model;
     else if (agent === "codebuddy") state.codebuddyModel = model;
     else if (agent === "antigravity") state.antigravityModel = model;
-    else state.ompModel = model;
+    else if (agent === "omp") state.ompModel = model;
+    else if (agent === "kiro-cli") state.kiroCliModel = model;
     return state;
   }
 
@@ -356,6 +369,10 @@ export class DraftAgentController<Composer extends object> {
       state.antigravityThinkingOptionId = thinkingOptionId;
     } else if (agent === "antigravity") {
       delete state.antigravityThinkingOptionId;
+    } else if (agent === "kiro-cli" && thinkingOptionId) {
+      state.kiroCliThinkingOptionId = thinkingOptionId;
+    } else if (agent === "kiro-cli") {
+      delete state.kiroCliThinkingOptionId;
     }
     return state;
   }

@@ -453,7 +453,7 @@ function projectItem(
         id: item.itemId,
         type: "agentMessage",
         text: item.text,
-        phase: null,
+        phase: item.phase ?? null,
         memoryCitation: null,
       };
     case "reasoning":
@@ -516,7 +516,15 @@ function projectItem(
         changes: projectFileChanges(item.changes),
         status: itemStatus(outcome),
       };
-    case "subagentDelegation":
+    case "subagentDelegation": {
+      const primary = item.subagents[0];
+      // Codex exposes one configuration per Item, not per receiver. Do not
+      // attribute the first child's configuration to a heterogeneous group.
+      const sameConfiguration = item.subagents.every(
+        (subagent) =>
+          subagent.model === primary?.model &&
+          subagent.reasoningEffort === primary?.reasoningEffort,
+      );
       return {
         id: item.itemId,
         type: "collabAgentToolCall",
@@ -525,8 +533,8 @@ function projectItem(
         senderThreadId: senderThreadId ?? "",
         receiverThreadIds: item.subagents.map(({ subagentId }) => subagentId),
         prompt: item.prompt ?? null,
-        model: null,
-        reasoningEffort: null,
+        model: sameConfiguration ? (primary?.model ?? null) : null,
+        reasoningEffort: sameConfiguration ? (primary?.reasoningEffort ?? null) : null,
         agentsStates: Object.fromEntries(
           item.subagents.map(({ subagentId, status, resultSummary }) => [
             subagentId,
@@ -534,6 +542,7 @@ function projectItem(
           ]),
         ),
       };
+    }
   }
 }
 
@@ -598,6 +607,15 @@ function historicalStatus(outcome: HistoricalTurnOutcome): "completed" | "interr
 
 export function projectHistoricalTurn(input: HistoricalTurnProjectionInput): JsonObject {
   const { turnId, cwd, snapshot } = input;
+  const startedAtMs = snapshot.startedAtMs;
+  const completedAtMs = snapshot.completedAtMs;
+  const hasTiming =
+    startedAtMs !== undefined &&
+    completedAtMs !== undefined &&
+    Number.isFinite(startedAtMs) &&
+    Number.isFinite(completedAtMs) &&
+    startedAtMs >= 0 &&
+    completedAtMs >= startedAtMs;
   const error =
     snapshot.outcome.status === "failed"
       ? {
@@ -643,9 +661,9 @@ export function projectHistoricalTurn(input: HistoricalTurnProjectionInput): Jso
       }),
     ],
     error,
-    startedAt: null,
-    completedAt: null,
-    durationMs: null,
+    startedAt: hasTiming ? Math.floor(startedAtMs / 1000) : null,
+    completedAt: hasTiming ? Math.floor(completedAtMs / 1000) : null,
+    durationMs: hasTiming ? completedAtMs - startedAtMs : null,
     itemsView: "full",
   };
 }

@@ -162,9 +162,11 @@ export function projectDelegationThreadSnapshot(input: {
   const latestTurnMessages = latestTurnId
     ? visible.filter((message) => message.turnId === latestTurnId && message.role === "agent")
     : [];
-  const final = latestTurnMessages.filter((message) => message.phase === "final").at(-1);
+  const final = latestTurnMessages
+    .filter((message) => message.phase === "final" && message.text.trim())
+    .at(-1);
   const progress = latestTurnMessages
-    .filter((message) => message.phase !== "final")
+    .filter((message) => message.phase !== "final" && message.text.trim())
     .map(({ id, turnId, text }) => ({ id, turnId, text }));
   const result = input.running
     ? ({ availability: "pending" } as const)
@@ -179,9 +181,16 @@ export function projectDelegationThreadSnapshot(input: {
 
   const offset =
     options.view === "messages" ? decodeCursor(input.threadId, options.cursor) : visible.length;
-  const page =
-    options.view === "messages" ? visible.slice(offset, offset + options.limit) : undefined;
-  const nextOffset = options.view === "messages" ? offset + (page?.length ?? 0) : visible.length;
+  // Keep cursor offsets in the original message sequence, including whitespace,
+  // so cursors issued before whitespace filtering remain valid.
+  const page: DelegationMessage[] | undefined = options.view === "messages" ? [] : undefined;
+  let nextOffset = offset;
+  if (page) {
+    while (nextOffset < visible.length && page.length < options.limit) {
+      const message = visible[nextOffset++];
+      if (message?.text.trim()) page.push(message);
+    }
+  }
   return {
     threadId: input.threadId,
     harnessId: input.harnessId,
@@ -190,7 +199,12 @@ export function projectDelegationThreadSnapshot(input: {
       latestTurnId && latestTurnStatus ? { turnId: latestTurnId, status: latestTurnStatus } : null,
     progress,
     result,
-    ...(page ? { messages: page } : {}),
+    ...(page
+      ? {
+          messages: page,
+          hasMore: visible.slice(nextOffset).some((message) => message.text.trim()),
+        }
+      : {}),
     nextCursor: encodeCursor(input.threadId, nextOffset),
   };
 }

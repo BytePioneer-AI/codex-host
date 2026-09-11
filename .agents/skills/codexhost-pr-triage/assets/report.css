@@ -958,3 +958,24 @@ dialog::backdrop {
 .snapshot-pill {
   white-space: nowrap;
 }
+/* Issue cards reuse the shared report theme; keep this small extension in the single offline stylesheet. */
+#issues-section {
+  margin-top: 28px;
+}
+.issue-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 340px), 1fr));
+  gap: 16px;
+}
+.issue-card {
+  --tone: var(--teal);
+  --wash: #eff8f8;
+  min-width: 0;
+}
+.issue-card > a,
+.detail-section a {
+  overflow-wrap: anywhere;
+}
+.detail-section p {
+  white-space: pre-wrap;
+}

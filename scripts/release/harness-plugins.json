@@ -7,13 +7,13 @@
     "packages/adapters/grok",
     "packages/adapters/omp",
     "packages/adapters/codebuddy",
-    "packages/adapters/antigravity"
+    "packages/adapters/antigravity",
+    "packages/adapters/kiro-cli"
   ],
   "runtimePackages": [
     "@agentclientprotocol/sdk",
     "@anthropic-ai/claude-agent-sdk",
     "@deepseek-ai/cosmokit",
-    "@deepseek-ai/dsh-host-apiproxy",
     "@deepseek-ai/schemastery",
     "@opencode-ai/sdk",
     "diff",

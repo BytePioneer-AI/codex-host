@@ -126,6 +126,7 @@ async function executeCurrentLastTurnRollback(input: {
     };
   }
 
+  const configuration = currentConfiguration(current);
   let opened: Awaited<ReturnType<HarnessAdapter["open"]>>;
   try {
     opened = await adapter.open({
@@ -136,6 +137,13 @@ async function executeCurrentLastTurnRollback(input: {
         [DELEGATION_THREAD_ID_ENV]: current.id,
       },
       sourceRef: currentNativeRef as NativeSessionRef,
+      ...(configuration.effectiveModel ? { model: configuration.effectiveModel } : {}),
+      ...(configuration.effectiveThinkingOptionId
+        ? { thinkingOptionId: configuration.effectiveThinkingOptionId }
+        : {}),
+      ...(configuration.effectivePermissionModeId
+        ? { permissionModeId: configuration.effectivePermissionModeId }
+        : {}),
     });
   } catch {
     return { ok: false, error: { code: -32076, message: "External Thread rollback failed" } };
@@ -153,7 +161,6 @@ async function executeCurrentLastTurnRollback(input: {
       error: { code: -32076, message: "External rollback did not return a valid Session" },
     };
   }
-  const configuration = currentConfiguration(current);
   const configurationError = await restoreCurrentConfiguration(session, configuration);
   if (configurationError) {
     await session.close().catch(() => undefined);

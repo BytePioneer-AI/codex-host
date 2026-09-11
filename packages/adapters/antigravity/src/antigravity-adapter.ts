@@ -414,19 +414,25 @@ function hostUsage(value: AntigravityUsage | undefined, modelId?: string): HostU
   return Object.keys(usage).length > 0 ? usage : null;
 }
 
-function normalizedProcessError(stderr: string, fallback: string): HarnessError {
-  // stderr can echo the invoked command line, so redact before it is surfaced.
-  const diagnostic = sanitizeDiagnosticTail(stderr.trim());
-  if (/sign[ -]?in|authenticat|credential|login/iu.test(diagnostic)) {
+function normalizedProcessError(
+  detail: string,
+  fallback: string,
+  exposeDetail = false,
+): HarnessError {
+  const nativeDetail = detail.trim();
+  // stderr can echo the invoked command line, so retain its existing redacted
+  // diagnostic tail. A structured result.error is shown verbatim below.
+  const diagnostic = sanitizeDiagnosticTail(nativeDetail);
+  if (/sign[ -]?in|authenticat|credential|login/iu.test(nativeDetail)) {
     return {
       code: "authenticationRequired",
-      message: diagnostic || fallback,
+      message: exposeDetail ? nativeDetail || fallback : diagnostic || fallback,
       retryable: false,
     };
   }
   return {
     code: "nativeFailure",
-    message: fallback,
+    message: exposeDetail && nativeDetail ? `${fallback}: ${nativeDetail}` : fallback,
     retryable: true,
     ...(diagnostic ? { stderrTail: diagnostic.slice(-4_000) } : {}),
   };
@@ -986,7 +992,8 @@ class AntigravitySession implements HarnessSession {
         this.#completeTurn(active, { status: "succeeded", checkpoint }, nativeTurnRef);
       }
     } else {
-      const errorDetail = event.result.error?.trim() || active.stderr;
+      const nativeError = event.result.error?.trim();
+      const errorDetail = nativeError || active.stderr;
       this.#completeTurn(
         active,
         {
@@ -994,6 +1001,7 @@ class AntigravitySession implements HarnessSession {
           error: normalizedProcessError(
             errorDetail,
             `Antigravity Turn ended with status ${event.result.status}`,
+            nativeError !== undefined,
           ),
           checkpoint,
         },
@@ -1422,6 +1430,7 @@ function historySubagentState(
 }
 
 export class AntigravityAdapter implements HarnessAdapter {
+  readonly commandCatalog = ANTIGRAVITY_COMMAND_CATALOG;
   readonly harnessId: HarnessId = antigravityHarnessId;
   readonly subagents = {
     readSnapshot: async (input: {

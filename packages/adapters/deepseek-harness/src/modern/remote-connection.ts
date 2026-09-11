@@ -473,6 +473,94 @@ export class ModernRemoteConnection {
     }
   }
 
+  /** DSH 015 flushes its live log before replying to the export route's HEAD request. */
+  async flushSession(sessionId: string, signal?: AbortSignal): Promise<void> {
+    if (signal?.aborted) {
+      throw new ModernRemoteConnectionError(
+        "cancelled",
+        "DeepSeek Harness Session flush was cancelled before startup",
+      );
+    }
+    if (typeof sessionId !== "string" || sessionId.trim() === "" || sessionId.includes("\0")) {
+      throw new ModernRemoteConnectionError(
+        "protocolError",
+        "DeepSeek Harness Session id is invalid",
+      );
+    }
+    await this.connect();
+    const timeout = AbortSignal.timeout(this.#unaryTimeoutMs);
+    const requestSignal = AbortSignal.any([
+      this.#lifetime.signal,
+      timeout,
+      ...(signal ? [signal] : []),
+    ]);
+    try {
+      requestSignal.throwIfAborted();
+      const url = new URL("/api/session.export", this.#origin);
+      url.searchParams.set("sessionId", sessionId);
+      url.searchParams.set("includeDescendants", "false");
+      const response = await this.#dependencies.fetch(url, {
+        method: "HEAD",
+        redirect: "manual",
+        headers: { cookie: this.#cookie as string },
+        signal: requestSignal,
+      });
+      try {
+        requestSignal.throwIfAborted();
+        if (response.status === 401 || response.status === 403) {
+          throw new ModernRemoteConnectionError(
+            "authenticationRequired",
+            "DeepSeek Harness Web authentication is no longer valid",
+          );
+        }
+        if (response.status >= 300 && response.status < 400) {
+          throw new ModernRemoteConnectionError(
+            "protocolError",
+            "DeepSeek Harness Session flush returned an unexpected redirect",
+          );
+        }
+        if (response.status !== 200) {
+          throw new ModernRemoteConnectionError(
+            response.ok ? "protocolError" : "unavailable",
+            `DeepSeek Harness Session flush failed with HTTP ${String(response.status)}`,
+          );
+        }
+        const mediaType = response.headers
+          .get("content-type")
+          ?.split(";", 1)[0]
+          ?.trim()
+          .toLowerCase();
+        if (mediaType !== "application/zip") {
+          throw new ModernRemoteConnectionError(
+            "protocolError",
+            "DeepSeek Harness Session flush returned an invalid archive response",
+          );
+        }
+      } finally {
+        await cancelResponse(response);
+      }
+    } catch (error) {
+      if (signal?.aborted) {
+        throw new ModernRemoteConnectionError(
+          "cancelled",
+          "DeepSeek Harness Session flush was cancelled",
+        );
+      }
+      if (this.#fault) throw this.#fault;
+      if (timeout.aborted) {
+        throw new ModernRemoteConnectionError(
+          "unavailable",
+          "DeepSeek Harness Session flush timed out",
+        );
+      }
+      if (error instanceof ModernRemoteConnectionError) throw error;
+      throw new ModernRemoteConnectionError(
+        "unavailable",
+        "DeepSeek Harness Session flush transport failed",
+      );
+    }
+  }
+
   openStream<T>(
     endpoint: string,
     args: Readonly<Record<string, unknown>>,

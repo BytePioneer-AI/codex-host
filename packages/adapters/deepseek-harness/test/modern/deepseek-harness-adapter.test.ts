@@ -19,11 +19,13 @@ class Feed implements AsyncIterable<unknown>, AsyncIterator<unknown> {
   #done = false;
   #returned = false;
   returnCalls = 0;
+  readonly seen: unknown[] = [];
 
   constructor(readonly onReturn: () => void = () => undefined) {}
 
   push(value: unknown): void {
     if (this.#done) return;
+    this.seen.push(value);
     this.#deliver({ done: false, value });
   }
 
@@ -85,6 +87,8 @@ class FakeConnection implements ModernConnectionLike {
   connectCalls = 0;
   closeCalls = 0;
   readonly openWebUi = vi.fn(() => Promise.resolve());
+  readonly flushSession = vi.fn(() => Promise.resolve());
+  updateQueueResult: ModernRemoteResult<unknown> = { ok: true, value: { accepted: true } };
   stderrTail = "";
   autoOpenJournal = true;
   permissionModesEnabled = false;
@@ -165,6 +169,9 @@ class FakeConnection implements ModernConnectionLike {
         ModernRemoteResult<T>
       >;
     }
+    if (endpoint === "session/updateQueue") {
+      return Promise.resolve(this.updateQueueResult as ModernRemoteResult<T>);
+    }
     if (endpoint === "session/selectModel") {
       const request = args.request as {
         sessionId: string;
@@ -213,6 +220,32 @@ class FakeConnection implements ModernConnectionLike {
     }
     if (endpoint === "session/cancel" && this.cancelResponse) {
       return this.cancelResponse as Promise<ModernRemoteResult<T>>;
+    }
+    if (endpoint === "session/cancel") {
+      const request = args.request as { sessionId: string };
+      const feed = this.follows.get(request.sessionId);
+      const entries = (feed?.seen ?? [])
+        .map(
+          (value) =>
+            (value as { event: { seq: number; type: string; data: Record<string, unknown> } })
+              .event,
+        )
+        .filter(Boolean);
+      const turn = entries.findLast((entry) => entry.type === "turn/start");
+      const ended = entries.findLast((entry) => entry.type === "turn/end");
+      if (feed && turn && (!ended || turn.seq > ended.seq)) {
+        let seq = (entries.at(-1)?.seq ?? 0) + 1;
+        const step = entries.findLast((entry) => entry.type === "step/start");
+        const stepEnd = entries.findLast((entry) => entry.type === "step/end");
+        if (step && (!stepEnd || step.seq > stepEnd.seq))
+          feed.push(liveEvent(seq++, "step/end", { turn: turn.data.turn, step: step.data.step }));
+        feed.push(
+          liveEvent(seq, "turn/end", {
+            turn: turn.data.turn,
+            reason: { kind: "aborted", reason: { kind: "user" } },
+          }),
+        );
+      }
     }
     if (endpoint === "session/prompt" || endpoint === "session/cancel") {
       return Promise.resolve({ ok: true, value: { accepted: true } } as ModernRemoteResult<T>);
@@ -573,6 +606,290 @@ function setup(
   return { adapter, connection };
 }
 
+function v015Snapshot(input: Parameters<typeof exactJournalSnapshot>[0]): Record<string, unknown> {
+  const snapshot = exactJournalSnapshot(input);
+  const header = { ...(snapshot.header as Record<string, unknown>) };
+  delete header.seedLength;
+  return {
+    ...snapshot,
+    header: { ...header, version: 3, isSeeded: input.parentSession !== undefined },
+    assistantStream: { revision: 0 },
+  };
+}
+
+describe("DSH 0.1.5-rc.1 session operations", () => {
+  const locator = { dshVersion: "0.1.5-rc.1" };
+
+  it.each(["session", "adapter"] as const)(
+    "reports failed V3 persistence confirmation during %s close",
+    async (owner) => {
+      const cwd = path.resolve("fixture-v015-persistence");
+      const { adapter, connection } = setup(["durability"], { version: "0.1.5-rc.1" });
+      connection.journalSnapshots.set(
+        "session-durability",
+        v015Snapshot({ sessionId: "session-durability", cwd, events: [] }),
+      );
+      const opened = await adapter.open({ kind: "create", cwd });
+      if (!opened.ok) throw new Error(opened.error.message);
+      connection.flushSession.mockRejectedValue(new Error("native persistence failed"));
+      const closing = owner === "session" ? opened.value.close() : adapter.close();
+      await expect(closing).rejects.toThrow("native persistence failed");
+      expect(connection.follows.get("session-durability")?.returnCalls).toBe(1);
+      expect(connection.flushSession).toHaveBeenCalledTimes(1);
+      if (owner === "session") await adapter.close();
+      else {
+        expect(connection.closeCalls).toBe(1);
+        await expect(adapter.close()).rejects.toThrow("native persistence failed");
+        expect(connection.flushSession).toHaveBeenCalledTimes(1);
+      }
+    },
+  );
+
+  it.each(["confirmed", "remove-failed", "not-cleared", "flush-failed"] as const)(
+    "requires durable inherited inbox cleanup before adopting a V3 Fork: %s",
+    async (outcome) => {
+      const cwd = path.resolve("fixture-v015-inbox");
+      const { adapter, connection } = setup([], { version: "0.1.5-rc.1" });
+      const pending = {
+        id: "later-input",
+        role: "user",
+        content: [{ type: "text", text: "discard this" }],
+        source: { kind: "user", rpcId: "later-request" },
+      };
+      const prefix = [
+        ...forkSourceEvents().slice(0, 3),
+        exactJournalEvent(3, "agent/inbox/spliced", {
+          target: "next-turn",
+          start: 0,
+          inserted: [pending],
+        }),
+      ];
+      const source = v015Snapshot({
+        sessionId: "session-source",
+        cwd,
+        events: [...prefix, exactJournalEvent(4, "turn/start", { turn: 2 })],
+      });
+      connection.journalSnapshots.set("session-source", source);
+      const seeded = [...prefix, exactJournalEvent(4, "session/end-seed", { inherited: true })];
+      const snapshot = (cleared: boolean) => {
+        const events = cleared
+          ? [
+              ...seeded,
+              exactJournalEvent(5, "agent/inbox/spliced", {
+                target: "next-turn",
+                start: 0,
+                removedCount: 1,
+                inserted: [],
+                outcome: "canceled",
+              }),
+            ]
+          : seeded;
+        return {
+          ...v015Snapshot({
+            sessionId: "session-forked",
+            cwd,
+            parentSession: "session-source",
+            events,
+          }),
+          projections: {
+            asOfSeq: events.length - 1,
+            values: {
+              modelSelection: { lastUsed: null, next: null },
+              inbox: { "next-turn": cleared ? [] : [pending], "next-step": [] },
+            },
+          },
+        };
+      };
+      connection.journalSnapshotQueues.set("session-forked", [
+        snapshot(false),
+        snapshot(outcome !== "not-cleared"),
+      ]);
+      if (outcome === "remove-failed")
+        connection.updateQueueResult = {
+          ok: false,
+          error: { code: "session/queue-item-not-found", message: "missing", details: {} },
+        };
+      if (outcome === "flush-failed")
+        connection.flushSession.mockRejectedValue(new Error("persistence failed"));
+      const refs = forkRefs("session-source", 2);
+      const opened = await adapter.open({
+        kind: "fork",
+        cwd,
+        sourceRef: { ...refs.sourceRef, locator },
+        checkpoint: { ...refs.checkpoint, checkpointId: "v3-turn-end:2", locator },
+      });
+      expect(opened.ok).toBe(outcome === "confirmed");
+      expect(connection.calls.filter(({ endpoint }) => endpoint === "session/updateQueue")).toEqual(
+        [
+          {
+            endpoint: "session/updateQueue",
+            args: {
+              request: {
+                sessionId: "session-forked",
+                itemId: "later-input",
+                action: { kind: "remove" },
+              },
+            },
+          },
+        ],
+      );
+      expect(connection.journalSnapshots.get("session-source")).toBe(source);
+      expect(connection.flushSession).toHaveBeenCalledTimes(
+        outcome === "confirmed" || outcome === "flush-failed" ? 1 : 0,
+      );
+      if (opened.ok) await opened.value.close();
+      await adapter.close();
+    },
+  );
+
+  it("creates, selects native permissions and resumes a V3 Session", async () => {
+    const cwd = path.resolve("fixture-v015-create");
+    const { adapter, connection } = setup(["v015"], { version: "0.1.5-rc.1" });
+    connection.permissionModesEnabled = true;
+    connection.journalSnapshots.set("session-v015", {
+      ...v015Snapshot({ sessionId: "session-v015", cwd, events: [] }),
+      projections: {
+        asOfSeq: -1,
+        values: { modelSelection: { lastUsed: null, next: null } },
+      },
+    });
+    const created = await adapter.open({
+      kind: "create",
+      cwd,
+      permissionModeId: "danger-full-access" as never,
+    });
+    expect(created).toMatchObject({ ok: true });
+    if (!created.ok) throw new Error(created.error.message);
+    const ref = created.value.initialState.nativeRef;
+    if (!ref) throw new Error("missing native Session reference");
+    expect(ref).toMatchObject({ nativeSessionId: "session-v015", locator });
+    expect(connection.streams).toContainEqual({
+      endpoint: "session/follow",
+      args: {
+        request: {
+          address: { kind: "session", sessionId: "session-v015" },
+          maxMessages: 200,
+          assistantStream: true,
+        },
+      },
+    });
+    expect(connection.calls).toContainEqual({
+      endpoint: "commands/execute",
+      args: {
+        agentId: "session-v015",
+        line: "/permission danger-full-access",
+        submittedAttachments: [],
+      },
+    });
+    await created.value.close();
+    connection.journalSnapshots.set("session-v015", {
+      ...v015Snapshot({
+        sessionId: "session-v015",
+        cwd,
+        events: [exactJournalEvent(0, "permission/preset", { preset: "danger-full-access" })],
+      }),
+      projections: {
+        asOfSeq: 0,
+        values: {
+          modelSelection: { lastUsed: null, next: null },
+          permissions: permissionProjection("danger-full-access"),
+        },
+      },
+    });
+    const resumed = await adapter.open({ kind: "resume", nativeRef: ref, cwd });
+    if (!resumed.ok) throw new Error(resumed.error.message);
+    expect(resumed).toMatchObject({ ok: true });
+    expect(connection.calls.filter(({ endpoint }) => endpoint === "session/create")).toHaveLength(
+      1,
+    );
+    if (resumed.ok) await resumed.value.close();
+    await adapter.close();
+  });
+
+  it.each(["fork", "rollbackLastTurn"] as const)(
+    "uses the V3 checkpoint and inherited marker for %s",
+    async (kind) => {
+      const cwd = path.resolve("fixture-v015-fork");
+      const { adapter, connection } = setup([], { version: "0.1.5-rc.1" });
+      const sourceEvents = [
+        ...forkSourceEvents(),
+        exactJournalEvent(7, "turn/end", { turn: 2, reason: { kind: "completed" } }),
+      ];
+      connection.journalSnapshots.set(
+        "session-source",
+        v015Snapshot({
+          sessionId: "session-source",
+          cwd,
+          events: sourceEvents,
+          headerAgentPreset: "standard",
+          agentPreset: "standard",
+        }),
+      );
+      connection.journalSnapshots.set(
+        "session-forked",
+        v015Snapshot({
+          sessionId: "session-forked",
+          cwd,
+          parentSession: "session-source",
+          headerAgentPreset: "standard",
+          agentPreset: "standard",
+          events: [
+            ...sourceEvents.slice(0, 5),
+            exactJournalEvent(5, "session/end-seed", { inherited: true }),
+          ],
+        }),
+      );
+      const refs = forkRefs("session-source", 2);
+      const sourceRef = { ...refs.sourceRef, locator };
+      const opened = await adapter.open(
+        kind === "fork"
+          ? {
+              kind,
+              sourceRef,
+              cwd,
+              checkpoint: { ...refs.checkpoint, checkpointId: "v3-turn-end:2", locator },
+            }
+          : { kind, sourceRef, cwd },
+      );
+      expect(opened).toMatchObject({ ok: true });
+      if (!opened.ok) throw new Error(opened.error.message);
+      expect(connection.calls).toContainEqual({
+        endpoint: "session/fork",
+        args: { request: { sessionId: "session-source", atSeq: 2 } },
+      });
+      await expect(opened.value.readSnapshot()).resolves.toMatchObject({
+        ok: true,
+        value: { turns: [{ checkpoint: { checkpointId: "v3-turn-end:2", locator } }] },
+      });
+      await opened.value.close();
+      await adapter.close();
+    },
+  );
+
+  it("rejects V0 checkpoints before native mutation and V3 refs on 012", async () => {
+    const cwd = path.resolve("fixture-v015-references");
+    const { adapter, connection } = setup([], { version: "0.1.5-rc.1" });
+    await expect(
+      adapter.open({ kind: "fork", ...forkRefs("session-old", 2), cwd }),
+    ).resolves.toMatchObject({
+      ok: false,
+      error: { code: "invalidRequest" },
+    });
+    expect(connection.calls.some(({ endpoint }) => endpoint === "session/fork")).toBe(false);
+    await adapter.close();
+    const older = setup();
+    await expect(
+      older.adapter.open({
+        kind: "resume",
+        cwd,
+        nativeRef: { ...forkRefs("session-new", 2).sourceRef, locator },
+      }),
+    ).resolves.toMatchObject({ ok: false, error: { code: "invalidRequest" } });
+    expect(older.connection.calls).toEqual([]);
+    await older.adapter.close();
+  });
+});
+
 describe("Modern DeepSeek Harness Adapter", () => {
   it("lists exact Modern Session candidates through the managed connection", async () => {
     const { adapter, connection } = setup();
@@ -762,7 +1079,7 @@ describe("Modern DeepSeek Harness Adapter", () => {
     await adapter.close();
   });
 
-  it("sends next before Session close retires a pending interaction and Turn", async () => {
+  it("cancels native execution before Session close retires a pending interaction and Turn", async () => {
     const { adapter, connection } = setup(["created", "request-close", "interaction-close"]);
     const cwd = path.resolve("fixture-interaction-close");
     connection.expectedCwds.set("session-created", cwd);
@@ -812,7 +1129,7 @@ describe("Modern DeepSeek Harness Adapter", () => {
       args: {
         clientId: "client-1",
         eventId: "approval-close",
-        outcome: { kind: "next" },
+        outcome: { kind: "result", value: "cancelled" },
       },
     });
     await expect(outputs.next()).resolves.toMatchObject({

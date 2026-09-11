@@ -11,6 +11,7 @@ import {
   type JsonValue,
 } from "@codexhost/shared-contracts";
 
+import type { PiEmptySessionConfiguration } from "./pi-empty-session.js";
 import { resolvePiExecutable, withNodeRuntimeOnPath } from "./command.js";
 import type { PiSessionHistory } from "./pi-history.js";
 import {
@@ -142,6 +143,7 @@ export interface PiRpcSessionOptions {
   sessionFile?: string;
   forkSessionFile?: string;
   model?: PiNativeModelRef;
+  emptySessionConfiguration?: PiEmptySessionConfiguration;
   commandTimeoutMs?: number;
   compactionTimeoutMs?: number;
   cancelTimeoutMs?: number;
@@ -156,6 +158,7 @@ export interface PiRpcProcessOptions {
   sessionFile?: string;
   forkSessionFile?: string;
   model?: PiNativeModelRef;
+  emptySessionConfiguration?: PiEmptySessionConfiguration;
 }
 
 export interface PiRpcProcessAdapter {
@@ -408,6 +411,12 @@ export function piRpcProcessCommand(
   if (options.model && (options.sessionFile || options.forkSessionFile)) {
     throw new Error("Pi RPC cannot combine a startup Model with Session restore or Fork");
   }
+  if (
+    options.emptySessionConfiguration &&
+    (!options.sessionFile || options.model || options.forkSessionFile)
+  ) {
+    throw new Error("Pi empty Session configuration requires an exclusive Session resume");
+  }
   const platform = dependencies.platform ?? process.platform;
   const command = resolvePiExecutable(
     {
@@ -425,10 +434,20 @@ export function piRpcProcessCommand(
     : options.sessionFile
       ? ["--session", options.sessionFile]
       : [];
-  const modelArguments = options.model
-    ? ["--provider", options.model.provider, "--model", options.model.id]
+  const startupModel = options.emptySessionConfiguration?.model ?? options.model;
+  const modelArguments = startupModel
+    ? ["--provider", startupModel.provider, "--model", startupModel.id]
     : [];
-  const arguments_ = ["--mode", "rpc", ...modelArguments, ...sessionArguments];
+  const thinkingArguments = options.emptySessionConfiguration
+    ? ["--thinking", options.emptySessionConfiguration.thinkingLevel]
+    : [];
+  const arguments_ = [
+    "--mode",
+    "rpc",
+    ...modelArguments,
+    ...thinkingArguments,
+    ...sessionArguments,
+  ];
   const extension = path.win32.extname(command).toLowerCase();
   if (platform !== "win32" || ![".cmd", ".bat"].includes(extension)) {
     return { command, arguments: arguments_, windowsVerbatimArguments: false };
@@ -470,6 +489,7 @@ export class PiRpcSession {
   #buffer: Buffer<ArrayBufferLike> = Buffer.alloc(0);
   #child: ChildProcessWithoutNullStreams | null = null;
   #closed = false;
+  #closePromise: Promise<void> | null = null;
   #compactionActive = false;
   #compactionTurn: ActiveTurn | null = null;
   #compactionTimeout: NodeJS.Timeout | null = null;
@@ -527,6 +547,9 @@ export class PiRpcSession {
       ...(this.#options.sessionFile ? { sessionFile: this.#options.sessionFile } : {}),
       ...(this.#options.forkSessionFile ? { forkSessionFile: this.#options.forkSessionFile } : {}),
       ...(this.#options.model ? { model: this.#options.model } : {}),
+      ...(this.#options.emptySessionConfiguration
+        ? { emptySessionConfiguration: this.#options.emptySessionConfiguration }
+        : {}),
     });
     this.#child = child;
     child.stdout.on("data", (chunk: Buffer) => this.#push(chunk));
@@ -845,11 +868,15 @@ export class PiRpcSession {
     void this.close().catch(() => undefined);
   }
 
-  async close(): Promise<void> {
-    if (this.#closed) return;
-    this.#closed = true;
-    this.#rejectAll(new Error("Pi RPC Session closed"));
-    await this.#stopProcess();
+  close(): Promise<void> {
+    if (!this.#closed) {
+      this.#closed = true;
+      this.#rejectAll(new Error("Pi RPC Session closed"));
+    }
+    // Closed admission is not proof of process exit. Every caller awaits the same cleanup,
+    // including calls racing cancellation or a timed-out Prompt.
+    this.#closePromise ??= this.#stopProcess();
+    return this.#closePromise;
   }
 
   async #stopProcess(): Promise<void> {
@@ -1499,7 +1526,7 @@ export class PiRpcSession {
     }
     let finalFault = fault;
     try {
-      await this.#stopProcess();
+      await this.close();
     } catch (error) {
       finalFault = new PiRpcFaultError(
         "processExited",

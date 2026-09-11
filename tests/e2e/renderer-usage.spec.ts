@@ -40,6 +40,7 @@ const { outputFiles } = await build({
         let exactRefreshes = 0;
         usage.onOpen = () => { exactRefreshes += 1; };
         globalThis.rendererUsageExactRefreshes = () => exactRefreshes;
+        globalThis.updateKiroUsage = (value) => renderRendererUsageControl(usage, value, "zh-CN");
         const credits = mountRendererCreditsControl("usage-composer");
         usage.place(model);
         credits.place(plus);
@@ -84,6 +85,7 @@ const { outputFiles } = await build({
             cacheHitRatePercent: 99,
             totalCostUsd: 1.373,
             planFiveHourUsedPercent: 45,
+            planSevenDayUsedPercent: 12,
             planFiveHourResetsAtUnix: 1_756_130_400,
           });
         };
@@ -115,6 +117,55 @@ const { outputFiles } = await build({
 
 const browserBundle = outputFiles[0]?.text;
 if (!browserBundle) throw new Error("Renderer Usage bundle was not generated");
+
+for (const width of [1280, 375]) {
+  test(`Kiro credits and context popover at ${width}px`, async ({ page }, testInfo) => {
+    await page.setViewportSize({ width, height: 600 });
+    await page.setContent(
+      '<!doctype html><body style="margin:12px;padding-top:280px;color-scheme:dark;background:#222;color:white;font:14px system-ui"></body>',
+    );
+    await page.addScriptTag({ content: browserBundle });
+    await page.evaluate(() => {
+      const setup = Reflect.get(globalThis, "setupRendererUsage");
+      setup();
+      const update = Reflect.get(globalThis, "updateKiroUsage");
+      update({ totalCredits: 0.058778444510779446, contextUsagePercent: 9.594499588012695 });
+    });
+    const usage = page.locator('[data-codexhost-usage-control="usage-composer"]');
+    await expect(usage).toBeVisible();
+    await expect(usage).toHaveText("0.059 credits");
+    await expect(usage.locator("svg")).toHaveCount(0);
+    await expect(usage.locator("button")).toHaveAttribute(
+      "aria-label",
+      "对话用量: 0.059 credits; 上下文 9.6%",
+    );
+    await usage.hover();
+    const popover = page.getByRole("dialog", { name: "对话用量详情" });
+    await expect(popover).toBeVisible();
+    await expect(popover).toContainText("已记录消耗");
+    await expect(popover).toContainText("0.059 credits");
+    await expect(popover).toContainText("上下文");
+    await expect(popover).toContainText("9.6%");
+    await expect(popover.locator(":scope > div").nth(1)).toContainText("上下文");
+    await expect(popover.locator(":scope > div").last()).toContainText("已记录消耗");
+    const clipped = await usage
+      .locator("span")
+      .first()
+      .evaluate((element) => element.scrollWidth > element.clientWidth);
+    expect(clipped).toBe(false);
+    for (const unavailable of ["$", "输入 / 输出", "缓存读取", "缓存写入", "会话费用估算"]) {
+      await expect(popover).not.toContainText(unavailable);
+    }
+    const box = await popover.boundingBox();
+    if (!box) throw new Error("Usage popover has no bounds");
+    expect(box.x).toBeGreaterThanOrEqual(0);
+    expect(box.x + box.width).toBeLessThanOrEqual(width);
+    await page.screenshot({ path: testInfo.outputPath("kiro-usage.png") });
+    await page.evaluate(() => Reflect.get(globalThis, "updateKiroUsage")(null));
+    await expect(usage).toBeHidden();
+    await expect(popover).toBeHidden();
+  });
+}
 
 test("renders Usage immediately to the left of the model control", async ({ page }) => {
   await page.setContent('<!doctype html><body style="margin:0"></body>');
@@ -314,7 +365,7 @@ test("renders the Usage popover in Chinese when the settings locale is Chinese",
   await expect(popover).not.toContainText("Latest cache hit");
 });
 
-test("shows a Claude.ai five-hour plan window only in the Usage popover", async ({ page }) => {
+test("omits plan limits from the Usage trigger and popover", async ({ page }) => {
   await page.setContent('<!doctype html><body style="margin:0"></body>');
   await page.addScriptTag({ content: browserBundle });
   await page.evaluate(() => {
@@ -335,7 +386,8 @@ test("shows a Claude.ai five-hour plan window only in the Usage popover", async 
   await usage.hover();
   const popover = page.locator('[role="dialog"][aria-label="Thread Usage details"]');
   await expect(popover).toBeVisible();
-  await expect(popover).toContainText("5-hour limit");
-  await expect(popover).toContainText("45%");
+  await expect(popover).not.toContainText("5-hour limit");
+  await expect(popover).not.toContainText("45%");
+  await expect(popover).not.toContainText("12%");
   await expect(popover).not.toContainText("7-day limit");
 });

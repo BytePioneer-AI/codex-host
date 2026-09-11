@@ -731,6 +731,20 @@ button {
   box-shadow: 0 1px 3px rgb(0 0 0 / 24%);
 }
 
+.settings-preference-checkbox {
+  width: 18px;
+  height: 18px;
+  flex: none;
+  margin: 0;
+  accent-color: var(--settings-focus);
+  cursor: pointer;
+}
+
+.settings-preference-checkbox:focus-visible {
+  outline: 2px solid var(--settings-focus);
+  outline-offset: 2px;
+}
+
 .settings-connection-page-header {
   display: flex;
   align-items: flex-start;

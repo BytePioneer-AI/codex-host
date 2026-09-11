@@ -730,7 +730,7 @@ for (const line of lines) {
       }
     });
 
-    it("emits turn.completed with failed outcome on CLI error", async () => {
+    it("passes a structured CLI result error through to the failed Turn", async () => {
       const streamLines = [
         JSON.stringify({
           event: "init",
@@ -742,6 +742,8 @@ for (const line of lines) {
           result: {
             conversation_id: "conv-err",
             status: "ERROR",
+            // Synthetic protocol fixture, not a captured agy error message.
+            error: "Synthetic native failure detail",
             num_turns: 1,
           },
         }),
@@ -774,8 +776,15 @@ for (const line of lines) {
         expect(completed).toMatchObject({
           type: "turn.completed",
           turnId,
-          outcome: { status: "failed" },
+          outcome: {
+            status: "failed",
+            error: {
+              code: "nativeFailure",
+              message: "Antigravity Turn ended with status ERROR: Synthetic native failure detail",
+            },
+          },
         });
+        expect(JSON.stringify(completed)).toContain("Synthetic native failure detail");
 
         await session.close();
       } finally {

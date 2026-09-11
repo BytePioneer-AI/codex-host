@@ -1,6 +1,7 @@
 import codexAgentIconUrl from "./assets/codex-agent.png";
 import grokAgentIconUrl from "./assets/grok-agent.png";
 import antigravityAgentIconUrl from "./assets/antigravity-agent.svg";
+import kiroAgentIconUrl from "./assets/kiro-agent.svg";
 import ompAgentIconUrl from "./assets/omp-agent.svg";
 import openCodeAgentIconUrl from "./assets/opencode-agent.png";
 import type { RendererAgent } from "./agent-selection-state.js";
@@ -15,6 +16,7 @@ export const RENDERER_AGENT_LABELS: Record<RendererAgent, string> = {
   omp: "Oh My Pi",
   codebuddy: "CodeBuddy",
   antigravity: "Antigravity CLI",
+  "kiro-cli": "Kiro CLI",
 };
 
 const PI_PATHS = [
@@ -39,7 +41,7 @@ const CODEBUDDY_MARK_PATH =
   "M12 2C6.477 2 2 6.477 2 12s4.477 10 10 10c3.899 0 7.26-2.224 8.917-5.468l-3.408-1.957A5.996 5.996 0 0 1 12 18a6 6 0 1 1 0-12 5.99 5.99 0 0 1 4.132 1.648l3.203-2.83A9.963 9.963 0 0 0 12 2z";
 
 function createSvgIcon(
-  paths: readonly { d: string; fillRule?: string }[],
+  paths: readonly { d: string; fillRule?: string; fill?: string }[],
   color: string,
   size: number,
   ownerDocument: Document,
@@ -56,6 +58,7 @@ function createSvgIcon(
     const path = ownerDocument.createElementNS("http://www.w3.org/2000/svg", "path");
     path.setAttribute("d", definition.d);
     if (definition.fillRule) path.setAttribute("fill-rule", definition.fillRule);
+    if (definition.fill) path.setAttribute("fill", definition.fill);
     svg.append(path);
   }
   return svg;
@@ -116,9 +119,9 @@ export function createRendererAgentIcon(
   if (agent === "codebuddy") {
     return createSvgIcon([{ d: CODEBUDDY_MARK_PATH }], "#4a89ff", size, ownerDocument);
   }
-  if (agent === "antigravity") {
+  if (agent === "antigravity" || agent === "kiro-cli") {
     const image = ownerDocument.createElement("img");
-    image.src = antigravityAgentIconUrl;
+    image.src = agent === "kiro-cli" ? kiroAgentIconUrl : antigravityAgentIconUrl;
     image.alt = "";
     image.draggable = false;
     image.style.width = `${size}px`;

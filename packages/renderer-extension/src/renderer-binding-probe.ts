@@ -1,4 +1,5 @@
 import {
+  decodeHarnessPluginRoute,
   harnessIdSchema,
   permissionModeFixedAtCreate,
   type HarnessCommandDescriptor,
@@ -43,6 +44,7 @@ import {
   type ExternalPermissionModeControlView,
 } from "./renderer-composer-dom.js";
 import { rendererHarnessMessages } from "./renderer-harness-localization.js";
+import { installReasoningTranscriptSoftWrap } from "./renderer-transcript-dom.js";
 import { RendererCodexAccountState } from "./renderer-codex-account-state.js";
 import {
   decodeAntigravityTransportModelId,
@@ -95,6 +97,7 @@ const externalHarnessIds = {
   omp: harnessIdSchema.parse("omp"),
   codebuddy: harnessIdSchema.parse("codebuddy"),
   antigravity: harnessIdSchema.parse("antigravity"),
+  "kiro-cli": harnessIdSchema.parse("kiro-cli"),
 } as const;
 
 const externalAgents: readonly ExternalRendererAgent[] = [
@@ -106,6 +109,7 @@ const externalAgents: readonly ExternalRendererAgent[] = [
   "omp",
   "codebuddy",
   "antigravity",
+  "kiro-cli",
 ];
 type HarnessAvailability = Partial<Record<ExternalRendererAgent, RendererAgentAvailability>>;
 type HarnessAvailabilityErrors = Record<ExternalRendererAgent, CodexhostError | undefined>;
@@ -205,8 +209,9 @@ export function shouldReloadExternalCatalogAfterAvailabilityRefresh(
   previous: RendererAgentAvailability | undefined,
   next: RendererAgentAvailability,
   configurationReady: boolean,
+  explicitRefresh = false,
 ): boolean {
-  return previous !== next || !configurationReady;
+  return explicitRefresh || previous !== next || !configurationReady;
 }
 
 function isExternalConfigurationReadyView(
@@ -469,6 +474,24 @@ export function restoredThreadOwnership(inspection: ThreadInspection): RestoredT
       ...(permissionModeId ? { permissionModeId } : {}),
     };
   }
+  if (inspection.harnessId === "kiro-cli") {
+    const route = decodeHarnessPluginRoute(inspection.transportModelId);
+    if (!route || route.harnessId !== "kiro-cli") {
+      throw new Error("Kiro CLI Thread reported an incompatible transport Model");
+    }
+    const model = inspection.effectiveModel ?? route.model;
+    const thinkingOptionId =
+      inspection.availableThinkingOptions !== undefined
+        ? selectableThinkingOptionId(inspection)
+        : (inspection.effectiveThinkingOptionId ?? route.thinkingOptionId);
+    const permissionModeId = inspection.effectivePermissionModeId ?? route.permissionModeId;
+    return {
+      agent: "kiro-cli",
+      ...(model ? { model } : {}),
+      ...(thinkingOptionId ? { thinkingOptionId } : {}),
+      ...(permissionModeId ? { permissionModeId } : {}),
+    };
+  }
   throw new Error("Thread owner is not a Renderer Agent");
 }
 
@@ -617,6 +640,7 @@ export function installRendererBindingProbe(
   const mountedByComposer = new Map<Element, MountedComposer>();
   const pendingReplacements = new Map<Element, PendingComposerReplacement>();
   let disposed = false;
+  const disposeReasoningSoftWrap = installReasoningTranscriptSoftWrap(document);
   let scanScheduled = false;
   let refreshTargetsOnNextScan = false;
   let adapterDispose: (() => void) | null = null;
@@ -699,6 +723,7 @@ export function installRendererBindingProbe(
       omp: undefined,
       codebuddy: undefined,
       antigravity: undefined,
+      "kiro-cli": undefined,
     },
     webUi: Object.fromEntries(
       externalAgents.map((agent) => [agent, false]),
@@ -1329,7 +1354,22 @@ export function installRendererBindingProbe(
         return;
       }
       if (current.phase === "locked" && previousModel && !previousModelAvailable) {
-        throw new Error("Existing Thread Model is absent from the current Catalog");
+        mounted.modelView = {
+          status: "error",
+          catalog: inspection.catalog,
+          selected: previousModel,
+          thinkingSelectionSupported: inspection.capabilities.configuration.selectThinkingOption,
+          error: "Existing Thread Model is absent from the current Catalog",
+        };
+        if (selectedPermissionModeId && mounted.permissionModeView.catalog) {
+          mounted.permissionModeView = {
+            status: "ready",
+            catalog: mounted.permissionModeView.catalog,
+            selected: selectedPermissionModeId,
+            ...permissionModeLock,
+          };
+        }
+        return;
       }
 
       const selected = previousModelAvailable
@@ -2111,6 +2151,7 @@ export function installRendererBindingProbe(
                 previousStatus,
                 status,
                 isExternalConfigurationStable(mounted.modelView, mounted.permissionModeView),
+                refresh && force,
               )
             ) {
               void loadExternalCatalog(mounted);
@@ -2807,6 +2848,7 @@ export function installRendererBindingProbe(
       applyAdapterAgent = null;
       modelControl = null;
       mutationObserver.disconnect();
+      disposeReasoningSoftWrap();
       sidebarAgentIcons.dispose();
       settingsLifecycle.dispose();
       document.removeEventListener("beforeinput", onBeforeInput, true);

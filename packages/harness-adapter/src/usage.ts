@@ -7,6 +7,9 @@ export interface HostUsage {
   reasoningOutputTokens?: number;
   totalTokens?: number;
   totalCostUsd?: number;
+  /** Known cumulative native credits for this Thread, not account quota or USD. */
+  totalCredits?: number;
+  contextUsagePercent?: number;
   cacheHitRatePercent?: number;
   contextWindowTokens?: number;
   contextUsedTokens?: number;
@@ -44,6 +47,8 @@ const usageFields = new Set<keyof HostUsage>([
   ...safeIntegerFields,
   ...percentFields,
   "totalCostUsd",
+  "totalCredits",
+  "contextUsagePercent",
 ]);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -57,6 +62,15 @@ export function parseHostUsage(value: unknown): HostUsage {
   for (const key of keys) {
     if (!usageFields.has(key as keyof HostUsage)) {
       throw new Error(`Harness Usage contains unknown field '${key}'`);
+    }
+  }
+  for (const field of ["totalCredits", "contextUsagePercent"] as const) {
+    const candidate = value[field];
+    if (
+      candidate !== undefined &&
+      (typeof candidate !== "number" || !Number.isFinite(candidate) || candidate < 0)
+    ) {
+      throw new Error(`Harness Usage '${field}' must be a finite non-negative number`);
     }
   }
   for (const field of tokenFields) {

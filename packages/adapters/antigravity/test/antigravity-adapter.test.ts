@@ -9,6 +9,7 @@ import {
   harnessPermissionModeIdSchema,
   harnessThinkingOptionIdSchema,
   hostTurnIdSchema,
+  nativeSessionRefSchema,
 } from "@codexhost/shared-contracts";
 import { describe, expect, it } from "vitest";
 
@@ -136,31 +137,71 @@ describe("Antigravity Adapter", () => {
       await fixture.cleanup();
     }
   });
-  it("refuses Desktop approval execution when the native CLI cannot confirm the Hook configuration", async () => {
+  it.each(["configured", "desktop-approvals"])(
+    "rejects obsolete %s on create, resume, rollback and live selection",
+    async (mode) => {
+      const { command, cwd, cleanup } = await fakeAgy(FAKE_MODELS);
+      const adapter = new AntigravityAdapter({ command });
+      const permissionModeId = harnessPermissionModeIdSchema.parse(mode);
+      const nativeRef = nativeSessionRefSchema.parse({
+        harnessId: "antigravity",
+        nativeSessionId: "old-session",
+        formatVersion: 1,
+      });
+      const rejected = {
+        ok: false,
+        error: {
+          code: "invalidRequest",
+          message: expect.stringContaining("Explicitly select Skip permissions"),
+        },
+      };
+      try {
+        expect(await adapter.open({ kind: "create", cwd, permissionModeId })).toMatchObject(
+          rejected,
+        );
+        expect(
+          await adapter.open({ kind: "resume", cwd, nativeRef, permissionModeId }),
+        ).toMatchObject(rejected);
+        expect(
+          await adapter.open({
+            kind: "rollbackLastTurn",
+            cwd,
+            sourceRef: nativeRef,
+            permissionModeId,
+          }),
+        ).toMatchObject(rejected);
+        const opened = await adapter.open({ kind: "create", cwd });
+        if (!opened.ok) throw new Error(opened.error.message);
+        expect(opened.value.initialState?.effectivePermissionModeId).toBe(
+          "dangerously-skip-permissions",
+        );
+        expect(
+          await opened.value.execute({ type: "permissionMode.select", permissionModeId }),
+        ).toMatchObject(rejected);
+        expect(
+          await opened.value.execute({
+            type: "permissionMode.select",
+            permissionModeId: harnessPermissionModeIdSchema.parse("dangerously-skip-permissions"),
+          }),
+        ).toMatchObject({ ok: true });
+      } finally {
+        await adapter.close();
+        await cleanup();
+      }
+    },
+  );
+
+  it("advertises only native Skip permissions, marked dangerous and default", async () => {
     const { command, cwd, cleanup } = await fakeAgy(FAKE_MODELS);
     const adapter = new AntigravityAdapter({ command });
     try {
-      const opened = await adapter.open({
-        kind: "create",
-        cwd,
-        permissionModeId: harnessPermissionModeIdSchema.parse("desktop-approvals"),
+      const inspection = await adapter.inspect({ cwd });
+      if (inspection.status !== "ready") throw new Error("Fixture CLI is not ready");
+      expect(inspection.permissionModes).toMatchObject({
+        defaultModeId: "dangerously-skip-permissions",
+        modes: [{ id: "dangerously-skip-permissions", dangerous: true }],
       });
-      if (!opened.ok) throw new Error(opened.error.message);
-      const iterator = opened.value.outputs[Symbol.asyncIterator]();
-      expect(
-        await opened.value.execute({
-          type: "turn.start",
-          turnId: hostTurnIdSchema.parse("missing-approval-hook"),
-          input: [{ type: "text", text: "Do not execute without an approval Hook" }],
-        }),
-      ).toMatchObject({
-        ok: false,
-        error: {
-          message: expect.stringContaining("no tools were started"),
-        },
-      });
-      await opened.value.close();
-      expect((await iterator.next()).done).toBe(true);
+      expect(inspection.permissionModes?.modes).toHaveLength(1);
     } finally {
       await adapter.close();
       await cleanup();
@@ -553,6 +594,7 @@ describe("Antigravity Adapter", () => {
     expect(error.diagnostic).not.toContain("sk-live-abc123");
     expect(error.diagnostic).toContain("[redacted]");
     expect(error.message).toContain("'request-review'");
+    expect(error.message).toContain("Check Antigravity CLI diagnostics and native Hooks");
     expect(error.retryable).toBe(false);
   });
 

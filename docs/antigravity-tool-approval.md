@@ -1,68 +1,54 @@
-# Antigravity Tool Approval
+# Antigravity Permissions
 
-Select **Desktop approvals** in the Permission Mode picker to approve tool
-actions through Desktop. The existing **Configured permissions** and
-**Skip permissions** modes retain their previous behavior.
+Antigravity exposes only **Skip permissions (dangerous)**, which is also the
+new-session default. Every Turn starts agy with its native
+`--dangerously-skip-permissions` flag. codexhost does not add tool approvals,
+allow/ask/deny matching, a read-only allowlist, or workspace path restrictions.
+Use this Harness only in an environment where unrestricted tool execution is
+acceptable. This does not grant administrator privileges or bypass OS controls.
 
-## Execution Boundary
+## Why only Skip permissions?
 
 Native agy 1.1.27 print mode cannot consume interactive permission responses.
-A real probe confirmed that a PreToolUse `allow` decision alone still leaves a
-command subject to native headless denial. Therefore this opt-in mode uses
-`--dangerously-skip-permissions` for that CLI process and gates execution with
-the private PreToolUse Hook.
+The previous Configured permissions mode could therefore deny a tool and leave
+an empty response. The former Desktop approvals workaround disabled native
+permission checks and gated tools through a private Hook. Reimplementing agy's
+permission policy in codexhost is not a supported replacement for a native
+permission interface.
 
-Before sending any model input, the Adapter asks the CLI for its effective Hook
-configuration using the same workspace and private Hook directory. It requires
-the exact enabled all-tool Hook, source path, and command. Missing or invalid
-configuration rejects the Turn without starting tools.
+Configured permissions and Desktop approvals are no longer offered. Explicit
+legacy mode IDs on create, resume, rollback, or live selection are rejected with
+an instruction to select Skip permissions; they are not silently translated.
+When the Host restores a saved legacy selection, restoration fails rather than
+executing a Turn with broader permissions. Start a new Thread with Skip
+permissions if the old Thread cannot be opened to change its selection.
 
-The Hook waits for a standard `HostApprovalInteraction` response, projected
-through `mcpServer/elicitation/request`. Only **Allow once** and **Deny** are
-offered. Timeout, cancellation, a closed connection, malformed responses, and
-foreign session identities deny execution. No persistent session or global
-permission grants are written by the bridge.
+The Adapter does not inspect `/config`, verify an all-tool `/hooks` gate, or
+promise that native allow/ask/deny rules remain effective under skip. Actual CLI
+behavior, independently configured native Hooks, and OS restrictions remain
+outside codexhost's permission policy. A native denial is still reported with
+sanitized diagnostics, not treated as success.
 
-The transport is shared with the Question bridge, including its private
-loopback authentication, payload limits, Windows command quoting, and cleanup.
-Question replies still use `deny.reason`; an approval never authorizes a native
-question's automatic skip behavior.
+## Questions are not tool approvals
 
-## Scope
+The private `PreToolUse` Hook is retained **only for `^ask_question$`** to bridge
+single-choice and text questions to Desktop. Its `deny.reason` carries the real
+user answer and prevents native automatic question skipping; it does not grant
+or refuse permission for ordinary tools. Authentication, bounded payloads,
+deadlines, duplicate-question checks, and cleanup remain in place.
 
-- Tool arguments are supplied to the common approval projector. Desktop applies
-  its existing display-length limits; this is not a new custom review UI.
-- Each permission approves one native tool call, not every operation performed
-  internally by that tool or an approved command.
-- Registered direct-child Hook requests can be approved on the active parent
-  Turn. Unknown or detached child requests are denied. Child-specific Questions
-  and Autonomous Turns are not introduced.
-- Calling `ask_permission` is unnecessary in this mode: the agent must call the
-  intended tool, which triggers the Desktop approval.
-- This depends on private CLI behavior and effective Hook loading. Revalidate
-  after CLI changes; do not describe it as native stdin permission support.
+Ordinary parent and child tools do not enter this bridge, do not consume its
+128-question budget, and do not incur a Host Hook process or HTTP round trip.
+The Question mechanism still depends on private CLI behavior and should be
+revalidated after CLI updates.
 
-## Evidence
+## Validation
 
-Windows, agy 1.1.27, 2026-09-05:
+Focused tests cover the single dangerous/default mode, rejection of legacy
+selections, native skip startup without permission probes, and 160 ordinary tool
+calls followed by a Desktop Question in one Turn. Existing Question tests cover
+responses, expiry, cancellation, authentication, and cleanup.
 
-- Plain `allow` and an empty `permissionOverrides` list did not grant execution.
-- Process-level skip plus Hook `allow` executed the fixture command.
-- Process-level skip plus Hook `deny` did not execute it.
-- A missing Hook script failed the tool instead of executing it.
-- Existing deny Hooks prevailed over an allow Hook.
-- The real Adapter test verified that a file did not exist while approval was
-  pending, appeared only after Desktop acceptance, and was never created after
-  denial or cancellation. Interaction closure preceded Turn completion.
-
-The new mode has protocol/runtime verification, not a user-confirmed Desktop
-visual acceptance test.
-
-```powershell
-$env:CODEXHOST_RUN_ANTIGRAVITY_APPROVAL_REAL = "1"
-node node_modules/vitest/vitest.mjs run --config tests/vitest.config.js packages/host-runtime/test/antigravity-approval.real.test.ts
-```
-
-This opt-in test uses the locally configured account and a private workspace.
-Optional runtime evidence is written to
-`CODEXHOST_ANTIGRAVITY_APPROVAL_EVIDENCE_DIR`; do not commit it.
+The long-Turn test uses a stand-in CLI to verify Adapter wiring, not to establish
+agy's native permission-rule semantics. The obsolete opt-in Desktop approval
+real test was removed because that mode is no longer supported.

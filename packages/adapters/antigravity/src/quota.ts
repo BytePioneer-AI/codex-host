@@ -92,8 +92,11 @@ function parseBuckets(groups: readonly unknown[]): ParsedBucket[] {
 }
 
 /**
- * Picks the bucket that actually constrains the next Turn: prefers the 5-hour
- * window (most actionable and resets soonest), breaking ties by consumption.
+ * Picks the headline bucket: a 5-hour window always leads because it is the
+ * most actionable and resets soonest, even when a longer window is more
+ * consumed (those stay visible as product usage). Among 5-hour windows, or
+ * among the remaining windows when no 5-hour window exists, the most consumed
+ * bucket leads.
  */
 function leadingBucket(buckets: readonly ParsedBucket[]): ParsedBucket | undefined {
   return [...buckets].sort((left, right) => {

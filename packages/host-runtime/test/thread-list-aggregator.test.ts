@@ -93,6 +93,41 @@ function directionalOfficialSource(rowsAscending: JsonObject[]) {
 }
 
 describe("aggregated Thread list", () => {
+  it("paginates mixed Harness and single native pages through exact prefix queries", async () => {
+    const source = officialSource([
+      official("official-5", 5),
+      official("official-4", 4),
+      official("official-2", 2),
+      official("official-1", 1),
+    ]);
+    const records = [external("external-6", 6), external("external-3", 3)];
+    const ids: unknown[] = [];
+    let cursor: string | null = null;
+    for (let index = 0; index < 4; index += 1) {
+      const decoded = query({ cursor, limit: 2, sortDirection: "desc" });
+      const page = await aggregateThreadList({
+        query: decoded,
+        records,
+        runtimeFor: () => null,
+        requestOfficialPage: source.request,
+      });
+      expect(decoded.limit).toBe(2);
+      ids.push(...page.data.map((thread) => thread.id));
+      cursor = page.nextCursor;
+      if (cursor === null) break;
+    }
+    expect(ids).toEqual([
+      "external-6",
+      "official-5",
+      "official-4",
+      "external-3",
+      "official-2",
+      "official-1",
+    ]);
+    expect(source.calls.filter((params) => params.limit === 1)).toHaveLength(2);
+    expect(cursor).toBeNull();
+  });
+
   it("terminates after an empty final official page", async () => {
     const source = officialSource([]);
     const page = await aggregateThreadList({

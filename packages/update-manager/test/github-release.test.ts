@@ -5,8 +5,10 @@ import {
   compareSemanticVersions,
   expectedInstallerAssetName,
   fetchLatestGitHubRelease,
+  fetchLatestGitHubReleaseWithGitHubCli,
   parseLatestGitHubRelease,
   selectInstallerReleaseArtifact,
+  type GitHubCliRunner,
 } from "@codexhost/update-manager";
 
 function release(overrides: Record<string, unknown> = {}) {
@@ -110,5 +112,137 @@ describe("GitHub Release update discovery", () => {
       CODEXHOST_LATEST_RELEASE_URL,
       expect.objectContaining({ redirect: "error" }),
     );
+  });
+
+  it("uses the authenticated GitHub CLI without exposing its token", async () => {
+    const run = vi.fn(async () => JSON.stringify(release()));
+    await expect(
+      fetchLatestGitHubReleaseWithGitHubCli({
+        environment: { PATH: "/usr/bin:/bin" },
+        executableCandidates: ["/opt/homebrew/bin/gh"],
+        run,
+      }),
+    ).resolves.toMatchObject({ version: "1.2.3" });
+    expect(run).toHaveBeenCalledWith(
+      "/opt/homebrew/bin/gh",
+      [
+        "api",
+        "--hostname",
+        "github.com",
+        "--method",
+        "GET",
+        "--header",
+        "Accept: application/vnd.github+json",
+        "--header",
+        "X-GitHub-Api-Version: 2022-11-28",
+        "repos/BytePioneer-AI/codex-host/releases/latest",
+      ],
+      { environment: { PATH: "/usr/bin:/bin" } },
+    );
+  });
+
+  it("falls back cleanly when GitHub CLI is unavailable", async () => {
+    const run = vi.fn(async () => {
+      throw Object.assign(new Error("not installed"), { code: "ENOENT" });
+    });
+    await expect(
+      fetchLatestGitHubReleaseWithGitHubCli({
+        executableCandidates: ["gh", "/opt/homebrew/bin/gh"],
+        run,
+      }),
+    ).resolves.toBeNull();
+    expect(run).toHaveBeenCalledTimes(2);
+  });
+
+  it("finds Homebrew gh with the minimal macOS GUI PATH", async () => {
+    const run = vi.fn(async (executable: string) => {
+      if (executable === "gh") throw Object.assign(new Error("missing"), { code: "ENOENT" });
+      return JSON.stringify(release());
+    });
+    await expect(
+      fetchLatestGitHubReleaseWithGitHubCli({
+        environment: { PATH: "/usr/bin:/bin" },
+        platform: "darwin",
+        run,
+      }),
+    ).resolves.toMatchObject({ version: "1.2.3" });
+    expect(run.mock.calls.map(([executable]) => executable)).toEqual([
+      "gh",
+      "/opt/homebrew/bin/gh",
+    ]);
+  });
+
+  it.each(["win32", "linux"] as const)("discovers native gh on %s", async (platform) => {
+    const expected =
+      platform === "win32" ? "C:\\Program Files\\GitHub CLI\\gh.exe" : "/usr/local/bin/gh";
+    const run = vi.fn(async (executable: string) => {
+      if (executable !== expected) throw Object.assign(new Error("missing"), { code: "ENOENT" });
+      return JSON.stringify(release());
+    });
+    await expect(
+      fetchLatestGitHubReleaseWithGitHubCli({
+        environment: { ProgramFiles: "C:\\Program Files" },
+        platform,
+        run,
+      }),
+    ).resolves.toMatchObject({ version: "1.2.3" });
+    expect(run.mock.calls.at(-1)?.[0]).toBe(expected);
+  });
+
+  it("does not substitute another installation for an explicit gh command", async () => {
+    const run = vi.fn<GitHubCliRunner>(async () => {
+      throw Object.assign(new Error("missing"), { code: "ENOENT" });
+    });
+    await expect(
+      fetchLatestGitHubReleaseWithGitHubCli({
+        environment: { CODEXHOST_GH_COMMAND: "/custom/gh" },
+        run,
+      }),
+    ).resolves.toBeNull();
+    expect(run).toHaveBeenCalledOnce();
+    expect(run.mock.calls[0]?.[0]).toBe("/custom/gh");
+  });
+
+  it("does not repeat CLI failures or expose their diagnostics", async () => {
+    const run = vi.fn(async () => {
+      throw new Error("private CLI diagnostic");
+    });
+    await expect(
+      fetchLatestGitHubReleaseWithGitHubCli({
+        executableCandidates: ["gh", "/opt/homebrew/bin/gh"],
+        run,
+      }),
+    ).resolves.toBeNull();
+    expect(run).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    "not JSON",
+    JSON.stringify(release({ prerelease: true })),
+    JSON.stringify(release({ html_url: "https://example.com/release" })),
+  ])("rejects invalid CLI release output", async (output) => {
+    const run = vi.fn(async () => output);
+    await expect(fetchLatestGitHubReleaseWithGitHubCli({ run })).resolves.toBeNull();
+    expect(run).toHaveBeenCalledOnce();
+  });
+
+  it("does not start gh after cancellation", async () => {
+    const run = vi.fn();
+    await expect(
+      fetchLatestGitHubReleaseWithGitHubCli({ signal: AbortSignal.abort(), run }),
+    ).rejects.toMatchObject({ name: "AbortError" });
+    expect(run).not.toHaveBeenCalled();
+  });
+
+  it("propagates cancellation without exposing subprocess stderr", async () => {
+    const controller = new AbortController();
+    const run = vi.fn(async () => {
+      controller.abort();
+      throw new Error("sensitive subprocess stderr");
+    });
+    await expect(
+      fetchLatestGitHubReleaseWithGitHubCli({ signal: controller.signal, run }),
+    ).rejects.toMatchObject({ name: "AbortError" });
+    expect(run).toHaveBeenCalledOnce();
   });
 });

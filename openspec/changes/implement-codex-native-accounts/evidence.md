@@ -78,7 +78,7 @@
 - 另取得“操作已准入但 stage 尚未建立时取消丢失”的 RED；开始 barrier 现从准入建立，取消和 close 在检查／注册阶段都有效。覆盖首次状态广播中的同步取消，不额外创建登录协调器。
 - 调用生产 `host.disconnect()` 的合成回归曾在恢复后等待已退出的旧 Turn。现在 Owner 在每次真实 stop proof 完成后通知仍附着的客户端，清理本客户端工作记账；failed stop、EOF 和 client detach 不触发该通知。回归先确认 native busy 已消失但 Host 仍不结束，再证明修复有效。初始探针误用了无效 fixture 选项，后续 gate-phase 观察也不能代替退出事件，两者都未作为成功修复保留。
 
-最后修正后的 build/plugins、严格 typecheck、lint/boundaries 通过；完整聚焦集合 **56 文件、759 通过、3 个 Windows-only skip**，包括显式启用的真实官方 CLI 和 compiled helper。Renderer build 与三份 E2E **43 通过**；相关 Rust **platform 56、launcher unit 52、CLI 4**，scoped clippy 与 fmt 通过。最后格式和 OpenSpec 对账另有检查日志。未运行全仓测试或跨平台 Desktop。
+启动修复提交 `1a2b4533` 的 build/plugins、严格 typecheck、lint/boundaries 通过；完整聚焦集合 **56 文件、759 通过、3 个 Windows-only skip**，包括显式启用的真实官方 CLI 和 compiled helper。Renderer build 与三份 E2E **43 通过**；相关 Rust **platform 56、launcher unit 52、CLI 4**，scoped clippy 与 fmt 通过。最后格式和 OpenSpec 对账另有检查日志。未运行全仓测试或跨平台 Desktop。
 
 最后代码另对真实官方 CLI 的隔离生命周期执行 **10/10** 次重复验证，记录为 `native-retirement-live-repeat-*.log`；结束后 OAuth callback 端口无 listener。每次仍是不打开授权 URL、不完成认证的开始／取消流程，不累加为十项新的功能覆盖。
 
@@ -87,6 +87,14 @@
 相关日志：`desktop-initialize-red.log`、`desktop-path-{red,green}.log`、`chromium-profile-{red,green}.log`、`native-oauth-routing-red.log`、`native-login-admission-cancel-red.log`、`native-recovery-drain-proof-red.log`、`native-startup-tests-final-clean.log`、`native-startup-tests-final-recheck.log`、`native-startup-cursor-recheck.log` 及 `native-startup-*-final*.log`。测试见 `native-official-integration.test.ts`，需显式设置 `CODEXHOST_TEST_OFFICIAL_CODEX` 和 `CODEXHOST_TEST_NATIVE_LAUNCHER`；它不会打开授权 URL、完成认证或调用真实 Model。
 
 真实 Desktop 目前只证明隔离登录页能够显示，不等于已登录界面、阻断时的管理入口或其他 Harness GUI 已验收；原始用户启动的 unavailable 首因仍未取得那次原因日志。真实认证、系统密钥、同一真实 Thread A→B→A 与完整迁移仍是明确的后续门槛。本轮新的独立 pi 审查未启动：CLI 缺少合法 Host Runtime endpoint/token context；没有新子任务或审查结果。
+
+## 启动修复后的主分支同步
+
+推送 `1a2b4533` 后，GitHub 报告与新的 main 冲突。同步至 `7cc4db87`，保留主分支的 v0.7.0 准备、Antigravity 原生权限、Claude/Pi 结算、mapping CAS 和 GitHub CLI 更新检查改动；没有执行发布。
+
+仅两个 modify/delete 冲突，均为本方案已删除的 `multi-account-thread-list` 实现与测试。阅读 #264 的修复和执行证据后，保留删除：这里已没有多 Account 分页中间层，原生请求直接使用外层 merger 给出的精确 limit。保留并适配其组合回归为单一 native source，仍验证两次较小 prefix 请求、原始 limit 不变、排序与无遗漏／重复，不恢复旧路由。
+
+同步后 build/plugins、严格 typecheck、lint/boundaries、launcher build、Rust tests/clippy、Renderer build 通过；聚焦集合按主分支受影响范围扩展为 **72 文件、1076 通过、3 个 Windows-only skip**，三份模拟客户端 E2E **43 通过**。未启用真实 Harness 认证测试。记录为 `post-fix-main-*.log` 和 `post-fix-main-test-manifest.txt`，不与旧集合累计。全仓格式检查通过；以新 main 为基准检查 PR 差异，不修改从 main 继承的已生成 OpenSpec 末尾空行。
 
 ## 原生协议证据的限度
 

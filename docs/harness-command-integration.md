@@ -100,6 +100,8 @@ Adapter static commandCatalog (no native request or Session)
   -> temporary Turn cleanup unless the command requires persistence
 ```
 
+Pi manual `/compact` and automatic compaction have no Host wall-clock deadline: native `compaction_end` determines their outcome. Pending Prompt and Compact response timeouts pause while compaction is active and resume afterward. Startup, other RPC responses, cancellation, and process cleanup retain their existing bounds.
+
 Grok maps optional trailing text to native `userContext`. Claude `/compact`
 maps it to custom summarization instructions. `/init` and `/recap` take no
 arguments. These commands invoke Harness-native operations and must not be

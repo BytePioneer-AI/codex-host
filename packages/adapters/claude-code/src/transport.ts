@@ -181,6 +181,14 @@ export interface ClaudeTurnTransport {
   readonly sessionId: string;
   setAutonomousTurnHandler(handler: (turn: ClaudeAutonomousTurn) => void): void;
   setIdleTurnHandler(handler: ClaudeIdleTurnHandler | null): void;
+  /**
+   * Receives settlements that have no preceding buffered Subagent lifecycle.
+   * A task-notification Segment may never produce a Terminal, so independent
+   * settlements must not wait for Turn batching. Settlements that depend on a
+   * buffered creation/reactivation stay in that batch to preserve causal order.
+   * Without a Thread handler, settlements remain in the autonomous Turn batch.
+   */
+  setThreadEventHandler(handler: ((event: ClaudeTurnEvent) => void) | null): void;
   setIdleLive(live: boolean): void;
   start(): Promise<void>;
   getContextUsage(): Promise<ClaudeTransportContextUsage | null>;

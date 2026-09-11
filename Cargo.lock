@@ -317,7 +317,7 @@ checksum = "0c9ea0ac24bc397ab3c98583a3c9ba74fa56b09a4449bbe172b9b1ddb016027a"
 
 [[package]]
 name = "codexhost-gate-a-native"
-version = "0.6.2"
+version = "0.7.0"
 dependencies = [
  "codexhost-platform",
  "codexhost-shim",
@@ -325,7 +325,7 @@ dependencies = [
 
 [[package]]
 name = "codexhost-launcher"
-version = "0.6.2"
+version = "0.7.0"
 dependencies = [
  "codexhost-platform",
  "fs2",
@@ -339,7 +339,7 @@ dependencies = [
 
 [[package]]
 name = "codexhost-platform"
-version = "0.6.2"
+version = "0.7.0"
 dependencies = [
  "getrandom 0.3.4",
  "keyring",
@@ -356,7 +356,7 @@ dependencies = [
 
 [[package]]
 name = "codexhost-shim"
-version = "0.6.2"
+version = "0.7.0"
 dependencies = [
  "codexhost-platform",
  "fs2",
@@ -366,7 +366,7 @@ dependencies = [
 
 [[package]]
 name = "codexhost-updater"
-version = "0.6.2"
+version = "0.7.0"
 dependencies = [
  "codexhost-platform",
  "serde",

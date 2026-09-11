@@ -100,6 +100,12 @@ xattr -dr com.apple.quarantine /Applications/codexhost.app
 
 在 `设置 → 外观` 中可以开启 **换行显示思考文本**，让思考块中的长行自动换行。该选项默认关闭，选择保存在本机并立即生效，普通 Shell 输出不受影响。
 
+### 更新检查与 GitHub 限流
+
+codexhost 优先通过已登录的 [GitHub CLI](https://cli.github.com/)（`gh auth login --hostname github.com`）检查最新 Release，使用账户的 API 额度，减少共享代理出口的匿名限流影响。凭证由 `gh` 管理，codexhost 不读取或保存 Token。
+
+未安装、未登录或调用失败时会回退到公开 API；单次 `gh` 调用最多等待 5 秒。支持 PATH、macOS Homebrew 和常见 Windows/Linux 安装位置；也可通过 Host 环境变量 `CODEXHOST_GH_COMMAND` 指定可执行文件路径（不带参数）。安装包下载和校验流程保持不变；认证请求仍受 GitHub 账户及次级限流约束。
+
 ### 交互展示
 
 <table>
@@ -156,7 +162,7 @@ xattr -dr com.apple.quarantine /Applications/codexhost.app
 | Edit Diff | 原生 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | 提问 / 取消 | 原生 | ✅ | — / ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Model / Thinking 选择 | 原生 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ / — |
-| 工具审批 | 原生 | ✅ | — | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| 工具审批 | 原生 | ✅ | — | ✅ | ✅ | ✅ | ✅ | —¹ | ✅ | ✅ |
 | 权限模式 | 原生 | — | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Agent 间任务协作 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — | — |
 | Usage | 原生 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — |
@@ -164,6 +170,8 @@ xattr -dr com.apple.quarantine /Applications/codexhost.app
 | 上下文压缩 | 原生 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — | — | — |
 | 斜杠命令 | 原生 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — | — |
 | 修订上一条消息 | 原生 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — | — |
+
+> **Antigravity：**¹ 仅提供 **Skip permissions（危险）**，使用原生 `--dangerously-skip-permissions`；codexhost 不添加工具审批、权限规则或工作区读写限制，请仅在可信环境中使用。旧的 Configured permissions / Desktop approvals 不再支持，需明确选择 Skip permissions。提问仍支持单选和文本，子代理支持原生卡片与只读过程记录。详见[权限说明](docs/antigravity-tool-approval.md)和[子代理说明](docs/antigravity-subagents.md)。
 
 ## 跨 Agent 协作
 

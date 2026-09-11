@@ -2,6 +2,7 @@ import type { AccountCreditsSnapshot } from "@codexhost/shared-contracts";
 
 import { formatRendererCreditsReset, rendererCreditsTone } from "../renderer-credits-control.js";
 import { formatRendererCreditsPercent } from "../renderer-usage-control.js";
+import { renderAccountResetTime } from "./accounts-reset-time.js";
 import { createRendererSettingsIcon } from "./icons.js";
 import type { RendererSettingsMessages } from "./localization.js";
 
@@ -67,28 +68,122 @@ export function resetCreditDetailLine(
     .replace("{time}", formatAccountCreditsReset(expiresAt, messages.locale, now));
 }
 
+interface AccountUsageWindow {
+  readonly label: string;
+  readonly usedPercent: number;
+  readonly resetsAt: string | undefined;
+}
+
+export function accountUsageColumnLabel(
+  period: "five_hour" | "seven_day",
+  display: AccountUsageDisplay,
+  messages: RendererSettingsMessages,
+): string {
+  const mode =
+    display === "remaining" ? messages.accountCreditsRemaining : messages.accountCreditsUsed;
+  return `${creditsPeriodLabel(period, messages)}${messages.locale === "zh-CN" ? "" : " "}${mode}`;
+}
+
+/** Only generic windows occupy the comparison columns; scoped labels are never totals. */
+function splitUsageWindows(credits: AccountCreditsSnapshot, messages: RendererSettingsMessages) {
+  const columns: Partial<Record<"five_hour" | "seven_day", AccountUsageWindow>> = {};
+  const additional: AccountUsageWindow[] = [];
+  const primary: AccountUsageWindow = {
+    label: credits.label ?? creditsPeriodLabel(credits.periodType, messages),
+    usedPercent: credits.usedPercent,
+    resetsAt: credits.resetsAt,
+  };
+  if (!credits.label && credits.periodType === "five_hour") columns.five_hour = primary;
+  else if (!credits.label && ["seven_day", "weekly"].includes(credits.periodType))
+    columns.seven_day = { ...primary, label: messages.accountCreditsPeriodSevenDay };
+  else additional.push(primary);
+  for (const product of credits.productUsage ?? []) {
+    const window: AccountUsageWindow = {
+      label: creditsProductLabel(product.product, messages),
+      usedPercent: product.usagePercent,
+      resetsAt: product.resetsAt,
+    };
+    // These exact public labels are shared by native Codex and Harness projections.
+    // Do not infer a global window from arbitrary model/product names containing "7-day".
+    const period =
+      product.product === "7-day window"
+        ? "seven_day"
+        : product.product === "5-hour window"
+          ? "five_hour"
+          : null;
+    if (period && !columns[period])
+      columns[period] = { ...window, label: creditsPeriodLabel(period, messages) };
+    else additional.push(window);
+  }
+  return { columns, additional };
+}
+
+function renderUsageWindow(
+  document: Document,
+  window: AccountUsageWindow,
+  messages: RendererSettingsMessages,
+  display: AccountUsageDisplay,
+): HTMLElement {
+  const meter = document.createElement("div");
+  meter.className = "settings-account-usage__meter";
+  const label = document.createElement("span");
+  label.className = "settings-account-usage__title";
+  label.textContent = window.label;
+  label.title = window.label;
+  const value = display === "remaining" ? 100 - window.usedPercent : window.usedPercent;
+  const valueLabel =
+    display === "remaining" ? messages.accountCreditsRemaining : messages.accountCreditsUsed;
+  const tone = rendererCreditsTone(window.usedPercent);
+  const percent = document.createElement("div");
+  percent.className = `settings-account-usage__percent settings-account-usage__percent--${tone}`;
+  const number = document.createElement("span");
+  number.textContent = formatRendererCreditsPercent(value);
+  const reset = window.resetsAt
+    ? renderAccountResetTime(document, window.resetsAt, messages)
+    : null;
+  if (reset) percent.append(reset.countdown);
+  percent.append(number);
+  const bar = document.createElement("div");
+  bar.className = `settings-account-usage__bar settings-account-usage__bar--${tone}`;
+  bar.setAttribute("role", "meter");
+  bar.setAttribute("aria-label", `${window.label} · ${valueLabel}`);
+  bar.setAttribute("aria-valuemin", "0");
+  bar.setAttribute("aria-valuemax", "100");
+  bar.setAttribute("aria-valuenow", String(value));
+  const fill = document.createElement("span");
+  fill.style.width = `${Math.min(100, Math.max(0, value))}%`;
+  bar.append(fill);
+  meter.append(label, percent, bar);
+  if (reset) meter.append(reset.timestamp);
+  return meter;
+}
+
 export function renderAccountUsage(
   document: Document,
   state: AccountUsageViewState | undefined,
   messages: RendererSettingsMessages,
   display: AccountUsageDisplay,
   onRetry: () => void,
-): HTMLElement | null {
-  if (!state) return null;
-  const usage = document.createElement("div");
-  usage.className = "settings-account-usage";
-  if (state.status !== "ready") {
+): { cells: HTMLTableCellElement[]; additional: HTMLElement | null } {
+  if (state?.status !== "ready") {
+    const cell = document.createElement("td");
+    cell.colSpan = 2;
+    cell.className = "settings-account-usage-cell settings-account-usage-cell--message";
+    const usage = document.createElement("div");
+    usage.className = "settings-account-usage";
     const message = document.createElement("span");
     message.className = "settings-account-usage__message";
-    message.textContent =
-      state.status === "loading"
+    message.textContent = !state
+      ? "—"
+      : state.status === "loading"
         ? messages.accountCreditsLoading
         : state.status === "error"
           ? messages.accountCreditsFailed
           : messages.accountCreditsEmpty;
+    if (!state) message.title = messages.accountCreditsEmpty;
     usage.append(message);
-    if (state.status === "loading") usage.setAttribute("aria-busy", "true");
-    if (state.status === "error") {
+    if (state?.status === "loading") usage.setAttribute("aria-busy", "true");
+    if (state?.status === "error") {
       const retry = document.createElement("button");
       retry.type = "button";
       retry.className = "settings-command-button settings-command-button--secondary";
@@ -96,62 +191,35 @@ export function renderAccountUsage(
       retry.addEventListener("click", onRetry);
       usage.append(retry);
     }
-    return usage;
+    cell.append(usage);
+    return { cells: [cell], additional: null };
   }
-  const credits = state.credits;
-  // Render only reported windows/products. Neither a plan name nor a missing
-  // window is evidence of zero usage, unlimited access, or a synthetic 5h limit.
-  const windows = [
-    {
-      label: credits.label ?? creditsPeriodLabel(credits.periodType, messages),
-      usedPercent: credits.usedPercent,
-      resetsAt: credits.resetsAt,
-    },
-    ...(credits.productUsage ?? []).map((product) => ({
-      label: creditsProductLabel(product.product, messages),
-      usedPercent: product.usagePercent,
-      resetsAt: product.resetsAt,
-    })),
-  ];
-  for (const window of windows) {
-    const meter = document.createElement("div");
-    meter.className = "settings-account-usage__meter";
-    const label = document.createElement("span");
-    label.className = "settings-account-usage__title";
-    label.textContent = window.label;
-    label.title = window.label;
-    const value = display === "remaining" ? 100 - window.usedPercent : window.usedPercent;
-    const valueLabel =
-      display === "remaining" ? messages.accountCreditsRemaining : messages.accountCreditsUsed;
-    const tone = rendererCreditsTone(window.usedPercent);
-    const bar = document.createElement("div");
-    bar.className = `settings-account-usage__bar settings-account-usage__bar--${tone}`;
-    bar.setAttribute("role", "meter");
-    bar.setAttribute("aria-label", `${window.label} · ${valueLabel}`);
-    bar.setAttribute("aria-valuemin", "0");
-    bar.setAttribute("aria-valuemax", "100");
-    bar.setAttribute("aria-valuenow", String(value));
-    const fill = document.createElement("span");
-    fill.style.width = `${Math.min(100, Math.max(0, value))}%`;
-    bar.append(fill);
-    const percent = document.createElement("span");
-    percent.className = `settings-account-usage__percent settings-account-usage__percent--${tone}`;
-    const prefix = document.createElement("span");
-    prefix.textContent = valueLabel;
-    prefix.className = "settings-account-usage__value-label";
-    const number = document.createElement("span");
-    number.textContent = formatRendererCreditsPercent(value);
-    percent.append(prefix, number);
-    meter.append(label, bar, percent);
-    if (window.resetsAt) {
-      const reset = document.createElement("span");
-      reset.className = "settings-account-usage__sub";
-      reset.textContent = `${formatAccountCreditsReset(window.resetsAt, messages.locale)} ${messages.accountCreditsReset}`;
-      meter.append(reset);
+  const { columns, additional } = splitUsageWindows(state.credits, messages);
+  const cells = (["five_hour", "seven_day"] as const).map((period) => {
+    const cell = document.createElement("td");
+    cell.className = "settings-account-usage-cell";
+    const window = columns[period];
+    if (window) cell.append(renderUsageWindow(document, window, messages, display));
+    else {
+      const missing = document.createElement("div");
+      missing.className = "settings-account-usage__missing";
+      const label = document.createElement("span");
+      label.className = "settings-account-usage__title";
+      label.textContent = creditsPeriodLabel(period, messages);
+      const dash = document.createElement("span");
+      dash.textContent = "—";
+      dash.setAttribute("aria-hidden", "true");
+      missing.append(label, dash);
+      cell.append(missing);
     }
-    usage.append(meter);
-  }
-  return usage;
+    return cell;
+  });
+  if (!additional.length) return { cells, additional: null };
+  const extra = document.createElement("div");
+  extra.className = "settings-account-extra-usage";
+  for (const window of additional)
+    extra.append(renderUsageWindow(document, window, messages, display));
+  return { cells, additional: extra };
 }
 
 export function renderAccountResetCredits(
@@ -172,8 +240,11 @@ export function renderAccountResetCredits(
     messages.locale === "zh-CN"
       ? `${resetCredits.availableCount} 张`
       : String(resetCredits.availableCount);
+  const label = document.createElement("span");
+  label.textContent = messages.accountResetCredits;
   summary.append(
     createRendererSettingsIcon("ticket", 16),
+    label,
     count,
     createRendererSettingsIcon("chevron-right", 14),
   );

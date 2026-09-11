@@ -94,7 +94,7 @@ Windows 当前覆盖常见的：
 | Pi | 是 | 否，仍保留 Adapter 内实现 | 是 | 找不到时保留原有延迟失败语义 |
 | OMP | 是 | 否，仍保留 Adapter 内实现 | 是 | 找不到时保留原有延迟失败语义 |
 | Grok | 是 | 是 | 否 | GUI 精简 `PATH` 下仍应补齐 Node Runtime PATH |
-| DeepSeek Harness | 否 | 否 | 否 | 优先连接 loopback DSH Web Host；本地 `dsh`/`npx` fallback 仍使用 Adapter 内发现代码 |
+| DeepSeek Harness | 否 | 否 | 否 | Adapter 内发现本地 `dsh`/`npx`，校验精确支持版本后启动托管 Web |
 
 因此，当前准确结论是：
 
@@ -102,7 +102,7 @@ Windows 当前覆盖常见的：
 
 ## DeepSeek Harness 的特殊性
 
-DeepSeek Adapter 默认连接本地 DSH Web Host：
+DeepSeek Adapter 仅支持精确 `0.1.2-rc.1` 和 `0.1.5-rc.1`，推荐 `dsh-v0.1.5-rc.1`。Legacy 协议及外部 Host attach/fallback 已移除。默认诊断端点为：
 
 ```text
 http://127.0.0.1:3080/
@@ -110,12 +110,13 @@ http://127.0.0.1:3080/
 
 连接流程是：
 
-1. 探测已经运行的 loopback HTTP Host；
-2. 如果 Host 不可达，查找显式配置的命令；
-3. 否则在当前 `PATH` 中查找 `dsh`；
-4. 再回退到本地 `npx --offline --no-install @deepseek-ai/dsh`；
-5. 启动 `web --host ... --port ...`；
-6. 等待 HTTP Host 就绪后建立 HTTP/WebSocket 通信。
+1. 校验诊断端点只包含无凭据的 loopback HTTP 根地址，拒绝 bootstrap URL 和查询参数。
+2. 依次检查显式命令、当前 `PATH` 中的 `dsh`、本地 `npx --offline --no-install @deepseek-ai/dsh`；显式配置不可用时不静默改用其他安装。
+3. 执行 `--version`，仅接受上述两个完整版本号。其他 RC、正式版和带 build metadata 的变体均在启动 Web 前失败，并显示实际版本、支持范围和推荐版本。
+4. 对诊断端点做无凭据指纹检查。若已有 DSH Web 返回已识别的认证要求，提示关闭该实例后重新诊断；不会接管其凭据或停止它。端点属于其他服务时不向其发送会话内容。
+5. 启动 `web --no-open --host 127.0.0.1 --port 0`，等待原生 bootstrap，完成认证，再建立 HTTP/WebSocket 通信。托管进程使用自己的临时端口。
+
+正常使用无需手动启动 `dsh web`。版本变化后重新启动 codexhost，以重新选择对应日志与流式 profile；V0/V3 的历史边界见[消息修订与恢复](dsh-edit-recovery.md)。
 
 DeepSeek 的 endpoint 校验、Host 启动、就绪等待和 HTTP/WebSocket 生命周期属于 Adapter 专用语义，应继续留在 `packages/adapters/deepseek-harness`。
 

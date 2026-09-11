@@ -27,6 +27,7 @@ if (args.length !== 2 || args.some((arg) => arg.startsWith("--"))) {
           output,
           complete: report.complete,
           evaluated: report.prs.length,
+          issues: report.issues?.length ?? 0,
           skipped: report.skipped.length,
           counts: Object.fromEntries(
             VERDICTS.map((verdict) => [

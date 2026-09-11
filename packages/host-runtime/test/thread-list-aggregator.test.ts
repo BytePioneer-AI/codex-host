@@ -16,6 +16,7 @@ import {
   aggregateThreadList,
   officialThreadListPageFromResponse,
 } from "../src/thread-list-aggregator.js";
+import { aggregateOfficialAccountThreadListPage } from "../src/multi-account-thread-list.js";
 
 const harnessId = harnessIdSchema.parse("pi");
 
@@ -93,6 +94,37 @@ function directionalOfficialSource(rowsAscending: JsonObject[]) {
 }
 
 describe("aggregated Thread list", () => {
+  it("paginates mixed Harness and multi-Account pages through exact prefix queries", async () => {
+    const sources = {
+      a: officialSource([official("a-5", 5), official("a-2", 2)]),
+      b: officialSource([official("b-4", 4), official("b-1", 1)]),
+    };
+    const records = [external("external-6", 6), external("external-3", 3)];
+    const ids: unknown[] = [];
+    let cursor: string | null = null;
+    for (let index = 0; index < 4; index += 1) {
+      const decoded = query({ cursor, limit: 2, sortDirection: "desc" });
+      const page = await aggregateThreadList({
+        query: decoded,
+        records,
+        runtimeFor: () => null,
+        requestOfficialPage: (params) =>
+          aggregateOfficialAccountThreadListPage({
+            query: decoded,
+            accountIds: ["a", "b"],
+            params,
+            requestAccountPage: (accountId, params) =>
+              sources[accountId as "a" | "b"].request(params),
+          }),
+      });
+      ids.push(...page.data.map((thread) => thread.id));
+      cursor = page.nextCursor;
+      if (cursor === null) break;
+    }
+    expect(ids).toEqual(["external-6", "a-5", "b-4", "external-3", "a-2", "b-1"]);
+    expect(cursor).toBeNull();
+  });
+
   it("terminates after an empty final official page", async () => {
     const source = officialSource([]);
     const page = await aggregateThreadList({

@@ -12,6 +12,8 @@ import {
   MODERN_MODEL_SELECTION_PROJECTION_KEY,
   MODERN_PERMISSION_PROJECTION_KEY,
   ModernConfigurationError,
+  modernConfigurationHarnessError,
+  readModernModelSelectionState,
   readModernConfigurationSnapshot,
   selectModernModel,
   selectModernPermissionMode,
@@ -507,6 +509,130 @@ describe("DeepSeek Harness Modern Model selection", () => {
 });
 
 describe("DeepSeek Harness Modern Permission selection", () => {
+  it.each([
+    [null, "ask", "unsupported"],
+    [permissionCatalog(), "missing-preset", "invalidRequest"],
+  ] as const)("rejects unavailable permission modes before RPC", async (catalog, mode, code) => {
+    const remote = new FakeRemote(async () => ({ ok: true, value: undefined }));
+    await expect(
+      selectModernPermissionMode(
+        remote,
+        initialControl(),
+        SESSION_ID,
+        catalog,
+        mode as never,
+        new AbortController().signal,
+      ),
+    ).rejects.toMatchObject({ code });
+    expect(remote.calls).toEqual([]);
+  });
+
+  it.each([
+    [{ ok: true, value: undefined }, "protocolError"],
+    [
+      { ok: true, value: { commandId: "cmd", result: { kind: "error", text: "denied" } } },
+      "remoteError",
+    ],
+    [
+      { ok: false, error: { code: "command/rejected", message: "denied", details: {} } },
+      "remoteError",
+    ],
+  ] as const)(
+    "does not report an unconfirmed command as a permission change",
+    async (response, code) => {
+      const remote = new FakeRemote(async () => response);
+      await expect(
+        selectModernPermissionMode(
+          remote,
+          initialControl(),
+          SESSION_ID,
+          permissionCatalog(),
+          "danger-full-access" as never,
+          new AbortController().signal,
+        ),
+      ).rejects.toMatchObject({ code });
+      expect(remote.calls).toHaveLength(1);
+    },
+  );
+
+  it("accepts a lost command reply only after the native projection confirms it", async () => {
+    const control = initialControl();
+    const remote = new FakeRemote(async () => {
+      control.set(MODERN_PERMISSION_PROJECTION_KEY, permissionValue("danger-full-access"), 5);
+      throw new ModernRemoteConnectionError("unavailable", "reply lost");
+    });
+    await expect(
+      selectModernPermissionMode(
+        remote,
+        control,
+        SESSION_ID,
+        permissionCatalog(),
+        "danger-full-access" as never,
+        new AbortController().signal,
+      ),
+    ).resolves.toEqual({ changed: true, projectionSeq: 5 });
+    expect(remote.calls).toHaveLength(1);
+  });
+
+  it.each([false, true])(
+    "rejects malformed permission confirmation after uncertain=%s reply",
+    async (uncertain) => {
+      const control = initialControl();
+      const remote = new FakeRemote(async () => {
+        control.set(MODERN_PERMISSION_PROJECTION_KEY, { currentValue: 42 }, 5);
+        if (uncertain) throw new ModernRemoteConnectionError("unavailable", "reply lost");
+        return { ok: true, value: { commandId: "cmd", result: { kind: "success" } } };
+      });
+      await expect(
+        selectModernPermissionMode(
+          remote,
+          control,
+          SESSION_ID,
+          permissionCatalog(),
+          "danger-full-access" as never,
+          new AbortController().signal,
+        ),
+      ).rejects.toMatchObject({ code: "protocolError" });
+    },
+  );
+
+  it("waits for missing permissions and rejects a malformed first projection", async () => {
+    const control = new FakeControl();
+    const remote = new FakeRemote(async () => ({ ok: true, value: undefined }));
+    const selecting = selectModernPermissionMode(
+      remote,
+      control,
+      SESSION_ID,
+      permissionCatalog(),
+      "ask" as never,
+      new AbortController().signal,
+    );
+    const checked = expect(selecting).rejects.toMatchObject({ code: "protocolError" });
+    control.set(MODERN_PERMISSION_PROJECTION_KEY, { malformed: true }, 0);
+    await checked;
+    expect(remote.calls).toEqual([]);
+  });
+
+  it("does not retry an uncertain permission mutation when confirmation is cancelled", async () => {
+    const abort = new AbortController();
+    const control = initialControl();
+    const remote = new FakeRemote(async () => {
+      abort.abort();
+      throw new ModernRemoteConnectionError("unavailable", "reply lost");
+    });
+    await expect(
+      selectModernPermissionMode(
+        remote,
+        control,
+        SESSION_ID,
+        permissionCatalog(),
+        "danger-full-access" as never,
+        abort.signal,
+      ),
+    ).rejects.toMatchObject({ code: "unavailable" });
+    expect(remote.calls).toHaveLength(1);
+  });
+
   it("short-circuits the same authoritative preset without a command RPC", async () => {
     const remote = new FakeRemote(async () => ({ ok: true, value: undefined }));
     await expect(
@@ -578,5 +704,55 @@ describe("DeepSeek Harness Modern Permission selection", () => {
       ),
     ).rejects.toMatchObject({ code: "protocolError" });
     expect(remote.calls).toHaveLength(1);
+  });
+});
+
+describe("DeepSeek configuration error boundaries", () => {
+  it.each([-2, -0, 0.5, Number.NaN])("rejects invalid model projection sequence %s", (seq) => {
+    expect(() =>
+      readModernModelSelectionState({ seq, value: modelValue(null) }, modelCatalog()),
+    ).toThrow(ModernConfigurationError);
+  });
+
+  it.each([
+    { provider: "", model: "model-1" },
+    { provider: "provider-1", model: "\0" },
+    { provider: "provider-1", model: "m".repeat(513) },
+    { provider: "provider-1", model: "model-1", reasoningEffort: "" },
+    { provider: "provider-1", model: "model-1", extra: true },
+  ])("rejects malformed native model selection", (value) => {
+    expect(() =>
+      readModernModelSelectionState({ seq: 1, value: modelValue(value) }, modelCatalog()),
+    ).toThrow(ModernConfigurationError);
+  });
+
+  it.each([
+    ["authenticationRequired", undefined, "authenticationRequired", false],
+    ["invalidRequest", undefined, "invalidRequest", false],
+    ["notInstalled", undefined, "notInstalled", false],
+    ["processExited", undefined, "processExited", true],
+    ["protocolError", undefined, "protocolError", false],
+    ["unsupported", undefined, "unsupported", false],
+    ["unavailable", undefined, "unavailable", true],
+    ["limitExceeded", undefined, "protocolError", false],
+    ["cancelled", undefined, "unavailable", true],
+    ["remoteError", "session/not-found", "sessionNotFound", false],
+    ["remoteError", "session/agent-busy", "sessionBusy", true],
+    ["remoteError", "model/rejected", "nativeFailure", false],
+  ] as const)(
+    "preserves the actionable error classification for %s/%s",
+    (native, diagnostic, code, retryable) => {
+      expect(
+        modernConfigurationHarnessError(new ModernConfigurationError(native, "failed", diagnostic)),
+      ).toMatchObject({ code, retryable });
+    },
+  );
+
+  it("does not expose unexpected configuration exceptions", () => {
+    expect(modernConfigurationHarnessError(new Error("SECRET_CANARY"))).toEqual({
+      code: "nativeFailure",
+      message: "DeepSeek Harness configuration failed",
+      retryable: false,
+    });
   });
 });

@@ -35,6 +35,7 @@ import {
   grokCompactionEventFromUpdate,
   isGrokExtensionSessionUpdateMethod,
 } from "./grok-compaction.js";
+import { grokSubagentEventFromUpdate } from "./grok-subagent.js";
 import {
   GROK_COMPACT_CONVERSATION_FALLBACK_METHOD,
   GROK_COMPACT_CONVERSATION_METHOD,
@@ -116,6 +117,21 @@ export type GrokTransportEvent =
       contextWindowTokens?: number;
       errorMessage?: string;
       metadata?: Record<string, unknown>;
+    }
+  | {
+      type: "subagent.spawned";
+      nativeSubagentId: string;
+      description?: string;
+      role?: string;
+      model?: string;
+      metadata?: Record<string, unknown>;
+    }
+  | {
+      type: "subagent.finished";
+      nativeSubagentId: string;
+      status: "completed" | "failed" | "interrupted";
+      resultSummary?: string;
+      metadata?: Record<string, unknown>;
     };
 
 export interface GrokPermissionRequest {
@@ -153,7 +169,7 @@ export interface GrokNativeSessionLocation {
 }
 
 export type GrokOpenInput =
-  | { kind: "create"; permissionModeId: HarnessPermissionModeId }
+  | { kind: "create"; permissionModeId: HarnessPermissionModeId; modelId?: string }
   | { kind: "resume"; sessionId: string; permissionModeId: HarnessPermissionModeId }
   | GrokForkOpenInput
   | GrokRewindOpenInput;
@@ -177,6 +193,14 @@ interface ActiveCompact {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function acpToolName(update: unknown, metadata?: Record<string, unknown>): string | undefined {
+  if (!isRecord(update)) return undefined;
+  if (typeof update.name === "string" && update.name.length > 0) return update.name;
+  const meta = isRecord(update._meta) ? update._meta : metadata;
+  const tool = meta && isRecord(meta["x.ai/tool"]) ? meta["x.ai/tool"] : undefined;
+  return tool && typeof tool.name === "string" && tool.name.length > 0 ? tool.name : undefined;
 }
 
 function errorText(error: unknown): string {
@@ -281,6 +305,8 @@ function transportEvent(
   }
   const compaction = grokCompactionEventFromUpdate(extension);
   if (compaction) return compaction;
+  const subagent = grokSubagentEventFromUpdate(extension);
+  if (subagent) return subagent;
   switch (update.sessionUpdate) {
     case "user_message_chunk":
     case "agent_message_chunk":
@@ -296,30 +322,34 @@ function transportEvent(
         text: update.content.text,
         ...(update.messageId ? { messageId: update.messageId } : {}),
       };
-    case "tool_call":
+    case "tool_call": {
+      const name = acpToolName(update, metadata);
       return {
         type: "tool.call",
         callId: update.toolCallId,
         title: update.title,
-        ...(update.name ? { name: update.name } : {}),
+        ...(name ? { name } : {}),
         ...(update.kind ? { kind: update.kind } : {}),
         ...(update.status ? { status: update.status } : {}),
         ...(update.rawInput !== undefined ? { rawInput: update.rawInput } : {}),
         ...(update.rawOutput !== undefined ? { rawOutput: update.rawOutput } : {}),
         ...(update.content ? { content: update.content } : {}),
       };
-    case "tool_call_update":
+    }
+    case "tool_call_update": {
+      const name = acpToolName(update, metadata);
       return {
         type: "tool.update",
         callId: update.toolCallId,
         ...(update.title !== undefined ? { title: update.title } : {}),
-        ...(update.name !== undefined ? { name: update.name } : {}),
+        ...(name ? { name } : {}),
         ...(update.kind !== undefined ? { kind: update.kind } : {}),
         ...(update.status !== undefined ? { status: update.status } : {}),
         ...(update.rawInput !== undefined ? { rawInput: update.rawInput } : {}),
         ...(update.rawOutput !== undefined ? { rawOutput: update.rawOutput } : {}),
         ...(update.content !== undefined ? { content: update.content } : {}),
       };
+    }
     case "usage_update":
       return { type: "usage", update, ...(metadata ? { metadata } : {}) };
     default:
@@ -488,6 +518,7 @@ export class GrokAcpTransport {
   #initialize: InitializeResponse | null = null;
   #replay: GrokTransportEvent[] | null = null;
   #sessionId: string | null = null;
+  #startupModelId: string | undefined;
   #stderrTail = "";
 
   constructor(options: GrokAcpTransportOptions) {
@@ -557,6 +588,7 @@ export class GrokAcpTransport {
     if (this.#sessionId || this.#closed)
       throw new Error("Grok ACP Transport cannot be opened twice");
     try {
+      if (input.kind === "create") this.#startupModelId = input.modelId;
       const initialize = await this.#ensureInitialized();
       const connection = this.#connection;
       if (!connection) throw new GrokTransportError("unavailable", "Grok ACP is unavailable");
@@ -723,7 +755,7 @@ export class GrokAcpTransport {
       ...(this.#options.command ? { command: this.#options.command } : {}),
       environment: this.#options.environment ?? process.env,
     });
-    const invocation = grokInvocation(executable);
+    const invocation = grokInvocation(executable, process.platform, this.#startupModelId);
     const child = spawn(invocation.command, invocation.arguments, {
       cwd: this.#options.cwd,
       env: { ...process.env, ...this.#options.environment },

@@ -1,56 +1,8 @@
-.settings-harness-accounts {
-  margin-top: 32px;
-}
-
-.settings-harness-accounts__title {
-  margin: 0 0 16px;
-  font-size: 14px;
-  font-weight: 500;
-}
-
-.settings-harness-account__identity {
-  min-width: 0;
-}
-
-.settings-harness-account__identity > .settings-account-email {
-  display: block;
-  max-width: 24ch;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .settings-harness-account__logo {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 40px;
-  height: 40px;
-  flex: none;
-}
-
-.settings-harness-account {
   display: grid;
-  grid-template-columns: minmax(180px, 1fr) minmax(0, 2fr);
-  align-items: center;
-  gap: 24px;
-  padding: 24px;
-}
-
-.settings-harness-account + .settings-harness-account {
-  border-top: 1px solid var(--settings-border);
-}
-
-.settings-harness-account > div {
-  min-width: 0;
-  overflow-wrap: anywhere;
-}
-
-@media (max-width: 700px) {
-  .settings-harness-account {
-    grid-template-columns: minmax(0, 1fr);
-    padding: 16px;
-  }
+  place-items: center;
+  width: 34px;
+  height: 34px;
 }
 
 .settings-account-header {
@@ -58,13 +10,6 @@
   align-items: flex-start;
   justify-content: space-between;
   gap: 20px;
-}
-
-.settings-account-eyebrow {
-  margin: 0 0 8px;
-  color: var(--settings-muted);
-  font-size: 11px;
-  letter-spacing: 0.13em;
 }
 
 .settings-account-header > :first-child {
@@ -75,7 +20,7 @@
 .settings-account-header > .settings-command-button {
   flex: none;
   white-space: nowrap;
-  margin-top: 20px;
+  margin-top: 0;
   min-height: 36px;
   padding: 8px 12px;
   border-radius: 7px;
@@ -101,53 +46,6 @@
 }
 .settings-account-status:empty {
   display: none;
-}
-
-.settings-account-help-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  margin-top: 20px;
-  flex-wrap: wrap;
-}
-.settings-account-task-hint {
-  display: flex;
-  align-items: flex-start;
-  gap: 9px;
-  margin: 0;
-  color: var(--settings-muted);
-  font-size: 12px;
-  flex: 1 1 280px;
-}
-.settings-account-task-hint svg {
-  flex: none;
-  margin-top: 1px;
-}
-.settings-account-help-button {
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  padding: 8px 12px;
-  color: var(--settings-muted);
-  font-size: 12px;
-  background: transparent;
-  border: 0;
-  border-radius: 7px;
-  cursor: pointer;
-}
-.settings-account-help-button:hover {
-  color: var(--settings-text);
-  background: var(--settings-hover);
-}
-.settings-account-device-code-note {
-  margin: 12px 0 0;
-  font-size: 12px;
-  padding: 10px 12px;
-  color: var(--settings-warning);
-  background: var(--settings-warning-bg);
-  border: 1px solid var(--settings-warning-border);
-  border-radius: 8px;
 }
 
 .settings-account-toolbar {
@@ -184,7 +82,7 @@
 }
 .settings-account-toolbar input {
   min-width: 80px;
-  width: 150px;
+  width: 210px;
   max-width: 100%;
   padding: 5px 0;
   color: var(--settings-text);
@@ -234,7 +132,7 @@
   font-size: 12px;
 }
 .settings-account-table th {
-  padding: 13px 20px;
+  padding: 12px 16px;
   color: var(--account-muted);
   background: light-dark(#f8f8fa, #202024);
   font-size: 11px;
@@ -244,18 +142,16 @@
 .settings-account-table th:nth-child(1) {
   width: 32%;
 }
-.settings-account-table th:nth-child(2) {
-  width: 38%;
-}
+.settings-account-table th:nth-child(2),
 .settings-account-table th:nth-child(3) {
-  width: 12%;
+  width: 24%;
 }
 .settings-account-table th:nth-child(4) {
-  width: 18%;
+  width: 20%;
   text-align: right;
 }
 .settings-account-table td {
-  padding: 19px 20px;
+  padding: 17px 16px;
   vertical-align: middle;
   border-top: 1px solid var(--settings-divider);
 }
@@ -285,16 +181,11 @@
 .settings-account-row__identity {
   min-width: 0;
 }
-.settings-account-title {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  flex-wrap: wrap;
-}
 .settings-account-email {
+  display: block;
   min-width: 0;
   overflow: hidden;
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 550;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -303,27 +194,22 @@
   display: flex;
   align-items: center;
   min-width: 0;
-  gap: 7px;
+  gap: 5px;
   margin-top: 4px;
   color: var(--settings-muted);
-}
-.settings-account-domain {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.settings-account-plan-separator {
-  flex: none;
+  flex-wrap: wrap;
+  font-size: 11px;
+  overflow-wrap: anywhere;
 }
 .settings-account-plan {
   flex: none;
-  padding: 1px 6px;
+  padding: 0 4px;
   color: var(--settings-muted);
   border: 1px solid var(--settings-border);
   border-radius: 5px;
-  font-size: 11px;
-  white-space: nowrap;
+  font-size: 10px;
+  max-width: 100%;
+  overflow-wrap: anywhere;
 }
 .settings-account-plan--highlighted {
   color: light-dark(#654f91, #c8bfff);
@@ -333,51 +219,69 @@
 }
 .settings-account-active {
   flex: none;
-  padding: 2px 7px;
-  color: light-dark(#66548e, #bdb4ff);
-  background: light-dark(#f4f0fb, #aca0ff12);
-  border: 1px solid light-dark(#dfd5f1, #aca0ff24);
-  border-radius: 5px;
-  font-size: 11px;
+  color: light-dark(#66548e, #c8bfff);
+  font-size: 10px;
   white-space: nowrap;
 }
 
 .settings-account-usage {
   display: grid;
-  gap: 14px;
-  max-width: 380px;
+  gap: 10px;
 }
 .settings-account-usage__meter {
   display: grid;
-  grid-template-columns: 48px minmax(36px, 1fr) 96px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-rows: 20px 4px 17px;
   align-items: center;
-  gap: 3px 10px;
+  gap: 6px 0;
+  min-width: 0;
+  font-variant-numeric: tabular-nums;
 }
-:host([lang="zh-CN"]) .settings-account-usage__meter {
-  grid-template-columns: 48px minmax(36px, 1fr) 72px;
-}
-
 .settings-account-usage__title {
-  color: light-dark(#5d5d68, #c3c3cd);
-  font-size: 12px;
+  display: none;
+  min-width: 0;
+  color: var(--settings-muted);
+  font-size: 11px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.settings-account-extra-usage {
+  display: grid;
+  gap: 12px;
+  margin-top: 14px;
+}
+.settings-account-extra-usage .settings-account-usage__meter {
+  grid-template-rows: auto 20px 4px 17px;
+}
+.settings-account-extra-usage .settings-account-usage__title {
+  display: block;
+  grid-column: 1 / -1;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
 .settings-account-usage__percent {
+  grid-column: 1 / -1;
+  min-width: 0;
   display: flex;
   align-items: baseline;
   justify-content: flex-end;
-  gap: 4px;
+  gap: 7px;
   font-size: 14px;
   font-weight: 600;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
-.settings-account-usage__value-label {
+.settings-account-usage__countdown {
+  min-width: 0;
   color: var(--settings-muted);
-  font-size: 11px;
+  font-size: 10px;
   font-weight: 400;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.settings-account-usage__percent > :last-child {
+  flex: none;
 }
 .settings-account-usage__percent--warn {
   color: var(--settings-warning);
@@ -386,6 +290,7 @@
   color: var(--settings-danger);
 }
 .settings-account-usage__bar {
+  grid-column: 1 / -1;
   height: 4px;
   overflow: hidden;
   background: light-dark(#e3e1e8, #3c3c43);
@@ -404,15 +309,45 @@
   background: var(--settings-danger);
 }
 .settings-account-usage__sub {
-  grid-column: 2 / -1;
+  grid-column: 1 / -1;
   color: var(--account-muted);
-  font-size: 11px;
+  font-size: 10px;
   font-variant-numeric: tabular-nums;
-  overflow-wrap: anywhere;
+  text-align: right;
+  white-space: nowrap;
 }
-.settings-account-usage__message,
-.settings-account-unknown {
+.settings-account-usage__message {
   color: var(--settings-muted);
+}
+.settings-account-usage__missing {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-content: center;
+  gap: 6px;
+  min-height: 53px;
+  color: var(--settings-muted);
+}
+.settings-account-usage__missing > span:not(.settings-account-usage__title) {
+  grid-column: 1 / -1;
+  font-size: 14px;
+}
+.settings-account-management {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+}
+.settings-account-native {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 3px;
+  color: var(--settings-muted);
+  font-size: 11px;
+}
+.settings-account-native .settings-icon-button {
+  width: 25px;
+  height: 28px;
 }
 .settings-account-usage > button {
   justify-self: start;
@@ -425,8 +360,8 @@
   flex-wrap: wrap;
 }
 .settings-account-action {
-  padding: 8px 10px;
-  min-height: 36px;
+  padding: 4px 5px;
+  min-height: 30px;
   font-size: 12px;
   color: var(--settings-text);
   background: transparent;
@@ -442,26 +377,23 @@
   opacity: 0.45;
   cursor: not-allowed;
 }
-.settings-account-actions .settings-account-delete {
-  color: var(--settings-muted);
+.settings-account-delete {
+  color: var(--settings-danger);
 }
-.settings-account-actions .settings-account-delete:hover,
-.settings-account-actions .settings-account-delete:focus-visible {
+.settings-account-delete:hover,
+.settings-account-delete:focus-visible {
   color: var(--settings-danger);
   background: var(--settings-danger-bg);
-}
-.settings-account-mobile-label {
-  display: none;
 }
 .settings-account-reset-summary {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  min-height: 32px;
+  min-height: 24px;
   padding: 3px 0;
-  font-size: 12px;
+  font-size: 10px;
   white-space: nowrap;
-  color: var(--settings-text);
+  color: var(--settings-muted);
   background: transparent;
   border: 0;
   border-radius: 5px;
@@ -532,30 +464,49 @@
   border-radius: 6px;
 }
 .settings-account-list :focus-visible,
-.settings-account-toolbar :focus-visible,
-.settings-account-help-button:focus-visible {
+.settings-account-toolbar :focus-visible {
   outline: 2px solid var(--settings-focus);
   outline-offset: -2px;
 }
 
-@container (min-width: 611px) and (max-width: 800px) {
-  .settings-account-table th,
-  .settings-account-table td {
-    padding-left: 12px;
-    padding-right: 12px;
-  }
-  .settings-account-table th:nth-child(1) {
-    width: 30%;
-  }
-  .settings-account-table th:nth-child(2) {
-    width: 37%;
-  }
-  .settings-account-table th:nth-child(4) {
-    width: 21%;
-  }
+.settings-account-dialog {
+  position: fixed;
+  width: min(360px, calc(100vw - 40px));
+  max-height: calc(100vh - 40px);
+  overflow: auto;
+  padding: 22px;
+  color: var(--settings-text);
+  background: var(--settings-surface);
+  border: 1px solid var(--settings-border);
+  border-radius: 12px;
+  text-align: left;
+}
+.settings-account-dialog::backdrop {
+  background: #0005;
+}
+.settings-account-dialog h2 {
+  margin: 0 28px 12px 0;
+  font-size: 15px;
+}
+.settings-account-dialog p {
+  color: var(--settings-muted);
+  font-size: 12px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+.settings-account-dialog__close {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+}
+.settings-account-dialog__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
 }
 
-@container (max-width: 610px) {
+@container (max-width: 680px) {
   .settings-account-table,
   .settings-account-table tbody {
     display: block;
@@ -565,35 +516,66 @@
   }
   .settings-account-row {
     display: grid;
-    grid-template-columns: 1fr 1fr;
-    padding: 16px;
-    gap: 12px;
-    border-bottom: 1px solid var(--settings-divider);
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    padding: 18px;
+    gap: 18px 22px;
+    border-top: 1px solid var(--settings-divider);
+  }
+  .settings-account-row:first-child {
+    border-top: 0;
   }
   .settings-account-table .settings-account-row > td {
+    display: block;
+    min-width: 0;
     padding: 0;
     border: 0;
   }
-  .settings-account-row > td:nth-child(1),
-  .settings-account-row > td:nth-child(2) {
+  .settings-account-person-cell,
+  .settings-account-management-cell,
+  .settings-account-usage-cell--message {
     grid-column: 1 / -1;
   }
-  .settings-account-row > td:nth-child(3) {
-    display: flex;
-    align-items: center;
-    gap: 8px;
+  .settings-account-table .settings-account-management-cell {
+    border-top: 1px solid var(--settings-divider);
+    padding-top: 8px;
   }
-  .settings-account-mobile-label {
-    display: inline;
-    color: var(--settings-muted);
-    font-size: 11px;
+  .settings-account-email {
+    font-size: 13px;
   }
-  .settings-account-usage {
-    max-width: none;
-  }
-  .settings-account-table tr:not(.settings-account-row),
-  .settings-account-table tr:not(.settings-account-row) > td {
+  .settings-account-usage__title {
     display: block;
+    grid-column: 1;
+  }
+  .settings-account-usage__percent,
+  .settings-account-usage__missing > span:not(.settings-account-usage__title) {
+    grid-column: 2;
+    text-align: right;
+  }
+  .settings-account-extra-usage .settings-account-usage__percent {
+    grid-column: 1 / -1;
+  }
+  .settings-account-management {
+    flex-direction: row;
+    justify-content: space-between;
+  }
+  .settings-account-actions {
+    order: 1;
+    margin-left: auto;
+  }
+  .settings-account-native {
+    justify-content: flex-start;
+  }
+  .settings-account-table tr:not(.settings-account-row, [hidden]),
+  .settings-account-table tr:not(.settings-account-row, [hidden]) > td {
+    display: block;
+  }
+}
+
+@container (max-width: 360px) {
+  .settings-account-row {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 16px;
+    padding: 16px;
   }
 }
 

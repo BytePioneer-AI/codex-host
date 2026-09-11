@@ -81,6 +81,7 @@
   try {
     const report = JSON.parse($("report-data").textContent);
     let view = "board";
+    const issues = report.issues ?? [];
     const counts = Object.fromEntries(
       verdicts.map((verdict) => [
         verdict.key,
@@ -94,7 +95,68 @@
       return node;
     }
 
+    function processingStatus(item) {
+      return element(
+        "p",
+        "snapshot-details",
+        item.source
+          ? `已处理来源快照 · ${item.source.collectedAt}`
+          : item.source === null
+            ? "未完成 · 下次增量分诊仍会处理"
+            : "历史评估 · 尚未建立增量处理记录",
+      );
+    }
+
+    function followUp(item) {
+      return [
+        processingStatus(item),
+        ...(item.nextActor ? [textSection("下一步负责人", item.nextActor)] : []),
+        ...(item.replyDraft ? [textSection("回复草稿 · 尚未发布", item.replyDraft)] : []),
+      ];
+    }
+
+    function showIssueDetail(issue) {
+      const heading = element("h2", "", issue.title);
+      heading.id = "detail-title";
+      const body = $("detail-body");
+      body.replaceChildren(
+        heading,
+        element("p", "original-title", `原始标题 · ${issue.originalTitle}`),
+        element("div", "mono muted", `${issue.repository}#${issue.number} · Issue`),
+        textSection("问题", issue.summary),
+        textSection("判断依据", issue.reason),
+        textSection("类型 / 优先级", `${issue.category} / ${issue.priority}`),
+        listSection("需要补充的信息", issue.missingInfo),
+        textSection("下一步", issue.action),
+        ...followUp(issue),
+      );
+      const related = element("section", "detail-section");
+      related.append(element("h3", "", "关联条目 · 不是重复关单决定"));
+      for (const item of issue.related) {
+        const row = element("p");
+        row.append(link(item.url, item.url), document.createTextNode(` — ${item.reason}`));
+        related.append(row);
+      }
+      body.append(related);
+      for (const item of issue.evidence) {
+        const row = element("div", "evidence-file");
+        row.append(
+          item.url ? link(item.label, item.url) : element("span", "", item.label),
+          element("small", "", item.detail),
+          element("span", "file-revision", item.revision),
+        );
+        body.append(row);
+      }
+      body.append(
+        link("打开 Issue ↗", issue.url, "button"),
+        element("p", "detail-note", "只读建议和未发布草稿；不执行评论、改标签或关闭。"),
+      );
+      $("detail").showModal();
+      $("detail").scrollTop = 0;
+    }
+
     function showDetail(pr) {
+      if (pr.category) return showIssueDetail(pr);
       const verdict = verdicts.find((item) => item.key === pr.verdict);
       const badge = element("div", verdict.className);
       badge.append(element("span", "verdict-pill", `${verdict.label} · ${verdict.key}`));
@@ -121,7 +183,7 @@
       );
       if (pr.simplifications.length) body.append(listSection("建议精简", pr.simplifications));
       if (pr.questions.length) body.append(listSection("需要回答的问题", pr.questions));
-      body.append(textSection("下一步", pr.action));
+      body.append(textSection("下一步", pr.action), ...followUp(pr));
       const evidence = element("section", "detail-section");
       evidence.append(element("h3", "", "关键证据"));
       for (const item of pr.evidence) {
@@ -185,12 +247,32 @@
       node.append(
         element("p", "snapshot-details mono", `HEAD ${pr.headSha?.slice(0, 8) ?? "未知"}`),
       );
+      if (report.schemaVersion === 2) node.append(processingStatus(pr));
       if ($("show-ci").checked) node.append(integration(pr));
       const footer = element("div", "card-footer");
       const stats = pr.stats
         ? `${pr.stats.files} 文件 · +${pr.stats.additions} / −${pr.stats.deletions}`
         : "改动统计未知";
       footer.append(element("span", "mono", stats), detailButton(pr, "detail-button"));
+      node.append(footer);
+      return node;
+    }
+
+    function issueCard(issue) {
+      const node = element("article", "card issue-card");
+      node.append(
+        link(`${issue.repository}#${issue.number}`, issue.url, "mono"),
+        element("h3", "", issue.title),
+        labeledText("问题", issue.summary),
+        labeledText("判断", issue.reason),
+        labeledText("下一步", `${issue.nextActor}：${issue.action}`),
+        processingStatus(issue),
+      );
+      const footer = element("div", "card-footer");
+      footer.append(
+        element("span", "", `${issue.category} · ${issue.priority}`),
+        detailButton(issue, "detail-button"),
+      );
       node.append(footer);
       return node;
     }
@@ -296,6 +378,20 @@
       $("table-tab").setAttribute("aria-pressed", String(view === "table"));
       $("results").textContent =
         `显示 ${prs.length} / ${report.prs.length} 个已评估 PR · CI/冲突不决定所属列`;
+      const matches = issues
+        .filter((issue) =>
+          `${issue.repository}#${issue.number} ${issue.title} ${issue.originalTitle} ${issue.summary} ${issue.reason}`
+            .toLowerCase()
+            .includes(query),
+        )
+        .sort(
+          (a, b) =>
+            ($("sort").value === "asc" ? 1 : -1) *
+            (a.number - b.number || a.repository.localeCompare(b.repository)),
+        );
+      $("issue-list").replaceChildren(...matches.map(issueCard));
+      $("issue-results").textContent = `显示 ${matches.length} / ${issues.length} 个 Issue`;
+      $("issues-section").hidden = report.schemaVersion === 1 && issues.length === 0;
     }
 
     $("report-scope").textContent = `${report.repositories.join(" · ")} — ${report.scope}`;
@@ -305,7 +401,7 @@
       const errors = element("ul");
       errors.append(...report.errors.map((error) => element("li", "", error)));
       $("collection-note").append(
-        element("p", "", "本报告存在以下采集缺口；未取得的 PR 不会被计作已评估："),
+        element("p", "", "本报告存在以下采集缺口；未完成的条目不会推进增量处理记录："),
         errors,
       );
     }
@@ -313,7 +409,9 @@
     total.append(
       document.createTextNode("已评估 "),
       element("strong", "", report.prs.length),
-      document.createTextNode(` 个 PR / 跳过 ${report.skipped.length} 个`),
+      document.createTextNode(
+        ` 个 PR / ${issues.length} 个 Issue / 跳过 ${report.skipped.length} 个`,
+      ),
     );
     $("summary").append(total);
     for (const verdict of verdicts) {
@@ -329,8 +427,8 @@
       hour12: false,
     });
     $("generated-time").dateTime = report.generatedAt;
-    $("skipped-summary").textContent = `已跳过 · ${report.skipped.length} 个 PR`;
-    if (!report.skipped.length) $("skipped-list").append(element("p", "", "没有跳过的 PR。"));
+    $("skipped-summary").textContent = `已跳过 · ${report.skipped.length} 个条目`;
+    if (!report.skipped.length) $("skipped-list").append(element("p", "", "没有跳过的条目。"));
     for (const pr of report.skipped) {
       const item = element("div", "skipped-item");
       item.append(
@@ -343,6 +441,7 @@
     for (const repository of report.repositories)
       $("repository-links").append(
         link(`${repository} PR 列表 ↗`, `https://github.com/${repository}/pulls`),
+        link(`${repository} Issue 列表 ↗`, `https://github.com/${repository}/issues`),
       );
     $("search").addEventListener("input", render);
     $("sort").addEventListener("change", render);

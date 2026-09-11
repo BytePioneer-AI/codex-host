@@ -45,6 +45,10 @@
 
 | 文档 | 作用 |
 |---|---|
+| [`harness-executable-discovery.md`](harness-executable-discovery.md#deepseek-harness-的特殊性) | 当前 DSH `0.1.2-rc.1` / `0.1.5-rc.1` 精确支持范围、托管 Web 与连接诊断。 |
+| [`dsh-edit-recovery.md`](dsh-edit-recovery.md) | 两版原生停止确认、消息修订、Fork 与 V0/V3 checkpoint 隔离。 |
+| [`dsh-015rc1-validation.md`](dsh-015rc1-validation.md) | 双版本测试、真实 CLI 生命周期、覆盖率与协议源码证据。 |
+| [`harness-session-import.md`](harness-session-import.md) | 本地 DSH 与 Pi 原生会话导入契约及恢复边界。 |
 | [`archive/deepseek-integration/deepseek-harness-integration-analysis.md`](archive/deepseek-integration/deepseek-harness-integration-analysis.md) | 归档 DeepSeek Harness 接入前后的接口调研、候选方案和分阶段实施分析。 |
 
 ### Grok 接入

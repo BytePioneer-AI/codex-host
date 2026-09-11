@@ -9,7 +9,7 @@ process.exitCode =
   arguments_[0] === "--codexhost-delegation-cli"
     ? await runDelegationCli({ arguments: arguments_.slice(1), environment: process.env })
     : arguments_[0] === "--codexhost-harness-broker"
-      ? await runClaudeAquaHarnessBroker(process.env)
+      ? await runClaudeAquaHarnessBroker(process.env, arguments_[1] ?? "claude-code")
       : arguments_[0] === "--codexhost-remote"
         ? await runRemoteHostCli({ arguments: arguments_.slice(1), environment: process.env })
         : arguments_[0] === "--codexhost-remote-control-bridge"

@@ -1,4 +1,6 @@
 interface:
-  display_name: "codexhost PR 合入评估"
-  short_description: "评估功能价值与实现克制，生成合入建议看板"
-  default_prompt: "用 $codexhost-pr-triage 评估当前仓库的 open PR：功能是否有意义、代码是否改得过度、维护代价是否值得。给出 ACCEPT / SIMPLIFY / DISCUSS / DECLINE，将真实评估写入 report.json，并用 skill 自带渲染器生成本地 HTML 看板；CI 和冲突作为修复成本与后续动作的辅助信息，不作为硬阻断，不执行 GitHub 写操作。"
+  display_name: "codexhost Issue / PR 增量分诊"
+  short_description: "手动处理新增或更新条目，生成只读分诊与合入建议看板"
+  default_prompt: "用 $codexhost-pr-triage 增量分诊当前仓库的 Issue 和 PR，每批最多 10 个。运行 prepare-run 选取新增、有新进展或未完成条目；Issue 明确证据、信息缺口、关联与下一步，PR 沿用价值与实现克制的四档建议。填写真实报告和未发布回复草稿，通过 update-report --selection 复核来源后记录进度并更新本地 HTML 看板。CI/冲突不决定 PR 档位；不执行 GitHub 写操作。"
+policy:
+  allow_implicit_invocation: false

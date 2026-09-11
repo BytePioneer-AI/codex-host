@@ -20,6 +20,44 @@ function successfulFetch(body: unknown): typeof fetch {
 }
 
 describe("delegation CLI", () => {
+  it.each([
+    ["harness", "list", "--help"],
+    ["harness", "inspect", "--help"],
+    ["delegate", "start", "--help"],
+    ["thread", "send", "--help"],
+    ["thread", "cancel", "--help"],
+    ["thread", "read", "--help"],
+    ["thread", "wait", "--help"],
+    ["thread", "list", "--help"],
+  ])("shows scoped help for %s %s", async (group, command, help) => {
+    const output = new PassThrough();
+    const fetchImpl = successfulFetch({});
+    expect(await runDelegationCli({ arguments: [group, command, help], output, fetchImpl })).toBe(
+      0,
+    );
+    expect(outputText(output)).toContain(`codexhost ${group} ${command}`);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("discovers Harnesses without reading a Model catalog", async () => {
+    const fetchImpl = successfulFetch({ harnesses: ["codex", "pi"] });
+    const output = new PassThrough();
+    expect(
+      await runDelegationCli({
+        arguments: ["harness", "list", "--format", "compact"],
+        environment: {
+          [DELEGATION_RUNTIME_ENDPOINT_ENV]: "http://127.0.0.1:4321",
+          [DELEGATION_RUNTIME_TOKEN_ENV]: "token",
+        },
+        output,
+        fetchImpl,
+      }),
+    ).toBe(0);
+    expect(JSON.parse(outputText(output))).toEqual({ harnesses: ["codex", "pi"] });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(String(vi.mocked(fetchImpl).mock.calls[0]?.[0])).toContain("/v1/harness/list");
+  });
+
   it("prints the authoritative help", async () => {
     const output = new PassThrough();
     await expect(runDelegationCli({ arguments: ["delegate", "--help"], output })).resolves.toBe(0);
@@ -66,6 +104,8 @@ describe("delegation CLI", () => {
           "claude-code",
           "--task",
           "review auth",
+          "--cwd",
+          "/workspace/project",
           "--model",
           "model-ref",
           "--thinking",
@@ -86,6 +126,7 @@ describe("delegation CLI", () => {
     expect(JSON.parse(String(init?.body))).toMatchObject({
       harnessId: "claude-code",
       task: "review auth",
+      cwd: "/workspace/project",
       parentThreadId: "parent-1",
       requestId: "request-1",
       model: { id: "model-ref" },
@@ -110,9 +151,109 @@ describe("delegation CLI", () => {
     ).resolves.toBe(0);
     const call = vi.mocked(fetchImpl).mock.calls[0];
     if (!call) throw new Error("Runtime fetch was not called");
-    expect(JSON.parse(String(call[1]?.body))).toMatchObject({
+    const body = JSON.parse(String(call[1]?.body));
+    expect(body).toMatchObject({
       parentThreadId: "parent-from-environment",
     });
+    expect(body).not.toHaveProperty("cwd");
+    expect(body).not.toHaveProperty("model");
+    expect(body).not.toHaveProperty("thinkingOptionId");
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps a help-like task value and starts with native defaults in compact mode", async () => {
+    const fetchImpl = successfulFetch({
+      delegationId: "internal-delegation",
+      threadId: "child-1",
+      turnId: "internal-turn",
+      harnessId: "pi",
+      deepLink: "codex://threads/child-1",
+      status: "running",
+      cwd: "/workspace",
+      parentThreadId: "parent-1",
+      next: { read: "read", wait: "wait" },
+    });
+    const output = new PassThrough();
+    expect(
+      await runDelegationCli({
+        arguments: ["delegate", "start", "--harness", "pi", "--task", "-h", "--format", "compact"],
+        environment: {
+          [DELEGATION_RUNTIME_ENDPOINT_ENV]: "http://127.0.0.1:4321",
+          [DELEGATION_RUNTIME_TOKEN_ENV]: "token",
+        },
+        output,
+        fetchImpl,
+      }),
+    ).toBe(0);
+    expect(JSON.parse(outputText(output))).toEqual({
+      thread: "codex://threads/child-1",
+      harnessId: "pi",
+      status: "running",
+      cwd: "/workspace",
+      parent: "codex://threads/parent-1",
+    });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(String(vi.mocked(fetchImpl).mock.calls[0]?.[1]?.body))).toEqual({
+      harnessId: "pi",
+      task: "-h",
+    });
+  });
+
+  it("keeps full JSON compatible while compact message pages omit duplicated content and IDs", async () => {
+    const snapshot = {
+      threadId: "child-1",
+      harnessId: "pi",
+      status: "completed",
+      turn: { turnId: "internal-turn", status: "completed" },
+      progress: [{ id: "progress-id", turnId: "internal-turn", text: "Old progress" }],
+      result: { availability: "available", text: "Final answer" },
+      messages: [{ id: "message-id", turnId: "internal-turn", role: "user", text: "Question" }],
+      hasMore: true,
+      nextCursor: "page-2",
+    };
+    const fetchImpl = successfulFetch(snapshot);
+    for (const format of [undefined, "json", "compact"]) {
+      const output = new PassThrough();
+      expect(
+        await runDelegationCli({
+          arguments: [
+            "thread",
+            "read",
+            "codex://threads/child-1",
+            "--view",
+            "messages",
+            "--limit",
+            "1",
+            ...(format ? ["--format", format] : []),
+          ],
+          environment: {
+            [DELEGATION_RUNTIME_ENDPOINT_ENV]: "http://127.0.0.1:4321",
+            [DELEGATION_RUNTIME_TOKEN_ENV]: "token",
+          },
+          output,
+          fetchImpl,
+        }),
+      ).toBe(0);
+      expect(JSON.parse(outputText(output))).toEqual(
+        format === "compact"
+          ? {
+              thread: "codex://threads/child-1",
+              harnessId: "pi",
+              status: "completed",
+              messages: [{ role: "user", text: "Question" }],
+              hasMore: true,
+              nextCursor: "page-2",
+            }
+          : snapshot,
+      );
+    }
+    for (const [, init] of vi.mocked(fetchImpl).mock.calls) {
+      expect(JSON.parse(String(init?.body))).toEqual({
+        threadId: "child-1",
+        view: "messages",
+        limit: 1,
+      });
+    }
   });
 
   it("sends follow-up messages and cancellation requests using deep links", async () => {
@@ -196,6 +337,8 @@ describe("delegation CLI", () => {
   });
 
   it.each([
+    ["invalid format", ["thread", "read", "thread-1", "--format", "text"]],
+    ["invalid discovery arguments", ["harness", "list", "pi"]],
     ["invalid view", ["thread", "read", "thread-1", "--view", "raw"]],
     ["invalid timeout", ["thread", "wait", "thread-1", "--timeout-ms", "0"]],
     [

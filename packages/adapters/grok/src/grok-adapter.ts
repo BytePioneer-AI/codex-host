@@ -21,6 +21,7 @@ import {
   type HarnessSession,
   type HarnessSessionCapabilities,
   type HarnessSessionState,
+  type HarnessSubagentCapability,
   type HostAgentMessageItem,
   type HostApprovalInteraction,
   type HostCommand,
@@ -70,6 +71,8 @@ import {
   GrokAcpTransport,
   GrokTransportError,
   grokNativeSessionDirectory,
+  locateGrokNativeSession,
+  readGrokNativeHistory,
   type GrokAcpTransportOptions,
   type GrokNativeSessionLocation,
   type GrokOpenInput,
@@ -78,6 +81,18 @@ import {
   type GrokTransportEvent,
 } from "./acp-transport.js";
 import { grokMediaResolveRoots, rewriteLocalMediaMarkdown } from "./local-media-markdown.js";
+import { GrokSubagentLifecycle } from "./grok-subagent-lifecycle.js";
+import {
+  grokNativeSubagentId,
+  grokSubagentBackground,
+  grokSubagentDescription,
+  grokSubagentModel,
+  grokSubagentOperation,
+  grokSubagentPrompt,
+  grokSubagentResultSummary,
+  grokSubagentRole,
+  grokSubagentWaitSettlements,
+} from "./grok-subagent.js";
 import type { GrokCompactResult } from "./grok-manual-compaction.js";
 import { projectGrokFileChanges } from "./grok-file-change.js";
 import { forkGrokSession } from "./grok-fork.js";
@@ -178,6 +193,7 @@ interface ActiveTurn {
   compactionContextWindow: number | undefined;
   compactionTerminal: Extract<GrokTransportEvent, { type: "compaction.completed" }> | null;
   tools: Map<string, ActiveTool>;
+  subagents: GrokSubagentLifecycle;
   completedItems: HostItemSnapshot[];
   approvals: Map<HostInteractionId, ActiveApproval>;
   cancellationRequested: boolean;
@@ -209,6 +225,7 @@ function capabilitiesForModels(modelState: GrokModelState): HarnessSessionCapabi
       permissionModeScope: "atCreate",
     },
     history: { fork: true, forkAcrossCwd: true, rollbackLastTurn: true },
+    subagents: { observe: true, readTranscript: true },
   };
 }
 const DEFAULT_CLOSE_TIMEOUT_MS = 2_000;
@@ -483,6 +500,7 @@ class GrokHarnessSession implements HarnessSession {
       compactionContextWindow: undefined,
       compactionTerminal: null,
       tools: new Map(),
+      subagents: this.#createSubagents(),
       completedItems: [],
       approvals: new Map(),
       cancellationRequested: false,
@@ -578,6 +596,7 @@ class GrokHarnessSession implements HarnessSession {
       compactionContextWindow: undefined,
       compactionTerminal: null,
       tools: new Map(),
+      subagents: this.#createSubagents(),
       completedItems: [],
       approvals: new Map(),
       cancellationRequested: false,
@@ -876,6 +895,8 @@ class GrokHarnessSession implements HarnessSession {
       this.#appendReasoning(active, event.text, event.messageId);
     else if (event.type === "tool.call") this.#startTool(active, event);
     else if (event.type === "tool.update") this.#updateTool(active, event);
+    else if (event.type === "subagent.spawned") this.#bindSpawnedSubagent(active, event);
+    else if (event.type === "subagent.finished") this.#finishNativeSubagent(active, event);
     else if (event.type === "compaction.started") this.#startCompaction(active, event);
     else if (event.type === "compaction.completed") {
       active.compactionTerminal = event;
@@ -1000,9 +1021,37 @@ class GrokHarnessSession implements HarnessSession {
     });
   }
 
+  #createSubagents(): GrokSubagentLifecycle {
+    return new GrokSubagentLifecycle({
+      newItemId: () => hostItemIdSchema.parse(this.#randomUUID()),
+      emit: (event) => this.#event(event),
+    });
+  }
+
   #startTool(active: ActiveTurn, event: Extract<GrokTransportEvent, { type: "tool.call" }>): void {
     this.#completeReasoning(active, { status: "succeeded" });
     this.#completeAgent(active, { status: "succeeded" });
+    const operation = grokSubagentOperation(event.name, event.title, event.rawInput);
+    if (operation) {
+      const prompt = grokSubagentPrompt(event.rawInput);
+      const role = grokSubagentRole(event.rawInput);
+      const nativeSubagentId = grokNativeSubagentId(event.rawInput);
+      const model = grokSubagentModel(event.rawInput);
+      active.subagents.start(active.command.turnId, {
+        callId: event.callId,
+        operation,
+        description: grokSubagentDescription(event.rawInput, event.title),
+        ...(prompt ? { prompt } : {}),
+        ...(role ? { role } : {}),
+        ...(model ? { model } : {}),
+        background: grokSubagentBackground(event.rawInput),
+        ...(nativeSubagentId ? { nativeSubagentId } : {}),
+      });
+      if (event.status === "completed" || event.status === "failed") {
+        this.#completeSubagentTool(active, event.callId, event.status, event);
+      }
+      return;
+    }
     let item = startGrokToolItem({
       itemId: hostItemIdSchema.parse(this.#randomUUID()),
       name: event.name,
@@ -1024,6 +1073,40 @@ class GrokHarnessSession implements HarnessSession {
     active: ActiveTurn,
     event: Extract<GrokTransportEvent, { type: "tool.update" }>,
   ): void {
+    if (
+      !active.subagents.has(event.callId) &&
+      !active.tools.has(event.callId) &&
+      grokSubagentOperation(event.name, event.title, event.rawInput)
+    ) {
+      this.#startTool(active, {
+        type: "tool.call",
+        callId: event.callId,
+        title: event.title ?? "Grok Subagent",
+        ...(event.name ? { name: event.name } : {}),
+        ...(event.kind ? { kind: event.kind } : {}),
+        ...(event.status ? { status: event.status } : {}),
+        ...(event.rawInput !== undefined ? { rawInput: event.rawInput } : {}),
+        ...(event.rawOutput !== undefined ? { rawOutput: event.rawOutput } : {}),
+        ...(event.content ? { content: event.content } : {}),
+      });
+      return;
+    }
+    if (active.subagents.has(event.callId)) {
+      if (event.status === "completed" || event.status === "failed") {
+        this.#completeSubagentTool(active, event.callId, event.status, event);
+        return;
+      }
+      const role = grokSubagentRole(event.rawInput);
+      const nativeSubagentId = grokNativeSubagentId(event.rawInput, event.rawOutput, event.content);
+      active.subagents.update(active.command.turnId, event.callId, {
+        ...(event.title
+          ? { description: grokSubagentDescription(event.rawInput, event.title) }
+          : {}),
+        ...(role ? { role } : {}),
+        ...(nativeSubagentId ? { nativeSubagentId } : {}),
+      });
+      return;
+    }
     const tool = active.tools.get(event.callId);
     if (!tool) return;
     const projection = projectGrokToolOutput(event.content, event.rawOutput, this.#toolOutputLimit);
@@ -1085,6 +1168,7 @@ class GrokHarnessSession implements HarnessSession {
         : { status: "succeeded" };
     this.#completeItem(active, tool.item, outcome);
     if (status !== "completed") return;
+    this.#completeWatchedSubagents(active, tool.item, content, rawOutput);
     const changes = projectGrokFileChanges(content, this.#cwd);
     if (!changes) return;
     const fileItem: HostFileChangeItem = {
@@ -1094,6 +1178,80 @@ class GrokHarnessSession implements HarnessSession {
     };
     this.#event({ type: "item.started", turnId: active.command.turnId, item: fileItem });
     this.#completeItem(active, fileItem, { status: "succeeded" });
+  }
+
+  #completeSubagentTool(
+    active: ActiveTurn,
+    callId: string,
+    status: string,
+    event: {
+      rawInput?: unknown;
+      rawOutput?: unknown;
+      content?: unknown[] | null;
+      title?: string | null;
+    },
+  ): void {
+    const nativeSubagentId = grokNativeSubagentId(event.rawInput, event.rawOutput, event.content);
+    const resultSummary = grokSubagentResultSummary(event.content, event.rawOutput);
+    active.subagents.completeSpawn(active.command.turnId, callId, {
+      failed: status === "failed",
+      cancellationRequested: active.cancellationRequested,
+      ...(nativeSubagentId ? { nativeSubagentId } : {}),
+      ...(resultSummary ? { resultSummary } : {}),
+    });
+  }
+
+  #completeWatchedSubagents(
+    active: ActiveTurn,
+    item: ActiveTool["item"],
+    content?: unknown[] | null,
+    rawOutput?: unknown,
+  ): void {
+    const name = item.type === "toolExecution" ? item.toolName : item.command;
+    const rawInput = item.type === "toolExecution" ? item.arguments : undefined;
+    const resultSummary = grokSubagentResultSummary(content, rawOutput);
+    for (const settlement of grokSubagentWaitSettlements({
+      name,
+      title: name,
+      rawInput,
+      content,
+      rawOutput,
+    })) {
+      active.subagents.completeByNativeId(active.command.turnId, settlement.id, {
+        failed: settlement.status === "failed",
+        cancellationRequested: active.cancellationRequested || settlement.status === "interrupted",
+        status: settlement.status,
+        ...(settlement.resultSummary
+          ? { resultSummary: settlement.resultSummary }
+          : resultSummary
+            ? { resultSummary }
+            : {}),
+      });
+    }
+  }
+
+  #bindSpawnedSubagent(
+    active: ActiveTurn,
+    event: Extract<GrokTransportEvent, { type: "subagent.spawned" }>,
+  ): void {
+    active.subagents.bindNativeId(active.command.turnId, {
+      nativeSubagentId: event.nativeSubagentId,
+      ...(event.description ? { description: event.description } : {}),
+      ...(event.role ? { role: event.role } : {}),
+      ...(event.model ? { model: event.model } : {}),
+    });
+  }
+
+  #finishNativeSubagent(
+    active: ActiveTurn,
+    event: Extract<GrokTransportEvent, { type: "subagent.finished" }>,
+  ): void {
+    active.subagents.completeByNativeId(active.command.turnId, event.nativeSubagentId, {
+      failed: event.status === "failed",
+      cancellationRequested: active.cancellationRequested || event.status === "interrupted",
+      status: event.status,
+      ...(event.resultSummary ? { resultSummary: event.resultSummary } : {}),
+    });
   }
 
   #completeAgent(active: ActiveTurn, outcome: HostItemOutcome): void {
@@ -1181,6 +1339,7 @@ class GrokHarnessSession implements HarnessSession {
     const itemOutcome: HostItemOutcome = outcome;
     this.#completeReasoning(active, itemOutcome);
     this.#completeAgent(active, itemOutcome);
+    active.subagents.finalize(active.command.turnId, itemOutcome);
     if (active.compactionItem) {
       this.#completeItem(active, active.compactionItem, itemOutcome);
       active.compactionItem = null;
@@ -1262,6 +1421,45 @@ class GrokHarnessSession implements HarnessSession {
 export class GrokAdapter implements HarnessAdapter {
   readonly commandCatalog = grokCommandCatalog;
   readonly harnessId: HarnessId = grokHarnessId;
+  readonly subagents: HarnessSubagentCapability = {
+    readSnapshot: async (input) => {
+      if (input.parent.harnessId !== this.harnessId || input.nativeSubagentId.trim().length === 0) {
+        return {
+          ok: false,
+          error: {
+            code: "invalidRequest",
+            message: "Grok Subagent reference is invalid",
+            retryable: false,
+          },
+        };
+      }
+      try {
+        const location = await locateGrokNativeSession(
+          this.#environment ? { environment: this.#environment } : {},
+          input.nativeSubagentId,
+        );
+        const cwd = location?.cwd ?? input.cwd;
+        const history = await readGrokNativeHistory(
+          this.#environment ? { cwd, environment: this.#environment } : { cwd },
+          input.nativeSubagentId,
+        );
+        return {
+          ok: true,
+          value: mapGrokReplay(
+            history,
+            this.harnessId,
+            // Host Subagent records keep the parent Native Session identity.
+            input.parent.nativeSessionId,
+            cwd,
+            [],
+            this.#toolOutputLimit,
+          ),
+        };
+      } catch (error) {
+        return { ok: false, error: normalizeError(error, "protocolError") };
+      }
+    },
+  };
   readonly #closeTimeoutMs: number;
   readonly #dependencies: GrokAdapterDependencies;
   readonly #environment: NodeJS.ProcessEnv | undefined;
@@ -1515,7 +1713,11 @@ export class GrokAdapter implements HarnessAdapter {
                 sessionId: parsedRef.data.nativeSessionId,
                 permissionModeId: requestedPermissionModeId,
               }
-            : { kind: "create", permissionModeId: requestedPermissionModeId },
+            : {
+                kind: "create",
+                permissionModeId: requestedPermissionModeId,
+                ...(input.kind === "create" && input.model ? { modelId: input.model.id } : {}),
+              },
         );
       }
       if (!opened) {

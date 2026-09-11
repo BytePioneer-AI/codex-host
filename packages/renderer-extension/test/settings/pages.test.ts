@@ -14,7 +14,7 @@ vi.mock("../../src/settings/icons.js", () => ({
 }));
 
 import { RendererSettingsPageScope } from "../../src/settings/core.js";
-import { mountHarnessAccounts } from "../../src/settings/harness-accounts.js";
+import { createHarnessAccounts } from "../../src/settings/harness-accounts.js";
 import { rendererSettingsMessages } from "../../src/settings/localization.js";
 import { createRendererModelClient } from "../../src/renderer-model-client.js";
 import { RendererSessionImportUnavailableError } from "../../src/renderer-session-import-client.js";
@@ -117,6 +117,8 @@ class FakeDocument {
       },
       setTimeout: vi.fn(() => 0),
       clearTimeout: vi.fn(),
+      setInterval: vi.fn(() => 0),
+      clearInterval: vi.fn(),
       addEventListener: vi.fn(),
       removeEventListener: vi.fn(),
     } as unknown as Window;
@@ -220,68 +222,39 @@ describe("Read-only Harness accounts", () => {
       },
     ],
   };
-  it("shows only returned accounts with searchable read-only quota and shared display mode", async () => {
-    const document = new FakeDocument();
-    const content = document.createElement("main");
+  it("loads native snapshots and discards stale accounts after empty or failed refreshes", async () => {
     const scope = new RendererSettingsPageScope();
     const listHarnessAccounts = vi.fn(async () => result);
-    const mounted = mountHarnessAccounts(
-      {
-        content: content as unknown as HTMLElement,
-        signal: scope.signal,
-        runLatest: (op, handlers) => scope.runLatest(op, handlers),
-      },
-      rendererSettingsMessages("en"),
-      () => ({ listHarnessAccounts }),
-      vi.fn(),
-    );
-    expect(descendants(content).find((node) => node.tagName === "section")?.hidden).toBe(true);
+    const mounted = createHarnessAccounts(scope.signal, () => ({ listHarnessAccounts }), vi.fn());
+    expect(mounted.accounts).toEqual([]);
     await mounted.refresh();
-    expect(visibleText(content)).toContain("Grok Build");
-    expect(visibleText(content)).toContain("person@example.com");
-    expect(descendants(content).filter((node) => node.tagName === "button")).toHaveLength(0);
-    expect(
-      descendants(content)
-        .find((node) => node.attributes.get("role") === "meter")
-        ?.attributes.get("aria-valuenow"),
-    ).toBe("75");
-    mounted.update("grok", "used");
-    expect(
-      descendants(content)
-        .find((node) => node.attributes.get("role") === "meter")
-        ?.attributes.get("aria-valuenow"),
-    ).toBe("25");
-    mounted.update("not-found", "used");
-    expect(descendants(content).filter((node) => node.tagName === "article")).toHaveLength(0);
+    expect(mounted.accounts).toEqual(result.accounts);
     listHarnessAccounts.mockResolvedValueOnce({ accounts: [] });
     await mounted.refresh();
-    expect(descendants(content).find((node) => node.tagName === "section")?.hidden).toBe(true);
-    expect(visibleText(content)).not.toContain("person@example.com");
+    expect(mounted.accounts).toEqual([]);
+    await mounted.refresh();
+    expect(mounted.accounts).toEqual(result.accounts);
+    listHarnessAccounts.mockRejectedValueOnce(new Error("unavailable"));
+    await mounted.refresh();
+    expect(mounted.accounts).toEqual([]);
+    expect(mounted.refreshing).toBe(false);
+    scope.dispose();
   });
 
   it("coalesces refreshes and discards late results after page disposal", async () => {
-    const document = new FakeDocument();
-    const content = document.createElement("main");
     const scope = new RendererSettingsPageScope();
     const pending = deferred<HarnessAccountListResult>();
     const listHarnessAccounts = vi.fn(() => pending.promise);
-    const mounted = mountHarnessAccounts(
-      {
-        content: content as unknown as HTMLElement,
-        signal: scope.signal,
-        runLatest: (op, handlers) => scope.runLatest(op, handlers),
-      },
-      rendererSettingsMessages("en"),
-      () => ({ listHarnessAccounts }),
-      vi.fn(),
-    );
+    const changed = vi.fn();
+    const mounted = createHarnessAccounts(scope.signal, () => ({ listHarnessAccounts }), changed);
     const refresh = mounted.refresh();
     await mounted.refresh();
     expect(listHarnessAccounts).toHaveBeenCalledOnce();
     scope.dispose();
     pending.resolve(result);
     await refresh;
-    expect(visibleText(content)).not.toContain("person@example.com");
+    expect(mounted.accounts).toEqual([]);
+    expect(changed).toHaveBeenCalledOnce();
   });
 });
 
@@ -623,7 +596,7 @@ describe("Renderer Codex Accounts page", () => {
         .map(({ type }) => type),
     ).toEqual(["search"]);
     const add = descendants(content).find(
-      ({ tagName, children }) => tagName === "button" && children.includes("Add Account"),
+      ({ tagName, children }) => tagName === "button" && children.includes("Add Codex account"),
     );
     add?.dispatch("click");
 
@@ -769,20 +742,18 @@ describe("Renderer Codex Accounts page", () => {
       expect(inspectCodexAccountUsage).toHaveBeenCalledWith({ accountId: "work" }),
     );
     expect(inspectCodexAccountUsage).toHaveBeenCalledTimes(1);
-    await vi.waitFor(() => expect(visibleText(content)).toContain("周额度"));
+    await vi.waitFor(() => expect(visibleText(content)).toContain("7 天"));
     expect(visibleText(content)).toContain("Build");
     expect(visibleText(content)).toContain("已用");
     expect(visibleText(content)).toContain("work");
     expect(visibleText(content)).toContain("example.com");
     expect(visibleText(content)).toContain("Pending");
-    expect(visibleText(content)).not.toContain("work@example.com");
+    expect(visibleText(content)).toContain("work@example.com");
     expect(visibleText(content)).not.toContain("/tmp/secret-home");
     expect(visibleText(content)).not.toContain("/tmp/pending-home");
     expect(
-      descendants(content).filter((element) =>
-        element.className.split(" ").includes("settings-account-usage"),
-      ),
-    ).toHaveLength(1);
+      descendants(content).filter((element) => element.getAttribute("role") === "meter"),
+    ).toHaveLength(2);
 
     scope.dispose();
   });
@@ -873,10 +844,6 @@ describe("Renderer Codex Accounts page", () => {
       runLatest: (operation, handlers) => scope.runLatest(operation, handlers),
     });
     await vi.waitFor(() => expect(visibleText(content)).toContain("Personal"));
-    expect(visibleText(content)).toContain(
-      "Existing tasks keep the account they were created with",
-    );
-    expect(visibleText(content)).toContain("Enable device code authorization for Codex");
     expect(visibleText(content)).not.toContain("token");
     expect(
       descendants(content).filter(
@@ -891,7 +858,7 @@ describe("Renderer Codex Accounts page", () => {
     await vi.waitFor(() =>
       expect(client.activateCodexAccount).toHaveBeenCalledWith({ accountId: "work" }),
     );
-    await vi.waitFor(() => expect(visibleText(content)).toContain("Default"));
+    await vi.waitFor(() => expect(visibleText(content)).toContain("Codex default"));
 
     const signIn = descendants(content).find(
       ({ tagName, textContent }) => tagName === "button" && textContent === "Sign in",

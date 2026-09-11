@@ -26,6 +26,7 @@ import {
 import type { RendererAgent } from "./agent-selection-state.js";
 import { installRendererForkControl } from "./renderer-fork-control.js";
 import { installRendererExternalSteering } from "./renderer-external-steering.js";
+import { installRendererExternalQueue } from "./renderer-external-queue.js";
 import {
   createRendererModelClient,
   createThreadUsageSubscriptionRelay,
@@ -982,7 +983,7 @@ export function installCurrentRendererAdapter(): {
       requestClient: PrewarmTarget["requestClient"];
     }
   >();
-  const steeringCleanups = new Set<() => void>();
+  const turnControlCleanups = new Set<() => void>();
   const modelClientForTargets = (
     targets: readonly PrewarmTarget[],
     policy: RendererDraftPrewarmPolicy | null = null,
@@ -995,10 +996,12 @@ export function installCurrentRendererAdapter(): {
     const client = createRendererModelClient([target]);
     if (client) {
       // A new connection must not inherit unsupported-method observations.
-      // Steering belongs to the manager, so do not install duplicate hooks.
+      // Turn controls belong to the manager, so do not install duplicate hooks.
       if (!cached) {
-        const cleanup = installRendererExternalSteering(target);
-        if (cleanup) steeringCleanups.add(cleanup);
+        const queueCleanup = installRendererExternalQueue(target);
+        if (queueCleanup) turnControlCleanups.add(queueCleanup);
+        const steeringCleanup = installRendererExternalSteering(target);
+        if (steeringCleanup) turnControlCleanups.add(steeringCleanup);
       }
       clientsByTarget.set(target, { client, policy, requestClient: target.requestClient });
     }
@@ -1245,7 +1248,7 @@ export function installCurrentRendererAdapter(): {
         () => activeRoutingPolicy?.select(null),
         () => syncActiveRoute(null),
         () => forkControl.dispose(),
-        ...steeringCleanups,
+        ...turnControlCleanups,
         () => usageSubscription.dispose(),
       ];
       for (const cleanup of cleanups) {

@@ -1,5 +1,5 @@
 use std::ffi::OsString;
-#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[cfg(target_os = "macos")]
 use std::os::unix::process::CommandExt;
 use std::path::Path;
 #[cfg(not(target_os = "windows"))]
@@ -384,7 +384,7 @@ fn desktop_launch_command(
         let mut command = Command::new(program);
         command.args(additional_arguments);
         #[cfg(target_os = "linux")]
-        command.process_group(0);
+        super::background::start_in_new_session(&mut command);
         command
     };
 
@@ -1063,6 +1063,20 @@ mod tests {
         )
         .expect("launch Desktop executable directly");
         assert_eq!(session.root_snapshot().executable, desktop);
+        // A background process group that keeps the invoking terminal can be
+        // stopped by job control (issue #167); the Desktop must lead its own
+        // session, which also keeps PGID == PID for group-based ownership.
+        let root = nix::unistd::Pid::from_raw(
+            i32::try_from(session.root_snapshot().id).expect("Desktop PID fits i32"),
+        );
+        assert_eq!(
+            nix::unistd::getsid(Some(root)).expect("read Desktop session"),
+            root
+        );
+        assert_eq!(
+            session.root_snapshot().process_group_id,
+            session.root_snapshot().id
+        );
         session
             .shutdown(Duration::from_secs(2))
             .expect("stop fake Desktop");

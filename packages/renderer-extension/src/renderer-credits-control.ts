@@ -108,7 +108,7 @@ export function creditsPeriodLabel(
   return messages.account;
 }
 
-function productLabel(product: string, locale: RendererSettingsLocale): string {
+export function productLabel(product: string, locale: RendererSettingsLocale = "en"): string {
   if (product === "GrokBuild") return "Build";
   if (product === "GrokChat") return "Chat";
   if (product === "GrokImagine") return "Imagine";
@@ -116,11 +116,15 @@ function productLabel(product: string, locale: RendererSettingsLocale): string {
   const messages = rendererCreditsMessages(locale);
   if (product === "5-hour window") return messages.fiveHour;
   if (product === "7-day window") return messages.sevenDay;
+  if (product === "Weekly window") return messages.weekly;
   if (product.endsWith(" · 5-hour window")) {
     return `${product.slice(0, -"5-hour window".length)}${messages.fiveHour}`;
   }
   if (product.endsWith(" · 7-day window")) {
     return `${product.slice(0, -"7-day window".length)}${messages.sevenDay}`;
+  }
+  if (product.endsWith(" · Weekly window")) {
+    return `${product.slice(0, -"Weekly window".length)}${messages.weekly}`;
   }
   return product;
 }
@@ -180,7 +184,9 @@ function renderCreditsHeader(
   // reset line always lands under its own label instead of zig-zagging sides.
   const left = document.createElement("div");
   const label = document.createElement("div");
-  label.textContent = creditsPeriodLabel(credits.periodType, locale);
+  label.textContent = credits.label
+    ? productLabel(credits.label, locale)
+    : creditsPeriodLabel(credits.periodType, locale);
   label.style.fontSize = "12.5px";
   label.style.fontWeight = "600";
   left.append(label);
@@ -478,7 +484,10 @@ export function renderRendererCreditsControl(
   }
   const remaining = remainingPercent(accountCredits.usedPercent);
   const percent = formatRendererCreditsPercent(remaining);
-  const title = `${creditsPeriodLabel(accountCredits.periodType)} ${percent}`;
+  const periodLabel = accountCredits.label
+    ? productLabel(accountCredits.label, locale)
+    : creditsPeriodLabel(accountCredits.periodType, locale);
+  const title = `${periodLabel} ${percent}`;
   const tone = rendererCreditsTone(accountCredits.usedPercent);
   const ringSlot = control.trigger.querySelector<HTMLElement>("[data-codexhost-credits-ring]");
   const label = control.trigger.querySelector<HTMLElement>("[data-codexhost-credits-label]");

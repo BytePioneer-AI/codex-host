@@ -92,16 +92,20 @@ function parseBuckets(groups: readonly unknown[]): ParsedBucket[] {
 }
 
 /**
- * Picks the bucket that actually constrains the next Turn: the most consumed
- * one, breaking ties toward the 5-hour window because it resets soonest.
+ * Picks the bucket that actually constrains the next Turn: prefers the 5-hour
+ * window (most actionable and resets soonest), breaking ties by consumption.
  */
 function leadingBucket(buckets: readonly ParsedBucket[]): ParsedBucket | undefined {
   return [...buckets].sort((left, right) => {
-    if (right.usagePercent !== left.usagePercent) return right.usagePercent - left.usagePercent;
-    return (
-      Number(periodTypeFrom(right.window) === "five_hour") -
-      Number(periodTypeFrom(left.window) === "five_hour")
-    );
+    const leftIsFiveHour = periodTypeFrom(left.window) === "five_hour";
+    const rightIsFiveHour = periodTypeFrom(right.window) === "five_hour";
+    if (leftIsFiveHour !== rightIsFiveHour) {
+      return Number(rightIsFiveHour) - Number(leftIsFiveHour);
+    }
+    if (right.usagePercent !== left.usagePercent) {
+      return right.usagePercent - left.usagePercent;
+    }
+    return 0;
   })[0];
 }
 

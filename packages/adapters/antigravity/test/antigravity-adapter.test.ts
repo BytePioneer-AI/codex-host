@@ -490,7 +490,10 @@ describe("Antigravity Adapter", () => {
   });
 
   describe("Session Lifecycle & Tool Streaming", () => {
-    async function fakeStreamingAgy(streamLines: readonly string[]): Promise<{
+    async function fakeStreamingAgy(
+      streamLines: readonly string[],
+      options?: { stderrLines?: readonly string[] },
+    ): Promise<{
       command: string;
       cwd: string;
       cleanup(): Promise<void>;
@@ -503,13 +506,25 @@ describe("Antigravity Adapter", () => {
         }
       };
       const scriptContent = `
+const fs = require("node:fs");
 const lines = ${JSON.stringify(streamLines)};
+const stderrLines = ${JSON.stringify(options?.stderrLines ?? [])};
 if (process.argv.includes("models")) {
   process.stdout.write("gemini-3.7-flash-high\\tGemini 3.7 Flash High\\n");
   process.exit(0);
 }
-for (const line of lines) {
-  process.stdout.write(line + "\\n");
+for (const errLine of stderrLines) {
+  fs.writeSync(2, errLine + "\\n");
+}
+const emitStdout = () => {
+  for (const line of lines) {
+    process.stdout.write(line + "\\n");
+  }
+};
+if (stderrLines.length > 0) {
+  setTimeout(emitStdout, 50);
+} else {
+  emitStdout();
 }
 `;
       const jsPath = path.join(directory, "agy.cjs");
@@ -535,8 +550,9 @@ for (const line of lines) {
     async function runResultScenario(
       streamLines: readonly string[],
       turnIdText: string,
+      options?: { stderrLines?: readonly string[] },
     ): Promise<Extract<HostEvent, { type: "turn.completed" }>> {
-      const { command, cwd, cleanup } = await fakeStreamingAgy(streamLines);
+      const { command, cwd, cleanup } = await fakeStreamingAgy(streamLines, options);
       const adapter = new AntigravityAdapter({ command });
       try {
         const opened = await adapter.open({ kind: "create", cwd });
@@ -908,6 +924,48 @@ for (const line of lines) {
         await adapter.close();
         await cleanup();
       }
+    });
+
+    it("treats non-SUCCESS result as succeeded when result.error is missing, stderr is non-empty, and response is completed without pending tools", async () => {
+      const completed = await runResultScenario(
+        [
+          JSON.stringify({
+            event: "init",
+            init: { permission_mode: "default" },
+            conversation_id: "conv-stderr-diagnostics",
+          }),
+          JSON.stringify({
+            event: "step_update",
+            step_update: {
+              conversation_id: "conv-stderr-diagnostics",
+              step_index: 1,
+              state: "DONE",
+              step_type: "agent_response",
+              text: "Task completed successfully despite diagnostic stderr output.",
+            },
+          }),
+          JSON.stringify({
+            event: "result",
+            result: {
+              conversation_id: "conv-stderr-diagnostics",
+              status: "ERROR",
+              num_turns: 1,
+            },
+          }),
+        ],
+        "turn-stderr-diagnostics",
+        {
+          stderrLines: [
+            "[INFO] ordinary diagnostic stderr log from CLI",
+            "[DEBUG] background telemetry sync complete",
+          ],
+        },
+      );
+
+      expect(completed).toMatchObject({
+        turnId: "turn-stderr-diagnostics",
+        outcome: { status: "succeeded" },
+      });
     });
 
     it("treats non-SUCCESS result with transient stream interruption error detail as succeeded when response is present", async () => {

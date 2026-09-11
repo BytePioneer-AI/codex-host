@@ -1024,7 +1024,7 @@ class AntigravitySession implements HarnessSession {
         hasAgentResponse &&
         !hasPendingTools &&
         !isAuthError &&
-        (!errorDetail ||
+        (!nativeError ||
           isTransientInterruption ||
           (isPermissionDenialDetail && active.agentResponseCompleted))
       ) {

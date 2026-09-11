@@ -253,6 +253,7 @@ export async function runDesktopController(
           "antigravity",
           "kiro-cli",
           "codebuddy",
+          "cursor-cli",
         ],
         timeoutMs: PRODUCTION_INSTALL_TIMEOUT_MS,
       },

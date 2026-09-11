@@ -123,7 +123,7 @@ describe("Antigravity Adapter", () => {
     const adapter = new AntigravityAdapter({ command: fixture.command, environment: process.env });
     try {
       expect(await adapter.inspectAccount()).toMatchObject({
-        credits: { label: "Gemini Models · Weekly window", usedPercent: 2.65 },
+        credits: { label: "Gemini Models · 5-hour window", usedPercent: 0 },
       });
       expect(adapter.credits()).not.toBeNull();
       await writeFile(
@@ -395,20 +395,20 @@ describe("Antigravity Adapter", () => {
 
   it("projects the CLI /usage command into an account credits snapshot", () => {
     const snapshot = parseAntigravityUsageCommand(USAGE_COMMAND, FETCHED_AT);
-    // The Gemini weekly bucket is the most consumed, so it leads the pill.
+    // The 5-hour window leads (it is the most actionable and resets soonest).
     // Labels come from the window, not the CLI's "… Remaining" naming, because
     // the values are consumed percentages.
     expect(snapshot).toEqual({
-      label: "Gemini Models · Weekly window",
-      usedPercent: 2.65,
-      periodType: "weekly",
-      resetsAt: "2026-09-01T03:17:57Z",
+      label: "Gemini Models · 5-hour window",
+      usedPercent: 0,
+      periodType: "five_hour",
+      resetsAt: "2026-08-31T19:38:13Z",
       fetchedAt: FETCHED_AT,
       productUsage: [
         {
-          product: "Gemini Models · 5-hour window",
-          usagePercent: 0,
-          resetsAt: "2026-08-31T19:38:13Z",
+          product: "Gemini Models · Weekly window",
+          usagePercent: 2.65,
+          resetsAt: "2026-09-01T03:17:57Z",
         },
         {
           product: "Claude and GPT models · Weekly window",
@@ -416,6 +416,73 @@ describe("Antigravity Adapter", () => {
           resetsAt: "2026-09-07T14:38:13Z",
         },
       ],
+    });
+  });
+
+  it("prefers the 5-hour window over weekly even when weekly usage is higher", () => {
+    const commandWithHigherWeekly = {
+      name: "usage",
+      data: {
+        groups: [
+          {
+            name: "Gemini Models",
+            buckets: [
+              {
+                id: "gemini-weekly",
+                window: "weekly",
+                remaining_fraction: 0.46,
+                reset_time: "2026-09-15T00:56:00Z",
+              },
+              {
+                id: "gemini-5h",
+                window: "5h",
+                remaining_fraction: 0.799,
+                reset_time: "2026-09-11T08:47:00Z",
+              },
+            ],
+          },
+        ],
+      },
+    };
+    const snapshot = parseAntigravityUsageCommand(commandWithHigherWeekly, FETCHED_AT);
+    expect(snapshot).toMatchObject({
+      label: "Gemini Models · 5-hour window",
+      periodType: "five_hour",
+      usedPercent: 20.1,
+    });
+    expect(snapshot?.productUsage).toEqual([
+      {
+        product: "Gemini Models · Weekly window",
+        usagePercent: 54,
+        resetsAt: "2026-09-15T00:56:00Z",
+      },
+    ]);
+  });
+
+  it("falls back to the most consumed window when no 5-hour window is present", () => {
+    const commandWithout5h = {
+      name: "usage",
+      data: {
+        groups: [
+          {
+            name: "Gemini Models",
+            buckets: [
+              {
+                id: "gemini-weekly",
+                window: "weekly",
+                remaining_fraction: 0.46,
+                reset_time: "2026-09-15T00:56:00Z",
+              },
+            ],
+          },
+        ],
+      },
+    };
+    const snapshot = parseAntigravityUsageCommand(commandWithout5h, FETCHED_AT);
+    expect(snapshot).toMatchObject({
+      label: "Gemini Models · Weekly window",
+      periodType: "weekly",
+      usedPercent: 54,
     });
   });
 
@@ -457,7 +524,7 @@ describe("Antigravity Adapter", () => {
       return Promise.resolve(stdout);
     }, new Date(FETCHED_AT));
     expect(calls).toEqual([["--print=/usage", "--output-format", "stream-json"]]);
-    expect(snapshot).toMatchObject({ usedPercent: 2.65, periodType: "weekly" });
+    expect(snapshot).toMatchObject({ usedPercent: 0, periodType: "five_hour" });
   });
 
   it("degrades to null when the CLI cannot answer /usage", async () => {

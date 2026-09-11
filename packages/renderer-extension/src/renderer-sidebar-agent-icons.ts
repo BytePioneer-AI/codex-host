@@ -141,6 +141,7 @@ export function rendererAgentForThreadOwnership(
   if (ownership.harnessId === "antigravity") return "antigravity";
   if (ownership.harnessId === "kiro-cli") return "kiro-cli";
   if (ownership.harnessId === "codebuddy") return "codebuddy";
+  if (ownership.harnessId === "cursor-cli") return "cursor-cli";
   return null;
 }
 

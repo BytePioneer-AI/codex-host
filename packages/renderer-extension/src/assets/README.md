@@ -30,6 +30,13 @@ mark, 40×40 viewBox and rounded clipping are preserved without modification.
 It matches `packages/adapters/codebuddy/assets/icon.svg` byte for byte; both
 copies are bundled locally so no network request is needed.
 
+`cursor-agent.svg` is the unmodified official Cursor Cube favicon from
+`https://cursor.com/favicon.svg`, with its original 512×512 viewBox, dark rounded
+plate and light mark. It matches `packages/adapters/cursor-cli/assets/icon.svg`
+byte for byte; both are bundled locally without runtime network requests.
+The README badge uses the matching standalone 2D Cube from the official brand
+kit; source details are in `docs/cursor-cli-experimental.md`.
+
 The Agent picker uses the official Pi mark from `https://pi.dev/logo-auto.svg`
 and the Claude mark distributed in Anthropic's official `anthropic.claude-code`
 VS Code extension as inline vector paths. The DeepSeek Harness whale mark is

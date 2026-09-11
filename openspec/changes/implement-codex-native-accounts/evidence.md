@@ -53,6 +53,14 @@
 - v2 与 Renderer 不再提交旧 Account 选择字段；仅保留两处明确拒绝旧输入的 guard。
 - 登录完成按 loginId 对账，不要求 provisional Account ID 不变；旧邮箱和已先到达的 ready 快照都不能虚构成功，无邮箱保存账号仍可查额度。
 
+## PR 前同步 main
+
+提交前同步到 `44f9289779940e1e1a138753a2fac9d1d146c774`，保留 main 的 Cursor／Antigravity 改动。同名新增的设计文档采用已获授权、包含实际实施与验收状态的版本。
+
+同步后重新执行 TypeScript build、严格 typecheck、lint/boundaries、Renderer build、全仓格式检查，均通过；聚焦测试扩展到 53 文件，731 通过、3 个 Windows-only 跳过，三份 Renderer E2E 43 通过。记录见 `pr-merge-*.log`。
+
+首次同步测试与 E2E 同时运行时，一项合成 private-file 队列测试在 helper 启动的 2 秒期限内超时；该项独立复查及完整聚焦集合复跑均通过。没有修改超时或队列断言，也没有把这次失败隐藏为全部一次通过；其时序稳定性仍需在 CI 观察。
+
 ## 原生协议证据的限度
 
 本轮用 `0.153.4` 的 `app-server generate-ts --experimental` 在隔离空 HOME 中离线生成完整协议。默认输出省略 experimental 接口，曾导致 settings／queue 接口缺失的误判；完整生成后已纠正，未据此删除有效 API。

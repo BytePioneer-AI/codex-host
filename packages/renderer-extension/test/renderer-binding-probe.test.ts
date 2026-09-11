@@ -170,6 +170,7 @@ describe("Renderer Composer DOM behavior", () => {
           antigravity: undefined,
           "kiro-cli": undefined,
           codebuddy: undefined,
+          "cursor-cli": undefined,
         },
       ),
     ).toEqual([]);
@@ -199,6 +200,7 @@ describe("Renderer Composer DOM behavior", () => {
           antigravity: undefined,
           "kiro-cli": undefined,
           codebuddy: undefined,
+          "cursor-cli": undefined,
         },
       ),
     ).toEqual(["deepseek-harness"]);
@@ -228,6 +230,7 @@ describe("Renderer Composer DOM behavior", () => {
           antigravity: undefined,
           "kiro-cli": undefined,
           codebuddy: undefined,
+          "cursor-cli": undefined,
         },
       ),
     ).toEqual(["deepseek-harness"]);
@@ -255,6 +258,7 @@ describe("Renderer Composer DOM behavior", () => {
           antigravity: undefined,
           "kiro-cli": undefined,
           codebuddy: undefined,
+          "cursor-cli": undefined,
         },
       ),
     ).toEqual(["pi", "claude-code", "deepseek-harness", "opencode", "grok", "omp", "antigravity"]);
@@ -284,6 +288,7 @@ describe("Renderer Composer DOM behavior", () => {
           antigravity: undefined,
           "kiro-cli": undefined,
           codebuddy: undefined,
+          "cursor-cli": undefined,
         },
       ),
     ).toEqual([]);
@@ -313,6 +318,7 @@ describe("Renderer Composer DOM behavior", () => {
           antigravity: undefined,
           "kiro-cli": undefined,
           codebuddy: undefined,
+          "cursor-cli": undefined,
         },
       ),
     ).toEqual(["deepseek-harness"]);

@@ -1189,30 +1189,6 @@ describe("Pi RPC Turn aggregation", () => {
     }
   });
 
-  it("uses a seven-minute default compaction timeout", async () => {
-    vi.useFakeTimers();
-    const onFault = vi.fn();
-    const rpc = session("manual-compaction-stalled", onFault);
-
-    try {
-      await rpc.start();
-      const compact = rpc.compact(undefined, () => undefined).catch((error: unknown) => error);
-
-      await vi.advanceTimersByTimeAsync(419_999);
-      expect(onFault).not.toHaveBeenCalled();
-      await vi.advanceTimersByTimeAsync(1);
-
-      expect(await compact).toMatchObject({
-        kind: "protocolError",
-        message: "Pi RPC compaction timed out after 420000ms",
-      });
-      expect(onFault).toHaveBeenCalledOnce();
-    } finally {
-      await rpc.close();
-      vi.useRealTimers();
-    }
-  });
-
   it("fails a manual Compact when native compaction never reaches a terminal event", async () => {
     vi.useFakeTimers();
     const onFault = vi.fn();

@@ -24,6 +24,7 @@ import {
   type CreateProvisionalThreadInput,
   type DelegationStatus,
   type FindRecentDelegationInput,
+  type RebindSubagentSessionInput,
   type ReplaceReadySessionAfterLastTurnInput,
   type ReplaceReadySessionInput,
   type StoredDelegationRecordV1,
@@ -475,6 +476,52 @@ export class MappingStore {
       nativeSessionRef: input.nativeSessionRef,
       turnMappings: this.#mergeMappings(current.turnMappings, input.turnMappings ?? []),
     }));
+  }
+
+  // Keep native ref, Turn mappings and the indexed create request in one serialized
+  // record mutation; separate setters could leave a child pointing at mixed Sessions.
+  async rebindSubagentSession(input: RebindSubagentSessionInput): Promise<StoredThreadRecordV1> {
+    return this.#update(input.hostThreadId, (current) => {
+      const parent = this.#records.get(input.parentHostThreadId);
+      if (
+        current.state !== "ready" ||
+        !current.nativeSessionRef ||
+        current.subagent?.parentHostThreadId !== input.parentHostThreadId ||
+        parent?.state !== "ready" ||
+        parent.harnessId !== current.harnessId ||
+        input.previousNativeSessionRef.harnessId !== current.harnessId ||
+        input.nativeSessionRef.harnessId !== current.harnessId ||
+        !sameJson(parent.nativeSessionRef, input.nativeSessionRef)
+      )
+        throw new MappingStoreError(
+          "MAPPING_CONFLICT",
+          "Subagent replacement must belong to its current parent Session",
+        );
+      if (
+        sameJson(current.nativeSessionRef, input.nativeSessionRef) &&
+        current.createRequestId === input.createRequestId
+      )
+        return null;
+      if (!sameJson(current.nativeSessionRef, input.previousNativeSessionRef)) {
+        throw new MappingStoreError(
+          "MAPPING_CONFLICT",
+          "Subagent replacement source Session is stale",
+        );
+      }
+      const nativeSessionId = input.nativeSessionRef.nativeSessionId;
+      return {
+        ...current,
+        createRequestId: input.createRequestId,
+        nativeSessionRef: input.nativeSessionRef,
+        turnMappings: current.turnMappings.map((mapping) => ({
+          ...mapping,
+          nativeTurnRef: { ...mapping.nativeTurnRef, nativeSessionId },
+          ...(mapping.nativeCheckpointRef
+            ? { nativeCheckpointRef: { ...mapping.nativeCheckpointRef, nativeSessionId } }
+            : {}),
+        })),
+      };
+    });
   }
 
   async replaceReadySession(input: ReplaceReadySessionInput): Promise<StoredThreadRecordV1> {

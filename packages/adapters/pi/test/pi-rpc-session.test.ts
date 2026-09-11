@@ -22,6 +22,7 @@ type Scenario =
   | "settled-streaming"
   | "assistant-error"
   | "retry-success"
+  | "prompt-auto-compaction"
   | "prompt-preflight-compaction"
   | "prompt-preflight-compaction-timeout"
   | "manual-compaction"
@@ -66,10 +67,12 @@ class FakePiRpcProcess extends EventEmitter {
   #modelId = "synthetic-model";
   #thinkingLevel = "high";
   readonly #scenario: Scenario;
+  readonly #compactionDelayMs: number | undefined;
 
-  constructor(scenario: Scenario) {
+  constructor(scenario: Scenario, compactionDelayMs?: number) {
     super();
     this.#scenario = scenario;
+    this.#compactionDelayMs = compactionDelayMs;
     this.stdin.on("data", (chunk: Buffer) => this.#push(chunk));
     this.stdin.once("finish", () => {
       this.exitCode = 0;
@@ -360,14 +363,21 @@ class FakePiRpcProcess extends EventEmitter {
           tokensBefore: 275_729,
           estimatedTokensAfter: 32_000,
         });
-      }, 10);
+      }, this.#compactionDelayMs ?? 10);
       return;
     }
     if (
       command.type === "prompt" &&
-      (this.#scenario === "prompt-preflight-compaction" ||
+      this.#promptCount === 0 &&
+      (this.#scenario === "prompt-auto-compaction" ||
+        this.#scenario === "prompt-preflight-compaction" ||
         this.#scenario === "prompt-preflight-compaction-timeout")
     ) {
+      this.#promptCount += 1;
+      if (this.#scenario === "prompt-auto-compaction") {
+        this.#isStreaming = true;
+        this.#respond(command);
+      }
       this.#output({ type: "compaction_start", reason: "threshold" });
       setTimeout(() => {
         this.#output({
@@ -384,7 +394,7 @@ class FakePiRpcProcess extends EventEmitter {
         });
         if (this.#scenario === "prompt-preflight-compaction-timeout") return;
         this.#isStreaming = true;
-        this.#respond(command);
+        if (this.#scenario !== "prompt-auto-compaction") this.#respond(command);
         const message = {
           role: "assistant",
           content: [{ type: "text", text: "continued after compaction" }],
@@ -392,7 +402,7 @@ class FakePiRpcProcess extends EventEmitter {
         this.#output({ type: "message_start", message });
         this.#output({ type: "message_end", message });
         this.#settleAgent();
-      }, 20);
+      }, this.#compactionDelayMs ?? 20);
       return;
     }
     if (command.type === "prompt") this.#isStreaming = true;
@@ -480,6 +490,9 @@ class FakePiRpcProcess extends EventEmitter {
     }
     if (
       this.#scenario === "final-only" ||
+      this.#scenario === "manual-compaction" ||
+      this.#scenario === "prompt-auto-compaction" ||
+      this.#scenario === "prompt-preflight-compaction" ||
       this.#scenario === "settled-streaming" ||
       ((this.#scenario === "cancel" || this.#scenario === "long-running") && this.#promptCount > 1)
     ) {
@@ -701,22 +714,22 @@ function session(
   onFault = vi.fn(),
   options: {
     commandTimeoutMs?: number;
-    compactionTimeoutMs?: number;
+    nativeCompactionDelayMs?: number;
     cancelTimeoutMs?: number;
   } = {},
 ): PiRpcSession {
   const processAdapter: PiRpcProcessAdapter = {
     spawn() {
-      return new FakePiRpcProcess(scenario) as unknown as ChildProcessWithoutNullStreams;
+      return new FakePiRpcProcess(
+        scenario,
+        options.nativeCompactionDelayMs,
+      ) as unknown as ChildProcessWithoutNullStreams;
     },
   };
   return new PiRpcSession(
     {
       cwd: process.cwd(),
       commandTimeoutMs: options.commandTimeoutMs ?? 2_000,
-      ...(options.compactionTimeoutMs === undefined
-        ? {}
-        : { compactionTimeoutMs: options.compactionTimeoutMs }),
       cancelTimeoutMs: options.cancelTimeoutMs ?? 500,
       closeTimeoutMs: 500,
       onFault,
@@ -1169,43 +1182,73 @@ describe("Pi RPC Turn aggregation", () => {
     await rpc.close();
   });
 
-  it("does not time out the Compact RPC while native compaction is active", async () => {
-    vi.useFakeTimers();
-    const rpc = session("manual-compaction", vi.fn(), { commandTimeoutMs: 5 });
-    const events: PiTurnEvent[] = [];
+  it.each(["manual-compaction", "prompt-auto-compaction", "prompt-preflight-compaction"] as const)(
+    "allows %s beyond the former wall-clock bound and reuses the Session",
+    async (scenario) => {
+      vi.useFakeTimers();
+      const onFault = vi.fn();
+      const durationMs = 20 * 60_000;
+      const rpc = session(scenario, onFault, {
+        commandTimeoutMs: 5,
+        nativeCompactionDelayMs: durationMs,
+      });
+      const events: PiTurnEvent[] = [];
+      const onSettled = vi.fn();
 
-    try {
-      await rpc.start();
-      const compact = rpc.compact(undefined, (event) => events.push(event));
-      await vi.advanceTimersByTimeAsync(10);
-      await expect(compact).resolves.toEqual({ outcome: "succeeded" });
-      expect(events).toEqual([
-        { type: "compaction.started" },
-        { type: "compaction.completed", outcome: "succeeded" },
-      ]);
-    } finally {
-      await rpc.close();
-      vi.useRealTimers();
-    }
-  });
+      try {
+        await rpc.start();
+        const result =
+          scenario === "manual-compaction"
+            ? rpc.compact(undefined, (event) => events.push(event))
+            : rpc.runTurn("continue", (event) => events.push(event));
+        void result.then(onSettled, onSettled);
 
-  it("fails a manual Compact when native compaction never reaches a terminal event", async () => {
+        await vi.advanceTimersByTimeAsync(durationMs - 1);
+
+        expect(onFault).not.toHaveBeenCalled();
+        expect(onSettled).not.toHaveBeenCalled();
+        expect(events).toEqual([{ type: "compaction.started" }]);
+
+        await vi.advanceTimersByTimeAsync(1);
+
+        await expect(result).resolves.toEqual(
+          scenario === "manual-compaction"
+            ? { outcome: "succeeded" }
+            : { text: "continued after compaction", cancelled: false },
+        );
+        expect(events.filter(({ type }) => type.startsWith("compaction."))).toEqual([
+          { type: "compaction.started" },
+          { type: "compaction.completed", outcome: "succeeded" },
+        ]);
+        expect(onFault).not.toHaveBeenCalled();
+        await expect(rpc.runTurn("next turn", () => undefined)).resolves.toEqual({
+          text: "synthetic final text",
+          cancelled: false,
+        });
+      } finally {
+        await rpc.close();
+        vi.useRealTimers();
+      }
+    },
+  );
+
+  it("keeps a stalled manual Compact pending until the Session closes", async () => {
     vi.useFakeTimers();
     const onFault = vi.fn();
-    const rpc = session("manual-compaction-stalled", onFault, {
-      commandTimeoutMs: 5,
-      compactionTimeoutMs: 20,
-    });
+    const onSettled = vi.fn();
+    const rpc = session("manual-compaction-stalled", onFault, { commandTimeoutMs: 5 });
 
     try {
       await rpc.start();
       const compact = rpc.compact(undefined, () => undefined);
-      const rejected = expect(compact).rejects.toThrow("compaction timed out after 20ms");
+      void compact.then(onSettled, onSettled);
 
-      await vi.advanceTimersByTimeAsync(20);
+      await vi.advanceTimersByTimeAsync(20 * 60_000);
 
-      await rejected;
-      expect(onFault).toHaveBeenCalledWith(expect.objectContaining({ kind: "protocolError" }));
+      expect(onFault).not.toHaveBeenCalled();
+      expect(onSettled).not.toHaveBeenCalled();
+      await rpc.close();
+      await expect(compact).rejects.toThrow("Pi RPC Session closed");
     } finally {
       await rpc.close();
       vi.useRealTimers();

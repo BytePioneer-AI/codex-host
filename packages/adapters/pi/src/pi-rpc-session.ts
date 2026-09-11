@@ -145,7 +145,6 @@ export interface PiRpcSessionOptions {
   model?: PiNativeModelRef;
   emptySessionConfiguration?: PiEmptySessionConfiguration;
   commandTimeoutMs?: number;
-  compactionTimeoutMs?: number;
   cancelTimeoutMs?: number;
   closeTimeoutMs?: number;
   onFault?: (error: PiRpcFaultError) => void;
@@ -477,10 +476,7 @@ const nodeProcessAdapter: PiRpcProcessAdapter = {
 
 export class PiRpcSession {
   readonly #options: Required<
-    Pick<
-      PiRpcSessionOptions,
-      "commandTimeoutMs" | "compactionTimeoutMs" | "cancelTimeoutMs" | "closeTimeoutMs"
-    >
+    Pick<PiRpcSessionOptions, "commandTimeoutMs" | "cancelTimeoutMs" | "closeTimeoutMs">
   > &
     PiRpcSessionOptions;
   readonly #processAdapter: PiRpcProcessAdapter;
@@ -492,7 +488,6 @@ export class PiRpcSession {
   #closePromise: Promise<void> | null = null;
   #compactionActive = false;
   #compactionTurn: ActiveTurn | null = null;
-  #compactionTimeout: NodeJS.Timeout | null = null;
   #failed = false;
   #pending = new Map<string, PendingCommand>();
   #state: PiSessionState | null = null;
@@ -512,7 +507,6 @@ export class PiRpcSession {
     }
     this.#options = {
       commandTimeoutMs: 30_000,
-      compactionTimeoutMs: 420_000,
       cancelTimeoutMs: 2_000,
       closeTimeoutMs: 2_000,
       ...options,
@@ -927,17 +921,9 @@ export class PiRpcSession {
     if (value.type === "compaction_start") {
       this.#compactionActive = true;
       this.#compactionTurn = this.#activeTurn;
-      this.#compactionTimeout ??= setTimeout(() => {
-        this.#compactionTimeout = null;
-        this.#fail(
-          new PiRpcFaultError(
-            "protocolError",
-            `Pi RPC compaction timed out after ${this.#options.compactionTimeoutMs}ms`,
-          ),
-        );
-      }, this.#options.compactionTimeoutMs);
       const onEvent = this.#activeTurn?.onEvent ?? this.#manualCompaction?.onEvent;
       onEvent?.({ type: "compaction.started" });
+      // Pi owns compaction duration; keep Prompt/Compact correlation until its terminal event.
       for (const pending of this.#pending.values()) {
         if ((pending.command !== "prompt" && pending.command !== "compact") || !pending.timeout)
           continue;
@@ -948,8 +934,6 @@ export class PiRpcSession {
     }
     if (value.type === "compaction_end") {
       this.#compactionActive = false;
-      if (this.#compactionTimeout) clearTimeout(this.#compactionTimeout);
-      this.#compactionTimeout = null;
       const compactionTurn = this.#compactionTurn;
       this.#compactionTurn = null;
       for (const [id, pending] of this.#pending) {
@@ -1563,8 +1547,6 @@ export class PiRpcSession {
   }
 
   #rejectAll(error: Error): void {
-    if (this.#compactionTimeout) clearTimeout(this.#compactionTimeout);
-    this.#compactionTimeout = null;
     for (const pending of this.#pending.values()) {
       if (pending.timeout) clearTimeout(pending.timeout);
       pending.reject(error);

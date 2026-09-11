@@ -19,6 +19,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { listExternalThreadMetadata } from "../src/external-thread-list.js";
 import { ExternalThreadRepository } from "../src/external-thread-repository.js";
 import { ExternalThreadRuntime } from "../src/external-thread-runtime.js";
+import { findExternalSubagent } from "../src/external-subagent-threads.js";
 
 const directories: string[] = [];
 const harnessId = harnessIdSchema.parse("antigravity");
@@ -92,6 +93,63 @@ afterEach(async () => {
 });
 
 describe("External native child identity", () => {
+  it("routes descendant observations only within the current Harness and parent Session tree", async () => {
+    const { repository, parent } = await fixture();
+    try {
+      const child = (id: string, owner: string, nativeId = id) => ({
+        ...parent,
+        hostThreadId: hostThreadIdSchema.parse(id),
+        subagent: {
+          parentHostThreadId: hostThreadIdSchema.parse(owner),
+          nativeSubagentId: nativeId,
+        },
+      });
+      const direct = child("child", parent.hostThreadId);
+      const nested = child("grandchild", direct.hostThreadId, "child/grandchild");
+      const foreignParent = { ...parent, hostThreadId: hostThreadIdSchema.parse("foreign") };
+      const foreignChild = child("foreign-child", foreignParent.hostThreadId, "child/grandchild");
+      const records = [parent, direct, nested, foreignParent, foreignChild];
+      expect(findExternalSubagent(records, parent, "child")).toEqual(direct);
+      expect(findExternalSubagent(records, parent, "child/grandchild")).toEqual(nested);
+      expect(findExternalSubagent(records, foreignParent, "child/grandchild")).toEqual(
+        foreignChild,
+      );
+      expect(findExternalSubagent(records, direct, "child")).toBeUndefined();
+      expect(
+        findExternalSubagent(
+          records.filter((record) => record !== direct),
+          parent,
+          "child/grandchild",
+        ),
+      ).toBeUndefined();
+      for (const invalid of [
+        { ...direct, nativeSessionRef: replacementRef },
+        { ...direct, harnessId: harnessIdSchema.parse("pi") },
+        { ...direct, subagent: { ...direct.subagent, parentHostThreadId: nested.hostThreadId } },
+      ]) {
+        expect(
+          findExternalSubagent([parent, invalid, nested], parent, "child/grandchild"),
+        ).toBeUndefined();
+      }
+      expect(
+        findExternalSubagent(
+          records,
+          { ...parent, nativeSessionRef: replacementRef },
+          "child/grandchild",
+        ),
+      ).toBeUndefined();
+      expect(
+        findExternalSubagent(
+          [...records, child("ambiguous", parent.hostThreadId, "child/grandchild")],
+          parent,
+          "child/grandchild",
+        ),
+      ).toBeUndefined();
+    } finally {
+      await repository.close();
+    }
+  });
+
   it.each([sourceRef, replacementRef])(
     "retains child and Turn IDs across rollback to $nativeSessionId",
     async (ref) => {

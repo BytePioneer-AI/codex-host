@@ -87,6 +87,7 @@ import {
   listExternalTurns,
 } from "./external-thread-history.js";
 import { executeExternalThreadRollback } from "./external-thread-rollback.js";
+import { findExternalSubagent } from "./external-subagent-threads.js";
 import {
   createExternalThreadRecordInput,
   createProductionExternalThreadStore,
@@ -531,6 +532,7 @@ export class AppServerHost {
   #officialLoginSessions = new Map<string, CodexLoginSession>();
   #writer: OrderedWriter;
   #subagentThreadStatuses = new Map<string, "active" | "idle">();
+  #liveSubagentThreadIds = new Set<string>();
   #runningSubagentsByParent = new Map<string, Set<string>>();
   #pendingExternalCommandRequests = new Set<string>();
   #closeRequested = false;
@@ -3216,8 +3218,19 @@ export class AppServerHost {
     return this.#externalRuntime.locate(threadId);
   }
 
-  #resolveExternalThread(threadId: string): Promise<ExternalThreadResolution> {
-    return this.#externalRuntime.resolve(threadId);
+  async #resolveExternalThread(threadId: string): Promise<ExternalThreadResolution> {
+    const resolution = await this.#externalRuntime.resolve(threadId);
+    if (resolution.kind === "external") {
+      try {
+        await this.#restoreSubagentStatuses(resolution.thread, resolution.historyFresh);
+      } catch {
+        return {
+          kind: "error",
+          error: { code: -32081, message: "External Subagent state could not be restored" },
+        };
+      }
+    }
+    return resolution;
   }
 
   async #writeResolutionError(
@@ -3229,8 +3242,65 @@ export class AppServerHost {
     return true;
   }
 
-  #refreshExternalThread(thread: ExternalThread): Promise<ExternalThreadRpcError | null> {
-    return this.#externalRuntime.refresh(thread);
+  async #refreshExternalThread(thread: ExternalThread): Promise<ExternalThreadRpcError | null> {
+    const error = await this.#externalRuntime.refresh(thread);
+    if (!error) {
+      try {
+        await this.#restoreSubagentStatuses(thread, true);
+      } catch {
+        return { code: -32081, message: "External Subagent state could not be restored" };
+      }
+    }
+    return error;
+  }
+
+  async #restoreSubagentStatuses(thread: ExternalThread, initialize: boolean): Promise<void> {
+    const latest = new Map<string, "active" | "idle">();
+    for (const turn of initialize ? thread.turns : []) {
+      if (!Array.isArray(turn.items)) continue;
+      for (const item of turn.items) {
+        if (!isRecord(item) || item.type !== "collabAgentToolCall" || !isRecord(item.agentsStates))
+          continue;
+        for (const [id, state] of Object.entries(item.agentsStates)) {
+          if (isRecord(state))
+            latest.set(
+              id,
+              state.status === "running" || state.status === "pendingInit" ? "active" : "idle",
+            );
+        }
+      }
+    }
+    const children = latest.size
+      ? (await this.#repository.list()).filter(
+          (record) =>
+            record.state === "ready" &&
+            record.harnessId === thread.harnessId &&
+            record.nativeSessionRef?.nativeSessionId ===
+              thread.record.nativeSessionRef?.nativeSessionId &&
+            record.subagent?.parentHostThreadId === thread.id,
+        )
+      : [];
+    const childIds = new Set<string>(children.map((record) => record.hostThreadId));
+    for (const [id, status] of latest) {
+      if (!childIds.has(id)) continue;
+      if (this.#liveSubagentThreadIds.has(id)) continue;
+      this.#subagentThreadStatuses.set(id, status);
+      const child = this.#externalRuntime.get(id);
+      if (child) {
+        child.running = status === "active";
+        child.thread.status =
+          status === "active" ? { type: "active", activeFlags: [] } : { type: "idle" };
+      }
+      this.#trackRunningSubagent(thread.id, id, status);
+    }
+    const status = this.#subagentThreadStatuses.get(thread.id);
+    if (thread.record.subagent && status) thread.running = status === "active";
+    if (status || latest.size > 0 || this.#hasRunningSubagents(thread.id)) {
+      thread.thread.status =
+        thread.running || this.#hasRunningSubagents(thread.id)
+          ? { type: "active", activeFlags: [] }
+          : { type: "idle" };
+    }
   }
 
   #persistTerminalIdentity(
@@ -3442,6 +3512,10 @@ export class AppServerHost {
             turns: [],
             sessionId: await this.#repository.sessionTreeId(location.record),
           });
+      const status = this.#subagentThreadStatuses.get(location.record.hostThreadId);
+      if (status)
+        thread.status =
+          status === "active" ? { type: "active", activeFlags: [] } : { type: "idle" };
       await this.#writer.json(rpcEnvelope(request, { result: { thread } }));
       if (location.thread) await this.#replayExternalUsage(location.thread);
     } catch {
@@ -3463,7 +3537,7 @@ export class AppServerHost {
       );
       return;
     }
-    if (includeTurns && !thread.running && !historyFresh) {
+    if (includeTurns && (!thread.running || thread.record.subagent) && !historyFresh) {
       const refreshed = await this.#refreshExternalThread(thread);
       if (refreshed) {
         await this.#writer.json(rpcError(request, refreshed.code, refreshed.message));
@@ -3493,7 +3567,12 @@ export class AppServerHost {
     const requiresRefresh =
       request.method === "thread/turns/list" ||
       (request.method === "thread/items/list" && !thread.historyHydrated);
-    if (!thread.running && !historyFresh && headPage && requiresRefresh) {
+    if (
+      (!thread.running || thread.record.subagent) &&
+      !historyFresh &&
+      headPage &&
+      requiresRefresh
+    ) {
       const refreshed = await this.#refreshExternalThread(thread);
       if (refreshed) {
         await this.#writer.json(rpcError(request, refreshed.code, refreshed.message));
@@ -3526,7 +3605,7 @@ export class AppServerHost {
     params: JsonObject,
     historyFresh: boolean,
   ): Promise<void> {
-    if (!thread.running && !historyFresh) {
+    if ((!thread.running || thread.record.subagent) && !historyFresh) {
       const refreshed = await this.#refreshExternalThread(thread);
       if (refreshed) {
         await this.#writer.json(rpcError(request, refreshed.code, refreshed.message));
@@ -3974,28 +4053,26 @@ export class AppServerHost {
     }
     if (event.type === "subagent.transcript.changed") {
       const nativeSubagentId = event.nativeSubagentId;
-      const record = (await this.#repository.list()).find(
-        (candidate) =>
-          candidate.subagent?.parentHostThreadId === thread.id &&
-          candidate.subagent.nativeSubagentId === nativeSubagentId &&
-          candidate.nativeSessionRef?.nativeSessionId ===
-            thread.record.nativeSessionRef?.nativeSessionId,
+      const record = findExternalSubagent(
+        await this.#repository.list(),
+        thread.record,
+        nativeSubagentId,
       );
       if (record) await this.#refreshOpenSubagentThread(record.hostThreadId, false);
       return;
     }
     if (event.type === "subagent.state.changed") {
       const nativeSubagentId = event.nativeSubagentId;
-      const record = (await this.#repository.list()).find(
-        (candidate) =>
-          candidate.subagent?.parentHostThreadId === thread.id &&
-          candidate.subagent.nativeSubagentId === nativeSubagentId &&
-          candidate.nativeSessionRef?.nativeSessionId ===
-            thread.record.nativeSessionRef?.nativeSessionId,
+      const record = findExternalSubagent(
+        await this.#repository.list(),
+        thread.record,
+        nativeSubagentId,
       );
       if (!record) return;
       const status = event.status === "pending" || event.status === "running" ? "active" : "idle";
       this.#trackRunningSubagent(thread.id, record.hostThreadId, status);
+      if (record.subagent?.parentHostThreadId !== thread.id && record.subagent)
+        this.#trackRunningSubagent(record.subagent.parentHostThreadId, record.hostThreadId, status);
       await this.#setSubagentThreadStatus(record.hostThreadId, status);
       if (!thread.running && !thread.activeTurnId && !this.#hasRunningSubagents(thread.id)) {
         await this.#setThreadStatus(thread, { type: "idle" });
@@ -4127,6 +4204,7 @@ export class AppServerHost {
       running: status === "active",
     });
     this.#subagentThreadStatuses.set(record.hostThreadId, status);
+    this.#liveSubagentThreadIds.add(record.hostThreadId);
     this.#trackRunningSubagent(parent.id, record.hostThreadId, status);
     await this.#writer.json({
       method: "thread/started",
@@ -4237,6 +4315,8 @@ export class AppServerHost {
 
   async #setSubagentThreadStatus(threadId: string, status: "active" | "idle"): Promise<void> {
     const previousStatus = this.#subagentThreadStatuses.get(threadId);
+    this.#subagentThreadStatuses.set(threadId, status);
+    this.#liveSubagentThreadIds.add(threadId);
     const child = this.#externalRuntime.get(threadId);
     if (child) {
       child.running = status === "active";
@@ -4258,7 +4338,6 @@ export class AppServerHost {
       }
     }
     if (previousStatus === status) return;
-    this.#subagentThreadStatuses.set(threadId, status);
     await this.#writer.json({
       method: "thread/status/changed",
       emittedAtMs: Date.now(),

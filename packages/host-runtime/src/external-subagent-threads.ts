@@ -7,6 +7,39 @@ import { hostThreadIdSchema, type NativeSessionRef } from "@codexhost/shared-con
 
 import type { ExternalThreadStore } from "./external-thread-repository.js";
 
+/** Route root-owned observations without confusing siblings, forks or replaced Sessions. */
+export function findExternalSubagent(
+  records: readonly StoredThreadRecordV1[],
+  parent: StoredThreadRecordV1,
+  nativeSubagentId: string,
+): StoredThreadRecordV1 | undefined {
+  if (parent.state !== "ready" || !parent.nativeSessionRef) return undefined;
+  const byId = new Map(records.map((record) => [record.hostThreadId, record]));
+  const matches = records.filter((record) => {
+    if (
+      record.hostThreadId === parent.hostThreadId ||
+      record.subagent?.nativeSubagentId !== nativeSubagentId
+    )
+      return false;
+    const visited = new Set<string>();
+    let current: StoredThreadRecordV1 | undefined = record;
+    while (current && !visited.has(current.hostThreadId)) {
+      if (
+        current.state !== "ready" ||
+        current.harnessId !== parent.harnessId ||
+        current.nativeSessionRef?.nativeSessionId !== parent.nativeSessionRef?.nativeSessionId
+      )
+        return false;
+      if (current.hostThreadId === parent.hostThreadId) return true;
+      visited.add(current.hostThreadId);
+      current = current.subagent ? byId.get(current.subagent.parentHostThreadId) : undefined;
+    }
+    return false;
+  });
+  // Native IDs must unambiguously address a child within this root's tree.
+  return matches.length === 1 ? matches[0] : undefined;
+}
+
 function childCreateRequest(
   parent: Pick<StoredThreadRecordV1, "hostThreadId" | "harnessId">,
   nativeRef: NativeSessionRef,

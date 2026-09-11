@@ -1547,6 +1547,16 @@ describe("AppServerHost HarnessAdapter projection", () => {
       canAcceptDirectInput: false,
     });
     const childThreadId = (messageParams(childStarted).thread as JsonObject).id as string;
+    for (const id of [93, 94]) {
+      writeRequest(fixture.desktopInput, {
+        id,
+        method: id === 93 ? "thread/read" : "thread/resume",
+        params: { threadId: childThreadId, excludeTurns: true },
+      });
+      expect(await fixture.collector.waitFor((message) => requestId(message, id))).toMatchObject({
+        result: { thread: { status: { type: "active" }, canAcceptDirectInput: false } },
+      });
+    }
     writeRequest(fixture.desktopInput, {
       id: 98,
       method: "thread/turns/list",
@@ -1697,6 +1707,181 @@ describe("AppServerHost HarnessAdapter projection", () => {
       cwd: "/synthetic",
     });
     await stopFixture(fixture);
+  });
+
+  it("hydrates running descendants and routes root observations to open nested details", async () => {
+    let answer = "Working";
+    let grandchildStatus: "running" | "completed" = "running";
+    const snapshot = (nativeSessionId: string, id: string, child?: string): HostThreadSnapshot => ({
+      turns: [
+        {
+          nativeTurnRef: {
+            harnessId: harnessIdSchema.parse("pi"),
+            nativeSessionId,
+            nativeTurnKey: id,
+            formatVersion: 1,
+          },
+          input: [{ type: "text", text: id }],
+          items: child
+            ? [
+                {
+                  item: {
+                    type: "subagentDelegation",
+                    itemId: hostItemIdSchema.parse(`spawn-${child}`),
+                    operation: "spawn",
+                    subagents: [
+                      {
+                        subagentId: child,
+                        nativeSubagentId: child,
+                        description: child,
+                        background: true,
+                        status: child === "child/grandchild" ? grandchildStatus : "running",
+                      },
+                    ],
+                  },
+                  outcome: { status: "succeeded" },
+                },
+              ]
+            : [
+                {
+                  item: {
+                    type: "agentMessage",
+                    itemId: hostItemIdSchema.parse("nested-answer"),
+                    text: answer,
+                  },
+                  outcome: { status: "succeeded" },
+                },
+              ],
+          outcome: { status: "succeeded" },
+        },
+      ],
+    });
+    const adapter = Object.assign(new FakeHarnessAdapter(harnessIdSchema.parse("pi")), {
+      subagents: {
+        readSnapshot: vi.fn(
+          async ({
+            parent,
+            nativeSubagentId,
+          }: {
+            parent: { nativeSessionId: string };
+            nativeSubagentId: string;
+          }) => ({
+            ok: true as const,
+            value: snapshot(
+              parent.nativeSessionId,
+              nativeSubagentId,
+              nativeSubagentId === "child" ? "child/grandchild" : undefined,
+            ),
+          }),
+        ),
+      },
+    });
+    const fixture = createFixture({ externalAdapters: new Map([["pi", adapter]]) });
+    try {
+      const rootId = await startPiThread(fixture);
+      const session = adapter.sessions[0];
+      const nativeId = session?.initialState.nativeRef?.nativeSessionId;
+      if (!session || !nativeId) throw new Error("Missing parent Session");
+      const rootSnapshot = snapshot(nativeId, "root", "child");
+      const rootItem = rootSnapshot.turns[0]?.items[0]?.item;
+      if (rootItem?.type !== "subagentDelegation") throw new Error("Missing root delegation");
+      rootItem.subagents.push({
+        subagentId: "unresolved-call",
+        description: "No native identity",
+        background: true,
+        status: "running",
+      });
+      vi.spyOn(session, "readSnapshot").mockResolvedValue({
+        ok: true,
+        value: rootSnapshot,
+      });
+      let request = 100;
+      const read = async (id: string, methodName = "thread/turns/list") => {
+        const requestIdValue = request++;
+        writeRequest(fixture.desktopInput, {
+          id: requestIdValue,
+          method: methodName,
+          params: { threadId: id, limit: 20, itemsView: "full", excludeTurns: true },
+        });
+        return fixture.collector.waitFor((message) => requestId(message, requestIdValue));
+      };
+      await read(rootId);
+      const child = (await fixture.mappingStore.listThreads()).find(
+        (record) => record.subagent?.nativeSubagentId === "child",
+      );
+      if (!child) throw new Error("Missing child mapping");
+      expect(await read(child.hostThreadId, "thread/read")).toMatchObject({
+        result: { thread: { status: { type: "active" } } },
+      });
+      await read(child.hostThreadId);
+      const grandchild = (await fixture.mappingStore.listThreads()).find(
+        (record) => record.subagent?.nativeSubagentId === "child/grandchild",
+      );
+      if (!grandchild) throw new Error("Missing grandchild mapping");
+      expect(await read(grandchild.hostThreadId, "thread/resume")).toMatchObject({
+        result: { thread: { status: { type: "active" }, parentThreadId: child.hostThreadId } },
+      });
+
+      // A cold read-only parent has no outputs to deliver its descendants' changes.
+      answer = "Snapshot progress";
+      expect(await read(grandchild.hostThreadId)).toMatchObject({
+        result: {
+          data: [{ items: expect.arrayContaining([expect.objectContaining({ text: answer })]) }],
+        },
+      });
+      grandchildStatus = "completed";
+      await read(child.hostThreadId);
+      expect(await read(grandchild.hostThreadId, "thread/read")).toMatchObject({
+        result: { thread: { status: { type: "idle" } } },
+      });
+      const rootChild = rootItem.subagents[0];
+      if (!rootChild) throw new Error("Missing root child state");
+      rootChild.status = "completed";
+      await read(rootId);
+      expect(await read(rootId, "thread/read")).toMatchObject({
+        result: { thread: { status: { type: "idle" } } },
+      });
+      rootChild.status = "running";
+      grandchildStatus = "running";
+      await read(rootId);
+      await read(child.hostThreadId);
+      expect(await read(grandchild.hostThreadId, "thread/read")).toMatchObject({
+        result: { thread: { status: { type: "active" } } },
+      });
+
+      answer = "Nested progress";
+      session.emitSubagentTranscriptChanged("child/grandchild");
+      await fixture.collector.waitFor(
+        (message) =>
+          method(message, "item/completed") &&
+          messageParams(message).threadId === grandchild.hostThreadId &&
+          (messageParams(message).item as JsonObject)?.text === answer,
+      );
+      session.emitSubagentState("child/grandchild", "completed", answer);
+      await fixture.collector.waitFor((message) =>
+        threadStatus(message, grandchild.hostThreadId, "idle"),
+      );
+      // Once a live terminal was observed, an older parent Snapshot cannot revive it.
+      await read(child.hostThreadId);
+      expect(await read(grandchild.hostThreadId, "thread/read")).toMatchObject({
+        result: { thread: { status: { type: "idle" } } },
+      });
+      expect(await read(child.hostThreadId, "thread/read")).toMatchObject({
+        result: { thread: { status: { type: "active" } } },
+      });
+      session.emitSubagentState("child", "completed");
+      await fixture.collector.waitFor((message) =>
+        threadStatus(message, child.hostThreadId, "idle"),
+      );
+      expect(await read(grandchild.hostThreadId, "thread/read")).toMatchObject({
+        result: { thread: { status: { type: "idle" } } },
+      });
+      expect(await read(rootId, "thread/read")).toMatchObject({
+        result: { thread: { status: { type: "idle" } } },
+      });
+    } finally {
+      await stopFixture(fixture);
+    }
   });
 
   it("keeps the Parent Thread active until all background Subagents settle", async () => {

@@ -39,11 +39,44 @@ export function selectRendererRequestManager<Manager, RequestClient>(
   return eligible.length === 1 ? (eligible[0] ?? null) : null;
 }
 
+export function requestManagerFromHookState(value: unknown): object | null {
+  const matchesRequestManager = (candidate: unknown): candidate is object => {
+    if (candidate == null || typeof candidate !== "object") return false;
+    const value = candidate as {
+      requestClient?: {
+        prewarmThreadStart?: unknown;
+        sendRequest?: unknown;
+        enqueueRequest?: unknown;
+      };
+      prewarmedThreadManager?: { discardAllPrewarmedThreads?: unknown };
+      sendRequest?: unknown;
+    };
+    return (
+      value.requestClient != null &&
+      typeof value.requestClient.prewarmThreadStart === "function" &&
+      typeof value.requestClient.sendRequest === "function" &&
+      typeof value.requestClient.enqueueRequest === "function" &&
+      typeof value.prewarmedThreadManager?.discardAllPrewarmedThreads === "function" &&
+      typeof value.sendRequest === "function"
+    );
+  };
+  if (matchesRequestManager(value)) return value;
+  if (
+    value != null &&
+    typeof value === "object" &&
+    matchesRequestManager((value as { manager?: unknown }).manager)
+  ) {
+    return (value as { manager: object }).manager;
+  }
+  return null;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 const FIND_REQUEST_MANAGER_EXPRESSION = `(() => {
+  const requestManagerFromHookState = ${requestManagerFromHookState.toString()};
   const editors = [...document.querySelectorAll(
     '[data-codex-composer], [contenteditable="true"][role="textbox"]',
   )];
@@ -71,19 +104,8 @@ const FIND_REQUEST_MANAGER_EXPRESSION = `(() => {
     }
     let hook = fiber.memoizedState;
     for (let index = 0; hook != null && index < 120; index += 1, hook = hook.next) {
-      const value = hook.memoizedState;
-      if (
-        value != null &&
-        typeof value === 'object' &&
-        value.requestClient != null &&
-        typeof value.requestClient.prewarmThreadStart === 'function' &&
-        typeof value.requestClient.sendRequest === 'function' &&
-        typeof value.requestClient.enqueueRequest === 'function' &&
-        typeof value.prewarmedThreadManager?.discardAllPrewarmedThreads === 'function' &&
-        typeof value.sendRequest === 'function'
-      ) {
-        managers.add(value);
-      }
+      const manager = requestManagerFromHookState(hook.memoizedState);
+      if (manager != null) managers.add(manager);
     }
   }
   const candidates = [...managers].map((manager) => {

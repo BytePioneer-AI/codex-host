@@ -722,7 +722,9 @@ describe("ClaudeSdkTransport autonomous task continuation", () => {
   it("publishes Root output produced after a background task notification", async () => {
     const value = fixture();
     const autonomous: ClaudeAutonomousTurn[] = [];
+    const threadEvents: ClaudeTurnEvent[] = [];
     value.transport.setAutonomousTurnHandler((turn) => autonomous.push(turn));
+    value.transport.setThreadEventHandler((event) => threadEvents.push(event));
     await value.transport.start();
 
     value.fakeQuery.push({
@@ -750,16 +752,19 @@ describe("ClaudeSdkTransport autonomous task continuation", () => {
     completeTurn(value.fakeQuery);
 
     await vi.waitFor(() => expect(autonomous).toHaveLength(1));
+    expect(threadEvents).toEqual([
+      {
+        type: "subagent.settled",
+        callId: "send-1",
+        nativeSubagentId: "native-agent-1",
+        status: "completed",
+        resultSummary: "Analysis complete",
+      },
+    ]);
     expect(autonomous[0]).toMatchObject({
       nativeTurnKey: "00000000-0000-4000-8000-000000000040",
       result: { status: "succeeded" },
       events: [
-        {
-          type: "subagent.settled",
-          nativeSubagentId: "native-agent-1",
-          status: "completed",
-          resultSummary: "Analysis complete",
-        },
         { type: "text.delta", delta: "Background analysis result" },
         { type: "message.completed" },
       ],
@@ -770,7 +775,9 @@ describe("ClaudeSdkTransport autonomous task continuation", () => {
   it("preserves a failed task-notification whose user content is text blocks", async () => {
     const value = fixture();
     const autonomous: ClaudeAutonomousTurn[] = [];
+    const threadEvents: ClaudeTurnEvent[] = [];
     value.transport.setAutonomousTurnHandler((turn) => autonomous.push(turn));
+    value.transport.setThreadEventHandler((event) => threadEvents.push(event));
     await value.transport.start();
 
     value.fakeQuery.push({
@@ -793,7 +800,7 @@ describe("ClaudeSdkTransport autonomous task continuation", () => {
     completeTurn(value.fakeQuery);
 
     await vi.waitFor(() => expect(autonomous).toHaveLength(1));
-    expect(autonomous[0]?.events.filter((event) => event.type === "subagent.settled")).toEqual([
+    expect(threadEvents).toEqual([
       {
         type: "subagent.settled",
         nativeSubagentId: "a78414260bd2f9554",
@@ -801,6 +808,45 @@ describe("ClaudeSdkTransport autonomous task continuation", () => {
         resultSummary: "Agent failed",
       },
     ]);
+    expect(autonomous[0]?.events.filter((event) => event.type === "subagent.settled")).toEqual([]);
+    await value.transport.close();
+  });
+
+  it("delivers a background task settlement whose Segment never produces a Terminal", async () => {
+    const value = fixture();
+    const autonomous: ClaudeAutonomousTurn[] = [];
+    const threadEvents: ClaudeTurnEvent[] = [];
+    value.transport.setAutonomousTurnHandler((turn) => autonomous.push(turn));
+    value.transport.setThreadEventHandler((event) => threadEvents.push(event));
+    await value.transport.start();
+
+    // Claude may enqueue the notification without a continuation Turn: no
+    // Assistant output and no Result follow. The settlement is Thread-level
+    // and must still be delivered instead of being swallowed by Turn batching.
+    value.fakeQuery.push({
+      type: "user",
+      uuid: "00000000-0000-4000-8000-000000000060",
+      session_id: "00000000-0000-4000-8000-000000000001",
+      parent_tool_use_id: null,
+      origin: { kind: "task-notification" },
+      message: {
+        role: "user",
+        content:
+          "<task-notification><task-id>native-agent-late</task-id><summary>Late analysis</summary></task-notification>",
+      },
+    } as unknown as SDKMessage);
+
+    await vi.waitFor(() =>
+      expect(threadEvents).toEqual([
+        {
+          type: "subagent.settled",
+          nativeSubagentId: "native-agent-late",
+          status: "completed",
+          resultSummary: "Late analysis",
+        },
+      ]),
+    );
+    expect(autonomous).toEqual([]);
     await value.transport.close();
   });
 
@@ -1933,4 +1979,240 @@ describe("Claude history replacement fence", () => {
       }
     },
   );
+});
+
+// A native continuation may launch another child before its own result arrives.
+function pushBackgroundDelegation(
+  fakeQuery: FakeQuery,
+  callId: string,
+  nativeSubagentId: string | undefined,
+  operation: "spawn" | "send" = "spawn",
+): void {
+  fakeQuery.push({
+    type: "assistant",
+    uuid: `assistant-${callId}`,
+    parent_tool_use_id: null,
+    message: {
+      id: `message-${callId}`,
+      content: [
+        {
+          type: "tool_use",
+          id: callId,
+          name: operation === "spawn" ? "Agent" : "SendMessage",
+          input:
+            operation === "spawn"
+              ? { description: "Analyze", prompt: "Analyze", run_in_background: true }
+              : { to: nativeSubagentId, summary: "Analyze", message: "Analyze" },
+        },
+      ],
+    },
+  } as unknown as SDKMessage);
+  fakeQuery.push({
+    type: "user",
+    parent_tool_use_id: null,
+    message: {
+      role: "user",
+      content: [{ type: "tool_result", tool_use_id: callId, content: "Launched", is_error: false }],
+    },
+    ...(operation === "spawn"
+      ? { tool_use_result: { status: "async_launched", agentId: nativeSubagentId } }
+      : {}),
+  } as unknown as SDKMessage);
+}
+
+function pushSettlement(
+  fakeQuery: FakeQuery,
+  nativeSubagentId: string,
+  status = "completed",
+  callId?: string,
+): void {
+  fakeQuery.push({
+    type: "system",
+    subtype: "task_notification",
+    task_id: nativeSubagentId,
+    status,
+    summary: "Analysis finished",
+    ...(callId ? { tool_use_id: callId } : {}),
+  } as unknown as SDKMessage);
+}
+
+describe("ClaudeSdkTransport autonomous Subagent settlement ordering", () => {
+  it.each(["unset", "cleared"])(
+    "keeps settlements in the autonomous batch when the Thread handler is %s",
+    async (handlerState) => {
+      const value = fixture();
+      const turns: ClaudeAutonomousTurn[] = [];
+      const immediate = vi.fn();
+      value.transport.setAutonomousTurnHandler((turn) => turns.push(turn));
+      if (handlerState === "cleared") {
+        value.transport.setThreadEventHandler(immediate);
+        value.transport.setThreadEventHandler(null);
+      }
+      await value.transport.start();
+      try {
+        pushSettlement(value.fakeQuery, "existing-child", "completed", "existing-call");
+        completeTurn(value.fakeQuery);
+        await vi.waitFor(() => expect(turns).toHaveLength(1));
+        expect(turns[0]?.events).toEqual([
+          {
+            type: "subagent.settled",
+            nativeSubagentId: "existing-child",
+            callId: "existing-call",
+            status: "completed",
+            resultSummary: "Analysis finished",
+          },
+        ]);
+        expect(immediate).not.toHaveBeenCalled();
+      } finally {
+        await value.transport.close();
+      }
+    },
+  );
+
+  it.each(["completed", "failed", "stopped"])(
+    "keeps a fast %s child settlement after its buffered creation",
+    async (status) => {
+      const value = fixture();
+      const turns: ClaudeAutonomousTurn[] = [];
+      const immediate: ClaudeTurnEvent[] = [];
+      value.transport.setAutonomousTurnHandler((turn) => turns.push(turn));
+      value.transport.setThreadEventHandler((event) => immediate.push(event));
+      await value.transport.start();
+      try {
+        pushBackgroundDelegation(value.fakeQuery, "spawn-1", "child-1");
+        // No callId: the native ID learned from the launch result must suffice.
+        pushSettlement(value.fakeQuery, "child-1", status);
+        completeTurn(value.fakeQuery);
+        await vi.waitFor(() => expect(turns).toHaveLength(1));
+        expect(immediate).toEqual([]);
+        const turn = turns[0];
+        if (!turn) throw new Error("Autonomous Turn was not delivered");
+        const events = turn.events;
+        const created = events.findIndex((event) => event.type === "subagent.completed");
+        expect(created).toBeGreaterThanOrEqual(0);
+        expect(events.findIndex((event) => event.type === "subagent.settled")).toBeGreaterThan(
+          created,
+        );
+        expect(events.filter((event) => event.type === "subagent.settled")).toEqual([
+          {
+            type: "subagent.settled",
+            nativeSubagentId: "child-1",
+            status: status === "stopped" ? "interrupted" : status,
+            resultSummary: "Analysis finished",
+          },
+        ]);
+      } finally {
+        await value.transport.close();
+      }
+    },
+  );
+
+  it("uses the call ID when the launch result has not supplied a native child ID", async () => {
+    const value = fixture();
+    const turns: ClaudeAutonomousTurn[] = [];
+    const immediate: ClaudeTurnEvent[] = [];
+    value.transport.setAutonomousTurnHandler((turn) => turns.push(turn));
+    value.transport.setThreadEventHandler((event) => immediate.push(event));
+    await value.transport.start();
+    try {
+      pushBackgroundDelegation(value.fakeQuery, "spawn-call-only", undefined);
+      pushSettlement(value.fakeQuery, "child-from-notification", "completed", "spawn-call-only");
+      completeTurn(value.fakeQuery);
+      await vi.waitFor(() => expect(turns).toHaveLength(1));
+      expect(immediate).toEqual([]);
+      const turn = turns[0];
+      if (!turn) throw new Error("Autonomous Turn was not delivered");
+      const created = turn.events.findIndex((event) => event.type === "subagent.completed");
+      expect(turn.events[created]).not.toHaveProperty("nativeSubagentId");
+      expect(turn.events.findIndex((event) => event.type === "subagent.settled")).toBeGreaterThan(
+        created,
+      );
+    } finally {
+      await value.transport.close();
+    }
+  });
+
+  it("orders repeated sends to one native child independently across batches", async () => {
+    const value = fixture();
+    const turns: ClaudeAutonomousTurn[] = [];
+    const immediate: ClaudeTurnEvent[] = [];
+    value.transport.setAutonomousTurnHandler((turn) => turns.push(turn));
+    value.transport.setThreadEventHandler((event) => immediate.push(event));
+    await value.transport.start();
+    try {
+      for (let index = 0; index < 2; index += 1) {
+        pushBackgroundDelegation(value.fakeQuery, `send-${index}`, "existing-child", "send");
+        pushSettlement(value.fakeQuery, "existing-child");
+        completeTurn(value.fakeQuery);
+        await vi.waitFor(() => expect(turns).toHaveLength(index + 1));
+        const turn = turns[index];
+        if (!turn) throw new Error("Autonomous Turn was not delivered");
+        const events = turn.events;
+        expect(events.findIndex((event) => event.type === "subagent.settled")).toBeGreaterThan(
+          events.findIndex((event) => event.type === "subagent.completed"),
+        );
+      }
+      expect(immediate).toEqual([]);
+      // No creation in this new batch: do not retain a stale dependency.
+      pushSettlement(value.fakeQuery, "existing-child");
+      await vi.waitFor(() => expect(immediate).toHaveLength(1));
+    } finally {
+      await value.transport.close();
+    }
+  });
+
+  it("does not make unrelated settlements wait for a buffered creation or Terminal", async () => {
+    const value = fixture();
+    const turns: ClaudeAutonomousTurn[] = [];
+    const immediate: ClaudeTurnEvent[] = [];
+    value.transport.setAutonomousTurnHandler((turn) => turns.push(turn));
+    value.transport.setThreadEventHandler((event) => immediate.push(event));
+    await value.transport.start();
+    try {
+      pushBackgroundDelegation(value.fakeQuery, "spawn-new", "new-child");
+      pushSettlement(value.fakeQuery, "new-child");
+      pushSettlement(value.fakeQuery, "existing-child");
+      await vi.waitFor(() =>
+        expect(immediate).toEqual([
+          expect.objectContaining({ nativeSubagentId: "existing-child" }),
+        ]),
+      );
+      expect(turns).toEqual([]);
+      completeTurn(value.fakeQuery);
+      await vi.waitFor(() => expect(turns).toHaveLength(1));
+      const turn = turns[0];
+      if (!turn) throw new Error("Autonomous Turn was not delivered");
+      expect(turn.events.filter((event) => event.type === "subagent.settled")).toEqual([
+        expect.objectContaining({ nativeSubagentId: "new-child" }),
+      ]);
+    } finally {
+      await value.transport.close();
+    }
+  });
+
+  it("discards unpublished lifecycle events on close without flushing orphan terminal states", async () => {
+    const value = fixture();
+    const turns: ClaudeAutonomousTurn[] = [];
+    const immediate: ClaudeTurnEvent[] = [];
+    value.transport.setAutonomousTurnHandler((turn) => turns.push(turn));
+    value.transport.setThreadEventHandler((event) => immediate.push(event));
+    await value.transport.start();
+    pushBackgroundDelegation(value.fakeQuery, "spawn-close", "unpublished-child");
+    pushSettlement(value.fakeQuery, "unpublished-child");
+    pushSettlement(value.fakeQuery, "existing-child");
+    try {
+      await vi.waitFor(() =>
+        expect(
+          immediate.some(
+            (event) =>
+              event.type === "subagent.settled" && event.nativeSubagentId === "existing-child",
+          ),
+        ).toBe(true),
+      );
+    } finally {
+      await value.transport.close();
+    }
+    expect(turns).toEqual([]);
+    expect(immediate).toEqual([expect.objectContaining({ nativeSubagentId: "existing-child" })]);
+  });
 });

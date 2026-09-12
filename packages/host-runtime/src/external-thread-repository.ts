@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 
-import type { HostThreadSnapshot } from "@codexhost/harness-adapter";
+import type { HostSubagentState, HostThreadSnapshot } from "@codexhost/harness-adapter";
 import {
   MappingStore,
   type CommitReadyThreadInput,
@@ -10,13 +10,14 @@ import {
   type CreateProvisionalThreadInput,
   type DelegationStatus,
   type FindRecentDelegationInput,
+  type RebindSubagentSessionInput,
   type ReplaceReadySessionAfterLastTurnInput,
   type ReplaceReadySessionInput,
   type StoredDelegationRecordV1,
   type StoredThreadRecordV1,
   type StoredTurnMappingV1,
 } from "@codexhost/mapping-store";
-import { projectHistoricalTurn, type JsonObject } from "@codexhost/protocol-core";
+import type { JsonObject } from "@codexhost/protocol-core";
 import {
   hostThreadIdSchema,
   hostTurnIdSchema,
@@ -25,6 +26,10 @@ import {
   type NativeSessionRef,
   type NativeTurnRef,
 } from "@codexhost/shared-contracts";
+import {
+  materializeExternalSubagent,
+  projectExternalSnapshot,
+} from "./external-subagent-threads.js";
 
 export interface ExternalThreadStore {
   initialize(): Promise<void>;
@@ -44,6 +49,7 @@ export interface ExternalThreadStore {
   removeDelegation(delegationId: HostThreadId): Promise<void>;
   createProvisional(input: CreateProvisionalThreadInput): Promise<StoredThreadRecordV1>;
   commitReady(input: CommitReadyThreadInput): Promise<StoredThreadRecordV1>;
+  rebindSubagentSession(input: RebindSubagentSessionInput): Promise<StoredThreadRecordV1>;
   replaceReadySession(input: ReplaceReadySessionInput): Promise<StoredThreadRecordV1>;
   replaceReadySessionAfterLastTurn(
     input: ReplaceReadySessionAfterLastTurnInput,
@@ -112,6 +118,10 @@ export class ExternalThreadRepository {
 
   list(): Promise<StoredThreadRecordV1[]> {
     return this.store.listThreads();
+  }
+
+  materializeSubagent(parent: StoredThreadRecordV1, child: HostSubagentState) {
+    return materializeExternalSubagent(this.store, parent, child);
   }
 
   findByCreateRequest(createRequestId: string): Promise<StoredThreadRecordV1 | null> {
@@ -245,15 +255,7 @@ export class ExternalThreadRepository {
     });
     return {
       record: nextRecord,
-      turns: snapshot.turns.map((turn, index) => {
-        const mapping = mappings[index];
-        if (!mapping) throw new Error("Derived Snapshot mapping is incomplete");
-        return projectHistoricalTurn({
-          turnId: mapping.hostTurnId,
-          cwd: record.cwd,
-          snapshot: turn,
-        });
-      }),
+      turns: await projectExternalSnapshot(this.store, nextRecord, snapshot),
     };
   }
 
@@ -318,6 +320,8 @@ export class ExternalThreadRepository {
     });
     const nextRecord = await this.store.replaceReadySession({
       hostThreadId: derived.hostThreadId,
+      expectedRevision: derived.revision,
+      expectedNativeSessionRef: derived.nativeSessionRef,
       nativeSessionRef,
       turnMappings: mappings,
       forkSource: {
@@ -327,15 +331,7 @@ export class ExternalThreadRepository {
     });
     return {
       record: nextRecord,
-      turns: snapshot.turns.map((turn, index) => {
-        const mapping = mappings[index];
-        if (!mapping) throw new Error("External rollback Snapshot mapping is incomplete");
-        return projectHistoricalTurn({
-          turnId: mapping.hostTurnId,
-          cwd: derived.cwd,
-          snapshot: turn,
-        });
-      }),
+      turns: await projectExternalSnapshot(this.store, nextRecord, snapshot, derived),
     };
   }
 
@@ -372,31 +368,27 @@ export class ExternalThreadRepository {
     });
     const nextRecord = await this.store.replaceReadySessionAfterLastTurn({
       hostThreadId: current.hostThreadId,
+      expectedRevision: current.revision,
+      expectedNativeSessionRef: current.nativeSessionRef,
       nativeSessionRef,
       turnMappings: mappings,
     });
     return {
       record: nextRecord,
-      turns: snapshot.turns.map((turn, index) => {
-        const mapping = mappings[index];
-        if (!mapping) throw new Error("Last-Turn rollback Snapshot mapping is incomplete");
-        return projectHistoricalTurn({
-          turnId: mapping.hostTurnId,
-          cwd: current.cwd,
-          snapshot: turn,
-        });
-      }),
+      turns: await projectExternalSnapshot(this.store, nextRecord, snapshot, current),
     };
   }
 
   async sessionTreeId(record: StoredThreadRecordV1): Promise<string> {
     let current = record;
     const visited = new Set<string>();
-    while (current.forkSource) {
+    while (current.subagent || current.forkSource) {
       if (visited.has(current.hostThreadId))
         throw new Error("External Thread Fork tree contains a cycle");
       visited.add(current.hostThreadId);
-      const source = await this.find(current.forkSource.hostThreadId);
+      const parentId = current.subagent?.parentHostThreadId ?? current.forkSource?.hostThreadId;
+      if (!parentId) break;
+      const source = await this.find(parentId);
       if (!source) break;
       current = source;
     }
@@ -459,9 +451,7 @@ export class ExternalThreadRepository {
       : record;
     return {
       record: nextRecord,
-      turns: aligned.map(({ mapping, snapshot: turn }) =>
-        projectHistoricalTurn({ turnId: mapping.hostTurnId, cwd: record.cwd, snapshot: turn }),
-      ),
+      turns: await projectExternalSnapshot(this.store, nextRecord, snapshot),
     };
   }
 }

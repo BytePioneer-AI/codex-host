@@ -9,11 +9,13 @@ import {
   type DeepSeekCommandInvocation,
 } from "./executable.js";
 
-export type DeepSeekProtocolGeneration = "legacy" | "modern";
+export type DeepSeekProtocolGeneration = "modern";
+
+export type DeepSeekSupportedVersion = "0.1.2-rc.1" | "0.1.5-rc.1";
 
 export interface DeepSeekExecutableGeneration {
   readonly generation: DeepSeekProtocolGeneration;
-  readonly version: "0.1.1-rc.2" | "0.1.2-rc.1";
+  readonly version: DeepSeekSupportedVersion;
   readonly command: DeepSeekCommandInvocation;
 }
 
@@ -156,7 +158,7 @@ function loopbackHostname(hostname: string): boolean {
 }
 
 /** Validate and canonicalize the only endpoint form eligible for local DSH wire probes. */
-export function parseDeepSeekLegacyEndpoint(endpoint = DEFAULT_DEEPSEEK_ENDPOINT): string {
+export function parseDeepSeekEndpoint(endpoint = DEFAULT_DEEPSEEK_ENDPOINT): string {
   let parsed: URL;
   try {
     parsed = new URL(endpoint);
@@ -179,7 +181,7 @@ export function parseDeepSeekLegacyEndpoint(endpoint = DEFAULT_DEEPSEEK_ENDPOINT
   if (parsed.searchParams.has("token")) {
     throw probeError(
       "authenticationRequired",
-      "DeepSeek Harness Web bootstrap URL 不可作为连接端点；请关闭该实例，让 codexhost 启动推荐版本 dsh-v0.1.2-rc.1。\nA DeepSeek Harness Web bootstrap URL cannot be used as an endpoint. Close that instance and let codexhost start the recommended dsh-v0.1.2-rc.1.",
+      "DeepSeek Harness Web bootstrap URL 不可作为连接端点；请关闭该实例，让 codexhost 启动 dsh-v0.1.2-rc.1 或 dsh-v0.1.5-rc.1（仅支持这两个版本）。\nA DeepSeek Harness Web bootstrap URL cannot be used as an endpoint. Close that instance and let codexhost start dsh-v0.1.2-rc.1 or dsh-v0.1.5-rc.1; only these two versions are supported.",
     );
   }
   if (parsed.search !== "") {
@@ -239,11 +241,12 @@ export function classifyDeepSeekVersionOutput(
       "DeepSeek Harness --version did not return exactly one semantic version",
     );
   }
-  if (version === "0.1.1-rc.2") return { generation: "legacy", version };
-  if (version === "0.1.2-rc.1") return { generation: "modern", version };
+  if (version === "0.1.2-rc.1" || version === "0.1.5-rc.1") {
+    return { generation: "modern", version };
+  }
   throw probeError(
     "unsupported",
-    `当前 DeepSeek Harness 版本 ${version} 不受支持；请升级到推荐版本 dsh-v0.1.2-rc.1（Legacy 会话仍支持 dsh-v0.1.1-rc.2）。\nDeepSeek Harness ${version} is unsupported. Please upgrade to the recommended dsh-v0.1.2-rc.1 (dsh-v0.1.1-rc.2 remains supported for Legacy sessions).`,
+    `当前 DeepSeek Harness 版本 ${version} 不受支持；codexhost 仅支持 dsh-v0.1.2-rc.1 和 dsh-v0.1.5-rc.1，推荐安装 dsh-v0.1.5-rc.1。\nDeepSeek Harness ${version} is unsupported. codexhost only supports dsh-v0.1.2-rc.1 and dsh-v0.1.5-rc.1; dsh-v0.1.5-rc.1 is recommended.`,
   );
 }
 

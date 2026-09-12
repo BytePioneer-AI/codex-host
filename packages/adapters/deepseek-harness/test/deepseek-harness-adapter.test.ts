@@ -8,18 +8,14 @@ import type {
   InspectHarnessInput,
 } from "@codexhost/harness-adapter";
 import { harnessIdSchema, type DeepSeekModernSessionCandidate } from "@codexhost/shared-contracts";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { DeepSeekHarnessAdapter } from "../src/deepseek-harness-adapter.js";
 import {
+  classifyDeepSeekVersionOutput,
   DeepSeekGenerationProbeError,
   type DeepSeekExecutableGeneration,
 } from "../src/generation-selector.js";
-import type { DeepSeekHostConnectionLike } from "../src/legacy/deepseek-harness-adapter.js";
-import type {
-  DeepSeekHostClient,
-  DeepSeekHostConnectionOptions,
-} from "../src/legacy/host-client.js";
 
 const readyInspection: HarnessInspection = {
   status: "ready",
@@ -35,12 +31,6 @@ const readyInspection: HarnessInspection = {
   },
 };
 
-const legacyExecutable: DeepSeekExecutableGeneration = {
-  generation: "legacy",
-  version: "0.1.1-rc.2",
-  command: { command: "resolved-dsh", arguments: ["--offline"], kind: "npx" },
-};
-
 const modernExecutable: DeepSeekExecutableGeneration = {
   generation: "modern",
   version: "0.1.2-rc.1",
@@ -50,59 +40,16 @@ const modernExecutable: DeepSeekExecutableGeneration = {
 const MODERN_AUTHENTICATION_BODY =
   "dsh web authentication required; reopen the URL printed by dsh web.\n";
 
+beforeEach(() => {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(() => Promise.reject(new TypeError("fetch failed"))),
+  );
+});
+
 afterEach(() => {
   vi.unstubAllGlobals();
 });
-
-class FakeConnection implements DeepSeekHostConnectionLike {
-  readonly client = {
-    host: {
-      describe: () =>
-        Promise.resolve({
-          result: {
-            ok: true,
-            value: {
-              version: "0.0.1",
-              cwd: "/workspace",
-              provider: "deepseek-official",
-              model: "deepseek-v4-flash",
-              attachedSessions: 0,
-              canOpenPath: false,
-            },
-          },
-        }),
-    },
-    llm: {
-      models: () => Promise.resolve({ result: { ok: true, value: { groups: [], failures: [] } } }),
-    },
-    settings: {
-      describe: () =>
-        Promise.resolve({
-          result: {
-            ok: true,
-            value: { writable: false, hasDocument: false, namespaces: [] },
-          },
-        }),
-    },
-  } as unknown as DeepSeekHostClient;
-  connectCalls = 0;
-  closeCalls = 0;
-
-  constructor(readonly connectResult: (signal?: AbortSignal) => Promise<void>) {}
-
-  connect(signal?: AbortSignal): Promise<void> {
-    this.connectCalls += 1;
-    return this.connectResult(signal);
-  }
-
-  subscribe(): () => void {
-    return () => undefined;
-  }
-
-  async close(): Promise<void> {
-    this.closeCalls += 1;
-  }
-}
 
 class FakeAdapter implements HarnessAdapter {
   readonly harnessId = harnessIdSchema.parse("deepseek-harness");
@@ -144,7 +91,7 @@ const unavailableInspection: HarnessInspection = {
   status: "unavailable",
   error: {
     code: "unavailable",
-    message: "DeepSeek Harness Legacy endpoint is unavailable",
+    message: "DeepSeek Harness managed Web is unavailable",
     retryable: true,
   },
 };
@@ -162,13 +109,11 @@ function deferred<T>(): {
 
 describe("DeepSeek public generation selector", () => {
   it("forwards Session discovery only to the selected Modern generation", async () => {
-    const failedLegacy = new FakeAdapter(() => Promise.resolve(unavailableInspection));
     const modern = new FakeAdapter();
     const adapter = new DeepSeekHarnessAdapter(
       {},
       {
         probeExecutable: () => Promise.resolve(modernExecutable),
-        createLegacyAdapter: () => failedLegacy,
         createModernAdapter: () => modern,
       },
     );
@@ -178,158 +123,88 @@ describe("DeepSeek public generation selector", () => {
       value: [],
     });
     expect(modern.listCalls).toBe(1);
-    expect(failedLegacy.listCalls).toBe(0);
     await adapter.close();
   });
 
-  it("revalidates Modern import metadata and provides its generation-owned native identity", async () => {
-    const modern = new FakeAdapter();
-    const list = vi
-      .spyOn(modern.sessionImport, "listCandidates")
-      .mockResolvedValueOnce({
+  it.each(["0.1.2-rc.1", "0.1.5-rc.1"] as const)(
+    "revalidates import metadata and preserves %s native identity",
+    async (version) => {
+      const modern = new FakeAdapter();
+      const list = vi
+        .spyOn(modern.sessionImport, "listCandidates")
+        .mockResolvedValueOnce({
+          ok: true,
+          value: [
+            {
+              nativeSessionId: "native",
+              cwd: "/project",
+              title: "Fresh",
+              updatedAt: 1,
+              running: true,
+            },
+          ],
+        })
+        .mockResolvedValueOnce({ ok: true, value: [] });
+      const adapter = new DeepSeekHarnessAdapter(
+        {},
+        {
+          probeExecutable: () => Promise.resolve({ ...modernExecutable, version }),
+          createModernAdapter: () => modern,
+        },
+      );
+      expect(await adapter.sessionImport.resolveCandidate("native")).toEqual({
         ok: true,
-        value: [
-          {
+        value: {
+          candidate: {
             nativeSessionId: "native",
             cwd: "/project",
             title: "Fresh",
             updatedAt: 1,
             running: true,
           },
-        ],
-      })
-      .mockResolvedValueOnce({ ok: true, value: [] });
-    const adapter = new DeepSeekHarnessAdapter(
-      {},
-      {
-        probeExecutable: () => Promise.resolve(modernExecutable),
-        createLegacyAdapter: () => new FakeAdapter(() => Promise.resolve(unavailableInspection)),
-        createModernAdapter: () => modern,
-      },
-    );
-    expect(await adapter.sessionImport.resolveCandidate("native")).toEqual({
-      ok: true,
-      value: {
-        candidate: {
-          nativeSessionId: "native",
-          cwd: "/project",
-          title: "Fresh",
-          updatedAt: 1,
-          running: true,
+          nativeRef: {
+            harnessId: "deepseek-harness",
+            nativeSessionId: "native",
+            formatVersion: 1,
+            ...(version === "0.1.5-rc.1" ? { locator: { dshVersion: version } } : {}),
+          },
         },
-        nativeRef: { harnessId: "deepseek-harness", nativeSessionId: "native", formatVersion: 1 },
-      },
-    });
-    expect(await adapter.sessionImport.resolveCandidate("native")).toMatchObject({
-      ok: false,
-      error: { code: "sessionNotFound" },
-    });
-    expect(list).toHaveBeenCalledTimes(2);
-    await adapter.close();
-  });
+      });
+      expect(await adapter.sessionImport.resolveCandidate("native")).toMatchObject({
+        ok: false,
+        error: { code: "sessionNotFound" },
+      });
+      expect(list).toHaveBeenCalledTimes(2);
+      await adapter.close();
+    },
+  );
 
-  it("rejects Session discovery on Legacy without calling its Session API", async () => {
-    const legacy = new FakeAdapter();
-    const adapter = new DeepSeekHarnessAdapter(
-      {},
-      {
-        probeExecutable: () => Promise.resolve(legacyExecutable),
-        createLegacyAdapter: () => legacy,
-      },
-    );
-
-    await expect(adapter.sessionImport.listCandidates()).resolves.toMatchObject({
-      ok: false,
-      error: { code: "unsupported", retryable: false },
-    });
-    await expect(adapter.sessionImport.resolveCandidate("native")).resolves.toMatchObject({
-      ok: false,
-      error: { code: "unsupported" },
-    });
-    expect(legacy.listCalls).toBe(0);
-    await adapter.close();
-  });
-
-  it("attaches an exact Legacy Host even when no executable is installed", async () => {
-    const connection = new FakeConnection(() => Promise.resolve());
-    const probeExecutable = vi.fn(() =>
-      Promise.reject(
-        new DeepSeekGenerationProbeError("notInstalled", "No local DSH executable was found"),
-      ),
-    );
-    const createConnection = vi.fn(() => connection);
-    const adapter = new DeepSeekHarnessAdapter(
-      {},
-      {
-        probeExecutable,
-        createConnection,
-      },
-    );
-
-    await expect(adapter.inspect()).resolves.toMatchObject({ status: "ready" });
-    expect(createConnection).toHaveBeenCalledWith(expect.objectContaining({ attachOnly: true }));
-    expect(connection.connectCalls).toBe(1);
-    await adapter.close();
-    expect(connection.closeCalls).toBe(1);
-  });
-
-  it("reuses the probed command invocation for a managed Legacy Host", async () => {
-    const failedDelegate = new FakeAdapter(() => Promise.resolve(unavailableInspection));
-    const selectedDelegate = new FakeAdapter();
-    const options: DeepSeekHostConnectionOptions[] = [];
-    const createConnection = vi.fn();
-    const adapter = new DeepSeekHarnessAdapter(
-      {},
-      {
-        probeExecutable: () => Promise.resolve(legacyExecutable),
-        createConnection,
-        createLegacyAdapter: (input) => {
-          options.push(input);
-          return options.length === 1 ? failedDelegate : selectedDelegate;
+  it.each(["0.1.2-rc.1", "0.1.5-rc.1"] as const)(
+    "passes exact %s through the managed Modern Adapter factory",
+    async (version) => {
+      const executable = { ...modernExecutable, version };
+      const modernDelegate = new FakeAdapter();
+      const createModernAdapter = vi.fn(() => modernDelegate);
+      const adapter = new DeepSeekHarnessAdapter(
+        {},
+        {
+          probeExecutable: () => Promise.resolve(executable),
+          createModernAdapter,
         },
-      },
-    );
+      );
 
-    await expect(adapter.inspect()).resolves.toBe(readyInspection);
-    expect(options).toHaveLength(2);
-    expect(options[0]).toMatchObject({ attachOnly: true });
-    expect(options[1]).toMatchObject({ attachOnly: false });
-    expect(options[1]?.commandInvocation).toBe(legacyExecutable.command);
-    expect(createConnection).not.toHaveBeenCalled();
-    expect(failedDelegate.closeCalls).toBe(1);
-    await expect(adapter.webUi.open()).resolves.toMatchObject({
-      ok: false,
-      error: { code: "unsupported" },
-    });
-    await adapter.close();
-    expect(selectedDelegate.closeCalls).toBe(1);
-  });
-
-  it("passes exact 0.1.2-rc.1 through the managed Modern Adapter factory", async () => {
-    const executable = modernExecutable;
-    const failedDelegate = new FakeAdapter(() => Promise.resolve(unavailableInspection));
-    const modernDelegate = new FakeAdapter();
-    const createModernAdapter = vi.fn(() => modernDelegate);
-    const adapter = new DeepSeekHarnessAdapter(
-      {},
-      {
-        probeExecutable: () => Promise.resolve(executable),
-        createLegacyAdapter: () => failedDelegate,
-        createModernAdapter,
-      },
-    );
-
-    await expect(adapter.inspect()).resolves.toBe(readyInspection);
-    expect(createModernAdapter).toHaveBeenCalledWith(
-      expect.objectContaining({
-        command: executable.command.command,
-        commandArguments: executable.command.arguments,
-      }),
-    );
-    expect(failedDelegate.closeCalls).toBe(1);
-    await adapter.close();
-    expect(modernDelegate.closeCalls).toBe(1);
-  });
+      await expect(adapter.inspect()).resolves.toBe(readyInspection);
+      expect(createModernAdapter).toHaveBeenCalledWith(
+        expect.objectContaining({
+          command: executable.command.command,
+          commandArguments: executable.command.arguments,
+          version,
+        }),
+      );
+      await adapter.close();
+      expect(modernDelegate.closeCalls).toBe(1);
+    },
+  );
 
   it("forwards the Host-owned Web handoff only to the selected Modern Adapter", async () => {
     const handoff = vi.fn<(url: URL) => Promise<void>>(() => Promise.resolve());
@@ -345,7 +220,6 @@ describe("DeepSeek public generation selector", () => {
       { openWebUi: handoff },
       {
         probeExecutable: () => Promise.resolve(modernExecutable),
-        createLegacyAdapter: () => new FakeAdapter(() => Promise.resolve(unavailableInspection)),
         createModernAdapter,
       },
     );
@@ -359,39 +233,40 @@ describe("DeepSeek public generation selector", () => {
     await adapter.close();
   });
 
-  it("reports a recognized unsupported executable before touching an endpoint", async () => {
-    const createConnection = vi.fn();
-    const createLegacyAdapter = vi.fn();
-    const createModernAdapter = vi.fn();
-    const adapter = new DeepSeekHarnessAdapter(
-      {},
-      {
-        probeExecutable: () =>
-          Promise.reject(
-            new DeepSeekGenerationProbeError(
-              "unsupported",
-              "当前 DeepSeek Harness 版本 0.1.0-rc.7 不受支持；请升级到推荐版本 dsh-v0.1.2-rc.1。\nDeepSeek Harness 0.1.0-rc.7 is unsupported. Please upgrade to the recommended dsh-v0.1.2-rc.1.",
-            ),
-          ),
-        createConnection,
-        createLegacyAdapter,
-        createModernAdapter,
-      },
-    );
+  it.each(["0.1.1-rc.2", "0.1.3-rc.1", "0.1.5-rc.2", "0.1.5"])(
+    "rejects unsupported %s before touching an endpoint",
+    async (version) => {
+      const createModernAdapter = vi.fn();
+      const adapter = new DeepSeekHarnessAdapter(
+        {},
+        {
+          probeExecutable: async () => ({
+            ...classifyDeepSeekVersionOutput(version),
+            command: modernExecutable.command,
+          }),
+          createModernAdapter,
+        },
+      );
 
-    await expect(adapter.inspect()).resolves.toMatchObject({
-      status: "unavailable",
-      error: {
-        code: "unsupported",
-        retryable: false,
-        stage: "version",
-        durationMs: expect.any(Number),
-      },
-    });
-    expect(createConnection).not.toHaveBeenCalled();
-    expect(createLegacyAdapter).not.toHaveBeenCalled();
-    expect(createModernAdapter).not.toHaveBeenCalled();
-  });
+      await expect(adapter.inspect()).resolves.toMatchObject({
+        status: "unavailable",
+        error: {
+          code: "unsupported",
+          retryable: false,
+          stage: "version",
+          durationMs: expect.any(Number),
+          message: expect.stringContaining("仅支持 dsh-v0.1.2-rc.1 和 dsh-v0.1.5-rc.1"),
+        },
+      });
+      await expect(adapter.sessionImport.resolveCandidate("native")).resolves.toMatchObject({
+        ok: false,
+        error: { code: "unsupported" },
+      });
+      expect(globalThis.fetch).not.toHaveBeenCalled();
+      expect(createModernAdapter).not.toHaveBeenCalled();
+      await adapter.close();
+    },
+  );
 
   it("never retries a version probe whose process cleanup was not confirmed", async () => {
     const probeExecutable = vi.fn(() =>
@@ -403,8 +278,7 @@ describe("DeepSeek public generation selector", () => {
         ),
       ),
     );
-    const createConnection = vi.fn();
-    const adapter = new DeepSeekHarnessAdapter({}, { probeExecutable, createConnection });
+    const adapter = new DeepSeekHarnessAdapter({}, { probeExecutable });
 
     await expect(adapter.inspect()).resolves.toMatchObject({
       status: "unavailable",
@@ -414,16 +288,14 @@ describe("DeepSeek public generation selector", () => {
       error: { code: "processExited", retryable: false },
     });
     expect(probeExecutable).toHaveBeenCalledOnce();
-    expect(createConnection).not.toHaveBeenCalled();
     await adapter.close();
   });
 
   it("rejects an external bootstrap URL without probing or echoing its token", async () => {
     const probeExecutable = vi.fn();
-    const createConnection = vi.fn();
     const adapter = new DeepSeekHarnessAdapter(
       { endpoint: "http://127.0.0.1:3080/?token=secret-canary" },
-      { probeExecutable, createConnection },
+      { probeExecutable },
     );
 
     const inspection = await adapter.inspect();
@@ -432,45 +304,13 @@ describe("DeepSeek public generation selector", () => {
       error: {
         code: "authenticationRequired",
         message: expect.stringMatching(
-          /推荐版本 dsh-v0\.1\.2-rc\.1[\s\S]*recommended dsh-v0\.1\.2-rc\.1/u,
+          /dsh-v0\.1\.2-rc\.1 或 dsh-v0\.1\.5-rc\.1[\s\S]*only these two versions are supported/u,
         ),
         stage: "wire-handshake",
       },
     });
     expect(JSON.stringify(inspection)).not.toContain("secret-canary");
     expect(probeExecutable).not.toHaveBeenCalled();
-    expect(createConnection).not.toHaveBeenCalled();
-  });
-
-  it("does not fall back to Modern when an endpoint fails the Legacy wire contract", async () => {
-    const failedDelegate = new FakeAdapter(() =>
-      Promise.resolve({
-        status: "unavailable",
-        error: {
-          code: "protocolError",
-          message: "DeepSeek Harness Host did not satisfy the exact Legacy wire contract",
-          retryable: false,
-        },
-      } as HarnessInspection),
-    );
-    const createModernAdapter = vi.fn();
-    const adapter = new DeepSeekHarnessAdapter(
-      {},
-      {
-        probeExecutable: () => Promise.resolve(modernExecutable),
-        createLegacyAdapter: () => failedDelegate,
-        createModernAdapter,
-      },
-    );
-
-    await expect(adapter.inspect()).resolves.toMatchObject({
-      status: "unavailable",
-      error: { code: "protocolError", stage: "wire-handshake" },
-    });
-    expect(createModernAdapter).not.toHaveBeenCalled();
-    expect(failedDelegate.closeCalls).toBe(1);
-    await adapter.close();
-    expect(failedDelegate.closeCalls).toBe(1);
   });
 
   it("identifies an authenticated Modern endpoint without starting or attaching to it", async () => {
@@ -531,8 +371,8 @@ describe("DeepSeek public generation selector", () => {
         diagnostic: "externalModernWeb",
       },
     });
-    expect(fetch).toHaveBeenCalledTimes(2);
-    expect(fetch.mock.calls[1]?.[0]).toBe(endpoint);
+    expect(fetch).toHaveBeenCalledOnce();
+    expect(fetch.mock.calls[0]?.[0]).toBe(endpoint);
     expect(fetch.mock.calls.every(([input]) => new URL(String(input)).port === "43123")).toBe(true);
     expect(createModernAdapter).not.toHaveBeenCalled();
     externalWebRunning = false;
@@ -573,7 +413,7 @@ describe("DeepSeek public generation selector", () => {
         );
       });
       vi.stubGlobal("fetch", fetch);
-      const createModernAdapter = vi.fn();
+      const createModernAdapter = vi.fn(() => new FakeAdapter());
       const adapter = new DeepSeekHarnessAdapter(
         {},
         {
@@ -583,19 +423,12 @@ describe("DeepSeek public generation selector", () => {
       );
 
       const inspection = await adapter.inspect();
-      expect(inspection).toMatchObject({
-        status: "unavailable",
-        error: {
-          code: "authenticationRequired",
-          message: "DeepSeek Harness Web requires authentication",
-          retryable: false,
-          stage: "wire-handshake",
-          diagnostic: `HTTP_${String(status)}`,
-        },
-      });
+      expect(inspection).toBe(readyInspection);
       expect(JSON.stringify(inspection)).not.toContain("secret-canary");
       expect(cancellations).toBe(1);
-      expect(createModernAdapter).not.toHaveBeenCalled();
+      expect(createModernAdapter).toHaveBeenCalledOnce();
+      expect(fetch).toHaveBeenCalledOnce();
+      expect(new URL(String(fetch.mock.calls[0]?.[0])).pathname).toBe("/");
       await adapter.close();
     },
   );
@@ -603,14 +436,12 @@ describe("DeepSeek public generation selector", () => {
   it("shares one concurrent selection and stays on the selected generation after refresh", async () => {
     const generation = deferred<DeepSeekExecutableGeneration>();
     const probeExecutable = vi.fn(() => generation.promise);
-    const failedDelegate = new FakeAdapter(() => Promise.resolve(unavailableInspection));
     const modernDelegate = new FakeAdapter();
     const createModernAdapter = vi.fn(() => modernDelegate);
     const adapter = new DeepSeekHarnessAdapter(
       {},
       {
         probeExecutable,
-        createLegacyAdapter: () => failedDelegate,
         createModernAdapter,
       },
     );
@@ -646,7 +477,6 @@ describe("DeepSeek public generation selector", () => {
               )
             : Promise.resolve(modernExecutable);
         },
-        createLegacyAdapter: () => new FakeAdapter(() => Promise.resolve(unavailableInspection)),
         createModernAdapter: () => modernDelegate,
       },
     );
@@ -670,13 +500,11 @@ describe("DeepSeek public generation selector", () => {
       () => Promise.resolve(unavailableInspection),
       () => Promise.reject(new Error("cleanup failed")),
     );
-    const createLegacyAdapter = vi.fn(() => failedDelegate);
-    const createModernAdapter = vi.fn();
+    const createModernAdapter = vi.fn(() => failedDelegate);
     const adapter = new DeepSeekHarnessAdapter(
       {},
       {
         probeExecutable: () => Promise.resolve(modernExecutable),
-        createLegacyAdapter,
         createModernAdapter,
       },
     );
@@ -699,15 +527,13 @@ describe("DeepSeek public generation selector", () => {
         durationMs: expect.any(Number),
       },
     });
-    expect(createLegacyAdapter).toHaveBeenCalledOnce();
-    expect(createModernAdapter).not.toHaveBeenCalled();
+    expect(createModernAdapter).toHaveBeenCalledOnce();
     expect(failedDelegate.closeCalls).toBe(1);
     await adapter.close();
   });
 
   it("closes an in-flight candidate exactly once even when candidate close rejects", async () => {
     const pendingInspection = deferred<HarnessInspection>();
-    const failedDelegate = new FakeAdapter(() => Promise.resolve(unavailableInspection));
     const modernDelegate = new FakeAdapter(
       () => pendingInspection.promise,
       () => Promise.reject(new Error("candidate close failed")),
@@ -722,7 +548,6 @@ describe("DeepSeek public generation selector", () => {
         {},
         {
           probeExecutable: () => Promise.resolve(modernExecutable),
-          createLegacyAdapter: () => failedDelegate,
           createModernAdapter: () => modernDelegate,
         },
       );
@@ -745,7 +570,6 @@ describe("DeepSeek public generation selector", () => {
   });
 
   it("propagates a selected delegate cleanup failure exactly once", async () => {
-    const failedDelegate = new FakeAdapter(() => Promise.resolve(unavailableInspection));
     const modernDelegate = new FakeAdapter(undefined, () =>
       Promise.reject(new Error("owned process survived")),
     );
@@ -753,7 +577,6 @@ describe("DeepSeek public generation selector", () => {
       {},
       {
         probeExecutable: () => Promise.resolve(modernExecutable),
-        createLegacyAdapter: () => failedDelegate,
         createModernAdapter: () => modernDelegate,
       },
     );
@@ -775,7 +598,6 @@ describe("DeepSeek public generation selector", () => {
       {},
       {
         probeExecutable: () => Promise.resolve(modernExecutable),
-        createLegacyAdapter: () => new FakeAdapter(() => Promise.resolve(unavailableInspection)),
         createModernAdapter: () => modernDelegate,
       },
     );
@@ -793,8 +615,6 @@ describe("DeepSeek public generation selector", () => {
 
   it("aborts an in-flight version probe without creating a candidate", async () => {
     let probeSignal: AbortSignal | undefined;
-    const createConnection = vi.fn();
-    const createLegacyAdapter = vi.fn();
     const createModernAdapter = vi.fn();
     const adapter = new DeepSeekHarnessAdapter(
       {},
@@ -815,8 +635,6 @@ describe("DeepSeek public generation selector", () => {
             );
           });
         },
-        createConnection,
-        createLegacyAdapter,
         createModernAdapter,
       },
     );
@@ -829,8 +647,6 @@ describe("DeepSeek public generation selector", () => {
       error: { code: "invalidState" },
     });
     expect(probeSignal.aborted).toBe(true);
-    expect(createConnection).not.toHaveBeenCalled();
-    expect(createLegacyAdapter).not.toHaveBeenCalled();
     expect(createModernAdapter).not.toHaveBeenCalled();
   });
 
@@ -870,39 +686,13 @@ describe("DeepSeek public generation selector", () => {
     });
   });
 
-  it("reports cleanup failure from a candidate created after close begins", async () => {
-    const generation = deferred<DeepSeekExecutableGeneration>();
-    const lateDelegate = new FakeAdapter(undefined, () =>
-      Promise.reject(new Error("late candidate cleanup failed")),
-    );
-    const createLegacyAdapter = vi.fn(() => lateDelegate);
-    const adapter = new DeepSeekHarnessAdapter(
-      {},
-      {
-        probeExecutable: () => generation.promise,
-        createLegacyAdapter,
-      },
-    );
-    const inspection = adapter.inspect();
-    const closing = adapter.close();
-    generation.resolve(legacyExecutable);
-
-    await expect(closing).rejects.toThrow("DeepSeek Harness Adapter cleanup did not complete");
-    await expect(inspection).resolves.toMatchObject({
-      status: "unavailable",
-      error: { code: "invalidState" },
-    });
-    expect(createLegacyAdapter).toHaveBeenCalledOnce();
-    expect(lateDelegate.closeCalls).toBe(1);
-  });
-
-  it("closes while an injected Legacy Adapter ignores cancellation", async () => {
+  it("closes while an injected Modern Adapter ignores cancellation", async () => {
     const delegate = new FakeAdapter(() => new Promise<HarnessInspection>(() => undefined));
     const adapter = new DeepSeekHarnessAdapter(
       {},
       {
-        probeExecutable: () => Promise.resolve(legacyExecutable),
-        createLegacyAdapter: () => delegate,
+        probeExecutable: () => Promise.resolve(modernExecutable),
+        createModernAdapter: () => delegate,
       },
     );
     const inspection = adapter.inspect();
@@ -914,5 +704,63 @@ describe("DeepSeek public generation selector", () => {
       error: { code: "invalidState" },
     });
     expect(delegate.closeCalls).toBe(1);
+  });
+
+  it("does not create a late candidate when a version probe resolves after close", async () => {
+    const generation = deferred<DeepSeekExecutableGeneration>();
+    const createModernAdapter = vi.fn(() => new FakeAdapter());
+    const adapter = new DeepSeekHarnessAdapter(
+      {},
+      {
+        probeExecutable: () => generation.promise,
+        createModernAdapter,
+      },
+    );
+    const inspection = adapter.inspect();
+    const closing = adapter.close();
+    generation.resolve(modernExecutable);
+    await expect(closing).resolves.toBeUndefined();
+    await expect(inspection).resolves.toMatchObject({ error: { code: "invalidState" } });
+    expect(createModernAdapter).not.toHaveBeenCalled();
+  });
+
+  it("rejects all operations after close and never opens an unmanaged Web UI", async () => {
+    const adapter = new DeepSeekHarnessAdapter();
+    await expect(adapter.webUi.open()).resolves.toMatchObject({ error: { code: "unsupported" } });
+    await adapter.close();
+    await expect(adapter.webUi.open()).resolves.toMatchObject({ error: { code: "invalidState" } });
+    await expect(adapter.open({ kind: "create", cwd: "fixture" })).resolves.toMatchObject({
+      error: { code: "invalidState" },
+    });
+    await expect(adapter.sessionImport.listCandidates()).resolves.toMatchObject({
+      error: { code: "invalidState" },
+    });
+    expect(globalThis.fetch).not.toHaveBeenCalled();
+  });
+
+  it("preserves startup diagnostics and closes the failed managed candidate", async () => {
+    const error = {
+      code: "protocolError",
+      message: "Invalid startup payload",
+      retryable: false,
+      diagnostic: "invalidPayload",
+      stage: "handshake",
+      durationMs: 3,
+      stderrTail: "redacted detail",
+    };
+    const candidate = new FakeAdapter(() => Promise.resolve({ status: "unavailable", error }));
+    const adapter = new DeepSeekHarnessAdapter(
+      {},
+      {
+        probeExecutable: () => Promise.resolve(modernExecutable),
+        createModernAdapter: () => candidate,
+      },
+    );
+    await expect(adapter.inspect()).resolves.toMatchObject({
+      status: "unavailable",
+      error: { ...error, durationMs: expect.any(Number) },
+    });
+    await adapter.close();
+    expect(candidate.closeCalls).toBe(1);
   });
 });

@@ -1,11 +1,24 @@
+import {
+  ModernJournalError,
+  type ModernJournalErrorCode,
+  assertJsonValue,
+  hasExactKeys,
+  isRecord,
+  isCursor,
+  protocolError,
+  limitError,
+} from "../profiles/journal-format.js";
 /** Strict, single-generation DeepSeek Harness Modern Session journal reader. */
 
 import { ModernRemoteConnectionError } from "./remote-connection.js";
+import { DEEPSEEK_V012_PROFILE, type DeepSeekModernProfile } from "../profiles/profile.js";
 import {
-  redactModernCredential,
-  sanitizeModernRemoteFailure,
-  type ModernRemoteResult,
-} from "./wire.js";
+  DeepSeekV015ProtocolError,
+  expandV015AssistantStream,
+  type DeepSeekV015AssistantBaseline,
+  type DeepSeekV015AssistantFrame,
+} from "../profiles/v015.js";
+import { sanitizeModernRemoteFailure, type ModernRemoteResult } from "./wire.js";
 
 export const MODERN_JOURNAL_PAGE_MAX_MESSAGES = 200;
 export const MODERN_JOURNAL_MAX_RECORDS_PER_PAGE = 100_000;
@@ -16,7 +29,6 @@ export const MODERN_JOURNAL_MAX_HISTORY_BYTES = 128 * 1024 * 1024;
 export const MODERN_JOURNAL_MAX_BUFFERED_LIVE_EVENTS = 8_192;
 export const MODERN_JOURNAL_MAX_BUFFERED_LIVE_BYTES = 32 * 1024 * 1024;
 export const MODERN_JOURNAL_RECOVERY_OPEN_TIMEOUT_MS = 10_000;
-const MODERN_JOURNAL_MAX_JSON_DEPTH = 100;
 
 export type ModernJournalJson =
   | null
@@ -27,19 +39,29 @@ export type ModernJournalJson =
   | { readonly [key: string]: ModernJournalJson };
 
 export interface ModernJournalHeader {
-  readonly version: 0;
+  readonly version: 0 | 3;
   readonly id: string;
   readonly createdAt: number;
   readonly cwd?: string;
   readonly parentSession?: string;
   readonly seedLength?: number;
+  readonly isSeeded?: boolean;
   readonly origin?: "subagent";
   readonly delegationDepth?: number;
   readonly agentPreset?: string;
 }
 
+export interface ModernJournalAssistantStream {
+  readonly type: "assistant-stream";
+  readonly frame: DeepSeekV015AssistantFrame;
+}
+
+export type ModernJournalLiveItem = ModernJournalEvent | ModernJournalAssistantStream;
+
 export type ModernJournalSurfaceOp =
-  "append" | { readonly op: "replace"; readonly start: number; readonly end: number };
+  | "append"
+  | { readonly op: "replace"; readonly start: number; readonly end: number }
+  | { readonly op: "replace"; readonly startSeq: number; readonly endSeq: number };
 
 /** Generic event envelope; unknown event names remain available to the projector. */
 export interface ModernJournalEvent {
@@ -48,8 +70,9 @@ export interface ModernJournalEvent {
   readonly time: number;
   readonly data: ModernJournalJson;
   readonly ignorable?: true;
-  readonly sourceEventSeqs?: readonly number[];
-  readonly surfaceOp?: ModernJournalSurfaceOp;
+  /** V3 unknown ignorable events retain opaque JSON metadata without surface meaning. */
+  readonly sourceEventSeqs?: ModernJournalJson;
+  readonly surfaceOp?: ModernJournalJson;
 }
 
 export interface ModernJournalProjections {
@@ -58,11 +81,13 @@ export interface ModernJournalProjections {
 }
 
 export interface ModernJournal {
+  readonly profile?: DeepSeekModernProfile;
   readonly header: ModernJournalHeader;
+  readonly inheritedEventCount?: number;
   readonly cursor: number;
   readonly projections: ModernJournalProjections;
   readonly events: readonly ModernJournalEvent[];
-  readonly live: AsyncIterable<ModernJournalEvent>;
+  readonly live: AsyncIterable<ModernJournalLiveItem>;
   close(): Promise<void>;
 }
 
@@ -86,6 +111,7 @@ export interface ModernJournalOpenRequest {
 }
 
 export interface ModernJournalOptions {
+  readonly profile?: DeepSeekModernProfile;
   readonly pageMaxMessages?: number;
   readonly maxRecordsPerPage?: number;
   readonly maxRecordBytes?: number;
@@ -98,27 +124,12 @@ export interface ModernJournalOptions {
   readonly signal?: AbortSignal;
 }
 
-export type ModernJournalErrorCode =
-  | "authenticationRequired"
-  | "cancelled"
-  | "limitExceeded"
-  | "notInstalled"
-  | "processExited"
-  | "protocolError"
-  | "remoteError"
-  | "unavailable";
-
-export class ModernJournalError extends Error {
-  readonly nativeCode?: string;
-
-  constructor(
-    readonly code: ModernJournalErrorCode,
-    message: string,
-    nativeCode?: string,
-  ) {
-    super(redactModernCredential(message));
-    this.name = "ModernJournalError";
-    if (nativeCode !== undefined) this.nativeCode = redactModernCredential(nativeCode);
+export { ModernJournalError, type ModernJournalErrorCode } from "../profiles/journal-format.js";
+/** A transient Assistant presentation gap that a fresh opening baseline can repair. */
+export class ModernJournalDesyncError extends ModernJournalError {
+  constructor(message: string) {
+    super("protocolError", message);
+    this.name = "ModernJournalDesyncError";
   }
 }
 
@@ -152,6 +163,7 @@ export async function openModernJournal(
     throw new TypeError("cwd must be a string when present");
   }
   const limits = resolveOptions(options);
+  const profile = options.profile ?? DEEPSEEK_V012_PROFILE;
   const address = { kind: "session" as const, sessionId: request.sessionId };
   const controller = new AbortController();
   const signal = options.signal
@@ -166,7 +178,13 @@ export async function openModernJournal(
     iterator = remote
       .openStream<unknown>(
         "session/follow",
-        { request: { address, maxMessages: limits.pageMaxMessages } },
+        {
+          request: {
+            address,
+            maxMessages: limits.pageMaxMessages,
+            ...(profile.assistantStream ? { assistantStream: true } : {}),
+          },
+        },
         signal,
       )
       [Symbol.asyncIterator]();
@@ -181,7 +199,7 @@ export async function openModernJournal(
   try {
     const first = await nextBeforeAbort(iterator, openingSignal);
     if (first.done) throw protocolError("journal follow ended before its opening snapshot");
-    opening = parseOpeningSnapshot(first.value, request, limits);
+    opening = parseOpeningSnapshot(first.value, request, limits, profile);
   } catch (error) {
     controller.abort(error);
     await Promise.allSettled([returnFollow()]);
@@ -196,9 +214,43 @@ export async function openModernJournal(
     retainedHistoryBytes += bytes;
   };
   const liveBuffer = new LiveBuffer(limits.maxBufferedLiveEvents, limits.maxBufferedLiveBytes);
+  try {
+    if (opening.assistantStream?.activeAttempt) {
+      const attempt = opening.assistantStream.activeAttempt;
+      const openingFrames: DeepSeekV015AssistantFrame[] = [
+        {
+          type: "start",
+          attemptId: attempt.attemptId,
+          revision: opening.assistantStream.revision,
+          startedAfterSeq: attempt.startedAfterSeq,
+          turn: attempt.turn,
+          step: attempt.step,
+        },
+        ...expandV015AssistantStream(attempt.stream).map(
+          ({ time, chunk }, index): DeepSeekV015AssistantFrame => ({
+            type: "chunk",
+            attemptId: attempt.attemptId,
+            revision: opening.assistantStream?.revision as number,
+            index,
+            time,
+            chunk,
+          }),
+        ),
+      ];
+      for (const frame of openingFrames) {
+        const item = { type: "assistant-stream" as const, frame };
+        liveBuffer.push(item, assertWireBytes(item, limits.maxRecordBytes, "assistant baseline"));
+      }
+    }
+  } catch (error) {
+    controller.abort(error);
+    await Promise.allSettled([returnFollow()]);
+    throw normalizeError(error, "DeepSeek Harness assistant baseline failed");
+  }
   let closing = false;
   let pumpFailure: ModernJournalError | undefined;
   let expectedLiveSeq = opening.cursor + 1;
+  let assistantRevision = opening.assistantStream?.revision;
   const pump = (async (): Promise<void> => {
     try {
       while (!closing) {
@@ -207,13 +259,25 @@ export async function openModernJournal(
           if (closing) break;
           throw new ModernJournalError("unavailable", "journal follow ended unexpectedly");
         }
-        const { event, retainedBytes } = parseLiveEvent(item.value, limits);
-        if (event.seq !== expectedLiveSeq) {
-          throw protocolError("journal live events are not sequence-contiguous");
+        const parsed = parseLiveItem(item.value, limits, profile);
+        if ("frame" in parsed.item) {
+          const expectedRevision = (assistantRevision ?? 0) + 1;
+          const restartsLifecycle =
+            parsed.item.frame.type === "start" && parsed.item.frame.revision === 1;
+          if (!restartsLifecycle && parsed.item.frame.revision !== expectedRevision) {
+            throw new ModernJournalDesyncError(
+              "journal assistant stream is not revision-contiguous",
+            );
+          }
+          assistantRevision = parsed.item.frame.revision;
+        } else {
+          if (parsed.item.seq !== expectedLiveSeq) {
+            throw protocolError("journal live events are not sequence-contiguous");
+          }
+          expectedLiveSeq += 1;
+          reserveHistoryBytes(parsed.retainedBytes);
         }
-        expectedLiveSeq += 1;
-        reserveHistoryBytes(retainedBytes);
-        liveBuffer.push(event, retainedBytes);
+        liveBuffer.push(parsed.item, parsed.retainedBytes);
       }
       liveBuffer.end();
     } catch (error) {
@@ -270,7 +334,7 @@ export async function openModernJournal(
       );
       if (pumpFailure) throw pumpFailure;
       if (!result.ok) throw remoteResultError("session/page", result.error);
-      const page = parsePage(result.value, oldestSeq - 1, limits);
+      const page = parsePage(result.value, oldestSeq - 1, limits, profile);
       const firstSeq = page.events[0]?.seq;
       if (firstSeq === undefined || firstSeq >= oldestSeq) {
         throw protocolError("journal page made no backwards progress");
@@ -289,9 +353,10 @@ export async function openModernJournal(
     }
     assertContiguous(events, "journal history");
 
+    const inheritedEventCount = profile.inheritedEventCount(opening.header, events);
     let liveClaimed = false;
-    const live: AsyncIterable<ModernJournalEvent> = {
-      [Symbol.asyncIterator](): AsyncIterator<ModernJournalEvent> {
+    const live: AsyncIterable<ModernJournalLiveItem> = {
+      [Symbol.asyncIterator](): AsyncIterator<ModernJournalLiveItem> {
         if (liveClaimed)
           throw new ModernJournalError("protocolError", "journal live stream is single-use");
         liveClaimed = true;
@@ -306,7 +371,9 @@ export async function openModernJournal(
       },
     };
     return {
+      profile,
       header: opening.header,
+      ...(inheritedEventCount === undefined ? {} : { inheritedEventCount }),
       cursor: opening.cursor,
       projections: opening.projections,
       events,
@@ -324,6 +391,7 @@ function parseOpeningSnapshot(
   value: unknown,
   request: ModernJournalOpenRequest,
   limits: ResolvedOptions,
+  profile: DeepSeekModernProfile,
 ): {
   readonly header: ModernJournalHeader;
   readonly cursor: number;
@@ -331,10 +399,12 @@ function parseOpeningSnapshot(
   readonly hasMore: boolean;
   readonly projections: ModernJournalProjections;
   readonly retainedBytes: number;
+  readonly assistantStream?: DeepSeekV015AssistantBaseline;
 } {
+  const expectedKeys = profile.snapshotKeys;
   if (
     !isRecord(value) ||
-    !hasExactKeys(value, ["type", "header", "cursor", "records", "hasMore", "projections"]) ||
+    !hasExactKeys(value, expectedKeys) ||
     value.type !== "snapshot" ||
     !isCursor(value.cursor) ||
     typeof value.hasMore !== "boolean"
@@ -344,7 +414,8 @@ function parseOpeningSnapshot(
   if (value.cursor + 1 > limits.maxEvents) {
     throw limitError("journal opening cursor exceeded maxEvents");
   }
-  const header = parseHeader(value.header, request, limits.maxRecordBytes);
+  assertWireBytes(value.header, limits.maxRecordBytes, "journal header");
+  const header = profile.parseHeader(value.header, request);
   if (header.seedLength !== undefined && header.seedLength > value.cursor + 1) {
     throw protocolError("journal snapshot seedLength is past its opening cursor");
   }
@@ -355,7 +426,18 @@ function parseOpeningSnapshot(
     value.cursor,
     "journal snapshot",
     limits,
+    profile,
   );
+  let assistantStream: DeepSeekV015AssistantBaseline | undefined;
+  if (profile.parseAssistantBaseline) {
+    assertWireBytes(value.assistantStream, limits.maxRecordBytes, "assistant stream baseline");
+    assistantStream = profile.parseAssistantBaseline(value.assistantStream);
+    if (
+      assistantStream.activeAttempt &&
+      assistantStream.activeAttempt.startedAfterSeq > value.cursor
+    )
+      throw protocolError("assistant stream baseline starts after the durable cursor");
+  }
   return {
     header,
     cursor: value.cursor,
@@ -363,10 +445,16 @@ function parseOpeningSnapshot(
     hasMore: window.hasMore,
     projections,
     retainedBytes: window.retainedBytes,
+    ...(assistantStream === undefined ? {} : { assistantStream }),
   };
 }
 
-function parsePage(value: unknown, expectedLastSeq: number, limits: ResolvedOptions): ParsedWindow {
+function parsePage(
+  value: unknown,
+  expectedLastSeq: number,
+  limits: ResolvedOptions,
+  profile: DeepSeekModernProfile,
+): ParsedWindow {
   if (
     !isRecord(value) ||
     !hasExactKeys(value, ["records", "hasMore"]) ||
@@ -374,7 +462,14 @@ function parsePage(value: unknown, expectedLastSeq: number, limits: ResolvedOpti
   ) {
     throw protocolError("session/page returned an invalid page");
   }
-  return parseWindow(value.records, value.hasMore, expectedLastSeq, "journal page", limits);
+  return parseWindow(
+    value.records,
+    value.hasMore,
+    expectedLastSeq,
+    "journal page",
+    limits,
+    profile,
+  );
 }
 
 function parseWindow(
@@ -383,6 +478,7 @@ function parseWindow(
   expectedLastSeq: number,
   label: string,
   limits: ResolvedOptions,
+  profile: DeepSeekModernProfile,
 ): ParsedWindow {
   if (!Array.isArray(records)) throw protocolError(`${label} records must be an array`);
   if (records.length > limits.maxRecordsPerPage) {
@@ -394,7 +490,7 @@ function parseWindow(
   for (const record of records) {
     assertWireBytes(record, limits.maxRecordBytes, `${label} record`);
     const remaining = Math.min(limits.maxEvents, logicalLimit) - events.length;
-    const expanded = parseHistoryRecord(record, remaining);
+    const expanded = profile.parseHistoryRecord(record, remaining);
     const expandedBytes = expanded.reduce(
       (total, event) => total + Buffer.byteLength(JSON.stringify(event), "utf8"),
       0,
@@ -420,182 +516,13 @@ function parseWindow(
   return { events, hasMore, retainedBytes };
 }
 
-function parseHistoryRecord(value: unknown, remainingEvents: number): ModernJournalEvent[] {
-  if (remainingEvents < 1) throw limitError("journal history exceeded its logical event bound");
-  if (!isRecord(value) || !hasExactKeys(value, ["type", "event"])) {
-    throw protocolError("journal history record has an invalid envelope");
-  }
-  if (value.type === "event") return [parseEvent(value.event)];
-  if (value.type === "chunks") return expandChunkRow(value.event, remainingEvents);
-  throw protocolError("journal history record has an unknown kind");
-}
-
-function parseLiveEvent(
+function parseLiveItem(
   value: unknown,
   limits: ResolvedOptions,
-): { readonly event: ModernJournalEvent; readonly retainedBytes: number } {
+  profile: DeepSeekModernProfile,
+): { readonly item: ModernJournalLiveItem; readonly retainedBytes: number } {
   const retainedBytes = assertWireBytes(value, limits.maxRecordBytes, "journal live record");
-  if (!isRecord(value) || !hasExactKeys(value, ["type", "event"]) || value.type !== "event") {
-    throw protocolError("journal live follow emitted a non-event frame");
-  }
-  return { event: parseEvent(value.event), retainedBytes };
-}
-
-function parseEvent(value: unknown): ModernJournalEvent {
-  if (
-    !isRecord(value) ||
-    !hasRequiredOptionalKeys(
-      value,
-      ["type", "seq", "time", "data"],
-      ["ignorable", "sourceEventSeqs", "surfaceOp"],
-    )
-  ) {
-    throw protocolError("journal event has an invalid envelope");
-  }
-  if (
-    typeof value.type !== "string" ||
-    value.type.length === 0 ||
-    !isSeq(value.seq) ||
-    !Number.isSafeInteger(value.time) ||
-    (Object.hasOwn(value, "ignorable") && value.ignorable !== true)
-  ) {
-    throw protocolError("journal event has invalid scalar fields");
-  }
-  assertJsonValue(value.data, "journal event data");
-  if (Object.hasOwn(value, "sourceEventSeqs")) {
-    if (
-      !Array.isArray(value.sourceEventSeqs) ||
-      value.sourceEventSeqs.some((seq) => !isSeq(seq) || seq >= (value.seq as number)) ||
-      new Set(value.sourceEventSeqs).size !== value.sourceEventSeqs.length
-    ) {
-      throw protocolError("journal event has invalid sourceEventSeqs");
-    }
-  }
-  if (Object.hasOwn(value, "surfaceOp")) parseSurfaceOp(value.surfaceOp);
-  return value as unknown as ModernJournalEvent;
-}
-
-function parseSurfaceOp(value: unknown): ModernJournalSurfaceOp {
-  if (value === "append") return value;
-  if (
-    !isRecord(value) ||
-    !hasExactKeys(value, ["op", "start", "end"]) ||
-    value.op !== "replace" ||
-    !isSeq(value.start) ||
-    !isSeq(value.end)
-  ) {
-    throw protocolError("journal event has an invalid surfaceOp");
-  }
-  return value as unknown as ModernJournalSurfaceOp;
-}
-
-function expandChunkRow(value: unknown, remainingEvents: number): ModernJournalEvent[] {
-  if (
-    !isRecord(value) ||
-    !hasExactKeys(value, ["type", "seq", "time", "data"]) ||
-    typeof value.type !== "string" ||
-    !["chunkrow/text-chunks", "chunkrow/reasoning-chunks", "chunkrow/tool-call-chunks"].includes(
-      value.type,
-    ) ||
-    !isSeq(value.seq) ||
-    !Number.isSafeInteger(value.time) ||
-    !isRecord(value.data)
-  ) {
-    throw protocolError("journal chunk row has an invalid envelope");
-  }
-  const data = value.data;
-  const tool = value.type === "chunkrow/tool-call-chunks";
-  const withName = tool && Object.hasOwn(data, "name");
-  const expectedDataKeys = tool
-    ? withName
-      ? ["turn", "step", "index", "id", "name", "dt", "args"]
-      : ["turn", "step", "index", "id", "dt", "args"]
-    : ["turn", "step", "index", "dt", "texts"];
-  if (
-    !hasExactKeys(data, expectedDataKeys) ||
-    !isFiniteNumber(data.turn) ||
-    !isFiniteNumber(data.step) ||
-    !isFiniteNumber(data.index) ||
-    (tool && (typeof data.id !== "string" || (withName && typeof data.name !== "string")))
-  ) {
-    throw protocolError("journal chunk row has invalid data fields");
-  }
-  const payload = data[tool ? "args" : "texts"];
-  const dt = data.dt;
-  if (
-    !Array.isArray(payload) ||
-    payload.length === 0 ||
-    payload.some((entry) => typeof entry !== "string") ||
-    !Array.isArray(dt) ||
-    dt.some((gap) => !Number.isSafeInteger(gap)) ||
-    dt.length !== payload.length - 1
-  ) {
-    throw protocolError("journal chunk row has invalid member arrays");
-  }
-  const seq = value.seq as number;
-  if (payload.length > remainingEvents) throw limitError("journal chunk row exceeded maxEvents");
-  if (payload.length - 1 > Number.MAX_SAFE_INTEGER - seq) {
-    throw protocolError("journal chunk row member sequences overflow");
-  }
-  const events: ModernJournalEvent[] = [];
-  let time = value.time as number;
-  for (let index = 0; index < payload.length; index += 1) {
-    if (index > 0) time += dt[index - 1] as number;
-    if (!Number.isSafeInteger(time)) throw protocolError("journal chunk row member times overflow");
-    const chunk = tool
-      ? {
-          type: "tool-call-delta",
-          index: data.index,
-          id: data.id,
-          ...(withName ? { name: data.name } : {}),
-          argumentsDelta: payload[index],
-        }
-      : {
-          type: value.type === "chunkrow/text-chunks" ? "text-delta" : "reasoning-delta",
-          index: data.index,
-          text: payload[index],
-        };
-    events.push({
-      type: "assistant/chunk",
-      seq: seq + index,
-      time,
-      data: { turn: data.turn, step: data.step, chunk } as ModernJournalJson,
-    });
-  }
-  return events;
-}
-
-function parseHeader(
-  value: unknown,
-  expected: ModernJournalOpenRequest,
-  maxBytes: number,
-): ModernJournalHeader {
-  assertWireBytes(value, maxBytes, "journal header");
-  if (
-    !isRecord(value) ||
-    !hasRequiredOptionalKeys(
-      value,
-      ["version", "id", "createdAt"],
-      ["cwd", "parentSession", "seedLength", "origin", "delegationDepth", "agentPreset"],
-    )
-  ) {
-    throw protocolError("journal snapshot has an invalid header");
-  }
-  if (
-    value.version !== 0 ||
-    value.id !== expected.sessionId ||
-    !isNonNegativeSafeInteger(value.createdAt) ||
-    Object.hasOwn(value, "cwd") !== (expected.cwd !== undefined) ||
-    value.cwd !== expected.cwd ||
-    (Object.hasOwn(value, "parentSession") && typeof value.parentSession !== "string") ||
-    (Object.hasOwn(value, "seedLength") && !isNonNegativeSafeInteger(value.seedLength)) ||
-    (Object.hasOwn(value, "origin") && value.origin !== "subagent") ||
-    (Object.hasOwn(value, "delegationDepth") && !isNonNegativeSafeInteger(value.delegationDepth)) ||
-    (Object.hasOwn(value, "agentPreset") && typeof value.agentPreset !== "string")
-  ) {
-    throw protocolError("journal snapshot header does not match the requested Session");
-  }
-  return value as unknown as ModernJournalHeader;
+  return { item: profile.parseLiveItem(value), retainedBytes };
 }
 
 function parseProjections(
@@ -661,90 +588,6 @@ function assertWireBytes(value: unknown, maxBytes: number, label: string): numbe
   return bytes;
 }
 
-function assertJsonValue(value: unknown, label: string): asserts value is ModernJournalJson {
-  const pending: Array<{ readonly value: unknown; readonly depth: number }> = [{ value, depth: 0 }];
-  const seen = new Set<object>();
-  while (pending.length > 0) {
-    const item = pending.pop() as { readonly value: unknown; readonly depth: number };
-    const current = item.value;
-    if (
-      current === null ||
-      typeof current === "string" ||
-      typeof current === "boolean" ||
-      (typeof current === "number" && Number.isFinite(current))
-    ) {
-      continue;
-    }
-    if (typeof current !== "object") throw protocolError(`${label} is not JSON-safe`);
-    if (item.depth >= MODERN_JOURNAL_MAX_JSON_DEPTH) {
-      throw limitError(`${label} exceeded its JSON depth bound`);
-    }
-    if (seen.has(current)) throw protocolError(`${label} contains a cycle`);
-    seen.add(current);
-    if (!Array.isArray(current)) {
-      const prototype = Reflect.getPrototypeOf(current);
-      if (prototype !== Object.prototype && prototype !== null) {
-        throw protocolError(`${label} contains a non-JSON object`);
-      }
-    }
-    for (const key of Reflect.ownKeys(current)) {
-      if (typeof key !== "string") throw protocolError(`${label} contains a symbol key`);
-      pending.push({
-        value: (current as Record<string, unknown>)[key],
-        depth: item.depth + 1,
-      });
-    }
-  }
-}
-
-function hasExactKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
-  const actual = Reflect.ownKeys(value);
-  return actual.length === keys.length && keys.every((key) => Object.hasOwn(value, key));
-}
-
-function hasRequiredOptionalKeys(
-  value: Record<string, unknown>,
-  required: readonly string[],
-  optional: readonly string[],
-): boolean {
-  const allowed = new Set([...required, ...optional]);
-  const actual = Reflect.ownKeys(value);
-  return (
-    required.every((key) => Object.hasOwn(value, key)) &&
-    actual.every((key) => typeof key === "string" && allowed.has(key))
-  );
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function isFiniteNumber(value: unknown): value is number {
-  return typeof value === "number" && Number.isFinite(value);
-}
-
-function isNonNegativeSafeInteger(value: unknown): value is number {
-  return (
-    typeof value === "number" && Number.isSafeInteger(value) && value >= 0 && !Object.is(value, -0)
-  );
-}
-
-function isSeq(value: unknown): value is number {
-  return isNonNegativeSafeInteger(value);
-}
-
-function isCursor(value: unknown): value is number {
-  return value === -1 || isSeq(value);
-}
-
-function protocolError(message: string): ModernJournalError {
-  return new ModernJournalError("protocolError", message);
-}
-
-function limitError(message: string): ModernJournalError {
-  return new ModernJournalError("limitExceeded", message);
-}
-
 function remoteResultError(
   endpoint: string,
   failure: {
@@ -763,6 +606,9 @@ function remoteResultError(
 
 function normalizeError(error: unknown, context: string): ModernJournalError {
   if (error instanceof ModernJournalError) return error;
+  if (error instanceof DeepSeekV015ProtocolError) {
+    return new ModernJournalError("protocolError", `${context}: ${error.message}`);
+  }
   const remoteFailure =
     typeof error === "object" && error !== null ? Reflect.get(error, "remoteFailure") : undefined;
   if (
@@ -823,9 +669,11 @@ async function nextBeforeAbort<T>(
   });
 }
 
-class LiveBuffer implements AsyncIterable<ModernJournalEvent> {
-  readonly #items: Array<{ readonly event: ModernJournalEvent; readonly retainedBytes: number }> =
-    [];
+class LiveBuffer implements AsyncIterable<ModernJournalLiveItem> {
+  readonly #items: Array<{
+    readonly event: ModernJournalLiveItem;
+    readonly retainedBytes: number;
+  }> = [];
   #retainedBytes = 0;
   #done = false;
   #failure: Error | undefined;
@@ -837,7 +685,7 @@ class LiveBuffer implements AsyncIterable<ModernJournalEvent> {
     readonly maxBytes: number,
   ) {}
 
-  push(event: ModernJournalEvent, retainedBytes: number): void {
+  push(event: ModernJournalLiveItem, retainedBytes: number): void {
     if (this.#done || this.#failure) return;
     if (this.#items.length >= this.maxItems) {
       throw limitError("journal live buffer exceeded maxBufferedLiveEvents");
@@ -866,13 +714,13 @@ class LiveBuffer implements AsyncIterable<ModernJournalEvent> {
     this.#notify();
   }
 
-  [Symbol.asyncIterator](): AsyncIterator<ModernJournalEvent> {
+  [Symbol.asyncIterator](): AsyncIterator<ModernJournalLiveItem> {
     if (this.#claimed) throw protocolError("journal live buffer is single-use");
     this.#claimed = true;
     return { next: () => this.#next() };
   }
 
-  async #next(): Promise<IteratorResult<ModernJournalEvent>> {
+  async #next(): Promise<IteratorResult<ModernJournalLiveItem>> {
     while (this.#items.length === 0 && !this.#done && !this.#failure) {
       await new Promise<void>((resolve) => {
         this.#wake = resolve;

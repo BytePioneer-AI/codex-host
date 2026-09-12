@@ -52,8 +52,8 @@ pub use linux_installation::discover_codex_desktop;
 pub use macos_native_harness_broker::{
     NATIVE_HARNESS_BROKER_LABEL, NativeHarnessBrokerCommand, NativeHarnessBrokerInstallStep,
     NativeHarnessBrokerLaunchAgentPlan, NativeHarnessBrokerLaunchctlPlan,
-    NativeHarnessBrokerObservedState, NativeHarnessBrokerPaths, plan_native_harness_broker_install,
-    plan_native_harness_broker_launch_agent,
+    NativeHarnessBrokerObservedState, NativeHarnessBrokerPaths, native_harness_broker_label,
+    plan_native_harness_broker_install, plan_native_harness_broker_launch_agent,
     plan_native_harness_broker_launch_agent_with_environment, plan_native_harness_broker_launchctl,
 };
 #[cfg(target_os = "macos")]

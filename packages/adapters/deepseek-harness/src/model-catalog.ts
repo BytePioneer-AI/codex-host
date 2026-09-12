@@ -11,7 +11,6 @@ import {
 } from "@codexhost/shared-contracts";
 
 const MODEL_REF_PREFIX = "deepseek-harness-model-v2.";
-const LEGACY_MODEL_REF_PREFIX = "deepseek-harness-model-v1.";
 
 export interface DeepSeekNativeModelRef {
   provider: string;
@@ -59,12 +58,6 @@ export function encodeDeepSeekHarnessModelRef(model: DeepSeekNativeModelRef): Ha
 
 export function decodeDeepSeekHarnessModelRef(ref: HarnessModelRef): DeepSeekNativeModelRef {
   const parsed = harnessModelRefSchema.parse(ref);
-  if (parsed.id.startsWith(LEGACY_MODEL_REF_PREFIX)) {
-    const encoded = parsed.id.slice(LEGACY_MODEL_REF_PREFIX.length);
-    const model = Buffer.from(encoded, "base64url").toString("utf8");
-    if (!encoded || !model) throw new Error("DeepSeek Harness legacy Model Ref is invalid");
-    return { provider: "deepseek-official", model };
-  }
   if (!parsed.id.startsWith(MODEL_REF_PREFIX)) {
     throw new Error("DeepSeek Harness Model Ref belongs to another Adapter");
   }

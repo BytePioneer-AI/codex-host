@@ -267,19 +267,31 @@ The Claude Code Adapter package root SHALL directly export only the concrete Ada
 
 ### Requirement: Claude Code publishes stable current context Usage
 
-The Claude Code Adapter MUST read current context Usage only from the active official SDK Query's stable structured context operation. It MUST map reliable current used Token and effective maximum Token values into one normalized `HostUsage` context pair after each validated complete Assistant message and after the Turn terminal, and MUST omit unavailable Session aggregate, cost, category, percentage, or Model fields rather than deriving them. It MUST NOT depend on the SDK experimental Session Usage operation or interpret per-Result Usage as a Native Session aggregate.
+The Claude Code Adapter MUST update current context Usage passively from validated complete Root Assistant request Usage whenever a still-applicable context window is known. It MUST NOT automatically invoke the stable structured context operation at Assistant, Tool, or ordinary Turn terminal boundaries. An exact context read MUST occur only for an explicit Usage detail refresh or another explicit calibration operation, MUST use the active official SDK Query's stable `getContextUsage()` operation, and MUST map a reliable used/max Token pair into normalized `HostUsage`. The Adapter MUST NOT depend on the SDK experimental Session Usage operation, read local credentials, or call an Anthropic OAuth usage HTTP endpoint.
 
-#### Scenario: Claude Assistant message exposes context during an active Turn
+#### Scenario: Claude Assistant message updates context during an active Turn
 
-- **WHEN** an accepted Claude Turn receives a validated complete Assistant message and the active Query returns valid current context while Tool work or a later Assistant response remains pending
-- **THEN** the Adapter MUST publish a `session.usage.changed` snapshot associated with the active Turn
-- **AND** the Adapter MUST NOT wait for the native Result before first providing the current context pair
+- **WHEN** an accepted Claude Turn receives a validated complete Root Assistant message with reliable request input/cache Token usage and the Session already knows a still-applicable context window
+- **THEN** the Adapter MUST publish a `session.usage.changed` snapshot associated with the active Turn using that request observation as the current context estimate
+- **AND** the Adapter MUST NOT call `getContextUsage()` for that Assistant boundary
 
-#### Scenario: Successful Claude Turn exposes current context
+#### Scenario: Local Tool completes during an active Turn
 
-- **WHEN** an accepted Claude Turn reaches its authoritative terminal and the active Query returns valid current context used and maximum Token values
-- **THEN** the Adapter MUST publish one `session.usage.changed` snapshot containing the corresponding `contextUsedTokens` and `contextWindowTokens`
-- **AND** the snapshot MUST remain Session-level Telemetry associated with that observation boundary
+- **WHEN** a Claude Tool execution completes without a new Root Assistant response
+- **THEN** the Adapter MUST NOT publish invented model Usage
+- **AND** it MUST NOT call `getContextUsage()` merely because the Tool completed
+
+#### Scenario: Ordinary Claude Turn reaches terminal
+
+- **WHEN** an accepted Claude Turn reaches its authoritative terminal
+- **THEN** the Adapter MUST calibrate Session Usage from the native Result when available
+- **AND** it MUST NOT call `getContextUsage()` merely because the Turn completed
+
+#### Scenario: User explicitly requests exact context
+
+- **WHEN** the current Claude Session receives an explicit exact Usage refresh and the active Query returns valid current context used and maximum Token values
+- **THEN** the Adapter MUST publish one `session.usage.changed` snapshot containing the exact `contextUsedTokens` and `contextWindowTokens`
+- **AND** the exact observation MUST replace an older context estimate while preserving other still-applicable Session Usage fields
 
 #### Scenario: Claude context response is unavailable or malformed
 
@@ -295,9 +307,127 @@ The Claude Code Adapter MUST read current context Usage only from the active off
 
 #### Scenario: An older context read completes after a newer boundary
 
-- **WHEN** a context read started for an earlier Turn completes after another Turn starts, Session close begins, or the Session faults
+- **WHEN** a context read started for an earlier generation completes after the effective Model changes, another Session replaces it, Session close begins, or the Session faults
 - **THEN** the Adapter MUST discard that stale result
 - **AND** it MUST NOT replace Usage owned by the newer Session boundary
+
+### Requirement: Claude Code publishes passive request Usage once per actual model response
+
+For every validated complete Root Assistant model response, the Claude Code Adapter MUST consume the response's structured request Usage without issuing another model or token-counting request. The private observation MUST retain a stable request identity, actual request Model, optional structured Provider identity when available, input Token, output Token, cache-creation input Token, and cache-read input Token fields. Request observations, Model/Provider pricing inputs, and deduplication identities MUST remain inside the Claude Adapter package and the owning `ClaudeHarnessSession`.
+
+#### Scenario: Root Assistant response completes before a Tool loop finishes
+
+- **WHEN** a complete Root Assistant response contains reliable request Usage and a Tool or later Assistant response remains pending
+- **THEN** the Adapter MUST immediately merge that request into the active Session Usage estimate and publish an update associated with the active Turn
+- **AND** it MUST NOT wait for the final Result before updating latest cache hit, Token totals, or a priceable cost estimate
+
+#### Scenario: Complete Assistant frame is delivered more than once
+
+- **WHEN** live transport, replay, or Transcript fallback delivers the same native Assistant request identity more than once
+- **THEN** the owning Session MUST count that request at most once
+- **AND** duplicate delivery MUST NOT increase Token or cost estimates
+
+#### Scenario: Two Claude Sessions run concurrently
+
+- **WHEN** Session A and Session B receive interleaved Assistant responses, including equal-looking Token values or message-local ordinals
+- **THEN** each Session MUST update only its own request set and Usage snapshot
+- **AND** neither Session's input, output, cache hit, cost, request identity, or Context state MUST appear in the other Session
+
+#### Scenario: Actual request Model differs from the selected UI Model
+
+- **WHEN** Claude reports that a completed request used a different actual Model or Provider than the currently displayed selectable Model
+- **THEN** any request cost estimate MUST use the actual structured request attribution
+- **AND** the Adapter MUST NOT price that request using the UI selection alone
+
+#### Scenario: Request cannot be priced reliably
+
+- **WHEN** request Token usage is valid but its actual Model/Provider cannot be mapped to a reliable Adapter-owned price
+- **THEN** the Adapter MUST still update reliable Token and cache-hit fields
+- **AND** it MUST omit that request's cost increment rather than guessing a price
+
+### Requirement: Claude Code calibrates active-Turn estimates with authoritative Result Usage
+
+Each Claude Session MUST maintain an in-memory calibrated Session baseline plus deduplicated completed-request deltas for the active Turn. A request delta MAY provide near-real-time input, output, cache-hit, context, and cost estimates. When the authoritative native Result provides valid cumulative `modelUsage` or `total_cost_usd`, the Adapter MUST replace the corresponding temporary aggregate with the Result value and clear the calibrated Turn delta. `result.usage` MUST remain latest-request data and MUST NOT be copied into Session aggregate input/output fields.
+
+#### Scenario: Long-running Turn contains multiple model responses
+
+- **WHEN** a Claude Turn completes two or more distinct Root Assistant requests before its terminal Result
+- **THEN** the Session MUST publish monotonically merged estimates after each completed request
+- **AND** Tool execution between those requests MUST NOT add Tokens or cost by itself
+
+#### Scenario: Result provides cumulative model Usage and cost
+
+- **WHEN** the Turn Result contains valid per-model `modelUsage` and finite non-negative `total_cost_usd`
+- **THEN** the Adapter MUST publish Session input/output totals summed from `modelUsage` and Session cost from `total_cost_usd`
+- **AND** those authoritative fields MUST replace the corresponding active-Turn estimates without double counting
+
+#### Scenario: Result omits one aggregate field
+
+- **WHEN** the Turn Result provides a valid cumulative cost but no valid cumulative Token totals, or valid Token totals but no valid cost
+- **THEN** the Adapter MUST calibrate only the field supplied by the Result
+- **AND** it MUST preserve the still-applicable estimate for the omitted field rather than replace it with zero
+
+#### Scenario: Model selection changes between Turns
+
+- **WHEN** an Idle Session selects a different Model after one Turn completes and then starts another Turn
+- **THEN** the next Turn's request estimates MUST use each new request's actual Model attribution
+- **AND** the previous calibrated Session baseline MUST remain part of the same Session total
+
+#### Scenario: Session closes or faults before Result calibration
+
+- **WHEN** Session close or fault occurs while an estimated Turn has not received an authoritative Result
+- **THEN** the uncalibrated state MUST remain memory-only and be discarded with the Session
+- **AND** the Adapter MUST NOT persist or transfer it to a replacement Session
+
+### Requirement: Claude exact Context refresh is bounded and deduplicated per Session
+
+A Claude Session MUST coordinate explicit exact Context refreshes with one Session-local in-flight operation, a short success TTL, a failure cooldown, bounded retry delays, and Session/Model generation checks. A successful valid response MUST terminate the retry sequence immediately. Different Claude Sessions MUST NOT share Context in-flight state, TTL entries, cooldowns, or results.
+
+#### Scenario: Concurrent detail requests target one Session
+
+- **WHEN** two or more exact Usage refreshes target the same live Claude Session while one Context read is pending
+- **THEN** they MUST share the same in-flight Context operation
+- **AND** the Transport MUST NOT receive one `getContextUsage()` call per caller
+
+#### Scenario: Context read succeeds on the first attempt
+
+- **WHEN** the first exact Context attempt returns a valid used/max Token pair
+- **THEN** the Adapter MUST publish that observation and stop the retry loop
+- **AND** later configured retry delays MUST NOT invoke `getContextUsage()` again
+
+#### Scenario: Exact Context refresh fails repeatedly
+
+- **WHEN** an exact Context refresh throws, returns `null`, or returns malformed data through all bounded attempts
+- **THEN** the Session MUST enter a failure cooldown during which repeated detail requests do not start another Context operation
+- **AND** the latest still-applicable Usage and Session lifecycle MUST remain unchanged
+
+#### Scenario: Exact Context cache is still fresh
+
+- **WHEN** another exact refresh is requested within the successful Context TTL and the Session/Model generation is unchanged
+- **THEN** the Adapter MUST reuse the cached exact observation
+- **AND** it MUST NOT call the Transport again
+
+#### Scenario: Two Sessions request exact Context concurrently
+
+- **WHEN** Session A and Session B request exact Context at the same time
+- **THEN** each Session MUST use its own in-flight operation and generation checks
+- **AND** a result from Session A MUST NOT satisfy or overwrite Session B
+
+### Requirement: Claude plan limits use passive stable events only
+
+Claude.ai five-hour and seven-day plan windows MUST be accepted only from validated SDK `rate_limit_event` observations and MAY be shared at Claude Adapter account scope. The Adapter MUST NOT call the SDK experimental Session Usage operation, read OAuth credentials, or issue direct Anthropic Usage HTTP requests to fill missing plan windows. Missing windows MUST remain absent.
+
+#### Scenario: Stable plan-window event arrives
+
+- **WHEN** a validated `rate_limit_event` reports a five-hour or seven-day utilization window
+- **THEN** the Adapter MUST merge the account-scoped window according to existing freshness rules
+- **AND** active Claude Sessions MAY publish the accepted value with their own Session Usage snapshots
+
+#### Scenario: No plan-window event has arrived
+
+- **WHEN** Renderer inspects a Claude Thread before any valid plan-window event exists
+- **THEN** the Adapter MUST omit the plan-window fields
+- **AND** it MUST NOT invoke an experimental Usage operation to manufacture them
 
 ### Requirement: Claude exposes compact as a registered Harness command
 
@@ -467,6 +597,13 @@ Claude Code SHALL advertise Subagent observation and SHALL map Root `Agent` or `
 - **AND** occupancy SHALL be settled only when the native Session stops opening Segments for this user task, since the number of Segments Claude spends on queued notifications is not observable
 - **AND** Root text, reasoning, Tool Use, or a Segment start SHALL cancel any pending idle decision so a slow continuation cannot close the Turn early
 
+#### Scenario: A held Root Turn receives settlement without a continuation
+- **WHEN** the Root has reached its native Result and a later task notification or live background task level marks an occupied Subagent as settled
+- **THEN** Claude Adapter SHALL start the existing continuation quiescence period while the Root is idle
+- **AND** if no Root continuation starts during that period, it SHALL release the settled Subagents' pending continuation occupancy
+- **AND** it SHALL complete the held Turn and accept another user Turn once no running background Subagents remain
+- **AND** Root output, compaction, or an interaction request SHALL cancel the pending idle decision, and later Subagent settlement SHALL NOT restart it until the Root reaches its next native Result
+
 #### Scenario: Agent Tool result returns
 - **WHEN** the correlated Root Agent or Task Tool Result returns with a stable `agentId`
 - **THEN** Claude Adapter SHALL preserve that native identity for Child Host Thread registration and complete the spawn operation according to the Tool Result outcome
@@ -509,3 +646,147 @@ Claude Adapter SHALL implement the common Subagent transcript capability using t
 - **THEN** Claude Adapter SHALL return a normalized read failure
 - **AND** it SHALL NOT substitute Root Session history or manufacture Child content
 
+### Requirement: Native interruptions retain their human Turn
+
+The Adapter SHALL attribute a native interruption marker to its matching human prompt using native identity and metadata rather than text alone.
+
+#### Scenario: Cancellation precedes assistant output
+- **WHEN** a recognized interruption shares the human promptId and has no promptSource
+- **THEN** history contains one cancelled Turn and its checkpoint is the interruption UUID
+
+#### Scenario: A user quotes interruption text
+- **WHEN** interruption text arrives with a different promptId, an explicit promptSource, or without matching prompt evidence
+- **THEN** the user input remains a separate visible Turn
+
+### Requirement: Live completion history waits for known messages
+
+The Adapter SHALL wait for the latest completed Turn's known user and checkpoint UUIDs before returning its history snapshot.
+
+#### Scenario: The native transcript write lags completion
+- **WHEN** a completed message is initially absent and appears within the bounded wait
+- **THEN** the read returns the updated snapshot
+
+#### Scenario: The transcript remains stale
+- **WHEN** the bounded wait expires before the known messages appear
+- **THEN** the read returns retryable sessionBusy and a later read can retry the same expectation
+
+### Requirement: Empty edited Claude Sessions are durably recoverable
+
+The Adapter SHALL persist an empty replacement identity and configuration before reporting it usable, and SHALL distinguish an unstarted reservation from a missing started transcript.
+
+#### Scenario: Exit before resend
+
+- **WHEN** the sole Turn is edited and the Session closes before sending replacement input
+- **THEN** another Adapter resumes the same empty identity and current configuration
+
+#### Scenario: Competing native starts
+
+- **WHEN** two wrappers attempt to start the same reservation
+- **THEN** exactly one acquires the creation claim
+
+#### Scenario: Startup fails before input
+
+- **WHEN** startup fails and owned resources close successfully before input submission
+- **THEN** the claim can be released for retry
+
+#### Scenario: Started transcript disappears
+
+- **WHEN** a claimed Session has no native transcript
+- **THEN** recovery fails instead of creating an empty Session
+
+### Requirement: Claude shutdown reports unconfirmed resource termination
+
+The Adapter SHALL await owned process termination and output drain, and SHALL report failure when shutdown cannot be confirmed.
+
+#### Scenario: The Wrapper root exits first
+
+- **WHEN** an owned Unix child remains after the Wrapper exits
+- **THEN** close stops the process group before resolving
+
+#### Scenario: A background stop receipt lacks a terminal
+
+- **WHEN** a native background task acknowledges stop without a terminal notification
+- **THEN** close fails within its bounded timeout
+
+### Requirement: Rollback preserves configuration before native startup
+
+The Host SHALL pass current Model, Thinking and Permission Mode in optional rollback input fields, and the Claude Adapter SHALL persist these for empty recovery.
+
+#### Scenario: Brokered rollback
+
+- **WHEN** the Host requests rollback with current settings through the Broker
+- **THEN** the same optional settings reach the Adapter
+
+### Requirement: Lazy resume retains saved selection
+
+The Host SHALL provide saved Model and Thinking hints on resume, and Claude SHALL apply them before a later configuration command can publish defaults.
+
+#### Scenario: Cold resume followed by edit
+
+- **WHEN** a native Claude Session resumes without eagerly reporting Model and Thinking
+- **THEN** restoring Permission Mode retains the saved Model and Thinking
+
+#### Scenario: Pending metadata differs from a hint
+
+- **WHEN** durable empty Session configuration differs from stale resume hints
+- **THEN** the durable configuration remains authoritative
+
+### Requirement: Escalated cancellation retains shutdown ownership
+
+The Adapter SHALL retain the active Turn and its Transport until escalated cancellation confirms native shutdown.
+
+#### Scenario: Native close is delayed or fails
+
+- **WHEN** interrupt escalation starts Transport close and close has not succeeded
+- **THEN** another Turn and history reads remain unavailable, a late native terminal cannot publish successful cancellation, and Session close cannot report successful shutdown
+- **AND** failed close faults the Session while retaining the Transport for explicit cleanup
+
+### Requirement: Claude Code publishes Session aggregate Usage and latest cache hit rate from Turn Result
+
+When a Claude Turn Result supplies reliable Session-level totals, the Adapter MUST merge them into the current `HostUsage` snapshot together with any still-applicable context pair and plan-window fields. Session input and output MUST come from summing `modelUsage` per-model `inputTokens` and `outputTokens`. Session cost MUST come from `total_cost_usd`. Latest cache hit rate MAY be computed only from the native last-request cache and input Token fields (`cache_read_input_tokens / (input_tokens + cache_creation_input_tokens + cache_read_input_tokens)` when every addend is present and the denominator is greater than zero). The Adapter MUST NOT write Session cache totals into `cachedInputTokens` or `cacheWriteInputTokens`, MUST NOT publish `reasoningOutputTokens`, and MUST NOT copy last-request `usage` input or output onto Session aggregate fields.
+
+#### Scenario: Successful Result exposes Session cost and token totals
+
+- **WHEN** an accepted Claude Turn Result includes a finite non-negative `total_cost_usd` and per-model `modelUsage` with non-negative safe-integer input and output totals
+- **THEN** the Adapter MUST publish `totalCostUsd` plus summed `inputTokens` and `outputTokens` on the next `session.usage.changed` snapshot
+- **AND** that snapshot MUST still include the latest still-applicable context pair when one exists
+
+#### Scenario: Latest request exposes cache hit rate
+
+- **WHEN** the Result last-request `usage` or the stable context `apiUsage` includes input, cache-creation, and cache-read Token counts whose sum is greater than zero
+- **THEN** the Adapter MUST publish `cacheHitRatePercent` as the cache-read share of that sum, clamped to 0–100
+- **AND** the Adapter MUST NOT publish `cachedInputTokens` or `cacheWriteInputTokens` from those same fields
+
+#### Scenario: Last-request cache fields are incomplete
+
+- **WHEN** any of the last-request input, cache-creation, or cache-read Token fields is missing
+- **THEN** the Adapter MUST omit `cacheHitRatePercent`
+- **AND** it MUST NOT publish `CH 0%` or any substitute percentage
+
+#### Scenario: API-key or third-party Claude Session has no plan windows
+
+- **WHEN** a Claude Session completes a Result without any `rate_limit_event`
+- **THEN** the snapshot MAY contain context, Session I/O, cost, and cache hit rate
+- **AND** the snapshot MUST omit plan-window fields rather than filling zeros
+
+### Requirement: Claude Code publishes Claude.ai plan windows from rate-limit events
+
+The Adapter MUST map SDK `rate_limit_event` payloads whose `rateLimitType` is `five_hour` or `seven_day` into optional `HostUsage` plan-window fields. A five-hour event MUST update only the five-hour used percent and optional reset Unix timestamp while preserving any already published seven-day window, and a seven-day event MUST do the reverse. Other `rateLimitType` values MUST be ignored. Plan-window updates MUST be merged into the latest still-applicable snapshot and MUST NOT clear context, Session aggregate, cost, or cache hit rate. The Adapter MUST NOT call the experimental SDK Session Usage operation to obtain these windows.
+
+#### Scenario: Five-hour plan window arrives for a Claude.ai subscriber
+
+- **WHEN** the SDK emits a `rate_limit_event` with `rateLimitType` `five_hour` and a finite utilization between 0 and 100
+- **THEN** the Adapter MUST publish `planFiveHourUsedPercent` and, when present, `planFiveHourResetsAtUnix`
+- **AND** the collapsed Renderer summary contract remains `CH` and cost only; these plan fields exist for the details Popover
+
+#### Scenario: Seven-day window updates without erasing five-hour data
+
+- **WHEN** a later `rate_limit_event` reports `seven_day` utilization and a five-hour window is already on the snapshot
+- **THEN** the Adapter MUST publish the seven-day fields
+- **AND** the existing five-hour fields MUST remain
+
+#### Scenario: Plan-window event is malformed or not a tracked window
+
+- **WHEN** utilization is missing, out of range, or `rateLimitType` is not `five_hour` or `seven_day`
+- **THEN** the Adapter MUST ignore that event
+- **AND** Turn outcome and the latest still-applicable Usage MUST remain unchanged

@@ -33,12 +33,16 @@ class FakeClaudeTransport implements ClaudeTurnTransport {
   readonly sessionId: string;
   autonomousTurnHandler: ((turn: ClaudeAutonomousTurn) => void) | null = null;
   idleHandler: ClaudeIdleTurnHandler | null = null;
+  threadHandler: ((event: ClaudeTurnEvent) => void) | null = null;
   idleLive = false;
   setAutonomousTurnHandler(handler: (turn: ClaudeAutonomousTurn) => void): void {
     this.autonomousTurnHandler = handler;
   }
   setIdleTurnHandler(handler: ClaudeIdleTurnHandler | null): void {
     this.idleHandler = handler;
+  }
+  setThreadEventHandler(handler: ((event: ClaudeTurnEvent) => void) | null): void {
+    this.threadHandler = handler;
   }
   setIdleLive(live: boolean): void {
     this.idleLive = live;
@@ -156,6 +160,10 @@ class FakeClaudeTransport implements ClaudeTurnTransport {
       return;
     }
     throw new Error("No active fake Claude Turn");
+  }
+
+  threadEvent(event: ClaudeTurnEvent): void {
+    this.threadHandler?.(event);
   }
 
   approval(request: ClaudeApprovalRequest): void {
@@ -2262,6 +2270,113 @@ describe("Claude Code HarnessAdapter", () => {
     await session.close();
   });
 
+  it.each(["completed", "failed", "interrupted"] as const)(
+    "finishes an autonomous Turn after its newly created child is %s",
+    async (status) => {
+      const { adapter, transports } = fixture();
+      const session = await openSession(adapter);
+      const events: Array<Extract<HarnessOutput, { kind: "event" }>["event"]> = [];
+      const drain = (async () => {
+        for await (const output of session.outputs) {
+          if (output.kind === "event") events.push(output.event);
+        }
+      })();
+      try {
+        await session.execute(textTurn("initial"));
+        const transport = transports[0];
+        if (!transport) throw new Error("Fake Claude transport was not created");
+        transport.finish({ status: "succeeded" });
+        await vi.waitFor(() =>
+          expect(events.some((event) => event.type === "turn.completed")).toBe(true),
+        );
+        events.length = 0;
+        transport.autonomousTurnHandler?.({
+          nativeTurnKey: "continuation-with-child",
+          events: [
+            {
+              type: "subagent.started",
+              operation: "spawn",
+              callId: "spawn-child",
+              description: "Inspect",
+              background: true,
+            },
+            {
+              type: "subagent.completed",
+              callId: "spawn-child",
+              isError: false,
+              continuesInBackground: true,
+              nativeSubagentId: "fast-child",
+            },
+            {
+              type: "subagent.settled",
+              nativeSubagentId: "fast-child",
+              status,
+              resultSummary: "Child finished",
+            },
+          ],
+          result: { status: "succeeded" },
+        });
+        await vi.waitFor(() =>
+          expect(events.some((event) => event.type === "turn.completed")).toBe(true),
+        );
+        expect(events.filter((event) => event.type === "subagent.state.changed")).toEqual([
+          {
+            type: "subagent.state.changed",
+            nativeSubagentId: "fast-child",
+            status,
+            resultSummary: "Child finished",
+          },
+        ]);
+        const creation = events.findIndex(
+          (event) =>
+            event.type === "item.completed" && event.snapshot.item.type === "subagentDelegation",
+        );
+        const settlement = events.findIndex((event) => event.type === "subagent.state.changed");
+        expect(creation).toBeGreaterThanOrEqual(0);
+        expect(settlement).toBeGreaterThan(creation);
+        expect(await session.execute(textTurn("next-user-turn"))).toMatchObject({ ok: true });
+        transport.finish({ status: "succeeded" });
+      } finally {
+        await session.close();
+        await drain;
+      }
+    },
+  );
+
+  it("publishes a background Subagent settlement that arrives outside any Turn", async () => {
+    const { adapter, transports } = fixture();
+    const session = await openSession(adapter);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+
+    await session.execute(textTurn("delegate in background"));
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    const transport = transports[0];
+    if (!transport) throw new Error("Fake Claude transport was not created");
+    transport.delta("Background task launched");
+    await nextEvent(iterator);
+    transport.finish({ status: "succeeded" });
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+
+    // The Turn is complete and idle. Claude may enqueue the task notification
+    // without a continuation, so the settlement no longer rides a Turn.
+    transport.threadEvent({
+      type: "subagent.settled",
+      nativeSubagentId: "native-agent-late",
+      status: "completed",
+      resultSummary: "Analysis complete",
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "subagent.state.changed",
+      nativeSubagentId: "native-agent-late",
+      status: "completed",
+      resultSummary: "Analysis complete",
+    });
+    await session.close();
+  });
+
   it("holds the Root Turn until background Subagents and continuations finish", async () => {
     const { adapter, transports } = fixture();
     const session = await openSession(adapter);
@@ -2356,6 +2471,57 @@ describe("Claude Code HarnessAdapter", () => {
         nativeTurnRef: { nativeTurnKey: transport.turns[0]?.userMessageId },
       });
     }
+    await session.close();
+  });
+
+  it("releases a held Root Turn when a background Subagent settles without a continuation", async () => {
+    const { adapter, transports } = fixture();
+    const session = await openSession(adapter);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+
+    await session.execute(textTurn("launch in background"));
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    const transport = transports[0];
+    if (!transport) throw new Error("Fake Claude transport was not created");
+    transport.event({
+      type: "subagent.started",
+      operation: "spawn",
+      callId: "agent-1",
+      description: "Inspect directory",
+      background: true,
+    });
+    await nextEvent(iterator);
+    transport.event({
+      type: "subagent.completed",
+      callId: "agent-1",
+      isError: false,
+      continuesInBackground: true,
+      nativeSubagentId: "native-agent-1",
+    });
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    transport.delta("The Subagent is running", "root-1");
+    await nextEvent(iterator);
+    transport.event({ type: "message.completed", messageId: "root-1" });
+    await nextEvent(iterator);
+    transport.finish({ status: "succeeded" });
+    await new Promise((resolve) => {
+      setTimeout(resolve, 0);
+    });
+
+    // The idle notification may carry only the original callId. It still has to
+    // release the held Turn after the native Root result has already arrived.
+    transport.event({ type: "subagent.updated", callId: "agent-1", status: "completed" });
+    await new Promise((resolve) => {
+      setTimeout(resolve, 80);
+    });
+
+    await expect(session.execute(textTurn("after-settlement"))).resolves.toMatchObject({
+      ok: true,
+    });
+    transport.finish({ status: "succeeded" });
     await session.close();
   });
 
@@ -4778,6 +4944,7 @@ describe("Claude Code HarnessAdapter", () => {
         sessionId: "claude-id",
         setAutonomousTurnHandler: () => undefined,
         setIdleTurnHandler: () => undefined,
+        setThreadEventHandler: () => undefined,
         setIdleLive: () => undefined,
         start: async () => {
           throw new ClaudeCodeExecutableError("Claude Code is not installed");

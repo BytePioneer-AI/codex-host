@@ -1,0 +1,13 @@
+{
+  "manifestVersion": 1,
+  "id": "cursor-cli",
+  "name": "Cursor CLI (Experimental)",
+  "version": "0.0.0",
+  "adapterApiVersion": 1,
+  "entry": "./dist/plugin.js",
+  "icon": "./assets/icon.svg",
+  "links": {
+    "documentation": "https://cursor.com/docs/cli/acp",
+    "installation": "https://cursor.com/docs/cli/installation"
+  }
+}

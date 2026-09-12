@@ -4,20 +4,12 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { pathToFileURL } from "node:url";
 
+import { validateReleaseVersion } from "../../packages/repository-automation/index.mjs";
+
+export { validateReleaseVersion };
+
 const repositoryRoot = path.resolve(import.meta.dirname, "../..");
 const execFileAsync = promisify(execFile);
-const semverPattern =
-  /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-(?:(?:0|[1-9]\d*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9]\d*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*))?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/u;
-
-export function validateReleaseVersion(version) {
-  if (!semverPattern.test(version)) {
-    throw new Error(`release version '${version}' must be valid semver`);
-  }
-  if (version === "0.0.0") {
-    throw new Error("release version must not be 0.0.0");
-  }
-  return version;
-}
 
 export function parseReleasePrepareArguments(arguments_) {
   let version;

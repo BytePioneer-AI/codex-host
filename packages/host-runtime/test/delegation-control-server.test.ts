@@ -26,6 +26,7 @@ describe("delegation control server", () => {
     const server = await startDelegationControlServer({
       token,
       api: {
+        listHarnesses: vi.fn(async () => ({ harnesses: ["codex" as const, "pi" as const] })),
         inspect: vi.fn(),
         start,
         send: vi.fn(),
@@ -53,6 +54,9 @@ describe("delegation control server", () => {
       expect(response.status).toBe(200);
       await expect(response.json()).resolves.toMatchObject({ threadId: "thread-1" });
       expect(start).toHaveBeenCalledWith({ harnessId: "pi", task: "review", cwd: "/synthetic" });
+      const harnesses = await fetch(`${server.endpoint}/v1/harness/list`, authorized({}));
+      await expect(harnesses.json()).resolves.toEqual({ harnesses: ["codex", "pi"] });
+      expect(start).toHaveBeenCalledTimes(1);
     } finally {
       await server.close();
     }
@@ -78,6 +82,7 @@ describe("delegation control server", () => {
     const server = await startDelegationControlServer({
       token,
       api: {
+        listHarnesses: vi.fn(async () => ({ harnesses: ["codex" as const, "pi" as const] })),
         inspect,
         start: vi.fn(),
         send: vi.fn(),
@@ -116,6 +121,7 @@ describe("delegation control server", () => {
     const server = await startDelegationControlServer({
       token,
       api: {
+        listHarnesses: vi.fn(async () => ({ harnesses: ["codex" as const, "pi" as const] })),
         inspect: vi.fn(),
         start: vi.fn(),
         send,
@@ -142,6 +148,7 @@ describe("delegation control server", () => {
     const server = await startDelegationControlServer({
       token,
       api: {
+        listHarnesses: vi.fn(async () => ({ harnesses: ["codex" as const, "pi" as const] })),
         inspect: vi.fn(),
         start: vi.fn(),
         send: vi.fn(),

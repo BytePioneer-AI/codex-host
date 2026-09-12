@@ -2,6 +2,7 @@ import { expect, test, type Page } from "@playwright/test";
 import { build } from "esbuild";
 import path from "node:path";
 
+test.use({ timezoneId: "Asia/Shanghai" });
 const browserExecutable = process.env.CODEXHOST_PLAYWRIGHT_EXECUTABLE_PATH;
 if (browserExecutable) test.use({ launchOptions: { executablePath: browserExecutable } });
 
@@ -22,10 +23,10 @@ const { outputFiles } = await build({
         ];
         const snapshots = {
           native: { usedPercent:9,periodType:"seven_day",resetsAt:"2026-09-13T13:16:00Z",resetCredits:{availableCount:2,nextExpiresAt:"2026-10-04T01:54:00Z",expiresAt:["2026-10-04T01:54:00Z","2026-10-08T01:54:00Z"]} },
-          team: { usedPercent:91,periodType:"five_hour",resetsAt:"2026-09-07T18:44:00Z",productUsage:[{product:"7-day window",usagePercent:0,resetsAt:"2026-09-13T13:44:00Z"},{product:"GPT-5.3-Codex-Spark weekly limit",usagePercent:25}],resetCredits:{availableCount:1} },
+          team: { usedPercent:91,periodType:"five_hour",resetsAt:"2026-09-10T08:34:00Z",productUsage:[{product:"7-day window",usagePercent:0,resetsAt:"2026-09-13T13:44:00Z"},{product:"GPT-5.3-Codex-Spark weekly limit",usagePercent:25}],resetCredits:{availableCount:1} },
         };
         let harnessAccounts = [
-          {harnessId:"grok",harnessName:"Grok Build",email:"grok@example.com",credits:{usedPercent:25,periodType:"weekly"}},
+          {harnessId:"grok",harnessName:"Grok Build",email:"grok@example.com",credits:{usedPercent:0,periodType:"weekly",resetsAt:"2026-09-17T03:32:00Z"}},
           {harnessId:"antigravity",harnessName:"Antigravity",credits:{label:"Gemini Models · Weekly window",usedPercent:10,periodType:"weekly"}},
           {harnessId:"claude-code",harnessName:"Claude Code",email:"claude@example.com",plan:"max",credits:{usedPercent:0,periodType:"five_hour",productUsage:[{product:"7-day window",usagePercent:50}]}},
         ];
@@ -93,6 +94,7 @@ const { outputFiles } = await build({
         const registry=createRendererSettingsPageRegistry([createAccountsSettingsPage(messages,()=>client)]);
         const shell=mountRendererSettingsShell(registry,document,messages);
         shell.openSettings(undefined,"accounts");
+        globalThis.accountsFixture.dispose = () => shell.dispose();
       };
     `,
     resolveDir: path.resolve(import.meta.dirname, "../.."),
@@ -120,6 +122,8 @@ async function setup(page: Page, options = {}) {
     }),
   );
   await page.goto("http://localhost/accounts-test");
+  await page.clock.install({ time: new Date("2026-09-10T08:20:00Z") });
+  await page.clock.pauseAt(new Date("2026-09-10T08:20:00Z"));
   await page.addScriptTag({ content: bundle });
   await page.evaluate((options) => Reflect.get(globalThis, "setupAccounts")(options), options);
 }
@@ -129,19 +133,40 @@ async function calls(page: Page, key: string) {
 const nativeRow = '[data-account-id="native"]';
 const teamRow = '[data-account-id="team"]';
 
+async function openAccountActions(page: Page, row = teamRow) {
+  await page.locator(`${row} [data-account-focus$=":more"]`).click();
+  return page.locator(`${row} .settings-account-dialog[open]`);
+}
+
 test("shows detected Harness quota read-only and removes rows when authentication has no data", async ({
   page,
 }) => {
   await setup(page, { scenario: "external" });
-  const section = page.locator(".settings-harness-accounts");
-  await expect(section).toBeVisible();
-  await expect(section.locator("article")).toHaveCount(3);
+  const section = page.locator(".settings-account-table");
+  const nativeAccounts = section.locator("tr[data-harness-id]");
+  await expect(page.locator(".settings-harness-accounts")).toHaveCount(0);
+  await expect(page.locator(".settings-account-table")).toHaveCount(1);
+  await expect(nativeAccounts).toHaveCount(3);
+  await expect(section.locator(".settings-account-row")).toHaveCount(6);
+  await expect(page.locator(".settings-account-count")).toHaveText("账号6");
   await expect(section.locator(".settings-harness-account__logo img")).toHaveCount(2);
   await expect(
     section.locator('[data-harness-id="claude-code"] .settings-harness-account__logo svg'),
   ).toHaveCount(1);
   await expect(section).not.toContainText("请在原生 Agent 中管理登录");
-  await expect(section.getByRole("button")).toHaveCount(0);
+  await expect(
+    nativeAccounts.getByRole("button", { name: /设为默认|删除|使用重置|登录$/ }),
+  ).toHaveCount(0);
+  await expect(
+    section.locator('[data-harness-id="antigravity"] .settings-account-metadata'),
+  ).toHaveCount(0);
+  const info = section.getByRole("button", { name: "Grok Build · 原生管理", exact: true });
+  await info.click();
+  const nativeInfo = section.locator('[data-harness-id="grok"] dialog[open]');
+  await expect(nativeInfo).toContainText("登录、退出和切换请在其原生客户端中完成");
+  await page.keyboard.press("Escape");
+  await expect(nativeInfo).toHaveCount(0);
+  await expect(info).toBeFocused();
   await expect(section).not.toContainText("当前登录账号");
   await expect(section).not.toContainText("更新于");
   const longEmail = "very.long.account.name.with.many.characters@example.com";
@@ -168,25 +193,28 @@ test("shows detected Harness quota read-only and removes rows when authenticatio
   await expect(section).toContainText("Gemini Models · Weekly window");
   await expect(section.locator('[data-harness-id="grok"] [role="meter"]')).toHaveAttribute(
     "aria-valuenow",
-    "75",
+    "100",
   );
   await page.getByRole("button", { name: "已用", exact: true }).click();
   await expect(section.locator('[data-harness-id="grok"] [role="meter"]')).toHaveAttribute(
     "aria-valuenow",
-    "25",
+    "0",
   );
   await page.getByRole("searchbox").fill("claude@example.com");
-  await expect(section.locator("article")).toHaveCount(1);
+  await expect(section.locator(".settings-account-row")).toHaveCount(1);
+  await expect(page.locator(".settings-account-empty")).toHaveCount(0);
+  await expect(page.locator(".settings-account-count")).toHaveText("账号6");
   await expect(section).toContainText("Claude Code");
   await page.getByRole("searchbox").fill("");
   await page.setViewportSize({ width: 500, height: 850 });
-  await expect(section.locator("article")).toHaveCount(3);
+  await expect(nativeAccounts).toHaveCount(3);
   expect(await section.evaluate((element) => element.scrollWidth <= element.clientWidth + 1)).toBe(
     true,
   );
   await page.evaluate(() => Reflect.get(globalThis, "accountsFixture").clearHarnessAccounts());
   await page.getByRole("button", { name: "刷新额度", exact: true }).click();
-  await expect(section).toBeHidden();
+  await expect(nativeAccounts).toHaveCount(0);
+  await expect(page.locator(".settings-account-count")).toHaveText("账号3");
   expect(await calls(page, "activate")).toEqual([]);
   expect(await calls(page, "deleted")).toEqual([]);
 });
@@ -197,18 +225,27 @@ test("uses four columns and only reported windows, with equal-width bars and no 
   await setup(page);
   await expect(page.locator(".settings-account-table th")).toHaveText([
     "账号",
-    "额度",
-    "重置卡",
-    "操作",
+    "5 小时剩余",
+    "7 天剩余",
+    "管理",
   ]);
   await expect(page.locator(`${nativeRow} [role="meter"]`)).toHaveCount(1);
   await expect(page.locator(`${teamRow} [role="meter"]`)).toHaveCount(3);
-  await expect(page.locator(`${nativeRow} .settings-account-usage__title`)).toHaveText("7 天");
-  await expect(page.locator(`${nativeRow} .settings-account-usage__title`)).toHaveCSS(
-    "width",
-    "48px",
+  await expect(page.locator(`${nativeRow} .settings-account-usage__missing`)).toContainText("—");
+  await expect(page.locator(`${nativeRow} .settings-account-usage__missing`)).not.toContainText(
+    "未提供此窗口",
   );
-  await expect(page.locator(`${nativeRow} .settings-account-active`)).toHaveText("默认");
+  await expect(
+    page.locator(`${nativeRow} .settings-account-usage-cell`).nth(0).getByRole("meter"),
+  ).toHaveCount(0);
+  await expect(
+    page.locator(`${nativeRow} .settings-account-usage-cell`).nth(1).getByRole("meter"),
+  ).toHaveAttribute("aria-valuenow", "91");
+  await expect(page.locator(`${nativeRow} .settings-account-active`)).toHaveText("Codex 默认");
+  await expect(page.locator(`${nativeRow} .settings-account-email`)).toHaveText(
+    "zhaobin_jiang@163.com",
+  );
+  await expect(page.locator(`${nativeRow} .settings-account-metadata`)).toContainText("Codex");
   await expect(page.locator(`${nativeRow} .settings-account-plan`)).toHaveText("Pro 20x");
   await expect(page.locator(`${nativeRow} .settings-account-plan`)).toHaveClass(
     /settings-account-plan--highlighted/,
@@ -220,23 +257,33 @@ test("uses four columns and only reported windows, with equal-width bars and no 
   await expect(
     page.locator(teamRow).getByRole("button", { name: "设为默认", exact: true }),
   ).toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
-  await expect(page.locator(".settings-account-count")).toContainText("已连接账号2");
-  const loginHelp = page.getByRole("button", { name: "登录前须知", exact: true });
-  await loginHelp.click();
-  await expect(page.locator(".settings-account-device-code-note")).toBeVisible();
-  await loginHelp.click();
-  await expect(page.locator(".settings-account-device-code-note")).toBeHidden();
-  await expect(page.locator(`${teamRow} .settings-account-usage__title`)).toHaveText([
-    "5 小时",
-    "7 天",
+  await expect(page.locator(".settings-account-count")).toHaveText("账号3");
+  await expect(
+    page.getByText(
+      "默认设置仅影响新的 Codex 任务，已有任务保持原账号；其他 Agent 的登录与切换由其原生客户端管理。",
+      { exact: true },
+    ),
+  ).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "登录前须知", exact: true })).toHaveCount(0);
+  await expect(
+    page.getByText(
+      "登录前，请先在 Web 端的“设置 → 账号安全与登录”中开启“为 Codex 启用设备代码授权”。",
+      { exact: true },
+    ),
+  ).toHaveCount(0);
+  await expect(page.locator(".settings-account-device-code-note")).toHaveCount(0);
+  await expect(
+    page.locator(`${teamRow} .settings-account-usage-cell .settings-account-usage__title`),
+  ).toHaveText(["5 小时", "7 天"]);
+  await expect(page.locator(`${teamRow} .settings-account-extra-usage`)).toContainText(
     "GPT-5.3-Codex-Spark weekly limit",
-  ]);
+  );
   await expect(page.locator(".settings-account-table")).not.toContainText("未返回此窗口");
   await expect(page.locator(".settings-account-table")).not.toContainText("Pro 5x");
   await expect(page.locator(".settings-account-table")).not.toContainText("续期");
   await expect(page.locator('[data-account-id="pending"] [role="meter"]')).toHaveCount(0);
   const widths = await page
-    .locator('[role="meter"]')
+    .locator('.settings-account-usage-cell [role="meter"]')
     .evaluateAll((els) => els.map((el) => el.getBoundingClientRect().width));
   expect(Math.max(...widths) - Math.min(...widths)).toBeLessThan(1);
   await expect(page.getByRole("button", { name: "剩余", exact: true })).toHaveAttribute(
@@ -244,13 +291,19 @@ test("uses four columns and only reported windows, with equal-width bars and no 
     "true",
   );
   await expect(page.locator(`${nativeRow} [role="meter"]`)).toHaveAttribute("aria-valuenow", "91");
-  await expect(page.locator(`${teamRow} [role="meter"]`).first()).toHaveAttribute(
-    "aria-valuenow",
-    "9",
-  );
-  await expect(page.locator(`${teamRow} [role="meter"]`).first()).toHaveClass(/--hot/);
+  await expect(
+    page.locator(`${teamRow} .settings-account-usage-cell [role="meter"]`).first(),
+  ).toHaveAttribute("aria-valuenow", "9");
+  await expect(
+    page.locator(`${teamRow} .settings-account-usage-cell [role="meter"]`).first(),
+  ).toHaveClass(/--hot/);
   await expect(page.locator(`${nativeRow} .settings-account-active`)).toHaveCount(1);
-  await expect(page.locator(`${nativeRow} .settings-account-actions`)).toBeEmpty();
+  await expect(
+    page.locator(nativeRow).getByRole("button", { name: "设为默认", exact: true }),
+  ).toHaveCount(0);
+  await expect(page.locator(`${nativeRow} .settings-account-reset-summary`)).toContainText(
+    "重置卡",
+  );
   await page.getByRole("searchbox").fill("gmail");
   await expect(page.locator(".settings-account-row")).toHaveCount(1);
   await page.getByRole("searchbox").fill("no-match");
@@ -294,9 +347,11 @@ test("keeps native-home deletion protection separate from the active account and
   await expect(page.locator(`${teamRow} .settings-account-active`)).toHaveCount(1);
   await expect(page.locator(`${nativeRow} .settings-account-delete`)).toHaveCount(0);
   const remove = page.getByRole("button", { name: "删除: chongwen623@gmail.com", exact: true });
+  await openAccountActions(page);
   page.once("dialog", (dialog) => dialog.dismiss());
   await remove.click();
   expect(await calls(page, "deleted")).toHaveLength(0);
+  await openAccountActions(page);
   page.once("dialog", (dialog) => dialog.accept());
   await remove.click();
   await expect(page.locator(teamRow)).toHaveCount(0);
@@ -325,7 +380,7 @@ for (const input of ["mouse", "keyboard"] as const) {
       await expect(row).toBeFocused();
       await page.evaluate(() => Reflect.get(globalThis, "accountsFixture").completeActivation());
       if (outcome === "success") {
-        await expect(row.locator(".settings-account-active")).toHaveText("默认");
+        await expect(row.locator(".settings-account-active")).toHaveText("Codex 默认");
         await expect(activate).toHaveCount(0);
       } else {
         await expect(activate).toBeEnabled();
@@ -368,7 +423,7 @@ test("does not strand an earlier usage request when metadata adds another signed
 test("keeps add, native device login and cancellation available", async ({ page }) => {
   await setup(page);
   await page.getByRole("searchbox").fill("gmail");
-  await page.getByRole("button", { name: "添加账号", exact: true }).click();
+  await page.getByRole("button", { name: "添加 Codex 账号", exact: true }).click();
   await expect(page.getByRole("searchbox")).toHaveValue("");
   await expect(page.getByRole("searchbox")).toBeDisabled();
   await expect(page.locator(".settings-account-verification")).toContainText("ABCD-EFGH");
@@ -378,7 +433,7 @@ test("keeps add, native device login and cancellation available", async ({ page 
   );
   await page.getByRole("button", { name: "取消登录", exact: true }).click();
   await expect(page.locator(".settings-account-verification")).toHaveCount(0);
-  await expect(page.getByRole("button", { name: "添加账号", exact: true })).toBeEnabled();
+  await expect(page.getByRole("button", { name: "添加 Codex 账号", exact: true })).toBeEnabled();
 });
 
 test("renders completed accounts without waiting for a slower window request", async ({ page }) => {
@@ -395,6 +450,7 @@ test("ignores late usage for a deleted account and unlocks refresh", async ({ pa
   await setup(page, { scenario: "slow-team" });
   await expect(page.locator(`${nativeRow} [role="meter"]`)).toHaveCount(1);
   await expect(page.locator(teamRow)).toContainText("正在读取额度");
+  await openAccountActions(page);
   page.once("dialog", (dialog) => dialog.accept());
   await page.locator(`${teamRow} .settings-account-delete`).click();
   await expect(page.locator(teamRow)).toHaveCount(0);
@@ -414,7 +470,7 @@ test("does not let another mutation supersede an in-flight reset", async ({ page
     page.locator(teamRow).getByRole("button", { name: "设为默认", exact: true }),
   ).toBeDisabled();
   await expect(page.locator(`${teamRow} .settings-account-delete`)).toBeDisabled();
-  await expect(page.getByRole("button", { name: "添加账号", exact: true })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "添加 Codex 账号", exact: true })).toBeDisabled();
   await page.locator(`${teamRow} .settings-account-reset-summary`).click();
   await expect(page.getByRole("button", { name: "使用重置", exact: true })).toBeDisabled();
   await page.evaluate(() => Reflect.get(globalThis, "accountsFixture").completeReset());
@@ -424,21 +480,142 @@ test("does not let another mutation supersede an in-flight reset", async ({ page
   ).toBeEnabled();
 });
 
+test("updates compact countdowns without requests, replacing rows, or inventing a reset", async ({
+  page,
+}) => {
+  await setup(page);
+  const countdown = page
+    .locator(`${teamRow} .settings-account-usage-cell [data-resets-at]`)
+    .first();
+  const timestamp = page.locator(`${nativeRow} time`).first();
+  await expect(countdown).toHaveText("14m");
+  await expect(page.locator(`${nativeRow} [data-resets-at]`).first()).toHaveText("3d4h");
+  await expect(timestamp).toHaveText("09/13 21:16");
+  await expect(timestamp).toHaveAttribute("datetime", "2026-09-13T13:16:00.000Z");
+  await expect(timestamp).toHaveAttribute("title", /额度重置时间：.*2026.*GMT\+8/);
+  await expect(countdown).toHaveAttribute("aria-label", "距重置还有 14分钟");
+  const originalNode = await countdown.elementHandle();
+  const inspect = await calls(page, "inspect");
+  const summary = page.locator(`${teamRow} .settings-account-reset-summary`);
+  await summary.focus();
+  await page.keyboard.press("Enter");
+  await page.clock.runFor(60_000);
+  await expect(countdown).toHaveText("13m");
+  expect(await originalNode?.evaluate((node) => node.isConnected)).toBe(true);
+  await expect(summary).toBeFocused();
+  await expect(summary).toHaveAttribute("aria-expanded", "true");
+  await page.clock.runFor(13 * 60_000);
+  await expect(countdown).toHaveText("待刷新");
+  await expect(
+    page.locator(`${teamRow} .settings-account-usage-cell [role="meter"]`).first(),
+  ).toHaveAttribute("aria-valuenow", "9");
+  expect(await calls(page, "inspect")).toEqual(inspect);
+});
+
+test("stops the local countdown clock when settings are disposed", async ({ page }) => {
+  await setup(page);
+  const countdown = await page.locator(`${teamRow} [data-resets-at]`).first().elementHandle();
+  await page.evaluate(() => Reflect.get(globalThis, "accountsFixture").dispose());
+  await page.clock.runFor(60_000);
+  expect(await countdown?.evaluate((node) => node.textContent)).toBe("14m");
+});
+
+test("keeps row order stable across defaults, display mode and refresh, and searches Agent or plan", async ({
+  page,
+}) => {
+  await setup(page, { scenario: "external" });
+  const rows = page.locator(".settings-account-row");
+  const order = () =>
+    rows.evaluateAll((nodes) =>
+      nodes.map(
+        (node) => node.getAttribute("data-account-id") ?? node.getAttribute("data-harness-id"),
+      ),
+    );
+  await expect(rows).toHaveCount(6);
+  const initial = await order();
+  expect(initial).toEqual(["native", "team", "pending", "antigravity", "claude-code", "grok"]);
+  await page.locator(teamRow).getByRole("button", { name: "设为默认", exact: true }).click();
+  await page.getByRole("button", { name: "已用", exact: true }).click();
+  await expect(page.locator(".settings-account-table th")).toHaveText([
+    "账号",
+    "5 小时已用",
+    "7 天已用",
+    "管理",
+  ]);
+  await page.getByRole("button", { name: "刷新额度", exact: true }).click();
+  expect(await order()).toEqual(initial);
+  await page.getByRole("searchbox").fill("Codex");
+  await expect(rows).toHaveCount(3);
+  await page.getByRole("searchbox").fill("max");
+  await expect(rows).toHaveCount(1);
+  await expect(rows).toHaveAttribute("data-harness-id", "claude-code");
+  await page.getByRole("searchbox").fill("Pro 20x");
+  await expect(rows).toHaveCount(1);
+  await expect(rows).toHaveAttribute("data-account-id", "native");
+  await page.getByRole("searchbox").fill("no-such-account");
+  await expect(page.locator(".settings-account-empty")).toHaveCount(1);
+  await expect(page.locator(".settings-account-count")).toHaveText("账号6");
+});
+
+test("supports keyboard account details and per-account refresh without exposing protected deletion", async ({
+  page,
+}) => {
+  await setup(page);
+  const trigger = page.locator(`${nativeRow} [data-account-focus$=":more"]`);
+  await trigger.focus();
+  await page.keyboard.press("Enter");
+  const dialog = page.locator(`${nativeRow} dialog[open]`);
+  await expect(dialog).toBeVisible();
+  await expect(dialog.getByRole("button", { name: /删除/ })).toHaveCount(0);
+  await dialog.getByRole("button", { name: "刷新额度", exact: true }).click();
+  await expect(dialog).toHaveCount(0);
+  await expect.poll(() => calls(page, "inspect")).toEqual(["native", "team", "native"]);
+  await expect(trigger).toBeFocused();
+});
+
+test("keeps account details and keyboard focus through another account's async quota update", async ({
+  page,
+}) => {
+  await setup(page, { scenario: "slow" });
+  const dialog = await openAccountActions(page);
+  const refresh = dialog.getByRole("button", { name: "刷新额度", exact: true });
+  await refresh.focus();
+  await page.evaluate(() => Reflect.get(globalThis, "accountsFixture").deliverNative());
+  await expect(page.locator(`${nativeRow} [role="meter"]`)).toHaveCount(1);
+  await expect(dialog).toBeVisible();
+  await expect(refresh).toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(dialog).toHaveCount(0);
+  await expect(page.locator(`${teamRow} [data-account-focus$=":more"]`)).toBeFocused();
+});
+
 for (const locale of ["zh-CN", "en"]) {
   for (const theme of ["light", "dark"]) {
     test(`fits the real settings shell in ${locale}/${theme} on desktop and mobile`, async ({
       page,
     }) => {
-      await setup(page, { locale, theme });
+      await setup(page, { locale, theme, scenario: "external" });
       await expect(page.locator(`${nativeRow} [role="meter"]`)).toHaveCount(1);
       await page.screenshot({
         path: test.info().outputPath(`accounts-${locale}-${theme}-desktop.png`),
       });
-      for (const width of [1440, 900, 720, 390]) {
+      await page.locator('[data-harness-id="grok"]').scrollIntoViewIfNeeded();
+      await page.screenshot({
+        path: test.info().outputPath(`accounts-${locale}-${theme}-native.png`),
+      });
+      for (const width of [1440, 900, 720, 500, 390]) {
         await page.setViewportSize({ width, height: 1000 });
         const list = page.locator(".settings-account-list:has(.settings-account-table)");
         expect(await list.evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(true);
-        for (const selector of [".settings-account-reset-summary", ".settings-account-delete"]) {
+        expect(
+          await list
+            .locator(".settings-account-usage__meter")
+            .evaluateAll((nodes) => nodes.every((node) => node.scrollWidth <= node.clientWidth)),
+        ).toBe(true);
+        for (const selector of [
+          ".settings-account-reset-summary",
+          '[data-account-focus$=":more"]',
+        ]) {
           const control = page.locator(`${teamRow} ${selector}`);
           await control.scrollIntoViewIfNeeded();
           await expect(control).toBeVisible();
@@ -452,6 +629,9 @@ for (const locale of ["zh-CN", "en"]) {
           );
         }
       }
+      await page.screenshot({
+        path: test.info().outputPath(`accounts-${locale}-${theme}-mobile.png`),
+      });
       const summary = page.locator(`${nativeRow} .settings-account-reset-summary`);
       await summary.focus();
       await page.keyboard.press("Enter");

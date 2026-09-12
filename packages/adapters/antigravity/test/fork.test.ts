@@ -72,7 +72,7 @@ async function fakeMultiTurnAgy(turnStreamLines: readonly (readonly string[])[])
 const fs = require("node:fs");
 const path = require("node:path");
 
-if (process.argv.includes("models") || process.argv.some((arg) => arg.includes("/usage") || arg.includes("/config"))) {
+if (process.argv.includes("models") || process.argv.some((arg) => arg.includes("/usage"))) {
   if (process.argv.includes("models")) {
     process.stdout.write("gemini-3.7-flash\\tGemini 3.7 Flash\\n");
   }

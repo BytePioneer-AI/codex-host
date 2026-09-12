@@ -487,7 +487,7 @@ describe("mapping-store package", () => {
       hostThreadId: sourceThreadId,
       hostTurnId: hostTurnIdSchema.parse("source-turn-3"),
     });
-    await store.upsertTurnMappings(threadId, [mapping(2), mapping(3)]);
+    const before = await store.upsertTurnMappings(threadId, [mapping(2), mapping(3)]);
     const replacementRef = nativeSessionRefSchema.parse({
       harnessId,
       nativeSessionId: "native-session-2",
@@ -500,6 +500,8 @@ describe("mapping-store package", () => {
     ];
     const replaced = await store.replaceReadySession({
       hostThreadId: threadId,
+      expectedRevision: before.revision,
+      expectedNativeSessionRef: nativeRef,
       nativeSessionRef: replacementRef,
       turnMappings: replacementMappings,
       forkSource: {
@@ -525,6 +527,8 @@ describe("mapping-store package", () => {
     await expect(
       store.replaceReadySession({
         hostThreadId: threadId,
+        expectedRevision: replaced.revision,
+        expectedNativeSessionRef: replacementRef,
         nativeSessionRef: failedRef,
         turnMappings: [mappingForSession(failedRef, 1)],
         forkSource: { hostThreadId: sourceThreadId, hostTurnId: mapping(1).hostTurnId },
@@ -556,6 +560,8 @@ describe("mapping-store package", () => {
 
     const replaced = await first.replaceReadySessionAfterLastTurn({
       hostThreadId: threadId,
+      expectedRevision: before?.revision ?? 0,
+      expectedNativeSessionRef: nativeRef,
       nativeSessionRef: replacementRef,
       turnMappings: [],
     });
@@ -585,6 +591,8 @@ describe("mapping-store package", () => {
 
     const replaced = await store.replaceReadySessionAfterLastTurn({
       hostThreadId: threadId,
+      expectedRevision: before?.revision ?? 0,
+      expectedNativeSessionRef: nativeRef,
       nativeSessionRef: nativeRef,
       turnMappings: [mapping(1)],
     });
@@ -607,7 +615,7 @@ describe("mapping-store package", () => {
     });
     await store.initialize();
     await createReady(store);
-    await store.upsertTurnMappings(threadId, [mapping(2), mapping(3)]);
+    const before = await store.upsertTurnMappings(threadId, [mapping(2), mapping(3)]);
     const replacementRef = nativeSessionRefSchema.parse({
       harnessId,
       nativeSessionId: "native-session-shorter",
@@ -615,6 +623,8 @@ describe("mapping-store package", () => {
     }) as NativeSessionRef;
     const replaced = await store.replaceReadySessionAfterLastTurn({
       hostThreadId: threadId,
+      expectedRevision: before.revision,
+      expectedNativeSessionRef: nativeRef,
       nativeSessionRef: replacementRef,
       turnMappings: [mappingForSession(replacementRef, 1), mappingForSession(replacementRef, 2)],
     });
@@ -628,6 +638,8 @@ describe("mapping-store package", () => {
     await expect(
       store.replaceReadySessionAfterLastTurn({
         hostThreadId: threadId,
+        expectedRevision: replaced.revision,
+        expectedNativeSessionRef: replacementRef,
         nativeSessionRef: failedRef,
         turnMappings: [mappingForSession(failedRef, 1)],
       }),

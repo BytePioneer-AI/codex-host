@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type * as UpdateManager from "@codexhost/update-manager";
 
 import {
   createBackgroundUpdateManager,
@@ -13,7 +14,18 @@ import {
 
 import { createHostUpdateCoordinator } from "../src/update-coordinator.js";
 
+const discovery = vi.hoisted(() => ({ cli: vi.fn(), http: vi.fn() }));
+vi.mock("@codexhost/update-manager", async (importOriginal) => ({
+  ...(await importOriginal<typeof UpdateManager>()),
+  fetchLatestGitHubReleaseWithGitHubCli: discovery.cli,
+  fetchLatestGitHubRelease: discovery.http,
+}));
+
 const roots: string[] = [];
+afterEach(() => {
+  vi.clearAllMocks();
+  vi.useRealTimers();
+});
 afterEach(async () => Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true }))));
 
 async function file(filePath: string, contents = "fixture"): Promise<void> {
@@ -112,6 +124,51 @@ function release(version = "1.2.3"): CodexhostLatestRelease {
 }
 
 describe("Host update coordinator", () => {
+  it.each([true, false])(
+    "prefers gh and only falls back when needed (CLI available: %s)",
+    async (available) => {
+      const fixture = await npmFixture();
+      discovery.cli.mockResolvedValue(available ? release() : null);
+      discovery.http.mockResolvedValue(release());
+      const coordinator = createHostUpdateCoordinator({
+        ...fixture,
+        platform: "darwin",
+        architecture: "arm64",
+      });
+      await expect(coordinator.check()).resolves.toMatchObject({
+        latestVersion: "1.2.3",
+        error: null,
+      });
+      expect(discovery.cli).toHaveBeenCalledWith(
+        expect.objectContaining({ environment: fixture.environment, platform: "darwin" }),
+      );
+      expect(discovery.http).toHaveBeenCalledTimes(available ? 0 : 1);
+      if (!available)
+        expect(discovery.http.mock.calls[0]?.[0].signal).toBe(
+          discovery.cli.mock.calls[0]?.[0].signal,
+        );
+    },
+  );
+
+  it("does not fall back after caller cancellation", async () => {
+    const fixture = await npmFixture();
+    const controller = new AbortController();
+    discovery.cli.mockImplementation(async ({ signal }: { signal: AbortSignal }) => {
+      controller.abort();
+      signal.throwIfAborted();
+    });
+    const coordinator = createHostUpdateCoordinator({
+      ...fixture,
+      platform: "darwin",
+      architecture: "arm64",
+    });
+    await expect(coordinator.check(controller.signal)).resolves.toMatchObject({
+      latestVersion: null,
+      error: expect.any(String),
+    });
+    expect(discovery.http).not.toHaveBeenCalled();
+  });
+
   it("hands a macOS update to Launcher without starting the Helper", async () => {
     const fixture = await npmFixture();
     const spawnUpdater = vi.fn(() => ({ pid: 777 }) as unknown as ChildProcess);

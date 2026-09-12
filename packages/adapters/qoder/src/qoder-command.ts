@@ -12,7 +12,17 @@ export class QoderExecutableError extends Error {
 }
 
 export const CODEXHOST_QODER_COMMAND = "CODEXHOST_QODER_COMMAND";
+export const QODER_SDK_CUSTOM_BASE_URL_BYOK = "QODER_SDK_CUSTOM_BASE_URL_BYOK";
 const QODER_NPM_CLI_ENTRYPOINT = "node_modules/@qoder-ai/qodercli/bundle/qodercli.js";
+
+export function qoderEnvironment(
+  environment?: Record<string, string | undefined>,
+): Record<string, string | undefined> {
+  return {
+    ...environment,
+    [QODER_SDK_CUSTOM_BASE_URL_BYOK]: environment?.[QODER_SDK_CUSTOM_BASE_URL_BYOK] ?? "1",
+  };
+}
 
 export const qoderDiscoverySpec: HarnessDiscoverySpec = {
   id: "qoder",

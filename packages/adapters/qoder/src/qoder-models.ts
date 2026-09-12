@@ -6,6 +6,7 @@ import {
   harnessModelRefSchema,
   type HarnessModel,
   type HarnessModelCatalog,
+  type HarnessModelGroup,
   type HarnessModelRef,
 } from "@codexhost/shared-contracts";
 import { z } from "zod";
@@ -46,9 +47,26 @@ export function decodeQoderModelRef(ref: HarnessModelRef): string | undefined {
   }
 }
 
+function qoderModelGroup(raw: Record<string, unknown>): HarnessModelGroup {
+  const source = typeof raw.source === "string" ? raw.source : undefined;
+  const tags = Array.isArray(raw.tags)
+    ? raw.tags.filter((tag): tag is string => typeof tag === "string")
+    : [];
+  if (
+    source === "custom" ||
+    source === "user" ||
+    source === "organization" ||
+    tags.includes("custom-provider")
+  ) {
+    return "custom";
+  }
+  return raw.isNew === true ? "new" : "default";
+}
+
 export function parseQoderModelCatalog(rawModels?: unknown[]): HarnessModelCatalog {
   const models: HarnessModel[] = [];
   const seenRefs = new Set<string>();
+  let nativeDefault: HarnessModelRef | undefined;
 
   if (Array.isArray(rawModels)) {
     for (const item of rawModels) {
@@ -57,9 +75,11 @@ export function parseQoderModelCatalog(rawModels?: unknown[]): HarnessModelCatal
         const value =
           typeof raw.value === "string" && raw.value.trim().length > 0
             ? raw.value.trim()
-            : typeof raw.id === "string" && raw.id.trim().length > 0
-              ? raw.id.trim()
-              : undefined;
+            : typeof raw.modelId === "string" && raw.modelId.trim().length > 0
+              ? raw.modelId.trim()
+              : typeof raw.id === "string" && raw.id.trim().length > 0
+                ? raw.id.trim()
+                : undefined;
         if (!value) continue;
 
         const labelCandidate =
@@ -76,13 +96,16 @@ export function parseQoderModelCatalog(rawModels?: unknown[]): HarnessModelCatal
           models.push({
             ref,
             label,
+            group: qoderModelGroup(raw),
+            ...(typeof raw.isEnabled === "boolean" ? { selectable: raw.isEnabled } : {}),
           });
+          if (!nativeDefault && raw.isDefault === true) nativeDefault = ref;
         }
       }
     }
   }
 
-  const defaultModel = models[0]?.ref;
+  const defaultModel = nativeDefault ?? models[0]?.ref;
 
   return harnessModelCatalogSchema.parse({
     models,

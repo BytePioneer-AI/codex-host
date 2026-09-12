@@ -93,12 +93,19 @@ export class QoderAdapter implements HarnessAdapter {
                 ...(this.#environment ? { env: this.#environment } : {}),
               },
             });
-            if (probeQuery.getAvailableModels) {
-              rawModels = await probeQuery.getAvailableModels({ fetchStrategy: "cache" });
+            try {
+              if (probeQuery.getAvailableModels) {
+                rawModels = await probeQuery.getAvailableModels({ fetchStrategy: "cache" });
+              }
+            } finally {
+              try {
+                await probeQuery.close();
+              } catch {
+                // Ignore query close error
+              }
             }
-            await probeQuery.close();
           } catch {
-            // Keep fallback catalog on error
+            // Keep empty catalog on error
           }
         }
 

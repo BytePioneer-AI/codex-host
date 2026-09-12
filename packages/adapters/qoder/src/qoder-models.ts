@@ -82,15 +82,6 @@ export function parseQoderModelCatalog(rawModels?: unknown[]): HarnessModelCatal
     }
   }
 
-  if (models.length === 0) {
-    for (const std of QODER_STANDARD_MODELS) {
-      models.push({
-        ref: encodeQoderModelRef(std.value),
-        label: std.label,
-      });
-    }
-  }
-
   const defaultModel = models[0]?.ref;
 
   return harnessModelCatalogSchema.parse({

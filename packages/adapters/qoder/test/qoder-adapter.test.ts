@@ -15,7 +15,6 @@ import {
   decodeQoderModelRef,
   encodeQoderModelRef,
   parseQoderModelCatalog,
-  QODER_DEFAULT_MODEL_REF,
 } from "../src/qoder-models.js";
 import type {
   QoderModelInfo,
@@ -144,7 +143,8 @@ describe("QoderAdapter", () => {
       const inspection1 = await adapter.inspect({ cwd: "D:/project" });
       expect(inspection1.status).toBe("ready");
       if (inspection1.status === "ready") {
-        expect(inspection1.catalog.defaultModel?.id).toBe(QODER_DEFAULT_MODEL_REF.id);
+        expect(inspection1.catalog.models).toEqual([]);
+        expect(inspection1.catalog.defaultModel).toBeUndefined();
         expect(inspection1.capabilities.configuration.selectModel).toBe(true);
         expect(inspection1.capabilities.configuration.selectPermissionMode).toBe(true);
         expect(inspection1.capabilities.history.rollbackLastTurn).toBe(false);
@@ -162,6 +162,45 @@ describe("QoderAdapter", () => {
       const inspection3 = await adapter.inspect({ cwd: "D:/project", refresh: true });
       expect(inspection3.status).toBe("ready");
       expect(resolveCalls).toBe(2);
+    });
+
+    it("dynamically returns models from queryFactory in inspect()", async () => {
+      const fakeQuery = new FakeQoderQuery();
+      const adapter = new QoderAdapter({
+        resolveExecutable: () => "D:/tools/qodercli.exe",
+        queryFactory: () => fakeQuery,
+      });
+
+      const inspection = await adapter.inspect({ cwd: "D:/project" });
+      expect(inspection.status).toBe("ready");
+      if (inspection.status === "ready") {
+        expect(inspection.catalog.models).toHaveLength(2);
+        expect(inspection.catalog.defaultModel?.id).toBe(encodeQoderModelRef("default").id);
+        expect(harnessInspectionSchema.parse(inspection)).toEqual(inspection);
+      }
+    });
+
+    it("closes probeQuery in finally and returns empty catalog when getAvailableModels throws", async () => {
+      const closeSpy = vi.fn(async () => undefined);
+      const throwingQuery = {
+        getAvailableModels: vi.fn(async () => {
+          throw new Error("CLI connection failed");
+        }),
+        close: closeSpy,
+      } as unknown as QoderQuery;
+
+      const adapter = new QoderAdapter({
+        resolveExecutable: () => "D:/tools/qodercli.exe",
+        queryFactory: () => throwingQuery,
+      });
+
+      const inspection = await adapter.inspect({ cwd: "D:/project" });
+      expect(inspection.status).toBe("ready");
+      if (inspection.status === "ready") {
+        expect(inspection.catalog.models).toEqual([]);
+        expect(inspection.catalog.defaultModel).toBeUndefined();
+      }
+      expect(closeSpy).toHaveBeenCalledOnce();
     });
   });
 
@@ -795,7 +834,7 @@ describe("QoderAdapter", () => {
       expect(decoded).toBe("claude-3-7-sonnet@20250219/thinking");
     });
 
-    it("parses model catalog with fallback to default model", () => {
+    it("parses model catalog from dynamic model list", () => {
       const catalog = parseQoderModelCatalog([
         { value: "qoder-1", displayName: "Qoder Model 1" },
         { value: "qoder-2", displayName: "Qoder Model 2" },
@@ -803,6 +842,16 @@ describe("QoderAdapter", () => {
       expect(catalog.models.length).toBe(2);
       expect(catalog.defaultModel?.id).toBe(encodeQoderModelRef("qoder-1").id);
       expect(catalog.thinkingOptions).toEqual([]);
+    });
+
+    it("returns empty catalog when dynamic models are unavailable or empty", () => {
+      const catalogEmpty = parseQoderModelCatalog([]);
+      expect(catalogEmpty.models).toEqual([]);
+      expect(catalogEmpty.defaultModel).toBeUndefined();
+
+      const catalogUndefined = parseQoderModelCatalog(undefined);
+      expect(catalogUndefined.models).toEqual([]);
+      expect(catalogUndefined.defaultModel).toBeUndefined();
     });
   });
 

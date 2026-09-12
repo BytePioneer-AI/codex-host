@@ -165,14 +165,15 @@ export class QoderAdapter implements HarnessAdapter {
           }
         }
 
+        const catalog = parseQoderModelCatalog(rawModels);
         const result: Extract<HarnessInspection, { status: "ready" }> = {
           status: "ready",
-          catalog: parseQoderModelCatalog(rawModels),
+          catalog,
           permissionModes: QODER_PERMISSION_MODE_CATALOG,
           capabilities: {
             configuration: {
               selectModel: true,
-              selectThinkingOption: false,
+              selectThinkingOption: catalog.thinkingOptions.length > 0,
               selectPermissionMode: true,
               permissionModeScope: "live",
             },
@@ -395,12 +396,22 @@ export class QoderAdapter implements HarnessAdapter {
       };
     }
 
+    const cachedInspection =
+      this.#inspections.get(input.cwd)?.result ??
+      [...this.#inspections.values()][0]?.result;
+    const catalog =
+      cachedInspection && cachedInspection.status === "ready"
+        ? cachedInspection.catalog
+        : undefined;
+
     const session = new QoderSession({
       sessionId,
       cwd: input.cwd,
       environment,
       ...("model" in input && input.model ? { model: input.model } : {}),
       ...("permissionModeId" in input && input.permissionModeId ? { permissionModeId: input.permissionModeId } : {}),
+      ...("thinkingOptionId" in input && input.thinkingOptionId ? { thinkingOptionId: input.thinkingOptionId } : {}),
+      ...(catalog ? { catalog } : {}),
       ...(openResumeId ? { resume: openResumeId } : {}),
       queryFactory: this.#queryFactory,
       getSessionMessages: this.#getSessionMessages,

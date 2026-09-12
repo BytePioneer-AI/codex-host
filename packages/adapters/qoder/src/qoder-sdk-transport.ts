@@ -40,8 +40,10 @@ import {
   nativeSessionRefSchema,
   nativeTurnRefSchema,
   type HarnessId,
+  type HarnessModelCatalog,
   type HarnessModelRef,
   type HarnessPermissionModeId,
+  type HarnessThinkingOptionId,
   type HostInteractionId,
   type HostItemId,
   type HostTurnId,
@@ -60,7 +62,11 @@ import {
 import { mapQoderException, mapQoderResultError } from "./qoder-errors.js";
 import { qoderEnvironment } from "./qoder-command.js";
 import { mapQoderSnapshot } from "./qoder-history.js";
-import { decodeQoderModelRef, QODER_DEFAULT_MODEL_REF } from "./qoder-models.js";
+import {
+  decodeQoderModelRef,
+  QODER_DEFAULT_MODEL_REF,
+  qoderAvailableThinkingOptions,
+} from "./qoder-models.js";
 import { mapToQoderPermissionMode } from "./qoder-permission-modes.js";
 import type {
   CanUseToolContext,
@@ -147,6 +153,8 @@ export interface QoderSessionOptions {
   environment?: Record<string, string | undefined>;
   model?: HarnessModelRef;
   permissionModeId?: HarnessPermissionModeId;
+  thinkingOptionId?: HarnessThinkingOptionId;
+  catalog?: HarnessModelCatalog;
   resume?: string;
   queryFactory: QoderQueryFactory;
   getSessionMessages?: (
@@ -159,19 +167,7 @@ export interface QoderSessionOptions {
 
 export class QoderSession implements HarnessSession {
   readonly harnessId: HarnessId = harnessIdSchema.parse("qoder");
-  readonly capabilities: HarnessSessionCapabilities = {
-    configuration: {
-      selectModel: true,
-      selectThinkingOption: false,
-      selectPermissionMode: true,
-      permissionModeScope: "live",
-    },
-    history: {
-      fork: true,
-      forkAcrossCwd: false,
-      rollbackLastTurn: true,
-    },
-  };
+  readonly capabilities: HarnessSessionCapabilities;
   readonly initialState: HarnessSessionState;
   readonly initialUsage: HostUsage | null = null;
   readonly outputs: AsyncIterable<HarnessOutput>;
@@ -184,6 +180,7 @@ export class QoderSession implements HarnessSession {
   readonly #query: QoderQuery;
   readonly #sessionId: string;
   readonly #cwd: string;
+  readonly #catalog: HarnessModelCatalog | undefined;
   readonly #getSessionMessages: (
     sessionId: string,
     options?: GetSessionMessagesOptions,
@@ -199,6 +196,7 @@ export class QoderSession implements HarnessSession {
     this.outputs = this.#channel.outputs;
     this.#sessionId = options.sessionId;
     this.#cwd = options.cwd;
+    this.#catalog = options.catalog;
     this.#getSessionMessages = options.getSessionMessages ?? defaultGetSessionMessages;
     this.#onClosed = options.onClosed;
 
@@ -208,10 +206,53 @@ export class QoderSession implements HarnessSession {
       formatVersion: 1,
     });
 
+    const effectiveModel = options.model ?? QODER_DEFAULT_MODEL_REF;
+    const availableThinkingOptions = qoderAvailableThinkingOptions(options.catalog, effectiveModel);
+    let effectiveThinkingOptionId: HarnessThinkingOptionId | undefined;
+    if (options.thinkingOptionId) {
+      if (
+        !availableThinkingOptions ||
+        availableThinkingOptions.some((o) => o.id === options.thinkingOptionId)
+      ) {
+        effectiveThinkingOptionId = options.thinkingOptionId;
+      }
+    } else if (availableThinkingOptions && availableThinkingOptions.length > 0) {
+      if (
+        options.catalog?.defaultThinkingOptionId &&
+        availableThinkingOptions.some((o) => o.id === options.catalog?.defaultThinkingOptionId)
+      ) {
+        effectiveThinkingOptionId = options.catalog.defaultThinkingOptionId;
+      } else {
+        effectiveThinkingOptionId =
+          availableThinkingOptions.find((o) => o.id === "medium")?.id ??
+          availableThinkingOptions[0]?.id;
+      }
+    }
+
+    this.capabilities = {
+      configuration: {
+        selectModel: true,
+        selectThinkingOption: options.catalog
+          ? options.catalog.thinkingOptions.length > 0
+          : Boolean(effectiveThinkingOptionId || options.thinkingOptionId),
+        selectPermissionMode: true,
+        permissionModeScope: "live",
+      },
+      history: {
+        fork: true,
+        forkAcrossCwd: false,
+        rollbackLastTurn: true,
+      },
+    };
+
     this.#state = {
       nativeRef,
-      effectiveModel: options.model ?? QODER_DEFAULT_MODEL_REF,
+      effectiveModel,
       ...(options.permissionModeId ? { effectivePermissionModeId: options.permissionModeId } : {}),
+      ...(effectiveThinkingOptionId ? { effectiveThinkingOptionId } : {}),
+      ...(availableThinkingOptions && availableThinkingOptions.length > 0
+        ? { availableThinkingOptions }
+        : {}),
     };
     this.initialState = { ...this.#state };
 
@@ -221,6 +262,11 @@ export class QoderSession implements HarnessSession {
 
     const environment = qoderEnvironment(options.environment);
     const auth = environment.QODER_PERSONAL_ACCESS_TOKEN ? accessTokenFromEnv() : qodercliAuth();
+
+    const extraArgs: Record<string, string | null> = {};
+    if (effectiveThinkingOptionId) {
+      extraArgs["reasoning-effort"] = effectiveThinkingOptionId;
+    }
 
     const qoderOptions: QoderOptions = {
       cwd: options.cwd,
@@ -234,6 +280,7 @@ export class QoderSession implements HarnessSession {
       ...(permissionMode === "bypassPermissions" || permissionMode === "yolo"
         ? { allowDangerouslySkipPermissions: true }
         : {}),
+      ...(Object.keys(extraArgs).length > 0 ? { extraArgs } : {}),
       ...(options.resume ? { resume: options.resume } : {}),
       auth,
       includePartialMessages: true,
@@ -1348,7 +1395,38 @@ export class QoderSession implements HarnessSession {
           };
         }
 
-        if (this.#query.setModel) {
+        const availableThinkingOptions = this.#catalog
+          ? qoderAvailableThinkingOptions(this.#catalog, command.model)
+          : this.#state.availableThinkingOptions;
+
+        let effectiveThinkingOptionId = this.#state.effectiveThinkingOptionId;
+        if (availableThinkingOptions && availableThinkingOptions.length > 0) {
+          if (
+            !effectiveThinkingOptionId ||
+            !availableThinkingOptions.some((o) => o.id === effectiveThinkingOptionId)
+          ) {
+            effectiveThinkingOptionId =
+              availableThinkingOptions.find((o) => o.id === "medium")?.id ??
+              availableThinkingOptions[0]?.id;
+          }
+        } else {
+          effectiveThinkingOptionId = undefined;
+        }
+
+        if (typeof this.#query.request === "function") {
+          try {
+            await this.#query.request({
+              type: "set_model",
+              model: nativeModel,
+              ...(effectiveThinkingOptionId ? { reasoningEffort: effectiveThinkingOptionId } : {}),
+            });
+          } catch (err) {
+            return {
+              ok: false,
+              error: mapQoderException(err),
+            };
+          }
+        } else if (this.#query.setModel) {
           try {
             await this.#query.setModel(nativeModel);
           } catch (err) {
@@ -1359,12 +1437,21 @@ export class QoderSession implements HarnessSession {
           }
         }
 
-        this.#usageTracker.setModel(nativeModel);
-
-        this.#state = {
+        const nextState: HarnessSessionState = {
           ...this.#state,
           effectiveModel: command.model,
         };
+        if (effectiveThinkingOptionId) {
+          nextState.effectiveThinkingOptionId = effectiveThinkingOptionId;
+        } else {
+          delete nextState.effectiveThinkingOptionId;
+        }
+        if (availableThinkingOptions && availableThinkingOptions.length > 0) {
+          nextState.availableThinkingOptions = availableThinkingOptions;
+        } else {
+          delete nextState.availableThinkingOptions;
+        }
+        this.#state = nextState;
         this.#emitEvent({
           type: "session.state.changed",
           state: { ...this.#state },
@@ -1373,15 +1460,66 @@ export class QoderSession implements HarnessSession {
         return { ok: true, value: { completed: true } };
       }
 
-      case "thinking.select":
-        return {
-          ok: false,
-          error: {
-            code: "unsupported",
-            message: "Thinking option selection is not supported for Qoder",
-            retryable: false,
-          },
+      case "thinking.select": {
+        if (this.#activeTurn) {
+          return {
+            ok: false,
+            error: {
+              code: "sessionBusy",
+              message: "Cannot switch thinking option during active turn",
+              retryable: true,
+            },
+          };
+        }
+
+        const thinkingOptionId = command.thinkingOptionId;
+        if (this.#catalog) {
+          const available = qoderAvailableThinkingOptions(
+            this.#catalog,
+            this.#state.effectiveModel,
+          );
+          if (available && !available.some((o) => o.id === thinkingOptionId)) {
+            return {
+              ok: false,
+              error: {
+                code: "invalidRequest",
+                message: `Thinking option '${thinkingOptionId}' is not supported by current model`,
+                retryable: false,
+              },
+            };
+          }
+        }
+
+        const nativeModel = this.#state.effectiveModel
+          ? decodeQoderModelRef(this.#state.effectiveModel)
+          : undefined;
+
+        if (typeof this.#query.request === "function") {
+          try {
+            await this.#query.request({
+              type: "set_model",
+              ...(nativeModel ? { model: nativeModel } : {}),
+              reasoningEffort: thinkingOptionId,
+            });
+          } catch (err) {
+            return {
+              ok: false,
+              error: mapQoderException(err),
+            };
+          }
+        }
+
+        this.#state = {
+          ...this.#state,
+          effectiveThinkingOptionId: thinkingOptionId,
         };
+        this.#emitEvent({
+          type: "session.state.changed",
+          state: { ...this.#state },
+        });
+
+        return { ok: true, value: { completed: true } };
+      }
 
       case "permissionMode.select": {
         if (this.#activeTurn) {

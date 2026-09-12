@@ -3,6 +3,7 @@ import type { HarnessOutput } from "@codexhost/harness-adapter";
 import {
   harnessInspectionSchema,
   harnessPermissionModeIdSchema,
+  harnessThinkingOptionIdSchema,
   hostTurnIdSchema,
   jsonValueSchema,
   nativeCheckpointRefSchema,
@@ -22,6 +23,7 @@ import {
   decodeQoderModelRef,
   encodeQoderModelRef,
   parseQoderModelCatalog,
+  qoderAvailableThinkingOptions,
 } from "../src/qoder-models.js";
 import type {
   QoderModelInfo,
@@ -60,6 +62,7 @@ class FakeQoderQuery implements QoderQuery {
   }));
   readonly setModel = vi.fn(async () => undefined);
   readonly setPermissionMode = vi.fn(async () => undefined);
+  readonly request = vi.fn(async () => ({}));
 
   #closed = false;
   #messages: SDKMessage[] = [];
@@ -1204,6 +1207,58 @@ describe("QoderAdapter", () => {
       expect(catalogUndefined.defaultModel).toBeUndefined();
       expect(Object.hasOwn(catalogUndefined, "defaultModel")).toBe(false);
     });
+
+    it("parses thinking options and supported effort IDs for reasoning models", () => {
+      const catalog = parseQoderModelCatalog([
+        {
+          value: "claude-3-7-sonnet",
+          displayName: "Claude 3.7 Sonnet",
+          isReasoning: true,
+          efforts: ["low", "medium", "high", "max"],
+          defaultEffort: "high",
+          supportsDisabled: true,
+        },
+        {
+          value: "deepseek-r1",
+          displayName: "DeepSeek R1",
+          thinking_config: {
+            enabled: {
+              efforts: {
+                low: {},
+                medium: { is_default: true },
+              },
+            },
+            disabled: {},
+          },
+        },
+        {
+          value: "gpt-4o",
+          displayName: "GPT-4o",
+        },
+      ]);
+
+      expect(catalog.models.length).toBe(3);
+      expect(catalog.thinkingOptions).toEqual([
+        { id: "off", label: "Off" },
+        { id: "low", label: "Low" },
+        { id: "medium", label: "Medium" },
+        { id: "high", label: "High" },
+        { id: "max", label: "Max" },
+      ]);
+      expect(catalog.defaultThinkingOptionId).toBe("high");
+
+      const claude = catalog.models.find((m) => decodeQoderModelRef(m.ref) === "claude-3-7-sonnet");
+      expect(claude?.supportedThinkingOptionIds).toEqual(["off", "low", "medium", "high", "max"]);
+
+      const r1 = catalog.models.find((m) => decodeQoderModelRef(m.ref) === "deepseek-r1");
+      expect(r1?.supportedThinkingOptionIds).toEqual(["off", "low", "medium"]);
+
+      const gpt4o = catalog.models.find((m) => decodeQoderModelRef(m.ref) === "gpt-4o");
+      expect(gpt4o?.supportedThinkingOptionIds).toBeUndefined();
+
+      expect(qoderAvailableThinkingOptions(catalog, claude?.ref)).toHaveLength(5);
+      expect(qoderAvailableThinkingOptions(catalog, gpt4o?.ref)).toBeUndefined();
+    });
   });
 
   describe("Session configuration forwarding", () => {
@@ -1261,6 +1316,125 @@ describe("QoderAdapter", () => {
       if (!resumeRes.ok) return;
       expect(capturedOptions?.resume).toBe("session-resume-abc");
       await resumeRes.value.close();
+      await adapter.close();
+    });
+
+    it("forwards thinkingOptionId to SDK extraArgs and session state", async () => {
+      let capturedOptions: QoderOptions | undefined;
+      const fakeQuery = new FakeQoderQuery();
+      fakeQuery.getAvailableModels.mockResolvedValueOnce([
+        {
+          value: "qoder-reasoning",
+          displayName: "Qoder Reasoning",
+          description: "Reasoning model",
+          isReasoning: true,
+          efforts: ["low", "medium", "high"],
+          defaultEffort: "medium",
+        },
+      ]);
+      const adapter = new QoderAdapter({
+        resolveExecutable: () => "D:/tools/qodercli.exe",
+        queryFactory: (input) => {
+          capturedOptions = input.options;
+          return fakeQuery;
+        },
+      });
+
+      const inspection = await adapter.inspect({ cwd: "D:/project" });
+      expect(inspection.status).toBe("ready");
+      if (inspection.status !== "ready") return;
+      expect(inspection.capabilities.configuration.selectThinkingOption).toBe(true);
+      expect(inspection.catalog.thinkingOptions).toHaveLength(3);
+
+      const opened = await adapter.open({
+        kind: "create",
+        cwd: "D:/project",
+        model: encodeQoderModelRef("qoder-reasoning"),
+        thinkingOptionId: harnessThinkingOptionIdSchema.parse("high"),
+      });
+
+      expect(opened.ok).toBe(true);
+      if (!opened.ok) return;
+
+      expect(capturedOptions?.extraArgs).toEqual({ "reasoning-effort": "high" });
+      expect(opened.value.initialState.effectiveThinkingOptionId).toBe("high");
+      expect(opened.value.initialState.availableThinkingOptions).toEqual([
+        { id: "low", label: "Low" },
+        { id: "medium", label: "Medium" },
+        { id: "high", label: "High" },
+      ]);
+      expect(opened.value.capabilities.configuration.selectThinkingOption).toBe(true);
+
+      const selectResult = await opened.value.execute({
+        type: "thinking.select",
+        thinkingOptionId: harnessThinkingOptionIdSchema.parse("low"),
+      });
+      expect(selectResult.ok).toBe(true);
+      expect(fakeQuery.request).toHaveBeenCalledWith({
+        type: "set_model",
+        model: "qoder-reasoning",
+        reasoningEffort: "low",
+      });
+
+      await opened.value.close();
+      await adapter.close();
+    });
+
+    it("re-evaluates thinking options on model.select", async () => {
+      const fakeQuery = new FakeQoderQuery();
+      fakeQuery.getAvailableModels.mockResolvedValueOnce([
+        {
+          value: "reasoning-model",
+          displayName: "Reasoning Model",
+          description: "Reasoning model",
+          isReasoning: true,
+          efforts: ["medium", "high"],
+        },
+        {
+          value: "standard-model",
+          displayName: "Standard Model",
+          description: "Standard model",
+        },
+      ]);
+      const adapter = new QoderAdapter({
+        resolveExecutable: () => "D:/tools/qodercli.exe",
+        queryFactory: () => fakeQuery,
+      });
+
+      await adapter.inspect({ cwd: "D:/project" });
+
+      const opened = await adapter.open({
+        kind: "create",
+        cwd: "D:/project",
+        model: encodeQoderModelRef("reasoning-model"),
+      });
+      expect(opened.ok).toBe(true);
+      if (!opened.ok) return;
+
+      expect(opened.value.initialState.effectiveThinkingOptionId).toBe("medium");
+
+      const selectStandard = await opened.value.execute({
+        type: "model.select",
+        model: encodeQoderModelRef("standard-model"),
+      });
+      expect(selectStandard.ok).toBe(true);
+      expect(fakeQuery.request).toHaveBeenCalledWith({
+        type: "set_model",
+        model: "standard-model",
+      });
+
+      const selectReasoning = await opened.value.execute({
+        type: "model.select",
+        model: encodeQoderModelRef("reasoning-model"),
+      });
+      expect(selectReasoning.ok).toBe(true);
+      expect(fakeQuery.request).toHaveBeenCalledWith({
+        type: "set_model",
+        model: "reasoning-model",
+        reasoningEffort: "medium",
+      });
+
+      await opened.value.close();
       await adapter.close();
     });
   });

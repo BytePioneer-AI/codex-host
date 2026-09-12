@@ -1798,6 +1798,87 @@ describe("AppServerHost HarnessAdapter projection", () => {
     await stopFixture(fixture);
   });
 
+  it("keeps a Subagent Thread active when it is opened while its Subagent runs", async () => {
+    const base = new FakeHarnessAdapter(harnessIdSchema.parse("pi"));
+    const adapter = Object.assign(base, {
+      subagents: {
+        readSnapshot: vi.fn(async (input: { parent: { nativeSessionId: string } }) => ({
+          ok: true as const,
+          value: {
+            turns: [
+              {
+                nativeTurnRef: {
+                  harnessId: harnessIdSchema.parse("pi"),
+                  nativeSessionId: input.parent.nativeSessionId,
+                  nativeTurnKey: "open-while-running-turn",
+                  formatVersion: 1,
+                },
+                input: [{ type: "text", text: "Inspect files" }],
+                items: [],
+                outcome: { status: "unknown" as const, reason: "Background work" },
+              },
+            ],
+          },
+        })),
+      },
+    });
+    const fixture = createFixture({
+      externalAdapters: new Map([["pi", adapter]]) as ReadonlyMap<
+        ExternalHarnessId,
+        FakeHarnessAdapter
+      >,
+    });
+    const threadId = await startPiThread(fixture);
+    const turnId = await startPiTurn(fixture, threadId);
+    const session = adapter.sessions[0];
+    if (!session) throw new Error("Fake Session was not opened");
+    await fixture.collector.waitFor((message) => turnEvent(message, "turn/started", turnId));
+    const childStartedPromise = fixture.collector.waitFor(
+      (message) =>
+        method(message, "thread/started") &&
+        (messageParams(message).thread as JsonObject | undefined)?.parentThreadId === threadId,
+    );
+    session.startSubagentDelegation({
+      subagentId: "open-while-running-call",
+      nativeSubagentId: "native-open-while-running",
+      description: "Inspect files",
+      background: true,
+      status: "running",
+    });
+    const childStarted = await childStartedPromise;
+    const childThread = messageParams(childStarted).thread as JsonObject;
+    const childThreadId = childThread.id as string;
+    expect(childThread.status).toEqual({ type: "active", activeFlags: [] });
+
+    writeRequest(fixture.desktopInput, {
+      id: 96,
+      method: "thread/resume",
+      params: { threadId: childThreadId, excludeTurns: true },
+    });
+    const opened = await fixture.collector.waitFor((message) => requestId(message, 96));
+    expect((opened.result as JsonObject).thread).toEqual(
+      expect.objectContaining({ id: childThreadId, status: { type: "active", activeFlags: [] } }),
+    );
+    expect(
+      fixture.collector.messages.some((message) => threadStatus(message, childThreadId, "idle")),
+    ).toBe(false);
+
+    session.emitSubagentState("native-open-while-running", "completed", "Inspection complete");
+    await expect(
+      fixture.collector.waitFor((message) => threadStatus(message, childThreadId, "idle")),
+    ).resolves.toBeTruthy();
+    writeRequest(fixture.desktopInput, {
+      id: 97,
+      method: "thread/resume",
+      params: { threadId: childThreadId, excludeTurns: true },
+    });
+    const reopened = await fixture.collector.waitFor((message) => requestId(message, 97));
+    expect((reopened.result as JsonObject).thread).toEqual(
+      expect.objectContaining({ id: childThreadId, status: { type: "idle" } }),
+    );
+    await stopFixture(fixture);
+  });
+
   it("terminates the official app-server when its Host session closes", async () => {
     const fixture = createFixture();
     fixture.official.kill.mockImplementationOnce(() => {

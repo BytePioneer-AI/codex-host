@@ -82,9 +82,24 @@ async function requestRuntime(input: {
   const endpoint = input.environment[DELEGATION_RUNTIME_ENDPOINT_ENV];
   const token = input.environment[DELEGATION_RUNTIME_TOKEN_ENV];
   if (!endpoint || !token) {
+    const missingEnvironmentVariables = [
+      ...(!endpoint ? [DELEGATION_RUNTIME_ENDPOINT_ENV] : []),
+      ...(!token ? [DELEGATION_RUNTIME_TOKEN_ENV] : []),
+    ];
     throw new DelegationControlError(
       "RUNTIME_UNREACHABLE",
-      `${DELEGATION_RUNTIME_ENDPOINT_ENV} and ${DELEGATION_RUNTIME_TOKEN_ENV} are required`,
+      `${missingEnvironmentVariables.join(" and ")} ${missingEnvironmentVariables.length === 1 ? "is" : "are"} required. If this command runs inside native Codex, shell_environment_policy may have filtered the Host-provided CODEXHOST_* variables. Prefer inherit = "all" with ignore_default_excludes = true and a narrow include_only allowlist that contains "CODEXHOST_RUNTIME_ENDPOINT" and "CODEXHOST_RUNTIME_TOKEN" plus the variables required by the platform and invoked tools; do not use unconstrained inherit = "all".`,
+      {
+        reason: "missing_runtime_environment",
+        missingEnvironmentVariables,
+        nativeCodexRecovery: {
+          recommendedPolicy: {
+            inherit: "all",
+            ignoreDefaultExcludes: true,
+            includeOnlyMustContain: [DELEGATION_RUNTIME_ENDPOINT_ENV, DELEGATION_RUNTIME_TOKEN_ENV],
+          },
+        },
+      },
     );
   }
   let response: Response;

@@ -1,0 +1,46 @@
+name: Feature request / 功能建议
+description: 描述真实使用场景和期望能力，不必先设计实现。
+title: "[Feature] "
+labels: [enhancement]
+body:
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Other / Unknown
+        - Desktop / Renderer
+        - Harness Adapter
+        - Thread / History
+        - Accounts / Usage
+        - Install / Update
+        - Remote
+        - Documentation
+    validations:
+      required: true
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: 希望增加或改进什么？
+    validations:
+      required: true
+  - type: textarea
+    id: use-case
+    attributes:
+      label: Use case
+      description: 谁在什么场景下遇到限制？当前如何解决？
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: 期望的用户可见行为。涉及 Harness 时，请说明其原生能力或文档依据，不要把 Model 当作 Harness。
+    validations:
+      required: true
+  - type: input
+    id: related
+    attributes:
+      label: Related issues
+      description: 可填写已有 Issue／PR 链接，或“无”。

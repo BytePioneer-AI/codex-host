@@ -1,5 +1,3 @@
-import { randomUUID } from "node:crypto";
-
 import { deepSeekHarnessCommandCatalog } from "./harness-commands.js";
 
 import type {
@@ -24,17 +22,11 @@ import {
 import {
   DeepSeekGenerationProbeError,
   hasDeepSeekModernAuthenticationFingerprint,
-  parseDeepSeekLegacyEndpoint,
+  parseDeepSeekEndpoint,
   probeDeepSeekExecutableGeneration,
   type DeepSeekExecutableGeneration,
   type ProbeDeepSeekGenerationOptions,
 } from "./generation-selector.js";
-import {
-  DeepSeekHarnessAdapter as LegacyDeepSeekHarnessAdapter,
-  type DeepSeekHarnessAdapterDependencies as LegacyAdapterDependencies,
-  type DeepSeekHarnessAdapterOptions as LegacyAdapterOptions,
-} from "./legacy/deepseek-harness-adapter.js";
-import { DeepSeekHarnessTransportError, DeepSeekHostConnection } from "./legacy/host-client.js";
 import {
   ModernDeepSeekHarnessAdapter,
   type ModernDeepSeekHarnessAdapterOptions,
@@ -49,19 +41,15 @@ export interface DeepSeekHarnessAdapterOptions {
   readonly endpoint?: string;
   readonly environment?: NodeJS.ProcessEnv;
   readonly startupTimeoutMs?: number;
-  readonly commandTimeoutMs?: number;
   readonly closeTimeoutMs?: number;
   readonly toolOutputLimit?: number;
   readonly openWebUi?: (url: URL) => Promise<void>;
 }
 
 export interface DeepSeekHarnessAdapterDependencies {
-  readonly randomUUID?: LegacyAdapterDependencies["randomUUID"];
-  readonly createConnection?: LegacyAdapterDependencies["createConnection"];
   readonly probeExecutable?: (
     options: ProbeDeepSeekGenerationOptions,
   ) => Promise<DeepSeekExecutableGeneration>;
-  readonly createLegacyAdapter?: (options: LegacyAdapterOptions) => HarnessAdapter;
   readonly createModernAdapter?: (
     options: ModernDeepSeekHarnessAdapterOptions,
   ) => ModernDelegateAdapter;
@@ -72,8 +60,8 @@ interface ModernDelegateAdapter extends HarnessAdapter {
 }
 
 interface DelegateOwner {
-  readonly adapter: HarnessAdapter;
-  readonly generation: "legacy" | "modern";
+  readonly adapter: ModernDelegateAdapter;
+  readonly version: DeepSeekExecutableGeneration["version"];
   inspection: HarnessInspection;
   closePromise?: Promise<void>;
 }
@@ -90,7 +78,7 @@ class DelegateSelectionError extends Error {
   }
 }
 
-/** Public DeepSeek Adapter that selects one exact DSH protocol generation for its lifetime. */
+/** Public DeepSeek Adapter that verifies one supported DSH version for its lifetime. */
 export class DeepSeekHarnessAdapter implements HarnessAdapter {
   readonly commandCatalog = deepSeekHarnessCommandCatalog();
   readonly harnessId: HarnessId = DEEPSEEK_HARNESS_ID;
@@ -119,6 +107,9 @@ export class DeepSeekHarnessAdapter implements HarnessAdapter {
             harnessId: this.harnessId,
             nativeSessionId,
             formatVersion: 1,
+            ...(this.#delegate?.version === "0.1.5-rc.1"
+              ? { locator: { dshVersion: "0.1.5-rc.1" } }
+              : {}),
           }),
         },
       };
@@ -131,11 +122,9 @@ export class DeepSeekHarnessAdapter implements HarnessAdapter {
   readonly #probeExecutable: (
     options: ProbeDeepSeekGenerationOptions,
   ) => Promise<DeepSeekExecutableGeneration>;
-  readonly #createLegacyAdapter: (options: LegacyAdapterOptions) => HarnessAdapter;
   readonly #createModernAdapter: (
     options: ModernDeepSeekHarnessAdapterOptions,
   ) => ModernDelegateAdapter;
-  readonly #randomUUID: NonNullable<DeepSeekHarnessAdapterDependencies["randomUUID"]>;
   #candidate: DelegateOwner | undefined;
   #cleanupFailedDuringClose = false;
   #closePromise: Promise<void> | undefined;
@@ -150,18 +139,8 @@ export class DeepSeekHarnessAdapter implements HarnessAdapter {
     dependencies: DeepSeekHarnessAdapterDependencies = {},
   ) {
     this.#options = options;
-    this.#randomUUID = dependencies.randomUUID ?? randomUUID;
     this.#probeExecutable =
       dependencies.probeExecutable ?? ((input) => probeDeepSeekExecutableGeneration(input));
-    const legacyDependencies: LegacyAdapterDependencies = {
-      randomUUID: this.#randomUUID,
-      createConnection:
-        dependencies.createConnection ??
-        ((connectionOptions) => new DeepSeekHostConnection(connectionOptions)),
-    };
-    this.#createLegacyAdapter =
-      dependencies.createLegacyAdapter ??
-      ((legacyOptions) => new LegacyDeepSeekHarnessAdapter(legacyOptions, legacyDependencies));
     this.#createModernAdapter =
       dependencies.createModernAdapter ??
       ((modernOptions) => new ModernDeepSeekHarnessAdapter(modernOptions));
@@ -202,17 +181,7 @@ export class DeepSeekHarnessAdapter implements HarnessAdapter {
     try {
       const selected = await this.#select(false);
       if (this.#closed) return { ok: false, error: closedError() };
-      if (selected.generation !== "modern") {
-        return {
-          ok: false,
-          error: {
-            code: "unsupported",
-            message: "DeepSeek Harness Session import requires the Modern protocol",
-            retryable: false,
-          },
-        };
-      }
-      return (selected.adapter as ModernDelegateAdapter).sessionImport.listCandidates();
+      return selected.adapter.sessionImport.listCandidates();
     } catch (error) {
       return { ok: false, error: this.#selectionError(error) };
     }
@@ -273,7 +242,7 @@ export class DeepSeekHarnessAdapter implements HarnessAdapter {
     const startedAt = Date.now();
     let endpoint: string;
     try {
-      endpoint = parseDeepSeekLegacyEndpoint(this.#options.endpoint);
+      endpoint = parseDeepSeekEndpoint(this.#options.endpoint);
     } catch (error) {
       throw new DelegateSelectionError(
         this.#withSelectionDiagnostics(error, "wire-handshake", startedAt),
@@ -311,28 +280,17 @@ export class DeepSeekHarnessAdapter implements HarnessAdapter {
       throw new DelegateSelectionError(executableFailure);
     }
 
-    try {
-      return await this.#legacyCandidate(endpoint, true, undefined, signal);
-    } catch (error) {
-      let endpointFailure = this.#withSelectionDiagnostics(error, "wire-handshake", startedAt);
-      if (
-        endpointFailure.code === "authenticationRequired" &&
-        (await hasDeepSeekModernAuthenticationFingerprint(endpoint, signal))
-      ) {
-        endpointFailure = {
-          ...endpointFailure,
-          message: EXTERNAL_MODERN_WEB_MESSAGE,
-          retryable: false,
-          diagnostic: "externalModernWeb",
-        };
-      }
-      endpointFailure = {
-        ...endpointFailure,
-        ...(endpointFailure.code === "authenticationRequired" ? { stage: "wire-handshake" } : {}),
+    if (await hasDeepSeekModernAuthenticationFingerprint(endpoint, signal)) {
+      throw new DelegateSelectionError({
+        code: "authenticationRequired",
+        message: EXTERNAL_MODERN_WEB_MESSAGE,
+        retryable: false,
+        diagnostic: "externalModernWeb",
+        stage: "wire-handshake",
         durationMs: Math.max(0, Date.now() - startedAt),
-      };
-      if (endpointFailure.code !== "unavailable") throw new DelegateSelectionError(endpointFailure);
+      });
     }
+    if (signal.aborted) throw new DelegateSelectionError(closedError());
 
     if (!executable) {
       throw new DelegateSelectionError(
@@ -347,53 +305,10 @@ export class DeepSeekHarnessAdapter implements HarnessAdapter {
             },
       );
     }
-    if (executable.generation === "legacy") {
-      try {
-        return await this.#legacyCandidate(endpoint, false, executable, signal);
-      } catch (error) {
-        throw new DelegateSelectionError(
-          this.#withSelectionDiagnostics(error, "wire-handshake", startedAt),
-        );
-      }
-    }
     try {
       return await this.#modernCandidate(executable, signal);
     } catch (error) {
       throw new DelegateSelectionError(this.#withSelectionDiagnostics(error, "startup", startedAt));
-    }
-  }
-
-  async #legacyCandidate(
-    endpoint: string,
-    attachOnly: boolean,
-    executable: DeepSeekExecutableGeneration | undefined,
-    signal: AbortSignal,
-  ): Promise<DelegateOwner> {
-    const options: LegacyAdapterOptions = {
-      ...legacyOptions(this.#options),
-      endpoint,
-      attachOnly,
-      ...(executable ? { commandInvocation: executable.command } : {}),
-    };
-    const adapter = this.#createLegacyAdapter(options);
-    const owner: DelegateOwner = {
-      adapter,
-      generation: "legacy",
-      inspection: unavailableInspection("DeepSeek Harness Legacy selection is incomplete"),
-    };
-    this.#candidate = owner;
-    try {
-      const inspection = await raceWithAbort(adapter.inspect(), signal, () =>
-        this.#closeOwner(owner),
-      );
-      if (inspection.status !== "ready") {
-        throw new DelegateSelectionError(normalizeInspectionError(inspection.error));
-      }
-      owner.inspection = inspection;
-      return owner;
-    } catch (error) {
-      await this.#closeFailedCandidate(owner);
-      throw error;
     }
   }
 
@@ -403,12 +318,13 @@ export class DeepSeekHarnessAdapter implements HarnessAdapter {
   ): Promise<DelegateOwner> {
     const adapter = this.#createModernAdapter({
       ...modernOptions(this.#options),
+      version: executable.version,
       command: executable.command.command,
       commandArguments: executable.command.arguments,
     });
     const owner: DelegateOwner = {
       adapter,
-      generation: "modern",
+      version: executable.version,
       inspection: unavailableInspection("DeepSeek Harness Modern selection is incomplete"),
     };
     this.#candidate = owner;
@@ -496,14 +412,6 @@ export class DeepSeekHarnessAdapter implements HarnessAdapter {
         ...(error.stderrTail ? { stderrTail: error.stderrTail } : {}),
       };
     }
-    if (error instanceof DeepSeekHarnessTransportError) {
-      return {
-        code: error.code === "cancelled" ? "unavailable" : error.code,
-        message: error.message,
-        retryable: error.code === "unavailable" || error.code === "processExited",
-        ...(error.nativeCode ? { diagnostic: error.nativeCode } : {}),
-      };
-    }
     return {
       code: "internalError",
       message: "DeepSeek Harness generation selection failed",
@@ -546,24 +454,9 @@ async function raceWithAbort<T>(
   }
 }
 
-function legacyOptions(options: DeepSeekHarnessAdapterOptions): LegacyAdapterOptions {
-  return {
-    ...(options.command ? { command: options.command } : {}),
-    ...(options.environment ? { environment: options.environment } : {}),
-    ...(options.startupTimeoutMs === undefined
-      ? {}
-      : { startupTimeoutMs: options.startupTimeoutMs }),
-    ...(options.commandTimeoutMs === undefined
-      ? {}
-      : { commandTimeoutMs: options.commandTimeoutMs }),
-    ...(options.closeTimeoutMs === undefined ? {} : { closeTimeoutMs: options.closeTimeoutMs }),
-    ...(options.toolOutputLimit === undefined ? {} : { toolOutputLimit: options.toolOutputLimit }),
-  };
-}
-
 function modernOptions(
   options: DeepSeekHarnessAdapterOptions,
-): Omit<ModernDeepSeekHarnessAdapterOptions, "command" | "commandArguments"> {
+): Omit<ModernDeepSeekHarnessAdapterOptions, "command" | "commandArguments" | "version"> {
   return {
     ...(options.environment ? { environment: options.environment } : {}),
     ...(options.startupTimeoutMs === undefined
@@ -621,5 +514,3 @@ function closedError(): HarnessError {
     retryable: false,
   };
 }
-
-export type { DeepSeekHostConnectionLike } from "./legacy/deepseek-harness-adapter.js";

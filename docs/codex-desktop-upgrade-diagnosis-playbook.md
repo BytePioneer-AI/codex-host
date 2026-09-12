@@ -10,6 +10,7 @@
 相关兼容性债务记录见：
 
 - `docs/archive/codex-desktop-incidents/26.814-compatibility-debt.md`
+- `docs/archive/codex-desktop-incidents/26.908-request-manager-wrapper.md`（Fiber hook 把 Request Manager 包进 `{ hostId, manager, status }` 后，连接检查全部失败）
 
 ## 一、先建立分层模型
 
@@ -215,6 +216,16 @@ inner bridge
   - prewarmThreadStart
   - enqueueRequest: 原型方法
 ```
+
+从 Codex Desktop `26.908.40834` 起，上述 outer manager 不一定等于 `hook.memoizedState`。现场见到的包装是：
+
+```text
+hook.memoizedState = { hostId, manager: outer manager, status }
+```
+
+查找必须先按现有 API 形状检查 hook state，再检查 `.manager`。包装对象本身不是 Request Manager；匹配 0 个时不要直接当成 Desktop 删掉了 bridge。
+
+同一版本里，Composer draft 身份也可能从七槽 atom 变成更长 memo 元组里重复的 `client-new-thread:` 字符串。只认旧七槽时会出现 Agent 能选、但模型/权限显示不可用。详见 `docs/archive/codex-desktop-incidents/26.908-request-manager-wrapper.md`。
 
 注意两点：
 

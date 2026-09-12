@@ -259,8 +259,8 @@ export function permissionDeniedTurnError(nativeMode: string | null, denial: str
     code: "nativeFailure",
     message:
       `Antigravity denied a tool call under its${mode} permission mode and produced no response. ` +
-      "Headless Antigravity evaluates its own permission rules and cannot ask for approval; " +
-      "retry with the Skip permissions Permission Mode.",
+      "codexhost uses native Skip permissions and does not enforce tool permissions. " +
+      "Check Antigravity CLI diagnostics and native Hooks for the denial; Desktop approvals and Configured permissions are not supported.",
     retryable: false,
     diagnostic: sanitizeDiagnosticTail(denial),
   };
@@ -414,19 +414,25 @@ function hostUsage(value: AntigravityUsage | undefined, modelId?: string): HostU
   return Object.keys(usage).length > 0 ? usage : null;
 }
 
-function normalizedProcessError(stderr: string, fallback: string): HarnessError {
-  // stderr can echo the invoked command line, so redact before it is surfaced.
-  const diagnostic = sanitizeDiagnosticTail(stderr.trim());
-  if (/sign[ -]?in|authenticat|credential|login/iu.test(diagnostic)) {
+function normalizedProcessError(
+  detail: string,
+  fallback: string,
+  exposeDetail = false,
+): HarnessError {
+  const nativeDetail = detail.trim();
+  // stderr can echo the invoked command line, so retain its existing redacted
+  // diagnostic tail. A structured result.error is shown verbatim below.
+  const diagnostic = sanitizeDiagnosticTail(nativeDetail);
+  if (/sign[ -]?in|authenticat|credential|login/iu.test(nativeDetail)) {
     return {
       code: "authenticationRequired",
-      message: diagnostic || fallback,
+      message: exposeDetail ? nativeDetail || fallback : diagnostic || fallback,
       retryable: false,
     };
   }
   return {
     code: "nativeFailure",
-    message: fallback,
+    message: exposeDetail && nativeDetail ? `${fallback}: ${nativeDetail}` : fallback,
     retryable: true,
     ...(diagnostic ? { stderrTail: diagnostic.slice(-4_000) } : {}),
   };
@@ -628,11 +634,6 @@ class AntigravitySession implements HarnessSession {
 
     let questions: AntigravityQuestionBridge;
     this.#preparingQuestions = AntigravityQuestionBridge.create({
-      approvals: this.#permissionMode === "desktop-approvals",
-      ownsApprovalSession: (id) =>
-        this.#active?.command === command &&
-        !this.#active.cancellationRequested &&
-        this.#active.subagents.state(id) !== undefined,
       turnId: command.turnId,
       nativeSessionId: () =>
         this.#active?.command === command && !this.#active.cancellationRequested
@@ -655,31 +656,6 @@ class AntigravitySession implements HarnessSession {
         }
         this.#channel.emit(output);
       },
-    }).then(async (bridge) => {
-      if (this.#permissionMode !== "desktop-approvals") return bridge;
-      try {
-        const { stdout } = await runBuffered(
-          this.#executable,
-          [
-            "--add-dir",
-            this.#cwd,
-            "--add-dir",
-            bridge.directory,
-            "--print=/hooks",
-            "--output-format",
-            "stream-json",
-          ],
-          this.#cwd,
-          { ...this.#environment, ...bridge.environment },
-          DEFAULT_INSPECT_TIMEOUT_MS,
-        );
-        if (!bridge.verifyApprovalHooks(stdout))
-          throw new Error("Desktop approval Hook was not loaded");
-        return bridge;
-      } catch {
-        await bridge.dispose();
-        throw new Error("Desktop approval Hook verification failed; no tools were started");
-      }
     });
     try {
       questions = await this.#preparingQuestions;
@@ -711,12 +687,7 @@ class AntigravitySession implements HarnessSession {
     ];
     if (this.#nativeRef) arguments_.unshift("--conversation", this.#nativeRef.nativeSessionId);
     arguments_.push(...antigravityModelArguments(this.#model, this.#thinkingOptionId));
-    if (
-      this.#permissionMode === "dangerously-skip-permissions" ||
-      this.#permissionMode === "desktop-approvals"
-    ) {
-      arguments_.push("--dangerously-skip-permissions");
-    }
+    arguments_.push("--dangerously-skip-permissions");
     arguments_.push("--add-dir", this.#cwd);
     arguments_.push("--add-dir", questions.directory);
     arguments_.push("--log-file", logPath);
@@ -986,7 +957,8 @@ class AntigravitySession implements HarnessSession {
         this.#completeTurn(active, { status: "succeeded", checkpoint }, nativeTurnRef);
       }
     } else {
-      const errorDetail = event.result.error?.trim() || active.stderr;
+      const nativeError = event.result.error?.trim();
+      const errorDetail = nativeError || active.stderr;
       this.#completeTurn(
         active,
         {
@@ -994,6 +966,7 @@ class AntigravitySession implements HarnessSession {
           error: normalizedProcessError(
             errorDetail,
             `Antigravity Turn ended with status ${event.result.status}`,
+            nativeError !== undefined,
           ),
           checkpoint,
         },
@@ -1614,6 +1587,17 @@ export class AntigravityAdapter implements HarnessAdapter {
 
   async open(input: OpenSessionInput): Promise<HarnessResult<HarnessSession>> {
     if (this.#closed) return { ok: false, error: invalidState("Antigravity Adapter is closed") };
+    let permissionMode: AntigravityPermissionMode = "dangerously-skip-permissions";
+    if (input.kind !== "fork" && input.permissionModeId) {
+      try {
+        permissionMode = decodeAntigravityPermissionModeId(input.permissionModeId);
+      } catch (error) {
+        return {
+          ok: false,
+          error: { code: "invalidRequest", message: errorMessage(error), retryable: false },
+        };
+      }
+    }
     if (!input.cwd) {
       return {
         ok: false,
@@ -1728,17 +1712,6 @@ export class AntigravityAdapter implements HarnessAdapter {
             message: "Antigravity cannot resume another Harness Session",
             retryable: false,
           },
-        };
-      }
-    }
-    let permissionMode: AntigravityPermissionMode = "configured";
-    if (input.kind === "create" && input.permissionModeId) {
-      try {
-        permissionMode = decodeAntigravityPermissionModeId(input.permissionModeId);
-      } catch (error) {
-        return {
-          ok: false,
-          error: { code: "invalidRequest", message: errorMessage(error), retryable: false },
         };
       }
     }

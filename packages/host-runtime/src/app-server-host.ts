@@ -2281,6 +2281,8 @@ export class AppServerHost {
         records,
         runtimeFor: (threadId) => {
           const thread = this.#externalRuntime.get(threadId);
+          const subagentStatus = this.#subagentThreadStatuses.get(threadId);
+          if (subagentStatus) return { running: subagentStatus === "active" };
           return thread ? { running: thread.running } : null;
         },
         requestOfficialPage: (params) =>
@@ -3975,7 +3977,9 @@ export class AppServerHost {
       const record = (await this.#repository.list()).find(
         (candidate) =>
           candidate.subagent?.parentHostThreadId === thread.id &&
-          candidate.subagent.nativeSubagentId === nativeSubagentId,
+          candidate.subagent.nativeSubagentId === nativeSubagentId &&
+          candidate.nativeSessionRef?.nativeSessionId ===
+            thread.record.nativeSessionRef?.nativeSessionId,
       );
       if (record) await this.#refreshOpenSubagentThread(record.hostThreadId, false);
       return;
@@ -3985,7 +3989,9 @@ export class AppServerHost {
       const record = (await this.#repository.list()).find(
         (candidate) =>
           candidate.subagent?.parentHostThreadId === thread.id &&
-          candidate.subagent.nativeSubagentId === nativeSubagentId,
+          candidate.subagent.nativeSubagentId === nativeSubagentId &&
+          candidate.nativeSessionRef?.nativeSessionId ===
+            thread.record.nativeSessionRef?.nativeSessionId,
       );
       if (!record) return;
       const status = event.status === "pending" || event.status === "running" ? "active" : "idle";
@@ -4107,35 +4113,13 @@ export class AppServerHost {
     if (!subagent.nativeSubagentId || !parent.record.nativeSessionRef) return subagent;
     const status =
       subagent.status === "pending" || subagent.status === "running" ? "active" : "idle";
-    const records = await this.#repository.list();
-    const existing = records.find(
-      (record) =>
-        record.subagent?.parentHostThreadId === parent.id &&
-        record.subagent.nativeSubagentId === subagent.nativeSubagentId,
-    );
-    if (existing) {
-      this.#trackRunningSubagent(parent.id, existing.hostThreadId, status);
-      await this.#setSubagentThreadStatus(existing.hostThreadId, status);
-      return { ...subagent, subagentId: existing.hostThreadId };
+    const record = await this.#repository.materializeSubagent(parent.record, subagent);
+    if (!record) return subagent;
+    if (this.#subagentThreadStatuses.has(record.hostThreadId)) {
+      this.#trackRunningSubagent(parent.id, record.hostThreadId, status);
+      await this.#setSubagentThreadStatus(record.hostThreadId, status);
+      return { ...subagent, subagentId: record.hostThreadId };
     }
-    const recordInput = createExternalThreadRecordInput({
-      harnessId: parent.record.harnessId,
-      cwd: parent.cwd,
-      title: subagent.description,
-      transportModelId: parent.transportModelId,
-      ephemeral: false,
-      historyMode: "paginated",
-      subagent: {
-        parentHostThreadId: parent.id,
-        nativeSubagentId: subagent.nativeSubagentId,
-        ...(subagent.role ? { role: subagent.role } : {}),
-      },
-    });
-    let record = await this.#repository.createProvisional(recordInput);
-    record = await this.#repository.commitNative(
-      record.hostThreadId,
-      parent.record.nativeSessionRef,
-    );
     const thread = externalThreadValue({
       record,
       turns: [],

@@ -121,7 +121,7 @@ export async function rollbackAntigravityLastTurn(
 
   const model = sourceSession?.model ?? sourceHistory.model;
   const thinkingOptionId = sourceSession?.thinkingOptionId ?? sourceHistory.thinkingOptionId;
-  const permissionMode = sourceSession?.permissionMode ?? "configured";
+  const permissionMode = sourceSession?.permissionMode ?? "dangerously-skip-permissions";
 
   const rolledBackHistory = await AntigravityHistory.createDerived({
     environment: sessionEnvironment,

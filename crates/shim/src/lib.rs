@@ -185,6 +185,16 @@ fn wait_for_child(
             process_tree_refresh_due(last_process_tree_refresh, now, root_status.is_some());
         let has_live_processes = if refresh_process_tree {
             let has_live_processes = child.has_live_processes()?;
+            #[cfg(all(target_os = "macos", feature = "test-utils"))]
+            if let Some(path) = env::var_os("CODEXHOST_TEST_PROCESS_OBSERVATIONS") {
+                // The stderr pump holds its output lock for the child's lifetime.
+                // Use a test-only file to acknowledge completed observations.
+                std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(path)?
+                    .write_all(b".")?;
+            }
             last_process_tree_refresh = Some(now);
             has_live_processes
         } else {

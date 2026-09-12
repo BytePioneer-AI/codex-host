@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   installRendererDraftPrewarmPolicy,
   installRendererDraftPrewarmPolicyDirect,
+  requestManagerFromHookState,
   selectRendererRequestManager,
 } from "../src/renderer-draft-prewarm-policy.js";
 import {
@@ -20,6 +21,28 @@ function requestManagerFixture(): RendererHostRequestManager {
     onNotification: vi.fn(),
     onRequest: vi.fn(),
     dispatchAppServerResponse: vi.fn(),
+  };
+}
+
+function fiberRequestManagerFixture(): {
+  sendRequest: ReturnType<typeof vi.fn>;
+  requestClient: {
+    sendRequest: ReturnType<typeof vi.fn>;
+    prewarmThreadStart: ReturnType<typeof vi.fn>;
+    enqueueRequest: ReturnType<typeof vi.fn>;
+  };
+  prewarmedThreadManager: { discardAllPrewarmedThreads: ReturnType<typeof vi.fn> };
+  getHostId: () => string;
+} {
+  return {
+    sendRequest: vi.fn(),
+    requestClient: {
+      sendRequest: vi.fn(),
+      prewarmThreadStart: vi.fn(),
+      enqueueRequest: vi.fn(),
+    },
+    prewarmedThreadManager: { discardAllPrewarmedThreads: vi.fn() },
+    getHostId: () => "local",
   };
 }
 
@@ -258,6 +281,43 @@ describe("Renderer draft prewarm policy", () => {
     expect(selectRendererRequestManager([candidate], [])).toBe(candidate);
   });
 
+  it("recognizes a Fiber hook state that is already the request manager", () => {
+    const manager = fiberRequestManagerFixture();
+    expect(requestManagerFromHookState(manager)).toBe(manager);
+  });
+
+  it("unwraps a Desktop 26.908 host/manager/status Fiber hook wrapper", () => {
+    const manager = fiberRequestManagerFixture();
+    expect(requestManagerFromHookState({ hostId: "local", manager, status: "ready" })).toBe(
+      manager,
+    );
+  });
+
+  it("prefers the outer manager when it already matches the request-manager shape", () => {
+    const inner = fiberRequestManagerFixture();
+    const outer = fiberRequestManagerFixture();
+    Object.assign(outer, { manager: inner });
+    expect(requestManagerFromHookState(outer)).toBe(outer);
+  });
+
+  it("returns null for a Host manager registry and an unrelated nested manager", () => {
+    expect(
+      requestManagerFromHookState({
+        addManager: () => undefined,
+        getForHostId: () => undefined,
+        waitForManagerForHostId: () => undefined,
+        scope: {},
+      }),
+    ).toBeNull();
+    expect(
+      requestManagerFromHookState({
+        hostId: "local",
+        manager: { getHostId: () => "local" },
+        status: "ready",
+      }),
+    ).toBeNull();
+  });
+
   it("generates syntactically valid main-process code", async () => {
     const evaluate = vi.fn(async (expression: string): Promise<unknown> => {
       expect(() => new Function(`return ${expression}`)).not.toThrow();
@@ -276,10 +336,9 @@ describe("Renderer draft prewarm policy", () => {
     expect(evaluate).toHaveBeenCalledOnce();
     const expression = evaluate.mock.calls[0]?.[0] ?? "";
     expect(expression).toContain("webContents.fromId(17)");
-    expect(expression).toContain("typeof value.requestClient.enqueueRequest === 'function'");
-    expect(expression).toContain(
-      "typeof value.prewarmedThreadManager?.discardAllPrewarmedThreads === 'function'",
-    );
+    expect(expression).toContain("value.requestClient.enqueueRequest");
+    expect(expression).toContain("value.prewarmedThreadManager?.discardAllPrewarmedThreads");
+    expect(expression).toContain("matchesRequestManager(value.manager)");
     expect(expression).toContain("executionTargetHostId");
     expect(expression).toContain("permissionsHostId");
   });

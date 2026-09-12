@@ -38,6 +38,19 @@ Host 和 Renderer 接入必须配套发布；仅升级 Host、让旧 Renderer �
 - 当前轮尚无确认的 Turn ID 时不猜测目标，也不把过期目标改为另一轮重试。
 - 旧轮和新轮在 Native Session 历史中是两个真实 Turn，不复用旧 ID、不伪造同轮注入，不合并 Fork/Rollback 身份。
 
+## 跟进消息队列
+
+Codex Desktop **26.903.61454 / build 8378** 在功能开关及 app-server 版本满足条件时使用服务端队列。运行中追加消息会先调用 `thread/queue/list`，再调用 `thread/queue/add`；仅让 Host 返回空列表不能恢复入队。外部 Thread 不属于官方 app-server，Host 对这些请求的拒绝仍需保留，不能透传或伪造服务端队列。
+
+`renderer-external-queue.ts` 在当前 Manager 的 `getTurnCoordinator().serverQueue.isEnabled(threadId)` 上排除外部 Thread，让 Desktop 继续使用保留的本地队列：
+
+- 只读取同一个 Manager 的 `getConversation(threadId)`，核对 Thread ID 及 Host 投影的保留标记 `modelProvider: "codexhost"`。不根据当前 Agent 选择或 Model 名称猜测，不跨 Host 缓存身份，也不增加 RPC。
+- 普通入队、编辑、重排、删除／恢复、暂停和终态后的自动执行仍由 Desktop 原有队列负责，不新增 Host 队列或 Harness 命令。
+- 官方 Thread、尚未加载的 Thread 和无 Thread ID 的开关探测保留原函数。Thread 元数据加载后重新读取，不缓存此前的未知结果。旧版 Desktop 没有此后端时不做修改。
+- 包装的是队列后端自身的可写普通方法，不修改 Manager 或 Coordinator 的 RpcTarget 方法。卸载恢复原属性；不覆盖后来安装的其他包装。
+
+该边界来自实际代码和运行中开关观察，不代表能确定功能开关何时启用，或断言此接口首次出现于该 Desktop 版本。
+
 ## 验证
 
 针对性测试：
@@ -46,10 +59,13 @@ Host 和 Renderer 接入必须配套发布；仅升级 Host、让旧 Renderer �
 - `packages/host-runtime/test/app-server-host.test.ts`：真实 Host 路由、外部不泄漏官方流、取消与启动顺序、响应 gate、同 Thread start 竞争、官方透传。
 - `packages/renderer-extension/test/renderer-external-steering.test.ts`：正常 start 占位、唯一输入、无旧轮 steer Item、去重、队列暂停恢复、owner/follower、失败和卸载。
 - `packages/renderer-extension/test/renderer-external-steering-rpc.test.ts`：类方法的 RPC 可访问性、模型／权限列表读取、官方与外部 steer、实例隔离、卸载和重复安装，以及卸载期间待定请求的清理。
+- `packages/renderer-extension/test/renderer-external-queue.test.ts`：经生产 Adapter 安装路径验证外部入队、已有暂停消息、队列清空后再次入队、同连接官方队列、Manager 隔离、元数据更新、旧版后端和卸载恢复。
 - `packages/renderer-extension/test/versioned-renderer-adapter.test.ts`：现有版本化绑定与清理回归。
 
 实现时还在 Node VM 中回放了上述 Desktop Bundle 的真实 `lun`（普通 start）、`GS`（占位写入）和 `Irn`（旧轮消息恢复）helper：legacy / canonical 历史各验证启动成功与启动失败，检查单条新输入、无旧轮 steer 恢复、失败输入保留。该回放仍模拟了准备器与传输，不是实际窗口或原生 Session 测试。
 
 针对 RpcTarget 实例属性回归，还在运行中的上述版本 Desktop 内通过其真实 `RpcStub` 调用了 `model/list` 和 `permissionProfile/list`，验证原型挂接修复后两者成功返回，并重试了此前失败的只读查询。该检查没有发送新消息、修改权限选择或验证原生 Harness 执行。
+
+针对服务端队列回归，还在 Node VM 中回放了 26.903.61454 Bundle 的真实 Turn Coordinator：修复前复现 `thread/queue/list` 错误，修复后验证入队、编辑、重排、删除／恢复、每次终态后仅启动下一条消息，以及官方服务端队列保留。回放使用合成存储、传输和执行器，不调用原生 Harness。运行中只读探测另外确认了真实 Thread 元数据及开关；用隔离的后端对象验证外部 Thread 被排除、官方 Thread 保持启用，没有修改用户窗口的队列或发送消息。
 
 以上合成测试和只读 RPC 检查不替代真实 Desktop 与各原生 Harness 验收。发布验收应覆盖流式文本、工具运行、Question/Approval、连续提交、已有队列、取消失败、刷新历史，以及多窗口和远端连接。不得把类型检查或合成测试通过称为所有 Harness 的实机兼容性证明。

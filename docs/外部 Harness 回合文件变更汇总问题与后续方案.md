@@ -4,6 +4,8 @@
 >
 > 关联：[Issue #218](https://github.com/BytePioneer-AI/codex-host/issues/218)、[#134](https://github.com/BytePioneer-AI/codex-host/issues/134)。术语遵循[领域术语表](./领域术语表.md)。
 
+> 本文 Legacy 源码路径、DSH `0.1.1-rc.2` 环境与验证结果保留问题调查时的历史事实；当前 Legacy 已移除，仅支持 `0.1.2-rc.1` / `0.1.5-rc.1`，见[消息修订与恢复](dsh-edit-recovery.md)。本次版本对接不代表下述净 diff 方案已实施。
+
 ## 1. 问题背景
 
 Issue #218 报告：DSH 在同一 Turn 中反复编辑相同文件，Codex Desktop 回合末尾的文件变更卡片出现多条相同路径，并显示“已编辑 18 个文件”，实际涉及两个文件。报告环境为 codexhost 0.6.0、Codex Desktop 26.901.6511.0、DSH 0.1.1-rc.2、Windows。

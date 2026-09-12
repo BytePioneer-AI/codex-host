@@ -1,0 +1,13 @@
+{
+  "manifestVersion": 1,
+  "id": "codebuddy",
+  "name": "CodeBuddy",
+  "version": "0.0.0",
+  "adapterApiVersion": 1,
+  "entry": "./dist/plugin.js",
+  "icon": "./assets/icon.svg",
+  "links": {
+    "installation": "https://www.codebuddy.ai/docs/zh/cli/overview",
+    "documentation": "https://www.codebuddy.ai/docs/zh/cli/acp"
+  }
+}

@@ -29,6 +29,33 @@ function source(rows: Record<string, JsonObject[]>) {
 }
 
 describe("Multi-Account official Thread list", () => {
+  it("honors a smaller prefix request without changing the outer query limit", async () => {
+    const decoded = query();
+    const requestAccountPage = source({
+      a: [
+        { id: "a-3", createdAt: 3 },
+        { id: "a-1", createdAt: 1 },
+      ],
+      b: [{ id: "b-2", createdAt: 2 }],
+    });
+    const first = await aggregateOfficialAccountThreadListPage({
+      query: decoded,
+      accountIds: ["a", "b"],
+      params: { ...decoded.params, limit: 1 },
+      requestAccountPage,
+    });
+    expect(first.data.map((thread) => thread.id)).toEqual(["a-3"]);
+    expect(first.nextCursor).not.toBeNull();
+    const next = await aggregateOfficialAccountThreadListPage({
+      query: decoded,
+      accountIds: ["a", "b"],
+      params: { ...decoded.params, cursor: first.nextCursor },
+      requestAccountPage,
+    });
+    expect(next.data.map((thread) => thread.id)).toEqual(["b-2", "a-1"]);
+    expect(next.nextCursor).toBeNull();
+  });
+
   it("merges and paginates Account sources without duplicates or omissions", async () => {
     const requestAccountPage = source({
       a: [

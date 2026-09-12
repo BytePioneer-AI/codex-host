@@ -134,30 +134,6 @@ For a supported Desktop build, the Renderer Adapter SHALL synchronously update t
 - **AND** Host routes the Turn from immutable Thread ownership and retains configuration from the Native Session
 - **AND** explicit Model, Thinking, or Permission changes use only the fixed Host control methods
 
-### Requirement: Pi title generation does not enter Codex Harness
-
-The versioned main-process policy SHALL bind each supported metadata generation service to its owning Renderer window and SHALL prevent a locked Pi Composer from creating an official Codex title Thread.
-
-#### Scenario: Pi first Turn requests an automatic title
-
-- **WHEN** the owning Renderer reports one uniquely locked Pi Composer
-- **THEN** title generation returns no remote title and Codex Desktop uses its existing local fallback without an official ephemeral `thread/start`
-
-#### Scenario: Codex first Turn requests an automatic title
-
-- **WHEN** the owning Renderer reports one uniquely locked Codex Composer
-- **THEN** the original official title service behavior is preserved
-
-#### Scenario: Pi fallback title is stored
-
-- **WHEN** Desktop applies its local fallback through `thread/name/set` for a Pi-owned Thread
-- **THEN** the Host updates the Pi Thread and emits `thread/name/updated` locally without forwarding the request to Codex
-
-#### Scenario: Title ownership is ambiguous
-
-- **WHEN** the service owner, Probe, or locked Composer cannot be determined uniquely
-- **THEN** remote title generation is skipped rather than sending potentially Pi-owned content to Codex
-
 ### Requirement: Prewarm ownership does not create unused Pi processes
 
 The Host SHALL establish Pi Thread ownership at `thread/start` and SHALL defer `PiRpcSession` startup until the first `turn/start` for that exact Thread ID.
@@ -262,17 +238,6 @@ The versioned Renderer Agent control SHALL use an explicit enabled-Agent list co
 #### Scenario: Disabled Agent is requested
 - **WHEN** code attempts to select an Agent absent from the enabled list
 - **THEN** Renderer rejects the switch and remains on the prior Agent
-
-### Requirement: External Agent title isolation is shared
-The main-process title policy SHALL call the official title service only for a uniquely locked Codex Composer. Pi, Claude Code, unknown external Agents, and ambiguous ownership SHALL return the existing local fallback without reading or forwarding Prompt content.
-
-#### Scenario: Claude first Turn requests a title
-- **WHEN** the owning Renderer reports one locked Claude Code Composer
-- **THEN** title generation SHALL skip the official Codex Harness and use local fallback
-
-#### Scenario: Codex first Turn requests a title
-- **WHEN** the owning Renderer reports one locked Codex Composer
-- **THEN** original official title generation SHALL remain unchanged
 
 ### Requirement: Controlled Renderer evidence recognizes Claude without exposing content
 Renderer binding tooling SHALL require an explicit CLI option to enable Claude and SHALL accept only known Agent enum values in sanitized observations.
@@ -548,7 +513,7 @@ A Claude draft selection SHALL update the provider preference and its bounded re
 - **AND** the provider preference SHALL remain the user's last selected default for future Claude drafts
 
 ### Requirement: Renderer prerequisites SHALL gate only external capability availability
-Renderer Model target uniqueness、Adapter readiness、Draft Prewarm clearing和Title Policy ownership SHALL保持外部Agent切换与提交的必要条件。失败 MUST使对应外部能力不可用，但 SHALL NOT终止受管Desktop或成为Launcher兼容提示。
+Renderer Model target uniqueness、Adapter readiness和Draft Prewarm clearing SHALL保持外部Agent切换与提交的必要条件。主进程Title Policy ownership在直接Renderer CDP控制模式下 MAY不可用且 MUST NOT单独阻止Renderer Adapter安装。失败 MUST使对应外部能力不可用，但 SHALL NOT终止受管Desktop或成为Launcher兼容提示。系统 MUST NOT在Title Policy未安装时伪造其ready标记或声称外部标题隔离已生效。
 
 #### Scenario: Agent Model target在恢复期间不可用
 - **WHEN** Adapter无法识别唯一受支持Composer Model target
@@ -559,6 +524,12 @@ Renderer Model target uniqueness、Adapter readiness、Draft Prewarm clearing和
 - **WHEN** 外部Agent切换无法清除owned Draft prewarm
 - **THEN** 切换 SHALL失败且Adapter SHALL保持外部提交不可用
 - **AND** 受管Desktop SHALL继续运行并允许后续恢复
+
+#### Scenario: 主进程Title Policy不可用
+- **WHEN** Renderer通过直接CDP安装且`__codexhostMainProcessTitlePolicyV1`不存在
+- **THEN** Adapter SHALL继续验证Model target、Draft routing和Host control prerequisites
+- **AND** Title Policy缺失 SHALL NOT单独将Adapter置为unsupported
+- **AND** Renderer SHALL NOT创建伪造的Title Policy readiness marker
 
 ### Requirement: 未评审标题服务标识 SHALL NOT 单独阻断安全安装
 主进程标题策略 SHALL 把服务必要结构与已评审压缩身份分开判断。只有在标题服务路径、prototype `generateTitle`、已评审函数结构和Renderer ownership安装均成立时，未知压缩类名 MAY被分类为有界warning并继续安装。必要结构失败 SHALL使外部Agent能力保持不可用并进入Controller后台恢复，但 MUST NOT终止受管Desktop或产生Launcher兼容错误。
@@ -694,3 +665,4 @@ The modules that own version-locked Composer Model targeting, request/prewarm ow
 - **WHEN** the production Renderer entry installs codexhost binding
 - **THEN** it SHALL continue using the existing production installation and status interfaces
 - **AND** it SHALL NOT automatically execute or persist the local contract audit
+

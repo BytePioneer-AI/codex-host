@@ -1678,7 +1678,7 @@ describe("Codex UI projector", () => {
           "D:\\CodeProject\\test",
         );
         expect(toolChanges).not.toBeNull();
-        return toolChanges?.[0] ?? { path: "", kind: "update", unifiedDiff: "" };
+        return toolChanges?.[0] ?? { path: "", kind: "update" as const, unifiedDiff: "" };
       });
 
       expect(changes).toHaveLength(10);

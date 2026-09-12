@@ -7,6 +7,7 @@ import {
   formatRendererPlanWindow,
   formatRendererTokenCount,
   formatRendererTokenRate,
+  renderRendererUsageControl,
   rendererUsageHasDisplayData,
   rendererUsageMessages,
 } from "../src/renderer-usage-control.js";
@@ -92,5 +93,53 @@ describe("Renderer Usage native Codex snapshots", () => {
       }),
     ).toBe(true);
     expect(rendererUsageHasDisplayData(null)).toBe(false);
+  });
+});
+
+describe("Renderer Usage chip formatting", () => {
+  it("formats context summary and tokens instead of static usage label", () => {
+    const createMockElement = () => ({
+      style: {},
+      setAttribute: () => {},
+      append: () => {},
+      replaceChildren: () => {},
+      textContent: "",
+      title: "",
+    });
+    const fakeDoc = {
+      createElement: () => createMockElement(),
+      head: { appendChild: () => {} },
+      querySelector: () => null,
+    };
+    const previousDoc = (globalThis as unknown as { document?: unknown }).document;
+    (globalThis as unknown as { document: unknown }).document = fakeDoc;
+
+    try {
+      const control = {
+        root: createMockElement(),
+        trigger: createMockElement(),
+        label: { textContent: "" },
+        popover: createMockElement(),
+        locale: "zh-CN",
+      } as unknown as Parameters<typeof renderRendererUsageControl>[0];
+
+      // 1. Used + window tokens formatted into percentage and window
+      renderRendererUsageControl(
+        control,
+        { contextUsedTokens: 10_000, contextWindowTokens: 200_000 },
+        "zh-CN",
+      );
+      expect(control.label.textContent).toBe("5% / 200k");
+
+      // 2. Context usage percent alone
+      renderRendererUsageControl(control, { contextUsagePercent: 12.5 }, "zh-CN");
+      expect(control.label.textContent).toBe("12.5%");
+
+      // 3. Token usage alone
+      renderRendererUsageControl(control, { totalTokens: 50_000 }, "zh-CN");
+      expect(control.label.textContent).toBe("50k Token");
+    } finally {
+      (globalThis as unknown as { document?: unknown }).document = previousDoc;
+    }
   });
 });

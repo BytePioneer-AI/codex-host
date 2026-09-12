@@ -1,12 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
-import type {
-  HarnessModelRef,
-  HarnessOutput,
-} from "@codexhost/harness-adapter";
+import type { HarnessOutput } from "@codexhost/harness-adapter";
 import {
-  harnessIdSchema,
+  harnessInspectionSchema,
   harnessPermissionModeIdSchema,
-  hostInteractionIdSchema,
   hostTurnIdSchema,
   nativeCheckpointRefSchema,
   nativeSessionRefSchema,
@@ -14,11 +10,7 @@ import {
 
 import { QoderAdapter } from "../src/qoder-adapter.js";
 import { QoderExecutableError } from "../src/qoder-command.js";
-import {
-  mapQoderException,
-  mapQoderExitCode,
-  mapQoderResultError,
-} from "../src/qoder-errors.js";
+import { mapQoderException, mapQoderExitCode, mapQoderResultError } from "../src/qoder-errors.js";
 import {
   decodeQoderModelRef,
   encodeQoderModelRef,
@@ -28,7 +20,6 @@ import {
 import type {
   QoderModelInfo,
   QoderOptions,
-  QoderPermissionMode,
   QoderQuery,
   QoderQueryFactory,
   SDKAssistantMessage,
@@ -55,8 +46,8 @@ class FakeQoderQuery implements QoderQuery {
     totalTokens: 450,
     maxTokens: 1000,
   }));
-  readonly setModel = vi.fn(async (_model: string) => undefined);
-  readonly setPermissionMode = vi.fn(async (_mode: QoderPermissionMode) => undefined);
+  readonly setModel = vi.fn(async () => undefined);
+  readonly setPermissionMode = vi.fn(async () => undefined);
 
   #closed = false;
   #messages: SDKMessage[] = [];
@@ -157,6 +148,9 @@ describe("QoderAdapter", () => {
         expect(inspection1.capabilities.configuration.selectModel).toBe(true);
         expect(inspection1.capabilities.configuration.selectPermissionMode).toBe(true);
         expect(inspection1.capabilities.history.rollbackLastTurn).toBe(false);
+        expect(inspection1.permissionModes?.modes).toHaveLength(5);
+        expect(inspection1.permissionModes?.defaultModeId).toBe("default");
+        expect(harnessInspectionSchema.parse(inspection1)).toEqual(inspection1);
       }
 
       // Second call uses cached inspection
@@ -211,7 +205,11 @@ describe("QoderAdapter", () => {
       const forkResult = await adapter.open({
         kind: "fork",
         cwd: "D:/project",
-        sourceRef: nativeSessionRefSchema.parse({ harnessId: "qoder", nativeSessionId: "source-1", formatVersion: 1 }),
+        sourceRef: nativeSessionRefSchema.parse({
+          harnessId: "qoder",
+          nativeSessionId: "source-1",
+          formatVersion: 1,
+        }),
         checkpoint: nativeCheckpointRefSchema.parse({
           harnessId: "qoder",
           nativeSessionId: "source-1",
@@ -228,7 +226,11 @@ describe("QoderAdapter", () => {
       const rollbackResult = await adapter.open({
         kind: "rollbackLastTurn",
         cwd: "D:/project",
-        sourceRef: nativeSessionRefSchema.parse({ harnessId: "qoder", nativeSessionId: "source-1", formatVersion: 1 }),
+        sourceRef: nativeSessionRefSchema.parse({
+          harnessId: "qoder",
+          nativeSessionId: "source-1",
+          formatVersion: 1,
+        }),
       });
       expect(rollbackResult.ok).toBe(false);
       if (!rollbackResult.ok) {
@@ -293,7 +295,8 @@ describe("QoderAdapter", () => {
       } as SDKResultMessage);
 
       await collector.waitFor(
-        (o) => o.kind === "event" && o.event.type === "turn.completed" && o.event.turnId === turnId1,
+        (o) =>
+          o.kind === "event" && o.event.type === "turn.completed" && o.event.turnId === turnId1,
       );
 
       // Turn 2 on the SAME session and query!
@@ -320,7 +323,8 @@ describe("QoderAdapter", () => {
       } as SDKResultMessage);
 
       await collector.waitFor(
-        (o) => o.kind === "event" && o.event.type === "turn.completed" && o.event.turnId === turnId2,
+        (o) =>
+          o.kind === "event" && o.event.type === "turn.completed" && o.event.turnId === turnId2,
       );
 
       // Verify query was NOT closed between turns
@@ -383,14 +387,26 @@ describe("QoderAdapter", () => {
       const updates = collector.outputs.filter(
         (o) => o.kind === "event" && o.event.type === "item.updated",
       );
-      const appends = updates.map((u) => (u as any).event.update.text);
+      const appends = updates.map((u) =>
+        u.kind === "event" &&
+        u.event.type === "item.updated" &&
+        u.event.update.type === "text.append"
+          ? u.event.update.text
+          : undefined,
+      );
       expect(appends).toEqual(["Hello ", "world"]);
 
       const completed = collector.outputs.find(
         (o) => o.kind === "event" && o.event.type === "item.completed",
       );
       expect(completed).toBeDefined();
-      expect((completed as any).event.snapshot.item.text).toBe("Hello world");
+      if (
+        completed?.kind === "event" &&
+        completed.event.type === "item.completed" &&
+        completed.event.snapshot.item.type === "agentMessage"
+      ) {
+        expect(completed.event.snapshot.item.text).toBe("Hello world");
+      }
 
       await session.close();
     });
@@ -447,16 +463,103 @@ describe("QoderAdapter", () => {
       } as SDKResultMessage);
 
       await collector.waitFor(
-        (o) => o.kind === "event" && o.event.type === "turn.completed" && o.event.turnId === turnId2,
+        (o) =>
+          o.kind === "event" && o.event.type === "turn.completed" && o.event.turnId === turnId2,
       );
 
       await session.close();
+    });
+
+    it("completes active streaming message and reasoning items on turn.cancel", async () => {
+      const fakeQuery = new FakeQoderQuery();
+      const adapter = new QoderAdapter({
+        resolveExecutable: () => "D:/tools/qodercli.exe",
+        queryFactory: () => fakeQuery,
+      });
+
+      const openResult = await adapter.open({ kind: "create", cwd: "D:/workspace" });
+      if (!openResult.ok) throw new Error("open failed");
+      const session = openResult.value;
+      const collector = new OutputCollector(session.outputs);
+
+      const turnId = hostTurnIdSchema.parse("turn-streaming-cancel");
+      await session.execute({
+        type: "turn.start",
+        turnId,
+        input: [{ type: "text", text: "Start streaming" }],
+      });
+
+      // Stream thinking delta
+      fakeQuery.push({
+        type: "stream_event",
+        thinking_delta: "Thinking in progress...",
+      } as unknown as SDKMessage);
+
+      // Stream text delta
+      fakeQuery.push({
+        type: "stream_event",
+        text_delta: "Generating text...",
+      } as unknown as SDKMessage);
+
+      await collector.waitFor(
+        (o) =>
+          o.kind === "event" &&
+          o.event.type === "item.updated" &&
+          o.event.update.type === "text.append",
+      );
+
+      // Cancel turn while streaming items are active
+      const cancelResult = await session.execute({
+        type: "turn.cancel",
+        turnId,
+      });
+      expect(cancelResult.ok).toBe(true);
+
+      const reasoningCompleted = await collector.waitFor(
+        (o) =>
+          o.kind === "event" &&
+          o.event.type === "item.completed" &&
+          o.event.snapshot.item.type === "reasoning",
+      );
+      if (
+        reasoningCompleted.kind === "event" &&
+        reasoningCompleted.event.type === "item.completed" &&
+        reasoningCompleted.event.snapshot.item.type === "reasoning"
+      ) {
+        expect(reasoningCompleted.event.snapshot.outcome.status).toBe("cancelled");
+        expect(reasoningCompleted.event.snapshot.item.text).toBe("Thinking in progress...");
+      }
+
+      const messageCompleted = await collector.waitFor(
+        (o) =>
+          o.kind === "event" &&
+          o.event.type === "item.completed" &&
+          o.event.snapshot.item.type === "agentMessage",
+      );
+      if (
+        messageCompleted.kind === "event" &&
+        messageCompleted.event.type === "item.completed" &&
+        messageCompleted.event.snapshot.item.type === "agentMessage"
+      ) {
+        expect(messageCompleted.event.snapshot.outcome.status).toBe("cancelled");
+        expect(messageCompleted.event.snapshot.item.text).toBe("Generating text...");
+      }
+
+      await collector.waitFor(
+        (o) =>
+          o.kind === "event" &&
+          o.event.type === "turn.completed" &&
+          o.event.outcome.status === "cancelled",
+      );
+
+      await session.close();
+      await adapter.close();
     });
   });
 
   describe("Tool approval interaction", () => {
     it("bridges tool approval to HostApprovalInteraction with allow and deny", async () => {
-      let canUseToolCb: any;
+      let canUseToolCb: NonNullable<QoderOptions["canUseTool"]> | undefined;
       const fakeQuery = new FakeQoderQuery();
       const adapter = new QoderAdapter({
         resolveExecutable: () => "D:/tools/qodercli.exe",
@@ -478,6 +581,8 @@ describe("QoderAdapter", () => {
         input: [{ type: "text", text: "Run command" }],
       });
 
+      if (!canUseToolCb) throw new Error("canUseToolCb not set");
+
       // Trigger canUseTool from SDK
       const abortController = new AbortController();
       const permPromise = canUseToolCb(
@@ -489,7 +594,8 @@ describe("QoderAdapter", () => {
       const interactionEvent = await collector.waitFor(
         (o) => o.kind === "interaction" && o.interaction.type === "approval",
       );
-      const interactionId = (interactionEvent as any).interaction.interactionId;
+      if (interactionEvent.kind !== "interaction") throw new Error("Expected interaction");
+      const interactionId = interactionEvent.interaction.interactionId;
 
       // Respond allowOnce
       const respondRes = await session.execute({
@@ -509,7 +615,7 @@ describe("QoderAdapter", () => {
         (o) =>
           o.kind === "event" &&
           o.event.type === "interaction.closed" &&
-          (o.event as any).reason === "responded",
+          o.event.reason === "responded",
       );
 
       await session.close();
@@ -518,7 +624,7 @@ describe("QoderAdapter", () => {
 
   describe("AskUserQuestion interaction with full question prompt keying", () => {
     it("bridges AskUserQuestion and formats answers dictionary keyed by full question text", async () => {
-      let canUseToolCb: any;
+      let canUseToolCb: NonNullable<QoderOptions["canUseTool"]> | undefined;
       const fakeQuery = new FakeQoderQuery();
       const adapter = new QoderAdapter({
         resolveExecutable: () => "D:/tools/qodercli.exe",
@@ -543,6 +649,8 @@ describe("QoderAdapter", () => {
       const questionPrompt = "Which environment would you like to deploy to?";
       const abortController = new AbortController();
 
+      if (!canUseToolCb) throw new Error("canUseToolCb not set");
+
       const questionPromise = canUseToolCb(
         "AskUserQuestion",
         {
@@ -554,14 +662,20 @@ describe("QoderAdapter", () => {
             },
           ],
         },
-        { signal: abortController.signal },
+        { signal: abortController.signal, toolUseID: "tool-question-1" },
       );
 
       const interactionEvent = await collector.waitFor(
         (o) => o.kind === "interaction" && o.interaction.type === "question",
       );
-      const interaction = (interactionEvent as any).interaction;
-      expect(interaction.questions[0].prompt).toBe(questionPrompt);
+      if (
+        interactionEvent.kind !== "interaction" ||
+        interactionEvent.interaction.type !== "question"
+      ) {
+        throw new Error("Expected question interaction");
+      }
+      const interaction = interactionEvent.interaction;
+      expect(interaction.questions[0]?.prompt).toBe(questionPrompt);
 
       // Respond with selected answer
       const respondRes = await session.execute({
@@ -578,9 +692,11 @@ describe("QoderAdapter", () => {
 
       const result = await questionPromise;
       expect(result.behavior).toBe("allow");
-      expect((result as any).updatedInput.answers).toEqual({
-        [questionPrompt]: "Production",
-      });
+      if (result.behavior === "allow") {
+        expect(result.updatedInput?.answers).toEqual({
+          [questionPrompt]: "Production",
+        });
+      }
 
       await session.close();
     });
@@ -805,21 +921,42 @@ describe("QoderAdapter", () => {
       await collector.waitFor((o) => o.kind === "event" && o.event.type === "turn.completed");
 
       const reasoningStarted = collector.outputs.find(
-        (o) => o.kind === "event" && o.event.type === "item.started" && (o.event as any).item.type === "reasoning",
+        (o) =>
+          o.kind === "event" &&
+          o.event.type === "item.started" &&
+          o.event.item.type === "reasoning",
       );
       expect(reasoningStarted).toBeDefined();
 
       const reasoningCompleted = collector.outputs.find(
-        (o) => o.kind === "event" && o.event.type === "item.completed" && (o.event as any).snapshot.item.type === "reasoning",
+        (o) =>
+          o.kind === "event" &&
+          o.event.type === "item.completed" &&
+          o.event.snapshot.item.type === "reasoning",
       );
       expect(reasoningCompleted).toBeDefined();
-      expect((reasoningCompleted as any).event.snapshot.item.text).toBe("I am analyzing the codebase.");
+      if (
+        reasoningCompleted?.kind === "event" &&
+        reasoningCompleted.event.type === "item.completed" &&
+        reasoningCompleted.event.snapshot.item.type === "reasoning"
+      ) {
+        expect(reasoningCompleted.event.snapshot.item.text).toBe("I am analyzing the codebase.");
+      }
 
       const messageCompleted = collector.outputs.find(
-        (o) => o.kind === "event" && o.event.type === "item.completed" && (o.event as any).snapshot.item.type === "agentMessage",
+        (o) =>
+          o.kind === "event" &&
+          o.event.type === "item.completed" &&
+          o.event.snapshot.item.type === "agentMessage",
       );
       expect(messageCompleted).toBeDefined();
-      expect((messageCompleted as any).event.snapshot.item.text).toBe("Here is the answer.");
+      if (
+        messageCompleted?.kind === "event" &&
+        messageCompleted.event.type === "item.completed" &&
+        messageCompleted.event.snapshot.item.type === "agentMessage"
+      ) {
+        expect(messageCompleted.event.snapshot.item.text).toBe("Here is the answer.");
+      }
 
       await session.close();
       await adapter.close();
@@ -863,12 +1000,18 @@ describe("QoderAdapter", () => {
       } as SDKAssistantMessage);
 
       await collector.waitFor(
-        (o) => o.kind === "event" && o.event.type === "item.started" && (o.event as any).item.type === "toolExecution",
+        (o) =>
+          o.kind === "event" &&
+          o.event.type === "item.started" &&
+          o.event.item.type === "toolExecution",
       );
 
       // Crucial check: tool is NOT completed yet!
       const prematureCompleted = collector.outputs.find(
-        (o) => o.kind === "event" && o.event.type === "item.completed" && (o.event as any).snapshot.item.type === "toolExecution",
+        (o) =>
+          o.kind === "event" &&
+          o.event.type === "item.completed" &&
+          o.event.snapshot.item.type === "toolExecution",
       );
       expect(prematureCompleted).toBeUndefined();
 
@@ -892,13 +1035,23 @@ describe("QoderAdapter", () => {
         (o) =>
           o.kind === "event" &&
           o.event.type === "item.completed" &&
-          (o.event as any).snapshot.item.type === "toolExecution" &&
-          (o.event as any).snapshot.item.itemId === "call_abc_1",
+          o.event.snapshot.item.type === "toolExecution" &&
+          o.event.snapshot.item.itemId === "call_abc_1",
       );
       expect(toolCompletedEvent).toBeDefined();
-      const completedSnapshot = (toolCompletedEvent as any).event.snapshot;
-      expect(completedSnapshot.outcome.status).toBe("succeeded");
-      expect(completedSnapshot.item.output.content[0].text).toBe("file content here");
+      if (
+        toolCompletedEvent.kind === "event" &&
+        toolCompletedEvent.event.type === "item.completed"
+      ) {
+        const item = toolCompletedEvent.event.snapshot.item;
+        if (item.type === "toolExecution") {
+          expect(toolCompletedEvent.event.snapshot.outcome.status).toBe("succeeded");
+          const firstOutput = item.output?.content[0];
+          if (firstOutput?.type === "text") {
+            expect(firstOutput.text).toBe("file content here");
+          }
+        }
+      }
 
       // Now test failing tool execution
       fakeQuery.push({
@@ -920,7 +1073,7 @@ describe("QoderAdapter", () => {
         (o) =>
           o.kind === "event" &&
           o.event.type === "item.started" &&
-          (o.event as any).item.itemId === "call_abc_2",
+          o.event.item.itemId === "call_abc_2",
       );
 
       fakeQuery.push({
@@ -942,12 +1095,23 @@ describe("QoderAdapter", () => {
         (o) =>
           o.kind === "event" &&
           o.event.type === "item.completed" &&
-          (o.event as any).snapshot.item.itemId === "call_abc_2",
+          o.event.snapshot.item.type === "toolExecution" &&
+          o.event.snapshot.item.itemId === "call_abc_2",
       );
       expect(failedCompletedEvent).toBeDefined();
-      const failedSnapshot = (failedCompletedEvent as any).event.snapshot;
-      expect(failedSnapshot.outcome.status).toBe("failed");
-      expect(failedSnapshot.outcome.error?.message).toBe("command failed with error");
+      if (
+        failedCompletedEvent.kind === "event" &&
+        failedCompletedEvent.event.type === "item.completed"
+      ) {
+        const item = failedCompletedEvent.event.snapshot.item;
+        if (item.type === "toolExecution") {
+          const outcome = failedCompletedEvent.event.snapshot.outcome;
+          expect(outcome.status).toBe("failed");
+          if (outcome.status === "failed") {
+            expect(outcome.error.message).toBe("command failed with error");
+          }
+        }
+      }
 
       fakeQuery.push({
         type: "result",

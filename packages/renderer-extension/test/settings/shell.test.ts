@@ -24,6 +24,7 @@ describe("Renderer settings foundation", () => {
       "Connections",
       "Accounts",
       "Session Import",
+      "Appearance",
       "Updates",
       "About",
     ]);
@@ -31,6 +32,7 @@ describe("Renderer settings foundation", () => {
       "connections",
       "accounts",
       "session-import",
+      "settings",
       "updates",
       "about",
     ]);
@@ -64,6 +66,7 @@ describe("Renderer settings foundation", () => {
       "connections",
       "accounts",
       "session-import",
+      "appearance",
       "updates",
       "about",
     ]);

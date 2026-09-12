@@ -8,6 +8,7 @@
 
 - `harness-delegation-coordinator.ts`：Adapter Map、配置校验、任务与普通 Thread 协调。
 - `delegation-cli.ts`、`delegation-types.ts`：当前 CLI 和请求契约。
+- `delegation-cli-help.ts`、`delegation-cli-output.ts`：按命令组织的帮助与精简输出。
 - `delegation-snapshot.ts`：进度与结果的只读投影。
 - `external-thread-runtime.ts`：普通 Session 的创建、持久化和恢复。
 
@@ -32,6 +33,15 @@
 - 首次和后续 Turn 使用 Host 提供的 turnId，标准事件发布可见文本与真实终态。
 
 需要对外观察的进度和最终回答使用 agentMessage；Reasoning、工具输出、命令与文件变化保留各自类型。观察结果来自公共投影，不让 Coordinator 读取新 Harness 的私有 Transcript。
+
+## CLI 观察输出
+
+- `harness list` 从当前 Adapter Map 发现目标，不启动 Session 或查询 Model Catalog。
+- `--format json` 保留完整 JSON（默认），`--format compact` 提供精简 JSON，使用可操作的任务链接代替内部追踪 ID。用户汇报只展示目标、状态、结果和任务链接。
+- compact 的 result 视图展示结果，运行中附带最新非空进度；messages 视图只展示当前消息页与状态，不重复进度和最终答案。正文不截断。
+- 消息分页的 `hasMore` 表示当前是否还有下一页；`nextCursor` 仍可保存为后续增量读取起点。过滤空白消息时保持原序列游标位置，不能使旧游标跳过新消息。
+- 创建结果包含工作目录和父任务；普通委派省略 `cwd` 时优先继承父任务目录，最终回退是 Host Runtime 进程目录。
+- 每个命令支持独立 `--help`。CLI 与 Runtime 需一起更新后使用新增发现/分页能力。
 
 ## 普通 Thread 的持续可写语义
 

@@ -1,15 +1,16 @@
 # deepseek-harness-fast-session Specification
 
 ## Purpose
-TBD - created by archiving change integrate-deepseek-harness-fast-path. Update Purpose after archive.
+规定 DeepSeek Harness 的公共 Adapter、原生凭据复用、文本/工具输出与取消语义；当前双 RC 历史能力由 support-dsh-015rc1 更新，具体格式边界见 deepseek-versioned-web-protocol。
 ## Requirements
 ### Requirement: DeepSeek Harness uses the shared Adapter contract
-The system SHALL provide a `deepseek-harness` implementation of `HarnessAdapter` and `HarnessSession`. DSH JSON-RPC methods and event names MUST remain internal to that Adapter package.
+
+The system SHALL provide one public `deepseek-harness` implementation of `HarnessAdapter` and `HarnessSession` supporting exact DSH `0.1.2-rc.1` and `0.1.5-rc.1`. DSH Remote methods, event names and version profiles MUST remain internal to that Adapter package.
 
 #### Scenario: New DeepSeek Session opens
-- **WHEN** Host opens the DeepSeek Adapter with a create input and an available runtime
+- **WHEN** Host opens the DeepSeek Adapter with a create input and an exact supported runtime
 - **THEN** the Adapter SHALL return a HarnessSession with a stable Native Session reference
-- **AND** resume, fork, and rollback capabilities SHALL be false
+- **AND** native resume, same-cwd fork, and last-turn rollback capabilities SHALL be available under the selected profile's verified boundaries
 
 ### Requirement: The runtime reuses the official DSH credential store
 The DeepSeek runtime SHALL resolve provider credentials through the official DSH credentials service and its standard Harness home. codexhost MUST NOT parse, copy, return, or persist credential values.
@@ -43,10 +44,3 @@ The Session SHALL map `turn.cancel` to a DSH `session/cancel` RPC and SHALL only
 - **WHEN** DSH rejects `session/cancel` as unknown
 - **THEN** the Session SHALL return a protocol or unsupported failure
 - **AND** it SHALL NOT report successful cancellation
-
-### Requirement: Unsupported DeepSeek history mutations are explicit
-The Adapter SHALL report native Session resume as supported while keeping fork and rollback capabilities false. It SHALL reject unsupported open kinds without creating another Native Session.
-
-#### Scenario: Host attempts fork or rollback
-- **WHEN** Host opens the Adapter with a fork or rollback input
-- **THEN** the Adapter SHALL return an `unsupported` error without creating a new Session

@@ -7,20 +7,23 @@ import {
 
 import { loadHarnessPlugins } from "./harness-plugin-loader.js";
 import { installedHarnessPluginOptions } from "./installed-harness-plugins.js";
+import { harnessPluginIdSchema } from "@codexhost/shared-contracts";
 
 export async function runClaudeAquaHarnessBroker(
   environment: NodeJS.ProcessEnv = process.env,
+  requestedHarnessId = "claude-code",
 ): Promise<number> {
+  const harnessId = harnessPluginIdSchema.parse(requestedHarnessId);
   if (process.platform !== "darwin") {
-    throw new Error("Claude Aqua Harness broker is available only on macOS");
+    throw new Error("Aqua Harness broker is available only on macOS");
   }
-  // The legacy Broker protocol still targets Claude Code, but construction and
-  // dependencies belong to its installed plugin. Do not recursively use a Broker client here.
+  // One authenticated socket/descriptor owns exactly one native plugin. Construction
+  // runs in the login LaunchAgent; the factory must not recursively choose a Broker client.
   const { pluginRoots, pluginContext } = installedHarnessPluginOptions(environment);
   const plugins = await loadHarnessPlugins({
     roots: pluginRoots,
     context: pluginContext,
-    onlyIds: new Set(["claude-code"]),
+    onlyIds: new Set([harnessId]),
     warmup: false,
     diagnose: (diagnostic) =>
       process.stderr.write(`Harness plugin: ${JSON.stringify(diagnostic)}\n`),
@@ -33,19 +36,19 @@ export async function runClaudeAquaHarnessBroker(
   let server: HarnessBrokerServer;
   try {
     server = await startHarnessBrokerServer({
-      descriptorPath: defaultHarnessBrokerDescriptorPath(environment),
-      socketPath: defaultHarnessBrokerSocketPath(environment),
+      descriptorPath: defaultHarnessBrokerDescriptorPath(environment, harnessId),
+      socketPath: defaultHarnessBrokerSocketPath(environment, harnessId),
       adapter,
     });
   } catch (error) {
     await adapter.close().catch(() => undefined);
     throw error;
   }
-  process.title = "codexhost claude-code Aqua harness broker";
+  process.title = `codexhost ${harnessId} Aqua harness broker`;
   process.stdout.write(
     `${JSON.stringify({
       method: "codexhost/harness-broker/ready",
-      params: { protocolVersion: 1, harnessId: "claude-code" },
+      params: { protocolVersion: 1, harnessId },
     })}\n`,
   );
   let stop: (() => void) | undefined;

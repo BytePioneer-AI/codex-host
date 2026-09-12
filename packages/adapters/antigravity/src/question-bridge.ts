@@ -6,11 +6,9 @@ import path from "node:path";
 
 import {
   validateHostQuestionResponse,
-  validateHostApprovalResponse,
   type HarnessOutput,
   type HarnessResult,
   type HostQuestionInteraction,
-  type HostApprovalInteraction,
   type HostToolExecutionItem,
   type InteractionClosedEvent,
   type InteractionRespondAccepted,
@@ -19,16 +17,11 @@ import {
 import {
   hostInteractionIdSchema,
   hostItemIdSchema,
-  jsonValueSchema,
   type HostTurnId,
 } from "@codexhost/shared-contracts";
 import { z } from "zod";
 
 import { ANTIGRAVITY_QUESTION_HOOK_CLIENT } from "./question-hook-client.js";
-import {
-  configuredPermissionDecision,
-  type AntigravityConfiguredPermissionPolicy,
-} from "./configured-permissions.js";
 
 const MAX_BYTES = 131_072;
 const QUESTION_TIMEOUT_MS = 10 * 60_000;
@@ -56,46 +49,26 @@ const responseSchema = z
     cancelled: z.boolean().optional(),
   })
   .strict();
-const approvalRequestSchema = z.object({
-  conversationId: z.string().min(1).max(128),
-  stepIdx: z.number().int().nonnegative(),
-  toolCall: z.object({
-    name: z
-      .string()
-      .min(1)
-      .max(256)
-      .refine((name) => name !== "ask_question"),
-    args: jsonValueSchema,
-  }),
-});
-const approvalResponseSchema = z.strictObject({
-  type: z.literal("approval"),
-  actionId: z.string(),
-});
-
 interface BridgeOptions {
   turnId: HostTurnId;
   nativeSessionId(): string | undefined;
   schedule(action: () => void): void;
   emit(output: HarnessOutput): void;
   timeoutMs?: number;
-  approvals?: boolean;
-  configuredPermissions?: AntigravityConfiguredPermissionPolicy;
-  ownsApprovalSession?(nativeSessionId: string): boolean;
 }
 
 interface PendingQuestion {
-  interaction: HostQuestionInteraction | HostApprovalInteraction;
+  interaction: HostQuestionInteraction;
   item?: HostToolExecutionItem;
   response: ServerResponse;
   timer: NodeJS.Timeout;
   expiresAt: number;
 }
 
-function deny(response: ServerResponse, reason: string, status = 200, decision = "deny"): void {
+function deny(response: ServerResponse, reason: string, status = 200): void {
   if (response.destroyed || response.writableEnded) return;
   response.writeHead(status, { "content-type": "application/json", connection: "close" });
-  response.end(JSON.stringify({ decision, reason }));
+  response.end(JSON.stringify({ decision: "deny", reason }));
 }
 
 export class AntigravityQuestionBridge {
@@ -112,7 +85,6 @@ export class AntigravityQuestionBridge {
   readonly #seenSteps = new Set<string>();
   #stopped = false;
   #disposal: Promise<void> | null = null;
-  #hookCommand = "";
 
   private constructor(directory: string, options: BridgeOptions) {
     this.directory = directory;
@@ -120,8 +92,6 @@ export class AntigravityQuestionBridge {
     this.environment = {
       CODEXHOST_AGY_QUESTION_TOKEN: this.#token,
       CODEXHOST_AGY_QUESTION_TIMEOUT_MS: String(options.timeoutMs ?? QUESTION_TIMEOUT_MS),
-      CODEXHOST_AGY_QUESTION_APPROVALS:
-        options.approvals || options.configuredPermissions ? "1" : "0",
     };
     this.#server.on("request", (request, response) => this.#receive(request, response));
   }
@@ -153,15 +123,13 @@ export class AntigravityQuestionBridge {
         process.platform === "win32"
           ? "%CODEXHOST_AGY_QUESTION_NODE% %CODEXHOST_AGY_QUESTION_CLIENT%"
           : `${quote(process.execPath)} ${quote(client)}`;
-      bridge.#hookCommand = command;
       await writeFile(
         path.join(directory, ".agents", "hooks.json"),
         JSON.stringify({
           "codexhost-question-bridge": {
             PreToolUse: [
               {
-                matcher:
-                  options.approvals || options.configuredPermissions ? ".*" : "^ask_question$",
+                matcher: "^ask_question$",
                 hooks: [
                   {
                     type: "command",
@@ -180,53 +148,6 @@ export class AntigravityQuestionBridge {
       await bridge.dispose();
       throw error;
     }
-  }
-
-  verifyApprovalHooks(stdout: string): boolean {
-    if (!this.#options.approvals && !this.#options.configuredPermissions) return false;
-    const hookSchema = z.object({
-      event: z.literal("command_result"),
-      command: z.object({
-        name: z.literal("hooks"),
-        data: z.object({
-          hooks: z.array(
-            z.object({
-              name: z.string(),
-              enabled: z.boolean(),
-              source: z.string(),
-              actions: z.array(
-                z.object({
-                  event: z.string(),
-                  matcher: z.string(),
-                  command: z.string(),
-                }),
-              ),
-            }),
-          ),
-        }),
-      }),
-    });
-    for (const line of stdout.split("\n")) {
-      try {
-        const parsed = hookSchema.safeParse(JSON.parse(line));
-        if (!parsed.success) continue;
-        return parsed.data.command.data.hooks.some(
-          (hook) =>
-            hook.name === "codexhost-question-bridge" &&
-            hook.enabled &&
-            path.resolve(hook.source) === path.join(this.directory, ".agents", "hooks.json") &&
-            hook.actions.some(
-              (action) =>
-                action.event === "PreToolUse" &&
-                action.matcher === ".*" &&
-                action.command === this.#hookCommand,
-            ),
-        );
-      } catch {
-        /* Non-command lines cannot confirm installation. */
-      }
-    }
-    return false;
   }
 
   #receive(request: IncomingMessage, response: ServerResponse): void {
@@ -266,86 +187,12 @@ export class AntigravityQuestionBridge {
         return;
       }
       if (!parsed.success) {
-        if (this.#options.approvals || this.#options.configuredPermissions) {
-          const approval = approvalRequestSchema.safeParse(JSON.parse(body));
-          if (approval.success) {
-            this.#options.schedule(() => this.#approve(approval.data, response));
-            return;
-          }
-        }
         deny(response, "Invalid question payload", 400);
         return;
       }
       const payload = parsed.data;
       this.#options.schedule(() => this.#ask(payload, response));
     });
-  }
-
-  #approve(payload: z.infer<typeof approvalRequestSchema>, response: ServerResponse): void {
-    if (
-      this.#stopped ||
-      response.destroyed ||
-      (payload.conversationId !== this.#options.nativeSessionId() &&
-        !this.#options.ownsApprovalSession?.(payload.conversationId))
-    ) {
-      deny(response, "Tool approval does not belong to the active codexhost Turn.");
-      return;
-    }
-    if (payload.toolCall.name === "ask_permission") {
-      deny(
-        response,
-        "Desktop approves actual tool actions. Call the intended tool directly instead of ask_permission.",
-      );
-      return;
-    }
-    const stepKey = `${payload.conversationId}:${payload.stepIdx}`;
-    if (this.#seenSteps.has(stepKey) || this.#seenSteps.size >= 128) {
-      deny(response, "Duplicate or overlapping tool approval. No permission was granted.");
-      return;
-    }
-    this.#seenSteps.add(stepKey);
-    if (this.#options.configuredPermissions) {
-      const decision = configuredPermissionDecision(
-        payload.toolCall.name,
-        payload.toolCall.args,
-        this.#options.configuredPermissions,
-      );
-      if (decision.decision !== "prompt") {
-        deny(response, decision.reason, 200, decision.decision);
-        return;
-      }
-    }
-    const interaction: HostApprovalInteraction = {
-      type: "approval",
-      interactionId: hostInteractionIdSchema.parse(randomUUID()),
-      turnId: this.#options.turnId,
-      title: `Antigravity: ${payload.toolCall.name}`,
-      description: `Tool: ${payload.toolCall.name}\nSession: ${payload.conversationId}\nArguments:\n${JSON.stringify(payload.toolCall.args, null, 2)}`,
-      subject: { type: "nativeAction" },
-      actions: [
-        { id: "allow-once", label: "Allow once", effect: "allowOnce" },
-        { id: "deny", label: "Deny", effect: "deny" },
-      ],
-    };
-    const pending: PendingQuestion = {
-      interaction,
-      response,
-      expiresAt: Date.now() + (this.#options.timeoutMs ?? QUESTION_TIMEOUT_MS),
-      timer: setTimeout(() => {
-        this.#finish(pending, "expired", "Tool approval expired. No permission was granted.");
-      }, this.#options.timeoutMs ?? QUESTION_TIMEOUT_MS),
-    };
-    this.#pending.set(interaction.interactionId, pending);
-    response.on("close", () => {
-      if (!response.writableFinished) {
-        this.#finish(
-          pending,
-          "cancelled",
-          "Tool approval connection closed. No permission was granted.",
-        );
-      }
-    });
-    this.#options.emit({ kind: "interaction", interaction });
   }
 
   #ask(payload: z.infer<typeof requestSchema>, response: ServerResponse): void {
@@ -441,36 +288,11 @@ export class AntigravityQuestionBridge {
       };
     }
     if (Date.now() >= pending.expiresAt) {
-      this.#finish(
-        pending,
-        "expired",
-        pending.interaction.type === "approval"
-          ? "Tool approval expired. No permission was granted."
-          : EXPIRED_REASON,
-      );
+      this.#finish(pending, "expired", EXPIRED_REASON);
       return {
         ok: false,
         error: { code: "invalidState", message: "Question has expired", retryable: false },
       };
-    }
-    if (pending.interaction.type === "approval") {
-      const parsed = approvalResponseSchema.safeParse(command.response);
-      if (!parsed.success) {
-        return {
-          ok: false,
-          error: { code: "invalidRequest", message: "Invalid Approval response", retryable: false },
-        };
-      }
-      const error = validateHostApprovalResponse(pending.interaction, parsed.data);
-      if (error) return { ok: false, error };
-      const allowed = parsed.data.actionId === "allow-once";
-      this.#finish(
-        pending,
-        "responded",
-        allowed ? "User approved this tool call once." : "User denied this tool call.",
-        allowed ? "allow" : "deny",
-      );
-      return { ok: true, value: { accepted: true } };
     }
     const parsed = responseSchema.safeParse(command.response);
     if (!parsed.success) {
@@ -512,15 +334,10 @@ export class AntigravityQuestionBridge {
     return { ok: true, value: { accepted: true } };
   }
 
-  #finish(
-    pending: PendingQuestion,
-    reason: InteractionClosedEvent["reason"],
-    text: string,
-    decision = "deny",
-  ): void {
+  #finish(pending: PendingQuestion, reason: InteractionClosedEvent["reason"], text: string): void {
     if (!this.#pending.delete(pending.interaction.interactionId)) return;
     clearTimeout(pending.timer);
-    deny(pending.response, text, 200, decision);
+    deny(pending.response, text);
     this.#options.emit({
       kind: "event",
       event: {
@@ -557,9 +374,7 @@ export class AntigravityQuestionBridge {
       this.#finish(
         pending,
         "cancelled",
-        pending.interaction.type === "approval"
-          ? "The codexhost Turn ended before tool approval. No permission was granted."
-          : "The codexhost Turn ended before an answer was received. Do not infer a user choice.",
+        "The codexhost Turn ended before an answer was received. Do not infer a user choice.",
       );
     }
   }

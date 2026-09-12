@@ -10,7 +10,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   classifyDeepSeekVersionOutput,
   hasDeepSeekModernAuthenticationFingerprint,
-  parseDeepSeekLegacyEndpoint,
+  parseDeepSeekEndpoint,
   probeDeepSeekExecutableGeneration,
   type DeepSeekGenerationProbeError,
   type DeepSeekGenerationProbeDependencies,
@@ -185,9 +185,9 @@ describe("DeepSeek executable generation probe", () => {
     "http://127.0.0.1:3080/#fragment-canary",
     "http://127.0.0.1:3080/?mode=canary",
     "http://127.0.0.1.example:3080/",
-  ])("rejects a non-exact Legacy probe endpoint %s without echoing it", (endpoint) => {
+  ])("rejects a non-exact DSH probe endpoint %s without echoing it", (endpoint) => {
     try {
-      parseDeepSeekLegacyEndpoint(endpoint);
+      parseDeepSeekEndpoint(endpoint);
       throw new Error("expected endpoint validation to fail");
     } catch (error) {
       expect(error).toMatchObject({ code: "protocolError" });
@@ -196,7 +196,10 @@ describe("DeepSeek executable generation probe", () => {
   });
 
   it.each([
-    ["0.1.1-rc.2", "legacy", "0.1.1-rc.2"],
+    ["0.1.2-rc.1", "modern", "0.1.2-rc.1"],
+    ["0.1.5-rc.1", "modern", "0.1.5-rc.1"],
+    ["0.1.5-rc.1\n", "modern", "0.1.5-rc.1"],
+    ["0.1.5-rc.1\r\n", "modern", "0.1.5-rc.1"],
     ["0.1.2-rc.1\n", "modern", "0.1.2-rc.1"],
     ["0.1.2-rc.1\r\n", "modern", "0.1.2-rc.1"],
   ] as const)("classifies the exact supported output %j", (output, generation, version) => {
@@ -215,6 +218,12 @@ describe("DeepSeek executable generation probe", () => {
   it.each([
     "0.1.0-rc.7",
     "0.1.1-rc.1",
+    "0.1.1-rc.2",
+    "0.1.5-alpha.1",
+    "0.1.5-rc.2",
+    "0.1.5",
+    "0.1.6-rc.1",
+    "0.1.5-rc.1+build.1",
     "0.1.2-alpha.1",
     "0.1.2-alpha.2",
     "0.1.2-alpha.3",
@@ -235,10 +244,12 @@ describe("DeepSeek executable generation probe", () => {
       throw new Error("expected unsupported version to fail");
     } catch (error) {
       expect(error).toMatchObject({ code: "unsupported", retryable: false });
-      expect((error as Error).message).toContain("推荐版本 dsh-v0.1.2-rc.1");
+      expect((error as Error).message).toContain("仅支持 dsh-v0.1.2-rc.1 和 dsh-v0.1.5-rc.1");
       expect((error as Error).message).toContain(
-        "Please upgrade to the recommended dsh-v0.1.2-rc.1",
+        "only supports dsh-v0.1.2-rc.1 and dsh-v0.1.5-rc.1",
       );
+      expect((error as Error).message).toContain("推荐安装 dsh-v0.1.5-rc.1");
+      expect((error as Error).message).toContain("dsh-v0.1.5-rc.1 is recommended");
     }
   });
 
@@ -296,7 +307,7 @@ describe("DeepSeek executable generation probe", () => {
       { command: executable() },
       dependencies(child),
     );
-    child.stdout.emit("data", "0.1.1-rc.2\n");
+    child.stdout.emit("data", "0.1.5-rc.1\n");
     child.stderr.emit("data", "API_KEY=secret-canary unexpected warning\n");
     close(child, 0);
     await expect(pending).rejects.toMatchObject({
@@ -371,9 +382,9 @@ describe("DeepSeek executable generation probe", () => {
       },
       probeDependencies,
     );
-    child.stdout.emit("data", "0.1.1-rc.2\n");
+    child.stdout.emit("data", "0.1.5-rc.1\n");
     close(child, 0);
-    await expect(pending).resolves.toMatchObject({ generation: "legacy" });
+    await expect(pending).resolves.toMatchObject({ generation: "modern", version: "0.1.5-rc.1" });
 
     for (const option of ["timeoutMs", "cleanupTimeoutMs"] as const) {
       const rejectedDependencies = dependencies(childProcess());

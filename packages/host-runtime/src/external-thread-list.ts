@@ -88,9 +88,46 @@ export function externalAnchor(entry: ThreadListEntry): ThreadListExternalAnchor
 function includesExternalRecord(
   record: StoredThreadRecordV1,
   query: DecodedThreadListRequest,
+  byId: ReadonlyMap<string, StoredThreadRecordV1>,
 ): boolean {
   if (record.state !== "ready" || !record.nativeSessionRef) return false;
-  if (record.subagent) return false;
+  // Rollback retains old records for historical links, but only rebound children
+  // belong to the parent's current Native Session (including nested children).
+  let current = record;
+  const owners = new Set<string>();
+  while (current.subagent) {
+    if (owners.has(current.hostThreadId)) return false;
+    owners.add(current.hostThreadId);
+    const parent = byId.get(current.subagent.parentHostThreadId);
+    if (
+      !parent ||
+      parent.state !== "ready" ||
+      parent.harnessId !== current.harnessId ||
+      parent.nativeSessionRef?.nativeSessionId !== current.nativeSessionRef?.nativeSessionId
+    )
+      return false;
+    current = parent;
+  }
+  const sourceKind = record.subagent ? "subAgentThreadSpawn" : "vscode";
+  const scoped = query.parentThreadId !== null || query.ancestorThreadId !== null;
+  if (
+    record.subagent &&
+    !scoped &&
+    !query.sourceKinds?.some((kind) => kind === "subAgent" || kind === "subAgentThreadSpawn")
+  )
+    return false;
+  if (query.parentThreadId !== null && record.subagent?.parentHostThreadId !== query.parentThreadId)
+    return false;
+  if (query.ancestorThreadId !== null) {
+    let parentId = record.subagent?.parentHostThreadId;
+    const visited = new Set<string>([record.hostThreadId]);
+    while (parentId && parentId !== query.ancestorThreadId && !visited.has(parentId)) {
+      visited.add(parentId);
+      parentId = byId.get(parentId)?.subagent?.parentHostThreadId;
+    }
+    if (record.hostThreadId === query.ancestorThreadId || parentId !== query.ancestorThreadId)
+      return false;
+  }
   if (record.archived !== query.archived) return false;
   if (query.cwd !== null && !query.cwd.includes(record.cwd)) return false;
   if (
@@ -103,7 +140,8 @@ function includesExternalRecord(
   if (
     query.sourceKinds !== null &&
     query.sourceKinds.length > 0 &&
-    !query.sourceKinds.includes("vscode")
+    !query.sourceKinds.includes(sourceKind) &&
+    !(record.subagent && query.sourceKinds.includes("subAgent"))
   ) {
     return false;
   }
@@ -113,7 +151,6 @@ function includesExternalRecord(
   ) {
     return false;
   }
-  if (query.parentThreadId !== null || query.ancestorThreadId !== null) return false;
   if (query.isPinned === true) return false;
   return true;
 }
@@ -141,7 +178,7 @@ export function resolveExternalSessionTreeIds(
       }
       visited.add(current.hostThreadId);
       path.push(current);
-      const sourceId = current.forkSource?.hostThreadId;
+      const sourceId = current.subagent?.parentHostThreadId ?? current.forkSource?.hostThreadId;
       const source = sourceId ? byId.get(sourceId) : undefined;
       if (!source) {
         const root = current.hostThreadId;
@@ -165,8 +202,9 @@ export function listExternalThreadMetadata(input: {
 }): ExternalThreadListPage {
   if (!input.query.supportsExternal) return { data: [], hasMore: false };
   const sessionIds = resolveExternalSessionTreeIds(input.records);
+  const byId = new Map(input.records.map((record) => [record.hostThreadId, record]));
   const entries = input.records
-    .filter((record) => includesExternalRecord(record, input.query))
+    .filter((record) => includesExternalRecord(record, input.query, byId))
     .map((record): ThreadListEntry => {
       const runtime = input.runtimeFor(record.hostThreadId);
       const sessionId = sessionIds.get(record.hostThreadId);

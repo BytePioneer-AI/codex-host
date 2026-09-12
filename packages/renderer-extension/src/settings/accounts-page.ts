@@ -19,10 +19,13 @@ import type {
 
 import {
   accountListFocusRestorer,
+  accountPlanLabel,
   createAccountsTable,
   renderAccountRows,
+  renderHarnessAccountRow,
 } from "./accounts-list.js";
-import { mountHarnessAccounts, type RendererHarnessAccountClient } from "./harness-accounts.js";
+import { createHarnessAccounts, type RendererHarnessAccountClient } from "./harness-accounts.js";
+import { mountAccountResetCountdowns } from "./accounts-reset-time.js";
 import type { AccountUsageDisplay, AccountUsageViewState } from "./accounts-usage.js";
 import type { RendererSettingsPageDefinition, RendererSettingsPageMountContext } from "./core.js";
 import { createRendererSettingsIcon } from "./icons.js";
@@ -70,16 +73,13 @@ export function createAccountsSettingsPage(
       const header = document.createElement("div");
       header.className = "settings-account-header";
       const copy = document.createElement("div");
-      const eyebrow = document.createElement("p");
-      eyebrow.className = "settings-account-eyebrow";
-      eyebrow.textContent = "ACCOUNT MANAGEMENT";
       const heading = document.createElement("h1");
       heading.className = "settings-section-label";
       heading.textContent = messages.pageLabels.accounts;
       const description = document.createElement("p");
       description.className = "settings-page-description";
       description.textContent = messages.accountsDescription;
-      copy.append(eyebrow, heading, description);
+      copy.append(heading, description);
       const add = document.createElement("button");
       add.type = "button";
       add.className = "settings-command-button";
@@ -89,29 +89,6 @@ export function createAccountsSettingsPage(
       const status = document.createElement("p");
       status.className = "settings-account-status";
       status.setAttribute("aria-live", "polite");
-      const helpRow = document.createElement("div");
-      helpRow.className = "settings-account-help-row";
-      const taskHint = document.createElement("p");
-      taskHint.className = "settings-account-task-hint";
-      const taskHintText = document.createElement("span");
-      taskHintText.textContent = messages.accountTaskHint;
-      taskHint.append(createRendererSettingsIcon("info", 16), taskHintText);
-      const help = document.createElement("button");
-      help.type = "button";
-      help.className = "settings-account-help-button";
-      help.append(createRendererSettingsIcon("help", 16), messages.accountLoginHelp);
-      help.setAttribute("aria-expanded", "false");
-      help.setAttribute("aria-controls", "settings-account-login-help");
-      const deviceCodeNote = document.createElement("p");
-      deviceCodeNote.id = "settings-account-login-help";
-      deviceCodeNote.className = "settings-account-device-code-note";
-      deviceCodeNote.textContent = messages.accountDeviceCodePrerequisite;
-      deviceCodeNote.hidden = true;
-      help.addEventListener("click", () => {
-        deviceCodeNote.hidden = !deviceCodeNote.hidden;
-        help.setAttribute("aria-expanded", String(!deviceCodeNote.hidden));
-      });
-      helpRow.append(taskHint, help);
       const toolbar = document.createElement("div");
       toolbar.className = "settings-account-toolbar";
       const connected = document.createElement("div");
@@ -160,9 +137,10 @@ export function createAccountsSettingsPage(
       toolbar.append(connected, searchWrapper, displayControls, refreshUsage);
       const list = document.createElement("div");
       list.className = "settings-account-list";
-      const { table, body } = createAccountsTable(document, messages);
+      const { table, body, updateDisplay } = createAccountsTable(document, messages);
       list.append(table);
-      context.content.append(header, helpRow, deviceCodeNote, status, toolbar, list);
+      context.content.append(header, status, toolbar, list);
+      const stopCountdowns = mountAccountResetCountdowns(list, messages, context.signal);
 
       let accounts: readonly CodexAccountSummary[] = [];
       let accountCreating = false;
@@ -224,7 +202,8 @@ export function createAccountsSettingsPage(
         const restoreFocus = accountListFocusRestorer(list, search);
         body.replaceChildren();
         status.textContent = loginMessage ?? "";
-        connectedCount.textContent = String(accounts.filter((account) => account.email).length);
+        connectedCount.textContent = String(accounts.length + harnessAccounts.accounts.length);
+        updateDisplay(usageDisplay);
         search.disabled = login !== null || loginStartingAccountId !== null;
         for (const [display, button] of displayButtons) {
           button.setAttribute("aria-pressed", String(display === usageDisplay));
@@ -236,11 +215,17 @@ export function createAccountsSettingsPage(
           [...usageByAccountId.values()].some((usage) => usage.status === "loading") ||
           accountBusy();
         const query = search.value.trim().toLocaleLowerCase();
-        harnessAccounts?.update(query, usageDisplay);
         const visibleAccounts = accounts.filter((account) =>
-          `${account.email ?? ""} ${account.label}`.toLocaleLowerCase().includes(query),
+          `Codex ${account.email ?? ""} ${account.label} ${accountPlanLabel(account.planType) ?? ""}`
+            .toLocaleLowerCase()
+            .includes(query),
         );
-        if (visibleAccounts.length === 0) {
+        const visibleHarnessAccounts = harnessAccounts.accounts.filter((account) =>
+          `${account.harnessName} ${account.email ?? ""} ${account.label ?? ""} ${account.plan ?? ""}`
+            .toLocaleLowerCase()
+            .includes(query),
+        );
+        if (visibleAccounts.length + visibleHarnessAccounts.length === 0) {
           const emptyRow = document.createElement("tr");
           const emptyCell = document.createElement("td");
           emptyCell.colSpan = 4;
@@ -330,6 +315,9 @@ export function createAccountsSettingsPage(
             verificationRow.append(verificationCell);
             body.append(verificationRow);
           }
+        }
+        for (const account of visibleHarnessAccounts) {
+          body.append(renderHarnessAccountRow(document, account, messages, usageDisplay));
         }
         restoreFocus();
       };
@@ -573,10 +561,11 @@ export function createAccountsSettingsPage(
       } catch {
         // Login remains usable even when the renderer bridge cannot subscribe.
       }
-      const harnessAccounts = mountHarnessAccounts(context, messages, getClient, render);
+      const harnessAccounts = createHarnessAccounts(context.signal, getClient, render);
       void harnessAccounts.refresh();
       load();
       return () => {
+        stopCountdowns();
         clearLoginRefresh();
         unsubscribe?.();
       };

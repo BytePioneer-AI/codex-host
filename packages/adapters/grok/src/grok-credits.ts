@@ -36,9 +36,12 @@ function finitePercent(value: unknown): number | undefined {
   return Math.min(100, Math.max(0, value));
 }
 
-function nonNegativeNumber(value: unknown): number | undefined {
-  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) return undefined;
-  return value;
+function nonNegativeCentValue(value: unknown): number | undefined {
+  if (!isRecord(value)) return undefined;
+  // Grok's Cent wrapper can omit val for zero amounts.
+  const amount = value.val === undefined ? 0 : value.val;
+  if (typeof amount !== "number" || !Number.isFinite(amount) || amount < 0) return undefined;
+  return amount;
 }
 
 function grokHome(environment: NodeJS.ProcessEnv): string {
@@ -73,27 +76,38 @@ export function parseGrokCreditsResponse(
   if (!isRecord(value) || !isRecord(value.config)) return null;
   const config = value.config;
   const period = isRecord(config.currentPeriod) ? config.currentPeriod : undefined;
+  const periodType = periodTypeFrom(period?.type);
   const resetsAt =
     (typeof period?.end === "string" && period.end.length > 0 ? period.end : undefined) ??
     (typeof config.billingPeriodEnd === "string" && config.billingPeriodEnd.length > 0
       ? config.billingPeriodEnd
       : undefined);
-  const onDemandCap = isRecord(config.onDemandCap)
-    ? nonNegativeNumber(config.onDemandCap.val)
-    : undefined;
-  const onDemandUsed = isRecord(config.onDemandUsed)
-    ? nonNegativeNumber(config.onDemandUsed.val)
-    : undefined;
-  const usedPercent =
-    finitePercent(config.creditUsagePercent) ??
-    (onDemandCap !== undefined && onDemandCap > 0 && onDemandUsed !== undefined
-      ? Math.min(100, Math.max(0, (onDemandUsed / onDemandCap) * 100))
-      : undefined);
+  let usedPercent = finitePercent(config.creditUsagePercent);
+  if (config.creditUsagePercent === undefined) {
+    const monthlyLimit = nonNegativeCentValue(config.monthlyLimit);
+    const used = nonNegativeCentValue(config.used);
+    if (
+      (config.monthlyLimit !== undefined && monthlyLimit === undefined) ||
+      (config.used !== undefined && used === undefined)
+    )
+      return null;
+    // Follow Grok's included-credit calculation, never the separate on-demand spending cap.
+    if (monthlyLimit !== undefined && monthlyLimit > 0) {
+      usedPercent = Math.min(100, ((used ?? 0) / monthlyLimit) * 100);
+    } else if (
+      periodType !== "unknown" &&
+      resetsAt !== undefined &&
+      Number.isFinite(Date.parse(resetsAt))
+    ) {
+      // Grok defaults omitted usage to zero. Require a recognizable period, not just any config.
+      usedPercent = 0;
+    }
+  }
   if (usedPercent === undefined) return null;
   const productUsage = productUsageFrom(config.productUsage);
   return {
     usedPercent,
-    periodType: periodTypeFrom(period?.type),
+    periodType,
     fetchedAt,
     ...(resetsAt ? { resetsAt } : {}),
     ...(productUsage ? { productUsage } : {}),

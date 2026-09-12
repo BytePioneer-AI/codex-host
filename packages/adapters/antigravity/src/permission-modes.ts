@@ -5,30 +5,20 @@ import {
   type HarnessPermissionModeId,
 } from "@codexhost/shared-contracts";
 
-export type AntigravityPermissionMode =
-  "configured" | "desktop-approvals" | "dangerously-skip-permissions";
+export type AntigravityPermissionMode = "dangerously-skip-permissions";
 
-export const ANTIGRAVITY_DEFAULT_PERMISSION_MODE_ID =
-  harnessPermissionModeIdSchema.parse("configured");
+export const ANTIGRAVITY_DEFAULT_PERMISSION_MODE_ID = harnessPermissionModeIdSchema.parse(
+  "dangerously-skip-permissions",
+);
 
 export const ANTIGRAVITY_PERMISSION_MODE_CATALOG: HarnessPermissionModeCatalog =
   harnessPermissionModeCatalogSchema.parse({
     modes: [
       {
-        id: "configured",
-        label: "Configured permissions",
-        description: "Use Antigravity CLI permission rules with headless-safe tool approvals.",
-      },
-      {
-        id: "desktop-approvals",
-        label: "Desktop approvals",
-        description:
-          "Ask Desktop before each parent tool action. Uses native auto-execution behind a verified, fail-closed Hook; does not use configured permission prompts.",
-      },
-      {
         id: "dangerously-skip-permissions",
         label: "Skip permissions",
-        description: "Auto-approve every Antigravity CLI tool action.",
+        description:
+          "Run Antigravity CLI with --dangerously-skip-permissions. codexhost adds no tool approval or workspace restrictions.",
         dangerous: true,
       },
     ],
@@ -39,12 +29,10 @@ export function decodeAntigravityPermissionModeId(
   value: HarnessPermissionModeId,
 ): AntigravityPermissionMode {
   const parsed = harnessPermissionModeIdSchema.parse(value);
-  if (
-    parsed !== "configured" &&
-    parsed !== "desktop-approvals" &&
-    parsed !== "dangerously-skip-permissions"
-  ) {
-    throw new Error("Antigravity Permission Mode belongs to another Adapter");
+  if (parsed !== "dangerously-skip-permissions") {
+    throw new Error(
+      "Antigravity only supports Skip permissions (dangerous). Explicitly select Skip permissions to continue; codexhost does not enforce tool permissions.",
+    );
   }
-  return parsed as AntigravityPermissionMode;
+  return "dangerously-skip-permissions";
 }

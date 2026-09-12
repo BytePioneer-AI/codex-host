@@ -80,6 +80,21 @@ A Session SHALL expose one single-consumer ordered output stream. Every accepted
 - **THEN** the Session SHALL continue waiting for the native terminal condition
 - **AND** elapsed wall-clock time alone SHALL NOT fail the Turn or fault the Session
 
+### Requirement: Pi compaction follows native completion without a Host wall-clock deadline
+
+The Pi Adapter SHALL wait for native `compaction_end` for manual and automatic compaction, including preflight compaction before Prompt acceptance. Elapsed wall-clock time alone SHALL NOT fail compaction or fault the Session. Pending Prompt and Compact response deadlines SHALL remain paused while native compaction is active and SHALL resume after its terminal event. Startup, other RPC responses, cancellation, and process cleanup SHALL retain their existing bounds.
+
+#### Scenario: Slow compaction completes and the Session continues
+
+- **WHEN** native manual or automatic compaction runs longer than seven minutes and then completes successfully
+- **THEN** the Adapter SHALL preserve the native compaction lifecycle and complete the pending operation
+- **AND** the same Session SHALL accept a subsequent Turn without restarting the Host or Pi
+
+#### Scenario: Session closes while compaction is pending
+
+- **WHEN** the Session closes before native compaction completes
+- **THEN** pending operations SHALL terminate and the owned Pi process SHALL close within the existing cleanup bounds
+
 ### Requirement: Session state and faults use the ordered stream
 
 The Session SHALL publish available Native Session identity as a complete state change. An unrecoverable Pi process or protocol fault SHALL complete any active lifecycle before emitting `session.faulted` and ending the stream.

@@ -39,6 +39,13 @@ export class DelegationControlRegistry implements DelegationControlApi {
     ).inspect(input);
   }
 
+  async listHarnesses() {
+    return only(
+      [...this.#registrations],
+      "Harness discovery requires exactly one active Host Runtime session",
+    ).listHarnesses();
+  }
+
   async start(input: DelegationStartInput) {
     return (await this.#registrationForStart(input)).start(input);
   }

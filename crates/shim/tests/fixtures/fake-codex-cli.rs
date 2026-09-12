@@ -284,6 +284,9 @@ fn main() {
 
             setpgid(Pid::from_raw(0), Pid::from_raw(0)).expect("isolate fake child process group");
         }
+        if let Some(path) = env::var_os("FAKE_CODEX_CHILD_READY_PATH") {
+            write_ready_file(Path::new(&path), &process::id().to_string());
+        }
         thread::sleep(Duration::from_millis(environment_u64(
             "FAKE_CODEX_CHILD_DELAY_MS",
             60_000,
@@ -359,10 +362,16 @@ fn main() {
             );
         }
         if env::var_os("FAKE_CODEX_ROOT_EXIT").is_some() {
-            thread::sleep(Duration::from_millis(environment_u64(
-                "FAKE_CODEX_ROOT_EXIT_DELAY_MS",
-                500,
-            )));
+            if env::var_os("FAKE_CODEX_ROOT_EXIT_ON_INPUT").is_some() {
+                io::stdin()
+                    .read_exact(&mut [0])
+                    .expect("wait for root exit release");
+            } else {
+                thread::sleep(Duration::from_millis(environment_u64(
+                    "FAKE_CODEX_ROOT_EXIT_DELAY_MS",
+                    500,
+                )));
+            }
             return;
         }
         thread::sleep(Duration::from_millis(environment_u64(

@@ -9,7 +9,9 @@ export {
   decodeQoderModelRef,
   encodeQoderModelRef,
   parseQoderModelCatalog,
+  qoderAvailableThinkingOptions,
   QODER_DEFAULT_MODEL_REF,
+  QODER_EFFORT_LABELS,
 } from "./qoder-models.js";
 export {
   QODER_DEFAULT_PERMISSION_MODE_ID,

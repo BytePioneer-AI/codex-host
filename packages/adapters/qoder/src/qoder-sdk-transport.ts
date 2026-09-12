@@ -66,6 +66,7 @@ import type {
   CanUseToolContext,
   GetSessionMessagesOptions,
   PermissionResult,
+  QoderContextUsage,
   QoderOptions,
   QoderQuery,
   QoderQueryFactory,
@@ -177,7 +178,7 @@ export class QoderSession implements HarnessSession {
 
   readonly #channel = new HarnessOutputChannel<HarnessOutput>();
   readonly #pushableInput = new PushableInput<SDKUserMessage>();
-  readonly #usageTracker = new QoderUsageTracker();
+  readonly #usageTracker: QoderUsageTracker;
   readonly #pendingInteractions = new Map<string, PendingInteraction>();
   readonly #activeTools = new Map<string, ActiveTool>();
   readonly #query: QoderQuery;
@@ -215,6 +216,7 @@ export class QoderSession implements HarnessSession {
     this.initialState = { ...this.#state };
 
     const nativeModel = options.model ? decodeQoderModelRef(options.model) : undefined;
+    this.#usageTracker = new QoderUsageTracker(nativeModel ? { modelId: nativeModel } : undefined);
     const permissionMode = mapToQoderPermissionMode(options.permissionModeId);
 
     const environment = qoderEnvironment(options.environment);
@@ -682,6 +684,7 @@ export class QoderSession implements HarnessSession {
         observedForTurnId: this.#activeTurn.turnId,
       });
     }
+    void this.refreshUsage();
 
     // Complete any open tools
     for (const activeTool of this.#activeTools.values()) {
@@ -994,22 +997,37 @@ export class QoderSession implements HarnessSession {
   }
 
   async refreshUsage(): Promise<void> {
+    let changed = false;
     if (this.#query.getContextUsage) {
       try {
         const usage = await this.#query.getContextUsage();
         if (usage) {
-          this.#usageTracker.observeContextUsage(usage);
-          const snapshot = this.#usageTracker.snapshot();
-          if (snapshot) {
-            this.#emitEvent({
-              type: "session.usage.changed",
-              usage: snapshot,
-              ...(this.#activeTurn ? { observedForTurnId: this.#activeTurn.turnId } : {}),
-            });
-          }
+          this.#usageTracker.observeContextUsage(usage as QoderContextUsage);
+          changed = true;
         }
       } catch {
         // Diagnostic failure only, never fails turn
+      }
+    }
+    if (this.#query.getUsageInfo) {
+      try {
+        const info = await this.#query.getUsageInfo();
+        if (info) {
+          this.#usageTracker.observeUsageInfo(info);
+          changed = true;
+        }
+      } catch {
+        // Diagnostic failure only, never fails turn
+      }
+    }
+    if (changed) {
+      const snapshot = this.#usageTracker.snapshot();
+      if (snapshot) {
+        this.#emitEvent({
+          type: "session.usage.changed",
+          usage: snapshot,
+          ...(this.#activeTurn ? { observedForTurnId: this.#activeTurn.turnId } : {}),
+        });
       }
     }
   }
@@ -1331,6 +1349,8 @@ export class QoderSession implements HarnessSession {
             };
           }
         }
+
+        this.#usageTracker.setModel(nativeModel);
 
         this.#state = {
           ...this.#state,

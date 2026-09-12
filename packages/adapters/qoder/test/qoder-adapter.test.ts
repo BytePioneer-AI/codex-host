@@ -34,7 +34,11 @@ import type {
   SDKResultMessage,
   SDKUserMessage,
 } from "../src/qoder-sdk-types.js";
-import { QoderUsageTracker } from "../src/qoder-usage.js";
+import {
+  QODER_DEFAULT_CONTEXT_WINDOW_TOKENS,
+  QoderUsageTracker,
+  resolveQoderContextWindow,
+} from "../src/qoder-usage.js";
 
 class FakeQoderQuery implements QoderQuery {
   readonly interrupt = vi.fn(async () => undefined);
@@ -1851,6 +1855,140 @@ describe("QoderAdapter", () => {
         expect(msgItem.item.text).toBe("Working tree is clean.");
         expect(msgItem.item.phase).toBe("final_answer");
       }
+    });
+  });
+
+  describe("QoderUsageTracker", () => {
+    it("resolves context window for default and gemini models", () => {
+      expect(resolveQoderContextWindow()).toBe(QODER_DEFAULT_CONTEXT_WINDOW_TOKENS);
+      expect(resolveQoderContextWindow("claude-3-5-sonnet")).toBe(200_000);
+      expect(resolveQoderContextWindow("gemini-2.5-pro")).toBe(1_048_576);
+      expect(resolveQoderContextWindow("gemini-1.5-flash")).toBe(1_048_576);
+      expect(resolveQoderContextWindow("custom-model", 500_000)).toBe(500_000);
+    });
+
+    it("tracks assistant message usage, context window, and context ratio", () => {
+      const tracker = new QoderUsageTracker({ modelId: "claude-3-7-sonnet" });
+      expect(tracker.snapshot()).toBeNull();
+
+      tracker.observeAssistant({
+        type: "assistant",
+        uuid: "asst-1",
+        session_id: "sess-1",
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text: "Hello" }],
+          usage: {
+            input_tokens: 1500,
+            output_tokens: 500,
+            cache_read_input_tokens: 300,
+            cache_creation_input_tokens: 200,
+            context_usage_ratio: 0.08,
+            credits: 0.02,
+          },
+        },
+        parent_tool_use_id: null,
+        parent_agent_id: null,
+      } as unknown as SDKAssistantMessage);
+
+      const snapshot = tracker.snapshot();
+      expect(snapshot).not.toBeNull();
+      expect(snapshot?.inputTokens).toBe(1500);
+      expect(snapshot?.outputTokens).toBe(500);
+      expect(snapshot?.totalTokens).toBe(2000);
+      expect(snapshot?.cachedInputTokens).toBe(300);
+      expect(snapshot?.cacheWriteInputTokens).toBe(200);
+      expect(snapshot?.totalCredits).toBe(0.02);
+      expect(snapshot?.contextUsagePercent).toBe(8);
+      expect(snapshot?.contextWindowTokens).toBe(200_000);
+      expect(snapshot?.contextUsedTokens).toBe(16_000);
+    });
+
+    it("tracks result message total_credits, total_cost_usd and replaces previous snapshot", () => {
+      const tracker = new QoderUsageTracker();
+      tracker.observeResult({
+        type: "result",
+        uuid: "res-1",
+        session_id: "sess-1",
+        subtype: "success",
+        total_credits: 0.15,
+        total_cost_usd: 0.0045,
+        usage: {
+          input_tokens: 2000,
+          output_tokens: 800,
+          context_usage_ratio: 0.1,
+        },
+      } as unknown as SDKResultMessage);
+
+      const snapshot = tracker.snapshot();
+      expect(snapshot?.totalCredits).toBe(0.15);
+      expect(snapshot?.totalCostUsd).toBe(0.0045);
+      expect(snapshot?.inputTokens).toBe(2000);
+      expect(snapshot?.outputTokens).toBe(800);
+      expect(snapshot?.totalTokens).toBe(2800);
+      expect(snapshot?.contextUsagePercent).toBe(10);
+      expect(snapshot?.contextWindowTokens).toBe(200_000);
+      expect(snapshot?.contextUsedTokens).toBe(20_000);
+
+      // Second result replaces cumulative total_credits, does not accumulate
+      tracker.observeResult({
+        type: "result",
+        uuid: "res-2",
+        session_id: "sess-1",
+        subtype: "success",
+        total_credits: 0.25,
+      } as unknown as SDKResultMessage);
+      expect(tracker.snapshot()?.totalCredits).toBe(0.25);
+    });
+
+    it("tracks context usage from getContextUsage and usage info from getUsageInfo", () => {
+      const tracker = new QoderUsageTracker();
+      tracker.observeContextUsage({
+        contextWindow: {
+          usedPercentage: 25,
+          maxTokens: 128_000,
+          totalTokens: 32_000,
+        },
+      });
+
+      let snapshot = tracker.snapshot();
+      expect(snapshot?.contextUsagePercent).toBe(25);
+      expect(snapshot?.contextWindowTokens).toBe(128_000);
+      expect(snapshot?.contextUsedTokens).toBe(32_000);
+
+      tracker.observeUsageInfo({
+        session: {
+          total_credits: 0.5,
+        },
+      });
+      snapshot = tracker.snapshot();
+      expect(snapshot?.totalCredits).toBe(0.5);
+    });
+
+    it("updates context window when setModel is called", () => {
+      const tracker = new QoderUsageTracker({ modelId: "claude-3-5-sonnet" });
+      tracker.observeAssistant({
+        type: "assistant",
+        uuid: "asst-1",
+        session_id: "sess-1",
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text: "Hi" }],
+          usage: {
+            input_tokens: 1000,
+            output_tokens: 200,
+            context_usage_ratio: 0.1,
+          },
+        },
+        parent_tool_use_id: null,
+        parent_agent_id: null,
+      } as unknown as SDKAssistantMessage);
+      expect(tracker.snapshot()?.contextWindowTokens).toBe(200_000);
+      expect(tracker.snapshot()?.contextUsedTokens).toBe(20_000);
+
+      tracker.setModel("gemini-2.5-flash");
+      expect(tracker.snapshot()?.contextWindowTokens).toBe(1_048_576);
+      expect(tracker.snapshot()?.contextUsedTokens).toBe(104_858);
     });
   });
 });

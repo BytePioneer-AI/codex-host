@@ -418,6 +418,8 @@ function coalesceSingleFileChanges(fileChanges: HostFileChange[]): HostFileChang
     path: filePath,
     kind: overallKind,
     unifiedDiff: mergedDiff,
+    ...(first.oldText !== undefined ? { oldText: first.oldText } : {}),
+    ...(last.newText !== undefined ? { newText: last.newText } : {}),
   };
 }
 
@@ -525,12 +527,51 @@ function projectFileChangeKind(kind: HostFileChange["kind"]): JsonValue {
   return { type: kind };
 }
 
+export function extractContentFromUnifiedDiff(
+  unifiedDiff: string,
+  kind: "add" | "delete",
+): string {
+  if (
+    !unifiedDiff.includes("@@") &&
+    !unifiedDiff.startsWith("diff --git") &&
+    !unifiedDiff.startsWith("---")
+  ) {
+    return unifiedDiff;
+  }
+  const lines = unifiedDiff.replaceAll("\r\n", "\n").split("\n");
+  const prefix = kind === "add" ? "+" : "-";
+  const headerPrefix = kind === "add" ? "+++" : "---";
+  const result: string[] = [];
+  let inHunk = false;
+  for (const line of lines) {
+    if (line.startsWith("@@")) {
+      inHunk = true;
+      continue;
+    }
+    if (!inHunk) continue;
+    if (line.startsWith(prefix) && !line.startsWith(headerPrefix)) {
+      result.push(line.slice(1));
+    }
+  }
+  return result.join("\n");
+}
+
 function projectFileChanges(changes: HostFileChange[]): JsonValue[] {
-  return changes.map(({ path, kind, unifiedDiff }) => ({
-    path,
-    kind: projectFileChangeKind(kind),
-    diff: ensureGitDiffHeader(path, unifiedDiff),
-  }));
+  return changes.map((change) => {
+    let diff: string;
+    if (change.kind === "add") {
+      diff = change.newText ?? extractContentFromUnifiedDiff(change.unifiedDiff, "add");
+    } else if (change.kind === "delete") {
+      diff = change.oldText ?? extractContentFromUnifiedDiff(change.unifiedDiff, "delete");
+    } else {
+      diff = ensureGitDiffHeader(change.path, change.unifiedDiff);
+    }
+    return {
+      path: change.path,
+      kind: projectFileChangeKind(change.kind),
+      diff,
+    };
+  });
 }
 
 function wireFileChangeItem(

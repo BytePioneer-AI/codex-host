@@ -2064,7 +2064,8 @@ export function installRendererBindingProbe(
     if (!control || !hostId) return null;
     const selected = control.clientForHost?.(hostId);
     if (selected) return selected;
-    const currentHostId = control.currentHostId?.() ?? "local";
+    if (!control.currentHostId) return hostId === "local" ? control : null;
+    const currentHostId = control.currentHostId();
     return currentHostId === hostId ? control : null;
   }
 

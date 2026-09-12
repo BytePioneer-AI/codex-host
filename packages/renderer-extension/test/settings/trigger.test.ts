@@ -18,6 +18,147 @@ function bounds(left: number, top: number, width: number, height: number): Rende
   };
 }
 
+class FakeHeaderElement {
+  readonly attributes = new Map<string, string>();
+  readonly children: FakeHeaderElement[] = [];
+  readonly listeners = new Map<string, (event: { stopPropagation(): void }) => void>();
+  readonly classList = { add: vi.fn() };
+  readonly style: Record<string, string | ((name: string, value: string) => void)> = {};
+  disabled = false;
+  isConnected = true;
+  parentElement: FakeHeaderElement | null = null;
+  title = "";
+  type = "";
+
+  constructor(
+    readonly left = 0,
+    readonly width = 80,
+  ) {
+    this.style.setProperty = (name: string, value: string) => {
+      this.style[name] = value;
+    };
+  }
+
+  get firstChild(): FakeHeaderElement | null {
+    return this.children[0] ?? null;
+  }
+  get nextSibling(): FakeHeaderElement | null {
+    if (!this.parentElement) return null;
+    const index = this.parentElement.children.indexOf(this);
+    return this.parentElement.children[index + 1] ?? null;
+  }
+  addEventListener(name: string, listener: (event: { stopPropagation(): void }) => void): void {
+    this.listeners.set(name, listener);
+  }
+  append(...children: FakeHeaderElement[]): void {
+    for (const child of children) this.insertBefore(child, null);
+  }
+  appendChild(child: FakeHeaderElement): FakeHeaderElement {
+    return this.insertBefore(child, null);
+  }
+  getBoundingClientRect(): DOMRect {
+    return {
+      left: this.left,
+      right: this.left + this.width,
+      top: 0,
+      bottom: 46,
+      width: this.width,
+      height: 46,
+    } as DOMRect;
+  }
+  insertBefore(child: FakeHeaderElement, before: FakeHeaderElement | null): FakeHeaderElement {
+    child.remove();
+    child.parentElement = this;
+    child.isConnected = true;
+    const index = before ? this.children.indexOf(before) : -1;
+    if (index < 0) this.children.push(child);
+    else this.children.splice(index, 0, child);
+    return child;
+  }
+  matches(selector: string): boolean {
+    const attribute = /^\[([^=\]]+)="([^"]*)"\]$/.exec(selector);
+    if (!attribute) return false;
+    const [, name, value] = attribute;
+    return name !== undefined && this.attributes.get(name) === value;
+  }
+  querySelector(selector: string): FakeHeaderElement | null {
+    return this.querySelectorAll(selector)[0] ?? null;
+  }
+  querySelectorAll(selector: string): FakeHeaderElement[] {
+    const scoped = selector.startsWith(":scope > ");
+    const target = scoped ? selector.slice(":scope > ".length) : selector;
+    if (scoped) return this.children.filter((child) => child.matches(target));
+    return this.children.flatMap((child) => [
+      ...(child.matches(target) ? [child] : []),
+      ...child.querySelectorAll(selector),
+    ]);
+  }
+  remove(): void {
+    if (this.parentElement) {
+      const index = this.parentElement.children.indexOf(this);
+      if (index >= 0) this.parentElement.children.splice(index, 1);
+    }
+    this.parentElement = null;
+    this.isConnected = false;
+  }
+  removeEventListener(name: string): void {
+    this.listeners.delete(name);
+  }
+  setAttribute(name: string, value: string): void {
+    this.attributes.set(name, value);
+  }
+  toggleAttribute(name: string, force: boolean): void {
+    if (force) this.attributes.set(name, "");
+    else this.attributes.delete(name);
+  }
+}
+
+interface FakeHeader {
+  header: FakeHeaderElement;
+  startSlot: FakeHeaderElement;
+  surface: FakeHeaderElement;
+  pageHeader: FakeHeaderElement;
+  actionGroup: FakeHeaderElement | null;
+  endSlot: FakeHeaderElement;
+}
+
+// Mirrors Codex Desktop 0.153.4: both shell slots carry the obstacle attribute, and the native
+// action group is the trailing obstacle child of the header context menu surface.
+function createFakeHeader(options: { nativeActions: boolean }): FakeHeader {
+  const header = new FakeHeaderElement(0, 1510);
+  const startSlot = new FakeHeaderElement(0, 216);
+  startSlot.setAttribute("data-test-id", "header-shell-slot");
+  startSlot.setAttribute("data-app-shell-header-obstacle", "true");
+  const surface = new FakeHeaderElement(216, 1119);
+  surface.setAttribute("data-testid", "app-shell-header-context-menu-surface");
+  const pageHeader = new FakeHeaderElement(223, 1071);
+  pageHeader.setAttribute("data-app-shell-page-header", "true");
+  surface.append(pageHeader);
+  let actionGroup: FakeHeaderElement | null = null;
+  if (options.nativeActions) {
+    actionGroup = new FakeHeaderElement(1299, 31);
+    actionGroup.setAttribute("data-app-shell-header-obstacle", "true");
+    surface.append(actionGroup);
+  }
+  const endSlot = new FakeHeaderElement(1447, 63);
+  endSlot.setAttribute("data-test-id", "header-shell-slot");
+  endSlot.setAttribute("data-app-shell-header-obstacle", "true");
+  header.append(startSlot, surface, endSlot);
+  return { header, startSlot, surface, pageHeader, actionGroup, endSlot };
+}
+
+function stubHeaderDocument(current: () => FakeHeaderElement): Document {
+  const document = {
+    createElement: () => new FakeHeaderElement(),
+    createElementNS: () => new FakeHeaderElement(),
+    querySelector: (selector: string) =>
+      selector === 'header[data-pip-obstacle="app-shell-header"]' ? current() : null,
+    querySelectorAll: () => [],
+  } as unknown as Document;
+  vi.stubGlobal("document", document);
+  return document;
+}
+
 describe("Renderer settings header trigger", () => {
   const header = bounds(240, 36, 942, 46);
 
@@ -123,102 +264,9 @@ describe("Renderer settings header trigger", () => {
     vi.unstubAllGlobals();
   });
 
-  it("mounts directly before the application header end slot without Thread actions", () => {
-    class FakeElement {
-      readonly attributes = new Map<string, string>();
-      readonly children: FakeElement[] = [];
-      readonly listeners = new Map<string, (event: { stopPropagation(): void }) => void>();
-      readonly classList = { add: vi.fn() };
-      readonly style: Record<string, string | ((name: string, value: string) => void)> = {};
-      disabled = false;
-      isConnected = true;
-      parentElement: FakeElement | null = null;
-      title = "";
-      type = "";
-
-      constructor(readonly left = 0) {
-        this.style.setProperty = (name: string, value: string) => {
-          this.style[name] = value;
-        };
-      }
-
-      get firstChild(): FakeElement | null {
-        return this.children[0] ?? null;
-      }
-      get nextSibling(): FakeElement | null {
-        if (!this.parentElement) return null;
-        const index = this.parentElement.children.indexOf(this);
-        return this.parentElement.children[index + 1] ?? null;
-      }
-      addEventListener(name: string, listener: (event: { stopPropagation(): void }) => void): void {
-        this.listeners.set(name, listener);
-      }
-      append(...children: FakeElement[]): void {
-        for (const child of children) this.insertBefore(child, null);
-      }
-      appendChild(child: FakeElement): FakeElement {
-        return this.insertBefore(child, null);
-      }
-      getBoundingClientRect(): DOMRect {
-        return {
-          left: this.left,
-          right: this.left + 80,
-          top: 0,
-          bottom: 46,
-          width: 80,
-          height: 46,
-        } as DOMRect;
-      }
-      insertBefore(child: FakeElement, before: FakeElement | null): FakeElement {
-        child.remove();
-        child.parentElement = this;
-        child.isConnected = true;
-        const index = before ? this.children.indexOf(before) : -1;
-        if (index < 0) this.children.push(child);
-        else this.children.splice(index, 0, child);
-        return child;
-      }
-      querySelectorAll(selector: string): FakeElement[] {
-        return selector === ':scope > [data-test-id="header-shell-slot"]'
-          ? this.children.filter((child) => child.attributes.has("data-test-id"))
-          : [];
-      }
-      remove(): void {
-        if (this.parentElement) {
-          const index = this.parentElement.children.indexOf(this);
-          if (index >= 0) this.parentElement.children.splice(index, 1);
-        }
-        this.parentElement = null;
-        this.isConnected = false;
-      }
-      removeEventListener(name: string): void {
-        this.listeners.delete(name);
-      }
-      setAttribute(name: string, value: string): void {
-        this.attributes.set(name, value);
-      }
-      toggleAttribute(name: string, force: boolean): void {
-        if (force) this.attributes.set(name, "");
-        else this.attributes.delete(name);
-      }
-    }
-
-    const header = new FakeElement();
-    const startSlot = new FakeElement(0);
-    startSlot.setAttribute("data-test-id", "header-shell-slot");
-    const content = new FakeElement(240);
-    const endSlot = new FakeElement(1120);
-    endSlot.setAttribute("data-test-id", "header-shell-slot");
-    header.append(startSlot, content, endSlot);
-    let currentHeader = header;
-    const document = {
-      createElement: () => new FakeElement(),
-      createElementNS: () => new FakeElement(),
-      querySelector: (selector: string) =>
-        selector === 'header[data-pip-obstacle="app-shell-header"]' ? currentHeader : null,
-      querySelectorAll: () => [],
-    } as unknown as Document;
-    vi.stubGlobal("document", document);
+  it("mounts directly before the native header action group", () => {
+    const shell = createFakeHeader({ nativeActions: true });
+    const document = stubHeaderDocument(() => shell.header);
 
     try {
       const control = installRendererSettingsHeaderTrigger({
@@ -228,24 +276,87 @@ describe("Renderer settings header trigger", () => {
       });
 
       expect(control.root).not.toBeNull();
-      expect(header.children).toEqual([startSlot, content, control.root, endSlot]);
+      expect(shell.surface.children).toEqual([shell.pageHeader, control.root, shell.actionGroup]);
+      expect(shell.header.children).toEqual([shell.startSlot, shell.surface, shell.endSlot]);
+      control.dispose();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
 
-      const replacementHeader = new FakeElement();
-      const replacementStartSlot = new FakeElement(0);
-      replacementStartSlot.setAttribute("data-test-id", "header-shell-slot");
-      const replacementContent = new FakeElement(240);
-      const replacementEndSlot = new FakeElement(1120);
-      replacementEndSlot.setAttribute("data-test-id", "header-shell-slot");
-      replacementHeader.append(replacementStartSlot, replacementContent, replacementEndSlot);
-      currentHeader = replacementHeader;
+  it("mounts directly before the application header end slot without Thread actions", () => {
+    const shell = createFakeHeader({ nativeActions: false });
+    const document = stubHeaderDocument(() => shell.header);
+
+    try {
+      const control = installRendererSettingsHeaderTrigger({
+        available: true,
+        onOpen: vi.fn(),
+        ownerDocument: document,
+      });
+
+      expect(control.root).not.toBeNull();
+      expect(shell.header.children).toEqual([
+        shell.startSlot,
+        shell.surface,
+        control.root,
+        shell.endSlot,
+      ]);
+      expect(shell.surface.children).toEqual([shell.pageHeader]);
+      control.dispose();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("remounts before the native action group when Codex replaces the application header", () => {
+    const shell = createFakeHeader({ nativeActions: true });
+    let current = shell.header;
+    const document = stubHeaderDocument(() => current);
+
+    try {
+      const control = installRendererSettingsHeaderTrigger({
+        available: true,
+        onOpen: vi.fn(),
+        ownerDocument: document,
+      });
+      expect(shell.surface.children).toEqual([shell.pageHeader, control.root, shell.actionGroup]);
+
+      const replacement = createFakeHeader({ nativeActions: true });
+      current = replacement.header;
 
       expect(control.refresh()).toBe(true);
-      expect(header.children).toEqual([startSlot, content, endSlot]);
-      expect(replacementHeader.children).toEqual([
-        replacementStartSlot,
-        replacementContent,
+      expect(shell.surface.children).toEqual([shell.pageHeader, shell.actionGroup]);
+      expect(replacement.surface.children).toEqual([
+        replacement.pageHeader,
         control.root,
-        replacementEndSlot,
+        replacement.actionGroup,
+      ]);
+      control.dispose();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("stays put when another injected control mounts before the owned trigger", () => {
+    const shell = createFakeHeader({ nativeActions: true });
+    const document = stubHeaderDocument(() => shell.header);
+
+    try {
+      const control = installRendererSettingsHeaderTrigger({
+        available: true,
+        onOpen: vi.fn(),
+        ownerDocument: document,
+      });
+      const foreign = new FakeHeaderElement(1200, 24);
+      shell.surface.insertBefore(foreign, control.root as unknown as FakeHeaderElement);
+
+      expect(control.refresh()).toBe(true);
+      expect(shell.surface.children).toEqual([
+        shell.pageHeader,
+        foreign,
+        control.root,
+        shell.actionGroup,
       ]);
       control.dispose();
     } finally {

@@ -2,6 +2,7 @@ import { randomBytes } from "node:crypto";
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from "node:child_process";
 import fs from "node:fs";
 import { homedir, tmpdir } from "node:os";
+import path from "node:path";
 
 import { createOpencodeClient, type OpencodeClient } from "@opencode-ai/sdk/v2/client";
 
@@ -42,6 +43,7 @@ export interface OpenCodeServerDependencies {
   randomPassword(): string;
   spawn(command: string, args: string[], options: SpawnOptions): ChildProcessWithoutNullStreams;
   sleep(milliseconds: number): Promise<void>;
+  resolveServerCwd?(environment: NodeJS.ProcessEnv): string | undefined;
 }
 
 const DEFAULT_STARTUP_TIMEOUT_MS = 20_000;
@@ -129,7 +131,7 @@ function signalProcessTree(child: ChildProcessWithoutNullStreams, signal: NodeJS
 function safeOpenCodeServerCwd(environment: NodeJS.ProcessEnv): string | undefined {
   const candidates = [environment.USERPROFILE, environment.HOME, homedir(), tmpdir()];
   for (const candidate of candidates) {
-    if (!candidate) continue;
+    if (!candidate || !path.isAbsolute(candidate)) continue;
     try {
       if (!fs.statSync(candidate).isDirectory()) continue;
       fs.accessSync(candidate, fs.constants.R_OK | fs.constants.W_OK);
@@ -267,7 +269,13 @@ export class OpenCodeServerConnection implements OpenCodeServerConnectionLike {
       OPENCODE_SERVER_PASSWORD: password,
     };
     const invocation = openCodeServerInvocation(executable, environment);
-    const serverCwd = safeOpenCodeServerCwd(environment);
+    const serverCwd = (this.#dependencies.resolveServerCwd ?? safeOpenCodeServerCwd)(environment);
+    if (!serverCwd) {
+      throw new OpenCodeTransportError(
+        "unavailable",
+        "OpenCode Server requires a writable startup directory",
+      );
+    }
     let child: ChildProcessWithoutNullStreams;
     try {
       child = this.#dependencies.spawn(invocation.command, invocation.arguments, {
@@ -276,7 +284,7 @@ export class OpenCodeServerConnection implements OpenCodeServerConnectionLike {
         detached: process.platform !== "win32",
         windowsHide: true,
         windowsVerbatimArguments: invocation.windowsVerbatimArguments,
-        ...(serverCwd ? { cwd: serverCwd } : {}),
+        cwd: serverCwd,
       });
     } catch (error) {
       throw new OpenCodeTransportError(

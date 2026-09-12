@@ -29,6 +29,7 @@ import type {
   QoderQueryFactory,
   SDKAssistantMessage,
   SDKMessage,
+  SDKPartialAssistantMessage,
   SDKResultMessage,
   SDKUserMessage,
 } from "../src/qoder-sdk-types.js";
@@ -682,6 +683,10 @@ describe("QoderAdapter", () => {
 
       const permResult = await permPromise;
       expect(permResult.behavior).toBe("allow");
+      expect(permResult.toolUseID).toBe("tool-bash-1");
+      if (permResult.behavior === "allow") {
+        expect(permResult.updatedInput).toEqual({ command: "rm -rf /" });
+      }
 
       await collector.waitFor(
         (o) =>
@@ -689,6 +694,28 @@ describe("QoderAdapter", () => {
           o.event.type === "interaction.closed" &&
           o.event.reason === "responded",
       );
+
+      // Now test deny case
+      const denyPromise = canUseToolCb(
+        "Bash",
+        { command: "dangerous" },
+        { signal: abortController.signal, toolUseID: "tool-bash-2" },
+      );
+      const denyInteractionEvent = await collector.waitFor(
+        (o) =>
+          o.kind === "interaction" &&
+          o.interaction.type === "approval" &&
+          o.interaction.interactionId !== interactionId,
+      );
+      if (denyInteractionEvent.kind !== "interaction") throw new Error("Expected interaction");
+      await session.execute({
+        type: "interaction.respond",
+        interactionId: denyInteractionEvent.interaction.interactionId,
+        response: { type: "approval", actionId: "deny" },
+      });
+      const denyResult = await denyPromise;
+      expect(denyResult.behavior).toBe("deny");
+      expect(denyResult.toolUseID).toBe("tool-bash-2");
 
       await session.close();
     });
@@ -764,11 +791,36 @@ describe("QoderAdapter", () => {
 
       const result = await questionPromise;
       expect(result.behavior).toBe("allow");
+      expect(result.toolUseID).toBe("tool-question-1");
       if (result.behavior === "allow") {
         expect(result.updatedInput?.answers).toEqual({
           [questionPrompt]: "Production",
         });
+        // Crucial: original questions property must be preserved!
+        expect(result.updatedInput?.questions).toBeDefined();
       }
+
+      // Now test cancelled question
+      const cancelPromise = canUseToolCb(
+        "AskUserQuestion",
+        { questions: [{ question: "Cancel me?" }] },
+        { signal: abortController.signal, toolUseID: "tool-question-2" },
+      );
+      const cancelInteractionEvent = await collector.waitFor(
+        (o) =>
+          o.kind === "interaction" &&
+          o.interaction.type === "question" &&
+          o.interaction.interactionId !== interaction.interactionId,
+      );
+      if (cancelInteractionEvent.kind !== "interaction") throw new Error("Expected interaction");
+      await session.execute({
+        type: "interaction.respond",
+        interactionId: cancelInteractionEvent.interaction.interactionId,
+        response: { type: "question", cancelled: true, answers: {} },
+      });
+      const cancelResult = await cancelPromise;
+      expect(cancelResult.behavior).toBe("deny");
+      expect(cancelResult.toolUseID).toBe("tool-question-2");
 
       await session.close();
     });
@@ -1243,6 +1295,117 @@ describe("QoderAdapter", () => {
             expect(outcome.error.message).toBe("command failed with error");
           }
         }
+      }
+
+      fakeQuery.push({
+        type: "result",
+        subtype: "success",
+      } as SDKResultMessage);
+
+      await collector.waitFor((o) => o.kind === "event" && o.event.type === "turn.completed");
+
+      await session.close();
+      await adapter.close();
+    });
+
+    it("tags pre-tool message as commentary and post-tool terminal message as final_answer", async () => {
+      const fakeQuery = new FakeQoderQuery();
+      const adapter = new QoderAdapter({
+        resolveExecutable: () => "D:/tools/qodercli.exe",
+        queryFactory: () => fakeQuery,
+      });
+
+      const openResult = await adapter.open({ kind: "create", cwd: "D:/workspace" });
+      if (!openResult.ok) throw new Error("open failed");
+      const session = openResult.value;
+      const collector = new OutputCollector(session.outputs);
+
+      const turnId = hostTurnIdSchema.parse("turn-phase-check");
+      await session.execute({
+        type: "turn.start",
+        turnId,
+        input: [{ type: "text", text: "Check directory" }],
+      });
+
+      // Streaming text before tool
+      fakeQuery.push({
+        type: "stream_event",
+        event: {
+          type: "content_block_delta",
+          delta: { type: "text_delta", text: "I will check the files." },
+        },
+      } as SDKPartialAssistantMessage);
+
+      // Assistant message with both text and tool_use
+      fakeQuery.push({
+        type: "assistant",
+        message: {
+          role: "assistant",
+          content: [
+            { type: "text", text: "I will check the files." },
+            {
+              type: "tool_use",
+              id: "call_ls_1",
+              name: "bash",
+              input: { command: "ls" },
+            },
+          ],
+        },
+      } as unknown as SDKAssistantMessage);
+
+      // Wait for commentary message to complete
+      const commentaryCompleted = await collector.waitFor(
+        (o) =>
+          o.kind === "event" &&
+          o.event.type === "item.completed" &&
+          o.event.snapshot.item.type === "agentMessage" &&
+          o.event.snapshot.item.text === "I will check the files.",
+      );
+      if (
+        commentaryCompleted.kind === "event" &&
+        commentaryCompleted.event.type === "item.completed" &&
+        commentaryCompleted.event.snapshot.item.type === "agentMessage"
+      ) {
+        expect(commentaryCompleted.event.snapshot.item.phase).toBe("commentary");
+      }
+
+      // User sends tool_result
+      fakeQuery.push({
+        type: "user",
+        message: {
+          role: "user",
+          content: [
+            {
+              type: "tool_result",
+              tool_use_id: "call_ls_1",
+              content: "file1.txt\nfile2.txt",
+            },
+          ],
+        },
+      } as unknown as SDKUserMessage);
+
+      // Assistant sends final answer (no tool_use)
+      fakeQuery.push({
+        type: "assistant",
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text: "Here are the files: file1.txt, file2.txt" }],
+        },
+      } as SDKAssistantMessage);
+
+      const finalCompleted = await collector.waitFor(
+        (o) =>
+          o.kind === "event" &&
+          o.event.type === "item.completed" &&
+          o.event.snapshot.item.type === "agentMessage" &&
+          o.event.snapshot.item.text === "Here are the files: file1.txt, file2.txt",
+      );
+      if (
+        finalCompleted.kind === "event" &&
+        finalCompleted.event.type === "item.completed" &&
+        finalCompleted.event.snapshot.item.type === "agentMessage"
+      ) {
+        expect(finalCompleted.event.snapshot.item.phase).toBe("final_answer");
       }
 
       fakeQuery.push({

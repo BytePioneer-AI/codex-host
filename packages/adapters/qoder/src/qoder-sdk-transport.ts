@@ -126,6 +126,8 @@ interface PendingInteraction {
   interaction: HostApprovalInteraction | HostQuestionInteraction;
   resolve: (result: PermissionResult) => void;
   questionPrompts?: string[];
+  rawInput?: unknown;
+  toolUseID?: string;
 }
 
 export interface QoderSessionOptions {
@@ -374,6 +376,7 @@ export class QoderSession implements HarnessSession {
             type: "agentMessage",
             itemId,
             text: "",
+            phase: "commentary",
           },
         });
       }
@@ -407,12 +410,19 @@ export class QoderSession implements HarnessSession {
     const content = message.message?.content;
     if (!Array.isArray(content)) return;
 
+    const hasToolUseInMessage = content.some(
+      (block) =>
+        typeof block === "object" &&
+        block !== null &&
+        (block as Record<string, unknown>).type === "tool_use",
+    );
+
     for (const block of content) {
-      this.#projectAssistantBlock(block);
+      this.#projectAssistantBlock(block, hasToolUseInMessage);
     }
   }
 
-  #projectAssistantBlock(block: unknown): void {
+  #projectAssistantBlock(block: unknown, hasToolUseInMessage = false): void {
     if (!this.#activeTurn || typeof block !== "object" || block === null) return;
     const turnId = this.#activeTurn.turnId;
     const rawBlock = block as Record<string, unknown>;
@@ -420,6 +430,9 @@ export class QoderSession implements HarnessSession {
     if (rawBlock.type === "text" && typeof rawBlock.text === "string") {
       const activeStreamingId = this.#activeTurn.activeStreamingMessageItemId;
       const accumulated = this.#activeTurn.accumulatedStreamingText;
+      const phase: "commentary" | "final_answer" = hasToolUseInMessage
+        ? "commentary"
+        : "final_answer";
 
       if (activeStreamingId && rawBlock.text.startsWith(accumulated)) {
         const remaining = rawBlock.text.slice(accumulated.length);
@@ -442,6 +455,7 @@ export class QoderSession implements HarnessSession {
               type: "agentMessage",
               itemId: activeStreamingId,
               text: rawBlock.text,
+              phase,
             },
             outcome: { status: "succeeded" },
           },
@@ -457,6 +471,7 @@ export class QoderSession implements HarnessSession {
             type: "agentMessage",
             itemId,
             text: rawBlock.text,
+            phase,
           },
         });
         this.#emitEvent({
@@ -467,6 +482,7 @@ export class QoderSession implements HarnessSession {
               type: "agentMessage",
               itemId,
               text: rawBlock.text,
+              phase,
             },
             outcome: { status: "succeeded" },
           },
@@ -528,6 +544,24 @@ export class QoderSession implements HarnessSession {
         });
       }
     } else if (rawBlock.type === "tool_use") {
+      if (this.#activeTurn.activeStreamingMessageItemId) {
+        this.#emitEvent({
+          type: "item.completed",
+          turnId,
+          snapshot: {
+            item: {
+              type: "agentMessage",
+              itemId: this.#activeTurn.activeStreamingMessageItemId,
+              text: this.#activeTurn.accumulatedStreamingText,
+              phase: "commentary",
+            },
+            outcome: { status: "succeeded" },
+          },
+        });
+        this.#activeTurn.activeStreamingMessageItemId = undefined;
+        this.#activeTurn.accumulatedStreamingText = "";
+      }
+
       const toolId = typeof rawBlock.id === "string" ? rawBlock.id : `tool-${randomUUID()}`;
       const itemId = hostItemIdSchema.parse(toolId);
       const toolName = typeof rawBlock.name === "string" ? rawBlock.name : "unknown";
@@ -663,6 +697,7 @@ export class QoderSession implements HarnessSession {
             type: "agentMessage",
             itemId: this.#activeTurn.activeStreamingMessageItemId,
             text: this.#activeTurn.accumulatedStreamingText,
+            phase: result.subtype === "success" ? "final_answer" : "commentary",
           },
           outcome: { status: "succeeded" },
         },
@@ -808,7 +843,11 @@ export class QoderSession implements HarnessSession {
           turnId,
           reason: "cancelled",
         });
-        resolve({ behavior: "deny", message: "Question interaction aborted" });
+        resolve({
+          behavior: "deny",
+          message: "Question interaction aborted",
+          ...(context.toolUseID ? { toolUseID: context.toolUseID } : {}),
+        });
       };
 
       context.signal.addEventListener("abort", onAbort, { once: true });
@@ -817,6 +856,8 @@ export class QoderSession implements HarnessSession {
         id: interactionId,
         interaction,
         questionPrompts,
+        rawInput: input,
+        toolUseID: context.toolUseID,
         resolve: (result) => {
           cleanup();
           resolve(result);
@@ -876,6 +917,8 @@ export class QoderSession implements HarnessSession {
       this.#pendingInteractions.set(interactionId, {
         id: interactionId,
         interaction,
+        rawInput: input,
+        toolUseID: context.toolUseID,
         resolve: (result) => {
           cleanup();
           resolve(result);
@@ -1110,9 +1153,21 @@ export class QoderSession implements HarnessSession {
           });
 
           if (command.response.actionId === "allowOnce") {
-            pending.resolve({ behavior: "allow" });
+            const rawInputObj =
+              typeof pending.rawInput === "object" && pending.rawInput !== null
+                ? (pending.rawInput as Record<string, unknown>)
+                : {};
+            pending.resolve({
+              behavior: "allow",
+              updatedInput: rawInputObj,
+              ...(pending.toolUseID !== undefined ? { toolUseID: pending.toolUseID } : {}),
+            });
           } else {
-            pending.resolve({ behavior: "deny", message: "User denied permission" });
+            pending.resolve({
+              behavior: "deny",
+              message: "User denied permission",
+              ...(pending.toolUseID !== undefined ? { toolUseID: pending.toolUseID } : {}),
+            });
           }
 
           return { ok: true, value: { accepted: true } };
@@ -1146,7 +1201,11 @@ export class QoderSession implements HarnessSession {
           });
 
           if (command.response.cancelled) {
-            pending.resolve({ behavior: "deny", message: "User cancelled question" });
+            pending.resolve({
+              behavior: "deny",
+              message: "User cancelled question",
+              ...(pending.toolUseID !== undefined ? { toolUseID: pending.toolUseID } : {}),
+            });
           } else {
             // Qoder requires answers keyed by full question prompt text!
             const answers: Record<string, string> = {};
@@ -1157,11 +1216,18 @@ export class QoderSession implements HarnessSession {
               }
             }
 
+            const rawInputObj =
+              typeof pending.rawInput === "object" && pending.rawInput !== null
+                ? (pending.rawInput as Record<string, unknown>)
+                : {};
+
             pending.resolve({
               behavior: "allow",
               updatedInput: {
+                ...rawInputObj,
                 answers,
               },
+              ...(pending.toolUseID !== undefined ? { toolUseID: pending.toolUseID } : {}),
             });
           }
 

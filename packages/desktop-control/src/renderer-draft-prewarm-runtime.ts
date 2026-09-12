@@ -76,15 +76,13 @@ export function installDraftPrewarmPolicyBridge(
   const isRecord = (value: unknown): value is Record<string, unknown> =>
     typeof value === "object" && value !== null && !Array.isArray(value);
   const isUnsupportedPosixBridgeSpawn = (value: unknown): boolean => {
+    const marker = "AbsolutePathBuf deserialized without a base path";
     if (typeof value === "string") {
-      return value.includes("AbsolutePathBuf deserialized without a base path");
+      return value.startsWith("Invalid request:") && value.includes(marker);
     }
     if (!isRecord(value)) return false;
-    if (
-      typeof value.message === "string" &&
-      value.message.includes("AbsolutePathBuf deserialized without a base path")
-    ) {
-      return true;
+    if (typeof value.message === "string" && value.message.includes(marker)) {
+      if (value.code === -32600 || value.message.startsWith("Invalid request:")) return true;
     }
     return value.cause !== value && isUnsupportedPosixBridgeSpawn(value.cause);
   };

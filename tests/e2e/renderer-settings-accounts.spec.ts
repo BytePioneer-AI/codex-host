@@ -25,8 +25,10 @@ const { outputFiles } = await build({
         let revision = 1;
         const accountSnapshot = (selected = accounts) => ({
           version:2,currentAccountId,phase:"ready",revision,instanceId:"settings-host",
-          capabilities:{manage:true,switch:true,login:true,delete:true,logout:true,recover:true},
-          accounts:selected,
+          capabilities: scenario === "legacy"
+            ? {manage:false,switch:false,login:false,delete:false,logout:false,recover:false,reason:"migration-required"}
+            : {manage:true,switch:true,login:true,delete:true,logout:true,recover:true},
+          accounts:scenario === "legacy" ? selected.slice(0,1) : selected,
         });
         const snapshots = {
           native: { usedPercent:9,periodType:"seven_day",resetsAt:"2026-09-13T13:16:00Z",resetCredits:{availableCount:2,nextExpiresAt:"2026-10-04T01:54:00Z",expiresAt:["2026-10-04T01:54:00Z","2026-10-08T01:54:00Z"]} },
@@ -158,6 +160,21 @@ async function calls(page: Page, key: string) {
 }
 const nativeRow = '[data-account-id="native"]';
 const teamRow = '[data-account-id="team"]';
+
+test("explains native legacy compatibility without enabling managed account actions", async ({
+  page,
+}) => {
+  await setup(page, { locale: "en", scenario: "legacy" });
+  await expect(page.locator(".settings-account-status")).toContainText(
+    "Native compatibility mode: Codex uses the existing official home.",
+  );
+  await expect(page.locator(".settings-account-status")).toContainText(
+    "Other account homes and their history have not been merged",
+  );
+  await expect(page.getByRole("button", { name: "Add Codex account", exact: true })).toBeDisabled();
+  expect(await calls(page, "login")).toEqual([]);
+  expect(await calls(page, "activate")).toEqual([]);
+});
 
 async function openAccountActions(page: Page, row = teamRow) {
   await page.locator(`${row} [data-account-focus$=":more"]`).click();

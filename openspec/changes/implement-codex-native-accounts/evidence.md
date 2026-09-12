@@ -102,6 +102,20 @@
 
 生成类型仅证明接口及字段声明存在。未据此声称真实账户已认证，或原生默认 `cli_auth_credentials_store` 已证明为 file。当前需原生有效配置明确报告 `file`；省略值仍安全降级为原生单账号，不自动改用户配置。设置恢复的原生实际运行仍待联合验收。
 
+## 旧布局原生启动兼容修正
+
+本机此前的可逆对照定位为：旧登记含多个 home，`migration-required` 阻断正式后台，使原本有效的原生账号显示登录页。临时 compiled fallback 两次恢复工作区，但不是正式实现或完整迁移验收。
+
+正式源码现在仅允许严格受限的原生兼容：有效旧登记当前选中的账号已在正式 home；全部已知旧 home 无托管账号目录或进程记录；native helper 可完成进程盘点且没有发现其他 writer。每次后台启动重新检查登记、托管状态和 writer。账号管理保持禁用；不初始化 Vault／OS key，不改原生存储配置、凭据或登记，不合并其他目录历史。Settings 显示兼容限制，明确其他历史需使用旧版访问。选中其他 home、未完成事务或不确定 writer 仍拒绝启动。
+
+本轮新增布局→Host→合成原生协议组合测试，覆盖 `file / auto / keyring` 配置保全、`account/read` 返回既有合成身份、禁止管理切换、其他 home 保全、prepare 后任一 home 出现事务，以及后台退出后的 writer 重检。它使用临时文件、合成协议 peer 和假进程盘点，不等于真实 keyring 或账号认证验证。
+
+当前验证：聚焦 **11 文件、138 项通过**；两份模拟 Desktop E2E **43 项通过**，包含新的兼容提示与禁用操作断言；TypeScript/plugins、Renderer 和 Rust dev build、严格 typecheck、lint/boundaries 通过。没有重跑完整 Rust 测试或全仓测试；这次没有 Rust 源码修改。
+
+真实 Desktop 验证尚未闭合：最新源码构建完成，但 PR 启动后的 CDP HTTP／页面探针超时；与之对照，main 两次正常返回可见 editor、无登录页。超时尝试不计为通过，也没有证据将此卡住归因于账号布局。已恢复 main 到正常工作区。记录位于 `/tmp/codexhost-native-accounts-tasks/legacy-*.log` 和对应 Desktop JSON；未执行真实登录、退出账号、切换账号或推理。
+
+此前 CI run `34639723654` 已结束，四个平台均失败。已在本地复现并修正 `renderer-unsupported-methods.test.ts` 使用旧 Account 契约的 fixture；另一个 `renderer-binding-probe-host-catalog.test.ts` 的 Model selection 错误展示失败仍可复现，未将本轮聚焦通过表述为 CI 或完整 PR 验收通过。
+
 ## 支持矩阵与未闭合门槛
 
 | 项目 | 本轮证据 | 不应推断的结论 |
@@ -110,7 +124,7 @@
 | Windows DACL／Job、Linux 原语 | 编译检查及可在本机运行的纯测试 | Windows/Linux native runtime 全通过 |
 | 官方 `0.153.4`＋明确 file 模式 | 离线协议、fake 组合、实际受保护 listener 与未认证 OAuth 取消链路 | 所有版本、默认配置、真实认证和 Provider 均已验证 |
 | 新安装／单一正式 home | 原地保留；不移动原生数据 | 多 home 已合并 |
-| 旧多 home／foreign／损坏元数据 | `migration-required`，保留原件 | 已完成数据库、附件、记忆、队列或项目迁移 |
+| 旧多 home／foreign／损坏元数据 | `migration-required`，保留原件；仅满足安全条件的已选正式 home 可保留原生启动并禁用账号管理 | 已完成数据库、附件、记忆、队列或项目迁移，或最新源码真实 Desktop 兼容已验收 |
 | 外部 Harness 连续性 | Host 路由及合成组合检查 | 真实多 Harness 长时间并行联合验收完成 |
 
 未知 Codex 进程只保守拒绝，不自动杀死。文件路径校验是操作前后观察，不是抵御任意恶意同 UID 程序或阻止外部 CLI 以后启动的保证。macOS 对无害 deny-only ACL 也保守拒绝；任意网络文件系统语义未验证。

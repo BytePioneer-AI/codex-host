@@ -38,6 +38,9 @@ export type NativeAccountLayout =
       kind: "migration-required";
       reason: "invalid-metadata" | "multiple-homes" | "foreign-home";
       homes: LegacyHomeInventory[];
+      /** A clean legacy installation may keep using its already-selected permanent home.
+       * This does not adopt the other homes or enable managed Account operations. */
+      nativeCompatibility?: { accountId: string; registryDigest: string };
     };
 
 function missing(error: unknown): boolean {
@@ -100,8 +103,8 @@ async function metadata(file: string): Promise<Buffer | null> {
 }
 
 /** The supported in-place layout loses no native data because nothing is moved.
- * Multiple homes are inventoried and explicitly blocked until a complete database,
- * attachment, memory, queue and project migration has a verified implementation.
+ * Multiple homes still require migration. A clean layout whose selected Account
+ * already uses the permanent home may retain native startup without Account management.
  */
 export async function inspectNativeAccountLayout(
   dataDirectory: string,
@@ -153,7 +156,28 @@ export async function inspectNativeAccountLayout(
       process.platform === "win32" ? value.toLowerCase() : value;
     if (new Set(homes.map((entry) => key(entry.home))).size !== homes.length)
       throw new Error("duplicate home");
-    if (homes.length > 1) return { kind: "migration-required", reason: "multiple-homes", homes };
+    if (homes.length > 1) {
+      const selected = homes.find((entry) => entry.accountId === parsed.activeAccountId);
+      const clean = homes.every((entry) =>
+        entry.entries.every(
+          (name) =>
+            ![".codexhost-native-accounts", ".codexhost-process.json"].includes(name.toLowerCase()),
+        ),
+      );
+      return {
+        kind: "migration-required",
+        reason: "multiple-homes",
+        homes,
+        ...(clean && selected && key(selected.home) === key(canonical)
+          ? {
+              nativeCompatibility: {
+                accountId: selected.accountId,
+                registryDigest: nativeDigest(registry),
+              },
+            }
+          : {}),
+      };
+    }
     const only = homes[0],
       account = parsed.accounts[0];
     if (!only || !account || key(only.home) !== key(canonical))

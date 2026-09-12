@@ -566,6 +566,74 @@ describe("Renderer Codex Accounts page", () => {
     scope.dispose();
   });
 
+  it.each(["ready", "unavailable"] as const)(
+    "explains legacy migration limits without offering account changes (%s)",
+    async (phase) => {
+      const client = {
+        listCodexAccounts: vi.fn(async (): Promise<CodexAccountListResult> => ({
+          ...accountSnapshot(
+            phase === "ready" ? [{ accountId: "native", label: "Native Codex Account" }] : [],
+          ),
+          phase,
+          capabilities: {
+            manage: false,
+            switch: false,
+            login: false,
+            delete: false,
+            logout: false,
+            recover: false,
+            reason: "migration-required",
+          },
+        })),
+        deleteCodexAccount: vi.fn(),
+        switchCodexAccount: vi.fn(),
+        logoutCodexAccount: vi.fn(),
+        recoverCodexAccounts: vi.fn(),
+        startCodexAccountLogin: vi.fn(),
+        cancelCodexAccountLogin: vi.fn(),
+      };
+      const page = createDefaultRendererSettingsPages(
+        rendererSettingsMessages("en"),
+        () => null,
+        () => null,
+        () => client,
+      ).find(({ id }) => id === "accounts");
+      if (!page) throw new Error("Accounts page is not registered");
+      const document = new FakeDocument();
+      const content = document.createElement("main");
+      const scope = new RendererSettingsPageScope();
+      page.mount({
+        content: content as unknown as HTMLElement,
+        signal: scope.signal,
+        runLatest: (operation, handlers) => scope.runLatest(operation, handlers),
+      });
+      try {
+        const statusText = () =>
+          elementWithClass(content, "settings-account-status").children.join(" ");
+        await vi.waitFor(() =>
+          expect(statusText()).toContain(
+            phase === "ready"
+              ? "Native compatibility mode: Codex uses the existing official home."
+              : "Legacy Codex data requires migration before this layout can be used.",
+          ),
+        );
+        if (phase === "ready") {
+          expect(statusText()).toContain(
+            "Other account homes and their history have not been merged",
+          );
+          expect(statusText()).toContain("previous version");
+        }
+        const add = descendants(content).find(
+          ({ tagName, children }) => tagName === "button" && children.includes("Add Codex account"),
+        );
+        expect(add?.disabled).toBe(true);
+        expect(client.startCodexAccountLogin).not.toHaveBeenCalled();
+      } finally {
+        scope.dispose();
+      }
+    },
+  );
+
   it("creates an isolated Account and starts sign-in without asking for a name", async () => {
     const client = {
       listCodexAccounts: vi.fn(async () => accountSnapshot([], null)),

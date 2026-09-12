@@ -68,10 +68,19 @@ Inactive quota reads SHALL use bounded requests without starting another backend
 - **WHEN** one cache write observes a newer persisted snapshot
 - **THEN** retry SHALL merge its own Account change with that snapshot rather than overwrite another Account's update
 
-### Requirement: Unsupported old layouts SHALL block without losing history
-Only verified layouts SHALL be adopted. Single permanent-home adoption SHALL not copy or delete native history. Until complete multi-home migration exists, multiple or foreign homes, invalid metadata and orphan Thread bindings SHALL block Codex enablement. A future migration MUST preserve databases, attachments, memories, queues, projects and native relationships, require approved human confirmation before irreversible actions, and retain source data.
+### Requirement: Unsupported old layouts SHALL preserve authentication without claiming migration
+Only verified layouts SHALL be adopted. Single permanent-home adoption SHALL not copy or delete native history. Multiple homes SHALL disable managed Account operations until complete migration exists. A valid legacy layout MAY retain native single-backend operation only when its selected Account already uses the effective permanent home, none of its homes contains managed Account state or an ownership record, and native process inspection confirms no observable other writer. This compatibility path SHALL NOT change the home, credential-store configuration, credentials or legacy registry itself, and SHALL NOT initialize a Vault or OS key. It SHALL revalidate the layout and writer admission before every backend start. Foreign or mismatched selected homes, invalid metadata, orphan Thread bindings and uncertain ownership SHALL remain blocked. A future migration MUST preserve databases, attachments, memories, queues, projects and native relationships, require approved human confirmation before irreversible actions, and retain source data.
 
 #### Scenario: Multiple old homes contain history
 - **WHEN** startup detects that unsupported layout
 - **THEN** it SHALL return migration-required, preserve all source homes and avoid both rollout-only migration and an old multi-backend fallback
 - **AND** it SHALL not claim the migration or release acceptance has completed
+
+#### Scenario: Existing native login survives a clean legacy upgrade
+- **WHEN** a valid multi-home registry selects the existing permanent home and the compatibility safety checks pass
+- **THEN** Codex SHALL read its existing native authentication through one official backend without managed Account initialization
+- **AND** Settings SHALL explain that Account management is disabled and other homes and their history remain accessible through the previous version, not claim they were merged
+
+#### Scenario: Legacy compatibility becomes unsafe before backend start
+- **WHEN** the registry changes, managed state appears, or native process inspection fails or finds another writer
+- **THEN** the Host SHALL refuse backend startup without deleting data, reading OS keys, or stopping unknown processes

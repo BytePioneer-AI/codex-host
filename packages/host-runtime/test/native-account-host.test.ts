@@ -63,6 +63,7 @@ const native = vi.hoisted(() => {
     runtimeConstructions: 0,
     accountConstructions: 0,
     accountInstances: [] as object[],
+    nativeLaunches: [] as unknown[],
   };
   const current = (): Fixture => {
     if (!state.current) throw new Error("native account host fixture is unavailable");
@@ -242,15 +243,32 @@ vi.mock("../src/native-process-identity.js", () => ({
   readNativeProcessIdentity: async () => null,
 }));
 vi.mock("../src/native-process-inventory.js", () => ({
-  readNativeProcessIds: async () => native.current().inventory,
+  readNativeProcessIds: vi.fn(async () => native.current().inventory),
 }));
 vi.mock("../src/codex-runtime/owned-official-backends.js", () => ({
   createOwnedLoopbackBackend: () => createBackend(),
   createOwnedStdioBackend: () => createBackend(),
 }));
 
+vi.mock("../src/remote-official-app-server.js", () => ({
+  createLoopbackOfficialAppServerListener: (input: unknown) => {
+    native.state.nativeLaunches.push(input);
+    const backend = createBackend();
+    return {
+      closed: backend.closed,
+      processId: backend.processId,
+      async listen() {
+        await backend.start();
+        return "ws://127.0.0.1:43210";
+      },
+      close: () => backend.stop(),
+    };
+  },
+}));
+
 import { prepareLocalCodex } from "../src/native-account-host.js";
 import { OfficialRuntimeClient } from "../src/codex-runtime/official-runtime-scope.js";
+import { readNativeProcessIds } from "../src/native-process-inventory.js";
 
 interface HostFixture {
   root: string;
@@ -408,6 +426,9 @@ async function fixture(
 }
 
 beforeEach(() => {
+  vi.mocked(readNativeProcessIds)
+    .mockReset()
+    .mockImplementation(async () => native.current().inventory);
   native.state.current = null;
   native.state.fileConstructions = 0;
   native.state.keyConstructions = 0;
@@ -415,6 +436,7 @@ beforeEach(() => {
   native.state.runtimeConstructions = 0;
   native.state.accountConstructions = 0;
   native.state.accountInstances.length = 0;
+  native.state.nativeLaunches.length = 0;
 });
 
 afterEach(async () => {
@@ -461,6 +483,106 @@ describe("local native Account composition", () => {
     expect(native.current().events).toEqual([]);
     await prepared.close();
   });
+
+  it("preserves native startup for an eligible legacy layout without initializing account management", async () => {
+    const f = await fixture({
+      layout: {
+        kind: "migration-required",
+        reason: "multiple-homes",
+        homes: [],
+        nativeCompatibility: { accountId: "legacy-current", registryDigest: "original" },
+      },
+    });
+    const input = f.input({ sharedListener: true });
+    const prepared = await prepareLocalCodex(input);
+    try {
+      expect(prepared.allowNativeAuthPassthrough).toBe(true);
+      expect(prepared.accountControl.snapshot().capabilities).toMatchObject({
+        manage: false,
+        switch: false,
+        login: false,
+        delete: false,
+        reason: "migration-required",
+      });
+      expect(native.state.fileConstructions).toBe(0);
+      expect(native.state.keyConstructions).toBe(0);
+      expect(native.state.accountConstructions).toBe(0);
+      await prepared.officialRuntimeScope.start();
+      await prepared.officialRuntimeScope.start();
+      expect(native.current().events).toEqual(["backend-start"]);
+      expect(native.state.nativeLaunches).toHaveLength(1);
+      expect(native.state.nativeLaunches[0]).toMatchObject({
+        stockCodexPath: input.stockCodexPath,
+        environment: { CODEX_HOME: f.home },
+      });
+      expect(prepared.officialRuntimeScope.gate.phase).toBe("ready");
+    } finally {
+      await prepared.close();
+    }
+    expect(native.current().events).toEqual(["backend-start", "backend-stop"]);
+    expect(f.files.replace).not.toHaveBeenCalled();
+  });
+
+  it.each(["missing-helper", "unknown-writer", "inventory-error"])(
+    "refuses legacy compatibility for %s without creating keys or starting a backend",
+    async (failure) => {
+      const f = await fixture({
+        layout: {
+          kind: "migration-required",
+          reason: "multiple-homes",
+          homes: [],
+          nativeCompatibility: { accountId: "legacy-current", registryDigest: "original" },
+        },
+      });
+      if (failure === "unknown-writer") native.current().inventory = [424242];
+      if (failure === "inventory-error")
+        vi.mocked(readNativeProcessIds).mockRejectedValueOnce(new Error("unavailable"));
+      const prepared = await prepareLocalCodex(
+        f.input({
+          sharedListener: true,
+          ...(failure === "missing-helper" ? { launcher: "" } : {}),
+        }),
+      );
+      expect(prepared.allowNativeAuthPassthrough).toBe(false);
+      await expect(prepared.officialRuntimeScope.start()).rejects.toMatchObject({
+        code: "unavailable",
+      });
+      expect(native.state.keyConstructions).toBe(0);
+      expect(native.current().events).toEqual([]);
+      await prepared.close();
+    },
+  );
+
+  it.each(["layout-changed", "managed-state-appeared", "writer-appeared"])(
+    "rechecks legacy admission at backend start: %s",
+    async (failure) => {
+      const f = await fixture({
+        layout: {
+          kind: "migration-required",
+          reason: "multiple-homes",
+          homes: [],
+          nativeCompatibility: { accountId: "legacy-current", registryDigest: "original" },
+        },
+      });
+      const prepared = await prepareLocalCodex(f.input({ sharedListener: true }));
+      expect(prepared.allowNativeAuthPassthrough).toBe(true);
+      if (failure === "writer-appeared") native.current().inventory = [424242];
+      else
+        native.current().layout = {
+          kind: "migration-required",
+          reason: "multiple-homes",
+          homes: [],
+          ...(failure === "layout-changed"
+            ? {
+                nativeCompatibility: { accountId: "other", registryDigest: "changed" },
+              }
+            : {}),
+        };
+      await expect(prepared.officialRuntimeScope.start()).rejects.toThrow();
+      expect(native.current().events).not.toContain("backend-start");
+      await prepared.close();
+    },
+  );
 
   it("retains native single-account mode and the home lease when the keyring is unavailable", async () => {
     const f = await fixture({ keyAvailable: false });

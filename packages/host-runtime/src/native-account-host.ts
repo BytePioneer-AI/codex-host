@@ -154,6 +154,7 @@ function nativeFallback(
     files: NativePrivateFiles;
     launcher: string;
   },
+  assertStartup?: () => Promise<void>,
 ): PreparedLocalCodex {
   const scope = new OfficialRuntimeScope({
     permanentHome: home,
@@ -178,7 +179,7 @@ function nativeFallback(
               })
             : createOwnedStdioBackend(launch);
         });
-      return input.sharedListener
+      const backend = input.sharedListener
         ? nativeListener(input, home)
         : createOwnedConnectionBackend(() =>
             spawnOfficialAppServerConnection({
@@ -187,6 +188,14 @@ function nativeFallback(
               environment: { ...officialEnvironment(input.environment), CODEX_HOME: home },
             }),
           );
+      if (assertStartup) {
+        const start = backend.start.bind(backend);
+        backend.start = async () => {
+          await assertStartup();
+          await start();
+        };
+      }
+      return backend;
     },
   });
   const control = new SingleNativeCodexAccount(() => ({
@@ -225,10 +234,39 @@ export async function prepareLocalCodex(input: LocalCodexOptions): Promise<Prepa
     input.environment.CODEXHOST_DATA_DIR ?? path.join(homedir(), ".codexhost"),
   );
   const layout = await inspectNativeAccountLayout(data, home);
-  if (layout.kind === "migration-required")
-    return blocked(home, input.diagnosticOutput, "migration-required");
-  const root = path.join(home, ".codexhost-native-accounts");
   const launcher = input.environment.CODEXHOST_LAUNCHER_EXECUTABLE;
+  if (layout.kind === "migration-required") {
+    const compatibility = layout.nativeCompatibility;
+    if (!compatibility || !launcher || !path.isAbsolute(launcher))
+      return blocked(home, input.diagnosticOutput, "migration-required");
+    const assertStartup = async (): Promise<void> => {
+      // Repeat at every backend start: a new Journal, changed selection or unknown
+      // writer must not be bypassed by an earlier clean compatibility decision.
+      const latest = await inspectNativeAccountLayout(data, home);
+      if (
+        latest.kind !== "migration-required" ||
+        latest.nativeCompatibility?.registryDigest !== compatibility.registryDigest ||
+        latest.nativeCompatibility.accountId !== compatibility.accountId
+      )
+        throw new Error("Legacy Codex Account layout changed");
+      const writers = await readNativeProcessIds({
+        launcher,
+        executableNames: [path.basename(input.stockCodexPath), "codex", "codex.exe"],
+        environment: input.environment,
+      });
+      if (writers.length) throw new Error("Another native process may own the Codex home");
+    };
+    try {
+      await assertStartup();
+    } catch {
+      return blocked(home, input.diagnosticOutput, "recovery-required");
+    }
+    input.diagnosticOutput.write(
+      "codexhost: Legacy Account compatibility mode; using the existing permanent home. Account management is disabled; other homes are preserved but not merged.\n",
+    );
+    return nativeFallback(input, home, "migration-required", undefined, assertStartup);
+  }
+  const root = path.join(home, ".codexhost-native-accounts");
   // Without trusted native I/O, an existing managed directory cannot be assumed clean.
   if (!launcher || !path.isAbsolute(launcher)) {
     return (await exists(root)) || (await exists(path.join(home, ".codexhost-process.json")))

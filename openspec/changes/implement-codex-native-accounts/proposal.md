@@ -12,7 +12,7 @@
 - Desktop initialize 与 Codex readiness 分开；保留原生登录应答／完成／账号更新协议，不以局部 Codex 故障关闭整个 Desktop 或伪造认证。
 - v2 公开快照、Settings 全局切换和只读 Composer 身份；移除旧 per-draft 选择、后台池和 Thread→Account 执行路由。
 - 保留非当前额度和受控 OAuth 刷新；私有 I/O、OS 密钥和进程证明由通用 Rust 原语提供。
-- 旧多 home 尚无完整迁移时明确阻止启用，不丢弃历史后假报成功。
+- 旧多 home 尚无完整迁移时禁用账号管理；有效登记的当前账号已使用正式 home 且无托管状态／其他 writer 时保留原生登录启动，明确其他目录历史需使用旧版访问。其他不安全布局仍阻断，不丢弃历史后假报迁移成功。
 
 ## Non-goals
 

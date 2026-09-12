@@ -249,7 +249,11 @@ export function createAccountsSettingsPage(
           ? messages.accountCleanupRequired
           : accountPhase === "unavailable" && capabilities.reason === "recovery-required"
             ? messages.accountRecoveryRequired
-            : loginMessage;
+            : capabilities.reason === "migration-required"
+              ? accountPhase === "ready" && currentAccountId !== null
+                ? messages.accountLegacyCompatibility
+                : messages.accountMigrationRequired
+              : loginMessage;
         if (accountStatus) status.append(accountStatus);
         if (
           (cleanupRequired || capabilities.reason === "recovery-required") &&

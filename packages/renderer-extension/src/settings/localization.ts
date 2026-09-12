@@ -100,6 +100,8 @@ export interface RendererSettingsMessages {
   readonly accountRecovering: string;
   readonly accountRecoveryRequired: string;
   readonly accountCleanupRequired: string;
+  readonly accountLegacyCompatibility: string;
+  readonly accountMigrationRequired: string;
   readonly accountSignIn: string;
   readonly accountSigningIn: string;
   readonly accountVerificationDescription: string;
@@ -319,6 +321,10 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   accountRecover: "Recover",
   accountRecovering: "Recovering Codex...",
   accountRecoveryRequired: "Codex Account recovery is required before work can continue.",
+  accountLegacyCompatibility:
+    "Native compatibility mode: Codex uses the existing official home. Account management is disabled. Other account homes and their history have not been merged; use the previous version to access them. No source data was migrated or deleted.",
+  accountMigrationRequired:
+    "Legacy Codex data requires migration before this layout can be used. Your data is preserved; use the previous version to access it. This is not a sign-in request.",
   accountCleanupRequired:
     "The Account change was saved, but cleanup or Codex recovery is still required.",
   accountSignIn: "Sign in",
@@ -554,6 +560,10 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   accountRecover: "恢复",
   accountRecovering: "正在恢复 Codex...",
   accountRecoveryRequired: "继续工作前需要恢复 Codex 账号状态。",
+  accountLegacyCompatibility:
+    "原生兼容模式：继续使用原有官方目录，账号管理暂不可用。其他账号目录及其历史尚未合并，请使用旧版访问；没有迁移或删除原数据。",
+  accountMigrationRequired:
+    "旧 Codex 数据布局需要迁移后才能使用。原数据已保留，请使用旧版访问；这不是要求重新登录。",
   accountCleanupRequired: "账号变更已保存，但仍需完成清理或恢复 Codex。",
   accountSignIn: "登录",
   accountSigningIn: "正在启动设备登录...",

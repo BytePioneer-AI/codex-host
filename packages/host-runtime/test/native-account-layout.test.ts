@@ -144,6 +144,7 @@ describe("native Account legacy layout inspection", () => {
     expect(result).toEqual({
       kind: "migration-required",
       reason: "multiple-homes",
+      nativeCompatibility: { accountId: "first", registryDigest: expect.any(String) },
       homes: [
         { accountId: "first", home: f.home, entries: firstEntries },
         { accountId: "second", home: second, entries: secondEntries },
@@ -212,6 +213,30 @@ describe("native Account legacy layout inspection", () => {
       homes: [{ accountId: "foreign", home: foreign, entries: ["state.sqlite"] }],
     });
   });
+
+  it("does not substitute the official home for a different selected legacy account", async () => {
+    const f = await fixture();
+    const second = path.join(f.root, "second-home");
+    await mkdir(second);
+    await writeRegistry(f.legacy, [account("selected", second), account("default", f.home)]);
+    const result = await inspectNativeAccountLayout(f.data, f.home);
+    expect(result).toMatchObject({ kind: "migration-required", reason: "multiple-homes" });
+    expect(result).not.toHaveProperty("nativeCompatibility");
+  });
+
+  it.each([".codexhost-native-accounts", ".codexhost-process.json"])(
+    "does not offer native compatibility when any legacy home contains %s",
+    async (entry) => {
+      const f = await fixture();
+      const second = path.join(f.root, "second-home");
+      await mkdir(second);
+      await writeRegistry(f.legacy, [account("selected", f.home), account("other", second)]);
+      await writeFile(path.join(second, entry), "unresolved managed state");
+      const result = await inspectNativeAccountLayout(f.data, f.home);
+      expect(result).toMatchObject({ kind: "migration-required", reason: "multiple-homes" });
+      expect(result).not.toHaveProperty("nativeCompatibility");
+    },
+  );
 
   it.each([
     [

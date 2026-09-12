@@ -723,10 +723,15 @@ fn child_command(
 /// Desktop helpers that persist only the standard `CODEX_CLI_PATH`
 /// override.
 ///
-/// The launcher-provided path remains authoritative. Installation discovery is
-/// deliberately restricted to a re-entry where `CODEX_CLI_PATH` identifies
-/// this exact Shim, so an unrelated or direct invocation still fails closed.
-fn resolve_stock_codex_path(current_executable: &Path) -> ShimResult<PathBuf> {
+/// The launcher-provided path remains authoritative. Discovery requires the
+/// exact self override, except for macOS node_repl's top-level `sandbox` call:
+/// it resolves the executable before clearing both CLI overrides from the child.
+fn resolve_stock_codex_path(
+    current_executable: &Path,
+    arguments: &[OsString],
+) -> ShimResult<PathBuf> {
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    let _ = arguments;
     let stock_codex_path = match env::var_os(STOCK_CODEX_PATH_ENV) {
         Some(configured) => PathBuf::from(configured),
         None => {
@@ -735,16 +740,21 @@ fn resolve_stock_codex_path(current_executable: &Path) -> ShimResult<PathBuf> {
 
             #[cfg(any(target_os = "windows", target_os = "macos"))]
             {
-                let cli_override = env::var_os(CODEX_CLI_PATH_ENV)
-                    .map(PathBuf::from)
-                    .ok_or_else(|| format!("{STOCK_CODEX_PATH_ENV} is required"))?;
-                let cli_override = canonical_existing_file(&cli_override)?;
-                let current_executable = canonical_existing_file(current_executable)?;
-                if cli_override != current_executable {
-                    return Err(format!(
-                        "{STOCK_CODEX_PATH_ENV} is required when {CODEX_CLI_PATH_ENV} does not identify the running Shim"
-                    )
-                    .into());
+                if let Some(cli_override) = env::var_os(CODEX_CLI_PATH_ENV) {
+                    let cli_override = canonical_existing_file(&PathBuf::from(cli_override))?;
+                    let current_executable = canonical_existing_file(current_executable)?;
+                    if cli_override != current_executable {
+                        return Err(format!(
+                            "{STOCK_CODEX_PATH_ENV} is required when {CODEX_CLI_PATH_ENV} does not identify the running Shim"
+                        )
+                        .into());
+                    }
+                } else if !cfg!(target_os = "macos")
+                    || arguments
+                        .first()
+                        .is_none_or(|argument| argument != "sandbox")
+                {
+                    return Err(format!("{STOCK_CODEX_PATH_ENV} is required").into());
                 }
                 discover_desktop_managed_codex_cli().map_err(|error| {
                     format!(
@@ -766,7 +776,7 @@ pub fn run_proxy_with_observer(
     observer: &impl ProxyObserver,
 ) -> ShimResult<i32> {
     let current_executable = env::current_exe()?;
-    let stock_codex_path = resolve_stock_codex_path(&current_executable)?;
+    let stock_codex_path = resolve_stock_codex_path(&current_executable, arguments)?;
     observer.invocation(arguments, &stock_codex_path);
 
     let started = Instant::now();

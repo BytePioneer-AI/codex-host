@@ -557,6 +557,22 @@ function isCurrentRequestBridge(value: unknown): value is PrewarmTarget {
   );
 }
 
+function requestTargetOwnerFromHookState(value: unknown): PrewarmTarget | null {
+  if (!isRecord(value)) return null;
+  const ownerFrom = (candidate: unknown): PrewarmTarget | null => {
+    if (!isRecord(candidate)) return null;
+    const requestClient = candidate.requestClient;
+    const bridge = isCurrentRequestBridge(requestClient)
+      ? requestClient
+      : isCurrentRequestBridge(candidate)
+        ? candidate
+        : null;
+    if (!bridge) return null;
+    return typeof candidate.sendRequest === "function" ? (candidate as PrewarmTarget) : bridge;
+  };
+  return ownerFrom(value) ?? ownerFrom(value.manager);
+}
+
 export function findActivePrewarmTargets(root: ParentNode): PrewarmTarget[] {
   const editor = root.querySelector<HTMLElement>(
     '[data-codex-composer], [contenteditable="true"][role="textbox"]',
@@ -590,18 +606,8 @@ export function findActivePrewarmTargets(root: ParentNode): PrewarmTarget[] {
   for (let depth = 0; depth < 200; depth += 1) {
     let hook = fiber.memoizedState as { memoizedState?: unknown; next?: unknown } | null;
     for (let hookIndex = 0; hook && hookIndex < 100; hookIndex += 1) {
-      const hookState = hook.memoizedState;
-      if (isRecord(hookState)) {
-        const requestClient = hookState.requestClient;
-        const bridge = isCurrentRequestBridge(requestClient)
-          ? requestClient
-          : isCurrentRequestBridge(hookState)
-            ? hookState
-            : null;
-        if (bridge) {
-          targets.add(typeof hookState.sendRequest === "function" ? hookState : bridge);
-        }
-      }
+      const owner = requestTargetOwnerFromHookState(hook.memoizedState);
+      if (owner) targets.add(owner);
       hook =
         typeof hook.next === "object" && hook.next !== null
           ? (hook.next as { memoizedState?: unknown; next?: unknown })
@@ -663,7 +669,7 @@ function findComposerConversationThreadId(composer?: Element): HostThreadId | nu
   return threadId;
 }
 
-function isCurrentDraftWrapper(value: unknown): value is readonly unknown[] {
+function isLegacySevenSlotDraftWrapper(value: unknown): value is readonly unknown[] {
   if (
     !Array.isArray(value) ||
     value.length !== 7 ||
@@ -681,6 +687,28 @@ function isCurrentDraftWrapper(value: unknown): value is readonly unknown[] {
   } catch {
     return false;
   }
+}
+
+function duplicatedClientNewThreadId(value: unknown): string | null {
+  if (!Array.isArray(value)) return null;
+  const ids = value.filter(
+    (item): item is string => typeof item === "string" && item.startsWith("client-new-thread:"),
+  );
+  if (ids.length < 2 || ids.some((id) => id !== ids[0])) return null;
+  return ids[0] ?? null;
+}
+
+function draftIdFromMemoValue(value: unknown): string | null {
+  if (
+    isLegacySevenSlotDraftWrapper(value) &&
+    typeof value[2] === "string" &&
+    value[2].startsWith("client-new-thread:")
+  ) {
+    return value[2];
+  }
+  // Codex 26.908 stores the same client-new-thread identity twice in a longer
+  // memo-cache tuple (length 13/19 observed) instead of the seven-slot atom.
+  return duplicatedClientNewThreadId(value);
 }
 
 type ComposerDomIdentity =
@@ -716,13 +744,8 @@ function findComposerDraftIds(composer: Element): Set<string> {
     const memoCache = isRecord(updateQueue) ? updateQueue.memoCache : null;
     const data = isRecord(memoCache) && Array.isArray(memoCache.data) ? memoCache.data : [];
     for (const value of data) {
-      if (
-        isCurrentDraftWrapper(value) &&
-        typeof value[2] === "string" &&
-        value[2].startsWith("client-new-thread:")
-      ) {
-        draftIds.add(value[2]);
-      }
+      const draftId = draftIdFromMemoValue(value);
+      if (draftId) draftIds.add(draftId);
     }
     const parent = fiber.return;
     fiber =

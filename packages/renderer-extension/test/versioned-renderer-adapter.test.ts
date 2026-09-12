@@ -192,6 +192,33 @@ describe("current Codex Renderer Agent adapter", () => {
     expect(retired.sendRequest).not.toHaveBeenCalled();
   });
 
+  it("finds a nearby request manager without requiring the root within 200 ancestors", async () => {
+    const active = {
+      hostId: "local",
+      sendRequest: vi.fn().mockRejectedValue(new Error("Codex is busy")),
+      prewarmThreadStart: vi.fn(),
+      enqueueRequest: vi.fn(),
+    };
+    const first: Record<string, unknown> = { memoizedState: { memoizedState: active, next: null } };
+    let node = first;
+    for (let depth = 1; depth < 209; depth += 1) {
+      const parent: Record<string, unknown> = { child: node };
+      node.return = parent;
+      node = parent;
+    }
+    node.stateNode = { current: node };
+    const editor = { parentElement: null, querySelectorAll: () => [] } as unknown as Element;
+    Object.defineProperty(editor, "__reactFiber$test", { value: first });
+    const targets = findActivePrewarmTargets({
+      querySelector: () => editor,
+    } as unknown as ParentNode);
+    expect(targets).toEqual([active]);
+    await expect(targets[0]?.sendRequest?.("codexhost/account/switch", {})).rejects.toThrow(
+      "Codex is busy",
+    );
+    expect(active.sendRequest).toHaveBeenCalledOnce();
+  });
+
   it("ignores Host manager registries and unrelated nested manager fields", () => {
     const editor = {
       parentElement: null,

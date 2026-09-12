@@ -49,6 +49,32 @@ describe("committed React ownership", () => {
     expect(committedReactAncestors(null)).toEqual([]);
   });
 
+  it("resolves a valid deeply nested Thread without a root-depth limit", () => {
+    const first: Fiber = {};
+    let node = first;
+    for (let depth = 1; depth < 209; depth += 1) {
+      const parent: Fiber = { child: node };
+      node.return = parent;
+      node = parent;
+    }
+    node.stateNode = { current: node };
+    const ancestors = committedReactAncestors(first);
+    expect(ancestors).toHaveLength(209);
+    expect(ancestors[0]).toBe(first);
+    expect(ancestors.at(-1)).toBe(node);
+  });
+
+  it("bounds parent traversal even without a cycle", () => {
+    const first: Fiber = {};
+    let node = first;
+    for (let depth = 1; depth < 20_010; depth += 1) {
+      const parent: Fiber = {};
+      node.return = parent;
+      node = parent;
+    }
+    expect(committedReactAncestors(first)).toEqual([]);
+  });
+
   it("rejects cyclic ancestry and bounds malformed committed trees", () => {
     const cyclic: Fiber = {};
     cyclic.return = cyclic;

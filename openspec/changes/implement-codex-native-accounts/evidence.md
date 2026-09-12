@@ -8,7 +8,35 @@
 - 完整设计：[设计说明](../../../docs/codex-native-account-switching-design.md)；产品说明：[账号设置](../../../docs/codex-accounts.md)。
 - PR 前测试只用临时目录、合成凭据、假密钥和假认证网络。用户随后授权提交、推送、普通审查 PR #262，并允许起停 Desktop 诊断。后续又明确授权测试相关进程起停和真实账号切换，实际结果分阶段记录如下；未执行推理，未发布。
 
-## 最新：切换响应所有者与连续操作
+## 最新：按会话 ID 保留当前页面
+
+用户经方案讨论确认只采用「记住当前会话 → 切换账号 → 新界面可用后打开原会话」，不扩展为通用导航恢复系统。
+
+- 实机捕获 `account/updated` 的登录状态仍为已登录，随后 Desktop 的内存路由器从实例 1 更换为实例 2，路由默认回首页；不是原 Thread 或历史文件被删除。观察器先通过手动打开会话的原生导航调用验证有效，再记录切换后的路由器替换；此前未捕获替换的轮询探针不能作为反证。
+- 新模块 `renderer-account-navigation.ts` 只暂存本窗口已识别的本地 Codex 会话 ID 和原 Composer。切换应答成功后等待界面重建，通过已有原生侧栏入口打开同一 Thread 一次。拒绝、Settings 外的新用户操作、已选择其他会话、超时或卸载结束恢复，不改官方路由器、不保留旧 Client、不重试账号请求或发送消息。
+- 第一版自动恢复实机仍有失败；临时阶段记录随后确认过一次 B→A 自动恢复成功。新增慢应答回归发现 UI 的 30 秒等待预算不应包含后台验证耗时，已改为从成功应答后开始；该合成失败证明预算边界问题，不将其冒充首轮全部实机失败的完整解释。
+- 已清除临时阶段记录，并以正式源码 `npm start` fresh build。Desktop **26.908.40834**、CLI **0.154.0-alpha.6.2** 在同一有 **2 个已持久化 Turns** 的真实会话完成 **两轮 A→B→A**。四次切换后的 Composer 均自动指向原 Thread，原生历史摘要、渲染内容摘要和原文件前缀字节一致，**没有手动重新打开会话**。第一轮每次成功后等待 30 秒检查，第二轮等待 20 秒；不是无间隔点击或全程无加载画面的证明。
+- 原生身份改变并最终恢复用户最初的 A；最终 `transaction.json`、`login.json` 均不存在，主窗口仍在原会话，未安装导航诊断观察器或临时阶段记录。抽样最大 Codex 进程数为 1，不作无间隙进程或其他 Harness 连续性证明。全程不发送消息、不执行推理、不模拟额度耗尽。
+- 验证：**6 个 Vitest 文件、109 passed**（含导航、原生打开入口、深层绑定及响应归属）；账号页模拟 Playwright **29 passed**；typecheck、lint／boundaries、全仓 Prettier／cargo fmt、OpenSpec strict、diff check 通过。旧 Model Catalog 的独立失败未在本轮修正，不宣称全仓或 CI 全绿。完整 Rust tests、其他 Harness 联合运行、系统密钥失败生命周期和跨平台验收未运行。
+
+私有证据：`account-navigation-{red,slow-response-red}.log`、`navigation-reset-read.json`、`account-navigation-final-{tests,typecheck,lint,e2e,openspec}.log`、`account-navigation-final-live-launch.log`、`account-navigation-final-{to-b,to-a,identity}.json`、`thread-switch-{final-before,final-b,final-a,repeat-b,repeat-a}-result.json`。切换后真实新 Turn 的认证／上下文仍未验收。PR 不合并、不发布。
+
+## 前一阶段：深层历史页绑定回归与缩减后的历史范围
+
+用户已确认当前只保全主账号原正式 home 的历史；其他旧账号历史不要求迁移、合并或在新版显示，旧目录不主动删除。下文较早阶段将完整多 home 迁移列为交付门槛的记录不再代表当前范围。
+
+- 同一真实历史页的只读对照发现合法 React 祖先路径为 **209 层**，无环；已提交树在第 **3822** 个节点找到目标，未超过 20,000 节点预算。新增检查错误要求在 200 层内到达根节点，因而误报 request manager retired，Harness 出现感叹号、Settings 账号列表不可用。两个 checkout 均已包含 Desktop 26.908 的 main 兼容修复；不是漏同步或再次升级。
+- 先按用户偏好整体撤回根节点／当前 manager 校验，保留响应归属保护。聚焦测试通过、历史页恢复，但正式 fresh build 实测 A→B 后页面回到新会话，回切又未结束；原生身份仍为 B、没有待决 Journal。通过重启测试 Desktop、显式切换恢复 A。这一整体撤回方案没有提交，不能称为成功修复，也未证实该次等待的具体响应路径。
+- 最终只改 `renderer-react-ownership.ts`：删除祖先链和已提交树搜索中的 200 层硬限制，统一以已有 **20,000 节点预算及环检测**限制遍历工作量。保留已提交 Fiber／当前 Client 校验以及独立的在途响应保护，不增加导航补偿、重试或另一套绑定规则。补充 209 层、超预算无环祖先链及两个实际发现／注入入口回归，保留原退休树和响应归属测试。
+- 最终正式源码 `npm start` fresh build，在有 **2 个已持久化 Turns** 的真实会话开始 A→B，确认原生身份改变；随后 B→A 正常完成，最终原账号恢复，`transaction.json` 和 `login.json` 均不存在。每次操作前显式等待，不将它称作立即连续点击测试；抽样最大官方 Codex 进程数为 1。
+- **页面连续性仍失败**：切换后主页面短暂尚未安装扩展，稍后恢复为新会话，Composer 不再指向原 Thread。回切后的原生 `thread/read` 仍有相同 2 个 Turns，内容摘要和原文件前缀字节保留；手动重新打开原 Thread 后，Composer 身份、两轮渲染内容摘要和原生历史均与切换前一致。没有发送消息、执行推理或模拟额度耗尽，不宣称后续 Turn 的认证／上下文行为已验收。
+- 探针已改用 Composer 的 conversation identity 和 `[data-turn-key]` 渲染历史摘要，不再以 `location.pathname` 或不存在的 `[data-turn-id]` 判断是否停留在原 Thread。历史内容及真实 ID／路径只留本机私有证据，公开结果仅布尔值和计数。
+
+本次聚焦验证 **4 个 Vitest 文件、86 passed**，typecheck、lint／boundaries、全仓 Prettier／cargo fmt、OpenSpec strict 和 diff check 通过。首次运行 Renderer 用例时公共导出仍为旧构建产物；执行 typecheck 重新生成后重跑通过，不把那次旧产物失败当成生产修复。全仓测试、完整 Rust tests 和平台联合验收未重跑；上轮 Model Catalog 的独立失败尚未修正。
+
+私有证据：`revert-binding-guard-{red,green}.log`、`thread-binding-depth-differential.json`、`thread-depth-budget-{green,typecheck}.log`、`thread-depth-budget-live-launch.log`、`thread-depth-budget-switch-to-b.json`、`thread-depth-budget-final-identity.json`、`thread-switch-{before-final,after-a-final,after-reopen-final}-result.json`。PR 仍不合并、不发布。
+
+## 前一阶段：切换响应所有者与连续操作
 
 此节更新前一阶段“Host 已写 busy、Renderer 永久等待”的结论，不覆盖历史失败证据。
 

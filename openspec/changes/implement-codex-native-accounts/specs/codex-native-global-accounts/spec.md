@@ -98,6 +98,12 @@ The browser-safe v2 Account snapshot SHALL expose ready/changing/unavailable, re
 - **AND** a busy rejection SHALL end Settings' pending state and permit explicit user retry without weakening admission
 - **AND** successful native delivery SHALL NOT be completed twice, and another Host or unowned request ID SHALL NOT complete this request
 
+#### Scenario: Desktop resets navigation after switching Accounts
+- **WHEN** a successful Settings switch rebuilds Desktop's navigation while the window was displaying a local native Codex Thread
+- **THEN** Renderer SHALL retain that Thread ID for the operation and open the same Thread through the native UI once the replacement view is available
+- **AND** rejection, newer user navigation, expiration or disposal SHALL stop restoration without retrying the Account operation or replaying any Thread input
+- **AND** this window-local navigation intent SHALL NOT persist an Account-to-Thread mapping or reuse a retired Client
+
 #### Scenario: Retired account-selection API is used
 - **WHEN** a client submits activate or per-draft account-selection input
 - **THEN** Host SHALL reject it rather than silently restoring per-Thread routing

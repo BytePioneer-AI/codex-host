@@ -82,6 +82,7 @@ import {
 } from "./renderer-harness-command-claim.js";
 import { installRendererSettingsLifecycle } from "./renderer-settings-lifecycle.js";
 import { openRendererThread } from "./renderer-fork-control.js";
+import { createRendererAccountNavigation } from "./renderer-account-navigation.js";
 import type {
   RendererConnectionDiagnostics,
   RendererConnectionSnapshot,
@@ -674,9 +675,30 @@ export function installRendererBindingProbe(
     getLocalAgent: localAgentForSidebarThread,
   });
   let connectionDiagnostics: RendererConnectionDiagnostics | null = null;
+  const accountNavigation = createRendererAccountNavigation(() => {
+    const views = [...mountedByComposer.values()].filter(
+      (mounted) =>
+        mounted.composer.isConnected &&
+        mounted.hostId === "local" &&
+        mounted.ownershipStatus === "ready" &&
+        controller.get(mounted.composer).agent === "codex",
+    );
+    const view = views.length === 1 ? views[0] : undefined;
+    const threadId = view && threadIdFromComposerModelTarget(view.modelTarget);
+    return view && threadId ? { composer: view.composer, threadId } : null;
+  });
   const settingsLifecycle = installRendererSettingsLifecycle(window, {
     getUpdateClient: () => modelControl,
-    getAccountClient: () => modelControl,
+    getAccountClient: () => {
+      const client = modelControl;
+      return (
+        client && {
+          ...client,
+          switchCodexAccount: (input) =>
+            accountNavigation.switchAccount(() => client.switchCodexAccount(input)),
+        }
+      );
+    },
     getConnectionDiagnostics: () => connectionDiagnostics,
     getSessionImportClient: () => {
       const client = modelClientForHost("local");
@@ -2770,6 +2792,7 @@ export function installRendererBindingProbe(
       mutationObserver.disconnect();
       disposeReasoningSoftWrap();
       sidebarAgentIcons.dispose();
+      accountNavigation.dispose();
       settingsLifecycle.dispose();
       document.removeEventListener("beforeinput", onBeforeInput, true);
       document.removeEventListener("submit", onSubmit, true);

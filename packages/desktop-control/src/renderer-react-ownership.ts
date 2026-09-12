@@ -6,7 +6,8 @@ type Fiber = Record<string, unknown>;
  */
 export function committedReactAncestors(value: unknown): readonly Fiber[] {
   // Self-contained: Desktop Control serializes this function for Renderer evaluation.
-  const MAX_DEPTH = 200;
+  // Bound traversal work, not valid UI nesting. Existing Thread layouts can
+  // exceed 200 ancestors even when their request manager is nearby.
   const MAX_VISITED_FIBERS = 20_000;
   const fiber = (value: unknown): Fiber | null =>
     typeof value === "object" && value !== null ? (value as Fiber) : null;
@@ -15,7 +16,7 @@ export function committedReactAncestors(value: unknown): readonly Fiber[] {
   const previous: Fiber[] = [];
   const seen = new Set<Fiber>();
   for (let node: Fiber | null = first; node; node = fiber(node.return)) {
-    if (seen.has(node) || previous.length >= MAX_DEPTH) return [];
+    if (seen.has(node) || seen.size >= MAX_VISITED_FIBERS) return [];
     seen.add(node);
     previous.push(node);
   }
@@ -29,9 +30,8 @@ export function committedReactAncestors(value: unknown): readonly Fiber[] {
   interface Entry {
     node: Fiber;
     parent: Entry | null;
-    depth: number;
   }
-  const stack: Entry[] = [{ node: current, parent: null, depth: 1 }];
+  const stack: Entry[] = [{ node: current, parent: null }];
   const alternate = fiber(first.alternate);
   seen.clear();
   while (stack.length > 0 && seen.size < MAX_VISITED_FIBERS) {
@@ -46,10 +46,9 @@ export function committedReactAncestors(value: unknown): readonly Fiber[] {
       return ancestors;
     }
     const sibling = entry.parent && fiber(entry.node.sibling);
-    if (sibling) stack.push({ node: sibling, parent: entry.parent, depth: entry.depth });
+    if (sibling) stack.push({ node: sibling, parent: entry.parent });
     const child = fiber(entry.node.child);
-    if (child && entry.depth < MAX_DEPTH)
-      stack.push({ node: child, parent: entry, depth: entry.depth + 1 });
+    if (child) stack.push({ node: child, parent: entry });
   }
   return [];
 }

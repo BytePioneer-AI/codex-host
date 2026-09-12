@@ -154,6 +154,21 @@ describe.each([false, true])("native Host response ownership (injected: %s)", (i
     },
   );
 
+  it("replaces an older four-argument policy that lacks response ownership protection", async () => {
+    const { install, target } = fixture(injected);
+    const dispose = vi.fn();
+    target.__codexhostDraftPrewarmPolicyV1 = {
+      owns(manager: unknown, bridge: unknown, hostId: string, threads: unknown) {
+        return !!manager && !!bridge && hostId === "local" && !!threads;
+      },
+      dispose,
+    };
+    const client = nativeClient();
+    await install(client);
+    expect(dispose).toHaveBeenCalledOnce();
+    expect(client.listeners.size).toBe(1);
+  });
+
   it("does not deliver twice when native routing settles before or after the window listener", async () => {
     for (const nativeFirst of [true, false]) {
       const { install, frame } = fixture(injected);

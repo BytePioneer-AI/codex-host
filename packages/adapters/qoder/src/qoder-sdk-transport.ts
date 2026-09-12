@@ -53,6 +53,11 @@ import {
   type NativeSessionRef,
 } from "@codexhost/shared-contracts";
 
+import {
+  accessTokenFromEnv,
+  qodercliAuth,
+} from "@qoder-ai/qoder-agent-sdk";
+
 import { mapQoderException, mapQoderResultError } from "./qoder-errors.js";
 import { decodeQoderModelRef, encodeQoderModelRef, QODER_DEFAULT_MODEL_REF } from "./qoder-models.js";
 import type {
@@ -60,13 +65,13 @@ import type {
   CanUseToolContext,
   PermissionResult,
   QoderOptions,
+  QoderPermissionMode,
   QoderQuery,
   QoderQueryFactory,
-  SDKAssistantContent,
   SDKAssistantMessage,
   SDKMessage,
+  SDKPartialAssistantMessage,
   SDKResultMessage,
-  SDKStreamEvent,
   SDKSystemMessage,
   SDKUserMessage,
 } from "./qoder-sdk-types.js";
@@ -110,8 +115,17 @@ export class PushableInput<T> implements AsyncIterable<T> {
 interface ActiveTurnState {
   turnId: HostTurnId;
   userMessageUuid: string;
-  activeStreamingItemId?: HostItemId | undefined;
+  activeStreamingMessageItemId?: HostItemId | undefined;
   accumulatedStreamingText: string;
+  activeStreamingReasoningItemId?: HostItemId | undefined;
+  accumulatedStreamingReasoning: string;
+}
+
+interface ActiveTool {
+  itemId: HostItemId;
+  toolName: string;
+  arguments: JsonValue;
+  startedAtMs: number;
 }
 
 interface PendingInteraction {
@@ -127,9 +141,27 @@ export interface QoderSessionOptions {
   environment?: Record<string, string | undefined>;
   model?: HarnessModelRef;
   permissionModeId?: HarnessPermissionModeId;
+  resume?: string;
   queryFactory: QoderQueryFactory;
   pathToQoderCLIExecutable?: string;
   onClosed?: () => void;
+}
+
+function mapToQoderPermissionMode(id: HarnessPermissionModeId | undefined): QoderPermissionMode | undefined {
+  if (!id) return undefined;
+  const str = String(id);
+  if (
+    str === "default" ||
+    str === "acceptEdits" ||
+    str === "bypassPermissions" ||
+    str === "yolo" ||
+    str === "plan" ||
+    str === "dontAsk" ||
+    str === "auto"
+  ) {
+    return str as QoderPermissionMode;
+  }
+  return "default";
 }
 
 export class QoderSession implements HarnessSession {
@@ -138,8 +170,8 @@ export class QoderSession implements HarnessSession {
     configuration: {
       selectModel: true,
       selectThinkingOption: false,
-      selectPermissionMode: false,
-      permissionModeScope: "atCreate",
+      selectPermissionMode: true,
+      permissionModeScope: "live",
     },
     history: {
       fork: false,
@@ -155,6 +187,7 @@ export class QoderSession implements HarnessSession {
   readonly #pushableInput = new PushableInput<SDKUserMessage>();
   readonly #usageTracker = new QoderUsageTracker();
   readonly #pendingInteractions = new Map<string, PendingInteraction>();
+  readonly #activeTools = new Map<string, ActiveTool>();
   readonly #query: QoderQuery;
   readonly #onClosed: (() => void) | undefined;
 
@@ -180,12 +213,27 @@ export class QoderSession implements HarnessSession {
     };
     this.initialState = { ...this.#state };
 
+    const nativeModel = options.model ? decodeQoderModelRef(options.model) : undefined;
+    const permissionMode = mapToQoderPermissionMode(options.permissionModeId);
+
+    const auth = options.environment?.QODER_PERSONAL_ACCESS_TOKEN
+      ? accessTokenFromEnv()
+      : qodercliAuth();
+
     const qoderOptions: QoderOptions = {
       cwd: options.cwd,
       sessionId: options.sessionId,
       ...(options.pathToQoderCLIExecutable
         ? { pathToQoderCLIExecutable: options.pathToQoderCLIExecutable }
         : {}),
+      ...(options.environment ? { env: { ...options.environment } } : {}),
+      ...(nativeModel ? { model: nativeModel } : {}),
+      ...(permissionMode ? { permissionMode } : {}),
+      ...(permissionMode === "bypassPermissions" || permissionMode === "yolo"
+        ? { allowDangerouslySkipPermissions: true }
+        : {}),
+      ...(options.resume ? { resume: options.resume } : {}),
+      auth,
       includePartialMessages: true,
       canUseTool: this.#handleCanUseTool.bind(this),
     };
@@ -236,7 +284,10 @@ export class QoderSession implements HarnessSession {
         this.#handleAssistantMessage(message as SDKAssistantMessage);
         break;
       case "stream_event":
-        this.#handleStreamEvent(message as SDKStreamEvent);
+        this.#handleStreamEvent(message as SDKPartialAssistantMessage);
+        break;
+      case "user":
+        this.#handleUserMessage(message as SDKUserMessage);
         break;
       case "result":
         this.#handleResultMessage(message as SDKResultMessage);
@@ -265,19 +316,65 @@ export class QoderSession implements HarnessSession {
     }
   }
 
-  #handleStreamEvent(event: SDKStreamEvent): void {
+  #handleStreamEvent(event: SDKPartialAssistantMessage): void {
     if (!this.#activeTurn) return;
 
-    const delta =
-      event.text_delta ||
-      event.event?.delta?.text ||
-      event.event?.delta?.thinking;
+    const rawEvent = (event as Record<string, unknown>).event as Record<string, unknown> | undefined;
+    const rawDelta = (rawEvent?.delta ?? (event as Record<string, unknown>).delta) as Record<string, unknown> | undefined;
 
-    if (delta && delta.length > 0) {
-      let itemId = this.#activeTurn.activeStreamingItemId;
+    let thinkingDelta: string | undefined;
+    if (typeof rawDelta?.thinking === "string") {
+      thinkingDelta = rawDelta.thinking;
+    } else if (typeof (event as Record<string, unknown>).thinking_delta === "string") {
+      thinkingDelta = (event as Record<string, unknown>).thinking_delta as string;
+    } else if (rawDelta?.type === "thinking_delta" && typeof rawDelta.thinking === "string") {
+      thinkingDelta = rawDelta.thinking as string;
+    }
+
+    if (thinkingDelta && thinkingDelta.length > 0) {
+      let itemId = this.#activeTurn.activeStreamingReasoningItemId;
+      if (!itemId) {
+        itemId = hostItemIdSchema.parse(`reasoning-${randomUUID()}`);
+        this.#activeTurn.activeStreamingReasoningItemId = itemId;
+        this.#activeTurn.accumulatedStreamingReasoning = "";
+        this.#emitEvent({
+          type: "item.started",
+          turnId: this.#activeTurn.turnId,
+          item: {
+            type: "reasoning",
+            itemId,
+            text: "",
+          },
+        });
+      }
+
+      this.#activeTurn.accumulatedStreamingReasoning += thinkingDelta;
+      this.#emitEvent({
+        type: "item.updated",
+        turnId: this.#activeTurn.turnId,
+        itemId,
+        update: {
+          type: "text.append",
+          text: thinkingDelta,
+        },
+      });
+      return;
+    }
+
+    let textDelta: string | undefined;
+    if (typeof rawDelta?.text === "string") {
+      textDelta = rawDelta.text;
+    } else if (typeof (event as Record<string, unknown>).text_delta === "string") {
+      textDelta = (event as Record<string, unknown>).text_delta as string;
+    } else if (rawDelta?.type === "text_delta" && typeof rawDelta.text === "string") {
+      textDelta = rawDelta.text as string;
+    }
+
+    if (textDelta && textDelta.length > 0) {
+      let itemId = this.#activeTurn.activeStreamingMessageItemId;
       if (!itemId) {
         itemId = hostItemIdSchema.parse(`item-${randomUUID()}`);
-        this.#activeTurn.activeStreamingItemId = itemId;
+        this.#activeTurn.activeStreamingMessageItemId = itemId;
         this.#activeTurn.accumulatedStreamingText = "";
         this.#emitEvent({
           type: "item.started",
@@ -290,14 +387,14 @@ export class QoderSession implements HarnessSession {
         });
       }
 
-      this.#activeTurn.accumulatedStreamingText += delta;
+      this.#activeTurn.accumulatedStreamingText += textDelta;
       this.#emitEvent({
         type: "item.updated",
         turnId: this.#activeTurn.turnId,
         itemId,
         update: {
           type: "text.append",
-          text: delta,
+          text: textDelta,
         },
       });
     }
@@ -324,17 +421,17 @@ export class QoderSession implements HarnessSession {
     }
   }
 
-  #projectAssistantBlock(block: SDKAssistantContent): void {
-    if (!this.#activeTurn) return;
+  #projectAssistantBlock(block: unknown): void {
+    if (!this.#activeTurn || typeof block !== "object" || block === null) return;
     const turnId = this.#activeTurn.turnId;
+    const rawBlock = block as Record<string, unknown>;
 
-    if (block.type === "text") {
-      const activeStreamingId = this.#activeTurn.activeStreamingItemId;
+    if (rawBlock.type === "text" && typeof rawBlock.text === "string") {
+      const activeStreamingId = this.#activeTurn.activeStreamingMessageItemId;
       const accumulated = this.#activeTurn.accumulatedStreamingText;
 
-      if (activeStreamingId && block.text.startsWith(accumulated)) {
-        // Delta deduplication: append only the difference if any
-        const remaining = block.text.slice(accumulated.length);
+      if (activeStreamingId && rawBlock.text.startsWith(accumulated)) {
+        const remaining = rawBlock.text.slice(accumulated.length);
         if (remaining.length > 0) {
           this.#emitEvent({
             type: "item.updated",
@@ -353,12 +450,12 @@ export class QoderSession implements HarnessSession {
             item: {
               type: "agentMessage",
               itemId: activeStreamingId,
-              text: block.text,
+              text: rawBlock.text,
             },
             outcome: { status: "succeeded" },
           },
         });
-        this.#activeTurn.activeStreamingItemId = undefined;
+        this.#activeTurn.activeStreamingMessageItemId = undefined;
         this.#activeTurn.accumulatedStreamingText = "";
       } else {
         const itemId = hostItemIdSchema.parse(`item-${randomUUID()}`);
@@ -368,7 +465,7 @@ export class QoderSession implements HarnessSession {
           item: {
             type: "agentMessage",
             itemId,
-            text: block.text,
+            text: rawBlock.text,
           },
         });
         this.#emitEvent({
@@ -378,60 +475,143 @@ export class QoderSession implements HarnessSession {
             item: {
               type: "agentMessage",
               itemId,
-              text: block.text,
+              text: rawBlock.text,
             },
             outcome: { status: "succeeded" },
           },
         });
       }
-    } else if (block.type === "thinking") {
-      const itemId = hostItemIdSchema.parse(`item-${randomUUID()}`);
-      this.#emitEvent({
-        type: "item.started",
-        turnId,
-        item: {
-          type: "reasoning",
-          itemId,
-          text: block.thinking,
-        },
-      });
-      this.#emitEvent({
-        type: "item.completed",
-        turnId,
-        snapshot: {
+    } else if (rawBlock.type === "thinking" && typeof rawBlock.thinking === "string") {
+      const activeStreamingId = this.#activeTurn.activeStreamingReasoningItemId;
+      const accumulated = this.#activeTurn.accumulatedStreamingReasoning;
+
+      if (activeStreamingId && rawBlock.thinking.startsWith(accumulated)) {
+        const remaining = rawBlock.thinking.slice(accumulated.length);
+        if (remaining.length > 0) {
+          this.#emitEvent({
+            type: "item.updated",
+            turnId,
+            itemId: activeStreamingId,
+            update: {
+              type: "text.append",
+              text: remaining,
+            },
+          });
+        }
+        this.#emitEvent({
+          type: "item.completed",
+          turnId,
+          snapshot: {
+            item: {
+              type: "reasoning",
+              itemId: activeStreamingId,
+              text: rawBlock.thinking,
+            },
+            outcome: { status: "succeeded" },
+          },
+        });
+        this.#activeTurn.activeStreamingReasoningItemId = undefined;
+        this.#activeTurn.accumulatedStreamingReasoning = "";
+      } else {
+        const itemId = hostItemIdSchema.parse(`reasoning-${randomUUID()}`);
+        this.#emitEvent({
+          type: "item.started",
+          turnId,
           item: {
             type: "reasoning",
             itemId,
-            text: block.thinking,
+            text: rawBlock.thinking,
           },
-          outcome: { status: "succeeded" },
-        },
+        });
+        this.#emitEvent({
+          type: "item.completed",
+          turnId,
+          snapshot: {
+            item: {
+              type: "reasoning",
+              itemId,
+              text: rawBlock.thinking,
+            },
+            outcome: { status: "succeeded" },
+          },
+        });
+      }
+    } else if (rawBlock.type === "tool_use") {
+      const toolId = typeof rawBlock.id === "string" ? rawBlock.id : `tool-${randomUUID()}`;
+      const itemId = hostItemIdSchema.parse(toolId);
+      const toolName = typeof rawBlock.name === "string" ? rawBlock.name : "unknown";
+      const toolArgs = (rawBlock.input as JsonValue) ?? {};
+
+      this.#activeTools.set(toolId, {
+        itemId,
+        toolName,
+        arguments: toolArgs,
+        startedAtMs: Date.now(),
       });
-    } else if (block.type === "tool_use") {
-      const itemId = hostItemIdSchema.parse(block.id || `tool-${randomUUID()}`);
+
       this.#emitEvent({
         type: "item.started",
         turnId,
         item: {
           type: "toolExecution",
           itemId,
-          toolName: block.name,
-          arguments: (block.input as JsonValue) ?? {},
+          toolName,
+          arguments: toolArgs,
         },
       });
-      this.#emitEvent({
-        type: "item.completed",
-        turnId,
-        snapshot: {
-          item: {
-            type: "toolExecution",
-            itemId,
-            toolName: block.name,
-            arguments: (block.input as JsonValue) ?? {},
-          },
-          outcome: { status: "succeeded" },
-        },
-      });
+    }
+  }
+
+  #handleUserMessage(message: SDKUserMessage): void {
+    const content = message.message?.content;
+    if (!Array.isArray(content)) return;
+
+    for (const block of content) {
+      if (typeof block === "object" && block !== null && (block as Record<string, unknown>).type === "tool_result") {
+        const toolResult = block as {
+          type: "tool_result";
+          tool_use_id: string;
+          content: string | unknown[];
+          is_error?: boolean;
+        };
+
+        const activeTool = this.#activeTools.get(toolResult.tool_use_id);
+        if (activeTool) {
+          const isError = toolResult.is_error === true;
+          const outputText = typeof toolResult.content === "string"
+            ? toolResult.content
+            : JSON.stringify(toolResult.content);
+
+          const durationMs = Math.max(0, Date.now() - activeTool.startedAtMs);
+          this.#emitEvent({
+            type: "item.completed",
+            turnId: this.#activeTurn?.turnId ?? hostTurnIdSchema.parse("turn-fallback"),
+            snapshot: {
+              item: {
+                type: "toolExecution",
+                itemId: activeTool.itemId,
+                toolName: activeTool.toolName,
+                arguments: activeTool.arguments,
+                output: {
+                  content: [{ type: "text", text: outputText }],
+                },
+                durationMs,
+              },
+              outcome: isError
+                ? {
+                    status: "failed",
+                    error: {
+                      code: "nativeFailure",
+                      message: outputText || `Tool '${activeTool.toolName}' failed`,
+                      retryable: false,
+                    },
+                  }
+                : { status: "succeeded" },
+            },
+          });
+          this.#activeTools.delete(toolResult.tool_use_id);
+        }
+      }
     }
   }
 
@@ -448,22 +628,61 @@ export class QoderSession implements HarnessSession {
       });
     }
 
-    // Close any active streaming item
-    if (this.#activeTurn.activeStreamingItemId) {
+    // Complete any open tools
+    for (const [id, activeTool] of this.#activeTools) {
+      this.#emitEvent({
+        type: "item.completed",
+        turnId: this.#activeTurn.turnId,
+        snapshot: {
+          item: {
+            type: "toolExecution",
+            itemId: activeTool.itemId,
+            toolName: activeTool.toolName,
+            arguments: activeTool.arguments,
+            durationMs: Math.max(0, Date.now() - activeTool.startedAtMs),
+          },
+          outcome: result.subtype === "success"
+            ? { status: "succeeded" }
+            : { status: "failed", error: { code: "nativeFailure", message: "Tool incomplete on result", retryable: false } },
+        },
+      });
+    }
+    this.#activeTools.clear();
+
+    // Close any active streaming text message item
+    if (this.#activeTurn.activeStreamingMessageItemId) {
       this.#emitEvent({
         type: "item.completed",
         turnId: this.#activeTurn.turnId,
         snapshot: {
           item: {
             type: "agentMessage",
-            itemId: this.#activeTurn.activeStreamingItemId,
+            itemId: this.#activeTurn.activeStreamingMessageItemId,
             text: this.#activeTurn.accumulatedStreamingText,
           },
           outcome: { status: "succeeded" },
         },
       });
-      this.#activeTurn.activeStreamingItemId = undefined;
+      this.#activeTurn.activeStreamingMessageItemId = undefined;
       this.#activeTurn.accumulatedStreamingText = "";
+    }
+
+    // Close any active streaming reasoning item
+    if (this.#activeTurn.activeStreamingReasoningItemId) {
+      this.#emitEvent({
+        type: "item.completed",
+        turnId: this.#activeTurn.turnId,
+        snapshot: {
+          item: {
+            type: "reasoning",
+            itemId: this.#activeTurn.activeStreamingReasoningItemId,
+            text: this.#activeTurn.accumulatedStreamingReasoning,
+          },
+          outcome: { status: "succeeded" },
+        },
+      });
+      this.#activeTurn.activeStreamingReasoningItemId = undefined;
+      this.#activeTurn.accumulatedStreamingReasoning = "";
     }
 
     const turnId = this.#activeTurn.turnId;
@@ -718,6 +937,7 @@ export class QoderSession implements HarnessSession {
           turnId: command.turnId,
           userMessageUuid,
           accumulatedStreamingText: "",
+          accumulatedStreamingReasoning: "",
         };
 
         this.#emitEvent({
@@ -749,6 +969,27 @@ export class QoderSession implements HarnessSession {
         }
 
         this.#cancelPendingInteractions(command.turnId, "Turn cancelled by user");
+
+        for (const [id, activeTool] of this.#activeTools) {
+          this.#emitEvent({
+            type: "item.completed",
+            turnId: command.turnId,
+            snapshot: {
+              item: {
+                type: "toolExecution",
+                itemId: activeTool.itemId,
+                toolName: activeTool.toolName,
+                arguments: activeTool.arguments,
+                durationMs: Math.max(0, Date.now() - activeTool.startedAtMs),
+              },
+              outcome: {
+                status: "failed",
+                error: { code: "nativeFailure", message: "Tool cancelled by user", retryable: false },
+              },
+            },
+          });
+        }
+        this.#activeTools.clear();
 
         try {
           await this.#query.interrupt();
@@ -934,15 +1175,52 @@ export class QoderSession implements HarnessSession {
           },
         };
 
-      case "permissionMode.select":
-        return {
-          ok: false,
-          error: {
-            code: "unsupported",
-            message: "Live permission mode selection is not supported for Qoder",
-            retryable: false,
-          },
+      case "permissionMode.select": {
+        if (this.#activeTurn) {
+          return {
+            ok: false,
+            error: {
+              code: "sessionBusy",
+              message: "Cannot switch permission mode during active turn",
+              retryable: true,
+            },
+          };
+        }
+
+        const mode = mapToQoderPermissionMode(command.permissionModeId);
+        if (!mode) {
+          return {
+            ok: false,
+            error: {
+              code: "invalidRequest",
+              message: `Unknown permission mode '${command.permissionModeId}'`,
+              retryable: false,
+            },
+          };
+        }
+
+        if (this.#query.setPermissionMode) {
+          try {
+            await this.#query.setPermissionMode(mode);
+          } catch (err) {
+            return {
+              ok: false,
+              error: mapQoderException(err),
+            };
+          }
+        }
+
+        this.#state = {
+          ...this.#state,
+          effectivePermissionModeId: command.permissionModeId,
         };
+        this.#emitEvent({
+          type: "session.state.changed",
+          state: { ...this.#state },
+        });
+
+        return { ok: true, value: { completed: true } };
+      }
 
       default:
         return {
@@ -975,6 +1253,27 @@ export class QoderSession implements HarnessSession {
 
     if (this.#activeTurn) {
       this.#cancelPendingInteractions(this.#activeTurn.turnId, "Session closed");
+      for (const [id, activeTool] of this.#activeTools) {
+        this.#emitEvent({
+          type: "item.completed",
+          turnId: this.#activeTurn.turnId,
+          snapshot: {
+            item: {
+              type: "toolExecution",
+              itemId: activeTool.itemId,
+              toolName: activeTool.toolName,
+              arguments: activeTool.arguments,
+              durationMs: Math.max(0, Date.now() - activeTool.startedAtMs),
+            },
+            outcome: {
+              status: "failed",
+              error: { code: "nativeFailure", message: "Session closed", retryable: false },
+            },
+          },
+        });
+      }
+      this.#activeTools.clear();
+
       this.#emitEvent({
         type: "turn.completed",
         turnId: this.#activeTurn.turnId,

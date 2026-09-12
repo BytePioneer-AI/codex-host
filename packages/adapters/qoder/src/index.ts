@@ -25,11 +25,9 @@ export type {
   QoderOptions,
   QoderQuery,
   QoderQueryFactory,
-  SDKAssistantContent,
   SDKAssistantMessage,
   SDKMessage,
   SDKResultMessage,
-  SDKStreamEvent,
   SDKSystemMessage,
   SDKUserMessage,
 } from "./qoder-sdk-types.js";

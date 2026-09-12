@@ -16,10 +16,17 @@
     "@deepseek-ai/cosmokit",
     "@deepseek-ai/dsh-host-apiproxy",
     "@deepseek-ai/schemastery",
+    "@modelcontextprotocol/sdk",
     "@opencode-ai/sdk",
     "@qoder-ai/qoder-agent-sdk",
+    "ajv",
+    "ajv-formats",
     "diff",
+    "fast-deep-equal",
+    "fast-uri",
+    "json-schema-traverse",
     "ws",
-    "zod"
+    "zod",
+    "zod-to-json-schema"
   ]
 }

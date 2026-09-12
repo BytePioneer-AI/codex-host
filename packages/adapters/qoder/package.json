@@ -25,6 +25,6 @@
     "@codexhost/harness-adapter": "0.0.0",
     "@codexhost/harness-discovery": "0.0.0",
     "@codexhost/shared-contracts": "0.0.0",
-    "@qoder-ai/qoder-agent-sdk": "0.1.0"
+    "@qoder-ai/qoder-agent-sdk": "^1.0.39"
   }
 }

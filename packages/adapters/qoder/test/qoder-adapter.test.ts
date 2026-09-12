@@ -4,8 +4,12 @@ import type {
   HarnessOutput,
 } from "@codexhost/harness-adapter";
 import {
+  harnessIdSchema,
+  harnessPermissionModeIdSchema,
   hostInteractionIdSchema,
   hostTurnIdSchema,
+  nativeCheckpointRefSchema,
+  nativeSessionRefSchema,
 } from "@codexhost/shared-contracts";
 
 import { QoderAdapter } from "../src/qoder-adapter.js";
@@ -22,7 +26,9 @@ import {
   QODER_DEFAULT_MODEL_REF,
 } from "../src/qoder-models.js";
 import type {
+  QoderModelInfo,
   QoderOptions,
+  QoderPermissionMode,
   QoderQuery,
   QoderQueryFactory,
   SDKAssistantMessage,
@@ -40,9 +46,9 @@ class FakeQoderQuery implements QoderQuery {
       waiter({ done: true, value: undefined });
     }
   });
-  readonly getAvailableModels = vi.fn(async () => [
-    { value: "default", displayName: "Default" },
-    { value: "qoder-fast", displayName: "Qoder Fast" },
+  readonly getAvailableModels = vi.fn(async (): Promise<QoderModelInfo[]> => [
+    { value: "default", displayName: "Default", description: "Default Qoder model" },
+    { value: "qoder-fast", displayName: "Qoder Fast", description: "Fast Qoder model" },
   ]);
   readonly getContextUsage = vi.fn(async () => ({
     contextWindow: { usedPercentage: 45 },
@@ -50,6 +56,7 @@ class FakeQoderQuery implements QoderQuery {
     maxTokens: 1000,
   }));
   readonly setModel = vi.fn(async (_model: string) => undefined);
+  readonly setPermissionMode = vi.fn(async (_mode: QoderPermissionMode) => undefined);
 
   #closed = false;
   #messages: SDKMessage[] = [];
@@ -148,7 +155,7 @@ describe("QoderAdapter", () => {
       if (inspection1.status === "ready") {
         expect(inspection1.catalog.defaultModel?.id).toBe(QODER_DEFAULT_MODEL_REF.id);
         expect(inspection1.capabilities.configuration.selectModel).toBe(true);
-        expect(inspection1.capabilities.configuration.selectPermissionMode).toBe(false);
+        expect(inspection1.capabilities.configuration.selectPermissionMode).toBe(true);
         expect(inspection1.capabilities.history.rollbackLastTurn).toBe(false);
       }
 
@@ -188,11 +195,11 @@ describe("QoderAdapter", () => {
       const resumeResult = await adapter.open({
         kind: "resume",
         cwd: "D:/project",
-        nativeRef: {
+        nativeRef: nativeSessionRefSchema.parse({
           harnessId: "qoder",
           nativeSessionId: "session-12345",
           formatVersion: 1,
-        },
+        }),
       });
       expect(resumeResult.ok).toBe(true);
       if (resumeResult.ok) {
@@ -204,8 +211,13 @@ describe("QoderAdapter", () => {
       const forkResult = await adapter.open({
         kind: "fork",
         cwd: "D:/project",
-        sourceRef: { harnessId: "qoder", nativeSessionId: "source-1", formatVersion: 1 },
-        checkpoint: { harnessId: "qoder", nativeCheckpointId: "cp-1", formatVersion: 1 },
+        sourceRef: nativeSessionRefSchema.parse({ harnessId: "qoder", nativeSessionId: "source-1", formatVersion: 1 }),
+        checkpoint: nativeCheckpointRefSchema.parse({
+          harnessId: "qoder",
+          nativeSessionId: "source-1",
+          checkpointId: "cp-1",
+          formatVersion: 1,
+        }),
       });
       expect(forkResult.ok).toBe(false);
       if (!forkResult.ok) {
@@ -216,7 +228,7 @@ describe("QoderAdapter", () => {
       const rollbackResult = await adapter.open({
         kind: "rollbackLastTurn",
         cwd: "D:/project",
-        sourceRef: { harnessId: "qoder", nativeSessionId: "source-1", formatVersion: 1 },
+        sourceRef: nativeSessionRefSchema.parse({ harnessId: "qoder", nativeSessionId: "source-1", formatVersion: 1 }),
       });
       expect(rollbackResult.ok).toBe(false);
       if (!rollbackResult.ok) {
@@ -264,7 +276,7 @@ describe("QoderAdapter", () => {
         type: "system",
         subtype: "init",
         session_id: "qoder-session-real",
-      });
+      } as unknown as SDKMessage);
 
       fakeQuery.push({
         type: "assistant",
@@ -344,12 +356,12 @@ describe("QoderAdapter", () => {
       fakeQuery.push({
         type: "stream_event",
         text_delta: "Hello ",
-      });
+      } as unknown as SDKMessage);
 
       fakeQuery.push({
         type: "stream_event",
         text_delta: "world",
-      });
+      } as unknown as SDKMessage);
 
       // Now assistant message confirms "Hello world"
       fakeQuery.push({
@@ -580,7 +592,7 @@ describe("QoderAdapter", () => {
         type: "result",
         subtype: "error_during_execution",
         error_code: 105,
-      });
+      } as unknown as SDKResultMessage);
       expect(authErr.code).toBe("authenticationRequired");
       expect(authErr.retryable).toBe(false);
 
@@ -589,14 +601,14 @@ describe("QoderAdapter", () => {
         subtype: "error_during_execution",
         error_code: 430,
         errors: ["Feature not available"],
-      });
+      } as unknown as SDKResultMessage);
       expect(unsuppErr.code).toBe("unsupported");
 
       const retryableErr = mapQoderResultError({
         type: "result",
         subtype: "error_during_execution",
         error_code: 500,
-      });
+      } as unknown as SDKResultMessage);
       expect(retryableErr.code).toBe("nativeFailure");
       expect(retryableErr.retryable).toBe(true);
 
@@ -604,7 +616,7 @@ describe("QoderAdapter", () => {
         type: "result",
         subtype: "error_during_execution",
         error_code: 47902,
-      });
+      } as unknown as SDKResultMessage);
       expect(limitErr.code).toBe("invalidState");
     });
 
@@ -637,7 +649,7 @@ describe("QoderAdapter", () => {
         subtype: "success",
         total_credits: 5.5,
         usage: { input_tokens: 100, output_tokens: 50 },
-      });
+      } as unknown as SDKResultMessage);
 
       const snap1 = tracker.snapshot();
       expect(snap1?.totalCredits).toBe(5.5);
@@ -649,7 +661,7 @@ describe("QoderAdapter", () => {
         subtype: "success",
         total_credits: 8.2,
         usage: { input_tokens: 120, output_tokens: 60 },
-      });
+      } as unknown as SDKResultMessage);
 
       const snap2 = tracker.snapshot();
       // Must NOT be 13.7! Must be latest snapshot 8.2!
@@ -675,6 +687,311 @@ describe("QoderAdapter", () => {
       expect(catalog.models.length).toBe(2);
       expect(catalog.defaultModel?.id).toBe(encodeQoderModelRef("qoder-1").id);
       expect(catalog.thinkingOptions).toEqual([]);
+    });
+  });
+
+  describe("Session configuration forwarding", () => {
+    it("forwards environment, model, permissionMode, and resume options to SDK", async () => {
+      let capturedOptions: QoderOptions | undefined;
+      const fakeQuery = new FakeQoderQuery();
+      const adapter = new QoderAdapter({
+        resolveExecutable: () => "D:/tools/qodercli.exe",
+        queryFactory: (input) => {
+          capturedOptions = input.options;
+          return fakeQuery;
+        },
+      });
+
+      const yoloMode = harnessPermissionModeIdSchema.parse("yolo");
+      const modelRef = encodeQoderModelRef("ultimate");
+
+      // Test create with environment, model, permissionMode
+      const createRes = await adapter.open({
+        kind: "create",
+        cwd: "D:/workspace",
+        environment: {
+          CUSTOM_VAR: "custom_value",
+          QODER_PERSONAL_ACCESS_TOKEN: "token-123",
+        },
+        model: modelRef,
+        permissionModeId: yoloMode,
+      });
+
+      expect(createRes.ok).toBe(true);
+      if (!createRes.ok) return;
+
+      expect(capturedOptions?.env).toEqual({
+        CUSTOM_VAR: "custom_value",
+        QODER_PERSONAL_ACCESS_TOKEN: "token-123",
+      });
+      expect(capturedOptions?.model).toBe("ultimate");
+      expect(capturedOptions?.permissionMode).toBe("yolo");
+      expect(capturedOptions?.allowDangerouslySkipPermissions).toBe(true);
+      await createRes.value.close();
+
+      // Test resume forwards resume sessionId
+      const resumeRes = await adapter.open({
+        kind: "resume",
+        cwd: "D:/workspace",
+        nativeRef: nativeSessionRefSchema.parse({
+          harnessId: "qoder",
+          nativeSessionId: "session-resume-abc",
+          formatVersion: 1,
+        }),
+      });
+
+      expect(resumeRes.ok).toBe(true);
+      if (!resumeRes.ok) return;
+      expect(capturedOptions?.resume).toBe("session-resume-abc");
+      await resumeRes.value.close();
+      await adapter.close();
+    });
+  });
+
+  describe("Thinking delta streaming & isolation", () => {
+    it("routes thinking stream events to reasoning item instead of agentMessage", async () => {
+      const fakeQuery = new FakeQoderQuery();
+      const adapter = new QoderAdapter({
+        resolveExecutable: () => "D:/tools/qodercli.exe",
+        queryFactory: () => fakeQuery,
+      });
+
+      const openResult = await adapter.open({ kind: "create", cwd: "D:/workspace" });
+      if (!openResult.ok) throw new Error("open failed");
+      const session = openResult.value;
+      const collector = new OutputCollector(session.outputs);
+
+      const turnId = hostTurnIdSchema.parse("turn-thinking");
+      await session.execute({
+        type: "turn.start",
+        turnId,
+        input: [{ type: "text", text: "Reason about this" }],
+      });
+
+      // Stream thinking delta
+      fakeQuery.push({
+        type: "stream_event",
+        thinking_delta: "I am analyzing ",
+      } as unknown as SDKMessage);
+
+      fakeQuery.push({
+        type: "stream_event",
+        thinking_delta: "the codebase.",
+      } as unknown as SDKMessage);
+
+      // Stream text delta
+      fakeQuery.push({
+        type: "stream_event",
+        text_delta: "Here is the answer.",
+      } as unknown as SDKMessage);
+
+      // Assistant message confirmation
+      fakeQuery.push({
+        type: "assistant",
+        message: {
+          role: "assistant",
+          content: [
+            { type: "thinking", thinking: "I am analyzing the codebase." },
+            { type: "text", text: "Here is the answer." },
+          ],
+        },
+      } as SDKAssistantMessage);
+
+      fakeQuery.push({
+        type: "result",
+        subtype: "success",
+      } as SDKResultMessage);
+
+      await collector.waitFor((o) => o.kind === "event" && o.event.type === "turn.completed");
+
+      const reasoningStarted = collector.outputs.find(
+        (o) => o.kind === "event" && o.event.type === "item.started" && (o.event as any).item.type === "reasoning",
+      );
+      expect(reasoningStarted).toBeDefined();
+
+      const reasoningCompleted = collector.outputs.find(
+        (o) => o.kind === "event" && o.event.type === "item.completed" && (o.event as any).snapshot.item.type === "reasoning",
+      );
+      expect(reasoningCompleted).toBeDefined();
+      expect((reasoningCompleted as any).event.snapshot.item.text).toBe("I am analyzing the codebase.");
+
+      const messageCompleted = collector.outputs.find(
+        (o) => o.kind === "event" && o.event.type === "item.completed" && (o.event as any).snapshot.item.type === "agentMessage",
+      );
+      expect(messageCompleted).toBeDefined();
+      expect((messageCompleted as any).event.snapshot.item.text).toBe("Here is the answer.");
+
+      await session.close();
+      await adapter.close();
+    });
+  });
+
+  describe("Tool use & tool result lifecycle", () => {
+    it("waits for tool_result before completing toolExecution item and reflects failure", async () => {
+      const fakeQuery = new FakeQoderQuery();
+      const adapter = new QoderAdapter({
+        resolveExecutable: () => "D:/tools/qodercli.exe",
+        queryFactory: () => fakeQuery,
+      });
+
+      const openResult = await adapter.open({ kind: "create", cwd: "D:/workspace" });
+      if (!openResult.ok) throw new Error("open failed");
+      const session = openResult.value;
+      const collector = new OutputCollector(session.outputs);
+
+      const turnId = hostTurnIdSchema.parse("turn-tools");
+      await session.execute({
+        type: "turn.start",
+        turnId,
+        input: [{ type: "text", text: "Execute tool" }],
+      });
+
+      // Assistant requests tool_use
+      fakeQuery.push({
+        type: "assistant",
+        message: {
+          role: "assistant",
+          content: [
+            {
+              type: "tool_use",
+              id: "call_abc_1",
+              name: "ReadFile",
+              input: { path: "src/index.ts" },
+            },
+          ],
+        },
+      } as SDKAssistantMessage);
+
+      await collector.waitFor(
+        (o) => o.kind === "event" && o.event.type === "item.started" && (o.event as any).item.type === "toolExecution",
+      );
+
+      // Crucial check: tool is NOT completed yet!
+      const prematureCompleted = collector.outputs.find(
+        (o) => o.kind === "event" && o.event.type === "item.completed" && (o.event as any).snapshot.item.type === "toolExecution",
+      );
+      expect(prematureCompleted).toBeUndefined();
+
+      // Subsequent user message brings tool_result
+      fakeQuery.push({
+        type: "user",
+        message: {
+          role: "user",
+          content: [
+            {
+              type: "tool_result",
+              tool_use_id: "call_abc_1",
+              content: "file content here",
+              is_error: false,
+            },
+          ],
+        },
+      } as unknown as SDKUserMessage);
+
+      const toolCompletedEvent = await collector.waitFor(
+        (o) =>
+          o.kind === "event" &&
+          o.event.type === "item.completed" &&
+          (o.event as any).snapshot.item.type === "toolExecution" &&
+          (o.event as any).snapshot.item.itemId === "call_abc_1",
+      );
+      expect(toolCompletedEvent).toBeDefined();
+      const completedSnapshot = (toolCompletedEvent as any).event.snapshot;
+      expect(completedSnapshot.outcome.status).toBe("succeeded");
+      expect(completedSnapshot.item.output.content[0].text).toBe("file content here");
+
+      // Now test failing tool execution
+      fakeQuery.push({
+        type: "assistant",
+        message: {
+          role: "assistant",
+          content: [
+            {
+              type: "tool_use",
+              id: "call_abc_2",
+              name: "Bash",
+              input: { command: "exit 1" },
+            },
+          ],
+        },
+      } as SDKAssistantMessage);
+
+      await collector.waitFor(
+        (o) =>
+          o.kind === "event" &&
+          o.event.type === "item.started" &&
+          (o.event as any).item.itemId === "call_abc_2",
+      );
+
+      fakeQuery.push({
+        type: "user",
+        message: {
+          role: "user",
+          content: [
+            {
+              type: "tool_result",
+              tool_use_id: "call_abc_2",
+              content: "command failed with error",
+              is_error: true,
+            },
+          ],
+        },
+      } as unknown as SDKUserMessage);
+
+      const failedCompletedEvent = await collector.waitFor(
+        (o) =>
+          o.kind === "event" &&
+          o.event.type === "item.completed" &&
+          (o.event as any).snapshot.item.itemId === "call_abc_2",
+      );
+      expect(failedCompletedEvent).toBeDefined();
+      const failedSnapshot = (failedCompletedEvent as any).event.snapshot;
+      expect(failedSnapshot.outcome.status).toBe("failed");
+      expect(failedSnapshot.outcome.error?.message).toBe("command failed with error");
+
+      fakeQuery.push({
+        type: "result",
+        subtype: "success",
+      } as SDKResultMessage);
+
+      await collector.waitFor((o) => o.kind === "event" && o.event.type === "turn.completed");
+
+      await session.close();
+      await adapter.close();
+    });
+  });
+
+  describe("permissionMode.select command", () => {
+    it("calls query.setPermissionMode and notifies session state changed", async () => {
+      const fakeQuery = new FakeQoderQuery();
+      const adapter = new QoderAdapter({
+        resolveExecutable: () => "D:/tools/qodercli.exe",
+        queryFactory: () => fakeQuery,
+      });
+
+      const openResult = await adapter.open({ kind: "create", cwd: "D:/workspace" });
+      if (!openResult.ok) throw new Error("open failed");
+      const session = openResult.value;
+      const collector = new OutputCollector(session.outputs);
+
+      const acceptEditsMode = harnessPermissionModeIdSchema.parse("acceptEdits");
+      const selectResult = await session.execute({
+        type: "permissionMode.select",
+        permissionModeId: acceptEditsMode,
+      });
+
+      expect(selectResult.ok).toBe(true);
+      expect(fakeQuery.setPermissionMode).toHaveBeenCalledWith("acceptEdits");
+
+      await collector.waitFor(
+        (o) =>
+          o.kind === "event" &&
+          o.event.type === "session.state.changed" &&
+          o.event.state.effectivePermissionModeId === acceptEditsMode,
+      );
+
+      await session.close();
+      await adapter.close();
     });
   });
 

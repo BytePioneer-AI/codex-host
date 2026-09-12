@@ -2,9 +2,10 @@ import type { HarnessError } from "@codexhost/harness-adapter";
 import type { SDKResultMessage } from "./qoder-sdk-types.js";
 
 export function mapQoderResultError(result: SDKResultMessage): HarnessError {
-  const errorCode = result.error_code;
+  const errorObj = result.subtype !== "success" ? (result as { errors?: string[]; error_code?: number }) : undefined;
+  const errorCode = errorObj?.error_code;
   const message =
-    (result.errors && result.errors.length > 0 ? result.errors.join("; ") : undefined) ||
+    (errorObj?.errors && errorObj.errors.length > 0 ? errorObj.errors.join("; ") : undefined) ||
     `Qoder execution error (code ${errorCode ?? result.subtype})`;
 
   if (errorCode === 105) {

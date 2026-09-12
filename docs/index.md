@@ -40,6 +40,7 @@
 | 文档 | 作用 |
 |---|---|
 | [`archive/codex-desktop-incidents/26.814-compatibility-debt.md`](archive/codex-desktop-incidents/26.814-compatibility-debt.md) | 归档 Codex Desktop 26.814 更新导致 Renderer Request Bridge 和 Agent/Model 路由异常的事故记录。 |
+| [`archive/codex-desktop-incidents/26.908-request-manager-wrapper.md`](archive/codex-desktop-incidents/26.908-request-manager-wrapper.md) | 归档 Codex Desktop 26.908 把 Request Manager 包进 Fiber hook `{ hostId, manager, status }` 后连接检查失败的记录。 |
 
 ### DeepSeek Harness 接入
 

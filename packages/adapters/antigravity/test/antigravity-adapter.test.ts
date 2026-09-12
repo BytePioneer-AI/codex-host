@@ -632,6 +632,9 @@ describe("Antigravity Adapter", () => {
       "broken pipe",
       "write: broken pipe",
       "unexpected EOF",
+      "EOF",
+      ": EOF",
+      'API error (attempt 1): request failed: Post "https://daily-cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse": EOF',
       "stream terminated by RST_STREAM",
     ];
     for (const sample of transientSamples) {
@@ -1564,6 +1567,134 @@ if (stderrLines.length > 0) {
 
       expect(completed).toMatchObject({
         turnId: "turn-reset-partial",
+        outcome: { status: "failed", error: { code: "nativeFailure" } },
+      });
+    });
+
+    it("treats non-SUCCESS result with streamGenerateContent EOF error as succeeded when response is present", async () => {
+      const eofError =
+        'API error (attempt 1): request failed: Post "https://daily-cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse": EOF';
+      const streamLines = [
+        JSON.stringify({
+          event: "init",
+          init: { permission_mode: "default" },
+          conversation_id: "conv-eof-completed",
+        }),
+        JSON.stringify({
+          event: "step_update",
+          step_update: {
+            conversation_id: "conv-eof-completed",
+            step_index: 1,
+            state: "DONE",
+            step_type: "agent_response",
+            text: "Task completed successfully before remote EOF.",
+          },
+        }),
+        JSON.stringify({
+          event: "result",
+          result: {
+            conversation_id: "conv-eof-completed",
+            status: "ERROR",
+            error: eofError,
+            num_turns: 1,
+          },
+        }),
+      ];
+
+      const { command, cwd, cleanup } = await fakeStreamingAgy(streamLines);
+      const adapter = new AntigravityAdapter({ command });
+      try {
+        const opened = await adapter.open({ kind: "create", cwd });
+        expect(opened.ok).toBe(true);
+        if (!opened.ok) return;
+
+        const session = opened.value;
+        const iterator = session.outputs[Symbol.asyncIterator]();
+        const turnId = hostTurnIdSchema.parse("turn-eof-completed");
+
+        await session.execute({
+          type: "turn.start",
+          turnId,
+          input: [{ type: "text", text: "check eof" }],
+        });
+
+        const started = await nextEvent(iterator);
+        expect(started.type).toBe("turn.started");
+
+        const stateChanged = await nextEvent(iterator);
+        expect(stateChanged.type).toBe("session.state.changed");
+
+        const itemStarted = await nextEvent(iterator);
+        expect(itemStarted).toMatchObject({
+          type: "item.started",
+          turnId,
+          item: {
+            type: "agentMessage",
+            text: "Task completed successfully before remote EOF.",
+          },
+        });
+
+        const itemCompleted = await nextEvent(iterator);
+        expect(itemCompleted).toMatchObject({
+          type: "item.completed",
+          turnId,
+          snapshot: {
+            item: {
+              type: "agentMessage",
+              text: "Task completed successfully before remote EOF.",
+            },
+            outcome: { status: "succeeded" },
+          },
+        });
+
+        const completed = await nextEvent(iterator);
+        expect(completed).toMatchObject({
+          type: "turn.completed",
+          turnId,
+          outcome: { status: "succeeded" },
+        });
+
+        await session.close();
+      } finally {
+        await adapter.close();
+        await cleanup();
+      }
+    });
+
+    it("keeps a partial agent response failed when interrupted by streamGenerateContent EOF", async () => {
+      const completed = await runResultScenario(
+        [
+          JSON.stringify({
+            event: "init",
+            init: { permission_mode: "default" },
+            conversation_id: "conv-eof-partial",
+          }),
+          JSON.stringify({
+            event: "step_update",
+            step_update: {
+              conversation_id: "conv-eof-partial",
+              step_index: 1,
+              state: "ACTIVE",
+              step_type: "agent_response",
+              text_delta: "The operations started but remote closed with EOF",
+            },
+          }),
+          JSON.stringify({
+            event: "result",
+            result: {
+              conversation_id: "conv-eof-partial",
+              status: "ERROR",
+              error:
+                'API error (attempt 1): request failed: Post "https://daily-cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse": EOF',
+              num_turns: 1,
+            },
+          }),
+        ],
+        "turn-eof-partial",
+      );
+
+      expect(completed).toMatchObject({
+        turnId: "turn-eof-partial",
         outcome: { status: "failed", error: { code: "nativeFailure" } },
       });
     });

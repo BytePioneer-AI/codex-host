@@ -88,7 +88,12 @@ describe("OpenCode SDK transport", () => {
       },
       randomPassword: () => "synthetic-password",
       spawn: (command, args, options) => {
-        spawnCalls.push({ command, args, env: options.env, cwd: options.cwd });
+        spawnCalls.push({
+          command,
+          args,
+          env: options.env,
+          ...(options.cwd === undefined ? {} : { cwd: options.cwd }),
+        });
         const child = new FakeChild();
         child.pid += children.length;
         children.push(child);

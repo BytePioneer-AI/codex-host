@@ -28,6 +28,7 @@ import {
   qoderEnvironment,
   resolveQoderExecutable,
 } from "./qoder-command.js";
+import { mapQoderSnapshot } from "./qoder-history.js";
 import { parseQoderModelCatalog } from "./qoder-models.js";
 import { QODER_PERMISSION_MODE_CATALOG } from "./qoder-permission-modes.js";
 import type {
@@ -178,7 +179,7 @@ export class QoderAdapter implements HarnessAdapter {
             history: {
               fork: true,
               forkAcrossCwd: false,
-              rollbackLastTurn: false,
+              rollbackLastTurn: true,
             },
           },
         };
@@ -206,17 +207,6 @@ export class QoderAdapter implements HarnessAdapter {
   }
 
   async open(input: OpenSessionInput): Promise<HarnessResult<HarnessSession>> {
-    if (input.kind === "rollbackLastTurn") {
-      return {
-        ok: false,
-        error: {
-          code: "unsupported",
-          message: `Qoder does not support session ${input.kind}`,
-          retryable: false,
-        },
-      };
-    }
-
     const environment = qoderEnvironment(input.environment ?? this.#environment);
     let pathToQoderCLIExecutable: string | undefined;
     try {
@@ -308,6 +298,92 @@ export class QoderAdapter implements HarnessAdapter {
 
       sessionId = derivedSessionId;
       openResumeId = derivedSessionId;
+    } else if (input.kind === "rollbackLastTurn") {
+      const sourceRef = nativeSessionRefSchema.safeParse(input.sourceRef);
+      if (!sourceRef.success || sourceRef.data.harnessId !== this.harnessId) {
+        return {
+          ok: false,
+          error: {
+            code: "invalidRequest",
+            message: "Native session ref missing or invalid for Qoder rollbackLastTurn",
+            retryable: false,
+          },
+        };
+      }
+
+      let sourceMessages: SessionMessage[];
+      try {
+        sourceMessages = await this.#getSessionMessages(sourceRef.data.nativeSessionId, {
+          dir: input.cwd,
+          view: "historical",
+        });
+      } catch (error) {
+        return {
+          ok: false,
+          error: {
+            code: "nativeFailure",
+            message:
+              error instanceof Error ? error.message : "Failed to read Qoder session history",
+            retryable: false,
+          },
+        };
+      }
+
+      const snapshot = mapQoderSnapshot(sourceMessages, sourceRef.data.nativeSessionId);
+      if (snapshot.turns.length === 0) {
+        return {
+          ok: false,
+          error: {
+            code: "invalidRequest",
+            message: "Qoder session has no turn to roll back",
+            retryable: false,
+          },
+        };
+      }
+
+      if (snapshot.turns.length === 1) {
+        sessionId = randomUUID();
+        openResumeId = undefined;
+      } else {
+        const retainedTurn = snapshot.turns[snapshot.turns.length - 2];
+        const checkpointId =
+          retainedTurn?.checkpoint?.checkpointId ?? retainedTurn?.nativeTurnRef?.nativeTurnKey;
+        if (!checkpointId) {
+          return {
+            ok: false,
+            error: {
+              code: "checkpointNotFound",
+              message: "Qoder rollback checkpoint is unavailable",
+              retryable: false,
+            },
+          };
+        }
+
+        let derivedSessionId: string;
+        try {
+          const forked = await this.#forkSession(sourceRef.data.nativeSessionId, {
+            dir: input.cwd,
+            upToMessageId: checkpointId,
+          });
+          derivedSessionId = forked.sessionId;
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          const isNotFound =
+            message.toLowerCase().includes("not found") ||
+            message.toLowerCase().includes("cannot find");
+          return {
+            ok: false,
+            error: {
+              code: isNotFound ? "checkpointNotFound" : "nativeFailure",
+              message: `Qoder native rollback fork failed: ${message}`,
+              retryable: false,
+            },
+          };
+        }
+
+        sessionId = derivedSessionId;
+        openResumeId = derivedSessionId;
+      }
     } else {
       return {
         ok: false,

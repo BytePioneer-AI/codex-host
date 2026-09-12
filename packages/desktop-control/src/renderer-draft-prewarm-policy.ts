@@ -39,36 +39,59 @@ export function selectRendererRequestManager<Manager, RequestClient>(
   return eligible.length === 1 ? (eligible[0] ?? null) : null;
 }
 
-export function requestManagerFromHookState(value: unknown): object | null {
+export function requestManagerFromHookState(value: unknown, activeHostId?: string): object | null {
   const matchesRequestManager = (candidate: unknown): candidate is object => {
-    if (candidate == null || typeof candidate !== "object") return false;
-    const value = candidate as {
-      requestClient?: {
-        prewarmThreadStart?: unknown;
-        sendRequest?: unknown;
-        enqueueRequest?: unknown;
-      };
-      prewarmedThreadManager?: { discardAllPrewarmedThreads?: unknown };
-      sendRequest?: unknown;
-    };
+    if (
+      candidate == null ||
+      typeof candidate !== "object" ||
+      !("requestClient" in candidate) ||
+      !("prewarmedThreadManager" in candidate) ||
+      !("sendRequest" in candidate)
+    ) {
+      return false;
+    }
+    const requestClient = candidate.requestClient;
+    const prewarmedThreadManager = candidate.prewarmedThreadManager;
     return (
-      value.requestClient != null &&
-      typeof value.requestClient.prewarmThreadStart === "function" &&
-      typeof value.requestClient.sendRequest === "function" &&
-      typeof value.requestClient.enqueueRequest === "function" &&
-      typeof value.prewarmedThreadManager?.discardAllPrewarmedThreads === "function" &&
-      typeof value.sendRequest === "function"
+      requestClient != null &&
+      typeof requestClient === "object" &&
+      "prewarmThreadStart" in requestClient &&
+      typeof requestClient.prewarmThreadStart === "function" &&
+      "sendRequest" in requestClient &&
+      typeof requestClient.sendRequest === "function" &&
+      "enqueueRequest" in requestClient &&
+      typeof requestClient.enqueueRequest === "function" &&
+      prewarmedThreadManager != null &&
+      typeof prewarmedThreadManager === "object" &&
+      "discardAllPrewarmedThreads" in prewarmedThreadManager &&
+      typeof prewarmedThreadManager.discardAllPrewarmedThreads === "function" &&
+      typeof candidate.sendRequest === "function"
     );
   };
   if (matchesRequestManager(value)) return value;
   if (
     value != null &&
     typeof value === "object" &&
-    matchesRequestManager((value as { manager?: unknown }).manager)
+    "manager" in value &&
+    matchesRequestManager(value.manager)
   ) {
-    return (value as { manager: object }).manager;
+    return value.manager;
   }
-  return null;
+  if (typeof activeHostId !== "string" || activeHostId.length === 0) return null;
+  if (
+    value == null ||
+    typeof value !== "object" ||
+    !("addManager" in value) ||
+    typeof value.addManager !== "function" ||
+    !("getForHostId" in value) ||
+    typeof value.getForHostId !== "function" ||
+    !("waitForManagerForHostId" in value) ||
+    typeof value.waitForManagerForHostId !== "function"
+  ) {
+    return null;
+  }
+  const manager = value.getForHostId.call(value, activeHostId);
+  return matchesRequestManager(manager) ? manager : null;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -92,19 +115,32 @@ const FIND_REQUEST_MANAGER_EXPRESSION = `(() => {
     if (key != null) fiber = element[key];
     element = element.parentElement;
   }
-  const managers = new Set();
+  const composerFiber = fiber;
   const activeHostIds = new Set();
-  for (let depth = 0; fiber != null && depth < 200; depth += 1, fiber = fiber.return) {
-    const props = fiber.memoizedProps;
+  for (
+    let currentFiber = composerFiber, depth = 0;
+    currentFiber != null && depth < 200;
+    depth += 1, currentFiber = currentFiber.return
+  ) {
+    const props = currentFiber.memoizedProps;
     if (props != null && typeof props === 'object') {
       for (const name of ['executionTargetHostId', 'permissionsHostId']) {
         const value = props[name];
         if (typeof value === 'string' && value.length > 0) activeHostIds.add(value);
       }
     }
-    let hook = fiber.memoizedState;
+  }
+  const activeHostId =
+    activeHostIds.size === 1 ? activeHostIds.values().next().value : undefined;
+  const managers = new Set();
+  for (
+    let currentFiber = composerFiber, depth = 0;
+    currentFiber != null && depth < 200;
+    depth += 1, currentFiber = currentFiber.return
+  ) {
+    let hook = currentFiber.memoizedState;
     for (let index = 0; hook != null && index < 120; index += 1, hook = hook.next) {
-      const manager = requestManagerFromHookState(hook.memoizedState);
+      const manager = requestManagerFromHookState(hook.memoizedState, activeHostId);
       if (manager != null) managers.add(manager);
     }
   }

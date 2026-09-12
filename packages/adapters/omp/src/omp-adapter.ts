@@ -1,3 +1,4 @@
+import { ompNativeCommandCatalog, ompNativePrompt, type OmpNativeCommand } from "./omp-commands.js";
 import { createTwoFilesPatch, parsePatch } from "diff";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
@@ -123,6 +124,7 @@ export interface OmpTurnTransport {
   readonly stderrTail?: string;
   start(): Promise<unknown>;
   getAvailableModels(): Promise<OmpNativeModel[]>;
+  getAvailableCommands?(): Promise<OmpNativeCommand[]>;
   getAvailableThinkingLevels(): Promise<HarnessThinkingOptionId[] | null>;
   getEntries(): Promise<OmpSessionHistory>;
   getSubagentMessages(input: {
@@ -629,7 +631,7 @@ class OmpHarnessSession implements HarnessSession {
       subagents: { observe: true, readTranscript: true },
     };
     this.commands = {
-      list: async () => ({ ok: true, value: ompCommandCatalog }),
+      list: () => this.#listCommands(),
       execute: (command) => this.#executeHarnessCommand(command),
     };
     this.#transport = options.startedTransport ?? null;
@@ -644,6 +646,22 @@ class OmpHarnessSession implements HarnessSession {
     this.#usage = this.initialUsage;
     this.#state = this.initialState;
     this.outputs = this.#channel.outputs;
+  }
+
+  async #listCommands() {
+    try {
+      const native = (await this.#transport?.getAvailableCommands?.()) ?? [];
+      return { ok: true as const, value: ompNativeCommandCatalog(ompCommandCatalog, native) };
+    } catch {
+      return {
+        ok: false as const,
+        error: {
+          code: "unavailable" as const,
+          message: "OMP command catalog is unavailable",
+          retryable: true,
+        },
+      };
+    }
   }
 
   handleTransportFault(error: OmpRpcFaultError): void {
@@ -894,7 +912,7 @@ class OmpHarnessSession implements HarnessSession {
         },
       };
     }
-    const text = command.input.map((input) => input.text).join("\n");
+    let text = command.input.map((input) => input.text).join("\n");
     if (text.length === 0) {
       return {
         ok: false,
@@ -917,6 +935,11 @@ class OmpHarnessSession implements HarnessSession {
       let transport: OmpTurnTransport;
       try {
         transport = await this.#ensureTransport();
+        if (text.trimStart().startsWith("/omp:")) {
+          const catalog = await this.#listCommands();
+          if (!catalog.ok) throw new Error(catalog.error.message);
+          text = ompNativePrompt(text, catalog.value);
+        }
       } catch (error) {
         return { ok: false, error: normalizedError(error, "unavailable") };
       }

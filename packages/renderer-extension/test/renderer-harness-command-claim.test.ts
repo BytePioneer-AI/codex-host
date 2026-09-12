@@ -56,6 +56,23 @@ class FakeTextarea {
 }
 
 describe("Renderer Harness command Composer claims", () => {
+  it("inserts prompt-mode commands even without arguments instead of executing them", () => {
+    const editor = new FakeTextarea();
+    const execute = vi.fn();
+    const command = harnessCommandDescriptorSchema.parse({
+      id: "claude.native.probe",
+      invocation: "/claude:probe",
+      label: "Probe",
+      argumentMode: "none",
+      executionMode: "prompt",
+    });
+    expect(
+      routeRendererHarnessCommandSelection(editor as unknown as HTMLElement, command, execute),
+    ).toBe(true);
+    expect(editor.value).toBe("/claude:probe keep this draft");
+    expect(execute).not.toHaveBeenCalled();
+  });
+
   it("prefixes a textarea draft and leaves execution to the normal submit path", () => {
     const editor = new FakeTextarea();
     const execute = vi.fn();

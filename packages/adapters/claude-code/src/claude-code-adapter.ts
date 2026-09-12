@@ -1,3 +1,4 @@
+import { claudeNativeCommandCatalog, claudeNativePrompt } from "./claude-commands.js";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 
@@ -594,7 +595,7 @@ class ClaudeHarnessSession implements HarnessSession {
         formatVersion: 1,
       });
     this.commands = {
-      list: async () => ({ ok: true, value: claudeCommandCatalog }),
+      list: () => this.#listCommands(),
       execute: (command) => this.#executeHarnessCommand(command),
     };
     const durable = this.#openMode === "resume" || options.nativeRef !== undefined;
@@ -613,6 +614,22 @@ class ClaudeHarnessSession implements HarnessSession {
     this.#state = this.initialState;
     this.#statePublished = durable;
     this.outputs = this.#channel.outputs;
+  }
+
+  async #listCommands() {
+    try {
+      const native = (await this.#transport?.getAvailableCommands?.()) ?? [];
+      return { ok: true as const, value: claudeNativeCommandCatalog(claudeCommandCatalog, native) };
+    } catch {
+      return {
+        ok: false as const,
+        error: {
+          code: "unavailable" as const,
+          message: "Claude Code command catalog is unavailable",
+          retryable: true,
+        },
+      };
+    }
   }
 
   async readSnapshot(): Promise<HarnessResult<HostThreadSnapshot>> {
@@ -756,7 +773,7 @@ class ClaudeHarnessSession implements HarnessSession {
         },
       };
     }
-    const text = command.input.map((input) => input.text).join("\n");
+    let text = command.input.map((input) => input.text).join("\n");
     if (text.length === 0) {
       return {
         ok: false,
@@ -773,6 +790,11 @@ class ClaudeHarnessSession implements HarnessSession {
     let transport: ClaudeTurnTransport;
     try {
       transport = await this.#ensureTransport();
+      if (text.trimStart().startsWith("/claude:")) {
+        const catalog = await this.#listCommands();
+        if (!catalog.ok) throw new Error(catalog.error.message);
+        text = claudeNativePrompt(text, catalog.value);
+      }
     } catch (error) {
       this.#acceptingTurn = false;
       return { ok: false, error: startupFailure(error) };

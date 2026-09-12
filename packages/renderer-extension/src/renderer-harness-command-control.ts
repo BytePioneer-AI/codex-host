@@ -39,6 +39,8 @@ export interface RendererHarnessCommandControl {
   root: HTMLElement;
   trigger: HTMLButtonElement;
   menu: HTMLElement;
+  onOpen?: () => void;
+  openSearch(): boolean;
   setCommands(commands: readonly HarnessCommandDescriptor[], hasSession?: boolean): void;
   setExecuting(commandId: string | null): void;
   setLocale(locale: RendererSettingsLocale): void;
@@ -181,6 +183,17 @@ export function mountRendererHarnessCommandControl(
   menu.style.background = "Canvas";
   menu.style.color = "CanvasText";
   menu.style.boxShadow = "0 12px 32px rgba(0, 0, 0, 0.22)";
+  const search = ownerDocument.createElement("input");
+  search.type = "search";
+  search.placeholder = messages.searchCommands;
+  search.setAttribute("aria-label", messages.searchCommands);
+  search.style.cssText =
+    "box-sizing:border-box;width:100%;padding:8px;border:0;border-bottom:1px solid rgba(127,127,127,.2);background:transparent;color:inherit;font:13px system-ui;outline-offset:-2px";
+  const list = ownerDocument.createElement("div");
+  const footer = ownerDocument.createElement("div");
+  footer.style.cssText = "padding:6px 8px;color:GrayText;font:11px/16px system-ui";
+  footer.textContent = messages.nativeCommandsHint;
+  menu.append(search, list, footer);
   ownerDocument.body.append(menu);
 
   if (insertBefore?.parentElement === parent) parent.insertBefore(root, insertBefore);
@@ -193,11 +206,15 @@ export function mountRendererHarnessCommandControl(
   let hasSession = true;
   let triggerHovered = false;
   let disposed = false;
+  let searchMode = false;
 
   const positionMenu = (): void => {
     const rect = trigger.getBoundingClientRect();
+    const above = rect.top - MENU_GAP - VIEWPORT_MARGIN;
+    const below = window.innerHeight - rect.bottom - MENU_GAP - VIEWPORT_MARGIN;
+    const opensAbove = above >= below;
+    menu.style.maxHeight = `${Math.max(40, Math.min(360, opensAbove ? above : below))}px`;
     const menuHeight = menu.getBoundingClientRect().height;
-    const opensAbove = rect.top >= menuHeight + MENU_GAP + VIEWPORT_MARGIN;
     const left = clamp(
       rect.left,
       VIEWPORT_MARGIN,
@@ -241,7 +258,8 @@ export function mountRendererHarnessCommandControl(
   };
 
   const open = (shouldFocus = true): void => {
-    if (commands.length === 0 || executingCommandId !== null) return;
+    if (executingCommandId !== null) return;
+    control.onOpen?.();
     menu.hidden = false;
     positionMenu();
     trigger.setAttribute("aria-expanded", "true");
@@ -259,7 +277,12 @@ export function mountRendererHarnessCommandControl(
     cancelClose();
     closeTimer = window.setTimeout(() => {
       closeTimer = null;
-      if (!trigger.matches(":hover") && !menu.matches(":hover")) close();
+      if (
+        !trigger.matches(":hover") &&
+        !menu.matches(":hover") &&
+        !menu.contains(ownerDocument.activeElement)
+      )
+        close();
     }, 140);
   };
 
@@ -269,14 +292,20 @@ export function mountRendererHarnessCommandControl(
   };
 
   const renderItems = (): void => {
-    menu.replaceChildren();
+    list.replaceChildren();
     const header = ownerDocument.createElement("div");
     header.textContent = messages.commands;
     header.style.padding = "5px 8px 4px";
     header.style.color = "rgba(127, 127, 127, 0.75)";
     header.style.font = "600 11px/16px system-ui, sans-serif";
-    menu.append(header);
-    items = commands.map((command) =>
+    list.append(header);
+    const query = search.value.trim().toLocaleLowerCase().replace(/^\//u, "");
+    const filtered = commands.filter((command) =>
+      `${command.invocation} ${command.label} ${command.description ?? ""}`
+        .toLocaleLowerCase()
+        .includes(query),
+    );
+    items = filtered.map((command) =>
       menuItem(
         ownerDocument,
         command,
@@ -288,7 +317,14 @@ export function mountRendererHarnessCommandControl(
           : undefined,
       ),
     );
-    menu.append(...items);
+    list.append(...items);
+    if (items.length === 0) {
+      const empty = ownerDocument.createElement("div");
+      empty.textContent =
+        commands.length === 0 ? messages.commandsUnavailable : messages.noMatchingCommands;
+      empty.style.cssText = "padding:8px;color:GrayText;font:12px system-ui";
+      list.append(empty);
+    }
     activeIndex = Math.min(activeIndex, Math.max(0, items.length - 1));
     if (executingCommandId !== null) {
       for (const item of items) {
@@ -307,6 +343,7 @@ export function mountRendererHarnessCommandControl(
     }
   };
   const onMenuKeyDown = (event: KeyboardEvent): void => {
+    if (event.isComposing) return;
     if (event.key === "Escape") {
       event.preventDefault();
       close();
@@ -315,6 +352,7 @@ export function mountRendererHarnessCommandControl(
     }
     if (event.key === "ArrowDown" || event.key === "ArrowUp") {
       event.preventDefault();
+      if (items.length === 0) return;
       const delta = event.key === "ArrowDown" ? 1 : -1;
       activeIndex = (activeIndex + delta + items.length) % items.length;
       focusActive(delta);
@@ -338,8 +376,15 @@ export function mountRendererHarnessCommandControl(
     if (!menu.hidden) positionMenu();
   };
 
+  search.addEventListener("input", () => {
+    activeIndex = 0;
+    renderItems();
+    positionMenu();
+  });
+
   trigger.addEventListener("click", () => {
     cancelClose();
+    searchMode = false;
     open(true);
   });
   trigger.addEventListener("pointerenter", () => {
@@ -365,6 +410,17 @@ export function mountRendererHarnessCommandControl(
     root,
     trigger,
     menu,
+    openSearch() {
+      if (disposed || root.hidden || executingCommandId !== null) return false;
+      searchMode = true;
+      search.value = "";
+      activeIndex = 0;
+      renderItems();
+      cancelClose();
+      open(false);
+      search.focus({ preventScroll: true });
+      return true;
+    },
     placeBefore(reference) {
       if (!reference?.parentElement) return false;
       if (root.parentElement === reference.parentElement && root.nextElementSibling === reference) {
@@ -376,8 +432,9 @@ export function mountRendererHarnessCommandControl(
     setCommands(nextCommands, nextHasSession = true) {
       commands = [...nextCommands];
       hasSession = nextHasSession;
-      if (commands.length === 0) close();
+      if (commands.length === 0 && !searchMode) close();
       renderItems();
+      if (!menu.hidden) positionMenu();
       syncTriggerState();
     },
     setExecuting(commandId) {
@@ -389,6 +446,9 @@ export function mountRendererHarnessCommandControl(
       if (locale === nextLocale) return;
       locale = nextLocale;
       messages = rendererHarnessMessages(locale);
+      search.placeholder = messages.searchCommands;
+      search.setAttribute("aria-label", messages.searchCommands);
+      footer.textContent = messages.nativeCommandsHint;
       trigger.setAttribute("aria-label", messages.harnessCommands);
       menu.setAttribute("aria-label", messages.harnessCommands);
       renderItems();

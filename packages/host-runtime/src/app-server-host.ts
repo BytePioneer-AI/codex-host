@@ -2655,6 +2655,24 @@ export class AppServerHost {
       await this.#writer.json(rpcEnvelope(request, { result: { commands: [] } }));
       return;
     }
+    // Only query an already-open Native Session; metadata reads never resume one.
+    const commands = location.thread?.session.commands;
+    if (commands) {
+      try {
+        const result = await commands.list();
+        if (!result.ok) {
+          await this.#writer.json(rpcError(request, -32078, result.error.message));
+          return;
+        }
+        const catalog = harnessCommandCatalogSchema.parse(result.value);
+        await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(catalog) }));
+      } catch {
+        await this.#writer.json(
+          rpcError(request, -32078, "Harness command catalog is unavailable"),
+        );
+      }
+      return;
+    }
     await this.#writeHarnessCommandCatalog(request, location.record.harnessId);
   }
 
@@ -2710,6 +2728,12 @@ export class AppServerHost {
         return;
       }
       const descriptor = catalog.value.commands.find(({ id }) => id === params.data.commandId);
+      if (descriptor?.executionMode === "prompt") {
+        await this.#writer.json(
+          rpcError(request, -32602, "Prompt commands must be submitted as ordinary Turns"),
+        );
+        return;
+      }
       if (!descriptor) {
         await this.#writer.json(
           rpcError(
@@ -3690,6 +3714,27 @@ export class AppServerHost {
               command.argumentMode === "text" && commandText.startsWith(`${command.invocation} `)
             );
           });
+        if (matched?.executionMode === "prompt") {
+          // Hand the admission reservation to the ordinary Turn synchronously.
+          this.#pendingExternalCommandRequests.delete(thread.id);
+          try {
+            const started = await this.#beginExternalTurn(thread, commandText);
+            try {
+              await this.#writer.json(rpcEnvelope(request, { result: { turn: started.turn } }));
+            } finally {
+              started.gate.resolve();
+            }
+          } catch (error) {
+            await this.#writer.json(
+              rpcError(
+                request,
+                error instanceof ExternalSteerError ? error.code : -32073,
+                errorMessage(error),
+              ),
+            );
+          }
+          return;
+        }
         if (matched) {
           const argumentText = commandText.slice(matched.invocation.length).trimStart();
           try {

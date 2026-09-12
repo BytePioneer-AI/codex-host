@@ -15,7 +15,13 @@ import {
   nativeTurnRefSchema,
 } from "@codexhost/shared-contracts";
 
-import { CodexTurnProjector, projectHistoricalTurn } from "../src/index.js";
+import {
+  CodexTurnProjector,
+  ensureGitDiffHeader,
+  fileChangeFromTool,
+  normalizeDisplayPath,
+  projectHistoricalTurn,
+} from "../src/index.js";
 
 const turnId = hostTurnIdSchema.parse("turn-1");
 const itemId = (value: string) => hostItemIdSchema.parse(value);
@@ -1555,5 +1561,105 @@ describe("Codex UI projector", () => {
     expect(() =>
       value.project({ type: "turn.completed", turnId, outcome: { status: "succeeded" } }),
     ).toThrow("follows the Turn terminal");
+  });
+
+  describe("File diff formatting and path normalization", () => {
+    it("normalizes Windows and Unix paths relative to cwd", () => {
+      expect(normalizeDisplayPath("D:\\CodeProject\\test\\sample.txt", "D:\\CodeProject\\test")).toBe(
+        "sample.txt",
+      );
+      expect(normalizeDisplayPath("D:/CodeProject/test/sub/file.js", "D:/CodeProject/test")).toBe(
+        "sub/file.js",
+      );
+      expect(normalizeDisplayPath("/repo/app/src/index.ts", "/repo/app")).toBe("src/index.ts");
+      expect(normalizeDisplayPath("relative/path.ts", "/repo/app")).toBe("relative/path.ts");
+      expect(normalizeDisplayPath("./relative/path.ts", "/repo/app")).toBe("relative/path.ts");
+    });
+
+    it("ensures Git diff header on diffs missing diff --git", () => {
+      const rawDiff = "--- /dev/null\n+++ b/sample.txt\n@@ -0,0 +1 @@\n+sample\n";
+      const gitDiff = ensureGitDiffHeader("sample.txt", rawDiff);
+      expect(gitDiff).toBe(
+        "diff --git a/sample.txt b/sample.txt\n--- /dev/null\n+++ b/sample.txt\n@@ -0,0 +1 @@\n+sample\n",
+      );
+
+      // Already has diff --git
+      expect(ensureGitDiffHeader("sample.txt", gitDiff)).toBe(gitDiff);
+    });
+
+    it("projects Write tool with Windows absolute path into standard git diff with +1 -0 line count", () => {
+      const changes = fileChangeFromTool(
+        "Write",
+        {
+          file_path: "D:\\CodeProject\\test\\sample.txt",
+          content: "This is a sample file.\n",
+        },
+        "D:\\CodeProject\\test",
+      );
+      expect(changes).toBeDefined();
+      expect(changes).toHaveLength(1);
+      const change = changes?.[0];
+      expect(change?.path).toBe("sample.txt");
+      expect(change?.kind).toBe("add");
+      expect(change?.unifiedDiff).toBe(
+        "diff --git a/sample.txt b/sample.txt\n--- /dev/null\n+++ b/sample.txt\n@@ -0,0 +1 @@\n+This is a sample file.\n",
+      );
+
+      // Verify line counts
+      const lines = change?.unifiedDiff.split("\n") ?? [];
+      let additions = 0;
+      let deletions = 0;
+      let inHunk = false;
+      for (const line of lines) {
+        if (line.startsWith("@@")) {
+          inHunk = true;
+          continue;
+        }
+        if (!inHunk) continue;
+        if (line.startsWith("+") && !line.startsWith("+++")) additions++;
+        else if (line.startsWith("-") && !line.startsWith("---")) deletions++;
+      }
+      expect(additions).toBe(1);
+      expect(deletions).toBe(0);
+    });
+
+    it("projects live turn streaming of mutating tool with Windows absolute path", () => {
+      const p = new CodexTurnProjector({
+        threadId: "t1",
+        turnId,
+        cwd: "D:\\CodeProject\\test",
+        startedAtMs: 1000,
+      });
+      p.project({ type: "turn.started", turnId });
+
+      const started = p.project({
+        type: "item.started",
+        turnId,
+        item: {
+          type: "toolExecution",
+          itemId: itemId("write-1"),
+          toolName: "Write",
+          arguments: {
+            file_path: "D:\\CodeProject\\test\\sample.txt",
+            content: "This is a sample file.\n",
+          },
+        },
+      });
+
+      const patchMsg = started.messages.find((m) => m.method === "item/fileChange/patchUpdated");
+      expect(patchMsg).toBeDefined();
+      const patchParams = patchMsg?.params as {
+        changes: Array<{ path: string; kind: { type: string }; diff: string }>;
+      };
+      expect(patchParams.changes[0]?.path).toBe("sample.txt");
+      expect(patchParams.changes[0]?.diff).toContain("diff --git a/sample.txt b/sample.txt");
+      expect(patchParams.changes[0]?.diff).toContain("@@ -0,0 +1 @@");
+      expect(patchParams.changes[0]?.diff).toContain("+This is a sample file.");
+
+      const diffMsg = started.messages.find((m) => m.method === "turn/diff/updated");
+      expect(diffMsg).toBeDefined();
+      const diffParams = diffMsg?.params as { diff: string };
+      expect(diffParams.diff).toContain("diff --git a/sample.txt b/sample.txt");
+    });
   });
 });

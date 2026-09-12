@@ -22,6 +22,14 @@ export const CLAUDE_THINKING_OPTIONS = [
 export const CLAUDE_THINKING_OPTION_IDS = CLAUDE_THINKING_OPTIONS.map(({ id }) => id);
 export const CLAUDE_DEFAULT_THINKING_OPTION_ID = harnessThinkingOptionIdSchema.parse("auto");
 
+/**
+ * Thinking budget used when Thinking is re-armed mid-session. Adaptive Models
+ * read any non-zero budget as "adaptive" (so they keep deciding depth for
+ * themselves, guided by the effort level); older Models get a concrete ceiling.
+ * Matches the budget Claude Code's own maximum Thinking keyword uses.
+ */
+export const CLAUDE_THINKING_BUDGET_TOKENS = 31999;
+
 export type ClaudeEffortLevel = "low" | "medium" | "high" | "xhigh" | "max";
 
 export interface ClaudeThinkingConfiguration {

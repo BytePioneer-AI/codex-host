@@ -810,6 +810,65 @@ describe("Renderer draft prewarm policy", () => {
     expect(writtenBridgeFrames(directSend)).toHaveLength(3);
   });
 
+  it.each(["thread/read", "thread/resume"] as const)(
+    "falls back to the stock app-server for native recovery after the POSIX bridge rejection: %s",
+    async (method) => {
+      const manager = requestManagerFixture();
+      const { bridge, directSend } = remoteRequestBridgeFixture();
+      const posixError = Object.assign(
+        new Error("Invalid request: AbsolutePathBuf deserialized without a base path"),
+        { code: -32600 },
+      );
+      directSend.mockImplementation((requestedMethod: string) =>
+        requestedMethod === "process/spawn"
+          ? Promise.reject(posixError)
+          : Promise.resolve({ thread: { id: "native-posix-thread" } }),
+      );
+      installDraftPrewarmPolicyBridge(
+        manager,
+        bridge,
+        "remote-control:fixture-host",
+        {},
+        {
+          discardAllPrewarmedThreads: vi.fn(),
+        },
+      );
+
+      await expect(
+        bridge.sendRequest(method, { threadId: "native-posix-thread" }),
+      ).resolves.toEqual({
+        thread: { id: "native-posix-thread" },
+      });
+      expect(directSend).toHaveBeenNthCalledWith(2, method, { threadId: "native-posix-thread" });
+    },
+  );
+
+  it("does not fall back after an unrelated Remote Control bridge failure", async () => {
+    const manager = requestManagerFixture();
+    const { bridge, directSend } = remoteRequestBridgeFixture();
+    const unrelatedError = Object.assign(
+      new Error("transport: AbsolutePathBuf deserialized without a base path"),
+      { code: -1 },
+    );
+    directSend.mockImplementation((method: string) =>
+      method === "process/spawn" ? Promise.reject(unrelatedError) : Promise.resolve({}),
+    );
+    installDraftPrewarmPolicyBridge(
+      manager,
+      bridge,
+      "remote-control:fixture-host",
+      {},
+      {
+        discardAllPrewarmedThreads: vi.fn(),
+      },
+    );
+
+    await expect(bridge.sendRequest("thread/read", { threadId: "unknown-thread" })).rejects.toThrow(
+      "transport: AbsolutePathBuf deserialized without a base path",
+    );
+    expect(directSend).not.toHaveBeenCalledWith("thread/read", { threadId: "unknown-thread" });
+  });
+
   it("leaves stock Remote Control requests direct and terminates its bridge on dispose", async () => {
     const manager = requestManagerFixture();
     const { bridge, directSend } = remoteRequestBridgeFixture();

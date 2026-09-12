@@ -75,6 +75,17 @@ export function installDraftPrewarmPolicyBridge(
   let selectedCodexAccountId: string | null = null;
   const isRecord = (value: unknown): value is Record<string, unknown> =>
     typeof value === "object" && value !== null && !Array.isArray(value);
+  const isUnsupportedPosixBridgeSpawn = (value: unknown): boolean => {
+    const marker = "AbsolutePathBuf deserialized without a base path";
+    if (typeof value === "string") {
+      return value.startsWith("Invalid request:") && value.includes(marker);
+    }
+    if (!isRecord(value)) return false;
+    if (typeof value.message === "string" && value.message.includes(marker)) {
+      if (value.code === -32600 || value.message.startsWith("Invalid request:")) return true;
+    }
+    return value.cause !== value && isUnsupportedPosixBridgeSpawn(value.cause);
+  };
   const isRemoteControlHost = hostId.startsWith("remote-control:");
   const knownExternalThreadIds = new Set<string>();
   const knownOfficialThreadIds = new Set<string>();
@@ -524,8 +535,28 @@ export function installDraftPrewarmPolicyBridge(
         : originalSend.call(bridge, method, routedParameters, options);
     const unresolvedThreadId = shouldResolveThreadOwnership(method, routedParameters);
     if (unresolvedThreadId) {
-      return resolveThreadOwnership(unresolvedThreadId).then((owner) =>
-        owner === "external" ? sendBridged() : sendDirect(),
+      return resolveThreadOwnership(unresolvedThreadId).then(
+        (owner) => (owner === "external" ? sendBridged() : sendDirect()),
+        (error) => {
+          // The bridge exists only on a controlled Windows Host. A POSIX Remote
+          // Control relay rejects its Windows `cwd` before it can inspect
+          // ownership, but the same unknown Thread may still be a native Codex
+          // Thread. Keep this narrowly limited to the relay's exact
+          // deserialization error and the two native recovery requests; other
+          // bridge failures must remain visible so an external Thread is never
+          // silently routed to the stock app-server.
+          if (
+            (method === "thread/read" || method === "thread/resume") &&
+            isUnsupportedPosixBridgeSpawn(error)
+          ) {
+            return Promise.resolve(sendDirect()).then((result) => {
+              knownOfficialThreadIds.add(unresolvedThreadId);
+              knownExternalThreadIds.delete(unresolvedThreadId);
+              return result;
+            });
+          }
+          throw error;
+        },
       );
     }
     return shouldUseBridge(method, routedParameters) ? sendBridged() : sendDirect();

@@ -7,6 +7,7 @@ import {
   jsonValueSchema,
   nativeCheckpointRefSchema,
   nativeSessionRefSchema,
+  nativeTurnRefSchema,
 } from "@codexhost/shared-contracts";
 
 import { QoderAdapter } from "../src/qoder-adapter.js";
@@ -1315,6 +1316,130 @@ describe("QoderAdapter", () => {
       if (!res.ok) {
         expect(res.error.code).toBe("invalidState");
       }
+    });
+  });
+
+  describe("Native Turn identity persistence", () => {
+    it("emits turn.completed with valid nativeTurnRef on success", async () => {
+      const fakeQuery = new FakeQoderQuery();
+      const adapter = new QoderAdapter({
+        resolveExecutable: () => "D:/tools/qodercli.exe",
+        queryFactory: () => fakeQuery,
+      });
+
+      const openResult = await adapter.open({ kind: "create", cwd: "D:/workspace" });
+      if (!openResult.ok) throw new Error("open failed");
+      const session = openResult.value;
+      const collector = new OutputCollector(session.outputs);
+
+      const turnId = hostTurnIdSchema.parse("turn-persist-1");
+      await session.execute({
+        type: "turn.start",
+        turnId,
+        input: [{ type: "text", text: "Hello" }],
+      });
+
+      fakeQuery.push({
+        type: "result",
+        subtype: "success",
+        uuid: "qoder-result-uuid-1234",
+      } as unknown as SDKResultMessage);
+
+      const completed = await collector.waitFor(
+        (o) =>
+          o.kind === "event" && o.event.type === "turn.completed" && o.event.turnId === turnId,
+      );
+
+      if (completed.kind === "event" && completed.event.type === "turn.completed") {
+        expect(completed.event.nativeTurnRef).toBeDefined();
+        const parsed = nativeTurnRefSchema.parse(completed.event.nativeTurnRef);
+        expect(parsed.harnessId).toBe("qoder");
+        expect(parsed.nativeTurnKey).toBe("qoder-result-uuid-1234");
+        expect(parsed.nativeSessionId).toBe(session.initialState.nativeRef?.nativeSessionId);
+        expect(parsed.formatVersion).toBe(1);
+      }
+
+      await session.close();
+    });
+
+    it("falls back to user message UUID when result has no uuid", async () => {
+      const fakeQuery = new FakeQoderQuery();
+      const adapter = new QoderAdapter({
+        resolveExecutable: () => "D:/tools/qodercli.exe",
+        queryFactory: () => fakeQuery,
+      });
+
+      const openResult = await adapter.open({ kind: "create", cwd: "D:/workspace" });
+      if (!openResult.ok) throw new Error("open failed");
+      const session = openResult.value;
+      const collector = new OutputCollector(session.outputs);
+
+      const turnId = hostTurnIdSchema.parse("turn-persist-2");
+      await session.execute({
+        type: "turn.start",
+        turnId,
+        input: [{ type: "text", text: "Hello without result uuid" }],
+      });
+
+      fakeQuery.push({
+        type: "result",
+        subtype: "success",
+      } as SDKResultMessage);
+
+      const completed = await collector.waitFor(
+        (o) =>
+          o.kind === "event" && o.event.type === "turn.completed" && o.event.turnId === turnId,
+      );
+
+      if (completed.kind === "event" && completed.event.type === "turn.completed") {
+        expect(completed.event.nativeTurnRef).toBeDefined();
+        const parsed = nativeTurnRefSchema.parse(completed.event.nativeTurnRef);
+        expect(parsed.harnessId).toBe("qoder");
+        expect(parsed.nativeTurnKey).toMatch(/^qoder-msg-/);
+        expect(parsed.formatVersion).toBe(1);
+      }
+
+      await session.close();
+    });
+
+    it("attaches nativeTurnRef when turn is cancelled", async () => {
+      const fakeQuery = new FakeQoderQuery();
+      const adapter = new QoderAdapter({
+        resolveExecutable: () => "D:/tools/qodercli.exe",
+        queryFactory: () => fakeQuery,
+      });
+
+      const openResult = await adapter.open({ kind: "create", cwd: "D:/workspace" });
+      if (!openResult.ok) throw new Error("open failed");
+      const session = openResult.value;
+      const collector = new OutputCollector(session.outputs);
+
+      const turnId = hostTurnIdSchema.parse("turn-persist-3");
+      await session.execute({
+        type: "turn.start",
+        turnId,
+        input: [{ type: "text", text: "Cancel me" }],
+      });
+
+      await session.execute({
+        type: "turn.cancel",
+        turnId,
+      });
+
+      const completed = await collector.waitFor(
+        (o) =>
+          o.kind === "event" && o.event.type === "turn.completed" && o.event.turnId === turnId,
+      );
+
+      if (completed.kind === "event" && completed.event.type === "turn.completed") {
+        expect(completed.event.outcome.status).toBe("cancelled");
+        expect(completed.event.nativeTurnRef).toBeDefined();
+        const parsed = nativeTurnRefSchema.parse(completed.event.nativeTurnRef);
+        expect(parsed.harnessId).toBe("qoder");
+        expect(parsed.nativeTurnKey).toMatch(/^qoder-msg-/);
+      }
+
+      await session.close();
     });
   });
 });

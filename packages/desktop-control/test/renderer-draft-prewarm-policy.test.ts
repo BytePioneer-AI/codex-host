@@ -846,10 +846,12 @@ describe("Renderer draft prewarm policy", () => {
   it("does not fall back after an unrelated Remote Control bridge failure", async () => {
     const manager = requestManagerFixture();
     const { bridge, directSend } = remoteRequestBridgeFixture();
+    const unrelatedError = Object.assign(
+      new Error("transport: AbsolutePathBuf deserialized without a base path"),
+      { code: -1 },
+    );
     directSend.mockImplementation((method: string) =>
-      method === "process/spawn"
-        ? Promise.reject(new Error("CodexHost Remote Control runtime is not running"))
-        : Promise.resolve({}),
+      method === "process/spawn" ? Promise.reject(unrelatedError) : Promise.resolve({}),
     );
     installDraftPrewarmPolicyBridge(
       manager,
@@ -862,7 +864,7 @@ describe("Renderer draft prewarm policy", () => {
     );
 
     await expect(bridge.sendRequest("thread/read", { threadId: "unknown-thread" })).rejects.toThrow(
-      "CodexHost Remote Control runtime is not running",
+      "transport: AbsolutePathBuf deserialized without a base path",
     );
     expect(directSend).not.toHaveBeenCalledWith("thread/read", { threadId: "unknown-thread" });
   });

@@ -14,7 +14,15 @@ import type { QoderModelInfo } from "./qoder-sdk-types.js";
 const QODER_MODEL_REF_PREFIX = "qoder-model-v1.";
 const QODER_MODEL_VALUE_MAX_LENGTH = 512;
 
-export const QODER_DEFAULT_MODEL_REF = encodeQoderModelRef("default");
+export const QODER_STANDARD_MODELS = [
+  { value: "auto", label: "Auto (Recommended)" },
+  { value: "ultimate", label: "Ultimate" },
+  { value: "performance", label: "Performance" },
+  { value: "efficient", label: "Efficient" },
+  { value: "lite", label: "Lite" },
+] as const;
+
+export const QODER_DEFAULT_MODEL_REF = encodeQoderModelRef("auto");
 
 export function encodeQoderModelRef(value: string): HarnessModelRef {
   const parsed = z.string().trim().min(1).max(QODER_MODEL_VALUE_MAX_LENGTH).parse(value);
@@ -74,10 +82,12 @@ export function parseQoderModelCatalog(rawModels?: unknown[]): HarnessModelCatal
   }
 
   if (models.length === 0) {
-    models.push({
-      ref: QODER_DEFAULT_MODEL_REF,
-      label: "Default",
-    });
+    for (const std of QODER_STANDARD_MODELS) {
+      models.push({
+        ref: encodeQoderModelRef(std.value),
+        label: std.label,
+      });
+    }
   }
 
   const defaultModel = models[0]!.ref;

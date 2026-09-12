@@ -1,5 +1,4 @@
 import { randomUUID } from "node:crypto";
-import { createRequire } from "node:module";
 import type {
   HarnessAdapter,
   HarnessInspection,
@@ -12,32 +11,24 @@ import {
   harnessIdSchema,
   type HarnessId,
 } from "@codexhost/shared-contracts";
+import { query as sdkQuery } from "@qoder-ai/qoder-agent-sdk";
 
 import {
   CODEXHOST_QODER_COMMAND,
   resolveQoderExecutable,
 } from "./qoder-command.js";
 import { parseQoderModelCatalog } from "./qoder-models.js";
-import type { QoderQueryFactory } from "./qoder-sdk-types.js";
+import type { QoderModelInfo, QoderQueryFactory } from "./qoder-sdk-types.js";
 import { QoderSession } from "./qoder-sdk-transport.js";
 
-const defaultQueryFactory: QoderQueryFactory = (input) => {
-  try {
-    const req = createRequire(import.meta.url);
-    const sdk = req("@qoder-ai/qoder-agent-sdk");
-    return sdk.query(input);
-  } catch (err) {
-    throw new Error(
-      `@qoder-ai/qoder-agent-sdk is not available: ${err instanceof Error ? err.message : String(err)}`,
-    );
-  }
-};
+const defaultQueryFactory: QoderQueryFactory = (input) => sdkQuery(input);
 
 export interface QoderAdapterOptions {
   commandOverride?: string;
   environment?: Record<string, string | undefined>;
   platform?: NodeJS.Platform;
   queryFactory?: QoderQueryFactory;
+  getAvailableModels?: () => Promise<QoderModelInfo[]>;
   resolveExecutable?: typeof resolveQoderExecutable;
 }
 
@@ -48,6 +39,7 @@ export class QoderAdapter implements HarnessAdapter {
   readonly #environment: Record<string, string | undefined>;
   readonly #platform: NodeJS.Platform;
   readonly #queryFactory: QoderQueryFactory;
+  readonly #getAvailableModels: (() => Promise<QoderModelInfo[]>) | undefined;
   readonly #resolveExecutable: typeof resolveQoderExecutable;
 
   readonly #sessions = new Set<HarnessSession>();
@@ -60,6 +52,7 @@ export class QoderAdapter implements HarnessAdapter {
     this.#environment = { ...options.environment };
     this.#platform = options.platform ?? process.platform;
     this.#queryFactory = options.queryFactory ?? defaultQueryFactory;
+    this.#getAvailableModels = options.getAvailableModels;
     this.#resolveExecutable = options.resolveExecutable ?? resolveQoderExecutable;
   }
 
@@ -88,15 +81,24 @@ export class QoderAdapter implements HarnessAdapter {
           platform: this.#platform,
         });
 
+        let rawModels: QoderModelInfo[] | undefined;
+        if (this.#getAvailableModels) {
+          try {
+            rawModels = await this.#getAvailableModels();
+          } catch {
+            // Keep fallback catalog on error
+          }
+        }
+
         const result: HarnessInspection = {
           status: "ready",
-          catalog: parseQoderModelCatalog(),
+          catalog: parseQoderModelCatalog(rawModels),
           capabilities: {
             configuration: {
               selectModel: true,
               selectThinkingOption: false,
-              selectPermissionMode: false,
-              permissionModeScope: "atCreate",
+              selectPermissionMode: true,
+              permissionModeScope: "live",
             },
             history: {
               fork: false,
@@ -184,6 +186,7 @@ export class QoderAdapter implements HarnessAdapter {
       environment: input.environment ?? this.#environment,
       ...(input.model ? { model: input.model } : {}),
       ...(input.permissionModeId ? { permissionModeId: input.permissionModeId } : {}),
+      ...(input.kind === "resume" ? { resume: sessionId } : {}),
       queryFactory: this.#queryFactory,
       ...(pathToQoderCLIExecutable ? { pathToQoderCLIExecutable } : {}),
       onClosed: () => {

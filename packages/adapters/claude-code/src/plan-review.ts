@@ -27,7 +27,7 @@ export function createClaudePlanReview(
         id: DECISION_ID,
         type: "choice",
         prompt: request.plan
-          ? `${warning}\n\n${request.plan}`
+          ? `Review the full plan in the conversation above. ${warning}`
           : "Claude Code did not provide plan text. Stay in plan mode and ask Claude to present the plan before approving it.",
         options: [
           {

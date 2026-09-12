@@ -75,24 +75,21 @@ describe("Renderer Agent icons", () => {
     expect(image.style.borderRadius).toBe("22.37%");
   });
 
-  it.each([
-    ["antigravity", antigravityAgentIconUrl],
-    ["kiro-cli", kiroAgentIconUrl],
-    ["codebuddy", codeBuddyAgentIconUrl],
-    ["cursor-cli", cursorAgentIconUrl],
-  ] as const)("renders %s with the bundled SVG asset", (agent, assetUrl) => {
-    const image = {
-      src: "",
-      alt: "unset",
-      draggable: true,
-      style: {},
-    } as unknown as HTMLImageElement;
-    const ownerDocument = {
-      createElement(tagName: string) {
-        expect(tagName).toBe("img");
-        return image;
-      },
-    } as unknown as Document;
+  it.each(["antigravity", "kiro-cli", "qoder"] as const)(
+    "renders %s with the bundled SVG asset",
+    (agent) => {
+      const image = {
+        src: "",
+        alt: "unset",
+        draggable: true,
+        style: {},
+      } as unknown as HTMLImageElement;
+      const ownerDocument = {
+        createElement(tagName: string) {
+          expect(tagName).toBe("img");
+          return image;
+        },
+      } as unknown as Document;
 
     expect(createRendererAgentIcon(agent, 16, ownerDocument)).toBe(image);
     expect(image.src).toBe(assetUrl);

@@ -97,8 +97,7 @@ const externalHarnessIds = {
   omp: harnessIdSchema.parse("omp"),
   antigravity: harnessIdSchema.parse("antigravity"),
   "kiro-cli": harnessIdSchema.parse("kiro-cli"),
-  codebuddy: harnessIdSchema.parse("codebuddy"),
-  "cursor-cli": harnessIdSchema.parse("cursor-cli"),
+  qoder: harnessIdSchema.parse("qoder"),
 } as const;
 
 const externalAgents: readonly ExternalRendererAgent[] = [
@@ -110,8 +109,7 @@ const externalAgents: readonly ExternalRendererAgent[] = [
   "omp",
   "antigravity",
   "kiro-cli",
-  "codebuddy",
-  "cursor-cli",
+  "qoder",
 ];
 type HarnessAvailability = Partial<Record<ExternalRendererAgent, RendererAgentAvailability>>;
 type HarnessAvailabilityErrors = Record<ExternalRendererAgent, CodexhostError | undefined>;
@@ -486,6 +484,24 @@ export function restoredThreadOwnership(inspection: ThreadInspection): RestoredT
       ...(permissionModeId ? { permissionModeId } : {}),
     };
   }
+  if (inspection.harnessId === "qoder") {
+    const route = decodeHarnessPluginRoute(inspection.transportModelId);
+    if (!route || route.harnessId !== "qoder") {
+      throw new Error("Qoder Thread reported an incompatible transport Model");
+    }
+    const model = inspection.effectiveModel ?? route.model;
+    const thinkingOptionId =
+      inspection.availableThinkingOptions !== undefined
+        ? selectableThinkingOptionId(inspection)
+        : (inspection.effectiveThinkingOptionId ?? route.thinkingOptionId);
+    const permissionModeId = inspection.effectivePermissionModeId ?? route.permissionModeId;
+    return {
+      agent: "qoder",
+      ...(model ? { model } : {}),
+      ...(thinkingOptionId ? { thinkingOptionId } : {}),
+      ...(permissionModeId ? { permissionModeId } : {}),
+    };
+  }
   throw new Error("Thread owner is not a Renderer Agent");
 }
 
@@ -718,8 +734,7 @@ export function installRendererBindingProbe(
       omp: undefined,
       antigravity: undefined,
       "kiro-cli": undefined,
-      codebuddy: undefined,
-      "cursor-cli": undefined,
+      qoder: undefined,
     },
     webUi: Object.fromEntries(
       externalAgents.map((agent) => [agent, false]),

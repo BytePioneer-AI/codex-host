@@ -30,8 +30,8 @@
 通过对 `codexhost` 本地 Mapping Store、Antigravity 运行时生成的转录日志（Transcript）以及落盘步骤文件进行现场调取，梳理出真实的底层事件链：
 
 ### 2.1 会话元数据与转录记录
-- **Mapping Store 文件**：`C:\Users\21240\.codexhost\mapping-store\threads\3c4601e6-f089-4f75-8aa7-38aa8b135a4f.json`
-- **Antigravity 实际转录日志**：`C:\Users\21240\.gemini\antigravity-cli\brain\8f08ea60-ce53-4568-813c-ae739a5af63e\.system_generated\logs\transcript_full.jsonl`
+- **Mapping Store 文件**：`<USER_HOME>/.codexhost/mapping-store/threads/<THREAD_ID>.json`
+- **Antigravity 实际转录日志**：`<USER_HOME>/.gemini/antigravity-cli/brain/<SESSION_ID>/.system_generated/logs/transcript_full.jsonl`
 
 现场抓取的关键时序记录如下：
 ```json
@@ -152,7 +152,7 @@ if (isAntigravityQuestionTool(rawToolName)) { ... }
      ```
    - 删除了基于假 Mock 数据的测试文件。
 2. **系统提示词明确拦截（方案 A）**：
-   - 在 [`ANTIGRAVITY_WORKSPACE_FILE_INSTRUCTION`](file:///D:/CodeProject/codex-host/packages/adapters/antigravity/src/antigravity-adapter.ts#L236-L245) 中注入明确指引：
+   - 在 [`ANTIGRAVITY_WORKSPACE_FILE_INSTRUCTION`](../packages/adapters/antigravity/src/antigravity-adapter.ts) 中注入明确指引：
      > `CRITICAL: Do NOT call the ask_question tool. You are running in a headless non-interactive environment where interactive modal questions cannot be prompted to the user and will be automatically skipped by the system. If you have clarifying questions or wish to present options, state them directly in your text response.`
    - **效果**：模型在需要向用户提问或提供方案选项时，不再去调用会必定失败的 `ask_question` 工具，而是直接在最终的 Markdown 回复中列出问题与选项，由用户在聊天输入框中正常打字回复。
 
@@ -230,3 +230,11 @@ if (isAntigravityQuestionTool(rawToolName)) { ... }
 真实集成测试使用 `CODEXHOST_RUN_ANTIGRAVITY_QUESTION_REAL=1` 显式启用，并会消费原生模型用量。可用 `CODEXHOST_ANTIGRAVITY_QUESTION_EVIDENCE_DIR` 保存输出、协议投影和快照，失败时也留证。
 
 用户于 2026-09-05 自行验收并提供截图，确认 Desktop 原生提问卡片正常展示，问题、选项及等待回答状态可见。提交后的真人端到端流程、长时间等待、跨平台实机和多选 UI 尚未单独记录验收结果；自动化已验证原生 CLI、Adapter 与公共协议的答案往返。原生工具仍以被阻止的错误步骤保留；桥接条目的成功只表示答案已由桥接层提交，不改写这一原生事实。
+
+### 8.5 方案呈现与提问卡片解耦（2026-09-12）
+
+实测反馈在实施任务审批流中，模型（如 Gemini 3.8 Flash）在内部思考链规划方案后，极易跳过正文输出直接发起 `ask_question`，将方案粗暴概括在选项标签内，造成 Desktop 提问弹窗提示“是否按此计划执行”却在聊天区看不到任何方案内容的断层。
+
+现已在 [`ANTIGRAVITY_WORKSPACE_FILE_INSTRUCTION`](../packages/adapters/antigravity/src/antigravity-adapter.ts) 中补充强约束：
+- 明确提问弹窗仅用于选项与表单输入，不能承载 Markdown 方案或代码变更计划。
+- 强制模型在寻求方案确认或审批前，必须先在响应文本（Markdown）中完整输出方案明细（包含目标、改动文件和关键步骤），严禁未输出方案直接提问或仅在选项标签中压缩方案。

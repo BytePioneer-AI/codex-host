@@ -1420,6 +1420,10 @@ if (count === 0) {
     });
 
     it("formats turn prompt with workspace file instructions and leaves slash commands untouched", () => {
+      expect(ANTIGRAVITY_WORKSPACE_FILE_INSTRUCTION).toContain(
+        "output the full, detailed plan in your response text before calling ask_question",
+      );
+
       const normalPrompt = "Create a hello world python file";
       const formatted = formatAntigravityTurnPrompt(normalPrompt);
       expect(formatted).toBe(`${ANTIGRAVITY_WORKSPACE_FILE_INSTRUCTION}${normalPrompt}`);

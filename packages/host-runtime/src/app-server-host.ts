@@ -1295,8 +1295,13 @@ export class AppServerHost {
       const threadId = params && typeof params.threadId === "string" ? params.threadId : null;
       const loginId = params && typeof params.loginId === "string" ? params.loginId : null;
       const loginAccountId = loginId ? await this.#resolveLoginAccountId(loginId) : undefined;
+      // Legacy pre-pool Threads may lack an Account binding. Reading or
+      // resuming such a Thread may recover ownership via official discovery;
+      // other requests on unbound Threads keep failing fast.
+      const recoverUnboundThread =
+        request.method === "thread/read" || request.method === "thread/resume";
       const runtime = threadId
-        ? await this.#codexRuntimePool.forThread(threadId)
+        ? await this.#codexRuntimePool.forThread(threadId, { recoverUnboundThread })
         : loginAccountId
           ? await this.#codexRuntimePool.get(loginAccountId)
           : requestedAccountId
@@ -1474,9 +1479,13 @@ export class AppServerHost {
     else await this.#writer.json(forwarded);
   }
 
-  async #requestOfficial(method: string, params: JsonObject): Promise<JsonObject> {
+  async #requestOfficial(
+    method: string,
+    params: JsonObject,
+    options?: { recoverUnboundThread?: boolean },
+  ): Promise<JsonObject> {
     return typeof params.threadId === "string"
-      ? this.#codexRuntimePool.requestForThread(params.threadId, method, params)
+      ? this.#codexRuntimePool.requestForThread(params.threadId, method, params, options)
       : this.#codexRuntimePool.requestActive(method, params);
   }
 
@@ -2160,10 +2169,14 @@ export class AppServerHost {
   }
 
   async #readOfficialDelegationThread(input: ThreadReadInput): Promise<DelegationThreadSnapshot> {
-    const response = await this.#requestOfficial("thread/read", {
-      threadId: input.threadId,
-      includeTurns: true,
-    });
+    const response = await this.#requestOfficial(
+      "thread/read",
+      {
+        threadId: input.threadId,
+        includeTurns: true,
+      },
+      { recoverUnboundThread: true },
+    );
     if (isRecord(response.error)) {
       throw new DelegationControlError(
         "THREAD_NOT_FOUND",

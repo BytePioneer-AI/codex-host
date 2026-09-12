@@ -72,10 +72,16 @@ export class CodexRuntimePool {
     return this.#ensureInitialized(await this.#load(accountId));
   }
 
-  async forThread(threadId: string): Promise<CodexRuntime> {
+  async forThread(
+    threadId: string,
+    options?: { recoverUnboundThread?: boolean },
+  ): Promise<CodexRuntime> {
     const accountId =
       (await this.#threadAccounts.getAccountId(threadId)) ??
-      (await this.#discoverHistoricalThreadAccount(threadId));
+      (await this.#discoverHistoricalThreadAccount(
+        threadId,
+        options?.recoverUnboundThread === true,
+      ));
     if (!accountId) throw new UnknownCodexThreadAccountError(threadId);
     return this.get(accountId);
   }
@@ -124,8 +130,9 @@ export class CodexRuntimePool {
     threadId: string,
     method: string,
     params: JsonObject,
+    options?: { recoverUnboundThread?: boolean },
   ): Promise<JsonObject> {
-    return (await this.forThread(threadId)).request(method, params);
+    return (await this.forThread(threadId, options)).request(method, params);
   }
 
   async close(): Promise<void> {
@@ -206,12 +213,18 @@ export class CodexRuntimePool {
     return runtime;
   }
 
-  async #discoverHistoricalThreadAccount(threadId: string): Promise<string | null> {
+  async #discoverHistoricalThreadAccount(
+    threadId: string,
+    includeSingleAccount: boolean,
+  ): Promise<string | null> {
+    // Discovery is a migration path for pre-pool Threads that never received
+    // a binding. With several Accounts every CODEX_HOME is consulted; with a
+    // single Account it runs only for explicit recovery requests (thread
+    // read/resume) so mutating requests on unbound Threads keep failing fast.
+    // A binding is written only after an official thread/read confirms the
+    // Thread, never assumed.
     const accounts = await this.#accounts.list();
-    // A missing binding in a single-account installation remains an explicit
-    // error. Discovery is a migration path for pre-pool tasks once multiple
-    // isolated CODEX_HOMEs exist.
-    if (accounts.length < 2) return null;
+    if (accounts.length === 0 || (accounts.length === 1 && !includeSingleAccount)) return null;
     const loadedAccounts = accounts.filter((account) => this.#runtimes.has(account.accountId));
     const unloadedAccounts = accounts.filter((account) => !this.#runtimes.has(account.accountId));
     for (const candidates of [loadedAccounts, unloadedAccounts]) {
@@ -245,7 +258,14 @@ export class CodexRuntimePool {
       if (matches.length > 1) return null;
       const accountId = matches[0];
       if (!accountId) continue;
-      await this.#threadAccounts.bind(threadId, accountId);
+      try {
+        await this.#threadAccounts.bind(threadId, accountId);
+      } catch (error) {
+        // A failed binding write must not kill the Host or leave the caller
+        // hanging: report the Thread as unbound so the request fails cleanly.
+        this.#diagnose(error);
+        return null;
+      }
       return accountId;
     }
     return null;

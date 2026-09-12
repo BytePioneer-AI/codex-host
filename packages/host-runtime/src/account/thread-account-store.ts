@@ -60,7 +60,16 @@ export class ThreadAccountStore implements ThreadAccountStoreLike {
     }
     if (existing === accountId) return;
     this.#bindings.set(threadId, accountId);
-    await this.#persist();
+    try {
+      await this.#persist();
+    } catch (error) {
+      // Roll back the in-memory binding: it must not outlive its own failed
+      // persistence. Persist again so a write queued before the rollback
+      // cannot leave the rolled-back binding on disk.
+      this.#bindings.delete(threadId);
+      await this.#persist().catch(() => undefined);
+      throw error;
+    }
   }
 
   async listByAccount(accountId: string): Promise<string[]> {
@@ -92,11 +101,13 @@ export class ThreadAccountStore implements ThreadAccountStoreLike {
   }
 
   #persist(): Promise<void> {
-    const value: StoredThreadAccountsV1 = {
-      formatVersion: 1,
-      bindings: Object.fromEntries(this.#bindings),
-    };
     const operation = this.#writeTail.then(async () => {
+      // Snapshot at execution time: a binding rolled back after a later write
+      // was queued must not be revived by that write's stale snapshot.
+      const value: StoredThreadAccountsV1 = {
+        formatVersion: 1,
+        bindings: Object.fromEntries(this.#bindings),
+      };
       const temporary = `${this.#file}.${process.pid}.${randomUUID()}.tmp`;
       await writeFile(temporary, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 });
       await rename(temporary, this.#file);

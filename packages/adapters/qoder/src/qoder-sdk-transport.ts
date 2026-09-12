@@ -36,6 +36,7 @@ import {
   hostInteractionIdSchema,
   hostItemIdSchema,
   hostTurnIdSchema,
+  nativeCheckpointRefSchema,
   nativeSessionRefSchema,
   nativeTurnRefSchema,
   type HarnessId,
@@ -45,18 +46,25 @@ import {
   type HostItemId,
   type HostTurnId,
   type JsonValue,
+  type NativeCheckpointRef,
   type NativeSessionRef,
   type NativeTurnRef,
 } from "@codexhost/shared-contracts";
 
-import { accessTokenFromEnv, qodercliAuth } from "@qoder-ai/qoder-agent-sdk";
+import {
+  accessTokenFromEnv,
+  getSessionMessages as defaultGetSessionMessages,
+  qodercliAuth,
+} from "@qoder-ai/qoder-agent-sdk";
 
 import { mapQoderException, mapQoderResultError } from "./qoder-errors.js";
 import { qoderEnvironment } from "./qoder-command.js";
+import { mapQoderSnapshot } from "./qoder-history.js";
 import { decodeQoderModelRef, QODER_DEFAULT_MODEL_REF } from "./qoder-models.js";
 import { mapToQoderPermissionMode } from "./qoder-permission-modes.js";
 import type {
   CanUseToolContext,
+  GetSessionMessagesOptions,
   PermissionResult,
   QoderOptions,
   QoderQuery,
@@ -67,6 +75,7 @@ import type {
   SDKResultMessage,
   SDKSystemMessage,
   SDKUserMessage,
+  SessionMessage,
 } from "./qoder-sdk-types.js";
 import { QoderUsageTracker } from "./qoder-usage.js";
 
@@ -108,6 +117,7 @@ export class PushableInput<T> implements AsyncIterable<T> {
 interface ActiveTurnState {
   turnId: HostTurnId;
   userMessageUuid: string;
+  lastAssistantMessageUuid?: string | undefined;
   activeStreamingMessageItemId?: HostItemId | undefined;
   accumulatedStreamingText: string;
   activeStreamingReasoningItemId?: HostItemId | undefined;
@@ -138,6 +148,10 @@ export interface QoderSessionOptions {
   permissionModeId?: HarnessPermissionModeId;
   resume?: string;
   queryFactory: QoderQueryFactory;
+  getSessionMessages?: (
+    sessionId: string,
+    options?: GetSessionMessagesOptions,
+  ) => Promise<SessionMessage[]>;
   pathToQoderCLIExecutable?: string;
   onClosed?: () => void;
 }
@@ -152,7 +166,7 @@ export class QoderSession implements HarnessSession {
       permissionModeScope: "live",
     },
     history: {
-      fork: false,
+      fork: true,
       forkAcrossCwd: false,
       rollbackLastTurn: false,
     },
@@ -168,6 +182,11 @@ export class QoderSession implements HarnessSession {
   readonly #activeTools = new Map<string, ActiveTool>();
   readonly #query: QoderQuery;
   readonly #sessionId: string;
+  readonly #cwd: string;
+  readonly #getSessionMessages: (
+    sessionId: string,
+    options?: GetSessionMessagesOptions,
+  ) => Promise<SessionMessage[]>;
   readonly #onClosed: (() => void) | undefined;
 
   #state: HarnessSessionState;
@@ -178,6 +197,8 @@ export class QoderSession implements HarnessSession {
   constructor(options: QoderSessionOptions) {
     this.outputs = this.#channel.outputs;
     this.#sessionId = options.sessionId;
+    this.#cwd = options.cwd;
+    this.#getSessionMessages = options.getSessionMessages ?? defaultGetSessionMessages;
     this.#onClosed = options.onClosed;
 
     const nativeRef: NativeSessionRef = nativeSessionRefSchema.parse({
@@ -396,6 +417,10 @@ export class QoderSession implements HarnessSession {
 
   #handleAssistantMessage(message: SDKAssistantMessage): void {
     if (!this.#activeTurn) return;
+
+    if (message.uuid) {
+      this.#activeTurn.lastAssistantMessageUuid = message.uuid;
+    }
 
     this.#usageTracker.observeAssistant(message);
     const usage = this.#usageTracker.snapshot();
@@ -726,16 +751,25 @@ export class QoderSession implements HarnessSession {
 
     const turnId = this.#activeTurn.turnId;
     const userMessageUuid = this.#activeTurn.userMessageUuid;
+    const lastAssistantMessageUuid = this.#activeTurn.lastAssistantMessageUuid;
     this.#activeTurn = null;
 
     const nativeTurnRef = this.#createNativeTurnRef(result.uuid || userMessageUuid);
+    const checkpoint: NativeCheckpointRef | undefined = lastAssistantMessageUuid
+      ? nativeCheckpointRefSchema.parse({
+          harnessId: "qoder",
+          nativeSessionId: this.#state.nativeRef?.nativeSessionId ?? this.#sessionId,
+          checkpointId: lastAssistantMessageUuid,
+          formatVersion: 1,
+        })
+      : undefined;
 
     if (result.subtype === "success") {
       this.#emitEvent({
         type: "turn.completed",
         turnId,
         nativeTurnRef,
-        outcome: { status: "succeeded" },
+        outcome: checkpoint ? { status: "succeeded", checkpoint } : { status: "succeeded" },
       });
     } else {
       const error = mapQoderResultError(result);
@@ -743,7 +777,7 @@ export class QoderSession implements HarnessSession {
         type: "turn.completed",
         turnId,
         nativeTurnRef,
-        outcome: { status: "failed", error },
+        outcome: checkpoint ? { status: "failed", error, checkpoint } : { status: "failed", error },
       });
     }
   }
@@ -930,14 +964,33 @@ export class QoderSession implements HarnessSession {
   }
 
   async readSnapshot(): Promise<HarnessResult<HostThreadSnapshot>> {
-    return {
-      ok: false,
-      error: {
-        code: "unsupported",
-        message: "Qoder does not provide native transcript snapshot reading",
-        retryable: false,
-      },
-    };
+    if (this.#activeTurn) {
+      return {
+        ok: false,
+        error: {
+          code: "sessionBusy",
+          message: "Qoder session cannot read history during an active turn",
+          retryable: true,
+        },
+      };
+    }
+    try {
+      const messages = await this.#getSessionMessages(this.#sessionId, {
+        dir: this.#cwd,
+        view: "historical",
+      });
+      const snapshot = mapQoderSnapshot(messages, this.#sessionId);
+      return { ok: true, value: snapshot };
+    } catch (error) {
+      return {
+        ok: false,
+        error: {
+          code: "nativeFailure",
+          message: error instanceof Error ? error.message : "Failed to read Qoder session history",
+          retryable: false,
+        },
+      };
+    }
   }
 
   async refreshUsage(): Promise<void> {

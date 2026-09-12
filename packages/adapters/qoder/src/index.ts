@@ -34,4 +34,5 @@ export type {
 } from "./qoder-sdk-types.js";
 export { QoderUsageTracker } from "./qoder-usage.js";
 export { mapQoderException, mapQoderExitCode, mapQoderResultError } from "./qoder-errors.js";
+export { mapQoderSnapshot, extractUserText, isHumanUser } from "./qoder-history.js";
 export { createHarnessAdapter } from "./plugin.js";

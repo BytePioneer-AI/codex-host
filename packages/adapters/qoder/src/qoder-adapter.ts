@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import path from "node:path";
 import type {
   HarnessAdapter,
   HarnessInspection,
@@ -7,8 +8,20 @@ import type {
   InspectHarnessInput,
   OpenSessionInput,
 } from "@codexhost/harness-adapter";
-import { harnessIdSchema, type HarnessId } from "@codexhost/shared-contracts";
-import { accessTokenFromEnv, qodercliAuth, query as sdkQuery } from "@qoder-ai/qoder-agent-sdk";
+import {
+  harnessIdSchema,
+  nativeCheckpointRefSchema,
+  nativeSessionRefSchema,
+  type HarnessId,
+} from "@codexhost/shared-contracts";
+import {
+  accessTokenFromEnv,
+  forkSession as defaultForkSession,
+  getSessionInfo as defaultGetSessionInfo,
+  getSessionMessages as defaultGetSessionMessages,
+  qodercliAuth,
+  query as sdkQuery,
+} from "@qoder-ai/qoder-agent-sdk";
 
 import {
   CODEXHOST_QODER_COMMAND,
@@ -17,7 +30,16 @@ import {
 } from "./qoder-command.js";
 import { parseQoderModelCatalog } from "./qoder-models.js";
 import { QODER_PERMISSION_MODE_CATALOG } from "./qoder-permission-modes.js";
-import type { QoderModelInfo, QoderQueryFactory } from "./qoder-sdk-types.js";
+import type {
+  ForkSessionOptions,
+  ForkSessionResult,
+  GetSessionInfoOptions,
+  GetSessionMessagesOptions,
+  QoderModelInfo,
+  QoderQueryFactory,
+  SDKSessionInfo,
+  SessionMessage,
+} from "./qoder-sdk-types.js";
 import { QoderSession } from "./qoder-sdk-transport.js";
 
 const defaultQueryFactory: QoderQueryFactory = (input) => sdkQuery(input);
@@ -31,6 +53,15 @@ export interface QoderAdapterOptions {
   environment?: Record<string, string | undefined>;
   platform?: NodeJS.Platform;
   queryFactory?: QoderQueryFactory;
+  forkSession?: (sessionId: string, options?: ForkSessionOptions) => Promise<ForkSessionResult>;
+  getSessionMessages?: (
+    sessionId: string,
+    options?: GetSessionMessagesOptions,
+  ) => Promise<SessionMessage[]>;
+  getSessionInfo?: (
+    sessionId: string,
+    options?: GetSessionInfoOptions,
+  ) => Promise<SDKSessionInfo | undefined>;
   getAvailableModels?: () => Promise<QoderModelInfo[]>;
   resolveExecutable?: typeof resolveQoderExecutable;
 }
@@ -42,6 +73,18 @@ export class QoderAdapter implements HarnessAdapter {
   readonly #environment: Record<string, string | undefined>;
   readonly #platform: NodeJS.Platform;
   readonly #queryFactory: QoderQueryFactory;
+  readonly #forkSession: (
+    sessionId: string,
+    options?: ForkSessionOptions,
+  ) => Promise<ForkSessionResult>;
+  readonly #getSessionMessages: (
+    sessionId: string,
+    options?: GetSessionMessagesOptions,
+  ) => Promise<SessionMessage[]>;
+  readonly #getSessionInfo: (
+    sessionId: string,
+    options?: GetSessionInfoOptions,
+  ) => Promise<SDKSessionInfo | undefined>;
   readonly #getAvailableModels: (() => Promise<QoderModelInfo[]>) | undefined;
   readonly #resolveExecutable: typeof resolveQoderExecutable;
 
@@ -55,6 +98,9 @@ export class QoderAdapter implements HarnessAdapter {
     this.#environment = qoderEnvironment(options.environment);
     this.#platform = options.platform ?? process.platform;
     this.#queryFactory = options.queryFactory ?? defaultQueryFactory;
+    this.#forkSession = options.forkSession ?? defaultForkSession;
+    this.#getSessionMessages = options.getSessionMessages ?? defaultGetSessionMessages;
+    this.#getSessionInfo = options.getSessionInfo ?? defaultGetSessionInfo;
     this.#getAvailableModels = options.getAvailableModels;
     this.#resolveExecutable = options.resolveExecutable ?? resolveQoderExecutable;
   }
@@ -130,7 +176,7 @@ export class QoderAdapter implements HarnessAdapter {
               permissionModeScope: "live",
             },
             history: {
-              fork: false,
+              fork: true,
               forkAcrossCwd: false,
               rollbackLastTurn: false,
             },
@@ -160,7 +206,7 @@ export class QoderAdapter implements HarnessAdapter {
   }
 
   async open(input: OpenSessionInput): Promise<HarnessResult<HarnessSession>> {
-    if (input.kind === "fork" || input.kind === "rollbackLastTurn") {
+    if (input.kind === "rollbackLastTurn") {
       return {
         ok: false,
         error: {
@@ -184,6 +230,7 @@ export class QoderAdapter implements HarnessAdapter {
     }
 
     let sessionId: string;
+    let openResumeId: string | undefined;
     if (input.kind === "create") {
       sessionId = randomUUID();
     } else if (input.kind === "resume") {
@@ -199,6 +246,68 @@ export class QoderAdapter implements HarnessAdapter {
         };
       }
       sessionId = id;
+      openResumeId = id;
+    } else if (input.kind === "fork") {
+      const sourceRef = nativeSessionRefSchema.safeParse(input.sourceRef);
+      const checkpoint = nativeCheckpointRefSchema.safeParse(input.checkpoint);
+      if (
+        !sourceRef.success ||
+        sourceRef.data.harnessId !== this.harnessId ||
+        !checkpoint.success ||
+        checkpoint.data.harnessId !== this.harnessId ||
+        checkpoint.data.nativeSessionId !== sourceRef.data.nativeSessionId
+      ) {
+        return {
+          ok: false,
+          error: {
+            code: "invalidRequest",
+            message: "Qoder Fork identity does not belong to the source Session",
+            retryable: false,
+          },
+        };
+      }
+
+      let sourceInfo: SDKSessionInfo | undefined;
+      try {
+        sourceInfo = await this.#getSessionInfo(sourceRef.data.nativeSessionId, { dir: input.cwd });
+      } catch {
+        // Ignore info lookup failure
+      }
+      if (sourceInfo?.cwd && path.resolve(sourceInfo.cwd) !== path.resolve(input.cwd)) {
+        return {
+          ok: false,
+          error: {
+            code: "unsupported",
+            message: "Qoder cannot Fork across working directories",
+            retryable: false,
+          },
+        };
+      }
+
+      let derivedSessionId: string;
+      try {
+        const forked = await this.#forkSession(sourceRef.data.nativeSessionId, {
+          dir: input.cwd,
+          upToMessageId: checkpoint.data.checkpointId,
+        });
+        derivedSessionId = forked.sessionId;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        const isNotFound =
+          message.toLowerCase().includes("not found") ||
+          message.toLowerCase().includes("cannot find");
+        return {
+          ok: false,
+          error: {
+            code: isNotFound ? "checkpointNotFound" : "nativeFailure",
+            message: `Qoder native fork failed: ${message}`,
+            retryable: false,
+          },
+        };
+      }
+
+      sessionId = derivedSessionId;
+      openResumeId = derivedSessionId;
     } else {
       return {
         ok: false,
@@ -214,10 +323,11 @@ export class QoderAdapter implements HarnessAdapter {
       sessionId,
       cwd: input.cwd,
       environment,
-      ...(input.model ? { model: input.model } : {}),
-      ...(input.permissionModeId ? { permissionModeId: input.permissionModeId } : {}),
-      ...(input.kind === "resume" ? { resume: sessionId } : {}),
+      ...("model" in input && input.model ? { model: input.model } : {}),
+      ...("permissionModeId" in input && input.permissionModeId ? { permissionModeId: input.permissionModeId } : {}),
+      ...(openResumeId ? { resume: openResumeId } : {}),
       queryFactory: this.#queryFactory,
+      getSessionMessages: this.#getSessionMessages,
       ...(pathToQoderCLIExecutable ? { pathToQoderCLIExecutable } : {}),
       onClosed: () => {
         this.#sessions.delete(session);

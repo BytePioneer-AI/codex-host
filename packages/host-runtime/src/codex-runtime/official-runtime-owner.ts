@@ -396,12 +396,19 @@ export class OfficialRuntimeOwner {
 
   async #request(client: Client, method: string, params: JsonObject): Promise<JsonObject> {
     this.#checkMethod(method, params);
-    const finish = this.gate.admit();
+    const quotaRead = method === "account/rateLimits/read";
+    const finish = this.gate.admit(quotaRead ? "quota-read" : "work");
     try {
       const runtime = await this.#connection(client);
       await this.#restore(client, runtime, method, params);
       const observe = this.#work.admitted(client.id, method, params);
-      const response = await runtime.request(method, params);
+      const response = await runtime.request(method, params).catch((error: unknown) => {
+        // A local timeout/transport failure is not native query completion. Do not
+        // let a waiting switch replace credentials while that outcome is unknown.
+        if (quotaRead && client.runtime === runtime && runtime.generation === this.#generation)
+          this.gate.unavailable();
+        throw error;
+      });
       if (
         client.runtime !== runtime ||
         runtime.generation !== this.#generation ||
@@ -440,8 +447,11 @@ export class OfficialRuntimeOwner {
       throw new Error("Official methods require a request ID");
     const params = object(value.params) ? value.params : {};
     this.#checkMethod(value.method, params);
-    const finish = this.gate.admit();
+    const finish = this.gate.admit(
+      value.method === "account/rateLimits/read" ? "quota-read" : "work",
+    );
     let pendingKey: string | undefined;
+    let quotaReadGeneration: number | undefined;
     try {
       const runtime = await this.#connection(client);
       await this.#restore(client, runtime, value.method, params);
@@ -457,9 +467,16 @@ export class OfficialRuntimeOwner {
           observe: this.#work.admitted(client.id, value.method, params),
         });
       }
+      if (value.method === "account/rateLimits/read") quotaReadGeneration = runtime.generation;
       await runtime.send(value);
       if (!pendingKey) finish();
     } catch (error) {
+      if (
+        quotaReadGeneration !== undefined &&
+        quotaReadGeneration === this.#generation &&
+        client.runtime?.generation === quotaReadGeneration
+      )
+        this.gate.unavailable();
       if (pendingKey) client.pending.delete(pendingKey);
       finish();
       throw error;
@@ -634,6 +651,10 @@ export class OfficialRuntimeOwner {
   }
 
   #retire(client: Client): void {
+    if (
+      [...client.pending.values()].some((pending) => pending.method === "account/rateLimits/read")
+    )
+      this.gate.unavailable();
     client.runtime?.retire();
     for (const subscription of client.threads.values()) delete subscription.restoring;
     for (const pending of client.pending.values()) {

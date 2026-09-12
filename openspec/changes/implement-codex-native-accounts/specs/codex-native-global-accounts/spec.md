@@ -14,6 +14,25 @@ Managed Codex SHALL use one canonical permanent home and at most one live offici
 - **THEN** Host SHALL reject the change without forced cancellation or deferred submission
 - **AND** a closed transport SHALL NOT count as proof of process-tree exit or retire outstanding work
 
+### Requirement: Account switching SHALL take priority over native quota inspection
+When the only admitted requests are official `account/rateLimits/read` calls, switching SHALL close new native admission and wait at most 10 seconds for those calls to settle before entering the existing credential transaction. This MUST remain one switch operation, without forced query cancellation, automatic resubmission, or disabling the switch entry merely because quota inspection is pending. Other native requests, credential refreshes and actual native work MUST retain immediate busy refusal.
+
+#### Scenario: Quota inspection is in flight when switching
+- **WHEN** the user selects another saved Account while only official quota reads are pending
+- **THEN** the Account state SHALL become changing and new native requests SHALL be refused
+- **AND** Host SHALL leave the backend, native credentials and Journal untouched until all admitted quota reads receive native responses
+- **AND** the same switch SHALL then use the existing native-idle checks, owned stop, credential replacement and verification
+
+#### Scenario: Quota draining exceeds its deadline
+- **WHEN** the admitted quota reads have not settled within 10 seconds
+- **THEN** Host SHALL refuse the switch and release its switching fence without clearing those reads, stopping the backend, changing credentials, or creating a recovery Journal
+- **AND** the original Account SHALL remain current and no switch SHALL be automatically resubmitted
+
+#### Scenario: Quota completion or native ownership becomes unknown
+- **WHEN** a quota request times out locally or loses its transport without a native response
+- **THEN** Host SHALL NOT treat release of the local waiter as native completion
+- **AND** native admission SHALL remain unavailable rather than proceeding with credential replacement
+
 ### Requirement: Managed startup SHALL be owned by Account recovery
 The dedicated management connection SHALL initialize before Desktop clients. A managed Runtime Scope MUST NOT bypass failed Account initialization by starting a backend or publishing ready itself. Known protocol incompatibility without pending state SHALL be distinguished from recovery or ownership conflicts.
 

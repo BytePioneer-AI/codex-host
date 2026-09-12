@@ -8,7 +8,20 @@
 - 完整设计：[设计说明](../../../docs/codex-native-account-switching-design.md)；产品说明：[账号设置](../../../docs/codex-accounts.md)。
 - PR 前测试只用临时目录、合成凭据、假密钥和假认证网络。用户随后授权提交、推送、普通审查 PR #262，并允许起停 Desktop 诊断。后续又明确授权测试相关进程起停和真实账号切换，实际结果分阶段记录如下；未执行推理，未发布。
 
-## 最新：按会话 ID 保留当前页面
+## 最新：额度查询与切换的准入冲突
+
+用户在真实发送一条短消息并完成回复后，反复遇到账号切换无效。该场景不能由此前不发送消息的切换验证覆盖。实机复现捕获到拒绝来自 `OfficialWorkGate.beginChange`：拒绝瞬间只有 **1 个 Host 发起的 `account/rateLimits/read`** 占用准入，其他请求及原生活动均为 **0**；不是回复尚未结束，也未进入凭据替换事务。仅事后检查 busy 已清空不足以定位这个时序冲突。
+
+- 读取本机 CLI **0.154.0-alpha.6.2** 生成的完整实验协议，未提供额度 RPC 的单独取消接口；没有把取消本地等待当作原生取消。曾讨论额度读取期间禁用切换入口，用户要求先确认交互，该方案未实施。
+- 用户随后确认参考 OpenCodex 的收尾流程。复用同一 pinned commit 中 `native-profile-api.ts` 的 `withMainRequestDrain` 思路及并发测试：在现有 `OfficialWorkGate` 内先关闭新原生准入，只为明确的官方额度读取等待最多 **10 秒**，完成后继续同一次切换。真实工作、其他原生请求、非当前 OAuth 刷新仍立即拒绝；退出、删除、登录不扩展这一等待规则。不增加 Renderer 状态或按钮禁用规则，不强制取消或自动重试。
+- 超时只释放切换围栏，保留原账号、后台和在途查询，不写 Journal；原生错误响应可正常收尾，但本地 RPC 超时、发送失败及连接退出不能作为原生完成，保持 unavailable。迟到的旧 generation 失败不能关闭新 generation 的准入。
+- 新的账号组合回归先红后绿；**14 个 Vitest 文件，305 passed／1 skipped**。覆盖同一次切换收尾、并发额度读取、禁止新请求、第二次变更拒绝、10 秒超时无改写、真实工作／审批立即拒绝、读取期间 unavailable、原生错误响应与本地超时／断连的区别。跳过项是未设置 `CODEXHOST_TEST_NATIVE_LAUNCHER` 的既有 helper 用例。账号页模拟 Playwright **29 passed**；typecheck、lint／boundaries、OpenSpec strict、diff check 通过。
+- 正式源码重新构建，实机在含 **1 个已完成 Turn** 的真实 Thread 完成 A→B→A。最终构建的 A→B 现场记录到点击时确有 **1 个额度查询在途**，约 **1.2 秒**后归零，随后切换成功；不是绕开冲突后才测试。此前一轮同类实测也捕获约 **2.2 秒／1.4 秒**的收尾。最终两次成功各等待 25 秒检查，均自动恢复同一 Thread，原生历史摘要、渲染历史摘要及原文件前缀字节一致。测试前账号已恢复，未发送新消息或执行推理。
+- 所有 Inspector 条件断点均在测试后撤除，没有修改编译产物加入探针。最大抽样 Codex 进程数为 **1**。仍不把这些结果当作切换后真实新 Turn 认证、跨平台、完整 CI、OS key 生命周期或外部 Harness 联合验收。
+
+私有证据位于 `/tmp/codexhost-native-accounts-tasks/completed-turn-refusal/`：`watch.log`、`detail-watch-2.log`、`detail-origin.log`、`drain-red.log`、`drain-tests-final.log`、`drain-typecheck-final.log`、`drain-lint-final.log`、`drain-e2e.log`、`final-source-launch.log`、`final-source-drain-watch.log`、`thread-switch-final-drain-{b,a}-result.json`。完整协议检查只做生成，不启动第二个官方后台。PR 不合并、不发布。
+
+## 前一阶段：按会话 ID 保留当前页面
 
 用户经方案讨论确认只采用「记住当前会话 → 切换账号 → 新界面可用后打开原会话」，不扩展为通用导航恢复系统。
 

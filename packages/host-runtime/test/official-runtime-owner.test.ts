@@ -157,6 +157,116 @@ const initialization = {
 };
 
 describe("single official runtime owner", () => {
+  it.each([
+    { via: "request", error: false },
+    { via: "request", error: true },
+    { via: "send", error: false },
+    { via: "send", error: true },
+  ])(
+    "drains $via quota reads until the native reply (error=$error), not merely dispatch",
+    async ({ via, error }) => {
+      const f = fixture();
+      const { client } = f.attach();
+      try {
+        await f.owner.start();
+        await client.initialize(initialization);
+        f.gate.initialized();
+        const connection = f.connection();
+        connection.setResponse(() => null);
+        const quota =
+          via === "request"
+            ? client.request("account/rateLimits/read", {})
+            : client.send({ id: "desktop-quota", method: "account/rateLimits/read", params: {} });
+        await vi.waitFor(() =>
+          expect(connection.requests.some((r) => r.method === "account/rateLimits/read")).toBe(
+            true,
+          ),
+        );
+        const draining = f.gate.beginChangeAfterQuotaReads();
+        expect(f.gate.phase).toBe("changing");
+        expect(f.gate.busy).toBe(true);
+        await expect(client.request("account/rateLimits/read", {})).rejects.toMatchObject({
+          code: "changing",
+        });
+        const request = connection.requests.find((r) => r.method === "account/rateLimits/read");
+        if (!request?.id) throw new Error("Missing native quota request");
+        connection.emit({
+          id: request.id,
+          ...(error
+            ? { error: { code: -32000, message: "quota unavailable" } }
+            : { result: { rateLimits: {} } }),
+        });
+        await quota;
+        const lease = await draining;
+        lease.assertIdle();
+        expect(f.events).toEqual(["start"]);
+        lease.finish("ready");
+      } finally {
+        await f.owner.stop();
+        client.close();
+      }
+    },
+  );
+
+  it("does not treat a local quota timeout as successful native completion", async () => {
+    const f = fixture();
+    const { client } = f.attach();
+    try {
+      await f.owner.start();
+      await client.initialize(initialization);
+      f.gate.initialized();
+      f.connection().setResponse(() => null);
+      vi.useFakeTimers();
+      const quota = client.request("account/rateLimits/read", {}).catch((error: unknown) => error);
+      await vi.advanceTimersByTimeAsync(29_950);
+      const draining = f.gate.beginChangeAfterQuotaReads().catch((error: unknown) => error);
+      await vi.advanceTimersByTimeAsync(100);
+      expect(await quota).toBeInstanceOf(Error);
+      expect(await draining).toMatchObject({ code: "unavailable" });
+      expect(f.gate.phase).toBe("unavailable");
+    } finally {
+      vi.useRealTimers();
+      await f.owner.stop();
+      client.close();
+    }
+  });
+
+  it("does not interpret a detached quota reader as native completion", async () => {
+    const f = fixture();
+    const { client } = f.attach();
+    try {
+      await f.owner.start();
+      await client.initialize(initialization);
+      f.gate.initialized();
+      f.connection().setResponse(() => null);
+      await client.send({ id: "quota", method: "account/rateLimits/read", params: {} });
+      const draining = f.gate.beginChangeAfterQuotaReads().catch((error: unknown) => error);
+      client.close();
+      expect(await draining).toMatchObject({ code: "unavailable" });
+      expect(f.gate.phase).toBe("unavailable");
+    } finally {
+      await f.owner.stop();
+      client.close();
+    }
+  });
+
+  it("does not extend quota draining to account credential reads", async () => {
+    const f = fixture();
+    const { client } = f.attach();
+    try {
+      await f.owner.start();
+      await client.initialize(initialization);
+      f.gate.initialized();
+      f.connection().setResponse(() => null);
+      await client.send({ id: "auth", method: "account/read", params: { refreshToken: true } });
+      await expect(f.gate.beginChangeAfterQuotaReads()).rejects.toMatchObject({ code: "busy" });
+      expect(f.gate.phase).toBe("ready");
+    } finally {
+      await f.owner.stop();
+      client.close();
+    }
+  });
+
   it("notifies attached clients once per proved retirement, never on failed stop or client detach", async () => {
     const f = fixture();
     const retired = vi.fn();

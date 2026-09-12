@@ -146,7 +146,7 @@ export class NativeCodexAccounts implements CodexAccountControl {
   }
   async recover(): Promise<void> {
     if (this.#login) await this.cancelLogin(this.#login.stage.operationId);
-    const change = this.#begin("recovery", true);
+    const change = await this.#begin("recovery", true);
     try {
       // Never import first. An unfinished first activation must be interpreted by its Journal.
       await this.#transaction.recover();
@@ -202,7 +202,9 @@ export class NativeCodexAccounts implements CodexAccountControl {
   }
   async #changeCredential(accountId: string | null, kind: "switch" | "logout"): Promise<void> {
     const operationId = randomUUID();
-    const change = this.#begin(kind, false, operationId);
+    const change = await this.#begin(kind, false, operationId, {
+      drainQuotaReads: kind === "switch",
+    });
     try {
       await this.#transaction.execute(accountId, undefined, operationId);
       if (!this.#finish(change, true)) throw new NativeTransitionError("recovery-required", false);
@@ -215,7 +217,7 @@ export class NativeCodexAccounts implements CodexAccountControl {
   }
   async remove(accountId: string): Promise<void> {
     const before = this.#store.vault;
-    const change = this.#begin("switch");
+    const change = await this.#begin("switch");
     try {
       await this.#store.mutate((next) => {
         if (next.currentAccountId === accountId)
@@ -271,10 +273,14 @@ export class NativeCodexAccounts implements CodexAccountControl {
     const starting = Promise.withResolvers<undefined>();
     let cancelledBeforeStage = false;
     let pending: PendingLogin | undefined;
-    const change = this.#begin("login", false, operationId, async () => {
-      cancelledBeforeStage = true;
-      await starting.promise;
-      return this.#login?.stage.operationId === operationId ? this.cancelLogin(operationId) : true;
+    const change = await this.#begin("login", false, operationId, {
+      cancelStarting: async () => {
+        cancelledBeforeStage = true;
+        await starting.promise;
+        return this.#login?.stage.operationId === operationId
+          ? this.cancelLogin(operationId)
+          : true;
+      },
     });
     const assertNotCancelled = () => {
       if (cancelledBeforeStage || pending?.cancelled)
@@ -531,16 +537,19 @@ export class NativeCodexAccounts implements CodexAccountControl {
     await this.#runtime.start();
     await this.#runtime.verify(profileCurrent(this.#store.vault)?.identity ?? null);
   }
-  #begin(
+  async #begin(
     kind: NonNullable<CodexAccountListResult["pendingOperation"]>["kind"],
     recovery = false,
     operationId: string = randomUUID(),
-    cancelStarting?: () => Promise<boolean>,
-  ): OfficialChangeLease {
+    options: { cancelStarting?: () => Promise<boolean>; drainQuotaReads?: boolean } = {},
+  ): Promise<OfficialChangeLease> {
     if (this.#pending) throw new OfficialAdmissionError("changing");
+    const { cancelStarting } = options;
     this.#pending = { operationId, kind, ...(cancelStarting ? { cancelStarting } : {}) };
     try {
-      const lease = this.#runtime.gate.beginChange(recovery);
+      const lease = options.drainQuotaReads
+        ? await this.#runtime.gate.beginChangeAfterQuotaReads()
+        : this.#runtime.gate.beginChange(recovery);
       this.#pending.lease = lease;
       return lease;
     } catch (error) {

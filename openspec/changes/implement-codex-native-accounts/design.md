@@ -18,6 +18,8 @@
 
 11. **会话 ID 跨界面重建保留**：用户确认最小流程为记住当前会话、切账号、新界面可用后打开同一会话。仅捕获当前窗口中归属明确的本地 Codex Thread；成功后等待旧 Composer 移除、新 Composer 出现，再调用已有原生侧栏打开入口一次。界面等待预算从切换应答后开始，拒绝、用户在 Settings 外交互、其他会话已选中、超时或卸载均结束恢复。不修改官方路由器、保存整套界面状态、建立 Account→Thread 映射或重发工作。
 
+12. **切换优先于额度读取**：参考同一 OpenCodex 版本的 `withMainRequestDrain`，只在官方 `account/rateLimits/read` 占用准入时，先关闭新请求，再限时等待最多 10 秒。完成后继续同一次切换，超时则保持源账号和在途查询，不停止后台、不写 Journal、不自动重试。真实工作、其他请求及 OAuth 凭据刷新仍直接拒绝。请求的本地超时或连接丢失必须保持 unavailable，不能假装查询已取消。不增加第二套门禁或刷新期间的按钮禁用规则。
+
 ## Source and licenses
 
 核心参考 opencodex commit `2d4d7a22381a2e497c2442902104619e25f937c7`。保留 `third-party/opencodex.LICENSE`，installer/npm notice 包含原 MIT 文本和来源 commit。PR #252 的原语、测试及 UI 选择性复用，不以该 PR 的恢复协调层为新架构。

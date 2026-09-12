@@ -86,7 +86,7 @@ export function parseQoderModelCatalog(rawModels?: unknown[]): HarnessModelCatal
 
   return harnessModelCatalogSchema.parse({
     models,
-    defaultModel,
+    ...(defaultModel ? { defaultModel } : {}),
     thinkingOptions: [],
   });
 }

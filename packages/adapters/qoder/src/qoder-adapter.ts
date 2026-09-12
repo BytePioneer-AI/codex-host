@@ -8,7 +8,7 @@ import type {
   OpenSessionInput,
 } from "@codexhost/harness-adapter";
 import { harnessIdSchema, type HarnessId } from "@codexhost/shared-contracts";
-import { query as sdkQuery } from "@qoder-ai/qoder-agent-sdk";
+import { accessTokenFromEnv, qodercliAuth, query as sdkQuery } from "@qoder-ai/qoder-agent-sdk";
 
 import { CODEXHOST_QODER_COMMAND, resolveQoderExecutable } from "./qoder-command.js";
 import { parseQoderModelCatalog } from "./qoder-models.js";
@@ -17,6 +17,10 @@ import type { QoderModelInfo, QoderQueryFactory } from "./qoder-sdk-types.js";
 import { QoderSession } from "./qoder-sdk-transport.js";
 
 const defaultQueryFactory: QoderQueryFactory = (input) => sdkQuery(input);
+
+function qoderAuthForEnvironment(environment: Record<string, string | undefined>) {
+  return environment.QODER_PERSONAL_ACCESS_TOKEN ? accessTokenFromEnv() : qodercliAuth();
+}
 
 export interface QoderAdapterOptions {
   commandOverride?: string;
@@ -91,6 +95,7 @@ export class QoderAdapter implements HarnessAdapter {
                 cwd: input?.cwd ?? process.cwd(),
                 pathToQoderCLIExecutable: executable,
                 ...(this.#environment ? { env: this.#environment } : {}),
+                auth: qoderAuthForEnvironment(this.#environment),
               },
             });
             try {

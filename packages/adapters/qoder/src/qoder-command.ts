@@ -12,6 +12,7 @@ export class QoderExecutableError extends Error {
 }
 
 export const CODEXHOST_QODER_COMMAND = "CODEXHOST_QODER_COMMAND";
+const QODER_NPM_CLI_ENTRYPOINT = "node_modules/@qoder-ai/qodercli/bundle/qodercli.js";
 
 export const qoderDiscoverySpec: HarnessDiscoverySpec = {
   id: "qoder",
@@ -32,6 +33,17 @@ export const qoderDiscoverySpec: HarnessDiscoverySpec = {
       "${APPDATA}/npm",
       VERSION_MANAGER_ROOTS,
     ],
+  },
+  runnableCandidate: (candidate, { platform, isExecutable }) => {
+    const pathFlavor = targetPath(platform);
+    if (platform !== "win32" || pathFlavor.extname(candidate).toLowerCase() !== ".cmd") {
+      return candidate;
+    }
+    const entrypoint = pathFlavor.join(
+      pathFlavor.dirname(candidate),
+      ...QODER_NPM_CLI_ENTRYPOINT.split("/"),
+    );
+    return isExecutable(entrypoint) ? entrypoint : undefined;
   },
 };
 

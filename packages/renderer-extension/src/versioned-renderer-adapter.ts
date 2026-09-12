@@ -553,7 +553,23 @@ function isCurrentRequestBridge(value: unknown): value is PrewarmTarget {
     value.hostId.length > 0 &&
     typeof value.sendRequest === "function" &&
     typeof value.prewarmThreadStart === "function" &&
-    typeof value.enqueueRequest === "function"
+    (value.enqueueRequest === undefined || typeof value.enqueueRequest === "function")
+  );
+}
+
+function isSplitRequestManager(value: unknown): value is PrewarmTarget {
+  if (!isRecord(value) || typeof value.sendRequest !== "function") return false;
+  const requestClient = value.requestClient;
+  if (
+    !isRecord(requestClient) ||
+    typeof requestClient.sendRequest !== "function" ||
+    typeof requestClient.prewarmThreadStart !== "function"
+  ) {
+    return false;
+  }
+  return (
+    (typeof value.hostId === "string" && value.hostId.length > 0) ||
+    typeof value.getHostId === "function"
   );
 }
 
@@ -600,6 +616,8 @@ export function findActivePrewarmTargets(root: ParentNode): PrewarmTarget[] {
             : null;
         if (bridge) {
           targets.add(typeof hookState.sendRequest === "function" ? hookState : bridge);
+        } else if (isSplitRequestManager(hookState)) {
+          targets.add(hookState);
         }
       }
       hook =
@@ -798,7 +816,7 @@ function prewarmTargetHostId(target: PrewarmTarget): string | null {
 
 function isRendererRequestTarget(value: unknown): value is PrewarmTarget {
   if (!isRecord(value) || typeof value.sendRequest !== "function") return false;
-  return isCurrentRequestBridge(value.requestClient ?? value);
+  return isCurrentRequestBridge(value.requestClient ?? value) || isSplitRequestManager(value);
 }
 
 function hasPolicyRequestTarget(policy: RendererDraftPrewarmPolicy): boolean {

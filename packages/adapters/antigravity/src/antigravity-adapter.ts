@@ -93,6 +93,7 @@ import { AntigravitySubagents } from "./subagents.js";
 import { nativeSubagentIdSchema, readSubagentTranscript } from "./subagent-transcript.js";
 import {
   antigravityToolErrorMessage,
+  classifyAntigravityDiagnostic,
   isAntigravityPermissionDenial,
   isRecord,
   parseAntigravityStreamLine,
@@ -424,7 +425,7 @@ function normalizedProcessError(
   // stderr can echo the invoked command line, so retain its existing redacted
   // diagnostic tail. A structured result.error is shown verbatim below.
   const diagnostic = sanitizeDiagnosticTail(nativeDetail);
-  if (/sign[ -]?in|authenticat|credential|login/iu.test(nativeDetail)) {
+  if (classifyAntigravityDiagnostic(nativeDetail) === "authenticationRequired") {
     return {
       code: "authenticationRequired",
       message: exposeDetail ? nativeDetail || fallback : diagnostic || fallback,
@@ -975,14 +976,15 @@ class AntigravitySession implements HarnessSession {
         );
         return;
       }
-      const isAuthError = /sign[ -]?in|authenticat|credential|login/iu.test(errorDetail);
+      const diagnosticKind = classifyAntigravityDiagnostic(errorDetail);
+      const isAuthError = diagnosticKind === "authenticationRequired";
       const hasAgentResponse =
         active.agentResponseCompleted ||
         (typeof event.result.response === "string" && event.result.response.trim().length > 0);
       const hasPendingTools = active.tools.size > 0 || active.pendingSteps.size > 0;
-      const isTransientInterruption =
-        /stream was interrupted|connection closed|network error|socket hang up/iu.test(errorDetail);
-      const isPermissionDenialDetail = isAntigravityPermissionDenial(errorDetail);
+      const isTransientInterruption = diagnosticKind === "transientInterruption";
+      const isPermissionDenialDetail =
+        diagnosticKind === "permissionDenied" || isAntigravityPermissionDenial(errorDetail);
 
       if (
         event.result.status === "ERROR" &&

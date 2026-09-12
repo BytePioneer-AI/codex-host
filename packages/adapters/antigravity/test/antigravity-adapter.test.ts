@@ -19,9 +19,12 @@ import {
   antigravityAvailableThinkingOptions,
   antigravityModelArguments,
   antigravityToolErrorMessage,
+  classifyAntigravityDiagnostic,
   fetchAntigravityQuota,
   formatAntigravityTurnPrompt,
+  isAntigravityAuthError,
   isAntigravityPermissionDenial,
+  isAntigravityTransientInterruption,
   parseAntigravityContextUsage,
   parseAntigravityModels,
   parseAntigravityStreamLine,
@@ -582,6 +585,62 @@ describe("Antigravity Adapter", () => {
     expect(isAntigravityPermissionDenial(denial)).toBe(true);
     expect(antigravityToolErrorMessage({ type: "TOOL_ERROR" })).toBeNull();
     expect(isAntigravityPermissionDenial("file not found")).toBe(false);
+  });
+
+  it("classifies diagnostic text strictly without false positives from unrelated text", () => {
+    // Real Antigravity auth diagnostics
+    const authSamples = [
+      "Error: authentication required. Run 'agy' to log in, then retry.",
+      "Error: authentication required. Run 'antigravity' to log in.",
+      "error: authentication failed or timed out",
+      "Error: Please sign in to view available models. Launch the CLI without arguments to sign in.",
+      "Please sign in to use Antigravity",
+      "Not signed in. Run 'agy login'",
+      "Invalid credentials",
+      "no model configuration is available for this account",
+    ];
+    for (const sample of authSamples) {
+      expect(classifyAntigravityDiagnostic(sample)).toBe("authenticationRequired");
+      expect(isAntigravityAuthError(sample)).toBe(true);
+    }
+
+    // Unrelated errors mentioning "login" must NOT trigger auth classification
+    const authFalsePositives = [
+      "please login to continue the checkpoint save",
+      "checkpoint save failed: please login to git",
+      "Element #login-button not found in DOM",
+      "TypeError: Cannot read properties of undefined (reading 'login')",
+      "Failed to fetch /api/login: HTTP 500",
+    ];
+    for (const sample of authFalsePositives) {
+      expect(classifyAntigravityDiagnostic(sample)).toBe("unclassified");
+      expect(isAntigravityAuthError(sample)).toBe(false);
+    }
+
+    // Real transient stream interruptions
+    const transientSamples = [
+      "Error: The stream was interrupted. Please continue the task you were working on.",
+      "The stream was interrupted",
+      "stream was interrupted",
+      "Error: socket hang up",
+      "Error: connection closed unexpectedly",
+    ];
+    for (const sample of transientSamples) {
+      expect(classifyAntigravityDiagnostic(sample)).toBe("transientInterruption");
+      expect(isAntigravityTransientInterruption(sample)).toBe(true);
+    }
+
+    // Unrelated errors mentioning "network error" must NOT trigger transient interruption classification
+    const transientFalsePositives = [
+      "checkpoint save failed after network error",
+      "fetch failed: network error",
+      "npm install failed with network error",
+      "connection error: ECONNREFUSED 127.0.0.1:8080",
+    ];
+    for (const sample of transientFalsePositives) {
+      expect(classifyAntigravityDiagnostic(sample)).toBe("unclassified");
+      expect(isAntigravityTransientInterruption(sample)).toBe(false);
+    }
   });
 
   it("redacts credentials echoed by the denied command line", () => {
@@ -1406,6 +1465,127 @@ if (stderrLines.length > 0) {
       expect(completed).toMatchObject({
         turnId: "turn-cancelled",
         outcome: { status: "failed", error: { code: "nativeFailure" } },
+      });
+    });
+
+    it("keeps turn failed when completed response is followed by non-transient error mentioning network error", async () => {
+      const completed = await runResultScenario(
+        [
+          JSON.stringify({
+            event: "init",
+            init: { permission_mode: "default" },
+            conversation_id: "conv-network-error-checkpoint",
+          }),
+          JSON.stringify({
+            event: "step_update",
+            step_update: {
+              conversation_id: "conv-network-error-checkpoint",
+              step_index: 1,
+              state: "DONE",
+              step_type: "agent_response",
+              text: "Response delivered before downstream failure.",
+            },
+          }),
+          JSON.stringify({
+            event: "result",
+            result: {
+              conversation_id: "conv-network-error-checkpoint",
+              status: "ERROR",
+              error: "checkpoint save failed after network error",
+              num_turns: 1,
+            },
+          }),
+        ],
+        "turn-network-error-checkpoint",
+      );
+
+      expect(completed).toMatchObject({
+        turnId: "turn-network-error-checkpoint",
+        outcome: {
+          status: "failed",
+          error: {
+            code: "nativeFailure",
+            message:
+              "Antigravity Turn ended with status ERROR: checkpoint save failed after network error",
+          },
+        },
+      });
+    });
+
+    it("does not classify unrelated diagnostic mentioning login as authenticationRequired", async () => {
+      const completed = await runResultScenario(
+        [
+          JSON.stringify({
+            event: "init",
+            init: { permission_mode: "default" },
+            conversation_id: "conv-unrelated-login",
+          }),
+          JSON.stringify({
+            event: "step_update",
+            step_update: {
+              conversation_id: "conv-unrelated-login",
+              step_index: 1,
+              state: "DONE",
+              step_type: "agent_response",
+              text: "Response finished.",
+            },
+          }),
+          JSON.stringify({
+            event: "result",
+            result: {
+              conversation_id: "conv-unrelated-login",
+              status: "ERROR",
+              error: "please login to continue the checkpoint save",
+              num_turns: 1,
+            },
+          }),
+        ],
+        "turn-unrelated-login",
+      );
+
+      expect(completed).toMatchObject({
+        turnId: "turn-unrelated-login",
+        outcome: {
+          status: "failed",
+          error: {
+            code: "nativeFailure",
+            message:
+              "Antigravity Turn ended with status ERROR: please login to continue the checkpoint save",
+          },
+        },
+      });
+    });
+
+    it("classifies real Antigravity authentication error as authenticationRequired", async () => {
+      const completed = await runResultScenario(
+        [
+          JSON.stringify({
+            event: "init",
+            init: { permission_mode: "default" },
+            conversation_id: "conv-real-auth",
+          }),
+          JSON.stringify({
+            event: "result",
+            result: {
+              conversation_id: "conv-real-auth",
+              status: "ERROR",
+              error: "Error: authentication required. Run 'agy' to log in, then retry.",
+              num_turns: 1,
+            },
+          }),
+        ],
+        "turn-real-auth",
+      );
+
+      expect(completed).toMatchObject({
+        turnId: "turn-real-auth",
+        outcome: {
+          status: "failed",
+          error: {
+            code: "authenticationRequired",
+            message: "Error: authentication required. Run 'agy' to log in, then retry.",
+          },
+        },
       });
     });
 

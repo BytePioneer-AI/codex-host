@@ -30,8 +30,8 @@
 通过对 `codexhost` 本地 Mapping Store、Antigravity 运行时生成的转录日志（Transcript）以及落盘步骤文件进行现场调取，梳理出真实的底层事件链：
 
 ### 2.1 会话元数据与转录记录
-- **Mapping Store 文件**：`C:\Users\21240\.codexhost\mapping-store\threads\3c4601e6-f089-4f75-8aa7-38aa8b135a4f.json`
-- **Antigravity 实际转录日志**：`C:\Users\21240\.gemini\antigravity-cli\brain\8f08ea60-ce53-4568-813c-ae739a5af63e\.system_generated\logs\transcript_full.jsonl`
+- **Mapping Store 文件**：`<USER_HOME>/.codexhost/mapping-store/threads/<THREAD_ID>.json`
+- **Antigravity 实际转录日志**：`<USER_HOME>/.gemini/antigravity-cli/brain/<SESSION_ID>/.system_generated/logs/transcript_full.jsonl`
 
 现场抓取的关键时序记录如下：
 ```json
@@ -134,39 +134,34 @@ if (isAntigravityQuestionTool(rawToolName)) { ... }
 
 ---
 
-## 6. 当前采取的处理方案与后续演进分析
+## 6. 历史处理方案（已被第 8 节 Hook 方案取代）
 
-### 6.1 当前已实施方案（方案 A + 方案 C）
-鉴于上游二进制限制，为了避免给用户造成“工具明明调了却说我按了跳过”的不良体验，当前已完成：
+### 6.1 早期规避方案（历史记录，已废弃）
 
-1. **清理死代码（方案 C）**：
-   - 彻底移除了 `AntigravityAdapter` 中无法被真实触发的 `isAntigravityQuestionTool`、`#respond`、`#closeActiveInteractions` 等冗余逻辑；
-   - 恢复了适配器原有的安全契约：
-     ```typescript
-     if (command.type === "interaction.respond") {
-       return {
-         ok: false,
-         error: unsupported("Antigravity headless mode cannot answer interactive prompts"),
-       };
-     }
-     ```
-   - 删除了基于假 Mock 数据的测试文件。
-2. **系统提示词明确拦截（方案 A）**：
-   - 在 [`ANTIGRAVITY_WORKSPACE_FILE_INSTRUCTION`](file:///D:/CodeProject/codex-host/packages/adapters/antigravity/src/antigravity-adapter.ts#L236-L245) 中注入明确指引：
-     > `CRITICAL: Do NOT call the ask_question tool. You are running in a headless non-interactive environment where interactive modal questions cannot be prompted to the user and will be automatically skipped by the system. If you have clarifying questions or wish to present options, state them directly in your text response.`
-   - **效果**：模型在需要向用户提问或提供方案选项时，不再去调用会必定失败的 `ask_question` 工具，而是直接在最终的 Markdown 回复中列出问题与选项，由用户在聊天输入框中正常打字回复。
+> [!NOTE]
+> **历史背景说明**：本节记录 2026-09-05 之前的历史应对措施。早期因未发现 PreToolUse Hook 可截获非交互式提问，曾尝试使用“提示词禁用 + 移除适配器交互逻辑”作为临时规避。**该方案已被第 8 节基于 PreToolUse Hook 的问答桥接方案完全取代**。现行生效规则允许模型调用 `ask_question`，请勿采用本节旧提示词。
 
-### 6.2 用户关切问题说明
+鉴于早期对上游二进制限制的认知，为了避免给用户造成“工具明明调了却说我按了跳过”的不良体验，当时曾实施：
+
+1. **清理未连通的交互逻辑（历史动作）**：
+   - 移除了当时无法被真实触发的适配器交互逻辑；
+   - 将 `interaction.respond` 显式标记为不支持（该限制已于第 8 节随 Hook 桥接重新接入并支持）。
+2. **系统提示词明确拦截（早期历史提示词，已废弃）**：
+   - 早期曾在 [`ANTIGRAVITY_WORKSPACE_FILE_INSTRUCTION`](../packages/adapters/antigravity/src/antigravity-adapter.ts) 中注入过禁止调用指令（**现已废止**，现行提示词见第 8.2 节与第 8.5 节）：
+     > `[已废弃历史指令] CRITICAL: Do NOT call the ask_question tool. You are running in a headless non-interactive environment where interactive modal questions cannot be prompted to the user and will be automatically skipped by the system. If you have clarifying questions or wish to present options, state them directly in your text response.`
+   - **历史效果**：当时模型不再调用 `ask_question` 工具，而是直接在回复中以文字提问。
+
+### 6.2 用户关切问题说明（历史存档）
 > **“让 agy 不要调用 ask_question，直接在文本回复中提问，这和它直接问我有什么区别？之前的工具映射不就报废了？”**
 
-- **区别说明**：从**最终交互结果**来看，确实就退化成了“普通对话聊天”。原先工具映射希望达成的效果是“在聊天窗里弹出一个能用鼠标勾选的 UI 控件卡片”，而直接文本回复则是普通的文字段落。
-- **关于报废**：是的，针对 `agy` 的原生 `ask_question` 工具映射确实已经失效报废。因为 `agy` 的命令行设计把流式输入当成纯批处理管道，不支持交互式提问卡片的外部接管。
+- **区别说明**：从**最终交互结果**来看，当时确实退化成了“普通对话聊天”。
+- **关于报废**：该顾虑已由第 8 节的 Hook 方案解决，当前 `ask_question` 工具映射已重新恢复并正常工作。
 
-### 6.3 未来若强需“弹窗选择交互”的可行技术路径评估
+### 6.3 早期技术路径评估（历史存档）
 
-如果后续有强烈需求，必须让 Antigravity 在 Codex Desktop 中唤起原生的单选/多选卡片，以下是潜在的技术评估：
+如果后续有强烈需求，必须让 Antigravity 在 Codex Desktop 中唤起原生的单选/多选卡片，以下为当时的技术评估（后续实测已通过更轻量的 PreToolUse Hook 达成，无需引入内置 MCP Server）：
 
-#### 途径：通过内置 MCP 工具接入（方案 B）
+#### 途径：通过内置 MCP 工具接入（历史备选方案 B）
 - **原理**：
   `agy` 支持接入第三方 MCP（Model Context Protocol）服务器（`call_mcp_tool`）。MCP 工具在 Antigravity 体系中被视为**外部远程服务**。
 - **可行性逻辑**：
@@ -178,11 +173,16 @@ if (isAntigravityQuestionTool(rawToolName)) { ... }
 - **代价与权衡**：
   - 需要在 `codex-host` 中维护一个内置 MCP 进程或通信通道，增加了架构复杂度。
   - 需要确保模型在内置 `ask_question` 和 MCP 提问工具之间准确选择。
+  - *注：第 8 节已直接通过进程内置 PreToolUse Hook 拦截原生 `ask_question`，避免了维护独立 MCP 进程的复杂度。*
 
 ---
 
-## 7. 总结
-本次问题的根因在于 **上游 `agy.EXE` 在非交互模式下对内部 `ask_question` 工具实施了硬编码自动跳过**。当前采取“提示词规避 + 死代码清理”是最稳健、最符合真实物理限制的方案；若后续需要进一步实现弹窗控件交互，应转向 MCP 代理方案而非直接劫持内置工具。
+## 7. 早期总结（历史存档）
+
+> [!NOTE]
+> 本节为早期调查结论（2026-09-05 前）。后续实测已推翻“只能退回文字或使用 MCP”的推论，现行生效的实现方案请直接参阅第 8 节。
+
+本次问题的根因在于 **上游 `agy.EXE` 在非交互模式下对内部 `ask_question` 工具实施了硬编码自动跳过**。早期曾采取“提示词规避 + 死代码清理”作为临时规避方案；后续已通过 PreToolUse Hook 桥接实现了真正的交互接管并接入 Desktop 提问卡片（详见第 8 节）。
 
 ## 8. 后续实测与 Hook 桥接实现（2026-09-05）
 
@@ -230,3 +230,11 @@ if (isAntigravityQuestionTool(rawToolName)) { ... }
 真实集成测试使用 `CODEXHOST_RUN_ANTIGRAVITY_QUESTION_REAL=1` 显式启用，并会消费原生模型用量。可用 `CODEXHOST_ANTIGRAVITY_QUESTION_EVIDENCE_DIR` 保存输出、协议投影和快照，失败时也留证。
 
 用户于 2026-09-05 自行验收并提供截图，确认 Desktop 原生提问卡片正常展示，问题、选项及等待回答状态可见。提交后的真人端到端流程、长时间等待、跨平台实机和多选 UI 尚未单独记录验收结果；自动化已验证原生 CLI、Adapter 与公共协议的答案往返。原生工具仍以被阻止的错误步骤保留；桥接条目的成功只表示答案已由桥接层提交，不改写这一原生事实。
+
+### 8.5 方案呈现与提问卡片解耦（2026-09-12）
+
+实测反馈在实施任务审批流中，模型（如 Gemini 3.8 Flash）在内部思考链规划方案后，极易跳过正文输出直接发起 `ask_question`，将方案粗暴概括在选项标签内，造成 Desktop 提问弹窗提示“是否按此计划执行”却在聊天区看不到任何方案内容的断层。
+
+现已在 [`ANTIGRAVITY_WORKSPACE_FILE_INSTRUCTION`](../packages/adapters/antigravity/src/antigravity-adapter.ts) 中补充强约束：
+- 明确提问弹窗仅用于选项与表单输入，不能承载 Markdown 方案或代码变更计划。
+- 强制模型在寻求方案确认或审批前，必须先在响应文本（Markdown）中完整输出方案明细（包含目标、改动文件和关键步骤），严禁未输出方案直接提问或仅在选项标签中压缩方案。

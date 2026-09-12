@@ -121,6 +121,74 @@ describe("current Codex Renderer Agent adapter", () => {
     );
   });
 
+  it("unwraps a Desktop 26.908 host/manager/status hook wrapper to the outer manager", () => {
+    const editor = {
+      parentElement: null,
+      querySelectorAll: () => [],
+    } as unknown as Element;
+    const root = { querySelector: () => editor } as unknown as ParentNode;
+    const addNotificationCallback = vi.fn(() => () => undefined);
+    const requestClient = {
+      hostId: "local",
+      sendRequest: vi.fn<(method: string, params: unknown) => void>(),
+      prewarmThreadStart: () => undefined,
+      enqueueRequest: () => undefined,
+    };
+    const manager = {
+      requestClient,
+      sendRequest: async (method: string, params: unknown) =>
+        requestClient.sendRequest(method, params),
+      addNotificationCallback,
+    };
+    const wrapper = { hostId: "local", manager, status: "ready" };
+    Object.defineProperty(editor, "__reactFiber$test", {
+      configurable: true,
+      value: {
+        memoizedState: {
+          memoizedState: wrapper,
+          next: { memoizedState: wrapper, next: null },
+        },
+        return: null,
+      },
+    });
+
+    expect(findActivePrewarmTargets(root)).toEqual([manager]);
+    expect(findActivePrewarmTargets(root)[0]?.addNotificationCallback).toBe(
+      addNotificationCallback,
+    );
+  });
+
+  it("ignores Host manager registries and unrelated nested manager fields", () => {
+    const editor = {
+      parentElement: null,
+      querySelectorAll: () => [],
+    } as unknown as Element;
+    const root = { querySelector: () => editor } as unknown as ParentNode;
+    Object.defineProperty(editor, "__reactFiber$test", {
+      configurable: true,
+      value: {
+        memoizedState: {
+          memoizedState: {
+            addManager: () => undefined,
+            getForHostId: () => undefined,
+            scope: {},
+          },
+          next: {
+            memoizedState: {
+              hostId: "local",
+              manager: { getHostId: () => "local" },
+              status: "ready",
+            },
+            next: null,
+          },
+        },
+        return: null,
+      },
+    });
+
+    expect(findActivePrewarmTargets(root)).toEqual([]);
+  });
+
   it("keeps local and remote request targets independently addressable", () => {
     const local = {
       hostId: "local",
@@ -315,6 +383,35 @@ describe("current Codex Renderer Agent adapter", () => {
     });
 
     expect(findComposerModelTarget(composer)).toEqual(["default", "client-new-thread:opaque"]);
+  });
+
+  it("finds the Desktop 26.908 duplicated client-new-thread memo identity", () => {
+    const nineteenSlot = Array.from({ length: 19 }, () => ({}));
+    nineteenSlot[2] = "client-new-thread:opaque-19";
+    nineteenSlot[7] = "client-new-thread:opaque-19";
+    const thirteenSlot = Array.from({ length: 13 }, () => ({}));
+    thirteenSlot[3] = "client-new-thread:opaque-13";
+    thirteenSlot[5] = "client-new-thread:opaque-13";
+    thirteenSlot[6] = "client-new-thread:opaque-13";
+    const unduplicated = Array.from({ length: 19 }, () => ({}));
+    unduplicated[2] = "client-new-thread:once";
+
+    const nineteen = composerWithFiber({
+      updateQueue: { memoCache: { data: [nineteenSlot] } },
+      return: null,
+    });
+    const thirteen = composerWithFiber({
+      updateQueue: { memoCache: { data: [thirteenSlot] } },
+      return: null,
+    });
+    const missing = composerWithFiber({
+      updateQueue: { memoCache: { data: [unduplicated] } },
+      return: null,
+    });
+
+    expect(findComposerModelTarget(nineteen)).toEqual(["default", "client-new-thread:opaque-19"]);
+    expect(findComposerModelTarget(thirteen)).toEqual(["default", "client-new-thread:opaque-13"]);
+    expect(findComposerModelTarget(missing)).toBeNull();
   });
 
   it("uses the current Composer conversation identity", () => {

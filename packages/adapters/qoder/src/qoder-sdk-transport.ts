@@ -293,6 +293,7 @@ export class QoderSession implements HarnessSession {
     });
 
     this.#consumerLoopDone = this.#consumeMessages();
+    void this.refreshUsage();
   }
 
   #emitEvent(event: HostEvent): void {
@@ -722,16 +723,17 @@ export class QoderSession implements HarnessSession {
   #handleResultMessage(result: SDKResultMessage): void {
     if (!this.#activeTurn) return;
 
+    const turnId = this.#activeTurn.turnId;
     this.#usageTracker.observeResult(result);
     const usage = this.#usageTracker.snapshot();
     if (usage) {
       this.#emitEvent({
         type: "session.usage.changed",
         usage,
-        observedForTurnId: this.#activeTurn.turnId,
+        observedForTurnId: turnId,
       });
     }
-    void this.refreshUsage();
+    void this.refreshUsage(turnId);
 
     // Complete any open tools
     for (const activeTool of this.#activeTools.values()) {
@@ -799,7 +801,6 @@ export class QoderSession implements HarnessSession {
       this.#activeTurn.accumulatedStreamingReasoning = "";
     }
 
-    const turnId = this.#activeTurn.turnId;
     const userMessageUuid = this.#activeTurn.userMessageUuid;
     const lastAssistantMessageUuid = this.#activeTurn.lastAssistantMessageUuid;
     this.#activeTurn = null;
@@ -1052,7 +1053,7 @@ export class QoderSession implements HarnessSession {
     }
   }
 
-  async refreshUsage(): Promise<void> {
+  async refreshUsage(forTurnId?: HostTurnId): Promise<void> {
     let changed = false;
     if (this.#query.getContextUsage) {
       try {
@@ -1079,10 +1080,11 @@ export class QoderSession implements HarnessSession {
     if (changed) {
       const snapshot = this.#usageTracker.snapshot();
       if (snapshot) {
+        const targetTurnId = forTurnId ?? this.#activeTurn?.turnId;
         this.#emitEvent({
           type: "session.usage.changed",
           usage: snapshot,
-          ...(this.#activeTurn ? { observedForTurnId: this.#activeTurn.turnId } : {}),
+          ...(targetTurnId ? { observedForTurnId: targetTurnId } : {}),
         });
       }
     }
@@ -1452,6 +1454,8 @@ export class QoderSession implements HarnessSession {
           delete nextState.availableThinkingOptions;
         }
         this.#state = nextState;
+        this.#usageTracker.setModel(nativeModel);
+        void this.refreshUsage();
         this.#emitEvent({
           type: "session.state.changed",
           state: { ...this.#state },

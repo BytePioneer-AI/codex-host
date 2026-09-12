@@ -18,6 +18,7 @@ export const QODER_DEFAULT_CONTEXT_WINDOW_TOKENS = 200_000;
 export function resolveQoderContextWindow(modelId?: string, reportedWindow?: number): number {
   if (reportedWindow && reportedWindow > 0) return reportedWindow;
   if (modelId && /gemini/iu.test(modelId)) return 1_048_576;
+  if (modelId && /gpt-5\.6/iu.test(modelId)) return 252_000;
   return QODER_DEFAULT_CONTEXT_WINDOW_TOKENS;
 }
 
@@ -31,6 +32,10 @@ export class QoderUsageTracker {
   #contextUsagePercent: number | undefined;
   #contextWindowTokens: number;
   #contextUsedTokens: number | undefined;
+  #cacheHitRatePercent: number | undefined;
+  #planFiveHourUsedPercent: number | undefined;
+  #planFiveHourResetsAtUnix: number | undefined;
+  #turnCredits: number | undefined;
 
   constructor(options?: {
     modelId?: string | undefined;
@@ -42,8 +47,10 @@ export class QoderUsageTracker {
         : resolveQoderContextWindow(options?.modelId);
   }
 
-  setModel(modelId?: string): void {
-    if (modelId) {
+  setModel(modelId?: string, catalogWindow?: number): void {
+    if (catalogWindow && catalogWindow > 0) {
+      this.#contextWindowTokens = catalogWindow;
+    } else if (modelId) {
       this.#contextWindowTokens = resolveQoderContextWindow(modelId);
     }
   }
@@ -67,13 +74,23 @@ export class QoderUsageTracker {
     }
     // Assistant message usage may also contain credits for this turn
     if (isNonNegativeFinite(rawUsage.credits)) {
-      // If we don't have a result-level total_credits snapshot yet, we can track latest known credits
+      this.#turnCredits = (this.#turnCredits ?? 0) + rawUsage.credits;
       if (this.#totalCredits === undefined) {
-        this.#totalCredits = rawUsage.credits;
+        this.#totalCredits = this.#turnCredits;
       }
     }
     if (isNonNegativeFinite(rawUsage.context_usage_ratio)) {
       this.#contextUsagePercent = Math.min(100, Math.max(0, rawUsage.context_usage_ratio * 100));
+    }
+    if (
+      isNonNegativeSafeInteger(rawUsage.input_tokens) &&
+      rawUsage.input_tokens > 0 &&
+      isNonNegativeSafeInteger(rawUsage.cache_read_input_tokens)
+    ) {
+      this.#cacheHitRatePercent = Math.min(
+        100,
+        Math.max(0, (rawUsage.cache_read_input_tokens / rawUsage.input_tokens) * 100),
+      );
     }
   }
 
@@ -110,6 +127,19 @@ export class QoderUsageTracker {
           Math.max(0, (usage.context_usage_ratio as number) * 100),
         );
       }
+      if (
+        isNonNegativeSafeInteger(usage.input_tokens) &&
+        (usage.input_tokens as number) > 0 &&
+        isNonNegativeSafeInteger(usage.cache_read_input_tokens)
+      ) {
+        this.#cacheHitRatePercent = Math.min(
+          100,
+          Math.max(
+            0,
+            ((usage.cache_read_input_tokens as number) / (usage.input_tokens as number)) * 100,
+          ),
+        );
+      }
     }
 
     if (
@@ -136,8 +166,14 @@ export class QoderUsageTracker {
     }
   }
 
-  observeContextUsage(context: QoderContextUsage): void {
+  observeContextUsage(context: QoderContextUsage | Record<string, unknown>): void {
+    if (!context || typeof context !== "object") return;
     const raw = context as Record<string, unknown>;
+
+    if (typeof raw.model === "string") {
+      this.setModel(raw.model);
+    }
+
     const contextWindow = (raw.contextWindow ?? {}) as Record<string, unknown>;
 
     const percent =
@@ -173,12 +209,43 @@ export class QoderUsageTracker {
 
   observeUsageInfo(info: unknown): void {
     if (!info || typeof info !== "object") return;
-    const raw = info as Record<string, unknown>;
-    const session = (raw.session ?? raw) as Record<string, unknown>;
+    const envelope = info as Record<string, unknown>;
+    const usage = (envelope.usage && typeof envelope.usage === "object"
+      ? envelope.usage
+      : envelope) as Record<string, unknown>;
+    const session = (envelope.session && typeof envelope.session === "object"
+      ? envelope.session
+      : usage.session && typeof usage.session === "object"
+        ? usage.session
+        : usage) as Record<string, unknown>;
+
     const credits =
-      session.total_credits ?? session.totalCredits ?? raw.total_credits ?? raw.totalCredits;
+      session.total_credits ?? session.totalCredits ?? envelope.total_credits ?? envelope.totalCredits;
     if (isNonNegativeFinite(credits)) {
       this.#totalCredits = credits as number;
+    }
+
+    const userQuota = (usage.userQuota && typeof usage.userQuota === "object"
+      ? usage.userQuota
+      : undefined) as Record<string, unknown> | undefined;
+
+    const quotaPercent =
+      typeof userQuota?.percentage === "number"
+        ? userQuota.percentage
+        : typeof usage.totalUsagePercentage === "number"
+          ? usage.totalUsagePercentage
+          : undefined;
+
+    if (isNonNegativeFinite(quotaPercent) && quotaPercent <= 100) {
+      this.#planFiveHourUsedPercent = quotaPercent;
+    }
+
+    const expiresAt = usage.expiresAt ?? userQuota?.resetsAt;
+    if (typeof expiresAt === "number" && Number.isSafeInteger(expiresAt) && expiresAt > 0) {
+      const unix = expiresAt > 1e11 ? Math.floor(expiresAt / 1000) : Math.floor(expiresAt);
+      if (this.#planFiveHourUsedPercent !== undefined) {
+        this.#planFiveHourResetsAtUnix = unix;
+      }
     }
   }
 
@@ -198,11 +265,20 @@ export class QoderUsageTracker {
 
     if (this.#totalCredits !== undefined) candidate.totalCredits = this.#totalCredits;
     if (this.#totalCostUsd !== undefined) candidate.totalCostUsd = this.#totalCostUsd;
+    if (this.#cacheHitRatePercent !== undefined)
+      candidate.cacheHitRatePercent = this.#cacheHitRatePercent;
+
+    if (this.#planFiveHourUsedPercent !== undefined) {
+      candidate.planFiveHourUsedPercent = this.#planFiveHourUsedPercent;
+      if (this.#planFiveHourResetsAtUnix !== undefined) {
+        candidate.planFiveHourResetsAtUnix = this.#planFiveHourResetsAtUnix;
+      }
+    }
 
     const windowTokens = this.#contextWindowTokens;
     let usedTokens = this.#contextUsedTokens;
 
-    if (usedTokens === undefined && this.#contextUsagePercent !== undefined) {
+    if (usedTokens === undefined && this.#contextUsagePercent !== undefined && windowTokens > 0) {
       usedTokens = Math.round((windowTokens * this.#contextUsagePercent) / 100);
     } else if (
       usedTokens === undefined &&
@@ -211,18 +287,20 @@ export class QoderUsageTracker {
       usedTokens = (this.#inputTokens ?? 0) + (this.#cachedInputTokens ?? 0);
     }
 
-    if (usedTokens !== undefined) {
+    if (usedTokens !== undefined && windowTokens > 0) {
       candidate.contextUsedTokens = usedTokens;
       candidate.contextWindowTokens = windowTokens;
-      if (this.#contextUsagePercent === undefined && windowTokens > 0) {
+      if (this.#contextUsagePercent === undefined) {
         candidate.contextUsagePercent = Math.min(
           100,
           Math.max(0, (usedTokens / windowTokens) * 100),
         );
-      } else if (this.#contextUsagePercent !== undefined) {
+      } else {
         candidate.contextUsagePercent = this.#contextUsagePercent;
       }
-    } else if (this.#contextUsagePercent !== undefined) {
+    } else if (this.#contextUsagePercent !== undefined && windowTokens > 0) {
+      candidate.contextUsedTokens = Math.round((windowTokens * this.#contextUsagePercent) / 100);
+      candidate.contextWindowTokens = windowTokens;
       candidate.contextUsagePercent = this.#contextUsagePercent;
     }
 

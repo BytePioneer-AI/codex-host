@@ -22,7 +22,8 @@ export class NativeAccountError extends Error {
       | "stop-unconfirmed"
       | "authentication-failed"
       | "cleanup-required"
-      | "credential-conflict",
+      | "credential-conflict"
+      | "competing-writer",
   ) {
     super(`Codex Account ${code}`);
     this.name = "NativeAccountError";
@@ -58,6 +59,8 @@ const vaultSchema = z
     revision: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
     currentAccountId: z.string().uuid().nullable(),
     lastOperationId: z.string().uuid().nullable(),
+    /** Credential adoption provenance, not proof of native history migration. */
+    legacyRegistryDigest: digestSchema.optional(),
     accounts: z.array(accountSchema).max(128),
   })
   .strict();
@@ -134,6 +137,7 @@ export function parseJournal(bytes: Buffer, homeId: string): NativeProfileJourna
     if (journal.rollback) {
       validateVault(journal.rollback, homeId);
       if (
+        journal.rollback.legacyRegistryDigest !== journal.before.legacyRegistryDigest ||
         journal.rollback.currentAccountId !== journal.before.currentAccountId ||
         journal.rollback.revision !== journal.before.revision + 1 ||
         journal.rollback.accounts.length !== journal.before.accounts.length
@@ -153,6 +157,7 @@ export function parseJournal(bytes: Buffer, homeId: string): NativeProfileJourna
       }
     }
     if (
+      journal.after.legacyRegistryDigest !== journal.before.legacyRegistryDigest ||
       journal.after.lastOperationId !== journal.operationId ||
       journal.after.revision !== journal.before.revision + 1 ||
       (profileCurrent(journal.before) === null) !== (journal.source === null) ||

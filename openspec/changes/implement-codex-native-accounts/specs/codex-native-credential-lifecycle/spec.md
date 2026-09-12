@@ -69,18 +69,28 @@ Inactive quota reads SHALL use bounded requests without starting another backend
 - **THEN** retry SHALL merge its own Account change with that snapshot rather than overwrite another Account's update
 
 ### Requirement: Unsupported old layouts SHALL preserve authentication without claiming migration
-Only verified layouts SHALL be adopted. Single permanent-home adoption SHALL not copy or delete native history. Multiple homes SHALL disable managed Account operations until complete migration exists. A valid legacy layout MAY retain native single-backend operation only when its selected Account already uses the effective permanent home, none of its homes contains managed Account state or an ownership record, and native process inspection confirms no observable other writer. This compatibility path SHALL NOT change the home, credential-store configuration, credentials or legacy registry itself, and SHALL NOT initialize a Vault or OS key. It SHALL revalidate the layout and writer admission before every backend start. Foreign or mismatched selected homes, invalid metadata, orphan Thread bindings and uncertain ownership SHALL remain blocked. A future migration MUST preserve databases, attachments, memories, queues, projects and native relationships, require approved human confirmation before irreversible actions, and retain source data.
+Only verified layouts SHALL be adopted. Single permanent-home adoption SHALL not copy or delete native history. A valid legacy registry whose selected Account already uses the effective permanent home MAY adopt missing credentials after normal native recovery, identity and file-store verification, exclusive admission and owned backend exit. Other homes SHALL contain no managed state or ownership records. Source credentials SHALL remain read-only and be revalidated together with the registry and writer admission before one Vault CAS commits the encrypted Accounts and source registry digest. Existing saved grants SHALL NOT be overwritten by legacy copies. Current-home managed state SHALL go through normal recovery. Foreign or mismatched selected homes, invalid metadata, orphan Thread bindings and unconfirmed owned processes SHALL remain blocked. This is credential adoption, not history migration: all source databases, attachments, memories, queues, projects and native relationships SHALL remain in place, and Settings SHALL disclose that other histories have not been merged. A future irreversible migration MUST require approved human confirmation and retain source data.
 
 #### Scenario: Multiple old homes contain history
 - **WHEN** startup detects that unsupported layout
-- **THEN** it SHALL return migration-required, preserve all source homes and avoid both rollout-only migration and an old multi-backend fallback
+- **THEN** layout inspection SHALL mark history migration as incomplete, preserve all source homes and avoid both rollout-only migration and an old multi-backend fallback
 - **AND** it SHALL not claim the migration or release acceptance has completed
 
-#### Scenario: Existing native login survives a clean legacy upgrade
-- **WHEN** a valid multi-home registry selects the existing permanent home and the compatibility safety checks pass
-- **THEN** Codex SHALL read its existing native authentication through one official backend without managed Account initialization
-- **AND** Settings SHALL explain that Account management is disabled and other homes and their history remain accessible through the previous version, not claim they were merged
+#### Scenario: Adopted credentials support a global round trip
+- **WHEN** verified legacy credentials A and B have been adopted
+- **THEN** switching A to B and back SHALL use only the permanent home and the same credential transaction, with at most one Host-owned official backend
+- **AND** restarting SHALL NOT reimport an Account deleted after adoption; changed registry provenance SHALL NOT be silently accepted
 
-#### Scenario: Legacy compatibility becomes unsafe before backend start
-- **WHEN** the registry changes, managed state appears, or native process inspection fails or finds another writer
-- **THEN** the Host SHALL refuse backend startup without deleting data, reading OS keys, or stopping unknown processes
+#### Scenario: Existing native login survives unrelated CLI activity
+- **WHEN** native process inspection finds other CLI processes but the selected permanent home and every known legacy home have no managed state or ownership record
+- **THEN** ordinary native startup MAY continue without initializing a Vault or OS key
+- **AND** Account import, switching and native sign-in/sign-out SHALL be disabled with a competing-writer explanation; no unknown process SHALL be stopped
+- **AND** this mode SHALL revalidate the clean layout before each backend start and SHALL NOT replace credentials or rewrite configuration itself
+
+#### Scenario: Native-only compatibility becomes unsafe before backend start
+- **WHEN** the registry changes, managed state appears, or native process inspection cannot establish eligibility
+- **THEN** the Host SHALL refuse that compatibility path without deleting data or bypassing managed recovery
+
+#### Scenario: Another writer appears after managed startup
+- **WHEN** Account switching observes another writer after retiring its own idle backend
+- **THEN** no credential replacement SHALL occur and the committed current Account SHALL remain unchanged

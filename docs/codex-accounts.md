@@ -2,7 +2,7 @@
 
 在 codexhost 的「设置 → 账号」统一查看各 Harness 的账号与额度。Codex 托管账号使用一份正式会话存储和最多一个官方后台；其他 Harness 的认证和切换仍由其原生客户端管理。
 
-> 当前实现处于验收阶段，不是旧多 home 安装的通用升级版本。托管路径暂以官方 `0.153.4` 的文件式 ChatGPT 登录为能力基线；真实账号、系统凭据存储和各平台 Desktop 联合验收尚未完成。旧多 home 的完整迁移仍是发布门槛。有效旧登记的当前账号已使用正式 home、所有旧 home 均无托管状态且无可观察到的其他 writer 时，可保留原生单后台启动；设置页明确提示其他目录的历史尚未合并、需使用旧版访问，不宣称升级迁移完成。
+> 当前实现处于验收阶段，不是旧多 home 安装的通用历史迁移工具。托管路径支持已用隔离真实 CLI 检查的 `0.153.4` 与 `0.154.0-alpha.6.2` 文件式 ChatGPT 登录；macOS 已实测真实账号切换及 busy 拒绝后的显式重试；同一持久化 Thread 连续性、系统凭据存储失败生命周期和各平台 Desktop 联合验收尚未完成。旧登记选中的账号已使用正式 home 时，可安全接入旧凭据并在同一 home 内全局切换；其他目录的历史保留但尚未合并，不宣称完整迁移完成。
 
 ## 账号列表
 
@@ -42,6 +42,8 @@
 
 只有空闲时才切换：关闭新工作准入，停止并确认官方进程树退出，保存实际最新凭据，原子替换原生凭据，再启动并验证。忙碌、审批、终端、队列等未结束时明确拒绝；不强制取消、不排队、不重放输入。已有、已完成且可恢复的 Thread 本身不算忙；临时或尚未落盘的内存 Thread 无法保证跨重启保留，也会拒绝切换。原生返回一个计划中的历史路径不代表已经落盘。Desktop 和 Host 不因切换重启。Harness picker 只有一个 Codex，Composer 不提供账号选择。
 
+连续操作可能因原生后台查询仍在途而收到忙碌拒绝；页面应结束等待并恢复按钮，等待空闲后由用户显式重试，不会自动再发切换。切换期间 Desktop 若更换内部 Request Client，响应仍应完成原请求，而不是让页面永久等待。
+
 删除仅允许非当前保存账号，保留确认，不删除任何 Thread 或 home，也不自动选择其他账号。受控「退出登录」保存当前最新凭据后清除原生登录，已保存账号仍可再次选择；退出和删除不同。
 
 「添加 Codex 账号」使用原生设备代码登录。开始前停止任务后台，在私有、短命的认证 staging 目录中启动唯一登录后台，不执行用户任务。添加 B 不覆盖正式 home 中的 A，结束后仍使用 A；此前未登录时，首次成功登录成为当前账号。当前账号重新登录也必须安装新授权，不能因为 ID 相同跳过。
@@ -64,8 +66,10 @@ Desktop 的 Host 连接初始化与 Codex 就绪状态分开：Codex unavailable
 - 文件 helper 持有 home 租约，并在同一进程中执行有界 I/O；退出未确认时不能让新写入者越过租约。可观察到的其他 Codex 进程会保守阻止托管操作，不杀未知进程。这个检查不能阻止任意外部 CLI 以后启动或同用户程序自行写文件。
 - 公开快照只有 `ready/changing/unavailable`、已提交 current、能力、Host instance/revision 和必要清理提示，不含 Token 或存储路径。unavailable 时 current 不是后台已经可用的证明。
 - 非当前额度通过受控 WHAM 查询，不启动额外后台。OAuth 刷新有 single-flight、修改租约和凭据 CAS；缓存显示获取时间，失败使用 last-good，不把未知用量补成零。
-- 新安装和已有单一正式 home 原地使用，不复制历史。有效旧多 home 登记若当前账号恰好使用正式 home，且所有旧 home 均无 `.codexhost-native-accounts` 或 `.codexhost-process.json`，可在 native helper 确认无其他 writer 后保留原生认证；每次后台启动前重新验证登记、托管状态和 writer。不创建 Vault／OS 密钥，不改官方目录、存储配置或旧登记，新账号管理禁用并报告 `migration-required`。其他 home 的历史保留但不纳入当前目录，设置页明确提示使用旧版访问。
-- 当前旧账号不在正式 home、损坏元数据、外部 home、孤立 Thread 绑定、已有托管状态或无法确认 writer 时仍阻断，不擅自选择另一账号或绕过事务恢复。完整数据库、附件、记忆、队列、项目关系迁移及用户确认流程尚未交付；不要用只复制 rollout 代替迁移。
+- 新安装和已有单一正式 home 原地使用，不复制历史。有效旧多 home 登记若当前账号恰好使用正式 home、其他旧 home 无托管状态或进程记录，可在正常恢复、原生身份和 file 存储验证完成后，停止后台，只读导入旧 `auth.json` 中缺失的身份到加密 Vault。来源登记与凭据摘要、writer 准入会重新校验；一次 Vault CAS 同时提交账号和登记摘要。已有保存凭据不被旧副本覆盖，重复启动不重新导入已删除账号。原生当前凭据、旧登记及其他目录不被导入过程改写。
+- 公开快照的 `legacyHistoryPreserved` 表示仅凭据已接入，不代表历史已迁移。设置页允许全局切换，同时明确其他 home 的数据库、附件、记忆、队列和项目关系尚未合并；切换不改变 Thread 的历史目录或 Harness 归属。
+- 干净、未托管的原生 home 遇到其他 Codex CLI 时，允许普通原生使用，能力原因是 `competing-writer`。此路径不创建 Vault／OS 密钥，禁止导入、切换以及原生登录／退出账号；关闭其他 CLI 并重启后才能启用管理。这不是允许在未知 writer 下替换凭据。每次启动仍复查布局；出现托管状态便不再适用。
+- 当前旧账号不在正式 home、损坏登记、孤立 Thread 绑定、其他 home 的托管状态、未确认的旧进程或无法完成 writer 检查仍阻断。正式 home 中已有托管状态走原有 Journal／Vault 恢复，不绕过恢复。完整历史迁移及用户确认流程尚未交付，不能用只导入凭据或复制 rollout 冒充迁移完成。
 
 容量预算：每份原生凭据 256 KiB，Vault 4 MiB，Journal 17 MiB，通用私有文件 20 MiB；最多 128 个保存账号。实际可保存数量也受字节预算约束。
 
@@ -84,6 +88,7 @@ Desktop 的 Host 连接初始化与 Codex 就绪状态分开：Codex unavailable
 - `packages/host-runtime/src/account/native-account-store.ts`：统一 Vault、加密 Journal 和 staging。
 - `packages/host-runtime/src/native-account-host.ts`：本地能力、所有权与降级组成。
 - `packages/host-runtime/src/managed-native-auth.ts`：原生登录协议、事件顺序和正式后台代次更新；不另持凭据或管理进程。
+- `packages/desktop-control/src/renderer-host-response-ownership.ts`：通过原生请求生命周期保留在途 Host 响应的 Client 归属，不重发请求或解释事务结果。
 - `packages/renderer-extension/src/settings/accounts-page.ts`：账号生命周期、查询、登录与操作。
 - `packages/renderer-extension/src/settings/accounts-list.ts`：统一账号行、管理入口与重置卡展开。
 - `packages/renderer-extension/src/settings/accounts-usage.ts`：额度窗口分列、额外具名额度和重置卡详情。

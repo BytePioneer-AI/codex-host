@@ -1,3 +1,4 @@
+import { committedReactAncestors } from "@codexhost/desktop-control/renderer-bindings";
 import {
   encodeHarnessPluginRoute,
   harnessIdSchema,
@@ -601,8 +602,7 @@ export function findActivePrewarmTargets(root: ParentNode): PrewarmTarget[] {
   }
 
   const targets = new Set<PrewarmTarget>();
-  let fiber = firstFiber as { return?: unknown; memoizedState?: unknown };
-  for (let depth = 0; depth < 200; depth += 1) {
+  for (const fiber of committedReactAncestors(firstFiber)) {
     let hook = fiber.memoizedState as { memoizedState?: unknown; next?: unknown } | null;
     for (let hookIndex = 0; hook && hookIndex < 100; hookIndex += 1) {
       const owner = requestTargetOwnerFromHookState(hook.memoizedState);
@@ -612,9 +612,6 @@ export function findActivePrewarmTargets(root: ParentNode): PrewarmTarget[] {
           ? (hook.next as { memoizedState?: unknown; next?: unknown })
           : null;
     }
-    const parent = fiber.return;
-    if ((typeof parent !== "object" && typeof parent !== "function") || parent === null) break;
-    fiber = parent as typeof fiber;
   }
   return [...targets];
 }

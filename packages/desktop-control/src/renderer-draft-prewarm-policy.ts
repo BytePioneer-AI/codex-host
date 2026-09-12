@@ -1,4 +1,6 @@
 import type { CdpClient } from "./cdp-client.js";
+import { committedReactAncestors } from "./renderer-react-ownership.js";
+import { retainRendererHostResponses } from "./renderer-host-response-ownership.js";
 import {
   installDraftPrewarmPolicyBridge,
   installDraftPrewarmPolicyInRenderer,
@@ -77,11 +79,12 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 const FIND_REQUEST_MANAGER_EXPRESSION = `(() => {
   const requestManagerFromHookState = ${requestManagerFromHookState.toString()};
+  const committedReactAncestors = ${committedReactAncestors.toString()};
   const editors = [...document.querySelectorAll(
     '[data-codex-composer], [contenteditable="true"][role="textbox"]',
   )];
   if (editors.length !== 1) {
-    return { candidateCount: 0, hostId: null, sendRequest: null };
+    return { candidateCount: 0, editorCount: editors.length, hostId: null, sendRequest: null };
   }
   let element = editors[0];
   let fiber = null;
@@ -94,7 +97,8 @@ const FIND_REQUEST_MANAGER_EXPRESSION = `(() => {
   }
   const managers = new Set();
   const activeHostIds = new Set();
-  for (let depth = 0; fiber != null && depth < 200; depth += 1, fiber = fiber.return) {
+  for (const current of committedReactAncestors(fiber)) {
+    const fiber = current;
     const props = fiber.memoizedProps;
     if (props != null && typeof props === 'object') {
       for (const name of ['executionTargetHostId', 'permissionsHostId']) {
@@ -125,12 +129,23 @@ const FIND_REQUEST_MANAGER_EXPRESSION = `(() => {
   const selected = (${selectRendererRequestManager.toString()})(candidates, [...activeHostIds]);
   return {
     candidateCount: selected == null ? candidates.length : 1,
+    editorCount: editors.length,
     hostId: selected?.hostId ?? null,
     manager: selected?.manager ?? null,
     requestClient: selected?.requestClient ?? null,
     prewarmedThreadManager: selected?.prewarmedThreadManager ?? null,
   };
 })()`;
+
+// Validate the pinned owner between Controller polls. An old manager can still
+// send requests after retirement, but Desktop delivers replies to its replacement.
+const IS_CURRENT_REQUEST_MANAGER = `function(manager, requestClient, hostId, prewarmedThreadManager) {
+  const current = ${FIND_REQUEST_MANAGER_EXPRESSION};
+  return current.editorCount === 0 || (
+    current.manager === manager && current.requestClient === requestClient &&
+    current.hostId === hostId && current.prewarmedThreadManager === prewarmedThreadManager
+  );
+}`;
 
 const INSTALL_RENDERER_POLICY_FUNCTION = `function(requestClient, hostId, prewarmedThreadManager) {
   return (${installDraftPrewarmPolicyBridge.toString()})(
@@ -139,6 +154,8 @@ const INSTALL_RENDERER_POLICY_FUNCTION = `function(requestClient, hostId, prewar
     hostId,
     window,
     prewarmedThreadManager,
+    () => (${IS_CURRENT_REQUEST_MANAGER})(this, requestClient, hostId, prewarmedThreadManager),
+    (${retainRendererHostResponses.toString()}),
   );
 }`;
 const REQUEST_MANAGER_WAIT_TIMEOUT_MS = 60_000;
@@ -165,6 +182,10 @@ function directRendererInstaller(): string {
       selected.hostId,
       window,
       selected.prewarmedThreadManager,
+      () => (${IS_CURRENT_REQUEST_MANAGER})(
+        selected.manager, selected.requestClient, selected.hostId, selected.prewarmedThreadManager,
+      ),
+      (${retainRendererHostResponses.toString()}),
     );
   })()`;
 }

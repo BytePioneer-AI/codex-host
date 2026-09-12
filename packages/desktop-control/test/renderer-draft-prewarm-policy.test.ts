@@ -1,3 +1,4 @@
+import { runInNewContext } from "node:vm";
 import { describe, expect, it, vi } from "vitest";
 
 import {
@@ -996,6 +997,53 @@ describe("Renderer draft prewarm policy", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("publishes the committed manager rather than pinning a retired DOM Fiber in requestTarget", async () => {
+    const retired = { ...requestManagerFixture(), ...fiberRequestManagerFixture() };
+    const active = { ...requestManagerFixture(), ...fiberRequestManagerFixture() };
+    const state: { current?: object } = {};
+    const oldRoot: { stateNode: typeof state; child?: object } = { stateNode: state };
+    const currentRoot: { stateNode: typeof state; child?: object } = { stateNode: state };
+    const current = { return: currentRoot, memoizedState: { memoizedState: { manager: active } } };
+    currentRoot.child = current;
+    state.current = currentRoot;
+    const editor = {
+      parentElement: null,
+      __reactFiber$test: {
+        return: oldRoot,
+        alternate: current,
+        memoizedState: { memoizedState: { manager: retired } },
+      },
+    };
+    oldRoot.child = editor.__reactFiber$test;
+    const target: DraftPrewarmPolicyTarget = {};
+    const renderer = {
+      async evaluate<T>(expression: string): Promise<T> {
+        return await runInNewContext(expression, {
+          document: { querySelectorAll: () => [editor] },
+          window: target,
+          crypto: globalThis.crypto,
+          TextDecoder,
+          TextEncoder,
+          Uint8Array,
+          setTimeout,
+          clearTimeout,
+        });
+      },
+    };
+    await installRendererDraftPrewarmPolicyDirect(renderer);
+    const policy = target.__codexhostDraftPrewarmPolicyV1 as {
+      requestTarget(): object;
+      dispose(): void;
+    };
+    expect(policy.requestTarget()).toBe(active);
+    state.current = oldRoot;
+    expect(() => policy.requestTarget()).toThrow("Renderer request manager is retired");
+    await installRendererDraftPrewarmPolicyDirect(renderer);
+    const replaced = target.__codexhostDraftPrewarmPolicyV1 as typeof policy;
+    expect(replaced.requestTarget()).toBe(retired);
+    replaced.dispose();
   });
 
   it("installs the owned request bridge through direct Renderer evaluation", async () => {

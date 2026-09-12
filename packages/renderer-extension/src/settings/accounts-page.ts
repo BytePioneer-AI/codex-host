@@ -156,6 +156,7 @@ export function createAccountsSettingsPage(
       let accountInstanceId: string | undefined;
       let hasAccountSnapshot = false;
       let cleanupRequired = false;
+      let legacyHistoryPreserved = false;
       let capabilities: CodexAccountListResult["capabilities"] = {
         manage: false,
         switch: false,
@@ -249,11 +250,14 @@ export function createAccountsSettingsPage(
           ? messages.accountCleanupRequired
           : accountPhase === "unavailable" && capabilities.reason === "recovery-required"
             ? messages.accountRecoveryRequired
-            : capabilities.reason === "migration-required"
-              ? accountPhase === "ready" && currentAccountId !== null
-                ? messages.accountLegacyCompatibility
-                : messages.accountMigrationRequired
-              : loginMessage;
+            : capabilities.reason === "competing-writer"
+              ? messages.accountCompetingWriter
+              : capabilities.reason === "migration-required"
+                ? accountPhase === "ready" && currentAccountId !== null
+                  ? messages.accountLegacyCompatibility
+                  : messages.accountMigrationRequired
+                : (loginMessage ??
+                  (legacyHistoryPreserved ? messages.accountLegacyCredentialsAdopted : null));
         if (accountStatus) status.append(accountStatus);
         if (
           (cleanupRequired || capabilities.reason === "recovery-required") &&
@@ -497,6 +501,7 @@ export function createAccountsSettingsPage(
         accountRevision = result.revision;
         accountInstanceId = result.instanceId;
         cleanupRequired = result.cleanupRequired ?? false;
+        legacyHistoryPreserved = result.legacyHistoryPreserved ?? false;
         capabilities = result.capabilities;
         for (const accountId of expandedResetAccounts) {
           if (!accounts.some((account) => account.accountId === accountId))
@@ -560,6 +565,7 @@ export function createAccountsSettingsPage(
       const switchAccount = (accountId: string): void => {
         if (accountBusy() || !capabilities.switch || accountId === currentAccountId) return;
         accountActivating = true;
+        loginMessage = null;
         render();
         void context.runLatest(() => client().switchCodexAccount({ accountId }), {
           success() {

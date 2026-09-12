@@ -92,6 +92,12 @@ The browser-safe v2 Account snapshot SHALL expose ready/changing/unavailable, re
 - **THEN** the UI SHALL distinguish saved/committed Account state from readiness
 - **AND** old Host or old revision responses SHALL not replace newer state
 
+#### Scenario: Desktop replaces its Request Client while an Account response is in flight
+- **WHEN** Desktop changes its internal Request Client after an Account request was sent and receives that request's response
+- **THEN** the response SHALL complete the original request without dispatching another Account operation
+- **AND** a busy rejection SHALL end Settings' pending state and permit explicit user retry without weakening admission
+- **AND** successful native delivery SHALL NOT be completed twice, and another Host or unowned request ID SHALL NOT complete this request
+
 #### Scenario: Retired account-selection API is used
 - **WHEN** a client submits activate or per-draft account-selection input
 - **THEN** Host SHALL reject it rather than silently restoring per-Thread routing

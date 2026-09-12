@@ -145,6 +145,7 @@ describe("native Account legacy layout inspection", () => {
       kind: "migration-required",
       reason: "multiple-homes",
       nativeCompatibility: { accountId: "first", registryDigest: expect.any(String) },
+      credentialImport: { accountId: "first", registryDigest: expect.any(String) },
       homes: [
         { accountId: "first", home: f.home, entries: firstEntries },
         { accountId: "second", home: second, entries: secondEntries },
@@ -222,6 +223,7 @@ describe("native Account legacy layout inspection", () => {
     const result = await inspectNativeAccountLayout(f.data, f.home);
     expect(result).toMatchObject({ kind: "migration-required", reason: "multiple-homes" });
     expect(result).not.toHaveProperty("nativeCompatibility");
+    expect(result).not.toHaveProperty("credentialImport");
   });
 
   it.each([".codexhost-native-accounts", ".codexhost-process.json"])(
@@ -235,6 +237,7 @@ describe("native Account legacy layout inspection", () => {
       const result = await inspectNativeAccountLayout(f.data, f.home);
       expect(result).toMatchObject({ kind: "migration-required", reason: "multiple-homes" });
       expect(result).not.toHaveProperty("nativeCompatibility");
+      expect(result).not.toHaveProperty("credentialImport");
     },
   );
 

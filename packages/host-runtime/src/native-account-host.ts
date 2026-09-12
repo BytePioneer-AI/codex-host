@@ -13,6 +13,9 @@ import {
 } from "./account/codex-account-control.js";
 import { canonicalCodexHome, inspectNativeAccountLayout } from "./account/native-account-layout.js";
 import { NativeAccountStore } from "./account/native-account-store.js";
+import { importLegacyAccountCredentials } from "./account/legacy-account-credentials.js";
+import { NativeCodexCredentials } from "./account/native-codex-credentials.js";
+import { NativeAccountError, profileCurrent } from "./account/native-profile-vault.js";
 import { NativeCodexAccounts } from "./account/native-codex-accounts.js";
 import { OfficialAccountRuntime } from "./account/official-account-runtime.js";
 import { officialEnvironment } from "./app-server-host.js";
@@ -156,29 +159,41 @@ function nativeFallback(
   },
   assertStartup?: () => Promise<void>,
 ): PreparedLocalCodex {
+  const guarded = (backend: OwnedOfficialBackend): OwnedOfficialBackend => {
+    if (assertStartup) {
+      const start = backend.start.bind(backend);
+      backend.start = async () => {
+        await assertStartup();
+        await start();
+      };
+    }
+    return backend;
+  };
   const scope = new OfficialRuntimeScope({
     permanentHome: home,
     diagnosticOutput: input.diagnosticOutput,
-    allowNativeAuthPassthrough: true,
+    allowNativeAuthPassthrough: reason !== "competing-writer",
     createBackend: () => {
       if (ownership)
-        return ownership.record.wrap((receipt) => {
-          const launch = {
-            stockCodexPath: input.stockCodexPath,
-            cwd: home,
-            arguments: input.sharedListener
-              ? officialLoopbackListenerArguments(input.arguments)
-              : input.arguments,
-            environment: { ...officialEnvironment(input.environment), CODEX_HOME: home },
-            supervision: { launcher: ownership.launcher, files: ownership.files, receipt },
-          };
-          return input.sharedListener
-            ? createOwnedLoopbackBackend({
-                ...launch,
-                diagnosticOutput: discardNativeDiagnostics(),
-              })
-            : createOwnedStdioBackend(launch);
-        });
+        return guarded(
+          ownership.record.wrap((receipt) => {
+            const launch = {
+              stockCodexPath: input.stockCodexPath,
+              cwd: home,
+              arguments: input.sharedListener
+                ? officialLoopbackListenerArguments(input.arguments)
+                : input.arguments,
+              environment: { ...officialEnvironment(input.environment), CODEX_HOME: home },
+              supervision: { launcher: ownership.launcher, files: ownership.files, receipt },
+            };
+            return input.sharedListener
+              ? createOwnedLoopbackBackend({
+                  ...launch,
+                  diagnosticOutput: discardNativeDiagnostics(),
+                })
+              : createOwnedStdioBackend(launch);
+          }),
+        );
       const backend = input.sharedListener
         ? nativeListener(input, home)
         : createOwnedConnectionBackend(() =>
@@ -188,14 +203,7 @@ function nativeFallback(
               environment: { ...officialEnvironment(input.environment), CODEX_HOME: home },
             }),
           );
-      if (assertStartup) {
-        const start = backend.start.bind(backend);
-        backend.start = async () => {
-          await assertStartup();
-          await start();
-        };
-      }
-      return backend;
+      return guarded(backend);
     },
   });
   const control = new SingleNativeCodexAccount(() => ({
@@ -217,7 +225,7 @@ function nativeFallback(
   return {
     officialRuntimeScope: scope,
     accountControl: control,
-    allowNativeAuthPassthrough: true,
+    allowNativeAuthPassthrough: reason !== "competing-writer",
     close: async () => {
       await scope.close();
       await ownership?.store.close();
@@ -235,8 +243,9 @@ export async function prepareLocalCodex(input: LocalCodexOptions): Promise<Prepa
   );
   const layout = await inspectNativeAccountLayout(data, home);
   const launcher = input.environment.CODEXHOST_LAUNCHER_EXECUTABLE;
+  let assertLegacyStartup: (() => Promise<void>) | undefined;
   if (layout.kind === "migration-required") {
-    const compatibility = layout.nativeCompatibility;
+    const compatibility = layout.credentialImport ?? layout.nativeCompatibility;
     if (!compatibility || !launcher || !path.isAbsolute(launcher))
       return blocked(home, input.diagnosticOutput, "migration-required");
     const assertStartup = async (): Promise<void> => {
@@ -245,8 +254,12 @@ export async function prepareLocalCodex(input: LocalCodexOptions): Promise<Prepa
       const latest = await inspectNativeAccountLayout(data, home);
       if (
         latest.kind !== "migration-required" ||
-        latest.nativeCompatibility?.registryDigest !== compatibility.registryDigest ||
-        latest.nativeCompatibility.accountId !== compatibility.accountId
+        (latest.credentialImport ?? latest.nativeCompatibility)?.registryDigest !==
+          compatibility.registryDigest ||
+        (latest.credentialImport ?? latest.nativeCompatibility)?.accountId !==
+          compatibility.accountId ||
+        JSON.stringify(latest.homes.map((entry) => entry.home)) !==
+          JSON.stringify(layout.homes.map((entry) => entry.home))
       )
         throw new Error("Legacy Codex Account layout changed");
       const writers = await readNativeProcessIds({
@@ -254,17 +267,44 @@ export async function prepareLocalCodex(input: LocalCodexOptions): Promise<Prepa
         executableNames: [path.basename(input.stockCodexPath), "codex", "codex.exe"],
         environment: input.environment,
       });
-      if (writers.length) throw new Error("Another native process may own the Codex home");
+      if (writers.length) throw new NativeAccountError("competing-writer");
     };
+    assertLegacyStartup = assertStartup;
     try {
       await assertStartup();
-    } catch {
+    } catch (error) {
+      if (
+        error instanceof NativeAccountError &&
+        error.code === "competing-writer" &&
+        layout.nativeCompatibility
+      ) {
+        // This is ordinary native use, not managed recovery. No Vault, key or
+        // credential replacement is permitted, including native login/logout.
+        // Any managed state in ANY known home makes this path ineligible.
+        const assertCleanNativeUse = async () => {
+          const latest = await inspectNativeAccountLayout(data, home);
+          if (
+            latest.kind !== "migration-required" ||
+            latest.nativeCompatibility?.registryDigest !== compatibility.registryDigest ||
+            latest.nativeCompatibility.accountId !== compatibility.accountId ||
+            JSON.stringify(latest.homes.map((entry) => entry.home)) !==
+              JSON.stringify(layout.homes.map((entry) => entry.home))
+          )
+            throw new NativeAccountError("recovery-required");
+        };
+        input.diagnosticOutput.write(
+          "codexhost: Other Codex CLIs detected; retaining native use without Account mutations.\n",
+        );
+        return nativeFallback(input, home, "competing-writer", undefined, assertCleanNativeUse);
+      }
       return blocked(home, input.diagnosticOutput, "recovery-required");
     }
-    input.diagnosticOutput.write(
-      "codexhost: Legacy Account compatibility mode; using the existing permanent home. Account management is disabled; other homes are preserved but not merged.\n",
-    );
-    return nativeFallback(input, home, "migration-required", undefined, assertStartup);
+    if (!layout.credentialImport) {
+      input.diagnosticOutput.write(
+        "codexhost: Legacy Account compatibility mode; using the existing permanent home. Account management is disabled; other homes are preserved but not merged.\n",
+      );
+      return nativeFallback(input, home, "migration-required", undefined, assertStartup);
+    }
   }
   const root = path.join(home, ".codexhost-native-accounts");
   // Without trusted native I/O, an existing managed directory cannot be assumed clean.
@@ -272,6 +312,35 @@ export async function prepareLocalCodex(input: LocalCodexOptions): Promise<Prepa
     return (await exists(root)) || (await exists(path.join(home, ".codexhost-process.json")))
       ? blocked(home, input.diagnosticOutput, "recovery-required")
       : nativeFallback(input, home, "unsupported-storage");
+  }
+  if (
+    layout.kind !== "migration-required" &&
+    !(await exists(root)) &&
+    !(await exists(path.join(home, ".codexhost-process.json")))
+  ) {
+    try {
+      const writers = await readNativeProcessIds({
+        launcher,
+        executableNames: [path.basename(input.stockCodexPath), "codex", "codex.exe"],
+        environment: input.environment,
+      });
+      if (writers.length) {
+        input.diagnosticOutput.write(
+          "codexhost: Other native Codex processes were detected; refusing Account management\n",
+        );
+        return nativeFallback(input, home, "competing-writer", undefined, async () => {
+          const latest = await inspectNativeAccountLayout(data, home);
+          if (
+            JSON.stringify(latest) !== JSON.stringify(layout) ||
+            (await exists(root)) ||
+            (await exists(path.join(home, ".codexhost-process.json")))
+          )
+            throw new NativeAccountError("recovery-required");
+        });
+      }
+    } catch {
+      return blocked(home, input.diagnosticOutput, "recovery-required");
+    }
   }
   const files = new NativePrivateFiles({ launcher, environment: input.environment });
   const homeFiles = files.withReadOnlyDirectoryAccess();
@@ -298,12 +367,18 @@ export async function prepareLocalCodex(input: LocalCodexOptions): Promise<Prepa
       supervisorExitClosesProcessTree: process.platform === "win32",
     });
     const fallback = (reason: UnavailableCodexAccountReason): PreparedLocalCodex => {
-      const result = nativeFallback(input, home, reason, {
-        record: processRecord,
-        store,
-        files,
-        launcher,
-      });
+      const result = nativeFallback(
+        input,
+        home,
+        reason,
+        {
+          record: processRecord,
+          store,
+          files,
+          launcher,
+        },
+        assertLegacyStartup,
+      );
       scope = result.officialRuntimeScope;
       return result;
     };
@@ -318,6 +393,22 @@ export async function prepareLocalCodex(input: LocalCodexOptions): Promise<Prepa
     }
     const reconcile = async (): Promise<void> => {
       await processRecord.reconcile();
+      if (layout.kind === "migration-required" && layout.credentialImport) {
+        const latest = await inspectNativeAccountLayout(data, home);
+        if (
+          latest.kind !== "migration-required" ||
+          latest.credentialImport?.registryDigest !== layout.credentialImport.registryDigest ||
+          latest.credentialImport.accountId !== layout.credentialImport.accountId ||
+          JSON.stringify(latest.homes.map((entry) => entry.home)) !==
+            JSON.stringify(layout.homes.map((entry) => entry.home))
+        )
+          throw new NativeAccountError("recovery-required");
+        if (
+          store.vault.legacyRegistryDigest &&
+          store.vault.legacyRegistryDigest !== layout.credentialImport.registryDigest
+        )
+          throw new NativeAccountError("migration-required");
+      }
       // A Host lease cannot constrain arbitrary native CLIs; refuse observable unknown writers.
       const pids = await readNativeProcessIds({
         launcher,
@@ -365,11 +456,50 @@ export async function prepareLocalCodex(input: LocalCodexOptions): Promise<Prepa
     const accounts = new NativeCodexAccounts({ store, runtime });
     try {
       await accounts.initialize();
+      if (
+        layout.kind === "migration-required" &&
+        layout.credentialImport &&
+        !store.vault.legacyRegistryDigest
+      ) {
+        const change = scope.gate.beginChange();
+        try {
+          await runtime.assertNativeIdle();
+          await runtime.stop();
+          await importLegacyAccountCredentials({
+            store,
+            registryDigest: layout.credentialImport.registryDigest,
+            homes: layout.homes.map((entry) => entry.home),
+            assertAdmission: reconcile,
+            readCredentials: async (directory) => {
+              const bytes = await homeFiles.read(directory, "auth.json");
+              if (!bytes) return null;
+              try {
+                const text = bytes.toString("utf8");
+                if (!Buffer.from(text).equals(bytes))
+                  throw new Error("Invalid credential encoding");
+                return NativeCodexCredentials.parse(text);
+              } catch {
+                throw new NativeAccountError("migration-required");
+              } finally {
+                bytes.fill(0);
+              }
+            },
+          });
+          await runtime.start();
+          await runtime.verify(profileCurrent(store.vault)?.identity ?? null);
+          change.finish("ready");
+        } catch (error) {
+          change.finish("unavailable");
+          throw error;
+        }
+      }
     } catch (error) {
       const reason =
         typeof error === "object" && error !== null && "code" in error ? error.code : undefined;
       if (
-        (reason === "unsupported-version" || reason === "unsupported-storage") &&
+        (reason === "unsupported-version" ||
+          reason === "unsupported-storage" ||
+          reason === "migration-required") &&
         !(await store.readJournal()) &&
         !(await store.readStage())
       ) {

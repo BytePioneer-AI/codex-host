@@ -158,6 +158,40 @@ describe("current Codex Renderer Agent adapter", () => {
     );
   });
 
+  it("routes account requests through the committed manager when the DOM retains the retired Fiber", async () => {
+    const retired = {
+      hostId: "local",
+      sendRequest: vi.fn(),
+      prewarmThreadStart: vi.fn(),
+      enqueueRequest: vi.fn(),
+    };
+    const active = {
+      ...retired,
+      sendRequest: vi.fn().mockRejectedValue(new Error("Codex is busy")),
+    };
+    const rootState: { current?: object } = {};
+    const oldRoot = { stateNode: rootState };
+    const newRoot: { stateNode: typeof rootState; child?: object } = { stateNode: rootState };
+    const current = { memoizedState: { memoizedState: active, next: null }, return: newRoot };
+    const previous = {
+      memoizedState: { memoizedState: retired, next: null },
+      return: oldRoot,
+      alternate: current,
+    };
+    newRoot.child = current;
+    rootState.current = newRoot;
+    const editor = { parentElement: null, querySelectorAll: () => [] } as unknown as Element;
+    Object.defineProperty(editor, "__reactFiber$test", { value: previous });
+    const targets = findActivePrewarmTargets({
+      querySelector: () => editor,
+    } as unknown as ParentNode);
+    expect(targets).toEqual([active]);
+    await expect(targets[0]?.sendRequest?.("codexhost/account/switch", {})).rejects.toThrow(
+      "Codex is busy",
+    );
+    expect(retired.sendRequest).not.toHaveBeenCalled();
+  });
+
   it("ignores Host manager registries and unrelated nested manager fields", () => {
     const editor = {
       parentElement: null,

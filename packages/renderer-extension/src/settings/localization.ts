@@ -101,6 +101,8 @@ export interface RendererSettingsMessages {
   readonly accountRecoveryRequired: string;
   readonly accountCleanupRequired: string;
   readonly accountLegacyCompatibility: string;
+  readonly accountLegacyCredentialsAdopted: string;
+  readonly accountCompetingWriter: string;
   readonly accountMigrationRequired: string;
   readonly accountSignIn: string;
   readonly accountSigningIn: string;
@@ -321,6 +323,10 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   accountRecover: "Recover",
   accountRecovering: "Recovering Codex...",
   accountRecoveryRequired: "Codex Account recovery is required before work can continue.",
+  accountCompetingWriter:
+    "Another Codex CLI is running. Your existing native account remains usable, but account import, switching, sign-in and sign-out are disabled. Close the other CLI sessions and restart Codex Host to enable account management.",
+  accountLegacyCredentialsAdopted:
+    "Saved account credentials are available for global switching in the existing official home. Other account homes and their history are preserved but have not been merged. Account switching does not switch history directories.",
   accountLegacyCompatibility:
     "Native compatibility mode: Codex uses the existing official home. Account management is disabled. Other account homes and their history have not been merged; use the previous version to access them. No source data was migrated or deleted.",
   accountMigrationRequired:
@@ -560,6 +566,10 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   accountRecover: "恢复",
   accountRecovering: "正在恢复 Codex...",
   accountRecoveryRequired: "继续工作前需要恢复 Codex 账号状态。",
+  accountCompetingWriter:
+    "检测到其他 Codex CLI。仍可使用现有原生账号，但导入、切换、登录和退出账号暂不可用。请关闭其他 CLI 会话并重启 Codex Host 后启用账号管理。",
+  accountLegacyCredentialsAdopted:
+    "旧账号凭据已接入，可在原有官方目录内全局切换。其他账号目录及其历史保留但尚未合并；切换账号不会切换历史目录。",
   accountLegacyCompatibility:
     "原生兼容模式：继续使用原有官方目录，账号管理暂不可用。其他账号目录及其历史尚未合并，请使用旧版访问；没有迁移或删除原数据。",
   accountMigrationRequired:

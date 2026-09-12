@@ -523,7 +523,49 @@ describe("local native Account composition", () => {
     expect(f.files.replace).not.toHaveBeenCalled();
   });
 
-  it.each(["missing-helper", "unknown-writer", "inventory-error"])(
+  it("retains clean native use with other CLIs but blocks every credential mutation", async () => {
+    const f = await fixture({
+      layout: {
+        kind: "migration-required",
+        reason: "multiple-homes",
+        homes: [],
+        nativeCompatibility: { accountId: "legacy-current", registryDigest: "original" },
+      },
+    });
+    native.current().inventory = [424242];
+    const prepared = await prepareLocalCodex(f.input({ sharedListener: true }));
+    try {
+      expect(prepared.allowNativeAuthPassthrough).toBe(false);
+      expect(prepared.accountControl.snapshot().capabilities).toMatchObject({
+        manage: false,
+        switch: false,
+        login: false,
+        logout: false,
+        reason: "competing-writer",
+      });
+      await prepared.officialRuntimeScope.start();
+      expect(prepared.officialRuntimeScope.gate.phase).toBe("ready");
+      expect(native.state.keyConstructions).toBe(0);
+      expect(native.state.fileConstructions).toBe(0);
+      await expect(prepared.accountControl.switch("other")).rejects.toThrow();
+      await expect(prepared.accountControl.startLogin()).rejects.toThrow();
+      await expect(prepared.accountControl.logout()).rejects.toThrow();
+      const client = new OfficialRuntimeClient({
+        scope: prepared.officialRuntimeScope,
+        output: async () => {},
+      });
+      try {
+        await expect(client.request("account/login/start", { type: "chatgpt" })).rejects.toThrow();
+        await expect(client.request("account/logout", {})).rejects.toThrow();
+      } finally {
+        await client.close();
+      }
+    } finally {
+      await prepared.close();
+    }
+  });
+
+  it.each(["missing-helper", "inventory-error"])(
     "refuses legacy compatibility for %s without creating keys or starting a backend",
     async (failure) => {
       const f = await fixture({
@@ -534,7 +576,6 @@ describe("local native Account composition", () => {
           nativeCompatibility: { accountId: "legacy-current", registryDigest: "original" },
         },
       });
-      if (failure === "unknown-writer") native.current().inventory = [424242];
       if (failure === "inventory-error")
         vi.mocked(readNativeProcessIds).mockRejectedValueOnce(new Error("unavailable"));
       const prepared = await prepareLocalCodex(

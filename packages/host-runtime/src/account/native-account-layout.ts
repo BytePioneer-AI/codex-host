@@ -41,6 +41,9 @@ export type NativeAccountLayout =
       /** A clean legacy installation may keep using its already-selected permanent home.
        * This does not adopt the other homes or enable managed Account operations. */
       nativeCompatibility?: { accountId: string; registryDigest: string };
+      /** Eligibility for credential-only adoption; current-home managed state must
+       * still pass the normal Vault/Journal recovery path. Other homes stay read-only. */
+      credentialImport?: { accountId: string; registryDigest: string };
     };
 
 function missing(error: unknown): boolean {
@@ -168,6 +171,23 @@ export async function inspectNativeAccountLayout(
         kind: "migration-required",
         reason: "multiple-homes",
         homes,
+        ...(selected &&
+        key(selected.home) === key(canonical) &&
+        homes.every((entry) =>
+          entry.entries.every(
+            (name) =>
+              name.toLowerCase() !== ".codexhost-process.json" &&
+              (key(entry.home) === key(canonical) ||
+                name.toLowerCase() !== ".codexhost-native-accounts"),
+          ),
+        )
+          ? {
+              credentialImport: {
+                accountId: selected.accountId,
+                registryDigest: nativeDigest(registry),
+              },
+            }
+          : {}),
         ...(clean && selected && key(selected.home) === key(canonical)
           ? {
               nativeCompatibility: {

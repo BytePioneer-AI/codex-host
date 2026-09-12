@@ -331,8 +331,10 @@ export class OfficialAccountRuntime implements NativeAccountRuntime {
     } catch {
       throw new OfficialAccountVerificationError("unsupported-version");
     }
-    // Only this version has the credential-free persisted queue/active goal bootstrap probe.
-    if (version !== "0.153.4") throw new OfficialAccountVerificationError("unsupported-version");
+    // Exact versions exercised by the isolated real-CLI lifecycle probe. Renderer
+    // compatibility alone is not evidence of native Account/queue/goal semantics.
+    if (!["0.153.4", "0.154.0-alpha.6.2"].includes(version))
+      throw new OfficialAccountVerificationError("unsupported-version");
   }
 
   subscribe(listener: (value: JsonValue) => void): () => void {

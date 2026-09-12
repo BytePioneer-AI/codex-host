@@ -66,6 +66,7 @@ export const codexAccountCapabilitiesSchema = z
         "recovery-required",
         "keyring-unavailable",
         "migration-required",
+        "competing-writer",
       ])
       .optional(),
   })
@@ -80,6 +81,8 @@ export const codexAccountListResultSchema = z
     revision: z.number().int().nonnegative(),
     instanceId: nonBlankTextSchema.max(1_024).optional(),
     cleanupRequired: z.boolean().optional(),
+    /** Credentials were adopted; other native homes/history remain unmerged. */
+    legacyHistoryPreserved: z.boolean().optional(),
     pendingOperation: codexAccountPendingOperationSchema.optional(),
     capabilities: codexAccountCapabilitiesSchema,
     accounts: z.array(codexAccountSchema).max(128),

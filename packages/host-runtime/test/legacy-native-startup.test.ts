@@ -1,64 +1,132 @@
-import { mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { PassThrough } from "node:stream";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { JsonObject } from "@codexhost/protocol-core";
-import type * as OfficialConnection from "../src/official-app-server-connection.js";
+import type { SyntheticPrivateFiles } from "./fixtures/native-account-state.js";
 
 const native = vi.hoisted(() => ({
-  spawn: vi.fn(),
+  files: null as SyntheticPrivateFiles | null,
+  storage: "file",
+  launches: [] as unknown[],
+  live: 0,
+  peak: 0,
   inventory: vi.fn(async (): Promise<number[]> => []),
-  managed: vi.fn(() => {
-    throw new Error("Compatibility must not initialize managed storage");
-  }),
-}));
-vi.mock("../src/official-app-server-connection.js", async (original) => ({
-  ...(await original<typeof OfficialConnection>()),
-  spawnOfficialAppServerConnection: native.spawn,
 }));
 vi.mock("../src/native-process-inventory.js", () => ({ readNativeProcessIds: native.inventory }));
-vi.mock("../src/native-private-files.js", () => ({ NativePrivateFiles: native.managed }));
-vi.mock("../src/native-secret-keys.js", () => ({ NativeSecretKeys: native.managed }));
+vi.mock("../src/native-private-files.js", () => ({
+  NativePrivateFiles: vi.fn(function () {
+    if (!native.files) throw new Error("Missing synthetic files");
+    return Object.assign(native.files, {
+      withReadOnlyDirectoryAccess() {
+        return this;
+      },
+    });
+  }),
+}));
+vi.mock("../src/native-secret-keys.js", () => ({
+  NativeSecretKeys: class {
+    async read() {
+      return Buffer.alloc(32, 0x51);
+    }
+    async create() {
+      return Buffer.alloc(32, 0x51);
+    }
+  },
+}));
+vi.mock("../src/codex-runtime/official-cli-version.js", () => ({
+  readOfficialCliVersion: async () => "0.154.0-alpha.6.2",
+}));
+vi.mock("../src/codex-runtime/official-process-record.js", () => ({
+  OfficialProcessRecord: class {
+    async reconcile() {}
+    wrap(factory: (receipt: object) => unknown) {
+      return factory({});
+    }
+  },
+}));
+vi.mock("../src/codex-runtime/owned-official-backends.js", () => ({
+  createOwnedLoopbackBackend: (input: { environment: NodeJS.ProcessEnv }) => backend(input),
+  createOwnedStdioBackend: (input: { environment: NodeJS.ProcessEnv }) => backend(input),
+}));
 
 import { prepareLocalCodex } from "../src/native-account-host.js";
+import { NativeCodexCredentials } from "../src/account/native-codex-credentials.js";
 import { OfficialRuntimeClient } from "../src/codex-runtime/official-runtime-scope.js";
+import {
+  SyntheticPrivateFiles as MemoryFiles,
+  credential,
+} from "./fixtures/native-account-state.js";
 
 const roots: string[] = [];
 const timestamp = "2026-09-11T00:00:00.000Z";
-const identity = { type: "chatgpt", email: "existing@example.test", planType: "plus" };
 
 // A synthetic native protocol peer: no network, real authentication or OS key calls.
-function connection() {
-  const stdin = new PassThrough(),
-    stdout = new PassThrough(),
-    stderr = new PassThrough();
+function backend(input: { environment: NodeJS.ProcessEnv }) {
   const closed = Promise.withResolvers<{ code: number; signal: null }>();
-  let pending = "";
-  stdin.on("data", (chunk: Buffer) => {
-    pending += chunk.toString();
-    let newline: number;
-    while ((newline = pending.indexOf("\n")) >= 0) {
-      const request = JSON.parse(pending.slice(0, newline)) as JsonObject;
-      pending = pending.slice(newline + 1);
-      if (request.id === undefined) continue;
-      const result =
-        request.method === "account/read"
-          ? { account: identity, requiresOpenaiAuth: true }
-          : { userAgent: "synthetic-native" };
-      stdout.write(`${JSON.stringify({ id: request.id, result })}\n`);
-    }
-  });
-  const close = () => {
-    stdin.end();
-    stdout.end();
-    stderr.end();
-    closed.resolve({ code: 0, signal: null });
+  const connections: Array<{ close(): void }> = [];
+  let started = false;
+  return {
+    closed: closed.promise,
+    async start() {
+      native.launches.push(input);
+      started = true;
+      native.peak = Math.max(native.peak, ++native.live);
+    },
+    async connect() {
+      const stdin = new PassThrough(),
+        stdout = new PassThrough(),
+        stderr = new PassThrough();
+      const exited = Promise.withResolvers<{ code: number; signal: null }>();
+      let pending = "";
+      stdin.on("data", (chunk: Buffer) => {
+        pending += chunk.toString();
+        let newline: number;
+        while ((newline = pending.indexOf("\n")) >= 0) {
+          const request = JSON.parse(pending.slice(0, newline)) as JsonObject;
+          pending = pending.slice(newline + 1);
+          if (request.id === undefined) continue;
+          let result: unknown = { userAgent: "synthetic-native" };
+          if (request.method === "config/read")
+            result = { config: { cli_auth_credentials_store: native.storage } };
+          if (request.method === "account/read") {
+            const raw = native.files?.peek(input.environment.CODEX_HOME ?? "", "auth.json");
+            const current = raw ? NativeCodexCredentials.parse(raw.toString()) : null;
+            result = {
+              account: current
+                ? { type: "chatgpt", email: current.email, planType: current.planType }
+                : null,
+              requiresOpenaiAuth: true,
+            };
+          }
+          if (request.method === "account/rateLimits/read") result = { rateLimits: {} };
+          if (["thread/list", "thread/loaded/list"].includes(String(request.method)))
+            result = { data: [], nextCursor: null };
+          stdout.write(`${JSON.stringify({ id: request.id, result })}\n`);
+        }
+      });
+      const close = () => {
+        stdin.end();
+        stdout.end();
+        stderr.end();
+        exited.resolve({ code: 0, signal: null });
+      };
+      connections.push({ close });
+      return { stdin, stdout, stderr, closed: exited.promise, close };
+    },
+    async stop() {
+      for (const connection of connections) connection.close();
+      if (started) {
+        native.live--;
+        started = false;
+      }
+      closed.resolve({ code: 0, signal: null });
+    },
   };
-  return { stdin, stdout, stderr, closed: closed.promise, close, stopProcess: async () => close() };
 }
 
-async function fixture(storage = "auto", selected = "current") {
+async function fixture(storage = "file", selected = "current") {
   const root = await realpath(await mkdtemp(path.join(tmpdir(), "codexhost-legacy-startup-")));
   roots.push(root);
   const home = path.join(root, "official"),
@@ -67,7 +135,8 @@ async function fixture(storage = "auto", selected = "current") {
     registry = path.join(data, "codex-accounts");
   await Promise.all([mkdir(home), mkdir(other), mkdir(registry, { recursive: true })]);
   const preserved = new Map([
-    [path.join(home, "auth.json"), "synthetic opaque credential bytes\n"],
+    [path.join(home, "auth.json"), credential("a").serializeForNativeStore()],
+    [path.join(other, "auth.json"), credential("b").serializeForNativeStore()],
     [path.join(home, "config.toml"), `cli_auth_credentials_store = "${storage}"\n`],
     [path.join(other, "state.sqlite"), "synthetic history"],
     [
@@ -89,17 +158,20 @@ async function fixture(storage = "auto", selected = "current") {
     ],
     [
       path.join(registry, "thread-accounts.json"),
-      JSON.stringify({
-        formatVersion: 1,
-        bindings: { first: "current", second: "other" },
-      }),
+      JSON.stringify({ formatVersion: 1, bindings: { first: "current", second: "other" } }),
     ],
   ]);
-  for (const [file, bytes] of preserved) await writeFile(file, bytes);
+  native.files = new MemoryFiles();
+  native.storage = storage;
+  for (const [file, bytes] of preserved) {
+    await writeFile(file, bytes);
+    native.files.seed(path.dirname(file), path.basename(file), bytes);
+  }
   return {
     home,
     other,
     preserved,
+    files: native.files,
     input: {
       stockCodexPath: path.join(root, "codex"),
       arguments: ["app-server"],
@@ -108,108 +180,156 @@ async function fixture(storage = "auto", selected = "current") {
         CODEXHOST_DATA_DIR: data,
         CODEXHOST_LAUNCHER_EXECUTABLE: path.join(root, "launcher"),
       },
-      sharedListener: false,
+      sharedListener: true,
       diagnosticOutput: new PassThrough(),
     },
   };
 }
 
 beforeEach(() => {
-  native.spawn.mockReset().mockImplementation(connection);
   native.inventory.mockReset().mockResolvedValue([]);
-  native.managed.mockClear();
+  native.launches.length = 0;
+  native.live = 0;
+  native.peak = 0;
 });
 afterEach(async () => {
+  expect(native.live).toBe(0);
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true })));
 });
 
-describe("legacy layout to native Desktop protocol compatibility", () => {
-  it.each(["file", "auto", "keyring"])(
-    "retains native account/read without rewriting %s storage or historical data",
-    async (storage) => {
-      const f = await fixture(storage);
-      const prepared = await prepareLocalCodex(f.input);
-      const client = new OfficialRuntimeClient({
-        scope: prepared.officialRuntimeScope,
-        output: async () => {},
+describe("legacy layout to native Account switching composition", () => {
+  it("adopts A and B and switches A → B → A within one permanent home and one backend", async () => {
+    const f = await fixture();
+    const prepared = await prepareLocalCodex(f.input);
+    const client = new OfficialRuntimeClient({
+      scope: prepared.officialRuntimeScope,
+      output: async () => {},
+    });
+    try {
+      await client.initialize();
+      await client.initializeProtocol({
+        clientInfo: { name: "synthetic-desktop", version: "test" },
       });
-      try {
-        await client.initialize();
-        await expect(
-          client.initializeProtocol({ clientInfo: { name: "synthetic-desktop", version: "test" } }),
-        ).resolves.toMatchObject({ result: { userAgent: "synthetic-native" } });
-        await expect(
-          client.request("account/read", { refreshToken: false }),
-        ).resolves.toMatchObject({ result: { account: identity } });
-        expect(native.spawn).toHaveBeenCalledOnce();
-        expect(native.spawn).toHaveBeenCalledWith(
-          expect.objectContaining({ environment: expect.objectContaining({ CODEX_HOME: f.home }) }),
-        );
-        expect(native.managed).not.toHaveBeenCalled();
-        expect(prepared.accountControl.snapshot()).toMatchObject({
-          phase: "ready",
-          capabilities: { manage: false, reason: "migration-required" },
-        });
-        await expect(prepared.accountControl.switch("other")).rejects.toMatchObject({
-          code: "unavailable",
-        });
-      } finally {
-        await client.close();
-        await prepared.close();
-      }
-      for (const [file, bytes] of f.preserved) expect(await readFile(file, "utf8")).toBe(bytes);
-      expect(await readdir(f.home)).not.toContain(".codexhost-native-accounts");
-    },
-  );
+      const initial = prepared.accountControl.snapshot();
+      expect(initial).toMatchObject({
+        phase: "ready",
+        legacyHistoryPreserved: true,
+        capabilities: { switch: true },
+      });
+      expect(initial.accounts).toHaveLength(2);
+      const other = initial.accounts.find(
+        (account) => account.accountId !== initial.currentAccountId,
+      );
+      if (!other || !initial.currentAccountId) throw new Error("Missing adopted identities");
+      await prepared.accountControl.switch(other.accountId);
+      expect(f.files.peek(f.home, "auth.json")?.toString()).toBe(
+        credential("b").serializeForNativeStore(),
+      );
+      await expect(client.request("account/read", { refreshToken: false })).resolves.toMatchObject({
+        result: { account: { email: credential("b").email } },
+      });
+      await prepared.accountControl.switch(initial.currentAccountId);
+      expect(f.files.peek(f.home, "auth.json")?.toString()).toBe(
+        credential("a").serializeForNativeStore(),
+      );
+      expect(native.peak).toBe(1);
+      for (const launch of native.launches)
+        expect(launch).toMatchObject({ environment: { CODEX_HOME: f.home } });
+      expect(f.files.peek(f.other, "auth.json")?.toString()).toBe(
+        credential("b").serializeForNativeStore(),
+      );
+    } finally {
+      await client.close();
+      await prepared.close();
+    }
+    for (const [file, bytes] of f.preserved) expect(await readFile(file, "utf8")).toBe(bytes);
+    // Existing managed state in the selected home is recovered, not mistaken for a foreign layout.
+    const restarted = await prepareLocalCodex(f.input);
+    try {
+      expect(restarted.accountControl.snapshot().accounts).toHaveLength(2);
+    } finally {
+      await restarted.close();
+    }
+  });
 
-  it("rechecks writer admission after a proven backend retirement", async () => {
+  it("refuses replacement when an unknown writer appears after startup", async () => {
     const f = await fixture();
     const prepared = await prepareLocalCodex(f.input);
     try {
-      await prepared.officialRuntimeScope.start();
-      await prepared.officialRuntimeScope.owner.stop();
+      const initial = prepared.accountControl.snapshot();
+      const other = initial.accounts.find(
+        (account) => account.accountId !== initial.currentAccountId,
+      );
+      if (!other) throw new Error("Missing saved Account");
       native.inventory.mockResolvedValue([424242]);
-      await expect(prepared.officialRuntimeScope.owner.start({ mode: "task" })).rejects.toThrow();
-      expect(native.spawn).toHaveBeenCalledOnce();
-      expect(native.managed).not.toHaveBeenCalled();
+      await expect(prepared.accountControl.switch(other.accountId)).rejects.toThrow();
+      expect(f.files.peek(f.home, "auth.json")?.toString()).toBe(
+        credential("a").serializeForNativeStore(),
+      );
+      expect(prepared.accountControl.snapshot().currentAccountId).toBe(initial.currentAccountId);
     } finally {
       await prepared.close();
     }
   });
 
-  it("does not silently replace a selected non-default legacy home", async () => {
-    const f = await fixture("auto", "other");
-    const prepared = await prepareLocalCodex(f.input);
-    try {
-      await expect(prepared.officialRuntimeScope.start()).rejects.toMatchObject({
-        code: "unavailable",
-      });
-      expect(prepared.allowNativeAuthPassthrough).toBe(false);
-      expect(native.spawn).not.toHaveBeenCalled();
-      expect(native.managed).not.toHaveBeenCalled();
-    } finally {
-      await prepared.close();
-    }
-  });
-
-  it.each(["official", "other"])(
-    "rejects a pending transaction appearing in %s home after preparation",
+  it.each(["current", "other"])(
+    "does not adopt through unresolved managed state in %s home",
     async (location) => {
       const f = await fixture();
-      const prepared = await prepareLocalCodex(f.input);
       const directory = path.join(
-        location === "official" ? f.home : f.other,
+        location === "current" ? f.home : f.other,
         ".codexhost-native-accounts",
       );
       await mkdir(directory);
-      await writeFile(path.join(directory, "transaction.json"), "synthetic unresolved transaction");
+      await writeFile(path.join(directory, "transaction.json"), "unresolved");
+      f.files.seed(directory, "transaction.json", "unresolved");
+      const prepared = await prepareLocalCodex(f.input);
       try {
-        await expect(prepared.officialRuntimeScope.start()).rejects.toThrow();
-        expect(native.spawn).not.toHaveBeenCalled();
-        expect(native.managed).not.toHaveBeenCalled();
-        expect(await readFile(path.join(directory, "transaction.json"), "utf8")).toBe(
-          "synthetic unresolved transaction",
-        );
+        expect(prepared.accountControl.snapshot().capabilities.switch).toBe(false);
+        expect(native.launches).toHaveLength(0);
+        expect(await readFile(path.join(directory, "transaction.json"), "utf8")).toBe("unresolved");
+      } finally {
+        await prepared.close();
+      }
+    },
+  );
+
+  it.each(["auto", "keyring"])(
+    "keeps native startup without rewriting unsupported %s storage",
+    async (storage) => {
+      const f = await fixture(storage);
+      const prepared = await prepareLocalCodex(f.input);
+      try {
+        expect(prepared.allowNativeAuthPassthrough).toBe(true);
+        expect(prepared.accountControl.snapshot().capabilities).toMatchObject({
+          switch: false,
+          reason: "unsupported-storage",
+        });
+        await prepared.officialRuntimeScope.start();
+        expect(prepared.officialRuntimeScope.gate.phase).toBe("ready");
+      } finally {
+        await prepared.close();
+      }
+      for (const [file, bytes] of f.preserved) expect(await readFile(file, "utf8")).toBe(bytes);
+    },
+  );
+
+  it.each(["writer", "selected-other-home"])(
+    "does not start or import when blocked by %s",
+    async (failure) => {
+      const f = await fixture("file", failure === "selected-other-home" ? "other" : "current");
+      if (failure === "writer") native.inventory.mockResolvedValue([424242]);
+      const prepared = await prepareLocalCodex(f.input);
+      try {
+        expect(prepared.accountControl.snapshot().capabilities.switch).toBe(false);
+        if (failure === "selected-other-home")
+          await expect(prepared.officialRuntimeScope.start()).rejects.toThrow();
+        else
+          expect(prepared.accountControl.snapshot().capabilities.reason).toBe("competing-writer");
+        expect(native.launches).toHaveLength(0);
+        expect(
+          f.files.peek(path.join(f.home, ".codexhost-native-accounts"), "vault.json"),
+        ).toBeNull();
       } finally {
         await prepared.close();
       }

@@ -11,7 +11,10 @@
 5. **稳定私有租约**：持锁 helper 同时执行后续有界 I/O，所有 facade 共享队列和关闭状态；操作前后验证路径身份。原生进程 receipt 不明时不能退休工作或释放安全租约。OS 密钥不可用不回退明文。
 6. **能力与健康分离**：clean 状态下因版本、存储或密钥限制可保留原生单账号；关键恢复事实或所有权不明则仅 Codex unavailable。此时活着的 Host 仍可应答自身 transport initialize，保留 Desktop attachment 和原生协商参数；不发布假的认证或把客户端连接到 staging。活的管理器可 recover；静态不可用控制不伪造重试能力。
 7. **独立额度职责**：当前走官方协议，非当前 direct WHAM。刷新 single-flight＋工作准入＋最新 Vault CAS；缓存重试只合并本账号补丁，不覆盖其他账号数据。
-8. **迁移不冒充完成**：只有单一正式 home 原地采用。多 home、foreign home、孤立绑定或损坏记录保留原件并返回 migration-required；没有 rollout-only 自动迁移或旧后台池 fallback。有效多 home 若选中的账号已使用正式 home、全部旧 home 无托管状态且无其他 writer，则仅保留该 home 的原生单后台认证，不初始化 Vault／OS 密钥，禁用新账号管理。每次启动复查准入；设置页明确其他目录的历史尚未合并、需使用旧版访问。
+8. **凭据接入不冒充历史迁移**：有效多 home 登记当前账号已使用正式 home 时，在原生身份／file 存储验证及退出证明后，只读导入缺失身份到加密 Vault；同一次 CAS 记录来源摘要。已有保存授权不被旧源覆盖，删除后的账号不因重启复活。当前 home 的托管状态走正式恢复，其他 home 的托管状态、foreign home、孤立绑定或损坏登记仍拒绝。历史文件和旧登记不改写，不恢复后台池；UI 明确其他历史尚未合并。
+9. **普通原生使用与凭据变更分开准入**：干净未托管 home 的其他 CLI 不使 Desktop 启动失败，但此模式不初始化 Vault／密钥，禁止导入、切换和原生登录／退出。未知 writer 仍阻止凭据替换；有托管状态或旧进程记录时不使用该模式。
+
+10. **在途响应归原 Client**：Desktop 可在账号更新后更换内部 Request Client，并按当前 Host Client 投递响应。已提交 Fiber 发现及固定 policy 所有权检查约束新请求；在途 Host 请求则由原生 lifecycle 记录 ID，在正常投递未完成原 Promise 时交回原 Client 的原生响应 API。保留 Host／ID／窗口来源边界、原始结果和 metrics，退休后仅排空已有响应，不创建新请求或修改账号事务。
 
 ## Source and licenses
 

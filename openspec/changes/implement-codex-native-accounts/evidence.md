@@ -6,7 +6,55 @@
 - 工作目录：原 checkout 旁的独立 `codex-host-native-accounts` worktree。
 - opencodex：`2d4d7a22381a2e497c2442902104619e25f937c7`，MIT 资产与来源 notice 已加入两种发行布局。
 - 完整设计：[设计说明](../../../docs/codex-native-account-switching-design.md)；产品说明：[账号设置](../../../docs/codex-accounts.md)。
-- PR 前测试只用临时目录、合成凭据、假密钥和假认证网络。用户随后授权提交、推送、普通审查 PR #262，并允许起停 Desktop 诊断。后续实际启动与隔离结果单独记录如下；未完成真实账号认证／切换、系统密钥生命周期或推理验收，未发布。
+- PR 前测试只用临时目录、合成凭据、假密钥和假认证网络。用户随后授权提交、推送、普通审查 PR #262，并允许起停 Desktop 诊断。后续又明确授权测试相关进程起停和真实账号切换，实际结果分阶段记录如下；未执行推理，未发布。
+
+## 最新：切换响应所有者与连续操作
+
+此节更新前一阶段“Host 已写 busy、Renderer 永久等待”的结论，不覆盖历史失败证据。
+
+- 实机捕获请求登记在 Client 1，而 Desktop 将同一请求的成功响应交给 Client 2；Client 2 没有对应 Promise，Client 1 仍在等待。另一次捕获到 busy 错误已到达窗口，但原 Client 仍有未完成请求。故障不仅影响错误帧，也不是凭据事务或 Settings scope 的挂起。
+- 先后仅修正 Renderer 的已提交 React Fiber 发现、再同时修正 Desktop Control 固定 manager 的所有权检查，实机都仍失败。它们只能防止新请求选中可观察到的退休树，不能保证发送后 Client 不被替换；不能将这两次聚焦测试通过当成根因已经修复。
+- Desktop Control 现使用原生 request lifecycle 记录本 Client 发出的 Host 请求 ID。原生窗口投递先处理；如果该 ID 仍未完成，通过原 Client 的原生 `onResult/onError` 接收相同响应及 metrics。退休只改变新请求路由，已有响应继续归原 Client；完成后解除保留的监听。按 Host、ID 和原生窗口来源边界校验，不接管普通原生请求、不发新请求、不重试、不改变 busy 或事务结果。复用浏览器安全的已提交 Fiber 发现，Renderer 不引入 Node 或原生 SDK。
+- Settings 在用户明确再次点击切换时清除上一次错误；busy 拒绝本身仍显示并解锁按钮，不自动重试。相应 Playwright 回归先失败再修复。
+- 最新正式源码 `npm start` fresh build 后，Desktop **26.908.40834** 实际工作区和 3 个已接入账号正常。A→B 提交并改变原生身份；立即 B→A 收到 **busy，按钮恢复可用**，不再永久等待。在同一个 Settings 页面显式重试成功恢复 A，没有靠重开设置解除等待。
+- 随后同页又完成 A→B→A，两次点击间明确等待 **5 秒**，身份摘要改变并恢复、route 保持；不把这次间隔操作称为“立即两次都提交”。抽样观察 Codex 进程数最大为 1，不是无间隙进程证明。
+- 最终比对用户最初身份基线，A 已恢复；`transaction.json`、`login.json` 均不存在。fresh restart 已清除旧内存探针，最终未安装诊断 observer。切回后一次探针先见主工作区加载状态，额外等待 30 秒后可见编辑器及工作区控件恢复；辅助窗口有编辑器不能单独证明主工作区可用。
+
+本次响应边界聚焦验证：**9 个 Vitest 文件、156 passed；账号页模拟 Playwright 29 passed**。再合并账号及 production Host 组合回归，**38 文件中 37 passed、1 skipped；534 passed、12 skipped**（opt-in 原生 helper／CLI 及平台项），两组不累加。typecheck、lint/boundaries、全仓 format／Rust fmt、OpenSpec strict、diff check 通过。响应所有者测试覆盖成功/busy、发送后更换 Client、正常路径不重复投递、Host/ID/来源隔离、metrics 保全，并执行实际注入表达式。没有重跑全仓或完整 Rust tests；另行复查旧 Model Catalog 用例仍为 6 passed、1 failed，选择失败文案被 missing-Catalog 文案替代，尚未修正。本次真实操作 route 不含持久化 Thread，**仍未验收同一持久化 Thread、系统密钥失败生命周期、完整历史迁移或跨平台联合运行**。大型分块响应跨 Client 替换不在本轮验收范围；缺少原生 lifecycle API 的旧 Desktop 仅保留已有行为，不能宣称具有这项响应保护。
+
+私有脱敏证据：`response-owner-mismatch.json`、`native-response-owner-red.log`、`response-ownership-final-tests.log`、`response-ownership-composed-{manifest.txt,tests.log}`、`response-ownership-catalog-recheck.log`、`response-ownership-final-e2e.log`、`response-ownership-final-real-launch.log`、`response-ownership-final-live-{busy,retry,roundtrip}.json`、`response-ownership-final-identity.json`、`response-ownership-sustained-late.json`。PR 仍不合并、不发布。
+
+## 前一阶段：旧凭据接入与实机启动修正
+
+此节取代下文旧兼容实现的现状描述，不覆盖历史失败记录。
+
+- 已定位原弹框链路：干净旧布局遇到全局同名进程盘点非空，被错误地作为原生启动硬阻断；Desktop 收到 `Official request failed; retry explicitly` 后进入 `NSAlert runModal`，CDP 随之无响应。这不是遗漏 Desktop 26.908 兼容补丁的证据。同名盘点只是风险信号，不证明每个进程正在写目标 home。
+- 现将普通原生使用与 Host 凭据变更分开：只有所有已知 home 均无托管状态和旧进程记录的干净布局，才能在其他 CLI 存在时保持原生启动；此模式不创建 Vault／OS key，禁用账号导入、切换及原生登录／退出。普通原生认证刷新仍归 Codex 自身管理。未决事务、旧进程、盘点失败和不安全布局没有被放行；这些硬阻断场景的 Desktop 非阻塞呈现仍需后续验证，不能把本次正常启动通过当作所有恢复 UI 都已通过。
+- 旧账号当前 home 等于正式 home 时，新增凭据级接入：正常恢复和原生身份／file 存储验证后退出后台，双重校验来源与准入，以单次 Vault CAS 保存缺失凭据及登记摘要。保留完整字节及未知字段、不覆盖已有更新授权、不重启后复活已删除账号。全部旧源和历史不移动、不改写；`legacyHistoryPreserved` 明确历史尚未合并。
+- 合成 production Host 组合测试已覆盖旧 A→B→A、重启、单正式 home／最多一个 owned backend、提交丢失响应、来源变化、后出现 writer 与未决事务。这些不是用户真实身份的切换验收。
+- 精确版本准入加入当前 `0.154.0-alpha.6.2`，修正 CLI prerelease 解析。用真实 CLI、真实 compiled helper、临时 signed-out home、假密钥和拒绝外网的环境验证 explicit-file 与 native-default 两种配置，**2/2 通过**。原生默认 `config/read` 实际报告 `file`，没有为验证改写用户的存储配置；不代表真实 OAuth 或系统 keyring 生命周期已验证。
+- 用户环境为 Desktop **26.908.40834**。两次正式 `npm start` fresh build 后均实际进入原有工作区，CDP 检测到可见编辑器和工作区控件，无登录页或启动错误；第二次另等 30 秒复查仍通过。真实 Host Settings 的 shadow DOM 中 Accounts 页展示 competing-writer 提示，Add 禁用。不是仅依据 Launcher ready 或命令退出码判定。
+- 两次启动后，用户原生 `auth.json` 与旧 `accounts.json`／`thread-accounts.json` 指纹保持不变，正式 home 中没有创建托管账号目录。第一次前后 `config.toml` 字节指纹变化，具体写入方仍未定位；第二次前后 TOML 顶层值摘要无变化，`cli_auth_credentials_store` 未被显式改动。不能称全部配置字节未变。
+
+本轮验证（各集合有重叠，不相加）：
+
+| 验证 | 本轮结果 |
+| --- | --- |
+| 账号、Host 组合及 Renderer／contracts 聚焦 Vitest | 31 文件中 30 passed、1 skipped；424 passed、12 skipped（包含 opt-in native helper／CLI 与平台项） |
+| 显式真实 compiled private-file helper | 12 passed、2 Windows-only skipped |
+| 当前真实 CLI／隔离 signed-out 生命周期 | 2 passed；假密钥，无真实登录或推理 |
+| 两份模拟 Desktop Playwright | 45 passed，包含导入后的全局切换及 competing-writer UI |
+| TypeScript／plugins、Renderer、Rust dev 构建 | 两次 `npm start` fresh build 通过，并进行上述实际 UI 检查 |
+| typecheck、lint／boundaries、format／Rust fmt、OpenSpec strict、diff check | 通过 |
+| 既有 Model Catalog 用例单独复查 | 6 passed、1 failed；选择失败文案被 missing-Catalog 文案替代，未把它计作通过 |
+
+没有重跑全仓测试或本轮完整 Rust tests。用户随后明确授权起停测试相关进程：先停止 Desktop，再正常终止剩余 2 个 Codex 进程（无需强杀），确认盘点为空；fresh build 后实际进入托管模式，系统密钥支持的 Vault 已建立，Settings 显示 3 个账号与 2 个可切换按钮。真实 A→B 成功，正式 `auth.json` 的身份摘要改变；重新打开 Settings 并等待后台查询结束后，显式 B→A 也成功，身份摘要恢复。没有推理、删除账号、移动旧历史或手动复制凭据。进程抽样观察最大为 1；这不是连续无间隙的进程证明，也不替代结构和退出证明测试。
+
+连续快速 A→B→A 尚未通过：第二次操作有可重复的等待不结束。临时、脱敏边界探针已确认 Host 收到请求，返回 busy，且错误帧写出；Renderer 的 request sender 和 Settings scope 只有 enter、没有 rejection/completion。因此不是凭据事务挂起，也不是 scope 收到错误后因 runLatest 失效而丢弃 UI 回调。该次拒绝没有创建 Journal 或替换 B 凭据。重新打开 Settings 后可显式切回 A；最近检查已经恢复原账号 A。探针还发现旧 busy 文案可能在新操作等待期间保留，测试不能因此提前判断本次操作失败。
+
+Host 与 Renderer 的临时 compiled 探针已逐字节恢复；当时运行的进程仍含内存中的诊断代码，最终实机验收必须重新从正式源码构建启动。曾有一次临时探针引用错误的私有字段而未通过 JS 解析，已恢复后修正并先做语法检查；不将该诊断工具故障算作生产启动回归。真实连续切换、同一持久化 Thread 连续性、系统密钥拒绝／锁定生命周期、完整多 home 历史迁移和跨平台联合验收仍未完成；PR 不合并、不发布。
+
+私有证据位于 `/tmp/codexhost-native-accounts-tasks/`：`adoption-final-test-manifest.txt`、`adoption-final-tests.log`、`adoption-current-cli-final.log`、`adoption-native-files-final.log`、`adoption-final-e2e.log`、`adoption-live-repeat.json`、`adoption-live-sustained.json`、`adoption-catalog-recheck.log`；真实 Settings 探针仅记录布尔值与计数，不输出个人资料。
 
 ## 已执行验证
 

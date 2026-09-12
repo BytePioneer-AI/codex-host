@@ -113,6 +113,7 @@ export class NativeCodexAccounts implements CodexAccountControl {
       phase,
       revision: this.#runtime.gate.revision + this.#lastVault.revision,
       cleanupRequired: this.#cleanupRequired,
+      ...(this.#lastVault.legacyRegistryDigest ? { legacyHistoryPreserved: true } : {}),
       ...(this.#pending
         ? { pendingOperation: { operationId: this.#pending.operationId, kind: this.#pending.kind } }
         : {}),

@@ -22,6 +22,7 @@ export {
   coalesceFileChanges,
   diffText,
   ensureGitDiffHeader,
+  extractContentFromUnifiedDiff,
   fileChangeFromTool,
   normalizeDisplayPath,
   projectHistoricalTurn,

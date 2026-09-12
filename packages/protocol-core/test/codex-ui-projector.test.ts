@@ -1654,9 +1654,8 @@ describe("Codex UI projector", () => {
         changes: Array<{ path: string; kind: { type: string }; diff: string }>;
       };
       expect(patchParams.changes[0]?.path).toBe("sample.txt");
-      expect(patchParams.changes[0]?.diff).toContain("diff --git a/sample.txt b/sample.txt");
-      expect(patchParams.changes[0]?.diff).toContain("@@ -0,0 +1 @@");
-      expect(patchParams.changes[0]?.diff).toContain("+This is a sample file.");
+      expect(patchParams.changes[0]?.kind.type).toBe("add");
+      expect(patchParams.changes[0]?.diff).toBe("This is a sample file.");
 
       const diffMsg = started.messages.find((m) => m.method === "turn/diff/updated");
       expect(diffMsg).toBeDefined();
@@ -1822,6 +1821,55 @@ describe("Codex UI projector", () => {
       expect(gitHeaders).toHaveLength(1);
       expect(lastDiff).toContain("-count = 0");
       expect(lastDiff).toContain("+count = 10");
+    });
+
+    it("projects file creation with pure file content in item change to avoid 4 extra header lines in Desktop code box", () => {
+      const p = new CodexTurnProjector({
+        threadId: "thread-sample",
+        turnId,
+        cwd: "D:\\CodeProject\\test",
+        startedAtMs: 1_000,
+      });
+
+      p.project({ type: "turn.started", turnId });
+
+      const content = "这是一个示例文件。\n\n创建日期：2026-09-12\n用途：演示在当前项目目录中创建普通文本文件。";
+      const started = p.project({
+        type: "item.started",
+        turnId,
+        item: {
+          type: "toolExecution",
+          itemId: itemId("write-sample"),
+          toolName: "Write",
+          arguments: {
+            file_path: "D:\\CodeProject\\test\\sample.txt",
+            content,
+          },
+        },
+      });
+
+      // Item patch must contain ONLY the file content, without git headers (diff --git, ---, +++, @@)
+      const patchMsg = started.messages.find((m) => m.method === "item/fileChange/patchUpdated");
+      expect(patchMsg).toBeDefined();
+      const patchParams = patchMsg?.params as {
+        changes: Array<{ path: string; kind: { type: string }; diff: string }>;
+      };
+      expect(patchParams.changes[0]?.path).toBe("sample.txt");
+      expect(patchParams.changes[0]?.kind.type).toBe("add");
+      expect(patchParams.changes[0]?.diff).toBe(content);
+      expect(patchParams.changes[0]?.diff).not.toContain("diff --git");
+      expect(patchParams.changes[0]?.diff).not.toContain("--- /dev/null");
+      expect(patchParams.changes[0]?.diff).not.toContain("@@");
+
+      // Turn diff must contain full git unified diff
+      const diffMsg = started.messages.find((m) => m.method === "turn/diff/updated");
+      expect(diffMsg).toBeDefined();
+      const turnDiff = (diffMsg?.params as { diff: string }).diff;
+      expect(turnDiff).toContain("diff --git a/sample.txt b/sample.txt");
+      expect(turnDiff).toContain("--- /dev/null");
+      expect(turnDiff).toContain("+++ b/sample.txt");
+      expect(turnDiff).toContain("@@ -0,0 +1,4 @@");
+      expect(turnDiff).toContain("+这是一个示例文件。");
     });
   });
 });

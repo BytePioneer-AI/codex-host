@@ -356,7 +356,13 @@ export interface HostSubagentState {
 export interface HostSubagentDelegationItem {
   type: "subagentDelegation";
   itemId: HostItemId;
-  operation: "spawn" | "send";
+  /**
+   * "close" retires the delegation: the receivers reached a terminal state and
+   * the parent no longer holds a handle on them. Codex keeps a receiver in its
+   * Subagent list until it observes a close, because a receiver that merely
+   * completed can still be sent more input.
+   */
+  operation: "spawn" | "send" | "close";
   prompt?: string;
   subagents: HostSubagentState[];
 }

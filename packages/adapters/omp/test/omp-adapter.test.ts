@@ -605,6 +605,23 @@ describe("OMP Adapter Subagents", () => {
         },
       },
     });
+    const closed = events.find(
+      (event) =>
+        event.type === "item.completed" &&
+        event.snapshot.item.type === "subagentDelegation" &&
+        event.snapshot.item.operation === "close",
+    );
+    expect(closed).toMatchObject({
+      type: "item.completed",
+      snapshot: {
+        item: {
+          type: "subagentDelegation",
+          operation: "close",
+          subagents: [{ nativeSubagentId: "subagent-1", status: "completed" }],
+        },
+        outcome: { status: "succeeded" },
+      },
+    });
     expect(
       events
         .filter((event) => event.type === "subagent.state.changed")

@@ -199,6 +199,38 @@ describe("Antigravity Subagents", () => {
     }
   });
 
+  it("closes a delegation whose child is already terminal when the step finishes", async () => {
+    const { observer, events, completed } = fixture();
+    vi.mocked(subagentRpc).mockResolvedValue(native("IDLE"));
+    vi.mocked(readSubagentTranscript).mockResolvedValue({
+      ok: true,
+      value: parseSubagentTranscript(transcript, parent, child, "completed", process.cwd(), 64_000),
+    });
+    try {
+      observer.handle(step("ACTIVE"));
+      await observer.refresh();
+      expect(observer.state(child)).toMatchObject({ status: "completed" });
+      observer.handle(step("DONE"));
+      expect(completed).toHaveLength(2);
+      expect(completed[1]?.item).toMatchObject({
+        type: "subagentDelegation",
+        operation: "close",
+        subagents: [{ nativeSubagentId: child, status: "completed" }],
+      });
+      const started = events.filter(
+        (event) =>
+          event.type === "item.started" &&
+          event.item.type === "subagentDelegation" &&
+          event.item.operation === "close",
+      );
+      expect(started).toHaveLength(1);
+      observer.finish({ status: "succeeded" });
+      await observer.settled;
+    } finally {
+      observer.stop();
+    }
+  });
+
   it("keeps observation alive after parent completion and does not treat an RPC failure as child success", async () => {
     const { observer } = fixture();
     vi.mocked(subagentRpc).mockRejectedValue(new Error("transient"));

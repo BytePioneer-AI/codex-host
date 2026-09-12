@@ -1955,6 +1955,21 @@ describe("Claude Code HarnessAdapter", () => {
         outcome: { status: "succeeded" },
       },
     });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.started",
+      item: {
+        type: "subagentDelegation",
+        operation: "close",
+        subagents: [{ subagentId: "agent-1", status: "completed" }],
+      },
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.completed",
+      snapshot: {
+        item: { type: "subagentDelegation", operation: "close" },
+        outcome: { status: "succeeded" },
+      },
+    });
 
     transport.finish({ status: "succeeded" });
     expect(await nextEvent(iterator)).toMatchObject({

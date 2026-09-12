@@ -17,6 +17,8 @@ import {
 
 import {
   CodexTurnProjector,
+  coalesceFileChanges,
+  diffText,
   ensureGitDiffHeader,
   fileChangeFromTool,
   normalizeDisplayPath,
@@ -1660,6 +1662,166 @@ describe("Codex UI projector", () => {
       expect(diffMsg).toBeDefined();
       const diffParams = diffMsg?.params as { diff: string };
       expect(diffParams.diff).toContain("diff --git a/sample.txt b/sample.txt");
+    });
+
+    it("coalesces 10 sequential chained edits to the same file into a single net diff", () => {
+      const changes = Array.from({ length: 10 }, (_, i) => {
+        const from = `count = ${i}`;
+        const to = `count = ${i + 1}`;
+        const toolChanges = fileChangeFromTool(
+          "edit_file",
+          {
+            path: "D:\\CodeProject\\test\\sample.txt",
+            old_string: from,
+            new_string: to,
+          },
+          "D:\\CodeProject\\test",
+        );
+        expect(toolChanges).not.toBeNull();
+        return toolChanges?.[0] ?? { path: "", kind: "update", unifiedDiff: "" };
+      });
+
+      expect(changes).toHaveLength(10);
+      const coalesced = coalesceFileChanges(changes);
+      expect(coalesced).toHaveLength(1);
+      expect(coalesced[0]?.path).toBe("sample.txt");
+      expect(coalesced[0]?.kind).toBe("update");
+      expect(coalesced[0]?.unifiedDiff).toContain("-count = 0");
+      expect(coalesced[0]?.unifiedDiff).toContain("+count = 10");
+
+      const diff = diffText(changes);
+      const gitHeaders = diff.match(/^diff --git\s+/gm);
+      expect(gitHeaders).toHaveLength(1);
+      expect(diff).toContain("-count = 0");
+      expect(diff).toContain("+count = 10");
+    });
+
+    it("coalesces file creation followed by edits into a single add change", () => {
+      const addChanges = fileChangeFromTool(
+        "write_to_file",
+        {
+          path: "sample.txt",
+          content: "initial version",
+        },
+      );
+      expect(addChanges).not.toBeNull();
+      const add = addChanges?.[0] ?? { path: "", kind: "add", unifiedDiff: "" };
+
+      const updateChanges = fileChangeFromTool(
+        "edit_file",
+        {
+          path: "sample.txt",
+          old_string: "initial version",
+          new_string: "final version",
+        },
+      );
+      expect(updateChanges).not.toBeNull();
+      const update = updateChanges?.[0] ?? { path: "", kind: "update", unifiedDiff: "" };
+
+      const coalesced = coalesceFileChanges([add, update]);
+      expect(coalesced).toHaveLength(1);
+      expect(coalesced[0]?.kind).toBe("add");
+      expect(coalesced[0]?.unifiedDiff).toContain("--- /dev/null");
+      expect(coalesced[0]?.unifiedDiff).toContain("+final version");
+    });
+
+    it("coalesces disjoint edits on the same file under a single diff header", () => {
+      const edit1Changes = fileChangeFromTool(
+        "edit_file",
+        {
+          path: "sample.txt",
+          old_string: "function foo() {}",
+          new_string: "function foo() { return 1; }",
+        },
+      );
+      const edit2Changes = fileChangeFromTool(
+        "edit_file",
+        {
+          path: "sample.txt",
+          old_string: "function bar() {}",
+          new_string: "function bar() { return 2; }",
+        },
+      );
+      expect(edit1Changes).not.toBeNull();
+      expect(edit2Changes).not.toBeNull();
+      const edit1 = edit1Changes?.[0] ?? { path: "", kind: "update", unifiedDiff: "" };
+      const edit2 = edit2Changes?.[0] ?? { path: "", kind: "update", unifiedDiff: "" };
+
+      const coalesced = coalesceFileChanges([edit1, edit2]);
+      expect(coalesced).toHaveLength(1);
+      const diff = coalesced[0]?.unifiedDiff ?? "";
+      const headers = diff.match(/^diff --git\s+/gm);
+      expect(headers).toHaveLength(1);
+      expect(diff).toContain("+function foo() { return 1; }");
+      expect(diff).toContain("+function bar() { return 2; }");
+    });
+
+    it("coalesces interleaved edits to different files preserving first appearance order", () => {
+      const a1 =
+        fileChangeFromTool("edit_file", { path: "a.txt", old_string: "a0", new_string: "a1" })?.[
+          0
+        ] ?? { path: "a.txt", kind: "update", unifiedDiff: "" };
+      const b1 =
+        fileChangeFromTool("edit_file", { path: "b.txt", old_string: "b0", new_string: "b1" })?.[
+          0
+        ] ?? { path: "b.txt", kind: "update", unifiedDiff: "" };
+      const a2 =
+        fileChangeFromTool("edit_file", { path: "a.txt", old_string: "a1", new_string: "a2" })?.[
+          0
+        ] ?? { path: "a.txt", kind: "update", unifiedDiff: "" };
+
+      const coalesced = coalesceFileChanges([a1, b1, a2]);
+      expect(coalesced).toHaveLength(2);
+      expect(coalesced[0]?.path).toBe("a.txt");
+      expect(coalesced[0]?.unifiedDiff).toContain("-a0");
+      expect(coalesced[0]?.unifiedDiff).toContain("+a2");
+      expect(coalesced[1]?.path).toBe("b.txt");
+      expect(coalesced[1]?.unifiedDiff).toContain("-b0");
+      expect(coalesced[1]?.unifiedDiff).toContain("+b1");
+    });
+
+    it("emits single aggregated diff in turn/diff/updated across 10 sequential tool calls", () => {
+      const proj = new CodexTurnProjector({
+        threadId: "thread-1",
+        turnId,
+        cwd: "D:\\CodeProject\\test",
+        startedAtMs: 1_000,
+      });
+
+      proj.project({
+        type: "turn.started",
+        turnId,
+      });
+
+      let lastDiffMsg: { diff: string } | undefined;
+
+      for (let i = 0; i < 10; i++) {
+        const res = proj.project({
+          type: "item.started",
+          turnId,
+          item: {
+            type: "toolExecution",
+            itemId: itemId(`edit-${i}`),
+            toolName: "edit_file",
+            arguments: {
+              path: "D:\\CodeProject\\test\\sample.txt",
+              old_string: `count = ${i}`,
+              new_string: `count = ${i + 1}`,
+            },
+          },
+        });
+
+        const diffMsg = res.messages.find((m) => m.method === "turn/diff/updated");
+        expect(diffMsg).toBeDefined();
+        lastDiffMsg = diffMsg?.params as { diff: string };
+      }
+
+      expect(lastDiffMsg).toBeDefined();
+      const lastDiff = lastDiffMsg?.diff ?? "";
+      const gitHeaders = lastDiff.match(/^diff --git\s+/gm);
+      expect(gitHeaders).toHaveLength(1);
+      expect(lastDiff).toContain("-count = 0");
+      expect(lastDiff).toContain("+count = 10");
     });
   });
 });

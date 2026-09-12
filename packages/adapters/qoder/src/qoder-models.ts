@@ -9,7 +9,6 @@ import {
   type HarnessModelRef,
 } from "@codexhost/shared-contracts";
 import { z } from "zod";
-import type { QoderModelInfo } from "./qoder-sdk-types.js";
 
 const QODER_MODEL_REF_PREFIX = "qoder-model-v1.";
 const QODER_MODEL_VALUE_MAX_LENGTH = 512;
@@ -55,18 +54,20 @@ export function parseQoderModelCatalog(rawModels?: unknown[]): HarnessModelCatal
     for (const item of rawModels) {
       if (typeof item === "object" && item !== null) {
         const raw = item as Record<string, unknown>;
-        const value = typeof raw.value === "string" && raw.value.trim().length > 0
-          ? raw.value.trim()
-          : typeof raw.id === "string" && raw.id.trim().length > 0
-            ? raw.id.trim()
-            : undefined;
+        const value =
+          typeof raw.value === "string" && raw.value.trim().length > 0
+            ? raw.value.trim()
+            : typeof raw.id === "string" && raw.id.trim().length > 0
+              ? raw.id.trim()
+              : undefined;
         if (!value) continue;
 
-        const labelCandidate = typeof raw.displayName === "string" && raw.displayName.trim().length > 0
-          ? raw.displayName.trim()
-          : typeof raw.name === "string" && raw.name.trim().length > 0
-            ? raw.name.trim()
-            : value;
+        const labelCandidate =
+          typeof raw.displayName === "string" && raw.displayName.trim().length > 0
+            ? raw.displayName.trim()
+            : typeof raw.name === "string" && raw.name.trim().length > 0
+              ? raw.name.trim()
+              : value;
         const label = labelCandidate.slice(0, HARNESS_MODEL_LABEL_MAX_LENGTH);
 
         const ref = encodeQoderModelRef(value);
@@ -90,7 +91,7 @@ export function parseQoderModelCatalog(rawModels?: unknown[]): HarnessModelCatal
     }
   }
 
-  const defaultModel = models[0]!.ref;
+  const defaultModel = models[0]?.ref;
 
   return harnessModelCatalogSchema.parse({
     models,

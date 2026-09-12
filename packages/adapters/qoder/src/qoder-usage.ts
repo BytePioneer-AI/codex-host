@@ -98,7 +98,8 @@ export class QoderUsageTracker {
 
     if (this.#inputTokens !== undefined) candidate.inputTokens = this.#inputTokens;
     if (this.#outputTokens !== undefined) candidate.outputTokens = this.#outputTokens;
-    if (this.#cachedInputTokens !== undefined) candidate.cachedInputTokens = this.#cachedInputTokens;
+    if (this.#cachedInputTokens !== undefined)
+      candidate.cachedInputTokens = this.#cachedInputTokens;
     if (this.#cacheWriteInputTokens !== undefined)
       candidate.cacheWriteInputTokens = this.#cacheWriteInputTokens;
     if (this.#totalCredits !== undefined) candidate.totalCredits = this.#totalCredits;

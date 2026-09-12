@@ -7,17 +7,12 @@ import type {
   InspectHarnessInput,
   OpenSessionInput,
 } from "@codexhost/harness-adapter";
-import {
-  harnessIdSchema,
-  type HarnessId,
-} from "@codexhost/shared-contracts";
+import { harnessIdSchema, type HarnessId } from "@codexhost/shared-contracts";
 import { query as sdkQuery } from "@qoder-ai/qoder-agent-sdk";
 
-import {
-  CODEXHOST_QODER_COMMAND,
-  resolveQoderExecutable,
-} from "./qoder-command.js";
+import { CODEXHOST_QODER_COMMAND, resolveQoderExecutable } from "./qoder-command.js";
 import { parseQoderModelCatalog } from "./qoder-models.js";
+import { QODER_PERMISSION_MODE_CATALOG } from "./qoder-permission-modes.js";
 import type { QoderModelInfo, QoderQueryFactory } from "./qoder-sdk-types.js";
 import { QoderSession } from "./qoder-sdk-transport.js";
 
@@ -88,11 +83,29 @@ export class QoderAdapter implements HarnessAdapter {
           } catch {
             // Keep fallback catalog on error
           }
+        } else {
+          try {
+            const probeQuery = this.#queryFactory({
+              prompt: "",
+              options: {
+                cwd: input?.cwd ?? process.cwd(),
+                pathToQoderCLIExecutable: executable,
+                ...(this.#environment ? { env: this.#environment } : {}),
+              },
+            });
+            if (probeQuery.getAvailableModels) {
+              rawModels = await probeQuery.getAvailableModels({ fetchStrategy: "cache" });
+            }
+            await probeQuery.close();
+          } catch {
+            // Keep fallback catalog on error
+          }
         }
 
-        const result: HarnessInspection = {
+        const result: Extract<HarnessInspection, { status: "ready" }> = {
           status: "ready",
           catalog: parseQoderModelCatalog(rawModels),
+          permissionModes: QODER_PERMISSION_MODE_CATALOG,
           capabilities: {
             configuration: {
               selectModel: true,
@@ -110,7 +123,7 @@ export class QoderAdapter implements HarnessAdapter {
 
         this.#inspections.set(cacheKey, { result, refreshAfter: now + 30_000 });
         return result;
-      } catch (err) {
+      } catch {
         const errorResult: HarnessInspection = {
           status: "notInstalled",
           error: {

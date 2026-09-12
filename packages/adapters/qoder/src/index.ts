@@ -12,10 +12,11 @@ export {
   QODER_DEFAULT_MODEL_REF,
 } from "./qoder-models.js";
 export {
-  PushableInput,
-  QoderSession,
-  type QoderSessionOptions,
-} from "./qoder-sdk-transport.js";
+  QODER_DEFAULT_PERMISSION_MODE_ID,
+  QODER_PERMISSION_MODE_CATALOG,
+  mapToQoderPermissionMode,
+} from "./qoder-permission-modes.js";
+export { PushableInput, QoderSession, type QoderSessionOptions } from "./qoder-sdk-transport.js";
 export type {
   CanUseTool,
   CanUseToolContext,
@@ -32,9 +33,5 @@ export type {
   SDKUserMessage,
 } from "./qoder-sdk-types.js";
 export { QoderUsageTracker } from "./qoder-usage.js";
-export {
-  mapQoderException,
-  mapQoderExitCode,
-  mapQoderResultError,
-} from "./qoder-errors.js";
+export { mapQoderException, mapQoderExitCode, mapQoderResultError } from "./qoder-errors.js";
 export { createHarnessAdapter } from "./plugin.js";

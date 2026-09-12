@@ -9,12 +9,14 @@ import type { Readable, Writable } from "node:stream";
 
 import type {
   HarnessAdapter,
+  HarnessGoalCapability,
   HarnessOutput,
   HarnessSession,
   HostApprovalInteraction,
   HostSubagentState,
   HostApprovalResponse,
   HostQuestionInteraction,
+  SessionGoalChangedEvent,
 } from "@codexhost/harness-adapter";
 import { parseHostUsage, type HostUsage } from "@codexhost/harness-adapter";
 import type { HarnessPluginContext } from "@codexhost/harness-adapter/plugin";
@@ -100,6 +102,12 @@ import {
   type ExternalThreadLocation,
   type ExternalThreadResolution,
 } from "./external-thread-runtime.js";
+import {
+  externalThreadGoalFromHarness,
+  parseThreadGoalSetParams,
+  projectThreadGoal,
+  settledGoalStatus,
+} from "./external-thread-goal.js";
 import { ExternalSteerError, ExternalTurnSteering } from "./external-turn-steering.js";
 import {
   DELEGATION_CLI_PATH_ENV,
@@ -378,6 +386,9 @@ const EXPLICIT_EXTERNAL_THREAD_METHODS = new Set([
   "thread/archive",
   "thread/delete",
   "thread/fork",
+  "thread/goal/clear",
+  "thread/goal/get",
+  "thread/goal/set",
   "thread/items/list",
   "thread/metadata/update",
   "thread/name/set",
@@ -465,6 +476,10 @@ function turnProjectionGate(): TurnProjectionGate {
     resolve = complete;
   });
   return { promise, resolve };
+}
+
+function inferFileChangesFromTools(thread: ExternalThread): boolean {
+  return !thread.session.capabilities.fileChanges?.reliable;
 }
 
 class OrderedWriter {
@@ -1234,6 +1249,24 @@ export class AppServerHost {
           } else {
             await this.#deleteExternalThread(request, location);
           }
+          continue;
+        }
+      }
+      if (
+        request.method === "thread/goal/get" ||
+        request.method === "thread/goal/set" ||
+        request.method === "thread/goal/clear"
+      ) {
+        const params = requestObject(request);
+        const resolution =
+          typeof params.threadId === "string"
+            ? await this.#resolveExternalThread(params.threadId)
+            : ({ kind: "official" } as const);
+        if (await this.#writeResolutionError(request, resolution)) continue;
+        if (resolution.kind === "external") {
+          this.#dispatchDesktopRequest(() =>
+            this.#handleExternalGoalRequest(request, resolution.thread),
+          );
           continue;
         }
       }
@@ -2768,6 +2801,7 @@ export class AppServerHost {
         turnId,
         cwd: thread.cwd,
         startedAtMs: Date.now(),
+        inferFileChangesFromTools: inferFileChangesFromTools(thread),
       }),
     };
     const gate = turnProjectionGate();
@@ -3401,6 +3435,317 @@ export class AppServerHost {
     });
   }
 
+  /**
+   * Codex Desktop's Goal surface, served from the Harness-owned Goal. Host
+   * never emulates a Goal: Harnesses without native Goal control get an
+   * explicit refusal, and Desktop-only statuses (`paused`) stay in Host.
+   */
+  async #handleExternalGoalRequest(request: JsonRpcRequest, thread: ExternalThread): Promise<void> {
+    const control = thread.session.goal;
+    if (!control) {
+      // Reading is harmless (Desktop hydrates after every resume); control is not.
+      await this.#writer.json(
+        request.method === "thread/goal/get"
+          ? rpcEnvelope(request, { result: { goal: null } })
+          : rpcError(request, -32078, "External Harness does not support Goals"),
+      );
+      return;
+    }
+    try {
+      await this.#loadExternalGoal(thread, control);
+      if (request.method === "thread/goal/get") {
+        await this.#writer.json(
+          rpcEnvelope(request, { result: { goal: this.#projectExternalGoal(thread) } }),
+        );
+        return;
+      }
+      if (request.method === "thread/goal/clear") {
+        await this.#clearExternalGoal(request, thread, control);
+        return;
+      }
+      await this.#setExternalGoal(request, thread, control);
+    } catch (error) {
+      await this.#writer.json(rpcError(request, -32073, errorMessage(error)));
+    } finally {
+      this.#signalActiveWorkChanged();
+    }
+  }
+
+  async #loadExternalGoal(thread: ExternalThread, control: HarnessGoalCapability): Promise<void> {
+    if (thread.goalLoaded) return;
+    const result = await control.read();
+    if (!result.ok) throw new Error(result.error.message);
+    thread.goal = result.value
+      ? {
+          ...externalThreadGoalFromHarness(result.value, null, thread.latestUsage, Date.now()),
+          // Native evidence survives Host restarts, but no Turn is running yet.
+          status: "paused",
+        }
+      : null;
+    thread.goalLoaded = true;
+  }
+
+  #projectExternalGoal(thread: ExternalThread): JsonObject | null {
+    return thread.goal
+      ? projectThreadGoal({
+          threadId: thread.id,
+          goal: thread.goal,
+          usage: thread.latestUsage,
+          nowMs: Date.now(),
+        })
+      : null;
+  }
+
+  async #writeExternalGoalUpdated(thread: ExternalThread): Promise<void> {
+    const goal = this.#projectExternalGoal(thread);
+    if (!goal) return;
+    await this.#writer.json({
+      method: "thread/goal/updated",
+      params: { threadId: thread.id, turnId: thread.activeTurnId, goal },
+    });
+  }
+
+  async #writeExternalGoalCleared(thread: ExternalThread): Promise<void> {
+    await this.#writer.json({ method: "thread/goal/cleared", params: { threadId: thread.id } });
+  }
+
+  #externalThreadBusy(thread: ExternalThread): boolean {
+    return (
+      thread.running ||
+      thread.activeTurnId !== null ||
+      this.#externalSteering.hasPending(thread.id) ||
+      this.#pendingExternalCommandRequests.has(thread.id)
+    );
+  }
+
+  async #setExternalGoal(
+    request: JsonRpcRequest,
+    thread: ExternalThread,
+    control: HarnessGoalCapability,
+  ): Promise<void> {
+    let params: ReturnType<typeof parseThreadGoalSetParams>;
+    try {
+      params = parseThreadGoalSetParams(request.params);
+    } catch (error) {
+      await this.#writer.json(rpcError(request, -32602, errorMessage(error)));
+      return;
+    }
+    const current = thread.goal;
+    if (params.objective !== null) {
+      if (params.status !== null && params.status !== "active") {
+        await this.#writer.json(
+          rpcError(request, -32602, "A Goal objective can only be set with status active"),
+        );
+        return;
+      }
+      await this.#startExternalGoalTurn(request, thread, control, {
+        objective: params.objective,
+        tokenBudget:
+          params.tokenBudget === undefined ? (current?.tokenBudget ?? null) : params.tokenBudget,
+        createdAtMs:
+          current && current.objective === params.objective ? current.createdAtMs : Date.now(),
+      });
+      return;
+    }
+    if (!current) {
+      await this.#writer.json(
+        rpcError(request, -32602, `cannot update goal for thread ${thread.id}: no goal exists`),
+      );
+      return;
+    }
+    if (
+      params.status === "active" &&
+      current.status !== "active" &&
+      !this.#externalThreadBusy(thread)
+    ) {
+      // Resuming re-registers the objective natively so the Harness starts working again.
+      await this.#startExternalGoalTurn(request, thread, control, {
+        objective: current.objective,
+        tokenBudget: params.tokenBudget === undefined ? current.tokenBudget : params.tokenBudget,
+        createdAtMs: current.createdAtMs,
+      });
+      return;
+    }
+    if (params.status !== null && params.status !== "active" && params.status !== "paused") {
+      await this.#writer.json(
+        rpcError(request, -32602, `Host cannot set External Thread Goal status ${params.status}`),
+      );
+      return;
+    }
+    if (params.status === null && params.tokenBudget === undefined) {
+      await this.#writer.json(rpcError(request, -32602, "thread/goal/set changes nothing"));
+      return;
+    }
+    thread.goal = {
+      ...current,
+      ...(params.status ? { status: params.status } : {}),
+      ...(params.tokenBudget !== undefined ? { tokenBudget: params.tokenBudget } : {}),
+      updatedAtMs: Date.now(),
+    };
+    await this.#writer.json(
+      rpcEnvelope(request, { result: { goal: this.#projectExternalGoal(thread) } }),
+    );
+    await this.#writeExternalGoalUpdated(thread);
+  }
+
+  async #startExternalGoalTurn(
+    request: JsonRpcRequest,
+    thread: ExternalThread,
+    control: HarnessGoalCapability,
+    input: { objective: string; tokenBudget: number | null; createdAtMs: number },
+  ): Promise<void> {
+    if (this.#closeRequested || this.#externalRuntime.get(thread.id) !== thread) {
+      await this.#writer.json(rpcError(request, -32073, "External Thread is no longer available"));
+      return;
+    }
+    if (this.#externalThreadBusy(thread)) {
+      await this.#writer.json(
+        rpcError(request, -32072, "External Thread already has an active Turn"),
+      );
+      return;
+    }
+    const turnId = hostTurnIdSchema.parse(randomUUID());
+    // The Harness starts the Goal Turn itself; Desktop already shows the
+    // objective it typed, so the Turn carries no user input.
+    const projection: ProjectedTurn = {
+      projector: new CodexTurnProjector({
+        threadId: thread.id,
+        turnId,
+        cwd: thread.cwd,
+        startedAtMs: Date.now(),
+        inferFileChangesFromTools: inferFileChangesFromTools(thread),
+      }),
+    };
+    const gate = turnProjectionGate();
+    thread.running = true;
+    thread.activeTurnId = turnId;
+    thread.projectedTurns.set(turnId, projection);
+    thread.responseGates.set(turnId, gate);
+    let result: Awaited<ReturnType<HarnessGoalCapability["set"]>>;
+    try {
+      result = await control.set({ turnId, objective: input.objective });
+    } catch (error) {
+      result = {
+        ok: false,
+        error: { code: "nativeFailure", message: errorMessage(error), retryable: false },
+      };
+    }
+    if (!result.ok) {
+      thread.running = false;
+      thread.activeTurnId = null;
+      thread.projectedTurns.delete(turnId);
+      thread.responseGates.delete(turnId);
+      gate.resolve();
+      await this.#writer.json(
+        rpcError(
+          request,
+          result.error.code === "invalidRequest" ? -32602 : -32073,
+          result.error.message,
+        ),
+      );
+      return;
+    }
+    const nowMs = Date.now();
+    thread.goal = {
+      objective: input.objective,
+      status: "active",
+      tokenBudget: input.tokenBudget,
+      createdAtMs: input.createdAtMs,
+      updatedAtMs: nowMs,
+      tokensAtStart: thread.latestUsage?.totalTokens ?? 0,
+      nativeCleared: false,
+    };
+    try {
+      await this.#writer.json(
+        rpcEnvelope(request, { result: { goal: this.#projectExternalGoal(thread) } }),
+      );
+    } finally {
+      gate.resolve();
+    }
+    await this.#writeExternalGoalUpdated(thread);
+  }
+
+  async #clearExternalGoal(
+    request: JsonRpcRequest,
+    thread: ExternalThread,
+    control: HarnessGoalCapability,
+  ): Promise<void> {
+    const current = thread.goal;
+    if (!current) {
+      await this.#writer.json(rpcEnvelope(request, { result: { cleared: false } }));
+      return;
+    }
+    if (!current.nativeCleared) {
+      if (this.#externalThreadBusy(thread)) {
+        await this.#writer.json(
+          rpcError(request, -32072, "External Thread already has an active Turn"),
+        );
+        return;
+      }
+      const result = await control.clear();
+      if (!result.ok) {
+        await this.#writer.json(rpcError(request, -32073, result.error.message));
+        return;
+      }
+    }
+    await this.#writer.json(rpcEnvelope(request, { result: { cleared: true } }));
+    if (thread.goal !== null) {
+      thread.goal = null;
+      await this.#writeExternalGoalCleared(thread);
+    }
+  }
+
+  async #applyHarnessGoalChange(
+    thread: ExternalThread,
+    event: SessionGoalChangedEvent,
+  ): Promise<void> {
+    thread.goalLoaded = true;
+    const previous = thread.goal;
+    if (event.goal) {
+      const next = externalThreadGoalFromHarness(
+        event.goal,
+        previous,
+        thread.latestUsage,
+        Date.now(),
+      );
+      // Native activity while Host shows paused means the Harness resumed it.
+      if (next.status === "paused" && thread.running) next.status = "active";
+      thread.goal = next;
+      if (
+        previous === null ||
+        previous.objective !== next.objective ||
+        previous.status !== next.status
+      ) {
+        await this.#writeExternalGoalUpdated(thread);
+      }
+      return;
+    }
+    if (!previous) return;
+    const status = settledGoalStatus(event.outcome ?? "cleared");
+    if (event.reason) this.#diagnose(`${thread.harnessId} Goal ${event.outcome}: ${event.reason}`);
+    if (status === null) {
+      thread.goal = null;
+      await this.#writeExternalGoalCleared(thread);
+      return;
+    }
+    thread.goal = { ...previous, status, nativeCleared: true, updatedAtMs: Date.now() };
+    await this.#writeExternalGoalUpdated(thread);
+  }
+
+  /** A failed Goal Turn blocks the Goal; an interrupted one leaves it paused. */
+  async #settleExternalGoalAfterTurn(
+    thread: ExternalThread,
+    outcome: { status: string },
+  ): Promise<void> {
+    const goal = thread.goal;
+    if (!goal || goal.status !== "active" || goal.nativeCleared) return;
+    const status =
+      outcome.status === "failed" ? "blocked" : outcome.status === "cancelled" ? "paused" : null;
+    if (status === null) return;
+    thread.goal = { ...goal, status, updatedAtMs: Date.now() };
+    await this.#writeExternalGoalUpdated(thread);
+  }
+
   async #deleteExternalThread(
     request: JsonRpcRequest,
     location: Extract<ExternalThreadLocation, { kind: "external" }>,
@@ -3614,6 +3959,7 @@ export class AppServerHost {
         cwd: thread.cwd,
         startedAtMs: Date.now(),
         initialInput: [{ type: "text", text }],
+        inferFileChangesFromTools: inferFileChangesFromTools(thread),
       }),
     };
     thread.running = true;
@@ -3788,6 +4134,7 @@ export class AppServerHost {
         turnId,
         cwd: thread.cwd,
         startedAtMs,
+        inferFileChangesFromTools: inferFileChangesFromTools(thread),
       }),
     };
     const gate = turnProjectionGate();
@@ -3945,6 +4292,11 @@ export class AppServerHost {
       }
       return;
     }
+    if (event.type === "session.goal.changed") {
+      if (this.#externalRuntime.get(thread.id) !== thread) return;
+      await this.#applyHarnessGoalChange(thread, event);
+      return;
+    }
     if (event.type === "session.usage.changed") {
       if (this.#externalRuntime.get(thread.id) !== thread) return;
       thread.latestUsage = event.usage;
@@ -4020,6 +4372,7 @@ export class AppServerHost {
           cwd: thread.cwd,
           startedAtMs: Date.now(),
           initialInput: event.input,
+          inferFileChangesFromTools: inferFileChangesFromTools(thread),
         }),
       };
       thread.running = true;
@@ -4096,6 +4449,7 @@ export class AppServerHost {
     }
     for (const message of result.messages) await this.#writer.json(message);
     if (event.type === "turn.completed") {
+      await this.#settleExternalGoalAfterTurn(thread, event.outcome);
       await this.#setThreadStatus(
         thread,
         this.#hasRunningSubagents(thread.id)

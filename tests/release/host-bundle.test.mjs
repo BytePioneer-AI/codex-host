@@ -157,7 +157,7 @@ describe("release Host and independent plugin Bundles", () => {
         repositoryRoot,
         outputPath: path.join(app, "host-runtime.mjs"),
       });
-      expect(hostAudit.runtimePackages).toEqual(["ws", "zod"]);
+      expect(hostAudit.runtimePackages).toEqual(["diff", "ws", "zod"]);
       const pluginAudits = await buildPreinstalledHarnessPlugins({
         repositoryRoot,
         outputDirectory: path.join(app, "plugins"),

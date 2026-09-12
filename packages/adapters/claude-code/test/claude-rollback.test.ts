@@ -91,6 +91,7 @@ async function fixture(turns = 1) {
     readSessionMessages: vi.fn(async ({ sessionId }) =>
       structuredClone(histories.get(sessionId) ?? []),
     ),
+    readGoalRecords: async () => [],
     readSubagentMessages: async () => [],
     createTransport: vi.fn((input) => {
       let permissionMode = input.permissionMode;

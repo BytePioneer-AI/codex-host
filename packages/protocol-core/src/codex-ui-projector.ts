@@ -31,7 +31,7 @@ import {
   projectCodexQuestionRequest,
   type CodexQuestionRequestProjection,
 } from "./codex-question.js";
-
+import { mergeFileChangesByPath } from "./file-change-merge.js";
 export type ProjectableHostEvent =
   | TurnStartedEvent
   | ItemStartedEvent
@@ -59,6 +59,7 @@ export interface HistoricalTurnProjectionInput {
   turnId: HostTurnId;
   cwd: string;
   snapshot: HostTurnSnapshot;
+  inferFileChanges?: boolean;
 }
 
 interface ProjectedItem {
@@ -608,6 +609,7 @@ function historicalStatus(outcome: HistoricalTurnOutcome): "completed" | "interr
 
 export function projectHistoricalTurn(input: HistoricalTurnProjectionInput): JsonObject {
   const { turnId, cwd, snapshot } = input;
+  const inferFileChanges = input.inferFileChanges !== false;
   const startedAtMs = snapshot.startedAtMs;
   const completedAtMs = snapshot.completedAtMs;
   const hasTiming =
@@ -639,7 +641,9 @@ export function projectHistoricalTurn(input: HistoricalTurnProjectionInput): Jso
         if (item.type === "toolExecution") {
           if (isTodoTool(item.toolName) || todoPlanFromTool(item.toolName, item.arguments))
             return [];
-          const changes = fileChangeFromTool(item.toolName, item.arguments);
+          const changes = inferFileChanges
+            ? fileChangeFromTool(item.toolName, item.arguments)
+            : null;
           if (changes) {
             return [
               projectItem(
@@ -651,7 +655,7 @@ export function projectHistoricalTurn(input: HistoricalTurnProjectionInput): Jso
               ),
             ];
           }
-          if (isFileMutatingTool(item.toolName)) return [];
+          if (inferFileChanges && isFileMutatingTool(item.toolName)) return [];
         }
         return item.type === "reasoning"
           ? [
@@ -697,6 +701,7 @@ function diffText(changes: HostFileChange[]): string {
 
 export class CodexTurnProjector {
   readonly #cwd: string;
+  readonly #inferFileChangesFromTools: boolean;
   readonly #input: HostTurnSnapshot["input"];
   readonly #interactions = new Map<HostInteractionId, ProjectedInteraction>();
   readonly #items = new Map<HostItemId, ProjectedItem>();
@@ -715,6 +720,8 @@ export class CodexTurnProjector {
     cwd: string;
     startedAtMs: number;
     initialInput?: HostTurnSnapshot["input"];
+    /** Disable generic Tool inference when the Harness emits native File Changes. */
+    inferFileChangesFromTools?: boolean;
   }) {
     this.#threadId = input.threadId;
     this.#turnId = input.turnId;
@@ -722,6 +729,7 @@ export class CodexTurnProjector {
     this.#input = input.initialInput ?? [];
     this.#startedAtMs = input.startedAtMs;
     this.#startedAt = Math.floor(input.startedAtMs / 1000);
+    this.#inferFileChangesFromTools = input.inferFileChangesFromTools ?? true;
   }
 
   pendingTurn(startedAt: number | null = null): JsonObject {
@@ -884,7 +892,9 @@ export class CodexTurnProjector {
         const plan = planFromTodoValue(event.item.arguments);
         return { messages: plan ? [this.#planUpdated(plan)] : [] };
       }
-      const changes = fileChangeFromTool(event.item.toolName, event.item.arguments);
+      const changes = this.#inferFileChangesFromTools
+        ? fileChangeFromTool(event.item.toolName, event.item.arguments)
+        : null;
       if (changes) {
         projected.wireFileChanges = changes;
         const fileItem = {
@@ -899,7 +909,9 @@ export class CodexTurnProjector {
           ],
         };
       }
-      if (isFileMutatingTool(event.item.toolName)) return { messages: [] };
+      if (this.#inferFileChangesFromTools && isFileMutatingTool(event.item.toolName)) {
+        return { messages: [] };
+      }
     }
     const startedItem = event.item.type === "reasoning" ? { ...event.item, text: "" } : event.item;
     const messages = [this.#startWireItem(projected, startedItem, startedAtMs)];
@@ -1048,7 +1060,9 @@ export class CodexTurnProjector {
             planFromTodoValue(projected.item.arguments) ?? planFromTodoValue(projected.item.output);
           return { messages: plan ? [this.#planUpdated(plan, emittedAtMs)] : [] };
         }
-        const changes = fileChangeFromTool(projected.item.toolName, projected.item.arguments);
+        const changes = this.#inferFileChangesFromTools
+          ? fileChangeFromTool(projected.item.toolName, projected.item.arguments)
+          : null;
         if (changes) {
           projected.wireFileChanges = changes;
           const fileItem = {
@@ -1311,7 +1325,7 @@ export class CodexTurnProjector {
         params: {
           threadId: this.#threadId,
           turnId: this.#turnId,
-          diff: diffText(this.#allFileChanges()),
+          diff: diffText(mergeFileChangesByPath(this.#allFileChanges())),
         },
       },
     ];

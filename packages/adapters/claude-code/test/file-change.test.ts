@@ -30,7 +30,11 @@ describe("Claude native File Changes", () => {
   it("serializes a validated Edit patch relative to the Session cwd", () => {
     const native = parseClaudeNativeFileChange("Edit", {
       filePath: "/workspace/src/sample.txt",
-      originalFile: "ignored",
+      originalFile: "alpha\nbeta\ndelta\n",
+      oldString: "beta",
+      newString: "gamma",
+      replaceAll: false,
+      userModified: false,
       structuredPatch: hunks,
     });
 
@@ -49,6 +53,10 @@ describe("Claude native File Changes", () => {
         "+epsilon",
         "",
       ].join("\n"),
+      snapshot: {
+        before: "alpha\nbeta\ndelta\n",
+        after: "alpha\ngamma\ndelta\n",
+      },
     });
   });
 
@@ -56,6 +64,8 @@ describe("Claude native File Changes", () => {
     const created = parseClaudeNativeFileChange("Write", {
       type: "create",
       filePath: "created.txt",
+      originalFile: null,
+      content: "created\n",
       structuredPatch: [
         { oldStart: 0, oldLines: 0, newStart: 1, newLines: 1, lines: ["+created"] },
       ],
@@ -64,6 +74,7 @@ describe("Claude native File Changes", () => {
       path: "created.txt",
       kind: "add",
       unifiedDiff: expect.stringContaining("--- /dev/null\n+++ b/created.txt"),
+      snapshot: { before: null, after: "created\n" },
     });
 
     expect(
@@ -91,6 +102,23 @@ describe("Claude native File Changes", () => {
     expect(parseClaudeNativeFileChange("Write", { ...valid, type: "delete" })).toBeNull();
     expect(parseClaudeNativeFileChange("Edit", { ...valid, filePath: "bad\npath" })).toBeNull();
     expect(parseClaudeNativeFileChange("Edit", { ...valid, filePath: "   " })).toBeNull();
+  });
+
+  it("keeps the native patch but omits an untrustworthy snapshot", () => {
+    const change = parseClaudeNativeFileChange("Edit", {
+      filePath: "sample.txt",
+      originalFile: "old\n",
+      oldString: "old",
+      newString: "new",
+      replaceAll: false,
+      userModified: true,
+      structuredPatch: [
+        { oldStart: 1, oldLines: 1, newStart: 1, newLines: 1, lines: ["-old", "+new"] },
+      ],
+    });
+
+    expect(change).toMatchObject({ path: "sample.txt", kind: "update" });
+    expect(change).not.toHaveProperty("snapshot");
   });
 
   it("preserves an outside-cwd native path without reading the filesystem", () => {

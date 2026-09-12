@@ -96,6 +96,8 @@ const externalHarnessIds = {
   omp: harnessIdSchema.parse("omp"),
   antigravity: harnessIdSchema.parse("antigravity"),
   "kiro-cli": harnessIdSchema.parse("kiro-cli"),
+  codebuddy: harnessIdSchema.parse("codebuddy"),
+  "cursor-cli": harnessIdSchema.parse("cursor-cli"),
 } as const;
 
 const externalAgents: readonly ExternalRendererAgent[] = [
@@ -107,6 +109,8 @@ const externalAgents: readonly ExternalRendererAgent[] = [
   "omp",
   "antigravity",
   "kiro-cli",
+  "codebuddy",
+  "cursor-cli",
 ];
 type HarnessAvailability = Partial<Record<ExternalRendererAgent, RendererAgentAvailability>>;
 type HarnessAvailabilityErrors = Record<ExternalRendererAgent, CodexhostError | undefined>;
@@ -457,19 +461,25 @@ export function restoredThreadOwnership(inspection: ThreadInspection): RestoredT
       ...(permissionModeId ? { permissionModeId } : {}),
     };
   }
-  if (inspection.harnessId === "kiro-cli") {
+  if (
+    inspection.harnessId === "kiro-cli" ||
+    inspection.harnessId === "codebuddy" ||
+    inspection.harnessId === "cursor-cli"
+  ) {
     const route = decodeHarnessPluginRoute(inspection.transportModelId);
-    if (!route || route.harnessId !== "kiro-cli") {
-      throw new Error("Kiro CLI Thread reported an incompatible transport Model");
+    if (!route || route.harnessId !== inspection.harnessId) {
+      throw new Error("Plugin Thread reported an incompatible transport Model");
     }
     const model = inspection.effectiveModel ?? route.model;
     const thinkingOptionId =
-      inspection.availableThinkingOptions !== undefined
-        ? selectableThinkingOptionId(inspection)
-        : (inspection.effectiveThinkingOptionId ?? route.thinkingOptionId);
+      inspection.harnessId === "cursor-cli"
+        ? undefined
+        : inspection.availableThinkingOptions !== undefined
+          ? selectableThinkingOptionId(inspection)
+          : (inspection.effectiveThinkingOptionId ?? route.thinkingOptionId);
     const permissionModeId = inspection.effectivePermissionModeId ?? route.permissionModeId;
     return {
-      agent: "kiro-cli",
+      agent: inspection.harnessId,
       ...(model ? { model } : {}),
       ...(thinkingOptionId ? { thinkingOptionId } : {}),
       ...(permissionModeId ? { permissionModeId } : {}),
@@ -706,6 +716,8 @@ export function installRendererBindingProbe(
       omp: undefined,
       antigravity: undefined,
       "kiro-cli": undefined,
+      codebuddy: undefined,
+      "cursor-cli": undefined,
     },
     webUi: Object.fromEntries(
       externalAgents.map((agent) => [agent, false]),

@@ -1,0 +1,37 @@
+name: Question / 使用问题
+description: 提问或请求使用帮助。
+title: "[Question] "
+labels: [question]
+body:
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Other / Unknown
+        - Desktop / Renderer
+        - Harness Adapter
+        - Thread / History
+        - Accounts / Usage
+        - Install / Update
+        - Remote
+        - Documentation
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: 请描述问题；不要包含凭据或个人敏感信息。
+    validations:
+      required: true
+  - type: textarea
+    id: tried
+    attributes:
+      label: What have you tried?
+      description: 看过哪些文档、尝试过什么？尚未尝试也可说明。
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: 涉及运行问题时，请提供 codexhost／Desktop／Harness 版本、OS、安装方式和连接方式。

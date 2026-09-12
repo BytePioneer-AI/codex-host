@@ -47,9 +47,9 @@ claiming successful native cancellation.
 
 - Child Threads are read-only. Further instructions go through the parent.
 - This does not enable Autonomous Turns or child-specific Questions.
-  The optional Desktop approvals mode can route Hook requests from registered
-  direct children through the active parent Turn; unknown children are rejected.
-  The Question bridge remains scoped to the parent Turn.
+  Antigravity runs with native Skip permissions; codexhost does not approve or
+  restrict parent or child tool actions. The Question bridge remains scoped to
+  the parent Turn.
 - If a parent result arrives while children are still running, the observer and
   CLI stay alive until they settle or the Session closes. New parent input is
   rejected as busy during that interval.

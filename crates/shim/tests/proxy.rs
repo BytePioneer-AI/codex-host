@@ -2551,14 +2551,18 @@ fn escalates_when_the_official_cli_ignores_sigterm() {
 fn cleans_an_escaped_descendant_after_the_cli_root_exits() {
     let directory = temporary_directory();
     let ready = directory.join("ready");
+    let child_ready = directory.join("child-ready");
+    let observations = directory.join("observations");
     let mut shim = Command::new(shim_path())
         .env(STOCK_CODEX_PATH_ENV, fake_codex_path())
         .env("FAKE_CODEX_SPAWN_CHILD", "1")
         .env("FAKE_CODEX_ROOT_EXIT", "1")
-        .env("FAKE_CODEX_ROOT_EXIT_DELAY_MS", "100")
+        .env("FAKE_CODEX_ROOT_EXIT_ON_INPUT", "1")
+        .env("CODEXHOST_TEST_PROCESS_OBSERVATIONS", &observations)
         .env("FAKE_CODEX_CHILD_NEW_GROUP", "1")
+        .env("FAKE_CODEX_CHILD_READY_PATH", &child_ready)
         .env("FAKE_CODEX_READY_PATH", &ready)
-        .stdin(Stdio::null())
+        .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -2570,6 +2574,31 @@ fn cleans_an_escaped_descendant_after_the_cli_root_exits() {
         .expect("child identity")
         .parse::<u32>()
         .expect("child PID");
+    assert_eq!(
+        wait_for_file(&child_ready, Duration::from_secs(5)).trim(),
+        child_id.to_string()
+    );
+    // Ignore scans predating the child's completed setpgid. The first new
+    // observation may already be in flight; the second must start after it.
+    let observation_count = || fs::metadata(&observations).map_or(0, |metadata| metadata.len());
+    let previous_observations = observation_count();
+    let started = Instant::now();
+    while observation_count() < previous_observations + 2 {
+        if started.elapsed() >= Duration::from_secs(5) {
+            let _ = shim.kill();
+            let _ = Command::new("/bin/kill")
+                .args(["-KILL", &child_id.to_string()])
+                .status();
+            let _ = shim.wait();
+            panic!("Shim did not observe the fixture before root exit");
+        }
+        thread::sleep(Duration::from_millis(20));
+    }
+    shim.stdin
+        .take()
+        .expect("root release pipe")
+        .write_all(b"x")
+        .expect("release CLI root exit");
 
     let started = Instant::now();
     while shim.try_wait().expect("poll shim").is_none()
@@ -2585,10 +2614,11 @@ fn cleans_an_escaped_descendant_after_the_cli_root_exits() {
         panic!("Shim did not clean escaped descendant");
     }
     let output = shim.wait_with_output().expect("collect descendant output");
+    let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(output.status.success());
     assert!(
-        String::from_utf8_lossy(&output.stderr)
-            .contains("terminated official CLI descendants after root exit")
+        stderr.contains("terminated official CLI descendants after root exit"),
+        "{stderr}"
     );
     assert!(
         !process_exists(child_id),

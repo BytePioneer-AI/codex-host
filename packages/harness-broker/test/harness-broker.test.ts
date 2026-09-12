@@ -44,6 +44,104 @@ afterEach(async () => {
 });
 
 describe("macOS Aqua Harness broker", () => {
+  it("discovers a newly started broker and reconnects on demand after its generation changes", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "cx-broker-restart-"));
+    roots.push(root);
+    const descriptorPath = path.join(root, "broker.json");
+    const socketPath =
+      process.platform === "win32"
+        ? `\\\\.\\pipe\\cx-broker-${randomUUID()}`
+        : path.join(root, "b.sock");
+    const client = new BrokeredHarnessAdapter({ harnessId: "codebuddy", descriptorPath });
+    expect((await client.inspect()).status).toBe("unavailable");
+    let server = await startHarnessBrokerServer({
+      descriptorPath,
+      socketPath,
+      adapter: new FakeHarnessAdapter(harnessIdSchema.parse("codebuddy")),
+    });
+    try {
+      expect((await client.inspect()).status).toBe("ready");
+      await server.close();
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      server = await startHarnessBrokerServer({
+        descriptorPath,
+        socketPath,
+        adapter: new FakeHarnessAdapter(harnessIdSchema.parse("codebuddy")),
+      });
+      expect((await client.inspect({ refresh: true })).status).toBe("ready");
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  });
+  it.each(["codebuddy", "cursor-cli"])(
+    "isolates %s identity and forwards only opted-in delegation environment",
+    async (id) => {
+      const root = await mkdtemp(path.join(os.tmpdir(), "codexhost-broker-multi-"));
+      roots.push(root);
+      const descriptorPath = path.join(root, "broker.json");
+      const socketPath =
+        process.platform === "win32"
+          ? `\\\\.\\pipe\\codexhost-broker-${randomUUID()}`
+          : path.join(root, "broker.sock");
+      const native = new FakeHarnessAdapter(harnessIdSchema.parse(id));
+      const open = vi.spyOn(native, "open");
+      const server = await startHarnessBrokerServer({
+        descriptorPath,
+        socketPath,
+        adapter: native,
+      });
+      const client = new BrokeredHarnessAdapter({
+        descriptorPath,
+        harnessId: id,
+        forwardDelegationEnvironment: true,
+      });
+      const wrong = new BrokeredHarnessAdapter({ descriptorPath });
+      try {
+        expect(server.descriptor.harnessId).toBe(id);
+        expect(await wrong.inspect()).toMatchObject({ status: "unavailable" });
+        const created = await client.open({
+          kind: "create",
+          cwd: "/synthetic",
+          environment: {
+            CODEXHOST_THREAD_ID: "parent",
+            CODEXHOST_RUNTIME_TOKEN: "scoped-test-token",
+            PATH: "/untrusted",
+            HOME: "/another-user",
+          },
+        });
+        expect(created.ok).toBe(true);
+        if (!created.ok) throw Error(created.error.message);
+        expect(created.value.harnessId).toBe(id);
+        expect(open.mock.calls[0]?.[0]).toMatchObject({
+          environment: {
+            CODEXHOST_THREAD_ID: "parent",
+            CODEXHOST_RUNTIME_TOKEN: "scoped-test-token",
+          },
+        });
+        expect(open.mock.calls[0]?.[0].environment).not.toHaveProperty("PATH");
+        expect(open.mock.calls[0]?.[0].environment).not.toHaveProperty("HOME");
+        const rejected = await client.open({
+          kind: "resume",
+          cwd: "/synthetic",
+          nativeRef: {
+            harnessId: harnessIdSchema.parse("another-harness"),
+            nativeSessionId: "foreign",
+            formatVersion: 1,
+          },
+        });
+        expect(rejected).toMatchObject({ ok: false, error: { code: "protocolError" } });
+        expect(open).toHaveBeenCalledTimes(1);
+        const stream = created.value.outputs[Symbol.asyncIterator]();
+        await client.close();
+        await expect(stream.next()).resolves.toMatchObject({ done: true });
+      } finally {
+        await client.close();
+        await wrong.close();
+        await server.close();
+      }
+    },
+  );
   it.skipIf(process.platform === "win32")(
     "refuses to replace a non-socket entry at the broker socket path",
     async () => {

@@ -290,7 +290,7 @@ export async function forkAntigravitySession(
 
   const model = sourceSession?.model ?? sourceHistory.model;
   const thinkingOptionId = sourceSession?.thinkingOptionId ?? sourceHistory.thinkingOptionId;
-  const permissionMode = sourceSession?.permissionMode ?? "configured";
+  const permissionMode = sourceSession?.permissionMode ?? "dangerously-skip-permissions";
 
   const forkedHistory = await AntigravityHistory.createDerived({
     environment: sessionEnvironment,

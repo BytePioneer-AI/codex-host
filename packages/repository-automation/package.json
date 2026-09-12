@@ -1,0 +1,13 @@
+{
+  "name": "@codexhost/repository-automation",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "exports": {
+    ".": "./index.mjs"
+  },
+  "scripts": {
+    "test": "vitest run --config ../../tests/vitest.config.js packages/repository-automation/test"
+  }
+}

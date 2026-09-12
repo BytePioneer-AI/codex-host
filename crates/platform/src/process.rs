@@ -941,10 +941,22 @@ mod tests {
 
     #[test]
     fn checks_the_owned_root_without_refreshing_the_full_process_tree() {
-        let mut child = std::process::Command::new("sleep")
-            .arg("30")
+        use std::io::{BufRead, BufReader};
+        use std::process::Stdio;
+
+        // Bind the image only after fixture code is executing, not in the
+        // transient spawn/exec observation window. The shell stays in read.
+        let mut child = std::process::Command::new("/bin/sh")
+            .args(["-c", "printf 'ready\\n'; read -r token"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
             .spawn()
             .expect("spawn root fixture");
+        let mut ready = String::new();
+        BufReader::new(child.stdout.take().expect("fixture stdout"))
+            .read_line(&mut ready)
+            .expect("read fixture readiness");
+        assert_eq!(ready, "ready\n");
         let root = process_snapshot(child.id()).expect("snapshot root fixture");
         let tree = ObservedProcessTree::new(root);
 

@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   creditsPeriodLabel,
   formatRendererCreditsReset,
+  productLabel,
   rendererCreditsTone,
 } from "../src/renderer-credits-control.js";
 import { formatRendererCreditsPercent } from "../src/renderer-usage-control.js";
@@ -29,6 +30,28 @@ describe("Renderer credits control", () => {
     expect(creditsPeriodLabel("seven_day", "zh-CN")).toBe("7 天额度");
     expect(creditsPeriodLabel("unknown", "zh-CN")).toBe("账号额度");
     expect(formatRendererCreditsReset("not-a-date")).toBe("not-a-date");
+  });
+
+  it("translates product-scoped labels and limit windows into English and Chinese", () => {
+    expect(productLabel("GrokBuild")).toBe("Build");
+    expect(productLabel("5-hour window")).toBe("5-hour limit");
+    expect(productLabel("7-day window")).toBe("7-day limit");
+    expect(productLabel("Weekly window")).toBe("Weekly limit");
+    expect(productLabel("5-hour window", "zh-CN")).toBe("5 小时额度");
+    expect(productLabel("7-day window", "zh-CN")).toBe("7 天额度");
+    expect(productLabel("Weekly window", "zh-CN")).toBe("周额度");
+    expect(productLabel("Gemini Models · 5-hour window", "zh-CN")).toBe(
+      "Gemini Models · 5 小时额度",
+    );
+    expect(productLabel("Claude and GPT models · Weekly window", "zh-CN")).toBe(
+      "Claude and GPT models · 周额度",
+    );
+    expect(productLabel("Claude and GPT models · 7-day window", "zh-CN")).toBe(
+      "Claude and GPT models · 7 天额度",
+    );
+    expect(productLabel("Opus · 7-day")).toBe("Opus · 7-day limit");
+    expect(productLabel("Opus · 7-day", "zh-CN")).toBe("Opus · 7 天额度");
+    expect(productLabel("Model group · 5-hour", "zh-CN")).toBe("Model group · 5 小时额度");
   });
 
   it("formats a same-day reset as a precise time and every other reset as a dated time", () => {

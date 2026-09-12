@@ -55,6 +55,7 @@ export interface CodexQuestionProjection extends CodexTurnProjection {
 }
 
 export interface HistoricalTurnProjectionInput {
+  threadId?: string;
   turnId: HostTurnId;
   cwd: string;
   snapshot: HostTurnSnapshot;
@@ -654,10 +655,10 @@ export function projectHistoricalTurn(input: HistoricalTurnProjectionInput): Jso
         }
         return item.type === "reasoning"
           ? [
-              projectItem(item, outcome, cwd, true, ""),
+              projectItem(item, outcome, cwd, true, input.threadId ?? ""),
               projectReasoningTranscriptItem(item, outcome, cwd),
             ]
-          : [projectItem(item, outcome, cwd, true, "")];
+          : [projectItem(item, outcome, cwd, true, input.threadId ?? "")];
       }),
     ],
     error,

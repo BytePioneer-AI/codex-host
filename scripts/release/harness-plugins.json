@@ -7,7 +7,9 @@
     "packages/adapters/grok",
     "packages/adapters/omp",
     "packages/adapters/antigravity",
-    "packages/adapters/kiro-cli"
+    "packages/adapters/kiro-cli",
+    "packages/adapters/codebuddy",
+    "packages/adapters/cursor-cli"
   ],
   "runtimePackages": [
     "@agentclientprotocol/sdk",

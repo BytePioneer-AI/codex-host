@@ -312,8 +312,45 @@ export class ExternalThreadRuntime {
     } catch (error) {
       this.#diagnose(error);
     }
+    await this.#retireSubagents(current.id);
     this.#threads.delete(current.id);
     return this.register(input);
+  }
+
+  async #retireSubagents(parentId: string): Promise<void> {
+    const ancestors = new Map<string, Promise<StoredThreadRecordV1 | null>>();
+    const descendant = async (record: StoredThreadRecordV1 | null): Promise<boolean> => {
+      const visited = new Set<string>();
+      let ownerId = record?.subagent?.parentHostThreadId;
+      while (ownerId && !visited.has(ownerId)) {
+        if (ownerId === parentId) return true;
+        visited.add(ownerId);
+        let ancestor = ancestors.get(ownerId);
+        if (!ancestor) {
+          ancestor = this.#repository.find(ownerId);
+          ancestors.set(ownerId, ancestor);
+        }
+        ownerId = (await ancestor)?.subagent?.parentHostThreadId;
+      }
+      return false;
+    };
+    // A descendant may be open without its intermediate parent loaded. Follow
+    // stored ancestry, including in-flight restores, not just loaded children.
+    for (const [id, restoring] of [...this.#restores]) {
+      if (await descendant(await this.#repository.find(id))) {
+        await restoring.catch(this.#diagnose);
+      }
+    }
+    for (const child of this.#threads.values()) {
+      if (!(await descendant(child.record))) continue;
+      this.#threads.delete(child.id);
+      try {
+        await child.session.close();
+        await child.outputTask;
+      } catch (error) {
+        this.#diagnose(error);
+      }
+    }
   }
 
   async locate(threadId: string): Promise<ExternalThreadLocation> {
@@ -438,6 +475,14 @@ export class ExternalThreadRuntime {
         nativeSubagentId: subagent.nativeSubagentId,
         cwd: record.cwd,
       });
+      const latest = await this.#repository.find(record.hostThreadId);
+      if (
+        latest?.state === "ready" &&
+        latest.nativeSessionRef &&
+        JSON.stringify(latest.nativeSessionRef) !== JSON.stringify(parent)
+      ) {
+        return this.#restore(latest);
+      }
       if (!snapshot.ok) {
         throw new ExternalThreadOpenError(mapExternalThreadHarnessError(snapshot.error, "read"));
       }

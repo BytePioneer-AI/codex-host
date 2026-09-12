@@ -34,21 +34,24 @@ describe("platform packagers", () => {
   });
 
   it("publishes one tag-bound four-platform installer and npm release", async () => {
-    const [workflow, releaseBuilder, releaseClient] = await Promise.all([
+    const [workflow, releaseBuilder, releaseClient, releaseValidation] = await Promise.all([
       readFile(path.join(root, ".github/workflows/release-packages.yml"), "utf8"),
       readFile(path.join(root, "scripts/release/prepare-payload.mjs"), "utf8"),
       readFile(path.join(root, "packages/update-manager/src/github-release.ts"), "utf8"),
+      readFile(path.join(root, "packages/repository-automation/src/release.mjs"), "utf8"),
     ]);
     expect(workflow).toContain('tags:\n      - "v*"');
     expect(workflow).not.toContain("types: [published]");
     expect(workflow).toContain("Resolve release metadata");
-    expect(workflow).toContain("does not match package.json version");
-    expect(workflow).toContain("does not match Cargo workspace version");
-    expect(workflow).toContain("must be an annotated tag with release notes");
-    expect(workflow).toContain("%(contents:body)");
-    expect(workflow).toContain("npm_tag=test");
-    expect(workflow).toContain("npm_tag=next");
-    expect(workflow).toContain("npm_tag=latest");
+    expect(releaseValidation).toContain("does not match package.json version");
+    expect(releaseValidation).toContain("does not match Cargo workspace version");
+    expect(releaseValidation).toContain("must be an annotated tag with release notes");
+    expect(releaseValidation).toContain("%(contents:body)");
+    expect(workflow).toContain("npm_tag: result.npmTag");
+    expect(workflow).toContain("ref: ${{ needs.prepare.outputs.commit_sha }}");
+    expect(workflow).not.toContain("ref: ${{ needs.prepare.outputs.tag }}");
+    expect(workflow).toContain("Revalidate tag and CI immediately before npm publication");
+    expect(workflow).toContain("Revalidate tag and CI immediately before GitHub publication");
 
     expect(workflow).toContain("codexhost-*.dmg");
     expect(workflow).toContain("codexhost-*.exe");

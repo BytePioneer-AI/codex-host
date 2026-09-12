@@ -35,9 +35,7 @@ process.stdin.on("end", () => {
         target.pathname !== "/question" || target.username || target.password) {
       return unavailable();
     }
-    const payload = JSON.parse(input);
-    const approval = process.env.CODEXHOST_AGY_QUESTION_APPROVALS === "1" &&
-      payload.toolCall && payload.toolCall.name !== "ask_question";
+    JSON.parse(input);
     request = http.request(target, {
       method: "POST",
       headers: {
@@ -58,7 +56,7 @@ process.stdin.on("end", () => {
         try {
           const value = JSON.parse(body);
           if (response.statusCode !== 200 ||
-              (value.decision !== "deny" && !(approval && value.decision === "allow")) ||
+              value.decision !== "deny" ||
               typeof value.reason !== "string") return unavailable();
           finish(value);
         } catch { unavailable(); }

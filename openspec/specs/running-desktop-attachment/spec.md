@@ -12,7 +12,7 @@ The production Launcher SHALL distinguish stale-launcher recovery, clean Desktop
 
 #### Scenario: No Desktop is running
 - **WHEN** no target Codex Desktop process exists
-- **THEN** Launcher MUST use the existing clean launch with Shim, Host configuration, temporary Inspector, Renderer, and Controller supervision
+- **THEN** Launcher MUST use the existing clean launch with Shim, Host configuration, temporary loopback Chromium Renderer CDP, Renderer, and Controller supervision
 
 #### Scenario: Independently started official Desktop is running
 - **WHEN** a target Codex Desktop root exists without a live codexhost owner and authenticated Controller
@@ -88,3 +88,4 @@ Launcher SHALL在收到有效的compatible-only readiness并完成既有Host cha
 - **WHEN** Controller内部Renderer Session不可用但已按非阻塞策略返回有效readiness
 - **THEN** Launcher SHALL继续受管启动
 - **AND** Renderer恢复 SHALL由Controller后台处理而不是Launcher用户决策处理
+

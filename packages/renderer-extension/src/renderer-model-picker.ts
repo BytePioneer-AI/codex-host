@@ -250,6 +250,37 @@ function createHeading(text: string): HTMLElement {
   return heading;
 }
 
+function createModelGroupHeading(text: string): HTMLElement {
+  const heading = document.createElement("div");
+  heading.className = HEADING_CLASSES;
+  heading.dataset.codexhostModelGroupHeading = "true";
+  heading.setAttribute("role", "heading");
+  heading.setAttribute("aria-level", "3");
+  heading.tabIndex = -1;
+  heading.style.display = "flex";
+  heading.style.alignItems = "center";
+  heading.style.gap = "8px";
+  heading.style.marginTop = "8px";
+  heading.style.paddingTop = "8px";
+  heading.style.fontSize = "11px";
+  heading.style.fontWeight = "600";
+  heading.style.letterSpacing = "0.06em";
+  heading.style.textTransform = "uppercase";
+  heading.style.pointerEvents = "none";
+  heading.style.userSelect = "none";
+  heading.style.cursor = "default";
+
+  const label = document.createElement("span");
+  label.textContent = text;
+  const rule = document.createElement("span");
+  rule.setAttribute("aria-hidden", "true");
+  rule.style.flex = "1";
+  rule.style.height = "1px";
+  rule.style.backgroundColor = "var(--token-border, rgba(255, 255, 255, 0.14))";
+  heading.append(label, rule);
+  return heading;
+}
+
 const MODEL_GROUP_LABELS: Readonly<Record<HarnessModelGroup, string>> = {
   default: "Default",
   new: "New",
@@ -671,7 +702,7 @@ function rebuildOptions(control: RendererModelPickerControl, view: RendererModel
   };
   if (groups.length > 0) {
     for (const group of groups) {
-      const heading = createHeading(group.label);
+      const heading = createModelGroupHeading(group.label);
       control.modelMenu.append(heading);
       for (const model of group.models) appendModel(model, heading);
     }

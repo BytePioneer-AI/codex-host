@@ -50,6 +50,7 @@ import {
 import { accessTokenFromEnv, qodercliAuth } from "@qoder-ai/qoder-agent-sdk";
 
 import { mapQoderException, mapQoderResultError } from "./qoder-errors.js";
+import { qoderEnvironment } from "./qoder-command.js";
 import { decodeQoderModelRef, QODER_DEFAULT_MODEL_REF } from "./qoder-models.js";
 import { mapToQoderPermissionMode } from "./qoder-permission-modes.js";
 import type {
@@ -189,9 +190,8 @@ export class QoderSession implements HarnessSession {
     const nativeModel = options.model ? decodeQoderModelRef(options.model) : undefined;
     const permissionMode = mapToQoderPermissionMode(options.permissionModeId);
 
-    const auth = options.environment?.QODER_PERSONAL_ACCESS_TOKEN
-      ? accessTokenFromEnv()
-      : qodercliAuth();
+    const environment = qoderEnvironment(options.environment);
+    const auth = environment.QODER_PERSONAL_ACCESS_TOKEN ? accessTokenFromEnv() : qodercliAuth();
 
     const qoderOptions: QoderOptions = {
       cwd: options.cwd,
@@ -199,7 +199,7 @@ export class QoderSession implements HarnessSession {
       ...(options.pathToQoderCLIExecutable
         ? { pathToQoderCLIExecutable: options.pathToQoderCLIExecutable }
         : {}),
-      ...(options.environment ? { env: { ...options.environment } } : {}),
+      env: environment,
       ...(nativeModel ? { model: nativeModel } : {}),
       ...(permissionMode ? { permissionMode } : {}),
       ...(permissionMode === "bypassPermissions" || permissionMode === "yolo"

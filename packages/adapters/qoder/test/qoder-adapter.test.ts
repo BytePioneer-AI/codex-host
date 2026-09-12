@@ -10,7 +10,11 @@ import {
 } from "@codexhost/shared-contracts";
 
 import { QoderAdapter } from "../src/qoder-adapter.js";
-import { QoderExecutableError, resolveQoderExecutable } from "../src/qoder-command.js";
+import {
+  QODER_SDK_CUSTOM_BASE_URL_BYOK,
+  QoderExecutableError,
+  resolveQoderExecutable,
+} from "../src/qoder-command.js";
 import { mapQoderException, mapQoderExitCode, mapQoderResultError } from "../src/qoder-errors.js";
 import {
   decodeQoderModelRef,
@@ -186,6 +190,7 @@ describe("QoderAdapter", () => {
         expect(harnessInspectionSchema.parse(inspection)).toEqual(inspection);
       }
       expect(capturedOptions?.auth).toEqual({ type: "qodercli" });
+      expect(capturedOptions?.env?.[QODER_SDK_CUSTOM_BASE_URL_BYOK]).toBe("1");
     });
 
     it("uses configured access-token auth for model probing", async () => {
@@ -885,6 +890,39 @@ describe("QoderAdapter", () => {
       expect(catalog.thinkingOptions).toEqual([]);
     });
 
+    it("preserves native groups, availability, and server default", () => {
+      const catalog = parseQoderModelCatalog([
+        {
+          value: "qoder-default",
+          displayName: "Default model",
+          source: "system",
+          isEnabled: false,
+        },
+        {
+          value: "qoder-new",
+          displayName: "New model",
+          source: "system",
+          isNew: true,
+          isDefault: true,
+          isEnabled: true,
+        },
+        {
+          value: "qoder-custom/provider-model",
+          displayName: "Custom model",
+          source: "custom",
+          tags: ["custom-provider"],
+          isEnabled: true,
+        },
+      ]);
+
+      expect(catalog.models).toMatchObject([
+        { label: "Default model", group: "default", selectable: false },
+        { label: "New model", group: "new", selectable: true },
+        { label: "Custom model", group: "custom", selectable: true },
+      ]);
+      expect(catalog.defaultModel).toEqual(encodeQoderModelRef("qoder-new"));
+    });
+
     it("returns empty catalog when dynamic models are unavailable or empty", () => {
       const catalogEmpty = parseQoderModelCatalog([]);
       expect(catalogEmpty.models).toEqual([]);
@@ -931,6 +969,7 @@ describe("QoderAdapter", () => {
       expect(capturedOptions?.env).toEqual({
         CUSTOM_VAR: "custom_value",
         QODER_PERSONAL_ACCESS_TOKEN: "token-123",
+        [QODER_SDK_CUSTOM_BASE_URL_BYOK]: "1",
       });
       expect(capturedOptions?.model).toBe("ultimate");
       expect(capturedOptions?.permissionMode).toBe("yolo");

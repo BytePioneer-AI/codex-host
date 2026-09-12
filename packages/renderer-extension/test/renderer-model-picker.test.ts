@@ -14,6 +14,7 @@ import {
 import {
   isRendererModelPickerDisabled,
   rendererModelPickerPresentation,
+  rendererModelPickerGroups,
   shouldCloseRendererModelPicker,
   syncRendererLabelText,
 } from "../src/renderer-model-picker.js";
@@ -40,6 +41,34 @@ function catalog(levels: readonly string[]) {
 }
 
 describe("Renderer combined Model and Thinking picker presentation", () => {
+  it("keeps legacy catalogs flat and groups Qoder models by native category", () => {
+    expect(rendererModelPickerGroups(catalog([]).models)).toEqual([]);
+
+    const grouped = harnessModelCatalogSchema.parse({
+      models: [
+        { ref: model, label: "Auto", group: "default" },
+        {
+          ref: harnessModelRefSchema.parse({ id: "qoder-new" }),
+          label: "New",
+          group: "new",
+        },
+        {
+          ref: harnessModelRefSchema.parse({ id: "qoder-custom" }),
+          label: "Custom",
+          group: "custom",
+          selectable: false,
+        },
+      ],
+      thinkingOptions: [],
+    });
+
+    expect(rendererModelPickerGroups(grouped.models)).toEqual([
+      { group: "default", label: "Default (1)", models: [grouped.models[0]] },
+      { group: "new", label: "New (1)", models: [grouped.models[1]] },
+      { group: "custom", label: "Custom (1)", models: [grouped.models[2]] },
+    ]);
+  });
+
   it("anchors the main menu's right edge to the model trigger", () => {
     expect(
       rendererModelPickerMainMenuPlacement(

@@ -50,12 +50,18 @@ export const harnessThinkingOptionSchema = z
 
 export type HarnessThinkingOption = z.infer<typeof harnessThinkingOptionSchema>;
 
+export const harnessModelGroupSchema = z.enum(["default", "new", "custom"]);
+
+export type HarnessModelGroup = z.infer<typeof harnessModelGroupSchema>;
+
 export const harnessModelSchema = z
   .object({
     ref: harnessModelRefSchema,
     label: nonBlankTextSchema.max(HARNESS_MODEL_LABEL_MAX_LENGTH),
     resolvedModelLabel: harnessResolvedModelLabelSchema.optional(),
     supportedThinkingOptionIds: z.array(harnessThinkingOptionIdSchema).optional(),
+    group: harnessModelGroupSchema.optional(),
+    selectable: z.boolean().optional(),
   })
   .strict();
 

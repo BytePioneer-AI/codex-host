@@ -10,7 +10,11 @@ import type {
 import { harnessIdSchema, type HarnessId } from "@codexhost/shared-contracts";
 import { accessTokenFromEnv, qodercliAuth, query as sdkQuery } from "@qoder-ai/qoder-agent-sdk";
 
-import { CODEXHOST_QODER_COMMAND, resolveQoderExecutable } from "./qoder-command.js";
+import {
+  CODEXHOST_QODER_COMMAND,
+  qoderEnvironment,
+  resolveQoderExecutable,
+} from "./qoder-command.js";
 import { parseQoderModelCatalog } from "./qoder-models.js";
 import { QODER_PERMISSION_MODE_CATALOG } from "./qoder-permission-modes.js";
 import type { QoderModelInfo, QoderQueryFactory } from "./qoder-sdk-types.js";
@@ -48,7 +52,7 @@ export class QoderAdapter implements HarnessAdapter {
   constructor(options: QoderAdapterOptions = {}) {
     this.#commandOverride =
       options.commandOverride ?? options.environment?.[CODEXHOST_QODER_COMMAND];
-    this.#environment = { ...options.environment };
+    this.#environment = qoderEnvironment(options.environment);
     this.#platform = options.platform ?? process.platform;
     this.#queryFactory = options.queryFactory ?? defaultQueryFactory;
     this.#getAvailableModels = options.getAvailableModels;
@@ -167,11 +171,12 @@ export class QoderAdapter implements HarnessAdapter {
       };
     }
 
+    const environment = qoderEnvironment(input.environment ?? this.#environment);
     let pathToQoderCLIExecutable: string | undefined;
     try {
       pathToQoderCLIExecutable = this.#resolveExecutable({
         ...(this.#commandOverride ? { command: this.#commandOverride } : {}),
-        environment: (input.environment ?? this.#environment) as NodeJS.ProcessEnv,
+        environment: environment as NodeJS.ProcessEnv,
         platform: this.#platform,
       });
     } catch {
@@ -208,7 +213,7 @@ export class QoderAdapter implements HarnessAdapter {
     const session = new QoderSession({
       sessionId,
       cwd: input.cwd,
-      environment: input.environment ?? this.#environment,
+      environment,
       ...(input.model ? { model: input.model } : {}),
       ...(input.permissionModeId ? { permissionModeId: input.permissionModeId } : {}),
       ...(input.kind === "resume" ? { resume: sessionId } : {}),

@@ -4,12 +4,13 @@ import {
   harnessInspectionSchema,
   harnessPermissionModeIdSchema,
   hostTurnIdSchema,
+  jsonValueSchema,
   nativeCheckpointRefSchema,
   nativeSessionRefSchema,
 } from "@codexhost/shared-contracts";
 
 import { QoderAdapter } from "../src/qoder-adapter.js";
-import { QoderExecutableError } from "../src/qoder-command.js";
+import { QoderExecutableError, resolveQoderExecutable } from "../src/qoder-command.js";
 import { mapQoderException, mapQoderExitCode, mapQoderResultError } from "../src/qoder-errors.js";
 import {
   decodeQoderModelRef,
@@ -145,12 +146,14 @@ describe("QoderAdapter", () => {
       if (inspection1.status === "ready") {
         expect(inspection1.catalog.models).toEqual([]);
         expect(inspection1.catalog.defaultModel).toBeUndefined();
+        expect(Object.hasOwn(inspection1.catalog, "defaultModel")).toBe(false);
         expect(inspection1.capabilities.configuration.selectModel).toBe(true);
         expect(inspection1.capabilities.configuration.selectPermissionMode).toBe(true);
         expect(inspection1.capabilities.history.rollbackLastTurn).toBe(false);
         expect(inspection1.permissionModes?.modes).toHaveLength(5);
         expect(inspection1.permissionModes?.defaultModeId).toBe("default");
         expect(harnessInspectionSchema.parse(inspection1)).toEqual(inspection1);
+        expect(jsonValueSchema.parse(inspection1)).toEqual(inspection1);
       }
 
       // Second call uses cached inspection
@@ -166,9 +169,13 @@ describe("QoderAdapter", () => {
 
     it("dynamically returns models from queryFactory in inspect()", async () => {
       const fakeQuery = new FakeQoderQuery();
+      let capturedOptions: QoderOptions | undefined;
       const adapter = new QoderAdapter({
         resolveExecutable: () => "D:/tools/qodercli.exe",
-        queryFactory: () => fakeQuery,
+        queryFactory: (input) => {
+          capturedOptions = input.options;
+          return fakeQuery;
+        },
       });
 
       const inspection = await adapter.inspect({ cwd: "D:/project" });
@@ -178,6 +185,26 @@ describe("QoderAdapter", () => {
         expect(inspection.catalog.defaultModel?.id).toBe(encodeQoderModelRef("default").id);
         expect(harnessInspectionSchema.parse(inspection)).toEqual(inspection);
       }
+      expect(capturedOptions?.auth).toEqual({ type: "qodercli" });
+    });
+
+    it("uses configured access-token auth for model probing", async () => {
+      let capturedOptions: QoderOptions | undefined;
+      const adapter = new QoderAdapter({
+        environment: { QODER_PERSONAL_ACCESS_TOKEN: "token-123" },
+        resolveExecutable: () => "D:/tools/qodercli.exe",
+        queryFactory: (input) => {
+          capturedOptions = input.options;
+          return new FakeQoderQuery();
+        },
+      });
+
+      await adapter.inspect({ cwd: "D:/project" });
+
+      expect(capturedOptions?.auth).toEqual({
+        type: "accessToken",
+        accessToken: { envVar: "QODER_PERSONAL_ACCESS_TOKEN" },
+      });
     });
 
     it("closes probeQuery in finally and returns empty catalog when getAvailableModels throws", async () => {
@@ -825,6 +852,20 @@ describe("QoderAdapter", () => {
     });
   });
 
+  describe("Executable discovery", () => {
+    it("resolves the Windows npm shim to Qoder's JavaScript entrypoint", () => {
+      const shim = String.raw`C:\npm\qodercli.cmd`;
+      const entrypoint = String.raw`C:\npm\node_modules\@qoder-ai\qodercli\bundle\qodercli.js`;
+
+      expect(
+        resolveQoderExecutable(
+          { command: shim, environment: {}, platform: "win32" },
+          { isExecutable: (candidate) => candidate === entrypoint },
+        ),
+      ).toBe(entrypoint);
+    });
+  });
+
   describe("Model catalog encoding and decoding", () => {
     it("encodes and decodes model refs to opaque transport-safe strings", () => {
       const modelRef = encodeQoderModelRef("claude-3-7-sonnet@20250219/thinking");
@@ -848,10 +889,12 @@ describe("QoderAdapter", () => {
       const catalogEmpty = parseQoderModelCatalog([]);
       expect(catalogEmpty.models).toEqual([]);
       expect(catalogEmpty.defaultModel).toBeUndefined();
+      expect(Object.hasOwn(catalogEmpty, "defaultModel")).toBe(false);
 
       const catalogUndefined = parseQoderModelCatalog(undefined);
       expect(catalogUndefined.models).toEqual([]);
       expect(catalogUndefined.defaultModel).toBeUndefined();
+      expect(Object.hasOwn(catalogUndefined, "defaultModel")).toBe(false);
     });
   });
 

@@ -461,6 +461,7 @@ async function bindOfficialThread(
   fixture: ReturnType<typeof createFixture>,
   threadId: string,
 ): Promise<void> {
+  await fixture.ready;
   await vi.waitFor(async () => {
     expect(await fixture.accountRepository.getActiveAccountId()).toBeTruthy();
     await fixture.threadAccountStore.getAccountId(threadId);

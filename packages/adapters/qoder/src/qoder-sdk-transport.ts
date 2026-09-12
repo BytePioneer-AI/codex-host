@@ -169,7 +169,7 @@ export class QoderSession implements HarnessSession {
     history: {
       fork: true,
       forkAcrossCwd: false,
-      rollbackLastTurn: false,
+      rollbackLastTurn: true,
     },
   };
   readonly initialState: HarnessSessionState;
@@ -985,6 +985,15 @@ export class QoderSession implements HarnessSession {
       const snapshot = mapQoderSnapshot(messages, this.#sessionId);
       return { ok: true, value: snapshot };
     } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const isNotFound =
+        message.toLowerCase().includes("not found") ||
+        message.toLowerCase().includes("cannot find") ||
+        message.toLowerCase().includes("no such file") ||
+        message.toLowerCase().includes("enoent");
+      if (isNotFound) {
+        return { ok: true, value: { turns: [] } };
+      }
       return {
         ok: false,
         error: {

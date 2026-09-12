@@ -33,6 +33,7 @@ import type {
   SDKPartialAssistantMessage,
   SDKResultMessage,
   SDKUserMessage,
+  SessionMessage,
 } from "../src/qoder-sdk-types.js";
 import {
   QODER_DEFAULT_CONTEXT_WINDOW_TOKENS,
@@ -160,7 +161,7 @@ describe("QoderAdapter", () => {
         expect(Object.hasOwn(inspection1.catalog, "defaultModel")).toBe(false);
         expect(inspection1.capabilities.configuration.selectModel).toBe(true);
         expect(inspection1.capabilities.configuration.selectPermissionMode).toBe(true);
-        expect(inspection1.capabilities.history.rollbackLastTurn).toBe(false);
+        expect(inspection1.capabilities.history.rollbackLastTurn).toBe(true);
         expect(inspection1.permissionModes?.modes).toHaveLength(5);
         expect(inspection1.permissionModes?.defaultModeId).toBe("default");
         expect(harnessInspectionSchema.parse(inspection1)).toEqual(inspection1);
@@ -262,7 +263,7 @@ describe("QoderAdapter", () => {
       expect(session.harnessId).toBe("qoder");
       expect(session.capabilities.configuration.selectModel).toBe(true);
       expect(session.capabilities.history.fork).toBe(true);
-      expect(session.capabilities.history.rollbackLastTurn).toBe(false);
+      expect(session.capabilities.history.rollbackLastTurn).toBe(true);
 
       // Resume session
       const resumeResult = await adapter.open({
@@ -280,22 +281,125 @@ describe("QoderAdapter", () => {
         await resumeResult.value.close();
       }
 
-      // RollbackLastTurn session: typed unsupported error
-      const rollbackResult = await adapter.open({
+      // RollbackLastTurn session with 0 turns: invalidRequest
+      const rollbackEmpty = await adapter.open({
         kind: "rollbackLastTurn",
         cwd: "D:/project",
         sourceRef: nativeSessionRefSchema.parse({
           harnessId: "qoder",
-          nativeSessionId: "source-1",
+          nativeSessionId: "source-empty",
           formatVersion: 1,
         }),
       });
-      expect(rollbackResult.ok).toBe(false);
-      if (!rollbackResult.ok) {
-        expect(rollbackResult.error.code).toBe("unsupported");
+      expect(rollbackEmpty.ok).toBe(false);
+      if (!rollbackEmpty.ok) {
+        expect(rollbackEmpty.error.code).toBe("invalidRequest");
       }
 
       await session.close();
+      await adapter.close();
+    });
+
+    it("rolls back last turn: creates empty session for 1 turn and forks previous turn for 2+ turns", async () => {
+      const fakeQuery = new FakeQoderQuery();
+      const mockForkSession = vi.fn(async (_sessionId: string, options?: { upToMessageId?: string }) => ({
+        sessionId: `forked-for-${options?.upToMessageId ?? "unknown"}`,
+      }));
+
+      const singleTurnMessages: SessionMessage[] = [
+        {
+          type: "user",
+          uuid: "user-msg-1",
+          session_id: "sess-1-turn",
+          message: { role: "user", content: "hello" },
+          parent_tool_use_id: null,
+          parent_agent_id: null,
+        },
+        {
+          type: "assistant",
+          uuid: "asst-msg-1",
+          session_id: "sess-1-turn",
+          message: { role: "assistant", content: [{ type: "text", text: "world" }] },
+          parent_tool_use_id: null,
+          parent_agent_id: null,
+        },
+      ];
+
+      const twoTurnMessages: SessionMessage[] = [
+        ...singleTurnMessages,
+        {
+          type: "user",
+          uuid: "user-msg-2",
+          session_id: "sess-2-turn",
+          message: { role: "user", content: "how are you?" },
+          parent_tool_use_id: null,
+          parent_agent_id: null,
+        },
+        {
+          type: "assistant",
+          uuid: "asst-msg-2",
+          session_id: "sess-2-turn",
+          message: { role: "assistant", content: [{ type: "text", text: "great!" }] },
+          parent_tool_use_id: null,
+          parent_agent_id: null,
+        },
+      ];
+
+      const adapter = new QoderAdapter({
+        resolveExecutable: () => "D:/tools/qodercli.exe",
+        queryFactory: () => fakeQuery,
+        forkSession: mockForkSession,
+        getSessionMessages: vi.fn(async (sessionId: string) => {
+          if (sessionId === "sess-1-turn") return singleTurnMessages;
+          if (sessionId === "sess-2-turn") return twoTurnMessages;
+          return [];
+        }),
+      });
+
+      // 1. Rollback a 1-turn session -> empty session with 0 turns
+      const rollback1Result = await adapter.open({
+        kind: "rollbackLastTurn",
+        cwd: "D:/project",
+        sourceRef: nativeSessionRefSchema.parse({
+          harnessId: "qoder",
+          nativeSessionId: "sess-1-turn",
+          formatVersion: 1,
+        }),
+      });
+      expect(rollback1Result.ok).toBe(true);
+      if (rollback1Result.ok) {
+        const rolledSession = rollback1Result.value;
+        expect(rolledSession.capabilities.history.rollbackLastTurn).toBe(true);
+        const snapshot = await rolledSession.readSnapshot();
+        expect(snapshot.ok).toBe(true);
+        if (snapshot.ok) {
+          expect(snapshot.value.turns).toHaveLength(0);
+        }
+        await rolledSession.close();
+      }
+      expect(mockForkSession).not.toHaveBeenCalled();
+
+      // 2. Rollback a 2-turn session -> forks up to asst-msg-1 (checkpoint of turn 0)
+      const rollback2Result = await adapter.open({
+        kind: "rollbackLastTurn",
+        cwd: "D:/project",
+        sourceRef: nativeSessionRefSchema.parse({
+          harnessId: "qoder",
+          nativeSessionId: "sess-2-turn",
+          formatVersion: 1,
+        }),
+      });
+      expect(rollback2Result.ok).toBe(true);
+      if (rollback2Result.ok) {
+        const rolledSession = rollback2Result.value;
+        expect(mockForkSession).toHaveBeenCalledWith("sess-2-turn", {
+          dir: "D:/project",
+          upToMessageId: "asst-msg-1",
+        });
+        expect(rolledSession.initialState.nativeRef?.nativeSessionId).toBe("forked-for-asst-msg-1");
+        await rolledSession.close();
+      }
+
       await adapter.close();
     });
 

@@ -254,6 +254,7 @@ export async function runDesktopController(
           "kiro-cli",
           "codebuddy",
           "cursor-cli",
+          "qoder",
         ],
         timeoutMs: PRODUCTION_INSTALL_TIMEOUT_MS,
       },

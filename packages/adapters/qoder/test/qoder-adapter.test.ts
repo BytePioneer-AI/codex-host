@@ -17,6 +17,7 @@ import {
   resolveQoderExecutable,
 } from "../src/qoder-command.js";
 import { mapQoderException, mapQoderExitCode, mapQoderResultError } from "../src/qoder-errors.js";
+import { mapQoderSnapshot } from "../src/qoder-history.js";
 import {
   decodeQoderModelRef,
   encodeQoderModelRef,
@@ -239,7 +240,7 @@ describe("QoderAdapter", () => {
   });
 
   describe("open() session lifecycle", () => {
-    it("opens session with create and resume, and rejects fork and rollbackLastTurn", async () => {
+    it("opens session with create and resume, and rejects rollbackLastTurn", async () => {
       const fakeQuery = new FakeQoderQuery();
       const adapter = new QoderAdapter({
         resolveExecutable: () => "D:/tools/qodercli.exe",
@@ -256,7 +257,8 @@ describe("QoderAdapter", () => {
       const session = createResult.value;
       expect(session.harnessId).toBe("qoder");
       expect(session.capabilities.configuration.selectModel).toBe(true);
-      expect(session.capabilities.history.fork).toBe(false);
+      expect(session.capabilities.history.fork).toBe(true);
+      expect(session.capabilities.history.rollbackLastTurn).toBe(false);
 
       // Resume session
       const resumeResult = await adapter.open({
@@ -274,27 +276,6 @@ describe("QoderAdapter", () => {
         await resumeResult.value.close();
       }
 
-      // Fork session: typed unsupported error
-      const forkResult = await adapter.open({
-        kind: "fork",
-        cwd: "D:/project",
-        sourceRef: nativeSessionRefSchema.parse({
-          harnessId: "qoder",
-          nativeSessionId: "source-1",
-          formatVersion: 1,
-        }),
-        checkpoint: nativeCheckpointRefSchema.parse({
-          harnessId: "qoder",
-          nativeSessionId: "source-1",
-          checkpointId: "cp-1",
-          formatVersion: 1,
-        }),
-      });
-      expect(forkResult.ok).toBe(false);
-      if (!forkResult.ok) {
-        expect(forkResult.error.code).toBe("unsupported");
-      }
-
       // RollbackLastTurn session: typed unsupported error
       const rollbackResult = await adapter.open({
         kind: "rollbackLastTurn",
@@ -308,6 +289,134 @@ describe("QoderAdapter", () => {
       expect(rollbackResult.ok).toBe(false);
       if (!rollbackResult.ok) {
         expect(rollbackResult.error.code).toBe("unsupported");
+      }
+
+      await session.close();
+      await adapter.close();
+    });
+
+    it("forks session with checkpoint, derives session ID, and supports readSnapshot()", async () => {
+      const fakeQuery = new FakeQoderQuery();
+      const mockForkSession = vi.fn(async () => ({
+        sessionId: "derived-session-456",
+      }));
+      const mockGetSessionInfo = vi.fn(async (sessionId: string) => ({
+        sessionId,
+        summary: "Source Session",
+        cwd: "D:/project",
+        lastModified: Date.now(),
+      }));
+      const mockGetSessionMessages = vi.fn(async (sessionId: string) => [
+        {
+          type: "user" as const,
+          uuid: "user-msg-1",
+          session_id: sessionId,
+          message: { role: "user", content: "Build a feature" },
+          parent_tool_use_id: null,
+          parent_agent_id: null,
+        },
+        {
+          type: "assistant" as const,
+          uuid: "asst-msg-1",
+          session_id: sessionId,
+          message: {
+            id: "resp-1",
+            type: "message",
+            role: "assistant",
+            content: [{ type: "text", text: "Feature built successfully" }],
+          },
+          parent_tool_use_id: null,
+          parent_agent_id: null,
+        },
+      ]);
+
+      const adapter = new QoderAdapter({
+        resolveExecutable: () => "D:/tools/qodercli.exe",
+        queryFactory: () => fakeQuery,
+        forkSession: mockForkSession,
+        getSessionInfo: mockGetSessionInfo,
+        getSessionMessages: mockGetSessionMessages,
+      });
+
+      const sourceRef = nativeSessionRefSchema.parse({
+        harnessId: "qoder",
+        nativeSessionId: "source-1",
+        formatVersion: 1,
+      });
+      const checkpoint = nativeCheckpointRefSchema.parse({
+        harnessId: "qoder",
+        nativeSessionId: "source-1",
+        checkpointId: "asst-msg-1",
+        formatVersion: 1,
+      });
+
+      const forkResult = await adapter.open({
+        kind: "fork",
+        cwd: "D:/project",
+        sourceRef,
+        checkpoint,
+      });
+
+      expect(forkResult.ok).toBe(true);
+      if (!forkResult.ok) return;
+
+      expect(mockForkSession).toHaveBeenCalledWith("source-1", {
+        dir: "D:/project",
+        upToMessageId: "asst-msg-1",
+      });
+
+      const session = forkResult.value;
+      expect(session.initialState.nativeRef?.nativeSessionId).toBe("derived-session-456");
+
+      const snapshotResult = await session.readSnapshot();
+      expect(snapshotResult.ok).toBe(true);
+      if (snapshotResult.ok) {
+        expect(snapshotResult.value.turns).toHaveLength(1);
+        const turn = snapshotResult.value.turns[0];
+        expect(turn).toBeDefined();
+        if (!turn) return;
+        expect(turn.nativeTurnRef.nativeTurnKey).toBe("user-msg-1");
+        expect(turn.checkpoint?.checkpointId).toBe("asst-msg-1");
+        expect(turn.input[0]?.text).toBe("Build a feature");
+        expect(turn.items).toHaveLength(1);
+        const item0 = turn.items[0];
+        expect(item0).toBeDefined();
+        if (!item0) return;
+        expect(item0.item.type).toBe("agentMessage");
+        if (item0.item.type === "agentMessage") {
+          expect(item0.item.text).toBe("Feature built successfully");
+          expect(item0.item.phase).toBe("final_answer");
+        }
+      }
+
+      // Reject fork across different working directory
+      const crossCwdResult = await adapter.open({
+        kind: "fork",
+        cwd: "D:/other-project",
+        sourceRef,
+        checkpoint,
+      });
+      expect(crossCwdResult.ok).toBe(false);
+      if (!crossCwdResult.ok) {
+        expect(crossCwdResult.error.code).toBe("unsupported");
+      }
+
+      // Reject fork with foreign checkpoint
+      const foreignCheckpoint = nativeCheckpointRefSchema.parse({
+        harnessId: "qoder",
+        nativeSessionId: "different-source",
+        checkpointId: "asst-msg-1",
+        formatVersion: 1,
+      });
+      const foreignResult = await adapter.open({
+        kind: "fork",
+        cwd: "D:/project",
+        sourceRef,
+        checkpoint: foreignCheckpoint,
+      });
+      expect(foreignResult.ok).toBe(false);
+      if (!foreignResult.ok) {
+        expect(foreignResult.error.code).toBe("invalidRequest");
       }
 
       await session.close();
@@ -1603,6 +1712,145 @@ describe("QoderAdapter", () => {
       }
 
       await session.close();
+    });
+
+    it("attaches checkpoint with assistant UUID to turn.completed outcome", async () => {
+      const fakeQuery = new FakeQoderQuery();
+      const adapter = new QoderAdapter({
+        resolveExecutable: () => "D:/tools/qodercli.exe",
+        queryFactory: () => fakeQuery,
+      });
+
+      const openResult = await adapter.open({ kind: "create", cwd: "D:/workspace" });
+      if (!openResult.ok) throw new Error("open failed");
+      const session = openResult.value;
+      const collector = new OutputCollector(session.outputs);
+
+      const turnId = hostTurnIdSchema.parse("turn-persist-cp");
+      await session.execute({
+        type: "turn.start",
+        turnId,
+        input: [{ type: "text", text: "Hello with checkpoint" }],
+      });
+
+      fakeQuery.push({
+        type: "assistant",
+        uuid: "assistant-cp-uuid-9999",
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text: "I have responded" }],
+        },
+      } as unknown as SDKAssistantMessage);
+
+      fakeQuery.push({
+        type: "result",
+        subtype: "success",
+        uuid: "result-uuid-cp",
+      } as unknown as SDKResultMessage);
+
+      const completed = await collector.waitFor(
+        (o) =>
+          o.kind === "event" && o.event.type === "turn.completed" && o.event.turnId === turnId,
+      );
+
+      if (completed.kind === "event" && completed.event.type === "turn.completed") {
+        expect(completed.event.outcome.status).toBe("succeeded");
+        expect(completed.event.outcome.checkpoint).toBeDefined();
+        expect(completed.event.outcome.checkpoint?.checkpointId).toBe("assistant-cp-uuid-9999");
+        expect(completed.event.outcome.checkpoint?.harnessId).toBe("qoder");
+      }
+
+      await session.close();
+    });
+  });
+
+  describe("mapQoderSnapshot", () => {
+    it("maps Bash command execution and tool execution into structured items with checkpoints", () => {
+      const messages = [
+        {
+          type: "user" as const,
+          uuid: "user-1",
+          session_id: "test-sess",
+          message: { role: "user", content: "Check git status" },
+          parent_tool_use_id: null,
+          parent_agent_id: null,
+        },
+        {
+          type: "assistant" as const,
+          uuid: "asst-1",
+          session_id: "test-sess",
+          message: {
+            role: "assistant",
+            content: [
+              {
+                type: "tool_use",
+                id: "tool-bash-1",
+                name: "Bash",
+                input: { command: "git status" },
+              },
+            ],
+          },
+          parent_tool_use_id: null,
+          parent_agent_id: null,
+        },
+        {
+          type: "user" as const,
+          uuid: "user-tool-res-1",
+          session_id: "test-sess",
+          message: {
+            role: "user",
+            content: [
+              {
+                type: "tool_result",
+                tool_use_id: "tool-bash-1",
+                content: "On branch main\nnothing to commit",
+              },
+            ],
+          },
+          parent_tool_use_id: null,
+          parent_agent_id: null,
+        },
+        {
+          type: "assistant" as const,
+          uuid: "asst-2",
+          session_id: "test-sess",
+          message: {
+            role: "assistant",
+            content: [{ type: "text", text: "Working tree is clean." }],
+          },
+          parent_tool_use_id: null,
+          parent_agent_id: null,
+        },
+      ];
+
+      const snapshot = mapQoderSnapshot(messages, "test-sess");
+      expect(snapshot.turns).toHaveLength(1);
+      const turn = snapshot.turns[0];
+      expect(turn).toBeDefined();
+      if (!turn) return;
+      expect(turn.nativeTurnRef.nativeTurnKey).toBe("user-1");
+      expect(turn.checkpoint?.checkpointId).toBe("asst-2");
+      expect(turn.input[0]?.text).toBe("Check git status");
+      expect(turn.items).toHaveLength(2);
+
+      const cmdItem = turn.items[0];
+      expect(cmdItem).toBeDefined();
+      if (!cmdItem) return;
+      expect(cmdItem.item.type).toBe("commandExecution");
+      if (cmdItem.item.type === "commandExecution") {
+        expect(cmdItem.item.command).toBe("git status");
+        expect(cmdItem.item.output).toBe("On branch main\nnothing to commit");
+        expect(cmdItem.outcome.status).toBe("succeeded");
+      }
+
+      const msgItem = turn.items[1];
+      expect(msgItem).toBeDefined();
+      if (!msgItem) return;
+      expect(msgItem.item.type).toBe("agentMessage");
+      if (msgItem.item.type === "agentMessage") {
+        expect(msgItem.item.text).toBe("Working tree is clean.");
+        expect(msgItem.item.phase).toBe("final_answer");
+      }
     });
   });
 });

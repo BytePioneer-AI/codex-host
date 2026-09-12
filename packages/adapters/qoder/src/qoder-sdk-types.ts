@@ -1,6 +1,10 @@
 import type {
   CanUseTool,
   CanUseToolOptions,
+  ForkSessionOptions,
+  ForkSessionResult,
+  GetSessionInfoOptions,
+  GetSessionMessagesOptions,
   ModelInfo as QoderModelInfo,
   Options as QoderOptions,
   PermissionMode as QoderPermissionMode,
@@ -10,8 +14,10 @@ import type {
   SDKMessage,
   SDKPartialAssistantMessage,
   SDKResultMessage,
+  SDKSessionInfo,
   SDKSystemMessage,
   SDKUserMessage,
+  SessionMessage,
 } from "@qoder-ai/qoder-agent-sdk";
 
 export type CanUseToolContext = CanUseToolOptions;
@@ -19,6 +25,10 @@ export type CanUseToolContext = CanUseToolOptions;
 export type {
   CanUseTool,
   CanUseToolOptions,
+  ForkSessionOptions,
+  ForkSessionResult,
+  GetSessionInfoOptions,
+  GetSessionMessagesOptions,
   QoderModelInfo,
   QoderOptions,
   QoderPermissionMode,
@@ -27,9 +37,11 @@ export type {
   SDKMessage,
   SDKPartialAssistantMessage,
   SDKResultMessage,
+  SDKSessionInfo,
   SDKSystemMessage,
   SDKUserMessage,
   SdkQuery,
+  SessionMessage,
 };
 
 export interface QoderContextUsage {

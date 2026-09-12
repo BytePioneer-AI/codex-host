@@ -2269,5 +2269,73 @@ describe("QoderAdapter", () => {
       expect(tracker.snapshot()?.contextWindowTokens).toBe(1_048_576);
       expect(tracker.snapshot()?.contextUsedTokens).toBe(104_858);
     });
+
+    it("tracks cache hit rate and calculates percentage correctly", () => {
+      const tracker = new QoderUsageTracker();
+      tracker.observeAssistant({
+        type: "assistant",
+        uuid: "asst-1",
+        session_id: "sess-1",
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text: "Hello" }],
+          usage: {
+            input_tokens: 20_000,
+            cache_read_input_tokens: 15_000,
+            output_tokens: 100,
+            context_usage_ratio: 0.1,
+          },
+        },
+        parent_tool_use_id: null,
+        parent_agent_id: null,
+      } as unknown as SDKAssistantMessage);
+
+      const snapshot = tracker.snapshot();
+      expect(snapshot?.cacheHitRatePercent).toBe(75);
+      expect(snapshot?.contextUsedTokens).toBe(20_000);
+      expect(snapshot?.contextWindowTokens).toBe(200_000);
+    });
+
+    it("parses userQuota and expiresAt from getUsageInfo envelope", () => {
+      const tracker = new QoderUsageTracker();
+      tracker.observeUsageInfo({
+        usage: {
+          userId: "user-123",
+          userType: "personal_standard",
+          totalUsagePercentage: 42,
+          expiresAt: 1741824000000,
+          userQuota: {
+            total: 100,
+            used: 42,
+            remaining: 58,
+            percentage: 42,
+            unit: "credits",
+          },
+        },
+        session: {
+          total_credits: 1.25,
+        },
+      });
+
+      const snapshot = tracker.snapshot();
+      expect(snapshot?.totalCredits).toBe(1.25);
+      expect(snapshot?.planFiveHourUsedPercent).toBe(42);
+      expect(snapshot?.planFiveHourResetsAtUnix).toBe(1741824000);
+    });
+
+    it("derives contextUsedTokens when getContextUsage only reports usedPercentage", () => {
+      const tracker = new QoderUsageTracker({ modelId: "gpt-5.6-sol" });
+      tracker.observeContextUsage({
+        model: "qoder-custom/gpt-5.6-sol",
+        contextWindow: {
+          usedPercentage: 10,
+        },
+      });
+
+      const snapshot = tracker.snapshot();
+      expect(snapshot?.contextWindowTokens).toBe(252_000);
+      expect(snapshot?.contextUsagePercent).toBe(10);
+      expect(snapshot?.contextUsedTokens).toBe(25_200);
+    });
   });
 });

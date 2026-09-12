@@ -93,6 +93,7 @@ import { AntigravitySubagents } from "./subagents.js";
 import { nativeSubagentIdSchema, readSubagentTranscript } from "./subagent-transcript.js";
 import {
   antigravityToolErrorMessage,
+  classifyAntigravityDiagnostic,
   isAntigravityPermissionDenial,
   isRecord,
   parseAntigravityStreamLine,
@@ -125,6 +126,7 @@ interface ActiveTurn {
   logPath: string;
   agentItem: HostAgentMessageItem | null;
   agentText: string;
+  agentResponseCompleted: boolean;
   tools: Map<number, HostItem>;
   completedItems: HostItemSnapshot[];
   stderr: string;
@@ -423,7 +425,7 @@ function normalizedProcessError(
   // stderr can echo the invoked command line, so retain its existing redacted
   // diagnostic tail. A structured result.error is shown verbatim below.
   const diagnostic = sanitizeDiagnosticTail(nativeDetail);
-  if (/sign[ -]?in|authenticat|credential|login/iu.test(nativeDetail)) {
+  if (classifyAntigravityDiagnostic(nativeDetail) === "authenticationRequired") {
     return {
       code: "authenticationRequired",
       message: exposeDetail ? nativeDetail || fallback : diagnostic || fallback,
@@ -650,6 +652,7 @@ class AntigravitySession implements HarnessSession {
           this.#completeItem(active, active.agentItem, { status: "succeeded" });
           active.agentItem = null;
           active.agentText = "";
+          active.agentResponseCompleted = false;
         }
         if (output.kind === "event" && output.event.type === "item.completed") {
           active.completedItems.push(output.event.snapshot);
@@ -739,6 +742,7 @@ class AntigravitySession implements HarnessSession {
       logPath,
       agentItem: null,
       agentText: "",
+      agentResponseCompleted: false,
       tools: new Map(),
       completedItems: [],
       stderr: "",
@@ -917,6 +921,7 @@ class AntigravitySession implements HarnessSession {
     }
     if (event.result.response) {
       this.#appendOrSyncAgentText(active, event.result.response, false);
+      if (event.result.response.trim().length > 0) active.agentResponseCompleted = true;
     }
     const safeTurnId =
       event.result.num_turns !== undefined && event.result.num_turns !== null
@@ -943,7 +948,7 @@ class AntigravitySession implements HarnessSession {
         nativeTurnRef,
       );
     } else if (event.result.status === "SUCCESS") {
-      if (active.permissionDenial !== null && !active.agentItem) {
+      if (active.permissionDenial !== null && !active.agentResponseCompleted) {
         this.#completeTurn(
           active,
           {
@@ -959,19 +964,53 @@ class AntigravitySession implements HarnessSession {
     } else {
       const nativeError = event.result.error?.trim();
       const errorDetail = nativeError || active.stderr;
-      this.#completeTurn(
-        active,
-        {
-          status: "failed",
-          error: normalizedProcessError(
-            errorDetail,
-            `Antigravity Turn ended with status ${event.result.status}`,
-            nativeError !== undefined,
-          ),
-          checkpoint,
-        },
-        nativeTurnRef,
-      );
+      if (active.permissionDenial !== null && !active.agentResponseCompleted) {
+        this.#completeTurn(
+          active,
+          {
+            status: "failed",
+            error: permissionDeniedTurnError(active.nativePermissionMode, active.permissionDenial),
+            checkpoint,
+          },
+          nativeTurnRef,
+        );
+        return;
+      }
+      const diagnosticKind = classifyAntigravityDiagnostic(errorDetail);
+      const isAuthError = diagnosticKind === "authenticationRequired";
+      const hasAgentResponse =
+        active.agentResponseCompleted ||
+        (typeof event.result.response === "string" && event.result.response.trim().length > 0);
+      const hasPendingTools = active.tools.size > 0 || active.pendingSteps.size > 0;
+      const isTransientInterruption = diagnosticKind === "transientInterruption";
+      const isPermissionDenialDetail =
+        diagnosticKind === "permissionDenied" || isAntigravityPermissionDenial(errorDetail);
+
+      if (
+        event.result.status === "ERROR" &&
+        hasAgentResponse &&
+        !hasPendingTools &&
+        !isAuthError &&
+        (!nativeError ||
+          isTransientInterruption ||
+          (isPermissionDenialDetail && active.agentResponseCompleted))
+      ) {
+        this.#completeTurn(active, { status: "succeeded", checkpoint }, nativeTurnRef);
+      } else {
+        this.#completeTurn(
+          active,
+          {
+            status: "failed",
+            error: normalizedProcessError(
+              errorDetail,
+              `Antigravity Turn ended with status ${event.result.status}`,
+              Boolean(nativeError),
+            ),
+            checkpoint,
+          },
+          nativeTurnRef,
+        );
+      }
     }
   }
 
@@ -1004,6 +1043,7 @@ class AntigravitySession implements HarnessSession {
         this.#completeItem(active, active.agentItem, { status: "succeeded" });
         active.agentItem = null;
         active.agentText = "";
+        active.agentResponseCompleted = false;
       }
       if (active.subagents.handle(step)) return;
       step = { ...step, step_type: "tool" };
@@ -1011,16 +1051,18 @@ class AntigravitySession implements HarnessSession {
     if (step.step_type === "agent_response") {
       if (typeof step.text_delta === "string" && step.text_delta.length > 0) {
         this.#appendOrSyncAgentText(active, step.text_delta, true);
-        return;
+      } else {
+        const fullOrDelta =
+          (typeof step.text === "string" && step.text.length > 0 ? step.text : undefined) ??
+          (typeof step.content === "string" && step.content.length > 0
+            ? step.content
+            : undefined) ??
+          (typeof step.message === "string" && step.message.length > 0 ? step.message : undefined);
+        if (typeof fullOrDelta === "string" && fullOrDelta.length > 0) {
+          this.#appendOrSyncAgentText(active, fullOrDelta, false);
+        }
       }
-      const fullOrDelta =
-        step.text ??
-        (typeof step.content === "string" ? step.content : undefined) ??
-        (typeof step.message === "string" ? step.message : undefined);
-      if (typeof fullOrDelta === "string" && fullOrDelta.length > 0) {
-        this.#appendOrSyncAgentText(active, fullOrDelta, false);
-        return;
-      }
+      active.agentResponseCompleted = step.state === "DONE" && active.agentText.trim().length > 0;
       return;
     }
     if (step.step_type !== "tool") return;
@@ -1028,6 +1070,7 @@ class AntigravitySession implements HarnessSession {
       this.#completeItem(active, active.agentItem, { status: "succeeded" });
       active.agentItem = null;
       active.agentText = "";
+      active.agentResponseCompleted = false;
     }
     const merged = mergePendingStep(active.pendingSteps.get(step.step_index), step);
     let item = active.tools.get(step.step_index);

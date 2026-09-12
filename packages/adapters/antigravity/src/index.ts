@@ -24,10 +24,13 @@ export type {
 } from "./quota.js";
 export {
   antigravityToolErrorMessage,
+  classifyAntigravityDiagnostic,
+  isAntigravityAuthError,
   isAntigravityPermissionDenial,
+  isAntigravityTransientInterruption,
   parseAntigravityStreamLine,
 } from "./stream-events.js";
-export type { AntigravityStreamEvent } from "./stream-events.js";
+export type { AntigravityDiagnosticKind, AntigravityStreamEvent } from "./stream-events.js";
 export {
   codeActionFileChange,
   parseAntigravityCodeActions,

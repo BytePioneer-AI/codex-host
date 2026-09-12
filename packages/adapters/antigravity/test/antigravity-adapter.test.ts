@@ -19,9 +19,12 @@ import {
   antigravityAvailableThinkingOptions,
   antigravityModelArguments,
   antigravityToolErrorMessage,
+  classifyAntigravityDiagnostic,
   fetchAntigravityQuota,
   formatAntigravityTurnPrompt,
+  isAntigravityAuthError,
   isAntigravityPermissionDenial,
+  isAntigravityTransientInterruption,
   parseAntigravityContextUsage,
   parseAntigravityModels,
   parseAntigravityStreamLine,
@@ -584,6 +587,62 @@ describe("Antigravity Adapter", () => {
     expect(isAntigravityPermissionDenial("file not found")).toBe(false);
   });
 
+  it("classifies diagnostic text strictly without false positives from unrelated text", () => {
+    // Real Antigravity auth diagnostics
+    const authSamples = [
+      "Error: authentication required. Run 'agy' to log in, then retry.",
+      "Error: authentication required. Run 'antigravity' to log in.",
+      "error: authentication failed or timed out",
+      "Error: Please sign in to view available models. Launch the CLI without arguments to sign in.",
+      "Please sign in to use Antigravity",
+      "Not signed in. Run 'agy login'",
+      "Invalid credentials",
+      "no model configuration is available for this account",
+    ];
+    for (const sample of authSamples) {
+      expect(classifyAntigravityDiagnostic(sample)).toBe("authenticationRequired");
+      expect(isAntigravityAuthError(sample)).toBe(true);
+    }
+
+    // Unrelated errors mentioning "login" must NOT trigger auth classification
+    const authFalsePositives = [
+      "please login to continue the checkpoint save",
+      "checkpoint save failed: please login to git",
+      "Element #login-button not found in DOM",
+      "TypeError: Cannot read properties of undefined (reading 'login')",
+      "Failed to fetch /api/login: HTTP 500",
+    ];
+    for (const sample of authFalsePositives) {
+      expect(classifyAntigravityDiagnostic(sample)).toBe("unclassified");
+      expect(isAntigravityAuthError(sample)).toBe(false);
+    }
+
+    // Real transient stream interruptions
+    const transientSamples = [
+      "Error: The stream was interrupted. Please continue the task you were working on.",
+      "The stream was interrupted",
+      "stream was interrupted",
+      "Error: socket hang up",
+      "Error: connection closed unexpectedly",
+    ];
+    for (const sample of transientSamples) {
+      expect(classifyAntigravityDiagnostic(sample)).toBe("transientInterruption");
+      expect(isAntigravityTransientInterruption(sample)).toBe(true);
+    }
+
+    // Unrelated errors mentioning "network error" must NOT trigger transient interruption classification
+    const transientFalsePositives = [
+      "checkpoint save failed after network error",
+      "fetch failed: network error",
+      "npm install failed with network error",
+      "connection error: ECONNREFUSED 127.0.0.1:8080",
+    ];
+    for (const sample of transientFalsePositives) {
+      expect(classifyAntigravityDiagnostic(sample)).toBe("unclassified");
+      expect(isAntigravityTransientInterruption(sample)).toBe(false);
+    }
+  });
+
   it("redacts credentials echoed by the denied command line", () => {
     const denial =
       "permission check failed for command \"curl -H 'Authorization: Bearer sk-live-abc123' https://api.example.com\": " +
@@ -599,7 +658,10 @@ describe("Antigravity Adapter", () => {
   });
 
   describe("Session Lifecycle & Tool Streaming", () => {
-    async function fakeStreamingAgy(streamLines: readonly string[]): Promise<{
+    async function fakeStreamingAgy(
+      streamLines: readonly string[],
+      options?: { stderrLines?: readonly string[] },
+    ): Promise<{
       command: string;
       cwd: string;
       cleanup(): Promise<void>;
@@ -612,13 +674,25 @@ describe("Antigravity Adapter", () => {
         }
       };
       const scriptContent = `
+const fs = require("node:fs");
 const lines = ${JSON.stringify(streamLines)};
+const stderrLines = ${JSON.stringify(options?.stderrLines ?? [])};
 if (process.argv.includes("models")) {
   process.stdout.write("gemini-3.7-flash-high\\tGemini 3.7 Flash High\\n");
   process.exit(0);
 }
-for (const line of lines) {
-  process.stdout.write(line + "\\n");
+for (const errLine of stderrLines) {
+  fs.writeSync(2, errLine + "\\n");
+}
+const emitStdout = () => {
+  for (const line of lines) {
+    process.stdout.write(line + "\\n");
+  }
+};
+if (stderrLines.length > 0) {
+  setTimeout(emitStdout, 50);
+} else {
+  emitStdout();
 }
 `;
       const jsPath = path.join(directory, "agy.cjs");
@@ -639,6 +713,37 @@ for (const line of lines) {
       if (result.done) throw new Error("Output stream ended unexpectedly");
       if (result.value.kind !== "event") throw new Error("Expected an event output");
       return result.value.event;
+    }
+
+    async function runResultScenario(
+      streamLines: readonly string[],
+      turnIdText: string,
+      options?: { stderrLines?: readonly string[] },
+    ): Promise<Extract<HostEvent, { type: "turn.completed" }>> {
+      const { command, cwd, cleanup } = await fakeStreamingAgy(streamLines, options);
+      const adapter = new AntigravityAdapter({ command });
+      try {
+        const opened = await adapter.open({ kind: "create", cwd });
+        if (!opened.ok) throw new Error(opened.error.message);
+        const session = opened.value;
+        const iterator = session.outputs[Symbol.asyncIterator]();
+        const turnId = hostTurnIdSchema.parse(turnIdText);
+        const executed = await session.execute({
+          type: "turn.start",
+          turnId,
+          input: [{ type: "text", text: "run scenario" }],
+        });
+        if (!executed.ok) throw new Error(executed.error.message);
+        while (true) {
+          const event = await nextEvent(iterator);
+          if (event.type !== "turn.completed") continue;
+          await session.close();
+          return event;
+        }
+      } finally {
+        await adapter.close();
+        await cleanup();
+      }
     }
 
     it("executes a turn projecting write_to_file, run_command, and agentMessage", async () => {
@@ -900,6 +1005,588 @@ for (const line of lines) {
         await adapter.close();
         await cleanup();
       }
+    });
+
+    it("does not leak unredacted stderr diagnostics into message when result.error is empty", async () => {
+      const completed = await runResultScenario(
+        [
+          JSON.stringify({
+            event: "init",
+            init: { permission_mode: "default" },
+            conversation_id: "conv-empty-error",
+          }),
+          JSON.stringify({
+            event: "result",
+            result: {
+              conversation_id: "conv-empty-error",
+              status: "ERROR",
+              error: "   ",
+              num_turns: 1,
+            },
+          }),
+        ],
+        "turn-empty-error",
+        {
+          stderrLines: [
+            "[INFO] ordinary diagnostic stderr log from CLI",
+            "[DEBUG] auth token secret_token_12345 in header",
+          ],
+        },
+      );
+
+      expect(completed).toMatchObject({
+        turnId: "turn-empty-error",
+        outcome: {
+          status: "failed",
+          error: {
+            code: "nativeFailure",
+            message: "Antigravity Turn ended with status ERROR",
+          },
+        },
+      });
+      if (completed.outcome.status === "failed") {
+        expect(completed.outcome.error.message).not.toContain("secret_token_12345");
+        expect(completed.outcome.error.stderrTail).toContain("ordinary diagnostic stderr log");
+      }
+    });
+
+    it("treats non-SUCCESS result as succeeded when agent response was delivered and no tools are pending", async () => {
+      const streamLines = [
+        JSON.stringify({
+          event: "init",
+          init: { permission_mode: "default" },
+          conversation_id: "conv-healed",
+        }),
+        JSON.stringify({
+          event: "step_update",
+          step_update: {
+            conversation_id: "conv-healed",
+            step_index: 1,
+            state: "DONE",
+            step_type: "agent_response",
+            text: "Task completed successfully after recovery.",
+          },
+        }),
+        JSON.stringify({
+          event: "result",
+          result: {
+            conversation_id: "conv-healed",
+            status: "ERROR",
+            num_turns: 1,
+          },
+        }),
+      ];
+
+      const { command, cwd, cleanup } = await fakeStreamingAgy(streamLines);
+      const adapter = new AntigravityAdapter({ command });
+      try {
+        const opened = await adapter.open({ kind: "create", cwd });
+        expect(opened.ok).toBe(true);
+        if (!opened.ok) return;
+
+        const session = opened.value;
+        const iterator = session.outputs[Symbol.asyncIterator]();
+        const turnId = hostTurnIdSchema.parse("turn-healed");
+
+        await session.execute({
+          type: "turn.start",
+          turnId,
+          input: [{ type: "text", text: "commit changes" }],
+        });
+
+        const started = await nextEvent(iterator);
+        expect(started.type).toBe("turn.started");
+
+        const stateChanged = await nextEvent(iterator);
+        expect(stateChanged.type).toBe("session.state.changed");
+
+        const itemStarted = await nextEvent(iterator);
+        expect(itemStarted).toMatchObject({
+          type: "item.started",
+          turnId,
+          item: {
+            type: "agentMessage",
+            text: "Task completed successfully after recovery.",
+          },
+        });
+
+        const itemCompleted = await nextEvent(iterator);
+        expect(itemCompleted).toMatchObject({
+          type: "item.completed",
+          turnId,
+          snapshot: {
+            item: {
+              type: "agentMessage",
+              text: "Task completed successfully after recovery.",
+            },
+            outcome: { status: "succeeded" },
+          },
+        });
+
+        const completed = await nextEvent(iterator);
+        expect(completed).toMatchObject({
+          type: "turn.completed",
+          turnId,
+          outcome: { status: "succeeded" },
+        });
+
+        await session.close();
+      } finally {
+        await adapter.close();
+        await cleanup();
+      }
+    });
+
+    it("treats non-SUCCESS result as succeeded when result.error is missing, stderr is non-empty, and response is completed without pending tools", async () => {
+      const completed = await runResultScenario(
+        [
+          JSON.stringify({
+            event: "init",
+            init: { permission_mode: "default" },
+            conversation_id: "conv-stderr-diagnostics",
+          }),
+          JSON.stringify({
+            event: "step_update",
+            step_update: {
+              conversation_id: "conv-stderr-diagnostics",
+              step_index: 1,
+              state: "DONE",
+              step_type: "agent_response",
+              text: "Task completed successfully despite diagnostic stderr output.",
+            },
+          }),
+          JSON.stringify({
+            event: "result",
+            result: {
+              conversation_id: "conv-stderr-diagnostics",
+              status: "ERROR",
+              num_turns: 1,
+            },
+          }),
+        ],
+        "turn-stderr-diagnostics",
+        {
+          stderrLines: [
+            "[INFO] ordinary diagnostic stderr log from CLI",
+            "[DEBUG] background telemetry sync complete",
+          ],
+        },
+      );
+
+      expect(completed).toMatchObject({
+        turnId: "turn-stderr-diagnostics",
+        outcome: { status: "succeeded" },
+      });
+    });
+
+    it("falls back to content when step.text is empty string and treats event as agent text", async () => {
+      const streamLines = [
+        JSON.stringify({
+          event: "init",
+          init: { permission_mode: "default" },
+          conversation_id: "conv-empty-text-content",
+        }),
+        JSON.stringify({
+          event: "step_update",
+          step_update: {
+            conversation_id: "conv-empty-text-content",
+            step_index: 1,
+            state: "DONE",
+            step_type: "agent_response",
+            text: "",
+            content: "Recovered agent response from content fallback.",
+          },
+        }),
+        JSON.stringify({
+          event: "result",
+          result: {
+            conversation_id: "conv-empty-text-content",
+            status: "ERROR",
+            num_turns: 1,
+          },
+        }),
+      ];
+
+      const { command, cwd, cleanup } = await fakeStreamingAgy(streamLines);
+      const adapter = new AntigravityAdapter({ command });
+      try {
+        const opened = await adapter.open({ kind: "create", cwd });
+        expect(opened.ok).toBe(true);
+        if (!opened.ok) return;
+
+        const session = opened.value;
+        const iterator = session.outputs[Symbol.asyncIterator]();
+        const turnId = hostTurnIdSchema.parse("turn-empty-text-content");
+
+        await session.execute({
+          type: "turn.start",
+          turnId,
+          input: [{ type: "text", text: "trigger content fallback" }],
+        });
+
+        const started = await nextEvent(iterator);
+        expect(started.type).toBe("turn.started");
+
+        const stateChanged = await nextEvent(iterator);
+        expect(stateChanged.type).toBe("session.state.changed");
+
+        const itemStarted = await nextEvent(iterator);
+        expect(itemStarted).toMatchObject({
+          type: "item.started",
+          turnId,
+          item: {
+            type: "agentMessage",
+            text: "Recovered agent response from content fallback.",
+          },
+        });
+
+        const itemCompleted = await nextEvent(iterator);
+        expect(itemCompleted).toMatchObject({
+          type: "item.completed",
+          turnId,
+          snapshot: {
+            item: {
+              type: "agentMessage",
+              text: "Recovered agent response from content fallback.",
+            },
+            outcome: { status: "succeeded" },
+          },
+        });
+
+        const completed = await nextEvent(iterator);
+        expect(completed).toMatchObject({
+          type: "turn.completed",
+          turnId,
+          outcome: { status: "succeeded" },
+        });
+
+        await session.close();
+      } finally {
+        await adapter.close();
+        await cleanup();
+      }
+    });
+
+    it("falls back to message when step.text and content are empty strings", async () => {
+      const completed = await runResultScenario(
+        [
+          JSON.stringify({
+            event: "init",
+            init: { permission_mode: "default" },
+            conversation_id: "conv-empty-text-message",
+          }),
+          JSON.stringify({
+            event: "step_update",
+            step_update: {
+              conversation_id: "conv-empty-text-message",
+              step_index: 1,
+              state: "DONE",
+              step_type: "agent_response",
+              text: "",
+              content: "",
+              message: "Recovered agent response from message fallback.",
+            },
+          }),
+          JSON.stringify({
+            event: "result",
+            result: {
+              conversation_id: "conv-empty-text-message",
+              status: "ERROR",
+              num_turns: 1,
+            },
+          }),
+        ],
+        "turn-empty-text-message",
+      );
+
+      expect(completed).toMatchObject({
+        turnId: "turn-empty-text-message",
+        outcome: { status: "succeeded" },
+      });
+    });
+
+    it("treats non-SUCCESS result with transient stream interruption error detail as succeeded when response is present", async () => {
+      const streamLines = [
+        JSON.stringify({
+          event: "init",
+          init: { permission_mode: "default" },
+          conversation_id: "conv-transient",
+        }),
+        JSON.stringify({
+          event: "step_update",
+          step_update: {
+            conversation_id: "conv-transient",
+            step_index: 1,
+            state: "DONE",
+            step_type: "agent_response",
+            text: "All operations finished despite earlier stream interruption.",
+          },
+        }),
+        JSON.stringify({
+          event: "result",
+          result: {
+            conversation_id: "conv-transient",
+            status: "ERROR",
+            error:
+              "Error: The stream was interrupted. Please continue the task you were working on.",
+            num_turns: 1,
+          },
+        }),
+      ];
+
+      const { command, cwd, cleanup } = await fakeStreamingAgy(streamLines);
+      const adapter = new AntigravityAdapter({ command });
+      try {
+        const opened = await adapter.open({ kind: "create", cwd });
+        expect(opened.ok).toBe(true);
+        if (!opened.ok) return;
+
+        const session = opened.value;
+        const iterator = session.outputs[Symbol.asyncIterator]();
+        const turnId = hostTurnIdSchema.parse("turn-transient");
+
+        await session.execute({
+          type: "turn.start",
+          turnId,
+          input: [{ type: "text", text: "check work" }],
+        });
+
+        const started = await nextEvent(iterator);
+        expect(started.type).toBe("turn.started");
+
+        const stateChanged = await nextEvent(iterator);
+        expect(stateChanged.type).toBe("session.state.changed");
+
+        const itemStarted = await nextEvent(iterator);
+        expect(itemStarted).toMatchObject({
+          type: "item.started",
+          turnId,
+          item: {
+            type: "agentMessage",
+            text: "All operations finished despite earlier stream interruption.",
+          },
+        });
+
+        const itemCompleted = await nextEvent(iterator);
+        expect(itemCompleted).toMatchObject({
+          type: "item.completed",
+          turnId,
+          snapshot: {
+            item: {
+              type: "agentMessage",
+              text: "All operations finished despite earlier stream interruption.",
+            },
+            outcome: { status: "succeeded" },
+          },
+        });
+
+        const completed = await nextEvent(iterator);
+        expect(completed).toMatchObject({
+          type: "turn.completed",
+          turnId,
+          outcome: { status: "succeeded" },
+        });
+
+        await session.close();
+      } finally {
+        await adapter.close();
+        await cleanup();
+      }
+    });
+
+    it("keeps a partial agent response failed after a transient interruption", async () => {
+      const completed = await runResultScenario(
+        [
+          JSON.stringify({
+            event: "init",
+            init: { permission_mode: "default" },
+            conversation_id: "conv-partial",
+          }),
+          JSON.stringify({
+            event: "step_update",
+            step_update: {
+              conversation_id: "conv-partial",
+              step_index: 1,
+              state: "ACTIVE",
+              step_type: "agent_response",
+              text_delta: "The task started but was interrupted",
+            },
+          }),
+          JSON.stringify({
+            event: "result",
+            result: {
+              conversation_id: "conv-partial",
+              status: "ERROR",
+              error: "The stream was interrupted",
+              num_turns: 1,
+            },
+          }),
+        ],
+        "turn-partial",
+      );
+
+      expect(completed).toMatchObject({
+        turnId: "turn-partial",
+        outcome: { status: "failed", error: { code: "nativeFailure" } },
+      });
+    });
+
+    it("keeps an unknown non-SUCCESS result status failed", async () => {
+      const completed = await runResultScenario(
+        [
+          JSON.stringify({
+            event: "init",
+            init: { permission_mode: "default" },
+            conversation_id: "conv-cancelled",
+          }),
+          JSON.stringify({
+            event: "step_update",
+            step_update: {
+              conversation_id: "conv-cancelled",
+              step_index: 1,
+              state: "DONE",
+              step_type: "agent_response",
+              text: "The response was produced before cancellation.",
+            },
+          }),
+          JSON.stringify({
+            event: "result",
+            result: {
+              conversation_id: "conv-cancelled",
+              status: "CANCELLED",
+              response: "The response was produced before cancellation.",
+              num_turns: 1,
+            },
+          }),
+        ],
+        "turn-cancelled",
+      );
+
+      expect(completed).toMatchObject({
+        turnId: "turn-cancelled",
+        outcome: { status: "failed", error: { code: "nativeFailure" } },
+      });
+    });
+
+    it("keeps turn failed when completed response is followed by non-transient error mentioning network error", async () => {
+      const completed = await runResultScenario(
+        [
+          JSON.stringify({
+            event: "init",
+            init: { permission_mode: "default" },
+            conversation_id: "conv-network-error-checkpoint",
+          }),
+          JSON.stringify({
+            event: "step_update",
+            step_update: {
+              conversation_id: "conv-network-error-checkpoint",
+              step_index: 1,
+              state: "DONE",
+              step_type: "agent_response",
+              text: "Response delivered before downstream failure.",
+            },
+          }),
+          JSON.stringify({
+            event: "result",
+            result: {
+              conversation_id: "conv-network-error-checkpoint",
+              status: "ERROR",
+              error: "checkpoint save failed after network error",
+              num_turns: 1,
+            },
+          }),
+        ],
+        "turn-network-error-checkpoint",
+      );
+
+      expect(completed).toMatchObject({
+        turnId: "turn-network-error-checkpoint",
+        outcome: {
+          status: "failed",
+          error: {
+            code: "nativeFailure",
+            message:
+              "Antigravity Turn ended with status ERROR: checkpoint save failed after network error",
+          },
+        },
+      });
+    });
+
+    it("does not classify unrelated diagnostic mentioning login as authenticationRequired", async () => {
+      const completed = await runResultScenario(
+        [
+          JSON.stringify({
+            event: "init",
+            init: { permission_mode: "default" },
+            conversation_id: "conv-unrelated-login",
+          }),
+          JSON.stringify({
+            event: "step_update",
+            step_update: {
+              conversation_id: "conv-unrelated-login",
+              step_index: 1,
+              state: "DONE",
+              step_type: "agent_response",
+              text: "Response finished.",
+            },
+          }),
+          JSON.stringify({
+            event: "result",
+            result: {
+              conversation_id: "conv-unrelated-login",
+              status: "ERROR",
+              error: "please login to continue the checkpoint save",
+              num_turns: 1,
+            },
+          }),
+        ],
+        "turn-unrelated-login",
+      );
+
+      expect(completed).toMatchObject({
+        turnId: "turn-unrelated-login",
+        outcome: {
+          status: "failed",
+          error: {
+            code: "nativeFailure",
+            message:
+              "Antigravity Turn ended with status ERROR: please login to continue the checkpoint save",
+          },
+        },
+      });
+    });
+
+    it("classifies real Antigravity authentication error as authenticationRequired", async () => {
+      const completed = await runResultScenario(
+        [
+          JSON.stringify({
+            event: "init",
+            init: { permission_mode: "default" },
+            conversation_id: "conv-real-auth",
+          }),
+          JSON.stringify({
+            event: "result",
+            result: {
+              conversation_id: "conv-real-auth",
+              status: "ERROR",
+              error: "Error: authentication required. Run 'agy' to log in, then retry.",
+              num_turns: 1,
+            },
+          }),
+        ],
+        "turn-real-auth",
+      );
+
+      expect(completed).toMatchObject({
+        turnId: "turn-real-auth",
+        outcome: {
+          status: "failed",
+          error: {
+            code: "authenticationRequired",
+            message: "Error: authentication required. Run 'agy' to log in, then retry.",
+          },
+        },
+      });
     });
 
     it("emits turn.completed with cancelled outcome on session close while active", async () => {

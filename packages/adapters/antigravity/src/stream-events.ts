@@ -133,3 +133,49 @@ export function antigravityToolErrorMessage(value: unknown): string | null {
 export function isAntigravityPermissionDenial(message: string): boolean {
   return /permission check failed|denied permission|permission denied/iu.test(message);
 }
+
+export type AntigravityDiagnosticKind =
+  "authenticationRequired" | "transientInterruption" | "permissionDenied" | "unclassified";
+
+const ANTIGRAVITY_AUTH_ERROR_PATTERNS: readonly RegExp[] = [
+  /(?:^|[\r\n]|:\s*)(?:error:\s*)?authentication\s+(?:required|failed|error)\b/iu,
+  /(?:^|[\r\n]|:\s*)(?:error:\s*)?(?:please\s+)?sign[ -]?in\s+(?:to\s+(?:view\s+available\s+models|use\s+antigravity|access)|required)\b/iu,
+  /(?:^|[\r\n]|:\s*)(?:error:\s*)?(?:not|never)\s+signed\s+in\b/iu,
+  /(?:^|[\r\n]|:\s*)(?:error:\s*)?sign[ -]?in\s+required\b/iu,
+  /(?:^|[\r\n]|:\s*)(?:error:\s*)?log[ -]?in\s+required\b/iu,
+  /(?:^|[\r\n]|:\s*)(?:error:\s*)?run\s+['"`]?(?:agy|antigravity)(?:\s+auth)?\s+login['"`]?\b/iu,
+  /(?:^|[\r\n]|:\s*)(?:error:\s*)?run\s+['"`]?(?:agy|antigravity)['"`]?\s+to\s+log\s+in\b/iu,
+  /(?:^|[\r\n]|:\s*)(?:error:\s*)?(?:user\s+)?(?:not|un)\s*authenticated\b/iu,
+  /(?:^|[\r\n]|:\s*)(?:error:\s*)?(?:invalid|missing|expired)\s+credentials?\b/iu,
+  /(?:^|[\r\n]|:\s*)(?:error:\s*)?unauthorized\b/iu,
+  /(?:^|[\r\n]|:\s*)no model configuration is available for this account\b/iu,
+];
+
+const ANTIGRAVITY_TRANSIENT_INTERRUPTION_PATTERNS: readonly RegExp[] = [
+  /(?:^|[\r\n]|:\s*)(?:error:\s*)?(?:the\s+)?stream was interrupted\b/iu,
+  /(?:^|[\r\n]|:\s*)(?:error:\s*)?socket hang up\b/iu,
+  /(?:^|[\r\n]|:\s*)(?:error:\s*)?connection closed(?: unexpectedly)?\b/iu,
+];
+
+export function classifyAntigravityDiagnostic(detail: string): AntigravityDiagnosticKind {
+  const trimmed = detail.trim();
+  if (!trimmed) return "unclassified";
+  if (ANTIGRAVITY_AUTH_ERROR_PATTERNS.some((pattern) => pattern.test(trimmed))) {
+    return "authenticationRequired";
+  }
+  if (isAntigravityPermissionDenial(trimmed)) {
+    return "permissionDenied";
+  }
+  if (ANTIGRAVITY_TRANSIENT_INTERRUPTION_PATTERNS.some((pattern) => pattern.test(trimmed))) {
+    return "transientInterruption";
+  }
+  return "unclassified";
+}
+
+export function isAntigravityAuthError(detail: string): boolean {
+  return classifyAntigravityDiagnostic(detail) === "authenticationRequired";
+}
+
+export function isAntigravityTransientInterruption(detail: string): boolean {
+  return classifyAntigravityDiagnostic(detail) === "transientInterruption";
+}

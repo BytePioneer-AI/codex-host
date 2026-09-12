@@ -1315,6 +1315,7 @@ describe("QoderAdapter", () => {
       expect(resumeRes.ok).toBe(true);
       if (!resumeRes.ok) return;
       expect(capturedOptions?.resume).toBe("session-resume-abc");
+      expect(capturedOptions?.sessionId).toBeUndefined();
       await resumeRes.value.close();
       await adapter.close();
     });

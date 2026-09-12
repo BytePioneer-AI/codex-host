@@ -270,7 +270,7 @@ export class QoderSession implements HarnessSession {
 
     const qoderOptions: QoderOptions = {
       cwd: options.cwd,
-      sessionId: options.sessionId,
+      ...(options.resume ? {} : { sessionId: options.sessionId }),
       ...(options.pathToQoderCLIExecutable
         ? { pathToQoderCLIExecutable: options.pathToQoderCLIExecutable }
         : {}),

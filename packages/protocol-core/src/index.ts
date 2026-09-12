@@ -19,6 +19,8 @@ export {
 export type { CodexRateLimitResetCredits } from "./codex-native-usage.js";
 export {
   CodexTurnProjector,
+  coalesceFileChanges,
+  diffText,
   ensureGitDiffHeader,
   fileChangeFromTool,
   normalizeDisplayPath,

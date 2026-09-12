@@ -180,19 +180,26 @@ function isFileMutatingTool(toolName: string): boolean {
     "searchreplace",
     "applypatch",
     "replace",
+    "replacefilecontent",
     "multiedit",
     "write",
     "writefile",
     "filewrite",
+    "writetofile",
     "create",
     "createfile",
   ].includes(compactToolName(toolName));
 }
 
 function isWriteTool(toolName: string): boolean {
-  return ["write", "writefile", "filewrite", "create", "createfile"].includes(
-    compactToolName(toolName),
-  );
+  return [
+    "write",
+    "writefile",
+    "filewrite",
+    "writetofile",
+    "create",
+    "createfile",
+  ].includes(compactToolName(toolName));
 }
 
 function formatHunkRange(start: number, count: number): string {
@@ -279,6 +286,162 @@ function simpleUnifiedDiff(
   ].join("\n");
 }
 
+function extractHunkContent(unifiedDiff: string): string {
+  const lines = unifiedDiff.replaceAll("\r\n", "\n").split("\n");
+  const firstHunkIndex = lines.findIndex((line) => line.startsWith("@@"));
+  if (firstHunkIndex !== -1) {
+    const hunkLines = lines.slice(firstHunkIndex);
+    while (hunkLines.length > 0 && hunkLines[hunkLines.length - 1]?.trim() === "") {
+      hunkLines.pop();
+    }
+    return hunkLines.join("\n");
+  }
+  const nonHeaderLines = lines.filter(
+    (line) =>
+      !line.startsWith("diff --git") &&
+      !line.startsWith("--- ") &&
+      !line.startsWith("+++ ") &&
+      !line.startsWith("index ") &&
+      !line.startsWith("new file mode") &&
+      !line.startsWith("deleted file mode"),
+  );
+  while (nonHeaderLines.length > 0 && nonHeaderLines[nonHeaderLines.length - 1]?.trim() === "") {
+    nonHeaderLines.pop();
+  }
+  return nonHeaderLines.join("\n");
+}
+
+function mergeFileDiffs(
+  filePath: string,
+  diffs: string[],
+  kind: HostFileChange["kind"],
+): string {
+  const normalized = filePath.replaceAll("\\", "/");
+  const isAbsolute = normalized.startsWith("/") || /^[a-zA-Z]:\//.test(normalized);
+  const aPath = isAbsolute ? normalized : `a/${normalized}`;
+  const bPath = isAbsolute ? normalized : `b/${normalized}`;
+  const oldHeader = kind === "add" ? "/dev/null" : aPath;
+  const newHeader = kind === "delete" ? "/dev/null" : bPath;
+
+  const header = [
+    `diff --git ${aPath} ${bPath}`,
+    `--- ${oldHeader}`,
+    `+++ ${newHeader}`,
+  ].join("\n");
+
+  const hunks = diffs
+    .map(extractHunkContent)
+    .filter((hunk) => hunk.length > 0);
+
+  if (hunks.length === 0) {
+    return `${header}\n`;
+  }
+  return `${header}\n${hunks.join("\n")}\n`;
+}
+
+function coalesceSingleFileChanges(fileChanges: HostFileChange[]): HostFileChange {
+  const first = fileChanges[0];
+  if (!first) throw new Error("coalesceSingleFileChanges requires at least one file change");
+  if (fileChanges.length === 1) return first;
+
+  const last = fileChanges[fileChanges.length - 1] ?? first;
+
+  let overallKind: HostFileChange["kind"] = "update";
+  if (first.kind === "add" && last.kind !== "delete") {
+    overallKind = "add";
+  } else if (last.kind === "delete") {
+    overallKind = "delete";
+  } else if (
+    fileChanges.some((c) => c.kind === "add") &&
+    !fileChanges.some((c) => c.kind === "delete")
+  ) {
+    overallKind = "add";
+  }
+
+  // Reduce adjacent chainable changes
+  const reduced: HostFileChange[] = [];
+  for (const change of fileChanges) {
+    const prev = reduced[reduced.length - 1];
+    if (
+      prev &&
+      prev.newText !== undefined &&
+      change.oldText !== undefined &&
+      prev.newText === change.oldText
+    ) {
+      const chainedKind = prev.kind === "add" ? "add" : change.kind;
+      const oldText = prev.oldText ?? "";
+      const newText = change.newText ?? "";
+      reduced[reduced.length - 1] = {
+        path: change.path,
+        kind: chainedKind,
+        oldText,
+        newText,
+        unifiedDiff: simpleUnifiedDiff(
+          change.path,
+          chainedKind === "add" ? "" : oldText,
+          newText,
+          chainedKind === "delete" ? "update" : chainedKind,
+        ),
+      };
+    } else {
+      reduced.push(change);
+    }
+  }
+
+  const single = reduced[0];
+  if (reduced.length === 1 && single) {
+    if (single.kind === overallKind) {
+      return single;
+    }
+    return {
+      path: single.path,
+      kind: overallKind,
+      ...(single.oldText !== undefined ? { oldText: single.oldText } : {}),
+      ...(single.newText !== undefined ? { newText: single.newText } : {}),
+      unifiedDiff:
+        single.oldText !== undefined && single.newText !== undefined
+          ? simpleUnifiedDiff(
+              single.path,
+              overallKind === "add" ? "" : single.oldText,
+              single.newText,
+              overallKind === "delete" ? "update" : overallKind,
+            )
+          : single.unifiedDiff,
+    };
+  }
+
+  const diffs = reduced.map((c) => c.unifiedDiff);
+  const filePath = last.path;
+  const mergedDiff = mergeFileDiffs(filePath, diffs, overallKind);
+
+  return {
+    path: filePath,
+    kind: overallKind,
+    unifiedDiff: mergedDiff,
+  };
+}
+
+export function coalesceFileChanges(changes: HostFileChange[]): HostFileChange[] {
+  if (changes.length <= 1) return changes;
+
+  const groups = new Map<string, HostFileChange[]>();
+  for (const change of changes) {
+    const key = change.path.replaceAll("\\", "/").toLowerCase();
+    const existing = groups.get(key);
+    if (existing) {
+      existing.push(change);
+    } else {
+      groups.set(key, [change]);
+    }
+  }
+
+  const result: HostFileChange[] = [];
+  for (const fileChanges of groups.values()) {
+    result.push(coalesceSingleFileChanges(fileChanges));
+  }
+  return result;
+}
+
 export function fileChangeFromTool(
   toolName: string,
   args: JsonValue,
@@ -317,6 +480,8 @@ export function fileChangeFromTool(
         path: displayedPath,
         kind: "add",
         unifiedDiff: simpleUnifiedDiff(displayedPath, "", content, "add"),
+        oldText: "",
+        newText: content,
       },
     ];
   }
@@ -349,6 +514,8 @@ export function fileChangeFromTool(
       path: displayedPath,
       kind: "update",
       unifiedDiff: simpleUnifiedDiff(displayedPath, oldText, newText, "update"),
+      oldText,
+      newText,
     },
   ];
 }
@@ -783,8 +950,8 @@ function applyUpdate(item: HostItem, update: HostItemUpdate): HostItem {
   throw new Error(`Host Item '${item.type}' cannot apply update '${update.type}'`);
 }
 
-function diffText(changes: HostFileChange[]): string {
-  return changes
+export function diffText(changes: HostFileChange[]): string {
+  return coalesceFileChanges(changes)
     .map(({ path, unifiedDiff }) => ensureGitDiffHeader(path, unifiedDiff).trimEnd())
     .filter((diff) => diff.length > 0)
     .map((diff) => `${diff}\n`)
@@ -1418,12 +1585,13 @@ export class CodexTurnProjector {
   }
 
   #allFileChanges(): HostFileChange[] {
-    return this.#itemOrder.flatMap((itemId) => {
+    const raw = this.#itemOrder.flatMap((itemId) => {
       const projected = this.#items.get(itemId);
       if (!projected) return [];
       if (projected.item.type === "fileChange") return projected.item.changes;
       return projected.wireFileChanges ?? [];
     });
+    return coalesceFileChanges(raw);
   }
 
   #activeItem(itemId: HostItemId): ProjectedItem {

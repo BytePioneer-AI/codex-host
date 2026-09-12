@@ -37,6 +37,7 @@ import {
   hostItemIdSchema,
   hostTurnIdSchema,
   nativeSessionRefSchema,
+  nativeTurnRefSchema,
   type HarnessId,
   type HarnessModelRef,
   type HarnessPermissionModeId,
@@ -45,6 +46,7 @@ import {
   type HostTurnId,
   type JsonValue,
   type NativeSessionRef,
+  type NativeTurnRef,
 } from "@codexhost/shared-contracts";
 
 import { accessTokenFromEnv, qodercliAuth } from "@qoder-ai/qoder-agent-sdk";
@@ -163,6 +165,7 @@ export class QoderSession implements HarnessSession {
   readonly #pendingInteractions = new Map<string, PendingInteraction>();
   readonly #activeTools = new Map<string, ActiveTool>();
   readonly #query: QoderQuery;
+  readonly #sessionId: string;
   readonly #onClosed: (() => void) | undefined;
 
   #state: HarnessSessionState;
@@ -172,6 +175,7 @@ export class QoderSession implements HarnessSession {
 
   constructor(options: QoderSessionOptions) {
     this.outputs = this.#channel.outputs;
+    this.#sessionId = options.sessionId;
     this.#onClosed = options.onClosed;
 
     const nativeRef: NativeSessionRef = nativeSessionRefSchema.parse({
@@ -227,6 +231,15 @@ export class QoderSession implements HarnessSession {
     this.#channel.emit({ kind: "interaction", interaction });
   }
 
+  #createNativeTurnRef(nativeTurnKey: string): NativeTurnRef {
+    return nativeTurnRefSchema.parse({
+      harnessId: "qoder",
+      nativeSessionId: this.#state.nativeRef?.nativeSessionId ?? this.#sessionId,
+      nativeTurnKey,
+      formatVersion: 1,
+    });
+  }
+
   async #consumeMessages(): Promise<void> {
     try {
       for await (const message of this.#query) {
@@ -237,12 +250,15 @@ export class QoderSession implements HarnessSession {
       if (!this.#closed) {
         const harnessError = mapQoderException(error);
         if (this.#activeTurn) {
+          const turnId = this.#activeTurn.turnId;
+          const nativeTurnRef = this.#createNativeTurnRef(this.#activeTurn.userMessageUuid);
+          this.#activeTurn = null;
           this.#emitEvent({
             type: "turn.completed",
-            turnId: this.#activeTurn.turnId,
+            turnId,
+            nativeTurnRef,
             outcome: { status: "failed", error: harnessError },
           });
-          this.#activeTurn = null;
         }
       }
     }
@@ -674,12 +690,16 @@ export class QoderSession implements HarnessSession {
     }
 
     const turnId = this.#activeTurn.turnId;
+    const userMessageUuid = this.#activeTurn.userMessageUuid;
     this.#activeTurn = null;
+
+    const nativeTurnRef = this.#createNativeTurnRef(result.uuid || userMessageUuid);
 
     if (result.subtype === "success") {
       this.#emitEvent({
         type: "turn.completed",
         turnId,
+        nativeTurnRef,
         outcome: { status: "succeeded" },
       });
     } else {
@@ -687,6 +707,7 @@ export class QoderSession implements HarnessSession {
       this.#emitEvent({
         type: "turn.completed",
         turnId,
+        nativeTurnRef,
         outcome: { status: "failed", error },
       });
     }
@@ -1034,12 +1055,15 @@ export class QoderSession implements HarnessSession {
         }
 
         if (this.#activeTurn) {
+          const turnId = this.#activeTurn.turnId;
+          const nativeTurnRef = this.#createNativeTurnRef(this.#activeTurn.userMessageUuid);
+          this.#activeTurn = null;
           this.#emitEvent({
             type: "turn.completed",
-            turnId: this.#activeTurn.turnId,
+            turnId,
+            nativeTurnRef,
             outcome: { status: "cancelled", reason: "User cancelled turn" },
           });
-          this.#activeTurn = null;
         }
 
         return { ok: true, value: { cancellationRequested: true } };
@@ -1346,12 +1370,15 @@ export class QoderSession implements HarnessSession {
         this.#activeTurn.accumulatedStreamingReasoning = "";
       }
 
+      const turnId = this.#activeTurn.turnId;
+      const nativeTurnRef = this.#createNativeTurnRef(this.#activeTurn.userMessageUuid);
+      this.#activeTurn = null;
       this.#emitEvent({
         type: "turn.completed",
-        turnId: this.#activeTurn.turnId,
+        turnId,
+        nativeTurnRef,
         outcome: { status: "cancelled", reason: "Session closed" },
       });
-      this.#activeTurn = null;
     } else {
       for (const [id, pending] of this.#pendingInteractions) {
         this.#emitEvent({

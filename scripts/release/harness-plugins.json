@@ -7,7 +7,8 @@
     "packages/adapters/grok",
     "packages/adapters/omp",
     "packages/adapters/antigravity",
-    "packages/adapters/kiro-cli"
+    "packages/adapters/kiro-cli",
+    "packages/adapters/qoder"
   ],
   "runtimePackages": [
     "@agentclientprotocol/sdk",
@@ -16,6 +17,7 @@
     "@deepseek-ai/dsh-host-apiproxy",
     "@deepseek-ai/schemastery",
     "@opencode-ai/sdk",
+    "@qoder-ai/qoder-agent-sdk",
     "diff",
     "ws",
     "zod"

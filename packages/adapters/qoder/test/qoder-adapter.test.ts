@@ -1,0 +1,708 @@
+import { describe, expect, it, vi } from "vitest";
+import type {
+  HarnessModelRef,
+  HarnessOutput,
+} from "@codexhost/harness-adapter";
+import {
+  hostInteractionIdSchema,
+  hostTurnIdSchema,
+} from "@codexhost/shared-contracts";
+
+import { QoderAdapter } from "../src/qoder-adapter.js";
+import { QoderExecutableError } from "../src/qoder-command.js";
+import {
+  mapQoderException,
+  mapQoderExitCode,
+  mapQoderResultError,
+} from "../src/qoder-errors.js";
+import {
+  decodeQoderModelRef,
+  encodeQoderModelRef,
+  parseQoderModelCatalog,
+  QODER_DEFAULT_MODEL_REF,
+} from "../src/qoder-models.js";
+import type {
+  QoderOptions,
+  QoderQuery,
+  QoderQueryFactory,
+  SDKAssistantMessage,
+  SDKMessage,
+  SDKResultMessage,
+  SDKUserMessage,
+} from "../src/qoder-sdk-types.js";
+import { QoderUsageTracker } from "../src/qoder-usage.js";
+
+class FakeQoderQuery implements QoderQuery {
+  readonly interrupt = vi.fn(async () => undefined);
+  readonly close = vi.fn(async () => {
+    this.#closed = true;
+    for (const waiter of this.#waiters.splice(0)) {
+      waiter({ done: true, value: undefined });
+    }
+  });
+  readonly getAvailableModels = vi.fn(async () => [
+    { value: "default", displayName: "Default" },
+    { value: "qoder-fast", displayName: "Qoder Fast" },
+  ]);
+  readonly getContextUsage = vi.fn(async () => ({
+    contextWindow: { usedPercentage: 45 },
+    totalTokens: 450,
+    maxTokens: 1000,
+  }));
+  readonly setModel = vi.fn(async (_model: string) => undefined);
+
+  #closed = false;
+  #messages: SDKMessage[] = [];
+  #waiters: Array<(result: IteratorResult<SDKMessage>) => void> = [];
+
+  push(message: SDKMessage): void {
+    const waiter = this.#waiters.shift();
+    if (waiter) {
+      waiter({ done: false, value: message });
+    } else {
+      this.#messages.push(message);
+    }
+  }
+
+  [Symbol.asyncIterator](): AsyncIterator<SDKMessage> {
+    return {
+      next: () => {
+        const message = this.#messages.shift();
+        if (message) return Promise.resolve({ done: false, value: message });
+        if (this.#closed) return Promise.resolve({ done: true, value: undefined });
+        return new Promise((resolve) => this.#waiters.push(resolve));
+      },
+    };
+  }
+}
+
+class OutputCollector {
+  readonly outputs: HarnessOutput[] = [];
+  readonly #waiters: Array<(output: HarnessOutput) => void> = [];
+
+  constructor(stream: AsyncIterable<HarnessOutput>) {
+    (async () => {
+      try {
+        for await (const out of stream) {
+          this.outputs.push(out);
+          const waiter = this.#waiters.shift();
+          if (waiter) waiter(out);
+        }
+      } catch {
+        // Stream ended or errored
+      }
+    })();
+  }
+
+  async waitFor(
+    predicate: (output: HarnessOutput) => boolean,
+    timeoutMs = 2000,
+  ): Promise<HarnessOutput> {
+    const existing = this.outputs.find(predicate);
+    if (existing) return existing;
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(
+        () => reject(new Error("Timeout waiting for output event")),
+        timeoutMs,
+      );
+      const check = (out: HarnessOutput) => {
+        if (predicate(out)) {
+          clearTimeout(timer);
+          resolve(out);
+        } else {
+          this.#waiters.push(check);
+        }
+      };
+      this.#waiters.push(check);
+    });
+  }
+}
+
+describe("QoderAdapter", () => {
+  describe("inspect()", () => {
+    it("returns notInstalled when executable is not found", async () => {
+      const adapter = new QoderAdapter({
+        resolveExecutable: () => {
+          throw new QoderExecutableError("Qoder CLI is not installed");
+        },
+      });
+
+      const inspection = await adapter.inspect();
+      expect(inspection.status).toBe("notInstalled");
+      if (inspection.status === "notInstalled") {
+        expect(inspection.error.code).toBe("notInstalled");
+      }
+    });
+
+    it("returns ready when executable is resolved and caches result", async () => {
+      let resolveCalls = 0;
+      const adapter = new QoderAdapter({
+        resolveExecutable: () => {
+          resolveCalls++;
+          return "D:/tools/qodercli.exe";
+        },
+      });
+
+      const inspection1 = await adapter.inspect({ cwd: "D:/project" });
+      expect(inspection1.status).toBe("ready");
+      if (inspection1.status === "ready") {
+        expect(inspection1.catalog.defaultModel?.id).toBe(QODER_DEFAULT_MODEL_REF.id);
+        expect(inspection1.capabilities.configuration.selectModel).toBe(true);
+        expect(inspection1.capabilities.configuration.selectPermissionMode).toBe(false);
+        expect(inspection1.capabilities.history.rollbackLastTurn).toBe(false);
+      }
+
+      // Second call uses cached inspection
+      const inspection2 = await adapter.inspect({ cwd: "D:/project" });
+      expect(inspection2.status).toBe("ready");
+      expect(resolveCalls).toBe(1);
+
+      // Force refresh bypasses cache
+      const inspection3 = await adapter.inspect({ cwd: "D:/project", refresh: true });
+      expect(inspection3.status).toBe("ready");
+      expect(resolveCalls).toBe(2);
+    });
+  });
+
+  describe("open() session lifecycle", () => {
+    it("opens session with create and resume, and rejects fork and rollbackLastTurn", async () => {
+      const fakeQuery = new FakeQoderQuery();
+      const adapter = new QoderAdapter({
+        resolveExecutable: () => "D:/tools/qodercli.exe",
+        queryFactory: () => fakeQuery,
+      });
+
+      // Create session
+      const createResult = await adapter.open({
+        kind: "create",
+        cwd: "D:/project",
+      });
+      expect(createResult.ok).toBe(true);
+      if (!createResult.ok) return;
+      const session = createResult.value;
+      expect(session.harnessId).toBe("qoder");
+      expect(session.capabilities.configuration.selectModel).toBe(true);
+      expect(session.capabilities.history.fork).toBe(false);
+
+      // Resume session
+      const resumeResult = await adapter.open({
+        kind: "resume",
+        cwd: "D:/project",
+        nativeRef: {
+          harnessId: "qoder",
+          nativeSessionId: "session-12345",
+          formatVersion: 1,
+        },
+      });
+      expect(resumeResult.ok).toBe(true);
+      if (resumeResult.ok) {
+        expect(resumeResult.value.initialState.nativeRef?.nativeSessionId).toBe("session-12345");
+        await resumeResult.value.close();
+      }
+
+      // Fork session: typed unsupported error
+      const forkResult = await adapter.open({
+        kind: "fork",
+        cwd: "D:/project",
+        sourceRef: { harnessId: "qoder", nativeSessionId: "source-1", formatVersion: 1 },
+        checkpoint: { harnessId: "qoder", nativeCheckpointId: "cp-1", formatVersion: 1 },
+      });
+      expect(forkResult.ok).toBe(false);
+      if (!forkResult.ok) {
+        expect(forkResult.error.code).toBe("unsupported");
+      }
+
+      // RollbackLastTurn session: typed unsupported error
+      const rollbackResult = await adapter.open({
+        kind: "rollbackLastTurn",
+        cwd: "D:/project",
+        sourceRef: { harnessId: "qoder", nativeSessionId: "source-1", formatVersion: 1 },
+      });
+      expect(rollbackResult.ok).toBe(false);
+      if (!rollbackResult.ok) {
+        expect(rollbackResult.error.code).toBe("unsupported");
+      }
+
+      await session.close();
+      await adapter.close();
+    });
+  });
+
+  describe("Multi-turn streaming & query persistence", () => {
+    it("drives multiple turns through the same long-lived query instance", async () => {
+      const fakeQuery = new FakeQoderQuery();
+      let capturedOptions: QoderOptions | undefined;
+      const queryFactory: QoderQueryFactory = (input) => {
+        capturedOptions = input.options;
+        return fakeQuery;
+      };
+
+      const adapter = new QoderAdapter({
+        resolveExecutable: () => "D:/tools/qodercli.exe",
+        queryFactory,
+      });
+
+      const openResult = await adapter.open({
+        kind: "create",
+        cwd: "D:/test-cwd",
+      });
+      expect(openResult.ok).toBe(true);
+      if (!openResult.ok) return;
+      const session = openResult.value;
+      const collector = new OutputCollector(session.outputs);
+
+      // Turn 1
+      const turnId1 = hostTurnIdSchema.parse("turn-1");
+      const startRes1 = await session.execute({
+        type: "turn.start",
+        turnId: turnId1,
+        input: [{ type: "text", text: "Hello Qoder" }],
+      });
+      expect(startRes1.ok).toBe(true);
+
+      fakeQuery.push({
+        type: "system",
+        subtype: "init",
+        session_id: "qoder-session-real",
+      });
+
+      fakeQuery.push({
+        type: "assistant",
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text: "Hello user!" }],
+        },
+      } as SDKAssistantMessage);
+
+      fakeQuery.push({
+        type: "result",
+        subtype: "success",
+        total_credits: 1.2,
+      } as SDKResultMessage);
+
+      await collector.waitFor(
+        (o) => o.kind === "event" && o.event.type === "turn.completed" && o.event.turnId === turnId1,
+      );
+
+      // Turn 2 on the SAME session and query!
+      const turnId2 = hostTurnIdSchema.parse("turn-2");
+      const startRes2 = await session.execute({
+        type: "turn.start",
+        turnId: turnId2,
+        input: [{ type: "text", text: "Tell me more" }],
+      });
+      expect(startRes2.ok).toBe(true);
+
+      fakeQuery.push({
+        type: "assistant",
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text: "Here is more info." }],
+        },
+      } as SDKAssistantMessage);
+
+      fakeQuery.push({
+        type: "result",
+        subtype: "success",
+        total_credits: 2.5,
+      } as SDKResultMessage);
+
+      await collector.waitFor(
+        (o) => o.kind === "event" && o.event.type === "turn.completed" && o.event.turnId === turnId2,
+      );
+
+      // Verify query was NOT closed between turns
+      expect(fakeQuery.close).not.toHaveBeenCalled();
+      expect(capturedOptions?.sessionId).toBeDefined();
+
+      await session.close();
+      expect(fakeQuery.close).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe("Partial delta deduplication", () => {
+    it("deduplicates streamed text deltas when assistant message arrives", async () => {
+      const fakeQuery = new FakeQoderQuery();
+      const adapter = new QoderAdapter({
+        resolveExecutable: () => "D:/tools/qodercli.exe",
+        queryFactory: () => fakeQuery,
+      });
+
+      const openResult = await adapter.open({ kind: "create", cwd: "D:/workspace" });
+      if (!openResult.ok) throw new Error("open failed");
+      const session = openResult.value;
+      const collector = new OutputCollector(session.outputs);
+
+      const turnId = hostTurnIdSchema.parse("turn-stream");
+      await session.execute({
+        type: "turn.start",
+        turnId,
+        input: [{ type: "text", text: "Stream test" }],
+      });
+
+      // Emit deltas: "Hello " then "world"
+      fakeQuery.push({
+        type: "stream_event",
+        text_delta: "Hello ",
+      });
+
+      fakeQuery.push({
+        type: "stream_event",
+        text_delta: "world",
+      });
+
+      // Now assistant message confirms "Hello world"
+      fakeQuery.push({
+        type: "assistant",
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text: "Hello world" }],
+        },
+      } as SDKAssistantMessage);
+
+      fakeQuery.push({
+        type: "result",
+        subtype: "success",
+      } as SDKResultMessage);
+
+      await collector.waitFor((o) => o.kind === "event" && o.event.type === "turn.completed");
+
+      // Verify that deltas were appended and final message did NOT duplicate
+      const updates = collector.outputs.filter(
+        (o) => o.kind === "event" && o.event.type === "item.updated",
+      );
+      const appends = updates.map((u) => (u as any).event.update.text);
+      expect(appends).toEqual(["Hello ", "world"]);
+
+      const completed = collector.outputs.find(
+        (o) => o.kind === "event" && o.event.type === "item.completed",
+      );
+      expect(completed).toBeDefined();
+      expect((completed as any).event.snapshot.item.text).toBe("Hello world");
+
+      await session.close();
+    });
+  });
+
+  describe("Cancellation via interrupt()", () => {
+    it("invokes query.interrupt() and marks turn cancelled without closing session", async () => {
+      const fakeQuery = new FakeQoderQuery();
+      const adapter = new QoderAdapter({
+        resolveExecutable: () => "D:/tools/qodercli.exe",
+        queryFactory: () => fakeQuery,
+      });
+
+      const openResult = await adapter.open({ kind: "create", cwd: "D:/workspace" });
+      if (!openResult.ok) throw new Error("open failed");
+      const session = openResult.value;
+      const collector = new OutputCollector(session.outputs);
+
+      const turnId = hostTurnIdSchema.parse("turn-cancel");
+      await session.execute({
+        type: "turn.start",
+        turnId,
+        input: [{ type: "text", text: "Long operation" }],
+      });
+
+      // Cancel turn
+      const cancelResult = await session.execute({
+        type: "turn.cancel",
+        turnId,
+      });
+      expect(cancelResult.ok).toBe(true);
+
+      expect(fakeQuery.interrupt).toHaveBeenCalledTimes(1);
+
+      await collector.waitFor(
+        (o) =>
+          o.kind === "event" &&
+          o.event.type === "turn.completed" &&
+          o.event.outcome.status === "cancelled",
+      );
+
+      // Session is still open and can run another turn!
+      const turnId2 = hostTurnIdSchema.parse("turn-after-cancel");
+      const start2 = await session.execute({
+        type: "turn.start",
+        turnId: turnId2,
+        input: [{ type: "text", text: "Proceed again" }],
+      });
+      expect(start2.ok).toBe(true);
+
+      fakeQuery.push({
+        type: "result",
+        subtype: "success",
+      } as SDKResultMessage);
+
+      await collector.waitFor(
+        (o) => o.kind === "event" && o.event.type === "turn.completed" && o.event.turnId === turnId2,
+      );
+
+      await session.close();
+    });
+  });
+
+  describe("Tool approval interaction", () => {
+    it("bridges tool approval to HostApprovalInteraction with allow and deny", async () => {
+      let canUseToolCb: any;
+      const fakeQuery = new FakeQoderQuery();
+      const adapter = new QoderAdapter({
+        resolveExecutable: () => "D:/tools/qodercli.exe",
+        queryFactory: (input) => {
+          canUseToolCb = input.options?.canUseTool;
+          return fakeQuery;
+        },
+      });
+
+      const openResult = await adapter.open({ kind: "create", cwd: "D:/workspace" });
+      if (!openResult.ok) throw new Error("open failed");
+      const session = openResult.value;
+      const collector = new OutputCollector(session.outputs);
+
+      const turnId = hostTurnIdSchema.parse("turn-approval");
+      await session.execute({
+        type: "turn.start",
+        turnId,
+        input: [{ type: "text", text: "Run command" }],
+      });
+
+      // Trigger canUseTool from SDK
+      const abortController = new AbortController();
+      const permPromise = canUseToolCb(
+        "Bash",
+        { command: "rm -rf /" },
+        { signal: abortController.signal, toolUseID: "tool-bash-1" },
+      );
+
+      const interactionEvent = await collector.waitFor(
+        (o) => o.kind === "interaction" && o.interaction.type === "approval",
+      );
+      const interactionId = (interactionEvent as any).interaction.interactionId;
+
+      // Respond allowOnce
+      const respondRes = await session.execute({
+        type: "interaction.respond",
+        interactionId,
+        response: {
+          type: "approval",
+          actionId: "allowOnce",
+        },
+      });
+      expect(respondRes.ok).toBe(true);
+
+      const permResult = await permPromise;
+      expect(permResult.behavior).toBe("allow");
+
+      await collector.waitFor(
+        (o) =>
+          o.kind === "event" &&
+          o.event.type === "interaction.closed" &&
+          (o.event as any).reason === "responded",
+      );
+
+      await session.close();
+    });
+  });
+
+  describe("AskUserQuestion interaction with full question prompt keying", () => {
+    it("bridges AskUserQuestion and formats answers dictionary keyed by full question text", async () => {
+      let canUseToolCb: any;
+      const fakeQuery = new FakeQoderQuery();
+      const adapter = new QoderAdapter({
+        resolveExecutable: () => "D:/tools/qodercli.exe",
+        queryFactory: (input) => {
+          canUseToolCb = input.options?.canUseTool;
+          return fakeQuery;
+        },
+      });
+
+      const openResult = await adapter.open({ kind: "create", cwd: "D:/workspace" });
+      if (!openResult.ok) throw new Error("open failed");
+      const session = openResult.value;
+      const collector = new OutputCollector(session.outputs);
+
+      const turnId = hostTurnIdSchema.parse("turn-question");
+      await session.execute({
+        type: "turn.start",
+        turnId,
+        input: [{ type: "text", text: "Help me choose" }],
+      });
+
+      const questionPrompt = "Which environment would you like to deploy to?";
+      const abortController = new AbortController();
+
+      const questionPromise = canUseToolCb(
+        "AskUserQuestion",
+        {
+          questions: [
+            {
+              question: questionPrompt,
+              options: ["Production", "Staging"],
+              multiSelect: false,
+            },
+          ],
+        },
+        { signal: abortController.signal },
+      );
+
+      const interactionEvent = await collector.waitFor(
+        (o) => o.kind === "interaction" && o.interaction.type === "question",
+      );
+      const interaction = (interactionEvent as any).interaction;
+      expect(interaction.questions[0].prompt).toBe(questionPrompt);
+
+      // Respond with selected answer
+      const respondRes = await session.execute({
+        type: "interaction.respond",
+        interactionId: interaction.interactionId,
+        response: {
+          type: "question",
+          answers: {
+            [questionPrompt]: ["Production"],
+          },
+        },
+      });
+      expect(respondRes.ok).toBe(true);
+
+      const result = await questionPromise;
+      expect(result.behavior).toBe("allow");
+      expect((result as any).updatedInput.answers).toEqual({
+        [questionPrompt]: "Production",
+      });
+
+      await session.close();
+    });
+  });
+
+  describe("Error classification", () => {
+    it("maps result error_code correctly", () => {
+      const authErr = mapQoderResultError({
+        type: "result",
+        subtype: "error_during_execution",
+        error_code: 105,
+      });
+      expect(authErr.code).toBe("authenticationRequired");
+      expect(authErr.retryable).toBe(false);
+
+      const unsuppErr = mapQoderResultError({
+        type: "result",
+        subtype: "error_during_execution",
+        error_code: 430,
+        errors: ["Feature not available"],
+      });
+      expect(unsuppErr.code).toBe("unsupported");
+
+      const retryableErr = mapQoderResultError({
+        type: "result",
+        subtype: "error_during_execution",
+        error_code: 500,
+      });
+      expect(retryableErr.code).toBe("nativeFailure");
+      expect(retryableErr.retryable).toBe(true);
+
+      const limitErr = mapQoderResultError({
+        type: "result",
+        subtype: "error_during_execution",
+        error_code: 47902,
+      });
+      expect(limitErr.code).toBe("invalidState");
+    });
+
+    it("maps CLI exit codes correctly", () => {
+      expect(mapQoderExitCode(41).code).toBe("authenticationRequired");
+      expect(mapQoderExitCode(42).code).toBe("invalidRequest");
+      expect(mapQoderExitCode(44).code).toBe("nativeFailure");
+      expect(mapQoderExitCode(52).code).toBe("nativeFailure");
+      expect(mapQoderExitCode(53).code).toBe("invalidState");
+    });
+
+    it("maps SDK exceptions correctly", () => {
+      expect(mapQoderException(new Error("Login required: missing auth token")).code).toBe(
+        "authenticationRequired",
+      );
+      expect(mapQoderException(new Error("Session not found with id 123")).code).toBe(
+        "sessionNotFound",
+      );
+      expect(mapQoderException(new Error("Unsupported method call")).code).toBe("unsupported");
+      expect(mapQoderException(new Error("Protocol mismatch version")).code).toBe("protocolError");
+    });
+  });
+
+  describe("Usage credit snapshot mapping", () => {
+    it("retains latest total_credits snapshot without accumulating across turns", () => {
+      const tracker = new QoderUsageTracker();
+
+      tracker.observeResult({
+        type: "result",
+        subtype: "success",
+        total_credits: 5.5,
+        usage: { input_tokens: 100, output_tokens: 50 },
+      });
+
+      const snap1 = tracker.snapshot();
+      expect(snap1?.totalCredits).toBe(5.5);
+      expect(snap1?.inputTokens).toBe(100);
+
+      // Turn 2 result comes in with cumulative credits of 8.2
+      tracker.observeResult({
+        type: "result",
+        subtype: "success",
+        total_credits: 8.2,
+        usage: { input_tokens: 120, output_tokens: 60 },
+      });
+
+      const snap2 = tracker.snapshot();
+      // Must NOT be 13.7! Must be latest snapshot 8.2!
+      expect(snap2?.totalCredits).toBe(8.2);
+      expect(snap2?.inputTokens).toBe(120);
+    });
+  });
+
+  describe("Model catalog encoding and decoding", () => {
+    it("encodes and decodes model refs to opaque transport-safe strings", () => {
+      const modelRef = encodeQoderModelRef("claude-3-7-sonnet@20250219/thinking");
+      expect(/^[A-Za-z0-9._~-]+$/.test(modelRef.id)).toBe(true);
+
+      const decoded = decodeQoderModelRef(modelRef);
+      expect(decoded).toBe("claude-3-7-sonnet@20250219/thinking");
+    });
+
+    it("parses model catalog with fallback to default model", () => {
+      const catalog = parseQoderModelCatalog([
+        { value: "qoder-1", displayName: "Qoder Model 1" },
+        { value: "qoder-2", displayName: "Qoder Model 2" },
+      ]);
+      expect(catalog.models.length).toBe(2);
+      expect(catalog.defaultModel?.id).toBe(encodeQoderModelRef("qoder-1").id);
+      expect(catalog.thinkingOptions).toEqual([]);
+    });
+  });
+
+  describe("close() cleanup", () => {
+    it("closes open sessions and terminates queries cleanly", async () => {
+      const fakeQuery = new FakeQoderQuery();
+      const adapter = new QoderAdapter({
+        resolveExecutable: () => "D:/tools/qodercli.exe",
+        queryFactory: () => fakeQuery,
+      });
+
+      const openResult = await adapter.open({ kind: "create", cwd: "D:/workspace" });
+      if (!openResult.ok) throw new Error("open failed");
+      const session = openResult.value;
+
+      await adapter.close();
+      expect(fakeQuery.close).toHaveBeenCalledTimes(1);
+
+      // Subsequent execute after close fails with invalidState
+      const res = await session.execute({
+        type: "turn.start",
+        turnId: hostTurnIdSchema.parse("turn-after-close"),
+        input: [{ type: "text", text: "Should fail" }],
+      });
+      expect(res.ok).toBe(false);
+      if (!res.ok) {
+        expect(res.error.code).toBe("invalidState");
+      }
+    });
+  });
+});

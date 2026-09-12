@@ -608,4 +608,53 @@ describe("Renderer draft Agent controller", () => {
     ).rejects.toThrow("could not restore the prior Agent");
     expect(agents.isSwitching(composer)).toBe(false);
   });
+
+  it("supports Qoder draft switching, model scoping, and restoration", async () => {
+    const composer = {};
+    const agents = controller();
+    const qoderModel = harnessModelRefSchema.parse({ id: "qoder-default-model" });
+    const qoderThinking = harnessThinkingOptionIdSchema.parse("medium");
+    const permissionMode = harnessPermissionModeIdSchema.parse("auto");
+    const operations = {
+      applyAgent: () => true,
+      clearPrewarm: async () => undefined,
+    };
+
+    agents.mount(composer, ["default"]);
+    await agents.switchAgent(composer, "qoder", operations);
+    expect(agents.get(composer)).toMatchObject({
+      agent: "qoder",
+      phase: "draft",
+    });
+
+    agents.setExternalModel(composer, "qoder", qoderModel);
+    agents.setExternalThinkingOption(composer, "qoder", qoderThinking);
+    agents.setExternalPermissionMode(composer, "qoder", permissionMode);
+
+    expect(agents.modelForAgent(composer, "qoder")).toEqual(qoderModel);
+    expect(agents.thinkingOptionForAgent(composer, "qoder")).toBe(qoderThinking);
+    expect(agents.permissionModeForAgent(composer, "qoder")).toBe(permissionMode);
+
+    expect(agents.modelForAgent(composer, "pi")).toBeUndefined();
+    expect(agents.modelForAgent(composer, "kiro-cli")).toBeUndefined();
+
+    agents.lock(composer);
+    expect(agents.get(composer).phase).toBe("locked");
+
+    const restored = {};
+    agents.mount(restored, ["conversation", "qoder-thread-1"]);
+    agents.restore(restored, "qoder", qoderModel, qoderThinking, permissionMode);
+    expect(agents.get(restored)).toMatchObject({
+      agent: "qoder",
+      phase: "locked",
+      qoderModel,
+      qoderThinkingOptionId: qoderThinking,
+      permissionModeByAgent: {
+        qoder: permissionMode,
+      },
+    });
+    expect(agents.modelForAgent(restored, "qoder")).toEqual(qoderModel);
+    expect(agents.thinkingOptionForAgent(restored, "qoder")).toBe(qoderThinking);
+    expect(agents.permissionModeForAgent(restored, "qoder")).toBe(permissionMode);
+  });
 });

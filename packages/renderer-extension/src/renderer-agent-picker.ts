@@ -77,6 +77,7 @@ export const RENDERER_AGENT_INSTALL_URLS: Readonly<Record<ExternalRendererAgent,
   omp: "https://github.com/can1357/oh-my-pi",
   antigravity: "https://antigravity.google/product/antigravity-cli",
   "kiro-cli": "https://kiro.dev/docs/cli/",
+  qoder: "https://docs.qoder.com/",
 };
 
 type AgentAvailability = Partial<Record<ExternalRendererAgent, RendererAgentAvailability>>;

@@ -71,7 +71,7 @@ describe("Renderer Agent icons", () => {
     expect(image.style.borderRadius).toBe("22.37%");
   });
 
-  it.each(["antigravity", "kiro-cli"] as const)(
+  it.each(["antigravity", "kiro-cli", "qoder"] as const)(
     "renders %s with the bundled SVG asset",
     (agent) => {
       const image = {

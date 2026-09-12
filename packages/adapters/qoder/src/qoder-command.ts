@@ -1,0 +1,78 @@
+import path from "node:path";
+import {
+  resolveHarnessExecutable,
+  targetPath,
+  VERSION_MANAGER_ROOTS,
+  type HarnessDiscoveryDependencies,
+  type HarnessDiscoverySpec,
+} from "@codexhost/harness-discovery";
+
+export class QoderExecutableError extends Error {
+  readonly code = "QODER_NOT_FOUND";
+}
+
+export const CODEXHOST_QODER_COMMAND = "CODEXHOST_QODER_COMMAND";
+
+export const qoderDiscoverySpec: HarnessDiscoverySpec = {
+  id: "qoder",
+  command: "qodercli",
+  commandEnvironmentVariable: CODEXHOST_QODER_COMMAND,
+  installRoots: {
+    posix: [
+      "~/.local/bin",
+      "~/.qoder/bin",
+      VERSION_MANAGER_ROOTS,
+      "/usr/local/bin",
+      "/opt/homebrew/bin",
+    ],
+    windows: [
+      "${LOCALAPPDATA}/Programs/Qoder",
+      "${LOCALAPPDATA}/Qoder",
+      "~/.qoder/bin",
+      "${APPDATA}/npm",
+      VERSION_MANAGER_ROOTS,
+    ],
+  },
+};
+
+export const qoderFallbackSpec: HarnessDiscoverySpec = {
+  ...qoderDiscoverySpec,
+  command: "qoder",
+};
+
+export function resolveQoderExecutable(
+  input: {
+    command?: string;
+    environment?: NodeJS.ProcessEnv;
+    homeDirectory?: string;
+    platform?: NodeJS.Platform;
+  } = {},
+  dependencies: HarnessDiscoveryDependencies = {},
+): string {
+  const platform = input.platform ?? process.platform;
+  const resolution =
+    resolveHarnessExecutable(
+      qoderDiscoverySpec,
+      {
+        ...(input.command ? { command: input.command } : {}),
+        environment: input.environment ?? process.env,
+        ...(input.homeDirectory ? { homeDirectory: input.homeDirectory } : {}),
+        platform,
+      },
+      dependencies,
+    ) ??
+    resolveHarnessExecutable(
+      qoderFallbackSpec,
+      {
+        environment: input.environment ?? process.env,
+        ...(input.homeDirectory ? { homeDirectory: input.homeDirectory } : {}),
+        platform,
+      },
+      dependencies,
+    );
+
+  if (!resolution) throw new QoderExecutableError("Qoder CLI is not installed");
+  return targetPath(platform).isAbsolute(resolution.executable)
+    ? resolution.executable
+    : path.resolve(resolution.executable);
+}

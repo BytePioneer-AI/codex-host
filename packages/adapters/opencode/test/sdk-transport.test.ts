@@ -1,4 +1,5 @@
 import { EventEmitter } from "node:events";
+import { homedir } from "node:os";
 import { PassThrough } from "node:stream";
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
 
@@ -72,7 +73,12 @@ describe("OpenCode SDK transport", () => {
       directory?: string;
       headers: Record<string, string>;
     }> = [];
-    const spawnCalls: Array<{ command: string; args: string[]; env: NodeJS.ProcessEnv }> = [];
+    const spawnCalls: Array<{
+      command: string;
+      args: string[];
+      env: NodeJS.ProcessEnv;
+      cwd?: string;
+    }> = [];
     const dependencies: OpenCodeServerDependencies = {
       createClient: (options) => {
         clientOptions.push(options);
@@ -80,7 +86,12 @@ describe("OpenCode SDK transport", () => {
       },
       randomPassword: () => "synthetic-password",
       spawn: (command, args, options) => {
-        spawnCalls.push({ command, args, env: options.env });
+        spawnCalls.push({
+          command,
+          args,
+          env: options.env,
+          ...(options.cwd ? { cwd: options.cwd } : {}),
+        });
         const child = new FakeChild();
         child.pid += children.length;
         children.push(child);
@@ -103,6 +114,7 @@ describe("OpenCode SDK transport", () => {
     expect(spawnCalls[0]).toMatchObject({
       command: process.execPath,
       args: ["serve", "--hostname=127.0.0.1", "--port=0"],
+      cwd: homedir(),
       env: {
         OPENCODE_SERVER_USERNAME: "codexhost",
         OPENCODE_SERVER_PASSWORD: "synthetic-password",

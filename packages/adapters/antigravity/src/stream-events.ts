@@ -155,6 +155,10 @@ const ANTIGRAVITY_TRANSIENT_INTERRUPTION_PATTERNS: readonly RegExp[] = [
   /(?:^|[\r\n]|:\s*)(?:error:\s*)?(?:the\s+)?stream was interrupted\b/iu,
   /(?:^|[\r\n]|:\s*)(?:error:\s*)?socket hang up\b/iu,
   /(?:^|[\r\n]|:\s*)(?:error:\s*)?connection closed(?: unexpectedly)?\b/iu,
+  /(?:^|[\r\n]|:\s*)(?:error:\s*)?(?:(?:read|write)(?:\s+tcp[^\r\n:]*)?:\s*)?connection reset(?: by peer)?\b/iu,
+  /(?:^|[\r\n]|:\s*)(?:error:\s*)?(?:(?:read|write)(?:\s+tcp[^\r\n:]*)?:\s*)?broken pipe\b/iu,
+  /(?:^|[\r\n]|:\s*)(?:error:\s*)?unexpected EOF\b/iu,
+  /(?:^|[\r\n]|:\s*)(?:error:\s*)?stream terminated by RST_STREAM\b/iu,
 ];
 
 export function classifyAntigravityDiagnostic(detail: string): AntigravityDiagnosticKind {

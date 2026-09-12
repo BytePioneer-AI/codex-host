@@ -624,6 +624,15 @@ describe("Antigravity Adapter", () => {
       "stream was interrupted",
       "Error: socket hang up",
       "Error: connection closed unexpectedly",
+      "read: connection reset by peer",
+      "write: connection reset by peer",
+      "connection reset by peer",
+      "read tcp 127.0.0.1:65268->127.0.0.1:6152: read: connection reset by peer",
+      'API error (attempt 1): request failed: Post "https://daily-cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse": read tcp 127.0.0.1:65268->127.0.0.1:6152: read: connection reset by peer',
+      "broken pipe",
+      "write: broken pipe",
+      "unexpected EOF",
+      "stream terminated by RST_STREAM",
     ];
     for (const sample of transientSamples) {
       expect(classifyAntigravityDiagnostic(sample)).toBe("transientInterruption");
@@ -1427,6 +1436,134 @@ if (stderrLines.length > 0) {
 
       expect(completed).toMatchObject({
         turnId: "turn-partial",
+        outcome: { status: "failed", error: { code: "nativeFailure" } },
+      });
+    });
+
+    it("treats non-SUCCESS result with connection reset by peer error as succeeded when response is present", async () => {
+      const resetError =
+        'API error (attempt 1): request failed: Post "https://daily-cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse": read tcp 127.0.0.1:65268->127.0.0.1:6152: read: connection reset by peer';
+      const streamLines = [
+        JSON.stringify({
+          event: "init",
+          init: { permission_mode: "default" },
+          conversation_id: "conv-reset-peer",
+        }),
+        JSON.stringify({
+          event: "step_update",
+          step_update: {
+            conversation_id: "conv-reset-peer",
+            step_index: 1,
+            state: "DONE",
+            step_type: "agent_response",
+            text: "All operations finished and working tree is clean.",
+          },
+        }),
+        JSON.stringify({
+          event: "result",
+          result: {
+            conversation_id: "conv-reset-peer",
+            status: "ERROR",
+            error: resetError,
+            num_turns: 1,
+          },
+        }),
+      ];
+
+      const { command, cwd, cleanup } = await fakeStreamingAgy(streamLines);
+      const adapter = new AntigravityAdapter({ command });
+      try {
+        const opened = await adapter.open({ kind: "create", cwd });
+        expect(opened.ok).toBe(true);
+        if (!opened.ok) return;
+
+        const session = opened.value;
+        const iterator = session.outputs[Symbol.asyncIterator]();
+        const turnId = hostTurnIdSchema.parse("turn-reset-peer");
+
+        await session.execute({
+          type: "turn.start",
+          turnId,
+          input: [{ type: "text", text: "commit status" }],
+        });
+
+        const started = await nextEvent(iterator);
+        expect(started.type).toBe("turn.started");
+
+        const stateChanged = await nextEvent(iterator);
+        expect(stateChanged.type).toBe("session.state.changed");
+
+        const itemStarted = await nextEvent(iterator);
+        expect(itemStarted).toMatchObject({
+          type: "item.started",
+          turnId,
+          item: {
+            type: "agentMessage",
+            text: "All operations finished and working tree is clean.",
+          },
+        });
+
+        const itemCompleted = await nextEvent(iterator);
+        expect(itemCompleted).toMatchObject({
+          type: "item.completed",
+          turnId,
+          snapshot: {
+            item: {
+              type: "agentMessage",
+              text: "All operations finished and working tree is clean.",
+            },
+            outcome: { status: "succeeded" },
+          },
+        });
+
+        const completed = await nextEvent(iterator);
+        expect(completed).toMatchObject({
+          type: "turn.completed",
+          turnId,
+          outcome: { status: "succeeded" },
+        });
+
+        await session.close();
+      } finally {
+        await adapter.close();
+        await cleanup();
+      }
+    });
+
+    it("keeps a partial agent response failed when interrupted by connection reset by peer", async () => {
+      const completed = await runResultScenario(
+        [
+          JSON.stringify({
+            event: "init",
+            init: { permission_mode: "default" },
+            conversation_id: "conv-reset-partial",
+          }),
+          JSON.stringify({
+            event: "step_update",
+            step_update: {
+              conversation_id: "conv-reset-partial",
+              step_index: 1,
+              state: "ACTIVE",
+              step_type: "agent_response",
+              text_delta: "The operations started but stream was cut off",
+            },
+          }),
+          JSON.stringify({
+            event: "result",
+            result: {
+              conversation_id: "conv-reset-partial",
+              status: "ERROR",
+              error:
+                'API error (attempt 1): request failed: Post "https://daily-cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse": read tcp 127.0.0.1:65268->127.0.0.1:6152: read: connection reset by peer',
+              num_turns: 1,
+            },
+          }),
+        ],
+        "turn-reset-partial",
+      );
+
+      expect(completed).toMatchObject({
+        turnId: "turn-reset-partial",
         outcome: { status: "failed", error: { code: "nativeFailure" } },
       });
     });

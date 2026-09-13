@@ -35,7 +35,6 @@ export interface RendererHostRequestManager {
   onNotification(method: string, parameters: unknown): void;
   onRequest(request: Record<string, unknown>): void;
   dispatchAppServerResponse(method: string, response: Record<string, unknown>): unknown;
-  requestClient?: RendererHostRequestBridge;
 }
 
 export interface RendererPrewarmedThreadManager {
@@ -68,9 +67,8 @@ export function installDraftPrewarmPolicyBridge(
   }
   existing?.dispose?.();
 
-  let activeBridge = bridge;
-  let originalSend = bridge.sendRequest;
-  let originalPrewarm = bridge.prewarmThreadStart;
+  const originalSend = bridge.sendRequest;
+  const originalPrewarm = bridge.prewarmThreadStart;
   const originalOnNotification = manager.onNotification;
   const originalDispatchAppServerResponse = manager.dispatchAppServerResponse;
   let selectedModel: string | null = null;
@@ -105,27 +103,6 @@ export function installDraftPrewarmPolicyBridge(
   let bridgeReadyTimeout: ReturnType<typeof globalThis.setTimeout> | null = null;
   let bridgeInitialization: Promise<void> | null = null;
   let writeTail = Promise.resolve();
-
-  const bindCurrentBridge = (): boolean => {
-    const nextBridge = manager.requestClient ?? activeBridge;
-    if (nextBridge !== activeBridge) {
-      if (activeBridge.sendRequest === routedSend) activeBridge.sendRequest = originalSend;
-      if (activeBridge.prewarmThreadStart === routedPrewarm) {
-        activeBridge.prewarmThreadStart = originalPrewarm;
-      }
-      activeBridge = nextBridge;
-      originalSend = activeBridge.sendRequest;
-      originalPrewarm = activeBridge.prewarmThreadStart;
-    } else {
-      if (activeBridge.sendRequest !== routedSend) originalSend = activeBridge.sendRequest;
-      if (activeBridge.prewarmThreadStart !== routedPrewarm) {
-        originalPrewarm = activeBridge.prewarmThreadStart;
-      }
-    }
-    activeBridge.sendRequest = routedSend;
-    activeBridge.prewarmThreadStart = routedPrewarm;
-    return nextBridge !== bridge;
-  };
 
   const transportError = (message: string, cause?: unknown): Error => {
     const error = new Error(`codexhost Remote Control bridge: ${message}`);
@@ -167,7 +144,7 @@ export function installDraftPrewarmPolicyBridge(
     bridgeRequests.clear();
     if (isRemoteControlHost && terminate) {
       void Promise.resolve(
-        originalSend.call(activeBridge, "process/kill", { processHandle: failedProcessHandle }),
+        originalSend.call(bridge, "process/kill", { processHandle: failedProcessHandle }),
       ).catch(() => undefined);
     }
   };
@@ -372,7 +349,7 @@ export function installDraftPrewarmPolicyBridge(
     ];
     const startedProcessHandle = bridgeProcessHandle;
     try {
-      const started = originalSend.call(activeBridge, "process/spawn", {
+      const started = originalSend.call(bridge, "process/spawn", {
         command,
         processHandle: startedProcessHandle,
         cwd: "C:\\",
@@ -393,7 +370,7 @@ export function installDraftPrewarmPolicyBridge(
     const operation = async (): Promise<void> => {
       await startBridge();
       if (bridgeState !== "ready") throw transportError("is not ready");
-      await originalSend.call(activeBridge, "process/writeStdin", {
+      await originalSend.call(bridge, "process/writeStdin", {
         processHandle: bridgeProcessHandle,
         deltaBase64: utf8Base64(`${JSON.stringify(value)}\n`),
       });
@@ -543,8 +520,8 @@ export function installDraftPrewarmPolicyBridge(
       );
     const sendDirect = (): unknown =>
       options === undefined
-        ? originalSend.call(activeBridge, method, routedParameters)
-        : originalSend.call(activeBridge, method, routedParameters, options);
+        ? originalSend.call(bridge, method, routedParameters)
+        : originalSend.call(bridge, method, routedParameters, options);
     const unresolvedThreadId = shouldResolveThreadOwnership(method, routedParameters);
     if (unresolvedThreadId) {
       return resolveThreadOwnership(unresolvedThreadId).then((owner) =>
@@ -559,10 +536,11 @@ export function installDraftPrewarmPolicyBridge(
       return routedSend("thread/start", routedParameters, options);
     }
     return options === undefined
-      ? originalPrewarm.call(activeBridge, routedParameters)
-      : originalPrewarm.call(activeBridge, routedParameters, options);
+      ? originalPrewarm.call(bridge, routedParameters)
+      : originalPrewarm.call(bridge, routedParameters, options);
   };
-  bindCurrentBridge();
+  bridge.sendRequest = routedSend;
+  bridge.prewarmThreadStart = routedPrewarm;
   const routedWindowMessage = (event: Event): void => {
     const message = (event as Event & { data?: unknown }).data;
     if (
@@ -624,9 +602,6 @@ export function installDraftPrewarmPolicyBridge(
     requestTarget(): RendererHostRequestManager {
       return manager;
     },
-    refreshRequestBridge(): boolean {
-      return bindCurrentBridge();
-    },
     select(model: string | null): boolean {
       if (model !== null && (typeof model !== "string" || !model.startsWith("codexhost/"))) {
         throw new Error("Draft route Model must be a codexhost transport carrier");
@@ -648,9 +623,9 @@ export function installDraftPrewarmPolicyBridge(
       return Promise.resolve();
     },
     dispose(): void {
-      if (activeBridge.sendRequest === routedSend) activeBridge.sendRequest = originalSend;
-      if (activeBridge.prewarmThreadStart === routedPrewarm) {
-        activeBridge.prewarmThreadStart = originalPrewarm;
+      if (bridge.sendRequest === routedSend) bridge.sendRequest = originalSend;
+      if (bridge.prewarmThreadStart === routedPrewarm) {
+        bridge.prewarmThreadStart = originalPrewarm;
       }
       if (observesWindowNotifications) {
         target.removeEventListener?.("message", routedWindowMessage);
@@ -664,7 +639,7 @@ export function installDraftPrewarmPolicyBridge(
       bridgeReadyTimeout = null;
       if (isRemoteControlHost && (bridgeState === "starting" || bridgeState === "ready")) {
         void Promise.resolve(
-          originalSend.call(activeBridge, "process/kill", { processHandle: bridgeProcessHandle }),
+          originalSend.call(bridge, "process/kill", { processHandle: bridgeProcessHandle }),
         ).catch(() => undefined);
       }
       bridgeState = "disposed";

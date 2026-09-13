@@ -85,18 +85,9 @@ function validDiffPath(value: unknown): value is string {
   );
 }
 
-export interface StructuredDiffState {
-  path: string;
-  oldText: string | null;
-  newText: string | null;
-}
-
-export function mergeStructuredDiffs(
-  current: readonly StructuredDiffState[],
-  meta: unknown,
-): { state: StructuredDiffState[]; changes: HostFileChange[] } | null {
+export function structuredDiffs(meta: unknown): HostFileChange[] | null {
   if (!isRecord(meta) || !Array.isArray(meta.diffs) || meta.diffs.length === 0) return null;
-  const byPath = new Map(current.map((change) => [change.path, change]));
+  const changes: HostFileChange[] = [];
   for (const candidate of meta.diffs) {
     if (
       !isRecord(candidate) ||
@@ -106,39 +97,23 @@ export function mergeStructuredDiffs(
     ) {
       return null;
     }
-    const previous = byPath.get(candidate.path);
-    byPath.set(candidate.path, {
-      path: candidate.path,
-      oldText: previous ? previous.oldText : (candidate.oldText as string | null),
-      newText: candidate.newText as string | null,
-    });
+    const oldText = candidate.oldText as string | null;
+    const newText = candidate.newText as string | null;
+    const kind = oldText === null ? "add" : newText === null ? "delete" : "update";
+    const oldHeader = kind === "add" ? "/dev/null" : `a/${candidate.path}`;
+    const newHeader = kind === "delete" ? "/dev/null" : `b/${candidate.path}`;
+    const unifiedDiff = createTwoFilesPatch(
+      oldHeader,
+      newHeader,
+      oldText ?? "",
+      newText ?? "",
+      "",
+      "",
+      { context: 3 },
+    );
+    changes.push({ path: candidate.path, kind, unifiedDiff });
   }
-  const state = [...byPath.values()];
-  return {
-    state,
-    changes: state.map(({ path, oldText, newText }) => {
-      const kind = oldText === null ? "add" : newText === null ? "delete" : "update";
-      const oldHeader = kind === "add" ? "/dev/null" : `a/${path}`;
-      const newHeader = kind === "delete" ? "/dev/null" : `b/${path}`;
-      return {
-        path,
-        kind,
-        unifiedDiff: createTwoFilesPatch(
-          oldHeader,
-          newHeader,
-          oldText ?? "",
-          newText ?? "",
-          "",
-          "",
-          { context: 3 },
-        ),
-      };
-    }),
-  };
-}
-
-export function structuredDiffs(meta: unknown): HostFileChange[] | null {
-  return mergeStructuredDiffs([], meta)?.changes ?? null;
+  return changes;
 }
 
 export function parseDeepSeekContextWindow(value: unknown): number | undefined {

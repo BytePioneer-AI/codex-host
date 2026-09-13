@@ -369,7 +369,7 @@ describe("Harness plugin discovery and loading", () => {
       import { FakeHarnessAdapter } from ${JSON.stringify(fakeModule)};
       export async function createHarnessAdapter(context) {
         writeFileSync(new URL("started", import.meta.url), String(Object.isFrozen(context.environment)));
-        await new Promise(resolve => setTimeout(resolve, 1500));
+        await new Promise(resolve => setTimeout(resolve, 350));
         const adapter = new FakeHarnessAdapter("slow-agent");
         adapter.close = async () => { writeFileSync(new URL("closed", import.meta.url), "yes"); };
         return adapter;
@@ -381,7 +381,7 @@ describe("Harness plugin discovery and loading", () => {
     const registry = await loadHarnessPlugins({
       roots: [directory],
       context,
-      loadTimeoutMs: 800,
+      loadTimeoutMs: 200,
       diagnose,
     });
     expect(diagnose).toHaveBeenCalledWith({ id: "slow-agent", code: "loadTimeout" });

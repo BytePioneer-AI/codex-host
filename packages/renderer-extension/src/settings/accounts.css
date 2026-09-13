@@ -251,10 +251,12 @@
   gap: 12px;
   margin-top: 14px;
 }
-.settings-account-extra-usage .settings-account-usage__meter {
+.settings-account-extra-usage .settings-account-usage__meter,
+.settings-account-usage__meter--scoped {
   grid-template-rows: auto 20px 4px 17px;
 }
-.settings-account-extra-usage .settings-account-usage__title {
+.settings-account-extra-usage .settings-account-usage__title,
+.settings-account-usage__meter--scoped .settings-account-usage__title {
   display: block;
   grid-column: 1 / -1;
   white-space: normal;
@@ -330,6 +332,12 @@
 .settings-account-usage__missing > span:not(.settings-account-usage__title) {
   grid-column: 1 / -1;
   font-size: 14px;
+}
+.settings-account-table .settings-account-spanning-cell {
+  vertical-align: top;
+}
+.settings-account-quota-continuation-row > .settings-account-usage-cell {
+  background: inherit;
 }
 .settings-account-management {
   display: flex;

@@ -20,6 +20,8 @@ import {
   CODEX_ACCOUNT_LOGOUT_METHOD,
   CODEX_ACCOUNT_RECOVER_METHOD,
   CODEX_ACCOUNT_SWITCH_METHOD,
+  HARNESS_ACCOUNT_INSPECT_METHOD,
+  HARNESS_ACCOUNT_SOURCES_METHOD,
   HARNESS_INSPECT_METHOD,
   HARNESS_PLUGIN_LIST_METHOD,
   HARNESS_WEB_UI_OPEN_METHOD,
@@ -196,18 +198,48 @@ describe("Renderer fixed Model request client", () => {
     expect(remove).toHaveBeenCalledTimes(2);
   });
 
-  it("reads and validates read-only accounts from the bound Host without a Thread ID", async () => {
+  it("reads and validates progressive read-only accounts from the bound Host", async () => {
     const account = {
       harnessId: "sample-agent",
       harnessName: "Sample Agent",
       credits: { usedPercent: 0, periodType: "weekly" },
     };
-    const sendRequest = vi.fn().mockResolvedValue({ accounts: [account] });
+    const sendRequest = vi
+      .fn()
+      .mockResolvedValueOnce({
+        sources: [{ harnessId: "sample-agent", harnessName: "Sample Agent" }],
+      })
+      .mockResolvedValueOnce({
+        harnessId: "sample-agent",
+        harnessName: "Sample Agent",
+        account: { credits: account.credits },
+      })
+      .mockResolvedValueOnce({ accounts: [account] });
     const client = createRendererModelClient([{ sendRequest }]);
-    expect(await client?.listHarnessAccounts?.()).toEqual({ accounts: [account] });
-    expect(sendRequest).toHaveBeenCalledExactlyOnceWith("codexhost/harness/accounts/list", {});
-    sendRequest.mockResolvedValueOnce({ accounts: [{ ...account, token: "private" }] });
-    await expect(client?.listHarnessAccounts?.()).rejects.toThrow();
+    await expect(client?.listHarnessAccountSources?.()).resolves.toEqual({
+      sources: [{ harnessId: "sample-agent", harnessName: "Sample Agent" }],
+    });
+    await expect(
+      client?.inspectHarnessAccount?.({ harnessId: harnessIdSchema.parse("sample-agent") }),
+    ).resolves.toEqual({
+      harnessId: "sample-agent",
+      harnessName: "Sample Agent",
+      account: { credits: account.credits },
+    });
+    await expect(client?.listHarnessAccounts?.()).resolves.toEqual({ accounts: [account] });
+    expect(sendRequest.mock.calls).toEqual([
+      [HARNESS_ACCOUNT_SOURCES_METHOD, {}],
+      [HARNESS_ACCOUNT_INSPECT_METHOD, { harnessId: "sample-agent" }],
+      ["codexhost/harness/accounts/list", {}],
+    ]);
+    sendRequest.mockResolvedValueOnce({
+      harnessId: "sample-agent",
+      harnessName: "Sample Agent",
+      account: { credits: account.credits, token: "private" },
+    });
+    await expect(
+      client?.inspectHarnessAccount?.({ harnessId: harnessIdSchema.parse("sample-agent") }),
+    ).rejects.toThrow();
   });
 
   it("reads plugin descriptors from its own target and rejects backend or executable metadata", async () => {
@@ -319,11 +351,13 @@ describe("Renderer fixed Model request client", () => {
       "importHarnessSession",
       "inspectCodexAccountUsage",
       "inspectHarness",
+      "inspectHarnessAccount",
       "inspectHarnessCommands",
       "inspectThread",
       "inspectThreadCommands",
       "inspectThreadUsage",
       "listCodexAccounts",
+      "listHarnessAccountSources",
       "listHarnessAccounts",
       "listHarnessPlugins",
       "listHarnessSessions",

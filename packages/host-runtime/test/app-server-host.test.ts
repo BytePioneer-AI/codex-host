@@ -529,6 +529,31 @@ describe("AppServerHost installed Harness plugins", () => {
         result: { plugins: [{ id: "sample-agent", name: "Sample Agent", version: "1.0.0" }] },
       });
       writeRequest(fixture.desktopInput, {
+        id: 907,
+        method: "codexhost/harness/accounts/sources",
+        params: {},
+      });
+      expect(await fixture.collector.waitFor((message) => requestId(message, 907))).toMatchObject({
+        result: {
+          sources: [{ harnessId: "sample-agent", harnessName: "Sample Agent" }],
+        },
+      });
+      writeRequest(fixture.desktopInput, {
+        id: 908,
+        method: "codexhost/harness/accounts/inspect",
+        params: { harnessId: "sample-agent" },
+      });
+      expect(await fixture.collector.waitFor((message) => requestId(message, 908))).toMatchObject({
+        result: {
+          harnessId: "sample-agent",
+          harnessName: "Sample Agent",
+          account: {
+            email: "sample@example.com",
+            credits: { usedPercent: 25 },
+          },
+        },
+      });
+      writeRequest(fixture.desktopInput, {
         id: 902,
         method: "codexhost/harness/inspect",
         params: { harnessId: "sample-agent" },

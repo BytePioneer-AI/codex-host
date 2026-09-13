@@ -26,7 +26,7 @@ import {
   accountPlanLabel,
   createAccountsTable,
   renderAccountRows,
-  renderHarnessAccountRow,
+  renderHarnessAccountRows,
 } from "./accounts-list.js";
 import { createHarnessAccounts, type RendererHarnessAccountClient } from "./harness-accounts.js";
 import { mountAccountResetCountdowns } from "./accounts-reset-time.js";
@@ -429,7 +429,7 @@ export function createAccountsSettingsPage(
           body.append(verificationRow);
         }
         for (const account of visibleHarnessAccounts) {
-          body.append(renderHarnessAccountRow(document, account, messages, usageDisplay));
+          body.append(...renderHarnessAccountRows(document, account, messages, usageDisplay));
         }
         restoreFocus();
       };

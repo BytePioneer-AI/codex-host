@@ -1,4 +1,10 @@
 import {
+  harnessAccountInspectParamsSchema,
+  harnessAccountInspectResultSchema,
+  harnessAccountSourceListResultSchema,
+  type HarnessAccountInspectParams,
+  type HarnessAccountInspectResult,
+  type HarnessAccountSourceListResult,
   harnessAccountListResultSchema,
   type HarnessAccountListResult,
   codexAccountUsageParamsSchema,
@@ -105,6 +111,8 @@ import {
 
 export const HARNESS_INSPECT_METHOD = "codexhost/harness/inspect";
 export const HARNESS_PLUGIN_LIST_METHOD = "codexhost/harness/plugins/list";
+export const HARNESS_ACCOUNT_SOURCES_METHOD = "codexhost/harness/accounts/sources";
+export const HARNESS_ACCOUNT_INSPECT_METHOD = "codexhost/harness/accounts/inspect";
 export const HARNESS_WEB_UI_OPEN_METHOD = "codexhost/harness/web-ui/open";
 export const THREAD_FORK_METHOD = "codexhost/thread/fork";
 export const THREAD_INSPECT_METHOD = "codexhost/thread/inspect";
@@ -193,6 +201,8 @@ export interface RendererModelClient extends Partial<RendererSessionImportClient
   consumeCodexAccountResetCredit?(
     input: CodexAccountResetCreditConsumeParams,
   ): Promise<CodexAccountResetCreditConsumeResult>;
+  listHarnessAccountSources?(): Promise<HarnessAccountSourceListResult>;
+  inspectHarnessAccount?(input: HarnessAccountInspectParams): Promise<HarnessAccountInspectResult>;
   listHarnessAccounts?(): Promise<HarnessAccountListResult>;
   listCodexAccounts(): Promise<CodexAccountListResult>;
   refreshCodexAccounts(): Promise<CodexAccountListResult>;
@@ -458,6 +468,21 @@ export function createRendererModelClient(
         codexAccountResetCreditConsumeParamsSchema.parse(input),
       );
       return codexAccountResetCreditConsumeResultSchema.parse(result);
+    },
+    async listHarnessAccountSources(): Promise<HarnessAccountSourceListResult> {
+      return harnessAccountSourceListResultSchema.parse(
+        await manager.sendRequest(HARNESS_ACCOUNT_SOURCES_METHOD, {}),
+      );
+    },
+    async inspectHarnessAccount(
+      input: HarnessAccountInspectParams,
+    ): Promise<HarnessAccountInspectResult> {
+      return harnessAccountInspectResultSchema.parse(
+        await manager.sendRequest(
+          HARNESS_ACCOUNT_INSPECT_METHOD,
+          harnessAccountInspectParamsSchema.parse(input),
+        ),
+      );
     },
     async listHarnessAccounts(): Promise<HarnessAccountListResult> {
       return harnessAccountListResultSchema.parse(

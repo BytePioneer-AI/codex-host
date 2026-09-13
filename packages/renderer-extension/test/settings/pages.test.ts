@@ -3,7 +3,9 @@ import {
   hostThreadIdSchema,
   type CodexAccountListResult,
   type CodexAccountLoginCompleted,
+  type HarnessAccountInspectResult,
   type HarnessAccountListResult,
+  type HarnessAccountSourceListResult,
   type HarnessSessionListParams,
   type UpdateCheckResult,
   type UpdateStatus,
@@ -257,6 +259,80 @@ describe("Read-only Harness accounts", () => {
     await refresh;
     expect(mounted.accounts).toEqual([]);
     expect(changed).toHaveBeenCalledOnce();
+  });
+
+  it("falls back to the aggregate account request when progressive discovery is unavailable", async () => {
+    const scope = new RendererSettingsPageScope();
+    const listHarnessAccounts = vi.fn(async () => result);
+    const mounted = createHarnessAccounts(
+      scope.signal,
+      () => ({
+        listHarnessAccountSources: vi.fn(async () => {
+          throw new Error("unsupported");
+        }),
+        inspectHarnessAccount: vi.fn(),
+        listHarnessAccounts,
+      }),
+      vi.fn(),
+    );
+    await mounted.refresh();
+    expect(listHarnessAccounts).toHaveBeenCalledOnce();
+    expect(mounted.accounts).toEqual(result.accounts);
+    scope.dispose();
+  });
+
+  it("renders each Harness account as soon as its independent inspection completes", async () => {
+    const scope = new RendererSettingsPageScope();
+    const sources = deferred<HarnessAccountSourceListResult>();
+    const grok = deferred<HarnessAccountInspectResult>();
+    const claude = deferred<HarnessAccountInspectResult>();
+    const inspectHarnessAccount = vi.fn(({ harnessId }: { harnessId: string }) =>
+      harnessId === "grok" ? grok.promise : claude.promise,
+    );
+    const changed = vi.fn();
+    const mounted = createHarnessAccounts(
+      scope.signal,
+      () => ({
+        listHarnessAccountSources: () => sources.promise,
+        inspectHarnessAccount,
+      }),
+      changed,
+    );
+
+    const refresh = mounted.refresh();
+    sources.resolve({
+      sources: [
+        { harnessId: harnessIdSchema.parse("grok"), harnessName: "Grok" },
+        { harnessId: harnessIdSchema.parse("claude-code"), harnessName: "Claude Code" },
+      ],
+    });
+    await vi.waitFor(() => expect(inspectHarnessAccount).toHaveBeenCalledTimes(2));
+
+    grok.resolve({
+      harnessId: harnessIdSchema.parse("grok"),
+      harnessName: "Grok",
+      account: { credits: { usedPercent: 25, periodType: "weekly" } },
+    });
+    await vi.waitFor(() =>
+      expect(mounted.accounts).toEqual([
+        {
+          harnessId: "grok",
+          harnessName: "Grok",
+          credits: { usedPercent: 25, periodType: "weekly" },
+        },
+      ]),
+    );
+    expect(mounted.refreshing).toBe(true);
+
+    claude.resolve({
+      harnessId: harnessIdSchema.parse("claude-code"),
+      harnessName: "Claude Code",
+      account: { credits: { usedPercent: 50, periodType: "five_hour" } },
+    });
+    await refresh;
+    expect(mounted.accounts.map(({ harnessId }) => harnessId)).toEqual(["claude-code", "grok"]);
+    expect(mounted.refreshing).toBe(false);
+    scope.dispose();
   });
 });
 

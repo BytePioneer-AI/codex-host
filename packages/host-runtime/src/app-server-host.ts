@@ -1,6 +1,10 @@
 import { AccountRateLimits } from "./codex-runtime/account-rate-limits.js";
 import { ManagedNativeAuth } from "./managed-native-auth.js";
-import { inspectHarnessAccounts } from "./harness-accounts.js";
+import {
+  inspectHarnessAccount,
+  inspectHarnessAccounts,
+  listHarnessAccountSources,
+} from "./harness-accounts.js";
 import type { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import os from "node:os";
@@ -21,9 +25,13 @@ import type { HarnessPluginContext } from "@codexhost/harness-adapter/plugin";
 import type { StoredThreadRecordV1 } from "@codexhost/mapping-store";
 import {
   accountCreditsSnapshotSchema,
+  harnessAccountInspectParamsSchema,
+  harnessAccountInspectResultSchema,
+  type HarnessAccountInspectResult,
   harnessAccountListParamsSchema,
   harnessAccountListResultSchema,
   type HarnessAccountListResult,
+  harnessAccountSourceListParamsSchema,
   codexAccountUsageParamsSchema,
   codexAccountUsageResultSchema,
   codexAccountResetCreditConsumeParamsSchema,
@@ -527,6 +535,7 @@ export class AppServerHost {
   #externalAdapters: Map<ExternalHarnessId, HarnessAdapter>;
   #pluginDescriptors: HarnessPluginDescriptor[] = [];
   #accountInspection: Promise<HarnessAccountListResult> | null = null;
+  #accountInspections = new Map<HarnessId, Promise<HarnessAccountInspectResult>>();
   #externalRuntime: ExternalThreadRuntime;
   readonly #externalSteering = new ExternalTurnSteering();
   #repository: ExternalThreadRepository;
@@ -930,6 +939,45 @@ export class AppServerHost {
         request.method === "codexhost/account/recover"
       ) {
         this.#dispatchDesktopRequest(() => this.#handleCodexAccountRequest(request));
+        continue;
+      }
+      if (request.method === "codexhost/harness/accounts/sources") {
+        this.#dispatchDesktopRequest(async () => {
+          if (!harnessAccountSourceListParamsSchema.safeParse(request.params).success) {
+            await this.#writer.json(
+              rpcError(request, -32602, "Invalid Harness account source list params"),
+            );
+            return;
+          }
+          const result = listHarnessAccountSources(
+            this.#externalAdapters.values(),
+            this.#pluginDescriptors,
+          );
+          await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(result) }));
+        });
+        continue;
+      }
+      if (request.method === "codexhost/harness/accounts/inspect") {
+        this.#dispatchDesktopRequest(async () => {
+          const params = harnessAccountInspectParamsSchema.safeParse(request.params);
+          if (!params.success) {
+            await this.#writer.json(
+              rpcError(request, -32602, "Invalid Harness account inspection params"),
+            );
+            return;
+          }
+          const adapter = this.#externalAdapters.get(params.data.harnessId);
+          if (!adapter) {
+            await this.#writer.json(
+              rpcError(request, -32077, `Harness '${params.data.harnessId}' is unavailable`),
+            );
+            return;
+          }
+          const result = harnessAccountInspectResultSchema.parse(
+            await this.#inspectHarnessAccount(adapter),
+          );
+          await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(result) }));
+        });
         continue;
       }
       if (request.method === "codexhost/harness/accounts/list") {
@@ -1492,6 +1540,18 @@ export class AppServerHost {
 
   async #requestOfficial(method: string, params: JsonObject): Promise<JsonObject> {
     return this.#officialRuntime.request(method, params);
+  }
+
+  #inspectHarnessAccount(adapter: HarnessAdapter): Promise<HarnessAccountInspectResult> {
+    const active = this.#accountInspections.get(adapter.harnessId);
+    if (active) return active;
+    const inspection = inspectHarnessAccount(adapter, this.#pluginDescriptors).finally(() => {
+      if (this.#accountInspections.get(adapter.harnessId) === inspection) {
+        this.#accountInspections.delete(adapter.harnessId);
+      }
+    });
+    this.#accountInspections.set(adapter.harnessId, inspection);
+    return inspection;
   }
 
   async #currentCodexAccountId(): Promise<string | null> {

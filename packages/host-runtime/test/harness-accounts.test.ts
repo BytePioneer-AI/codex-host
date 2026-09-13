@@ -1,7 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
 import { FakeHarnessAdapter } from "@codexhost/harness-adapter/testing";
 import { harnessIdSchema, type HarnessAccountSnapshot } from "@codexhost/shared-contracts";
-import { inspectHarnessAccounts } from "../src/harness-accounts.js";
+import {
+  inspectHarnessAccount,
+  inspectHarnessAccounts,
+  listHarnessAccountSources,
+} from "../src/harness-accounts.js";
 
 const snapshot: HarnessAccountSnapshot = {
   email: "person@example.com",
@@ -11,6 +15,43 @@ const snapshot: HarnessAccountSnapshot = {
 const adapter = (id: string) => new FakeHarnessAdapter(harnessIdSchema.parse(id));
 
 describe("read-only Harness accounts", () => {
+  it("lists only progressive account sources with their plugin display names", () => {
+    const ready = Object.assign(adapter("sample-agent"), {
+      inspectAccount: vi.fn(async () => snapshot),
+    });
+    expect(
+      listHarnessAccountSources(
+        [ready, adapter("legacy-agent")],
+        [{ id: ready.harnessId, name: "Sample Agent", version: "1.0.0" }],
+      ),
+    ).toEqual({
+      sources: [{ harnessId: "sample-agent", harnessName: "Sample Agent" }],
+    });
+  });
+
+  it("inspects one account without exposing plugin failures or malformed snapshots", async () => {
+    const ready = Object.assign(adapter("sample-agent"), {
+      inspectAccount: vi.fn(async () => snapshot),
+    });
+    const malformed = Object.assign(adapter("bad-agent"), {
+      inspectAccount: async () => ({ ...snapshot, token: "must not escape" }),
+    });
+    await expect(
+      inspectHarnessAccount(ready, [
+        { id: ready.harnessId, name: "Sample Agent", version: "1.0.0" },
+      ]),
+    ).resolves.toEqual({
+      harnessId: "sample-agent",
+      harnessName: "Sample Agent",
+      account: snapshot,
+    });
+    await expect(inspectHarnessAccount(malformed, [])).resolves.toEqual({
+      harnessId: "bad-agent",
+      harnessName: "bad-agent",
+      account: null,
+    });
+  });
+
   it("returns only real quota, isolates failure, and uses plugin display metadata without opening Threads", async () => {
     const ready = Object.assign(adapter("sample-agent"), {
       inspectAccount: vi.fn(async () => snapshot),

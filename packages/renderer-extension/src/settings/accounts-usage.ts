@@ -18,6 +18,7 @@ export type AccountUsageViewState =
     };
 
 export type AccountUsageDisplay = "used" | "remaining";
+export type AccountUsageWindowFilter = "all" | "weekly-only";
 
 export function creditsPeriodLabel(
   periodType: AccountCreditsSnapshot["periodType"],
@@ -73,14 +74,22 @@ export function resetCreditDetailLine(
     .replace("{time}", formatAccountCreditsReset(expiresAt, messages.locale, now));
 }
 
+type AccountUsagePeriod = "five_hour" | "seven_day";
+
 interface AccountUsageWindow {
   readonly label: string;
   readonly usedPercent: number;
   readonly resetsAt: string | undefined;
+  readonly scoped: boolean;
+}
+
+interface AccountUsageRow {
+  readonly scope?: string;
+  readonly columns: Partial<Record<AccountUsagePeriod, AccountUsageWindow>>;
 }
 
 export function accountUsageColumnLabel(
-  period: "five_hour" | "seven_day",
+  period: AccountUsagePeriod,
   display: AccountUsageDisplay,
   messages: RendererSettingsMessages,
 ): string {
@@ -89,38 +98,110 @@ export function accountUsageColumnLabel(
   return `${creditsPeriodLabel(period, messages)}${messages.locale === "zh-CN" ? "" : " "}${mode}`;
 }
 
-/** Only generic windows occupy the comparison columns; scoped labels are never totals. */
-function splitUsageWindows(credits: AccountCreditsSnapshot, messages: RendererSettingsMessages) {
-  const columns: Partial<Record<"five_hour" | "seven_day", AccountUsageWindow>> = {};
+function comparisonPeriod(
+  periodType: AccountCreditsSnapshot["periodType"],
+): AccountUsagePeriod | null {
+  if (periodType === "five_hour") return "five_hour";
+  if (periodType === "weekly" || periodType === "seven_day") return "seven_day";
+  return null;
+}
+
+function scopedUsageProduct(product: string): {
+  scope: string;
+  period: AccountUsagePeriod;
+} | null {
+  const suffixes: ReadonlyArray<readonly [string, AccountUsagePeriod]> = [
+    [" · 5-hour window", "five_hour"],
+    [" · Weekly window", "seven_day"],
+    [" · 7-day window", "seven_day"],
+    [" · 5-hour", "five_hour"],
+    [" · 7-day", "seven_day"],
+  ];
+  for (const [suffix, period] of suffixes) {
+    if (!product.endsWith(suffix)) continue;
+    const scope = product.slice(0, -suffix.length).trim();
+    if (scope) return { scope, period };
+  }
+  return null;
+}
+
+/** Generic limits occupy the first row; related scoped limits add aligned quota-only rows. */
+function splitUsageWindows(
+  credits: AccountCreditsSnapshot,
+  messages: RendererSettingsMessages,
+  filter: AccountUsageWindowFilter,
+): { rows: AccountUsageRow[]; additional: AccountUsageWindow[] } {
+  const generic: AccountUsageRow = { columns: {} };
+  const scopedRows = new Map<string, AccountUsageRow[]>();
   const additional: AccountUsageWindow[] = [];
+  const addScoped = (
+    scope: string,
+    period: AccountUsagePeriod,
+    window: AccountUsageWindow,
+  ): void => {
+    const rows = scopedRows.get(scope) ?? [];
+    let row = rows.find((candidate) => !candidate.columns[period]);
+    if (!row) {
+      row = { scope, columns: {} };
+      rows.push(row);
+      scopedRows.set(scope, rows);
+    }
+    row.columns[period] = { ...window, label: scope, scoped: true };
+  };
+  const addWindow = (
+    window: AccountUsageWindow,
+    period: AccountUsagePeriod | null,
+    scope?: string,
+  ): void => {
+    if (scope && period) addScoped(scope, period, window);
+    else if (!scope && period && !generic.columns[period]) generic.columns[period] = window;
+    else additional.push(window);
+  };
+
   const primary: AccountUsageWindow = {
     label: credits.label ?? creditsPeriodLabel(credits.periodType, messages),
     usedPercent: credits.usedPercent,
     resetsAt: credits.resetsAt,
+    scoped: Boolean(credits.label && scopedUsageProduct(credits.label)),
   };
-  if (!credits.label && credits.periodType === "five_hour") columns.five_hour = primary;
-  else if (!credits.label && ["seven_day", "weekly"].includes(credits.periodType))
-    columns.seven_day = { ...primary, label: messages.accountCreditsPeriodSevenDay };
-  else additional.push(primary);
+  const primaryScope = credits.label ? scopedUsageProduct(credits.label) : null;
+  addWindow(
+    primary,
+    primaryScope?.period ?? (credits.label ? null : comparisonPeriod(credits.periodType)),
+    primaryScope?.scope,
+  );
+
   for (const product of credits.productUsage ?? []) {
+    const scoped = scopedUsageProduct(product.product);
     const window: AccountUsageWindow = {
       label: creditsProductLabel(product.product, messages),
       usedPercent: product.usagePercent,
       resetsAt: product.resetsAt,
+      scoped: Boolean(scoped),
     };
-    // These exact public labels are shared by native Codex and Harness projections.
-    // Do not infer a global window from arbitrary model/product names containing "7-day".
-    const period =
-      product.product === "7-day window"
-        ? "seven_day"
-        : product.product === "5-hour window"
-          ? "five_hour"
+    const genericPeriod =
+      product.product === "5-hour window"
+        ? "five_hour"
+        : product.product === "7-day window"
+          ? "seven_day"
           : null;
-    if (period && !columns[period])
-      columns[period] = { ...window, label: creditsPeriodLabel(period, messages) };
-    else additional.push(window);
+    addWindow(window, scoped?.period ?? genericPeriod, scoped?.scope);
   }
-  return { columns, additional };
+
+  const structured = [...scopedRows.values()].flat();
+  let rows = Object.keys(generic.columns).length > 0 ? [generic, ...structured] : structured;
+  if (rows.length === 0) rows = [generic];
+  if (filter === "weekly-only") {
+    rows = rows
+      .map((row) => ({
+        ...row,
+        columns: row.columns.seven_day ? { seven_day: row.columns.seven_day } : {},
+      }))
+      .filter((row) => row.columns.seven_day);
+    if (rows.length === 0) rows = [{ columns: {} }];
+    return { rows, additional: [] };
+  }
+  return { rows, additional };
 }
 
 function renderUsageWindow(
@@ -130,7 +211,9 @@ function renderUsageWindow(
   display: AccountUsageDisplay,
 ): HTMLElement {
   const meter = document.createElement("div");
-  meter.className = "settings-account-usage__meter";
+  meter.className = window.scoped
+    ? "settings-account-usage__meter settings-account-usage__meter--scoped"
+    : "settings-account-usage__meter";
   const label = document.createElement("span");
   label.className = "settings-account-usage__title";
   label.textContent = window.label;
@@ -169,7 +252,12 @@ export function renderAccountUsage(
   messages: RendererSettingsMessages,
   display: AccountUsageDisplay,
   onRetry: () => void,
-): { cells: HTMLTableCellElement[]; additional: HTMLElement | null } {
+  filter: AccountUsageWindowFilter = "all",
+): {
+  cells: HTMLTableCellElement[];
+  continuationCells: HTMLTableCellElement[][];
+  additional: HTMLElement | null;
+} {
   if (state?.status !== "ready") {
     const cell = document.createElement("td");
     cell.colSpan = 2;
@@ -197,34 +285,38 @@ export function renderAccountUsage(
       usage.append(retry);
     }
     cell.append(usage);
-    return { cells: [cell], additional: null };
+    return { cells: [cell], continuationCells: [], additional: null };
   }
-  const { columns, additional } = splitUsageWindows(state.credits, messages);
-  const cells = (["five_hour", "seven_day"] as const).map((period) => {
-    const cell = document.createElement("td");
-    cell.className = "settings-account-usage-cell";
-    const window = columns[period];
-    if (window) cell.append(renderUsageWindow(document, window, messages, display));
-    else {
-      const missing = document.createElement("div");
-      missing.className = "settings-account-usage__missing";
-      const label = document.createElement("span");
-      label.className = "settings-account-usage__title";
-      label.textContent = creditsPeriodLabel(period, messages);
-      const dash = document.createElement("span");
-      dash.textContent = "—";
-      dash.setAttribute("aria-hidden", "true");
-      missing.append(label, dash);
-      cell.append(missing);
-    }
-    return cell;
-  });
-  if (!additional.length) return { cells, additional: null };
+  const { rows, additional } = splitUsageWindows(state.credits, messages, filter);
+  const renderCells = (row: AccountUsageRow): HTMLTableCellElement[] =>
+    (["five_hour", "seven_day"] as const).map((period) => {
+      const cell = document.createElement("td");
+      cell.className = "settings-account-usage-cell";
+      const window = row.columns[period];
+      if (window) cell.append(renderUsageWindow(document, window, messages, display));
+      else {
+        const missing = document.createElement("div");
+        missing.className = "settings-account-usage__missing";
+        const label = document.createElement("span");
+        label.className = "settings-account-usage__title";
+        label.textContent = row.scope ?? creditsPeriodLabel(period, messages);
+        const dash = document.createElement("span");
+        dash.textContent = "—";
+        dash.setAttribute("aria-hidden", "true");
+        missing.append(label, dash);
+        cell.append(missing);
+      }
+      return cell;
+    });
+  const [firstRow = { columns: {} }, ...continuations] = rows;
+  const cells = renderCells(firstRow);
+  const continuationCells = continuations.map(renderCells);
+  if (!additional.length) return { cells, continuationCells, additional: null };
   const extra = document.createElement("div");
   extra.className = "settings-account-extra-usage";
   for (const window of additional)
     extra.append(renderUsageWindow(document, window, messages, display));
-  return { cells, additional: extra };
+  return { cells, continuationCells, additional: extra };
 }
 
 export function renderAccountResetCredits(

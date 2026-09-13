@@ -13,17 +13,35 @@ export const harnessAccountSnapshotSchema = z
   .strict();
 export type HarnessAccountSnapshot = z.infer<typeof harnessAccountSnapshotSchema>;
 
+const harnessAccountIdentityShape = {
+  harnessId: harnessIdSchema,
+  harnessName: z.string().trim().min(1).max(128),
+};
+
+export const harnessAccountSourceSchema = z.object(harnessAccountIdentityShape).strict();
+export type HarnessAccountSource = z.infer<typeof harnessAccountSourceSchema>;
+
+export const harnessAccountSourceListParamsSchema = z.object({}).strict();
+export const harnessAccountSourceListResultSchema = z
+  .object({ sources: z.array(harnessAccountSourceSchema).max(128) })
+  .strict();
+export type HarnessAccountSourceListResult = z.infer<typeof harnessAccountSourceListResultSchema>;
+
+export const harnessAccountInspectParamsSchema = z.object({ harnessId: harnessIdSchema }).strict();
+export type HarnessAccountInspectParams = z.infer<typeof harnessAccountInspectParamsSchema>;
+
+export const harnessAccountInspectResultSchema = z
+  .object({
+    ...harnessAccountIdentityShape,
+    account: harnessAccountSnapshotSchema.nullable(),
+  })
+  .strict();
+export type HarnessAccountInspectResult = z.infer<typeof harnessAccountInspectResultSchema>;
+
 export const harnessAccountListParamsSchema = z.object({}).strict();
 export const harnessAccountListResultSchema = z
   .object({
-    accounts: z
-      .array(
-        harnessAccountSnapshotSchema.extend({
-          harnessId: harnessIdSchema,
-          harnessName: z.string().min(1),
-        }),
-      )
-      .max(128),
+    accounts: z.array(harnessAccountSnapshotSchema.extend(harnessAccountIdentityShape)).max(128),
   })
   .strict();
 export type HarnessAccountListResult = z.infer<typeof harnessAccountListResultSchema>;

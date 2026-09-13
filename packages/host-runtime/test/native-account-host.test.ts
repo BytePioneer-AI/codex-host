@@ -523,7 +523,7 @@ describe("local native Account composition", () => {
     expect(f.files.replace).not.toHaveBeenCalled();
   });
 
-  it("retains clean native use with other CLIs but blocks every credential mutation", async () => {
+  it("retains legacy native startup and authentication with other Codex backends", async () => {
     const f = await fixture({
       layout: {
         kind: "migration-required",
@@ -535,14 +535,15 @@ describe("local native Account composition", () => {
     native.current().inventory = [424242];
     const prepared = await prepareLocalCodex(f.input({ sharedListener: true }));
     try {
-      expect(prepared.allowNativeAuthPassthrough).toBe(false);
+      expect(prepared.allowNativeAuthPassthrough).toBe(true);
       expect(prepared.accountControl.snapshot().capabilities).toMatchObject({
         manage: false,
         switch: false,
         login: false,
         logout: false,
-        reason: "competing-writer",
+        reason: "migration-required",
       });
+      expect(readNativeProcessIds).not.toHaveBeenCalled();
       await prepared.officialRuntimeScope.start();
       expect(prepared.officialRuntimeScope.gate.phase).toBe("ready");
       expect(native.state.keyConstructions).toBe(0);
@@ -550,51 +551,36 @@ describe("local native Account composition", () => {
       await expect(prepared.accountControl.switch("other")).rejects.toThrow();
       await expect(prepared.accountControl.startLogin()).rejects.toThrow();
       await expect(prepared.accountControl.logout()).rejects.toThrow();
-      const client = new OfficialRuntimeClient({
-        scope: prepared.officialRuntimeScope,
-        output: async () => {},
-      });
-      try {
-        await expect(client.request("account/login/start", { type: "chatgpt" })).rejects.toThrow();
-        await expect(client.request("account/logout", {})).rejects.toThrow();
-      } finally {
-        await client.close();
-      }
     } finally {
       await prepared.close();
     }
   });
 
-  it.each(["missing-helper", "inventory-error"])(
-    "refuses legacy compatibility for %s without creating keys or starting a backend",
-    async (failure) => {
-      const f = await fixture({
-        layout: {
-          kind: "migration-required",
-          reason: "multiple-homes",
-          homes: [],
-          nativeCompatibility: { accountId: "legacy-current", registryDigest: "original" },
-        },
-      });
-      if (failure === "inventory-error")
-        vi.mocked(readNativeProcessIds).mockRejectedValueOnce(new Error("unavailable"));
-      const prepared = await prepareLocalCodex(
-        f.input({
-          sharedListener: true,
-          ...(failure === "missing-helper" ? { launcher: "" } : {}),
-        }),
-      );
-      expect(prepared.allowNativeAuthPassthrough).toBe(false);
-      await expect(prepared.officialRuntimeScope.start()).rejects.toMatchObject({
-        code: "unavailable",
-      });
-      expect(native.state.keyConstructions).toBe(0);
-      expect(native.current().events).toEqual([]);
-      await prepared.close();
-    },
-  );
+  it("refuses legacy compatibility without a native helper, without creating keys or starting a backend", async () => {
+    const f = await fixture({
+      layout: {
+        kind: "migration-required",
+        reason: "multiple-homes",
+        homes: [],
+        nativeCompatibility: { accountId: "legacy-current", registryDigest: "original" },
+      },
+    });
+    const prepared = await prepareLocalCodex(
+      f.input({
+        sharedListener: true,
+        launcher: "",
+      }),
+    );
+    expect(prepared.allowNativeAuthPassthrough).toBe(false);
+    await expect(prepared.officialRuntimeScope.start()).rejects.toMatchObject({
+      code: "unavailable",
+    });
+    expect(native.state.keyConstructions).toBe(0);
+    expect(native.current().events).toEqual([]);
+    await prepared.close();
+  });
 
-  it.each(["layout-changed", "managed-state-appeared", "writer-appeared"])(
+  it.each(["layout-changed", "managed-state-appeared"])(
     "rechecks legacy admission at backend start: %s",
     async (failure) => {
       const f = await fixture({
@@ -607,18 +593,16 @@ describe("local native Account composition", () => {
       });
       const prepared = await prepareLocalCodex(f.input({ sharedListener: true }));
       expect(prepared.allowNativeAuthPassthrough).toBe(true);
-      if (failure === "writer-appeared") native.current().inventory = [424242];
-      else
-        native.current().layout = {
-          kind: "migration-required",
-          reason: "multiple-homes",
-          homes: [],
-          ...(failure === "layout-changed"
-            ? {
-                nativeCompatibility: { accountId: "other", registryDigest: "changed" },
-              }
-            : {}),
-        };
+      native.current().layout = {
+        kind: "migration-required",
+        reason: "multiple-homes",
+        homes: [],
+        ...(failure === "layout-changed"
+          ? {
+              nativeCompatibility: { accountId: "other", registryDigest: "changed" },
+            }
+          : {}),
+      };
       await expect(prepared.officialRuntimeScope.start()).rejects.toThrow();
       expect(native.current().events).not.toContain("backend-start");
       await prepared.close();
@@ -708,23 +692,36 @@ describe("local native Account composition", () => {
     );
   });
 
-  it("diagnoses other observable native processes without starting or killing a backend", async () => {
-    const f = await fixture();
-    native.current().inventory = [424242];
-    const input = f.input();
-    const diagnostic = vi.spyOn(input.diagnosticOutput, "write");
-    const prepared = await prepareLocalCodex(input);
-    try {
-      expect(diagnostic).toHaveBeenCalledWith(
-        "codexhost: Other native Codex processes were detected; refusing Account management\n",
+  it.each(["fresh", "managed", "legacy"] as const)(
+    "starts %s mode without an external process inventory or termination",
+    async (mode) => {
+      const f = await fixture(
+        mode === "legacy"
+          ? {
+              layout: {
+                kind: "migration-required",
+                reason: "multiple-homes",
+                homes: [],
+                nativeCompatibility: { accountId: "legacy-current", registryDigest: "original" },
+              },
+            }
+          : {},
       );
-      expect(prepared.officialRuntimeScope.gate.phase).toBe("unavailable");
-      expect(native.current().events).toEqual([]);
-      expect(diagnostic.mock.calls.flat().join(" ")).not.toContain("424242");
-    } finally {
-      await prepared.close();
-    }
-  });
+      if (mode === "managed")
+        await mkdir(path.join(f.home, ".codexhost-native-accounts"), { recursive: true });
+      native.current().inventory = [424242];
+      vi.mocked(readNativeProcessIds).mockRejectedValue(new Error("inventory unavailable"));
+      const prepared = await prepareLocalCodex(f.input({ sharedListener: true }));
+      try {
+        await prepared.officialRuntimeScope.start();
+        expect(prepared.officialRuntimeScope.gate.phase).toBe("ready");
+        expect(readNativeProcessIds).not.toHaveBeenCalled();
+      } finally {
+        await prepared.close();
+      }
+      expect(readNativeProcessIds).not.toHaveBeenCalled();
+    },
+  );
 
   it("returns exactly one shared Scope and one Account control", async () => {
     const f = await fixture();

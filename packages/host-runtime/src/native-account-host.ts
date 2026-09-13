@@ -33,7 +33,6 @@ import type { OwnedOfficialBackend } from "./codex-runtime/official-runtime-owne
 import { NativePrivateFiles } from "./native-private-files.js";
 import { NativeSecretKeys } from "./native-secret-keys.js";
 import { readNativeProcessIdentity } from "./native-process-identity.js";
-import { readNativeProcessIds } from "./native-process-inventory.js";
 import { spawnOfficialAppServerConnection } from "./official-app-server-connection.js";
 import { officialLoopbackListenerArguments } from "./remote-app-server.js";
 import { createLoopbackOfficialAppServerListener } from "./remote-official-app-server.js";
@@ -172,7 +171,7 @@ function nativeFallback(
   const scope = new OfficialRuntimeScope({
     permanentHome: home,
     diagnosticOutput: input.diagnosticOutput,
-    allowNativeAuthPassthrough: reason !== "competing-writer",
+    allowNativeAuthPassthrough: true,
     createBackend: () => {
       if (ownership)
         return guarded(
@@ -225,7 +224,7 @@ function nativeFallback(
   return {
     officialRuntimeScope: scope,
     accountControl: control,
-    allowNativeAuthPassthrough: reason !== "competing-writer",
+    allowNativeAuthPassthrough: true,
     close: async () => {
       await scope.close();
       await ownership?.store.close();
@@ -249,8 +248,8 @@ export async function prepareLocalCodex(input: LocalCodexOptions): Promise<Prepa
     if (!compatibility || !launcher || !path.isAbsolute(launcher))
       return blocked(home, input.diagnosticOutput, "migration-required");
     const assertStartup = async (): Promise<void> => {
-      // Repeat at every backend start: a new Journal, changed selection or unknown
-      // writer must not be bypassed by an earlier clean compatibility decision.
+      // Repeat at every backend start: changed layout or selection must not
+      // be bypassed by an earlier clean compatibility decision.
       const latest = await inspectNativeAccountLayout(data, home);
       if (
         latest.kind !== "migration-required" ||
@@ -262,41 +261,11 @@ export async function prepareLocalCodex(input: LocalCodexOptions): Promise<Prepa
           JSON.stringify(layout.homes.map((entry) => entry.home))
       )
         throw new Error("Legacy Codex Account layout changed");
-      const writers = await readNativeProcessIds({
-        launcher,
-        executableNames: [path.basename(input.stockCodexPath), "codex", "codex.exe"],
-        environment: input.environment,
-      });
-      if (writers.length) throw new NativeAccountError("competing-writer");
     };
     assertLegacyStartup = assertStartup;
     try {
       await assertStartup();
-    } catch (error) {
-      if (
-        error instanceof NativeAccountError &&
-        error.code === "competing-writer" &&
-        layout.nativeCompatibility
-      ) {
-        // This is ordinary native use, not managed recovery. No Vault, key or
-        // credential replacement is permitted, including native login/logout.
-        // Any managed state in ANY known home makes this path ineligible.
-        const assertCleanNativeUse = async () => {
-          const latest = await inspectNativeAccountLayout(data, home);
-          if (
-            latest.kind !== "migration-required" ||
-            latest.nativeCompatibility?.registryDigest !== compatibility.registryDigest ||
-            latest.nativeCompatibility.accountId !== compatibility.accountId ||
-            JSON.stringify(latest.homes.map((entry) => entry.home)) !==
-              JSON.stringify(layout.homes.map((entry) => entry.home))
-          )
-            throw new NativeAccountError("recovery-required");
-        };
-        input.diagnosticOutput.write(
-          "codexhost: Other Codex CLIs detected; retaining native use without Account mutations.\n",
-        );
-        return nativeFallback(input, home, "competing-writer", undefined, assertCleanNativeUse);
-      }
+    } catch {
       return blocked(home, input.diagnosticOutput, "recovery-required");
     }
     if (!layout.credentialImport) {
@@ -312,35 +281,6 @@ export async function prepareLocalCodex(input: LocalCodexOptions): Promise<Prepa
     return (await exists(root)) || (await exists(path.join(home, ".codexhost-process.json")))
       ? blocked(home, input.diagnosticOutput, "recovery-required")
       : nativeFallback(input, home, "unsupported-storage");
-  }
-  if (
-    layout.kind !== "migration-required" &&
-    !(await exists(root)) &&
-    !(await exists(path.join(home, ".codexhost-process.json")))
-  ) {
-    try {
-      const writers = await readNativeProcessIds({
-        launcher,
-        executableNames: [path.basename(input.stockCodexPath), "codex", "codex.exe"],
-        environment: input.environment,
-      });
-      if (writers.length) {
-        input.diagnosticOutput.write(
-          "codexhost: Other native Codex processes were detected; refusing Account management\n",
-        );
-        return nativeFallback(input, home, "competing-writer", undefined, async () => {
-          const latest = await inspectNativeAccountLayout(data, home);
-          if (
-            JSON.stringify(latest) !== JSON.stringify(layout) ||
-            (await exists(root)) ||
-            (await exists(path.join(home, ".codexhost-process.json")))
-          )
-            throw new NativeAccountError("recovery-required");
-        });
-      }
-    } catch {
-      return blocked(home, input.diagnosticOutput, "recovery-required");
-    }
   }
   const files = new NativePrivateFiles({ launcher, environment: input.environment });
   const homeFiles = files.withReadOnlyDirectoryAccess();
@@ -408,18 +348,6 @@ export async function prepareLocalCodex(input: LocalCodexOptions): Promise<Prepa
           store.vault.legacyRegistryDigest !== layout.credentialImport.registryDigest
         )
           throw new NativeAccountError("migration-required");
-      }
-      // A Host lease cannot constrain arbitrary native CLIs; refuse observable unknown writers.
-      const pids = await readNativeProcessIds({
-        launcher,
-        executableNames: [path.basename(input.stockCodexPath), "codex", "codex.exe"],
-        environment: input.environment,
-      });
-      if (pids.length) {
-        input.diagnosticOutput.write(
-          "codexhost: Other native Codex processes were detected; refusing Account management\n",
-        );
-        throw new Error("Another native process may own the Codex home");
       }
     };
     scope = new OfficialRuntimeScope({

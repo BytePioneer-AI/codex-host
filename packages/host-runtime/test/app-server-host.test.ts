@@ -464,6 +464,7 @@ async function bindOfficialThread(
   threadId: string,
 ): Promise<void> {
   void threadId;
+  await fixture.ready;
   await vi.waitFor(() => expect(fixture.spawnOfficial).toHaveBeenCalledOnce());
 }
 

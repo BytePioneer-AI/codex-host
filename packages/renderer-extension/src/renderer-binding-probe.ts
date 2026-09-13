@@ -63,6 +63,7 @@ import {
 import type { RendererModelClient } from "./renderer-model-client.js";
 import { RendererMethodUnavailableError } from "./renderer-request-sender.js";
 import { thinkingOptionsForModel } from "./renderer-model-picker.js";
+import { installRendererApprovalStyle } from "./renderer-approval-style.js";
 import { RENDERER_AGENT_INSTALL_URLS } from "./renderer-agent-picker.js";
 import {
   readClaudePermissionModePreference,
@@ -98,6 +99,7 @@ const externalHarnessIds = {
   "kiro-cli": harnessIdSchema.parse("kiro-cli"),
   codebuddy: harnessIdSchema.parse("codebuddy"),
   "cursor-cli": harnessIdSchema.parse("cursor-cli"),
+  qoder: harnessIdSchema.parse("qoder"),
 } as const;
 
 const externalAgents: readonly ExternalRendererAgent[] = [
@@ -111,6 +113,7 @@ const externalAgents: readonly ExternalRendererAgent[] = [
   "kiro-cli",
   "codebuddy",
   "cursor-cli",
+  "qoder",
 ];
 type HarnessAvailability = Partial<Record<ExternalRendererAgent, RendererAgentAvailability>>;
 type HarnessAvailabilityErrors = Record<ExternalRendererAgent, CodexhostError | undefined>;
@@ -485,6 +488,24 @@ export function restoredThreadOwnership(inspection: ThreadInspection): RestoredT
       ...(permissionModeId ? { permissionModeId } : {}),
     };
   }
+  if (inspection.harnessId === "qoder") {
+    const route = decodeHarnessPluginRoute(inspection.transportModelId);
+    if (!route || route.harnessId !== "qoder") {
+      throw new Error("Qoder Thread reported an incompatible transport Model");
+    }
+    const model = inspection.effectiveModel ?? route.model;
+    const thinkingOptionId =
+      inspection.availableThinkingOptions !== undefined
+        ? selectableThinkingOptionId(inspection)
+        : (inspection.effectiveThinkingOptionId ?? route.thinkingOptionId);
+    const permissionModeId = inspection.effectivePermissionModeId ?? route.permissionModeId;
+    return {
+      agent: "qoder",
+      ...(model ? { model } : {}),
+      ...(thinkingOptionId ? { thinkingOptionId } : {}),
+      ...(permissionModeId ? { permissionModeId } : {}),
+    };
+  }
   throw new Error("Thread owner is not a Renderer Agent");
 }
 
@@ -624,6 +645,7 @@ export function installRendererBindingProbe(
   const existing = window.__codexhostRendererBindingProbeV1;
   if (existing) return existing;
 
+  const disposeApprovalStyle = installRendererApprovalStyle(document);
   const enabledAgents = [...new Set(options.enabledAgents ?? DEFAULT_RENDERER_AGENTS)];
   const enabledAgentSet = new Set(enabledAgents);
   const controller = new DraftAgentController<Element>({
@@ -718,6 +740,7 @@ export function installRendererBindingProbe(
       "kiro-cli": undefined,
       codebuddy: undefined,
       "cursor-cli": undefined,
+      qoder: undefined,
     },
     webUi: Object.fromEntries(
       externalAgents.map((agent) => [agent, false]),
@@ -2041,7 +2064,8 @@ export function installRendererBindingProbe(
     if (!control || !hostId) return null;
     const selected = control.clientForHost?.(hostId);
     if (selected) return selected;
-    const currentHostId = control.currentHostId?.() ?? "local";
+    if (!control.currentHostId) return hostId === "local" ? control : null;
+    const currentHostId = control.currentHostId();
     return currentHostId === hostId ? control : null;
   }
 
@@ -2835,6 +2859,7 @@ export function installRendererBindingProbe(
     dispose() {
       if (disposed) return;
       disposed = true;
+      disposeApprovalStyle();
       usageNotificationDispose?.();
       usageNotificationDispose = null;
       adapterDispose?.();

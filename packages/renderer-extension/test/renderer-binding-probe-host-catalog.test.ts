@@ -11,6 +11,10 @@ import type { RendererConnectionDiagnostics } from "../src/settings/connections-
 import type { RendererSessionImportClient } from "../src/settings/session-import-page.js";
 import type * as VersionedRendererAdapter from "../src/versioned-renderer-adapter.js";
 
+vi.mock("../src/renderer-approval-style.js", () => ({
+  installRendererApprovalStyle: () => vi.fn(),
+}));
+
 const testState = vi.hoisted(() => ({
   composer: null as unknown as Element,
   editor: null as unknown as Element,
@@ -644,6 +648,40 @@ describe("Renderer binding Host-scoped Claude catalogs", () => {
 
     await vi.waitFor(() => expect(claudeInspections).toBeGreaterThanOrEqual(2));
     expect(testState.renderedModelViews.at(-1)).not.toMatchObject({ status: "error" });
+  });
+
+  it("waits for the Renderer request route before probing local Harnesses", async () => {
+    installFakeBrowser();
+    const inspectHarness = vi.fn(async () => readyInspection());
+    const modelControl = {
+      currentHostId: () => null,
+      clientForHost: vi.fn(() => null),
+      inspectHarness,
+      inspectThread: vi.fn(),
+      inspectThreadCommands: vi.fn(async () => ({ commands: [] })),
+      inspectThreadUsage: vi.fn(),
+      subscribeThreadUsage: () => () => undefined,
+    };
+    const { installRendererBindingProbe } = await import("../src/renderer-binding-probe.js");
+    const probe = installRendererBindingProbe({
+      enabledAgents: ["codex", "qoder"],
+      defaultAgent: "codex",
+    });
+    probe.setAdapter(
+      { state: "ready", reason: "ready", modelUpdates: 0, hook: "request-bridge" },
+      undefined,
+      undefined,
+      modelControl as never,
+    );
+
+    await Promise.resolve();
+    const diagnostics = testState.getConnectionDiagnostics?.();
+    const qoder = diagnostics
+      ?.snapshot()
+      .hosts.find(({ hostId }) => hostId === "local")
+      ?.agents.find(({ agent }) => agent === "qoder");
+    expect(qoder).toMatchObject({ availability: "checking", error: null });
+    expect(inspectHarness).not.toHaveBeenCalled();
   });
 
   it("reloads a same-Host empty Claude catalog on explicit refresh", async () => {

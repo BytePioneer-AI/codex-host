@@ -1,5 +1,7 @@
 import type {
+  HarnessModel,
   HarnessModelCatalog,
+  HarnessModelGroup,
   HarnessModelRef,
   HarnessThinkingOption,
   HarnessThinkingOptionId,
@@ -53,6 +55,8 @@ interface ModelOptionControl {
   button: HTMLButtonElement;
   check: HTMLElement;
   searchText: string;
+  selectable?: boolean;
+  groupHeading?: HTMLElement;
 }
 
 interface ThinkingOptionControl {
@@ -246,6 +250,66 @@ function createHeading(text: string): HTMLElement {
   return heading;
 }
 
+function createModelGroupHeading(text: string): HTMLElement {
+  const heading = document.createElement("div");
+  heading.className = HEADING_CLASSES;
+  heading.dataset.codexhostModelGroupHeading = "true";
+  heading.setAttribute("role", "heading");
+  heading.setAttribute("aria-level", "3");
+  heading.tabIndex = -1;
+  heading.style.display = "flex";
+  heading.style.alignItems = "center";
+  heading.style.gap = "8px";
+  heading.style.marginTop = "8px";
+  heading.style.paddingTop = "8px";
+  heading.style.fontSize = "11px";
+  heading.style.fontWeight = "600";
+  heading.style.letterSpacing = "0.06em";
+  heading.style.textTransform = "uppercase";
+  heading.style.pointerEvents = "none";
+  heading.style.userSelect = "none";
+  heading.style.cursor = "default";
+
+  const label = document.createElement("span");
+  label.textContent = text;
+  const rule = document.createElement("span");
+  rule.setAttribute("aria-hidden", "true");
+  rule.style.flex = "1";
+  rule.style.height = "1px";
+  rule.style.backgroundColor = "var(--token-border, rgba(255, 255, 255, 0.14))";
+  heading.append(label, rule);
+  return heading;
+}
+
+const MODEL_GROUP_LABELS: Readonly<Record<HarnessModelGroup, string>> = {
+  default: "Default",
+  new: "New",
+  custom: "Custom",
+};
+
+export interface RendererModelPickerGroup {
+  group: HarnessModelGroup;
+  label: string;
+  models: HarnessModel[];
+}
+
+export function rendererModelPickerGroups(
+  models: readonly HarnessModel[],
+): RendererModelPickerGroup[] {
+  if (!models.some((model) => model.group !== undefined)) return [];
+  return (Object.keys(MODEL_GROUP_LABELS) as HarnessModelGroup[])
+    .map((group) => ({
+      group,
+      label: MODEL_GROUP_LABELS[group],
+      models: models.filter((model) => (model.group ?? "default") === group),
+    }))
+    .filter(({ models: groupModels }) => groupModels.length > 0)
+    .map((group) => ({
+      ...group,
+      label: `${group.label} (${group.models.length})`,
+    }));
+}
+
 export function syncRendererLabelText(
   element: { textContent: string | null },
   text: string,
@@ -258,10 +322,19 @@ export function syncRendererLabelText(
 function applyModelSearchFilter(control: RendererModelPickerControl): void {
   const query = control.searchInput.value.trim().toLowerCase();
   let visibleCount = 0;
+  const visibleGroups = new Map<HTMLElement, boolean>();
   for (const option of control.options.values()) {
     const matches = query.length === 0 || option.searchText.includes(query);
     option.button.hidden = !matches;
     if (matches) visibleCount += 1;
+    if (option.groupHeading && matches) visibleGroups.set(option.groupHeading, true);
+  }
+  for (const option of control.options.values()) {
+    if (option.groupHeading && !visibleGroups.has(option.groupHeading)) {
+      option.groupHeading.hidden = true;
+    } else if (option.groupHeading) {
+      option.groupHeading.hidden = false;
+    }
   }
   control.searchEmpty.hidden = query.length === 0 || visibleCount > 0;
 }
@@ -474,6 +547,7 @@ export function mountRendererModelPicker(
         ? event.target.closest<HTMLButtonElement>("button[data-model-id]")
         : null;
     if (!target?.dataset.modelId) return;
+    if (target.disabled) return;
     close();
     trigger.focus();
     onSelectModel(target.dataset.modelId);
@@ -602,7 +676,9 @@ function rebuildOptions(control: RendererModelPickerControl, view: RendererModel
   control.modelButton.replaceChildren(modelText, modelChevron);
   control.menu.append(control.modelButton);
 
-  for (const model of view.catalog?.models ?? []) {
+  const models = view.catalog?.models ?? [];
+  const groups = rendererModelPickerGroups(models);
+  const appendModel = (model: HarnessModel, groupHeading?: HTMLElement): void => {
     const button = document.createElement("button");
     button.type = "button";
     button.dataset.modelId = model.ref.id;
@@ -619,8 +695,19 @@ function rebuildOptions(control: RendererModelPickerControl, view: RendererModel
       button,
       check,
       searchText: `${model.label} ${model.ref.id}`.toLowerCase(),
+      ...(typeof model.selectable === "boolean" ? { selectable: model.selectable } : {}),
+      ...(groupHeading ? { groupHeading } : {}),
     });
     control.modelMenu.append(button);
+  };
+  if (groups.length > 0) {
+    for (const group of groups) {
+      const heading = createModelGroupHeading(group.label);
+      control.modelMenu.append(heading);
+      for (const model of group.models) appendModel(model, heading);
+    }
+  } else {
+    for (const model of models) appendModel(model);
   }
   applyModelSearchFilter(control);
   // rebuildOptions replaced the submenu children above, which moves the focused
@@ -686,7 +773,7 @@ export function renderRendererModelPicker(
     const selected = modelId === view.selected?.id;
     option.button.setAttribute("aria-checked", String(selected));
     option.button.classList.toggle("bg-token-list-hover-background", selected);
-    option.button.disabled = control.trigger.disabled;
+    option.button.disabled = control.trigger.disabled || option.selectable === false;
     option.check.style.visibility = selected ? "visible" : "hidden";
   }
   for (const [thinkingOptionId, option] of control.thinkingOptions) {

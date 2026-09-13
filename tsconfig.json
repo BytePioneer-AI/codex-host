@@ -19,6 +19,7 @@
     { "path": "./packages/adapters/kiro-cli/tsconfig.json" },
     { "path": "./packages/adapters/codebuddy/tsconfig.json" },
     { "path": "./packages/adapters/cursor-cli/tsconfig.json" },
+    { "path": "./packages/adapters/qoder/tsconfig.json" },
     { "path": "./packages/host-runtime/tsconfig.json" },
     { "path": "./packages/renderer-extension/tsconfig.json" }
   ]

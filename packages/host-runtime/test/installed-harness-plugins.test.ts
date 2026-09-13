@@ -21,6 +21,7 @@ const classes = {
   "kiro-cli": "KiroAdapter",
   codebuddy: "CodeBuddyAdapter",
   "cursor-cli": "CursorAdapter",
+  qoder: "QoderAdapter",
 };
 
 const unavailable: HarnessInspection = {
@@ -36,6 +37,7 @@ function load(environment: NodeJS.ProcessEnv = {}) {
       platform: process.platform,
       managedRemoteHost: false,
     },
+    loadTimeoutMs: 30_000,
     warmup: false,
   });
 }
@@ -63,7 +65,7 @@ describe("installed Harness composition", () => {
     },
   );
 
-  // Cold bundle imports can exceed Vitest's 5s default on CI; the loader retains its 10s budget.
+  // Cold bundle imports can exceed Vitest's 5s default on CI; the loader retains its 30s budget.
   it("loads all preinstalled plugin factories without static registration or executable discovery", async () => {
     const registry = await load();
     try {
@@ -86,7 +88,7 @@ describe("installed Harness composition", () => {
     } finally {
       await registry.close();
     }
-  }, 15_000);
+  }, 35_000);
 
   it("provides every built-in command catalog before inspection or Session creation", async () => {
     const expected = {
@@ -116,6 +118,7 @@ describe("installed Harness composition", () => {
         "/kiro-spec",
         "/kiro-vibe",
       ],
+      qoder: ["/compact"],
     };
     const registry = await load();
     try {
@@ -143,6 +146,7 @@ describe("installed Harness composition", () => {
     ["kiro-cli", "CODEXHOST_KIRO_COMMAND"],
     ["codebuddy", "CODEXHOST_CODEBUDDY_COMMAND"],
     ["cursor-cli", "CODEXHOST_CURSOR_COMMAND"],
+    ["qoder", "CODEXHOST_QODER_COMMAND"],
   ])(
     "preserves the explicit %s command rather than finding another local installation",
     async (id, commandVariable) => {
@@ -168,6 +172,7 @@ describe("installed Harness composition", () => {
         managedRemoteHost: true,
         brokerDescriptorPath: path.resolve(".missing-fixture", "broker.json"),
       },
+      loadTimeoutMs: 30_000,
       warmup: false,
     });
     try {

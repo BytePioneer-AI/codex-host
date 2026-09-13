@@ -570,7 +570,6 @@ export function renderRendererUsageControl(
     totalCostUsd !== undefined ? formatRendererCost(totalCostUsd) : null,
   ].filter((value): value is string => value !== null);
   const contextPercent = usage?.contextUsagePercent;
-  if (contextPercent !== undefined && summary.length === 0) summary.push(messages.usage);
   if (
     summary.length === 0 &&
     hasContext &&
@@ -580,6 +579,8 @@ export function renderRendererUsageControl(
     summary.push(
       formatRendererContextSummary(usage.contextUsedTokens ?? 0, usage.contextWindowTokens),
     );
+  } else if (summary.length === 0 && contextPercent !== undefined) {
+    summary.push(`${decimal(contextPercent, 1)}%`);
   }
   if (summary.length === 0 && usage?.totalTokens !== undefined) {
     summary.push(`${formatRendererTokenCount(usage.totalTokens)} ${messages.tokensSummary}`);

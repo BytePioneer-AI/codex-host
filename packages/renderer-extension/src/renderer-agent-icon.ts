@@ -6,6 +6,7 @@ import codeBuddyAgentIconUrl from "./assets/codebuddy-agent.svg";
 import cursorAgentIconUrl from "./assets/cursor-agent.svg";
 import ompAgentIconUrl from "./assets/omp-agent.svg";
 import openCodeAgentIconUrl from "./assets/opencode-agent.png";
+import qoderAgentIconUrl from "./assets/qoder-agent.svg";
 import type { RendererAgent } from "./agent-selection-state.js";
 
 export const RENDERER_AGENT_LABELS: Record<RendererAgent, string> = {
@@ -20,6 +21,7 @@ export const RENDERER_AGENT_LABELS: Record<RendererAgent, string> = {
   "kiro-cli": "Kiro CLI",
   codebuddy: "CodeBuddy",
   "cursor-cli": "Cursor CLI (Experimental)",
+  qoder: "Qoder",
 };
 
 const PI_PATHS = [
@@ -130,6 +132,17 @@ export function createRendererAgentIcon(
           : agent === "kiro-cli"
             ? kiroAgentIconUrl
             : antigravityAgentIconUrl;
+    image.alt = "";
+    image.draggable = false;
+    image.style.width = `${size}px`;
+    image.style.height = `${size}px`;
+    image.style.objectFit = "contain";
+    image.style.flex = "none";
+    return image;
+  }
+  if (agent === "qoder") {
+    const image = ownerDocument.createElement("img");
+    image.src = qoderAgentIconUrl;
     image.alt = "";
     image.draggable = false;
     image.style.width = `${size}px`;

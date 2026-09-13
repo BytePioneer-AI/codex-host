@@ -14,13 +14,13 @@
 | --- | --- |
 | `npm run typecheck` | 通过 |
 | `npm run lint`（含 Workspace 边界） | 通过 |
-| Vitest：账号、事务、登录、Runtime、Host、远端原生连接、导航和契约，38 个文件 | 451 通过，12 跳过 |
+| `npm run test:typescript`：构建、插件打包及完整 Vitest，333 个文件 | 3861 通过，35 跳过 |
 | Playwright：账号设置与跨 Host 账号隔离，2 个文件 | 48 通过 |
 | macOS Rust：旧密钥 IPC／校验、进程枚举及批次终止 | 9 通过 |
 | `cargo fmt --all --check`、`git diff --check` | 通过 |
 | `openspec validate implement-codex-native-accounts --strict` | 通过 |
 
-Vitest 使用 `tests/vitest.config.js`，Playwright 使用 `tests/e2e/playwright.config.js`。跳过项受真实 CLI／helper 的 opt-in 环境或平台条件限制。测试使用合成凭据、临时目录、协议 peer 或模拟页面；Rust 进程测试只操作其合成进程。未运行全仓测试，也未操作真实账号或 Desktop，结果不等于真实多客户端切换验收。
+Vitest 使用 `tests/vitest.config.js`，Playwright 使用 `tests/e2e/playwright.config.js`。跳过项受真实 Harness／CLI／helper 的 opt-in 环境或平台条件限制。测试使用合成凭据、临时目录、协议 peer 或模拟页面；Rust 进程测试只操作其合成进程。未运行全仓测试，也未操作真实账号或 Desktop，结果不等于真实多客户端切换验收。
 
 ## 待验证边界
 

@@ -10,6 +10,9 @@
     "tsBuildInfoFile": "dist/types/tsconfig.tsbuildinfo",
     "emitDeclarationOnly": true
   },
-  "references": [{ "path": "../shared-contracts/tsconfig.json" }],
+  "references": [
+    { "path": "../shared-contracts/tsconfig.json" },
+    { "path": "../desktop-control/tsconfig.json" }
+  ],
   "include": ["src/**/*.ts"]
 }

@@ -1,5 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from "node:child_process";
+import fs from "node:fs";
+import { homedir, tmpdir } from "node:os";
 
 import { createOpencodeClient, type OpencodeClient } from "@opencode-ai/sdk/v2/client";
 
@@ -28,6 +30,7 @@ interface SpawnOptions {
   detached: boolean;
   windowsHide: boolean;
   windowsVerbatimArguments?: boolean;
+  cwd?: string;
 }
 
 export interface OpenCodeServerDependencies {
@@ -121,6 +124,21 @@ function signalProcessTree(child: ChildProcessWithoutNullStreams, signal: NodeJS
   } catch (error) {
     if (!isRecord(error) || error.code !== "ESRCH") throw error;
   }
+}
+
+function safeOpenCodeServerCwd(environment: NodeJS.ProcessEnv): string | undefined {
+  const candidates = [environment.USERPROFILE, environment.HOME, homedir(), tmpdir()];
+  for (const candidate of candidates) {
+    if (!candidate) continue;
+    try {
+      if (!fs.statSync(candidate).isDirectory()) continue;
+      fs.accessSync(candidate, fs.constants.R_OK | fs.constants.W_OK);
+      return candidate;
+    } catch {
+      // Try the next user-writable candidate.
+    }
+  }
+  return undefined;
 }
 
 export interface OpenCodeServerConnectionLike {
@@ -249,6 +267,7 @@ export class OpenCodeServerConnection implements OpenCodeServerConnectionLike {
       OPENCODE_SERVER_PASSWORD: password,
     };
     const invocation = openCodeServerInvocation(executable, environment);
+    const serverCwd = safeOpenCodeServerCwd(environment);
     let child: ChildProcessWithoutNullStreams;
     try {
       child = this.#dependencies.spawn(invocation.command, invocation.arguments, {
@@ -257,6 +276,7 @@ export class OpenCodeServerConnection implements OpenCodeServerConnectionLike {
         detached: process.platform !== "win32",
         windowsHide: true,
         windowsVerbatimArguments: invocation.windowsVerbatimArguments,
+        ...(serverCwd ? { cwd: serverCwd } : {}),
       });
     } catch (error) {
       throw new OpenCodeTransportError(

@@ -67,6 +67,40 @@ describe("remote official app-server connection", () => {
     }
   });
 
+  it("uses a capability header and redacts private transport close details", async () => {
+    const token = "synthetic-private-capability";
+    const server = createServer();
+    const webSockets = new WebSocketServer({ server });
+    let authorization: string | undefined;
+    webSockets.on("connection", (socket, request) => {
+      authorization = request.headers.authorization;
+      socket.on("message", () => socket.close(1008, token));
+    });
+    try {
+      await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+      const address = server.address();
+      if (!address || typeof address === "string") throw new Error("Missing test listener");
+      const connection = await createRemoteOfficialAppServerConnection(
+        `ws://127.0.0.1:${address.port}`,
+        { capabilityToken: token },
+      );
+      let diagnostic = "";
+      connection.stderr.on("data", (chunk: Buffer) => {
+        diagnostic += chunk.toString();
+      });
+      connection.stdin.write('{"id":1,"method":"initialize"}\n');
+      const exit = await connection.closed;
+      expect(authorization).toBe(`Bearer ${token}`);
+      expect(exit.error?.message).toContain("1008");
+      expect(exit.error?.message).not.toContain(token);
+      expect(diagnostic).not.toContain(token);
+    } finally {
+      for (const socket of webSockets.clients) socket.terminate();
+      await new Promise<void>((resolve) => webSockets.close(() => resolve()));
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
   it("matches the native client handshake without offering permessage-deflate", async () => {
     const socketPath = testSocketPath();
     const server = createServer();

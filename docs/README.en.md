@@ -22,13 +22,14 @@ But **Codex** is not the only capable **Agent Harness**. Some people prefer **Cl
   <a href="https://openai.com/codex/"><img alt="Codex" src="imgs/badge-codex.svg" /></a>
   <a href="https://code.claude.com/docs/en/quickstart"><img alt="Claude Code" src="https://img.shields.io/badge/Claude_Code-D97757?logo=claudecode&logoColor=white" /></a>
   <a href="https://opencode.ai/docs/"><img alt="OpenCode" src="imgs/badge-opencode.svg" /></a>
-  <a href="https://github.com/deepseek-ai/deepseek-harness"><img alt="DeepSeek Harness" src="https://img.shields.io/badge/DeepSeek-4D6BFE?logo=deepseek&logoColor=white" /></a>
   <a href="https://grok.com/"><img alt="Grok" src="https://img.shields.io/badge/Grok-000000?logo=x&logoColor=white" /></a>
-  <a href="https://github.com/can1357/oh-my-pi"><img alt="Oh My Pi" src="imgs/badge-omp-v5.svg" /></a>
+  <a href="https://github.com/can1357/oh-my-pi"><img alt="Oh My Pi" src="imgs/badge-omp-v5.svg" /></a><br />
+  <a href="https://github.com/deepseek-ai/deepseek-harness"><img alt="DeepSeek Harness" src="https://img.shields.io/badge/DeepSeek_Harness-4D6BFE?logo=deepseek&logoColor=white" /></a>
   <a href="https://antigravity.google/product/antigravity-cli"><img alt="AGY" src="imgs/badge-agy.svg" /></a>
   <a href="https://kiro.dev/docs/cli/"><img alt="Kiro CLI" src="imgs/badge-kiro.svg" /></a>
   <a href="https://www.codebuddy.cn/home/"><img alt="CodeBuddy" src="imgs/badge-codebuddy.svg" /></a>
   <a href="https://cursor.com/docs/cli/overview"><img alt="Cursor" src="imgs/badge-cursor.svg" /></a>
+  <a href="https://hermes-agent.nousresearch.com/docs"><img alt="Hermes" src="imgs/badge-hermes.svg" /></a>
 </p>
 
 <p align="center">
@@ -75,8 +76,7 @@ codexhost
 
 <details>
 <summary>Installation troubleshooting</summary>
-
-**macOS** - Apple verification issue
+**macOS**
 
 If the app cannot be verified when you first open it, run:
 
@@ -96,16 +96,6 @@ Fully quit Codex Desktop, open a new terminal, and start codexhost.
 
 </details>
 
-### Appearance settings
-
-In `Settings → Appearance`, enable **Wrap thinking text** to wrap long lines in the persisted thinking transcript. It is off by default, saved locally, and takes effect immediately. Ordinary shell output is unchanged.
-
-### Update checks and GitHub rate limits
-
-codexhost prefers an authenticated [GitHub CLI](https://cli.github.com/) (`gh auth login --hostname github.com`) for latest Release checks, using the account's API quota to reduce anonymous rate limits on shared proxy exits. Credentials remain managed by `gh`; codexhost does not read or store tokens.
-
-If `gh` is missing, unauthenticated, or fails, discovery falls back to the public API. Each CLI invocation is limited to 5 seconds. Discovery searches PATH, macOS Homebrew, and common Windows/Linux installation locations. Set `CODEXHOST_GH_COMMAND` in the Host environment to specify an executable path without arguments. Artifact downloads and verification are unchanged; authenticated requests remain subject to GitHub account and secondary rate limits.
-
 ### Interaction Examples
 
 <table>
@@ -115,16 +105,6 @@ If `gh` is missing, unauthenticated, or fails, discovery falls back to the publi
       <div align="center">
         <img width="90%" src="imgs/codexhost-full-workspace.png" alt="The complete CodexHost workspace in Codex Desktop, showing the project tree, conversation area, and multiple Agent selectors">
       </div>
-    </td>
-  </tr>
-  <tr>
-    <td width="50%" valign="top">
-      <p><strong>Agent and Model selection</strong></p>
-      <img src="imgs/agent-harness-selector.png" alt="Choose the Agent and Model that will execute the task before submitting; Codex, Pi, Claude Code, OpenCode, DeepSeek Harness, Grok, and Oh My Pi are available">
-    </td>
-    <td width="50%" valign="top">
-      <p><strong>Usage and cost information</strong></p>
-      <img src="imgs/usage-panel.png" alt="The Usage panel shows context, cache hits, and estimated cost">
     </td>
   </tr>
   <tr>
@@ -145,21 +125,21 @@ If `gh` is missing, unauthenticated, or fails, discovery falls back to the publi
 
 ## Feature Status
 
-| Capability | <a href="https://openai.com/codex/"><img alt="Codex" src="imgs/badge-codex.svg" /></a> | <a href="https://pi.dev/"><img alt="Pi" src="https://img.shields.io/badge/Pi-000000?logo=pi&logoColor=white" /></a> | <a href="https://github.com/can1357/oh-my-pi"><img alt="Oh My Pi" src="imgs/badge-omp-v5.svg" /></a> | <a href="https://code.claude.com/docs/en/quickstart"><img alt="Claude Code" src="https://img.shields.io/badge/Claude_Code-D97757?logo=claudecode&logoColor=white" /></a> | <a href="https://opencode.ai/docs/"><img alt="OpenCode" src="imgs/badge-opencode.svg" /></a> | <a href="https://grok.com/"><img alt="Grok" src="https://img.shields.io/badge/Grok-000000?logo=x&logoColor=white" /></a> | <a href="https://github.com/deepseek-ai/deepseek-harness"><img alt="DeepSeek Harness" src="https://img.shields.io/badge/DeepSeek-4D6BFE?logo=deepseek&logoColor=white" /></a> | <a href="https://antigravity.google/product/antigravity-cli"><img alt="AGY" src="imgs/badge-agy.svg" /></a> | <a href="https://www.codebuddy.cn/home/"><img alt="CodeBuddy" src="imgs/badge-codebuddy.svg" /></a> | <a href="https://cursor.com/docs/cli/overview"><img alt="Cursor" src="imgs/badge-cursor.svg" /></a> |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| Streaming responses | Native | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Tool status | Native | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Edit Diff | Native | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Questions / cancellation | Native | ✅ | — / ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Model / Thinking selection | Native | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ / — |
-| Tool approvals | Native | ✅ | — | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Permission modes | Native | — | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Cross-Agent task collaboration | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — | — |
-| Usage | Native | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — |
-| Fork | Native | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — | — |
-| Context compaction | Native | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — | — | — |
-| Slash commands | Native | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — | — |
-| Edit previous message | Native | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — | — |
+| Capability | <a href="https://openai.com/codex/"><img alt="Codex" src="imgs/harness-icon-codex.svg" /></a> | <a href="https://pi.dev/"><img alt="Pi" src="https://img.shields.io/badge/-000000?logo=pi&logoColor=white" /></a> | <a href="https://github.com/can1357/oh-my-pi"><img alt="Oh My Pi" src="imgs/harness-icon-omp-v5.svg" /></a> | <a href="https://code.claude.com/docs/en/quickstart"><img alt="Claude Code" src="https://img.shields.io/badge/-D97757?logo=claudecode&logoColor=white" /></a> | <a href="https://opencode.ai/docs/"><img alt="OpenCode" src="imgs/harness-icon-opencode.svg" /></a> | <a href="https://grok.com/"><img alt="Grok" src="https://img.shields.io/badge/-000000?logo=x&logoColor=white" /></a> | <a href="https://github.com/deepseek-ai/deepseek-harness"><img alt="DeepSeek Harness" src="https://img.shields.io/badge/-4D6BFE?logo=deepseek&logoColor=white" /></a> | <a href="https://antigravity.google/product/antigravity-cli"><img alt="AGY" src="imgs/harness-icon-agy.svg" /></a> | <a href="https://www.codebuddy.cn/home/"><img alt="CodeBuddy" src="imgs/harness-icon-codebuddy.svg" /></a> | <a href="https://cursor.com/docs/cli/overview"><img alt="Cursor" src="imgs/harness-icon-cursor.svg" /></a> | <a href="https://hermes-agent.nousresearch.com/docs"><img alt="Hermes" src="imgs/harness-icon-hermes.svg" /></a> |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| Streaming responses | Native | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Tool status | Native | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Edit Diff | Native | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — |
+| Questions / cancellation | Native | ✅ | — / ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — / ✅ |
+| Model / Thinking selection | Native | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ / — | ✅ / — |
+| Tool approvals | Native | ✅ | — | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Permission modes | Native | — | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Cross-Agent task collaboration | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — | — | ✅ |
+| Usage | Native | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — | ✅ |
+| Fork | Native | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — | — | — |
+| Context compaction | Native | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — | — | — | — |
+| Slash commands | Native | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — | — | — |
+| Edit previous message | Native | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — | — | — |
 
 ## Cross-Agent collaboration
 

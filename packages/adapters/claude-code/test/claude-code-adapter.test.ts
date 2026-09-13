@@ -2474,6 +2474,57 @@ describe("Claude Code HarnessAdapter", () => {
     await session.close();
   });
 
+  it("releases a held Root Turn when a background Subagent settles without a continuation", async () => {
+    const { adapter, transports } = fixture();
+    const session = await openSession(adapter);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+
+    await session.execute(textTurn("launch in background"));
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    const transport = transports[0];
+    if (!transport) throw new Error("Fake Claude transport was not created");
+    transport.event({
+      type: "subagent.started",
+      operation: "spawn",
+      callId: "agent-1",
+      description: "Inspect directory",
+      background: true,
+    });
+    await nextEvent(iterator);
+    transport.event({
+      type: "subagent.completed",
+      callId: "agent-1",
+      isError: false,
+      continuesInBackground: true,
+      nativeSubagentId: "native-agent-1",
+    });
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    transport.delta("The Subagent is running", "root-1");
+    await nextEvent(iterator);
+    transport.event({ type: "message.completed", messageId: "root-1" });
+    await nextEvent(iterator);
+    transport.finish({ status: "succeeded" });
+    await new Promise((resolve) => {
+      setTimeout(resolve, 0);
+    });
+
+    // The idle notification may carry only the original callId. It still has to
+    // release the held Turn after the native Root result has already arrived.
+    transport.event({ type: "subagent.updated", callId: "agent-1", status: "completed" });
+    await new Promise((resolve) => {
+      setTimeout(resolve, 80);
+    });
+
+    await expect(session.execute(textTurn("after-settlement"))).resolves.toMatchObject({
+      ok: true,
+    });
+    transport.finish({ status: "succeeded" });
+    await session.close();
+  });
+
   it("holds the Root Turn when background Subagents settle before the native result", async () => {
     const { adapter, transports } = fixture();
     const session = await openSession(adapter);

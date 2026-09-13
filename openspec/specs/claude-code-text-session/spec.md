@@ -597,6 +597,13 @@ Claude Code SHALL advertise Subagent observation and SHALL map Root `Agent` or `
 - **AND** occupancy SHALL be settled only when the native Session stops opening Segments for this user task, since the number of Segments Claude spends on queued notifications is not observable
 - **AND** Root text, reasoning, Tool Use, or a Segment start SHALL cancel any pending idle decision so a slow continuation cannot close the Turn early
 
+#### Scenario: A held Root Turn receives settlement without a continuation
+- **WHEN** the Root has reached its native Result and a later task notification or live background task level marks an occupied Subagent as settled
+- **THEN** Claude Adapter SHALL start the existing continuation quiescence period while the Root is idle
+- **AND** if no Root continuation starts during that period, it SHALL release the settled Subagents' pending continuation occupancy
+- **AND** it SHALL complete the held Turn and accept another user Turn once no running background Subagents remain
+- **AND** Root output, compaction, or an interaction request SHALL cancel the pending idle decision, and later Subagent settlement SHALL NOT restart it until the Root reaches its next native Result
+
 #### Scenario: Agent Tool result returns
 - **WHEN** the correlated Root Agent or Task Tool Result returns with a stable `agentId`
 - **THEN** Claude Adapter SHALL preserve that native identity for Child Host Thread registration and complete the spawn operation according to the Tool Result outcome
@@ -783,4 +790,3 @@ The Adapter MUST map SDK `rate_limit_event` payloads whose `rateLimitType` is `f
 - **WHEN** utilization is missing, out of range, or `rateLimitType` is not `five_hour` or `seven_day`
 - **THEN** the Adapter MUST ignore that event
 - **AND** Turn outcome and the latest still-applicable Usage MUST remain unchanged
-

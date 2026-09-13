@@ -166,6 +166,29 @@ impl SupervisedChild {
             .signal(signal)
     }
 
+    /// A root process exit is insufficient while retained supervised members are alive.
+    #[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
+    pub fn wait_for_tree_exit(
+        &mut self,
+        timeout: std::time::Duration,
+    ) -> Result<ExitStatus, PlatformError> {
+        let deadline = std::time::Instant::now() + timeout;
+        loop {
+            let status = self.child.try_wait()?;
+            if !self.has_live_processes()?
+                && let Some(status) = status
+            {
+                return Ok(status);
+            }
+            if std::time::Instant::now() >= deadline {
+                return Err(PlatformError::Invalid(
+                    "supervised process tree exit is unconfirmed".into(),
+                ));
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+
     pub fn disarm_cleanup(&mut self) {
         #[cfg(any(target_os = "macos", target_os = "linux"))]
         if let Some(guard) = &mut self.guard {
@@ -180,6 +203,18 @@ impl SupervisedChild {
             .map_or(Ok(false), ChildProcessGuard::has_live_members)
     }
 
+    #[cfg(target_os = "windows")]
+    pub fn has_live_processes(&self) -> Result<bool, PlatformError> {
+        self.guard
+            .as_ref()
+            .ok_or_else(|| {
+                PlatformError::Invalid("process tree ownership was not established".into())
+            })?
+            .job
+            .has_live_processes()
+            .map_err(PlatformError::Io)
+    }
+
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     #[must_use]
     pub fn process_group_id(&self) -> u32 {
@@ -188,6 +223,46 @@ impl SupervisedChild {
             .and_then(|guard| guard.process_group_id().ok())
             .unwrap_or_else(|| self.id())
     }
+}
+
+/// Start a hidden Windows child inside its Job before executing user code.
+/// This deliberately sets CREATE_NO_WINDOW | CREATE_SUSPENDED; callers must
+/// not require other process creation flags. Failure is not an exit receipt.
+#[cfg(target_os = "windows")]
+pub fn spawn_supervised_before_execution(
+    command: &mut Command,
+) -> Result<SupervisedChild, PlatformError> {
+    use std::os::windows::process::CommandExt;
+    use std::time::{Duration, Instant};
+    command.creation_flags(0x0800_0000 | 0x0000_0004);
+    let mut child = command.spawn()?;
+    let job = match windows_process::guard_child(&child) {
+        Ok(job) => job,
+        Err(error) => {
+            // This child is still suspended and has not spawned descendants.
+            let _ = child.kill();
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while child.try_wait()?.is_none() {
+                if Instant::now() >= deadline {
+                    return Err(PlatformError::Invalid(
+                        "failed supervised spawn cleanup is unconfirmed".into(),
+                    ));
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            return Err(PlatformError::Io(error));
+        }
+    };
+    let mut supervised = SupervisedChild {
+        child,
+        guard: Some(ChildProcessGuard { job }),
+    };
+    if let Err(error) = windows_process::resume_initial_thread(&mut supervised.child) {
+        supervised.force_terminate()?;
+        supervised.wait_for_tree_exit(Duration::from_secs(5))?;
+        return Err(PlatformError::Io(error));
+    }
+    Ok(supervised)
 }
 
 #[cfg(target_os = "windows")]
@@ -372,6 +447,77 @@ mod tests {
             .expect("terminate supervised script");
         child.wait().expect("wait for supervised script");
         fs::remove_dir_all(directory).expect("remove temporary directory");
+    }
+}
+
+#[cfg(all(test, target_os = "windows"))]
+mod windows_tests {
+    use super::{spawn_supervised, spawn_supervised_before_execution};
+    use std::io::{Read, Write};
+    use std::process::{Command, Stdio};
+    use std::time::Duration;
+
+    #[test]
+    fn tracks_descendants_after_root_exit() {
+        const MODE: &str = "CODEXHOST_TEST_JOB_ACCOUNTING";
+        const TEST: &str = "process_supervision::windows_tests::tracks_descendants_after_root_exit";
+        let executable = std::env::current_exe().expect("test executable");
+        if std::env::var(MODE).as_deref() == Ok("leaf") {
+            std::thread::sleep(Duration::from_secs(20));
+            return;
+        }
+        let mode = std::env::var(MODE).unwrap_or_default();
+        if mode == "root" || mode == "immediate" {
+            if mode == "root" {
+                // The legacy post-spawn API needs this test handshake.
+                std::io::stdin()
+                    .read_exact(&mut [0_u8; 1])
+                    .expect("release root");
+            }
+            let child = Command::new(executable)
+                .args(["--exact", TEST])
+                .env(MODE, "leaf")
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .expect("spawn test descendant");
+            // Windows has no Unix zombie reaping requirement; deliberately leave
+            // the descendant alive when this root's test process exits.
+            drop(child);
+            return;
+        }
+        for mode in ["root", "immediate"] {
+            let mut command = Command::new(&executable);
+            command
+                .args(["--exact", TEST])
+                .env(MODE, mode)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null());
+            let mut child = if mode == "root" {
+                spawn_supervised(&mut command)
+            } else {
+                spawn_supervised_before_execution(&mut command)
+            }
+            .expect("supervise test root");
+            if mode == "root" {
+                child
+                    .take_stdin()
+                    .expect("root stdin")
+                    .write_all(b"x")
+                    .expect("release root");
+            }
+            assert!(child.wait().expect("root exit").success());
+            assert!(child.has_live_processes().expect("query retained Job"));
+            assert!(child.wait_for_tree_exit(Duration::from_millis(10)).is_err());
+            child
+                .force_terminate()
+                .expect("terminate remaining Job members");
+            child
+                .wait_for_tree_exit(Duration::from_secs(5))
+                .expect("confirmed tree exit");
+        }
     }
 }
 

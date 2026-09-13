@@ -377,7 +377,7 @@ describe("npm package release", () => {
     });
   });
 
-  it("generates the OpenCode third-party notice from the repository license asset", async () => {
+  it("generates OpenCode and pinned opencodex notices from repository license assets", async () => {
     const root = process.cwd();
     const output = await temporaryDirectory();
     try {
@@ -385,6 +385,14 @@ describe("npm package release", () => {
       const notice = await readFile(path.join(output, "THIRD_PARTY_NOTICES.txt"), "utf8");
       const license = await readFile(
         path.join(output, "licenses/OpenCode-SDK-LICENSE.txt"),
+        "utf8",
+      );
+      const opencodexLicense = await readFile(
+        path.join(output, "licenses/opencodex-LICENSE.txt"),
+        "utf8",
+      );
+      const opencodexSource = await readFile(
+        path.join(root, "third-party/opencodex.LICENSE"),
         "utf8",
       );
       expect(
@@ -396,6 +404,12 @@ describe("npm package release", () => {
       expect(notice).toContain("@opencode-ai/sdk");
       expect(notice).toContain("licenses/OpenCode-SDK-LICENSE.txt");
       expect(license).toContain("Copyright (c) 2025 opencode");
+      expect(notice).toContain(
+        "opencodex native profiles (2d4d7a22381a2e497c2442902104619e25f937c7)",
+      );
+      expect(notice).toContain("License text: licenses/opencodex-LICENSE.txt");
+      expect(opencodexLicense).toBe(opencodexSource);
+      expect(opencodexLicense).toContain("MIT License");
     } finally {
       await rm(output, { recursive: true, force: true });
     }
@@ -633,6 +647,7 @@ describe("npm package release", () => {
       });
       expect(paths).toEqual(expectedNpmPackagePaths(target));
       expect(paths).toContain("licenses/OpenCode-SDK-LICENSE.txt");
+      expect(paths).toContain("licenses/opencodex-LICENSE.txt");
       expect(paths).not.toContain("runtime/node");
       expect(paths).toContain("bin/codexhost");
       expect(paths).toContain("libexec/codexhost-shim");

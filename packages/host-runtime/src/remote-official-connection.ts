@@ -27,7 +27,11 @@ function errorMessage(error: unknown): string {
  */
 export async function createRemoteOfficialAppServerConnection(
   endpoint: string,
+  options: { capabilityToken?: string } = {},
 ): Promise<OfficialAppServerConnection> {
+  const describeError = options.capabilityToken
+    ? (): string => "Private official connection failed"
+    : errorMessage;
   const stdout = new PassThrough();
   const stderr = new PassThrough();
   const closed = Promise.withResolvers<OfficialAppServerExit>();
@@ -41,6 +45,9 @@ export async function createRemoteOfficialAppServerConnection(
     // The native Codex daemon client uses tokio-tungstenite without offering
     // permessage-deflate. Keep the same handshake for every private listener.
     perMessageDeflate: false,
+    ...(options.capabilityToken === undefined
+      ? {}
+      : { headers: { Authorization: `Bearer ${options.capabilityToken}` } }),
   } as const;
   let socket: WebSocket;
   if (endpoint.startsWith("ws://")) {
@@ -71,7 +78,7 @@ export async function createRemoteOfficialAppServerConnection(
 
   const fail = (error: Error): void => {
     if (settled) return;
-    stderr.write(`codexhost shared official connection: ${error.message}\n`);
+    stderr.write(`codexhost shared official connection: ${describeError(error)}\n`);
     if (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING) {
       socket.terminate();
     }
@@ -102,7 +109,7 @@ export async function createRemoteOfficialAppServerConnection(
       })().then(
         () => callback(),
         (error: unknown) => {
-          const cause = error instanceof Error ? error : new Error(String(error));
+          const cause = new Error(describeError(error));
           fail(cause);
           callback(cause);
         },
@@ -120,7 +127,7 @@ export async function createRemoteOfficialAppServerConnection(
     },
   });
   stdin.on("error", (error) => {
-    if (!settled) stderr.write(`codexhost shared official connection: ${error.message}\n`);
+    if (!settled) stderr.write(`codexhost shared official connection: ${describeError(error)}\n`);
   });
 
   const opened = new Promise<void>((resolve, reject) => {
@@ -151,11 +158,12 @@ export async function createRemoteOfficialAppServerConnection(
     }
   });
   socket.on("error", (error) => {
-    if (!settled) stderr.write(`codexhost shared official connection: ${error.message}\n`);
+    if (!settled) stderr.write(`codexhost shared official connection: ${describeError(error)}\n`);
   });
   socket.once("close", (code, reason) => {
     const normal = code === 1000 || closeRequested;
-    const detail = reason.length > 0 ? `: ${reason.toString("utf8")}` : "";
+    const detail =
+      !options.capabilityToken && reason.length > 0 ? `: ${reason.toString("utf8")}` : "";
     finish({
       code: normal ? 0 : 1,
       signal: null,
@@ -172,9 +180,9 @@ export async function createRemoteOfficialAppServerConnection(
     finish({
       code: null,
       signal: null,
-      error: error instanceof Error ? error : new Error(String(error)),
+      error: new Error(describeError(error)),
     });
-    throw new Error(`Shared official app-server connection failed: ${errorMessage(error)}`);
+    throw new Error(`Shared official app-server connection failed: ${describeError(error)}`);
   }
 
   return {

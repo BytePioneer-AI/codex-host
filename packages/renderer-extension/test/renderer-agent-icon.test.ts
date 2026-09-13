@@ -5,6 +5,7 @@ import antigravityAgentIconUrl from "../src/assets/antigravity-agent.svg";
 import kiroAgentIconUrl from "../src/assets/kiro-agent.svg";
 import codeBuddyAgentIconUrl from "../src/assets/codebuddy-agent.svg";
 import cursorAgentIconUrl from "../src/assets/cursor-agent.svg";
+import hermesAgentIconUrl from "../src/assets/hermes-agent.png";
 
 describe("Renderer Agent icons", () => {
   it("renders OpenCode with the bundled official square mark", () => {
@@ -73,6 +74,31 @@ describe("Renderer Agent icons", () => {
     expect(image.style.width).toBe("16px");
     expect(image.style.height).toBe("16px");
     expect(image.style.borderRadius).toBe("22.37%");
+  });
+
+  it("renders Hermes on a light plate so its dark official mark stays visible", () => {
+    const image = {
+      src: "",
+      alt: "unset",
+      draggable: true,
+      style: {},
+    } as unknown as HTMLImageElement;
+    const ownerDocument = {
+      createElement(tagName: string) {
+        expect(tagName).toBe("img");
+        return image;
+      },
+    } as unknown as Document;
+
+    expect(createRendererAgentIcon("hermes", 16, ownerDocument)).toBe(image);
+    expect(image.src).toBe(hermesAgentIconUrl);
+    expect(image.style).toMatchObject({
+      width: "16px",
+      height: "16px",
+      padding: "1px",
+      borderRadius: "22.37%",
+      background: "#d8d8e8",
+    });
   });
 
   it.each([

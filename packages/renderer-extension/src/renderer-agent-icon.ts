@@ -19,6 +19,8 @@ export const RENDERER_AGENT_LABELS: Record<RendererAgent, string> = {
   omp: "Oh My Pi",
   antigravity: "Antigravity CLI",
   "kiro-cli": "Kiro CLI",
+  codebuddy: "CodeBuddy",
+  "cursor-cli": "Cursor CLI (Experimental)",
   qoder: "Qoder",
 };
 

@@ -149,6 +149,8 @@ function transportModelIdForAgent(agent: RendererAgent): string | null {
   if (agent === "omp") return OMP_TRANSPORT_MODEL_ID;
   if (agent === "antigravity") return ANTIGRAVITY_TRANSPORT_MODEL_ID;
   if (agent === "kiro-cli") return encodeHarnessPluginRoute({ harnessId: KIRO_CLI_HARNESS_ID });
+  if (agent === "codebuddy" || agent === "cursor-cli")
+    return encodeHarnessPluginRoute({ harnessId: harnessIdSchema.parse(agent) });
   if (agent === "qoder") return encodeHarnessPluginRoute({ harnessId: QODER_HARNESS_ID });
   return null;
 }

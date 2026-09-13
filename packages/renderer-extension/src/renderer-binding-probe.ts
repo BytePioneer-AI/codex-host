@@ -97,6 +97,8 @@ const externalHarnessIds = {
   omp: harnessIdSchema.parse("omp"),
   antigravity: harnessIdSchema.parse("antigravity"),
   "kiro-cli": harnessIdSchema.parse("kiro-cli"),
+  codebuddy: harnessIdSchema.parse("codebuddy"),
+  "cursor-cli": harnessIdSchema.parse("cursor-cli"),
   qoder: harnessIdSchema.parse("qoder"),
 } as const;
 
@@ -109,6 +111,8 @@ const externalAgents: readonly ExternalRendererAgent[] = [
   "omp",
   "antigravity",
   "kiro-cli",
+  "codebuddy",
+  "cursor-cli",
   "qoder",
 ];
 type HarnessAvailability = Partial<Record<ExternalRendererAgent, RendererAgentAvailability>>;
@@ -734,6 +738,8 @@ export function installRendererBindingProbe(
       omp: undefined,
       antigravity: undefined,
       "kiro-cli": undefined,
+      codebuddy: undefined,
+      "cursor-cli": undefined,
       qoder: undefined,
     },
     webUi: Object.fromEntries(

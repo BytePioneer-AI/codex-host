@@ -19,6 +19,8 @@ const classes = {
   omp: "OmpAdapter",
   antigravity: "AntigravityAdapter",
   "kiro-cli": "KiroAdapter",
+  codebuddy: "CodeBuddyAdapter",
+  "cursor-cli": "CursorAdapter",
   qoder: "QoderAdapter",
 };
 
@@ -142,6 +144,8 @@ describe("installed Harness composition", () => {
     ["omp", "CODEXHOST_OMP_COMMAND"],
     ["antigravity", "CODEXHOST_ANTIGRAVITY_COMMAND"],
     ["kiro-cli", "CODEXHOST_KIRO_COMMAND"],
+    ["codebuddy", "CODEXHOST_CODEBUDDY_COMMAND"],
+    ["cursor-cli", "CODEXHOST_CURSOR_COMMAND"],
     ["qoder", "CODEXHOST_QODER_COMMAND"],
   ])(
     "preserves the explicit %s command rather than finding another local installation",

@@ -3,7 +3,6 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 
 import {
-  createRemoteControlOfficialAppServerPlan,
   createRemoteOfficialAppServerPlan,
   hasLauncherManagedUpdateRuntime,
   MANAGED_REMOTE_APP_SERVER_PROCESS_TITLE,
@@ -31,26 +30,6 @@ describe("Host Runtime composition", () => {
         "app-server",
         "--listen",
         "unix:///Users/developer/.codex/app-server-control/.c-fixture1234.sock",
-        "--analytics-default-enabled",
-      ],
-    });
-  });
-
-  it("uses one dynamic loopback listener for the Windows Desktop and Remote Control sessions", () => {
-    expect(
-      createRemoteControlOfficialAppServerPlan([
-        "-c",
-        "features.code_mode_host=true",
-        "app-server",
-        "--analytics-default-enabled",
-      ]),
-    ).toEqual({
-      listenerArguments: [
-        "-c",
-        "features.code_mode_host=true",
-        "app-server",
-        "--listen",
-        "ws://127.0.0.1:0",
         "--analytics-default-enabled",
       ],
     });

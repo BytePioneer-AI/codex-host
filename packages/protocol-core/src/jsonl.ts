@@ -5,17 +5,25 @@ import { jsonValueSchema, type JsonValue } from "@codexhost/shared-contracts";
 const decoder = new TextDecoder("utf-8", { fatal: true });
 const newline = Buffer.from("\n");
 
-export async function* readLfFrames(stream: Readable): AsyncGenerator<Buffer<ArrayBufferLike>> {
+export async function* readLfFrames(
+  stream: Readable,
+  options: { maxFrameBytes?: number } = {},
+): AsyncGenerator<Buffer<ArrayBufferLike>> {
+  const maximum = options.maxFrameBytes ?? Infinity;
+  if (maximum !== Infinity && (!Number.isSafeInteger(maximum) || maximum < 1))
+    throw new Error("Invalid protocol frame limit");
   let pending: Buffer<ArrayBufferLike> = Buffer.alloc(0);
   for await (const chunk of stream) {
     const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as Uint8Array);
     pending = pending.length === 0 ? bytes : Buffer.concat([pending, bytes]);
     let newlineIndex = pending.indexOf(0x0a);
     while (newlineIndex >= 0) {
+      if (newlineIndex > maximum) throw new Error("Protocol frame exceeds its limit");
       yield pending.subarray(0, newlineIndex);
       pending = pending.subarray(newlineIndex + 1);
       newlineIndex = pending.indexOf(0x0a);
     }
+    if (pending.length > maximum) throw new Error("Protocol frame exceeds its limit");
   }
   if (pending.length !== 0) {
     throw new Error("Protocol stream ended with an unterminated JSONL frame");

@@ -23,6 +23,17 @@ const ATOMIC_REPLACE_RETRY_TIMEOUT: Duration = Duration::from_secs(2);
 const ATOMIC_REPLACE_RETRY_INTERVAL: Duration = Duration::from_millis(10);
 
 #[repr(C)]
+struct NativeThreadEntry {
+    size: u32,
+    usage: u32,
+    thread_id: u32,
+    owner_process_id: u32,
+    base_priority: i32,
+    delta_priority: i32,
+    flags: u32,
+}
+
+#[repr(C)]
 struct NativeProcessEntry {
     size: u32,
     usage: u32,
@@ -80,6 +91,11 @@ struct ExtendedLimitInformation {
 unsafe extern "system" {
     fn CloseHandle(handle: Handle) -> i32;
     fn CreateToolhelp32Snapshot(flags: u32, process_id: u32) -> Handle;
+    fn Thread32First(snapshot: Handle, entry: *mut NativeThreadEntry) -> i32;
+    fn Thread32Next(snapshot: Handle, entry: *mut NativeThreadEntry) -> i32;
+    fn OpenThread(access: u32, inherit: i32, thread_id: u32) -> Handle;
+    fn GetProcessIdOfThread(thread: Handle) -> u32;
+    fn ResumeThread(thread: Handle) -> u32;
     fn Process32FirstW(snapshot: Handle, entry: *mut NativeProcessEntry) -> i32;
     fn Process32NextW(snapshot: Handle, entry: *mut NativeProcessEntry) -> i32;
     fn OpenProcess(desired_access: u32, inherit_handle: i32, process_id: u32) -> Handle;
@@ -103,6 +119,13 @@ unsafe extern "system" {
         information: *const c_void,
         information_length: u32,
     ) -> i32;
+    fn QueryInformationJobObject(
+        job: Handle,
+        information_class: i32,
+        information: *mut c_void,
+        information_length: u32,
+        return_length: *mut u32,
+    ) -> i32;
     fn AssignProcessToJobObject(job: Handle, process: Handle) -> i32;
     fn TerminateJobObject(job: Handle, exit_code: u32) -> i32;
     fn TerminateProcess(process: Handle, exit_code: u32) -> i32;
@@ -118,6 +141,35 @@ pub struct ProcessEntry {
 pub struct ChildJob(Handle);
 
 impl ChildJob {
+    pub fn has_live_processes(&self) -> io::Result<bool> {
+        #[repr(C)]
+        struct Accounting {
+            total_user_time: i64,
+            total_kernel_time: i64,
+            period_user_time: i64,
+            period_kernel_time: i64,
+            page_faults: u32,
+            total_processes: u32,
+            active_processes: u32,
+            terminated_processes: u32,
+        }
+        let mut information: Accounting = unsafe { zeroed() };
+        let queried = unsafe {
+            QueryInformationJobObject(
+                self.0,
+                1,
+                &mut information as *mut _ as *mut c_void,
+                size_of::<Accounting>() as u32,
+                std::ptr::null_mut(),
+            )
+        };
+        if queried == 0 {
+            Err(io::Error::last_os_error())
+        } else {
+            Ok(information.active_processes != 0)
+        }
+    }
+
     pub fn terminate(&self, exit_code: u32) -> io::Result<()> {
         let result = unsafe { TerminateJobObject(self.0, exit_code) };
         if result == 0 {
@@ -302,6 +354,50 @@ pub fn atomic_replace_file(source: &std::path::Path, target: &std::path::Path) -
         }
         thread::sleep(ATOMIC_REPLACE_RETRY_INTERVAL);
     }
+}
+
+/// Resume only the initial thread of a child created with CREATE_SUSPENDED.
+/// The open thread handle and live child check avoid acting on a recycled TID.
+pub fn resume_initial_thread(child: &mut Child) -> io::Result<()> {
+    let snapshot = unsafe { CreateToolhelp32Snapshot(0x0000_0004, 0) };
+    if snapshot == INVALID_HANDLE_VALUE {
+        return Err(io::Error::last_os_error());
+    }
+    let mut entry: NativeThreadEntry = unsafe { zeroed() };
+    entry.size = size_of::<NativeThreadEntry>() as u32;
+    let mut present = unsafe { Thread32First(snapshot, &mut entry) } != 0;
+    while present && entry.owner_process_id != child.id() {
+        present = unsafe { Thread32Next(snapshot, &mut entry) } != 0;
+    }
+    let observation_error = io::Error::last_os_error();
+    unsafe {
+        CloseHandle(snapshot);
+    }
+    if !present {
+        return Err(observation_error);
+    }
+    // THREAD_SUSPEND_RESUME | THREAD_QUERY_LIMITED_INFORMATION.
+    let thread = unsafe { OpenThread(0x0002 | 0x0800, 0, entry.thread_id) };
+    if thread.is_null() {
+        return Err(io::Error::last_os_error());
+    }
+    let result = (|| {
+        if unsafe { GetProcessIdOfThread(thread) } != child.id() || child.try_wait()?.is_some() {
+            return Err(io::Error::other("spawned process identity changed"));
+        }
+        let previous = unsafe { ResumeThread(thread) };
+        if previous == u32::MAX {
+            return Err(io::Error::last_os_error());
+        }
+        if previous != 1 {
+            return Err(io::Error::other("unexpected initial thread suspend count"));
+        }
+        Ok(())
+    })();
+    unsafe {
+        CloseHandle(thread);
+    }
+    result
 }
 
 pub fn guard_child(child: &Child) -> io::Result<ChildJob> {

@@ -29,7 +29,6 @@ export interface DraftComposerState {
   agent: RendererAgent;
   phase: ComposerAgentPhase;
   composerId: string;
-  codexAccountId?: string;
   piModel?: HarnessModelRef;
   piThinkingOptionId?: HarnessThinkingOptionId;
   claudeModel?: HarnessModelRef;
@@ -200,15 +199,12 @@ export class DraftAgentController<Composer extends object> {
     model?: HarnessModelRef,
     thinkingOptionId?: HarnessThinkingOptionId,
     permissionModeId?: HarnessPermissionModeId,
-    codexAccountId?: string,
   ): Readonly<DraftComposerState> | null {
     if (!this.#enabledAgents.has(agent)) return null;
     const state = this.#state(composer);
     this.#pendingSubmissions.delete(state);
     state.agent = agent;
     state.phase = "locked";
-    if (agent === "codex" && codexAccountId) state.codexAccountId = codexAccountId;
-    else delete state.codexAccountId;
     if (agent === "pi" && model) state.piModel = model;
     else if (agent === "pi") delete state.piModel;
     if (agent === "claude-code" && model) state.claudeModel = model;
@@ -230,6 +226,7 @@ export class DraftAgentController<Composer extends object> {
     if (agent === "cursor-cli" && model) state.cursorCliModel = model;
     else if (agent === "cursor-cli") delete state.cursorCliModel;
     if (agent === "hermes" && model) state.hermesModel = model;
+    else if (agent === "hermes") delete state.hermesModel;
     if (agent === "pi" && thinkingOptionId) state.piThinkingOptionId = thinkingOptionId;
     else if (agent === "pi") delete state.piThinkingOptionId;
     if (agent === "claude-code" && thinkingOptionId) {
@@ -435,19 +432,10 @@ export class DraftAgentController<Composer extends object> {
   clearPendingSubmission(composer: Composer): void {
     const state = this.#state(composer);
     this.#pendingSubmissions.delete(state);
-    if (state.phase === "draft") delete state.codexAccountId;
   }
 
-  recordSubmission(composer: Composer, codexAccountId?: string): Readonly<DraftComposerState> {
+  recordSubmission(composer: Composer): Readonly<DraftComposerState> {
     const state = this.#state(composer);
-    if (
-      state.agent === "codex" &&
-      state.phase === "draft" &&
-      !state.codexAccountId &&
-      codexAccountId
-    ) {
-      state.codexAccountId = codexAccountId;
-    }
     this.#lastSubmittedAgent = state.agent;
     return state;
   }

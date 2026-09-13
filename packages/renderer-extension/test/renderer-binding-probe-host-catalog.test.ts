@@ -34,7 +34,7 @@ vi.mock("../src/renderer-composer-dom.js", async (importOriginal) => {
     mountComposerAgentControl: (
       ...args: Parameters<typeof RendererComposerDom.mountComposerAgentControl>
     ) => {
-      testState.selectModel = args[8];
+      testState.selectModel = args[7];
       return {
         composer: testState.composer,
         composerId: "composer-1",

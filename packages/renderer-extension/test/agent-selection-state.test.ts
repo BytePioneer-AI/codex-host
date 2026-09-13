@@ -15,35 +15,35 @@ function controller(): DraftAgentController<object> {
 }
 
 describe("Renderer draft Agent controller", () => {
-  it("retains the submitted Codex Account across locking and Composer replacement", () => {
+  it("locks Codex without retaining a per-draft Account across Composer replacement", () => {
     const agents = controller();
     const draft = {};
     const replacement = {};
     agents.mount(draft, ["default"]);
     agents.markSubmissionPending(draft);
-    agents.recordSubmission(draft, "account-b");
+    agents.recordSubmission(draft);
     expect(agents.transfer(draft, replacement, ["conversation", "thread-b"])).toBe(true);
-    expect(agents.get(replacement)).toMatchObject({ phase: "locked", codexAccountId: "account-b" });
-    agents.recordSubmission(replacement, "account-a");
+    expect(agents.get(replacement)).toMatchObject({ phase: "locked", agent: "codex" });
+    agents.recordSubmission(replacement);
     agents.clearPendingSubmission(replacement);
-    expect(agents.get(replacement).codexAccountId).toBe("account-b");
-    expect(agents.mount({}, ["default"]).codexAccountId).toBeUndefined();
+    expect(agents.get(replacement)).not.toHaveProperty("codexAccountId");
+    expect(agents.mount({}, ["default"])).not.toHaveProperty("codexAccountId");
     const reopened = {};
-    agents.restore(reopened, "codex", undefined, undefined, undefined, "account-b");
-    expect(agents.get(reopened)).toMatchObject({ phase: "locked", codexAccountId: "account-b" });
+    agents.restore(reopened, "codex");
+    expect(agents.get(reopened)).toMatchObject({ phase: "locked", agent: "codex" });
   });
 
-  it("discards the Account captured by a cancelled draft submission", () => {
+  it("does not capture an Account for a cancelled draft submission", () => {
     const agents = controller();
     const draft = {};
     agents.mount(draft, ["default"]);
     agents.markSubmissionPending(draft);
-    agents.recordSubmission(draft, "account-a");
+    agents.recordSubmission(draft);
     agents.clearPendingSubmission(draft);
     expect(agents.isSubmissionPending(draft)).toBe(false);
-    expect(agents.get(draft).codexAccountId).toBeUndefined();
-    agents.recordSubmission(draft, "account-b");
-    expect(agents.get(draft).codexAccountId).toBe("account-b");
+    expect(agents.get(draft)).not.toHaveProperty("codexAccountId");
+    agents.recordSubmission(draft);
+    expect(agents.get(draft)).not.toHaveProperty("codexAccountId");
   });
 
   it("isolates Agent selection by Composer", async () => {

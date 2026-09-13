@@ -10,7 +10,12 @@ export type AccountUsageViewState =
   | { readonly status: "loading" }
   | { readonly status: "empty" }
   | { readonly status: "error" }
-  | { readonly status: "ready"; readonly credits: AccountCreditsSnapshot };
+  | {
+      readonly status: "ready";
+      readonly credits: AccountCreditsSnapshot;
+      readonly freshness: "live" | "cached";
+      readonly observedAt: string | null;
+    };
 
 export type AccountUsageDisplay = "used" | "remaining";
 

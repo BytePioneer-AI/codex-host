@@ -1,6 +1,8 @@
 import {
   harnessIdSchema,
   hostThreadIdSchema,
+  type CodexAccountListResult,
+  type CodexAccountLoginCompleted,
   type HarnessAccountListResult,
   type HarnessSessionListParams,
   type UpdateCheckResult,
@@ -491,30 +493,41 @@ describe("Renderer Connections page", () => {
 });
 
 describe("Renderer Codex Accounts page", () => {
+  const capabilities = {
+    manage: true,
+    switch: true,
+    login: true,
+    delete: true,
+    logout: true,
+    recover: true,
+  } as const;
+  const accountSnapshot = <T extends { accountId: string }>(
+    accounts: T[],
+    currentAccountId: string | null = accounts[0]?.accountId ?? null,
+    revision = 1,
+  ) => ({
+    version: 2 as const,
+    currentAccountId,
+    phase: "ready" as const,
+    revision,
+    instanceId: "settings-host",
+    capabilities,
+    accounts: [...accounts],
+  });
+
   it("renders cached Accounts before live metadata refresh completes", async () => {
-    const refresh = Promise.withResolvers<{
-      accounts: Array<{
-        accountId: string;
-        label: string;
-        email: string;
-        codexHome: string;
-        active: boolean;
-        isDefault: boolean;
-      }>;
-    }>();
+    const refresh = Promise.withResolvers<CodexAccountListResult>();
     const cachedAccount = {
       accountId: "default",
       label: "Default",
-      codexHome: "/tmp/default",
-      active: true,
-      isDefault: true,
     };
     const client = {
-      listCodexAccounts: vi.fn(async () => ({ accounts: [cachedAccount] })),
+      listCodexAccounts: vi.fn(async () => accountSnapshot([cachedAccount])),
       refreshCodexAccounts: vi.fn(() => refresh.promise),
-      createCodexAccount: vi.fn(),
       deleteCodexAccount: vi.fn(),
-      activateCodexAccount: vi.fn(),
+      switchCodexAccount: vi.fn(),
+      logoutCodexAccount: vi.fn(),
+      recoverCodexAccounts: vi.fn(),
       startCodexAccountLogin: vi.fn(),
       cancelCodexAccountLogin: vi.fn(),
     };
@@ -538,7 +551,9 @@ describe("Renderer Codex Accounts page", () => {
     await vi.waitFor(() => expect(visibleText(content)).toContain("Default"));
     expect(client.refreshCodexAccounts).toHaveBeenCalledOnce();
 
-    refresh.resolve({ accounts: [{ ...cachedAccount, email: "cached@example.com" }] });
+    refresh.resolve(
+      accountSnapshot([{ ...cachedAccount, email: "cached@example.com" }], "default", 2),
+    );
     await vi.waitFor(() =>
       expect(descendants(content).some((element) => element.title === "cached@example.com")).toBe(
         true,
@@ -546,26 +561,88 @@ describe("Renderer Codex Accounts page", () => {
     );
     expect(visibleText(content)).toContain("cached");
     expect(visibleText(content)).toContain("example.com");
-    expect(visibleText(content)).not.toContain("/tmp/default");
+    expect(visibleText(content)).not.toContain("CODEX_HOME");
 
     scope.dispose();
   });
 
+  it.each(["ready", "unavailable"] as const)(
+    "explains legacy migration limits without offering account changes (%s)",
+    async (phase) => {
+      const client = {
+        listCodexAccounts: vi.fn(async (): Promise<CodexAccountListResult> => ({
+          ...accountSnapshot(
+            phase === "ready" ? [{ accountId: "native", label: "Native Codex Account" }] : [],
+          ),
+          phase,
+          capabilities: {
+            manage: false,
+            switch: false,
+            login: false,
+            delete: false,
+            logout: false,
+            recover: false,
+            reason: "migration-required",
+          },
+        })),
+        deleteCodexAccount: vi.fn(),
+        switchCodexAccount: vi.fn(),
+        logoutCodexAccount: vi.fn(),
+        recoverCodexAccounts: vi.fn(),
+        startCodexAccountLogin: vi.fn(),
+        cancelCodexAccountLogin: vi.fn(),
+      };
+      const page = createDefaultRendererSettingsPages(
+        rendererSettingsMessages("en"),
+        () => null,
+        () => null,
+        () => client,
+      ).find(({ id }) => id === "accounts");
+      if (!page) throw new Error("Accounts page is not registered");
+      const document = new FakeDocument();
+      const content = document.createElement("main");
+      const scope = new RendererSettingsPageScope();
+      page.mount({
+        content: content as unknown as HTMLElement,
+        signal: scope.signal,
+        runLatest: (operation, handlers) => scope.runLatest(operation, handlers),
+      });
+      try {
+        const statusText = () =>
+          elementWithClass(content, "settings-account-status").children.join(" ");
+        await vi.waitFor(() =>
+          expect(statusText()).toContain(
+            phase === "ready"
+              ? "Native compatibility mode: Codex uses the existing official home."
+              : "Legacy Codex data requires migration before this layout can be used.",
+          ),
+        );
+        if (phase === "ready") {
+          expect(statusText()).toContain(
+            "Other account homes and their history have not been merged",
+          );
+          expect(statusText()).toContain("previous version");
+        }
+        const add = descendants(content).find(
+          ({ tagName, children }) => tagName === "button" && children.includes("Add Codex account"),
+        );
+        expect(add?.disabled).toBe(true);
+        expect(client.startCodexAccountLogin).not.toHaveBeenCalled();
+      } finally {
+        scope.dispose();
+      }
+    },
+  );
+
   it("creates an isolated Account and starts sign-in without asking for a name", async () => {
-    const createdAccount = {
-      accountId: "work",
-      label: "Codex Account",
-      codexHome: "/tmp/work",
-      active: false,
-      isDefault: false,
-    };
     const client = {
-      listCodexAccounts: vi.fn(async () => ({ accounts: [] })),
-      createCodexAccount: vi.fn(async () => ({ account: createdAccount })),
+      listCodexAccounts: vi.fn(async () => accountSnapshot([], null)),
       deleteCodexAccount: vi.fn(),
-      activateCodexAccount: vi.fn(),
-      startCodexAccountLogin: vi.fn(async ({ accountId }: { accountId: string }) => ({
-        accountId,
+      switchCodexAccount: vi.fn(),
+      logoutCodexAccount: vi.fn(),
+      recoverCodexAccounts: vi.fn(),
+      startCodexAccountLogin: vi.fn(async () => ({
+        accountId: "work",
         loginId: "login-1",
         verificationUrl: "https://example.com/device",
         userCode: "ABCD-EFGH",
@@ -600,10 +677,7 @@ describe("Renderer Codex Accounts page", () => {
     );
     add?.dispatch("click");
 
-    await vi.waitFor(() => expect(client.createCodexAccount).toHaveBeenCalledWith({}));
-    await vi.waitFor(() =>
-      expect(client.startCodexAccountLogin).toHaveBeenCalledWith({ accountId: "work" }),
-    );
+    await vi.waitFor(() => expect(client.startCodexAccountLogin).toHaveBeenCalledWith({}));
     await vi.waitFor(() => expect(visibleText(content)).toContain("ABCD-EFGH"));
 
     scope.dispose();
@@ -614,27 +688,25 @@ describe("Renderer Codex Accounts page", () => {
       deletedAccountId: accountId,
     }));
     const client = {
-      listCodexAccounts: vi.fn(async () => ({
-        accounts: [
-          {
-            accountId: "default",
-            label: "Default",
-            codexHome: "/tmp/default",
-            active: true,
-            isDefault: true,
-          },
-          {
-            accountId: "work",
-            label: "Work",
-            codexHome: "/tmp/work",
-            active: false,
-            isDefault: false,
-          },
-        ],
-      })),
-      createCodexAccount: vi.fn(),
+      listCodexAccounts: vi.fn(async () =>
+        accountSnapshot(
+          [
+            {
+              accountId: "default",
+              label: "Default",
+            },
+            {
+              accountId: "work",
+              label: "Work",
+            },
+          ],
+          "default",
+        ),
+      ),
       deleteCodexAccount,
-      activateCodexAccount: vi.fn(),
+      switchCodexAccount: vi.fn(),
+      logoutCodexAccount: vi.fn(),
+      recoverCodexAccounts: vi.fn(),
       startCodexAccountLogin: vi.fn(),
       cancelCodexAccountLogin: vi.fn(),
     };
@@ -667,14 +739,12 @@ describe("Renderer Codex Accounts page", () => {
       "Delete this Account and its local data? This cannot be undone.",
     );
     await vi.waitFor(() => expect(deleteCodexAccount).toHaveBeenCalledWith({ accountId: "work" }));
-    await vi.waitFor(() => expect(visibleText(content)).not.toContain("Work"));
     expect(visibleText(content)).toContain("Default");
-    expect(visibleText(content)).not.toContain("/tmp/work");
 
     scope.dispose();
   });
 
-  it("renders usage cards for signed-in Accounts and omits unsigned quota and CODEX_HOME", async () => {
+  it("renders saved Account quota without exposing credential paths", async () => {
     const inspectCodexAccountUsage = vi.fn(async ({ accountId }: { accountId: string }) => {
       if (accountId !== "work") throw new Error(`unexpected account ${accountId}`);
       return {
@@ -692,32 +762,32 @@ describe("Renderer Codex Accounts page", () => {
             },
           ],
         },
+        freshness: "cached" as const,
+        observedAt: "2026-09-10T03:32:00.000Z",
       };
     });
     const client = {
-      listCodexAccounts: vi.fn(async () => ({
-        accounts: [
-          {
-            accountId: "work",
-            label: "Work",
-            email: "work@example.com",
-            codexHome: "/tmp/secret-home",
-            active: true,
-            isDefault: true,
-          },
-          {
-            accountId: "pending",
-            label: "Pending",
-            codexHome: "/tmp/pending-home",
-            active: false,
-            isDefault: false,
-          },
-        ],
-      })),
+      listCodexAccounts: vi.fn(async () =>
+        accountSnapshot(
+          [
+            {
+              accountId: "work",
+              label: "Work",
+              email: "work@example.com",
+            },
+            {
+              accountId: "pending",
+              label: "Pending",
+            },
+          ],
+          "work",
+        ),
+      ),
       inspectCodexAccountUsage,
-      createCodexAccount: vi.fn(),
       deleteCodexAccount: vi.fn(),
-      activateCodexAccount: vi.fn(),
+      switchCodexAccount: vi.fn(),
+      logoutCodexAccount: vi.fn(),
+      recoverCodexAccounts: vi.fn(),
       startCodexAccountLogin: vi.fn(),
       cancelCodexAccountLogin: vi.fn(),
     };
@@ -741,7 +811,19 @@ describe("Renderer Codex Accounts page", () => {
     await vi.waitFor(() =>
       expect(inspectCodexAccountUsage).toHaveBeenCalledWith({ accountId: "work" }),
     );
-    expect(inspectCodexAccountUsage).toHaveBeenCalledTimes(1);
+    expect(inspectCodexAccountUsage).toHaveBeenCalledWith({ accountId: "pending" });
+    expect(inspectCodexAccountUsage).toHaveBeenCalledTimes(2);
+    expect(
+      descendants(content).find(
+        ({ tagName, dataset }) =>
+          tagName === "button" && dataset.accountFocus === "pending:refresh",
+      ),
+    ).toBeDefined();
+    expect(
+      descendants(content).find(
+        ({ tagName, title }) => tagName === "button" && title === "刷新额度",
+      )?.disabled,
+    ).toBe(false);
     await vi.waitFor(() => expect(visibleText(content)).toContain("7 天"));
     expect(visibleText(content)).toContain("Build");
     expect(visibleText(content)).toContain("已用");
@@ -758,64 +840,158 @@ describe("Renderer Codex Accounts page", () => {
     scope.dispose();
   });
 
-  it("hides login for valid Accounts and exposes device-code login for others", async () => {
-    let active = "personal";
-    const personal = { email: undefined as string | undefined };
-    let loginCompleted:
-      | ((result: {
-          accountId: string;
-          loginId: string;
-          success: boolean;
-          error: string | null;
-        }) => void)
-      | undefined;
-    const listCodexAccounts = vi.fn(async () => ({
-      accounts: [
-        {
-          accountId: "personal",
-          label: "Personal",
-          ...(personal.email ? { email: personal.email } : {}),
-          codexHome: "/tmp/personal",
-          active: active === "personal",
-          isDefault: true,
-        },
-        {
-          accountId: "work",
-          label: "Work",
-          email: "work@example.com",
-          codexHome: "/tmp/work",
-          active: active === "work",
-          isDefault: false,
-        },
-      ],
-    }));
+  it.each([false, true])(
+    "does not infer re-login success from email (ready event already received: %s)",
+    async (readyEventFirst) => {
+      let accountsChanged: ((result: CodexAccountListResult) => void) | undefined;
+      let loginCompleted:
+        | ((result: {
+            accountId: string;
+            loginId: string;
+            success: boolean;
+            error: string | null;
+          }) => void)
+        | undefined;
+      const savedAccounts = [
+        { accountId: "personal", label: "Personal" },
+        { accountId: "work", label: "Work", email: "work@example.com" },
+      ];
+      let revision = 1;
+      const listCodexAccounts = vi.fn(async () =>
+        accountSnapshot(savedAccounts, "personal", revision),
+      );
+      const loginStart = Promise.withResolvers<{
+        accountId: string;
+        loginId: string;
+        verificationUrl: string;
+        userCode: string;
+      }>();
+      const client = {
+        listCodexAccounts,
+        refreshCodexAccounts: listCodexAccounts,
+        subscribeCodexAccounts: vi.fn((listener: typeof accountsChanged) => {
+          accountsChanged = listener;
+          return () => undefined;
+        }),
+        deleteCodexAccount: vi.fn(async ({ accountId }: { accountId: string }) => ({
+          deletedAccountId: accountId,
+        })),
+        switchCodexAccount: vi.fn(),
+        logoutCodexAccount: vi.fn(),
+        recoverCodexAccounts: vi.fn(),
+        startCodexAccountLogin: vi.fn(() => loginStart.promise),
+        cancelCodexAccountLogin: vi.fn(async () => ({ cancelled: true })),
+        subscribeCodexAccountLogin: vi.fn((listener: typeof loginCompleted) => {
+          loginCompleted = listener;
+          return () => undefined;
+        }),
+      };
+      const page = createDefaultRendererSettingsPages(
+        rendererSettingsMessages("en"),
+        () => null,
+        () => null,
+        () => client,
+      ).find(({ id }) => id === "accounts");
+      if (!page) throw new Error("Accounts page is not registered");
+
+      const document = new FakeDocument();
+      const openInBrowser = vi.fn(async () => undefined);
+      (
+        document.defaultView as Window & {
+          electronBridge: { sendMessageFromView: typeof openInBrowser };
+        }
+      ).electronBridge = { sendMessageFromView: openInBrowser };
+      const content = document.createElement("main");
+      const scope = new RendererSettingsPageScope();
+      const cleanup = page.mount({
+        content: content as unknown as HTMLElement,
+        signal: scope.signal,
+        runLatest: (operation, handlers) => scope.runLatest(operation, handlers),
+      });
+      await vi.waitFor(() => expect(visibleText(content)).toContain("Personal"));
+      expect(visibleText(content)).not.toContain("token");
+      const signIns = descendants(content).filter(
+        ({ tagName, textContent }) => tagName === "button" && textContent === "Sign in",
+      );
+      expect(signIns).toHaveLength(2);
+      signIns.find(({ dataset }) => dataset.accountFocus === "work:login")?.dispatch("click");
+      expect(client.startCodexAccountLogin).toHaveBeenCalledTimes(1);
+      loginStart.resolve({
+        accountId: "work",
+        loginId: "login-1",
+        verificationUrl: "https://example.com/device",
+        userCode: "ABCD-EFGH",
+      });
+      await vi.waitFor(() => expect(visibleText(content)).toContain("ABCD-EFGH"));
+      expect(visibleText(content)).toContain("https://example.com/device");
+      const verificationLink = descendants(content).find(
+        ({ tagName, href }) => tagName === "a" && href === "https://example.com/device",
+      );
+      const preventDefault = vi.fn();
+      verificationLink?.dispatch("click", { preventDefault });
+      expect(preventDefault).toHaveBeenCalledOnce();
+      expect(openInBrowser).toHaveBeenCalledWith({
+        type: "open-in-browser",
+        url: "https://example.com/device",
+        initiator: "open_in_browser_bridge",
+        openTarget: "external-browser",
+        source: "manual",
+      });
+      expect(
+        descendants(content).find(
+          ({ tagName, textContent }) => tagName === "button" && textContent === "Sign in",
+        )?.disabled,
+      ).toBe(true);
+      const refreshAfterLogin = vi.mocked(document.defaultView.setTimeout).mock.calls.at(-1)?.[0];
+      if (typeof refreshAfterLogin !== "function") {
+        throw new Error("Account login refresh was not scheduled");
+      }
+      refreshAfterLogin();
+      await vi.waitFor(() => expect(listCodexAccounts).toHaveBeenCalledTimes(3));
+      expect(visibleText(content)).toContain("ABCD-EFGH");
+      expect(visibleNotesText(elementWithClass(content, "settings-account-status"))).not.toContain(
+        "Sign-in completed.",
+      );
+      const refreshAfterAdvancedSnapshot = vi
+        .mocked(document.defaultView.setTimeout)
+        .mock.calls.at(-1)?.[0];
+      if (typeof refreshAfterAdvancedSnapshot !== "function") {
+        throw new Error("Account login refresh was not rescheduled");
+      }
+      revision = 2;
+      if (readyEventFirst) accountsChanged?.(accountSnapshot(savedAccounts, "personal", revision));
+      refreshAfterAdvancedSnapshot();
+      await vi.waitFor(() => expect(visibleText(content)).not.toContain("ABCD-EFGH"));
+      expect(visibleNotesText(elementWithClass(content, "settings-account-status"))).toContain(
+        "Sign-in finished, but its result was not received. Inspect the saved Account state.",
+      );
+      expect(visibleNotesText(elementWithClass(content, "settings-account-status"))).not.toContain(
+        "Sign-in completed.",
+      );
+      expect(visibleText(content)).not.toContain("ABCD-EFGH");
+      expect(loginCompleted).toBeTypeOf("function");
+
+      cleanup?.();
+      scope.dispose();
+    },
+  );
+
+  it("reconciles a completion delivered before the login start response by loginId", async () => {
     const loginStart = Promise.withResolvers<{
       accountId: string;
       loginId: string;
       verificationUrl: string;
       userCode: string;
     }>();
+    let loginCompleted: ((result: CodexAccountLoginCompleted) => void) | undefined;
     const client = {
-      listCodexAccounts,
-      refreshCodexAccounts: listCodexAccounts,
-      createCodexAccount: vi.fn(),
-      deleteCodexAccount: vi.fn(async ({ accountId }: { accountId: string }) => ({
-        deletedAccountId: accountId,
-      })),
-      activateCodexAccount: vi.fn(async ({ accountId }: { accountId: string }) => {
-        active = accountId;
-        return {
-          account: {
-            accountId,
-            label: "Work",
-            codexHome: "/tmp/work",
-            active: true,
-            isDefault: false,
-          },
-        };
-      }),
+      listCodexAccounts: vi.fn(async () => accountSnapshot([], null)),
+      deleteCodexAccount: vi.fn(),
+      switchCodexAccount: vi.fn(),
+      logoutCodexAccount: vi.fn(),
+      recoverCodexAccounts: vi.fn(),
       startCodexAccountLogin: vi.fn(() => loginStart.promise),
-      cancelCodexAccountLogin: vi.fn(async () => ({ cancelled: true })),
+      cancelCodexAccountLogin: vi.fn(),
       subscribeCodexAccountLogin: vi.fn((listener: typeof loginCompleted) => {
         loginCompleted = listener;
         return () => undefined;
@@ -830,90 +1006,43 @@ describe("Renderer Codex Accounts page", () => {
     if (!page) throw new Error("Accounts page is not registered");
 
     const document = new FakeDocument();
-    const openInBrowser = vi.fn(async () => undefined);
-    (
-      document.defaultView as Window & {
-        electronBridge: { sendMessageFromView: typeof openInBrowser };
-      }
-    ).electronBridge = { sendMessageFromView: openInBrowser };
     const content = document.createElement("main");
     const scope = new RendererSettingsPageScope();
-    const cleanup = page.mount({
+    page.mount({
       content: content as unknown as HTMLElement,
       signal: scope.signal,
       runLatest: (operation, handlers) => scope.runLatest(operation, handlers),
     });
-    await vi.waitFor(() => expect(visibleText(content)).toContain("Personal"));
-    expect(visibleText(content)).not.toContain("token");
-    expect(
-      descendants(content).filter(
-        ({ tagName, textContent }) => tagName === "button" && textContent === "Sign in",
-      ),
-    ).toHaveLength(1);
+    await vi.waitFor(() => expect(client.listCodexAccounts).toHaveBeenCalledOnce());
+    descendants(content)
+      .find(
+        ({ tagName, children }) => tagName === "button" && children.includes("Add Codex account"),
+      )
+      ?.dispatch("click");
+    await vi.waitFor(() => expect(client.startCodexAccountLogin).toHaveBeenCalledOnce());
 
-    const useWork = descendants(content).find(
-      ({ tagName, textContent }) => tagName === "button" && textContent === "Set as default",
-    );
-    useWork?.dispatch("click");
-    await vi.waitFor(() =>
-      expect(client.activateCodexAccount).toHaveBeenCalledWith({ accountId: "work" }),
-    );
-    await vi.waitFor(() => expect(visibleText(content)).toContain("Codex default"));
-
-    const signIn = descendants(content).find(
-      ({ tagName, textContent }) => tagName === "button" && textContent === "Sign in",
-    );
-    signIn?.dispatch("click");
-    const signInButtons = descendants(content).filter(
-      ({ tagName, textContent }) => tagName === "button" && textContent === "Sign in",
-    );
-    expect(signInButtons.every(({ disabled }) => disabled)).toBe(true);
-    signInButtons.at(-1)?.dispatch("click");
-    expect(client.startCodexAccountLogin).toHaveBeenCalledTimes(1);
+    loginCompleted?.({
+      accountId: "deduplicated",
+      loginId: "login-early",
+      success: true,
+      saved: true,
+      error: null,
+    });
     loginStart.resolve({
-      accountId: "personal",
-      loginId: "login-1",
+      accountId: "provisional",
+      loginId: "login-early",
       verificationUrl: "https://example.com/device",
-      userCode: "ABCD-EFGH",
+      userCode: "SHOULD-NOT-SHOW",
     });
-    await vi.waitFor(() => expect(visibleText(content)).toContain("ABCD-EFGH"));
-    expect(visibleText(content)).toContain("https://example.com/device");
-    const verificationLink = descendants(content).find(
-      ({ tagName, href }) => tagName === "a" && href === "https://example.com/device",
-    );
-    const preventDefault = vi.fn();
-    verificationLink?.dispatch("click", { preventDefault });
-    expect(preventDefault).toHaveBeenCalledOnce();
-    expect(openInBrowser).toHaveBeenCalledWith({
-      type: "open-in-browser",
-      url: "https://example.com/device",
-      initiator: "open_in_browser_bridge",
-      openTarget: "external-browser",
-      source: "manual",
-    });
-    expect(
-      descendants(content).find(
-        ({ tagName, textContent }) => tagName === "button" && textContent === "Sign in",
-      )?.disabled,
-    ).toBe(true);
-    personal.email = "personal@example.com";
-    const refreshAfterLogin = vi.mocked(document.defaultView.setTimeout).mock.calls.at(-1)?.[0];
-    if (typeof refreshAfterLogin !== "function") {
-      throw new Error("Account login refresh was not scheduled");
-    }
-    refreshAfterLogin();
-    await vi.waitFor(() =>
-      expect(
-        descendants(content).some(
-          ({ tagName, textContent }) => tagName === "button" && textContent === "Sign in",
-        ),
-      ).toBe(false),
-    );
-    expect(visibleText(content)).toContain("Sign-in completed");
-    expect(visibleText(content)).not.toContain("ABCD-EFGH");
-    expect(loginCompleted).toBeTypeOf("function");
 
-    cleanup?.();
+    await vi.waitFor(() =>
+      expect(visibleNotesText(elementWithClass(content, "settings-account-status"))).toContain(
+        "Sign-in completed.",
+      ),
+    );
+    expect(visibleText(content)).not.toContain("SHOULD-NOT-SHOW");
+    expect(client.listCodexAccounts).toHaveBeenCalledTimes(2);
+
     scope.dispose();
   });
 });

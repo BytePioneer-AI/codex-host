@@ -53,6 +53,7 @@ export {
   QODER_COMMAND_CATALOG,
   QODER_COMMANDS,
   QODER_VERIFIED_HEADLESS_COMMAND_IDS,
+  isQoderCompactionCommand,
   type ParsedQoderCommand,
 } from "./qoder-slash-commands.js";
 export { createHarnessAdapter } from "./plugin.js";

@@ -1,5 +1,6 @@
 import type {
   HistoricalTurnOutcome,
+  HostContextCompactionItem,
   HostItemOutcome,
   HostThreadSnapshot,
   HostTurnSnapshot,
@@ -14,6 +15,7 @@ import {
 } from "@codexhost/shared-contracts";
 
 import type { SessionMessage } from "./qoder-sdk-types.js";
+import { isQoderCompactionCommand } from "./qoder-slash-commands.js";
 
 const qoderHarnessId: HarnessId = harnessIdSchema.parse("qoder");
 
@@ -180,119 +182,149 @@ export function mapQoderSnapshot(
         }
       : { status: "succeeded" };
 
+    const firstWord = userText.trim().split(/\s+/)[0] ?? "";
+    const isCompactionTurn = isQoderCompactionCommand(firstWord);
+
     const items: HostTurnSnapshot["items"] = [];
 
-    const lastAssistantIdx = turnMessages.findLastIndex((m) => m.type === "assistant");
-
-    for (let msgIdx = 0; msgIdx < turnMessages.length; msgIdx += 1) {
-      const message = turnMessages[msgIdx];
-      if (!message || message.type !== "assistant") continue;
-
-      const isLastAssistant = msgIdx === lastAssistantIdx;
-      const content = (message.message as Record<string, unknown> | undefined)?.content;
-
-      if (typeof content === "string" && content.length > 0) {
+    if (isCompactionTurn) {
+      const compactionItem: HostContextCompactionItem = {
+        type: "contextCompaction",
+        itemId: hostItemIdSchema.parse(`qoder-compact-${user.uuid}`),
+      };
+      items.push({
+        item: compactionItem,
+        outcome: { status: "succeeded" },
+      });
+    } else {
+      const hasCompactBoundary = turnMessages.some(
+        (m) => m.type === "system" && (m as Record<string, unknown>).subtype === "compact_boundary",
+      );
+      if (hasCompactBoundary) {
+        const compactionItem: HostContextCompactionItem = {
+          type: "contextCompaction",
+          itemId: hostItemIdSchema.parse(`qoder-compact-boundary-${user.uuid}`),
+        };
         items.push({
-          item: {
-            type: "agentMessage",
-            itemId: hostItemIdSchema.parse(`qoder-item-${message.uuid}-0`),
-            text: content,
-            phase: isLastAssistant ? "final_answer" : "commentary",
-          },
+          item: compactionItem,
           outcome: { status: "succeeded" },
         });
-        continue;
       }
 
-      if (Array.isArray(content)) {
-        const hasSubsequentToolUse = content.some(
-          (b) =>
-            typeof b === "object" &&
-            b !== null &&
-            (b as Record<string, unknown>).type === "tool_use",
-        );
+      const lastAssistantIdx = turnMessages.findLastIndex((m) => m.type === "assistant");
 
-        for (let blockIndex = 0; blockIndex < content.length; blockIndex += 1) {
-          const block = content[blockIndex];
-          if (typeof block !== "object" || block === null) continue;
-          const rawBlock = block as Record<string, unknown>;
+      for (let msgIdx = 0; msgIdx < turnMessages.length; msgIdx += 1) {
+        const message = turnMessages[msgIdx];
+        if (!message || message.type !== "assistant") continue;
 
-          if (rawBlock.type === "thinking" && typeof rawBlock.thinking === "string") {
-            items.push({
-              item: {
-                type: "reasoning",
-                itemId: hostItemIdSchema.parse(`qoder-item-${message.uuid}-thinking-${blockIndex}`),
-                text: rawBlock.thinking,
-              },
-              outcome: { status: "succeeded" },
-            });
-            continue;
-          }
+        const isLastAssistant = msgIdx === lastAssistantIdx;
+        const content = (message.message as Record<string, unknown> | undefined)?.content;
 
-          if (rawBlock.type === "text" && typeof rawBlock.text === "string") {
-            const isFinalAnswer = isLastAssistant && !hasSubsequentToolUse;
-            items.push({
-              item: {
-                type: "agentMessage",
-                itemId: hostItemIdSchema.parse(`qoder-item-${message.uuid}-text-${blockIndex}`),
-                text: rawBlock.text,
-                phase: isFinalAnswer ? "final_answer" : "commentary",
-              },
-              outcome: { status: "succeeded" },
-            });
-            continue;
-          }
+        if (typeof content === "string" && content.length > 0) {
+          items.push({
+            item: {
+              type: "agentMessage",
+              itemId: hostItemIdSchema.parse(`qoder-item-${message.uuid}-0`),
+              text: content,
+              phase: isLastAssistant ? "final_answer" : "commentary",
+            },
+            outcome: { status: "succeeded" },
+          });
+          continue;
+        }
 
-          if (
-            rawBlock.type === "tool_use" &&
-            typeof rawBlock.id === "string" &&
-            typeof rawBlock.name === "string"
-          ) {
-            const res = toolResults.get(rawBlock.id);
-            const isError = res?.isError === true;
-            const output = res?.content;
-            const toolOutcome: HostItemOutcome = isError
-              ? {
-                  status: "failed",
-                  error: {
-                    code: "nativeFailure",
-                    message: output || `Tool '${rawBlock.name}' failed`,
-                    retryable: false,
-                  },
-                }
-              : { status: "succeeded" };
+        if (Array.isArray(content)) {
+          const hasSubsequentToolUse = content.some(
+            (b) =>
+              typeof b === "object" &&
+              b !== null &&
+              (b as Record<string, unknown>).type === "tool_use",
+          );
 
-            const itemId = hostItemIdSchema.parse(`qoder-item-${message.uuid}-tool-${blockIndex}`);
+          for (let blockIndex = 0; blockIndex < content.length; blockIndex += 1) {
+            const block = content[blockIndex];
+            if (typeof block !== "object" || block === null) continue;
+            const rawBlock = block as Record<string, unknown>;
 
-            if (
-              rawBlock.name === "Bash" &&
-              typeof rawBlock.input === "object" &&
-              rawBlock.input !== null &&
-              typeof (rawBlock.input as Record<string, unknown>).command === "string"
-            ) {
+            if (rawBlock.type === "thinking" && typeof rawBlock.thinking === "string") {
               items.push({
                 item: {
-                  type: "commandExecution",
-                  itemId,
-                  command: (rawBlock.input as Record<string, unknown>).command as string,
-                  ...(output ? { output } : {}),
-                  exitCode: isError ? 1 : 0,
+                  type: "reasoning",
+                  itemId: hostItemIdSchema.parse(
+                    `qoder-item-${message.uuid}-thinking-${blockIndex}`,
+                  ),
+                  text: rawBlock.thinking,
                 },
-                outcome: toolOutcome,
+                outcome: { status: "succeeded" },
               });
               continue;
             }
 
-            items.push({
-              item: {
-                type: "toolExecution",
-                itemId,
-                toolName: rawBlock.name,
-                arguments: rawBlock.input as JsonValue,
-                ...(output ? { output: { content: [{ type: "text", text: output }] } } : {}),
-              },
-              outcome: toolOutcome,
-            });
+            if (rawBlock.type === "text" && typeof rawBlock.text === "string") {
+              const isFinalAnswer = isLastAssistant && !hasSubsequentToolUse;
+              items.push({
+                item: {
+                  type: "agentMessage",
+                  itemId: hostItemIdSchema.parse(`qoder-item-${message.uuid}-text-${blockIndex}`),
+                  text: rawBlock.text,
+                  phase: isFinalAnswer ? "final_answer" : "commentary",
+                },
+                outcome: { status: "succeeded" },
+              });
+              continue;
+            }
+
+            if (
+              rawBlock.type === "tool_use" &&
+              typeof rawBlock.id === "string" &&
+              typeof rawBlock.name === "string"
+            ) {
+              const res = toolResults.get(rawBlock.id);
+              const isError = res?.isError === true;
+              const output = res?.content;
+              const toolOutcome: HostItemOutcome = isError
+                ? {
+                    status: "failed",
+                    error: {
+                      code: "nativeFailure",
+                      message: output || `Tool '${rawBlock.name}' failed`,
+                      retryable: false,
+                    },
+                  }
+                : { status: "succeeded" };
+
+              const itemId = hostItemIdSchema.parse(`qoder-item-${rawBlock.id}`);
+
+              if (
+                rawBlock.name === "Bash" &&
+                typeof rawBlock.input === "object" &&
+                rawBlock.input !== null &&
+                typeof (rawBlock.input as Record<string, unknown>).command === "string"
+              ) {
+                items.push({
+                  item: {
+                    type: "commandExecution",
+                    itemId,
+                    command: (rawBlock.input as Record<string, unknown>).command as string,
+                    ...(output ? { output } : {}),
+                    exitCode: isError ? 1 : 0,
+                  },
+                  outcome: toolOutcome,
+                });
+                continue;
+              }
+
+              items.push({
+                item: {
+                  type: "toolExecution",
+                  itemId,
+                  toolName: rawBlock.name,
+                  arguments: rawBlock.input as JsonValue,
+                  ...(output ? { output: { content: [{ type: "text", text: output }] } } : {}),
+                },
+                outcome: toolOutcome,
+              });
+            }
           }
         }
       }

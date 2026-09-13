@@ -23,7 +23,23 @@ export const QODER_COMMAND_CATALOG = QODER_FALLBACK_COMMAND_CATALOG;
 export const QODER_COMMANDS: readonly HarnessCommandDescriptor[] =
   QODER_FALLBACK_COMMAND_CATALOG.commands;
 
-export const QODER_VERIFIED_HEADLESS_COMMAND_IDS: ReadonlySet<string> = new Set(["qoder.compact"]);
+export const QODER_VERIFIED_HEADLESS_COMMAND_IDS: ReadonlySet<string> = new Set([
+  "qoder.compact",
+  "qoder.compress",
+  "qoder.summarize",
+]);
+
+export function isQoderCompactionCommand(commandIdOrInvocation: string): boolean {
+  const normalized = commandIdOrInvocation.toLowerCase().replace(/^\//, "");
+  return (
+    normalized === "compact" ||
+    normalized === "compress" ||
+    normalized === "summarize" ||
+    normalized === "qoder.compact" ||
+    normalized === "qoder.compress" ||
+    normalized === "qoder.summarize"
+  );
+}
 
 export function humanize(name: string): string {
   const parts = name.replace(/[_-]+/g, " ").trim().split(/\s+/).filter(Boolean);

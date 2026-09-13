@@ -19,12 +19,14 @@ import {
   QODER_VERIFIED_HEADLESS_COMMAND_IDS,
 } from "../src/qoder-slash-commands.js";
 import { QoderSession } from "../src/qoder-sdk-transport.js";
+import { mapQoderSnapshot } from "../src/qoder-history.js";
 import type {
   QoderQuery,
   QoderQueryFactory,
   QoderSlashCommand,
   SDKMessage,
   SDKUserMessage,
+  SessionMessage,
 } from "../src/qoder-sdk-types.js";
 
 class FakeQoderQuery implements QoderQuery {
@@ -403,8 +405,9 @@ describe("Qoder Slash Commands Capability", () => {
       }
     });
 
-    it("executes /compact command and genuinely pushes native prompt to SDK without client_composed: true", async () => {
+    it("executes /compact command with native contextCompaction item lifecycle", async () => {
       const { session, fakeQuery } = createSession();
+      const collector = new OutputCollector(session.outputs);
       const turnId = hostTurnIdSchema.parse("turn-compact-1");
 
       const result = await session.commands.execute({
@@ -422,6 +425,51 @@ describe("Qoder Slash Commands Capability", () => {
       expect(pushed?.client_composed).toBeUndefined();
       expect(pushed?.message.role).toBe("user");
       expect(pushed?.message.content).toEqual([{ type: "text", text: "/compact" }]);
+
+      // Verify contextCompaction item.started is emitted so Desktop displays "正在压缩上下文"
+      const started = collector.outputs.find(
+        (o) =>
+          o.kind === "event" &&
+          o.event.type === "item.started" &&
+          o.event.item.type === "contextCompaction",
+      );
+      expect(started).toBeDefined();
+
+      // Send thinking_delta from LLM while generating summary - verify it is suppressed (no reasoning item)
+      fakeQuery.deliverMessage({
+        type: "stream_event",
+        event: {
+          type: "content_block_delta",
+          delta: { type: "thinking_delta", thinking: "Internal compaction reasoning..." },
+        },
+      } as unknown as SDKMessage);
+      await flushTicks();
+
+      const reasoning = collector.outputs.find(
+        (o) =>
+          o.kind === "event" &&
+          o.event.type === "item.started" &&
+          o.event.item.type === "reasoning",
+      );
+      expect(reasoning).toBeUndefined();
+
+      // Finish compaction with SDK result
+      fakeQuery.deliverMessage({
+        type: "result",
+        subtype: "success",
+        uuid: "result-compact-1",
+      } as unknown as SDKMessage);
+      await flushTicks();
+
+      // Verify contextCompaction item.completed with succeeded is emitted so Desktop displays "上下文已压缩"
+      const completed = collector.outputs.find(
+        (o) =>
+          o.kind === "event" &&
+          o.event.type === "item.completed" &&
+          o.event.snapshot.item.type === "contextCompaction" &&
+          o.event.snapshot.outcome.status === "succeeded",
+      );
+      expect(completed).toBeDefined();
     });
 
     it("executes /compact command with arguments and pushes correct prompt", async () => {
@@ -691,6 +739,75 @@ describe("Qoder Slash Commands Capability", () => {
         commandId: "qoder.compact",
       });
       expect(retryResult.ok).toBe(true);
+    });
+
+    it("emits contextCompaction items on compact_boundary system message during a regular turn", async () => {
+      const { session, fakeQuery } = createSession();
+      const collector = new OutputCollector(session.outputs);
+      const turnId = hostTurnIdSchema.parse("turn-auto-compact");
+
+      await session.execute({
+        type: "turn.start",
+        turnId,
+        input: [{ type: "text", text: "Regular conversation" }],
+      });
+
+      await flushTicks();
+
+      // Qoder triggers auto-compaction and sends compact_boundary system message
+      fakeQuery.deliverMessage({
+        type: "system",
+        subtype: "compact_boundary",
+        uuid: "compact-boundary-uuid",
+        content: "Conversation compacted",
+      } as unknown as SDKMessage);
+
+      await flushTicks();
+
+      const started = collector.outputs.find(
+        (o) =>
+          o.kind === "event" &&
+          o.event.type === "item.started" &&
+          o.event.item.type === "contextCompaction",
+      );
+      expect(started).toBeDefined();
+
+      const completed = collector.outputs.find(
+        (o) =>
+          o.kind === "event" &&
+          o.event.type === "item.completed" &&
+          o.event.snapshot.item.type === "contextCompaction" &&
+          o.event.snapshot.outcome.status === "succeeded",
+      );
+      expect(completed).toBeDefined();
+    });
+
+    it("maps /compact turns to contextCompaction items in snapshot history", () => {
+      const messages: SessionMessage[] = [
+        {
+          type: "user",
+          uuid: "user-compact-msg",
+          parent_tool_use_id: null,
+          message: {
+            role: "user",
+            content: [{ type: "text", text: "/compact" }],
+          },
+        } as SessionMessage,
+        {
+          type: "assistant",
+          uuid: "assistant-compact-msg",
+          message: {
+            role: "assistant",
+            content: [{ type: "text", text: "Summary text..." }],
+          },
+        } as SessionMessage,
+      ];
+
+      const snapshot = mapQoderSnapshot(messages, "test-history-session");
+      expect(snapshot.turns).toHaveLength(1);
+      expect(snapshot.turns[0]?.items).toHaveLength(1);
+      expect(snapshot.turns[0]?.items[0]?.item.type).toBe("contextCompaction");
+      expect(snapshot.turns[0]?.items[0]?.outcome.status).toBe("succeeded");
     });
   });
 });

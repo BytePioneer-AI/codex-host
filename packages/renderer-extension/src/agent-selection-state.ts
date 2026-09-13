@@ -291,9 +291,8 @@ export class DraftAgentController<Composer extends object> {
     if (agent === "kiro-cli") return state.kiroCliModel;
     if (agent === "codebuddy") return state.codeBuddyModel;
     if (agent === "cursor-cli") return state.cursorCliModel;
-    return undefined;
     if (agent === "hermes") return state.hermesModel;
-    return state.antigravityModel;
+    return undefined;
   }
 
   thinkingOptionForAgent(

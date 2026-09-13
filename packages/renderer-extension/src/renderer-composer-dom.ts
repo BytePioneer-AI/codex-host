@@ -17,6 +17,11 @@ import {
   type RendererAgentPickerControl,
 } from "./renderer-agent-picker.js";
 import {
+  mountCursorModelPicker,
+  renderCursorModelPicker,
+  type CursorModelPickerControl,
+} from "./cursor-model-picker.js";
+import {
   mountRendererModelPicker,
   renderRendererModelPicker,
   syncRendererModelTriggerClass,
@@ -84,6 +89,7 @@ export interface ComposerAgentControl {
   root: HTMLElement;
   picker: RendererAgentPickerControl;
   modelPicker: RendererModelPickerControl;
+  cursorModelPicker?: CursorModelPickerControl;
   permissionModePicker: RendererPermissionModePickerControl;
   nativeModelControl: NativeModelControlState | null;
   nativePermissionModeControl: NativePermissionModeControlState | null;
@@ -468,8 +474,15 @@ function usagePlacementAnchor(control: ComposerAgentControl): HTMLElement | null
   // the native Context control exists. The renderer-owned Model control is a
   // stable footer anchor, so early Usage remains visible instead of waiting for
   // a later Context observation to create the native indicator.
-  const modelRoot = control.modelPicker?.root;
+  const modelRoot = activeModelPickerRoot(control);
   return modelRoot?.parentElement ? modelRoot : null;
+}
+
+function activeModelPickerRoot(control: ComposerAgentControl): HTMLElement | undefined {
+  if (control.cursorModelPicker && control.cursorModelPicker.root.style.display !== "none") {
+    return control.cursorModelPicker.root;
+  }
+  return control.modelPicker?.root;
 }
 
 /**
@@ -484,7 +497,7 @@ export function creditsPlacementAnchor(control: ComposerAgentControl): HTMLEleme
 
 function refreshTrailingClusterPlacement(control: ComposerAgentControl): void {
   const sendButton = control.sendButton;
-  const modelRoot = control.modelPicker?.root;
+  const modelRoot = activeModelPickerRoot(control);
   const agentRoot = control.root ?? control.picker?.root;
   if (!sendButton || !modelRoot || !agentRoot) return;
   const anchor = trailingActionAnchor(sendButton);
@@ -628,6 +641,7 @@ export function mountComposerAgentControl(
     onOpenProviderPicker,
   );
   const modelPicker = mountRendererModelPicker(composerId, onSelectModel, onSelectThinking);
+  const cursorModelPicker = mountCursorModelPicker(composerId, onSelectModel, onSelectThinking);
   const permissionModePicker = mountRendererPermissionModePicker(
     composerId,
     onSelectPermissionMode,
@@ -648,13 +662,14 @@ export function mountComposerAgentControl(
     composer.append(permissionModePicker.root);
   }
 
-  if (!toolbar) composer.append(modelPicker.root, picker.root);
+  if (!toolbar) composer.append(modelPicker.root, cursorModelPicker.root, picker.root);
   const control = {
     composer,
     composerId,
     root: picker.root,
     picker,
     modelPicker,
+    cursorModelPicker,
     permissionModePicker,
     nativeModelControl,
     nativePermissionModeControl,
@@ -731,7 +746,16 @@ export function renderComposerAgentControl(
     pickerView.nativeModelHidden,
     switching || state.agent !== "codex",
   );
-  renderRendererModelPicker(control.modelPicker, modelView, state.agent !== "codex");
+  const cursorAgent = state.agent === "cursor-cli";
+  renderRendererModelPicker(
+    control.modelPicker,
+    modelView,
+    state.agent !== "codex" && !cursorAgent,
+  );
+  if (control.cursorModelPicker) {
+    renderCursorModelPicker(control.cursorModelPicker, modelView, cursorAgent);
+  }
+  refreshTrailingClusterPlacement(control);
   const permissionModeVisible =
     state.agent !== "codex" &&
     permissionModeView.status !== "idle" &&
@@ -774,5 +798,6 @@ export function disposeComposerAgentControl(control: ComposerAgentControl): void
   control.harnessCommands.dispose();
   control.permissionModePicker.dispose();
   control.modelPicker.dispose();
+  control.cursorModelPicker?.dispose();
   control.picker.dispose();
 }

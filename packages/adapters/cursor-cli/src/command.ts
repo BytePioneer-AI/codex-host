@@ -2,7 +2,11 @@ import { existsSync, readdirSync } from "node:fs";
 import path from "node:path";
 import { commandInvocation, resolveHarnessExecutable } from "@codexhost/harness-discovery";
 
-export function cursorInvocation(environment: NodeJS.ProcessEnv, command?: string) {
+export function cursorInvocation(
+  environment: NodeJS.ProcessEnv,
+  command?: string,
+  args: readonly string[] = ["acp"],
+) {
   const resolution = resolveHarnessExecutable(
     {
       id: "cursor-cli",
@@ -37,7 +41,7 @@ export function cursorInvocation(environment: NodeJS.ProcessEnv, command?: strin
       if (version)
         return {
           command: path.join(versions, version, "node.exe"),
-          arguments: [path.join(versions, version, "index.js"), "acp"],
+          arguments: [path.join(versions, version, "index.js"), ...args],
           windowsVerbatimArguments: false,
         };
     }
@@ -45,5 +49,5 @@ export function cursorInvocation(environment: NodeJS.ProcessEnv, command?: strin
       "Cursor Windows launcher has no supported native bundle; configure a native executable",
     );
   }
-  return commandInvocation(resolution.executable, ["acp"], environment);
+  return commandInvocation(resolution.executable, [...args], environment);
 }

@@ -108,7 +108,9 @@ export class CursorTransport {
       const init = await this.#bounded(
         this.#connection.initialize({
           protocolVersion: 1,
-          clientCapabilities: {},
+          clientCapabilities: {
+            _meta: { parameterizedModelPicker: true },
+          } as never,
           clientInfo: { name: "codexhost", version: "0.6.2" },
         }),
       );

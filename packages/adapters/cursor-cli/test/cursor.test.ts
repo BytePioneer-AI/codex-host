@@ -9,7 +9,13 @@ import {
 import type { HarnessOutput } from "@codexhost/harness-adapter";
 import { CursorAdapter, CursorSession } from "../src/adapter.js";
 import { CursorTransport, type CursorCallbacks } from "../src/transport.js";
-import { cursorModelRef, cursorCatalog, cursorNativeModel } from "../src/models.js";
+import {
+  cursorCatalog,
+  cursorModelRef,
+  cursorNativeModel,
+  cursorSessionConfiguration,
+} from "../src/models.js";
+import { parseCursorListModelId, parseCursorListModels } from "../src/list-models.js";
 import { CursorInteractions } from "../src/interactions.js";
 import { cursorSnapshot } from "../src/projection.js";
 
@@ -85,23 +91,22 @@ afterEach(() => {
 describe("Cursor native configuration", () => {
   it("starts inspection cache expiry at completion, including slow native startup", async () => {
     const clock = vi.spyOn(Date, "now").mockReturnValue(0),
-      gate = Promise.withResolvers<typeof info>();
-    const open = vi.spyOn(CursorTransport.prototype, "open").mockImplementation(() => gate.promise);
-    vi.spyOn(CursorTransport.prototype, "close").mockResolvedValue();
-    const adapter = new CursorAdapter();
+      gate = Promise.withResolvers<string>();
+    const listModels = vi.fn(() => gate.promise);
+    const adapter = new CursorAdapter({ listModels });
     try {
       const first = adapter.inspect();
       clock.mockReturnValue(400_000);
-      gate.resolve(info);
+      gate.resolve("auto - Auto (default)\n");
       await first;
       await adapter.inspect();
-      expect(open).toHaveBeenCalledTimes(1);
+      expect(listModels).toHaveBeenCalledTimes(1);
       clock.mockReturnValue(699_999);
       await adapter.inspect();
-      expect(open).toHaveBeenCalledTimes(1);
+      expect(listModels).toHaveBeenCalledTimes(1);
       clock.mockReturnValue(700_001);
       await adapter.inspect();
-      expect(open).toHaveBeenCalledTimes(2);
+      expect(listModels).toHaveBeenCalledTimes(2);
     } finally {
       await adapter.close();
     }
@@ -151,18 +156,144 @@ describe("Cursor native configuration", () => {
     expect(() => cursorNativeModel(info, "unknown")).toThrow();
     expect(cursorCatalog(info).thinkingOptions).toEqual([]);
   });
+  it("maps ACP model parameters onto grouped Thinking and Fast options", () => {
+    const parameterized = {
+      sessionId: info.sessionId,
+      configOptions: [
+        {
+          id: "model",
+          name: "Model",
+          type: "select" as const,
+          currentValue: "gpt-5.6-sol",
+          options: [
+            { value: "gpt-5.6-sol", name: "GPT-5.6 Sol" },
+            { value: "composer-2.5", name: "Composer 2.5" },
+          ],
+        },
+        {
+          id: "reasoning",
+          name: "Reasoning",
+          type: "select" as const,
+          category: "thought_level",
+          currentValue: "medium",
+          options: [
+            { value: "medium", name: "Medium" },
+            { value: "high", name: "High" },
+          ],
+        },
+        {
+          id: "fast",
+          name: "Fast",
+          type: "select" as const,
+          category: "model_config",
+          currentValue: "false",
+          options: [
+            { value: "false", name: "Off" },
+            { value: "true", name: "Fast" },
+          ],
+        },
+      ],
+    };
+    const catalog = cursorCatalog(parameterized);
+    const gpt = catalog.models.find((model) => model.label === "GPT-5.6 Sol");
+    expect(catalog.thinkingOptions.map((option) => option.label).sort()).toEqual(
+      ["Medium", "Medium · Fast", "High", "High · Fast"].sort(),
+    );
+    expect(gpt?.supportedThinkingOptionIds).toHaveLength(4);
+    expect(cursorNativeModel(parameterized, cursorModelRef("gpt-5.6-sol").id)).toBe("gpt-5.6-sol");
+    expect(
+      cursorSessionConfiguration(parameterized, cursorModelRef("gpt-5.6-sol"))
+        .effectiveThinkingOptionId,
+    ).toBe("g.fast~false.reasoning~medium");
+  });
+  it("inspects --list-models without opening an ACP session", async () => {
+    const open = vi.spyOn(CursorTransport.prototype, "open");
+    const adapter = new CursorAdapter({
+      listModels: async () =>
+        "auto - Auto (default)\ncomposer-2.5 - Composer 2.5\ncomposer-2.5-fast - Composer 2.5 Fast\n",
+    });
+    try {
+      const inspection = await adapter.inspect();
+      expect(open).not.toHaveBeenCalled();
+      expect(inspection.status).toBe("ready");
+      if (inspection.status !== "ready") throw new Error("expected a ready inspection");
+      expect(inspection.catalog.models.map((model) => model.label)).toEqual(["Auto", "Composer 2.5"]);
+      expect(
+        inspection.catalog.models.find((model) => model.label === "Composer 2.5")
+          ?.supportedThinkingOptionIds,
+      ).toEqual(["g.fast~false", "g.fast~true"]);
+    } finally {
+      await adapter.close();
+    }
+  });
+  it("selects Fast and Reasoning independently through Thinking commands", async () => {
+    const parameterized = {
+      sessionId: info.sessionId,
+      modes: { currentModeId: "agent" },
+      configOptions: [
+        {
+          id: "model",
+          name: "Model",
+          type: "select" as const,
+          currentValue: "gpt-5.6-sol",
+          options: [{ value: "gpt-5.6-sol", name: "GPT-5.6 Sol" }],
+        },
+        {
+          id: "reasoning",
+          name: "Reasoning",
+          type: "select" as const,
+          currentValue: "medium",
+          options: [
+            { value: "medium", name: "Medium" },
+            { value: "high", name: "High" },
+          ],
+        },
+        {
+          id: "fast",
+          name: "Fast",
+          type: "select" as const,
+          currentValue: "false",
+          options: [
+            { value: "false", name: "Off" },
+            { value: "true", name: "Fast" },
+          ],
+        },
+      ],
+    };
+    const current = Object.fromEntries(
+      parameterized.configOptions.map((option) => [option.id, option.currentValue]),
+    );
+    const transport = new FakeTransport({ cwd: process.cwd(), environment: {} });
+    const session = new CursorSession(transport, parameterized, () => {});
+    vi.spyOn(transport, "configure").mockImplementation(async (configId, value) => {
+      current[configId] = value;
+      return {
+        configOptions: parameterized.configOptions.map((option) => ({
+          ...option,
+          currentValue: current[option.id] ?? option.currentValue,
+        })),
+      };
+    });
+    const selected = await session.execute({
+      type: "thinking.select",
+      thinkingOptionId: "g.fast~true.reasoning~high",
+    });
+    expect(selected.ok).toBe(true);
+    expect(session.initialState.effectiveThinkingOptionId).toBe("g.fast~true.reasoning~high");
+    expect(current).toMatchObject({ fast: "true", reasoning: "high" });
+    await session.close();
+  });
   it("caches failed inspection and retries only on explicit refresh or expiry", async () => {
-    const open = vi
-      .spyOn(CursorTransport.prototype, "open")
-      .mockRejectedValue(new Error("not logged in"));
-    vi.spyOn(CursorTransport.prototype, "close").mockResolvedValue();
-    const adapter = new CursorAdapter();
+    const listModels = vi.fn(async () => {
+      throw new Error("not logged in");
+    });
+    const adapter = new CursorAdapter({ listModels });
     const first = await adapter.inspect();
     expect(harnessInspectionSchema.safeParse(first).success).toBe(true);
     expect(await adapter.inspect()).toEqual(first);
-    expect(open).toHaveBeenCalledTimes(1);
+    expect(listModels).toHaveBeenCalledTimes(1);
     await adapter.inspect({ refresh: true });
-    expect(open).toHaveBeenCalledTimes(2);
+    expect(listModels).toHaveBeenCalledTimes(2);
     await adapter.close();
   });
   it("does not claim unconfirmed mode selection", async () => {
@@ -376,5 +507,81 @@ describe("Cursor replay identity", () => {
       cursorSnapshot(info.sessionId, [{ ...identity, text: "other" }], replay),
     ).toThrow();
     expect(() => cursorSnapshot("other", [identity], replay)).toThrow();
+  });
+});
+
+const LIST_MODELS_SAMPLE = `
+Available models
+
+auto - Auto (default)
+composer-2.5 - Composer 2.5
+composer-2.5-fast - Composer 2.5 Fast
+gpt-5.6-sol-high - GPT-5.6 Sol 1M High
+gpt-5.6-sol-high-fast - GPT-5.6 Sol 1M High Fast
+gpt-5.6-sol-medium - GPT-5.6 Sol 1M
+claude-opus-5-high - Claude Opus 5 1M
+claude-opus-5-thinking-high - Claude Opus 5 1M Thinking
+claude-opus-5-thinking-high-fast - Claude Opus 5 1M Thinking Fast
+kimi-k2.7-code - Kimi K2.7 Code
+
+Tip: use --model <id>
+`;
+
+describe("Cursor --list-models catalog", () => {
+  it("strips Fast, effort and thinking suffixes from native ids", () => {
+    expect(parseCursorListModelId("composer-2.5-fast")).toEqual({
+      base: "composer-2.5",
+      fast: true,
+      thinking: false,
+    });
+    expect(parseCursorListModelId("gpt-5.6-sol-high-fast")).toEqual({
+      base: "gpt-5.6-sol",
+      fast: true,
+      thinking: false,
+      effort: "high",
+    });
+    expect(parseCursorListModelId("claude-opus-5-thinking-high-fast")).toEqual({
+      base: "claude-opus-5",
+      fast: true,
+      thinking: true,
+      effort: "high",
+    });
+    expect(parseCursorListModelId("claude-4.6-sonnet-medium-thinking")).toEqual({
+      base: "claude-4.6-sonnet",
+      fast: false,
+      thinking: true,
+      effort: "medium",
+    });
+    expect(parseCursorListModelId("kimi-k2.7-code")).toEqual({
+      base: "kimi-k2.7-code",
+      fast: false,
+      thinking: false,
+    });
+  });
+
+  it("groups variants into one model with Fast and thinking options", () => {
+    const { catalog } = parseCursorListModels(LIST_MODELS_SAMPLE);
+    expect(catalog.defaultModel).toEqual(cursorModelRef("auto"));
+    expect(catalog.models.map((model) => model.label)).toEqual([
+      "Auto",
+      "Composer 2.5",
+      "GPT-5.6 Sol",
+      "Claude Opus 5",
+      "Kimi K2.7 Code",
+    ]);
+    expect(
+      catalog.models.find((model) => model.label === "Auto")?.supportedThinkingOptionIds,
+    ).toBeUndefined();
+    expect(
+      catalog.models.find((model) => model.label === "Composer 2.5")?.supportedThinkingOptionIds,
+    ).toEqual(["g.fast~false", "g.fast~true"]);
+    expect(
+      catalog.models.find((model) => model.label === "GPT-5.6 Sol")?.supportedThinkingOptionIds
+        ?.length,
+    ).toBe(3);
+    expect(
+      catalog.models.find((model) => model.label === "Claude Opus 5")?.supportedThinkingOptionIds
+        ?.length,
+    ).toBe(3);
   });
 });

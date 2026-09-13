@@ -73,9 +73,10 @@ contract investigation before release acceptance.
 - Edit Diff is partial: it requires native ACP diff content. Delete/rename semantics,
   shell edits and missing historical diffs are not inferred. Other Cursor notification
   extensions are not all implemented.
-- Model inspection opens one empty native ACP session per cache refresh because
-  the catalog is returned by `session/new`. It submits no model prompt. Both
-  successful and failed inspection results are cached for five minutes on demand.
+- Model inspection runs native `cursor-agent --list-models` and splits Fast /
+  effort / thinking suffixes into the Host catalog. It does not create an ACP
+  Session. Conversation Sessions still use ACP `session/new` when the user
+  chats. Successful and failed inspection results are cached for five minutes.
 - The native history format and operating-system authentication behavior require
   platform/version acceptance before formal product support is claimed.
 

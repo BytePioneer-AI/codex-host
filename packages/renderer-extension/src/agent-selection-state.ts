@@ -47,6 +47,7 @@ export interface DraftComposerState {
   codeBuddyModel?: HarnessModelRef;
   codeBuddyThinkingOptionId?: HarnessThinkingOptionId;
   cursorCliModel?: HarnessModelRef;
+  cursorCliThinkingOptionId?: HarnessThinkingOptionId;
   hermesModel?: HarnessModelRef;
   permissionModeByAgent?: Partial<Record<ExternalRendererAgent, HarnessPermissionModeId>>;
 }
@@ -248,6 +249,9 @@ export class DraftAgentController<Composer extends object> {
     if (agent === "codebuddy" && thinkingOptionId) {
       state.codeBuddyThinkingOptionId = thinkingOptionId;
     } else if (agent === "codebuddy") delete state.codeBuddyThinkingOptionId;
+    if (agent === "cursor-cli" && thinkingOptionId) {
+      state.cursorCliThinkingOptionId = thinkingOptionId;
+    } else if (agent === "cursor-cli") delete state.cursorCliThinkingOptionId;
     if (agent !== "codex") {
       const permissionModeByAgent: NonNullable<DraftComposerState["permissionModeByAgent"]> = {};
       for (const candidate of [
@@ -305,6 +309,7 @@ export class DraftAgentController<Composer extends object> {
     if (agent === "antigravity") return state.antigravityThinkingOptionId;
     if (agent === "kiro-cli") return state.kiroCliThinkingOptionId;
     if (agent === "codebuddy") return state.codeBuddyThinkingOptionId;
+    if (agent === "cursor-cli") return state.cursorCliThinkingOptionId;
     return undefined;
   }
 
@@ -401,6 +406,10 @@ export class DraftAgentController<Composer extends object> {
       state.codeBuddyThinkingOptionId = thinkingOptionId;
     } else if (agent === "codebuddy") {
       delete state.codeBuddyThinkingOptionId;
+    } else if (agent === "cursor-cli" && thinkingOptionId) {
+      state.cursorCliThinkingOptionId = thinkingOptionId;
+    } else if (agent === "cursor-cli") {
+      delete state.cursorCliThinkingOptionId;
     }
     return state;
   }

@@ -8,6 +8,7 @@ import {
   createDefaultRendererSettingsPages,
   type RendererConnectionDiagnostics,
   type RendererCodexAccountClient,
+  type RendererCursorModelsClient,
   type RendererUpdateClient,
 } from "./settings/pages.js";
 import type {
@@ -28,6 +29,7 @@ export interface RendererSettingsLifecycleOptions {
   getConnectionDiagnostics?(): RendererConnectionDiagnostics | null;
   getAccountClient?(): RendererCodexAccountClient | null;
   getSessionImportClient?(): RendererSessionImportClient | null;
+  getCursorModelsClient?(): RendererCursorModelsClient | null;
   openImportedThread?: RendererImportedThreadOpener;
   onLocaleChange?(locale: RendererSettingsLocale): void;
 }
@@ -74,6 +76,7 @@ export function installRendererSettingsLifecycle(
         await options.openImportedThread(threadId, signal);
         if (!disposed && !signal.aborted) shell?.close();
       },
+      options.getCursorModelsClient ?? (() => null),
     );
     const nextShell = installRendererSettingsShell(definitions, messages, ownerWindow.document);
     const nextTrigger = installRendererSettingsHeaderTrigger({

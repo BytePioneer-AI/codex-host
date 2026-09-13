@@ -26,6 +26,12 @@ export interface RendererSettingsMessages {
   readonly generalSection: string;
   readonly otherSection: string;
   readonly appearanceDescription: string;
+  readonly modelsDescription: string;
+  readonly modelsUnavailable: string;
+  readonly modelsLoading: string;
+  readonly modelsEmpty: string;
+  readonly modelsLoadFailed: string;
+  readonly modelsSearchPlaceholder: string;
   readonly reasoningSoftWrapTitle: string;
   readonly reasoningSoftWrapDescription: string;
   readonly pageUnavailable: string;
@@ -238,6 +244,12 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   generalSection: "General",
   otherSection: "Other",
   appearanceDescription: "Adjust how thinking text is displayed in the conversation.",
+  modelsDescription: "Choose which Cursor CLI models appear in the composer picker.",
+  modelsUnavailable: "Cursor CLI is not available, so the model list cannot be loaded.",
+  modelsLoading: "Loading models…",
+  modelsEmpty: "No models were returned by Cursor CLI.",
+  modelsLoadFailed: "Could not load the Cursor CLI model catalog.",
+  modelsSearchPlaceholder: "Search models",
   reasoningSoftWrapTitle: "Wrap thinking text",
   reasoningSoftWrapDescription:
     "Wrap long thinking lines in the transcript. Ordinary shell output is unaffected. Off by default.",
@@ -465,6 +477,7 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   pageLabels: Object.freeze({
     connections: "Connections",
     appearance: "Appearance",
+    models: "Models",
     accounts: "Accounts",
     "session-import": "Session Import",
     updates: "Updates",
@@ -481,6 +494,12 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   generalSection: "通用",
   otherSection: "其他",
   appearanceDescription: "调整会话中思考文本的显示方式。",
+  modelsDescription: "选择哪些 Cursor CLI 模型出现在输入框的模型选择器中。",
+  modelsUnavailable: "Cursor CLI 当前不可用，无法加载模型列表。",
+  modelsLoading: "正在加载模型…",
+  modelsEmpty: "Cursor CLI 没有返回可用模型。",
+  modelsLoadFailed: "无法加载 Cursor CLI 模型目录。",
+  modelsSearchPlaceholder: "搜索模型",
   reasoningSoftWrapTitle: "换行显示思考文本",
   reasoningSoftWrapDescription: "让思考块中的长行自动换行。普通 Shell 输出不受影响。默认关闭。",
   pageUnavailable: "页面不可用",
@@ -699,6 +718,7 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   pageLabels: Object.freeze({
     connections: "连接",
     appearance: "外观",
+    models: "模型",
     accounts: "账号",
     "session-import": "会话导入",
     updates: "更新",

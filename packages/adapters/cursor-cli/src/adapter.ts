@@ -30,15 +30,21 @@ import {
 import {
   harnessIdSchema,
   harnessPermissionModeIdSchema,
+  harnessThinkingOptionIdSchema,
   nativeSessionRefSchema,
   nativeTurnRefSchema,
 } from "@codexhost/shared-contracts";
 import {
-  CURSOR_CAPABILITIES,
   CURSOR_MODES,
-  cursorCatalog,
+  cursorCapabilities,
+  cursorConfigOptions,
   cursorModelRef,
   cursorNativeModel,
+  cursorParameterGroups,
+  cursorSessionConfiguration,
+  cursorThinkingFromNativeModelId,
+  decodeCursorModelRef,
+  decodeGroupedThinkingOptionId,
   cursorModels,
 } from "./models.js";
 import {
@@ -51,11 +57,18 @@ import { CursorTurnOutput, cursorSnapshot } from "./projection.js";
 import { CursorInteractions } from "./interactions.js";
 import { type CursorSubagents, cursorTaskAddress } from "./subagents.js";
 import type { HarnessSubagentCapability } from "@codexhost/harness-adapter";
+import {
+  cursorListModelsVariantKey,
+  parseCursorListModelId,
+  parseCursorListModels,
+  readCursorListModels,
+} from "./list-models.js";
 
 export interface CursorAdapterOptions {
   environment?: NodeJS.ProcessEnv;
   command?: string;
   timeoutMs?: number;
+  listModels?: () => Promise<string>;
 }
 export function cursorError(error: unknown): HarnessError {
   const message = sanitizeDiagnosticTail(
@@ -112,6 +125,7 @@ export class CursorAdapter implements HarnessAdapter {
     string,
     { expires: number; pending: boolean; result: Promise<HarnessInspection> }
   >();
+  #variants = new Map<string, string>();
   #closed = false;
   constructor(readonly options: CursorAdapterOptions = {}) {}
   transportOptions(cwd: string, environment?: NodeJS.ProcessEnv): CursorTransportOptions {
@@ -133,13 +147,16 @@ export class CursorAdapter implements HarnessAdapter {
     if (cached && (cached.pending || (!input.refresh && cached.expires > Date.now())))
       return cached.result;
     const result = (async (): Promise<HarnessInspection> => {
-      const transport = new CursorTransport(this.transportOptions(cwd));
       try {
-        const info = await transport.open();
+        const text = this.options.listModels
+          ? await this.options.listModels()
+          : await readCursorListModels(this.transportOptions(cwd));
+        const parsed = parseCursorListModels(text);
+        this.#variants = parsed.variants;
         return {
           status: "ready",
-          catalog: cursorCatalog(info),
-          capabilities: CURSOR_CAPABILITIES,
+          catalog: parsed.catalog,
+          capabilities: cursorCapabilities(parsed.catalog.thinkingOptions.length > 0),
           permissionModes: CURSOR_MODES,
         };
       } catch (error) {
@@ -148,8 +165,6 @@ export class CursorAdapter implements HarnessAdapter {
           status: failure.code === "notInstalled" ? "notInstalled" : "unavailable",
           error: failure,
         };
-      } finally {
-        await transport.close();
       }
     })();
     // Cache negative results as well; discovery never starts a polling/retry timer.
@@ -165,14 +180,8 @@ export class CursorAdapter implements HarnessAdapter {
     if (this.#closed) return rejected("invalidState", "Cursor adapter is closed");
     if (input.kind !== "create" && input.kind !== "resume")
       return rejected("unsupported", "Cursor fork and rollback are not supported");
-    if (
-      input.thinkingOptionId ||
-      (input.kind === "create" && input.executionPolicy === "unattended-full-access")
-    )
-      return rejected(
-        "unsupported",
-        "Cursor ACP does not expose this execution policy or thinking selection",
-      );
+    if (input.kind === "create" && input.executionPolicy === "unattended-full-access")
+      return rejected("unsupported", "Cursor ACP does not expose this execution policy");
     if (input.kind === "resume" && input.nativeRef.harnessId !== this.harnessId)
       return rejected("invalidRequest", "Session belongs to another Harness");
     const options = this.transportOptions(input.cwd, input.environment);
@@ -190,6 +199,7 @@ export class CursorAdapter implements HarnessAdapter {
           this.#sessions.delete(session);
         },
         input.kind === "create",
+        this.#variants,
       );
       if (input.kind === "resume") {
         const native = readCursorNativeTurns(transport.sessionId, options.cwd, options.environment);
@@ -207,6 +217,25 @@ export class CursorAdapter implements HarnessAdapter {
       if (input.model) {
         const selected = await session.execute({ type: "model.select", model: input.model });
         if (!selected.ok) throw new Error(selected.error.message);
+      }
+      const legacyModelId = input.model ? decodeCursorModelRef(input.model.id) : "";
+      const requestedThinking =
+        input.thinkingOptionId ??
+        (legacyModelId.includes("[")
+          ? cursorThinkingFromNativeModelId(
+              cursorParameterGroups(cursorConfigOptions({ configOptions: session.configOptions })),
+              legacyModelId,
+            )
+          : undefined);
+      if (
+        requestedThinking &&
+        requestedThinking !== session.initialState.effectiveThinkingOptionId
+      ) {
+        const selected = await session.execute({
+          type: "thinking.select",
+          thinkingOptionId: harnessThinkingOptionIdSchema.parse(requestedThinking),
+        });
+        if (!selected.ok && input.thinkingOptionId) throw new Error(selected.error.message);
       }
       if (input.permissionModeId) {
         const selected = await session.execute({
@@ -237,7 +266,7 @@ export class CursorAdapter implements HarnessAdapter {
 
 export class CursorSession implements HarnessSession {
   readonly harnessId = harnessIdSchema.parse("cursor-cli");
-  readonly capabilities = CURSOR_CAPABILITIES;
+  readonly capabilities: ReturnType<typeof cursorCapabilities>;
   readonly initialUsage = null;
   readonly initialState: HarnessSessionState;
   readonly #channel = new HarnessOutputChannel<HarnessOutput>();
@@ -248,6 +277,10 @@ export class CursorSession implements HarnessSession {
   #configuring = false;
   #closed = false;
   #fresh: boolean;
+  #configOptions: unknown;
+  get configOptions() {
+    return this.#configOptions;
+  }
   #subagentOutput: CursorSubagents | undefined;
   subagentSnapshot(callId: string): HostThreadSnapshot | undefined {
     try {
@@ -261,15 +294,22 @@ export class CursorSession implements HarnessSession {
     readonly info: CursorSessionInfo,
     readonly onClose: () => void,
     created = true,
+    readonly variants = new Map<string, string>(),
   ) {
     this.#fresh = created;
+    this.#configOptions = info.configOptions;
+    const model = cursorModelRef(cursorModels(info).current);
+    this.capabilities = cursorCapabilities(
+      cursorParameterGroups(cursorConfigOptions(info)).length > 0 ||
+        cursorModels(info).models.some((entry) => !entry.value.includes("[")),
+    );
     this.initialState = {
       nativeRef: nativeSessionRefSchema.parse({
         harnessId: "cursor-cli",
         nativeSessionId: transport.sessionId,
         formatVersion: 1,
       }),
-      effectiveModel: cursorModelRef(cursorModels(info).current),
+      ...cursorSessionConfiguration(info, model),
       effectivePermissionModeId: harnessPermissionModeIdSchema.parse(
         info.modes?.currentModeId ?? "agent",
       ),
@@ -371,29 +411,74 @@ export class CursorSession implements HarnessSession {
       active.task = this.#run(command, before);
       return { ok: true, value: { turnId: command.turnId } };
     }
-    if (command.type === "thinking.select")
-      return rejected(
-        "unsupported",
-        "Cursor ACP exposes model variants, not an independent thinking selector",
-      );
+    if (command.type === "thinking.select") {
+      const selections = decodeGroupedThinkingOptionId(command.thinkingOptionId);
+      if (!this.capabilities.configuration.selectThinkingOption || !selections) {
+        return rejected(
+          "unsupported",
+          "Cursor ACP exposes model variants, not an independent thinking selector",
+        );
+      }
+    }
     this.#configuring = true;
     try {
-      const value =
-        command.type === "model.select"
-          ? cursorNativeModel(this.info, command.model.id)
-          : command.permissionModeId;
-      const configId = command.type === "model.select" ? "model" : "mode";
-      if (configId === "mode" && !CURSOR_MODES.modes.some((mode) => mode.id === value))
-        return rejected("invalidRequest", "Unknown Cursor execution mode");
-      const result = await this.transport.configure(configId, value);
-      if (
-        !result.configOptions.some(
-          (option) => option.id === configId && option.currentValue === value,
+      if (command.type === "thinking.select") {
+        const selections = decodeGroupedThinkingOptionId(command.thinkingOptionId);
+        if (!selections) return rejected("invalidRequest", "Unknown Cursor Thinking option");
+        const base = this.initialState.effectiveModel
+          ? decodeCursorModelRef(this.initialState.effectiveModel.id)
+          : "";
+        const variant = this.variants.get(
+          cursorListModelsVariantKey(base, command.thinkingOptionId),
+        );
+        if (variant) {
+          const result = await this.transport.configure("model", variant);
+          const options = cursorConfigOptions(result);
+          const current = options.find((option) => option.id === "model")?.currentValue;
+          if (current !== variant && current !== base) {
+            throw new Error("Cursor did not confirm configuration selection");
+          }
+          this.#syncConfiguration(options, this.initialState.effectiveModel);
+        } else {
+          let options = cursorConfigOptions({ configOptions: this.#configOptions });
+          for (const selection of selections) {
+            const result = await this.transport.configure(selection.groupId, selection.optionId);
+            options = cursorConfigOptions(result);
+            if (
+              !options.some(
+                (option) =>
+                  option.id === selection.groupId && option.currentValue === selection.optionId,
+              )
+            )
+              throw new Error("Cursor did not confirm configuration selection");
+          }
+          this.#syncConfiguration(options, this.initialState.effectiveModel);
+        }
+      } else {
+        const value =
+          command.type === "model.select"
+            ? this.#nativeSelectValue(command.model.id)
+            : command.permissionModeId;
+        const configId = command.type === "model.select" ? "model" : "mode";
+        if (configId === "mode" && !CURSOR_MODES.modes.some((mode) => mode.id === value))
+          return rejected("invalidRequest", "Unknown Cursor execution mode");
+        const result = await this.transport.configure(configId, value);
+        const options = cursorConfigOptions(result);
+        const current = options.find((option) => option.id === configId)?.currentValue;
+        if (
+          current !== value &&
+          !(
+            configId === "model" &&
+            parseCursorListModelId(current ?? "").base === parseCursorListModelId(value).base
+          )
         )
-      )
-        throw new Error("Cursor did not confirm configuration selection");
-      if (command.type === "model.select") this.initialState.effectiveModel = command.model;
-      else this.initialState.effectivePermissionModeId = command.permissionModeId;
+          throw new Error("Cursor did not confirm configuration selection");
+        if (command.type === "model.select") this.#syncConfiguration(options, command.model);
+        else {
+          this.#configOptions = result.configOptions;
+          this.initialState.effectivePermissionModeId = command.permissionModeId;
+        }
+      }
       this.#channel.emit({
         kind: "event",
         event: { type: "session.state.changed", state: { ...this.initialState } },
@@ -404,6 +489,38 @@ export class CursorSession implements HarnessSession {
     } finally {
       this.#configuring = false;
     }
+  }
+  #nativeSelectValue(ref: string): string {
+    let base: string;
+    try {
+      base = cursorNativeModel({ configOptions: this.#configOptions }, ref);
+    } catch {
+      base = decodeCursorModelRef(ref);
+    }
+    return (
+      this.variants.get(
+        cursorListModelsVariantKey(base, this.initialState.effectiveThinkingOptionId),
+      ) ??
+      this.variants.get(cursorListModelsVariantKey(base)) ??
+      base
+    );
+  }
+  #syncConfiguration(
+    options: ReturnType<typeof cursorConfigOptions>,
+    model = this.initialState.effectiveModel,
+  ) {
+    this.#configOptions = options;
+    if (!model) return;
+    const next = cursorSessionConfiguration({ configOptions: options }, model);
+    this.initialState.effectiveModel = next.effectiveModel;
+    if (next.resolvedModelLabel) this.initialState.resolvedModelLabel = next.resolvedModelLabel;
+    else delete this.initialState.resolvedModelLabel;
+    if (next.effectiveThinkingOptionId) {
+      this.initialState.effectiveThinkingOptionId = next.effectiveThinkingOptionId;
+    } else delete this.initialState.effectiveThinkingOptionId;
+    if (next.availableThinkingOptions) {
+      this.initialState.availableThinkingOptions = next.availableThinkingOptions;
+    } else delete this.initialState.availableThinkingOptions;
   }
   async #run(command: TurnStartCommand, before: CursorNativeTurn[]) {
     let fault: HarnessError | undefined;

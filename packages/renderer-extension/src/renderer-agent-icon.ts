@@ -148,6 +148,10 @@ export function createRendererAgentIcon(
     image.style.width = `${size}px`;
     image.style.height = `${size}px`;
     image.style.objectFit = "contain";
+    image.style.boxSizing = "border-box";
+    image.style.padding = `${Math.max(1, Math.round(size / 16))}px`;
+    image.style.borderRadius = "22.37%";
+    image.style.background = "#d8d8e8";
     image.style.flex = "none";
     return image;
   }

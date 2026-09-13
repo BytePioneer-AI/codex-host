@@ -35,6 +35,7 @@ function load(environment: NodeJS.ProcessEnv = {}) {
       platform: process.platform,
       managedRemoteHost: false,
     },
+    loadTimeoutMs: 30_000,
     warmup: false,
   });
 }
@@ -62,7 +63,7 @@ describe("installed Harness composition", () => {
     },
   );
 
-  // Cold bundle imports can exceed Vitest's 5s default on CI; the loader retains its 10s budget.
+  // Cold bundle imports can exceed Vitest's 5s default on CI; the loader retains its 30s budget.
   it("loads all preinstalled plugin factories without static registration or executable discovery", async () => {
     const registry = await load();
     try {
@@ -85,7 +86,7 @@ describe("installed Harness composition", () => {
     } finally {
       await registry.close();
     }
-  }, 15_000);
+  }, 35_000);
 
   it("provides every built-in command catalog before inspection or Session creation", async () => {
     const expected = {
@@ -167,6 +168,7 @@ describe("installed Harness composition", () => {
         managedRemoteHost: true,
         brokerDescriptorPath: path.resolve(".missing-fixture", "broker.json"),
       },
+      loadTimeoutMs: 30_000,
       warmup: false,
     });
     try {

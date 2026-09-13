@@ -31,7 +31,7 @@ import {
 import { mapQoderSnapshot } from "./qoder-history.js";
 import { parseQoderModelCatalog } from "./qoder-models.js";
 import { QODER_PERMISSION_MODE_CATALOG } from "./qoder-permission-modes.js";
-import { QODER_COMMAND_CATALOG } from "./qoder-slash-commands.js";
+import { QODER_FALLBACK_COMMAND_CATALOG } from "./qoder-slash-commands.js";
 import type {
   ForkSessionOptions,
   ForkSessionResult,
@@ -70,7 +70,7 @@ export interface QoderAdapterOptions {
 
 export class QoderAdapter implements HarnessAdapter {
   readonly harnessId: HarnessId = harnessIdSchema.parse("qoder");
-  readonly commandCatalog = QODER_COMMAND_CATALOG;
+  readonly commandCatalog = QODER_FALLBACK_COMMAND_CATALOG;
 
   readonly #commandOverride: string | undefined;
   readonly #environment: Record<string, string | undefined>;
@@ -399,8 +399,7 @@ export class QoderAdapter implements HarnessAdapter {
     }
 
     const cachedInspection =
-      this.#inspections.get(input.cwd)?.result ??
-      [...this.#inspections.values()][0]?.result;
+      this.#inspections.get(input.cwd)?.result ?? [...this.#inspections.values()][0]?.result;
     const catalog =
       cachedInspection && cachedInspection.status === "ready"
         ? cachedInspection.catalog
@@ -411,8 +410,12 @@ export class QoderAdapter implements HarnessAdapter {
       cwd: input.cwd,
       environment,
       ...("model" in input && input.model ? { model: input.model } : {}),
-      ...("permissionModeId" in input && input.permissionModeId ? { permissionModeId: input.permissionModeId } : {}),
-      ...("thinkingOptionId" in input && input.thinkingOptionId ? { thinkingOptionId: input.thinkingOptionId } : {}),
+      ...("permissionModeId" in input && input.permissionModeId
+        ? { permissionModeId: input.permissionModeId }
+        : {}),
+      ...("thinkingOptionId" in input && input.thinkingOptionId
+        ? { thinkingOptionId: input.thinkingOptionId }
+        : {}),
       ...(catalog ? { catalog } : {}),
       ...(openResumeId ? { resume: openResumeId } : {}),
       queryFactory: this.#queryFactory,

@@ -121,7 +121,7 @@ export function mapQoderSnapshot(
 ): HostThreadSnapshot {
   const turns: HostTurnSnapshot[] = [];
 
-  for (let index = 0; index < messages.length; ) {
+  for (let index = 0; index < messages.length;) {
     const user = messages[index];
     if (!user || !isHumanUser(user)) {
       index += 1;
@@ -221,9 +221,7 @@ export function mapQoderSnapshot(
             items.push({
               item: {
                 type: "reasoning",
-                itemId: hostItemIdSchema.parse(
-                  `qoder-item-${message.uuid}-thinking-${blockIndex}`,
-                ),
+                itemId: hostItemIdSchema.parse(`qoder-item-${message.uuid}-thinking-${blockIndex}`),
                 text: rawBlock.thinking,
               },
               outcome: { status: "succeeded" },

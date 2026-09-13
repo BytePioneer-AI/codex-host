@@ -192,14 +192,9 @@ function isFileMutatingTool(toolName: string): boolean {
 }
 
 function isWriteTool(toolName: string): boolean {
-  return [
-    "write",
-    "writefile",
-    "filewrite",
-    "writetofile",
-    "create",
-    "createfile",
-  ].includes(compactToolName(toolName));
+  return ["write", "writefile", "filewrite", "writetofile", "create", "createfile"].includes(
+    compactToolName(toolName),
+  );
 }
 
 function formatHunkRange(start: number, count: number): string {
@@ -233,10 +228,7 @@ export function normalizeDisplayPath(filePath: string, cwd?: string): string | n
   const normalizedCwd = cwd.trim().replaceAll("\\", "/").replace(/\/+$/, "");
   if (normalizedCwd.length === 0) return normalizedFile.replace(/^\.\//, "");
 
-  if (
-    normalizedFile.toLowerCase() === normalizedCwd.toLowerCase() ||
-    normalizedFile === "."
-  ) {
+  if (normalizedFile.toLowerCase() === normalizedCwd.toLowerCase() || normalizedFile === ".") {
     return null;
   }
 
@@ -246,8 +238,7 @@ export function normalizeDisplayPath(filePath: string, cwd?: string): string | n
     return rel.length > 0 ? rel : null;
   }
 
-  const isAbsolute =
-    normalizedFile.startsWith("/") || /^[a-zA-Z]:\//.test(normalizedFile);
+  const isAbsolute = normalizedFile.startsWith("/") || /^[a-zA-Z]:\//.test(normalizedFile);
   if (!isAbsolute) {
     return normalizedFile.replace(/^\.\//, "");
   }
@@ -311,11 +302,7 @@ function extractHunkContent(unifiedDiff: string): string {
   return nonHeaderLines.join("\n");
 }
 
-function mergeFileDiffs(
-  filePath: string,
-  diffs: string[],
-  kind: HostFileChange["kind"],
-): string {
+function mergeFileDiffs(filePath: string, diffs: string[], kind: HostFileChange["kind"]): string {
   const normalized = filePath.replaceAll("\\", "/");
   const isAbsolute = normalized.startsWith("/") || /^[a-zA-Z]:\//.test(normalized);
   const aPath = isAbsolute ? normalized : `a/${normalized}`;
@@ -323,15 +310,11 @@ function mergeFileDiffs(
   const oldHeader = kind === "add" ? "/dev/null" : aPath;
   const newHeader = kind === "delete" ? "/dev/null" : bPath;
 
-  const header = [
-    `diff --git ${aPath} ${bPath}`,
-    `--- ${oldHeader}`,
-    `+++ ${newHeader}`,
-  ].join("\n");
+  const header = [`diff --git ${aPath} ${bPath}`, `--- ${oldHeader}`, `+++ ${newHeader}`].join(
+    "\n",
+  );
 
-  const hunks = diffs
-    .map(extractHunkContent)
-    .filter((hunk) => hunk.length > 0);
+  const hunks = diffs.map(extractHunkContent).filter((hunk) => hunk.length > 0);
 
   if (hunks.length === 0) {
     return `${header}\n`;
@@ -527,10 +510,7 @@ function projectFileChangeKind(kind: HostFileChange["kind"]): JsonValue {
   return { type: kind };
 }
 
-export function extractContentFromUnifiedDiff(
-  unifiedDiff: string,
-  kind: "add" | "delete",
-): string {
+export function extractContentFromUnifiedDiff(unifiedDiff: string, kind: "add" | "delete"): string {
   if (
     !unifiedDiff.includes("@@") &&
     !unifiedDiff.startsWith("diff --git") &&

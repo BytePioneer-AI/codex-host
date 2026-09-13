@@ -2,91 +2,230 @@ import { describe, expect, it, vi } from "vitest";
 import {
   harnessCommandCatalogSchema,
   hostTurnIdSchema,
+  type JsonObject,
 } from "@codexhost/shared-contracts";
+import type { HarnessOutput } from "@codexhost/harness-adapter";
 
 import { QoderAdapter } from "../src/qoder-adapter.js";
 import {
   findQoderCommandDescriptor,
-  formatQoderTurnPrompt,
+  humanize,
+  mapQoderSlashCommands,
   parseAndFormatQoderCommand,
-  QODER_COMMAND_CATALOG,
+  parseQoderCommandInvocation,
   QODER_COMMANDS,
+  QODER_COMMAND_CATALOG,
+  QODER_FALLBACK_COMMAND_CATALOG,
+  QODER_VERIFIED_HEADLESS_COMMAND_IDS,
 } from "../src/qoder-slash-commands.js";
 import { QoderSession } from "../src/qoder-sdk-transport.js";
 import type {
   QoderQuery,
   QoderQueryFactory,
+  QoderSlashCommand,
   SDKMessage,
   SDKUserMessage,
 } from "../src/qoder-sdk-types.js";
 
 class FakeQoderQuery implements QoderQuery {
   readonly interrupt = vi.fn(async () => undefined);
-  readonly close = vi.fn(async () => undefined);
+  readonly close = vi.fn(async () => {
+    this.#closed = true;
+    for (const waiter of this.#waiters.splice(0)) {
+      waiter({ done: true, value: undefined });
+    }
+  });
   readonly setModel = vi.fn(async () => undefined);
   readonly setPermissionMode = vi.fn(async () => undefined);
   readonly request = vi.fn(async () => ({}));
+  supportedCommands?: () => Promise<QoderSlashCommand[]>;
   readonly pushedMessages: SDKUserMessage[] = [];
+
+  #closed = false;
+  #messageQueue: SDKMessage[] = [];
+  #waiters: Array<(result: IteratorResult<SDKMessage>) => void> = [];
+  #errorToThrow: Error | undefined = undefined;
+  #rejectWaiter: ((reason?: unknown) => void) | undefined = undefined;
+
+  throwInIterator(err: Error): void {
+    if (this.#waiters.length > 0) {
+      this.#waiters.shift();
+      this.#rejectWaiter?.(err);
+    } else {
+      this.#errorToThrow = err;
+    }
+  }
+
+  deliverMessage(msg: SDKMessage): void {
+    const waiter = this.#waiters.shift();
+    if (waiter) {
+      waiter({ done: false, value: msg });
+    } else {
+      this.#messageQueue.push(msg);
+    }
+  }
+
+  attachPrompt(prompt: string | AsyncIterable<SDKUserMessage>): void {
+    if (typeof prompt === "object" && prompt !== null && Symbol.asyncIterator in prompt) {
+      void (async () => {
+        try {
+          for await (const msg of prompt) {
+            this.pushedMessages.push(msg);
+          }
+        } catch {
+          // Pushable input closed
+        }
+      })();
+    }
+  }
 
   [Symbol.asyncIterator](): AsyncIterator<SDKMessage> {
     return {
-      next: () => new Promise(() => {}),
+      next: () => {
+        if (this.#errorToThrow) {
+          const err = this.#errorToThrow;
+          this.#errorToThrow = undefined;
+          return Promise.reject(err);
+        }
+        const msg = this.#messageQueue.shift();
+        if (msg !== undefined) return Promise.resolve({ done: false, value: msg });
+        if (this.#closed) return Promise.resolve({ done: true, value: undefined });
+        return new Promise<IteratorResult<SDKMessage>>((resolve, reject) => {
+          this.#rejectWaiter = reject;
+          this.#waiters.push(resolve);
+        });
+      },
     };
   }
 }
 
+class OutputCollector {
+  readonly outputs: HarnessOutput[] = [];
+  constructor(stream: AsyncIterable<HarnessOutput>) {
+    void (async () => {
+      try {
+        for await (const out of stream) {
+          this.outputs.push(out);
+        }
+      } catch {
+        // Output stream ended
+      }
+    })();
+  }
+}
+
+async function flushTicks(ms = 10): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function createSession(customSupportedCommands?: QoderSlashCommand[]): {
+  session: QoderSession;
+  fakeQuery: FakeQoderQuery;
+} {
+  const fakeQuery = new FakeQoderQuery();
+  if (customSupportedCommands) {
+    fakeQuery.supportedCommands = vi.fn(async () => customSupportedCommands);
+  }
+  const factory: QoderQueryFactory = ({ prompt }) => {
+    fakeQuery.attachPrompt(prompt);
+    return fakeQuery;
+  };
+
+  const session = new QoderSession({
+    sessionId: "test-cmd-session",
+    cwd: "/test/cwd",
+    queryFactory: factory,
+  });
+
+  return { session, fakeQuery };
+}
+
 describe("Qoder Slash Commands Capability", () => {
-  describe("Catalog Definition", () => {
-    it("exposes the command catalog on the adapter before inspection or session creation", () => {
+  describe("Catalog Definition & Helpers", () => {
+    it("exposes the fallback command catalog on the adapter before inspection or session creation", () => {
       const adapter = new QoderAdapter();
-      expect(adapter.commandCatalog).toEqual(QODER_COMMAND_CATALOG);
-      expect(QODER_COMMANDS).toBe(QODER_COMMAND_CATALOG.commands);
+      expect(adapter.commandCatalog).toEqual(QODER_FALLBACK_COMMAND_CATALOG);
+      expect(QODER_COMMAND_CATALOG).toEqual(QODER_FALLBACK_COMMAND_CATALOG);
+      expect(QODER_COMMANDS).toEqual(QODER_FALLBACK_COMMAND_CATALOG.commands);
     });
 
-    it("conforms to harnessCommandCatalogSchema and includes real Qoder CLI commands", () => {
-      const parsed = harnessCommandCatalogSchema.safeParse(QODER_COMMAND_CATALOG);
+    it("restricts fallback catalog strictly to verified headless commands (/compact only)", () => {
+      const parsed = harnessCommandCatalogSchema.safeParse(QODER_FALLBACK_COMMAND_CATALOG);
       expect(parsed.success).toBe(true);
 
-      const invocations = QODER_COMMAND_CATALOG.commands.map((c) => c.invocation);
-      expect(invocations).toContain("/compact");
-      expect(invocations).toContain("/plan");
-      expect(invocations).toContain("/review");
-      expect(invocations).toContain("/diff");
-      expect(invocations).toContain("/init");
-      expect(invocations).toContain("/help");
-      expect(invocations).toContain("/about");
-      expect(invocations).toContain("/mcp");
-      expect(invocations).toContain("/skills");
-      expect(invocations).toContain("/tools");
-      expect(invocations).not.toContain("/boost");
-      expect(invocations.length).toBe(63);
+      const invocations = QODER_FALLBACK_COMMAND_CATALOG.commands.map((c) => c.invocation);
+      expect(invocations).toEqual(["/compact"]);
+      expect(QODER_FALLBACK_COMMAND_CATALOG.commands).toHaveLength(1);
 
-      for (const command of QODER_COMMAND_CATALOG.commands) {
-        expect(command.id).toMatch(/^qoder\./);
-        expect(command.label.length).toBeGreaterThan(0);
-        expect(command.description?.length).toBeGreaterThan(0);
-      }
+      const compactCmd = QODER_FALLBACK_COMMAND_CATALOG.commands[0];
+      expect(compactCmd?.id).toBe("qoder.compact");
+      expect(compactCmd?.label).toBe("Compact");
+      expect(compactCmd?.argumentMode).toBe("text");
+      expect(QODER_VERIFIED_HEADLESS_COMMAND_IDS.has("qoder.compact")).toBe(true);
     });
 
-    it("finds commands by ID, invocation, or suffix", () => {
+    it("humanizes command names correctly", () => {
+      expect(humanize("compact")).toBe("Compact");
+      expect(humanize("memory_stats")).toBe("Memory Stats");
+      expect(humanize("auto-compact")).toBe("Auto Compact");
+      expect(humanize("quick_fix_all")).toBe("Quick Fix All");
+      expect(humanize("")).toBe("");
+    });
+
+    it("maps native QoderSlashCommand items to HarnessCommandCatalog", () => {
+      const nativeCommands: QoderSlashCommand[] = [
+        { name: "compact", description: "Compresses context", argumentHint: "" },
+        { name: "plan", description: "Create execution plan", argumentHint: "<goal>" },
+        { name: "diff", description: "Show git diff", argumentHint: "  " },
+      ];
+
+      const catalog = mapQoderSlashCommands(nativeCommands);
+      expect(catalog.commands).toHaveLength(3);
+
+      expect(catalog.commands[0]).toEqual({
+        id: "qoder.compact",
+        invocation: "/compact",
+        label: "Compact",
+        description: "Compresses context",
+        argumentMode: "none",
+      });
+      expect(catalog.commands[1]).toEqual({
+        id: "qoder.plan",
+        invocation: "/plan",
+        label: "Plan",
+        description: "Create execution plan",
+        argumentMode: "text",
+      });
+      expect(catalog.commands[2]).toEqual({
+        id: "qoder.diff",
+        invocation: "/diff",
+        label: "Diff",
+        description: "Show git diff",
+        argumentMode: "none",
+      });
+    });
+
+    it("finds commands by ID, invocation, or suffix in specified or fallback catalog", () => {
       expect(findQoderCommandDescriptor("qoder.compact")?.invocation).toBe("/compact");
       expect(findQoderCommandDescriptor("/compact")?.id).toBe("qoder.compact");
       expect(findQoderCommandDescriptor("compact")?.id).toBe("qoder.compact");
 
-      expect(findQoderCommandDescriptor("qoder.plan")?.invocation).toBe("/plan");
-      expect(findQoderCommandDescriptor("/plan")?.id).toBe("qoder.plan");
-
-      expect(findQoderCommandDescriptor("/boost")).toBeUndefined();
-      expect(findQoderCommandDescriptor("qoder.boost")).toBeUndefined();
+      expect(findQoderCommandDescriptor("/plan")).toBeUndefined();
       expect(findQoderCommandDescriptor("unknown")).toBeUndefined();
+
+      const customCatalog = mapQoderSlashCommands([
+        { name: "plan", description: "Plan", argumentHint: "<goal>" },
+      ]);
+      expect(findQoderCommandDescriptor("qoder.plan", customCatalog)?.invocation).toBe("/plan");
+      expect(findQoderCommandDescriptor("/plan", customCatalog)?.id).toBe("qoder.plan");
     });
   });
 
-  describe("parseAndFormatQoderCommand", () => {
+  describe("parseQoderCommandInvocation", () => {
     const turnId = hostTurnIdSchema.parse("turn-test-1");
 
     it("formats /compact command with and without arguments", () => {
-      const withText = parseAndFormatQoderCommand({
+      const withText = parseQoderCommandInvocation({
         turnId,
         commandId: "qoder.compact",
         arguments: { text: "focus on api" },
@@ -105,201 +244,139 @@ describe("Qoder Slash Commands Capability", () => {
       if (bare.ok) {
         expect(bare.value.prompt).toBe("/compact");
       }
-    });
 
-    it("formats /plan command with and without arguments", () => {
-      const withText = parseAndFormatQoderCommand({
+      const whitespaceText = parseQoderCommandInvocation({
         turnId,
-        commandId: "qoder.plan",
-        arguments: { text: "database migration" },
+        commandId: "qoder.compact",
+        arguments: { text: "   " },
       });
-      expect(withText.ok).toBe(true);
-      if (withText.ok) {
-        expect(withText.value.prompt).toBe("/plan database migration");
-      }
-
-      const bare = parseAndFormatQoderCommand({
-        turnId,
-        commandId: "qoder.plan",
-      });
-      expect(bare.ok).toBe(true);
-      if (bare.ok) {
-        expect(bare.value.prompt).toBe("/plan");
+      expect(whitespaceText.ok).toBe(true);
+      if (whitespaceText.ok) {
+        expect(whitespaceText.value.prompt).toBe("/compact");
       }
     });
 
-    it("formats /review, /diff, /help, /init commands", () => {
-      const review = parseAndFormatQoderCommand({
-        turnId,
-        commandId: "qoder.review",
-        arguments: { text: "staged changes" },
-      });
-      expect(review.ok).toBe(true);
-      if (review.ok) {
-        expect(review.value.prompt).toBe("/review staged changes");
+    it("rejects unverified commands even if present in custom catalog", () => {
+      const customCatalog = mapQoderSlashCommands([
+        { name: "compact", description: "Compact", argumentHint: "" },
+        { name: "plan", description: "Plan", argumentHint: "<goal>" },
+        { name: "review", description: "Review", argumentHint: "" },
+      ]);
+
+      const planRes = parseQoderCommandInvocation(
+        {
+          turnId,
+          commandId: "qoder.plan",
+          arguments: { text: "database migration" },
+        },
+        customCatalog,
+      );
+      expect(planRes.ok).toBe(false);
+      if (!planRes.ok) {
+        expect(planRes.error.code).toBe("unsupported");
+        expect(planRes.error.message).toContain("not verified for headless execution");
       }
 
-      const diff = parseAndFormatQoderCommand({
-        turnId,
-        commandId: "qoder.diff",
-      });
-      expect(diff.ok).toBe(true);
-      if (diff.ok) {
-        expect(diff.value.prompt).toBe("/diff");
-      }
-
-      const init = parseAndFormatQoderCommand({
-        turnId,
-        commandId: "qoder.init",
-      });
-      expect(init.ok).toBe(true);
-      if (init.ok) {
-        expect(init.value.prompt).toBe("/init");
-      }
-
-      const help = parseAndFormatQoderCommand({
-        turnId,
-        commandId: "qoder.help",
-        arguments: { text: "mcp" },
-      });
-      expect(help.ok).toBe(true);
-      if (help.ok) {
-        expect(help.value.prompt).toBe("/help mcp");
+      const reviewRes = parseQoderCommandInvocation(
+        {
+          turnId,
+          commandId: "qoder.review",
+        },
+        customCatalog,
+      );
+      expect(reviewRes.ok).toBe(false);
+      if (!reviewRes.ok) {
+        expect(reviewRes.error.code).toBe("unsupported");
+        expect(reviewRes.error.message).toContain("not verified for headless execution");
       }
     });
 
-    it("rejects arguments on commands with argumentMode: none", () => {
-      const res = parseAndFormatQoderCommand({
-        turnId,
-        commandId: "qoder.init",
-        arguments: { text: "extra" },
-      });
-      expect(res.ok).toBe(false);
-      if (!res.ok) {
-        expect(res.error.code).toBe("invalidRequest");
-        expect(res.error.message).toContain("does not accept arguments");
-      }
-
-      const resAbout = parseAndFormatQoderCommand({
-        turnId,
-        commandId: "qoder.about",
-        arguments: { text: "unexpected" },
-      });
-      expect(resAbout.ok).toBe(false);
-      if (!resAbout.ok) {
-        expect(resAbout.error.code).toBe("invalidRequest");
-      }
-    });
-
-    it("rejects non-object or invalid arguments", () => {
-      const nonObj = parseAndFormatQoderCommand({
-        turnId,
-        commandId: "qoder.plan",
-        arguments: "bad" as unknown as Record<string, unknown>,
-      });
-      expect(nonObj.ok).toBe(false);
-      if (!nonObj.ok) {
-        expect(nonObj.error.code).toBe("invalidRequest");
-      }
-
-      const unknownArg = parseAndFormatQoderCommand({
-        turnId,
-        commandId: "qoder.plan",
-        arguments: { unknownField: "val" },
-      });
-      expect(unknownArg.ok).toBe(false);
-      if (!unknownArg.ok) {
-        expect(unknownArg.error.code).toBe("invalidRequest");
-      }
-
-      const nonStringText = parseAndFormatQoderCommand({
-        turnId,
-        commandId: "qoder.plan",
-        arguments: { text: 123 as unknown as string },
-      });
-      expect(nonStringText.ok).toBe(false);
-      if (!nonStringText.ok) {
-        expect(nonStringText.error.code).toBe("invalidRequest");
-      }
-    });
-
-    it("rejects unknown command ID (including fabricated /boost)", () => {
-      const res = parseAndFormatQoderCommand({
+    it("rejects unknown command ID not present in catalog", () => {
+      const res = parseQoderCommandInvocation({
         turnId,
         commandId: "qoder.nonexistent",
       });
       expect(res.ok).toBe(false);
       if (!res.ok) {
         expect(res.error.code).toBe("unsupported");
+        expect(res.error.message).toContain("does not expose Harness command");
       }
+    });
 
-      const resBoost = parseAndFormatQoderCommand({
+    it("rejects non-object or invalid arguments", () => {
+      const nonObj = parseQoderCommandInvocation({
         turnId,
-        commandId: "qoder.boost",
+        commandId: "qoder.compact",
+        arguments: "bad" as unknown as JsonObject,
       });
-      expect(resBoost.ok).toBe(false);
-      if (!resBoost.ok) {
-        expect(resBoost.error.code).toBe("unsupported");
+      expect(nonObj.ok).toBe(false);
+      if (!nonObj.ok) {
+        expect(nonObj.error.code).toBe("invalidRequest");
+      }
+
+      const unknownArg = parseQoderCommandInvocation({
+        turnId,
+        commandId: "qoder.compact",
+        arguments: { unknownField: "val" },
+      });
+      expect(unknownArg.ok).toBe(false);
+      if (!unknownArg.ok) {
+        expect(unknownArg.error.code).toBe("invalidRequest");
+        expect(unknownArg.error.message).toContain("unknown argument");
+      }
+
+      const nonStringText = parseQoderCommandInvocation({
+        turnId,
+        commandId: "qoder.compact",
+        arguments: { text: 123 as unknown as string },
+      });
+      expect(nonStringText.ok).toBe(false);
+      if (!nonStringText.ok) {
+        expect(nonStringText.error.code).toBe("invalidRequest");
+        expect(nonStringText.error.message).toContain("must be a string");
+      }
+    });
+
+    it("rejects arguments when command has argumentMode none", () => {
+      const customCatalog = harnessCommandCatalogSchema.parse({
+        commands: [
+          {
+            id: "qoder.compact",
+            invocation: "/compact",
+            label: "Compact",
+            argumentMode: "none",
+          },
+        ],
+      });
+
+      const res = parseQoderCommandInvocation(
+        {
+          turnId,
+          commandId: "qoder.compact",
+          arguments: { text: "extra" },
+        },
+        customCatalog,
+      );
+      expect(res.ok).toBe(false);
+      if (!res.ok) {
+        expect(res.error.code).toBe("invalidRequest");
+        expect(res.error.message).toContain("does not accept arguments");
       }
     });
   });
 
-  describe("formatQoderTurnPrompt", () => {
-    it("preserves native prompts without rewriting", () => {
-      expect(formatQoderTurnPrompt("/compact")).toBe("/compact");
-      expect(formatQoderTurnPrompt("/plan add payment gateway")).toBe("/plan add payment gateway");
-      expect(formatQoderTurnPrompt("/review")).toBe("/review");
-      expect(formatQoderTurnPrompt("/diff")).toBe("/diff");
-      expect(formatQoderTurnPrompt("/init")).toBe("/init");
-      expect(formatQoderTurnPrompt("/help")).toBe("/help");
-      expect(formatQoderTurnPrompt("/boost")).toBe("/boost");
-      expect(formatQoderTurnPrompt("Hello, can you help me write code?")).toBe(
-        "Hello, can you help me write code?",
-      );
-    });
-  });
-
-  describe("Session Commands Execution", () => {
-    function createSession(): {
-      session: QoderSession;
-      fakeQuery: FakeQoderQuery;
-    } {
-      const fakeQuery = new FakeQoderQuery();
-      const factory: QoderQueryFactory = () => fakeQuery;
-
-      const session = new QoderSession({
-        sessionId: "test-cmd-session",
-        cwd: "/test/cwd",
-        queryFactory: factory,
-      });
-
-      return { session, fakeQuery };
-    }
-
-    it("lists command catalog via session.commands.list()", async () => {
+  describe("Session Commands Execution & SDK Message Delivery", () => {
+    it("lists fallback command catalog via session.commands.list()", async () => {
       const { session } = createSession();
       const list = await session.commands.list();
       expect(list.ok).toBe(true);
       if (list.ok) {
-        expect(list.value).toEqual(QODER_COMMAND_CATALOG);
+        expect(list.value).toEqual(QODER_FALLBACK_COMMAND_CATALOG);
       }
     });
 
-    it("executes /plan command and starts turn with formatted prompt", async () => {
-      const { session } = createSession();
-      const turnId = hostTurnIdSchema.parse("turn-plan-1");
-
-      const result = await session.commands.execute({
-        turnId,
-        commandId: "qoder.plan",
-        arguments: { text: "check race conditions" },
-      });
-
-      expect(result).toEqual({ ok: true, value: { turnId } });
-    });
-
-    it("executes /compact command directly", async () => {
-      const { session } = createSession();
+    it("executes /compact command and genuinely pushes native prompt to SDK without client_composed: true", async () => {
+      const { session, fakeQuery } = createSession();
       const turnId = hostTurnIdSchema.parse("turn-compact-1");
 
       const result = await session.commands.execute({
@@ -308,10 +385,146 @@ describe("Qoder Slash Commands Capability", () => {
       });
 
       expect(result).toEqual({ ok: true, value: { turnId } });
+
+      await flushTicks();
+      expect(fakeQuery.pushedMessages).toHaveLength(1);
+      const pushed = fakeQuery.pushedMessages[0];
+      expect(pushed?.type).toBe("user");
+      // client_composed MUST NOT be true so Qoder triggers native slash dispatcher
+      expect(pushed?.client_composed).toBeUndefined();
+      expect(pushed?.message.role).toBe("user");
+      expect(pushed?.message.content).toEqual([{ type: "text", text: "/compact" }]);
+    });
+
+    it("executes /compact command with arguments and pushes correct prompt", async () => {
+      const { session, fakeQuery } = createSession();
+      const turnId = hostTurnIdSchema.parse("turn-compact-args");
+
+      const result = await session.commands.execute({
+        turnId,
+        commandId: "qoder.compact",
+        arguments: { text: "optimize memory" },
+      });
+
+      expect(result).toEqual({ ok: true, value: { turnId } });
+
+      await flushTicks();
+      expect(fakeQuery.pushedMessages).toHaveLength(1);
+      const pushed = fakeQuery.pushedMessages[0];
+      expect(pushed?.client_composed).toBeUndefined();
+      expect(pushed?.message.content).toEqual([{ type: "text", text: "/compact optimize memory" }]);
+    });
+
+    it("rejects unverified commands (e.g. /plan) and never pushes them to the SDK", async () => {
+      const { session, fakeQuery } = createSession();
+      const turnId = hostTurnIdSchema.parse("turn-unverified-plan");
+
+      const result = await session.commands.execute({
+        turnId,
+        commandId: "qoder.plan",
+        arguments: { text: "add payment gateway" },
+      });
+
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.error.code).toBe("unsupported");
+      }
+
+      await flushTicks();
+      // Unverified commands must NEVER be pushed as user prompts
+      expect(fakeQuery.pushedMessages).toHaveLength(0);
+    });
+
+    it("dynamically loads supported commands from query.supportedCommands()", async () => {
+      const customCommands: QoderSlashCommand[] = [
+        { name: "compact", description: "Compact context", argumentHint: "" },
+        { name: "custom_cmd", description: "A custom command", argumentHint: "<arg>" },
+      ];
+
+      const { session, fakeQuery } = createSession(customCommands);
+      await flushTicks();
+
+      const list = await session.commands.list();
+      expect(list.ok).toBe(true);
+      if (list.ok) {
+        const invocations = list.value.commands.map((c) => c.invocation);
+        expect(invocations).toContain("/compact");
+        expect(invocations).toContain("/custom_cmd");
+      }
+
+      // Executing the unverified custom command must still be rejected
+      const turnId = hostTurnIdSchema.parse("turn-custom-cmd");
+      const result = await session.commands.execute({
+        turnId,
+        commandId: "qoder.custom_cmd",
+      });
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.error.code).toBe("unsupported");
+        expect(result.error.message).toContain("not verified for headless execution");
+      }
+      expect(fakeQuery.pushedMessages).toHaveLength(0);
+    });
+
+    it("updates catalog dynamically on system/init message with commands", async () => {
+      const { session, fakeQuery } = createSession();
+
+      fakeQuery.deliverMessage({
+        type: "system",
+        subtype: "init",
+        session_id: "init-session-id",
+        commands: [
+          { name: "compact", description: "Init compact", argumentHint: "" },
+          { name: "init_extra", description: "Init extra", argumentHint: "" },
+        ],
+      } as unknown as SDKMessage);
+
+      await flushTicks();
+
+      const list = await session.commands.list();
+      expect(list.ok).toBe(true);
+      if (list.ok) {
+        const ids = list.value.commands.map((c) => c.id);
+        expect(ids).toContain("qoder.compact");
+        expect(ids).toContain("qoder.init_extra");
+      }
+    });
+
+    it("fully replaces catalog snapshot on commands_changed message without merging removed commands", async () => {
+      const { session, fakeQuery } = createSession();
+
+      // Send commands_changed message containing only a new command (compact intentionally absent)
+      fakeQuery.deliverMessage({
+        type: "system",
+        subtype: "commands_changed",
+        uuid: "msg-uuid-1",
+        session_id: "test-cmd-session",
+        commands: [{ name: "diff", description: "Show git diff", argumentHint: "" }],
+      } as unknown as SDKMessage);
+
+      await flushTicks();
+
+      const list = await session.commands.list();
+      expect(list.ok).toBe(true);
+      if (list.ok) {
+        expect(list.value.commands).toHaveLength(1);
+        expect(list.value.commands[0]?.invocation).toBe("/diff");
+      }
+
+      // Compact is no longer in the catalog snapshot, so executing it should now fail with unsupported
+      const result = await session.commands.execute({
+        turnId: hostTurnIdSchema.parse("turn-removed-compact"),
+        commandId: "qoder.compact",
+      });
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.error.code).toBe("unsupported");
+        expect(result.error.message).toContain("does not expose Harness command");
+      }
     });
 
     it("rejects command when another turn is running (sessionBusy)", async () => {
-      const { session } = createSession();
+      const { session, fakeQuery } = createSession();
       const turn1 = hostTurnIdSchema.parse("turn-active-1");
       const turn2 = hostTurnIdSchema.parse("turn-active-2");
 
@@ -324,50 +537,73 @@ describe("Qoder Slash Commands Capability", () => {
 
       const rejected = await session.commands.execute({
         turnId: turn2,
-        commandId: "qoder.plan",
+        commandId: "qoder.compact",
       });
       expect(rejected.ok).toBe(false);
       if (!rejected.ok) {
         expect(rejected.error.code).toBe("sessionBusy");
         expect(rejected.error.retryable).toBe(true);
       }
+
+      await flushTicks();
+      // Only the turn.start message was sent; rejected command was not pushed
+      expect(fakeQuery.pushedMessages).toHaveLength(1);
+      expect(fakeQuery.pushedMessages[0]?.message.content[0]).toEqual({
+        type: "text",
+        text: "working",
+      });
     });
 
     it("rejects command when session is closed", async () => {
-      const { session } = createSession();
+      const { session, fakeQuery } = createSession();
       await session.close();
 
       const result = await session.commands.execute({
         turnId: hostTurnIdSchema.parse("turn-closed-1"),
-        commandId: "qoder.plan",
+        commandId: "qoder.compact",
       });
       expect(result.ok).toBe(false);
       if (!result.ok) {
         expect(result.error.code).toBe("invalidState");
       }
+      expect(fakeQuery.pushedMessages).toHaveLength(0);
     });
 
-    it("rejects unknown commandId and invalid arguments", async () => {
-      const { session } = createSession();
+    it("completes active command turn as failed when query raises an error", async () => {
+      const { session, fakeQuery } = createSession();
+      const collector = new OutputCollector(session.outputs);
+      const turnId = hostTurnIdSchema.parse("turn-fail-1");
 
-      const unknown = await session.commands.execute({
-        turnId: hostTurnIdSchema.parse("turn-err-1"),
-        commandId: "unknown.command",
+      const executed = await session.commands.execute({
+        turnId,
+        commandId: "qoder.compact",
       });
-      expect(unknown.ok).toBe(false);
-      if (!unknown.ok) {
-        expect(unknown.error.code).toBe("unsupported");
+      expect(executed.ok).toBe(true);
+
+      fakeQuery.throwInIterator(new Error("Simulated query runner disconnect"));
+
+      await flushTicks();
+
+      const completedEvent = collector.outputs.find(
+        (o) => o.kind === "event" && o.event.type === "turn.completed",
+      );
+      expect(completedEvent).toBeDefined();
+      if (
+        completedEvent &&
+        completedEvent.kind === "event" &&
+        completedEvent.event.type === "turn.completed"
+      ) {
+        expect(completedEvent.event.turnId).toBe(turnId);
+        expect(completedEvent.event.outcome.status).toBe("failed");
       }
 
-      const badArgs = await session.commands.execute({
-        turnId: hostTurnIdSchema.parse("turn-err-2"),
-        commandId: "qoder.init",
-        arguments: { text: "unexpected" },
+      // Session is now idle again and can accept new commands
+      const turn2 = hostTurnIdSchema.parse("turn-compact-retry");
+      const retryResult = await session.commands.execute({
+        turnId: turn2,
+        commandId: "qoder.compact",
       });
-      expect(badArgs.ok).toBe(false);
-      if (!badArgs.ok) {
-        expect(badArgs.error.code).toBe("invalidRequest");
-      }
+      expect(retryResult.ok).toBe(true);
     });
   });
 });

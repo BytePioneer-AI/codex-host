@@ -305,9 +305,11 @@ describe("QoderAdapter", () => {
 
     it("rolls back last turn: creates empty session for 1 turn and forks previous turn for 2+ turns", async () => {
       const fakeQuery = new FakeQoderQuery();
-      const mockForkSession = vi.fn(async (_sessionId: string, options?: { upToMessageId?: string }) => ({
-        sessionId: `forked-for-${options?.upToMessageId ?? "unknown"}`,
-      }));
+      const mockForkSession = vi.fn(
+        async (_sessionId: string, options?: { upToMessageId?: string }) => ({
+          sessionId: `forked-for-${options?.upToMessageId ?? "unknown"}`,
+        }),
+      );
 
       const singleTurnMessages: SessionMessage[] = [
         {
@@ -1901,8 +1903,7 @@ describe("QoderAdapter", () => {
       } as unknown as SDKResultMessage);
 
       const completed = await collector.waitFor(
-        (o) =>
-          o.kind === "event" && o.event.type === "turn.completed" && o.event.turnId === turnId,
+        (o) => o.kind === "event" && o.event.type === "turn.completed" && o.event.turnId === turnId,
       );
 
       if (completed.kind === "event" && completed.event.type === "turn.completed") {
@@ -1942,8 +1943,7 @@ describe("QoderAdapter", () => {
       } as SDKResultMessage);
 
       const completed = await collector.waitFor(
-        (o) =>
-          o.kind === "event" && o.event.type === "turn.completed" && o.event.turnId === turnId,
+        (o) => o.kind === "event" && o.event.type === "turn.completed" && o.event.turnId === turnId,
       );
 
       if (completed.kind === "event" && completed.event.type === "turn.completed") {
@@ -1982,8 +1982,7 @@ describe("QoderAdapter", () => {
       });
 
       const completed = await collector.waitFor(
-        (o) =>
-          o.kind === "event" && o.event.type === "turn.completed" && o.event.turnId === turnId,
+        (o) => o.kind === "event" && o.event.type === "turn.completed" && o.event.turnId === turnId,
       );
 
       if (completed.kind === "event" && completed.event.type === "turn.completed") {
@@ -2032,8 +2031,7 @@ describe("QoderAdapter", () => {
       } as unknown as SDKResultMessage);
 
       const completed = await collector.waitFor(
-        (o) =>
-          o.kind === "event" && o.event.type === "turn.completed" && o.event.turnId === turnId,
+        (o) => o.kind === "event" && o.event.type === "turn.completed" && o.event.turnId === turnId,
       );
 
       if (completed.kind === "event" && completed.event.type === "turn.completed") {

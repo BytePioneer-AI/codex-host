@@ -28,7 +28,9 @@ export type {
   QoderOptions,
   QoderQuery,
   QoderQueryFactory,
+  QoderSlashCommand,
   SDKAssistantMessage,
+  SDKCommandsChangedMessage,
   SDKMessage,
   SDKResultMessage,
   SDKSystemMessage,
@@ -42,11 +44,15 @@ export {
 export { mapQoderException, mapQoderExitCode, mapQoderResultError } from "./qoder-errors.js";
 export { mapQoderSnapshot, extractUserText, isHumanUser } from "./qoder-history.js";
 export {
-  QODER_COMMANDS,
-  QODER_COMMAND_CATALOG,
+  humanize,
+  mapQoderSlashCommands,
   findQoderCommandDescriptor,
+  parseQoderCommandInvocation,
   parseAndFormatQoderCommand,
-  formatQoderTurnPrompt,
+  QODER_FALLBACK_COMMAND_CATALOG,
+  QODER_COMMAND_CATALOG,
+  QODER_COMMANDS,
+  QODER_VERIFIED_HEADLESS_COMMAND_IDS,
   type ParsedQoderCommand,
 } from "./qoder-slash-commands.js";
 export { createHarnessAdapter } from "./plugin.js";

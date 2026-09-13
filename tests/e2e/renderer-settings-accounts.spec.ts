@@ -107,9 +107,8 @@ const { outputFiles } = await build({
         globalThis.accountsFixture = {
           calls,
           recover: () => { failUsage=false; },
-          requireAccountRecovery: () => accountListener?.({
-            ...accountSnapshot(),phase:"unavailable",cleanupRequired:true,
-            pendingOperation:{operationId:"recover-1",kind:"recovery"},
+          requireAccountRecovery: (ready = false) => accountListener?.({
+            ...accountSnapshot(),phase:ready ? "ready" : "unavailable",cleanupRequired:true,
             capabilities:{...accountSnapshot().capabilities,reason:"recovery-required"},
           }),
           clearHarnessAccounts: () => { harnessAccounts=[]; },
@@ -181,17 +180,16 @@ test("explains native legacy compatibility without enabling managed account acti
   expect(await calls(page, "activate")).toEqual([]);
 });
 
-test("allows adopted credentials to switch globally without claiming history directories were merged", async ({
+test("shows adopted accounts without explanatory banners and allows switching", async ({
   page,
 }) => {
   await setup(page, { scenario: "legacy-adopted" });
-  await expect(page.locator(".settings-account-status")).toContainText("切换账号不会切换历史目录");
+  await expect(page.locator(".settings-page-description")).toHaveCount(0);
+  await expect(page.locator(".settings-account-status")).toBeEmpty();
   await page.locator(teamRow).getByRole("button", { name: "切换", exact: true }).click();
   await expect(page.locator(teamRow)).toContainText("当前");
   expect(await calls(page, "activate")).toEqual(["team"]);
-  await expect(page.locator(".settings-account-status")).toContainText(
-    "其他账号目录及其历史保留但尚未合并",
-  );
+  await expect(page.locator(".settings-account-status")).toBeEmpty();
 });
 
 async function openAccountActions(page: Page, row = teamRow) {
@@ -525,14 +523,36 @@ test("reconciles login completion delivered before the start response", async ({
   await expect(page.getByText("SHOULD-NOT-SHOW", { exact: true })).toHaveCount(0);
 });
 
-test("surfaces saved cleanup work and provides a usable recovery action", async ({ page }) => {
-  await setup(page);
-  await page.evaluate(() => Reflect.get(globalThis, "accountsFixture").requireAccountRecovery());
-  await expect(page.locator(".settings-account-status")).toContainText("账号变更已保存");
-  await page.getByRole("button", { name: "恢复", exact: true }).click();
-  await expect.poll(() => calls(page, "recover")).toEqual(["recover"]);
-  await expect(page.locator(".settings-account-status")).not.toContainText("账号变更已保存");
-});
+for (const scenario of [
+  { locale: "zh-CN", ready: false, message: "账号已保存，Codex 尚未就绪。", button: "恢复" },
+  { locale: "zh-CN", ready: true, message: "账号已保存，临时文件清理未完成。", button: "重试清理" },
+  {
+    locale: "en",
+    ready: false,
+    message: "Account saved. Codex is not ready yet.",
+    button: "Recover",
+  },
+  {
+    locale: "en",
+    ready: true,
+    message: "Account saved. Temporary file cleanup is incomplete.",
+    button: "Retry cleanup",
+  },
+]) {
+  test(`distinguishes saved Account recovery from cleanup (${scenario.locale}, ready=${scenario.ready})`, async ({
+    page,
+  }) => {
+    await setup(page, { locale: scenario.locale });
+    await page.evaluate(
+      (ready) => Reflect.get(globalThis, "accountsFixture").requireAccountRecovery(ready),
+      scenario.ready,
+    );
+    await expect(page.locator(".settings-account-status")).toContainText(scenario.message);
+    await page.getByRole("button", { name: scenario.button, exact: true }).click();
+    await expect.poll(() => calls(page, "recover")).toEqual(["recover"]);
+    await expect(page.locator(".settings-account-status")).not.toContainText(scenario.message);
+  });
+}
 
 test("renders completed accounts without waiting for a slower window request", async ({ page }) => {
   await setup(page, { scenario: "slow" });

@@ -6,7 +6,6 @@ import type { CodexCredentialIdentity } from "./native-codex-credentials.js";
 export interface NativeAccountRuntime {
   readonly gate: OfficialWorkGate;
   preflight(): Promise<void>;
-  assertNativeIdle(): Promise<void>;
   stop(): Promise<void>;
   /** Account switch only, after owned backend exit; never used by shutdown or recovery. */
   stopExternalProcesses(): Promise<void>;

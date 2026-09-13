@@ -30,9 +30,6 @@ async function setup() {
 describe("Account switch stops native backends", () => {
   it("fences new work and stops the backend before replacing credentials, skipping idle probes", async () => {
     await setup();
-    state.runtime.nativeIdle = false;
-    state.runtime.gate.nativeWork("active-turn", true);
-    const idle = vi.spyOn(state.runtime, "assertNativeIdle");
     const originalStop = state.runtime.stop.bind(state.runtime);
     const stop = vi.spyOn(state.runtime, "stop").mockImplementation(async () => {
       expect(state.runtime.gate.phase).toBe("changing");
@@ -41,7 +38,6 @@ describe("Account switch stops native backends", () => {
       await originalStop();
     });
     await manager.switch(ids.b);
-    expect(idle).not.toHaveBeenCalled();
     expect(stop).toHaveBeenCalledOnce();
     expect(manager.currentAccountId()).toBe(ids.b);
     expect(manager.snapshot().phase).toBe("ready");
@@ -135,13 +131,5 @@ describe("Account switch stops native backends", () => {
     expect(state.files.peek(state.store.home, "auth.json")).toEqual(before);
     expect(manager.currentAccountId()).toBe(ids.a);
     expect(manager.snapshot().phase).toBe("ready");
-  });
-
-  it("does not relax logout admission", async () => {
-    await setup();
-    state.runtime.gate.nativeWork("active-turn", true);
-    const stop = vi.spyOn(state.runtime, "stop");
-    await expect(manager.logout()).rejects.toMatchObject({ code: "busy" });
-    expect(stop).not.toHaveBeenCalled();
   });
 });

@@ -15,14 +15,26 @@ Managed Codex SHALL use one canonical permanent home and at most one live Host-o
 - **AND** a closed transport alone SHALL NOT count as proof of process-tree exit
 
 ### Requirement: Account switching SHALL stop native backends without an idle scan
-Switching SHALL enter changing synchronously, reject new work before connection or automatic startup, stop the owned backend and then the detected external Codex backends before replacing credentials. This SHALL be the only switching strategy, with no experimental flags or quota-drain queue. Login, logout and recovery SHALL retain their existing admission rules.
+Switching SHALL enter changing synchronously, reject new work before connection or automatic startup, stop the owned backend and then the detected external Codex backends before replacing credentials. Login and logout SHALL also enter changing and stop the owned backend without scanning Threads, but SHALL NOT invoke external backend termination. Account admission SHALL track outstanding request leases, not native task activity, and SHALL NOT probe queues in response to native activity. Recovery SHALL stop the owned backend before credential mutation; saved-Account deletion SHALL NOT stop it. Both SHALL retain request-lease and ownership checks without waiting for acknowledged native tasks to complete.
 
 #### Scenario: Native requests and work are pending
-- **WHEN** the user switches while native requests, including quota reads, or native work are pending
+- **WHEN** the user switches, starts login or logs out while native requests, including quota reads, or native work are pending
 - **THEN** Host SHALL stop without scanning Thread, Goal, queue or temporary-session state
 - **AND** outstanding native RPCs SHALL fail explicitly and release their leases on retirement, without poisoning changing admission merely because stop was intentional
 - **AND** new work and concurrent switching SHALL fail immediately, without replay into the target Account
 - **AND** independent Host credential-writer leases SHALL NOT be cleared to force credential replacement
+
+#### Scenario: Native activity continues after its RPC completes
+- **WHEN** native Turn, tool, Goal or queue activity continues after its request lease ends
+- **THEN** that activity SHALL NOT block saved-Account deletion or recovery admission
+- **AND** native requests and notifications SHALL continue through their normal routing without additional queue probes
+- **AND** recovery SHALL still require owned-process exit proof before changing credentials
+
+#### Scenario: A quota request times out or its client detaches
+- **WHEN** a local quota request times out or its client detaches while the owned backend remains available
+- **THEN** the request SHALL fail explicitly and release its lease without independently making Codex unavailable
+- **AND** actual connection failure SHALL still close admission
+- **AND** credential replacement SHALL still require process exit proof and independent Host credential-writer leases to finish
 
 #### Scenario: VS Code restarts its Codex backend
 - **WHEN** an editor starts a new backend after the detected batch was stopped
@@ -72,17 +84,18 @@ When native Account admission is unavailable or changing, Host SHALL acknowledge
 - **AND** client detach, EOF and an unconfirmed stop SHALL NOT emit that retirement fact
 
 ### Requirement: Thread restoration SHALL preserve native identity and generation
-Account replacement SHALL retain native Thread IDs, persisted history and Harness ownership through native resume semantics. Host SHALL retain subscription parameters and lazy restoration, without fabricating replacement Threads. Switching SHALL NOT scan Threads to capture settings; lossless recovery of temporary content and all runtime settings is not guaranteed. When an authoritative settings snapshot exists from an idle-only mutation, restoration SHALL verify it before dispatching the requested Turn.
+Account replacement SHALL retain native Thread IDs, persisted history and Harness ownership through native resume semantics. Host SHALL retain initialization and subscription parameters for lazy restoration, without fabricating replacement Threads. Account operations SHALL NOT scan Threads or capture runtime settings snapshots; lossless recovery of temporary content and all runtime settings is not guaranteed.
 
-#### Scenario: Native settings changed after initial Thread creation
-- **WHEN** an idle-only mutation captures a Thread's authoritative settings after its original start request
-- **THEN** the replacement generation SHALL restore the actual latest settings before admitting subsequent work
-- **AND** late frames from a retired generation SHALL not update the new generation
+#### Scenario: Work follows a backend replacement
+- **WHEN** a subscribed Thread receives work in a new backend generation
+- **THEN** Host SHALL first rejoin the same native Thread using its subscription parameters
+- **AND** late frames from a retired generation SHALL NOT update the new generation
+- **AND** a failed native resume SHALL reject the requested work without replay or a fabricated replacement Thread
 
-#### Scenario: A native path names an unmaterialized rollout
-- **WHEN** an idle-only mutation probes a loaded Thread and native resume confirms no rollout exists
-- **THEN** Host SHALL reject that mutation as busy while preserving the live Thread and writer
-- **AND** it SHALL NOT infer persistence from the path field, fabricate a replacement Thread, or report failed authentication
+#### Scenario: A loaded Thread is not persisted
+- **WHEN** login, logout or switching is requested with temporary or unmaterialized native content
+- **THEN** Host SHALL stop the backend without probing Thread recoverability
+- **AND** any subsequent native inability to restore that content SHALL be reported explicitly
 
 ### Requirement: Native Desktop authentication SHALL retain its protocol semantics
 Managed native ChatGPT OAuth and device-code login SHALL use the same Account coordinator and transaction as Settings, but SHALL activate the signed-in identity. Native branding and streamlined-login parameters SHALL reach the native login backend. Unsupported token-injection and non-ChatGPT modes MUST NOT bypass managed credential ownership.

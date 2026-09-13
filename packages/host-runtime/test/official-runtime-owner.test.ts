@@ -181,7 +181,7 @@ describe("single official runtime owner", () => {
         await vi.waitFor(() =>
           expect(connection.requests.some((r) => r.method === method)).toBe(true),
         );
-        const lease = f.gate.beginSwitch();
+        const lease = f.gate.beginStoppingChange();
         await expect(client.request(method, {})).rejects.toMatchObject({ code: "changing" });
         await f.owner.stop();
         if (via === "request") expect(await pending).toBeInstanceOf(Error);
@@ -209,7 +209,7 @@ describe("single official runtime owner", () => {
     },
   );
 
-  it("does not treat a local quota timeout as successful native completion", async () => {
+  it("fails a local quota timeout without making the owned backend unavailable", async () => {
     const f = fixture();
     const { client } = f.attach();
     try {
@@ -220,11 +220,18 @@ describe("single official runtime owner", () => {
       vi.useFakeTimers();
       const quota = client.request("account/rateLimits/read", {}).catch((error: unknown) => error);
       await vi.advanceTimersByTimeAsync(29_950);
-      const lease = f.gate.beginSwitch();
       await vi.advanceTimersByTimeAsync(100);
       expect(await quota).toBeInstanceOf(Error);
-      expect(() => lease.assertIdle()).toThrow("unavailable");
-      expect(f.gate.phase).toBe("unavailable");
+      expect(f.gate.busy).toBe(false);
+      expect(f.gate.phase).toBe("ready");
+      expect(f.owner.running).toBe(true);
+      f.connection().setResponse((request) => ({ id: request.id ?? null, result: {} }));
+      await client.request("model/list", {});
+      // A timed-out request is not exit proof, even though admission stays ready.
+      f.native().failStop(true);
+      await expect(f.owner.stop()).rejects.toThrow("unavailable");
+      await expect(f.owner.start()).rejects.toThrow("unavailable");
+      f.native().failStop(false);
     } finally {
       vi.useRealTimers();
       await f.owner.stop();
@@ -232,7 +239,76 @@ describe("single official runtime owner", () => {
     }
   });
 
-  it("does not interpret a detached quota reader as native completion", async () => {
+  it("fails detached quota requests without disrupting other clients", async () => {
+    const f = fixture();
+    const { client, output } = f.attach();
+    try {
+      await f.owner.start();
+      await client.initialize(initialization);
+      f.gate.initialized();
+      f.connection().setResponse(() => null);
+      await client.send({ id: "quota", method: "account/rateLimits/read", params: {} });
+      client.close();
+      expect(output).toContainEqual({
+        id: "quota",
+        error: { code: -32001, message: "Official connection retired; retry explicitly" },
+      });
+      expect(f.gate.busy).toBe(false);
+      expect(f.gate.phase).toBe("ready");
+      const other = f.attach();
+      await other.client.initialize(initialization);
+      await other.client.request("model/list", {});
+      expect(f.create).toHaveBeenCalledOnce();
+    } finally {
+      await f.owner.stop();
+      client.close();
+    }
+  });
+
+  it("forwards native activity without probing queues or blocking metadata admission", async () => {
+    const f = fixture();
+    const { client, output } = f.attach();
+    try {
+      await f.owner.start();
+      await client.initialize(initialization);
+      f.gate.initialized();
+      for (const method of ["turn/start", "thread/queue/add", "thread/goal/set", "process/spawn"])
+        await client.request(method, { threadId: "active", processHandle: "tool" });
+      const notifications = [
+        { method: "turn/started", params: { threadId: "active", turn: { id: "turn" } } },
+        {
+          method: "thread/status/changed",
+          params: { threadId: "active", status: { type: "active" } },
+        },
+        { method: "thread/queue/changed", params: { threadId: "active" } },
+        {
+          method: "thread/goal/updated",
+          params: { threadId: "active", goal: { status: "active" } },
+        },
+      ];
+      for (const notification of notifications) f.connection().emit(notification);
+      await vi.waitFor(() => expect(output).toEqual(notifications));
+      expect(f.connection().requests.map(({ method }) => method)).toEqual([
+        "initialize",
+        "initialized",
+        "turn/start",
+        "thread/queue/add",
+        "thread/goal/set",
+        "process/spawn",
+      ]);
+      f.gate.beginChange().finish("ready");
+      expect(f.owner.running).toBe(true);
+      const recovery = f.gate.beginChange(true);
+      await f.owner.stop();
+      await f.owner.start();
+      recovery.finish("ready");
+      expect(f.peak()).toBe(1);
+    } finally {
+      await f.owner.stop();
+    }
+  });
+
+  it("still makes actual quota transport loss unavailable", async () => {
     const f = fixture();
     const { client } = f.attach();
     try {
@@ -240,18 +316,23 @@ describe("single official runtime owner", () => {
       await client.initialize(initialization);
       f.gate.initialized();
       f.connection().setResponse(() => null);
-      await client.send({ id: "quota", method: "account/rateLimits/read", params: {} });
-      const lease = f.gate.beginSwitch();
-      client.close();
-      expect(() => lease.assertIdle()).toThrow("unavailable");
-      expect(f.gate.phase).toBe("unavailable");
+      const quota = client.request("account/rateLimits/read", {}).catch((error: unknown) => error);
+      await vi.waitFor(() =>
+        expect(
+          f.connection().requests.some((request) => request.method === "account/rateLimits/read"),
+        ).toBe(true),
+      );
+      f.connection().stdout.end();
+      expect(await quota).toBeInstanceOf(Error);
+      await vi.waitFor(() => expect(f.gate.phase).toBe("unavailable"));
+      await expect(client.request("model/list", {})).rejects.toThrow("unavailable");
+      await expect(f.owner.start()).rejects.toThrow("unavailable");
     } finally {
       await f.owner.stop();
-      client.close();
     }
   });
 
-  it("keeps idle-only mutations blocked by pending credential reads", async () => {
+  it("keeps non-stopping changes blocked by pending credential reads", async () => {
     const f = fixture();
     const { client } = f.attach();
     try {
@@ -448,46 +529,27 @@ describe("single official runtime owner", () => {
         cwd: "synthetic-cwd",
         excludeTurns: true,
       });
-      expect(f.gate.busy).toBe(true);
+      expect(f.gate.busy).toBe(false);
       f.connection(1).emit({
         method: "turn/completed",
         params: { threadId: "original", turn: { id: "turn-one", status: "completed" } },
       });
-      await vi.waitFor(() => expect(f.gate.busy).toBe(false));
+      await vi.waitFor(() =>
+        expect(a.output).toContainEqual({
+          method: "turn/completed",
+          params: { threadId: "original", turn: { id: "turn-one", status: "completed" } },
+        }),
+      );
     } finally {
       await f.owner.stop();
     }
   });
 
   it.each([false, true])(
-    "restores effective settings across replacements (dormant generation: %s)",
+    "lazily rejoins the same Thread with subscription parameters (dormant generation: %s)",
     async (dormant) => {
       const f = fixture();
       const a = f.attach();
-      const effective = {
-        thread: {
-          id: "settings-thread",
-          status: { type: "idle" },
-          model: "latest-model",
-          modelProvider: "latest-provider",
-          reasoningEffort: "high",
-        },
-        model: "latest-model",
-        modelProvider: "latest-provider",
-        serviceTier: "priority",
-        cwd: "/latest/cwd",
-        runtimeWorkspaceRoots: ["/latest/cwd", "/latest/shared"],
-        instructionSources: [],
-        approvalPolicy: "on-request",
-        approvalsReviewer: "user",
-        sandbox: { type: "readOnly", networkAccess: false },
-        activePermissionProfile: { id: ":read-only", extends: null },
-        reasoningEffort: "high",
-        multiAgentMode: "explicitRequestOnly",
-        initialTurnsPage: null,
-        turnsBackwardsCursor: null,
-        itemsBackwardsCursor: null,
-      };
       try {
         await f.owner.start();
         await a.client.initialize(initialization);
@@ -505,7 +567,6 @@ describe("single official runtime owner", () => {
         });
 
         const change = f.gate.beginChange();
-        f.owner.captureThreadSettings([effective]);
         await f.owner.stop();
         await f.owner.start();
         change.finish("ready");
@@ -513,7 +574,6 @@ describe("single official runtime owner", () => {
         if (dormant) {
           // B had no user requests, so its loaded list is empty before switching back to A.
           const back = f.gate.beginChange();
-          f.owner.captureThreadSettings([]);
           await f.owner.stop();
           await f.owner.start();
           back.finish("ready");
@@ -522,9 +582,7 @@ describe("single official runtime owner", () => {
         f.connection(generation).setResponse((request) => {
           if (!request.method) return null;
           if (request.method === "thread/resume")
-            return { id: request.id ?? null, result: effective };
-          if (request.method === "thread/settings/update")
-            return { id: request.id ?? null, result: {} };
+            return { id: request.id ?? null, result: { thread: { id: "settings-thread" } } };
           if (request.method === "turn/interrupt") return { id: request.id ?? null, result: {} };
           return { id: request.id ?? null, result: {} };
         });
@@ -543,24 +601,16 @@ describe("single official runtime owner", () => {
             method: "thread/resume",
             params: {
               threadId: "settings-thread",
-              model: "latest-model",
-              modelProvider: "latest-provider",
-              serviceTier: "priority",
-              cwd: "/latest/cwd",
-              runtimeWorkspaceRoots: ["/latest/cwd", "/latest/shared"],
-              approvalPolicy: "on-request",
-              approvalsReviewer: "user",
-              permissions: ":read-only",
+              model: "initial-model",
+              modelProvider: "initial-provider",
+              serviceTier: null,
+              cwd: "/initial/cwd",
+              runtimeWorkspaceRoots: ["/initial/cwd"],
+              approvalPolicy: "never",
+              approvalsReviewer: "auto_review",
+              sandbox: "danger-full-access",
               excludeTurns: true,
             },
-          },
-          {
-            method: "thread/settings/update",
-            params: { threadId: "settings-thread", effort: "high" },
-          },
-          {
-            method: "thread/resume",
-            params: { threadId: "settings-thread", excludeTurns: true },
           },
           {
             method: "turn/interrupt",
@@ -575,13 +625,7 @@ describe("single official runtime owner", () => {
         f.connection(generation + 1).setResponse((request) => {
           if (!request.method) return null;
           if (request.method === "thread/resume")
-            return {
-              id: request.id ?? null,
-              result: {
-                ...effective,
-                activePermissionProfile: { id: ":read-only", extends: ":changed-base" },
-              },
-            };
+            return { id: request.id ?? null, error: { code: -32600, message: "cannot resume" } };
           return { id: request.id ?? null, result: {} };
         });
         await expect(
@@ -589,7 +633,7 @@ describe("single official runtime owner", () => {
             threadId: "settings-thread",
             turnId: "must-not-forward",
           }),
-        ).rejects.toThrow("settings restoration failed");
+        ).rejects.toThrow("Thread restoration failed");
         expect(f.connection(generation + 1).requests).not.toContainEqual(
           expect.objectContaining({
             method: "turn/interrupt",
@@ -684,21 +728,21 @@ describe("single official runtime owner", () => {
     await f.owner.stop();
   });
 
-  it("retains native work when an unexpected close cannot prove tree exit", async () => {
+  it("keeps ownership when an unexpected close cannot prove tree exit", async () => {
     const f = fixture();
     const client = f.attach();
     await f.owner.start();
     await client.client.initialize(initialization);
     f.gate.initialized();
     await client.client.request("process/spawn", { processHandle: "live-process" });
-    expect(f.gate.busy).toBe(true);
+    expect(f.gate.busy).toBe(false);
 
     f.native().failStop(true);
     f.native().closeUnexpectedly();
     await vi.waitFor(() => expect(f.gate.phase).toBe("unavailable"));
     await expect(f.owner.stop()).rejects.toThrow("unavailable");
 
-    expect(f.gate.busy).toBe(true);
+    expect(f.gate.phase).toBe("unavailable");
     await expect(f.owner.start()).rejects.toThrow("unavailable");
     expect(f.create).toHaveBeenCalledOnce();
 
@@ -707,18 +751,18 @@ describe("single official runtime owner", () => {
     expect(f.gate.busy).toBe(false);
   });
 
-  it("retires work only after proving an unexpected tree exit and requires explicit recovery", async () => {
+  it("requires explicit recovery after an unexpected backend exit", async () => {
     const f = fixture();
     const client = f.attach();
     await f.owner.start();
     await client.client.initialize(initialization);
     f.gate.initialized();
     await client.client.request("process/spawn", { processHandle: "exited-process" });
-    expect(f.gate.busy).toBe(true);
+    expect(f.gate.busy).toBe(false);
 
     f.native().closeUnexpectedly();
     await vi.waitFor(() => expect(f.owner.running).toBe(false));
-    await vi.waitFor(() => expect(f.gate.busy).toBe(false));
+    await f.owner.stop();
     expect(f.gate.phase).toBe("unavailable");
     expect(f.create).toHaveBeenCalledOnce();
 
@@ -729,7 +773,7 @@ describe("single official runtime owner", () => {
     await f.owner.stop();
   });
 
-  it("clears native work when sending a server reply fails", async () => {
+  it("reports server reply send failures without introducing a work lease", async () => {
     const f = fixture();
     const a = f.attach();
     try {

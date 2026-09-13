@@ -21,7 +21,6 @@ export class OfficialWorkGate {
   #phase: OfficialAccountPhase = "unavailable";
   #revision = 0;
   readonly #requests = new Set<symbol>();
-  readonly #nativeWork = new Set<string>();
   readonly #listeners = new Set<() => void>();
   #change: symbol | undefined;
 
@@ -32,7 +31,7 @@ export class OfficialWorkGate {
     return this.#revision;
   }
   get busy(): boolean {
-    return this.#requests.size > 0 || this.#nativeWork.size > 0;
+    return this.#requests.size > 0;
   }
 
   subscribe(listener: () => void): () => void {
@@ -53,30 +52,20 @@ export class OfficialWorkGate {
       this.#requests.delete(request);
     };
   }
-  /** Called only for the current connection generation by the official owner. */
-  nativeWork(key: string, active: boolean): boolean {
-    const previous = this.#nativeWork.has(key);
-    if (active) this.#nativeWork.add(key);
-    else this.#nativeWork.delete(key);
-    return previous;
-  }
   beginChange(recovery = false): OfficialChangeLease {
     return this.#beginChange(recovery);
   }
 
   /** Reject new work immediately; existing native work is ended by backend retirement. */
-  beginSwitch(): OfficialChangeLease {
+  beginStoppingChange(): OfficialChangeLease {
     return this.#beginChange(false, true);
   }
 
   #beginChange(recovery: boolean, stopWork = false): OfficialChangeLease {
     if (this.#change || this.#phase === "changing") throw new OfficialAdmissionError("changing");
     if (this.#phase !== "ready" && !recovery) throw new OfficialAdmissionError("unavailable");
-    // Recovery may retry exit proof without clearing stale native markers. Host
-    // credential refresh leases still prevent recovery until their writers stop.
-    const retryExit = recovery && this.#phase === "unavailable";
-    if (!stopWork && (this.#requests.size > 0 || (this.#nativeWork.size > 0 && !retryExit)))
-      throw new OfficialAdmissionError("busy");
+    // Recovery and metadata changes must not race independent Host credential writers.
+    if (!stopWork && this.busy) throw new OfficialAdmissionError("busy");
     const token = Symbol();
     this.#change = token;
     this.#publish("changing");
@@ -97,10 +86,6 @@ export class OfficialWorkGate {
   }
   unavailable(): void {
     this.#publish("unavailable");
-  }
-  retired(): void {
-    // Only confirmed process exit proves native work cannot continue.
-    this.#nativeWork.clear();
   }
   #publish(phase: OfficialAccountPhase): void {
     if (phase === this.#phase) return;

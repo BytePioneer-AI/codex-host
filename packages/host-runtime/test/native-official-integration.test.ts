@@ -172,28 +172,22 @@ describe.skipIf(!stock || !launcher)("real official CLI with an isolated signed-
           sandbox: "read-only",
           ephemeral: false,
         });
-        const original = z
-          .object({
-            thread: z.object({ id: z.string(), ephemeral: z.literal(false), path: z.string() }),
-            model: z.string(),
-            modelProvider: z.string(),
-            approvalPolicy: z.literal("never"),
-            sandbox: z.unknown(),
-            cwd: z.string(),
-          })
-          .parse(started.result);
+        z.object({
+          thread: z.object({ id: z.string(), ephemeral: z.literal(false), path: z.string() }),
+          model: z.string(),
+          modelProvider: z.string(),
+          approvalPolicy: z.literal("never"),
+          sandbox: z.unknown(),
+          cwd: z.string(),
+        }).parse(started.result);
         await vi.waitFor(() => expect(scope.gate.busy).toBe(false));
-        // Native 0.153.4 returns a planned path before materializing the rollout.
-        // Reject replacement, but leave this in-memory Thread and writer alive.
-        await expect(runtime.assertNativeIdle()).rejects.toMatchObject({ code: "busy" });
-        expect(scope.gate.phase).toBe("ready");
+        // Login stops the backend even when native history is not materialized.
+        const nextLogin = await accounts.startNativeLogin({ type: "chatgpt" });
+        expect(scope.gate.phase).toBe("changing");
         expect(live).toBe(1);
-        await expect(
-          desktop.request("thread/read", {
-            threadId: original.thread.id,
-            includeTurns: false,
-          }),
-        ).resolves.toMatchObject({ result: { thread: { id: original.thread.id } } });
+        expect(await accounts.cancelLogin(nextLogin.response.loginId)).toBe(true);
+        expect(scope.gate.phase).toBe("ready");
+        expect(await store.readCredentials()).toBeNull();
         expect(peak).toBe(1);
       } finally {
         await desktop?.close();

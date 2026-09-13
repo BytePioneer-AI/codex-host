@@ -52,7 +52,7 @@ export class NativeProfileTransaction {
     accountId: string | null,
     replacement?: NativeCodexCredentials,
     operationId: string = randomUUID(),
-    mode: "switch" | "idle" = "idle",
+    stopExternalProcesses = false,
   ): Promise<void> {
     let stopping = false,
       stopped = false;
@@ -66,11 +66,10 @@ export class NativeProfileTransaction {
       matchProfile(candidate, target);
       await this.runtime.preflight();
       matchProfile(await this.store.readCredentials(), profileCurrent(before));
-      if (mode === "idle") await this.runtime.assertNativeIdle();
       stopping = true;
       await this.runtime.stop();
       stopped = true;
-      if (mode === "switch") await this.runtime.stopExternalProcesses();
+      if (stopExternalProcesses) await this.runtime.stopExternalProcesses();
       // Exit retires native work, but does not prove unrelated Host credential
       // refresh requests have finished. Never clear their leases to force success.
       if (this.runtime.gate.busy) throw new OfficialAdmissionError("busy");
@@ -108,10 +107,7 @@ export class NativeProfileTransaction {
       await this.#finishTarget(journal);
     } catch (error) {
       if (!stopping)
-        throw new NativeTransitionError(
-          safeCode(error),
-          this.runtime.gate.phase !== "unavailable",
-        );
+        throw new NativeTransitionError(safeCode(error), this.runtime.gate.phase !== "unavailable");
       if (!stopped) throw new NativeTransitionError("stop-unconfirmed", false);
       try {
         const journal = await this.store.readJournal();

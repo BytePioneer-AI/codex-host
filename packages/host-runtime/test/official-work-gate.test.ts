@@ -13,14 +13,15 @@ describe("official work publication", () => {
     expect(gate.revision).toBe(1);
   });
 
-  it("lets unavailable recovery retry exit proof but not publish ready with native work", () => {
+  it("cannot finish a stopping change before an independent writer releases its lease", () => {
     const gate = new OfficialWorkGate();
-    gate.nativeWork("unconfirmed-native-work", true);
-    const recovery = gate.beginChange(true);
+    gate.initialized();
+    const release = gate.admit();
+    const recovery = gate.beginStoppingChange();
     expect(gate.busy).toBe(true);
     expect(() => recovery.assertIdle()).toThrow("busy");
     expect(() => recovery.finish("ready")).toThrow("busy");
-    gate.retired();
+    release();
     recovery.assertIdle();
     recovery.finish("ready");
     expect(gate.phase).toBe("ready");

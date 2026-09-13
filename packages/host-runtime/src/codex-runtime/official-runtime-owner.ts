@@ -8,15 +8,7 @@ import type {
   OfficialAppServerExit,
 } from "../official-app-server-connection.js";
 import { CodexRuntime, type CodexRuntimeOutput } from "./codex-runtime.js";
-import {
-  assertOfficialThreadSettingsRestored,
-  buildOfficialThreadResumeParams,
-  buildOfficialThreadSettingsUpdate,
-  parseOfficialThreadSettings,
-  type OfficialThreadSettingsSnapshot,
-} from "./official-thread-settings.js";
 import { OfficialAdmissionError, type OfficialWorkGate } from "./official-work-gate.js";
-import { OfficialWorkTracker } from "./official-work-tracker.js";
 
 /** Created synchronously so a failed start never hides an owned, possibly live process. */
 export interface OwnedOfficialBackend {
@@ -38,7 +30,6 @@ interface Pending {
   method: string;
   params: JsonObject;
   finish(): void;
-  observe(response: JsonObject): void;
 }
 interface Client {
   id: string;
@@ -94,8 +85,6 @@ export class OfficialRuntimeOwner {
   readonly #allowNativeAuthPassthrough: boolean;
   readonly #diagnosticOutput: Writable;
   readonly #clients = new Set<Client>();
-  readonly #work: OfficialWorkTracker;
-  readonly #threadSettings = new Map<string, OfficialThreadSettingsSnapshot>();
   #backend: OwnedOfficialBackend | undefined;
   #generation = 0;
   #phase: "stopped" | "starting" | "running" | "stopping" | "unavailable" = "stopped";
@@ -109,10 +98,6 @@ export class OfficialRuntimeOwner {
     this.#allowNativeAuthPassthrough = input.allowNativeAuthPassthrough ?? false;
     this.#diagnosticOutput = input.diagnosticOutput;
     this.gate = input.gate;
-    this.#work = new OfficialWorkTracker(this.gate, (id, threadId) => {
-      const client = [...this.#clients].find((candidate) => candidate.id === id);
-      if (client) void this.#inspectQueue(client, threadId);
-    });
   }
   get generation(): number {
     return this.#generation;
@@ -149,8 +134,7 @@ export class OfficialRuntimeOwner {
     void backend.closed.then(() => {
       if (this.#backend !== backend || this.#phase === "stopping") return;
       // A relay closing is not itself proof that the native process tree exited.
-      // Preserve every native-work marker until the owner's normal stop path
-      // validates the receipt (or remains unavailable on an unconfirmed stop).
+      // Remain unavailable until the owner's stop path validates process exit.
       this.#unavailable();
       void this.stop().catch(() => undefined);
     });
@@ -222,8 +206,6 @@ export class OfficialRuntimeOwner {
         }
         this.#backend = undefined;
         this.#phase = "stopped";
-        this.#work.retired();
-        this.gate.retired();
         retired = true;
       } catch {
         this.#unavailable();
@@ -308,17 +290,6 @@ export class OfficialRuntimeOwner {
     return response;
   }
 
-  /** Capture authoritative rejoin results after closing admission, rather than
-   * ordering duplicate settings notifications from independent connections.
-   */
-  captureThreadSettings(responses: readonly JsonObject[]): void {
-    if (this.gate.phase === "ready") throw new OfficialAdmissionError("busy");
-    const captured = responses.map(parseOfficialThreadSettings);
-    // A second replacement may happen before any lazy Thread resume. Keep the
-    // last verified settings for those dormant subscriptions across generations.
-    for (const settings of captured) this.#threadSettings.set(settings.threadId, settings);
-  }
-
   #configure(client: Client, params: JsonObject): void {
     if (client.initialization && JSON.stringify(client.initialization) !== JSON.stringify(params))
       throw new Error("Official client initialization parameters changed");
@@ -396,31 +367,17 @@ export class OfficialRuntimeOwner {
 
   async #request(client: Client, method: string, params: JsonObject): Promise<JsonObject> {
     this.#checkMethod(method, params);
-    const quotaRead = method === "account/rateLimits/read";
     const finish = this.gate.admit();
     try {
       const runtime = await this.#connection(client);
       await this.#restore(client, runtime, method, params);
-      const observe = this.#work.admitted(client.id, method, params);
-      const response = await runtime.request(method, params).catch((error: unknown) => {
-        // Unexpected transport loss is not native completion. Intentional backend
-        // retirement during switching instead ends requests without poisoning the lease.
-        if (
-          quotaRead &&
-          this.#phase === "running" &&
-          client.runtime === runtime &&
-          runtime.generation === this.#generation
-        )
-          this.gate.unavailable();
-        throw error;
-      });
+      const response = await runtime.request(method, params);
       if (
         client.runtime !== runtime ||
         runtime.generation !== this.#generation ||
         this.#phase !== "running"
       )
         throw new OfficialAdmissionError("unavailable");
-      observe(response);
       this.#remember(client, method, params, response);
       return response;
     } finally {
@@ -438,13 +395,8 @@ export class OfficialRuntimeOwner {
         client.runtime.generation !== this.#generation
       )
         throw new Error("Retired official server request");
-      const key = String(value.id);
-      try {
-        await client.runtime.send({ ...value, id: original });
-        client.serverRequests.delete(key);
-      } finally {
-        this.gate.nativeWork(key, false);
-      }
+      await client.runtime.send({ ...value, id: original });
+      client.serverRequests.delete(String(value.id));
       return;
     }
     if (value.method === "initialized") return;
@@ -454,7 +406,6 @@ export class OfficialRuntimeOwner {
     this.#checkMethod(value.method, params);
     const finish = this.gate.admit();
     let pendingKey: string | undefined;
-    let quotaReadGeneration: number | undefined;
     try {
       const runtime = await this.#connection(client);
       await this.#restore(client, runtime, value.method, params);
@@ -467,20 +418,11 @@ export class OfficialRuntimeOwner {
           method: value.method,
           params,
           finish,
-          observe: this.#work.admitted(client.id, value.method, params),
         });
       }
-      if (value.method === "account/rateLimits/read") quotaReadGeneration = runtime.generation;
       await runtime.send(value);
       if (!pendingKey) finish();
     } catch (error) {
-      if (
-        this.#phase === "running" &&
-        quotaReadGeneration !== undefined &&
-        quotaReadGeneration === this.#generation &&
-        client.runtime?.generation === quotaReadGeneration
-      )
-        this.gate.unavailable();
       if (pendingKey) client.pending.delete(pendingKey);
       finish();
       throw error;
@@ -510,12 +452,10 @@ export class OfficialRuntimeOwner {
       return;
     const value = event.value;
     if (!object(value)) return client.output(event);
-    this.#work.notification(client.id, value);
     if (typeof value.id === "string" || typeof value.id === "number") {
       if (typeof value.method === "string") {
         const id = `codexhost:server:${client.id}:${event.generation}:${randomUUID()}`;
         client.serverRequests.set(id, value.id);
-        this.gate.nativeWork(id, true);
         const projected = { ...value, id };
         return client.output({
           ...event,
@@ -525,7 +465,6 @@ export class OfficialRuntimeOwner {
       }
       const pending = client.pending.get(requestKey(value.id));
       if (pending) {
-        pending.observe(value);
         this.#remember(client, pending.method, pending.params, value);
         client.pending.delete(requestKey(value.id));
         pending.finish();
@@ -585,13 +524,8 @@ export class OfficialRuntimeOwner {
     if (!subscription || subscription.generation === runtime.generation) return;
     if (subscription.restoring) return subscription.restoring;
     const restoring = (async () => {
-      const settings = this.#threadSettings.get(threadId);
-      const resume = settings
-        ? buildOfficialThreadResumeParams(settings, subscription.params)
-        : subscription.params;
-      const observe = this.#work.admitted(client.id, "thread/resume", resume);
+      const resume = subscription.params;
       const response = await runtime.request("thread/resume", resume);
-      observe(response);
       if (
         response.error ||
         !object(response.result) ||
@@ -601,31 +535,6 @@ export class OfficialRuntimeOwner {
         throw new Error("Official Thread restoration failed");
       if (client.runtime !== runtime || runtime.generation !== this.#generation)
         throw new OfficialAdmissionError("unavailable");
-      if (settings) {
-        const restored = await runtime.request(
-          "thread/settings/update",
-          buildOfficialThreadSettingsUpdate(settings),
-        );
-        if (
-          restored.error ||
-          !object(restored.result) ||
-          client.runtime !== runtime ||
-          runtime.generation !== this.#generation
-        )
-          throw new Error("Official Thread settings restoration failed");
-        const verified = await runtime.request("thread/resume", {
-          threadId,
-          excludeTurns: true,
-        });
-        if (
-          verified.error ||
-          !object(verified.result) ||
-          client.runtime !== runtime ||
-          runtime.generation !== this.#generation
-        )
-          throw new Error("Official Thread settings restoration failed");
-        assertOfficialThreadSettingsRestored(verified.result, settings);
-      }
       subscription.generation = runtime.generation;
     })();
     subscription.restoring = restoring;
@@ -636,30 +545,7 @@ export class OfficialRuntimeOwner {
     }
   }
 
-  async #inspectQueue(client: Client, threadId: string): Promise<void> {
-    const runtime = client.runtime;
-    if (!runtime) return;
-    const params: JsonObject = { threadId, cursor: null, limit: 1 };
-    const observe = this.#work.admitted(client.id, "thread/queue/list", params);
-    try {
-      const response = await runtime.request("thread/queue/list", params);
-      if (
-        runtime === client.runtime &&
-        runtime.generation === this.#generation &&
-        this.#clients.has(client)
-      )
-        observe(response);
-    } catch {
-      /* Keep unknown queued work busy; never infer idle from a failed query. */
-    }
-  }
-
   #retire(client: Client): void {
-    if (
-      this.#phase !== "stopping" &&
-      [...client.pending.values()].some((pending) => pending.method === "account/rateLimits/read")
-    )
-      this.gate.unavailable();
     client.runtime?.retire();
     for (const subscription of client.threads.values()) delete subscription.restoring;
     for (const pending of client.pending.values()) {
@@ -677,7 +563,6 @@ export class OfficialRuntimeOwner {
         .catch(() => undefined);
     }
     client.pending.clear();
-    for (const id of client.serverRequests.keys()) this.gate.nativeWork(id, false);
     client.serverRequests.clear();
   }
 

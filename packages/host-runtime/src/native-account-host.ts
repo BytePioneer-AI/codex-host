@@ -398,8 +398,8 @@ export async function prepareLocalCodex(input: LocalCodexOptions): Promise<Prepa
       ) {
         const change = scope.gate.beginChange();
         try {
-          await runtime.assertNativeIdle();
           await runtime.stop();
+          change.assertIdle();
           await importLegacyAccountCredentials({
             store,
             registryDigest: layout.credentialImport.registryDigest,

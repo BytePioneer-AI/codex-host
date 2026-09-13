@@ -20,7 +20,7 @@ export async function importLegacyAccountCredentials(input: {
   registryDigest: string;
   homes: readonly string[];
   readCredentials(home: string): Promise<NativeCodexCredentials | null>;
-  /** Revalidate source layout and absence of observable writers while stopped. */
+  /** Revalidate source layout and owned-process exit while stopped. */
   assertAdmission(): Promise<void>;
 }): Promise<void> {
   const { store } = input;

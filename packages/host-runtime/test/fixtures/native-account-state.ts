@@ -163,7 +163,6 @@ export class SyntheticNativeAccountRuntime implements NativeAccountRuntime {
   preflightError: Error | undefined;
   verifyError: Error | undefined;
   startHook: RuntimeHook | undefined;
-  nativeIdle = true;
   readonly permanentHome: string;
 
   constructor(
@@ -178,23 +177,15 @@ export class SyntheticNativeAccountRuntime implements NativeAccountRuntime {
     if (this.preflightError) throw this.preflightError;
   }
 
-  async assertNativeIdle(): Promise<void> {
-    if (!this.nativeIdle) throw Object.assign(new Error("synthetic native work"), { code: "busy" });
-  }
-
   async stopExternalProcesses(): Promise<void> {}
 
   async stop(): Promise<void> {
     const home = this.activeHome;
-    if (!home) {
-      this.gate.retired();
-      return;
-    }
+    if (!home) return;
     const hooks = this.#stopHooks.get(home) ?? [];
     this.#stopHooks.delete(home);
     for (const hook of hooks) await hook(home);
     this.activeHome = undefined;
-    this.gate.retired();
   }
 
   async start(stagingHome?: string): Promise<void> {

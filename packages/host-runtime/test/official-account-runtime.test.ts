@@ -15,11 +15,6 @@ async function fixture(stopExternalProcesses?: () => Promise<void>) {
     "config/read": { config: { cli_auth_credentials_store: "file" } },
     "account/read": { account: { type: "chatgpt", email: native.email ?? "a@example.test" } },
     "account/rateLimits/read": { rateLimits: {} },
-    "thread/list": { data: [], nextCursor: null },
-    "thread/loaded/list": { data: [], nextCursor: null },
-    "thread/queue/list": { data: [], nextCursor: null },
-    "thread/goal/get": { goal: null },
-    "thread/backgroundTerminals/list": { data: [], nextCursor: null },
   };
   const gate = new OfficialWorkGate();
   const controlRequest = vi.fn<(method: string, params: JsonObject) => Promise<JsonObject>>(
@@ -39,7 +34,6 @@ async function fixture(stopExternalProcesses?: () => Promise<void>) {
     gate,
     running: true,
     controlRequest,
-    captureThreadSettings: vi.fn<(threads: readonly JsonObject[]) => void>(),
     start: vi.fn(async (...args: unknown[]) => {
       void args;
       owner.running = true;
@@ -102,28 +96,6 @@ describe("official native account checks", () => {
     await f.runtime.start();
     expect(stopExternal).toHaveBeenCalledOnce();
   });
-  it.each(["thread", "queue"] as const)(
-    "refuses idle-only mutations with pending %s work",
-    async (reason) => {
-      const f = await fixture();
-      f.responses["thread/list"] = {
-        data: [{ id: "blocking", status: { type: reason === "thread" ? "active" : "idle" } }],
-        nextCursor: null,
-      };
-      f.owner.controlRequest.mockImplementation(async (method, params) => ({
-        result:
-          method === "thread/list" && params.archived
-            ? { data: [], nextCursor: null }
-            : method === "thread/queue/list"
-              ? { data: [{}], nextCursor: null }
-              : (f.responses[method] ?? {}),
-      }));
-      await expect(f.runtime.assertNativeIdle()).rejects.toMatchObject({
-        code: "busy",
-      });
-      expect(f.owner.stop).not.toHaveBeenCalled();
-    },
-  );
   it("initializes a persistent loopback management client before Desktop attaches", async () => {
     const f = await fixture();
     f.owner.running = false;
@@ -251,11 +223,14 @@ describe("official native account checks", () => {
     );
     await expect(f.runtime.verify(f.native.identity)).rejects.toThrow("invalid-native-response");
   });
-  it("keeps a successful cold preflight for idle proof and explicit stop", async () => {
+  it("checks only authentication and configuration before explicit stop", async () => {
     const f = await fixture();
     f.owner.running = false;
     await f.runtime.preflight();
-    await f.runtime.assertNativeIdle();
+    expect(f.owner.controlRequest.mock.calls.map(([method]) => method)).toEqual([
+      "config/read",
+      "account/read",
+    ]);
     expect(f.owner.start).toHaveBeenCalledWith({ mode: "management-only" });
     expect(f.owner.stop).not.toHaveBeenCalled();
     expect(f.owner.running).toBe(true);
@@ -279,159 +254,5 @@ describe("official native account checks", () => {
     f.reconcile.mockRejectedValue(new Error("unconfirmed"));
     await expect(f.runtime.preflight()).rejects.toThrow("unconfirmed");
     expect(f.owner.start).not.toHaveBeenCalled();
-  });
-  it.each(["active", "usageLimited", "paused"])(
-    "blocks persisted %s goals even when no Thread is loaded",
-    async (status) => {
-      const f = await fixture();
-      f.owner.controlRequest.mockImplementation(async (method, params) => ({
-        result:
-          method === "thread/list"
-            ? params.archived
-              ? { data: [], nextCursor: null }
-              : { data: [{ id: "persisted", status: { type: "notLoaded" } }], nextCursor: null }
-            : method === "thread/goal/get"
-              ? { goal: { status } }
-              : (f.responses[method] ?? {}),
-      }));
-      await expect(f.runtime.assertNativeIdle()).rejects.toMatchObject({
-        code: "busy",
-      });
-      const listCalls = f.owner.controlRequest.mock.calls.filter(
-        ([method]) => method === "thread/list",
-      );
-      expect(listCalls.map(([, params]) => params.archived)).toEqual([false, true]);
-      expect(listCalls[0]?.[1]).toMatchObject({
-        modelProviders: [],
-        sourceKinds: expect.arrayContaining(["exec", "subAgentOther", "unknown"]),
-      });
-    },
-  );
-  it("does not call unsupported queue or goal APIs for archived history", async () => {
-    const f = await fixture();
-    f.owner.controlRequest.mockImplementation(async (method, params) => {
-      if (method === "thread/list")
-        return {
-          result: params.archived
-            ? { data: [{ id: "archived", status: { type: "notLoaded" } }], nextCursor: null }
-            : { data: [], nextCursor: null },
-        };
-      if (method === "thread/queue/list" || method === "thread/goal/get")
-        return { error: { code: -32600, message: "unsupported for archived Thread" } };
-      return { result: f.responses[method] ?? {} };
-    });
-    await f.runtime.assertNativeIdle();
-    expect(f.owner.controlRequest).not.toHaveBeenCalledWith(
-      "thread/queue/list",
-      expect.objectContaining({ threadId: "archived" }),
-    );
-    expect(f.owner.controlRequest).not.toHaveBeenCalledWith(
-      "thread/goal/get",
-      expect.objectContaining({ threadId: "archived" }),
-    );
-  });
-
-  it("checks loaded background terminals and captures the live Model rather than stale list metadata", async () => {
-    const f = await fixture();
-    const thread = {
-      id: "loaded",
-      ephemeral: false,
-      path: "/synthetic/home/sessions/loaded.jsonl",
-      status: { type: "idle" },
-      model: "selected",
-      modelProvider: "provider",
-      reasoningEffort: "low",
-    };
-    f.responses["thread/loaded/list"] = { data: [thread.id], nextCursor: null };
-    f.responses["thread/read"] = { thread };
-    const effective = {
-      thread,
-      model: "selected",
-      modelProvider: "provider",
-      serviceTier: "priority",
-      cwd: "/synthetic/current",
-      runtimeWorkspaceRoots: ["/synthetic/current"],
-      instructionSources: [],
-      approvalPolicy: "on-request",
-      approvalsReviewer: "user",
-      sandbox: { type: "workspaceWrite", writableRoots: [], networkAccess: false },
-      activePermissionProfile: { id: ":workspace", extends: null },
-      reasoningEffort: "low",
-      multiAgentMode: "explicitRequestOnly",
-      initialTurnsPage: null,
-      turnsBackwardsCursor: null,
-      itemsBackwardsCursor: null,
-    };
-    f.responses["thread/resume"] = effective;
-    f.responses["thread/backgroundTerminals/list"] = {
-      data: [{ id: "terminal" }],
-      nextCursor: null,
-    };
-    await expect(f.runtime.assertNativeIdle()).rejects.toMatchObject({
-      code: "busy",
-    });
-    expect(f.owner.captureThreadSettings).not.toHaveBeenCalled();
-    f.responses["thread/backgroundTerminals/list"] = { data: [], nextCursor: null };
-    await f.runtime.assertNativeIdle();
-    expect(f.owner.controlRequest).toHaveBeenCalledWith("thread/resume", {
-      threadId: "loaded",
-      excludeTurns: true,
-    });
-    expect(f.owner.captureThreadSettings).toHaveBeenCalledWith([effective]);
-  });
-
-  it.each([
-    { ephemeral: true, path: "/synthetic/home/sessions/temporary.jsonl" },
-    { ephemeral: false, path: null },
-    { ephemeral: false, path: "" },
-    {},
-  ])("refuses non-restorable loaded native Thread metadata %j", async (metadata) => {
-    const f = await fixture();
-    const thread = { id: "temporary", status: { type: "idle" }, ...metadata };
-    f.responses["thread/loaded/list"] = { data: [thread.id], nextCursor: null };
-    f.responses["thread/read"] = { thread };
-    f.responses["thread/resume"] = { thread };
-    await expect(f.runtime.assertNativeIdle()).rejects.toMatchObject({
-      code: "busy",
-    });
-    expect(f.owner.captureThreadSettings).not.toHaveBeenCalled();
-    expect(f.owner.stop).not.toHaveBeenCalled();
-  });
-
-  it.each([
-    { message: "no rollout found for thread id draft", expected: "busy" },
-    { message: "another native request failure", expected: "invalid-native-response" },
-  ])(
-    "classifies native resume refusal without stopping the writer: $expected",
-    async ({ message, expected }) => {
-      const f = await fixture();
-      f.runtime.gate.initialized();
-      const thread = {
-        id: "draft",
-        ephemeral: false,
-        status: { type: "idle" },
-        path: "/synthetic/home/sessions/planned-not-materialized.jsonl",
-      };
-      f.responses["thread/loaded/list"] = { data: [thread.id], nextCursor: null };
-      f.responses["thread/read"] = { thread };
-      f.owner.controlRequest.mockImplementation(async (method) =>
-        method === "thread/resume"
-          ? { error: { code: -32600, message } }
-          : { result: f.responses[method] ?? {} },
-      );
-      await expect(f.runtime.assertNativeIdle()).rejects.toMatchObject({ code: expected });
-      expect(f.runtime.gate.phase).toBe("ready");
-      expect(f.owner.stop).not.toHaveBeenCalled();
-      expect(f.owner.captureThreadSettings).not.toHaveBeenCalled();
-    },
-  );
-
-  it("rejects a repeated native pagination cursor instead of looping or reporting idle", async () => {
-    const f = await fixture();
-    f.responses["thread/list"] = { data: [], nextCursor: "again" };
-    await expect(f.runtime.assertNativeIdle()).rejects.toMatchObject({
-      code: "invalid-native-response",
-    });
-    expect(f.owner.controlRequest).toHaveBeenCalledTimes(2);
   });
 });

@@ -26,7 +26,6 @@ describe("request retirement during Account switch", () => {
     await setup();
     const releaseFirst = state.runtime.gate.admit();
     const releaseSecond = state.runtime.gate.admit();
-    state.runtime.gate.nativeWork("active-turn", true);
     const originalStop = state.runtime.stop.bind(state.runtime);
     const stop = vi.spyOn(state.runtime, "stop").mockImplementation(async () => {
       expect(state.runtime.gate.phase).toBe("changing");
@@ -44,14 +43,20 @@ describe("request retirement during Account switch", () => {
     expect(manager.snapshot().phase).toBe("ready");
     expect(state.runtime.gate.busy).toBe(false);
   });
-  it("does not change logout or delete admission", async () => {
+  it("deletes a saved Account without stopping the backend, but respects writer leases", async () => {
     await setup();
+    const before = state.files.peek(state.store.home, "auth.json");
+    const stop = vi.spyOn(state.runtime, "stop");
     const release = state.runtime.gate.admit();
     try {
-      await expect(manager.logout()).rejects.toMatchObject({ code: "busy" });
       await expect(manager.remove(ids.b)).rejects.toMatchObject({ code: "busy" });
     } finally {
       release();
     }
+    await manager.remove(ids.b);
+    expect(stop).not.toHaveBeenCalled();
+    expect(manager.currentAccountId()).toBe(ids.a);
+    expect(manager.snapshot().accounts.map(({ accountId }) => accountId)).toEqual([ids.a]);
+    expect(state.files.peek(state.store.home, "auth.json")).toEqual(before);
   });
 });

@@ -18,18 +18,6 @@ const managementInitialization = {
   clientInfo: { name: "codexhost_account_management", version: "1" },
   capabilities: { experimentalApi: true },
 };
-const sources = [
-  "cli",
-  "vscode",
-  "exec",
-  "appServer",
-  "subAgent",
-  "subAgentReview",
-  "subAgentCompact",
-  "subAgentThreadSpawn",
-  "subAgentOther",
-  "unknown",
-];
 export class OfficialAccountVerificationError extends Error {
   constructor(
     readonly code:
@@ -45,13 +33,7 @@ export class OfficialAccountVerificationError extends Error {
 
 type AccountRuntimeOwner = Pick<
   OfficialRuntimeOwner,
-  | "gate"
-  | "running"
-  | "start"
-  | "stop"
-  | "attachManagement"
-  | "controlRequest"
-  | "captureThreadSettings"
+  "gate" | "running" | "start" | "stop" | "attachManagement" | "controlRequest"
 >;
 
 /** Native account operations. No refresh client, provider substitution or model inference. */
@@ -117,17 +99,9 @@ export class OfficialAccountRuntime implements NativeAccountRuntime {
       this.#activeHome = this.#sharedCodexHome;
       await this.#configuration();
       await this.#authenticationMode();
-      const loaded = await this.#read("thread/loaded/list", {});
-      if (
-        !Array.isArray(loaded.data) ||
-        loaded.data.length !== 0 ||
-        loaded.nextCursor !== null ||
-        this.#owner.gate.busy
-      )
-        throw new OfficialAdmissionError("busy");
     } catch (error) {
       // A failed cold probe cannot leave an unverified writer behind. A successful
-      // probe intentionally remains available for assertNativeIdle() and explicit stop().
+      // probe remains available until the coordinator explicitly stops it.
       await this.stop();
       throw error;
     }
@@ -160,113 +134,6 @@ export class OfficialAccountRuntime implements NativeAccountRuntime {
       )
     )
       throw new OfficialAccountVerificationError("unsupported-storage");
-  }
-
-  async assertNativeIdle(): Promise<void> {
-    if (this.#owner.gate.busy) throw new OfficialAdmissionError("busy");
-    const threads = new Map<string, { status: JsonObject; archived: boolean }>();
-    const loadedThreads = new Map<string, JsonObject>();
-    for (const archived of [false, true]) {
-      let cursor: string | null = null;
-      const seen = new Set<string>();
-      do {
-        const page = await this.#read("thread/list", {
-          archived,
-          modelProviders: [],
-          sourceKinds: sources,
-          cursor,
-          limit: 100,
-        });
-        if (
-          !Array.isArray(page.data) ||
-          !(page.nextCursor === null || typeof page.nextCursor === "string")
-        )
-          throw new OfficialAccountVerificationError("invalid-native-response");
-        for (const thread of page.data) {
-          if (!object(thread) || typeof thread.id !== "string" || !object(thread.status))
-            throw new OfficialAccountVerificationError("invalid-native-response");
-          threads.set(thread.id, { status: thread.status, archived });
-        }
-        if (threads.size > 100_000) throw new OfficialAdmissionError("busy");
-        cursor = page.nextCursor;
-        if (cursor !== null) {
-          if (seen.has(cursor))
-            throw new OfficialAccountVerificationError("invalid-native-response");
-          seen.add(cursor);
-        }
-      } while (cursor !== null);
-    }
-    // Include loaded ephemeral Threads absent from the persisted list.
-    let cursor: string | null = null;
-    const seen = new Set<string>();
-    do {
-      const loaded = await this.#read("thread/loaded/list", { cursor, limit: 100 });
-      if (
-        !Array.isArray(loaded.data) ||
-        !(loaded.nextCursor === null || typeof loaded.nextCursor === "string")
-      )
-        throw new OfficialAccountVerificationError("invalid-native-response");
-      for (const id of loaded.data) {
-        if (typeof id !== "string")
-          throw new OfficialAccountVerificationError("invalid-native-response");
-        const read = await this.#read("thread/read", { threadId: id, includeTurns: false });
-        if (!object(read.thread) || read.thread.id !== id || !object(read.thread.status))
-          throw new OfficialAccountVerificationError("invalid-native-response");
-        // A loaded in-memory Thread must not disappear during credential replacement.
-        // Never force persistence by changing its native ephemeral/history contract.
-        if (
-          read.thread.ephemeral !== false ||
-          typeof read.thread.path !== "string" ||
-          !read.thread.path.trim()
-        )
-          throw new OfficialAdmissionError("busy");
-        const terminals = await this.#read("thread/backgroundTerminals/list", {
-          threadId: id,
-          cursor: null,
-          limit: 1,
-        });
-        if (
-          !Array.isArray(terminals.data) ||
-          terminals.data.length !== 0 ||
-          terminals.nextCursor !== null
-        )
-          throw new OfficialAdmissionError("busy");
-        threads.set(id, {
-          status: read.thread.status,
-          archived: threads.get(id)?.archived ?? false,
-        });
-        loadedThreads.set(id, read.thread);
-        if (threads.size > 100_000) throw new OfficialAdmissionError("busy");
-      }
-      cursor = loaded.nextCursor;
-      if (cursor !== null) {
-        if (seen.has(cursor)) throw new OfficialAccountVerificationError("invalid-native-response");
-        seen.add(cursor);
-      }
-    } while (cursor !== null);
-    for (const [threadId, thread] of threads) {
-      if (thread.status.type !== "idle" && thread.status.type !== "notLoaded")
-        throw new OfficialAdmissionError("busy");
-      // Archived Threads cannot auto-continue, and native queue/goal endpoints
-      // reject archived IDs; only non-archived Threads require these probes.
-      if (thread.archived) continue;
-      const queue = await this.#read("thread/queue/list", { threadId, cursor: null, limit: 1 });
-      if (!Array.isArray(queue.data) || queue.data.length !== 0 || queue.nextCursor !== null)
-        throw new OfficialAdmissionError("busy");
-      const goal = await this.#read("thread/goal/get", { threadId });
-      if (goal.goal !== null && (!object(goal.goal) || goal.goal.status !== "complete"))
-        throw new OfficialAdmissionError("busy");
-    }
-    if (this.#owner.gate.busy) throw new OfficialAdmissionError("busy");
-    const settings: JsonObject[] = [];
-    for (const threadId of loadedThreads.keys()) {
-      const resumed = await this.#read("thread/resume", { threadId, excludeTurns: true });
-      if (!object(resumed.thread) || resumed.thread.id !== threadId)
-        throw new OfficialAccountVerificationError("invalid-native-response");
-      settings.push(resumed);
-    }
-    this.#owner.captureThreadSettings(settings);
-    if (this.#owner.gate.busy) throw new OfficialAdmissionError("busy");
   }
 
   async stopExternalProcesses(): Promise<void> {
@@ -339,7 +206,7 @@ export class OfficialAccountRuntime implements NativeAccountRuntime {
       throw new OfficialAccountVerificationError("unsupported-version");
     }
     // Exact versions exercised by the isolated real-CLI lifecycle probe. Renderer
-    // compatibility alone is not evidence of native Account/queue/goal semantics.
+    // compatibility alone is not evidence of native authentication semantics.
     if (!["0.153.4", "0.154.0-alpha.6.2"].includes(version))
       throw new OfficialAccountVerificationError("unsupported-version");
   }
@@ -356,17 +223,6 @@ export class OfficialAccountRuntime implements NativeAccountRuntime {
     } catch {
       throw new OfficialAccountVerificationError("invalid-native-response");
     }
-    // Native 0.153.4 can report a planned path for an idle, non-ephemeral
-    // Thread whose rollout is not materialized yet. It cannot survive a restart;
-    // keep the writer alive and report admission refusal, not failed login.
-    if (
-      method === "thread/resume" &&
-      typeof params.threadId === "string" &&
-      object(result.error) &&
-      result.error.code === -32600 &&
-      result.error.message === `no rollout found for thread id ${params.threadId}`
-    )
-      throw new OfficialAdmissionError("busy");
     if (result.error || !object(result.result))
       throw new OfficialAccountVerificationError("invalid-native-response");
     return result.result;

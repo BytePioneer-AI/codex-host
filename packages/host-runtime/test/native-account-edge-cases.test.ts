@@ -6,7 +6,6 @@ import type { CodexAccountLoginCompleted } from "@codexhost/shared-contracts";
 import { NativeAccountStore } from "../src/account/native-account-store.js";
 import { NativeCodexAccounts } from "../src/account/native-codex-accounts.js";
 import { NativeCodexCredentials } from "../src/account/native-codex-credentials.js";
-import { OfficialAdmissionError } from "../src/codex-runtime/official-work-gate.js";
 import { NativePrivateFiles } from "../src/native-private-files.js";
 import {
   credential,
@@ -106,41 +105,75 @@ describe("native Account boundary regressions", () => {
     }
   });
 
-  it("refuses logout while busy without stopping A", async () => {
-    const { state, manager } = await currentA();
-    const stop = vi.spyOn(state.runtime, "stop");
-    vi.spyOn(state.runtime, "assertNativeIdle").mockRejectedValueOnce(
-      new OfficialAdmissionError("busy"),
-    );
-    await expect(manager.logout()).rejects.toMatchObject({ code: "busy" });
-    expect(stop).not.toHaveBeenCalled();
-    expect(manager.snapshot().phase).toBe("ready");
-  });
-
-  it("reports busy without stopping A when native persisted work rejects login", async () => {
-    const { state, manager } = await currentA();
-    const stop = vi.spyOn(state.runtime, "stop");
-    vi.spyOn(state.runtime, "assertNativeIdle").mockRejectedValueOnce(
-      new OfficialAdmissionError("busy"),
-    );
-    await expect(manager.startLogin()).rejects.toMatchObject({ code: "busy" });
-    expect(stop).not.toHaveBeenCalled();
-    expect(manager.snapshot().phase).toBe("ready");
-  });
-
-  it("retries exit proof in unavailable recovery without retiring unconfirmed work", async () => {
+  it.each(["login", "logout"])("%s retires native requests before proceeding", async (kind) => {
     const { state, manager } = await currentA();
     const before = state.files.peek(state.store.home, "auth.json");
-    state.runtime.gate.nativeWork("disconnected-native-turn", true);
-    // Recovery must not stop a healthy busy backend.
-    await expect(manager.recover()).rejects.toMatchObject({ code: "busy" });
-    state.runtime.gate.unavailable();
+    const release = state.runtime.gate.admit();
+    const originalStop = state.runtime.stop.bind(state.runtime);
+    const stop = vi.spyOn(state.runtime, "stop").mockImplementation(async () => {
+      expect(state.runtime.gate.phase).toBe("changing");
+      expect(() => state.runtime.gate.admit()).toThrow("changing");
+      // The owner rejects pending native RPCs and releases their leases on retirement.
+      release();
+      await originalStop();
+    });
+    const external = vi.spyOn(state.runtime, "stopExternalProcesses");
+    const control = vi.spyOn(state.runtime, "controlRequest");
+    if (kind === "login") {
+      const login = await manager.startLogin();
+      expect(state.files.peek(state.store.home, "auth.json")).toEqual(before);
+      expect(stop).toHaveBeenCalledOnce();
+      expect(await manager.cancelLogin(login.loginId)).toBe(true);
+    } else {
+      await manager.logout();
+      expect(manager.currentAccountId()).toBeNull();
+      expect(state.files.peek(state.store.home, "auth.json")).toBeNull();
+      expect(stop).toHaveBeenCalledOnce();
+    }
+    expect(control.mock.calls.some(([method]) => method.startsWith("thread/"))).toBe(false);
+    expect(external).not.toHaveBeenCalled();
+    expect(state.runtime.gate.busy).toBe(false);
+    expect(manager.snapshot().phase).toBe("ready");
+  });
+
+  it.each(["login", "logout"])("%s preserves credentials when stop fails", async (kind) => {
+    const { state, manager } = await currentA();
+    const before = state.files.peek(state.store.home, "auth.json");
+    vi.spyOn(state.runtime, "stop").mockRejectedValue(new Error("unconfirmed exit"));
+    await expect(kind === "login" ? manager.startLogin() : manager.logout()).rejects.toThrow();
+    expect(state.files.peek(state.store.home, "auth.json")).toEqual(before);
+    expect(await state.store.readStage()).toBeNull();
+    expect(manager.snapshot().phase).toBe("unavailable");
+  });
+
+  it.each(["login", "logout"])(
+    "%s cannot discard an independent Host writer lease",
+    async (kind) => {
+      const { state, manager } = await currentA();
+      const before = state.files.peek(state.store.home, "auth.json");
+      const release = state.runtime.gate.admit();
+      try {
+        await expect(kind === "login" ? manager.startLogin() : manager.logout()).rejects.toThrow();
+        expect(state.files.peek(state.store.home, "auth.json")).toEqual(before);
+        expect(await state.store.readStage()).toBeNull();
+        expect(state.runtime.gate.busy).toBe(true);
+      } finally {
+        release();
+      }
+    },
+  );
+
+  it("requires exit proof for recovery even without pending request leases", async () => {
+    const { state, manager } = await currentA();
+    const before = state.files.peek(state.store.home, "auth.json");
+    expect(state.runtime.gate.phase).toBe("ready");
+    expect(state.runtime.gate.busy).toBe(false);
     const stop = vi
       .spyOn(state.runtime, "stop")
       .mockRejectedValueOnce(new Error("stop-unconfirmed"));
     await expect(manager.recover()).rejects.toThrow("recovery-required");
     expect(stop).toHaveBeenCalledOnce();
-    expect(state.runtime.gate.busy).toBe(true);
+    expect(state.runtime.gate.phase).toBe("unavailable");
     expect(state.files.peek(state.store.home, "auth.json")).toEqual(before);
     await manager.recover();
     expect(state.runtime.gate.busy).toBe(false);

@@ -2024,17 +2024,19 @@ describe("AppServerHost HarnessAdapter projection", () => {
         },
       });
       await fixture.collector.waitFor((message) => message.method === "turn/started");
-      expect(scope.gate.busy).toBe(true);
+      // Admission leases are independent from the Host's active-Turn draining.
+      expect(scope.gate.busy).toBe(false);
       exit.resolve({ code: 1, signal: null });
       await vi.waitFor(() => expect(stop).toHaveBeenCalledOnce());
       fixture.host.disconnect();
       await new Promise<void>((resolve) => setImmediate(resolve));
       expect(finished).toBe(false);
-      expect(scope.gate.busy).toBe(true);
+      expect(scope.gate.busy).toBe(false);
       proof.resolve(undefined);
-      await vi.waitFor(() => expect(scope.gate.busy).toBe(false));
+      await scope.owner.stop();
       await vi.waitFor(() => expect(finished).toBe(true));
     } finally {
+      exit.resolve({ code: 1, signal: null });
       proof.resolve(undefined);
       fixture.host.close();
       await fixture.running;

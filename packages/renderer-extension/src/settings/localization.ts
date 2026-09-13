@@ -64,7 +64,6 @@ export interface RendererSettingsMessages {
   readonly sessionImportRetryOpen: string;
   readonly sessionImportRetrying: string;
   readonly connectionsDescription: string;
-  readonly accountsDescription: string;
   readonly accountAdd: string;
   readonly accountColumnAccount: string;
   readonly accountConnected: string;
@@ -98,8 +97,10 @@ export interface RendererSettingsMessages {
   readonly accountRecovering: string;
   readonly accountRecoveryRequired: string;
   readonly accountCleanupRequired: string;
+  readonly accountSavedUnavailable: string;
+  readonly accountRetryCleanup: string;
+  readonly accountCleaningUp: string;
   readonly accountLegacyCompatibility: string;
-  readonly accountLegacyCredentialsAdopted: string;
   readonly accountMigrationRequired: string;
   readonly accountSignIn: string;
   readonly accountSigningIn: string;
@@ -283,8 +284,6 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   sessionImportRetrying: "Opening...",
   connectionsDescription:
     "View runtime status by Host. Select an item to inspect details or complete its setup.",
-  accountsDescription:
-    "View accounts and limits across Agents. Switching stops local Codex backends, including VS Code and CLI sessions; unsaved work may be lost.",
   accountConnected: "Accounts",
   accountDefaultBadge: "Current",
   accountAdd: "Add Codex account",
@@ -318,14 +317,14 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   accountRecover: "Recover",
   accountRecovering: "Recovering Codex...",
   accountRecoveryRequired: "Codex Account recovery is required before work can continue.",
-  accountLegacyCredentialsAdopted:
-    "Saved account credentials are available for global switching in the existing official home. Other account homes and their history are preserved but have not been merged. Account switching does not switch history directories.",
   accountLegacyCompatibility:
     "Native compatibility mode: Codex uses the existing official home. Account management is disabled. Other account homes and their history have not been merged; use the previous version to access them. No source data was migrated or deleted.",
   accountMigrationRequired:
     "Legacy Codex data requires migration before this layout can be used. Your data is preserved; use the previous version to access it. This is not a sign-in request.",
-  accountCleanupRequired:
-    "The Account change was saved, but cleanup or Codex recovery is still required.",
+  accountCleanupRequired: "Account saved. Temporary file cleanup is incomplete.",
+  accountSavedUnavailable: "Account saved. Codex is not ready yet.",
+  accountRetryCleanup: "Retry cleanup",
+  accountCleaningUp: "Retrying cleanup...",
   accountSignIn: "Sign in",
   accountSigningIn: "Starting device sign-in...",
   accountVerificationDescription: "Open the verification page and enter this one-time code:",
@@ -523,8 +522,6 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   sessionImportRetryOpen: "重试打开",
   sessionImportRetrying: "正在打开……",
   connectionsDescription: "按 Host 查看运行时状态。选择一项，在右侧检查详情或完成配置。",
-  accountsDescription:
-    "查看各 Agent 的账号与额度。切换会停止本机 Codex 后端（含 VS Code 和 CLI 会话），未保存内容可能丢失。",
   accountConnected: "账号",
   accountDefaultBadge: "当前",
   accountAdd: "添加 Codex 账号",
@@ -558,13 +555,14 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   accountRecover: "恢复",
   accountRecovering: "正在恢复 Codex...",
   accountRecoveryRequired: "继续工作前需要恢复 Codex 账号状态。",
-  accountLegacyCredentialsAdopted:
-    "旧账号凭据已接入，可在原有官方目录内全局切换。其他账号目录及其历史保留但尚未合并；切换账号不会切换历史目录。",
   accountLegacyCompatibility:
     "原生兼容模式：继续使用原有官方目录，账号管理暂不可用。其他账号目录及其历史尚未合并，请使用旧版访问；没有迁移或删除原数据。",
   accountMigrationRequired:
     "旧 Codex 数据布局需要迁移后才能使用。原数据已保留，请使用旧版访问；这不是要求重新登录。",
-  accountCleanupRequired: "账号变更已保存，但仍需完成清理或恢复 Codex。",
+  accountCleanupRequired: "账号已保存，临时文件清理未完成。",
+  accountSavedUnavailable: "账号已保存，Codex 尚未就绪。",
+  accountRetryCleanup: "重试清理",
+  accountCleaningUp: "正在重试清理...",
   accountSignIn: "登录",
   accountSigningIn: "正在启动设备登录...",
   accountVerificationDescription: "打开验证页面并输入以下一次性代码：",

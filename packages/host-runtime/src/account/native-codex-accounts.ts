@@ -202,15 +202,9 @@ export class NativeCodexAccounts implements CodexAccountControl {
   }
   async #changeCredential(accountId: string | null, kind: "switch" | "logout"): Promise<void> {
     const operationId = randomUUID();
-    const stopWork = kind === "switch";
-    const change = this.#begin(kind, false, operationId, { stopWork });
+    const change = this.#begin(kind, false, operationId, { stopWork: true });
     try {
-      await this.#transaction.execute(
-        accountId,
-        undefined,
-        operationId,
-        stopWork ? "switch" : "idle",
-      );
+      await this.#transaction.execute(accountId, undefined, operationId, kind === "switch");
       if (!this.#finish(change, true)) throw new NativeTransitionError("recovery-required", false);
     } catch (error) {
       const ready = error instanceof NativeTransitionError && error.ready;
@@ -278,6 +272,7 @@ export class NativeCodexAccounts implements CodexAccountControl {
     let cancelledBeforeStage = false;
     let pending: PendingLogin | undefined;
     const change = this.#begin("login", false, operationId, {
+      stopWork: true,
       cancelStarting: async () => {
         cancelledBeforeStage = true;
         await starting.promise;
@@ -298,11 +293,10 @@ export class NativeCodexAccounts implements CodexAccountControl {
         throw new NativeAccountError("recovery-required");
       assertNotCancelled();
       await this.#runtime.preflight();
-      await this.#runtime.assertNativeIdle();
-      change.assertIdle();
       assertNotCancelled();
       stopping = true;
       await this.#runtime.stop();
+      change.assertIdle();
       matchProfile(await this.#store.readCredentials(), profileCurrent(this.#store.vault));
       assertNotCancelled();
       const stage = await this.#store.createStage(accountId, operationId, { activateOnSuccess });
@@ -555,7 +549,7 @@ export class NativeCodexAccounts implements CodexAccountControl {
     this.#pending = { operationId, kind, ...(cancelStarting ? { cancelStarting } : {}) };
     try {
       const lease = options.stopWork
-        ? this.#runtime.gate.beginSwitch()
+        ? this.#runtime.gate.beginStoppingChange()
         : this.#runtime.gate.beginChange(recovery);
       this.#pending.lease = lease;
       return lease;

@@ -83,10 +83,7 @@ export function createAccountsSettingsPage(
       const heading = document.createElement("h1");
       heading.className = "settings-section-label";
       heading.textContent = messages.pageLabels.accounts;
-      const description = document.createElement("p");
-      description.className = "settings-page-description";
-      description.textContent = messages.accountsDescription;
-      copy.append(heading, description);
+      copy.append(heading);
       const add = document.createElement("button");
       add.type = "button";
       add.className = "settings-command-button";
@@ -156,7 +153,6 @@ export function createAccountsSettingsPage(
       let accountInstanceId: string | undefined;
       let hasAccountSnapshot = false;
       let cleanupRequired = false;
-      let legacyHistoryPreserved = false;
       let capabilities: CodexAccountListResult["capabilities"] = {
         manage: false,
         switch: false,
@@ -246,16 +242,18 @@ export function createAccountsSettingsPage(
         const restoreFocus = accountListFocusRestorer(list, search);
         body.replaceChildren();
         status.replaceChildren();
+        const cleanupOnly = cleanupRequired && accountPhase === "ready";
         const accountStatus = cleanupRequired
-          ? messages.accountCleanupRequired
+          ? cleanupOnly
+            ? messages.accountCleanupRequired
+            : messages.accountSavedUnavailable
           : accountPhase === "unavailable" && capabilities.reason === "recovery-required"
             ? messages.accountRecoveryRequired
             : capabilities.reason === "migration-required"
               ? accountPhase === "ready" && currentAccountId !== null
                 ? messages.accountLegacyCompatibility
                 : messages.accountMigrationRequired
-              : (loginMessage ??
-                (legacyHistoryPreserved ? messages.accountLegacyCredentialsAdopted : null));
+              : loginMessage;
         if (accountStatus) status.append(accountStatus);
         if (
           (cleanupRequired || capabilities.reason === "recovery-required") &&
@@ -264,9 +262,13 @@ export function createAccountsSettingsPage(
           const recover = document.createElement("button");
           recover.type = "button";
           recover.className = "settings-command-button settings-command-button--secondary";
-          recover.textContent = accountRecovering
-            ? messages.accountRecovering
-            : messages.accountRecover;
+          recover.textContent = cleanupOnly
+            ? accountRecovering
+              ? messages.accountCleaningUp
+              : messages.accountRetryCleanup
+            : accountRecovering
+              ? messages.accountRecovering
+              : messages.accountRecover;
           recover.disabled = accountBusy();
           recover.addEventListener("click", recoverAccounts);
           status.append(" ", recover);
@@ -499,7 +501,6 @@ export function createAccountsSettingsPage(
         accountRevision = result.revision;
         accountInstanceId = result.instanceId;
         cleanupRequired = result.cleanupRequired ?? false;
-        legacyHistoryPreserved = result.legacyHistoryPreserved ?? false;
         capabilities = result.capabilities;
         for (const accountId of expandedResetAccounts) {
           if (!accounts.some((account) => account.accountId === accountId))
@@ -542,9 +543,7 @@ export function createAccountsSettingsPage(
         cleanupRequired = result.cleanupRequired ?? cleanupRequired;
         loginMessage =
           result.saved || result.success
-            ? result.cleanupRequired
-              ? messages.accountCleanupRequired
-              : messages.accountLoginSucceeded
+            ? messages.accountLoginSucceeded
             : (result.error ?? messages.accountLoginFailed);
         render();
         if (result.saved || result.success) load(true);
@@ -712,7 +711,10 @@ export function createAccountsSettingsPage(
       const recoverAccounts = (): void => {
         if (accountBusy() || !capabilities.recover) return;
         accountRecovering = true;
-        loginMessage = messages.accountRecovering;
+        loginMessage =
+          cleanupRequired && accountPhase === "ready"
+            ? messages.accountCleaningUp
+            : messages.accountRecovering;
         render();
         void context.runLatest(() => client().recoverCodexAccounts({}), {
           success(result) {

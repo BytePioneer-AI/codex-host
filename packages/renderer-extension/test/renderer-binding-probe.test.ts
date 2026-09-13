@@ -1106,6 +1106,23 @@ describe("Renderer Composer DOM behavior", () => {
       thinkingOptionId: "high",
       permissionModeId: "configured",
     });
+    expect(
+      restoredThreadOwnership({
+        owner: "external",
+        harnessId: "hermes",
+        transportModelId: "codexhost/plugin-v1@synthetic",
+        history: { fork: false, forkAcrossCwd: false, rollbackLastTurn: false },
+        effectiveModel: harnessModelRefSchema.parse({
+          id: "hermes-model-v1.emFpOmdsbS01LXR1cmJv",
+        }),
+        effectivePermissionModeId: harnessPermissionModeIdSchema.parse("accept_edits"),
+        locked: true,
+      }),
+    ).toEqual({
+      agent: "hermes",
+      model: { id: "hermes-model-v1.emFpOmdsbS01LXR1cmJv" },
+      permissionModeId: "accept_edits",
+    });
     expect(() =>
       restoredThreadOwnership({
         owner: "external",

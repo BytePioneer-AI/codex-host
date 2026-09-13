@@ -1,0 +1,11 @@
+{
+  "manifestVersion": 1,
+  "id": "hermes",
+  "name": "Hermes",
+  "version": "0.1.0",
+  "adapterApiVersion": 1,
+  "entry": "./dist/plugin.js",
+  "links": {
+    "documentation": "https://hermes-agent.nousresearch.com/docs"
+  }
+}

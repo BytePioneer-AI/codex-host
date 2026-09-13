@@ -138,7 +138,6 @@ export class SyntheticPrivateFiles implements PrivateCredentialFiles {
 export class SyntheticNativeAccountKeys implements NativeAccountKeys {
   #key: Buffer | null;
   reads = 0;
-  creates = 0;
 
   constructor(key: Uint8Array | null = Buffer.alloc(32, 0x5a)) {
     this.#key = key ? Buffer.from(key) : null;
@@ -147,13 +146,6 @@ export class SyntheticNativeAccountKeys implements NativeAccountKeys {
   async read(): Promise<Buffer | null> {
     this.reads++;
     return this.#key ? Buffer.from(this.#key) : null;
-  }
-
-  async create(): Promise<Buffer> {
-    this.creates++;
-    if (this.#key) throw new Error("synthetic key already exists");
-    this.#key = Buffer.alloc(32, 0x5a);
-    return Buffer.from(this.#key);
   }
 }
 
@@ -189,6 +181,8 @@ export class SyntheticNativeAccountRuntime implements NativeAccountRuntime {
   async assertNativeIdle(): Promise<void> {
     if (!this.nativeIdle) throw Object.assign(new Error("synthetic native work"), { code: "busy" });
   }
+
+  async stopExternalProcesses(): Promise<void> {}
 
   async stop(): Promise<void> {
     const home = this.activeHome;

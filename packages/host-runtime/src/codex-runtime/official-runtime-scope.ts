@@ -165,37 +165,6 @@ export class OfficialRuntimeClient {
   }
 }
 
-/** Adapter for an already established one-client connection. Production shared
- * listeners should inject their native OwnedOfficialBackend directly. */
-export function createSharedConnectionBackend(
-  factory: () => OfficialAppServerConnection | Promise<OfficialAppServerConnection>,
-  backendClosed: Promise<Awaited<OfficialAppServerConnection["closed"]>>,
-): OwnedOfficialBackend {
-  const connections = new Set<OfficialAppServerConnection>();
-  const closed = Promise.withResolvers<Awaited<OfficialAppServerConnection["closed"]>>();
-  void backendClosed.then(closed.resolve);
-  let stopped = false;
-  return {
-    closed: closed.promise,
-    async start() {},
-    async connect() {
-      if (stopped) throw new Error("Official connection backend is stopped");
-      const connection = await factory();
-      connections.add(connection);
-      void connection.closed.finally(() => connections.delete(connection));
-      return connection;
-    },
-    async stop() {
-      stopped = true;
-      const active = [...connections];
-      for (const connection of active) connection.close();
-      await Promise.allSettled(active.map((connection) => connection.closed));
-      connections.clear();
-      closed.resolve({ code: 0, signal: null });
-    },
-  };
-}
-
 export function createOwnedConnectionBackend(
   factory: () => OfficialAppServerConnection | Promise<OfficialAppServerConnection>,
 ): OwnedOfficialBackend {

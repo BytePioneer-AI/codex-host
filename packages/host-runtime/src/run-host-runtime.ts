@@ -28,7 +28,6 @@ import {
 import {
   createRemoteAppServerWebSocketListener,
   isRemoteUnixListenerInvocation,
-  officialLoopbackListenerArguments,
   officialListenerArgumentsForRemoteListener,
   prepareRemoteAppServerSocketDirectory,
   remoteAppServerSocketPath,
@@ -54,12 +53,6 @@ export function createRemoteOfficialAppServerPlan(
     socketPath,
     listenerArguments: officialListenerArgumentsForRemoteListener(arguments_, socketPath),
   };
-}
-
-export function createRemoteControlOfficialAppServerPlan(arguments_: readonly string[]): {
-  listenerArguments: string[];
-} {
-  return { listenerArguments: officialLoopbackListenerArguments(arguments_) };
 }
 
 export function hasLauncherManagedUpdateRuntime(

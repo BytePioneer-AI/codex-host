@@ -31,11 +31,9 @@ const native = vi.hoisted(() => {
     files: FixtureFiles;
     key: Buffer | null;
     keyReadError?: Error;
-    keyCreateError?: Error;
     initializationError?: Error;
     startBeforeInitializationError: boolean;
     reconcileError?: Error;
-    inventory: number[];
     version: string;
     events: string[];
     managedSnapshot: {
@@ -64,6 +62,7 @@ const native = vi.hoisted(() => {
     accountConstructions: 0,
     accountInstances: [] as object[],
     nativeLaunches: [] as unknown[],
+    externalStop: undefined as (() => Promise<void>) | undefined,
   };
   const current = (): Fixture => {
     if (!state.current) throw new Error("native account host fixture is unavailable");
@@ -108,12 +107,6 @@ const native = vi.hoisted(() => {
       if (fixture.keyReadError) throw fixture.keyReadError;
       return fixture.key ? Buffer.from(fixture.key) : null;
     }
-    async create(): Promise<Buffer> {
-      const fixture = current();
-      if (fixture.keyCreateError) throw fixture.keyCreateError;
-      if (!fixture.key) throw new Error("native key unavailable");
-      return Buffer.from(fixture.key);
-    }
   }
   class OfficialProcessRecord {
     constructor(input: unknown) {
@@ -139,8 +132,10 @@ const native = vi.hoisted(() => {
       owner: OfficialAccountRuntime["owner"];
       nativeVersion(): Promise<string>;
       reconcilePreviousWriter(): Promise<void>;
+      stopExternalProcesses?(): Promise<void>;
     }) {
       state.runtimeConstructions++;
+      state.externalStop = input.stopExternalProcesses;
       this.owner = input.owner;
       this.nativeVersion = input.nativeVersion;
       this.reconcilePreviousWriter = input.reconcilePreviousWriter;
@@ -242,8 +237,8 @@ vi.mock("../src/codex-runtime/official-cli-version.js", () => ({
 vi.mock("../src/native-process-identity.js", () => ({
   readNativeProcessIdentity: async () => null,
 }));
-vi.mock("../src/native-process-inventory.js", () => ({
-  readNativeProcessIds: vi.fn(async () => native.current().inventory),
+vi.mock("../src/native-process-stop.js", () => ({
+  stopNativeProcesses: vi.fn(async () => undefined),
 }));
 vi.mock("../src/codex-runtime/owned-official-backends.js", () => ({
   createOwnedLoopbackBackend: () => createBackend(),
@@ -268,7 +263,7 @@ vi.mock("../src/remote-official-app-server.js", () => ({
 
 import { prepareLocalCodex } from "../src/native-account-host.js";
 import { OfficialRuntimeClient } from "../src/codex-runtime/official-runtime-scope.js";
-import { readNativeProcessIds } from "../src/native-process-inventory.js";
+import { stopNativeProcesses } from "../src/native-process-stop.js";
 
 interface HostFixture {
   root: string;
@@ -370,11 +365,9 @@ async function fixture(
     layout: options.layout ?? { kind: "new" },
     files,
     key: options.keyAvailable === false ? null : Buffer.alloc(32, 0x5a),
-    ...(options.keyAvailable === false ? { keyCreateError: new Error("key unavailable") } : {}),
     ...(options.initializationError ? { initializationError: options.initializationError } : {}),
     startBeforeInitializationError: options.startBeforeInitializationError ?? false,
     ...(options.reconcileError ? { reconcileError: options.reconcileError } : {}),
-    inventory: [],
     version: "0.153.4",
     events,
     managedSnapshot: {
@@ -426,9 +419,8 @@ async function fixture(
 }
 
 beforeEach(() => {
-  vi.mocked(readNativeProcessIds)
-    .mockReset()
-    .mockImplementation(async () => native.current().inventory);
+  vi.mocked(stopNativeProcesses).mockClear();
+  native.state.externalStop = undefined;
   native.state.current = null;
   native.state.fileConstructions = 0;
   native.state.keyConstructions = 0;
@@ -523,7 +515,7 @@ describe("local native Account composition", () => {
     expect(f.files.replace).not.toHaveBeenCalled();
   });
 
-  it("retains legacy native startup and authentication with other Codex backends", async () => {
+  it("retains legacy native startup and authentication without account management", async () => {
     const f = await fixture({
       layout: {
         kind: "migration-required",
@@ -532,7 +524,6 @@ describe("local native Account composition", () => {
         nativeCompatibility: { accountId: "legacy-current", registryDigest: "original" },
       },
     });
-    native.current().inventory = [424242];
     const prepared = await prepareLocalCodex(f.input({ sharedListener: true }));
     try {
       expect(prepared.allowNativeAuthPassthrough).toBe(true);
@@ -543,7 +534,6 @@ describe("local native Account composition", () => {
         logout: false,
         reason: "migration-required",
       });
-      expect(readNativeProcessIds).not.toHaveBeenCalled();
       await prepared.officialRuntimeScope.start();
       expect(prepared.officialRuntimeScope.gate.phase).toBe("ready");
       expect(native.state.keyConstructions).toBe(0);
@@ -693,7 +683,7 @@ describe("local native Account composition", () => {
   });
 
   it.each(["fresh", "managed", "legacy"] as const)(
-    "starts %s mode without an external process inventory or termination",
+    "starts and closes %s mode without terminating external backends",
     async (mode) => {
       const f = await fixture(
         mode === "legacy"
@@ -709,19 +699,38 @@ describe("local native Account composition", () => {
       );
       if (mode === "managed")
         await mkdir(path.join(f.home, ".codexhost-native-accounts"), { recursive: true });
-      native.current().inventory = [424242];
-      vi.mocked(readNativeProcessIds).mockRejectedValue(new Error("inventory unavailable"));
       const prepared = await prepareLocalCodex(f.input({ sharedListener: true }));
       try {
         await prepared.officialRuntimeScope.start();
         expect(prepared.officialRuntimeScope.gate.phase).toBe("ready");
-        expect(readNativeProcessIds).not.toHaveBeenCalled();
+        expect(stopNativeProcesses).not.toHaveBeenCalled();
       } finally {
         await prepared.close();
       }
-      expect(readNativeProcessIds).not.toHaveBeenCalled();
+      expect(stopNativeProcesses).not.toHaveBeenCalled();
     },
   );
+
+  it("allows external backends at startup and always wires a switch-only stop", async () => {
+    const f = await fixture();
+    const input = f.input();
+    const prepared = await prepareLocalCodex(input);
+    try {
+      expect(prepared.officialRuntimeScope.owner.running).toBe(true);
+      expect(prepared.officialRuntimeScope.gate.phase).toBe("ready");
+      expect(stopNativeProcesses).not.toHaveBeenCalled();
+      expect(native.state.externalStop).toBeTypeOf("function");
+      await native.state.externalStop?.();
+      expect(stopNativeProcesses).toHaveBeenCalledWith({
+        launcher: f.launcher,
+        executableNames: ["codex", "codex", "codex.exe"],
+        environment: input.environment,
+      });
+    } finally {
+      await prepared.close();
+    }
+    expect(stopNativeProcesses).toHaveBeenCalledOnce();
+  });
 
   it("returns exactly one shared Scope and one Account control", async () => {
     const f = await fixture();

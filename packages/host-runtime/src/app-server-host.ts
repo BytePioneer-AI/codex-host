@@ -292,7 +292,11 @@ function errorMessage(error: unknown): string {
 
 function codexAccountRpcError(error: unknown): { code: number; message: string } {
   const code = isRecord(error) && typeof error.code === "string" ? error.code : undefined;
-  if (code === "busy") return { code: -32084, message: "Codex is busy" };
+  if (code === "busy")
+    return {
+      code: -32084,
+      message: "Codex is busy",
+    };
   if (code === "changing") return { code: -32085, message: "Codex Account is changing" };
   if (code === "unavailable" || code === "recovery-required" || code === "stop-unconfirmed")
     return { code: -32086, message: "Codex Account is unavailable" };

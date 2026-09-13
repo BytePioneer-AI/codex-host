@@ -12,9 +12,9 @@ const native = vi.hoisted(() => ({
   launches: [] as unknown[],
   live: 0,
   peak: 0,
-  inventory: vi.fn(async (): Promise<number[]> => []),
+  stopExternal: vi.fn(async () => {}),
 }));
-vi.mock("../src/native-process-inventory.js", () => ({ readNativeProcessIds: native.inventory }));
+vi.mock("../src/native-process-stop.js", () => ({ stopNativeProcesses: native.stopExternal }));
 vi.mock("../src/native-private-files.js", () => ({
   NativePrivateFiles: vi.fn(function () {
     if (!native.files) throw new Error("Missing synthetic files");
@@ -28,9 +28,6 @@ vi.mock("../src/native-private-files.js", () => ({
 vi.mock("../src/native-secret-keys.js", () => ({
   NativeSecretKeys: class {
     async read() {
-      return Buffer.alloc(32, 0x51);
-    }
-    async create() {
       return Buffer.alloc(32, 0x51);
     }
   },
@@ -187,7 +184,7 @@ async function fixture(storage = "file", selected = "current") {
 }
 
 beforeEach(() => {
-  native.inventory.mockReset().mockResolvedValue([]);
+  native.stopExternal.mockReset().mockResolvedValue(undefined);
   native.launches.length = 0;
   native.live = 0;
   native.peak = 0;
@@ -232,6 +229,7 @@ describe("legacy layout to native Account switching composition", () => {
       expect(f.files.peek(f.home, "auth.json")?.toString()).toBe(
         credential("a").serializeForNativeStore(),
       );
+      expect(native.stopExternal).toHaveBeenCalledTimes(2);
       expect(native.peak).toBe(1);
       for (const launch of native.launches)
         expect(launch).toMatchObject({ environment: { CODEX_HOME: f.home } });
@@ -252,7 +250,7 @@ describe("legacy layout to native Account switching composition", () => {
     }
   });
 
-  it("refuses replacement when an unknown writer appears after startup", async () => {
+  it("refuses replacement when external backend termination fails", async () => {
     const f = await fixture();
     const prepared = await prepareLocalCodex(f.input);
     try {
@@ -261,7 +259,7 @@ describe("legacy layout to native Account switching composition", () => {
         (account) => account.accountId !== initial.currentAccountId,
       );
       if (!other) throw new Error("Missing saved Account");
-      native.inventory.mockResolvedValue([424242]);
+      native.stopExternal.mockRejectedValue(new Error("exit unconfirmed"));
       await expect(prepared.accountControl.switch(other.accountId)).rejects.toThrow();
       expect(f.files.peek(f.home, "auth.json")?.toString()).toBe(
         credential("a").serializeForNativeStore(),
@@ -314,25 +312,18 @@ describe("legacy layout to native Account switching composition", () => {
     },
   );
 
-  it.each(["writer", "selected-other-home"])(
-    "does not start or import when blocked by %s",
-    async (failure) => {
-      const f = await fixture("file", failure === "selected-other-home" ? "other" : "current");
-      if (failure === "writer") native.inventory.mockResolvedValue([424242]);
-      const prepared = await prepareLocalCodex(f.input);
-      try {
-        expect(prepared.accountControl.snapshot().capabilities.switch).toBe(false);
-        if (failure === "selected-other-home")
-          await expect(prepared.officialRuntimeScope.start()).rejects.toThrow();
-        else
-          expect(prepared.accountControl.snapshot().capabilities.reason).toBe("competing-writer");
-        expect(native.launches).toHaveLength(0);
-        expect(
-          f.files.peek(path.join(f.home, ".codexhost-native-accounts"), "vault.json"),
-        ).toBeNull();
-      } finally {
-        await prepared.close();
-      }
-    },
-  );
+  it("does not start or import when the selected Account uses another home", async () => {
+    const f = await fixture("file", "other");
+    const prepared = await prepareLocalCodex(f.input);
+    try {
+      expect(prepared.accountControl.snapshot().capabilities.switch).toBe(false);
+      await expect(prepared.officialRuntimeScope.start()).rejects.toThrow();
+      expect(native.launches).toHaveLength(0);
+      expect(
+        f.files.peek(path.join(f.home, ".codexhost-native-accounts"), "vault.json"),
+      ).toBeNull();
+    } finally {
+      await prepared.close();
+    }
+  });
 });

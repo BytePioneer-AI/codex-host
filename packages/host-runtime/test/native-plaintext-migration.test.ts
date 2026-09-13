@@ -1,7 +1,8 @@
+import assert from "node:assert/strict";
 import { createCipheriv, randomBytes } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { NativeAccountStore, newProfile } from "../src/account/native-account-store.js";
-import { NativeCodexCredentials } from "../src/account/native-codex-credentials.js";
+import type { NativeCodexCredentials } from "../src/account/native-codex-credentials.js";
 import {
   nativeDigest,
   profileCurrent,
@@ -64,26 +65,26 @@ async function fixture() {
     saved: [{ accountId: ids.b, credential: credential("b") }],
   });
   const before = state.store.vault;
-  const a = before.accounts.find((a) => a.accountId === ids.a)!;
-  const b = before.accounts.find((a) => a.accountId === ids.b)!;
+  const a = before.accounts.find((a) => a.accountId === ids.a);
+  const b = before.accounts.find((a) => a.accountId === ids.b);
+  assert.ok(a && b);
   b.payload = legacy(state.store.homeId, b, credential("b"));
   const after = structuredClone(before);
   after.currentAccountId = ids.b;
   after.lastOperationId = operationId;
   after.revision++;
-  after.accounts.find((a) => a.accountId === ids.a)!.payload = legacy(
-    state.store.homeId,
-    a,
-    credential("a"),
-  );
-  after.accounts.find((a) => a.accountId === ids.b)!.payload = null;
+  const afterA = after.accounts.find((a) => a.accountId === ids.a);
+  const afterB = after.accounts.find((a) => a.accountId === ids.b);
+  assert.ok(afterA && afterB);
+  afterA.payload = legacy(state.store.homeId, a, credential("a"));
+  afterB.payload = null;
   const journal: NativeProfileJournal = {
     version: 1,
     operationId,
     phase: "prepared",
     before,
     after,
-    source: after.accounts.find((a) => a.accountId === ids.a)!.payload,
+    source: afterA.payload,
     target: b.payload,
   };
   const candidate = newProfile(credential("c"), ids.c);
@@ -105,25 +106,29 @@ async function fixture() {
 }
 async function assertConverted() {
   const vault = store.vault;
-  const saved = vault.accounts.find((a) => a.accountId === ids.b)!;
+  const saved = vault.accounts.find((a) => a.accountId === ids.b);
+  assert.ok(saved);
   expect(store.restoreCredential(saved).serializeForNativeStore()).toBe(
     credential("b").serializeForNativeStore(),
   );
   const journal = await store.readJournal();
-  expect(journal).not.toBeNull();
-  expect(sameVault(vault, journal!.before)).toBe(true);
-  expect(decideProfileRecovery(journal!, vault, credential("a"))).toBe("source");
-  expect(
-    store
-      .restoreCredential(profileCurrent(journal!.before)!, journal!.source)
-      .serializeForNativeStore(),
-  ).toBe(credential("a").serializeForNativeStore());
+  assert.ok(journal);
+  expect(sameVault(vault, journal.before)).toBe(true);
+  expect(decideProfileRecovery(journal, vault, credential("a"))).toBe("source");
+  const current = profileCurrent(journal.before);
+  assert.ok(current);
+  expect(store.restoreCredential(current, journal.source).serializeForNativeStore()).toBe(
+    credential("a").serializeForNativeStore(),
+  );
   const stage = await store.readStage();
-  expect(store.restoreCredential(stage!.candidate!).serializeForNativeStore()).toBe(
+  assert.ok(stage?.candidate);
+  expect(store.restoreCredential(stage.candidate).serializeForNativeStore()).toBe(
     credential("c").serializeForNativeStore(),
   );
   for (const name of ["vault.json", "transaction.json", "login.json"]) {
-    expect(state.files.peek(store.directory, name)!.toString()).not.toContain('"cipher"');
+    const raw = state.files.peek(store.directory, name);
+    assert.ok(raw);
+    expect(raw.toString()).not.toContain('"cipher"');
   }
 }
 
@@ -165,7 +170,9 @@ describe("in-place plaintext credential migration", () => {
       if (failure === "missing") read.mockResolvedValue(null);
       if (failure === "wrong") read.mockResolvedValue(Buffer.alloc(32, 0x99));
       if (failure === "corrupt-stage") {
-        const stage = JSON.parse(state.files.peek(store.directory, "login.json")!.toString());
+        const raw = state.files.peek(store.directory, "login.json");
+        assert.ok(raw);
+        const stage = JSON.parse(raw.toString());
         stage.candidate.payload.tag = Buffer.alloc(16).toString("base64");
         state.files.seed(store.directory, "login.json", JSON.stringify(stage));
       }
@@ -181,7 +188,6 @@ describe("in-place plaintext credential migration", () => {
   it("never reads or creates a key for a new store or new plaintext credentials", async () => {
     state = await createNativeAccountTestState();
     expect(state.keys.reads).toBe(0);
-    expect(state.keys.creates).toBe(0);
     await state.seedAccounts({
       current: null,
       saved: [{ accountId: ids.b, credential: credential("b") }],
@@ -190,7 +196,9 @@ describe("in-place plaintext credential migration", () => {
     await state.store.close();
     store = new NativeAccountStore({ home: state.store.home, files: state.files });
     await store.open();
-    expect(store.restoreCredential(store.vault.accounts[0]!).serializeForNativeStore()).toBe(
+    const saved = store.vault.accounts[0];
+    assert.ok(saved);
+    expect(store.restoreCredential(saved).serializeForNativeStore()).toBe(
       credential("b").serializeForNativeStore(),
     );
   });

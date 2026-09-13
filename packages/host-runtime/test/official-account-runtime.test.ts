@@ -7,7 +7,7 @@ import type { CodexRuntimeOutput } from "../src/codex-runtime/codex-runtime.js";
 import { OfficialWorkGate } from "../src/codex-runtime/official-work-gate.js";
 import { syntheticNativeCredentials } from "./fixtures/codex-account-fixtures.js";
 
-async function fixture() {
+async function fixture(stopExternalProcesses?: () => Promise<void>) {
   const native = NativeCodexCredentials.parse(syntheticNativeCredentials({ subject: "a" }));
   const credentialsByHome = new Map([["/synthetic/home", native]]);
   const readCredentials = vi.fn(async (home: string) => credentialsByHome.get(home) ?? null);
@@ -66,6 +66,7 @@ async function fixture() {
     environment,
     nativeVersion: version,
     reconcilePreviousWriter: reconcile,
+    stopExternalProcesses: stopExternalProcesses ?? (async () => {}),
   });
   return {
     native,
@@ -90,6 +91,39 @@ async function fixture() {
 }
 
 describe("official native account checks", () => {
+  it("only invokes external termination explicitly after owned exit", async () => {
+    const stopExternal = vi.fn(async () => {});
+    const f = await fixture(stopExternal);
+    await expect(f.runtime.stopExternalProcesses()).rejects.toMatchObject({ code: "busy" });
+    await f.runtime.stop();
+    expect(stopExternal).not.toHaveBeenCalled();
+    await f.runtime.stopExternalProcesses();
+    expect(stopExternal).toHaveBeenCalledOnce();
+    await f.runtime.start();
+    expect(stopExternal).toHaveBeenCalledOnce();
+  });
+  it.each(["thread", "queue"] as const)(
+    "refuses idle-only mutations with pending %s work",
+    async (reason) => {
+      const f = await fixture();
+      f.responses["thread/list"] = {
+        data: [{ id: "blocking", status: { type: reason === "thread" ? "active" : "idle" } }],
+        nextCursor: null,
+      };
+      f.owner.controlRequest.mockImplementation(async (method, params) => ({
+        result:
+          method === "thread/list" && params.archived
+            ? { data: [], nextCursor: null }
+            : method === "thread/queue/list"
+              ? { data: [{}], nextCursor: null }
+              : (f.responses[method] ?? {}),
+      }));
+      await expect(f.runtime.assertNativeIdle()).rejects.toMatchObject({
+        code: "busy",
+      });
+      expect(f.owner.stop).not.toHaveBeenCalled();
+    },
+  );
   it("initializes a persistent loopback management client before Desktop attaches", async () => {
     const f = await fixture();
     f.owner.running = false;
@@ -260,7 +294,9 @@ describe("official native account checks", () => {
               ? { goal: { status } }
               : (f.responses[method] ?? {}),
       }));
-      await expect(f.runtime.assertNativeIdle()).rejects.toMatchObject({ code: "busy" });
+      await expect(f.runtime.assertNativeIdle()).rejects.toMatchObject({
+        code: "busy",
+      });
       const listCalls = f.owner.controlRequest.mock.calls.filter(
         ([method]) => method === "thread/list",
       );
@@ -331,7 +367,9 @@ describe("official native account checks", () => {
       data: [{ id: "terminal" }],
       nextCursor: null,
     };
-    await expect(f.runtime.assertNativeIdle()).rejects.toThrow("busy");
+    await expect(f.runtime.assertNativeIdle()).rejects.toMatchObject({
+      code: "busy",
+    });
     expect(f.owner.captureThreadSettings).not.toHaveBeenCalled();
     f.responses["thread/backgroundTerminals/list"] = { data: [], nextCursor: null };
     await f.runtime.assertNativeIdle();
@@ -353,7 +391,9 @@ describe("official native account checks", () => {
     f.responses["thread/loaded/list"] = { data: [thread.id], nextCursor: null };
     f.responses["thread/read"] = { thread };
     f.responses["thread/resume"] = { thread };
-    await expect(f.runtime.assertNativeIdle()).rejects.toMatchObject({ code: "busy" });
+    await expect(f.runtime.assertNativeIdle()).rejects.toMatchObject({
+      code: "busy",
+    });
     expect(f.owner.captureThreadSettings).not.toHaveBeenCalled();
     expect(f.owner.stop).not.toHaveBeenCalled();
   });

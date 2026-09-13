@@ -94,10 +94,6 @@ export class NativeProcessRelay {
     this.stdin.write(request);
   }
 
-  get nativeProcessId(): number | undefined {
-    return this.#nativePid;
-  }
-
   async start(): Promise<void> {
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {

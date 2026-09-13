@@ -20,7 +20,7 @@ export interface OfficialChangeLease {
 export class OfficialWorkGate {
   #phase: OfficialAccountPhase = "unavailable";
   #revision = 0;
-  readonly #requests = new Map<symbol, "work" | "quota-read">();
+  readonly #requests = new Set<symbol>();
   readonly #nativeWork = new Set<string>();
   readonly #listeners = new Set<() => void>();
   #change: symbol | undefined;
@@ -41,21 +41,18 @@ export class OfficialWorkGate {
       this.#listeners.delete(listener);
     };
   }
-
   initialized(): void {
     if (this.#change || this.busy) throw new OfficialAdmissionError("busy");
     this.#publish("ready");
   }
-
-  admit(kind: "work" | "quota-read" = "work"): () => void {
+  admit(): () => void {
     if (this.#phase !== "ready") throw new OfficialAdmissionError(this.#phase);
     const request = Symbol();
-    this.#requests.set(request, kind);
+    this.#requests.add(request);
     return () => {
       this.#requests.delete(request);
     };
   }
-
   /** Called only for the current connection generation by the official owner. */
   nativeWork(key: string, active: boolean): boolean {
     const previous = this.#nativeWork.has(key);
@@ -63,52 +60,22 @@ export class OfficialWorkGate {
     else this.#nativeWork.delete(key);
     return previous;
   }
-
   beginChange(recovery = false): OfficialChangeLease {
-    return this.#beginChange(recovery, false);
+    return this.#beginChange(recovery);
   }
 
-  /** Adapted from OpenCodex native-profile-api.ts withMainRequestDrain at
-   * 2d4d7a22381a2e497c2442902104619e25f937c7 (MIT; third-party/opencodex.LICENSE).
-   * Fence first, then drain only quota reads. No change lease escapes before idle;
-   * on timeout, leave the read running and restore admission without touching auth.
-   */
-  async beginChangeAfterQuotaReads(timeoutMs = 10_000): Promise<OfficialChangeLease> {
-    const change = this.#beginChange(false, true);
-    const token = this.#change;
-    try {
-      const deadline = Date.now() + timeoutMs;
-      while (this.#requests.size > 0) {
-        if (this.#phase === "unavailable") throw new OfficialAdmissionError("unavailable");
-        if (this.#nativeWork.size > 0 || Date.now() >= deadline)
-          throw new OfficialAdmissionError("busy");
-        await new Promise<void>((resolve) =>
-          setTimeout(resolve, Math.min(50, deadline - Date.now())),
-        );
-      }
-      change.assertIdle();
-      return change;
-    } catch (error) {
-      if (this.#change === token) {
-        this.#change = undefined;
-        if (this.#phase === "changing") this.#publish("ready");
-      }
-      throw error;
-    }
+  /** Reject new work immediately; existing native work is ended by backend retirement. */
+  beginSwitch(): OfficialChangeLease {
+    return this.#beginChange(false, true);
   }
 
-  #beginChange(recovery: boolean, drainQuotaReads: boolean): OfficialChangeLease {
+  #beginChange(recovery: boolean, stopWork = false): OfficialChangeLease {
     if (this.#change || this.#phase === "changing") throw new OfficialAdmissionError("changing");
     if (this.#phase !== "ready" && !recovery) throw new OfficialAdmissionError("unavailable");
-    // A failed stop can leave native markers after transport loss. Explicit
-    // recovery must be able to retry that same owner's exit proof, without
-    // clearing those markers or interrupting a healthy busy runtime. Pending
-    // Host requests (including credential refresh) still prevent recovery.
+    // Recovery may retry exit proof without clearing stale native markers. Host
+    // credential refresh leases still prevent recovery until their writers stop.
     const retryExit = recovery && this.#phase === "unavailable";
-    if (
-      [...this.#requests.values()].some((kind) => !drainQuotaReads || kind !== "quota-read") ||
-      (this.#nativeWork.size > 0 && !retryExit)
-    )
+    if (!stopWork && (this.#requests.size > 0 || (this.#nativeWork.size > 0 && !retryExit)))
       throw new OfficialAdmissionError("busy");
     const token = Symbol();
     this.#change = token;
@@ -128,23 +95,18 @@ export class OfficialWorkGate {
       },
     };
   }
-
   unavailable(): void {
-    // Do not release an in-progress transaction's exclusive lease on a native error.
     this.#publish("unavailable");
   }
-
   retired(): void {
     // Only confirmed process exit proves native work cannot continue.
     this.#nativeWork.clear();
   }
-
   #publish(phase: OfficialAccountPhase): void {
     if (phase === this.#phase) return;
     this.#phase = phase;
     this.#revision++;
     for (const listener of this.#listeners) {
-      // A dead renderer must not roll back an already committed identity.
       try {
         listener();
       } catch {

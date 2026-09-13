@@ -8,7 +8,7 @@ mod installation_layout;
 mod native_harness_broker;
 mod private_file_command;
 mod process_identity_command;
-mod process_inventory_command;
+mod process_stop_command;
 mod runtime_instance;
 mod secret_key_command;
 #[cfg(target_os = "linux")]
@@ -1226,7 +1226,7 @@ fn run(arguments: &[String]) -> Result<(), Box<dyn Error>> {
         Some("supervise-process") => Err("supervise-process accepts no arguments".into()),
         Some("process-identity") if arguments.len() == 1 => process_identity_command::run(),
         Some("process-identity") => Err("process-identity accepts no arguments".into()),
-        Some("process-inventory") => process_inventory_command::run(&arguments[1..]),
+        Some("process-stop") => process_stop_command::run(&arguments[1..]),
         Some("private-file") if arguments.len() == 1 => private_file_command::run(),
         Some("private-file") => Err("private-file accepts no arguments".into()),
         Some("secret-key") if arguments.len() == 1 => secret_key_command::run(),

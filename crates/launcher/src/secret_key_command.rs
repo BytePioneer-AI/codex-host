@@ -12,7 +12,6 @@ const REQUEST_LIMIT: usize = 256;
 #[serde(tag = "operation", rename_all = "kebab-case", deny_unknown_fields)]
 enum Request {
     Read { key_id: String },
-    Create { key_id: String },
 }
 
 fn request(reader: &mut impl BufRead) -> io::Result<Request> {
@@ -30,9 +29,6 @@ fn execute(reader: &mut impl BufRead, output: &mut impl Write) -> Result<(), Box
     let response = match request(reader)? {
         Request::Read { key_id } => {
             json!({"content": codexhost_platform::read_secret_key(&key_id)?})
-        }
-        Request::Create { key_id } => {
-            json!({"content": codexhost_platform::create_secret_key(&key_id)?})
         }
     };
     serde_json::to_writer(&mut *output, &response)
@@ -54,6 +50,7 @@ mod tests {
     #[test]
     fn rejects_unknown_operations_fields_and_oversized_input_without_os_access() {
         for input in [
+            b"{\"operation\":\"create\",\"key_id\":\"synthetic\"}\n".to_vec(),
             b"{\"operation\":\"delete\",\"key_id\":\"synthetic\"}\n".to_vec(),
             b"{\"operation\":\"read\",\"key_id\":\"synthetic\",\"secret\":\"never\"}\n".to_vec(),
             vec![b'x'; REQUEST_LIMIT + 2],

@@ -1,10 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { isNativeModelControlCandidate } from "../src/renderer-composer-dom.js";
-import {
-  codexAccountDisplayName,
-  codexAccountPresentationSignature,
-} from "../src/renderer-codex-account-options.js";
+import { codexAccountDisplayName } from "../src/renderer-codex-account-options.js";
 import {
   rendererAgentMenuPlacement,
   rendererAgentPickerTooltip,
@@ -48,16 +45,6 @@ describe("Renderer Agent picker presentation", () => {
       domain: null,
       full: "Reviewer",
     });
-  });
-
-  it("refreshes Account presentation when live email metadata arrives", () => {
-    const account = {
-      accountId: "reviewer",
-      label: "Reviewer",
-    };
-    expect(codexAccountPresentationSignature([account])).not.toBe(
-      codexAccountPresentationSignature([{ ...account, email: "reviewer@example.com" }]),
-    );
   });
 
   it("includes the active Codex Account in the locked hover detail", () => {

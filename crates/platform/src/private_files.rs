@@ -19,7 +19,7 @@ mod native;
 #[path = "private_files_unix.rs"]
 mod native;
 
-/// Maximum encrypted Vault, Journal, or native credential file size.
+/// Maximum private file size accepted by the native I/O helper.
 /// IPC framing budgets account for JSON's worst-case byte-array expansion.
 pub const PRIVATE_FILE_LIMIT: usize = 20 * 1024 * 1024;
 

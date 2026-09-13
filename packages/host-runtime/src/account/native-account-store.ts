@@ -37,7 +37,6 @@ export interface PrivateCredentialFiles {
 }
 export interface NativeAccountKeys {
   read(keyId: string): Promise<Buffer | null>;
-  create(keyId: string): Promise<Buffer>;
 }
 const stageSchema = z
   .object({
@@ -78,7 +77,7 @@ export class NativeAccountStore {
   readonly homeId: string;
   readonly files: PrivateCredentialFiles;
   readonly #homeFiles: PrivateCredentialFiles;
-  readonly #keys: Pick<NativeAccountKeys, "read"> | undefined;
+  readonly #keys: NativeAccountKeys | undefined;
   readonly #onLeaseLost: () => void;
   #lease: NativePrivateFileLease | undefined;
   #ready = false;
@@ -90,7 +89,7 @@ export class NativeAccountStore {
     files: PrivateCredentialFiles;
     homeFiles?: PrivateCredentialFiles;
     /** Used only to convert existing encrypted files; never creates a key. */
-    keys?: Pick<NativeAccountKeys, "read">;
+    keys?: NativeAccountKeys;
     onLeaseLost?: () => void;
   }) {
     this.home = path.resolve(input.home);

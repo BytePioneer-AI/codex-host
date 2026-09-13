@@ -1,37 +1,33 @@
 ## ADDED Requirements
 
 ### Requirement: Account changes SHALL use one native backend and one session store
-Managed Codex SHALL use one canonical permanent home and at most one live official app-server, including authentication staging. Account changes MUST stop and prove the owned writer tree has exited before replacing native credentials. They MUST NOT proxy Model requests, alter Provider headers, route Threads by Account, or create permanent per-Account homes.
+Managed Codex SHALL use one canonical permanent home and at most one live Host-owned official app-server, including authentication staging. Account changes MUST stop and prove the owned writer tree has exited before replacing native credentials. They MUST NOT proxy Model requests, alter Provider headers, route Threads by Account, or create permanent per-Account homes.
 
-#### Scenario: Switch A to B while idle
-- **WHEN** the user selects saved B with no active native work
+#### Scenario: Switch A to B
+- **WHEN** the user selects saved B
 - **THEN** Host SHALL save stopped A's latest credentials, install B, restart and authenticate B before committing current=B
 - **AND** Desktop, Host, external Harnesses and native Thread IDs SHALL remain intact
 - **AND** subsequent Turns in existing Codex Threads SHALL use the new global identity without replaying earlier requests
 
-#### Scenario: Work or exit is unconfirmed
-- **WHEN** a Turn, approval, terminal, realtime session, queue, goal or writer remains active or unconfirmed
-- **THEN** Host SHALL reject the change without forced cancellation or deferred submission
-- **AND** a closed transport SHALL NOT count as proof of process-tree exit or retire outstanding work
+#### Scenario: Exit is unconfirmed
+- **WHEN** Host cannot prove the owned backend tree or the external stop batch has exited
+- **THEN** it SHALL NOT install target credentials
+- **AND** a closed transport alone SHALL NOT count as proof of process-tree exit
 
-### Requirement: Account switching SHALL take priority over native quota inspection
-When the only admitted requests are official `account/rateLimits/read` calls, switching SHALL close new native admission and wait at most 10 seconds for those calls to settle before entering the existing credential transaction. This MUST remain one switch operation, without forced query cancellation, automatic resubmission, or disabling the switch entry merely because quota inspection is pending. Other native requests, credential refreshes and actual native work MUST retain immediate busy refusal.
+### Requirement: Account switching SHALL stop native backends without an idle scan
+Switching SHALL enter changing synchronously, reject new work before connection or automatic startup, stop the owned backend and then the detected external Codex backends before replacing credentials. This SHALL be the only switching strategy, with no experimental flags or quota-drain queue. Login, logout and recovery SHALL retain their existing admission rules.
 
-#### Scenario: Quota inspection is in flight when switching
-- **WHEN** the user selects another saved Account while only official quota reads are pending
-- **THEN** the Account state SHALL become changing and new native requests SHALL be refused
-- **AND** Host SHALL leave the backend, native credentials and Journal untouched until all admitted quota reads receive native responses
-- **AND** the same switch SHALL then use the existing native-idle checks, owned stop, credential replacement and verification
+#### Scenario: Native requests and work are pending
+- **WHEN** the user switches while native requests, including quota reads, or native work are pending
+- **THEN** Host SHALL stop without scanning Thread, Goal, queue or temporary-session state
+- **AND** outstanding native RPCs SHALL fail explicitly and release their leases on retirement, without poisoning changing admission merely because stop was intentional
+- **AND** new work and concurrent switching SHALL fail immediately, without replay into the target Account
+- **AND** independent Host credential-writer leases SHALL NOT be cleared to force credential replacement
 
-#### Scenario: Quota draining exceeds its deadline
-- **WHEN** the admitted quota reads have not settled within 10 seconds
-- **THEN** Host SHALL refuse the switch and release its switching fence without clearing those reads, stopping the backend, changing credentials, or creating a recovery Journal
-- **AND** the original Account SHALL remain current and no switch SHALL be automatically resubmitted
-
-#### Scenario: Quota completion or native ownership becomes unknown
-- **WHEN** a quota request times out locally or loses its transport without a native response
-- **THEN** Host SHALL NOT treat release of the local waiter as native completion
-- **AND** native admission SHALL remain unavailable rather than proceeding with credential replacement
+#### Scenario: VS Code restarts its Codex backend
+- **WHEN** an editor starts a new backend after the detected batch was stopped
+- **THEN** Host SHALL NOT repeatedly hunt replacement processes
+- **AND** success SHALL depend on target native credentials and the verified Host-owned backend, not synchronized identity across all clients
 
 ### Requirement: Managed startup SHALL be owned by Account recovery
 The dedicated management connection SHALL initialize before Desktop clients. A managed Runtime Scope MUST NOT bypass failed Account initialization by starting a backend or publishing ready itself. Known protocol incompatibility without pending state SHALL be distinguished from recovery or ownership conflicts.
@@ -75,17 +71,17 @@ When native Account admission is unavailable or changing, Host SHALL acknowledge
 - **AND** every confirmed backend retirement SHALL settle attached clients' native work bookkeeping, independently of any one-shot startup failure notification
 - **AND** client detach, EOF and an unconfirmed stop SHALL NOT emit that retirement fact
 
-### Requirement: Thread restoration SHALL preserve native settings and generation
-Account replacement SHALL retain native Thread IDs, history and Harness ownership, and preserve actual Model, Provider, reasoning and permission/workspace settings through native resume semantics. Host MUST NOT use stale initial draft values or fabricate replacement Threads. Unprovable restoration SHALL fail explicitly without dispatching the requested Turn.
+### Requirement: Thread restoration SHALL preserve native identity and generation
+Account replacement SHALL retain native Thread IDs, persisted history and Harness ownership through native resume semantics. Host SHALL retain subscription parameters and lazy restoration, without fabricating replacement Threads. Switching SHALL NOT scan Threads to capture settings; lossless recovery of temporary content and all runtime settings is not guaranteed. When an authoritative settings snapshot exists from an idle-only mutation, restoration SHALL verify it before dispatching the requested Turn.
 
 #### Scenario: Native settings changed after initial Thread creation
-- **WHEN** an idle Thread has more recent runtime settings than its original start request
+- **WHEN** an idle-only mutation captures a Thread's authoritative settings after its original start request
 - **THEN** the replacement generation SHALL restore the actual latest settings before admitting subsequent work
 - **AND** late frames from a retired generation SHALL not update the new generation
 
 #### Scenario: A native path names an unmaterialized rollout
-- **WHEN** an idle loaded Thread reports a path but native resume confirms no rollout exists
-- **THEN** Host SHALL reject replacement as busy while preserving the live Thread and writer
+- **WHEN** an idle-only mutation probes a loaded Thread and native resume confirms no rollout exists
+- **THEN** Host SHALL reject that mutation as busy while preserving the live Thread and writer
 - **AND** it SHALL NOT infer persistence from the path field, fabricate a replacement Thread, or report failed authentication
 
 ### Requirement: Native Desktop authentication SHALL retain its protocol semantics

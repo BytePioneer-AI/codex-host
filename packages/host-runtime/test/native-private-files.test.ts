@@ -402,7 +402,6 @@ describe.skipIf(!launcher)("native private-file IPC (explicit compiled launcher)
       relay.stderr.resume();
       try {
         await relay.start();
-        expect(relay.nativeProcessId).toBeTypeOf("number");
         await vi.waitFor(() => expect(output).toBe("synthetic-output\n"));
         expect((await relay.stop()).code).toBe(0);
         const receipt = await files.read(directory, "exit.json");

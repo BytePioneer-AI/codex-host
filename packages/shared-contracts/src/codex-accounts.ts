@@ -66,7 +66,6 @@ export const codexAccountCapabilitiesSchema = z
         "recovery-required",
         "keyring-unavailable",
         "migration-required",
-        "competing-writer",
       ])
       .optional(),
   })

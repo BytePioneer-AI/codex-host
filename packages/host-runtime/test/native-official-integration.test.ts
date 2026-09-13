@@ -120,6 +120,9 @@ describe.skipIf(!stock || !launcher)("real official CLI with an isolated signed-
         // This randomized private test home has no external users. Keep the real
         // owned-writer reconciliation; application-wide inventory has its own tests.
         reconcilePreviousWriter: () => record.reconcile(),
+        stopExternalProcesses: async () => {
+          throw new Error("External process termination is forbidden in this isolated test");
+        },
       });
       let accounts: NativeCodexAccounts | undefined;
       let desktop: OfficialRuntimeClient | undefined;

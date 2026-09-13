@@ -8,7 +8,6 @@ import { OfficialProcessLifecycle } from "./official-process-lifecycle.js";
 const SECRET_BYTES = 32;
 const REQUEST_LIMIT = 256;
 const RESPONSE_LIMIT = 1_024;
-const MAX_QUEUED_OPERATIONS = 64;
 const keyIdPattern = /^[0-9a-f]{64}$/;
 const responseSchema = z
   .object({
@@ -23,12 +22,10 @@ export class NativeSecretKeyError extends Error {
   }
 }
 
-/** OS-backed binary keys over bounded stdin/stdout; stderr is always discarded. */
+/** Read legacy OS keys for migration only; bounded IPC, discarded stderr, no key creation. */
 export class NativeSecretKeys {
   readonly #launcher: string;
   readonly #environment: NodeJS.ProcessEnv;
-  #queue: Promise<void> = Promise.resolve();
-  #queuedOperations = 0;
   #blocked = false;
 
   constructor(input: { launcher: string; environment?: NodeJS.ProcessEnv }) {
@@ -54,37 +51,8 @@ export class NativeSecretKeys {
   }
 
   async read(keyId: string): Promise<Buffer | null> {
-    return this.#operate("read", keyId);
-  }
-
-  async create(keyId: string): Promise<Buffer> {
-    const created = await this.#operate("create", keyId);
-    if (!created) throw new NativeSecretKeyError("failed");
-    return created;
-  }
-
-  async #operate(operation: "read" | "create", keyId: string): Promise<Buffer | null> {
-    if (!keyIdPattern.test(keyId)) throw new NativeSecretKeyError("failed");
-    if (this.#blocked) throw new NativeSecretKeyError("failed");
-    if (this.#queuedOperations >= MAX_QUEUED_OPERATIONS) {
-      throw new NativeSecretKeyError("failed");
-    }
-    this.#queuedOperations += 1;
-    const predecessor = this.#queue;
-    const next = Promise.withResolvers<undefined>();
-    this.#queue = next.promise;
-    await predecessor;
-    try {
-      if (this.#blocked) throw new NativeSecretKeyError("failed");
-      return await this.#run(operation, keyId);
-    } finally {
-      this.#queuedOperations -= 1;
-      next.resolve(undefined);
-    }
-  }
-
-  async #run(operation: "read" | "create", keyId: string): Promise<Buffer | null> {
-    const payload = `${JSON.stringify({ operation, key_id: keyId })}\n`;
+    if (!keyIdPattern.test(keyId) || this.#blocked) throw new NativeSecretKeyError("failed");
+    const payload = `${JSON.stringify({ operation: "read", key_id: keyId })}\n`;
     if (Buffer.byteLength(payload) > REQUEST_LIMIT) throw new NativeSecretKeyError("failed");
 
     let child: ChildProcessWithoutNullStreams;

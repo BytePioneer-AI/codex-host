@@ -31,10 +31,6 @@ export class AccountRateLimits {
     return this.#accounts.get(accountId)?.resetCredits ?? null;
   }
 
-  getObservedAt(accountId: string): string | null {
-    return this.#accounts.get(accountId)?.observedAt ?? null;
-  }
-
   reset(accountId: string): void {
     this.#accounts.delete(accountId);
   }

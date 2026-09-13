@@ -965,6 +965,67 @@ describe("AppServerHost HarnessAdapter projection", () => {
     }
   });
 
+  it.each(["admission", "transaction", "untrusted"] as const)(
+    "returns a fixed busy error without exposing %s details",
+    async (kind) => {
+      const { OfficialAdmissionError } = await import("../src/codex-runtime/official-work-gate.js");
+      const { NativeTransitionError } =
+        await import("../src/account/native-profile-transaction.js");
+      const accountId = "00000000-0000-4000-8000-000000000022";
+      const error =
+        kind === "admission"
+          ? new OfficialAdmissionError("busy", new Error("private native details"))
+          : kind === "transaction"
+            ? new NativeTransitionError("busy", true)
+            : Object.assign(new Error("secret native diagnostic"), { code: "busy" });
+      const state: CodexAccountListResult = {
+        version: 2,
+        currentAccountId: null,
+        phase: "ready",
+        revision: 1,
+        capabilities: { manage: true, switch: true, login: true, delete: true },
+        accounts: [{ accountId, label: "Target" }],
+      };
+      const accountControl: CodexAccountControl = {
+        snapshot: () => state,
+        currentAccountId: () => null,
+        async switch() {
+          throw error;
+        },
+        async remove() {},
+        async startLogin() {
+          throw new Error("unused");
+        },
+        async cancelLogin() {
+          return false;
+        },
+        async logout() {},
+        async recover() {},
+        observe() {},
+        subscribeLogin: () => () => undefined,
+      };
+      const fixture = createFixture({ accountControl, allowNativeAuthPassthrough: false });
+      try {
+        await fixture.ready;
+        writeRequest(fixture.desktopInput, {
+          id: 911,
+          method: "codexhost/account/switch",
+          params: { accountId },
+        });
+        await expect(
+          fixture.collector.waitFor((message) => message.id === 911),
+        ).resolves.toMatchObject({
+          error: {
+            code: -32084,
+            message: "Codex is busy",
+          },
+        });
+      } finally {
+        await stopFixture(fixture);
+      }
+    },
+  );
+
   it("does not report a ready switch when control returns before its snapshot is ready", async () => {
     const firstId = "00000000-0000-4000-8000-000000000021";
     const secondId = "00000000-0000-4000-8000-000000000022";

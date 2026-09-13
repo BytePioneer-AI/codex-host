@@ -158,49 +158,50 @@ const initialization = {
 
 describe("single official runtime owner", () => {
   it.each([
-    { via: "request", error: false },
-    { via: "request", error: true },
-    { via: "send", error: false },
-    { via: "send", error: true },
+    { via: "request", method: "account/rateLimits/read" },
+    { via: "request", method: "thread/read" },
+    { via: "send", method: "account/rateLimits/read" },
+    { via: "send", method: "account/read" },
   ])(
-    "drains $via quota reads until the native reply (error=$error), not merely dispatch",
-    async ({ via, error }) => {
+    "ends pending $via $method on intentional stop without poisoning switch admission",
+    async ({ via, method }) => {
       const f = fixture();
-      const { client } = f.attach();
+      const { client, output } = f.attach();
       try {
         await f.owner.start();
         await client.initialize(initialization);
         f.gate.initialized();
         const connection = f.connection();
         connection.setResponse(() => null);
-        const quota =
+        const pending = (
           via === "request"
-            ? client.request("account/rateLimits/read", {})
-            : client.send({ id: "desktop-quota", method: "account/rateLimits/read", params: {} });
+            ? client.request(method, {})
+            : client.send({ id: "desktop-request", method, params: {} })
+        ).catch((error: unknown) => error);
         await vi.waitFor(() =>
-          expect(connection.requests.some((r) => r.method === "account/rateLimits/read")).toBe(
-            true,
-          ),
+          expect(connection.requests.some((r) => r.method === method)).toBe(true),
         );
-        const draining = f.gate.beginChangeAfterQuotaReads();
+        const lease = f.gate.beginSwitch();
+        await expect(client.request(method, {})).rejects.toMatchObject({ code: "changing" });
+        await f.owner.stop();
+        if (via === "request") expect(await pending).toBeInstanceOf(Error);
+        else {
+          await pending;
+          expect(output).toContainEqual(
+            expect.objectContaining({ id: "desktop-request", error: expect.any(Object) }),
+          );
+        }
         expect(f.gate.phase).toBe("changing");
-        expect(f.gate.busy).toBe(true);
-        await expect(client.request("account/rateLimits/read", {})).rejects.toMatchObject({
-          code: "changing",
-        });
-        const request = connection.requests.find((r) => r.method === "account/rateLimits/read");
-        if (!request?.id) throw new Error("Missing native quota request");
-        connection.emit({
-          id: request.id,
-          ...(error
-            ? { error: { code: -32000, message: "quota unavailable" } }
-            : { result: { rateLimits: {} } }),
-        });
-        await quota;
-        const lease = await draining;
         lease.assertIdle();
-        expect(f.events).toEqual(["start"]);
+        expect(f.create).toHaveBeenCalledOnce();
+        await expect(client.request(method, {})).rejects.toMatchObject({ code: "changing" });
+        expect(f.create).toHaveBeenCalledOnce();
+        await f.owner.start();
         lease.finish("ready");
+        await client.request("account/rateLimits/read", {});
+        expect(f.connection(1).requests.filter((r) => r.method === method)).toHaveLength(
+          method === "account/rateLimits/read" ? 1 : 0,
+        );
       } finally {
         await f.owner.stop();
         client.close();
@@ -219,10 +220,10 @@ describe("single official runtime owner", () => {
       vi.useFakeTimers();
       const quota = client.request("account/rateLimits/read", {}).catch((error: unknown) => error);
       await vi.advanceTimersByTimeAsync(29_950);
-      const draining = f.gate.beginChangeAfterQuotaReads().catch((error: unknown) => error);
+      const lease = f.gate.beginSwitch();
       await vi.advanceTimersByTimeAsync(100);
       expect(await quota).toBeInstanceOf(Error);
-      expect(await draining).toMatchObject({ code: "unavailable" });
+      expect(() => lease.assertIdle()).toThrow("unavailable");
       expect(f.gate.phase).toBe("unavailable");
     } finally {
       vi.useRealTimers();
@@ -240,9 +241,9 @@ describe("single official runtime owner", () => {
       f.gate.initialized();
       f.connection().setResponse(() => null);
       await client.send({ id: "quota", method: "account/rateLimits/read", params: {} });
-      const draining = f.gate.beginChangeAfterQuotaReads().catch((error: unknown) => error);
+      const lease = f.gate.beginSwitch();
       client.close();
-      expect(await draining).toMatchObject({ code: "unavailable" });
+      expect(() => lease.assertIdle()).toThrow("unavailable");
       expect(f.gate.phase).toBe("unavailable");
     } finally {
       await f.owner.stop();
@@ -250,7 +251,7 @@ describe("single official runtime owner", () => {
     }
   });
 
-  it("does not extend quota draining to account credential reads", async () => {
+  it("keeps idle-only mutations blocked by pending credential reads", async () => {
     const f = fixture();
     const { client } = f.attach();
     try {
@@ -259,7 +260,7 @@ describe("single official runtime owner", () => {
       f.gate.initialized();
       f.connection().setResponse(() => null);
       await client.send({ id: "auth", method: "account/read", params: { refreshToken: true } });
-      await expect(f.gate.beginChangeAfterQuotaReads()).rejects.toMatchObject({ code: "busy" });
+      expect(() => f.gate.beginChange()).toThrow("busy");
       expect(f.gate.phase).toBe("ready");
     } finally {
       await f.owner.stop();

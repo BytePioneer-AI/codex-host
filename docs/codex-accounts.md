@@ -1,14 +1,14 @@
 # 账号与额度设置
 
-在 codexhost 的「设置 → 账号」统一查看各 Harness 的账号与额度。Codex 托管账号使用一份正式会话存储和最多一个官方后台；其他 Harness 的认证和切换仍由其原生客户端管理。
+在 codexhost 的「设置 → 账号」统一查看各 Harness 的账号与额度。Codex 托管账号使用一份正式会话存储和最多一个受管官方后台；其他 Harness 的认证和切换仍由其原生客户端管理。
 
-> 当前实现处于验收阶段，不是旧多 home 安装的通用历史迁移工具。托管路径支持已用隔离真实 CLI 检查的 `0.153.4` 与 `0.154.0-alpha.6.2` 文件式 ChatGPT 登录；macOS 已实测真实账号切换及 busy 拒绝后的显式重试；切换后后续 Turn 的认证／上下文、系统凭据存储失败生命周期和各平台 Desktop 联合验收尚未完成。旧登记选中的账号已使用正式 home 时，可安全接入旧凭据并在同一 home 内全局切换；当前范围只保留主账号正式 home 的原有历史；其他旧账号历史不要求合并或在新版显示，旧目录不主动删除。
+> 托管范围为 `0.153.4` 与 `0.154.0-alpha.6.2` 的文件式 ChatGPT 登录，当前处于验收阶段。真实多客户端停止、后续 Turn 认证／上下文、旧密钥失败生命周期及跨平台 Desktop 联合行为仍需验证。此功能只保全主账号正式 home 的历史，不提供其他 home 的历史合并。
 
-> 最新历史会话实测：已修复深层页面的绑定误判；正式构建完成两轮 A→B→A，每次均自动打开原会话，原生历史和页面内容摘要保持一致，最终恢复原账号。切换时记住当前本地 Codex 会话 ID，界面重建后通过原生入口打开同一会话；拒绝切换不导航，用户主动转到其他页面则取消恢复。未发送消息，不能据此宣称后续推理或其他 Harness 连续性已经验收。
+切换时记录当前窗口的本地 Codex Thread ID，成功且界面可用后通过原生入口打开同一 Thread；切换失败不导航，用户导航、超时或卸载结束恢复。
 
 ## 账号列表
 
-页面只有一张「账号 / 5 小时额度 / 7 天额度 / 管理」表格，不再另设「其他已识别账号」区域。窄窗口下每个账号独立排列，两个额度窗口并排，最窄布局再纵向堆叠。视觉沿用原设置外壳：淡紫色终端标记、无边框搜索、行内默认操作与紧凑的管理入口。工具栏的「账号」数量包含已保存的 Codex 账号和实际返回的其他 Harness 账号，不随搜索筛选改变。
+页面只有一张「账号 / 5 小时额度 / 7 天额度 / 管理」表格。窄窗口下每个账号独立排列，两个额度窗口并排，最窄布局再纵向堆叠。视觉沿用原设置外壳：淡紫色终端标记、无边框搜索、行内默认操作与紧凑的管理入口。工具栏的「账号」数量包含已保存的 Codex 账号和实际返回的其他 Harness 账号，不随搜索筛选改变。
 
 - 主标题显示完整邮箱或账号名称，单行省略并可悬停查看完整身份；Agent 名称、真实套餐与「Codex 当前」标记作为次级信息，不显示本地 `CODEX_HOME` 路径。
 - 搜索按邮箱、账号名称、Agent 或套餐筛选整个列表，仅在两类账号都不匹配时显示一个空状态。Codex 按 Host 返回顺序在前，其他 Harness 按稳定的 Harness ID 顺序在后；不按剩余额度或当前状态重排。
@@ -40,11 +40,11 @@
 
 ## 全局切换、删除与登录
 
-「切换到此账号」作用于当前 Host 的所有 Codex Thread，包括已有 Thread 的后续 Turn。切换不改变 Thread ID、历史、Model、Provider、目录或权限；不改变其他 Harness。已有上下文会随下一次请求用于新账号，账号不再是独立数据空间，也不等于实际 Billing Source。
+「切换到此账号」作用于当前 Host 的所有 Codex Thread，包括已有 Thread 的后续 Turn。切换不改变 Thread ID、历史、Model、Provider、目录或权限；不改变其他 Harness。已有上下文会随下一次请求用于新账号，账号不是独立数据空间，也不等于实际 Billing Source。
 
-只有空闲时才切换：关闭新工作准入，停止并确认官方进程树退出，保存实际最新凭据，原子替换原生凭据，再启动并验证。忙碌、审批、终端、队列等未结束时明确拒绝；不强制取消、不排队、不重放输入。已有、已完成且可恢复的 Thread 本身不算忙；临时或尚未落盘的内存 Thread 无法保证跨重启保留，也会拒绝切换。原生返回一个计划中的历史路径不代表已经落盘。Desktop 和 Host 不因切换重启。Harness picker 只有一个 Codex，Composer 不提供账号选择。
+切换使用停止后端方案：进入 `changing`，拒绝新请求和重复切换，停止自己的受管后端并确认退出，再停止当次检测到的其他 Codex 后端，保存实际最新凭据、原子替换、重启并验证。不扫描会话、Goal、队列或临时状态，不等待额度查询；旧原生 RPC 随后端退休明确失败，不排队、不自动重放。
 
-切换优先于后台额度刷新：仅有官方 `account/rateLimits/read` 在途时，先关闭新原生请求准入，最多等待 10 秒，让这些查询正常收尾后继续同一次切换；不提前禁用切换入口、不取消查询、不另发切换请求。收尾超时则明确拒绝，保留原账号和在途查询，不停止后台或改写凭据。真实工作、其他原生请求及非当前凭据的 OAuth 刷新仍立即拒绝，不排队。查询的本地超时或连接丢失不算原生完成，必须保持 unavailable，不能借此放行凭据替换。
+停止范围包括 VS Code／CLI，且不限于当前 `CODEX_HOME`；不关闭编辑器、Desktop、Host 或其他 Harness，不递归停止外部后端的工具子进程，不追杀 IDE 自动重启的后端。任务和未保存内容可能丢失，完整运行时设置无损恢复不作保证。设置页说明中断风险，无额外确认弹窗。登录、退出等非切换路径仍使用原有空闲检查；独立 Host 凭据刷新租约、退出证明、凭据 CAS 和身份校验仍保留。Harness picker 只有一个 Codex，Composer 不提供账号选择。
 
 发生拒绝时，页面应结束等待并恢复按钮；需要重试时由用户显式发起。切换期间 Desktop 若更换内部 Request Client，响应仍应完成原请求，而不是让页面永久等待。
 
@@ -58,21 +58,21 @@ Desktop 原生「登录」保留 OAuth 和设备代码两种 ChatGPT 协议，�
 
 取消、超时和迟到事件绑定本次登录操作。账号已保存但清理或正式后台恢复失败时，页面明确显示已保存和待恢复，不能把它当成账号未保存。`recover` 重试事实恢复，不强制删除 Journal 或覆盖未知凭据；不能安全确定所有权时仅 Codex unavailable，其他 Harness 保持运行。
 
-Desktop 的 Host 连接初始化与 Codex 就绪状态分开：Codex unavailable 或正在切换时，Host 只返回自身身份、正式 home 和运行平台，不启动额外后台、不宣称认证成功，也不把 Desktop 接入认证 staging。原生请求仍受准入限制；恢复后同一个 Desktop 连接使用保留的原生初始化参数继续工作。终端会以固定原因说明启动被阻断或检测到其他原生 Codex 进程，不输出凭据。
+Desktop 的 Host 连接初始化与 Codex 就绪状态分开：Codex unavailable 或正在切换时，Host 只返回自身身份、正式 home 和运行平台，不启动额外后台、不宣称认证成功，也不把 Desktop 接入认证 staging。原生请求仍受准入限制；恢复后同一个 Desktop 连接使用保留的原生初始化参数继续工作。终端会以固定原因说明启动被阻断，不输出凭据；其他 Codex 后端存在不阻断启动。
 
 本地托管模式统一使用受保护的官方 loopback listener，专用管理连接先于 Desktop 初始化。多连接仍只有一个后台。SSH 维持远端原生单账号，不传输本地凭据。不支持管理但无未决事务时保留原生单账号认证；该模式不承诺托管账号库能跟踪原生客户端自行更换或删除的凭据。
 
 ## 存储、安全与升级边界
 
 - Launcher 显式传递所支持的绝对 home／配置路径；指定 `CODEX_ELECTRON_USER_DATA_PATH` 时也传递 Chromium 的 `--user-data-dir`，避免只隔离部分 Electron 数据。不会把 API Key 等秘密拼入启动参数，也不把 SSH 管理环境的目录覆盖带入本地 Desktop。
-- 正式 `CODEX_HOME` 固定。当前凭据的权威是原生文件；非当前凭据使用 OS 密钥和 AES-256-GCM 保存在 `.codexhost-native-accounts/vault.json`，不另建长期账号 home。
-- `transaction.json` 和 `login.json` 记录未决操作，秘密备份同样加密。已有 Vault 缺失密钥时不生成替代密钥、不退回明文。密钥命名空间为 `codexhost.native-accounts.v1`。
-- 文件 helper 持有 home 租约，并在同一进程中执行有界 I/O；退出未确认时不能让新写入者越过租约。可观察到的其他 Codex 进程会保守阻止托管操作，不杀未知进程。这个检查不能阻止任意外部 CLI 以后启动或同用户程序自行写文件。
+- 正式 `CODEX_HOME` 固定。当前凭据的权威是原生文件；非当前凭据完整明文保存在私有 `.codexhost-native-accounts/vault.json`，不另建长期账号 home，不额外加密。
+- `transaction.json` 和 `login.json` 记录未决操作，备份同样使用明文。旧密文在 home 租约下用已有 OS 密钥一次性转换，转换前全部验证，按文件 CAS，可在中途失败后恢复。转换完成后不再读取密钥；缺失旧密钥时不创建替代密钥，不覆盖无法解密的数据。
+- 文件 helper 持有 home 租约，并在同一进程中执行有界 I/O；退出未确认时不能让新写入者越过租约。账号切换时停止当次检测到的其他 Codex 后端，但不能阻止外部程序此后启动或改写文件，仍须验证文件与后台身份。
 - 公开快照只有 `ready/changing/unavailable`、已提交 current、能力、Host instance/revision 和必要清理提示，不含 Token 或存储路径。unavailable 时 current 不是后台已经可用的证明。
 - 非当前额度通过受控 WHAM 查询，不启动额外后台。OAuth 刷新有 single-flight、修改租约和凭据 CAS；缓存显示获取时间，失败使用 last-good，不把未知用量补成零。
-- 新安装和已有单一正式 home 原地使用，不复制历史。有效旧多 home 登记若当前账号恰好使用正式 home、其他旧 home 无托管状态或进程记录，可在正常恢复、原生身份和 file 存储验证完成后，停止后台，只读导入旧 `auth.json` 中缺失的身份到加密 Vault。来源登记与凭据摘要、writer 准入会重新校验；一次 Vault CAS 同时提交账号和登记摘要。已有保存凭据不被旧副本覆盖，重复启动不重新导入已删除账号。原生当前凭据、旧登记及其他目录不被导入过程改写。
+- 新安装和已有单一正式 home 原地使用，不复制历史。有效旧多 home 登记若当前账号恰好使用正式 home、其他旧 home 无托管状态或进程记录，可在正常恢复、原生身份和 file 存储验证完成后，停止后台，只读导入旧 `auth.json` 中缺失的身份到明文 Vault。来源登记与凭据摘要、writer 准入会重新校验；一次 Vault CAS 同时提交账号和登记摘要。已有保存凭据不被旧副本覆盖，重复启动不重新导入已删除账号。原生当前凭据、旧登记及其他目录不被导入过程改写。
 - 公开快照的 `legacyHistoryPreserved` 表示仅凭据已接入，不代表历史已迁移。设置页允许全局切换，同时明确其他 home 的数据库、附件、记忆、队列和项目关系尚未合并；切换不改变 Thread 的历史目录或 Harness 归属。
-- 干净、未托管的原生 home 遇到其他 Codex CLI 时，允许普通原生使用，能力原因是 `competing-writer`。此路径不创建 Vault／OS 密钥，禁止导入、切换以及原生登录／退出账号；关闭其他 CLI 并重启后才能启用管理。这不是允许在未知 writer 下替换凭据。每次启动仍复查布局；出现托管状态便不再适用。
+- 启动不盘点或阻断其他 Codex 后端，托管和旧式兼容布局均允许与 VS Code／CLI 共存。旧布局结构、来源一致性和自身进程恢复记录仍校验。
 - 当前旧账号不在正式 home、损坏登记、孤立 Thread 绑定、其他 home 的托管状态、未确认的旧进程或无法完成 writer 检查仍阻断。正式 home 中已有托管状态走原有 Journal／Vault 恢复，不绕过恢复。完整多 home 历史迁移不在当前交付范围，不能用只导入凭据冒充迁移完成。
 
 容量预算：每份原生凭据 256 KiB，Vault 4 MiB，Journal 17 MiB，通用私有文件 20 MiB；最多 128 个保存账号。实际可保存数量也受字节预算约束。
@@ -86,10 +86,10 @@ Desktop 的 Host 连接初始化与 Codex 就绪状态分开：Codex unavailable
 ## 实现与验证
 
 - `docs/codex-native-account-switching-design.md`：设计、核心参考及发布验收边界。
-- `openspec/changes/implement-codex-native-accounts/evidence.md`：已执行验证、故障回归和未闭合发布门槛。
+- `openspec/changes/implement-codex-native-accounts/evidence.md`：已执行验证、测试范围和待完成验收。
 - `packages/host-runtime/src/account/native-codex-accounts.ts`：唯一账号控制面和隔离登录。
 - `packages/host-runtime/src/account/native-profile-transaction.ts`：切换、退出、重登和事实恢复。
-- `packages/host-runtime/src/account/native-account-store.ts`：统一 Vault、加密 Journal 和 staging。
+- `packages/host-runtime/src/account/native-account-store.ts`：明文 Vault、Journal 和 staging。
 - `packages/host-runtime/src/native-account-host.ts`：本地能力、所有权与降级组成。
 - `packages/host-runtime/src/managed-native-auth.ts`：原生登录协议、事件顺序和正式后台代次更新；不另持凭据或管理进程。
 - `packages/desktop-control/src/renderer-host-response-ownership.ts`：通过原生请求生命周期保留在途 Host 响应的 Client 归属，不重发请求或解释事务结果。

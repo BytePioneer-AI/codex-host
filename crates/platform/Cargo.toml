@@ -6,7 +6,6 @@ rust-version.workspace = true
 publish.workspace = true
 
 [dependencies]
-getrandom = "0.3.4"
 keyring = "4.2.0"
 serde = { version = "1.0.228", features = ["derive"] }
 sha2 = "0.10.9"

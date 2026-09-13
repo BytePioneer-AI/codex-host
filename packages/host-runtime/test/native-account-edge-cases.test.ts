@@ -75,11 +75,10 @@ describe("native Account boundary regressions", () => {
     const state = await createNativeAccountTestState();
     resources.push({ state });
     await state.store.close();
-    const keys = { read: vi.fn(async () => null), create: vi.fn(async () => Buffer.alloc(32)) };
+    const keys = { read: vi.fn(async () => null) };
     const store = new NativeAccountStore({ home: state.store.home, files: state.files, keys });
     await expect(store.open()).resolves.toBe(true);
     expect(keys.read).not.toHaveBeenCalled();
-    expect(keys.create).not.toHaveBeenCalled();
     try {
       expect(() => store.assertFileOwnership()).not.toThrow();
       expect(store.vault.accounts).toEqual([]);
@@ -105,6 +104,17 @@ describe("native Account boundary regressions", () => {
     } finally {
       unsubscribe();
     }
+  });
+
+  it("refuses logout while busy without stopping A", async () => {
+    const { state, manager } = await currentA();
+    const stop = vi.spyOn(state.runtime, "stop");
+    vi.spyOn(state.runtime, "assertNativeIdle").mockRejectedValueOnce(
+      new OfficialAdmissionError("busy"),
+    );
+    await expect(manager.logout()).rejects.toMatchObject({ code: "busy" });
+    expect(stop).not.toHaveBeenCalled();
+    expect(manager.snapshot().phase).toBe("ready");
   });
 
   it("reports busy without stopping A when native persisted work rejects login", async () => {

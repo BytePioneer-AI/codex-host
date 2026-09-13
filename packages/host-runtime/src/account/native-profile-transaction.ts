@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { OfficialAdmissionError } from "../codex-runtime/official-work-gate.js";
 import type { NativeAccountRuntime } from "./native-account-runtime.js";
 import { type NativeAccountStore, matchProfile } from "./native-account-store.js";
 import type { NativeCodexCredentials } from "./native-codex-credentials.js";
@@ -51,6 +52,7 @@ export class NativeProfileTransaction {
     accountId: string | null,
     replacement?: NativeCodexCredentials,
     operationId: string = randomUUID(),
+    mode: "switch" | "idle" = "idle",
   ): Promise<void> {
     let stopping = false,
       stopped = false;
@@ -64,10 +66,14 @@ export class NativeProfileTransaction {
       matchProfile(candidate, target);
       await this.runtime.preflight();
       matchProfile(await this.store.readCredentials(), profileCurrent(before));
-      await this.runtime.assertNativeIdle();
+      if (mode === "idle") await this.runtime.assertNativeIdle();
       stopping = true;
       await this.runtime.stop();
       stopped = true;
+      if (mode === "switch") await this.runtime.stopExternalProcesses();
+      // Exit retires native work, but does not prove unrelated Host credential
+      // refresh requests have finished. Never clear their leases to force success.
+      if (this.runtime.gate.busy) throw new OfficialAdmissionError("busy");
       const source = await this.store.readCredentials();
       matchProfile(source, profileCurrent(before));
       const after = structuredClone(before);
@@ -102,7 +108,10 @@ export class NativeProfileTransaction {
       await this.#finishTarget(journal);
     } catch (error) {
       if (!stopping)
-        throw new NativeTransitionError(safeCode(error), this.runtime.gate.phase !== "unavailable");
+        throw new NativeTransitionError(
+          safeCode(error),
+          this.runtime.gate.phase !== "unavailable",
+        );
       if (!stopped) throw new NativeTransitionError("stop-unconfirmed", false);
       try {
         const journal = await this.store.readJournal();

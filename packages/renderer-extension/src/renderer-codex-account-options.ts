@@ -18,11 +18,3 @@ export function codexAccountDisplayName(account: CodexAccountSummary): CodexAcco
     full,
   };
 }
-
-export function codexAccountPresentationSignature(
-  accounts: readonly CodexAccountSummary[],
-): string {
-  return accounts
-    .map(({ accountId, label, email }) => `${accountId}\u0000${label}\u0000${email ?? ""}`)
-    .join("\u0001");
-}

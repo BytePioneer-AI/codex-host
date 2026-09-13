@@ -1,37 +1,37 @@
 ## Why
 
-旧的 per-Account home／后台池／Thread 路由把账号身份和会话数据空间耦合，不能表达真正的原生全局账号切换。需要保留官方 Codex 的协议和能力，以停止—替换凭据—重启验证实现单后台、多加密凭据，不建立模型请求代理。
-
-用户已授权基于 `9d22515ec63d5ff79eec4a12d6d56b721b2bd361` 在独立 worktree 实现。opencodex native profile 是核心参考；PR #252 仅作为选择性复用材料。
+Codex 全局账号管理需要在固定会话存储中使用实际原生认证身份。通过停止后台、替换原生凭据、重启验证，保持官方协议和能力，不建立模型请求代理。
 
 ## What Changes
 
-- 固定一个正式 `CODEX_HOME`、一个官方进程 Owner；本地托管使用受保护 loopback 和优先初始化的管理连接。
-- 一个原子 Vault 提交 metadata、current 和非当前密文；一个事务执行者处理切换、首次激活、当前重登、退出及事实恢复。
-- 短命认证 staging 与正式后台严格不并行。设置页添加 B 不覆盖 A；原生 Desktop OAuth／设备代码登录保留激活本次身份的语义，共用同一事务。业务提交和清理结果分开表达。
-- Desktop initialize 与 Codex readiness 分开；保留原生登录应答／完成／账号更新协议，不以局部 Codex 故障关闭整个 Desktop 或伪造认证。
-- v2 公开快照、Settings 全局切换和只读 Composer 身份；移除旧 per-draft 选择、后台池和 Thread→Account 执行路由。
-- 保留非当前额度和受控 OAuth 刷新；私有 I/O、OS 密钥和进程证明由通用 Rust 原语提供。
-- 将旧凭据接入与完整历史迁移分开：旧登记当前账号已使用正式 home 时，经原生身份／存储验证和停止 writer 后只读导入缺失凭据到 Vault，启用同一 home 中的全局切换；来源摘要防止重复导入。当前范围只保全主账号正式 home 的原历史；其他旧账号历史不要求迁移、合并或在新版显示，旧目录不主动删除。干净未托管 home 的其他 CLI 只禁用账号变更，不阻断普通原生启动；危险托管恢复和布局冲突仍硬阻断。
+- 固定正式 `CODEX_HOME`，由唯一 Owner 管理受保护 loopback 后台和专用管理连接。
+- 切换进入 changing，停止受管及当次检测到的其他 Codex 后端，再安装和验证目标凭据；新请求拒绝，不排队或重放。
+- 原子明文 Vault 保存 metadata、current 和非当前凭据；统一事务处理切换、首次激活、重登、退出和恢复。
+- 私有认证 staging 与任务后台不并行。设置页添加只保存新账号；Desktop 原生登录使用本次身份。
+- Host transport initialize 独立于 Codex readiness；原生认证事件保留协议语义。
+- v2 快照、设置页全局操作、只读 Composer 身份和原生 Thread 懒恢复。
+- 非当前额度及受控 OAuth 刷新独立于后台数量；Rust 提供私有 I/O、旧密钥读取和进程能力。
+- 启动允许与 VS Code／CLI 共存；布局、身份和自身进程恢复事实约束管理能力。
+- 旧登记当前账号使用正式 home 时可只读接入缺失凭据。主账号历史保留，其他 home 不合并、不自动删除。
 
 ## Non-goals
 
-- 模型请求代理、Header 替换、外部 Token 热登录、自动账号轮换或后台池。
-- 改变 Model、Provider、Thread ID、历史或实际 Billing Source 语义。
-- 完成真实账号登录／推理、读取真实密钥或发布。提交、推送、普通审查 PR 及诊断用 Desktop 起停已获用户后续授权；隔离 CLI 的 OAuth 开始／取消不代表真实认证验收。
-- 假定全部官方版本、平台或旧数据布局已经验证；未确认阶段与采集值前不生成迁移向导。
+- 模型代理、Header 替换、外部 Token 热登录、自动账号轮换或每账号后台。
+- 改变 Harness、Model、Provider、Thread ID 或 Billing Source 语义。
+- 多客户端原子切换、临时内容和全部运行时设置的无损恢复。
+- 完整多 home 历史迁移，以及未经验证的版本、平台或存储配置支持。
 
 ## Capabilities
 
 ### New Capabilities
 
-- `codex-native-global-accounts`: 单后台、全局准入、Thread 连续性、公开状态及原生降级。
-- `codex-native-credential-lifecycle`: 加密 Vault、事务恢复、隔离登录、额度刷新及无损升级边界。
+- `codex-native-global-accounts`: 单个受管后台、全局准入、原生 Thread 连续性、公开状态和原生降级。
+- `codex-native-credential-lifecycle`: 明文 Vault、旧密文转换、事务恢复、隔离登录及额度刷新。
 
 ### Modified Capabilities
 
-无新增 Harness 插件契约；旧账号选择字段的移除随 v2 账号接口和现有严格请求校验一起生效。
+Harness 插件通过现有公共契约运行。v2 账号请求明确拒绝 per-draft 账号输入和 activate 别名。
 
 ## Impact
 
-涉及 Host Runtime、浏览器安全契约、Renderer／Draft 绑定、Rust 平台与 launcher、发行许可和聚焦测试。Host 仍通过插件公共契约加载其他 Harness，不引入 Adapter SDK 依赖。实现状态、支持限制及未完成的发布门槛见 `tasks.md` 和 `evidence.md`。
+涉及 Host Runtime、共享契约、Renderer／Draft 绑定、Rust 平台与 launcher、发行许可和聚焦测试。设计见 `design.md`，验收见 `tasks.md` 和 `evidence.md`。

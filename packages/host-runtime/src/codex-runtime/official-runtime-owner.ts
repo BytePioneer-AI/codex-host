@@ -397,15 +397,20 @@ export class OfficialRuntimeOwner {
   async #request(client: Client, method: string, params: JsonObject): Promise<JsonObject> {
     this.#checkMethod(method, params);
     const quotaRead = method === "account/rateLimits/read";
-    const finish = this.gate.admit(quotaRead ? "quota-read" : "work");
+    const finish = this.gate.admit();
     try {
       const runtime = await this.#connection(client);
       await this.#restore(client, runtime, method, params);
       const observe = this.#work.admitted(client.id, method, params);
       const response = await runtime.request(method, params).catch((error: unknown) => {
-        // A local timeout/transport failure is not native query completion. Do not
-        // let a waiting switch replace credentials while that outcome is unknown.
-        if (quotaRead && client.runtime === runtime && runtime.generation === this.#generation)
+        // Unexpected transport loss is not native completion. Intentional backend
+        // retirement during switching instead ends requests without poisoning the lease.
+        if (
+          quotaRead &&
+          this.#phase === "running" &&
+          client.runtime === runtime &&
+          runtime.generation === this.#generation
+        )
           this.gate.unavailable();
         throw error;
       });
@@ -447,9 +452,7 @@ export class OfficialRuntimeOwner {
       throw new Error("Official methods require a request ID");
     const params = object(value.params) ? value.params : {};
     this.#checkMethod(value.method, params);
-    const finish = this.gate.admit(
-      value.method === "account/rateLimits/read" ? "quota-read" : "work",
-    );
+    const finish = this.gate.admit();
     let pendingKey: string | undefined;
     let quotaReadGeneration: number | undefined;
     try {
@@ -472,6 +475,7 @@ export class OfficialRuntimeOwner {
       if (!pendingKey) finish();
     } catch (error) {
       if (
+        this.#phase === "running" &&
         quotaReadGeneration !== undefined &&
         quotaReadGeneration === this.#generation &&
         client.runtime?.generation === quotaReadGeneration
@@ -652,6 +656,7 @@ export class OfficialRuntimeOwner {
 
   #retire(client: Client): void {
     if (
+      this.#phase !== "stopping" &&
       [...client.pending.values()].some((pending) => pending.method === "account/rateLimits/read")
     )
       this.gate.unavailable();

@@ -1,50 +1,37 @@
-## 1. 基线与边界
+## 1. 平台与边界
 
-- [x] 1.1 从 `9d22515ec63d5ff79eec4a12d6d56b721b2bd361` 建立独立 worktree 和实现分支，不在原 checkout 实现。
-- [x] 1.2 以 opencodex native profile 为核心参考，选择性复用 #252；保留 MIT 来源并加入 installer/npm notices。
-- [x] 1.3 保留公共 Workspace 边界，不在 Rust 引入 Account/OAuth/Thread 逻辑，不在 Renderer 引入原生 SDK。
+- [x] 1.1 使用公共 Workspace 契约；Rust 只拥有通用原生能力，Renderer 不接触凭据。
+- [x] 1.2 私有文件 helper 持锁执行有界 I/O，校验路径身份、权限和条件写入。
+- [x] 1.3 提供进程身份、监督、退出 receipt 和单批次 Codex 后端终止。
+- [x] 1.4 显式传递 home／profile 路径和 Chromium user-data-dir。
+- [x] 1.5 复用代码附带 opencodex 来源和 MIT 发行声明。
 
-## 2. 原生平台与进程所有权
+## 2. 账号核心
 
-- [x] 2.1 实现私有文件、OS 32-byte 密钥、进程身份与有界进程盘点、进程监督与退出 receipt。
-- [x] 2.2 持锁 helper 执行全部后续 I/O；共享 facade、64 项队列、20 MiB 文件预算和稳定路径校验。
-- [x] 2.3 验证 macOS 实际 helper／扩展 ACL 拒绝，完成 Windows/Linux 平台编译检查；不将编译等同于运行验证。
-- [x] 2.4 在 spawn intent 写入后重新检查租约；Scope 关闭后拒绝迟到启动，失败 close 的每次重试仍须证明退出。
-- [x] 2.5 显式传递所支持的绝对 home／profile 覆盖，并为 Chromium 同步 user-data-dir；以 macOS 实际文件句柄验证隔离，不把未成功透传的启动计为隔离验收。
+- [x] 2.1 明文 Vault、Journal 与登录 candidate 保存完整原生凭据字节。
+- [x] 2.2 旧密文使用已有密钥原地转换；按文件 CAS，可恢复部分转换。
+- [x] 2.3 切换、首次激活、重登和退出共用一个事务执行者及提交收据。
+- [x] 2.4 先进入 changing，再停止受管和检测到的其他 Codex 后端；新请求立即拒绝，不排队或重放。
+- [x] 2.5 登录、退出及凭据接入保留空闲准入；独立 Host 刷新租约、身份和退出证明保护写入。
+- [x] 2.6 原生 OAuth／设备代码登录使用唯一 staging 后台，关联开始、取消和完成事件，持久保留激活意图。
+- [x] 2.7 冷启动先恢复后导入，允许外部 Codex 共存；不支持管理时按所有权事实选择原生路径。
+- [x] 2.8 管理连接优先初始化，generation 隔离，Host transport initialize 独立于 Codex readiness。
 
-## 3. 账号与 Runtime 核心
+## 3. Desktop 与额度
 
-- [x] 3.1 统一 Vault、加密 Journal、原生完整字节、同身份摘要判定及提交收据。
-- [x] 3.2 切换、首次激活、当前重登和 logout 共用一个事务执行者；补偿前保全最新目标。
-- [x] 3.3 实现认证-only staging、启动／取消 barrier、早晚事件关联、去重和已保存但待恢复结果。
-- [x] 3.4 冷启动先恢复后导入；未知身份先拒绝；clean 不支持能力保留原生单账号与安全所有权。
-- [x] 3.5 唯一官方 Owner，管理连接优先初始化，工作准入与 generation 隔离；只在实际退出确认后退休工作。
-- [x] 3.6 捕获原生有效设置，懒恢复并验证；连续无工作代次仍保留设置；拒绝临时／缺少持久路径的 Thread。
-- [x] 3.7 unavailable 恢复可重试旧进程退出证明，但不得清空未确认工作、打断健康的 busy 运行或越过在途凭据刷新。
-- [x] 3.8 本地／Remote Control 共享一个 Scope；SSH 保持远端原生认证；Codex 故障不关闭外部 Harness。
-- [x] 3.9 Host transport initialize 不依赖 Codex readiness，保留 Desktop attachment 与原生协商；恢复或 staging 期间不误关共享后台。每次真实后台退出独立通知客户端清理旧工作，不依赖一次性 startup failure。
-- [x] 3.10 原生 OAuth／设备代码登录、取消及完成事件复用唯一协调器；取消／关闭从准入起有效，持久保留原生激活意图，正式 generation 从原生 account/read 发布身份更新。
+- [x] 3.1 v2 快照、全局设置页、Host instance/revision、只读 Composer 身份。
+- [x] 3.2 原 Client 拥有在途应答；切换成功后通过原生入口恢复选中 Thread。
+- [x] 3.3 原生订阅懒恢复，空闲路径采集的有效设置在恢复时验证。
+- [x] 3.4 当前原生额度及非当前 WHAM／OAuth 刷新使用 single-flight、修改租约和最新 Vault CAS。
+- [x] 3.5 旧布局凭据只读接入；主账号历史保持，其他 home 保留且不合并。
 
-## 4. UI、额度与升级
+## 4. 验收
 
-- [x] 4.1 接入 v2 快照、全局 Settings 操作、Host epoch/revision 和只读 Composer 身份；删除旧选择和路由代码。
-- [x] 4.2 完成前端登录早事件、重登不以旧邮箱判断成功、无邮箱保存账号和结果未确认显示的最后回归。
-- [x] 4.3 保留非当前 WHAM／OAuth 刷新、single-flight、最新 Vault CAS 和按账号补丁的缓存重试。
-- [x] 4.4 实现旧布局有界只读检测；当前账号与正式 home 一致时，在原生验证和安全退出后一次性加密接入缺失旧凭据，启用全局切换，保留来源及全部历史并明确未合并。其他 CLI 只在干净未托管模式下允许原生使用，仍禁止 Host 账号变更与原生登录／退出；其余不安全布局不绕过恢复。
-- [x] 4.5 按用户后续确认缩减历史范围：主账号继续使用原正式 home；其他旧账号历史不要求合并或在新版显示，旧目录不主动删除。完整多 home 迁移不再是交付门槛。
+- [x] 4.1 提供契约、账号事务、RPC 退休、登录取消、恢复及 UI 的聚焦测试。
+- [x] 4.2 完成类型、lint、边界、格式、聚焦 TS／E2E／Rust 和 OpenSpec 检查；结果与跳过条件见 evidence。
+- [ ] 4.3 完成各目标平台的原生文件、进程树、旧密钥读取失败和 Desktop 联合运行验证。
+- [ ] 4.4 实机验证检测到的 VS Code／CLI 后端 PID／启动身份退出及自动重启行为。
+- [ ] 4.5 同一真实 Thread 完成 A→B→A，验证后续请求认证、历史、Desktop／Host 连续性及其他 Harness 行为。
+- [ ] 4.6 完成当前支持矩阵验收后再进入发布。
 
-- [x] 4.6 修正退休 React 树／固定 policy 的新请求绑定，并保留发送后 Client 更换时的在途 Host 响应归属；实测 busy 解锁及同页显式重试，清除新尝试期间的旧错误，不重放请求。
-
-- [x] 4.7 参考 OpenCodex 收尾逻辑解决已完成消息后额度查询与切换冲突：先关闭新准入，只为官方额度读取等待最多 10 秒；真实工作仍立即拒绝，无新的按钮禁用规则。组合回归先红后绿，正式源码构建在已有消息的真实 Thread 验证在途额度查询收尾后 A→B→A，保留历史并恢复测试前账号。
-
-## 5. 验证与发布门槛
-
-- [x] 5.1 添加公共 Interface 组合测试及真实 compiled-helper 合成测试；修复持久提交、退出、恢复和连续切换的边界回归。
-- [x] 5.2 在全部最后修正后重跑类型、lint、边界、格式、聚焦 TS/Renderer/E2E、Rust 与 OpenSpec 验证，并更新证据。
-- [ ] 5.3 获得授权后，完成真实 OS keyring 生命周期、各平台 native 文件／进程树及 Desktop 联合验证。
-- [ ] 5.4 获得授权后，同一真实 Thread 完成 A→B→A，并验证 Desktop/Host PID 和外部 Harness 流式输出、审批、取消、保存不中断。当前不发送消息、不模拟额度耗尽；正式构建已完成同一历史会话两轮 A→B→A，每次自动打开原 Thread，历史和页面内容检查一致。外部 Harness 联合运行及 PID 连续性仍待单独验收，因此此组合项不勾选。
-- [ ] 5.5 证明官方默认凭据存储及更广版本／配置矩阵后，再扩展当前明确 `file` 的能力限制。
-- [ ] 5.6 当前范围的上述门槛闭合后，才可宣称替代旧版本并进入发布；用户已另行授权提交、推送和审查 PR，但未授权发布。
-- [x] 5.7 在 macOS 隔离 home、假 Vault 密钥和真实官方 CLI／compiled helper 下验证受保护 listener、OAuth 开始／取消、退出清理和未物化 Thread 拒绝；不把这些计为真实认证或 OS keyring 验收。
-
-执行记录和限制见 [evidence.md](evidence.md)。未勾选的发布门槛不是测试已通过，也不授权真实账号操作或编写未经确认的迁移向导。
+结果与未验证边界见 [evidence.md](evidence.md)。真实账号、进程和发布操作须在获得相应授权后执行。

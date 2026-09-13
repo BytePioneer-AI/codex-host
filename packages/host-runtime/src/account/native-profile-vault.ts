@@ -22,8 +22,7 @@ export class NativeAccountError extends Error {
       | "stop-unconfirmed"
       | "authentication-failed"
       | "cleanup-required"
-      | "credential-conflict"
-      | "competing-writer",
+      | "credential-conflict",
   ) {
     super(`Codex Account ${code}`);
     this.name = "NativeAccountError";

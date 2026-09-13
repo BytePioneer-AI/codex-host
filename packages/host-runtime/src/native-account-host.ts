@@ -33,6 +33,7 @@ import type { OwnedOfficialBackend } from "./codex-runtime/official-runtime-owne
 import { NativePrivateFiles } from "./native-private-files.js";
 import { NativeSecretKeys } from "./native-secret-keys.js";
 import { readNativeProcessIdentity } from "./native-process-identity.js";
+import { stopNativeProcesses } from "./native-process-stop.js";
 import { spawnOfficialAppServerConnection } from "./official-app-server-connection.js";
 import { officialLoopbackListenerArguments } from "./remote-app-server.js";
 import { createLoopbackOfficialAppServerListener } from "./remote-official-app-server.js";
@@ -380,6 +381,12 @@ export async function prepareLocalCodex(input: LocalCodexOptions): Promise<Prepa
       nativeVersion: () =>
         readOfficialCliVersion(input.stockCodexPath, officialEnvironment(input.environment)),
       reconcilePreviousWriter: reconcile,
+      stopExternalProcesses: () =>
+        stopNativeProcesses({
+          launcher,
+          executableNames: [path.basename(input.stockCodexPath), "codex", "codex.exe"],
+          environment: input.environment,
+        }),
     });
     const accounts = new NativeCodexAccounts({ store, runtime });
     try {

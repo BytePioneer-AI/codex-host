@@ -84,12 +84,10 @@ export interface RendererSettingsMessages {
   readonly accountCreditsFailed: string;
   readonly accountCreditsRetry: string;
   readonly accountCreditsRefresh: string;
-  readonly accountCreateFailed: string;
   readonly accountDelete: string;
   readonly accountDeleteConfirm: string;
   readonly accountDeleting: string;
   readonly accountDeleteFailed: string;
-  readonly accountActive: string;
   readonly accountUse: string;
   readonly accountLogout: string;
   readonly accountLogoutConfirm: string;
@@ -102,7 +100,6 @@ export interface RendererSettingsMessages {
   readonly accountCleanupRequired: string;
   readonly accountLegacyCompatibility: string;
   readonly accountLegacyCredentialsAdopted: string;
-  readonly accountCompetingWriter: string;
   readonly accountMigrationRequired: string;
   readonly accountSignIn: string;
   readonly accountSigningIn: string;
@@ -287,7 +284,7 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   connectionsDescription:
     "View runtime status by Host. Select an item to inspect details or complete its setup.",
   accountsDescription:
-    "View accounts and limits across Agents, and manage the current Codex identity.",
+    "View accounts and limits across Agents. Switching stops local Codex backends, including VS Code and CLI sessions; unsaved work may be lost.",
   accountConnected: "Accounts",
   accountDefaultBadge: "Current",
   accountAdd: "Add Codex account",
@@ -308,12 +305,10 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   accountCreditsFailed: "Could not load limits",
   accountCreditsRetry: "Retry",
   accountCreditsRefresh: "Refresh limits",
-  accountCreateFailed: "Could not add the Account.",
   accountDelete: "Delete",
   accountDeleteConfirm: "Delete this Account and its local data? This cannot be undone.",
   accountDeleting: "Deleting Account...",
   accountDeleteFailed: "Could not delete the Account.",
-  accountActive: "Current",
   accountUse: "Switch",
   accountLogout: "Sign out",
   accountLogoutConfirm: "Sign out the current Codex identity? Saved Accounts are retained.",
@@ -323,8 +318,6 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   accountRecover: "Recover",
   accountRecovering: "Recovering Codex...",
   accountRecoveryRequired: "Codex Account recovery is required before work can continue.",
-  accountCompetingWriter:
-    "Another Codex CLI is running. Your existing native account remains usable, but account import, switching, sign-in and sign-out are disabled. Close the other CLI sessions and restart Codex Host to enable account management.",
   accountLegacyCredentialsAdopted:
     "Saved account credentials are available for global switching in the existing official home. Other account homes and their history are preserved but have not been merged. Account switching does not switch history directories.",
   accountLegacyCompatibility:
@@ -530,7 +523,8 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   sessionImportRetryOpen: "重试打开",
   sessionImportRetrying: "正在打开……",
   connectionsDescription: "按 Host 查看运行时状态。选择一项，在右侧检查详情或完成配置。",
-  accountsDescription: "查看各 Agent 的账号与额度，管理 Codex 当前身份。",
+  accountsDescription:
+    "查看各 Agent 的账号与额度。切换会停止本机 Codex 后端（含 VS Code 和 CLI 会话），未保存内容可能丢失。",
   accountConnected: "账号",
   accountDefaultBadge: "当前",
   accountAdd: "添加 Codex 账号",
@@ -551,12 +545,10 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   accountCreditsFailed: "额度读取失败",
   accountCreditsRetry: "重试",
   accountCreditsRefresh: "刷新额度",
-  accountCreateFailed: "添加账号失败。",
   accountDelete: "删除",
   accountDeleteConfirm: "删除此账号及其本地数据？此操作无法撤销。",
   accountDeleting: "正在删除账号...",
   accountDeleteFailed: "删除账号失败。",
-  accountActive: "当前账号",
   accountUse: "切换",
   accountLogout: "退出登录",
   accountLogoutConfirm: "退出当前 Codex 身份？已保存的账号会保留。",
@@ -566,8 +558,6 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   accountRecover: "恢复",
   accountRecovering: "正在恢复 Codex...",
   accountRecoveryRequired: "继续工作前需要恢复 Codex 账号状态。",
-  accountCompetingWriter:
-    "检测到其他 Codex CLI。仍可使用现有原生账号，但导入、切换、登录和退出账号暂不可用。请关闭其他 CLI 会话并重启 Codex Host 后启用账号管理。",
   accountLegacyCredentialsAdopted:
     "旧账号凭据已接入，可在原有官方目录内全局切换。其他账号目录及其历史保留但尚未合并；切换账号不会切换历史目录。",
   accountLegacyCompatibility:

@@ -81,17 +81,17 @@ pub use process::{
     desktop_process_tree, desktop_root_snapshots_for_installation, process_snapshots,
 };
 pub use process_identity::process_identity;
-pub use process_inventory::process_ids_by_executable_name;
 #[cfg(target_os = "windows")]
 pub use process_supervision::spawn_supervised_before_execution;
 pub use process_supervision::{ChildProcessGuard, SupervisedChild, spawn_supervised};
-pub use process_termination::{terminate_process_group_instance, terminate_process_instance};
+pub use process_termination::{
+    stop_processes_by_executable_names, terminate_process_group_instance,
+    terminate_process_instance,
+};
 #[cfg(target_os = "windows")]
 pub use proxy_environment::desktop_helper_proxy_environment;
 pub use proxy_environment::proxy_environment;
-pub use secret_keys::{
-    NATIVE_SECRET_KEY_BYTES, NATIVE_SECRET_KEY_SERVICE, create_secret_key, read_secret_key,
-};
+pub use secret_keys::read_secret_key;
 #[cfg(target_os = "macos")]
 pub use system_proxy::{SystemProxySettings, system_proxy_settings};
 #[cfg(target_os = "windows")]

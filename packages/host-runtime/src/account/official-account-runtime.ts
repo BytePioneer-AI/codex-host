@@ -62,6 +62,7 @@ export class OfficialAccountRuntime implements NativeAccountRuntime {
   readonly #environment: NodeJS.ProcessEnv;
   readonly #version: () => Promise<string>;
   readonly #reconcile: () => Promise<void>;
+  readonly #stopExternalProcesses: () => Promise<void>;
   readonly #control: OfficialClientSession;
   readonly #listeners = new Set<(value: JsonValue) => void>();
   #activeHome: string | undefined;
@@ -75,6 +76,7 @@ export class OfficialAccountRuntime implements NativeAccountRuntime {
     nativeVersion(): Promise<string>;
     /** Reject any previous writer whose real exit cannot be established, including orphans. */
     reconcilePreviousWriter(): Promise<void>;
+    stopExternalProcesses(): Promise<void>;
   }) {
     this.#owner = input.owner;
     this.#sharedCodexHome = input.sharedCodexHome;
@@ -82,6 +84,7 @@ export class OfficialAccountRuntime implements NativeAccountRuntime {
     this.#environment = input.environment ?? {};
     this.#version = input.nativeVersion;
     this.#reconcile = input.reconcilePreviousWriter;
+    this.#stopExternalProcesses = input.stopExternalProcesses;
     if (input.owner.running) this.#activeHome = input.sharedCodexHome;
     this.#control = input.owner.attachManagement(async ({ value }) => {
       for (const listener of this.#listeners) {
@@ -245,8 +248,7 @@ export class OfficialAccountRuntime implements NativeAccountRuntime {
       if (thread.status.type !== "idle" && thread.status.type !== "notLoaded")
         throw new OfficialAdmissionError("busy");
       // Archived Threads cannot auto-continue, and native queue/goal endpoints
-      // reject archived IDs. Treating those expected errors as unknown state made
-      // every installation with archived history permanently unswitchable.
+      // reject archived IDs; only non-archived Threads require these probes.
       if (thread.archived) continue;
       const queue = await this.#read("thread/queue/list", { threadId, cursor: null, limit: 1 });
       if (!Array.isArray(queue.data) || queue.data.length !== 0 || queue.nextCursor !== null)
@@ -265,6 +267,11 @@ export class OfficialAccountRuntime implements NativeAccountRuntime {
     }
     this.#owner.captureThreadSettings(settings);
     if (this.#owner.gate.busy) throw new OfficialAdmissionError("busy");
+  }
+
+  async stopExternalProcesses(): Promise<void> {
+    if (this.#owner.running) throw new OfficialAdmissionError("busy");
+    await this.#stopExternalProcesses();
   }
 
   async stop(): Promise<void> {

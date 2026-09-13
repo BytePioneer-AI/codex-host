@@ -250,14 +250,12 @@ export function createAccountsSettingsPage(
           ? messages.accountCleanupRequired
           : accountPhase === "unavailable" && capabilities.reason === "recovery-required"
             ? messages.accountRecoveryRequired
-            : capabilities.reason === "competing-writer"
-              ? messages.accountCompetingWriter
-              : capabilities.reason === "migration-required"
-                ? accountPhase === "ready" && currentAccountId !== null
-                  ? messages.accountLegacyCompatibility
-                  : messages.accountMigrationRequired
-                : (loginMessage ??
-                  (legacyHistoryPreserved ? messages.accountLegacyCredentialsAdopted : null));
+            : capabilities.reason === "migration-required"
+              ? accountPhase === "ready" && currentAccountId !== null
+                ? messages.accountLegacyCompatibility
+                : messages.accountMigrationRequired
+              : (loginMessage ??
+                (legacyHistoryPreserved ? messages.accountLegacyCredentialsAdopted : null));
         if (accountStatus) status.append(accountStatus);
         if (
           (cleanupRequired || capabilities.reason === "recovery-required") &&

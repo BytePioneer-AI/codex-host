@@ -35,7 +35,6 @@ import { encodeDeepSeekHarnessModelRef, parseDeepSeekThinkingOptionId } from "..
 import {
   deepSeekUsageKey,
   isRecord,
-  mergeStructuredDiffs,
   mergeDeepSeekUsage,
   nonBlankString,
   parseArguments,
@@ -43,7 +42,7 @@ import {
   parseDeepSeekUsage,
   projectToolResult,
   projectTurnReason,
-  type StructuredDiffState,
+  structuredDiffs,
 } from "../projection.js";
 import type { ModernJournalEvent } from "./journal.js";
 import {
@@ -602,8 +601,6 @@ interface HistoryTurn {
   input: HostTextInput[];
   items: HostItemSnapshot[];
   tools: Map<string, HistoryTool>;
-  fileChangeIndex?: number;
-  fileChangeState: StructuredDiffState[];
   model: HarnessModelRef | undefined;
 }
 
@@ -668,7 +665,6 @@ export function projectModernHistory(input: ProjectModernHistoryInput): ModernHi
           input: [],
           items: [],
           tools: new Map(),
-          fileChangeState: [],
           model: effectiveModel,
         };
         break;
@@ -877,30 +873,14 @@ function projectToolResultEvent(
         : { status: "succeeded" },
   };
   if (!result.failed && data.error === undefined) {
-    const merged = mergeStructuredDiffs(turn.fileChangeState, data.meta);
-    if (merged) {
-      turn.fileChangeState = merged.state;
-      const index = turn.fileChangeIndex;
-      if (index === undefined) {
-        const fileItem: HostFileChangeItem = {
-          type: "fileChange",
-          itemId: modernItemId(sessionId, `event:${seq}:file-change`),
-          changes: merged.changes,
-        };
-        turn.fileChangeIndex = turn.items.length;
-        turn.items.push({ item: fileItem, outcome: { status: "succeeded" } });
-      } else {
-        const snapshot = turn.items[index];
-        if (snapshot?.item.type === "fileChange") {
-          turn.items[index] = {
-            item: {
-              ...snapshot.item,
-              changes: merged.changes,
-            },
-            outcome: { status: "succeeded" },
-          };
-        }
-      }
+    const changes = structuredDiffs(data.meta);
+    if (changes) {
+      const fileItem: HostFileChangeItem = {
+        type: "fileChange",
+        itemId: modernItemId(sessionId, `event:${seq}:file-change`),
+        changes,
+      };
+      turn.items.push({ item: fileItem, outcome: { status: "succeeded" } });
     }
   }
 }

@@ -12,9 +12,7 @@ use codexhost_platform::{
     DesktopInstallation, descendant_executable_exists, desktop_root_process_ids_for_installation,
 };
 #[cfg(target_os = "windows")]
-use codexhost_platform::{
-    PlatformError, process_executable_path, process_exists, terminate_process_by_id,
-};
+use codexhost_platform::{process_executable_path, process_exists, terminate_process_by_id};
 
 use crate::ResolvedLaunchOptions;
 use crate::runtime_instance::{
@@ -172,34 +170,12 @@ pub(super) fn try_activate_controlled_instance(
 }
 
 #[cfg(target_os = "windows")]
-fn stale_launcher_executable_path(
-    result: Result<std::path::PathBuf, PlatformError>,
-) -> Result<Option<std::path::PathBuf>, Box<dyn Error>> {
-    match result {
-        Ok(path) => Ok(Some(path.canonicalize()?)),
-        Err(PlatformError::Io(error))
-            if error.kind() == io::ErrorKind::PermissionDenied
-                || error.raw_os_error() == Some(5) =>
-        {
-            // The recorded PID may have been reused by a protected unrelated process.
-            // Never terminate a process whose executable identity cannot be confirmed.
-            Ok(None)
-        }
-        Err(error) => Err(error.into()),
-    }
-}
-
-#[cfg(target_os = "windows")]
 pub(super) fn stop_stale_launcher(descriptor: &RuntimeDescriptor) -> Result<(), Box<dyn Error>> {
     if descriptor.launcher_pid == std::process::id() || !process_exists(descriptor.launcher_pid) {
         return Ok(());
     }
     let expected = env::current_exe()?.canonicalize()?;
-    let Some(actual) =
-        stale_launcher_executable_path(process_executable_path(descriptor.launcher_pid))?
-    else {
-        return Ok(());
-    };
+    let actual = process_executable_path(descriptor.launcher_pid)?.canonicalize()?;
     if actual != expected {
         return Ok(());
     }
@@ -221,20 +197,4 @@ pub(super) fn stop_stale_launcher(descriptor: &RuntimeDescriptor) -> Result<(), 
 #[cfg(not(target_os = "windows"))]
 pub(super) fn stop_stale_launcher(_descriptor: &RuntimeDescriptor) -> Result<(), Box<dyn Error>> {
     Ok(())
-}
-
-#[cfg(all(test, target_os = "windows"))]
-mod tests {
-    use super::stale_launcher_executable_path;
-    use codexhost_platform::PlatformError;
-    use std::io;
-
-    #[test]
-    fn ignores_access_denied_for_a_reused_stale_launcher_pid() {
-        let result =
-            stale_launcher_executable_path(Err(PlatformError::Io(io::Error::from_raw_os_error(5))))
-                .expect("access-denied PID lookup should be recoverable");
-
-        assert!(result.is_none());
-    }
 }

@@ -134,10 +134,7 @@ async function preserveQueuedFollowUps(
  * Only this operation's outgoing start RPC becomes steer; Host owns stop/wait/start.
  * Official Threads retain the original steer implementation and response semantics.
  */
-export function installRendererExternalSteering(
-  target: unknown,
-  refreshRequestBridge?: () => boolean,
-): (() => void) | null {
+export function installRendererExternalSteering(target: unknown): (() => void) | null {
   if (!isManager(target)) return null;
   const manager = target;
   const originalSteer = manager.steerTurn;
@@ -150,7 +147,6 @@ export function installRendererExternalSteering(
   let disposed = false;
 
   const send: RendererMethod = function (method, params, options) {
-    refreshRequestBridge?.();
     const messageId = isRecord(params) ? params.clientUserMessageId : null;
     const route =
       typeof messageId === "string" && isRecord(params)
@@ -199,7 +195,6 @@ export function installRendererExternalSteering(
   };
 
   const steer: RendererMethod = async function (...args) {
-    refreshRequestBridge?.();
     const [
       threadId,
       input,

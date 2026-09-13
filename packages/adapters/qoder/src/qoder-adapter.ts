@@ -31,6 +31,7 @@ import {
 import { mapQoderSnapshot } from "./qoder-history.js";
 import { parseQoderModelCatalog } from "./qoder-models.js";
 import { QODER_PERMISSION_MODE_CATALOG } from "./qoder-permission-modes.js";
+import { QODER_COMMAND_CATALOG } from "./qoder-slash-commands.js";
 import type {
   ForkSessionOptions,
   ForkSessionResult,
@@ -69,6 +70,7 @@ export interface QoderAdapterOptions {
 
 export class QoderAdapter implements HarnessAdapter {
   readonly harnessId: HarnessId = harnessIdSchema.parse("qoder");
+  readonly commandCatalog = QODER_COMMAND_CATALOG;
 
   readonly #commandOverride: string | undefined;
   readonly #environment: Record<string, string | undefined>;

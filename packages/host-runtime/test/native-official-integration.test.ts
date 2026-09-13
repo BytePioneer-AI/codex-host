@@ -59,10 +59,6 @@ describe.skipIf(!stock || !launcher)("real official CLI with an isolated signed-
         home,
         files,
         homeFiles: files.withReadOnlyDirectoryAccess(),
-        keys: {
-          read: async () => Buffer.alloc(32, 0x51),
-          create: async () => Buffer.alloc(32, 0x51),
-        },
       });
       const diagnosticOutput = new Writable({
         write(_chunk, _encoding, done) {

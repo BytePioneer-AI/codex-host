@@ -2,9 +2,9 @@ import { describe, expect, it } from "vitest";
 
 import { newProfile } from "../src/account/native-account-store.js";
 import {
-  decryptCredential,
+  restoreCredential,
   decideProfileRecovery,
-  encryptCredential,
+  snapshotCredential,
   nativeDigest,
   parseJournal,
   serializePrivate,
@@ -13,7 +13,6 @@ import {
 } from "../src/account/native-profile-vault.js";
 import { credential, nativeAccountIds } from "./fixtures/native-account-state.js";
 
-const key = Buffer.alloc(32, 0x41);
 const homeId = nativeDigest("/synthetic/canonical/home");
 const operationId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 
@@ -22,7 +21,7 @@ function switchingJournal(phase: NativeProfileJournal["phase"] = "prepared") {
   const b = credential("b", 1);
   const profileA = newProfile(a, nativeAccountIds.a);
   const profileB = newProfile(b, nativeAccountIds.b);
-  profileB.payload = encryptCredential(key, homeId, profileB, b);
+  profileB.payload = snapshotCredential(profileB, b);
   const before: NativeProfileVault = {
     version: 1,
     homeId,
@@ -38,7 +37,7 @@ function switchingJournal(phase: NativeProfileJournal["phase"] = "prepared") {
   const afterA = after.accounts.find((account) => account.accountId === profileA.accountId);
   const afterB = after.accounts.find((account) => account.accountId === profileB.accountId);
   if (!afterA || !afterB) throw new Error("missing synthetic profiles");
-  afterA.payload = encryptCredential(key, homeId, profileA, a);
+  afterA.payload = snapshotCredential(profileA, a);
   afterB.payload = null;
   const journal: NativeProfileJournal = {
     version: 1,
@@ -53,23 +52,23 @@ function switchingJournal(phase: NativeProfileJournal["phase"] = "prepared") {
 }
 
 describe("native profile Vault codec", () => {
-  it("preserves the complete native document and binds ciphertext to key, home and account AAD", () => {
+  it("preserves plaintext credential bytes and checks digest and identity", () => {
     const original = credential("codec", 3);
     const account = newProfile(original, nativeAccountIds.a);
-    const envelope = encryptCredential(key, homeId, account, original);
-
-    expect(decryptCredential(key, homeId, account, envelope).serializeForNativeStore()).toBe(
+    const payload = snapshotCredential(account, original);
+    expect(payload).toMatchObject({
+      format: "plaintext",
+      nativeDocument: original.serializeForNativeStore(),
+    });
+    expect(restoreCredential(account, payload).serializeForNativeStore()).toBe(
       original.serializeForNativeStore(),
     );
-    expect(() => decryptCredential(Buffer.alloc(32, 0x42), homeId, account, envelope)).toThrow(
-      "Codex Account recovery-required",
+    expect(() => restoreCredential(account, { ...payload, digest: "0".repeat(64) })).toThrow(
+      "recovery-required",
     );
-    expect(() =>
-      decryptCredential(key, nativeDigest("/different/home"), account, envelope),
-    ).toThrow("Codex Account recovery-required");
-    expect(() =>
-      decryptCredential(key, homeId, { ...account, accountId: nativeAccountIds.b }, envelope),
-    ).toThrow("Codex Account recovery-required");
+    expect(() => restoreCredential(newProfile(credential("other")), payload)).toThrow(
+      "recovery-required",
+    );
   });
 
   it("validates persisted transaction facts and distinguishes every durable phase", () => {
@@ -118,8 +117,8 @@ describe("native profile Vault codec", () => {
       phase: "prepared",
       before,
       after,
-      source: encryptCredential(key, homeId, profile, a1),
-      target: encryptCredential(key, homeId, profile, a2),
+      source: snapshotCredential(profile, a1),
+      target: snapshotCredential(profile, a2),
     };
 
     expect(decideProfileRecovery(journal, before, a1)).toBe("source");

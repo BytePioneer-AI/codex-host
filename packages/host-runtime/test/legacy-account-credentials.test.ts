@@ -46,7 +46,7 @@ describe("non-destructive legacy Account credential adoption", () => {
     expect(vault.legacyRegistryDigest).toBe(f.input.registryDigest);
     const added = vault.accounts.find((a) => a.accountId !== nativeAccountIds.a);
     if (!added) throw new Error("Missing adopted Account");
-    expect(f.state.store.decrypt(added).serializeForNativeStore()).toBe(
+    expect(f.state.store.restoreCredential(added).serializeForNativeStore()).toBe(
       credential("b").serializeForNativeStore(),
     );
     expect((await f.state.store.readCredentials())?.serializeForNativeStore()).toBe(before);
@@ -77,7 +77,7 @@ describe("non-destructive legacy Account credential adoption", () => {
     await importLegacyAccountCredentials(f.input);
     const saved = f.state.store.vault.accounts.find((a) => a.accountId === nativeAccountIds.b);
     if (!saved) throw new Error("Missing saved Account");
-    expect(f.state.store.decrypt(saved).serializeForNativeStore()).toBe(
+    expect(f.state.store.restoreCredential(saved).serializeForNativeStore()).toBe(
       credential("b", 3).serializeForNativeStore(),
     );
   });

@@ -366,7 +366,7 @@ export class NativeAccountQuotas {
   async #readLive(account: NativeProfileAccount): Promise<CodexAccountUsageResult> {
     const previous = this.get(account.accountId);
     try {
-      let credential = this.#credentials.decrypt(account);
+      let credential = this.#credentials.restoreCredential(account);
       let refreshed = false;
       const oauth = credential.managedOAuthCredential();
       if (oauth.expiresAtUnix !== undefined && oauth.expiresAtUnix <= Date.now() / 1000 + 60) {
@@ -437,7 +437,7 @@ export class NativeAccountQuotas {
     const latest = vault.accounts.find((entry) => entry.accountId === account.accountId);
     if (!latest || vault.currentAccountId === account.accountId)
       throw new CodexAccountQuotaError("unavailable");
-    const credential = this.#credentials.decrypt(latest);
+    const credential = this.#credentials.restoreCredential(latest);
     if (credentialDigest(credential) !== credentialDigest(expected)) return credential;
     const oauth = expected.managedOAuthCredential();
     const response = await this.#fetch(CHATGPT_TOKEN_URL, {

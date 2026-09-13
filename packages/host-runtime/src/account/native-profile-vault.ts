@@ -1,6 +1,6 @@
 // Native profile envelope/recovery model adapted from opencodex (MIT),
 // commit 2d4d7a22381a2e497c2442902104619e25f937c7. See third-party/opencodex.LICENSE.
-import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
+import { createHash } from "node:crypto";
 import { z } from "zod";
 import { codexAccountPlanTypeSchema } from "@codexhost/shared-contracts";
 import {
@@ -40,7 +40,17 @@ const encryptedSchema = z
     digest: digestSchema,
   })
   .strict();
-export type EncryptedNativeCredential = z.infer<typeof encryptedSchema>;
+export type LegacyEncryptedCredential = z.infer<typeof encryptedSchema>;
+const plaintextSchema = z
+  .object({
+    format: z.literal("plaintext"),
+    nativeDocument: z.string().max(262_144),
+    digest: digestSchema,
+  })
+  .strict();
+// Legacy envelopes are accepted for one-time, in-place conversion only.
+const storedCredentialSchema = z.union([plaintextSchema, encryptedSchema]);
+export type StoredNativeCredential = z.infer<typeof storedCredentialSchema>;
 const accountSchema = z
   .object({
     accountId: z.string().uuid(),
@@ -48,7 +58,7 @@ const accountSchema = z
     label: z.string().min(1).max(256),
     email: z.string().email().max(320).optional(),
     planType: codexAccountPlanTypeSchema.optional(),
-    payload: encryptedSchema.nullable(),
+    payload: storedCredentialSchema.nullable(),
   })
   .strict();
 export type NativeProfileAccount = z.infer<typeof accountSchema>;
@@ -72,8 +82,8 @@ const journalSchema = z
     phase: z.enum(["prepared", "auth-replaced", "vault-committed"]),
     before: vaultSchema,
     after: vaultSchema,
-    source: encryptedSchema.nullable(),
-    target: encryptedSchema.nullable(),
+    source: storedCredentialSchema.nullable(),
+    target: storedCredentialSchema.nullable(),
     /** Durable compensation intent preserves rotated target Tokens before restoring source. */
     rollback: vaultSchema.optional(),
   })
@@ -190,70 +200,28 @@ export function serializePrivate(value: NativeProfileVault | NativeProfileJourna
   return bytes;
 }
 
-function associatedData(homeId: string, account: NativeProfileAccount, digest: string): Buffer {
-  return Buffer.from(
-    JSON.stringify([
-      "codexhost-native-profile-v1",
-      homeId,
-      account.accountId,
-      account.identity,
-      digest,
-    ]),
-  );
-}
-export function encryptCredential(
-  key: Uint8Array,
-  homeId: string,
+export function snapshotCredential(
   account: NativeProfileAccount,
   credential: NativeCodexCredentials,
-): EncryptedNativeCredential {
+): StoredNativeCredential {
   if (!sameCodexCredentialIdentity(account.identity, credential.identity))
     throw new NativeAccountError("credential-conflict");
-  const raw = Buffer.from(credential.serializeForNativeStore());
-  try {
-    const digest = nativeDigest(raw),
-      nonce = randomBytes(12);
-    const cipher = createCipheriv("aes-256-gcm", key, nonce);
-    cipher.setAAD(associatedData(homeId, account, digest));
-    return {
-      cipher: "aes-256-gcm",
-      nonce: nonce.toString("base64"),
-      ciphertext: Buffer.concat([cipher.update(raw), cipher.final()]).toString("base64"),
-      tag: cipher.getAuthTag().toString("base64"),
-      digest,
-    };
-  } finally {
-    raw.fill(0);
-  }
+  const nativeDocument = credential.serializeForNativeStore();
+  return { format: "plaintext", nativeDocument, digest: nativeDigest(nativeDocument) };
 }
-export function decryptCredential(
-  key: Uint8Array,
-  homeId: string,
+export function restoreCredential(
   account: NativeProfileAccount,
-  envelope: EncryptedNativeCredential,
+  payload: StoredNativeCredential,
 ): NativeCodexCredentials {
-  let raw: Buffer | undefined;
   try {
-    const nonce = Buffer.from(envelope.nonce, "base64"),
-      tag = Buffer.from(envelope.tag, "base64");
-    if (nonce.length !== 12 || tag.length !== 16) throw new Error("envelope");
-    const cipher = createDecipheriv("aes-256-gcm", key, nonce);
-    cipher.setAAD(associatedData(homeId, account, envelope.digest));
-    cipher.setAuthTag(tag);
-    raw = Buffer.concat([
-      cipher.update(Buffer.from(envelope.ciphertext, "base64")),
-      cipher.final(),
-    ]);
-    if (nativeDigest(raw) !== envelope.digest || !Buffer.from(raw.toString("utf8")).equals(raw))
-      throw new Error("digest");
-    const credential = NativeCodexCredentials.parse(raw.toString("utf8"));
+    if (!("format" in payload) || nativeDigest(payload.nativeDocument) !== payload.digest)
+      throw new Error("payload");
+    const credential = NativeCodexCredentials.parse(payload.nativeDocument);
     if (!sameCodexCredentialIdentity(account.identity, credential.identity))
       throw new Error("identity");
     return credential;
   } catch {
     throw new NativeAccountError("recovery-required");
-  } finally {
-    raw?.fill(0);
   }
 }
 

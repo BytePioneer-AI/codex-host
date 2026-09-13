@@ -39,7 +39,7 @@ describe("native profile transaction combinations", () => {
       (account) => account.accountId === nativeAccountIds.a,
     );
     if (!savedA) throw new Error("missing saved A");
-    expect(state.store.decrypt(savedA).serializeForNativeStore()).toBe(
+    expect(state.store.restoreCredential(savedA).serializeForNativeStore()).toBe(
       a2.serializeForNativeStore(),
     );
     expect((await state.store.readCredentials())?.serializeForNativeStore()).toBe(
@@ -99,7 +99,7 @@ describe("native profile transaction combinations", () => {
       (account) => account.accountId === nativeAccountIds.b,
     );
     if (!savedB) throw new Error("missing saved B");
-    expect(state.store.decrypt(savedB).serializeForNativeStore()).toBe(
+    expect(state.store.restoreCredential(savedB).serializeForNativeStore()).toBe(
       b2.serializeForNativeStore(),
     );
   });

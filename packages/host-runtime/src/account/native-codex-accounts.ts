@@ -427,7 +427,7 @@ export class NativeCodexAccounts implements CodexAccountControl {
             sameCodexCredentialIdentity(a.identity, latest.identity),
           );
           const account = newProfile(latest, existing?.accountId ?? pending.accountId);
-          account.payload = this.#store.encrypt(account, latest);
+          account.payload = this.#store.snapshotCredential(account, latest);
           pending.stage.candidate = account;
           pending.accountId = account.accountId;
           await this.#store.writeStage(pending.stage);
@@ -512,7 +512,7 @@ export class NativeCodexAccounts implements CodexAccountControl {
       if (candidate.accountId === before.currentAccountId) {
         await this.#transaction.execute(
           candidate.accountId,
-          this.#store.decrypt(candidate),
+          this.#store.restoreCredential(candidate),
           stage.operationId,
         );
       } else {

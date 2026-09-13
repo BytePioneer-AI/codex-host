@@ -71,18 +71,18 @@ describe("native Account boundary regressions", () => {
     await manager.close();
   });
 
-  it("does not generate a replacement key for an existing Vault; native fallback retains its file lease", async () => {
+  it("opens an existing plaintext Vault without any keyring access and retains the lease", async () => {
     const state = await createNativeAccountTestState();
     resources.push({ state });
     await state.store.close();
     const keys = { read: vi.fn(async () => null), create: vi.fn(async () => Buffer.alloc(32)) };
     const store = new NativeAccountStore({ home: state.store.home, files: state.files, keys });
-    await expect(store.open()).rejects.toThrow("keyring-unavailable");
+    await expect(store.open()).resolves.toBe(true);
+    expect(keys.read).not.toHaveBeenCalled();
     expect(keys.create).not.toHaveBeenCalled();
-    await expect(store.open({ allowLocked: true })).resolves.toBe(false);
     try {
       expect(() => store.assertFileOwnership()).not.toThrow();
-      expect(() => store.vault).toThrow("keyring-unavailable");
+      expect(store.vault.accounts).toEqual([]);
       await expect(state.files.lock(store.directory, ".codexhost-writer.lock")).rejects.toThrow();
     } finally {
       await store.close();
@@ -367,10 +367,6 @@ describe.skipIf(!launcher)(
         home: path.join(root, "home"),
         files,
         homeFiles: files.withReadOnlyDirectoryAccess(),
-        keys: {
-          read: async () => Buffer.alloc(32, 0x41),
-          create: async () => Buffer.alloc(32, 0x41),
-        },
       });
       try {
         await store.open();

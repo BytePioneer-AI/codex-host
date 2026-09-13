@@ -118,7 +118,7 @@ describe("native inactive-account quota combinations", () => {
     );
     const latestB = latest.accounts.find((account) => account.accountId === nativeAccountIds.b);
     if (!latestB) throw new Error("missing refreshed B");
-    expect(state.store.decrypt(latestB).managedOAuthCredential()).toMatchObject({
+    expect(state.store.restoreCredential(latestB).managedOAuthCredential()).toMatchObject({
       accessToken: b2.managedOAuthCredential().accessToken,
       refreshToken: b2.managedOAuthCredential().refreshToken,
     });

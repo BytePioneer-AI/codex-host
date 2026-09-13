@@ -60,7 +60,7 @@ export class NativeProfileTransaction {
       const target =
         accountId === null ? null : before.accounts.find((a) => a.accountId === accountId);
       if (target === undefined) throw new NativeAccountError("unknown-account");
-      const candidate = target ? (replacement ?? this.store.decrypt(target)) : null;
+      const candidate = target ? (replacement ?? this.store.restoreCredential(target)) : null;
       matchProfile(candidate, target);
       await this.runtime.preflight();
       matchProfile(await this.store.readCredentials(), profileCurrent(before));
@@ -76,8 +76,9 @@ export class NativeProfileTransaction {
       after.lastOperationId = operationId;
       const sourceAccount = profileCurrent(before);
       const sourcePayload =
-        sourceAccount && source ? this.store.encrypt(sourceAccount, source) : null;
-      const targetPayload = target && candidate ? this.store.encrypt(target, candidate) : null;
+        sourceAccount && source ? this.store.snapshotCredential(sourceAccount, source) : null;
+      const targetPayload =
+        target && candidate ? this.store.snapshotCredential(target, candidate) : null;
       for (const account of after.accounts) {
         if (account.accountId === accountId) account.payload = null;
         else if (account.accountId === before.currentAccountId) account.payload = sourcePayload;
@@ -191,14 +192,17 @@ export class NativeProfileTransaction {
     if (target && actual) {
       const saved = rollback.accounts.find((a) => a.accountId === target.accountId);
       if (!saved) throw new NativeAccountError("recovery-required");
-      saved.payload = this.store.encrypt(saved, actual);
+      saved.payload = this.store.snapshotCredential(saved, actual);
       journal.target = saved.payload;
     }
     journal.rollback = rollback;
     // Preserve rotated target bytes durably before touching the installed credential.
     await this.store.writeJournal(journal);
     const source = profileCurrent(journal.before);
-    await this.store.install(source ? this.store.decrypt(source, journal.source) : null, actual);
+    await this.store.install(
+      source ? this.store.restoreCredential(source, journal.source) : null,
+      actual,
+    );
     await this.#finishSource(journal);
   }
   async #finishSource(journal: NativeProfileJournal): Promise<void> {

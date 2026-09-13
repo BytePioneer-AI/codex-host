@@ -240,7 +240,7 @@ describe("native Codex Account manager combinations", () => {
     });
     const stage: NativeLoginStage = await state.store.createStage();
     const candidate = newProfile(b, nativeAccountIds.b);
-    candidate.payload = state.store.encrypt(candidate, b);
+    candidate.payload = state.store.snapshotCredential(candidate, b);
     stage.candidate = candidate;
     await state.store.writeStage(stage);
     const manager = new NativeCodexAccounts({

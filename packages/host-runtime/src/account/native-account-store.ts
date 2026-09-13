@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { migrateLegacyCredentials } from "./legacy-credential-migration.js";
 import { lstat, rm } from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
@@ -13,13 +14,13 @@ import {
   serializePrivate,
   sameVault,
   validateVault,
-  encryptCredential,
-  decryptCredential,
+  snapshotCredential,
+  restoreCredential,
   parseProfileAccount,
   type NativeProfileVault,
   type NativeProfileAccount,
   type NativeProfileJournal,
-  type EncryptedNativeCredential,
+  type StoredNativeCredential,
 } from "./native-profile-vault.js";
 
 export interface PrivateCredentialFiles {
@@ -56,6 +57,20 @@ export type NativeLoginStage = Omit<z.infer<typeof stageSchema>, "candidate"> & 
   candidate?: NativeProfileAccount;
 };
 
+function parseLoginStage(bytes: Buffer): NativeLoginStage {
+  try {
+    if (bytes.length > 5 * 1024 * 1024) throw new Error("large");
+    const parsed = stageSchema.parse(JSON.parse(bytes.toString("utf8")));
+    const { candidate, ...rest } = parsed;
+    if (candidate === undefined) return rest;
+    const account = parseProfileAccount(candidate);
+    if (!account.payload) throw new Error("candidate");
+    return { ...rest, candidate: account };
+  } catch {
+    throw new NativeAccountError("recovery-required");
+  }
+}
+
 /** Private persistence for one home. Only the account Module mutates Vault/Journal. */
 export class NativeAccountStore {
   readonly home: string;
@@ -63,10 +78,10 @@ export class NativeAccountStore {
   readonly homeId: string;
   readonly files: PrivateCredentialFiles;
   readonly #homeFiles: PrivateCredentialFiles;
-  readonly #keys: NativeAccountKeys;
+  readonly #keys: Pick<NativeAccountKeys, "read"> | undefined;
   readonly #onLeaseLost: () => void;
   #lease: NativePrivateFileLease | undefined;
-  #key: Buffer | undefined;
+  #ready = false;
   #vault: NativeProfileVault | undefined;
   #mutations: Promise<void> = Promise.resolve();
 
@@ -74,7 +89,8 @@ export class NativeAccountStore {
     home: string;
     files: PrivateCredentialFiles;
     homeFiles?: PrivateCredentialFiles;
-    keys: NativeAccountKeys;
+    /** Used only to convert existing encrypted files; never creates a key. */
+    keys?: Pick<NativeAccountKeys, "read">;
     onLeaseLost?: () => void;
   }) {
     this.home = path.resolve(input.home);
@@ -86,7 +102,7 @@ export class NativeAccountStore {
     this.#onLeaseLost = input.onLeaseLost ?? (() => {});
   }
 
-  /** Native fallback may keep file/process ownership without decrypting any profile. */
+  /** Legacy conversion is the only path that may read a keyring key. */
   async open(options: { allowLocked?: boolean } = {}): Promise<boolean> {
     if (this.#lease) throw new NativeAccountError("recovery-required");
     await this.#homeFiles.ensureDirectory(this.home);
@@ -96,27 +112,35 @@ export class NativeAccountStore {
     void lease.closed.then(() => {
       if (this.#lease !== lease) return;
       this.#lease = undefined;
-      this.#key?.fill(0);
-      this.#key = undefined;
+      this.#ready = false;
       this.#onLeaseLost();
     });
     try {
-      const bytes = await this.files.read(this.directory, "vault.json");
-      const pending = await this.files.read(this.directory, "transaction.json");
-      const stage = await this.files.read(this.directory, "login.json");
-      if (!bytes && (pending || stage)) throw new NativeAccountError("recovery-required");
-      if (bytes) this.#vault = parseVault(bytes, this.homeId);
       try {
-        this.#key = (await this.#keys.read(this.homeId)) ?? undefined;
-        if (!this.#key && !bytes) this.#key = await this.#keys.create(this.homeId);
-        if (!this.#key || this.#key.length !== 32) throw new Error("key");
-      } catch {
-        this.#key?.fill(0);
-        this.#key = undefined;
-        if (options.allowLocked) return false;
-        throw new NativeAccountError("keyring-unavailable");
+        await migrateLegacyCredentials({
+          files: this.files,
+          directory: this.directory,
+          homeId: this.homeId,
+          readLegacyKey: () => this.#keys?.read(this.homeId) ?? Promise.resolve(null),
+          parseStage: parseLoginStage,
+        });
+      } catch (error) {
+        if (
+          options.allowLocked &&
+          error instanceof NativeAccountError &&
+          error.code === "keyring-unavailable"
+        )
+          return false;
+        throw error;
       }
-      if (!bytes) {
+      const bytes = await this.files.read(this.directory, "vault.json");
+      if (bytes) {
+        try {
+          this.#vault = parseVault(bytes, this.homeId);
+        } finally {
+          bytes.fill(0);
+        }
+      } else {
         const initial: NativeProfileVault = {
           version: 1,
           homeId: this.homeId,
@@ -128,6 +152,7 @@ export class NativeAccountStore {
         await this.files.replace(this.directory, "vault.json", serializePrivate(initial), null);
         this.#vault = initial;
       }
+      this.#ready = true;
       return true;
     } catch (error) {
       await this.close();
@@ -138,12 +163,8 @@ export class NativeAccountStore {
     if (!this.#lease) throw new NativeAccountError("recovery-required");
   }
   assertOwnership(): void {
-    this.#ownedKey();
-  }
-  #ownedKey(): Buffer {
     this.assertFileOwnership();
-    if (!this.#key) throw new NativeAccountError("keyring-unavailable");
-    return this.#key;
+    if (!this.#ready) throw new NativeAccountError("recovery-required");
   }
   get vault(): NativeProfileVault {
     this.assertOwnership();
@@ -195,16 +216,20 @@ export class NativeAccountStore {
     this.#mutations = pending.catch(() => undefined);
     return pending;
   }
-  encrypt(
+  snapshotCredential(
     account: NativeProfileAccount,
     credential: NativeCodexCredentials,
-  ): EncryptedNativeCredential {
-    return encryptCredential(this.#ownedKey(), this.homeId, account, credential);
+  ): StoredNativeCredential {
+    this.assertOwnership();
+    return snapshotCredential(account, credential);
   }
-  decrypt(account: NativeProfileAccount, payload = account.payload): NativeCodexCredentials {
-    const key = this.#ownedKey();
+  restoreCredential(
+    account: NativeProfileAccount,
+    payload = account.payload,
+  ): NativeCodexCredentials {
+    this.assertOwnership();
     if (!payload) throw new NativeAccountError("recovery-required");
-    return decryptCredential(key, this.homeId, account, payload);
+    return restoreCredential(account, payload);
   }
   async readCredentials(home = this.home): Promise<NativeCodexCredentials | null> {
     this.assertOwnership();
@@ -276,14 +301,9 @@ export class NativeAccountStore {
     const bytes = await this.files.read(this.directory, "login.json");
     if (!bytes) return null;
     try {
-      const parsed = stageSchema.parse(JSON.parse(bytes.toString("utf8")));
-      const { candidate, ...rest } = parsed;
-      if (candidate === undefined) return rest;
-      const account = parseProfileAccount(candidate);
-      if (!account.payload) throw new Error("candidate");
-      return { ...rest, candidate: account };
-    } catch {
-      throw new NativeAccountError("recovery-required");
+      return parseLoginStage(bytes);
+    } finally {
+      bytes.fill(0);
     }
   }
   async writeStage(stage: NativeLoginStage): Promise<void> {
@@ -366,16 +386,18 @@ export class NativeAccountStore {
     await this.mutate((next) => {
       if (next.currentAccountId === accountId) throw new NativeAccountError("credential-conflict");
       const account = next.accounts.find((a) => a.accountId === accountId);
-      if (!account || credentialDigest(this.decrypt(account)) !== credentialDigest(expected))
+      if (
+        !account ||
+        credentialDigest(this.restoreCredential(account)) !== credentialDigest(expected)
+      )
         throw new NativeAccountError("credential-conflict");
-      account.payload = this.encrypt(account, target);
+      account.payload = this.snapshotCredential(account, target);
     });
   }
   async close(): Promise<void> {
     const lease = this.#lease;
     this.#lease = undefined;
-    this.#key?.fill(0);
-    this.#key = undefined;
+    this.#ready = false;
     if (lease) await lease.release();
   }
 }

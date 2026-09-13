@@ -609,17 +609,17 @@ describe("local native Account composition", () => {
     },
   );
 
-  it("retains native single-account mode and the home lease when the keyring is unavailable", async () => {
+  it("initializes normal account management without an available keyring", async () => {
     const f = await fixture({ keyAvailable: false });
     const prepared = await prepareLocalCodex(f.input());
-    expect(prepared.allowNativeAuthPassthrough).toBe(true);
-    expect(prepared.accountControl.snapshot().capabilities.reason).toBe("keyring-unavailable");
+    expect(prepared.allowNativeAuthPassthrough).toBe(false);
+    expect(prepared.accountControl.snapshot().capabilities.manage).toBe(true);
     expect(f.files.activeLeases).toBe(1);
-    expect(f.files.replace).not.toHaveBeenCalled();
 
     await prepared.officialRuntimeScope.start();
     await prepared.close();
-    expect(native.current().events).toEqual(["backend-start", "backend-stop", "lease-release"]);
+    expect(native.current().events).toContain("backend-stop");
+    expect(native.current().events.at(-1)).toBe("lease-release");
     expect(f.files.activeLeases).toBe(0);
   });
 
@@ -644,8 +644,8 @@ describe("local native Account composition", () => {
     const f = await fixture({ keyAvailable: false, reconcileError: new Error("writer active") });
     const prepared = await prepareLocalCodex(f.input());
     expect(prepared.allowNativeAuthPassthrough).toBe(false);
-    expect(prepared.accountControl.snapshot().capabilities.reason).toBe("recovery-required");
-    expect(native.current().events).toEqual(["lease-release"]);
+    expect(prepared.officialRuntimeScope.gate.phase).toBe("unavailable");
+    expect(native.current().events).not.toContain("backend-start");
     await prepared.close();
   });
 

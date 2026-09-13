@@ -335,7 +335,7 @@ export async function createNativeAccountTestState(
           account.payload =
             input.current?.accountId === entry.accountId
               ? null
-              : store.encrypt(account, entry.credential);
+              : store.snapshotCredential(account, entry.credential);
           return account;
         });
         next.currentAccountId = input.current?.accountId ?? null;

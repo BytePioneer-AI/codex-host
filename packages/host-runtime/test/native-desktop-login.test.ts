@@ -92,7 +92,7 @@ describe("native Desktop login uses the one Account transaction", () => {
       );
       if (!savedA) throw new Error("Missing saved synthetic A");
       expect(
-        state.store.decrypt(savedA).serializeForNativeStore() === latestA.serializeForNativeStore(),
+        state.store.restoreCredential(savedA).serializeForNativeStore() === latestA.serializeForNativeStore(),
       ).toBe(true);
       expect(await state.store.readStage()).toBeNull();
       expect(await state.store.readJournal()).toBeNull();

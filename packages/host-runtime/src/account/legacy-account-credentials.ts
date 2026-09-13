@@ -48,7 +48,7 @@ export async function importLegacyAccountCredentials(input: {
     )
       continue;
     const account = newProfile(credential);
-    account.payload = store.encrypt(account, credential);
+    account.payload = store.snapshotCredential(account, credential);
     next.accounts.push(account);
   }
   // Refreshing an old CLI must not race credential capture; never overwrite a saved

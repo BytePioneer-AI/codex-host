@@ -1,3 +1,5 @@
+import { retainRendererHostResponses } from "./renderer-host-response-ownership.js";
+
 export interface RendererDebugger {
   isAttached(): boolean;
   attach(version: string): void;
@@ -19,6 +21,7 @@ export interface DraftPrewarmPolicyTarget {
 }
 
 export interface RendererHostRequestBridge {
+  addRequestLifecycleListener?(listener: (event: unknown) => void): () => void;
   sendRequest(method: string, parameters: unknown, options?: unknown): unknown;
   prewarmThreadStart(parameters: unknown, options?: unknown): unknown;
   enqueueRequest(
@@ -47,6 +50,8 @@ export function installDraftPrewarmPolicyBridge(
   hostId: string,
   target: DraftPrewarmPolicyTarget,
   prewarmedThreadManager: RendererPrewarmedThreadManager,
+  isCurrentManager?: () => boolean,
+  retainResponses: typeof retainRendererHostResponses = retainRendererHostResponses,
 ): { state: "ready"; reason: "owned-request-bridge" } {
   const existing = target.__codexhostDraftPrewarmPolicyV1 as
     | {
@@ -55,13 +60,14 @@ export function installDraftPrewarmPolicyBridge(
           candidate: RendererHostRequestBridge,
           candidateHostId: string,
           candidatePrewarmedThreadManager: RendererPrewarmedThreadManager,
+          requiresCurrentManager: boolean,
         ) => boolean;
         dispose?: () => void;
       }
     | undefined;
   if (
-    existing?.owns?.length === 4 &&
-    existing.owns(manager, bridge, hostId, prewarmedThreadManager) === true
+    existing?.owns?.length === 5 &&
+    existing.owns(manager, bridge, hostId, prewarmedThreadManager, !!isCurrentManager) === true
   ) {
     return { state: "ready", reason: "owned-request-bridge" };
   }
@@ -72,10 +78,10 @@ export function installDraftPrewarmPolicyBridge(
   const originalOnNotification = manager.onNotification;
   const originalDispatchAppServerResponse = manager.dispatchAppServerResponse;
   let selectedModel: string | null = null;
-  let selectedCodexAccountId: string | null = null;
   const isRecord = (value: unknown): value is Record<string, unknown> =>
     typeof value === "object" && value !== null && !Array.isArray(value);
   const isRemoteControlHost = hostId.startsWith("remote-control:");
+  const retireResponses = isRemoteControlHost ? () => {} : retainResponses(bridge, hostId, target);
   const knownExternalThreadIds = new Set<string>();
   const knownOfficialThreadIds = new Set<string>();
   const threadOwnershipResolutions = new Map<string, Promise<"external" | "codex">>();
@@ -488,8 +494,8 @@ export function installDraftPrewarmPolicyBridge(
     if (method === "thread/start") {
       return (
         isRecord(parameters) &&
-        ((typeof parameters.model === "string" && parameters.model.startsWith("codexhost/")) ||
-          typeof parameters.__codexhostAccountId === "string")
+        typeof parameters.model === "string" &&
+        parameters.model.startsWith("codexhost/")
       );
     }
     const threadId = threadIdFromParameters(parameters);
@@ -504,13 +510,10 @@ export function installDraftPrewarmPolicyBridge(
     if (!isRecord(parameters) || parameters.ephemeral === true) {
       return parameters;
     }
-    const routed = {
+    return {
       ...parameters,
       ...(selectedModel === null ? {} : { model: selectedModel }),
-      ...(selectedCodexAccountId === null ? {} : { __codexhostAccountId: selectedCodexAccountId }),
     };
-    selectedCodexAccountId = null;
-    return routed;
   };
   const routedSend = (method: string, parameters: unknown, options?: unknown): unknown => {
     const routedParameters = method === "thread/start" ? routeThreadStart(parameters) : parameters;
@@ -591,15 +594,19 @@ export function installDraftPrewarmPolicyBridge(
       candidate: RendererHostRequestBridge,
       candidateHostId: string,
       candidatePrewarmedThreadManager: RendererPrewarmedThreadManager,
+      requiresCurrentManager: boolean,
     ): boolean {
       return (
         candidateManager === manager &&
         candidate === bridge &&
         candidateHostId === hostId &&
-        candidatePrewarmedThreadManager === prewarmedThreadManager
+        candidatePrewarmedThreadManager === prewarmedThreadManager &&
+        requiresCurrentManager === !!isCurrentManager
       );
     },
     requestTarget(): RendererHostRequestManager {
+      if (isCurrentManager && !isCurrentManager())
+        throw new Error("Renderer request manager is retired");
       return manager;
     },
     select(model: string | null): boolean {
@@ -610,19 +617,12 @@ export function installDraftPrewarmPolicyBridge(
       selectedModel = model;
       return true;
     },
-    selectAccount(accountId: string | null): boolean {
-      if (accountId !== null && !/^[A-Za-z0-9._~-]+$/u.test(accountId)) {
-        throw new Error("Draft Codex Account ID must be filename-safe");
-      }
-      if (selectedCodexAccountId === accountId) return false;
-      selectedCodexAccountId = accountId;
-      return true;
-    },
     clear(): Promise<void> {
       prewarmedThreadManager.discardAllPrewarmedThreads();
       return Promise.resolve();
     },
     dispose(): void {
+      retireResponses();
       if (bridge.sendRequest === routedSend) bridge.sendRequest = originalSend;
       if (bridge.prewarmThreadStart === routedPrewarm) {
         bridge.prewarmThreadStart = originalPrewarm;
@@ -652,7 +652,6 @@ export function installDraftPrewarmPolicyBridge(
       knownOfficialThreadIds.clear();
       threadOwnershipResolutions.clear();
       selectedModel = null;
-      selectedCodexAccountId = null;
     },
   });
   Object.defineProperty(target, "__codexhostDraftPrewarmPolicyV1", {

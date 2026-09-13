@@ -1,10 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { isNativeModelControlCandidate } from "../src/renderer-composer-dom.js";
-import {
-  codexAccountDisplayName,
-  codexAccountPresentationSignature,
-} from "../src/renderer-codex-account-options.js";
+import { codexAccountDisplayName } from "../src/renderer-codex-account-options.js";
 import {
   rendererAgentMenuPlacement,
   rendererAgentPickerTooltip,
@@ -37,9 +34,6 @@ describe("Renderer Agent picker presentation", () => {
       accountId: "reviewer",
       label: "Reviewer",
       email: "reviewer@example.com",
-      codexHome: "/tmp/reviewer",
-      active: true,
-      isDefault: false,
     };
     expect(codexAccountDisplayName(account)).toEqual({
       local: "reviewer",
@@ -53,19 +47,6 @@ describe("Renderer Agent picker presentation", () => {
     });
   });
 
-  it("refreshes Account presentation when live email metadata arrives", () => {
-    const account = {
-      accountId: "reviewer",
-      label: "Reviewer",
-      codexHome: "/tmp/reviewer",
-      active: true,
-      isDefault: false,
-    };
-    expect(codexAccountPresentationSignature([account])).not.toBe(
-      codexAccountPresentationSignature([{ ...account, email: "reviewer@example.com" }]),
-    );
-  });
-
   it("includes the active Codex Account in the locked hover detail", () => {
     expect(
       rendererAgentPickerTooltip(
@@ -74,9 +55,6 @@ describe("Renderer Agent picker presentation", () => {
           accountId: "reviewer",
           label: "Reviewer",
           email: "reviewer@example.com",
-          codexHome: "/tmp/reviewer",
-          active: true,
-          isDefault: false,
         },
       ),
     ).toBe("Agent: Codex · reviewer@example.com (locked)");
@@ -103,12 +81,12 @@ describe("Renderer Agent picker presentation", () => {
     });
   });
 
-  it("keeps the Provider picker enabled when Codex has multiple Accounts", () => {
+  it("does not turn multiple Codex Accounts into Harness picker entries", () => {
     expect(
-      rendererAgentPickerView({ agent: "codex", phase: "draft" }, "ready", false, ["codex"], {}, 2),
+      rendererAgentPickerView({ agent: "codex", phase: "draft" }, "ready", false, ["codex"]),
     ).toMatchObject({
       label: "Codex",
-      triggerDisabled: false,
+      triggerDisabled: true,
       optionDisabled: { codex: false },
     });
   });

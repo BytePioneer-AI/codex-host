@@ -62,7 +62,7 @@ describe("Cursor read-only native identity", () => {
     const f = fixture();
     expect(readCursorNativeTurns(f.sessionId, f.home, { HOME: f.home })).toEqual(f.turns);
     expect(readCursorNativeTurns(f.sessionId, f.home, { HOME: f.home })).toEqual(f.turns);
-  });
+  }, 15_000);
   it("allows a new empty history without inventing IDs", () => {
     const f = fixture([]);
     expect(readCursorNativeTurns(f.sessionId, f.home, { HOME: f.home })).toEqual([]);

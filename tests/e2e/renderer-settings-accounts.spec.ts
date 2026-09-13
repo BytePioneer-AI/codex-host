@@ -17,10 +17,20 @@ const { outputFiles } = await build({
       globalThis.setupAccounts = ({ locale = "zh-CN", theme = "dark", scenario = "normal" } = {}) => {
         document.documentElement.style.colorScheme = theme;
         const accounts = [
-          { accountId:"native",label:"Native",email:"zhaobin_jiang@163.com",planType:"pro",codexHome:"/private/native",active:true,isDefault:true },
-          { accountId:"team",label:"Team",email:"chongwen623@gmail.com",planType:"team",codexHome:"/private/team",active:false,isDefault:false },
-          { accountId:"pending",label:"Pending login",codexHome:"/private/pending",active:false,isDefault:false },
+          { accountId:"native",label:"Native",email:"zhaobin_jiang@163.com",planType:"pro" },
+          { accountId:"team",label:"Team",email:"chongwen623@gmail.com",planType:"team" },
+          { accountId:"pending",label:"Pending login" },
         ];
+        let currentAccountId = "native";
+        let revision = 1;
+        const accountSnapshot = (selected = accounts) => ({
+          version:2,currentAccountId,phase:"ready",revision,instanceId:"settings-host",
+          legacyHistoryPreserved: scenario === "legacy-adopted",
+          capabilities: scenario === "legacy"
+            ? {manage:false,switch:false,login:false,delete:false,logout:false,recover:false,reason:"migration-required"}
+            : {manage:true,switch:true,login:true,delete:true,logout:true,recover:true},
+          accounts:scenario === "legacy" ? selected.slice(0,1) : selected,
+        });
         const snapshots = {
           native: { usedPercent:9,periodType:"seven_day",resetsAt:"2026-09-13T13:16:00Z",resetCredits:{availableCount:2,nextExpiresAt:"2026-10-04T01:54:00Z",expiresAt:["2026-10-04T01:54:00Z","2026-10-08T01:54:00Z"]} },
           team: { usedPercent:91,periodType:"five_hour",resetsAt:"2026-09-10T08:34:00Z",productUsage:[{product:"7-day window",usagePercent:0,resetsAt:"2026-09-13T13:44:00Z"},{product:"GPT-5.3-Codex-Spark weekly limit",usagePercent:25}],resetCredits:{availableCount:1} },
@@ -32,63 +42,85 @@ const { outputFiles } = await build({
         ];
         let failUsage = scenario === "error";
         let loginListener;
+        let accountListener;
         let resolveLive;
         let resolveNative;
         let resolveTeam;
         let resolveReset;
         let resolveActivation;
+        let resolveLoginStart;
         const activationCompletion = new Promise(resolve => { resolveActivation = resolve; });
+        const loginStart = new Promise(resolve => { resolveLoginStart = resolve; });
         const teamUsage = new Promise(resolve => { resolveTeam = resolve; });
         const resetCompletion = new Promise(resolve => { resolveReset = resolve; });
         const live = new Promise(resolve => { resolveLive = resolve; });
         const native = new Promise(resolve => { resolveNative = resolve; });
-        const calls = { inspect:[],deleted:[],reset:[],activate:[],login:[] };
+        const calls = { inspect:[],deleted:[],reset:[],activate:[],login:[],recover:[] };
         const client = {
           ...(scenario === "external" ? {listHarnessAccounts: async () => ({accounts:harnessAccounts})} : {}),
-          listCodexAccounts: async () => ({accounts:scenario === "late" ? accounts.slice(0,1) : accounts}),
-          refreshCodexAccounts: async () => scenario === "late" ? live : ({accounts}),
+          listCodexAccounts: async () => accountSnapshot(scenario === "late" ? accounts.slice(0,1) : accounts),
+          refreshCodexAccounts: async () => scenario === "late" ? live : accountSnapshot(),
           inspectCodexAccountUsage: async ({accountId}) => {
             calls.inspect.push(accountId);
             if ((scenario === "late" || scenario === "slow") && accountId === "native") return native;
             if (scenario === "slow-team" && accountId === "team") return teamUsage;
             if (accountId === "team" && failUsage) throw new Error("offline");
-            return {accountId,usage:null,accountCredits:snapshots[accountId]};
+            return {accountId,usage:null,accountCredits:snapshots[accountId],freshness:"cached",observedAt:"2026-09-10T08:20:00.000Z"};
           },
-          activateCodexAccount: async ({accountId}) => {
+          switchCodexAccount: async ({accountId}) => {
             calls.activate.push(accountId);
+            if (scenario === "busy-retry") {
+              if (calls.activate.length === 1) throw new Error("Codex is busy");
+              await activationCompletion;
+            }
             if (scenario.startsWith("slow-activation")) {
               await activationCompletion;
               if (scenario === "slow-activation-error") throw new Error("Activation failed");
             }
-            accounts.forEach(account => account.active = account.accountId === accountId);
-            return {account:accounts.find(account => account.accountId === accountId)};
+            currentAccountId = accountId;
+            revision += 1;
+            return {currentAccountId:accountId,phase:"ready",revision};
           },
           deleteCodexAccount: async ({accountId}) => {
             calls.deleted.push(accountId);
+            const index=accounts.findIndex(account=>account.accountId===accountId);
+            if(index>=0) accounts.splice(index,1);
             return {deletedAccountId:accountId};
           },
+          logoutCodexAccount: async () => { currentAccountId=null; revision+=1; return {currentAccountId:null,phase:"ready",revision}; },
+          recoverCodexAccounts: async () => { calls.recover.push("recover"); revision+=1; return accountSnapshot(); },
           consumeCodexAccountResetCredit: async input => {
             calls.reset.push(input);
             if (scenario === "slow-reset") await resetCompletion;
             return {accountId:input.accountId,outcome:"reset",accountCredits:{...snapshots[input.accountId],usedPercent:0,resetCredits:{availableCount:1}}};
           },
-          createCodexAccount: async () => ({account:{accountId:"new",label:"New account",codexHome:"/private/new",active:false,isDefault:false}}),
-          startCodexAccountLogin: async ({accountId}) => {
+          startCodexAccountLogin: async ({accountId}={}) => {
+            accountId = accountId ?? "new";
             calls.login.push(accountId);
+            if (scenario === "early-login") return loginStart;
             return {accountId,loginId:"login-new",verificationUrl:"https://example.com/device",userCode:"ABCD-EFGH"};
           },
           cancelCodexAccountLogin: async () => ({cancelled:true}),
           subscribeCodexAccountLogin: listener => { loginListener=listener; return () => { loginListener=undefined; }; },
+          subscribeCodexAccounts: listener => { accountListener=listener; return () => { accountListener=undefined; }; },
         };
         globalThis.accountsFixture = {
           calls,
           recover: () => { failUsage=false; },
+          requireAccountRecovery: (ready = false) => accountListener?.({
+            ...accountSnapshot(),phase:ready ? "ready" : "unavailable",cleanupRequired:true,
+            capabilities:{...accountSnapshot().capabilities,reason:"recovery-required"},
+          }),
           clearHarnessAccounts: () => { harnessAccounts=[]; },
-          deliverLive: () => resolveLive({accounts}),
-          deliverNative: () => resolveNative({accountId:"native",usage:null,accountCredits:snapshots.native}),
-          deliverTeam: () => resolveTeam({accountId:"team",usage:null,accountCredits:snapshots.team}),
+          deliverLive: () => resolveLive(accountSnapshot()),
+          deliverNative: () => resolveNative({accountId:"native",usage:null,accountCredits:snapshots.native,freshness:"live",observedAt:"2026-09-10T08:20:00.000Z"}),
+          deliverTeam: () => resolveTeam({accountId:"team",usage:null,accountCredits:snapshots.team,freshness:"live",observedAt:"2026-09-10T08:20:00.000Z"}),
           completeReset: () => resolveReset(),
           completeActivation: () => resolveActivation(),
+          completeEarlyLogin: () => {
+            loginListener?.({accountId:"deduplicated",loginId:"login-new",success:true,saved:true,error:null});
+            resolveLoginStart({accountId:"new",loginId:"login-new",verificationUrl:"https://example.com/device",userCode:"SHOULD-NOT-SHOW"});
+          },
         };
         const messages=rendererSettingsMessages(locale);
         const registry=createRendererSettingsPageRegistry([createAccountsSettingsPage(messages,()=>client)]);
@@ -133,6 +165,33 @@ async function calls(page: Page, key: string) {
 const nativeRow = '[data-account-id="native"]';
 const teamRow = '[data-account-id="team"]';
 
+test("explains native legacy compatibility without enabling managed account actions", async ({
+  page,
+}) => {
+  await setup(page, { locale: "en", scenario: "legacy" });
+  await expect(page.locator(".settings-account-status")).toContainText(
+    "Native compatibility mode: Codex uses the existing official home.",
+  );
+  await expect(page.locator(".settings-account-status")).toContainText(
+    "Other account homes and their history have not been merged",
+  );
+  await expect(page.getByRole("button", { name: "Add Codex account", exact: true })).toBeDisabled();
+  expect(await calls(page, "login")).toEqual([]);
+  expect(await calls(page, "activate")).toEqual([]);
+});
+
+test("shows adopted accounts without explanatory banners and allows switching", async ({
+  page,
+}) => {
+  await setup(page, { scenario: "legacy-adopted" });
+  await expect(page.locator(".settings-page-description")).toHaveCount(0);
+  await expect(page.locator(".settings-account-status")).toBeEmpty();
+  await page.locator(teamRow).getByRole("button", { name: "切换", exact: true }).click();
+  await expect(page.locator(teamRow)).toContainText("当前");
+  expect(await calls(page, "activate")).toEqual(["team"]);
+  await expect(page.locator(".settings-account-status")).toBeEmpty();
+});
+
 async function openAccountActions(page: Page, row = teamRow) {
   await page.locator(`${row} [data-account-focus$=":more"]`).click();
   return page.locator(`${row} .settings-account-dialog[open]`);
@@ -155,7 +214,7 @@ test("shows detected Harness quota read-only and removes rows when authenticatio
   ).toHaveCount(1);
   await expect(section).not.toContainText("请在原生 Agent 中管理登录");
   await expect(
-    nativeAccounts.getByRole("button", { name: /设为默认|删除|使用重置|登录$/ }),
+    nativeAccounts.getByRole("button", { name: /切换|删除|使用重置|登录$/ }),
   ).toHaveCount(0);
   await expect(
     section.locator('[data-harness-id="antigravity"] .settings-account-metadata'),
@@ -241,7 +300,7 @@ test("uses four columns and only reported windows, with equal-width bars and no 
   await expect(
     page.locator(`${nativeRow} .settings-account-usage-cell`).nth(1).getByRole("meter"),
   ).toHaveAttribute("aria-valuenow", "91");
-  await expect(page.locator(`${nativeRow} .settings-account-active`)).toHaveText("Codex 默认");
+  await expect(page.locator(`${nativeRow} .settings-account-active`)).toHaveText("当前");
   await expect(page.locator(`${nativeRow} .settings-account-email`)).toHaveText(
     "zhaobin_jiang@163.com",
   );
@@ -254,9 +313,10 @@ test("uses four columns and only reported windows, with equal-width bars and no 
   await expect(page.locator(`${nativeRow} .settings-account-row__mark svg`)).toHaveCount(1);
   await expect(page.locator(`${nativeRow} .settings-account-row__mark img`)).toHaveCount(0);
   await expect(page.getByRole("searchbox")).toHaveCSS("border-top-width", "0px");
-  await expect(
-    page.locator(teamRow).getByRole("button", { name: "设为默认", exact: true }),
-  ).toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
+  await expect(page.locator(teamRow).getByRole("button", { name: "切换", exact: true })).toHaveCSS(
+    "background-color",
+    "rgba(0, 0, 0, 0)",
+  );
   await expect(page.locator(".settings-account-count")).toHaveText("账号3");
   await expect(
     page.getByText(
@@ -299,7 +359,7 @@ test("uses four columns and only reported windows, with equal-width bars and no 
   ).toHaveClass(/--hot/);
   await expect(page.locator(`${nativeRow} .settings-account-active`)).toHaveCount(1);
   await expect(
-    page.locator(nativeRow).getByRole("button", { name: "设为默认", exact: true }),
+    page.locator(nativeRow).getByRole("button", { name: "切换", exact: true }),
   ).toHaveCount(0);
   await expect(page.locator(`${nativeRow} .settings-account-reset-summary`)).toContainText(
     "重置卡",
@@ -338,38 +398,55 @@ test("expands reset details in-place, confirms consumption and preserves expande
   await expect(page.locator(`${nativeRow} .settings-account-reset-summary`)).toContainText("1 张");
 });
 
-test("keeps native-home deletion protection separate from the active account and confirms deletion", async ({
+test("protects only the current Account from deletion and confirms deleting a non-current Account", async ({
   page,
 }) => {
   await setup(page);
   await expect(page.locator(`${nativeRow} .settings-account-delete`)).toHaveCount(0);
-  await page.locator(teamRow).getByRole("button", { name: "设为默认", exact: true }).click();
+  await page.locator(teamRow).getByRole("button", { name: "切换", exact: true }).click();
   await expect(page.locator(`${teamRow} .settings-account-active`)).toHaveCount(1);
-  await expect(page.locator(`${nativeRow} .settings-account-delete`)).toHaveCount(0);
-  const remove = page.getByRole("button", { name: "删除: chongwen623@gmail.com", exact: true });
-  await openAccountActions(page);
+  await expect(page.locator(`${teamRow} .settings-account-delete`)).toHaveCount(0);
+  const remove = page.getByRole("button", { name: "删除: zhaobin_jiang@163.com", exact: true });
+  await openAccountActions(page, nativeRow);
   page.once("dialog", (dialog) => dialog.dismiss());
   await remove.click();
   expect(await calls(page, "deleted")).toHaveLength(0);
-  await openAccountActions(page);
+  await openAccountActions(page, nativeRow);
   page.once("dialog", (dialog) => dialog.accept());
   await remove.click();
-  await expect(page.locator(teamRow)).toHaveCount(0);
-  expect(await calls(page, "deleted")).toEqual(["team"]);
-  await expect(page.locator(`${nativeRow} .settings-account-active`)).toHaveCount(1);
+  await expect(page.locator(nativeRow)).toHaveCount(0);
+  expect(await calls(page, "deleted")).toEqual(["native"]);
+  await expect(page.locator(`${teamRow} .settings-account-active`)).toHaveCount(1);
   await expect(page.getByRole("searchbox")).toBeFocused();
+});
+
+test("clears a busy rejection only when the user explicitly retries the switch", async ({
+  page,
+}) => {
+  await setup(page, { scenario: "busy-retry" });
+  const activate = page.locator(teamRow).getByRole("button", { name: "切换", exact: true });
+  await activate.click();
+  await expect(activate).toBeEnabled();
+  await expect(page.locator(".settings-account-status")).toHaveText("Codex is busy");
+  expect(await calls(page, "activate")).toEqual(["team"]);
+  await activate.click();
+  await expect(activate).toBeDisabled();
+  await expect(page.locator(".settings-account-status")).not.toContainText("Codex is busy");
+  expect(await calls(page, "activate")).toEqual(["team", "team"]);
+  await page.evaluate(() => Reflect.get(globalThis, "accountsFixture").completeActivation());
+  await expect(page.locator(`${teamRow} .settings-account-active`)).toHaveText("当前");
 });
 
 for (const input of ["mouse", "keyboard"] as const) {
   for (const outcome of ["success", "error"] as const) {
-    test(`keeps focus on the account row during default activation (${input}/${outcome})`, async ({
+    test(`keeps focus on the account row during global switching (${input}/${outcome})`, async ({
       page,
     }) => {
       await setup(page, {
         scenario: outcome === "error" ? "slow-activation-error" : "slow-activation",
       });
       const row = page.locator(teamRow);
-      const activate = row.getByRole("button", { name: "设为默认", exact: true });
+      const activate = row.getByRole("button", { name: "切换", exact: true });
       if (input === "mouse") await activate.click();
       else {
         await activate.focus();
@@ -380,7 +457,7 @@ for (const input of ["mouse", "keyboard"] as const) {
       await expect(row).toBeFocused();
       await page.evaluate(() => Reflect.get(globalThis, "accountsFixture").completeActivation());
       if (outcome === "success") {
-        await expect(row.locator(".settings-account-active")).toHaveText("Codex 默认");
+        await expect(row.locator(".settings-account-active")).toHaveText("当前");
         await expect(activate).toHaveCount(0);
       } else {
         await expect(activate).toBeEnabled();
@@ -394,7 +471,7 @@ for (const input of ["mouse", "keyboard"] as const) {
   }
 }
 
-test("shows load failures with retry, and refreshes only signed-in accounts", async ({ page }) => {
+test("shows load failures with retry, and refreshes every saved Account", async ({ page }) => {
   await setup(page, { scenario: "error" });
   await expect(page.locator(teamRow)).toContainText("额度读取失败");
   await expect(page.locator(`${teamRow} [role="meter"]`)).toHaveCount(0);
@@ -404,7 +481,7 @@ test("shows load failures with retry, and refreshes only signed-in accounts", as
   await page.getByRole("button", { name: "刷新额度", exact: true }).click();
   await expect
     .poll(() => calls(page, "inspect"))
-    .toEqual(["native", "team", "team", "native", "team"]);
+    .toEqual(["native", "team", "pending", "team", "native", "team", "pending"]);
   await expect(page.getByRole("button", { name: "刷新额度", exact: true })).toBeEnabled();
 });
 
@@ -435,6 +512,47 @@ test("keeps add, native device login and cancellation available", async ({ page 
   await expect(page.locator(".settings-account-verification")).toHaveCount(0);
   await expect(page.getByRole("button", { name: "添加 Codex 账号", exact: true })).toBeEnabled();
 });
+
+test("reconciles login completion delivered before the start response", async ({ page }) => {
+  await setup(page, { scenario: "early-login" });
+  await page.getByRole("button", { name: "添加 Codex 账号", exact: true }).click();
+  await expect.poll(() => calls(page, "login")).toEqual(["new"]);
+  await page.evaluate(() => Reflect.get(globalThis, "accountsFixture").completeEarlyLogin());
+  await expect(page.locator(".settings-account-status")).toHaveText("登录成功。");
+  await expect(page.locator(".settings-account-verification")).toHaveCount(0);
+  await expect(page.getByText("SHOULD-NOT-SHOW", { exact: true })).toHaveCount(0);
+});
+
+for (const scenario of [
+  { locale: "zh-CN", ready: false, message: "账号已保存，Codex 尚未就绪。", button: "恢复" },
+  { locale: "zh-CN", ready: true, message: "账号已保存，临时文件清理未完成。", button: "重试清理" },
+  {
+    locale: "en",
+    ready: false,
+    message: "Account saved. Codex is not ready yet.",
+    button: "Recover",
+  },
+  {
+    locale: "en",
+    ready: true,
+    message: "Account saved. Temporary file cleanup is incomplete.",
+    button: "Retry cleanup",
+  },
+]) {
+  test(`distinguishes saved Account recovery from cleanup (${scenario.locale}, ready=${scenario.ready})`, async ({
+    page,
+  }) => {
+    await setup(page, { locale: scenario.locale });
+    await page.evaluate(
+      (ready) => Reflect.get(globalThis, "accountsFixture").requireAccountRecovery(ready),
+      scenario.ready,
+    );
+    await expect(page.locator(".settings-account-status")).toContainText(scenario.message);
+    await page.getByRole("button", { name: scenario.button, exact: true }).click();
+    await expect.poll(() => calls(page, "recover")).toEqual(["recover"]);
+    await expect(page.locator(".settings-account-status")).not.toContainText(scenario.message);
+  });
+}
 
 test("renders completed accounts without waiting for a slower window request", async ({ page }) => {
   await setup(page, { scenario: "slow" });
@@ -467,16 +585,16 @@ test("does not let another mutation supersede an in-flight reset", async ({ page
   await page.getByRole("button", { name: "使用重置", exact: true }).click();
   await expect.poll(() => calls(page, "reset")).toHaveLength(1);
   await expect(
-    page.locator(teamRow).getByRole("button", { name: "设为默认", exact: true }),
+    page.locator(teamRow).getByRole("button", { name: "切换", exact: true }),
   ).toBeDisabled();
   await expect(page.locator(`${teamRow} .settings-account-delete`)).toBeDisabled();
   await expect(page.getByRole("button", { name: "添加 Codex 账号", exact: true })).toBeDisabled();
   await page.locator(`${teamRow} .settings-account-reset-summary`).click();
-  await expect(page.getByRole("button", { name: "使用重置", exact: true })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "使用重置", exact: true })).toHaveCount(0);
   await page.evaluate(() => Reflect.get(globalThis, "accountsFixture").completeReset());
   await expect(page.locator(`${nativeRow} [role="meter"]`)).toHaveAttribute("aria-valuenow", "100");
   await expect(
-    page.locator(teamRow).getByRole("button", { name: "设为默认", exact: true }),
+    page.locator(teamRow).getByRole("button", { name: "切换", exact: true }),
   ).toBeEnabled();
 });
 
@@ -520,7 +638,7 @@ test("stops the local countdown clock when settings are disposed", async ({ page
   expect(await countdown?.evaluate((node) => node.textContent)).toBe("14m");
 });
 
-test("keeps row order stable across defaults, display mode and refresh, and searches Agent or plan", async ({
+test("keeps row order stable across global switches, display mode and refresh, and searches Agent or plan", async ({
   page,
 }) => {
   await setup(page, { scenario: "external" });
@@ -534,7 +652,7 @@ test("keeps row order stable across defaults, display mode and refresh, and sear
   await expect(rows).toHaveCount(6);
   const initial = await order();
   expect(initial).toEqual(["native", "team", "pending", "antigravity", "claude-code", "grok"]);
-  await page.locator(teamRow).getByRole("button", { name: "设为默认", exact: true }).click();
+  await page.locator(teamRow).getByRole("button", { name: "切换", exact: true }).click();
   await page.getByRole("button", { name: "已用", exact: true }).click();
   await expect(page.locator(".settings-account-table th")).toHaveText([
     "账号",
@@ -566,10 +684,11 @@ test("supports keyboard account details and per-account refresh without exposing
   await page.keyboard.press("Enter");
   const dialog = page.locator(`${nativeRow} dialog[open]`);
   await expect(dialog).toBeVisible();
+  await expect(dialog.getByRole("button", { name: "登录", exact: true })).toHaveCount(1);
   await expect(dialog.getByRole("button", { name: /删除/ })).toHaveCount(0);
   await dialog.getByRole("button", { name: "刷新额度", exact: true }).click();
   await expect(dialog).toHaveCount(0);
-  await expect.poll(() => calls(page, "inspect")).toEqual(["native", "team", "native"]);
+  await expect.poll(() => calls(page, "inspect")).toEqual(["native", "team", "pending", "native"]);
   await expect(trigger).toBeFocused();
 });
 

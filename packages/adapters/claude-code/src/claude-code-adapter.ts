@@ -183,6 +183,8 @@ interface ActiveTurn {
   usageTokensCalibrated: boolean;
   usageCostCalibrated: boolean;
   held: boolean;
+  /** True while Claude can still produce a native result for the current Root Segment. */
+  rootSegmentActive: boolean;
   completion: Promise<void>;
   resolveCompletion(): void;
 }
@@ -829,6 +831,7 @@ class ClaudeHarnessSession implements HarnessSession {
       usageTokensCalibrated: false,
       usageCostCalibrated: false,
       held: false,
+      rootSegmentActive: true,
       completion,
       resolveCompletion,
     };
@@ -941,6 +944,7 @@ class ClaudeHarnessSession implements HarnessSession {
       usageTokensCalibrated: false,
       usageCostCalibrated: false,
       held: false,
+      rootSegmentActive: true,
       completion,
       resolveCompletion,
     };
@@ -1509,23 +1513,25 @@ class ClaudeHarnessSession implements HarnessSession {
     if (this.#active !== active || this.#phase === "closed" || this.#phase === "faulted") return;
     switch (event.type) {
       case "segment.started":
-        this.#observeRootOutput();
+        this.#observeRootOutput(active);
         return;
       case "subagents.live":
         this.#occupancy.observeLive(event.nativeSubagentIds);
+        this.#armContinuationQuiescence(active);
         return;
       case "compaction.started":
+        this.#observeRootOutput(active);
         this.#startCompaction(active);
         return;
       case "compaction.completed":
         this.#completeCompaction(active, event.outcome);
         return;
       case "text.delta":
-        if (event.delta.length > 0) this.#observeRootOutput();
+        if (event.delta.length > 0) this.#observeRootOutput(active);
         this.#appendText(active, event.messageId, event.delta);
         return;
       case "reasoning.delta":
-        if (event.delta.length > 0) this.#observeRootOutput();
+        if (event.delta.length > 0) this.#observeRootOutput(active);
         this.#activateAssistantMessage(active, event.messageId);
         this.#appendReasoning(active, event.messageId, event.delta);
         return;
@@ -1533,6 +1539,10 @@ class ClaudeHarnessSession implements HarnessSession {
         this.#completeReasoning(active, event.messageId, { status: "succeeded" });
         return;
       case "message.completed": {
+        // A continuation may complete its message without emitting text (for example
+        // after a tool or interaction). Keep the quiescence timer from closing the
+        // held Turn until the native result confirms this Segment is done.
+        this.#observeRootOutput(active);
         if (event.lastRequestUsage) {
           this.#requestUsageBoundary += 1;
           this.#applyLatestRequestUsage(active, event.lastRequestUsage);
@@ -1553,7 +1563,7 @@ class ClaudeHarnessSession implements HarnessSession {
         return;
       }
       case "tool.started":
-        this.#observeRootOutput();
+        this.#observeRootOutput(active);
         for (const messageId of [...active.reasoningItems.keys()]) {
           this.#completeReasoning(active, messageId, { status: "succeeded" });
         }
@@ -1567,7 +1577,7 @@ class ClaudeHarnessSession implements HarnessSession {
         active.tools.complete(active.command.turnId, event, active.cancellationRequested);
         return;
       case "subagent.started":
-        this.#observeRootOutput();
+        this.#observeRootOutput(active);
         for (const messageId of [...active.reasoningItems.keys()]) {
           this.#completeReasoning(active, messageId, { status: "succeeded" });
         }
@@ -1634,6 +1644,7 @@ class ClaudeHarnessSession implements HarnessSession {
         return;
       }
       case "interaction.requested":
+        this.#observeRootOutput(active);
         this.#startInteraction(active, event.request);
         return;
       case "interaction.closed":
@@ -1925,6 +1936,7 @@ class ClaudeHarnessSession implements HarnessSession {
       usageTokensCalibrated: false,
       usageCostCalibrated: false,
       held: false,
+      rootSegmentActive: true,
       completion,
       resolveCompletion,
     };
@@ -1949,6 +1961,8 @@ class ClaudeHarnessSession implements HarnessSession {
   ): void {
     // The Subagent stopped, but its Root continuation runs in a later Segment.
     this.#occupancy.notify(callId, nativeSubagentId);
+    const active = this.#active;
+    if (active?.held) this.#armContinuationQuiescence(active);
     if (!nativeSubagentId) return;
     this.#event({
       type: "subagent.state.changed",
@@ -1967,6 +1981,7 @@ class ClaudeHarnessSession implements HarnessSession {
   #finishResult(active: ActiveTurn, result: ClaudeTransportTurnResult): void {
     // A late native terminal cannot substitute for the process shutdown already in progress.
     if (this.#active !== active || this.#hardCancelTask) return;
+    active.rootSegmentActive = false;
     if (result.status === "succeeded" && (active.tools.size > 0 || active.subagents.size > 0)) {
       this.#finishFailed(active, transportFailure("protocol"));
     } else if (result.status === "succeeded") {
@@ -2251,11 +2266,26 @@ class ClaudeHarnessSession implements HarnessSession {
 
   /** Completes held work after a quiet period with no further Root output. */
   #armContinuationQuiescence(active: ActiveTurn): void {
+    if (
+      this.#active !== active ||
+      !active.held ||
+      active.rootSegmentActive ||
+      this.#phase !== "open" ||
+      !this.#occupancy.awaitingContinuation
+    ) {
+      return;
+    }
     this.#clearContinuationQuiescence();
-    if (!this.#occupancy.awaitingContinuation) return;
     const quiescence = setTimeout(() => {
       this.#continuationQuiescence = null;
-      if (this.#active !== active || !active.held || this.#phase !== "open") return;
+      if (
+        this.#active !== active ||
+        !active.held ||
+        active.rootSegmentActive ||
+        this.#phase !== "open"
+      ) {
+        return;
+      }
       this.#occupancy.releaseContinuations();
       if (this.#occupancy.unsettled) return;
       this.#finish(active, { status: "succeeded" });
@@ -2270,7 +2300,8 @@ class ClaudeHarnessSession implements HarnessSession {
     this.#continuationQuiescence = null;
   }
 
-  #observeRootOutput(): void {
+  #observeRootOutput(active: ActiveTurn): void {
+    active.rootSegmentActive = true;
     this.#clearContinuationQuiescence();
   }
 

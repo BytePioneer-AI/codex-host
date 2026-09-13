@@ -179,9 +179,9 @@ export class QoderUsageTracker {
     const percent =
       typeof contextWindow.usedPercentage === "number"
         ? contextWindow.usedPercentage
-      : typeof raw.usedPercentage === "number"
-        ? raw.usedPercentage
-        : undefined;
+        : typeof raw.usedPercentage === "number"
+          ? raw.usedPercentage
+          : undefined;
     if (isNonNegativeFinite(percent) && percent <= 100) {
       this.#contextUsagePercent = percent;
     }
@@ -189,9 +189,9 @@ export class QoderUsageTracker {
     const maxTokens =
       typeof contextWindow.maxTokens === "number"
         ? contextWindow.maxTokens
-      : typeof raw.maxTokens === "number"
-        ? raw.maxTokens
-        : undefined;
+        : typeof raw.maxTokens === "number"
+          ? raw.maxTokens
+          : undefined;
     if (isNonNegativeSafeInteger(maxTokens) && maxTokens > 0) {
       this.#contextWindowTokens = maxTokens;
     }
@@ -199,9 +199,9 @@ export class QoderUsageTracker {
     const totalTokens =
       typeof contextWindow.totalTokens === "number"
         ? contextWindow.totalTokens
-      : typeof raw.totalTokens === "number"
-        ? raw.totalTokens
-        : undefined;
+        : typeof raw.totalTokens === "number"
+          ? raw.totalTokens
+          : undefined;
     if (isNonNegativeSafeInteger(totalTokens) && totalTokens >= 0) {
       this.#contextUsedTokens = totalTokens;
     }
@@ -210,24 +210,29 @@ export class QoderUsageTracker {
   observeUsageInfo(info: unknown): void {
     if (!info || typeof info !== "object") return;
     const envelope = info as Record<string, unknown>;
-    const usage = (envelope.usage && typeof envelope.usage === "object"
-      ? envelope.usage
-      : envelope) as Record<string, unknown>;
-    const session = (envelope.session && typeof envelope.session === "object"
-      ? envelope.session
-      : usage.session && typeof usage.session === "object"
-        ? usage.session
-        : usage) as Record<string, unknown>;
+    const usage = (
+      envelope.usage && typeof envelope.usage === "object" ? envelope.usage : envelope
+    ) as Record<string, unknown>;
+    const session = (
+      envelope.session && typeof envelope.session === "object"
+        ? envelope.session
+        : usage.session && typeof usage.session === "object"
+          ? usage.session
+          : usage
+    ) as Record<string, unknown>;
 
     const credits =
-      session.total_credits ?? session.totalCredits ?? envelope.total_credits ?? envelope.totalCredits;
+      session.total_credits ??
+      session.totalCredits ??
+      envelope.total_credits ??
+      envelope.totalCredits;
     if (isNonNegativeFinite(credits)) {
       this.#totalCredits = credits as number;
     }
 
-    const userQuota = (usage.userQuota && typeof usage.userQuota === "object"
-      ? usage.userQuota
-      : undefined) as Record<string, unknown> | undefined;
+    const userQuota = (
+      usage.userQuota && typeof usage.userQuota === "object" ? usage.userQuota : undefined
+    ) as Record<string, unknown> | undefined;
 
     const quotaPercent =
       typeof userQuota?.percentage === "number"

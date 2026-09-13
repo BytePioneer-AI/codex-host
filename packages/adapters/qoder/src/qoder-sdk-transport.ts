@@ -35,9 +35,9 @@ import {
   validateHostQuestionResponse,
 } from "@codexhost/harness-adapter";
 import {
-  QODER_COMMAND_CATALOG,
-  formatQoderTurnPrompt,
-  parseAndFormatQoderCommand,
+  QODER_FALLBACK_COMMAND_CATALOG,
+  mapQoderSlashCommands,
+  parseQoderCommandInvocation,
 } from "./qoder-slash-commands.js";
 import {
   harnessIdSchema,
@@ -47,6 +47,7 @@ import {
   nativeCheckpointRefSchema,
   nativeSessionRefSchema,
   nativeTurnRefSchema,
+  type HarnessCommandCatalog,
   type HarnessId,
   type HarnessModelCatalog,
   type HarnessModelRef,
@@ -84,7 +85,9 @@ import type {
   QoderOptions,
   QoderQuery,
   QoderQueryFactory,
+  QoderSlashCommand,
   SDKAssistantMessage,
+  SDKCommandsChangedMessage,
   SDKMessage,
   SDKPartialAssistantMessage,
   SDKResultMessage,
@@ -196,6 +199,7 @@ export class QoderSession implements HarnessSession {
   ) => Promise<SessionMessage[]>;
   readonly #onClosed: (() => void) | undefined;
 
+  #commandCatalog: HarnessCommandCatalog = QODER_FALLBACK_COMMAND_CATALOG;
   #state: HarnessSessionState;
   #activeTurn: ActiveTurnState | null = null;
   #closed = false;
@@ -204,7 +208,7 @@ export class QoderSession implements HarnessSession {
   constructor(options: QoderSessionOptions) {
     this.outputs = this.#channel.outputs;
     this.commands = {
-      list: async () => ({ ok: true, value: QODER_COMMAND_CATALOG }),
+      list: async () => ({ ok: true, value: this.#commandCatalog }),
       execute: (command) => this.#executeHarnessCommand(command),
     };
     this.#sessionId = options.sessionId;
@@ -305,8 +309,22 @@ export class QoderSession implements HarnessSession {
       options: qoderOptions,
     });
 
+    void this.#initSupportedCommands();
     this.#consumerLoopDone = this.#consumeMessages();
     void this.refreshUsage();
+  }
+
+  async #initSupportedCommands(): Promise<void> {
+    if (typeof this.#query.supportedCommands === "function") {
+      try {
+        const commands = await this.#query.supportedCommands();
+        if (Array.isArray(commands) && commands.length > 0 && !this.#closed) {
+          this.#commandCatalog = mapQoderSlashCommands(commands);
+        }
+      } catch {
+        // Keep fallback or existing catalog on error
+      }
+    }
   }
 
   #emitEvent(event: HostEvent): void {
@@ -374,20 +392,32 @@ export class QoderSession implements HarnessSession {
     }
   }
 
-  #handleSystemMessage(message: SDKSystemMessage): void {
-    if (message.subtype === "init" && message.session_id) {
-      this.#state = {
-        ...this.#state,
-        nativeRef: nativeSessionRefSchema.parse({
-          harnessId: "qoder",
-          nativeSessionId: message.session_id,
-          formatVersion: 1,
-        }),
-      };
-      this.#emitEvent({
-        type: "session.state.changed",
-        state: { ...this.#state },
-      });
+  #handleSystemMessage(message: SDKSystemMessage | SDKCommandsChangedMessage): void {
+    const subtype = (message as { subtype?: string }).subtype;
+    if (subtype === "init") {
+      if (message.session_id) {
+        this.#state = {
+          ...this.#state,
+          nativeRef: nativeSessionRefSchema.parse({
+            harnessId: "qoder",
+            nativeSessionId: message.session_id,
+            formatVersion: 1,
+          }),
+        };
+        this.#emitEvent({
+          type: "session.state.changed",
+          state: { ...this.#state },
+        });
+      }
+      const rawCommands = (message as { commands?: unknown }).commands;
+      if (Array.isArray(rawCommands)) {
+        this.#commandCatalog = mapQoderSlashCommands(rawCommands as QoderSlashCommand[]);
+      }
+    } else if (subtype === "commands_changed") {
+      const rawCommands = (message as { commands?: unknown }).commands;
+      if (Array.isArray(rawCommands)) {
+        this.#commandCatalog = mapQoderSlashCommands(rawCommands as QoderSlashCommand[]);
+      }
     }
   }
 
@@ -1147,8 +1177,7 @@ export class QoderSession implements HarnessSession {
           turnId: command.turnId,
         });
 
-        const rawText = command.input.map((item) => item.text).join("\n");
-        const textContent = formatQoderTurnPrompt(rawText);
+        const textContent = command.input.map((item) => item.text).join("\n");
         const sdkMessage: SDKUserMessage = {
           type: "user",
           uuid: userMessageUuid,
@@ -1622,19 +1651,38 @@ export class QoderSession implements HarnessSession {
       };
     }
 
-    const formatted = parseAndFormatQoderCommand(command);
-    if (!formatted.ok) {
-      return formatted;
+    const parsed = parseQoderCommandInvocation(command, this.#commandCatalog);
+    if (!parsed.ok) {
+      return parsed;
     }
 
-    const started = await this.execute({
-      type: "turn.start",
+    const userMessageUuid = `qoder-msg-${randomUUID()}`;
+    this.#activeTurn = {
       turnId: command.turnId,
-      input: [{ type: "text", text: formatted.value.prompt }],
+      userMessageUuid,
+      accumulatedStreamingText: "",
+      accumulatedStreamingReasoning: "",
+    };
+
+    this.#emitEvent({
+      type: "turn.started",
+      turnId: command.turnId,
     });
-    if (!started.ok) {
-      return started;
-    }
+
+    const sdkMessage: SDKUserMessage = {
+      type: "user",
+      uuid: userMessageUuid,
+      ...(this.#state.nativeRef?.nativeSessionId
+        ? { session_id: this.#state.nativeRef.nativeSessionId }
+        : {}),
+      parent_tool_use_id: null,
+      message: {
+        role: "user",
+        content: [{ type: "text", text: parsed.value.prompt }],
+      },
+    };
+
+    this.#pushableInput.push(sdkMessage);
     return { ok: true, value: { turnId: command.turnId } };
   }
 

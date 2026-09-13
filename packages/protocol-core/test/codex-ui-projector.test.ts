@@ -1567,9 +1567,9 @@ describe("Codex UI projector", () => {
 
   describe("File diff formatting and path normalization", () => {
     it("normalizes Windows and Unix paths relative to cwd", () => {
-      expect(normalizeDisplayPath("D:\\CodeProject\\test\\sample.txt", "D:\\CodeProject\\test")).toBe(
-        "sample.txt",
-      );
+      expect(
+        normalizeDisplayPath("D:\\CodeProject\\test\\sample.txt", "D:\\CodeProject\\test"),
+      ).toBe("sample.txt");
       expect(normalizeDisplayPath("D:/CodeProject/test/sub/file.js", "D:/CodeProject/test")).toBe(
         "sub/file.js",
       );
@@ -1696,24 +1696,18 @@ describe("Codex UI projector", () => {
     });
 
     it("coalesces file creation followed by edits into a single add change", () => {
-      const addChanges = fileChangeFromTool(
-        "write_to_file",
-        {
-          path: "sample.txt",
-          content: "initial version",
-        },
-      );
+      const addChanges = fileChangeFromTool("write_to_file", {
+        path: "sample.txt",
+        content: "initial version",
+      });
       expect(addChanges).not.toBeNull();
       const add = addChanges?.[0] ?? { path: "", kind: "add", unifiedDiff: "" };
 
-      const updateChanges = fileChangeFromTool(
-        "edit_file",
-        {
-          path: "sample.txt",
-          old_string: "initial version",
-          new_string: "final version",
-        },
-      );
+      const updateChanges = fileChangeFromTool("edit_file", {
+        path: "sample.txt",
+        old_string: "initial version",
+        new_string: "final version",
+      });
       expect(updateChanges).not.toBeNull();
       const update = updateChanges?.[0] ?? { path: "", kind: "update", unifiedDiff: "" };
 
@@ -1725,22 +1719,16 @@ describe("Codex UI projector", () => {
     });
 
     it("coalesces disjoint edits on the same file under a single diff header", () => {
-      const edit1Changes = fileChangeFromTool(
-        "edit_file",
-        {
-          path: "sample.txt",
-          old_string: "function foo() {}",
-          new_string: "function foo() { return 1; }",
-        },
-      );
-      const edit2Changes = fileChangeFromTool(
-        "edit_file",
-        {
-          path: "sample.txt",
-          old_string: "function bar() {}",
-          new_string: "function bar() { return 2; }",
-        },
-      );
+      const edit1Changes = fileChangeFromTool("edit_file", {
+        path: "sample.txt",
+        old_string: "function foo() {}",
+        new_string: "function foo() { return 1; }",
+      });
+      const edit2Changes = fileChangeFromTool("edit_file", {
+        path: "sample.txt",
+        old_string: "function bar() {}",
+        new_string: "function bar() { return 2; }",
+      });
       expect(edit1Changes).not.toBeNull();
       expect(edit2Changes).not.toBeNull();
       const edit1 = edit1Changes?.[0] ?? { path: "", kind: "update", unifiedDiff: "" };
@@ -1756,18 +1744,21 @@ describe("Codex UI projector", () => {
     });
 
     it("coalesces interleaved edits to different files preserving first appearance order", () => {
-      const a1 =
-        fileChangeFromTool("edit_file", { path: "a.txt", old_string: "a0", new_string: "a1" })?.[
-          0
-        ] ?? { path: "a.txt", kind: "update", unifiedDiff: "" };
-      const b1 =
-        fileChangeFromTool("edit_file", { path: "b.txt", old_string: "b0", new_string: "b1" })?.[
-          0
-        ] ?? { path: "b.txt", kind: "update", unifiedDiff: "" };
-      const a2 =
-        fileChangeFromTool("edit_file", { path: "a.txt", old_string: "a1", new_string: "a2" })?.[
-          0
-        ] ?? { path: "a.txt", kind: "update", unifiedDiff: "" };
+      const a1 = fileChangeFromTool("edit_file", {
+        path: "a.txt",
+        old_string: "a0",
+        new_string: "a1",
+      })?.[0] ?? { path: "a.txt", kind: "update", unifiedDiff: "" };
+      const b1 = fileChangeFromTool("edit_file", {
+        path: "b.txt",
+        old_string: "b0",
+        new_string: "b1",
+      })?.[0] ?? { path: "b.txt", kind: "update", unifiedDiff: "" };
+      const a2 = fileChangeFromTool("edit_file", {
+        path: "a.txt",
+        old_string: "a1",
+        new_string: "a2",
+      })?.[0] ?? { path: "a.txt", kind: "update", unifiedDiff: "" };
 
       const coalesced = coalesceFileChanges([a1, b1, a2]);
       expect(coalesced).toHaveLength(2);
@@ -1833,7 +1824,8 @@ describe("Codex UI projector", () => {
 
       p.project({ type: "turn.started", turnId });
 
-      const content = "这是一个示例文件。\n\n创建日期：2026-09-12\n用途：演示在当前项目目录中创建普通文本文件。";
+      const content =
+        "这是一个示例文件。\n\n创建日期：2026-09-12\n用途：演示在当前项目目录中创建普通文本文件。";
       const started = p.project({
         type: "item.started",
         turnId,

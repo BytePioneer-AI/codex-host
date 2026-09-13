@@ -18,6 +18,8 @@ import type {
   SDKSystemMessage,
   SDKUserMessage,
   SessionMessage,
+  SlashCommand as QoderSlashCommand,
+  SDKCommandsChangedMessage,
 } from "@qoder-ai/qoder-agent-sdk";
 
 export type CanUseToolContext = CanUseToolOptions;
@@ -34,6 +36,7 @@ export type {
   QoderPermissionMode,
   PermissionResult,
   SDKAssistantMessage,
+  SDKCommandsChangedMessage,
   SDKMessage,
   SDKPartialAssistantMessage,
   SDKResultMessage,
@@ -42,6 +45,7 @@ export type {
   SDKUserMessage,
   SdkQuery,
   SessionMessage,
+  QoderSlashCommand,
 };
 
 export interface QoderContextUsage {
@@ -66,6 +70,7 @@ export interface QoderQuery extends AsyncIterable<SDKMessage> {
   setModel?(model?: string): Promise<void>;
   setPermissionMode?(mode: QoderPermissionMode): Promise<void>;
   request?(request: Record<string, unknown>): Promise<unknown>;
+  supportedCommands?(): Promise<QoderSlashCommand[]>;
 }
 
 export type QoderQueryFactory = (input: {

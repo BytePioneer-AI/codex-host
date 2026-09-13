@@ -8,7 +8,9 @@ import type {
   HostApprovalAction,
   HostApprovalInteraction,
   HostCommand,
+  HostContextCompactionItem,
   HostEvent,
+  HostItemOutcome,
   HostQuestion,
   HostQuestionInteraction,
   HostThreadSnapshot,
@@ -36,6 +38,7 @@ import {
 } from "@codexhost/harness-adapter";
 import {
   QODER_FALLBACK_COMMAND_CATALOG,
+  isQoderCompactionCommand,
   mapQoderSlashCommands,
   parseQoderCommandInvocation,
 } from "./qoder-slash-commands.js";
@@ -140,6 +143,8 @@ interface ActiveTurnState {
   accumulatedStreamingText: string;
   activeStreamingReasoningItemId?: HostItemId | undefined;
   accumulatedStreamingReasoning: string;
+  isCompaction?: boolean | undefined;
+  compactionItemId?: HostItemId | undefined;
 }
 
 interface ActiveTool {
@@ -356,6 +361,19 @@ export class QoderSession implements HarnessSession {
         if (this.#activeTurn) {
           const turnId = this.#activeTurn.turnId;
           const nativeTurnRef = this.#createNativeTurnRef(this.#activeTurn.userMessageUuid);
+          if (this.#activeTurn.compactionItemId) {
+            this.#emitEvent({
+              type: "item.completed",
+              turnId,
+              snapshot: {
+                item: {
+                  type: "contextCompaction",
+                  itemId: this.#activeTurn.compactionItemId,
+                },
+                outcome: { status: "failed", error: harnessError },
+              },
+            });
+          }
           this.#activeTurn = null;
           this.#emitEvent({
             type: "turn.completed",
@@ -426,11 +444,33 @@ export class QoderSession implements HarnessSession {
           // Ignore invalid commands snapshot to avoid breaking session loop
         }
       }
+    } else if (subtype === "compact_boundary") {
+      if (this.#activeTurn && !this.#activeTurn.isCompaction) {
+        const autoCompactionItemId = hostItemIdSchema.parse(`compact-${randomUUID()}`);
+        const compactionItem: HostContextCompactionItem = {
+          type: "contextCompaction",
+          itemId: autoCompactionItemId,
+        };
+        this.#emitEvent({
+          type: "item.started",
+          turnId: this.#activeTurn.turnId,
+          item: compactionItem,
+        });
+        this.#emitEvent({
+          type: "item.completed",
+          turnId: this.#activeTurn.turnId,
+          snapshot: {
+            item: compactionItem,
+            outcome: { status: "succeeded" },
+          },
+        });
+      }
     }
   }
 
   #handleStreamEvent(event: SDKPartialAssistantMessage): void {
     if (!this.#activeTurn) return;
+    if (this.#activeTurn.isCompaction) return;
 
     const rawEvent = (event as Record<string, unknown>).event as
       Record<string, unknown> | undefined;
@@ -532,6 +572,8 @@ export class QoderSession implements HarnessSession {
         observedForTurnId: this.#activeTurn.turnId,
       });
     }
+
+    if (this.#activeTurn.isCompaction) return;
 
     const content = message.message?.content;
     if (!Array.isArray(content)) return;
@@ -850,6 +892,29 @@ export class QoderSession implements HarnessSession {
       });
       this.#activeTurn.activeStreamingReasoningItemId = undefined;
       this.#activeTurn.accumulatedStreamingReasoning = "";
+    }
+
+    // Close any active compaction item
+    if (this.#activeTurn.compactionItemId) {
+      const outcome: HostItemOutcome =
+        result.subtype === "success"
+          ? { status: "succeeded" }
+          : {
+              status: "failed",
+              error: mapQoderResultError(result),
+            };
+      this.#emitEvent({
+        type: "item.completed",
+        turnId: this.#activeTurn.turnId,
+        snapshot: {
+          item: {
+            type: "contextCompaction",
+            itemId: this.#activeTurn.compactionItemId,
+          },
+          outcome,
+        },
+      });
+      this.#activeTurn.compactionItemId = undefined;
     }
 
     const userMessageUuid = this.#activeTurn.userMessageUuid;
@@ -1271,6 +1336,22 @@ export class QoderSession implements HarnessSession {
           this.#activeTurn.accumulatedStreamingReasoning = "";
         }
 
+        // Close any active compaction item
+        if (this.#activeTurn.compactionItemId) {
+          this.#emitEvent({
+            type: "item.completed",
+            turnId: this.#activeTurn.turnId,
+            snapshot: {
+              item: {
+                type: "contextCompaction",
+                itemId: this.#activeTurn.compactionItemId,
+              },
+              outcome: { status: "cancelled", reason: "Turn cancelled by user" },
+            },
+          });
+          this.#activeTurn.compactionItemId = undefined;
+        }
+
         try {
           await this.#query.interrupt();
         } catch {
@@ -1664,18 +1745,39 @@ export class QoderSession implements HarnessSession {
       return parsed;
     }
 
+    const isCompaction = isQoderCompactionCommand(
+      parsed.value.descriptor.id || parsed.value.descriptor.invocation,
+    );
+    const compactionItemId = isCompaction
+      ? hostItemIdSchema.parse(`compact-${randomUUID()}`)
+      : undefined;
+
     const userMessageUuid = `qoder-msg-${randomUUID()}`;
     this.#activeTurn = {
       turnId: command.turnId,
       userMessageUuid,
       accumulatedStreamingText: "",
       accumulatedStreamingReasoning: "",
+      isCompaction,
+      compactionItemId,
     };
 
     this.#emitEvent({
       type: "turn.started",
       turnId: command.turnId,
     });
+
+    if (compactionItemId) {
+      const compactionItem: HostContextCompactionItem = {
+        type: "contextCompaction",
+        itemId: compactionItemId,
+      };
+      this.#emitEvent({
+        type: "item.started",
+        turnId: command.turnId,
+        item: compactionItem,
+      });
+    }
 
     const sdkMessage: SDKUserMessage = {
       type: "user",
@@ -1768,6 +1870,22 @@ export class QoderSession implements HarnessSession {
         });
         this.#activeTurn.activeStreamingReasoningItemId = undefined;
         this.#activeTurn.accumulatedStreamingReasoning = "";
+      }
+
+      // Close any active compaction item
+      if (this.#activeTurn.compactionItemId) {
+        this.#emitEvent({
+          type: "item.completed",
+          turnId: this.#activeTurn.turnId,
+          snapshot: {
+            item: {
+              type: "contextCompaction",
+              itemId: this.#activeTurn.compactionItemId,
+            },
+            outcome: { status: "cancelled", reason: "Session closed" },
+          },
+        });
+        this.#activeTurn.compactionItemId = undefined;
       }
 
       const turnId = this.#activeTurn.turnId;

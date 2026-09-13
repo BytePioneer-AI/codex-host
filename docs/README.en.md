@@ -51,7 +51,7 @@ But **Codex** is not the only capable **Agent Harness**. Some people prefer **Cl
 
 ## Interface Preview
 
-No app switching required: **Pi, Claude Code, OpenCode, OMP, Grok Build, DeepSeek Harness, and Hermes** can all run directly in the same Codex Desktop window.
+No app switching required: **Pi, Claude Code, OpenCode, OMP, Grok Build, and DeepSeek Harness** can all run directly in the same Codex Desktop window.
 
 https://github.com/user-attachments/assets/c48192d7-23ff-4f6e-b61a-6345a655bb76
 

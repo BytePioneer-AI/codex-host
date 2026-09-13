@@ -51,7 +51,7 @@
 
 ## 인터페이스 미리보기
 
-앱을 전환하지 않고도 **Pi, Claude Code, OpenCode, OMP, Grok Build, DeepSeek Harness, Hermes**를 하나의 Codex Desktop 창에서 바로 사용할 수 있습니다.
+앱을 전환하지 않고도 **Pi, Claude Code, OpenCode, OMP, Grok Build, DeepSeek Harness**를 하나의 Codex Desktop 창에서 바로 사용할 수 있습니다.
 
 https://github.com/user-attachments/assets/c48192d7-23ff-4f6e-b61a-6345a655bb76
 

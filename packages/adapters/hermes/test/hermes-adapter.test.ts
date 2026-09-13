@@ -3,14 +3,17 @@ import { describe, expect, it } from "vitest";
 import type { HarnessOutput } from "@codexhost/harness-adapter";
 import {
   harnessIdSchema,
-  harnessPermissionModeIdSchema,
   hostTurnIdSchema,
   nativeSessionRefSchema,
   nativeTurnRefSchema,
 } from "@codexhost/shared-contracts";
 
-import type { HermesOpenResult, HermesTransportEvent } from "../src/acp-transport.js";
-import { HermesAcpTransport, HermesTransportError } from "../src/acp-transport.js";
+import type {
+  HermesAcpTransport,
+  HermesOpenResult,
+  HermesTransportEvent,
+} from "../src/acp-transport.js";
+import { HermesTransportError } from "../src/acp-transport.js";
 import { encodeHermesModelRef } from "../src/hermes-models.js";
 import { HermesSession } from "../src/hermes-session.js";
 

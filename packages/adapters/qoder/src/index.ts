@@ -41,4 +41,12 @@ export {
 } from "./qoder-usage.js";
 export { mapQoderException, mapQoderExitCode, mapQoderResultError } from "./qoder-errors.js";
 export { mapQoderSnapshot, extractUserText, isHumanUser } from "./qoder-history.js";
+export {
+  QODER_COMMANDS,
+  QODER_COMMAND_CATALOG,
+  findQoderCommandDescriptor,
+  parseAndFormatQoderCommand,
+  formatQoderTurnPrompt,
+  type ParsedQoderCommand,
+} from "./qoder-slash-commands.js";
 export { createHarnessAdapter } from "./plugin.js";

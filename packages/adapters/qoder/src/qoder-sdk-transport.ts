@@ -21,6 +21,9 @@ import type {
   PermissionModeSelectCompleted,
   ThinkingSelectCommand,
   ThinkingSelectCompleted,
+  HarnessCommandAccepted,
+  HarnessCommandCapability,
+  HarnessCommandInvocation,
   TurnCancelAccepted,
   TurnCancelCommand,
   TurnStartAccepted,
@@ -31,6 +34,11 @@ import {
   validateHostApprovalResponse,
   validateHostQuestionResponse,
 } from "@codexhost/harness-adapter";
+import {
+  QODER_COMMAND_CATALOG,
+  formatQoderTurnPrompt,
+  parseAndFormatQoderCommand,
+} from "./qoder-slash-commands.js";
 import {
   harnessIdSchema,
   hostInteractionIdSchema,
@@ -168,6 +176,7 @@ export interface QoderSessionOptions {
 export class QoderSession implements HarnessSession {
   readonly harnessId: HarnessId = harnessIdSchema.parse("qoder");
   readonly capabilities: HarnessSessionCapabilities;
+  readonly commands: HarnessCommandCapability;
   readonly initialState: HarnessSessionState;
   readonly initialUsage: HostUsage | null = null;
   readonly outputs: AsyncIterable<HarnessOutput>;
@@ -194,6 +203,10 @@ export class QoderSession implements HarnessSession {
 
   constructor(options: QoderSessionOptions) {
     this.outputs = this.#channel.outputs;
+    this.commands = {
+      list: async () => ({ ok: true, value: QODER_COMMAND_CATALOG }),
+      execute: (command) => this.#executeHarnessCommand(command),
+    };
     this.#sessionId = options.sessionId;
     this.#cwd = options.cwd;
     this.#catalog = options.catalog;
@@ -1134,7 +1147,8 @@ export class QoderSession implements HarnessSession {
           turnId: command.turnId,
         });
 
-        const textContent = command.input.map((item) => item.text).join("\n");
+        const rawText = command.input.map((item) => item.text).join("\n");
+        const textContent = formatQoderTurnPrompt(rawText);
         const sdkMessage: SDKUserMessage = {
           type: "user",
           uuid: userMessageUuid,
@@ -1582,6 +1596,46 @@ export class QoderSession implements HarnessSession {
           },
         };
     }
+  }
+
+  async #executeHarnessCommand(
+    command: HarnessCommandInvocation,
+  ): Promise<HarnessResult<HarnessCommandAccepted>> {
+    if (this.#closed) {
+      return {
+        ok: false,
+        error: {
+          code: "invalidState",
+          message: "Qoder Session is closed",
+          retryable: false,
+        },
+      };
+    }
+    if (this.#activeTurn) {
+      return {
+        ok: false,
+        error: {
+          code: "sessionBusy",
+          message: "Another turn is currently running",
+          retryable: true,
+        },
+      };
+    }
+
+    const formatted = parseAndFormatQoderCommand(command);
+    if (!formatted.ok) {
+      return formatted;
+    }
+
+    const started = await this.execute({
+      type: "turn.start",
+      turnId: command.turnId,
+      input: [{ type: "text", text: formatted.value.prompt }],
+    });
+    if (!started.ok) {
+      return started;
+    }
+    return { ok: true, value: { turnId: command.turnId } };
   }
 
   #cancelPendingInteractions(turnId: HostTurnId, reason: string): void {

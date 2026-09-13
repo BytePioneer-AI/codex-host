@@ -76,8 +76,7 @@ codexhost
 
 <details>
 <summary>Installation troubleshooting</summary>
-
-**macOS** - Apple verification issue
+**macOS**
 
 If the app cannot be verified when you first open it, run:
 
@@ -97,16 +96,6 @@ Fully quit Codex Desktop, open a new terminal, and start codexhost.
 
 </details>
 
-### Appearance settings
-
-In `Settings → Appearance`, enable **Wrap thinking text** to wrap long lines in the persisted thinking transcript. It is off by default, saved locally, and takes effect immediately. Ordinary shell output is unchanged.
-
-### Update checks and GitHub rate limits
-
-codexhost prefers an authenticated [GitHub CLI](https://cli.github.com/) (`gh auth login --hostname github.com`) for latest Release checks, using the account's API quota to reduce anonymous rate limits on shared proxy exits. Credentials remain managed by `gh`; codexhost does not read or store tokens.
-
-If `gh` is missing, unauthenticated, or fails, discovery falls back to the public API. Each CLI invocation is limited to 5 seconds. Discovery searches PATH, macOS Homebrew, and common Windows/Linux installation locations. Set `CODEXHOST_GH_COMMAND` in the Host environment to specify an executable path without arguments. Artifact downloads and verification are unchanged; authenticated requests remain subject to GitHub account and secondary rate limits.
-
 ### Interaction Examples
 
 <table>
@@ -116,16 +105,6 @@ If `gh` is missing, unauthenticated, or fails, discovery falls back to the publi
       <div align="center">
         <img width="90%" src="imgs/codexhost-full-workspace.png" alt="The complete CodexHost workspace in Codex Desktop, showing the project tree, conversation area, and multiple Agent selectors">
       </div>
-    </td>
-  </tr>
-  <tr>
-    <td width="50%" valign="top">
-      <p><strong>Agent and Model selection</strong></p>
-      <img src="imgs/agent-harness-selector.png" alt="Choose the Agent and Model that will execute the task before submitting; Codex, Pi, Claude Code, OpenCode, DeepSeek Harness, Grok, and Oh My Pi are available">
-    </td>
-    <td width="50%" valign="top">
-      <p><strong>Usage and cost information</strong></p>
-      <img src="imgs/usage-panel.png" alt="The Usage panel shows context, cache hits, and estimated cost">
     </td>
   </tr>
   <tr>

@@ -76,8 +76,7 @@ codexhost
 
 <details>
 <summary>설치 문제 해결</summary>
-
-**macOS** - Apple 인증 문제
+**macOS**
 
 처음 열 때 앱을 확인할 수 없다는 메시지가 표시되면 다음을 실행하세요:
 
@@ -106,16 +105,6 @@ Codex Desktop을 완전히 종료한 뒤, 새 터미널을 열고 codexhost를 �
       <div align="center">
         <img width="90%" src="imgs/codexhost-full-workspace.png" alt="프로젝트 구조, 대화 영역 및 여러 Agent 선택기가 표시된 Codex Desktop의 CodexHost 전체 작업 화면">
       </div>
-    </td>
-  </tr>
-  <tr>
-    <td width="50%" valign="top">
-      <p><strong>Agent 및 Model 선택</strong></p>
-      <img src="imgs/agent-harness-selector.png" alt="작업 제출 전에 실제 실행할 Agent와 Model을 선택할 수 있으며 Codex, Pi, Claude Code, OpenCode, DeepSeek Harness, Grok, Oh My Pi를 사용할 수 있습니다">
-    </td>
-    <td width="50%" valign="top">
-      <p><strong>Usage 및 비용 정보</strong></p>
-      <img src="imgs/usage-panel.png" alt="Usage 패널에서 컨텍스트, 캐시 적중 및 예상 비용을 확인할 수 있습니다">
     </td>
   </tr>
   <tr>

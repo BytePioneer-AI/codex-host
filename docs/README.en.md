@@ -29,6 +29,7 @@ But **Codex** is not the only capable **Agent Harness**. Some people prefer **Cl
   <a href="https://kiro.dev/docs/cli/"><img alt="Kiro CLI" src="imgs/badge-kiro.svg" /></a>
   <a href="https://www.codebuddy.cn/home/"><img alt="CodeBuddy" src="imgs/badge-codebuddy.svg" /></a>
   <a href="https://cursor.com/docs/cli/overview"><img alt="Cursor" src="imgs/badge-cursor.svg" /></a>
+  <a href="https://hermes-agent.nousresearch.com/docs"><img alt="Hermes" src="imgs/badge-hermes.svg" /></a>
 </p>
 
 <p align="center">
@@ -50,7 +51,7 @@ But **Codex** is not the only capable **Agent Harness**. Some people prefer **Cl
 
 ## Interface Preview
 
-No app switching required: **Pi, Claude Code, OpenCode, OMP, Grok Build, and DeepSeek Harness** can all run directly in the same Codex Desktop window.
+No app switching required: **Pi, Claude Code, OpenCode, OMP, Grok Build, DeepSeek Harness, and Hermes** can all run directly in the same Codex Desktop window.
 
 https://github.com/user-attachments/assets/c48192d7-23ff-4f6e-b61a-6345a655bb76
 

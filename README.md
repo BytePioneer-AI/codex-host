@@ -29,6 +29,7 @@
   <a href="https://kiro.dev/docs/cli/"><img alt="Kiro CLI" src="docs/imgs/badge-kiro.svg" /></a>
   <a href="https://www.codebuddy.cn/home/"><img alt="CodeBuddy" src="docs/imgs/badge-codebuddy.svg" /></a>
   <a href="https://cursor.com/docs/cli/overview"><img alt="Cursor" src="docs/imgs/badge-cursor.svg" /></a>
+  <a href="https://hermes-agent.nousresearch.com/docs"><img alt="Hermes" src="docs/imgs/badge-hermes.svg" /></a>
 </p>
 
 <p align="center">
@@ -50,7 +51,7 @@
 
 ## 界面预览
 
-无需切换应用，**Pi、Claude Code、OpenCode、OMP、Grok Build 和 DeepSeek Harness** 都可以在同一个 Codex Desktop 窗口中直接使用。
+无需切换应用，**Pi、Claude Code、OpenCode、OMP、Grok Build、DeepSeek Harness 和 Hermes** 都可以在同一个 Codex Desktop 窗口中直接使用。
 
 https://github.com/user-attachments/assets/c48192d7-23ff-4f6e-b61a-6345a655bb76
 

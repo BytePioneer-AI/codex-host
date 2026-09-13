@@ -29,6 +29,7 @@
   <a href="https://kiro.dev/docs/cli/"><img alt="Kiro CLI" src="imgs/badge-kiro.svg" /></a>
   <a href="https://www.codebuddy.cn/home/"><img alt="CodeBuddy" src="imgs/badge-codebuddy.svg" /></a>
   <a href="https://cursor.com/docs/cli/overview"><img alt="Cursor" src="imgs/badge-cursor.svg" /></a>
+  <a href="https://hermes-agent.nousresearch.com/docs"><img alt="Hermes" src="imgs/badge-hermes.svg" /></a>
 </p>
 
 <p align="center">
@@ -50,7 +51,7 @@
 
 ## 인터페이스 미리보기
 
-앱을 전환하지 않고도 **Pi, Claude Code, OpenCode, OMP, Grok Build, DeepSeek Harness**를 하나의 Codex Desktop 창에서 바로 사용할 수 있습니다.
+앱을 전환하지 않고도 **Pi, Claude Code, OpenCode, OMP, Grok Build, DeepSeek Harness, Hermes**를 하나의 Codex Desktop 창에서 바로 사용할 수 있습니다.
 
 https://github.com/user-attachments/assets/c48192d7-23ff-4f6e-b61a-6345a655bb76
 

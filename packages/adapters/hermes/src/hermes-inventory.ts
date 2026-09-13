@@ -15,7 +15,8 @@ import { decodeHermesModelRefId, encodeHermesModelRef } from "./hermes-models.js
  * The model inventory lives inside that virtualenv (hermes_cli.inventory), so
  * the same interpreter runs a read-only one-shot probe.
  */
-const VENV_PYTHON_SHIM_PATTERN = /exec\s+"([^"]+?venv\/bin\/python)"/;
+const POSIX_VENV_PYTHON_SHIM_PATTERN = /exec\s+"([^"]+?venv\/bin\/python)"/;
+const WINDOWS_VENV_HERMES_SHIM_PATTERN = /"([^"]+?[\\/]venv[\\/]Scripts[\\/]hermes\.exe)"/i;
 
 const INVENTORY_PROBE_SCRIPT = `
 import json
@@ -103,11 +104,17 @@ export interface HermesInventory {
 
 export class HermesInventoryError extends Error {}
 
-async function venvPythonFromShim(hermesExecutable: string): Promise<string | null> {
+export async function venvPythonFromShim(
+  hermesExecutable: string,
+  platform: NodeJS.Platform = process.platform,
+): Promise<string | null> {
   try {
     const shim = await readFile(hermesExecutable, "utf8");
-    const match = VENV_PYTHON_SHIM_PATTERN.exec(shim);
-    return match?.[1] ?? null;
+    if (platform === "win32") {
+      const target = WINDOWS_VENV_HERMES_SHIM_PATTERN.exec(shim)?.[1];
+      return target ? path.win32.join(path.win32.dirname(target), "python.exe") : null;
+    }
+    return POSIX_VENV_PYTHON_SHIM_PATTERN.exec(shim)?.[1] ?? null;
   } catch {
     return null;
   }
@@ -124,11 +131,18 @@ export function inventoryPythonCandidates(
   if (environmentDirectory === "scripts") {
     candidates.push(pathApi.join(executableDirectory, "python.exe"));
   } else if (environmentDirectory === "bin") {
-    candidates.push(pathApi.join(executableDirectory, "python"));
+    candidates.push(
+      pathApi.join(executableDirectory, platform === "win32" ? "python.exe" : "python"),
+    );
   }
-  const agentDir = pathApi.resolve(executableDirectory, "../../.hermes/hermes-agent");
+  const relativePython = platform === "win32" ? "venv/Scripts/python.exe" : "venv/bin/python";
+  // Current standalone installers place the public launcher in <root>/bin
+  // and the bound Python environment in <root>/hermes-agent/venv.
+  candidates.push(pathApi.resolve(executableDirectory, "../hermes-agent", relativePython));
+  // Older user-local installers place the launcher in ~/.local/bin and the
+  // agent environment in ~/.hermes/hermes-agent.
   candidates.push(
-    pathApi.join(agentDir, platform === "win32" ? "venv/Scripts/python.exe" : "venv/bin/python"),
+    pathApi.resolve(executableDirectory, "../../.hermes/hermes-agent", relativePython),
   );
   return [...new Set(candidates)];
 }
@@ -202,11 +216,12 @@ export async function readHermesModelInventory(
   timeoutMs = 20_000,
   options: { environment?: NodeJS.ProcessEnv; platform?: NodeJS.Platform } = {},
 ): Promise<HermesInventory> {
+  const platform = options.platform ?? process.platform;
   const candidates = [
-    ...(options.platform === "win32" ? [] : [(await venvPythonFromShim(hermesExecutable)) ?? ""]),
-    ...inventoryPythonCandidates(hermesExecutable, options.platform),
+    (await venvPythonFromShim(hermesExecutable, platform)) ?? "",
+    ...inventoryPythonCandidates(hermesExecutable, platform),
   ].filter((candidate, index, all) => candidate.length > 0 && all.indexOf(candidate) === index);
-  let pythonExecutable = candidates[0];
+  let pythonExecutable: string | null = null;
   for (const candidate of candidates) {
     try {
       await access(candidate);
@@ -216,7 +231,11 @@ export async function readHermesModelInventory(
       // Try the next supported Hermes installation layout.
     }
   }
-  if (!pythonExecutable) throw new HermesInventoryError("Hermes inventory interpreter not found");
+  if (!pythonExecutable) {
+    throw new HermesInventoryError(
+      `Hermes inventory interpreter not found (searched: ${candidates.join(", ")})`,
+    );
+  }
   return runProbe(pythonExecutable, timeoutMs, options.environment);
 }
 

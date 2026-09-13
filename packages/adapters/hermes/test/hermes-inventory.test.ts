@@ -1,9 +1,13 @@
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+
 import { describe, expect, it } from "vitest";
 
 import {
   catalogModelsFromInventory,
   inventoryPythonCandidates,
-  readHermesModelInventory,
+  venvPythonFromShim,
 } from "../src/hermes-inventory.js";
 import { encodeHermesModelRef, projectHermesModelState } from "../src/hermes-models.js";
 
@@ -63,6 +67,28 @@ describe("Hermes inventory process", () => {
         "win32",
       )[0],
     ).toBe("C:\\Users\\test\\.hermes\\hermes-agent\\venv\\Scripts\\python.exe");
+  });
+
+  it("resolves the standalone Windows installation layout", () => {
+    expect(inventoryPythonCandidates("C:\\hermes\\bin\\hermes.exe", "win32")).toContain(
+      "C:\\hermes\\hermes-agent\\venv\\Scripts\\python.exe",
+    );
+  });
+
+  it("follows the bound virtualenv from a Windows command shim", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "hermes-windows-shim-"));
+    const shim = path.join(directory, "hermes.cmd");
+    try {
+      await writeFile(
+        shim,
+        '@echo off\r\n"D:\\Apps\\Hermes\\hermes-agent\\venv\\Scripts\\hermes.exe" %*\r\n',
+      );
+      await expect(venvPythonFromShim(shim, "win32")).resolves.toBe(
+        "D:\\Apps\\Hermes\\hermes-agent\\venv\\Scripts\\python.exe",
+      );
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
   });
 });
 

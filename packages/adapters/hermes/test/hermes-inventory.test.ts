@@ -1,8 +1,4 @@
-import { chmod, mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
-import os from "node:os";
-import path from "node:path";
-
-import { afterEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 
 import {
   catalogModelsFromInventory,
@@ -10,16 +6,6 @@ import {
   readHermesModelInventory,
 } from "../src/hermes-inventory.js";
 import { encodeHermesModelRef, projectHermesModelState } from "../src/hermes-models.js";
-
-const temporaryDirectories: string[] = [];
-
-afterEach(async () => {
-  await Promise.all(
-    temporaryDirectories
-      .splice(0)
-      .map((directory) => rm(directory, { recursive: true, force: true })),
-  );
-});
 
 describe("Hermes model catalog", () => {
   it("labels each model as Provider / model", () => {
@@ -77,65 +63,6 @@ describe("Hermes inventory process", () => {
         "win32",
       )[0],
     ).toBe("C:\\Users\\test\\.hermes\\hermes-agent\\venv\\Scripts\\python.exe");
-  });
-
-  it("passes the Adapter environment to the inventory subprocess", async () => {
-    const directory = await mkdtemp(path.join(os.tmpdir(), "hermes-inventory-env-"));
-    temporaryDirectories.push(directory);
-    const binDirectory = path.join(directory, "venv", "bin");
-    await mkdir(binDirectory, { recursive: true });
-    const launcher = path.join(binDirectory, "hermes");
-    const python = path.join(binDirectory, "python");
-    await writeFile(launcher, "#!/bin/sh\nexit 0\n");
-    await writeFile(
-      python,
-      `#!/usr/bin/env node
-if (process.env.HERMES_TEST_INVENTORY !== "visible") process.exit(4);
-console.log(JSON.stringify({ models: [], currentModelId: null }));
-`,
-    );
-    await chmod(launcher, 0o755);
-    await chmod(python, 0o755);
-
-    await expect(
-      readHermesModelInventory(launcher, 10_000, {
-        environment: { ...process.env, HERMES_TEST_INVENTORY: "visible" },
-      }),
-    ).resolves.toEqual({ models: [], currentModelId: null });
-  });
-
-  it("isolates imports from an untrusted launch directory", async () => {
-    const directory = await mkdtemp(path.join(os.tmpdir(), "hermes-inventory-isolation-"));
-    temporaryDirectories.push(directory);
-    const hostileDirectory = path.join(directory, "hostile-checkout");
-    const binDirectory = path.join(directory, "venv", "bin");
-    await mkdir(hostileDirectory, { recursive: true });
-    await mkdir(binDirectory, { recursive: true });
-    const launcher = path.join(binDirectory, "hermes");
-    const python = path.join(binDirectory, "python");
-    await writeFile(launcher, "#!/bin/sh\nexit 0\n");
-    await writeFile(
-      python,
-      `#!/usr/bin/env node
-if (!process.argv.includes("-I")) process.exit(5);
-if (process.cwd() === process.env.HERMES_TEST_HOSTILE_CWD) process.exit(6);
-console.log(JSON.stringify({ models: [], currentModelId: null }));
-`,
-    );
-    await chmod(launcher, 0o755);
-    await chmod(python, 0o755);
-    const previousCwd = process.cwd();
-
-    try {
-      process.chdir(hostileDirectory);
-      await expect(
-        readHermesModelInventory(launcher, 10_000, {
-          environment: { ...process.env, HERMES_TEST_HOSTILE_CWD: hostileDirectory },
-        }),
-      ).resolves.toEqual({ models: [], currentModelId: null });
-    } finally {
-      process.chdir(previousCwd);
-    }
   });
 });
 

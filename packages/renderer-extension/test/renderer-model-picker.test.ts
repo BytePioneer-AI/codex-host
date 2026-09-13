@@ -130,7 +130,7 @@ describe("Renderer combined Model and Thinking picker presentation", () => {
     expect(view.thinkingOptions.map(({ id }) => id)).not.toContain("max");
   });
 
-  it("shows Claude runtime-resolved Model display without exposing Thinking controls", () => {
+  it("shows a runtime-resolved Model label after the selected Model", () => {
     const claudeModel = harnessModelRefSchema.parse({ id: "claude-model-v1.c29ubmV0" });
     const claudeCatalog = harnessModelCatalogSchema.parse({
       models: [

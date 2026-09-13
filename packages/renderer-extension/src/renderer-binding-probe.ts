@@ -99,6 +99,7 @@ const externalHarnessIds = {
   "kiro-cli": harnessIdSchema.parse("kiro-cli"),
   codebuddy: harnessIdSchema.parse("codebuddy"),
   "cursor-cli": harnessIdSchema.parse("cursor-cli"),
+  hermes: harnessIdSchema.parse("hermes"),
 } as const;
 
 const externalAgents: readonly ExternalRendererAgent[] = [
@@ -112,9 +113,10 @@ const externalAgents: readonly ExternalRendererAgent[] = [
   "kiro-cli",
   "codebuddy",
   "cursor-cli",
+  "hermes",
 ];
 type HarnessAvailability = Partial<Record<ExternalRendererAgent, RendererAgentAvailability>>;
-type HarnessAvailabilityErrors = Record<ExternalRendererAgent, CodexhostError | undefined>;
+type HarnessAvailabilityErrors = Partial<Record<ExternalRendererAgent, CodexhostError | undefined>>;
 type HarnessWebUiAvailability = Record<ExternalRendererAgent, boolean>;
 
 function isRetryableHarnessAvailability(
@@ -486,6 +488,17 @@ export function restoredThreadOwnership(inspection: ThreadInspection): RestoredT
       ...(permissionModeId ? { permissionModeId } : {}),
     };
   }
+  if (inspection.harnessId === "hermes") {
+    // Hermes rides the shared harness-plugin route; effective configuration
+    // comes from the Thread inspection, not a Harness-specific codec.
+    return {
+      agent: "hermes",
+      ...(inspection.effectiveModel ? { model: inspection.effectiveModel } : {}),
+      ...(inspection.effectivePermissionModeId
+        ? { permissionModeId: inspection.effectivePermissionModeId }
+        : {}),
+    };
+  }
   throw new Error("Thread owner is not a Renderer Agent");
 }
 
@@ -740,6 +753,7 @@ export function installRendererBindingProbe(
       "kiro-cli": undefined,
       codebuddy: undefined,
       "cursor-cli": undefined,
+      hermes: undefined,
     },
     webUi: Object.fromEntries(
       externalAgents.map((agent) => [agent, false]),

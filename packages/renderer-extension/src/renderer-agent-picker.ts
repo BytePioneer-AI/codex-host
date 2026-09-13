@@ -69,6 +69,7 @@ export const RENDERER_AGENT_INSTALL_URLS: Readonly<Record<ExternalRendererAgent,
   "kiro-cli": "https://kiro.dev/docs/cli/",
   codebuddy: "https://www.codebuddy.ai/docs/zh/cli/overview",
   "cursor-cli": "https://cursor.com/docs/cli/installation",
+  hermes: "https://hermes-agent.nousresearch.com/docs",
 };
 
 type AgentAvailability = Partial<Record<ExternalRendererAgent, RendererAgentAvailability>>;

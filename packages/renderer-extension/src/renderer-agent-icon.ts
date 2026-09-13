@@ -1,5 +1,6 @@
 import codexAgentIconUrl from "./assets/codex-agent.png";
 import grokAgentIconUrl from "./assets/grok-agent.png";
+import hermesAgentIconUrl from "./assets/hermes-agent.png";
 import antigravityAgentIconUrl from "./assets/antigravity-agent.svg";
 import kiroAgentIconUrl from "./assets/kiro-agent.svg";
 import codeBuddyAgentIconUrl from "./assets/codebuddy-agent.svg";
@@ -20,6 +21,7 @@ export const RENDERER_AGENT_LABELS: Record<RendererAgent, string> = {
   "kiro-cli": "Kiro CLI",
   codebuddy: "CodeBuddy",
   "cursor-cli": "Cursor CLI (Experimental)",
+  hermes: "Hermes",
 };
 
 const PI_PATHS = [
@@ -135,6 +137,21 @@ export function createRendererAgentIcon(
     image.style.width = `${size}px`;
     image.style.height = `${size}px`;
     image.style.objectFit = "contain";
+    image.style.flex = "none";
+    return image;
+  }
+  if (agent === "hermes") {
+    const image = ownerDocument.createElement("img");
+    image.src = hermesAgentIconUrl;
+    image.alt = "";
+    image.draggable = false;
+    image.style.width = `${size}px`;
+    image.style.height = `${size}px`;
+    image.style.objectFit = "contain";
+    image.style.boxSizing = "border-box";
+    image.style.padding = `${Math.max(1, Math.round(size / 16))}px`;
+    image.style.borderRadius = "22.37%";
+    image.style.background = "#d8d8e8";
     image.style.flex = "none";
     return image;
   }

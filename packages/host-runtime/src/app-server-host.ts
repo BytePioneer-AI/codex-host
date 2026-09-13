@@ -363,6 +363,8 @@ function approvalServerName(harnessId: ExternalHarnessId): string {
       return "Oh My Pi";
     case "antigravity":
       return "Antigravity CLI";
+    case "kiro-cli":
+      return "Kiro CLI";
     default:
       return harnessId;
   }
@@ -613,9 +615,11 @@ export class AppServerHost {
       cancelOfficial: (input) => this.#cancelOfficialDelegationThread(input),
       startOfficial: (input) => this.#startOfficialDelegation(input),
       listOfficial: (input) => this.#listDelegationThreads(input),
+      officialThreadCwd: (threadId) => this.#readOfficialThreadCwd(threadId),
       activeOfficialParents: () => [...this.#activeOfficialTurns.keys()],
     });
     const unregisterDelegationApi = options.onDelegationApi?.({
+      listHarnesses: () => this.#delegationCoordinator.listHarnesses(),
       inspect: (input) => this.#delegationCoordinator.inspect(input),
       start: (input) => this.#delegationCoordinator.start(input),
       send: (input) => this.#delegationCoordinator.send(input),
@@ -1799,6 +1803,14 @@ export class AppServerHost {
     return thread !== null || childDelegation !== null || delegation !== null;
   }
 
+  async #readOfficialThreadCwd(threadId: string): Promise<string | undefined> {
+    const response = await this.#requestOfficial("thread/read", { threadId });
+    if (isRecord(response.error)) return undefined;
+    const result = isRecord(response.result) ? response.result : null;
+    const thread = result && isRecord(result.thread) ? result.thread : null;
+    return thread && typeof thread.cwd === "string" && thread.cwd.trim() ? thread.cwd : undefined;
+  }
+
   async #inspectOfficialDelegationTarget(
     input: HarnessInspectInput,
   ): Promise<HarnessInspectResult> {
@@ -1879,7 +1891,7 @@ export class AppServerHost {
   }
 
   async #startOfficialDelegation(
-    input: DelegationStartInput & { parentThreadId: string },
+    input: DelegationStartInput & { parentThreadId: string; cwd: string },
   ): Promise<DelegationStartResult> {
     let requestedModel: HarnessModelRef | undefined;
     try {
@@ -2025,6 +2037,7 @@ export class AppServerHost {
         harnessId: "codex",
         deepLink: `codex://threads/${threadId}`,
         status: pendingTerminal ?? "running",
+        cwd: thread && typeof thread.cwd === "string" ? thread.cwd : input.cwd,
         ...(requestedModel || input.thinkingOptionId
           ? {
               configuration: {
@@ -2268,6 +2281,8 @@ export class AppServerHost {
         records,
         runtimeFor: (threadId) => {
           const thread = this.#externalRuntime.get(threadId);
+          const subagentStatus = this.#subagentThreadStatuses.get(threadId);
+          if (subagentStatus) return { running: subagentStatus === "active" };
           return thread ? { running: thread.running } : null;
         },
         requestOfficialPage: (params) =>
@@ -3962,7 +3977,9 @@ export class AppServerHost {
       const record = (await this.#repository.list()).find(
         (candidate) =>
           candidate.subagent?.parentHostThreadId === thread.id &&
-          candidate.subagent.nativeSubagentId === nativeSubagentId,
+          candidate.subagent.nativeSubagentId === nativeSubagentId &&
+          candidate.nativeSessionRef?.nativeSessionId ===
+            thread.record.nativeSessionRef?.nativeSessionId,
       );
       if (record) await this.#refreshOpenSubagentThread(record.hostThreadId, false);
       return;
@@ -3972,7 +3989,9 @@ export class AppServerHost {
       const record = (await this.#repository.list()).find(
         (candidate) =>
           candidate.subagent?.parentHostThreadId === thread.id &&
-          candidate.subagent.nativeSubagentId === nativeSubagentId,
+          candidate.subagent.nativeSubagentId === nativeSubagentId &&
+          candidate.nativeSessionRef?.nativeSessionId ===
+            thread.record.nativeSessionRef?.nativeSessionId,
       );
       if (!record) return;
       const status = event.status === "pending" || event.status === "running" ? "active" : "idle";
@@ -4075,6 +4094,7 @@ export class AppServerHost {
         await this.#repository.setDelegationStatus(delegation.delegationId, status);
       }
     }
+    for (const message of result.messages) await this.#writer.json(message);
     if (event.type === "turn.completed") {
       await this.#setThreadStatus(
         thread,
@@ -4082,9 +4102,6 @@ export class AppServerHost {
           ? { type: "active", activeFlags: [] }
           : { type: "idle" },
       );
-    }
-    for (const message of result.messages) await this.#writer.json(message);
-    if (event.type === "turn.completed") {
       this.#externalSteering.terminal(thread.id, event.turnId, event.outcome);
     }
   }
@@ -4096,35 +4113,13 @@ export class AppServerHost {
     if (!subagent.nativeSubagentId || !parent.record.nativeSessionRef) return subagent;
     const status =
       subagent.status === "pending" || subagent.status === "running" ? "active" : "idle";
-    const records = await this.#repository.list();
-    const existing = records.find(
-      (record) =>
-        record.subagent?.parentHostThreadId === parent.id &&
-        record.subagent.nativeSubagentId === subagent.nativeSubagentId,
-    );
-    if (existing) {
-      this.#trackRunningSubagent(parent.id, existing.hostThreadId, status);
-      await this.#setSubagentThreadStatus(existing.hostThreadId, status);
-      return { ...subagent, subagentId: existing.hostThreadId };
+    const record = await this.#repository.materializeSubagent(parent.record, subagent);
+    if (!record) return subagent;
+    if (this.#subagentThreadStatuses.has(record.hostThreadId)) {
+      this.#trackRunningSubagent(parent.id, record.hostThreadId, status);
+      await this.#setSubagentThreadStatus(record.hostThreadId, status);
+      return { ...subagent, subagentId: record.hostThreadId };
     }
-    const recordInput = createExternalThreadRecordInput({
-      harnessId: parent.record.harnessId,
-      cwd: parent.cwd,
-      title: subagent.description,
-      transportModelId: parent.transportModelId,
-      ephemeral: false,
-      historyMode: "paginated",
-      subagent: {
-        parentHostThreadId: parent.id,
-        nativeSubagentId: subagent.nativeSubagentId,
-        ...(subagent.role ? { role: subagent.role } : {}),
-      },
-    });
-    let record = await this.#repository.createProvisional(recordInput);
-    record = await this.#repository.commitNative(
-      record.hostThreadId,
-      parent.record.nativeSessionRef,
-    );
     const thread = externalThreadValue({
       record,
       turns: [],

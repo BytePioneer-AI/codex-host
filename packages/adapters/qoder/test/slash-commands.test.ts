@@ -205,6 +205,34 @@ describe("Qoder Slash Commands Capability", () => {
       });
     });
 
+    it("sanitizes whitespace descriptions and caps length at 512 characters without schema errors", () => {
+      const longDesc = "a".repeat(600);
+      const catalog = mapQoderSlashCommands([
+        { name: "whitespace_desc", description: "   ", argumentHint: "" },
+        { name: "long_desc", description: longDesc, argumentHint: "" },
+      ]);
+      expect(catalog.commands).toHaveLength(2);
+      expect(catalog.commands[0]?.description).toBeUndefined();
+      expect(catalog.commands[1]?.description).toHaveLength(512);
+    });
+
+    it("supports string command names and normalizes uppercase names to lowercase", () => {
+      const catalog = mapQoderSlashCommands(["/Compact", "Review"]);
+      expect(catalog.commands).toHaveLength(2);
+      expect(catalog.commands[0]).toEqual({
+        id: "qoder.compact",
+        invocation: "/compact",
+        label: "Compact",
+        argumentMode: "none",
+      });
+      expect(catalog.commands[1]).toEqual({
+        id: "qoder.review",
+        invocation: "/review",
+        label: "Review",
+        argumentMode: "none",
+      });
+    });
+
     it("finds commands by ID, invocation, or suffix in specified or fallback catalog", () => {
       expect(findQoderCommandDescriptor("qoder.compact")?.invocation).toBe("/compact");
       expect(findQoderCommandDescriptor("/compact")?.id).toBe("qoder.compact");
@@ -488,6 +516,65 @@ describe("Qoder Slash Commands Capability", () => {
         expect(ids).toContain("qoder.compact");
         expect(ids).toContain("qoder.init_extra");
       }
+    });
+
+    it("preserves fallback catalog when system/init delivers empty commands array", async () => {
+      const { session, fakeQuery } = createSession();
+
+      fakeQuery.deliverMessage({
+        type: "system",
+        subtype: "init",
+        session_id: "init-empty-id",
+        commands: [],
+      } as unknown as SDKMessage);
+
+      await flushTicks();
+
+      const list = await session.commands.list();
+      expect(list.ok).toBe(true);
+      if (list.ok) {
+        expect(list.value).toEqual(QODER_FALLBACK_COMMAND_CATALOG);
+      }
+    });
+
+    it("gracefully handles malformed commands_changed payload without aborting session", async () => {
+      const { session, fakeQuery } = createSession();
+
+      // Send malformed commands payload with an invalid object that would cause schema error
+      fakeQuery.deliverMessage({
+        type: "system",
+        subtype: "commands_changed",
+        uuid: "msg-bad-cmd",
+        session_id: "test-cmd-session",
+        commands: [{ name: "@@@@@" }],
+      } as unknown as SDKMessage);
+
+      await flushTicks();
+
+      // Catalog should remain intact and session can still execute /compact
+      const turnId = hostTurnIdSchema.parse("turn-after-bad-cmd");
+      const result = await session.commands.execute({
+        turnId,
+        commandId: "qoder.compact",
+      });
+      expect(result.ok).toBe(true);
+    });
+
+    it("executes /compact case-insensitively", async () => {
+      const { session, fakeQuery } = createSession();
+      const turnId = hostTurnIdSchema.parse("turn-case-insensitive");
+
+      const result = await session.commands.execute({
+        turnId,
+        commandId: "/COMPACT",
+      });
+      expect(result.ok).toBe(true);
+
+      await flushTicks();
+      expect(fakeQuery.pushedMessages).toHaveLength(1);
+      expect(fakeQuery.pushedMessages[0]?.message.content).toEqual([
+        { type: "text", text: "/compact" },
+      ]);
     });
 
     it("fully replaces catalog snapshot on commands_changed message without merging removed commands", async () => {

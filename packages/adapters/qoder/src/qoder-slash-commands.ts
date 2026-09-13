@@ -32,7 +32,7 @@ export function humanize(name: string): string {
 }
 
 export function mapQoderSlashCommands(
-  commands: readonly QoderSlashCommand[],
+  commands: readonly (QoderSlashCommand | string)[],
 ): HarnessCommandCatalog {
   const rawDescriptors: Array<{
     id: string;
@@ -44,19 +44,30 @@ export function mapQoderSlashCommands(
   const seenIds = new Set<string>();
 
   for (const native of commands) {
-    if (!native?.name) continue;
-    const cleanName = native.name.replace(/^\//, "").trim();
+    if (!native) continue;
+    const rawName = typeof native === "string" ? native : native.name;
+    if (typeof rawName !== "string") continue;
+    const cleanName = rawName.replace(/^\//, "").trim().toLowerCase();
     if (!cleanName) continue;
     const id = `qoder.${cleanName}`;
     if (seenIds.has(id)) continue;
     seenIds.add(id);
 
-    const hasArg = typeof native.argumentHint === "string" && native.argumentHint.trim().length > 0;
+    const desc =
+      typeof native === "object" && typeof native.description === "string"
+        ? native.description.trim()
+        : undefined;
+    const argumentHint =
+      typeof native === "object" && typeof native.argumentHint === "string"
+        ? native.argumentHint
+        : undefined;
+    const hasArg = typeof argumentHint === "string" && argumentHint.trim().length > 0;
+
     rawDescriptors.push({
       id,
       invocation: `/${cleanName}`,
-      label: humanize(cleanName),
-      ...(native.description ? { description: native.description } : {}),
+      label: humanize(cleanName).trim() || cleanName,
+      ...(desc && desc.length > 0 ? { description: desc.slice(0, 512) } : {}),
       argumentMode: hasArg ? "text" : "none",
     });
   }
@@ -101,7 +112,7 @@ export function parseQoderCommandInvocation(
     };
   }
 
-  if (!QODER_VERIFIED_HEADLESS_COMMAND_IDS.has(descriptor.id)) {
+  if (!QODER_VERIFIED_HEADLESS_COMMAND_IDS.has(descriptor.id.toLowerCase())) {
     return {
       ok: false,
       error: {

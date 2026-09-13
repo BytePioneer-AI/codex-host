@@ -410,13 +410,21 @@ export class QoderSession implements HarnessSession {
         });
       }
       const rawCommands = (message as { commands?: unknown }).commands;
-      if (Array.isArray(rawCommands)) {
-        this.#commandCatalog = mapQoderSlashCommands(rawCommands as QoderSlashCommand[]);
+      if (Array.isArray(rawCommands) && rawCommands.length > 0) {
+        try {
+          this.#commandCatalog = mapQoderSlashCommands(rawCommands as QoderSlashCommand[]);
+        } catch {
+          // Ignore invalid commands snapshot to avoid breaking session loop
+        }
       }
     } else if (subtype === "commands_changed") {
       const rawCommands = (message as { commands?: unknown }).commands;
       if (Array.isArray(rawCommands)) {
-        this.#commandCatalog = mapQoderSlashCommands(rawCommands as QoderSlashCommand[]);
+        try {
+          this.#commandCatalog = mapQoderSlashCommands(rawCommands as QoderSlashCommand[]);
+        } catch {
+          // Ignore invalid commands snapshot to avoid breaking session loop
+        }
       }
     }
   }

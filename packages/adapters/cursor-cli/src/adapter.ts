@@ -59,7 +59,6 @@ import { CursorInteractions } from "./interactions.js";
 import { type CursorSubagents, cursorTaskAddress } from "./subagents.js";
 import type { HarnessSubagentCapability } from "@codexhost/harness-adapter";
 import {
-  cursorListModelsVariantKey,
   parseCursorListModelId,
   parseCursorListModels,
   readCursorListModels,
@@ -426,42 +425,24 @@ export class CursorSession implements HarnessSession {
       if (command.type === "thinking.select") {
         const selections = decodeGroupedThinkingOptionId(command.thinkingOptionId);
         if (!selections) return rejected("invalidRequest", "Unknown Cursor Thinking option");
-        const base = this.initialState.effectiveModel
-          ? decodeCursorModelRef(this.initialState.effectiveModel.id)
-          : "";
-        const variant = this.variants.get(
-          cursorListModelsVariantKey(base, command.thinkingOptionId),
+        const applicable = selections.filter((selection) =>
+          cursorThinkingSelectionsAvailable([selection], { configOptions: this.#configOptions }),
         );
-        if (variant) {
-          const result = await this.transport.configure("model", variant);
-          const options = cursorConfigOptions(result);
-          const current = options.find((option) => option.id === "model")?.currentValue;
-          if (current !== variant && current !== base) {
-            throw new Error("Cursor did not confirm configuration selection");
-          }
-          this.#syncConfiguration(options, this.initialState.effectiveModel);
-          if (current === variant) {
-            this.initialState.effectiveThinkingOptionId = command.thinkingOptionId;
-          }
-        } else {
+        if (applicable.length === 0)
+          return rejected("invalidRequest", "Unknown Cursor Thinking option");
+        let options = cursorConfigOptions({ configOptions: this.#configOptions });
+        for (const selection of applicable) {
+          const result = await this.transport.configure(selection.groupId, selection.optionId);
+          options = cursorConfigOptions(result);
           if (
-            !cursorThinkingSelectionsAvailable(selections, { configOptions: this.#configOptions })
-          )
-            return rejected("invalidRequest", "Unknown Cursor Thinking option");
-          let options = cursorConfigOptions({ configOptions: this.#configOptions });
-          for (const selection of selections) {
-            const result = await this.transport.configure(selection.groupId, selection.optionId);
-            options = cursorConfigOptions(result);
-            if (
-              !options.some(
-                (option) =>
-                  option.id === selection.groupId && option.currentValue === selection.optionId,
-              )
+            !options.some(
+              (option) =>
+                option.id === selection.groupId && option.currentValue === selection.optionId,
             )
-              throw new Error("Cursor did not confirm configuration selection");
-          }
-          this.#syncConfiguration(options, this.initialState.effectiveModel);
+          )
+            throw new Error("Cursor did not confirm configuration selection");
         }
+        this.#syncConfiguration(options, this.initialState.effectiveModel);
       } else {
         const value =
           command.type === "model.select"
@@ -499,19 +480,11 @@ export class CursorSession implements HarnessSession {
     }
   }
   #nativeSelectValue(ref: string): string {
-    let base: string;
     try {
-      base = cursorNativeModel({ configOptions: this.#configOptions }, ref);
+      return cursorNativeModel({ configOptions: this.#configOptions }, ref);
     } catch {
-      base = decodeCursorModelRef(ref);
+      return decodeCursorModelRef(ref);
     }
-    return (
-      this.variants.get(
-        cursorListModelsVariantKey(base, this.initialState.effectiveThinkingOptionId),
-      ) ??
-      this.variants.get(cursorListModelsVariantKey(base)) ??
-      base
-    );
   }
   #syncConfiguration(
     options: ReturnType<typeof cursorConfigOptions>,

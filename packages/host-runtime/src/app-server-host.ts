@@ -3062,6 +3062,9 @@ export class AppServerHost {
     if (!sessionResult.ok) {
       this.#routeObservationTracker.rejectCreate(request.id);
       await this.#repository.removeProvisional(record.hostThreadId).catch(() => undefined);
+      this.#diagnose(
+        `External Thread create failed (${sessionResult.error.code}): ${sessionResult.error.message}`,
+      );
       const mapped = mapExternalThreadHarnessError(sessionResult.error, "create");
       await this.#writer.json(rpcError(request, mapped.code, mapped.message));
       return;

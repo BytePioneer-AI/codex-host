@@ -287,9 +287,7 @@ describe("Cursor native configuration", () => {
     expect(current).toMatchObject({ fast: "true", reasoning: "high" });
     await session.close();
   });
-  it("keeps the requested Thinking option when configure returns only the variant model", async () => {
-    const thinkingId = "g.fast~true.reasoning~high";
-    const variant = "gpt-5.6-sol-high-fast";
+  it("selects ACP effort instead of a list-models suffix model id", async () => {
     const parameterized = {
       sessionId: info.sessionId,
       configOptions: [
@@ -297,34 +295,55 @@ describe("Cursor native configuration", () => {
           id: "model",
           name: "Model",
           type: "select" as const,
-          currentValue: "gpt-5.6-sol",
+          currentValue: "muse-spark-1.3",
+          options: [{ value: "muse-spark-1.3", name: "Muse Spark 1.3" }],
+        },
+        {
+          id: "effort",
+          name: "Effort",
+          type: "select" as const,
+          currentValue: "medium",
           options: [
-            { value: "gpt-5.6-sol", name: "GPT-5.6 Sol" },
-            { value: variant, name: "GPT-5.6 Sol Fast" },
+            { value: "high", name: "High" },
+            { value: "medium", name: "Medium" },
           ],
         },
       ],
     };
+    const current = Object.fromEntries(
+      parameterized.configOptions.map((option) => [option.id, option.currentValue]),
+    );
     const transport = new FakeTransport({ cwd: process.cwd(), environment: {} });
     const session = new CursorSession(
       transport,
       parameterized,
       () => {},
       true,
-      new Map([[cursorListModelsVariantKey("gpt-5.6-sol", thinkingId), variant]]),
+      new Map([[cursorListModelsVariantKey("muse-spark-1.3", "g.effort~high"), "muse-spark-1.3-high"]]),
     );
-    vi.spyOn(transport, "configure").mockResolvedValue({
-      configOptions: parameterized.configOptions.map((option) => ({
-        ...option,
-        currentValue: variant,
-      })),
+    const configure = vi.spyOn(transport, "configure").mockImplementation(async (configId, value) => {
+      current[configId] = value;
+      return {
+        configOptions: parameterized.configOptions.map((option) => ({
+          ...option,
+          currentValue: current[option.id] ?? option.currentValue,
+        })),
+      };
     });
-    const selected = await session.execute({
+    const selectedModel = await session.execute({
+      type: "model.select",
+      model: cursorModelRef("muse-spark-1.3"),
+    });
+    expect(selectedModel.ok).toBe(true);
+    expect(configure).toHaveBeenCalledWith("model", "muse-spark-1.3");
+    configure.mockClear();
+    const selectedThinking = await session.execute({
       type: "thinking.select",
-      thinkingOptionId: thinkingId,
+      thinkingOptionId: "g.effort~high",
     });
-    expect(selected.ok).toBe(true);
-    expect(session.initialState.effectiveThinkingOptionId).toBe(thinkingId);
+    expect(selectedThinking.ok).toBe(true);
+    expect(configure).toHaveBeenCalledWith("effort", "high");
+    expect(configure).not.toHaveBeenCalledWith("model", "muse-spark-1.3-high");
     await session.close();
   });
   it("rejects unknown Thinking groups before configuring the native session", async () => {

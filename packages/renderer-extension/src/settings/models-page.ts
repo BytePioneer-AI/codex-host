@@ -1,12 +1,16 @@
 import type { RendererSettingsPageDefinition, RendererSettingsPageMountContext } from "./core.js";
 import type { RendererSettingsMessages } from "./localization.js";
 
-/** Same key as the Cursor composer picker. */
-const HIDDEN_MODELS_KEY = "codexhost.cursor-model-picker-hidden.v1";
+export type RendererVisibleModelHarness = "cursor-cli" | "pi";
 
-function hiddenModelIds(): Set<string> {
+const HIDDEN_MODEL_KEYS: Record<RendererVisibleModelHarness, string> = {
+  "cursor-cli": "codexhost.cursor-model-picker-hidden.v1",
+  pi: "codexhost.pi-model-picker-hidden.v1",
+};
+
+function hiddenModelIds(harness: RendererVisibleModelHarness): Set<string> {
   try {
-    const raw = window.localStorage.getItem(HIDDEN_MODELS_KEY);
+    const raw = window.localStorage.getItem(HIDDEN_MODEL_KEYS[harness]);
     if (!raw) return new Set();
     const parsed: unknown = JSON.parse(raw);
     return Array.isArray(parsed)
@@ -17,12 +21,16 @@ function hiddenModelIds(): Set<string> {
   }
 }
 
-function setModelHidden(modelId: string, hidden: boolean): void {
-  const ids = hiddenModelIds();
+function setModelHidden(
+  harness: RendererVisibleModelHarness,
+  modelId: string,
+  hidden: boolean,
+): void {
+  const ids = hiddenModelIds(harness);
   if (hidden) ids.add(modelId);
   else ids.delete(modelId);
   try {
-    window.localStorage.setItem(HIDDEN_MODELS_KEY, JSON.stringify([...ids]));
+    window.localStorage.setItem(HIDDEN_MODEL_KEYS[harness], JSON.stringify([...ids]));
   } catch {
     // Private mode or quota.
   }
@@ -34,7 +42,7 @@ export interface RendererCursorModelOption {
 }
 
 export interface RendererCursorModelsClient {
-  listModels(): Promise<readonly RendererCursorModelOption[]>;
+  listModels(harnessId: RendererVisibleModelHarness): Promise<readonly RendererCursorModelOption[]>;
 }
 
 export function createModelsSettingsPage(
@@ -47,9 +55,16 @@ export function createModelsSettingsPage(
     icon: "model-pool",
     mount(context: RendererSettingsPageMountContext) {
       const document = context.content.ownerDocument;
+      const header = document.createElement("div");
+      header.className = "settings-models-header";
       const heading = document.createElement("div");
       heading.className = "settings-section-label";
       heading.textContent = messages.pageLabels.models;
+      const harnessBar = document.createElement("div");
+      harnessBar.className = "settings-models-harness";
+      harnessBar.setAttribute("role", "tablist");
+      harnessBar.setAttribute("aria-label", messages.sessionImportHarness);
+      header.append(heading, harnessBar);
 
       const description = document.createElement("p");
       description.className = "settings-page-description";
@@ -63,11 +78,43 @@ export function createModelsSettingsPage(
 
       const list = document.createElement("div");
       list.className = "settings-models-list";
-
       const status = document.createElement("p");
       status.className = "settings-page-description";
 
-      context.content.append(heading, description, search, list, status);
+      context.content.append(header, description, search, list, status);
+
+      const sections: {
+        harness: RendererVisibleModelHarness;
+        title: string;
+        models: readonly RendererCursorModelOption[] | undefined;
+        error?: string;
+      }[] = [
+        { harness: "cursor-cli", title: messages.modelsCursorSection, models: undefined },
+        { harness: "pi", title: messages.modelsPiSection, models: undefined },
+      ];
+      let selectedHarness: RendererVisibleModelHarness = "cursor-cli";
+
+      const selectedSection = (): (typeof sections)[number] =>
+        sections.find((section) => section.harness === selectedHarness) ?? sections[0]!;
+
+      const renderHarnessOptions = (): void => {
+        harnessBar.replaceChildren();
+        for (const section of sections) {
+          const option = document.createElement("button");
+          option.type = "button";
+          option.textContent = section.title;
+          option.setAttribute("role", "tab");
+          option.setAttribute("aria-selected", String(section.harness === selectedHarness));
+          option.addEventListener("click", () => {
+            if (section.harness === selectedHarness) return;
+            selectedHarness = section.harness;
+            search.value = "";
+            renderHarnessOptions();
+            void load();
+          });
+          harnessBar.append(option);
+        }
+      };
 
       const renderUnavailable = (detail: string): void => {
         list.replaceChildren();
@@ -76,7 +123,13 @@ export function createModelsSettingsPage(
         search.hidden = true;
       };
 
-      const renderModels = (models: readonly RendererCursorModelOption[]): void => {
+      const renderModels = (): void => {
+        const section = selectedSection();
+        if (section.error) {
+          renderUnavailable(section.error);
+          return;
+        }
+        const models = section.models ?? [];
         search.hidden = models.length === 0;
         status.hidden = models.length > 0;
         status.textContent = models.length === 0 ? messages.modelsEmpty : "";
@@ -93,7 +146,7 @@ export function createModelsSettingsPage(
           const toggle = document.createElement("button");
           toggle.type = "button";
           toggle.className = "settings-preference-switch";
-          const visible = !hiddenModelIds().has(model.id);
+          const visible = !hiddenModelIds(section.harness).has(model.id);
           toggle.setAttribute("role", "switch");
           toggle.setAttribute("aria-checked", String(visible));
           toggle.setAttribute("aria-label", model.label);
@@ -103,15 +156,14 @@ export function createModelsSettingsPage(
           toggle.addEventListener("click", () => {
             const nextVisible = toggle.getAttribute("aria-checked") !== "true";
             toggle.setAttribute("aria-checked", String(nextVisible));
-            setModelHidden(model.id, !nextVisible);
+            setModelHidden(section.harness, model.id, !nextVisible);
           });
           row.append(title, toggle);
           list.append(row);
         }
       };
 
-      let models: readonly RendererCursorModelOption[] = [];
-      search.addEventListener("input", () => renderModels(models));
+      search.addEventListener("input", () => renderModels());
 
       const load = (): Promise<void> => {
         const client = getClient();
@@ -119,19 +171,32 @@ export function createModelsSettingsPage(
           renderUnavailable(messages.modelsUnavailable);
           return Promise.resolve();
         }
+        const section = selectedSection();
+        if (section.models || section.error) {
+          renderModels();
+          return Promise.resolve();
+        }
         status.hidden = false;
         status.textContent = messages.modelsLoading;
         list.replaceChildren();
-        return context.runLatest((_signal) => client.listModels(), {
+        const harness = section.harness;
+        return context.runLatest((_signal) => client.listModels(harness), {
           success(result) {
-            models = result;
-            renderModels(models);
+            if (selectedSection().harness !== harness) return;
+            section.models = result;
+            delete section.error;
+            renderModels();
           },
           failure() {
-            renderUnavailable(messages.modelsLoadFailed);
+            if (selectedSection().harness !== harness) return;
+            section.models = [];
+            section.error = messages.modelsLoadFailed;
+            renderUnavailable(section.error);
           },
         });
       };
+
+      renderHarnessOptions();
 
       void load();
       return undefined;

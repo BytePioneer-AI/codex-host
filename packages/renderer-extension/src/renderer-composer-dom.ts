@@ -687,6 +687,29 @@ export function mountComposerAgentControl(
   return control;
 }
 
+const PI_HIDDEN_MODELS_KEY = "codexhost.pi-model-picker-hidden.v1";
+
+function hidePiModels(view: RendererModelControlView): RendererModelControlView {
+  if (view.status !== "ready" || !view.catalog) return view;
+  let hidden: Set<string>;
+  try {
+    const raw = window.localStorage.getItem(PI_HIDDEN_MODELS_KEY);
+    const parsed: unknown = raw ? JSON.parse(raw) : [];
+    hidden = Array.isArray(parsed)
+      ? new Set(parsed.filter((id): id is string => typeof id === "string"))
+      : new Set();
+  } catch {
+    return view;
+  }
+  if (hidden.size === 0) return view;
+  const selectedId = view.selected?.id;
+  const models = view.catalog.models.filter(
+    (model) => !hidden.has(model.ref.id) || model.ref.id === selectedId,
+  );
+  if (models.length === view.catalog.models.length) return view;
+  return { ...view, catalog: { ...view.catalog, models } };
+}
+
 export function renderComposerAgentControl(
   control: ComposerAgentControl,
   state: { agent: RendererAgent; phase: ComposerAgentPhase },
@@ -749,7 +772,7 @@ export function renderComposerAgentControl(
   const cursorAgent = state.agent === "cursor-cli";
   renderRendererModelPicker(
     control.modelPicker,
-    modelView,
+    state.agent === "pi" ? hidePiModels(modelView) : modelView,
     state.agent !== "codex" && !cursorAgent,
   );
   if (control.cursorModelPicker) {

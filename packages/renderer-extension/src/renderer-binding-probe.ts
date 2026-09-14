@@ -729,9 +729,9 @@ export function installRendererBindingProbe(
       const client = modelClientForHost("local");
       if (!client) return null;
       return {
-        async listModels() {
+        async listModels(harnessId) {
           const inspection = await client.inspectHarness({
-            harnessId: externalHarnessIds["cursor-cli"],
+            harnessId: externalHarnessIds[harnessId],
           });
           if (inspection.status !== "ready") {
             throw new Error(inspection.error.message);

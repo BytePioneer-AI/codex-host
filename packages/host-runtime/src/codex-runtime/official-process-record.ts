@@ -70,6 +70,14 @@ export class OfficialProcessRecord {
       // configured with KILL_ON_JOB_CLOSE, so confirmed helper exit/reuse is
       // kernel proof that the whole owned process tree was terminated.
       closedWindowsJob = this.#supervisorExitClosesProcessTree;
+      // Supervisor PID is gone. A killed Host often leaves no tree-exit receipt,
+      // which previously blocked official Codex until manual recovery.
+      if (current === null) {
+        this.#assertOwnership();
+        await this.#files.remove(this.#home, name, privateFileDigest(previous.bytes));
+        await this.#removeReceipt();
+        return;
+      }
     }
     const receipt = await this.#receipt();
     if ((receipt && receipt.tag !== previous.record.nonce) || (!receipt && !closedWindowsJob))

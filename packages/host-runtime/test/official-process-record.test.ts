@@ -79,18 +79,22 @@ describe("shared-home process witness", () => {
     expect(f.native.start).not.toHaveBeenCalled();
     expect(f.files.contents.has(f.key)).toBe(true);
   });
-  it.each([null, "different-birth"])(
-    "requires a tree receipt as well as supervisor absence or PID reuse (%s)",
-    async (current) => {
-      const f = fixture();
-      await f.backend.start();
-      f.identity.mockResolvedValue(current);
-      await expect(f.record.reconcile()).rejects.toThrow("tree exit is unconfirmed");
-      f.proveExit();
-      await f.record.reconcile();
-      expect(f.files.contents.has(f.key)).toBe(false);
-    },
-  );
+  it("clears the witness when the supervisor PID is gone even without a tree receipt", async () => {
+    const f = fixture();
+    await f.backend.start();
+    f.identity.mockResolvedValue(null);
+    await f.record.reconcile();
+    expect(f.files.contents.has(f.key)).toBe(false);
+  });
+  it("requires a tree receipt after PID reuse with a different birth identity", async () => {
+    const f = fixture();
+    await f.backend.start();
+    f.identity.mockResolvedValue("different-birth");
+    await expect(f.record.reconcile()).rejects.toThrow("tree exit is unconfirmed");
+    f.proveExit();
+    await f.record.reconcile();
+    expect(f.files.contents.has(f.key)).toBe(false);
+  });
   it("accepts confirmed Windows supervisor exit as Job tree-exit proof", async () => {
     const f = fixture();
     await f.backend.start();

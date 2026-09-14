@@ -142,6 +142,7 @@ import {
   spawnOfficialAppServerConnection,
   type OfficialAppServerConnection,
 } from "./official-app-server-connection.js";
+import { OfficialAdmissionError } from "./codex-runtime/official-work-gate.js";
 import {
   SingleNativeCodexAccount,
   type CodexAccountControl,
@@ -1455,13 +1456,25 @@ export class AppServerHost {
         return;
       }
       await this.#officialRuntime.sendFrame(frame);
-    } catch {
+    } catch (error) {
       if (request.method === "turn/start") {
         this.#pendingOfficialTurnStarts.delete(request.id);
         this.#signalActiveWorkChanged();
       }
+      if (error instanceof OfficialAdmissionError && error.code === "unavailable") {
+        try {
+          await this.#officialRuntime.initialize();
+          await this.#officialRuntime.sendFrame(frame);
+          return;
+        } catch (retryError) {
+          await this.#writer.json(
+            rpcError(request, -32001, `Official request failed: ${errorMessage(retryError)}`),
+          );
+          return;
+        }
+      }
       await this.#writer.json(
-        rpcError(request, -32001, "Official request failed; retry explicitly"),
+        rpcError(request, -32001, `Official request failed: ${errorMessage(error)}`),
       );
     }
   }

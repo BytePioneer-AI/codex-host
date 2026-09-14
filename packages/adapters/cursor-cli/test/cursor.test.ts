@@ -97,6 +97,7 @@ describe("Cursor native configuration", () => {
     const clock = vi.spyOn(Date, "now").mockReturnValue(0),
       gate = Promise.withResolvers<string>();
     const listModels = vi.fn(() => gate.promise);
+    vi.spyOn(CursorTransport.prototype, "ensureAgent").mockResolvedValue();
     const adapter = new CursorAdapter({ listModels });
     try {
       const first = adapter.inspect();
@@ -210,8 +211,48 @@ describe("Cursor native configuration", () => {
         .effectiveThinkingOptionId,
     ).toBe("g.fast~false.reasoning~medium");
   });
+  it("exposes ACP context window options as Thinking groups for a live session", () => {
+    const live = {
+      sessionId: info.sessionId,
+      configOptions: [
+        {
+          id: "model",
+          name: "Model",
+          type: "select" as const,
+          currentValue: "muse-spark-1.3",
+          options: [{ value: "muse-spark-1.3", name: "Muse Spark 1.3" }],
+        },
+        {
+          id: "context",
+          name: "Context",
+          type: "select" as const,
+          currentValue: "300k",
+          options: [
+            { value: "300k", name: "300K" },
+            { value: "1m", name: "1M" },
+          ],
+        },
+        {
+          id: "effort",
+          name: "Effort",
+          type: "select" as const,
+          currentValue: "high",
+          options: [
+            { value: "high", name: "High" },
+            { value: "medium", name: "Medium" },
+          ],
+        },
+      ],
+    };
+    const state = cursorSessionConfiguration(live, cursorModelRef("muse-spark-1.3"));
+    expect(state.availableThinkingOptions?.some((option) => option.id.includes("context~1m"))).toBe(
+      true,
+    );
+    expect(state.effectiveThinkingOptionId).toBe("g.context~300k.effort~high");
+  });
   it("inspects --list-models without opening an ACP session", async () => {
     const open = vi.spyOn(CursorTransport.prototype, "open");
+    vi.spyOn(CursorTransport.prototype, "ensureAgent").mockResolvedValue();
     const adapter = new CursorAdapter({
       listModels: async () =>
         "auto - Auto (default)\ncomposer-2.5 - Composer 2.5\ncomposer-2.5-fast - Composer 2.5 Fast\n",
@@ -226,6 +267,30 @@ describe("Cursor native configuration", () => {
         inspection.catalog.models.find((model) => model.label === "Composer 2.5")
           ?.supportedThinkingOptionIds,
       ).toEqual(["g.fast~false", "g.fast~true"]);
+    } finally {
+      await adapter.close();
+    }
+  });
+  it("prewarms ACP without session/new and reuses it on create", async () => {
+    const ensure = vi.spyOn(CursorTransport.prototype, "ensureAgent").mockResolvedValue();
+    vi.spyOn(CursorTransport.prototype, "idle", "get").mockReturnValue(true);
+    const open = vi.spyOn(CursorTransport.prototype, "open").mockImplementation(async function (
+      this: CursorTransport,
+    ) {
+      this.sessionId = info.sessionId;
+      return info;
+    });
+    const adapter = new CursorAdapter({
+      listModels: async () => "auto - Auto (default)\n",
+    });
+    try {
+      await adapter.inspect();
+      await vi.waitFor(() => expect(ensure).toHaveBeenCalled());
+      expect(open).not.toHaveBeenCalled();
+      const opened = await adapter.open({ kind: "create", cwd: process.cwd() });
+      expect(opened.ok).toBe(true);
+      expect(open).toHaveBeenCalledTimes(1);
+      if (opened.ok) await opened.value.close();
     } finally {
       await adapter.close();
     }
@@ -362,6 +427,7 @@ describe("Cursor native configuration", () => {
     const listModels = vi.fn(async () => {
       throw new Error("not logged in");
     });
+    vi.spyOn(CursorTransport.prototype, "ensureAgent").mockResolvedValue();
     const adapter = new CursorAdapter({ listModels });
     const first = await adapter.inspect();
     expect(harnessInspectionSchema.safeParse(first).success).toBe(true);

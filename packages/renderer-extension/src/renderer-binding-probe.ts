@@ -1,6 +1,7 @@
 import {
   decodeHarnessPluginRoute,
   harnessIdSchema,
+  harnessThinkingOptionIdSchema,
   permissionModeFixedAtCreate,
   type HarnessCommandDescriptor,
   type HarnessModelCatalog,
@@ -63,6 +64,7 @@ import {
 import type { RendererModelClient } from "./renderer-model-client.js";
 import { RendererMethodUnavailableError } from "./renderer-request-sender.js";
 import { thinkingOptionsForModel } from "./renderer-model-picker.js";
+import { resolveSupportedThinkingOptionId } from "./cursor-model-picker.js";
 import { RENDERER_AGENT_INSTALL_URLS } from "./renderer-agent-picker.js";
 import {
   readClaudePermissionModePreference,
@@ -100,6 +102,7 @@ const externalHarnessIds = {
   codebuddy: harnessIdSchema.parse("codebuddy"),
   "cursor-cli": harnessIdSchema.parse("cursor-cli"),
   hermes: harnessIdSchema.parse("hermes"),
+  qodercli: harnessIdSchema.parse("qodercli"),
 } as const;
 
 const externalAgents: readonly ExternalRendererAgent[] = [
@@ -114,6 +117,7 @@ const externalAgents: readonly ExternalRendererAgent[] = [
   "codebuddy",
   "cursor-cli",
   "hermes",
+  "qodercli",
 ];
 type HarnessAvailability = Partial<Record<ExternalRendererAgent, RendererAgentAvailability>>;
 type HarnessAvailabilityErrors = Partial<Record<ExternalRendererAgent, CodexhostError | undefined>>;
@@ -467,7 +471,8 @@ export function restoredThreadOwnership(inspection: ThreadInspection): RestoredT
   if (
     inspection.harnessId === "kiro-cli" ||
     inspection.harnessId === "codebuddy" ||
-    inspection.harnessId === "cursor-cli"
+    inspection.harnessId === "cursor-cli" ||
+    inspection.harnessId === "qodercli"
   ) {
     const route = decodeHarnessPluginRoute(inspection.transportModelId);
     if (!route || route.harnessId !== inspection.harnessId) {
@@ -770,6 +775,7 @@ export function installRendererBindingProbe(
       codebuddy: undefined,
       "cursor-cli": undefined,
       hermes: undefined,
+      qodercli: undefined,
     },
     webUi: Object.fromEntries(
       externalAgents.map((agent) => [agent, false]),
@@ -1421,10 +1427,9 @@ export function installRendererBindingProbe(
         ? previousModel
         : (preferredConfiguration?.model ?? inspection.catalog.defaultModel);
       if (!selected) throw new Error("External Harness did not report its default Model");
-      const effectiveCatalog =
-        current.phase === "locked" && mounted.threadConfiguration
-          ? catalogWithConfigurationState(inspection.catalog, selected, mounted.threadConfiguration)
-          : inspection.catalog;
+      const effectiveCatalog = mounted.threadConfiguration?.availableThinkingOptions
+        ? catalogWithConfigurationState(inspection.catalog, selected, mounted.threadConfiguration)
+        : inspection.catalog;
       const previousThinkingOptionId = controller.thinkingOptionForAgent(mounted.composer, agent);
       const requestedThinkingOptionId = previousModelAvailable
         ? previousThinkingOptionId
@@ -1813,16 +1818,15 @@ export function installRendererBindingProbe(
     const catalog = mounted.modelView.catalog;
     const model = controller.modelForAgent(mounted.composer, agent);
     const permissionModeId = controller.permissionModeForAgent(mounted.composer, agent);
-    const selectedThinkingOptionId = catalog?.thinkingOptions.find(
-      ({ id }) => id === thinkingOptionId,
-    )?.id;
     const catalogModel = catalog?.models.find((candidate) => candidate.ref.id === model?.id);
+    const selectedThinkingOptionId = harnessThinkingOptionIdSchema.safeParse(
+      resolveSupportedThinkingOptionId(thinkingOptionId, catalogModel?.supportedThinkingOptionIds),
+    ).data;
     if (
       !mounted.modelView.thinkingSelectionSupported ||
       !catalog ||
       !model ||
-      !selectedThinkingOptionId ||
-      !catalogModel?.supportedThinkingOptionIds?.includes(selectedThinkingOptionId)
+      !selectedThinkingOptionId
     ) {
       return;
     }

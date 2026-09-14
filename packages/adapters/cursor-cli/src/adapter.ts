@@ -126,6 +126,8 @@ export class CursorAdapter implements HarnessAdapter {
     { expires: number; pending: boolean; result: Promise<HarnessInspection> }
   >();
   #variants = new Map<string, string>();
+  #warm: CursorTransport | undefined;
+  #warming: Promise<void> | undefined;
   #closed = false;
   constructor(readonly options: CursorAdapterOptions = {}) {}
   transportOptions(cwd: string, environment?: NodeJS.ProcessEnv): CursorTransportOptions {
@@ -144,8 +146,10 @@ export class CursorAdapter implements HarnessAdapter {
       };
     const cwd = path.resolve(input.cwd ?? process.cwd());
     const cached = this.#inspections.get(cwd);
-    if (cached && (cached.pending || (!input.refresh && cached.expires > Date.now())))
+    if (cached && (cached.pending || (!input.refresh && cached.expires > Date.now()))) {
+      void this.#prewarm(cwd);
       return cached.result;
+    }
     const result = (async (): Promise<HarnessInspection> => {
       try {
         const text = this.options.listModels
@@ -174,7 +178,34 @@ export class CursorAdapter implements HarnessAdapter {
       entry.pending = false;
       entry.expires = Date.now() + 5 * 60_000;
     });
+    void this.#prewarm(cwd);
     return result;
+  }
+  #takeIdleWarm(): CursorTransport | undefined {
+    const transport = this.#warm;
+    if (!transport?.idle) return undefined;
+    this.#warm = undefined;
+    return transport;
+  }
+  async #prewarm(cwd: string): Promise<void> {
+    if (this.#closed || this.#warm?.idle || this.#warming) return;
+    const warming = (async () => {
+      const transport = new CursorTransport(this.transportOptions(cwd));
+      await transport.ensureAgent();
+      if (this.#closed) {
+        await transport.close();
+        return;
+      }
+      this.#warm = transport;
+    })();
+    this.#warming = warming;
+    try {
+      await warming;
+    } catch {
+      // Catalog inspect still succeeds if ACP prewarm fails.
+    } finally {
+      if (this.#warming === warming) this.#warming = undefined;
+    }
   }
   async open(input: OpenSessionInput): Promise<HarnessResult<HarnessSession>> {
     if (this.#closed) return rejected("invalidState", "Cursor adapter is closed");
@@ -185,12 +216,15 @@ export class CursorAdapter implements HarnessAdapter {
     if (input.kind === "resume" && input.nativeRef.harnessId !== this.harnessId)
       return rejected("invalidRequest", "Session belongs to another Harness");
     const options = this.transportOptions(input.cwd, input.environment);
-    const transport = new CursorTransport(options);
+    if (this.#warming) await this.#warming;
+    const transport = this.#takeIdleWarm() ?? new CursorTransport(options);
+    void this.#prewarm(options.cwd);
     try {
       if (input.kind === "resume")
         readCursorNativeTurns(input.nativeRef.nativeSessionId, options.cwd, options.environment);
       const info = await transport.open(
         input.kind === "resume" ? input.nativeRef.nativeSessionId : undefined,
+        options.cwd,
       );
       const session = new CursorSession(
         transport,
@@ -258,9 +292,13 @@ export class CursorAdapter implements HarnessAdapter {
   async close() {
     this.#closed = true;
     await Promise.allSettled([...this.#sessions].map((session) => session.close()));
-    await Promise.allSettled(
-      [...this.#inspections.values()].map((inspection) => inspection.result),
-    );
+    const warm = this.#warm;
+    this.#warm = undefined;
+    await Promise.allSettled([
+      this.#warming,
+      warm?.close(),
+      ...[...this.#inspections.values()].map((inspection) => inspection.result),
+    ]);
   }
 }
 

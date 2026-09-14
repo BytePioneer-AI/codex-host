@@ -7,7 +7,11 @@ import {
   harnessThinkingOptionIdSchema,
 } from "@codexhost/shared-contracts";
 import { DraftAgentController, KNOWN_RENDERER_AGENTS } from "../src/agent-selection-state.js";
-import { cursorModelPickerPresentation } from "../src/cursor-model-picker.js";
+import {
+  cursorModelPickerPresentation,
+  replaceGroupedSelection,
+  resolveSupportedThinkingOptionId,
+} from "../src/cursor-model-picker.js";
 import { restoredThreadOwnership } from "../src/renderer-binding-probe.js";
 import { modelSelectionForAgent } from "../src/versioned-renderer-adapter.js";
 import { RENDERER_AGENT_INSTALL_URLS } from "../src/renderer-agent-picker.js";
@@ -132,5 +136,57 @@ describe("cursor model picker presentation", () => {
     expect(view.groups.map((group) => group.id)).toEqual(["reasoning"]);
     expect(view.thinkingLabel).toBe("Medium");
     expect(view.fast?.enabled).toBe(false);
+  });
+
+  it("shows model, context, and thinking groups from a live ACP catalog", () => {
+    const model = harnessModelRefSchema.parse({ id: "cursor.muse" });
+    const ids = [
+      "g.context~300k.effort~high",
+      "g.context~1m.effort~high",
+      "g.context~300k.effort~medium",
+      "g.context~1m.effort~medium",
+    ];
+    const catalog = harnessModelCatalogSchema.parse({
+      models: [{ ref: model, label: "Muse Spark 1.3", supportedThinkingOptionIds: ids }],
+      defaultModel: model,
+      thinkingOptions: ids.map((id) => ({ id, label: id })),
+    });
+    const view = cursorModelPickerPresentation({
+      status: "ready",
+      catalog,
+      selected: model,
+      selectedThinkingOptionId: "g.context~300k.effort~high",
+      thinkingSelectionSupported: true,
+    });
+    expect(view.modelLabel).toBe("Muse Spark 1.3");
+    expect(view.groups.map((group) => group.id).sort()).toEqual(["context", "effort"]);
+    expect(view.groups.find((group) => group.id === "context")?.selectedOptionId).toBe("300k");
+    expect(view.groups.find((group) => group.id === "effort")?.selectedOptionId).toBe("high");
+  });
+
+  it("keeps ACP context window ids when the live catalog supports them", () => {
+    const supported = [
+      "g.context~300k.effort~high",
+      "g.context~1m.effort~high",
+      "g.context~300k.effort~medium",
+      "g.context~1m.effort~medium",
+    ];
+    expect(
+      replaceGroupedSelection("g.context~300k.effort~high", "context", "1m", supported),
+    ).toBe("g.context~1m.effort~high");
+    expect(
+      resolveSupportedThinkingOptionId("g.context~1m.effort~high", supported),
+    ).toBe("g.context~1m.effort~high");
+  });
+
+  it("maps thinking clicks onto the model's supported ids, dropping extra ACP groups", () => {
+    const supported = ["g.effort~medium", "g.effort~high"];
+    expect(
+      replaceGroupedSelection("g.context~300k.effort~high", "effort", "medium", supported),
+    ).toBe("g.effort~medium");
+    expect(replaceGroupedSelection("g.effort~high", "context", "1m", supported)).toBeUndefined();
+    expect(
+      resolveSupportedThinkingOptionId("g.context~300k.effort~high", supported),
+    ).toBe("g.effort~high");
   });
 });

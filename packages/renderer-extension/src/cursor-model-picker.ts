@@ -7,7 +7,7 @@ import {
 } from "./renderer-trigger-chip-style.js";
 
 const MENU_CLASSES =
-  "fixed z-50 overflow-hidden rounded-xl bg-token-dropdown-background/90 text-token-foreground shadow-lg backdrop-blur-xl";
+  "overflow-hidden rounded-xl bg-token-dropdown-background/90 text-token-foreground shadow-lg backdrop-blur-xl";
 const OPTION_CLASSES =
   "flex w-full cursor-interaction items-center gap-2 rounded-lg px-2 py-2 text-left text-sm text-token-foreground outline-none enabled:hover:bg-token-list-hover-background enabled:active:bg-token-foreground/15 disabled:cursor-not-allowed disabled:opacity-40";
 const SEARCH_INPUT_CLASSES =
@@ -65,7 +65,7 @@ function decodeGroupedId(id: string): GroupedSelection[] | null {
   return selections;
 }
 
-function replaceGroupedSelection(
+export function replaceGroupedSelection(
   currentId: string | undefined,
   groupId: string,
   optionId: string,
@@ -86,6 +86,21 @@ function replaceGroupedSelection(
       (selection) => selection.groupId === groupId && selection.optionId === optionId,
     ),
   );
+}
+
+export function resolveSupportedThinkingOptionId(
+  requested: string,
+  supportedIds: readonly string[] | undefined,
+): string | undefined {
+  if (!supportedIds?.length) return undefined;
+  if (supportedIds.includes(requested)) return requested;
+  const decoded = decodeGroupedId(requested);
+  if (!decoded) return undefined;
+  for (const atom of decoded) {
+    const resolved = replaceGroupedSelection(requested, atom.groupId, atom.optionId, supportedIds);
+    if (resolved) return resolved;
+  }
+  return undefined;
 }
 
 function titleCase(value: string): string {
@@ -349,19 +364,23 @@ export function mountCursorModelPicker(
   menu.setAttribute("role", "menu");
   menu.setAttribute("aria-label", "Cursor model");
   menu.setAttribute("popover", "manual");
-  menu.className = MENU_CLASSES;
+  menu.className = "fixed z-50";
   menu.style.position = "fixed";
   menu.style.inset = "auto";
   menu.style.margin = "0";
-  menu.style.padding = "4px";
-  menu.style.border = "0";
-  menu.style.minWidth = "220px";
-  menu.style.font = "400 13px/18px system-ui, sans-serif";
+
+  const card = document.createElement("div");
+  card.className = MENU_CLASSES;
+  card.style.padding = "4px";
+  card.style.border = "0";
+  card.style.minWidth = "220px";
+  card.style.font = "400 13px/18px system-ui, sans-serif";
 
   const thinkingMenu = document.createElement("div");
   thinkingMenu.setAttribute("role", "menu");
   thinkingMenu.hidden = true;
   thinkingMenu.className = MENU_CLASSES;
+  thinkingMenu.style.position = "fixed";
   thinkingMenu.style.padding = "4px";
   thinkingMenu.style.border = "0";
   thinkingMenu.style.font = "400 13px/18px system-ui, sans-serif";
@@ -370,6 +389,7 @@ export function mountCursorModelPicker(
   modelMenu.setAttribute("role", "menu");
   modelMenu.hidden = true;
   modelMenu.className = MENU_CLASSES;
+  modelMenu.style.position = "fixed";
   modelMenu.style.padding = "0";
   modelMenu.style.border = "0";
   modelMenu.style.flexDirection = "column";
@@ -435,7 +455,7 @@ export function mountCursorModelPicker(
     const supported = thinkingOptionsForModel(view.catalog, view.selected).map(
       (option) => option.id,
     );
-    menu.replaceChildren();
+    card.replaceChildren();
     thinkingButtons.clear();
     options.clear();
     optionsList.replaceChildren(searchEmpty);
@@ -455,18 +475,22 @@ export function mountCursorModelPicker(
       knob.dataset.checked = String(presentation.fast.enabled);
       knob.setAttribute("aria-hidden", "true");
       row.append(title, knob);
-      menu.append(row);
+      card.append(row);
     }
     for (const group of presentation.groups) {
       const selected =
         group.options.find((option) => option.id === group.selectedOptionId)?.label ?? "";
       const row = createCompactRow(group.label, selected);
       row.dataset.openGroup = group.id;
-      menu.append(row);
+      card.append(row);
       for (const option of group.options) {
-        const cartesianId =
-          replaceGroupedSelection(view.selectedThinkingOptionId, group.id, option.id, supported) ??
-          option.id;
+        const cartesianId = replaceGroupedSelection(
+          view.selectedThinkingOptionId,
+          group.id,
+          option.id,
+          supported,
+        );
+        if (!cartesianId) continue;
         const button = document.createElement("button");
         button.type = "button";
         button.className = OPTION_CLASSES;
@@ -483,7 +507,7 @@ export function mountCursorModelPicker(
     }
     const modelRow = createCompactRow("Model", presentation.modelLabel);
     modelRow.dataset.openModels = "true";
-    menu.append(modelRow);
+    card.append(modelRow);
 
     const hidden = readHiddenIds();
     const selectedId = view.selected?.id;
@@ -520,13 +544,13 @@ export function mountCursorModelPicker(
     }
     showSide(thinkingMenu);
     thinkingMenu.style.display = "block";
-    placeSidePanel(thinkingMenu, menu);
+    placeSidePanel(thinkingMenu, card);
   };
   const openModels = (): void => {
     if (!keepEntryOpen()) return;
     hideSide(thinkingMenu);
     showSide(modelMenu);
-    placeSidePanel(modelMenu, menu);
+    placeSidePanel(modelMenu, card);
     searchInput.focus();
   };
 
@@ -606,8 +630,8 @@ export function mountCursorModelPicker(
       return;
     }
     placeMain();
-    if (!thinkingMenu.hidden) placeSidePanel(thinkingMenu, menu);
-    if (!modelMenu.hidden) placeSidePanel(modelMenu, menu);
+    if (!thinkingMenu.hidden) placeSidePanel(thinkingMenu, card);
+    if (!modelMenu.hidden) placeSidePanel(modelMenu, card);
   };
 
   trigger.addEventListener("click", onTriggerClick);
@@ -621,7 +645,8 @@ export function mountCursorModelPicker(
   window.addEventListener("resize", onViewportChange);
   window.addEventListener("scroll", onViewportChange, true);
   root.append(trigger);
-  document.body.append(menu, thinkingMenu, modelMenu);
+  menu.append(card, thinkingMenu, modelMenu);
+  document.body.append(menu);
 
   const control: CursorModelPickerControl & { render(view: RendererModelControlView): void } = {
     root,
@@ -655,8 +680,6 @@ export function mountCursorModelPicker(
       window.removeEventListener("resize", onViewportChange);
       window.removeEventListener("scroll", onViewportChange, true);
       menu.remove();
-      thinkingMenu.remove();
-      modelMenu.remove();
       root.remove();
     },
   };

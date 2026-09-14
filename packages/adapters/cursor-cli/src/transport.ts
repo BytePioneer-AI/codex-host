@@ -31,6 +31,7 @@ export class CursorTransport {
   #connection: ClientSideConnection | undefined;
   #callbacks: CursorCallbacks | undefined;
   #closed = false;
+  #loadSession = false;
   #fault: Error | undefined;
   #rejectFault!: (error: Error) => void;
   readonly #failed = new Promise<never>((_, reject) => {
@@ -39,6 +40,10 @@ export class CursorTransport {
 
   constructor(readonly options: CursorTransportOptions) {
     void this.#failed.catch(() => undefined);
+  }
+
+  get idle(): boolean {
+    return !this.#closed && Boolean(this.#connection) && !this.sessionId;
   }
 
   async #bounded<T>(work: Promise<T>, timeout = this.options.timeoutMs ?? 30_000): Promise<T> {
@@ -60,8 +65,9 @@ export class CursorTransport {
     }
   }
 
-  async open(sessionId?: string): Promise<CursorSessionInfo> {
-    if (this.#closed || this.#connection) throw new Error("Cursor transport cannot be reopened");
+  async ensureAgent(): Promise<void> {
+    if (this.#closed) throw new Error("Cursor session closed");
+    if (this.#connection) return;
     const invocation = cursorInvocation(this.options.environment, this.options.command);
     const child = spawn(invocation.command, invocation.arguments, {
       cwd: this.options.cwd,
@@ -114,18 +120,32 @@ export class CursorTransport {
           clientInfo: { name: "codexhost", version: "0.6.2" },
         }),
       );
-      if (init.protocolVersion !== 1 || (sessionId && !init.agentCapabilities?.loadSession))
+      if (init.protocolVersion !== 1)
         throw new Error("Cursor does not support the required ACP session protocol");
+      this.#loadSession = Boolean(init.agentCapabilities?.loadSession);
       // This reuses an existing native login. The adapter never launches login or reads credentials.
       await this.#bounded(this.#connection.authenticate({ methodId: "cursor_login" }));
+    } catch (error) {
+      await this.close();
+      throw error;
+    }
+  }
+
+  async open(sessionId?: string, sessionCwd = this.options.cwd): Promise<CursorSessionInfo> {
+    if (this.#closed) throw new Error("Cursor session closed");
+    if (this.sessionId) throw new Error("Cursor transport cannot be reopened");
+    await this.ensureAgent();
+    if (sessionId && !this.#loadSession)
+      throw new Error("Cursor does not support the required ACP session protocol");
+    const connection = this.#connection;
+    if (!connection) throw new Error("Cursor ACP process could not start");
+    try {
       this.sessionId = sessionId ?? "";
       const info = sessionId
         ? await this.#bounded(
-            this.#connection.loadSession({ sessionId, cwd: this.options.cwd, mcpServers: [] }),
+            connection.loadSession({ sessionId, cwd: sessionCwd, mcpServers: [] }),
           )
-        : await this.#bounded(
-            this.#connection.newSession({ cwd: this.options.cwd, mcpServers: [] }),
-          );
+        : await this.#bounded(connection.newSession({ cwd: sessionCwd, mcpServers: [] }));
       if ("sessionId" in info && typeof info.sessionId === "string")
         this.sessionId = info.sessionId;
       if (!this.sessionId) throw new Error("Cursor returned no native session ID");

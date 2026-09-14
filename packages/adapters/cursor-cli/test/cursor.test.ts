@@ -15,7 +15,11 @@ import {
   cursorNativeModel,
   cursorSessionConfiguration,
 } from "../src/models.js";
-import { parseCursorListModelId, parseCursorListModels } from "../src/list-models.js";
+import {
+  cursorListModelsVariantKey,
+  parseCursorListModelId,
+  parseCursorListModels,
+} from "../src/list-models.js";
 import { CursorInteractions } from "../src/interactions.js";
 import { cursorSnapshot } from "../src/projection.js";
 
@@ -281,6 +285,58 @@ describe("Cursor native configuration", () => {
     expect(selected.ok).toBe(true);
     expect(session.initialState.effectiveThinkingOptionId).toBe("g.fast~true.reasoning~high");
     expect(current).toMatchObject({ fast: "true", reasoning: "high" });
+    await session.close();
+  });
+  it("keeps the requested Thinking option when configure returns only the variant model", async () => {
+    const thinkingId = "g.fast~true.reasoning~high";
+    const variant = "gpt-5.6-sol-high-fast";
+    const parameterized = {
+      sessionId: info.sessionId,
+      configOptions: [
+        {
+          id: "model",
+          name: "Model",
+          type: "select" as const,
+          currentValue: "gpt-5.6-sol",
+          options: [
+            { value: "gpt-5.6-sol", name: "GPT-5.6 Sol" },
+            { value: variant, name: "GPT-5.6 Sol Fast" },
+          ],
+        },
+      ],
+    };
+    const transport = new FakeTransport({ cwd: process.cwd(), environment: {} });
+    const session = new CursorSession(
+      transport,
+      parameterized,
+      () => {},
+      true,
+      new Map([[cursorListModelsVariantKey("gpt-5.6-sol", thinkingId), variant]]),
+    );
+    vi.spyOn(transport, "configure").mockResolvedValue({
+      configOptions: parameterized.configOptions.map((option) => ({
+        ...option,
+        currentValue: variant,
+      })),
+    });
+    const selected = await session.execute({
+      type: "thinking.select",
+      thinkingOptionId: thinkingId,
+    });
+    expect(selected.ok).toBe(true);
+    expect(session.initialState.effectiveThinkingOptionId).toBe(thinkingId);
+    await session.close();
+  });
+  it("rejects unknown Thinking groups before configuring the native session", async () => {
+    const transport = new FakeTransport({ cwd: process.cwd(), environment: {} });
+    const session = new CursorSession(transport, info, () => {});
+    const configure = vi.spyOn(transport, "configure");
+    const selected = await session.execute({
+      type: "thinking.select",
+      thinkingOptionId: "g.fast~true.reasoning~high",
+    });
+    expect(selected.ok).toBe(false);
+    expect(configure).not.toHaveBeenCalled();
     await session.close();
   });
   it("caches failed inspection and retries only on explicit refresh or expiry", async () => {

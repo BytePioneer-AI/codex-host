@@ -207,7 +207,7 @@ function ensureCursorPickerStyle(ownerDocument: Document): void {
       background: rgba(127, 127, 127, 0.28);
       pointer-events: none;
     }
-    .codexhost-switch[aria-checked="true"] {
+    .codexhost-switch[data-checked="true"] {
       background: #16a34a;
     }
     .codexhost-switch::after {
@@ -220,7 +220,7 @@ function ensureCursorPickerStyle(ownerDocument: Document): void {
       border-radius: 999px;
       background: #fff;
     }
-    .codexhost-switch[aria-checked="true"]::after {
+    .codexhost-switch[data-checked="true"]::after {
       left: 18px;
     }
   `;
@@ -444,6 +444,7 @@ export function mountCursorModelPicker(
       const row = document.createElement("button");
       row.type = "button";
       row.className = OPTION_CLASSES;
+      row.setAttribute("role", "switch");
       row.dataset.nextThinking = presentation.fast.nextThinkingOptionId;
       row.setAttribute("aria-checked", String(presentation.fast.enabled));
       const title = document.createElement("span");
@@ -451,7 +452,8 @@ export function mountCursorModelPicker(
       title.style.flex = "1";
       const knob = document.createElement("span");
       knob.className = "codexhost-switch";
-      knob.setAttribute("aria-checked", String(presentation.fast.enabled));
+      knob.dataset.checked = String(presentation.fast.enabled);
+      knob.setAttribute("aria-hidden", "true");
       row.append(title, knob);
       menu.append(row);
     }

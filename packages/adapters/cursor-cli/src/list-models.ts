@@ -175,7 +175,11 @@ export async function readCursorListModels(options: CursorListModelsOptions): Pr
     child.stdout.setEncoding("utf8");
     child.stdout.on("data", (chunk: string) => {
       stdout += chunk;
-      if (stdout.length > 1_000_000) fail(new Error("Cursor --list-models output is too large"));
+      if (stdout.length > 1_000_000) {
+        child.stdout.destroy();
+        child.kill("SIGKILL");
+        fail(new Error("Cursor --list-models output is too large"));
+      }
     });
     child.stderr.resume();
     child.on("error", () =>

@@ -130,14 +130,31 @@ export function createModelsSettingsPage(
           return;
         }
         const models = section.models ?? [];
-        search.hidden = models.length === 0;
-        status.hidden = models.length > 0;
-        status.textContent = models.length === 0 ? messages.modelsEmpty : "";
         const query = search.value.trim().toLowerCase();
+        const matched =
+          query.length === 0
+            ? models
+            : models.filter((model) =>
+                `${model.label} ${model.id}`.toLowerCase().includes(query),
+              );
+        if (models.length === 0) {
+          search.hidden = true;
+          status.hidden = false;
+          status.textContent = messages.modelsEmpty;
+          list.replaceChildren();
+          return;
+        }
+        search.hidden = false;
+        if (matched.length === 0) {
+          status.hidden = false;
+          status.textContent = messages.modelsNoMatches;
+          list.replaceChildren();
+          return;
+        }
+        status.hidden = true;
+        status.textContent = "";
         list.replaceChildren();
-        for (const model of models) {
-          const haystack = `${model.label} ${model.id}`.toLowerCase();
-          if (query.length > 0 && !haystack.includes(query)) continue;
+        for (const model of matched) {
           const row = document.createElement("div");
           row.className = "settings-models-row";
           const title = document.createElement("span");

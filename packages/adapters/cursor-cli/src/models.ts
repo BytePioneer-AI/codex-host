@@ -50,6 +50,20 @@ function encodeGroupedThinkingOptionId(
     .join(".")}`;
 }
 
+export function cursorThinkingSelectionsAvailable(
+  selections: ReadonlyArray<{ groupId: string; optionId: string }>,
+  info: CursorSessionInfo | { configOptions?: unknown },
+): boolean {
+  const groups = cursorParameterGroups(cursorConfigOptions(info));
+  return selections.every((selection) =>
+    groups.some(
+      (group) =>
+        group.id === selection.groupId &&
+        group.options.some((option) => option.id === selection.optionId),
+    ),
+  );
+}
+
 export function decodeGroupedThinkingOptionId(
   id: string,
 ): Array<{ groupId: string; optionId: string }> | null {

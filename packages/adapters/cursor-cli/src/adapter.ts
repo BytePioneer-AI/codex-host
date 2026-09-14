@@ -38,6 +38,7 @@ import {
   CURSOR_MODES,
   cursorCapabilities,
   cursorConfigOptions,
+  cursorThinkingSelectionsAvailable,
   cursorModelRef,
   cursorNativeModel,
   cursorParameterGroups,
@@ -439,7 +440,14 @@ export class CursorSession implements HarnessSession {
             throw new Error("Cursor did not confirm configuration selection");
           }
           this.#syncConfiguration(options, this.initialState.effectiveModel);
+          if (current === variant) {
+            this.initialState.effectiveThinkingOptionId = command.thinkingOptionId;
+          }
         } else {
+          if (
+            !cursorThinkingSelectionsAvailable(selections, { configOptions: this.#configOptions })
+          )
+            return rejected("invalidRequest", "Unknown Cursor Thinking option");
           let options = cursorConfigOptions({ configOptions: this.#configOptions });
           for (const selection of selections) {
             const result = await this.transport.configure(selection.groupId, selection.optionId);

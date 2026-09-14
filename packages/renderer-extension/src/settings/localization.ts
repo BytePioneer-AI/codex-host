@@ -30,6 +30,7 @@ export interface RendererSettingsMessages {
   readonly modelsUnavailable: string;
   readonly modelsLoading: string;
   readonly modelsEmpty: string;
+  readonly modelsNoMatches: string;
   readonly modelsLoadFailed: string;
   readonly modelsSearchPlaceholder: string;
   readonly modelsCursorSection: string;
@@ -250,6 +251,7 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   modelsUnavailable: "No harness catalog is available, so the model list cannot be loaded.",
   modelsLoading: "Loading models…",
   modelsEmpty: "No models were returned.",
+  modelsNoMatches: "No models match this search.",
   modelsLoadFailed: "Could not load this model catalog.",
   modelsSearchPlaceholder: "Search models",
   modelsCursorSection: "Cursor CLI",
@@ -502,6 +504,7 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   modelsUnavailable: "当前没有可用的模型目录。",
   modelsLoading: "正在加载模型…",
   modelsEmpty: "没有返回可用模型。",
+  modelsNoMatches: "没有匹配的模型。",
   modelsLoadFailed: "无法加载该模型目录。",
   modelsSearchPlaceholder: "搜索模型",
   modelsCursorSection: "Cursor CLI",

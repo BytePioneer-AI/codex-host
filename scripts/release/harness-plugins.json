@@ -17,6 +17,7 @@
     "@agentclientprotocol/sdk",
     "@anthropic-ai/claude-agent-sdk",
     "@qoder-ai/qoder-agent-sdk",
+    "@modelcontextprotocol/sdk",
     "@deepseek-ai/cosmokit",
     "@deepseek-ai/schemastery",
     "@opencode-ai/sdk",

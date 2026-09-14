@@ -23,6 +23,12 @@
     "@opencode-ai/sdk",
     "diff",
     "ws",
-    "zod"
+    "zod",
+    "zod-to-json-schema",
+    "ajv",
+    "fast-deep-equal",
+    "json-schema-traverse",
+    "fast-uri",
+    "ajv-formats"
   ]
 }

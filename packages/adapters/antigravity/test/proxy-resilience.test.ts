@@ -90,6 +90,17 @@ describe("Antigravity Proxy & Network Resilience", () => {
       expect(resolved.all_proxy).toBeUndefined();
     });
 
+    it("preserves system proxy variables when proxy is set to system", () => {
+      const baseEnv: NodeJS.ProcessEnv = {
+        HTTP_PROXY: "http://127.0.0.1:8888",
+        HTTPS_PROXY: "http://127.0.0.1:8888",
+        [ANTIGRAVITY_PROXY_ENV]: "system",
+      };
+      const resolved = resolveAntigravityEnvironment(baseEnv);
+      expect(resolved.HTTP_PROXY).toBe("http://127.0.0.1:8888");
+      expect(resolved.HTTPS_PROXY).toBe("http://127.0.0.1:8888");
+    });
+
     it("overrides proxy variables when explicit proxy URL is provided", () => {
       const baseEnv: NodeJS.ProcessEnv = {
         HTTP_PROXY: "http://127.0.0.1:8888",
@@ -102,10 +113,11 @@ describe("Antigravity Proxy & Network Resilience", () => {
       expect(resolved.https_proxy).toBe("http://proxy.internal:7890");
     });
 
-    it("combines NO_PROXY bypass rules", () => {
+    it("combines and deduplicates NO_PROXY bypass rules", () => {
       const baseEnv: NodeJS.ProcessEnv = {
         NO_PROXY: "localhost,127.0.0.1",
-        [ANTIGRAVITY_NO_PROXY_ENV]: "googleapis.com,.internal.net",
+        no_proxy: "localhost,127.0.0.1",
+        [ANTIGRAVITY_NO_PROXY_ENV]: "127.0.0.1,googleapis.com,.internal.net",
       };
       const resolved = resolveAntigravityEnvironment(baseEnv);
       expect(resolved.NO_PROXY).toBe("localhost,127.0.0.1,googleapis.com,.internal.net");
@@ -168,6 +180,8 @@ describe("Antigravity Proxy & Network Resilience", () => {
           process.stdout.write(JSON.stringify({
             event: "result",
             result: {
+              conversation_id: "conv-retry-1",
+              num_turns: 1,
               status: "ERROR",
               error: "API error (attempt 1): request failed: Post \\"https://daily-cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse\\": read tcp 127.0.0.1:62464->127.0.0.1:8888: read: connection reset by peer"
             }
@@ -226,7 +240,7 @@ describe("Antigravity Proxy & Network Resilience", () => {
         const stateChanged1 = await nextEvent(iterator);
         expect(stateChanged1.type).toBe("session.state.changed");
 
-        // Attempt 1 fails -> auto-retries -> attempt 2 init
+        // Attempt 1 fails in handleResult -> auto-retries -> attempt 2 init
         const stateChanged2 = await nextEvent(iterator);
         expect(stateChanged2.type).toBe("session.state.changed");
 
@@ -345,6 +359,8 @@ describe("Antigravity Proxy & Network Resilience", () => {
         process.stdout.write(JSON.stringify({
           event: "result",
           result: {
+            conversation_id: "conv-persistent-fail",
+            num_turns: 1,
             status: "ERROR",
             error: "read tcp 127.0.0.1:62464->127.0.0.1:8888: read: connection reset by peer"
           }
@@ -404,6 +420,8 @@ describe("Antigravity Proxy & Network Resilience", () => {
         process.stdout.write(JSON.stringify({
           event: "result",
           result: {
+            conversation_id: "conv-quota-fail",
+            num_turns: 1,
             status: "ERROR",
             error: "Resource exhausted: Quota limit reached for gemini-3.7-pro"
           }
@@ -472,6 +490,8 @@ describe("Antigravity Proxy & Network Resilience", () => {
         process.stdout.write(JSON.stringify({
           event: "result",
           result: {
+            conversation_id: "conv-post-token",
+            num_turns: 1,
             status: "ERROR",
             error: "read tcp 127.0.0.1:62464->127.0.0.1:8888: read: connection reset by peer"
           }

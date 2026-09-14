@@ -261,14 +261,15 @@ export function resolveAntigravityEnvironment(
   )?.trim();
 
   if (proxyOverride) {
-    if (proxyOverride.toLowerCase() === "direct") {
+    const normalized = proxyOverride.toLowerCase();
+    if (normalized === "direct") {
       delete environment.HTTP_PROXY;
       delete environment.HTTPS_PROXY;
       delete environment.http_proxy;
       delete environment.https_proxy;
       delete environment.ALL_PROXY;
       delete environment.all_proxy;
-    } else {
+    } else if (normalized !== "system") {
       environment.HTTP_PROXY = proxyOverride;
       environment.HTTPS_PROXY = proxyOverride;
       environment.http_proxy = proxyOverride;
@@ -277,10 +278,18 @@ export function resolveAntigravityEnvironment(
   }
 
   if (noProxyAppend) {
-    const existing = environment.NO_PROXY ?? environment.no_proxy ?? "";
-    const combined = existing ? `${existing},${noProxyAppend}` : noProxyAppend;
-    environment.NO_PROXY = combined;
-    environment.no_proxy = combined;
+    const existingParts = [
+      ...(environment.NO_PROXY?.split(",") ?? []),
+      ...(environment.no_proxy?.split(",") ?? []),
+      ...noProxyAppend.split(","),
+    ]
+      .map((entry) => entry.trim())
+      .filter((entry) => entry.length > 0);
+    const combined = [...new Set(existingParts)].join(",");
+    if (combined) {
+      environment.NO_PROXY = combined;
+      environment.no_proxy = combined;
+    }
   }
 
   if (environment.HTTP_PROXY === "") delete environment.HTTP_PROXY;
@@ -309,6 +318,7 @@ function canRetryTurn(active: ActiveTurn, errorText: string): boolean {
     active.agentText === "" &&
     active.completedItems.length === 0 &&
     active.tools.size === 0 &&
+    active.pendingSteps.size === 0 &&
     isTransientNetworkError(errorText)
   );
 }
@@ -930,7 +940,11 @@ class AntigravitySession implements HarnessSession {
     if (this.#retryDelayMs > 0) {
       await new Promise((resolve) => setTimeout(resolve, this.#retryDelayMs));
     }
-    if (this.#active !== active || active.cancellationRequested || this.#closed) {
+    if (this.#active !== active || this.#closed) {
+      return;
+    }
+    if (active.cancellationRequested) {
+      this.#completeTurn(active, { status: "cancelled", reason: "Cancelled by user" });
       return;
     }
     const started = this.#startTurnProcess(active);

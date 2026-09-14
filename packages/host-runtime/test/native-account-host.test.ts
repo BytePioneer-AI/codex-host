@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -34,6 +35,7 @@ const native = vi.hoisted(() => {
     initializationError?: Error;
     startBeforeInitializationError: boolean;
     reconcileError?: Error;
+    staleProcessRecord: boolean;
     version: string;
     events: string[];
     managedSnapshot: {
@@ -113,8 +115,13 @@ const native = vi.hoisted(() => {
       void input;
       state.recordConstructions++;
     }
-    async reconcile(): Promise<void> {
+    async reconcile(options: { allowMissingExitReceipt?: boolean } = {}): Promise<void> {
       if (current().reconcileError) throw current().reconcileError;
+      if (current().staleProcessRecord) {
+        if (!options.allowMissingExitReceipt)
+          throw new Error("Official process tree exit is unconfirmed");
+        current().staleProcessRecord = false;
+      }
     }
     wrap(factory: (receipt: { directory: string; name: string; tag: string }) => object): object {
       return factory({ directory: "/synthetic", name: "process.json", tag: "fixture" });
@@ -263,6 +270,7 @@ vi.mock("../src/remote-official-app-server.js", () => ({
 
 import { prepareLocalCodex } from "../src/native-account-host.js";
 import { OfficialRuntimeClient } from "../src/codex-runtime/official-runtime-scope.js";
+import { nativeDigest, parseJournal } from "../src/account/native-profile-vault.js";
 import { stopNativeProcesses } from "../src/native-process-stop.js";
 
 interface HostFixture {
@@ -350,6 +358,7 @@ async function fixture(
     initializationError?: Error;
     startBeforeInitializationError?: boolean;
     reconcileError?: Error;
+    staleProcessRecord?: boolean;
     layout?: object;
   } = {},
 ): Promise<HostFixture> {
@@ -368,6 +377,7 @@ async function fixture(
     ...(options.initializationError ? { initializationError: options.initializationError } : {}),
     startBeforeInitializationError: options.startBeforeInitializationError ?? false,
     ...(options.reconcileError ? { reconcileError: options.reconcileError } : {}),
+    staleProcessRecord: options.staleProcessRecord ?? false,
     version: "0.153.4",
     events,
     managedSnapshot: {
@@ -627,6 +637,87 @@ describe("local native Account composition", () => {
       expect(native.current().events).toEqual(["lease-release"]);
       expect(f.files.activeLeases).toBe(0);
       await prepared.close();
+    },
+  );
+
+  it("allows ordinary startup after a retired supervisor lost its exit receipt", async () => {
+    const f = await fixture({ staleProcessRecord: true });
+    const prepared = await prepareLocalCodex(f.input());
+    try {
+      expect(native.current().staleProcessRecord).toBe(false);
+      expect(prepared.officialRuntimeScope.gate.phase).toBe("ready");
+      expect(native.current().events).toContain("backend-start");
+      expect(stopNativeProcesses).not.toHaveBeenCalled();
+    } finally {
+      await prepared.close();
+    }
+  });
+
+  it.each(["transaction.json", "login.json"])(
+    "preserves stale process evidence when startup encounters unreadable pending %s",
+    async (name) => {
+      const f = await fixture({ staleProcessRecord: true });
+      f.files.contents.set(
+        fileKey(path.join(f.home, ".codexhost-native-accounts"), name),
+        Buffer.from("pending"),
+      );
+      const prepared = await prepareLocalCodex(f.input());
+      try {
+        expect(native.current().staleProcessRecord).toBe(true);
+        expect(prepared.officialRuntimeScope.gate.phase).toBe("unavailable");
+        expect(native.current().events).not.toContain("backend-start");
+      } finally {
+        await prepared.close();
+      }
+    },
+  );
+
+  it.each(["transaction.json", "login.json"])(
+    "does not waive missing exit evidence for a valid pending %s",
+    async (name) => {
+      const f = await fixture({ staleProcessRecord: true });
+      const homeId = nativeDigest(process.platform === "win32" ? f.home.toLowerCase() : f.home);
+      const before = {
+        version: 1,
+        homeId,
+        revision: 0,
+        currentAccountId: null,
+        lastOperationId: null,
+        accounts: [],
+      };
+      const operationId = randomUUID();
+      const pending = Buffer.from(
+        JSON.stringify(
+          name === "transaction.json"
+            ? {
+                version: 1,
+                operationId,
+                phase: "prepared",
+                before,
+                after: { ...before, revision: 1, lastOperationId: operationId },
+                source: null,
+                target: null,
+              }
+            : {
+                version: 1,
+                operationId,
+                sourceAccountId: null,
+                expiresAt: Date.now() + 60_000,
+              },
+        ),
+      );
+      if (name === "transaction.json") expect(() => parseJournal(pending, homeId)).not.toThrow();
+      const key = fileKey(path.join(f.home, ".codexhost-native-accounts"), name);
+      f.files.contents.set(key, pending);
+      const prepared = await prepareLocalCodex(f.input());
+      try {
+        expect(native.current().staleProcessRecord).toBe(true);
+        expect(prepared.officialRuntimeScope.gate.phase).toBe("unavailable");
+        expect(native.current().events).not.toContain("backend-start");
+        expect(f.files.contents.get(key)).toEqual(pending);
+      } finally {
+        await prepared.close();
+      }
     },
   );
 

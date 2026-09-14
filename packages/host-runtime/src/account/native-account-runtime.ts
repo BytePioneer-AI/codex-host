@@ -11,6 +11,7 @@ export interface NativeAccountRuntime {
   stopExternalProcesses(): Promise<void>;
   /** No argument starts the permanent home; a staging home is management-only. */
   start(stagingHome?: string): Promise<void>;
+  /** Check native Account state and credential identity, not quota or Model availability. */
   verify(identity: CodexCredentialIdentity | null): Promise<void>;
   controlRequest(method: string, params: JsonObject): Promise<JsonObject>;
   subscribe(listener: (value: JsonValue) => void): () => void;

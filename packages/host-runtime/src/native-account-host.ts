@@ -329,8 +329,14 @@ export async function prepareLocalCodex(input: LocalCodexOptions): Promise<Prepa
         opened = false;
         return blocked(home, input.diagnosticOutput, "keyring-unavailable");
       }
-      await processRecord.reconcile();
+      await processRecord.reconcile({ allowMissingExitReceipt: true });
       return fallback("keyring-unavailable");
+    }
+    if (!(await store.readJournal()) && !(await store.readStage())) {
+      // Startup does not replace credentials. A retired supervisor's missing
+      // shutdown receipt must not permanently block an otherwise clean home.
+      // Pending operations and every subsequent reconciliation remain strict.
+      await processRecord.reconcile({ allowMissingExitReceipt: true });
     }
     const reconcile = async (): Promise<void> => {
       await processRecord.reconcile();

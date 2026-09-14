@@ -12,6 +12,8 @@ const native = vi.hoisted(() => ({
   launches: [] as unknown[],
   live: 0,
   peak: 0,
+  quotaUnavailable: false,
+  quotaRequests: 0,
   stopExternal: vi.fn(async () => {}),
 }));
 vi.mock("../src/native-process-stop.js", () => ({ stopNativeProcesses: native.stopExternal }));
@@ -97,7 +99,16 @@ function backend(input: { environment: NodeJS.ProcessEnv }) {
               requiresOpenaiAuth: true,
             };
           }
-          if (request.method === "account/rateLimits/read") result = { rateLimits: {} };
+          if (request.method === "account/rateLimits/read") {
+            native.quotaRequests++;
+            if (native.quotaUnavailable) {
+              stdout.write(
+                `${JSON.stringify({ id: request.id, error: { code: -1, message: "synthetic quota service unavailable" } })}\n`,
+              );
+              continue;
+            }
+            result = { rateLimits: {} };
+          }
           if (["thread/list", "thread/loaded/list"].includes(String(request.method)))
             result = { data: [], nextCursor: null };
           stdout.write(`${JSON.stringify({ id: request.id, result })}\n`);
@@ -188,6 +199,8 @@ beforeEach(() => {
   native.launches.length = 0;
   native.live = 0;
   native.peak = 0;
+  native.quotaUnavailable = false;
+  native.quotaRequests = 0;
 });
 afterEach(async () => {
   expect(native.live).toBe(0);
@@ -195,60 +208,68 @@ afterEach(async () => {
 });
 
 describe("legacy layout to native Account switching composition", () => {
-  it("adopts A and B and switches A → B → A within one permanent home and one backend", async () => {
-    const f = await fixture();
-    const prepared = await prepareLocalCodex(f.input);
-    const client = new OfficialRuntimeClient({
-      scope: prepared.officialRuntimeScope,
-      output: async () => {},
-    });
-    try {
-      await client.initialize();
-      await client.initializeProtocol({
-        clientInfo: { name: "synthetic-desktop", version: "test" },
+  it.each([false, true])(
+    "runs A → B → A and restarts without quota (%s)",
+    async (quotaUnavailable) => {
+      const f = await fixture();
+      native.quotaUnavailable = quotaUnavailable;
+      const prepared = await prepareLocalCodex(f.input);
+      const client = new OfficialRuntimeClient({
+        scope: prepared.officialRuntimeScope,
+        output: async () => {},
       });
-      const initial = prepared.accountControl.snapshot();
-      expect(initial).toMatchObject({
-        phase: "ready",
-        legacyHistoryPreserved: true,
-        capabilities: { switch: true },
-      });
-      expect(initial.accounts).toHaveLength(2);
-      const other = initial.accounts.find(
-        (account) => account.accountId !== initial.currentAccountId,
-      );
-      if (!other || !initial.currentAccountId) throw new Error("Missing adopted identities");
-      await prepared.accountControl.switch(other.accountId);
-      expect(f.files.peek(f.home, "auth.json")?.toString()).toBe(
-        credential("b").serializeForNativeStore(),
-      );
-      await expect(client.request("account/read", { refreshToken: false })).resolves.toMatchObject({
-        result: { account: { email: credential("b").email } },
-      });
-      await prepared.accountControl.switch(initial.currentAccountId);
-      expect(f.files.peek(f.home, "auth.json")?.toString()).toBe(
-        credential("a").serializeForNativeStore(),
-      );
-      expect(native.stopExternal).toHaveBeenCalledTimes(2);
-      expect(native.peak).toBe(1);
-      for (const launch of native.launches)
-        expect(launch).toMatchObject({ environment: { CODEX_HOME: f.home } });
-      expect(f.files.peek(f.other, "auth.json")?.toString()).toBe(
-        credential("b").serializeForNativeStore(),
-      );
-    } finally {
-      await client.close();
-      await prepared.close();
-    }
-    for (const [file, bytes] of f.preserved) expect(await readFile(file, "utf8")).toBe(bytes);
-    // Existing managed state in the selected home is recovered, not mistaken for a foreign layout.
-    const restarted = await prepareLocalCodex(f.input);
-    try {
-      expect(restarted.accountControl.snapshot().accounts).toHaveLength(2);
-    } finally {
-      await restarted.close();
-    }
-  });
+      try {
+        await client.initialize();
+        await client.initializeProtocol({
+          clientInfo: { name: "synthetic-desktop", version: "test" },
+        });
+        const initial = prepared.accountControl.snapshot();
+        expect(initial).toMatchObject({
+          phase: "ready",
+          legacyHistoryPreserved: true,
+          capabilities: { switch: true },
+        });
+        expect(initial.accounts).toHaveLength(2);
+        const other = initial.accounts.find(
+          (account) => account.accountId !== initial.currentAccountId,
+        );
+        if (!other || !initial.currentAccountId) throw new Error("Missing adopted identities");
+        await prepared.accountControl.switch(other.accountId);
+        expect(f.files.peek(f.home, "auth.json")?.toString()).toBe(
+          credential("b").serializeForNativeStore(),
+        );
+        await expect(
+          client.request("account/read", { refreshToken: false }),
+        ).resolves.toMatchObject({
+          result: { account: { email: credential("b").email } },
+        });
+        await prepared.accountControl.switch(initial.currentAccountId);
+        expect(f.files.peek(f.home, "auth.json")?.toString()).toBe(
+          credential("a").serializeForNativeStore(),
+        );
+        expect(native.stopExternal).toHaveBeenCalledTimes(2);
+        expect(native.peak).toBe(1);
+        for (const launch of native.launches)
+          expect(launch).toMatchObject({ environment: { CODEX_HOME: f.home } });
+        expect(f.files.peek(f.other, "auth.json")?.toString()).toBe(
+          credential("b").serializeForNativeStore(),
+        );
+      } finally {
+        await client.close();
+        await prepared.close();
+      }
+      for (const [file, bytes] of f.preserved) expect(await readFile(file, "utf8")).toBe(bytes);
+      // Existing managed state in the selected home is recovered, not mistaken for a foreign layout.
+      const restarted = await prepareLocalCodex(f.input);
+      try {
+        expect(restarted.accountControl.snapshot().accounts).toHaveLength(2);
+        expect(restarted.accountControl.snapshot().phase).toBe("ready");
+        expect(native.quotaRequests).toBe(0);
+      } finally {
+        await restarted.close();
+      }
+    },
+  );
 
   it("refuses replacement when external backend termination fails", async () => {
     const f = await fixture();

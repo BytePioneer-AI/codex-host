@@ -141,7 +141,6 @@ describe("official native account checks", () => {
       "account/read",
       "config/read",
       "account/read",
-      "account/rateLimits/read",
     ]);
   });
   it("rejects unsupported versions before bootstrapping or changing any credential", async () => {
@@ -195,13 +194,12 @@ describe("official native account checks", () => {
     f.environment.OPENAI_API_KEY = "synthetic";
     await expect(f.runtime.preflight()).rejects.toMatchObject({ code: "unsupported-storage" });
   });
-  it("checks authenticated quota before comparing the final native identity, without inference", async () => {
+  it("checks the native account and credential identity without querying quota", async () => {
     const f = await fixture();
     await f.runtime.verify(f.native.identity);
     expect(f.owner.controlRequest.mock.calls.map(([method]) => method)).toEqual([
       "config/read",
       "account/read",
-      "account/rateLimits/read",
     ]);
     expect(f.owner.controlRequest).toHaveBeenCalledWith("account/read", {
       refreshToken: true,
@@ -214,14 +212,40 @@ describe("official native account checks", () => {
       code: "authentication-failed",
     });
   });
-  it("does not accept a quota RPC failure as authenticated and does not expose its body", async () => {
+  it("does not depend on a working quota service for account verification", async () => {
     const f = await fixture();
     f.owner.controlRequest.mockImplementation(async (method) =>
       method === "account/rateLimits/read"
+        ? { error: { message: "synthetic quota service unavailable" } }
+        : { result: f.responses[method] ?? {} },
+    );
+    await expect(f.runtime.verify(f.native.identity)).resolves.toBeUndefined();
+    expect(f.owner.controlRequest.mock.calls.map(([method]) => method)).not.toContain(
+      "account/rateLimits/read",
+    );
+  });
+  it("still rejects a native account RPC failure without exposing its body", async () => {
+    const f = await fixture();
+    f.owner.controlRequest.mockImplementation(async (method) =>
+      method === "account/read"
         ? { error: { message: "synthetic-secret" } }
         : { result: f.responses[method] ?? {} },
     );
     await expect(f.runtime.verify(f.native.identity)).rejects.toThrow("invalid-native-response");
+  });
+  it("still rejects credential identity changes during the native account check", async () => {
+    const f = await fixture();
+    f.owner.controlRequest.mockImplementation(async (method) => {
+      if (method === "account/read")
+        f.credentialsByHome.set(
+          "/synthetic/home",
+          NativeCodexCredentials.parse(syntheticNativeCredentials({ subject: "other" })),
+        );
+      return { result: f.responses[method] ?? {} };
+    });
+    await expect(f.runtime.verify(f.native.identity)).rejects.toMatchObject({
+      code: "authentication-failed",
+    });
   });
   it("checks only authentication and configuration before explicit stop", async () => {
     const f = await fixture();

@@ -183,11 +183,9 @@ export class OfficialAccountRuntime implements NativeAccountRuntime {
     }
     if (!before || !sameCodexCredentialIdentity(before.identity, identity))
       throw new OfficialAccountVerificationError("authentication-failed");
-    // The native backend performs any needed refresh; successful JWT decoding is not authentication.
+    // Let native account/read handle refresh, then verify the resulting file identity.
+    // Quota availability is not an Account readiness or credential-commit condition.
     const account = await this.#read("account/read", { refreshToken: true });
-    const quota = await this.#read("account/rateLimits/read", {});
-    if (!object(quota.rateLimits))
-      throw new OfficialAccountVerificationError("authentication-failed");
     const after = await this.#safeReadCredentials(home);
     if (
       !after ||

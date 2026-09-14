@@ -44,10 +44,23 @@ Switching SHALL enter changing synchronously, reject new work before connection 
 ### Requirement: Managed startup SHALL be owned by Account recovery
 The dedicated management connection SHALL initialize before Desktop clients. A managed Runtime Scope MUST NOT bypass failed Account initialization by starting a backend or publishing ready itself. Known protocol incompatibility without pending state SHALL be distinguished from recovery or ownership conflicts.
 
+#### Scenario: Quota service is unavailable
+- **WHEN** startup, recovery, login or switching verifies the native Account
+- **THEN** verification SHALL use native account state and credential identity without issuing `account/rateLimits/read`
+- **AND** quota values and quota-service availability SHALL NOT determine Account readiness or credential-transaction commit
+- **AND** independent quota display SHALL remain available without becoming a startup dependency; actual Model request authorization and quota enforcement belong to the native backend
+
 #### Scenario: Cold startup before Desktop attaches
 - **WHEN** Account recovery needs native configuration or authentication
 - **THEN** it SHALL use a unique management-only backend without depending on Desktop initialization
 - **AND** recovery records SHALL be interpreted before importing native credentials
+
+#### Scenario: Ordinary startup follows a retired supervisor without an exit receipt
+- **WHEN** no credential transaction or login stage is pending, the home lease is held, and a historical running supervisor is confirmed absent or its PID has been reused
+- **THEN** startup MAY retire that historical running record without an exit receipt and continue normal credential identity verification
+- **AND** this SHALL NOT be treated as proof that the historical process tree exited or as exit evidence for a credential change
+- **AND** live supervisors, failed identity inspection, unidentified spawn gaps and invalid or mismatched receipts SHALL remain blocked
+- **AND** pending-operation recovery, current backend stop and subsequent backend replacement SHALL retain strict exit checks
 
 #### Scenario: Management unsupported but native use is safe
 - **WHEN** no transaction or ownership conflict exists and management is unavailable because of storage, key or version capability

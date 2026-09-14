@@ -5,6 +5,7 @@ import antigravityAgentIconUrl from "./assets/antigravity-agent.svg";
 import kiroAgentIconUrl from "./assets/kiro-agent.svg";
 import codeBuddyAgentIconUrl from "./assets/codebuddy-agent.svg";
 import cursorAgentIconUrl from "./assets/cursor-agent.svg";
+import qoderAgentIconUrl from "./assets/qoder-agent.svg";
 import ompAgentIconUrl from "./assets/omp-agent.svg";
 import openCodeAgentIconUrl from "./assets/opencode-agent.png";
 import type { RendererAgent } from "./agent-selection-state.js";
@@ -22,6 +23,7 @@ export const RENDERER_AGENT_LABELS: Record<RendererAgent, string> = {
   codebuddy: "CodeBuddy",
   "cursor-cli": "Cursor CLI (Experimental)",
   hermes: "Hermes",
+  qodercli: "Qoder CLI",
 };
 
 const PI_PATHS = [
@@ -121,7 +123,8 @@ export function createRendererAgentIcon(
     agent === "antigravity" ||
     agent === "kiro-cli" ||
     agent === "codebuddy" ||
-    agent === "cursor-cli"
+    agent === "cursor-cli" ||
+    agent === "qodercli"
   ) {
     const image = ownerDocument.createElement("img");
     image.src =
@@ -129,9 +132,11 @@ export function createRendererAgentIcon(
         ? codeBuddyAgentIconUrl
         : agent === "cursor-cli"
           ? cursorAgentIconUrl
-          : agent === "kiro-cli"
-            ? kiroAgentIconUrl
-            : antigravityAgentIconUrl;
+          : agent === "qodercli"
+            ? qoderAgentIconUrl
+            : agent === "kiro-cli"
+              ? kiroAgentIconUrl
+              : antigravityAgentIconUrl;
     image.alt = "";
     image.draggable = false;
     image.style.width = `${size}px`;

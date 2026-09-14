@@ -255,6 +255,7 @@ export async function runDesktopController(
           "codebuddy",
           "cursor-cli",
           "hermes",
+          "qodercli",
         ],
         timeoutMs: PRODUCTION_INSTALL_TIMEOUT_MS,
       },

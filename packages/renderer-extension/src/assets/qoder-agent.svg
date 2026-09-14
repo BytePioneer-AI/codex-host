@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" role="img" aria-label="Qoder CLI">
+  <rect width="24" height="24" rx="6" fill="#0F766E"/>
+  <circle cx="12" cy="12" r="6.2" fill="none" stroke="#ECFDF5" stroke-width="2.2"/>
+  <path d="M16.2 16.2 19 19" fill="none" stroke="#ECFDF5" stroke-width="2.2" stroke-linecap="round"/>
+</svg>

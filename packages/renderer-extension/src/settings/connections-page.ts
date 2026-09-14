@@ -27,6 +27,7 @@ const HARNESS_INSTALL_URLS: Readonly<Record<ExternalRendererAgent, string>> = Ob
   codebuddy: "https://www.codebuddy.ai/docs/zh/cli/overview",
   "cursor-cli": "https://cursor.com/docs/cli/installation",
   hermes: "https://hermes-agent.nousresearch.com/docs",
+  qodercli: "https://docs.qoder.com/cli/installation",
 });
 
 export interface RendererConnectionAgentSnapshot {

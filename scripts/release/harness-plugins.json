@@ -10,11 +10,13 @@
     "packages/adapters/kiro-cli",
     "packages/adapters/codebuddy",
     "packages/adapters/cursor-cli",
-    "packages/adapters/hermes"
+    "packages/adapters/hermes",
+    "packages/adapters/qodercli"
   ],
   "runtimePackages": [
     "@agentclientprotocol/sdk",
     "@anthropic-ai/claude-agent-sdk",
+    "@qoder-ai/qoder-agent-sdk",
     "@deepseek-ai/cosmokit",
     "@deepseek-ai/schemastery",
     "@opencode-ai/sdk",

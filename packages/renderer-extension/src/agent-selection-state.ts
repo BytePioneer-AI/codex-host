@@ -17,6 +17,7 @@ export const KNOWN_RENDERER_AGENTS = [
   "codebuddy",
   "cursor-cli",
   "hermes",
+  "qodercli",
 ] as const;
 export const DEFAULT_RENDERER_AGENTS = KNOWN_RENDERER_AGENTS;
 export type RendererAgent = (typeof KNOWN_RENDERER_AGENTS)[number];
@@ -49,6 +50,8 @@ export interface DraftComposerState {
   cursorCliModel?: HarnessModelRef;
   cursorCliThinkingOptionId?: HarnessThinkingOptionId;
   hermesModel?: HarnessModelRef;
+  qodercliModel?: HarnessModelRef;
+  qodercliThinkingOptionId?: HarnessThinkingOptionId;
   permissionModeByAgent?: Partial<Record<ExternalRendererAgent, HarnessPermissionModeId>>;
 }
 
@@ -228,6 +231,8 @@ export class DraftAgentController<Composer extends object> {
     else if (agent === "cursor-cli") delete state.cursorCliModel;
     if (agent === "hermes" && model) state.hermesModel = model;
     else if (agent === "hermes") delete state.hermesModel;
+    if (agent === "qodercli" && model) state.qodercliModel = model;
+    else if (agent === "qodercli") delete state.qodercliModel;
     if (agent === "pi" && thinkingOptionId) state.piThinkingOptionId = thinkingOptionId;
     else if (agent === "pi") delete state.piThinkingOptionId;
     if (agent === "claude-code" && thinkingOptionId) {
@@ -252,6 +257,9 @@ export class DraftAgentController<Composer extends object> {
     if (agent === "cursor-cli" && thinkingOptionId) {
       state.cursorCliThinkingOptionId = thinkingOptionId;
     } else if (agent === "cursor-cli") delete state.cursorCliThinkingOptionId;
+    if (agent === "qodercli" && thinkingOptionId) {
+      state.qodercliThinkingOptionId = thinkingOptionId;
+    } else if (agent === "qodercli") delete state.qodercliThinkingOptionId;
     if (agent !== "codex") {
       const permissionModeByAgent: NonNullable<DraftComposerState["permissionModeByAgent"]> = {};
       for (const candidate of [
@@ -266,6 +274,7 @@ export class DraftAgentController<Composer extends object> {
         "codebuddy",
         "cursor-cli",
         "hermes",
+        "qodercli",
       ] as const) {
         const current = state.permissionModeByAgent?.[candidate];
         if (candidate !== agent && current) permissionModeByAgent[candidate] = current;
@@ -293,6 +302,7 @@ export class DraftAgentController<Composer extends object> {
     if (agent === "codebuddy") return state.codeBuddyModel;
     if (agent === "cursor-cli") return state.cursorCliModel;
     if (agent === "hermes") return state.hermesModel;
+    if (agent === "qodercli") return state.qodercliModel;
     return undefined;
   }
 
@@ -310,6 +320,7 @@ export class DraftAgentController<Composer extends object> {
     if (agent === "kiro-cli") return state.kiroCliThinkingOptionId;
     if (agent === "codebuddy") return state.codeBuddyThinkingOptionId;
     if (agent === "cursor-cli") return state.cursorCliThinkingOptionId;
+    if (agent === "qodercli") return state.qodercliThinkingOptionId;
     return undefined;
   }
 
@@ -350,6 +361,7 @@ export class DraftAgentController<Composer extends object> {
     else if (agent === "codebuddy") state.codeBuddyModel = model;
     else if (agent === "cursor-cli") state.cursorCliModel = model;
     else if (agent === "hermes") state.hermesModel = model;
+    else if (agent === "qodercli") state.qodercliModel = model;
     else state.antigravityModel = model;
     return state;
   }
@@ -410,6 +422,10 @@ export class DraftAgentController<Composer extends object> {
       state.cursorCliThinkingOptionId = thinkingOptionId;
     } else if (agent === "cursor-cli") {
       delete state.cursorCliThinkingOptionId;
+    } else if (agent === "qodercli" && thinkingOptionId) {
+      state.qodercliThinkingOptionId = thinkingOptionId;
+    } else if (agent === "qodercli") {
+      delete state.qodercliThinkingOptionId;
     }
     return state;
   }

@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import path from "node:path";
-import { forkSession as forkQoderNativeSession } from "@qoder-ai/qoder-agent-sdk";
+import { getSubagentMessages } from "@qoder-ai/qoder-agent-sdk";
 import {
   HarnessOutputChannel,
   sanitizeDiagnosticTail,
@@ -13,6 +13,7 @@ import {
   type HarnessResult,
   type HarnessSession,
   type HarnessSessionState,
+  type HostUsage,
   type HostApprovalInteraction,
   type HostCommand,
   type HostEvent,
@@ -52,15 +53,12 @@ import {
 } from "@codexhost/shared-contracts";
 
 import { QoderExecutableError, resolveQoderExecutable } from "./command.js";
-import { readQoderSnapshot } from "./history.js";
-import {
-  qoderStatusRequiresAuthentication,
-  readQoderListModels,
-  readQoderStatus,
-} from "./list-models.js";
+import { deriveQoderSession, type QoderHistoryDependencies } from "./fork.js";
+import { mapQoderMessageRecords, readQoderSnapshot } from "./history.js";
+import { parseQoderThinkingOptionId } from "./thinking.js";
 import {
   decodeQoderModelRef,
-  parseQoderListModels,
+  parseQoderSdkModels,
   QODER_CAPABILITIES,
   qoderModelRef,
 } from "./models.js";
@@ -70,24 +68,25 @@ import {
   QODER_PERMISSION_MODE_CATALOG,
   type QoderPermissionMode,
 } from "./permission-modes.js";
-import { QoderSdkTransport, type QoderQueryFactory, type QoderTurnEvent } from "./sdk-transport.js";
+import {
+  QoderSdkModelInspector,
+  QoderSdkTransport,
+  type QoderQueryFactory,
+  type QoderTurnEvent,
+} from "./sdk-transport.js";
 
 const HARNESS_ID = harnessIdSchema.parse("qodercli");
 
 export interface QoderAdapterOptions {
   environment?: NodeJS.ProcessEnv;
   command?: string;
-  timeoutMs?: number;
   closeTimeoutMs?: number;
-  listModels?: (cwd: string) => Promise<string>;
-  readStatus?: (cwd: string) => Promise<string>;
   queryFactory?: QoderQueryFactory;
-  forkSession?: (input: {
-    sourceSessionId: string;
-    cwd: string;
-    upToMessageId?: string;
-  }) => Promise<{ sessionId: string }>;
-  readSnapshot?: (nativeRef: NativeSessionRef, cwd: string) => HostThreadSnapshot;
+  history?: Partial<QoderHistoryDependencies>;
+  readSnapshot?: (
+    nativeRef: NativeSessionRef,
+    cwd: string,
+  ) => HostThreadSnapshot | Promise<HostThreadSnapshot>;
 }
 
 function rejected(
@@ -112,9 +111,43 @@ export function qoderError(error: unknown): HarnessError {
   return { code: "protocolError", message, retryable: false };
 }
 
+const SUBAGENT_TOOLS = new Set(["Agent", "Task"]);
+
+function nativeSubagentId(input: unknown): string | undefined {
+  if (typeof input !== "object" || input === null || Array.isArray(input)) return undefined;
+  const record = input as Record<string, unknown>;
+  for (const key of ["agentId", "agent_id", "task_id"]) {
+    const value = record[key];
+    if (typeof value === "string" && value.trim().length > 0) return value;
+  }
+  return undefined;
+}
+
 export class QoderAdapter implements HarnessAdapter {
   readonly harnessId: HarnessId = HARNESS_ID;
+  readonly subagents = {
+    readSnapshot: async (input: {
+      parent: NativeSessionRef;
+      nativeSubagentId: string;
+      cwd: string;
+    }): Promise<HarnessResult<HostThreadSnapshot>> => {
+      if (input.parent.harnessId !== this.harnessId || input.nativeSubagentId.trim().length === 0) {
+        return rejected("invalidRequest", "Qoder Subagent reference is invalid");
+      }
+      try {
+        const messages = await getSubagentMessages(
+          input.parent.nativeSessionId,
+          input.nativeSubagentId,
+          { dir: input.cwd },
+        );
+        return { ok: true, value: mapQoderMessageRecords(input.parent, messages) };
+      } catch {
+        return rejected("protocolError", "Qoder Subagent history is invalid");
+      }
+    },
+  };
   readonly #sessions = new Set<QoderSession>();
+  readonly #inspectors = new Set<QoderSdkModelInspector>();
   readonly #inspections = new Map<
     string,
     { expires: number; pending: boolean; result: Promise<HarnessInspection> }
@@ -149,13 +182,13 @@ export class QoderAdapter implements HarnessAdapter {
 
   async open(input: OpenSessionInput): Promise<HarnessResult<HarnessSession>> {
     if (this.#closed) return rejected("invalidState", "Qoder adapter is closed");
-    if (input.kind === "rollbackLastTurn") {
-      return rejected("unsupported", "Qoder last-Turn rollback is not verified yet");
-    }
     if (input.kind === "resume" && input.nativeRef.harnessId !== this.harnessId) {
       return rejected("invalidRequest", "Session belongs to another Harness");
     }
-    if (input.kind === "fork" && input.sourceRef.harnessId !== this.harnessId) {
+    if (
+      (input.kind === "fork" || input.kind === "rollbackLastTurn") &&
+      input.sourceRef.harnessId !== this.harnessId
+    ) {
       return rejected("invalidRequest", "Session belongs to another Harness");
     }
     let transport: QoderSdkTransport | undefined;
@@ -173,19 +206,32 @@ export class QoderAdapter implements HarnessAdapter {
       } else if (input.kind === "resume") {
         sessionId = input.nativeRef.nativeSessionId;
         openMode = "resume";
-      } else {
-        const forked = await (this.options.forkSession ?? defaultForkSession)({
-          sourceSessionId: input.sourceRef.nativeSessionId,
+      } else if (input.kind === "rollbackLastTurn" || input.kind === "fork") {
+        const derived = await deriveQoderSession({
+          kind: input.kind,
           cwd,
-          upToMessageId: input.checkpoint.checkpointId,
+          sourceRef: input.sourceRef,
+          ...(input.kind === "fork" ? { checkpoint: input.checkpoint } : {}),
+          ...(this.options.history ? { dependencies: this.options.history } : {}),
         });
-        sessionId = forked.sessionId;
-        openMode = "resume";
+        if (!derived.ok) return derived;
+        sessionId = derived.value.sessionId;
+        openMode = derived.value.openMode;
+      } else {
+        const exhaustive: never = input;
+        return rejected(
+          "invalidRequest",
+          `Unsupported open ${(exhaustive as OpenSessionInput).kind}`,
+        );
       }
       const model =
         input.kind === "fork" || !("model" in input) || !input.model
           ? undefined
           : decodeQoderModelRef(input.model);
+      const thinkingOptionId =
+        input.kind === "fork" || !("thinkingOptionId" in input) || !input.thinkingOptionId
+          ? undefined
+          : parseQoderThinkingOptionId(input.thinkingOptionId);
       const permissionMode: QoderPermissionMode =
         input.kind === "fork" || !("permissionModeId" in input) || !input.permissionModeId
           ? "default"
@@ -198,6 +244,7 @@ export class QoderAdapter implements HarnessAdapter {
         sessionId,
         openMode,
         ...(model ? { model } : {}),
+        ...(thinkingOptionId ? { thinkingOptionId } : {}),
         permissionMode,
         unattended: input.kind === "create" && input.executionPolicy === "unattended-full-access",
         ...(this.options.closeTimeoutMs ? { closeTimeoutMs: this.options.closeTimeoutMs } : {}),
@@ -214,6 +261,7 @@ export class QoderAdapter implements HarnessAdapter {
       const initialState: HarnessSessionState = {
         nativeRef,
         ...(model ? { effectiveModel: qoderModelRef(model) } : {}),
+        ...(thinkingOptionId ? { effectiveThinkingOptionId: thinkingOptionId } : {}),
         effectivePermissionModeId: encodeQoderPermissionMode(permissionMode),
       };
       const session = new QoderSession(
@@ -236,67 +284,79 @@ export class QoderAdapter implements HarnessAdapter {
 
   async close(): Promise<void> {
     this.#closed = true;
-    await Promise.all([...this.#sessions].map((session) => session.close()));
+    await Promise.all([
+      ...[...this.#sessions].map((session) => session.close()),
+      ...[...this.#inspectors].map((inspector) => inspector.close().catch(() => undefined)),
+    ]);
   }
 
   async #inspectCwd(cwd: string): Promise<HarnessInspection> {
+    const startedAt = Date.now();
+    let stage = "resolve-executable";
+    let inspector: QoderSdkModelInspector | null = null;
     try {
       resolveQoderExecutable({
         ...(this.options.command ? { command: this.options.command } : {}),
         environment: this.options.environment ?? process.env,
       });
-      const environment = this.options.environment ?? process.env;
-      const status = this.options.readStatus
-        ? await this.options.readStatus(cwd)
-        : await readQoderStatus({
-            cwd,
-            environment,
-            ...(this.options.command ? { command: this.options.command } : {}),
-            ...(this.options.timeoutMs ? { timeoutMs: this.options.timeoutMs } : {}),
-          });
-      if (qoderStatusRequiresAuthentication(status)) {
+      stage = "startup";
+      inspector = new QoderSdkModelInspector({
+        cwd,
+        environment: this.options.environment ?? process.env,
+        ...(this.options.command ? { command: this.options.command } : {}),
+        ...(this.options.closeTimeoutMs ? { closeTimeoutMs: this.options.closeTimeoutMs } : {}),
+        ...(this.options.queryFactory ? { queryFactory: this.options.queryFactory } : {}),
+      });
+      this.#inspectors.add(inspector);
+      stage = "model-catalog";
+      const snapshot = await inspector.inspect();
+      if (!snapshot.canSelectModel) {
         return {
-          status: "error",
+          status: "unavailable",
           error: {
-            code: "authenticationRequired",
-            message: "Qoder CLI authentication is required",
+            code: "unavailable",
+            message: "Qoder did not expose a selectable Model catalog",
             retryable: false,
+            stage,
+            durationMs: Date.now() - startedAt,
+            ...(inspector.stderrTail ? { stderrTail: inspector.stderrTail } : {}),
           },
         };
       }
-      const text = this.options.listModels
-        ? await this.options.listModels(cwd)
-        : await readQoderListModels({
-            cwd,
-            environment,
-            ...(this.options.command ? { command: this.options.command } : {}),
-            ...(this.options.timeoutMs ? { timeoutMs: this.options.timeoutMs } : {}),
-          });
+      const catalog = parseQoderSdkModels(snapshot.models);
       return harnessInspectionSchema.parse({
         status: "ready",
-        catalog: parseQoderListModels(text),
-        permissionModes: QODER_PERMISSION_MODE_CATALOG,
-        capabilities: QODER_CAPABILITIES,
+        catalog,
+        ...(snapshot.canSelectPermissionMode
+          ? { permissionModes: QODER_PERMISSION_MODE_CATALOG }
+          : {}),
+        capabilities: {
+          ...QODER_CAPABILITIES,
+          configuration: {
+            ...QODER_CAPABILITIES.configuration,
+            selectThinkingOption: catalog.thinkingOptions.length > 0,
+            selectPermissionMode: snapshot.canSelectPermissionMode,
+          },
+        },
       });
     } catch (error) {
       const failure = qoderError(error);
       return {
         status: failure.code === "notInstalled" ? "notInstalled" : "error",
-        error: failure,
+        error: {
+          ...failure,
+          stage,
+          durationMs: Date.now() - startedAt,
+          ...(inspector?.stderrTail ? { stderrTail: inspector.stderrTail } : {}),
+        },
       };
+    } finally {
+      if (inspector) {
+        await inspector.close().catch(() => undefined);
+        this.#inspectors.delete(inspector);
+      }
     }
   }
-}
-
-async function defaultForkSession(input: {
-  sourceSessionId: string;
-  cwd: string;
-  upToMessageId?: string;
-}): Promise<{ sessionId: string }> {
-  return forkQoderNativeSession(input.sourceSessionId, {
-    dir: input.cwd,
-    ...(input.upToMessageId ? { upToMessageId: input.upToMessageId } : {}),
-  });
 }
 
 class QoderSession implements HarnessSession {
@@ -312,7 +372,12 @@ class QoderSession implements HarnessSession {
   readonly #environment: NodeJS.ProcessEnv;
   readonly #onClosed: () => void;
   readonly #readSnapshot:
-    ((nativeRef: NativeSessionRef, cwd: string) => HostThreadSnapshot) | undefined;
+    | ((
+        nativeRef: NativeSessionRef,
+        cwd: string,
+      ) => HostThreadSnapshot | Promise<HostThreadSnapshot>)
+    | undefined;
+  #usage: HostUsage | null = null;
   #state: HarnessSessionState;
   #activeTurn: {
     turnId: HostTurnId;
@@ -331,7 +396,10 @@ class QoderSession implements HarnessSession {
     cwd: string,
     environment: NodeJS.ProcessEnv,
     onClosed: () => void,
-    readSnapshot?: (nativeRef: NativeSessionRef, cwd: string) => HostThreadSnapshot,
+    readSnapshot?: (
+      nativeRef: NativeSessionRef,
+      cwd: string,
+    ) => HostThreadSnapshot | Promise<HostThreadSnapshot>,
   ) {
     this.#transport = transport;
     this.#nativeRef = nativeRef;
@@ -366,9 +434,9 @@ class QoderSession implements HarnessSession {
     if (this.#closed) return rejected("invalidState", "Qoder Session is closed");
     if (this.#busy) return rejected("sessionBusy", "Qoder Session is busy", true);
     try {
-      const snapshot = this.#readSnapshot
+      const snapshot = await (this.#readSnapshot
         ? this.#readSnapshot(this.#nativeRef, this.#cwd)
-        : readQoderSnapshot(this.#nativeRef, this.#cwd, this.#environment);
+        : readQoderSnapshot(this.#nativeRef, this.#cwd, this.#environment));
       return { ok: true, value: { ...snapshot, state: this.#state } };
     } catch (error) {
       return { ok: false, error: qoderError(error) };
@@ -411,7 +479,7 @@ class QoderSession implements HarnessSession {
       case "model.select":
         return this.#selectModel(command);
       case "thinking.select":
-        return rejected("unsupported", "Qoder Thinking options are not selectable yet");
+        return this.#selectThinking(command);
       case "permissionMode.select":
         return this.#selectPermissionMode(command);
       default: {
@@ -422,6 +490,18 @@ class QoderSession implements HarnessSession {
         );
       }
     }
+  }
+
+  async refreshUsage(): Promise<void> {
+    if (this.#closed || this.#faulted) return;
+    const usage = await this.#transport.refreshUsage();
+    if (!usage) return;
+    this.#usage = usage;
+    this.#emit({
+      type: "session.usage.changed",
+      usage,
+      ...(this.#activeTurn ? { observedForTurnId: this.#activeTurn.turnId } : {}),
+    });
   }
 
   async close(): Promise<void> {
@@ -466,6 +546,14 @@ class QoderSession implements HarnessSession {
                 },
               };
       this.#completeOpenItems(command.turnId, outcome);
+      if (result.usage) {
+        this.#usage = result.usage;
+        this.#emit({
+          type: "session.usage.changed",
+          usage: result.usage,
+          observedForTurnId: command.turnId,
+        });
+      }
       this.#emit({
         type: "turn.completed",
         turnId: command.turnId,
@@ -562,6 +650,21 @@ class QoderSession implements HarnessSession {
     }
   }
 
+  async #selectThinking(
+    command: ThinkingSelectCommand,
+  ): Promise<HarnessResult<ThinkingSelectCompleted>> {
+    if (this.#busy) return rejected("sessionBusy", "Qoder Session is busy", true);
+    try {
+      const thinkingOptionId = parseQoderThinkingOptionId(command.thinkingOptionId);
+      await this.#transport.setThinkingOption(thinkingOptionId);
+      this.#state = { ...this.#state, effectiveThinkingOptionId: thinkingOptionId };
+      this.#emit({ type: "session.state.changed", state: this.#state });
+      return { ok: true, value: { completed: true } };
+    } catch (error) {
+      return { ok: false, error: qoderError(error) };
+    }
+  }
+
   async #selectPermissionMode(
     command: PermissionModeSelectCommand,
   ): Promise<HarnessResult<PermissionModeSelectCompleted>> {
@@ -599,6 +702,13 @@ class QoderSession implements HarnessSession {
       };
       this.#activeTurn?.items.set(event.callId, { itemId, item });
       this.#emit({ type: "item.started", turnId, item });
+      if (SUBAGENT_TOOLS.has(event.toolName)) {
+        this.#emit({
+          type: "subagent.state.changed",
+          nativeSubagentId: event.nativeSubagentId ?? event.callId,
+          status: "running",
+        });
+      }
       return;
     }
     if (event.type === "tool.completed") {
@@ -622,6 +732,13 @@ class QoderSession implements HarnessSession {
       };
       this.#activeTurn?.items.delete(event.callId);
       this.#emit({ type: "item.completed", turnId, snapshot });
+      if (open.item.type === "toolExecution" && SUBAGENT_TOOLS.has(open.item.toolName)) {
+        this.#emit({
+          type: "subagent.state.changed",
+          nativeSubagentId: nativeSubagentId(open.item.arguments) ?? event.callId,
+          status: event.isError ? "failed" : "completed",
+        });
+      }
       return;
     }
     if (event.type === "interaction.requested") {

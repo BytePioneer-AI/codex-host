@@ -1,12 +1,14 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { query, qodercliAuth } from "@qoder-ai/qoder-agent-sdk";
 import { withNodeRuntimeOnPath } from "@codexhost/harness-discovery";
-import { sanitizeDiagnosticTail } from "@codexhost/harness-adapter";
+import { sanitizeDiagnosticTail, type HostUsage } from "@codexhost/harness-adapter";
 import type { JsonValue } from "@codexhost/shared-contracts";
 
 import { resolveQoderExecutable } from "./command.js";
 import { closeQoderProcessGroup } from "./process-fence.js";
 import type { QoderPermissionMode } from "./permission-modes.js";
+import { parseQoderThinkingOptionId, qoderThinkingConfiguration } from "./thinking.js";
+import { parseQoderContextUsage, parseQoderResultUsage } from "./usage.js";
 
 const CLIENT_APP = "codexhost-qodercli-adapter/0.0.0";
 const DEFAULT_ABORT_TIMEOUT_MS = 2_000;
@@ -68,7 +70,13 @@ export type QoderInteractionResponse =
 export type QoderTurnEvent =
   | { type: "text.delta"; itemKey: string; delta: string }
   | { type: "reasoning.delta"; itemKey: string; delta: string }
-  | { type: "tool.started"; callId: string; toolName: string; arguments: JsonValue }
+  | {
+      type: "tool.started";
+      callId: string;
+      toolName: string;
+      arguments: JsonValue;
+      nativeSubagentId?: string;
+    }
   | { type: "tool.completed"; callId: string; output: string; isError: boolean }
   | { type: "interaction.requested"; request: QoderInteractionRequest }
   | {
@@ -81,6 +89,7 @@ export interface QoderTurnResult {
   status: "succeeded" | "cancelled" | "failed";
   nativeTurnKey: string;
   errorMessage?: string;
+  usage?: HostUsage | null;
 }
 
 export interface QoderQuery {
@@ -90,6 +99,8 @@ export interface QoderQuery {
   close(): void;
   setModel?(model: string): Promise<void>;
   setPermissionMode?(mode: QoderPermissionMode): Promise<void>;
+  applyFlagSettings?(settings: Record<string, unknown>): Promise<void>;
+  getContextUsage?(): Promise<unknown>;
 }
 
 export type QoderQueryFactory = (input: {
@@ -104,6 +115,7 @@ export interface QoderSdkTransportOptions {
   sessionId: string;
   openMode: "create" | "resume";
   model?: string;
+  thinkingOptionId?: string;
   permissionMode: QoderPermissionMode;
   unattended?: boolean;
   closeTimeoutMs?: number;
@@ -169,6 +181,23 @@ function asText(value: unknown): string {
   }
 }
 
+function nativeSubagentId(input: unknown): string | undefined {
+  if (!isRecord(input)) return undefined;
+  for (const key of ["agentId", "agent_id", "task_id"]) {
+    const value = input[key];
+    if (typeof value === "string" && value.trim().length > 0) return value;
+  }
+  return undefined;
+}
+
+function extraArgsForThinking(thinkingOptionId: string): Record<string, unknown> {
+  const thinking = qoderThinkingConfiguration(parseQoderThinkingOptionId(thinkingOptionId));
+  if (!thinking.enabled) {
+    return { extraArgs: { "reasoning-effort": null } };
+  }
+  return thinking.effort ? { extraArgs: { "reasoning-effort": thinking.effort } } : {};
+}
+
 function contentBlocks(message: Record<string, unknown>): unknown[] {
   if (Array.isArray(message.content)) return message.content;
   if (isRecord(message.message) && Array.isArray(message.message.content)) {
@@ -184,6 +213,7 @@ export class QoderSdkTransport {
   readonly #command: string | undefined;
   readonly #openMode: "create" | "resume";
   readonly #model: string | undefined;
+  #thinkingOptionId: string | undefined;
   readonly #unattended: boolean;
   readonly #closeTimeoutMs: number;
   readonly #abortTimeoutMs: number;
@@ -207,6 +237,7 @@ export class QoderSdkTransport {
     this.#command = options.command;
     this.#openMode = options.openMode;
     this.#model = options.model;
+    this.#thinkingOptionId = options.thinkingOptionId;
     this.#unattended = options.unattended === true;
     this.#permissionMode = options.permissionMode;
     this.#closeTimeoutMs = options.closeTimeoutMs ?? 8_000;
@@ -236,6 +267,7 @@ export class QoderSdkTransport {
           ? { allowDangerouslySkipPermissions: true, permissionMode: "bypassPermissions" }
           : {}),
         ...(this.#model ? { model: this.#model } : {}),
+        ...(this.#thinkingOptionId ? extraArgsForThinking(this.#thinkingOptionId) : {}),
         ...(this.#openMode === "resume"
           ? { resume: this.sessionId }
           : { sessionId: this.sessionId }),
@@ -289,6 +321,24 @@ export class QoderSdkTransport {
     }
     await this.#query.setPermissionMode(mode);
     this.#permissionMode = mode;
+  }
+
+  async setThinkingOption(thinkingOptionId: string): Promise<void> {
+    if (!this.#query?.applyFlagSettings) {
+      throw new Error("Qoder SDK cannot select Thinking at runtime");
+    }
+    const thinking = qoderThinkingConfiguration(parseQoderThinkingOptionId(thinkingOptionId));
+    await this.#query.applyFlagSettings(
+      thinking.enabled
+        ? { alwaysThinkingEnabled: true, effortLevel: thinking.effort ?? null }
+        : { alwaysThinkingEnabled: false, effortLevel: null },
+    );
+    this.#thinkingOptionId = thinkingOptionId;
+  }
+
+  async refreshUsage(): Promise<HostUsage | null> {
+    if (!this.#query?.getContextUsage) return null;
+    return parseQoderContextUsage(await this.#query.getContextUsage());
   }
 
   runTurn(
@@ -598,16 +648,20 @@ export class QoderSdkTransport {
 
   #project(message: unknown, active: ActiveTurn): QoderTurnResult | undefined {
     if (!isRecord(message)) return undefined;
-    if (
-      message.type === "stream_event" &&
-      isRecord(message.event) &&
-      isRecord(message.event.delta)
-    ) {
-      const delta = message.event.delta;
-      if (delta.type === "text_delta" && typeof delta.text === "string") {
-        this.#appendStreamed(active, "text", `${active.streamedText}${delta.text}`);
-      } else if (delta.type === "thinking_delta" && typeof delta.thinking === "string") {
-        this.#appendStreamed(active, "reasoning", `${active.streamedReasoning}${delta.thinking}`);
+    if (message.type === "stream_event" && isRecord(message.event)) {
+      const payload = isRecord(message.event.delta) ? message.event.delta : message.event;
+      if (payload.type === "text_delta" && typeof payload.text === "string") {
+        this.#appendStreamed(active, "text", `${active.streamedText}${payload.text}`);
+      } else if (payload.type === "thinking_delta") {
+        const thinking =
+          typeof payload.thinking === "string"
+            ? payload.thinking
+            : typeof payload.text === "string"
+              ? payload.text
+              : "";
+        if (thinking) {
+          this.#appendStreamed(active, "reasoning", `${active.streamedReasoning}${thinking}`);
+        }
       }
     }
     if (message.type === "assistant") {
@@ -615,15 +669,23 @@ export class QoderSdkTransport {
         if (!isRecord(block)) continue;
         if (block.type === "text" && typeof block.text === "string") {
           this.#appendStreamed(active, "text", block.text);
-        } else if (block.type === "thinking" && typeof block.thinking === "string") {
-          this.#appendStreamed(active, "reasoning", block.thinking);
+        } else if (block.type === "thinking") {
+          const thinking =
+            typeof block.thinking === "string"
+              ? block.thinking
+              : typeof block.text === "string"
+                ? block.text
+                : "";
+          if (thinking) this.#appendStreamed(active, "reasoning", thinking);
         } else if (block.type === "tool_use" && typeof block.name === "string") {
           const callId = typeof block.id === "string" ? block.id : block.name;
+          const subagentId = nativeSubagentId(block.input);
           active.onEvent({
             type: "tool.started",
             callId,
             toolName: block.name,
             arguments: (block.input as JsonValue) ?? null,
+            ...(subagentId ? { nativeSubagentId: subagentId } : {}),
           });
         }
       }
@@ -642,17 +704,19 @@ export class QoderSdkTransport {
     }
     if (message.type === "result") {
       const subtype = typeof message.subtype === "string" ? message.subtype : "success";
+      const usage = parseQoderResultUsage(message);
       if (subtype === "success") {
-        return { status: "succeeded", nativeTurnKey: active.nativeTurnKey };
+        return { status: "succeeded", nativeTurnKey: active.nativeTurnKey, usage };
       }
       if (subtype === "error") {
         return {
           status: "failed",
           nativeTurnKey: active.nativeTurnKey,
           errorMessage: sanitizeDiagnosticTail(asText(message.errors ?? message.result)),
+          usage,
         };
       }
-      return { status: "cancelled", nativeTurnKey: active.nativeTurnKey };
+      return { status: "cancelled", nativeTurnKey: active.nativeTurnKey, usage };
     }
     return undefined;
   }
@@ -724,5 +788,140 @@ export class QoderSdkTransport {
     if (failures.length > 0) {
       throw new AggregateError(failures, "Qoder SDK shutdown could not be confirmed");
     }
+  }
+}
+
+export interface QoderSdkInspectorOptions {
+  cwd: string;
+  environment: NodeJS.ProcessEnv;
+  command?: string;
+  closeTimeoutMs?: number;
+  queryFactory?: QoderQueryFactory;
+}
+
+export interface QoderInspectionSnapshot {
+  models: unknown;
+  canSelectModel: boolean;
+  canSelectPermissionMode: boolean;
+}
+
+export class QoderSdkModelInspector {
+  readonly #children: ChildProcessWithoutNullStreams[] = [];
+  readonly #input = new PushableInput<unknown>();
+  readonly #cwd: string;
+  readonly #environment: NodeJS.ProcessEnv;
+  readonly #command: string | undefined;
+  readonly #closeTimeoutMs: number;
+  readonly #queryFactory: QoderQueryFactory;
+  #query: QoderQuery | null = null;
+  #closePromise: Promise<void> | null = null;
+  #stderrTail = "";
+
+  constructor(options: QoderSdkInspectorOptions) {
+    this.#cwd = options.cwd;
+    this.#environment = options.environment;
+    this.#command = options.command;
+    this.#closeTimeoutMs = options.closeTimeoutMs ?? 8_000;
+    this.#queryFactory = options.queryFactory ?? ((input) => query(input as never) as QoderQuery);
+  }
+
+  get stderrTail(): string {
+    return this.#stderrTail;
+  }
+
+  async inspect(): Promise<QoderInspectionSnapshot> {
+    if (this.#closePromise) throw new Error("Qoder SDK inspector is closing");
+    const executable = resolveQoderExecutable({
+      ...(this.#command ? { command: this.#command } : {}),
+      environment: this.#environment,
+    });
+    const activeQuery = this.#queryFactory({
+      prompt: this.#input,
+      options: {
+        cwd: this.#cwd,
+        auth: qodercliAuth(),
+        pathToQoderCLIExecutable: executable,
+        persistSession: false,
+        includePartialMessages: false,
+        tools: [],
+        env: withNodeRuntimeOnPath({
+          ...this.#environment,
+          QODER_AGENT_SDK_CLIENT_APP: CLIENT_APP,
+        }),
+        spawnQoderCLIProcess: (spawnOptions: {
+          command: string;
+          args: string[];
+          cwd?: string;
+          env?: NodeJS.ProcessEnv;
+          signal?: AbortSignal;
+        }) => this.#spawn(spawnOptions),
+      },
+    });
+    this.#query = activeQuery;
+    const initialized = await activeQuery.initializationResult();
+    const models = isRecord(initialized) ? initialized.models : undefined;
+    return {
+      models,
+      canSelectModel: Array.isArray(models) && typeof activeQuery.setModel === "function",
+      canSelectPermissionMode: typeof activeQuery.setPermissionMode === "function",
+    };
+  }
+
+  async close(): Promise<void> {
+    if (this.#closePromise) return this.#closePromise;
+    this.#closePromise = this.#closeInspector();
+    return this.#closePromise;
+  }
+
+  async #closeInspector(): Promise<void> {
+    this.#input.end();
+    try {
+      this.#query?.close();
+    } catch {
+      /* Inspector close is best-effort. */
+    }
+    const stopped = await Promise.allSettled(
+      this.#children.map((child) => closeQoderProcessGroup(child, this.#closeTimeoutMs)),
+    );
+    await Promise.race([
+      Promise.all(this.#children.map((child) => this.#waitForExit(child))),
+      new Promise((resolve) => setTimeout(resolve, this.#closeTimeoutMs)),
+    ]);
+    this.#query = null;
+    const failures = stopped.flatMap((result) =>
+      result.status === "rejected" ? [result.reason] : [],
+    );
+    if (failures.length > 0) {
+      throw new AggregateError(failures, "Qoder SDK inspector shutdown could not be confirmed");
+    }
+  }
+
+  #spawn(options: {
+    command: string;
+    args: string[];
+    cwd?: string;
+    env?: NodeJS.ProcessEnv;
+    signal?: AbortSignal;
+  }): ChildProcessWithoutNullStreams {
+    const child = spawn(options.command, options.args, {
+      cwd: options.cwd ?? this.#cwd,
+      env: options.env ?? this.#environment,
+      stdio: ["pipe", "pipe", "pipe"],
+      windowsHide: true,
+      ...(process.platform === "win32" ? {} : { detached: true }),
+    });
+    child.stderr.on("data", (chunk: Buffer | string) => {
+      this.#stderrTail = sanitizeDiagnosticTail(`${this.#stderrTail}${chunk.toString()}`);
+    });
+    this.#children.push(child);
+    return child;
+  }
+
+  #waitForExit(child: ChildProcessWithoutNullStreams): Promise<void> {
+    if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve();
+    return new Promise((resolve) => {
+      child.once("exit", () => resolve());
+      child.once("error", () => resolve());
+    });
   }
 }

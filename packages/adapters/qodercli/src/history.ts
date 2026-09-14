@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import os from "node:os";
+import { getSessionMessages } from "@qoder-ai/qoder-agent-sdk";
 
 import type {
   HostAgentMessageItem,
@@ -70,28 +71,21 @@ function textFromMessage(message: unknown): string {
     .join("");
 }
 
-export function mapQoderJsonlSnapshot(
+export function mapQoderMessageRecords(
   nativeRef: NativeSessionRef,
-  raw: string,
+  records: readonly unknown[],
 ): HostThreadSnapshot {
   const turns: HostTurnSnapshot[] = [];
   let current: HostTurnSnapshot | undefined;
   let itemOrdinal = 0;
-  for (const line of raw.split(/\r?\n/u)) {
-    if (!line.trim()) continue;
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(line);
-    } catch {
-      continue;
-    }
-    if (!isRecord(parsed) || typeof parsed.type !== "string") continue;
-    const message = parsed.message;
-    if (parsed.type === "user" && isRecord(message) && message.role === "user") {
+  for (const record of records) {
+    if (!isRecord(record) || typeof record.type !== "string") continue;
+    const message = record.message;
+    if (record.type === "user" && isRecord(message) && message.role === "user") {
       if (isToolResultUser(message)) continue;
       const nativeTurnKey =
-        (typeof parsed.promptId === "string" && parsed.promptId) ||
-        (typeof parsed.uuid === "string" && parsed.uuid) ||
+        (typeof record.promptId === "string" && record.promptId) ||
+        (typeof record.uuid === "string" && record.uuid) ||
         `user-${turns.length + 1}`;
       current = {
         nativeTurnRef: nativeTurnRefSchema.parse({
@@ -114,7 +108,7 @@ export function mapQoderJsonlSnapshot(
       continue;
     }
     if (!current) continue;
-    if (parsed.type === "assistant" && isRecord(message)) {
+    if (record.type === "assistant" && isRecord(message)) {
       const model = typeof message.model === "string" ? message.model : undefined;
       if (model) current.model = qoderModelRef(model);
       for (const block of Array.isArray(message.content) ? message.content : []) {
@@ -142,11 +136,33 @@ export function mapQoderJsonlSnapshot(
   return { turns };
 }
 
-export function readQoderSnapshot(
+export function mapQoderJsonlSnapshot(
+  nativeRef: NativeSessionRef,
+  raw: string,
+): HostThreadSnapshot {
+  const records: unknown[] = [];
+  for (const line of raw.split(/\r?\n/u)) {
+    if (!line.trim()) continue;
+    try {
+      records.push(JSON.parse(line));
+    } catch {
+      continue;
+    }
+  }
+  return mapQoderMessageRecords(nativeRef, records);
+}
+
+export async function readQoderSnapshot(
   nativeRef: NativeSessionRef,
   cwd: string,
-  environment: NodeJS.ProcessEnv,
-): HostThreadSnapshot {
+  environment: NodeJS.ProcessEnv = process.env,
+): Promise<HostThreadSnapshot> {
+  try {
+    const messages = await getSessionMessages(nativeRef.nativeSessionId, { dir: cwd });
+    if (messages.length > 0) return mapQoderMessageRecords(nativeRef, messages);
+  } catch {
+    /* Fall back to the on-disk JSONL transcript. */
+  }
   const file = qoderSessionLogPath(cwd, nativeRef.nativeSessionId, environment);
   if (!existsSync(file)) return { turns: [] };
   return mapQoderJsonlSnapshot(nativeRef, readFileSync(file, "utf8"));

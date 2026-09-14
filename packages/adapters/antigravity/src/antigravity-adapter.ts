@@ -246,18 +246,25 @@ function invalidState(message: string): HarnessError {
 export const ANTIGRAVITY_PROXY_ENV = "CODEXHOST_ANTIGRAVITY_PROXY";
 export const ANTIGRAVITY_NO_PROXY_ENV = "CODEXHOST_ANTIGRAVITY_NO_PROXY";
 
+export function isLoopbackProxy(url?: string): boolean {
+  if (!url) return false;
+  const trimmed = url.trim();
+  if (!trimmed) return false;
+  return (
+    /^(https?|socks5h?):\/\/(127\.0\.0\.1|localhost|\[::1\]|0\.0\.0\.0)(:\d+)?\/?$/i.test(
+      trimmed,
+    ) || /^(127\.0\.0\.1|localhost|\[::1\]|0\.0\.0\.0)(:\d+)?\/?$/i.test(trimmed)
+  );
+}
+
 export function resolveAntigravityEnvironment(
   baseEnvironment: NodeJS.ProcessEnv,
   bridgeEnvironment: NodeJS.ProcessEnv = {},
 ): NodeJS.ProcessEnv {
   const environment: NodeJS.ProcessEnv = { ...baseEnvironment, ...bridgeEnvironment };
-  const proxyOverride = (
-    environment[ANTIGRAVITY_PROXY_ENV] ??
-    environment.CODEXHOST_PROXY
-  )?.trim();
+  const proxyOverride = (environment[ANTIGRAVITY_PROXY_ENV] ?? environment.CODEXHOST_PROXY)?.trim();
   const noProxyAppend = (
-    environment[ANTIGRAVITY_NO_PROXY_ENV] ??
-    environment.CODEXHOST_NO_PROXY
+    environment[ANTIGRAVITY_NO_PROXY_ENV] ?? environment.CODEXHOST_NO_PROXY
   )?.trim();
 
   if (proxyOverride) {
@@ -275,6 +282,18 @@ export function resolveAntigravityEnvironment(
       environment.http_proxy = proxyOverride;
       environment.https_proxy = proxyOverride;
     }
+  } else {
+    // When no explicit proxy override is configured, strip implicit loopback proxies
+    // (e.g. 127.0.0.1 / localhost) synthesized by the Host platform layer from local
+    // desktop proxy clients (Surge, Clash). These local HTTP proxy ports are prone to
+    // connection resets (TCP RST) on long-lived SSE streams, whereas native terminals
+    // and TUN virtual interfaces handle direct connections reliably.
+    if (isLoopbackProxy(environment.HTTP_PROXY)) delete environment.HTTP_PROXY;
+    if (isLoopbackProxy(environment.HTTPS_PROXY)) delete environment.HTTPS_PROXY;
+    if (isLoopbackProxy(environment.http_proxy)) delete environment.http_proxy;
+    if (isLoopbackProxy(environment.https_proxy)) delete environment.https_proxy;
+    if (isLoopbackProxy(environment.ALL_PROXY)) delete environment.ALL_PROXY;
+    if (isLoopbackProxy(environment.all_proxy)) delete environment.all_proxy;
   }
 
   if (noProxyAppend) {
@@ -825,7 +844,11 @@ class AntigravitySession implements HarnessSession {
       await questions.dispose();
       return {
         ok: false,
-        error: { code: "nativeFailure", message: "Failed to start Antigravity process", retryable: true },
+        error: {
+          code: "nativeFailure",
+          message: "Failed to start Antigravity process",
+          retryable: true,
+        },
       };
     }
     this.#event({ type: "turn.started", turnId: command.turnId });

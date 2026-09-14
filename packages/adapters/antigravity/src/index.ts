@@ -7,6 +7,7 @@ export {
   ANTIGRAVITY_WORKSPACE_FILE_INSTRUCTION,
   AntigravityAdapter,
   formatAntigravityTurnPrompt,
+  isLoopbackProxy,
   isTransientNetworkError,
   parseAntigravityContextUsage,
   permissionDeniedTurnError,

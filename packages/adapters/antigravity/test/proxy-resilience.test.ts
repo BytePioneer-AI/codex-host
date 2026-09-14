@@ -10,6 +10,7 @@ import {
   ANTIGRAVITY_NO_PROXY_ENV,
   ANTIGRAVITY_PROXY_ENV,
   AntigravityAdapter,
+  isLoopbackProxy,
   isTransientNetworkError,
   resolveAntigravityEnvironment,
 } from "../src/index.js";
@@ -138,12 +139,82 @@ describe("Antigravity Proxy & Network Resilience", () => {
       expect(resolved.https_proxy).toBeUndefined();
     });
 
+    it("automatically strips loopback proxies (127.0.0.1, localhost) when no explicit proxy is configured", () => {
+      const baseEnv: NodeJS.ProcessEnv = {
+        HTTP_PROXY: "http://127.0.0.1:8888",
+        HTTPS_PROXY: "http://127.0.0.1:8888",
+        http_proxy: "http://localhost:8888",
+        https_proxy: "http://[::1]:8888",
+        ALL_PROXY: "socks5://127.0.0.1:1080",
+        all_proxy: "socks5://127.0.0.1:1080",
+      };
+      const resolved = resolveAntigravityEnvironment(baseEnv);
+      expect(resolved.HTTP_PROXY).toBeUndefined();
+      expect(resolved.HTTPS_PROXY).toBeUndefined();
+      expect(resolved.http_proxy).toBeUndefined();
+      expect(resolved.https_proxy).toBeUndefined();
+      expect(resolved.ALL_PROXY).toBeUndefined();
+      expect(resolved.all_proxy).toBeUndefined();
+    });
+
+    it("preserves non-loopback (corporate/remote) proxy when no explicit proxy is configured", () => {
+      const baseEnv: NodeJS.ProcessEnv = {
+        HTTP_PROXY: "http://proxy.corp.internal:8080",
+        HTTPS_PROXY: "http://proxy.corp.internal:8080",
+      };
+      const resolved = resolveAntigravityEnvironment(baseEnv);
+      expect(resolved.HTTP_PROXY).toBe("http://proxy.corp.internal:8080");
+      expect(resolved.HTTPS_PROXY).toBe("http://proxy.corp.internal:8080");
+    });
+
     it("applies proxy options configured on the AntigravityAdapter constructor", () => {
       const adapter = new AntigravityAdapter({
         proxy: "direct",
         environment: { HTTP_PROXY: "http://127.0.0.1:8888" },
       });
       expect(adapter).toBeDefined();
+    });
+  });
+
+  describe("isLoopbackProxy", () => {
+    it("identifies IPv4 loopback addresses", () => {
+      expect(isLoopbackProxy("http://127.0.0.1:8888")).toBe(true);
+      expect(isLoopbackProxy("http://127.0.0.1:8888/")).toBe(true);
+      expect(isLoopbackProxy("https://127.0.0.1:8888")).toBe(true);
+      expect(isLoopbackProxy("127.0.0.1:8888")).toBe(true);
+      expect(isLoopbackProxy("http://127.0.0.1")).toBe(true);
+      expect(isLoopbackProxy("http://0.0.0.0:8888")).toBe(true);
+    });
+
+    it("identifies localhost addresses", () => {
+      expect(isLoopbackProxy("http://localhost:7890")).toBe(true);
+      expect(isLoopbackProxy("http://localhost:8888/")).toBe(true);
+      expect(isLoopbackProxy("localhost:8888")).toBe(true);
+      expect(isLoopbackProxy("http://localhost")).toBe(true);
+    });
+
+    it("identifies IPv6 loopback addresses", () => {
+      expect(isLoopbackProxy("http://[::1]:8888")).toBe(true);
+      expect(isLoopbackProxy("http://[::1]:8888/")).toBe(true);
+      expect(isLoopbackProxy("[::1]:8888")).toBe(true);
+    });
+
+    it("identifies socks loopback addresses", () => {
+      expect(isLoopbackProxy("socks5://127.0.0.1:1080")).toBe(true);
+      expect(isLoopbackProxy("socks5h://127.0.0.1:1080")).toBe(true);
+    });
+
+    it("rejects non-loopback external and corporate proxies", () => {
+      expect(isLoopbackProxy("http://proxy.corp.internal:8080")).toBe(false);
+      expect(isLoopbackProxy("http://10.0.0.1:8888")).toBe(false);
+      expect(isLoopbackProxy("http://192.168.1.1:7890")).toBe(false);
+      expect(isLoopbackProxy("https://example.com:443")).toBe(false);
+    });
+
+    it("handles falsy and empty inputs safely", () => {
+      expect(isLoopbackProxy(undefined)).toBe(false);
+      expect(isLoopbackProxy("")).toBe(false);
+      expect(isLoopbackProxy("   ")).toBe(false);
     });
   });
 
@@ -400,10 +471,7 @@ describe("Antigravity Proxy & Network Resilience", () => {
         });
 
         // Verify that exactly 2 attempts were executed
-        const attempts = parseInt(
-          await readFile(path.join(directory, "attempt.txt"), "utf8"),
-          10,
-        );
+        const attempts = parseInt(await readFile(path.join(directory, "attempt.txt"), "utf8"), 10);
         expect(attempts).toBe(2);
       } finally {
         await adapter.close();
@@ -460,10 +528,7 @@ describe("Antigravity Proxy & Network Resilience", () => {
         });
 
         // Exactly 1 attempt ran (no retry)
-        const attempts = parseInt(
-          await readFile(path.join(directory, "attempt.txt"), "utf8"),
-          10,
-        );
+        const attempts = parseInt(await readFile(path.join(directory, "attempt.txt"), "utf8"), 10);
         expect(attempts).toBe(1);
       } finally {
         await adapter.close();
@@ -538,10 +603,7 @@ describe("Antigravity Proxy & Network Resilience", () => {
           outcome: { status: "failed" },
         });
 
-        const attempts = parseInt(
-          await readFile(path.join(directory, "attempt.txt"), "utf8"),
-          10,
-        );
+        const attempts = parseInt(await readFile(path.join(directory, "attempt.txt"), "utf8"), 10);
         expect(attempts).toBe(1);
       } finally {
         await adapter.close();

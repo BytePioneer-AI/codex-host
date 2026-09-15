@@ -9,6 +9,8 @@ export const SETTINGS_HEADER_SURFACE_SELECTOR =
   '[data-testid="app-shell-header-context-menu-surface"]';
 const SETTINGS_APPLICATION_HEADER_SELECTOR = 'header[data-pip-obstacle="app-shell-header"]';
 const SETTINGS_HEADER_SLOT_SELECTOR = ':scope > [data-test-id="header-shell-slot"]';
+const SETTINGS_HEADER_NATIVE_ACTION_GROUP_SELECTOR =
+  ':scope > [data-app-shell-header-obstacle="true"]';
 
 export interface RendererSettingsTriggerControl {
   root: HTMLElement;
@@ -113,6 +115,15 @@ export function inspectRendererSettingsContract(
   };
 }
 
+function findNativeHeaderActionGroup(header: HTMLElement): HTMLElement | null {
+  const surface = header.querySelector<HTMLElement>(SETTINGS_HEADER_SURFACE_SELECTOR);
+  if (!surface) return null;
+  const groups = [
+    ...surface.querySelectorAll<HTMLElement>(SETTINGS_HEADER_NATIVE_ACTION_GROUP_SELECTOR),
+  ];
+  return groups.at(-1) ?? null;
+}
+
 function findRendererSettingsHeaderInsertionPoint(
   ownerDocument: Document,
 ): RendererSettingsHeaderInsertionPoint | null {
@@ -121,6 +132,11 @@ function findRendererSettingsHeaderInsertionPoint(
 
   const headerBounds = measuredBounds(header);
   if (headerBounds.width <= 0 || headerBounds.height <= 0) return null;
+
+  const nativeActionGroup = findNativeHeaderActionGroup(header);
+  if (nativeActionGroup?.parentElement) {
+    return { parent: nativeActionGroup.parentElement, before: nativeActionGroup };
+  }
 
   const endSlot = [...header.querySelectorAll<HTMLElement>(SETTINGS_HEADER_SLOT_SELECTOR)]
     .filter((slot) => {

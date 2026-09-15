@@ -4,7 +4,7 @@
 Define the browser-safe, window-scoped codexhost settings shell, validated page extension contract, application-header trigger, lifecycle isolation, responsive presentation, and honest unavailable-state boundary for future runtime settings.
 ## Requirements
 ### Requirement: Codex Renderer exposes one codexhost settings shell
-The Renderer Extension SHALL install one window-scoped codexhost settings shell and one owned settings trigger as the first control in the verified Codex application-header right-side action group. The trigger SHALL remain present when that group has no native actions in a blank Thread and SHALL appear immediately before the native Open Location control when it is available. The shell and trigger SHALL remain independent of Composer, Thread, Harness, Model, Thinking, and submission state.
+The Renderer Extension SHALL install one window-scoped codexhost settings shell and one owned settings trigger as the first control in the verified Codex application-header right-side action group. The trigger SHALL mount immediately before that native action group so native header controls keep their own positions and owned controls extend away from them. The trigger SHALL remain present when the header renders no native action group for a blank Thread, mounting in the structurally verified right-side action position instead. The shell and trigger SHALL remain independent of Composer, Thread, Harness, Model, Thinking, and submission state.
 
 #### Scenario: User opens settings from the application header
 - **WHEN** the user activates the owned codexhost icon in the Codex application header
@@ -12,14 +12,18 @@ The Renderer Extension SHALL install one window-scoped codexhost settings shell 
 - **AND** Agent, Model, Composer phase, and native create state SHALL remain unchanged
 
 #### Scenario: Blank Thread has no native header actions
-- **WHEN** the application header does not render Open Location or the context menu for a blank Thread
+- **WHEN** the application header renders no native action group for a blank Thread
 - **THEN** the settings trigger SHALL remain mounted in the structurally verified right-side action position
-- **AND** it SHALL remain immediately before Open Location if native actions later appear
+- **AND** it SHALL move immediately before the native action group if native actions later appear
 
 #### Scenario: Codex replaces the application header
 - **WHEN** Renderer mutation scanning observes that the mounted header trigger is disconnected
-- **THEN** Renderer SHALL mount one replacement trigger immediately before Open Location in the next verified header action group
+- **THEN** Renderer SHALL mount one replacement trigger immediately before the native action group of the next verified header
 - **AND** it SHALL NOT create a second dialog, trigger, or configuration state store
+
+#### Scenario: Another extension mounts its own header control
+- **WHEN** a control that Renderer does not own is inserted between the owned trigger and the start of the header action area
+- **THEN** Renderer SHALL keep the owned trigger immediately before the native action group instead of reclaiming the first position
 
 #### Scenario: Verified header action group is unavailable
 - **WHEN** Renderer cannot identify either a visible bounded native action group or its structurally verified empty action position

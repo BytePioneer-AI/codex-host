@@ -307,6 +307,58 @@ fn preserves_arguments_and_removes_recursive_environment() {
 }
 
 #[test]
+fn routes_skysight_memory_app_server_to_the_stock_codex_cli() {
+    let fake_codex = fake_codex_path();
+    let fake_codex_text = fake_codex.to_string_lossy();
+    let output = run_shim(
+        b"",
+        &[
+            "app-server",
+            "--stdio",
+            "-c",
+            "model_provider=\"openai-memgen\"",
+        ],
+        &[
+            (HOST_NODE_PATH_ENV, fake_codex_text.as_ref()),
+            (HOST_RUNTIME_PATH_ENV, fake_codex_text.as_ref()),
+            ("FAKE_CODEX_PRINT_INVOCATION", "1"),
+        ],
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    // Even with a Host Runtime configured, the Skysight-specific provider must execute the stock
+    // CLI directly so its one-shot summary response reaches SkyComputerUseService.
+    assert!(output.status.success(), "{stderr}");
+    assert!(stderr.contains("args=app-server|--stdio|-c|model_provider=\"openai-memgen\""));
+    assert!(stderr.contains("codex_cli_path_present=false"));
+    assert!(output.stdout.is_empty());
+}
+
+#[test]
+fn routes_internal_codex_auxiliary_app_server_to_the_stock_cli() {
+    let fake_codex = fake_codex_path();
+    let fake_codex_text = fake_codex.to_string_lossy();
+    let output = run_shim(
+        b"",
+        &["app-server", "--stdio"],
+        &[
+            (HOST_NODE_PATH_ENV, fake_codex_text.as_ref()),
+            (HOST_RUNTIME_PATH_ENV, fake_codex_text.as_ref()),
+            ("CODEX_INTERNAL_ORIGINATOR_OVERRIDE", "skysight"),
+            ("FAKE_CODEX_PRINT_INVOCATION", "1"),
+        ],
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    // The internal originator marker is an official ownership boundary. It must override an
+    // otherwise valid Host Runtime route without removing the caller's marker from the stock CLI.
+    assert!(output.status.success(), "{stderr}");
+    assert!(stderr.contains("args=app-server|--stdio"));
+    assert!(stderr.contains("codex_cli_path_present=false"));
+    assert!(output.stdout.is_empty());
+}
+
+#[test]
 fn managed_remote_child_receives_inherited_proxy_environment() {
     let output = run_shim(
         b"",

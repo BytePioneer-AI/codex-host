@@ -2442,6 +2442,21 @@ describe("Grok Adapter ACP projection", () => {
         status: "completed",
         resultSummary: "Inspection done",
       });
+      expect(await nextEvent(iterator)).toMatchObject({
+        type: "item.started",
+        item: {
+          type: "subagentDelegation",
+          operation: "close",
+          subagents: [{ nativeSubagentId: "child-session", status: "completed" }],
+        },
+      });
+      expect(await nextEvent(iterator)).toMatchObject({
+        type: "item.completed",
+        snapshot: {
+          item: { type: "subagentDelegation", operation: "close" },
+          outcome: { status: "succeeded" },
+        },
+      });
 
       transport.event({
         type: "tool.call",

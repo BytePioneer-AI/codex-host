@@ -576,6 +576,59 @@ describe("Codex UI projector", () => {
     ]);
   });
 
+  it("projects a closed delegation as a closeAgent Tool Call", () => {
+    const value = projector();
+    const closeItem: HostSubagentDelegationItem = {
+      type: "subagentDelegation",
+      itemId: itemId("delegation-close-1"),
+      operation: "close",
+      subagents: [
+        {
+          subagentId: "claude-agent-1",
+          description: "Inspect implementation",
+          background: true,
+          status: "completed",
+          resultSummary: "Inspection complete",
+        },
+      ],
+    };
+    value.project({ type: "turn.started", turnId });
+
+    expect(value.project({ type: "item.started", turnId, item: closeItem }).messages).toMatchObject(
+      [
+        {
+          method: "item/started",
+          params: {
+            item: {
+              id: "delegation-close-1",
+              type: "collabAgentToolCall",
+              tool: "closeAgent",
+              senderThreadId: "thread-1",
+              receiverThreadIds: ["claude-agent-1"],
+              agentsStates: {
+                "claude-agent-1": { status: "completed", message: "Inspection complete" },
+              },
+            },
+          },
+        },
+      ],
+    );
+    expect(
+      value.project({
+        type: "item.completed",
+        turnId,
+        snapshot: { item: closeItem, outcome: { status: "succeeded" } },
+      }).messages,
+    ).toMatchObject([
+      {
+        method: "item/completed",
+        params: {
+          item: { type: "collabAgentToolCall", tool: "closeAgent", status: "completed" },
+        },
+      },
+    ]);
+  });
+
   it.each([
     { configurations: [{}], expected: { model: null, reasoningEffort: null } },
     { configurations: [], expected: { model: null, reasoningEffort: null } },

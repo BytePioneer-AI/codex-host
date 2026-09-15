@@ -125,6 +125,7 @@ export class OmpSubagentLifecycle {
         ? { status: "failed", error: subagentFailure() }
         : { status: "succeeded" };
     this.#emit({ type: "item.completed", turnId, snapshot: { item, outcome } });
+    this.#close(turnId, item.subagents);
     return subagent;
   }
 
@@ -141,6 +142,31 @@ export class OmpSubagentLifecycle {
             : "failed";
       const item = { ...active.item, subagents: [{ ...current, status }] };
       this.#emit({ type: "item.completed", turnId, snapshot: { item, outcome } });
+      this.#close(turnId, item.subagents);
     }
+  }
+
+  /**
+   * Codex retires a receiver from its Subagent list when the Host closes the
+   * delegation, not when the receiver reports completion: a completed Agent is
+   * still addressable, so Codex keeps offering it. A failed or interrupted
+   * receiver is retired by its status alone, so a completed one is the only
+   * case that needs the Host to close the handle.
+   */
+  #close(turnId: HostTurnId, subagents: HostSubagentState[]): void {
+    const closed = subagents.filter(({ status }) => status === "completed");
+    if (closed.length === 0) return;
+    const item: HostSubagentDelegationItem = {
+      type: "subagentDelegation",
+      itemId: this.#newItemId(),
+      operation: "close",
+      subagents: closed,
+    };
+    this.#emit({ type: "item.started", turnId, item });
+    this.#emit({
+      type: "item.completed",
+      turnId,
+      snapshot: { item, outcome: { status: "succeeded" } },
+    });
   }
 }

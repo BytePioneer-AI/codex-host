@@ -86,7 +86,7 @@ const hostItemSchema = z.discriminatedUnion("type", [
   z.strictObject({
     type: z.literal("subagentDelegation"),
     itemId: hostItemIdSchema,
-    operation: z.enum(["spawn", "send"]),
+    operation: z.enum(["spawn", "send", "close"]),
     prompt: z.string().optional(),
     subagents: z.array(
       z.strictObject({

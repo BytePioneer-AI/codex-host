@@ -87,7 +87,7 @@ async function readSnapshot(
     };
   }
   try {
-    return { ok: true, value: mapClaudeSnapshot(messages, sessionId) };
+    return { ok: true, value: mapClaudeSnapshot(messages, sessionId, cwd) };
   } catch {
     return {
       ok: false,

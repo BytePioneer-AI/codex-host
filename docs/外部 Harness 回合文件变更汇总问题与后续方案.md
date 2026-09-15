@@ -1,6 +1,6 @@
 # 外部 Harness 回合文件变更汇总问题与后续方案
 
-> 状态：调查记录与候选方案，尚未实施。本文不表示现有公共契约已支持独立回合净 diff，也不表示所有 Harness 或 Desktop UI 已完成实测。
+> 状态：调查记录；下文“当前实现”指本修复前的实现。本 PR 已为 Claude Code 的 Edit/Write 接入完整快照并计算可信净 diff；快照缺失或断链时保留原始操作，Pi、DSH 与 Desktop 端到端验证仍待后续完成。
 >
 > 关联：[Issue #218](https://github.com/BytePioneer-AI/codex-host/issues/218)、[#134](https://github.com/BytePioneer-AI/codex-host/issues/134)。术语遵循[领域术语表](./领域术语表.md)。
 
@@ -41,7 +41,7 @@ Pi 和 Claude Code 也存在逐次产生 fileChange item 的路径：
 
 逐次记录操作本身合理，不应只为减少汇总行数而删除原生操作历史。
 
-### 2.2 公共投影直接拼接操作 diff
+### 2.2 调查时公共投影直接拼接操作 diff
 
 `packages/protocol-core/src/codex-ui-projector.ts` 的 `#fileChangeUpdates()` 同时发出：
 
@@ -103,7 +103,7 @@ Pi Adapter、Pi RPC Session、CC 文件变更解析及原生消息相关的四�
 
 ## 4. 各 Harness 原生数据能力
 
-### 4.1 Claude Code：SDK 有完整基线信息，当前转换丢弃了它
+### 4.1 Claude Code：SDK 有完整基线信息
 
 核查仓库安装的 `@anthropic-ai/claude-agent-sdk/sdk-tools.d.ts`：
 
@@ -112,7 +112,7 @@ Pi Adapter、Pi RPC Session、CC 文件变更解析及原生消息相关的四�
 
 `originalFile` 的契约含义是修改前完整文件内容，但其类型允许 null，必须按工具语义处理缺失情况，不能一律推断为新建。
 
-当前 `parseClaudeNativeFileChange()` 只保留路径、类型和 hunks，没有保留完整原内容。对于原生确实提供完整基线的 Edit/Write，可以在 Adapter 内保留基线，并利用结构化补丁或写入内容恢复当前状态。历史消息是否同样保留这些字段仍需确认。
+Claude Adapter 现在为未被用户二次修改的 Edit/Write 保留完整前后状态；公共投影仅在同一路径的状态连续时重算基线到最终状态的净 diff。字段缺失或状态断链时保留原始操作 diff，不伪造合并结果。完整状态只在 Host 内部使用，不发送给 Desktop。历史消息是否同样保留这些字段仍需确认。
 
 SDK 另有 `enableFileCheckpointing` 和 `rewindFiles(messageId, { dryRun: true })`。类型声明允许返回 `filesChanged`、`insertions`、`deletions`，但不是完整净 diff 查询接口；本次没有实测该能力。不要把 SDK 文件备份与 Host 的 Native Checkpoint 混为一谈。
 
@@ -194,7 +194,7 @@ turn/diff/updated
 
 优先候选是保留原有操作级 item，同时让回合累计结果拥有独立、明确的公共表达，不再从全部操作 item 无条件推导。
 
-当前 `HostFileChange` 仅有 `path`、`kind`、`unifiedDiff`，不足以表达完整文件基线。若需要新增快照输入或独立回合 diff 输出，必须同步公共类型、schema、Adapter、协议投影、历史读取及测试；具体字段和事件名尚未设计，不在本文中预设。
+`HostFileChange` 现在可选携带完整前后状态；Claude Code 使用它计算实时回合净 diff。缺少快照的 Harness 仍沿用原始操作 diff，不会被当作可可靠合并的数据。
 
 现有 `fileChanges.replace` 能替换开放 item 的 changes，但不等于已经支持“保留所有操作 item，再提供独立累计结果”。直接增加一个汇总 fileChange item 还可能被当前 `#allFileChanges()` 再次累加。另一种按回合维护稳定 item 的方案会改变操作卡片语义，须与 Desktop 消费行为一起评估，不能直接复用已 completed 的 item。
 

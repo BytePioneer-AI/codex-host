@@ -180,6 +180,8 @@ export const harnessSessionCapabilitiesSchema = z
       })
       .strict()
       .optional(),
+    /** The Adapter emits File Changes from native evidence, so Tool inference is disabled. */
+    fileChanges: z.object({ reliable: z.boolean() }).strict().optional(),
   })
   .strict();
 

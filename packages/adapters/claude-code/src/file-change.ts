@@ -14,12 +14,14 @@ export interface ClaudeNativeFileChange {
   path: string;
   kind: "add" | "update";
   hunks: ClaudeStructuredPatchHunk[];
+  snapshot?: { before: string | null; after: string };
 }
 
 export interface ClaudeProjectedFileChange {
   path: string;
   kind: "add" | "update";
   unifiedDiff: string;
+  snapshot?: { before: string | null; after: string };
 }
 
 const hunkSchema = z
@@ -66,6 +68,35 @@ function validHunk(value: unknown): ClaudeStructuredPatchHunk | null {
   return hunk;
 }
 
+function nativeSnapshot(
+  toolName: "Edit" | "Write",
+  value: Record<string, unknown>,
+): ClaudeNativeFileChange["snapshot"] {
+  if (toolName === "Write") {
+    if (value.userModified === true || typeof value.content !== "string") return undefined;
+    if (value.type === "create" && value.originalFile === null) {
+      return { before: null, after: value.content };
+    }
+    return value.type === "update" && typeof value.originalFile === "string"
+      ? { before: value.originalFile, after: value.content }
+      : undefined;
+  }
+  if (
+    value.userModified === true ||
+    typeof value.originalFile !== "string" ||
+    typeof value.oldString !== "string" ||
+    typeof value.newString !== "string" ||
+    typeof value.replaceAll !== "boolean" ||
+    !value.originalFile.includes(value.oldString)
+  ) {
+    return undefined;
+  }
+  const after = value.replaceAll
+    ? value.originalFile.split(value.oldString).join(value.newString)
+    : value.originalFile.replace(value.oldString, value.newString);
+  return { before: value.originalFile, after };
+}
+
 export function parseClaudeNativeFileChange(
   toolName: string,
   value: unknown,
@@ -75,10 +106,12 @@ export function parseClaudeNativeFileChange(
   const hunks = value.structuredPatch.map(validHunk);
   if (hunks.length === 0 || hunks.some((hunk) => hunk === null)) return null;
   if (toolName === "Write" && value.type !== "create" && value.type !== "update") return null;
+  const snapshot = nativeSnapshot(toolName, value);
   return {
     path: value.filePath,
     kind: toolName === "Write" && value.type === "create" ? "add" : "update",
     hunks: hunks as ClaudeStructuredPatchHunk[],
+    ...(snapshot ? { snapshot } : {}),
   };
 }
 
@@ -115,5 +148,10 @@ export function projectClaudeFileChange(
         : `a/${normalizedPath}`;
   const newHeader = absoluteDisplayPath ? normalizedPath : `b/${normalizedPath}`;
   const unifiedDiff = [`--- ${oldHeader}`, `+++ ${newHeader}`, ...body, ""].join("\n");
-  return { path: normalizedPath, kind: value.kind, unifiedDiff };
+  return {
+    path: normalizedPath,
+    kind: value.kind,
+    unifiedDiff,
+    ...(value.snapshot ? { snapshot: value.snapshot } : {}),
+  };
 }

@@ -35,6 +35,9 @@ import type {
   HarnessSession,
   HarnessSessionCapabilities,
   HarnessSessionState,
+  HarnessGoalCapability,
+  HostGoal,
+  HostGoalOutcome,
   InspectHarnessInput,
   HostAgentMessageItem,
   HostApprovalInteraction,
@@ -157,8 +160,12 @@ export class FakeHarnessSession implements HarnessSession {
   readonly initialState: HarnessSessionState;
   readonly initialUsage: HostUsage | null;
   commands?: HarnessCommandCapability;
+  readonly goal?: HarnessGoalCapability;
   readonly interactionResponses: InteractionRespondCommand[] = [];
   readonly outputs: AsyncIterable<HarnessOutput>;
+  /** Goal control calls the Host issued, in order. */
+  readonly goalCalls: Array<"set" | "clear" | "read"> = [];
+  activeGoal: HostGoal | null = null;
   snapshotReads = 0;
   usageRefreshes = 0;
   usageFailures = 0;
@@ -203,6 +210,7 @@ export class FakeHarnessSession implements HarnessSession {
     initialPermissionModeId: HarnessPermissionModeId | undefined = permissionModes?.defaultModeId,
     supportsRollbackLastTurn = false,
     permissionModeScope: HarnessPermissionModeScope = "live",
+    supportsGoal = false,
   ) {
     this.harnessId = harnessId;
     const availableThinkingOptions = thinkingOptionsForModel(catalog, initialModel);
@@ -225,6 +233,17 @@ export class FakeHarnessSession implements HarnessSession {
       },
       subagents: { observe: false, readTranscript: false },
     };
+    if (supportsGoal) {
+      this.goal = {
+        set: async (input) => this.#setGoal(input),
+        clear: async () => this.#clearGoal(),
+        read: async () => {
+          if (this.#closed) return { ok: false, error: invalidStateError };
+          this.goalCalls.push("read");
+          return { ok: true, value: this.activeGoal };
+        },
+      };
+    }
     this.cwd = cwd;
     this.#catalog = catalog;
     this.#permissionModes = permissionModes;
@@ -409,6 +428,65 @@ export class FakeHarnessSession implements HarnessSession {
         },
       };
     }
+    this.#startTurn(command);
+    return { ok: true, value: { turnId: command.turnId } };
+  }
+
+  #setGoal(input: { turnId: HostTurnId; objective: string }): HarnessResult<TurnStartAccepted> {
+    if (this.#closed) return { ok: false, error: invalidStateError };
+    this.goalCalls.push("set");
+    if (this.#nextRejection) {
+      const error = this.#nextRejection;
+      this.#nextRejection = null;
+      return { ok: false, error };
+    }
+    if (this.#active) {
+      return {
+        ok: false,
+        error: {
+          code: "sessionBusy",
+          message: "Fake Harness Session already has an active Turn",
+          retryable: true,
+        },
+      };
+    }
+    this.activeGoal = { objective: input.objective, setAtMs: Date.now() };
+    this.#startTurn({ type: "turn.start", turnId: input.turnId, input: [] });
+    this.#event({ type: "session.goal.changed", goal: this.activeGoal });
+    return { ok: true, value: { turnId: input.turnId } };
+  }
+
+  #clearGoal(): HarnessResult<boolean> {
+    if (this.#closed) return { ok: false, error: invalidStateError };
+    this.goalCalls.push("clear");
+    const cleared = this.activeGoal !== null;
+    if (cleared) {
+      this.activeGoal = null;
+      this.#event({ type: "session.goal.changed", goal: null, outcome: "cleared" });
+    }
+    return { ok: true, value: cleared };
+  }
+
+  /** Simulates the native Harness reporting Goal progress (a new evaluation round). */
+  publishGoal(goal: HostGoal): void {
+    if (this.#closed) throw new Error("Fake Harness Session is closed");
+    this.activeGoal = goal;
+    this.#event({ type: "session.goal.changed", goal });
+  }
+
+  /** Simulates the native Harness dropping its Goal for the given reason. */
+  settleGoal(outcome: HostGoalOutcome, reason?: string): void {
+    if (this.#closed) throw new Error("Fake Harness Session is closed");
+    this.activeGoal = null;
+    this.#event({
+      type: "session.goal.changed",
+      goal: null,
+      outcome,
+      ...(reason ? { reason } : {}),
+    });
+  }
+
+  #startTurn(command: TurnStartCommand): void {
     const item: HostAgentMessageItem = {
       type: "agentMessage",
       itemId: this.#nextItemId(),
@@ -438,7 +516,6 @@ export class FakeHarnessSession implements HarnessSession {
       this.#nextApproval = null;
       this.requestApproval(pending.title, pending.description);
     }
-    return { ok: true, value: { turnId: command.turnId } };
   }
 
   appendText(text: string): void {
@@ -995,6 +1072,7 @@ export class FakeHarnessAdapter implements HarnessAdapter {
   readonly supportsForkAcrossCwd: boolean;
   readonly supportsRollbackLastTurn: boolean;
   readonly permissionModeScope: HarnessPermissionModeScope;
+  supportsGoal: boolean;
   inspectionCalls = 0;
   #closePromise: Promise<void> | null = null;
   #sessionOrdinal = 0;
@@ -1009,6 +1087,7 @@ export class FakeHarnessAdapter implements HarnessAdapter {
     permissionModes?: HarnessPermissionModeCatalog,
     supportsRollbackLastTurn = false,
     permissionModeScope: HarnessPermissionModeScope = "live",
+    supportsGoal = false,
   ) {
     this.harnessId = harnessId;
     this.catalog = catalog;
@@ -1018,6 +1097,7 @@ export class FakeHarnessAdapter implements HarnessAdapter {
     this.supportsForkAcrossCwd = supportsForkAcrossCwd;
     this.supportsRollbackLastTurn = supportsRollbackLastTurn;
     this.permissionModeScope = permissionModeScope;
+    this.supportsGoal = supportsGoal;
   }
 
   async inspect(input: InspectHarnessInput = {}): Promise<HarnessInspection> {
@@ -1270,6 +1350,7 @@ export class FakeHarnessAdapter implements HarnessAdapter {
       permissionModeId,
       this.supportsRollbackLastTurn,
       this.permissionModeScope,
+      this.supportsGoal,
     );
     this.sessions.push(session);
     this.#sessionsByNativeId.set(nativeRef.nativeSessionId, session);

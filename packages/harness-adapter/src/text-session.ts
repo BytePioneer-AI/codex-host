@@ -139,6 +139,14 @@ export interface TurnCancelCommand {
   turnId: HostTurnId;
 }
 
+/** Harness-neutral view of a native Session Goal. */
+export interface HostGoal {
+  objective: string;
+  setAtMs: number;
+}
+
+export type HostGoalOutcome = "achieved" | "unachievable" | "cleared" | "error";
+
 export interface HostChoiceQuestion {
   id: string;
   type: "choice";
@@ -278,6 +286,21 @@ export interface PermissionModeSelectCompleted {
   completed: true;
 }
 
+/**
+ * Control over a Harness-owned Session Goal. Present only when the Harness
+ * has a native Goal; Host never emulates one.
+ */
+export interface HarnessGoalCapability {
+  /**
+   * Sets (or replaces) the Goal. The Harness starts the Goal's first Turn
+   * itself under `turnId`; the objective is not visible user input.
+   */
+  set(input: { turnId: HostTurnId; objective: string }): Promise<HarnessResult<TurnStartAccepted>>;
+  clear(): Promise<HarnessResult<boolean>>;
+  /** Reads the Goal the Harness currently holds from its native evidence. */
+  read(): Promise<HarnessResult<HostGoal | null>>;
+}
+
 export interface HostAgentMessageItem {
   type: "agentMessage";
   itemId: HostItemId;
@@ -329,6 +352,8 @@ export interface HostFileChange {
   path: string;
   kind: "add" | "update" | "delete";
   unifiedDiff: string;
+  /** Complete native states used only to derive a trustworthy Turn-level net diff. */
+  snapshot?: { before: string | null; after: string | null };
 }
 
 export interface HostFileChangeItem {
@@ -407,6 +432,8 @@ export interface HostTurnSnapshot {
 
 export interface HostThreadSnapshot {
   turns: HostTurnSnapshot[];
+  /** Native File Change Items are authoritative; do not infer them from Tool arguments. */
+  fileChangesReliable?: boolean;
   /** Current Native Session configuration observed with this history read. */
   state?: HarnessSessionState;
 }
@@ -425,6 +452,17 @@ export interface SessionUsageChangedEvent {
   type: "session.usage.changed";
   usage: HostUsage | null;
   observedForTurnId?: HostTurnId;
+}
+
+/**
+ * The Harness-owned Session Goal changed. `goal` is null once the Harness no
+ * longer holds it; `outcome` then says why it went away.
+ */
+export interface SessionGoalChangedEvent {
+  type: "session.goal.changed";
+  goal: HostGoal | null;
+  outcome?: HostGoalOutcome;
+  reason?: string;
 }
 
 export interface SubagentStateChangedEvent {
@@ -491,6 +529,7 @@ export interface SessionFaultedEvent {
 export type HostEvent =
   | SessionStateChangedEvent
   | SessionUsageChangedEvent
+  | SessionGoalChangedEvent
   | SubagentStateChangedEvent
   | SubagentTranscriptChangedEvent
   | TurnStartedEvent
@@ -512,6 +551,7 @@ export interface HarnessSession {
   readonly initialUsage: HostUsage | null;
   readonly outputs: AsyncIterable<HarnessOutput>;
   readonly commands?: HarnessCommandCapability;
+  readonly goal?: HarnessGoalCapability;
 
   refreshUsage?(): Promise<void>;
   readSnapshot(): Promise<HarnessResult<HostThreadSnapshot>>;

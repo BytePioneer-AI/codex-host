@@ -191,6 +191,7 @@ export async function projectExternalSnapshot(
         turnId: mapping.hostTurnId,
         cwd: record.cwd,
         snapshot: { ...turn, items },
+        inferFileChanges: !snapshot.fileChangesReliable,
       }),
     );
   }

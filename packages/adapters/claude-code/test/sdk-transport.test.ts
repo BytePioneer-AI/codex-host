@@ -96,6 +96,7 @@ function fixture(
     return fakeQuery as unknown as Query;
   });
   const onFault = vi.fn();
+  const onGoalSignal = vi.fn();
   const onPermissionModeChanged = vi.fn();
   const onPlanLimit = vi.fn();
   const transport = new ClaudeSdkTransport({
@@ -109,12 +110,14 @@ function fixture(
     closeTimeoutMs: 100,
     onPermissionModeChanged,
     onFault,
+    onGoalSignal,
     onPlanLimit,
     queryFactory,
   });
   return {
     fakeQuery,
     onFault,
+    onGoalSignal,
     onPermissionModeChanged,
     onPlanLimit,
     queryFactory,
@@ -125,6 +128,36 @@ function fixture(
     transport,
   };
 }
+
+describe("ClaudeSdkTransport Goal control", () => {
+  it("does not project a Goal acknowledgement as Assistant output", async () => {
+    const value = fixture();
+    await value.transport.start();
+    const events: ClaudeTurnEvent[] = [];
+    const turn = value.transport.runTurn(
+      "/goal ship it",
+      "00000000-0000-4000-8000-000000000024",
+      (event) => events.push(event),
+    );
+    value.fakeQuery.push({
+      type: "assistant",
+      uuid: "00000000-0000-4000-8000-000000000025",
+      session_id: "00000000-0000-4000-8000-000000000001",
+      parent_tool_use_id: null,
+      message: {
+        role: "assistant",
+        model: "<synthetic>",
+        content: [{ type: "text", text: "Goal set: ship it" }],
+      },
+    } as unknown as SDKMessage);
+    await vi.waitFor(() => expect(value.onGoalSignal).toHaveBeenCalledOnce());
+    expect(events).toEqual([]);
+    completeTurn(value.fakeQuery);
+    await turn;
+    expect(events).toEqual([]);
+    await value.transport.close();
+  });
+});
 
 function completeTurn(fakeQuery: FakeQuery): void {
   fakeQuery.push({
@@ -894,15 +927,20 @@ describe("ClaudeSdkTransport autonomous task continuation", () => {
 });
 
 describe("ClaudeSdkTransport process environment", () => {
-  it("adds the Host Node runtime to the Claude process PATH", async () => {
+  it("adds the Host Node runtime and keeps persisted Sessions visible to Claude CLI", async () => {
     const value = fixture("create", "default", harnessThinkingOptionIdSchema.parse("auto"), {
       PATH: "/usr/bin:/bin:/usr/sbin:/sbin",
+      CLAUDE_CODE_ENTRYPOINT: "sdk-ts",
     });
 
     await value.transport.start();
     expect(options(value).env?.PATH?.split(path.delimiter)).toContain(
       path.dirname(process.execPath),
     );
+    expect(options(value).env).toMatchObject({
+      CLAUDE_AGENT_SDK_CLIENT_APP: "codexhost-claude-code-adapter/0.0.0",
+      CLAUDE_CODE_ENTRYPOINT: "codexhost",
+    });
     await value.transport.close();
   });
 });
@@ -1076,6 +1114,7 @@ describe("ClaudeSdkTransport Model control", () => {
     expect(options(value).env?.PATH?.split(path.delimiter)).toContain(
       path.dirname(process.execPath),
     );
+    expect(options(value).env?.CLAUDE_CODE_ENTRYPOINT).toBe("codexhost");
     expect(options(value)).not.toHaveProperty("sessionId");
     expect(options(value)).not.toHaveProperty("resume");
   });

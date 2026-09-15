@@ -19,7 +19,7 @@ Use `none` when the command has no argument and `text` when it accepts trailing 
 
 ## 2. Register it in the owning Adapter
 
-Declare a static `HarnessAdapter.commandCatalog`. Reading this metadata must not call `inspect()`, connect to a native service, or open a Session. Keep `session.commands.list()` consistent with this catalog for existing execution clients. Implement execution in the owning Adapter and validate:
+Declare a static `HarnessAdapter.commandCatalog`. Reading this metadata must not call `inspect()`, connect to a native service, or open a Session. The static catalog remains available before a Native Session exists. An already-started Session may extend `session.commands.list()` with commands discovered through its native interface; listing must never start or resume a Native Session. Implement execution in the owning Adapter and validate:
 
 - command ID;
 - argument shape;
@@ -41,9 +41,11 @@ For commands with visible progress, decide explicitly whether they need:
 
 ## 4. Reuse Host and Renderer routing
 
-The Renderer reads static metadata via `codexhost/harness/commands/inspect { harnessId }`, through the target Host and public Adapter contract. No Thread or Native Session is needed, and there is no native-discovery fallback. The legacy Thread catalog RPC also reads Adapter metadata without opening or resuming a Session. The independent Composer popover has no Harness-specific catalog branches. Selecting `/compact` always executes directly with no text arguments, leaving the current draft and attachments untouched, even when the Harness supports optional compaction instructions. Other text commands prefix their invocation in the current editor, including before the first Turn, preserving the draft and attachments for ordinary submission. Direct commands (`/compact` and argument-free commands) execute only when a Thread exists; otherwise their menu items are disabled with an explanation, while the menu and other text commands remain available. Manually submitted `/compact` text retains the Adapter's existing argument support.
+The Renderer reads static metadata via `codexhost/harness/commands/inspect { harnessId }`, through the target Host and public Adapter contract. No Thread or Native Session is needed, and there is no native-discovery fallback. The Thread catalog RPC reads `commands.list()` from an already-open Session, falling back to static Adapter metadata only when no Session is loaded. It never opens or resumes a Session to populate the menu. The independent Composer popover has no Harness-specific catalog branches. Selecting `/compact` always executes directly with no text arguments, leaving the current draft and attachments untouched, even when the Harness supports optional compaction instructions. Other text commands prefix their invocation in the current editor, including before the first Turn, preserving the draft and attachments for ordinary submission. Direct commands (`/compact` and argument-free commands) execute only when a Thread exists; otherwise their menu items are disabled with an explanation, while the menu and other text commands remain available. Manually submitted `/compact` text retains the Adapter's existing argument support.
 
 The command button belongs to the active external Harness controls, near the Composer's left-side actions. It remains visible before a Thread exists and while the command catalog is empty or unavailable; in those states it is disabled with a localized availability hint. Only command execution requires a Thread; catalog inspection does not. Switching to Codex hides the external Harness command button and closes its popover. It MUST remain outside the Codex React-managed Slash command list; the independent popover owns its own focus, keyboard navigation, positioning, and scrolling.
+
+The independent popover includes a search field. Typing `/` into an empty external Composer opens this search field before Codex handles the keystroke; composing text, slashes inside ordinary drafts, and native Codex input remain untouched. Opening the picker refreshes its catalog through the target Host.
 
 For typed submission, the Host first checks for a leading slash-command token (ignoring leading whitespace). Only command candidates have trailing whitespace removed before catalog matching; ordinary prompts retain their original text and skip command catalog inspection. Unknown slash commands are rejected.
 
@@ -122,3 +124,17 @@ The public `/dsh-goal` invocation avoids Codex Desktop's built-in `/goal` comman
 - Shared contracts remain Harness-neutral.
 - Renderer code must not parse or execute Harness `SKILL.md` files.
 - UI DOM selectors are compatibility details, not command contract requirements.
+
+## Claude Code and OMP native prompt commands
+
+Descriptors may declare `executionMode: "prompt"`. These commands insert a draft on selection and execute through an ordinary `turn/start` after explicit submission. They do not use ephemeral `command/execute`; direct command execution rejects them. This preserves native prompt expansion and normal conversation history.
+
+- Claude Code reads SDK `supportedCommands()` from the existing query. Eligible SDK prompts and skills appear as `/claude:<name>` (including plugin-qualified names such as `/claude:plugin:review`). The Adapter validates the name against the current SDK catalog immediately before translating it to the native `/<name>` invocation. Model, permission, identity-replacement and known local control commands remain on existing controls or are excluded. Existing `/compact`, `/init`, and `/recap` keep their original execution paths.
+- OMP reads RPC `get_available_commands` from the existing transport. File prompt templates (`source: "file"`) and skills (`source: "skill"`) appear as `/omp:<name>`, for example `/omp:skill:review`. Unknown/missing native discovery on older OMP releases leaves the static catalog intact. Terminal-only builtins, extensions and custom imperative handlers are not assumed to be ordinary prompt turns; they remain excluded in this slice. Existing `/compact` is unchanged.
+- Namespaces prevent same-named native Codex commands from consuming these invocations before Harness routing. Only the owning Adapter removes its prefix; arbitrary unknown slash input is still rejected.
+- Native entries become available once that Thread's native transport has started (normally after the first message). Draft and cold, unopened Session inspection remains static and side-effect-free. The picker explains this limitation; it refreshes when opened.
+- Discovery uses each Harness's existing configuration sources. In particular, Claude currently uses `settingSources: ["user"]`; this change does not enable project/local settings, add plugin roots, read command files in the Renderer, or invent terminal-only capabilities. Installed user/plugin prompts exposed by that query are supported. OMP retains its existing file/skill discovery behavior.
+
+### Validation
+
+Use a harmless native file/plugin command that expands its arguments into an exact response. Verify native catalog discovery, namespaced invocation translation, a successful command Turn, and a subsequent normal Turn. OMP RPC and Claude SDK shapes must come from those real interfaces; unit fixtures may anonymize names and descriptions. Browser tests should verify that `/` opens only the active Harness menu, search filters its entries, selection preserves drafts, and Codex's own slash handling remains unchanged.

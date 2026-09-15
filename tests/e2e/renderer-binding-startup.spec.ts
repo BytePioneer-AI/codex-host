@@ -289,3 +289,68 @@ test("Kiro selects Thinking inside the Model picker before a Thread exists", asy
   await expect(page.locator('[data-command-id="kiro.effort"]')).toHaveCount(0);
   await expect(page.locator('[data-command-id="kiro.context"]')).toBeVisible();
 });
+
+for (const agent of ["claude-code", "omp"]) {
+  test(`${agent} slash opens a searchable Harness menu without invoking Codex slash handling`, async ({
+    page,
+  }, testInfo) => {
+    await page.setContent("<!doctype html><body></body>");
+    await page.evaluate((agent) => {
+      Reflect.set(globalThis, "startupAgent", agent);
+      const prefix = agent === "omp" ? "omp" : "claude";
+      Reflect.set(globalThis, "startupCommands", [
+        {
+          id: `${prefix}.native.probe`,
+          invocation: `/${prefix}:probe`,
+          label: "Probe",
+          description: "Test arguments",
+          argumentMode: "text",
+          executionMode: "prompt",
+        },
+        { id: `${prefix}.compact`, invocation: "/compact", label: "Compact", argumentMode: "none" },
+      ]);
+    }, agent);
+    await page.addScriptTag({ content: browserBundle });
+    const editor = page.locator("[data-codex-composer]");
+    await expect(page.locator("[data-codexhost-harness-command-control] > button")).toBeEnabled();
+    await editor.evaluate((element) => {
+      Reflect.set(globalThis, "nativeSlashCount", 0);
+      element.addEventListener("keydown", (event) => {
+        if ((event as KeyboardEvent).key === "/") Reflect.set(globalThis, "nativeSlashCount", 1);
+      });
+    });
+    await editor.focus();
+    await page.keyboard.type("/");
+    const menu = page.locator("[data-codexhost-harness-command-menu]");
+    await expect(menu).toBeVisible();
+    await expect(editor).toBeEmpty();
+    expect(await page.evaluate(() => Reflect.get(globalThis, "nativeSlashCount"))).toBe(0);
+    const search = menu.getByRole("searchbox");
+    await expect(search).toBeFocused();
+    await search.fill("arguments");
+    await expect(menu.getByRole("menuitem")).toHaveCount(1);
+    await page.screenshot({ path: testInfo.outputPath("slash-menu.png") });
+    await search.press("Enter");
+    await expect(menu).toBeHidden();
+    const prefix = agent === "omp" ? "omp" : "claude";
+    await expect(editor).toHaveText(`/${prefix}:probe `);
+    expect(await page.evaluate(() => Reflect.get(globalThis, "threadCommandRequests"))).toEqual([]);
+  });
+}
+
+test("Codex slash and slashes inside ordinary external prompts remain native text input", async ({
+  page,
+}) => {
+  await page.setContent("<!doctype html><body></body>");
+  await page.evaluate(() => Reflect.set(globalThis, "startupAgent", "codex"));
+  await page.addScriptTag({ content: browserBundle });
+  const editor = page.locator("[data-codex-composer]");
+  await editor.fill("path");
+  await editor.press("End");
+  await page.keyboard.type("/file");
+  await expect(editor).toHaveText("path/file");
+  await expect(page.locator("[data-codexhost-harness-command-menu]")).toBeHidden();
+  await editor.fill("");
+  await page.keyboard.type("/");
+  await expect(editor).toHaveText("/");
+});

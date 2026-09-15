@@ -4,6 +4,9 @@ import type { RendererSettingsLocale } from "./settings/localization.js";
 
 export interface RendererHarnessMessages {
   readonly commands: string;
+  readonly searchCommands: string;
+  readonly noMatchingCommands: string;
+  readonly nativeCommandsHint: string;
   readonly harnessCommands: string;
   readonly commandsUnavailable: string;
   readonly commandRequiresConversation: string;
@@ -18,6 +21,10 @@ export interface RendererHarnessMessages {
 
 const ENGLISH_HARNESS_MESSAGES: RendererHarnessMessages = Object.freeze({
   commands: "Commands",
+  searchCommands: "Search Harness commands",
+  noMatchingCommands: "No matching commands",
+  nativeCommandsHint:
+    "Native prompts appear after the first message. Terminal-only controls are not included.",
   harnessCommands: "Harness commands",
   commandsUnavailable: "No Harness commands available yet",
   commandRequiresConversation: "Start a conversation before running this command",
@@ -33,6 +40,9 @@ const ENGLISH_HARNESS_MESSAGES: RendererHarnessMessages = Object.freeze({
 
 const CHINESE_HARNESS_MESSAGES: RendererHarnessMessages = Object.freeze({
   commands: "命令",
+  searchCommands: "搜索当前 Harness 的命令",
+  noMatchingCommands: "没有匹配的命令",
+  nativeCommandsHint: "首条消息后显示原生提示词命令；不包含终端专用控件。",
   harnessCommands: "Harness 命令",
   commandsUnavailable: "暂无可用的 Harness 命令",
   commandRequiresConversation: "请先开始对话，再执行此命令",

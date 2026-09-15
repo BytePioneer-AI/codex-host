@@ -1,3 +1,4 @@
+import type { OmpNativeCommand } from "./omp-commands.js";
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
@@ -791,6 +792,33 @@ export class OmpRpcSession {
       sessionFile: this.state.sessionFile,
       sessionId: this.state.sessionId,
       expectedCwd,
+    });
+  }
+
+  async getAvailableCommands(): Promise<OmpNativeCommand[]> {
+    let response: Record<string, unknown>;
+    try {
+      response = await this.#send("get_available_commands", {});
+    } catch (error) {
+      if (error instanceof OmpRpcUnsupportedCommandError) return [];
+      throw error;
+    }
+    const data = isRecord(response.data) ? response.data : null;
+    if (!data || !Array.isArray(data.commands)) throw new Error("OMP command catalog is invalid");
+    return data.commands.flatMap((command) => {
+      if (
+        !isRecord(command) ||
+        typeof command.name !== "string" ||
+        typeof command.source !== "string"
+      )
+        return [];
+      return [
+        {
+          name: command.name,
+          source: command.source,
+          ...(typeof command.description === "string" ? { description: command.description } : {}),
+        },
+      ];
     });
   }
 

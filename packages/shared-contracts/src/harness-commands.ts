@@ -22,6 +22,7 @@ export const harnessCommandDescriptorSchema = z
     label: commandLabelSchema,
     description: commandDescriptionSchema.optional(),
     argumentMode: z.enum(["none", "text"]),
+    executionMode: z.literal("prompt").optional(),
   })
   .strict();
 

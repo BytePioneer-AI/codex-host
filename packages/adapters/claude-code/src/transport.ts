@@ -1,3 +1,4 @@
+import type { ClaudeNativeCommand } from "./claude-commands.js";
 import type {
   HarnessAccountSnapshot,
   HarnessThinkingOptionId,
@@ -178,6 +179,7 @@ export interface ClaudeIdleTurnHandler {
 }
 
 export interface ClaudeTurnTransport {
+  getAvailableCommands?(): Promise<ClaudeNativeCommand[]>;
   readonly sessionId: string;
   setAutonomousTurnHandler(handler: (turn: ClaudeAutonomousTurn) => void): void;
   setIdleTurnHandler(handler: ClaudeIdleTurnHandler | null): void;

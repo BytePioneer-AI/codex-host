@@ -19,5 +19,5 @@
 ## 4. Tests and docs
 
 - [x] 4.1 Replace switch/login/vault/inactive-quota tests with current-only snapshot, official quota display, harness read-only rows, leftover Vault ignored, and leftover multi-account methods following the existing unknown-method path.
-- [x] 4.2 Rewrite `docs/codex-accounts.md` and the native switching design as read-only quota docs. Remove switching claims from SSH/remote docs. Do not edit `openspec/changes/implement-codex-native-accounts`.
+- [x] 4.2 Rewrite `docs/product/codex-accounts.md` and the native switching design as read-only quota docs. Remove switching claims from SSH/remote docs. Do not edit `openspec/changes/implement-codex-native-accounts`.
 - [x] 4.3 Run focused Host/Renderer/contract tests, typecheck, and `npx openspec validate remove-codex-multi-account --strict`.

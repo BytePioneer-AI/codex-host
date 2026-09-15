@@ -8,8 +8,8 @@ import { withUserShellEnvironment } from "./user-shell-environment.js";
 
 export const CLAUDE_CODE_COMMAND_ENV = "CODEXHOST_CLAUDE_COMMAND";
 
-export function createHarnessAdapter(context: HarnessPluginContext): HarnessAdapter {
-  const environment = withUserShellEnvironment({ ...context.environment });
+export async function createHarnessAdapter(context: HarnessPluginContext): Promise<HarnessAdapter> {
+  const environment = await withUserShellEnvironment({ ...context.environment });
   if (context.platform === "darwin" && context.managedRemoteHost) {
     return new BrokeredHarnessAdapter({
       commandCatalog: claudeCommandCatalog,

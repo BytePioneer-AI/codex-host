@@ -116,7 +116,7 @@ http://127.0.0.1:3080/
 4. 对诊断端点做无凭据指纹检查。若已有 DSH Web 返回已识别的认证要求，提示关闭该实例后重新诊断；不会接管其凭据或停止它。端点属于其他服务时不向其发送会话内容。
 5. 启动 `web --no-open --host 127.0.0.1 --port 0`，等待原生 bootstrap，完成认证，再建立 HTTP/WebSocket 通信。托管进程使用自己的临时端口。
 
-正常使用无需手动启动 `dsh web`。版本变化后重新启动 codexhost，以重新选择对应日志与流式 profile；V0/V3 的历史边界见[消息修订与恢复](dsh-edit-recovery.md)。
+正常使用无需手动启动 `dsh web`。版本变化后重新启动 codexhost，以重新选择对应日志与流式 profile；V0/V3 的历史边界见[消息修订与恢复](../harnesses/deepseek/dsh-edit-recovery.md)。
 
 DeepSeek 的 endpoint 校验、Host 启动、就绪等待和 HTTP/WebSocket 生命周期属于 Adapter 专用语义，应继续留在 `packages/adapters/deepseek-harness`。
 

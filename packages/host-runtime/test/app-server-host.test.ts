@@ -654,30 +654,38 @@ describe("AppServerHost installed Harness plugins", () => {
     }
   }, 15_000);
 
-  it("starts official Codex before a slow plugin factory returns", async () => {
-    const directory = mkdtempSync(path.join(tmpdir(), "codexhost-plugin-parallel-"));
-    const location = path.join(directory, "slow-agent");
-    const release = path.join(directory, "release");
-    mkdirSync(location);
-    writeFileSync(
-      path.join(directory, "enabled.json"),
-      JSON.stringify({ version: 1, enabled: ["slow-agent"] }),
-    );
-    writeFileSync(
-      path.join(location, "manifest.json"),
-      JSON.stringify({
-        manifestVersion: 1,
-        id: "slow-agent",
-        name: "Slow Agent",
-        version: "1.0.0",
-        adapterApiVersion: 1,
-        entry: "index.mjs",
-      }),
-    );
-    writeFileSync(
-      path.join(location, "index.mjs"),
-      `
-      import { access } from "node:fs/promises";
+  const pluginWaitMethods = [
+    "codexhost/harness/inspect",
+    "codexhost/harness/commands/inspect",
+    "thread/start",
+    "thread/resume",
+  ];
+  it.each(pluginWaitMethods)(
+    "keeps official requests moving during plugin loading: %s",
+    async (blockedMethod) => {
+      const directory = mkdtempSync(path.join(tmpdir(), "codexhost-plugin-parallel-"));
+      const location = path.join(directory, "slow-agent");
+      const release = path.join(directory, "release");
+      mkdirSync(location);
+      writeFileSync(
+        path.join(directory, "enabled.json"),
+        JSON.stringify({ version: 1, enabled: ["slow-agent"] }),
+      );
+      writeFileSync(
+        path.join(location, "manifest.json"),
+        JSON.stringify({
+          manifestVersion: 1,
+          id: "slow-agent",
+          name: "Slow Agent",
+          version: "1.0.0",
+          adapterApiVersion: 1,
+          entry: "index.mjs",
+        }),
+      );
+      writeFileSync(
+        path.join(location, "index.mjs"),
+        `
+      import { access, writeFile } from "node:fs/promises";
       import { FakeHarnessAdapter } from ${JSON.stringify(pathToFileURL(path.resolve("packages/harness-adapter/dist/testing.js")).href)};
       const release = ${JSON.stringify(pathToFileURL(release).href)};
       async function waitForRelease() {
@@ -691,61 +699,155 @@ describe("AppServerHost installed Harness plugins", () => {
         }
       }
       export async function createHarnessAdapter() {
+        await writeFile(new URL("started", import.meta.url), "yes");
         await waitForRelease();
-        return new FakeHarnessAdapter("slow-agent");
+        const adapter = new FakeHarnessAdapter("slow-agent");
+        await adapter.open({ kind: "create", cwd: "/synthetic" });
+        return adapter;
       }
     `,
-    );
-    const fixture = createFixture({ pluginDirectory: directory, externalAdapters: new Map() });
-    try {
-      await fixture.ready;
-      writeFileSync(release, "ok");
-      writeRequest(fixture.desktopInput, {
-        id: 920,
-        method: "codexhost/harness/inspect",
-        params: { harnessId: "slow-agent" },
-      });
-      expect(await fixture.collector.waitFor((message) => requestId(message, 920))).toMatchObject({
-        result: { status: "ready" },
-      });
-    } finally {
-      try {
-        await stopFixture(fixture);
-      } finally {
-        rmSync(directory, { recursive: true, force: true });
-      }
-    }
-  }, 10_000);
-
-  it("stops later plugin batches when Host closes during a blocked factory", async () => {
-    const ids = ["a-agent", "b-agent", "c-agent", "d-agent", "e-agent"];
-    const directory = mkdtempSync(path.join(tmpdir(), "codexhost-plugin-close-"));
-    const started = path.join(directory, "started");
-    const finished = path.join(directory, "finished");
-    mkdirSync(started);
-    mkdirSync(finished);
-    const release = path.join(directory, "release");
-    writeFileSync(
-      path.join(directory, "enabled.json"),
-      JSON.stringify({ version: 1, enabled: ids }),
-    );
-    for (const id of ids) {
-      const location = path.join(directory, id);
-      mkdirSync(location);
-      writeFileSync(
-        path.join(location, "manifest.json"),
-        JSON.stringify({
-          manifestVersion: 1,
-          id,
-          name: id,
-          version: "1.0.0",
-          adapterApiVersion: 1,
-          entry: "index.mjs",
-        }),
       );
+      const fixture = createFixture({ pluginDirectory: directory, externalAdapters: new Map() });
+      try {
+        await fixture.ready;
+        await vi.waitFor(() => expect(readdirSync(location)).toContain("started"));
+        writeRequest(fixture.desktopInput, {
+          id: 918,
+          method: "initialize",
+          params: { clientInfo: { name: "startup-test", version: "1" } },
+        });
+        const initialize = await readJsonLine(fixture.official.stdin);
+        expect(initialize.method).toBe("initialize");
+        writeRequest(fixture.official.stdout, {
+          id: requiredMessageId(initialize),
+          result: { userAgent: "test" },
+        });
+        expect(await fixture.collector.waitFor((message) => requestId(message, 918))).toMatchObject(
+          {
+            result: { userAgent: "test" },
+          },
+        );
+        expect((await readJsonLine(fixture.official.stdin)).method).toBe("initialized");
+        const model = encodeHarnessPluginRoute(
+          harnessPluginRouteSchema.parse({ harnessId: "slow-agent" }),
+        );
+        for (const id of ["persisted-thread", "other-thread"]) {
+          const hostThreadId = hostThreadIdSchema.parse(id);
+          await fixture.mappingStore.createProvisional({
+            hostThreadId,
+            createRequestId: id,
+            harnessId: harnessIdSchema.parse("slow-agent"),
+            cwd: "/synthetic",
+            title: "Persisted",
+            transportModelId: model,
+            ephemeral: false,
+            historyMode: "legacy",
+          });
+          await fixture.mappingStore.commitReady({
+            hostThreadId,
+            nativeSessionRef: {
+              harnessId: harnessIdSchema.parse("slow-agent"),
+              nativeSessionId:
+                id === "persisted-thread" ? "fake-session-1" : "other-native-session",
+              formatVersion: 1,
+            },
+          });
+        }
+        writeRequest(fixture.desktopInput, {
+          id: 920,
+          method: blockedMethod,
+          params:
+            blockedMethod === "thread/start"
+              ? { model, cwd: "/synthetic" }
+              : blockedMethod === "thread/resume"
+                ? { threadId: "persisted-thread" }
+                : { harnessId: "slow-agent" },
+        });
+        if (blockedMethod === "thread/resume") {
+          writeRequest(fixture.desktopInput, {
+            id: 921,
+            method: "thread/name/set",
+            params: { threadId: "persisted-thread", name: "After resume" },
+          });
+          writeRequest(fixture.desktopInput, {
+            id: 922,
+            method: "thread/name/set",
+            params: { threadId: "other-thread", name: "Independent" },
+          });
+          expect(
+            await fixture.collector.waitFor((message) => requestId(message, 922)),
+          ).toHaveProperty("result");
+          expect(fixture.collector.messages.some((message) => requestId(message, 921))).toBe(false);
+        }
+        writeRequest(fixture.desktopInput, { id: 919, method: "model/list", params: {} });
+        const models = await readJsonLine(fixture.official.stdin);
+        expect(models.method).toBe("model/list");
+        writeRequest(fixture.official.stdout, {
+          id: requiredMessageId(models),
+          result: { data: [] },
+        });
+        expect(await fixture.collector.waitFor((message) => requestId(message, 919))).toMatchObject(
+          {
+            result: { data: [] },
+          },
+        );
+        expect(fixture.collector.messages.some((message) => requestId(message, 920))).toBe(false);
+        writeFileSync(release, "ok");
+        const completed = await fixture.collector.waitFor((message) => requestId(message, 920));
+        expect(completed).toHaveProperty("result");
+        if (blockedMethod === "thread/resume") {
+          expect(completed).toMatchObject({ result: { thread: { id: "persisted-thread" } } });
+          const renamed = await fixture.collector.waitFor((message) => requestId(message, 921));
+          expect(renamed).toHaveProperty("result");
+          expect(fixture.collector.messages.indexOf(renamed)).toBeGreaterThan(
+            fixture.collector.messages.indexOf(completed),
+          );
+        }
+        expect(fixture.official.stdin.readableLength).toBe(0);
+      } finally {
+        writeFileSync(release, "ok");
+        fixture.host.close();
+        try {
+          await stopFixture(fixture);
+        } finally {
+          rmSync(directory, { recursive: true, force: true });
+        }
+      }
+    },
+    10_000,
+  );
+
+  it.each(["close", "eof"])(
+    "cancels blocked plugin loads on %s",
+    async (ending) => {
+      const ids = ["a-agent", "b-agent", "c-agent", "d-agent", "e-agent"];
+      const directory = mkdtempSync(path.join(tmpdir(), "codexhost-plugin-close-"));
+      const started = path.join(directory, "started");
+      const finished = path.join(directory, "finished");
+      mkdirSync(started);
+      mkdirSync(finished);
+      const release = path.join(directory, "release");
       writeFileSync(
-        path.join(location, "index.mjs"),
-        `
+        path.join(directory, "enabled.json"),
+        JSON.stringify({ version: 1, enabled: ids }),
+      );
+      for (const id of ids) {
+        const location = path.join(directory, id);
+        mkdirSync(location);
+        writeFileSync(
+          path.join(location, "manifest.json"),
+          JSON.stringify({
+            manifestVersion: 1,
+            id,
+            name: id,
+            version: "1.0.0",
+            adapterApiVersion: 1,
+            entry: "index.mjs",
+          }),
+        );
+        writeFileSync(
+          path.join(location, "index.mjs"),
+          `
       import { access, writeFile } from "node:fs/promises";
       import { FakeHarnessAdapter } from ${JSON.stringify(pathToFileURL(path.resolve("packages/harness-adapter/dist/testing.js")).href)};
       const started = ${JSON.stringify(pathToFileURL(path.join(started, id)).href)};
@@ -767,27 +869,113 @@ describe("AppServerHost installed Harness plugins", () => {
         }
       }
     `,
-      );
-    }
-    const fixture = createFixture({ pluginDirectory: directory, externalAdapters: new Map() });
-    try {
-      await fixture.ready;
-      await vi.waitFor(() => expect(readdirSync(started)).toHaveLength(4));
-      fixture.host.close();
-      await expect(fixture.running).resolves.toBe(0);
-      expect(readdirSync(started).sort()).toEqual(["a-agent", "b-agent", "c-agent", "d-agent"]);
-    } finally {
-      writeFileSync(release, "ok");
-      await vi.waitFor(() =>
-        expect(readdirSync(finished).sort()).toEqual(readdirSync(started).sort()),
-      );
-      try {
-        await stopFixture(fixture);
-      } finally {
-        rmSync(directory, { recursive: true, force: true });
+        );
       }
-    }
-  }, 3_000);
+      const fixture = createFixture({ pluginDirectory: directory, externalAdapters: new Map() });
+      try {
+        await fixture.ready;
+        await vi.waitFor(() => expect(readdirSync(started)).toHaveLength(4));
+        writeRequest(fixture.desktopInput, {
+          id: 925,
+          method: "codexhost/harness/commands/inspect",
+          params: { harnessId: "a-agent" },
+        });
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        if (ending === "close") fixture.host.close();
+        else fixture.desktopInput.end();
+        let exitCode: number | undefined;
+        void fixture.running.then(
+          (code) => {
+            exitCode = code;
+          },
+          () => undefined,
+        );
+        await vi.waitFor(() => expect(exitCode).toBe(0));
+        expect(readdirSync(started).sort()).toEqual(["a-agent", "b-agent", "c-agent", "d-agent"]);
+      } finally {
+        fixture.host.close();
+        writeFileSync(release, "ok");
+        await vi.waitFor(() =>
+          expect(readdirSync(finished).sort()).toEqual(readdirSync(started).sort()),
+        );
+        try {
+          await stopFixture(fixture);
+        } finally {
+          rmSync(directory, { recursive: true, force: true });
+        }
+      }
+    },
+    3_000,
+  );
+
+  it.each(["thread/start", "thread/resume", "codexhost/thread/command/execute"])(
+    "drains an admitted Session open before EOF cleanup: %s",
+    async (requestMethod) => {
+      const fixture = createFixture();
+      const release = Promise.withResolvers<undefined>();
+      const opened = Promise.withResolvers<undefined>();
+      const closeAdapter = vi.spyOn(fixture.adapter, "close");
+      try {
+        await fixture.ready;
+        if (requestMethod !== "thread/start") {
+          const seed = await fixture.adapter.open({ kind: "create", cwd: "/synthetic" });
+          if (!seed.ok || !seed.value.initialState.nativeRef) {
+            throw new Error("Cannot seed a native Session");
+          }
+          const hostThreadId = hostThreadIdSchema.parse("persisted-thread");
+          await fixture.mappingStore.createProvisional({
+            hostThreadId,
+            createRequestId: "930",
+            harnessId: harnessIdSchema.parse("pi"),
+            cwd: "/synthetic",
+            title: "Persisted",
+            transportModelId: "codexhost/pi-native",
+            ephemeral: false,
+            historyMode: "legacy",
+          });
+          await fixture.mappingStore.commitReady({
+            hostThreadId,
+            nativeSessionRef: seed.value.initialState.nativeRef,
+          });
+        }
+        const open = fixture.adapter.open.bind(fixture.adapter);
+        vi.spyOn(fixture.adapter, "open").mockImplementation(async (input) => {
+          const result = await open(input);
+          opened.resolve(undefined);
+          await release.promise;
+          return result;
+        });
+        writeRequest(fixture.desktopInput, {
+          id: 930,
+          method: requestMethod,
+          params:
+            requestMethod === "thread/start"
+              ? { model: "codexhost/pi-native", cwd: "/synthetic" }
+              : { threadId: "persisted-thread", commandId: "compact" },
+        });
+        await opened.promise;
+        writeRequest(fixture.desktopInput, { id: 931, method: "model/list", params: {} });
+        expect((await readJsonLine(fixture.official.stdin)).method).toBe("model/list");
+        fixture.desktopInput.end();
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        expect(closeAdapter).not.toHaveBeenCalled();
+        release.resolve(undefined);
+        await expect(fixture.running).resolves.toBe(0);
+        expect(closeAdapter).toHaveBeenCalledOnce();
+        const response = await fixture.collector.waitFor((message) => requestId(message, 930));
+        if (requestMethod === "codexhost/thread/command/execute") {
+          expect(response).toMatchObject({ error: { code: -32078 } });
+        } else {
+          expect(response).toHaveProperty("result");
+        }
+        expect(fixture.diagnosticOutput.read()?.toString() ?? "").not.toContain("closed");
+      } finally {
+        release.resolve(undefined);
+        fixture.host.close();
+        await stopFixture(fixture);
+      }
+    },
+  );
 
   it("binds DeepSeek Session Import after its Adapter has been dynamically loaded", async () => {
     const directory = mkdtempSync(path.join(tmpdir(), "codexhost-dynamic-import-"));

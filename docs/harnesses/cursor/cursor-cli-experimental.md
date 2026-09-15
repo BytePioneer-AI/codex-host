@@ -196,7 +196,7 @@ before/after history reads, and changed inputs or missing Tasks fail closed.
 ## macOS SSH and Remote Control
 
 Direct SSH startup can report a locked login keychain despite native GUI login.
-Managed remote plugin construction selects the [native Aqua broker](native-aqua-broker.md)
+Managed remote plugin construction selects the [native Aqua broker](../../platforms/macos/native-aqua-broker.md)
 and preserves that login session:
 
 ```sh

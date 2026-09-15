@@ -177,7 +177,7 @@ codexhost remote status
 
 그런 다음 로컬 codexhost를 통해 Codex Desktop을 시작하고 SSH 작업 공간을 연 뒤, 원격 입력창의 Agent/Model 선택기에서 원하는 Harness를 선택하세요.
 
-[SSH 설정, 진단 및 제거 문서 보기 →](remote-ssh-host.md)
+[SSH 설정, 진단 및 제거 문서 보기 →](../platforms/remote/remote-ssh-host.md)
 
 #### 2️⃣ Remote Control 원격 (실험 · Windows에 권장)
 
@@ -185,7 +185,7 @@ Windows가 제어 대상 Host인 경우, Codex Desktop의 공식 페어링, 계�
 
 이 연결 방식은 공개 서비스나 TCP 포트를 추가하지 않습니다. Harness 자격 증명은 제어 대상 Windows 컴퓨터에 그대로 유지됩니다.
 
-[Remote Control 설정, 전송 경계 및 진단 →](remote-control-host.md)
+[Remote Control 설정, 전송 경계 및 진단 →](../platforms/remote/remote-control-host.md)
 
 </details>
 
@@ -248,7 +248,7 @@ Pi를 예로 듭니다. 왼쪽에서 오른쪽이 한 번의 요청 호출 체�
 ### Harness 추가
 
 주요 작업은 플러그인의 Manifest, 팩토리, Adapter, Session 및 네이티브 통신과 변환 로직을 구현하는 것입니다. 현재 Renderer에는 여전히 정적 연결이 있어, 완전한 Desktop 연동은 별도로 처리해야 합니다.
-Harness를 추가할 때는 코딩 Agent가 저장소의 [codexhost-add-harness Skill](../.agents/skills/codexhost-add-harness/SKILL.md)을 사용하도록 할 수 있습니다. 플러그인 구조, 공용 Adapter 인터페이스, 기능 구현과 테스트 요구 사항을 설명합니다.
+Harness를 추가할 때는 코딩 Agent가 저장소의 [codexhost-add-harness Skill](../../.agents/skills/codexhost-add-harness/SKILL.md)을 사용하도록 할 수 있습니다. 플러그인 구조, 공용 Adapter 인터페이스, 기능 구현과 테스트 요구 사항을 설명합니다.
 
 ## 감사의 글
 

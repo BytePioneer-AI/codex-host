@@ -2,7 +2,7 @@
 
 > 调研基线：OpenCode `v1.18.25`（2026-08-28 发布）。本文只把 OpenCode 官方仓库、官方文档、官方 Release、官方 npm 包和本机实际运行结果作为能力证据。
 
-> 下文 DeepSeek Host API 对比保留调研时的历史基线；当前 DSH Legacy 已移除，仅支持 `0.1.2-rc.1` / `0.1.5-rc.1` 托管 Web，现行范围见[连接流程](harness-executable-discovery.md#deepseek-harness-的特殊性)和[消息修订与恢复](dsh-edit-recovery.md)。
+> 下文 DeepSeek Host API 对比保留调研时的历史基线；当前 DSH Legacy 已移除，仅支持 `0.1.2-rc.1` / `0.1.5-rc.1` 托管 Web，现行范围见[连接流程](../../architecture/harness-executable-discovery.md#deepseek-harness-的特殊性)和[消息修订与恢复](../deepseek/dsh-edit-recovery.md)。
 
 本文同时记录接入设计、官方能力证据和 `codex/opencode-harness` 分支的第一版实现。下文单独区分“官方接口存在”“当前已实现”“当前已对外声明”和“仍需真实 Gate”，避免把类型或 endpoint 的存在误报成平台能力。
 
@@ -48,7 +48,7 @@ OpenCodeAdapter
      -> Session API + SSE
 ```
 
-实现位于 [`packages/adapters/opencode`](../packages/adapters/opencode)，并已接入：
+实现位于 [`packages/adapters/opencode`](../../../packages/adapters/opencode)，并已接入：
 
 - Host Runtime 的默认 Adapter composition、`CODEXHOST_OPENCODE_COMMAND` 显式命令和发布 Bundle closure；
 - Protocol Core 的 `codexhost/opencode-native` carrier；
@@ -132,7 +132,7 @@ OpenCodeAdapter
 
 ## codexhost 现有 Harness 是怎样接入的
 
-codexhost 没有让 Renderer 直接理解某个 Harness 的 wire protocol。所有外部 Harness 最终都实现 [`HarnessAdapter` / `HarnessSession`](../packages/harness-adapter/src/text-session.ts)，再输出统一的 Turn、Item、Question、Approval、Usage、Subagent、Checkpoint 和历史 Snapshot；分析时注册位于 `adapter-composition.ts`，后续已迁入 [`harness-plugin-loader.ts`](../packages/host-runtime/src/harness-plugin-loader.ts)；路由仍由 [`model-routing.ts`](../packages/protocol-core/src/model-routing.ts) 承接。
+codexhost 没有让 Renderer 直接理解某个 Harness 的 wire protocol。所有外部 Harness 最终都实现 [`HarnessAdapter` / `HarnessSession`](../../../packages/harness-adapter/src/text-session.ts)，再输出统一的 Turn、Item、Question、Approval、Usage、Subagent、Checkpoint 和历史 Snapshot；分析时注册位于 `adapter-composition.ts`，后续已迁入 [`harness-plugin-loader.ts`](../../../packages/host-runtime/src/harness-plugin-loader.ts)；路由仍由 [`model-routing.ts`](../../../packages/protocol-core/src/model-routing.ts) 承接。
 
 当前仓库有五种有代表性的接入形态：
 
@@ -146,11 +146,11 @@ codexhost 没有让 Renderer 直接理解某个 Harness 的 wire protocol。所�
 
 对应源码证据：
 
-- Pi：[`pi-rpc-session.ts`](../packages/adapters/pi/src/pi-rpc-session.ts)、[`pi-adapter.ts`](../packages/adapters/pi/src/pi-adapter.ts)
-- OMP：[`omp-rpc-session.ts`](../packages/adapters/omp/src/omp-rpc-session.ts)、[`omp-adapter.ts`](../packages/adapters/omp/src/omp-adapter.ts)
-- Claude Code：[`sdk-transport.ts`](../packages/adapters/claude-code/src/sdk-transport.ts)、[`claude-code-adapter.ts`](../packages/adapters/claude-code/src/claude-code-adapter.ts)
-- Grok：[`acp-transport.ts`](../packages/adapters/grok/src/acp-transport.ts)、[`grok-adapter.ts`](../packages/adapters/grok/src/grok-adapter.ts)
-- DeepSeek：[`host-client.ts`](../packages/adapters/deepseek-harness/src/host-client.ts)、[`deepseek-harness-adapter.ts`](../packages/adapters/deepseek-harness/src/deepseek-harness-adapter.ts)
+- Pi：[`pi-rpc-session.ts`](../../../packages/adapters/pi/src/pi-rpc-session.ts)、[`pi-adapter.ts`](../../../packages/adapters/pi/src/pi-adapter.ts)
+- OMP：[`omp-rpc-session.ts`](../../../packages/adapters/omp/src/omp-rpc-session.ts)、[`omp-adapter.ts`](../../../packages/adapters/omp/src/omp-adapter.ts)
+- Claude Code：[`sdk-transport.ts`](../../../packages/adapters/claude-code/src/sdk-transport.ts)、[`claude-code-adapter.ts`](../../../packages/adapters/claude-code/src/claude-code-adapter.ts)
+- Grok：[`acp-transport.ts`](../../../packages/adapters/grok/src/acp-transport.ts)、[`grok-adapter.ts`](../../../packages/adapters/grok/src/grok-adapter.ts)
+- DeepSeek：[`host-client.ts`](../../../packages/adapters/deepseek-harness/src/host-client.ts)、[`deepseek-harness-adapter.ts`](../../../packages/adapters/deepseek-harness/src/deepseek-harness-adapter.ts)
 
 能力保真度对比如下；“有”只描述当前仓库实现，“可做”表示本文推荐路径在完成 Gate 后有原生依据：
 
@@ -291,7 +291,7 @@ Permission/Question 的 asked、replied、rejected 事件和 list endpoint 应�
 
 OpenCode 的 `build`、`plan` 和自定义 Agent 是 Harness Agent；Model 是 `providerID/modelID`；variant/effort 是模型推理选项；Permission 是规则请求。这四者不能因为 ACP 都放在 `configOptions` 中就混成一个选择器。
 
-当前 [`HarnessSessionCapabilities`](../packages/shared-contracts/src/harness-models.ts) 只声明 Model、Thinking Option 和 Permission Mode，没有 Agent selection。因此建议：
+当前 [`HarnessSessionCapabilities`](../../../packages/shared-contracts/src/harness-models.ts) 只声明 Model、Thinking Option 和 Permission Mode，没有 Agent selection。因此建议：
 
 - Model：从 provider/model catalog 生成 `HarnessModelRef`，V1 每次 prompt 带上选中的 Model；
 - Thinking：只有目标 Model 明确暴露 variant 且通过实测时，才映射为 `HarnessThinkingOption`；

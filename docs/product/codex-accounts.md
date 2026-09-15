@@ -50,7 +50,7 @@ SSH 维持远端原生单账号，不传输本地凭据。
 
 ## 实现与验证
 
-- `docs/codex-native-account-switching-design.md`：多账号能力已删除后的只读额度边界。
+- `docs/product/codex-native-account-switching-design.md`：多账号能力已删除后的只读额度边界。
 - `openspec/changes/remove-codex-multi-account/`：删除 Host 多账号管理的产品契约。
 - `packages/host-runtime/src/account/codex-account-control.ts`：当前官方身份的只读投影。
 - `packages/host-runtime/src/native-account-host.ts`：本地当前身份读取。

@@ -51,7 +51,7 @@ Host
 - `packages/harness-adapter/src/plugin.ts`：工厂和 Context。
 - `packages/shared-contracts/src/harness-models.ts`：Catalog、能力和检查结果。
 - `packages/shared-contracts/src/harness-plugins.ts`：Manifest、描述与启用配置。
-- `docs/harness-plugin-runtime.md`：已实现边界、安装、信任和发行规则。
+- `docs/architecture/harness-plugin-runtime.md`：已实现边界、安装、信任和发行规则。
 
 核对目标 Harness 的当前原生接口、版本、认证和运行方式。实际可行时优先原生 SDK、RPC 或服务接口；只有原生接口不可用或确有理由时使用 ACP，并记录能力差异。不要以 CLI 名称相似推断协议兼容。
 

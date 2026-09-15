@@ -35,7 +35,7 @@ copies are bundled locally so no network request is needed.
 plate and light mark. It matches `packages/adapters/cursor-cli/assets/icon.svg`
 byte for byte; both are bundled locally without runtime network requests.
 The README badge uses the matching standalone 2D Cube from the official brand
-kit; source details are in `docs/cursor-cli-experimental.md`.
+kit; source details are in `docs/harnesses/cursor/cursor-cli-experimental.md`.
 `hermes-agent.png` is a cropped and resized copy of the Hermes Agent mark from
 the official Hermes Agent website favicon. It is bundled locally so the
 Renderer does not depend on the Hermes installation or a network request.

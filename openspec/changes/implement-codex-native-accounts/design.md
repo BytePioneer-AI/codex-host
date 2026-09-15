@@ -1,6 +1,6 @@
 ## Context
 
-See [Codex native Account design](../../../docs/codex-native-account-switching-design.md). An Account is an authentication identity, not a Harness, Model, Provider or Billing Source. Permanent home and native Thread storage remain fixed. This design supersedes the previous Journal/recovery design.
+See [Codex native Account design](../../../docs/product/codex-native-account-switching-design.md). An Account is an authentication identity, not a Harness, Model, Provider or Billing Source. Permanent home and native Thread storage remain fixed. This design supersedes the previous Journal/recovery design.
 
 ## Decisions
 

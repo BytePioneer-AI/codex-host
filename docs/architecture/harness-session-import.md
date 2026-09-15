@@ -81,7 +81,7 @@ Host 不承诺在 resolver 与 resume 之间锁住外部客户端；当前没有
 
 - 通过托管 Web 的公开 Session API 发现候选并重新检查所选 Session，不直接扫描或改写 DSH 的原生日志文件。
 - 导入只登记映射；打开 Thread 后才读取原生历史，并继续相同 Native Session ID。`0.1.2-rc.1` 使用 V0 日志；`0.1.5-rc.1` 使用 V3 日志及独立 Assistant 流，系统消息参与原生历史引用但不展示为用户回合。
-- 两种日志的序号与 checkpoint 不可互换。原生格式迁移由 DSH 负责，codexhost 不把旧 checkpoint 当作迁移后的序号，也不提供降级迁移。详见[消息修订与恢复](dsh-edit-recovery.md)。
+- 两种日志的序号与 checkpoint 不可互换。原生格式迁移由 DSH 负责，codexhost 不把旧 checkpoint 当作迁移后的序号，也不提供降级迁移。详见[消息修订与恢复](../harnesses/deepseek/dsh-edit-recovery.md)。
 - 若配置的回环端点已有无法认证的 DSH Web，先关闭该实例，再重新运行连接诊断，让 codexhost 启动自己的 Web；不会接管或停止外部进程。
 
 ## 验证

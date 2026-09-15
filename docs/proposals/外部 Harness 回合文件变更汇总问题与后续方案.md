@@ -2,9 +2,9 @@
 
 > 状态：调查记录与候选方案，尚未实施。本文不表示现有公共契约已支持独立回合净 diff，也不表示所有 Harness 或 Desktop UI 已完成实测。
 >
-> 关联：[Issue #218](https://github.com/BytePioneer-AI/codex-host/issues/218)、[#134](https://github.com/BytePioneer-AI/codex-host/issues/134)。术语遵循[领域术语表](./领域术语表.md)。
+> 关联：[Issue #218](https://github.com/BytePioneer-AI/codex-host/issues/218)、[#134](https://github.com/BytePioneer-AI/codex-host/issues/134)。术语遵循[领域术语表](../project/领域术语表.md)。
 
-> 本文 Legacy 源码路径、DSH `0.1.1-rc.2` 环境与验证结果保留问题调查时的历史事实；当前 Legacy 已移除，仅支持 `0.1.2-rc.1` / `0.1.5-rc.1`，见[消息修订与恢复](dsh-edit-recovery.md)。本次版本对接不代表下述净 diff 方案已实施。
+> 本文 Legacy 源码路径、DSH `0.1.1-rc.2` 环境与验证结果保留问题调查时的历史事实；当前 Legacy 已移除，仅支持 `0.1.2-rc.1` / `0.1.5-rc.1`，见[消息修订与恢复](../harnesses/deepseek/dsh-edit-recovery.md)。本次版本对接不代表下述净 diff 方案已实施。
 
 ## 1. 问题背景
 

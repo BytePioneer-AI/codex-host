@@ -25,6 +25,6 @@ DeepSeek Harness 已通过官方 Host API 提供按完成 Turn 截断的原生 S
 ## Impact
 
 - `packages/adapters/deepseek-harness`：Checkpoint 投影、原生 Fork、Last-Turn Rollback、错误映射、派生历史验证和测试。
-- `README.md`、`docs/README.en.md`、`docs/README.ko.md`：DeepSeek Harness 能力状态。
+- `README.md`、`docs/project/README.en.md`、`docs/project/README.ko.md`：DeepSeek Harness 能力状态。
 - `.agents/skills/codexhost-add-harness/references/current-harness-implementations.md`：当前参考实现能力。
 - 不修改 shared contracts、Protocol Core、Host Runtime、Renderer、Mapping Store 或项目文件状态。

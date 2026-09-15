@@ -30,7 +30,7 @@
 
 允许具体 Harness 名称出现在所属插件、插件测试、发行版预装清单、兼容夹具和用户文档中。验收关注生产依赖与运行策略，而不是全仓库字符串清零。预装清单属于发行组合，不能重新变成核心运行代码中的静态 Adapter import。
 
-Codex Desktop 协议、官方 app-server、Renderer 兼容绑定仍是 codexhost 的产品集成，不要求在本次迁移中改成另一套通用前端插件。术语遵循[领域术语表](领域术语表.md)，Harness、Model、Provider、Account 不得混用。
+Codex Desktop 协议、官方 app-server、Renderer 兼容绑定仍是 codexhost 的产品集成，不要求在本次迁移中改成另一套通用前端插件。术语遵循[领域术语表](../project/领域术语表.md)，Harness、Model、Provider、Account 不得混用。
 
 ### 1.3 非目标
 
@@ -62,37 +62,37 @@ Codex Desktop 协议、官方 app-server、Renderer 兼容绑定仍是 codexhost
 
 ### 2.1 当前已有的良好边界
 
-- [`HarnessAdapter / HarnessSession`](../packages/harness-adapter/src/text-session.ts)：统一打开、检查、执行、输出、快照与关闭。
-- [`HarnessId`](../packages/shared-contracts/src/ids.ts)：带品牌类型的非空字符串，不是必须逐项扩充的固定枚举。
+- [`HarnessAdapter / HarnessSession`](../../packages/harness-adapter/src/text-session.ts)：统一打开、检查、执行、输出、快照与关闭。
+- [`HarnessId`](../../packages/shared-contracts/src/ids.ts)：带品牌类型的非空字符串，不是必须逐项扩充的固定枚举。
 - 各 `packages/adapters/*`：大部分原生协议、SDK 和历史实现已独立。
-- [`CodexTurnProjector`](../packages/protocol-core/src/codex-ui-projector.ts)：消费公共事件，不需要为插件重新实现一份 Desktop 投影。
+- [`CodexTurnProjector`](../../packages/protocol-core/src/codex-ui-projector.ts)：消费公共事件，不需要为插件重新实现一份 Desktop 投影。
 - Model、权限、Usage、Credits 和命令控件已有通用实现，主要缺口在外围编排与数据来源。
 
 ### 2.2 静态注册与展示耦合
 
 当前存在多份外部 Harness 知识：
 
-- 基线中的 `adapter-composition.ts`：静态 import、构造参数、特定预取和 Claude Broker 选择。该模块现已删除，加载路径见 [`installed-harness-plugins.ts`](../packages/host-runtime/src/installed-harness-plugins.ts)。
-- [`model-routing.ts`](../packages/protocol-core/src/model-routing.ts)：固定名单、专用 Transport Model 常量和分支。
-- [`agent-selection-state.ts`](../packages/renderer-extension/src/agent-selection-state.ts)：固定 Agent union、`piModel`、`claudeModel` 等状态字段。
-- [`versioned-renderer-adapter.ts`](../packages/renderer-extension/src/versioned-renderer-adapter.ts)：Renderer 侧重复维护专用编码。
-- [`renderer-binding-probe.ts`](../packages/renderer-extension/src/renderer-binding-probe.ts)：ownership 恢复、Credits 白名单与 Claude 偏好。
-- [`renderer-agent-picker.ts`](../packages/renderer-extension/src/renderer-agent-picker.ts)：安装地址；相关图标模块维护名称与资源。
-- [`production-controller.ts`](../packages/desktop-control/src/production-controller.ts)：再传入一份固定 Agent 列表。
-- [`build-release.mjs`](../packages/host-runtime/scripts/build-release.mjs)：固定 Adapter/SDK 必须打入 Host Bundle。
+- 基线中的 `adapter-composition.ts`：静态 import、构造参数、特定预取和 Claude Broker 选择。该模块现已删除，加载路径见 [`installed-harness-plugins.ts`](../../packages/host-runtime/src/installed-harness-plugins.ts)。
+- [`model-routing.ts`](../../packages/protocol-core/src/model-routing.ts)：固定名单、专用 Transport Model 常量和分支。
+- [`agent-selection-state.ts`](../../packages/renderer-extension/src/agent-selection-state.ts)：固定 Agent union、`piModel`、`claudeModel` 等状态字段。
+- [`versioned-renderer-adapter.ts`](../../packages/renderer-extension/src/versioned-renderer-adapter.ts)：Renderer 侧重复维护专用编码。
+- [`renderer-binding-probe.ts`](../../packages/renderer-extension/src/renderer-binding-probe.ts)：ownership 恢复、Credits 白名单与 Claude 偏好。
+- [`renderer-agent-picker.ts`](../../packages/renderer-extension/src/renderer-agent-picker.ts)：安装地址；相关图标模块维护名称与资源。
+- [`production-controller.ts`](../../packages/desktop-control/src/production-controller.ts)：再传入一份固定 Agent 列表。
+- [`build-release.mjs`](../../packages/host-runtime/scripts/build-release.mjs)：固定 Adapter/SDK 必须打入 Host Bundle。
 
 这类信息应改为插件描述和运行时目录，而不是集中复制到另一份公共静态注册表。
 
 ### 2.3 恢复策略泄漏
 
-[`external-thread-runtime.ts`](../packages/host-runtime/src/external-thread-runtime.ts) 的恢复路径按名称处理：
+[`external-thread-runtime.ts`](../../packages/host-runtime/src/external-thread-runtime.ts) 的恢复路径按名称处理：
 
 - Grok：将持久化权限传入 `open({ kind: "resume" })`。
 - 部分其他 Harness：打开后调用 `permissionMode.select`。
 - OpenCode：跳过上述权限重放。
 - OMP/OpenCode：将实际配置重新编码并保存，避免下次恢复使用过期 token。
 
-这些分支保护真实行为，不能直接删除。相关断言见 [`external-thread-runtime.test.ts`](../packages/host-runtime/test/external-thread-runtime.test.ts)。迁移应把“怎样恢复”交给插件，Host 保留状态验证和映射管理。
+这些分支保护真实行为，不能直接删除。相关断言见 [`external-thread-runtime.test.ts`](../../packages/host-runtime/test/external-thread-runtime.test.ts)。迁移应把“怎样恢复”交给插件，Host 保留状态验证和映射管理。
 
 ### 2.4 可选能力尚未贯通
 
@@ -104,10 +104,10 @@ Codex Desktop 协议、官方 app-server、Renderer 兼容绑定仍是 codexhost
 
 ### 2.5 外围耦合
 
-- [`run-host-runtime.ts`](../packages/host-runtime/src/run-host-runtime.ts) 显式预取 Claude/Antigravity 目录。
-- [`harness-broker`](../packages/harness-broker/src/protocol.ts) 的描述、客户端与服务端实际限定 Claude Code，不是已经通用的插件进程协议。
-- [`delegation-skill.ts`](../packages/host-runtime/src/delegation-skill.ts) 包含 `.claude` 安装位置。
-- [`remote-host-install.ts`](../packages/host-runtime/src/remote-host-install.ts) 存在 `claudeCommand` 专属配置。
+- [`run-host-runtime.ts`](../../packages/host-runtime/src/run-host-runtime.ts) 显式预取 Claude/Antigravity 目录。
+- [`harness-broker`](../../packages/harness-broker/src/protocol.ts) 的描述、客户端与服务端实际限定 Claude Code，不是已经通用的插件进程协议。
+- [`delegation-skill.ts`](../../packages/host-runtime/src/delegation-skill.ts) 包含 `.claude` 安装位置。
+- [`remote-host-install.ts`](../../packages/host-runtime/src/remote-host-install.ts) 存在 `claudeCommand` 专属配置。
 - 发布脚本维护各原生 SDK 与许可证。
 
 因此本地聊天动态化不等于完整插件化，远程、委派、环境和生产分发都须纳入范围。
@@ -504,9 +504,9 @@ Rust 继续拥有原生启动、进程管理、安装与平台集成。若平台
 
 ## 16. 相关文档
 
-- [领域术语表](领域术语表.md)
+- [领域术语表](../project/领域术语表.md)
 - [Harness 命令集成](harness-command-integration.md)
 - [Harness CLI 发现](harness-executable-discovery.md)
 - [ACP 后续抽取边界](acp-layer-follow-up.md)
-- [SSH 远程 Host](remote-ssh-host.zh-CN.md)
-- [Remote Control Host](remote-control-host.zh-CN.md)
+- [SSH 远程 Host](../platforms/remote/remote-ssh-host.zh-CN.md)
+- [Remote Control Host](../platforms/remote/remote-control-host.zh-CN.md)

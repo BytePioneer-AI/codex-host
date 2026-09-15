@@ -19,7 +19,7 @@ Bug 尽可能包含：
 
 - 目标分支使用 `main`。标题建议采用 `fix(scope): ...`、`feat(scope): ...`、`docs: ...` 等格式。
 - 描述目的、关联 Issue（没有可写 `N/A`）、实现范围和实际执行的验证。不要仅写“测试通过”。
-- 遵循 [AGENTS.md](AGENTS.md) 和[领域术语表](docs/领域术语表.md)：保留 Harness 原生语义，遵守 Rust / TypeScript 所有权和包边界。
+- 遵循 [AGENTS.md](AGENTS.md) 和[领域术语表](docs/project/领域术语表.md)：保留 Harness 原生语义，遵守 Rust / TypeScript 所有权和包边界。
 - 根据风险选择定向测试。行为变更应有相关验证，低风险文档、注释修改不要求机械地新增测试。
 - 涉及 Desktop、Renderer 或真实 Harness 的变化，分别记录自动测试和实机结果，并说明版本、平台和未验证部分。UI 变化尽可能提供脱敏截图。
 - 作者负责理解改动、回应反馈、补充验证和维护自己的分支。维护者不默认接管整个修复工作。
@@ -33,4 +33,4 @@ Bug 尽可能包含：
 
 不处理 Issue，不催补模板或要求手填验证 SHA，不重复汇总 AI 审查，不自动关闭、批准、合并或切换 Draft。`automation:ignore` 可停用单个 PR 的自动处理。
 
-原有 CI 与发布前校验保持不变。更多细节见[仓库维护自动化](docs/repository-maintenance.md)。
+原有 CI 与发布前校验保持不变。更多细节见[仓库维护自动化](docs/operations/repository-maintenance.md)。

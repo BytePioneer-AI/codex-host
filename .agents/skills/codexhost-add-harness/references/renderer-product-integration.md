@@ -63,7 +63,7 @@ Host 已有插件目录和通用路由，但 Renderer 尚未完全目录驱动�
 
 外部 Thread 的「调整方向」复用公共 Host／Renderer 路径：`turn.cancel` → 等旧轮终态 → `turn.start`。插件提供[取消与后续 Turn](output-and-interactions.md#取消与后续-turn)的基础行为，不另建 steer 命令、capability 或 Harness 专用 Renderer 分支；官方 Codex Thread 保留原生 steer。
 
-对目标 Harness 验证新输入只展示、执行一次，成功后可继续跟进；失败时保留输入，既有队列和旧轮消息不会被错误恢复或重复发送。分别验证取消失败、超时和交付结果未确认，不能把客户端超时当作输入未被接受。共享实现、当前输入限制和版本化绑定见[外部 Thread 调整方向](../../../../docs/external-thread-steering.md)，不在插件中复制协调逻辑。
+对目标 Harness 验证新输入只展示、执行一次，成功后可继续跟进；失败时保留输入，既有队列和旧轮消息不会被错误恢复或重复发送。分别验证取消失败、超时和交付结果未确认，不能把客户端超时当作输入未被接受。共享实现、当前输入限制和版本化绑定见[外部 Thread 调整方向](../../../../docs/architecture/external-thread-steering.md)，不在插件中复制协调逻辑。
 
 ## Desktop Control 与发布
 

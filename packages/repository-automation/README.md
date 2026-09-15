@@ -9,4 +9,4 @@
 
 维护入口默认实际写入，调用方应明确传入 `dryRun: true` 做只读预览；GitHub 手动入口默认开启预览。自动化不调用模型、不执行 PR 代码，也不自动合并或发布。
 
-详见 [仓库维护自动化](../../docs/repository-maintenance.md)。
+详见 [仓库维护自动化](../../docs/operations/repository-maintenance.md)。

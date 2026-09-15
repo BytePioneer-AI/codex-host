@@ -25,5 +25,5 @@
 ## Impact
 
 - `packages/adapters/deepseek-harness`、对应测试、插件打包依赖清单、根锁文件和覆盖率配置。
-- `docs/harness-session-import.md`、`docs/dsh-edit-recovery.md`、插件架构与运行时文档中实际受影响段落。项目及多语言 README 保持原样，plan/todo 仅保留本地，不纳入 PR。
+- `docs/architecture/harness-session-import.md`、`docs/harnesses/deepseek/dsh-edit-recovery.md`、插件架构与运行时文档中实际受影响段落。项目及多语言 README 保持原样，plan/todo 仅保留本地，不纳入 PR。
 - 不改变公共 Harness/Mapping Store 格式、Host 导入 RPC 别名、其他 Harness、Rust、DSH 源码或用户原生会话数据。

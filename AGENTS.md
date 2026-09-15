@@ -45,7 +45,7 @@
 
 ## Coding Style & Naming Conventions
 
-- Follow `docs/领域术语表.md`; in particular, do not conflate Harness, Model, Provider, Account, or Billing Source.
+- Follow `docs/project/领域术语表.md`; in particular, do not conflate Harness, Model, Provider, Account, or Billing Source.
 
 ## Implementation Principles
 
@@ -70,6 +70,8 @@
 - Small, low-risk changes do not require tests. For high-risk or cross-package changes, or when explicitly requested, add focused tests for changed behavior and boundary conditions; do not run full test suites by default.
 - Do not claim a check passed unless it was executed. Report skipped or blocked checks and the reason.
 - A change is complete only when implementation, contracts, tests, and affected documentation agree.
+- For core logic or major feature changes, update the corresponding feature document in `docs/`, creating one only when needed. Describe current behavior and key constraints; prefer maintaining an existing document over adding a change report. Minor fixes and local refactors need no documentation changes.
+- Keep `docs/index.md` links and one-line descriptions current when adding, moving, or removing documents. Introduce feature-based subdirectories as navigation needs grow.
 
 ## Commit & Pull Request Guidelines
 

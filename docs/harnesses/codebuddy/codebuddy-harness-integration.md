@@ -98,7 +98,7 @@ revalidate canonical paths, workspace ownership and transcript identity. Read
 failures and assistant/file messages never imply child completion, and closing the
 parent prevents in-flight observations from emitting late events.
 
-Managed macOS remote execution uses the [native Aqua broker](native-aqua-broker.md):
+Managed macOS remote execution uses the [native Aqua broker](../../platforms/macos/native-aqua-broker.md):
 
 ```sh
 codexhost broker install --harness codebuddy

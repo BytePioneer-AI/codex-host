@@ -76,7 +76,7 @@
 | `adapter.sessionImport.listCandidates()` / `resolveCandidate(id)` | list 返回浏览器安全元数据；resolve 重新校验并返回 `{ candidate, nativeRef }`，完整 locator 由 Adapter 确认；不写 Host 映射库 | 本地 Host/RPC/设置页已通用化，Pi 与 DSH Modern 已接入；仅有 list 的旧插件不进入可导入目录。远程与 CC Broker 尚未扩展 |
 | `adapter.webUi.open()` | inspection 的 webUi 与动作一致；本地打开优先使用 Context 服务 | managed remote 无本地 opener，缺服务时明确不可用，不绕过 Native Launcher |
 
-相关 schema：`packages/shared-contracts/src/harness-commands.ts`、`harness-session-import.ts`、`thread-usage.ts`；Usage 解析用 `parseHostUsage()`。导入契约、未知运行状态与接入验收见 [`docs/harness-session-import.md`](../../../../docs/harness-session-import.md)。
+相关 schema：`packages/shared-contracts/src/harness-commands.ts`、`harness-session-import.ts`、`thread-usage.ts`；Usage 解析用 `parseHostUsage()`。导入契约、未知运行状态与接入验收见 [`docs/architecture/harness-session-import.md`](../../../../docs/architecture/harness-session-import.md)。
 
 **Credits 尚不是正式 Adapter 字段。**现有 Host 通过 `credits()` / `refreshCredits()` 结构检查处理，并有 Renderer 等特例。新 Harness 需要额度展示时，单独核对公共扩展和上层使用方；不要在 Manifest 虚构 capability 或承诺自动接入。
 

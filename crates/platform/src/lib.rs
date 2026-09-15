@@ -15,6 +15,8 @@ mod installation;
 #[cfg(target_os = "linux")]
 mod linux_installation;
 mod macos_native_harness_broker;
+#[cfg(target_os = "macos")]
+mod macos_process_observation;
 mod process;
 mod process_supervision;
 mod process_termination;

@@ -45,7 +45,7 @@
 
 ## Coding Style & Naming Conventions
 
-- Follow `docs/领域术语表.md`; in particular, do not conflate Harness, Model, Provider, Account, or Billing Source.
+- Follow `docs/project/领域术语表.md`; in particular, do not conflate Harness, Model, Provider, Account, or Billing Source.
 
 ## Implementation Principles
 

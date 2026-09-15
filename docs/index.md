@@ -1,69 +1,129 @@
 # 文档目录
 
-本页列出 `docs/` 下的当前文档与历史归档；标记为“历史归档”的内容只用于追溯决策，不代表当前实现。
+本页按长期功能领域列出 `docs/` 的当前文档与历史归档。标记为“方案”“调研”或“历史归档”的内容不代表当前实现。
 
-## 项目与语言版本
+## 项目入口
 
-| 文档 | 作用 |
-|---|---|
-| [`README.en.md`](README.en.md) | 提供 codexhost 项目介绍、安装方式和功能概览的英文版本。 |
-| [`README.ko.md`](README.ko.md) | 提供 codexhost 项目介绍、安装方式和功能概览的韩文版本。 |
-| [`领域术语表.md`](领域术语表.md) | 统一 Harness、Model、Provider、Account、Thread 等领域术语及其使用边界。 |
+| 文档 | 内容与阅读时机 |
+| --- | --- |
+| [`project/README.en.md`](project/README.en.md) | 英文项目介绍、安装方式和功能概览；维护英文用户入口时阅读。 |
+| [`project/README.ko.md`](project/README.ko.md) | 韩文项目介绍、安装方式和功能概览；维护韩文用户入口时阅读。 |
+| [`project/领域术语表.md`](project/领域术语表.md) | Harness、Model、Provider、Account、Thread 等领域术语；命名产品和代码概念前阅读。 |
 
-## 开发与架构
+## Harness 架构与公共能力
 
-| 文档 | 作用 |
-|---|---|
-| [`harness-plugin-architecture.md`](harness-plugin-architecture.md) | 目标架构与分阶段迁移方案：分析目录发现式 Harness 插件架构、现有耦合、行为保持、风险与验收标准；完整迁移尚未完成。 |
-| [`harness-plugin-runtime.md`](harness-plugin-runtime.md) | 插件运行时实现：七个 Harness 统一动态加载、预装发行、目录与工厂契约、安全边界和剩余迁移目标。 |
-| [`harness-command-integration.md`](harness-command-integration.md) | 说明新增 Harness 原生命令时的 Adapter、Host、Renderer 边界和验证要求。 |
-| [`claude-code-plan-mode.md`](claude-code-plan-mode.md) | 说明 Claude Code 规划模式、显式计划退出确认及原生权限状态边界。 |
-| [`harness-executable-discovery.md`](harness-executable-discovery.md) | 说明外部 Harness CLI 的跨平台发现机制、当前接入范围和剩余限制。 |
-| [`acp-layer-follow-up.md`](acp-layer-follow-up.md) | 记录未来出现第二个生产 ACP Harness 后抽取共享 ACP 层的触发条件和边界。 |
-| [`codex-desktop-upgrade-diagnosis-playbook.md`](codex-desktop-upgrade-diagnosis-playbook.md) | 提供 Codex Desktop 更新后 Renderer、Bridge、Agent 和 Model 异常的排查流程。 |
+| 文档 | 内容与阅读时机 |
+| --- | --- |
+| [`architecture/harness-plugin-runtime.md`](architecture/harness-plugin-runtime.md) | 当前插件加载、预装发行、运行时契约与安全边界；修改插件系统时首先阅读。 |
+| [`architecture/harness-plugin-architecture.md`](architecture/harness-plugin-architecture.md) | 插件化目标架构与未完成迁移方案；规划后续解耦时阅读，接口示例不代表当前 API。 |
+| [`architecture/harness-command-integration.md`](architecture/harness-command-integration.md) | Harness 原生命令的 Adapter、Host、Renderer 边界；新增命令能力时阅读。 |
+| [`architecture/harness-executable-discovery.md`](architecture/harness-executable-discovery.md) | Harness CLI 的跨平台发现和 DSH 特殊连接范围；修改发现或启动逻辑时阅读。 |
+| [`architecture/harness-session-import.md`](architecture/harness-session-import.md) | Pi 与 DSH 本地会话导入契约和恢复边界；扩展导入能力时阅读。 |
+| [`architecture/external-thread-steering.md`](architecture/external-thread-steering.md) | 外部 Thread 取消旧 Turn 后启动新 Turn 的“调整方向”语义；修改 steering 时阅读。 |
+| [`architecture/acp-layer-follow-up.md`](architecture/acp-layer-follow-up.md) | 共享 ACP 层的抽取条件与边界；出现第二个适合共享实现的生产 ACP Harness 时阅读。 |
 
-## 安装与远程运行
+## Harness 专项
 
-| 文档 | 作用 |
-|---|---|
-| [`linux.zh-CN.md`](linux.zh-CN.md) | 说明 x64/ARM64 Linux 上安装、兼容性、进程所有权和诊断方法。 |
-| [`linux.md`](linux.md) | 提供 Linux 安装与诊断说明的英文版本。 |
-| [`remote-ssh-host.zh-CN.md`](remote-ssh-host.zh-CN.md) | 说明通过 Codex Desktop 原生 SSH 工作流使用远程机器上的 Harness。 |
-| [`remote-ssh-host.md`](remote-ssh-host.md) | 提供 SSH 远程 Harness Host 使用说明的英文版本。 |
-| [`remote-control-host.zh-CN.md`](remote-control-host.zh-CN.md) | 说明通过 Codex Desktop Remote Control 使用被控 Windows 主机上的 Harness。 |
-| [`remote-control-host.md`](remote-control-host.md) | 提供 Remote Control Harness Host 使用说明的英文版本。 |
+### Antigravity
+
+| 文档 | 内容与阅读时机 |
+| --- | --- |
+| [`harnesses/antigravity/antigravity-tool-approval.md`](harnesses/antigravity/antigravity-tool-approval.md) | agy 的危险跳过权限、旧模式拒绝和问题桥边界；修改权限或交互时阅读。 |
+| [`harnesses/antigravity/antigravity-subagents.md`](harnesses/antigravity/antigravity-subagents.md) | agy 原生 Subagent 生命周期、Transcript 和公共投影；修改 Subagent 支持时阅读。 |
+| [`harnesses/antigravity/antigravity-question-interaction-postmortem.md`](harnesses/antigravity/antigravity-question-interaction-postmortem.md) | Ask Question 失败历史、后续 Hook 桥实测和限制；排查 agy 提问交互时阅读。 |
+
+### Claude Code
+
+| 文档 | 内容与阅读时机 |
+| --- | --- |
+| [`harnesses/claude-code/claude-code-plan-mode.md`](harnesses/claude-code/claude-code-plan-mode.md) | Claude Code 规划模式、计划退出确认与权限状态边界；修改 Plan Mode 时阅读。 |
+| [`harnesses/claude-code/claude-code-edit-recovery.md`](harnesses/claude-code/claude-code-edit-recovery.md) | 最后一条消息编辑后的独立 Session、空历史保留和关闭语义；修改编辑恢复时阅读。 |
+
+### CodeBuddy 与 Cursor
+
+| 文档 | 内容与阅读时机 |
+| --- | --- |
+| [`harnesses/codebuddy/codebuddy-harness-integration.md`](harnesses/codebuddy/codebuddy-harness-integration.md) | CodeBuddy 原生 ACP 插件、生命周期和能力边界；维护 CodeBuddy Adapter 时阅读。 |
+| [`harnesses/cursor/cursor-cli-experimental.md`](harnesses/cursor/cursor-cli-experimental.md) | 实验性 Cursor CLI ACP 插件及能力限制；维护 Cursor Adapter 或发行接入时阅读。 |
+
+### DeepSeek Harness
+
+| 文档 | 内容与阅读时机 |
+| --- | --- |
+| [`harnesses/deepseek/dsh-edit-recovery.md`](harnesses/deepseek/dsh-edit-recovery.md) | DSH 原生停止确认、消息修订、Fork 和版本化 checkpoint；修改恢复流程时阅读。 |
+| [`harnesses/deepseek/dsh-015rc1-validation.md`](harnesses/deepseek/dsh-015rc1-validation.md) | DSH 支持版本、真实 CLI 生命周期和协议验证证据；变更版本范围或 Gate 时阅读。 |
+
+### OpenCode 与 Pi
+
+| 文档 | 内容与阅读时机 |
+| --- | --- |
+| [`harnesses/opencode/opencode-harness-integration-analysis.md`](harnesses/opencode/opencode-harness-integration-analysis.md) | OpenCode 官方接口证据、接入设计和实现边界；维护 OpenCode Adapter 时阅读。 |
+| [`harnesses/opencode/opencode-edit-recovery.md`](harnesses/opencode/opencode-edit-recovery.md) | OpenCode 原生 Fork 编辑恢复和取消终态语义；修改编辑或取消时阅读。 |
+| [`harnesses/pi/pi-edit-recovery.md`](harnesses/pi/pi-edit-recovery.md) | Pi 空历史编辑、原生文件发布和生命周期 Gate；修改 Pi 恢复时阅读。 |
+
+### Grok
+
+| 文档 | 内容与阅读时机 |
+| --- | --- |
+| [`harnesses/grok/subagent-status-and-model.md`](harnesses/grok/subagent-status-and-model.md) | Grok Subagent 状态、Model、Transcript 与 Desktop 投影；修改 Grok Subagent 时阅读。 |
+
+## 账号与 Desktop 产品接入
+
+| 文档 | 内容与阅读时机 |
+| --- | --- |
+| [`product/codex-accounts.md`](product/codex-accounts.md) | 设置页中的当前 Codex 身份、额度及其他 Harness 只读账号；修改账号 UI 或查询链路时阅读。 |
+| [`product/codex-native-account-switching-design.md`](product/codex-native-account-switching-design.md) | 移除 Codex 多账号切换后的只读边界；修改 Codex 认证或账号路由时阅读。 |
+| [`operations/codex-desktop-upgrade-diagnosis-playbook.md`](operations/codex-desktop-upgrade-diagnosis-playbook.md) | Desktop 更新后 Renderer、Bridge、Agent 和 Model 异常的诊断流程；升级兼容性回归时阅读。 |
+
+## 平台、进程与远程运行
+
+| 文档 | 内容与阅读时机 |
+| --- | --- |
+| [`platforms/linux/linux.zh-CN.md`](platforms/linux/linux.zh-CN.md) | Linux 安装、兼容性、进程所有权和诊断的中文说明；维护 Linux 支持时阅读。 |
+| [`platforms/linux/linux.md`](platforms/linux/linux.md) | Linux 安装与诊断的英文说明；修改对应中文说明时同步核对。 |
+| [`platforms/remote/remote-ssh-host.zh-CN.md`](platforms/remote/remote-ssh-host.zh-CN.md) | 通过 Desktop 原生 SSH 工作流使用远程 Harness；修改 SSH Host 时阅读。 |
+| [`platforms/remote/remote-ssh-host.md`](platforms/remote/remote-ssh-host.md) | Remote SSH Harness Host 的英文说明；修改对应中文说明时同步核对。 |
+| [`platforms/remote/remote-control-host.zh-CN.md`](platforms/remote/remote-control-host.zh-CN.md) | 在被控 Windows 主机运行 Harness 的 Remote Control 说明；修改该链路时阅读。 |
+| [`platforms/remote/remote-control-host.md`](platforms/remote/remote-control-host.md) | Remote Control Harness Host 的英文说明；修改对应中文说明时同步核对。 |
+| [`platforms/macos/macos-native-tools.md`](platforms/macos/macos-native-tools.md) | macOS Browser 与 Computer Use 辅助 app-server 路由；修改原生工具兼容性时阅读。 |
+| [`platforms/macos/native-aqua-broker.md`](platforms/macos/native-aqua-broker.md) | 在 macOS Aqua 会话运行远程原生 Harness 插件的 Broker；修改 Broker 时阅读。 |
+| [`platforms/macos/macos-process-observation.md`](platforms/macos/macos-process-observation.md) | macOS shim 进程树观察、路径读取优化与安全不变量；修改进程监管时阅读。 |
+| [`platforms/windows/windows-tool-compatibility.md`](platforms/windows/windows-tool-compatibility.md) | Windows Browser Use、Computer Use 和辅助进程路由；修改 Windows 原生工具支持时阅读。 |
+
+## 维护
+
+| 文档 | 内容与阅读时机 |
+| --- | --- |
+| [`operations/repository-maintenance.md`](operations/repository-maintenance.md) | PR 标签、CI 评论和发布前检查自动化；修改仓库自动化时阅读。 |
+
+## 待评估方案与问题调查
+
+这些文档记录尚未实施或未批准的方案，不应作为当前能力说明。
+
+| 文档 | 内容与阅读时机 |
+| --- | --- |
+| [`proposals/Reasoning 实时预览与持久 Transcript 的后续方案.md`](proposals/Reasoning%20实时预览与持久%20Transcript%20的后续方案.md) | Reasoning 实时预览与持久留痕方案；规划 Reasoning 展示时阅读。 |
+| [`proposals/外部 Harness 回合文件变更汇总问题与后续方案.md`](proposals/外部%20Harness%20回合文件变更汇总问题与后续方案.md) | Turn 文件变更重复汇总问题、语义分层和候选方案；设计净 diff 时阅读。 |
 
 ## 历史归档
 
+历史归档只用于追溯决策，不代表当前实现。
+
 ### Codex Desktop 兼容性事故
 
-| 文档 | 作用 |
-|---|---|
-| [`archive/codex-desktop-incidents/26.814-compatibility-debt.md`](archive/codex-desktop-incidents/26.814-compatibility-debt.md) | 归档 Codex Desktop 26.814 更新导致 Renderer Request Bridge 和 Agent/Model 路由异常的事故记录。 |
-| [`archive/codex-desktop-incidents/26.908-request-manager-wrapper.md`](archive/codex-desktop-incidents/26.908-request-manager-wrapper.md) | 归档 Codex Desktop 26.908 把 Request Manager 包进 Fiber hook `{ hostId, manager, status }` 后连接检查失败的记录。 |
+| 文档 | 内容 |
+| --- | --- |
+| [`archive/codex-desktop-incidents/26.814-compatibility-debt.md`](archive/codex-desktop-incidents/26.814-compatibility-debt.md) | Desktop 26.814 导致 Renderer Request Bridge 和 Agent/Model 路由异常的事故记录。 |
+| [`archive/codex-desktop-incidents/26.908-request-manager-wrapper.md`](archive/codex-desktop-incidents/26.908-request-manager-wrapper.md) | Desktop 26.908 Request Manager Fiber 包装导致连接检查失败的事故记录。 |
 
-### DeepSeek Harness 接入
+### Harness 接入与发现
 
-| 文档 | 作用 |
-|---|---|
-| [`harness-executable-discovery.md`](harness-executable-discovery.md#deepseek-harness-的特殊性) | 当前 DSH `0.1.2-rc.1` / `0.1.5-rc.1` 精确支持范围、托管 Web 与连接诊断。 |
-| [`dsh-edit-recovery.md`](dsh-edit-recovery.md) | 两版原生停止确认、消息修订、Fork 与 V0/V3 checkpoint 隔离。 |
-| [`dsh-015rc1-validation.md`](dsh-015rc1-validation.md) | 双版本测试、真实 CLI 生命周期、覆盖率与协议源码证据。 |
-| [`harness-session-import.md`](harness-session-import.md) | 本地 DSH 与 Pi 原生会话导入契约及恢复边界。 |
-| [`archive/deepseek-integration/deepseek-harness-integration-analysis.md`](archive/deepseek-integration/deepseek-harness-integration-analysis.md) | 归档 DeepSeek Harness 接入前后的接口调研、候选方案和分阶段实施分析。 |
-
-### Grok 接入
-
-| 文档 | 作用 |
-|---|---|
-| [`archive/grok-integration/grok-cli-adapter-integration.md`](archive/grok-integration/grok-cli-adapter-integration.md) | 归档 Grok CLI 通过 ACP 接入 `HarnessAdapter` 的早期架构与能力分析。 |
-| [`archive/grok-integration/grok-build-fork-integration.md`](archive/grok-integration/grok-build-fork-integration.md) | 归档 Grok 原生 Session Fork 协议、边界和实施前验证结论。 |
-
-### Harness 可执行文件发现
-
-| 文档 | 作用 |
-|---|---|
-| [`archive/harness-discovery-pre-2df7058/README.md`](archive/harness-discovery-pre-2df7058/README.md) | 说明统一 Harness discovery 实施前历史材料的归档原因和使用规则。 |
-| [`archive/harness-discovery-pre-2df7058/01-desktop-install-discovery-notes.md`](archive/harness-discovery-pre-2df7058/01-desktop-install-discovery-notes.md) | 归档早期分析中关于 Codex Desktop 与 codexhost 原生安装发现的主题。 |
-| [`archive/harness-discovery-pre-2df7058/02-per-adapter-harness-discovery-notes.md`](archive/harness-discovery-pre-2df7058/02-per-adapter-harness-discovery-notes.md) | 归档公共发现包实施前各 Adapter 独立查找 Harness CLI 的代码形态。 |
-| [`archive/harness-discovery-pre-2df7058/03-invalidated-conclusions.md`](archive/harness-discovery-pre-2df7058/03-invalidated-conclusions.md) | 汇总早期分析中已失效或需要限定条件的结论及当前事实。 |
+| 文档 | 内容 |
+| --- | --- |
+| [`archive/deepseek-integration/deepseek-harness-integration-analysis.md`](archive/deepseek-integration/deepseek-harness-integration-analysis.md) | DeepSeek Harness 接入前后的接口调研和分阶段实施分析。 |
+| [`archive/grok-integration/grok-cli-adapter-integration.md`](archive/grok-integration/grok-cli-adapter-integration.md) | Grok CLI 通过 ACP 接入 HarnessAdapter 的早期架构与能力分析。 |
+| [`archive/grok-integration/grok-build-fork-integration.md`](archive/grok-integration/grok-build-fork-integration.md) | Grok 原生 Session Fork 协议、边界和实施前验证结论。 |
+| [`archive/harness-discovery-pre-2df7058/README.md`](archive/harness-discovery-pre-2df7058/README.md) | 统一 Harness discovery 实施前材料的归档说明和使用规则。 |
+| [`archive/harness-discovery-pre-2df7058/01-desktop-install-discovery-notes.md`](archive/harness-discovery-pre-2df7058/01-desktop-install-discovery-notes.md) | 早期 Desktop 与 codexhost 原生安装发现分析。 |
+| [`archive/harness-discovery-pre-2df7058/02-per-adapter-harness-discovery-notes.md`](archive/harness-discovery-pre-2df7058/02-per-adapter-harness-discovery-notes.md) | 公共发现包实施前各 Adapter 独立发现 CLI 的代码形态。 |
+| [`archive/harness-discovery-pre-2df7058/03-invalidated-conclusions.md`](archive/harness-discovery-pre-2df7058/03-invalidated-conclusions.md) | 已失效或需要限定条件的早期结论与当前事实。 |

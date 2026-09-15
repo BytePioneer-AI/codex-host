@@ -564,67 +564,115 @@ describe("current Codex Renderer Agent adapter", () => {
     expect(findComposerModelTarget(conflictingConversation)).toBeNull();
   });
 
-  it("installs without synthesizing a main-process title policy marker", () => {
-    const requestTarget = {
-      hostId: "local",
-      sendRequest: vi.fn(),
-      prewarmThreadStart: vi.fn(),
-      enqueueRequest: vi.fn(),
-    };
-    const policy = {
-      state: "ready" as const,
-      hostId: "local",
-      requestTarget: () => requestTarget,
-      select: vi.fn(() => true),
-      clear: vi.fn(async () => {}),
-    };
-    const listeners = new Map<string, EventListener>();
-    const fakeWindow = {
-      __codexhostDraftPrewarmPolicyV1: policy,
-      dispatchEvent: vi.fn(),
-      addEventListener: vi.fn((type: string, listener: EventListener) => {
-        listeners.set(type, listener);
-      }),
-      removeEventListener: vi.fn(),
-      setInterval: vi.fn(() => 1),
-      clearInterval: vi.fn(),
-    };
-    const fakeDocument = {
-      addEventListener: vi.fn(),
-      removeEventListener: vi.fn(),
-      querySelector: vi.fn(),
-      documentElement: {},
-    };
-    const priorWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
-    const priorDocument = Object.getOwnPropertyDescriptor(globalThis, "document");
-    const priorCustomEvent = Object.getOwnPropertyDescriptor(globalThis, "CustomEvent");
-    Object.defineProperties(globalThis, {
-      window: { configurable: true, value: fakeWindow },
-      document: { configurable: true, value: fakeDocument },
-      CustomEvent: {
-        configurable: true,
-        value: class CustomEvent {
-          constructor(readonly type: string) {}
+  it.each(["local", "remote-ssh-discovered:mac"])(
+    "installs for %s and only sends resource settings to local",
+    (hostId) => {
+      const requestTarget = {
+        hostId,
+        sendRequest: vi.fn(),
+        prewarmThreadStart: vi.fn(),
+        enqueueRequest: vi.fn(),
+      };
+      const policy = {
+        state: "ready" as const,
+        hostId,
+        requestTarget: () => requestTarget,
+        select: vi.fn(() => true),
+        clear: vi.fn(async () => {}),
+      };
+      const listeners = new Map<string, EventListener>();
+      const fakeWindow = {
+        __codexhostDraftPrewarmPolicyV1: policy,
+        dispatchEvent: vi.fn(),
+        addEventListener: vi.fn((type: string, listener: EventListener) => {
+          listeners.set(type, listener);
+        }),
+        removeEventListener: vi.fn(),
+        setInterval: vi.fn(() => 1),
+        clearInterval: vi.fn(),
+      };
+      const fakeDocument = {
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+        querySelector: vi.fn(),
+        documentElement: {},
+      };
+      const priorWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
+      const priorDocument = Object.getOwnPropertyDescriptor(globalThis, "document");
+      const priorCustomEvent = Object.getOwnPropertyDescriptor(globalThis, "CustomEvent");
+      Object.defineProperties(globalThis, {
+        window: { configurable: true, value: fakeWindow },
+        document: { configurable: true, value: fakeDocument },
+        CustomEvent: {
+          configurable: true,
+          value: class CustomEvent {
+            constructor(readonly type: string) {}
+          },
         },
-      },
-    });
+      });
 
-    try {
-      const adapter = installCurrentRendererAdapter();
-      expect(adapter.status).toMatchObject({ state: "ready", reason: "ready" });
-      expect("__codexhostMainProcessTitlePolicyV1" in fakeWindow).toBe(false);
-      adapter.dispose();
-    } finally {
-      for (const [name, descriptor] of [
-        ["window", priorWindow],
-        ["document", priorDocument],
-        ["CustomEvent", priorCustomEvent],
-      ] as const) {
-        if (descriptor) Object.defineProperty(globalThis, name, descriptor);
-        else Reflect.deleteProperty(globalThis, name);
+      try {
+        const adapter = installCurrentRendererAdapter();
+        expect(adapter.status).toMatchObject({ state: "ready", reason: "ready" });
+        expect("__codexhostMainProcessTitlePolicyV1" in fakeWindow).toBe(false);
+        if (hostId === "local") {
+          expect(requestTarget.sendRequest).toHaveBeenCalledWith(
+            "codexhost/settings/idle-release/set",
+            {
+              enabled: false,
+              timeoutMinutes: 30,
+            },
+          );
+          const localClient = adapter.modelControl?.clientForHost?.("local");
+          expect(localClient).toBeTruthy();
+          // The local target remains discoverable while the remote route is active.
+          fakeDocument.querySelector.mockReturnValue({
+            querySelectorAll: () => [],
+            __reactFiber$idle: {
+              memoizedState: { memoizedState: requestTarget, next: null },
+              return: null,
+            },
+          });
+          const remoteTarget = {
+            ...requestTarget,
+            hostId: "remote-ssh-discovered:mac",
+            sendRequest: vi.fn(),
+          };
+          for (let index = 0; index < 2; index += 1) {
+            fakeWindow.__codexhostDraftPrewarmPolicyV1 = {
+              ...policy,
+              hostId: remoteTarget.hostId,
+              requestTarget: () => remoteTarget,
+            };
+            expect(adapter.modelControl?.currentHostId?.()).toBe(remoteTarget.hostId);
+            fakeWindow.__codexhostDraftPrewarmPolicyV1 = policy;
+            expect(adapter.modelControl?.clientForHost?.("local")).toBe(localClient);
+          }
+          expect(requestTarget.sendRequest).toHaveBeenCalledTimes(1);
+          expect(remoteTarget.sendRequest).not.toHaveBeenCalled();
+          // Auxiliary lookups must not disable real connection or explicit policy invalidation.
+          Object.defineProperty(requestTarget, "requestClient", { value: { ...requestTarget } });
+          const reconnected = adapter.modelControl?.clientForHost?.("local");
+          expect(reconnected).toBeTruthy();
+          expect(reconnected).not.toBe(localClient);
+          fakeWindow.__codexhostDraftPrewarmPolicyV1 = { ...policy };
+          expect(adapter.modelControl?.clientForHost?.("local")).not.toBe(reconnected);
+        } else {
+          expect(requestTarget.sendRequest).not.toHaveBeenCalled();
+        }
+        adapter.dispose();
+      } finally {
+        for (const [name, descriptor] of [
+          ["window", priorWindow],
+          ["document", priorDocument],
+          ["CustomEvent", priorCustomEvent],
+        ] as const) {
+          if (descriptor) Object.defineProperty(globalThis, name, descriptor);
+          else Reflect.deleteProperty(globalThis, name);
+        }
       }
-    }
-  });
+    },
+  );
 
   it("recognizes current-version policy readiness markers independently", () => {
     expect(isMainProcessTitlePolicyReady({ state: "ready" })).toBe(true);

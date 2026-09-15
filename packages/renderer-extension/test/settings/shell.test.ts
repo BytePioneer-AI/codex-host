@@ -24,7 +24,7 @@ describe("Renderer settings foundation", () => {
       "Connections",
       "Accounts",
       "Session Import",
-      "Appearance",
+      "General",
       "Updates",
       "About",
     ]);

@@ -59,26 +59,26 @@ describe("production Renderer release chain", () => {
   });
 
   it("builds the local audit entry without packaging it in production", async () => {
-    const [rendererManifest, auditEntry, releaseBuilder] = await Promise.all([
-      source("packages/renderer-extension/package.json"),
+    const [rendererBuild, auditEntry, releaseBuilder] = await Promise.all([
+      source("packages/renderer-extension/scripts/build.mjs"),
       source("packages/renderer-extension/src/audit-entry.ts"),
       source("scripts/release/prepare-payload.mjs"),
     ]);
 
-    expect(rendererManifest).toContain("src/audit-entry.ts");
-    expect(rendererManifest).toContain("dist/contract-audit.js");
+    expect(rendererBuild).toContain("src/audit-entry.ts");
+    expect(rendererBuild).toContain("dist/contract-audit.js");
     expect(auditEntry).toContain("__codexhostContractAuditV1");
     expect(releaseBuilder).not.toContain("contract-audit.js");
   });
 
   it("builds and packages executable production entries", async () => {
-    const [rendererManifest, releaseBuilder] = await Promise.all([
-      source("packages/renderer-extension/package.json"),
+    const [rendererBuild, releaseBuilder] = await Promise.all([
+      source("packages/renderer-extension/scripts/build.mjs"),
       source("scripts/release/prepare-payload.mjs"),
     ]);
 
-    expect(rendererManifest).toContain("src/production-entry.ts");
-    expect(rendererManifest).toContain("dist/production.js");
+    expect(rendererBuild).toContain("src/production-entry.ts");
+    expect(rendererBuild).toContain("dist/production.js");
     expect(releaseBuilder).toContain('dist", "production.js');
     expect(releaseBuilder).toContain("desktop-controller.mjs");
     expect(releaseBuilder).toContain('packageName: "lucide"');

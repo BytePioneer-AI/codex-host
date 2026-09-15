@@ -1,4 +1,7 @@
 import {
+  IDLE_RELEASE_SETTINGS_METHOD,
+  idleReleaseSettingsSchema,
+  type IdleReleaseSettings,
   harnessAccountInspectParamsSchema,
   harnessAccountInspectResultSchema,
   harnessAccountSourceListResultSchema,
@@ -150,6 +153,7 @@ function notificationTarget(manager: RequestManagerCandidate): RequestManagerCan
 }
 
 export interface RendererModelClient extends Partial<RendererSessionImportClient> {
+  setIdleReleaseSettings?(settings: IdleReleaseSettings): Promise<IdleReleaseSettings>;
   currentHostId?(): string | null;
   listHarnessPlugins?(): Promise<HarnessPluginListResult>;
   clientForHost?(hostId: string): RendererModelClient | null;
@@ -301,6 +305,12 @@ export function createRendererModelClient(
   };
 
   return Object.freeze({
+    async setIdleReleaseSettings(settings: IdleReleaseSettings): Promise<IdleReleaseSettings> {
+      const params = idleReleaseSettingsSchema.parse(settings);
+      return idleReleaseSettingsSchema.parse(
+        await manager.sendRequest(IDLE_RELEASE_SETTINGS_METHOD, params),
+      );
+    },
     ...createRendererSessionImportClient(async (method, params) =>
       manager.sendRequest(method, params),
     ),

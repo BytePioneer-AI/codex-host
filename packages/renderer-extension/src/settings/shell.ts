@@ -1,5 +1,6 @@
 import settingsCss from "./shell.css";
 import accountsCss from "./accounts.css";
+import tailwindCss from "./tailwind.css";
 import {
   RendererSettingsNavigationState,
   RendererSettingsPageScope,
@@ -68,7 +69,8 @@ export function mountRendererSettingsShell(
   root.style.colorScheme = RENDERER_SETTINGS_COLOR_SCHEME;
   const shadow = root.attachShadow({ mode: "open" });
   const style = ownerDocument.createElement("style");
-  style.textContent = `${settingsCss}\n${accountsCss}`;
+  // Tailwind declares the cascade layer order, so it must precede the unlayered settings CSS.
+  style.textContent = `${tailwindCss}\n${settingsCss}\n${accountsCss}`;
 
   const dialog = ownerDocument.createElement("dialog");
   dialog.className = "codexhost-settings-dialog";

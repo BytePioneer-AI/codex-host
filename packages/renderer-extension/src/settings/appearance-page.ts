@@ -5,6 +5,13 @@ import {
 } from "../renderer-transcript-dom.js";
 import type { RendererSettingsPageDefinition, RendererSettingsPageMountContext } from "./core.js";
 import type { RendererSettingsMessages } from "./localization.js";
+import { mountIdleReleaseControls } from "./idle-release-controls.js";
+import {
+  createPreferenceGroup,
+  createPreferenceItem,
+  createPreferenceSwitch,
+  preferenceId,
+} from "./preference-ui.js";
 
 export function createAppearanceSettingsPage(
   messages: RendererSettingsMessages,
@@ -25,33 +32,31 @@ export function createAppearanceSettingsPage(
       description.className = "settings-page-description";
       description.textContent = messages.appearanceDescription;
 
-      const row = document.createElement("label");
-      row.className = "settings-preference-row";
-      const copy = document.createElement("span");
-      copy.className = "settings-preference-row__copy";
-      const title = document.createElement("strong");
-      title.textContent = messages.reasoningSoftWrapTitle;
-      const detail = document.createElement("span");
-      detail.textContent = messages.reasoningSoftWrapDescription;
-      copy.append(title, detail);
-
-      const checkbox = document.createElement("input");
-      checkbox.type = "checkbox";
-      checkbox.className = "settings-preference-checkbox";
-      checkbox.checked = readReasoningTranscriptSoftWrap(ownerWindow);
-      checkbox.setAttribute("aria-label", messages.reasoningSoftWrapTitle);
-      checkbox.addEventListener("change", () => {
-        setReasoningTranscriptSoftWrap(ownerWindow, checkbox.checked);
+      const { group, card } = createPreferenceGroup(document, messages.appearanceGroup);
+      const softWrapId = preferenceId("reasoning-soft-wrap");
+      const row = createPreferenceItem(document, {
+        title: messages.reasoningSoftWrapTitle,
+        description: messages.reasoningSoftWrapDescription,
+        controlId: softWrapId,
       });
-
+      const toggle = createPreferenceSwitch(document, softWrapId, row.description.id);
+      toggle.checked = readReasoningTranscriptSoftWrap(ownerWindow);
+      toggle.addEventListener("change", () => {
+        setReasoningTranscriptSoftWrap(ownerWindow, toggle.checked);
+      });
       const sync = (): void => {
-        checkbox.checked = readReasoningTranscriptSoftWrap(ownerWindow);
+        toggle.checked = readReasoningTranscriptSoftWrap(ownerWindow);
       };
       ownerWindow.addEventListener(REASONING_SOFT_WRAP_CHANGE_EVENT, sync);
+      row.item.append(toggle);
+      card.append(row.item);
 
-      row.append(copy, checkbox);
-      context.content.append(heading, description, row);
-      return () => ownerWindow.removeEventListener(REASONING_SOFT_WRAP_CHANGE_EVENT, sync);
+      context.content.append(heading, description, group);
+      const disposeIdleRelease = mountIdleReleaseControls(context.content, messages);
+      return () => {
+        ownerWindow.removeEventListener(REASONING_SOFT_WRAP_CHANGE_EVENT, sync);
+        disposeIdleRelease();
+      };
     },
   });
 }

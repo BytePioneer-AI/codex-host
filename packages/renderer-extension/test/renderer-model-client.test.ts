@@ -321,6 +321,7 @@ describe("Renderer fixed Model request client", () => {
       "selectThreadModel",
       "selectThreadPermissionMode",
       "selectThreadThinking",
+      "setIdleReleaseSettings",
       "startUpdate",
       "subscribeCodexAccounts",
       "subscribeThreadUsage",

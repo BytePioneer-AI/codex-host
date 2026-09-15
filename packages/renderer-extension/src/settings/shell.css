@@ -34,21 +34,24 @@
   letter-spacing: 0;
 }
 
-*,
-*::before,
-*::after {
-  box-sizing: border-box;
-  letter-spacing: 0;
-}
+/* Element defaults stay below Tailwind utilities; unlayered component classes still override them. */
+@layer base {
+  *,
+  *::before,
+  *::after {
+    box-sizing: border-box;
+    letter-spacing: 0;
+  }
 
-button,
-input,
-select {
-  font: inherit;
-}
+  button,
+  input,
+  select {
+    font: inherit;
+  }
 
-button {
-  color: inherit;
+  button {
+    color: inherit;
+  }
 }
 
 [hidden] {
@@ -664,85 +667,6 @@ button {
 .settings-session-import-running {
   color: var(--settings-muted);
   font-size: 12px;
-}
-
-.settings-preference-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 32px;
-  min-height: 88px;
-  padding: 18px 0;
-  border-top: 1px solid var(--settings-divider);
-  border-bottom: 1px solid var(--settings-divider);
-}
-
-.settings-preference-row__copy {
-  display: flex;
-  flex: 1 1 auto;
-  flex-direction: column;
-  min-width: 0;
-  gap: 5px;
-}
-
-.settings-preference-row__copy strong {
-  color: var(--settings-text);
-  font-size: 15px;
-  font-weight: 600;
-  line-height: 22px;
-}
-
-.settings-preference-row__copy span {
-  max-width: 680px;
-  color: var(--settings-muted);
-  font-size: 13px;
-  line-height: 20px;
-}
-
-.settings-preference-switch {
-  display: inline-flex;
-  align-items: center;
-  width: 42px;
-  height: 24px;
-  flex: none;
-  padding: 2px;
-  border: 0;
-  border-radius: 999px;
-  background: var(--settings-surface-hover);
-  cursor: pointer;
-  transition: background 120ms ease;
-}
-
-.settings-preference-switch[aria-checked="true"] {
-  justify-content: flex-end;
-  background: var(--settings-focus);
-}
-
-.settings-preference-switch:focus-visible {
-  outline: 2px solid var(--settings-focus);
-  outline-offset: 2px;
-}
-
-.settings-preference-switch__thumb {
-  width: 20px;
-  height: 20px;
-  border-radius: 50%;
-  background: var(--settings-primary-text);
-  box-shadow: 0 1px 3px rgb(0 0 0 / 24%);
-}
-
-.settings-preference-checkbox {
-  width: 18px;
-  height: 18px;
-  flex: none;
-  margin: 0;
-  accent-color: var(--settings-focus);
-  cursor: pointer;
-}
-
-.settings-preference-checkbox:focus-visible {
-  outline: 2px solid var(--settings-focus);
-  outline-offset: 2px;
 }
 
 .settings-connection-page-header {

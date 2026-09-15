@@ -73,6 +73,7 @@
 | --- | --- |
 | [`product/codex-accounts.md`](product/codex-accounts.md) | 设置页中的当前 Codex 身份、额度及其他 Harness 只读账号；修改账号 UI 或查询链路时阅读。 |
 | [`product/codex-native-account-switching-design.md`](product/codex-native-account-switching-design.md) | 移除 Codex 多账号切换后的只读边界；修改 Codex 认证或账号路由时阅读。 |
+| [`architecture/renderer-settings-styling.md`](architecture/renderer-settings-styling.md) | 设置页 Tailwind CSS 使用边界、构建方式与编写规则；新增或改版设置页界面时阅读。 |
 | [`operations/codex-desktop-upgrade-diagnosis-playbook.md`](operations/codex-desktop-upgrade-diagnosis-playbook.md) | Desktop 更新后 Renderer、Bridge、Agent 和 Model 异常的诊断流程；升级兼容性回归时阅读。 |
 
 ## 平台、进程与远程运行
@@ -102,6 +103,7 @@
 
 | 文档 | 内容与阅读时机 |
 | --- | --- |
+| [`proposals/external-harness-idle-unload-proposal.md`](proposals/external-harness-idle-unload-proposal.md) | 外部 Harness 空闲释放与恢复方案、实现进展及验证边界；评估闲置资源回收时阅读。 |
 | [`proposals/Reasoning 实时预览与持久 Transcript 的后续方案.md`](proposals/Reasoning%20实时预览与持久%20Transcript%20的后续方案.md) | Reasoning 实时预览与持久留痕方案；规划 Reasoning 展示时阅读。 |
 | [`proposals/外部 Harness 回合文件变更汇总问题与后续方案.md`](proposals/外部%20Harness%20回合文件变更汇总问题与后续方案.md) | Turn 文件变更重复汇总问题、语义分层和候选方案；设计净 diff 时阅读。 |
 

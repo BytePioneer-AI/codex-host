@@ -2,6 +2,8 @@ import { expect, test } from "@playwright/test";
 import { build } from "esbuild";
 import path from "node:path";
 
+import { tailwindEsbuildPlugin } from "../../packages/renderer-extension/scripts/tailwind-esbuild-plugin.mjs";
+
 const repositoryRoot = path.resolve(import.meta.dirname, "../..");
 const browserExecutable = process.env.CODEXHOST_PLAYWRIGHT_EXECUTABLE_PATH;
 if (browserExecutable) test.use({ launchOptions: { executablePath: browserExecutable } });
@@ -143,6 +145,7 @@ const { outputFiles } = await build({
   platform: "browser",
   target: "es2024",
   loader: { ".css": "text", ".png": "dataurl", ".svg": "dataurl" },
+  plugins: [tailwindEsbuildPlugin()],
   write: false,
 });
 

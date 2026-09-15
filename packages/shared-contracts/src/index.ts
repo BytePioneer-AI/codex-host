@@ -1,5 +1,11 @@
 import { z } from "zod";
 import { WORKSPACE_CONTRACT_VERSION } from "./version.js";
+export {
+  IDLE_RELEASE_SETTINGS_METHOD,
+  DEFAULT_IDLE_RELEASE_SETTINGS,
+  idleReleaseSettingsSchema,
+  type IdleReleaseSettings,
+} from "./idle-release.js";
 
 export {
   harnessAccountSnapshotSchema,

@@ -169,6 +169,7 @@ export class ClaudeToolLifecycle {
         const fileItem: HostItem = {
           type: "fileChange",
           itemId: this.#newItemId(),
+          sourceItemIds: [tool.item.itemId],
           changes: [change],
         };
         this.#emit({ type: "item.started", turnId, item: fileItem });

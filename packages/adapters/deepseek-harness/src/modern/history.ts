@@ -878,6 +878,7 @@ function projectToolResultEvent(
       const fileItem: HostFileChangeItem = {
         type: "fileChange",
         itemId: modernItemId(sessionId, `event:${seq}:file-change`),
+        sourceItemIds: [item.itemId],
         changes,
       };
       turn.items.push({ item: fileItem, outcome: { status: "succeeded" } });

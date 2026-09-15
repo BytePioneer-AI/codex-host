@@ -1174,6 +1174,7 @@ class GrokHarnessSession implements HarnessSession {
     const fileItem: HostFileChangeItem = {
       type: "fileChange",
       itemId: hostItemIdSchema.parse(this.#randomUUID()),
+      sourceItemIds: [tool.item.itemId],
       changes,
     };
     this.#event({ type: "item.started", turnId: active.command.turnId, item: fileItem });

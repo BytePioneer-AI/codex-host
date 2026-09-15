@@ -60,6 +60,7 @@ export class KiroTurnOutput {
       const file: HostFileChangeItem = {
         type: "fileChange",
         itemId: hostItemIdSchema.parse(`file-${tool.item.itemId}`),
+        sourceItemIds: [tool.item.itemId],
         changes: changes ?? [],
       };
       if (tool.file) {

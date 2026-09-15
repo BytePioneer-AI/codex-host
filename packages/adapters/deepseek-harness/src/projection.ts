@@ -111,7 +111,7 @@ export function structuredDiffs(meta: unknown): HostFileChange[] | null {
       "",
       { context: 3 },
     );
-    changes.push({ path: candidate.path, kind, unifiedDiff });
+    changes.push({ path: candidate.path, kind, unifiedDiff, diffScope: "fragment" });
   }
   return changes;
 }

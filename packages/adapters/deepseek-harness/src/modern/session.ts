@@ -2198,6 +2198,7 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
         const fileItem: HostFileChangeItem = {
           type: "fileChange",
           itemId: modernItemId(this.#sessionId, `event:${seq}:file-change`),
+          sourceItemIds: [item.itemId],
           changes,
         };
         this.#emit({ type: "item.started", turnId: active.turnId, item: fileItem });

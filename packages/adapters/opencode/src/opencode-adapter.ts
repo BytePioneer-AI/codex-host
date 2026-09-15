@@ -1219,6 +1219,7 @@ class OpenCodeHarnessSession implements HarnessSession, OpenCodeTransportListene
           const item: HostFileChangeItem = {
             type: "fileChange",
             itemId: hostItemIdSchema.parse(id),
+            sourceItemIds: [...active.items.values()].map(({ item }) => item.itemId),
             changes,
           };
           active.items.set(id, { item, completed: false });

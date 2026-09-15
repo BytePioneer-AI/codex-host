@@ -1,6 +1,6 @@
 # 外部 Harness 回合文件变更汇总问题与后续方案
 
-> 状态：调查记录与候选方案，尚未实施。本文不表示现有公共契约已支持独立回合净 diff，也不表示所有 Harness 或 Desktop UI 已完成实测。
+> 状态：第 1–10 节保留原调查记录；当前实现见第 11 节。公共层已按路径汇总文件卡片，但局部片段仍不能承诺精确回合净统计，Desktop UI 尚未完成实测。
 >
 > 关联：[Issue #218](https://github.com/BytePioneer-AI/codex-host/issues/218)、[#134](https://github.com/BytePioneer-AI/codex-host/issues/134)。术语遵循[领域术语表](./领域术语表.md)。
 
@@ -245,3 +245,19 @@ turn/diff/updated
 需要补足的是可信的回合累计能力，而不是简单去重或文案替换。优先比较文件基线与当前状态，复用现有 diff 库；有原生累计结果时直接使用，没有充分数据时明确受限。
 
 目前不实施生产代码，不新增全局文件监听／备份系统，不复制 Paseo 的工作区 Git diff 作为回合结果，也不声称 Desktop 已暴露外部 Harness 可调用的合并服务。后续以本记录为背景，在确认 Desktop 消费行为和原生数据来源后再确定公共契约与具体实现。
+
+## 11. 当前实现：所有外部 Harness 共用文件汇总
+
+`protocol-core` 的 `CodexTurnProjector` 在每个 Host Turn 内保留一个开放的文件汇总 Item，每次原生变化或工具结果更新时按文件路径重新计算，直到 Turn 终止才完成该 Item。`pendingTurn`、完成快照与 `projectHistoricalTurn` 使用同一汇总规则。原生 Codex 路径保持原样；接入公共 Harness Item 契约的插件均使用该规则，无需按 Harness 名称注册。
+
+- 同一文件多次编辑或一条结果包含多个同路径片段，Desktop 的 `changes` 只有一条路径。
+- `HostFileChangeItem.sourceItemIds` 标记原生结果对应的工具 Item，避免参数预览和原生结果重复计入。Claude Code、DeepSeek、Grok、Kiro、OpenCode 已提供关联；Pi/OMP 优先使用工具结果中的标准 patch，再替换参数预览。
+- 失败／取消的预览从汇总移除；Turn 后续失败或取消不移除之前成功确认的修改。这里只按已发布的 Item outcome 判断，不推断失败工具是否在磁盘上部分写入。
+- Windows 绝对／相对路径别名按同一文件分组，POSIX 路径保留大小写区别。
+- 对具有文件坐标、内容连续的标准 unified patches，公共层组合操作并用现有 `diff` 库计算净变化；恢复原样会清空该路径。补丁未提供的上下文不从磁盘猜测。
+- `HostFileChange.diffScope: "fragment"` 明确表示缺少文件坐标的局部片段。DeepSeek `meta.diffs` 和从普通工具参数合成的片段使用此标记；即便相邻片段的文本恰好相同，也不把它们当作同一个文件位置。
+- 对片段或连续性无法确认的补丁，只在同一路径下保留原始差异，**增删数是保留的操作差异统计，不承诺回合净统计**。不拼接“首次 oldText＋末次 newText”，不丢弃其他位置的编辑；不把这种展示补丁当成已验证可用于撤销的文件补丁。
+
+因此，本次完成的是跨 Harness 文件卡片去重和有可靠坐标时的净补丁合成，不宣称任意 Agent 的所有写入都能形成精确净 diff。Shell、未报告的自定义写入、二进制文件、外部并发修改和无坐标片段仍受原生证据限制。
+
+回归覆盖位于 `packages/protocol-core/test/file-change-summary.test.ts`、现有投影器测试和 DeepSeek `test/projection.test.ts`，包括实时／历史一致、来源替换、预览撤回、远隔位置与行号偏移、新建／删除／恢复、路径别名、缺失末尾换行与无坐标片段保真。

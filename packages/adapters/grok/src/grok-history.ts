@@ -300,6 +300,7 @@ export function mapGrokReplay(
     const fileItem: HostFileChangeItem = {
       type: "fileChange",
       itemId: stableId("file-change", turnIndex, ++messageIndex),
+      sourceItemIds: [tool.itemId],
       changes,
     };
     items.push({ item: fileItem, outcome: { status: "succeeded" } });

@@ -1279,9 +1279,10 @@ describe("Codex UI projector", () => {
       }).messages,
     ).toMatchObject([
       {
-        method: "item/completed",
-        params: { item: { type: "fileChange", status: "completed" } },
+        method: "item/fileChange/patchUpdated",
+        params: { itemId: "edit-1", changes: [{ path: "src/app.ts" }] },
       },
+      { method: "turn/diff/updated" },
     ]);
   });
 
@@ -1326,7 +1327,9 @@ describe("Codex UI projector", () => {
       ],
     };
     const secondStarted = value.project({ type: "item.started", turnId, item: secondFile });
-    expect(secondStarted.messages[2]).toMatchObject({
+    expect(
+      secondStarted.messages.find(({ method }) => method === "turn/diff/updated"),
+    ).toMatchObject({
       params: {
         diff: expect.stringMatching(/sample\.txt[\s\S]*other\.txt/u),
       },
@@ -1343,8 +1346,12 @@ describe("Codex UI projector", () => {
     });
     expect(completed.completedTurn).toMatchObject({
       items: [
-        { type: "fileChange", id: "file-1", status: "completed" },
-        { type: "fileChange", id: "file-2", status: "completed" },
+        {
+          type: "fileChange",
+          id: "file-1",
+          status: "completed",
+          changes: [{ path: "sample.txt" }, { path: "other.txt" }],
+        },
       ],
     });
   });

@@ -232,7 +232,27 @@ class BrowserSidebarAgentIconDom implements SidebarAgentIconDom {
   }
 
   observe(onChange: () => void): () => void {
-    const observer = new MutationObserver(onChange);
+    const isSidebarIconMutation = (mutation: MutationRecord): boolean => {
+      if (mutation.type === "childList") {
+        const allNodes = [...mutation.addedNodes, ...mutation.removedNodes];
+        if (
+          allNodes.length > 0 &&
+          allNodes.every(
+            (node) =>
+              node.nodeType === Node.ELEMENT_NODE &&
+              ((node as Element).hasAttribute(SIDEBAR_AGENT_ICON_ATTRIBUTE) ||
+                (node as Element).closest?.(`[${SIDEBAR_AGENT_ICON_ATTRIBUTE}]`) !== null),
+          )
+        ) {
+          return true;
+        }
+      }
+      return false;
+    };
+    const observer = new MutationObserver((mutations) => {
+      if (mutations.every(isSidebarIconMutation)) return;
+      onChange();
+    });
     observer.observe(this.root, {
       attributes: true,
       attributeFilter: [SIDEBAR_THREAD_ID_ATTRIBUTE, SIDEBAR_THREAD_HOST_ID_ATTRIBUTE],
@@ -266,14 +286,36 @@ export function installRendererSidebarAgentIcons(options: {
   const ownershipRetryTimers = new Map<string, ReturnType<typeof setTimeout>>();
   let disposed = false;
   let scanScheduled = false;
+  let isScanning = false;
+  let reScanRequested = false;
 
   const ownershipKey = (hostId: string, threadId: string): string =>
     JSON.stringify([hostId, threadId]);
 
   const scheduleScan = (): void => {
-    if (disposed || scanScheduled) return;
+    if (disposed) return;
+    if (isScanning) {
+      reScanRequested = true;
+      return;
+    }
+    if (scanScheduled) return;
     scanScheduled = true;
-    queueMicrotask(scan);
+    queueMicrotask(runScan);
+  };
+
+  const runScan = (): void => {
+    scanScheduled = false;
+    if (disposed) return;
+    isScanning = true;
+    try {
+      scan();
+    } finally {
+      isScanning = false;
+      if (reScanRequested) {
+        reScanRequested = false;
+        scheduleScan();
+      }
+    }
   };
 
   const clearOwnershipRetry = (key: string): void => {

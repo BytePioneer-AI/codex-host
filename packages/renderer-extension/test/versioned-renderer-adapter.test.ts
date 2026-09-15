@@ -335,6 +335,36 @@ describe("current Codex Renderer Agent adapter", () => {
     expect(discoverTargets).not.toHaveBeenCalled();
   });
 
+  it("invalidates a policy-owned route immediately when its manager retires", () => {
+    const now = vi.spyOn(Date, "now").mockReturnValue(1_000);
+    const manager = {
+      hostId: "local",
+      sendRequest: vi.fn(),
+      prewarmThreadStart: vi.fn(),
+      enqueueRequest: vi.fn(),
+    };
+    const policy = {
+      state: "ready" as const,
+      hostId: manager.hostId,
+      requestTarget: vi.fn(() => manager),
+      select: vi.fn(() => true),
+      clear: vi.fn(async () => undefined),
+    };
+    const discoverTargets = vi.fn(() => [manager]);
+    const resolver = createRendererRequestRouteResolver(() => policy, discoverTargets);
+    try {
+      expect(resolver.resolve()?.targets).toEqual([manager]);
+      policy.requestTarget.mockImplementation(() => {
+        throw new Error("Renderer request manager is retired");
+      });
+      expect(resolver.resolve()).toBeNull();
+      expect(resolver.resolve()).toBeNull();
+      expect(discoverTargets).not.toHaveBeenCalled();
+    } finally {
+      now.mockRestore();
+    }
+  });
+
   it.each([
     ["non-callable", {}],
     ["malformed", () => ({})],

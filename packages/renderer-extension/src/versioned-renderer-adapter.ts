@@ -143,7 +143,7 @@ interface RendererDraftPrewarmPolicyTarget {
 }
 
 const DRAFT_PREWARM_POLICY_WAIT_TIMEOUT_MS = 10_000;
-const DRAFT_PREWARM_POLICY_POLL_INTERVAL_MS = 25;
+const DRAFT_PREWARM_POLICY_POLL_INTERVAL_MS = 200;
 
 declare global {
   interface Window {
@@ -595,20 +595,24 @@ export function findActivePrewarmTargets(root: ParentNode): PrewarmTarget[] {
   );
   if (!editor) return [];
 
-  let fiberElement: Element | undefined = [editor, ...editor.querySelectorAll("*")].find(
-    (element) =>
-      Object.getOwnPropertyNames(element).some((name) => name.startsWith("__reactFiber$")),
-  );
-  for (let ancestor = editor.parentElement; !fiberElement && ancestor;) {
-    if (Object.getOwnPropertyNames(ancestor).some((name) => name.startsWith("__reactFiber$"))) {
-      fiberElement = ancestor;
-      break;
-    }
-    ancestor = ancestor.parentElement;
+  let fiberElement: Element | null = editor;
+  let fiberName: string | undefined;
+  for (let depth = 0; fiberElement && depth < 16; depth += 1) {
+    fiberName = Object.getOwnPropertyNames(fiberElement).find((name) =>
+      name.startsWith("__reactFiber$"),
+    );
+    if (fiberName) break;
+    fiberElement = fiberElement.parentElement;
   }
-  const fiberName = fiberElement
-    ? Object.getOwnPropertyNames(fiberElement).find((name) => name.startsWith("__reactFiber$"))
-    : null;
+  if (!fiberElement || !fiberName) {
+    const candidate = editor.querySelector("*");
+    if (candidate) {
+      fiberName = Object.getOwnPropertyNames(candidate).find((name) =>
+        name.startsWith("__reactFiber$"),
+      );
+      if (fiberName) fiberElement = candidate;
+    }
+  }
   const firstFiber =
     fiberElement && fiberName
       ? Object.getOwnPropertyDescriptor(fiberElement, fiberName)?.value

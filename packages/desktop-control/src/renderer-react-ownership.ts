@@ -26,13 +26,39 @@ export function committedReactAncestors(value: unknown): readonly Fiber[] {
   if (!rootState || !("current" in rootState)) return previous;
   const current = fiber(rootState.current);
   if (!current) return [];
+  const alternate = fiber(first.alternate);
+
+  // Fast path: in normal React commits, the return pointers lead directly to the current root.
+  if (previous.at(-1) === current) {
+    return previous;
+  }
+
+  if (alternate) {
+    const altPath: Fiber[] = [];
+    const altSeen = new Set<Fiber>();
+    for (let node: Fiber | null = alternate; node; node = fiber(node.return)) {
+      if (altSeen.has(node) || altPath.length >= MAX_VISITED_FIBERS) break;
+      altSeen.add(node);
+      altPath.push(node);
+    }
+    if (altPath.at(-1) === current) {
+      const parent = fiber(alternate.return);
+      let isFirstChild = false;
+      for (let child = parent && fiber(parent.child); child; child = fiber(child.sibling)) {
+        if (child === first) {
+          isFirstChild = true;
+          break;
+        }
+      }
+      return isFirstChild ? [first, ...altPath.slice(1)] : altPath;
+    }
+  }
 
   interface Entry {
     node: Fiber;
     parent: Entry | null;
   }
   const stack: Entry[] = [{ node: current, parent: null }];
-  const alternate = fiber(first.alternate);
   seen.clear();
   while (stack.length > 0 && seen.size < MAX_VISITED_FIBERS) {
     const entry = stack.pop();

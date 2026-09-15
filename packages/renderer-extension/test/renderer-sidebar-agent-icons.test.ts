@@ -150,6 +150,63 @@ function fiberRow(
 }
 
 describe("Renderer sidebar Agent ownership", () => {
+  it("rereads identity when a browser row gains a Fiber or is reused", async () => {
+    const attributes: Record<string, string> = {
+      "data-app-action-sidebar-thread-row": "",
+      "data-app-action-sidebar-thread-id": "local:client-new-thread:opaque",
+      "data-app-action-sidebar-thread-host-id": "local",
+    };
+    const row = {
+      isConnected: true,
+      getAttribute: (name: string) => attributes[name] ?? null,
+      querySelectorAll: () => [],
+    };
+    vi.stubGlobal("document", { querySelectorAll: () => [row] });
+    vi.stubGlobal(
+      "MutationObserver",
+      class {
+        observe() {}
+        disconnect() {}
+      },
+    );
+    const getLocalAgent = vi.fn(() => "codex" as const);
+    const control = installRendererSidebarAgentIcons({
+      getClient: () => null,
+      getLocalAgent,
+    });
+    try {
+      expect(getLocalAgent).toHaveBeenLastCalledWith({
+        hostId: "local",
+        threadId: null,
+        draftId: "client-new-thread:opaque",
+      });
+
+      const props = { conversationId: "thread-1", dataAttributes: attributes };
+      Object.defineProperty(row, "__reactFiber$test", { value: { memoizedProps: props } });
+      control.refresh();
+      await settle();
+      expect(getLocalAgent).toHaveBeenLastCalledWith({
+        hostId: "local",
+        threadId: "thread-1",
+        draftId: "client-new-thread:opaque",
+      });
+
+      attributes["data-app-action-sidebar-thread-host-id"] = "remote";
+      attributes["data-app-action-sidebar-thread-id"] = "remote:thread-2";
+      props.conversationId = "thread-2";
+      control.refresh();
+      await settle();
+      expect(getLocalAgent).toHaveBeenLastCalledWith({
+        hostId: "remote",
+        threadId: "thread-2",
+        draftId: null,
+      });
+    } finally {
+      control.dispose();
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("resolves the draft key separately from the Fiber conversation identity", () => {
     const attributes = {
       "data-app-action-sidebar-thread-row": "",

@@ -597,7 +597,38 @@ export function applyComposerModelWrite(
   return write();
 }
 
+function isCodexHostNode(node: Node | null | undefined): boolean {
+  if (!node || node.nodeType !== Node.ELEMENT_NODE) return false;
+  const element = node as Element;
+  if (
+    typeof element.closest === "function" &&
+    element.closest(
+      "[data-codexhost-control-root], [data-codexhost-settings-trigger], [data-codexhost-settings-shell], [data-codexhost-sidebar-agent-icon], [data-codexhost-model-control], [data-codexhost-permission-mode-control], [data-codexhost-usage-control], [data-codexhost-credits-control], [data-codexhost-harness-command-control]",
+    ) !== null
+  ) {
+    return true;
+  }
+  if (typeof element.getAttributeNames === "function") {
+    for (const name of element.getAttributeNames()) {
+      if (name.startsWith("data-codexhost-")) return true;
+    }
+  }
+  return false;
+}
+
+function isCodexHostMutation(mutation: MutationRecord): boolean {
+  const target =
+    mutation.target instanceof Element ? mutation.target : mutation.target.parentElement;
+  if (isCodexHostNode(target)) return true;
+  if (mutation.type === "childList") {
+    const allNodes = [...mutation.addedNodes, ...mutation.removedNodes];
+    if (allNodes.length > 0 && allNodes.every(isCodexHostNode)) return true;
+  }
+  return false;
+}
+
 function mutationMayChangeComposerTarget(mutation: MutationRecord): boolean {
+  if (isCodexHostMutation(mutation)) return false;
   const target =
     mutation.target instanceof Element ? mutation.target : mutation.target.parentElement;
   return !target || editorForElement(target) === null;
@@ -648,6 +679,8 @@ export function installRendererBindingProbe(
   let disposed = false;
   const disposeReasoningSoftWrap = installReasoningTranscriptSoftWrap(document);
   let scanScheduled = false;
+  let isScanning = false;
+  let reScanRequested = false;
   let refreshTargetsOnNextScan = false;
   let adapterDispose: (() => void) | null = null;
   let applyAdapterAgent: ApplyAdapterAgent | null = null;
@@ -2362,7 +2395,6 @@ export function installRendererBindingProbe(
   };
 
   const scan = (): void => {
-    scanScheduled = false;
     const refreshTargets = refreshTargetsOnNextScan;
     refreshTargetsOnNextScan = false;
     if (disposed) return;
@@ -2430,9 +2462,29 @@ export function installRendererBindingProbe(
 
   const scheduleScan = (refreshTargets = false): void => {
     refreshTargetsOnNextScan ||= refreshTargets;
-    if (scanScheduled || disposed) return;
+    if (disposed) return;
+    if (isScanning) {
+      reScanRequested = true;
+      return;
+    }
+    if (scanScheduled) return;
     scanScheduled = true;
-    queueMicrotask(scan);
+    queueMicrotask(runScan);
+  };
+
+  const runScan = (): void => {
+    scanScheduled = false;
+    if (disposed) return;
+    isScanning = true;
+    try {
+      scan();
+    } finally {
+      isScanning = false;
+      if (reScanRequested) {
+        reScanRequested = false;
+        scheduleScan();
+      }
+    }
   };
 
   const composerRootsWithin = (node: Node): Element[] => {
@@ -2589,8 +2641,10 @@ export function installRendererBindingProbe(
   };
 
   const mutationObserver = new MutationObserver((mutations) => {
-    transferReplacedComposers(mutations);
-    scheduleScan(mutations.some(mutationMayChangeComposerTarget));
+    const relevant = mutations.filter((mutation) => !isCodexHostMutation(mutation));
+    if (relevant.length === 0) return;
+    transferReplacedComposers(relevant);
+    scheduleScan(relevant.some(mutationMayChangeComposerTarget));
   });
   const onHostRouteChange = (): void => {
     sidebarAgentIcons.refresh();

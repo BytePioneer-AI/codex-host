@@ -83,33 +83,37 @@ const FIND_REQUEST_MANAGER_EXPRESSION = `(() => {
   const editors = [...document.querySelectorAll(
     '[data-codex-composer], [contenteditable="true"][role="textbox"]',
   )];
-  if (editors.length !== 1) {
+  if (editors.length === 0) {
     return { candidateCount: 0, editorCount: editors.length, hostId: null, sendRequest: null };
   }
-  let element = editors[0];
-  let fiber = null;
-  while (element != null && fiber == null) {
-    const key = Object.getOwnPropertyNames(element).find((name) =>
-      name.startsWith('__reactFiber$'),
-    );
-    if (key != null) fiber = element[key];
-    element = element.parentElement;
-  }
+  // Main and side chat can expose multiple editors backed by the same manager.
+  // Validate their combined ownership instead of treating editor count as ambiguity.
   const managers = new Set();
   const activeHostIds = new Set();
-  for (const current of committedReactAncestors(fiber)) {
-    const fiber = current;
-    const props = fiber.memoizedProps;
-    if (props != null && typeof props === 'object') {
-      for (const name of ['executionTargetHostId', 'permissionsHostId']) {
-        const value = props[name];
-        if (typeof value === 'string' && value.length > 0) activeHostIds.add(value);
-      }
+  for (const editor of editors) {
+    let element = editor;
+    let fiber = null;
+    while (element != null && fiber == null) {
+      const key = Object.getOwnPropertyNames(element).find((name) =>
+        name.startsWith('__reactFiber$'),
+      );
+      if (key != null) fiber = element[key];
+      element = element.parentElement;
     }
-    let hook = fiber.memoizedState;
-    for (let index = 0; hook != null && index < 120; index += 1, hook = hook.next) {
-      const manager = requestManagerFromHookState(hook.memoizedState);
-      if (manager != null) managers.add(manager);
+    for (const current of committedReactAncestors(fiber)) {
+      const fiber = current;
+      const props = fiber.memoizedProps;
+      if (props != null && typeof props === 'object') {
+        for (const name of ['executionTargetHostId', 'permissionsHostId']) {
+          const value = props[name];
+          if (typeof value === 'string' && value.length > 0) activeHostIds.add(value);
+        }
+      }
+      let hook = fiber.memoizedState;
+      for (let index = 0; hook != null && index < 120; index += 1, hook = hook.next) {
+        const manager = requestManagerFromHookState(hook.memoizedState);
+        if (manager != null) managers.add(manager);
+      }
     }
   }
   const candidates = [...managers].map((manager) => {

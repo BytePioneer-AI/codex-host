@@ -1071,6 +1071,58 @@ describe("Renderer draft prewarm policy", () => {
     policy.dispose();
   });
 
+  it("keeps the shared request manager current while side chat opens and closes", async () => {
+    const active = { ...requestManagerFixture(), ...fiberRequestManagerFixture() };
+    const editorFor = (manager: typeof active) => ({
+      parentElement: null,
+      __reactFiber$test: {
+        memoizedProps: { executionTargetHostId: manager.getHostId() },
+        memoizedState: { memoizedState: { manager } },
+      },
+    });
+    const mainEditor = editorFor(active);
+    const editors = [mainEditor];
+    const target: DraftPrewarmPolicyTarget = {};
+    const renderer = {
+      async evaluate<T>(expression: string): Promise<T> {
+        return await runInNewContext(expression, {
+          document: { querySelectorAll: () => editors },
+          window: target,
+          crypto: globalThis.crypto,
+          TextDecoder,
+          TextEncoder,
+          Uint8Array,
+          setTimeout,
+          clearTimeout,
+        });
+      },
+    };
+    await installRendererDraftPrewarmPolicyDirect(renderer);
+    const policy = target.__codexhostDraftPrewarmPolicyV1 as {
+      requestTarget(): object;
+      dispose(): void;
+    };
+    try {
+      editors.push(editorFor(active));
+      expect(policy.requestTarget()).toBe(active);
+      await installRendererDraftPrewarmPolicyDirect(renderer);
+      expect(target.__codexhostDraftPrewarmPolicyV1).toBe(policy);
+
+      // A genuinely different manager or Host must still invalidate the route.
+      const other = { ...requestManagerFixture(), ...fiberRequestManagerFixture() };
+      editors[1] = editorFor(other);
+      expect(() => policy.requestTarget()).toThrow("Renderer request manager is retired");
+      other.getHostId = () => "remote-host";
+      editors[1] = editorFor(other);
+      expect(() => policy.requestTarget()).toThrow("Renderer request manager is retired");
+
+      editors.pop();
+      expect(policy.requestTarget()).toBe(active);
+    } finally {
+      policy.dispose();
+    }
+  });
+
   it("installs the owned request bridge through direct Renderer evaluation", async () => {
     const evaluate = vi.fn(async (expression: string): Promise<unknown> => {
       void expression;

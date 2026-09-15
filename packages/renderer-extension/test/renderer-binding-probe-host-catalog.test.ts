@@ -7,6 +7,7 @@ import {
   isRendererModelPickerDisabled,
   type RendererModelControlView,
 } from "../src/renderer-model-picker.js";
+import type { installRendererSidebarAgentIcons } from "../src/renderer-sidebar-agent-icons.js";
 import type { RendererConnectionDiagnostics } from "../src/settings/connections-page.js";
 import type { RendererSessionImportClient } from "../src/settings/session-import-page.js";
 import type * as VersionedRendererAdapter from "../src/versioned-renderer-adapter.js";
@@ -19,6 +20,7 @@ const testState = vi.hoisted(() => ({
   selectModel: null as null | ((modelId: string) => void),
   getConnectionDiagnostics: null as null | (() => RendererConnectionDiagnostics | null),
   getSessionImportClient: null as null | (() => RendererSessionImportClient | null),
+  sidebarOptions: null as null | Parameters<typeof installRendererSidebarAgentIcons>[0],
   documentListeners: new Map<string, EventListener>(),
   modelTarget: ["conversation", "thread-a"] as readonly unknown[],
 }));
@@ -85,7 +87,12 @@ vi.mock("../src/versioned-renderer-adapter.js", async (importOriginal) => {
 });
 
 vi.mock("../src/renderer-sidebar-agent-icons.js", () => ({
-  installRendererSidebarAgentIcons: () => ({ refresh: vi.fn(), dispose: vi.fn() }),
+  installRendererSidebarAgentIcons: (
+    options: Parameters<typeof installRendererSidebarAgentIcons>[0],
+  ) => {
+    testState.sidebarOptions = options;
+    return { refresh: vi.fn(), dispose: vi.fn() };
+  },
 }));
 
 vi.mock("../src/renderer-settings-lifecycle.js", () => ({
@@ -221,6 +228,46 @@ afterEach(() => {
 });
 
 describe("Renderer binding Host-scoped Claude catalogs", () => {
+  it("does not rediscover the request route for unrelated sidebar rows", async () => {
+    installFakeBrowser();
+    const host = {
+      inspectHarness: vi.fn(async () => readyInspection()),
+      inspectThread: vi.fn(async () => ({ owner: "codex", locked: true })),
+      inspectThreadCommands: vi.fn(async () => ({ commands: [] })),
+      inspectThreadUsage: vi.fn(async () => ({
+        threadId: "thread-a",
+        usage: null,
+        accountCredits: null,
+      })),
+      subscribeThreadUsage: () => () => undefined,
+    };
+    const currentHostId = vi.fn(() => "local");
+    const { installRendererBindingProbe } = await import("../src/renderer-binding-probe.js");
+    const probe = installRendererBindingProbe({ enabledAgents: ["codex"], defaultAgent: "codex" });
+    probe.setAdapter(
+      { state: "ready", reason: "ready", modelUpdates: 0, hook: "request-bridge" },
+      undefined,
+      undefined,
+      { ...host, currentHostId, clientForHost: () => host } as never,
+    );
+    const getAgent = testState.sidebarOptions?.getLocalAgent;
+    assert(getAgent);
+    await vi.waitFor(() =>
+      expect(getAgent({ hostId: "local", threadId: "thread-a", draftId: null })).toBe("codex"),
+    );
+    currentHostId.mockClear();
+    for (let index = 0; index < 77; index += 1) {
+      expect(
+        getAgent({ hostId: "local", threadId: `unrelated-${index}`, draftId: null }),
+      ).toBeNull();
+    }
+    expect(currentHostId).not.toHaveBeenCalled();
+    expect(getAgent({ hostId: "local", threadId: "thread-a", draftId: null })).toBe("codex");
+    expect(currentHostId).toHaveBeenCalledTimes(1);
+    currentHostId.mockReturnValue("remote-host");
+    expect(getAgent({ hostId: "local", threadId: "thread-a", draftId: null })).toBeNull();
+  });
+
   it("keeps the latest catalog selectable until a locked Thread explicitly replaces its missing Model", async () => {
     installFakeBrowser();
     const oldModel = harnessModelRefSchema.parse({ id: "claude-model-v1.b3B1cw" });

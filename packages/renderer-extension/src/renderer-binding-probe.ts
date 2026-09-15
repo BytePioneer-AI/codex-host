@@ -664,21 +664,21 @@ export function installRendererBindingProbe(
     threadId: string | null;
     draftId: string | null;
   }): RendererAgent | null => {
-    const mountedHostId = modelControl?.currentHostId?.() ?? "local";
-    if (input.hostId !== mountedHostId) return null;
     for (const mounted of mountedByComposer.values()) {
       const target = mounted.modelTarget;
-      if (target?.[0] === "default" && input.draftId !== null && target[1] === input.draftId) {
-        return controller.get(mounted.composer).agent;
-      }
-      if (
+      const matchesDraft =
+        target?.[0] === "default" && input.draftId !== null && target[1] === input.draftId;
+      const matchesConversation =
         target?.[0] === "conversation" &&
         input.threadId !== null &&
         target[1] === input.threadId &&
-        mounted.ownershipStatus === "ready"
-      ) {
-        return controller.get(mounted.composer).agent;
-      }
+        mounted.ownershipStatus === "ready";
+      if (!matchesDraft && !matchesConversation) continue;
+      // Route validation walks the committed React tree. Only a row matching a
+      // mounted Composer needs it; unrelated sidebar rows cannot use local state.
+      const mountedHostId = modelControl?.currentHostId?.() ?? "local";
+      if (input.hostId !== mountedHostId) return null;
+      return controller.get(mounted.composer).agent;
     }
     return null;
   };

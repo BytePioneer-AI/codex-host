@@ -210,6 +210,35 @@ export function snapshotFromHistory(
   const turns: HostTurnSnapshot[] = [];
   let current: HostTurnSnapshot | undefined;
   const tools = new Map<string, HostItemSnapshot>();
+  // CodeBuddy persists a Tool call and its result from separate writers, so a call that
+  // is refused before it runs can land its result first. Hold such a result until its
+  // call arrives instead of failing the whole read.
+  const earlyResults = new Map<string, Record<string, unknown>>();
+  const applyResult = (snapshot: HostItemSnapshot, row: Record<string, unknown>) => {
+    snapshot.outcome = toolOutcome(row.status);
+    if (snapshot.item.type === "subagentDelegation") {
+      const childId = codeBuddyChildId(row);
+      snapshot.item.subagents = snapshot.item.subagents.map((child) => ({
+        ...child,
+        ...(childId ? { subagentId: childId, nativeSubagentId: childId } : {}),
+        status:
+          snapshot.outcome.status === "failed"
+            ? "failed"
+            : child.background
+              ? "interrupted"
+              : "completed",
+        resultSummary: child.background
+          ? "Live background observation is unavailable after reload"
+          : contentText(row.output).slice(0, 2000),
+      }));
+    }
+    if (snapshot.item.type === "toolExecution") snapshot.item.output = toolOutput(row.output);
+    if (snapshot.item.type === "commandExecution") {
+      const output = toolOutput(row.output);
+      snapshot.item.output = contentText(output.content);
+      snapshot.item.outputTruncated = Boolean(output.truncated);
+    }
+  };
   for (const row of nativeHistoryRows(contents)) {
     if (row.type === "message" && row.role === "user") {
       current = {
@@ -226,6 +255,7 @@ export function snapshotFromHistory(
       };
       turns.push(current);
       tools.clear();
+      earlyResults.clear();
       continue;
     }
     if (!current) continue;
@@ -252,42 +282,30 @@ export function snapshotFromHistory(
           throw new CodeBuddyError("protocolError", "Invalid native Tool arguments");
         }
       }
+      const callId = text(row.callId);
       const snapshot = {
         item:
           row.name === "Agent"
-            ? codeBuddyDelegation(text(row.callId), input, "running")
-            : toolItem(text(row.callId), text(row.name), input, cwd),
+            ? codeBuddyDelegation(callId, input, "running")
+            : toolItem(callId, text(row.name), input, cwd),
         outcome: toolOutcome("unknown"),
       };
-      tools.set(text(row.callId), snapshot);
+      tools.set(callId, snapshot);
       current.items.push(snapshot);
       current.outcome = { status: "unknown", reason: "Native Tool has not completed" };
+      const early = earlyResults.get(callId);
+      if (early) {
+        earlyResults.delete(callId);
+        applyResult(snapshot, early);
+      }
     } else if (row.type === "function_call_result") {
-      const snapshot = tools.get(text(row.callId));
-      if (!snapshot) throw new CodeBuddyError("protocolError", "Native Tool result has no call");
-      snapshot.outcome = toolOutcome(row.status);
-      if (snapshot.item.type === "subagentDelegation") {
-        const childId = codeBuddyChildId(row);
-        snapshot.item.subagents = snapshot.item.subagents.map((child) => ({
-          ...child,
-          ...(childId ? { subagentId: childId, nativeSubagentId: childId } : {}),
-          status:
-            snapshot.outcome.status === "failed"
-              ? "failed"
-              : child.background
-                ? "interrupted"
-                : "completed",
-          resultSummary: child.background
-            ? "Live background observation is unavailable after reload"
-            : contentText(row.output).slice(0, 2000),
-        }));
-      }
-      if (snapshot.item.type === "toolExecution") snapshot.item.output = toolOutput(row.output);
-      if (snapshot.item.type === "commandExecution") {
-        const output = toolOutput(row.output);
-        snapshot.item.output = contentText(output.content);
-        snapshot.item.outputTruncated = Boolean(output.truncated);
-      }
+      // A result may precede its call: a Tool refused before it runs records its result
+      // without waiting for the call row. A result whose call never appears cannot be
+      // attributed to a renderable Tool, so it is dropped rather than failing the read.
+      const callId = text(row.callId);
+      const snapshot = tools.get(callId);
+      if (snapshot) applyResult(snapshot, row);
+      else earlyResults.set(callId, row);
     }
   }
   return { turns };

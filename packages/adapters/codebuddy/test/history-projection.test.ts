@@ -74,6 +74,40 @@ describe("CodeBuddy native history and output projection", () => {
       "unknown",
     );
   });
+  it("replays a Tool result that precedes its call and drops one without any call", () => {
+    const call = {
+      type: "function_call",
+      id: "call",
+      parentId: "result",
+      callId: "call-1",
+      name: "Bash",
+      arguments: JSON.stringify({ command: "tasklist" }),
+    };
+    const result = {
+      type: "function_call_result",
+      id: "result",
+      parentId: "answer",
+      callId: "call-1",
+      status: "completed",
+      output: { type: "text", text: "Command rejected: tasklist" },
+    };
+    const snapshot = snapshotFromHistory(lines([user, assistant, result, call]), ref, "/work");
+    expect(snapshot.turns[0]?.items).toMatchObject([
+      { item: { type: "agentMessage", text: "ok" } },
+      {
+        item: {
+          type: "commandExecution",
+          command: "tasklist",
+          cwd: "/work",
+          output: "Command rejected: tasklist",
+        },
+        outcome: { status: "succeeded" },
+      },
+    ]);
+    expect(snapshot.turns[0]?.items).toHaveLength(2);
+    const orphan = snapshotFromHistory(lines([user, assistant, result]), ref, "/work");
+    expect(orphan.turns[0]?.items).toMatchObject([{ item: { type: "agentMessage" } }]);
+  });
   it("deduplicates model-request Usage and reports credits rather than USD", () => {
     const data = {
       messageId: "model-request",

@@ -1078,21 +1078,12 @@ export function installCurrentRendererAdapter(): {
     return client;
   };
   const modelControl: RendererModelClient = Object.freeze({
-    currentHostId: () => {
-      const policy = window.__codexhostDraftPrewarmPolicyV1;
-      if (isDraftPrewarmPolicyReady(policy) && typeof policy.hostId === "string") {
-        return policy.hostId;
-      }
-      return currentRequestRoute()?.policy.hostId ?? null;
-    },
+    currentHostId: () => currentRequestRoute()?.policy.hostId ?? null,
     clientForHost(hostId: string): RendererModelClient | null {
-      const policy = window.__codexhostDraftPrewarmPolicyV1;
-      if (isDraftPrewarmPolicyReady(policy) && hasPolicyRequestTarget(policy)) {
-        if (policy.hostId !== hostId) return null;
-      }
       const route = currentRequestRoute();
       if (route?.policy.hostId === hostId)
         return modelClientForTargets(route.targets, route.policy);
+      const policy = window.__codexhostDraftPrewarmPolicyV1;
       if (isDraftPrewarmPolicyReady(policy) && hasPolicyRequestTarget(policy)) return null;
       const targets = rendererRequestTargetsForHost(findActivePrewarmTargets(document), hostId);
       return modelClientForTargets(targets ?? []);

@@ -685,6 +685,60 @@ describe("current Codex Renderer Agent adapter", () => {
     }
   });
 
+  it("invalidates currentHostId and clientForHost when the policy-owned manager retires", () => {
+    const fakeWindow: Record<string, unknown> = {
+      dispatchEvent: vi.fn(),
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    };
+    const fakeDocument = {
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      querySelector: () => null,
+      querySelectorAll: () => [],
+    };
+    const priorWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
+    const priorDocument = Object.getOwnPropertyDescriptor(globalThis, "document");
+    Object.defineProperties(globalThis, {
+      window: { configurable: true, value: fakeWindow },
+      document: { configurable: true, value: fakeDocument },
+    });
+
+    const manager = {
+      hostId: "local",
+      sendRequest: vi.fn(),
+      prewarmThreadStart: vi.fn(),
+      enqueueRequest: vi.fn(),
+    };
+    let isRetired = false;
+    fakeWindow.__codexhostDraftPrewarmPolicyV1 = {
+      state: "ready",
+      hostId: "local",
+      requestTarget: () => {
+        if (isRetired) throw new Error("Renderer request manager is retired");
+        return manager;
+      },
+      select: vi.fn(() => true),
+      clear: vi.fn(async () => undefined),
+    };
+
+    try {
+      const adapter = installCurrentRendererAdapter();
+      expect(adapter.modelControl.currentHostId?.()).toBe("local");
+      expect(adapter.modelControl.clientForHost?.("local")).not.toBeNull();
+
+      isRetired = true;
+      expect(adapter.modelControl.currentHostId?.()).toBeNull();
+      expect(adapter.modelControl.clientForHost?.("local")).toBeNull();
+      adapter.dispose();
+    } finally {
+      if (priorWindow) Object.defineProperty(globalThis, "window", priorWindow);
+      else Reflect.deleteProperty(globalThis, "window");
+      if (priorDocument) Object.defineProperty(globalThis, "document", priorDocument);
+      else Reflect.deleteProperty(globalThis, "document");
+    }
+  });
+
   it("recognizes current-version policy readiness markers independently", () => {
     expect(isMainProcessTitlePolicyReady({ state: "ready" })).toBe(true);
     expect(isMainProcessTitlePolicyReady({ state: "installing" })).toBe(false);

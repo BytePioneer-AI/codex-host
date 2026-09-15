@@ -20,7 +20,7 @@
   },
   "scripts": {
     "build": "tsc -b",
-    "test": "vitest run test"
+    "test": "vitest run --config ../../../tests/vitest.config.js packages/adapters/antigravity/test"
   },
   "dependencies": {
     "@codexhost/harness-adapter": "0.0.0",

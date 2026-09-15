@@ -2,12 +2,17 @@ import { packageMetadata as harnessAdapter } from "@codexhost/harness-adapter";
 import { WORKSPACE_CONTRACT_VERSION } from "@codexhost/shared-contracts";
 
 export {
+  ANTIGRAVITY_NO_PROXY_ENV,
+  ANTIGRAVITY_PROXY_ENV,
   ANTIGRAVITY_WORKSPACE_FILE_INSTRUCTION,
   AntigravityAdapter,
   formatAntigravityTurnPrompt,
+  isLoopbackProxy,
+  isTransientNetworkError,
   parseAntigravityContextUsage,
   permissionDeniedTurnError,
   resolveAntigravityContextWindow,
+  resolveAntigravityEnvironment,
 } from "./antigravity-adapter.js";
 export type { AntigravityAdapterOptions } from "./antigravity-adapter.js";
 export { resolveAntigravityExecutable } from "./command.js";

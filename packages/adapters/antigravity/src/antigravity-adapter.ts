@@ -114,6 +114,9 @@ export interface AntigravityAdapterOptions {
   inspectTimeoutMs?: number;
   printTimeout?: string;
   toolOutputLimit?: number;
+  proxy?: "direct" | "system" | string;
+  noProxy?: string;
+  retryDelayMs?: number;
 }
 
 interface ActiveTurn {
@@ -153,6 +156,9 @@ interface ActiveTurn {
    * its parameters when the step opens, not when it ends. */
   pendingSteps: Map<number, AntigravityStepUpdateEvent["step_update"]>;
   httpsPort: number | null;
+  turnPrompt: string;
+  retriesRemaining: number;
+  environment: NodeJS.ProcessEnv;
 }
 
 const antigravityHarnessId = harnessIdSchema.parse("antigravity");
@@ -235,6 +241,105 @@ function errorMessage(error: unknown): string {
 
 function invalidState(message: string): HarnessError {
   return { code: "invalidState", message, retryable: false };
+}
+
+export const ANTIGRAVITY_PROXY_ENV = "CODEXHOST_ANTIGRAVITY_PROXY";
+export const ANTIGRAVITY_NO_PROXY_ENV = "CODEXHOST_ANTIGRAVITY_NO_PROXY";
+
+export function isLoopbackProxy(url?: string): boolean {
+  if (!url) return false;
+  const trimmed = url.trim();
+  if (!trimmed) return false;
+  return (
+    /^(https?|socks5h?):\/\/(127\.0\.0\.1|localhost|\[::1\]|0\.0\.0\.0)(:\d+)?\/?$/i.test(
+      trimmed,
+    ) || /^(127\.0\.0\.1|localhost|\[::1\]|0\.0\.0\.0)(:\d+)?\/?$/i.test(trimmed)
+  );
+}
+
+export function resolveAntigravityEnvironment(
+  baseEnvironment: NodeJS.ProcessEnv,
+  bridgeEnvironment: NodeJS.ProcessEnv = {},
+): NodeJS.ProcessEnv {
+  const environment: NodeJS.ProcessEnv = { ...baseEnvironment, ...bridgeEnvironment };
+  const proxyOverride = (environment[ANTIGRAVITY_PROXY_ENV] ?? environment.CODEXHOST_PROXY)?.trim();
+  const noProxyAppend = (
+    environment[ANTIGRAVITY_NO_PROXY_ENV] ?? environment.CODEXHOST_NO_PROXY
+  )?.trim();
+
+  if (proxyOverride) {
+    const normalized = proxyOverride.toLowerCase();
+    if (normalized === "direct") {
+      delete environment.HTTP_PROXY;
+      delete environment.HTTPS_PROXY;
+      delete environment.http_proxy;
+      delete environment.https_proxy;
+      delete environment.ALL_PROXY;
+      delete environment.all_proxy;
+    } else if (normalized !== "system") {
+      environment.HTTP_PROXY = proxyOverride;
+      environment.HTTPS_PROXY = proxyOverride;
+      environment.http_proxy = proxyOverride;
+      environment.https_proxy = proxyOverride;
+    }
+  } else {
+    // When no explicit proxy override is configured, strip implicit loopback proxies
+    // (e.g. 127.0.0.1 / localhost) synthesized by the Host platform layer from local
+    // desktop proxy clients (Surge, Clash). These local HTTP proxy ports are prone to
+    // connection resets (TCP RST) on long-lived SSE streams, whereas native terminals
+    // and TUN virtual interfaces handle direct connections reliably.
+    if (isLoopbackProxy(environment.HTTP_PROXY)) delete environment.HTTP_PROXY;
+    if (isLoopbackProxy(environment.HTTPS_PROXY)) delete environment.HTTPS_PROXY;
+    if (isLoopbackProxy(environment.http_proxy)) delete environment.http_proxy;
+    if (isLoopbackProxy(environment.https_proxy)) delete environment.https_proxy;
+    if (isLoopbackProxy(environment.ALL_PROXY)) delete environment.ALL_PROXY;
+    if (isLoopbackProxy(environment.all_proxy)) delete environment.all_proxy;
+  }
+
+  if (noProxyAppend) {
+    const existingParts = [
+      ...(environment.NO_PROXY?.split(",") ?? []),
+      ...(environment.no_proxy?.split(",") ?? []),
+      ...noProxyAppend.split(","),
+    ]
+      .map((entry) => entry.trim())
+      .filter((entry) => entry.length > 0);
+    const combined = [...new Set(existingParts)].join(",");
+    if (combined) {
+      environment.NO_PROXY = combined;
+      environment.no_proxy = combined;
+    }
+  }
+
+  if (environment.HTTP_PROXY === "") delete environment.HTTP_PROXY;
+  if (environment.HTTPS_PROXY === "") delete environment.HTTPS_PROXY;
+  if (environment.http_proxy === "") delete environment.http_proxy;
+  if (environment.https_proxy === "") delete environment.https_proxy;
+  if (environment.ALL_PROXY === "") delete environment.ALL_PROXY;
+  if (environment.all_proxy === "") delete environment.all_proxy;
+
+  return environment;
+}
+
+export function isTransientNetworkError(text: string): boolean {
+  return /connection reset by peer|ECONNRESET|broken pipe|unexpected EOF|stream error|TLS handshake timeout/iu.test(
+    text,
+  );
+}
+
+const DEFAULT_RETRY_DELAY_MS = 1_000;
+
+function canRetryTurn(active: ActiveTurn, errorText: string): boolean {
+  return (
+    active.retriesRemaining > 0 &&
+    !active.cancellationRequested &&
+    active.agentItem === null &&
+    active.agentText === "" &&
+    active.completedItems.length === 0 &&
+    active.tools.size === 0 &&
+    active.pendingSteps.size === 0 &&
+    isTransientNetworkError(errorText)
+  );
 }
 
 export const ANTIGRAVITY_WORKSPACE_FILE_INSTRUCTION =
@@ -489,6 +594,7 @@ class AntigravitySession implements HarnessSession {
   readonly #onClosed: () => void;
   readonly #printTimeout: string;
   readonly #toolOutputLimit: number;
+  readonly #retryDelayMs: number;
   readonly #history: AntigravityHistory;
   readonly #subagentObservers = new Set<AntigravitySubagents>();
   #active: ActiveTurn | null = null;
@@ -513,6 +619,7 @@ class AntigravitySession implements HarnessSession {
     printTimeout: string;
     thinkingOptionId?: HarnessThinkingOptionId;
     toolOutputLimit: number;
+    retryDelayMs?: number;
     onClosed(): void;
   }) {
     this.#catalog = input.catalog;
@@ -526,6 +633,7 @@ class AntigravitySession implements HarnessSession {
     this.#printTimeout = input.printTimeout;
     this.#thinkingOptionId = input.thinkingOptionId ?? input.history.thinkingOptionId;
     this.#toolOutputLimit = input.toolOutputLimit;
+    this.#retryDelayMs = input.retryDelayMs ?? DEFAULT_RETRY_DELAY_MS;
     this.#onClosed = input.onClosed;
     this.initialState = this.#state();
     this.outputs = this.#channel.outputs;
@@ -675,43 +783,12 @@ class AntigravitySession implements HarnessSession {
       await questions.dispose();
       return { ok: false, error: invalidState("Antigravity Session is closed") };
     }
-    const environment = { ...this.#environment, ...questions.environment };
-    const logPath = path.join(os.tmpdir(), `codexhost-antigravity-${randomUUID()}.log`);
-    const arguments_ = [
-      "--input-format",
-      "stream-json",
-      "--output-format",
-      "stream-json",
-      "--print-timeout",
-      this.#printTimeout,
-    ];
-    if (this.#nativeRef) arguments_.unshift("--conversation", this.#nativeRef.nativeSessionId);
-    arguments_.push(...antigravityModelArguments(this.#model, this.#thinkingOptionId));
-    arguments_.push("--dangerously-skip-permissions");
-    arguments_.push("--add-dir", this.#cwd);
-    arguments_.push("--add-dir", questions.directory);
-    arguments_.push("--log-file", logPath);
-    const invocation = commandInvocation(this.#executable, arguments_, environment);
-    let child: ChildProcessByStdio<Writable, Readable, Readable>;
-    try {
-      child = spawn(invocation.command, invocation.arguments, {
-        cwd: this.#cwd,
-        env: environment,
-        windowsHide: true,
-        windowsVerbatimArguments: invocation.windowsVerbatimArguments,
-        stdio: ["pipe", "pipe", "pipe"],
-      });
-    } catch (error) {
-      await questions.dispose();
-      return {
-        ok: false,
-        error: { code: "nativeFailure", message: errorMessage(error), retryable: true },
-      };
-    }
+    const environment = resolveAntigravityEnvironment(this.#environment, questions.environment);
+    const turnPrompt = formatAntigravityTurnPrompt(text);
     const active: ActiveTurn = {
       command,
-      process: child,
-      exited: new Promise<void>((resolve) => child.once("close", () => resolve())),
+      process: null as unknown as ChildProcessByStdio<Writable, Readable, Readable>,
+      exited: Promise.resolve(),
       questions,
       subagents: new AntigravitySubagents({
         turnId: command.turnId,
@@ -736,7 +813,7 @@ class AntigravitySession implements HarnessSession {
         complete: (snapshot) => active.completedItems.push(snapshot),
         schedule: (work) => this.#enqueue(active, work),
       }),
-      logPath,
+      logPath: "",
       agentItem: null,
       agentText: "",
       tools: new Map(),
@@ -753,22 +830,87 @@ class AntigravitySession implements HarnessSession {
       fileChanges: new Map(),
       pendingSteps: new Map(),
       httpsPort: null,
+      turnPrompt,
+      retriesRemaining: 1,
+      environment,
     };
     this.#active = active;
     this.#subagentObservers.add(active.subagents);
+
+    const started = this.#startTurnProcess(active);
+    if (!started) {
+      this.#subagentObservers.delete(active.subagents);
+      this.#active = null;
+      await questions.dispose();
+      return {
+        ok: false,
+        error: {
+          code: "nativeFailure",
+          message: "Failed to start Antigravity process",
+          retryable: true,
+        },
+      };
+    }
+    this.#event({ type: "turn.started", turnId: command.turnId });
+    return { ok: true, value: { turnId: command.turnId } };
+  }
+
+  #startTurnProcess(active: ActiveTurn): boolean {
+    const logPath = path.join(os.tmpdir(), `codexhost-antigravity-${randomUUID()}.log`);
+    active.logPath = logPath;
+    const arguments_ = [
+      "--input-format",
+      "stream-json",
+      "--output-format",
+      "stream-json",
+      "--print-timeout",
+      this.#printTimeout,
+    ];
+    if (this.#nativeRef) arguments_.unshift("--conversation", this.#nativeRef.nativeSessionId);
+    arguments_.push(...antigravityModelArguments(this.#model, this.#thinkingOptionId));
+    arguments_.push("--dangerously-skip-permissions");
+    arguments_.push("--add-dir", this.#cwd);
+    arguments_.push("--add-dir", active.questions.directory);
+    arguments_.push("--log-file", logPath);
+    const invocation = commandInvocation(this.#executable, arguments_, active.environment);
+    let child: ChildProcessByStdio<Writable, Readable, Readable>;
+    try {
+      child = spawn(invocation.command, invocation.arguments, {
+        cwd: this.#cwd,
+        env: active.environment,
+        windowsHide: true,
+        windowsVerbatimArguments: invocation.windowsVerbatimArguments,
+        stdio: ["pipe", "pipe", "pipe"],
+      });
+    } catch {
+      return false;
+    }
+    active.process = child;
+    active.exited = new Promise<void>((resolve) => child.once("close", () => resolve()));
+    active.contextUsagePromise = null;
+    active.stderr = "";
+    active.receivedResult = false;
+    active.permissionDenial = null;
+    active.nativePermissionMode = null;
+
     child.stdin.on("error", () => undefined);
     child.stderr.setEncoding("utf8").on("data", (chunk: string) => {
       active.stderr = (active.stderr + chunk).slice(-8_000);
     });
     const lines = readline.createInterface({ input: child.stdout });
     lines.on("line", (line) => {
+      if (active.process !== child) return;
       const event = parseAntigravityStreamLine(line);
       if (event) this.#enqueue(active, () => this.#handleEvent(active, event));
       else if (line.trim()) active.stderr = (active.stderr + `\n${line}`).slice(-8_000);
     });
     child.once("error", (error) => {
-      this.#enqueue(active, () => {
-        if (this.#active !== active) return;
+      this.#enqueue(active, async () => {
+        if (this.#active !== active || active.process !== child) return;
+        if (canRetryTurn(active, error.message)) {
+          await this.#retryTurn(active);
+          return;
+        }
         this.#completeTurn(active, {
           status: "failed",
           error: { code: "nativeFailure", message: error.message, retryable: true },
@@ -776,14 +918,17 @@ class AntigravitySession implements HarnessSession {
       });
     });
     child.once("close", (code) => {
-      this.#enqueue(active, () => {
-        void unlink(active.logPath).catch(() => undefined);
-        if (active.subagents.running) void active.subagents.cancel();
-        else active.subagents.stop();
-        if (this.#active !== active || active.receivedResult) return;
+      this.#enqueue(active, async () => {
+        void unlink(logPath).catch(() => undefined);
+        if (this.#active !== active || active.process !== child) return;
+        if (active.receivedResult) return;
         if (active.cancellationRequested) {
           this.#completeTurn(active, { status: "cancelled", reason: "Cancelled by user" });
+        } else if (canRetryTurn(active, active.stderr)) {
+          await this.#retryTurn(active);
         } else {
+          if (active.subagents.running) void active.subagents.cancel();
+          else active.subagents.stop();
           this.#completeTurn(active, {
             status: "failed",
             error: normalizedProcessError(
@@ -795,26 +940,49 @@ class AntigravitySession implements HarnessSession {
       });
     });
     try {
-      const turnPrompt = formatAntigravityTurnPrompt(text);
       if (child.stdin.writable) {
         child.stdin.write(
-          `${JSON.stringify({ event: "user", message: { content: turnPrompt } })}\n`,
+          `${JSON.stringify({ event: "user", message: { content: active.turnPrompt } })}\n`,
           () => undefined,
         );
       }
-    } catch (error) {
+    } catch {
       child.kill();
+      return false;
+    }
+    return true;
+  }
+
+  async #retryTurn(active: ActiveTurn): Promise<void> {
+    active.retriesRemaining--;
+    try {
+      active.process.kill();
+    } catch {
+      // ignore
+    }
+    if (this.#retryDelayMs > 0) {
+      await new Promise((resolve) => setTimeout(resolve, this.#retryDelayMs));
+    }
+    if (this.#active !== active || this.#closed) {
+      return;
+    }
+    if (active.cancellationRequested) {
+      this.#completeTurn(active, { status: "cancelled", reason: "Cancelled by user" });
+      return;
+    }
+    const started = this.#startTurnProcess(active);
+    if (!started) {
+      if (active.subagents.running) void active.subagents.cancel();
+      else active.subagents.stop();
       this.#completeTurn(active, {
         status: "failed",
-        error: { code: "nativeFailure", message: errorMessage(error), retryable: true },
+        error: {
+          code: "nativeFailure",
+          message: "Antigravity CLI retry failed to start",
+          retryable: true,
+        },
       });
-      return {
-        ok: false,
-        error: { code: "nativeFailure", message: errorMessage(error), retryable: true },
-      };
     }
-    this.#event({ type: "turn.started", turnId: command.turnId });
-    return { ok: true, value: { turnId: command.turnId } };
   }
 
   async close(): Promise<void> {
@@ -959,6 +1127,10 @@ class AntigravitySession implements HarnessSession {
     } else {
       const nativeError = event.result.error?.trim();
       const errorDetail = nativeError || active.stderr;
+      if (canRetryTurn(active, errorDetail)) {
+        await this.#retryTurn(active);
+        return;
+      }
       this.#completeTurn(
         active,
         {
@@ -1443,6 +1615,7 @@ export class AntigravityAdapter implements HarnessAdapter {
   readonly #printTimeout: string;
   readonly #sessions = new Set<AntigravitySession>();
   readonly #toolOutputLimit: number;
+  readonly #retryDelayMs: number;
   #closed = false;
   #quota: AntigravityQuotaSnapshot | null = null;
   #quotaCwd: string | null = null;
@@ -1451,10 +1624,19 @@ export class AntigravityAdapter implements HarnessAdapter {
 
   constructor(options: AntigravityAdapterOptions = {}) {
     this.#command = options.command;
-    this.#environment = options.environment ?? process.env;
+    const baseEnv = options.environment ?? process.env;
+    const bridgeEnv: NodeJS.ProcessEnv = {};
+    if (options.proxy !== undefined) {
+      bridgeEnv[ANTIGRAVITY_PROXY_ENV] = options.proxy;
+    }
+    if (options.noProxy !== undefined) {
+      bridgeEnv[ANTIGRAVITY_NO_PROXY_ENV] = options.noProxy;
+    }
+    this.#environment = resolveAntigravityEnvironment(baseEnv, bridgeEnv);
     this.#inspectTimeoutMs = options.inspectTimeoutMs ?? DEFAULT_INSPECT_TIMEOUT_MS;
     this.#printTimeout = options.printTimeout ?? DEFAULT_PRINT_TIMEOUT;
     this.#toolOutputLimit = options.toolOutputLimit ?? DEFAULT_TOOL_OUTPUT_LIMIT;
+    this.#retryDelayMs = options.retryDelayMs ?? DEFAULT_RETRY_DELAY_MS;
   }
 
   async inspect(input: InspectHarnessInput = {}): Promise<HarnessInspection> {
@@ -1655,6 +1837,7 @@ export class AntigravityAdapter implements HarnessAdapter {
             printTimeout: this.#printTimeout,
             ...(params.thinkingOptionId ? { thinkingOptionId: params.thinkingOptionId } : {}),
             toolOutputLimit: this.#toolOutputLimit,
+            retryDelayMs: this.#retryDelayMs,
             onClosed: () => this.#sessions.delete(session),
           });
           this.#sessions.add(session);
@@ -1693,6 +1876,7 @@ export class AntigravityAdapter implements HarnessAdapter {
             printTimeout: this.#printTimeout,
             ...(params.thinkingOptionId ? { thinkingOptionId: params.thinkingOptionId } : {}),
             toolOutputLimit: this.#toolOutputLimit,
+            retryDelayMs: this.#retryDelayMs,
             onClosed: () => this.#sessions.delete(session),
           });
           this.#sessions.add(session);
@@ -1715,7 +1899,10 @@ export class AntigravityAdapter implements HarnessAdapter {
         };
       }
     }
-    const sessionEnvironment = { ...this.#environment, ...(input.environment ?? {}) };
+    const sessionEnvironment = resolveAntigravityEnvironment(
+      this.#environment,
+      input.environment ?? {},
+    );
     const history = await AntigravityHistory.open({
       environment: sessionEnvironment,
       ...(nativeRef ? { nativeSessionId: nativeRef.nativeSessionId } : {}),
@@ -1755,6 +1942,7 @@ export class AntigravityAdapter implements HarnessAdapter {
       printTimeout: this.#printTimeout,
       ...(thinkingOptionId ? { thinkingOptionId } : {}),
       toolOutputLimit: this.#toolOutputLimit,
+      retryDelayMs: this.#retryDelayMs,
       onClosed: () => this.#sessions.delete(session),
     });
     this.#sessions.add(session);

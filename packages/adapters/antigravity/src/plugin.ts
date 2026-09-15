@@ -1,8 +1,13 @@
 import type { HarnessAdapter } from "@codexhost/harness-adapter";
 import type { HarnessPluginContext } from "@codexhost/harness-adapter/plugin";
 
-import { AntigravityAdapter } from "./antigravity-adapter.js";
+import {
+  ANTIGRAVITY_NO_PROXY_ENV,
+  ANTIGRAVITY_PROXY_ENV,
+  AntigravityAdapter,
+} from "./antigravity-adapter.js";
 
+export { ANTIGRAVITY_NO_PROXY_ENV, ANTIGRAVITY_PROXY_ENV };
 export const ANTIGRAVITY_COMMAND_ENV = "CODEXHOST_ANTIGRAVITY_COMMAND";
 
 export function createHarnessAdapter(context: HarnessPluginContext): AntigravityAdapter {

@@ -7,6 +7,7 @@ import codeBuddyAgentIconUrl from "./assets/codebuddy-agent.svg";
 import cursorAgentIconUrl from "./assets/cursor-agent.svg";
 import ompAgentIconUrl from "./assets/omp-agent.svg";
 import openCodeAgentIconUrl from "./assets/opencode-agent.png";
+import qoderAgentIconUrl from "./assets/qoder-agent.svg";
 import type { RendererAgent } from "./agent-selection-state.js";
 
 export const RENDERER_AGENT_LABELS: Record<RendererAgent, string> = {
@@ -22,6 +23,7 @@ export const RENDERER_AGENT_LABELS: Record<RendererAgent, string> = {
   codebuddy: "CodeBuddy",
   "cursor-cli": "Cursor CLI (Experimental)",
   hermes: "Hermes",
+  qoder: "Qoder",
 };
 
 const PI_PATHS = [
@@ -152,6 +154,17 @@ export function createRendererAgentIcon(
     image.style.padding = `${Math.max(1, Math.round(size / 16))}px`;
     image.style.borderRadius = "22.37%";
     image.style.background = "#d8d8e8";
+    image.style.flex = "none";
+    return image;
+  }
+  if (agent === "qoder") {
+    const image = ownerDocument.createElement("img");
+    image.src = qoderAgentIconUrl;
+    image.alt = "";
+    image.draggable = false;
+    image.style.width = `${size}px`;
+    image.style.height = `${size}px`;
+    image.style.objectFit = "contain";
     image.style.flex = "none";
     return image;
   }

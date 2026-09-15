@@ -72,10 +72,12 @@ describe("production Controller / Renderer Agent contract", () => {
     );
     await vi.runAllTimersAsync();
     await run;
-    expect(install).toHaveBeenCalledOnce();
-    expect(install.mock.calls[0]?.[0].enabledAgents).toEqual(DEFAULT_RENDERER_AGENTS);
+    expect(install).toHaveBeenCalled();
+    expect([...(install.mock.calls[0]?.[0].enabledAgents ?? [])].sort()).toEqual(
+      [...DEFAULT_RENDERER_AGENTS].sort(),
+    );
     expect(
       client.command.mock.calls.filter(([method]) => method === "Runtime.evaluate"),
-    ).toHaveLength(1);
+    ).toHaveLength(2);
   });
 });

@@ -1,0 +1,12 @@
+{
+  "manifestVersion": 1,
+  "id": "qoder",
+  "name": "Qoder",
+  "version": "0.0.0",
+  "adapterApiVersion": 1,
+  "entry": "./dist/plugin.js",
+  "icon": "./assets/icon.svg",
+  "links": {
+    "installation": "https://docs.qoder.com/"
+  }
+}

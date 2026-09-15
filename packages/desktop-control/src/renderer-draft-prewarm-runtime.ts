@@ -38,6 +38,7 @@ export interface RendererHostRequestManager {
   onNotification(method: string, parameters: unknown): void;
   onRequest(request: Record<string, unknown>): void;
   dispatchAppServerResponse(method: string, response: Record<string, unknown>): unknown;
+  requestClient?: RendererHostRequestBridge;
 }
 
 export interface RendererPrewarmedThreadManager {
@@ -73,15 +74,16 @@ export function installDraftPrewarmPolicyBridge(
   }
   existing?.dispose?.();
 
-  const originalSend = bridge.sendRequest;
-  const originalPrewarm = bridge.prewarmThreadStart;
+  let activeBridge = bridge;
+  let originalSend = bridge.sendRequest;
+  let originalPrewarm = bridge.prewarmThreadStart;
   const originalOnNotification = manager.onNotification;
   const originalDispatchAppServerResponse = manager.dispatchAppServerResponse;
   let selectedModel: string | null = null;
   const isRecord = (value: unknown): value is Record<string, unknown> =>
     typeof value === "object" && value !== null && !Array.isArray(value);
   const isRemoteControlHost = hostId.startsWith("remote-control:");
-  const retireResponses = isRemoteControlHost ? () => {} : retainResponses(bridge, hostId, target);
+  let retireResponses = isRemoteControlHost ? () => {} : retainResponses(bridge, hostId, target);
   const knownExternalThreadIds = new Set<string>();
   const knownOfficialThreadIds = new Set<string>();
   const threadOwnershipResolutions = new Map<string, Promise<"external" | "codex">>();
@@ -109,6 +111,31 @@ export function installDraftPrewarmPolicyBridge(
   let bridgeReadyTimeout: ReturnType<typeof globalThis.setTimeout> | null = null;
   let bridgeInitialization: Promise<void> | null = null;
   let writeTail = Promise.resolve();
+
+  const bindCurrentBridge = (): boolean => {
+    const nextBridge = manager.requestClient ?? activeBridge;
+    if (nextBridge !== activeBridge) {
+      if (activeBridge.sendRequest === routedSend) activeBridge.sendRequest = originalSend;
+      if (activeBridge.prewarmThreadStart === routedPrewarm) {
+        activeBridge.prewarmThreadStart = originalPrewarm;
+      }
+      activeBridge = nextBridge;
+      if (!isRemoteControlHost) {
+        retireResponses();
+        retireResponses = retainResponses(activeBridge, hostId, target);
+      }
+      originalSend = activeBridge.sendRequest;
+      originalPrewarm = activeBridge.prewarmThreadStart;
+    } else {
+      if (activeBridge.sendRequest !== routedSend) originalSend = activeBridge.sendRequest;
+      if (activeBridge.prewarmThreadStart !== routedPrewarm) {
+        originalPrewarm = activeBridge.prewarmThreadStart;
+      }
+    }
+    activeBridge.sendRequest = routedSend;
+    activeBridge.prewarmThreadStart = routedPrewarm;
+    return nextBridge !== bridge;
+  };
 
   const transportError = (message: string, cause?: unknown): Error => {
     const error = new Error(`codexhost Remote Control bridge: ${message}`);
@@ -150,7 +177,7 @@ export function installDraftPrewarmPolicyBridge(
     bridgeRequests.clear();
     if (isRemoteControlHost && terminate) {
       void Promise.resolve(
-        originalSend.call(bridge, "process/kill", { processHandle: failedProcessHandle }),
+        originalSend.call(activeBridge, "process/kill", { processHandle: failedProcessHandle }),
       ).catch(() => undefined);
     }
   };
@@ -355,7 +382,7 @@ export function installDraftPrewarmPolicyBridge(
     ];
     const startedProcessHandle = bridgeProcessHandle;
     try {
-      const started = originalSend.call(bridge, "process/spawn", {
+      const started = originalSend.call(activeBridge, "process/spawn", {
         command,
         processHandle: startedProcessHandle,
         cwd: "C:\\",
@@ -376,7 +403,7 @@ export function installDraftPrewarmPolicyBridge(
     const operation = async (): Promise<void> => {
       await startBridge();
       if (bridgeState !== "ready") throw transportError("is not ready");
-      await originalSend.call(bridge, "process/writeStdin", {
+      await originalSend.call(activeBridge, "process/writeStdin", {
         processHandle: bridgeProcessHandle,
         deltaBase64: utf8Base64(`${JSON.stringify(value)}\n`),
       });
@@ -523,8 +550,8 @@ export function installDraftPrewarmPolicyBridge(
       );
     const sendDirect = (): unknown =>
       options === undefined
-        ? originalSend.call(bridge, method, routedParameters)
-        : originalSend.call(bridge, method, routedParameters, options);
+        ? originalSend.call(activeBridge, method, routedParameters)
+        : originalSend.call(activeBridge, method, routedParameters, options);
     const unresolvedThreadId = shouldResolveThreadOwnership(method, routedParameters);
     if (unresolvedThreadId) {
       return resolveThreadOwnership(unresolvedThreadId).then((owner) =>
@@ -539,11 +566,10 @@ export function installDraftPrewarmPolicyBridge(
       return routedSend("thread/start", routedParameters, options);
     }
     return options === undefined
-      ? originalPrewarm.call(bridge, routedParameters)
-      : originalPrewarm.call(bridge, routedParameters, options);
+      ? originalPrewarm.call(activeBridge, routedParameters)
+      : originalPrewarm.call(activeBridge, routedParameters, options);
   };
-  bridge.sendRequest = routedSend;
-  bridge.prewarmThreadStart = routedPrewarm;
+  bindCurrentBridge();
   const routedWindowMessage = (event: Event): void => {
     const message = (event as Event & { data?: unknown }).data;
     if (
@@ -609,6 +635,9 @@ export function installDraftPrewarmPolicyBridge(
         throw new Error("Renderer request manager is retired");
       return manager;
     },
+    refreshRequestBridge(): boolean {
+      return bindCurrentBridge();
+    },
     select(model: string | null): boolean {
       if (model !== null && (typeof model !== "string" || !model.startsWith("codexhost/"))) {
         throw new Error("Draft route Model must be a codexhost transport carrier");
@@ -623,9 +652,9 @@ export function installDraftPrewarmPolicyBridge(
     },
     dispose(): void {
       retireResponses();
-      if (bridge.sendRequest === routedSend) bridge.sendRequest = originalSend;
-      if (bridge.prewarmThreadStart === routedPrewarm) {
-        bridge.prewarmThreadStart = originalPrewarm;
+      if (activeBridge.sendRequest === routedSend) activeBridge.sendRequest = originalSend;
+      if (activeBridge.prewarmThreadStart === routedPrewarm) {
+        activeBridge.prewarmThreadStart = originalPrewarm;
       }
       if (observesWindowNotifications) {
         target.removeEventListener?.("message", routedWindowMessage);
@@ -639,7 +668,7 @@ export function installDraftPrewarmPolicyBridge(
       bridgeReadyTimeout = null;
       if (isRemoteControlHost && (bridgeState === "starting" || bridgeState === "ready")) {
         void Promise.resolve(
-          originalSend.call(bridge, "process/kill", { processHandle: bridgeProcessHandle }),
+          originalSend.call(activeBridge, "process/kill", { processHandle: bridgeProcessHandle }),
         ).catch(() => undefined);
       }
       bridgeState = "disposed";

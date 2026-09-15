@@ -1,0 +1,38 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="680" height="930" viewBox="0 0 680 930" role="img" aria-labelledby="title desc">
+  <title id="title">Qoder 功能状态</title>
+  <desc id="desc">Qoder Harness capability summary. Agent collaboration and slash commands are marked as limited.</desc>
+  <rect width="680" height="930" fill="#0d1117"/>
+  <text x="32" y="64" fill="#f0f6fc" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="30" font-weight="700">Qoder 功能状态</text>
+  <rect x="32" y="100" width="616" height="806" fill="none" stroke="#30363d"/>
+  <rect x="33" y="101" width="614" height="50" fill="#161b22"/>
+  <line x1="496" y1="100" x2="496" y2="906" stroke="#30363d"/>
+  <text x="50" y="133" fill="#f0f6fc" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="20" font-weight="700">能力</text>
+  <text x="572" y="133" fill="#f0f6fc" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="20" font-weight="700" text-anchor="middle">Qoder</text>
+
+  <g font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="19" fill="#f0f6fc">
+    <g stroke="#30363d">
+      <line x1="32" y1="151" x2="648" y2="151"/><line x1="32" y1="209" x2="648" y2="209"/>
+      <line x1="32" y1="267" x2="648" y2="267"/><line x1="32" y1="325" x2="648" y2="325"/>
+      <line x1="32" y1="383" x2="648" y2="383"/><line x1="32" y1="441" x2="648" y2="441"/>
+      <line x1="32" y1="499" x2="648" y2="499"/><line x1="32" y1="557" x2="648" y2="557"/>
+      <line x1="32" y1="615" x2="648" y2="615"/><line x1="32" y1="673" x2="648" y2="673"/>
+      <line x1="32" y1="731" x2="648" y2="731"/><line x1="32" y1="789" x2="648" y2="789"/>
+      <line x1="32" y1="847" x2="648" y2="847"/>
+    </g>
+    <g>
+      <text x="50" y="187">流式回复</text><text x="572" y="187" fill="#3fb950" text-anchor="middle" font-size="26">✓</text>
+      <text x="50" y="245">工具状态</text><text x="572" y="245" fill="#3fb950" text-anchor="middle" font-size="26">✓</text>
+      <text x="50" y="303">Edit Diff</text><text x="572" y="303" fill="#3fb950" text-anchor="middle" font-size="26">✓</text>
+      <text x="50" y="361">提问 / 取消</text><text x="572" y="361" fill="#3fb950" text-anchor="middle" font-size="26">✓</text>
+      <text x="50" y="419">Model / Thinking 选择</text><text x="572" y="419" fill="#3fb950" text-anchor="middle" font-size="26">✓</text>
+      <text x="50" y="477">工具审批</text><text x="572" y="477" fill="#3fb950" text-anchor="middle" font-size="26">✓</text>
+      <text x="50" y="535">权限模式</text><text x="572" y="535" fill="#3fb950" text-anchor="middle" font-size="26">✓</text>
+      <text x="50" y="593" text-decoration="line-through">Agent 间任务协作</text><text x="235" y="580" fill="#58a6ff" font-size="13">¹</text><text x="572" y="593" fill="#8b949e" text-anchor="middle" font-size="26">—</text>
+      <text x="50" y="651">Usage</text><text x="572" y="651" fill="#3fb950" text-anchor="middle" font-size="26">✓</text>
+      <text x="50" y="709">Fork</text><text x="572" y="709" fill="#3fb950" text-anchor="middle" font-size="26">✓</text>
+      <text x="50" y="767">上下文压缩</text><text x="572" y="767" fill="#3fb950" text-anchor="middle" font-size="26">✓</text>
+      <text x="50" y="825" text-decoration="line-through">斜杠命令</text><text x="145" y="812" fill="#58a6ff" font-size="13">²</text><text x="572" y="825" fill="#8b949e" text-anchor="middle" font-size="26">—</text>
+      <text x="50" y="883">修订上一条消息</text><text x="572" y="883" fill="#3fb950" text-anchor="middle" font-size="26">✓</text>
+    </g>
+  </g>
+</svg>

@@ -6,6 +6,7 @@ import kiroAgentIconUrl from "../src/assets/kiro-agent.svg";
 import codeBuddyAgentIconUrl from "../src/assets/codebuddy-agent.svg";
 import cursorAgentIconUrl from "../src/assets/cursor-agent.svg";
 import hermesAgentIconUrl from "../src/assets/hermes-agent.png";
+import qoderAgentIconUrl from "../src/assets/qoder-agent.svg";
 
 describe("Renderer Agent icons", () => {
   it("renders OpenCode with the bundled official square mark", () => {
@@ -106,6 +107,7 @@ describe("Renderer Agent icons", () => {
     ["kiro-cli", kiroAgentIconUrl],
     ["codebuddy", codeBuddyAgentIconUrl],
     ["cursor-cli", cursorAgentIconUrl],
+    ["qoder", qoderAgentIconUrl],
   ] as const)("renders %s with the bundled SVG asset", (agent, assetUrl) => {
     const image = {
       src: "",
@@ -119,7 +121,6 @@ describe("Renderer Agent icons", () => {
         return image;
       },
     } as unknown as Document;
-
     expect(createRendererAgentIcon(agent, 16, ownerDocument)).toBe(image);
     expect(image.src).toBe(assetUrl);
     expect(image.alt).toBe("");

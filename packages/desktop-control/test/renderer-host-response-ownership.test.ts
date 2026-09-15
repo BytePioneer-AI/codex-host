@@ -110,6 +110,7 @@ function fixture(injected: boolean) {
         manager.prewarmedThreadManager,
       );
     }
+    return manager;
   };
   const frame = (message: object, hostId = "local", hostMetrics?: object) =>
     events.dispatchEvent(
@@ -121,6 +122,34 @@ function fixture(injected: boolean) {
 const flushDelivery = () => new Promise<void>((resolve) => setImmediate(resolve));
 
 describe.each([false, true])("native Host response ownership (injected: %s)", (injected) => {
+  it("retains replies across three clients on the same manager", async () => {
+    const { install, frame, target } = fixture(injected);
+    const clients = [nativeClient(), nativeClient(), nativeClient()] as const;
+    const manager = await install(clients[0]);
+    const policy = target.__codexhostDraftPrewarmPolicyV1 as {
+      refreshRequestBridge(): boolean;
+      dispose(): void;
+    };
+    const requests = [];
+    for (const client of clients) {
+      manager.requestClient = client;
+      policy.refreshRequestBridge();
+      requests.push({
+        client,
+        promise: client.sendRequest("codexhost/account/refresh"),
+        id: requestId(client),
+      });
+    }
+    policy.dispose();
+    for (const { client, promise, id } of requests) {
+      frame({ id, result: { id } });
+      await flushDelivery();
+      await expect(promise).resolves.toEqual({ id });
+      expect(client.onResult).toHaveBeenCalledTimes(1);
+      expect(client.listeners.size).toBe(0);
+    }
+  });
+
   it.each(["success", "busy"] as const)(
     "settles a %s response on its sending Client after Desktop replaces the Client",
     async (outcome) => {

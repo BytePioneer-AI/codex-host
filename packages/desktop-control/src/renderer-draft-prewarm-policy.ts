@@ -139,13 +139,29 @@ const FIND_REQUEST_MANAGER_EXPRESSION = `(() => {
 
 // Validate the pinned owner between Controller polls. An old manager can still
 // send requests after retirement, but Desktop delivers replies to its replacement.
-const IS_CURRENT_REQUEST_MANAGER = `function(manager, requestClient, hostId, prewarmedThreadManager) {
-  const current = ${FIND_REQUEST_MANAGER_EXPRESSION};
-  return current.editorCount === 0 || (
-    current.manager === manager && current.requestClient === requestClient &&
-    current.hostId === hostId && current.prewarmedThreadManager === prewarmedThreadManager
-  );
-}`;
+const IS_CURRENT_REQUEST_MANAGER = `(() => {
+  let lastCheckedAt = 0;
+  let lastManager = null;
+  return function(manager, requestClient, hostId, prewarmedThreadManager) {
+    const now = Date.now();
+    if (lastManager === manager && now - lastCheckedAt < 200) {
+      return true;
+    }
+    const current = ${FIND_REQUEST_MANAGER_EXPRESSION};
+    const isCurrent = current.editorCount === 0 || (
+      current.manager === manager && current.requestClient === requestClient &&
+      current.hostId === hostId && current.prewarmedThreadManager === prewarmedThreadManager
+    );
+    if (isCurrent) {
+      lastManager = manager;
+      lastCheckedAt = now;
+      return true;
+    }
+    lastManager = null;
+    lastCheckedAt = 0;
+    return false;
+  };
+})()`;
 
 const INSTALL_RENDERER_POLICY_FUNCTION = `function(requestClient, hostId, prewarmedThreadManager) {
   return (${installDraftPrewarmPolicyBridge.toString()})(

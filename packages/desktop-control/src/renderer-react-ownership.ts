@@ -44,7 +44,10 @@ export function committedReactAncestors(value: unknown): readonly Fiber[] {
     if (altPath.at(-1) === current) {
       const parent = fiber(alternate.return);
       let isFirstChild = false;
+      const siblingSeen = new Set<Fiber>();
       for (let child = parent && fiber(parent.child); child; child = fiber(child.sibling)) {
+        if (siblingSeen.has(child) || siblingSeen.size >= MAX_VISITED_FIBERS) return [];
+        siblingSeen.add(child);
         if (child === first) {
           isFirstChild = true;
           break;

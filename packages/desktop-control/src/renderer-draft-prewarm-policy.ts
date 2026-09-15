@@ -174,7 +174,7 @@ const INSTALL_RENDERER_POLICY_FUNCTION = `function(requestClient, hostId, prewar
     (${retainRendererHostResponses.toString()}),
   );
 }`;
-const REQUEST_MANAGER_WAIT_TIMEOUT_MS = 5_000;
+const REQUEST_MANAGER_WAIT_TIMEOUT_MS = 30_000;
 const REQUEST_MANAGER_POLL_INTERVAL_MS = 200;
 
 function directRendererInstaller(): string {

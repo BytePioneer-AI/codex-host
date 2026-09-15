@@ -605,12 +605,18 @@ export function findActivePrewarmTargets(root: ParentNode): PrewarmTarget[] {
     fiberElement = fiberElement.parentElement;
   }
   if (!fiberElement || !fiberName) {
-    const candidate = editor.querySelector("*");
-    if (candidate) {
+    const descendants = editor.querySelectorAll("*");
+    const limit = Math.min(descendants.length, 16);
+    for (let index = 0; index < limit; index += 1) {
+      const candidate = descendants[index];
+      if (!candidate) continue;
       fiberName = Object.getOwnPropertyNames(candidate).find((name) =>
         name.startsWith("__reactFiber$"),
       );
-      if (fiberName) fiberElement = candidate;
+      if (fiberName) {
+        fiberElement = candidate;
+        break;
+      }
     }
   }
   const firstFiber =

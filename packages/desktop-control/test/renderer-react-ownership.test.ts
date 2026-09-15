@@ -88,4 +88,19 @@ describe("committed React ownership", () => {
     first.return.stateNode.current.child = siblings;
     expect(committedReactAncestors(first)).toEqual([]);
   });
+
+  it("safely bounds alternate sibling loops and cycle references", () => {
+    const state: { current?: Fiber } = {};
+    const oldRoot: Fiber = { stateNode: state };
+    const first: Fiber = { return: oldRoot };
+    const currentParent: Fiber = {};
+    const currentRoot: Fiber = { stateNode: state };
+    currentParent.return = currentRoot;
+    const cyclicChild: Fiber = {};
+    cyclicChild.sibling = cyclicChild;
+    currentParent.child = cyclicChild;
+    first.alternate = { return: currentParent };
+    state.current = currentRoot;
+    expect(committedReactAncestors(first)).toEqual([]);
+  });
 });

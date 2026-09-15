@@ -160,6 +160,35 @@ describe("current Codex Renderer Agent adapter", () => {
     );
   });
 
+  it("finds prewarm targets when the Fiber is on a later descendant rather than the first child", () => {
+    const firstChild = { parentElement: null } as unknown as Element;
+    const laterChild = { parentElement: null } as unknown as Element;
+    const editor = {
+      parentElement: null,
+      querySelectorAll: () => [firstChild, laterChild],
+    } as unknown as Element;
+    const root = { querySelector: () => editor } as unknown as ParentNode;
+    const addNotificationCallback = vi.fn(() => () => undefined);
+    const requestClient = {
+      hostId: "local",
+      sendRequest: vi.fn<(method: string, params: unknown) => void>(),
+      prewarmThreadStart: () => undefined,
+      enqueueRequest: () => undefined,
+    };
+    const manager = {
+      requestClient,
+      sendRequest: async (method: string, params: unknown) =>
+        requestClient.sendRequest(method, params),
+      addNotificationCallback,
+    };
+    Object.defineProperty(laterChild, "__reactFiber$test", {
+      configurable: true,
+      value: { memoizedState: { memoizedState: manager, next: null }, return: null },
+    });
+
+    expect(findActivePrewarmTargets(root)).toEqual([manager]);
+  });
+
   it("routes account requests through the committed manager when the DOM retains the retired Fiber", async () => {
     const retired = {
       hostId: "local",

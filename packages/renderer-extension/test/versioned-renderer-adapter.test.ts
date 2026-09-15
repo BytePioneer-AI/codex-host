@@ -724,12 +724,12 @@ describe("current Codex Renderer Agent adapter", () => {
 
     try {
       const adapter = installCurrentRendererAdapter();
-      expect(adapter.modelControl.currentHostId?.()).toBe("local");
-      expect(adapter.modelControl.clientForHost?.("local")).not.toBeNull();
+      expect(adapter.modelControl?.currentHostId?.()).toBe("local");
+      expect(adapter.modelControl?.clientForHost?.("local")).not.toBeNull();
 
       isRetired = true;
-      expect(adapter.modelControl.currentHostId?.()).toBeNull();
-      expect(adapter.modelControl.clientForHost?.("local")).toBeNull();
+      expect(adapter.modelControl?.currentHostId?.()).toBeNull();
+      expect(adapter.modelControl?.clientForHost?.("local")).toBeNull();
       adapter.dispose();
     } finally {
       if (priorWindow) Object.defineProperty(globalThis, "window", priorWindow);

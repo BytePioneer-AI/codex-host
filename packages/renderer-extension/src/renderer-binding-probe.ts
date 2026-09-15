@@ -60,6 +60,7 @@ import {
   type LockedComposerSelection,
   type RendererAdapterStatus,
 } from "./versioned-renderer-adapter.js";
+import { isInternalExtensionMutation } from "./renderer-dom-owned-controls.js";
 import type { RendererModelClient } from "./renderer-model-client.js";
 import { RendererMethodUnavailableError } from "./renderer-request-sender.js";
 import { thinkingOptionsForModel } from "./renderer-model-picker.js";
@@ -598,9 +599,48 @@ export function applyComposerModelWrite(
 }
 
 function mutationMayChangeComposerTarget(mutation: MutationRecord): boolean {
-  const target =
-    mutation.target instanceof Element ? mutation.target : mutation.target.parentElement;
-  return !target || editorForElement(target) === null;
+  if (mutation.type === "childList") {
+    for (const node of mutation.addedNodes) {
+      if (node.nodeType === Node.ELEMENT_NODE) {
+        const el = node as Element;
+        if (
+          el.matches(CODEX_COMPOSER_SELECTOR) ||
+          el.matches(EDITOR_SELECTOR) ||
+          el.matches("[data-above-composer-portal]") ||
+          el.querySelector(CODEX_COMPOSER_SELECTOR) ||
+          el.querySelector(EDITOR_SELECTOR) ||
+          el.querySelector("[data-above-composer-portal]")
+        ) {
+          return true;
+        }
+      }
+    }
+    for (const node of mutation.removedNodes) {
+      if (node.nodeType === Node.ELEMENT_NODE) {
+        const el = node as Element;
+        if (
+          el.matches(CODEX_COMPOSER_SELECTOR) ||
+          el.matches(EDITOR_SELECTOR) ||
+          el.matches("[data-above-composer-portal]") ||
+          el.querySelector(CODEX_COMPOSER_SELECTOR) ||
+          el.querySelector(EDITOR_SELECTOR) ||
+          el.querySelector("[data-above-composer-portal]")
+        ) {
+          return true;
+        }
+      }
+    }
+  }
+  if (
+    mutation.type === "attributes" &&
+    (mutation.attributeName === "data-codex-composer-root" ||
+      mutation.attributeName === "data-above-composer-conversation-id" ||
+      mutation.attributeName === "data-above-composer-portal" ||
+      (mutation.target instanceof Element && mutation.target.matches(CODEX_COMPOSER_SELECTOR)))
+  ) {
+    return true;
+  }
+  return false;
 }
 
 function catalogWithConfigurationState(
@@ -647,7 +687,7 @@ export function installRendererBindingProbe(
   const pendingReplacements = new Map<Element, PendingComposerReplacement>();
   let disposed = false;
   const disposeReasoningSoftWrap = installReasoningTranscriptSoftWrap(document);
-  let scanScheduled = false;
+  let scanHandle: number | null = null;
   let refreshTargetsOnNextScan = false;
   let adapterDispose: (() => void) | null = null;
   let applyAdapterAgent: ApplyAdapterAgent | null = null;
@@ -1166,6 +1206,32 @@ export function installRendererBindingProbe(
 
   const refreshMountedConversationTarget = (mounted: MountedComposer): boolean => {
     const currentTarget = findComposerModelTarget(mounted.composer);
+    if (currentTarget?.[0] !== "conversation") {
+      const previousTarget = mounted.modelTarget;
+      if (previousTarget?.[0] !== "conversation") return false;
+      const nextHostId = activeModelHostId() ?? mounted.hostId;
+      const state = controller.rebindDraft(mounted.composer);
+      mounted.modelTarget = currentTarget;
+      mounted.hostId = nextHostId;
+      mounted.composerId = state.composerId;
+      mounted.modelView = { status: "idle" };
+      mounted.permissionModeView = { status: "idle" };
+      mounted.threadConfiguration = undefined;
+      mounted.ownershipStatus = "not-required";
+      mounted.usage = null;
+      mounted.accountCredits = null;
+      mounted.usageRequestGeneration += 1;
+      usageRefreshAttempts.delete(mounted.composer);
+      const timer = usageRefreshTimers.get(mounted.composer);
+      if (timer !== undefined) {
+        window.clearTimeout(timer);
+        usageRefreshTimers.delete(mounted.composer);
+      }
+      renderMounted(mounted);
+      sidebarAgentIcons.refresh();
+      if (currentTarget?.[0] !== "default") void refreshDraftCodexUsage(mounted);
+      return true;
+    }
     const resolution = lateConversationTargetResolution(
       mounted.modelTarget,
       currentTarget,
@@ -2362,7 +2428,7 @@ export function installRendererBindingProbe(
   };
 
   const scan = (): void => {
-    scanScheduled = false;
+    cancelScanHandle();
     const refreshTargets = refreshTargetsOnNextScan;
     refreshTargetsOnNextScan = false;
     if (disposed) return;
@@ -2428,11 +2494,20 @@ export function installRendererBindingProbe(
     pendingReplacements.clear();
   };
 
+  const cancelScanHandle = (): void => {
+    if (scanHandle !== null) {
+      clearTimeout(scanHandle);
+      scanHandle = null;
+    }
+  };
+
   const scheduleScan = (refreshTargets = false): void => {
     refreshTargetsOnNextScan ||= refreshTargets;
-    if (scanScheduled || disposed) return;
-    scanScheduled = true;
-    queueMicrotask(scan);
+    if (disposed || scanHandle !== null) return;
+    scanHandle = setTimeout(() => {
+      scanHandle = null;
+      scan();
+    }, 0) as unknown as number;
   };
 
   const composerRootsWithin = (node: Node): Element[] => {
@@ -2589,8 +2664,10 @@ export function installRendererBindingProbe(
   };
 
   const mutationObserver = new MutationObserver((mutations) => {
-    transferReplacedComposers(mutations);
-    scheduleScan(mutations.some(mutationMayChangeComposerTarget));
+    const relevant = mutations.filter((m) => !isInternalExtensionMutation(m));
+    if (relevant.length === 0) return;
+    transferReplacedComposers(relevant);
+    scheduleScan(relevant.some(mutationMayChangeComposerTarget));
   });
   const onHostRouteChange = (): void => {
     sidebarAgentIcons.refresh();
@@ -2626,7 +2703,13 @@ export function installRendererBindingProbe(
   };
   mutationObserver.observe(document.documentElement, {
     attributes: true,
-    attributeFilter: ["hidden", "aria-hidden", "data-codex-composer-root"],
+    attributeFilter: [
+      "hidden",
+      "aria-hidden",
+      "data-codex-composer-root",
+      "data-above-composer-portal",
+      "data-above-composer-conversation-id",
+    ],
     characterData: true,
     childList: true,
     subtree: true,
@@ -2772,6 +2855,7 @@ export function installRendererBindingProbe(
       adapterDispose = null;
       applyAdapterAgent = null;
       modelControl = null;
+      cancelScanHandle();
       mutationObserver.disconnect();
       disposeReasoningSoftWrap();
       sidebarAgentIcons.dispose();

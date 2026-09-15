@@ -33,6 +33,7 @@ import {
   createThreadUsageSubscriptionRelay,
   type RendererModelClient,
 } from "./renderer-model-client.js";
+import { isInternalExtensionMutation } from "./renderer-dom-owned-controls.js";
 
 export const PI_TRANSPORT_MODEL_ID = "codexhost/pi-native";
 export const PI_TRANSPORT_MODEL_PREFIX = `${PI_TRANSPORT_MODEL_ID}@`;
@@ -1202,8 +1203,9 @@ export function installCurrentRendererAdapter(): {
   };
   const startPolicyRecapture = (): void => {
     stopPolicyRecapture();
-    policyRecaptureObserver = new MutationObserver(() => {
-      captureRoutingPolicy();
+    policyRecaptureObserver = new MutationObserver((mutations) => {
+      const isRelevant = mutations.some((m) => !isInternalExtensionMutation(m));
+      if (isRelevant) captureRoutingPolicy();
     });
     policyRecaptureObserver.observe(document.documentElement, {
       attributes: true,

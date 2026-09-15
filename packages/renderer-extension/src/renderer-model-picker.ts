@@ -309,6 +309,7 @@ export function mountRendererModelPicker(
 
   const menu = document.createElement("div");
   menu.id = `${composerId}-model-menu`;
+  menu.setAttribute("data-codexhost-model-menu", composerId);
   menu.setAttribute("role", "menu");
   menu.setAttribute("aria-label", "Model and Thinking");
   // The Model submenu is a separate top-layer popover appended to the document,
@@ -334,6 +335,7 @@ export function mountRendererModelPicker(
 
   const modelMenu = document.createElement("div");
   modelMenu.id = `${composerId}-model-submenu`;
+  modelMenu.setAttribute("data-codexhost-model-menu", composerId);
   modelMenu.setAttribute("role", "menu");
   modelMenu.setAttribute("aria-label", "Model");
   modelMenu.setAttribute("popover", "manual");

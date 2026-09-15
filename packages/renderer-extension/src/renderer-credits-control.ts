@@ -391,6 +391,7 @@ export function mountRendererCreditsControl(composerId: string): RendererCredits
 
   const popover = document.createElement("div");
   popover.id = `${composerId}-credits-popover`;
+  popover.setAttribute("data-codexhost-credits-popover", composerId);
   popover.setAttribute("role", "dialog");
   popover.setAttribute("aria-label", "Account limit details");
   popover.setAttribute("popover", "auto");

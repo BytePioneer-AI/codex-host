@@ -1296,4 +1296,78 @@ describe("Renderer Composer DOM behavior", () => {
 
     expect(write).not.toHaveBeenCalled();
   });
+
+  it("reconciles native controls idempotently without redundant DOM attribute writes", () => {
+    const hiddenSpy = vi.fn();
+    const setAttributeSpy = vi.fn();
+    const removeAttributeSpy = vi.fn();
+
+    let hiddenValue = false;
+    let ariaHiddenValue: string | null = null;
+    const element = {
+      get hidden() {
+        return hiddenValue;
+      },
+      set hidden(v: boolean) {
+        hiddenSpy(v);
+        hiddenValue = v;
+      },
+      getAttribute(name: string) {
+        return name === "aria-hidden" ? ariaHiddenValue : null;
+      },
+      setAttribute(name: string, value: string) {
+        setAttributeSpy(name, value);
+        if (name === "aria-hidden") ariaHiddenValue = value;
+      },
+      removeAttribute(name: string) {
+        removeAttributeSpy(name);
+        if (name === "aria-hidden") ariaHiddenValue = null;
+      },
+      hasAttribute: (name: string) => name === "aria-hidden" && ariaHiddenValue !== null,
+    };
+
+    const nativeModel = {
+      element: element as unknown as HTMLElement,
+      hidden: false,
+      ariaHidden: null,
+    };
+
+    const control = {
+      composer: { querySelectorAll: () => [] },
+      modelPicker: { root: { parentElement: {} }, trigger: {} },
+      nativeModelControl: nativeModel,
+      nativePermissionModeControl: null,
+      nativeContextUsageControl: null,
+      credits: { anchor: null, place: vi.fn(), root: { remove: vi.fn() } },
+      usage: null,
+    } as unknown as ComposerAgentControl;
+
+    // First reconciliation hides the control
+    reconcileComposerNativeControls(control, true, false);
+    expect(hiddenSpy).toHaveBeenCalledTimes(1);
+    expect(setAttributeSpy).toHaveBeenCalledTimes(1);
+    hiddenSpy.mockClear();
+    setAttributeSpy.mockClear();
+    removeAttributeSpy.mockClear();
+
+    // Second reconciliation with identical state must be completely idempotent: 0 writes!
+    reconcileComposerNativeControls(control, true, false);
+    expect(hiddenSpy).not.toHaveBeenCalled();
+    expect(setAttributeSpy).not.toHaveBeenCalled();
+    expect(removeAttributeSpy).not.toHaveBeenCalled();
+
+    // Reconcile to unhide
+    reconcileComposerNativeControls(control, false, false);
+    expect(hiddenSpy).toHaveBeenCalledWith(false);
+    expect(removeAttributeSpy).toHaveBeenCalledWith("aria-hidden");
+    hiddenSpy.mockClear();
+    setAttributeSpy.mockClear();
+    removeAttributeSpy.mockClear();
+
+    // Repeating unhide must also be completely idempotent: 0 writes!
+    reconcileComposerNativeControls(control, false, false);
+    expect(hiddenSpy).not.toHaveBeenCalled();
+    expect(setAttributeSpy).not.toHaveBeenCalled();
+    expect(removeAttributeSpy).not.toHaveBeenCalled();
+  });
 });

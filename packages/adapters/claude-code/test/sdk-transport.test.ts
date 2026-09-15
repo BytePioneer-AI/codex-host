@@ -51,6 +51,9 @@ class FakeQuery {
     }),
   );
   readonly setModel = vi.fn(async () => undefined);
+  readonly usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET = vi.fn(
+    async (): Promise<unknown> => ({ rate_limits: {} }),
+  );
   readonly applyFlagSettings = vi.fn(async () => undefined);
   readonly setPermissionMode = vi.fn(async () => undefined);
   #closed = false;
@@ -132,6 +135,22 @@ function completeTurn(fakeQuery: FakeQuery): void {
     subtype: "success",
     is_error: false,
     terminal_reason: "completed",
+  } as unknown as SDKMessage);
+}
+
+function pushRateLimitEvent(fakeQuery: FakeQuery): void {
+  fakeQuery.push({
+    type: "rate_limit_event",
+    rate_limit_info: {
+      status: "allowed",
+      rateLimitType: "five_hour",
+      unifiedWindows: {
+        five_hour: { utilization: 0.45, resetsAt: 1_787_674_200 },
+        seven_day: { utilization: 0.1, resetsAt: 1_787_940_000 },
+      },
+    },
+    uuid: "00000000-0000-4000-8000-000000000099",
+    session_id: "00000000-0000-4000-8000-000000000001",
   } as unknown as SDKMessage);
 }
 
@@ -221,19 +240,7 @@ describe("ClaudeSdkTransport plan-limit forwarding", () => {
     const value = fixture();
     await value.transport.start();
 
-    value.fakeQuery.push({
-      type: "rate_limit_event",
-      rate_limit_info: {
-        status: "allowed",
-        rateLimitType: "five_hour",
-        unifiedWindows: {
-          five_hour: { utilization: 0.45, resetsAt: 1_787_674_200 },
-          seven_day: { utilization: 0.1, resetsAt: 1_787_940_000 },
-        },
-      },
-      uuid: "00000000-0000-4000-8000-000000000099",
-      session_id: "00000000-0000-4000-8000-000000000001",
-    } as unknown as SDKMessage);
+    pushRateLimitEvent(value.fakeQuery);
     await vi.waitFor(() => expect(value.onPlanLimit).toHaveBeenCalledOnce());
     expect(value.onPlanLimit).toHaveBeenCalledWith({
       fiveHour: { utilizationPercent: 45, resetsAtUnix: 1_787_674_200 },
@@ -261,6 +268,66 @@ describe("ClaudeSdkTransport plan-limit forwarding", () => {
     completeTurn(value.fakeQuery);
     await turn;
     expect(value.onPlanLimit).not.toHaveBeenCalled();
+    await value.transport.close();
+  });
+
+  it("enriches the push with per-model weekly windows and probes at most once a minute", async () => {
+    const value = fixture();
+    value.fakeQuery.usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET.mockResolvedValue({
+      rate_limits: {
+        limits: [
+          { kind: "weekly_all", percent: 10, scope: null },
+          {
+            kind: "weekly_scoped",
+            percent: 32,
+            resets_at: "2026-09-10T16:59:59+00:00",
+            scope: { model: { id: null, display_name: "Fable" } },
+          },
+        ],
+      },
+    });
+    await value.transport.start();
+
+    pushRateLimitEvent(value.fakeQuery);
+    await vi.waitFor(() => expect(value.onPlanLimit).toHaveBeenCalledOnce());
+    const scopedWeekly = [
+      {
+        label: "Fable · 7-day window",
+        utilizationPercent: 32,
+        resetsAtUnix: Math.floor(Date.parse("2026-09-10T16:59:59+00:00") / 1000),
+      },
+    ];
+    expect(value.onPlanLimit).toHaveBeenCalledWith({
+      fiveHour: { utilizationPercent: 45, resetsAtUnix: 1_787_674_200 },
+      sevenDay: { utilizationPercent: 10, resetsAtUnix: 1_787_940_000 },
+      scopedWeekly,
+    });
+
+    pushRateLimitEvent(value.fakeQuery);
+    await vi.waitFor(() => expect(value.onPlanLimit).toHaveBeenCalledTimes(2));
+    expect(value.onPlanLimit).toHaveBeenLastCalledWith(expect.objectContaining({ scopedWeekly }));
+    expect(
+      value.fakeQuery.usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET,
+    ).toHaveBeenCalledOnce();
+    await value.transport.close();
+  });
+
+  it("forwards the unenriched push when the Usage probe fails", async () => {
+    const value = fixture();
+    value.fakeQuery.usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET.mockRejectedValue(
+      new Error("get_usage unsupported"),
+    );
+    await value.transport.start();
+
+    pushRateLimitEvent(value.fakeQuery);
+    await vi.waitFor(() => expect(value.onPlanLimit).toHaveBeenCalledOnce());
+    expect(value.onPlanLimit).toHaveBeenCalledWith({
+      fiveHour: { utilizationPercent: 45, resetsAtUnix: 1_787_674_200 },
+      sevenDay: { utilizationPercent: 10, resetsAtUnix: 1_787_940_000 },
+    });
+    expect(
+      value.fakeQuery.usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET,
+    ).toHaveBeenCalledOnce();
     await value.transport.close();
   });
 });

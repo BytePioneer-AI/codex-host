@@ -1,5 +1,7 @@
 import { EventEmitter } from "node:events";
-import { homedir } from "node:os";
+import fs from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { PassThrough } from "node:stream";
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
 
@@ -90,7 +92,7 @@ describe("OpenCode SDK transport", () => {
           command,
           args,
           env: options.env,
-          ...(options.cwd ? { cwd: options.cwd } : {}),
+          ...(options.cwd === undefined ? {} : { cwd: options.cwd }),
         });
         const child = new FakeChild();
         child.pid += children.length;
@@ -105,7 +107,10 @@ describe("OpenCode SDK transport", () => {
       sleep: async () => undefined,
     };
     const connection = new OpenCodeServerConnection(
-      { command: process.execPath, environment: { PATH: process.env.PATH } },
+      {
+        command: process.execPath,
+        environment: { PATH: process.env.PATH, USERPROFILE: tmpdir() },
+      },
       dependencies,
     );
 
@@ -114,7 +119,7 @@ describe("OpenCode SDK transport", () => {
     expect(spawnCalls[0]).toMatchObject({
       command: process.execPath,
       args: ["serve", "--hostname=127.0.0.1", "--port=0"],
-      cwd: homedir(),
+      cwd: tmpdir(),
       env: {
         OPENCODE_SERVER_USERNAME: "codexhost",
         OPENCODE_SERVER_PASSWORD: "synthetic-password",
@@ -141,6 +146,59 @@ describe("OpenCode SDK transport", () => {
     const second = children[1] as FakeChild;
     second.exitCode = 0;
     await connection.close();
+  });
+
+  it("fails before spawn when no writable startup directory is available", async () => {
+    const spawn = vi.fn();
+    const connection = new OpenCodeServerConnection(
+      { command: process.execPath, environment: { PATH: process.env.PATH } },
+      {
+        createClient: () => clientWith(),
+        randomPassword: () => "synthetic-password",
+        resolveServerCwd: () => undefined,
+        spawn,
+        sleep: async () => undefined,
+      },
+    );
+
+    await expect(connection.client()).rejects.toMatchObject({
+      code: "unavailable",
+      message: "OpenCode Server requires a writable startup directory",
+    });
+    expect(spawn).not.toHaveBeenCalled();
+  });
+
+  it("uses an absolute writable home instead of a relative profile directory", async () => {
+    const serverCwd = fs.mkdtempSync(path.join(tmpdir(), "codexhost-opencode-server-"));
+    const child = new FakeChild();
+    let spawnedCwd: string | undefined;
+    const connection = new OpenCodeServerConnection(
+      {
+        command: process.execPath,
+        environment: { PATH: process.env.PATH, USERPROFILE: ".", HOME: serverCwd },
+      },
+      {
+        createClient: () => clientWith(),
+        randomPassword: () => "synthetic-password",
+        spawn: (_command, _args, options) => {
+          spawnedCwd = options.cwd;
+          queueMicrotask(() => {
+            child.stdout.write("opencode server listening on http://127.0.0.1:4011\n");
+          });
+          return child as unknown as ChildProcessWithoutNullStreams;
+        },
+        sleep: async () => undefined,
+      },
+    );
+
+    try {
+      await expect(connection.client("/workspace")).resolves.toBeDefined();
+      expect(spawnedCwd).toBe(serverCwd);
+      child.exitCode = 0;
+      await connection.close();
+    } finally {
+      fs.rmSync(serverCwd, { recursive: true, force: true });
+    }
   });
 
   it("allows a later retry after startup fails before a child is available", async () => {

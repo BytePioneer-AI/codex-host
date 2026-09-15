@@ -7,6 +7,7 @@ import { warmup as warmupClaude } from "@codexhost/adapter-claude-code/plugin";
 import { warmup as warmupAntigravity } from "@codexhost/adapter-antigravity/plugin";
 
 import { installedHarnessPluginOptions, loadHarnessPlugins } from "../src/index.js";
+import type { HarnessPluginDiagnostic } from "../src/index.js";
 
 const sourceRuntimeUrl = pathToFileURL(path.resolve("packages/host-runtime/dist/main.js")).href;
 const pluginRoot = path.resolve("packages/host-runtime/dist/plugins");
@@ -29,7 +30,10 @@ const unavailable: HarnessInspection = {
   error: { code: "notInstalled", message: "synthetic", retryable: false },
 };
 
-function load(environment: NodeJS.ProcessEnv = {}) {
+function load(
+  environment: NodeJS.ProcessEnv = {},
+  onDiagnostic?: (diagnostic: HarnessPluginDiagnostic) => void,
+) {
   return loadHarnessPlugins({
     roots: [pluginRoot],
     context: {
@@ -38,6 +42,12 @@ function load(environment: NodeJS.ProcessEnv = {}) {
       managedRemoteHost: false,
     },
     warmup: false,
+    // A cold bundle import can exceed the loader's 10s default on a shared CI
+    // runner, so the loader gets more room than that. `loadTimeoutMs` must stay
+    // below the test timeout used below, otherwise Vitest ends the test before
+    // the loader can report why the plugin is missing.
+    loadTimeoutMs: 20_000,
+    ...(onDiagnostic ? { diagnose: onDiagnostic } : {}),
   });
 }
 
@@ -64,10 +74,16 @@ describe("installed Harness composition", () => {
     },
   );
 
-  // Cold bundle imports can exceed Vitest's 5s default on CI; the loader retains its 10s budget.
+  // Must outlast `loadTimeoutMs` (20s) so a genuinely missing plugin surfaces
+  // the loader's own diagnostic instead of a bare test timeout.
   it("loads all preinstalled plugin factories without static registration or executable discovery", async () => {
-    const registry = await load();
+    const diagnostics: HarnessPluginDiagnostic[] = [];
+    const registry = await load({}, (diagnostic) => diagnostics.push(diagnostic));
     try {
+      // The loader substitutes a placeholder Adapter when a plugin times out or
+      // fails to load. Assert its own reason first: otherwise a slow machine
+      // reports "expected 'Object' to be 'PiAdapter'" and hides the cause.
+      expect(diagnostics).toEqual([]);
       expect(
         registry
           .list()
@@ -87,7 +103,7 @@ describe("installed Harness composition", () => {
     } finally {
       await registry.close();
     }
-  }, 15_000);
+  }, 30_000);
 
   it("provides every built-in command catalog before inspection or Session creation", async () => {
     const expected = {

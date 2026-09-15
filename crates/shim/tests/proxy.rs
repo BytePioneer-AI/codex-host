@@ -465,6 +465,117 @@ fn macos_browser_helper_preserving_only_cli_override_reaches_official_cli() {
 
 #[cfg(target_os = "macos")]
 #[test]
+fn macos_browser_sandbox_without_cli_environment_reaches_official_cli() {
+    let directory = temporary_directory();
+    let bundle = macos_fixture_bundle(&directory);
+    let mut command = Command::new(shim_path());
+    for (key, _) in std::env::vars_os() {
+        if key.to_string_lossy().starts_with("CODEXHOST_") {
+            command.env_remove(key);
+        }
+    }
+    // node_repl resolves CODEX_CLI_PATH before clearing the kernel child's
+    // environment. Neither CLI override reaches this sandbox invocation.
+    let output = command
+        .args([
+            "sandbox",
+            "-c",
+            "shell_environment_policy.inherit=\"all\"",
+            "--",
+            "/official/node",
+            "--experimental-vm-modules",
+            "/official/kernel.js",
+        ])
+        .env_remove(CODEX_CLI_PATH_ENV)
+        .env(CUSTOM_INSTALL_ROOT_ENV, &bundle)
+        .env("FAKE_CODEX_PRINT_INVOCATION", "1")
+        .env("FAKE_CODEX_EXIT_CODE", "7")
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(7), "{stderr}");
+    assert!(output.stdout.is_empty());
+    assert!(
+        stderr.contains(
+            "args=sandbox|-c|shell_environment_policy.inherit=\"all\"|--|/official/node|--experimental-vm-modules|/official/kernel.js"
+        ),
+        "{stderr}"
+    );
+    assert!(stderr.contains("codex_cli_path_present=false"), "{stderr}");
+    assert!(!directory.join("local-host-runtime-owner.lock").exists());
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn macos_browser_sandbox_fallback_keeps_explicit_targets_authoritative() {
+    let directory = temporary_directory();
+    let bundle = macos_fixture_bundle(&directory);
+    for (key, target, error) in [
+        (
+            STOCK_CODEX_PATH_ENV,
+            directory.join("missing-codex"),
+            "does not exist",
+        ),
+        (STOCK_CODEX_PATH_ENV, shim_path(), "Shim itself"),
+        (
+            CODEX_CLI_PATH_ENV,
+            fake_codex_path(),
+            "does not identify the running Shim",
+        ),
+        (
+            CUSTOM_INSTALL_ROOT_ENV,
+            directory.join("missing-bundle"),
+            "Desktop-managed official Codex CLI could not be discovered",
+        ),
+    ] {
+        let output = Command::new(shim_path())
+            .args(["sandbox", "--", "/usr/bin/true"])
+            .env_remove(STOCK_CODEX_PATH_ENV)
+            .env_remove(CODEX_CLI_PATH_ENV)
+            .env(CUSTOM_INSTALL_ROOT_ENV, &bundle)
+            .env(key, target)
+            .env("PATH", fake_codex_path().parent().unwrap())
+            .stdin(Stdio::null())
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(!output.status.success(), "{key}: {stderr}");
+        assert!(output.stdout.is_empty());
+        assert!(stderr.contains(error), "{key}: {stderr}");
+    }
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn macos_browser_sandbox_fallback_rejects_unrelated_commands() {
+    let directory = temporary_directory();
+    let bundle = macos_fixture_bundle(&directory);
+    for arguments in [
+        vec!["app-server", "--listen", "stdio://"],
+        vec!["exec", "sandbox"],
+        vec!["--model", "sandbox"],
+    ] {
+        let output = Command::new(shim_path())
+            .args(arguments)
+            .env_remove(STOCK_CODEX_PATH_ENV)
+            .env_remove(CODEX_CLI_PATH_ENV)
+            .env(CUSTOM_INSTALL_ROOT_ENV, &bundle)
+            .stdin(Stdio::null())
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(!output.status.success(), "{stderr}");
+        assert!(output.stdout.is_empty());
+        assert!(stderr.contains("CODEXHOST_STOCK_CODEX_PATH is required"));
+    }
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[cfg(target_os = "macos")]
+#[test]
 fn macos_native_helpers_do_not_become_host_runtime_owners() {
     for (depth, detached) in [
         (0, false),

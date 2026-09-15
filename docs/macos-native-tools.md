@@ -4,12 +4,17 @@ codexhost keeps the Desktop's main app-server on the Host Runtime while routing
 private native-tool app-servers to the official CLI. Tool policy, authentication,
 and approvals remain owned by the official CLI and Desktop.
 
-Two independent macOS helper paths need different handling:
+Three independent macOS helper paths need different handling:
 
 - Browser helpers may preserve only `CODEX_CLI_PATH`. When that path resolves to
   the exact running Shim, it can discover the CLI inside a validated official
   Desktop bundle. An explicit `CODEXHOST_INSTALL_ROOT` remains authoritative;
   a missing/invalid bundle is an error. Discovery never falls back to `PATH`.
+- The `node_repl` kernel resolves that CLI path, then clears both CLI overrides
+  before invoking `sandbox -c ... -- <node> <kernel>`. Only this top-level
+  `sandbox` command may also discover the validated official CLI with neither
+  override present. An explicit invalid target still fails closed. Arguments are
+  forwarded unchanged so the official CLI, not the Shim, enforces the sandbox.
 - Native Computer Use inherits the managed Desktop's full environment. Desktop
   launched via LaunchServices is reparented to `launchd`, so Windows-style ancestry
   to the Launcher cannot identify these helpers. On macOS the Shim verifies the

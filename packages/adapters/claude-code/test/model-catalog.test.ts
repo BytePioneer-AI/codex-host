@@ -72,8 +72,85 @@ describe("Claude Code runtime Model catalog", () => {
     expect(
       normalized.catalog.models.find(({ label }) => label.startsWith("Family (sonnet"))
         ?.supportedThinkingOptionIds,
-    ).toEqual(["off", "auto", "low", "medium", "high", "xhigh", "max"]);
+    ).toEqual(["off", "auto", "low", "high"]);
+    expect(
+      normalized.catalog.models.find(({ label }) => label.startsWith("Family (custom-model"))
+        ?.supportedThinkingOptionIds,
+    ).toEqual(["off", "auto"]);
     expect(JSON.stringify(normalized.catalog)).not.toMatch(/private|apiKey|price|supportsEffort/u);
+  });
+
+  it("offers effort levels only to Models that report effort support", () => {
+    const normalized = normalizeClaudeModelCatalog(
+      snapshot([
+        {
+          value: "default",
+          displayName: "Default (recommended)",
+          description: "ignored",
+          resolvedModel: "claude-opus-5[1m]",
+          supportsEffort: true,
+          supportedEffortLevels: ["low", "medium", "high", "xhigh", "max"],
+          supportsAdaptiveThinking: true,
+        },
+        // Runtime shape for a Model without effort support: the capability keys
+        // are absent rather than false.
+        { value: "haiku", displayName: "Haiku", description: "ignored" },
+      ]),
+    );
+
+    expect(
+      normalized.catalog.models.map(({ label, supportedThinkingOptionIds }) => [
+        label,
+        supportedThinkingOptionIds,
+      ]),
+    ).toEqual([
+      ["Default (recommended)", ["off", "auto", "low", "medium", "high", "xhigh", "max"]],
+      ["Haiku", ["off", "auto"]],
+    ]);
+  });
+
+  it("keeps every Thinking option when the runtime reports no capabilities at all", () => {
+    const normalized = normalizeClaudeModelCatalog(
+      snapshot([
+        { value: "default", displayName: "Default", description: "ignored" },
+        { value: "sonnet", displayName: "Sonnet", description: "ignored" },
+      ]),
+    );
+
+    for (const model of normalized.catalog.models) {
+      expect(model.supportedThinkingOptionIds).toEqual([
+        "off",
+        "auto",
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max",
+      ]);
+    }
+  });
+
+  it("leaves a synthesized default row unnarrowed while other rows report capabilities", () => {
+    const normalized = normalizeClaudeModelCatalog(
+      snapshot([
+        { value: "haiku", displayName: "Haiku", description: "ignored" },
+        {
+          value: "sonnet",
+          displayName: "Sonnet",
+          description: "ignored",
+          supportsEffort: true,
+          supportedEffortLevels: ["high"],
+        },
+      ]),
+    );
+
+    expect(normalized.catalog.models[0]).toMatchObject({
+      label: "Default",
+      supportedThinkingOptionIds: ["off", "auto", "low", "medium", "high", "xhigh", "max"],
+    });
+    expect(
+      normalized.catalog.models.find(({ label }) => label === "Haiku")?.supportedThinkingOptionIds,
+    ).toEqual(["off", "auto"]);
   });
 
   it("uses deterministic bounded labels for long duplicate display names", () => {

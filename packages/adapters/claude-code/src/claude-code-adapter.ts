@@ -63,6 +63,8 @@ import {
   type AccountCreditsSnapshot,
   type HarnessAccountSnapshot,
   type HarnessId,
+  type HarnessModelCatalog,
+  type HarnessThinkingOption,
   type HarnessThinkingOptionId,
   type HostInteractionId,
   type NativeSessionRef,
@@ -78,6 +80,7 @@ import { claudeTranscriptItemId } from "./item-identity.js";
 import { readClaudeTranscript } from "./claude-transcript.js";
 import {
   CLAUDE_DEFAULT_MODEL_REF,
+  claudeThinkingOptionsForModel,
   decodeClaudeModelRef,
   normalizeClaudeModelCatalog,
 } from "./model-catalog.js";
@@ -504,6 +507,7 @@ class ClaudeHarnessSession implements HarnessSession {
   readonly #createTransport: ClaudeAdapterDependencies["createTransport"];
   readonly #cwd: string;
   readonly #nativeRef: NativeSessionRef;
+  readonly #modelCatalog: HarnessModelCatalog | undefined;
   readonly #onClosed: () => void;
   readonly #onPlanLimitObserved: (planLimit: ClaudePlanLimitEvent) => ClaudePlanLimitEvent | null;
   #openMode: "create" | "resume";
@@ -561,6 +565,7 @@ class ClaudeHarnessSession implements HarnessSession {
       nativeRef?: NativeSessionRef;
       pendingSessions: ClaudePendingSessions;
       knownConfiguration?: boolean;
+      modelCatalog?: HarnessModelCatalog;
       requestedModel?: HarnessModelRef;
       requestedPermissionModeId: HarnessPermissionModeId;
       requestedThinkingOptionId: HarnessThinkingOptionId;
@@ -582,9 +587,16 @@ class ClaudeHarnessSession implements HarnessSession {
     this.#onClosed = onClosed;
     this.#onPlanLimitObserved = onPlanLimitObserved;
     this.#openMode = options.openMode;
+    this.#modelCatalog = options.modelCatalog;
     this.#requestedModel = options.requestedModel;
     this.#requestedPermissionModeId = options.requestedPermissionModeId;
-    this.#requestedThinkingOptionId = options.requestedThinkingOptionId;
+    // A configuration persisted before the selected Model's Thinking support was
+    // known may name an option that Model cannot honour.
+    this.#requestedThinkingOptionId = this.#clampThinkingOptionId(
+      options.requestedModel ??
+        (options.openMode === "create" ? CLAUDE_DEFAULT_MODEL_REF : undefined),
+      options.requestedThinkingOptionId,
+    );
     this.#sessionId = options.sessionId;
     this.#toolOutputLimit = options.toolOutputLimit;
     this.#continuationQuiescenceMs = options.continuationQuiescenceMs;
@@ -1052,7 +1064,27 @@ class ClaudeHarnessSession implements HarnessSession {
           };
         }
       }
+      // The new Model may not honour the Thinking option the previous one did.
+      const thinkingOptionId = this.#clampThinkingOptionId(
+        command.model,
+        this.#requestedThinkingOptionId,
+      );
+      if (transport && thinkingOptionId !== this.#requestedThinkingOptionId) {
+        try {
+          await transport.setThinkingOption(thinkingOptionId);
+        } catch {
+          return {
+            ok: false,
+            error: {
+              code: "nativeFailure",
+              message: "Claude Code rejected the Thinking selection",
+              retryable: true,
+            },
+          };
+        }
+      }
       this.#requestedModel = command.model;
+      this.#requestedThinkingOptionId = thinkingOptionId;
       const persistenceError = await this.#savePendingConfiguration();
       if (persistenceError) return { ok: false, error: persistenceError };
       this.#publishState(this.#configuredState());
@@ -1085,6 +1117,20 @@ class ClaudeHarnessSession implements HarnessSession {
         error: {
           code: "invalidRequest",
           message: "Claude Code Thinking option is invalid",
+          retryable: false,
+        },
+      };
+    }
+    if (
+      !this.#availableThinkingOptions(this.#effectiveModel()).some(
+        ({ id }) => id === thinkingOptionId,
+      )
+    ) {
+      return {
+        ok: false,
+        error: {
+          code: "invalidRequest",
+          message: "Claude Code Thinking option is unavailable for the selected Model",
           retryable: false,
         },
       };
@@ -1482,15 +1528,39 @@ class ClaudeHarnessSession implements HarnessSession {
     }
   }
 
-  #configuredState(nativeReady = this.#state.nativeRef !== undefined): HarnessSessionState {
-    const effectiveModel =
+  #effectiveModel(): HarnessModelRef | undefined {
+    return (
       this.#requestedModel ??
-      (this.#openMode === "create" ? CLAUDE_DEFAULT_MODEL_REF : this.#state.effectiveModel);
+      (this.#openMode === "create" ? CLAUDE_DEFAULT_MODEL_REF : this.#state.effectiveModel)
+    );
+  }
+
+  /**
+   * Claude Code silently downgrades an effort level the selected Model cannot
+   * honour, so a Session only offers the levels that Model reports.
+   */
+  #availableThinkingOptions(model: HarnessModelRef | undefined): HarnessThinkingOption[] {
+    return this.#modelCatalog
+      ? claudeThinkingOptionsForModel(this.#modelCatalog, model)
+      : [...CLAUDE_THINKING_OPTIONS];
+  }
+
+  #clampThinkingOptionId(
+    model: HarnessModelRef | undefined,
+    requested: HarnessThinkingOptionId,
+  ): HarnessThinkingOptionId {
+    return this.#availableThinkingOptions(model).some(({ id }) => id === requested)
+      ? requested
+      : CLAUDE_DEFAULT_THINKING_OPTION_ID;
+  }
+
+  #configuredState(nativeReady = this.#state.nativeRef !== undefined): HarnessSessionState {
+    const effectiveModel = this.#effectiveModel();
     return {
       ...(nativeReady ? { nativeRef: this.#nativeRef } : {}),
       ...(effectiveModel ? { effectiveModel } : {}),
       effectiveThinkingOptionId: this.#requestedThinkingOptionId,
-      availableThinkingOptions: [...CLAUDE_THINKING_OPTIONS],
+      availableThinkingOptions: this.#availableThinkingOptions(effectiveModel),
       effectivePermissionModeId: this.#requestedPermissionModeId,
     };
   }
@@ -2857,6 +2927,8 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
         };
       }
     }
+    const inspection = this.#inspectionCache.get(cwd);
+    const modelCatalog = inspection?.status === "ready" ? inspection.catalog : undefined;
     const session: ClaudeHarnessSession = new ClaudeHarnessSession(
       cwd,
       this.#dependencies,
@@ -2866,6 +2938,7 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
       {
         ...(input.environment ? { environment: input.environment } : {}),
         openMode,
+        ...(modelCatalog ? { modelCatalog } : {}),
         pendingSessions: this.#pendingSessions,
         knownConfiguration:
           input.kind === "rollbackLastTurn" ||

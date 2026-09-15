@@ -208,7 +208,7 @@ class BrowserSidebarAgentIconRow implements SidebarAgentIconRow {
   }
 }
 
-class BrowserSidebarAgentIconDom implements SidebarAgentIconDom {
+export class BrowserSidebarAgentIconDom implements SidebarAgentIconDom {
   readonly #rowsByElement = new WeakMap<HTMLElement, BrowserSidebarAgentIconRow>();
   readonly #trackedRows = new Set<BrowserSidebarAgentIconRow>();
 
@@ -232,7 +232,43 @@ class BrowserSidebarAgentIconDom implements SidebarAgentIconDom {
   }
 
   observe(onChange: () => void): () => void {
-    const observer = new MutationObserver(onChange);
+    const isSidebarIconNode = (node: Node): boolean =>
+      node.nodeType === Node.ELEMENT_NODE &&
+      (node as Element).hasAttribute(SIDEBAR_AGENT_ICON_ATTRIBUTE);
+    const isSidebarRowElement = (node: Node): boolean =>
+      node.nodeType === Node.ELEMENT_NODE &&
+      ((node as Element).matches(SIDEBAR_THREAD_ROW_SELECTOR) ||
+        (node as Element).querySelector(SIDEBAR_THREAD_ROW_SELECTOR) !== null);
+    const observer = new MutationObserver((mutations) => {
+      const isRelevant = mutations.some((mutation) => {
+        const targetElement =
+          mutation.target instanceof Element ? mutation.target : mutation.target.parentElement;
+        if (targetElement?.closest(`[${SIDEBAR_AGENT_ICON_ATTRIBUTE}]`)) {
+          return false;
+        }
+        if (mutation.type === "attributes") {
+          return (
+            targetElement?.matches(SIDEBAR_THREAD_ROW_SELECTOR) ||
+            targetElement?.closest(SIDEBAR_THREAD_ROW_SELECTOR) !== null ||
+            targetElement?.hasAttribute(SIDEBAR_THREAD_ID_ATTRIBUTE) ||
+            targetElement?.hasAttribute(SIDEBAR_THREAD_HOST_ID_ATTRIBUTE) ||
+            false
+          );
+        }
+        if (mutation.type === "childList") {
+          const nodes = [...mutation.addedNodes, ...mutation.removedNodes];
+          if (nodes.length > 0 && nodes.every(isSidebarIconNode)) {
+            return false;
+          }
+          if (targetElement?.closest(SIDEBAR_THREAD_ROW_SELECTOR)) {
+            return true;
+          }
+          return nodes.some(isSidebarRowElement);
+        }
+        return false;
+      });
+      if (isRelevant) onChange();
+    });
     observer.observe(this.root, {
       attributes: true,
       attributeFilter: [SIDEBAR_THREAD_ID_ATTRIBUTE, SIDEBAR_THREAD_HOST_ID_ATTRIBUTE],
@@ -265,15 +301,24 @@ export function installRendererSidebarAgentIcons(options: {
   const ownershipRetryAttempts = new Map<string, number>();
   const ownershipRetryTimers = new Map<string, ReturnType<typeof setTimeout>>();
   let disposed = false;
-  let scanScheduled = false;
+  let scanHandle: number | null = null;
+
+  const cancelScanHandle = (): void => {
+    if (scanHandle !== null) {
+      clearTimeout(scanHandle);
+      scanHandle = null;
+    }
+  };
 
   const ownershipKey = (hostId: string, threadId: string): string =>
     JSON.stringify([hostId, threadId]);
 
   const scheduleScan = (): void => {
-    if (disposed || scanScheduled) return;
-    scanScheduled = true;
-    queueMicrotask(scan);
+    if (disposed || scanHandle !== null) return;
+    scanHandle = setTimeout(() => {
+      scanHandle = null;
+      scan();
+    }, 0) as unknown as number;
   };
 
   const clearOwnershipRetry = (key: string): void => {
@@ -349,7 +394,7 @@ export function installRendererSidebarAgentIcons(options: {
   };
 
   const scan = (): void => {
-    scanScheduled = false;
+    cancelScanHandle();
     if (disposed) return;
     const unresolvedByHost = new Map<string, Set<ReturnType<typeof hostThreadIdSchema.parse>>>();
     for (const row of dom.rows()) {
@@ -436,6 +481,7 @@ export function installRendererSidebarAgentIcons(options: {
     dispose() {
       if (disposed) return;
       disposed = true;
+      cancelScanHandle();
       stopObserving();
       dom.clear();
       ownershipByThread.clear();

@@ -72,7 +72,9 @@ const { outputFiles } = await build({
       const send = document.createElement("button");
       send.type = "submit";
       toolbar.append(send);
-      composer.append(editor, toolbar);
+      const identityPortal = document.createElement("div");
+      identityPortal.setAttribute("data-above-composer-portal", "true");
+      composer.append(editor, toolbar, identityPortal);
       document.body.append(composer);
 
       const unavailable = async () => {
@@ -80,6 +82,7 @@ const { outputFiles } = await build({
       };
       globalThis.threadCommandRequests = [];
       globalThis.commandCatalogRequests = [];
+      globalThis.threadInspectionRequests = [];
       globalThis.appliedConfiguration = null;
       const binding = installRendererBindingProbe({
         enabledAgents: ["codex", "pi", "deepseek-harness", "opencode", "claude-code", "grok", "omp", "kiro-cli"],
@@ -109,7 +112,10 @@ const { outputFiles } = await build({
             globalThis.threadCommandRequests.push(input);
             throw new Error("must not execute a command before submit");
           },
-          inspectThread: unavailable,
+          inspectThread: async (input) => {
+            globalThis.threadInspectionRequests.push(input);
+            return { owner: "codex", locked: true };
+          },
           forkThread: unavailable,
           inspectThreadUsage: unavailable,
           subscribeThreadUsage: () => {
@@ -224,6 +230,18 @@ test("a draft waits for the Desktop prewarm policy before applying its Model", a
   await expect(trigger).toContainText("Startup Model");
   await expect(trigger).toBeEnabled();
   await expect(trigger).toHaveAttribute("title", "Startup Model");
+});
+
+test("a draft rebinds when its Composer identity portal gains a conversation", async ({ page }) => {
+  await page.setContent("<!doctype html><body></body>");
+  await page.addScriptTag({ content: browserBundle });
+
+  await page.locator("[data-above-composer-portal]").evaluate((portal) => {
+    portal.setAttribute("data-above-composer-conversation-id", "thread-bound-late");
+  });
+  await expect
+    .poll(() => page.evaluate(() => Reflect.get(globalThis, "threadInspectionRequests")))
+    .toEqual([{ threadId: "thread-bound-late" }]);
 });
 
 test("Kiro selects Thinking inside the Model picker before a Thread exists", async ({

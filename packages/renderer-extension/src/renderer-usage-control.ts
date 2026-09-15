@@ -445,6 +445,7 @@ export function mountRendererUsageControl(
 
   const popover = document.createElement("div");
   popover.id = `${composerId}-usage-popover`;
+  popover.setAttribute("data-codexhost-usage-popover", composerId);
   popover.setAttribute("role", "dialog");
   popover.setAttribute("aria-label", messages.threadUsageDetails);
   popover.setAttribute("popover", "auto");

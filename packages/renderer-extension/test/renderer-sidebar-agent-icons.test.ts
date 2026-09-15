@@ -4,7 +4,7 @@ import {
   type ThreadOwnershipListParams,
   type ThreadOwnershipListResult,
 } from "@codexhost/shared-contracts";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { RendererAgent } from "../src/agent-selection-state.js";
 import type { RendererModelClient } from "../src/renderer-model-client.js";
@@ -14,6 +14,10 @@ import {
   draftIdFromSidebarRowElement,
   rendererAgentForThreadOwnership,
   threadIdFromSidebarRowElement,
+  BrowserSidebarAgentIconDom,
+  SIDEBAR_THREAD_ROW_ATTRIBUTE,
+  SIDEBAR_THREAD_ID_ATTRIBUTE,
+  SIDEBAR_AGENT_ICON_ATTRIBUTE,
   type SidebarAgentIconDom,
   type SidebarAgentIconRow,
 } from "../src/renderer-sidebar-agent-icons.js";
@@ -113,7 +117,7 @@ function clientWith(
 }
 
 async function settle(): Promise<void> {
-  await new Promise((resolve) => setTimeout(resolve, 0));
+  await new Promise((resolve) => setTimeout(resolve, 10));
 }
 
 function fiberRow(
@@ -573,5 +577,366 @@ describe("Renderer sidebar Agent ownership", () => {
         harnessId: FUTURE_HARNESS_ID,
       }),
     ).toBeNull();
+  });
+});
+
+class MockNode {
+  static readonly ELEMENT_NODE = 1;
+  static readonly TEXT_NODE = 3;
+  nodeType = MockNode.ELEMENT_NODE;
+  parentElement: MockElement | null = null;
+}
+
+class MockElement extends MockNode {
+  override nodeType = MockNode.ELEMENT_NODE;
+  readonly attributes = new Map<string, string>();
+  readonly children: MockElement[] = [];
+
+  constructor(public tagName = "div") {
+    super();
+  }
+
+  get isConnected(): boolean {
+    if (this.isRoot) return true;
+    for (let parent = this.parentElement; parent; parent = parent.parentElement) {
+      if (parent.isRoot) return true;
+    }
+    return false;
+  }
+  isRoot = false;
+
+  setAttribute(name: string, value: string): void {
+    this.attributes.set(name, value);
+  }
+
+  getAttribute(name: string): string | null {
+    return this.attributes.get(name) ?? null;
+  }
+
+  hasAttribute(name: string): boolean {
+    return this.attributes.has(name);
+  }
+
+  removeAttribute(name: string): void {
+    this.attributes.delete(name);
+  }
+
+  matches(selector: string): boolean {
+    if (selector.startsWith("[") && selector.endsWith("]")) {
+      const attr = selector.slice(1, -1);
+      return this.attributes.has(attr);
+    }
+    return this.tagName.toLowerCase() === selector.toLowerCase();
+  }
+
+  closest(selector: string): MockElement | null {
+    if (this.matches(selector)) return this;
+    for (let parent = this.parentElement; parent; parent = parent.parentElement) {
+      if (parent.matches(selector)) return parent;
+    }
+    return null;
+  }
+
+  querySelector<E extends Element = Element>(selector: string): E | null {
+    for (const child of this.children) {
+      if (child.matches(selector)) return child as unknown as E;
+      const found = child.querySelector<E>(selector);
+      if (found) return found;
+    }
+    return null;
+  }
+
+  querySelectorAll<E extends Element = Element>(selector: string): NodeListOf<E> {
+    const results: MockElement[] = [];
+    const search = (node: MockElement) => {
+      for (const child of node.children) {
+        if (child.matches(selector)) results.push(child);
+        search(child);
+      }
+    };
+    search(this);
+    return results as unknown as NodeListOf<E>;
+  }
+
+  appendChild(child: MockElement): void {
+    child.parentElement = this;
+    this.children.push(child);
+  }
+
+  removeChild(child: MockElement): void {
+    const idx = this.children.indexOf(child);
+    if (idx !== -1) {
+      this.children.splice(idx, 1);
+      child.parentElement = null;
+    }
+  }
+
+  remove(): void {
+    this.parentElement?.removeChild(this);
+  }
+}
+
+type MockMutationCallback = (mutations: MutationRecord[], observer: MutationObserver) => void;
+
+class MockMutationObserver {
+  static instances: MockMutationObserver[] = [];
+  target: MockElement | null = null;
+  options?: MutationObserverInit | undefined;
+  disconnected = false;
+
+  constructor(public callback: MockMutationCallback) {
+    MockMutationObserver.instances.push(this);
+  }
+
+  observe(target: Node, options?: MutationObserverInit): void {
+    this.target = target as unknown as MockElement;
+    this.options = options;
+  }
+
+  disconnect(): void {
+    this.disconnected = true;
+    const idx = MockMutationObserver.instances.indexOf(this);
+    if (idx !== -1) MockMutationObserver.instances.splice(idx, 1);
+  }
+
+  trigger(mutations: Partial<MutationRecord>[]): void {
+    if (this.disconnected) return;
+    this.callback(mutations as MutationRecord[], this as unknown as MutationObserver);
+  }
+}
+
+function firstObserver(): MockMutationObserver {
+  const observer = MockMutationObserver.instances[0];
+  if (!observer) throw new Error("Missing MockMutationObserver instance");
+  return observer;
+}
+
+describe("BrowserSidebarAgentIconDom observe filtering", () => {
+  let root: MockElement;
+  let sidebarContainer: MockElement;
+  let transcriptContainer: MockElement;
+
+  beforeEach(() => {
+    MockMutationObserver.instances = [];
+    vi.stubGlobal("Node", MockNode);
+    vi.stubGlobal("Element", MockElement);
+    vi.stubGlobal("MutationObserver", MockMutationObserver);
+
+    root = new MockElement("div");
+    root.isRoot = true;
+
+    sidebarContainer = new MockElement("div");
+    sidebarContainer.setAttribute("data-sidebar-container", "");
+    root.appendChild(sidebarContainer);
+
+    transcriptContainer = new MockElement("div");
+    transcriptContainer.setAttribute("data-transcript-container", "");
+    root.appendChild(transcriptContainer);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("does not trigger onChange when transcript message content is inserted", () => {
+    const dom = new BrowserSidebarAgentIconDom(root as unknown as ParentNode & Node);
+    const onChange = vi.fn();
+    const cleanup = dom.observe(onChange);
+
+    expect(MockMutationObserver.instances.length).toBe(1);
+    const observer = firstObserver();
+
+    const messageElement = new MockElement("div");
+    messageElement.setAttribute("data-message-bubble", "");
+    transcriptContainer.appendChild(messageElement);
+
+    observer.trigger([
+      {
+        type: "childList",
+        target: transcriptContainer as unknown as Node,
+        addedNodes: [messageElement as unknown as Node] as unknown as NodeList,
+        removedNodes: [] as unknown as NodeList,
+      },
+    ]);
+
+    expect(onChange).not.toHaveBeenCalled();
+    cleanup();
+  });
+
+  it("triggers onChange when a sidebar thread row is inserted or removed", () => {
+    const dom = new BrowserSidebarAgentIconDom(root as unknown as ParentNode & Node);
+    const onChange = vi.fn();
+    const cleanup = dom.observe(onChange);
+
+    const observer = firstObserver();
+
+    const row = new MockElement("div");
+    row.setAttribute(SIDEBAR_THREAD_ROW_ATTRIBUTE, "");
+    sidebarContainer.appendChild(row);
+
+    observer.trigger([
+      {
+        type: "childList",
+        target: sidebarContainer as unknown as Node,
+        addedNodes: [row as unknown as Node] as unknown as NodeList,
+        removedNodes: [] as unknown as NodeList,
+      },
+    ]);
+
+    expect(onChange).toHaveBeenCalledTimes(1);
+
+    onChange.mockClear();
+    sidebarContainer.removeChild(row);
+
+    observer.trigger([
+      {
+        type: "childList",
+        target: sidebarContainer as unknown as Node,
+        addedNodes: [] as unknown as NodeList,
+        removedNodes: [row as unknown as Node] as unknown as NodeList,
+      },
+    ]);
+
+    expect(onChange).toHaveBeenCalledTimes(1);
+    cleanup();
+  });
+
+  it("triggers onChange when a container containing sidebar rows is inserted", () => {
+    const dom = new BrowserSidebarAgentIconDom(root as unknown as ParentNode & Node);
+    const onChange = vi.fn();
+    const cleanup = dom.observe(onChange);
+
+    const observer = firstObserver();
+
+    const section = new MockElement("section");
+    const row = new MockElement("div");
+    row.setAttribute(SIDEBAR_THREAD_ROW_ATTRIBUTE, "");
+    section.appendChild(row);
+    root.appendChild(section);
+
+    observer.trigger([
+      {
+        type: "childList",
+        target: root as unknown as Node,
+        addedNodes: [section as unknown as Node] as unknown as NodeList,
+        removedNodes: [] as unknown as NodeList,
+      },
+    ]);
+
+    expect(onChange).toHaveBeenCalledTimes(1);
+    cleanup();
+  });
+
+  it("triggers onChange when sidebar row identity attributes change", () => {
+    const dom = new BrowserSidebarAgentIconDom(root as unknown as ParentNode & Node);
+    const onChange = vi.fn();
+    const cleanup = dom.observe(onChange);
+
+    const observer = firstObserver();
+
+    const row = new MockElement("div");
+    row.setAttribute(SIDEBAR_THREAD_ROW_ATTRIBUTE, "");
+    row.setAttribute(SIDEBAR_THREAD_ID_ATTRIBUTE, "thread-1");
+    sidebarContainer.appendChild(row);
+
+    observer.trigger([
+      {
+        type: "attributes",
+        target: row as unknown as Node,
+        attributeName: SIDEBAR_THREAD_ID_ATTRIBUTE,
+      },
+    ]);
+
+    expect(onChange).toHaveBeenCalledTimes(1);
+    cleanup();
+  });
+
+  it("triggers onChange for non-icon changes inside a sidebar row", () => {
+    const dom = new BrowserSidebarAgentIconDom(root as unknown as ParentNode & Node);
+    const onChange = vi.fn();
+    const cleanup = dom.observe(onChange);
+
+    const observer = firstObserver();
+
+    const row = new MockElement("div");
+    row.setAttribute(SIDEBAR_THREAD_ROW_ATTRIBUTE, "");
+    const titleTrigger = new MockElement("div");
+    titleTrigger.setAttribute("data-thread-title-trigger", "");
+    row.appendChild(titleTrigger);
+    sidebarContainer.appendChild(row);
+
+    const titleText = new MockElement("span");
+    titleTrigger.appendChild(titleText);
+
+    observer.trigger([
+      {
+        type: "childList",
+        target: titleTrigger as unknown as Node,
+        addedNodes: [titleText as unknown as Node] as unknown as NodeList,
+        removedNodes: [] as unknown as NodeList,
+      },
+    ]);
+
+    expect(onChange).toHaveBeenCalledTimes(1);
+    cleanup();
+  });
+
+  it("ignores mutations that only modify sidebar agent icons", () => {
+    const dom = new BrowserSidebarAgentIconDom(root as unknown as ParentNode & Node);
+    const onChange = vi.fn();
+    const cleanup = dom.observe(onChange);
+
+    const observer = firstObserver();
+
+    const row = new MockElement("div");
+    row.setAttribute(SIDEBAR_THREAD_ROW_ATTRIBUTE, "");
+    sidebarContainer.appendChild(row);
+
+    const icon = new MockElement("span");
+    icon.setAttribute(SIDEBAR_AGENT_ICON_ATTRIBUTE, "pi");
+    row.appendChild(icon);
+
+    observer.trigger([
+      {
+        type: "childList",
+        target: row as unknown as Node,
+        addedNodes: [icon as unknown as Node] as unknown as NodeList,
+        removedNodes: [] as unknown as NodeList,
+      },
+    ]);
+
+    expect(onChange).not.toHaveBeenCalled();
+
+    const svg = new MockElement("svg");
+    icon.appendChild(svg);
+
+    observer.trigger([
+      {
+        type: "childList",
+        target: icon as unknown as Node,
+        addedNodes: [svg as unknown as Node] as unknown as NodeList,
+        removedNodes: [] as unknown as NodeList,
+      },
+    ]);
+
+    expect(onChange).not.toHaveBeenCalled();
+    cleanup();
+  });
+
+  it("cancels pending scheduled scan and disconnects observer on dispose", () => {
+    const dom = new BrowserSidebarAgentIconDom(root as unknown as ParentNode & Node);
+    const client = clientWith(async () => ({ threads: [] }));
+    const control = installRendererSidebarAgentIcons({
+      getClient: () => client,
+      dom,
+    });
+
+    expect(MockMutationObserver.instances.length).toBe(1);
+    const observer = firstObserver();
+    expect(observer.disconnected).toBe(false);
+
+    control.dispose();
+
+    expect(observer.disconnected).toBe(true);
   });
 });

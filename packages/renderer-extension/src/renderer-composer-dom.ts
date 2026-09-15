@@ -48,6 +48,7 @@ import {
   mountRendererHarnessCommandControl,
   type RendererHarnessCommandControl,
 } from "./renderer-harness-command-control.js";
+import { isOwnedExtensionControl as isOwnedRendererControl } from "./renderer-dom-owned-controls.js";
 
 export { CONTROL_ATTRIBUTE };
 export type ExternalModelControlView = RendererModelControlView;
@@ -114,17 +115,6 @@ function controlDescription(element: Element): string {
 
 function buttonText(button: HTMLButtonElement): string {
   return controlDescription(button);
-}
-
-function isOwnedRendererControl(element: Element): boolean {
-  return (
-    element.hasAttribute(CONTROL_ATTRIBUTE) ||
-    element.hasAttribute("data-codexhost-model-control") ||
-    element.hasAttribute("data-codexhost-permission-mode-control") ||
-    element.hasAttribute("data-codexhost-usage-control") ||
-    element.hasAttribute("data-codexhost-credits-control") ||
-    element.hasAttribute("data-codexhost-harness-command-control")
-  );
 }
 
 export function isComposerSubmitButton(button: HTMLButtonElement): boolean {
@@ -434,9 +424,16 @@ function captureNativeControl(element: HTMLElement | null): NativeControlState |
 
 function restoreNativeControl(state: NativeControlState | null | undefined): void {
   if (!state) return;
-  state.element.hidden = state.hidden;
-  if (state.ariaHidden === null) state.element.removeAttribute("aria-hidden");
-  else state.element.setAttribute("aria-hidden", state.ariaHidden);
+  if (state.element.hidden !== state.hidden) {
+    state.element.hidden = state.hidden;
+  }
+  if (state.ariaHidden === null) {
+    if (state.element.hasAttribute("aria-hidden")) {
+      state.element.removeAttribute("aria-hidden");
+    }
+  } else if (state.element.getAttribute("aria-hidden") !== state.ariaHidden) {
+    state.element.setAttribute("aria-hidden", state.ariaHidden);
+  }
 }
 
 function refreshNativeContextUsageControl(control: ComposerAgentControl): void {
@@ -571,8 +568,12 @@ function setNativeControlHidden(
     (active as HTMLElement).blur();
   }
   if (state.element.getAttribute("aria-expanded") === "true") state.element.click();
-  state.element.hidden = true;
-  state.element.setAttribute("aria-hidden", "true");
+  if (!state.element.hidden) {
+    state.element.hidden = true;
+  }
+  if (state.element.getAttribute("aria-hidden") !== "true") {
+    state.element.setAttribute("aria-hidden", "true");
+  }
 }
 
 export function reconcileComposerNativeControls(
@@ -712,9 +713,11 @@ export function renderComposerAgentControl(
   const submissionBlocked = switching || ownershipError || modelBlocked || permissionModeBlocked;
   if (submissionBlocked && control.sendDisabledBeforeSwitch === null) {
     control.sendDisabledBeforeSwitch = control.sendButton.disabled;
-    control.sendButton.disabled = true;
+    if (!control.sendButton.disabled) control.sendButton.disabled = true;
   } else if (!submissionBlocked && control.sendDisabledBeforeSwitch !== null) {
-    control.sendButton.disabled = control.sendDisabledBeforeSwitch;
+    if (control.sendButton.disabled !== control.sendDisabledBeforeSwitch) {
+      control.sendButton.disabled = control.sendDisabledBeforeSwitch;
+    }
     control.sendDisabledBeforeSwitch = null;
   }
   const pickerView = renderRendererAgentPicker(
@@ -755,15 +758,23 @@ export function renderComposerAgentControl(
     );
   }
   control.harnessCommands.setLocale(locale);
-  control.harnessCommands.root.hidden = state.agent === "codex";
-  control.harnessCommands.root.style.display = state.agent === "codex" ? "none" : "inline-flex";
+  const hideHarness = state.agent === "codex";
+  if (control.harnessCommands.root.hidden !== hideHarness) {
+    control.harnessCommands.root.hidden = hideHarness;
+  }
+  const expectedHarnessDisplay = hideHarness ? "none" : "inline-flex";
+  if (control.harnessCommands.root.style.display !== expectedHarnessDisplay) {
+    control.harnessCommands.root.style.display = expectedHarnessDisplay;
+  }
   if (state.agent === "codex") control.harnessCommands.close();
   renderRendererCreditsControl(control.credits, accountCredits, locale);
 }
 
 export function disposeComposerAgentControl(control: ComposerAgentControl): void {
   if (control.sendDisabledBeforeSwitch !== null) {
-    control.sendButton.disabled = control.sendDisabledBeforeSwitch;
+    if (control.sendButton.disabled !== control.sendDisabledBeforeSwitch) {
+      control.sendButton.disabled = control.sendDisabledBeforeSwitch;
+    }
   }
   restoreNativeControl(control.nativeModelControl);
   restoreNativeControl(control.nativeContextUsageControl);

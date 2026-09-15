@@ -193,6 +193,20 @@ export class DraftAgentController<Composer extends object> {
     return state;
   }
 
+  rebindDraft(composer: Composer): Readonly<DraftComposerState> {
+    const previous = this.#state(composer);
+    this.#pendingSubmissions.delete(previous);
+    this.#modelRequestGenerations.set(previous, ++this.#modelRequestSequence);
+    this.#ownershipRequestGenerations.set(previous, ++this.#ownershipRequestSequence);
+    for (let index = this.#conversationStates.length - 1; index >= 0; index -= 1) {
+      if (this.#conversationStates[index]?.state === previous)
+        this.#conversationStates.splice(index, 1);
+    }
+    previous.phase = "draft";
+    this.#states.set(composer, previous);
+    return previous;
+  }
+
   restore(
     composer: Composer,
     agent: RendererAgent,

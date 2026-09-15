@@ -635,8 +635,7 @@ function mutationMayChangeComposerTarget(mutation: MutationRecord): boolean {
     mutation.type === "attributes" &&
     (mutation.attributeName === "data-codex-composer-root" ||
       mutation.attributeName === "data-above-composer-conversation-id" ||
-      (mutation.target instanceof Element &&
-        mutation.target.matches("[data-above-composer-portal]")) ||
+      mutation.attributeName === "data-above-composer-portal" ||
       (mutation.target instanceof Element && mutation.target.matches(CODEX_COMPOSER_SELECTOR)))
   ) {
     return true;
@@ -1207,6 +1206,32 @@ export function installRendererBindingProbe(
 
   const refreshMountedConversationTarget = (mounted: MountedComposer): boolean => {
     const currentTarget = findComposerModelTarget(mounted.composer);
+    if (currentTarget?.[0] !== "conversation") {
+      const previousTarget = mounted.modelTarget;
+      if (previousTarget?.[0] !== "conversation") return false;
+      const nextHostId = activeModelHostId() ?? mounted.hostId;
+      const state = controller.rebindDraft(mounted.composer);
+      mounted.modelTarget = currentTarget;
+      mounted.hostId = nextHostId;
+      mounted.composerId = state.composerId;
+      mounted.modelView = { status: "idle" };
+      mounted.permissionModeView = { status: "idle" };
+      mounted.threadConfiguration = undefined;
+      mounted.ownershipStatus = "not-required";
+      mounted.usage = null;
+      mounted.accountCredits = null;
+      mounted.usageRequestGeneration += 1;
+      usageRefreshAttempts.delete(mounted.composer);
+      const timer = usageRefreshTimers.get(mounted.composer);
+      if (timer !== undefined) {
+        window.clearTimeout(timer);
+        usageRefreshTimers.delete(mounted.composer);
+      }
+      renderMounted(mounted);
+      sidebarAgentIcons.refresh();
+      if (currentTarget?.[0] !== "default") void refreshDraftCodexUsage(mounted);
+      return true;
+    }
     const resolution = lateConversationTargetResolution(
       mounted.modelTarget,
       currentTarget,

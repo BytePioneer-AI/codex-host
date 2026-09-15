@@ -385,6 +385,20 @@ describe("Renderer draft Agent controller", () => {
     });
   });
 
+  it("clears a conversation binding when a Composer returns to a draft", () => {
+    const composer = {};
+    const target = ["conversation", "thread-a"];
+    const agents = controller();
+
+    agents.mount(composer, target);
+    agents.restore(composer, "pi");
+    const staleOwnershipRequest = agents.beginOwnershipRequest(composer);
+
+    expect(agents.rebindDraft(composer)).toMatchObject({ agent: "pi", phase: "draft" });
+    expect(agents.isCurrentOwnershipRequest(composer, staleOwnershipRequest)).toBe(false);
+    expect(agents.mount({}, target)).toMatchObject({ agent: "codex", phase: "draft" });
+  });
+
   it("restores a newly mounted Fork owner and ignores stale ownership generations", () => {
     const forkComposer = {};
     const replacement = {};

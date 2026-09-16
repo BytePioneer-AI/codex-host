@@ -168,6 +168,8 @@ export interface ClaudePlanLimitEvent {
 
 export interface ClaudeAutonomousTurn {
   nativeTurnKey: string;
+  /** Present only when a native User Message UUID was observed, not for synthetic Turn keys. */
+  userMessageId?: string;
   events: ClaudeTurnEvent[];
   result: ClaudeTransportTurnResult;
 }

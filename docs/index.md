@@ -46,6 +46,12 @@
 | [`harnesses/codebuddy/codebuddy-harness-integration.md`](harnesses/codebuddy/codebuddy-harness-integration.md) | CodeBuddy 原生 ACP 插件、生命周期和能力边界；维护 CodeBuddy Adapter 时阅读。 |
 | [`harnesses/cursor/cursor-cli-experimental.md`](harnesses/cursor/cursor-cli-experimental.md) | 实验性 Cursor CLI ACP 插件及能力限制；维护 Cursor Adapter 或发行接入时阅读。 |
 
+### Devin
+
+| 文档 | 内容与阅读时机 |
+| --- | --- |
+| [`harnesses/devin/devin-cli-acp-integration.md`](harnesses/devin/devin-cli-acp-integration.md) | Devin CLI 原生 ACP 插件、Turn 身份与能力边界；维护 Devin Adapter 时阅读。 |
+
 ### DeepSeek Harness
 
 | 文档 | 内容与阅读时机 |

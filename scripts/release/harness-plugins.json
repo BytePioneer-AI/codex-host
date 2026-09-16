@@ -10,6 +10,7 @@
     "packages/adapters/kiro-cli",
     "packages/adapters/codebuddy",
     "packages/adapters/cursor-cli",
+    "packages/adapters/devin",
     "packages/adapters/hermes",
     "packages/adapters/qoder",
     "packages/adapters/qoder-cn"

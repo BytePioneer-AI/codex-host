@@ -61,8 +61,7 @@ export class DevinTransport {
     }
   }
 
-  async open(sessionId?: string): Promise<DevinSessionInfo> {
-    if (this.#closed || this.#connection) throw new Error("Devin transport cannot be reopened");
+  async #connect(requiresLoadSession: boolean): Promise<ClientSideConnection> {
     const invocation = devinInvocation(this.options.environment, this.options.command);
     const child = spawn(invocation.command, invocation.arguments, {
       cwd: this.options.cwd,
@@ -115,17 +114,28 @@ export class DevinTransport {
           clientInfo: { name: "codexhost", version: "0.9.0" },
         }),
       );
-      if (init.protocolVersion !== 1 || (sessionId && !init.agentCapabilities?.loadSession))
+      if (init.protocolVersion !== 1 || (requiresLoadSession && !init.agentCapabilities?.loadSession))
         throw new Error("Devin does not support the required ACP session protocol");
       // Devin authenticates through its own stored credentials (`devin auth login`);
       // the adapter never launches a login flow or reads credentials.
+      return this.#connection;
+    } catch (error) {
+      await this.close();
+      throw error;
+    }
+  }
+
+  async open(sessionId?: string): Promise<DevinSessionInfo> {
+    if (this.#closed || this.#connection) throw new Error("Devin transport cannot be reopened");
+    const connection = await this.#connect(Boolean(sessionId));
+    try {
       this.sessionId = sessionId ?? "";
       this.#collecting = true;
       const info = await (sessionId
         ? this.#bounded(
-            this.#connection.loadSession({ sessionId, cwd: this.options.cwd, mcpServers: [] }),
+            connection.loadSession({ sessionId, cwd: this.options.cwd, mcpServers: [] }),
           )
-        : this.#bounded(this.#connection.newSession({ cwd: this.options.cwd, mcpServers: [] })));
+        : this.#bounded(connection.newSession({ cwd: this.options.cwd, mcpServers: [] })));
       this.#collecting = false;
       if ("sessionId" in info && typeof info.sessionId === "string")
         this.sessionId = info.sessionId;
@@ -135,6 +145,12 @@ export class DevinTransport {
       await this.close();
       throw error;
     }
+  }
+
+  /** One-shot sessionless connection for read-only queries like session/list. */
+  async probe(): Promise<ClientSideConnection> {
+    if (this.#closed || this.#connection) throw new Error("Devin transport cannot be reopened");
+    return this.#connect(false);
   }
 
   /**

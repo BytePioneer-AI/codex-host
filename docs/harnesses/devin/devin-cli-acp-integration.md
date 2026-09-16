@@ -38,6 +38,10 @@ catalog (385 entries when tested) and the permission modes `accept-edits`,
 - Command resolution uses the shared `harness-discovery` mechanism;
   `CODEXHOST_DEVIN_COMMAND` selects an explicit executable. No polling timers,
   provider substitution or Codex fallback.
+- Native session import through `session/list` on a sessionless probe
+  connection (`initialize` only, no user Session is created). Rows missing a
+  valid `cwd` or `updatedAt` are skipped rather than fabricated; `running`
+  reflects the native `cognition.ai/isLocked` meta flag when present.
 
 ## Turn identity
 
@@ -69,8 +73,10 @@ been established.
   There is no Devin-specific Host branch; the Thread rides the shared
   plugin route like the other plugin Harnesses.
 - Fork, rollback, independent thinking selection, usage/account reporting,
-  native session import/deletion wiring and subagent transcript browsing are
-  not advertised. Image prompt input is outside the current Host text contract.
+  native session deletion wiring and subagent transcript browsing are
+  not advertised. `devin auth status` exposes identity and plan but no valid
+  usage percentage, so no `inspectAccount()` credits are fabricated. Image
+  prompt input is outside the current Host text contract.
 - Devin-specific `_meta` extensions beyond the identity and tool-name keys
   (slash commands, embedded context payloads) are not surfaced.
 - Model inspection opens one empty native ACP session per cache refresh because

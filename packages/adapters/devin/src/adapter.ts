@@ -1,4 +1,5 @@
 import path from "node:path";
+import type { ClientSideConnection } from "@agentclientprotocol/sdk";
 import {
   HarnessOutputChannel,
   sanitizeDiagnosticTail,
@@ -42,6 +43,7 @@ import {
   devinNativeModel,
 } from "./models.js";
 import { DevinTransport, type DevinSessionInfo, type DevinTransportOptions } from "./transport.js";
+import { listDevinSessionCandidates, resolveDevinSessionCandidate } from "./import.js";
 import { DevinTurnOutput, devinPromptTurnKey, devinSnapshot } from "./projection.js";
 import { DevinInteractions } from "./interactions.js";
 
@@ -72,6 +74,11 @@ function rejected(code: HarnessError["code"], message: string): { ok: false; err
 }
 export class DevinAdapter implements HarnessAdapter {
   readonly harnessId = harnessIdSchema.parse("devin");
+  readonly sessionImport = {
+    listCandidates: () => this.#listImportCandidates(),
+    resolveCandidate: (nativeSessionId: string) =>
+      this.#resolveImportCandidate(nativeSessionId),
+  };
   readonly #sessions = new Set<DevinSession>();
   readonly #inspections = new Map<
     string,
@@ -189,6 +196,50 @@ export class DevinAdapter implements HarnessAdapter {
       return { ok: false, error: devinError(error) };
     }
   }
+  /**
+   * Run a one-shot read-only query against a fresh `devin acp` process
+   * (initialize + session/list, no user Session creation).
+   */
+  async #withProbeConnection<T>(
+    action: (connection: ClientSideConnection) => Promise<T>,
+  ): Promise<T> {
+    const transport = new DevinTransport(
+      this.transportOptions(process.cwd()),
+    );
+    try {
+      const connection = await transport.probe();
+      return await action(connection);
+    } finally {
+      await transport.close();
+    }
+  }
+
+  async #listImportCandidates() {
+    if (this.#closed) return rejected("invalidState", "Devin adapter is closed");
+    try {
+      const candidates = await this.#withProbeConnection((connection) =>
+        listDevinSessionCandidates({ connection }),
+      );
+      return { ok: true as const, value: candidates };
+    } catch (error) {
+      return { ok: false as const, error: devinError(error) };
+    }
+  }
+
+  async #resolveImportCandidate(nativeSessionId: string) {
+    if (this.#closed) return rejected("invalidState", "Devin adapter is closed");
+    try {
+      const source = await this.#withProbeConnection((connection) =>
+        resolveDevinSessionCandidate({ connection, nativeSessionId }),
+      );
+      if (!source)
+        return rejected("sessionNotFound", `Devin Session ${nativeSessionId} no longer exists`);
+      return { ok: true as const, value: source };
+    } catch (error) {
+      return { ok: false as const, error: devinError(error) };
+    }
+  }
+
   async close() {
     this.#closed = true;
     await Promise.allSettled([...this.#sessions].map((session) => session.close()));

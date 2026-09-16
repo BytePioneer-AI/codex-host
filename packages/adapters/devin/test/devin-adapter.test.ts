@@ -450,3 +450,66 @@ describe("Devin interactions", () => {
     expect(await waiting).toEqual({ outcome: { outcome: "selected", optionId: "reject-once" } });
   });
 });
+
+describe("Devin session import", () => {
+  const rows = [
+    {
+      sessionId: "cotton-suit",
+      title: "Fix the flaky test",
+      updatedAt: "2026-09-16T22:04:37+00:00",
+      cwd: "/tmp/workspace",
+      _meta: { "cognition.ai/isLocked": true },
+    },
+    { sessionId: "no-cwd", title: "Skip me", updatedAt: "2026-09-16T00:00:00Z" },
+    { sessionId: "no-date", title: "Skip me too", cwd: "/tmp/x" },
+  ];
+  function stubProbe() {
+    const connection = {
+      request: vi.fn(async (method: string) => {
+        if (method !== "session/list") throw new Error(`unexpected method ${method}`);
+        return { sessions: rows };
+      }),
+    };
+    vi.spyOn(DevinTransport.prototype, "probe").mockResolvedValue(
+      connection as never,
+    );
+    vi.spyOn(DevinTransport.prototype, "close").mockResolvedValue();
+    return connection;
+  }
+  it("lists native Devin sessions without opening a user session", async () => {
+    const connection = stubProbe();
+    const adapter = new DevinAdapter();
+    const result = await adapter.sessionImport.listCandidates();
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("listCandidates failed");
+    expect(result.value).toEqual([
+      {
+        nativeSessionId: "cotton-suit",
+        title: "Fix the flaky test",
+        updatedAt: Date.parse("2026-09-16T22:04:37+00:00"),
+        cwd: "/tmp/workspace",
+        running: true,
+      },
+    ]);
+    expect(connection.request).toHaveBeenCalledWith("session/list", {});
+    await adapter.close();
+  });
+  it("resolves a listed session to a Host import source", async () => {
+    stubProbe();
+    const adapter = new DevinAdapter();
+    const resolved = await adapter.sessionImport.resolveCandidate("cotton-suit");
+    expect(resolved.ok).toBe(true);
+    if (!resolved.ok) throw new Error("resolveCandidate failed");
+    expect(resolved.value.nativeRef).toEqual({
+      harnessId: "devin",
+      nativeSessionId: "cotton-suit",
+      formatVersion: 1,
+    });
+    expect(resolved.value.candidate.nativeSessionId).toBe("cotton-suit");
+    const missing = await adapter.sessionImport.resolveCandidate("gone");
+    expect(missing.ok).toBe(false);
+    if (missing.ok) throw new Error("expected failure");
+    expect(missing.error.code).toBe("sessionNotFound");
+    await adapter.close();
+  });
+});

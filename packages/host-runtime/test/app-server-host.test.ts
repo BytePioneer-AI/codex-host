@@ -1,8048 +1,2427 @@
-import type { ChildProcessWithoutNullStreams, spawn } from "node:child_process";
-import { EventEmitter } from "node:events";
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { pathToFileURL } from "node:url";
-import { tmpdir } from "node:os";
-import path from "node:path";
-import { PassThrough } from "node:stream";
-
-import { describe, expect, it, vi } from "vitest";
-import type {
-  HarnessAdapter,
-  HarnessResult,
-  HarnessSessionState,
-  HostThreadSnapshot,
-} from "@codexhost/harness-adapter";
-import { FakeHarnessAdapter, FakeHarnessSession } from "@codexhost/harness-adapter/testing";
-import { MappingStore } from "@codexhost/mapping-store";
-import {
-  CLAUDE_CODE_NATIVE_TRANSPORT_MODEL_ID,
-  encodeClaudeTransportModel,
-  encodeGrokTransportModel,
-  encodePiTransportModel,
-  type ExternalHarnessId,
-  type JsonObject,
-} from "@codexhost/protocol-core";
-import {
-  encodeHarnessPluginRoute,
-  harnessPluginRouteSchema,
-  harnessCommandDescriptorSchema,
-  harnessIdSchema,
-  harnessModelRefSchema,
-  harnessPermissionModeCatalogSchema,
-  harnessPermissionModeIdSchema,
-  harnessThinkingOptionIdSchema,
-  hostItemIdSchema,
-  hostThreadIdSchema,
-  hostTurnIdSchema,
-  type CodexAccountListResult,
-  type DeepSeekModernSessionCandidate,
-} from "@codexhost/shared-contracts";
-
-import type {
-  DelegationControlApi,
-  DelegationControlRegistration,
-} from "../src/delegation-types.js";
-import { AppServerHost } from "../src/app-server-host.js";
-import {
-  SingleNativeCodexAccount,
-  type CodexAccountControl,
-} from "../src/account/codex-account-control.js";
-import { OfficialRuntimeScope } from "../src/codex-runtime/official-runtime-scope.js";
-import type { OwnedOfficialBackend } from "../src/codex-runtime/official-runtime-owner.js";
-import type {
-  OfficialAppServerConnection,
-  OfficialAppServerExit,
-} from "../src/official-app-server-connection.js";
-import type { HostUpdateCoordinator } from "../src/update-coordinator.js";
-
-class FakeOfficialProcess extends EventEmitter {
-  readonly stdin = new PassThrough();
-  readonly stdout = new PassThrough();
-  readonly stderr = new PassThrough();
-  readonly kill = vi.fn((signal: NodeJS.Signals = "SIGTERM") => {
-    this.stdout.end();
-    this.emit("exit", null, signal);
-    return true;
-  });
-
-  constructor(exitOnInputEnd = true) {
-    super();
-    this.stdin.once("finish", () => {
-      if (!exitOnInputEnd) return;
-      this.stdout.end();
-      this.emit("exit", 0, null);
-    });
-  }
-}
-
-class FailingOwnershipMappingStore extends MappingStore {
-  override getThread(): Promise<never> {
-    return Promise.reject(new Error("Synthetic ownership read failure"));
-  }
-}
-
-class FailingArchiveMappingStore extends MappingStore {
-  override setArchived(): Promise<never> {
-    return Promise.reject(new Error("Synthetic archive write failure"));
-  }
-}
-
-class FailingListMappingStore extends MappingStore {
-  override listThreads(): Promise<never> {
-    return Promise.reject(new Error("Synthetic list read failure"));
-  }
-}
-
-class FailingDelegationMappingStore extends MappingStore {
-  override createDelegation(): Promise<never> {
-    return Promise.reject(new Error("Synthetic Delegation write failure"));
-  }
-}
-
-class JsonLineCollector {
-  readonly messages: JsonObject[] = [];
-  readonly #waiters: Array<{
-    predicate: (message: JsonObject) => boolean;
-    resolve(message: JsonObject): void;
-    timeout: ReturnType<typeof setTimeout>;
-  }> = [];
-  #buffer = "";
-
-  constructor(stream: PassThrough) {
-    stream.setEncoding("utf8");
-    stream.on("data", (chunk: string) => {
-      this.#buffer += chunk;
-      let newline = this.#buffer.indexOf("\n");
-      while (newline >= 0) {
-        const message = JSON.parse(this.#buffer.slice(0, newline)) as JsonObject;
-        this.#buffer = this.#buffer.slice(newline + 1);
-        this.messages.push(message);
-        const matched = this.#waiters.filter(({ predicate }) => predicate(message));
-        for (const waiter of matched) {
-          const index = this.#waiters.indexOf(waiter);
-          if (index >= 0) this.#waiters.splice(index, 1);
-          clearTimeout(waiter.timeout);
-          waiter.resolve(message);
-        }
-        newline = this.#buffer.indexOf("\n");
-      }
-    });
-  }
-
-  waitFor(predicate: (message: JsonObject) => boolean): Promise<JsonObject> {
-    const existing = this.messages.find(predicate);
-    if (existing) return Promise.resolve(existing);
-    return new Promise<JsonObject>((resolve, reject) => {
-      const waiter = {
-        predicate,
-        resolve,
-        timeout: setTimeout(() => {
-          const index = this.#waiters.indexOf(waiter);
-          if (index >= 0) this.#waiters.splice(index, 1);
-          reject(new Error("Timed out waiting for Host output"));
-        }, 2_000),
-      };
-      this.#waiters.push(waiter);
-    });
-  }
-}
-
-function method(message: JsonObject, value: string): boolean {
-  return message.method === value;
-}
-
-function requestId(message: JsonObject, id: number): boolean {
-  return message.id === id;
-}
-
-function requiredMessageId(message: JsonObject): string | number {
-  if (typeof message.id === "string" || typeof message.id === "number") return message.id;
-  throw new Error("JSON-RPC message has no ID");
-}
-
-function messageParams(message: JsonObject): JsonObject {
-  return (message.params ?? {}) as JsonObject;
-}
-
-function threadStatus(message: JsonObject, threadId: string, type: string): boolean {
-  const params = messageParams(message);
-  return (
-    method(message, "thread/status/changed") &&
-    params.threadId === threadId &&
-    (params.status as JsonObject | undefined)?.type === type
-  );
-}
-
-function turnEvent(message: JsonObject, eventMethod: string, turnId: string): boolean {
-  const params = messageParams(message);
-  return (
-    method(message, eventMethod) &&
-    ((params.turn as JsonObject | undefined)?.id === turnId || params.turnId === turnId)
-  );
-}
-
-function writeRequest(stream: PassThrough, value: JsonObject): void {
-  stream.write(`${JSON.stringify(value)}\n`);
-}
-
-const jsonLineBuffers = new WeakMap<PassThrough, string>();
-
-async function readJsonLine(stream: PassThrough): Promise<JsonObject> {
-  let buffer = jsonLineBuffers.get(stream) ?? "";
-  if (!buffer.includes("\n")) {
-    await vi.waitFor(() => {
-      const chunk = stream.read() as Buffer | string | null;
-      if (chunk !== null) buffer += String(chunk);
-      expect(buffer).toContain("\n");
-    });
-  }
-  const newline = buffer.indexOf("\n");
-  const line = buffer.slice(0, newline);
-  jsonLineBuffers.set(stream, buffer.slice(newline + 1));
-  return JSON.parse(line) as JsonObject;
-}
-
-function rollbackCapableAdapter(): FakeHarnessAdapter {
-  return new FakeHarnessAdapter(
-    harnessIdSchema.parse("pi"),
-    undefined,
-    true,
-    true,
-    null,
-    undefined,
-    true,
-  );
-}
-
-class ResumeStateRollbackAdapter extends FakeHarnessAdapter {
-  rollbackReplacementStateAtFirstRead: HarnessSessionState | undefined;
-
-  override async open(input: Parameters<FakeHarnessAdapter["open"]>[0]) {
-    const opened = await super.open(input);
-    if (
-      input.kind === "rollbackLastTurn" &&
-      opened.ok &&
-      opened.value instanceof FakeHarnessSession
-    ) {
-      const session = opened.value;
-      const nativeRef = session.initialState.nativeRef;
-      if (nativeRef) session.setStateForSnapshot({ nativeRef });
-      const readSnapshot = session.readSnapshot.bind(session);
-      session.readSnapshot = async () => {
-        this.rollbackReplacementStateAtFirstRead ??= session.state;
-        return readSnapshot();
-      };
-    }
-    return opened;
-  }
-}
-
-class WebUiHarnessAdapter extends FakeHarnessAdapter {
-  openCalls = 0;
-  failureMessage: string | undefined;
-  readonly webUi = {
-    open: async (): Promise<HarnessResult<void>> => {
-      this.openCalls += 1;
-      return this.failureMessage
-        ? {
-            ok: false,
-            error: {
-              code: "unavailable",
-              message: this.failureMessage,
-              retryable: true,
-            },
-          }
-        : { ok: true, value: undefined };
-    },
-  };
-}
-
-class ModernSessionImportAdapter extends FakeHarnessAdapter {
-  candidates: DeepSeekModernSessionCandidate[] = [];
-  readonly listCandidates = vi.fn(
-    async (): Promise<HarnessResult<DeepSeekModernSessionCandidate[]>> => ({
-      ok: true,
-      value: structuredClone(this.candidates),
-    }),
-  );
-  readonly sessionImport = {
-    listCandidates: this.listCandidates,
-    resolveCandidate: async (nativeSessionId: string) => {
-      const listed = await this.listCandidates();
-      if (!listed.ok) return listed;
-      const candidate = listed.value.find((entry) => entry.nativeSessionId === nativeSessionId);
-      return candidate
-        ? {
-            ok: true as const,
-            value: {
-              candidate,
-              nativeRef: { harnessId: this.harnessId, nativeSessionId, formatVersion: 1 as const },
-            },
-          }
-        : {
-            ok: false as const,
-            error: {
-              code: "sessionNotFound" as const,
-              message: "Missing session",
-              retryable: false,
-            },
-          };
-    },
-  };
-}
-
-function createFixture(
-  options: {
-    environment?: NodeJS.ProcessEnv;
-    pluginDirectory?: string;
-    externalAdapters?: ReadonlyMap<ExternalHarnessId, FakeHarnessAdapter>;
-    mappingStore?: MappingStore;
-    mappingStoreDirectory?: string;
-    closeMappingStoreOnExit?: boolean;
-    desktopOutput?: PassThrough;
-    officialExitsOnInputEnd?: boolean;
-    createOfficialConnection?: () =>
-      OfficialAppServerConnection | Promise<OfficialAppServerConnection>;
-    updateCoordinator?: HostUpdateCoordinator;
-    accountControl?: CodexAccountControl;
-    officialRuntimeScope?: OfficialRuntimeScope;
-    onDelegationApi?: (api: DelegationControlRegistration) => (() => void) | undefined;
-  } = {},
-) {
-  const adapter =
-    options.externalAdapters?.get("pi") ?? new FakeHarnessAdapter(harnessIdSchema.parse("pi"));
-  const mappingStoreDirectory =
-    options.mappingStoreDirectory ?? mkdtempSync(path.join(tmpdir(), "codexhost-host-test-"));
-  const mappingStore =
-    options.mappingStore ?? new MappingStore({ directory: mappingStoreDirectory });
-  const desktopInput = new PassThrough();
-  const desktopOutput = options.desktopOutput ?? new PassThrough();
-  const diagnosticOutput = new PassThrough();
-  const official = new FakeOfficialProcess(options.officialExitsOnInputEnd);
-  const collector = new JsonLineCollector(desktopOutput);
-  const startup = Promise.withResolvers<undefined>();
-  void startup.promise.catch(() => undefined);
-  const spawnOfficial = vi.fn(() => {
-    startup.resolve(undefined);
-    return official as unknown as ChildProcessWithoutNullStreams;
-  });
-  const createOfficialConnection = options.createOfficialConnection;
-  if (options.officialRuntimeScope) startup.resolve(undefined);
-  const host = new AppServerHost({
-    stockCodexPath: "/synthetic/codex",
-    arguments: ["app-server"],
-    defaultAgent: "codex",
-    desktopInput,
-    desktopOutput,
-    diagnosticOutput,
-    mappingStore,
-    ...(options.closeMappingStoreOnExit !== undefined
-      ? { closeMappingStoreOnExit: options.closeMappingStoreOnExit }
-      : {}),
-    environment: {
-      CODEXHOST_DATA_DIR: mappingStoreDirectory,
-      ...(options.environment ?? {}),
-    },
-    ...(options.pluginDirectory ? { pluginRoots: [options.pluginDirectory] } : {}),
-    externalAdapters:
-      options.externalAdapters ?? new Map<ExternalHarnessId, HarnessAdapter>([["pi", adapter]]),
-    spawnOfficial: spawnOfficial as unknown as typeof spawn,
-    ...(createOfficialConnection
-      ? {
-          createOfficialConnection: async () => {
-            startup.resolve(undefined);
-            return createOfficialConnection();
-          },
-        }
-      : {}),
-    ...(options.updateCoordinator ? { updateCoordinator: options.updateCoordinator } : {}),
-    ...(options.accountControl ? { accountControl: options.accountControl } : {}),
-    ...(options.officialRuntimeScope ? { officialRuntimeScope: options.officialRuntimeScope } : {}),
-    ...(options.onDelegationApi ? { onDelegationApi: options.onDelegationApi } : {}),
-  });
-  const running = host.run();
-  void running.then(
-    () => startup.reject(new Error("Host exited before fixture startup")),
-    (error) => startup.reject(error),
-  );
-  return {
-    adapter,
-    collector,
-    desktopInput,
-    desktopOutput,
-    diagnosticOutput,
-    host,
-    official,
-    running,
-    ready: startup.promise.then(
-      () => new Promise<undefined>((resolve) => setImmediate(resolve, undefined)),
-    ),
-    mappingStore,
-    mappingStoreDirectory,
-    spawnOfficial,
-  };
-}
-
-async function startExternalThread(
-  fixture: ReturnType<typeof createFixture>,
-  model: string,
-  id = 1,
-  additionalParams: JsonObject = {},
-): Promise<string> {
-  await fixture.ready;
-  writeRequest(fixture.desktopInput, {
-    id,
-    method: "thread/start",
-    params: { model, cwd: "/synthetic", ...additionalParams },
-  });
-  const response = await fixture.collector.waitFor((message) => requestId(message, id));
-  expect(response).not.toHaveProperty("error");
-  const result = response.result as JsonObject;
-  const thread = result.thread as JsonObject;
-  if (typeof thread.id !== "string") throw new Error("Synthetic thread response has no ID");
-  return thread.id;
-}
-
-async function startPiThread(
-  fixture: ReturnType<typeof createFixture>,
-  model = "codexhost/pi-native",
-): Promise<string> {
-  return startExternalThread(fixture, model);
-}
-
-async function startPiTurn(
-  fixture: ReturnType<typeof createFixture>,
-  threadId: string,
-  id = 2,
-): Promise<string> {
-  writeRequest(fixture.desktopInput, {
-    id,
-    method: "turn/start",
-    params: { threadId, input: [{ type: "text", text: "synthetic" }] },
-  });
-  const response = await fixture.collector.waitFor((message) => requestId(message, id));
-  const result = response.result as JsonObject;
-  const turn = result.turn as JsonObject;
-  if (typeof turn.id !== "string") throw new Error("Synthetic turn response has no ID");
-  return turn.id;
-}
-
-async function completePiTurn(
-  fixture: ReturnType<typeof createFixture>,
-  threadId: string,
-  requestIdValue: number,
-  sessionIndex = 0,
-): Promise<string> {
-  const turnId = await startPiTurn(fixture, threadId, requestIdValue);
-  const session = fixture.adapter.sessions[sessionIndex];
-  if (!session) throw new Error("Fake Pi Session was not opened");
-  await fixture.collector.waitFor((message) => turnEvent(message, "turn/started", turnId));
-  session.appendText(`answer ${requestIdValue}`);
-  session.succeedTurn();
-  await fixture.collector.waitFor((message) => turnEvent(message, "turn/completed", turnId));
-  return turnId;
-}
-
-async function closeFixture(fixture: ReturnType<typeof createFixture>): Promise<void> {
-  fixture.desktopInput.end();
-  const outcome = await fixture.running;
-  expect(outcome, fixture.diagnosticOutput.read()?.toString() ?? "").toBe(0);
-}
-
-async function stopFixture(fixture: ReturnType<typeof createFixture>): Promise<void> {
-  await closeFixture(fixture);
-  rmSync(fixture.mappingStoreDirectory, { recursive: true, force: true });
-}
-
-async function bindOfficialThread(
-  fixture: ReturnType<typeof createFixture>,
-  threadId: string,
-): Promise<void> {
-  void threadId;
-  await fixture.ready;
-  await vi.waitFor(() => expect(fixture.spawnOfficial).toHaveBeenCalledOnce());
-}
-
-async function answerOfficialParentCwd(
-  fixture: ReturnType<typeof createFixture>,
-  threadId = "parent-thread",
-): Promise<void> {
-  const request = await readJsonLine(fixture.official.stdin);
-  expect(request).toMatchObject({ method: "thread/read", params: { threadId } });
-  fixture.official.stdout.write(
-    `${JSON.stringify({
-      id: request.id,
-      result: { thread: { id: threadId, cwd: "/synthetic" } },
-    })}\n`,
-  );
-}
-
-describe("AppServerHost idle resource release", () => {
-  it("validates settings locally without forwarding them to the official server", async () => {
-    const fixture = createFixture();
-    try {
-      await fixture.ready;
-      writeRequest(fixture.desktopInput, {
-        id: 900,
-        method: "codexhost/settings/idle-release/set",
-        params: { enabled: true, timeoutMinutes: 4 },
-      });
-      expect(await fixture.collector.waitFor((message) => requestId(message, 900))).toMatchObject({
-        error: { code: -32602 },
-      });
-      writeRequest(fixture.desktopInput, {
-        id: 901,
-        method: "codexhost/settings/idle-release/set",
-        params: { enabled: false, timeoutMinutes: 30 },
-      });
-      expect(await fixture.collector.waitFor((message) => requestId(message, 901))).toMatchObject({
-        result: { enabled: false, timeoutMinutes: 30 },
-      });
-      expect(fixture.official.stdin.read()).toBeNull();
-    } finally {
-      await stopFixture(fixture);
-    }
-  });
-
-  it("silently releases an idle session and resumes its history for another Turn", async () => {
-    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"] });
-    const fixture = createFixture();
-    try {
-      const threadId = await startPiThread(fixture);
-      const turnId = await completePiTurn(fixture, threadId, 2);
-      const source = fixture.adapter.sessions[0];
-      if (!source) throw new Error("Missing source Session");
-      const snapshot = await source.readSnapshot();
-      if (!snapshot.ok) throw new Error(snapshot.error.message);
-      const close = vi.spyOn(source, "close");
-      const nativeOpen = fixture.adapter.open.bind(fixture.adapter);
-      let resumed: FakeHarnessSession | undefined;
-      const open = vi.spyOn(fixture.adapter, "open").mockImplementation(async (input) => {
-        if (input.kind !== "resume") return nativeOpen(input);
-        resumed = new FakeHarnessSession(
-          fixture.adapter.harnessId,
-          fixture.adapter.catalog,
-          undefined,
-          input.nativeRef,
-          snapshot.value,
-        );
-        return { ok: true, value: resumed };
-      });
-      writeRequest(fixture.desktopInput, {
-        id: 900,
-        method: "codexhost/settings/idle-release/set",
-        params: { enabled: true, timeoutMinutes: 10 },
-      });
-      await fixture.collector.waitFor((message) => requestId(message, 900));
-      await vi.advanceTimersByTimeAsync(9 * 60_000);
-      writeRequest(fixture.desktopInput, {
-        id: 910,
-        method: "codexhost/sessions/loaded/list",
-        params: {},
-      });
-      const listing = await fixture.collector.waitFor((message) => requestId(message, 910));
-      expect(listing).toMatchObject({
-        result: [{ threadId, state: "idle", reason: "timeout", inactiveMs: 9 * 60_000 }],
-      });
-      await vi.advanceTimersByTimeAsync(2 * 60_000);
-      expect(close).toHaveBeenCalledTimes(1);
-      writeRequest(fixture.desktopInput, {
-        id: 911,
-        method: "codexhost/sessions/loaded/list",
-        params: {},
-      });
-      expect(await fixture.collector.waitFor((message) => requestId(message, 911))).toMatchObject({
-        result: [],
-      });
-      expect(open).not.toHaveBeenCalled();
-      expect(fixture.collector.messages.some((message) => method(message, "thread/closed"))).toBe(
-        false,
-      );
-      writeRequest(fixture.desktopInput, {
-        id: 901,
-        method: "thread/read",
-        params: { threadId, includeTurns: false },
-      });
-      await fixture.collector.waitFor((message) => requestId(message, 901));
-      expect(open).not.toHaveBeenCalled();
-      writeRequest(fixture.desktopInput, {
-        id: 902,
-        method: "thread/read",
-        params: { threadId, includeTurns: true },
-      });
-      const history = await fixture.collector.waitFor((message) => requestId(message, 902));
-      expect(history).not.toHaveProperty("error");
-      expect(JSON.stringify(history)).toContain(turnId);
-      expect(open).toHaveBeenCalledTimes(1);
-      const nextTurn = await startPiTurn(fixture, threadId, 903);
-      await fixture.collector.waitFor((message) => turnEvent(message, "turn/started", nextTurn));
-      if (!resumed) throw new Error("Missing resumed Session");
-      resumed.appendText("after idle release");
-      resumed.succeedTurn();
-      await fixture.collector.waitFor((message) => turnEvent(message, "turn/completed", nextTurn));
-    } finally {
-      await stopFixture(fixture);
-      vi.useRealTimers();
-    }
-  });
-
-  it("keeps an active Turn loaded even beyond the configured timeout", async () => {
-    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"] });
-    const fixture = createFixture();
-    try {
-      const threadId = await startPiThread(fixture);
-      const turnId = await startPiTurn(fixture, threadId);
-      await fixture.collector.waitFor((message) => turnEvent(message, "turn/started", turnId));
-      const session = fixture.adapter.sessions[0];
-      if (!session) throw new Error("Missing Session");
-      const close = vi.spyOn(session, "close");
-      writeRequest(fixture.desktopInput, {
-        id: 900,
-        method: "codexhost/settings/idle-release/set",
-        params: { enabled: true, timeoutMinutes: 10 },
-      });
-      await fixture.collector.waitFor((message) => requestId(message, 900));
-      await vi.advanceTimersByTimeAsync(31 * 60_000);
-      expect(close).not.toHaveBeenCalled();
-      session.succeedTurn();
-      await fixture.collector.waitFor((message) => turnEvent(message, "turn/completed", turnId));
-    } finally {
-      await stopFixture(fixture);
-      vi.useRealTimers();
-    }
-  });
-});
-
-describe("AppServerHost official forwarding", () => {
-  it.each([
-    { method: "codexhost/unknown", params: {} },
-    {
-      method: "thread/start",
-      params: { model: "gpt-5", cwd: "/synthetic", unknownParam: "opaque" },
-    },
-    {
-      method: "turn/start",
-      params: {
-        threadId: "official-thread",
-        input: [{ type: "text", text: "synthetic" }],
-        unknownParam: "opaque",
-      },
-    },
-  ])("forwards $method unchanged and relays backend errors", async ({ method, params }) => {
-    const fixture = createFixture();
-    try {
-      await fixture.ready;
-      const request = { id: 1, method, params };
-      writeRequest(fixture.desktopInput, request);
-      expect(await readJsonLine(fixture.official.stdin)).toEqual(request);
-      const response = { id: 1, error: { code: -32601, message: "Synthetic backend error" } };
-      writeRequest(fixture.official.stdout, response);
-      expect(await fixture.collector.waitFor((message) => requestId(message, 1))).toEqual(response);
-    } finally {
-      await stopFixture(fixture);
-    }
-  });
-});
-
-describe("AppServerHost installed Harness plugins", () => {
-  // A cold plugin import has a 10s per-plugin loader budget; RPC checks remain 2s.
-  it("discovers an unknown plugin, serves its descriptor, routes a Thread, and closes it", async () => {
-    const directory = mkdtempSync(path.join(tmpdir(), "codexhost-plugin-host-"));
-    const location = path.join(directory, "sample-agent");
-    mkdirSync(location);
-    writeFileSync(
-      path.join(directory, "enabled.json"),
-      JSON.stringify({ version: 1, enabled: ["sample-agent"] }),
-    );
-    writeFileSync(
-      path.join(location, "manifest.json"),
-      JSON.stringify({
-        manifestVersion: 1,
-        id: "sample-agent",
-        name: "Sample Agent",
-        version: "1.0.0",
-        adapterApiVersion: 1,
-        entry: "index.mjs",
-      }),
-    );
-    writeFileSync(
-      path.join(location, "index.mjs"),
-      `
-      import { FakeHarnessAdapter } from ${JSON.stringify(pathToFileURL(path.resolve("packages/harness-adapter/dist/testing.js")).href)};
-      import { writeFileSync } from "node:fs";
-      let accountInspections = 0;
-      export function createHarnessAdapter() {
-        const adapter = new FakeHarnessAdapter("sample-agent");
-        adapter.inspectAccount = async () => ({ email: "sample@example.com", credits: { usedPercent: ++accountInspections, periodType: "weekly" } });
-        const close = adapter.close.bind(adapter);
-        adapter.close = async () => { await close(); writeFileSync(new URL("closed", import.meta.url), "yes"); };
-        return adapter;
-      }
-    `,
-    );
-    const fixture = createFixture({ pluginDirectory: directory, externalAdapters: new Map() });
-    try {
-      await fixture.ready;
-      writeRequest(fixture.desktopInput, {
-        id: 901,
-        method: "codexhost/harness/plugins/list",
-        params: {},
-      });
-      expect(await fixture.collector.waitFor((message) => requestId(message, 901))).toMatchObject({
-        result: { plugins: [{ id: "sample-agent", name: "Sample Agent", version: "1.0.0" }] },
-      });
-      writeRequest(fixture.desktopInput, {
-        id: 907,
-        method: "codexhost/harness/accounts/sources",
-        params: {},
-      });
-      expect(await fixture.collector.waitFor((message) => requestId(message, 907))).toMatchObject({
-        result: {
-          sources: [{ harnessId: "sample-agent", harnessName: "Sample Agent" }],
-        },
-      });
-      writeRequest(fixture.desktopInput, {
-        id: 908,
-        method: "codexhost/harness/accounts/inspect",
-        params: { harnessId: "sample-agent" },
-      });
-      expect(await fixture.collector.waitFor((message) => requestId(message, 908))).toMatchObject({
-        result: {
-          harnessId: "sample-agent",
-          harnessName: "Sample Agent",
-          account: {
-            email: "sample@example.com",
-            credits: { usedPercent: 1 },
-          },
-        },
-      });
-      writeRequest(fixture.desktopInput, {
-        id: 902,
-        method: "codexhost/harness/inspect",
-        params: { harnessId: "sample-agent" },
-      });
-      expect(await fixture.collector.waitFor((message) => requestId(message, 902))).toMatchObject({
-        result: { status: "ready" },
-      });
-      writeRequest(fixture.desktopInput, {
-        id: 905,
-        method: "codexhost/harness/accounts/list",
-        params: {},
-      });
-      expect(await fixture.collector.waitFor((message) => requestId(message, 905))).toMatchObject({
-        result: {
-          accounts: [
-            {
-              harnessId: "sample-agent",
-              harnessName: "Sample Agent",
-              email: "sample@example.com",
-              credits: { usedPercent: 1 },
-            },
-          ],
-        },
-      });
-      writeRequest(fixture.desktopInput, {
-        id: 909,
-        method: "codexhost/harness/accounts/inspect",
-        params: { harnessId: "sample-agent", refresh: true },
-      });
-      expect(await fixture.collector.waitFor((message) => requestId(message, 909))).toMatchObject({
-        result: {
-          harnessId: "sample-agent",
-          account: { credits: { usedPercent: 2 } },
-        },
-      });
-      writeRequest(fixture.desktopInput, {
-        id: 906,
-        method: "codexhost/harness/accounts/list",
-        params: { token: "invalid" },
-      });
-      expect(await fixture.collector.waitFor((message) => requestId(message, 906))).toMatchObject({
-        error: { code: -32602 },
-      });
-      const model = encodeHarnessPluginRoute(
-        harnessPluginRouteSchema.parse({ harnessId: "sample-agent" }),
-      );
-      const threadId = await startExternalThread(fixture, model, 903);
-      expect(
-        await fixture.mappingStore.getThread(hostThreadIdSchema.parse(threadId)),
-      ).toMatchObject({ harnessId: "sample-agent" });
-      expect(fixture.official.stdin.readableLength).toBe(0);
-      writeRequest(fixture.desktopInput, { id: 904, method: "initialize", params: {} });
-      const initialize = await readJsonLine(fixture.official.stdin);
-      expect(initialize).toMatchObject({ method: "initialize" });
-      writeRequest(fixture.official.stdout, {
-        id: requiredMessageId(initialize),
-        result: { userAgent: "official" },
-      });
-      expect(await readJsonLine(fixture.official.stdin)).toMatchObject({ method: "initialized" });
-      expect(await fixture.collector.waitFor((message) => requestId(message, 904))).toMatchObject({
-        result: { userAgent: "official" },
-      });
-    } finally {
-      await stopFixture(fixture);
-      try {
-        expect(readFileSync(path.join(location, "closed"), "utf8")).toBe("yes");
-      } finally {
-        rmSync(directory, { recursive: true, force: true });
-      }
-    }
-  }, 15_000);
-
-  const pluginWaitMethods = [
-    "codexhost/harness/inspect",
-    "codexhost/harness/commands/inspect",
-    "thread/start",
-    "thread/resume",
-  ];
-  it.each(pluginWaitMethods)(
-    "keeps official requests moving during plugin loading: %s",
-    async (blockedMethod) => {
-      const directory = mkdtempSync(path.join(tmpdir(), "codexhost-plugin-parallel-"));
-      const location = path.join(directory, "slow-agent");
-      const release = path.join(directory, "release");
-      mkdirSync(location);
-      writeFileSync(
-        path.join(directory, "enabled.json"),
-        JSON.stringify({ version: 1, enabled: ["slow-agent"] }),
-      );
-      writeFileSync(
-        path.join(location, "manifest.json"),
-        JSON.stringify({
-          manifestVersion: 1,
-          id: "slow-agent",
-          name: "Slow Agent",
-          version: "1.0.0",
-          adapterApiVersion: 1,
-          entry: "index.mjs",
-        }),
-      );
-      writeFileSync(
-        path.join(location, "index.mjs"),
-        `
-      import { access, writeFile } from "node:fs/promises";
-      import { FakeHarnessAdapter } from ${JSON.stringify(pathToFileURL(path.resolve("packages/harness-adapter/dist/testing.js")).href)};
-      const release = ${JSON.stringify(pathToFileURL(release).href)};
-      async function waitForRelease() {
-        for (;;) {
-          try {
-            await access(new URL(release));
-            return;
-          } catch {
-            await new Promise((resolve) => setTimeout(resolve, 20));
-          }
-        }
-      }
-      export async function createHarnessAdapter() {
-        await writeFile(new URL("started", import.meta.url), "yes");
-        await waitForRelease();
-        const adapter = new FakeHarnessAdapter("slow-agent");
-        await adapter.open({ kind: "create", cwd: "/synthetic" });
-        return adapter;
-      }
-    `,
-      );
-      const fixture = createFixture({ pluginDirectory: directory, externalAdapters: new Map() });
-      try {
-        await fixture.ready;
-        await vi.waitFor(() => expect(readdirSync(location)).toContain("started"));
-        writeRequest(fixture.desktopInput, {
-          id: 918,
-          method: "initialize",
-          params: { clientInfo: { name: "startup-test", version: "1" } },
-        });
-        const initialize = await readJsonLine(fixture.official.stdin);
-        expect(initialize.method).toBe("initialize");
-        writeRequest(fixture.official.stdout, {
-          id: requiredMessageId(initialize),
-          result: { userAgent: "test" },
-        });
-        expect(await fixture.collector.waitFor((message) => requestId(message, 918))).toMatchObject(
-          {
-            result: { userAgent: "test" },
-          },
-        );
-        expect((await readJsonLine(fixture.official.stdin)).method).toBe("initialized");
-        const model = encodeHarnessPluginRoute(
-          harnessPluginRouteSchema.parse({ harnessId: "slow-agent" }),
-        );
-        for (const id of ["persisted-thread", "other-thread"]) {
-          const hostThreadId = hostThreadIdSchema.parse(id);
-          await fixture.mappingStore.createProvisional({
-            hostThreadId,
-            createRequestId: id,
-            harnessId: harnessIdSchema.parse("slow-agent"),
-            cwd: "/synthetic",
-            title: "Persisted",
-            transportModelId: model,
-            ephemeral: false,
-            historyMode: "legacy",
-          });
-          await fixture.mappingStore.commitReady({
-            hostThreadId,
-            nativeSessionRef: {
-              harnessId: harnessIdSchema.parse("slow-agent"),
-              nativeSessionId:
-                id === "persisted-thread" ? "fake-session-1" : "other-native-session",
-              formatVersion: 1,
-            },
-          });
-        }
-        writeRequest(fixture.desktopInput, {
-          id: 920,
-          method: blockedMethod,
-          params:
-            blockedMethod === "thread/start"
-              ? { model, cwd: "/synthetic" }
-              : blockedMethod === "thread/resume"
-                ? { threadId: "persisted-thread" }
-                : { harnessId: "slow-agent" },
-        });
-        if (blockedMethod === "thread/resume") {
-          writeRequest(fixture.desktopInput, {
-            id: 921,
-            method: "thread/name/set",
-            params: { threadId: "persisted-thread", name: "After resume" },
-          });
-          writeRequest(fixture.desktopInput, {
-            id: 922,
-            method: "thread/name/set",
-            params: { threadId: "other-thread", name: "Independent" },
-          });
-          expect(
-            await fixture.collector.waitFor((message) => requestId(message, 922)),
-          ).toHaveProperty("result");
-          expect(fixture.collector.messages.some((message) => requestId(message, 921))).toBe(false);
-        }
-        writeRequest(fixture.desktopInput, { id: 919, method: "model/list", params: {} });
-        const models = await readJsonLine(fixture.official.stdin);
-        expect(models.method).toBe("model/list");
-        writeRequest(fixture.official.stdout, {
-          id: requiredMessageId(models),
-          result: { data: [] },
-        });
-        expect(await fixture.collector.waitFor((message) => requestId(message, 919))).toMatchObject(
-          {
-            result: { data: [] },
-          },
-        );
-        expect(fixture.collector.messages.some((message) => requestId(message, 920))).toBe(false);
-        writeFileSync(release, "ok");
-        const completed = await fixture.collector.waitFor((message) => requestId(message, 920));
-        expect(completed).toHaveProperty("result");
-        if (blockedMethod === "thread/resume") {
-          expect(completed).toMatchObject({ result: { thread: { id: "persisted-thread" } } });
-          const renamed = await fixture.collector.waitFor((message) => requestId(message, 921));
-          expect(renamed).toHaveProperty("result");
-          expect(fixture.collector.messages.indexOf(renamed)).toBeGreaterThan(
-            fixture.collector.messages.indexOf(completed),
-          );
-        }
-        expect(fixture.official.stdin.readableLength).toBe(0);
-      } finally {
-        writeFileSync(release, "ok");
-        fixture.host.close();
-        try {
-          await stopFixture(fixture);
-        } finally {
-          rmSync(directory, { recursive: true, force: true });
-        }
-      }
-    },
-    10_000,
-  );
-
-  it.each(["close", "eof"])(
-    "cancels blocked plugin loads on %s",
-    async (ending) => {
-      const ids = ["a-agent", "b-agent", "c-agent", "d-agent", "e-agent"];
-      const directory = mkdtempSync(path.join(tmpdir(), "codexhost-plugin-close-"));
-      const started = path.join(directory, "started");
-      const finished = path.join(directory, "finished");
-      mkdirSync(started);
-      mkdirSync(finished);
-      const release = path.join(directory, "release");
-      writeFileSync(
-        path.join(directory, "enabled.json"),
-        JSON.stringify({ version: 1, enabled: ids }),
-      );
-      for (const id of ids) {
-        const location = path.join(directory, id);
-        mkdirSync(location);
-        writeFileSync(
-          path.join(location, "manifest.json"),
-          JSON.stringify({
-            manifestVersion: 1,
-            id,
-            name: id,
-            version: "1.0.0",
-            adapterApiVersion: 1,
-            entry: "index.mjs",
-          }),
-        );
-        writeFileSync(
-          path.join(location, "index.mjs"),
-          `
-      import { access, writeFile } from "node:fs/promises";
-      import { FakeHarnessAdapter } from ${JSON.stringify(pathToFileURL(path.resolve("packages/harness-adapter/dist/testing.js")).href)};
-      const started = ${JSON.stringify(pathToFileURL(path.join(started, id)).href)};
-      const finished = ${JSON.stringify(pathToFileURL(path.join(finished, id)).href)};
-      const release = ${JSON.stringify(pathToFileURL(release).href)};
-      export async function createHarnessAdapter() {
-        await writeFile(new URL(started), "yes");
-        try {
-          for (;;) {
-            try {
-              await access(new URL(release));
-              return new FakeHarnessAdapter(${JSON.stringify(id)});
-            } catch {
-              await new Promise((resolve) => setTimeout(resolve, 20));
-            }
-          }
-        } finally {
-          await writeFile(new URL(finished), "yes");
-        }
-      }
-    `,
-        );
-      }
-      const fixture = createFixture({ pluginDirectory: directory, externalAdapters: new Map() });
-      try {
-        await fixture.ready;
-        await vi.waitFor(() => expect(readdirSync(started)).toHaveLength(4));
-        writeRequest(fixture.desktopInput, {
-          id: 925,
-          method: "codexhost/harness/commands/inspect",
-          params: { harnessId: "a-agent" },
-        });
-        await new Promise<void>((resolve) => setImmediate(resolve));
-        if (ending === "close") fixture.host.close();
-        else fixture.desktopInput.end();
-        let exitCode: number | undefined;
-        void fixture.running.then(
-          (code) => {
-            exitCode = code;
-          },
-          () => undefined,
-        );
-        await vi.waitFor(() => expect(exitCode).toBe(0));
-        expect(readdirSync(started).sort()).toEqual(["a-agent", "b-agent", "c-agent", "d-agent"]);
-      } finally {
-        fixture.host.close();
-        writeFileSync(release, "ok");
-        await vi.waitFor(() =>
-          expect(readdirSync(finished).sort()).toEqual(readdirSync(started).sort()),
-        );
-        try {
-          await stopFixture(fixture);
-        } finally {
-          rmSync(directory, { recursive: true, force: true });
-        }
-      }
-    },
-    3_000,
-  );
-
-  it.each(["thread/start", "thread/resume", "codexhost/thread/command/execute"])(
-    "drains an admitted Session open before EOF cleanup: %s",
-    async (requestMethod) => {
-      const fixture = createFixture();
-      const release = Promise.withResolvers<undefined>();
-      const opened = Promise.withResolvers<undefined>();
-      const closeAdapter = vi.spyOn(fixture.adapter, "close");
-      try {
-        await fixture.ready;
-        if (requestMethod !== "thread/start") {
-          const seed = await fixture.adapter.open({ kind: "create", cwd: "/synthetic" });
-          if (!seed.ok || !seed.value.initialState.nativeRef) {
-            throw new Error("Cannot seed a native Session");
-          }
-          const hostThreadId = hostThreadIdSchema.parse("persisted-thread");
-          await fixture.mappingStore.createProvisional({
-            hostThreadId,
-            createRequestId: "930",
-            harnessId: harnessIdSchema.parse("pi"),
-            cwd: "/synthetic",
-            title: "Persisted",
-            transportModelId: "codexhost/pi-native",
-            ephemeral: false,
-            historyMode: "legacy",
-          });
-          await fixture.mappingStore.commitReady({
-            hostThreadId,
-            nativeSessionRef: seed.value.initialState.nativeRef,
-          });
-        }
-        const open = fixture.adapter.open.bind(fixture.adapter);
-        vi.spyOn(fixture.adapter, "open").mockImplementation(async (input) => {
-          const result = await open(input);
-          opened.resolve(undefined);
-          await release.promise;
-          return result;
-        });
-        writeRequest(fixture.desktopInput, {
-          id: 930,
-          method: requestMethod,
-          params:
-            requestMethod === "thread/start"
-              ? { model: "codexhost/pi-native", cwd: "/synthetic" }
-              : { threadId: "persisted-thread", commandId: "compact" },
-        });
-        await opened.promise;
-        writeRequest(fixture.desktopInput, { id: 931, method: "model/list", params: {} });
-        expect((await readJsonLine(fixture.official.stdin)).method).toBe("model/list");
-        fixture.desktopInput.end();
-        await new Promise<void>((resolve) => setImmediate(resolve));
-        expect(closeAdapter).not.toHaveBeenCalled();
-        release.resolve(undefined);
-        await expect(fixture.running).resolves.toBe(0);
-        expect(closeAdapter).toHaveBeenCalledOnce();
-        const response = await fixture.collector.waitFor((message) => requestId(message, 930));
-        if (requestMethod === "codexhost/thread/command/execute") {
-          expect(response).toMatchObject({ error: { code: -32078 } });
-        } else {
-          expect(response).toHaveProperty("result");
-        }
-        expect(fixture.diagnosticOutput.read()?.toString() ?? "").not.toContain("closed");
-      } finally {
-        release.resolve(undefined);
-        fixture.host.close();
-        await stopFixture(fixture);
-      }
-    },
-  );
-
-  it("binds DeepSeek Session Import after its Adapter has been dynamically loaded", async () => {
-    const directory = mkdtempSync(path.join(tmpdir(), "codexhost-dynamic-import-"));
-    const location = path.join(directory, "deepseek-harness");
-    mkdirSync(location);
-    writeFileSync(
-      path.join(directory, "enabled.json"),
-      JSON.stringify({ version: 1, enabled: ["deepseek-harness"] }),
-    );
-    writeFileSync(
-      path.join(location, "manifest.json"),
-      JSON.stringify({
-        manifestVersion: 1,
-        id: "deepseek-harness",
-        name: "DeepSeek Harness",
-        version: "1",
-        adapterApiVersion: 1,
-        entry: "plugin.mjs",
-      }),
-    );
-    writeFileSync(
-      path.join(location, "plugin.mjs"),
-      `
-      import { FakeHarnessAdapter } from ${JSON.stringify(pathToFileURL(path.resolve("packages/harness-adapter/dist/testing.js")).href)};
-      export function createHarnessAdapter() {
-        const adapter = new FakeHarnessAdapter("deepseek-harness");
-        adapter.sessionImport = {
-          listCandidates: async () => ({ ok: true, value: [] }),
-          resolveCandidate: async () => ({ ok: false, error: { code: "sessionNotFound", message: "Missing", retryable: false } }),
-        };
-        return adapter;
-      }
-    `,
-    );
-    const fixture = createFixture({ pluginDirectory: directory, externalAdapters: new Map() });
-    try {
-      writeRequest(fixture.desktopInput, {
-        id: 910,
-        method: "codexhost/deepseek/modern-session/list",
-        params: {},
-      });
-      expect(await fixture.collector.waitFor((message) => requestId(message, 910))).toMatchObject({
-        result: { candidates: [] },
-      });
-      writeRequest(fixture.desktopInput, {
-        id: 911,
-        method: "codexhost/harness/session-import/sources",
-        params: {},
-      });
-      expect(await fixture.collector.waitFor((message) => requestId(message, 911))).toMatchObject({
-        result: { harnesses: [{ harnessId: "deepseek-harness", name: "DeepSeek Harness" }] },
-      });
-    } finally {
-      try {
-        await stopFixture(fixture);
-      } finally {
-        rmSync(directory, { recursive: true, force: true });
-      }
-    }
-  });
-
-  it("validates catalog parameters and leaves uninstalled routes out of the official stream", async () => {
-    const fixture = createFixture();
-    try {
-      writeRequest(fixture.desktopInput, {
-        id: 911,
-        method: "codexhost/harness/plugins/list",
-        params: { directory: "/untrusted" },
-      });
-      expect(await fixture.collector.waitFor((message) => requestId(message, 911))).toMatchObject({
-        error: { code: -32602 },
-      });
-      writeRequest(fixture.desktopInput, {
-        id: 912,
-        method: "thread/start",
-        params: {
-          model: encodeHarnessPluginRoute(
-            harnessPluginRouteSchema.parse({ harnessId: "missing-agent" }),
-          ),
-          cwd: "/synthetic",
-        },
-      });
-      expect(await fixture.collector.waitFor((message) => requestId(message, 912))).toHaveProperty(
-        "error",
-      );
-      writeRequest(fixture.desktopInput, {
-        id: 913,
-        method: "thread/start",
-        params: { model: "codexhost/plugin-v1@invalid", cwd: "/synthetic" },
-      });
-      expect(await fixture.collector.waitFor((message) => requestId(message, 913))).toHaveProperty(
-        "error",
-      );
-      expect(fixture.official.stdin.readableLength).toBe(0);
-    } finally {
-      await stopFixture(fixture);
-    }
-  });
-});
-
-describe("AppServerHost HarnessAdapter projection", () => {
-  it("uses an injected shared listener connection without spawning a stdio app-server", async () => {
-    const stdin = new PassThrough();
-    const stdout = new PassThrough();
-    const stderr = new PassThrough();
-    const closed = Promise.withResolvers<{
-      code: number | null;
-      signal: NodeJS.Signals | null;
-    }>();
-    const connected = Promise.withResolvers<undefined>();
-    const close = vi.fn(() => {
-      stdin.destroy();
-      stdout.end();
-      closed.resolve({ code: 0, signal: null });
-    });
-    const createOfficialConnection = vi.fn(() => {
-      connected.resolve(undefined);
-      return { stdin, stdout, stderr, closed: closed.promise, close };
-    });
-    const fixture = createFixture({ createOfficialConnection });
-
-    try {
-      await connected.promise;
-      expect(createOfficialConnection).toHaveBeenCalledTimes(1);
-      expect(fixture.spawnOfficial).not.toHaveBeenCalled();
-
-      fixture.host.close();
-
-      await expect(fixture.running).resolves.toBe(0);
-      expect(close).toHaveBeenCalled();
-    } finally {
-      fixture.desktopInput.end();
-      await fixture.running;
-      rmSync(fixture.mappingStoreDirectory, { recursive: true, force: true });
-    }
-  });
-
-  it("keeps external Harness requests available after official startup failure", async () => {
-    const createOfficialConnection = vi.fn(() => {
-      throw new Error("synthetic startup failure");
-    });
-    const fixture = createFixture({ createOfficialConnection });
-    try {
-      const threadId = await startPiThread(fixture);
-      const turnId = await startPiTurn(fixture, threadId);
-      const session = fixture.adapter.sessions[0];
-      if (!session) throw new Error("Fake Pi Session was not opened");
-      session.succeedTurn();
-      await fixture.collector.waitFor((message) => turnEvent(message, "turn/completed", turnId));
-      writeRequest(fixture.desktopInput, { id: 902, method: "model/list", params: {} });
-      await expect(
-        fixture.collector.waitFor((message) => message.id === 902),
-      ).resolves.toMatchObject({ error: { code: -32001 } });
-      expect(createOfficialConnection).toHaveBeenCalledOnce();
-      expect(fixture.desktopInput.destroyed).toBe(false);
-    } finally {
-      fixture.host.close();
-      await fixture.running;
-      rmSync(fixture.mappingStoreDirectory, { recursive: true, force: true });
-    }
-  });
-
-  it.each([false, true])("preserves native auth with account management=%s", async (managed) => {
-    const accountControl = Object.assign(
-      new SingleNativeCodexAccount(() => ({
-        version: 2,
-        currentAccountId: null,
-        phase: "ready",
-        revision: 7,
-        accounts: [],
-      })),
-      {
-        refresh: vi.fn(async () => {
-          throw new Error("synthetic identity refresh failure");
-        }),
-      },
-    );
-    const fixture = createFixture(managed ? { accountControl } : {});
-    try {
-      await fixture.ready;
-      const requests: JsonObject[] = [
-        { id: 903, method: "account/logout" },
-        { id: 904, method: "account/logout", params: null },
-        { id: 905, method: "account/logout", params: {} },
-        { id: 906, method: "account/login/start", params: { type: "chatgpt", futureField: true } },
-        { id: 907, method: "account/login/start", params: { type: "future-native-mode" } },
-        {
-          id: 908,
-          method: "account/login/cancel",
-          params: { loginId: "native-id", futureField: 1 },
-        },
-        { id: 909, method: "account/login/future", params: {} },
-        { id: 910, method: "account/login/start" },
-        { id: 911, method: "account/logout", params: false },
-        { id: 913, method: "account/logout", params: [] },
-        { id: 914, method: "account/login/cancel" },
-      ];
-      for (const request of requests) {
-        writeRequest(fixture.desktopInput, request);
-        expect(await readJsonLine(fixture.official.stdin)).toEqual(request);
-        const response =
-          request.id === 906
-            ? {
-                id: request.id,
-                result: { type: "chatgpt", loginId: "native-id", futureField: "kept" },
-              }
-            : request.id === 908
-              ? { id: request.id, result: { status: "canceled", futureField: true } }
-              : request.id === 907 || request.id === 910 || request.id === 911
-                ? {
-                    id: request.id,
-                    error: {
-                      code: -32602,
-                      message: "native rejection",
-                      data: { futureField: true },
-                    },
-                  }
-                : { id: request.id, result: {} };
-        fixture.official.stdout.write(`${JSON.stringify(response)}\n`);
-        expect(await fixture.collector.waitFor((message) => message.id === request.id)).toEqual(
-          response,
-        );
-      }
-      for (const notification of [
-        {
-          method: "account/login/completed",
-          params: { loginId: "native-id", success: true, futureField: true },
-        },
-        { method: "account/updated", params: { authMode: null, futureField: "kept" } },
-      ]) {
-        fixture.official.stdout.write(`${JSON.stringify(notification)}\n`);
-        expect(
-          await fixture.collector.waitFor((message) => message.method === notification.method),
-        ).toEqual(notification);
-      }
-      if (managed) await vi.waitFor(() => expect(accountControl.refresh).toHaveBeenCalled());
-      writeRequest(fixture.desktopInput, { id: 912, method: "account/read", params: {} });
-      expect(await readJsonLine(fixture.official.stdin)).toEqual({
-        id: 912,
-        method: "account/read",
-        params: {},
-      });
-      fixture.official.stdout.write(`${JSON.stringify({ id: 912, result: { account: null } })}\n`);
-      await expect(
-        fixture.collector.waitFor((message) => message.id === 912),
-      ).resolves.toMatchObject({ result: { account: null } });
-    } finally {
-      await stopFixture(fixture);
-    }
-  });
-
-  it("refreshes native-derived Account selection before returning an Account list", async () => {
-    const stale: CodexAccountListResult = {
-      version: 2,
-      currentAccountId: null,
-      phase: "ready",
-      revision: 1,
-      accounts: [],
-    };
-    const fresh: CodexAccountListResult = {
-      ...stale,
-      currentAccountId: "native",
-      revision: 2,
-      accounts: [{ accountId: "native", label: "Observed native Account" }],
-    };
-    const refresh = vi.fn(async () => fresh);
-    const accountControl = Object.assign(new SingleNativeCodexAccount(() => stale), { refresh });
-    const fixture = createFixture({ accountControl });
-    try {
-      await fixture.ready;
-      writeRequest(fixture.desktopInput, { id: 908, method: "codexhost/account/list", params: {} });
-      await expect(fixture.collector.waitFor((message) => message.id === 908)).resolves.toEqual({
-        id: 908,
-        result: fresh,
-      });
-      expect(refresh).toHaveBeenCalledOnce();
-    } finally {
-      await stopFixture(fixture);
-    }
-  });
-
-  it.each([
-    "codexhost/account/switch",
-    "codexhost/account/logout",
-    "codexhost/account/login/start",
-    "codexhost/account/login/cancel",
-    "codexhost/account/delete",
-    "codexhost/account/recover",
-    "codexhost/account/rate-limit-reset/consume",
-  ])("forwards leftover Host account method %s as an unknown method", async (methodName) => {
-    const fixture = createFixture();
-    try {
-      await fixture.ready;
-      const request = { id: 910, method: methodName, params: { accountId: "account-b" } };
-      writeRequest(fixture.desktopInput, request);
-      expect(await readJsonLine(fixture.official.stdin)).toEqual(request);
-      fixture.official.stdout.write(
-        `${JSON.stringify({ id: 910, error: { code: -32601, message: "Method not found" } })}\n`,
-      );
-      await expect(fixture.collector.waitFor((message) => message.id === 910)).resolves.toEqual({
-        id: 910,
-        error: { code: -32601, message: "Method not found" },
-      });
-    } finally {
-      await stopFixture(fixture);
-    }
-  });
-
-  it("hydrates the native summary list and preserves Subagent identity through parent history", async () => {
-    const fixture = createFixture();
-    try {
-      const parentId = await startPiThread(fixture);
-      const turnId = await startPiTurn(fixture, parentId);
-      await fixture.collector.waitFor((message) => turnEvent(message, "turn/started", turnId));
-      const session = fixture.adapter.sessions[0];
-      if (!session) throw new Error("Missing fixture Session");
-      const child = {
-        subagentId: "call-child",
-        nativeSubagentId: "native-child",
-        description: "Summary child",
-        role: "explorer",
-        background: false,
-        status: "running" as const,
-      };
-      const itemId = session.startSubagentDelegation(child);
-      const started = await fixture.collector.waitFor(
-        (message) =>
-          method(message, "thread/started") &&
-          (messageParams(message).thread as JsonObject | undefined)?.parentThreadId === parentId,
-      );
-      const childId = (messageParams(started).thread as JsonObject).id;
-      const list = async (id: number, sourceParams: JsonObject) => {
-        writeRequest(fixture.desktopInput, {
-          id,
-          method: "thread/list",
-          params: {
-            limit: 200,
-            sourceKinds: ["subAgentThreadSpawn"],
-            useStateDbOnly: true,
-            ...sourceParams,
-          },
-        });
-        const official = await readJsonLine(fixture.official.stdin);
-        expect(official.method).toBe("thread/list");
-        writeRequest(fixture.official.stdout, {
-          id: requiredMessageId(official),
-          result: { data: [], nextCursor: null },
-        });
-        return fixture.collector.waitFor((message) => requestId(message, id));
-      };
-      expect(await list(90, { ancestorThreadId: parentId })).toMatchObject({
-        result: {
-          data: [
-            {
-              id: childId,
-              parentThreadId: parentId,
-              name: "Summary child",
-              agentRole: "explorer",
-              status: { type: "active" },
-              canAcceptDirectInput: false,
-            },
-          ],
-        },
-      });
-      session.replaceSubagents(itemId, [{ ...child, status: "completed" }]);
-      session.completeItem(itemId, { status: "succeeded" });
-      session.succeedTurn();
-      await fixture.collector.waitFor((message) => turnEvent(message, "turn/completed", turnId));
-      expect(await list(91, { parentThreadId: parentId })).toMatchObject({
-        result: {
-          data: [
-            {
-              id: childId,
-              status: { type: "idle" },
-            },
-          ],
-        },
-      });
-      writeRequest(fixture.desktopInput, {
-        id: 92,
-        method: "thread/turns/list",
-        params: {
-          threadId: parentId,
-          limit: 20,
-          itemsView: "full",
-        },
-      });
-      const history = await fixture.collector.waitFor((message) => requestId(message, 92));
-      expect(history).toMatchObject({
-        result: {
-          data: [
-            {
-              items: expect.arrayContaining([
-                expect.objectContaining({
-                  type: "collabAgentToolCall",
-                  senderThreadId: parentId,
-                  receiverThreadIds: [childId],
-                }),
-              ]),
-            },
-          ],
-        },
-      });
-      expect(
-        (await fixture.mappingStore.listThreads()).filter((record) => record.subagent),
-      ).toHaveLength(1);
-    } finally {
-      await stopFixture(fixture);
-    }
-  });
-
-  it("materializes a Subagent receiver as a readable Child Host Thread", async () => {
-    const base = new FakeHarnessAdapter(harnessIdSchema.parse("pi"));
-    let subagentPhase: "started" | "temporarily-empty" | "working" | "completed" = "started";
-    const adapter = Object.assign(base, {
-      subagents: {
-        readSnapshot: vi.fn(async (input: { parent: { nativeSessionId: string } }) => {
-          const subagentSnapshot: HostThreadSnapshot = {
-            turns:
-              subagentPhase === "temporarily-empty"
-                ? []
-                : [
-                    {
-                      nativeTurnRef: {
-                        harnessId: harnessIdSchema.parse("pi"),
-                        nativeSessionId: input.parent.nativeSessionId,
-                        nativeTurnKey: "native-subagent-turn",
-                        formatVersion: 1,
-                      },
-                      input:
-                        subagentPhase === "started"
-                          ? [{ type: "text", text: "Analyze files" }]
-                          : [],
-                      items:
-                        subagentPhase === "started"
-                          ? []
-                          : [
-                              {
-                                item: {
-                                  type: "commandExecution",
-                                  itemId: hostItemIdSchema.parse("subagent-command"),
-                                  command: "pwd",
-                                  output: "/synthetic",
-                                  exitCode: 0,
-                                },
-                                outcome: { status: "succeeded" },
-                              },
-                              ...(subagentPhase === "completed"
-                                ? [
-                                    {
-                                      item: {
-                                        type: "agentMessage" as const,
-                                        itemId: hostItemIdSchema.parse("subagent-answer"),
-                                        text: "Analysis complete",
-                                      },
-                                      outcome: { status: "succeeded" as const },
-                                    },
-                                  ]
-                                : []),
-                            ],
-                      outcome: { status: "unknown", reason: "Synthetic history" },
-                    },
-                  ],
-          };
-          return { ok: true as const, value: subagentSnapshot };
-        }),
-      },
-    });
-    const fixture = createFixture({
-      externalAdapters: new Map([["pi", adapter]]) as ReadonlyMap<
-        ExternalHarnessId,
-        FakeHarnessAdapter
-      >,
-    });
-    const threadId = await startPiThread(fixture);
-    const turnId = await startPiTurn(fixture, threadId);
-    const session = adapter.sessions[0];
-    if (!session) throw new Error("Fake Session was not opened");
-    await fixture.collector.waitFor((message) => turnEvent(message, "turn/started", turnId));
-    const childStartedPromise = fixture.collector.waitFor(
-      (message) =>
-        method(message, "thread/started") &&
-        (messageParams(message).thread as JsonObject | undefined)?.parentThreadId === threadId,
-    );
-    const itemId = session.startSubagentDelegation({
-      subagentId: "agent-call",
-      nativeSubagentId: "native-agent-1",
-      description: "Analyze files",
-      background: false,
-      status: "running",
-    });
-    const childStarted = await childStartedPromise;
-    expect(messageParams(childStarted).thread).toMatchObject({
-      status: { type: "active" },
-      canAcceptDirectInput: false,
-    });
-    const childThreadId = (messageParams(childStarted).thread as JsonObject).id as string;
-    writeRequest(fixture.desktopInput, {
-      id: 98,
-      method: "thread/turns/list",
-      params: { threadId: childThreadId, limit: 20, itemsView: "full" },
-    });
-    const initialHistory = await fixture.collector.waitFor((message) => requestId(message, 98));
-    expect(initialHistory).toMatchObject({
-      result: { data: [{ items: [expect.objectContaining({ type: "userMessage" })] }] },
-    });
-
-    subagentPhase = "temporarily-empty";
-    session.emitSubagentTranscriptChanged("native-agent-1");
-    writeRequest(fixture.desktopInput, {
-      id: 97,
-      method: "thread/turns/list",
-      params: { threadId: childThreadId, limit: 20, itemsView: "full" },
-    });
-    const retainedHistory = await fixture.collector.waitFor((message) => requestId(message, 97));
-    expect(retainedHistory).toMatchObject({
-      result: { data: [{ items: [expect.objectContaining({ type: "userMessage" })] }] },
-    });
-
-    subagentPhase = "working";
-    session.emitSubagentTranscriptChanged("native-agent-1");
-    const childTurnStarted = await fixture.collector.waitFor(
-      (message) =>
-        method(message, "turn/started") &&
-        messageParams(message).threadId === childThreadId &&
-        ((messageParams(message).turn as JsonObject | undefined)?.status as string | undefined) ===
-          "inProgress",
-    );
-    const childTurnStartedIndex = fixture.collector.messages.indexOf(childTurnStarted);
-    const childCommandCompleted = await fixture.collector.waitFor(
-      (message) =>
-        method(message, "item/completed") &&
-        messageParams(message).threadId === childThreadId &&
-        (messageParams(message).item as JsonObject | undefined)?.type === "commandExecution" &&
-        (messageParams(message).item as JsonObject | undefined)?.command === "pwd",
-    );
-    expect(childTurnStartedIndex).toBeLessThan(
-      fixture.collector.messages.indexOf(childCommandCompleted),
-    );
-    writeRequest(fixture.desktopInput, {
-      id: 96,
-      method: "thread/turns/list",
-      params: { threadId: childThreadId, limit: 20, itemsView: "full" },
-    });
-    const mergedHistory = await fixture.collector.waitFor((message) => requestId(message, 96));
-    expect(mergedHistory).toMatchObject({
-      result: {
-        data: [
-          {
-            items: expect.arrayContaining([
-              expect.objectContaining({
-                type: "userMessage",
-                content: [expect.objectContaining({ text: "Analyze files" })],
-              }),
-              expect.objectContaining({ type: "commandExecution", command: "pwd" }),
-            ]),
-          },
-        ],
-      },
-    });
-
-    subagentPhase = "completed";
-    session.replaceSubagents(itemId, [
-      {
-        subagentId: "agent-call",
-        nativeSubagentId: "native-agent-1",
-        description: "Analyze files",
-        background: false,
-        status: "completed",
-        resultSummary: "Analysis complete",
-      },
-    ]);
-    session.completeItem(itemId, { status: "succeeded" });
-    session.succeedTurn();
-    await fixture.collector.waitFor((message) => turnEvent(message, "turn/completed", turnId));
-    expect(
-      fixture.collector.messages.filter(
-        (message) =>
-          method(message, "item/completed") &&
-          messageParams(message).threadId === childThreadId &&
-          (messageParams(message).item as JsonObject | undefined)?.type === "commandExecution",
-      ),
-    ).toHaveLength(1);
-    await expect(
-      fixture.collector.waitFor(
-        (message) =>
-          method(message, "item/completed") &&
-          messageParams(message).threadId === childThreadId &&
-          (messageParams(message).item as JsonObject | undefined)?.type === "agentMessage" &&
-          (messageParams(message).item as JsonObject | undefined)?.text === "Analysis complete",
-      ),
-    ).resolves.toBeTruthy();
-    await expect(
-      fixture.collector.waitFor(
-        (message) =>
-          method(message, "turn/completed") && messageParams(message).threadId === childThreadId,
-      ),
-    ).resolves.toBeTruthy();
-    await expect(
-      fixture.collector.waitFor(
-        (message) =>
-          method(message, "thread/status/changed") &&
-          messageParams(message).threadId === childThreadId &&
-          (messageParams(message).status as JsonObject | undefined)?.type === "idle",
-      ),
-    ).resolves.toBeTruthy();
-    const completed = await fixture.collector.waitFor(
-      (message) =>
-        method(message, "item/completed") &&
-        (messageParams(message).item as JsonObject | undefined)?.type === "collabAgentToolCall",
-    );
-    const completedChildThreadId = (
-      (messageParams(completed).item as JsonObject).receiverThreadIds as string[]
-    )[0];
-    expect(completedChildThreadId).toBe(childThreadId);
-    expect(childThreadId).toBeTruthy();
-    expect(childThreadId).not.toBe("agent-call");
-    if (!childThreadId) throw new Error("Projected Subagent has no Child Thread ID");
-
-    writeRequest(fixture.desktopInput, {
-      id: 99,
-      method: "thread/turns/list",
-      params: { threadId: childThreadId, limit: 20, itemsView: "full" },
-    });
-    const history = await fixture.collector.waitFor((message) => requestId(message, 99));
-    expect(history).toMatchObject({
-      result: {
-        data: [
-          {
-            items: expect.arrayContaining([
-              expect.objectContaining({
-                type: "commandExecution",
-                command: "pwd",
-                aggregatedOutput: "/synthetic",
-              }),
-              expect.objectContaining({ type: "agentMessage", text: "Analysis complete" }),
-            ]),
-          },
-        ],
-      },
-    });
-    expect(adapter.subagents.readSnapshot).toHaveBeenCalledWith({
-      parent: expect.objectContaining({ nativeSessionId: expect.any(String) }),
-      nativeSubagentId: "native-agent-1",
-      cwd: "/synthetic",
-    });
-    await stopFixture(fixture);
-  });
-
-  it("keeps the Parent Thread active until all background Subagents settle", async () => {
-    const base = new FakeHarnessAdapter(harnessIdSchema.parse("pi"));
-    let completed = false;
-    const adapter = Object.assign(base, {
-      subagents: {
-        readSnapshot: vi.fn(async (input: { parent: { nativeSessionId: string } }) => ({
-          ok: true as const,
-          value: {
-            turns: [
-              {
-                nativeTurnRef: {
-                  harnessId: harnessIdSchema.parse("pi"),
-                  nativeSessionId: input.parent.nativeSessionId,
-                  nativeTurnKey: "background-child-turn",
-                  formatVersion: 1,
-                },
-                input: [{ type: "text", text: "Inspect files" }],
-                items: completed
-                  ? [
-                      {
-                        item: {
-                          type: "agentMessage" as const,
-                          itemId: hostItemIdSchema.parse("background-child-answer"),
-                          text: "Inspection complete",
-                        },
-                        outcome: { status: "succeeded" as const },
-                      },
-                    ]
-                  : [],
-                outcome: { status: "unknown" as const, reason: "Background work" },
-              },
-            ],
-          },
-        })),
-      },
-    });
-    const fixture = createFixture({
-      externalAdapters: new Map([["pi", adapter]]) as ReadonlyMap<
-        ExternalHarnessId,
-        FakeHarnessAdapter
-      >,
-    });
-    const threadId = await startPiThread(fixture);
-    const turnId = await startPiTurn(fixture, threadId);
-    const session = adapter.sessions[0];
-    if (!session) throw new Error("Fake Session was not opened");
-    await fixture.collector.waitFor((message) => turnEvent(message, "turn/started", turnId));
-    const childStartedPromise = fixture.collector.waitFor(
-      (message) =>
-        method(message, "thread/started") &&
-        (messageParams(message).thread as JsonObject | undefined)?.parentThreadId === threadId,
-    );
-    const itemId = session.startSubagentDelegation({
-      subagentId: "background-agent-call",
-      nativeSubagentId: "native-background-agent",
-      description: "Inspect files",
-      background: true,
-      status: "running",
-    });
-    const childStarted = await childStartedPromise;
-    const childThreadId = (messageParams(childStarted).thread as JsonObject).id as string;
-    writeRequest(fixture.desktopInput, {
-      id: 95,
-      method: "thread/turns/list",
-      params: { threadId: childThreadId, limit: 20, itemsView: "full" },
-    });
-    await fixture.collector.waitFor((message) => requestId(message, 95));
-    session.completeItem(itemId, { status: "succeeded" });
-    session.succeedTurn();
-    await fixture.collector.waitFor((message) => turnEvent(message, "turn/completed", turnId));
-    await new Promise((resolve) => setTimeout(resolve, 10));
-
-    expect(
-      fixture.collector.messages.some((message) => threadStatus(message, threadId, "idle")),
-    ).toBe(false);
-    expect(
-      fixture.collector.messages.some((message) => threadStatus(message, threadId, "active")),
-    ).toBe(true);
-
-    completed = true;
-    session.emitSubagentState("native-background-agent", "completed", "Inspection complete");
-    await expect(
-      fixture.collector.waitFor((message) => threadStatus(message, childThreadId, "idle")),
-    ).resolves.toBeTruthy();
-    await expect(
-      fixture.collector.waitFor(
-        (message) =>
-          method(message, "item/completed") &&
-          messageParams(message).threadId === childThreadId &&
-          (messageParams(message).item as JsonObject | undefined)?.type === "agentMessage" &&
-          (messageParams(message).item as JsonObject | undefined)?.text === "Inspection complete",
-      ),
-    ).resolves.toBeTruthy();
-    await expect(
-      fixture.collector.waitFor((message) => threadStatus(message, threadId, "idle")),
-    ).resolves.toBeTruthy();
-    await stopFixture(fixture);
-  });
-
-  it("terminates the official app-server when its Host session closes", async () => {
-    const fixture = createFixture({ officialExitsOnInputEnd: false });
-    fixture.official.kill.mockImplementationOnce(() => {
-      fixture.official.stdout.end();
-      fixture.official.emit("exit", null, "SIGTERM");
-      return true;
-    });
-
-    try {
-      await vi.waitFor(() => expect(fixture.spawnOfficial).toHaveBeenCalledTimes(1));
-      expect(() => fixture.host.close()).not.toThrow();
-      await expect(fixture.running).resolves.toBe(0);
-      expect(fixture.official.kill).toHaveBeenCalledWith("SIGTERM");
-    } finally {
-      fixture.desktopInput.end();
-      await fixture.running;
-      rmSync(fixture.mappingStoreDirectory, { recursive: true, force: true });
-    }
-  });
-
-  it("accepts confirmed graceful EOF shutdown without signaling the exited process", async () => {
-    const fixture = createFixture();
-    const exited = vi.fn();
-    fixture.official.once("exit", exited);
-    try {
-      await fixture.ready;
-      fixture.host.close();
-      await expect(fixture.running).resolves.toBe(0);
-      expect(fixture.official.stdin.writableEnded).toBe(true);
-      expect(exited).toHaveBeenCalledExactlyOnceWith(0, null);
-      expect(fixture.official.kill).not.toHaveBeenCalled();
-    } finally {
-      fixture.desktopInput.end();
-      await fixture.running;
-      rmSync(fixture.mappingStoreDirectory, { recursive: true, force: true });
-    }
-  });
-
-  it("lets an active official Turn reach its terminal event after Desktop disconnects", async () => {
-    const fixture = createFixture({ officialExitsOnInputEnd: false });
-    const threadId = "019cbe86-76cf-7721-b5e4-978934e18757";
-    const turnId = "019cbe86-8eef-79d0-8658-cf2c64aa38cf";
-
-    try {
-      await bindOfficialThread(fixture, threadId);
-      writeRequest(fixture.desktopInput, {
-        id: 1,
-        method: "turn/start",
-        params: { threadId, input: [{ type: "text", text: "keep running" }] },
-      });
-      await readJsonLine(fixture.official.stdin);
-      fixture.official.stdout.write(
-        `${JSON.stringify({ method: "turn/started", params: { threadId, turn: { id: turnId } } })}\n`,
-      );
-      await fixture.collector.waitFor((message) => turnEvent(message, "turn/started", turnId));
-
-      fixture.host.disconnect();
-      const beforeTerminal = await Promise.race([
-        fixture.running.then(() => "settled" as const),
-        new Promise<"pending">((resolve) => setTimeout(() => resolve("pending"), 25)),
-      ]);
-
-      expect(beforeTerminal).toBe("pending");
-      expect(fixture.official.kill).not.toHaveBeenCalled();
-
-      fixture.official.stdout.write(
-        `${JSON.stringify({
-          method: "turn/completed",
-          params: { threadId, turn: { id: turnId, status: "completed" } },
-        })}\n`,
-      );
-      await expect(
-        fixture.collector.waitFor((message) => turnEvent(message, "turn/completed", turnId)),
-      ).resolves.toBeTruthy();
-      await expect(fixture.running).resolves.toBe(0);
-      expect(fixture.official.kill).toHaveBeenCalledExactlyOnceWith("SIGTERM");
-    } finally {
-      fixture.host.close();
-      fixture.desktopInput.end();
-      await fixture.running;
-      rmSync(fixture.mappingStoreDirectory, { recursive: true, force: true });
-    }
-  });
-
-  it("keeps a forwarded official turn/start alive across the pre-response disconnect race", async () => {
-    const fixture = createFixture({ officialExitsOnInputEnd: false });
-    const threadId = "019cbe87-ae18-7543-97f1-c60deeb61b17";
-    const turnId = "019cbe87-b77a-78a2-a16a-c6ad1fc2a026";
-
-    try {
-      await bindOfficialThread(fixture, threadId);
-      writeRequest(fixture.desktopInput, {
-        id: 1,
-        method: "turn/start",
-        params: { threadId, input: [{ type: "text", text: "start then disconnect" }] },
-      });
-      await readJsonLine(fixture.official.stdin);
-      fixture.host.disconnect();
-
-      const beforeResponse = await Promise.race([
-        fixture.running.then(() => "settled" as const),
-        new Promise<"pending">((resolve) => setTimeout(() => resolve("pending"), 25)),
-      ]);
-      expect(beforeResponse).toBe("pending");
-
-      fixture.official.stdout.write(
-        `${JSON.stringify({ id: 1, result: { turn: { id: turnId } } })}\n`,
-      );
-      await expect(
-        fixture.collector.waitFor((message) => requestId(message, 1)),
-      ).resolves.toBeTruthy();
-      expect(fixture.official.stdin.writableEnded).toBe(false);
-
-      fixture.official.stdout.write(
-        `${JSON.stringify({
-          method: "turn/completed",
-          params: { threadId, turn: { id: turnId, status: "completed" } },
-        })}\n`,
-      );
-      await expect(fixture.running).resolves.toBe(0);
-      expect(fixture.official.kill).toHaveBeenCalledExactlyOnceWith("SIGTERM");
-    } finally {
-      fixture.host.close();
-      fixture.desktopInput.end();
-      await fixture.running;
-      rmSync(fixture.mappingStoreDirectory, { recursive: true, force: true });
-    }
-  });
-
-  it("releases a disconnected Host session when pending official turn/start fails", async () => {
-    const fixture = createFixture({ officialExitsOnInputEnd: false });
-    const threadId = "019cbe88-9a77-78ae-919f-79cfe1468e11";
-
-    try {
-      await bindOfficialThread(fixture, threadId);
-      writeRequest(fixture.desktopInput, {
-        id: 1,
-        method: "turn/start",
-        params: { threadId, input: [{ type: "text", text: "rejected start" }] },
-      });
-      await readJsonLine(fixture.official.stdin);
-      fixture.host.disconnect();
-      fixture.official.stdout.write(
-        `${JSON.stringify({ id: 1, error: { code: -32000, message: "synthetic rejection" } })}\n`,
-      );
-
-      await expect(
-        fixture.collector.waitFor((message) => requestId(message, 1)),
-      ).resolves.toBeTruthy();
-      await expect(fixture.running).resolves.toBe(0);
-      expect(fixture.official.kill).toHaveBeenCalledExactlyOnceWith("SIGTERM");
-    } finally {
-      fixture.host.close();
-      fixture.desktopInput.end();
-      await fixture.running;
-      rmSync(fixture.mappingStoreDirectory, { recursive: true, force: true });
-    }
-  });
-
-  it("releases a disconnected Host when official completion precedes the start response", async () => {
-    const fixture = createFixture({ officialExitsOnInputEnd: false });
-    const threadId = "019cbe89-91f5-71c8-b24d-0410e73a2ef4";
-    const turnId = "019cbe89-9e78-7e49-ac62-3958b8db3881";
-
-    try {
-      await bindOfficialThread(fixture, threadId);
-      writeRequest(fixture.desktopInput, {
-        id: 1,
-        method: "turn/start",
-        params: { threadId, input: [{ type: "text", text: "finish immediately" }] },
-      });
-      await readJsonLine(fixture.official.stdin);
-      fixture.host.disconnect();
-      fixture.official.stdout.write(
-        `${JSON.stringify({
-          method: "turn/completed",
-          params: { threadId, turn: { id: turnId, status: "completed" } },
-        })}\n`,
-      );
-      fixture.official.stdout.write(
-        `${JSON.stringify({ id: 1, result: { turn: { id: turnId } } })}\n`,
-      );
-
-      await expect(fixture.running).resolves.toBe(0);
-      expect(fixture.official.kill).toHaveBeenCalledExactlyOnceWith("SIGTERM");
-    } finally {
-      fixture.host.close();
-      fixture.desktopInput.end();
-      await fixture.running;
-      rmSync(fixture.mappingStoreDirectory, { recursive: true, force: true });
-    }
-  });
-
-  it("lets an active external Harness Turn finish after Desktop disconnects", async () => {
-    const fixture = createFixture();
-    let session: FakeHarnessSession | undefined;
-
-    try {
-      const threadId = await startPiThread(fixture);
-      const turnId = await startPiTurn(fixture, threadId);
-      session = fixture.adapter.sessions[0];
-      if (!session) throw new Error("Fake Pi Session was not opened");
-      const close = vi.spyOn(session, "close");
-      await fixture.collector.waitFor((message) => turnEvent(message, "turn/started", turnId));
-
-      fixture.host.disconnect();
-      const beforeTerminal = await Promise.race([
-        fixture.running.then(() => "settled" as const),
-        new Promise<"pending">((resolve) => setTimeout(() => resolve("pending"), 25)),
-      ]);
-
-      expect(beforeTerminal).toBe("pending");
-      expect(close).not.toHaveBeenCalled();
-
-      session.appendText("completed after transport disconnect");
-      session.succeedTurn();
-      await expect(
-        fixture.collector.waitFor((message) => turnEvent(message, "turn/completed", turnId)),
-      ).resolves.toBeTruthy();
-      await expect(fixture.running).resolves.toBe(0);
-      expect(close).toHaveBeenCalled();
-    } finally {
-      try {
-        session?.succeedTurn();
-      } catch {
-        // A failing implementation may already have interrupted the synthetic Turn.
-      }
-      fixture.host.close();
-      fixture.desktopInput.end();
-      await fixture.running;
-      rmSync(fixture.mappingStoreDirectory, { recursive: true, force: true });
-    }
-  });
-
-  it("preserves an external Turn and rejects official retries after backend failure", async () => {
-    const fixture = createFixture();
-    try {
-      const threadId = await startPiThread(fixture);
-      const turnId = await startPiTurn(fixture, threadId);
-      const session = fixture.adapter.sessions[0];
-      if (!session) throw new Error("Fake Pi Session was not opened");
-      const close = vi.spyOn(session, "close");
-      fixture.official.emit("exit", 1, null);
-      await vi.waitFor(() => expect(fixture.official.stdout.destroyed).toBe(true));
-      writeRequest(fixture.desktopInput, { id: 901, method: "model/list", params: {} });
-      await expect(
-        fixture.collector.waitFor((message) => message.id === 901),
-      ).resolves.toMatchObject({ id: 901, error: { code: -32001 } });
-      expect(fixture.desktopInput.destroyed).toBe(false);
-      expect(close).not.toHaveBeenCalled();
-      expect(fixture.spawnOfficial).toHaveBeenCalledOnce();
-      session.appendText("external output after official exit");
-      session.succeedTurn();
-      await expect(
-        fixture.collector.waitFor((message) => turnEvent(message, "turn/completed", turnId)),
-      ).resolves.toBeTruthy();
-      expect(close).not.toHaveBeenCalled();
-    } finally {
-      fixture.host.close();
-      await fixture.running;
-      rmSync(fixture.mappingStoreDirectory, { recursive: true, force: true });
-    }
-  });
-
-  it("keeps Desktop initialization and external Harnesses available after failed startup cleanup cannot prove exit", async () => {
-    const exit = { code: 1, signal: null };
-    const stopProcess = vi.fn(async (): Promise<OfficialAppServerExit> => {
-      throw new Error("synthetic exit unconfirmed");
-    });
-    const connection: OfficialAppServerConnection = {
-      stdin: new PassThrough(),
-      stdout: new PassThrough(),
-      stderr: new PassThrough(),
-      closed: Promise.resolve(exit),
-      stopProcess,
-      close: vi.fn(),
-    };
-    const fixture = createFixture({ createOfficialConnection: () => connection });
-    const outcomes: unknown[] = [];
-    void fixture.running.then(
-      (code) => outcomes.push(code),
-      (error: unknown) => outcomes.push(error),
-    );
-    try {
-      await vi.waitFor(() => expect(stopProcess).toHaveBeenCalled());
-      await new Promise<void>((resolve) => setImmediate(resolve));
-      expect(outcomes).toEqual([]);
-      writeRequest(fixture.desktopInput, {
-        id: 901,
-        method: "initialize",
-        params: { clientInfo: { name: "codex_desktop", version: "synthetic" } },
-      });
-      const initializationResponse = await fixture.collector.waitFor(
-        (message) => message.id === 901,
-      );
-      expect(initializationResponse.error).toBeUndefined();
-      expect(initializationResponse).toMatchObject({ id: 901, result: expect.any(Object) });
-      writeRequest(fixture.desktopInput, { method: "initialized", params: {} });
-      const threadId = await startPiThread(fixture);
-      const turnId = await startPiTurn(fixture, threadId);
-      const session = fixture.adapter.sessions[0];
-      if (!session) throw new Error("Fake Pi Session was not opened");
-      session.appendText("external output despite unconfirmed native exit");
-      session.succeedTurn();
-      await fixture.collector.waitFor((message) => turnEvent(message, "turn/completed", turnId));
-      writeRequest(fixture.desktopInput, { id: 902, method: "model/list", params: {} });
-      await expect(
-        fixture.collector.waitFor((message) => message.id === 902),
-      ).resolves.toMatchObject({
-        id: 902,
-        error: { code: -32001 },
-      });
-      expect(outcomes).toEqual([]);
-    } finally {
-      stopProcess.mockImplementation(async () => exit);
-      fixture.host.close();
-      await fixture.running.catch(() => undefined);
-      connection.stdin.destroy();
-      connection.stdout.destroy();
-      connection.stderr.destroy();
-      rmSync(fixture.mappingStoreDirectory, { recursive: true, force: true });
-    }
-  });
-
-  it("keeps the initialized Desktop client attached through managed Account recovery", async () => {
-    const exit = Promise.withResolvers<OfficialAppServerExit>();
-    const stdin = new PassThrough();
-    const stdout = new PassThrough();
-    const stderr = new PassThrough();
-    const nativeRequests: JsonObject[] = [];
-    stdin.on("data", (chunk: Buffer) => {
-      const request = JSON.parse(chunk.toString()) as JsonObject;
-      nativeRequests.push(request);
-      if (!("id" in request)) return;
-      writeRequest(stdout, {
-        id: request.id ?? null,
-        result: request.method === "initialize" ? { userAgent: "synthetic-native" } : { data: [] },
-      });
-    });
-    const createBackend = vi.fn((): OwnedOfficialBackend => ({
-      closed: exit.promise,
-      start: async () => {},
-      connect: async () => ({
-        stdin,
-        stdout,
-        stderr,
-        closed: exit.promise,
-        close: () => {},
-      }),
-      stop: async () => {
-        stdin.end();
-        stdout.end();
-        stderr.end();
-        exit.resolve({ code: 0, signal: null });
-      },
-    }));
-    const scope = new OfficialRuntimeScope({
-      permanentHome: "/synthetic/permanent",
-      createBackend: createBackend.mockImplementationOnce(() => {
-        throw new Error("Synthetic initial startup failure");
-      }),
-      diagnosticOutput: new PassThrough(),
-    });
-    const accountControl = new SingleNativeCodexAccount(() => ({
-      version: 2,
-      currentAccountId: null,
-      phase: scope.gate.phase,
-      revision: scope.gate.revision,
-      accounts: [],
-    }));
-    const fixture = createFixture({ officialRuntimeScope: scope, accountControl });
-    const params = {
-      clientInfo: { name: "codex_desktop", version: "synthetic" },
-    };
-    try {
-      writeRequest(fixture.desktopInput, { id: 901, method: "initialize", params });
-      const initial = await fixture.collector.waitFor((message) => message.id === 901);
-      expect(initial.error).toBeUndefined();
-      expect(initial).toMatchObject({ result: { codexHome: "/synthetic/permanent" } });
-      expect(scope.gate.phase).toBe("unavailable");
-      expect(createBackend).toHaveBeenCalledOnce();
-      writeRequest(fixture.desktopInput, { method: "initialized" });
-      await scope.owner.start();
-      scope.gate.initialized();
-      expect(nativeRequests).toContainEqual(
-        expect.objectContaining({ method: "initialize", params }),
-      );
-      expect(nativeRequests).toContainEqual({ method: "initialized" });
-      writeRequest(fixture.desktopInput, { id: 903, method: "model/list", params: {} });
-      await expect(
-        fixture.collector.waitFor((message) => message.id === 903),
-      ).resolves.toMatchObject({
-        result: { data: [] },
-      });
-      expect(fixture.collector.messages.filter((message) => message.id === 901)).toHaveLength(1);
-      expect(createBackend).toHaveBeenCalledTimes(2);
-    } finally {
-      fixture.host.close();
-      await fixture.running;
-      await scope.close();
-      rmSync(fixture.mappingStoreDirectory, { recursive: true, force: true });
-    }
-  });
-
-  it("drains recovered native work only after actual writer exit, not a one-shot startup failure", async () => {
-    const exit = Promise.withResolvers<OfficialAppServerExit>();
-    const proof = Promise.withResolvers<undefined>();
-    const stdin = new PassThrough();
-    const stdout = new PassThrough();
-    const stderr = new PassThrough();
-    stdin.on("data", (chunk: Buffer) => {
-      const request = JSON.parse(chunk.toString()) as JsonObject;
-      if ("id" in request)
-        writeRequest(stdout, { id: request.id ?? null, result: { userAgent: "synthetic-native" } });
-    });
-    const stop = vi.fn(async () => {
-      await proof.promise;
-      stdin.end();
-      stdout.end();
-      stderr.end();
-    });
-    const scope = new OfficialRuntimeScope({
-      permanentHome: "/synthetic/permanent",
-      diagnosticOutput: new PassThrough(),
-      createBackend: vi
-        .fn(() => ({
-          closed: exit.promise,
-          start: async () => {},
-          stop,
-          connect: async () => ({ stdin, stdout, stderr, closed: exit.promise, close: () => {} }),
-        }))
-        .mockImplementationOnce(() => {
-          throw new Error("Synthetic initial startup failure");
-        }),
-    });
-    const fixture = createFixture({ officialRuntimeScope: scope });
-    let finished = false;
-    void fixture.running.then(() => {
-      finished = true;
-    });
-    try {
-      writeRequest(fixture.desktopInput, { id: 901, method: "initialize", params: {} });
-      await fixture.collector.waitFor((message) => message.id === 901);
-      await scope.owner.start();
-      scope.gate.initialized();
-      writeRequest(stdout, {
-        method: "turn/started",
-        params: {
-          threadId: "synthetic-native-thread",
-          turn: { id: "synthetic-native-turn", status: "inProgress", items: [] },
-        },
-      });
-      await fixture.collector.waitFor((message) => message.method === "turn/started");
-      // Admission leases are independent from the Host's active-Turn draining.
-      expect(scope.gate.busy).toBe(false);
-      exit.resolve({ code: 1, signal: null });
-      await vi.waitFor(() => expect(stop).toHaveBeenCalledOnce());
-      fixture.host.disconnect();
-      await new Promise<void>((resolve) => setImmediate(resolve));
-      expect(finished).toBe(false);
-      expect(scope.gate.busy).toBe(false);
-      proof.resolve(undefined);
-      await scope.owner.stop();
-      await vi.waitFor(() => expect(finished).toBe(true));
-    } finally {
-      exit.resolve({ code: 1, signal: null });
-      proof.resolve(undefined);
-      fixture.host.close();
-      await fixture.running;
-      await scope.close();
-      rmSync(fixture.mappingStoreDirectory, { recursive: true, force: true });
-    }
-  });
-
-  it("keeps Host alive when official app-server output closes before Desktop input", async () => {
-    const fixture = createFixture();
-
-    try {
-      await vi.waitFor(() => expect(fixture.spawnOfficial).toHaveBeenCalledOnce());
-      fixture.official.stdout.end();
-
-      const outcome = await Promise.race([
-        fixture.running,
-        new Promise<"timed-out">((resolve) => {
-          setTimeout(() => resolve("timed-out"), 100);
-        }),
-      ]);
-
-      expect(outcome).toBe("timed-out");
-      expect(fixture.desktopInput.destroyed).toBe(false);
-      expect(fixture.official.kill).toHaveBeenCalledWith("SIGTERM");
-    } finally {
-      fixture.host.close();
-      await fixture.running;
-      rmSync(fixture.mappingStoreDirectory, { recursive: true, force: true });
-    }
-  });
-
-  it("keeps Host alive when official output closes while Desktop output is backpressured", async () => {
-    const fixture = createFixture({ desktopOutput: new PassThrough({ highWaterMark: 1 }) });
-
-    try {
-      await vi.waitFor(() => expect(fixture.spawnOfficial).toHaveBeenCalledOnce());
-      fixture.desktopOutput.pause();
-      fixture.official.stdout.write(
-        `${JSON.stringify({ method: "synthetic/event", params: { payload: "x".repeat(32_768) } })}\n`,
-      );
-      await vi.waitFor(() =>
-        expect(fixture.desktopOutput.listenerCount("drain")).toBeGreaterThan(0),
-      );
-      fixture.official.stdout.end();
-
-      const outcome = await Promise.race([
-        fixture.running,
-        new Promise<"timed-out">((resolve) => {
-          setTimeout(() => resolve("timed-out"), 1_000);
-        }),
-      ]);
-
-      expect(outcome).toBe("timed-out");
-      expect(fixture.desktopInput.destroyed).toBe(false);
-      expect(fixture.official.kill).toHaveBeenCalledWith("SIGTERM");
-    } finally {
-      fixture.host.close();
-      fixture.desktopOutput.resume();
-      await fixture.running;
-      rmSync(fixture.mappingStoreDirectory, { recursive: true, force: true });
-    }
-  });
-
-  it("keeps Host alive when the official app-server exits while its output stays open", async () => {
-    const fixture = createFixture();
-
-    try {
-      await vi.waitFor(() => expect(fixture.spawnOfficial).toHaveBeenCalledOnce());
-      expect(
-        fixture.official.stdin.write(Buffer.alloc(fixture.official.stdin.writableHighWaterMark)),
-      ).toBe(false);
-      writeRequest(fixture.desktopInput, { id: 90, method: "model/list", params: {} });
-      await vi.waitFor(() =>
-        expect(fixture.official.stdin.listenerCount("drain")).toBeGreaterThan(0),
-      );
-      fixture.official.emit("exit", 0, null);
-
-      const outcome = await Promise.race([
-        fixture.running,
-        new Promise<"timed-out">((resolve) => {
-          setTimeout(() => resolve("timed-out"), 1_000);
-        }),
-      ]);
-
-      expect(outcome).toBe("timed-out");
-      expect(fixture.desktopInput.destroyed).toBe(false);
-      expect(fixture.spawnOfficial).toHaveBeenCalledOnce();
-      expect(fixture.official.stdout.destroyed).toBe(true);
-      // A confirmed exit releases process ownership; do not signal it again.
-      expect(fixture.official.kill).not.toHaveBeenCalled();
-    } finally {
-      fixture.host.close();
-      await fixture.running;
-      rmSync(fixture.mappingStoreDirectory, { recursive: true, force: true });
-    }
-  });
-
-  it("keeps Desktop-first official app-server shutdown successful", async () => {
-    const fixture = createFixture();
-
-    try {
-      await vi.waitFor(() => expect(fixture.spawnOfficial).toHaveBeenCalledOnce());
-      fixture.desktopInput.end();
-
-      await expect(fixture.running).resolves.toBe(0);
-    } finally {
-      fixture.host.close();
-      await fixture.running;
-      rmSync(fixture.mappingStoreDirectory, { recursive: true, force: true });
-    }
-  });
-
-  it("can share one initialized Mapping Store across concurrent remote sessions", async () => {
-    const directory = mkdtempSync(path.join(tmpdir(), "codexhost-host-shared-"));
-    const mappingStore = new MappingStore({ directory });
-    await mappingStore.initialize();
-    const close = vi.spyOn(mappingStore, "close");
-    const backendClosed = Promise.withResolvers<OfficialAppServerExit>();
-    const connections = new Set<OfficialAppServerConnection>();
-    const officialRuntimeScope = new OfficialRuntimeScope({
-      permanentHome: "/synthetic/shared-home",
-      diagnosticOutput: new PassThrough(),
-      createBackend: (): OwnedOfficialBackend => ({
-        closed: backendClosed.promise,
-        async start() {},
-        async connect() {
-          const stdin = new PassThrough();
-          const stdout = new PassThrough();
-          const stderr = new PassThrough();
-          const closed = Promise.withResolvers<OfficialAppServerExit>();
-          const connection: OfficialAppServerConnection = {
-            stdin,
-            stdout,
-            stderr,
-            closed: closed.promise,
-            close() {
-              stdin.end();
-              stdout.end();
-              stderr.end();
-              closed.resolve({ code: 0, signal: null });
-              connections.delete(connection);
-            },
-          };
-          connections.add(connection);
-          return connection;
-        },
-        async stop() {
-          for (const connection of [...connections]) connection.close();
-          backendClosed.resolve({ code: 0, signal: null });
-        },
-      }),
-    });
-    const accountControl = new SingleNativeCodexAccount(() => ({
-      version: 2,
-      currentAccountId: null,
-      phase: officialRuntimeScope.gate.phase,
-      revision: officialRuntimeScope.gate.revision,
-      accounts: [],
-    }));
-    // This checks shared Mapping Store lifetime with explicit shared Host composition.
-    const first = createFixture({
-      mappingStore,
-      mappingStoreDirectory: directory,
-      closeMappingStoreOnExit: false,
-      officialRuntimeScope,
-      accountControl,
-    });
-    const second = createFixture({
-      mappingStore,
-      mappingStoreDirectory: directory,
-      closeMappingStoreOnExit: false,
-      officialRuntimeScope,
-      accountControl,
-    });
-
-    try {
-      await Promise.all([closeFixture(first), closeFixture(second)]);
-      expect(close).not.toHaveBeenCalled();
-    } finally {
-      await officialRuntimeScope.close();
-      await mappingStore.close();
-      rmSync(directory, { recursive: true, force: true });
-    }
-  });
-
-  it("routes fixed update controls locally without requesting Desktop quit", async () => {
-    const updateCoordinator: HostUpdateCoordinator = {
-      check: vi.fn(async () => ({
-        currentVersion: "1.2.2",
-        installation: "npm" as const,
-        latestVersion: "1.2.3",
-        updateAvailable: true,
-        installationAvailable: true,
-        releaseNotes: "Safer updates",
-        releaseNotesUrl: "https://github.com/BytePioneer-AI/codex-host/releases/tag/v1.2.3",
-        status: null,
-        error: null,
-      })),
-      start: vi.fn(async () => ({
-        status: {
-          version: "1.2.3",
-          installation: "npm" as const,
-          phase: "prepared" as const,
-          updatedAt: 10,
-          error: null,
-        },
-      })),
-      status: vi.fn(async () => ({ status: null })),
-    };
-    const fixture = createFixture({ updateCoordinator });
-
-    writeRequest(fixture.desktopInput, {
-      id: 20,
-      method: "codexhost/update/check",
-      params: {},
-    });
-    await expect(
-      fixture.collector.waitFor((message) => requestId(message, 20)),
-    ).resolves.toMatchObject({ result: { latestVersion: "1.2.3", updateAvailable: true } });
-
-    writeRequest(fixture.desktopInput, {
-      id: 21,
-      method: "codexhost/update/start",
-      params: {},
-    });
-    await expect(
-      fixture.collector.waitFor((message) => requestId(message, 21)),
-    ).resolves.toMatchObject({ result: { status: { phase: "prepared" } } });
-    expect(updateCoordinator.start).toHaveBeenCalledOnce();
-    await stopFixture(fixture);
-  });
-
-  it("rejects privileged update params and unavailable composition", async () => {
-    const fixture = createFixture();
-    writeRequest(fixture.desktopInput, {
-      id: 22,
-      method: "codexhost/update/start",
-      params: { url: "https://example.com/update.exe" },
-    });
-    await expect(
-      fixture.collector.waitFor((message) => requestId(message, 22)),
-    ).resolves.toMatchObject({ error: { code: -32602 } });
-
-    writeRequest(fixture.desktopInput, {
-      id: 24,
-      method: "codexhost/update/status",
-      params: null,
-    });
-    await expect(
-      fixture.collector.waitFor((message) => requestId(message, 24)),
-    ).resolves.toMatchObject({ error: { code: -32602 } });
-
-    writeRequest(fixture.desktopInput, {
-      id: 23,
-      method: "codexhost/update/check",
-      params: {},
-    });
-    await expect(
-      fixture.collector.waitFor((message) => requestId(message, 23)),
-    ).resolves.toMatchObject({ error: { code: -32090 } });
-    await stopFixture(fixture);
-  });
-
-  it("handles Pi inspection locally without opening a Thread Session", async () => {
-    const fixture = createFixture();
-    const officialWrite = vi.fn();
-    fixture.official.stdin.on("data", officialWrite);
-
-    writeRequest(fixture.desktopInput, {
-      id: 30,
-      method: "codexhost/harness/inspect",
-      params: { harnessId: "pi", cwd: "/synthetic", refresh: true },
-    });
-    await expect(
-      fixture.collector.waitFor((message) => requestId(message, 30)),
-    ).resolves.toMatchObject({
-      result: {
-        status: "ready",
-        catalog: { models: [{ label: "Fake Primary" }, { label: "Fake Secondary" }] },
-        capabilities: {
-          configuration: { selectModel: true, selectThinkingOption: true },
-          history: { fork: true, forkAcrossCwd: true, rollbackLastTurn: false },
-        },
-      },
-    });
-    expect(fixture.adapter.inspectionCalls).toBe(1);
-    expect(fixture.adapter.sessions).toHaveLength(0);
-    expect(officialWrite).not.toHaveBeenCalled();
-    await stopFixture(fixture);
-  });
-
-  it("dispatches inspection by registered Harness ID and rejects unknown Harnesses", async () => {
-    const pi = new FakeHarnessAdapter(harnessIdSchema.parse("pi"));
-    const claude = new FakeHarnessAdapter(harnessIdSchema.parse("claude-code"));
-    const fixture = createFixture({
-      externalAdapters: new Map<ExternalHarnessId, FakeHarnessAdapter>([
-        ["pi", pi],
-        ["claude-code", claude],
-      ]),
-    });
-
-    writeRequest(fixture.desktopInput, {
-      id: 31,
-      method: "codexhost/harness/inspect",
-      params: { harnessId: "claude-code", cwd: "/synthetic-claude" },
-    });
-    await expect(
-      fixture.collector.waitFor((message) => requestId(message, 31)),
-    ).resolves.toMatchObject({ result: { status: "ready" } });
-    expect(claude.inspectionCalls).toBe(1);
-    expect(pi.inspectionCalls).toBe(0);
-
-    writeRequest(fixture.desktopInput, {
-      id: 32,
-      method: "codexhost/harness/inspect",
-      params: { harnessId: "unregistered" },
-    });
-    await expect(
-      fixture.collector.waitFor((message) => requestId(message, 32)),
-    ).resolves.toMatchObject({
-      error: { code: -32077, message: "Harness 'unregistered' is unavailable" },
-    });
-    await stopFixture(fixture);
-  });
-
-  it("opens a Harness Web UI without returning or echoing its credential", async () => {
-    const adapter = new WebUiHarnessAdapter(harnessIdSchema.parse("deepseek-harness"));
-    const fixture = createFixture({
-      externalAdapters: new Map<ExternalHarnessId, FakeHarnessAdapter>([
-        ["deepseek-harness", adapter],
-      ]),
-    });
-
-    writeRequest(fixture.desktopInput, {
-      id: 37,
-      method: "codexhost/harness/web-ui/open",
-      params: { harnessId: "deepseek-harness" },
-    });
-    await expect(fixture.collector.waitFor((message) => requestId(message, 37))).resolves.toEqual({
-      id: 37,
-      result: {},
-    });
-    expect(adapter.openCalls).toBe(1);
-
-    const canary = "SECRET_CANARY";
-    writeRequest(fixture.desktopInput, {
-      id: 38,
-      method: "codexhost/harness/web-ui/open",
-      params: { harnessId: "deepseek-harness", url: `http://127.0.0.1/?token=${canary}` },
-    });
-    await expect(
-      fixture.collector.waitFor((message) => requestId(message, 38)),
-    ).resolves.toMatchObject({ error: { code: -32602 } });
-    expect(adapter.openCalls).toBe(1);
-
-    adapter.failureMessage = `failed near ?token=${canary}`;
-    writeRequest(fixture.desktopInput, {
-      id: 39,
-      method: "codexhost/harness/web-ui/open",
-      params: { harnessId: "deepseek-harness" },
-    });
-    await expect(fixture.collector.waitFor((message) => requestId(message, 39))).resolves.toEqual({
-      id: 39,
-      error: { code: -32092, message: "Harness Web UI could not be opened" },
-    });
-    expect(JSON.stringify(fixture.collector.messages)).not.toContain(canary);
-    await stopFixture(fixture);
-  });
-
-  it("lists and imports a Modern DeepSeek Session as notLoaded metadata", async () => {
-    const adapter = new ModernSessionImportAdapter(harnessIdSchema.parse("deepseek-harness"));
-    adapter.candidates = [
-      {
-        nativeSessionId: "native-import",
-        title: "Imported history",
-        updatedAt: 123,
-        cwd: path.resolve("import-workspace"),
-        running: false,
-      },
-    ];
-    const fixture = createFixture({
-      externalAdapters: new Map<ExternalHarnessId, FakeHarnessAdapter>([
-        ["deepseek-harness", adapter],
-      ]),
-    });
-    const officialWrite = vi.fn();
-    fixture.official.stdin.on("data", officialWrite);
-
-    writeRequest(fixture.desktopInput, {
-      id: 40,
-      method: "codexhost/deepseek/modern-session/list",
-      params: {},
-    });
-    await expect(fixture.collector.waitFor((message) => requestId(message, 40))).resolves.toEqual({
-      id: 40,
-      result: { candidates: adapter.candidates },
-    });
-    writeRequest(fixture.desktopInput, {
-      id: 41,
-      method: "codexhost/deepseek/modern-session/import",
-      params: { nativeSessionId: "native-import" },
-    });
-    const response = await fixture.collector.waitFor((message) => requestId(message, 41));
-    expect(response).toMatchObject({ result: { threadId: expect.any(String) } });
-    const threadId = (response.result as JsonObject).threadId;
-    const started = await fixture.collector.waitFor(
-      (message) =>
-        method(message, "thread/started") &&
-        (messageParams(message).thread as JsonObject | undefined)?.id === threadId,
-    );
-    expect(messageParams(started).thread).toMatchObject({
-      id: threadId,
-      status: { type: "notLoaded" },
-      cwd: path.resolve("import-workspace"),
-      name: "Imported history",
-      turns: [],
-    });
-    expect(fixture.collector.messages.indexOf(response)).toBeLessThan(
-      fixture.collector.messages.indexOf(started),
-    );
-    expect(adapter.sessions).toHaveLength(0);
-    expect(officialWrite).not.toHaveBeenCalled();
-
-    writeRequest(fixture.desktopInput, {
-      id: 43,
-      method: "codexhost/deepseek/modern-session/import",
-      params: { nativeSessionId: "native-import" },
-    });
-    await expect(fixture.collector.waitFor((message) => requestId(message, 43))).resolves.toEqual({
-      id: 43,
-      result: { threadId },
-    });
-    expect(
-      fixture.collector.messages.filter(
-        (message) =>
-          method(message, "thread/started") &&
-          (messageParams(message).thread as JsonObject | undefined)?.id === threadId,
-      ),
-    ).toHaveLength(1);
-    await stopFixture(fixture);
-  });
-
-  it("rejects invalid Modern DeepSeek import params before calling the Adapter", async () => {
-    const adapter = new ModernSessionImportAdapter(harnessIdSchema.parse("deepseek-harness"));
-    const fixture = createFixture({
-      externalAdapters: new Map<ExternalHarnessId, FakeHarnessAdapter>([
-        ["deepseek-harness", adapter],
-      ]),
-    });
-
-    writeRequest(fixture.desktopInput, {
-      id: 42,
-      method: "codexhost/deepseek/modern-session/import",
-      params: { nativeSessionId: "", cwd: "/untrusted" },
-    });
-    await expect(
-      fixture.collector.waitFor((message) => requestId(message, 42)),
-    ).resolves.toMatchObject({ error: { code: -32602 } });
-    expect(adapter.listCandidates).not.toHaveBeenCalled();
-    await stopFixture(fixture);
-  });
-
-  it("answers a later Harness inspect while an earlier inspect is still running", async () => {
-    const pi = new FakeHarnessAdapter(harnessIdSchema.parse("pi"));
-    const claude = new FakeHarnessAdapter(harnessIdSchema.parse("claude-code"));
-    let releaseClaude = (): void => undefined;
-    const claudeReady = new Promise<void>((resolve) => {
-      releaseClaude = resolve;
-    });
-    const inspectClaude = claude.inspect.bind(claude);
-    claude.inspect = async (input) => {
-      await claudeReady;
-      return inspectClaude(input);
-    };
-    const fixture = createFixture({
-      externalAdapters: new Map<ExternalHarnessId, FakeHarnessAdapter>([
-        ["pi", pi],
-        ["claude-code", claude],
-      ]),
-    });
-
-    writeRequest(fixture.desktopInput, {
-      id: 33,
-      method: "codexhost/harness/inspect",
-      params: { harnessId: "claude-code" },
-    });
-    writeRequest(fixture.desktopInput, {
-      id: 34,
-      method: "codexhost/harness/inspect",
-      params: { harnessId: "pi" },
-    });
-    await expect(
-      fixture.collector.waitFor((message) => requestId(message, 34)),
-    ).resolves.toMatchObject({ result: { status: "ready" } });
-    expect(fixture.collector.messages.some((message) => requestId(message, 33))).toBe(false);
-    expect(pi.inspectionCalls).toBe(1);
-
-    releaseClaude();
-    await expect(
-      fixture.collector.waitFor((message) => requestId(message, 33)),
-    ).resolves.toMatchObject({ result: { status: "ready" } });
-    await stopFixture(fixture);
-  });
-
-  it("answers a Harness inspect while official thread/list is still pending", async () => {
-    const fixture = createFixture();
-    writeRequest(fixture.desktopInput, {
-      id: 35,
-      method: "thread/list",
-      params: { limit: 10, sortKey: "created_at", sortDirection: "desc" },
-    });
-    writeRequest(fixture.desktopInput, {
-      id: 36,
-      method: "codexhost/harness/inspect",
-      params: { harnessId: "pi" },
-    });
-    await expect(
-      fixture.collector.waitFor((message) => requestId(message, 36)),
-    ).resolves.toMatchObject({ result: { status: "ready" } });
-    expect(fixture.collector.messages.some((message) => requestId(message, 35))).toBe(false);
-    await stopFixture(fixture);
-  });
-
-  it("projects delegated input while reading visible progress from a running external Turn", async () => {
-    let delegationApi: DelegationControlApi | undefined;
-    const fixture = createFixture({
-      onDelegationApi: (api) => {
-        delegationApi = api;
-        return undefined;
-      },
-    });
-    await fixture.ready;
-    await vi.waitFor(async () => expect(await fixture.mappingStore.listThreads()).toEqual([]));
-    if (!delegationApi) throw new Error("Delegation API was not registered");
-    const starting = delegationApi.start({
-      harnessId: "pi",
-      task: "review auth",
-      cwd: "/synthetic",
-      parentThreadId: "parent-thread",
-    });
-    await answerOfficialParentCwd(fixture);
-    const started = await starting;
-    const session = fixture.adapter.sessions[0];
-    if (!session) throw new Error("Delegated Session was not opened");
-    await expect(
-      fixture.collector.waitFor(
-        (message) =>
-          method(message, "turn/started") &&
-          (message.params as JsonObject).threadId === started.threadId,
-      ),
-    ).resolves.toMatchObject({
-      params: {
-        turn: {
-          items: [
-            {
-              type: "userMessage",
-              content: [{ type: "text", text: "review auth" }],
-            },
-          ],
-        },
-      },
-    });
-    session.appendText("Checking auth.");
-    await expect(
-      delegationApi.read({ threadId: started.threadId, view: "result" }),
-    ).resolves.toMatchObject({
-      status: "running",
-      progress: [expect.objectContaining({ text: "Checking auth." })],
-      result: { availability: "pending" },
-    });
-    session.succeedTurn();
-    const completed = await fixture.collector.waitFor(
-      (message) =>
-        method(message, "turn/completed") &&
-        (message.params as JsonObject).threadId === started.threadId,
-    );
-    expect(completed).toMatchObject({
-      params: {
-        turn: {
-          items: [
-            {
-              type: "userMessage",
-              content: [{ type: "text", text: "review auth" }],
-            },
-            { type: "agentMessage", text: "Checking auth." },
-          ],
-        },
-      },
-    });
-    const completedItems = (
-      (completed.params as JsonObject).turn as { items: Array<{ id?: string; type?: string }> }
-    ).items;
-    expect(completedItems.filter((item) => item.type === "userMessage")).toHaveLength(1);
-    expect(new Set(completedItems.map((item) => item.id)).size).toBe(completedItems.length);
-
-    // Delegated external Threads use paginated history; read via turns/list.
-    writeRequest(fixture.desktopInput, {
-      id: 1057,
-      method: "thread/turns/list",
-      params: { threadId: started.threadId, limit: 20, itemsView: "full" },
-    });
-    const listed = await fixture.collector.waitFor((message) => requestId(message, 1057));
-    expect(listed).toMatchObject({
-      result: {
-        data: [
-          {
-            items: [
-              {
-                type: "userMessage",
-                content: [{ type: "text", text: "review auth" }],
-              },
-              { type: "agentMessage", text: "Checking auth." },
-            ],
-          },
-        ],
-      },
-    });
-    const storedItems =
-      (listed as { result: { data: Array<{ items: Array<{ id?: string; type?: string }> }> } })
-        .result.data[0]?.items ?? [];
-    expect(storedItems.filter((item) => item.type === "userMessage")).toHaveLength(1);
-    expect(new Set(storedItems.map((item) => item.id)).size).toBe(storedItems.length);
-    await stopFixture(fixture);
-  });
-
-  it("inherits cwd from a native Codex parent when delegation omits cwd", async () => {
-    let delegationApi: DelegationControlApi | undefined;
-    const fixture = createFixture({
-      onDelegationApi: (api) => {
-        delegationApi = api;
-        return undefined;
-      },
-    });
-    await fixture.ready;
-    if (!delegationApi) throw new Error("Delegation API was not registered");
-    await bindOfficialThread(fixture, "native-parent");
-
-    const pending = delegationApi.start({
-      harnessId: "pi",
-      task: "inherit workspace",
-      parentThreadId: "native-parent",
-    });
-    const read = await readJsonLine(fixture.official.stdin);
-    expect(read).toMatchObject({
-      method: "thread/read",
-      params: { threadId: "native-parent" },
-    });
-    fixture.official.stdout.write(
-      `${JSON.stringify({
-        id: read.id,
-        result: { thread: { id: "native-parent", cwd: "/native-workspace" } },
-      })}\n`,
-    );
-
-    await expect(pending).resolves.toMatchObject({ harnessId: "pi", status: "running" });
-    expect(fixture.adapter.sessions[0]?.cwd).toBe(path.resolve("/native-workspace"));
-    fixture.adapter.sessions[0]?.succeedTurn();
-    await stopFixture(fixture);
-  });
-
-  it("lists native and external Threads through the delegation CLI list surface", async () => {
-    let delegationApi: DelegationControlApi | undefined;
-    const fixture = createFixture({
-      onDelegationApi: (api) => {
-        delegationApi = api;
-        return undefined;
-      },
-    });
-    await fixture.ready;
-    await vi.waitFor(async () => expect(await fixture.mappingStore.listThreads()).toEqual([]));
-    if (!delegationApi) throw new Error("Delegation API was not registered");
-    const externalThreadId = await startPiThread(fixture);
-
-    const pending = delegationApi.list({ cwd: "/synthetic", limit: 25, sort: "created-desc" });
-    const request = await readJsonLine(fixture.official.stdin);
-    expect(request).toMatchObject({
-      method: "thread/list",
-      params: { cwd: ["/synthetic"], limit: 25, sortKey: "created_at", sortDirection: "desc" },
-    });
-    fixture.official.stdout.write(
-      `${JSON.stringify({
-        id: request.id,
-        result: {
-          data: [
-            {
-              id: "native-thread",
-              cwd: "/synthetic",
-              name: "Native",
-              createdAt: 2_000,
-              updatedAt: 2_000,
-              status: { type: "idle" },
-            },
-          ],
-          nextCursor: null,
-        },
-      })}\n`,
-    );
-    await expect(pending).resolves.toMatchObject({
-      threads: expect.arrayContaining([
-        expect.objectContaining({ threadId: externalThreadId, harnessId: "pi" }),
-        expect.objectContaining({ threadId: "native-thread", harnessId: "codex" }),
-      ]),
-    });
-    await stopFixture(fixture);
-  });
-
-  it("sends and cancels follow-up Turns on an external delegated Thread", async () => {
-    let delegationApi: DelegationControlApi | undefined;
-    const fixture = createFixture({
-      onDelegationApi: (api) => {
-        delegationApi = api;
-        return undefined;
-      },
-    });
-    await fixture.ready;
-    await vi.waitFor(async () => expect(await fixture.mappingStore.listThreads()).toEqual([]));
-    if (!delegationApi) throw new Error("Delegation API was not registered");
-    const starting = delegationApi.start({
-      harnessId: "pi",
-      task: "first",
-      cwd: "/synthetic",
-      parentThreadId: "parent-thread",
-    });
-    await answerOfficialParentCwd(fixture);
-    const started = await starting;
-    const session = fixture.adapter.sessions[0];
-    if (!session) throw new Error("Delegated Session was not opened");
-    session.succeedTurn();
-    await vi.waitFor(async () =>
-      expect(
-        await delegationApi?.read({ threadId: started.threadId, view: "result" }),
-      ).toMatchObject({ status: "completed" }),
-    );
-    const followUp = await delegationApi.send({ threadId: started.threadId, message: "continue" });
-    expect(followUp).toMatchObject({ harnessId: "pi", status: "running" });
-    await expect(
-      delegationApi.send({ threadId: started.threadId, message: "again" }),
-    ).rejects.toMatchObject({ code: "THREAD_BUSY" });
-    await expect(delegationApi.cancel({ threadId: started.threadId })).resolves.toMatchObject({
-      turnId: followUp.turnId,
-      cancelled: true,
-    });
-    session.completeCancellation();
-    await stopFixture(fixture);
-  });
-
-  it("sends and cancels follow-up Turns on a native Codex Thread", async () => {
-    let delegationApi: DelegationControlApi | undefined;
-    const fixture = createFixture({
-      onDelegationApi: (api) => {
-        delegationApi = api;
-        return undefined;
-      },
-    });
-    await fixture.ready;
-    await vi.waitFor(async () => expect(await fixture.mappingStore.listThreads()).toEqual([]));
-    if (!delegationApi) throw new Error("Delegation API was not registered");
-    await bindOfficialThread(fixture, "native-child");
-
-    const send = delegationApi.send({ threadId: "native-child", message: "continue" });
-    const read = await readJsonLine(fixture.official.stdin);
-    expect(read).toMatchObject({
-      method: "thread/read",
-      params: { threadId: "native-child", includeTurns: true },
-    });
-    fixture.official.stdout.write(
-      `${JSON.stringify({ id: read.id, result: { thread: { id: "native-child" } } })}\n`,
-    );
-    const turnStart = await readJsonLine(fixture.official.stdin);
-    expect(turnStart).toMatchObject({
-      method: "turn/start",
-      params: { threadId: "native-child", input: [{ type: "text", text: "continue" }] },
-    });
-    fixture.official.stdout.write(
-      `${JSON.stringify({ id: turnStart.id, result: { turn: { id: "native-turn-2" } } })}\n`,
-    );
-    await expect(send).resolves.toMatchObject({ turnId: "native-turn-2", status: "running" });
-    await expect(
-      delegationApi.send({ threadId: "native-child", message: "again" }),
-    ).rejects.toMatchObject({ code: "THREAD_BUSY" });
-
-    const cancel = delegationApi.cancel({ threadId: "native-child" });
-    const interrupt = await readJsonLine(fixture.official.stdin);
-    expect(interrupt).toMatchObject({
-      method: "turn/interrupt",
-      params: { threadId: "native-child", turnId: "native-turn-2" },
-    });
-    fixture.official.stdout.write(`${JSON.stringify({ id: interrupt.id, result: {} })}\n`);
-    await expect(cancel).resolves.toMatchObject({ turnId: "native-turn-2", cancelled: true });
-    await stopFixture(fixture);
-  });
-
-  it("inspects native Codex Models and starts with explicit Model and Thinking", async () => {
-    const xaiModel = harnessModelRefSchema.parse({
-      id: "codex-model-v1.eGFpL2dyb2stNC42",
-    });
-    const kimiModel = harnessModelRefSchema.parse({
-      id: "codex-model-v1.a2ltaS9rM1sxbV0",
-    });
-    let delegationApi: DelegationControlApi | undefined;
-    const fixture = createFixture({
-      onDelegationApi: (api) => {
-        delegationApi = api;
-        return undefined;
-      },
-    });
-    await fixture.ready;
-    await vi.waitFor(async () => expect(await fixture.mappingStore.listThreads()).toEqual([]));
-    if (!delegationApi) throw new Error("Delegation API was not registered");
-
-    const inspection = delegationApi.inspect({ harnessId: "codex" });
-    const modelList = await readJsonLine(fixture.official.stdin);
-    expect(modelList).toMatchObject({ method: "model/list", params: {} });
-    fixture.official.stdout.write(
-      `${JSON.stringify({
-        id: modelList.id,
-        result: {
-          data: [
-            {
-              model: "xai/grok-4.6",
-              displayName: "Grok 4.6",
-              isDefault: true,
-              supportedReasoningEfforts: [{ reasoningEffort: "high", description: "High" }],
-            },
-            {
-              model: "kimi/k3[1m]",
-              displayName: "Kimi K3",
-              supportedReasoningEfforts: [{ reasoningEffort: "high", description: "High" }],
-            },
-          ],
-        },
-      })}\n`,
-    );
-    await expect(inspection).resolves.toMatchObject({
-      harnessId: "codex",
-      inspection: {
-        status: "ready",
-        catalog: {
-          models: [
-            { ref: xaiModel, label: "Grok 4.6" },
-            { ref: kimiModel, label: "Kimi K3" },
-          ],
-          defaultModel: xaiModel,
-          thinkingOptions: [{ id: "high", label: "High" }],
-        },
-      },
-    });
-
-    const pending = delegationApi.start({
-      harnessId: "codex",
-      task: "review auth",
-      cwd: "/synthetic",
-      parentThreadId: "parent-thread",
-      model: kimiModel,
-      thinkingOptionId: harnessThinkingOptionIdSchema.parse("high"),
-    });
-    await answerOfficialParentCwd(fixture);
-    const validationList = await readJsonLine(fixture.official.stdin);
-    expect(validationList).toMatchObject({ method: "model/list" });
-    fixture.official.stdout.write(
-      `${JSON.stringify({
-        id: validationList.id,
-        result: {
-          data: [
-            {
-              model: "xai/grok-4.6",
-              supportedReasoningEfforts: [{ reasoningEffort: "high", description: "High" }],
-            },
-            {
-              model: "kimi/k3[1m]",
-              isDefault: true,
-              supportedReasoningEfforts: [{ reasoningEffort: "high", description: "High" }],
-            },
-          ],
-        },
-      })}\n`,
-    );
-    const threadStart = await readJsonLine(fixture.official.stdin);
-    expect(threadStart).toMatchObject({
-      method: "thread/start",
-      params: { model: "kimi/k3[1m]" },
-    });
-    expect(threadStart.params).not.toHaveProperty("reasoningEffort");
-    fixture.official.stdout.write(
-      `${JSON.stringify({
-        id: threadStart.id,
-        result: {
-          thread: { id: "native-configured" },
-          model: "kimi/k3[1m]",
-        },
-      })}\n`,
-    );
-    const turnStart = await readJsonLine(fixture.official.stdin);
-    expect(turnStart).toMatchObject({
-      method: "turn/start",
-      params: { model: "kimi/k3[1m]", effort: "high" },
-    });
-    fixture.official.stdout.write(
-      `${JSON.stringify({ id: turnStart.id, result: { turn: { id: "native-turn" } } })}\n`,
-    );
-    await expect(pending).resolves.toMatchObject({
-      configuration: {
-        requested: { model: kimiModel, thinkingOptionId: "high" },
-        effective: {
-          effectiveModel: kimiModel,
-        },
-      },
-    });
-    await stopFixture(fixture);
-  });
-
-  it("canonicalizes legacy transport-safe Codex Model refs before delegation", async () => {
-    const legacyModel = harnessModelRefSchema.parse({ id: "gpt-5.6-luna" });
-    const canonicalModel = harnessModelRefSchema.parse({
-      id: "codex-model-v1.Z3B0LTUuNi1sdW5h",
-    });
-    let delegationApi: DelegationControlApi | undefined;
-    const fixture = createFixture({
-      onDelegationApi: (api) => {
-        delegationApi = api;
-        return undefined;
-      },
-    });
-    await fixture.ready;
-    await vi.waitFor(async () => expect(await fixture.mappingStore.listThreads()).toEqual([]));
-    if (!delegationApi) throw new Error("Delegation API was not registered");
-
-    const pending = delegationApi.start({
-      harnessId: "codex",
-      task: "review auth",
-      cwd: "/synthetic",
-      parentThreadId: "parent-thread",
-      model: legacyModel,
-    });
-    await answerOfficialParentCwd(fixture);
-    const modelList = await readJsonLine(fixture.official.stdin);
-    expect(modelList).toMatchObject({ method: "model/list", params: {} });
-    fixture.official.stdout.write(
-      `${JSON.stringify({
-        id: modelList.id,
-        result: { data: [{ model: "gpt-5.6-luna", isDefault: true }] },
-      })}\n`,
-    );
-    const threadStart = await readJsonLine(fixture.official.stdin);
-    expect(threadStart).toMatchObject({
-      method: "thread/start",
-      params: { model: "gpt-5.6-luna" },
-    });
-    fixture.official.stdout.write(
-      `${JSON.stringify({
-        id: threadStart.id,
-        result: {
-          thread: { id: "native-legacy-configured" },
-          model: "gpt-5.6-luna",
-        },
-      })}\n`,
-    );
-    const turnStart = await readJsonLine(fixture.official.stdin);
-    expect(turnStart).toMatchObject({
-      method: "turn/start",
-      params: { model: "gpt-5.6-luna" },
-    });
-    fixture.official.stdout.write(
-      `${JSON.stringify({ id: turnStart.id, result: { turn: { id: "native-legacy-turn" } } })}\n`,
-    );
-    await expect(pending).resolves.toMatchObject({
-      configuration: {
-        requested: { model: canonicalModel },
-        effective: { effectiveModel: canonicalModel },
-      },
-    });
-    await stopFixture(fixture);
-  });
-
-  it("delegates to native Codex through brokered official requests without echoing internal responses", async () => {
-    let delegationApi: DelegationControlApi | undefined;
-    const fixture = createFixture({
-      onDelegationApi: (api) => {
-        delegationApi = api;
-        return undefined;
-      },
-    });
-    await fixture.ready;
-    await vi.waitFor(async () => expect(await fixture.mappingStore.listThreads()).toEqual([]));
-    if (!delegationApi) throw new Error("Delegation API was not registered");
-
-    const pending = delegationApi.start({
-      harnessId: "codex",
-      task: "review auth",
-      cwd: "/synthetic",
-      parentThreadId: "parent-thread",
-      requestId: "native-request-1",
-    });
-    await answerOfficialParentCwd(fixture);
-    const threadStart = await readJsonLine(fixture.official.stdin);
-    expect(threadStart).toMatchObject({
-      method: "thread/start",
-      params: {
-        cwd: "/synthetic",
-        approvalPolicy: "never",
-        sandbox: "danger-full-access",
-      },
-    });
-    fixture.official.stdout.write(
-      `${JSON.stringify({ id: threadStart.id, result: { thread: { id: "native-child" } } })}\n`,
-    );
-    const turnStart = await readJsonLine(fixture.official.stdin);
-    expect(turnStart).toMatchObject({
-      method: "turn/start",
-      params: { threadId: "native-child", input: [{ type: "text", text: "review auth" }] },
-    });
-    fixture.official.stdout.write(
-      `${JSON.stringify({ id: turnStart.id, result: { turn: { id: "native-turn" } } })}\n`,
-    );
-    await expect(pending).resolves.toMatchObject({
-      threadId: "native-child",
-      turnId: "native-turn",
-      status: "running",
-    });
-    expect(
-      fixture.collector.messages.some(
-        (message) => message.id === threadStart.id || message.id === turnStart.id,
-      ),
-    ).toBe(false);
-    await expect(
-      fixture.mappingStore.findDelegationByRequest("native-request-1"),
-    ).resolves.toMatchObject({
-      childHostThreadId: "native-child",
-      targetHarnessId: "codex",
-      status: "running",
-    });
-    fixture.official.stdout.write(
-      `${JSON.stringify({
-        method: "turn/completed",
-        params: {
-          threadId: "native-child",
-          turn: { id: "native-turn", status: "completed" },
-        },
-      })}\n`,
-    );
-    await vi.waitFor(async () =>
-      expect(await fixture.mappingStore.findDelegationByRequest("native-request-1")).toMatchObject({
-        status: "completed",
-      }),
-    );
-    const duplicate = delegationApi.start({
-      harnessId: "codex",
-      task: "review auth",
-      cwd: "/synthetic",
-      parentThreadId: "parent-thread",
-      requestId: "native-request-1",
-    });
-    await answerOfficialParentCwd(fixture);
-    await expect(duplicate).resolves.toMatchObject({ threadId: "native-child" });
-    expect(fixture.official.stdin.readableLength).toBe(0);
-
-    const implicitPending = delegationApi.start({
-      harnessId: "codex",
-      task: "implicit native task",
-      cwd: "/synthetic",
-      parentThreadId: "parent-thread",
-    });
-    await answerOfficialParentCwd(fixture);
-    const implicitThreadStart = await readJsonLine(fixture.official.stdin);
-    fixture.official.stdout.write(
-      `${JSON.stringify({ id: implicitThreadStart.id, result: { thread: { id: "implicit-child" } } })}\n`,
-    );
-    const implicitTurnStart = await readJsonLine(fixture.official.stdin);
-    fixture.official.stdout.write(
-      `${JSON.stringify({ id: implicitTurnStart.id, result: { turn: { id: "implicit-turn" } } })}\n`,
-    );
-    await expect(implicitPending).resolves.toMatchObject({ threadId: "implicit-child" });
-    const implicitDuplicate = delegationApi.start({
-      harnessId: "codex",
-      task: "implicit native task",
-      cwd: "/synthetic",
-      parentThreadId: "parent-thread",
-    });
-    await answerOfficialParentCwd(fixture);
-    await expect(implicitDuplicate).resolves.toMatchObject({ threadId: "implicit-child" });
-    expect(fixture.official.stdin.readableLength).toBe(0);
-    await stopFixture(fixture);
-  });
-
-  it("deletes a native Codex Thread when Delegation persistence fails", async () => {
-    let delegationApi: DelegationControlApi | undefined;
-    const directory = mkdtempSync(path.join(tmpdir(), "codexhost-delegation-write-failure-"));
-    const fixture = createFixture({
-      mappingStore: new FailingDelegationMappingStore({ directory }),
-      mappingStoreDirectory: directory,
-      onDelegationApi: (api) => {
-        delegationApi = api;
-        return undefined;
-      },
-    });
-    await fixture.ready;
-    await vi.waitFor(async () => expect(await fixture.mappingStore.listThreads()).toEqual([]));
-    if (!delegationApi) throw new Error("Delegation API was not registered");
-    const pending = delegationApi.start({
-      harnessId: "codex",
-      task: "review auth",
-      cwd: "/synthetic",
-      parentThreadId: "parent-thread",
-    });
-    await answerOfficialParentCwd(fixture);
-    const threadStart = await readJsonLine(fixture.official.stdin);
-    fixture.official.stdout.write(
-      `${JSON.stringify({ id: threadStart.id, result: { thread: { id: "native-child" } } })}\n`,
-    );
-    const turnStart = await readJsonLine(fixture.official.stdin);
-    fixture.official.stdout.write(
-      `${JSON.stringify({ id: turnStart.id, result: { turn: { id: "native-turn" } } })}\n`,
-    );
-    const deletion = await readJsonLine(fixture.official.stdin);
-    expect(deletion).toMatchObject({
-      method: "thread/delete",
-      params: { threadId: "native-child" },
-    });
-    fixture.official.stdout.write(`${JSON.stringify({ id: deletion.id, result: {} })}\n`);
-    await expect(pending).rejects.toThrow("Synthetic Delegation write failure");
-    await stopFixture(fixture);
-  });
-
-  it("preserves a terminal native status observed before Delegation persistence", async () => {
-    let delegationApi: DelegationControlApi | undefined;
-    const fixture = createFixture({
-      onDelegationApi: (api) => {
-        delegationApi = api;
-        return undefined;
-      },
-    });
-    await fixture.ready;
-    await vi.waitFor(async () => expect(await fixture.mappingStore.listThreads()).toEqual([]));
-    if (!delegationApi) throw new Error("Delegation API was not registered");
-    const pending = delegationApi.start({
-      harnessId: "codex",
-      task: "fast task",
-      cwd: "/synthetic",
-      parentThreadId: "parent-thread",
-      requestId: "fast-native-request",
-    });
-    await answerOfficialParentCwd(fixture);
-    const threadStart = await readJsonLine(fixture.official.stdin);
-    fixture.official.stdout.write(
-      `${JSON.stringify({ id: threadStart.id, result: { thread: { id: "fast-child" } } })}\n`,
-    );
-    const turnStart = await readJsonLine(fixture.official.stdin);
-    fixture.official.stdout.write(
-      `${JSON.stringify({
-        method: "turn/completed",
-        params: {
-          threadId: "fast-child",
-          turn: { id: "fast-turn", status: "completed" },
-        },
-      })}\n`,
-    );
-    fixture.official.stdout.write(
-      `${JSON.stringify({ id: turnStart.id, result: { turn: { id: "fast-turn" } } })}\n`,
-    );
-    await expect(pending).resolves.toMatchObject({ status: "completed" });
-    await expect(
-      fixture.mappingStore.findDelegationByRequest("fast-native-request"),
-    ).resolves.toMatchObject({ status: "completed" });
-    await stopFixture(fixture);
-  });
-
-  it("proxies native Codex reads into the visible result shape", async () => {
-    let delegationApi: DelegationControlApi | undefined;
-    const fixture = createFixture({
-      onDelegationApi: (api) => {
-        delegationApi = api;
-        return undefined;
-      },
-    });
-    await fixture.ready;
-    await vi.waitFor(async () => expect(await fixture.mappingStore.listThreads()).toEqual([]));
-    if (!delegationApi) throw new Error("Delegation API was not registered");
-    await bindOfficialThread(fixture, "native-child");
-    const pending = delegationApi.read({ threadId: "native-child", view: "result" });
-    const request = await readJsonLine(fixture.official.stdin);
-    expect(request).toMatchObject({
-      method: "thread/read",
-      params: { threadId: "native-child", includeTurns: true },
-    });
-    fixture.official.stdout.write(
-      `${JSON.stringify({
-        id: request.id,
-        result: {
-          thread: {
-            id: "native-child",
-            status: { type: "idle" },
-            turns: [
-              {
-                id: "native-turn",
-                status: "completed",
-                items: [
-                  { id: "reasoning", type: "reasoning", summary: ["hidden"] },
-                  { id: "final", type: "agentMessage", phase: "final", text: "done" },
-                ],
-              },
-            ],
-          },
-        },
-      })}\n`,
-    );
-    const snapshot = await pending;
-    expect(snapshot).toMatchObject({
-      harnessId: "codex",
-      status: "completed",
-      result: { availability: "available", text: "done" },
-    });
-    expect(JSON.stringify(snapshot)).not.toContain("hidden");
-    await stopFixture(fixture);
-  });
-
-  it("deletes a native Codex Thread when initial task delivery fails", async () => {
-    let delegationApi: DelegationControlApi | undefined;
-    const fixture = createFixture({
-      onDelegationApi: (api) => {
-        delegationApi = api;
-        return undefined;
-      },
-    });
-    await fixture.ready;
-    await vi.waitFor(async () => expect(await fixture.mappingStore.listThreads()).toEqual([]));
-    if (!delegationApi) throw new Error("Delegation API was not registered");
-    const pending = delegationApi.start({
-      harnessId: "codex",
-      task: "review auth",
-      cwd: "/synthetic",
-      parentThreadId: "parent-thread",
-    });
-    await answerOfficialParentCwd(fixture);
-    const threadStart = await readJsonLine(fixture.official.stdin);
-    fixture.official.stdout.write(
-      `${JSON.stringify({ id: threadStart.id, result: { thread: { id: "native-child" } } })}\n`,
-    );
-    const turnStart = await readJsonLine(fixture.official.stdin);
-    fixture.official.stdout.write(
-      `${JSON.stringify({ id: turnStart.id, error: { code: -1, message: "delivery failed" } })}\n`,
-    );
-    const deletion = await readJsonLine(fixture.official.stdin);
-    expect(deletion).toMatchObject({
-      method: "thread/delete",
-      params: { threadId: "native-child" },
-    });
-    fixture.official.stdout.write(`${JSON.stringify({ id: deletion.id, result: {} })}\n`);
-    await expect(pending).rejects.toThrow("no Turn identity");
-    await expect(fixture.mappingStore.listDelegations()).resolves.toHaveLength(0);
-    await stopFixture(fixture);
-  });
-
-  it("passes Runtime connection and current Thread identity when manually creating an external Thread", async () => {
-    class RecordingAdapter extends FakeHarnessAdapter {
-      openedInputs: Parameters<FakeHarnessAdapter["open"]>[0][] = [];
-
-      override async open(input: Parameters<FakeHarnessAdapter["open"]>[0]) {
-        this.openedInputs.push(input);
-        return super.open(input);
-      }
-    }
-    const adapter = new RecordingAdapter(harnessIdSchema.parse("pi"));
-    const fixture = createFixture({
-      environment: {
-        CODEXHOST_CLI_PATH: "/opt/codexhost",
-        CODEXHOST_RUNTIME_ENDPOINT: "http://127.0.0.1:43123",
-        CODEXHOST_RUNTIME_TOKEN: "token",
-      },
-      externalAdapters: new Map([["pi", adapter]]),
-    });
-    const threadId = await startPiThread(fixture);
-    expect(adapter.openedInputs[0]).toMatchObject({
-      environment: {
-        CODEXHOST_CLI_PATH: "/opt/codexhost",
-        CODEXHOST_RUNTIME_ENDPOINT: "http://127.0.0.1:43123",
-        CODEXHOST_RUNTIME_TOKEN: "token",
-        CODEXHOST_THREAD_ID: threadId,
-      },
-    });
-    await stopFixture(fixture);
-  });
-
-  it("inspects authoritative external and Codex Thread ownership locally", async () => {
-    const fixture = createFixture({
-      accountControl: {
-        currentAccountId: () => null,
-        snapshot: () => ({
-          version: 2,
-          currentAccountId: null,
-          phase: "unavailable",
-          revision: 0,
-          accounts: [],
-        }),
-      },
-    });
-    const officialWrite = vi.fn();
-    fixture.official.stdin.on("data", officialWrite);
-    const threadId = await startPiThread(fixture);
-
-    writeRequest(fixture.desktopInput, {
-      id: 40,
-      method: "codexhost/thread/inspect",
-      params: { threadId },
-    });
-    await expect(
-      fixture.collector.waitFor((message) => requestId(message, 40)),
-    ).resolves.toMatchObject({
-      result: {
-        owner: "external",
-        harnessId: "pi",
-        transportModelId: "codexhost/pi-native",
-        effectiveModel: { id: "fake-model-v1.primary" },
-        history: { fork: true, forkAcrossCwd: true, rollbackLastTurn: false },
-        locked: true,
-      },
-    });
-
-    writeRequest(fixture.desktopInput, {
-      id: 41,
-      method: "codexhost/thread/inspect",
-      params: { threadId: "official-thread" },
-    });
-    await expect(fixture.collector.waitFor((message) => requestId(message, 41))).resolves.toEqual({
-      id: 41,
-      result: { owner: "codex", locked: true },
-    });
-    writeRequest(fixture.desktopInput, {
-      id: 42,
-      method: "codexhost/thread/usage/inspect",
-      params: { threadId: "official-thread" },
-    });
-    await expect(fixture.collector.waitFor((message) => requestId(message, 42))).resolves.toEqual({
-      id: 42,
-      result: { threadId: "official-thread", usage: null },
-    });
-
-    writeRequest(fixture.desktopInput, {
-      id: 43,
-      method: "codexhost/thread/usage/inspect",
-      params: { threadId: 42 },
-    });
-    await expect(
-      fixture.collector.waitFor((message) => requestId(message, 43)),
-    ).resolves.toMatchObject({ error: { code: -32602 } });
-
-    // An unavailable current Account must never query native quota.
-    expect(officialWrite).not.toHaveBeenCalled();
-    await stopFixture(fixture);
-  });
-
-  it("keeps the Host alive when inspecting a Thread without a local Account binding", async () => {
-    const fixture = createFixture();
-    const officialWrite = vi.fn();
-    fixture.official.stdin.on("data", officialWrite);
-    try {
-      await bindOfficialThread(fixture, "bound-local-thread");
-      writeRequest(fixture.desktopInput, {
-        id: 40,
-        method: "codexhost/thread/inspect",
-        params: { threadId: "remote-thread-without-local-account" },
-      });
-      await expect(fixture.collector.waitFor((message) => requestId(message, 40))).resolves.toEqual(
-        {
-          id: 40,
-          result: { owner: "codex", locked: true },
-        },
-      );
-      writeRequest(fixture.desktopInput, {
-        id: 41,
-        method: "codexhost/thread/inspect",
-        params: { threadId: "bound-local-thread" },
-      });
-      await expect(fixture.collector.waitFor((message) => requestId(message, 41))).resolves.toEqual(
-        {
-          id: 41,
-          result: { owner: "codex", locked: true },
-        },
-      );
-      expect(officialWrite).not.toHaveBeenCalled();
-    } finally {
-      fixture.desktopInput.end();
-      await fixture.running;
-      rmSync(fixture.mappingStoreDirectory, { recursive: true, force: true });
-    }
-  });
-
-  it("projects official Codex token Usage and account rate limits for inspection", async () => {
-    const fixture = createFixture();
-    fixture.official.stdin.on("data", (chunk: Buffer) => {
-      for (const line of chunk.toString("utf8").split("\n")) {
-        if (!line) continue;
-        const message = JSON.parse(line) as JsonObject;
-        if (message.method !== "account/rateLimits/read") continue;
-        fixture.official.stdout.write(
-          `${JSON.stringify({
-            id: message.id,
-            result: {
-              rateLimits: {
-                primary: { usedPercent: 3, windowDurationMins: 300, resetsAt: 1_800 },
-                secondary: { usedPercent: 9, windowDurationMins: 10_080, resetsAt: 2_400 },
-              },
-              rateLimitsByLimitId: null,
-            },
-          })}\n`,
-        );
-      }
-    });
-    fixture.official.stdout.write(
-      `${JSON.stringify({
-        method: "thread/tokenUsage/updated",
-        params: {
-          threadId: "official-thread",
-          turnId: "official-turn",
-          tokenUsage: {
-            total: {
-              totalTokens: 1_000,
-              inputTokens: 800,
-              cachedInputTokens: 600,
-              cacheWriteInputTokens: 10,
-              outputTokens: 200,
-              reasoningOutputTokens: 50,
-            },
-            last: {
-              totalTokens: 240,
-              inputTokens: 200,
-              cachedInputTokens: 150,
-              cacheWriteInputTokens: 5,
-              outputTokens: 40,
-              reasoningOutputTokens: 10,
-            },
-            modelContextWindow: 2_000,
-          },
-        },
-      })}\n`,
-    );
-    await fixture.collector.waitFor((message) => method(message, "thread/tokenUsage/updated"));
-
-    writeRequest(fixture.desktopInput, {
-      id: 44,
-      method: "codexhost/thread/usage/inspect",
-      params: { threadId: "official-thread" },
-    });
-    await expect(fixture.collector.waitFor((message) => requestId(message, 44))).resolves.toEqual({
-      id: 44,
-      result: {
-        threadId: "official-thread",
-        accountCredits: {
-          usedPercent: 3,
-          periodType: "five_hour",
-          resetsAt: new Date(1_800 * 1_000).toISOString(),
-          productUsage: [
-            {
-              product: "7-day window",
-              usagePercent: 9,
-              resetsAt: new Date(2_400 * 1_000).toISOString(),
-            },
-          ],
-        },
-        usage: {
-          totalTokens: 1_000,
-          inputTokens: 800,
-          cachedInputTokens: 600,
-          cacheWriteInputTokens: 10,
-          outputTokens: 200,
-          reasoningOutputTokens: 50,
-          contextUsedTokens: 240,
-          contextWindowTokens: 2_000,
-          cacheHitRatePercent: 75,
-        },
-      },
-    });
-    await stopFixture(fixture);
-  });
-
-  it("inspects current Account quota and treats other Account ids as unknown", async () => {
-    const snapshot = () => ({
-      version: 2 as const,
-      currentAccountId: "account-a",
-      phase: "ready" as const,
-      revision: 1,
-      accounts: [{ accountId: "account-a", label: "A", email: "a@example.com" }],
-    });
-    const accountControl: CodexAccountControl = {
-      snapshot,
-      currentAccountId: () => "account-a",
-    };
-    const fixture = createFixture({ accountControl });
-    fixture.official.stdin.on("data", (chunk: Buffer) => {
-      for (const line of chunk.toString("utf8").split("\n")) {
-        if (!line) continue;
-        const message = JSON.parse(line) as JsonObject;
-        if (message.method !== "account/rateLimits/read") continue;
-        fixture.official.stdout.write(
-          `${JSON.stringify({
-            id: message.id,
-            result: {
-              rateLimits: {
-                primary: { usedPercent: 12, windowDurationMins: 300 },
-                secondary: { usedPercent: 34, windowDurationMins: 10_080 },
-              },
-            },
-          })}\n`,
-        );
-      }
-    });
-    try {
-      writeRequest(fixture.desktopInput, {
-        id: 46,
-        method: "codexhost/account/usage/inspect",
-        params: { accountId: "account-b", refresh: true },
-      });
-      await expect(
-        fixture.collector.waitFor((message) => requestId(message, 46)),
-      ).resolves.toMatchObject({
-        id: 46,
-        error: { code: -32086, message: "Unknown Codex Account" },
-      });
-
-      writeRequest(fixture.desktopInput, {
-        id: 47,
-        method: "codexhost/account/usage/inspect",
-        params: { accountId: "account-a" },
-      });
-      await expect(
-        fixture.collector.waitFor((message) => requestId(message, 47)),
-      ).resolves.toMatchObject({
-        id: 47,
-        result: {
-          accountId: "account-a",
-          freshness: "live",
-          accountCredits: { usedPercent: 12, periodType: "five_hour" },
-        },
-      });
-    } finally {
-      await stopFixture(fixture);
-    }
-  });
-
-  it("keeps cumulative Thread Usage independent from native Account changes", async () => {
-    const fixture = createFixture({
-      accountControl: {
-        currentAccountId: () => null,
-        snapshot: () => ({
-          version: 2,
-          currentAccountId: null,
-          phase: "unavailable",
-          revision: 0,
-          accounts: [],
-        }),
-      },
-    });
-    fixture.official.stdout.write(
-      `${JSON.stringify({
-        method: "thread/tokenUsage/updated",
-        params: {
-          threadId: "official-thread",
-          turnId: "official-turn",
-          tokenUsage: {
-            total: { totalTokens: 100, inputTokens: 80, outputTokens: 20 },
-            last: { totalTokens: 100, inputTokens: 80, outputTokens: 20 },
-            modelContextWindow: 1_000,
-          },
-        },
-      })}\n`,
-    );
-    await fixture.collector.waitFor((message) => method(message, "thread/tokenUsage/updated"));
-
-    fixture.official.stdout.write(`${JSON.stringify({ method: "account/updated", params: {} })}\n`);
-    await fixture.collector.waitFor((message) => method(message, "account/updated"));
-
-    writeRequest(fixture.desktopInput, {
-      id: 45,
-      method: "codexhost/thread/usage/inspect",
-      params: { threadId: "official-thread" },
-    });
-    await expect(fixture.collector.waitFor((message) => requestId(message, 45))).resolves.toEqual({
-      id: 45,
-      result: {
-        threadId: "official-thread",
-        usage: {
-          totalTokens: 100,
-          inputTokens: 80,
-          outputTokens: 20,
-          contextUsedTokens: 100,
-          contextWindowTokens: 1_000,
-        },
-      },
-    });
-    await stopFixture(fixture);
-  });
-
-  it("continues an existing Pi Thread without requiring a Renderer Model carrier", async () => {
-    const fixture = createFixture();
-    const threadId = await startPiThread(fixture);
-    const session = fixture.adapter.sessions[0];
-    if (!session) throw new Error("Fake Pi Session was not opened");
-    const effectiveModel = session.state.effectiveModel;
-
-    writeRequest(fixture.desktopInput, {
-      id: 42,
-      method: "turn/start",
-      params: {
-        threadId,
-        model: "gpt-5.6-luna",
-        input: [{ type: "text", text: "existing Pi turn" }],
-      },
-    });
-    await expect(
-      fixture.collector.waitFor((message) => requestId(message, 42)),
-    ).resolves.toMatchObject({ result: { turn: { status: "inProgress" } } });
-    expect(session.state.effectiveModel).toEqual(effectiveModel);
-    session.succeedTurn();
-    await stopFixture(fixture);
-  });
-
-  it("lists persisted ownership without restoring external Sessions", async () => {
-    const pi = new FakeHarnessAdapter(harnessIdSchema.parse("pi"));
-    const claude = new FakeHarnessAdapter(harnessIdSchema.parse("claude-code"));
-    const first = createFixture({
-      externalAdapters: new Map([
-        ["pi", pi],
-        ["claude-code", claude],
-      ]),
-    });
-    const piThreadId = await startExternalThread(first, "codexhost/pi-native", 1);
-    const claudeThreadId = await startExternalThread(
-      first,
-      CLAUDE_CODE_NATIVE_TRANSPORT_MODEL_ID,
-      2,
-    );
-    const directory = first.mappingStoreDirectory;
-    await closeFixture(first);
-
-    const restartedPi = new FakeHarnessAdapter(harnessIdSchema.parse("pi"));
-    const restartedClaude = new FakeHarnessAdapter(harnessIdSchema.parse("claude-code"));
-    const restarted = createFixture({
-      externalAdapters: new Map([
-        ["pi", restartedPi],
-        ["claude-code", restartedClaude],
-      ]),
-      mappingStoreDirectory: directory,
-    });
-    const officialWrite = vi.fn();
-    restarted.official.stdin.on("data", officialWrite);
-
-    writeRequest(restarted.desktopInput, {
-      id: 42,
-      method: "codexhost/thread/ownership/list",
-      params: { threadIds: ["official-thread", piThreadId, claudeThreadId] },
-    });
-    await expect(restarted.collector.waitFor((message) => requestId(message, 42))).resolves.toEqual(
-      {
-        id: 42,
-        result: {
-          threads: [
-            { threadId: "official-thread", owner: "codex" },
-            { threadId: piThreadId, owner: "external", harnessId: "pi" },
-            { threadId: claudeThreadId, owner: "external", harnessId: "claude-code" },
-          ],
-        },
-      },
-    );
-    expect(restartedPi.sessions).toHaveLength(0);
-    expect(restartedClaude.sessions).toHaveLength(0);
-    expect(officialWrite).not.toHaveBeenCalled();
-    await stopFixture(restarted);
-  });
-
-  it("rejects invalid or unreadable ownership-list metadata locally", async () => {
-    const directory = mkdtempSync(path.join(tmpdir(), "codexhost-host-test-"));
-    const mappingStore = new FailingOwnershipMappingStore({ directory });
-    const fixture = createFixture({ mappingStore, mappingStoreDirectory: directory });
-    const officialWrite = vi.fn();
-    fixture.official.stdin.on("data", officialWrite);
-
-    writeRequest(fixture.desktopInput, {
-      id: 43,
-      method: "codexhost/thread/ownership/list",
-      params: { threadIds: ["duplicate", "duplicate"] },
-    });
-    await expect(
-      fixture.collector.waitFor((message) => requestId(message, 43)),
-    ).resolves.toMatchObject({ error: { code: -32602 } });
-
-    writeRequest(fixture.desktopInput, {
-      id: 44,
-      method: "codexhost/thread/ownership/list",
-      params: { threadIds: ["unreadable-thread"] },
-    });
-    await expect(
-      fixture.collector.waitFor((message) => requestId(message, 44)),
-    ).resolves.toMatchObject({ error: { code: -32081 } });
-    expect(fixture.adapter.sessions).toHaveLength(0);
-    expect(officialWrite).not.toHaveBeenCalled();
-    await stopFixture(fixture);
-  });
-
-  it("aggregates official and External Thread rows through an internal official request", async () => {
-    const fixture = createFixture();
-    const threadId = await startPiThread(fixture);
-    const session = fixture.adapter.sessions[0];
-    if (!session) throw new Error("Fake Pi Session was not opened");
-    const snapshotReads = session.snapshotReads;
-    const internalRequest = new Promise<JsonObject>((resolve) => {
-      fixture.official.stdin.once("data", (chunk: Buffer) => {
-        const request = JSON.parse(chunk.toString("utf8")) as JsonObject;
-        resolve(request);
-        fixture.official.stdout.write(
-          `${JSON.stringify({
-            id: request.id,
-            result: {
-              data: [{ id: "official-thread", createdAt: 1, updatedAt: 1, recencyAt: 1 }],
-              nextCursor: null,
-              backwardsCursor: "official-backwards",
-            },
-          })}\n`,
-        );
-      });
-    });
-
-    writeRequest(fixture.desktopInput, {
-      id: 45,
-      method: "thread/list",
-      params: { limit: 10, sortKey: "created_at", sortDirection: "desc" },
-    });
-    await expect(internalRequest).resolves.toMatchObject({
-      method: "thread/list",
-      params: { cursor: null, limit: 10, sortKey: "created_at", sortDirection: "desc" },
-    });
-    const response = await fixture.collector.waitFor((message) => requestId(message, 45));
-    const result = response.result as JsonObject;
-    const data = result.data as JsonObject[];
-    expect(data.map((thread) => thread.id)).toEqual([threadId, "official-thread"]);
-    expect(data[0]).toMatchObject({
-      status: { type: "idle" },
-      turns: [],
-      preview: "",
-      isPinned: false,
-    });
-    expect(session.snapshotReads).toBe(snapshotReads);
-    expect(
-      fixture.collector.messages.filter(
-        (message) => typeof message.id === "string" && message.id.startsWith("codexhost:official:"),
-      ),
-    ).toEqual([]);
-    await stopFixture(fixture);
-  });
-
-  it("fails the complete aggregated list when Store or official listing fails", async () => {
-    const directory = mkdtempSync(path.join(tmpdir(), "codexhost-host-test-"));
-    const failingStore = new FailingListMappingStore({ directory });
-    const storeFailure = createFixture({
-      mappingStore: failingStore,
-      mappingStoreDirectory: directory,
-    });
-    const officialWrite = vi.fn();
-    storeFailure.official.stdin.on("data", officialWrite);
-    writeRequest(storeFailure.desktopInput, { id: 46, method: "thread/list", params: {} });
-    await expect(
-      storeFailure.collector.waitFor((message) => requestId(message, 46)),
-    ).resolves.toMatchObject({ error: { code: -32082 } });
-    expect(officialWrite).not.toHaveBeenCalled();
-    await stopFixture(storeFailure);
-
-    const officialFailure = createFixture();
-    officialFailure.official.stdin.once("data", (chunk: Buffer) => {
-      const internal = JSON.parse(chunk.toString("utf8")) as JsonObject;
-      officialFailure.official.stdout.write(
-        `${JSON.stringify({ id: internal.id, error: { code: -32000, message: "official failed" } })}\n`,
-      );
-    });
-    writeRequest(officialFailure.desktopInput, { id: 47, method: "thread/list", params: {} });
-    await expect(
-      officialFailure.collector.waitFor((message) => requestId(message, 47)),
-    ).resolves.toEqual({ id: 47, error: { code: -32000, message: "official failed" } });
-    await stopFixture(officialFailure);
-  });
-
-  it("lists an unloaded External Thread after restart without restoring its Adapter", async () => {
-    const first = createFixture();
-    const threadId = await startPiThread(first);
-    const directory = first.mappingStoreDirectory;
-    await closeFixture(first);
-
-    const restartedAdapter = new FakeHarnessAdapter(harnessIdSchema.parse("pi"));
-    const restarted = createFixture({
-      externalAdapters: new Map([["pi", restartedAdapter]]),
-      mappingStoreDirectory: directory,
-    });
-    restarted.official.stdin.once("data", (chunk: Buffer) => {
-      const request = JSON.parse(chunk.toString("utf8")) as JsonObject;
-      restarted.official.stdout.write(
-        `${JSON.stringify({
-          id: request.id,
-          result: { data: [], nextCursor: null, backwardsCursor: null },
-        })}\n`,
-      );
-    });
-    writeRequest(restarted.desktopInput, {
-      id: 46,
-      method: "thread/list",
-      params: { limit: 10 },
-    });
-    const response = await restarted.collector.waitFor((message) => requestId(message, 46));
-    const result = response.result as JsonObject;
-    expect(result.data).toEqual([
-      expect.objectContaining({
-        id: threadId,
-        status: { type: "notLoaded" },
-        canAcceptDirectInput: null,
-        turns: [],
-      }),
-    ]);
-    expect(restartedAdapter.sessions).toHaveLength(0);
-    await stopFixture(restarted);
-  });
-
-  it("forwards a future official Thread list filter unchanged without External injection", async () => {
-    const fixture = createFixture();
-    const request = {
-      id: 47,
-      method: "thread/list",
-      params: { limit: 3, futureOfficialFilter: { keep: true } },
-    };
-    const forwarded = new Promise<JsonObject>((resolve) => {
-      fixture.official.stdin.once("data", (chunk: Buffer) => {
-        const value = JSON.parse(chunk.toString("utf8")) as JsonObject;
-        resolve(value);
-        fixture.official.stdout.write(
-          `${JSON.stringify({ id: 47, result: { data: [], nextCursor: null } })}\n`,
-        );
-      });
-    });
-    writeRequest(fixture.desktopInput, request);
-    await expect(forwarded).resolves.toEqual(request);
-    await expect(fixture.collector.waitFor((message) => requestId(message, 47))).resolves.toEqual({
-      id: 47,
-      result: { data: [], nextCursor: null },
-    });
-    expect(fixture.adapter.sessions).toHaveLength(0);
-    await stopFixture(fixture);
-  });
-
-  it("archives and unarchives an active External Thread without closing its Session", async () => {
-    const fixture = createFixture();
-    const threadId = await startPiThread(fixture);
-    const turnId = await startPiTurn(fixture, threadId, 48);
-    const session = fixture.adapter.sessions[0];
-    if (!session) throw new Error("Fake Pi Session was not opened");
-    await fixture.collector.waitFor((message) => turnEvent(message, "turn/started", turnId));
-    const before = await fixture.mappingStore.getThread(hostThreadIdSchema.parse(threadId));
-
-    writeRequest(fixture.desktopInput, {
-      id: 49,
-      method: "thread/archive",
-      params: { threadId },
-    });
-    await expect(fixture.collector.waitFor((message) => requestId(message, 49))).resolves.toEqual({
-      id: 49,
-      result: {},
-    });
-    await fixture.collector.waitFor((message) => method(message, "thread/archived"));
-    await expect(
-      fixture.mappingStore.getThread(hostThreadIdSchema.parse(threadId)),
-    ).resolves.toMatchObject({ archived: true, nativeSessionRef: before?.nativeSessionRef });
-    const archiveResponseIndex = fixture.collector.messages.findIndex(
-      (message) => message.id === 49,
-    );
-    const archiveNotificationIndex = fixture.collector.messages.findIndex((message) =>
-      method(message, "thread/archived"),
-    );
-    expect(archiveResponseIndex).toBeLessThan(archiveNotificationIndex);
-
-    session.appendText("still running after archive");
-    session.succeedTurn();
-    await fixture.collector.waitFor((message) => turnEvent(message, "turn/completed", turnId));
-
-    writeRequest(fixture.desktopInput, {
-      id: 50,
-      method: "thread/unarchive",
-      params: { threadId },
-    });
-    const unarchive = await fixture.collector.waitFor((message) => requestId(message, 50));
-    expect(unarchive).toMatchObject({
-      result: { thread: { id: threadId, status: { type: "idle" }, turns: [] } },
-    });
-    await fixture.collector.waitFor((message) => method(message, "thread/unarchived"));
-    await expect(
-      fixture.mappingStore.getThread(hostThreadIdSchema.parse(threadId)),
-    ).resolves.toMatchObject({ archived: false, nativeSessionRef: before?.nativeSessionRef });
-    const unarchiveResponseIndex = fixture.collector.messages.findIndex(
-      (message) => message.id === 50,
-    );
-    const unarchiveNotificationIndex = fixture.collector.messages.findIndex((message) =>
-      method(message, "thread/unarchived"),
-    );
-    expect(unarchiveResponseIndex).toBeLessThan(unarchiveNotificationIndex);
-    expect(fixture.adapter.sessions).toHaveLength(1);
-    await stopFixture(fixture);
-  });
-
-  it("does not emit an archive notification when persistence fails", async () => {
-    const directory = mkdtempSync(path.join(tmpdir(), "codexhost-host-test-"));
-    const mappingStore = new FailingArchiveMappingStore({ directory });
-    const fixture = createFixture({ mappingStore, mappingStoreDirectory: directory });
-    const threadId = await startPiThread(fixture);
-    writeRequest(fixture.desktopInput, {
-      id: 51,
-      method: "thread/archive",
-      params: { threadId },
-    });
-    await expect(
-      fixture.collector.waitFor((message) => requestId(message, 51)),
-    ).resolves.toMatchObject({ error: { code: -32081 } });
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    expect(fixture.collector.messages.some((message) => method(message, "thread/archived"))).toBe(
-      false,
-    );
-    await expect(
-      fixture.mappingStore.getThread(hostThreadIdSchema.parse(threadId)),
-    ).resolves.toMatchObject({ archived: false });
-    await stopFixture(fixture);
-  });
-
-  it("manages persisted External metadata even when its Harness is not registered", async () => {
-    const directory = mkdtempSync(path.join(tmpdir(), "codexhost-host-test-"));
-    const seed = new MappingStore({ directory });
-    await seed.initialize();
-    const threadId = hostThreadIdSchema.parse("unregistered-external");
-    await seed.createProvisional({
-      hostThreadId: threadId,
-      createRequestId: "unregistered-create",
-      harnessId: harnessIdSchema.parse("pi"),
-      cwd: "/synthetic",
-      transportModelId: "codexhost/pi-native",
-      ephemeral: false,
-      historyMode: "legacy",
-    });
-    await seed.commitReady({
-      hostThreadId: threadId,
-      nativeSessionRef: {
-        harnessId: harnessIdSchema.parse("pi"),
-        nativeSessionId: "unregistered-native",
-        formatVersion: 1,
-      },
-    });
-    await seed.close();
-
-    const fixture = createFixture({
-      externalAdapters: new Map(),
-      mappingStoreDirectory: directory,
-    });
-    writeRequest(fixture.desktopInput, {
-      id: 52,
-      method: "thread/archive",
-      params: { threadId },
-    });
-    await expect(fixture.collector.waitFor((message) => requestId(message, 52))).resolves.toEqual({
-      id: 52,
-      result: {},
-    });
-    await expect(fixture.mappingStore.getThread(threadId)).resolves.toMatchObject({
-      archived: true,
-    });
-    await stopFixture(fixture);
-  });
-
-  it("fails External current and future metadata updates closed without official fallback", async () => {
-    const fixture = createFixture();
-    const officialWrite = vi.fn();
-    fixture.official.stdin.on("data", officialWrite);
-    const threadId = await startPiThread(fixture);
-    for (const [id, patch] of [
-      [53, { isPinned: true }],
-      [54, { gitInfo: { branch: "main", sha: null } }],
-    ] as const) {
-      writeRequest(fixture.desktopInput, {
-        id,
-        method: "thread/metadata/update",
-        params: { threadId, ...patch },
-      });
-      await expect(
-        fixture.collector.waitFor((message) => requestId(message, id)),
-      ).resolves.toMatchObject({
-        error: { code: -32078, message: "External Thread metadata updates are unsupported" },
-      });
-    }
-    writeRequest(fixture.desktopInput, {
-      id: 58,
-      method: "thread/future/manage",
-      params: { threadId, futureMetadata: true },
-    });
-    await expect(
-      fixture.collector.waitFor((message) => requestId(message, 58)),
-    ).resolves.toMatchObject({
-      error: { code: -32076, message: "External Thread does not support thread/future/manage" },
-    });
-    expect(officialWrite).not.toHaveBeenCalled();
-    const stored = await fixture.mappingStore.getThread(hostThreadIdSchema.parse(threadId));
-    expect(stored).not.toHaveProperty("isPinned");
-    expect(stored).not.toHaveProperty("gitInfo");
-    await stopFixture(fixture);
-  });
-
-  it("forwards official Archive, Unarchive, and metadata updates unchanged", async () => {
-    const fixture = createFixture();
-    await bindOfficialThread(fixture, "official-thread");
-    const officialRequests = new JsonLineCollector(fixture.official.stdin);
-    const requests: JsonObject[] = [
-      { id: 55, method: "thread/archive", params: { threadId: "official-thread" } },
-      { id: 56, method: "thread/unarchive", params: { threadId: "official-thread" } },
-      {
-        id: 57,
-        method: "thread/metadata/update",
-        params: { threadId: "official-thread", isPinned: true },
-      },
-    ];
-    for (const request of requests) {
-      writeRequest(fixture.desktopInput, request);
-      await expect(
-        officialRequests.waitFor((message) => message.id === request.id),
-      ).resolves.toEqual(request);
-      const result = request.id === 55 ? {} : { thread: { id: "official-thread" } };
-      fixture.official.stdout.write(`${JSON.stringify({ id: request.id, result })}\n`);
-      await fixture.collector.waitFor((message) => message.id === request.id);
-    }
-    const notification = {
-      method: "thread/archived",
-      params: { threadId: "official-thread" },
-    };
-    fixture.official.stdout.write(`${JSON.stringify(notification)}\n`);
-    await expect(
-      fixture.collector.waitFor((message) => method(message, "thread/archived")),
-    ).resolves.toEqual(notification);
-    expect(fixture.adapter.sessions).toHaveLength(0);
-    await stopFixture(fixture);
-  });
-
-  it("preserves the Desktop Thread persistence mode for an external Harness", async () => {
-    const fixture = createFixture();
-    writeRequest(fixture.desktopInput, {
-      id: 1,
-      method: "thread/start",
-      params: {
-        model: "codexhost/pi-native",
-        cwd: "/synthetic",
-        ephemeral: false,
-        historyMode: "legacy",
-      },
-    });
-    await expect(
-      fixture.collector.waitFor((message) => requestId(message, 1)),
-    ).resolves.toMatchObject({
-      result: {
-        thread: { ephemeral: false, historyMode: "legacy", source: "vscode" },
-      },
-    });
-    await expect(
-      fixture.collector.waitFor((message) => method(message, "thread/started")),
-    ).resolves.toMatchObject({
-      params: {
-        thread: { ephemeral: false, historyMode: "legacy", source: "vscode" },
-      },
-    });
-
-    writeRequest(fixture.desktopInput, {
-      id: 2,
-      method: "thread/start",
-      params: {
-        model: "codexhost/pi-native",
-        cwd: "/synthetic",
-        ephemeral: true,
-        historyMode: "paginated",
-      },
-    });
-    await expect(
-      fixture.collector.waitFor((message) => requestId(message, 2)),
-    ).resolves.toMatchObject({
-      result: {
-        thread: { ephemeral: true, historyMode: "paginated", source: "vscode" },
-      },
-    });
-    await stopFixture(fixture);
-  });
-
-  it("pages external Turns and Items with paginated resume bootstrap", async () => {
-    const fixture = createFixture();
-    const officialWrite = vi.fn();
-    fixture.official.stdin.on("data", officialWrite);
-    writeRequest(fixture.desktopInput, {
-      id: 10,
-      method: "thread/start",
-      params: {
-        model: "codexhost/pi-native",
-        cwd: "/synthetic",
-        historyMode: "paginated",
-      },
-    });
-    const started = await fixture.collector.waitFor((message) => requestId(message, 10));
-    const threadId = ((started.result as JsonObject).thread as JsonObject).id;
-    if (typeof threadId !== "string") throw new Error("Paginated Thread has no ID");
-    const firstTurnId = await completePiTurn(fixture, threadId, 11);
-    const secondTurnId = await completePiTurn(fixture, threadId, 12);
-    const thirdTurnId = await completePiTurn(fixture, threadId, 13);
-    const session = fixture.adapter.sessions[0];
-    if (!session) throw new Error("Paginated Session was not opened");
-
-    writeRequest(fixture.desktopInput, {
-      id: 14,
-      method: "thread/read",
-      params: { threadId, includeTurns: true },
-    });
-    await expect(
-      fixture.collector.waitFor((message) => requestId(message, 14)),
-    ).resolves.toMatchObject({ error: { code: -32602 } });
-
-    writeRequest(fixture.desktopInput, {
-      id: 15,
-      method: "thread/turns/list",
-      params: { threadId, limit: 2, itemsView: "summary" },
-    });
-    const turnsPage = await fixture.collector.waitFor((message) => requestId(message, 15));
-    expect(turnsPage).toMatchObject({
-      result: {
-        data: [
-          {
-            id: thirdTurnId,
-            itemsView: "summary",
-            items: [{ type: "userMessage" }, { type: "agentMessage" }],
-          },
-          {
-            id: secondTurnId,
-            itemsView: "summary",
-            items: [{ type: "userMessage" }, { type: "agentMessage" }],
-          },
-        ],
-        nextCursor: expect.any(String),
-        backwardsCursor: expect.any(String),
-      },
-    });
-    expect(session.snapshotReads).toBe(1);
-
-    writeRequest(fixture.desktopInput, {
-      id: 16,
-      method: "thread/items/list",
-      params: { threadId, turnId: thirdTurnId },
-    });
-    await expect(
-      fixture.collector.waitFor((message) => requestId(message, 16)),
-    ).resolves.toMatchObject({
-      result: {
-        data: [
-          { turnId: thirdTurnId, item: { type: "userMessage" } },
-          { turnId: thirdTurnId, item: { type: "agentMessage" } },
-        ],
-      },
-    });
-    expect(session.snapshotReads).toBe(1);
-
-    writeRequest(fixture.desktopInput, {
-      id: 17,
-      method: "thread/resume",
-      params: {
-        threadId,
-        excludeTurns: true,
-        initialTurnsPage: { limit: 1, itemsView: "summary" },
-      },
-    });
-    const resumed = await fixture.collector.waitFor((message) => requestId(message, 17));
-    expect(resumed).toMatchObject({
-      result: {
-        thread: { id: threadId, turns: [] },
-        initialTurnsPage: { data: [{ id: thirdTurnId }] },
-        turnsBackwardsCursor: expect.any(String),
-        itemsBackwardsCursor: expect.any(String),
-      },
-    });
-    expect(session.snapshotReads).toBe(2);
-
-    const itemsBackwardsCursor = (resumed.result as JsonObject).itemsBackwardsCursor;
-    if (typeof itemsBackwardsCursor !== "string") {
-      throw new Error("Paginated resume did not return an Item head cursor");
-    }
-    writeRequest(fixture.desktopInput, {
-      id: 18,
-      method: "thread/items/list",
-      params: {
-        threadId,
-        turnId: firstTurnId,
-        cursor: itemsBackwardsCursor,
-      },
-    });
-    await expect(
-      fixture.collector.waitFor((message) => requestId(message, 18)),
-    ).resolves.toMatchObject({
-      result: { data: [], nextCursor: null, backwardsCursor: null },
-    });
-
-    expect(officialWrite).not.toHaveBeenCalled();
-    await stopFixture(fixture);
-  });
-
-  it("selects an existing Pi Thread Model from ordered Session state", async () => {
-    const fixture = createFixture();
-    const officialWrite = vi.fn();
-    fixture.official.stdin.on("data", officialWrite);
-    const threadId = await startPiThread(fixture);
-    const model = fixture.adapter.catalog.models[1]?.ref;
-    if (!model) throw new Error("Fake catalog has no secondary Model");
-
-    writeRequest(fixture.desktopInput, {
-      id: 31,
-      method: "codexhost/thread/model/select",
-      params: { threadId, model },
-    });
-    await expect(
-      fixture.collector.waitFor((message) => requestId(message, 31)),
-    ).resolves.toMatchObject({
-      id: 31,
-      result: {
-        effectiveModel: model,
-        effectiveThinkingOptionId: "off",
-        availableThinkingOptions: [
-          { id: "off", label: "Off" },
-          { id: "low", label: "Low" },
-        ],
-      },
-    });
-    expect(fixture.adapter.sessions[0]?.state.effectiveModel).toEqual(model);
-    expect(officialWrite).not.toHaveBeenCalled();
-    await stopFixture(fixture);
-  });
-
-  it("selects a registered non-Pi Thread Model through its owning Session", async () => {
-    const pi = new FakeHarnessAdapter(harnessIdSchema.parse("pi"));
-    const claude = new FakeHarnessAdapter(harnessIdSchema.parse("claude-code"));
-    const fixture = createFixture({
-      externalAdapters: new Map<ExternalHarnessId, FakeHarnessAdapter>([
-        ["pi", pi],
-        ["claude-code", claude],
-      ]),
-    });
-    const threadId = await startExternalThread(fixture, CLAUDE_CODE_NATIVE_TRANSPORT_MODEL_ID);
-    const model = claude.catalog.models[1]?.ref;
-    if (!model) throw new Error("Fake Claude catalog has no secondary Model");
-
-    writeRequest(fixture.desktopInput, {
-      id: 33,
-      method: "codexhost/thread/model/select",
-      params: { threadId, model },
-    });
-    await expect(
-      fixture.collector.waitFor((message) => requestId(message, 33)),
-    ).resolves.toMatchObject({
-      id: 33,
-      result: { effectiveModel: model, effectiveThinkingOptionId: "off" },
-    });
-    expect(claude.sessions[0]?.state.effectiveModel).toEqual(model);
-    expect(pi.sessions).toHaveLength(0);
-    await stopFixture(fixture);
-  });
-
-  it("routes Permission Mode through the owning capable Session and preserves rejection", async () => {
-    const pi = new FakeHarnessAdapter(harnessIdSchema.parse("pi"));
-    const claudeSeed = new FakeHarnessAdapter(harnessIdSchema.parse("claude-code"));
-    const permissionModes = harnessPermissionModeCatalogSchema.parse({
-      modes: [
-        { id: "default", label: "Default" },
-        { id: "auto", label: "Auto" },
-        { id: "bypassPermissions", label: "Bypass", dangerous: true },
-      ],
-      defaultModeId: "default",
-    });
-    const claude = new FakeHarnessAdapter(
-      harnessIdSchema.parse("claude-code"),
-      claudeSeed.catalog,
-      false,
-      false,
-      null,
-      permissionModes,
-    );
-    const fixture = createFixture({
-      externalAdapters: new Map<ExternalHarnessId, FakeHarnessAdapter>([
-        ["pi", pi],
-        ["claude-code", claude],
-      ]),
-    });
-    const model = claude.catalog.defaultModel;
-    if (!model) throw new Error("Fake Claude catalog has no default Model");
-    const defaultMode = harnessPermissionModeIdSchema.parse("default");
-    const threadId = await startExternalThread(
-      fixture,
-      encodeClaudeTransportModel(model, defaultMode),
-      36,
-    );
-    const auto = harnessPermissionModeIdSchema.parse("auto");
-
-    writeRequest(fixture.desktopInput, {
-      id: 37,
-      method: "codexhost/thread/permission-mode/select",
-      params: { threadId, permissionModeId: auto },
-    });
-    await expect(
-      fixture.collector.waitFor((message) => requestId(message, 37)),
-    ).resolves.toMatchObject({
-      result: { effectiveModel: model, effectivePermissionModeId: auto },
-    });
-    expect(claude.sessions[0]?.state.effectivePermissionModeId).toBe(auto);
-    await expect(
-      fixture.mappingStore.getThread(hostThreadIdSchema.parse(threadId)),
-    ).resolves.toMatchObject({
-      transportModelId: encodeClaudeTransportModel(model, auto),
-    });
-    expect(pi.sessions).toHaveLength(0);
-
-    claude.sessions[0]?.rejectNextPermissionModeSelection({
-      code: "nativeFailure",
-      message: "Policy rejected bypass",
-      retryable: false,
-    });
-    writeRequest(fixture.desktopInput, {
-      id: 38,
-      method: "codexhost/thread/permission-mode/select",
-      params: {
-        threadId,
-        permissionModeId: harnessPermissionModeIdSchema.parse("bypassPermissions"),
-      },
-    });
-    await expect(
-      fixture.collector.waitFor((message) => requestId(message, 38)),
-    ).resolves.toMatchObject({
-      error: { code: -32078, message: "Policy rejected bypass" },
-    });
-    expect(claude.sessions[0]?.state.effectivePermissionModeId).toBe(auto);
-    await stopFixture(fixture);
-  });
-
-  it("rejects live Grok Permission Mode changes without rewriting mapping", async () => {
-    const permissionModes = harnessPermissionModeCatalogSchema.parse({
-      modes: [
-        { id: "default", label: "Default" },
-        { id: "always-approve", label: "Always approve", dangerous: true },
-      ],
-      defaultModeId: "default",
-    });
-    const grok = new FakeHarnessAdapter(
-      harnessIdSchema.parse("grok"),
-      undefined,
-      true,
-      true,
-      null,
-      permissionModes,
-      false,
-      "atCreate",
-    );
-    const fixture = createFixture({
-      externalAdapters: new Map<ExternalHarnessId, FakeHarnessAdapter>([["grok", grok]]),
-    });
-    const model = grok.catalog.defaultModel;
-    if (!model) throw new Error("Fake Grok catalog has no default Model");
-    const defaultMode = harnessPermissionModeIdSchema.parse("default");
-    const alwaysApprove = harnessPermissionModeIdSchema.parse("always-approve");
-    const transportModelId = encodeGrokTransportModel(model, defaultMode);
-    const threadId = await startExternalThread(fixture, transportModelId, 50);
-    const session = grok.sessions[0];
-    if (!session) throw new Error("Fake Grok Session was not opened");
-    const execute = vi.spyOn(session, "execute");
-
-    writeRequest(fixture.desktopInput, {
-      id: 51,
-      method: "codexhost/thread/permission-mode/select",
-      params: { threadId, permissionModeId: alwaysApprove },
-    });
-    await expect(
-      fixture.collector.waitFor((message) => requestId(message, 51)),
-    ).resolves.toMatchObject({
-      error: { code: -32078, message: "Permission Mode is fixed at Session creation" },
-    });
-    expect(execute).not.toHaveBeenCalled();
-    expect(session.state.effectivePermissionModeId).toBe(defaultMode);
-    await expect(
-      fixture.mappingStore.getThread(hostThreadIdSchema.parse(threadId)),
-    ).resolves.toMatchObject({ transportModelId });
-
-    await stopFixture(fixture);
-  });
-
-  it("selects existing Thread Thinking from ordered complete Session state", async () => {
-    const fixture = createFixture();
-    const officialWrite = vi.fn();
-    fixture.official.stdin.on("data", officialWrite);
-    const threadId = await startPiThread(fixture);
-    const off = fixture.adapter.catalog.thinkingOptions.find(({ id }) => id === "off")?.id;
-    if (!off) throw new Error("Fake catalog has no Off Thinking option");
-
-    writeRequest(fixture.desktopInput, {
-      id: 34,
-      method: "codexhost/thread/thinking/select",
-      params: { threadId, thinkingOptionId: off },
-    });
-    await expect(
-      fixture.collector.waitFor((message) => requestId(message, 34)),
-    ).resolves.toMatchObject({
-      id: 34,
-      result: {
-        effectiveModel: fixture.adapter.catalog.defaultModel,
-        effectiveThinkingOptionId: "off",
-        availableThinkingOptions: [
-          { id: "off", label: "Off" },
-          { id: "high", label: "High" },
-        ],
-      },
-    });
-    expect(fixture.adapter.sessions[0]?.state.effectiveThinkingOptionId).toBe("off");
-    await expect(
-      fixture.mappingStore.getThread(hostThreadIdSchema.parse(threadId)),
-    ).resolves.toMatchObject({
-      transportModelId: encodePiTransportModel(fixture.adapter.catalog.defaultModel, off),
-    });
-    expect(officialWrite).not.toHaveBeenCalled();
-    await stopFixture(fixture);
-  });
-
-  it("rejects fixed Model control for an unknown or Codex-owned Thread locally", async () => {
-    const fixture = createFixture();
-    const officialWrite = vi.fn();
-    fixture.official.stdin.on("data", officialWrite);
-    const model = fixture.adapter.catalog.models[0]?.ref;
-    if (!model) throw new Error("Fake catalog is empty");
-
-    writeRequest(fixture.desktopInput, {
-      id: 35,
-      method: "codexhost/thread/model/select",
-      params: { threadId: "official-thread", model },
-    });
-    await expect(
-      fixture.collector.waitFor((message) => requestId(message, 35)),
-    ).resolves.toMatchObject({ error: { code: -32078 } });
-    expect(officialWrite).not.toHaveBeenCalled();
-    await stopFixture(fixture);
-  });
-
-  it("rejects a Pi Model selection while its Turn is active", async () => {
-    const fixture = createFixture();
-    const threadId = await startPiThread(fixture);
-    await startPiTurn(fixture, threadId);
-    const model = fixture.adapter.catalog.models[1]?.ref;
-    if (!model) throw new Error("Fake catalog has no secondary Model");
-
-    writeRequest(fixture.desktopInput, {
-      id: 32,
-      method: "codexhost/thread/model/select",
-      params: { threadId, model },
-    });
-    await expect(
-      fixture.collector.waitFor((message) => requestId(message, 32)),
-    ).resolves.toMatchObject({
-      error: { code: -32078, message: expect.stringContaining("active") },
-    });
-    const off = fixture.adapter.catalog.thinkingOptions.find(({ id }) => id === "off")?.id;
-    if (!off) throw new Error("Fake catalog has no Off Thinking option");
-    writeRequest(fixture.desktopInput, {
-      id: 36,
-      method: "codexhost/thread/thinking/select",
-      params: { threadId, thinkingOptionId: off },
-    });
-    await expect(
-      fixture.collector.waitFor((message) => requestId(message, 36)),
-    ).resolves.toMatchObject({
-      error: { code: -32078, message: expect.stringContaining("active") },
-    });
-    fixture.adapter.sessions[0]?.succeedTurn();
-    await stopFixture(fixture);
-  });
-
-  it("binds a selected Pi Model and Thinking carrier to create and later Turn routing", async () => {
-    const fixture = createFixture();
-    const model = fixture.adapter.catalog.models[1]?.ref;
-    if (!model) throw new Error("Fake catalog has no secondary Model");
-    const low = fixture.adapter.catalog.thinkingOptions.find(({ id }) => id === "low")?.id;
-    if (!low) throw new Error("Fake catalog has no Low Thinking option");
-    const carrier = encodePiTransportModel(model, low);
-    const threadId = await startPiThread(fixture, carrier);
-
-    expect(fixture.adapter.sessions[0]?.initialState).toMatchObject({
-      effectiveModel: model,
-      effectiveThinkingOptionId: low,
-    });
-    expect(
-      (fixture.collector.messages.find((message) => requestId(message, 1))?.result as JsonObject)
-        .model,
-    ).toBe(carrier);
-    writeRequest(fixture.desktopInput, {
-      id: 33,
-      method: "turn/start",
-      params: {
-        threadId,
-        model: carrier,
-        input: [{ type: "text", text: "selected" }],
-      },
-    });
-    await expect(
-      fixture.collector.waitFor((message) => requestId(message, 33)),
-    ).resolves.toMatchObject({ result: { turn: { status: "inProgress" } } });
-    fixture.adapter.sessions[0]?.succeedTurn();
-    await stopFixture(fixture);
-  });
-
-  it("rejects malformed selected Pi carriers without forwarding or stopping Host", async () => {
-    const fixture = createFixture();
-    const officialWrite = vi.fn();
-    fixture.official.stdin.on("data", officialWrite);
-
-    writeRequest(fixture.desktopInput, {
-      id: 34,
-      method: "thread/start",
-      params: { model: "codexhost/pi-native@provider/model", cwd: "/synthetic" },
-    });
-    await expect(
-      fixture.collector.waitFor((message) => requestId(message, 34)),
-    ).resolves.toMatchObject({
-      error: { code: -32602, message: expect.stringContaining("Model Ref") },
-    });
-    expect(fixture.adapter.sessions).toHaveLength(0);
-    expect(officialWrite).not.toHaveBeenCalled();
-    await stopFixture(fixture);
-  });
-
-  it("projects early Adapter outputs after the turn/start response and supports thread/read", async () => {
-    const fixture = createFixture();
-    const threadId = await startPiThread(fixture);
-    const session = fixture.adapter.sessions[0];
-    if (!session) throw new Error("Fake Pi Session was not opened");
-
-    writeRequest(fixture.desktopInput, {
-      id: 2,
-      method: "turn/start",
-      params: { threadId, input: [{ type: "text", text: "synthetic" }] },
-    });
-    await fixture.collector.waitFor((message) => requestId(message, 2));
-    session.appendText("fake output");
-    await fixture.collector.waitFor((message) => method(message, "item/started"));
-    session.succeedTurn();
-    await fixture.collector.waitFor((message) => method(message, "turn/completed"));
-
-    const responseIndex = fixture.collector.messages.findIndex((message) => requestId(message, 2));
-    const startedIndex = fixture.collector.messages.findIndex((message) =>
-      method(message, "turn/started"),
-    );
-    expect(responseIndex).toBeGreaterThanOrEqual(0);
-    expect(startedIndex).toBeGreaterThan(responseIndex);
-
-    writeRequest(fixture.desktopInput, {
-      id: 3,
-      method: "thread/read",
-      params: { threadId, includeTurns: true },
-    });
-    const readResponse = await fixture.collector.waitFor((message) => requestId(message, 3));
-    expect(readResponse).toMatchObject({
-      result: { thread: { turns: [{ status: "completed" }] } },
-    });
-    await stopFixture(fixture);
-  });
-
-  it("projects autonomous Harness Turn input in the live turn/started payload", async () => {
-    const fixture = createFixture();
-    await startPiThread(fixture);
-    const session = fixture.adapter.sessions[0];
-    if (!session) throw new Error("Fake Pi Session was not opened");
-    const turnId = hostTurnIdSchema.parse("autonomous-turn");
-
-    session.publishAutonomousTurn(turnId, [
-      { type: "text", text: "native follow-up" },
-      { type: "text", text: "second line" },
-    ]);
-
-    await expect(
-      fixture.collector.waitFor((message) => turnEvent(message, "turn/started", turnId)),
-    ).resolves.toMatchObject({
-      params: {
-        turn: {
-          id: turnId,
-          items: [
-            {
-              type: "userMessage",
-              content: [
-                { type: "text", text: "native follow-up" },
-                { type: "text", text: "second line" },
-              ],
-            },
-          ],
-        },
-      },
-    });
-    await fixture.collector.waitFor((message) => turnEvent(message, "turn/completed", turnId));
-    await stopFixture(fixture);
-  });
-
-  it("reads static Harness command catalogs without inspection or opening a Session", async () => {
-    const fixture = createFixture();
-    const catalog = {
-      commands: [
-        harnessCommandDescriptorSchema.parse({
-          id: "fake.compact",
-          invocation: "/compact",
-          label: "Compact",
-          argumentMode: "none",
-        }),
-      ],
-    };
-    Object.assign(fixture.adapter, { commandCatalog: catalog });
-    const inspect = vi.spyOn(fixture.adapter, "inspect");
-    const open = vi.spyOn(fixture.adapter, "open");
-    writeRequest(fixture.desktopInput, {
-      id: 1,
-      method: "codexhost/harness/commands/inspect",
-      params: { harnessId: "pi" },
-    });
-    await expect(
-      fixture.collector.waitFor((message) => requestId(message, 1)),
-    ).resolves.toMatchObject({ result: catalog });
-    expect(inspect).not.toHaveBeenCalled();
-    expect(open).not.toHaveBeenCalled();
-    expect(fixture.adapter.sessions).toHaveLength(0);
-
-    for (const [id, params, code] of [
-      [2, { threadId: "unused" }, -32602],
-      [3, { harnessId: "missing" }, -32077],
-    ] as const) {
-      writeRequest(fixture.desktopInput, {
-        id,
-        method: "codexhost/harness/commands/inspect",
-        params,
-      });
-      await expect(
-        fixture.collector.waitFor((message) => requestId(message, id)),
-      ).resolves.toMatchObject({ error: { code } });
-    }
-    Object.assign(fixture.adapter, { commandCatalog: { commands: [{ id: "invalid" }] } });
-    writeRequest(fixture.desktopInput, {
-      id: 4,
-      method: "codexhost/harness/commands/inspect",
-      params: { harnessId: "pi" },
-    });
-    await expect(
-      fixture.collector.waitFor((message) => requestId(message, 4)),
-    ).resolves.toMatchObject({ error: { code: -32078 } });
-    expect(open).not.toHaveBeenCalled();
-    await stopFixture(fixture);
-  });
-
-  it("acknowledges an accepted Harness command through the public command contract", async () => {
-    const fixture = createFixture();
-    const threadId = await startPiThread(fixture);
-    const session = fixture.adapter.sessions[0];
-    if (!session) throw new Error("Fake Pi Session was not opened");
-    session.commands = {
-      list: async () => ({
-        ok: true,
-        value: {
-          commands: [
-            harnessCommandDescriptorSchema.parse({
-              id: "fake.compact",
-              invocation: "/compact",
-              label: "Compact",
-              argumentMode: "none" as const,
-            }),
-          ],
-        },
-      }),
-      execute: async ({ turnId }) => {
-        session.publishEphemeralCommand(turnId, {
-          type: "contextCompaction",
-          itemId: hostItemIdSchema.parse("fake-command-compaction-item"),
-        });
-        return {
-          ok: true,
-          value: { turnId },
-        };
-      },
-    };
-    const turnId = hostTurnIdSchema.parse("manual-compact");
-
-    writeRequest(fixture.desktopInput, {
-      id: 2,
-      method: "codexhost/thread/command/execute",
-      params: { threadId, commandId: "fake.compact", turnId },
-    });
-
-    await expect(
-      fixture.collector.waitFor((message) => requestId(message, 2)),
-    ).resolves.toMatchObject({ result: { accepted: true, turnId } });
-    await fixture.collector.waitFor((message) => turnEvent(message, "turn/completed", turnId));
-
-    const nextTurnId = await startPiTurn(fixture, threadId, 3);
-    await fixture.collector.waitFor((message) => turnEvent(message, "turn/started", nextTurnId));
-    session.succeedTurn();
-    await fixture.collector.waitFor((message) => turnEvent(message, "turn/completed", nextTurnId));
-    await stopFixture(fixture);
-  });
-
-  it("serializes command catalog admission and releases it after discovery failure", async () => {
-    const fixture = createFixture();
-    const threadId = await startPiThread(fixture);
-    const session = fixture.adapter.sessions[0];
-    if (!session) throw new Error("Fake Pi Session was not opened");
-    let resolveCatalog:
-      | ((value: {
-          ok: false;
-          error: {
-            code: "unavailable";
-            message: string;
-            retryable: true;
-          };
-        }) => void)
-      | undefined;
-    const descriptor = harnessCommandDescriptorSchema.parse({
-      id: "fake.compact",
-      invocation: "/compact",
-      label: "Compact",
-      argumentMode: "none",
-    });
-    const list = vi
-      .fn()
-      .mockImplementationOnce(
-        () =>
-          new Promise((resolve) => {
-            resolveCatalog = resolve;
-          }),
-      )
-      .mockResolvedValue({ ok: true, value: { commands: [descriptor] } });
-    const execute = vi.fn(async ({ turnId }) => {
-      session.publishEphemeralCommand(turnId, {
-        type: "contextCompaction",
-        itemId: hostItemIdSchema.parse(`retried-command-${turnId}`),
-      });
-      return { ok: true as const, value: { turnId } };
-    });
-    session.commands = { list, execute };
-
-    writeRequest(fixture.desktopInput, {
-      id: 2,
-      method: "codexhost/thread/command/execute",
-      params: { threadId, commandId: "fake.compact" },
-    });
-    await vi.waitFor(() => expect(list).toHaveBeenCalledOnce());
-    writeRequest(fixture.desktopInput, {
-      id: 3,
-      method: "codexhost/thread/command/execute",
-      params: { threadId, commandId: "fake.compact" },
-    });
-    await expect(
-      fixture.collector.waitFor((message) => requestId(message, 3)),
-    ).resolves.toMatchObject({ error: { code: -32072 } });
-
-    resolveCatalog?.({
-      ok: false,
-      error: { code: "unavailable", message: "catalog offline", retryable: true },
-    });
-    await expect(
-      fixture.collector.waitFor((message) => requestId(message, 2)),
-    ).resolves.toMatchObject({ error: { code: -32078, message: "catalog offline" } });
-
-    writeRequest(fixture.desktopInput, {
-      id: 4,
-      method: "codexhost/thread/command/execute",
-      params: { threadId, commandId: "fake.compact" },
-    });
-    await expect(
-      fixture.collector.waitFor((message) => requestId(message, 4)),
-    ).resolves.toMatchObject({ result: { accepted: true } });
-    expect(execute).toHaveBeenCalledOnce();
-    await stopFixture(fixture);
-  });
-
-  it("preserves ordinary prompt whitespace without command discovery", async () => {
-    const fixture = createFixture();
-    const threadId = await startPiThread(fixture);
-    const session = fixture.adapter.sessions[0];
-    if (!session) throw new Error("Fake Pi Session was not opened");
-    const list = vi.fn();
-    const executeCommand = vi.fn();
-    session.commands = { list, execute: executeCommand };
-    const execute = vi.spyOn(session, "execute");
-    const text = " \ntext /compact text \n";
-
-    writeRequest(fixture.desktopInput, {
-      id: 2,
-      method: "turn/start",
-      params: { threadId, input: [{ type: "text", text }] },
-    });
-    await expect(
-      fixture.collector.waitFor((message) => requestId(message, 2)),
-    ).resolves.toMatchObject({ result: { turn: { status: "inProgress" } } });
-    expect(execute).toHaveBeenCalledWith(
-      expect.objectContaining({ type: "turn.start", input: [{ type: "text", text }] }),
-    );
-    expect(list).not.toHaveBeenCalled();
-    expect(executeCommand).not.toHaveBeenCalled();
-    await stopFixture(fixture);
-  });
-
-  it.each([
-    ["bare", "/compact"],
-    ["space", "/compact "],
-    ["newline", "/compact\n"],
-    ["space before newline", "/compact \n"],
-    ["surrounding whitespace", " \n/compact\t\r\n"],
-  ])("recognizes compact without instructions: %s", async (_name, text) => {
-    const fixture = createFixture();
-    try {
-      const threadId = await startPiThread(fixture);
-      const session = fixture.adapter.sessions[0];
-      if (!session) throw new Error("Fake Pi Session was not opened");
-      session.commands = {
-        list: async () => ({
-          ok: true,
-          value: {
-            commands: [
-              harnessCommandDescriptorSchema.parse({
-                id: "fake.compact",
-                invocation: "/compact",
-                label: "Compact",
-                argumentMode: "text",
-              }),
-            ],
-          },
-        }),
-        execute: async ({ turnId, arguments: arguments_ }) => {
-          expect(arguments_).toBeUndefined();
-          session.publishEphemeralCommand(turnId, {
-            type: "contextCompaction",
-            itemId: hostItemIdSchema.parse("compact-whitespace-test"),
-          });
-          return { ok: true, value: { turnId } };
-        },
-      };
-      writeRequest(fixture.desktopInput, {
-        id: 2,
-        method: "turn/start",
-        params: { threadId, input: [{ type: "text", text }] },
-      });
-      await expect(
-        fixture.collector.waitFor((message) => requestId(message, 2)),
-      ).resolves.toMatchObject({ result: { turn: { status: "inProgress" } } });
-    } finally {
-      await stopFixture(fixture);
-    }
-  });
-
-  it("projects a Harness command's native compaction Item through the existing UI lane", async () => {
-    const fixture = createFixture();
-    const threadId = await startPiThread(fixture);
-    const session = fixture.adapter.sessions[0];
-    if (!session) throw new Error("Fake Pi Session was not opened");
-    session.commands = {
-      list: async () => ({
-        ok: true,
-        value: {
-          commands: [
-            harnessCommandDescriptorSchema.parse({
-              id: "fake.compact",
-              invocation: "/compact",
-              label: "Compact",
-              argumentMode: "text" as const,
-            }),
-          ],
-        },
-      }),
-      execute: async ({ turnId, commandId, arguments: arguments_ }) => {
-        expect(commandId).toBe("fake.compact");
-        expect(arguments_).toEqual({ text: "Keep implementation details" });
-        session.publishEphemeralCommand(turnId, {
-          type: "contextCompaction",
-          itemId: hostItemIdSchema.parse("fake-compaction-item"),
-        });
-        return { ok: true, value: { turnId } };
-      },
-    };
-
-    writeRequest(fixture.desktopInput, {
-      id: 2,
-      method: "turn/start",
-      params: {
-        threadId,
-        input: [{ type: "text", text: "/compact Keep implementation details" }],
-      },
-    });
-    await expect(
-      fixture.collector.waitFor((message) => requestId(message, 2)),
-    ).resolves.toMatchObject({ result: { turn: { status: "inProgress" } } });
-    await expect(
-      fixture.collector.waitFor(
-        (message) =>
-          method(message, "item/started") &&
-          (messageParams(message).item as JsonObject | undefined)?.type === "contextCompaction",
-      ),
-    ).resolves.toMatchObject({ params: { item: { type: "contextCompaction" } } });
-    await expect(
-      fixture.collector.waitFor(
-        (message) =>
-          method(message, "item/completed") &&
-          (messageParams(message).item as JsonObject | undefined)?.type === "contextCompaction",
-      ),
-    ).resolves.toMatchObject({ params: { item: { type: "contextCompaction" } } });
-    await fixture.collector.waitFor((message) => method(message, "turn/completed"));
-    expect(session.persistedSnapshot().turns).toHaveLength(0);
-    await stopFixture(fixture);
-  });
-
-  it("projects live and historical Reasoning through the native summary lane", async () => {
-    const fixture = createFixture();
-    const threadId = await startPiThread(fixture);
-    const session = fixture.adapter.sessions[0];
-    if (!session) throw new Error("Fake Pi Session was not opened");
-
-    writeRequest(fixture.desktopInput, {
-      id: 2,
-      method: "turn/start",
-      params: { threadId, input: [{ type: "text", text: "reasoning" }] },
-    });
-    await fixture.collector.waitFor((message) => requestId(message, 2));
-    const reasoningId = session.startReasoning("visible ");
-    await expect(
-      fixture.collector.waitFor(
-        (message) =>
-          method(message, "item/started") &&
-          ((message.params as JsonObject).item as JsonObject | undefined)?.id ===
-            `${reasoningId}-summary`,
-      ),
-    ).resolves.toMatchObject({
-      params: { item: { type: "reasoning", summary: [], content: [] } },
-    });
-    await fixture.collector.waitFor((message) =>
-      method(message, "item/reasoning/summaryPartAdded"),
-    );
-    session.appendReasoning(reasoningId, "analysis");
-    await expect(
-      fixture.collector.waitFor(
-        (message) =>
-          method(message, "item/reasoning/summaryTextDelta") &&
-          (message.params as JsonObject).delta === "analysis",
-      ),
-    ).resolves.toMatchObject({ params: { summaryIndex: 0 } });
-    session.completeItem(reasoningId, { status: "succeeded" });
-    await fixture.collector.waitFor(
-      (message) =>
-        method(message, "item/completed") &&
-        ((message.params as JsonObject).item as JsonObject | undefined)?.id === reasoningId,
-    );
-    session.appendText("answer");
-    session.succeedTurn();
-    const completed = await fixture.collector.waitFor((message) =>
-      method(message, "turn/completed"),
-    );
-    expect(completed).toMatchObject({
-      params: {
-        turn: {
-          items: [
-            {
-              id: `${reasoningId}-summary`,
-              type: "reasoning",
-              summary: ["visible analysis"],
-              content: [],
-            },
-            {
-              id: reasoningId,
-              type: "commandExecution",
-              command: "thinking",
-              aggregatedOutput: "visible analysis",
-            },
-            { type: "agentMessage", text: "answer" },
-          ],
-        },
-      },
-    });
-
-    writeRequest(fixture.desktopInput, {
-      id: 3,
-      method: "thread/read",
-      params: { threadId, includeTurns: true },
-    });
-    await expect(
-      fixture.collector.waitFor((message) => requestId(message, 3)),
-    ).resolves.toMatchObject({
-      result: {
-        thread: {
-          turns: [
-            {
-              items: [
-                { type: "userMessage" },
-                {
-                  id: `${reasoningId}-summary`,
-                  type: "reasoning",
-                  summary: ["visible analysis"],
-                  content: [],
-                },
-                {
-                  id: reasoningId,
-                  type: "commandExecution",
-                  command: "thinking",
-                  aggregatedOutput: "visible analysis",
-                },
-                { type: "agentMessage", text: "answer" },
-              ],
-            },
-          ],
-        },
-      },
-    });
-    await stopFixture(fixture);
-  });
-
-  it("notifies Renderer when reliable Usage arrives before Context Usage", async () => {
-    const fixture = createFixture();
-    const threadId = await startPiThread(fixture);
-    const session = fixture.adapter.sessions[0];
-    if (!session) throw new Error("Fake Pi Session was not opened");
-
-    const turnId = await startPiTurn(fixture, threadId, 2);
-    session.publishUsage(
-      { cacheHitRatePercent: 0, totalCostUsd: 0.01, inputTokens: 9, outputTokens: 122 },
-      hostTurnIdSchema.parse(turnId),
-    );
-
-    await expect(
-      fixture.collector.waitFor(
-        (message) =>
-          method(message, "codexhost/thread/usage/updated") &&
-          messageParams(message).threadId === threadId,
-      ),
-    ).resolves.toEqual({
-      method: "codexhost/thread/usage/updated",
-      params: { threadId },
-    });
-    expect(
-      fixture.collector.messages.some(
-        (message) =>
-          method(message, "thread/tokenUsage/updated") &&
-          messageParams(message).threadId === threadId,
-      ),
-    ).toBe(false);
-
-    session.succeedTurn();
-    await fixture.collector.waitFor((message) => turnEvent(message, "turn/completed", turnId));
-    await stopFixture(fixture);
-  });
-
-  it("orders early and terminal Usage updates and replays current Usage after thread/read", async () => {
-    const fixture = createFixture();
-    const threadId = await startPiThread(fixture);
-    const session = fixture.adapter.sessions[0];
-    if (!session) throw new Error("Fake Pi Session was not opened");
-    session.publishUsageOnNextTurn({
-      totalTokens: 30,
-      contextUsedTokens: 20,
-      contextWindowTokens: 100,
-    });
-
-    const turnId = await startPiTurn(fixture, threadId, 2);
-    const earlyUsage = await fixture.collector.waitFor(
-      (message) =>
-        method(message, "thread/tokenUsage/updated") &&
-        messageParams(message).threadId === threadId,
-    );
-    expect(earlyUsage).toMatchObject({
-      params: {
-        threadId,
-        turnId,
-        tokenUsage: {
-          total: { totalTokens: 30 },
-          last: { totalTokens: 20, inputTokens: 20 },
-          modelContextWindow: 100,
-        },
-      },
-    });
-    const responseIndex = fixture.collector.messages.findIndex((message) => requestId(message, 2));
-    const earlyUsageIndex = fixture.collector.messages.indexOf(earlyUsage);
-    expect(earlyUsageIndex).toBeGreaterThan(responseIndex);
-
-    session.succeedTurn();
-    await fixture.collector.waitFor((message) => turnEvent(message, "turn/completed", turnId));
-    await fixture.collector.waitFor((message) => threadStatus(message, threadId, "idle"));
-    session.publishUsage(
-      { totalTokens: 44, contextUsedTokens: 25, contextWindowTokens: 100 },
-      hostTurnIdSchema.parse(turnId),
-    );
-    await vi.waitFor(() => {
-      expect(
-        fixture.collector.messages.filter(
-          (message) =>
-            method(message, "thread/tokenUsage/updated") &&
-            ((messageParams(message).tokenUsage as JsonObject).total as JsonObject).totalTokens ===
-              44,
-        ),
-      ).toHaveLength(1);
-    });
-    const terminalIndex = fixture.collector.messages.findIndex((message) =>
-      turnEvent(message, "turn/completed", turnId),
-    );
-    const idleIndex = fixture.collector.messages.findIndex((message) =>
-      threadStatus(message, threadId, "idle"),
-    );
-    const terminalUsageIndex = fixture.collector.messages.findIndex(
-      (message) =>
-        method(message, "thread/tokenUsage/updated") &&
-        ((messageParams(message).tokenUsage as JsonObject).total as JsonObject).totalTokens === 44,
-    );
-    expect(idleIndex).toBeGreaterThan(terminalIndex);
-    expect(terminalUsageIndex).toBeGreaterThan(idleIndex);
-
-    writeRequest(fixture.desktopInput, {
-      id: 3,
-      method: "thread/read",
-      params: { threadId, includeTurns: true },
-    });
-    await fixture.collector.waitFor((message) => requestId(message, 3));
-    await vi.waitFor(() => {
-      expect(
-        fixture.collector.messages.filter(
-          (message) =>
-            method(message, "thread/tokenUsage/updated") &&
-            ((messageParams(message).tokenUsage as JsonObject).total as JsonObject).totalTokens ===
-              44,
-        ),
-      ).toHaveLength(2);
-    });
-    const readResponseIndex = fixture.collector.messages.findIndex((message) =>
-      requestId(message, 3),
-    );
-    const replayIndex = fixture.collector.messages.findLastIndex(
-      (message) =>
-        method(message, "thread/tokenUsage/updated") &&
-        ((messageParams(message).tokenUsage as JsonObject).total as JsonObject).totalTokens === 44,
-    );
-    expect(replayIndex).toBeGreaterThan(readResponseIndex);
-
-    const stored = await fixture.mappingStore.getThread(hostThreadIdSchema.parse(threadId));
-    expect(JSON.stringify(stored)).not.toMatch(/"(?:usage|cost|context|requestId|refreshCache)"/i);
-    await stopFixture(fixture);
-  });
-
-  it("keeps Usage isolated across registered Harness Threads", async () => {
-    const piAdapter = new FakeHarnessAdapter(harnessIdSchema.parse("pi"));
-    const claudeAdapter = new FakeHarnessAdapter(harnessIdSchema.parse("claude-code"));
-    const fixture = createFixture({
-      externalAdapters: new Map<ExternalHarnessId, FakeHarnessAdapter>([
-        ["pi", piAdapter],
-        ["claude-code", claudeAdapter],
-      ]),
-    });
-    const piThreadId = await startExternalThread(fixture, "codexhost/pi-native", 10);
-    const claudeThreadId = await startExternalThread(
-      fixture,
-      CLAUDE_CODE_NATIVE_TRANSPORT_MODEL_ID,
-      11,
-    );
-    const piTurnId = await completePiTurn(fixture, piThreadId, 12, 0);
-    const claudeTurnId = await completePiTurn(
-      { ...fixture, adapter: claudeAdapter },
-      claudeThreadId,
-      13,
-      0,
-    );
-    piAdapter.sessions[0]?.publishUsage(
-      { totalTokens: 10, contextUsedTokens: 2, contextWindowTokens: 100 },
-      hostTurnIdSchema.parse(piTurnId),
-    );
-    claudeAdapter.sessions[0]?.publishUsage(
-      { totalTokens: 90, contextUsedTokens: 70, contextWindowTokens: 200 },
-      hostTurnIdSchema.parse(claudeTurnId),
-    );
-
-    await expect(
-      fixture.collector.waitFor(
-        (message) =>
-          method(message, "thread/tokenUsage/updated") &&
-          messageParams(message).threadId === piThreadId,
-      ),
-    ).resolves.toMatchObject({ params: { tokenUsage: { total: { totalTokens: 10 } } } });
-    await expect(
-      fixture.collector.waitFor(
-        (message) =>
-          method(message, "thread/tokenUsage/updated") &&
-          messageParams(message).threadId === claudeThreadId,
-      ),
-    ).resolves.toMatchObject({ params: { tokenUsage: { total: { totalTokens: 90 } } } });
-    await stopFixture(fixture);
-  });
-
-  it("routes exact Usage refresh only to the owning External Session", async () => {
-    const piAdapter = new FakeHarnessAdapter(harnessIdSchema.parse("pi"));
-    const claudeAdapter = new FakeHarnessAdapter(harnessIdSchema.parse("claude-code"));
-    const fixture = createFixture({
-      externalAdapters: new Map<ExternalHarnessId, FakeHarnessAdapter>([
-        ["pi", piAdapter],
-        ["claude-code", claudeAdapter],
-      ]),
-    });
-    const piThreadId = await startExternalThread(fixture, "codexhost/pi-native", 60);
-    const claudeThreadId = await startExternalThread(
-      fixture,
-      CLAUDE_CODE_NATIVE_TRANSPORT_MODEL_ID,
-      61,
-    );
-
-    writeRequest(fixture.desktopInput, {
-      id: 62,
-      method: "codexhost/thread/usage/inspect",
-      params: { threadId: claudeThreadId, refresh: "exact" },
-    });
-    await fixture.collector.waitFor((message) => requestId(message, 62));
-    expect(claudeAdapter.sessions[0]?.usageRefreshes).toBe(1);
-    expect(piAdapter.sessions[0]?.usageRefreshes).toBe(0);
-
-    writeRequest(fixture.desktopInput, {
-      id: 63,
-      method: "codexhost/thread/usage/inspect",
-      params: { threadId: piThreadId, refresh: "newer" },
-    });
-    await expect(
-      fixture.collector.waitFor((message) => requestId(message, 63)),
-    ).resolves.toMatchObject({ error: { code: -32602 } });
-    expect(piAdapter.sessions[0]?.usageRefreshes).toBe(0);
-    await stopFixture(fixture);
-  });
-
-  it("round-trips Claude.ai plan-window fields through Thread Usage inspection without writing accountCredits", async () => {
-    const claudeAdapter = new FakeHarnessAdapter(harnessIdSchema.parse("claude-code"));
-    const fixture = createFixture({
-      externalAdapters: new Map<ExternalHarnessId, FakeHarnessAdapter>([
-        ["claude-code", claudeAdapter],
-      ]),
-    });
-    const claudeThreadId = await startExternalThread(
-      fixture,
-      CLAUDE_CODE_NATIVE_TRANSPORT_MODEL_ID,
-      70,
-    );
-    const claudeTurnId = await completePiTurn(
-      { ...fixture, adapter: claudeAdapter },
-      claudeThreadId,
-      71,
-      0,
-    );
-    claudeAdapter.sessions[0]?.publishUsage(
-      {
-        cacheHitRatePercent: 99,
-        totalCostUsd: 1.373,
-        contextUsedTokens: 50,
-        contextWindowTokens: 200,
-        planFiveHourUsedPercent: 45,
-        planFiveHourResetsAtUnix: 1_756_130_400,
-      },
-      hostTurnIdSchema.parse(claudeTurnId),
-    );
-    await fixture.collector.waitFor(
-      (message) =>
-        method(message, "thread/tokenUsage/updated") &&
-        messageParams(message).threadId === claudeThreadId,
-    );
-
-    writeRequest(fixture.desktopInput, {
-      id: 72,
-      method: "codexhost/thread/usage/inspect",
-      params: { threadId: claudeThreadId, refresh: "exact" },
-    });
-    await expect(fixture.collector.waitFor((message) => requestId(message, 72))).resolves.toEqual({
-      id: 72,
-      result: {
-        threadId: claudeThreadId,
-        usage: {
-          cacheHitRatePercent: 99,
-          totalCostUsd: 1.373,
-          contextUsedTokens: 50,
-          contextWindowTokens: 200,
-          planFiveHourUsedPercent: 45,
-          planFiveHourResetsAtUnix: 1_756_130_400,
-        },
-      },
-    });
-    expect(claudeAdapter.sessions[0]?.usageRefreshes).toBe(1);
-
-    writeRequest(fixture.desktopInput, {
-      id: 73,
-      method: "codexhost/thread/usage/inspect",
-      params: { threadId: "official-thread", refresh: "exact" },
-    });
-    await expect(
-      fixture.collector.waitFor((message) => requestId(message, 73)),
-    ).resolves.toMatchObject({ error: { code: -32602 } });
-    await stopFixture(fixture);
-  });
-
-  it("forks external inclusive, exclusive, and tail boundaries without reusing Host Turn IDs", async () => {
-    const fixture = createFixture();
-    const officialWrite = vi.fn();
-    fixture.official.stdin.on("data", officialWrite);
-    const sourceThreadId = await startPiThread(fixture);
-    const sourceTurnIds: [string, string, string] = [
-      await completePiTurn(fixture, sourceThreadId, 2),
-      await completePiTurn(fixture, sourceThreadId, 3),
-      await completePiTurn(fixture, sourceThreadId, 4),
-    ];
-
-    const forkRequest = async (id: number, params: JsonObject): Promise<JsonObject> => {
-      writeRequest(fixture.desktopInput, {
-        id,
-        method: "thread/fork",
-        params: { threadId: sourceThreadId, ...params },
-      });
-      const response = await fixture.collector.waitFor((message) => requestId(message, id));
-      const result = response.result as JsonObject;
-      return result.thread as JsonObject;
-    };
-
-    const inclusive = await forkRequest(10, {
-      lastTurnId: sourceTurnIds[0],
-      cwd: "/synthetic-worktree/inclusive",
-      runtimeWorkspaceRoots: ["/synthetic-worktree/inclusive", "/synthetic"],
-    });
-    const exclusive = await forkRequest(11, { beforeTurnId: sourceTurnIds[1] });
-    const tail = await forkRequest(12, {});
-    const excluded = await forkRequest(13, { excludeTurns: true });
-
-    expect(inclusive).toMatchObject({
-      forkedFromId: sourceThreadId,
-      parentThreadId: null,
-      cwd: "/synthetic-worktree/inclusive",
-      turns: [expect.objectContaining({ status: "completed" })],
-    });
-    expect(exclusive.turns).toHaveLength(1);
-    expect(tail.turns).toHaveLength(3);
-    expect(excluded.turns).toEqual([]);
-    const inclusiveTurnId = (inclusive.turns as JsonObject[])[0]?.id;
-    expect(inclusiveTurnId).not.toBe(sourceTurnIds[0]);
-    expect(inclusive.id).not.toBe(sourceThreadId);
-    expect(exclusive.id).not.toBe(inclusive.id);
-
-    const responseIndex = fixture.collector.messages.findIndex((message) => requestId(message, 10));
-    const notificationIndex = fixture.collector.messages.findIndex(
-      (message) =>
-        method(message, "thread/started") &&
-        (messageParams(message).thread as JsonObject | undefined)?.id === inclusive.id,
-    );
-    expect(notificationIndex).toBeGreaterThan(responseIndex);
-
-    await completePiTurn(fixture, inclusive.id as string, 20, 1);
-    await completePiTurn(fixture, sourceThreadId, 21, 0);
-    await expect(fixture.adapter.sessions[1]?.readSnapshot()).resolves.toMatchObject({
-      ok: true,
-      value: { turns: [{}, {}] },
-    });
-    await expect(fixture.adapter.sessions[0]?.readSnapshot()).resolves.toMatchObject({
-      ok: true,
-      value: { turns: [{}, {}, {}, {}] },
-    });
-    expect(officialWrite).not.toHaveBeenCalled();
-    await stopFixture(fixture);
-  });
-
-  it("forks a completed boundary while a later source Turn is still running", async () => {
-    const fixture = createFixture();
-    const sourceThreadId = await startPiThread(fixture);
-    const completedTurnId = await completePiTurn(fixture, sourceThreadId, 2);
-    const activeTurnId = await startPiTurn(fixture, sourceThreadId, 3);
-    await fixture.collector.waitFor((message) => turnEvent(message, "turn/started", activeTurnId));
-
-    writeRequest(fixture.desktopInput, {
-      id: 10,
-      method: "thread/fork",
-      params: { threadId: sourceThreadId, lastTurnId: completedTurnId },
-    });
-    const response = await fixture.collector.waitFor((message) => requestId(message, 10));
-    expect(response).toMatchObject({ result: { thread: { turns: [{}] } } });
-    expect(fixture.adapter.sessions).toHaveLength(2);
-
-    const sourceSession = fixture.adapter.sessions[0];
-    if (!sourceSession) throw new Error("Fake source Session was not opened");
-    sourceSession.succeedTurn();
-    await fixture.collector.waitFor((message) =>
-      turnEvent(message, "turn/completed", activeTurnId),
-    );
-    await expect(sourceSession.readSnapshot()).resolves.toMatchObject({
-      ok: true,
-      value: { turns: [{}, {}] },
-    });
-    await stopFixture(fixture);
-  });
-
-  it("uses only completed source Turns for tail Fork and Desktop rollback while running", async () => {
-    const fixture = createFixture();
-    const sourceThreadId = await startPiThread(fixture);
-    await completePiTurn(fixture, sourceThreadId, 2);
-    await completePiTurn(fixture, sourceThreadId, 3);
-    await completePiTurn(fixture, sourceThreadId, 4);
-    const activeTurnId = await startPiTurn(fixture, sourceThreadId, 5);
-    await fixture.collector.waitFor((message) => turnEvent(message, "turn/started", activeTurnId));
-
-    writeRequest(fixture.desktopInput, {
-      id: 10,
-      method: "thread/fork",
-      params: { threadId: sourceThreadId },
-    });
-    const forkResponse = await fixture.collector.waitFor((message) => requestId(message, 10));
-    expect(forkResponse).toMatchObject({ result: { thread: { turns: [{}, {}, {}] } } });
-    const derivedId = ((forkResponse.result as JsonObject).thread as JsonObject).id;
-    if (typeof derivedId !== "string") throw new Error("Fork response has no derived Thread ID");
-
-    writeRequest(fixture.desktopInput, {
-      id: 11,
-      method: "thread/rollback",
-      params: { threadId: derivedId, numTurns: 3 },
-    });
-    await expect(
-      fixture.collector.waitFor((message) => requestId(message, 11)),
-    ).resolves.toMatchObject({ result: { thread: { id: derivedId, turns: [{}] } } });
-
-    const sourceSession = fixture.adapter.sessions[0];
-    if (!sourceSession) throw new Error("Fake source Session was not opened");
-    sourceSession.succeedTurn();
-    await fixture.collector.waitFor((message) =>
-      turnEvent(message, "turn/completed", activeTurnId),
-    );
-    await expect(sourceSession.readSnapshot()).resolves.toMatchObject({
-      ok: true,
-      value: { turns: [{}, {}, {}, {}] },
-    });
-    await stopFixture(fixture);
-  });
-
-  it("rejects a running source that has no completed Fork Checkpoint", async () => {
-    const fixture = createFixture();
-    const sourceThreadId = await startPiThread(fixture);
-    const activeTurnId = await startPiTurn(fixture, sourceThreadId, 2);
-    await fixture.collector.waitFor((message) => turnEvent(message, "turn/started", activeTurnId));
-
-    writeRequest(fixture.desktopInput, {
-      id: 10,
-      method: "thread/fork",
-      params: { threadId: sourceThreadId },
-    });
-    await expect(
-      fixture.collector.waitFor((message) => requestId(message, 10)),
-    ).resolves.toMatchObject({
-      error: { code: -32080, message: "External Fork Checkpoint is unavailable" },
-    });
-    expect(fixture.adapter.sessions).toHaveLength(1);
-
-    const sourceSession = fixture.adapter.sessions[0];
-    if (!sourceSession) throw new Error("Fake source Session was not opened");
-    sourceSession.succeedTurn();
-    await fixture.collector.waitFor((message) =>
-      turnEvent(message, "turn/completed", activeTurnId),
-    );
-    await stopFixture(fixture);
-  });
-
-  it("routes a fixed Renderer Fork intent through the existing external Fork implementation", async () => {
-    const fixture = createFixture();
-    const officialWrite = vi.fn();
-    fixture.official.stdin.on("data", officialWrite);
-    const sourceThreadId = await startPiThread(fixture);
-    const firstTurnId = await completePiTurn(fixture, sourceThreadId, 2);
-    await completePiTurn(fixture, sourceThreadId, 3);
-
-    writeRequest(fixture.desktopInput, {
-      id: 10,
-      method: "codexhost/thread/fork",
-      params: { threadId: sourceThreadId, lastTurnId: firstTurnId },
-    });
-    const response = await fixture.collector.waitFor((message) => requestId(message, 10));
-    expect(response).toMatchObject({ result: { threadId: expect.any(String) } });
-    const derivedId = (response.result as JsonObject).threadId;
-    if (typeof derivedId !== "string") throw new Error("Renderer Fork has no derived Thread ID");
-    expect(derivedId).not.toBe(sourceThreadId);
-    await expect(
-      fixture.mappingStore.getThread(hostThreadIdSchema.parse(derivedId)),
-    ).resolves.toMatchObject({
-      forkSource: { hostThreadId: sourceThreadId, hostTurnId: firstTurnId },
-      turnMappings: [{}],
-    });
-    const responseIndex = fixture.collector.messages.findIndex((message) => requestId(message, 10));
-    const notificationIndex = fixture.collector.messages.findIndex(
-      (message) =>
-        method(message, "thread/started") &&
-        (messageParams(message).thread as JsonObject | undefined)?.id === derivedId,
-    );
-    expect(notificationIndex).toBeGreaterThan(responseIndex);
-    expect(officialWrite).not.toHaveBeenCalled();
-    await stopFixture(fixture);
-  });
-
-  it("acknowledges Desktop unsubscribe without inventing an external subscription", async () => {
-    const fixture = createFixture();
-    const officialWrite = vi.fn();
-    fixture.official.stdin.on("data", officialWrite);
-    const threadId = await startPiThread(fixture);
-    await completePiTurn(fixture, threadId, 2);
-
-    writeRequest(fixture.desktopInput, {
-      id: 10,
-      method: "thread/unsubscribe",
-      params: { threadId },
-    });
-    await expect(fixture.collector.waitFor((message) => requestId(message, 10))).resolves.toEqual({
-      id: 10,
-      result: { status: "notSubscribed" },
-    });
-    await expect(fixture.adapter.sessions[0]?.readSnapshot()).resolves.toMatchObject({
-      ok: true,
-      value: { turns: [{}] },
-    });
-
-    writeRequest(fixture.desktopInput, {
-      id: 11,
-      method: "thread/resume",
-      params: { threadId },
-    });
-    await expect(
-      fixture.collector.waitFor((message) => requestId(message, 11)),
-    ).resolves.toMatchObject({ result: { thread: { id: threadId, turns: [{}] } } });
-    expect(fixture.adapter.sessions).toHaveLength(1);
-    expect(officialWrite).not.toHaveBeenCalled();
-    await stopFixture(fixture);
-  });
-
-  it("rolls back the current External Thread by exactly one Turn", async () => {
-    const adapter = rollbackCapableAdapter();
-    const fixture = createFixture({ externalAdapters: new Map([["pi", adapter]]) });
-    const officialWrite = vi.fn();
-    fixture.official.stdin.on("data", officialWrite);
-    const threadId = await startPiThread(fixture);
-    const firstTurnId = await completePiTurn(fixture, threadId, 2);
-    await completePiTurn(fixture, threadId, 3);
-    const before = await fixture.mappingStore.getThread(hostThreadIdSchema.parse(threadId));
-
-    writeRequest(fixture.desktopInput, {
-      id: 10,
-      method: "thread/rollback",
-      params: { threadId, numTurns: 1 },
-    });
-    await expect(
-      fixture.collector.waitFor((message) => requestId(message, 10)),
-    ).resolves.toMatchObject({
-      result: { thread: { id: threadId, turns: [{ id: firstTurnId }] } },
-    });
-    await expect(
-      fixture.mappingStore.getThread(hostThreadIdSchema.parse(threadId)),
-    ).resolves.toMatchObject({
-      hostThreadId: threadId,
-      nativeSessionRef: { nativeSessionId: "fake-session-2" },
-      transportModelId: before?.transportModelId,
-      turnMappings: [{ hostTurnId: firstTurnId }],
-    });
-    expect(adapter.sessions[1]?.initialState).toMatchObject({
-      effectiveModel: adapter.sessions[0]?.state.effectiveModel,
-      effectiveThinkingOptionId: adapter.sessions[0]?.state.effectiveThinkingOptionId,
-    });
-    await expect(adapter.sessions[0]?.readSnapshot()).resolves.toMatchObject({
-      ok: false,
-      error: { code: "invalidState" },
-    });
-    await completePiTurn(fixture, threadId, 11, 1);
-    expect(officialWrite).not.toHaveBeenCalled();
-    await stopFixture(fixture);
-  });
-
-  it("restores configuration before reading a resume-state rollback replacement", async () => {
-    const permissionModes = harnessPermissionModeCatalogSchema.parse({
-      modes: [
-        { id: "default", label: "Default" },
-        { id: "auto", label: "Auto" },
-      ],
-      defaultModeId: "default",
-    });
-    const adapter = new ResumeStateRollbackAdapter(
-      harnessIdSchema.parse("pi"),
-      undefined,
-      true,
-      true,
-      null,
-      permissionModes,
-      true,
-    );
-    const fixture = createFixture({ externalAdapters: new Map([["pi", adapter]]) });
-    const threadId = await startPiThread(fixture);
-    const model = adapter.catalog.models[1]?.ref;
-    if (!model) throw new Error("Fake catalog has no secondary Model");
-    const thinkingOptionId = "low";
-    const permissionModeId = harnessPermissionModeIdSchema.parse("auto");
-
-    writeRequest(fixture.desktopInput, {
-      id: 40,
-      method: "codexhost/thread/model/select",
-      params: { threadId, model },
-    });
-    await fixture.collector.waitFor((message) => requestId(message, 40));
-    writeRequest(fixture.desktopInput, {
-      id: 41,
-      method: "codexhost/thread/thinking/select",
-      params: { threadId, thinkingOptionId },
-    });
-    await fixture.collector.waitFor((message) => requestId(message, 41));
-    writeRequest(fixture.desktopInput, {
-      id: 42,
-      method: "codexhost/thread/permission-mode/select",
-      params: { threadId, permissionModeId },
-    });
-    await fixture.collector.waitFor((message) => requestId(message, 42));
-
-    const firstTurnId = await completePiTurn(fixture, threadId, 43);
-    await completePiTurn(fixture, threadId, 44);
-    writeRequest(fixture.desktopInput, {
-      id: 45,
-      method: "thread/rollback",
-      params: { threadId, numTurns: 1 },
-    });
-    await expect(
-      fixture.collector.waitFor((message) => requestId(message, 45)),
-    ).resolves.toMatchObject({
-      result: { thread: { id: threadId, turns: [{ id: firstTurnId }] } },
-    });
-
-    const expectedConfiguration = {
-      effectiveModel: model,
-      effectiveThinkingOptionId: thinkingOptionId,
-      effectivePermissionModeId: permissionModeId,
-    };
-    expect(adapter.rollbackReplacementStateAtFirstRead).toMatchObject(expectedConfiguration);
-    expect(adapter.sessions[1]?.state).toMatchObject(expectedConfiguration);
-    await stopFixture(fixture);
-  });
-
-  it("reverts the latest completed Turn of a paginated External Thread", async () => {
-    const adapter = rollbackCapableAdapter();
-    const fixture = createFixture({ externalAdapters: new Map([["pi", adapter]]) });
-    const officialWrite = vi.fn();
-    fixture.official.stdin.on("data", officialWrite);
-    const threadId = await startExternalThread(fixture, "codexhost/pi-native", 1, {
-      historyMode: "paginated",
-    });
-    const firstTurnId = await completePiTurn(fixture, threadId, 2);
-    const lastTurnId = await completePiTurn(fixture, threadId, 3);
-
-    writeRequest(fixture.desktopInput, {
-      id: 10,
-      method: "thread/revert",
-      params: { threadId, beforeTurnId: lastTurnId },
-    });
-    await expect(
-      fixture.collector.waitFor((message) => requestId(message, 10)),
-    ).resolves.toMatchObject({ result: { thread: { id: threadId, turns: [] } } });
-    await expect(
-      fixture.collector.waitFor((message) => method(message, "thread/reverted")),
-    ).resolves.toEqual({ method: "thread/reverted", params: { threadId } });
-    await expect(
-      fixture.mappingStore.getThread(hostThreadIdSchema.parse(threadId)),
-    ).resolves.toMatchObject({
-      nativeSessionRef: { nativeSessionId: "fake-session-2" },
-      turnMappings: [{ hostTurnId: firstTurnId }],
-    });
-    expect(adapter.sessions).toHaveLength(2);
-    expect(officialWrite).not.toHaveBeenCalled();
-    await stopFixture(fixture);
-  });
-
-  it("rejects a stale paginated Revert boundary without changing history", async () => {
-    const adapter = rollbackCapableAdapter();
-    const fixture = createFixture({ externalAdapters: new Map([["pi", adapter]]) });
-    const threadId = await startExternalThread(fixture, "codexhost/pi-native", 1, {
-      historyMode: "paginated",
-    });
-    await completePiTurn(fixture, threadId, 2);
-    const before = await fixture.mappingStore.getThread(hostThreadIdSchema.parse(threadId));
-
-    writeRequest(fixture.desktopInput, {
-      id: 10,
-      method: "thread/revert",
-      params: { threadId, beforeTurnId: "stale-turn" },
-    });
-    await expect(
-      fixture.collector.waitFor((message) => requestId(message, 10)),
-    ).resolves.toMatchObject({ error: { code: -32080 } });
-    await expect(
-      fixture.mappingStore.getThread(hostThreadIdSchema.parse(threadId)),
-    ).resolves.toEqual(before);
-    expect(adapter.sessions).toHaveLength(1);
-    await stopFixture(fixture);
-  });
-
-  it("rolls the only current External Turn back to empty history", async () => {
-    const adapter = rollbackCapableAdapter();
-    const fixture = createFixture({ externalAdapters: new Map([["pi", adapter]]) });
-    const threadId = await startPiThread(fixture);
-    await completePiTurn(fixture, threadId, 2);
-
-    writeRequest(fixture.desktopInput, {
-      id: 10,
-      method: "thread/rollback",
-      params: { threadId, numTurns: 1 },
-    });
-    await expect(
-      fixture.collector.waitFor((message) => requestId(message, 10)),
-    ).resolves.toMatchObject({ result: { thread: { id: threadId, turns: [] } } });
-    await expect(
-      fixture.mappingStore.getThread(hostThreadIdSchema.parse(threadId)),
-    ).resolves.toMatchObject({
-      nativeSessionRef: { nativeSessionId: "fake-session-2" },
-      turnMappings: [],
-    });
-    await completePiTurn(fixture, threadId, 11, 1);
-    await stopFixture(fixture);
-  });
-
-  it("rejects current last-Turn rollback while active or for multiple Turns", async () => {
-    const adapter = rollbackCapableAdapter();
-    const fixture = createFixture({ externalAdapters: new Map([["pi", adapter]]) });
-    const threadId = await startPiThread(fixture);
-    await completePiTurn(fixture, threadId, 2);
-
-    writeRequest(fixture.desktopInput, {
-      id: 10,
-      method: "thread/rollback",
-      params: { threadId, numTurns: 2 },
-    });
-    await expect(
-      fixture.collector.waitFor((message) => requestId(message, 10)),
-    ).resolves.toMatchObject({ error: { code: -32076 } });
-
-    const activeTurnId = await startPiTurn(fixture, threadId, 11);
-    writeRequest(fixture.desktopInput, {
-      id: 12,
-      method: "thread/rollback",
-      params: { threadId, numTurns: 1 },
-    });
-    await expect(
-      fixture.collector.waitFor((message) => requestId(message, 12)),
-    ).resolves.toMatchObject({ error: { code: -32072 } });
-    expect(adapter.sessions).toHaveLength(1);
-    adapter.sessions[0]?.succeedTurn();
-    await fixture.collector.waitFor((message) =>
-      turnEvent(message, "turn/completed", activeTurnId),
-    );
-    await stopFixture(fixture);
-  });
-
-  it("keeps the current Session authoritative when last-Turn persistence fails", async () => {
-    const directory = mkdtempSync(path.join(tmpdir(), "codexhost-host-last-turn-failure-"));
-    let failRollbackCommit = false;
-    const mappingStore = new MappingStore({
-      directory,
-      beforeReplace(record) {
-        if (failRollbackCommit && record.state === "ready" && record.turnMappings.length === 1) {
-          throw new Error("synthetic last-Turn rollback failure");
-        }
-      },
-    });
-    const adapter = rollbackCapableAdapter();
-    const fixture = createFixture({
-      externalAdapters: new Map([["pi", adapter]]),
-      mappingStore,
-      mappingStoreDirectory: directory,
-    });
-    const threadId = await startPiThread(fixture);
-    await completePiTurn(fixture, threadId, 2);
-    await completePiTurn(fixture, threadId, 3);
-    const before = await mappingStore.getThread(hostThreadIdSchema.parse(threadId));
-    failRollbackCommit = true;
-
-    writeRequest(fixture.desktopInput, {
-      id: 10,
-      method: "thread/rollback",
-      params: { threadId, numTurns: 1 },
-    });
-    await expect(
-      fixture.collector.waitFor((message) => requestId(message, 10)),
-    ).resolves.toMatchObject({ error: { code: -32081 } });
-    await expect(mappingStore.getThread(hostThreadIdSchema.parse(threadId))).resolves.toEqual(
-      before,
-    );
-    await expect(adapter.sessions[0]?.readSnapshot()).resolves.toMatchObject({
-      ok: true,
-      value: { turns: [{}, {}] },
-    });
-    await expect(adapter.sessions[1]?.readSnapshot()).resolves.toMatchObject({
-      ok: false,
-      error: { code: "invalidState" },
-    });
-    await completePiTurn(fixture, threadId, 11, 0);
-    await stopFixture(fixture);
-  });
-
-  it("realizes Desktop Worktree tail-Fork plus rollback as one exact derived prefix", async () => {
-    const fixture = createFixture();
-    const officialWrite = vi.fn();
-    fixture.official.stdin.on("data", officialWrite);
-    const sourceThreadId = await startPiThread(fixture);
-    const sourceTurnIds = [
-      await completePiTurn(fixture, sourceThreadId, 2),
-      await completePiTurn(fixture, sourceThreadId, 3),
-      await completePiTurn(fixture, sourceThreadId, 4),
-    ];
-
-    writeRequest(fixture.desktopInput, {
-      id: 10,
-      method: "thread/fork",
-      params: {
-        threadId: sourceThreadId,
-        cwd: "/synthetic-worktree",
-        runtimeWorkspaceRoots: ["/synthetic-worktree", "/synthetic"],
-      },
-    });
-    const forkResponse = await fixture.collector.waitFor((message) => requestId(message, 10));
-    expect(forkResponse.result).toMatchObject({
-      cwd: "/synthetic-worktree",
-      runtimeWorkspaceRoots: ["/synthetic-worktree", "/synthetic"],
-    });
-    const forkedThread = (forkResponse.result as JsonObject).thread as JsonObject;
-    const derivedId = forkedThread.id;
-    const initialDerivedTurns = forkedThread.turns as JsonObject[];
-    if (typeof derivedId !== "string") throw new Error("Tail Fork response has no Thread ID");
-    expect(forkedThread.cwd).toBe("/synthetic-worktree");
-    expect(initialDerivedTurns).toHaveLength(3);
-
-    writeRequest(fixture.desktopInput, {
-      id: 11,
-      method: "thread/rollback",
-      params: { threadId: derivedId, numTurns: 2 },
-    });
-    const rollbackResponse = await fixture.collector.waitFor((message) => requestId(message, 11));
-    const rolledBack = (rollbackResponse.result as JsonObject).thread as JsonObject;
-    expect(rolledBack).toMatchObject({
-      id: derivedId,
-      forkedFromId: sourceThreadId,
-      turns: [{ id: initialDerivedTurns[0]?.id, status: "completed" }],
-    });
-    const derivedRecord = await fixture.mappingStore.getThread(hostThreadIdSchema.parse(derivedId));
-    expect(derivedRecord).toMatchObject({
-      nativeSessionRef: { nativeSessionId: "fake-session-3" },
-      cwd: "/synthetic-worktree",
-      forkSource: { hostThreadId: sourceThreadId, hostTurnId: sourceTurnIds[0] },
-      turnMappings: [
-        {
-          hostTurnId: initialDerivedTurns[0]?.id,
-          nativeTurnRef: { nativeSessionId: "fake-session-3" },
-          nativeCheckpointRef: { nativeSessionId: "fake-session-3" },
-        },
-      ],
-    });
-    expect(fixture.adapter.sessions[0]?.cwd).toBe("/synthetic");
-    expect(fixture.adapter.sessions[1]?.cwd).toBe("/synthetic-worktree");
-    expect(fixture.adapter.sessions[2]?.cwd).toBe("/synthetic-worktree");
-    await expect(fixture.adapter.sessions[1]?.readSnapshot()).resolves.toMatchObject({
-      ok: false,
-      error: { code: "invalidState" },
-    });
-    await expect(fixture.adapter.sessions[0]?.readSnapshot()).resolves.toMatchObject({
-      ok: true,
-      value: { turns: [{}, {}, {}] },
-    });
-
-    await completePiTurn(fixture, derivedId, 20, 2);
-    await completePiTurn(fixture, sourceThreadId, 21, 0);
-    await expect(fixture.adapter.sessions[2]?.readSnapshot()).resolves.toMatchObject({
-      ok: true,
-      value: { turns: [{}, {}] },
-    });
-    await expect(fixture.adapter.sessions[0]?.readSnapshot()).resolves.toMatchObject({
-      ok: true,
-      value: { turns: [{}, {}, {}, {}] },
-    });
-    expect(officialWrite).not.toHaveBeenCalled();
-    await stopFixture(fixture);
-  });
-
-  it("rejects rollback when an external Thread is not an untouched derived prefix", async () => {
-    const fixture = createFixture();
-    const officialWrite = vi.fn();
-    fixture.official.stdin.on("data", officialWrite);
-    const sourceThreadId = await startPiThread(fixture);
-    await completePiTurn(fixture, sourceThreadId, 2);
-    await completePiTurn(fixture, sourceThreadId, 3);
-
-    writeRequest(fixture.desktopInput, {
-      id: 10,
-      method: "thread/rollback",
-      params: { threadId: sourceThreadId, numTurns: 1 },
-    });
-    await expect(
-      fixture.collector.waitFor((message) => requestId(message, 10)),
-    ).resolves.toMatchObject({ error: { code: -32076 } });
-
-    writeRequest(fixture.desktopInput, {
-      id: 11,
-      method: "thread/fork",
-      params: { threadId: sourceThreadId },
-    });
-    const forkResponse = await fixture.collector.waitFor((message) => requestId(message, 11));
-    const derivedId = ((forkResponse.result as JsonObject).thread as JsonObject).id;
-    if (typeof derivedId !== "string") throw new Error("Tail Fork response has no Thread ID");
-    await completePiTurn(fixture, derivedId, 12, 1);
-
-    writeRequest(fixture.desktopInput, {
-      id: 13,
-      method: "thread/rollback",
-      params: { threadId: derivedId, numTurns: 1 },
-    });
-    await expect(
-      fixture.collector.waitFor((message) => requestId(message, 13)),
-    ).resolves.toMatchObject({ error: { code: -32076 } });
-    expect(fixture.adapter.sessions).toHaveLength(2);
-    expect(officialWrite).not.toHaveBeenCalled();
-    await stopFixture(fixture);
-  });
-
-  it("commits excluded Fork mappings before a later thread/read", async () => {
-    const fixture = createFixture();
-    const sourceThreadId = await startPiThread(fixture);
-    await completePiTurn(fixture, sourceThreadId, 2);
-    await completePiTurn(fixture, sourceThreadId, 3);
-
-    writeRequest(fixture.desktopInput, {
-      id: 10,
-      method: "thread/fork",
-      params: { threadId: sourceThreadId, excludeTurns: true },
-    });
-    const forked = await fixture.collector.waitFor((message) => requestId(message, 10));
-    const derivedId = ((forked.result as JsonObject).thread as JsonObject).id;
-    if (typeof derivedId !== "string") throw new Error("Fork response has no derived Thread ID");
-    writeRequest(fixture.desktopInput, {
-      id: 11,
-      method: "thread/read",
-      params: { threadId: derivedId, includeTurns: true },
-    });
-    await expect(
-      fixture.collector.waitFor((message) => requestId(message, 11)),
-    ).resolves.toMatchObject({ result: { thread: { turns: [{}, {}] } } });
-    await stopFixture(fixture);
-  });
-
-  it("reads and updates persisted external metadata without restoring history", async () => {
-    const directory = mkdtempSync(path.join(tmpdir(), "codexhost-host-metadata-test-"));
-    const adapter = new FakeHarnessAdapter(harnessIdSchema.parse("pi"));
-    const opened = await adapter.open({ kind: "create", cwd: "/persisted" });
-    if (!opened.ok || !opened.value.initialState.nativeRef) {
-      throw new Error("Fake persisted Session was not created");
-    }
-    const source = adapter.sessions[0];
-    if (!source) throw new Error("Fake persisted Session was not opened");
-    const threadId = hostThreadIdSchema.parse("metadata-thread");
-    const store = new MappingStore({ directory });
-    await store.initialize();
-    await store.createProvisional({
-      hostThreadId: threadId,
-      createRequestId: "metadata-create",
-      harnessId: adapter.harnessId,
-      cwd: "/persisted",
-      title: "Before",
-      transportModelId: "codexhost/pi-native",
-      ephemeral: false,
-      historyMode: "paginated",
-    });
-    await store.commitReady({
-      hostThreadId: threadId,
-      nativeSessionRef: opened.value.initialState.nativeRef,
-    });
-    await store.close();
-
-    const fixture = createFixture({
-      externalAdapters: new Map([["pi", adapter]]),
-      mappingStoreDirectory: directory,
-    });
-    const officialWrite = vi.fn();
-    fixture.official.stdin.on("data", officialWrite);
-
-    writeRequest(fixture.desktopInput, {
-      id: 51,
-      method: "thread/name/set",
-      params: { threadId, name: "After" },
-    });
-    await expect(fixture.collector.waitFor((message) => requestId(message, 51))).resolves.toEqual({
-      id: 51,
-      result: {},
-    });
-
-    writeRequest(fixture.desktopInput, {
-      id: 52,
-      method: "thread/read",
-      params: { threadId, includeTurns: false },
-    });
-    await expect(
-      fixture.collector.waitFor((message) => requestId(message, 52)),
-    ).resolves.toMatchObject({ result: { thread: { id: threadId, name: "After", turns: [] } } });
-    writeRequest(fixture.desktopInput, {
-      id: 53,
-      method: "thread/read",
-      params: { threadId, includeTurns: true },
-    });
-    await expect(
-      fixture.collector.waitFor((message) => requestId(message, 53)),
-    ).resolves.toMatchObject({ error: { code: -32602 } });
-    expect(source.snapshotReads).toBe(0);
-    expect(adapter.sessions).toHaveLength(1);
-    expect(officialWrite).not.toHaveBeenCalled();
-    await stopFixture(fixture);
-  });
-
-  it("restores Store-owned external read, resume, and Fork on demand", async () => {
-    const directory = mkdtempSync(path.join(tmpdir(), "codexhost-host-restart-test-"));
-    const adapter = new FakeHarnessAdapter(
-      harnessIdSchema.parse("pi"),
-      undefined,
-      undefined,
-      undefined,
-      { totalTokens: 77, contextUsedTokens: 33, contextWindowTokens: 200 },
-    );
-    const opened = await adapter.open({ kind: "create", cwd: "/persisted" });
-    if (!opened.ok) throw new Error(opened.error.message);
-    const source = opened.value;
-    const persistedTurnId = hostTurnIdSchema.parse("persisted-turn");
-    await source.execute({
-      type: "turn.start",
-      turnId: persistedTurnId,
-      input: [{ type: "text", text: "persisted question" }],
-    });
-    const fakeSource = adapter.sessions[0];
-    if (!fakeSource) throw new Error("Fake persisted Session was not opened");
-    fakeSource.appendText("persisted answer");
-    fakeSource.succeedTurn();
-    const snapshot = await source.readSnapshot();
-    if (!snapshot.ok || !source.initialState.nativeRef || !snapshot.value.turns[0]) {
-      throw new Error("Fake persisted Snapshot was not created");
-    }
-
-    const threadId = hostThreadIdSchema.parse("persisted-thread");
-    const store = new MappingStore({ directory });
-    await store.initialize();
-    await store.createProvisional({
-      hostThreadId: threadId,
-      createRequestId: "persisted-create",
-      harnessId: adapter.harnessId,
-      cwd: "/persisted",
-      title: "Persisted Pi",
-      transportModelId: "codexhost/pi-native",
-      ephemeral: false,
-      historyMode: "legacy",
-    });
-    await store.commitReady({
-      hostThreadId: threadId,
-      nativeSessionRef: source.initialState.nativeRef,
-      turnMappings: [
-        {
-          hostTurnId: persistedTurnId,
-          nativeTurnRef: snapshot.value.turns[0].nativeTurnRef,
-          nativeCheckpointRef: snapshot.value.turns[0].checkpoint,
-        },
-      ],
-    });
-    await store.close();
-
-    const restoredModel = adapter.catalog.models[1]?.ref;
-    if (!restoredModel) throw new Error("Fake Adapter has no restored Model");
-    fakeSource.setStateForSnapshot({
-      ...fakeSource.state,
-      effectiveModel: restoredModel,
-      resolvedModelLabel: "Fake Secondary",
-    });
-
-    const fixture = createFixture({
-      externalAdapters: new Map([["pi", adapter]]),
-      mappingStoreDirectory: directory,
-    });
-    const officialWrite = vi.fn();
-    fixture.official.stdin.on("data", officialWrite);
-    writeRequest(fixture.desktopInput, {
-      id: 60,
-      method: "thread/read",
-      params: { threadId, includeTurns: true },
-    });
-    await expect(
-      fixture.collector.waitFor((message) => requestId(message, 60)),
-    ).resolves.toMatchObject({
-      result: {
-        thread: {
-          id: threadId,
-          name: "Persisted Pi",
-          turns: [{ id: persistedTurnId, status: "completed" }],
-        },
-      },
-    });
-    const restoredUsage = await fixture.collector.waitFor((message) =>
-      method(message, "thread/tokenUsage/updated"),
-    );
-    expect(restoredUsage).toMatchObject({
-      params: {
-        threadId,
-        turnId: persistedTurnId,
-        tokenUsage: { total: { totalTokens: 77 }, modelContextWindow: 200 },
-      },
-    });
-    expect(fixture.collector.messages.indexOf(restoredUsage)).toBeGreaterThan(
-      fixture.collector.messages.findIndex((message) => requestId(message, 60)),
-    );
-    expect(fakeSource.snapshotReads).toBe(2);
-
-    writeRequest(fixture.desktopInput, {
-      id: 64,
-      method: "codexhost/thread/usage/inspect",
-      params: { threadId },
-    });
-    await expect(
-      fixture.collector.waitFor((message) => requestId(message, 64)),
-    ).resolves.toMatchObject({
-      result: {
-        threadId,
-        usage: {
-          totalTokens: 77,
-          contextUsedTokens: 33,
-          contextWindowTokens: 200,
-        },
-      },
-    });
-
-    writeRequest(fixture.desktopInput, {
-      id: 63,
-      method: "codexhost/thread/inspect",
-      params: { threadId },
-    });
-    await expect(
-      fixture.collector.waitFor((message) => requestId(message, 63)),
-    ).resolves.toMatchObject({
-      result: {
-        owner: "external",
-        effectiveModel: restoredModel,
-        resolvedModelLabel: "Fake Secondary",
-      },
-    });
-
-    writeRequest(fixture.desktopInput, {
-      id: 61,
-      method: "thread/resume",
-      params: { threadId },
-    });
-    await expect(
-      fixture.collector.waitFor((message) => requestId(message, 61)),
-    ).resolves.toMatchObject({
-      result: {
-        thread: { id: threadId, turns: [{ id: persistedTurnId }] },
-        model: "codexhost/pi-native",
-        initialTurnsPage: null,
-      },
-    });
-
-    writeRequest(fixture.desktopInput, {
-      id: 62,
-      method: "thread/fork",
-      params: {
-        threadId,
-        lastTurnId: persistedTurnId,
-        cwd: "/persisted-worktree",
-        runtimeWorkspaceRoots: ["/persisted-worktree", "/persisted"],
-      },
-    });
-    const restartedFork = await fixture.collector.waitFor((message) => requestId(message, 62));
-    expect(restartedFork).toMatchObject({
-      result: {
-        cwd: "/persisted-worktree",
-        thread: {
-          id: expect.not.stringMatching(/^persisted-thread$/u),
-          cwd: "/persisted-worktree",
-          forkedFromId: threadId,
-          turns: [{ status: "completed" }],
-        },
-      },
-    });
-    const restartedDerivedId = ((restartedFork.result as JsonObject).thread as JsonObject).id;
-    if (typeof restartedDerivedId !== "string") throw new Error("Restarted Fork has no ID");
-    await expect(
-      fixture.mappingStore.getThread(hostThreadIdSchema.parse(restartedDerivedId)),
-    ).resolves.toMatchObject({ cwd: "/persisted-worktree" });
-    expect(officialWrite).not.toHaveBeenCalled();
-    await stopFixture(fixture);
-  });
-
-  it("tail-Forks the latest completed Checkpoint while the source Turn is active", async () => {
-    const fixture = createFixture();
-    const officialWrite = vi.fn();
-    fixture.official.stdin.on("data", officialWrite);
-    const threadId = await startPiThread(fixture);
-    await completePiTurn(fixture, threadId, 2);
-    const activeTurnId = await startPiTurn(fixture, threadId, 3);
-
-    writeRequest(fixture.desktopInput, {
-      id: 10,
-      method: "thread/fork",
-      params: { threadId },
-    });
-    const forkResponse = await fixture.collector.waitFor((message) => requestId(message, 10));
-    expect(forkResponse).toMatchObject({ result: { thread: { turns: [{}] } } });
-    const derivedId = ((forkResponse.result as JsonObject).thread as JsonObject).id;
-    if (typeof derivedId !== "string") throw new Error("Fork response has no derived Thread ID");
-
-    writeRequest(fixture.desktopInput, {
-      id: 11,
-      method: "thread/rollback",
-      params: { threadId: derivedId, numTurns: 1 },
-    });
-    await expect(
-      fixture.collector.waitFor((message) => requestId(message, 11)),
-    ).resolves.toMatchObject({ result: { thread: { id: derivedId, turns: [{}] } } });
-    expect(fixture.adapter.sessions).toHaveLength(2);
-    expect(officialWrite).not.toHaveBeenCalled();
-
-    const source = fixture.adapter.sessions[0];
-    source?.appendText("done");
-    source?.succeedTurn();
-    await fixture.collector.waitFor((message) =>
-      turnEvent(message, "turn/completed", activeTurnId),
-    );
-    await stopFixture(fixture);
-  });
-
-  it("rejects unsafe external Fork overrides without official fallback", async () => {
-    const fixture = createFixture();
-    const officialWrite = vi.fn();
-    fixture.official.stdin.on("data", officialWrite);
-    const threadId = await startPiThread(fixture);
-    const firstTurnId = await completePiTurn(fixture, threadId, 2);
-
-    const invalidForks: Array<{ id: number; params: JsonObject; code: number }> = [
-      { id: 10, params: { path: "/another/session.jsonl" }, code: -32602 },
-      { id: 11, params: { beforeTurnId: firstTurnId }, code: -32080 },
-      { id: 12, params: { lastTurnId: "unknown-turn" }, code: -32080 },
-      {
-        id: 13,
-        params: { lastTurnId: firstTurnId, beforeTurnId: firstTurnId },
-        code: -32602,
-      },
-      { id: 14, params: { cwd: "relative-worktree" }, code: -32602 },
-      {
-        id: 15,
-        params: { cwd: "/worktree", runtimeWorkspaceRoots: ["relative-root"] },
-        code: -32602,
-      },
-      {
-        id: 16,
-        params: { cwd: "/worktree", runtimeWorkspaceRoots: ["/source-only"] },
-        code: -32602,
-      },
-    ];
-    for (const invalid of invalidForks) {
-      writeRequest(fixture.desktopInput, {
-        id: invalid.id,
-        method: "thread/fork",
-        params: { threadId, ...invalid.params },
-      });
-      await expect(
-        fixture.collector.waitFor((message) => requestId(message, invalid.id)),
-      ).resolves.toMatchObject({ error: { code: invalid.code } });
-    }
-    expect(fixture.adapter.sessions).toHaveLength(1);
-    expect(officialWrite).not.toHaveBeenCalled();
-    await stopFixture(fixture);
-  });
-
-  it("rejects a changed Fork cwd when the Adapter supports only source-cwd Fork", async () => {
-    const adapter = new FakeHarnessAdapter(harnessIdSchema.parse("pi"), undefined, true, false);
-    const fixture = createFixture({ externalAdapters: new Map([["pi", adapter]]) });
-    const officialWrite = vi.fn();
-    fixture.official.stdin.on("data", officialWrite);
-    const threadId = await startPiThread(fixture);
-    await completePiTurn(fixture, threadId, 2);
-
-    writeRequest(fixture.desktopInput, {
-      id: 10,
-      method: "thread/fork",
-      params: {
-        threadId,
-        cwd: "/synthetic-worktree",
-        runtimeWorkspaceRoots: ["/synthetic-worktree"],
-      },
-    });
-    await expect(
-      fixture.collector.waitFor((message) => requestId(message, 10)),
-    ).resolves.toMatchObject({ error: { code: -32076 } });
-    expect(adapter.sessions).toHaveLength(1);
-    expect(officialWrite).not.toHaveBeenCalled();
-    await stopFixture(fixture);
-  });
-
-  it("projects a failed terminal when live Turn identity persistence fails", async () => {
-    const directory = mkdtempSync(path.join(tmpdir(), "codexhost-host-write-failure-"));
-    let failTurnCommit = false;
-    const mappingStore = new MappingStore({
-      directory,
-      beforeReplace(record) {
-        if (failTurnCommit && record.turnMappings.length > 0) {
-          throw new Error("synthetic terminal commit failure");
-        }
-      },
-    });
-    const fixture = createFixture({ mappingStore, mappingStoreDirectory: directory });
-    const threadId = await startPiThread(fixture);
-    failTurnCommit = true;
-    const turnId = await startPiTurn(fixture, threadId, 2);
-    const session = fixture.adapter.sessions[0];
-    if (!session) throw new Error("Fake Pi Session was not opened");
-    session.appendText("native success");
-    session.succeedTurn();
-
-    await expect(
-      fixture.collector.waitFor((message) => turnEvent(message, "turn/completed", turnId)),
-    ).resolves.toMatchObject({
-      params: {
-        turn: { status: "failed", error: { message: expect.stringContaining("persisted") } },
-      },
-    });
-    await expect(mappingStore.getThread(hostThreadIdSchema.parse(threadId))).resolves.toMatchObject(
-      {
-        turnMappings: [],
-      },
-    );
-    await stopFixture(fixture);
-  });
-
-  it("closes and hides a derived runtime when Fork commit fails", async () => {
-    const directory = mkdtempSync(path.join(tmpdir(), "codexhost-host-fork-failure-"));
-    let failForkCommit = false;
-    const mappingStore = new MappingStore({
-      directory,
-      beforeReplace(record) {
-        if (failForkCommit && record.state === "ready" && record.forkSource) {
-          throw new Error("synthetic derived commit failure");
-        }
-      },
-    });
-    const fixture = createFixture({ mappingStore, mappingStoreDirectory: directory });
-    const threadId = await startPiThread(fixture);
-    const turnId = await completePiTurn(fixture, threadId, 2);
-    failForkCommit = true;
-
-    writeRequest(fixture.desktopInput, {
-      id: 10,
-      method: "thread/fork",
-      params: { threadId, lastTurnId: turnId },
-    });
-    await expect(
-      fixture.collector.waitFor((message) => requestId(message, 10)),
-    ).resolves.toMatchObject({ error: { code: -32081 } });
-    await expect(fixture.adapter.sessions[1]?.readSnapshot()).resolves.toMatchObject({
-      ok: false,
-      error: { code: "invalidState" },
-    });
-    await expect(mappingStore.listThreads()).resolves.toHaveLength(1);
-    await stopFixture(fixture);
-  });
-
-  it("keeps the temporary derived Session authoritative when rollback commit fails", async () => {
-    const directory = mkdtempSync(path.join(tmpdir(), "codexhost-host-rollback-failure-"));
-    let failRollbackCommit = false;
-    const mappingStore = new MappingStore({
-      directory,
-      beforeReplace(record) {
-        if (failRollbackCommit && record.state === "ready" && record.turnMappings.length === 1) {
-          throw new Error("synthetic rollback commit failure");
-        }
-      },
-    });
-    const fixture = createFixture({ mappingStore, mappingStoreDirectory: directory });
-    const sourceThreadId = await startPiThread(fixture);
-    await completePiTurn(fixture, sourceThreadId, 2);
-    await completePiTurn(fixture, sourceThreadId, 3);
-    await completePiTurn(fixture, sourceThreadId, 4);
-    writeRequest(fixture.desktopInput, {
-      id: 10,
-      method: "thread/fork",
-      params: { threadId: sourceThreadId },
-    });
-    const forkResponse = await fixture.collector.waitFor((message) => requestId(message, 10));
-    const derivedId = ((forkResponse.result as JsonObject).thread as JsonObject).id;
-    if (typeof derivedId !== "string") throw new Error("Tail Fork response has no Thread ID");
-    const before = await mappingStore.getThread(hostThreadIdSchema.parse(derivedId));
-    failRollbackCommit = true;
-
-    writeRequest(fixture.desktopInput, {
-      id: 11,
-      method: "thread/rollback",
-      params: { threadId: derivedId, numTurns: 2 },
-    });
-    await expect(
-      fixture.collector.waitFor((message) => requestId(message, 11)),
-    ).resolves.toMatchObject({ error: { code: -32081 } });
-    await expect(mappingStore.getThread(hostThreadIdSchema.parse(derivedId))).resolves.toEqual(
-      before,
-    );
-    await expect(fixture.adapter.sessions[2]?.readSnapshot()).resolves.toMatchObject({
-      ok: false,
-      error: { code: "invalidState" },
-    });
-    await expect(fixture.adapter.sessions[1]?.readSnapshot()).resolves.toMatchObject({
-      ok: true,
-      value: { turns: [{}, {}, {}] },
-    });
-
-    writeRequest(fixture.desktopInput, {
-      id: 12,
-      method: "thread/read",
-      params: { threadId: derivedId, includeTurns: true },
-    });
-    await expect(
-      fixture.collector.waitFor((message) => requestId(message, 12)),
-    ).resolves.toMatchObject({ result: { thread: { turns: [{}, {}, {}] } } });
-    await stopFixture(fixture);
-  });
-
-  it("returns the Thread to idle after every Turn in the same Session", async () => {
-    const fixture = createFixture();
-    const threadId = await startPiThread(fixture);
-    const session = fixture.adapter.sessions[0];
-    if (!session) throw new Error("Fake Pi Session was not opened");
-    const turnIds: string[] = [];
-
-    for (const requestIdValue of [2, 3]) {
-      const turnId = await startPiTurn(fixture, threadId, requestIdValue);
-      turnIds.push(turnId);
-      await fixture.collector.waitFor((message) => turnEvent(message, "turn/started", turnId));
-      session.appendText(`output ${requestIdValue}`);
-      session.succeedTurn();
-      await fixture.collector.waitFor((message) => turnEvent(message, "turn/completed", turnId));
-      const completedTurnCount = requestIdValue - 1;
-      await fixture.collector.waitFor(
-        (message) =>
-          threadStatus(message, threadId, "idle") &&
-          fixture.collector.messages.filter((candidate) =>
-            threadStatus(candidate, threadId, "idle"),
-          ).length >= completedTurnCount,
-      );
-    }
-
-    const statuses = fixture.collector.messages.flatMap((message) => {
-      if (!method(message, "thread/status/changed")) return [];
-      const params = messageParams(message);
-      if (params.threadId !== threadId) return [];
-      const status = params.status as JsonObject | undefined;
-      return typeof status?.type === "string" ? [status.type] : [];
-    });
-    expect(statuses).toEqual(["active", "idle", "active", "idle"]);
-    for (const [turnIndex, turnId] of turnIds.entries()) {
-      const completedIndex = fixture.collector.messages.findIndex((message) =>
-        turnEvent(message, "turn/completed", turnId),
-      );
-      const idleIndexes = fixture.collector.messages.flatMap((message, messageIndex) =>
-        threadStatus(message, threadId, "idle") ? [messageIndex] : [],
-      );
-      expect(completedIndex).toBeGreaterThanOrEqual(0);
-      expect(idleIndexes[turnIndex]).toBeGreaterThan(completedIndex);
-    }
-
-    writeRequest(fixture.desktopInput, {
-      id: 4,
-      method: "thread/read",
-      params: { threadId },
-    });
-    await expect(
-      fixture.collector.waitFor((message) => requestId(message, 4)),
-    ).resolves.toMatchObject({ result: { thread: { status: { type: "idle" } } } });
-    await stopFixture(fixture);
-  });
-
-  it("updates a Pi Thread name locally", async () => {
-    const fixture = createFixture();
-    const officialWrite = vi.fn();
-    fixture.official.stdin.on("data", officialWrite);
-    const threadId = await startPiThread(fixture);
-
-    writeRequest(fixture.desktopInput, {
-      id: 2,
-      method: "thread/name/set",
-      params: { threadId, name: "Pi Thread" },
-    });
-
-    await expect(fixture.collector.waitFor((message) => requestId(message, 2))).resolves.toEqual({
-      id: 2,
-      result: {},
-    });
-    await expect(
-      fixture.collector.waitFor((message) => method(message, "thread/name/updated")),
-    ).resolves.toMatchObject({ params: { threadId, threadName: "Pi Thread" } });
-    writeRequest(fixture.desktopInput, {
-      id: 3,
-      method: "thread/read",
-      params: { threadId },
-    });
-    await expect(
-      fixture.collector.waitFor((message) => requestId(message, 3)),
-    ).resolves.toMatchObject({ result: { thread: { name: "Pi Thread" } } });
-    expect(officialWrite).not.toHaveBeenCalled();
-    await stopFixture(fixture);
-  });
-
-  it("deletes an unused Pi prewarm locally", async () => {
-    const fixture = createFixture();
-    const officialWrite = vi.fn();
-    fixture.official.stdin.on("data", officialWrite);
-    const threadId = await startPiThread(fixture);
-    const session = fixture.adapter.sessions[0];
-    if (!session) throw new Error("Fake Pi Session was not opened");
-    const close = vi.spyOn(session, "close");
-
-    writeRequest(fixture.desktopInput, {
-      id: 2,
-      method: "thread/delete",
-      params: { threadId },
-    });
-
-    await expect(fixture.collector.waitFor((message) => requestId(message, 2))).resolves.toEqual({
-      id: 2,
-      result: {},
-    });
-    expect(close).toHaveBeenCalledOnce();
-    expect(officialWrite).not.toHaveBeenCalled();
-    await stopFixture(fixture);
-  });
-
-  it("deletes an active external Thread after retiring its pending Question", async () => {
-    const fixture = createFixture();
-    const forwarded: string[] = [];
-    fixture.official.stdin.setEncoding("utf8");
-    fixture.official.stdin.on("data", (chunk: string) => forwarded.push(chunk));
-    const threadId = await startPiThread(fixture);
-    const session = fixture.adapter.sessions[0];
-    if (!session) throw new Error("Fake Pi Session was not opened");
-    await startPiTurn(fixture, threadId);
-    session.askQuestion({
-      id: "value",
-      type: "text",
-      prompt: "Value",
-      multiline: false,
-      secret: false,
-      optional: false,
-    });
-    const questionRequest = await fixture.collector.waitFor((message) =>
-      method(message, "item/tool/requestUserInput"),
-    );
-    if (typeof questionRequest.id !== "number" || !Number.isSafeInteger(questionRequest.id)) {
-      throw new Error("Question request has no numeric Host ID");
-    }
-
-    writeRequest(fixture.desktopInput, {
-      id: 3,
-      method: "thread/delete",
-      params: { threadId },
-    });
-    await expect(fixture.collector.waitFor((message) => requestId(message, 3))).resolves.toEqual({
-      id: 3,
-      result: {},
-    });
-    writeRequest(fixture.desktopInput, {
-      id: questionRequest.id,
-      result: { answers: { value: { answers: ["late"] } } },
-    });
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    expect(forwarded.join("")).not.toContain(questionRequest.id);
-    await stopFixture(fixture);
-  });
-
-  it("returns a command error without lifecycle notifications for a rejected Turn", async () => {
-    const fixture = createFixture();
-    const threadId = await startPiThread(fixture);
-    const session = fixture.adapter.sessions[0];
-    if (!session) throw new Error("Fake Pi Session was not opened");
-    session.rejectNextTurn({
-      code: "unavailable",
-      message: "synthetic rejection",
-      retryable: true,
-    });
-
-    writeRequest(fixture.desktopInput, {
-      id: 2,
-      method: "turn/start",
-      params: { threadId, input: [{ type: "text", text: "rejected" }] },
-    });
-    await expect(
-      fixture.collector.waitFor((message) => requestId(message, 2)),
-    ).resolves.toMatchObject({
-      error: { code: -32073, message: "synthetic rejection" },
-    });
-    expect(fixture.collector.messages.some((message) => method(message, "turn/started"))).toBe(
-      false,
-    );
-    await stopFixture(fixture);
-  });
-
-  it("projects a visible native failure before the failed Turn terminal", async () => {
-    const fixture = createFixture();
-    const threadId = await startPiThread(fixture);
-    const session = fixture.adapter.sessions[0];
-    if (!session) throw new Error("Fake Pi Session was not opened");
-
-    writeRequest(fixture.desktopInput, {
-      id: 2,
-      method: "turn/start",
-      params: { threadId, input: [{ type: "text", text: "failed" }] },
-    });
-    await fixture.collector.waitFor((message) => requestId(message, 2));
-    session.startReasoning("visible failure context");
-    await fixture.collector.waitFor(
-      (message) =>
-        method(message, "item/started") &&
-        ((message.params as JsonObject).item as JsonObject | undefined)?.type === "reasoning",
-    );
-    session.failTurn({
-      code: "nativeFailure",
-      message: '503: {"message":"Service temporarily unavailable","type":"api_error"}',
-      retryable: false,
-    });
-    const completed = await fixture.collector.waitFor((message) =>
-      method(message, "turn/completed"),
-    );
-    expect(completed).toMatchObject({
-      params: {
-        turn: {
-          status: "failed",
-          error: {
-            message: expect.stringContaining("Service temporarily unavailable"),
-            codexErrorInfo: "other",
-            additionalDetails: null,
-          },
-        },
-      },
-    });
-    const visibleError = fixture.collector.messages.find((message) => method(message, "error"));
-    expect(visibleError).toMatchObject({
-      params: {
-        error: {
-          message: expect.stringContaining("Service temporarily unavailable"),
-          codexErrorInfo: "other",
-          additionalDetails: null,
-        },
-        willRetry: false,
-        threadId,
-      },
-    });
-
-    const itemIndex = fixture.collector.messages.findIndex((message) =>
-      method(message, "item/completed"),
-    );
-    const errorIndex = fixture.collector.messages.findIndex((message) => method(message, "error"));
-    const turnIndex = fixture.collector.messages.findIndex((message) =>
-      method(message, "turn/completed"),
-    );
-    expect(itemIndex).toBeGreaterThanOrEqual(0);
-    expect(errorIndex).toBeGreaterThan(itemIndex);
-    expect(turnIndex).toBeGreaterThan(errorIndex);
-    await stopFixture(fixture);
-  });
-
-  it("projects Command, Generic Tool, reliable File Change, and Turn Diff output", async () => {
-    const fixture = createFixture();
-    const threadId = await startPiThread(fixture);
-    await startPiTurn(fixture, threadId);
-    const session = fixture.adapter.sessions[0];
-    if (!session) throw new Error("Fake Pi Session was not opened");
-
-    const commandId = session.startCommandExecution("printf done", "/synthetic");
-    await fixture.collector.waitFor(
-      (message) =>
-        method(message, "item/started") &&
-        (message.params as JsonObject).item !== undefined &&
-        ((message.params as JsonObject).item as JsonObject).id === commandId,
-    );
-    session.appendCommandOutput(commandId, "done\n");
-    await fixture.collector.waitFor((message) =>
-      method(message, "item/commandExecution/outputDelta"),
-    );
-    session.completeItem(commandId, { status: "succeeded" });
-
-    const toolId = session.startToolExecution("custom", { value: 1 });
-    session.replaceToolOutput(toolId, {
-      content: [{ type: "text", text: "custom output" }],
-    });
-    session.completeItem(toolId, { status: "succeeded" });
-    const toolCompleted = await fixture.collector.waitFor(
-      (message) =>
-        method(message, "item/completed") &&
-        ((message.params as JsonObject).item as JsonObject | undefined)?.id === toolId,
-    );
-    expect(toolCompleted).toMatchObject({
-      params: { item: { type: "dynamicToolCall", tool: "custom", success: true } },
-    });
-
-    session.emitFileChange([
-      {
-        path: "sample.txt",
-        kind: "update",
-        unifiedDiff: "--- a/sample.txt\n+++ b/sample.txt\n@@ -1 +1 @@\n-old\n+new\n",
-      },
-    ]);
-    await fixture.collector.waitFor((message) => method(message, "item/fileChange/patchUpdated"));
-    await expect(
-      fixture.collector.waitFor((message) => method(message, "turn/diff/updated")),
-    ).resolves.toMatchObject({ params: { diff: expect.stringContaining("+new") } });
-
-    session.appendText("finished");
-    session.succeedTurn();
-    const completed = await fixture.collector.waitFor((message) =>
-      method(message, "turn/completed"),
-    );
-    expect(completed).toMatchObject({
-      params: {
-        turn: {
-          status: "completed",
-          items: [{ type: "fileChange" }, { type: "agentMessage" }],
-        },
-      },
-    });
-    await stopFixture(fixture);
-  });
-
-  it("round-trips an early Approval through the reviewed Codex native request", async () => {
-    const fixture = createFixture();
-    const threadId = await startPiThread(fixture);
-    const session = fixture.adapter.sessions[0];
-    if (!session) throw new Error("Fake Pi Session was not opened");
-    session.requestApprovalOnNextTurn("Allow native action?", "One-shot approval");
-
-    const turnId = await startPiTurn(fixture, threadId);
-    const request = await fixture.collector.waitFor((message) =>
-      method(message, "mcpServer/elicitation/request"),
-    );
-    expect(request).toEqual({
-      id: -1_000_001,
-      method: "mcpServer/elicitation/request",
-      params: {
-        serverName: "Pi",
-        threadId,
-        turnId,
-        mode: "form",
-        message: "Allow native action?",
-        requestedSchema: { type: "object", properties: {} },
-        _meta: {
-          codex_approval_kind: "mcp_tool_call",
-          reason: "One-shot approval",
-        },
-      },
-    });
-    expect(
-      fixture.collector.messages.some((message) => method(message, "item/tool/requestUserInput")),
-    ).toBe(false);
-
-    const approvalRequestId = request.id;
-    if (typeof approvalRequestId !== "number") {
-      throw new Error("Approval request has no numeric Host ID");
-    }
-    writeRequest(fixture.desktopInput, {
-      id: approvalRequestId,
-      result: { action: "accept", content: {}, _meta: null },
-    });
-    await vi.waitFor(() => {
-      expect(session.interactionResponses).toMatchObject([
-        { response: { type: "approval", actionId: "allowOnce" } },
-      ]);
-    });
-    writeRequest(fixture.desktopInput, {
-      id: approvalRequestId,
-      result: { action: "accept" },
-    });
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    expect(session.interactionResponses).toHaveLength(1);
-
-    session.appendText("continued");
-    session.succeedTurn();
-    await fixture.collector.waitFor((message) => turnEvent(message, "turn/completed", turnId));
-    await stopFixture(fixture);
-  });
-
-  it("round-trips a declared native Approval scope without exposing a payload", async () => {
-    const fixture = createFixture();
-    const threadId = await startPiThread(fixture);
-    const session = fixture.adapter.sessions[0];
-    if (!session) throw new Error("Fake Pi Session was not opened");
-    await startPiTurn(fixture, threadId);
-    session.requestApproval("Remember native action?", undefined, "always");
-    const request = await fixture.collector.waitFor((message) =>
-      method(message, "mcpServer/elicitation/request"),
-    );
-    expect(request).toMatchObject({ params: { _meta: { persist: "always" } } });
-    if (typeof request.id !== "number") throw new Error("Approval request has no numeric ID");
-    writeRequest(fixture.desktopInput, {
-      id: request.id,
-      result: { action: "accept", content: {}, _meta: { persist: "always" } },
-    });
-    await vi.waitFor(() => {
-      expect(session.interactionResponses).toMatchObject([
-        { response: { type: "approval", actionId: "allowAlways" } },
-      ]);
-    });
-    session.succeedTurn();
-    await fixture.collector.waitFor((message) => method(message, "turn/completed"));
-    await stopFixture(fixture);
-  });
-
-  it("fails closed for denied, cancelled, errored, and malformed native Approval responses", async () => {
-    const responses: JsonObject[] = [
-      { result: { action: "decline" } },
-      { result: { action: "cancel" } },
-      { error: { code: -1, message: "dismissed" } },
-      { result: { action: "allowForSession" } },
-      { result: { action: "accept", content: {}, _meta: { persist: "session" } } },
-    ];
-    for (const response of responses) {
-      const fixture = createFixture();
-      const threadId = await startPiThread(fixture);
-      const session = fixture.adapter.sessions[0];
-      if (!session) throw new Error("Fake Pi Session was not opened");
-      await startPiTurn(fixture, threadId);
-      session.requestApproval("Approve once");
-      const request = await fixture.collector.waitFor((message) =>
-        method(message, "mcpServer/elicitation/request"),
-      );
-      const approvalRequestId = request.id;
-      if (typeof approvalRequestId !== "number") {
-        throw new Error("Approval request has no numeric Host ID");
-      }
-      writeRequest(fixture.desktopInput, { id: approvalRequestId, ...response });
-      await vi.waitFor(() => {
-        expect(session.interactionResponses.at(-1)).toMatchObject({
-          response: { type: "approval", actionId: "deny" },
-        });
-      });
-      session.succeedTurn();
-      await fixture.collector.waitFor((message) => method(message, "turn/completed"));
-      await stopFixture(fixture);
-    }
-  });
-
-  it("resolves cancelled Approval state and consumes its reserved late-response namespace", async () => {
-    const fixture = createFixture();
-    const forwarded: string[] = [];
-    fixture.official.stdin.setEncoding("utf8");
-    fixture.official.stdin.on("data", (chunk: string) => forwarded.push(chunk));
-    const threadId = await startPiThread(fixture);
-    const turnId = await startPiTurn(fixture, threadId);
-    const session = fixture.adapter.sessions[0];
-    if (!session) throw new Error("Fake Pi Session was not opened");
-    session.requestApproval("Cancel pending Approval");
-    const approvalRequest = await fixture.collector.waitFor((message) =>
-      method(message, "mcpServer/elicitation/request"),
-    );
-    const approvalRequestId = approvalRequest.id;
-    if (typeof approvalRequestId !== "number") {
-      throw new Error("Approval request has no numeric Host ID");
-    }
-    session.completeCancellationOnRequest();
-
-    writeRequest(fixture.desktopInput, {
-      id: 3,
-      method: "turn/interrupt",
-      params: { threadId, turnId },
-    });
-    await fixture.collector.waitFor((message) => requestId(message, 3));
-    const resolved = await fixture.collector.waitFor((message) =>
-      method(message, "serverRequest/resolved"),
-    );
-    const completed = await fixture.collector.waitFor((message) =>
-      method(message, "turn/completed"),
-    );
-    expect(resolved).toMatchObject({
-      params: { threadId, requestId: approvalRequestId },
-    });
-    const responseIndex = fixture.collector.messages.findIndex((message) => requestId(message, 3));
-    const resolvedIndex = fixture.collector.messages.indexOf(resolved);
-    const terminalIndex = fixture.collector.messages.indexOf(completed);
-    expect(resolvedIndex).toBeGreaterThan(responseIndex);
-    expect(terminalIndex).toBeGreaterThan(resolvedIndex);
-
-    writeRequest(fixture.desktopInput, {
-      id: approvalRequestId,
-      result: { action: "accept" },
-    });
-    writeRequest(fixture.desktopInput, {
-      id: -1_500_000,
-      result: { action: "accept" },
-    });
-    writeRequest(fixture.desktopInput, { id: 999, result: { official: true } });
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    expect(forwarded.join("")).not.toContain(
-      JSON.stringify({ id: 999, result: { official: true } }),
-    );
-    expect(forwarded.join("")).not.toContain(String(approvalRequestId));
-    expect(forwarded.join("")).not.toContain("-1500000");
-    expect(session.interactionResponses).toHaveLength(0);
-    await stopFixture(fixture);
-  });
-
-  it("round-trips an early standalone Question through the Codex native request", async () => {
-    const fixture = createFixture();
-    const threadId = await startPiThread(fixture);
-    const session = fixture.adapter.sessions[0];
-    if (!session) throw new Error("Fake Pi Session was not opened");
-    session.askQuestionOnNextTurn(
-      {
-        id: "decision",
-        type: "choice",
-        prompt: "Choose",
-        options: [
-          { value: "continue-value", label: "Continue" },
-          { value: "stop-value", label: "Stop" },
-        ],
-        multiple: false,
-        allowOther: false,
-        optional: false,
-      },
-      { title: "Decision" },
-    );
-
-    const turnId = await startPiTurn(fixture, threadId);
-    const request = await fixture.collector.waitFor((message) =>
-      method(message, "item/tool/requestUserInput"),
-    );
-    expect(request).toMatchObject({
-      id: -1,
-      params: {
-        threadId,
-        turnId,
-        itemId: expect.any(String),
-        questions: [
-          {
-            id: "decision",
-            header: "Decision",
-            question: "Choose",
-            options: [
-              { label: "Continue", description: "" },
-              { label: "Stop", description: "" },
-            ],
-          },
-        ],
-      },
-    });
-    const turnResponseIndex = fixture.collector.messages.findIndex((message) =>
-      requestId(message, 2),
-    );
-    const questionIndex = fixture.collector.messages.indexOf(request);
-    expect(questionIndex).toBeGreaterThan(turnResponseIndex);
-    const requestIdValue = request.id;
-    if (typeof requestIdValue !== "number") throw new Error("Question request has no numeric ID");
-    writeRequest(fixture.desktopInput, {
-      id: requestIdValue,
-      result: { answers: { decision: { answers: ["Continue"] } } },
-    });
-    await fixture.collector.waitFor(
-      (message) =>
-        method(message, "item/completed") &&
-        ((message.params as JsonObject).item as JsonObject | undefined)?.id ===
-          (request.params as JsonObject).itemId,
-    );
-    expect(session.interactionResponses).toMatchObject([
-      {
-        response: { type: "question", answers: { decision: ["continue-value"] } },
-      },
-    ]);
-
-    session.appendText("continued");
-    const turnCompleted = fixture.collector.waitFor((message) =>
-      turnEvent(message, "turn/completed", turnId),
-    );
-    session.succeedTurn();
-    await turnCompleted;
-    await stopFixture(fixture);
-  });
-
-  it("fails a secret Question closed without rendering visible Desktop input", async () => {
-    const fixture = createFixture();
-    const threadId = await startPiThread(fixture);
-    const session = fixture.adapter.sessions[0];
-    if (!session) throw new Error("Fake Pi Session was not opened");
-    await startPiTurn(fixture, threadId);
-    session.askQuestion({
-      id: "secret",
-      type: "text",
-      prompt: "Secret value",
-      multiline: false,
-      secret: true,
-      optional: false,
-    });
-    await vi.waitFor(() => {
-      expect(session.interactionResponses.at(-1)).toMatchObject({
-        response: { type: "question", answers: {}, cancelled: true },
-      });
-    });
-    expect(
-      fixture.collector.messages.filter((message) => method(message, "item/tool/requestUserInput")),
-    ).toHaveLength(0);
-    const turnCompleted = fixture.collector.waitFor((message) => method(message, "turn/completed"));
-    session.succeedTurn();
-    await turnCompleted;
-    await stopFixture(fixture);
-  });
-
-  it("cancels malformed and dismissed Desktop Question responses", async () => {
-    for (const result of [
-      { answers: { decision: { answers: ["undeclared"] } } },
-      { answers: {} },
-    ]) {
-      const fixture = createFixture();
-      const threadId = await startPiThread(fixture);
-      const session = fixture.adapter.sessions[0];
-      if (!session) throw new Error("Fake Pi Session was not opened");
-      await startPiTurn(fixture, threadId);
-      session.askQuestion({
-        id: "decision",
-        type: "choice",
-        prompt: "Choose",
-        options: [{ value: "known", label: "Known" }],
-        multiple: false,
-        allowOther: false,
-        optional: false,
-      });
-      const request = await fixture.collector.waitFor((message) =>
-        method(message, "item/tool/requestUserInput"),
-      );
-      if (typeof request.id !== "number") throw new Error("Question request has no numeric ID");
-      writeRequest(fixture.desktopInput, { id: request.id, result });
-      await fixture.collector.waitFor((message) => method(message, "item/completed"));
-      expect(session.interactionResponses.at(-1)).toMatchObject({
-        response: { type: "question", answers: {}, cancelled: true },
-      });
-      session.succeedTurn();
-      await fixture.collector.waitFor((message) => method(message, "turn/completed"));
-      await stopFixture(fixture);
-    }
-  });
-
-  it("cancels a Question at the Host expiry bound", async () => {
-    const fixture = createFixture();
-    const threadId = await startPiThread(fixture);
-    const session = fixture.adapter.sessions[0];
-    if (!session) throw new Error("Fake Pi Session was not opened");
-    await startPiTurn(fixture, threadId);
-    session.askQuestion(
-      {
-        id: "value",
-        type: "text",
-        prompt: "Value",
-        multiline: false,
-        secret: false,
-        optional: false,
-      },
-      { expiresAt: new Date(Date.now() + 20).toISOString() },
-    );
-    const request = await fixture.collector.waitFor((message) =>
-      method(message, "item/tool/requestUserInput"),
-    );
-    await expect(
-      fixture.collector.waitFor((message) => method(message, "serverRequest/resolved")),
-    ).resolves.toMatchObject({
-      params: { threadId, requestId: request.id },
-    });
-    await fixture.collector.waitFor((message) => method(message, "item/completed"));
-    expect(session.interactionResponses.at(-1)).toMatchObject({
-      response: { type: "question", answers: {}, cancelled: true },
-    });
-    session.succeedTurn();
-    await fixture.collector.waitFor((message) => method(message, "turn/completed"));
-    await stopFixture(fixture);
-  });
-
-  it("forwards non-Host responses and consumes retired Host Question responses", async () => {
-    const fixture = createFixture();
-    const forwarded: string[] = [];
-    fixture.official.stdin.setEncoding("utf8");
-    fixture.official.stdin.on("data", (chunk: string) => forwarded.push(chunk));
-    const threadId = await startPiThread(fixture);
-    const session = fixture.adapter.sessions[0];
-    if (!session) throw new Error("Fake Pi Session was not opened");
-    await startPiTurn(fixture, threadId);
-    const interactionId = session.askQuestion({
-      id: "value",
-      type: "text",
-      prompt: "Value",
-      multiline: false,
-      secret: false,
-      optional: false,
-    });
-    const request = await fixture.collector.waitFor((message) =>
-      method(message, "item/tool/requestUserInput"),
-    );
-    if (typeof request.id !== "number") throw new Error("Question request has no numeric ID");
-    session.expireQuestion(interactionId);
-    await expect(
-      fixture.collector.waitFor((message) => method(message, "serverRequest/resolved")),
-    ).resolves.toMatchObject({
-      params: { threadId, requestId: request.id },
-    });
-    await fixture.collector.waitFor((message) => method(message, "item/completed"));
-
-    writeRequest(fixture.desktopInput, {
-      id: request.id,
-      result: { answers: { value: { answers: ["late"] } } },
-    });
-    writeRequest(fixture.desktopInput, { id: 999, result: { official: true } });
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    expect(forwarded.join("")).not.toContain(
-      JSON.stringify({ id: 999, result: { official: true } }),
-    );
-    expect(forwarded.join("")).not.toContain(String(request.id));
-
-    session.succeedTurn();
-    await fixture.collector.waitFor((message) => method(message, "turn/completed"));
-    await stopFixture(fixture);
-  });
-
-  it("cancels pending steering before draining operations after a Desktop input error", async () => {
-    const fixture = createFixture();
-    try {
-      const threadId = await startPiThread(fixture);
-      const oldTurnId = await startPiTurn(fixture, threadId);
-      const session = fixture.adapter.sessions[0];
-      if (!session) throw new Error("Fake Session was not opened");
-      const execute = vi.spyOn(session, "execute");
-      writeRequest(fixture.desktopInput, {
-        id: 100,
-        method: "turn/steer",
-        params: {
-          threadId,
-          expectedTurnId: oldTurnId,
-          input: [{ type: "text", text: "must not start during shutdown" }],
-        },
-      });
-      await vi.waitFor(() =>
-        expect(execute).toHaveBeenCalledWith({ type: "turn.cancel", turnId: oldTurnId }),
-      );
-      // No terminal event: only shutdown, not the 20-second steering timeout, can release this waiter.
-      fixture.desktopInput.destroy(new Error("Synthetic Desktop input failure"));
-      const response = await fixture.collector.waitFor((message) => requestId(message, 100));
-      expect(response).toMatchObject({ error: { code: -32074 } });
-      expect(JSON.stringify(response)).toContain("connection closed before replacement");
-      expect(execute).not.toHaveBeenCalledWith(expect.objectContaining({ type: "turn.start" }));
-      expect(await fixture.running).toBe(1);
-    } finally {
-      fixture.host.close();
-      await fixture.running;
-      rmSync(fixture.mappingStoreDirectory, { recursive: true, force: true });
-    }
-  });
-
-  it("steers an external Thread by cancelling, waiting for terminal projection, and starting once", async () => {
-    const fixture = createFixture();
-    const threadId = await startPiThread(fixture);
-    const oldTurnId = await startPiTurn(fixture, threadId);
-    const session = fixture.adapter.sessions[0];
-    if (!session) throw new Error("Fake Pi Session was not opened");
-    const execute = vi.spyOn(session, "execute");
-    const officialWrite = vi.fn();
-    fixture.official.stdin.on("data", officialWrite);
-    const params = {
-      threadId,
-      expectedTurnId: oldTurnId,
-      clientUserMessageId: "steer-message",
-      input: [{ type: "text", text: "new direction" }],
-    };
-    writeRequest(fixture.desktopInput, { id: 100, method: "turn/steer", params });
-    await vi.waitFor(() =>
-      expect(execute).toHaveBeenCalledWith({ type: "turn.cancel", turnId: oldTurnId }),
-    );
-    expect(fixture.collector.messages.some((message) => requestId(message, 100))).toBe(false);
-    writeRequest(fixture.desktopInput, { id: 101, method: "turn/steer", params });
-    writeRequest(fixture.desktopInput, {
-      id: 102,
-      method: "turn/start",
-      params: { threadId, input: [{ type: "text", text: "competing" }] },
-    });
-    await expect(
-      fixture.collector.waitFor((message) => requestId(message, 102)),
-    ).resolves.toMatchObject({ error: { code: -32072 } });
-    session.completeCancellation();
-    const response = await fixture.collector.waitFor((message) => requestId(message, 100));
-    const replacementId = (response.result as JsonObject).turnId;
-    expect(typeof replacementId).toBe("string");
-    expect(replacementId).not.toBe(oldTurnId);
-    await expect(
-      fixture.collector.waitFor((message) => requestId(message, 101)),
-    ).resolves.toMatchObject({ result: { turnId: replacementId } });
-    await fixture.collector.waitFor((message) =>
-      turnEvent(message, "turn/started", String(replacementId)),
-    );
-    const index = (predicate: (message: JsonObject) => boolean) =>
-      fixture.collector.messages.findIndex(predicate);
-    expect(index((message) => turnEvent(message, "turn/completed", oldTurnId))).toBeLessThan(
-      index((message) => requestId(message, 100)),
-    );
-    expect(index((message) => requestId(message, 100))).toBeLessThan(
-      index((message) => turnEvent(message, "turn/started", String(replacementId))),
-    );
-    expect(execute).toHaveBeenCalledTimes(2);
-    expect(execute).toHaveBeenNthCalledWith(2, {
-      type: "turn.start",
-      turnId: replacementId,
-      input: [{ type: "text", text: "new direction" }],
-    });
-    expect(officialWrite).not.toHaveBeenCalled();
-    session.succeedTurn();
-    await fixture.collector.waitFor((message) =>
-      turnEvent(message, "turn/completed", String(replacementId)),
-    );
-    await stopFixture(fixture);
-  });
-
-  it("handles synchronous external cancellation and rejects stale or unsupported steer input locally", async () => {
-    const fixture = createFixture();
-    const threadId = await startPiThread(fixture);
-    const oldTurnId = await startPiTurn(fixture, threadId);
-    const session = fixture.adapter.sessions[0];
-    if (!session) throw new Error("Fake Pi Session was not opened");
-    const execute = vi.spyOn(session, "execute");
-    for (const [id, params] of [
-      [100, { threadId, expectedTurnId: "stale", input: [{ type: "text", text: "new" }] }],
-      [
-        101,
-        {
-          threadId,
-          expectedTurnId: oldTurnId,
-          input: [
-            { type: "text", text: "new" },
-            { type: "image", url: "image" },
-          ],
-        },
-      ],
-    ] as const) {
-      writeRequest(fixture.desktopInput, {
-        id,
-        method: "turn/steer",
-        params: JSON.parse(JSON.stringify(params)),
-      });
-      await expect(
-        fixture.collector.waitFor((message) => requestId(message, id)),
-      ).resolves.toHaveProperty("error");
-    }
-    expect(execute).not.toHaveBeenCalled();
-    session.completeCancellationOnRequest();
-    writeRequest(fixture.desktopInput, {
-      id: 102,
-      method: "turn/steer",
-      params: { threadId, expectedTurnId: oldTurnId, input: [{ type: "text", text: "new" }] },
-    });
-    const response = await fixture.collector.waitFor((message) => requestId(message, 102));
-    expect(response).toHaveProperty("result.turnId");
-    session.succeedTurn();
-    await stopFixture(fixture);
-  });
-
-  it("passes an Account-bound official steer and its result through unchanged", async () => {
-    const fixture = createFixture();
-    await bindOfficialThread(fixture, "official-thread");
-    const params = {
-      threadId: "official-thread",
-      expectedTurnId: "official-turn",
-      clientUserMessageId: "message",
-      input: [{ type: "text", text: "new direction" }],
-    };
-    writeRequest(fixture.desktopInput, { id: 100, method: "turn/steer", params });
-    await expect(readJsonLine(fixture.official.stdin)).resolves.toEqual({
-      id: 100,
-      method: "turn/steer",
-      params,
-    });
-    writeRequest(fixture.official.stdout, { id: 100, result: { turnId: "official-turn" } });
-    await expect(fixture.collector.waitFor((message) => requestId(message, 100))).resolves.toEqual({
-      id: 100,
-      result: { turnId: "official-turn" },
-    });
-    expect(fixture.adapter.sessions).toHaveLength(0);
-    await stopFixture(fixture);
-  });
-
-  it("writes the interrupt response before cancellation lifecycle notifications", async () => {
-    const fixture = createFixture();
-    const threadId = await startPiThread(fixture);
-    const turnId = await startPiTurn(fixture, threadId);
-    const session = fixture.adapter.sessions[0];
-    if (!session) throw new Error("Fake Pi Session was not opened");
-    session.startCommandExecution("sleep 10");
-    session.askQuestion({
-      id: "cancel-decision",
-      type: "choice",
-      prompt: "Continue?",
-      options: [
-        { value: "yes", label: "Yes" },
-        { value: "no", label: "No" },
-      ],
-      multiple: false,
-      allowOther: false,
-      optional: false,
-    });
-    const questionRequest = await fixture.collector.waitFor((message) =>
-      method(message, "item/tool/requestUserInput"),
-    );
-    session.completeCancellationOnRequest();
-
-    writeRequest(fixture.desktopInput, {
-      id: 3,
-      method: "turn/interrupt",
-      params: { threadId, turnId },
-    });
-    await expect(fixture.collector.waitFor((message) => requestId(message, 3))).resolves.toEqual({
-      id: 3,
-      result: {},
-    });
-    const completed = await fixture.collector.waitFor((message) =>
-      method(message, "turn/completed"),
-    );
-    expect(completed).toMatchObject({ params: { turn: { status: "interrupted" } } });
-
-    const responseIndex = fixture.collector.messages.findIndex((message) => requestId(message, 3));
-    const questionItemId = (questionRequest.params as JsonObject).itemId;
-    const questionClosedIndex = fixture.collector.messages.findIndex(
-      (message) =>
-        method(message, "item/completed") &&
-        ((message.params as JsonObject).item as JsonObject | undefined)?.id === questionItemId,
-    );
-    const turnIndex = fixture.collector.messages.findIndex((message) =>
-      method(message, "turn/completed"),
-    );
-    expect(questionClosedIndex).toBeGreaterThan(responseIndex);
-    expect(turnIndex).toBeGreaterThan(questionClosedIndex);
-    await stopFixture(fixture);
-  });
-
-  it("rejects an interrupt that does not reference the active Pi Turn", async () => {
-    const fixture = createFixture();
-    const officialWrite = vi.fn();
-    fixture.official.stdin.on("data", officialWrite);
-    const threadId = await startPiThread(fixture);
-
-    writeRequest(fixture.desktopInput, {
-      id: 2,
-      method: "turn/interrupt",
-      params: { threadId, turnId: "missing-turn" },
-    });
-    await expect(
-      fixture.collector.waitFor((message) => requestId(message, 2)),
-    ).resolves.toMatchObject({
-      error: { code: -32074, message: "External turn/interrupt must reference the active Turn" },
-    });
-    expect(officialWrite).not.toHaveBeenCalled();
-    await stopFixture(fixture);
-  });
-
-  it("isolates Pi and Claude Threads behind the same registered Harness path", async () => {
-    const piAdapter = new FakeHarnessAdapter(harnessIdSchema.parse("pi"));
-    const claudeAdapter = new FakeHarnessAdapter(harnessIdSchema.parse("claude-code"));
-    const fixture = createFixture({
-      externalAdapters: new Map<ExternalHarnessId, FakeHarnessAdapter>([
-        ["pi", piAdapter],
-        ["claude-code", claudeAdapter],
-      ]),
-    });
-    const claudeThreadId = await startExternalThread(
-      fixture,
-      CLAUDE_CODE_NATIVE_TRANSPORT_MODEL_ID,
-      10,
-    );
-    const piThreadId = await startExternalThread(fixture, "codexhost/pi-native", 11);
-    expect(claudeThreadId).not.toBe(piThreadId);
-    expect(claudeAdapter.sessions).toHaveLength(1);
-    expect(piAdapter.sessions).toHaveLength(1);
-
-    writeRequest(fixture.desktopInput, {
-      id: 12,
-      method: "turn/start",
-      params: { threadId: claudeThreadId, input: [{ type: "text", text: "synthetic" }] },
-    });
-    await fixture.collector.waitFor((message) => requestId(message, 12));
-    const claudeSession = claudeAdapter.sessions[0];
-    if (!claudeSession) throw new Error("Fake Claude Session was not opened");
-    claudeSession.appendText("claude output");
-    const claudeStarted = await fixture.collector.waitFor(
-      (message) =>
-        method(message, "item/started") &&
-        (message.params as JsonObject).threadId === claudeThreadId,
-    );
-    expect(claudeStarted).toBeDefined();
-    claudeSession.succeedTurn();
-    await fixture.collector.waitFor(
-      (message) =>
-        method(message, "turn/completed") &&
-        (message.params as JsonObject).threadId === claudeThreadId,
-    );
-
-    expect(piAdapter.sessions[0]?.initialState.effectiveModel).toEqual(
-      piAdapter.catalog.defaultModel,
-    );
-    expect(claudeAdapter.sessions).toHaveLength(1);
-    const responseIndex = fixture.collector.messages.findIndex((message) => requestId(message, 12));
-    const startedIndex = fixture.collector.messages.findIndex(
-      (message) =>
-        method(message, "turn/started") &&
-        (message.params as JsonObject).threadId === claudeThreadId,
-    );
-    expect(startedIndex).toBeGreaterThan(responseIndex);
-    await stopFixture(fixture);
-  });
-
-  it("keeps selected Claude Models request-scoped and projects confirmed actual state", async () => {
-    const piAdapter = new FakeHarnessAdapter(harnessIdSchema.parse("pi"));
-    const claudeAdapter = new FakeHarnessAdapter(harnessIdSchema.parse("claude-code"));
-    const fixture = createFixture({
-      externalAdapters: new Map<ExternalHarnessId, FakeHarnessAdapter>([
-        ["pi", piAdapter],
-        ["claude-code", claudeAdapter],
-      ]),
-    });
-    const firstModel = claudeAdapter.catalog.models[0]?.ref;
-    const secondModel = claudeAdapter.catalog.models[1]?.ref;
-    if (!firstModel || !secondModel) throw new Error("Fake Claude catalog is incomplete");
-
-    const firstThreadId = await startExternalThread(
-      fixture,
-      encodeClaudeTransportModel(secondModel),
-      20,
-    );
-    const secondThreadId = await startExternalThread(
-      fixture,
-      encodeClaudeTransportModel(firstModel),
-      21,
-    );
-    expect(claudeAdapter.sessions[0]?.initialState.effectiveModel).toEqual(secondModel);
-    expect(claudeAdapter.sessions[1]?.initialState.effectiveModel).toEqual(firstModel);
-
-    writeRequest(fixture.desktopInput, {
-      id: 22,
-      method: "codexhost/thread/model/select",
-      params: { threadId: firstThreadId, model: firstModel },
-    });
-    await expect(
-      fixture.collector.waitFor((message) => requestId(message, 22)),
-    ).resolves.toMatchObject({
-      result: {
-        effectiveModel: firstModel,
-        resolvedModelLabel: "fake-runtime-primary",
-      },
-    });
-
-    writeRequest(fixture.desktopInput, {
-      id: 23,
-      method: "codexhost/thread/inspect",
-      params: { threadId: firstThreadId },
-    });
-    await expect(
-      fixture.collector.waitFor((message) => requestId(message, 23)),
-    ).resolves.toMatchObject({
-      result: {
-        harnessId: "claude-code",
-        transportModelId: encodeClaudeTransportModel(secondModel),
-        effectiveModel: firstModel,
-        resolvedModelLabel: "fake-runtime-primary",
-      },
-    });
-
-    writeRequest(fixture.desktopInput, {
-      id: 24,
-      method: "turn/start",
-      params: {
-        threadId: secondThreadId,
-        model: encodePiTransportModel(piAdapter.catalog.defaultModel),
-        input: [{ type: "text", text: "foreign" }],
-      },
-    });
-    await expect(
-      fixture.collector.waitFor((message) => requestId(message, 24)),
-    ).resolves.toMatchObject({
-      error: {
-        code: -32602,
-        message: "Turn Model carrier does not belong to the Thread Harness",
-      },
-    });
-    expect(claudeAdapter.sessions[1]?.state.effectiveModel).toEqual(firstModel);
-    await stopFixture(fixture);
-  });
-
-  it("rejects Model selection when the owning Claude Session does not support it", async () => {
-    const piAdapter = new FakeHarnessAdapter(harnessIdSchema.parse("pi"));
-    const claudeAdapter = new FakeHarnessAdapter(harnessIdSchema.parse("claude-code"));
-    const fixture = createFixture({
-      externalAdapters: new Map<ExternalHarnessId, FakeHarnessAdapter>([
-        ["pi", piAdapter],
-        ["claude-code", claudeAdapter],
-      ]),
-    });
-    const threadId = await startExternalThread(fixture, CLAUDE_CODE_NATIVE_TRANSPORT_MODEL_ID, 20);
-    const model = piAdapter.catalog.defaultModel;
-    if (!model) throw new Error("Fake Pi catalog has no default Model");
-    const claudeSession = claudeAdapter.sessions[0];
-    if (!claudeSession) throw new Error("Fake Claude Session was not opened");
-    claudeSession.capabilities.configuration.selectModel = false;
-
-    writeRequest(fixture.desktopInput, {
-      id: 21,
-      method: "codexhost/thread/model/select",
-      params: { threadId, model },
-    });
-
-    await expect(
-      fixture.collector.waitFor((message) => requestId(message, 21)),
-    ).resolves.toMatchObject({
-      error: {
-        code: -32078,
-        message: "External Harness does not support Model selection",
-      },
-    });
-    expect(claudeSession.state.effectiveModel).toEqual(claudeAdapter.catalog.defaultModel);
-
-    const off = claudeAdapter.catalog.thinkingOptions.find(({ id }) => id === "off")?.id;
-    if (!off) throw new Error("Fake Claude catalog has no Thinking option");
-    claudeSession.capabilities.configuration.selectThinkingOption = false;
-    writeRequest(fixture.desktopInput, {
-      id: 22,
-      method: "codexhost/thread/thinking/select",
-      params: { threadId, thinkingOptionId: off },
-    });
-    await expect(
-      fixture.collector.waitFor((message) => requestId(message, 22)),
-    ).resolves.toMatchObject({
-      error: {
-        code: -32078,
-        message: "External Harness does not support Thinking selection",
-      },
-    });
-    await stopFixture(fixture);
-  });
-
-  it("fails closed when a valid Claude token has no registered Adapter", async () => {
-    const fixture = createFixture();
-    const officialWrite = vi.fn();
-    fixture.official.stdin.on("data", officialWrite);
-
-    writeRequest(fixture.desktopInput, {
-      id: 20,
-      method: "thread/start",
-      params: { model: CLAUDE_CODE_NATIVE_TRANSPORT_MODEL_ID, cwd: "/synthetic" },
-    });
-
-    await expect(
-      fixture.collector.waitFor((message) => requestId(message, 20)),
-    ).resolves.toMatchObject({
-      error: { code: -32070, message: "External Harness 'claude-code' is unavailable" },
-    });
-    expect(officialWrite).not.toHaveBeenCalled();
-    expect(fixture.adapter.sessions).toHaveLength(0);
-    await stopFixture(fixture);
-  });
-
-  it("passes only the delegation Runtime whitelist from codexhost internal controls", async () => {
-    const fixture = createFixture({
-      environment: {
-        VISIBLE_TO_OFFICIAL: "yes",
-        CODEXHOST_RUNTIME_ENDPOINT: "http://127.0.0.1:43123",
-        CODEXHOST_RUNTIME_TOKEN: "runtime-token",
-        CODEXHOST_CLI_PATH: "/opt/codexhost/bin/codexhost",
-        CODEXHOST_DATA_DIR: "/synthetic/codexhost-data",
-        CODEXHOST_CLAUDE_COMMAND: "/synthetic/claude",
-      },
-    });
-
-    await vi.waitFor(() => {
-      expect(fixture.spawnOfficial).toHaveBeenCalledWith(
-        "/synthetic/codex",
-        ["app-server"],
-        expect.objectContaining({
-          env: expect.objectContaining({
-            VISIBLE_TO_OFFICIAL: "yes",
-            CODEXHOST_RUNTIME_ENDPOINT: "http://127.0.0.1:43123",
-            CODEXHOST_RUNTIME_TOKEN: "runtime-token",
-            CODEXHOST_CLI_PATH: "/opt/codexhost/bin/codexhost",
-          }),
-        }),
-      );
-    });
-    await stopFixture(fixture);
-  });
-
-  it("does not pass internal Harness controls to the official app-server", async () => {
-    const fixture = createFixture({
-      environment: {
-        VISIBLE_TO_OFFICIAL: "yes",
-        CODEXHOST_DATA_DIR: "/synthetic/codexhost-data",
-        CODEXHOST_ENABLE_CLAUDE_CODE: "1",
-        CODEXHOST_CLAUDE_COMMAND: "/synthetic/claude",
-        CODEXHOST_PI_COMMAND: "/synthetic/pi",
-      },
-    });
-
-    await vi.waitFor(() => {
-      expect(fixture.spawnOfficial).toHaveBeenCalledWith(
-        "/synthetic/codex",
-        ["app-server"],
-        expect.objectContaining({
-          env: expect.objectContaining({ VISIBLE_TO_OFFICIAL: "yes" }),
-        }),
-      );
-    });
-    await stopFixture(fixture);
-  });
-
-  it("forwards a Codex-owned interrupt without invoking Pi", async () => {
-    const fixture = createFixture();
-    await bindOfficialThread(fixture, "official-thread");
-    fixture.official.stdin.once("data", (chunk: Buffer) => {
-      const request = JSON.parse(chunk.toString("utf8")) as JsonObject;
-      fixture.official.stdout.write(`${JSON.stringify({ id: request.id, result: {} })}\n`);
-    });
-
-    writeRequest(fixture.desktopInput, {
-      id: 8,
-      method: "turn/interrupt",
-      params: { threadId: "official-thread", turnId: "official-turn" },
-    });
-    await expect(fixture.collector.waitFor((message) => requestId(message, 8))).resolves.toEqual({
-      id: 8,
-      result: {},
-    });
-    expect(fixture.adapter.sessions).toHaveLength(0);
-    await stopFixture(fixture);
-  });
-
-  it("forwards Codex-owned history pagination without opening a Pi Session", async () => {
-    const fixture = createFixture();
-    await bindOfficialThread(fixture, "official-thread");
-    const request = {
-      id: 8,
-      method: "thread/turns/list",
-      params: {
-        threadId: "official-thread",
-        cursor: "official-cursor",
-        limit: 7,
-        sortDirection: "desc",
-        itemsView: "summary",
-        extraOfficialField: { keep: true },
-      },
-    };
-    const forwarded = new Promise<JsonObject>((resolve) => {
-      fixture.official.stdin.once("data", (chunk: Buffer) => {
-        const value = JSON.parse(chunk.toString("utf8")) as JsonObject;
-        resolve(value);
-        fixture.official.stdout.write(`${JSON.stringify({ id: 8, result: { data: [] } })}\n`);
-      });
-    });
-
-    writeRequest(fixture.desktopInput, request);
-    await expect(forwarded).resolves.toEqual(request);
-    await expect(fixture.collector.waitFor((message) => requestId(message, 8))).resolves.toEqual({
-      id: 8,
-      result: { data: [] },
-    });
-    expect(fixture.adapter.sessions).toHaveLength(0);
-    await stopFixture(fixture);
-  });
-
-  it("forwards official Codex Usage notifications without external projection", async () => {
-    const fixture = createFixture();
-    const notification = {
-      method: "thread/tokenUsage/updated",
-      params: {
-        threadId: "official-thread",
-        turnId: "official-turn",
-        tokenUsage: {
-          total: {
-            totalTokens: 11,
-            inputTokens: 5,
-            cachedInputTokens: 1,
-            cacheWriteInputTokens: 0,
-            outputTokens: 5,
-            reasoningOutputTokens: 0,
-          },
-          last: {
-            totalTokens: 4,
-            inputTokens: 4,
-            cachedInputTokens: 0,
-            cacheWriteInputTokens: 0,
-            outputTokens: 0,
-            reasoningOutputTokens: 0,
-          },
-          modelContextWindow: 100,
-        },
-      },
-    };
-    fixture.official.stdout.write(`${JSON.stringify(notification)}\n`);
-
-    await expect(
-      fixture.collector.waitFor((message) => method(message, "thread/tokenUsage/updated")),
-    ).resolves.toEqual(notification);
-    expect(fixture.adapter.sessions).toHaveLength(0);
-    await stopFixture(fixture);
-  });
-
-  it("forwards Codex-owned requests without opening a Pi Session", async () => {
-    const fixture = createFixture();
-    await bindOfficialThread(fixture, "official-thread");
-    fixture.official.stdin.once("data", (chunk: Buffer) => {
-      const request = JSON.parse(chunk.toString("utf8")) as JsonObject;
-      fixture.official.stdout.write(
-        `${JSON.stringify({ id: request.id, result: { source: "official" } })}\n`,
-      );
-    });
-
-    writeRequest(fixture.desktopInput, {
-      id: 9,
-      method: "thread/read",
-      params: { threadId: "official-thread" },
-    });
-    await expect(fixture.collector.waitFor((message) => requestId(message, 9))).resolves.toEqual({
-      id: 9,
-      result: { source: "official" },
-    });
-    expect(fixture.adapter.sessions).toHaveLength(0);
-    await stopFixture(fixture);
-  });
-});
+YЄзЉx-®йЬjЧќўлiєЪ+Љ§j[h‘йЬўйнЧMtу¤иµ©hєЪn¶X§zНZ[\Ьќ\HИЪ[›ШЩ\ЬХЪ]Э]ќ[Э™X[\ЛЬ]Ы€Hњ›ЫH››ЩNЪ[Ь›ШЩ\ЬИЋВљ[\ЬќИ]™[ќ[Z]\€Hњ›ЫH››ЩN™]™[ќИЋВљ[\ЬќИZЩ\”Ю[ЛZЩ[\Ю[Л™XY\”Ю[Л™XYљ[TЮ[Л›TЮ[ЛЬљ]Qљ[TЮ[ИHњ›ЫH››ЩN™њИЋВљ[\ЬќИ]Сљ[UT“Hњ›ЫH››ЩNќ\›ЋВљ[\ЬќИ\\€Hњ›ЫH››ЩN›ЬИЋВљ[\Ьќ]њ›ЫH››ЩNњ]ЋВљ[\ЬќИ\ЬХ›ЭYЪHњ›ЫH››ЩNњЭ™X[HЋВ‚љ[\ЬќИ\ШЬљX™K^XЭ]љHHњ›ЫHќљ]\ЭЋВљ[\Ьќ\HВ€\›™\ЬРY\\‹€\›™\ЬФ™\Э[€\›™\ЬФЩ\ЬЪ[Ы”Э]K€ЬЭ™XYЫ\ЪЭџHњ›ЫHђЫЩ^ЬЭЪ\›™\ЬЛXY\\€ЋВљ[\ЬќИZЩR\›™\ЬРY\\‹ZЩR\›™\ЬФЩ\ЬЪ[Ы€Hњ›ЫHђЫЩ^ЬЭЪ\›™\ЬЛXY\\‹Э\Э[™ИЋВљ[\ЬќИX\[™ФЭЬ™HHњ›ЫHђЫЩ^ЬЭЫX\[™Л\ЭЬ™HЋВљ[\ЬќВ€УUQWРУСWУђUU‘WХђS”ФФ•УSСSТQ€[ЫЩPЫ]YU[њЬЬќ[Щ[€[ЫЩQЬ›ЪХ[њЬЬќ[Щ[€[ЫЩTU[њЬЬќ[Щ[€\H^\›[\›™\ЬТY€\HњЫЫ“Шљ™XЭџHњ›ЫHђЫЩ^ЬЭЬ›ЭШЫЫXЫЬ™HЋВљ[\ЬќВ€[ЫЩR\›™\ЬФYЪ[”›Э]K€\›™\ЬФYЪ[”›Э]TШЪ[XK€\›™\ЬРЫЫ[X[™\ШЬљ\Ь”ШЪ[XK€\›™\ЬТYШЪ[XK€\›™\ЬУ[Щ[™Y”ШЪ[XK€\›™\ЬФ\›Z\ЬЪ[Ы“[ЩPШ][ЩФШЪ[XK€\›™\ЬФ\›Z\ЬЪ[Ы“[ЩRYШЪ[XK€\›™\ЬХ[љЪ[™УЬ[Ы’YШЪ[XK€ЬЭ][RYШЪ[XK€ЬЭ™XYYШЪ[XK€ЬЭ\›’YШЪ[XK€\HЫЩ^XШЫЭ[ќ\Э™\Э[€\HY\ЩYZУ[Щ\›”Щ\ЬЪ[ЫђШ[™Y]KџHњ›ЫHђЫЩ^ЬЭЬЪ\™YXЫЫќXЭИЋВ‚љ[\Ьќ\HВ€[YШ][ЫђЫЫќ›Ы\K€[YШ][ЫђЫЫќ›Ы™YЪ\Э][Ы‹џHњ›ЫH‹‹‹ЬЬЛЩ[YШ][Ы‹]\\ЛљњИЋВљ[\ЬќИ\Щ\ќ™\’ЬЭHњ›ЫH‹‹‹ЬЬЛШ\\Щ\ќ™\‹ZЬЭљњИЋВљ[\ЬќВ€Ъ[™ЫS]]™PЫЩ^XШЫЭ[ќ€\HЫЩ^XШЫЭ[ќЫЫќ›ЫџHњ›ЫH‹‹‹ЬЬЛШXШЫЭ[ќШЫЩ^XXШЫЭ[ќXЫЫќ›ЫљњИЋВљ[\ЬќИЩ™љXЪX[ќ[ќ[YTШЫЬHHњ›ЫH‹‹‹ЬЬЛШЫЩ^\ќ[ќ[YKЫЩ™љXЪX[\ќ[ќ[YK\ШЫЬKљњИЋВљ[\Ьќ\HИЭЫ™YЩ™љXЪX[XЪЩ[™Hњ›ЫH‹‹‹ЬЬЛШЫЩ^\ќ[ќ[YKЫЩ™љXЪX[\ќ[ќ[YK[ЭЫ™\‹љњИЋВљ[\Ьќ\HВ€Щ™љXЪX[\Щ\ќ™\ђЫЫ›™XЭ[Ы‹€Щ™љXЪX[\Щ\ќ™\‘^]џHњ›ЫH‹‹‹ЬЬЛЫЩ™љXЪX[X\\Щ\ќ™\‹XЫЫ›™XЭ[Ы‹љњИЋВљ[\Ьќ\HИЬЭ\]PЫЫЬ™[]Ь€Hњ›ЫH‹‹‹ЬЬЛЭ\]KXЫЫЬ™[]Ь‹љњИЋВ‚Ы\ЬИZЩSЩ™љXЪX[›ШЩ\ЬИ^[™И]™[ќ[Z]\€В€™XYЫ›HЭ[€H™]И\ЬХ›ЭYЪ
+
+NВ€™XYЫ›HЭЭ]H™]И\ЬХ›ЭYЪ
+
+NВ€™XYЫ›HЭ\њ€H™]И\ЬХ›ЭYЪ
+
+NВ€™XYЫ›HЪ[HљK™›Љ
+ЪYЫ[€›ЩR”Л”ЪYЫ[ИH”ТQХT“HЉHO€В€\ЛњЭЭ]™[™
+
+NВ€\Л™[Z]
+™^]‹ќ[ЪYЫ[
+NВ€™]\›€ќYNВ€JNВ‚€ЫЫњЭќXЭЬЉ^]Ы’[њ][™HќYJHВ€Э\\Љ
+NВ€\ЛњЭ[‹›ЫЩJ™љ[љ\Ъ‹
+
+HO€В€Y€
+Y^]Ы’[њ][™
+H™]\›ЋВ€\ЛњЭЭ]™[™
+
+NВ€\Л™[Z]
+™^]‹ќ[
+NВ€JNВ€BџB‚Ы\ЬИZ[[™УЭЫ™\њЪ\X\[™ФЭЬ™H^[™ИX\[™ФЭЬ™HВ€Э™\њљYHЩ]™XY
+
+N€›ЫZ\ЩO™]™\Џ€В€™]\›€›ЫZ\ЩKњ™Z™XЭ
+™]И\њ›ЬЉ”Ю[ќ]XИЭЫ™\њЪ\™XYZ[\™HЉJNВ€BџB‚Ы\ЬИZ[[™Р\Ъ]™SX\[™ФЭЬ™H^[™ИX\[™ФЭЬ™HВ€Э™\њљYHЩ]\Ъ]™Y
+
+N€›ЫZ\ЩO™]™\Џ€В€™]\›€›ЫZ\ЩKњ™Z™XЭ
+™]И\њ›ЬЉ”Ю[ќ]XИ\Ъ]™HЬљ]HZ[\™HЉJNВ€BџB‚Ы\ЬИZ[[™У\ЭX\[™ФЭЬ™H^[™ИX\[™ФЭЬ™HВ€Э™\њљYH\Э™XYК
+N€›ЫZ\ЩO™]™\Џ€В€™]\›€›ЫZ\ЩKњ™Z™XЭ
+™]И\њ›ЬЉ”Ю[ќ]XИ\Э™XYZ[\™HЉJNВ€BџB‚Ы\ЬИZ[[™С[YШ][Ы“X\[™ФЭЬ™H^[™ИX\[™ФЭЬ™HВ€Э™\њљYHЬ™X]Q[YШ][ЫЉ
+N€›ЫZ\ЩO™]™\Џ€В€™]\›€›ЫZ\ЩKњ™Z™XЭ
+™]И\њ›ЬЉ”Ю[ќ]XИ[YШ][Ы€Ьљ]HZ[\™HЉJNВ€BџB‚Ы\ЬИњЫЫ“[™PЫЫXЭЬ€В€™XYЫ›HY\ЬШYЩ\О€њЫЫ“Шљ™XЭЧHHЧNВ€™XYЫ›HЭШZ]\њО€\њ^OВ€™YXШ]N€
+Y\ЬШYЩN€њЫЫ“Шљ™XЭ
+HO€›ЫЫX[ЋВ€™\ЫЫ™JY\ЬШYЩN€њЫЫ“Шљ™XЭ
+N€›ЪYВ€[Y[Э]€™]\›•\O\[Щ€Щ][Y[Э]ЋВ€O€HЧNВ€ШќY™™\€H€ЋВ‚€ЫЫњЭќXЭЬЉЭ™X[N€\ЬХ›ЭYЪ
+HВ€Э™X[KњЩ][ЫЩ[™Кќ]ЋЉNВ€Э™X[K›ЫЉ™]H‹
+Ъ[љО€Эљ[™КHO€В€\Л€ШќY™™\€
+ПHЪ[љОВ€]™]Ы[™HH\Л€ШќY™™\‹љ[™^ЩЉ—€ЉNВ€Ъ[H
+™]Ы[™HЏH
+HВ€ЫЫњЭY\ЬШYЩHH”УУ‹њ\њЩJ\Л€ШќY™™\‹њЫXЩJ™]Ы[™JJH\ИњЫЫ“Шљ™XЭВ€\Л€ШќY™™\€H\Л€ШќY™™\‹њЫXЩJ™]Ы[™H
+ИJNВ€\Л›Y\ЬШYЩ\Лњ\Ъ
+Y\ЬШYЩJNВ€ЫЫњЭX]ЪYH\Л€ЭШZ]\њЛ™љ[\Љ
+И™YXШ]HJHO€™YXШ]JY\ЬШYЩJJNВ€›Ь€
+ЫЫњЭШZ]\€Щ€X]ЪY
+HВ€ЫЫњЭ[™^H\Л€ЭШZ]\њЛљ[™^ЩЉШZ]\ЉNВ€Y€
+[™^ЏH
+H\Л€ЭШZ]\њЛњЬXЩJ[™^JNВ€ЫX\•[Y[Э]
+ШZ]\‹ќ[Y[Э]
+NВ€ШZ]\‹њ™\ЫЫ™JY\ЬШYЩJNВ€B€™]Ы[™HH\Л€ШќY™™\‹љ[™^ЩЉ—€ЉNВ€B€JNВ€B‚€ШZ]›ЬЉ™YXШ]N€
+Y\ЬШYЩN€њЫЫ“Шљ™XЭ
+HO€›ЫЫX[ЉN€›ЫZ\ЩOњЫЫ“Шљ™XЭ€В€ЫЫњЭ^\Э[™ИH\Л›Y\ЬШYЩ\Л™љ[™
+™YXШ]JNВ€Y€
+^\Э[™КH™]\›€›ЫZ\ЩKњ™\ЫЫ™J^\Э[™КNВ€™]\›€™]И›ЫZ\ЩOњЫЫ“Шљ™XЭЉ
+™\ЫЫ™K™Z™XЭ
+HO€В€ЫЫњЭШZ]\€HВ€™YXШ]K€™\ЫЫ™K€[Y[Э]€Щ][Y[Э]
+
+
+HO€В€ЫЫњЭ[™^H\Л€ЭШZ]\њЛљ[™^ЩЉШZ]\ЉNВ€Y€
+[™^ЏH
+H\Л€ЭШZ]\њЛњЬXЩJ[™^JNВ€™Z™XЭ
+™]И\њ›ЬЉ•[YYЭ]ШZ][™И›Ь€ЬЭЭ]]ЉJNВ€K—М
+K€NВ€\Л€ЭШZ]\њЛњ\Ъ
+ШZ]\ЉNВ€JNВ€BџB‚™ќ[Э[Ы€Y]Щ
+Y\ЬШYЩN€њЫЫ“Шљ™XЭ[YN€Эљ[™КN€›ЫЫX[€В€™]\›€Y\ЬШYЩK›Y]ЩOOH[YNВџB‚™ќ[Э[Ы€™\]Y\ЭY
+Y\ЬШYЩN€њЫЫ“Шљ™XЭY€ќ[X™\ЉN€›ЫЫX[€В€™]\›€Y\ЬШYЩKљYOOHYВџB‚™ќ[Э[Ы€™\]Z\™YY\ЬШYЩRY
+Y\ЬШYЩN€њЫЫ“Шљ™XЭ
+N€Эљ[™Иќ[X™\€В€Y€
+\[Щ€Y\ЬШYЩKљYOOHњЭљ[™И€\[Щ€Y\ЬШYЩKљYOOH›ќ[X™\€ЉH™]\›€Y\ЬШYЩKљYВ€›ЭИ™]И\њ›ЬЉ’”УУ‹T”ИY\ЬШYЩH\И›ИQЉNВџB‚™ќ[Э[Ы€Y\ЬШYЩT\[\КY\ЬШYЩN€њЫЫ“Шљ™XЭ
+N€њЫЫ“Шљ™XЭВ€™]\›€
+Y\ЬШYЩKњ\[\ИПИЯJH\ИњЫЫ“Шљ™XЭВџB‚™ќ[Э[Ы€™XYЭ]\КY\ЬШYЩN€њЫЫ“Шљ™XЭ™XYY€Эљ[™Л\N€Эљ[™КN€›ЫЫX[€В€ЫЫњЭ\[\ИHY\ЬШYЩT\[\КY\ЬШYЩJNВ€™]\›€
+€Y]Щ
+Y\ЬШYЩKќ™XYЬЭ]\ЛШЪ[™ЩYЉH	‰‚€\[\Лќ™XYYOOH™XYY	‰‚€
+\[\ЛњЭ]\И\ИњЫЫ“Шљ™XЭ[™Yљ[™Y
+OЛќ\HOOH\B€
+NВџB‚™ќ[Э[Ы€\›‘]™[ќ
+Y\ЬШYЩN€њЫЫ“Шљ™XЭ]™[ќY]Щ€Эљ[™Л\›’Y€Эљ[™КN€›ЫЫX[€В€ЫЫњЭ\[\ИHY\ЬШYЩT\[\КY\ЬШYЩJNВ€™]\›€
+€Y]Щ
+Y\ЬШYЩK]™[ќY]Щ
+H	‰‚€
+
+\[\Лќ\›€\ИњЫЫ“Шљ™XЭ[™Yљ[™Y
+OЛљYOOH\›’Y\[\Лќ\›’YOOH\›’Y
+B€
+NВџB‚™ќ[Э[Ы€Ьљ]T™\]Y\Э
+Э™X[N€\ЬХ›ЭYЪ[YN€њЫЫ“Шљ™XЭ
+N€›ЪYВ€Э™X[KќЬљ]J	Т”УУ‹њЭљ[™ЪYћJ[YJ_W
+NВџB‚ЫЫњЭњЫЫ“[™PќY™™\њИH™]ИЩXZУX\\ЬХ›ЭYЪЭљ[™ПЉ
+NВ‚\Ю[Иќ[Э[Ы€™XYњЫЫ“[™JЭ™X[N€\ЬХ›ЭYЪ
+N€›ЫZ\ЩOњЫЫ“Шљ™XЭ€В€]ќY™™\€HњЫЫ“[™PќY™™\њЛ™Щ]
+Э™X[JHПИ€ЋВ€Y€
+XќY™™\‹љ[ЫY\К—€ЉJHВ€]ШZ]љKќШZ]›ЬЉ
+
+HO€В€ЫЫњЭЪ[љИHЭ™X[Kњ™XY
+
+H\ИќY™™\€Эљ[™Иќ[В€Y€
+Ъ[љИOOHќ[
+HќY™™\€
+ПHЭљ[™КЪ[љКNВ€^XЭ
+ќY™™\ЉKќРЫЫќZ[Љ—€ЉNВ€JNВ€B€ЫЫњЭ™]Ы[™HHќY™™\‹љ[™^ЩЉ—€ЉNВ€ЫЫњЭ[™HHќY™™\‹њЫXЩJ™]Ы[™JNВ€њЫЫ“[™PќY™™\њЛњЩ]
+Э™X[KќY™™\‹њЫXЩJ™]Ы[™H
+ИJJNВ€™]\›€”УУ‹њ\њЩJ[™JH\ИњЫЫ“Шљ™XЭВџB‚™ќ[Э[Ы€›ЫXЪРШ\X›PY\\Љ
+N€ZЩR\›™\ЬРY\\€В€™]\›€™]ИZЩR\›™\ЬРY\\Љ€\›™\ЬТYШЪ[XKњ\њЩJњHЉK€[™Yљ[™Y€ќYK€ќYK€ќ[€[™Yљ[™Y€ќYK€
+NВџB‚Ы\ЬИ™\Э[YTЭ]T›ЫXЪРY\\€^[™ИZЩR\›™\ЬРY\\€В€›ЫXЪФ™\XЩ[Y[ќЭ]P]љ\њЭ™XY€\›™\ЬФЩ\ЬЪ[Ы”Э]H[™Yљ[™YВ‚€Э™\њљYH\Ю[ИЬ[Љ[њ]€\[Y]\њПZЩR\›™\ЬРY\\–И›Ь[€—O–МJHВ€ЫЫњЭЬ[™YH]ШZ]Э\\‹›Ь[Љ[њ]
+NВ€Y€
+€[њ]љЪ[™OOHњ›ЫXЪУ\Э\›€€	‰‚€Ь[™Y›ЪИ	‰‚€Ь[™Yќ[YH[њЭ[Щ[Щ€ZЩR\›™\ЬФЩ\ЬЪ[Ы‚€
+HВ€ЫЫњЭЩ\ЬЪ[Ы€HЬ[™Yќ[YNВ€ЫЫњЭ]]™T™Y€HЩ\ЬЪ[Ы‹љ[љ]X[Э]K›]]™T™YЋВ€Y€
+]]™T™YЉHЩ\ЬЪ[Ы‹њЩ]Э]Q›Ь”Ы\ЪЭ
+И]]™T™Y€JNВ€ЫЫњЭ™XYЫ\ЪЭHЩ\ЬЪ[Ы‹њ™XYЫ\ЪЭљ[™
+Щ\ЬЪ[ЫЉNВ€Щ\ЬЪ[Ы‹њ™XYЫ\ЪЭH\Ю[И
+
+HO€В€\Лњ›ЫXЪФ™\XЩ[Y[ќЭ]P]љ\њЭ™XYППHЩ\ЬЪ[Ы‹њЭ]NВ€™]\›€™XYЫ\ЪЭ
+
+NВ€NВ€B€™]\›€Ь[™YВ€BџB‚Ы\ЬИЩX•ZR\›™\ЬРY\\€^[™ИZЩR\›™\ЬРY\\€В€Ь[ђШ[ИHВ€Z[\™SY\ЬШYЩN€Эљ[™И[™Yљ[™YВ€™XYЫ›HЩX•ZHHВ€Ь[Ћ€\Ю[И
+
+N€›ЫZ\ЩO\›™\ЬФ™\Э[›ЪYЏ€O€В€\Л›Ь[ђШ[И
+ПHNВ€™]\›€\Л™Z[\™SY\ЬШYЩB€ИВ€ЪО€[ЩK€\њ›ЬЋ€В€ЫЩN€ќ[]Z[X›H‹€Y\ЬШYЩN€\Л™Z[\™SY\ЬШYЩK€™]ћXX›N€ќYK€K€B€€ИЪО€ќYK[YN€[™Yљ[™YNВ€K€NВџB‚Ы\ЬИ[Щ\›”Щ\ЬЪ[Ы’[\ЬќY\\€^[™ИZЩR\›™\ЬРY\\€В€Ш[™Y]\О€Y\ЩYZУ[Щ\›”Щ\ЬЪ[ЫђШ[™Y]VЧHHЧNВ€™XYЫ›H\ЭШ[™Y]\ИHљK™›Љ€\Ю[И
+
+N€›ЫZ\ЩO\›™\ЬФ™\Э[Y\ЩYZУ[Щ\›”Щ\ЬЪ[ЫђШ[™Y]VЧOЏ€O€
+В€ЪО€ќYK€[YN€ЭќXЭ\™YЫЫ™J\ЛШ[™Y]\КK€JK€
+NВ€™XYЫ›HЩ\ЬЪ[Ы’[\ЬќHВ€\ЭШ[™Y]\О€\Л›\ЭШ[™Y]\Л€™\ЫЫ™PШ[™Y]N€\Ю[И
+]]™TЩ\ЬЪ[Ы’Y€Эљ[™КHO€В€ЫЫњЭ\ЭYH]ШZ]\Л›\ЭШ[™Y]\К
+NВ€Y€
+[\ЭY›ЪКH™]\›€\ЭYВ€ЫЫњЭШ[™Y]HH\ЭYќ[YK™љ[™
+
+[ќћJHO€[ќћK›]]™TЩ\ЬЪ[Ы’YOOH]]™TЩ\ЬЪ[Ы’Y
+NВ€™]\›€Ш[™Y]B€ИВ€ЪО€ќYH\ИЫЫњЭ€[YN€В€Ш[™Y]K€]]™T™YЋ€И\›™\ЬТY€\Лљ\›™\ЬТY]]™TЩ\ЬЪ[Ы’Y›Ь›X]™\њЪ[ЫЋ€H\ИЫЫњЭK€K€B€€В€ЪО€[ЩH\ИЫЫњЭ€\њ›ЬЋ€В€ЫЩN€њЩ\ЬЪ[Ы“›Э›Э[™€\ИЫЫњЭ€Y\ЬШYЩN€“Z\ЬЪ[™ИЩ\ЬЪ[Ы€‹€™]ћXX›N€[ЩK€K€NВ€K€NВџB‚™ќ[Э[Ы€Ь™X]Qљ^\™J€Ь[ЫњО€В€[ќљ\›Ы›Y[ќО€›ЩR”Л”›ШЩ\ЬС[ќЋВ€YЪ[‘\™XЭЬћOО€Эљ[™ОВ€^\›[Y\\њПО€™XYЫ›SX\^\›[\›™\ЬТYZЩR\›™\ЬРY\\ЏЋВ€X\[™ФЭЬ™OО€X\[™ФЭЬ™NВ€X\[™ФЭЬ™Q\™XЭЬћOО€Эљ[™ОВ€ЫЬЩSX\[™ФЭЬ™SЫ‘^]О€›ЫЫX[ЋВ€\ЪЭЬЭ]]О€\ЬХ›ЭYЪВ€Щ™љXЪX[^]УЫ’[њ][™О€›ЫЫX[ЋВ€Ь™X]SЩ™љXЪX[ЫЫ›™XЭ[ЫЏО€
+
+HO‚€Щ™љXЪX[\Щ\ќ™\ђЫЫ›™XЭ[Ы€›ЫZ\ЩOЩ™љXЪX[\Щ\ќ™\ђЫЫ›™XЭ[ЫЏЋВ€\]PЫЫЬ™[]ЬЏО€ЬЭ\]PЫЫЬ™[]ЬЋВ€XШЫЭ[ќЫЫќ›ЫО€ЫЩ^XШЫЭ[ќЫЫќ›ЫВ€Щ™љXЪX[ќ[ќ[YTШЫЬOО€Щ™љXЪX[ќ[ќ[YTШЫЬNВ€Ы‘[YШ][Ыђ\OО€
+\N€[YШ][ЫђЫЫќ›Ы™YЪ\Э][ЫЉHO€
+
+
+HO€›ЪY
+H[™Yљ[™YВ€HHЯKЉHВ€ЫЫњЭY\\€B€Ь[ЫњЛ™^\›[Y\\њПЛ™Щ]
+њHЉHПИ™]ИZЩR\›™\ЬРY\\Љ\›™\ЬТYШЪ[XKњ\њЩJњHЉJNВ€ЫЫњЭX\[™ФЭЬ™Q\™XЭЬћHB€Ь[ЫњЛ›X\[™ФЭЬ™Q\™XЭЬћHПИZЩ[\Ю[К]љ›Ъ[Љ\\Љ
+KЫЩ^ЬЭZЬЭ]\ЭHЉJNВ€ЫЫњЭX\[™ФЭЬ™HB€Ь[ЫњЛ›X\[™ФЭЬ™HПИ™]ИX\[™ФЭЬ™JИ\™XЭЬћN€X\[™ФЭЬ™Q\™XЭЬћHJNВ€ЫЫњЭ\ЪЭЬ[њ]H™]И\ЬХ›ЭYЪ
+
+NВ€ЫЫњЭ\ЪЭЬЭ]]HЬ[ЫњЛ™\ЪЭЬЭ]]ПИ™]И\ЬХ›ЭYЪ
+
+NВ€ЫЫњЭXYЫ›ЬЭXУЭ]]H™]И\ЬХ›ЭYЪ
+
+NВ€ЫЫњЭЩ™љXЪX[H™]ИZЩSЩ™љXЪX[›ШЩ\ЬКЬ[ЫњЛ›Щ™љXЪX[^]УЫ’[њ][™
+NВ€ЫЫњЭЫЫXЭЬ€H™]ИњЫЫ“[™PЫЫXЭЬЉ\ЪЭЬЭ]]
+NВ€ЫЫњЭЭ\ќ\H›ЫZ\ЩKќЪ]™\ЫЫ™\њП[™Yљ[™YЉ
+NВ€›ЪYЭ\ќ\њ›ЫZ\ЩKШ]Ъ
+
+
+HO€[™Yљ[™Y
+NВ€ЫЫњЭЬ]Ы“Щ™љXЪX[HљK™›Љ
+
+HO€В€Э\ќ\њ™\ЫЫ™J[™Yљ[™Y
+NВ€™]\›€Щ™љXЪX[\И[љЫ›ЭЫ€\ИЪ[›ШЩ\ЬХЪ]Э]ќ[Э™X[\ОВ€JNВ€ЫЫњЭЬ™X]SЩ™љXЪX[ЫЫ›™XЭ[Ы€HЬ[ЫњЛЬ™X]SЩ™љXЪX[ЫЫ›™XЭ[ЫЋВ€Y€
+Ь[ЫњЛ›Щ™љXЪX[ќ[ќ[YTШЫЬJHЭ\ќ\њ™\ЫЫ™J[™Yљ[™Y
+NВ€ЫЫњЭЬЭH™]И\Щ\ќ™\’ЬЭ
+В€ЭШЪРЫЩ^]€‹ЬЮ[ќ]XЛШЫЩ^‹€\™Э[Y[ќО€И\\Щ\ќ™\€—K€Y][YЩ[ќ€ЫЩ^‹€\ЪЭЬ[њ]€\ЪЭЬЭ]]€XYЫ›ЬЭXУЭ]]€X\[™ФЭЬ™K€‹‹ЉЬ[ЫњЛЫЬЩSX\[™ФЭЬ™SЫ‘^]OOH[™Yљ[™Y€ИИЫЬЩSX\[™ФЭЬ™SЫ‘^]€Ь[ЫњЛЫЬЩSX\[™ФЭЬ™SЫ‘^]B€€ЯJK€[ќљ\›Ы›Y[ќ€В€УСVФХСUWСTЋ€X\[™ФЭЬ™Q\™XЭЬћK€‹‹ЉЬ[ЫњЛ™[ќљ\›Ы›Y[ќПИЯJK€K€‹‹ЉЬ[ЫњЛњYЪ[‘\™XЭЬћHИИYЪ[”›ЫЭО€ЫЬ[ЫњЛњYЪ[‘\™XЭЬћWHH€ЯJK€^\›[Y\\њО‚€Ь[ЫњЛ™^\›[Y\\њИПИ™]ИX\^\›[\›™\ЬТY\›™\ЬРY\\ЏЉЦИњH‹Y\\—WJK€Ь]Ы“Щ™љXЪX[€Ь]Ы“Щ™љXЪX[\И[љЫ›ЭЫ€\И\[Щ€Ь]Ы‹€‹‹ЉЬ™X]SЩ™љXЪX[ЫЫ›™XЭ[Ы‚€ИВ€Ь™X]SЩ™љXЪX[ЫЫ›™XЭ[ЫЋ€\Ю[И
+
+HO€В€Э\ќ\њ™\ЫЫ™J[™Yљ[™Y
+NВ€™]\›€Ь™X]SЩ™љXЪX[ЫЫ›™XЭ[ЫЉ
+NВ€K€B€€ЯJK€‹‹ЉЬ[ЫњЛќ\]PЫЫЬ™[]Ь€ИИ\]PЫЫЬ™[]ЬЋ€Ь[ЫњЛќ\]PЫЫЬ™[]Ь€H€ЯJK€‹‹ЉЬ[ЫњЛXШЫЭ[ќЫЫќ›ЫИИXШЫЭ[ќЫЫќ›Ы€Ь[ЫњЛXШЫЭ[ќЫЫќ›ЫH€ЯJK€‹‹ЉЬ[ЫњЛ›Щ™љXЪX[ќ[ќ[YTШЫЬHИИЩ™љXЪX[ќ[ќ[YTШЫЬN€Ь[ЫњЛ›Щ™љXЪX[ќ[ќ[YTШЫЬHH€ЯJK€‹‹ЉЬ[ЫњЛ›Ы‘[YШ][Ыђ\HИИЫ‘[YШ][Ыђ\N€Ь[ЫњЛ›Ы‘[YШ][Ыђ\HH€ЯJK€JNВ€ЫЫњЭќ[›љ[™ИHЬЭњќ[Љ
+NВ€›ЪYќ[›љ[™Лќ[Љ€
+
+HO€Э\ќ\њ™Z™XЭ
+™]И\њ›ЬЉ’ЬЭ^]Y™Y›Ь™Hљ^\™HЭ\ќ\ЉJK€
+\њ›ЬЉHO€Э\ќ\њ™Z™XЭ
+\њ›ЬЉK€
+NВ€™]\›€В€Y\\‹€ЫЫXЭЬ‹€\ЪЭЬ[њ]€\ЪЭЬЭ]]€XYЫ›ЬЭXУЭ]]€ЬЭ€Щ™љXЪX[€ќ[›љ[™Л€™XYN€Э\ќ\њ›ЫZ\ЩKќ[Љ€
+
+HO€™]И›ЫZ\ЩO[™Yљ[™YЉ
+™\ЫЫ™JHO€Щ][[YYX]J™\ЫЫ™K[™Yљ[™Y
+JK€
+K€X\[™ФЭЬ™K€X\[™ФЭЬ™Q\™XЭЬћK€Ь]Ы“Щ™љXЪX[€NВџB‚\Ю[Иќ[Э[Ы€Э\ќ^\›[™XY
+€љ^\™N€™]\›•\O\[Щ€Ь™X]Qљ^\™O‹€[Щ[€Эљ[™Л€YHK€Y][Ы[\[\О€њЫЫ“Шљ™XЭHЯKЉN€›ЫZ\ЩOЭљ[™П€В€]ШZ]љ^\™Kњ™XYNВ€Ьљ]T™\]Y\Э
+љ^\™K™\ЪЭЬ[њ]В€Y€Y]Щ€ќ™XYЬЭ\ќ‹€\[\О€И[Щ[ЭЩ€‹ЬЮ[ќ]XИ‹‹‹Y][Ы[\[\ИK€JNВ€ЫЫњЭ™\ЬЫњЩHH]ШZ]љ^\™KЫЫXЭЬ‹ќШZ]›ЬЉ
+Y\ЬШYЩJHO€™\]Y\ЭY
+Y\ЬШYЩKY
+JNВ€^XЭ
+™\ЬЫњЩJK››ЭќТ]™T›Ь\ќJ™\њ›Ь€ЉNВ€ЫЫњЭ™\Э[H™\ЬЫњЩKњ™\Э[\ИњЫЫ“Шљ™XЭВ€ЫЫњЭ™XYH™\Э[ќ™XY\ИњЫЫ“Шљ™XЭВ€Y€
+\[Щ€™XYљYOOHњЭљ[™ИЉH›ЭИ™]И\њ›ЬЉ”Ю[ќ]XИ™XY™\ЬЫњЩH\И›ИQЉNВ€™]\›€™XYљYВџB‚\Ю[Иќ[Э[Ы€Э\ќU™XY
+€љ^\™N€™]\›•\O\[Щ€Ь™X]Qљ^\™O‹€[Щ[HЫЩ^ЬЭЬK[]]™H‹ЉN€›ЫZ\ЩOЭљ[™П€В€™]\›€Э\ќ^\›[™XY
+љ^\™K[Щ[
+NВџB‚\Ю[Иќ[Э[Ы€Э\ќU\›Љ€љ^\™N€™]\›•\O\[Щ€Ь™X]Qљ^\™O‹€™XYY€Эљ[™Л€YH‹ЉN€›ЫZ\ЩOЭљ[™П€В€Ьљ]T™\]Y\Э
+љ^\™K™\ЪЭЬ[њ]В€Y€Y]Щ€ќ\›‹ЬЭ\ќ‹€\[\О€И™XYY[њ]€ЮИ\N€ќ^‹^€њЮ[ќ]XИ€WHK€JNВ€ЫЫњЭ™\ЬЫњЩHH]ШZ]љ^\™KЫЫXЭЬ‹ќШZ]›ЬЉ
+Y\ЬШYЩJHO€™\]Y\ЭY
+Y\ЬШYЩKY
+JNВ€ЫЫњЭ™\Э[H™\ЬЫњЩKњ™\Э[\ИњЫЫ“Шљ™XЭВ€ЫЫњЭ\›€H™\Э[ќ\›€\ИњЫЫ“Шљ™XЭВ€Y€
+\[Щ€\›‹љYOOHњЭљ[™ИЉH›ЭИ™]И\њ›ЬЉ”Ю[ќ]XИ\›€™\ЬЫњЩH\И›ИQЉNВ€™]\›€\›‹љYВџB‚\Ю[Иќ[Э[Ы€ЫЫ\]TU\›Љ€љ^\™N€™]\›•\O\[Щ€Ь™X]Qљ^\™O‹€™XYY€Эљ[™Л€™\]Y\ЭY[YN€ќ[X™\‹€Щ\ЬЪ[Ы’[™^HЉN€›ЫZ\ЩOЭљ[™П€В€ЫЫњЭ\›’YH]ШZ]Э\ќU\›Љљ^\™K™XYY™\]Y\ЭY[YJNВ€ЫЫњЭЩ\ЬЪ[Ы€Hљ^\™KY\\‹њЩ\ЬЪ[ЫњЦЬЩ\ЬЪ[Ы’[™^NВ€Y€
+\Щ\ЬЪ[ЫЉH›ЭИ™]И\њ›ЬЉ‘ZЩHHЩ\ЬЪ[Ы€Ш\И›ЭЬ[™YЉNВ€]ШZ]љ^\™KЫЫXЭЬ‹ќШZ]›ЬЉ
+Y\ЬШYЩJHO€\›‘]™[ќ
+Y\ЬШYЩKќ\›‹ЬЭ\ќY‹\›’Y
+JNВ€Щ\ЬЪ[Ы‹\[™^
+[њЭЩ\€	Ь™\]Y\ЭY[Y_X
+NВ€Щ\ЬЪ[Ы‹њЭXШЩYY\›Љ
+NВ€]ШZ]љ^\™KЫЫXЭЬ‹ќШZ]›ЬЉ
+Y\ЬШYЩJHO€\›‘]™[ќ
+Y\ЬШYЩKќ\›‹ШЫЫ\]Y‹\›’Y
+JNВ€™]\›€\›’YВџB‚\Ю[Иќ[Э[Ы€ЫЬЩQљ^\™Jљ^\™N€™]\›•\O\[Щ€Ь™X]Qљ^\™OЉN€›ЫZ\ЩO›ЪY€В€љ^\™K™\ЪЭЬ[њ]™[™
+
+NВ€ЫЫњЭЭ]ЫЫYHH]ШZ]љ^\™Kњќ[›љ[™ОВ€^XЭ
+Э]ЫЫYKљ^\™K™XYЫ›ЬЭXУЭ]]њ™XY
+
+OЛќФЭљ[™К
+HПИ€ЉKќР™J
+NВџB‚\Ю[Иќ[Э[Ы€ЭЬљ^\™Jљ^\™N€™]\›•\O\[Щ€Ь™X]Qљ^\™OЉN€›ЫZ\ЩO›ЪY€В€]ШZ]ЫЬЩQљ^\™Jљ^\™JNВ€›TЮ[Кљ^\™K›X\[™ФЭЬ™Q\™XЭЬћKИ™XЭ\њЪ]™N€ќYK›ЬЩN€ќYHJNВџB‚\Ю[Иќ[Э[Ы€љ[™Щ™љXЪX[™XY
+€љ^\™N€™]\›•\O\[Щ€Ь™X]Qљ^\™O‹€™XYY€Эљ[™ЛЉN€›ЫZ\ЩO›ЪY€В€›ЪY™XYYВ€]ШZ]љ^\™Kњ™XYNВ€]ШZ]љKќШZ]›ЬЉ
+
+HO€^XЭ
+љ^\™KњЬ]Ы“Щ™љXЪX[
+KќТ]™P™Y[ђШ[YЫЩJ
+JNВџB‚\Ю[Иќ[Э[Ы€[њЭЩ\“Щ™љXЪX[\™[ќЭЩ
+€љ^\™N€™]\›•\O\[Щ€Ь™X]Qљ^\™O‹€™XYYHњ\™[ќ]™XY‹ЉN€›ЫZ\ЩO›ЪY€В€ЫЫњЭ™\]Y\ЭH]ШZ]™XYњЫЫ“[™Jљ^\™K›Щ™љXЪX[њЭ[ЉNВ€^XЭ
+™\]Y\Э
+KќУX]ЪШљ™XЭ
+ИY]Щ€ќ™XYЬ™XY‹\[\О€И™XYYHJNВ€љ^\™K›Щ™љXЪX[њЭЭ]ќЬљ]J€	Т”УУ‹њЭљ[™ЪYћJВ€Y€™\]Y\ЭљY€™\Э[€И™XY€ИY€™XYYЭЩ€‹ЬЮ[ќ]XИ€HK€J_W€
+NВџB‚™\ШЬљX™Jђ\Щ\ќ™\’ЬЭYH™\ЫЭ\ЩH™[X\ЩH‹
+
+HO€В€]
+ќ[Y]\ИЩ][™ЬИШШ[HЪ]Э]›ЬќШ\™[™И[HИHЩ™љXЪX[Щ\ќ™\€‹\Ю[И
+
+HO€В€ЫЫњЭљ^\™HHЬ™X]Qљ^\™J
+NВ€ћHВ€]ШZ]љ^\™Kњ™XYNВ€Ьљ]T™\]Y\Э
+љ^\™K™\ЪЭЬ[њ]В€Y€L€Y]Щ€ЫЩ^ЬЭЬЩ][™ЬЛЪYK\™[X\ЩKЬЩ]‹€\[\О€И[X›Y€ќYK[Y[Э]Z[ќ]\О€K€JNВ€^XЭ
+]ШZ]љ^\™KЫЫXЭЬ‹ќШZ]›ЬЉ
+Y\ЬШYЩJHO€™\]Y\ЭY
+Y\ЬШYЩKL
+JJKќУX]ЪШљ™XЭ
+В€\њ›ЬЋ€ИЫЩN€LМЌЊ€K€JNВ€Ьљ]T™\]Y\Э
+љ^\™K™\ЪЭЬ[њ]В€Y€LK€Y]Щ€ЫЩ^ЬЭЬЩ][™ЬЛЪYK\™[X\ЩKЬЩ]‹€\[\О€И[X›Y€[ЩK[Y[Э]Z[ќ]\О€МK€JNВ€^XЭ
+]ШZ]љ^\™KЫЫXЭЬ‹ќШZ]›ЬЉ
+Y\ЬШYЩJHO€™\]Y\ЭY
+Y\ЬШYЩKLJJJKќУX]ЪШљ™XЭ
+В€™\Э[€И[X›Y€[ЩK[Y[Э]Z[ќ]\О€МK€JNВ€^XЭ
+љ^\™K›Щ™љXЪX[њЭ[‹њ™XY
+
+JKќР™Sќ[
+
+NВ€Hљ[[HВ€]ШZ]ЭЬљ^\™Jљ^\™JNВ€B€JNВ‚€]
+њЪ[[ќH™[X\Щ\И[€YHЩ\ЬЪ[Ы€[™™\Э[Y\И]И\ЭЬћH›Ь€[›Э\€\›€‹\Ю[И
+
+HO€В€љKќ\ЩQZЩU[Y\њКИСZЩN€ИњЩ][ќ\ќ[‹ЫX\’[ќ\ќ[‹‘]H—HJNВ€ЫЫњЭљ^\™HHЬ™X]Qљ^\™J
+NВ€ћHВ€ЫЫњЭ™XYYH]ШZ]Э\ќU™XY
+љ^\™JNВ€ЫЫњЭ\›’YH]ШZ]ЫЫ\]TU\›Љљ^\™K™XYYЉNВ€ЫЫњЭЫЭ\ЩHHљ^\™KY\\‹њЩ\ЬЪ[ЫњЦМNВ€Y€
+\ЫЭ\ЩJH›ЭИ™]И\њ›ЬЉ“Z\ЬЪ[™ИЫЭ\ЩHЩ\ЬЪ[Ы€ЉNВ€ЫЫњЭЫ\ЪЭH]ШZ]ЫЭ\ЩKњ™XYЫ\ЪЭ
+
+NВ€Y€
+\Ы\ЪЭ›ЪКH›ЭИ™]И\њ›ЬЉЫ\ЪЭ™\њ›Ь‹›Y\ЬШYЩJNВ€ЫЫњЭЫЬЩHHљKњЬSЫЉЫЭ\ЩKЫЬЩHЉNВ€ЫЫњЭ]]™SЬ[€Hљ^\™KY\\‹›Ь[‹љ[™
+љ^\™KY\\ЉNВ€]™\Э[YY€ZЩR\›™\ЬФЩ\ЬЪ[Ы€[™Yљ[™YВ€ЫЫњЭЬ[€HљKњЬSЫЉљ^\™KY\\‹›Ь[€ЉK›[ШЪТ[\[Y[ќ][ЫЉ\Ю[И
+[њ]
+HO€В€Y€
+[њ]љЪ[™OOHњ™\Э[YHЉH™]\›€]]™SЬ[Љ[њ]
+NВ€™\Э[YYH™]ИZЩR\›™\ЬФЩ\ЬЪ[ЫЉ€љ^\™KY\\‹љ\›™\ЬТY€љ^\™KY\\‹Ш][ЩЛ€[™Yљ[™Y€[њ]›]]™T™Y‹€Ы\ЪЭќ[YK€
+NВ€™]\›€ИЪО€ќYK[YN€™\Э[YYNВ€JNВ€Ьљ]T™\]Y\Э
+љ^\™K™\ЪЭЬ[њ]В€Y€L€Y]Щ€ЫЩ^ЬЭЬЩ][™ЬЛЪYK\™[X\ЩKЬЩ]‹€\[\О€И[X›Y€ќYK[Y[Э]Z[ќ]\О€LK€JNВ€]ШZ]љ^\™KЫЫXЭЬ‹ќШZ]›ЬЉ
+Y\ЬШYЩJHO€™\]Y\ЭY
+Y\ЬШYЩKL
+JNВ€]ШZ]љKY[ЩU[Y\њРћU[YP\Ю[КH
+€ЊМ
+NВ€Ьљ]T™\]Y\Э
+љ^\™K™\ЪЭЬ[њ]В€Y€LL€Y]Щ€ЫЩ^ЬЭЬЩ\ЬЪ[ЫњЛЫШYYЫ\Э‹€\[\О€ЯK€JNВ€ЫЫњЭ\Э[™ИH]ШZ]љ^\™KЫЫXЭЬ‹ќШZ]›ЬЉ
+Y\ЬШYЩJHO€™\]Y\ЭY
+Y\ЬШYЩKLL
+JNВ€^XЭ
+\Э[™КKќУX]ЪШљ™XЭ
+В€™\Э[€ЮИ™XYYЭ]N€љYH‹™X\ЫЫЋ€ќ[Y[Э]‹[XЭ]™S\О€H
+€ЊМWK€JNВ€]ШZ]љKY[ЩU[Y\њРћU[YP\Ю[К€
+€ЊМ
+NВ€^XЭ
+ЫЬЩJKќТ]™P™Y[ђШ[Y[Y\КJNВ€Ьљ]T™\]Y\Э
+љ^\™K™\ЪЭЬ[њ]В€Y€LLK€Y]Щ€ЫЩ^ЬЭЬЩ\ЬЪ[ЫњЛЫШYYЫ\Э‹€\[\О€ЯK€JNВ€^XЭ
+]ШZ]љ^\™KЫЫXЭЬ‹ќШZ]›ЬЉ
+Y\ЬШYЩJHO€™\]Y\ЭY
+Y\ЬШYЩKLLJJJKќУX]ЪШљ™XЭ
+В€™\Э[€ЧK€JNВ€^XЭ
+Ь[ЉK››ЭќТ]™P™Y[ђШ[Y
+
+NВ€^XЭ
+љ^\™KЫЫXЭЬ‹›Y\ЬШYЩ\ЛњЫЫYJ
+Y\ЬШYЩJHO€Y]Щ
+Y\ЬШYЩKќ™XYШЫЬЩYЉJJKќР™J€[ЩK€
+NВ€Ьљ]T™\]Y\Э
+љ^\™K™\ЪЭЬ[њ]В€Y€LK€Y]Щ€ќ™XYЬ™XY‹€\[\О€И™XYY[ЫYU\›њО€[ЩHK€JNВ€]ШZ]љ^\™KЫЫXЭЬ‹ќШZ]›ЬЉ
+Y\ЬШYЩJHO€™\]Y\ЭY
+Y\ЬШYЩKLJJNВ€^XЭ
+Ь[ЉK››ЭќТ]™P™Y[ђШ[Y
+
+NВ€Ьљ]T™\]Y\Э
+љ^\™K™\ЪЭЬ[њ]В€Y€L‹€Y]Щ€ќ™XYЬ™XY‹€\[\О€И™XYY[ЫYU\›њО€ќYHK€JNВ€ЫЫњЭ\ЭЬћHH]ШZ]љ^\™KЫЫXЭЬ‹ќШZ]›ЬЉ
+Y\ЬШYЩJHO€™\]Y\ЭY
+Y\ЬШYЩKLЉJNВ€^XЭ
+\ЭЬћJK››ЭќТ]™T›Ь\ќJ™\њ›Ь€ЉNВ€^XЭ
+”УУ‹њЭљ[™ЪYћJ\ЭЬћJJKќРЫЫќZ[Љ\›’Y
+NВ€^XЭ
+Ь[ЉKќТ]™P™Y[ђШ[Y[Y\КJNВ€ЫЫњЭ™^\›€H]ШZ]Э\ќU\›Љљ^\™K™XYYLКNВ€]ШZ]љ^\™KЫЫXЭЬ‹ќШZ]›ЬЉ
+Y\ЬШYЩJHO€\›‘]™[ќ
+Y\ЬШYЩKќ\›‹ЬЭ\ќY‹™^\›ЉJNВ€Y€
+\™\Э[YY
+H›ЭИ™]И\њ›ЬЉ“Z\ЬЪ[™И™\Э[YYЩ\ЬЪ[Ы€ЉNВ€™\Э[YY\[™^
+Yќ\€YH™[X\ЩHЉNВ€™\Э[YYњЭXШЩYY\›Љ
+NВ€]ШZ]љ^\™KЫЫXЭЬ‹ќШZ]›ЬЉ
+Y\ЬШYЩJHO€\›‘]™[ќ
+Y\ЬШYЩKќ\›‹ШЫЫ\]Y‹™^\›ЉJNВ€Hљ[[HВ€]ШZ]ЭЬљ^\™Jљ^\™JNВ€љKќ\ЩT™X[[Y\њК
+NВ€B€JNВ‚€]
+љЩY\И[€XЭ]™H\›€ШYY]™[€™^[Ы™HЫЫ™љYЭ\™Y[Y[Э]‹\Ю[И
+
+HO€В€љKќ\ЩQZЩU[Y\њКИСZЩN€ИњЩ][ќ\ќ[‹ЫX\’[ќ\ќ[‹‘]H—HJNВ€ЫЫњЭљ^\™HHЬ™X]Qљ^\™J
+NВ€ћHВ€ЫЫњЭ™XYYH]ШZ]Э\ќU™XY
+љ^\™JNВ€ЫЫњЭ\›’YH]ШZ]Э\ќU\›Љљ^\™K™XYY
+NВ€]ШZ]љ^\™KЫЫXЭЬ‹ќШZ]›ЬЉ
+Y\ЬШYЩJHO€\›‘]™[ќ
+Y\ЬШYЩKќ\›‹ЬЭ\ќY‹\›’Y
+JNВ€ЫЫњЭЩ\ЬЪ[Ы€Hљ^\™KY\\‹њЩ\ЬЪ[ЫњЦМNВ€Y€
+\Щ\ЬЪ[ЫЉH›ЭИ™]И\њ›ЬЉ“Z\ЬЪ[™ИЩ\ЬЪ[Ы€ЉNВ€ЫЫњЭЫЬЩHHљKњЬSЫЉЩ\ЬЪ[Ы‹ЫЬЩHЉNВ€Ьљ]T™\]Y\Э
+љ^\™K™\ЪЭЬ[њ]В€Y€L€Y]Щ€ЫЩ^ЬЭЬЩ][™ЬЛЪYK\™[X\ЩKЬЩ]‹€\[\О€И[X›Y€ќYK[Y[Э]Z[ќ]\О€LK€JNВ€]ШZ]љ^\™KЫЫXЭЬ‹ќШZ]›ЬЉ
+Y\ЬШYЩJHO€™\]Y\ЭY
+Y\ЬШYЩKL
+JNВ€]ШZ]љKY[ЩU[Y\њРћU[YP\Ю[КМH
+€ЊМ
+NВ€^XЭ
+ЫЬЩJK››ЭќТ]™P™Y[ђШ[Y
+
+NВ€Щ\ЬЪ[Ы‹њЭXШЩYY\›Љ
+NВ€]ШZ]љ^\™KЫЫXЭЬ‹ќШZ]›ЬЉ
+Y\ЬШYЩJHO€\›‘]™[ќ
+Y\ЬШYЩKќ\›‹ШЫЫ\]Y‹\›’Y
+JNВ€Hљ[[HВ€]ШZ]ЭЬљ^\™Jљ^\™JNВ€љKќ\ЩT™X[[Y\њК
+NВ€B€JNВџJNВ‚™\ШЬљX™Jђ\Щ\ќ™\’ЬЭЩ™љXЪX[›ЬќШ\™[™И‹
+
+HO€В€]™XXЪ
+В€ИY]Щ€ЫЩ^ЬЭЭ[љЫ›ЭЫ€‹\[\О€ЯHK€В€Y]Щ€ќ™XYЬЭ\ќ‹€\[\О€И[Щ[€™ЬMH‹ЭЩ€‹ЬЮ[ќ]XИ‹[љЫ›ЭЫ”\[N€›Ь\]YH€K€K€В€Y]Щ€ќ\›‹ЬЭ\ќ‹€\[\О€В€™XYY€›Щ™љXЪX[]™XY‹€[њ]€ЮИ\N€ќ^‹^€њЮ[ќ]XИ€WK€[љЫ›ЭЫ”\[N€›Ь\]YH‹€K€K€JJ™›ЬќШ\™И	Y]Щ[Ъ[™ЩY[™™[^\ИXЪЩ[™\њ›ЬњИ‹\Ю[И
+ИY]Щ\[\ИJHO€В€ЫЫњЭљ^\™HHЬ™X]Qљ^\™J
+NВ€ћHВ€]ШZ]љ^\™Kњ™XYNВ€ЫЫњЭ™\]Y\ЭHИY€KY]Щ\[\ИNВ€Ьљ]T™\]Y\Э
+љ^\™K™\ЪЭЬ[њ]™\]Y\Э
+NВ€^XЭ
+]ШZ]™XYњЫЫ“[™Jљ^\™K›Щ™љXЪX[њЭ[ЉJKќС\]X[
+™\]Y\Э
+NВ€ЫЫњЭ™\ЬЫњЩHHИY€K\њ›ЬЋ€ИЫЩN€LМЌЊKY\ЬШYЩN€”Ю[ќ]XИXЪЩ[™\њ›Ь€€HNВ€Ьљ]T™\]Y\Э
+љ^\™K›Щ™љXЪX[њЭЭ]™\ЬЫњЩJNВ€^XЭ
+]ШZ]љ^\™KЫЫXЭЬ‹ќШZ]›ЬЉ
+Y\ЬШYЩJHO€™\]Y\ЭY
+Y\ЬШYЩKJJJKќС\]X[
+™\ЬЫњЩJNВ€Hљ[[HВ€]ШZ]ЭЬљ^\™Jљ^\™JNВ€B€JNВџJNВ‚™\ШЬљX™Jђ\Щ\ќ™\’ЬЭ[њЭ[Y\›™\ЬИYЪ[њИ‹
+
+HO€В€ЛИHЫЫYЪ[€[\Ьќ\ИHLИ\‹\YЪ[€ШY\€ќYЩ]И”ИЪXЪЬИ™[XZ[€њЛ‚€]
+™\ШЫЭ™\њИ[€[љЫ›ЭЫ€YЪ[‹Щ\ќ™\И]И\ШЬљ\Ь‹›Э]\ИH™XY[™ЫЬЩ\И]‹\Ю[И
+
+HO€В€ЫЫњЭ\™XЭЬћHHZЩ[\Ю[К]љ›Ъ[Љ\\Љ
+KЫЩ^ЬЭ\YЪ[‹ZЬЭHЉJNВ€ЫЫњЭШШ][Ы€H]љ›Ъ[Љ\™XЭЬћKњШ[\KXYЩ[ќЉNВ€ZЩ\”Ю[КШШ][ЫЉNВ€Ьљ]Qљ[TЮ[К€]љ›Ъ[Љ\™XЭЬћK™[X›YљњЫЫ€ЉK€”УУ‹њЭљ[™ЪYћJИ™\њЪ[ЫЋ€K[X›Y€ИњШ[\KXYЩ[ќ—HJK€
+NВ€Ьљ]Qљ[TЮ[К€]љ›Ъ[ЉШШ][Ы‹›X[љY™\ЭљњЫЫ€ЉK€”УУ‹њЭљ[™ЪYћJВ€X[љY™\Э™\њЪ[ЫЋ€K€Y€њШ[\KXYЩ[ќ‹€[YN€”Ш[\HYЩ[ќ‹€™\њЪ[ЫЋ€ЊKЊЊ‹€Y\\ђ\U™\њЪ[ЫЋ€K€[ќћN€љ[™^›ZњИ‹€JK€
+NВ€Ьљ]Qљ[TЮ[К€]љ›Ъ[ЉШШ][Ы‹љ[™^›ZњИЉK€€[\ЬќИZЩR\›™\ЬРY\\€Hњ›ЫH	Т”УУ‹њЭљ[™ЪYћJ]Сљ[UT“
+]њ™\ЫЫ™JњXЪШYЩ\ЛЪ\›™\ЬЛXY\\‹Щ\ЭЭ\Э[™ЛљњИЉJKљ™YЉ_NВ€[\ЬќИЬљ]Qљ[TЮ[ИHњ›ЫH››ЩN™њИЋВ€]XШЫЭ[ќ[њЬXЭ[ЫњИHВ€^Ьќќ[Э[Ы€Ь™X]R\›™\ЬРY\\Љ
+HВ€ЫЫњЭY\\€H™]ИZЩR\›™\ЬРY\\ЉњШ[\KXYЩ[ќЉNВ€Y\\‹љ[њЬXЭXШЫЭ[ќH\Ю[И
+
+HO€
+И[XZ[€њШ[\P^[\KЫЫH‹Ь™Y]О€И\ЩY\Щ[ќ€
+КШXШЫЭ[ќ[њЬXЭ[ЫњЛ\љ[Щ\N€ќЩYZЫH€HJNВ€ЫЫњЭЫЬЩHHY\\‹ЫЬЩKљ[™
+Y\\ЉNВ€Y\\‹ЫЬЩHH\Ю[И
+
+HO€И]ШZ]ЫЬЩJ
+NИЬљ]Qљ[TЮ[К™]ИT“
+ЫЬЩY‹[\Ьќ›Y]Kќ\›
+KћY\ИЉNИNВ€™]\›€Y\\ЋВ€B€€
+NВ€ЫЫњЭљ^\™HHЬ™X]Qљ^\™JИYЪ[‘\™XЭЬћN€\™XЭЬћK^\›[Y\\њО€™]ИX\
+
+HJNВ€ћHВ€]ШZ]љ^\™Kњ™XYNВ€Ьљ]T™\]Y\Э
+љ^\™K™\ЪЭЬ[њ]В€Y€LK€Y]Щ€ЫЩ^ЬЭЪ\›™\ЬЛЬYЪ[њЛЫ\Э‹€\[\О€ЯK€JNВ€^XЭ
+]ШZ]љ^\™KЫЫXЭЬ‹ќШZ]›ЬЉ
+Y\ЬШYЩJHO€™\]Y\ЭY
+Y\ЬШYЩKLJJJKќУX]ЪШљ™XЭ
+В€™\Э[€ИYЪ[њО€ЮИY€њШ[\KXYЩ[ќ‹[YN€”Ш[\HYЩ[ќ‹™\њЪ[ЫЋ€ЊKЊЊ€WHK€JNВ€Ьљ]T™\]Y\Э
+љ^\™K™\ЪЭЬ[њ]В€Y€LЛ€Y]Щ€ЫЩ^ЬЭЪ\›™\ЬЛШXШЫЭ[ќЛЬЫЭ\Щ\И‹€\[\О€ЯK€JNВ€^XЭ
+]ШZ]љ^\™KЫЫXЭЬ‹ќШZ]›ЬЉ
+Y\ЬШYЩJHO€™\]Y\ЭY
+Y\ЬШYЩKLКJJKќУX]ЪШљ™XЭ
+В€™\Э[€В€ЫЭ\Щ\О€ЮИ\›™\ЬТY€њШ[\KXYЩ[ќ‹\›™\ЬУ[YN€”Ш[\HYЩ[ќ€WK€K€JNВ€Ьљ]T™\]Y\Э
+љ^\™K™\ЪЭЬ[њ]В€Y€L€Y]Щ€ЫЩ^ЬЭЪ\›™\ЬЛШXШЫЭ[ќЛЪ[њЬXЭ‹€\[\О€И\›™\ЬТY€њШ[\KXYЩ[ќ€K€JNВ€^XЭ
+]ШZ]љ^\™KЫЫXЭЬ‹ќШZ]›ЬЉ
+Y\ЬШYЩJHO€™\]Y\ЭY
+Y\ЬШYЩKL
+JJKќУX]ЪШљ™XЭ
+В€™\Э[€В€\›™\ЬТY€њШ[\KXYЩ[ќ‹€\›™\ЬУ[YN€”Ш[\HYЩ[ќ‹€XШЫЭ[ќ€В€[XZ[€њШ[\P^[\KЫЫH‹€Ь™Y]О€И\ЩY\Щ[ќ€HK€K€K€JNВ€Ьљ]T™\]Y\Э
+љ^\™K™\ЪЭЬ[њ]В€Y€L‹€Y]Щ€ЫЩ^ЬЭЪ\›™\ЬЛЪ[њЬXЭ‹€\[\О€И\›™\ЬТY€њШ[\KXYЩ[ќ€K€JNВ€^XЭ
+]ШZ]љ^\™KЫЫXЭЬ‹ќШZ]›ЬЉ
+Y\ЬШYЩJHO€™\]Y\ЭY
+Y\ЬШYЩKLЉJJKќУX]ЪШљ™XЭ
+В€™\Э[€ИЭ]\О€њ™XYH€K€JNВ€Ьљ]T™\]Y\Э
+љ^\™K™\ЪЭЬ[њ]В€Y€LK€Y]Щ€ЫЩ^ЬЭЪ\›™\ЬЛШXШЫЭ[ќЛЫ\Э‹€\[\О€ЯK€JNВ€^XЭ
+]ШZ]љ^\™KЫЫXЭЬ‹ќШZ]›ЬЉ
+Y\ЬШYЩJHO€™\]Y\ЭY
+Y\ЬШYЩKLJJJKќУX]ЪШљ™XЭ
+В€™\Э[€В€XШЫЭ[ќО€В€В€\›™\ЬТY€њШ[\KXYЩ[ќ‹€\›™\ЬУ[YN€”Ш[\HYЩ[ќ‹€[XZ[€њШ[\P^[\KЫЫH‹€Ь™Y]О€И\ЩY\Щ[ќ€HK€K€K€K€JNВ€Ьљ]T™\]Y\Э
+љ^\™K™\ЪЭЬ[њ]В€Y€LK€Y]Щ€ЫЩ^ЬЭЪ\›™\ЬЛШXШЫЭ[ќЛЪ[њЬXЭ‹€\[\О€И\›™\ЬТY€њШ[\KXYЩ[ќ‹™Yњ™\Ъ€ќYHK€JNВ€^XЭ
+]ШZ]љ^\™KЫЫXЭЬ‹ќШZ]›ЬЉ
+Y\ЬШYЩJHO€™\]Y\ЭY
+Y\ЬШYЩKLJJJKќУX]ЪШљ™XЭ
+В€™\Э[€В€\›™\ЬТY€њШ[\KXYЩ[ќ‹€XШЫЭ[ќ€ИЬ™Y]О€И\ЩY\Щ[ќ€€HK€K€JNВ€Ьљ]T™\]Y\Э
+љ^\™K™\ЪЭЬ[њ]В€Y€L‹€Y]Щ€ЫЩ^ЬЭЪ\›™\ЬЛШXШЫЭ[ќЛЫ\Э‹€\[\О€ИЪЩ[Ћ€љ[ќ[Y€K€JNВ€^XЭ
+]ШZ]љ^\™KЫЫXЭЬ‹ќШZ]›ЬЉ
+Y\ЬШYЩJHO€™\]Y\ЭY
+Y\ЬШYЩKLЉJJKќУX]ЪШљ™XЭ
+В€\њ›ЬЋ€ИЫЩN€LМЌЊ€K€JNВ€ЫЫњЭ[Щ[H[ЫЩR\›™\ЬФYЪ[”›Э]J€\›™\ЬФYЪ[”›Э]TШЪ[XKњ\њЩJИ\›™\ЬТY€њШ[\KXYЩ[ќ€JK€
+NВ€ЫЫњЭ™XYYH]ШZ]Э\ќ^\›[™XY
+љ^\™K[Щ[LКNВ€^XЭ
+€]ШZ]љ^\™K›X\[™ФЭЬ™K™Щ]™XY
+ЬЭ™XYYШЪ[XKњ\њЩJ™XYY
+JK€
+KќУX]ЪШљ™XЭ
+И\›™\ЬТY€њШ[\KXYЩ[ќ€JNВ€^XЭ
+љ^\™K›Щ™љXЪX[њЭ[‹њ™XYX›S[™Э
+KќР™J
+NВ€Ьљ]T™\]Y\Э
+љ^\™K™\ЪЭЬ[њ]ИY€LY]Щ€љ[љ]X[^™H‹\[\О€ЯHJNВ€ЫЫњЭ[љ]X[^™HH]ШZ]™XYњЫЫ“[™Jљ^\™K›Щ™љXЪX[њЭ[ЉNВ€^XЭ
+[љ]X[^™JKќУX]ЪШљ™XЭ
+ИY]Щ€љ[љ]X[^™H€JNВ€Ьљ]T™\]Y\Э
+љ^\™K›Щ™љXЪX[њЭЭ]В€Y€™\]Z\™YY\ЬШYЩRY
+[љ]X[^™JK€™\Э[€И\Щ\ђYЩ[ќ€›Щ™љXЪX[€K€JNВ€^XЭ
+]ШZ]™XYњЫЫ“[™Jљ^\™K›Щ™љXЪX[њЭ[ЉJKќУX]ЪШљ™XЭ
+ИY]Щ€љ[љ]X[^™Y€JNВ€^XЭ
+]ШZ]љ^\™KЫЫXЭЬ‹ќШZ]›ЬЉ
+Y\ЬШYЩJHO€™\]Y\ЭY
+Y\ЬШYЩKL
+JJKќУX]ЪШљ™XЭ
+В€™\Э[€И\Щ\ђYЩ[ќ€›Щ™љXЪX[€K€JNВ€Hљ[[HВ€]ШZ]ЭЬљ^\™Jљ^\™JNВ€ћHВ€^XЭ
+™XYљ[TЮ[К]љ›Ъ[ЉШШ][Ы‹ЫЬЩYЉKќ]ЋЉJKќР™JћY\ИЉNВ€Hљ[[HВ€›TЮ[К\™XЭЬћKИ™XЭ\њЪ]™N€ќYK›ЬЩN€ќYHJNВ€B€B€KMWМ
+NВ‚€ЫЫњЭYЪ[•ШZ]Y]ЩИHВ€ЫЩ^ЬЭЪ\›™\ЬЛЪ[њЬXЭ‹€ЫЩ^ЬЭЪ\›™\ЬЛШЫЫ[X[™ЛЪ[њЬXЭ‹€ќ™XYЬЭ\ќ‹€ќ™XYЬ™\Э[YH‹€NВ€]™XXЪ
+YЪ[•ШZ]Y]ЩКJ€љЩY\ИЩ™љXЪX[™\]Y\ЭИ[Эљ[™И\љ[™ИYЪ[€ШY[™О€	\И‹€\Ю[И
+›ШЪЩYY]Щ
+HO€В€ЫЫњЭ\™XЭЬћHHZЩ[\Ю[К]љ›Ъ[Љ\\Љ
+KЫЩ^ЬЭ\YЪ[‹\\[[HЉJNВ€ЫЫњЭШШ][Ы€H]љ›Ъ[Љ\™XЭЬћKњЫЭЛXYЩ[ќЉNВ€ЫЫњЭ™[X\ЩHH]љ›Ъ[Љ\™XЭЬћKњ™[X\ЩHЉNВ€ZЩ\”Ю[КШШ][ЫЉNВ€Ьљ]Qљ[TЮ[К€]љ›Ъ[Љ\™XЭЬћK™[X›YљњЫЫ€ЉK€”УУ‹њЭљ[™ЪYћJИ™\њЪ[ЫЋ€K[X›Y€ИњЫЭЛXYЩ[ќ—HJK€
+NВ€Ьљ]Qљ[TЮ[К€]љ›Ъ[ЉШШ][Ы‹›X[љY™\ЭљњЫЫ€ЉK€”УУ‹њЭљ[™ЪYћJВ€X[љY™\Э™\њЪ[ЫЋ€K€Y€њЫЭЛXYЩ[ќ‹€[YN€”ЫЭИYЩ[ќ‹€™\њЪ[ЫЋ€ЊKЊЊ‹€Y\\ђ\U™\њЪ[ЫЋ€K€[ќћN€љ[™^›ZњИ‹€JK€
+NВ€Ьљ]Qљ[TЮ[К€]љ›Ъ[ЉШШ][Ы‹љ[™^›ZњИЉK€€[\ЬќИXШЩ\ЬЛЬљ]Qљ[HHњ›ЫH››ЩN™њЛЬ›ЫZ\Щ\ИЋВ€[\ЬќИZЩR\›™\ЬРY\\€Hњ›ЫH	Т”УУ‹њЭљ[™ЪYћJ]Сљ[UT“
+]њ™\ЫЫ™JњXЪШYЩ\ЛЪ\›™\ЬЛXY\\‹Щ\ЭЭ\Э[™ЛљњИЉJKљ™YЉ_NВ€ЫЫњЭ™[X\ЩHH	Т”УУ‹њЭљ[™ЪYћJ]Сљ[UT“
+™[X\ЩJKљ™YЉ_NВ€\Ю[Иќ[Э[Ы€ШZ]›Ь”™[X\ЩJ
+HВ€›Ь€
+ОКHВ€ћHВ€]ШZ]XШЩ\ЬК™]ИT“
+™[X\ЩJJNВ€™]\›ЋВ€HШ]ЪВ€]ШZ]™]И›ЫZ\ЩJ
+™\ЫЫ™JHO€Щ][Y[Э]
+™\ЫЫ™KЊ
+JNВ€B€B€B€^Ьќ\Ю[Иќ[Э[Ы€Ь™X]R\›™\ЬРY\\Љ
+HВ€]ШZ]Ьљ]Qљ[J™]ИT“
+њЭ\ќY‹[\Ьќ›Y]Kќ\›
+KћY\ИЉNВ€]ШZ]ШZ]›Ь”™[X\ЩJ
+NВ€ЫЫњЭY\\€H™]ИZЩR\›™\ЬРY\\ЉњЫЭЛXYЩ[ќЉNВ€]ШZ]Y\\‹›Ь[ЉИЪ[™€Ь™X]H‹ЭЩ€‹ЬЮ[ќ]XИ€JNВ€™]\›€Y\\ЋВ€B€€
+NВ€ЫЫњЭљ^\™HHЬ™X]Qљ^\™JИYЪ[‘\™XЭЬћN€\™XЭЬћK^\›[Y\\њО€™]ИX\
+
+HJNВ€ћHВ€]ШZ]љ^\™Kњ™XYNВ€]ШZ]љKќШZ]›ЬЉ
+
+HO€^XЭ
+™XY\”Ю[КШШ][ЫЉJKќРЫЫќZ[ЉњЭ\ќYЉJNВ€Ьљ]T™\]Y\Э
+љ^\™K™\ЪЭЬ[њ]В€Y€LN€Y]Щ€љ[љ]X[^™H‹€\[\О€ИЫY[ќ[™›О€И[YN€њЭ\ќ\]\Э‹™\њЪ[ЫЋ€ЊH€HK€JNВ€ЫЫњЭ[љ]X[^™HH]ШZ]™XYњЫЫ“[™Jљ^\™K›Щ™љXЪX[њЭ[ЉNВ€^XЭ
+[љ]X[^™K›Y]Щ
+KќР™Jљ[љ]X[^™HЉNВ€Ьљ]T™\]Y\Э
+љ^\™K›Щ™љXЪX[њЭЭ]В€Y€™\]Z\™YY\ЬШYЩRY
+[љ]X[^™JK€™\Э[€И\Щ\ђYЩ[ќ€ќ\Э€K€JNВ€^XЭ
+]ШZ]љ^\™KЫЫXЭЬ‹ќШZ]›ЬЉ
+Y\ЬШYЩJHO€™\]Y\ЭY
+Y\ЬШYЩKLN
+JJKќУX]ЪШљ™XЭ
+€В€™\Э[€И\Щ\ђYЩ[ќ€ќ\Э€K€K€
+NВ€^XЭ
+
+]ШZ]™XYњЫЫ“[™Jљ^\™K›Щ™љXЪX[њЭ[ЉJK›Y]Щ
+KќР™Jљ[љ]X[^™YЉNВ€ЫЫњЭ[Щ[H[ЫЩR\›™\ЬФYЪ[”›Э]J€\›™\ЬФYЪ[”›Э]TШЪ[XKњ\њЩJИ\›™\ЬТY€њЫЭЛXYЩ[ќ€JK€
+NВ€›Ь€
+ЫЫњЭYЩ€Ињ\њЪ\ЭY]™XY‹›Э\‹]™XY—JHВ€ЫЫњЭЬЭ™XYYHЬЭ™XYYШЪ[XKњ\њЩJY
+NВ€]ШZ]љ^\™K›X\[™ФЭЬ™KЬ™X]T›Эљ\Ъ[Ы[
+В€ЬЭ™XYY€Ь™X]T™\]Y\ЭY€Y€\›™\ЬТY€\›™\ЬТYШЪ[XKњ\њЩJњЫЭЛXYЩ[ќЉK€ЭЩ€‹ЬЮ[ќ]XИ‹€]N€”\њЪ\ЭY‹€[њЬЬќ[Щ[Y€[Щ[€\[Y\[€[ЩK€\ЭЬћS[ЩN€›YШXЮH‹€JNВ€]ШZ]љ^\™K›X\[™ФЭЬ™KЫЫ[Z]™XYJВ€ЬЭ™XYY€]]™TЩ\ЬЪ[Ы”™YЋ€В€\›™\ЬТY€\›™\ЬТYШЪ[XKњ\њЩJњЫЭЛXYЩ[ќЉK€]]™TЩ\ЬЪ[Ы’Y‚€YOOHњ\њЪ\ЭY]™XY€И™ZЩK\Щ\ЬЪ[Ы‹LH€€›Э\‹[]]™K\Щ\ЬЪ[Ы€‹€›Ь›X]™\њЪ[ЫЋ€K€K€JNВ€B€Ьљ]T™\]Y\Э
+љ^\™K™\ЪЭЬ[њ]В€Y€LЊ€Y]Щ€›ШЪЩYY]Щ€\[\О‚€›ШЪЩYY]ЩOOHќ™XYЬЭ\ќ‚€ИИ[Щ[ЭЩ€‹ЬЮ[ќ]XИ€B€€›ШЪЩYY]ЩOOHќ™XYЬ™\Э[YH‚€ИИ™XYY€њ\њЪ\ЭY]™XY€B€€И\›™\ЬТY€њЫЭЛXYЩ[ќ€K€JNВ€Y€
+›ШЪЩYY]ЩOOHќ™XYЬ™\Э[YHЉHВ€Ьљ]T™\]Y\Э
+љ^\™K™\ЪЭЬ[њ]В€Y€LЊK€Y]Щ€ќ™XYЫ[YKЬЩ]‹€\[\О€И™XYY€њ\њЪ\ЭY]™XY‹[YN€ђYќ\€™\Э[YH€K€JNВ€Ьљ]T™\]Y\Э
+љ^\™K™\ЪЭЬ[њ]В€Y€LЊ‹€Y]Щ€ќ™XYЫ[YKЬЩ]‹€\[\О€И™XYY€›Э\‹]™XY‹[YN€’[™\[™[ќ€K€JNВ€^XЭ
+€]ШZ]љ^\™KЫЫXЭЬ‹ќШZ]›ЬЉ
+Y\ЬШYЩJHO€™\]Y\ЭY
+Y\ЬШYЩKLЊЉJK€
+KќТ]™T›Ь\ќJњ™\Э[ЉNВ€^XЭ
+љ^\™KЫЫXЭЬ‹›Y\ЬШYЩ\ЛњЫЫYJ
+Y\ЬШYЩJHO€™\]Y\ЭY
+Y\ЬШYЩKLЊJJJKќР™J[ЩJNВ€B€Ьљ]T™\]Y\Э
+љ^\™K™\ЪЭЬ[њ]ИY€LNKY]Щ€›[Щ[Ы\Э‹\[\О€ЯHJNВ€ЫЫњЭ[Щ[ИH]ШZ]™XYњЫЫ“[™Jљ^\™K›Щ™љXЪX[њЭ[ЉNВ€^XЭ
+[Щ[Л›Y]Щ
+KќР™J›[Щ[Ы\ЭЉNВ€Ьљ]T™\]Y\Э
+љ^\™K›Щ™љXЪX[њЭЭ]В€Y€™\]Z\™YY\ЬШYЩRY
+[Щ[КK€™\Э[€И]N€ЧHK€JNВ€^XЭ
+]ШZ]љ^\™KЫЫXЭЬ‹ќШZ]›ЬЉ
+Y\ЬШYЩJHO€™\]Y\ЭY
+Y\ЬШYЩKLNJJJKќУX]ЪШљ™XЭ
+€В€™\Э[€И]N€ЧHK€K€
+NВ€^XЭ
+љ^\™KЫЫXЭЬ‹›Y\ЬШYЩ\ЛњЫЫYJ
+Y\ЬШYЩJHO€™\]Y\ЭY
+Y\ЬШYЩKLЊ
+JJKќР™J[ЩJNВ€Ьљ]Qљ[TЮ[К™[X\ЩK›ЪИЉNВ€ЫЫњЭЫЫ\]YH]ШZ]љ^\™KЫЫXЭЬ‹ќШZ]›ЬЉ
+Y\ЬШYЩJHO€™\]Y\ЭY
+Y\ЬШYЩKLЊ
+JNВ€^XЭ
+ЫЫ\]Y
+KќТ]™T›Ь\ќJњ™\Э[ЉNВ€Y€
+›ШЪЩYY]ЩOOHќ™XYЬ™\Э[YHЉHВ€^XЭ
+ЫЫ\]Y
+KќУX]ЪШљ™XЭ
+И™\Э[€И™XY€ИY€њ\њЪ\ЭY]™XY€HHJNВ€ЫЫњЭ™[[YYH]ШZ]љ^\™KЫЫXЭЬ‹ќШZ]›ЬЉ
+Y\ЬШYЩJHO€™\]Y\ЭY
+Y\ЬШYЩKLЊJJNВ€^XЭ
+™[[YY
+KќТ]™T›Ь\ќJњ™\Э[ЉNВ€^XЭ
+љ^\™KЫЫXЭЬ‹›Y\ЬШYЩ\Лљ[™^ЩЉ™[[YY
+JKќР™QЬ™X]\•[Љ€љ^\™KЫЫXЭЬ‹›Y\ЬШYЩ\Лљ[™^ЩЉЫЫ\]Y
+K€
+NВ€B€^XЭ
+љ^\™K›Щ™љXЪX[њЭ[‹њ™XYX›S[™Э
+KќР™J
+NВ€Hљ[[HВ€Ьљ]Qљ[TЮ[К™[X\ЩK›ЪИЉNВ€љ^\™KљЬЭЫЬЩJ
+NВ€ћHВ€]ШZ]ЭЬљ^\™Jљ^\™JNВ€Hљ[[HВ€›TЮ[К\™XЭЬћKИ™XЭ\њЪ]™N€ќYK›ЬЩN€ќYHJNВ€B€B€K€LМ€
+NВ‚€]™XXЪ
+ИЫЬЩH‹™[Щ€—JJ€Ш[Щ[И›ШЪЩYYЪ[€ШYИЫ€	\И‹€\Ю[И
+[™[™КHO€В€ЫЫњЭYИHИKXYЩ[ќ‹‹XYЩ[ќ‹ЛXYЩ[ќ‹™XYЩ[ќ‹™KXYЩ[ќ—NВ€ЫЫњЭ\™XЭЬћHHZЩ[\Ю[К]љ›Ъ[Љ\\Љ
+KЫЩ^ЬЭ\YЪ[‹XЫЬЩKHЉJNВ€ЫЫњЭЭ\ќYH]љ›Ъ[Љ\™XЭЬћKњЭ\ќYЉNВ€ЫЫњЭљ[љ\ЪYH]љ›Ъ[Љ\™XЭЬћK™љ[љ\ЪYЉNВ€ZЩ\”Ю[КЭ\ќY
+NВ€ZЩ\”Ю[Кљ[љ\ЪY
+NВ€ЫЫњЭ™[X\ЩHH]љ›Ъ[Љ\™XЭЬћKњ™[X\ЩHЉNВ€Ьљ]Qљ[TЮ[К€]љ›Ъ[Љ\™XЭЬћK™[X›YљњЫЫ€ЉK€”УУ‹њЭљ[™ЪYћJИ™\њЪ[ЫЋ€K[X›Y€YИJK€
+NВ€›Ь€
+ЫЫњЭYЩ€YКHВ€ЫЫњЭШШ][Ы€H]љ›Ъ[Љ\™XЭЬћKY
+NВ€ZЩ\”Ю[КШШ][ЫЉNВ€Ьљ]Qљ[TЮ[К€]љ›Ъ[ЉШШ][Ы‹›X[љY™\ЭљњЫЫ€ЉK€”УУ‹њЭљ[™ЪYћJВ€X[љY™\Э™\њЪ[ЫЋ€K€Y€[YN€Y€™\њЪ[ЫЋ€ЊKЊЊ‹€Y\\ђ\U™\њЪ[ЫЋ€K€[ќћN€љ[™^›ZњИ‹€JK€
+NВ€Ьљ]Qљ[TЮ[К€]љ›Ъ[ЉШШ][Ы‹љ[™^›ZњИЉK€€[\ЬќИXШЩ\ЬЛЬљ]Qљ[HHњ›ЫH››ЩN™њЛЬ›ЫZ\Щ\ИЋВ€[\ЬќИZЩR\›™\ЬРY\\€Hњ›ЫH	Т”УУ‹њЭљ[™ЪYћJ]Сљ[UT“
+]њ™\ЫЫ™JњXЪШYЩ\ЛЪ\›™\ЬЛXY\\‹Щ\ЭЭ\Э[™ЛљњИЉJKљ™YЉ_NВ€ЫЫњЭЭ\ќYH	Т”УУ‹њЭљ[™ЪYћJ]Сљ[UT“
+]љ›Ъ[ЉЭ\ќYY
+JKљ™YЉ_NВ€ЫЫњЭљ[љ\ЪYH	Т”УУ‹њЭљ[™ЪYћJ]Сљ[UT“
+]љ›Ъ[Љљ[љ\ЪYY
+JKљ™YЉ_NВ€ЫЫњЭ™[X\ЩHH	Т”УУ‹њЭљ[™ЪYћJ]Сљ[UT“
+™[X\ЩJKљ™YЉ_NВ€^Ьќ\Ю[Иќ[Э[Ы€Ь™X]R\›™\ЬРY\\Љ
+HВ€]ШZ]Ьљ]Qљ[J™]ИT“
+Э\ќY
+KћY\ИЉNВ€ћHВ€›Ь€
+ОКHВ€ћHВ€]ШZ]XШЩ\ЬК™]ИT“
+™[X\ЩJJNВ€™]\›€™]ИZЩR\›™\ЬРY\\Љ	Т”УУ‹њЭљ[™ЪYћJY
+_JNВ€HШ]ЪВ€]ШZ]™]И›ЫZ\ЩJ
+™\ЫЫ™JHO€Щ][Y[Э]
+™\ЫЫ™KЊ
+JNВ€B€B€Hљ[[HВ€]ШZ]Ьљ]Qљ[J™]ИT“
+љ[љ\ЪY
+KћY\ИЉNВ€B€B€€
+NВ€B€ЫЫњЭљ^\™HHЬ™X]Qљ^\™JИYЪ[‘\™XЭЬћN€\™XЭЬћK^\›[Y\\њО€™]ИX\
+
+HJNВ€ћHВ€]ШZ]љ^\™Kњ™XYNВ€]ШZ]љKќШZ]›ЬЉ
+
+HO€^XЭ
+™XY\”Ю[КЭ\ќY
+JKќТ]™S[™Э
+
+JNВ€Ьљ]T™\]Y\Э
+љ^\™K™\ЪЭЬ[њ]В€Y€LЌK€Y]Щ€ЫЩ^ЬЭЪ\›™\ЬЛШЫЫ[X[™ЛЪ[њЬXЭ‹€\[\О€И\›™\ЬТY€KXYЩ[ќ€K€JNВ€]ШZ]™]И›ЫZ\ЩO›ЪYЉ
+™\ЫЫ™JHO€Щ][[YYX]J™\ЫЫ™JJNВ€Y€
+[™[™ИOOHЫЬЩHЉHљ^\™KљЬЭЫЬЩJ
+NВ€[ЩHљ^\™K™\ЪЭЬ[њ]™[™
+
+NВ€]^]ЫЩN€ќ[X™\€[™Yљ[™YВ€›ЪYљ^\™Kњќ[›љ[™Лќ[Љ€
+ЫЩJHO€В€^]ЫЩHHЫЩNВ€K€
+
+HO€[™Yљ[™Y€
+NВ€]ШZ]љKќШZ]›ЬЉ
+
+HO€^XЭ
+^]ЫЩJKќР™J
+JNВ€^XЭ
+™XY\”Ю[КЭ\ќY
+KњЫЬќ
+
+JKќС\]X[
+ИKXYЩ[ќ‹‹XYЩ[ќ‹ЛXYЩ[ќ‹™XYЩ[ќ—JNВ€Hљ[[HВ€љ^\™KљЬЭЫЬЩJ
+NВ€Ьљ]Qљ[TЮ[К™[X\ЩK›ЪИЉNВ€]ШZ]љKќШZ]›ЬЉ
+
+HO‚€^XЭ
+™XY\”Ю[Кљ[љ\ЪY
+KњЫЬќ
+
+JKќС\]X[
+™XY\”Ю[КЭ\ќY
+KњЫЬќ
+
+JK€
+NВ€ћHВ€]ШZ]ЭЬљ^\™Jљ^\™JNВ€Hљ[[HВ€›TЮ[К\™XЭЬћKИ™XЭ\њЪ]™N€ќYK›ЬЩN€ќYHJNВ€B€B€K€ЧМ€
+NВ‚€]™XXЪ
+Иќ™XYЬЭ\ќ‹ќ™XYЬ™\Э[YH‹ЫЩ^ЬЭЭ™XYШЫЫ[X[™Щ^XЭ]H—JJ€™Z[њИ[€YZ]YЩ\ЬЪ[Ы€Ь[€™Y›Ь™HSС€ЫX[ќ\€	\И‹€\Ю[И
+™\]Y\ЭY]Щ
+HO€В€ЫЫњЭљ^\™HHЬ™X]Qљ^\™J
+NВ€ЫЫњЭ™[X\ЩHH›ЫZ\ЩKќЪ]™\ЫЫ™\њП[™Yљ[™YЉ
+NВ€ЫЫњЭЬ[™YH›ЫZ\ЩKќЪ]™\ЫЫ™\њП[™Yљ[™YЉ
+NВ€ЫЫњЭЫЬЩPY\\€HљKњЬSЫЉљ^\™KY\\‹ЫЬЩHЉNВ€ћHВ€]ШZ]љ^\™Kњ™XYNВ€Y€
+™\]Y\ЭY]ЩOOHќ™XYЬЭ\ќЉHВ€ЫЫњЭЩYYH]ШZ]љ^\™KY\\‹›Ь[ЉИЪ[™€Ь™X]H‹ЭЩ€‹ЬЮ[ќ]XИ€JNВ€Y€
+\ЩYY›ЪИ\ЩYYќ[YKљ[љ]X[Э]K›]]™T™YЉHВ€›ЭИ™]И\њ›ЬЉђШ[››ЭЩYYH]]™HЩ\ЬЪ[Ы€ЉNВ€B€ЫЫњЭЬЭ™XYYHЬЭ™XYYШЪ[XKњ\њЩJњ\њЪ\ЭY]™XYЉNВ€]ШZ]љ^\™K›X\[™ФЭЬ™KЬ™X]T›Эљ\Ъ[Ы[
+В€ЬЭ™XYY€Ь™X]T™\]Y\ЭY€ЋLМ‹€\›™\ЬТY€\›™\ЬТYШЪ[XKњ\њЩJњHЉK€ЭЩ€‹ЬЮ[ќ]XИ‹€]N€”\њЪ\ЭY‹€[њЬЬќ[Щ[Y€ЫЩ^ЬЭЬK[]]™H‹€\[Y\[€[ЩK€\ЭЬћS[ЩN€›YШXЮH‹€JNВ€]ШZ]љ^\™K›X\[™ФЭЬ™KЫЫ[Z]™XYJВ€ЬЭ™XYY€]]™TЩ\ЬЪ[Ы”™YЋ€ЩYYќ[YKљ[љ]X[Э]K›]]™T™Y‹€JNВ€B€ЫЫњЭЬ[€Hљ^\™KY\\‹›Ь[‹љ[™
+љ^\™KY\\ЉNВ€љKњЬSЫЉљ^\™KY\\‹›Ь[€ЉK›[ШЪТ[\[Y[ќ][ЫЉ\Ю[И
+[њ]
+HO€В€ЫЫњЭ™\Э[H]ШZ]Ь[Љ[њ]
+NВ€Ь[™Yњ™\ЫЫ™J[™Yљ[™Y
+NВ€]ШZ]™[X\ЩKњ›ЫZ\ЩNВ€™]\›€™\Э[В€JNВ€Ьљ]T™\]Y\Э
+љ^\™K™\ЪЭЬ[њ]В€Y€LМ€Y]Щ€™\]Y\ЭY]Щ€\[\О‚€™\]Y\ЭY]ЩOOHќ™XYЬЭ\ќ‚€ИИ[Щ[€ЫЩ^ЬЭЬK[]]™H‹ЭЩ€‹ЬЮ[ќ]XИ€B€€И™XYY€њ\њЪ\ЭY]™XY‹ЫЫ[X[™Y€ЫЫ\XЭ€K€JNВ€]ШZ]Ь[™Yњ›ЫZ\ЩNВ€Ьљ]T™\]Y\Э
+љ^\™K™\ЪЭЬ[њ]ИY€LМKY]Щ€›[Щ[Ы\Э‹\[\О€ЯHJNВ€^XЭ
+
+]ШZ]™XYњЫЫ“[™Jљ^\™K›Щ™љXЪX[њЭ[ЉJK›Y]Щ
+KќР™J›[Щ[Ы\ЭЉNВ€љ^\™K™\ЪЭЬ[њ]™[™
+
+NВ€]ШZ]™]И›ЫZ\ЩO›ЪYЉ
+™\ЫЫ™JHO€Щ][[YYX]J™\ЫЫ™JJNВ€^XЭ
+ЫЬЩPY\\ЉK››ЭќТ]™P™Y[ђШ[Y
+
+NВ€™[X\ЩKњ™\ЫЫ™J[™Yљ[™Y
+NВ€]ШZ]^XЭ
+љ^\™Kњќ[›љ[™КKњ™\ЫЫ™\ЛќР™J
+NВ€^XЭ
+ЫЬЩPY\\ЉKќТ]™P™Y[ђШ[YЫЩJ
+NВ€ЫЫњЭ™\ЬЫњЩHH]ШZ]љ^\™KЫЫXЭЬ‹ќШZ]›ЬЉ
+Y\ЬШYЩJHO€™\]Y\ЭY
+Y\ЬШYЩKLМ
+JNВ€Y€
+™\]Y\ЭY]ЩOOHЫЩ^ЬЭЭ™XYШЫЫ[X[™Щ^XЭ]HЉHВ€^XЭ
+™\ЬЫњЩJKќУX]ЪШљ™XЭ
+И\њ›ЬЋ€ИЫЩN€LМЊОHJNВ€H[ЩHВ€^XЭ
+™\ЬЫњЩJKќТ]™T›Ь\ќJњ™\Э[ЉNВ€B€^XЭ
+љ^\™K™XYЫ›ЬЭXУЭ]]њ™XY
+
+OЛќФЭљ[™К
+HПИ€ЉK››ЭќРЫЫќZ[ЉЫЬЩYЉNВ€Hљ[[HВ€™[X\ЩKњ™\ЫЫ™J[™Yљ[™Y
+NВ€љ^\™KљЬЭЫЬЩJ
+NВ€]ШZ]ЭЬљ^\™Jљ^\™JNВ€B€K€
+NВ‚€]
+љ[™ИY\ЩYZИЩ\ЬЪ[Ы€[\ЬќYќ\€]ИY\\€\И™Y[€[[ZXШ[HШYY‹\Ю[И
+
+HO€В€ЫЫњЭ\™XЭЬћHHZЩ[\Ю[К]љ›Ъ[Љ\\Љ
+KЫЩ^ЬЭY[[ZXЛZ[\ЬќHЉJNВ€ЫЫњЭШШ][Ы€H]љ›Ъ[Љ\™XЭЬћK™Y\ЩYZЛZ\›™\ЬИЉNВ€ZЩ\”Ю[КШШ][ЫЉNВ€Ьљ]Qљ[TЮ[К€]љ›Ъ[Љ\™XЭЬћK™[X›YљњЫЫ€ЉK€”УУ‹њЭљ[™ЪYћJИ™\њЪ[ЫЋ€K[X›Y€И™Y\ЩYZЛZ\›™\ЬИ—HJK€
+NВ€Ьљ]Qљ[TЮ[К€]љ›Ъ[ЉШШ][Ы‹›X[љY™\ЭљњЫЫ€ЉK€”УУ‹њЭљ[™ЪYћJВ€X[љY™\Э™\њЪ[ЫЋ€K€Y€™Y\ЩYZЛZ\›™\ЬИ‹€[YN€‘Y\ЩYZИ\›™\ЬИ‹€™\њЪ[ЫЋ€ЊH‹€Y\\ђ\U™\њЪ[ЫЋ€K€[ќћN€њYЪ[‹›ZњИ‹€JK€
+NВ€Ьљ]Qљ[TЮ[К€]љ›Ъ[ЉШШ][Ы‹њYЪ[‹›ZњИЉK€€[\ЬќИZЩR\›™\ЬРY\\€Hњ›ЫH	Т”УУ‹њЭљ[™ЪYћJ]Сљ[UT“
+]њ™\ЫЫ™JњXЪШYЩ\ЛЪ\›™\ЬЛXY\\‹Щ\ЭЭ\Э[™ЛљњИЉJKљ™YЉ_NВ€^Ьќќ[Э[Ы€Ь™X]R\›™\ЬРY\\Љ
+HВ€ЫЫњЭY\\€H™]ИZЩR\›™\ЬРY\\Љ™Y\ЩYZЛZ\›™\ЬИЉNВ€Y\\‹њЩ\ЬЪ[Ы’[\ЬќHВ€\ЭШ[™Y]\О€\Ю[И
+
+HO€
+ИЪО€ќYK[YN€ЧHJK€™\ЫЫ™PШ[™Y]N€\Ю[И
+
+HO€
+ИЪО€[ЩK\њ›ЬЋ€ИЫЩN€њЩ\ЬЪ[Ы“›Э›Э[™‹Y\ЬШYЩN€“Z\ЬЪ[™И‹™]ћXX›N€[ЩHHJK€NВ€™]\›€Y\\ЋВ€B€€
+NВ€ЫЫњЭљ^\™HHЬ™X]Qљ^\™JИYЪ[‘\™XЭЬћN€\™XЭЬћK^\›[Y\\њО€™]ИX\
+
+HJNВ€ћHВ€Ьљ]T™\]Y\Э
+љ^\™K™\ЪЭЬ[њ]В€Y€LL€Y]Щ€ЫЩ^ЬЭЩY\ЩYZЛЫ[Щ\›‹\Щ\ЬЪ[Ы‹Ы\Э‹€\[\О€ЯK€JNВ€^XЭ
+]ШZ]љ^\™KЫЫXЭЬ‹ќШZ]›ЬЉ
+Y\ЬШYЩJHO€™\]Y\ЭY
+Y\ЬШYЩKLL
+JJKќУX]ЪШљ™XЭ
+В€™\Э[€ИШ[™Y]\О€ЧHK€JNВ€Ьљ]T™\]Y\Э
+љ^\™K™\ЪЭЬ[њ]В€Y€LLK€Y]Щ€ЫЩ^ЬЭЪ\›™\ЬЛЬЩ\ЬЪ[Ы‹Z[\ЬќЬЫЭ\Щ\И‹€\[\О€ЯK€JNВ€^XЭ
+]ШZ]љ^\™KЫЫXЭЬ‹ќШZ]›ЬЉ
+Y\ЬШYЩJHO€™\]Y\ЭY
+Y\ЬШYЩKLLJJJKќУX]ЪШљ™XЭ
+В€™\Э[€И\›™\ЬЩ\О€ЮИ\›™\ЬТY€™Y\ЩYZЛZ\›™\ЬИ‹[YN€‘Y\ЩYZИ\›™\ЬИ€WHK€JNВ€Hљ[[HВ€ћHВ€]ШZ]ЭЬљ^\™Jљ^\™JNВ€Hљ[[HВ€›TЮ[К\™XЭЬћKИ™XЭ\њЪ]™N€ќYK›ЬЩN€ќYHJNВ€B€B€JNВ‚€]
+ќ[Y]\ИШ][ЩИ\[Y]\њИ[™X]™\И[љ[њЭ[Y›Э]\ИЭ]Щ€HЩ™љXЪX[Э™X[H‹\Ю[И
+
+HO€В€ЫЫњЭљ^\™HHЬ™X]Qљ^\™J
+NВ€ћHВ€Ьљ]T™\]Y\Э
+љ^\™K™\ЪЭЬ[њ]В€Y€LLK€Y]Щ€ЫЩ^ЬЭЪ\›™\ЬЛЬYЪ[њЛЫ\Э‹€\[\О€И\™XЭЬћN€‹Э[ќќ\ЭY€K€JNВ€^XЭ
+]ШZ]љ^\™KЫЫXЭЬ‹ќШZ]›ЬЉ
+Y\ЬШYЩJHO€™\]Y\ЭY
+Y\ЬШYЩKLLJJJKќУX]ЪШљ™XЭ
+В€\њ›ЬЋ€ИЫЩN€LМЌЊ€K€JNВ€Ьљ]T™\]Y\Э
+љ^\™K™\ЪЭЬ[њ]В€Y€LL‹€Y]Щ€ќ™XYЬЭ\ќ‹€\[\О€В€[Щ[€[ЫЩR\›™\ЬФYЪ[”›Э]J€\›™\ЬФYЪ[”›Э]TШЪ[XKњ\њЩJИ\›™\ЬТY€›Z\ЬЪ[™ЛXYЩ[ќ€JK€
+K€ЭЩ€‹ЬЮ[ќ]XИ‹€K€JNВ€^XЭ
+]ШZ]љ^\™KЫЫXЭЬ‹ќШZ]›ЬЉ
+Y\ЬШYЩJHO€™\]Y\ЭY
+Y\ЬШYЩKLLЉJJKќТ]™T›Ь\ќJ€™\њ›Ь€‹€
+NВ€Ьљ]T™\]Y\Э
+љ^\™K™\ЪЭЬ[њ]В€Y€LLЛ€Y]Щ€ќ™XYЬЭ\ќ‹€\[\О€И[Щ[€ЫЩ^ЬЭЬYЪ[‹]ЊP[ќ[Y‹ЭЩ€‹ЬЮ[ќ]XИ€K€JNВ€^XЭ
+]ШZ]љ^\™KЫЫXЭЬ‹ќШZ]›ЬЉ
+Y\ЬШYЩJHO€™\]Y\ЭY
+Y\ЬШYЩKLLКJJKќТ]™T›Ь\ќJ€™\њ›Ь€‹€
+NВ€^XЭ
+љ^\™K›Щ™љXЪX[њЭ[‹њ™XYX›S[™Э
+KќР™J
+NВ€Hљ[[HВ€]ШZ]ЭЬљ^\™Jљ^\™JNВ€B€JNВџJNВ‚™\ШЬљX™Jђ\Щ\ќ™\’ЬЭ\›™\ЬРY\\€›Ъ™XЭ[Ы€‹
+
+HO€В€]
+ќ\Щ\И[€[љ™XЭYЪ\™Y\Э[™\€ЫЫ›™XЭ[Ы€Ъ]Э]Ь]Ыљ[™ИHЭ[И\\Щ\ќ™\€‹\Ю[И
+
+HO€В€ЫЫњЭЭ[€H™]И\ЬХ›ЭYЪ
+
+NВ€ЫЫњЭЭЭ]H™]И\ЬХ›ЭYЪ
+
+NВ€ЫЫњЭЭ\њ€H™]И\ЬХ›ЭYЪ
+
+NВ€ЫЫњЭЫЬЩYH›ЫZ\ЩKќЪ]™\ЫЫ™\њПВ€ЫЩN€ќ[X™\€ќ[В€ЪYЫ[€›ЩR”Л”ЪYЫ[Иќ[В€OЉ
+NВ€ЫЫњЭЫЫ›™XЭYH›ЫZ\ЩKќЪ]™\ЫЫ™\њП[™Yљ[™YЉ
+NВ€ЫЫњЭЫЬЩHHљK™›Љ
+
+HO€В€Э[‹™\Э›ЮJ
+NВ€ЭЭ]™[™
+
+NВ€ЫЬЩYњ™\ЫЫ™JИЫЩN€ЪYЫ[€ќ[JNВ€JNВ€ЫЫњЭЬ™X]SЩ™љXЪX[ЫЫ›™XЭ[Ы€HљK™›Љ
+
+HO€В€ЫЫ›™XЭYњ™\ЫЫ™J[™Yљ[™Y
+NВ€™]\›€ИЭ[‹ЭЭ]Э\њ‹ЫЬЩY€ЫЬЩYњ›ЫZ\ЩKЫЬЩHNВ€JNВ€ЫЫњЭљ^\™HHЬ™X]Qљ^\™JИЬ™X]SЩ™љXЪX[ЫЫ›™XЭ[Ы€JNВ‚€ћHВ€]ШZ]ЫЫ›™XЭYњ›ЫZ\ЩNВ€^XЭ
+Ь™X]SЩ™љXЪX[ЫЫ›™XЭ[ЫЉKќТ]™P™Y[ђШ[Y[Y\КJNВ€^XЭ
+љ^\™KњЬ]Ы“Щ™љXЪX[
+K››ЭќТ]™P™Y[ђШ[Y
+
+NВ‚€љ^\™KљЬЭЫЬЩJ
+NВ‚€]ШZ]^XЭ
+љ^\™Kњќ[›љ[™КKњ™\ЫЫ™\ЛќР™J
+NВ€^XЭ
+ЫЬЩJKќТ]™P™Y[ђШ[Y
+
+NВ€Hљ[[HВ€љ^\™K™\ЪЭЬ[њ]™[™
+
+NВ€]ШZ]љ^\™Kњќ[›љ[™ОВ€›TЮ[Кљ^\™K›X\[™ФЭЬ™Q\™XЭЬћKИ™XЭ\њЪ]™N€ќYK›ЬЩN€ќYHJNВ€B€JNВ‚€]
+љЩY\И^\›[\›™\ЬИ™\]Y\ЭИ]Z[X›HYќ\€Щ™љXЪX[Э\ќ\Z[\™H‹\Ю[И
+
+HO€В€ЫЫњЭЬ™X]SЩ™љXЪX[ЫЫ›™XЭ[Ы€HљK™›Љ
+
+HO€В€›ЭИ™]И\њ›ЬЉњЮ[ќ]XИЭ\ќ\Z[\™HЉNВ€JNВ€ЫЫњЭљ^\™HHЬ™X]Qљ^\™JИЬ™X]SЩ™љXЪX[ЫЫ›™XЭ[Ы€JNВ€ћHВ€ЫЫњЭ™XYYH]ШZ]Э\ќU™XY
+љ^\™JNВ€ЫЫњЭ\›’YH]ШZ]Э\ќU\›Љљ^\™K™XYY
+NВ€ЫЫњЭЩ\ЬЪ[Ы€Hљ^\™KY\\‹њЩ\ЬЪ[ЫњЦМNВ€Y€
+\Щ\ЬЪ[ЫЉH›ЭИ™]И\њ›ЬЉ‘ZЩHHЩ\ЬЪ[Ы€Ш\И›ЭЬ[™YЉNВ€Щ\ЬЪ[Ы‹њЭXШЩYY\›Љ
+NВ€]ШZ]љ^\™KЫЫXЭЬ‹ќШZ]›ЬЉ
+Y\ЬШYЩJHO€\›‘]™[ќ
+Y\ЬШYЩKќ\›‹ШЫЫ\]Y‹\›’Y
+JNВ€Ьљ]T™\]Y\Э
+љ^\™K™\ЪЭЬ[њ]ИY€L‹Y]Щ€›[Щ[Ы\Э‹\[\О€ЯHJNВ€]ШZ]^XЭ
+€љ^\™KЫЫXЭЬ‹ќШZ]›ЬЉ
+Y\ЬШYЩJHO€Y\ЬШYЩKљYOOHLЉK€
+Kњ™\ЫЫ™\ЛќУX]ЪШљ™XЭ
+И\њ›ЬЋ€ИЫЩN€LМЊHHJNВ€^XЭ
+Ь™X]SЩ™љXЪX[ЫЫ›™XЭ[ЫЉKќТ]™P™Y[ђШ[YЫЩJ
+NВ€^XЭ
+љ^\™K™\ЪЭЬ[њ]™\Э›ЮYY
+KќР™J[ЩJNВ€Hљ[[HВ€љ^\™KљЬЭЫЬЩJ
+NВ€]ШZ]љ^\™Kњќ[›љ[™ОВ€›TЮ[Кљ^\™K›X\[™ФЭЬ™Q\™XЭЬћKИ™XЭ\њЪ]™N€ќYK›ЬЩN€ќYHJNВ€B€JNВ‚€]™XXЪ
+Щ[ЩKќYWJJњ™\Щ\ќ™\И]]™H]]Ъ]XШЫЭ[ќX[YЩ[Y[ќI\И‹\Ю[И
+X[YЩY
+HO€В€ЫЫњЭXШЫЭ[ќЫЫќ›ЫHШљ™XЭ\ЬЪYЫЉ€™]ИЪ[™ЫS]]™PЫЩ^XШЫЭ[ќ
+
+
+HO€
+В€™\њЪ[ЫЋ€‹€Э\њ™[ќXШЫЭ[ќY€ќ[€\ЩN€њ™XYH‹€™]љ\Ъ[ЫЋ€Л€XШЫЭ[ќО€ЧK€JJK€В€™Yњ™\Ъ€љK™›Љ\Ю[И
+
+HO€В€›ЭИ™]И\њ›ЬЉњЮ[ќ]XИY[ќ]H™Yњ™\ЪZ[\™HЉNВ€JK€K€
+NВ€ЫЫњЭљ^\™HHЬ™X]Qљ^\™JX[YЩYИИXШЫЭ[ќЫЫќ›ЫH€ЯJNВ€ћHВ€]ШZ]љ^\™Kњ™XYNВ€ЫЫњЭ™\]Y\ЭО€њЫЫ“Шљ™XЭЧHHВ€ИY€LЛY]Щ€XШЫЭ[ќЫЩЫЭ]€K€ИY€LY]Щ€XШЫЭ[ќЫЩЫЭ]‹\[\О€ќ[K€ИY€LKY]Щ€XШЫЭ[ќЫЩЫЭ]‹\[\О€ЯHK€ИY€L‹Y]Щ€XШЫЭ[ќЫЩЪ[‹ЬЭ\ќ‹\[\О€И\N€Ъ]Ь‹ќ]\™QљY[€ќYHHK€ИY€LЛY]Щ€XШЫЭ[ќЫЩЪ[‹ЬЭ\ќ‹\[\О€И\N€™ќ]\™K[]]™K[[ЩH€HK€В€Y€L€Y]Щ€XШЫЭ[ќЫЩЪ[‹ШШ[Щ[‹€\[\О€ИЩЪ[’Y€›]]™KZY‹ќ]\™QљY[€HK€K€ИY€LKY]Щ€XШЫЭ[ќЫЩЪ[‹Щќ]\™H‹\[\О€ЯHK€ИY€LLY]Щ€XШЫЭ[ќЫЩЪ[‹ЬЭ\ќ€K€ИY€LLKY]Щ€XШЫЭ[ќЫЩЫЭ]‹\[\О€[ЩHK€ИY€LLЛY]Щ€XШЫЭ[ќЫЩЫЭ]‹\[\О€ЧHK€ИY€LMY]Щ€XШЫЭ[ќЫЩЪ[‹ШШ[Щ[€K€NВ€›Ь€
+ЫЫњЭ™\]Y\ЭЩ€™\]Y\ЭКHВ€Ьљ]T™\]Y\Э
+љ^\™K™\ЪЭЬ[њ]™\]Y\Э
+NВ€^XЭ
+]ШZ]™XYњЫЫ“[™Jљ^\™K›Щ™љXЪX[њЭ[ЉJKќС\]X[
+™\]Y\Э
+NВ€ЫЫњЭ™\ЬЫњЩHB€™\]Y\ЭљYOOHL‚€ИВ€Y€™\]Y\ЭљY€™\Э[€И\N€Ъ]Ь‹ЩЪ[’Y€›]]™KZY‹ќ]\™QљY[€љЩ\€K€B€€™\]Y\ЭљYOOHL€ИИY€™\]Y\ЭљY™\Э[€ИЭ]\О€Ш[Щ[Y‹ќ]\™QљY[€ќYHHB€€™\]Y\ЭљYOOHLИ™\]Y\ЭљYOOHLL™\]Y\ЭљYOOHLLB€ИВ€Y€™\]Y\ЭљY€\њ›ЬЋ€В€ЫЩN€LМЌЊ‹€Y\ЬШYЩN€›]]™H™Z™XЭ[Ы€‹€]N€Иќ]\™QљY[€ќYHK€K€B€€ИY€™\]Y\ЭљY™\Э[€ЯHNВ€љ^\™K›Щ™љXЪX[њЭЭ]ќЬљ]J	Т”УУ‹њЭљ[™ЪYћJ™\ЬЫњЩJ_W
+NВ€^XЭ
+]ШZ]љ^\™KЫЫXЭЬ‹ќШZ]›ЬЉ
+Y\ЬШYЩJHO€Y\ЬШYЩKљYOOH™\]Y\ЭљY
+JKќС\]X[
+€™\ЬЫњЩK€
+NВ€B€›Ь€
+ЫЫњЭ›ЭYљXШ][Ы€Щ€В€В€Y]Щ€XШЫЭ[ќЫЩЪ[‹ШЫЫ\]Y‹€\[\О€ИЩЪ[’Y€›]]™KZY‹ЭXШЩ\ЬО€ќYKќ]\™QљY[€ќYHK€K€ИY]Щ€XШЫЭ[ќЭ\]Y‹\[\О€И]][ЩN€ќ[ќ]\™QљY[€љЩ\€HK€JHВ€љ^\™K›Щ™љXЪX[њЭЭ]ќЬљ]J	Т”УУ‹њЭљ[™ЪYћJ›ЭYљXШ][ЫЉ_W
+NВ€^XЭ
+€]ШZ]љ^\™KЫЫXЭЬ‹ќШZ]›ЬЉ
+Y\ЬШYЩJHO€Y\ЬШYЩK›Y]ЩOOH›ЭYљXШ][Ы‹›Y]Щ
+K€
+KќС\]X[
+›ЭYљXШ][ЫЉNВ€B€Y€
+X[YЩY
+H]ШZ]љKќШZ]›ЬЉ
+
+HO€^XЭ
+XШЫЭ[ќЫЫќ›Ыњ™Yњ™\Ъ
+KќТ]™P™Y[ђШ[Y
+
+JNВ€Ьљ]T™\]Y\Э
+љ^\™K™\ЪЭЬ[њ]ИY€LL‹Y]Щ€XШЫЭ[ќЬ™XY‹\[\О€ЯHJNВ€^XЭ
+]ШZ]™XYњЫЫ“[™Jљ^\™K›Щ™љXЪX[њЭ[ЉJKќС\]X[
+В€Y€LL‹€Y]Щ€XШЫЭ[ќЬ™XY‹€\[\О€ЯK€JNВ€љ^\™K›Щ™љXЪX[њЭЭ]ќЬљ]J	Т”УУ‹њЭљ[™ЪYћJИY€LL‹™\Э[€ИXШЫЭ[ќ€ќ[HJ_W
+NВ€]ШZ]^XЭ
+€љ^\™KЫЫXЭЬ‹ќШZ]›ЬЉ
+Y\ЬШYЩJHO€Y\ЬШYЩKљYOOHLLЉK€
+Kњ™\ЫЫ™\ЛќУX]ЪШљ™XЭ
+И™\Э[€ИXШЫЭ[ќ€ќ[HJNВ€Hљ[[HВ€]ШZ]ЭЬљ^\™Jљ^\™JNВ€B€JNВ‚€]
+њ™Yњ™\Ъ\И]]™KY\љ]™YXШЫЭ[ќЩ[XЭ[Ы€™Y›Ь™H™]\›љ[™И[€XШЫЭ[ќ\Э‹\Ю[И
+
+HO€В€ЫЫњЭЭ[N€ЫЩ^XШЫЭ[ќ\Э™\Э[HВ€™\њЪ[ЫЋ€‹€Э\њ™[ќXШЫЭ[ќY€ќ[€\ЩN€њ™XYH‹€™]љ\Ъ[ЫЋ€K€XШЫЭ[ќО€ЧK€NВ€ЫЫњЭњ™\Ъ€ЫЩ^XШЫЭ[ќ\Э™\Э[HВ€‹‹њЭ[K€Э\њ™[ќXШЫЭ[ќY€›]]™H‹€™]љ\Ъ[ЫЋ€‹€XШЫЭ[ќО€ЮИXШЫЭ[ќY€›]]™H‹X™[€“ШњЩ\ќ™Y]]™HXШЫЭ[ќ€WK€NВ€ЫЫњЭ™Yњ™\ЪHљK™›Љ\Ю[И
+
+HO€њ™\Ъ
+NВ€ЫЫњЭXШЫЭ[ќЫЫќ›ЫHШљ™XЭ\ЬЪYЫЉ™]ИЪ[™ЫS]]™PЫЩ^XШЫЭ[ќ
+
+
+HO€Э[JKИ™Yњ™\ЪJNВ€ЫЫњЭљ^\™HHЬ™X]Qљ^\™JИXШЫЭ[ќЫЫќ›ЫJNВ€ћHВ€]ШZ]љ^\™Kњ™XYNВ€Ьљ]T™\]Y\Э
+љ^\™K™\ЪЭЬ[њ]ИY€LY]Щ€ЫЩ^ЬЭШXШЫЭ[ќЫ\Э‹\[\О€ЯHJNВ€]ШZ]^XЭ
+љ^\™KЫЫXЭЬ‹ќШZ]›ЬЉ
+Y\ЬШYЩJHO€Y\ЬШYЩKљYOOHL
+JKњ™\ЫЫ™\ЛќС\]X[
+В€Y€L€™\Э[€њ™\Ъ€JNВ€^XЭ
+™Yњ™\Ъ
+KќТ]™P™Y[ђШ[YЫЩJ
+NВ€Hљ[[HВ€]ШZ]ЭЬљ^\™Jљ^\™JNВ€B€JNВ‚€]™XXЪ
+В€ЫЩ^ЬЭШXШЫЭ[ќЬЭЪ]Ъ‹€ЫЩ^ЬЭШXШЫЭ[ќЫЩЫЭ]‹€ЫЩ^ЬЭШXШЫЭ[ќЫЩЪ[‹ЬЭ\ќ‹€ЫЩ^ЬЭШXШЫЭ[ќЫЩЪ[‹ШШ[Щ[‹€ЫЩ^ЬЭШXШЫЭ[ќЩ[]H‹€ЫЩ^ЬЭШXШЫЭ[ќЬ™XЫЭ™\€‹€ЫЩ^ЬЭШXШЫЭ[ќЬ]K[[Z]\™\Щ]ШЫЫњЭ[YH‹€JJ™›ЬќШ\™ИYќЭ™\€ЬЭXШЫЭ[ќY]Щ	\И\И[€[љЫ›ЭЫ€Y]Щ‹\Ю[И
+Y]Щ[YJHO€В€ЫЫњЭљ^\™HHЬ™X]Qљ^\™J
+NВ€ћHВ€]ШZ]љ^\™Kњ™XYNВ€ЫЫњЭ™\]Y\ЭHИY€LLY]Щ€Y]Щ[YK\[\О€ИXШЫЭ[ќY€XШЫЭ[ќX€€HNВ€Ьљ]T™\]Y\Э
+љ^\™K™\ЪЭЬ[њ]™\]Y\Э
+NВ€^XЭ
+]ШZ]™XYњЫЫ“[™Jљ^\™K›Щ™љXЪX[њЭ[ЉJKќС\]X[
+™\]Y\Э
+NВ€љ^\™K›Щ™љXЪX[њЭЭ]ќЬљ]J€	Т”УУ‹њЭљ[™ЪYћJИY€LL\њ›ЬЋ€ИЫЩN€LМЌЊKY\ЬШYЩN€“Y]Щ›Э›Э[™€HJ_W€
+NВ€]ШZ]^XЭ
+љ^\™KЫЫXЭЬ‹ќШZ]›ЬЉ
+Y\ЬШYЩJHO€Y\ЬШYЩKљYOOHLL
+JKњ™\ЫЫ™\ЛќС\]X[
+В€Y€LL€\њ›ЬЋ€ИЫЩN€LМЌЊKY\ЬШYЩN€“Y]Щ›Э›Э[™€K€JNВ€Hљ[[HВ€]ШZ]ЭЬљ^\™Jљ^\™JNВ€B€JNВ‚€]
+љY]\ИH]]™HЭ[[X\ћH\Э[™™\Щ\ќ™\ИЭXYЩ[ќY[ќ]H›ЭYЪ\™[ќ\ЭЬћH‹\Ю[И
+
+HO€В€ЫЫњЭљ^\™HHЬ™X]Qљ^\™J
+NВ€ћHВ€ЫЫњЭ\™[ќYH]ШZ]Э\ќU™XY
+љ^\™JNВ€ЫЫњЭ\›’YH]ШZ]Э\ќU\›Љљ^\™K\™[ќY
+NВ€]ШZ]љ^\™KЫЫXЭЬ‹ќШZ]›ЬЉ
+Y\ЬШYЩJHO€\›‘]™[ќ
+Y\ЬШYЩKќ\›‹ЬЭ\ќY‹\›’Y
+JNВ€ЫЫњЭЩ\ЬЪ[Ы€Hљ^\™KY\\‹њЩ\ЬЪ[ЫњЦМNВ€Y€
+\Щ\ЬЪ[ЫЉH›ЭИ™]И\њ›ЬЉ“Z\ЬЪ[™Иљ^\™HЩ\ЬЪ[Ы€ЉNВ€ЫЫњЭЪ[HВ€ЭXYЩ[ќY€Ш[XЪ[‹€]]™TЭXYЩ[ќY€›]]™KXЪ[‹€\ШЬљ\[ЫЋ€”Э[[X\ћHЪ[‹€›ЫN€™^Ь™\€‹€XЪЩЬ›Э[™€[ЩK€Э]\О€њќ[›љ[™И€\ИЫЫњЭ€NВ€ЫЫњЭ][RYHЩ\ЬЪ[Ы‹њЭ\ќЭXYЩ[ќ[YШ][ЫЉЪ[
+NВ€ЫЫњЭЭ\ќYH]ШZ]љ^\™KЫЫXЭЬ‹ќШZ]›ЬЉ€
+Y\ЬШYЩJHO‚€Y]Щ
+Y\ЬШYЩKќ™XYЬЭ\ќYЉH	‰‚€
+Y\ЬШYЩT\[\КY\ЬШYЩJKќ™XY\ИњЫЫ“Шљ™XЭ[™Yљ[™Y
+OЛњ\™[ќ™XYYOOH\™[ќY€
+NВ€ЫЫњЭЪ[YH
+Y\ЬШYЩT\[\КЭ\ќY
+Kќ™XY\ИњЫЫ“Шљ™XЭ
+KљYВ€ЫЫњЭ\ЭH\Ю[И
+Y€ќ[X™\‹ЫЭ\ЩT\[\О€њЫЫ“Шљ™XЭ
+HO€В€Ьљ]T™\]Y\Э
+љ^\™K™\ЪЭЬ[њ]В€Y€Y]Щ€ќ™XYЫ\Э‹€\[\О€В€[Z]€Њ€ЫЭ\ЩRЪ[™О€ИњЭXђYЩ[ќ™XYЬ]Ы€—K€\ЩTЭ]Q“Ы›N€ќYK€‹‹њЫЭ\ЩT\[\Л€K€JNВ€ЫЫњЭЩ™љXЪX[H]ШZ]™XYњЫЫ“[™Jљ^\™K›Щ™љXЪX[њЭ[ЉNВ€^XЭ
+Щ™љXЪX[›Y]Щ
+KќР™Jќ™XYЫ\ЭЉNВ€Ьљ]T™\]Y\Э
+љ^\™K›Щ™љXЪX[њЭЭ]В€Y€™\]Z\™YY\ЬШYЩRY
+Щ™љXЪX[
+K€™\Э[€И]N€ЧK™^Э\њЫЬЋ€ќ[K€JNВ€™]\›€љ^\™KЫЫXЭЬ‹ќШZ]›ЬЉ
+Y\ЬШYЩJHO€™\]Y\ЭY
+Y\ЬШYЩKY
+JNВ€NВ€^XЭ
+]ШZ]\Э
+LИ[Щ\ЭЬ•™XYY€\™[ќYJJKќУX]ЪШљ™XЭ
+В€™\Э[€В€]N€В€В€Y€Ъ[Y€\™[ќ™XYY€\™[ќY€[YN€”Э[[X\ћHЪ[‹€YЩ[ќ›ЫN€™^Ь™\€‹€Э]\О€И\N€XЭ]™H€K€Ш[ђXШЩ\\™XЭ[њ]€[ЩK€K€K€K€JNВ€Щ\ЬЪ[Ы‹њ™\XЩTЭXYЩ[ќК][RYЮИ‹‹Ъ[Э]\О€ЫЫ\]Y€WJNВ€Щ\ЬЪ[Ы‹ЫЫ\]R][J][RYИЭ]\О€њЭXШЩYYY€JNВ€Щ\ЬЪ[Ы‹њЭXШЩYY\›Љ
+NВ€]ШZ]љ^\™KЫЫXЭЬ‹ќШZ]›ЬЉ
+Y\ЬШYЩJHO€\›‘]™[ќ
+Y\ЬШYЩKќ\›‹ШЫЫ\]Y‹\›’Y
+JNВ€^XЭ
+]ШZ]\Э
+LKИ\™[ќ™XYY€\™[ќYJJKќУX]ЪШљ™XЭ
+В€™\Э[€В€]N€В€В€Y€Ъ[Y€Э]\О€И\N€љYH€K€K€K€K€JNВ€Ьљ]T™\]Y\Э
+љ^\™K™\ЪЭЬ[њ]В€Y€L‹€Y]Щ€ќ™XYЭ\›њЛЫ\Э‹€\[\О€В€™XYY€\™[ќY€[Z]€Њ€][\ХљY]О€™ќ[‹€K€JNВ€ЫЫњЭ\ЭЬћHH]ШZ]љ^\™KЫЫXЭЬ‹ќШZ]›ЬЉ
+Y\ЬШYЩJHO€™\]Y\ЭY
+Y\ЬШYЩKLЉJNВ€^XЭ
+\ЭЬћJKќУX]ЪШљ™XЭ
+В€™\Э[€В€]N€В€В€][\О€^XЭ\њ^PЫЫќZ[љ[™КВ€^XЭ›Шљ™XЭЫЫќZ[љ[™КВ€\N€ЫЫXђYЩ[ќЫЫШ[‹€Щ[™\•™XYY€\™[ќY€™XЩZ]™\•™XYYО€ШЪ[YK€JK€JK€K€K€K€JNВ€^XЭ
+€
+]ШZ]љ^\™K›X\[™ФЭЬ™K›\Э™XYК
+JK™љ[\Љ
+™XЫЬ™
+HO€™XЫЬ™њЭXYЩ[ќ
+K€
+KќТ]™S[™Э
+JNВ€Hљ[[HВ€]ШZ]ЭЬљ^\™Jљ^\™JNВ€B€JNВ‚€]
+›X]\љX[^™\ИHЭXYЩ[ќ™XЩZ]™\€\ИH™XYX›HЪ[ЬЭ™XY‹\Ю[И
+
+HO€В€ЫЫњЭ\ЩHH™]ИZЩR\›™\ЬРY\\Љ\›™\ЬТYШЪ[XKњ\њЩJњHЉJNВ€]ЭXYЩ[ќ\ЩN€њЭ\ќY€ќ[\Ь\љ[KY[\H€ќЫЬљЪ[™И€ЫЫ\]Y€HњЭ\ќYЋВ€ЫЫњЭY\\€HШљ™XЭ\ЬЪYЫЉ\ЩKВ€ЭXYЩ[ќО€В€™XYЫ\ЪЭ€љK™›Љ\Ю[И
+[њ]€И\™[ќ€И]]™TЩ\ЬЪ[Ы’Y€Эљ[™ИHJHO€В€ЫЫњЭЭXYЩ[ќЫ\ЪЭ€ЬЭ™XYЫ\ЪЭHВ€\›њО‚€ЭXYЩ[ќ\ЩHOOHќ[\Ь\љ[KY[\H‚€ИЧB€€В€В€]]™U\›”™YЋ€В€\›™\ЬТY€\›™\ЬТYШЪ[XKњ\њЩJњHЉK€]]™TЩ\ЬЪ[Ы’Y€[њ]њ\™[ќ›]]™TЩ\ЬЪ[Ы’Y€]]™U\›’Щ^N€›]]™K\ЭXYЩ[ќ]\›€‹€›Ь›X]™\њЪ[ЫЋ€K€K€[њ]‚€ЭXYЩ[ќ\ЩHOOHњЭ\ќY‚€ИЮИ\N€ќ^‹^€ђ[[^™Hљ[\И€WB€€ЧK€][\О‚€ЭXYЩ[ќ\ЩHOOHњЭ\ќY‚€ИЧB€€В€В€][N€В€\N€ЫЫ[X[™^XЭ][Ы€‹€][RY€ЬЭ][RYШЪ[XKњ\њЩJњЭXYЩ[ќXЫЫ[X[™ЉK€ЫЫ[X[™€њЩ‹€Э]]€‹ЬЮ[ќ]XИ‹€^]ЫЩN€€K€Э]ЫЫYN€ИЭ]\О€њЭXШЩYYY€K€K€‹‹ЉЭXYЩ[ќ\ЩHOOHЫЫ\]Y‚€ИВ€В€][N€В€\N€YЩ[ќY\ЬШYЩH€\ИЫЫњЭ€][RY€ЬЭ][RYШЪ[XKњ\њЩJњЭXYЩ[ќX[њЭЩ\€ЉK€^€ђ[[\Ъ\ИЫЫ\]H‹€K€Э]ЫЫYN€ИЭ]\О€њЭXШЩYYY€\ИЫЫњЭK€K€B€€ЧJK€K€Э]ЫЫYN€ИЭ]\О€ќ[љЫ›ЭЫ€‹™X\ЫЫЋ€”Ю[ќ]XИ\ЭЬћH€K€K€K€NВ€™]\›€ИЪО€ќYH\ИЫЫњЭ[YN€ЭXYЩ[ќЫ\ЪЭNВ€JK€K€JNВ€ЫЫњЭљ^\™HHЬ™X]Qљ^\™JВ€^\›[Y\\њО€™]ИX\
+ЦИњH‹Y\\—WJH\И™XYЫ›SX\€^\›[\›™\ЬТY€ZЩR\›™\ЬРY\\‚€‹€JNВ€ЫЫњЭ™XYYH]ШZ]Э\ќU™XY
+љ^\™JNВ€ЫЫњЭ\›’YH]ШZ]Э\ќU\›Љљ^\™K™XYY
+NВ€ЫЫњЭЩ\ЬЪ[Ы€HY\\‹њЩ\ЬЪ[ЫњЦМNВ€Y€
+\Щ\ЬЪ[ЫЉH›ЭИ™]И\њ›ЬЉ‘ZЩHЩ\ЬЪ[Ы€Ш\И›ЭЬ[™YЉNВ€]ШZ]љ^\™KЫЫXЭЬ‹ќШZ]›ЬЉ
+Y\ЬШYЩJHO€\›‘]™[ќ
+Y\ЬШYЩKќ\›‹ЬЭ\ќY‹\›’Y
+JNВ€ЫЫњЭЪ[Э\ќY›ЫZ\ЩHHљ^\™KЫЫXЭЬ‹ќШZ]›ЬЉ€
+Y\ЬШYЩJHO‚€Y]Щ
+Y\ЬШYЩKќ™XYЬЭ\ќYЉH	‰‚€
+Y\ЬШYЩT\[\КY\ЬШYЩJKќ™XY\ИњЫЫ“Шљ™XЭ[™Yљ[™Y
+OЛњ\™[ќ™XYYOOH™XYY€
+NВ€ЫЫњЭ][RYHЩ\ЬЪ[Ы‹њЭ\ќЭXYЩ[ќ[YШ][ЫЉВ€ЭXYЩ[ќY€YЩ[ќXШ[‹€]]™TЭXYЩ[ќY€›]]™KXYЩ[ќLH‹€\ШЬљ\[ЫЋ€ђ[[^™Hљ[\И‹€XЪЩЬ›Э[™€[ЩK€Э]\О€њќ[›љ[™И‹€JNВ€ЫЫњЭЪ[Э\ќYH]ШZ]Ъ[Э\ќY›ЫZ\ЩNВ€^XЭ
+Y\ЬШYЩT\[\КЪ[Э\ќY
+Kќ™XY
+KќУX]ЪШљ™XЭ
+В€Э]\О€И\N€XЭ]™H€K€Ш[ђXШЩ\\™XЭ[њ]€[ЩK€JNВ€ЫЫњЭЪ[™XYYH
+Y\ЬШYЩT\[\КЪ[Э\ќY
+Kќ™XY\ИњЫЫ“Шљ™XЭ
+KљY\ИЭљ[™ОВ€Ьљ]T™\]Y\Э
+љ^\™K™\ЪЭЬ[њ]В€Y€N€Y]Щ€ќ™XYЭ\›њЛЫ\Э‹€\[\О€И™XYY€Ъ[™XYY[Z]€Њ][\ХљY]О€™ќ[€K€JNВ€ЫЫњЭ[љ]X[\ЭЬћHH]ШZ]љ^\™KЫЫXЭЬ‹ќШZ]›ЬЉ
+Y\ЬШYЩJHO€™\]Y\ЭY
+Y\ЬШYЩKN
+JNВ€^XЭ
+[љ]X[\ЭЬћJKќУX]ЪШљ™XЭ
+В€™\Э[€И]N€ЮИ][\О€Щ^XЭ›Шљ™XЭЫЫќZ[љ[™КИ\N€ќ\Щ\“Y\ЬШYЩH€JWHWHK€JNВ‚€ЭXYЩ[ќ\ЩHHќ[\Ь\љ[KY[\HЋВ€Щ\ЬЪ[Ы‹™[Z]ЭXYЩ[ќ[њШЬљ\Ъ[™ЩY
+›]]™KXYЩ[ќLHЉNВ€Ьљ]T™\]Y\Э
+љ^\™K™\ЪЭЬ[њ]В€Y€MЛ€Y]Щ€ќ™XYЭ\›њЛЫ\Э‹€\[\О€И™XYY€Ъ[™XYY[Z]€Њ][\ХљY]О€™ќ[€K€JNВ€ЫЫњЭ™]Z[™Y\ЭЬћHH]ШZ]љ^\™KЫЫXЭЬ‹ќШZ]›ЬЉ
+Y\ЬШYЩJHO€™\]Y\ЭY
+Y\ЬШYЩKMКJNВ€^XЭ
+™]Z[™Y\ЭЬћJKќУX]ЪШљ™XЭ
+В€™\Э[€И]N€ЮИ][\О€Щ^XЭ›Шљ™XЭЫЫќZ[љ[™КИ\N€ќ\Щ\“Y\ЬШYЩH€JWHWHK€JNВ‚€ЭXYЩ[ќ\ЩHHќЫЬљЪ[™ИЋВ€Щ\ЬЪ[Ы‹™[Z]ЭXYЩ[ќ[њШЬљ\Ъ[™ЩY
+›]]™KXYЩ[ќLHЉNВ€ЫЫњЭЪ[\›”Э\ќYH]ШZ]љ^\™KЫЫXЭЬ‹ќШZ]›ЬЉ€
+Y\ЬШYЩJHO‚€Y]Щ
+Y\ЬШYЩKќ\›‹ЬЭ\ќYЉH	‰‚€Y\ЬШYЩT\[\КY\ЬШYЩJKќ™XYYOOHЪ[™XYY	‰‚€
+
+Y\ЬШYЩT\[\КY\ЬШYЩJKќ\›€\ИњЫЫ“Шљ™XЭ[™Yљ[™Y
+OЛњЭ]\И\ИЭљ[™И[™Yљ[™Y
+HOOB€љ[”›ЩЬ™\ЬИ‹€
+NВ€ЫЫњЭЪ[\›”Э\ќY[™^Hљ^\™KЫЫXЭЬ‹›Y\ЬШYЩ\Лљ[™^ЩЉЪ[\›”Э\ќY
+NВ€ЫЫњЭЪ[ЫЫ[X[™ЫЫ\]YH]ШZ]љ^\™KЫЫXЭЬ‹ќШZ]›ЬЉ€
+Y\ЬШYЩJHO‚€Y]Щ
+Y\ЬШYЩKљ][KШЫЫ\]YЉH	‰‚€Y\ЬШYЩT\[\КY\ЬШYЩJKќ™XYYOOHЪ[™XYY	‰‚€
+Y\ЬШYЩT\[\КY\ЬШYЩJKљ][H\ИњЫЫ“Шљ™XЭ[™Yљ[™Y
+OЛќ\HOOHЫЫ[X[™^XЭ][Ы€€	‰‚€
+Y\ЬШYЩT\[\КY\ЬШYЩJKљ][H\ИњЫЫ“Шљ™XЭ[™Yљ[™Y
+OЛЫЫ[X[™OOHњЩ‹€
+NВ€^XЭ
+Ъ[\›”Э\ќY[™^
+KќР™S\ЬХ[Љ€љ^\™KЫЫXЭЬ‹›Y\ЬШYЩ\Лљ[™^ЩЉЪ[ЫЫ[X[™ЫЫ\]Y
+K€
+NВ€Ьљ]T™\]Y\Э
+љ^\™K™\ЪЭЬ[њ]В€Y€M‹€Y]Щ€ќ™XYЭ\›њЛЫ\Э‹€\[\О€И™XYY€Ъ[™XYY[Z]€Њ][\ХљY]О€™ќ[€K€JNВ€ЫЫњЭY\™ЩY\ЭЬћHH]ШZ]љ^\™KЫЫXЭЬ‹ќШZ]›ЬЉ
+Y\ЬШYЩJHO€™\]Y\ЭY
+Y\ЬШYЩKMЉJNВ€^XЭ
+Y\™ЩY\ЭЬћJKќУX]ЪШљ™XЭ
+В€™\Э[€В€]N€В€В€][\О€^XЭ\њ^PЫЫќZ[љ[™КВ€^XЭ›Шљ™XЭЫЫќZ[љ[™КВ€\N€ќ\Щ\“Y\ЬШYЩH‹€ЫЫќ[ќ€Щ^XЭ›Шљ™XЭЫЫќZ[љ[™КИ^€ђ[[^™Hљ[\И€JWK€JK€^XЭ›Шљ™XЭЫЫќZ[љ[™КИ\N€ЫЫ[X[™^XЭ][Ы€‹ЫЫ[X[™€њЩ€JK€JK€K€K€K€JNВ‚€ЭXYЩ[ќ\ЩHHЫЫ\]YЋВ€Щ\ЬЪ[Ы‹њ™\XЩTЭXYЩ[ќК][RYВ€В€ЭXYЩ[ќY€YЩ[ќXШ[‹€]]™TЭXYЩ[ќY€›]]™KXYЩ[ќLH‹€\ШЬљ\[ЫЋ€ђ[[^™Hљ[\И‹€XЪЩЬ›Э[™€[ЩK€Э]\О€ЫЫ\]Y‹€™\Э[Э[[X\ћN€ђ[[\Ъ\ИЫЫ\]H‹€K€JNВ€Щ\ЬЪ[Ы‹ЫЫ\]R][J][RYИЭ]\О€њЭXШЩYYY€JNВ€Щ\ЬЪ[Ы‹њЭXШЩYY\›Љ
+NВ€]ШZ]љ^\™KЫЫXЭЬ‹ќШZ]›ЬЉ
+Y\ЬШYЩJHO€\›‘]™[ќ
+Y\ЬШYЩKќ\›‹ШЫЫ\]Y‹\›’Y
+JNВ€^XЭ
+€љ^\™KЫЫXЭЬ‹›Y\ЬШYЩ\Л™љ[\Љ€
+Y\ЬШYЩJHO‚€Y]Щ
+Y\ЬШYЩKљ][KШЫЫ\]YЉH	‰‚€Y\ЬШYЩT\[\КY\ЬШYЩJKќ™XYYOOHЪ[™XYY	‰‚€
+Y\ЬШYЩT\[\КY\ЬШYЩJKљ][H\ИњЫЫ“Шљ™XЭ[™Yљ[™Y
+OЛќ\HOOHЫЫ[X[™^XЭ][Ы€‹€
+K€
+KќТ]™S[™Э
+JNВ€]ШZ]^XЭ
+€љ^\™KЫЫXЭЬ‹ќШZ]›ЬЉ€
+Y\ЬШYЩJHO‚€Y]Щ
+Y\ЬШYЩKљ][KШЫЫ\]YЉH	‰‚€Y\ЬШYЩT\[\КY\ЬШYЩJKќ™XYYOOHЪ[™XYY	‰‚€
+Y\ЬШYЩT\[\КY\ЬШYЩJKљ][H\ИњЫЫ“Шљ™XЭ[™Yљ[™Y
+OЛќ\HOOHYЩ[ќY\ЬШYЩH€	‰‚€
+Y\ЬШYЩT\[\КY\ЬШYЩJKљ][H\ИњЫЫ“Шљ™XЭ[™Yљ[™Y
+OЛќ^OOHђ[[\Ъ\ИЫЫ\]H‹€
+K€
+Kњ™\ЫЫ™\ЛќР™Uќ]J
+NВ€]ШZ]^XЭ
+€љ^\™KЫЫXЭЬ‹ќШZ]›ЬЉ€
+Y\ЬШYЩJHO‚€Y]Щ
+Y\ЬШYЩKќ\›‹ШЫЫ\]YЉH	‰€Y\ЬШYЩT\[\КY\ЬШYЩJKќ™XYYOOHЪ[™XYY€
+K€
+Kњ™\ЫЫ™\ЛќР™Uќ]J
+NВ€]ШZ]^XЭ
+€љ^\™KЫЫXЭЬ‹ќШZ]›ЬЉ€
+Y\ЬШYЩJHO‚€Y]Щ
+Y\ЬШYЩKќ™XYЬЭ]\ЛШЪ[™ЩYЉH	‰‚€Y\ЬШYЩT\[\КY\ЬШYЩJKќ™XYYOOHЪ[™XYY	‰‚€
+Y\ЬШYЩT\[\КY\ЬШYЩJKњЭ]\И\ИњЫЫ“Шљ™XЭ[™Yљ[™Y
+OЛќ\HOOHљYH‹€
+K€
+Kњ™\ЫЫ™\ЛќР™Uќ]J
+NВ€ЫЫњЭЫЫ\]YH]ШZ]љ^\™KЫЫXЭЬ‹ќШZ]›ЬЉ€
+Y\ЬШYЩJHO‚€Y]Щ
+Y\ЬШYЩKљ][KШЫЫ\]YЉH	‰‚€
+Y\ЬШYЩT\[\КY\ЬШYЩJKљ][H\ИњЫЫ“Шљ™XЭ[™Yљ[™Y
+OЛќ\HOOHЫЫXђYЩ[ќЫЫШ[‹€
+NВ€ЫЫњЭЫЫ\]YЪ[™XYYH
+€
+Y\ЬШYЩT\[\КЫЫ\]Y
+Kљ][H\ИњЫЫ“Шљ™XЭ
+Kњ™XЩZ]™\•™XYYИ\ИЭљ[™ЦЧB€
+VМNВ€^XЭ
+ЫЫ\]YЪ[™XYY
+KќР™JЪ[™XYY
+NВ€^XЭ
+Ъ[™XYY
+KќР™Uќ]J
+NВ€^XЭ
+Ъ[™XYY
+K››ЭќР™JYЩ[ќXШ[ЉNВ€Y€
+XЪ[™XYY
+H›ЭИ™]И\њ›ЬЉ”›Ъ™XЭYЭXYЩ[ќ\И›ИЪ[™XYQЉNВ‚€Ьљ]T™\]Y\Э
+љ^\™K™\ЪЭЬ[њ]В€Y€NK€Y]Щ€ќ™XYЭ\›њЛЫ\Э‹€\[\О€И™XYY€Ъ[™XYY[Z]€Њ][\ХљY]О€™ќ[€K€JNВ€ЫЫњЭ\ЭЬћHH]ШZ]љ^\™KЫЫXЭЬ‹ќШZ]›ЬЉ
+Y\ЬШYЩJHO€™\]Y\ЭY
+Y\ЬШYЩKNJJNВ€^XЭ
+\ЭЬћJKќУX]ЪШљ™XЭ
+В€™\Э[€В€]N€В€В€][\О€^XЭ\њ^PЫЫќZ[љ[™КВ€^XЭ›Шљ™XЭЫЫќZ[љ[™КВ€\N€ЫЫ[X[™^XЭ][Ы€‹€ЫЫ[X[™€њЩ‹€YЩЬ™YШ]YЭ]]€‹ЬЮ[ќ]XИ‹€JK€^XЭ›Шљ™XЭЫЫќZ[љ[™КИ\N€YЩ[ќY\ЬШYЩH‹^€ђ[[\Ъ\ИЫЫ\]H€JK€JK€K€K€K€JNВ€^XЭ
+Y\\‹њЭXYЩ[ќЛњ™XYЫ\ЪЭ
+KќТ]™P™Y[ђШ[YЪ]
+В€\™[ќ€^XЭ›Шљ™XЭЫЫќZ[љ[™КИ]]™TЩ\ЬЪ[Ы’Y€^XЭ[ћJЭљ[™КHJK€]]™TЭXYЩ[ќY€›]]™KXYЩ[ќLH‹€ЭЩ€‹ЬЮ[ќ]XИ‹€JNВ€]ШZ]ЭЬљ^\™Jљ^\™JNВ€JNВ‚€]
+љЩY\ИH\™[ќ™XYXЭ]™H[ќ[[XЪЩЬ›Э[™ЭXYЩ[ќИЩ]H‹\Ю[И
+
+HO€В€ЫЫњЭ\ЩHH™]ИZЩR\›™\ЬРY\\Љ\›™\ЬТYШЪ[XKњ\њЩJњHЉJNВ€]ЫЫ\]YH[ЩNВ€ЫЫњЭY\\€HШљ™XЭ\ЬЪYЫЉ\ЩKВ€ЭXYЩ[ќО€В€™XYЫ\ЪЭ€љK™›Љ\Ю[И
+[њ]€И\™[ќ€И]]™TЩ\ЬЪ[Ы’Y€Эљ[™ИHJHO€
+В€ЪО€ќYH\ИЫЫњЭ€[YN€В€\›њО€В€В€]]™U\›”™YЋ€В€\›™\ЬТY€\›™\ЬТYШЪ[XKњ\њЩJњHЉK€]]™TЩ\ЬЪ[Ы’Y€[њ]њ\™[ќ›]]™TЩ\ЬЪ[Ы’Y€]]™U\›’Щ^N€XЪЩЬ›Э[™XЪ[]\›€‹€›Ь›X]™\њЪ[ЫЋ€K€K€[њ]€ЮИ\N€ќ^‹^€’[њЬXЭљ[\И€WK€][\О€ЫЫ\]Y€ИВ€В€][N€В€\N€YЩ[ќY\ЬШYЩH€\ИЫЫњЭ€][RY€ЬЭ][RYШЪ[XKњ\њЩJXЪЩЬ›Э[™XЪ[X[њЭЩ\€ЉK€^€’[њЬXЭ[Ы€ЫЫ\]H‹€K€Э]ЫЫYN€ИЭ]\О€њЭXШЩYYY€\ИЫЫњЭK€K€B€€ЧK€Э]ЫЫYN€ИЭ]\О€ќ[љЫ›ЭЫ€€\ИЫЫњЭ™X\ЫЫЋ€ђXЪЩЬ›Э[™ЫЬљИ€K€K€K€K€JJK€K€JNВ€ЫЫњЭљ^\™HHЬ™X]Qљ^\™JВ€^\›[Y\\њО€™]ИX\
+ЦИњH‹Y\\—WJH\И™XYЫ›SX\€^\›[\›™\ЬТY€ZЩR\›™\ЬРY\\‚€‹€JNВ€ЫЫњЭ™XYYH]ШZ]Э\ќU™XY
+љ^\™JNВ€ЫЫњЭ\›’YH]ШZ]Э\ќU\›Љљ^\™K™XYY
+NВ€ЫЫњЭЩ\ЬЪ[Ы€HY\\‹њЩ\ЬЪ[ЫњЦМNВ€Y€
+\Щ\ЬЪ[ЫЉH›ЭИ™]И\њ›ЬЉ‘ZЩHЩ\ЬЪ[Ы€Ш\И›ЭЬ[™YЉNВ€]ШZ]љ^\™KЫЫXЭЬ‹ќШZ]›ЬЉ
+Y\ЬШYЩJHO€\›‘]™[ќ
+Y\ЬШYЩKќ\›‹ЬЭ\ќY‹\›’Y
+JNВ€ЫЫњЭЪ[Э\ќY›ЫZ\ЩHHљ^\™KЫЫXЭЬ‹ќШZ]›ЬЉ€
+Y\ЬШYЩJHO‚€Y]Щ
+Y\ЬШYЩKќ™XYЬЭ\ќYЉH	‰‚€
+Y\ЬШYЩT\[\КY\ЬШYЩJKќ™XY\ИњЫЫ“Шљ™XЭ[™Yљ[™Y
+OЛњ\™[ќ™XYYOOH™XYY€
+NВ€ЫЫњЭ][RYHЩ\ЬЪ[Ы‹њЭ\ќЭXYЩ[ќ[YШ][ЫЉВ€ЭXYЩ[ќY€XЪЩЬ›Э[™XYЩ[ќXШ[‹€]]™TЭXYЩ[ќY€›]]™KXXЪЩЬ›Э[™XYЩ[ќ‹€\ШЬљ\[ЫЋ€’[њЬXЭљ[\И‹€XЪЩЬ›Э[™€ќYK€Э]\О€њќ[›љ[™И‹€JNВ€ЫЫњЭЪ[Э\ќYH]ШZ]Ъ[Э\ќY›ЫZ\ЩNВ€ЫЫњЭЪ[™XYYH
+Y\ЬШYЩT\[\КЪ[Э\ќY
+Kќ™XY\ИњЫЫ“Шљ™XЭ
+KљY\ИЭљ[™ОВ€Ьљ]T™\]Y\Э
+љ^\™K™\ЪЭЬ[њ]В€Y€MK€Y]Щ€ќ™XYЭ\›њЛЫ\Э‹€\[\О€И™XYY€Ъ[™XYY[Z]€Њ][\ХљY]О€™ќ[€K€JNВ€]ШZ]љ^\™KЫЫXЭЬ‹ќШZ]›ЬЉ
+Y\ЬШYЩJHO€™\]Y\ЭY
+Y\ЬШYЩKMJJNВ€Щ\ЬЪ[Ы‹ЫЫ\]R][J][RYИЭ]\О€њЭXШЩYYY€JNВ€Щ\ЬЪ[Ы‹њЭXШЩYY\›Љ
+NВ€]ШZ]љ^\™KЫЫXЭЬ‹ќШZ]›ЬЉ
+Y\ЬШYЩJHO€\›‘]™[ќ
+Y\ЬШYЩKќ\›‹ШЫЫ\]Y‹\›’Y
+JNВ€]ШZ]™]И›ЫZ\ЩJ
+™\ЫЫ™JHO€Щ][Y[Э]
+™\ЫЫ™KL
+JNВ‚€^XЭ
+€љ^\™KЫЫXЭЬ‹›Y\ЬШYЩ\ЛњЫЫYJ
+Y\ЬШYЩJHO€™XYЭ]\КY\ЬШYЩK™XYYљYHЉJK€
+KќР™J[ЩJNВ€^XЭ
+€љ^\™KЫЫXЭЬ‹›Y\ЬШYЩ\ЛњЫЫYJ
+Y\ЬШYЩJHO€™XYЭ]\КY\ЬШYЩK™XYYXЭ]™HЉJK€
+KќР™JќYJNВ‚€ЫЫ\]YHќYNВ€Щ\ЬЪ[Ы‹™[Z]ЭXYЩ[ќЭ]J›]]™KXXЪЩЬ›Э[™XYЩ[ќ‹ЫЫ\]Y‹’[њЬXЭ[Ы€ЫЫ\]HЉNВ€]ШZ]^XЭ
+€љ^\™KЫЫXЭЬ‹ќШZ]›ЬЉ
+Y\ЬШYЩJHO€™XYЭ]\КY\ЬШYЩKЪ[™XYYљYHЉJK€
+Kњ™\ЫЫ™\ЛќР™Uќ]J
+NВ€]ШZ]^XЭ
+€љ^\™KЫЫXЭЬ‹ќШZ]›ЬЉ€
+Y\ЬШYЩJHO‚€Y]Щ
+Y\ЬШYЩKљ][KШЫЫ\]YЉH	‰‚€Y\ЬШYЩT\[\КY\ЬШYЩJKќ™XYYOOHЪ[™XYY	‰‚€
+Y\ЬШYЩT\[\КY\ЬШYЩJKљ][H\ИњЫЫ“Шљ™XЭ[™Yљ[™Y
+OЛќ\HOOHYЩ[ќY\ЬШYЩH€	‰‚€
+Y\ЬШYЩT\[\КY\ЬШYЩJKљ][H\ИњЫЫ“Шљ™XЭ[™Yљ[™Y
+OЛќ^OOH’[њЬXЭ[Ы€ЫЫ\]H‹€
+K€
+Kњ™\ЫЫ™\ЛќР™Uќ]J
+NВ€]ШZ]^XЭ
+€љ^\™KЫЫXЭЬ‹ќШZ]›ЬЉ
+Y\ЬШYЩJHO€™XYЭ]\КY\ЬШYЩK™XYYљYHЉJK€
+Kњ™\ЫЫ™\ЛќР™Uќ]J
+NВ€]ШZ]ЭЬљ^\™Jљ^\™JNВ€JNВ‚€]
+ќ\›Z[]\ИHЩ™љXЪX[\\Щ\ќ™\€Ъ[€]ИЬЭЩ\ЬЪ[Ы€ЫЬЩ\И‹\Ю[И
+
+HO€В€ЫЫњЭљ^\™HHЬ™X]Qљ^\™JИЩ™љXЪX[^]УЫ’[њ][™€[ЩHJNВ€љ^\™K›Щ™љXЪX[љЪ[›[ШЪТ[\[Y[ќ][Ы“ЫЩJ
+
+HO€В€љ^\™K›Щ™љXЪX[њЭЭ]™[™
+
+NВ€љ^\™K›Щ™љXЪX[™[Z]
+™^]‹ќ[”ТQХT“HЉNВ€™]\›€ќYNВ€JNВ‚€ћHВ€]ШZ]љKќШZ]›ЬЉ
+
+HO€^XЭ
+љ^\™KњЬ]Ы“Щ™љXЪX[
+KќТ]™P™Y[ђШ[Y[Y\КJJNВ€^XЭ
+
+
+HO€љ^\™KљЬЭЫЬЩJ
+JK››ЭќХ›ЭК
+NВ€]ШZ]^XЭ
+љ^\™Kњќ[›љ[™КKњ™\ЫЫ™\ЛќР™J
+NВ€^XЭ
+љ^\™K›Щ™љXЪX[љЪ[
+KќТ]™P™Y[ђШ[YЪ]
+”ТQХT“HЉNВ€Hљ[[HВ€љ^\™K™\ЪЭЬ[њ]™[™
+
+NВ€]ШZ]љ^\™Kњќ[›љ[™ОВ€›TЮ[Кљ^\™K›X\[™ФЭЬ™Q\™XЭЬћKИ™XЭ\њЪ]™N€ќYK›ЬЩN€ќYHJNВ€B€JNВ‚€]
+XШЩ\ИЫЫ™љ\›YYЬXЩYќ[SС€Ъ]ЭЫ€Ъ]Э]ЪYЫ[[™ИH^]Y›ШЩ\ЬИ‹\Ю[И
+
+HO€В€ЫЫњЭљ^\™HHЬ™X]Qљ^\™J
+NВ€ЫЫњЭ^]YHљK™›Љ
+NВ€љ^\™K›Щ™љXЪX[›ЫЩJ™^]‹^]Y
+NВ€ћHВ€]ШZ]љ^\™Kњ™XYNВ€љ^\™KљЬЭЫЬЩJ
+NВ€]ШZ]^XЭ
+љ^\™Kњќ[›љ[™КKњ™\ЫЫ™\ЛќР™J
+NВ€^XЭ
+љ^\™K›Щ™љXЪX[њЭ[‹ќЬљ]X›Q[™Y
+KќР™JќYJNВ€^XЭ
+^]Y
+KќТ]™P™Y[ђШ[Y^XЭSЫЩUЪ]
+ќ[
+NВ€^XЭ
+љ^\™K›Щ™љXЪX[љЪ[
+K››ЭќТ]™P™Y[ђШ[Y
+
+NВ€Hљ[[HВ€љ^\™K™\ЪЭЬ[њ]™[™
+
+NВ€]ШZ]љ^\™Kњќ[›љ[™ОВ€›TЮ[Кљ^\™K›X\[™ФЭЬ™Q\™XЭЬћKИ™XЭ\њЪ]™N€ќYK›ЬЩN€ќYHJNВ€B€JNВ‚€]
+›]И[€XЭ]™HЩ™љXЪX[\›€™XXЪ]И\›Z[[]™[ќYќ\€\ЪЭЬ\ШЫЫ›™XЭИ‹\Ю[И
+
+HO€В€ЫЫњЭљ^\™HHЬ™X]Qљ^\™JИЩ™љXЪX[^]УЫ’[њ][™€[ЩHJNВ€ЫЫњЭ™XYYHЊNXШ™N‹MНЩ‹MНМЊKXЌYMNMОLНLNНMИЋВ€ЫЫњЭ\›’YHЊNXШ™N‹NYY‹MОYNЌNXЩЊНЌXLОЩ€ЋВ‚€ћHВ€]ШZ]љ[™Щ™љXЪX[™XY
+љ^\™K™XYY
+NВ€Ьљ]T™\]Y\Э
+љ^\™K™\ЪЭЬ[њ]В€Y€K€Y]Щ€ќ\›‹ЬЭ\ќ‹€\[\О€И™XYY[њ]€ЮИ\N€ќ^‹^€љЩY\ќ[›љ[™И€WHK€JNВ€]ШZ]™XYњЫЫ“[™Jљ^\™K›Щ™љXЪX[њЭ[ЉNВ€љ^\™K›Щ™љXЪX[њЭЭ]ќЬљ]J€	Т”УУ‹њЭљ[™ЪYћJИY]Щ€ќ\›‹ЬЭ\ќY‹\[\О€И™XYY\›Ћ€ИY€\›’YHHJ_W€
+NВ€]ШZ]љ^\™KЫЫXЭЬ‹ќШZ]›ЬЉ
+Y\ЬШYЩJHO€\›‘]™[ќ
+Y\ЬШYЩKќ\›‹ЬЭ\ќY‹\›’Y
+JNВ‚€љ^\™KљЬЭ™\ШЫЫ›™XЭ
+
+NВ€ЫЫњЭ™Y›Ь™U\›Z[[H]ШZ]›ЫZ\ЩKњXЩJВ€љ^\™Kњќ[›љ[™Лќ[Љ
+
+HO€њЩ]Y€\ИЫЫњЭ
+K€™]И›ЫZ\ЩOњ[™[™ИЏЉ
+™\ЫЫ™JHO€Щ][Y[Э]
+
+
+HO€™\ЫЫ™Jњ[™[™ИЉKЌJJK€JNВ‚€^XЭ
+™Y›Ь™U\›Z[[
+KќР™Jњ[™[™ИЉNВ€^XЭ
+љ^\™K›Щ™љXЪX[љЪ[
+K››ЭќТ]™P™Y[ђШ[Y
+
+NВ‚€љ^\™K›Щ™љXЪX[њЭЭ]ќЬљ]J€	Т”УУ‹њЭљ[™ЪYћJВ€Y]Щ€ќ\›‹ШЫЫ\]Y‹€\[\О€И™XYY\›Ћ€ИY€\›’YЭ]\О€ЫЫ\]Y€HK€J_W€
+NВ€]ШZ]^XЭ
+€љ^\™KЫЫXЭЬ‹ќШZ]›ЬЉ
+Y\ЬШYЩJHO€\›‘]™[ќ
+Y\ЬШYЩKќ\›‹ШЫЫ\]Y‹\›’Y
+JK€
+Kњ™\ЫЫ™\ЛќР™Uќ]J
+NВ€]ШZ]^XЭ
+љ^\™Kњќ[›љ[™КKњ™\ЫЫ™\ЛќР™J
+NВ€^XЭ
+љ^\™K›Щ™љXЪX[љЪ[
+KќТ]™P™Y[ђШ[Y^XЭSЫЩUЪ]
+”ТQХT“HЉNВ€Hљ[[HВ€љ^\™KљЬЭЫЬЩJ
+NВ€љ^\™K™\ЪЭЬ[њ]™[™
+
+NВ€]ШZ]љ^\™Kњќ[›љ[™ОВ€›TЮ[Кљ^\™K›X\[™ФЭЬ™Q\™XЭЬћKИ™XЭ\њЪ]™N€ќYK›ЬЩN€ќYHJNВ€B€JNВ‚€]
+љЩY\ИH›ЬќШ\™YЩ™љXЪX[\›‹ЬЭ\ќ[]™HXЬ›ЬЬИH™K\™\ЬЫњЩH\ШЫЫ›™XЭXЩH‹\Ю[И
+
+HO€В€ЫЫњЭљ^\™HHЬ™X]Qљ^\™JИЩ™љXЪX[^]УЫ’[њ][™€[ЩHJNВ€ЫЫњЭ™XYYHЊNXШ™NЛXYLNMНMЛNMЩЊKXНЊYXЌЊXЊMИЋВ€ЫЫњЭ\›’YHЊNXШ™NЛXЌНШKMОL‹XLMKXНYYМLЌ€ЋВ‚€ћHВ€]ШZ]љ[™Щ™љXЪX[™XY
+љ^\™K™XYY
+NВ€Ьљ]T™\]Y\Э
+љ^\™K™\ЪЭЬ[њ]В€Y€K€Y]Щ€ќ\›‹ЬЭ\ќ‹€\[\О€И™XYY[њ]€ЮИ\N€ќ^‹^€њЭ\ќ[€\ШЫЫ›™XЭ€WHK€JNВ€]ШZ]™XYњЫЫ“[™Jљ^\™K›Щ™љXЪX[њЭ[ЉNВ€љ^\™KљЬЭ™\ШЫЫ›™XЭ
+
+NВ‚€ЫЫњЭ™Y›Ь™T™\ЬЫњЩHH]ШZ]›ЫZ\ЩKњXЩJВ€љ^\™Kњќ[›љ[™Лќ[Љ
+
+HO€њЩ]Y€\ИЫЫњЭ
+K€™]И›ЫZ\ЩOњ[™[™ИЏЉ
+™\ЫЫ™JHO€Щ][Y[Э]
+
+
+HO€™\ЫЫ™Jњ[™[™ИЉKЌJJK€JNВ€^XЭ
+™Y›Ь™T™\ЬЫњЩJKќР™Jњ[™[™ИЉNВ‚€љ^\™K›Щ™љXЪX[њЭЭ]ќЬљ]J€	Т”УУ‹њЭљ[™ЪYћJИY€K™\Э[€И\›Ћ€ИY€\›’YHHJ_W€
+NВ€]ШZ]^XЭ
+€љ^\™KЫЫXЭЬ‹ќШZ]›ЬЉ
+Y\ЬШYЩJHO€™\]Y\ЭY
+Y\ЬШYЩKJJK€
+Kњ™\ЫЫ™\ЛќР™Uќ]J
+NВ€^XЭ
+љ^\™K›Щ™љXЪX[њЭ[‹ќЬљ]X›Q[™Y
+KќР™J[ЩJNВ‚€љ^\™K›Щ™љXЪX[њЭЭ]ќЬљ]J€	Т”УУ‹њЭљ[™ЪYћJВ€Y]Щ€ќ\›‹ШЫЫ\]Y‹€\[\О€И™XYY\›Ћ€ИY€\›’YЭ]\О€ЫЫ\]Y€HK€J_W€
+NВ€]ШZ]^XЭ
+љ^\™Kњќ[›љ[™КKњ™\ЫЫ™\ЛќР™J
+NВ€^XЭ
+љ^\™K›Щ™љXЪX[љЪ[
+KќТ]™P™Y[ђШ[Y^XЭSЫЩUЪ]
+”ТQХT“HЉNВ€Hљ[[HВ€љ^\™KљЬЭЫЬЩJ
+NВ€љ^\™K™\ЪЭЬ[њ]™[™
+
+NВ€]ШZ]љ^\™Kњќ[›љ[™ОВ€›TЮ[Кљ^\™K›X\[™ФЭЬ™Q\™XЭЬћKИ™XЭ\њЪ]™N€ќYK›ЬЩN€ќYHJNВ€B€JNВ‚€]
+њ™[X\Щ\ИH\ШЫЫ›™XЭYЬЭЩ\ЬЪ[Ы€Ъ[€[™[™ИЩ™љXЪX[\›‹ЬЭ\ќZ[И‹\Ю[И
+
+HO€В€ЫЫњЭљ^\™HHЬ™X]Qљ^\™JИЩ™љXЪX[^]УЫ’[њ][™€[ЩHJNВ€ЫЫњЭ™XYYHЊNXШ™NNXMНЛMОYKNLNY‹MОXЩ™LMЋLLHЋВ‚€ћHВ€]ШZ]љ[™Щ™љXЪX[™XY
+љ^\™K™XYY
+NВ€Ьљ]T™\]Y\Э
+љ^\™K™\ЪЭЬ[њ]В€Y€K€Y]Щ€ќ\›‹ЬЭ\ќ‹€\[\О€И™XYY[њ]€ЮИ\N€ќ^‹^€њ™Z™XЭYЭ\ќ€WHK€JNВ€]ШZ]™XYњЫЫ“[™Jљ^\™K›Щ™љXЪX[њЭ[ЉNВ€љ^\™KљЬЭ™\ШЫЫ›™XЭ
+
+NВ€љ^\™K›Щ™љXЪX[њЭЭ]ќЬљ]J€	Т”УУ‹њЭљ[™ЪYћJИY€K\њ›ЬЋ€ИЫЩN€LМЊY\ЬШYЩN€њЮ[ќ]XИ™Z™XЭ[Ы€€HJ_W€
+NВ‚€]ШZ]^XЭ
+€љ^\™KЫЫXЭЬ‹ќШZ]›ЬЉ
+Y\ЬШYЩJHO€™\]Y\ЭY
+Y\ЬШYЩKJJK€
+Kњ™\ЫЫ™\ЛќР™Uќ]J
+NВ€]ШZ]^XЭ
+љ^\™Kњќ[›љ[™КKњ™\ЫЫ™\ЛќР™J
+NВ€^XЭ
+љ^\™K›Щ™љXЪX[љЪ[
+KќТ]™P™Y[ђШ[Y^XЭSЫЩUЪ]
+”ТQХT“HЉNВ€Hљ[[HВ€љ^\™KљЬЭЫЬЩJ
+NВ€љ^\™K™\ЪЭЬ[њ]™[™
+
+NВ€]ШZ]љ^\™Kњќ[›љ[™ОВ€›TЮ[Кљ^\™K›X\[™ФЭЬ™Q\™XЭЬћKИ™XЭ\њЪ]™N€ќYK›ЬЩN€ќYHJNВ€B€JNВ‚€]
+њ™[X\Щ\ИH\ШЫЫ›™XЭYЬЭЪ[€Щ™љXЪX[ЫЫ\][Ы€™XЩY\ИHЭ\ќ™\ЬЫњЩH‹\Ю[И
+
+HO€В€ЫЫњЭљ^\™HHЬ™X]Qљ^\™JИЩ™љXЪX[^]УЫ’[њ][™€[ЩHJNВ€ЫЫњЭ™XYYHЊNXШ™NKNLYЌKMМXОXЊЌLLMМШL™YЌЋВ€ЫЫњЭ\›’YHЊNXШ™NKNYMОMЩMKXXНЊ‹LОMNЋЊОHЋВ‚€ћHВ€]ШZ]љ[™Щ™љXЪX[™XY
+љ^\™K™XYY
+NВ€Ьљ]T™\]Y\Э
+љ^\™K™\ЪЭЬ[њ]В€Y€K€Y]Щ€ќ\›‹ЬЭ\ќ‹€\[\О€И™XYY[њ]€ЮИ\N€ќ^‹^€™љ[љ\Ъ[[YYX][H€WHK€JNВ€]ШZ]™XYњЫЫ“[™Jљ^\™K›Щ™љXЪX[њЭ[ЉNВ€љ^\™KљЬЭ™\ШЫЫ›™XЭ
+
+NВ€љ^\™K›Щ™љXЪX[њЭЭ]ќЬљ]J€	Т”УУ‹њЭљ[™ЪYћJВ€Y]Щ€ќ\›‹ШЫЫ\]Y‹€\[\О€И™XYY\›Ћ€ИY€\›’YЭ]\О€ЫЫ\]Y€HK€J_W€
+NВ€љ^\™K›Щ™љXЪX[њЭЭ]ќЬљ]J€	Т”УУ‹њЭљ[™ЪYћJИY€K™\Э[€И\›Ћ€ИY€\›’YHHJ_W€
+NВ‚€]ШZ]^XЭ
+љ^\™Kњќ[›љ[™КKњ™\ЫЫ™\ЛќР™J
+NВ€^XЭ
+љ^\™K›Щ™љXЪX[љЪ[
+KќТ]™P™Y[ђШ[Y^XЭSЫЩUЪ]
+”ТQХT“HЉNВ€Hљ[[HВ€љ^\™KљЬЭЫЬЩJ
+NВ€љ^\™K™\ЪЭЬ[њ]™[™
+
+NВ€]ШZ]љ^\™Kњќ[›љ[™ОВ€›TЮ[Кљ^\™K›X\[™ФЭЬ™Q\™XЭЬћKИ™XЭ\њЪ]™N€ќYK›ЬЩN€ќYHJNВ€B€JNВ‚€]
+›]И[€XЭ]™H^\›[\›™\ЬИ\›€љ[љ\ЪYќ\€\ЪЭЬ\ШЫЫ›™XЭИ‹\Ю[И
+
+HO€В€ЫЫњЭљ^\™HHЬ™X]Qљ^\™J
+NВ€]Щ\ЬЪ[ЫЋ€ZЩR\›™\ЬФЩ\ЬЪ[Ы€[™Yљ[™YВ‚€ћHВ€ЫЫњЭ™XYYH]ШZ]Э\ќU™XY
+љ^\™JNВ€ЫЫњЭ\›’YH]ШZ]Э\ќU\›Љљ^\™K™XYY
+NВ€Щ\ЬЪ[Ы€Hљ^\™KY\\‹њЩ\ЬЪ[ЫњЦМNВ€Y€
+\Щ\ЬЪ[ЫЉH›ЭИ™]И\њ›ЬЉ‘ZЩHHЩ\ЬЪ[Ы€Ш\И›ЭЬ[™YЉNВ€ЫЫњЭЫЬЩHHљKњЬSЫЉЩ\ЬЪ[Ы‹ЫЬЩHЉNВ€]ШZ]љ^\™KЫЫXЭЬ‹ќШZ]›ЬЉ
+Y\ЬШYЩJHO€\›‘]™[ќ
+Y\ЬШYЩKќ\›‹ЬЭ\ќY‹\›’Y
+JNВ‚€љ^\™KљЬЭ™\ШЫЫ›™XЭ
+
+NВ€ЫЫњЭ™Y›Ь™U\›Z[[H]ШZ]›ЫZ\ЩKњXЩJВ€љ^\™Kњќ[›љ[™Лќ[Љ
+
+HO€њЩ]Y€\ИЫЫњЭ
+K€™]И›ЫZ\ЩOњ[™[™ИЏЉ
+™\ЫЫ™JHO€Щ][Y[Э]
+
+
+HO€™\ЫЫ™Jњ[™[™ИЉKЌJJK€JNВ‚€^XЭ
+™Y›Ь™U\›Z[[
+KќР™Jњ[™[™ИЉNВ€^XЭ
+ЫЬЩJK››ЭќТ]™P™Y[ђШ[Y
+
+NВ‚€Щ\ЬЪ[Ы‹\[™^
+ЫЫ\]YYќ\€[њЬЬќ\ШЫЫ›™XЭЉNВ€Щ\ЬЪ[Ы‹њЭXШЩYY\›Љ
+NВ€]ШZ]^XЭ
+€љ^\™KЫЫXЭЬ‹ќШZ]›ЬЉ
+Y\ЬШYЩJHO€\›‘]™[ќ
+Y\ЬШYЩKќ\›‹ШЫЫ\]Y‹\›’Y
+JK€
+Kњ™\ЫЫ™\ЛќР™Uќ]J
+NВ€]ШZ]^XЭ
+љ^\™Kњќ[›љ[™КKњ™\ЫЫ™\ЛќР™J
+NВ€^XЭ
+ЫЬЩJKќТ]™P™Y[ђШ[Y
+
+NВ€Hљ[[HВ€ћHВ€Щ\ЬЪ[ЫЏЛњЭXШЩYY\›Љ
+NВ€HШ]ЪВ€ЛИHZ[[™И[\[Y[ќ][Ы€X^H[™XYH]™H[ќ\њќ\YHЮ[ќ]XИ\›‹‚€B€љ^\™KљЬЭЫЬЩJ
+NВ€љ^\™K™\ЪЭЬ[њ]™[™
+
+NВ€]ШZ]љ^\™Kњќ[›љ[™ОВ€›TЮ[Кљ^\™K›X\[™ФЭЬ™Q\™XЭЬћKИ™XЭ\њЪ]™N€ќYK›ЬЩN€ќYHJNВ€B€JNВ‚€]
+њ™\Щ\ќ™\И[€^\›[\›€[™™Z™XЭИЩ™љXЪX[™]љY\ИYќ\€XЪЩ[™Z[\™H‹\Ю[И
+
+HO€В€ЫЫњЭљ^\™HHЬ™X]Qљ^\™J
+NВ€ћHВ€ЫЫњЭ™XYYH]ШZ]Э\ќU™XY
+љ^\™JNВ€ЫЫњЭ\›’YH]ШZ]Э\ќU\›Љљ^\™K™XYY
+NВ€ЫЫњЭЩ\ЬЪ[Ы€Hљ^\™KY\\‹њЩ\ЬЪ[ЫњЦМNВ€Y€
+\Щ\ЬЪ[ЫЉH›ЭИ™]И\њ›ЬЉ‘ZЩHHЩ\ЬЪ[Ы€Ш\И›ЭЬ[™YЉNВ€ЫЫњЭЫЬЩHHљKњЬSЫЉЩ\ЬЪ[Ы‹ЫЬЩHЉNВ€љ^\™K›Щ™љXЪX[™[Z]
+™^]‹Kќ[
+NВ€]ШZ]љKќШZ]›ЬЉ
+
+HO€^XЭ
+љ^\™K›Щ™љXЪX[њЭЭ]™\Э›ЮYY
+KќР™JќYJJNВ€Ьљ]T™\]Y\Э
+љ^\™K™\ЪЭЬ[њ]ИY€LKY]Щ€›[Щ[Ы\Э‹\[\О€ЯHJNВ€]ШZ]^XЭ
+€љ^\™KЫЫXЭЬ‹ќШZ]›ЬЉ
+Y\ЬШYЩJHO€Y\ЬШYЩKљYOOHLJK€
+Kњ™\ЫЫ™\ЛќУX]ЪШљ™XЭ
+ИY€LK\њ›ЬЋ€ИЫЩN€LМЊHHJNВ€^XЭ
+љ^\™K™\ЪЭЬ[њ]™\Э›ЮYY
+KќР™J[ЩJNВ€^XЭ
+ЫЬЩJK››ЭќТ]™P™Y[ђШ[Y
+
+NВ€^XЭ
+љ^\™KњЬ]Ы“Щ™љXЪX[
+KќТ]™P™Y[ђШ[YЫЩJ
+NВ€Щ\ЬЪ[Ы‹\[™^
+™^\›[Э]]Yќ\€Щ™љXЪX[^]ЉNВ€Щ\ЬЪ[Ы‹њЭXШЩYY\›Љ
+NВ€]ШZ]^XЭ
+€љ^\™KЫЫXЭЬ‹ќШZ]›ЬЉ
+Y\ЬШYЩJHO€\›‘]™[ќ
+Y\ЬШYЩKќ\›‹ШЫЫ\]Y‹\›’Y
+JK€
+Kњ™\ЫЫ™\ЛќР™Uќ]J
+NВ€^XЭ
+ЫЬЩJK››ЭќТ]™P™Y[ђШ[Y
+
+NВ€Hљ[[HВ€љ^\™KљЬЭЫЬЩJ
+NВ€]ШZ]љ^\™Kњќ[›љ[™ОВ€›TЮ[Кљ^\™K›X\[™ФЭЬ™Q\™XЭЬћKИ™XЭ\њЪ]™N€ќYK›ЬЩN€ќYHJNВ€B€JNВ‚€]
+љЩY\И\ЪЭЬ[љ]X[^][Ы€[™^\›[\›™\ЬЩ\И]Z[X›HYќ\€Z[YЭ\ќ\ЫX[ќ\Ш[››Э›Э™H^]‹\Ю[И
+
+HO€В€ЫЫњЭ^]HИЫЩN€KЪYЫ[€ќ[NВ€ЫЫњЭЭЬ›ШЩ\ЬИHљK™›Љ\Ю[И
+
+N€›ЫZ\ЩOЩ™љXЪX[\Щ\ќ™\‘^]€O€В€›ЭИ™]И\њ›ЬЉњЮ[ќ]XИ^][ЫЫ™љ\›YYЉNВ€JNВ€ЫЫњЭЫЫ›™XЭ[ЫЋ€Щ™љXЪX[\Щ\ќ™\ђЫЫ›™XЭ[Ы€HВ€Э[Ћ€™]И\ЬХ›ЭYЪ
+
+K€ЭЭ]€™]И\ЬХ›ЭYЪ
+
+K€Э\њЋ€™]И\ЬХ›ЭYЪ
+
+K€ЫЬЩY€›ЫZ\ЩKњ™\ЫЫ™J^]
+K€ЭЬ›ШЩ\ЬЛ€ЫЬЩN€љK™›Љ
+K€NВ€ЫЫњЭљ^\™HHЬ™X]Qљ^\™JИЬ™X]SЩ™љXЪX[ЫЫ›™XЭ[ЫЋ€
+
+HO€ЫЫ›™XЭ[Ы€JNВ€ЫЫњЭЭ]ЫЫY\О€[љЫ›ЭЫ–ЧHHЧNВ€›ЪYљ^\™Kњќ[›љ[™Лќ[Љ€
+ЫЩJHO€Э]ЫЫY\Лњ\Ъ
+ЫЩJK€
+\њ›ЬЋ€[љЫ›ЭЫЉHO€Э]ЫЫY\Лњ\Ъ
+\њ›ЬЉK€
+NВ€ћHВ€]ШZ]љKќШZ]›ЬЉ
+
+HO€^XЭ
+ЭЬ›ШЩ\ЬКKќТ]™P™Y[ђШ[Y
+
+JNВ€]ШZ]™]И›ЫZ\ЩO›ЪYЉ
+™\ЫЫ™JHO€Щ][[YYX]J™\ЫЫ™JJNВ€^XЭ
+Э]ЫЫY\КKќС\]X[
+ЧJNВ€Ьљ]T™\]Y\Э
+љ^\™K™\ЪЭЬ[њ]В€Y€LK€Y]Щ€љ[љ]X[^™H‹€\[\О€ИЫY[ќ[™›О€И[YN€ЫЩ^Щ\ЪЭЬ‹™\њЪ[ЫЋ€њЮ[ќ]XИ€HK€JNВ€ЫЫњЭ[љ]X[^][Ы”™\ЬЫњЩHH]ШZ]љ^\™KЫЫXЭЬ‹ќШZ]›ЬЉ€
+Y\ЬШYЩJHO€Y\ЬШYЩKљYOOHLK€
+NВ€^XЭ
+[љ]X[^][Ы”™\ЬЫњЩK™\њ›ЬЉKќР™U[™Yљ[™Y
+
+NВ€^XЭ
+[љ]X[^][Ы”™\ЬЫњЩJKќУX]ЪШљ™XЭ
+ИY€LK™\Э[€^XЭ[ћJШљ™XЭ
+HJNВ€Ьљ]T™\]Y\Э
+љ^\™K™\ЪЭЬ[њ]ИY]Щ€љ[љ]X[^™Y‹\[\О€ЯHJNВ€ЫЫњЭ™XYYH]ШZ]Э\ќU™XY
+љ^\™JNВ€ЫЫњЭ\›’YH]ШZ]Э\ќU\›Љљ^\™K™XYY
+NВ€ЫЫњЭЩ\ЬЪ[Ы€Hљ^\™KY\\‹њЩ\ЬЪ[ЫњЦМNВ€Y€
+\Щ\ЬЪ[ЫЉH›ЭИ™]И\њ›ЬЉ‘ZЩHHЩ\ЬЪ[Ы€Ш\И›ЭЬ[™YЉNВ€Щ\ЬЪ[Ы‹\[™^
+™^\›[Э]]\Ь]H[ЫЫ™љ\›YY]]™H^]ЉNВ€Щ\ЬЪ[Ы‹њЭXШЩYY\›Љ
+NВ€]ШZ]љ^\™KЫЫXЭЬ‹ќШZ]›ЬЉ
+Y\ЬШYЩJHO€\›‘]™[ќ
+Y\ЬШYЩKќ\›‹ШЫЫ\]Y‹\›’Y
+JNВ€Ьљ]T™\]Y\Э
+љ^\™K™\ЪЭЬ[њ]ИY€L‹Y]Щ€›[Щ[Ы\Э‹\[\О€ЯHJNВ€]ШZ]^XЭ
+€љ^\™KЫЫXЭЬ‹ќШZ]›ЬЉ
+Y\ЬШYЩJHO€Y\ЬШYЩKљYOOHLЉK€
+Kњ™\ЫЫ™\ЛќУX]ЪШљ™XЭ
+В€Y€L‹€\њ›ЬЋ€ИЫЩN€LМЊHK€JNВ€^XЭ
+Э]ЫЫY\КKќС\]X[
+ЧJNВ€Hљ[[HВ€ЭЬ›ШЩ\ЬЛ›[ШЪТ[\[Y[ќ][ЫЉ\Ю[И
+
+HO€^]
+NВ€љ^\™KљЬЭЫЬЩJ
+NВ€]ШZ]љ^\™Kњќ[›љ[™ЛШ]Ъ
+
+
+HO€[™Yљ[™Y
+NВ€ЫЫ›™XЭ[Ы‹њЭ[‹™\Э›ЮJ
+NВ€ЫЫ›™XЭ[Ы‹њЭЭ]™\Э›ЮJ
+NВ€ЫЫ›™XЭ[Ы‹њЭ\њ‹™\Э›ЮJ
+NВ€›TЮ[Кљ^\™K›X\[™ФЭЬ™Q\™XЭЬћKИ™XЭ\њЪ]™N€ќYK›ЬЩN€ќYHJNВ€B€JNВ‚€]
+љЩY\ИH[љ]X[^™Y\ЪЭЬЫY[ќ]XЪY›ЭYЪX[YЩYXШЫЭ[ќ™XЫЭ™\ћH‹\Ю[И
+
+HO€В€ЫЫњЭ^]H›ЫZ\ЩKќЪ]™\ЫЫ™\њПЩ™љXЪX[\Щ\ќ™\‘^]Љ
+NВ€ЫЫњЭЭ[€H™]И\ЬХ›ЭYЪ
+
+NВ€ЫЫњЭЭЭ]H™]И\ЬХ›ЭYЪ
+
+NВ€ЫЫњЭЭ\њ€H™]И\ЬХ›ЭYЪ
+
+NВ€ЫЫњЭ]]™T™\]Y\ЭО€њЫЫ“Шљ™XЭЧHHЧNВ€Э[‹›ЫЉ™]H‹
+Ъ[љО€ќY™™\ЉHO€В€ЫЫњЭ™\]Y\ЭH”УУ‹њ\њЩJЪ[љЛќФЭљ[™К
+JH\ИњЫЫ“Шљ™XЭВ€]]™T™\]Y\ЭЛњ\Ъ
+™\]Y\Э
+NВ€Y€
+JљY€[€™\]Y\Э
+JH™]\›ЋВ€Ьљ]T™\]Y\Э
+ЭЭ]В€Y€™\]Y\ЭљYПИќ[€™\Э[€™\]Y\Э›Y]ЩOOHљ[љ]X[^™H€ИИ\Щ\ђYЩ[ќ€њЮ[ќ]XЛ[]]™H€H€И]N€ЧHK€JNВ€JNВ€ЫЫњЭЬ™X]PXЪЩ[™HљK™›Љ
+
+N€ЭЫ™YЩ™љXЪX[XЪЩ[™O€
+В€ЫЬЩY€^]њ›ЫZ\ЩK€Э\ќ€\Ю[И
+
+HO€ЯK€ЫЫ›™XЭ€\Ю[И
+
+HO€
+В€Э[‹€ЭЭ]€Э\њ‹€ЫЬЩY€^]њ›ЫZ\ЩK€ЫЬЩN€
+
+HO€ЯK€JK€ЭЬ€\Ю[И
+
+HO€В€Э[‹™[™
+
+NВ€ЭЭ]™[™
+
+NВ€Э\њ‹™[™
+
+NВ€^]њ™\ЫЫ™JИЫЩN€ЪYЫ[€ќ[JNВ€K€JJNВ€ЫЫњЭШЫЬHH™]ИЩ™љXЪX[ќ[ќ[YTШЫЬJВ€\›X[™[ќЫYN€‹ЬЮ[ќ]XЛЬ\›X[™[ќ‹€Ь™X]PXЪЩ[™€Ь™X]PXЪЩ[™›[ШЪТ[\[Y[ќ][Ы“ЫЩJ
+
+HO€В€›ЭИ™]И\њ›ЬЉ”Ю[ќ]XИ[љ]X[Э\ќ\Z[\™HЉNВ€JK€XYЫ›ЬЭXУЭ]]€™]И\ЬХ›ЭYЪ
+
+K€JNВ€ЫЫњЭXШЫЭ[ќЫЫќ›ЫH™]ИЪ[™ЫS]]™PЫЩ^XШЫЭ[ќ
+
+
+HO€
+В€™\њЪ[ЫЋ€‹€Э\њ™[ќXШЫЭ[ќY€ќ[€\ЩN€ШЫЬK™Ш]Kњ\ЩK€™]љ\Ъ[ЫЋ€ШЫЬK™Ш]Kњ™]љ\Ъ[Ы‹€XШЫЭ[ќО€ЧK€JJNВ€ЫЫњЭљ^\™HHЬ™X]Qљ^\™JИЩ™љXЪX[ќ[ќ[YTШЫЬN€ШЫЬKXШЫЭ[ќЫЫќ›ЫJNВ€ЫЫњЭ\[\ИHВ€ЫY[ќ[™›О€И[YN€ЫЩ^Щ\ЪЭЬ‹™\њЪ[ЫЋ€њЮ[ќ]XИ€K€NВ€ћHВ€Ьљ]T™\]Y\Э
+љ^\™K™\ЪЭЬ[њ]ИY€LKY]Щ€љ[љ]X[^™H‹\[\ИJNВ€ЫЫњЭ[љ]X[H]ШZ]љ^\™KЫЫXЭЬ‹ќШZ]›ЬЉ
+Y\ЬШYЩJHO€Y\ЬШYЩKљYOOHLJNВ€^XЭ
+[љ]X[™\њ›ЬЉKќР™U[™Yљ[™Y
+
+NВ€^XЭ
+[љ]X[
+KќУX]ЪШљ™XЭ
+И™\Э[€ИЫЩ^ЫYN€‹ЬЮ[ќ]XЛЬ\›X[™[ќ€HJNВ€^XЭ
+ШЫЬK™Ш]Kњ\ЩJKќР™Jќ[]Z[X›HЉNВ€^XЭ
+Ь™X]PXЪЩ[™
+KќТ]™P™Y[ђШ[YЫЩJ
+NВ€Ьљ]T™\]Y\Э
+љ^\™K™\ЪЭЬ[њ]ИY]Щ€љ[љ]X[^™Y€JNВ€]ШZ]ШЫЬK›ЭЫ™\‹њЭ\ќ
+
+NВ€ШЫЬK™Ш]Kљ[љ]X[^™Y
+
+NВ€^XЭ
+]]™T™\]Y\ЭКKќРЫЫќZ[‘\]X[
+€^XЭ›Шљ™XЭЫЫќZ[љ[™КИY]Щ€љ[љ]X[^™H‹\[\ИJK€
+NВ€^XЭ
+]]™T™\]Y\ЭКKќРЫЫќZ[‘\]X[
+ИY]Щ€љ[љ]X[^™Y€JNВ€Ьљ]T™\]Y\Э
+љ^\™K™\ЪЭЬ[њ]ИY€LЛY]Щ€›[Щ[Ы\Э‹\[\О€ЯHJNВ€]ШZ]^XЭ
+€љ^\™KЫЫXЭЬ‹ќШZ]›ЬЉ
+Y\ЬШYЩJHO€Y\ЬШYЩKљYOOHLКK€
+Kњ™\ЫЫ™\ЛќУX]ЪШљ™XЭ
+В€™\Э[€И]N€ЧHK€JNВ€^XЭ
+љ^\™KЫЫXЭЬ‹›Y\ЬШYЩ\Л™љ[\Љ
+Y\ЬШYЩJHO€Y\ЬШYЩKљYOOHLJJKќТ]™S[™Э
+JNВ€^XЭ
+Ь™X]PXЪЩ[™
+KќТ]™P™Y[ђШ[Y[Y\КЉNВ€Hљ[[HВ€љ^\™KљЬЭЫЬЩJ
+NВ€]ШZ]љ^\™Kњќ[›љ[™ОВ€]ШZ]ШЫЬKЫЬЩJ
+NВ€›TЮ[Кљ^\™K›X\[™ФЭЬ™Q\™XЭЬћKИ™XЭ\њЪ]™N€ќYK›ЬЩN€ќYHJNВ€B€JNВ‚€]
+™Z[њИ™XЫЭ™\™Y]]™HЫЬљИЫ›HYќ\€XЭX[Ьљ]\€^]›ЭHЫ™K\ЪЭЭ\ќ\Z[\™H‹\Ю[И
+
+HO€В€ЫЫњЭ^]H›ЫZ\ЩKќЪ]™\ЫЫ™\њПЩ™љXЪX[\Щ\ќ™\‘^]Љ
+NВ€ЫЫњЭ›ЫЩ€H›ЫZ\ЩKќЪ]™\ЫЫ™\њП[™Yљ[™YЉ
+NВ€ЫЫњЭЭ[€H™]И\ЬХ›ЭYЪ
+
+NВ€ЫЫњЭЭЭ]H™]И\ЬХ›ЭYЪ
+
+NВ€ЫЫњЭЭ\њ€H™]И\ЬХ›ЭYЪ
+
+NВ€Э[‹›ЫЉ™]H‹
+Ъ[љО€ќY™™\ЉHO€В€ЫЫњЭ™\]Y\ЭH”УУ‹њ\њЩJЪ[љЛќФЭљ[™К
+JH\ИњЫЫ“Шљ™XЭВ€Y€
+љY€[€™\]Y\Э
+B€Ьљ]T™\]Y\Э
+ЭЭ]ИY€™\]Y\ЭљYПИќ[™\Э[€И\Щ\ђYЩ[ќ€њЮ[ќ]XЛ[]]™H€HJNВ€JNВ€ЫЫњЭЭЬHљK™›Љ\Ю[И
+
+HO€В€]ШZ]›ЫЩ‹њ›ЫZ\ЩNВ€Э[‹™[™
+
+NВ€ЭЭ]™[™
+
+NВ€Э\њ‹™[™
+
+NВ€JNВ€ЫЫњЭШЫЬHH™]ИЩ™љXЪX[ќ[ќ[YTШЫЬJВ€\›X[™[ќЫYN€‹ЬЮ[ќ]XЛЬ\›X[™[ќ‹€XYЫ›ЬЭXУЭ]]€™]И\ЬХ›ЭYЪ
+
+K€Ь™X]PXЪЩ[™€љB€™›Љ
+
+HO€
+В€ЫЬЩY€^]њ›ЫZ\ЩK€Э\ќ€\Ю[И
+
+HO€ЯK€ЭЬ€ЫЫ›™XЭ€\Ю[И
+
+HO€
+ИЭ[‹ЭЭ]Э\њ‹ЫЬЩY€^]њ›ЫZ\ЩKЫЬЩN€
+
+HO€ЯHJK€JJB€›[ШЪТ[\[Y[ќ][Ы“ЫЩJ
+
+HO€В€›ЭИ™]И\њ›ЬЉ”Ю[ќ]XИ[љ]X[Э\ќ\Z[\™HЉNВ€JK€JNВ€ЫЫњЭљ^\™HHЬ™X]Qљ^\™JИЩ™љXЪX[ќ[ќ[YTШЫЬN€ШЫЬHJNВ€]љ[љ\ЪYH[ЩNВ€›ЪYљ^\™Kњќ[›љ[™Лќ[Љ
+
+HO€В€љ[љ\ЪYHќYNВ€JNВ€ћHВ€Ьљ]T™\]Y\Э
+љ^\™K™\ЪЭЬ[њ]ИY€LKY]Щ€љ[љ]X[^™H‹\[\О€ЯHJNВ€]ШZ]љ^\™KЫЫXЭЬ‹ќШZ]›ЬЉ
+Y\ЬШYЩJHO€Y\ЬШYЩKљYOOHLJNВ€]ШZ]ШЫЬK›ЭЫ™\‹њЭ\ќ
+
+NВ€ШЫЬK™Ш]Kљ[љ]X[^™Y
+
+NВ€Ьљ]T™\]Y\Э
+ЭЭ]В€Y]Щ€ќ\›‹ЬЭ\ќY‹€\[\О€В€™XYY€њЮ[ќ]XЛ[]]™K]™XY‹€\›Ћ€ИY€њЮ[ќ]XЛ[]]™K]\›€‹Э]\О€љ[”›ЩЬ™\ЬИ‹][\О€ЧHK€K€JNВ€]ШZ]љ^\™KЫЫXЭЬ‹ќШZ]›ЬЉ
+Y\ЬШYЩJHO€Y\ЬШYЩK›Y]ЩOOHќ\›‹ЬЭ\ќYЉNВ€ЛИYZ\ЬЪ[Ы€X\Щ\И\™H[™\[™[ќњ›ЫHHЬЭ	ЬИXЭ]™KU\›€Z[љ[™Л‚€^XЭ
+ШЫЬK™Ш]Kќ\ЮJKќР™J[ЩJNВ€^]њ™\ЫЫ™JИЫЩN€KЪYЫ[€ќ[JNВ€]ШZ]љKќШZ]›ЬЉ
+
+HO€^XЭ
+ЭЬ
+KќТ]™P™Y[ђШ[YЫЩJ
+JNВ€љ^\™KљЬЭ™\ШЫЫ›™XЭ
+
+NВ€]ШZ]™]И›ЫZ\ЩO›ЪYЉ
+™\ЫЫ™JHO€Щ][[YYX]J™\ЫЫ™JJNВ€^XЭ
+љ[љ\ЪY
+KќР™J[ЩJNВ€^XЭ
+ШЫЬK™Ш]Kќ\ЮJKќР™J[ЩJNВ€›ЫЩ‹њ™\ЫЫ™J[™Yљ[™Y
+NВ€]ШZ]ШЫЬK›ЭЫ™\‹њЭЬ
+
+NВ€]ШZ]љKќШZ]›ЬЉ
+
+HO€^XЭ
+љ[љ\ЪY
+KќР™JќYJJNВ€Hљ[[HВ€^]њ™\ЫЫ™JИЫЩN€KЪYЫ[€ќ[JNВ€›ЫЩ‹њ™\ЫЫ™J[™Yљ[™Y
+NВ€љ^\™KљЬЭЫЬЩJ
+NВ€]ШZ]љ^\™Kњќ[›љ[™ОВ€]ШZ]ШЫЬKЫЬЩJ
+NВ€›TЮ[Кљ^\™K›X\[™ФЭЬ™Q\™XЭЬћKИ™XЭ\њЪ]™N€ќYK›ЬЩN€ќYHJNВ€B€JNВ‚€]
+љЩY\ИЬЭ[]™HЪ[€Щ™љXЪX[\\Щ\ќ™\€Э]]ЫЬЩ\И™Y›Ь™H\ЪЭЬ[њ]‹\Ю[И
+
+HO€В€ЫЫњЭљ^\™HHЬ™X]Qљ^\™J
+NВ‚€ћHВ€]ШZ]љKќШZ]›ЬЉ
+
+HO€^XЭ
+љ^\™KњЬ]Ы“Щ™љXЪX[
+KќТ]™P™Y[ђШ[YЫЩJ
+JNВ€љ^\™K›Щ™љXЪX[њЭЭ]™[™
+
+NВ‚€ЫЫњЭЭ]ЫЫYHH]ШZ]›ЫZ\ЩKњXЩJВ€љ^\™Kњќ[›љ[™Л€™]И›ЫZ\ЩOќ[YY[Э]ЏЉ
+™\ЫЫ™JHO€В€Щ][Y[Э]
+
+
+HO€™\ЫЫ™Jќ[YY[Э]ЉKL
+NВ€JK€JNВ‚€^XЭ
+Э]ЫЫYJKќР™Jќ[YY[Э]ЉNВ€^XЭ
+љ^\™K™\ЪЭЬ[њ]™\Э›ЮYY
+KќР™J[ЩJNВ€^XЭ
+љ^\™K›Щ™љXЪX[љЪ[
+KќТ]™P™Y[ђШ[YЪ]
+”ТQХT“HЉNВ€Hљ[[HВ€љ^\™KљЬЭЫЬЩJ
+NВ€]ШZ]љ^\™Kњќ[›љ[™ОВ€›TЮ[Кљ^\™K›X\[™ФЭЬ™Q\™XЭЬћKИ™XЭ\њЪ]™N€ќYK›ЬЩN€ќYHJNВ€B€JNВ‚€]
+љЩY\ИЬЭ[]™HЪ[€Щ™љXЪX[Э]]ЫЬЩ\ИЪ[H\ЪЭЬЭ]]\ИXЪЬ™\ЬЭ\™Y‹\Ю[И
+
+HO€В€ЫЫњЭљ^\™HHЬ™X]Qљ^\™JИ\ЪЭЬЭ]]€™]И\ЬХ›ЭYЪ
+ИYЪШ]\“X\љО€HJHJNВ‚€ћHВ€]ШZ]љKќШZ]›ЬЉ
+
+HO€^XЭ
+љ^\™KњЬ]Ы“Щ™љXЪX[
+KќТ]™P™Y[ђШ[YЫЩJ
+JNВ€љ^\™K™\ЪЭЬЭ]]њ]\ЩJ
+NВ€љ^\™K›Щ™љXЪX[њЭЭ]ќЬљ]J€	Т”УУ‹њЭљ[™ЪYћJИY]Щ€њЮ[ќ]XЛЩ]™[ќ‹\[\О€И^[ШY€ћ‹њ™\X]
+М—ННЋ
+HHJ_W€
+NВ€]ШZ]љKќШZ]›ЬЉ
+
+HO‚€^XЭ
+љ^\™K™\ЪЭЬЭ]]›\Э[™\ђЫЭ[ќ
+™Z[€ЉJKќР™QЬ™X]\•[Љ
+K€
+NВ€љ^\™K›Щ™љXЪX[њЭЭ]™[™
+
+NВ‚€ЫЫњЭЭ]ЫЫYHH]ШZ]›ЫZ\ЩKњXЩJВ€љ^\™Kњќ[›љ[™Л€™]И›ЫZ\ЩOќ[YY[Э]ЏЉ
+™\ЫЫ™JHO€В€Щ][Y[Э]
+
+
+HO€™\ЫЫ™Jќ[YY[Э]ЉKWМ
+NВ€JK€JNВ‚€^XЭ
+Э]ЫЫYJKќР™Jќ[YY[Э]ЉNВ€^XЭ
+љ^\™K™\ЪЭЬ[њ]™\Э›ЮYY
+KќР™J[ЩJNВ€^XЭ
+љ^\™K›Щ™љXЪX[љЪ[
+KќТ]™P™Y[ђШ[YЪ]
+”ТQХT“HЉNВ€Hљ[[HВ€љ^\™KљЬЭЫЬЩJ
+NВ€љ^\™K™\ЪЭЬЭ]]њ™\Э[YJ
+NВ€]ШZ]љ^\™Kњќ[›љ[™ОВ€›TЮ[Кљ^\™K›X\[™ФЭЬ™Q\™XЭЬћKИ™XЭ\њЪ]™N€ќYK›ЬЩN€ќYHJNВ€B€JNВ‚€]
+љЩY\ИЬЭ[]™HЪ[€HЩ™љXЪX[\\Щ\ќ™\€^]ИЪ[H]ИЭ]]Э^\ИЬ[€‹\Ю[И
+
+HO€В€ЫЫњЭљ^\™HHЬ™X]Qљ^\™J
+NВ‚€ћHВ€]ШZ]љKќШZ]›ЬЉ
+
+HO€^XЭ
+љ^\™KњЬ]Ы“Щ™љXЪX[
+KќТ]™P™Y[ђШ[YЫЩJ
+JNВ€^XЭ
+€љ^\™K›Щ™љXЪX[њЭ[‹ќЬљ]JќY™™\‹[ШКљ^\™K›Щ™љXЪX[њЭ[‹ќЬљ]X›RYЪШ]\“X\љКJK€
+KќР™J[ЩJNВ€Ьљ]T™\]Y\Э
+љ^\™K™\ЪЭЬ[њ]ИY€LY]Щ€›[Щ[Ы\Э‹\[\О€ЯHJNВ€]ШZ]љKќШZ]›ЬЉ
+
+HO‚€^XЭ
+љ^\™K›Щ™љXЪX[њЭ[‹›\Э[™\ђЫЭ[ќ
+™Z[€ЉJKќР™QЬ™X]\•[Љ
+K€
+NВ€љ^\™K›Щ™љXЪX[™[Z]
+™^]‹ќ[
+NВ‚€ЫЫњЭЭ]ЫЫYHH]ШZ]›ЫZ\ЩKњXЩJВ€љ^\™Kњќ[›љ[™Л€™]И›ЫZ\ЩOќ[YY[Э]ЏЉ
+™\ЫЫ™JHO€В€Щ][Y[Э]
+
+
+HO€™\ЫЫ™Jќ[YY[Э]ЉKWМ
+NВ€JK€JNВ‚€^XЭ
+Э]ЫЫYJKќР™Jќ[YY[Э]ЉNВ€^XЭ
+љ^\™K™\ЪЭЬ[њ]™\Э›ЮYY
+KќР™J[ЩJNВ€^XЭ
+љ^\™KњЬ]Ы“Щ™љXЪX[
+KќТ]™P™Y[ђШ[YЫЩJ
+NВ€^XЭ
+љ^\™K›Щ™љXЪX[њЭЭ]™\Э›ЮYY
+KќР™JќYJNВ€ЛИHЫЫ™љ\›YY^]™[X\Щ\И›ШЩ\ЬИЭЫ™\њЪ\ИИ›ЭЪYЫ[]YШZ[‹‚€^XЭ
+љ^\™K›Щ™љXЪX[љЪ[
+K››ЭќТ]™P™Y[ђШ[Y
+
+NВ€Hљ[[HВ€љ^\™KљЬЭЫЬЩJ
+NВ€]ШZ]љ^\™Kњќ[›љ[™ОВ€›TЮ[Кљ^\™K›X\[™ФЭЬ™Q\™XЭЬћKИ™XЭ\њЪ]™N€ќYK›ЬЩN€ќYHJNВ€B€JNВ‚€]
+љЩY\И\ЪЭЬYљ\њЭЩ™љXЪX[\\Щ\ќ™\€Ъ]ЭЫ€ЭXШЩ\ЬЩќ[‹\Ю[И
+
+HO€В€ЫЫњЭљ^\™HHЬ™X]Qљ^\™J
+NВ‚€ћHВ€]ШZ]љKќШZ]›ЬЉ
+
+HO€^XЭ
+љ^\™KњЬ]Ы“Щ™љXЪX[
+KќТ]™P™Y[ђШ[YЫЩJ
+JNВ€љ^\™K™\ЪЭЬ[њ]™[™
+
+NВ‚€]ШZ]^XЭ
+љ^\™Kњќ[›љ[™КKњ™\ЫЫ™\ЛќР™J
+NВ€Hљ[[HВ€љ^\™KљЬЭЫЬЩJ
+NВ€]ШZ]љ^\™Kњќ[›љ[™ОВ€›TЮ[Кљ^\™K›X\[™ФЭЬ™Q\™XЭЬћKИ™XЭ\њЪ]™N€ќYK›ЬЩN€ќYHJNВ€B€JNВ‚€]
+Ш[€Ъ\™HЫ™H[љ]X[^™YX\[™ИЭЬ™HXЬ›ЬЬИЫЫЭ\њ™[ќ™[[ЭHЩ\ЬЪ[ЫњИ‹\Ю[И
+
+HO€В€ЫЫњЭ\™XЭЬћHHZЩ[\Ю[К]љ›Ъ[Љ\\Љ
+KЫЩ^ЬЭZЬЭ\Ъ\™YHЉJNВ€ЫЫњЭX\[™ФЭЬ™HH™]ИX\[™ФЭЬ™JИ\™XЭЬћHJNВ€]ШZ]X\[™ФЭЬ™Kљ[љ]X[^™J
+NВ€ЫЫњЭЫЬЩHHљKњЬSЫЉX\[™ФЭЬ™KЫЬЩHЉNВ€ЫЫњЭXЪЩ[™ЫЬЩYH›ЫZ\ЩKќЪ]™\ЫЫ™\њПЩ™љXЪX[\Щ\ќ™\‘^]Љ
+NВ€ЫЫњЭЫЫ›™XЭ[ЫњИH™]ИЩ]Щ™љXЪX[\Щ\ќ™\ђЫЫ›™XЭ[ЫЏЉ
+NВ€ЫЫњЭЩ™љXЪX[ќ[ќ[YTШЫЬHH™]ИЩ™љXЪX[ќ[ќ[YTШЫЬJВ€\›X[™[ќЫYN€‹ЬЮ[ќ]XЛЬЪ\™YZЫYH‹€XYЫ›ЬЭXУЭ]]€™]И\ЬХ›ЭYЪ
+
+K€Ь™X]PXЪЩ[™€
+
+N€ЭЫ™YЩ™љXЪX[XЪЩ[™O€
+В€ЫЬЩY€XЪЩ[™ЫЬЩYњ›ЫZ\ЩK€\Ю[ИЭ\ќ
+
+HЯK€\Ю[ИЫЫ›™XЭ
+
+HВ€ЫЫњЭЭ[€H™]И\ЬХ›ЭYЪ
+
+NВ€ЫЫњЭЭЭ]H™]И\ЬХ›ЭYЪ
+
+NВ€ЫЫњЭЭ\њ€H™]И\ЬХ›ЭYЪ
+
+NВ€ЫЫњЭЫЬЩYH›ЫZ\ЩKќЪ]™\ЫЫ™\њПЩ™љXЪX[\Щ\ќ™\‘^]Љ
+NВ€ЫЫњЭЫЫ›™XЭ[ЫЋ€Щ™љXЪX[\Щ\ќ™\ђЫЫ›™XЭ[Ы€HВ€Э[‹€ЭЭ]€Э\њ‹€ЫЬЩY€ЫЬЩYњ›ЫZ\ЩK€ЫЬЩJ
+HВ€Э[‹™[™
+
+NВ€ЭЭ]™[™
+
+NВ€Э\њ‹™[™
+
+NВ€ЫЬЩYњ™\ЫЫ™JИЫЩN€ЪYЫ[€ќ[JNВ€ЫЫ›™XЭ[ЫњЛ™[]JЫЫ›™XЭ[ЫЉNВ€K€NВ€ЫЫ›™XЭ[ЫњЛY
+ЫЫ›™XЭ[ЫЉNВ€™]\›€ЫЫ›™XЭ[ЫЋВ€K€\Ю[ИЭЬ
+
+HВ€›Ь€
+ЫЫњЭЫЫ›™XЭ[Ы€Щ€Л‹‹ЫЫ›™XЭ[ЫњЧJHЫЫ›™XЭ[Ы‹ЫЬЩJ
+NВ€XЪЩ[™ЫЬЩYњ™\ЫЫ™JИЫЩN€ЪYЫ[€ќ[JNВ€K€JK€JNВ€ЫЫњЭXШЫЭ[ќЫЫќ›ЫH™]ИЪ[™ЫS]]™PЫЩ^XШЫЭ[ќ
+
+
+HO€
+В€™\њЪ[ЫЋ€‹€Э\њ™[ќXШЫЭ[ќY€ќ[€\ЩN€Щ™љXЪX[ќ[ќ[YTШЫЬK™Ш]Kњ\ЩK€™]љ\Ъ[ЫЋ€Щ™љXЪX[ќ[ќ[YTШЫЬK™Ш]Kњ™]љ\Ъ[Ы‹€XШЫЭ[ќО€ЧK€JJNВ€ЛИ\ИЪXЪЬИЪ\™YX\[™ИЭЬ™HY™][YHЪ]^XЪ]Ъ\™YЬЭЫЫ\ЬЪ][Ы‹‚€ЫЫњЭљ\њЭHЬ™X]Qљ^\™JВ€X\[™ФЭЬ™K€X\[™ФЭЬ™Q\™XЭЬћN€\™XЭЬћK€ЫЬЩSX\[™ФЭЬ™SЫ‘^]€[ЩK€Щ™љXЪX[ќ[ќ[YTШЫЬK€XШЫЭ[ќЫЫќ›Ы€JNВ€ЫЫњЭЩXЫЫ™HЬ™X]Qљ^\™JВ€X\[™ФЭЬ™K€X\[™ФЭЬ™Q\™XЭЬћN€\™XЭЬћK€ЫЬЩSX\[™ФЭЬ™SЫ‘^]€[ЩK€Щ™љXЪX[ќ[ќ[YTШЫЬK€XШЫЭ[ќЫЫќ›Ы€JNВ‚€ћHВ€]ШZ]›ЫZ\ЩK[
+ШЫЬЩQљ^\™Jљ\њЭ
+KЫЬЩQљ^\™JЩXЫЫ™
+WJNВ€^XЭ
+ЫЬЩJK››ЭќТ]™P™Y[ђШ[Y
+
+NВ€Hљ[[HВ€]ШZ]Щ™љXЪX[ќ[ќ[YTШЫЬKЫЬЩJ
+NВ€]ШZ]X\[™ФЭЬ™KЫЬЩJ
+NВ€›TЮ[К\™XЭЬћKИ™XЭ\њЪ]™N€ќYK›ЬЩN€ќYHJNВ€B€JNВ‚€]
+њ›Э]\Иљ^Y\]HЫЫќ›ЫИШШ[HЪ]Э]™\]Y\Э[™И\ЪЭЬ]Z]‹\Ю[И
+
+HO€В€ЫЫњЭ\]PЫЫЬ™[]ЬЋ€ЬЭ\]PЫЫЬ™[]Ь€HВ€ЪXЪО€љK™›Љ\Ю[И
+
+HO€
+В€Э\њ™[ќ™\њЪ[ЫЋ€ЊKЊ‹Њ€‹€[њЭ[][ЫЋ€›њH€\ИЫЫњЭ€]\Э™\њЪ[ЫЋ€ЊKЊ‹ЊИ‹€\]P]Z[X›N€ќYK€[њЭ[][Ыђ]Z[X›N€ќYK€™[X\ЩS›Э\О€”ШY™\€\]\И‹€™[X\ЩS›Э\Х\›€љО‹ЛЩЪ]X‹ЫЫKРћ]T[Ы™Y\‹PRKШЫЩ^ZЬЭЬ™[X\Щ\ЛЭYЛЭЊKЊ‹ЊИ‹€Э]\О€ќ[€\њ›ЬЋ€ќ[€JJK€Э\ќ€љK™›Љ\Ю[И
+
+HO€
+В€Э]\О€В€™\њЪ[ЫЋ€ЊKЊ‹ЊИ‹€[њЭ[][ЫЋ€›њH€\ИЫЫњЭ€\ЩN€њ™\\™Y€\ИЫЫњЭ€\]Y]€L€\њ›ЬЋ€ќ[€K€JJK€Э]\О€љK™›Љ\Ю[И
+
+HO€
+ИЭ]\О€ќ[JJK€NВ€ЫЫњЭљ^\™HHЬ™X]Qљ^\™JИ\]PЫЫЬ™[]Ь€JNВ‚€Ьљ]T™\]Y\Э
+љ^\™K™\ЪЭЬ[њ]В€Y€Њ€Y]Щ€ЫЩ^ЬЭЭ\]KШЪXЪИ‹€\[\О€ЯK€JNВ€]ШZ]^XЭ
+€љ^\™KЫЫXЭЬ‹ќШZ]›ЬЉ
+Y\ЬШYЩJHO€™\]Y\ЭY
+Y\ЬШYЩKЊ
+JK€
+Kњ™\ЫЫ™\ЛќУX]ЪШљ™XЭ
+И™\Э[€И]\Э™\њЪ[ЫЋ€ЊKЊ‹ЊИ‹\]P]Z[X›N€ќYHHJNВ‚€Ьљ]T™\]Y\Э
+љ^\™K™\ЪЭЬ[њ]В€Y€ЊK€Y]Щ€ЫЩ^ЬЭЭ\]KЬЭ\ќ‹€\[\О€ЯK€JNВ€]ШZ]^XЭ
+€љ^\™KЫЫXЭЬ‹ќШZ]›ЬЉ
+Y\ЬШYЩJHO€™\]Y\ЭY
+Y\ЬШYЩKЊJJK€
+Kњ™\ЫЫ™\ЛќУX]ЪШљ™XЭ
+И™\Э[€ИЭ]\О€И\ЩN€њ™\\™Y€HHJNВ€^XЭ
+\]PЫЫЬ™[]Ь‹њЭ\ќ
+KќТ]™P™Y[ђШ[YЫЩJ
+NВ€]ШZ]ЭЬљ^\™Jљ^\™JNВ€JNВ‚€]
+њ™Z™XЭИљ]љ[YЩY\]H\[\И[™[]Z[X›HЫЫ\ЬЪ][Ы€‹\Ю[И
+
+HO€В€ЫЫњЭљ^\™HHЬ™X]Qљ^\™J
+NВ€Ьљ]T™\]Y\Э
+љ^\™K™\ЪЭЬ[њ]В€Y€Њ‹€Y]Щ€ЫЩ^ЬЭЭ\]KЬЭ\ќ‹€\[\О€И\›€љО‹ЛЩ^[\KЫЫKЭ\]K™^H€K€JNВ€]ШZ]^XЭ
+€љ^\™KЫЫXЭЬ‹ќШZ]›ЬЉ
+Y\ЬШYЩJHO€™\]Y\ЭY
+Y\ЬШYЩKЊЉJK€
+Kњ™\ЫЫ™\ЛќУX]ЪШљ™XЭ
+И\њ›ЬЋ€ИЫЩN€LМЌЊ€HJNВ‚€Ьљ]T™\]Y\Э
+љ^\™K™\ЪЭЬ[њ]В€Y€Ќ€Y]Щ€ЫЩ^ЬЭЭ\]KЬЭ]\И‹€\[\О€ќ[€JNВ€]ШZ]^XЭ
+€љ^\™KЫЫXЭЬ‹ќШZ]›ЬЉ
+Y\ЬШYЩJHO€™\]Y\ЭY
+Y\ЬШYЩKЌ
+JK€
+Kњ™\ЫЫ™\ЛќУX]ЪШљ™XЭ
+И\њ›ЬЋ€ИЫЩN€LМЌЊ€HJNВ‚€Ьљ]T™\]Y\Э
+љ^\™K™\ЪЭЬ[њ]В€Y€ЊЛ€Y]Щ€ЫЩ^ЬЭЭ\]KШЪXЪИ‹€\[\О€ЯK€JNВ€]ШZ]^XЭ
+€љ^\™KЫЫXЭЬ‹ќШZ]›ЬЉ
+Y\ЬШYЩJHO€™\]Y\ЭY
+Y\ЬШYЩKЊКJK€
+Kњ™\ЫЫ™\ЛќУX]ЪШљ™XЭ
+И\њ›ЬЋ€ИЫЩN€LМЊLHJNВ€]ШZ]ЭЬљ^\™Jљ^\™JNВ€JNВ‚€]
+љ[™\ИH[њЬXЭ[Ы€ШШ[HЪ]Э]Ь[љ[™ИH™XYЩ\ЬЪ[Ы€‹\Ю[И
+
+HO€В€ЫЫњЭљ^\™HHЬ™X]Qљ^\™J
+NВ€ЫЫњЭЩ™љXЪX[Ьљ]HHљK™›Љ
+NВ€љ^\™K›Щ™љXЪX[њЭ[‹›ЫЉ™]H‹Щ™љXЪX[Ьљ]JNВ‚€Ьљ]T™\]Y\Э
+љ^\™K™\ЪЭЬ[њ]В€Y€М€Y]Щ€ЫЩ^ЬЭЪ\›™\ЬЛЪ[њЬXЭ‹€\[\О€И\›™\ЬТY€њH‹ЭЩ€‹ЬЮ[ќ]XИ‹™Yњ™\Ъ€ќYHK€JNВ€]ШZ]^XЭ
+€љ^\™KЫЫXЭЬ‹ќШZ]›ЬЉ
+Y\ЬШYЩJHO€™\]Y\ЭY
+Y\ЬШYЩKМ
+JK€
+Kњ™\ЫЫ™\ЛќУX]ЪШљ™XЭ
+В€™\Э[€В€Э]\О€њ™XYH‹€Ш][ЩО€И[Щ[О€ЮИX™[€‘ZЩHљ[X\ћH€KИX™[€‘ZЩHЩXЫЫ™\ћH€WHK€Ш\Xљ[]Y\О€В€ЫЫ™љYЭ\][ЫЋ€ИЩ[XЭ[Щ[€ќYKЩ[XЭ[љЪ[™УЬ[ЫЋ€ќYHK€\ЭЬћN€И›ЬљО€ќYK›ЬљРXЬ›ЬЬРЭЩ€ќYK›ЫXЪУ\Э\›Ћ€[ЩHK€K€K€JNВ€^XЭ
+љ^\™KY\\‹љ[њЬXЭ[ЫђШ[КKќР™JJNВ€^XЭ
+љ^\™KY\\‹њЩ\ЬЪ[ЫњКKќТ]™S[™Э
+
+NВ€^XЭ
+Щ™љXЪX[Ьљ]JK››ЭќТ]™P™Y[ђШ[Y
+
+NВ€]ШZ]ЭЬљ^\™Jљ^\™JNВ€JNВ‚€]
+™\Ь]Ъ\И[њЬXЭ[Ы€ћH™YЪ\Э\™Y\›™\ЬИQ[™™Z™XЭИ[љЫ›ЭЫ€\›™\ЬЩ\И‹\Ю[И
+
+HO€В€ЫЫњЭHH™]ИZЩR\›™\ЬРY\\Љ\›™\ЬТYШЪ[XKњ\њЩJњHЉJNВ€ЫЫњЭЫ]YHH™]ИZЩR\›™\ЬРY\\Љ\›™\ЬТYШЪ[XKњ\њЩJЫ]YKXЫЩHЉJNВ€ЫЫњЭљ^\™HHЬ™X]Qљ^\™JВ€^\›[Y\\њО€™]ИX\^\›[\›™\ЬТYZЩR\›™\ЬРY\\ЏЉВ€ИњH‹WK€ИЫ]YKXЫЩH‹Ы]YWK€JK€JNВ‚€Ьљ]T™\]Y\Э
+љ^\™K™\ЪЭЬ[њ]В€Y€МK€Y]Щ€ЫЩ^ЬЭЪ\›™\ЬЛЪ[њЬXЭ‹€\[\О€И\›™\ЬТY€Ы]YKXЫЩH‹ЭЩ€‹ЬЮ[ќ]XЛXЫ]YH€K€JNВ€]ШZ]^XЭ
+€љ^\™KЫЫXЭЬ‹ќШZ]›ЬЉ
+Y\ЬШYЩJHO€™\]Y\ЭY
+Y\ЬШYЩKМJJK€
+Kњ™\ЫЫ™\ЛќУX]ЪШљ™XЭ
+И™\Э[€ИЭ]\О€њ™XYH€HJNВ€^XЭ
+Ы]YKљ[њЬXЭ[ЫђШ[КKќР™JJNВ€^XЭ
+Kљ[њЬXЭ[ЫђШ[КKќР™J
+NВ‚€Ьљ]T™\]Y\Э
+љ^\™K™\ЪЭЬ[њ]В€Y€М‹€Y]Щ€ЫЩ^ЬЭЪ\›™\ЬЛЪ[њЬXЭ‹€\[\О€И\›™\ЬТY€ќ[њ™YЪ\Э\™Y€K€JNВ€]ШZ]^XЭ
+€љ^\™KЫЫXЭЬ‹ќШZ]›ЬЉ
+Y\ЬШYЩJHO€™\]Y\ЭY
+Y\ЬШYЩKМЉJK€
+Kњ™\ЫЫ™\ЛќУX]ЪШљ™XЭ
+В€\њ›ЬЋ€ИЫЩN€LМЊНЛY\ЬШYЩN€’\›™\ЬИ	Э[њ™YЪ\Э\™Y	И\И[]Z[X›H€K€JNВ€]ШZ]ЭЬљ^\™Jљ^\™JNВ€JNВ‚€]
+›Ь[њИH\›™\ЬИЩX€RHЪ]Э]™]\›љ[™ИЬ€XЪЪ[™И]ИЬ™Y[ќX[‹\Ю[И
+
+HO€В€ЫЫњЭY\\€H™]ИЩX•ZR\›™\ЬРY\\Љ\›™\ЬТYШЪ[XKњ\њЩJ™Y\ЩYZЛZ\›™\ЬИЉJNВ€ЫЫњЭљ^\™HHЬ™X]Qљ^\™JВ€^\›[Y\\њО€™]ИX\^\›[\›™\ЬТYZЩR\›™\ЬРY\\ЏЉВ€И™Y\ЩYZЛZ\›™\ЬИ‹Y\\—K€JK€JNВ‚€Ьљ]T™\]Y\Э
+љ^\™K™\ЪЭЬ[њ]В€Y€НЛ€Y]Щ€ЫЩ^ЬЭЪ\›™\ЬЛЭЩX‹]ZKЫЬ[€‹€\[\О€И\›™\ЬТY€™Y\ЩYZЛZ\›™\ЬИ€K€JNВ€]ШZ]^XЭ
+љ^\™KЫЫXЭЬ‹ќШZ]›ЬЉ
+Y\ЬШYЩJHO€™\]Y\ЭY
+Y\ЬШYЩKНКJJKњ™\ЫЫ™\ЛќС\]X[
+В€Y€НЛ€™\Э[€ЯK€JNВ€^XЭ
+Y\\‹›Ь[ђШ[КKќР™JJNВ‚€ЫЫњЭШ[\ћHH”СPФ‘UРРSђT–HЋВ€Ьљ]T™\]Y\Э
+љ^\™K™\ЪЭЬ[њ]В€Y€О€Y]Щ€ЫЩ^ЬЭЪ\›™\ЬЛЭЩX‹]ZKЫЬ[€‹€\[\О€И\›™\ЬТY€™Y\ЩYZЛZ\›™\ЬИ‹\›€‹ЛМLЌЛЊЊЊKПЭЪЩ[ЏIШШ[\ћ_XK€JNВ€]ШZ]^XЭ
+€љ^\™KЫЫXЭЬ‹ќШZ]›ЬЉ
+Y\ЬШYЩJHO€™\]Y\ЭY
+Y\ЬШYЩKО
+JK€
+Kњ™\ЫЫ™\ЛќУX]ЪШљ™XЭ
+И\њ›ЬЋ€ИЫЩN€LМЌЊ€HJNВ€^XЭ
+Y\\‹›Ь[ђШ[КKќР™JJNВ‚€Y\\‹™Z[\™SY\ЬШYЩHHZ[Y™X\€ЭЪЩ[ЏIШШ[\ћ_XВ€Ьљ]T™\]Y\Э
+љ^\™K™\ЪЭЬ[њ]В€Y€ОK€Y]Щ€ЫЩ^ЬЭЪ\›™\ЬЛЭЩX‹]ZKЫЬ[€‹€\[\О€И\›™\ЬТY€™Y\ЩYZЛZ\›™\ЬИ€K€JNВ€]ШZ]^XЭ
+љ^\™KЫЫXЭЬ‹ќШZ]›ЬЉ
+Y\ЬШYЩJHO€™\]Y\ЭY
+Y\ЬШYЩKОJJJKњ™\ЫЫ™\ЛќС\]X[
+В€Y€ОK€\њ›ЬЋ€ИЫЩN€LМЊL‹Y\ЬШYЩN€’\›™\ЬИЩX€RHЫЭ[›Э™HЬ[™Y€K€JNВ€^XЭ
+”УУ‹њЭљ[™ЪYћJљ^\™KЫЫXЭЬ‹›Y\ЬШYЩ\КJK››ЭќРЫЫќZ[ЉШ[\ћJNВ€]ШZ]ЭЬљ^\™Jљ^\™JNВ€JNВ‚€]
+›\ЭИ[™[\ЬќИH[Щ\›€Y\ЩYZИЩ\ЬЪ[Ы€\И›ЭШYYY]Y]H‹\Ю[И
+
+HO€В€ЫЫњЭY\\€H™]И[Щ\›”Щ\ЬЪ[Ы’[\ЬќY\\Љ\›™\ЬТYШЪ[XKњ\њЩJ™Y\ЩYZЛZ\›™\ЬИЉJNВ€Y\\‹Ш[™Y]\ИHВ€В€]]™TЩ\ЬЪ[Ы’Y€›]]™KZ[\Ьќ‹€]N€’[\ЬќY\ЭЬћH‹€\]Y]€LЊЛ€ЭЩ€]њ™\ЫЫ™Jљ[\Ьќ]ЫЬљЬЬXЩHЉK€ќ[›љ[™О€[ЩK€K€NВ€ЫЫњЭљ^\™HHЬ™X]Qљ^\™JВ€^\›[Y\\њО€™]ИX\^\›[\›™\ЬТYZЩR\›™\ЬРY\\ЏЉВ€И™Y\ЩYZЛZ\›™\ЬИ‹Y\\—K€JK€JNВ€ЫЫњЭЩ™љXЪX[Ьљ]HHљK™›Љ
+NВ€љ^\™K›Щ™љXЪX[њЭ[‹›ЫЉ™]H‹Щ™љXЪX[Ьљ]JNВ‚€Ьљ]T™\]Y\Э
+љ^\™K™\ЪЭЬ[њ]В€Y€€Y]Щ€ЫЩ^ЬЭЩY\ЩYZЛЫ[Щ\›‹\Щ\ЬЪ[Ы‹Ы\Э‹€\[\О€ЯK€JNВ€]ШZ]^XЭ
+љ^\™KЫЫXЭЬ‹ќШZ]›ЬЉ
+Y\ЬШYЩJHO€™\]Y\ЭY
+Y\ЬШYЩK
+JJKњ™\ЫЫ™\ЛќС\]X[
+В€Y€€™\Э[€ИШ[™Y]\О€Y\\‹Ш[™Y]\ИK€JNВ€Ьљ]T™\]Y\Э
+љ^\™K™\ЪЭЬ[њ]В€Y€K€Y]Щ€ЫЩ^ЬЭЩY\ЩYZЛЫ[Щ\›‹\Щ\ЬЪ[Ы‹Ъ[\Ьќ‹€\[\О€И]]™TЩ\ЬЪ[Ы’Y€›]]™KZ[\Ьќ€K€JNВ€ЫЫњЭ™\ЬЫњЩHH]ШZ]љ^\™KЫЫXЭЬ‹ќШZ]›ЬЉ
+Y\ЬШYЩJHO€™\]Y\ЭY
+Y\ЬШYЩKJJNВ€^XЭ
+™\ЬЫњЩJKќУX]ЪШљ™XЭ
+И™\Э[€И™XYY€^XЭ[ћJЭљ[™КHHJNВ€ЫЫњЭ™XYYH
+™\ЬЫњЩKњ™\Э[\ИњЫЫ“Шљ™XЭ
+Kќ™XYYВ€ЫЫњЭЭ\ќYH]ШZ]љ^\™KЫЫXЭЬ‹ќШZ]›ЬЉ€
+Y\ЬШYЩJHO‚€Y]Щ
+Y\ЬШYЩKќ™XYЬЭ\ќYЉH	‰‚€
+Y\ЬШYЩT\[\КY\ЬШYЩJKќ™XY\ИњЫЫ“Шљ™XЭ[™Yљ[™Y
+OЛљYOOH™XYY€
+NВ€^XЭ
+Y\ЬШYЩT\[\КЭ\ќY
+Kќ™XY
+KќУX]ЪШљ™XЭ
+В€Y€™XYY€Э]\О€И\N€››ЭШYY€K€ЭЩ€]њ™\ЫЫ™Jљ[\Ьќ]ЫЬљЬЬXЩHЉK€[YN€’[\ЬќY\ЭЬћH‹€\›њО€ЧK€JNВ€^XЭ
+љ^\™KЫЫXЭЬ‹›Y\ЬШYЩ\Лљ[™^ЩЉ™\ЬЫњЩJJKќР™S\ЬХ[Љ€љ^\™KЫЫXЭЬ‹›Y\ЬШYЩ\Лљ[™^ЩЉЭ\ќY
+K€
+NВ€^XЭ
+Y\\‹њЩ\ЬЪ[ЫњКKќТ]™S[™Э
+
+NВ€^XЭ
+Щ™љXЪX[Ьљ]JK››ЭќТ]™P™Y[ђШ[Y
+
+NВ‚€Ьљ]T™\]Y\Э
+љ^\™K™\ЪЭЬ[њ]В€Y€Л€Y]Щ€ЫЩ^ЬЭЩY\ЩYZЛЫ[Щ\›‹\Щ\ЬЪ[Ы‹Ъ[\Ьќ‹€\[\О€И]]™TЩ\ЬЪ[Ы’Y€›]]™KZ[\Ьќ€K€JNВ€]ШZ]^XЭ
+љ^\™KЫЫXЭЬ‹ќШZ]›ЬЉ
+Y\ЬШYЩJHO€™\]Y\ЭY
+Y\ЬШYЩKКJJKњ™\ЫЫ™\ЛќС\]X[
+В€Y€Л€™\Э[€И™XYYK€JNВ€^XЭ
+€љ^\™KЫЫXЭЬ‹›Y\ЬШYЩ\Л™љ[\Љ€
+Y\ЬШYЩJHO‚€Y]Щ
+Y\ЬШYЩKќ™XYЬЭ\ќYЉH	‰‚€
+Y\ЬШYЩT\[\КY\ЬШYЩJKќ™XY\ИњЫЫ“Шљ™XЭ[™Yљ[™Y
+OЛљYOOH™XYY€
+K€
+KќТ]™S[™Э
+JNВ€]ШZ]ЭЬљ^\™Jљ^\™JNВ€JNВ‚€]
+њ™Z™XЭИ[ќ[Y[Щ\›€Y\ЩYZИ[\Ьќ\[\И™Y›Ь™HШ[[™ИHY\\€‹\Ю[И
+
+HO€В€ЫЫњЭY\\€H™]И[Щ\›”Щ\ЬЪ[Ы’[\ЬќY\\Љ\›™\ЬТYШЪ[XKњ\њЩJ™Y\ЩYZЛZ\›™\ЬИЉJNВ€ЫЫњЭљ^\™HHЬ™X]Qљ^\™JВ€^\›[Y\\њО€™]ИX\^\›[\›™\ЬТYZЩR\›™\ЬРY\\ЏЉВ€И™Y\ЩYZЛZ\›™\ЬИ‹Y\\—K€JK€JNВ‚€Ьљ]T™\]Y\Э
+љ^\™K™\ЪЭЬ[њ]В€Y€‹€Y]Щ€ЫЩ^ЬЭЩY\ЩYZЛЫ[Щ\›‹\Щ\ЬЪ[Ы‹Ъ[\Ьќ‹€\[\О€И]]™TЩ\ЬЪ[Ы’Y€€‹ЭЩ€‹Э[ќќ\ЭY€K€JNВ€]ШZ]^XЭ
+€љ^\™KЫЫXЭЬ‹ќШZ]›ЬЉ
+Y\ЬШYЩJHO€™\]Y\ЭY
+Y\ЬШYЩKЉJK€
+Kњ™\ЫЫ™\ЛќУX]ЪШљ™XЭ
+И\њ›ЬЋ€ИЫЩN€LМЌЊ€HJNВ€^XЭ
+Y\\‹›\ЭШ[™Y]\КK››ЭќТ]™P™Y[ђШ[Y
+
+NВ€]ШZ]ЭЬљ^\™Jљ^\™JNВ€JNВ‚€]
+[њЭЩ\њИH]\€\›™\ЬИ[њЬXЭЪ[H[€X\›Y\€[њЬXЭ\ИЭ[ќ[›љ[™И‹\Ю[И
+
+HO€В€ЫЫњЭHH™]ИZЩR\›™\ЬРY\\Љ\›™\ЬТYШЪ[XKњ\њЩJњHЉJNВ€ЫЫњЭЫ]YHH™]ИZЩR\›™\ЬРY\\Љ\›™\ЬТYШЪ[XKњ\њЩJЫ]YKXЫЩHЉJNВ€]™[X\ЩPЫ]YHH
+
+N€›ЪYO€[™Yљ[™YВ€ЫЫњЭЫ]YT™XYHH™]И›ЫZ\ЩO›ЪYЉ
+™\ЫЫ™JHO€В€™[X\ЩPЫ]YHH™\ЫЫ™NВ€JNВ€ЫЫњЭ[њЬXЭЫ]YHHЫ]YKљ[њЬXЭљ[™
+Ы]YJNВ€Ы]YKљ[њЬXЭH\Ю[И
+[њ]
+HO€В€]ШZ]Ы]YT™XYNВ€™]\›€[њЬXЭЫ]YJ[њ]
+NВ€NВ€ЫЫњЭљ^\™HHЬ™X]Qљ^\™JВ€^\›[Y\\њО€™]ИX\^\›[\›™\ЬТYZЩR\›™\ЬРY\\ЏЉВ€ИњH‹WK€ИЫ]YKXЫЩH‹Ы]YWK€JK€JNВ‚€Ьљ]T™\]Y\Э
+љ^\™K™\ЪЭЬ[њ]В€Y€МЛ€Y]Щ€ЫЩ^ЬЭЪ\›™\ЬЛЪ[њЬXЭ‹€\[\О€И\›™\ЬТY€Ы]YKXЫЩH€K€JNВ€Ьљ]T™\]Y\Э
+љ^\™K™\ЪЭЬ[њ]В€Y€Н€Y]Щ€ЫЩ^ЬЭЪ\›™\ЬЛЪ[њЬXЭ‹€\[\О€И\›™\ЬТY€њH€K€JNВ€]ШZ]^XЭ
+€љ^\™KЫЫXЭЬ‹ќШZ]›ЬЉ
+Y\ЬШYЩJHO€™\]Y\ЭY
+Y\ЬШYЩKН
+JK€
+Kњ™\ЫЫ™\ЛќУX]ЪШљ™XЭ
+И™\Э[€ИЭ]\О€њ™XYH€HJNВ€^XЭ
+љ^\™KЫЫXЭЬ‹›Y\ЬШYЩ\ЛњЫЫYJ
+Y\ЬШYЩJHO€™\]Y\ЭY
+Y\ЬШYЩKМКJJKќР™J[ЩJNВ€^XЭ
+Kљ[њЬXЭ[ЫђШ[КKќР™JJNВ‚€™[X\ЩPЫ]YJ
+NВ€]ШZ]^XЭ
+€љ^\™KЫЫXЭЬ‹ќШZ]›ЬЉ
+Y\ЬШYЩJHO€™\]Y\ЭY
+Y\ЬШYЩKМКJK€
+Kњ™\ЫЫ™\ЛќУX]ЪШљ™XЭ
+И™\Э[€ИЭ]\О€њ™XYH€HJNВ€]ШZ]ЭЬљ^\™Jљ^\™JNВ€JNВ‚€]
+[њЭЩ\њИH\›™\ЬИ[њЬXЭЪ[HЩ™љXЪX[™XYЫ\Э\ИЭ[[™[™И‹\Ю[И
+
+HO€В€ЫЫњЭљ^\™HHЬ™X]Qљ^\™J
+NВ€Ьљ]T™\]Y\Э
+љ^\™K™\ЪЭЬ[њ]В€Y€НK€Y]Щ€ќ™XYЫ\Э‹€\[\О€И[Z]€LЫЬќЩ^N€Ь™X]YШ]‹ЫЬќ\™XЭ[ЫЋ€™\ШИ€K€JNВ€Ьљ]T™\]Y\Э
+љ^\™K™\ЪЭЬ[њ]В€Y€Н‹€Y]Щ€ЫЩ^ЬЭЪ\›™\ЬЛЪ[њЬXЭ‹€\[\О€И\›™\ЬТY€њH€K€JNВ€]ШZ]^XЭ
+€љ^\™KЫЫXЭЬ‹ќШZ]›ЬЉ
+Y\ЬШYЩJHO€™\]Y\ЭY
+Y\ЬШYЩKНЉJK€
+Kњ™\ЫЫ™\ЛќУX]ЪШљ™XЭ
+И™\Э[€ИЭ]\О€њ™XYH€HJNВ€^XЭ
+љ^\™KЫЫXЭЬ‹›Y\ЬШYЩ\ЛњЫЫYJ
+Y\ЬШYЩJHO€™\]Y\ЭY
+Y\ЬШYЩKНJJJKќР™J[ЩJNВ€]ШZ]ЭЬљ^\™Jљ^\™JNВ€JNВ‚€]
+њ›Ъ™XЭИ[YШ]Y[њ]Ъ[H™XY[™Иљ\ЪX›H›ЩЬ™\ЬИњ›ЫHHќ[›љ[™И^\›[\›€‹\Ю[И
+
+HO€В€][YШ][Ыђ\N€[YШ][ЫђЫЫќ›Ы\H[™Yљ[™YВ€ЫЫњЭљ^\™HHЬ™X]Qљ^\™JВ€Ы‘[YШ][Ыђ\N€
+\JHO€В€[YШ][Ыђ\HH\NВ€™]\›€[™Yљ[™YВ€K€JNВ€]ШZ]љ^\™Kњ™XYNВ€]ШZ]љKќШZ]›ЬЉ\Ю[И
+
+HO€^XЭ
+]ШZ]љ^\™K›X\[™ФЭЬ™K›\Э™XYК
+JKќС\]X[
+ЧJJNВ€Y€
+Y[YШ][Ыђ\JH›ЭИ™]И\њ›ЬЉ‘[YШ][Ы€THШ\И›Э™YЪ\Э\™YЉNВ€ЫЫњЭЭ\ќ[™ИH[YШ][Ыђ\KњЭ\ќ
+В€\›™\ЬТY€њH‹€\ЪО€њ™]љY]И]]‹€ЭЩ€‹ЬЮ[ќ]XИ‹€\™[ќ™XYY€њ\™[ќ]™XY‹€JNВ€]ШZ][њЭЩ\“Щ™љXЪX[\™[ќЭЩ
+љ^\™JNВ€ЫЫњЭЭ\ќYH]ШZ]Э\ќ[™ОВ€ЫЫњЭЩ\ЬЪ[Ы€Hљ^\™KY\\‹њЩ\ЬЪ[ЫњЦМNВ€Y€
+\Щ\ЬЪ[ЫЉH›ЭИ™]И\њ›ЬЉ‘[YШ]YЩ\ЬЪ[Ы€Ш\И›ЭЬ[™YЉNВ€]ШZ]^XЭ
+€љ^\™KЫЫXЭЬ‹ќШZ]›ЬЉ€
+Y\ЬШYЩJHO‚€Y]Щ
+Y\ЬШYЩKќ\›‹ЬЭ\ќYЉH	‰‚€
+Y\ЬШYЩKњ\[\И\ИњЫЫ“Шљ™XЭ
+Kќ™XYYOOHЭ\ќYќ™XYY€
+K€
+Kњ™\ЫЫ™\ЛќУX]ЪШљ™XЭ
+В€\[\О€В€\›Ћ€В€][\О€В€В€\N€ќ\Щ\“Y\ЬШYЩH‹€ЫЫќ[ќ€ЮИ\N€ќ^‹^€њ™]љY]И]]€WK€K€K€K€K€JNВ€Щ\ЬЪ[Ы‹\[™^
+ђЪXЪЪ[™И]]€ЉNВ€]ШZ]^XЭ
+€[YШ][Ыђ\Kњ™XY
+И™XYY€Э\ќYќ™XYYљY]О€њ™\Э[€JK€
+Kњ™\ЫЫ™\ЛќУX]ЪШљ™XЭ
+В€Э]\О€њќ[›љ[™И‹€›ЩЬ™\ЬО€Щ^XЭ›Шљ™XЭЫЫќZ[љ[™КИ^€ђЪXЪЪ[™И]]€€JWK€™\Э[€И]Z[Xљ[]N€њ[™[™И€K€JNВ€Щ\ЬЪ[Ы‹њЭXШЩYY\›Љ
+NВ€ЫЫњЭЫЫ\]YH]ШZ]љ^\™KЫЫXЭЬ‹ќШZ]›ЬЉ€
+Y\ЬШYЩJHO‚€Y]Щ
+Y\ЬШYЩKќ\›‹ШЫЫ\]YЉH	‰‚€
+Y\ЬШYЩKњ\[\И\ИњЫЫ“Шљ™XЭ
+Kќ™XYYOOHЭ\ќYќ™XYY€
+NВ€^XЭ
+ЫЫ\]Y
+KќУX]ЪШљ™XЭ
+В€\[\О€В€\›Ћ€В€][\О€В€В€\N€ќ\Щ\“Y\ЬШYЩH‹€ЫЫќ[ќ€ЮИ\N€ќ^‹^€њ™]љY]И]]€WK€K€И\N€YЩ[ќY\ЬШYЩH‹^€ђЪXЪЪ[™И]]€€K€K€K€K€JNВ€ЫЫњЭЫЫ\]Y][\ИH
+€
+ЫЫ\]Yњ\[\И\ИњЫЫ“Шљ™XЭ
+Kќ\›€\ИИ][\О€\њ^OИYО€Эљ[™ОИ\OО€Эљ[™ИO€B€
+Kљ][\ОВ€^XЭ
+ЫЫ\]Y][\Л™љ[\Љ
+][JHO€][Kќ\HOOHќ\Щ\“Y\ЬШYЩHЉJKќТ]™S[™Э
+JNВ€^XЭ
+™]ИЩ]
+ЫЫ\]Y][\Л›X\
+
+][JHO€][KљY
+JKњЪ^™JKќР™JЫЫ\]Y][\Л›[™Э
+NВ‚€ЛИ[YШ]Y^\›[™XYИ\ЩHYЪ[]Y\ЭЬћNИ™XYљXH\›њЛЫ\Э‚€Ьљ]T™\]Y\Э
+љ^\™K™\ЪЭЬ[њ]В€Y€LMЛ€Y]Щ€ќ™XYЭ\›њЛЫ\Э‹€\[\О€И™XYY€Э\ќYќ™XYY[Z]€Њ][\ХљY]О€™ќ[€K€JNВ€ЫЫњЭ\ЭYH]ШZ]љ^\™KЫЫXЭЬ‹ќШZ]›ЬЉ
+Y\ЬШYЩJHO€™\]Y\ЭY
+Y\ЬШYЩKLMКJNВ€^XЭ
+\ЭY
+KќУX]ЪШљ™XЭ
+В€™\Э[€В€]N€В€В€][\О€В€В€\N€ќ\Щ\“Y\ЬШYЩH‹€ЫЫќ[ќ€ЮИ\N€ќ^‹^€њ™]љY]И]]€WK€K€И\N€YЩ[ќY\ЬШYЩH‹^€ђЪXЪЪ[™И]]€€K€K€K€K€K€JNВ€ЫЫњЭЭЬ™Y][\ИB€
+\ЭY\ИИ™\Э[€И]N€\њ^OИ][\О€\њ^OИYО€Эљ[™ОИ\OО€Эљ[™ИO€O€HJB€њ™\Э[™]VМOЛљ][\ИПИЧNВ€^XЭ
+ЭЬ™Y][\Л™љ[\Љ
+][JHO€][Kќ\HOOHќ\Щ\“Y\ЬШYЩHЉJKќТ]™S[™Э
+JNВ€^XЭ
+™]ИЩ]
+ЭЬ™Y][\Л›X\
+
+][JHO€][KљY
+JKњЪ^™JKќР™JЭЬ™Y][\Л›[™Э
+NВ€]ШZ]ЭЬљ^\™Jљ^\™JNВ€JNВ‚€]
+љ[љ\љ]ИЭЩњ›ЫHH]]™HЫЩ^\™[ќЪ[€[YШ][Ы€ЫZ]ИЭЩ‹\Ю[И
+
+HO€В€][YШ][Ыђ\N€[YШ][ЫђЫЫќ›Ы\H[™Yљ[™YВ€ЫЫњЭљ^\™HHЬ™X]Qљ^\™JВ€Ы‘[YШ][Ыђ\N€
+\JHO€В€[YШ][Ыђ\HH\NВ€™]\›€[™Yљ[™YВ€K€JNВ€]ШZ]љ^\™Kњ™XYNВ€Y€
+Y[YШ][Ыђ\JH›ЭИ™]И\њ›ЬЉ‘[YШ][Ы€THШ\И›Э™YЪ\Э\™YЉNВ€]ШZ]љ[™Щ™љXЪX[™XY
+љ^\™K›]]™K\\™[ќЉNВ‚€ЫЫњЭ[™[™ИH[YШ][Ыђ\KњЭ\ќ
+В€\›™\ЬТY€њH‹€\ЪО€љ[љ\љ]ЫЬљЬЬXЩH‹€\™[ќ™XYY€›]]™K\\™[ќ‹€JNВ€ЫЫњЭ™XYH]ШZ]™XYњЫЫ“[™Jљ^\™K›Щ™љXЪX[њЭ[ЉNВ€^XЭ
+™XY
+KќУX]ЪШљ™XЭ
+В€Y]Щ€ќ™XYЬ™XY‹€\[\О€И™XYY€›]]™K\\™[ќ€K€JNВ€љ^\™K›Щ™љXЪX[њЭЭ]ќЬљ]J€	Т”УУ‹њЭљ[™ЪYћJВ€Y€™XYљY€™\Э[€И™XY€ИY€›]]™K\\™[ќ‹ЭЩ€‹Ы]]™K]ЫЬљЬЬXЩH€HK€J_W€
+NВ‚€]ШZ]^XЭ
+[™[™КKњ™\ЫЫ™\ЛќУX]ЪШљ™XЭ
+И\›™\ЬТY€њH‹Э]\О€њќ[›љ[™И€JNВ€^XЭ
+љ^\™KY\\‹њЩ\ЬЪ[ЫњЦМOЛЭЩ
+KќР™J]њ™\ЫЫ™J‹Ы]]™K]ЫЬљЬЬXЩHЉJNВ€љ^\™KY\\‹њЩ\ЬЪ[ЫњЦМOЛњЭXШЩYY\›Љ
+NВ€]ШZ]ЭЬљ^\™Jљ^\™JNВ€JNВ‚€]
+›\ЭИ]]™H[™^\›[™XYИ›ЭYЪH[YШ][Ы€УH\ЭЭ\™XЩH‹\Ю[И
+
+HO€В€][YШ][Ыђ\N€[YШ][ЫђЫЫќ›Ы\H[™Yљ[™YВ€ЫЫњЭљ^\™HHЬ™X]Qљ^\™JВ€Ы‘[YШ][Ыђ\N€
+\JHO€В€[YШ][Ыђ\HH\NВ€™]\›€[™Yљ[™YВ€K€JNВ€]ШZ]љ^\™Kњ™XYNВ€]ШZ]љKќШZ]›ЬЉ\Ю[И
+
+HO€^XЭ
+]ШZ]љ^\™K›X\[™ФЭЬ™K›\Э™XYК
+JKќС\]X[
+ЧJJNВ€Y€
+Y[YШ][Ыђ\JH›ЭИ™]И\њ›ЬЉ‘[YШ][Ы€THШ\И›Э™YЪ\Э\™YЉNВ€ЫЫњЭ^\›[™XYYH]ШZ]Э\ќU™XY
+љ^\™JNВ‚€ЫЫњЭ[™[™ИH[YШ][Ыђ\K›\Э
+ИЭЩ€‹ЬЮ[ќ]XИ‹[Z]€ЌKЫЬќ€Ь™X]YY\ШИ€JNВ€ЫЫњЭ™\]Y\ЭH]ШZ]™XYњЫЫ“[™Jљ^\™K›Щ™љXЪX[њЭ[ЉNВ€^XЭ
+™\]Y\Э
+KќУX]ЪШљ™XЭ
+В€Y]Щ€ќ™XYЫ\Э‹€\[\О€ИЭЩ€И‹ЬЮ[ќ]XИ—K[Z]€ЌKЫЬќЩ^N€Ь™X]YШ]‹ЫЬќ\™XЭ[ЫЋ€™\ШИ€K€JNВ€љ^\™K›Щ™љXЪX[њЭЭ]ќЬљ]J€	Т”УУ‹њЭљ[™ЪYћJВ€Y€™\]Y\ЭљY€™\Э[€В€]N€В€В€Y€›]]™K]™XY‹€ЭЩ€‹ЬЮ[ќ]XИ‹€[YN€“]]™H‹€Ь™X]Y]€—М€\]Y]€—М€Э]\О€И\N€љYH€K€K€K€™^Э\њЫЬЋ€ќ[€K€J_W€
+NВ€]ШZ]^XЭ
+[™[™КKњ™\ЫЫ™\ЛќУX]ЪШљ™XЭ
+В€™XYО€^XЭ\њ^PЫЫќZ[љ[™КВ€^XЭ›Шљ™XЭЫЫќZ[љ[™КИ™XYY€^\›[™XYY\›™\ЬТY€њH€JK€^XЭ›Шљ™XЭЫЫќZ[љ[™КИ™XYY€›]]™K]™XY‹\›™\ЬТY€ЫЩ^€JK€JK€JNВ€]ШZ]ЭЬљ^\™Jљ^\™JNВ€JNВ‚€]
+њЩ[™И[™Ш[Щ[И›ЫЭЛ]\\›њИЫ€[€^\›[[YШ]Y™XY‹\Ю[И
+
+HO€В€][YШ][Ыђ\N€[YШ][ЫђЫЫќ›Ы\H[™Yљ[™YВ€ЫЫњЭљ^\™HHЬ™X]Qљ^\™JВ€Ы‘[YШ][Ыђ\N€
+\JHO€В€[YШ][Ыђ\HH\NВ€™]\›€[™Yљ[™YВ€K€JNВ€]ШZ]љ^\™Kњ™XYNВ€]ШZ]љKќШZ]›ЬЉ\Ю[И
+
+HO€^XЭ
+]ШZ]љ^\™K›X\[™ФЭЬ™K›\Э™XYК
+JKќС\]X[
+ЧJJNВ€Y€
+Y[YШ][Ыђ\JH›ЭИ™]И\њ›ЬЉ‘[YШ][Ы€THШ\И›Э™YЪ\Э\™YЉNВ€ЫЫњЭЭ\ќ[™ИH[YШ][Ыђ\KњЭ\ќ
+В€\›™\ЬТY€њH‹€\ЪО€™љ\њЭ‹€ЭЩ€‹ЬЮ[ќ]XИ‹€\™[ќ™XYY€њ\™[ќ]™XY‹€JNВ€]ШZ][њЭЩ\“Щ™љXЪX[\™[ќЭЩ
+љ^\™JNВ€ЫЫњЭЭ\ќYH]ШZ]Э\ќ[™ОВ€ЫЫњЭЩ\ЬЪ[Ы€Hљ^\™KY\\‹њЩ\ЬЪ[ЫњЦМNВ€Y€
+\Щ\ЬЪ[ЫЉH›ЭИ™]И\њ›ЬЉ‘[YШ]YЩ\ЬЪ[Ы€Ш\И›ЭЬ[™YЉNВ€Щ\ЬЪ[Ы‹њЭXШЩYY\›Љ
+NВ€]ШZ]љKќШZ]›ЬЉ\Ю[И
+
+HO‚€^XЭ
+€]ШZ][YШ][Ыђ\OЛњ™XY
+И™XYY€Э\ќYќ™XYYљY]О€њ™\Э[€JK€
+KќУX]ЪШљ™XЭ
+ИЭ]\О€ЫЫ\]Y€JK€
+NВ€ЫЫњЭ›ЫЭХ\H]ШZ][YШ][Ыђ\KњЩ[™
+И™XYY€Э\ќYќ™XYYY\ЬШYЩN€ЫЫќ[ќYH€JNВ€^XЭ
+›ЫЭХ\
+KќУX]ЪШљ™XЭ
+И\›™\ЬТY€њH‹Э]\О€њќ[›љ[™И€JNВ€]ШZ]^XЭ
+€[YШ][Ыђ\KњЩ[™
+И™XYY€Э\ќYќ™XYYY\ЬШYЩN€YШZ[€€JK€
+Kњ™Z™XЭЛќУX]ЪШљ™XЭ
+ИЫЩN€•‘PQР•TЦH€JNВ€]ШZ]^XЭ
+[YШ][Ыђ\KШ[Щ[
+И™XYY€Э\ќYќ™XYYJJKњ™\ЫЫ™\ЛќУX]ЪШљ™XЭ
+В€\›’Y€›ЫЭХ\ќ\›’Y€Ш[Щ[Y€ќYK€JNВ€Щ\ЬЪ[Ы‹ЫЫ\]PШ[Щ[][ЫЉ
+NВ€]ШZ]ЭЬљ^\™Jљ^\™JNВ€JNВ‚€]
+њЩ[™И[™Ш[Щ[И›ЫЭЛ]\\›њИЫ€H]]™HЫЩ^™XY‹\Ю[И
+
+HO€В€][YШ][Ыђ\N€[YШ][ЫђЫЫќ›Ы\H[™Yљ[™YВ€ЫЫњЭљ^\™HHЬ™X]Qљ^\™JВ€Ы‘[YШ][Ыђ\N€
+\JHO€В€[YШ][Ыђ\HH\NВ€™]\›€[™Yљ[™YВ€K€JNВ€]ШZ]љ^\™Kњ™XYNВ€]ШZ]љKќШZ]›ЬЉ\Ю[И
+
+HO€^XЭ
+]ШZ]љ^\™K›X\[™ФЭЬ™K›\Э™XYК
+JKќС\]X[
+ЧJJNВ€Y€
+Y[YШ][Ыђ\JH›ЭИ™]И\њ›ЬЉ‘[YШ][Ы€THШ\И›Э™YЪ\Э\™YЉNВ€]ШZ]љ[™Щ™љXЪX[™XY
+љ^\™K›]]™KXЪ[ЉNВ‚€ЫЫњЭЩ[™H[YШ][Ыђ\KњЩ[™
+И™XYY€›]]™KXЪ[‹Y\ЬШYЩN€ЫЫќ[ќYH€JNВ€ЫЫњЭ™XYH]ШZ]™XYњЫЫ“[™Jљ^\™K›Щ™љXЪX[њЭ[ЉNВ€^XЭ
+™XY
+KќУX]ЪШљ™XЭ
+В€Y]Щ€ќ™XYЬ™XY‹€\[\О€И™XYY€›]]™KXЪ[‹[ЫYU\›њО€ќYHK€JNВ€љ^\™K›Щ™љXЪX[њЭЭ]ќЬљ]J€	Т”УУ‹њЭљ[™ЪYћJИY€™XYљY™\Э[€И™XY€ИY€›]]™KXЪ[€HHJ_W€
+NВ€ЫЫњЭ\›”Э\ќH]ШZ]™XYњЫЫ“[™Jљ^\™K›Щ™љXЪX[њЭ[ЉNВ€^XЭ
+\›”Э\ќ
+KќУX]ЪШљ™XЭ
+В€Y]Щ€ќ\›‹ЬЭ\ќ‹€\[\О€И™XYY€›]]™KXЪ[‹[њ]€ЮИ\N€ќ^‹^€ЫЫќ[ќYH€WHK€JNВ€љ^\™K›Щ™љXЪX[њЭЭ]ќЬљ]J€	Т”УУ‹њЭљ[™ЪYћJИY€\›”Э\ќљY™\Э[€И\›Ћ€ИY€›]]™K]\›‹L€€HHJ_W€
+NВ€]ШZ]^XЭ
+Щ[™
+Kњ™\ЫЫ™\ЛќУX]ЪШљ™XЭ
+И\›’Y€›]]™K]\›‹L€‹Э]\О€њќ[›љ[™И€JNВ€]ШZ]^XЭ
+€[YШ][Ыђ\KњЩ[™
+И™XYY€›]]™KXЪ[‹Y\ЬШYЩN€YШZ[€€JK€
+Kњ™Z™XЭЛќУX]ЪШљ™XЭ
+ИЫЩN€•‘PQР•TЦH€JNВ‚€ЫЫњЭШ[Щ[H[YШ][Ыђ\KШ[Щ[
+И™XYY€›]]™KXЪ[€JNВ€ЫЫњЭ[ќ\њќ\H]ШZ]™XYњЫЫ“[™Jљ^\™K›Щ™љXЪX[њЭ[ЉNВ€^XЭ
+[ќ\њќ\
+KќУX]ЪШљ™XЭ
+В€Y]Щ€ќ\›‹Ъ[ќ\њќ\‹€\[\О€И™XYY€›]]™KXЪ[‹\›’Y€›]]™K]\›‹L€€K€JNВ€љ^\™K›Щ™љXЪX[њЭЭ]ќЬљ]J	Т”УУ‹њЭљ[™ЪYћJИY€[ќ\њќ\љY™\Э[€ЯHJ_W
+NВ€]ШZ]^XЭ
+Ш[Щ[
+Kњ™\ЫЫ™\ЛќУX]ЪШљ™XЭ
+И\›’Y€›]]™K]\›‹L€‹Ш[Щ[Y€ќYHJNВ€]ШZ]ЭЬљ^\™Jљ^\™JNВ€JNВ‚€]
+љ[њЬXЭИ]]™HЫЩ^[Щ[И[™Э\ќИЪ]^XЪ][Щ[[™[љЪ[™И‹\Ю[И
+
+HO€В€ЫЫњЭZS[Щ[H\›™\ЬУ[Щ[™Y”ШЪ[XKњ\њЩJВ€Y€ЫЩ^[[Щ[]ЊK™QСњ™XЊњЭђН€‹€JNВ€ЫЫњЭЪ[ZS[Щ[H\›™\ЬУ[Щ[™Y”ШЪ[XKњ\њЩJВ€Y€ЫЩ^[[Щ[]ЊKL›TО\“L\Ю•Њ‹€JNВ€][YШ][Ыђ\N€[YШ][ЫђЫЫќ›Ы\H[™Yљ[™YВ€ЫЫњЭљ^\™HHЬ™X]Qљ^\™JВ€Ы‘[YШ][Ыђ\N€
+\JHO€В€[YШ][Ыђ\HH\NВ€™]\›€[™Yљ[™YВ€K€JNВ€]ШZ]љ^\™Kњ™XYNВ€]ШZ]љKќШZ]›ЬЉ\Ю[И
+
+HO€^XЭ
+]ШZ]љ^\™K›X\[™ФЭЬ™K›\Э™XYК
+JKќС\]X[
+ЧJJNВ€Y€
+Y[YШ][Ыђ\JH›ЭИ™]И\њ›ЬЉ‘[YШ][Ы€THШ\И›Э™YЪ\Э\™YЉNВ‚€ЫЫњЭ[њЬXЭ[Ы€H[YШ][Ыђ\Kљ[њЬXЭ
+И\›™\ЬТY€ЫЩ^€JNВ€ЫЫњЭ[Щ[\ЭH]ШZ]™XYњЫЫ“[™Jљ^\™K›Щ™љXЪX[њЭ[ЉNВ€^XЭ
+[Щ[\Э
+KќУX]ЪШљ™XЭ
+ИY]Щ€›[Щ[Ы\Э‹\[\О€ЯHJNВ€љ^\™K›Щ™љXЪX[њЭЭ]ќЬљ]J€	Т”УУ‹њЭљ[™ЪYћJВ€Y€[Щ[\ЭљY€™\Э[€В€]N€В€В€[Щ[€ћZKЩЬ›ЪЛMЌ€‹€\Ь^S[YN€‘Ь›ЪИЌ€‹€\СY][€ќYK€Э\ЬќY™X\ЫЫљ[™СY™›ЬќО€ЮИ™X\ЫЫљ[™СY™›Ьќ€љYЪ‹\ШЬљ\[ЫЋ€’YЪ€WK€K€В€[Щ[€љЪ[ZKЪМЦМ[WH‹€\Ь^S[YN€’Ъ[ZHМИ‹€Э\ЬќY™X\ЫЫљ[™СY™›ЬќО€ЮИ™X\ЫЫљ[™СY™›Ьќ€љYЪ‹\ШЬљ\[ЫЋ€’YЪ€WK€K€K€K€J_W€
+NВ€]ШZ]^XЭ
+[њЬXЭ[ЫЉKњ™\ЫЫ™\ЛќУX]ЪШљ™XЭ
+В€\›™\ЬТY€ЫЩ^‹€[њЬXЭ[ЫЋ€В€Э]\О€њ™XYH‹€Ш][ЩО€В€[Щ[О€В€И™YЋ€ZS[Щ[X™[€‘Ь›ЪИЌ€€K€И™YЋ€Ъ[ZS[Щ[X™[€’Ъ[ZHМИ€K€K€Y][[Щ[€ZS[Щ[€[љЪ[™УЬ[ЫњО€ЮИY€љYЪ‹X™[€’YЪ€WK€K€K€JNВ‚€ЫЫњЭ[™[™ИH[YШ][Ыђ\KњЭ\ќ
+В€\›™\ЬТY€ЫЩ^‹€\ЪО€њ™]љY]И]]‹€ЭЩ€‹ЬЮ[ќ]XИ‹€\™[ќ™XYY€њ\™[ќ]™XY‹€[Щ[€Ъ[ZS[Щ[€[љЪ[™УЬ[Ы’Y€\›™\ЬХ[љЪ[™УЬ[Ы’YШЪ[XKњ\њЩJљYЪЉK€JNВ€]ШZ][њЭЩ\“Щ™љXЪX[\™[ќЭЩ
+љ^\™JNВ€ЫЫњЭ[Y][Ы“\ЭH]ШZ]™XYњЫЫ“[™Jљ^\™K›Щ™љXЪX[њЭ[ЉNВ€^XЭ
+[Y][Ы“\Э
+KќУX]ЪШљ™XЭ
+ИY]Щ€›[Щ[Ы\Э€JNВ€љ^\™K›Щ™љXЪX[њЭЭ]ќЬљ]J€	Т”УУ‹њЭљ[™ЪYћJВ€Y€[Y][Ы“\ЭљY€™\Э[€В€]N€В€В€[Щ[€ћZKЩЬ›ЪЛMЌ€‹€Э\ЬќY™X\ЫЫљ[™СY™›ЬќО€ЮИ™X\ЫЫљ[™СY™›Ьќ€љYЪ‹\ШЬљ\[ЫЋ€’YЪ€WK€K€В€[Щ[€љЪ[ZKЪМЦМ[WH‹€\СY][€ќYK€Э\ЬќY™X\ЫЫљ[™СY™›ЬќО€ЮИ™X\ЫЫљ[™СY™›Ьќ€љYЪ‹\ШЬљ\[ЫЋ€’YЪ€WK€K€K€K€J_W€
+NВ€ЫЫњЭ™XYЭ\ќH]ШZ]™XYњЫЫ“[™Jљ^\™K›Щ™љXЪX[њЭ[ЉNВ€^XЭ
+™XYЭ\ќ
+KќУX]ЪШљ™XЭ
+В€Y]Щ€ќ™XYЬЭ\ќ‹€\[\О€И[Щ[€љЪ[ZKЪМЦМ[WH€K€JNВ€^XЭ
+™XYЭ\ќњ\[\КK››ЭќТ]™T›Ь\ќJњ™X\ЫЫљ[™СY™›ЬќЉNВ€љ^\™K›Щ™љXЪX[њЭЭ]ќЬљ]J€	Т”УУ‹њЭљ[™ЪYћJВ€Y€™XYЭ\ќљY€™\Э[€В€™XY€ИY€›]]™KXЫЫ™љYЭ\™Y€K€[Щ[€љЪ[ZKЪМЦМ[WH‹€K€J_W€
+NВ€ЫЫњЭ\›”Э\ќH]ШZ]™XYњЫЫ“[™Jљ^\™K›Щ™љXЪX[њЭ[ЉNВ€^XЭ
+\›”Э\ќ
+KќУX]ЪШљ™XЭ
+В€Y]Щ€ќ\›‹ЬЭ\ќ‹€\[\О€И[Щ[€љЪ[ZKЪМЦМ[WH‹Y™›Ьќ€љYЪ€K€JNВ€љ^\™K›Щ™љXЪX[њЭЭ]ќЬљ]J€	Т”УУ‹њЭљ[™ЪYћJИY€\›”Э\ќљY™\Э[€И\›Ћ€ИY€›]]™K]\›€€HHJ_W€
+NВ€]ШZ]^XЭ
+[™[™КKњ™\ЫЫ™\ЛќУX]ЪШљ™XЭ
+В€ЫЫ™љYЭ\][ЫЋ€В€™\]Y\ЭY€И[Щ[€Ъ[ZS[Щ[[љЪ[™УЬ[Ы’Y€љYЪ€K€Y™™XЭ]™N€В€Y™™XЭ]™S[Щ[€Ъ[ZS[Щ[€K€K€JNВ€]ШZ]ЭЬљ^\™Jљ^\™JNВ€JNВ‚€]
+Ш[›ЫљXШ[^™\ИYШXЮH[њЬЬќ\ШY™HЫЩ^[Щ[™YњИ™Y›Ь™H[YШ][Ы€‹\Ю[И
+
+HO€В€ЫЫњЭYШXЮS[Щ[H\›™\ЬУ[Щ[™Y”ШЪ[XKњ\њЩJИY€™ЬMKЌ‹[[H€JNВ€ЫЫњЭШ[›ЫљXШ[[Щ[H\›™\ЬУ[Щ[™Y”ШЪ[XKњ\њЩJВ€Y€ЫЩ^[[Щ[]ЊK–ЊРЊ]SљL\ЩНZ‹€JNВ€][YШ][Ыђ\N€[YШ][ЫђЫЫќ›Ы\H[™Yљ[™YВ€ЫЫњЭљ^\™HHЬ™X]Qљ^\™JВ€Ы‘[YШ][Ыђ\N€
+\JHO€В€[YШ][Ыђ\HH\NВ€™]\›€[™Yљ[™YВ€K€JNВ€]ШZ]љ^\™Kњ™XYNВ€]ШZ]љKќШZ]›ЬЉ\Ю[И
+
+HO€^XЭ
+]ШZ]љ^\™K›X\[™ФЭЬ™K›\Э™XYК
+JKќС\]X[
+ЧJJNВ€Y€
+Y[YШ][Ыђ\JH›ЭИ™]И\њ›ЬЉ‘[YШ][Ы€THШ\И›Э™YЪ\Э\™YЉNВ‚€ЫЫњЭ[™[™ИH[YШ][Ыђ\KњЭ\ќ
+В€\›™\ЬТY€ЫЩ^‹€\ЪО€њ™]љY]И]]‹€ЭЩ€‹ЬЮ[ќ]XИ‹€\™[ќ™XYY€њ\™[ќ]™XY‹€[Щ[€YШXЮS[Щ[€JNВ€]ШZ][њЭЩ\“Щ™љXЪX[\™[ќЭЩ
+љ^\™JNВ€ЫЫњЭ[Щ[\ЭH]ШZ]™XYњЫЫ“[™Jљ^\™K›Щ™љXЪX[њЭ[ЉNВ€^XЭ
+[Щ[\Э
+KќУX]ЪШљ™XЭ
+ИY]Щ€›[Щ[Ы\Э‹\[\О€ЯHJNВ€љ^\™K›Щ™љXЪX[њЭЭ]ќЬљ]J€	Т”УУ‹њЭљ[™ЪYћJВ€Y€[Щ[\ЭљY€™\Э[€И]N€ЮИ[Щ[€™ЬMKЌ‹[[H‹\СY][€ќYHWHK€J_W€
+NВ€ЫЫњЭ™XYЭ\ќH]ШZ]™XYњЫЫ“[™Jљ^\™K›Щ™љXЪX[њЭ[ЉNВ€^XЭ
+™XYЭ\ќ
+KќУX]ЪШљ™XЭ
+В€Y]Щ€ќ™XYЬЭ\ќ‹€\[\О€И[Щ[€™ЬMKЌ‹[[H€K€JNВ€љ^\™K›Щ™љXЪX[њЭЭ]ќЬљ]J€	Т”УУ‹њЭљ[™ЪYћJВ€Y€™XYЭ\ќљY€™\Э[€В€™XY€ИY€›]]™K[YШXЮKXЫЫ™љYЭ\™Y€K€[Щ[€™ЬMKЌ‹[[H‹€K€J_W€
+NВ€ЫЫњЭ\›”Э\ќH]ШZ]™XYњЫЫ“[™Jљ^\™K›Щ™љXЪX[њЭ[ЉNВ€^XЭ
+\›”Э\ќ
+KќУX]ЪШљ™XЭ
+В€Y]Щ€ќ\›‹ЬЭ\ќ‹€\[\О€И[Щ[€™ЬMKЌ‹[[H€K€JNВ€љ^\™K›Щ™љXЪX[њЭЭ]ќЬљ]J€	Т”УУ‹њЭљ[™ЪYћJИY€\›”Э\ќљY™\Э[€И\›Ћ€ИY€›]]™K[YШXЮK]\›€€HHJ_W€
+NВ€]ШZ]^XЭ
+[™[™КKњ™\ЫЫ™\ЛќУX]ЪШљ™XЭ
+В€ЫЫ™љYЭ\][ЫЋ€В€™\]Y\ЭY€И[Щ[€Ш[›ЫљXШ[[Щ[K€Y™™XЭ]™N€ИY™™XЭ]™S[Щ[€Ш[›ЫљXШ[[Щ[K€K€JNВ€]ШZ]ЭЬљ^\™Jљ^\™JNВ€JNВ‚€]
+™[YШ]\ИИ]]™HЫЩ^›ЭYЪњ›ЪЩ\™YЩ™љXЪX[™\]Y\ЭИЪ]Э]XЪЪ[™И[ќ\›[™\ЬЫњЩ\И‹\Ю[И
+
+HO€В€][YШ][Ыђ\N€[YШ][ЫђЫЫќ›Ы\H[™Yљ[™YВ€ЫЫњЭљ^\™HHЬ™X]Qљ^\™JВ€Ы‘[YШ][Ыђ\N€
+\JHO€В€[YШ][Ыђ\HH\NВ€™]\›€[™Yљ[™YВ€K€JNВ€]ШZ]љ^\™Kњ™XYNВ€]ШZ]љKќШZ]›ЬЉ\Ю[И
+
+HO€^XЭ
+]ШZ]љ^\™K›X\[™ФЭЬ™K›\Э™XYК
+JKќС\]X[
+ЧJJNВ€Y€
+Y[YШ][Ыђ\JH›ЭИ™]И\њ›ЬЉ‘[YШ][Ы€THШ\И›Э™YЪ\Э\™YЉNВ‚€ЫЫњЭ[™[™ИH[YШ][Ыђ\KњЭ\ќ
+В€\›™\ЬТY€ЫЩ^‹€\ЪО€њ™]љY]И]]‹€ЭЩ€‹ЬЮ[ќ]XИ‹€\™[ќ™XYY€њ\™[ќ]™XY‹€™\]Y\ЭY€›]]™K\™\]Y\ЭLH‹€JNВ€]ШZ][њЭЩ\“Щ™љXЪX[\™[ќЭЩ
+љ^\™JNВ€ЫЫњЭ™XYЭ\ќH]ШZ]™XYњЫЫ“[™Jљ^\™K›Щ™љXЪX[њЭ[ЉNВ€^XЭ
+™XYЭ\ќ
+KќУX]ЪШљ™XЭ
+В€Y]Щ€ќ™XYЬЭ\ќ‹€\[\О€В€ЭЩ€‹ЬЮ[ќ]XИ‹€\›Э[ЫXЮN€›™]™\€‹€Ш[™›Ю€™[™Щ\‹Yќ[XXШЩ\ЬИ‹€K€JNВ€љ^\™K›Щ™љXЪX[њЭЭ]ќЬљ]J€	Т”УУ‹њЭљ[™ЪYћJИY€™XYЭ\ќљY™\Э[€И™XY€ИY€›]]™KXЪ[€HHJ_W€
+NВ€ЫЫњЭ\›”Э\ќH]ШZ]™XYњЫЫ“[™Jљ^\™K›Щ™љXЪX[њЭ[ЉNВ€^XЭ
+\›”Э\ќ
+KќУX]ЪШљ™XЭ
+В€Y]Щ€ќ\›‹ЬЭ\ќ‹€\[\О€И™XYY€›]]™KXЪ[‹[њ]€ЮИ\N€ќ^‹^€њ™]љY]И]]€WHK€JNВ€љ^\™K›Щ™љXЪX[њЭЭ]ќЬљ]J€	Т”УУ‹њЭљ[™ЪYћJИY€\›”Э\ќљY™\Э[€И\›Ћ€ИY€›]]™K]\›€€HHJ_W€
+NВ€]ШZ]^XЭ
+[™[™КKњ™\ЫЫ™\ЛќУX]ЪШљ™XЭ
+В€™XYY€›]]™KXЪ[‹€\›’Y€›]]™K]\›€‹€Э]\О€њќ[›љ[™И‹€JNВ€^XЭ
+€љ^\™KЫЫXЭЬ‹›Y\ЬШYЩ\ЛњЫЫYJ€
+Y\ЬШYЩJHO€Y\ЬШYЩKљYOOH™XYЭ\ќљYY\ЬШYЩKљYOOH\›”Э\ќљY€
+K€
+KќР™J[ЩJNВ€]ШZ]^XЭ
+€љ^\™K›X\[™ФЭЬ™K™љ[™[YШ][ЫђћT™\]Y\Э
+›]]™K\™\]Y\ЭLHЉK€
+Kњ™\ЫЫ™\ЛќУX]ЪШљ™XЭ
+В€Ъ[ЬЭ™XYY€›]]™KXЪ[‹€\™Щ]\›™\ЬТY€ЫЩ^‹€Э]\О€њќ[›љ[™И‹€JNВ€љ^\™K›Щ™љXЪX[њЭЭ]ќЬљ]J€	Т”УУ‹њЭљ[™ЪYћJВ€Y]Щ€ќ\›‹ШЫЫ\]Y‹€\[\О€В€™XYY€›]]™KXЪ[‹€\›Ћ€ИY€›]]™K]\›€‹Э]\О€ЫЫ\]Y€K€K€J_W€
+NВ€]ШZ]љKќШZ]›ЬЉ\Ю[И
+
+HO‚€^XЭ
+]ШZ]љ^\™K›X\[™ФЭЬ™K™љ[™[YШ][ЫђћT™\]Y\Э
+›]]™K\™\]Y\ЭLHЉJKќУX]ЪШљ™XЭ
+В€Э]\О€ЫЫ\]Y‹€JK€
+NВ€ЫЫњЭ\XШ]HH[YШ][Ыђ\KњЭ\ќ
+В€\›™\ЬТY€ЫЩ^‹€\ЪО€њ™]љY]И]]‹€ЭЩ€‹ЬЮ[ќ]XИ‹€\™[ќ™XYY€њ\™[ќ]™XY‹€™\]Y\ЭY€›]]™K\™\]Y\ЭLH‹€JNВ€]ШZ][њЭЩ\“Щ™љXЪX[\™[ќЭЩ
+љ^\™JNВ€]ШZ]^XЭ
+\XШ]JKњ™\ЫЫ™\ЛќУX]ЪШљ™XЭ
+И™XYY€›]]™KXЪ[€JNВ€^XЭ
+љ^\™K›Щ™љXЪX[њЭ[‹њ™XYX›S[™Э
+KќР™J
+NВ‚€ЫЫњЭ[\XЪ][™[™ИH[YШ][Ыђ\KњЭ\ќ
+В€\›™\ЬТY€ЫЩ^‹€\ЪО€љ[\XЪ]]]™H\ЪИ‹€ЭЩ€‹ЬЮ[ќ]XИ‹€\™[ќ™XYY€њ\™[ќ]™XY‹€JNВ€]ШZ][њЭЩ\“Щ™љXЪX[\™[ќЭЩ
+љ^\™JNВ€ЫЫњЭ[\XЪ]™XYЭ\ќH]ШZ]™XYњЫЫ“[™Jљ^\™K›Щ™љXЪX[њЭ[ЉNВ€љ^\™K›Щ™љXЪX[њЭЭ]ќЬљ]J€	Т”УУ‹њЭљ[™ЪYћJИY€[\XЪ]™XYЭ\ќљY™\Э[€И™XY€ИY€љ[\XЪ]XЪ[€HHJ_W€
+NВ€ЫЫњЭ[\XЪ]\›”Э\ќH]ШZ]™XYњЫЫ“[™Jљ^\™K›Щ™љXЪX[њЭ[ЉNВ€љ^\™K›Щ™љXЪX[њЭЭ]ќЬљ]J€	Т”УУ‹њЭљ[™ЪYћJИY€[\XЪ]\›”Э\ќљY™\Э[€И\›Ћ€ИY€љ[\XЪ]]\›€€HHJ_W€
+NВ€]ШZ]^XЭ
+[\XЪ][™[™КKњ™\ЫЫ™\ЛќУX]ЪШљ™XЭ
+И™XYY€љ[\XЪ]XЪ[€JNВ€ЫЫњЭ[\XЪ]\XШ]HH[YШ][Ыђ\KњЭ\ќ
+В€\›™\ЬТY€ЫЩ^‹€\ЪО€љ[\XЪ]]]™H\ЪИ‹€ЭЩ€‹ЬЮ[ќ]XИ‹€\™[ќ™XYY€њ\™[ќ]™XY‹€JNВ€]ШZ][њЭЩ\“Щ™љXЪX[\™[ќЭЩ
+љ^\™JNВ€]ШZ]^XЭ
+[\XЪ]\XШ]JKњ™\ЫЫ™\ЛќУX]ЪШљ™XЭ
+И™XYY€љ[\XЪ]XЪ[€JNВ€^XЭ
+љ^\™K›Щ™љXЪX[њЭ[‹њ™XYX›S[™Э
+KќР™J
+NВ€]ШZ]ЭЬљ^\™Jљ^\™JNВ€JNВ‚€]
+™[]\ИH]]™HЫЩ^™XYЪ[€[YШ][Ы€\њЪ\Э[ЩHZ[И‹\Ю[И
+
+HO€В€][YШ][Ыђ\N€[YШ][ЫђЫЫќ›Ы\H[™Yљ[™YВ€ЫЫњЭ\™XЭЬћHHZЩ[\Ю[К]љ›Ъ[Љ\\Љ
+KЫЩ^ЬЭY[YШ][Ы‹]Ьљ]KYZ[\™KHЉJNВ€ЫЫњЭљ^\™HHЬ™X]Qљ^\™JВ€X\[™ФЭЬ™N€™]ИZ[[™С[YШ][Ы“X\[™ФЭЬ™JИ\™XЭЬћHJK€X\[™ФЭЬ™Q\™XЭЬћN€\™XЭЬћK€Ы‘[YШ][Ыђ\N€
+\JHO€В€[YШ][Ыђ\HH\NВ€™]\›€[™Yљ[™YВ€K€JNВ€]ШZ]љ^\™Kњ™XYNВ€]ШZ]љKќШZ]›ЬЉ\Ю[И
+
+HO€^XЭ
+]ШZ]љ^\™K›X\[™ФЭЬ™K›\Э™XYК
+JKќС\]X[
+ЧJJNВ€Y€
+Y[YШ][Ыђ\JH›ЭИ™]И\њ›ЬЉ‘[YШ][Ы€THШ\И›Э™YЪ\Э\™YЉNВ€ЫЫњЭ[™[™ИH[YШ][Ыђ\KњЭ\ќ
+В€\›™\ЬТY€ЫЩ^‹€\ЪО€њ™]љY]И]]‹€ЭЩ€‹ЬЮ[ќ]XИ‹€\™[ќ™XYY€њ\™[ќ]™XY‹€JNВ€]ШZ][њЭЩ\“Щ™љXЪX[\™[ќЭЩ
+љ^\™JNВ€ЫЫњЭ™XYЭ\ќH]ШZ]™XYњЫЫ“[™Jљ^\™K›Щ™љXЪX[њЭ[ЉNВ€љ^\™K›Щ™љXЪX[њЭЭ]ќЬљ]J€	Т”УУ‹њЭљ[™ЪYћJИY€™XYЭ\ќљY™\Э[€И™XY€ИY€›]]™KXЪ[€HHJ_W€
+NВ€ЫЫњЭ\›”Э\ќH]ШZ]™XYњЫЫ“[™Jљ^\™K›Щ™љXЪX[њЭ[ЉNВ€љ^\™K›Щ™љXЪX[њЭЭ]ќЬљ]J€	Т”УУ‹њЭљ[™ЪYћJИY€\›”Э\ќљY™\Э[€И\›Ћ€ИY€›]]™K]\›€€HHJ_W€
+NВ€ЫЫњЭ[][Ы€H]ШZ]™XYњЫЫ“[™Jљ^\™K›Щ™љXЪX[њЭ[ЉNВ€^XЭ
+[][ЫЉKќУX]ЪШљ™XЭ
+В€Y]Щ€ќ™XYЩ[]H‹€\[\О€И™XYY€›]]™KXЪ[€K€JNВ€љ^\™K›Щ™љXЪX[њЭЭ]ќЬљ]J	Т”УУ‹њЭљ[™ЪYћJИY€[][Ы‹љY™\Э[€ЯHJ_W
+NВ€]ШZ]^XЭ
+[™[™КKњ™Z™XЭЛќХ›ЭК”Ю[ќ]XИ[YШ][Ы€Ьљ]HZ[\™HЉNВ€]ШZ]ЭЬљ^\™Jљ^\™JNВ€JNВ‚€]
+њ™\Щ\ќ™\ИH\›Z[[]]™HЭ]\ИШњЩ\ќ™Y™Y›Ь™H[YШ][Ы€\њЪ\Э[ЩH‹\Ю[И
+
+HO€В€][YШ][Ыђ\N€[YШ][ЫђЫЫќ›Ы\H[™Yљ[™YВ€ЫЫњЭљ^\™HHЬ™X]Qљ^\™JВ€Ы‘[YШ][Ыђ\N€
+\JHO€В€[YШ][Ыђ\HH\NВ€™]\›€[™Yљ[™YВ€K€JNВ€]ШZ]љ^\™Kњ™XYNВ€]ШZ]љKќШZ]›ЬЉ\Ю[И
+
+HO€^XЭ
+]ШZ]љ^\™K›X\[™ФЭЬ™K›\Э™XYК
+JKќС\]X[
+ЧJJNВ€Y€
+Y[YШ][Ыђ\JH›ЭИ™]И\њ›ЬЉ‘[YШ][Ы€THШ\И›Э™YЪ\Э\™YЉNВ€ЫЫњЭ[™[™ИH[YШ][Ыђ\KњЭ\ќ
+В€\›™\ЬТY€ЫЩ^‹€\ЪО€™\Э\ЪИ‹€ЭЩ€‹ЬЮ[ќ]XИ‹€\™[ќ™XYY€њ\™[ќ]™XY‹€™\]Y\ЭY€™\Э[]]™K\™\]Y\Э‹€JNВ€]ШZ][њЭЩ\“Щ™љXЪX[\™[ќЭЩ
+љ^\™JNВ€ЫЫњЭ™XYЭ\ќH]ШZ]™XYњЫЫ“[™Jљ^\™K›Щ™љXЪX[њЭ[ЉNВ€љ^\™K›Щ™љXЪX[њЭЭ]ќЬљ]J€	Т”УУ‹њЭљ[™ЪYћJИY€™XYЭ\ќљY™\Э[€И™XY€ИY€™\ЭXЪ[€HHJ_W€
+NВ€ЫЫњЭ\›”Э\ќH]ШZ]™XYњЫЫ“[™Jљ^\™K›Щ™љXЪX[њЭ[ЉNВ€љ^\™K›Щ™љXЪX[њЭЭ]ќЬљ]J€	Т”УУ‹њЭљ[™ЪYћJВ€Y]Щ€ќ\›‹ШЫЫ\]Y‹€\[\О€В€™XYY€™\ЭXЪ[‹€\›Ћ€ИY€™\Э]\›€‹Э]\О€ЫЫ\]Y€K€K€J_W€
+NВ€љ^\™K›Щ™љXЪX[њЭЭ]ќЬљ]J€	Т”УУ‹њЭљ[™ЪYћJИY€\›”Э\ќљY™\Э[€И\›Ћ€ИY€™\Э]\›€€HHJ_W€
+NВ€]ШZ]^XЭ
+[™[™КKњ™\ЫЫ™\ЛќУX]ЪШљ™XЭ
+ИЭ]\О€ЫЫ\]Y€JNВ€]ШZ]^XЭ
+€љ^\™K›X\[™ФЭЬ™K™љ[™[YШ][ЫђћT™\]Y\Э
+™\Э[]]™K\™\]Y\ЭЉK€
+Kњ™\ЫЫ™\ЛќУX]ЪШљ™XЭ
+ИЭ]\О€ЫЫ\]Y€JNВ€]ШZ]ЭЬљ^\™Jљ^\™JNВ€JNВ‚€]
+њ›ЮY\И]]™HЫЩ^™XYИ[ќИHљ\ЪX›H™\Э[Ъ\H‹\Ю[И
+
+HO€В€][YШ][Ыђ\N€[YШ][ЫђЫЫќ›Ы\H[™Yљ[™YВ€ЫЫњЭљ^\™HHЬ™X]Qљ^\™JВ€Ы‘[YШ][Ыђ\N€
+\JHO€В€[YШ][Ыђ\HH\NВ€™]\›€[™Yљ[™YВ€K€JNВ€]ШZ]љ^\™Kњ™XYNВ€]ШZ]љKќШZ]›ЬЉ\Ю[И
+
+HO€^XЭ
+]ШZ]љ^\™K›X\[™ФЭЬ™K›\Э™XYК
+JKќС\]X[
+ЧJJNВ€Y€
+Y[YШ][Ыђ\JH›ЭИ™]И\њ›ЬЉ‘[YШ][Ы€THШ\И›Э™YЪ\Э\™YЉNВ€]ШZ]љ[™Щ™љXЪX[™XY
+љ^\™K›]]™KXЪ[ЉNВ€ЫЫњЭ[™[™ИH[YШ][Ыђ\Kњ™XY
+И™XYY€›]]™KXЪ[‹љY]О€њ™\Э[€JNВ€ЫЫњЭ™\]Y\ЭH]ШZ]™XYњЫЫ“[™Jљ^\™K›Щ™љXЪX[њЭ[ЉNВ€^XЭ
+™\]Y\Э
+KќУX]ЪШљ™XЭ
+В€Y]Щ€ќ™XYЬ™XY‹€\[\О€И™XYY€›]]™KXЪ[‹[ЫYU\›њО€ќYHK€JNВ€љ^\™K›Щ™љXЪX[њЭЭ]ќЬљ]J€	Т”УУ‹њЭљ[™ЪYћJВ€Y€™\]Y\ЭљY€™\Э[€В€™XY€В€Y€›]]™KXЪ[‹€Э]\О€И\N€љYH€K€\›њО€В€В€Y€›]]™K]\›€‹€Э]\О€ЫЫ\]Y‹€][\О€В€ИY€њ™X\ЫЫљ[™И‹\N€њ™X\ЫЫљ[™И‹Э[[X\ћN€ИљY[€—HK€ИY€™љ[[‹\N€YЩ[ќY\ЬШYЩH‹\ЩN€™љ[[‹^€™Ы™H€K€K€K€K€K€K€J_W€
+NВ€ЫЫњЭЫ\ЪЭH]ШZ][™[™ОВ€^XЭ
+Ы\ЪЭ
+KќУX]ЪШљ™XЭ
+В€\›™\ЬТY€ЫЩ^‹€Э]\О€ЫЫ\]Y‹€™\Э[€И]Z[Xљ[]N€]Z[X›H‹^€™Ы™H€K€JNВ€^XЭ
+”УУ‹њЭљ[™ЪYћJЫ\ЪЭ
+JK››ЭќРЫЫќZ[ЉљY[€ЉNВ€]ШZ]ЭЬљ^\™Jљ^\™JNВ€JNВ‚€]
+™[]\ИH]]™HЫЩ^™XYЪ[€[љ]X[\ЪИ[]™\ћHZ[И‹\Ю[И
+
+HO€В€][YШ][Ыђ\N€[YШ][ЫђЫЫќ›Ы\H[™Yљ[™YВ€ЫЫњЭљ^\™HHЬ™X]Qљ^\™JВ€Ы‘[YШ][Ыђ\N€
+\JHO€В€[YШ][Ыђ\HH\NВ€™]\›€[™Yљ[™YВ€K€JNВ€]ШZ]љ^\™Kњ™XYNВ€]ШZ]љKќШZ]›ЬЉ\Ю[И
+
+HO€^XЭ
+]ШZ]љ^\™K›X\[™ФЭЬ™K›\Э™XYК
+JKќС\]X[
+ЧJJNВ€Y€
+Y[YШ][Ыђ\JH›ЭИ™]И\њ›ЬЉ‘[YШ][Ы€THШ\И›Э™YЪ\Э\™YЉNВ€ЫЫњЭ[™[™ИH[YШ][Ыђ\KњЭ\ќ
+В€\›™\ЬТY€ЫЩ^‹€\ЪО€њ™]љY]И]]‹€ЭЩ€‹ЬЮ[ќ]XИ‹€\™[ќ™XYY€њ\™[ќ]™XY‹€JNВ€]ШZ][њЭЩ\“Щ™љXЪX[\™[ќЭЩ
+љ^\™JNВ€ЫЫњЭ™XYЭ\ќH]ШZ]™XYњЫЫ“[™Jљ^\™K›Щ™љXЪX[њЭ[ЉNВ€љ^\™K›Щ™љXЪX[њЭЭ]ќЬљ]J€	Т”УУ‹њЭљ[™ЪYћJИY€™XYЭ\ќљY™\Э[€И™XY€ИY€›]]™KXЪ[€HHJ_W€
+NВ€ЫЫњЭ\›”Э\ќH]ШZ]™XYњЫЫ“[™Jљ^\™K›Щ™љXЪX[њЭ[ЉNВ€љ^\™K›Щ™љXЪX[њЭЭ]ќЬљ]J€	Т”УУ‹њЭљ[™ЪYћJИY€\›”Э\ќљY\њ›ЬЋ€ИЫЩN€LKY\ЬШYЩN€™[]™\ћHZ[Y€HJ_W€
+NВ€ЫЫњЭ[][Ы€H]ШZ]™XYњЫЫ“[™Jљ^\™K›Щ™љXЪX[њЭ[ЉNВ€^XЭ
+[][ЫЉKќУX]ЪШљ™XЭ
+В€Y]Щ€ќ™XYЩ[]H‹€\[\О€И™XYY€›]]™KXЪ[€K€JNВ€љ^\™K›Щ™љXЪX[њЭЭ]ќЬљ]J	Т”УУ‹њЭљ[™ЪYћJИY€[][Ы‹љY™\Э[€ЯHJ_W
+NВ€]ШZ]^XЭ
+[™[™КKњ™Z™XЭЛќХ›ЭК››И\›€Y[ќ]HЉNВ€]ШZ]^XЭ
+љ^\™K›X\[™ФЭЬ™K›\Э[YШ][ЫњК
+JKњ™\ЫЫ™\ЛќТ]™S[™Э
+
+NВ€]ШZ]ЭЬљ^\™Jљ^\™JNВ€JNВ‚€]
+њ\ЬЩ\Иќ[ќ[YHЫЫ›™XЭ[Ы€[™Э\њ™[ќ™XYY[ќ]HЪ[€X[ќX[HЬ™X][™И[€^\›[™XY‹\Ю[И
+
+HO€В€Ы\ЬИ™XЫЬ™[™РY\\€^[™ИZЩR\›™\ЬРY\\€В€Ь[™Y[њ]О€\[Y]\њПZЩR\›™\ЬРY\\–И›Ь[€—O–МVЧHHЧNВ‚€Э™\њљYH\Ю[ИЬ[Љ[њ]€\[Y]\њПZЩR\›™\ЬРY\\–И›Ь[€—O–МJHВ€\Л›Ь[™Y[њ]Лњ\Ъ
+[њ]
+NВ€™]\›€Э\\‹›Ь[Љ[њ]
+NВ€B€B€ЫЫњЭY\\€H™]И™XЫЬ™[™РY\\Љ\›™\ЬТYШЪ[XKњ\њЩJњHЉJNВ€ЫЫњЭљ^\™HHЬ™X]Qљ^\™JВ€[ќљ\›Ы›Y[ќ€В€УСVФХРУWФU€‹ЫЬШЫЩ^ЬЭ‹€УСVФХФ•S•SQWСS‘ТS•€љ‹ЛМLЌЛЊЊЊNЌМLЊИ‹€УСVФХФ•S•SQWХТСSЋ€ќЪЩ[€‹€K€^\›[Y\\њО€™]ИX\
+ЦИњH‹Y\\—WJK€JNВ€ЫЫњЭ™XYYH]ШZ]Э\ќU™XY
+љ^\™JNВ€^XЭ
+Y\\‹›Ь[™Y[њ]ЦМJKќУX]ЪШљ™XЭ
+В€[ќљ\›Ы›Y[ќ€В€УСVФХРУWФU€‹ЫЬШЫЩ^ЬЭ‹€УСVФХФ•S•SQWСS‘ТS•€љ‹ЛМLЌЛЊЊЊNЌМLЊИ‹€УСVФХФ•S•SQWХТСSЋ€ќЪЩ[€‹€УСVФХХ‘PQТQ€™XYY€K€JNВ€]ШZ]ЭЬљ^\™Jљ^\™JNВ€JNВ‚€]
+љ[њЬXЭИ]]Ьљ]]]™H^\›[[™ЫЩ^™XYЭЫ™\њЪ\ШШ[H‹\Ю[И
+
+HO€В€ЫЫњЭљ^\™HHЬ™X]Qљ^\™JВ€XШЫЭ[ќЫЫќ›Ы€В€Э\њ™[ќXШЫЭ[ќY€
+
+HO€ќ[€Ы\ЪЭ€
+
+HO€
+В€™\њЪ[ЫЋ€‹€Э\њ™[ќXШЫЭ[ќY€ќ[€\ЩN€ќ[]Z[X›H‹€™]љ\Ъ[ЫЋ€€XШЫЭ[ќО€ЧK€JK€K€JNВ€ЫЫњЭЩ™љXЪX[Ьљ]HHљK™›Љ
+NВ€љ^\™K›Щ™љXЪX[њЭ[‹›ЫЉ™]H‹Щ™љXЪX[Ьљ]JNВ€ЫЫњЭ™XYYH]ШZ]Э\ќU™XY
+љ^\™JNВ‚€Ьљ]T™\]Y\Э
+љ^\™K™\ЪЭЬ[њ]В€Y€€Y]Щ€ЫЩ^ЬЭЭ™XYЪ[њЬXЭ‹€\[\О€И™XYYK€JNВ€]ШZ]^XЭ
+€љ^\™KЫЫXЭЬ‹ќШZ]›ЬЉ
+Y\ЬШYЩJHO€™\]Y\ЭY
+Y\ЬШYЩK
+JK€
+Kњ™\ЫЫ™\ЛќУX]ЪШљ™XЭ
+В€™\Э[€В€ЭЫ™\Ћ€™^\›[‹€\›™\ЬТY€њH‹€[њЬЬќ[Щ[Y€ЫЩ^ЬЭЬK[]]™H‹€Y™™XЭ]™S[Щ[€ИY€™ZЩK[[Щ[]ЊKњљ[X\ћH€K€\ЭЬћN€И›ЬљО€ќYK›ЬљРXЬ›ЬЬРЭЩ€ќYK›ЫXЪУ\Э\›Ћ€[ЩHK€ШЪЩY€ќYK€K€JNВ‚€Ьљ]T™\]Y\Э
+љ^\™K™\ЪЭЬ[њ]В€Y€K€Y]Щ€ЫЩ^ЬЭЭ™XYЪ[њЬXЭ‹€\[\О€И™XYY€›Щ™љXЪX[]™XY€K€JNВ€]ШZ]^XЭ
+љ^\™KЫЫXЭЬ‹ќШZ]›ЬЉ
+Y\ЬШYЩJHO€™\]Y\ЭY
+Y\ЬШYЩKJJJKњ™\ЫЫ™\ЛќС\]X[
+В€Y€K€™\Э[€ИЭЫ™\Ћ€ЫЩ^‹ШЪЩY€ќYHK€JNВ€Ьљ]T™\]Y\Э
+љ^\™K™\ЪЭЬ[њ]В€Y€‹€Y]Щ€ЫЩ^ЬЭЭ™XYЭ\ШYЩKЪ[њЬXЭ‹€\[\О€И™XYY€›Щ™љXЪX[]™XY€K€JNВ€]ШZ]^XЭ
+љ^\™KЫЫXЭЬ‹ќШZ]›ЬЉ
+Y\ЬШYЩJHO€™\]Y\ЭY
+Y\ЬШYЩKЉJJKњ™\ЫЫ™\ЛќС\]X[
+В€Y€‹€™\Э[€И™XYY€›Щ™љXЪX[]™XY‹\ШYЩN€ќ[K€JNВ‚€Ьљ]T™\]Y\Э
+љ^\™K™\ЪЭЬ[њ]В€Y€Л€Y]Щ€ЫЩ^ЬЭЭ™XYЭ\ШYЩKЪ[њЬXЭ‹€\[\О€И™XYY€€K€JNВ€]ШZ]^XЭ
+€љ^\™KЫЫXЭЬ‹ќШZ]›ЬЉ
+Y\ЬШYЩJHO€™\]Y\ЭY
+Y\ЬШYЩKКJK€
+Kњ™\ЫЫ™\ЛќУX]ЪШљ™XЭ
+И\њ›ЬЋ€ИЫЩN€LМЌЊ€HJNВ‚€ЛИ[€[]Z[X›HЭ\њ™[ќXШЫЭ[ќ]\Э™]™\€]Y\ћH]]™H][ЭK‚€^XЭ
+Щ™љXЪX[Ьљ]JK››ЭќТ]™P™Y[ђШ[Y
+
+NВ€]ШZ]ЭЬљ^\™Jљ^\™JNВ€JNВ‚€]
+љЩY\ИHЬЭ[]™HЪ[€[њЬXЭ[™ИH™XYЪ]Э]HШШ[XШЫЭ[ќљ[™[™И‹\Ю[И
+
+HO€В€ЫЫњЭљ^\™HHЬ™X]Qљ^\™J
+NВ€ЫЫњЭЩ™љXЪX[Ьљ]HHљK™›Љ
+NВ€љ^\™K›Щ™љXЪX[њЭ[‹›ЫЉ™]H‹Щ™љXЪX[Ьљ]JNВ€ћHВ€]ШZ]љ[™Щ™љXЪX[™XY
+љ^\™K›Э[™[ШШ[]™XYЉNВ€Ьљ]T™\]Y\Э
+љ^\™K™\ЪЭЬ[њ]В€Y€€Y]Щ€ЫЩ^ЬЭЭ™XYЪ[њЬXЭ‹€\[\О€И™XYY€њ™[[ЭK]™XY]Ъ]Э][ШШ[XXШЫЭ[ќ€K€JNВ€]ШZ]^XЭ
+љ^\™KЫЫXЭЬ‹ќШZ]›ЬЉ
+Y\ЬШYЩJHO€™\]Y\ЭY
+Y\ЬШYЩK
+JJKњ™\ЫЫ™\ЛќС\]X[
+€В€Y€€™\Э[€ИЭЫ™\Ћ€ЫЩ^‹ШЪЩY€ќYHK€K€
+NВ€Ьљ]T™\]Y\Э
+љ^\™K™\ЪЭЬ[њ]В€Y€K€Y]Щ€ЫЩ^ЬЭЭ™XYЪ[њЬXЭ‹€\[\О€И™XYY€›Э[™[ШШ[]™XY€K€JNВ€]ШZ]^XЭ
+љ^\™KЫЫXЭЬ‹ќШZ]›ЬЉ
+Y\ЬШYЩJHO€™\]Y\ЭY
+Y\ЬШYЩKJJJKњ™\ЫЫ™\ЛќС\]X[
+€В€Y€K€™\Э[€ИЭЫ™\Ћ€ЫЩ^‹ШЪЩY€ќYHK€K€
+NВ€^XЭ
+Щ™љXЪX[Ьљ]JK››ЭќТ]™P™Y[ђШ[Y
+
+NВ€Hљ[[HВ€љ^\™K™\ЪЭЬ[њ]™[™
+
+NВ€]ШZ]љ^\™Kњќ[›љ[™ОВ€›TЮ[Кљ^\™K›X\[™ФЭЬ™Q\™XЭЬћKИ™XЭ\њЪ]™N€ќYK›ЬЩN€ќYHJNВ€B€JNВ‚€]
+њ›Ъ™XЭИЩ™љXЪX[ЫЩ^ЪЩ[€\ШYЩH[™XШЫЭ[ќ]H[Z]И›Ь€[њЬXЭ[Ы€‹\Ю[И
+
+HO€В€ЫЫњЭљ^\™HHЬ™X]Qљ^\™J
+NВ€љ^\™K›Щ™љXЪX[њЭ[‹›ЫЉ™]H‹
+Ъ[љО€ќY™™\ЉHO€В€›Ь€
+ЫЫњЭ[™HЩ€Ъ[љЛќФЭљ[™Кќ]ЋЉKњЬ]
+—€ЉJHВ€Y€
+[[™JHЫЫќ[ќYNВ€ЫЫњЭY\ЬШYЩHH”УУ‹њ\њЩJ[™JH\ИњЫЫ“Шљ™XЭВ€Y€
+Y\ЬШYЩK›Y]ЩOOHXШЫЭ[ќЬ]S[Z]ЛЬ™XYЉHЫЫќ[ќYNВ€љ^\™K›Щ™љXЪX[њЭЭ]ќЬљ]J€	Т”УУ‹њЭљ[™ЪYћJВ€Y€Y\ЬШYЩKљY€™\Э[€В€]S[Z]О€В€љ[X\ћN€И\ЩY\Щ[ќ€ЛЪ[™ЭС\][Ы“Z[њО€М™\Щ]Р]€WОK€ЩXЫЫ™\ћN€И\ЩY\Щ[ќ€KЪ[™ЭС\][Ы“Z[њО€LМ™\Щ]Р]€—НK€K€]S[Z]РћS[Z]Y€ќ[€K€J_W€
+NВ€B€JNВ€љ^\™K›Щ™љXЪX[њЭЭ]ќЬљ]J€	Т”УУ‹њЭљ[™ЪYћJВ€Y]Щ€ќ™XYЭЪЩ[•\ШYЩKЭ\]Y‹€\[\О€В€™XYY€›Щ™љXЪX[]™XY‹€\›’Y€›Щ™љXЪX[]\›€‹€ЪЩ[•\ШYЩN€В€Э[€В€Э[ЪЩ[њО€WМ€[њ]ЪЩ[њО€€ШXЪY[њ]ЪЩ[њО€Њ€ШXЪUЬљ]R[њ]ЪЩ[њО€L€Э]]ЪЩ[њО€Њ€™X\ЫЫљ[™УЭ]]ЪЩ[њО€L€K€\Э€В€Э[ЪЩ[њО€Ќ€[њ]ЪЩ[њО€Њ€ШXЪY[њ]ЪЩ[њО€ML€ШXЪUЬљ]R[њ]ЪЩ[њО€K€Э]]ЪЩ[њО€€™X\ЫЫљ[™УЭ]]ЪЩ[њО€L€K€[Щ[ЫЫќ^Ъ[™ЭО€—М€K€K€J_W€
+NВ€]ШZ]љ^\™KЫЫXЭЬ‹ќШZ]›ЬЉ
+Y\ЬШYЩJHO€Y]Щ
+Y\ЬШYЩKќ™XYЭЪЩ[•\ШYЩKЭ\]YЉJNВ‚€Ьљ]T™\]Y\Э
+љ^\™K™\ЪЭЬ[њ]В€Y€€Y]Щ€ЫЩ^ЬЭЭ™XYЭ\ШYЩKЪ[њЬXЭ‹€\[\О€И™XYY€›Щ™љXЪX[]™XY€K€JNВ€]ШZ]^XЭ
+љ^\™KЫЫXЭЬ‹ќШZ]›ЬЉ
+Y\ЬШYЩJHO€™\]Y\ЭY
+Y\ЬШYЩK
+JJKњ™\ЫЫ™\ЛќС\]X[
+В€Y€€™\Э[€В€™XYY€›Щ™љXЪX[]™XY‹€XШЫЭ[ќЬ™Y]О€В€\ЩY\Щ[ќ€Л€\љ[Щ\N€™љ]™WЪЭ\€‹€™\Щ]Р]€™]И]JWО
+€WМ
+KќТTУФЭљ[™К
+K€›ЩXЭ\ШYЩN€В€В€›ЩXЭ€ЌЛY^HЪ[™ЭИ‹€\ШYЩT\Щ[ќ€K€™\Щ]Р]€™]И]J—Н
+€WМ
+KќТTУФЭљ[™К
+K€K€K€K€\ШYЩN€В€Э[ЪЩ[њО€WМ€[њ]ЪЩ[њО€€ШXЪY[њ]ЪЩ[њО€Њ€ШXЪUЬљ]R[њ]ЪЩ[њО€L€Э]]ЪЩ[њО€Њ€™X\ЫЫљ[™УЭ]]ЪЩ[њО€L€ЫЫќ^\ЩYЪЩ[њО€Ќ€ЫЫќ^Ъ[™ЭХЪЩ[њО€—М€ШXЪR]]T\Щ[ќ€НK€K€K€JNВ€]ШZ]ЭЬљ^\™Jљ^\™JNВ€JNВ‚€]
+љ[њЬXЭИЭ\њ™[ќXШЫЭ[ќ][ЭH[™™X]ИЭ\€XШЫЭ[ќYИ\И[љЫ›ЭЫ€‹\Ю[И
+
+HO€В€ЫЫњЭЫ\ЪЭH
+
+HO€
+В€™\њЪ[ЫЋ€€\ИЫЫњЭ€Э\њ™[ќXШЫЭ[ќY€XШЫЭ[ќXH‹€\ЩN€њ™XYH€\ИЫЫњЭ€™]љ\Ъ[ЫЋ€K€XШЫЭ[ќО€ЮИXШЫЭ[ќY€XШЫЭ[ќXH‹X™[€ђH‹[XZ[€P^[\KЫЫH€WK€JNВ€ЫЫњЭXШЫЭ[ќЫЫќ›Ы€ЫЩ^XШЫЭ[ќЫЫќ›ЫHВ€Ы\ЪЭ€Э\њ™[ќXШЫЭ[ќY€
+
+HO€XШЫЭ[ќXH‹€NВ€ЫЫњЭљ^\™HHЬ™X]Qљ^\™JИXШЫЭ[ќЫЫќ›ЫJNВ€љ^\™K›Щ™љXЪX[њЭ[‹›ЫЉ™]H‹
+Ъ[љО€ќY™™\ЉHO€В€›Ь€
+ЫЫњЭ[™HЩ€Ъ[љЛќФЭљ[™Кќ]ЋЉKњЬ]
+—€ЉJHВ€Y€
+[[™JHЫЫќ[ќYNВ€ЫЫњЭY\ЬШYЩHH”УУ‹њ\њЩJ[™JH\ИњЫЫ“Шљ™XЭВ€Y€
+Y\ЬШYЩK›Y]ЩOOHXШЫЭ[ќЬ]S[Z]ЛЬ™XYЉHЫЫќ[ќYNВ€љ^\™K›Щ™љXЪX[њЭЭ]ќЬљ]J€	Т”УУ‹њЭљ[™ЪYћJВ€Y€Y\ЬШYЩKљY€™\Э[€В€]S[Z]О€В€љ[X\ћN€И\ЩY\Щ[ќ€L‹Ъ[™ЭС\][Ы“Z[њО€МK€ЩXЫЫ™\ћN€И\ЩY\Щ[ќ€НЪ[™ЭС\][Ы“Z[њО€LМK€K€K€J_W€
+NВ€B€JNВ€ћHВ€Ьљ]T™\]Y\Э
+љ^\™K™\ЪЭЬ[њ]В€Y€‹€Y]Щ€ЫЩ^ЬЭШXШЫЭ[ќЭ\ШYЩKЪ[њЬXЭ‹€\[\О€ИXШЫЭ[ќY€XШЫЭ[ќX€‹™Yњ™\Ъ€ќYHK€JNВ€]ШZ]^XЭ
+€љ^\™KЫЫXЭЬ‹ќШZ]›ЬЉ
+Y\ЬШYЩJHO€™\]Y\ЭY
+Y\ЬШYЩKЉJK€
+Kњ™\ЫЫ™\ЛќУX]ЪШљ™XЭ
+В€Y€‹€\њ›ЬЋ€ИЫЩN€LМЊ‹Y\ЬШYЩN€•[љЫ›ЭЫ€ЫЩ^XШЫЭ[ќ€K€JNВ‚€Ьљ]T™\]Y\Э
+љ^\™K™\ЪЭЬ[њ]В€Y€Л€Y]Щ€ЫЩ^ЬЭШXШЫЭ[ќЭ\ШYЩKЪ[њЬXЭ‹€\[\О€ИXШЫЭ[ќY€XШЫЭ[ќXH€K€JNВ€]ШZ]^XЭ
+€љ^\™KЫЫXЭЬ‹ќШZ]›ЬЉ
+Y\ЬШYЩJHO€™\]Y\ЭY
+Y\ЬШYЩKКJK€
+Kњ™\ЫЫ™\ЛќУX]ЪШљ™XЭ
+В€Y€Л€™\Э[€В€XШЫЭ[ќY€XШЫЭ[ќXH‹€њ™\Ъ™\ЬО€›]™H‹€XШЫЭ[ќЬ™Y]О€И\ЩY\Щ[ќ€L‹\љ[Щ\N€™љ]™WЪЭ\€€K€K€JNВ€Hљ[[HВ€]ШZ]ЭЬљ^\™Jљ^\™JNВ€B€JNВ‚€]
+љЩY\ИЭ[][]]™H™XY\ШYЩH[™\[™[ќњ›ЫH]]™HXШЫЭ[ќЪ[™Щ\И‹\Ю[И
+
+HO€В€ЫЫњЭљ^\™HHЬ™X]Qљ^\™JВ€XШЫЭ[ќЫЫќ›Ы€В€Э\њ™[ќXШЫЭ[ќY€
+
+HO€ќ[€Ы\ЪЭ€
+
+HO€
+В€™\њЪ[ЫЋ€‹€Э\њ™[ќXШЫЭ[ќY€ќ[€\ЩN€ќ[]Z[X›H‹€™]љ\Ъ[ЫЋ€€XШЫЭ[ќО€ЧK€JK€K€JNВ€љ^\™K›Щ™љXЪX[њЭЭ]ќЬљ]J€	Т”УУ‹њЭљ[™ЪYћJВ€Y]Щ€ќ™XYЭЪЩ[•\ШYЩKЭ\]Y‹€\[\О€В€™XYY€›Щ™љXЪX[]™XY‹€\›’Y€›Щ™љXЪX[]\›€‹€ЪЩ[•\ШYЩN€В€Э[€ИЭ[ЪЩ[њО€L[њ]ЪЩ[њО€Э]]ЪЩ[њО€ЊK€\Э€ИЭ[ЪЩ[њО€L[њ]ЪЩ[њО€Э]]ЪЩ[њО€ЊK€[Щ[ЫЫќ^Ъ[™ЭО€WМ€K€K€J_W€
+NВ€]ШZ]љ^\™KЫЫXЭЬ‹ќШZ]›ЬЉ
+Y\ЬШYЩJHO€Y]Щ
+Y\ЬШYЩKќ™XYЭЪЩ[•\ШYЩKЭ\]YЉJNВ‚€љ^\™K›Щ™љXЪX[њЭЭ]ќЬљ]J	Т”УУ‹њЭљ[™ЪYћJИY]Щ€XШЫЭ[ќЭ\]Y‹\[\О€ЯHJ_W
+NВ€]ШZ]љ^\™KЫЫXЭЬ‹ќШZ]›ЬЉ
+Y\ЬШYЩJHO€Y]Щ
+Y\ЬШYЩKXШЫЭ[ќЭ\]YЉJNВ‚€Ьљ]T™\]Y\Э
+љ^\™K™\ЪЭЬ[њ]В€Y€K€Y]Щ€ЫЩ^ЬЭЭ™XYЭ\ШYЩKЪ[њЬXЭ‹€\[\О€И™XYY€›Щ™љXЪX[]™XY€K€JNВ€]ШZ]^XЭ
+љ^\™KЫЫXЭЬ‹ќШZ]›ЬЉ
+Y\ЬШYЩJHO€™\]Y\ЭY
+Y\ЬШYЩKJJJKњ™\ЫЫ™\ЛќС\]X[
+В€Y€K€™\Э[€В€™XYY€›Щ™љXЪX[]™XY‹€\ШYЩN€В€Э[ЪЩ[њО€L€[њ]ЪЩ[њО€€Э]]ЪЩ[њО€Њ€ЫЫќ^\ЩYЪЩ[њО€L€ЫЫќ^Ъ[™ЭХЪЩ[њО€WМ€K€K€JNВ€]ШZ]ЭЬљ^\™Jљ^\™JNВ€JNВ‚€]
+ЫЫќ[ќY\И[€^\Э[™ИH™XYЪ]Э]™\]Z\љ[™ИH™[™\™\€[Щ[Ш\њљY\€‹\Ю[И
+
+HO€В€ЫЫњЭљ^\™HHЬ™X]Qљ^\™J
+NВ€ЫЫњЭ™XYYH]ШZ]Э\ќU™XY
+љ^\™JNВ€ЫЫњЭЩ\ЬЪ[Ы€Hљ^\™KY\\‹њЩ\ЬЪ[ЫњЦМNВ€Y€
+\Щ\ЬЪ[ЫЉH›ЭИ™]И\њ›ЬЉ‘ZЩHHЩ\ЬЪ[Ы€Ш\И›ЭЬ[™YЉNВ€ЫЫњЭY™™XЭ]™S[Щ[HЩ\ЬЪ[Ы‹њЭ]K™Y™™XЭ]™S[Щ[В‚€Ьљ]T™\]Y\Э
+љ^\™K™\ЪЭЬ[њ]В€Y€‹€Y]Щ€ќ\›‹ЬЭ\ќ‹€\[\О€В€™XYY€[Щ[€™ЬMKЌ‹[[H‹€[њ]€ЮИ\N€ќ^‹^€™^\Э[™ИH\›€€WK€K€JNВ€]ШZ]^XЭ
+€љ^\™KЫЫXЭЬ‹ќШZ]›ЬЉ
+Y\ЬШYЩJHO€™\]Y\ЭY
+Y\ЬШYЩKЉJK€
+Kњ™\ЫЫ™\ЛќУX]ЪШљ™XЭ
+И™\Э[€И\›Ћ€ИЭ]\О€љ[”›ЩЬ™\ЬИ€HHJNВ€^XЭ
+Щ\ЬЪ[Ы‹њЭ]K™Y™™XЭ]™S[Щ[
+KќС\]X[
+Y™™XЭ]™S[Щ[
+NВ€Щ\ЬЪ[Ы‹њЭXШЩYY\›Љ
+NВ€]ШZ]ЭЬљ^\™Jљ^\™JNВ€JNВ‚€]
+›\ЭИ\њЪ\ЭYЭЫ™\њЪ\Ъ]Э]™\ЭЬљ[™И^\›[Щ\ЬЪ[ЫњИ‹\Ю[И
+
+HO€В€ЫЫњЭHH™]ИZЩR\›™\ЬРY\\Љ\›™\ЬТYШЪ[XKњ\њЩJњHЉJNВ€ЫЫњЭЫ]YHH™]ИZЩR\›™\ЬРY\\Љ\›™\ЬТYШЪ[XKњ\њЩJЫ]YKXЫЩHЉJNВ€ЫЫњЭљ\њЭHЬ™X]Qљ^\™JВ€^\›[Y\\њО€™]ИX\
+В€ИњH‹WK€ИЫ]YKXЫЩH‹Ы]YWK€JK€JNВ€ЫЫњЭU™XYYH]ШZ]Э\ќ^\›[™XY
+љ\њЭЫЩ^ЬЭЬK[]]™H‹JNВ€ЫЫњЭЫ]YU™XYYH]ШZ]Э\ќ^\›[™XY
+€љ\њЭ€УUQWРУСWУђUU‘WХђS”ФФ•УSСSТQ€‹€
+NВ€ЫЫњЭ\™XЭЬћHHљ\њЭ›X\[™ФЭЬ™Q\™XЭЬћNВ€]ШZ]ЫЬЩQљ^\™Jљ\њЭ
+NВ‚€ЫЫњЭ™\Э\ќYHH™]ИZЩR\›™\ЬРY\\Љ\›™\ЬТYШЪ[XKњ\њЩJњHЉJNВ€ЫЫњЭ™\Э\ќYЫ]YHH™]ИZЩR\›™\ЬРY\\Љ\›™\ЬТYШЪ[XKњ\њЩJЫ]YKXЫЩHЉJNВ€ЫЫњЭ™\Э\ќYHЬ™X]Qљ^\™JВ€^\›[Y\\њО€™]ИX\
+В€ИњH‹™\Э\ќYWK€ИЫ]YKXЫЩH‹™\Э\ќYЫ]YWK€JK€X\[™ФЭЬ™Q\™XЭЬћN€\™XЭЬћK€JNВ€ЫЫњЭЩ™љXЪX[Ьљ]HHљK™›Љ
+NВ€™\Э\ќY›Щ™љXЪX[њЭ[‹›ЫЉ™]H‹Щ™љXЪX[Ьљ]JNВ‚€Ьљ]T™\]Y\Э
+™\Э\ќY™\ЪЭЬ[њ]В€Y€‹€Y]Щ€ЫЩ^ЬЭЭ™XYЫЭЫ™\њЪ\Ы\Э‹€\[\О€И™XYYО€И›Щ™љXЪX[]™XY‹U™XYYЫ]YU™XYYHK€JNВ€]ШZ]^XЭ
+™\Э\ќYЫЫXЭЬ‹ќШZ]›ЬЉ
+Y\ЬШYЩJHO€™\]Y\ЭY
+Y\ЬШYЩKЉJJKњ™\ЫЫ™\ЛќС\]X[
+€В€Y€‹€™\Э[€В€™XYО€В€И™XYY€›Щ™љXЪX[]™XY‹ЭЫ™\Ћ€ЫЩ^€K€И™XYY€U™XYYЭЫ™\Ћ€™^\›[‹\›™\ЬТY€њH€K€И™XYY€Ы]YU™XYYЭЫ™\Ћ€™^\›[‹\›™\ЬТY€Ы]YKXЫЩH€K€K€K€K€
+NВ€^XЭ
+™\Э\ќYKњЩ\ЬЪ[ЫњКKќТ]™S[™Э
+
+NВ€^XЭ
+™\Э\ќYЫ]YKњЩ\ЬЪ[ЫњКKќТ]™S[™Э
+
+NВ€^XЭ
+Щ™љXЪX[Ьљ]JK››ЭќТ]™P™Y[ђШ[Y
+
+NВ€]ШZ]ЭЬљ^\™J™\Э\ќY
+NВ€JNВ‚€]
+њ™Z™XЭИ[ќ[YЬ€[њ™XYX›HЭЫ™\њЪ\[\ЭY]Y]HШШ[H‹\Ю[И
+
+HO€В€ЫЫњЭ\™XЭЬћHHZЩ[\Ю[К]љ›Ъ[Љ\\Љ
+KЫЩ^ЬЭZЬЭ]\ЭHЉJNВ€ЫЫњЭX\[™ФЭЬ™HH™]ИZ[[™УЭЫ™\њЪ\X\[™ФЭЬ™JИ\™XЭЬћHJNВ€ЫЫњЭљ^\™HHЬ™X]Qљ^\™JИX\[™ФЭЬ™KX\[™ФЭЬ™Q\™XЭЬћN€\™XЭЬћHJNВ€ЫЫњЭЩ™љXЪX[Ьљ]HHљK™›Љ
+NВ€љ^\™K›Щ™љXЪX[њЭ[‹›ЫЉ™]H‹Щ™љXЪX[Ьљ]JNВ‚€Ьљ]T™\]Y\Э
+љ^\™K™\ЪЭЬ[њ]В€Y€Л€Y]Щ€ЫЩ^ЬЭЭ™XYЫЭЫ™\њЪ\Ы\Э‹€\[\О€И™XYYО€И™\XШ]H‹™\XШ]H—HK€JNВ€]ШZ]^XЭ
+€љ^\™KЫЫXЭЬ‹ќШZ]›ЬЉ
+Y\ЬШYЩJHO€™\]Y\ЭY
+Y\ЬШYЩKКJK€
+Kњ™\ЫЫ™\ЛќУX]ЪШљ™XЭ
+И\њ›ЬЋ€ИЫЩN€LМЌЊ€HJNВ‚€Ьљ]T™\]Y\Э
+љ^\™K™\ЪЭЬ[њ]В€Y€€Y]Щ€ЫЩ^ЬЭЭ™XYЫЭЫ™\њЪ\Ы\Э‹€\[\О€И™XYYО€Иќ[њ™XYX›K]™XY—HK€JNВ€]ШZ]^XЭ
+€љ^\™KЫЫXЭЬ‹ќШZ]›ЬЉ
+Y\ЬШYЩJHO€™\]Y\ЭY
+Y\ЬШYЩK
+JK€
+Kњ™\ЫЫ™\ЛќУX]ЪШљ™XЭ
+И\њ›ЬЋ€ИЫЩN€LМЊHHJNВ€^XЭ
+љ^\™KY\\‹њЩ\ЬЪ[ЫњКKќТ]™S[™Э
+
+NВ€^XЭ
+Щ™љXЪX[Ьљ]JK››ЭќТ]™P™Y[ђШ[Y
+
+NВ€]ШZ]ЭЬљ^\™Jљ^\™JNВ€JNВ‚€]
+YЩЬ™YШ]\ИЩ™љXЪX[[™^\›[™XY›ЭЬИ›ЭYЪ[€[ќ\›[Щ™љXЪX[™\]Y\Э‹\Ю[И
+
+HO€В€ЫЫњЭљ^5УО­ўG§ІЪоќЖ­yРЃµ•НН…ќ”иЂ‰Ѕ™™ҐЌҐ…°Ѓ™…Ґ±•ђ€ЃфЃф¤м(ЂЂЂЃ…Э…ҐРЃНСЅБҐбСХЙ”ЎЅ™™ҐЌҐ…±…Ґ±ХЙ”¤м(ЂЃф¤м((ЂЃҐР ‰±ҐНСМЃ…ёЃХ№±Ѕ…‘•ђЃбС•Й№…°ЃQЎЙ•…ђЃ…™С•ИЃЙ•НС…ЙРЃЭҐСЎЅХРЃЙ•НСЅЙҐ№њЃҐСМЃ‘…БС•И€°Ѓ…Не№ЊЂ ¤ЂфшЃм(ЂЂЂЃЌЅ№НРЃ™ҐЙНРЂфЃЌЙ•…С•ҐбСХЙ” ¤м(ЂЂЂЃЌЅ№НРЃСЎЙ•…‘%ђЂфЃ…Э…ҐРЃНС…ЙСAҐQЎЙ•…ђЎ™ҐЙНР¤м(ЂЂЂЃЌЅ№НРЃ‘ҐЙ•ЌСЅЙдЂфЃ™ҐЙНР№µ…ББҐ№ќMСЅЙ•ҐЙ•ЌСЅЙдм(ЂЂЂЃ…Э…ҐРЃЌ±ЅН•ҐбСХЙ”Ў™ҐЙНР¤м((ЂЂЂЃЌЅ№НРЃЙ•НС…ЙС•‘‘…БС•ИЂфЃ№•ЬЃ…­•!…Й№•НН‘…БС•ИЎЎ…Й№•НН%‘MЌЎ•µ„№Б…ЙН” ‰Б¤€¤¤м(ЂЂЂЃЌЅ№НРЃЙ•НС…ЙС•ђЂфЃЌЙ•…С•ҐбСХЙ”Ўм(ЂЂЂЂЂЃ•бС•Й№…±‘…БС•ЙМиЃ№•ЬЃ5…АЎml‰Б¤€°ЃЙ•НС…ЙС•‘‘…БС•Йut¤°(ЂЂЂЂЂЃµ…ББҐ№ќMСЅЙ•ҐЙ•ЌСЅЙдиЃ‘ҐЙ•ЌСЅЙд°(ЂЂЂЃф¤м(ЂЂЂЃЙ•НС…ЙС•ђ№Ѕ™™ҐЌҐ…°№НС‘Ґё№Ѕ№Ќ” ‰‘…С„€°ЂЎЌЎХ№¬иЃ	Х™™•И¤ЂфшЃм(ЂЂЂЂЂЃЌЅ№НРЃЙ•ЕХ•НРЂфЃ)M=8№Б…ЙН”ЎЌЎХ№¬№СЅMСЙҐ№њ ‰ХСа€¤¤Ѓ…МЃ)НЅ№=‰©•ЌРм(ЂЂЂЂЂЃЙ•НС…ЙС•ђ№Ѕ™™ҐЌҐ…°№НС‘ЅХР№ЭЙҐС” (ЂЂЂЂЂЂЂЃЂ‘н)M=8№НСЙҐ№ќҐ™дЎм(ЂЂЂЂЂЂЂЂЂЃҐђиЃЙ•ЕХ•НР№Ґђ°(ЂЂЂЂЂЂЂЂЂЃЙ•НХ±РиЃмЃ‘…С„иЃmt°Ѓ№•бСХЙНЅИиЃ№Х±°°Ѓ‰…Ќ­Э…Й‘НХЙНЅИиЃ№Х±°Ѓф°(ЂЂЂЂЂЂЂЃфҐхq№Ђ°(ЂЂЂЂЂЂ¤м(ЂЂЂЃф¤м(ЂЂЂЃЭЙҐС•I•ЕХ•НРЎЙ•НС…ЙС•ђ№‘•Н­СЅБ%№БХР°Ѓм(ЂЂЂЂЂЃҐђиЂРШ°(ЂЂЂЂЂЃµ•СЎЅђиЂ‰СЎЙ•…ђЅ±ҐНР€°(ЂЂЂЂЂЃБ…Й…µМиЃмЃ±ҐµҐРиЂДАЃф°(ЂЂЂЃф¤м(ЂЂЂЃЌЅ№НРЃЙ•НБЅ№Н”ЂфЃ…Э…ҐРЃЙ•НС…ЙС•ђ№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤ЂфшЃЙ•ЕХ•НС%ђЎµ•НН…ќ”°ЂРШ¤¤м(ЂЂЂЃЌЅ№НРЃЙ•НХ±РЂфЃЙ•НБЅ№Н”№Й•НХ±РЃ…МЃ)НЅ№=‰©•ЌРм(ЂЂЂЃ•бБ•ЌРЎЙ•НХ±Р№‘…С„¤№СЅЕХ…°Ўl(ЂЂЂЂЂЃ•бБ•ЌР№Ѕ‰©•ЌСЅ№С…Ґ№Ґ№њЎм(ЂЂЂЂЂЂЂЃҐђиЃСЎЙ•…‘%ђ°(ЂЂЂЂЂЂЂЃНС…СХМиЃмЃСеБ”иЂ‰№ЅС1Ѕ…‘•ђ€Ѓф°(ЂЂЂЂЂЂЂЃЌ…№ЌЌ•БСҐЙ•ЌС%№БХРиЃ№Х±°°(ЂЂЂЂЂЂЂЃСХЙ№МиЃmt°(ЂЂЂЂЂЃф¤°(ЂЂЂЃt¤м(ЂЂЂЃ•бБ•ЌРЎЙ•НС…ЙС•‘‘…БС•И№Н•ННҐЅ№М¤№СЅ!…Щ•1•№ќС  А¤м(ЂЂЂЃ…Э…ҐРЃНСЅБҐбСХЙ”ЎЙ•НС…ЙС•ђ¤м(ЂЃф¤м((ЂЃҐР ‰™ЅЙЭ…Й‘МЃ„Ѓ™ХСХЙ”ЃЅ™™ҐЌҐ…°ЃQЎЙ•…ђЃ±ҐНРЃ™Ґ±С•ИЃХ№ЌЎ…№ќ•ђЃЭҐСЎЅХРЃбС•Й№…°ЃҐ№©•ЌСҐЅё€°Ѓ…Не№ЊЂ ¤ЂфшЃм(ЂЂЂЃЌЅ№НРЃ™ҐбСХЙ”ЂфЃЌЙ•…С•ҐбСХЙ” ¤м(ЂЂЂЃЌЅ№НРЃЙ•ЕХ•НРЂфЃм(ЂЂЂЂЂЃҐђиЂРЬ°(ЂЂЂЂЂЃµ•СЎЅђиЂ‰СЎЙ•…ђЅ±ҐНР€°(ЂЂЂЂЂЃБ…Й…µМиЃмЃ±ҐµҐРиЂМ°Ѓ™ХСХЙ•=™™ҐЌҐ…±Ґ±С•ИиЃмЃ­••АиЃСЙХ”ЃфЃф°(ЂЂЂЃфм(ЂЂЂЃЌЅ№НРЃ™ЅЙЭ…Й‘•ђЂфЃ№•ЬЃAЙЅµҐН”с)НЅ№=‰©•ЌРш ЎЙ•НЅ±Щ”¤ЂфшЃм(ЂЂЂЂЂЃ™ҐбСХЙ”№Ѕ™™ҐЌҐ…°№НС‘Ґё№Ѕ№Ќ” ‰‘…С„€°ЂЎЌЎХ№¬иЃ	Х™™•И¤ЂфшЃм(ЂЂЂЂЂЂЂЃЌЅ№НРЃЩ…±Х”ЂфЃ)M=8№Б…ЙН”ЎЌЎХ№¬№СЅMСЙҐ№њ ‰ХСа€¤¤Ѓ…МЃ)НЅ№=‰©•ЌРм(ЂЂЂЂЂЂЂЃЙ•НЅ±Щ”ЎЩ…±Х”¤м(ЂЂЂЂЂЂЂЃ™ҐбСХЙ”№Ѕ™™ҐЌҐ…°№НС‘ЅХР№ЭЙҐС” (ЂЂЂЂЂЂЂЂЂЃЂ‘н)M=8№НСЙҐ№ќҐ™дЎмЃҐђиЂРЬ°ЃЙ•НХ±РиЃмЃ‘…С„иЃmt°Ѓ№•бСХЙНЅИиЃ№Х±°ЃфЃфҐхq№Ђ°(ЂЂЂЂЂЂЂЂ¤м(ЂЂЂЂЂЃф¤м(ЂЂЂЃф¤м(ЂЂЂЃЭЙҐС•I•ЕХ•НРЎ™ҐбСХЙ”№‘•Н­СЅБ%№БХР°ЃЙ•ЕХ•НР¤м(ЂЂЂЃ…Э…ҐРЃ•бБ•ЌРЎ™ЅЙЭ…Й‘•ђ¤№Й•НЅ±Щ•М№СЅЕХ…°ЎЙ•ЕХ•НР¤м(ЂЂЂЃ…Э…ҐРЃ•бБ•ЌРЎ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤ЂфшЃЙ•ЕХ•НС%ђЎµ•НН…ќ”°ЂРЬ¤¤¤№Й•НЅ±Щ•М№СЅЕХ…°Ўм(ЂЂЂЂЂЃҐђиЂРЬ°(ЂЂЂЂЂЃЙ•НХ±РиЃмЃ‘…С„иЃmt°Ѓ№•бСХЙНЅИиЃ№Х±°Ѓф°(ЂЂЂЃф¤м(ЂЂЂЃ•бБ•ЌРЎ™ҐбСХЙ”№…‘…БС•И№Н•ННҐЅ№М¤№СЅ!…Щ•1•№ќС  А¤м(ЂЂЂЃ…Э…ҐРЃНСЅБҐбСХЙ”Ў™ҐбСХЙ”¤м(ЂЃф¤м((ЂЃҐР ‰…ЙЌЎҐЩ•МЃ…№ђЃХ№…ЙЌЎҐЩ•МЃ…ёЃ…ЌСҐЩ”ЃбС•Й№…°ЃQЎЙ•…ђЃЭҐСЎЅХРЃЌ±ЅНҐ№њЃҐСМЃM•ННҐЅё€°Ѓ…Не№ЊЂ ¤ЂфшЃм(ЂЂЂЃЌЅ№НРЃ™ҐбСХЙ”ЂфЃЌЙ•…С•ҐбСХЙ” ¤м(ЂЂЂЃЌЅ№НРЃСЎЙ•…‘%ђЂфЃ…Э…ҐРЃНС…ЙСAҐQЎЙ•…ђЎ™ҐбСХЙ”¤м(ЂЂЂЃЌЅ№НРЃСХЙ№%ђЂфЃ…Э…ҐРЃНС…ЙСAҐQХЙёЎ™ҐбСХЙ”°ЃСЎЙ•…‘%ђ°ЂРа¤м(ЂЂЂЃЌЅ№НРЃН•ННҐЅёЂфЃ™ҐбСХЙ”№…‘…БС•И№Н•ННҐЅ№НlБtм(ЂЂЂЃҐЂ …Н•ННҐЅё¤ЃСЎЙЅЬЃ№•ЬЃЙЙЅИ ‰…­”ЃA¤ЃM•ННҐЅёЃЭ…МЃ№ЅРЃЅБ•№•ђ€¤м(ЂЂЂЃ…Э…ҐРЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤ЂфшЃСХЙ№Щ•№РЎµ•НН…ќ”°Ђ‰СХЙёЅНС…ЙС•ђ€°ЃСХЙ№%ђ¤¤м(ЂЂЂЃЌЅ№НРЃ‰•™ЅЙ”ЂфЃ…Э…ҐРЃ™ҐбСХЙ”№µ…ББҐ№ќMСЅЙ”№ќ•СQЎЙ•…ђЎЎЅНСQЎЙ•…‘%‘MЌЎ•µ„№Б…ЙН”ЎСЎЙ•…‘%ђ¤¤м((ЂЂЂЃЭЙҐС•I•ЕХ•НРЎ™ҐбСХЙ”№‘•Н­СЅБ%№БХР°Ѓм(ЂЂЂЂЂЃҐђиЂРд°(ЂЂЂЂЂЃµ•СЎЅђиЂ‰СЎЙ•…ђЅ…ЙЌЎҐЩ”€°(ЂЂЂЂЂЃБ…Й…µМиЃмЃСЎЙ•…‘%ђЃф°(ЂЂЂЃф¤м(ЂЂЂЃ…Э…ҐРЃ•бБ•ЌРЎ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤ЂфшЃЙ•ЕХ•НС%ђЎµ•НН…ќ”°ЂРд¤¤¤№Й•НЅ±Щ•М№СЅЕХ…°Ўм(ЂЂЂЂЂЃҐђиЂРд°(ЂЂЂЂЂЃЙ•НХ±РиЃнф°(ЂЂЂЃф¤м(ЂЂЂЃ…Э…ҐРЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤ЂфшЃµ•СЎЅђЎµ•НН…ќ”°Ђ‰СЎЙ•…ђЅ…ЙЌЎҐЩ•ђ€¤¤м(ЂЂЂЃ…Э…ҐРЃ•бБ•ЌР (ЂЂЂЂЂЃ™ҐбСХЙ”№µ…ББҐ№ќMСЅЙ”№ќ•СQЎЙ•…ђЎЎЅНСQЎЙ•…‘%‘MЌЎ•µ„№Б…ЙН”ЎСЎЙ•…‘%ђ¤¤°(ЂЂЂЂ¤№Й•НЅ±Щ•М№СЅ5…СЌЎ=‰©•ЌРЎмЃ…ЙЌЎҐЩ•ђиЃСЙХ”°Ѓ№…СҐЩ•M•ННҐЅ№I•иЃ‰•™ЅЙ”ь№№…СҐЩ•M•ННҐЅ№I•Ѓф¤м(ЂЂЂЃЌЅ№НРЃ…ЙЌЎҐЩ•I•НБЅ№Н•%№‘•аЂфЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№µ•НН…ќ•М№™Ґ№‘%№‘•а (ЂЂЂЂЂЂЎµ•НН…ќ”¤ЂфшЃµ•НН…ќ”№ҐђЂфффЂРд°(ЂЂЂЂ¤м(ЂЂЂЃЌЅ№НРЃ…ЙЌЎҐЩ•9ЅСҐ™ҐЌ…СҐЅ№%№‘•аЂфЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№µ•НН…ќ•М№™Ґ№‘%№‘•а Ўµ•НН…ќ”¤Ђфш(ЂЂЂЂЂЃµ•СЎЅђЎµ•НН…ќ”°Ђ‰СЎЙ•…ђЅ…ЙЌЎҐЩ•ђ€¤°(ЂЂЂЂ¤м(ЂЂЂЃ•бБ•ЌРЎ…ЙЌЎҐЩ•I•НБЅ№Н•%№‘•а¤№СЅ	•1•ННQЎ…ёЎ…ЙЌЎҐЩ•9ЅСҐ™ҐЌ…СҐЅ№%№‘•а¤м((ЂЂЂЃН•ННҐЅё№…ББ•№‘Q•бР ‰НСҐ±°ЃЙХ№№Ґ№њЃ…™С•ИЃ…ЙЌЎҐЩ”€¤м(ЂЂЂЃН•ННҐЅё№НХЌЌ••‘QХЙё ¤м(ЂЂЂЃ…Э…ҐРЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤ЂфшЃСХЙ№Щ•№РЎµ•НН…ќ”°Ђ‰СХЙёЅЌЅµБ±•С•ђ€°ЃСХЙ№%ђ¤¤м((ЂЂЂЃЭЙҐС•I•ЕХ•НРЎ™ҐбСХЙ”№‘•Н­СЅБ%№БХР°Ѓм(ЂЂЂЂЂЃҐђиЂФА°(ЂЂЂЂЂЃµ•СЎЅђиЂ‰СЎЙ•…ђЅХ№…ЙЌЎҐЩ”€°(ЂЂЂЂЂЃБ…Й…µМиЃмЃСЎЙ•…‘%ђЃф°(ЂЂЂЃф¤м(ЂЂЂЃЌЅ№НРЃХ№…ЙЌЎҐЩ”ЂфЃ…Э…ҐРЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤ЂфшЃЙ•ЕХ•НС%ђЎµ•НН…ќ”°ЂФА¤¤м(ЂЂЂЃ•бБ•ЌРЎХ№…ЙЌЎҐЩ”¤№СЅ5…СЌЎ=‰©•ЌРЎм(ЂЂЂЂЂЃЙ•НХ±РиЃмЃСЎЙ•…ђиЃмЃҐђиЃСЎЙ•…‘%ђ°ЃНС…СХМиЃмЃСеБ”иЂ‰Ґ‘±”€Ѓф°ЃСХЙ№МиЃmtЃфЃф°(ЂЂЂЃф¤м(ЂЂЂЃ…Э…ҐРЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤ЂфшЃµ•СЎЅђЎµ•НН…ќ”°Ђ‰СЎЙ•…ђЅХ№…ЙЌЎҐЩ•ђ€¤¤м(ЂЂЂЃ…Э…ҐРЃ•бБ•ЌР (ЂЂЂЂЂЃ™ҐбСХЙ”№µ…ББҐ№ќMСЅЙ”№ќ•СQЎЙ•…ђЎЎЅНСQЎЙ•…‘%‘MЌЎ•µ„№Б…ЙН”ЎСЎЙ•…‘%ђ¤¤°(ЂЂЂЂ¤№Й•НЅ±Щ•М№СЅ5…СЌЎ=‰©•ЌРЎмЃ…ЙЌЎҐЩ•ђиЃ™…±Н”°Ѓ№…СҐЩ•M•ННҐЅ№I•иЃ‰•™ЅЙ”ь№№…СҐЩ•M•ННҐЅ№I•Ѓф¤м(ЂЂЂЃЌЅ№НРЃХ№…ЙЌЎҐЩ•I•НБЅ№Н•%№‘•аЂфЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№µ•НН…ќ•М№™Ґ№‘%№‘•а (ЂЂЂЂЂЂЎµ•НН…ќ”¤ЂфшЃµ•НН…ќ”№ҐђЂфффЂФА°(ЂЂЂЂ¤м(ЂЂЂЃЌЅ№НРЃХ№…ЙЌЎҐЩ•9ЅСҐ™ҐЌ…СҐЅ№%№‘•аЂфЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№µ•НН…ќ•М№™Ґ№‘%№‘•а Ўµ•НН…ќ”¤Ђфш(ЂЂЂЂЂЃµ•СЎЅђЎµ•НН…ќ”°Ђ‰СЎЙ•…ђЅХ№…ЙЌЎҐЩ•ђ€¤°(ЂЂЂЂ¤м(ЂЂЂЃ•бБ•ЌРЎХ№…ЙЌЎҐЩ•I•НБЅ№Н•%№‘•а¤№СЅ	•1•ННQЎ…ёЎХ№…ЙЌЎҐЩ•9ЅСҐ™ҐЌ…СҐЅ№%№‘•а¤м(ЂЂЂЃ•бБ•ЌРЎ™ҐбСХЙ”№…‘…БС•И№Н•ННҐЅ№М¤№СЅ!…Щ•1•№ќС  Д¤м(ЂЂЂЃ…Э…ҐРЃНСЅБҐбСХЙ”Ў™ҐбСХЙ”¤м(ЂЃф¤м((ЂЃҐР ‰‘Ѕ•МЃ№ЅРЃ•µҐРЃ…ёЃ…ЙЌЎҐЩ”Ѓ№ЅСҐ™ҐЌ…СҐЅёЃЭЎ•ёЃБ•ЙНҐНС•№Ќ”Ѓ™…Ґ±М€°Ѓ…Не№ЊЂ ¤ЂфшЃм(ЂЂЂЃЌЅ№НРЃ‘ҐЙ•ЌСЅЙдЂфЃµ­‘С•µБMе№ЊЎБ…С №©ЅҐёЎСµБ‘ҐИ ¤°Ђ‰ЌЅ‘•бЎЅНРµЎЅНРµС•НРґ€¤¤м(ЂЂЂЃЌЅ№НРЃµ…ББҐ№ќMСЅЙ”ЂфЃ№•ЬЃ…Ґ±Ґ№ќЙЌЎҐЩ•5…ББҐ№ќMСЅЙ”ЎмЃ‘ҐЙ•ЌСЅЙдЃф¤м(ЂЂЂЃЌЅ№НРЃ™ҐбСХЙ”ЂфЃЌЙ•…С•ҐбСХЙ”ЎмЃµ…ББҐ№ќMСЅЙ”°Ѓµ…ББҐ№ќMСЅЙ•ҐЙ•ЌСЅЙдиЃ‘ҐЙ•ЌСЅЙдЃф¤м(ЂЂЂЃЌЅ№НРЃСЎЙ•…‘%ђЂфЃ…Э…ҐРЃНС…ЙСAҐQЎЙ•…ђЎ™ҐбСХЙ”¤м(ЂЂЂЃЭЙҐС•I•ЕХ•НРЎ™ҐбСХЙ”№‘•Н­СЅБ%№БХР°Ѓм(ЂЂЂЂЂЃҐђиЂФД°(ЂЂЂЂЂЃµ•СЎЅђиЂ‰СЎЙ•…ђЅ…ЙЌЎҐЩ”€°(ЂЂЂЂЂЃБ…Й…µМиЃмЃСЎЙ•…‘%ђЃф°(ЂЂЂЃф¤м(ЂЂЂЃ…Э…ҐРЃ•бБ•ЌР (ЂЂЂЂЂЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤ЂфшЃЙ•ЕХ•НС%ђЎµ•НН…ќ”°ЂФД¤¤°(ЂЂЂЂ¤№Й•НЅ±Щ•М№СЅ5…СЌЎ=‰©•ЌРЎмЃ•ЙЙЅИиЃмЃЌЅ‘”иЂґМИАаДЃфЃф¤м(ЂЂЂЃ…Э…ҐРЃ№•ЬЃAЙЅµҐН” ЎЙ•НЅ±Щ”¤ЂфшЃН•СQҐµ•ЅХРЎЙ•НЅ±Щ”°ЂИА¤¤м(ЂЂЂЃ•бБ•ЌРЎ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№µ•НН…ќ•М№НЅµ” Ўµ•НН…ќ”¤ЂфшЃµ•СЎЅђЎµ•НН…ќ”°Ђ‰СЎЙ•…ђЅ…ЙЌЎҐЩ•ђ€¤¤¤№СЅ	” (ЂЂЂЂЂЃ™…±Н”°(ЂЂЂЂ¤м(ЂЂЂЃ…Э…ҐРЃ•бБ•ЌР (ЂЂЂЂЂЃ™ҐбСХЙ”№µ…ББҐ№ќMСЅЙ”№ќ•СQЎЙ•…ђЎЎЅНСQЎЙ•…‘%‘MЌЎ•µ„№Б…ЙН”ЎСЎЙ•…‘%ђ¤¤°(ЂЂЂЂ¤№Й•НЅ±Щ•М№СЅ5…СЌЎ=‰©•ЌРЎмЃ…ЙЌЎҐЩ•ђиЃ™…±Н”Ѓф¤м(ЂЂЂЃ…Э…ҐРЃНСЅБҐбСХЙ”Ў™ҐбСХЙ”¤м(ЂЃф¤м((ЂЃҐР ‰µ…№…ќ•МЃБ•ЙНҐНС•ђЃбС•Й№…°Ѓµ•С…‘…С„Ѓ•Щ•ёЃЭЎ•ёЃҐСМЃ!…Й№•НМЃҐМЃ№ЅРЃЙ•ќҐНС•Й•ђ€°Ѓ…Не№ЊЂ ¤ЂфшЃм(ЂЂЂЃЌЅ№НРЃ‘ҐЙ•ЌСЅЙдЂфЃµ­‘С•µБMе№ЊЎБ…С №©ЅҐёЎСµБ‘ҐИ ¤°Ђ‰ЌЅ‘•бЎЅНРµЎЅНРµС•НРґ€¤¤м(ЂЂЂЃЌЅ№НРЃН••ђЂфЃ№•ЬЃ5…ББҐ№ќMСЅЙ”ЎмЃ‘ҐЙ•ЌСЅЙдЃф¤м(ЂЂЂЃ…Э…ҐРЃН••ђ№Ґ№ҐСҐ…±Ґй” ¤м(ЂЂЂЃЌЅ№НРЃСЎЙ•…‘%ђЂфЃЎЅНСQЎЙ•…‘%‘MЌЎ•µ„№Б…ЙН” ‰Х№Й•ќҐНС•Й•ђµ•бС•Й№…°€¤м(ЂЂЂЃ…Э…ҐРЃН••ђ№ЌЙ•…С•AЙЅЩҐНҐЅ№…°Ўм(ЂЂЂЂЂЃЎЅНСQЎЙ•…‘%ђиЃСЎЙ•…‘%ђ°(ЂЂЂЂЂЃЌЙ•…С•I•ЕХ•НС%ђиЂ‰Х№Й•ќҐНС•Й•ђµЌЙ•…С”€°(ЂЂЂЂЂЃЎ…Й№•НН%ђиЃЎ…Й№•НН%‘MЌЎ•µ„№Б…ЙН” ‰Б¤€¤°(ЂЂЂЂЂЃЌЭђиЂ€ЅНе№СЎ•СҐЊ€°(ЂЂЂЂЂЃСЙ…№НБЅЙС5Ѕ‘•±%ђиЂ‰ЌЅ‘•бЎЅНРЅБ¤µ№…СҐЩ”€°(ЂЂЂЂЂЃ•БЎ•µ•Й…°иЃ™…±Н”°(ЂЂЂЂЂЃЎҐНСЅЙе5Ѕ‘”иЂ‰±•ќ…Ќд€°(ЂЂЂЃф¤м(ЂЂЂЃ…Э…ҐРЃН••ђ№ЌЅµµҐСI•…‘дЎм(ЂЂЂЂЂЃЎЅНСQЎЙ•…‘%ђиЃСЎЙ•…‘%ђ°(ЂЂЂЂЂЃ№…СҐЩ•M•ННҐЅ№I•иЃм(ЂЂЂЂЂЂЂЃЎ…Й№•НН%ђиЃЎ…Й№•НН%‘MЌЎ•µ„№Б…ЙН” ‰Б¤€¤°(ЂЂЂЂЂЂЂЃ№…СҐЩ•M•ННҐЅ№%ђиЂ‰Х№Й•ќҐНС•Й•ђµ№…СҐЩ”€°(ЂЂЂЂЂЂЂЃ™ЅЙµ…СY•ЙНҐЅёиЂД°(ЂЂЂЂЂЃф°(ЂЂЂЃф¤м(ЂЂЂЃ…Э…ҐРЃН••ђ№Ќ±ЅН” ¤м((ЂЂЂЃЌЅ№НРЃ™ҐбСХЙ”ЂфЃЌЙ•…С•ҐбСХЙ”Ўм(ЂЂЂЂЂЃ•бС•Й№…±‘…БС•ЙМиЃ№•ЬЃ5…А ¤°(ЂЂЂЂЂЃµ…ББҐ№ќMСЅЙ•ҐЙ•ЌСЅЙдиЃ‘ҐЙ•ЌСЅЙд°(ЂЂЂЃф¤м(ЂЂЂЃЭЙҐС•I•ЕХ•НРЎ™ҐбСХЙ”№‘•Н­СЅБ%№БХР°Ѓм(ЂЂЂЂЂЃҐђиЂФИ°(ЂЂЂЂЂЃµ•СЎЅђиЂ‰СЎЙ•…ђЅ…ЙЌЎҐЩ”€°(ЂЂЂЂЂЃБ…Й…µМиЃмЃСЎЙ•…‘%ђЃф°(ЂЂЂЃф¤м(ЂЂЂЃ…Э…ҐРЃ•бБ•ЌРЎ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤ЂфшЃЙ•ЕХ•НС%ђЎµ•НН…ќ”°ЂФИ¤¤¤№Й•НЅ±Щ•М№СЅЕХ…°Ўм(ЂЂЂЂЂЃҐђиЂФИ°(ЂЂЂЂЂЃЙ•НХ±РиЃнф°(ЂЂЂЃф¤м(ЂЂЂЃ…Э…ҐРЃ•бБ•ЌРЎ™ҐбСХЙ”№µ…ББҐ№ќMСЅЙ”№ќ•СQЎЙ•…ђЎСЎЙ•…‘%ђ¤¤№Й•НЅ±Щ•М№СЅ5…СЌЎ=‰©•ЌРЎм(ЂЂЂЂЂЃ…ЙЌЎҐЩ•ђиЃСЙХ”°(ЂЂЂЃф¤м(ЂЂЂЃ…Э…ҐРЃНСЅБҐбСХЙ”Ў™ҐбСХЙ”¤м(ЂЃф¤м((ЂЃҐР ‰Б•ЙНҐНСМЃбС•Й№…°ЃБҐёЃµ•С…‘…С„Ѓ‰ХРЃЙ•©•ЌСМЃХ№НХББЅЙС•ђЃµ•С…‘…С„ЃЭҐСЎЅХРЃЅ™™ҐЌҐ…°Ѓ™…±±‰…Ќ¬€°Ѓ…Не№ЊЂ ¤ЂфшЃм(ЂЂЂЃЌЅ№НРЃ™ҐбСХЙ”ЂфЃЌЙ•…С•ҐбСХЙ” ¤м(ЂЂЂЃЌЅ№НРЃЅ™™ҐЌҐ…±]ЙҐС”ЂфЃЩ¤№™ё ¤м(ЂЂЂЃ™ҐбСХЙ”№Ѕ™™ҐЌҐ…°№НС‘Ґё№Ѕё ‰‘…С„€°ЃЅ™™ҐЌҐ…±]ЙҐС”¤м(ЂЂЂЃЌЅ№НРЃСЎЙ•…‘%ђЂфЃ…Э…ҐРЃНС…ЙСAҐQЎЙ•…ђЎ™ҐбСХЙ”¤м(ЂЂЂЃЭЙҐС•I•ЕХ•НРЎ™ҐбСХЙ”№‘•Н­СЅБ%№БХР°Ѓм(ЂЂЂЂЂЃҐђиЂФМ°(ЂЂЂЂЂЃµ•СЎЅђиЂ‰СЎЙ•…ђЅµ•С…‘…С„ЅХБ‘…С”€°(ЂЂЂЂЂЃБ…Й…µМиЃмЃСЎЙ•…‘%ђ°ЃҐНAҐ№№•ђиЃСЙХ”Ѓф°(ЂЂЂЃф¤м(ЂЂЂЃ…Э…ҐРЃ•бБ•ЌР (ЂЂЂЂЂЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤ЂфшЃЙ•ЕХ•НС%ђЎµ•НН…ќ”°ЂФМ¤¤°(ЂЂЂЂ¤№Й•НЅ±Щ•М№СЅ5…СЌЎ=‰©•ЌРЎмЃЙ•НХ±РиЃмЃСЎЙ•…ђиЃмЃҐђиЃСЎЙ•…‘%ђ°ЃҐНAҐ№№•ђиЃСЙХ”ЃфЃфЃф¤м(ЂЂЂЃ…Э…ҐРЃ•бБ•ЌР (ЂЂЂЂЂЃ™ҐбСХЙ”№µ…ББҐ№ќMСЅЙ”№ќ•СQЎЙ•…ђЎЎЅНСQЎЙ•…‘%‘MЌЎ•µ„№Б…ЙН”ЎСЎЙ•…‘%ђ¤¤°(ЂЂЂЂ¤№Й•НЅ±Щ•М№СЅ5…СЌЎ=‰©•ЌРЎмЃҐНAҐ№№•ђиЃСЙХ”Ѓф¤м(ЂЂЂЃ™ЅИЂЎЌЅ№НРЃmҐђ°ЃБ…СЌЎtЃЅЃl(ЂЂЂЂЂЃlФР°ЃмЃќҐС%№™јиЃмЃ‰Й…№Ќ иЂ‰µ…Ґё€°ЃНЎ„иЃ№Х±°ЃфЃхt°(ЂЂЂЂЂЃlФФ°ЃмЃҐНAҐ№№•ђиЃ™…±Н”°ЃќҐС%№™јиЃмЃ‰Й…№Ќ иЂ‰µ…Ґё€°ЃНЎ„иЃ№Х±°ЃфЃхt°(ЂЂЂЃtЃ…МЃЌЅ№НР¤Ѓм(ЂЂЂЂЂЃЭЙҐС•I•ЕХ•НРЎ™ҐбСХЙ”№‘•Н­СЅБ%№БХР°Ѓм(ЂЂЂЂЂЂЂЃҐђ°(ЂЂЂЂЂЂЂЃµ•СЎЅђиЂ‰СЎЙ•…ђЅµ•С…‘…С„ЅХБ‘…С”€°(ЂЂЂЂЂЂЂЃБ…Й…µМиЃмЃСЎЙ•…‘%ђ°Ђёё№Б…СЌ Ѓф°(ЂЂЂЂЂЃф¤м(ЂЂЂЂЂЃ…Э…ҐРЃ•бБ•ЌР (ЂЂЂЂЂЂЂЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤ЂфшЃЙ•ЕХ•НС%ђЎµ•НН…ќ”°ЃҐђ¤¤°(ЂЂЂЂЂЂ¤№Й•НЅ±Щ•М№СЅ5…СЌЎ=‰©•ЌРЎм(ЂЂЂЂЂЂЂЃ•ЙЙЅИиЃмЃЌЅ‘”иЂґМИАЬа°Ѓµ•НН…ќ”иЂ‰бС•Й№…°ЃQЎЙ•…ђЃµ•С…‘…С„ЃХБ‘…С•МЃ…Й”ЃХ№НХББЅЙС•ђ€Ѓф°(ЂЂЂЂЂЃф¤м(ЂЂЂЃф(ЂЂЂЃЭЙҐС•I•ЕХ•НРЎ™ҐбСХЙ”№‘•Н­СЅБ%№БХР°Ѓм(ЂЂЂЂЂЃҐђиЂФа°(ЂЂЂЂЂЃµ•СЎЅђиЂ‰СЎЙ•…ђЅ™ХСХЙ”Ѕµ…№…ќ”€°(ЂЂЂЂЂЃБ…Й…µМиЃмЃСЎЙ•…‘%ђ°Ѓ™ХСХЙ•5•С…‘…С„иЃСЙХ”Ѓф°(ЂЂЂЃф¤м(ЂЂЂЃ…Э…ҐРЃ•бБ•ЌР (ЂЂЂЂЂЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤ЂфшЃЙ•ЕХ•НС%ђЎµ•НН…ќ”°ЂФа¤¤°(ЂЂЂЂ¤№Й•НЅ±Щ•М№СЅ5…СЌЎ=‰©•ЌРЎм(ЂЂЂЂЂЃ•ЙЙЅИиЃмЃЌЅ‘”иЂґМИАЬШ°Ѓµ•НН…ќ”иЂ‰бС•Й№…°ЃQЎЙ•…ђЃ‘Ѕ•МЃ№ЅРЃНХББЅЙРЃСЎЙ•…ђЅ™ХСХЙ”Ѕµ…№…ќ”€Ѓф°(ЂЂЂЃф¤м(ЂЂЂЃ•бБ•ЌРЎЅ™™ҐЌҐ…±]ЙҐС”¤№№ЅР№СЅ!…Щ•	••№…±±•ђ ¤м(ЂЂЂЃЌЅ№НРЃНСЅЙ•ђЂфЃ…Э…ҐРЃ™ҐбСХЙ”№µ…ББҐ№ќMСЅЙ”№ќ•СQЎЙ•…ђЎЎЅНСQЎЙ•…‘%‘MЌЎ•µ„№Б…ЙН”ЎСЎЙ•…‘%ђ¤¤м(ЂЂЂЃ•бБ•ЌРЎНСЅЙ•ђ¤№СЅ5…СЌЎ=‰©•ЌРЎмЃҐНAҐ№№•ђиЃСЙХ”Ѓф¤м(ЂЂЂЃ•бБ•ЌРЎНСЅЙ•ђ¤№№ЅР№СЅ!…Щ•AЙЅБ•ЙСд ‰ќҐС%№™ј€¤м(ЂЂЂЃ…Э…ҐРЃНСЅБҐбСХЙ”Ў™ҐбСХЙ”¤м(ЂЃф¤м((ЂЃҐР ‰™ЅЙЭ…Й‘МЃЅ™™ҐЌҐ…°ЃЙЌЎҐЩ”°ЃU№…ЙЌЎҐЩ”°Ѓ…№ђЃµ•С…‘…С„ЃХБ‘…С•МЃХ№ЌЎ…№ќ•ђ€°Ѓ…Не№ЊЂ ¤ЂфшЃм(ЂЂЂЃЌЅ№НРЃ™ҐбСХЙ”ЂфЃЌЙ•…С•ҐбСХЙ” ¤м(ЂЂЂЃ…Э…ҐРЃ‰Ґ№‘=™™ҐЌҐ…±QЎЙ•…ђЎ™ҐбСХЙ”°Ђ‰Ѕ™™ҐЌҐ…°µСЎЙ•…ђ€¤м(ЂЂЂЃЌЅ№НРЃЅ™™ҐЌҐ…±I•ЕХ•НСМЂфЃ№•ЬЃ)НЅ№1Ґ№•Ѕ±±•ЌСЅИЎ™ҐбСХЙ”№Ѕ™™ҐЌҐ…°№НС‘Ґё¤м(ЂЂЂЃЌЅ№НРЃЙ•ЕХ•НСМиЃ)НЅ№=‰©•ЌСmtЂфЃl(ЂЂЂЂЂЃмЃҐђиЂФФ°Ѓµ•СЎЅђиЂ‰СЎЙ•…ђЅ…ЙЌЎҐЩ”€°ЃБ…Й…µМиЃмЃСЎЙ•…‘%ђиЂ‰Ѕ™™ҐЌҐ…°µСЎЙ•…ђ€ЃфЃф°(ЂЂЂЂЂЃмЃҐђиЂФШ°Ѓµ•СЎЅђиЂ‰СЎЙ•…ђЅХ№…ЙЌЎҐЩ”€°ЃБ…Й…µМиЃмЃСЎЙ•…‘%ђиЂ‰Ѕ™™ҐЌҐ…°µСЎЙ•…ђ€ЃфЃф°(ЂЂЂЂЂЃм(ЂЂЂЂЂЂЂЃҐђиЂФЬ°(ЂЂЂЂЂЂЂЃµ•СЎЅђиЂ‰СЎЙ•…ђЅµ•С…‘…С„ЅХБ‘…С”€°(ЂЂЂЂЂЂЂЃБ…Й…µМиЃмЃСЎЙ•…‘%ђиЂ‰Ѕ™™ҐЌҐ…°µСЎЙ•…ђ€°ЃҐНAҐ№№•ђиЃСЙХ”Ѓф°(ЂЂЂЂЂЃф°(ЂЂЂЃtм(ЂЂЂЃ™ЅИЂЎЌЅ№НРЃЙ•ЕХ•НРЃЅЃЙ•ЕХ•НСМ¤Ѓм(ЂЂЂЂЂЃЭЙҐС•I•ЕХ•НРЎ™ҐбСХЙ”№‘•Н­СЅБ%№БХР°ЃЙ•ЕХ•НР¤м(ЂЂЂЂЂЃ…Э…ҐРЃ•бБ•ЌР (ЂЂЂЂЂЂЂЃЅ™™ҐЌҐ…±I•ЕХ•НСМ№Э…ҐСЅИ Ўµ•НН…ќ”¤ЂфшЃµ•НН…ќ”№ҐђЂфффЃЙ•ЕХ•НР№Ґђ¤°(ЂЂЂЂЂЂ¤№Й•НЅ±Щ•М№СЅЕХ…°ЎЙ•ЕХ•НР¤м(ЂЂЂЂЂЃЌЅ№НРЃЙ•НХ±РЂфЃЙ•ЕХ•НР№ҐђЂфффЂФФЂьЃнфЂиЃмЃСЎЙ•…ђиЃмЃҐђиЂ‰Ѕ™™ҐЌҐ…°µСЎЙ•…ђ€ЃфЃфм(ЂЂЂЂЂЃ™ҐбСХЙ”№Ѕ™™ҐЌҐ…°№НС‘ЅХР№ЭЙҐС”ЎЂ‘н)M=8№НСЙҐ№ќҐ™дЎмЃҐђиЃЙ•ЕХ•НР№Ґђ°ЃЙ•НХ±РЃфҐхq№Ђ¤м(ЂЂЂЂЂЃ…Э…ҐРЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤ЂфшЃµ•НН…ќ”№ҐђЂфффЃЙ•ЕХ•НР№Ґђ¤м(ЂЂЂЃф(ЂЂЂЃЌЅ№НРЃ№ЅСҐ™ҐЌ…СҐЅёЂфЃм(ЂЂЂЂЂЃµ•СЎЅђиЂ‰СЎЙ•…ђЅ…ЙЌЎҐЩ•ђ€°(ЂЂЂЂЂЃБ…Й…µМиЃмЃСЎЙ•…‘%ђиЂ‰Ѕ™™ҐЌҐ…°µСЎЙ•…ђ€Ѓф°(ЂЂЂЃфм(ЂЂЂЃ™ҐбСХЙ”№Ѕ™™ҐЌҐ…°№НС‘ЅХР№ЭЙҐС”ЎЂ‘н)M=8№НСЙҐ№ќҐ™дЎ№ЅСҐ™ҐЌ…СҐЅёҐхq№Ђ¤м(ЂЂЂЃ…Э…ҐРЃ•бБ•ЌР (ЂЂЂЂЂЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤ЂфшЃµ•СЎЅђЎµ•НН…ќ”°Ђ‰СЎЙ•…ђЅ…ЙЌЎҐЩ•ђ€¤¤°(ЂЂЂЂ¤№Й•НЅ±Щ•М№СЅЕХ…°Ў№ЅСҐ™ҐЌ…СҐЅё¤м(ЂЂЂЃ•бБ•ЌРЎ™ҐбСХЙ”№…‘…БС•И№Н•ННҐЅ№М¤№СЅ!…Щ•1•№ќС  А¤м(ЂЂЂЃ…Э…ҐРЃНСЅБҐбСХЙ”Ў™ҐбСХЙ”¤м(ЂЃф¤м((ЂЃҐР ‰БЙ•Н•ЙЩ•МЃСЎ”Ѓ•Н­СЅАЃQЎЙ•…ђЃБ•ЙНҐНС•№Ќ”ЃµЅ‘”Ѓ™ЅИЃ…ёЃ•бС•Й№…°Ѓ!…Й№•НМ€°Ѓ…Не№ЊЂ ¤ЂфшЃм(ЂЂЂЃЌЅ№НРЃ™ҐбСХЙ”ЂфЃЌЙ•…С•ҐбСХЙ” ¤м(ЂЂЂЃЭЙҐС•I•ЕХ•НРЎ™ҐбСХЙ”№‘•Н­СЅБ%№БХР°Ѓм(ЂЂЂЂЂЃҐђиЂД°(ЂЂЂЂЂЃµ•СЎЅђиЂ‰СЎЙ•…ђЅНС…ЙР€°(ЂЂЂЂЂЃБ…Й…µМиЃм(ЂЂЂЂЂЂЂЃµЅ‘•°иЂ‰ЌЅ‘•бЎЅНРЅБ¤µ№…СҐЩ”€°(ЂЂЂЂЂЂЂЃЌЭђиЂ€ЅНе№СЎ•СҐЊ€°(ЂЂЂЂЂЂЂЃ•БЎ•µ•Й…°иЃ™…±Н”°(ЂЂЂЂЂЂЂЃЎҐНСЅЙе5Ѕ‘”иЂ‰±•ќ…Ќд€°(ЂЂЂЂЂЃф°(ЂЂЂЃф¤м(ЂЂЂЃ…Э…ҐРЃ•бБ•ЌР (ЂЂЂЂЂЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤ЂфшЃЙ•ЕХ•НС%ђЎµ•НН…ќ”°ЂД¤¤°(ЂЂЂЂ¤№Й•НЅ±Щ•М№СЅ5…СЌЎ=‰©•ЌРЎм(ЂЂЂЂЂЃЙ•НХ±РиЃм(ЂЂЂЂЂЂЂЃСЎЙ•…ђиЃмЃ•БЎ•µ•Й…°иЃ™…±Н”°ЃЎҐНСЅЙе5Ѕ‘”иЂ‰±•ќ…Ќд€°ЃНЅХЙЌ”иЂ‰ЩНЌЅ‘”€Ѓф°(ЂЂЂЂЂЃф°(ЂЂЂЃф¤м(ЂЂЂЃ…Э…ҐРЃ•бБ•ЌР (ЂЂЂЂЂЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤ЂфшЃµ•СЎЅђЎµ•НН…ќ”°Ђ‰СЎЙ•…ђЅНС…ЙС•ђ€¤¤°(ЂЂЂЂ¤№Й•НЅ±Щ•М№СЅ5…СЌЎ=‰©•ЌРЎм(ЂЂЂЂЂЃБ…Й…µМиЃм(ЂЂЂЂЂЂЂЃСЎЙ•…ђиЃмЃ•БЎ•µ•Й…°иЃ™…±Н”°ЃЎҐНСЅЙе5Ѕ‘”иЂ‰±•ќ…Ќд€°ЃНЅХЙЌ”иЂ‰ЩНЌЅ‘”€Ѓф°(ЂЂЂЂЂЃф°(ЂЂЂЃф¤м((ЂЂЂЃЭЙҐС•I•ЕХ•НРЎ™ҐбСХЙ”№‘•Н­СЅБ%№БХР°Ѓм(ЂЂЂЂЂЃҐђиЂИ°(ЂЂЂЂЂЃµ•СЎЅђиЂ‰СЎЙ•…ђЅНС…ЙР€°(ЂЂЂЂЂЃБ…Й…µМиЃм(ЂЂЂЂЂЂЂЃµЅ‘•°иЂ‰ЌЅ‘•бЎЅНРЅБ¤µ№…СҐЩ”€°(ЂЂЂЂЂЂЂЃЌЭђиЂ€ЅНе№СЎ•СҐЊ€°(ЂЂЂЂЂЂЂЃ•БЎ•µ•Й…°иЃСЙХ”°(ЂЂЂЂЂЂЂЃЎҐНСЅЙе5Ѕ‘”иЂ‰Б…ќҐ№…С•ђ€°(ЂЂЂЂЂЃф°(ЂЂЂЃф¤м(ЂЂЂЃ…Э…ҐРЃ•бБ•ЌР (ЂЂЂЂЂЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤ЂфшЃЙ•ЕХ•НС%ђЎµ•НН…ќ”°ЂИ¤¤°(ЂЂЂЂ¤№Й•НЅ±Щ•М№СЅ5…СЌЎ=‰©•ЌРЎм(ЂЂЂЂЂЃЙ•НХ±РиЃм(ЂЂЂЂЂЂЂЃСЎЙ•…ђиЃмЃ•БЎ•µ•Й…°иЃСЙХ”°ЃЎҐНСЅЙе5Ѕ‘”иЂ‰Б…ќҐ№…С•ђ€°ЃНЅХЙЌ”иЂ‰ЩНЌЅ‘”€Ѓф°(ЂЂЂЂЂЃф°(ЂЂЂЃф¤м(ЂЂЂЃ…Э…ҐРЃНСЅБҐбСХЙ”Ў™ҐбСХЙ”¤м(ЂЃф¤м((ЂЃҐР ‰Б…ќ•МЃ•бС•Й№…°ЃQХЙ№МЃ…№ђЃ%С•µМЃЭҐС ЃБ…ќҐ№…С•ђЃЙ•НХµ”Ѓ‰ЅЅСНСЙ…А€°Ѓ…Не№ЊЂ ¤ЂфшЃм(ЂЂЂЃЌЅ№НРЃ™ҐбСХЙ”ЂфЃЌЙ•…С•ҐбСХЙ” ¤м(ЂЂЂЃЌЅ№НРЃЅ™™ҐЌҐ…±]ЙҐС”ЂфЃЩ¤№™ё ¤м(ЂЂЂЃ™ҐбСХЙ”№Ѕ™™ҐЌҐ…°№НС‘Ґё№Ѕё ‰‘…С„€°ЃЅ™™ҐЌҐ…±]ЙҐС”¤м(ЂЂЂЃЭЙҐС•I•ЕХ•НРЎ™ҐбСХЙ”№‘•Н­СЅБ%№БХР°Ѓм(ЂЂЂЂЂЃҐђиЂДА°(ЂЂЂЂЂЃµ•СЎЅђиЂ‰СЎЙ•…ђЅНС…ЙР€°(ЂЂЂЂЂЃБ…Й…µМиЃм(ЂЂЂЂЂЂЂЃµЅ‘•°иЂ‰ЌЅ‘•бЎЅНРЅБ¤µ№…СҐЩ”€°(ЂЂЂЂЂЂЂЃЌЭђиЂ€ЅНе№СЎ•СҐЊ€°(ЂЂЂЂЂЂЂЃЎҐНСЅЙе5Ѕ‘”иЂ‰Б…ќҐ№…С•ђ€°(ЂЂЂЂЂЃф°(ЂЂЂЃф¤м(ЂЂЂЃЌЅ№НРЃНС…ЙС•ђЂфЃ…Э…ҐРЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤ЂфшЃЙ•ЕХ•НС%ђЎµ•НН…ќ”°ЂДА¤¤м(ЂЂЂЃЌЅ№НРЃСЎЙ•…‘%ђЂфЂ ЎНС…ЙС•ђ№Й•НХ±РЃ…МЃ)НЅ№=‰©•ЌР¤№СЎЙ•…ђЃ…МЃ)НЅ№=‰©•ЌР¤№Ґђм(ЂЂЂЃҐЂЎСеБ•ЅЃСЎЙ•…‘%ђЂ„ффЂ‰НСЙҐ№њ€¤ЃСЎЙЅЬЃ№•ЬЃЙЙЅИ ‰A…ќҐ№…С•ђЃQЎЙ•…ђЃЎ…МЃ№јЃ%€¤м(ЂЂЂЃЌЅ№НРЃ™ҐЙНСQХЙ№%ђЂфЃ…Э…ҐРЃЌЅµБ±•С•AҐQХЙёЎ™ҐбСХЙ”°ЃСЎЙ•…‘%ђ°ЂДД¤м(ЂЂЂЃЌЅ№НРЃН•ЌЅ№‘QХЙ№%ђЂфЃ…Э…ҐРЃЌЅµБ±•С•AҐQХЙёЎ™ҐбСХЙ”°ЃСЎЙ•…‘%ђ°ЂДИ¤м(ЂЂЂЃЌЅ№НРЃСЎҐЙ‘QХЙ№%ђЂфЃ…Э…ҐРЃЌЅµБ±•С•AҐQХЙёЎ™ҐбСХЙ”°ЃСЎЙ•…‘%ђ°ЂДМ¤м(ЂЂЂЃЌЅ№НРЃН•ННҐЅёЂфЃ™ҐбСХЙ”№…‘…БС•И№Н•ННҐЅ№НlБtм(ЂЂЂЃҐЂ …Н•ННҐЅё¤ЃСЎЙЅЬЃ№•ЬЃЙЙЅИ ‰A…ќҐ№…С•ђЃM•ННҐЅёЃЭ…МЃ№ЅРЃЅБ•№•ђ€¤м((ЂЂЂЃЭЙҐС•I•ЕХ•НРЎ™ҐбСХЙ”№‘•Н­СЅБ%№БХР°Ѓм(ЂЂЂЂЂЃҐђиЂДР°(ЂЂЂЂЂЃµ•СЎЅђиЂ‰СЎЙ•…ђЅЙ•…ђ€°(ЂЂЂЂЂЃБ…Й…µМиЃмЃСЎЙ•…‘%ђ°ЃҐ№Ќ±Х‘•QХЙ№МиЃСЙХ”Ѓф°(ЂЂЂЃф¤м(ЂЂЂЃ…Э…ҐРЃ•бБ•ЌР (ЂЂЂЂЂЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤ЂфшЃЙ•ЕХ•НС%ђЎµ•НН…ќ”°ЂДР¤¤°(ЂЂЂЂ¤№Й•НЅ±Щ•М№СЅ5…СЌЎ=‰©•ЌРЎмЃ•ЙЙЅИиЃмЃЌЅ‘”иЂґМИШАИЃфЃф¤м((ЂЂЂЃЭЙҐС•I•ЕХ•НРЎ™ҐбСХЙ”№‘•Н­СЅБ%№БХР°Ѓм(ЂЂЂЂЂЃҐђиЂДФ°(ЂЂЂЂЂЃµ•СЎЅђиЂ‰СЎЙ•…ђЅСХЙ№МЅ±ҐНР€°(ЂЂЂЂЂЃБ…Й…µМиЃмЃСЎЙ•…‘%ђ°Ѓ±ҐµҐРиЂИ°ЃҐС•µНYҐ•ЬиЂ‰НХµµ…Йд€Ѓф°(ЂЂЂЃф¤м(ЂЂЂЃЌЅ№НРЃСХЙ№НA…ќ”ЂфЃ…Э…ҐРЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤ЂфшЃЙ•ЕХ•НС%ђЎµ•НН…ќ”°ЂДФ¤¤м(ЂЂЂЃ•бБ•ЌРЎСХЙ№НA…ќ”¤№СЅ5…СЌЎ=‰©•ЌРЎм(ЂЂЂЂЂЃЙ•НХ±РиЃм(ЂЂЂЂЂЂЂЃ‘…С„иЃl(ЂЂЂЂЂЂЂЂЂЃм(ЂЂЂЂЂЂЂЂЂЂЂЃҐђиЃСЎҐЙ‘QХЙ№%ђ°(ЂЂЂЂЂЂЂЂЂЂЂЃҐС•µНYҐ•ЬиЂ‰НХµµ…Йд€°(ЂЂЂЂЂЂЂЂЂЂЂЃҐС•µМиЃmмЃСеБ”иЂ‰ХН•Й5•НН…ќ”€Ѓф°ЃмЃСеБ”иЂ‰…ќ•№С5•НН…ќ”€Ѓхt°(ЂЂЂЂЂЂЂЂЂЃф°(ЂЂЂЂЂЂЂЂЂЃм(ЂЂЂЂЂЂЂЂЂЂЂЃҐђиЃН•ЌЅ№‘QХЙ№%ђ°(ЂЂЂЂЂЂЂЂЂЂЂЃҐС•µНYҐ•ЬиЂ‰НХµµ…Йд€°(ЂЂЂЂЂЂЂЂЂЂЂЃҐС•µМиЃmмЃСеБ”иЂ‰ХН•Й5•НН…ќ”€Ѓф°ЃмЃСеБ”иЂ‰…ќ•№С5•НН…ќ”€Ѓхt°(ЂЂЂЂЂЂЂЂЂЃф°(ЂЂЂЂЂЂЂЃt°(ЂЂЂЂЂЂЂЃ№•бСХЙНЅИиЃ•бБ•ЌР№…№дЎMСЙҐ№њ¤°(ЂЂЂЂЂЂЂЃ‰…Ќ­Э…Й‘НХЙНЅИиЃ•бБ•ЌР№…№дЎMСЙҐ№њ¤°(ЂЂЂЂЂЃф°(ЂЂЂЃф¤м(ЂЂЂЃ•бБ•ЌРЎН•ННҐЅё№Н№…БНЎЅСI•…‘М¤№СЅ	” Д¤м((ЂЂЂЃЭЙҐС•I•ЕХ•НРЎ™ҐбСХЙ”№‘•Н­СЅБ%№БХР°Ѓм(ЂЂЂЂЂЃҐђиЂДШ°(ЂЂЂЂЂЃµ•СЎЅђиЂ‰СЎЙ•…ђЅҐС•µМЅ±ҐНР€°(ЂЂЂЂЂЃБ…Й…µМиЃмЃСЎЙ•…‘%ђ°ЃСХЙ№%ђиЃСЎҐЙ‘QХЙ№%ђЃф°(ЂЂЂЃф¤м(ЂЂЂЃ…Э…ҐРЃ•бБ•ЌР (ЂЂЂЂЂЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤ЂфшЃЙ•ЕХ•НС%ђЎµ•НН…ќ”°ЂДШ¤¤°(ЂЂЂЂ¤№Й•НЅ±Щ•М№СЅ5…СЌЎ=‰©•ЌРЎм(ЂЂЂЂЂЃЙ•НХ±РиЃм(ЂЂЂЂЂЂЂЃ‘…С„иЃl(ЂЂЂЂЂЂЂЂЂЃмЃСХЙ№%ђиЃСЎҐЙ‘QХЙ№%ђ°ЃҐС•ґиЃмЃСеБ”иЂ‰ХН•Й5•НН…ќ”€ЃфЃф°(ЂЂЂЂЂЂЂЂЂЃмЃСХЙ№%ђиЃСЎҐЙ‘QХЙ№%ђ°ЃҐС•ґиЃмЃСеБ”иЂ‰…ќ•№С5•НН…ќ”€ЃфЃф°(ЂЂЂЂЂЂЂЃt°(ЂЂЂЂЂЃф°(ЂЂЂЃф¤м(ЂЂЂЃ•бБ•ЌРЎН•ННҐЅё№Н№…БНЎЅСI•…‘М¤№СЅ	” Д¤м((ЂЂЂЃЭЙҐС•I•ЕХ•НРЎ™ҐбСХЙ”№‘•Н­СЅБ%№БХР°Ѓм(ЂЂЂЂЂЃҐђиЂДЬ°(ЂЂЂЂЂЃµ•СЎЅђиЂ‰СЎЙ•…ђЅЙ•НХµ”€°(ЂЂЂЂЂЃБ…Й…µМиЃм(ЂЂЂЂЂЂЂЃСЎЙ•…‘%ђ°(ЂЂЂЂЂЂЂЃ•бЌ±Х‘•QХЙ№МиЃСЙХ”°(ЂЂЂЂЂЂЂЃҐ№ҐСҐ…±QХЙ№НA…ќ”иЃмЃ±ҐµҐРиЂД°ЃҐС•µНYҐ•ЬиЂ‰НХµµ…Йд€Ѓф°(ЂЂЂЂЂЃф°(ЂЂЂЃф¤м(ЂЂЂЃЌЅ№НРЃЙ•НХµ•ђЂфЃ…Э…ҐРЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤ЂфшЃЙ•ЕХ•НС%ђЎµ•НН…ќ”°ЂДЬ¤¤м(ЂЂЂЃ•бБ•ЌРЎЙ•НХµ•ђ¤№СЅ5…СЌЎ=‰©•ЌРЎм(ЂЂЂЂЂЃЙ•НХ±РиЃм(ЂЂЂЂЂЂЂЃСЎЙ•…ђиЃмЃҐђиЃСЎЙ•…‘%ђ°ЃСХЙ№МиЃmtЃф°(ЂЂЂЂЂЂЂЃҐ№ҐСҐ…±QХЙ№НA…ќ”иЃмЃ‘…С„иЃmмЃҐђиЃСЎҐЙ‘QХЙ№%ђЃхtЃф°(ЂЂЂЂЂЂЂЃСХЙ№Н	…Ќ­Э…Й‘НХЙНЅИиЃ•бБ•ЌР№…№дЎMСЙҐ№њ¤°(ЂЂЂЂЂЂЂЃҐС•µН	…Ќ­Э…Й‘НХЙНЅИиЃ•бБ•ЌР№…№дЎMСЙҐ№њ¤°(ЂЂЂЂЂЃф°(ЂЂЂЃф¤м(ЂЂЂЃ•бБ•ЌРЎН•ННҐЅё№Н№…БНЎЅСI•…‘М¤№СЅ	” И¤м((ЂЂЂЃЌЅ№НРЃҐС•µН	…Ќ­Э…Й‘НХЙНЅИЂфЂЎЙ•НХµ•ђ№Й•НХ±РЃ…МЃ)НЅ№=‰©•ЌР¤№ҐС•µН	…Ќ­Э…Й‘НХЙНЅИм(ЂЂЂЃҐЂЎСеБ•ЅЃҐС•µН	…Ќ­Э…Й‘НХЙНЅИЂ„ффЂ‰НСЙҐ№њ€¤Ѓм(ЂЂЂЂЂЃСЎЙЅЬЃ№•ЬЃЙЙЅИ ‰A…ќҐ№…С•ђЃЙ•НХµ”Ѓ‘ҐђЃ№ЅРЃЙ•СХЙёЃ…ёЃ%С•ґЃЎ•…ђЃЌХЙНЅИ€¤м(ЂЂЂЃф(ЂЂЂЃЭЙҐС•I•ЕХ•НРЎ™ҐбСХЙ”№‘•Н­СЅБ%№БХР°Ѓм(ЂЂЂЂЂЃҐђиЂДа°(ЂЂЂЂЂЃµ•СЎЅђиЂ‰СЎЙ•…ђЅҐС•µМЅ±ҐНР€°(ЂЂЂЂЂЃБ…Й…µМиЃм(ЂЂЂЂЂЂЂЃСЎЙ•…‘%ђ°(ЂЂЂЂЂЂЂЃСХЙ№%ђиЃ™ҐЙНСQХЙ№%ђ°(ЂЂЂЂЂЂЂЃЌХЙНЅИиЃҐС•µН	…Ќ­Э…Й‘НХЙНЅИ°(ЂЂЂЂЂЃф°(ЂЂЂЃф¤м(ЂЂЂЃ…Э…ҐРЃ•бБ•ЌР (ЂЂЂЂЂЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤ЂфшЃЙ•ЕХ•НС%ђЎµ•НН…ќ”°ЂДа¤¤°(ЂЂЂЂ¤№Й•НЅ±Щ•М№СЅ5…СЌЎ=‰©•ЌРЎм(ЂЂЂЂЂЃЙ•НХ±РиЃмЃ‘…С„иЃmt°Ѓ№•бСХЙНЅИиЃ№Х±°°Ѓ‰…Ќ­Э…Й‘НХЙНЅИиЃ№Х±°Ѓф°(ЂЂЂЃф¤м((ЂЂЂЃ•бБ•ЌРЎЅ™™ҐЌҐ…±]ЙҐС”¤№№ЅР№СЅ!…Щ•	••№…±±•ђ ¤м(ЂЂЂЃ…Э…ҐРЃНСЅБҐбСХЙ”Ў™ҐбСХЙ”¤м(ЂЃф¤м((ЂЃҐР ‰Н•±•ЌСМЃ…ёЃ•бҐНСҐ№њЃA¤ЃQЎЙ•…ђЃ5Ѕ‘•°Ѓ™ЙЅґЃЅЙ‘•Й•ђЃM•ННҐЅёЃНС…С”€°Ѓ…Не№ЊЂ ¤ЂфшЃм(ЂЂЂЃЌЅ№НРЃ™ҐбСХЙ”ЂфЃЌЙ•…С•ҐбСХЙ” ¤м(ЂЂЂЃЌЅ№НРЃЅ™™ҐЌҐ…±]ЙҐС”ЂфЃЩ¤№™ё ¤м(ЂЂЂЃ™ҐбСХЙ”№Ѕ™™ҐЌҐ…°№НС‘Ґё№Ѕё ‰‘…С„€°ЃЅ™™ҐЌҐ…±]ЙҐС”¤м(ЂЂЂЃЌЅ№НРЃСЎЙ•…‘%ђЂфЃ…Э…ҐРЃНС…ЙСAҐQЎЙ•…ђЎ™ҐбСХЙ”¤м(ЂЂЂЃЌЅ№НРЃµЅ‘•°ЂфЃ™ҐбСХЙ”№…‘…БС•И№Ќ…С…±Ѕњ№µЅ‘•±НlЕtь№Й•м(ЂЂЂЃҐЂ …µЅ‘•°¤ЃСЎЙЅЬЃ№•ЬЃЙЙЅИ ‰…­”ЃЌ…С…±ЅњЃЎ…МЃ№јЃН•ЌЅ№‘…ЙдЃ5Ѕ‘•°€¤м((ЂЂЂЃЭЙҐС•I•ЕХ•НРЎ™ҐбСХЙ”№‘•Н­СЅБ%№БХР°Ѓм(ЂЂЂЂЂЃҐђиЂМД°(ЂЂЂЂЂЃµ•СЎЅђиЂ‰ЌЅ‘•бЎЅНРЅСЎЙ•…ђЅµЅ‘•°ЅН•±•ЌР€°(ЂЂЂЂЂЃБ…Й…µМиЃмЃСЎЙ•…‘%ђ°ЃµЅ‘•°Ѓф°(ЂЂЂЃф¤м(ЂЂЂЃ…Э…ҐРЃ•бБ•ЌР (ЂЂЂЂЂЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤ЂфшЃЙ•ЕХ•НС%ђЎµ•НН…ќ”°ЂМД¤¤°(ЂЂЂЂ¤№Й•НЅ±Щ•М№СЅ5…СЌЎ=‰©•ЌРЎм(ЂЂЂЂЂЃҐђиЂМД°(ЂЂЂЂЂЃЙ•НХ±РиЃм(ЂЂЂЂЂЂЂЃ•™™•ЌСҐЩ•5Ѕ‘•°иЃµЅ‘•°°(ЂЂЂЂЂЂЂЃ•™™•ЌСҐЩ•QЎҐ№­Ґ№ќ=БСҐЅ№%ђиЂ‰Ѕ™€°(ЂЂЂЂЂЂЂЃ…Щ…Ґ±…‰±•QЎҐ№­Ґ№ќ=БСҐЅ№МиЃl(ЂЂЂЂЂЂЂЂЂЃмЃҐђиЂ‰Ѕ™€°Ѓ±…‰•°иЂ‰=™€Ѓф°(ЂЂЂЂЂЂЂЂЂЃмЃҐђиЂ‰±ЅЬ€°Ѓ±…‰•°иЂ‰1ЅЬ€Ѓф°(ЂЂЂЂЂЂЂЃt°(ЂЂЂЂЂЃф°(ЂЂЂЃф¤м(ЂЂЂЃ•бБ•ЌРЎ™ҐбСХЙ”№…‘…БС•И№Н•ННҐЅ№НlБtь№НС…С”№•™™•ЌСҐЩ•5Ѕ‘•°¤№СЅЕХ…°ЎµЅ‘•°¤м(ЂЂЂЃ•бБ•ЌРЎЅ™™ҐЌҐ…±]ЙҐС”¤№№ЅР№СЅ!…Щ•	••№…±±•ђ ¤м(ЂЂЂЃ…Э…ҐРЃНСЅБҐбСХЙ”Ў™ҐбСХЙ”¤м(ЂЃф¤м((ЂЃҐР ‰Н•±•ЌСМЃ„ЃЙ•ќҐНС•Й•ђЃ№ЅёµA¤ЃQЎЙ•…ђЃ5Ѕ‘•°ЃСЎЙЅХќ ЃҐСМЃЅЭ№Ґ№њЃM•ННҐЅё€°Ѓ…Не№ЊЂ ¤ЂфшЃм(ЂЂЂЃЌЅ№НРЃБ¤ЂфЃ№•ЬЃ…­•!…Й№•НН‘…БС•ИЎЎ…Й№•НН%‘MЌЎ•µ„№Б…ЙН” ‰Б¤€¤¤м(ЂЂЂЃЌЅ№НРЃЌ±…Х‘”ЂфЃ№•ЬЃ…­•!…Й№•НН‘…БС•ИЎЎ…Й№•НН%‘MЌЎ•µ„№Б…ЙН” ‰Ќ±…Х‘”µЌЅ‘”€¤¤м(ЂЂЂЃЌЅ№НРЃ™ҐбСХЙ”ЂфЃЌЙ•…С•ҐбСХЙ”Ўм(ЂЂЂЂЂЃ•бС•Й№…±‘…БС•ЙМиЃ№•ЬЃ5…АсбС•Й№…±!…Й№•НН%ђ°Ѓ…­•!…Й№•НН‘…БС•ИшЎl(ЂЂЂЂЂЂЂЃl‰Б¤€°ЃБҐt°(ЂЂЂЂЂЂЂЃl‰Ќ±…Х‘”µЌЅ‘”€°ЃЌ±…Х‘•t°(ЂЂЂЂЂЃt¤°(ЂЂЂЃф¤м(ЂЂЂЃЌЅ№НРЃСЎЙ•…‘%ђЂфЃ…Э…ҐРЃНС…ЙСбС•Й№…±QЎЙ•…ђЎ™ҐбСХЙ”°Ѓ1U}=}9Q%Y}QI9MA=IQ}5=1}%¤м(ЂЂЂЃЌЅ№НРЃµЅ‘•°ЂфЃЌ±…Х‘”№Ќ…С…±Ѕњ№µЅ‘•±НlЕtь№Й•м(ЂЂЂЃҐЂ …µЅ‘•°¤ЃСЎЙЅЬЃ№•ЬЃЙЙЅИ ‰…­”Ѓ±…Х‘”ЃЌ…С…±ЅњЃЎ…МЃ№јЃН•ЌЅ№‘…ЙдЃ5Ѕ‘•°€¤м((ЂЂЂЃЭЙҐС•I•ЕХ•НРЎ™ҐбСХЙ”№‘•Н­СЅБ%№БХР°Ѓм(ЂЂЂЂЂЃҐђиЂММ°(ЂЂЂЂЂЃµ•СЎЅђиЂ‰ЌЅ‘•бЎЅНРЅСЎЙ•…ђЅµЅ‘•°ЅН•±•ЌР€°(ЂЂЂЂЂЃБ…Й…µМиЃмЃСЎЙ•…‘%ђ°ЃµЅ‘•°Ѓф°(ЂЂЂЃф¤м(ЂЂЂЃ…Э…ҐРЃ•бБ•ЌР (ЂЂЂЂЂЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤ЂфшЃЙ•ЕХ•НС%ђЎµ•НН…ќ”°ЂММ¤¤°(ЂЂЂЂ¤№Й•НЅ±Щ•М№СЅ5…СЌЎ=‰©•ЌРЎм(ЂЂЂЂЂЃҐђиЂММ°(ЂЂЂЂЂЃЙ•НХ±РиЃмЃ•™™•ЌСҐЩ•5Ѕ‘•°иЃµЅ‘•°°Ѓ•™™•ЌСҐЩ•QЎҐ№­Ґ№ќ=БСҐЅ№%ђиЂ‰Ѕ™€Ѓф°(ЂЂЂЃф¤м(ЂЂЂЃ•бБ•ЌРЎЌ±…Х‘”№Н•ННҐЅ№НlБtь№НС…С”№•™™•ЌСҐЩ•5Ѕ‘•°¤№СЅЕХ…°ЎµЅ‘•°¤м(ЂЂЂЃ•бБ•ЌРЎБ¤№Н•ННҐЅ№М¤№СЅ!…Щ•1•№ќС  А¤м(ЂЂЂЃ…Э…ҐРЃНСЅБҐбСХЙ”Ў™ҐбСХЙ”¤м(ЂЃф¤м((ЂЃҐР ‰ЙЅХС•МЃA•ЙµҐННҐЅёЃ5Ѕ‘”ЃСЎЙЅХќ ЃСЎ”ЃЅЭ№Ґ№њЃЌ…Б…‰±”ЃM•ННҐЅёЃ…№ђЃБЙ•Н•ЙЩ•МЃЙ•©•ЌСҐЅё€°Ѓ…Не№ЊЂ ¤ЂфшЃм(ЂЂЂЃЌЅ№НРЃБ¤ЂфЃ№•ЬЃ…­•!…Й№•НН‘…БС•ИЎЎ…Й№•НН%‘MЌЎ•µ„№Б…ЙН” ‰Б¤€¤¤м(ЂЂЂЃЌЅ№НРЃЌ±…Х‘•M••ђЂфЃ№•ЬЃ…­•!…Й№•НН‘…БС•ИЎЎ…Й№•НН%‘MЌЎ•µ„№Б…ЙН” ‰Ќ±…Х‘”µЌЅ‘”€¤¤м(ЂЂЂЃЌЅ№НРЃБ•ЙµҐННҐЅ№5Ѕ‘•МЂфЃЎ…Й№•ННA•ЙµҐННҐЅ№5Ѕ‘•…С…±ЅќMЌЎ•µ„№Б…ЙН”Ўм(ЂЂЂЂЂЃµЅ‘•МиЃl(ЂЂЂЂЂЂЂЃмЃҐђиЂ‰‘•™…Х±Р€°Ѓ±…‰•°иЂ‰•™…Х±Р€Ѓф°(ЂЂЂЂЂЂЂЃмЃҐђиЂ‰…ХСј€°Ѓ±…‰•°иЂ‰ХСј€Ѓф°(ЂЂЂЂЂЂЂЃмЃҐђиЂ‰‰еБ…ННA•ЙµҐННҐЅ№М€°Ѓ±…‰•°иЂ‰	еБ…НМ€°Ѓ‘…№ќ•ЙЅХМиЃСЙХ”Ѓф°(ЂЂЂЂЂЃt°(ЂЂЂЂЂЃ‘•™…Х±С5Ѕ‘•%ђиЂ‰‘•™…Х±Р€°(ЂЂЂЃф¤м(ЂЂЂЃЌЅ№НРЃЌ±…Х‘”ЂфЃ№•ЬЃ…­•!…Й№•НН‘…БС•И (ЂЂЂЂЂЃЎ…Й№•НН%‘MЌЎ•µ„№Б…ЙН” ‰Ќ±…Х‘”µЌЅ‘”€¤°(ЂЂЂЂЂЃЌ±…Х‘•M••ђ№Ќ…С…±Ѕњ°(ЂЂЂЂЂЃ™…±Н”°(ЂЂЂЂЂЃ™…±Н”°(ЂЂЂЂЂЃ№Х±°°(ЂЂЂЂЂЃБ•ЙµҐННҐЅ№5Ѕ‘•М°(ЂЂЂЂ¤м(ЂЂЂЃЌЅ№НРЃ™ҐбСХЙ”ЂфЃЌЙ•…С•ҐбСХЙ”Ўм(ЂЂЂЂЂЃ•бС•Й№…±‘…БС•ЙМиЃ№•ЬЃ5…АсбС•Й№…±!…Й№•НН%ђ°Ѓ…­•!…Й№•НН‘…БС•ИшЎl(ЂЂЂЂЂЂЂЃl‰Б¤€°ЃБҐt°(ЂЂЂЂЂЂЂЃl‰Ќ±…Х‘”µЌЅ‘”€°ЃЌ±…Х‘•t°(ЂЂЂЂЂЃt¤°(ЂЂЂЃф¤м(ЂЂЂЃЌЅ№НРЃµЅ‘•°ЂфЃЌ±…Х‘”№Ќ…С…±Ѕњ№‘•™…Х±С5Ѕ‘•°м(ЂЂЂЃҐЂ …µЅ‘•°¤ЃСЎЙЅЬЃ№•ЬЃЙЙЅИ ‰…­”Ѓ±…Х‘”ЃЌ…С…±ЅњЃЎ…МЃ№јЃ‘•™…Х±РЃ5Ѕ‘•°€¤м(ЂЂЂЃЌЅ№НРЃ‘•™…Х±С5Ѕ‘”ЂфЃЎ…Й№•ННA•ЙµҐННҐЅ№5Ѕ‘•%‘MЌЎ•µ„№Б…ЙН” ‰‘•™…Х±Р€¤м(ЂЂЂЃЌЅ№НРЃСЎЙ•…‘%ђЂфЃ…Э…ҐРЃНС…ЙСбС•Й№…±QЎЙ•…ђ (ЂЂЂЂЂЃ™ҐбСХЙ”°(ЂЂЂЂЂЃ•№ЌЅ‘•±…Х‘•QЙ…№НБЅЙС5Ѕ‘•°ЎµЅ‘•°°Ѓ‘•™…Х±С5Ѕ‘”¤°(ЂЂЂЂЂЂМШ°(ЂЂЂЂ¤м(ЂЂЂЃЌЅ№НРЃ…ХСјЂфЃЎ…Й№•ННA•ЙµҐННҐЅ№5Ѕ‘•%‘MЌЎ•µ„№Б…ЙН” ‰…ХСј€¤м((ЂЂЂЃЭЙҐС•I•ЕХ•НРЎ™ҐбСХЙ”№‘•Н­СЅБ%№БХР°Ѓм(ЂЂЂЂЂЃҐђиЂМЬ°(ЂЂЂЂЂЃµ•СЎЅђиЂ‰ЌЅ‘•бЎЅНРЅСЎЙ•…ђЅБ•ЙµҐННҐЅёµµЅ‘”ЅН•±•ЌР€°(ЂЂЂЂЂЃБ…Й…µМиЃмЃСЎЙ•…‘%ђ°ЃБ•ЙµҐННҐЅ№5Ѕ‘•%ђиЃ…ХСјЃф°(ЂЂЂЃф¤м(ЂЂЂЃ…Э…ҐРЃ•бБ•ЌР (ЂЂЂЂЂЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤ЂфшЃЙ•ЕХ•НС%ђЎµ•НН…ќ”°ЂМЬ¤¤°(ЂЂЂЂ¤№Й•НЅ±Щ•М№СЅ5…СЌЎ=‰©•ЌРЎм(ЂЂЂЂЂЃЙ•НХ±РиЃмЃ•™™•ЌСҐЩ•5Ѕ‘•°иЃµЅ‘•°°Ѓ•™™•ЌСҐЩ•A•ЙµҐННҐЅ№5Ѕ‘•%ђиЃ…ХСјЃф°(ЂЂЂЃф¤м(ЂЂЂЃ•бБ•ЌРЎЌ±…Х‘”№Н•ННҐЅ№НlБtь№НС…С”№•™™•ЌСҐЩ•A•ЙµҐННҐЅ№5Ѕ‘•%ђ¤№СЅ	”Ў…ХСј¤м(ЂЂЂЃ…Э…ҐРЃ•бБ•ЌР (ЂЂЂЂЂЃ™ҐбСХЙ”№µ…ББҐ№ќMСЅЙ”№ќ•СQЎЙ•…ђЎЎЅНСQЎЙ•…‘%‘MЌЎ•µ„№Б…ЙН”ЎСЎЙ•…‘%ђ¤¤°(ЂЂЂЂ¤№Й•НЅ±Щ•М№СЅ5…СЌЎ=‰©•ЌРЎм(ЂЂЂЂЂЃСЙ…№НБЅЙС5Ѕ‘•±%ђиЃ•№ЌЅ‘•±…Х‘•QЙ…№НБЅЙС5Ѕ‘•°ЎµЅ‘•°°Ѓ…ХСј¤°(ЂЂЂЃф¤м(ЂЂЂЃ•бБ•ЌРЎБ¤№Н•ННҐЅ№М¤№СЅ!…Щ•1•№ќС  А¤м((ЂЂЂЃЌ±…Х‘”№Н•ННҐЅ№НlБtь№Й•©•ЌС9•бСA•ЙµҐННҐЅ№5Ѕ‘•M•±•ЌСҐЅёЎм(ЂЂЂЂЂЃЌЅ‘”иЂ‰№…СҐЩ•…Ґ±ХЙ”€°(ЂЂЂЂЂЃµ•НН…ќ”иЂ‰AЅ±ҐЌдЃЙ•©•ЌС•ђЃ‰еБ…НМ€°(ЂЂЂЂЂЃЙ•СЙе…‰±”иЃ™…±Н”°(ЂЂЂЃф¤м(ЂЂЂЃЭЙҐС•I•ЕХ•НРЎ™ҐбСХЙ”№‘•Н­СЅБ%№БХР°Ѓм(ЂЂЂЂЂЃҐђиЂМа°(ЂЂЂЂЂЃµ•СЎЅђиЂ‰ЌЅ‘•бЎЅНРЅСЎЙ•…ђЅБ•ЙµҐННҐЅёµµЅ‘”ЅН•±•ЌР€°(ЂЂЂЂЂЃБ…Й…µМиЃм(ЂЂЂЂЂЂЂЃСЎЙ•…‘%ђ°(ЂЂЂЂЂЂЂЃБ•ЙµҐННҐЅ№5Ѕ‘•%ђиЃЎ…Й№•ННA•ЙµҐННҐЅ№5Ѕ‘•%‘MЌЎ•µ„№Б…ЙН” ‰‰еБ…ННA•ЙµҐННҐЅ№М€¤°(ЂЂЂЂЂЃф°(ЂЂЂЃф¤м(ЂЂЂЃ…Э…ҐРЃ•бБ•ЌР (ЂЂЂЂЂЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤ЂфшЃЙ•ЕХ•НС%ђЎµ•НН…ќ”°ЂМа¤¤°(ЂЂЂЂ¤№Й•НЅ±Щ•М№СЅ5…СЌЎ=‰©•ЌРЎм(ЂЂЂЂЂЃ•ЙЙЅИиЃмЃЌЅ‘”иЂґМИАЬа°Ѓµ•НН…ќ”иЂ‰AЅ±ҐЌдЃЙ•©•ЌС•ђЃ‰еБ…НМ€Ѓф°(ЂЂЂЃф¤м(ЂЂЂЃ•бБ•ЌРЎЌ±…Х‘”№Н•ННҐЅ№НlБtь№НС…С”№•™™•ЌСҐЩ•A•ЙµҐННҐЅ№5Ѕ‘•%ђ¤№СЅ	”Ў…ХСј¤м(ЂЂЂЃ…Э…ҐРЃНСЅБҐбСХЙ”Ў™ҐбСХЙ”¤м(ЂЃф¤м((ЂЃҐР ‰Й•©•ЌСМЃ±ҐЩ”ЃЙЅ¬ЃA•ЙµҐННҐЅёЃ5Ѕ‘”ЃЌЎ…№ќ•МЃЭҐСЎЅХРЃЙ•ЭЙҐСҐ№њЃµ…ББҐ№њ€°Ѓ…Не№ЊЂ ¤ЂфшЃм(ЂЂЂЃЌЅ№НРЃБ•ЙµҐННҐЅ№5Ѕ‘•МЂфЃЎ…Й№•ННA•ЙµҐННҐЅ№5Ѕ‘•…С…±ЅќMЌЎ•µ„№Б…ЙН”Ўм(ЂЂЂЂЂЃµЅ‘•МиЃl(ЂЂЂЂЂЂЂЃмЃҐђиЂ‰‘•™…Х±Р€°Ѓ±…‰•°иЂ‰•™…Х±Р€Ѓф°(ЂЂЂЂЂЂЂЃмЃҐђиЂ‰…±Э…еМµ…ББЙЅЩ”€°Ѓ±…‰•°иЂ‰±Э…еМЃ…ББЙЅЩ”€°Ѓ‘…№ќ•ЙЅХМиЃСЙХ”Ѓф°(ЂЂЂЂЂЃt°(ЂЂЂЂЂЃ‘•™…Х±С5Ѕ‘•%ђиЂ‰‘•™…Х±Р€°(ЂЂЂЃф¤м(ЂЂЂЃЌЅ№НРЃќЙЅ¬ЂфЃ№•ЬЃ…­•!…Й№•НН‘…БС•И (ЂЂЂЂЂЃЎ…Й№•НН%‘MЌЎ•µ„№Б…ЙН” ‰ќЙЅ¬€¤°(ЂЂЂЂЂЃХ№‘•™Ґ№•ђ°(ЂЂЂЂЂЃСЙХ”°(ЂЂЂЂЂЃСЙХ”°(ЂЂЂЂЂЃ№Х±°°(ЂЂЂЂЂЃБ•ЙµҐННҐЅ№5Ѕ‘•М°(ЂЂЂЂЂЃ™…±Н”°(ЂЂЂЂЂЂ‰…СЙ•…С”€°(ЂЂЂЂ¤м(ЂЂЂЃЌЅ№НРЃ™ҐбСХЙ”ЂфЃЌЙ•…С•ҐбСХЙ”Ўм(ЂЂЂЂЂЃ•бС•Й№…±‘…БС•ЙМиЃ№•ЬЃ5…АсбС•Й№…±!…Й№•НН%ђ°Ѓ…­•!…Й№•НН‘…БС•ИшЎml‰ќЙЅ¬€°ЃќЙЅ­ut¤°(ЂЂЂЃф¤м(ЂЂЂЃЌЅ№НРЃµЅ‘•°ЂфЃќЙЅ¬№Ќ…С…±Ѕњ№‘•™…Х±С5Ѕ‘•°м(ЂЂЂЃҐЂ …µЅ‘•°¤ЃСЎЙЅЬЃ№•ЬЃЙЙЅИ ‰…­”ЃЙЅ¬ЃЌ…С…±ЅњЃЎ…МЃ№јЃ‘•™…Х±РЃ5Ѕ‘•°€¤м(ЂЂЂЃЌЅ№НРЃ‘•™…Х±С5Ѕ‘”ЂфЃЎ…Й№•ННA•ЙµҐННҐЅ№5Ѕ‘•%‘MЌЎ•µ„№Б…ЙН” ‰‘•™…Х±Р€¤м(ЂЂЂЃЌЅ№НРЃ…±Э…еНББЙЅЩ”ЂфЃЎ…Й№•ННA•ЙµҐННҐЅ№5Ѕ‘•%‘MЌЎ•µ„№Б…ЙН” ‰…±Э…еМµ…ББЙЅЩ”€¤м(ЂЂЂЃЌЅ№НРЃСЙ…№НБЅЙС5Ѕ‘•±%ђЂфЃ•№ЌЅ‘•ЙЅ­QЙ…№НБЅЙС5Ѕ‘•°ЎµЅ‘•°°Ѓ‘•™…Х±С5Ѕ‘”¤м(ЂЂЂЃЌЅ№НРЃСЎЙ•…‘%ђЂфЃ…Э…ҐРЃНС…ЙСбС•Й№…±QЎЙ•…ђЎ™ҐбСХЙ”°ЃСЙ…№НБЅЙС5Ѕ‘•±%ђ°ЂФА¤м(ЂЂЂЃЌЅ№НРЃН•ННҐЅёЂфЃќЙЅ¬№Н•ННҐЅ№НlБtм(ЂЂЂЃҐЂ …Н•ННҐЅё¤ЃСЎЙЅЬЃ№•ЬЃЙЙЅИ ‰…­”ЃЙЅ¬ЃM•ННҐЅёЃЭ…МЃ№ЅРЃЅБ•№•ђ€¤м(ЂЂЂЃЌЅ№НРЃ•б•ЌХС”ЂфЃЩ¤№НБе=ёЎН•ННҐЅё°Ђ‰•б•ЌХС”€¤м((ЂЂЂЃЭЙҐС•I•ЕХ•НРЎ™ҐбСХЙ”№‘•Н­СЅБ%№БХР°Ѓм(ЂЂЂЂЂЃҐђиЂФД°(ЂЂЂЂЂЃµ•СЎЅђиЂ‰ЌЅ‘•бЎЅНРЅСЎЙ•…ђЅБ•ЙµҐННҐЅёµµЅ‘”ЅН•±•ЌР€°(ЂЂЂЂЂЃБ…Й…µМиЃмЃСЎЙ•…‘%ђ°ЃБ•ЙµҐННҐЅ№5Ѕ‘•%ђиЃ…±Э…еНББЙЅЩ”Ѓф°(ЂЂЂЃф¤м(ЂЂЂЃ…Э…ҐРЃ•бБ•ЌР (ЂЂЂЂЂЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤ЂфшЃЙ•ЕХ•НС%ђЎµ•НН…ќ”°ЂФД¤¤°(ЂЂЂЂ¤№Й•НЅ±Щ•М№СЅ5…СЌЎ=‰©•ЌРЎм(ЂЂЂЂЂЃ•ЙЙЅИиЃмЃЌЅ‘”иЂґМИАЬа°Ѓµ•НН…ќ”иЂ‰A•ЙµҐННҐЅёЃ5Ѕ‘”ЃҐМЃ™Ґб•ђЃ…РЃM•ННҐЅёЃЌЙ•…СҐЅё€Ѓф°(ЂЂЂЃф¤м(ЂЂЂЃ•бБ•ЌРЎ•б•ЌХС”¤№№ЅР№СЅ!…Щ•	••№…±±•ђ ¤м(ЂЂЂЃ•бБ•ЌРЎН•ННҐЅё№НС…С”№•™™•ЌСҐЩ•A•ЙµҐННҐЅ№5Ѕ‘•%ђ¤№СЅ	”Ў‘•™…Х±С5Ѕ‘”¤м(ЂЂЂЃ…Э…ҐРЃ•бБ•ЌР (ЂЂЂЂЂЃ™ҐбСХЙ”№µ…ББҐ№ќMСЅЙ”№ќ•СQЎЙ•…ђЎЎЅНСQЎЙ•…‘%‘MЌЎ•µ„№Б…ЙН”ЎСЎЙ•…‘%ђ¤¤°(ЂЂЂЂ¤№Й•НЅ±Щ•М№СЅ5…СЌЎ=‰©•ЌРЎмЃСЙ…№НБЅЙС5Ѕ‘•±%ђЃф¤м((ЂЂЂЃ…Э…ҐРЃНСЅБҐбСХЙ”Ў™ҐбСХЙ”¤м(ЂЃф¤м((ЂЃҐР ‰Н•±•ЌСМЃ•бҐНСҐ№њЃQЎЙ•…ђЃQЎҐ№­Ґ№њЃ™ЙЅґЃЅЙ‘•Й•ђЃЌЅµБ±•С”ЃM•ННҐЅёЃНС…С”€°Ѓ…Не№ЊЂ ¤ЂфшЃм(ЂЂЂЃЌЅ№НРЃ™ҐбСХЙ”ЂфЃЌЙ•…С•ҐбСХЙ” ¤м(ЂЂЂЃЌЅ№НРЃЅ™™ҐЌҐ…±]ЙҐС”ЂфЃЩ¤№™ё ¤м(ЂЂЂЃ™ҐбСХЙ”№Ѕ™™ҐЌҐ…°№НС‘Ґё№Ѕё ‰‘…С„€°ЃЅ™™ҐЌҐ…±]ЙҐС”¤м(ЂЂЂЃЌЅ№НРЃСЎЙ•…‘%ђЂфЃ…Э…ҐРЃНС…ЙСAҐQЎЙ•…ђЎ™ҐбСХЙ”¤м(ЂЂЂЃЌЅ№НРЃЅ™ЂфЃ™ҐбСХЙ”№…‘…БС•И№Ќ…С…±Ѕњ№СЎҐ№­Ґ№ќ=БСҐЅ№М№™Ґ№ђ ЎмЃҐђЃф¤ЂфшЃҐђЂфффЂ‰Ѕ™€¤ь№Ґђм(ЂЂЂЃҐЂ …Ѕ™¤ЃСЎЙЅЬЃ№•ЬЃЙЙЅИ ‰…­”ЃЌ…С…±ЅњЃЎ…МЃ№јЃ=™ЃQЎҐ№­Ґ№њЃЅБСҐЅё€¤м((ЂЂЂЃЭЙҐС•I•ЕХ•НРЎ™ҐбСХЙ”№‘•Н­СЅБ%№БХР°Ѓм(ЂЂЂЂЂЃҐђиЂМР°(ЂЂЂЂЂЃµ•СЎЅђиЂ‰ЌЅ‘•бЎЅНРЅСЎЙ•…ђЅСЎҐ№­Ґ№њЅН•±•ЌР€°(ЂЂЂЂЂЃБ…Й…µМиЃмЃСЎЙ•…‘%ђ°ЃСЎҐ№­Ґ№ќ=БСҐЅ№%ђиЃЅ™Ѓф°(ЂЂЂЃф¤м(ЂЂЂЃ…Э…ҐРЃ•бБ•ЌР (ЂЂЂЂЂЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤ЂфшЃЙ•ЕХ•НС%ђЎµ•НН…ќ”°ЂМР¤¤°(ЂЂЂЂ¤№Й•НЅ±Щ•М№СЅ5…СЌЎ=‰©•ЌРЎм(ЂЂЂЂЂЃҐђиЂМР°(ЂЂЂЂЂЃЙ•НХ±РиЃм(ЂЂЂЂЂЂЂЃ•™™•ЌСҐЩ•5Ѕ‘•°иЃ™ҐбСХЙ”№…‘…БС•И№Ќ…С…±Ѕњ№‘•™…Х±С5Ѕ‘•°°(ЂЂЂЂЂЂЂЃ•™™•ЌСҐЩ•QЎҐ№­Ґ№ќ=БСҐЅ№%ђиЂ‰Ѕ™€°(ЂЂЂЂЂЂЂЃ…Щ…Ґ±…‰±•QЎҐ№­Ґ№ќ=БСҐЅ№МиЃl(ЂЂЂЂЂЂЂЂЂЃмЃҐђиЂ‰Ѕ™€°Ѓ±…‰•°иЂ‰=™€Ѓф°(ЂЂЂЂЂЂЂЂЂЃмЃҐђиЂ‰ЎҐќ €°Ѓ±…‰•°иЂ‰!Ґќ €Ѓф°(ЂЂЂЂЂЂЂЃt°(ЂЂЂЂЂЃф°(ЂЂЂЃф¤м(ЂЂЂЃ•бБ•ЌРЎ™ҐбСХЙ”№…‘…БС•И№Н•ННҐЅ№НlБtь№НС…С”№•™™•ЌСҐЩ•QЎҐ№­Ґ№ќ=БСҐЅ№%ђ¤№СЅ	” ‰Ѕ™€¤м(ЂЂЂЃ…Э…ҐРЃ•бБ•ЌР (ЂЂЂЂЂЃ™ҐбСХЙ”№µ…ББҐ№ќMСЅЙ”№ќ•СQЎЙ•…ђЎЎЅНСQЎЙ•…‘%‘MЌЎ•µ„№Б…ЙН”ЎСЎЙ•…‘%ђ¤¤°(ЂЂЂЂ¤№Й•НЅ±Щ•М№СЅ5…СЌЎ=‰©•ЌРЎм(ЂЂЂЂЂЃСЙ…№НБЅЙС5Ѕ‘•±%ђиЃ•№ЌЅ‘•AҐQЙ…№НБЅЙС5Ѕ‘•°Ў™ҐбСХЙ”№…‘…БС•И№Ќ…С…±Ѕњ№‘•™…Х±С5Ѕ‘•°°ЃЅ™¤°(ЂЂЂЃф¤м(ЂЂЂЃ•бБ•ЌРЎЅ™™ҐЌҐ…±]ЙҐС”¤№№ЅР№СЅ!…Щ•	••№…±±•ђ ¤м(ЂЂЂЃ…Э…ҐРЃНСЅБҐбСХЙ”Ў™ҐбСХЙ”¤м(ЂЃф¤м((ЂЃҐР ‰Й•©•ЌСМЃ™Ґб•ђЃ5Ѕ‘•°ЃЌЅ№СЙЅ°Ѓ™ЅИЃ…ёЃХ№­№ЅЭёЃЅИЃЅ‘•аµЅЭ№•ђЃQЎЙ•…ђЃ±ЅЌ…±±д€°Ѓ…Не№ЊЂ ¤ЂфшЃм(ЂЂЂЃЌЅ№НРЃ™ҐбСХЙ”ЂфЃЌЙ•…С•ҐбСХЙ” ¤м(ЂЂЂЃЌЅ№НРЃЅ™™ҐЌҐ…±]ЙҐС”ЂфЃЩ¤№™ё ¤м(ЂЂЂЃ™ҐбСХЙ”№Ѕ™™ҐЌҐ…°№НС‘Ґё№Ѕё ‰‘…С„€°ЃЅ™™ҐЌҐ…±]ЙҐС”¤м(ЂЂЂЃЌЅ№НРЃµЅ‘•°ЂфЃ™ҐбСХЙ”№…‘…БС•И№Ќ…С…±Ѕњ№µЅ‘•±НlБtь№Й•м(ЂЂЂЃҐЂ …µЅ‘•°¤ЃСЎЙЅЬЃ№•ЬЃЙЙЅИ ‰…­”ЃЌ…С…±ЅњЃҐМЃ•µБСд€¤м((ЂЂЂЃЭЙҐС•I•ЕХ•НРЎ™ҐбСХЙ”№‘•Н­СЅБ%№БХР°Ѓм(ЂЂЂЂЂЃҐђиЂМФ°(ЂЂЂЂЂЃµ•СЎЅђиЂ‰ЌЅ‘•бЎЅНРЅСЎЙ•…ђЅµЅ‘•°ЅН•±•ЌР€°(ЂЂЂЂЂЃБ…Й…µМиЃмЃСЎЙ•…‘%ђиЂ‰Ѕ™™ҐЌҐ…°µСЎЙ•…ђ€°ЃµЅ‘•°Ѓф°(ЂЂЂЃф¤м(ЂЂЂЃ…Э…ҐРЃ•бБ•ЌР (ЂЂЂЂЂЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤ЂфшЃЙ•ЕХ•НС%ђЎµ•НН…ќ”°ЂМФ¤¤°(ЂЂЂЂ¤№Й•НЅ±Щ•М№СЅ5…СЌЎ=‰©•ЌРЎмЃ•ЙЙЅИиЃмЃЌЅ‘”иЂґМИАЬаЃфЃф¤м(ЂЂЂЃ•бБ•ЌРЎЅ™™ҐЌҐ…±]ЙҐС”¤№№ЅР№СЅ!…Щ•	••№…±±•ђ ¤м(ЂЂЂЃ…Э…ҐРЃНСЅБҐбСХЙ”Ў™ҐбСХЙ”¤м(ЂЃф¤м((ЂЃҐР ‰Й•©•ЌСМЃ„ЃA¤Ѓ5Ѕ‘•°ЃН•±•ЌСҐЅёЃЭЎҐ±”ЃҐСМЃQХЙёЃҐМЃ…ЌСҐЩ”€°Ѓ…Не№ЊЂ ¤ЂфшЃм(ЂЂЂЃЌЅ№НРЃ™ҐбСХЙ”ЂфЃЌЙ•…С•ҐбСХЙ” ¤м(ЂЂЂЃЌЅ№НРЃСЎЙ•…‘%ђЂфЃ…Э…ҐРЃНС…ЙСAҐQЎЙ•…ђЎ™ҐбСХЙ”¤м(ЂЂЂЃ…Э…ҐРЃНС…ЙСAҐQХЙёЎ™ҐбСХЙ”°ЃСЎЙ•…‘%ђ¤м(ЂЂЂЃЌЅ№НРЃµЅ‘•°ЂфЃ™ҐбСХЙ”№…‘…БС•И№Ќ…С…±Ѕњ№µЅ‘•±НlЕtь№Й•м(ЂЂЂЃҐЂ …µЅ‘•°¤ЃСЎЙЅЬЃ№•ЬЃЙЙЅИ ‰…­”ЃЌ…С…±ЅњЃЎ…МЃ№јЃН•ЌЅ№‘…ЙдЃ5Ѕ‘•°€¤м((ЂЂЂЃЭЙҐС•I•ЕХ•НРЎ™ҐбСХЙ”№‘•Н­СЅБ%№БХР°Ѓм(ЂЂЂЂЂЃҐђиЂМИ°(ЂЂЂЂЂЃµ•СЎЅђиЂ‰ЌЅ‘•бЎЅНРЅСЎЙ•…ђЅµЅ‘•°ЅН•±•ЌР€°(ЂЂЂЂЂЃБ…Й…µМиЃмЃСЎЙ•…‘%ђ°ЃµЅ‘•°Ѓф°(ЂЂЂЃф¤м(ЂЂЂЃ…Э…ҐРЃ•бБ•ЌР (ЂЂЂЂЂЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤ЂфшЃЙ•ЕХ•НС%ђЎµ•НН…ќ”°ЂМИ¤¤°(ЂЂЂЂ¤№Й•НЅ±Щ•М№СЅ5…СЌЎ=‰©•ЌРЎм(ЂЂЂЂЂЃ•ЙЙЅИиЃмЃЌЅ‘”иЂґМИАЬа°Ѓµ•НН…ќ”иЃ•бБ•ЌР№НСЙҐ№ќЅ№С…Ґ№Ґ№њ ‰…ЌСҐЩ”€¤Ѓф°(ЂЂЂЃф¤м(ЂЂЂЃЌЅ№НРЃЅ™ЂфЃ™ҐбСХЙ”№…‘…БС•И№Ќ…С…±Ѕњ№СЎҐ№­Ґ№ќ=БСҐЅ№М№™Ґ№ђ ЎмЃҐђЃф¤ЂфшЃҐђЂфффЂ‰Ѕ™€¤ь№Ґђм(ЂЂЂЃҐЂ …Ѕ™¤ЃСЎЙЅЬЃ№•ЬЃЙЙЅИ ‰…­”ЃЌ…С…±ЅњЃЎ…МЃ№јЃ=™ЃQЎҐ№­Ґ№њЃЅБСҐЅё€¤м(ЂЂЂЃЭЙҐС•I•ЕХ•НРЎ™ҐбСХЙ”№‘•Н­СЅБ%№БХР°Ѓм(ЂЂЂЂЂЃҐђиЂМШ°(ЂЂЂЂЂЃµ•СЎЅђиЂ‰ЌЅ‘•бЎЅНРЅСЎЙ•…ђЅСЎҐ№­Ґ№њЅН•±•ЌР€°(ЂЂЂЂЂЃБ…Й…µМиЃмЃСЎЙ•…‘%ђ°ЃСЎҐ№­Ґ№ќ=БСҐЅ№%ђиЃЅ™Ѓф°(ЂЂЂЃф¤м(ЂЂЂЃ…Э…ҐРЃ•бБ•ЌР (ЂЂЂЂЂЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤ЂфшЃЙ•ЕХ•НС%ђЎµ•НН…ќ”°ЂМШ¤¤°(ЂЂЂЂ¤№Й•НЅ±Щ•М№СЅ5…СЌЎ=‰©•ЌРЎм(ЂЂЂЂЂЃ•ЙЙЅИиЃмЃЌЅ‘”иЂґМИАЬа°Ѓµ•НН…ќ”иЃ•бБ•ЌР№НСЙҐ№ќЅ№С…Ґ№Ґ№њ ‰…ЌСҐЩ”€¤Ѓф°(ЂЂЂЃф¤м(ЂЂЂЃ™ҐбСХЙ”№…‘…БС•И№Н•ННҐЅ№НlБtь№НХЌЌ••‘QХЙё ¤м(ЂЂЂЃ…Э…ҐРЃНСЅБҐбСХЙ”Ў™ҐбСХЙ”¤м(ЂЃф¤м((ЂЃҐР ‰‰Ґ№‘МЃ„ЃН•±•ЌС•ђЃA¤Ѓ5Ѕ‘•°Ѓ…№ђЃQЎҐ№­Ґ№њЃЌ…ЙЙҐ•ИЃСјЃЌЙ•…С”Ѓ…№ђЃ±…С•ИЃQХЙёЃЙЅХСҐ№њ€°Ѓ…Не№ЊЂ ¤ЂфшЃм(ЂЂЂЃЌЅ№НРЃ™ҐбСХЙ”ЂфЃЌЙ•…С•ҐбСХЙ” ¤м(ЂЂЂЃЌЅ№НРЃµЅ‘•°ЂфЃ™ҐбСХЙ”№…‘…БС•И№Ќ…С…±Ѕњ№µЅ‘•±НlЕtь№Й•м(ЂЂЂЃҐЂ …µЅ‘•°¤ЃСЎЙЅЬЃ№•ЬЃЙЙЅИ ‰…­”ЃЌ…С…±ЅњЃЎ…МЃ№јЃН•ЌЅ№‘…ЙдЃ5Ѕ‘•°€¤м(ЂЂЂЃЌЅ№НРЃ±ЅЬЂфЃ™ҐбСХЙ”№…‘…БС•И№Ќ…С…±Ѕњ№СЎҐ№­Ґ№ќ=БСҐЅ№М№™Ґ№ђ ЎмЃҐђЃф¤ЂфшЃҐђЂфффЂ‰±ЅЬ€¤ь№Ґђм(ЂЂЂЃҐЂ …±ЅЬ¤ЃСЎЙЅЬЃ№•ЬЃЙЙЅИ ‰…­”ЃЌ…С…±ЅњЃЎ…МЃ№јЃ1ЅЬЃQЎҐ№­Ґ№њЃЅБСҐЅё€¤м(ЂЂЂЃЌЅ№НРЃЌ…ЙЙҐ•ИЂфЃ•№ЌЅ‘•AҐQЙ…№НБЅЙС5Ѕ‘•°ЎµЅ‘•°°Ѓ±ЅЬ¤м(ЂЂЂЃЌЅ№НРЃСЎЙ•…‘%ђЂфЃ…Э…ҐРЃНС…ЙСAҐQЎЙ•…ђЎ™ҐбСХЙ”°ЃЌ…ЙЙҐ•И¤м((ЂЂЂЃ•бБ•ЌРЎ™ҐбСХЙ”№…‘…БС•И№Н•ННҐЅ№НlБtь№Ґ№ҐСҐ…±MС…С”¤№СЅ5…СЌЎ=‰©•ЌРЎм(ЂЂЂЂЂЃ•™™•ЌСҐЩ•5Ѕ‘•°иЃµЅ‘•°°(ЂЂЂЂЂЃ•™™•ЌСҐЩ•QЎҐ№­Ґ№ќ=БСҐЅ№%ђиЃ±ЅЬ°(ЂЂЂЃф¤м(ЂЂЂЃ•бБ•ЌР (ЂЂЂЂЂЂЎ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№µ•НН…ќ•М№™Ґ№ђ Ўµ•НН…ќ”¤ЂфшЃЙ•ЕХ•НС%ђЎµ•НН…ќ”°ЂД¤¤ь№Й•НХ±РЃ…МЃ)НЅ№=‰©•ЌР¤(ЂЂЂЂЂЂЂЂ№µЅ‘•°°(ЂЂЂЂ¤№СЅ	”ЎЌ…ЙЙҐ•И¤м(ЂЂЂЃЭЙҐС•I•ЕХ•НРЎ™ҐбСХЙ”№‘•Н­СЅБ%№БХР°Ѓм(ЂЂЂЂЂЃҐђиЂММ°(ЂЂЂЂЂЃµ•СЎЅђиЂ‰СХЙёЅНС…ЙР€°(ЂЂЂЂЂЃБ…Й…µМиЃм(ЂЂЂЂЂЂЂЃСЎЙ•…‘%ђ°(ЂЂЂЂЂЂЂЃµЅ‘•°иЃЌ…ЙЙҐ•И°(ЂЂЂЂЂЂЂЃҐ№БХРиЃmмЃСеБ”иЂ‰С•бР€°ЃС•бРиЂ‰Н•±•ЌС•ђ€Ѓхt°(ЂЂЂЂЂЃф°(ЂЂЂЃф¤м(ЂЂЂЃ…Э…ҐРЃ•бБ•ЌР (ЂЂЂЂЂЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤ЂфшЃЙ•ЕХ•НС%ђЎµ•НН…ќ”°ЂММ¤¤°(ЂЂЂЂ¤№Й•НЅ±Щ•М№СЅ5…СЌЎ=‰©•ЌРЎмЃЙ•НХ±РиЃмЃСХЙёиЃмЃНС…СХМиЂ‰Ґ№AЙЅќЙ•НМ€ЃфЃфЃф¤м(ЂЂЂЃ™ҐбСХЙ”№…‘…БС•И№Н•ННҐЅ№НlБtь№НХЌЌ••‘QХЙё ¤м(ЂЂЂЃ…Э…ҐРЃНСЅБҐбСХЙ”Ў™ҐбСХЙ”¤м(ЂЃф¤м((ЂЃҐР ‰Й•©•ЌСМЃµ…±™ЅЙµ•ђЃН•±•ЌС•ђЃA¤ЃЌ…ЙЙҐ•ЙМЃЭҐСЎЅХРЃ™ЅЙЭ…Й‘Ґ№њЃЅИЃНСЅББҐ№њЃ!ЅНР€°Ѓ…Не№ЊЂ ¤ЂфшЃм(ЂЂЂЃЌЅ№НРЃ™ҐбСХЙ”ЂфЃЌЙ•…С•ҐбСХЙ” ¤м(ЂЂЂЃЌЅ№НРЃЅ™™ҐЌҐ…±]ЙҐС”ЂфЃЩ¤№™ё ¤м(ЂЂЂЃ™ҐбСХЙ”№Ѕ™™ҐЌҐ…°№НС‘Ґё№Ѕё ‰‘…С„€°ЃЅ™™ҐЌҐ…±]ЙҐС”¤м((ЂЂЂЃЭЙҐС•I•ЕХ•НРЎ™ҐбСХЙ”№‘•Н­СЅБ%№БХР°Ѓм(ЂЂЂЂЂЃҐђиЂМР°(ЂЂЂЂЂЃµ•СЎЅђиЂ‰СЎЙ•…ђЅНС…ЙР€°(ЂЂЂЂЂЃБ…Й…µМиЃмЃµЅ‘•°иЂ‰ЌЅ‘•бЎЅНРЅБ¤µ№…СҐЩ•БЙЅЩҐ‘•ИЅµЅ‘•°€°ЃЌЭђиЂ€ЅНе№СЎ•СҐЊ€Ѓф°(ЂЂЂЃф¤м(ЂЂЂЃ…Э…ҐРЃ•бБ•ЌР (ЂЂЂЂЂЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤ЂфшЃЙ•ЕХ•НС%ђЎµ•НН…ќ”°ЂМР¤¤°(ЂЂЂЂ¤№Й•НЅ±Щ•М№СЅ5…СЌЎ=‰©•ЌРЎм(ЂЂЂЂЂЃ•ЙЙЅИиЃмЃЌЅ‘”иЂґМИШАИ°Ѓµ•НН…ќ”иЃ•бБ•ЌР№НСЙҐ№ќЅ№С…Ґ№Ґ№њ ‰5Ѕ‘•°ЃI•€¤Ѓф°(ЂЂЂЃф¤м(ЂЂЂЃ•бБ•ЌРЎ™ҐбСХЙ”№…‘…БС•И№Н•ННҐЅ№М¤№СЅ!…Щ•1•№ќС  А¤м(ЂЂЂЃ•бБ•ЌРЎЅ™™ҐЌҐ…±]ЙҐС”¤№№ЅР№СЅ!…Щ•	••№…±±•ђ ¤м(ЂЂЂЃ…Э…ҐРЃНСЅБҐбСХЙ”Ў™ҐбСХЙ”¤м(ЂЃф¤м((ЂЃҐР ‰БЙЅ©•ЌСМЃ•…Й±дЃ‘…БС•ИЃЅХСБХСМЃ…™С•ИЃСЎ”ЃСХЙёЅНС…ЙРЃЙ•НБЅ№Н”Ѓ…№ђЃНХББЅЙСМЃСЎЙ•…ђЅЙ•…ђ€°Ѓ…Не№ЊЂ ¤ЂфшЃм(ЂЂЂЃЌЅ№НРЃ™ҐбСХЙ”ЂфЃЌЙ•…С•ҐбСХЙ” ¤м(ЂЂЂЃЌЅ№НРЃСЎЙ•…‘%ђЂфЃ…Э…ҐРЃНС…ЙСAҐQЎЙ•…ђЎ™ҐбСХЙ”¤м(ЂЂЂЃЌЅ№НРЃН•ННҐЅёЂфЃ™ҐбСХЙ”№…‘…БС•И№Н•ННҐЅ№НlБtм(ЂЂЂЃҐЂ …Н•ННҐЅё¤ЃСЎЙЅЬЃ№•ЬЃЙЙЅИ ‰…­”ЃA¤ЃM•ННҐЅёЃЭ…МЃ№ЅРЃЅБ•№•ђ€¤м((ЂЂЂЃЭЙҐС•I•ЕХ•НРЎ™ҐбСХЙ”№‘•Н­СЅБ%№БХР°Ѓм(ЂЂЂЂЂЃҐђиЂИ°(ЂЂЂЂЂЃµ•СЎЅђиЂ‰СХЙёЅНС…ЙР€°(ЂЂЂЂЂЃБ…Й…µМиЃмЃСЎЙ•…‘%ђ°ЃҐ№БХРиЃmмЃСеБ”иЂ‰С•бР€°ЃС•бРиЂ‰Не№СЎ•СҐЊ€ЃхtЃф°(ЂЂЂЃф¤м(ЂЂЂЃ…Э…ҐРЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤ЂфшЃЙ•ЕХ•НС%ђЎµ•НН…ќ”°ЂИ¤¤м(ЂЂЂЃН•ННҐЅё№…ББ•№‘Q•бР ‰™…­”ЃЅХСБХР€¤м(ЂЂЂЃ…Э…ҐРЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤ЂфшЃµ•СЎЅђЎµ•НН…ќ”°Ђ‰ҐС•ґЅНС…ЙС•ђ€¤¤м(ЂЂЂЃН•ННҐЅё№НХЌЌ••‘QХЙё ¤м(ЂЂЂЃ…Э…ҐРЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤ЂфшЃµ•СЎЅђЎµ•НН…ќ”°Ђ‰СХЙёЅЌЅµБ±•С•ђ€¤¤м((ЂЂЂЃЌЅ№НРЃЙ•НБЅ№Н•%№‘•аЂфЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№µ•НН…ќ•М№™Ґ№‘%№‘•а Ўµ•НН…ќ”¤ЂфшЃЙ•ЕХ•НС%ђЎµ•НН…ќ”°ЂИ¤¤м(ЂЂЂЃЌЅ№НРЃНС…ЙС•‘%№‘•аЂфЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№µ•НН…ќ•М№™Ґ№‘%№‘•а Ўµ•НН…ќ”¤Ђфш(ЂЂЂЂЂЃµ•СЎЅђЎµ•НН…ќ”°Ђ‰СХЙёЅНС…ЙС•ђ€¤°(ЂЂЂЂ¤м(ЂЂЂЃ•бБ•ЌРЎЙ•НБЅ№Н•%№‘•а¤№СЅ	•Й•…С•ЙQЎ…№=ЙЕХ…° А¤м(ЂЂЂЃ•бБ•ЌРЎНС…ЙС•‘%№‘•а¤№СЅ	•Й•…С•ЙQЎ…ёЎЙ•НБЅ№Н•%№‘•а¤м((ЂЂЂЃЭЙҐС•I•ЕХ•НРЎ™ҐбСХЙ”№‘•Н­СЅБ%№БХР°Ѓм(ЂЂЂЂЂЃҐђиЂМ°(ЂЂЂЂЂЃµ•СЎЅђиЂ‰СЎЙ•…ђЅЙ•…ђ€°(ЂЂЂЂЂЃБ…Й…µМиЃмЃСЎЙ•…‘%ђ°ЃҐ№Ќ±Х‘•QХЙ№МиЃСЙХ”Ѓф°(ЂЂЂЃф¤м(ЂЂЂЃЌЅ№НРЃЙ•…‘I•НБЅ№Н”ЂфЃ…Э…ҐРЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤ЂфшЃЙ•ЕХ•НС%ђЎµ•НН…ќ”°ЂМ¤¤м(ЂЂЂЃ•бБ•ЌРЎЙ•…‘I•НБЅ№Н”¤№СЅ5…СЌЎ=‰©•ЌРЎм(ЂЂЂЂЂЃЙ•НХ±РиЃмЃСЎЙ•…ђиЃмЃСХЙ№МиЃmмЃНС…СХМиЂ‰ЌЅµБ±•С•ђ€ЃхtЃфЃф°(ЂЂЂЃф¤м(ЂЂЂЃ…Э…ҐРЃНСЅБҐбСХЙ”Ў™ҐбСХЙ”¤м(ЂЃф¤м((ЂЃҐР ‰БЙЅ©•ЌСМЃ…ХСЅ№ЅµЅХМЃ!…Й№•НМЃQХЙёЃҐ№БХРЃҐёЃСЎ”Ѓ±ҐЩ”ЃСХЙёЅНС…ЙС•ђЃБ…е±Ѕ…ђ€°Ѓ…Не№ЊЂ ¤ЂфшЃм(ЂЂЂЃЌЅ№НРЃ™ҐбСХЙ”ЂфЃЌЙ•…С•ҐбСХЙ” ¤м(ЂЂЂЃ…Э…ҐРЃНС…ЙСAҐQЎЙ•…ђЎ™ҐбСХЙ”¤м(ЂЂЂЃЌЅ№НРЃН•ННҐЅёЂфЃ™ҐбСХЙ”№…‘…БС•И№Н•ННҐЅ№НlБtм(ЂЂЂЃҐЂ …Н•ННҐЅё¤ЃСЎЙЅЬЃ№•ЬЃЙЙЅИ ‰…­”ЃA¤ЃM•ННҐЅёЃЭ…МЃ№ЅРЃЅБ•№•ђ€¤м(ЂЂЂЃЌЅ№НРЃСХЙ№%ђЂфЃЎЅНСQХЙ№%‘MЌЎ•µ„№Б…ЙН” ‰…ХСЅ№ЅµЅХМµСХЙё€¤м((ЂЂЂЃН•ННҐЅё№БХ‰±ҐНЎХСЅ№ЅµЅХНQХЙёЎСХЙ№%ђ°Ѓl(ЂЂЂЂЂЃмЃСеБ”иЂ‰С•бР€°ЃС•бРиЂ‰№…СҐЩ”Ѓ™Ѕ±±ЅЬµХА€Ѓф°(ЂЂЂЂЂЃмЃСеБ”иЂ‰С•бР€°ЃС•бРиЂ‰Н•ЌЅ№ђЃ±Ґ№”€Ѓф°(ЂЂЂЃt¤м((ЂЂЂЃ…Э…ҐРЃ•бБ•ЌР (ЂЂЂЂЂЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤ЂфшЃСХЙ№Щ•№РЎµ•НН…ќ”°Ђ‰СХЙёЅНС…ЙС•ђ€°ЃСХЙ№%ђ¤¤°(ЂЂЂЂ¤№Й•НЅ±Щ•М№СЅ5…СЌЎ=‰©•ЌРЎм(ЂЂЂЂЂЃБ…Й…µМиЃм(ЂЂЂЂЂЂЂЃСХЙёиЃм(ЂЂЂЂЂЂЂЂЂЃҐђиЃСХЙ№%ђ°(ЂЂЂЂЂЂЂЂЂЃҐС•µМиЃl(ЂЂЂЂЂЂЂЂЂЂЂЃм(ЂЂЂЂЂЂЂЂЂЂЂЂЂЃСеБ”иЂ‰ХН•Й5•НН…ќ”€°(ЂЂЂЂЂЂЂЂЂЂЂЂЂЃЌЅ№С•№РиЃl(ЂЂЂЂЂЂЂЂЂЂЂЂЂЂЂЃмЃСеБ”иЂ‰С•бР€°ЃС•бРиЂ‰№…СҐЩ”Ѓ™Ѕ±±ЅЬµХА€Ѓф°(ЂЂЂЂЂЂЂЂЂЂЂЂЂЂЂЃмЃСеБ”иЂ‰С•бР€°ЃС•бРиЂ‰Н•ЌЅ№ђЃ±Ґ№”€Ѓф°(ЂЂЂЂЂЂЂЂЂЂЂЂЂЃt°(ЂЂЂЂЂЂЂЂЂЂЂЃф°(ЂЂЂЂЂЂЂЂЂЃt°(ЂЂЂЂЂЂЂЃф°(ЂЂЂЂЂЃф°(ЂЂЂЃф¤м(ЂЂЂЃ…Э…ҐРЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤ЂфшЃСХЙ№Щ•№РЎµ•НН…ќ”°Ђ‰СХЙёЅЌЅµБ±•С•ђ€°ЃСХЙ№%ђ¤¤м(ЂЂЂЃ…Э…ҐРЃНСЅБҐбСХЙ”Ў™ҐбСХЙ”¤м(ЂЃф¤м((ЂЃҐР ‰Й•…‘МЃНС…СҐЊЃ!…Й№•НМЃЌЅµµ…№ђЃЌ…С…±ЅќМЃЭҐСЎЅХРЃҐ№НБ•ЌСҐЅёЃЅИЃЅБ•№Ґ№њЃ„ЃM•ННҐЅё€°Ѓ…Не№ЊЂ ¤ЂфшЃм(ЂЂЂЃЌЅ№НРЃ™ҐбСХЙ”ЂфЃЌЙ•…С•ҐбСХЙ” ¤м(ЂЂЂЃЌЅ№НРЃЌ…С…±ЅњЂфЃм(ЂЂЂЂЂЃЌЅµµ…№‘МиЃl(ЂЂЂЂЂЂЂЃЎ…Й№•ННЅµµ…№‘•НЌЙҐБСЅЙMЌЎ•µ„№Б…ЙН”Ўм(ЂЂЂЂЂЂЂЂЂЃҐђиЂ‰™…­”№ЌЅµБ…ЌР€°(ЂЂЂЂЂЂЂЂЂЃҐ№ЩЅЌ…СҐЅёиЂ€ЅЌЅµБ…ЌР€°(ЂЂЂЂЂЂЂЂЂЃ±…‰•°иЂ‰ЅµБ…ЌР€°(ЂЂЂЂЂЂЂЂЂЃ…ЙќХµ•№С5Ѕ‘”иЂ‰№Ѕ№”€°(ЂЂЂЂЂЂЂЃф¤°(ЂЂЂЂЂЃt°(ЂЂЂЃфм(ЂЂЂЃ=‰©•ЌР№…ННҐќёЎ™ҐбСХЙ”№…‘…БС•И°ЃмЃЌЅµµ…№‘…С…±ЅњиЃЌ…С…±ЅњЃф¤м(ЂЂЂЃЌЅ№НРЃҐ№НБ•ЌРЂфЃЩ¤№НБе=ёЎ™ҐбСХЙ”№…‘…БС•И°Ђ‰Ґ№НБ•ЌР€¤м(ЂЂЂЃЌЅ№НРЃЅБ•ёЂфЃЩ¤№НБе=ёЎ™ҐбСХЙ”№…‘…БС•И°Ђ‰ЅБ•ё€¤м(ЂЂЂЃЭЙҐС•I•ЕХ•НРЎ™ҐбСХЙ”№‘•Н­СЅБ%№БХР°Ѓм(ЂЂЂЂЂЃҐђиЂД°(ЂЂЂЂЂЃµ•СЎЅђиЂ‰ЌЅ‘•бЎЅНРЅЎ…Й№•НМЅЌЅµµ…№‘МЅҐ№НБ•ЌР€°(ЂЂЂЂЂЃБ…Й…µМиЃмЃЎ…Й№•НН%ђиЂ‰Б¤€Ѓф°(ЂЂЂЃф¤м(ЂЂЂЃ…Э…ҐРЃ•бБ•ЌР (ЂЂЂЂЂЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤ЂфшЃЙ•ЕХ•НС%ђЎµ•НН…ќ”°ЂД¤¤°(ЂЂЂЂ¤№Й•НЅ±Щ•М№СЅ5…СЌЎ=‰©•ЌРЎмЃЙ•НХ±РиЃЌ…С…±ЅњЃф¤м(ЂЂЂЃ•бБ•ЌРЎҐ№НБ•ЌР¤№№ЅР№СЅ!…Щ•	••№…±±•ђ ¤м(ЂЂЂЃ•бБ•ЌРЎЅБ•ё¤№№ЅР№СЅ!…Щ•	••№…±±•ђ ¤м(ЂЂЂЃ•бБ•ЌРЎ™ҐбСХЙ”№…‘…БС•И№Н•ННҐЅ№М¤№СЅ!…Щ•1•№ќС  А¤м((ЂЂЂЃ™ЅИЂЎЌЅ№НРЃmҐђ°ЃБ…Й…µМ°ЃЌЅ‘•tЃЅЃl(ЂЂЂЂЂЃlИ°ЃмЃСЎЙ•…‘%ђиЂ‰Х№ХН•ђ€Ѓф°ЂґМИШАЙt°(ЂЂЂЂЂЃlМ°ЃмЃЎ…Й№•НН%ђиЂ‰µҐННҐ№њ€Ѓф°ЂґМИАЬЭt°(ЂЂЂЃtЃ…МЃЌЅ№НР¤Ѓм(ЂЂЂЂЂЃЭЙҐС•I•ЕХ•НРЎ™ҐбСХЙ”№‘•Н­СЅБ%№БХР°Ѓм(ЂЂЂЂЂЂЂЃҐђ°(ЂЂЂЂЂЂЂЃµ•СЎЅђиЂ‰ЌЅ‘•бЎЅНРЅЎ…Й№•НМЅЌЅµµ…№‘МЅҐ№НБ•ЌР€°(ЂЂЂЂЂЂЂЃБ…Й…µМ°(ЂЂЂЂЂЃф¤м(ЂЂЂЂЂЃ…Э…ҐРЃ•бБ•ЌР (ЂЂЂЂЂЂЂЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤ЂфшЃЙ•ЕХ•НС%ђЎµ•НН…ќ”°ЃҐђ¤¤°(ЂЂЂЂЂЂ¤№Й•НЅ±Щ•М№СЅ5…СЌЎ=‰©•ЌРЎмЃ•ЙЙЅИиЃмЃЌЅ‘”ЃфЃф¤м(ЂЂЂЃф(ЂЂЂЃ=‰©•ЌР№…ННҐќёЎ™ҐбСХЙ”№…‘…БС•И°ЃмЃЌЅµµ…№‘…С…±ЅњиЃмЃЌЅµµ…№‘МиЃmмЃҐђиЂ‰Ґ№Щ…±Ґђ€ЃхtЃфЃф¤м(ЂЂЂЃЭЙҐС•I•ЕХ•НРЎ™ҐбСХЙ”№‘•Н­СЅБ%№БХР°Ѓм(ЂЂЂЂЂЃҐђиЂР°(ЂЂЂЂЂЃµ•СЎЅђиЂ‰ЌЅ‘•бЎЅНРЅЎ…Й№•НМЅЌЅµµ…№‘МЅҐ№НБ•ЌР€°(ЂЂЂЂЂЃБ…Й…µМиЃмЃЎ…Й№•НН%ђиЂ‰Б¤€Ѓф°(ЂЂЂЃф¤м(ЂЂЂЃ…Э…ҐРЃ•бБ•ЌР (ЂЂЂЂЂЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤ЂфшЃЙ•ЕХ•НС%ђЎµ•НН…ќ”°ЂР¤¤°(ЂЂЂЂ¤№Й•НЅ±Щ•М№СЅ5…СЌЎ=‰©•ЌРЎмЃ•ЙЙЅИиЃмЃЌЅ‘”иЂґМИАЬаЃфЃф¤м(ЂЂЂЃ•бБ•ЌРЎЅБ•ё¤№№ЅР№СЅ!…Щ•	••№…±±•ђ ¤м(ЂЂЂЃ…Э…ҐРЃНСЅБҐбСХЙ”Ў™ҐбСХЙ”¤м(ЂЃф¤м((ЂЃҐР ‰…Ќ­№ЅЭ±•‘ќ•МЃ…ёЃ…ЌЌ•БС•ђЃ!…Й№•НМЃЌЅµµ…№ђЃСЎЙЅХќ ЃСЎ”ЃБХ‰±ҐЊЃЌЅµµ…№ђЃЌЅ№СЙ…ЌР€°Ѓ…Не№ЊЂ ¤ЂфшЃм(ЂЂЂЃЌЅ№НРЃ™ҐбСХЙ”ЂфЃЌЙ•…С•ҐбСХЙ” ¤м(ЂЂЂЃЌЅ№НРЃСЎЙ•…‘%ђЂфЃ…Э…ҐРЃНС…ЙСAҐQЎЙ•…ђЎ™ҐбСХЙ”¤м(ЂЂЂЃЌЅ№НРЃН•ННҐЅёЂфЃ™ҐбСХЙ”№…‘…БС•И№Н•ННҐЅ№НlБtм(ЂЂЂЃҐЂ …Н•ННҐЅё¤ЃСЎЙЅЬЃ№•ЬЃЙЙЅИ ‰…­”ЃA¤ЃM•ННҐЅёЃЭ…МЃ№ЅРЃЅБ•№•ђ€¤м(ЂЂЂЃН•ННҐЅё№ЌЅµµ…№‘МЂфЃм(ЂЂЂЂЂЃ±ҐНРиЃ…Не№ЊЂ ¤ЂфшЂЎм(ЂЂЂЂЂЂЂЃЅ¬иЃСЙХ”°(ЂЂЂЂЂЂЂЃЩ…±Х”иЃм(ЂЂЂЂЂЂЂЂЂЃЌЅµµ…№‘МиЃl(ЂЂЂЂЂЂЂЂЂЂЂЃЎ…Й№•ННЅµµ…№‘•НЌЙҐБСЅЙMЌЎ•µ„№Б…ЙН”Ўм(ЂЂЂЂЂЂЂЂЂЂЂЂЂЃҐђиЂ‰™…­”№ЌЅµБ…ЌР€°(ЂЂЂЂЂЂЂЂЂЂЂЂЂЃҐ№ЩЅЌ…СҐЅёиЂ€ЅЌЅµБ…ЌР€°(ЂЂЂЂЂЂЂЂЂЂЂЂЂЃ±…‰•°иЂ‰ЅµБ…ЌР€°(ЂЂЂЂЂЂЂЂЂЂЂЂЂЃ…ЙќХµ•№С5Ѕ‘”иЂ‰№Ѕ№”€Ѓ…МЃЌЅ№НР°(ЂЂЂЂЂЂЂЂЂЂЂЃф¤°(ЂЂЂЂЂЂЂЂЂЃt°(ЂЂЂЂЂЂЂЃф°(ЂЂЂЂЂЃф¤°(ЂЂЂЂЂЃ•б•ЌХС”иЃ…Не№ЊЂЎмЃСХЙ№%ђЃф¤ЂфшЃм(ЂЂЂЂЂЂЂЃН•ННҐЅё№БХ‰±ҐНЎБЎ•µ•Й…±Ѕµµ…№ђЎСХЙ№%ђ°Ѓм(ЂЂЂЂЂЂЂЂЂЃСеБ”иЂ‰ЌЅ№С•бСЅµБ…ЌСҐЅё€°(ЂЂЂЂЂЂЂЂЂЃҐС•µ%ђиЃЎЅНС%С•µ%‘MЌЎ•µ„№Б…ЙН” ‰™…­”µЌЅµµ…№ђµЌЅµБ…ЌСҐЅёµҐС•ґ€¤°(ЂЂЂЂЂЂЂЃф¤м(ЂЂЂЂЂЂЂЃЙ•СХЙёЃм(ЂЂЂЂЂЂЂЂЂЃЅ¬иЃСЙХ”°(ЂЂЂЂЂЂЂЂЂЃЩ…±Х”иЃмЃСХЙ№%ђЃф°(ЂЂЂЂЂЂЂЃфм(ЂЂЂЂЂЃф°(ЂЂЂЃфм(ЂЂЂЃЌЅ№НРЃСХЙ№%ђЂфЃЎЅНСQХЙ№%‘MЌЎ•µ„№Б…ЙН” ‰µ…№Х…°µЌЅµБ…ЌР€¤м((ЂЂЂЃЭЙҐС•I•ЕХ•НРЎ™ҐбСХЙ”№‘•Н­СЅБ%№БХР°Ѓм(ЂЂЂЂЂЃҐђиЂИ°(ЂЂЂЂЂЃµ•СЎЅђиЂ‰ЌЅ‘•бЎЅНРЅСЎЙ•…ђЅЌЅµµ…№ђЅ•б•ЌХС”€°(ЂЂЂЂЂЃБ…Й…µМиЃмЃСЎЙ•…‘%ђ°ЃЌЅµµ…№‘%ђиЂ‰™…­”№ЌЅµБ…ЌР€°ЃСХЙ№%ђЃф°(ЂЂЂЃф¤м((ЂЂЂЃ…Э…ҐРЃ•бБ•ЌР (ЂЂЂЂЂЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤ЂфшЃЙ•ЕХ•НС%ђЎµ•НН…ќ”°ЂИ¤¤°(ЂЂЂЂ¤№Й•НЅ±Щ•М№СЅ5…СЌЎ=‰©•ЌРЎмЃЙ•НХ±РиЃмЃ…ЌЌ•БС•ђиЃСЙХ”°ЃСХЙ№%ђЃфЃф¤м(ЂЂЂЃ…Э…ҐРЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤ЂфшЃСХЙ№Щ•№РЎµ•НН…ќ”°Ђ‰СХЙёЅЌЅµБ±•С•ђ€°ЃСХЙ№%ђ¤¤м((ЂЂЂЃЌЅ№НРЃ№•бСQХЙ№%ђЂфЃ…Э…ҐРЃНС…ЙСAҐQХЙёЎ™ҐбСХЙ”°ЃСЎЙ•…‘%ђ°ЂМ¤м(ЂЂЂЃ…Э…ҐРЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤ЂфшЃСХЙ№Щ•№РЎµ•НН…ќ”°Ђ‰СХЙёЅНС…ЙС•ђ€°Ѓ№•бСQХЙ№%ђ¤¤м(ЂЂЂЃН•ННҐЅё№НХЌЌ••‘QХЙё ¤м(ЂЂЂЃ…Э…ҐРЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤ЂфшЃСХЙ№Щ•№РЎµ•НН…ќ”°Ђ‰СХЙёЅЌЅµБ±•С•ђ€°Ѓ№•бСQХЙ№%ђ¤¤м(ЂЂЂЃ…Э…ҐРЃНСЅБҐбСХЙ”Ў™ҐбСХЙ”¤м(ЂЃф¤м((ЂЃҐР ‰Н•ЙҐ…±Ґй•МЃЌЅµµ…№ђЃЌ…С…±ЅњЃ…‘µҐННҐЅёЃ…№ђЃЙ•±•…Н•МЃҐРЃ…™С•ИЃ‘ҐНЌЅЩ•ЙдЃ™…Ґ±ХЙ”€°Ѓ…Не№ЊЂ ¤ЂфшЃм(ЂЂЂЃЌЅ№НРЃ™ҐбСХЙ”ЂфЃЌЙ•…С•ҐбСХЙ” ¤м(ЂЂЂЃЌЅ№НРЃСЎЙ•…‘%ђЂфЃ…Э…ҐРЃНС…ЙСAҐQЎЙ•…ђЎ™ҐбСХЙ”¤м(ЂЂЂЃЌЅ№НРЃН•ННҐЅёЂфЃ™ҐбСХЙ”№…‘…БС•И№Н•ННҐЅ№НlБtм(ЂЂЂЃҐЂ …Н•ННҐЅё¤ЃСЎЙЅЬЃ№•ЬЃЙЙЅИ ‰…­”ЃA¤ЃM•ННҐЅёЃЭ…МЃ№ЅРЃЅБ•№•ђ€¤м(ЂЂЂЃ±•РЃЙ•НЅ±Щ•…С…±Ѕњи(ЂЂЂЂЂЃрЂ ЎЩ…±Х”иЃм(ЂЂЂЂЂЂЂЂЂЃЅ¬иЃ™…±Н”м(ЂЂЂЂЂЂЂЂЂЃ•ЙЙЅИиЃм(ЂЂЂЂЂЂЂЂЂЂЂЃЌЅ‘”иЂ‰Х№…Щ…Ґ±…‰±”€м(ЂЂЂЂЂЂЂЂЂЂЂЃµ•НН…ќ”иЃНСЙҐ№њм(ЂЂЂЂЂЂЂЂЂЂЂЃЙ•СЙе…‰±”иЃСЙХ”м(ЂЂЂЂЂЂЂЂЂЃфм(ЂЂЂЂЂЂЂЃф¤ЂфшЃЩЅҐђ¤(ЂЂЂЂЂЃрЃХ№‘•™Ґ№•ђм(ЂЂЂЃЌЅ№НРЃ‘•НЌЙҐБСЅИЂфЃЎ…Й№•ННЅµµ…№‘•НЌЙҐБСЅЙMЌЎ•µ„№Б…ЙН”Ўм(ЂЂЂЂЂЃҐђиЂ‰™…­”№ЌЅµБ…ЌР€°(ЂЂЂЂЂЃҐ№ЩЅЌ…СҐЅёиЂ€ЅЌЅµБ…ЌР€°(ЂЂЂЂЂЃ±…‰•°иЂ‰ЅµБ…ЌР€°(ЂЂЂЂЂЃ…ЙќХµ•№С5Ѕ‘”иЂ‰№Ѕ№”€°(ЂЂЂЃф¤м(ЂЂЂЃЌЅ№НРЃ±ҐНРЂфЃЩ¤(ЂЂЂЂЂЂ№™ё ¤(ЂЂЂЂЂЂ№µЅЌ­%µБ±•µ•№С…СҐЅ№=№Ќ” (ЂЂЂЂЂЂЂЂ ¤Ђфш(ЂЂЂЂЂЂЂЂЂЃ№•ЬЃAЙЅµҐН” ЎЙ•НЅ±Щ”¤ЂфшЃм(ЂЂЂЂЂЂЂЂЂЂЂЃЙ•НЅ±Щ•…С…±ЅњЂфЃЙ•НЅ±Щ”м(ЂЂЂЂЂЂЂЂЂЃф¤°(ЂЂЂЂЂЂ¤(ЂЂЂЂЂЂ№µЅЌ­I•НЅ±Щ•‘Y…±Х”ЎмЃЅ¬иЃСЙХ”°ЃЩ…±Х”иЃмЃЌЅµµ…№‘МиЃm‘•НЌЙҐБСЅЙtЃфЃф¤м(ЂЂЂЃЌЅ№НРЃ•б•ЌХС”ЂфЃЩ¤№™ёЎ…Не№ЊЂЎмЃСХЙ№%ђЃф¤ЂфшЃм(ЂЂЂЂЂЃН•ННҐЅё№БХ‰±ҐНЎБЎ•µ•Й…±Ѕµµ…№ђЎСХЙ№%ђ°Ѓм(ЂЂЂЂЂЂЂЃСеБ”иЂ‰ЌЅ№С•бСЅµБ…ЌСҐЅё€°(ЂЂЂЂЂЂЂЃҐС•µ%ђиЃЎЅНС%С•µ%‘MЌЎ•µ„№Б…ЙН”ЎЃЙ•СЙҐ•ђµЌЅµµ…№ђґ‘нСХЙ№%‘хЂ¤°(ЂЂЂЂЂЃф¤м(ЂЂЂЂЂЃЙ•СХЙёЃмЃЅ¬иЃСЙХ”Ѓ…МЃЌЅ№НР°ЃЩ…±Х”иЃмЃСХЙ№%ђЃфЃфм(ЂЂЂЃф¤м(ЂЂЂЃН•ННҐЅё№ЌЅµµ…№‘МЂфЃмЃ±ҐНР°Ѓ•б•ЌХС”Ѓфм((ЂЂЂЃЭЙҐС•I•ЕХ•НРЎ™ҐбСХЙ”№‘•Н­СЅБ%№БХР°Ѓм(ЂЂЂЂЂЃҐђиЂИ°(ЂЂЂЂЂЃµ•СЎЅђиЂ‰ЌЅ‘•бЎЅНРЅСЎЙ•…ђЅЌЅµµ…№ђЅ•б•ЌХС”€°(ЂЂЂЂЂЃБ…Й…µМиЃмЃСЎЙ•…‘%ђ°ЃЌЅµµ…№‘%ђиЂ‰™…­”№ЌЅµБ…ЌР€Ѓф°(ЂЂЂЃф¤м(ЂЂЂЃ…Э…ҐРЃЩ¤№Э…ҐСЅИ  ¤ЂфшЃ•бБ•ЌРЎ±ҐНР¤№СЅ!…Щ•	••№…±±•‘=№Ќ” ¤¤м(ЂЂЂЃЭЙҐС•I•ЕХ•НРЎ™ҐбСХЙ”№‘•Н­СЅБ%№БХР°Ѓм(ЂЂЂЂЂЃҐђиЂМ°(ЂЂЂЂЂЃµ•СЎЅђиЂ‰ЌЅ‘•бЎЅНРЅСЎЙ•…ђЅЌЅµµ…№ђЅ•б•ЌХС”€°(ЂЂЂЂЂЃБ…Й…µМиЃмЃСЎЙ•…‘%ђ°ЃЌЅµµ…№‘%ђиЂ‰™…­”№ЌЅµБ…ЌР€Ѓф°(ЂЂЂЃф¤м(ЂЂЂЃ…Э…ҐРЃ•бБ•ЌР (ЂЂЂЂЂЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤ЂфшЃЙ•ЕХ•НС%ђЎµ•НН…ќ”°ЂМ¤¤°(ЂЂЂЂ¤№Й•НЅ±Щ•М№СЅ5…СЌЎ=‰©•ЌРЎмЃ•ЙЙЅИиЃмЃЌЅ‘”иЂґМИАЬИЃфЃф¤м((ЂЂЂЃЙ•НЅ±Щ•…С…±ЅњьёЎм(ЂЂЂЂЂЃЅ¬иЃ™…±Н”°(ЂЂЂЂЂЃ•ЙЙЅИиЃмЃЌЅ‘”иЂ‰Х№…Щ…Ґ±…‰±”€°Ѓµ•НН…ќ”иЂ‰Ќ…С…±ЅњЃЅ™™±Ґ№”€°ЃЙ•СЙе…‰±”иЃСЙХ”Ѓф°(ЂЂЂЃф¤м(ЂЂЂЃ…Э…ҐРЃ•бБ•ЌР (ЂЂЂЂЂЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤ЂфшЃЙ•ЕХ•НС%ђЎµ•НН…ќ”°ЂИ¤¤°(ЂЂЂЂ¤№Й•НЅ±Щ•М№СЅ5…СЌЎ=‰©•ЌРЎмЃ•ЙЙЅИиЃмЃЌЅ‘”иЂґМИАЬа°Ѓµ•НН…ќ”иЂ‰Ќ…С…±ЅњЃЅ™™±Ґ№”€ЃфЃф¤м((ЂЂЂЃЭЙҐС•I•ЕХ•НРЎ™ҐбСХЙ”№‘•Н­СЅБ%№БХР°Ѓм(ЂЂЂЂЂЃҐђиЂР°(ЂЂЂЂЂЃµ•СЎЅђиЂ‰ЌЅ‘•бЎЅНРЅСЎЙ•…ђЅЌЅµµ…№ђЅ•б•ЌХС”€°(ЂЂЂЂЂЃБ…Й…µМиЃмЃСЎЙ•…‘%ђ°ЃЌЅµµ…№‘%ђиЂ‰™…­”№ЌЅµБ…ЌР€Ѓф°(ЂЂЂЃф¤м(ЂЂЂЃ…Э…ҐРЃ•бБ•ЌР (ЂЂЂЂЂЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤ЂфшЃЙ•ЕХ•НС%ђЎµ•НН…ќ”°ЂР¤¤°(ЂЂЂЂ¤№Й•НЅ±Щ•М№СЅ5…СЌЎ=‰©•ЌРЎмЃЙ•НХ±РиЃмЃ…ЌЌ•БС•ђиЃСЙХ”ЃфЃф¤м(ЂЂЂЃ•бБ•ЌРЎ•б•ЌХС”¤№СЅ!…Щ•	••№…±±•‘=№Ќ” ¤м(ЂЂЂЃ…Э…ҐРЃНСЅБҐбСХЙ”Ў™ҐбСХЙ”¤м(ЂЃф¤м((ЂЃҐР ‰БЙ•Н•ЙЩ•МЃЅЙ‘Ґ№…ЙдЃБЙЅµБРЃЭЎҐС•НБ…Ќ”ЃЭҐСЎЅХРЃЌЅµµ…№ђЃ‘ҐНЌЅЩ•Йд€°Ѓ…Не№ЊЂ ¤ЂфшЃм(ЂЂЂЃЌЅ№НРЃ™ҐбСХЙ”ЂфЃЌЙ•…С•ҐбСХЙ” ¤м(ЂЂЂЃЌЅ№НРЃСЎЙ•…‘%ђЂфЃ…Э…ҐРЃНС…ЙСAҐQЎЙ•…ђЎ™ҐбСХЙ”¤м(ЂЂЂЃЌЅ№НРЃН•ННҐЅёЂфЃ™ҐбСХЙ”№…‘…БС•И№Н•ННҐЅ№НlБtм(ЂЂЂЃҐЂ …Н•ННҐЅё¤ЃСЎЙЅЬЃ№•ЬЃЙЙЅИ ‰…­”ЃA¤ЃM•ННҐЅёЃЭ…МЃ№ЅРЃЅБ•№•ђ€¤м(ЂЂЂЃЌЅ№НРЃ±ҐНРЂфЃЩ¤№™ё ¤м(ЂЂЂЃЌЅ№НРЃ•б•ЌХС•Ѕµµ…№ђЂфЃЩ¤№™ё ¤м(ЂЂЂЃН•ННҐЅё№ЌЅµµ…№‘МЂфЃмЃ±ҐНР°Ѓ•б•ЌХС”иЃ•б•ЌХС•Ѕµµ…№ђЃфм(ЂЂЂЃЌЅ№НРЃ•б•ЌХС”ЂфЃЩ¤№НБе=ёЎН•ННҐЅё°Ђ‰•б•ЌХС”€¤м(ЂЂЂЃЌЅ№НРЃС•бРЂфЂ€Ѓq№С•бРЂЅЌЅµБ…ЌРЃС•бРЃqё€м((ЂЂЂЃЭЙҐС•I•ЕХ•НРЎ™ҐбСХЙ”№‘•Н­СЅБ%№БХР°Ѓм(ЂЂЂЂЂЃҐђиЂИ°(ЂЂЂЂЂЃµ•СЎЅђиЂ‰СХЙёЅНС…ЙР€°(ЂЂЂЂЂЃБ…Й…µМиЃмЃСЎЙ•…‘%ђ°ЃҐ№БХРиЃmмЃСеБ”иЂ‰С•бР€°ЃС•бРЃхtЃф°(ЂЂЂЃф¤м(ЂЂЂЃ…Э…ҐРЃ•бБ•ЌР (ЂЂЂЂЂЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤ЂфшЃЙ•ЕХ•НС%ђЎµ•НН…ќ”°ЂИ¤¤°(ЂЂЂЂ¤№Й•НЅ±Щ•М№СЅ5…СЌЎ=‰©•ЌРЎмЃЙ•НХ±РиЃмЃСХЙёиЃмЃНС…СХМиЂ‰Ґ№AЙЅќЙ•НМ€ЃфЃфЃф¤м(ЂЂЂЃ•бБ•ЌРЎ•б•ЌХС”¤№СЅ!…Щ•	••№…±±•‘]ҐС  (ЂЂЂЂЂЃ•бБ•ЌР№Ѕ‰©•ЌСЅ№С…Ґ№Ґ№њЎмЃСеБ”иЂ‰СХЙё№НС…ЙР€°ЃҐ№БХРиЃmмЃСеБ”иЂ‰С•бР€°ЃС•бРЃхtЃф¤°(ЂЂЂЂ¤м(ЂЂЂЃ•бБ•ЌРЎ±ҐНР¤№№ЅР№СЅ!…Щ•	••№…±±•ђ ¤м(ЂЂЂЃ•бБ•ЌРЎ•б•ЌХС•Ѕµµ…№ђ¤№№ЅР№СЅ!…Щ•	••№…±±•ђ ¤м(ЂЂЂЃ…Э…ҐРЃНСЅБҐбСХЙ”Ў™ҐбСХЙ”¤м(ЂЃф¤м((ЂЃҐР№•…Ќ Ўl(ЂЂЂЃl‰‰…Й”€°Ђ€ЅЌЅµБ…ЌР‰t°(ЂЂЂЃl‰НБ…Ќ”€°Ђ€ЅЌЅµБ…ЌРЂ‰t°(ЂЂЂЃl‰№•Э±Ґ№”€°Ђ€ЅЌЅµБ…ЌСqё‰t°(ЂЂЂЃl‰НБ…Ќ”Ѓ‰•™ЅЙ”Ѓ№•Э±Ґ№”€°Ђ€ЅЌЅµБ…ЌРЃqё‰t°(ЂЂЂЃl‰НХЙЙЅХ№‘Ґ№њЃЭЎҐС•НБ…Ќ”€°Ђ€ЃqёЅЌЅµБ…ЌСqСqЙqё‰t°(ЂЃt¤ ‰Й•ЌЅќ№Ґй•МЃЌЅµБ…ЌРЃЭҐСЎЅХРЃҐ№НСЙХЌСҐЅ№МиЂ•М€°Ѓ…Не№ЊЂЎ}№…µ”°ЃС•бР¤ЂфшЃм(ЂЂЂЃЌЅ№НРЃ™ҐбСХЙ”ЂфЃЌЙ•…С•ҐбСХЙ” ¤м(ЂЂЂЃСЙдЃм(ЂЂЂЂЂЃЌЅ№НРЃСЎЙ•…‘%ђЂфЃ…Э…ҐРЃНС…ЙСAҐQЎЙ•…ђЎ™ҐбСХЙ”¤м(ЂЂЂЂЂЃЌЅ№НРЃН•ННҐЅёЂфЃ™ҐбСХЙ”№…‘…БС•И№Н•ННҐЅ№НlБtм(ЂЂЂЂЂЃҐЂ …Н•ННҐЅё¤ЃСЎЙЅЬЃ№•ЬЃЙЙЅИ ‰…­”ЃA¤ЃM•ННҐЅёЃЭ…МЃ№ЅРЃЅБ•№•ђ€¤м(ЂЂЂЂЂЃН•ННҐЅё№ЌЅµµ…№‘МЂфЃм(ЂЂЂЂЂЂЂЃ±ҐНРиЃ…Не№ЊЂ ¤ЂфшЂЎм(ЂЂЂЂЂЂЂЂЂЃЅ¬иЃСЙХ”°(ЂЂЂЂЂЂЂЂЂЃЩ…±Х”иЃм(ЂЂЂЂЂЂЂЂЂЂЂЃЌЅµµ…№‘МиЃl(ЂЂЂЂЂЂЂЂЂЂЂЂЂЃЎ…Й№•ННЅµµ…№‘•НЌЙҐБСЅЙMЌЎ•µ„№Б…ЙН”Ўм(ЂЂЂЂЂЂЂЂЂЂЂЂЂЂЂЃҐђиЂ‰™…­”№ЌЅµБ…ЌР€°(ЂЂЂЂЂЂЂЂЂЂЂЂЂЂЂЃҐ№ЩЅЌ…СҐЅёиЂ€ЅЌЅµБ…ЌР€°(ЂЂЂЂЂЂЂЂЂЂЂЂЂЂЂЃ±…‰•°иЂ‰ЅµБ…ЌР€°(ЂЂЂЂЂЂЂЂЂЂЂЂЂЂЂЃ…ЙќХµ•№С5Ѕ‘”иЂ‰С•бР€°(ЂЂЂЂЂЂЂЂЂЂЂЂЂЃф¤°(ЂЂЂЂЂЂЂЂЂЂЂЃt°(ЂЂЂЂЂЂЂЂЂЃф°(ЂЂЂЂЂЂЂЃф¤°(ЂЂЂЂЂЂЂЃ•б•ЌХС”иЃ…Не№ЊЂЎмЃСХЙ№%ђ°Ѓ…ЙќХµ•№СМиЃ…ЙќХµ•№СН|Ѓф¤ЂфшЃм(ЂЂЂЂЂЂЂЂЂЃ•бБ•ЌРЎ…ЙќХµ•№СН|¤№СЅ	•U№‘•™Ґ№•ђ ¤м(ЂЂЂЂЂЂЂЂЂЃН•ННҐЅё№БХ‰±ҐНЎБЎ•µ•Й…±Ѕµµ…№ђЎСХЙ№%ђ°Ѓм(ЂЂЂЂЂЂЂЂЂЂЂЃСеБ”иЂ‰ЌЅ№С•бСЅµБ…ЌСҐЅё€°(ЂЂЂЂЂЂЂЂЂЂЂЃҐС•µ%ђиЃЎЅНС%С•µ%‘MЌЎ•µ„№Б…ЙН” ‰ЌЅµБ…ЌРµЭЎҐС•НБ…Ќ”µС•НР€¤°(ЂЂЂЂЂЂЂЂЂЃф¤м(ЂЂЂЂЂЂЂЂЂЃЙ•СХЙёЃмЃЅ¬иЃСЙХ”°ЃЩ…±Х”иЃмЃСХЙ№%ђЃфЃфм(ЂЂЂЂЂЂЂЃф°(ЂЂЂЂЂЃфм(ЂЂЂЂЂЃЭЙҐС•I•ЕХ•НРЎ™ҐбСХЙ”№‘•Н­СЅБ%№БХР°Ѓм(ЂЂЂЂЂЂЂЃҐђиЂИ°(ЂЂЂЂЂЂЂЃµ•СЎЅђиЂ‰СХЙёЅНС…ЙР€°(ЂЂЂЂЂЂЂЃБ…Й…µМиЃмЃСЎЙ•…‘%ђ°ЃҐ№БХРиЃmмЃСеБ”иЂ‰С•бР€°ЃС•бРЃхtЃф°(ЂЂЂЂЂЃф¤м(ЂЂЂЂЂЃ…Э…ҐРЃ•бБ•ЌР (ЂЂЂЂЂЂЂЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤ЂфшЃЙ•ЕХ•НС%ђЎµ•НН…ќ”°ЂИ¤¤°(ЂЂЂЂЂЂ¤№Й•НЅ±Щ•М№СЅ5…СЌЎ=‰©•ЌРЎмЃЙ•НХ±РиЃмЃСХЙёиЃмЃНС…СХМиЂ‰Ґ№AЙЅќЙ•НМ€ЃфЃфЃф¤м(ЂЂЂЃфЃ™Ґ№…±±дЃм(ЂЂЂЂЂЃ…Э…ҐРЃНСЅБҐбСХЙ”Ў™ҐбСХЙ”¤м(ЂЂЂЃф(ЂЃф¤м((ЂЃҐР ‰БЙЅ©•ЌСМЃ„Ѓ!…Й№•НМЃЌЅµµ…№ђќМЃ№…СҐЩ”ЃЌЅµБ…ЌСҐЅёЃ%С•ґЃСЎЙЅХќ ЃСЎ”Ѓ•бҐНСҐ№њЃU$Ѓ±…№”€°Ѓ…Не№ЊЂ ¤ЂфшЃм(ЂЂЂЃЌЅ№НРЃ™ҐбСХЙ”ЂфЃЌЙ•…С•ҐбСХЙ” ¤м(ЂЂЂЃЌЅ№НРЃСЎЙ•…‘%ђЂфЃ…Э…ҐРЃНС…ЙСAҐQЎЙ•…ђЎ™ҐбСХЙ”¤м(ЂЂЂЃЌЅ№НРЃН•ННҐЅёЂфЃ™ҐбСХЙ”№…‘…БС•И№Н•ННҐЅ№НlБtм(ЂЂЂЃҐЂ …Н•ННҐЅё¤ЃСЎЙЅЬЃ№•ЬЃЙЙЅИ ‰…­”ЃA¤ЃM•ННҐЅёЃЭ…МЃ№ЅРЃЅБ•№•ђ€¤м(ЂЂЂЃН•ННҐЅё№ЌЅµµ…№‘МЂфЃм(ЂЂЂЂЂЃ±ҐНРиЃ…Не№ЊЂ ¤ЂфшЂЎм(ЂЂЂЂЂЂЂЃЅ¬иЃСЙХ”°(ЂЂЂЂЂЂЂЃЩ…±Х”иЃм(ЂЂЂЂЂЂЂЂЂЃЌЅµµ…№‘МиЃl(ЂЂЂЂЂЂЂЂЂЂЂЃЎ…Й№•ННЅµµ…№‘•НЌЙҐБСЅЙMЌЎ•µ„№Б…ЙН”Ўм(ЂЂЂЂЂЂЂЂЂЂЂЂЂЃҐђиЂ‰™…­”№ЌЅµБ…ЌР€°(ЂЂЂЂЂЂЂЂЂЂЂЂЂЃҐ№ЩЅЌ…СҐЅёиЂ€ЅЌЅµБ…ЌР€°(ЂЂЂЂЂЂЂЂЂЂЂЂЂЃ±…‰•°иЂ‰ЅµБ…ЌР€°(ЂЂЂЂЂЂЂЂЂЂЂЂЂЃ…ЙќХµ•№С5Ѕ‘”иЂ‰С•бР€Ѓ…МЃЌЅ№НР°(ЂЂЂЂЂЂЂЂЂЂЂЃф¤°(ЂЂЂЂЂЂЂЂЂЃt°(ЂЂЂЂЂЂЂЃф°(ЂЂЂЂЂЃф¤°(ЂЂЂЂЂЃ•б•ЌХС”иЃ…Не№ЊЂЎмЃСХЙ№%ђ°ЃЌЅµµ…№‘%ђ°Ѓ…ЙќХµ•№СМиЃ…ЙќХµ•№СН|Ѓф¤ЂфшЃм(ЂЂЂЂЂЂЂЃ•бБ•ЌРЎЌЅµµ…№‘%ђ¤№СЅ	” ‰™…­”№ЌЅµБ…ЌР€¤м(ЂЂЂЂЂЂЂЃ•бБ•ЌРЎ…ЙќХµ•№СН|¤№СЅЕХ…°ЎмЃС•бРиЂ‰-••АЃҐµБ±•µ•№С…СҐЅёЃ‘•С…Ґ±М€Ѓф¤м(ЂЂЂЂЂЂЂЃН•ННҐЅё№БХ‰±ҐНЎБЎ•µ•Й…±Ѕµµ…№ђЎСХЙ№%ђ°Ѓм(ЂЂЂЂЂЂЂЂЂЃСеБ”иЂ‰ЌЅ№С•бСЅµБ…ЌСҐЅё€°(ЂЂЂЂЂЂЂЂЂЃҐС•µ%ђиЃЎЅНС%С•µ%‘MЌЎ•µ„№Б…ЙН” ‰™…­”µЌЅµБ…ЌСҐЅёµҐС•ґ€¤°(ЂЂЂЂЂЂЂЃф¤м(ЂЂЂЂЂЂЂЃЙ•СХЙёЃмЃЅ¬иЃСЙХ”°ЃЩ…±Х”иЃмЃСХЙ№%ђЃфЃфм(ЂЂЂЂЂЃф°(ЂЂЂЃфм((ЂЂЂЃЭЙҐС•I•ЕХ•НРЎ™ҐбСХЙ”№‘•Н­СЅБ%№БХР°Ѓм(ЂЂЂЂЂЃҐђиЂИ°(ЂЂЂЂЂЃµ•СЎЅђиЂ‰СХЙёЅНС…ЙР€°(ЂЂЂЂЂЃБ…Й…µМиЃм(ЂЂЂЂЂЂЂЃСЎЙ•…‘%ђ°(ЂЂЂЂЂЂЂЃҐ№БХРиЃmмЃСеБ”иЂ‰С•бР€°ЃС•бРиЂ€ЅЌЅµБ…ЌРЃ-••АЃҐµБ±•µ•№С…СҐЅёЃ‘•С…Ґ±М€Ѓхt°(ЂЂЂЂЂЃф°(ЂЂЂЃф¤м(ЂЂЂЃ…Э…ҐРЃ•бБ•ЌР (ЂЂЂЂЂЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤ЂфшЃЙ•ЕХ•НС%ђЎµ•НН…ќ”°ЂИ¤¤°(ЂЂЂЂ¤№Й•НЅ±Щ•М№СЅ5…СЌЎ=‰©•ЌРЎмЃЙ•НХ±РиЃмЃСХЙёиЃмЃНС…СХМиЂ‰Ґ№AЙЅќЙ•НМ€ЃфЃфЃф¤м(ЂЂЂЃ…Э…ҐРЃ•бБ•ЌР (ЂЂЂЂЂЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ (ЂЂЂЂЂЂЂЂЎµ•НН…ќ”¤Ђфш(ЂЂЂЂЂЂЂЂЂЃµ•СЎЅђЎµ•НН…ќ”°Ђ‰ҐС•ґЅНС…ЙС•ђ€¤Ђ(ЂЂЂЂЂЂЂЂЂЂЎµ•НН…ќ•A…Й…µМЎµ•НН…ќ”¤№ҐС•ґЃ…МЃ)НЅ№=‰©•ЌРЃрЃХ№‘•™Ґ№•ђ¤ь№СеБ”ЂфффЂ‰ЌЅ№С•бСЅµБ…ЌСҐЅё€°(ЂЂЂЂЂЂ¤°(ЂЂЂЂ¤№Й•НЅ±Щ•М№СЅ5…СЌЎ=‰©•ЌРЎмЃБ…Й…µМиЃмЃҐС•ґиЃмЃСеБ”иЂ‰ЌЅ№С•бСЅµБ…ЌСҐЅё€ЃфЃфЃф¤м(ЂЂЂЃ…Э…ҐРЃ•бБ•ЌР (ЂЂЂЂЂЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ (ЂЂЂЂЂЂЂЂЎµ•НН…ќ”¤Ђфш(ЂЂЂЂЂЂЂЂЂЃµ•СЎЅђЎµ•НН…ќ”°Ђ‰ҐС•ґЅЌЅµБ±•С•ђ€¤Ђ(ЂЂЂЂЂЂЂЂЂЂЎµ•НН…ќ•A…Й…µМЎµ•НН…ќ”¤№ҐС•ґЃ…МЃ)НЅ№=‰©•ЌРЃрЃХ№‘•™Ґ№•ђ¤ь№СеБ”ЂфффЂ‰ЌЅ№С•бСЅµБ…ЌСҐЅё€°(ЂЂЂЂЂЂ¤°(ЂЂЂЂ¤№Й•НЅ±Щ•М№СЅ5…СЌЎ=‰©•ЌРЎмЃБ…Й…µМиЃмЃҐС•ґиЃмЃСеБ”иЂ‰ЌЅ№С•бСЅµБ…ЌСҐЅё€ЃфЃфЃф¤м(ЂЂЂЃ…Э…ҐРЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤ЂфшЃµ•СЎЅђЎµ•НН…ќ”°Ђ‰СХЙёЅЌЅµБ±•С•ђ€¤¤м(ЂЂЂЃ•бБ•ЌРЎН•ННҐЅё№Б•ЙНҐНС•‘M№…БНЎЅР ¤№СХЙ№М¤№СЅ!…Щ•1•№ќС  А¤м(ЂЂЂЃ…Э…ҐРЃНСЅБҐбСХЙ”Ў™ҐбСХЙ”¤м(ЂЃф¤м((ЂЃҐР ‰БЙЅ©•ЌСМЃ±ҐЩ”Ѓ…№ђЃЎҐНСЅЙҐЌ…°ЃI•…НЅ№Ґ№њЃСЎЙЅХќ ЃСЎ”Ѓ№…СҐЩ”ЃНХµµ…ЙдЃ±…№”€°Ѓ…Не№ЊЂ ¤ЂфшЃм(ЂЂЂЃЌЅ№НРЃ™ҐбСХЙ”ЂфЃЌЙ•…С•ҐбСХЙ” ¤м(ЂЂЂЃЌЅ№НРЃСЎЙ•…‘%ђЂфЃ…Э…ҐРЃНС…ЙСAҐQЎЙ•…ђЎ™ҐбСХЙ”¤м(ЂЂЂЃЌЅ№НРЃН•ННҐЅёЂфЃ™ҐбСХЙ”№…‘…БС•И№Н•ННҐЅ№НlБtм(ЂЂЂЃҐЂ …Н•ННҐЅё¤ЃСЎЙЅЬЃ№•ЬЃЙЙЅИ ‰…­”ЃA¤ЃM•ННҐЅёЃЭ…МЃ№ЅРЃЅБ•№•ђ€¤м((ЂЂЂЃЭЙҐС•I•ЕХ•НРЎ™ҐбСХЙ”№‘•Н­СЅБ%№БХР°Ѓм(ЂЂЂЂЂЃҐђиЂИ°(ЂЂЂЂЂЃµ•СЎЅђиЂ‰СХЙёЅНС…ЙР€°(ЂЂЂЂЂЃБ…Й…µМиЃмЃСЎЙ•…‘%ђ°ЃҐ№БХРиЃmмЃСеБ”иЂ‰С•бР€°ЃС•бРиЂ‰Й•…НЅ№Ґ№њ€ЃхtЃф°(ЂЂЂЃф¤м(ЂЂЂЃ…Э…ҐРЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤ЂфшЃЙ•ЕХ•НС%ђЎµ•НН…ќ”°ЂИ¤¤м(ЂЂЂЃЌЅ№НРЃЙ•…НЅ№Ґ№ќ%ђЂфЃН•ННҐЅё№НС…ЙСI•…НЅ№Ґ№њ ‰ЩҐНҐ‰±”Ђ€¤м(ЂЂЂЃ…Э…ҐРЃ•бБ•ЌР (ЂЂЂЂЂЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ (ЂЂЂЂЂЂЂЂЎµ•НН…ќ”¤Ђфш(ЂЂЂЂЂЂЂЂЂЃµ•СЎЅђЎµ•НН…ќ”°Ђ‰ҐС•ґЅНС…ЙС•ђ€¤Ђ(ЂЂЂЂЂЂЂЂЂЂ Ўµ•НН…ќ”№Б…Й…µМЃ…МЃ)НЅ№=‰©•ЌР¤№ҐС•ґЃ…МЃ)НЅ№=‰©•ЌРЃрЃХ№‘•™Ґ№•ђ¤ь№ҐђЂффф(ЂЂЂЂЂЂЂЂЂЂЂЃЂ‘нЙ•…НЅ№Ґ№ќ%‘фµНХµµ…ЙеЂ°(ЂЂЂЂЂЂ¤°(ЂЂЂЂ¤№Й•НЅ±Щ•М№СЅ5…СЌЎ=‰©•ЌРЎм(ЂЂЂЂЂЃБ…Й…µМиЃмЃҐС•ґиЃмЃСеБ”иЂ‰Й•…НЅ№Ґ№њ€°ЃНХµµ…ЙдиЃmt°ЃЌЅ№С•№РиЃmtЃфЃф°(ЂЂЂЃф¤м(ЂЂЂЃ…Э…ҐРЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤Ђфш(ЂЂЂЂЂЃµ•СЎЅђЎµ•НН…ќ”°Ђ‰ҐС•ґЅЙ•…НЅ№Ґ№њЅНХµµ…ЙеA…ЙС‘‘•ђ€¤°(ЂЂЂЂ¤м(ЂЂЂЃН•ННҐЅё№…ББ•№‘I•…НЅ№Ґ№њЎЙ•…НЅ№Ґ№ќ%ђ°Ђ‰…№…±еНҐМ€¤м(ЂЂЂЃ…Э…ҐРЃ•бБ•ЌР (ЂЂЂЂЂЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ (ЂЂЂЂЂЂЂЂЎµ•НН…ќ”¤Ђфш(ЂЂЂЂЂЂЂЂЂЃµ•СЎЅђЎµ•НН…ќ”°Ђ‰ҐС•ґЅЙ•…НЅ№Ґ№њЅНХµµ…ЙеQ•бС•±С„€¤Ђ(ЂЂЂЂЂЂЂЂЂЂЎµ•НН…ќ”№Б…Й…µМЃ…МЃ)НЅ№=‰©•ЌР¤№‘•±С„ЂфффЂ‰…№…±еНҐМ€°(ЂЂЂЂЂЂ¤°(ЂЂЂЂ¤№Й•НЅ±Щ•М№СЅ5…СЌЎ=‰©•ЌРЎмЃБ…Й…µМиЃмЃНХµµ…Йе%№‘•аиЂАЃфЃф¤м(ЂЂЂЃН•ННҐЅё№ЌЅµБ±•С•%С•ґЎЙ•…НЅ№Ґ№ќ%ђ°ЃмЃНС…СХМиЂ‰НХЌЌ••‘•ђ€Ѓф¤м(ЂЂЂЃ…Э…ҐРЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ (ЂЂЂЂЂЂЎµ•НН…ќ”¤Ђфш(ЂЂЂЂЂЂЂЃµ•СЎЅђЎµ•НН…ќ”°Ђ‰ҐС•ґЅЌЅµБ±•С•ђ€¤Ђ(ЂЂЂЂЂЂЂЂ Ўµ•НН…ќ”№Б…Й…µМЃ…МЃ)НЅ№=‰©•ЌР¤№ҐС•ґЃ…МЃ)НЅ№=‰©•ЌРЃрЃХ№‘•™Ґ№•ђ¤ь№ҐђЂфффЃЙ•…НЅ№Ґ№ќ%ђ°(ЂЂЂЂ¤м(ЂЂЂЃН•ННҐЅё№…ББ•№‘Q•бР ‰…№НЭ•И€¤м(ЂЂЂЃН•ННҐЅё№НХЌЌ••‘QХЙё ¤м(ЂЂЂЃЌЅ№НРЃЌЅµБ±•С•ђЂфЃ…Э…ҐРЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤Ђфш(ЂЂЂЂЂЃµ•СЎЅђЎµ•НН…ќ”°Ђ‰СХЙёЅЌЅµБ±•С•ђ€¤°(ЂЂЂЂ¤м(ЂЂЂЃ•бБ•ЌРЎЌЅµБ±•С•ђ¤№СЅ5…СЌЎ=‰©•ЌРЎм(ЂЂЂЂЂЃБ…Й…µМиЃм(ЂЂЂЂЂЂЂЃСХЙёиЃм(ЂЂЂЂЂЂЂЂЂЃҐС•µМиЃl(ЂЂЂЂЂЂЂЂЂЂЂЃм(ЂЂЂЂЂЂЂЂЂЂЂЂЂЃҐђиЃЂ‘нЙ•…НЅ№Ґ№ќ%‘фµНХµµ…ЙеЂ°(ЂЂЂЂЂЂЂЂЂЂЂЂЂЃСеБ”иЂ‰Й•…НЅ№Ґ№њ€°(ЂЂЂЂЂЂЂЂЂЂЂЂЂЃНХµµ…ЙдиЃl‰ЩҐНҐ‰±”Ѓ…№…±еНҐМ‰t°(ЂЂЂЂЂЂЂЂЂЂЂЂЂЃЌЅ№С•№РиЃmt°(ЂЂЂЂЂЂЂЂЂЂЂЃф°(ЂЂЂЂЂЂЂЂЂЂЂЃм(ЂЂЂЂЂЂЂЂЂЂЂЂЂЃҐђиЃЙ•…НЅ№Ґ№ќ%ђ°(ЂЂЂЂЂЂЂЂЂЂЂЂЂЃСеБ”иЂ‰ЌЅµµ…№‘б•ЌХСҐЅё€°(ЂЂЂЂЂЂЂЂЂЂЂЂЂЃЌЅµµ…№ђиЂ‰СЎҐ№­Ґ№њ€°(ЂЂЂЂЂЂЂЂЂЂЂЂЂЃ…ќќЙ•ќ…С•‘=ХСБХРиЂ‰ЩҐНҐ‰±”Ѓ…№…±еНҐМ€°(ЂЂЂЂЂЂЂЂЂЂЂЃф°(ЂЂЂЂЂЂЂЂЂЂЂЃмЃСеБ”иЂ‰…ќ•№С5•НН…ќ”€°ЃС•бРиЂ‰…№НЭ•И€Ѓф°(ЂЂЂЂЂЂЂЂЂЃt°(ЂЂЂЂЂЂЂЃф°(ЂЂЂЂЂЃф°(ЂЂЂЃф¤м((ЂЂЂЃЭЙҐС•I•ЕХ•НРЎ™ҐбСХЙ”№‘•Н­СЅБ%№БХР°Ѓм(ЂЂЂЂЂЃҐђиЂМ°(ЂЂЂЂЂЃµ•СЎЅђиЂ‰СЎЙ•…ђЅЙ•…ђ€°(ЂЂЂЂЂЃБ…Й…µМиЃмЃСЎЙ•…‘%ђ°ЃҐ№Ќ±Х‘•QХЙ№МиЃСЙХ”Ѓф°(ЂЂЂЃф¤м(ЂЂЂЃ…Э…ҐРЃ•бБ•ЌР (ЂЂЂЂЂЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤ЂфшЃЙ•ЕХ•НС%ђЎµ•НН…ќ”°ЂМ¤¤°(ЂЂЂЂ¤№Й•НЅ±Щ•М№СЅ5…СЌЎ=‰©•ЌРЎм(ЂЂЂЂЂЃЙ•НХ±РиЃм(ЂЂЂЂЂЂЂЃСЎЙ•…ђиЃм(ЂЂЂЂЂЂЂЂЂЃСХЙ№МиЃl(ЂЂЂЂЂЂЂЂЂЂЂЃм(ЂЂЂЂЂЂЂЂЂЂЂЂЂЃҐС•µМиЃl(ЂЂЂЂЂЂЂЂЂЂЂЂЂЂЂЃмЃСеБ”иЂ‰ХН•Й5•НН…ќ”€Ѓф°(ЂЂЂЂЂЂЂЂЂЂЂЂЂЂЂЃм(ЂЂЂЂЂЂЂЂЂЂЂЂЂЂЂЂЂЃҐђиЃЂ‘нЙ•…НЅ№Ґ№ќ%‘фµНХµµ…ЙеЂ°(ЂЂЂЂЂЂЂЂЂЂЂЂЂЂЂЂЂЃСеБ”иЂ‰Й•…НЅ№Ґ№њ€°(ЂЂЂЂЂЂЂЂЂЂЂЂЂЂЂЂЂЃНХµµ…ЙдиЃl‰ЩҐНҐ‰±”Ѓ…№…±еНҐМ‰t°(ЂЂЂЂЂЂЂЂЂЂЂЂЂЂЂЂЂЃЌЅ№С•№РиЃmt°(ЂЂЂЂЂЂЂЂЂЂЂЂЂЂЂЃф°(ЂЂЂЂЂЂЂЂЂЂЂЂЂЂЂЃм(ЂЂЂЂЂЂЂЂЂЂЂЂЂЂЂЂЂЃҐђиЃЙ•…НЅ№Ґ№ќ%ђ°(ЂЂЂЂЂЂЂЂЂЂЂЂЂЂЂЂЂЃСеБ”иЂ‰ЌЅµµ…№‘б•ЌХСҐЅё€°(ЂЂЂЂЂЂЂЂЂЂЂЂЂЂЂЂЂЃЌЅµµ…№ђиЂ‰СЎҐ№­Ґ№њ€°(ЂЂЂЂЂЂЂЂЂЂЂЂЂЂЂЂЂЃ…ќќЙ•ќ…С•‘=ХСБХРиЂ‰ЩҐНҐ‰±”Ѓ…№…±еНҐМ€°(ЂЂЂЂЂЂЂЂЂЂЂЂЂЂЂЃф°(ЂЂЂЂЂЂЂЂЂЂЂЂЂЂЂЃмЃСеБ”иЂ‰…ќ•№С5•НН…ќ”€°ЃС•бРиЂ‰…№НЭ•И€Ѓф°(ЂЂЂЂЂЂЂЂЂЂЂЂЂЃt°(ЂЂЂЂЂЂЂЂЂЂЂЃф°(ЂЂЂЂЂЂЂЂЂЃt°(ЂЂЂЂЂЂЂЃф°(ЂЂЂЂЂЃф°(ЂЂЂЃф¤м(ЂЂЂЃ…Э…ҐРЃНСЅБҐбСХЙ”Ў™ҐбСХЙ”¤м(ЂЃф¤м((ЂЃҐР ‰№ЅСҐ™Ґ•МЃI•№‘•Й•ИЃЭЎ•ёЃЙ•±Ґ…‰±”ЃUН…ќ”Ѓ…ЙЙҐЩ•МЃ‰•™ЅЙ”ЃЅ№С•бРЃUН…ќ”€°Ѓ…Не№ЊЂ ¤ЂфшЃм(ЂЂЂЃЌЅ№НРЃ™ҐбСХЙ”ЂфЃЌЙ•…С•ҐбСХЙ” ¤м(ЂЂЂЃЌЅ№НРЃСЎЙ•…‘%ђЂфЃ…Э…ҐРЃНС…ЙСAҐQЎЙ•…ђЎ™ҐбСХЙ”¤м(ЂЂЂЃЌЅ№НРЃН•ННҐЅёЂфЃ™ҐбСХЙ”№…‘…БС•И№Н•ННҐЅ№НlБtм(ЂЂЂЃҐЂ …Н•ННҐЅё¤ЃСЎЙЅЬЃ№•ЬЃЙЙЅИ ‰…­”ЃA¤ЃM•ННҐЅёЃЭ…МЃ№ЅРЃЅБ•№•ђ€¤м((ЂЂЂЃЌЅ№НРЃСХЙ№%ђЂфЃ…Э…ҐРЃНС…ЙСAҐQХЙёЎ™ҐбСХЙ”°ЃСЎЙ•…‘%ђ°ЂИ¤м(ЂЂЂЃН•ННҐЅё№БХ‰±ҐНЎUН…ќ” (ЂЂЂЂЂЃмЃЌ…ЌЎ•!ҐСI…С•A•ЙЌ•№РиЂА°ЃСЅС…±ЅНСUНђиЂАёАД°ЃҐ№БХСQЅ­•№МиЂд°ЃЅХСБХСQЅ­•№МиЂДИИЃф°(ЂЂЂЂЂЃЎЅНСQХЙ№%‘MЌЎ•µ„№Б…ЙН”ЎСХЙ№%ђ¤°(ЂЂЂЂ¤м((ЂЂЂЃ…Э…ҐРЃ•бБ•ЌР (ЂЂЂЂЂЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ (ЂЂЂЂЂЂЂЂЎµ•НН…ќ”¤Ђфш(ЂЂЂЂЂЂЂЂЂЃµ•СЎЅђЎµ•НН…ќ”°Ђ‰ЌЅ‘•бЎЅНРЅСЎЙ•…ђЅХН…ќ”ЅХБ‘…С•ђ€¤Ђ(ЂЂЂЂЂЂЂЂЂЃµ•НН…ќ•A…Й…µМЎµ•НН…ќ”¤№СЎЙ•…‘%ђЂфффЃСЎЙ•…‘%ђ°(ЂЂЂЂЂЂ¤°(ЂЂЂЂ¤№Й•НЅ±Щ•М№СЅЕХ…°Ўм(ЂЂЂЂЂЃµ•СЎЅђиЂ‰ЌЅ‘•бЎЅНРЅСЎЙ•…ђЅХН…ќ”ЅХБ‘…С•ђ€°(ЂЂЂЂЂЃБ…Й…µМиЃмЃСЎЙ•…‘%ђЃф°(ЂЂЂЃф¤м(ЂЂЂЃ•бБ•ЌР (ЂЂЂЂЂЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№µ•НН…ќ•М№НЅµ” (ЂЂЂЂЂЂЂЂЎµ•НН…ќ”¤Ђфш(ЂЂЂЂЂЂЂЂЂЃµ•СЎЅђЎµ•НН…ќ”°Ђ‰СЎЙ•…ђЅСЅ­•№UН…ќ”ЅХБ‘…С•ђ€¤Ђ(ЂЂЂЂЂЂЂЂЂЃµ•НН…ќ•A…Й…µМЎµ•НН…ќ”¤№СЎЙ•…‘%ђЂфффЃСЎЙ•…‘%ђ°(ЂЂЂЂЂЂ¤°(ЂЂЂЂ¤№СЅ	”Ў™…±Н”¤м((ЂЂЂЃН•ННҐЅё№НХЌЌ••‘QХЙё ¤м(ЂЂЂЃ…Э…ҐРЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤ЂфшЃСХЙ№Щ•№РЎµ•НН…ќ”°Ђ‰СХЙёЅЌЅµБ±•С•ђ€°ЃСХЙ№%ђ¤¤м(ЂЂЂЃ…Э…ҐРЃНСЅБҐбСХЙ”Ў™ҐбСХЙ”¤м(ЂЃф¤м((ЂЃҐР ‰ЅЙ‘•ЙМЃ•…Й±дЃ…№ђЃС•ЙµҐ№…°ЃUН…ќ”ЃХБ‘…С•МЃ…№ђЃЙ•Б±…еМЃЌХЙЙ•№РЃUН…ќ”Ѓ…™С•ИЃСЎЙ•…ђЅЙ•…ђ€°Ѓ…Не№ЊЂ ¤ЂфшЃм(ЂЂЂЃЌЅ№НРЃ™ҐбСХЙ”ЂфЃЌЙ•…С•ҐбСХЙ” ¤м(ЂЂЂЃЌЅ№НРЃСЎЙ•…‘%ђЂфЃ…Э…ҐРЃНС…ЙСAҐQЎЙ•…ђЎ™ҐбСХЙ”¤м(ЂЂЂЃЌЅ№НРЃН•ННҐЅёЂфЃ™ҐбСХЙ”№…‘…БС•И№Н•ННҐЅ№НlБtм(ЂЂЂЃҐЂ …Н•ННҐЅё¤ЃСЎЙЅЬЃ№•ЬЃЙЙЅИ ‰…­”ЃA¤ЃM•ННҐЅёЃЭ…МЃ№ЅРЃЅБ•№•ђ€¤м(ЂЂЂЃН•ННҐЅё№БХ‰±ҐНЎUН…ќ•=№9•бСQХЙёЎм(ЂЂЂЂЂЃСЅС…±QЅ­•№МиЂМА°(ЂЂЂЂЂЃЌЅ№С•бСUН•‘QЅ­•№МиЂИА°(ЂЂЂЂЂЃЌЅ№С•бС]Ґ№‘ЅЭQЅ­•№МиЂДАА°(ЂЂЂЃф¤м((ЂЂЂЃЌЅ№НРЃСХЙ№%ђЂфЃ…Э…ҐРЃНС…ЙСAҐQХЙёЎ™ҐбСХЙ”°ЃСЎЙ•…‘%ђ°ЂИ¤м(ЂЂЂЃЌЅ№НРЃ•…Й±еUН…ќ”ЂфЃ…Э…ҐРЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ (ЂЂЂЂЂЂЎµ•НН…ќ”¤Ђфш(ЂЂЂЂЂЂЂЃµ•СЎЅђЎµ•НН…ќ”°Ђ‰СЎЙ•…ђЅСЅ­•№UН…ќ”ЅХБ‘…С•ђ€¤Ђ(ЂЂЂЂЂЂЂЃµ•НН…ќ•A…Й…µМЎµ•НН…ќ”¤№СЎЙ•…‘%ђЂфффЃСЎЙ•…‘%ђ°(ЂЂЂЂ¤м(ЂЂЂЃ•бБ•ЌРЎ•…Й±еUН…ќ”¤№СЅ5…СЌЎ=‰©•ЌРЎм(ЂЂЂЂЂЃБ…Й…µМиЃм(ЂЂЂЂЂЂЂЃСЎЙ•…‘%ђ°(ЂЂЂЂЂЂЂЃСХЙ№%ђ°(ЂЂЂЂЂЂЂЃСЅ­•№UН…ќ”иЃм(ЂЂЂЂЂЂЂЂЂЃСЅС…°иЃмЃСЅС…±QЅ­•№МиЂМАЃф°(ЂЂЂЂЂЂЂЂЂЃ±…НРиЃмЃСЅС…±QЅ­•№МиЂИА°ЃҐ№БХСQЅ­•№МиЂИАЃф°(ЂЂЂЂЂЂЂЂЂЃµЅ‘•±Ѕ№С•бС]Ґ№‘ЅЬиЂДАА°(ЂЂЂЂЂЂЂЃф°(ЂЂЂЂЂЃф°(ЂЂЂЃф¤м(ЂЂЂЃЌЅ№НРЃЙ•НБЅ№Н•%№‘•аЂфЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№µ•НН…ќ•М№™Ґ№‘%№‘•а Ўµ•НН…ќ”¤ЂфшЃЙ•ЕХ•НС%ђЎµ•НН…ќ”°ЂИ¤¤м(ЂЂЂЃЌЅ№НРЃ•…Й±еUН…ќ•%№‘•аЂфЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№µ•НН…ќ•М№Ґ№‘•б=Ў•…Й±еUН…ќ”¤м(ЂЂЂЃ•бБ•ЌРЎ•…Й±еUН…ќ•%№‘•а¤№СЅ	•Й•…С•ЙQЎ…ёЎЙ•НБЅ№Н•%№‘•а¤м((ЂЂЂЃН•ННҐЅё№НХЌЌ••‘QХЙё ¤м(ЂЂЂЃ…Э…ҐРЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤ЂфшЃСХЙ№Щ•№РЎµ•НН…ќ”°Ђ‰СХЙёЅЌЅµБ±•С•ђ€°ЃСХЙ№%ђ¤¤м(ЂЂЂЃ…Э…ҐРЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤ЂфшЃСЎЙ•…‘MС…СХМЎµ•НН…ќ”°ЃСЎЙ•…‘%ђ°Ђ‰Ґ‘±”€¤¤м(ЂЂЂЃН•ННҐЅё№БХ‰±ҐНЎUН…ќ” (ЂЂЂЂЂЃмЃСЅС…±QЅ­•№МиЂРР°ЃЌЅ№С•бСUН•‘QЅ­•№МиЂИФ°ЃЌЅ№С•бС]Ґ№‘ЅЭQЅ­•№МиЂДААЃф°(ЂЂЂЂЂЃЎЅНСQХЙ№%‘MЌЎ•µ„№Б…ЙН”ЎСХЙ№%ђ¤°(ЂЂЂЂ¤м(ЂЂЂЃ…Э…ҐРЃЩ¤№Э…ҐСЅИ  ¤ЂфшЃм(ЂЂЂЂЂЃ•бБ•ЌР (ЂЂЂЂЂЂЂЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№µ•НН…ќ•М№™Ґ±С•И (ЂЂЂЂЂЂЂЂЂЂЎµ•НН…ќ”¤Ђфш(ЂЂЂЂЂЂЂЂЂЂЂЃµ•СЎЅђЎµ•НН…ќ”°Ђ‰СЎЙ•…ђЅСЅ­•№UН…ќ”ЅХБ‘…С•ђ€¤Ђ(ЂЂЂЂЂЂЂЂЂЂЂЂ Ўµ•НН…ќ•A…Й…µМЎµ•НН…ќ”¤№СЅ­•№UН…ќ”Ѓ…МЃ)НЅ№=‰©•ЌР¤№СЅС…°Ѓ…МЃ)НЅ№=‰©•ЌР¤№СЅС…±QЅ­•№МЂффф(ЂЂЂЂЂЂЂЂЂЂЂЂЂЂРР°(ЂЂЂЂЂЂЂЂ¤°(ЂЂЂЂЂЂ¤№СЅ!…Щ•1•№ќС  Д¤м(ЂЂЂЃф¤м(ЂЂЂЃЌЅ№НРЃС•ЙµҐ№…±%№‘•аЂфЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№µ•НН…ќ•М№™Ґ№‘%№‘•а Ўµ•НН…ќ”¤Ђфш(ЂЂЂЂЂЃСХЙ№Щ•№РЎµ•НН…ќ”°Ђ‰СХЙёЅЌЅµБ±•С•ђ€°ЃСХЙ№%ђ¤°(ЂЂЂЂ¤м(ЂЂЂЃЌЅ№НРЃҐ‘±•%№‘•аЂфЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№µ•НН…ќ•М№™Ґ№‘%№‘•а Ўµ•НН…ќ”¤Ђфш(ЂЂЂЂЂЃСЎЙ•…‘MС…СХМЎµ•НН…ќ”°ЃСЎЙ•…‘%ђ°Ђ‰Ґ‘±”€¤°(ЂЂЂЂ¤м(ЂЂЂЃЌЅ№НРЃС•ЙµҐ№…±UН…ќ•%№‘•аЂфЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№µ•НН…ќ•М№™Ґ№‘%№‘•а (ЂЂЂЂЂЂЎµ•НН…ќ”¤Ђфш(ЂЂЂЂЂЂЂЃµ•СЎЅђЎµ•НН…ќ”°Ђ‰СЎЙ•…ђЅСЅ­•№UН…ќ”ЅХБ‘…С•ђ€¤Ђ(ЂЂЂЂЂЂЂЂ Ўµ•НН…ќ•A…Й…µМЎµ•НН…ќ”¤№СЅ­•№UН…ќ”Ѓ…МЃ)НЅ№=‰©•ЌР¤№СЅС…°Ѓ…МЃ)НЅ№=‰©•ЌР¤№СЅС…±QЅ­•№МЂфффЂРР°(ЂЂЂЂ¤м(ЂЂЂЃ•бБ•ЌРЎҐ‘±•%№‘•а¤№СЅ	•Й•…С•ЙQЎ…ёЎС•ЙµҐ№…±%№‘•а¤м(ЂЂЂЃ•бБ•ЌРЎС•ЙµҐ№…±UН…ќ•%№‘•а¤№СЅ	•Й•…С•ЙQЎ…ёЎҐ‘±•%№‘•а¤м((ЂЂЂЃЭЙҐС•I•ЕХ•НРЎ™ҐбСХЙ”№‘•Н­СЅБ%№БХР°Ѓм(ЂЂЂЂЂЃҐђиЂМ°(ЂЂЂЂЂЃµ•СЎЅђиЂ‰СЎЙ•…ђЅЙ•…ђ€°(ЂЂЂЂЂЃБ…Й…µМиЃмЃСЎЙ•…‘%ђ°ЃҐ№Ќ±Х‘•QХЙ№МиЃСЙХ”Ѓф°(ЂЂЂЃф¤м(ЂЂЂЃ…Э…ҐРЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤ЂфшЃЙ•ЕХ•НС%ђЎµ•НН…ќ”°ЂМ¤¤м(ЂЂЂЃ…Э…ҐРЃЩ¤№Э…ҐСЅИ  ¤ЂфшЃм(ЂЂЂЂЂЃ•бБ•ЌР (ЂЂЂЂЂЂЂЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№µ•НН…ќ•М№™Ґ±С•И (ЂЂЂЂЂЂЂЂЂЂЎµ•НН…ќ”¤Ђфш(ЂЂЂЂЂЂЂЂЂЂЂЃµ•СЎЅђЎµ•НН…ќ”°Ђ‰СЎЙ•…ђЅСЅ­•№UН…ќ”ЅХБ‘…С•ђ€¤Ђ(ЂЂЂЂЂЂЂЂЂЂЂЂ Ўµ•НН…ќ•A…Й…µМЎµ•НН…ќ”¤№СЅ­•№UН…ќ”Ѓ…МЃ)НЅ№=‰©•ЌР¤№СЅС…°Ѓ…МЃ)НЅ№=‰©•ЌР¤№СЅС…±QЅ­•№МЂффф(ЂЂЂЂЂЂЂЂЂЂЂЂЂЂРР°(ЂЂЂЂЂЂЂЂ¤°(ЂЂЂЂЂЂ¤№СЅ!…Щ•1•№ќС  И¤м(ЂЂЂЃф¤м(ЂЂЂЃЌЅ№НРЃЙ•…‘I•НБЅ№Н•%№‘•аЂфЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№µ•НН…ќ•М№™Ґ№‘%№‘•а Ўµ•НН…ќ”¤Ђфш(ЂЂЂЂЂЃЙ•ЕХ•НС%ђЎµ•НН…ќ”°ЂМ¤°(ЂЂЂЂ¤м(ЂЂЂЃЌЅ№НРЃЙ•Б±…е%№‘•аЂфЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№µ•НН…ќ•М№™Ґ№‘1…НС%№‘•а (ЂЂЂЂЂЂЎµ•НН…ќ”¤Ђфш(ЂЂЂЂЂЂЂЃµ•СЎЅђЎµ•НН…ќ”°Ђ‰СЎЙ•…ђЅСЅ­•№UН…ќ”ЅХБ‘…С•ђ€¤Ђ(ЂЂЂЂЂЂЂЂ Ўµ•НН…ќ•A…Й…µМЎµ•НН…ќ”¤№СЅ­•№UН…ќ”Ѓ…МЃ)НЅ№=‰©•ЌР¤№СЅС…°Ѓ…МЃ)НЅ№=‰©•ЌР¤№СЅС…±QЅ­•№МЂфффЂРР°(ЂЂЂЂ¤м(ЂЂЂЃ•бБ•ЌРЎЙ•Б±…е%№‘•а¤№СЅ	•Й•…С•ЙQЎ…ёЎЙ•…‘I•НБЅ№Н•%№‘•а¤м((ЂЂЂЃЌЅ№НРЃНСЅЙ•ђЂфЃ…Э…ҐРЃ™ҐбСХЙ”№µ…ББҐ№ќMСЅЙ”№ќ•СQЎЙ•…ђЎЎЅНСQЎЙ•…‘%‘MЌЎ•µ„№Б…ЙН”ЎСЎЙ•…‘%ђ¤¤м(ЂЂЂЃ•бБ•ЌРЎ)M=8№НСЙҐ№ќҐ™дЎНСЅЙ•ђ¤¤№№ЅР№СЅ5…СЌ  ј€ ьйХН…ќ•сЌЅНСсЌЅ№С•бСсЙ•ЕХ•НС%‘сЙ•™Й•НЎ…ЌЎ”¤€Ѕ¤¤м(ЂЂЂЃ…Э…ҐРЃНСЅБҐбСХЙ”Ў™ҐбСХЙ”¤м(ЂЃф¤м((ЂЃҐР ‰­••БМЃUН…ќ”ЃҐНЅ±…С•ђЃ…ЌЙЅНМЃЙ•ќҐНС•Й•ђЃ!…Й№•НМЃQЎЙ•…‘М€°Ѓ…Не№ЊЂ ¤ЂфшЃм(ЂЂЂЃЌЅ№НРЃБҐ‘…БС•ИЂфЃ№•ЬЃ…­•!…Й№•НН‘…БС•ИЎЎ…Й№•НН%‘MЌЎ•µ„№Б…ЙН” ‰Б¤€¤¤м(ЂЂЂЃЌЅ№НРЃЌ±…Х‘•‘…БС•ИЂфЃ№•ЬЃ…­•!…Й№•НН‘…БС•ИЎЎ…Й№•НН%‘MЌЎ•µ„№Б…ЙН” ‰Ќ±…Х‘”µЌЅ‘”€¤¤м(ЂЂЂЃЌЅ№НРЃ™ҐбСХЙ”ЂфЃЌЙ•…С•ҐбСХЙ”Ўм(ЂЂЂЂЂЃ•бС•Й№…±‘…БС•ЙМиЃ№•ЬЃ5…АсбС•Й№…±!…Й№•НН%ђ°Ѓ…­•!…Й№•НН‘…БС•ИшЎl(ЂЂЂЂЂЂЂЃl‰Б¤€°ЃБҐ‘…БС•Йt°(ЂЂЂЂЂЂЂЃl‰Ќ±…Х‘”µЌЅ‘”€°ЃЌ±…Х‘•‘…БС•Йt°(ЂЂЂЂЂЃt¤°(ЂЂЂЃф¤м(ЂЂЂЃЌЅ№НРЃБҐQЎЙ•…‘%ђЂфЃ…Э…ҐРЃНС…ЙСбС•Й№…±QЎЙ•…ђЎ™ҐбСХЙ”°Ђ‰ЌЅ‘•бЎЅНРЅБ¤µ№…СҐЩ”€°ЂДА¤м(ЂЂЂЃЌЅ№НРЃЌ±…Х‘•QЎЙ•…‘%ђЂфЃ…Э…ҐРЃНС…ЙСбС•Й№…±QЎЙ•…ђ (ЂЂЂЂЂЃ™ҐбСХЙ”°(ЂЂЂЂЂЃ1U}=}9Q%Y}QI9MA=IQ}5=1}%°(ЂЂЂЂЂЂДД°(ЂЂЂЂ¤м(ЂЂЂЃЌЅ№НРЃБҐQХЙ№%ђЂфЃ…Э…ҐРЃЌЅµБ±•С•AҐQХЙёЎ™ҐбСХЙ”°ЃБҐQЎЙ•…‘%ђ°ЂДИ°ЂА¤м(ЂЂЂЃЌЅ№НРЃЌ±…Х‘•QХЙ№%ђЂфЃ…Э…ҐРЃЌЅµБ±•С•AҐQХЙё (ЂЂЂЂЂЃмЂёё№™ҐбСХЙ”°Ѓ…‘…БС•ИиЃЌ±…Х‘•‘…БС•ИЃф°(ЂЂЂЂЂЃЌ±…Х‘•QЎЙ•…‘%ђ°(ЂЂЂЂЂЂДМ°(ЂЂЂЂЂЂА°(ЂЂЂЂ¤м(ЂЂЂЃБҐ‘…БС•И№Н•ННҐЅ№НlБtь№БХ‰±ҐНЎUН…ќ” (ЂЂЂЂЂЃмЃСЅС…±QЅ­•№МиЂДА°ЃЌЅ№С•бСUН•‘QЅ­•№МиЂИ°ЃЌЅ№С•бС]Ґ№‘ЅЭQЅ­•№МиЂДААЃф°(ЂЂЂЂЂЃЎЅНСQХЙ№%‘MЌЎ•µ„№Б…ЙН”ЎБҐQХЙ№%ђ¤°(ЂЂЂЂ¤м(ЂЂЂЃЌ±…Х‘•‘…БС•И№Н•ННҐЅ№НlБtь№БХ‰±ҐНЎUН…ќ” (ЂЂЂЂЂЃмЃСЅС…±QЅ­•№МиЂдА°ЃЌЅ№С•бСUН•‘QЅ­•№МиЂЬА°ЃЌЅ№С•бС]Ґ№‘ЅЭQЅ­•№МиЂИААЃф°(ЂЂЂЂЂЃЎЅНСQХЙ№%‘MЌЎ•µ„№Б…ЙН”ЎЌ±…Х‘•QХЙ№%ђ¤°(ЂЂЂЂ¤м((ЂЂЂЃ…Э…ҐРЃ•бБ•ЌР (ЂЂЂЂЂЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ (ЂЂЂЂЂЂЂЂЎµ•НН…ќ”¤Ђфш(ЂЂЂЂЂЂЂЂЂЃµ•СЎЅђЎµ•НН…ќ”°Ђ‰СЎЙ•…ђЅСЅ­•№UН…ќ”ЅХБ‘…С•ђ€¤Ђ(ЂЂЂЂЂЂЂЂЂЃµ•НН…ќ•A…Й…µМЎµ•НН…ќ”¤№СЎЙ•…‘%ђЂфффЃБҐQЎЙ•…‘%ђ°(ЂЂЂЂЂЂ¤°(ЂЂЂЂ¤№Й•НЅ±Щ•М№СЅ5…СЌЎ=‰©•ЌРЎмЃБ…Й…µМиЃмЃСЅ­•№UН…ќ”иЃмЃСЅС…°иЃмЃСЅС…±QЅ­•№МиЂДАЃфЃфЃфЃф¤м(ЂЂЂЃ…Э…ҐРЃ•бБ•ЌР (ЂЂЂЂЂЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ (ЂЂЂЂЂЂЂЂЎµ•НН…ќ”¤Ђфш(ЂЂЂЂЂЂЂЂЂЃµ•СЎЅђЎµ•НН…ќ”°Ђ‰СЎЙ•…ђЅСЅ­•№UН…ќ”ЅХБ‘…С•ђ€¤Ђ(ЂЂЂЂЂЂЂЂЂЃµ•НН…ќ•A…Й…µМЎµ•НН…ќ”¤№СЎЙ•…‘%ђЂфффЃЌ±…Х‘•QЎЙ•…‘%ђ°(ЂЂЂЂЂЂ¤°(ЂЂЂЂ¤№Й•НЅ±Щ•М№СЅ5…СЌЎ=‰©•ЌРЎмЃБ…Й…µМиЃмЃСЅ­•№UН…ќ”иЃмЃСЅС…°иЃмЃСЅС…±QЅ­•№МиЂдАЃфЃфЃфЃф¤м(ЂЂЂЃ…Э…ҐРЃНСЅБҐбСХЙ”Ў™ҐбСХЙ”¤м(ЂЃф¤м((ЂЃҐР ‰ЙЅХС•МЃ•б…ЌРЃUН…ќ”ЃЙ•™Й•Н ЃЅ№±дЃСјЃСЎ”ЃЅЭ№Ґ№њЃбС•Й№…°ЃM•ННҐЅё€°Ѓ…Не№ЊЂ ¤ЂфшЃм(ЂЂЂЃЌЅ№НРЃБҐ‘…БС•ИЂфЃ№•ЬЃ…­•!…Й№•НН‘…БС•ИЎЎ…Й№•НН%‘MЌЎ•µ„№Б…ЙН” ‰Б¤€¤¤м(ЂЂЂЃЌЅ№НРЃЌ±…Х‘•‘…БС•ИЂфЃ№•ЬЃ…­•!…Й№•НН‘…БС•ИЎЎ…Й№•НН%‘MЌЎ•µ„№Б…ЙН” ‰Ќ±…Х‘”µЌЅ‘”€¤¤м(ЂЂЂЃЌЅ№НРЃ™ҐбСХЙ”ЂфЃЌЙ•…С•ҐбСХЙ”Ўм(ЂЂЂЂЂЃ•бС•Й№…±‘…БС•ЙМиЃ№•ЬЃ5…АсбС•Й№…±!…Й№•НН%ђ°Ѓ…­•!…Й№•НН‘…БС•ИшЎl(ЂЂЂЂЂЂЂЃl‰Б¤€°ЃБҐ‘…БС•Йt°(ЂЂЂЂЂЂЂЃl‰Ќ±…Х‘”µЌЅ‘”€°ЃЌ±…Х‘•‘…БС•Йt°(ЂЂЂЂЂЃt¤°(ЂЂЂЃф¤м(ЂЂЂЃЌЅ№НРЃБҐQЎЙ•…‘%ђЂфЃ…Э…ҐРЃНС…ЙСбС•Й№…±QЎЙ•…ђЎ™ҐбСХЙ”°Ђ‰ЌЅ‘•бЎЅНРЅБ¤µ№…СҐЩ”€°ЂША¤м(ЂЂЂЃЌЅ№НРЃЌ±…Х‘•QЎЙ•…‘%ђЂфЃ…Э…ҐРЃНС…ЙСбС•Й№…±QЎЙ•…ђ (ЂЂЂЂЂЃ™ҐбСХЙ”°(ЂЂЂЂЂЃ1U}=}9Q%Y}QI9MA=IQ}5=1}%°(ЂЂЂЂЂЂШД°(ЂЂЂЂ¤м((ЂЂЂЃЭЙҐС•I•ЕХ•НРЎ™ҐбСХЙ”№‘•Н­СЅБ%№БХР°Ѓм(ЂЂЂЂЂЃҐђиЂШИ°(ЂЂЂЂЂЃµ•СЎЅђиЂ‰ЌЅ‘•бЎЅНРЅСЎЙ•…ђЅХН…ќ”ЅҐ№НБ•ЌР€°(ЂЂЂЂЂЃБ…Й…µМиЃмЃСЎЙ•…‘%ђиЃЌ±…Х‘•QЎЙ•…‘%ђ°ЃЙ•™Й•Н иЂ‰•б…ЌР€Ѓф°(ЂЂЂЃф¤м(ЂЂЂЃ…Э…ҐРЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤ЂфшЃЙ•ЕХ•НС%ђЎµ•НН…ќ”°ЂШИ¤¤м(ЂЂЂЃ•бБ•ЌРЎЌ±…Х‘•‘…БС•И№Н•ННҐЅ№НlБtь№ХН…ќ•I•™Й•НЎ•М¤№СЅ	” Д¤м(ЂЂЂЃ•бБ•ЌРЎБҐ‘…БС•И№Н•ННҐЅ№НlБtь№ХН…ќ•I•™Й•НЎ•М¤№СЅ	” А¤м((ЂЂЂЃЭЙҐС•I•ЕХ•НРЎ™ҐбСХЙ”№‘•Н­СЅБ%№БХР°Ѓм(ЂЂЂЂЂЃҐђиЂШМ°(ЂЂЂЂЂЃµ•СЎЅђиЂ‰ЌЅ‘•бЎЅНРЅСЎЙ•…ђЅХН…ќ”ЅҐ№НБ•ЌР€°(ЂЂЂЂЂЃБ…Й…µМиЃмЃСЎЙ•…‘%ђиЃБҐQЎЙ•…‘%ђ°ЃЙ•™Й•Н иЂ‰№•Э•И€Ѓф°(ЂЂЂЃф¤м(ЂЂЂЃ…Э…ҐРЃ•бБ•ЌР (ЂЂЂЂЂЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤ЂфшЃЙ•ЕХ•НС%ђЎµ•НН…ќ”°ЂШМ¤¤°(ЂЂЂЂ¤№Й•НЅ±Щ•М№СЅ5…СЌЎ=‰©•ЌРЎмЃ•ЙЙЅИиЃмЃЌЅ‘”иЂґМИШАИЃфЃф¤м(ЂЂЂЃ•бБ•ЌРЎБҐ‘…БС•И№Н•ННҐЅ№НlБtь№ХН…ќ•I•™Й•НЎ•М¤№СЅ	” А¤м(ЂЂЂЃ…Э…ҐРЃНСЅБҐбСХЙ”Ў™ҐбСХЙ”¤м(ЂЃф¤м((ЂЃҐР ‰ЙЅХ№ђµСЙҐБМЃ±…Х‘”№…¤ЃБ±…ёµЭҐ№‘ЅЬЃ™Ґ•±‘МЃСЎЙЅХќ ЃQЎЙ•…ђЃUН…ќ”ЃҐ№НБ•ЌСҐЅёЃЭҐСЎЅХРЃЭЙҐСҐ№њЃ…ЌЌЅХ№СЙ•‘ҐСМ€°Ѓ…Не№ЊЂ ¤ЂфшЃм(ЂЂЂЃЌЅ№НРЃЌ±…Х‘•‘…БС•ИЂфЃ№•ЬЃ…­•!…Й№•НН‘…БС•ИЎЎ…Й№•НН%‘MЌЎ•µ„№Б…ЙН” ‰Ќ±…Х‘”µЌЅ‘”€¤¤м(ЂЂЂЃЌЅ№НРЃ™ҐбСХЙ”ЂфЃЌЙ•…С•ҐбСХЙ”Ўм(ЂЂЂЂЂЃ•бС•Й№…±‘…БС•ЙМиЃ№•ЬЃ5…АсбС•Й№…±!…Й№•НН%ђ°Ѓ…­•!…Й№•НН‘…БС•ИшЎl(ЂЂЂЂЂЂЂЃl‰Ќ±…Х‘”µЌЅ‘”€°ЃЌ±…Х‘•‘…БС•Йt°(ЂЂЂЂЂЃt¤°(ЂЂЂЃф¤м(ЂЂЂЃЌЅ№НРЃЌ±…Х‘•QЎЙ•…‘%ђЂфЃ…Э…ҐРЃНС…ЙСбС•Й№…±QЎЙ•…ђ (ЂЂЂЂЂЃ™ҐбСХЙ”°(ЂЂЂЂЂЃ1U}=}9Q%Y}QI9MA=IQ}5=1}%°(ЂЂЂЂЂЂЬА°(ЂЂЂЂ¤м(ЂЂЂЃЌЅ№НРЃЌ±…Х‘•QХЙ№%ђЂфЃ…Э…ҐРЃЌЅµБ±•С•AҐQХЙё (ЂЂЂЂЂЃмЂёё№™ҐбСХЙ”°Ѓ…‘…БС•ИиЃЌ±…Х‘•‘…БС•ИЃф°(ЂЂЂЂЂЃЌ±…Х‘•QЎЙ•…‘%ђ°(ЂЂЂЂЂЂЬД°(ЂЂЂЂЂЂА°(ЂЂЂЂ¤м(ЂЂЂЃЌ±…Х‘•‘…БС•И№Н•ННҐЅ№НlБtь№БХ‰±ҐНЎUН…ќ” (ЂЂЂЂЂЃм(ЂЂЂЂЂЂЂЃЌ…ЌЎ•!ҐСI…С•A•ЙЌ•№РиЂдд°(ЂЂЂЂЂЂЂЃСЅС…±ЅНСUНђиЂДёМЬМ°(ЂЂЂЂЂЂЂЃЌЅ№С•бСUН•‘QЅ­•№МиЂФА°(ЂЂЂЂЂЂЂЃЌЅ№С•бС]Ґ№‘ЅЭQЅ­•№МиЂИАА°(ЂЂЂЂЂЂЂЃБ±…№ҐЩ•!ЅХЙUН•‘A•ЙЌ•№РиЂРФ°(ЂЂЂЂЂЂЂЃБ±…№ҐЩ•!ЅХЙI•Н•СНСU№ҐаиЂЕ|ЬФЩ|ДМБ|РАА°(ЂЂЂЂЂЃф°(ЂЂЂЂЂЃЎЅНСQХЙ№%‘MЌЎ•µ„№Б…ЙН”ЎЌ±…Х‘•QХЙ№%ђ¤°(ЂЂЂЂ¤м(ЂЂЂЃ…Э…ҐРЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ (ЂЂЂЂЂЂЎµ•НН…ќ”¤Ђфш(ЂЂЂЂЂЂЂЃµ•СЎЅђЎµ•НН…ќ”°Ђ‰СЎЙ•…ђЅСЅ­•№UН…ќ”ЅХБ‘…С•ђ€¤Ђ(ЂЂЂЂЂЂЂЃµ•НН…ќ•A…Й…µМЎµ•НН…ќ”¤№СЎЙ•…‘%ђЂфффЃЌ±…Х‘•QЎЙ•…‘%ђ°(ЂЂЂЂ¤м((ЂЂЂЃЭЙҐС•I•ЕХ•НРЎ™ҐбСХЙ”№‘•Н­СЅБ%№БХР°Ѓм(ЂЂЂЂЂЃҐђиЂЬИ°(ЂЂЂЂЂЃµ•СЎЅђиЂ‰ЌЅ‘•бЎЅНРЅСЎЙ•…ђЅХН…ќ”ЅҐ№НБ•ЌР€°(ЂЂЂЂЂЃБ…Й…µМиЃмЃСЎЙ•…‘%ђиЃЌ±…Х‘•QЎЙ•…‘%ђ°ЃЙ•™Й•Н иЂ‰•б…ЌР€Ѓф°(ЂЂЂЃф¤м(ЂЂЂЃ…Э…ҐРЃ•бБ•ЌРЎ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤ЂфшЃЙ•ЕХ•НС%ђЎµ•НН…ќ”°ЂЬИ¤¤¤№Й•НЅ±Щ•М№СЅЕХ…°Ўм(ЂЂЂЂЂЃҐђиЂЬИ°(ЂЂЂЂЂЃЙ•НХ±РиЃм(ЂЂЂЂЂЂЂЃСЎЙ•…‘%ђиЃЌ±…Х‘•QЎЙ•…‘%ђ°(ЂЂЂЂЂЂЂЃХН…ќ”иЃм(ЂЂЂЂЂЂЂЂЂЃЌ…ЌЎ•!ҐСI…С•A•ЙЌ•№РиЂдд°(ЂЂЂЂЂЂЂЂЂЃСЅС…±ЅНСUНђиЂДёМЬМ°(ЂЂЂЂЂЂЂЂЂЃЌЅ№С•бСUН•‘QЅ­•№МиЂФА°(ЂЂЂЂЂЂЂЂЂЃЌЅ№С•бС]Ґ№‘ЅЭQЅ­•№МиЂИАА°(ЂЂЂЂЂЂЂЂЂЃБ±…№ҐЩ•!ЅХЙUН•‘A•ЙЌ•№РиЂРФ°(ЂЂЂЂЂЂЂЂЂЃБ±…№ҐЩ•!ЅХЙI•Н•СНСU№ҐаиЂЕ|ЬФЩ|ДМБ|РАА°(ЂЂЂЂЂЂЂЃф°(ЂЂЂЂЂЃф°(ЂЂЂЃф¤м(ЂЂЂЃ•бБ•ЌРЎЌ±…Х‘•‘…БС•И№Н•ННҐЅ№НlБtь№ХН…ќ•I•™Й•НЎ•М¤№СЅ	” Д¤м((ЂЂЂЃЭЙҐС•I•ЕХ•НРЎ™ҐбСХЙ”№‘•Н­СЅБ%№БХР°Ѓм(ЂЂЂЂЂЃҐђиЂЬМ°(ЂЂЂЂЂЃµ•СЎЅђиЂ‰ЌЅ‘•бЎЅНРЅСЎЙ•…ђЅХН…ќ”ЅҐ№НБ•ЌР€°(ЂЂЂЂЂЃБ…Й…µМиЃмЃСЎЙ•…‘%ђиЂ‰Ѕ™™ҐЌҐ…°µСЎЙ•…ђ€°ЃЙ•™Й•Н иЂ‰•б…ЌР€Ѓф°(ЂЂЂЃф¤м(ЂЂЂЃ…Э…ҐРЃ•бБ•ЌР (ЂЂЂЂЂЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤ЂфшЃЙ•ЕХ•НС%ђЎµ•НН…ќ”°ЂЬМ¤¤°(ЂЂЂЂ¤№Й•НЅ±Щ•М№СЅ5…СЌЎ=‰©•ЌРЎмЃ•ЙЙЅИиЃмЃЌЅ‘”иЂґМИШАИЃфЃф¤м(ЂЂЂЃ…Э…ҐРЃНСЅБҐбСХЙ”Ў™ҐбСХЙ”¤м(ЂЃф¤м((ЂЃҐР ‰™ЅЙ­МЃ•бС•Й№…°ЃҐ№Ќ±ХНҐЩ”°Ѓ•бЌ±ХНҐЩ”°Ѓ…№ђЃС…Ґ°Ѓ‰ЅХ№‘…ЙҐ•МЃЭҐСЎЅХРЃЙ•ХНҐ№њЃ!ЅНРЃQХЙёЃ%М€°Ѓ…Не№ЊЂ ¤ЂфшЃм(ЂЂЂЃЌЅ№НРЃ™ҐбСХЙ”ЂфЃЌЙ•…С•ҐбСХЙ” ¤м(ЂЂЂЃЌЅ№НРЃЅ™™ҐЌҐ…±]ЙҐС”ЂфЃЩ¤№™ё ¤м(ЂЂЂЃ™ҐбСХЙ”№Ѕ™™ҐЌҐ…°№НС‘Ґё№Ѕё ‰‘…С„€°ЃЅ™™ҐЌҐ…±]ЙҐС”¤м(ЂЂЂЃЌЅ№НРЃНЅХЙЌ•QЎЙ•…‘%ђЂфЃ…Э…ҐРЃНС…ЙСAҐQЎЙ•…ђЎ™ҐбСХЙ”¤м(ЂЂЂЃЌЅ№НРЃНЅХЙЌ•QХЙ№%‘МиЃmНСЙҐ№њ°ЃНСЙҐ№њ°ЃНСЙҐ№ќtЂфЃl(ЂЂЂЂЂЃ…Э…ҐРЃЌЅµБ±•С•AҐQХЙёЎ™ҐбСХЙ”°ЃНЅХЙЌ•QЎЙ•…‘%ђ°ЂИ¤°(ЂЂЂЂЂЃ…Э…ҐРЃЌЅµБ±•С•AҐQХЙёЎ™ҐбСХЙ”°ЃНЅХЙЌ•QЎЙ•…‘%ђ°ЂМ¤°(ЂЂЂЂЂЃ…Э…ҐРЃЌЅµБ±•С•AҐQХЙёЎ™ҐбСХЙ”°ЃНЅХЙЌ•QЎЙ•…‘%ђ°ЂР¤°(ЂЂЂЃtм((ЂЂЂЃЌЅ№НРЃ™ЅЙ­I•ЕХ•НРЂфЃ…Не№ЊЂЎҐђиЃ№Хµ‰•И°ЃБ…Й…µМиЃ)НЅ№=‰©•ЌР¤иЃAЙЅµҐН”с)НЅ№=‰©•ЌРшЂфшЃм(ЂЂЂЂЂЃЭЙҐС•I•ЕХ•НРЎ™ҐбСХЙ”№‘•Н­СЅБ%№БХР°Ѓм(ЂЂЂЂЂЂЂЃҐђ°(ЂЂЂЂЂЂЂЃµ•СЎЅђиЂ‰СЎЙ•…ђЅ™ЅЙ¬€°(ЂЂЂЂЂЂЂЃБ…Й…µМиЃмЃСЎЙ•…‘%ђиЃНЅХЙЌ•QЎЙ•…‘%ђ°Ђёё№Б…Й…µМЃф°(ЂЂЂЂЂЃф¤м(ЂЂЂЂЂЃЌЅ№НРЃЙ•НБЅ№Н”ЂфЃ…Э…ҐРЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤ЂфшЃЙ•ЕХ•НС%ђЎµ•НН…ќ”°ЃҐђ¤¤м(ЂЂЂЂЂЃЌЅ№НРЃЙ•НХ±РЂфЃЙ•НБЅ№Н”№Й•НХ±РЃ…МЃ)НЅ№=‰©•ЌРм(ЂЂЂЂЂЃЙ•СХЙёЃЙ•НХ±Р№СЎЙ•…ђЃ…МЃ)НЅ№=‰©•ЌРм(ЂЂЂЃфм((ЂЂЂЃЌЅ№НРЃҐ№Ќ±ХНҐЩ”ЂфЃ…Э…ҐРЃ™ЅЙ­I•ЕХ•НР ДА°Ѓм(ЂЂЂЂЂЃ±…НСQХЙ№%ђиЃНЅХЙЌ•QХЙ№%‘НlБt°(ЂЂЂЂЂЃЌЭђиЂ€ЅНе№СЎ•СҐЊµЭЅЙ­СЙ•”ЅҐ№Ќ±ХНҐЩ”€°(ЂЂЂЂЂЃЙХ№СҐµ•]ЅЙ­НБ…Ќ•IЅЅСМиЃl€ЅНе№СЎ•СҐЊµЭЅЙ­СЙ•”ЅҐ№Ќ±ХНҐЩ”€°Ђ€ЅНе№СЎ•СҐЊ‰t°(ЂЂЂЃф¤м(ЂЂЂЃЌЅ№НРЃ•бЌ±ХНҐЩ”ЂфЃ…Э…ҐРЃ™ЅЙ­I•ЕХ•НР ДД°ЃмЃ‰•™ЅЙ•QХЙ№%ђиЃНЅХЙЌ•QХЙ№%‘НlЕtЃф¤м(ЂЂЂЃЌЅ№НРЃС…Ґ°ЂфЃ…Э…ҐРЃ™ЅЙ­I•ЕХ•НР ДИ°Ѓнф¤м(ЂЂЂЃЌЅ№НРЃ•бЌ±Х‘•ђЂфЃ…Э…ҐРЃ™ЅЙ­I•ЕХ•НР ДМ°ЃмЃ•бЌ±Х‘•QХЙ№МиЃСЙХ”Ѓф¤м((ЂЂЂЃ•бБ•ЌРЎҐ№Ќ±ХНҐЩ”¤№СЅ5…СЌЎ=‰©•ЌРЎм(ЂЂЂЂЂЃ™ЅЙ­•‘ЙЅµ%ђиЃНЅХЙЌ•QЎЙ•…‘%ђ°(ЂЂЂЂЂЃБ…Й•№СQЎЙ•…‘%ђиЃ№Х±°°(ЂЂЂЂЂЃЌЭђиЂ€ЅНе№СЎ•СҐЊµЭЅЙ­СЙ•”ЅҐ№Ќ±ХНҐЩ”€°(ЂЂЂЂЂЃСХЙ№МиЃm•бБ•ЌР№Ѕ‰©•ЌСЅ№С…Ґ№Ґ№њЎмЃНС…СХМиЂ‰ЌЅµБ±•С•ђ€ЃфҐt°(ЂЂЂЃф¤м(ЂЂЂЃ•бБ•ЌРЎ•бЌ±ХНҐЩ”№СХЙ№М¤№СЅ!…Щ•1•№ќС  Д¤м(ЂЂЂЃ•бБ•ЌРЎС…Ґ°№СХЙ№М¤№СЅ!…Щ•1•№ќС  М¤м(ЂЂЂЃ•бБ•ЌРЎ•бЌ±Х‘•ђ№СХЙ№М¤№СЅЕХ…°Ўmt¤м(ЂЂЂЃЌЅ№НРЃҐ№Ќ±ХНҐЩ•QХЙ№%ђЂфЂЎҐ№Ќ±ХНҐЩ”№СХЙ№МЃ…МЃ)НЅ№=‰©•ЌСmtҐlБtь№Ґђм(ЂЂЂЃ•бБ•ЌРЎҐ№Ќ±ХНҐЩ•QХЙ№%ђ¤№№ЅР№СЅ	”ЎНЅХЙЌ•QХЙ№%‘НlБt¤м(ЂЂЂЃ•бБ•ЌРЎҐ№Ќ±ХНҐЩ”№Ґђ¤№№ЅР№СЅ	”ЎНЅХЙЌ•QЎЙ•…‘%ђ¤м(ЂЂЂЃ•бБ•ЌРЎ•бЌ±ХНҐЩ”№Ґђ¤№№ЅР№СЅ	”ЎҐ№Ќ±ХНҐЩ”№Ґђ¤м((ЂЂЂЃЌЅ№НРЃЙ•НБЅ№Н•%№‘•аЂфЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№µ•НН…ќ•М№™Ґ№‘%№‘•а Ўµ•НН…ќ”¤ЂфшЃЙ•ЕХ•НС%ђЎµ•НН…ќ”°ЂДА¤¤м(ЂЂЂЃЌЅ№НРЃ№ЅСҐ™ҐЌ…СҐЅ№%№‘•аЂфЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№µ•НН…ќ•М№™Ґ№‘%№‘•а (ЂЂЂЂЂЂЎµ•НН…ќ”¤Ђфш(ЂЂЂЂЂЂЂЃµ•СЎЅђЎµ•НН…ќ”°Ђ‰СЎЙ•…ђЅНС…ЙС•ђ€¤Ђ(ЂЂЂЂЂЂЂЂЎµ•НН…ќ•A…Й…µМЎµ•НН…ќ”¤№СЎЙ•…ђЃ…МЃ)НЅ№=‰©•ЌРЃрЃХ№‘•™Ґ№•ђ¤ь№ҐђЂфффЃҐ№Ќ±ХНҐЩ”№Ґђ°(ЂЂЂЂ¤м(ЂЂЂЃ•бБ•ЌРЎ№ЅСҐ™ҐЌ…СҐЅ№%№‘•а¤№СЅ	•Й•…С•ЙQЎ…ёЎЙ•НБЅ№Н•%№‘•а¤м((ЂЂЂЃ…Э…ҐРЃЌЅµБ±•С•AҐQХЙёЎ™ҐбСХЙ”°ЃҐ№Ќ±ХНҐЩ”№ҐђЃ…МЃНСЙҐ№њ°ЂИА°ЂД¤м(ЂЂЂЃ…Э…ҐРЃЌЅµБ±•С•AҐQХЙёЎ™ҐбСХЙ”°ЃНЅХЙЌ•QЎЙ•…‘%ђ°ЂИД°ЂА¤м(ЂЂЂЃ…Э…ҐРЃ•бБ•ЌРЎ™ҐбСХЙ”№…‘…БС•И№Н•ННҐЅ№НlЕtь№Й•…‘M№…БНЎЅР ¤¤№Й•НЅ±Щ•М№СЅ5…СЌЎ=‰©•ЌРЎм(ЂЂЂЂЂЃЅ¬иЃСЙХ”°(ЂЂЂЂЂЃЩ…±Х”иЃмЃСХЙ№МиЃmнф°ЃнхtЃф°(ЂЂЂЃф¤м(ЂЂЂЃ…Э…ҐРЃ•бБ•ЌРЎ™ҐбСХЙ”№…‘…БС•И№Н•ННҐЅ№НlБtь№Й•…‘M№…БНЎЅР ¤¤№Й•НЅ±Щ•М№СЅ5…СЌЎ=‰©•ЌРЎм(ЂЂЂЂЂЃЅ¬иЃСЙХ”°(ЂЂЂЂЂЃЩ…±Х”иЃмЃСХЙ№МиЃmнф°Ѓнф°Ѓнф°ЃнхtЃф°(ЂЂЂЃф¤м(ЂЂЂЃ•бБ•ЌРЎЅ™™ҐЌҐ…±]ЙҐС”¤№№ЅР№СЅ!…Щ•	••№…±±•ђ ¤м(ЂЂЂЃ…Э…ҐРЃНСЅБҐбСХЙ”Ў™ҐбСХЙ”¤м(ЂЃф¤м((ЂЃҐР ‰™ЅЙ­МЃ„ЃЌЅµБ±•С•ђЃ‰ЅХ№‘…ЙдЃЭЎҐ±”Ѓ„Ѓ±…С•ИЃНЅХЙЌ”ЃQХЙёЃҐМЃНСҐ±°ЃЙХ№№Ґ№њ€°Ѓ…Не№ЊЂ ¤ЂфшЃм(ЂЂЂЃЌЅ№НРЃ™ҐбСХЙ”ЂфЃЌЙ•…С•ҐбСХЙ” ¤м(ЂЂЂЃЌЅ№НРЃНЅХЙЌ•QЎЙ•…‘%ђЂфЃ…Э…ҐРЃНС…ЙСAҐQЎЙ•…ђЎ™ҐбСХЙ”¤м(ЂЂЂЃЌЅ№НРЃЌЅµБ±•С•‘QХЙ№%ђЂфЃ…Э…ҐРЃЌЅµБ±•С•AҐQХЙёЎ™ҐбСХЙ”°ЃНЅХЙЌ•QЎЙ•…‘%ђ°ЂИ¤м(ЂЂЂЃЌЅ№НРЃ…ЌСҐЩ•QХЙ№%ђЂфЃ…Э…ҐРЃНС…ЙСAҐQХЙёЎ™ҐбСХЙ”°ЃНЅХЙЌ•QЎЙ•…‘%ђ°ЂМ¤м(ЂЂЂЃ…Э…ҐРЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤ЂфшЃСХЙ№Щ•№РЎµ•НН…ќ”°Ђ‰СХЙёЅНС…ЙС•ђ€°Ѓ…ЌСҐЩ•QХЙ№%ђ¤¤м((ЂЂЂЃЭЙҐС•I•ЕХ•НРЎ™ҐбСХЙ”№‘•Н­СЅБ%№БХР°Ѓм(ЂЂЂЂЂЃҐђиЂДА°(ЂЂЂЂЂЃµ•СЎЅђиЂ‰СЎЙ•…ђЅ™ЅЙ¬€°(ЂЂЂЂЂЃБ…Й…µМиЃмЃСЎЙ•…‘%ђиЃНЅХЙЌ•QЎЙ•…‘%ђ°Ѓ±…НСQХЙ№%ђиЃЌЅµБ±•С•‘QХЙ№%ђЃф°(ЂЂЂЃф¤м(ЂЂЂЃЌЅ№НРЃЙ•НБЅ№Н”ЂфЃ…Э…ҐРЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤ЂфшЃЙ•ЕХ•НС%ђЎµ•НН…ќ”°ЂДА¤¤м(ЂЂЂЃ•бБ•ЌРЎЙ•НБЅ№Н”¤№СЅ5…СЌЎ=‰©•ЌРЎмЃЙ•НХ±РиЃмЃСЎЙ•…ђиЃмЃСХЙ№МиЃmнхtЃфЃфЃф¤м(ЂЂЂЃ•бБ•ЌРЎ™ҐбСХЙ”№…‘…БС•И№Н•ННҐЅ№М¤№СЅ!…Щ•1•№ќС  И¤м((ЂЂЂЃЌЅ№НРЃНЅХЙЌ•M•ННҐЅёЂфЃ™ҐбСХЙ”№…‘…БС•И№Н•ННҐЅ№НlБtм(ЂЂЂЃҐЂ …НЅХЙЌ•M•ННҐЅё¤ЃСЎЙЅЬЃ№•ЬЃЙЙЅИ ‰…­”ЃНЅХЙЌ”ЃM•ННҐЅёЃЭ…МЃ№ЅРЃЅБ•№•ђ€¤м(ЂЂЂЃНЅХЙЌ•M•ННҐЅё№НХЌЌ••‘QХЙё ¤м(ЂЂЂЃ…Э…ҐРЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤Ђфш(ЂЂЂЂЂЃСХЙ№Щ•№РЎµ•НН…ќ”°Ђ‰СХЙёЅЌЅµБ±•С•ђ€°Ѓ…ЌСҐЩ•QХЙ№%ђ¤°(ЂЂЂЂ¤м(ЂЂЂЃ…Э…ҐРЃ•бБ•ЌРЎНЅХЙЌ•M•ННҐЅё№Й•…‘M№…БНЎЅР ¤¤№Й•НЅ±Щ•М№СЅ5…СЌЎ=‰©•ЌРЎм(ЂЂЂЂЂЃЅ¬иЃСЙХ”°(ЂЂЂЂЂЃЩ…±Х”иЃмЃСХЙ№МиЃmнф°ЃнхtЃф°(ЂЂЂЃф¤м(ЂЂЂЃ…Э…ҐРЃНСЅБҐбСХЙ”Ў™ҐбСХЙ”¤м(ЂЃф¤м((ЂЃҐР ‰ХН•МЃЅ№±дЃЌЅµБ±•С•ђЃНЅХЙЌ”ЃQХЙ№МЃ™ЅИЃС…Ґ°ЃЅЙ¬Ѓ…№ђЃ•Н­СЅАЃЙЅ±±‰…Ќ¬ЃЭЎҐ±”ЃЙХ№№Ґ№њ€°Ѓ…Не№ЊЂ ¤ЂфшЃм(ЂЂЂЃЌЅ№НРЃ™ҐбСХЙ”ЂфЃЌЙ•…С•ҐбСХЙ” ¤м(ЂЂЂЃЌЅ№НРЃНЅХЙЌ•QЎЙ•…‘%ђЂфЃ…Э…ҐРЃНС…ЙСAҐQЎЙ•…ђЎ™ҐбСХЙ”¤м(ЂЂЂЃ…Э…ҐРЃЌЅµБ±•С•AҐQХЙёЎ™ҐбСХЙ”°ЃНЅХЙЌ•QЎЙ•…‘%ђ°ЂИ¤м(ЂЂЂЃ…Э…ҐРЃЌЅµБ±•С•AҐQХЙёЎ™ҐбСХЙ”°ЃНЅХЙЌ•QЎЙ•…‘%ђ°ЂМ¤м(ЂЂЂЃ…Э…ҐРЃЌЅµБ±•С•AҐQХЙёЎ™ҐбСХЙ”°ЃНЅХЙЌ•QЎЙ•…‘%ђ°ЂР¤м(ЂЂЂЃЌЅ№НРЃ…ЌСҐЩ•QХЙ№%ђЂфЃ…Э…ҐРЃНС…ЙСAҐQХЙёЎ™ҐбСХЙ”°ЃНЅХЙЌ•QЎЙ•…‘%ђ°ЂФ¤м(ЂЂЂЃ…Э…ҐРЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤ЂфшЃСХЙ№Щ•№РЎµ•НН…ќ”°Ђ‰СХЙёЅНС…ЙС•ђ€°Ѓ…ЌСҐЩ•QХЙ№%ђ¤¤м((ЂЂЂЃЭЙҐС•I•ЕХ•НРЎ™ҐбСХЙ”№‘•Н­СЅБ%№БХР°Ѓм(ЂЂЂЂЂЃҐђиЂДА°(ЂЂЂЂЂЃµ•СЎЅђиЂ‰СЎЙ•…ђЅ™ЅЙ¬€°(ЂЂЂЂЂЃБ…Й…µМиЃмЃСЎЙ•…‘%ђиЃНЅХЙЌ•QЎЙ•…‘%ђЃф°(ЂЂЂЃф¤м(ЂЂЂЃЌЅ№НРЃ™ЅЙ­I•НБЅ№Н”ЂфЃ…Э…ҐРЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤ЂфшЃЙ•ЕХ•НС%ђЎµ•НН…ќ”°ЂДА¤¤м(ЂЂЂЃ•бБ•ЌРЎ™ЅЙ­I•НБЅ№Н”¤№СЅ5…СЌЎ=‰©•ЌРЎмЃЙ•НХ±РиЃмЃСЎЙ•…ђиЃмЃСХЙ№МиЃmнф°Ѓнф°ЃнхtЃфЃфЃф¤м(ЂЂЂЃЌЅ№НРЃ‘•ЙҐЩ•‘%ђЂфЂ Ў™ЅЙ­I•НБЅ№Н”№Й•НХ±РЃ…МЃ)НЅ№=‰©•ЌР¤№СЎЙ•…ђЃ…МЃ)НЅ№=‰©•ЌР¤№Ґђм(ЂЂЂЃҐЂЎСеБ•ЅЃ‘•ЙҐЩ•‘%ђЂ„ффЂ‰НСЙҐ№њ€¤ЃСЎЙЅЬЃ№•ЬЃЙЙЅИ ‰ЅЙ¬ЃЙ•НБЅ№Н”ЃЎ…МЃ№јЃ‘•ЙҐЩ•ђЃQЎЙ•…ђЃ%€¤м((ЂЂЂЃЭЙҐС•I•ЕХ•НРЎ™ҐбСХЙ”№‘•Н­СЅБ%№БХР°Ѓм(ЂЂЂЂЂЃҐђиЂДД°(ЂЂЂЂЂЃµ•СЎЅђиЂ‰СЎЙ•…ђЅЙЅ±±‰…Ќ¬€°(ЂЂЂЂЂЃБ…Й…µМиЃмЃСЎЙ•…‘%ђиЃ‘•ЙҐЩ•‘%ђ°Ѓ№ХµQХЙ№МиЂМЃф°(ЂЂЂЃф¤м(ЂЂЂЃ…Э…ҐРЃ•бБ•ЌР (ЂЂЂЂЂЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤ЂфшЃЙ•ЕХ•НС%ђЎµ•НН…ќ”°ЂДД¤¤°(ЂЂЂЂ¤№Й•НЅ±Щ•М№СЅ5…СЌЎ=‰©•ЌРЎмЃЙ•НХ±РиЃмЃСЎЙ•…ђиЃмЃҐђиЃ‘•ЙҐЩ•‘%ђ°ЃСХЙ№МиЃmнхtЃфЃфЃф¤м((ЂЂЂЃЌЅ№НРЃНЅХЙЌ•M•ННҐЅёЂфЃ™ҐбСХЙ”№…‘…БС•И№Н•ННҐЅ№НlБtм(ЂЂЂЃҐЂ …НЅХЙЌ•M•ННҐЅё¤ЃСЎЙЅЬЃ№•ЬЃЙЙЅИ ‰…­”ЃНЅХЙЌ”ЃM•ННҐЅёЃЭ…МЃ№ЅРЃЅБ•№•ђ€¤м(ЂЂЂЃНЅХЙЌ•M•ННҐЅё№НХЌЌ••‘QХЙё ¤м(ЂЂЂЃ…Э…ҐРЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤Ђфш(ЂЂЂЂЂЃСХЙ№Щ•№РЎµ•НН…ќ”°Ђ‰СХЙёЅЌЅµБ±•С•ђ€°Ѓ…ЌСҐЩ•QХЙ№%ђ¤°(ЂЂЂЂ¤м(ЂЂЂЃ…Э…ҐРЃ•бБ•ЌРЎНЅХЙЌ•M•ННҐЅё№Й•…‘M№…БНЎЅР ¤¤№Й•НЅ±Щ•М№СЅ5…СЌЎ=‰©•ЌРЎм(ЂЂЂЂЂЃЅ¬иЃСЙХ”°(ЂЂЂЂЂЃЩ…±Х”иЃмЃСХЙ№МиЃmнф°Ѓнф°Ѓнф°ЃнхtЃф°(ЂЂЂЃф¤м(ЂЂЂЃ…Э…ҐРЃНСЅБҐбСХЙ”Ў™ҐбСХЙ”¤м(ЂЃф¤м((ЂЃҐР ‰Й•©•ЌСМЃ„ЃЙХ№№Ґ№њЃНЅХЙЌ”ЃСЎ…РЃЎ…МЃ№јЃЌЅµБ±•С•ђЃЅЙ¬ЃЎ•Ќ­БЅҐ№Р€°Ѓ…Не№ЊЂ ¤ЂфшЃм(ЂЂЂЃЌЅ№НРЃ™ҐбСХЙ”ЂфЃЌЙ•…С•ҐбСХЙ” ¤м(ЂЂЂЃЌЅ№НРЃНЅХЙЌ•QЎЙ•…‘%ђЂфЃ…Э…ҐРЃНС…ЙСAҐQЎЙ•…ђЎ™ҐбСХЙ”¤м(ЂЂЂЃЌЅ№НРЃ…ЌСҐЩ•QХЙ№%ђЂфЃ…Э…ҐРЃНС…ЙСAҐQХЙёЎ™ҐбСХЙ”°ЃНЅХЙЌ•QЎЙ•…‘%ђ°ЂИ¤м(ЂЂЂЃ…Э…ҐРЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤ЂфшЃСХЙ№Щ•№РЎµ•НН…ќ”°Ђ‰СХЙёЅНС…ЙС•ђ€°Ѓ…ЌСҐЩ•QХЙ№%ђ¤¤м((ЂЂЂЃЭЙҐС•I•ЕХ•НРЎ™ҐбСХЙ”№‘•Н­СЅБ%№БХР°Ѓм(ЂЂЂЂЂЃҐђиЂДА°(ЂЂЂЂЂЃµ•СЎЅђиЂ‰СЎЙ•…ђЅ™ЅЙ¬€°(ЂЂЂЂЂЃБ…Й…µМиЃмЃСЎЙ•…‘%ђиЃНЅХЙЌ•QЎЙ•…‘%ђЃф°(ЂЂЂЃф¤м(ЂЂЂЃ…Э…ҐРЃ•бБ•ЌР (ЂЂЂЂЂЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤ЂфшЃЙ•ЕХ•НС%ђЎµ•НН…ќ”°ЂДА¤¤°(ЂЂЂЂ¤№Й•НЅ±Щ•М№СЅ5…СЌЎ=‰©•ЌРЎм(ЂЂЂЂЂЃ•ЙЙЅИиЃмЃЌЅ‘”иЂґМИАаА°Ѓµ•НН…ќ”иЂ‰бС•Й№…°ЃЅЙ¬ЃЎ•Ќ­БЅҐ№РЃҐМЃХ№…Щ…Ґ±…‰±”€Ѓф°(ЂЂЂЃф¤м(ЂЂЂЃ•бБ•ЌРЎ™ҐбСХЙ”№…‘…БС•И№Н•ННҐЅ№М¤№СЅ!…Щ•1•№ќС  Д¤м((ЂЂЂЃЌЅ№НРЃНЅХЙЌ•M•ННҐЅёЂфЃ™ҐбСХЙ”№…‘…БС•И№Н•ННҐЅ№НlБtм(ЂЂЂЃҐЂ …НЅХЙЌ•M•ННҐЅё¤ЃСЎЙЅЬЃ№•ЬЃЙЙЅИ ‰…­”ЃНЅХЙЌ”ЃM•ННҐЅёЃЭ…МЃ№ЅРЃЅБ•№•ђ€¤м(ЂЂЂЃНЅХЙЌ•M•ННҐЅё№НХЌЌ••‘QХЙё ¤м(ЂЂЂЃ…Э…ҐРЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤Ђфш(ЂЂЂЂЂЃСХЙ№Щ•№РЎµ•НН…ќ”°Ђ‰СХЙёЅЌЅµБ±•С•ђ€°Ѓ…ЌСҐЩ•QХЙ№%ђ¤°(ЂЂЂЂ¤м(ЂЂЂЃ…Э…ҐРЃНСЅБҐбСХЙ”Ў™ҐбСХЙ”¤м(ЂЃф¤м((ЂЃҐР ‰ЙЅХС•МЃ„Ѓ™Ґб•ђЃI•№‘•Й•ИЃЅЙ¬ЃҐ№С•№РЃСЎЙЅХќ ЃСЎ”Ѓ•бҐНСҐ№њЃ•бС•Й№…°ЃЅЙ¬ЃҐµБ±•µ•№С…СҐЅё€°Ѓ…Не№ЊЂ ¤ЂфшЃм(ЂЂЂЃЌЅ№НРЃ™ҐбСХЙ”ЂфЃЌЙ•…С•ҐбСХЙ” ¤м(ЂЂЂЃЌЅ№НРЃЅ™™ҐЌҐ…±]ЙҐС”ЂфЃЩ¤№™ё ¤м(ЂЂЂЃ™ҐбСХЙ”№Ѕ™™ҐЌҐ…°№НС‘Ґё№Ѕё ‰‘…С„€°ЃЅ™™ҐЌҐ…±]ЙҐС”¤м(ЂЂЂЃЌЅ№НРЃНЅХЙЌ•QЎЙ•…‘%ђЂфЃ…Э…ҐРЃНС…ЙСAҐQЎЙ•…ђЎ™ҐбСХЙ”¤м(ЂЂЂЃЌЅ№НРЃ™ҐЙНСQХЙ№%ђЂфЃ…Э…ҐРЃЌЅµБ±•С•AҐQХЙёЎ™ҐбСХЙ”°ЃНЅХЙЌ•QЎЙ•…‘%ђ°ЂИ¤м(ЂЂЂЃ…Э…ҐРЃЌЅµБ±•С•AҐQХЙёЎ™ҐбСХЙ”°ЃНЅХЙЌ•QЎЙ•…‘%ђ°ЂМ¤м((ЂЂЂЃЭЙҐС•I•ЕХ•НРЎ™ҐбСХЙ”№‘•Н­СЅБ%№БХР°Ѓм(ЂЂЂЂЂЃҐђиЂДА°(ЂЂЂЂЂЃµ•СЎЅђиЂ‰ЌЅ‘•бЎЅНРЅСЎЙ•…ђЅ™ЅЙ¬€°(ЂЂЂЂЂЃБ…Й…µМиЃмЃСЎЙ•…‘%ђиЃНЅХЙЌ•QЎЙ•…‘%ђ°Ѓ±…НСQХЙ№%ђиЃ™ҐЙНСQХЙ№%ђЃф°(ЂЂЂЃф¤м(ЂЂЂЃЌЅ№НРЃЙ•НБЅ№Н”ЂфЃ…Э…ҐРЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤ЂфшЃЙ•ЕХ•НС%ђЎµ•НН…ќ”°ЂДА¤¤м(ЂЂЂЃ•бБ•ЌРЎЙ•НБЅ№Н”¤№СЅ5…СЌЎ=‰©•ЌРЎмЃЙ•НХ±РиЃмЃСЎЙ•…‘%ђиЃ•бБ•ЌР№…№дЎMСЙҐ№њ¤ЃфЃф¤м(ЂЂЂЃЌЅ№НРЃ‘•ЙҐЩ•‘%ђЂфЂЎЙ•НБЅ№Н”№Й•НХ±РЃ…МЃ)НЅ№=‰©•ЌР¤№СЎЙ•…‘%ђм(ЂЂЂЃҐЂЎСеБ•ЅЃ‘•ЙҐЩ•‘%ђЂ„ффЂ‰НСЙҐ№њ€¤ЃСЎЙЅЬЃ№•ЬЃЙЙЅИ ‰I•№‘•Й•ИЃЅЙ¬ЃЎ…МЃ№јЃ‘•ЙҐЩ•ђЃQЎЙ•…ђЃ%€¤м(ЂЂЂЃ•бБ•ЌРЎ‘•ЙҐЩ•‘%ђ¤№№ЅР№СЅ	”ЎНЅХЙЌ•QЎЙ•…‘%ђ¤м(ЂЂЂЃ…Э…ҐРЃ•бБ•ЌР (ЂЂЂЂЂЃ™ҐбСХЙ”№µ…ББҐ№ќMСЅЙ”№ќ•СQЎЙ•…ђЎЎЅНСQЎЙ•…‘%‘MЌЎ•µ„№Б…ЙН”Ў‘•ЙҐЩ•‘%ђ¤¤°(ЂЂЂЂ¤№Й•НЅ±Щ•М№СЅ5…СЌЎ=‰©•ЌРЎм(ЂЂЂЂЂЃ™ЅЙ­MЅХЙЌ”иЃмЃЎЅНСQЎЙ•…‘%ђиЃНЅХЙЌ•QЎЙ•…‘%ђ°ЃЎЅНСQХЙ№%ђиЃ™ҐЙНСQХЙ№%ђЃф°(ЂЂЂЂЂЃСХЙ№5…ББҐ№ќМиЃmнхt°(ЂЂЂЃф¤м(ЂЂЂЃЌЅ№НРЃЙ•НБЅ№Н•%№‘•аЂфЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№µ•НН…ќ•М№™Ґ№‘%№‘•а Ўµ•НН…ќ”¤ЂфшЃЙ•ЕХ•НС%ђЎµ•НН…ќ”°ЂДА¤¤м(ЂЂЂЃЌЅ№НРЃ№ЅСҐ™ҐЌ…СҐЅ№%№‘•аЂфЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№µ•НН…ќ•М№™Ґ№‘%№‘•а (ЂЂЂЂЂЂЎµ•НН…ќ”¤Ђфш(ЂЂЂЂЂЂЂЃµ•СЎЅђЎµ•НН…ќ”°Ђ‰СЎЙ•…ђЅНС…ЙС•ђ€¤Ђ(ЂЂЂЂЂЂЂЂЎµ•НН…ќ•A…Й…µМЎµ•НН…ќ”¤№СЎЙ•…ђЃ…МЃ)НЅ№=‰©•ЌРЃрЃХ№‘•™Ґ№•ђ¤ь№ҐђЂфффЃ‘•ЙҐЩ•‘%ђ°(ЂЂЂЂ¤м(ЂЂЂЃ•бБ•ЌРЎ№ЅСҐ™ҐЌ…СҐЅ№%№‘•а¤№СЅ	•Й•…С•ЙQЎ…ёЎЙ•НБЅ№Н•%№‘•а¤м(ЂЂЂЃ•бБ•ЌРЎЅ™™ҐЌҐ…±]ЙҐС”¤№№ЅР№СЅ!…Щ•	••№…±±•ђ ¤м(ЂЂЂЃ…Э…ҐРЃНСЅБҐбСХЙ”Ў™ҐбСХЙ”¤м(ЂЃф¤м((ЂЃҐР ‰…Ќ­№ЅЭ±•‘ќ•МЃ•Н­СЅАЃХ№НХ‰НЌЙҐ‰”ЃЭҐСЎЅХРЃҐ№Щ•№СҐ№њЃ…ёЃ•бС•Й№…°ЃНХ‰НЌЙҐБСҐЅё€°Ѓ…Не№ЊЂ ¤ЂфшЃм(ЂЂЂЃЌЅ№НРЃ™ҐбСХЙ”ЂфЃЌЙ•…С•ҐбСХЙ” ¤м(ЂЂЂЃЌЅ№НРЃЅ™™ҐЌҐ…±]ЙҐС”ЂфЃЩ¤№™ё ¤м(ЂЂЂЃ™ҐбСХЙ”№Ѕ™™ҐЌҐ…°№НС‘Ґё№Ѕё ‰‘…С„€°ЃЅ™™ҐЌҐ…±]ЙҐС”¤м(ЂЂЂЃЌЅ№НРЃСЎЙ•…‘%ђЂфЃ…Э…ҐРЃНС…ЙСAҐQЎЙ•…ђЎ™ҐбСХЙ”¤м(ЂЂЂЃ…Э…ҐРЃЌЅµБ±•С•AҐQХЙёЎ™ҐбСХЙ”°ЃСЎЙ•…‘%ђ°ЂИ¤м((ЂЂЂЃЭЙҐС•I•ЕХ•НРЎ™ҐбСХЙ”№‘•Н­СЅБ%№БХР°Ѓм(ЂЂЂЂЂЃҐђиЂДА°(ЂЂЂЂЂЃµ•СЎЅђиЂ‰СЎЙ•…ђЅХ№НХ‰НЌЙҐ‰”€°(ЂЂЂЂЂЃБ…Й…µМиЃмЃСЎЙ•…‘%ђЃф°(ЂЂЂЃф¤м(ЂЂЂЃ…Э…ҐРЃ•бБ•ЌРЎ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤ЂфшЃЙ•ЕХ•НС%ђЎµ•НН…ќ”°ЂДА¤¤¤№Й•НЅ±Щ•М№СЅЕХ…°Ўм(ЂЂЂЂЂЃҐђиЂДА°(ЂЂЂЂЂЃЙ•НХ±РиЃмЃНС…СХМиЂ‰№ЅСMХ‰НЌЙҐ‰•ђ€Ѓф°(ЂЂЂЃф¤м(ЂЂЂЃ…Э…ҐРЃ•бБ•ЌРЎ™ҐбСХЙ”№…‘…БС•И№Н•ННҐЅ№НlБtь№Й•…‘M№…БНЎЅР ¤¤№Й•НЅ±Щ•М№СЅ5…СЌЎ=‰©•ЌРЎм(ЂЂЂЂЂЃЅ¬иЃСЙХ”°(ЂЂЂЂЂЃЩ…±Х”иЃмЃСХЙ№МиЃmнхtЃф°(ЂЂЂЃф¤м((ЂЂЂЃЭЙҐС•I•ЕХ•НРЎ™ҐбСХЙ”№‘•Н­СЅБ%№БХР°Ѓм(ЂЂЂЂЂЃҐђиЂДД°(ЂЂЂЂЂЃµ•СЎЅђиЂ‰СЎЙ•…ђЅЙ•НХµ”€°(ЂЂЂЂЂЃБ…Й…µМиЃмЃСЎЙ•…‘%ђЃф°(ЂЂЂЃф¤м(ЂЂЂЃ…Э…ҐРЃ•бБ•ЌР (ЂЂЂЂЂЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤ЂфшЃЙ•ЕХ•НС%ђЎµ•НН…ќ”°ЂДД¤¤°(ЂЂЂЂ¤№Й•НЅ±Щ•М№СЅ5…СЌЎ=‰©•ЌРЎмЃЙ•НХ±РиЃмЃСЎЙ•…ђиЃмЃҐђиЃСЎЙ•…‘%ђ°ЃСХЙ№МиЃmнхtЃфЃфЃф¤м(ЂЂЂЃ•бБ•ЌРЎ™ҐбСХЙ”№…‘…БС•И№Н•ННҐЅ№М¤№СЅ!…Щ•1•№ќС  Д¤м(ЂЂЂЃ•бБ•ЌРЎЅ™™ҐЌҐ…±]ЙҐС”¤№№ЅР№СЅ!…Щ•	••№…±±•ђ ¤м(ЂЂЂЃ…Э…ҐРЃНСЅБҐбСХЙ”Ў™ҐбСХЙ”¤м(ЂЃф¤м((ЂЃҐР ‰ЙЅ±±МЃ‰…Ќ¬ЃСЎ”ЃЌХЙЙ•№РЃбС•Й№…°ЃQЎЙ•…ђЃ‰дЃ•б…ЌС±дЃЅ№”ЃQХЙё€°Ѓ…Не№ЊЂ ¤ЂфшЃм(ЂЂЂЃЌЅ№НРЃ…‘…БС•ИЂфЃЙЅ±±‰…Ќ­…Б…‰±•‘…БС•И ¤м(ЂЂЂЃЌЅ№НРЃ™ҐбСХЙ”ЂфЃЌЙ•…С•ҐбСХЙ”ЎмЃ•бС•Й№…±‘…БС•ЙМиЃ№•ЬЃ5…АЎml‰Б¤€°Ѓ…‘…БС•Йut¤Ѓф¤м(ЂЂЂЃЌЅ№НРЃЅ™™ҐЌҐ…±]ЙҐС”ЂфЃЩ¤№™ё ¤м(ЂЂЂЃ™ҐбСХЙ”№Ѕ™™ҐЌҐ…°№НС‘Ґё№Ѕё ‰‘…С„€°ЃЅ™™ҐЌҐ…±]ЙҐС”¤м(ЂЂЂЃЌЅ№НРЃСЎЙ•…‘%ђЂфЃ…Э…ҐРЃНС…ЙСAҐQЎЙ•…ђЎ™ҐбСХЙ”¤м(ЂЂЂЃЌЅ№НРЃ™ҐЙНСQХЙ№%ђЂфЃ…Э…ҐРЃЌЅµБ±•С•AҐQХЙёЎ™ҐбСХЙ”°ЃСЎЙ•…‘%ђ°ЂИ¤м(ЂЂЂЃ…Э…ҐРЃЌЅµБ±•С•AҐQХЙёЎ™ҐбСХЙ”°ЃСЎЙ•…‘%ђ°ЂМ¤м(ЂЂЂЃЌЅ№НРЃ‰•™ЅЙ”ЂфЃ…Э…ҐРЃ™ҐбСХЙ”№µ…ББҐ№ќMСЅЙ”№ќ•СQЎЙ•…ђЎЎЅНСQЎЙ•…‘%‘MЌЎ•µ„№Б…ЙН”ЎСЎЙ•…‘%ђ¤¤м((ЂЂЂЃЭЙҐС•I•ЕХ•НРЎ™ҐбСХЙ”№‘•Н­СЅБ%№БХР°Ѓм(ЂЂЂЂЂЃҐђиЂДА°(ЂЂЂЂЂЃµ•СЎЅђиЂ‰СЎЙ•…ђЅЙЅ±±‰…Ќ¬€°(ЂЂЂЂЂЃБ…Й…µМиЃмЃСЎЙ•…‘%ђ°Ѓ№ХµQХЙ№МиЂДЃф°(ЂЂЂЃф¤м(ЂЂЂЃ…Э…ҐРЃ•бБ•ЌР (ЂЂЂЂЂЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤ЂфшЃЙ•ЕХ•НС%ђЎµ•НН…ќ”°ЂДА¤¤°(ЂЂЂЂ¤№Й•НЅ±Щ•М№СЅ5…СЌЎ=‰©•ЌРЎм(ЂЂЂЂЂЃЙ•НХ±РиЃмЃСЎЙ•…ђиЃмЃҐђиЃСЎЙ•…‘%ђ°ЃСХЙ№МиЃmмЃҐђиЃ™ҐЙНСQХЙ№%ђЃхtЃфЃф°(ЂЂЂЃф¤м(ЂЂЂЃ…Э…ҐРЃ•бБ•ЌР (ЂЂЂЂЂЃ™ҐбСХЙ”№µ…ББҐ№ќMСЅЙ”№ќ•СQЎЙ•…ђЎЎЅНСQЎЙ•…‘%‘MЌЎ•µ„№Б…ЙН”ЎСЎЙ•…‘%ђ¤¤°(ЂЂЂЂ¤№Й•НЅ±Щ•М№СЅ5…СЌЎ=‰©•ЌРЎм(ЂЂЂЂЂЃЎЅНСQЎЙ•…‘%ђиЃСЎЙ•…‘%ђ°(ЂЂЂЂЂЃ№…СҐЩ•M•ННҐЅ№I•иЃмЃ№…СҐЩ•M•ННҐЅ№%ђиЂ‰™…­”µН•ННҐЅёґИ€Ѓф°(ЂЂЂЂЂЃСЙ…№НБЅЙС5Ѕ‘•±%ђиЃ‰•™ЅЙ”ь№СЙ…№НБЅЙС5Ѕ‘•±%ђ°(ЂЂЂЂЂЃСХЙ№5…ББҐ№ќМиЃmмЃЎЅНСQХЙ№%ђиЃ™ҐЙНСQХЙ№%ђЃхt°(ЂЂЂЃф¤м(ЂЂЂЃ•бБ•ЌРЎ…‘…БС•И№Н•ННҐЅ№НlЕtь№Ґ№ҐСҐ…±MС…С”¤№СЅ5…СЌЎ=‰©•ЌРЎм(ЂЂЂЂЂЃ•™™•ЌСҐЩ•5Ѕ‘•°иЃ…‘…БС•И№Н•ННҐЅ№НlБtь№НС…С”№•™™•ЌСҐЩ•5Ѕ‘•°°(ЂЂЂЂЂЃ•™™•ЌСҐЩ•QЎҐ№­Ґ№ќ=БСҐЅ№%ђиЃ…‘…БС•И№Н•ННҐЅ№НlБtь№НС…С”№•™™•ЌСҐЩ•QЎҐ№­Ґ№ќ=БСҐЅ№%ђ°(ЂЂЂЃф¤м(ЂЂЂЃ…Э…ҐРЃ•бБ•ЌРЎ…‘…БС•И№Н•ННҐЅ№НlБtь№Й•…‘M№…БНЎЅР ¤¤№Й•НЅ±Щ•М№СЅ5…СЌЎ=‰©•ЌРЎм(ЂЂЂЂЂЃЅ¬иЃ™…±Н”°(ЂЂЂЂЂЃ•ЙЙЅИиЃмЃЌЅ‘”иЂ‰Ґ№Щ…±Ґ‘MС…С”€Ѓф°(ЂЂЂЃф¤м(ЂЂЂЃ…Э…ҐРЃЌЅµБ±•С•AҐQХЙёЎ™ҐбСХЙ”°ЃСЎЙ•…‘%ђ°ЂДД°ЂД¤м(ЂЂЂЃ•бБ•ЌРЎЅ™™ҐЌҐ…±]ЙҐС”¤№№ЅР№СЅ!…Щ•	••№…±±•ђ ¤м(ЂЂЂЃ…Э…ҐРЃНСЅБҐбСХЙ”Ў™ҐбСХЙ”¤м(ЂЃф¤м((ЂЃҐР ‰Й•НСЅЙ•МЃЌЅ№™ҐќХЙ…СҐЅёЃ‰•™ЅЙ”ЃЙ•…‘Ґ№њЃ„ЃЙ•НХµ”µНС…С”ЃЙЅ±±‰…Ќ¬ЃЙ•Б±…Ќ•µ•№Р€°Ѓ…Не№ЊЂ ¤ЂфшЃм(ЂЂЂЃЌЅ№НРЃБ•ЙµҐННҐЅ№5Ѕ‘•МЂфЃЎ…Й№•ННA•ЙµҐННҐЅ№5Ѕ‘•…С…±ЅќMЌЎ•µ„№Б…ЙН”Ўм(ЂЂЂЂЂЃµЅ‘•МиЃl(ЂЂЂЂЂЂЂЃмЃҐђиЂ‰‘•™…Х±Р€°Ѓ±…‰•°иЂ‰•™…Х±Р€Ѓф°(ЂЂЂЂЂЂЂЃмЃҐђиЂ‰…ХСј€°Ѓ±…‰•°иЂ‰ХСј€Ѓф°(ЂЂЂЂЂЃt°(ЂЂЂЂЂЃ‘•™…Х±С5Ѕ‘•%ђиЂ‰‘•™…Х±Р€°(ЂЂЂЃф¤м(ЂЂЂЃЌЅ№НРЃ…‘…БС•ИЂфЃ№•ЬЃI•НХµ•MС…С•IЅ±±‰…Ќ­‘…БС•И (ЂЂЂЂЂЃЎ…Й№•НН%‘MЌЎ•µ„№Б…ЙН” ‰Б¤€¤°(ЂЂЂЂЂЃХ№‘•™Ґ№•ђ°(ЂЂЂЂЂЃСЙХ”°(ЂЂЂЂЂЃСЙХ”°(ЂЂЂЂЂЃ№Х±°°(ЂЂЂЂЂЃБ•ЙµҐННҐЅ№5Ѕ‘•М°(ЂЂЂЂЂЃСЙХ”°(ЂЂЂЂ¤м(ЂЂЂЃЌЅ№НРЃ™ҐбСХЙ”ЂфЃЌЙ•…С•ҐбСХЙ”ЎмЃ•бС•Й№…±‘…БС•ЙМиЃ№•ЬЃ5…АЎml‰Б¤€°Ѓ…‘…БС•Йut¤Ѓф¤м(ЂЂЂЃЌЅ№НРЃСЎЙ•…‘%ђЂфЃ…Э…ҐРЃНС…ЙСAҐQЎЙ•…ђЎ™ҐбСХЙ”¤м(ЂЂЂЃЌЅ№НРЃµЅ‘•°ЂфЃ…‘…БС•И№Ќ…С…±Ѕњ№µЅ‘•±НlЕtь№Й•м(ЂЂЂЃҐЂ …µЅ‘•°¤ЃСЎЙЅЬЃ№•ЬЃЙЙЅИ ‰…­”ЃЌ…С…±ЅњЃЎ…МЃ№јЃН•ЌЅ№‘…ЙдЃ5Ѕ‘•°€¤м(ЂЂЂЃЌЅ№НРЃСЎҐ№­Ґ№ќ=БСҐЅ№%ђЂфЂ‰±ЅЬ€м(ЂЂЂЃЌЅ№НРЃБ•ЙµҐННҐЅ№5Ѕ‘•%ђЂфЃЎ…Й№•ННA•ЙµҐННҐЅ№5Ѕ‘•%‘MЌЎ•µ„№Б…ЙН” ‰…ХСј€¤м((ЂЂЂЃЭЙҐС•I•ЕХ•НРЎ™ҐбСХЙ”№‘•Н­СЅБ%№БХР°Ѓм(ЂЂЂЂЂЃҐђиЂРА°(ЂЂЂЂЂЃµ•СЎЅђиЂ‰ЌЅ‘•бЎЅНРЅСЎЙ•…ђЅµЅ‘•°ЅН•±•ЌР€°(ЂЂЂЂЂЃБ…Й…µМиЃмЃСЎЙ•…‘%ђ°ЃµЅ‘•°Ѓф°(ЂЂЂЃф¤м(ЂЂЂЃ…Э…ҐРЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤ЂфшЃЙ•ЕХ•НС%ђЎµ•НН…ќ”°ЂРА¤¤м(ЂЂЂЃЭЙҐС•I•ЕХ•НРЎ™ҐбСХЙ”№‘•Н­СЅБ%№БХР°Ѓм(ЂЂЂЂЂЃҐђиЂРД°(ЂЂЂЂЂЃµ•СЎЅђиЂ‰ЌЅ‘•бЎЅНРЅСЎЙ•…ђЅСЎҐ№­Ґ№њЅН•±•ЌР€°(ЂЂЂЂЂЃБ…Й…µМиЃмЃСЎЙ•…‘%ђ°ЃСЎҐ№­Ґ№ќ=БСҐЅ№%ђЃф°(ЂЂЂЃф¤м(ЂЂЂЃ…Э…ҐРЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤ЂфшЃЙ•ЕХ•НС%ђЎµ•НН…ќ”°ЂРД¤¤м(ЂЂЂЃЭЙҐС•I•ЕХ•НРЎ™ҐбСХЙ”№‘•Н­СЅБ%№БХР°Ѓм(ЂЂЂЂЂЃҐђиЂРИ°(ЂЂЂЂЂЃµ•СЎЅђиЂ‰ЌЅ‘•бЎЅНРЅСЎЙ•…ђЅБ•ЙµҐННҐЅёµµЅ‘”ЅН•±•ЌР€°(ЂЂЂЂЂЃБ…Й…µМиЃмЃСЎЙ•…‘%ђ°ЃБ•ЙµҐННҐЅ№5Ѕ‘•%ђЃф°(ЂЂЂЃф¤м(ЂЂЂЃ…Э…ҐРЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤ЂфшЃЙ•ЕХ•НС%ђЎµ•НН…ќ”°ЂРИ¤¤м((ЂЂЂЃЌЅ№НРЃ™ҐЙНСQХЙ№%ђЂфЃ…Э…ҐРЃЌЅµБ±•С•AҐQХЙёЎ™ҐбСХЙ”°ЃСЎЙ•…‘%ђ°ЂРМ¤м(ЂЂЂЃ…Э…ҐРЃЌЅµБ±•С•AҐQХЙёЎ™ҐбСХЙ”°ЃСЎЙ•…‘%ђ°ЂРР¤м(ЂЂЂЃЭЙҐС•I•ЕХ•НРЎ™ҐбСХЙ”№‘•Н­СЅБ%№БХР°Ѓм(ЂЂЂЂЂЃҐђиЂРФ°(ЂЂЂЂЂЃµ•СЎЅђиЂ‰СЎЙ•…ђЅЙЅ±±‰…Ќ¬€°(ЂЂЂЂЂЃБ…Й…µМиЃмЃСЎЙ•…‘%ђ°Ѓ№ХµQХЙ№МиЂДЃф°(ЂЂЂЃф¤м(ЂЂЂЃ…Э…ҐРЃ•бБ•ЌР (ЂЂЂЂЂЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤ЂфшЃЙ•ЕХ•НС%ђЎµ•НН…ќ”°ЂРФ¤¤°(ЂЂЂЂ¤№Й•НЅ±Щ•М№СЅ5…СЌЎ=‰©•ЌРЎм(ЂЂЂЂЂЃЙ•НХ±РиЃмЃСЎЙ•…ђиЃмЃҐђиЃСЎЙ•…‘%ђ°ЃСХЙ№МиЃmмЃҐђиЃ™ҐЙНСQХЙ№%ђЃхtЃфЃф°(ЂЂЂЃф¤м((ЂЂЂЃЌЅ№НРЃ•бБ•ЌС•‘Ѕ№™ҐќХЙ…СҐЅёЂфЃм(ЂЂЂЂЂЃ•™™•ЌСҐЩ•5Ѕ‘•°иЃµЅ‘•°°(ЂЂЂЂЂЃ•™™•ЌСҐЩ•QЎҐ№­Ґ№ќ=БСҐЅ№%ђиЃСЎҐ№­Ґ№ќ=БСҐЅ№%ђ°(ЂЂЂЂЂЃ•™™•ЌСҐЩ•A•ЙµҐННҐЅ№5Ѕ‘•%ђиЃБ•ЙµҐННҐЅ№5Ѕ‘•%ђ°(ЂЂЂЃфм(ЂЂЂЃ•бБ•ЌРЎ…‘…БС•И№ЙЅ±±‰…Ќ­I•Б±…Ќ•µ•№СMС…С•СҐЙНСI•…ђ¤№СЅ5…СЌЎ=‰©•ЌРЎ•бБ•ЌС•‘Ѕ№™ҐќХЙ…СҐЅё¤м(ЂЂЂЃ•бБ•ЌРЎ…‘…БС•И№Н•ННҐЅ№НlЕtь№НС…С”¤№СЅ5…СЌЎ=‰©•ЌРЎ•бБ•ЌС•‘Ѕ№™ҐќХЙ…СҐЅё¤м(ЂЂЂЃ…Э…ҐРЃНСЅБҐбСХЙ”Ў™ҐбСХЙ”¤м(ЂЃф¤м((ЂЃҐР ‰Й•Щ•ЙСМЃСЎ”Ѓ±…С•НРЃЌЅµБ±•С•ђЃQХЙёЃЅЃ„ЃБ…ќҐ№…С•ђЃбС•Й№…°ЃQЎЙ•…ђ€°Ѓ…Не№ЊЂ ¤ЂфшЃм(ЂЂЂЃЌЅ№НРЃ…‘…БС•ИЂфЃЙЅ±±‰…Ќ­…Б…‰±•‘…БС•И ¤м(ЂЂЂЃЌЅ№НРЃ™ҐбСХЙ”ЂфЃЌЙ•…С•ҐбСХЙ”ЎмЃ•бС•Й№…±‘…БС•ЙМиЃ№•ЬЃ5…АЎml‰Б¤€°Ѓ…‘…БС•Йut¤Ѓф¤м(ЂЂЂЃЌЅ№НРЃЅ™™ҐЌҐ…±]ЙҐС”ЂфЃЩ¤№™ё ¤м(ЂЂЂЃ™ҐбСХЙ”№Ѕ™™ҐЌҐ…°№НС‘Ґё№Ѕё ‰‘…С„€°ЃЅ™™ҐЌҐ…±]ЙҐС”¤м(ЂЂЂЃЌЅ№НРЃСЎЙ•…‘%ђЂфЃ…Э…ҐРЃНС…ЙСбС•Й№…±QЎЙ•…ђЎ™ҐбСХЙ”°Ђ‰ЌЅ‘•бЎЅНРЅБ¤µ№…СҐЩ”€°ЂД°Ѓм(ЂЂЂЂЂЃЎҐНСЅЙе5Ѕ‘”иЂ‰Б…ќҐ№…С•ђ€°(ЂЂЂЃф¤м(ЂЂЂЃЌЅ№НРЃ™ҐЙНСQХЙ№%ђЂфЃ…Э…ҐРЃЌЅµБ±•С•AҐQХЙёЎ™ҐбСХЙ”°ЃСЎЙ•…‘%ђ°ЂИ¤м(ЂЂЂЃЌЅ№НРЃ±…НСQХЙ№%ђЂфЃ…Э…ҐРЃЌЅµБ±•С•AҐQХЙёЎ™ҐбСХЙ”°ЃСЎЙ•…‘%ђ°ЂМ¤м((ЂЂЂЃЭЙҐС•I•ЕХ•НРЎ™ҐбСХЙ”№‘•Н­СЅБ%№БХР°Ѓм(ЂЂЂЂЂЃҐђиЂДА°(ЂЂЂЂЂЃµ•СЎЅђиЂ‰СЎЙ•…ђЅЙ•Щ•ЙР€°(ЂЂЂЂЂЃБ…Й…µМиЃмЃСЎЙ•…‘%ђ°Ѓ‰•™ЅЙ•QХЙ№%ђиЃ±…НСQХЙ№%ђЃф°(ЂЂЂЃф¤м(ЂЂЂЃ…Э…ҐРЃ•бБ•ЌР (ЂЂЂЂЂЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤ЂфшЃЙ•ЕХ•НС%ђЎµ•НН…ќ”°ЂДА¤¤°(ЂЂЂЂ¤№Й•НЅ±Щ•М№СЅ5…СЌЎ=‰©•ЌРЎмЃЙ•НХ±РиЃмЃСЎЙ•…ђиЃмЃҐђиЃСЎЙ•…‘%ђ°ЃСХЙ№МиЃmtЃфЃфЃф¤м(ЂЂЂЃ…Э…ҐРЃ•бБ•ЌР (ЂЂЂЂЂЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤ЂфшЃµ•СЎЅђЎµ•НН…ќ”°Ђ‰СЎЙ•…ђЅЙ•Щ•ЙС•ђ€¤¤°(ЂЂЂЂ¤№Й•НЅ±Щ•М№СЅЕХ…°ЎмЃµ•СЎЅђиЂ‰СЎЙ•…ђЅЙ•Щ•ЙС•ђ€°ЃБ…Й…µМиЃмЃСЎЙ•…‘%ђЃфЃф¤м(ЂЂЂЃ…Э…ҐРЃ•бБ•ЌР (ЂЂЂЂЂЃ™ҐбСХЙ”№µ…ББҐ№ќMСЅЙ”№ќ•СQЎЙ•…ђЎЎЅНСQЎЙ•…‘%‘MЌЎ•µ„№Б…ЙН”ЎСЎЙ•…‘%ђ¤¤°(ЂЂЂЂ¤№Й•НЅ±Щ•М№СЅ5…СЌЎ=‰©•ЌРЎм(ЂЂЂЂЂЃ№…СҐЩ•M•ННҐЅ№I•иЃмЃ№…СҐЩ•M•ННҐЅ№%ђиЂ‰™…­”µН•ННҐЅёґИ€Ѓф°(ЂЂЂЂЂЃСХЙ№5…ББҐ№ќМиЃmмЃЎЅНСQХЙ№%ђиЃ™ҐЙНСQХЙ№%ђЃхt°(ЂЂЂЃф¤м(ЂЂЂЃ•бБ•ЌРЎ…‘…БС•И№Н•ННҐЅ№М¤№СЅ!…Щ•1•№ќС  И¤м(ЂЂЂЃ•бБ•ЌРЎЅ™™ҐЌҐ…±]ЙҐС”¤№№ЅР№СЅ!…Щ•	••№…±±•ђ ¤м(ЂЂЂЃ…Э…ҐРЃНСЅБҐбСХЙ”Ў™ҐбСХЙ”¤м(ЂЃф¤м((ЂЃҐР ‰Й•©•ЌСМЃ„ЃНС…±”ЃБ…ќҐ№…С•ђЃI•Щ•ЙРЃ‰ЅХ№‘…ЙдЃЭҐСЎЅХРЃЌЎ…№ќҐ№њЃЎҐНСЅЙд€°Ѓ…Не№ЊЂ ¤ЂфшЃм(ЂЂЂЃЌЅ№НРЃ…‘…БС•ИЂфЃЙЅ±±‰…Ќ­…Б…‰±•‘…БС•И ¤м(ЂЂЂЃЌЅ№НРЃ™ҐбСХЙ”ЂфЃЌЙ•…С•ҐбСХЙ”ЎмЃ•бС•Й№…±‘…БС•ЙМиЃ№•ЬЃ5…АЎml‰Б¤€°Ѓ…‘…БС•Йut¤Ѓф¤м(ЂЂЂЃЌЅ№НРЃСЎЙ•…‘%ђЂфЃ…Э…ҐРЃНС…ЙСбС•Й№…±QЎЙ•…ђЎ™ҐбСХЙ”°Ђ‰ЌЅ‘•бЎЅНРЅБ¤µ№…СҐЩ”€°ЂД°Ѓм(ЂЂЂЂЂЃЎҐНСЅЙе5Ѕ‘”иЂ‰Б…ќҐ№…С•ђ€°(ЂЂЂЃф¤м(ЂЂЂЃ…Э…ҐРЃЌЅµБ±•С•AҐQХЙёЎ™ҐбСХЙ”°ЃСЎЙ•…‘%ђ°ЂИ¤м(ЂЂЂЃЌЅ№НРЃ‰•™ЅЙ”ЂфЃ…Э…ҐРЃ™ҐбСХЙ”№µ…ББҐ№ќMСЅЙ”№ќ•СQЎЙ•…ђЎЎЅНСQЎЙ•…‘%‘MЌЎ•µ„№Б…ЙН”ЎСЎЙ•…‘%ђ¤¤м((ЂЂЂЃЭЙҐС•I•ЕХ•НРЎ™ҐбСХЙ”№‘•Н­СЅБ%№БХР°Ѓм(ЂЂЂЂЂЃҐђиЂДА°(ЂЂЂЂЂЃµ•СЎЅђиЂ‰СЎЙ•…ђЅЙ•Щ•ЙР€°(ЂЂЂЂЂЃБ…Й…µМиЃмЃСЎЙ•…‘%ђ°Ѓ‰•™ЅЙ•QХЙ№%ђиЂ‰НС…±”µСХЙё€Ѓф°(ЂЂЂЃф¤м(ЂЂЂЃ…Э…ҐРЃ•бБ•ЌР (ЂЂЂЂЂЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤ЂфшЃЙ•ЕХ•НС%ђЎµ•НН…ќ”°ЂДА¤¤°(ЂЂЂЂ¤№Й•НЅ±Щ•М№СЅ5…СЌЎ=‰©•ЌРЎмЃ•ЙЙЅИиЃмЃЌЅ‘”иЂґМИАаАЃфЃф¤м(ЂЂЂЃ…Э…ҐРЃ•бБ•ЌР (ЂЂЂЂЂЃ™ҐбСХЙ”№µ…ББҐ№ќMСЅЙ”№ќ•СQЎЙ•…ђЎЎЅНСQЎЙ•…‘%‘MЌЎ•µ„№Б…ЙН”ЎСЎЙ•…‘%ђ¤¤°(ЂЂЂЂ¤№Й•НЅ±Щ•М№СЅЕХ…°Ў‰•™ЅЙ”¤м(ЂЂЂЃ•бБ•ЌРЎ…‘…БС•И№Н•ННҐЅ№М¤№СЅ!…Щ•1•№ќС  Д¤м(ЂЂЂЃ…Э…ҐРЃНСЅБҐбСХЙ”Ў™ҐбСХЙ”¤м(ЂЃф¤м((ЂЃҐР ‰ЙЅ±±МЃСЎ”ЃЅ№±дЃЌХЙЙ•№РЃбС•Й№…°ЃQХЙёЃ‰…Ќ¬ЃСјЃ•µБСдЃЎҐНСЅЙд€°Ѓ…Не№ЊЂ ¤ЂфшЃм(ЂЂЂЃЌЅ№НРЃ…‘…БС•ИЂфЃЙЅ±±‰…Ќ­…Б…‰±•‘…БС•И ¤м(ЂЂЂЃЌЅ№НРЃ™ҐбСХЙ”ЂфЃЌЙ•…С•ҐбСХЙ”ЎмЃ•бС•Й№…±‘…БС•ЙМиЃ№•ЬЃ5…АЎml‰Б¤€°Ѓ…‘…БС•Йut¤Ѓф¤м(ЂЂЂЃЌЅ№НРЃСЎЙ•…‘%ђЂфЃ…Э…ҐРЃНС…ЙСAҐQЎЙ•…ђЎ™ҐбСХЙ”¤м(ЂЂЂЃ…Э…ҐРЃЌЅµБ±•С•AҐQХЙёЎ™ҐбСХЙ”°ЃСЎЙ•…‘%ђ°ЂИ¤м((ЂЂЂЃЭЙҐС•I•ЕХ•НРЎ™ҐбСХЙ”№‘•Н­СЅБ%№БХР°Ѓм(ЂЂЂЂЂЃҐђиЂДА°(ЂЂЂЂЂЃµ•СЎЅђиЂ‰СЎЙ•…ђЅЙЅ±±‰…Ќ¬€°(ЂЂЂЂЂЃБ…Й…µМиЃмЃСЎЙ•…‘%ђ°Ѓ№ХµQХЙ№МиЂДЃф°(ЂЂЂЃф¤м(ЂЂЂЃ…Э…ҐРЃ•бБ•ЌР (ЂЂЂЂЂЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤ЂфшЃЙ•ЕХ•НС%ђЎµ•НН…ќ”°ЂДА¤¤°(ЂЂЂЂ¤№Й•НЅ±Щ•М№СЅ5…СЌЎ=‰©•ЌРЎмЃЙ•НХ±РиЃмЃСЎЙ•…ђиЃмЃҐђиЃСЎЙ•…‘%ђ°ЃСХЙ№МиЃmtЃфЃфЃф¤м(ЂЂЂЃ…Э…ҐРЃ•бБ•ЌР (ЂЂЂЂЂЃ™ҐбСХЙ”№µ…ББҐ№ќMСЅЙ”№ќ•СQЎЙ•…ђЎЎЅНСQЎЙ•…‘%‘MЌЎ•µ„№Б…ЙН”ЎСЎЙ•…‘%ђ¤¤°(ЂЂЂЂ¤№Й•НЅ±Щ•М№СЅ5…СЌЎ=‰©•ЌРЎм(ЂЂЂЂЂЃ№…СҐЩ•M•ННҐЅ№I•иЃмЃ№…СҐЩ•M•ННҐЅ№%ђиЂ‰™…­”µН•ННҐЅёґИ€Ѓф°(ЂЂЂЂЂЃСХЙ№5…ББҐ№ќМиЃmt°(ЂЂЂЃф¤м(ЂЂЂЃ…Э…ҐРЃЌЅµБ±•С•AҐQХЙёЎ™ҐбСХЙ”°ЃСЎЙ•…‘%ђ°ЂДД°ЂД¤м(ЂЂЂЃ…Э…ҐРЃНСЅБҐбСХЙ”Ў™ҐбСХЙ”¤м(ЂЃф¤м((ЂЃҐР ‰Й•©•ЌСМЃЌХЙЙ•№РЃ±…НРµQХЙёЃЙЅ±±‰…Ќ¬ЃЭЎҐ±”Ѓ…ЌСҐЩ”ЃЅИЃ™ЅИЃµХ±СҐБ±”ЃQХЙ№М€°Ѓ…Не№ЊЂ ¤ЂфшЃм(ЂЂЂЃЌЅ№НРЃ…‘…БС•ИЂфЃЙЅ±±‰…Ќ­…Б…‰±•‘…БС•И ¤м(ЂЂЂЃЌЅ№НРЃ™ҐбСХЙ”ЂфЃЌЙ•…С•ҐбСХЙ”ЎмЃ•бС•Й№…±‘…БС•ЙМиЃ№•ЬЃ5…АЎml‰Б¤€°Ѓ…‘…БС•Йut¤Ѓф¤м(ЂЂЂЃЌЅ№НРЃСЎЙ•…‘%ђЂфЃ…Э…ҐРЃНС…ЙСAҐQЎЙ•…ђЎ™ҐбСХЙ”¤м(ЂЂЂЃ…Э…ҐРЃЌЅµБ±•С•AҐQХЙёЎ™ҐбСХЙ”°ЃСЎЙ•…‘%ђ°ЂИ¤м((ЂЂЂЃЭЙҐС•I•ЕХ•НРЎ™ҐбСХЙ”№‘•Н­СЅБ%№БХР°Ѓм(ЂЂЂЂЂЃҐђиЂДА°(ЂЂЂЂЂЃµ•СЎЅђиЂ‰СЎЙ•…ђЅЙЅ±±‰…Ќ¬€°(ЂЂЂЂЂЃБ…Й…µМиЃмЃСЎЙ•…‘%ђ°Ѓ№ХµQХЙ№МиЂИЃф°(ЂЂЂЃф¤м(ЂЂЂЃ…Э…ҐРЃ•бБ•ЌР (ЂЂЂЂЂЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤ЂфшЃЙ•ЕХ•НС%ђЎµ•НН…ќ”°ЂДА¤¤°(ЂЂЂЂ¤№Й•НЅ±Щ•М№СЅ5…СЌЎ=‰©•ЌРЎмЃ•ЙЙЅИиЃмЃЌЅ‘”иЂґМИАЬШЃфЃф¤м((ЂЂЂЃЌЅ№НРЃ…ЌСҐЩ•QХЙ№%ђЂфЃ…Э…ҐРЃНС…ЙСAҐQХЙёЎ™ҐбСХЙ”°ЃСЎЙ•…‘%ђ°ЂДД¤м(ЂЂЂЃЭЙҐС•I•ЕХ•НРЎ™ҐбСХЙ”№‘•Н­СЅБ%№БХР°Ѓм(ЂЂЂЂЂЃҐђиЂДИ°(ЂЂЂЂЂЃµ•СЎЅђиЂ‰СЎЙ•…ђЅЙЅ±±‰…Ќ¬€°(ЂЂЂЂЂЃБ…Й…µМиЃмЃСЎЙ•…‘%ђ°Ѓ№ХµQХЙ№МиЂДЃф°(ЂЂЂЃф¤м(ЂЂЂЃ…Э…ҐРЃ•бБ•ЌР (ЂЂЂЂЂЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤ЂфшЃЙ•ЕХ•НС%ђЎµ•НН…ќ”°ЂДИ¤¤°(ЂЂЂЂ¤№Й•НЅ±Щ•М№СЅ5…СЌЎ=‰©•ЌРЎмЃ•ЙЙЅИиЃмЃЌЅ‘”иЂґМИАЬИЃфЃф¤м(ЂЂЂЃ•бБ•ЌРЎ…‘…БС•И№Н•ННҐЅ№М¤№СЅ!…Щ•1•№ќС  Д¤м(ЂЂЂЃ…‘…БС•И№Н•ННҐЅ№НlБtь№НХЌЌ••‘QХЙё ¤м(ЂЂЂЃ…Э…ҐРЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤Ђфш(ЂЂЂЂЂЃСХЙ№Щ•№РЎµ•НН…ќ”°Ђ‰СХЙёЅЌЅµБ±•С•ђ€°Ѓ…ЌСҐЩ•QХЙ№%ђ¤°(ЂЂЂЂ¤м(ЂЂЂЃ…Э…ҐРЃНСЅБҐбСХЙ”Ў™ҐбСХЙ”¤м(ЂЃф¤м((ЂЃҐР ‰­••БМЃСЎ”ЃЌХЙЙ•№РЃM•ННҐЅёЃ…ХСЎЅЙҐС…СҐЩ”ЃЭЎ•ёЃ±…НРµQХЙёЃБ•ЙНҐНС•№Ќ”Ѓ™…Ґ±М€°Ѓ…Не№ЊЂ ¤ЂфшЃм(ЂЂЂЃЌЅ№НРЃ‘ҐЙ•ЌСЅЙдЂфЃµ­‘С•µБMе№ЊЎБ…С №©ЅҐёЎСµБ‘ҐИ ¤°Ђ‰ЌЅ‘•бЎЅНРµЎЅНРµ±…НРµСХЙёµ™…Ґ±ХЙ”ґ€¤¤м(ЂЂЂЃ±•РЃ™…Ґ±IЅ±±‰…Ќ­ЅµµҐРЂфЃ™…±Н”м(ЂЂЂЃЌЅ№НРЃµ…ББҐ№ќMСЅЙ”ЂфЃ№•ЬЃ5…ББҐ№ќMСЅЙ”Ўм(ЂЂЂЂЂЃ‘ҐЙ•ЌСЅЙд°(ЂЂЂЂЂЃ‰•™ЅЙ•I•Б±…Ќ”ЎЙ•ЌЅЙђ¤Ѓм(ЂЂЂЂЂЂЂЃҐЂЎ™…Ґ±IЅ±±‰…Ќ­ЅµµҐРЂЃЙ•ЌЅЙђ№НС…С”ЂфффЂ‰Й•…‘д€ЂЃЙ•ЌЅЙђ№СХЙ№5…ББҐ№ќМ№±•№ќС ЂфффЂД¤Ѓм(ЂЂЂЂЂЂЂЂЂЃСЎЙЅЬЃ№•ЬЃЙЙЅИ ‰Не№СЎ•СҐЊЃ±…НРµQХЙёЃЙЅ±±‰…Ќ¬Ѓ™…Ґ±ХЙ”€¤м(ЂЂЂЂЂЂЂЃф(ЂЂЂЂЂЃф°(ЂЂЂЃф¤м(ЂЂЂЃЌЅ№НРЃ…‘…БС•ИЂфЃЙЅ±±‰…Ќ­…Б…‰±•‘…БС•И ¤м(ЂЂЂЃЌЅ№НРЃ™ҐбСХЙ”ЂфЃЌЙ•…С•ҐбСХЙ”Ўм(ЂЂЂЂЂЃ•бС•Й№…±‘…БС•ЙМиЃ№•ЬЃ5…АЎml‰Б¤€°Ѓ…‘…БС•Йut¤°(ЂЂЂЂЂЃµ…ББҐ№ќMСЅЙ”°(ЂЂЂЂЂЃµ…ББҐ№ќMСЅЙ•ҐЙ•ЌСЅЙдиЃ‘ҐЙ•ЌСЅЙд°(ЂЂЂЃф¤м(ЂЂЂЃЌЅ№НРЃСЎЙ•…‘%ђЂфЃ…Э…ҐРЃНС…ЙСAҐQЎЙ•…ђЎ™ҐбСХЙ”¤м(ЂЂЂЃ…Э…ҐРЃЌЅµБ±•С•AҐQХЙёЎ™ҐбСХЙ”°ЃСЎЙ•…‘%ђ°ЂИ¤м(ЂЂЂЃ…Э…ҐРЃЌЅµБ±•С•AҐQХЙёЎ™ҐбСХЙ”°ЃСЎЙ•…‘%ђ°ЂМ¤м(ЂЂЂЃЌЅ№НРЃ‰•™ЅЙ”ЂфЃ…Э…ҐРЃµ…ББҐ№ќMСЅЙ”№ќ•СQЎЙ•…ђЎЎЅНСQЎЙ•…‘%‘MЌЎ•µ„№Б…ЙН”ЎСЎЙ•…‘%ђ¤¤м(ЂЂЂЃ™…Ґ±IЅ±±‰…Ќ­ЅµµҐРЂфЃСЙХ”м((ЂЂЂЃЭЙҐС•I•ЕХ•НРЎ™ҐбСХЙ”№‘•Н­СЅБ%№БХР°Ѓм(ЂЂЂЂЂЃҐђиЂДА°(ЂЂЂЂЂЃµ•СЎЅђиЂ‰СЎЙ•…ђЅЙЅ±±‰…Ќ¬€°(ЂЂЂЂЂЃБ…Й…µМиЃмЃСЎЙ•…‘%ђ°Ѓ№ХµQХЙ№МиЂДЃф°(ЂЂЂЃф¤м(ЂЂЂЃ…Э…ҐРЃ•бБ•ЌР (ЂЂЂЂЂЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤ЂфшЃЙ•ЕХ•НС%ђЎµ•НН…ќ”°ЂДА¤¤°(ЂЂЂЂ¤№Й•НЅ±Щ•М№СЅ5…СЌЎ=‰©•ЌРЎмЃ•ЙЙЅИиЃмЃЌЅ‘”иЂґМИАаДЃфЃф¤м(ЂЂЂЃ…Э…ҐРЃ•бБ•ЌРЎµ…ББҐ№ќMСЅЙ”№ќ•СQЎЙ•…ђЎЎЅНСQЎЙ•…‘%‘MЌЎ•µ„№Б…ЙН”ЎСЎЙ•…‘%ђ¤¤¤№Й•НЅ±Щ•М№СЅЕХ…° (ЂЂЂЂЂЃ‰•™ЅЙ”°(ЂЂЂЂ¤м(ЂЂЂЃ…Э…ҐРЃ•бБ•ЌРЎ…‘…БС•И№Н•ННҐЅ№НlБtь№Й•…‘M№…БНЎЅР ¤¤№Й•НЅ±Щ•М№СЅ5…СЌЎ=‰©•ЌРЎм(ЂЂЂЂЂЃЅ¬иЃСЙХ”°(ЂЂЂЂЂЃЩ…±Х”иЃмЃСХЙ№МиЃmнф°ЃнхtЃф°(ЂЂЂЃф¤м(ЂЂЂЃ…Э…ҐРЃ•бБ•ЌРЎ…‘…БС•И№Н•ННҐЅ№НlЕtь№Й•…‘M№…БНЎЅР ¤¤№Й•НЅ±Щ•М№СЅ5…СЌЎ=‰©•ЌРЎм(ЂЂЂЂЂЃЅ¬иЃ™…±Н”°(ЂЂЂЂЂЃ•ЙЙЅИиЃмЃЌЅ‘”иЂ‰Ґ№Щ…±Ґ‘MС…С”€Ѓф°(ЂЂЂЃф¤м(ЂЂЂЃ…Э…ҐРЃЌЅµБ±•С•AҐQХЙёЎ™ҐбСХЙ”°ЃСЎЙ•…‘%ђ°ЂДД°ЂА¤м(ЂЂЂЃ…Э…ҐРЃНСЅБҐбСХЙ”Ў™ҐбСХЙ”¤м(ЂЃф¤м((ЂЃҐР ‰Й•…±Ґй•МЃ•Н­СЅАЃ]ЅЙ­СЙ•”ЃС…Ґ°µЅЙ¬ЃБ±ХМЃЙЅ±±‰…Ќ¬Ѓ…МЃЅ№”Ѓ•б…ЌРЃ‘•ЙҐЩ•ђЃБЙ•™Ґа€°Ѓ…Не№ЊЂ ¤ЂфшЃм(ЂЂЂЃЌЅ№НРЃ™ҐбСХЙ”ЂфЃЌЙ•…С•ҐбСХЙ” ¤м(ЂЂЂЃЌЅ№НРЃЅ™™ҐЌҐ…±]ЙҐС”ЂфЃЩ¤№™ё ¤м(ЂЂЂЃ™ҐбСХЙ”№Ѕ™™ҐЌҐ…°№НС‘Ґё№Ѕё ‰‘…С„€°ЃЅ™™ҐЌҐ…±]ЙҐС”¤м(ЂЂЂЃЌЅ№НРЃНЅХЙЌ•QЎЙ•…‘%ђЂфЃ…Э…ҐРЃНС…ЙСAҐQЎЙ•…ђЎ™ҐбСХЙ”¤м(ЂЂЂЃЌЅ№НРЃНЅХЙЌ•QХЙ№%‘МЂфЃl(ЂЂЂЂЂЃ…Э…ҐРЃЌЅµБ±•С•AҐQХЙёЎ™ҐбСХЙ”°ЃНЅХЙЌ•QЎЙ•…‘%ђ°ЂИ¤°(ЂЂЂЂЂЃ…Э…ҐРЃЌЅµБ±•С•AҐQХЙёЎ™ҐбСХЙ”°ЃНЅХЙЌ•QЎЙ•…‘%ђ°ЂМ¤°(ЂЂЂЂЂЃ…Э…ҐРЃЌЅµБ±•С•AҐQХЙёЎ™ҐбСХЙ”°ЃНЅХЙЌ•QЎЙ•…‘%ђ°ЂР¤°(ЂЂЂЃtм((ЂЂЂЃЭЙҐС•I•ЕХ•НРЎ™ҐбСХЙ”№‘•Н­СЅБ%№БХР°Ѓм(ЂЂЂЂЂЃҐђиЂДА°(ЂЂЂЂЂЃµ•СЎЅђиЂ‰СЎЙ•…ђЅ™ЅЙ¬€°(ЂЂЂЂЂЃБ…Й…µМиЃм(ЂЂЂЂЂЂЂЃСЎЙ•…‘%ђиЃНЅХЙЌ•QЎЙ•…‘%ђ°(ЂЂЂЂЂЂЂЃЌЭђиЂ€ЅНе№СЎ•СҐЊµЭЅЙ­СЙ•”€°(ЂЂЂЂЂЂЂЃЙХ№СҐµ•]ЅЙ­НБ…Ќ•IЅЅСМиЃl€ЅНе№СЎ•СҐЊµЭЅЙ­СЙ•”€°Ђ€ЅНе№СЎ•СҐЊ‰t°(ЂЂЂЂЂЃф°(ЂЂЂЃф¤м(ЂЂЂЃЌЅ№НРЃ™ЅЙ­I•НБЅ№Н”ЂфЃ…Э…ҐРЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤ЂфшЃЙ•ЕХ•НС%ђЎµ•НН…ќ”°ЂДА¤¤м(ЂЂЂЃ•бБ•ЌРЎ™ЅЙ­I•НБЅ№Н”№Й•НХ±Р¤№СЅ5…СЌЎ=‰©•ЌРЎм(ЂЂЂЂЂЃЌЭђиЂ€ЅНе№СЎ•СҐЊµЭЅЙ­СЙ•”€°(ЂЂЂЂЂЃЙХ№СҐµ•]ЅЙ­НБ…Ќ•IЅЅСМиЃl€ЅНе№СЎ•СҐЊµЭЅЙ­СЙ•”€°Ђ€ЅНе№СЎ•СҐЊ‰t°(ЂЂЂЃф¤м(ЂЂЂЃЌЅ№НРЃ™ЅЙ­•‘QЎЙ•…ђЂфЂЎ™ЅЙ­I•НБЅ№Н”№Й•НХ±РЃ…МЃ)НЅ№=‰©•ЌР¤№СЎЙ•…ђЃ…МЃ)НЅ№=‰©•ЌРм(ЂЂЂЃЌЅ№НРЃ‘•ЙҐЩ•‘%ђЂфЃ™ЅЙ­•‘QЎЙ•…ђ№Ґђм(ЂЂЂЃЌЅ№НРЃҐ№ҐСҐ…±•ЙҐЩ•‘QХЙ№МЂфЃ™ЅЙ­•‘QЎЙ•…ђ№СХЙ№МЃ…МЃ)НЅ№=‰©•ЌСmtм(ЂЂЂЃҐЂЎСеБ•ЅЃ‘•ЙҐЩ•‘%ђЂ„ффЂ‰НСЙҐ№њ€¤ЃСЎЙЅЬЃ№•ЬЃЙЙЅИ ‰Q…Ґ°ЃЅЙ¬ЃЙ•НБЅ№Н”ЃЎ…МЃ№јЃQЎЙ•…ђЃ%€¤м(ЂЂЂЃ•бБ•ЌРЎ™ЅЙ­•‘QЎЙ•…ђ№ЌЭђ¤№СЅ	” €ЅНе№СЎ•СҐЊµЭЅЙ­СЙ•”€¤м(ЂЂЂЃ•бБ•ЌРЎҐ№ҐСҐ…±•ЙҐЩ•‘QХЙ№М¤№СЅ!…Щ•1•№ќС  М¤м((ЂЂЂЃЭЙҐС•I•ЕХ•НРЎ™ҐбСХЙ”№‘•Н­СЅБ%№БХР°Ѓм(ЂЂЂЂЂЃҐђиЂДД°(ЂЂЂЂЂЃµ•СЎЅђиЂ‰СЎЙ•…ђЅЙЅ±±‰…Ќ¬€°(ЂЂЂЂЂЃБ…Й…µМиЃмЃСЎЙ•…‘%ђиЃ‘•ЙҐЩ•‘%ђ°Ѓ№ХµQХЙ№МиЂИЃф°(ЂЂЂЃф¤м(ЂЂЂЃЌЅ№НРЃЙЅ±±‰…Ќ­I•НБЅ№Н”ЂфЃ…Э…ҐРЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤ЂфшЃЙ•ЕХ•НС%ђЎµ•НН…ќ”°ЂДД¤¤м(ЂЂЂЃЌЅ№НРЃЙЅ±±•‘	…Ќ¬ЂфЂЎЙЅ±±‰…Ќ­I•НБЅ№Н”№Й•НХ±РЃ…МЃ)НЅ№=‰©•ЌР¤№СЎЙ•…ђЃ…МЃ)НЅ№=‰©•ЌРм(ЂЂЂЃ•бБ•ЌРЎЙЅ±±•‘	…Ќ¬¤№СЅ5…СЌЎ=‰©•ЌРЎм(ЂЂЂЂЂЃҐђиЃ‘•ЙҐЩ•‘%ђ°(ЂЂЂЂЂЃ™ЅЙ­•‘ЙЅµ%ђиЃНЅХЙЌ•QЎЙ•…‘%ђ°(ЂЂЂЂЂЃСХЙ№МиЃmмЃҐђиЃҐ№ҐСҐ…±•ЙҐЩ•‘QХЙ№НlБtь№Ґђ°ЃНС…СХМиЂ‰ЌЅµБ±•С•ђ€Ѓхt°(ЂЂЂЃф¤м(ЂЂЂЃЌЅ№НРЃ‘•ЙҐЩ•‘I•ЌЅЙђЂфЃ…Э…ҐРЃ™ҐбСХЙ”№µ…ББҐ№ќMСЅЙ”№ќ•СQЎЙ•…ђЎЎЅНСQЎЙ•…‘%‘MЌЎ•µ„№Б…ЙН”Ў‘•ЙҐЩ•‘%ђ¤¤м(ЂЂЂЃ•бБ•ЌРЎ‘•ЙҐЩ•‘I•ЌЅЙђ¤№СЅ5…СЌЎ=‰©•ЌРЎм(ЂЂЂЂЂЃ№…СҐЩ•M•ННҐЅ№I•иЃмЃ№…СҐЩ•M•ННҐЅ№%ђиЂ‰™…­”µН•ННҐЅёґМ€Ѓф°(ЂЂЂЂЂЃЌЭђиЂ€ЅНе№СЎ•СҐЊµЭЅЙ­СЙ•”€°(ЂЂЂЂЂЃ™ЅЙ­MЅХЙЌ”иЃмЃЎЅНСQЎЙ•…‘%ђиЃНЅХЙЌ•QЎЙ•…‘%ђ°ЃЎЅНСQХЙ№%ђиЃНЅХЙЌ•QХЙ№%‘НlБtЃф°(ЂЂЂЂЂЃСХЙ№5…ББҐ№ќМиЃl(ЂЂЂЂЂЂЂЃм(ЂЂЂЂЂЂЂЂЂЃЎЅНСQХЙ№%ђиЃҐ№ҐСҐ…±•ЙҐЩ•‘QХЙ№НlБtь№Ґђ°(ЂЂЂЂЂЂЂЂЂЃ№…СҐЩ•QХЙ№I•иЃмЃ№…СҐЩ•M•ННҐЅ№%ђиЂ‰™…­”µН•ННҐЅёґМ€Ѓф°(ЂЂЂЂЂЂЂЂЂЃ№…СҐЩ•Ў•Ќ­БЅҐ№СI•иЃмЃ№…СҐЩ•M•ННҐЅ№%ђиЂ‰™…­”µН•ННҐЅёґМ€Ѓф°(ЂЂЂЂЂЂЂЃф°(ЂЂЂЂЂЃt°(ЂЂЂЃф¤м(ЂЂЂЃ•бБ•ЌРЎ™ҐбСХЙ”№…‘…БС•И№Н•ННҐЅ№НlБtь№ЌЭђ¤№СЅ	” €ЅНе№СЎ•СҐЊ€¤м(ЂЂЂЃ•бБ•ЌРЎ™ҐбСХЙ”№…‘…БС•И№Н•ННҐЅ№НlЕtь№ЌЭђ¤№СЅ	” €ЅНе№СЎ•СҐЊµЭЅЙ­СЙ•”€¤м(ЂЂЂЃ•бБ•ЌРЎ™ҐбСХЙ”№…‘…БС•И№Н•ННҐЅ№НlЙtь№ЌЭђ¤№СЅ	” €ЅНе№СЎ•СҐЊµЭЅЙ­СЙ•”€¤м(ЂЂЂЃ…Э…ҐРЃ•бБ•ЌРЎ™ҐбСХЙ”№…‘…БС•И№Н•ННҐЅ№НlЕtь№Й•…‘M№…БНЎЅР ¤¤№Й•НЅ±Щ•М№СЅ5…СЌЎ=‰©•ЌРЎм(ЂЂЂЂЂЃЅ¬иЃ™…±Н”°(ЂЂЂЂЂЃ•ЙЙЅИиЃмЃЌЅ‘”иЂ‰Ґ№Щ…±Ґ‘MС…С”€Ѓф°(ЂЂЂЃф¤м(ЂЂЂЃ…Э…ҐРЃ•бБ•ЌРЎ™ҐбСХЙ”№…‘…БС•И№Н•ННҐЅ№НlБtь№Й•…‘M№…БНЎЅР ¤¤№Й•НЅ±Щ•М№СЅ5…СЌЎ=‰©•ЌРЎм(ЂЂЂЂЂЃЅ¬иЃСЙХ”°(ЂЂЂЂЂЃЩ…±Х”иЃмЃСХЙ№МиЃmнф°Ѓнф°ЃнхtЃф°(ЂЂЂЃф¤м((ЂЂЂЃ…Э…ҐРЃЌЅµБ±•С•AҐQХЙёЎ™ҐбСХЙ”°Ѓ‘•ЙҐЩ•‘%ђ°ЂИА°ЂИ¤м(ЂЂЂЃ…Э…ҐРЃЌЅµБ±•С•AҐQХЙёЎ™ҐбСХЙ”°ЃНЅХЙЌ•QЎЙ•…‘%ђ°ЂИД°ЂА¤м(ЂЂЂЃ…Э…ҐРЃ•бБ•ЌРЎ™ҐбСХЙ”№…‘…БС•И№Н•ННҐЅ№НlЙtь№Й•…‘M№…БНЎЅР ¤¤№Й•НЅ±Щ•М№СЅ5…СЌЎ=‰©•ЌРЎм(ЂЂЂЂЂЃЅ¬иЃСЙХ”°(ЂЂЂЂЂЃЩ…±Х”иЃмЃСХЙ№МиЃmнф°ЃнхtЃф°(ЂЂЂЃф¤м(ЂЂЂЃ…Э…ҐРЃ•бБ•ЌРЎ™ҐбСХЙ”№…‘…БС•И№Н•ННҐЅ№НlБtь№Й•…‘M№…БНЎЅР ¤¤№Й•НЅ±Щ•М№СЅ5…СЌЎ=‰©•ЌРЎм(ЂЂЂЂЂЃЅ¬иЃСЙХ”°(ЂЂЂЂЂЃЩ…±Х”иЃмЃСХЙ№МиЃmнф°Ѓнф°Ѓнф°ЃнхtЃф°(ЂЂЂЃф¤м(ЂЂЂЃ•бБ•ЌРЎЅ™™ҐЌҐ…±]ЙҐС”¤№№ЅР№СЅ!…Щ•	••№…±±•ђ ¤м(ЂЂЂЃ…Э…ҐРЃНСЅБҐбСХЙ”Ў™ҐбСХЙ”¤м(ЂЃф¤м((ЂЃҐР ‰Й•©•ЌСМЃЙЅ±±‰…Ќ¬ЃЭЎ•ёЃ…ёЃ•бС•Й№…°ЃQЎЙ•…ђЃҐМЃ№ЅРЃ…ёЃХ№СЅХЌЎ•ђЃ‘•ЙҐЩ•ђЃБЙ•™Ґа€°Ѓ…Не№ЊЂ ¤ЂфшЃм(ЂЂЂЃЌЅ№НРЃ™ҐбСХЙ”ЂфЃЌЙ•…С•ҐбСХЙ” ¤м(ЂЂЂЃЌЅ№НРЃЅ™™ҐЌҐ…±]ЙҐС”ЂфЃЩ¤№™ё ¤м(ЂЂЂЃ™ҐбСХЙ”№Ѕ™™ҐЌҐ…°№НС‘Ґё№Ѕё ‰‘…С„€°ЃЅ™™ҐЌҐ…±]ЙҐС”¤м(ЂЂЂЃЌЅ№НРЃНЅХЙЌ•QЎЙ•…‘%ђЂфЃ…Э…ҐРЃНС…ЙСAҐQЎЙ•…ђЎ™ҐбСХЙ”¤м(ЂЂЂЃ…Э…ҐРЃЌЅµБ±•С•AҐQХЙёЎ™ҐбСХЙ”°ЃНЅХЙЌ•QЎЙ•…‘%ђ°ЂИ¤м(ЂЂЂЃ…Э…ҐРЃЌЅµБ±•С•AҐQХЙёЎ™ҐбСХЙ”°ЃНЅХЙЌ•QЎЙ•…‘%ђ°ЂМ¤м((ЂЂЂЃЭЙҐС•I•ЕХ•НРЎ™ҐбСХЙ”№‘•Н­СЅБ%№БХР°Ѓм(ЂЂЂЂЂЃҐђиЂДА°(ЂЂЂЂЂЃµ•СЎЅђиЂ‰СЎЙ•…ђЅЙЅ±±‰…Ќ¬€°(ЂЂЂЂЂЃБ…Й…µМиЃмЃСЎЙ•…‘%ђиЃНЅХЙЌ•QЎЙ•…‘%ђ°Ѓ№ХµQХЙ№МиЂДЃф°(ЂЂЂЃф¤м(ЂЂЂЃ…Э…ҐРЃ•бБ•ЌР (ЂЂЂЂЂЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤ЂфшЃЙ•ЕХ•НС%ђЎµ•НН…ќ”°ЂДА¤¤°(ЂЂЂЂ¤№Й•НЅ±Щ•М№СЅ5…СЌЎ=‰©•ЌРЎмЃ•ЙЙЅИиЃмЃЌЅ‘”иЂґМИАЬШЃфЃф¤м((ЂЂЂЃЭЙҐС•I•ЕХ•НРЎ™ҐбСХЙ”№‘•Н­СЅБ%№БХР°Ѓм(ЂЂЂЂЂЃҐђиЂДД°(ЂЂЂЂЂЃµ•СЎЅђиЂ‰СЎЙ•…ђЅ™ЅЙ¬€°(ЂЂЂЂЂЃБ…Й…µМиЃмЃСЎЙ•…‘%ђиЃНЅХЙЌ•QЎЙ•…‘%ђЃф°(ЂЂЂЃф¤м(ЂЂЂЃЌЅ№НРЃ™ЅЙ­I•НБЅ№Н”ЂфЃ…Э…ҐРЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤ЂфшЃЙ•ЕХ•НС%ђЎµ•НН…ќ”°ЂДД¤¤м(ЂЂЂЃЌЅ№НРЃ‘•ЙҐЩ•‘%ђЂфЂ Ў™ЅЙ­I•НБЅ№Н”№Й•НХ±РЃ…МЃ)НЅ№=‰©•ЌР¤№СЎЙ•…ђЃ…МЃ)НЅ№=‰©•ЌР¤№Ґђм(ЂЂЂЃҐЂЎСеБ•ЅЃ‘•ЙҐЩ•‘%ђЂ„ффЂ‰НСЙҐ№њ€¤ЃСЎЙЅЬЃ№•ЬЃЙЙЅИ ‰Q…Ґ°ЃЅЙ¬ЃЙ•НБЅ№Н”ЃЎ…МЃ№јЃQЎЙ•…ђЃ%€¤м(ЂЂЂЃ…Э…ҐРЃЌЅµБ±•С•AҐQХЙёЎ™ҐбСХЙ”°Ѓ‘•ЙҐЩ•‘%ђ°ЂДИ°ЂД¤м((ЂЂЂЃЭЙҐС•I•ЕХ•НРЎ™ҐбСХЙ”№‘•Н­СЅБ%№БХР°Ѓм(ЂЂЂЂЂЃҐђиЂДМ°(ЂЂЂЂЂЃµ•СЎЅђиЂ‰СЎЙ•…ђЅЙЅ±±‰…Ќ¬€°(ЂЂЂЂЂЃБ…Й…µМиЃмЃСЎЙ•…‘%ђиЃ‘•ЙҐЩ•‘%ђ°Ѓ№ХµQХЙ№МиЂДЃф°(ЂЂЂЃф¤м(ЂЂЂЃ…Э…ҐРЃ•бБ•ЌР (ЂЂЂЂЂЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤ЂфшЃЙ•ЕХ•НС%ђЎµ•НН…ќ”°ЂДМ¤¤°(ЂЂЂЂ¤№Й•НЅ±Щ•М№СЅ5…СЌЎ=‰©•ЌРЎмЃ•ЙЙЅИиЃмЃЌЅ‘”иЂґМИАЬШЃфЃф¤м(ЂЂЂЃ•бБ•ЌРЎ™ҐбСХЙ”№…‘…БС•И№Н•ННҐЅ№М¤№СЅ!…Щ•1•№ќС  И¤м(ЂЂЂЃ•бБ•ЌРЎЅ™™ҐЌҐ…±]ЙҐС”¤№№ЅР№СЅ!…Щ•	••№…±±•ђ ¤м(ЂЂЂЃ…Э…ҐРЃНСЅБҐбСХЙ”Ў™ҐбСХЙ”¤м(ЂЃф¤м((ЂЃҐР ‰ЌЅµµҐСМЃ•бЌ±Х‘•ђЃЅЙ¬Ѓµ…ББҐ№ќМЃ‰•™ЅЙ”Ѓ„Ѓ±…С•ИЃСЎЙ•…ђЅЙ•…ђ€°Ѓ…Не№ЊЂ ¤ЂфшЃм(ЂЂЂЃЌЅ№НРЃ™ҐбСХЙ”ЂфЃЌЙ•…С•ҐбСХЙ” ¤м(ЂЂЂЃЌЅ№НРЃНЅХЙЌ•QЎЙ•…‘%ђЂфЃ…Э…ҐРЃНС…ЙСAҐQЎЙ•…ђЎ™ҐбСХЙ”¤м(ЂЂЂЃ…Э…ҐРЃЌЅµБ±•С•AҐQХЙёЎ™ҐбСХЙ”°ЃНЅХЙЌ•QЎЙ•…‘%ђ°ЂИ¤м(ЂЂЂЃ…Э…ҐРЃЌЅµБ±•С•AҐQХЙёЎ™ҐбСХЙ”°ЃНЅХЙЌ•QЎЙ•…‘%ђ°ЂМ¤м((ЂЂЂЃЭЙҐС•I•ЕХ•НРЎ™ҐбСХЙ”№‘•Н­СЅБ%№БХР°Ѓм(ЂЂЂЂЂЃҐђиЂДА°(ЂЂЂЂЂЃµ•СЎЅђиЂ‰СЎЙ•…ђЅ™ЅЙ¬€°(ЂЂЂЂЂЃБ…Й…µМиЃмЃСЎЙ•…‘%ђиЃНЅХЙЌ•QЎЙ•…‘%ђ°Ѓ•бЌ±Х‘•QХЙ№МиЃСЙХ”Ѓф°(ЂЂЂЃф¤м(ЂЂЂЃЌЅ№НРЃ™ЅЙ­•ђЂфЃ…Э…ҐРЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤ЂфшЃЙ•ЕХ•НС%ђЎµ•НН…ќ”°ЂДА¤¤м(ЂЂЂЃЌЅ№НРЃ‘•ЙҐЩ•‘%ђЂфЂ Ў™ЅЙ­•ђ№Й•НХ±РЃ…МЃ)НЅ№=‰©•ЌР¤№СЎЙ•…ђЃ…МЃ)НЅ№=‰©•ЌР¤№Ґђм(ЂЂЂЃҐЂЎСеБ•ЅЃ‘•ЙҐЩ•‘%ђЂ„ффЂ‰НСЙҐ№њ€¤ЃСЎЙЅЬЃ№•ЬЃЙЙЅИ ‰ЅЙ¬ЃЙ•НБЅ№Н”ЃЎ…МЃ№јЃ‘•ЙҐЩ•ђЃQЎЙ•…ђЃ%€¤м(ЂЂЂЃЭЙҐС•I•ЕХ•НРЎ™ҐбСХЙ”№‘•Н­СЅБ%№БХР°Ѓм(ЂЂЂЂЂЃҐђиЂДД°(ЂЂЂЂЂЃµ•СЎЅђиЂ‰СЎЙ•…ђЅЙ•…ђ€°(ЂЂЂЂЂЃБ…Й…µМиЃмЃСЎЙ•…‘%ђиЃ‘•ЙҐЩ•‘%ђ°ЃҐ№Ќ±Х‘•QХЙ№МиЃСЙХ”Ѓф°(ЂЂЂЃф¤м(ЂЂЂЃ…Э…ҐРЃ•бБ•ЌР (ЂЂЂЂЂЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤ЂфшЃЙ•ЕХ•НС%ђЎµ•НН…ќ”°ЂДД¤¤°(ЂЂЂЂ¤№Й•НЅ±Щ•М№СЅ5…СЌЎ=‰©•ЌРЎмЃЙ•НХ±РиЃмЃСЎЙ•…ђиЃмЃСХЙ№МиЃmнф°ЃнхtЃфЃфЃф¤м(ЂЂЂЃ…Э…ҐРЃНСЅБҐбСХЙ”Ў™ҐбСХЙ”¤м(ЂЃф¤м((ЂЃҐР ‰Й•…‘МЃ…№ђЃХБ‘…С•МЃБ•ЙНҐНС•ђЃ•бС•Й№…°Ѓµ•С…‘…С„ЃЭҐСЎЅХРЃЙ•НСЅЙҐ№њЃЎҐНСЅЙд€°Ѓ…Не№ЊЂ ¤ЂфшЃм(ЂЂЂЃЌЅ№НРЃ‘ҐЙ•ЌСЅЙдЂфЃµ­‘С•µБMе№ЊЎБ…С №©ЅҐёЎСµБ‘ҐИ ¤°Ђ‰ЌЅ‘•бЎЅНРµЎЅНРµµ•С…‘…С„µС•НРґ€¤¤м(ЂЂЂЃЌЅ№НРЃ…‘…БС•ИЂфЃ№•ЬЃ…­•!…Й№•НН‘…БС•ИЎЎ…Й№•НН%‘MЌЎ•µ„№Б…ЙН” ‰Б¤€¤¤м(ЂЂЂЃЌЅ№НРЃЅБ•№•ђЂфЃ…Э…ҐРЃ…‘…БС•И№ЅБ•ёЎмЃ­Ґ№ђиЂ‰ЌЙ•…С”€°ЃЌЭђиЂ€ЅБ•ЙНҐНС•ђ€Ѓф¤м(ЂЂЂЃҐЂ …ЅБ•№•ђ№Ѕ¬ЃсрЂ…ЅБ•№•ђ№Щ…±Х”№Ґ№ҐСҐ…±MС…С”№№…СҐЩ•I•¤Ѓм(ЂЂЂЂЂЃСЎЙЅЬЃ№•ЬЃЙЙЅИ ‰…­”ЃБ•ЙНҐНС•ђЃM•ННҐЅёЃЭ…МЃ№ЅРЃЌЙ•…С•ђ€¤м(ЂЂЂЃф(ЂЂЂЃЌЅ№НРЃНЅХЙЌ”ЂфЃ…‘…БС•И№Н•ННҐЅ№НlБtм(ЂЂЂЃҐЂ …НЅХЙЌ”¤ЃСЎЙЅЬЃ№•ЬЃЙЙЅИ ‰…­”ЃБ•ЙНҐНС•ђЃM•ННҐЅёЃЭ…МЃ№ЅРЃЅБ•№•ђ€¤м(ЂЂЂЃЌЅ№НРЃСЎЙ•…‘%ђЂфЃЎЅНСQЎЙ•…‘%‘MЌЎ•µ„№Б…ЙН” ‰µ•С…‘…С„µСЎЙ•…ђ€¤м(ЂЂЂЃЌЅ№НРЃНСЅЙ”ЂфЃ№•ЬЃ5…ББҐ№ќMСЅЙ”ЎмЃ‘ҐЙ•ЌСЅЙдЃф¤м(ЂЂЂЃ…Э…ҐРЃНСЅЙ”№Ґ№ҐСҐ…±Ґй” ¤м(ЂЂЂЃ…Э…ҐРЃНСЅЙ”№ЌЙ•…С•AЙЅЩҐНҐЅ№…°Ўм(ЂЂЂЂЂЃЎЅНСQЎЙ•…‘%ђиЃСЎЙ•…‘%ђ°(ЂЂЂЂЂЃЌЙ•…С•I•ЕХ•НС%ђиЂ‰µ•С…‘…С„µЌЙ•…С”€°(ЂЂЂЂЂЃЎ…Й№•НН%ђиЃ…‘…БС•И№Ў…Й№•НН%ђ°(ЂЂЂЂЂЃЌЭђиЂ€ЅБ•ЙНҐНС•ђ€°(ЂЂЂЂЂЃСҐС±”иЂ‰	•™ЅЙ”€°(ЂЂЂЂЂЃСЙ…№НБЅЙС5Ѕ‘•±%ђиЂ‰ЌЅ‘•бЎЅНРЅБ¤µ№…СҐЩ”€°(ЂЂЂЂЂЃ•БЎ•µ•Й…°иЃ™…±Н”°(ЂЂЂЂЂЃЎҐНСЅЙе5Ѕ‘”иЂ‰Б…ќҐ№…С•ђ€°(ЂЂЂЃф¤м(ЂЂЂЃ…Э…ҐРЃНСЅЙ”№ЌЅµµҐСI•…‘дЎм(ЂЂЂЂЂЃЎЅНСQЎЙ•…‘%ђиЃСЎЙ•…‘%ђ°(ЂЂЂЂЂЃ№…СҐЩ•M•ННҐЅ№I•иЃЅБ•№•ђ№Щ…±Х”№Ґ№ҐСҐ…±MС…С”№№…СҐЩ•I•°(ЂЂЂЃф¤м(ЂЂЂЃ…Э…ҐРЃНСЅЙ”№Ќ±ЅН” ¤м((ЂЂЂЃЌЅ№НРЃ™ҐбСХЙ”ЂфЃЌЙ•…С•ҐбСХЙ”Ўм(ЂЂЂЂЂЃ•бС•Й№…±‘…БС•ЙМиЃ№•ЬЃ5…АЎml‰Б¤€°Ѓ…‘…БС•Йut¤°(ЂЂЂЂЂЃµ…ББҐ№ќMСЅЙ•ҐЙ•ЌСЅЙдиЃ‘ҐЙ•ЌСЅЙд°(ЂЂЂЃф¤м(ЂЂЂЃЌЅ№НРЃЅ™™ҐЌҐ…±]ЙҐС”ЂфЃЩ¤№™ё ¤м(ЂЂЂЃ™ҐбСХЙ”№Ѕ™™ҐЌҐ…°№НС‘Ґё№Ѕё ‰‘…С„€°ЃЅ™™ҐЌҐ…±]ЙҐС”¤м((ЂЂЂЃЭЙҐС•I•ЕХ•НРЎ™ҐбСХЙ”№‘•Н­СЅБ%№БХР°Ѓм(ЂЂЂЂЂЃҐђиЂФД°(ЂЂЂЂЂЃµ•СЎЅђиЂ‰СЎЙ•…ђЅ№…µ”ЅН•Р€°(ЂЂЂЂЂЃБ…Й…µМиЃмЃСЎЙ•…‘%ђ°Ѓ№…µ”иЂ‰™С•И€Ѓф°(ЂЂЂЃф¤м(ЂЂЂЃ…Э…ҐРЃ•бБ•ЌРЎ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤ЂфшЃЙ•ЕХ•НС%ђЎµ•НН…ќ”°ЂФД¤¤¤№Й•НЅ±Щ•М№СЅЕХ…°Ўм(ЂЂЂЂЂЃҐђиЂФД°(ЂЂЂЂЂЃЙ•НХ±РиЃнф°(ЂЂЂЃф¤м((ЂЂЂЃЭЙҐС•I•ЕХ•НРЎ™ҐбСХЙ”№‘•Н­СЅБ%№БХР°Ѓм(ЂЂЂЂЂЃҐђиЂФИ°(ЂЂЂЂЂЃµ•СЎЅђиЂ‰СЎЙ•…ђЅЙ•…ђ€°(ЂЂЂЂЂЃБ…Й…µМиЃмЃСЎЙ•…‘%ђ°ЃҐ№Ќ±Х‘•QХЙ№МиЃ™…±Н”Ѓф°(ЂЂЂЃф¤м(ЂЂЂЃ…Э…ҐРЃ•бБ•ЌР (ЂЂЂЂЂЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤ЂфшЃЙ•ЕХ•НС%ђЎµ•НН…ќ”°ЂФИ¤¤°(ЂЂЂЂ¤№Й•НЅ±Щ•М№СЅ5…СЌЎ=‰©•ЌРЎмЃЙ•НХ±РиЃмЃСЎЙ•…ђиЃмЃҐђиЃСЎЙ•…‘%ђ°Ѓ№…µ”иЂ‰™С•И€°ЃСХЙ№МиЃmtЃфЃфЃф¤м(ЂЂЂЃЭЙҐС•I•ЕХ•НРЎ™ҐбСХЙ”№‘•Н­СЅБ%№БХР°Ѓм(ЂЂЂЂЂЃҐђиЂФМ°(ЂЂЂЂЂЃµ•СЎЅђиЂ‰СЎЙ•…ђЅЙ•…ђ€°(ЂЂЂЂЂЃБ…Й…µМиЃмЃСЎЙ•…‘%ђ°ЃҐ№Ќ±Х‘•QХЙ№МиЃСЙХ”Ѓф°(ЂЂЂЃф¤м(ЂЂЂЃ…Э…ҐРЃ•бБ•ЌР (ЂЂЂЂЂЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤ЂфшЃЙ•ЕХ•НС%ђЎµ•НН…ќ”°ЂФМ¤¤°(ЂЂЂЂ¤№Й•НЅ±Щ•М№СЅ5…СЌЎ=‰©•ЌРЎмЃ•ЙЙЅИиЃмЃЌЅ‘”иЂґМИШАИЃфЃф¤м(ЂЂЂЃ•бБ•ЌРЎНЅХЙЌ”№Н№…БНЎЅСI•…‘М¤№СЅ	” А¤м(ЂЂЂЃ•бБ•ЌРЎ…‘…БС•И№Н•ННҐЅ№М¤№СЅ!…Щ•1•№ќС  Д¤м(ЂЂЂЃ•бБ•ЌРЎЅ™™ҐЌҐ…±]ЙҐС”¤№№ЅР№СЅ!…Щ•	••№…±±•ђ ¤м(ЂЂЂЃ…Э…ҐРЃНСЅБҐбСХЙ”Ў™ҐбСХЙ”¤м(ЂЃф¤м((ЂЃҐР ‰Й•НСЅЙ•МЃMСЅЙ”µЅЭ№•ђЃ•бС•Й№…°ЃЙ•…ђ°ЃЙ•НХµ”°Ѓ…№ђЃЅЙ¬ЃЅёЃ‘•µ…№ђ€°Ѓ…Не№ЊЂ ¤ЂфшЃм(ЂЂЂЃЌЅ№НРЃ‘ҐЙ•ЌСЅЙдЂфЃµ­‘С•µБMе№ЊЎБ…С №©ЅҐёЎСµБ‘ҐИ ¤°Ђ‰ЌЅ‘•бЎЅНРµЎЅНРµЙ•НС…ЙРµС•НРґ€¤¤м(ЂЂЂЃЌЅ№НРЃ…‘…БС•ИЂфЃ№•ЬЃ…­•!…Й№•НН‘…БС•И (ЂЂЂЂЂЃЎ…Й№•НН%‘MЌЎ•µ„№Б…ЙН” ‰Б¤€¤°(ЂЂЂЂЂЃХ№‘•™Ґ№•ђ°(ЂЂЂЂЂЃХ№‘•™Ґ№•ђ°(ЂЂЂЂЂЃХ№‘•™Ґ№•ђ°(ЂЂЂЂЂЃмЃСЅС…±QЅ­•№МиЂЬЬ°ЃЌЅ№С•бСUН•‘QЅ­•№МиЂММ°ЃЌЅ№С•бС]Ґ№‘ЅЭQЅ­•№МиЂИААЃф°(ЂЂЂЂ¤м(ЂЂЂЃЌЅ№НРЃЅБ•№•ђЂфЃ…Э…ҐРЃ…‘…БС•И№ЅБ•ёЎмЃ­Ґ№ђиЂ‰ЌЙ•…С”€°ЃЌЭђиЂ€ЅБ•ЙНҐНС•ђ€Ѓф¤м(ЂЂЂЃҐЂ …ЅБ•№•ђ№Ѕ¬¤ЃСЎЙЅЬЃ№•ЬЃЙЙЅИЎЅБ•№•ђ№•ЙЙЅИ№µ•НН…ќ”¤м(ЂЂЂЃЌЅ№НРЃНЅХЙЌ”ЂфЃЅБ•№•ђ№Щ…±Х”м(ЂЂЂЃЌЅ№НРЃБ•ЙНҐНС•‘QХЙ№%ђЂфЃЎЅНСQХЙ№%‘MЌЎ•µ„№Б…ЙН” ‰Б•ЙНҐНС•ђµСХЙё€¤м(ЂЂЂЃ…Э…ҐРЃНЅХЙЌ”№•б•ЌХС”Ўм(ЂЂЂЂЂЃСеБ”иЂ‰СХЙё№НС…ЙР€°(ЂЂЂЂЂЃСХЙ№%ђиЃБ•ЙНҐНС•‘QХЙ№%ђ°(ЂЂЂЂЂЃҐ№БХРиЃmмЃСеБ”иЂ‰С•бР€°ЃС•бРиЂ‰Б•ЙНҐНС•ђЃЕХ•НСҐЅё€Ѓхt°(ЂЂЂЃф¤м(ЂЂЂЃЌЅ№НРЃ™…­•MЅХЙЌ”ЂфЃ…‘…БС•И№Н•ННҐЅ№НlБtм(ЂЂЂЃҐЂ …™…­•MЅХЙЌ”¤ЃСЎЙЅЬЃ№•ЬЃЙЙЅИ ‰…­”ЃБ•ЙНҐНС•ђЃM•ННҐЅёЃЭ…МЃ№ЅРЃЅБ•№•ђ€¤м(ЂЂЂЃ™…­•MЅХЙЌ”№…ББ•№‘Q•бР ‰Б•ЙНҐНС•ђЃ…№НЭ•И€¤м(ЂЂЂЃ™…­•MЅХЙЌ”№НХЌЌ••‘QХЙё ¤м(ЂЂЂЃЌЅ№НРЃН№…БНЎЅРЂфЃ…Э…ҐРЃНЅХЙЌ”№Й•…‘M№…БНЎЅР ¤м(ЂЂЂЃҐЂ …Н№…БНЎЅР№Ѕ¬ЃсрЂ…НЅХЙЌ”№Ґ№ҐСҐ…±MС…С”№№…СҐЩ•I•ЃсрЂ…Н№…БНЎЅР№Щ…±Х”№СХЙ№НlБt¤Ѓм(ЂЂЂЂЂЃСЎЙЅЬЃ№•ЬЃЙЙЅИ ‰…­”ЃБ•ЙНҐНС•ђЃM№…БНЎЅРЃЭ…МЃ№ЅРЃЌЙ•…С•ђ€¤м(ЂЂЂЃф((ЂЂЂЃЌЅ№НРЃСЎЙ•…‘%ђЂфЃЎЅНСQЎЙ•…‘%‘MЌЎ•µ„№Б…ЙН” ‰Б•ЙНҐНС•ђµСЎЙ•…ђ€¤м(ЂЂЂЃЌЅ№НРЃНСЅЙ”ЂфЃ№•ЬЃ5…ББҐ№ќMСЅЙ”ЎмЃ‘ҐЙ•ЌСЅЙдЃф¤м(ЂЂЂЃ…Э…ҐРЃНСЅЙ”№Ґ№ҐСҐ…±Ґй” ¤м(ЂЂЂЃ…Э…ҐРЃНСЅЙ”№ЌЙ•…С•AЙЅЩҐНҐЅ№…°Ўм(ЂЂЂЂЂЃЎЅНСQЎЙ•…‘%ђиЃСЎЙ•…‘%ђ°(ЂЂЂЂЂЃЌЙ•…С•I•ЕХ•НС%ђиЂ‰Б•ЙНҐНС•ђµЌЙ•…С”€°(ЂЂЂЂЂЃЎ…Й№•НН%ђиЃ…‘…БС•И№Ў…Й№•НН%ђ°(ЂЂЂЂЂЃЌЭђиЂ€ЅБ•ЙНҐНС•ђ€°(ЂЂЂЂЂЃСҐС±”иЂ‰A•ЙНҐНС•ђЃA¤€°(ЂЂЂЂЂЃСЙ…№НБЅЙС5Ѕ‘•±%ђиЂ‰ЌЅ‘•бЎЅНРЅБ¤µ№…СҐЩ”€°(ЂЂЂЂЂЃ•БЎ•µ•Й…°иЃ™…±Н”°(ЂЂЂЂЂЃЎҐНСЅЙе5Ѕ‘”иЂ‰±•ќ…Ќд€°(ЂЂЂЃф¤м(ЂЂЂЃ…Э…ҐРЃНСЅЙ”№ЌЅµµҐСI•…‘дЎм(ЂЂЂЂЂЃЎЅНСQЎЙ•…‘%ђиЃСЎЙ•…‘%ђ°(ЂЂЂЂЂЃ№…СҐЩ•M•ННҐЅ№I•иЃНЅХЙЌ”№Ґ№ҐСҐ…±MС…С”№№…СҐЩ•I•°(ЂЂЂЂЂЃСХЙ№5…ББҐ№ќМиЃl(ЂЂЂЂЂЂЂЃм(ЂЂЂЂЂЂЂЂЂЃЎЅНСQХЙ№%ђиЃБ•ЙНҐНС•‘QХЙ№%ђ°(ЂЂЂЂЂЂЂЂЂЃ№…СҐЩ•QХЙ№I•иЃН№…БНЎЅР№Щ…±Х”№СХЙ№НlБt№№…СҐЩ•QХЙ№I•°(ЂЂЂЂЂЂЂЂЂЃ№…СҐЩ•Ў•Ќ­БЅҐ№СI•иЃН№…БНЎЅР№Щ…±Х”№СХЙ№НlБt№ЌЎ•Ќ­БЅҐ№Р°(ЂЂЂЂЂЂЂЃф°(ЂЂЂЂЂЃt°(ЂЂЂЃф¤м(ЂЂЂЃ…Э…ҐРЃНСЅЙ”№Ќ±ЅН” ¤м((ЂЂЂЃЌЅ№НРЃЙ•НСЅЙ•‘5Ѕ‘•°ЂфЃ…‘…БС•И№Ќ…С…±Ѕњ№µЅ‘•±НlЕtь№Й•м(ЂЂЂЃҐЂ …Й•НСЅЙ•‘5Ѕ‘•°¤ЃСЎЙЅЬЃ№•ЬЃЙЙЅИ ‰…­”Ѓ‘…БС•ИЃЎ…МЃ№јЃЙ•НСЅЙ•ђЃ5Ѕ‘•°€¤м(ЂЂЂЃ™…­•MЅХЙЌ”№Н•СMС…С•ЅЙM№…БНЎЅРЎм(ЂЂЂЂЂЂёё№™…­•MЅХЙЌ”№НС…С”°(ЂЂЂЂЂЃ•™™•ЌСҐЩ•5Ѕ‘•°иЃЙ•НСЅЙ•‘5Ѕ‘•°°(ЂЂЂЂЂЃЙ•НЅ±Щ•‘5Ѕ‘•±1…‰•°иЂ‰…­”ЃM•ЌЅ№‘…Йд€°(ЂЂЂЃф¤м((ЂЂЂЃЌЅ№НРЃ™ҐбСХЙ”ЂфЃЌЙ•…С•ҐбСХЙ”Ўм(ЂЂЂЂЂЃ•бС•Й№…±‘…БС•ЙМиЃ№•ЬЃ5…АЎml‰Б¤€°Ѓ…‘…БС•Йut¤°(ЂЂЂЂЂЃµ…ББҐ№ќMСЅЙ•ҐЙ•ЌСЅЙдиЃ‘ҐЙ•ЌСЅЙд°(ЂЂЂЃф¤м(ЂЂЂЃЌЅ№НРЃЅ™™ҐЌҐ…±]ЙҐС”ЂфЃЩ¤№™ё ¤м(ЂЂЂЃ™ҐбСХЙ”№Ѕ™™ҐЌҐ…°№НС‘Ґё№Ѕё ‰‘…С„€°ЃЅ™™ҐЌҐ…±]ЙҐС”¤м(ЂЂЂЃЭЙҐС•I•ЕХ•НРЎ™ҐбСХЙ”№‘•Н­СЅБ%№БХР°Ѓм(ЂЂЂЂЂЃҐђиЂША°(ЂЂЂЂЂЃµ•СЎЅђиЂ‰СЎЙ•…ђЅЙ•…ђ€°(ЂЂЂЂЂЃБ…Й…µМиЃмЃСЎЙ•…‘%ђ°ЃҐ№Ќ±Х‘•QХЙ№МиЃСЙХ”Ѓф°(ЂЂЂЃф¤м(ЂЂЂЃ…Э…ҐРЃ•бБ•ЌР (ЂЂЂЂЂЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤ЂфшЃЙ•ЕХ•НС%ђЎµ•НН…ќ”°ЂША¤¤°(ЂЂЂЂ¤№Й•НЅ±Щ•М№СЅ5…СЌЎ=‰©•ЌРЎм(ЂЂЂЂЂЃЙ•НХ±РиЃм(ЂЂЂЂЂЂЂЃСЎЙ•…ђиЃм(ЂЂЂЂЂЂЂЂЂЃҐђиЃСЎЙ•…‘%ђ°(ЂЂЂЂЂЂЂЂЂЃ№…µ”иЂ‰A•ЙНҐНС•ђЃA¤€°(ЂЂЂЂЂЂЂЂЂЃСХЙ№МиЃmмЃҐђиЃБ•ЙНҐНС•‘QХЙ№%ђ°ЃНС…СХМиЂ‰ЌЅµБ±•С•ђ€Ѓхt°(ЂЂЂЂЂЂЂЃф°(ЂЂЂЂЂЃф°(ЂЂЂЃф¤м(ЂЂЂЃЌЅ№НРЃЙ•НСЅЙ•‘UН…ќ”ЂфЃ…Э…ҐРЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤Ђфш(ЂЂЂЂЂЃµ•СЎЅђЎµ•НН…ќ”°Ђ‰СЎЙ•…ђЅСЅ­•№UН…ќ”ЅХБ‘…С•ђ€¤°(ЂЂЂЂ¤м(ЂЂЂЃ•бБ•ЌРЎЙ•НСЅЙ•‘UН…ќ”¤№СЅ5…СЌЎ=‰©•ЌРЎм(ЂЂЂЂЂЃБ…Й…µМиЃм(ЂЂЂЂЂЂЂЃСЎЙ•…‘%ђ°(ЂЂЂЂЂЂЂЃСХЙ№%ђиЃБ•ЙНҐНС•‘QХЙ№%ђ°(ЂЂЂЂЂЂЂЃСЅ­•№UН…ќ”иЃмЃСЅС…°иЃмЃСЅС…±QЅ­•№МиЂЬЬЃф°ЃµЅ‘•±Ѕ№С•бС]Ґ№‘ЅЬиЂИААЃф°(ЂЂЂЂЂЃф°(ЂЂЂЃф¤м(ЂЂЂЃ•бБ•ЌРЎ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№µ•НН…ќ•М№Ґ№‘•б=ЎЙ•НСЅЙ•‘UН…ќ”¤¤№СЅ	•Й•…С•ЙQЎ…ё (ЂЂЂЂЂЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№µ•НН…ќ•М№™Ґ№‘%№‘•а Ўµ•НН…ќ”¤ЂфшЃЙ•ЕХ•НС%ђЎµ•НН…ќ”°ЂША¤¤°(ЂЂЂЂ¤м(ЂЂЂЃ•бБ•ЌРЎ™…­•MЅХЙЌ”№Н№…БНЎЅСI•…‘М¤№СЅ	” И¤м((ЂЂЂЃЭЙҐС•I•ЕХ•НРЎ™ҐбСХЙ”№‘•Н­СЅБ%№БХР°Ѓм(ЂЂЂЂЂЃҐђиЂШР°(ЂЂЂЂЂЃµ•СЎЅђиЂ‰ЌЅ‘•бЎЅНРЅСЎЙ•…ђЅХН…ќ”ЅҐ№НБ•ЌР€°(ЂЂЂЂЂЃБ…Й…µМиЃмЃСЎЙ•…‘%ђЃф°(ЂЂЂЃф¤м(ЂЂЂЃ…Э…ҐРЃ•бБ•ЌР (ЂЂЂЂЂЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤ЂфшЃЙ•ЕХ•НС%ђЎµ•НН…ќ”°ЂШР¤¤°(ЂЂЂЂ¤№Й•НЅ±Щ•М№СЅ5…СЌЎ=‰©•ЌРЎм(ЂЂЂЂЂЃЙ•НХ±РиЃм(ЂЂЂЂЂЂЂЃСЎЙ•…‘%ђ°(ЂЂЂЂЂЂЂЃХН…ќ”иЃм(ЂЂЂЂЂЂЂЂЂЃСЅС…±QЅ­•№МиЂЬЬ°(ЂЂЂЂЂЂЂЂЂЃЌЅ№С•бСUН•‘QЅ­•№МиЂММ°(ЂЂЂЂЂЂЂЂЂЃЌЅ№С•бС]Ґ№‘ЅЭQЅ­•№МиЂИАА°(ЂЂЂЂЂЂЂЃф°(ЂЂЂЂЂЃф°(ЂЂЂЃф¤м((ЂЂЂЃЭЙҐС•I•ЕХ•НРЎ™ҐбСХЙ”№‘•Н­СЅБ%№БХР°Ѓм(ЂЂЂЂЂЃҐђиЂШМ°(ЂЂЂЂЂЃµ•СЎЅђиЂ‰ЌЅ‘•бЎЅНРЅСЎЙ•…ђЅҐ№НБ•ЌР€°(ЂЂЂЂЂЃБ…Й…µМиЃмЃСЎЙ•…‘%ђЃф°(ЂЂЂЃф¤м(ЂЂЂЃ…Э…ҐРЃ•бБ•ЌР (ЂЂЂЂЂЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤ЂфшЃЙ•ЕХ•НС%ђЎµ•НН…ќ”°ЂШМ¤¤°(ЂЂЂЂ¤№Й•НЅ±Щ•М№СЅ5…СЌЎ=‰©•ЌРЎм(ЂЂЂЂЂЃЙ•НХ±РиЃм(ЂЂЂЂЂЂЂЃЅЭ№•ИиЂ‰•бС•Й№…°€°(ЂЂЂЂЂЂЂЃ•™™•ЌСҐЩ•5Ѕ‘•°иЃЙ•НСЅЙ•‘5Ѕ‘•°°(ЂЂЂЂЂЂЂЃЙ•НЅ±Щ•‘5Ѕ‘•±1…‰•°иЂ‰…­”ЃM•ЌЅ№‘…Йд€°(ЂЂЂЂЂЃф°(ЂЂЂЃф¤м((ЂЂЂЃЭЙҐС•I•ЕХ•НРЎ™ҐбСХЙ”№‘•Н­СЅБ%№БХР°Ѓм(ЂЂЂЂЂЃҐђиЂШД°(ЂЂЂЂЂЃµ•СЎЅђиЂ‰СЎЙ•…ђЅЙ•НХµ”€°(ЂЂЂЂЂЃБ…Й…µМиЃмЃСЎЙ•…‘%ђЃф°(ЂЂЂЃф¤м(ЂЂЂЃ…Э…ҐРЃ•бБ•ЌР (ЂЂЂЂЂЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤ЂфшЃЙ•ЕХ•НС%ђЎµ•НН…ќ”°ЂШД¤¤°(ЂЂЂЂ¤№Й•НЅ±Щ•М№СЅ5…СЌЎ=‰©•ЌРЎм(ЂЂЂЂЂЃЙ•НХ±РиЃм(ЂЂЂЂЂЂЂЃСЎЙ•…ђиЃмЃҐђиЃСЎЙ•…‘%ђ°ЃСХЙ№МиЃmмЃҐђиЃБ•ЙНҐНС•‘QХЙ№%ђЃхtЃф°(ЂЂЂЂЂЂЂЃµЅ‘•°иЂ‰ЌЅ‘•бЎЅНРЅБ¤µ№…СҐЩ”€°(ЂЂЂЂЂЂЂЃҐ№ҐСҐ…±QХЙ№НA…ќ”иЃ№Х±°°(ЂЂЂЂЂЃф°(ЂЂЂЃф¤м((ЂЂЂЃЭЙҐС•I•ЕХ•НРЎ™ҐбСХЙ”№‘•Н­СЅБ%№БХР°Ѓм(ЂЂЂЂЂЃҐђиЂШИ°(ЂЂЂЂЂЃµ•СЎЅђиЂ‰СЎЙ•…ђЅ™ЅЙ¬€°(ЂЂЂЂЂЃБ…Й…µМиЃм(ЂЂЂЂЂЂЂЃСЎЙ•…‘%ђ°(ЂЂЂЂЂЂЂЃ±…НСQХЙ№%ђиЃБ•ЙНҐНС•‘QХЙ№%ђ°(ЂЂЂЂЂЂЂЃЌЭђиЂ€ЅБ•ЙНҐНС•ђµЭЅЙ­СЙ•”€°(ЂЂЂЂЂЂЂЃЙХ№СҐµ•]ЅЙ­НБ…Ќ•IЅЅСМиЃl€ЅБ•ЙНҐНС•ђµЭЅЙ­СЙ•”€°Ђ€ЅБ•ЙНҐНС•ђ‰t°(ЂЂЂЂЂЃф°(ЂЂЂЃф¤м(ЂЂЂЃЌЅ№НРЃЙ•НС…ЙС•‘ЅЙ¬ЂфЃ…Э…ҐРЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤ЂфшЃЙ•ЕХ•НС%ђЎµ•НН…ќ”°ЂШИ¤¤м(ЂЂЂЃ•бБ•ЌРЎЙ•НС…ЙС•‘ЅЙ¬¤№СЅ5…СЌЎ=‰©•ЌРЎм(ЂЂЂЂЂЃЙ•НХ±РиЃм(ЂЂЂЂЂЂЂЃЌЭђиЂ€ЅБ•ЙНҐНС•ђµЭЅЙ­СЙ•”€°(ЂЂЂЂЂЂЂЃСЎЙ•…ђиЃм(ЂЂЂЂЂЂЂЂЂЃҐђиЃ•бБ•ЌР№№ЅР№НСЙҐ№ќ5…СЌЎҐ№њ ЅyБ•ЙНҐНС•ђµСЎЙ•…ђђЅФ¤°(ЂЂЂЂЂЂЂЂЂЃЌЭђиЂ€ЅБ•ЙНҐНС•ђµЭЅЙ­СЙ•”€°(ЂЂЂЂЂЂЂЂЂЃ™ЅЙ­•‘ЙЅµ%ђиЃСЎЙ•…‘%ђ°(ЂЂЂЂЂЂЂЂЂЃСХЙ№МиЃmмЃНС…СХМиЂ‰ЌЅµБ±•С•ђ€Ѓхt°(ЂЂЂЂЂЂЂЃф°(ЂЂЂЂЂЃф°(ЂЂЂЃф¤м(ЂЂЂЃЌЅ№НРЃЙ•НС…ЙС•‘•ЙҐЩ•‘%ђЂфЂ ЎЙ•НС…ЙС•‘ЅЙ¬№Й•НХ±РЃ…МЃ)НЅ№=‰©•ЌР¤№СЎЙ•…ђЃ…МЃ)НЅ№=‰©•ЌР¤№Ґђм(ЂЂЂЃҐЂЎСеБ•ЅЃЙ•НС…ЙС•‘•ЙҐЩ•‘%ђЂ„ффЂ‰НСЙҐ№њ€¤ЃСЎЙЅЬЃ№•ЬЃЙЙЅИ ‰I•НС…ЙС•ђЃЅЙ¬ЃЎ…МЃ№јЃ%€¤м(ЂЂЂЃ…Э…ҐРЃ•бБ•ЌР (ЂЂЂЂЂЃ™ҐбСХЙ”№µ…ББҐ№ќMСЅЙ”№ќ•СQЎЙ•…ђЎЎЅНСQЎЙ•…‘%‘MЌЎ•µ„№Б…ЙН”ЎЙ•НС…ЙС•‘•ЙҐЩ•‘%ђ¤¤°(ЂЂЂЂ¤№Й•НЅ±Щ•М№СЅ5…СЌЎ=‰©•ЌРЎмЃЌЭђиЂ€ЅБ•ЙНҐНС•ђµЭЅЙ­СЙ•”€Ѓф¤м(ЂЂЂЃ•бБ•ЌРЎЅ™™ҐЌҐ…±]ЙҐС”¤№№ЅР№СЅ!…Щ•	••№…±±•ђ ¤м(ЂЂЂЃ…Э…ҐРЃНСЅБҐбСХЙ”Ў™ҐбСХЙ”¤м(ЂЃф¤м((ЂЃҐР ‰С…Ґ°µЅЙ­МЃСЎ”Ѓ±…С•НРЃЌЅµБ±•С•ђЃЎ•Ќ­БЅҐ№РЃЭЎҐ±”ЃСЎ”ЃНЅХЙЌ”ЃQХЙёЃҐМЃ…ЌСҐЩ”€°Ѓ…Не№ЊЂ ¤ЂфшЃм(ЂЂЂЃЌЅ№НРЃ™ҐбСХЙ”ЂфЃЌЙ•…С•ҐбСХЙ” ¤м(ЂЂЂЃЌЅ№НРЃЅ™™ҐЌҐ…±]ЙҐС”ЂфЃЩ¤№™ё ¤м(ЂЂЂЃ™ҐбСХЙ”№Ѕ™™ҐЌҐ…°№НС‘Ґё№Ѕё ‰‘…С„€°ЃЅ™™ҐЌҐ…±]ЙҐС”¤м(ЂЂЂЃЌЅ№НРЃСЎЙ•…‘%ђЂфЃ…Э…ҐРЃНС…ЙСAҐQЎЙ•…ђЎ™ҐбСХЙ”¤м(ЂЂЂЃ…Э…ҐРЃЌЅµБ±•С•AҐQХЙёЎ™ҐбСХЙ”°ЃСЎЙ•…‘%ђ°ЂИ¤м(ЂЂЂЃЌЅ№НРЃ…ЌСҐЩ•QХЙ№%ђЂфЃ…Э…ҐРЃНС…ЙСAҐQХЙёЎ™ҐбСХЙ”°ЃСЎЙ•…‘%ђ°ЂМ¤м((ЂЂЂЃЭЙҐС•I•ЕХ•НРЎ™ҐбСХЙ”№‘•Н­СЅБ%№БХР°Ѓм(ЂЂЂЂЂЃҐђиЂДА°(ЂЂЂЂЂЃµ•СЎЅђиЂ‰СЎЙ•…ђЅ™ЅЙ¬€°(ЂЂЂЂЂЃБ…Й…µМиЃмЃСЎЙ•…‘%ђЃф°(ЂЂЂЃф¤м(ЂЂЂЃЌЅ№НРЃ™ЅЙ­I•НБЅ№Н”ЂфЃ…Э…ҐРЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤ЂфшЃЙ•ЕХ•НС%ђЎµ•НН…ќ”°ЂДА¤¤м(ЂЂЂЃ•бБ•ЌРЎ™ЅЙ­I•НБЅ№Н”¤№СЅ5…СЌЎ=‰©•ЌРЎмЃЙ•НХ±РиЃмЃСЎЙ•…ђиЃмЃСХЙ№МиЃmнхtЃфЃфЃф¤м(ЂЂЂЃЌЅ№НРЃ‘•ЙҐЩ•‘%ђЂфЂ Ў™ЅЙ­I•НБЅ№Н”№Й•НХ±РЃ…МЃ)НЅ№=‰©•ЌР¤№СЎЙ•…ђЃ…МЃ)НЅ№=‰©•ЌР¤№Ґђм(ЂЂЂЃҐЂЎСеБ•ЅЃ‘•ЙҐЩ•‘%ђЂ„ффЂ‰НСЙҐ№њ€¤ЃСЎЙЅЬЃ№•ЬЃЙЙЅИ ‰ЅЙ¬ЃЙ•НБЅ№Н”ЃЎ…МЃ№јЃ‘•ЙҐЩ•ђЃQЎЙ•…ђЃ%€¤м((ЂЂЂЃЭЙҐС•I•ЕХ•НРЎ™ҐбСХЙ”№‘•Н­СЅБ%№БХР°Ѓм(ЂЂЂЂЂЃҐђиЂДД°(ЂЂЂЂЂЃµ•СЎЅђиЂ‰СЎЙ•…ђЅЙЅ±±‰…Ќ¬€°(ЂЂЂЂЂЃБ…Й…µМиЃмЃСЎЙ•…‘%ђиЃ‘•ЙҐЩ•‘%ђ°Ѓ№ХµQХЙ№МиЂДЃф°(ЂЂЂЃф¤м(ЂЂЂЃ…Э…ҐРЃ•бБ•ЌР (ЂЂЂЂЂЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤ЂфшЃЙ•ЕХ•НС%ђЎµ•НН…ќ”°ЂДД¤¤°(ЂЂЂЂ¤№Й•НЅ±Щ•М№СЅ5…СЌЎ=‰©•ЌРЎмЃЙ•НХ±РиЃмЃСЎЙ•…ђиЃмЃҐђиЃ‘•ЙҐЩ•‘%ђ°ЃСХЙ№МиЃmнхtЃфЃфЃф¤м(ЂЂЂЃ•бБ•ЌРЎ™ҐбСХЙ”№…‘…БС•И№Н•ННҐЅ№М¤№СЅ!…Щ•1•№ќС  И¤м(ЂЂЂЃ•бБ•ЌРЎЅ™™ҐЌҐ…±]ЙҐС”¤№№ЅР№СЅ!…Щ•	••№…±±•ђ ¤м((ЂЂЂЃЌЅ№НРЃНЅХЙЌ”ЂфЃ™ҐбСХЙ”№…‘…БС•И№Н•ННҐЅ№НlБtм(ЂЂЂЃНЅХЙЌ”ь№…ББ•№‘Q•бР ‰‘Ѕ№”€¤м(ЂЂЂЃНЅХЙЌ”ь№НХЌЌ••‘QХЙё ¤м(ЂЂЂЃ…Э…ҐРЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤Ђфш(ЂЂЂЂЂЃСХЙ№Щ•№РЎµ•НН…ќ”°Ђ‰СХЙёЅЌЅµБ±•С•ђ€°Ѓ…ЌСҐЩ•QХЙ№%ђ¤°(ЂЂЂЂ¤м(ЂЂЂЃ…Э…ҐРЃНСЅБҐбСХЙ”Ў™ҐбСХЙ”¤м(ЂЃф¤м((ЂЃҐР ‰Й•©•ЌСМЃХ№Н…™”Ѓ•бС•Й№…°ЃЅЙ¬ЃЅЩ•ЙЙҐ‘•МЃЭҐСЎЅХРЃЅ™™ҐЌҐ…°Ѓ™…±±‰…Ќ¬€°Ѓ…Не№ЊЂ ¤ЂфшЃм(ЂЂЂЃЌЅ№НРЃ™ҐбСХЙ”ЂфЃЌЙ•…С•ҐбСХЙ” ¤м(ЂЂЂЃЌЅ№НРЃЅ™™ҐЌҐ…±]ЙҐС”ЂфЃЩ¤№™ё ¤м(ЂЂЂЃ™ҐбСХЙ”№Ѕ™™ҐЌҐ…°№НС‘Ґё№Ѕё ‰‘…С„€°ЃЅ™™ҐЌҐ…±]ЙҐС”¤м(ЂЂЂЃЌЅ№НРЃСЎЙ•…‘%ђЂфЃ…Э…ҐРЃНС…ЙСAҐQЎЙ•…ђЎ™ҐбСХЙ”¤м(ЂЂЂЃЌЅ№НРЃ™ҐЙНСQХЙ№%ђЂфЃ…Э…ҐРЃЌЅµБ±•С•AҐQХЙёЎ™ҐбСХЙ”°ЃСЎЙ•…‘%ђ°ЂИ¤м((ЂЂЂЃЌЅ№НРЃҐ№Щ…±Ґ‘ЅЙ­МиЃЙЙ…дсмЃҐђиЃ№Хµ‰•ИмЃБ…Й…µМиЃ)НЅ№=‰©•ЌРмЃЌЅ‘”иЃ№Хµ‰•ИЃфшЂфЃl(ЂЂЂЂЂЃмЃҐђиЂДА°ЃБ…Й…µМиЃмЃБ…С иЂ€Ѕ…№ЅСЎ•ИЅН•ННҐЅё№©НЅ№°€Ѓф°ЃЌЅ‘”иЂґМИШАИЃф°(ЂЂЂЂЂЃмЃҐђиЂДД°ЃБ…Й…µМиЃмЃ‰•™ЅЙ•QХЙ№%ђиЃ™ҐЙНСQХЙ№%ђЃф°ЃЌЅ‘”иЂґМИАаАЃф°(ЂЂЂЂЂЃмЃҐђиЂДИ°ЃБ…Й…µМиЃмЃ±…НСQХЙ№%ђиЂ‰Х№­№ЅЭёµСХЙё€Ѓф°ЃЌЅ‘”иЂґМИАаАЃф°(ЂЂЂЂЂЃм(ЂЂЂЂЂЂЂЃҐђиЂДМ°(ЂЂЂЂЂЂЂЃБ…Й…µМиЃмЃ±…НСQХЙ№%ђиЃ™ҐЙНСQХЙ№%ђ°Ѓ‰•™ЅЙ•QХЙ№%ђиЃ™ҐЙНСQХЙ№%ђЃф°(ЂЂЂЂЂЂЂЃЌЅ‘”иЂґМИШАИ°(ЂЂЂЂЂЃф°(ЂЂЂЂЂЃмЃҐђиЂДР°ЃБ…Й…µМиЃмЃЌЭђиЂ‰Й•±…СҐЩ”µЭЅЙ­СЙ•”€Ѓф°ЃЌЅ‘”иЂґМИШАИЃф°(ЂЂЂЂЂЃм(ЂЂЂЂЂЂЂЃҐђиЂДФ°(ЂЂЂЂЂЂЂЃБ…Й…µМиЃмЃЌЭђиЂ€ЅЭЅЙ­СЙ•”€°ЃЙХ№СҐµ•]ЅЙ­НБ…Ќ•IЅЅСМиЃl‰Й•±…СҐЩ”µЙЅЅР‰tЃф°(ЂЂЂЂЂЂЂЃЌЅ‘”иЂґМИШАИ°(ЂЂЂЂЂЃф°(ЂЂЂЂЂЃм(ЂЂЂЂЂЂЂЃҐђиЂДШ°(ЂЂЂЂЂЂЂЃБ…Й…µМиЃмЃЌЭђиЂ€ЅЭЅЙ­СЙ•”€°ЃЙХ№СҐµ•]ЅЙ­НБ…Ќ•IЅЅСМиЃl€ЅНЅХЙЌ”µЅ№±д‰tЃф°(ЂЂЂЂЂЂЂЃЌЅ‘”иЂґМИШАИ°(ЂЂЂЂЂЃф°(ЂЂЂЃtм(ЂЂЂЃ™ЅИЂЎЌЅ№НРЃҐ№Щ…±ҐђЃЅЃҐ№Щ…±Ґ‘ЅЙ­М¤Ѓм(ЂЂЂЂЂЃЭЙҐС•I•ЕХ•НРЎ™ҐбСХЙ”№‘•Н­СЅБ%№БХР°Ѓм(ЂЂЂЂЂЂЂЃҐђиЃҐ№Щ…±Ґђ№Ґђ°(ЂЂЂЂЂЂЂЃµ•СЎЅђиЂ‰СЎЙ•…ђЅ™ЅЙ¬€°(ЂЂЂЂЂЂЂЃБ…Й…µМиЃмЃСЎЙ•…‘%ђ°Ђёё№Ґ№Щ…±Ґђ№Б…Й…µМЃф°(ЂЂЂЂЂЃф¤м(ЂЂЂЂЂЃ…Э…ҐРЃ•бБ•ЌР (ЂЂЂЂЂЂЂЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤ЂфшЃЙ•ЕХ•НС%ђЎµ•НН…ќ”°ЃҐ№Щ…±Ґђ№Ґђ¤¤°(ЂЂЂЂЂЂ¤№Й•НЅ±Щ•М№СЅ5…СЌЎ=‰©•ЌРЎмЃ•ЙЙЅИиЃмЃЌЅ‘”иЃҐ№Щ…±Ґђ№ЌЅ‘”ЃфЃф¤м(ЂЂЂЃф(ЂЂЂЃ•бБ•ЌРЎ™ҐбСХЙ”№…‘…БС•И№Н•ННҐЅ№М¤№СЅ!…Щ•1•№ќС  Д¤м(ЂЂЂЃ•бБ•ЌРЎЅ™™ҐЌҐ…±]ЙҐС”¤№№ЅР№СЅ!…Щ•	••№…±±•ђ ¤м(ЂЂЂЃ…Э…ҐРЃНСЅБҐбСХЙ”Ў™ҐбСХЙ”¤м(ЂЃф¤м((ЂЃҐР ‰Й•©•ЌСМЃ„ЃЌЎ…№ќ•ђЃЅЙ¬ЃЌЭђЃЭЎ•ёЃСЎ”Ѓ‘…БС•ИЃНХББЅЙСМЃЅ№±дЃНЅХЙЌ”µЌЭђЃЅЙ¬€°Ѓ…Не№ЊЂ ¤ЂфшЃм(ЂЂЂЃЌЅ№НРЃ…‘…БС•ИЂфЃ№•ЬЃ…­•!…Й№•НН‘…БС•ИЎЎ…Й№•НН%‘MЌЎ•µ„№Б…ЙН” ‰Б¤€¤°ЃХ№‘•™Ґ№•ђ°ЃСЙХ”°Ѓ™…±Н”¤м(ЂЂЂЃЌЅ№НРЃ™ҐбСХЙ”ЂфЃЌЙ•…С•ҐбСХЙ”ЎмЃ•бС•Й№…±‘…БС•ЙМиЃ№•ЬЃ5…АЎml‰Б¤€°Ѓ…‘…БС•Йut¤Ѓф¤м(ЂЂЂЃЌЅ№НРЃЅ™™ҐЌҐ…±]ЙҐС”ЂфЃЩ¤№™ё ¤м(ЂЂЂЃ™ҐбСХЙ”№Ѕ™™ҐЌҐ…°№НС‘Ґё№Ѕё ‰‘…С„€°ЃЅ™™ҐЌҐ…±]ЙҐС”¤м(ЂЂЂЃЌЅ№НРЃСЎЙ•…‘%ђЂфЃ…Э…ҐРЃНС…ЙСAҐQЎЙ•…ђЎ™ҐбСХЙ”¤м(ЂЂЂЃ…Э…ҐРЃЌЅµБ±•С•AҐQХЙёЎ™ҐбСХЙ”°ЃСЎЙ•…‘%ђ°ЂИ¤м((ЂЂЂЃЭЙҐС•I•ЕХ•НРЎ™ҐбСХЙ”№‘•Н­СЅБ%№БХР°Ѓм(ЂЂЂЂЂЃҐђиЂДА°(ЂЂЂЂЂЃµ•СЎЅђиЂ‰СЎЙ•…ђЅ™ЅЙ¬€°(ЂЂЂЂЂЃБ…Й…µМиЃм(ЂЂЂЂЂЂЂЃСЎЙ•…‘%ђ°(ЂЂЂЂЂЂЂЃЌЭђиЂ€ЅНе№СЎ•СҐЊµЭЅЙ­СЙ•”€°(ЂЂЂЂЂЂЂЃЙХ№СҐµ•]ЅЙ­НБ…Ќ•IЅЅСМиЃl€ЅНе№СЎ•СҐЊµЭЅЙ­СЙ•”‰t°(ЂЂЂЂЂЃф°(ЂЂЂЃф¤м(ЂЂЂЃ…Э…ҐРЃ•бБ•ЌР (ЂЂЂЂЂЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤ЂфшЃЙ•ЕХ•НС%ђЎµ•НН…ќ”°ЂДА¤¤°(ЂЂЂЂ¤№Й•НЅ±Щ•М№СЅ5…СЌЎ=‰©•ЌРЎмЃ•ЙЙЅИиЃмЃЌЅ‘”иЂґМИАЬШЃфЃф¤м(ЂЂЂЃ•бБ•ЌРЎ…‘…БС•И№Н•ННҐЅ№М¤№СЅ!…Щ•1•№ќС  Д¤м(ЂЂЂЃ•бБ•ЌРЎЅ™™ҐЌҐ…±]ЙҐС”¤№№ЅР№СЅ!…Щ•	••№…±±•ђ ¤м(ЂЂЂЃ…Э…ҐРЃНСЅБҐбСХЙ”Ў™ҐбСХЙ”¤м(ЂЃф¤м((ЂЃҐР ‰БЙЅ©•ЌСМЃ„Ѓ™…Ґ±•ђЃС•ЙµҐ№…°ЃЭЎ•ёЃ±ҐЩ”ЃQХЙёЃҐ‘•№СҐСдЃБ•ЙНҐНС•№Ќ”Ѓ™…Ґ±М€°Ѓ…Не№ЊЂ ¤ЂфшЃм(ЂЂЂЃЌЅ№НРЃ‘ҐЙ•ЌСЅЙдЂфЃµ­‘С•µБMе№ЊЎБ…С №©ЅҐёЎСµБ‘ҐИ ¤°Ђ‰ЌЅ‘•бЎЅНРµЎЅНРµЭЙҐС”µ™…Ґ±ХЙ”ґ€¤¤м(ЂЂЂЃ±•РЃ™…Ґ±QХЙ№ЅµµҐРЂфЃ™…±Н”м(ЂЂЂЃЌЅ№НРЃµ…ББҐ№ќMСЅЙ”ЂфЃ№•ЬЃ5…ББҐ№ќMСЅЙ”Ўм(ЂЂЂЂЂЃ‘ҐЙ•ЌСЅЙд°(ЂЂЂЂЂЃ‰•™ЅЙ•I•Б±…Ќ”ЎЙ•ЌЅЙђ¤Ѓм(ЂЂЂЂЂЂЂЃҐЂЎ™…Ґ±QХЙ№ЅµµҐРЂЃЙ•ЌЅЙђ№СХЙ№5…ББҐ№ќМ№±•№ќС ЂшЂА¤Ѓм(ЂЂЂЂЂЂЂЂЂЃСЎЙЅЬЃ№•ЬЃЙЙЅИ ‰Не№СЎ•СҐЊЃС•ЙµҐ№…°ЃЌЅµµҐРЃ™…Ґ±ХЙ”€¤м(ЂЂЂЂЂЂЂЃф(ЂЂЂЂЂЃф°(ЂЂЂЃф¤м(ЂЂЂЃЌЅ№НРЃ™ҐбСХЙ”ЂфЃЌЙ•…С•ҐбСХЙ”ЎмЃµ…ББҐ№ќMСЅЙ”°Ѓµ…ББҐ№ќMСЅЙ•ҐЙ•ЌСЅЙдиЃ‘ҐЙ•ЌСЅЙдЃф¤м(ЂЂЂЃЌЅ№НРЃСЎЙ•…‘%ђЂфЃ…Э…ҐРЃНС…ЙСAҐQЎЙ•…ђЎ™ҐбСХЙ”¤м(ЂЂЂЃ™…Ґ±QХЙ№ЅµµҐРЂфЃСЙХ”м(ЂЂЂЃЌЅ№НРЃСХЙ№%ђЂфЃ…Э…ҐРЃНС…ЙСAҐQХЙёЎ™ҐбСХЙ”°ЃСЎЙ•…‘%ђ°ЂИ¤м(ЂЂЂЃЌЅ№НРЃН•ННҐЅёЂфЃ™ҐбСХЙ”№…‘…БС•И№Н•ННҐЅ№НlБtм(ЂЂЂЃҐЂ …Н•ННҐЅё¤ЃСЎЙЅЬЃ№•ЬЃЙЙЅИ ‰…­”ЃA¤ЃM•ННҐЅёЃЭ…МЃ№ЅРЃЅБ•№•ђ€¤м(ЂЂЂЃН•ННҐЅё№…ББ•№‘Q•бР ‰№…СҐЩ”ЃНХЌЌ•НМ€¤м(ЂЂЂЃН•ННҐЅё№НХЌЌ••‘QХЙё ¤м((ЂЂЂЃ…Э…ҐРЃ•бБ•ЌР (ЂЂЂЂЂЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤ЂфшЃСХЙ№Щ•№РЎµ•НН…ќ”°Ђ‰СХЙёЅЌЅµБ±•С•ђ€°ЃСХЙ№%ђ¤¤°(ЂЂЂЂ¤№Й•НЅ±Щ•М№СЅ5…СЌЎ=‰©•ЌРЎм(ЂЂЂЂЂЃБ…Й…µМиЃм(ЂЂЂЂЂЂЂЃСХЙёиЃмЃНС…СХМиЂ‰™…Ґ±•ђ€°Ѓ•ЙЙЅИиЃмЃµ•НН…ќ”иЃ•бБ•ЌР№НСЙҐ№ќЅ№С…Ґ№Ґ№њ ‰Б•ЙНҐНС•ђ€¤ЃфЃф°(ЂЂЂЂЂЃф°(ЂЂЂЃф¤м(ЂЂЂЃ…Э…ҐРЃ•бБ•ЌРЎµ…ББҐ№ќMСЅЙ”№ќ•СQЎЙ•…ђЎЎЅНСQЎЙ•…‘%‘MЌЎ•µ„№Б…ЙН”ЎСЎЙ•…‘%ђ¤¤¤№Й•НЅ±Щ•М№СЅ5…СЌЎ=‰©•ЌР (ЂЂЂЂЂЃм(ЂЂЂЂЂЂЂЃСХЙ№5…ББҐ№ќМиЃmt°(ЂЂЂЂЂЃф°(ЂЂЂЂ¤м(ЂЂЂЃ…Э…ҐРЃНСЅБҐбСХЙ”Ў™ҐбСХЙ”¤м(ЂЃф¤м((ЂЃҐР ‰Ќ±ЅН•МЃ…№ђЃЎҐ‘•МЃ„Ѓ‘•ЙҐЩ•ђЃЙХ№СҐµ”ЃЭЎ•ёЃЅЙ¬ЃЌЅµµҐРЃ™…Ґ±М€°Ѓ…Не№ЊЂ ¤ЂфшЃм(ЂЂЂЃЌЅ№НРЃ‘ҐЙ•ЌСЅЙдЂфЃµ­‘С•µБMе№ЊЎБ…С №©ЅҐёЎСµБ‘ҐИ ¤°Ђ‰ЌЅ‘•бЎЅНРµЎЅНРµ™ЅЙ¬µ™…Ґ±ХЙ”ґ€¤¤м(ЂЂЂЃ±•РЃ™…Ґ±ЅЙ­ЅµµҐРЂфЃ™…±Н”м(ЂЂЂЃЌЅ№НРЃµ…ББҐ№ќMСЅЙ”ЂфЃ№•ЬЃ5…ББҐ№ќMСЅЙ”Ўм(ЂЂЂЂЂЃ‘ҐЙ•ЌСЅЙд°(ЂЂЂЂЂЃ‰•™ЅЙ•I•Б±…Ќ”ЎЙ•ЌЅЙђ¤Ѓм(ЂЂЂЂЂЂЂЃҐЂЎ™…Ґ±ЅЙ­ЅµµҐРЂЃЙ•ЌЅЙђ№НС…С”ЂфффЂ‰Й•…‘д€ЂЃЙ•ЌЅЙђ№™ЅЙ­MЅХЙЌ”¤Ѓм(ЂЂЂЂЂЂЂЂЂЃСЎЙЅЬЃ№•ЬЃЙЙЅИ ‰Не№СЎ•СҐЊЃ‘•ЙҐЩ•ђЃЌЅµµҐРЃ™…Ґ±ХЙ”€¤м(ЂЂЂЂЂЂЂЃф(ЂЂЂЂЂЃф°(ЂЂЂЃф¤м(ЂЂЂЃЌЅ№НРЃ™ҐбСХЙ”ЂфЃЌЙ•…С•ҐбСХЙ”ЎмЃµ…ББҐ№ќMСЅЙ”°Ѓµ…ББҐ№ќMСЅЙ•ҐЙ•ЌСЅЙдиЃ‘ҐЙ•ЌСЅЙдЃф¤м(ЂЂЂЃЌЅ№НРЃСЎЙ•…‘%ђЂфЃ…Э…ҐРЃНС…ЙСAҐQЎЙ•…ђЎ™ҐбСХЙ”¤м(ЂЂЂЃЌЅ№НРЃСХЙ№%ђЂфЃ…Э…ҐРЃЌЅµБ±•С•AҐQХЙёЎ™ҐбСХЙ”°ЃСЎЙ•…‘%ђ°ЂИ¤м(ЂЂЂЃ™…Ґ±ЅЙ­ЅµµҐРЂфЃСЙХ”м((ЂЂЂЃЭЙҐС•I•ЕХ•НРЎ™ҐбСХЙ”№‘•Н­СЅБ%№БХР°Ѓм(ЂЂЂЂЂЃҐђиЂДА°(ЂЂЂЂЂЃµ•СЎЅђиЂ‰СЎЙ•…ђЅ™ЅЙ¬€°(ЂЂЂЂЂЃБ…Й…µМиЃмЃСЎЙ•…‘%ђ°Ѓ±…НСQХЙ№%ђиЃСХЙ№%ђЃф°(ЂЂЂЃф¤м(ЂЂЂЃ…Э…ҐРЃ•бБ•ЌР (ЂЂЂЂЂЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤ЂфшЃЙ•ЕХ•НС%ђЎµ•НН…ќ”°ЂДА¤¤°(ЂЂЂЂ¤№Й•НЅ±Щ•М№СЅ5…СЌЎ=‰©•ЌРЎмЃ•ЙЙЅИиЃмЃЌЅ‘”иЂґМИАаДЃфЃф¤м(ЂЂЂЃ…Э…ҐРЃ•бБ•ЌРЎ™ҐбСХЙ”№…‘…БС•И№Н•ННҐЅ№НlЕtь№Й•…‘M№…БНЎЅР ¤¤№Й•НЅ±Щ•М№СЅ5…СЌЎ=‰©•ЌРЎм(ЂЂЂЂЂЃЅ¬иЃ™…±Н”°(ЂЂЂЂЂЃ•ЙЙЅИиЃмЃЌЅ‘”иЂ‰Ґ№Щ…±Ґ‘MС…С”€Ѓф°(ЂЂЂЃф¤м(ЂЂЂЃ…Э…ҐРЃ•бБ•ЌРЎµ…ББҐ№ќMСЅЙ”№±ҐНСQЎЙ•…‘М ¤¤№Й•НЅ±Щ•М№СЅ!…Щ•1•№ќС  Д¤м(ЂЂЂЃ…Э…ҐРЃНСЅБҐбСХЙ”Ў™ҐбСХЙ”¤м(ЂЃф¤м((ЂЃҐР ‰­••БМЃСЎ”ЃС•µБЅЙ…ЙдЃ‘•ЙҐЩ•ђЃM•ННҐЅёЃ…ХСЎЅЙҐС…СҐЩ”ЃЭЎ•ёЃЙЅ±±‰…Ќ¬ЃЌЅµµҐРЃ™…Ґ±М€°Ѓ…Не№ЊЂ ¤ЂфшЃм(ЂЂЂЃЌЅ№НРЃ‘ҐЙ•ЌСЅЙдЂфЃµ­‘С•µБMе№ЊЎБ…С №©ЅҐёЎСµБ‘ҐИ ¤°Ђ‰ЌЅ‘•бЎЅНРµЎЅНРµЙЅ±±‰…Ќ¬µ™…Ґ±ХЙ”ґ€¤¤м(ЂЂЂЃ±•РЃ™…Ґ±IЅ±±‰…Ќ­ЅµµҐРЂфЃ™…±Н”м(ЂЂЂЃЌЅ№НРЃµ…ББҐ№ќMСЅЙ”ЂфЃ№•ЬЃ5…ББҐ№ќMСЅЙ”Ўм(ЂЂЂЂЂЃ‘ҐЙ•ЌСЅЙд°(ЂЂЂЂЂЃ‰•™ЅЙ•I•Б±…Ќ”ЎЙ•ЌЅЙђ¤Ѓм(ЂЂЂЂЂЂЂЃҐЂЎ™…Ґ±IЅ±±‰…Ќ­ЅµµҐРЂЃЙ•ЌЅЙђ№НС…С”ЂфффЂ‰Й•…‘д€ЂЃЙ•ЌЅЙђ№СХЙ№5…ББҐ№ќМ№±•№ќС ЂфффЂД¤Ѓм(ЂЂЂЂЂЂЂЂЂЃСЎЙЅЬЃ№•ЬЃЙЙЅИ ‰Не№СЎ•СҐЊЃЙЅ±±‰…Ќ¬ЃЌЅµµҐРЃ™…Ґ±ХЙ”€¤м(ЂЂЂЂЂЂЂЃф(ЂЂЂЂЂЃф°(ЂЂЂЃф¤м(ЂЂЂЃЌЅ№НРЃ™ҐбСХЙ”ЂфЃЌЙ•…С•ҐбСХЙ”ЎмЃµ…ББҐ№ќMСЅЙ”°Ѓµ…ББҐ№ќMСЅЙ•ҐЙ•ЌСЅЙдиЃ‘ҐЙ•ЌСЅЙдЃф¤м(ЂЂЂЃЌЅ№НРЃНЅХЙЌ•QЎЙ•…‘%ђЂфЃ…Э…ҐРЃНС…ЙСAҐQЎЙ•…ђЎ™ҐбСХЙ”¤м(ЂЂЂЃ…Э…ҐРЃЌЅµБ±•С•AҐQХЙёЎ™ҐбСХЙ”°ЃНЅХЙЌ•QЎЙ•…‘%ђ°ЂИ¤м(ЂЂЂЃ…Э…ҐРЃЌЅµБ±•С•AҐQХЙёЎ™ҐбСХЙ”°ЃНЅХЙЌ•QЎЙ•…‘%ђ°ЂМ¤м(ЂЂЂЃ…Э…ҐРЃЌЅµБ±•С•AҐQХЙёЎ™ҐбСХЙ”°ЃНЅХЙЌ•QЎЙ•…‘%ђ°ЂР¤м(ЂЂЂЃЭЙҐС•I•ЕХ•НРЎ™ҐбСХЙ”№‘•Н­СЅБ%№БХР°Ѓм(ЂЂЂЂЂЃҐђиЂДА°(ЂЂЂЂЂЃµ•СЎЅђиЂ‰СЎЙ•…ђЅ™ЅЙ¬€°(ЂЂЂЂЂЃБ…Й…µМиЃмЃСЎЙ•…‘%ђиЃНЅХЙЌ•QЎЙ•…‘%ђЃф°(ЂЂЂЃф¤м(ЂЂЂЃЌЅ№НРЃ™ЅЙ­I•НБЅ№Н”ЂфЃ…Э…ҐРЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤ЂфшЃЙ•ЕХ•НС%ђЎµ•НН…ќ”°ЂДА¤¤м(ЂЂЂЃЌЅ№НРЃ‘•ЙҐЩ•‘%ђЂфЂ Ў™ЅЙ­I•НБЅ№Н”№Й•НХ±РЃ…МЃ)НЅ№=‰©•ЌР¤№СЎЙ•…ђЃ…МЃ)НЅ№=‰©•ЌР¤№Ґђм(ЂЂЂЃҐЂЎСеБ•ЅЃ‘•ЙҐЩ•‘%ђЂ„ффЂ‰НСЙҐ№њ€¤ЃСЎЙЅЬЃ№•ЬЃЙЙЅИ ‰Q…Ґ°ЃЅЙ¬ЃЙ•НБЅ№Н”ЃЎ…МЃ№јЃQЎЙ•…ђЃ%€¤м(ЂЂЂЃЌЅ№НРЃ‰•™ЅЙ”ЂфЃ…Э…ҐРЃµ…ББҐ№ќMСЅЙ”№ќ•СQЎЙ•…ђЎЎЅНСQЎЙ•…‘%‘MЌЎ•µ„№Б…ЙН”Ў‘•ЙҐЩ•‘%ђ¤¤м(ЂЂЂЃ™…Ґ±IЅ±±‰…Ќ­ЅµµҐРЂфЃСЙХ”м((ЂЂЂЃЭЙҐС•I•ЕХ•НРЎ™ҐбСХЙ”№‘•Н­СЅБ%№БХР°Ѓм(ЂЂЂЂЂЃҐђиЂДД°(ЂЂЂЂЂЃµ•СЎЅђиЂ‰СЎЙ•…ђЅЙЅ±±‰…Ќ¬€°(ЂЂЂЂЂЃБ…Й…µМиЃмЃСЎЙ•…‘%ђиЃ‘•ЙҐЩ•‘%ђ°Ѓ№ХµQХЙ№МиЂИЃф°(ЂЂЂЃф¤м(ЂЂЂЃ…Э…ҐРЃ•бБ•ЌР (ЂЂЂЂЂЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤ЂфшЃЙ•ЕХ•НС%ђЎµ•НН…ќ”°ЂДД¤¤°(ЂЂЂЂ¤№Й•НЅ±Щ•М№СЅ5…СЌЎ=‰©•ЌРЎмЃ•ЙЙЅИиЃмЃЌЅ‘”иЂґМИАаДЃфЃф¤м(ЂЂЂЃ…Э…ҐРЃ•бБ•ЌРЎµ…ББҐ№ќMСЅЙ”№ќ•СQЎЙ•…ђЎЎЅНСQЎЙ•…‘%‘MЌЎ•µ„№Б…ЙН”Ў‘•ЙҐЩ•‘%ђ¤¤¤№Й•НЅ±Щ•М№СЅЕХ…° (ЂЂЂЂЂЃ‰•™ЅЙ”°(ЂЂЂЂ¤м(ЂЂЂЃ…Э…ҐРЃ•бБ•ЌРЎ™ҐбСХЙ”№…‘…БС•И№Н•ННҐЅ№НlЙtь№Й•…‘M№…БНЎЅР ¤¤№Й•НЅ±Щ•М№СЅ5…СЌЎ=‰©•ЌРЎм(ЂЂЂЂЂЃЅ¬иЃ™…±Н”°(ЂЂЂЂЂЃ•ЙЙЅИиЃмЃЌЅ‘”иЂ‰Ґ№Щ…±Ґ‘MС…С”€Ѓф°(ЂЂЂЃф¤м(ЂЂЂЃ…Э…ҐРЃ•бБ•ЌРЎ™ҐбСХЙ”№…‘…БС•И№Н•ННҐЅ№НlЕtь№Й•…‘M№…БНЎЅР ¤¤№Й•НЅ±Щ•М№СЅ5…СЌЎ=‰©•ЌРЎм(ЂЂЂЂЂЃЅ¬иЃСЙХ”°(ЂЂЂЂЂЃЩ…±Х”иЃмЃСХЙ№МиЃmнф°Ѓнф°ЃнхtЃф°(ЂЂЂЃф¤м((ЂЂЂЃЭЙҐС•I•ЕХ•НРЎ™ҐбСХЙ”№‘•Н­СЅБ%№БХР°Ѓм(ЂЂЂЂЂЃҐђиЂДИ°(ЂЂЂЂЂЃµ•СЎЅђиЂ‰СЎЙ•…ђЅЙ•…ђ€°(ЂЂЂЂЂЃБ…Й…µМиЃмЃСЎЙ•…‘%ђиЃ‘•ЙҐЩ•‘%ђ°ЃҐ№Ќ±Х‘•QХЙ№МиЃСЙХ”Ѓф°(ЂЂЂЃф¤м(ЂЂЂЃ…Э…ҐРЃ•бБ•ЌР (ЂЂЂЂЂЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤ЂфшЃЙ•ЕХ•НС%ђЎµ•НН…ќ”°ЂДИ¤¤°(ЂЂЂЂ¤№Й•НЅ±Щ•М№СЅ5…СЌЎ=‰©•ЌРЎмЃЙ•НХ±РиЃмЃСЎЙ•…ђиЃмЃСХЙ№МиЃmнф°Ѓнф°ЃнхtЃфЃфЃф¤м(ЂЂЂЃ…Э…ҐРЃНСЅБҐбСХЙ”Ў™ҐбСХЙ”¤м(ЂЃф¤м((ЂЃҐР ‰Й•СХЙ№МЃСЎ”ЃQЎЙ•…ђЃСјЃҐ‘±”Ѓ…™С•ИЃ•Щ•ЙдЃQХЙёЃҐёЃСЎ”ЃН…µ”ЃM•ННҐЅё€°Ѓ…Не№ЊЂ ¤ЂфшЃм(ЂЂЂЃЌЅ№НРЃ™ҐбСХЙ”ЂфЃЌЙ•…С•ҐбСХЙ” ¤м(ЂЂЂЃЌЅ№НРЃСЎЙ•…‘%ђЂфЃ…Э…ҐРЃНС…ЙСAҐQЎЙ•…ђЎ™ҐбСХЙ”¤м(ЂЂЂЃЌЅ№НРЃН•ННҐЅёЂфЃ™ҐбСХЙ”№…‘…БС•И№Н•ННҐЅ№НlБtм(ЂЂЂЃҐЂ …Н•ННҐЅё¤ЃСЎЙЅЬЃ№•ЬЃЙЙЅИ ‰…­”ЃA¤ЃM•ННҐЅёЃЭ…МЃ№ЅРЃЅБ•№•ђ€¤м(ЂЂЂЃЌЅ№НРЃСХЙ№%‘МиЃНСЙҐ№ќmtЂфЃmtм((ЂЂЂЃ™ЅИЂЎЌЅ№НРЃЙ•ЕХ•НС%‘Y…±Х”ЃЅЃlИ°ЂНt¤Ѓм(ЂЂЂЂЂЃЌЅ№НРЃСХЙ№%ђЂфЃ…Э…ҐРЃНС…ЙСAҐQХЙёЎ™ҐбСХЙ”°ЃСЎЙ•…‘%ђ°ЃЙ•ЕХ•НС%‘Y…±Х”¤м(ЂЂЂЂЂЃСХЙ№%‘М№БХН ЎСХЙ№%ђ¤м(ЂЂЂЂЂЃ…Э…ҐРЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤ЂфшЃСХЙ№Щ•№РЎµ•НН…ќ”°Ђ‰СХЙёЅНС…ЙС•ђ€°ЃСХЙ№%ђ¤¤м(ЂЂЂЂЂЃН•ННҐЅё№…ББ•№‘Q•бРЎЃЅХСБХРЂ‘нЙ•ЕХ•НС%‘Y…±Х•хЂ¤м(ЂЂЂЂЂЃН•ННҐЅё№НХЌЌ••‘QХЙё ¤м(ЂЂЂЂЂЃ…Э…ҐРЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤ЂфшЃСХЙ№Щ•№РЎµ•НН…ќ”°Ђ‰СХЙёЅЌЅµБ±•С•ђ€°ЃСХЙ№%ђ¤¤м(ЂЂЂЂЂЃЌЅ№НРЃЌЅµБ±•С•‘QХЙ№ЅХ№РЂфЃЙ•ЕХ•НС%‘Y…±Х”ЂґЂДм(ЂЂЂЂЂЃ…Э…ҐРЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ (ЂЂЂЂЂЂЂЂЎµ•НН…ќ”¤Ђфш(ЂЂЂЂЂЂЂЂЂЃСЎЙ•…‘MС…СХМЎµ•НН…ќ”°ЃСЎЙ•…‘%ђ°Ђ‰Ґ‘±”€¤Ђ(ЂЂЂЂЂЂЂЂЂЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№µ•НН…ќ•М№™Ґ±С•И ЎЌ…№‘Ґ‘…С”¤Ђфш(ЂЂЂЂЂЂЂЂЂЂЂЃСЎЙ•…‘MС…СХМЎЌ…№‘Ґ‘…С”°ЃСЎЙ•…‘%ђ°Ђ‰Ґ‘±”€¤°(ЂЂЂЂЂЂЂЂЂЂ¤№±•№ќС ЂшфЃЌЅµБ±•С•‘QХЙ№ЅХ№Р°(ЂЂЂЂЂЂ¤м(ЂЂЂЃф((ЂЂЂЃЌЅ№НРЃНС…СХН•МЂфЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№µ•НН…ќ•М№™±…С5…А Ўµ•НН…ќ”¤ЂфшЃм(ЂЂЂЂЂЃҐЂ …µ•СЎЅђЎµ•НН…ќ”°Ђ‰СЎЙ•…ђЅНС…СХМЅЌЎ…№ќ•ђ€¤¤ЃЙ•СХЙёЃmtм(ЂЂЂЂЂЃЌЅ№НРЃБ…Й…µМЂфЃµ•НН…ќ•A…Й…µМЎµ•НН…ќ”¤м(ЂЂЂЂЂЃҐЂЎБ…Й…µМ№СЎЙ•…‘%ђЂ„ффЃСЎЙ•…‘%ђ¤ЃЙ•СХЙёЃmtм(ЂЂЂЂЂЃЌЅ№НРЃНС…СХМЂфЃБ…Й…µМ№НС…СХМЃ…МЃ)НЅ№=‰©•ЌРЃрЃХ№‘•™Ґ№•ђм(ЂЂЂЂЂЃЙ•СХЙёЃСеБ•ЅЃНС…СХМь№СеБ”ЂфффЂ‰НСЙҐ№њ€ЂьЃmНС…СХМ№СеБ•tЂиЃmtм(ЂЂЂЃф¤м(ЂЂЂЃ•бБ•ЌРЎНС…СХН•М¤№СЅЕХ…°Ўl‰…ЌСҐЩ”€°Ђ‰Ґ‘±”€°Ђ‰…ЌСҐЩ”€°Ђ‰Ґ‘±”‰t¤м(ЂЂЂЃ™ЅИЂЎЌЅ№НРЃmСХЙ№%№‘•а°ЃСХЙ№%‘tЃЅЃСХЙ№%‘М№•№СЙҐ•М ¤¤Ѓм(ЂЂЂЂЂЃЌЅ№НРЃЌЅµБ±•С•‘%№‘•аЂфЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№µ•НН…ќ•М№™Ґ№‘%№‘•а Ўµ•НН…ќ”¤Ђфш(ЂЂЂЂЂЂЂЃСХЙ№Щ•№РЎµ•НН…ќ”°Ђ‰СХЙёЅЌЅµБ±•С•ђ€°ЃСХЙ№%ђ¤°(ЂЂЂЂЂЂ¤м(ЂЂЂЂЂЃЌЅ№НРЃҐ‘±•%№‘•б•МЂфЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№µ•НН…ќ•М№™±…С5…А Ўµ•НН…ќ”°Ѓµ•НН…ќ•%№‘•а¤Ђфш(ЂЂЂЂЂЂЂЃСЎЙ•…‘MС…СХМЎµ•НН…ќ”°ЃСЎЙ•…‘%ђ°Ђ‰Ґ‘±”€¤ЂьЃmµ•НН…ќ•%№‘•бtЂиЃmt°(ЂЂЂЂЂЂ¤м(ЂЂЂЂЂЃ•бБ•ЌРЎЌЅµБ±•С•‘%№‘•а¤№СЅ	•Й•…С•ЙQЎ…№=ЙЕХ…° А¤м(ЂЂЂЂЂЃ•бБ•ЌРЎҐ‘±•%№‘•б•НmСХЙ№%№‘•бt¤№СЅ	•Й•…С•ЙQЎ…ёЎЌЅµБ±•С•‘%№‘•а¤м(ЂЂЂЃф((ЂЂЂЃЭЙҐС•I•ЕХ•НРЎ™ҐбСХЙ”№‘•Н­СЅБ%№БХР°Ѓм(ЂЂЂЂЂЃҐђиЂР°(ЂЂЂЂЂЃµ•СЎЅђиЂ‰СЎЙ•…ђЅЙ•…ђ€°(ЂЂЂЂЂЃБ…Й…µМиЃмЃСЎЙ•…‘%ђЃф°(ЂЂЂЃф¤м(ЂЂЂЃ…Э…ҐРЃ•бБ•ЌР (ЂЂЂЂЂЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤ЂфшЃЙ•ЕХ•НС%ђЎµ•НН…ќ”°ЂР¤¤°(ЂЂЂЂ¤№Й•НЅ±Щ•М№СЅ5…СЌЎ=‰©•ЌРЎмЃЙ•НХ±РиЃмЃСЎЙ•…ђиЃмЃНС…СХМиЃмЃСеБ”иЂ‰Ґ‘±”€ЃфЃфЃфЃф¤м(ЂЂЂЃ…Э…ҐРЃНСЅБҐбСХЙ”Ў™ҐбСХЙ”¤м(ЂЃф¤м((ЂЃҐР ‰ХБ‘…С•МЃ„ЃA¤ЃQЎЙ•…ђЃ№…µ”Ѓ±ЅЌ…±±д€°Ѓ…Не№ЊЂ ¤ЂфшЃм(ЂЂЂЃЌЅ№НРЃ™ҐбСХЙ”ЂфЃЌЙ•…С•ҐбСХЙ” ¤м(ЂЂЂЃЌЅ№НРЃЅ™™ҐЌҐ…±]ЙҐС”ЂфЃЩ¤№™ё ¤м(ЂЂЂЃ™ҐбСХЙ”№Ѕ™™ҐЌҐ…°№НС‘Ґё№Ѕё ‰‘…С„€°ЃЅ™™ҐЌҐ…±]ЙҐС”¤м(ЂЂЂЃЌЅ№НРЃСЎЙ•…‘%ђЂфЃ…Э…ҐРЃНС…ЙСAҐQЎЙ•…ђЎ™ҐбСХЙ”¤м((ЂЂЂЃЭЙҐС•I•ЕХ•НРЎ™ҐбСХЙ”№‘•Н­СЅБ%№БХР°Ѓм(ЂЂЂЂЂЃҐђиЂИ°(ЂЂЂЂЂЃµ•СЎЅђиЂ‰СЎЙ•…ђЅ№…µ”ЅН•Р€°(ЂЂЂЂЂЃБ…Й…µМиЃмЃСЎЙ•…‘%ђ°Ѓ№…µ”иЂ‰A¤ЃQЎЙ•…ђ€Ѓф°(ЂЂЂЃф¤м((ЂЂЂЃ…Э…ҐРЃ•бБ•ЌРЎ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤ЂфшЃЙ•ЕХ•НС%ђЎµ•НН…ќ”°ЂИ¤¤¤№Й•НЅ±Щ•М№СЅЕХ…°Ўм(ЂЂЂЂЂЃҐђиЂИ°(ЂЂЂЂЂЃЙ•НХ±РиЃнф°(ЂЂЂЃф¤м(ЂЂЂЃ…Э…ҐРЃ•бБ•ЌР (ЂЂЂЂЂЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤ЂфшЃµ•СЎЅђЎµ•НН…ќ”°Ђ‰СЎЙ•…ђЅ№…µ”ЅХБ‘…С•ђ€¤¤°(ЂЂЂЂ¤№Й•НЅ±Щ•М№СЅ5…СЌЎ=‰©•ЌРЎмЃБ…Й…µМиЃмЃСЎЙ•…‘%ђ°ЃСЎЙ•…‘9…µ”иЂ‰A¤ЃQЎЙ•…ђ€ЃфЃф¤м(ЂЂЂЃЭЙҐС•I•ЕХ•НРЎ™ҐбСХЙ”№‘•Н­СЅБ%№БХР°Ѓм(ЂЂЂЂЂЃҐђиЂМ°(ЂЂЂЂЂЃµ•СЎЅђиЂ‰СЎЙ•…ђЅЙ•…ђ€°(ЂЂЂЂЂЃБ…Й…µМиЃмЃСЎЙ•…‘%ђЃф°(ЂЂЂЃф¤м(ЂЂЂЃ…Э…ҐРЃ•бБ•ЌР (ЂЂЂЂЂЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤ЂфшЃЙ•ЕХ•НС%ђЎµ•НН…ќ”°ЂМ¤¤°(ЂЂЂЂ¤№Й•НЅ±Щ•М№СЅ5…СЌЎ=‰©•ЌРЎмЃЙ•НХ±РиЃмЃСЎЙ•…ђиЃмЃ№…µ”иЂ‰A¤ЃQЎЙ•…ђ€ЃфЃфЃф¤м(ЂЂЂЃ•бБ•ЌРЎЅ™™ҐЌҐ…±]ЙҐС”¤№№ЅР№СЅ!…Щ•	••№…±±•ђ ¤м(ЂЂЂЃ…Э…ҐРЃНСЅБҐбСХЙ”Ў™ҐбСХЙ”¤м(ЂЃф¤м((ЂЃҐР ‰‘•±•С•МЃ…ёЃХ№ХН•ђЃA¤ЃБЙ•Э…ЙґЃ±ЅЌ…±±д€°Ѓ…Не№ЊЂ ¤ЂфшЃм(ЂЂЂЃЌЅ№НРЃ™ҐбСХЙ”ЂфЃЌЙ•…С•ҐбСХЙ” ¤м(ЂЂЂЃЌЅ№НРЃЅ™™ҐЌҐ…±]ЙҐС”ЂфЃЩ¤№™ё ¤м(ЂЂЂЃ™ҐбСХЙ”№Ѕ™™ҐЌҐ…°№НС‘Ґё№Ѕё ‰‘…С„€°ЃЅ™™ҐЌҐ…±]ЙҐС”¤м(ЂЂЂЃЌЅ№НРЃСЎЙ•…‘%ђЂфЃ…Э…ҐРЃНС…ЙСAҐQЎЙ•…ђЎ™ҐбСХЙ”¤м(ЂЂЂЃЌЅ№НРЃН•ННҐЅёЂфЃ™ҐбСХЙ”№…‘…БС•И№Н•ННҐЅ№НlБtм(ЂЂЂЃҐЂ …Н•ННҐЅё¤ЃСЎЙЅЬЃ№•ЬЃЙЙЅИ ‰…­”ЃA¤ЃM•ННҐЅёЃЭ…МЃ№ЅРЃЅБ•№•ђ€¤м(ЂЂЂЃЌЅ№НРЃЌ±ЅН”ЂфЃЩ¤№НБе=ёЎН•ННҐЅё°Ђ‰Ќ±ЅН”€¤м((ЂЂЂЃЭЙҐС•I•ЕХ•НРЎ™ҐбСХЙ”№‘•Н­СЅБ%№БХР°Ѓм(ЂЂЂЂЂЃҐђиЂИ°(ЂЂЂЂЂЃµ•СЎЅђиЂ‰СЎЙ•…ђЅ‘•±•С”€°(ЂЂЂЂЂЃБ…Й…µМиЃмЃСЎЙ•…‘%ђЃф°(ЂЂЂЃф¤м((ЂЂЂЃ…Э…ҐРЃ•бБ•ЌРЎ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤ЂфшЃЙ•ЕХ•НС%ђЎµ•НН…ќ”°ЂИ¤¤¤№Й•НЅ±Щ•М№СЅЕХ…°Ўм(ЂЂЂЂЂЃҐђиЂИ°(ЂЂЂЂЂЃЙ•НХ±РиЃнф°(ЂЂЂЃф¤м(ЂЂЂЃ•бБ•ЌРЎЌ±ЅН”¤№СЅ!…Щ•	••№…±±•‘=№Ќ” ¤м(ЂЂЂЃ•бБ•ЌРЎЅ™™ҐЌҐ…±]ЙҐС”¤№№ЅР№СЅ!…Щ•	••№…±±•ђ ¤м(ЂЂЂЃ…Э…ҐРЃНСЅБҐбСХЙ”Ў™ҐбСХЙ”¤м(ЂЃф¤м((ЂЃҐР ‰‘•±•С•МЃ…ёЃ…ЌСҐЩ”Ѓ•бС•Й№…°ЃQЎЙ•…ђЃ…™С•ИЃЙ•СҐЙҐ№њЃҐСМЃБ•№‘Ґ№њЃEХ•НСҐЅё€°Ѓ…Не№ЊЂ ¤ЂфшЃм(ЂЂЂЃЌЅ№НРЃ™ҐбСХЙ”ЂфЃЌЙ•…С•ҐбСХЙ” ¤м(ЂЂЂЃЌЅ№НРЃ™ЅЙЭ…Й‘•ђиЃНСЙҐ№ќmtЂфЃmtм(ЂЂЂЃ™ҐбСХЙ”№Ѕ™™ҐЌҐ…°№НС‘Ґё№Н•С№ЌЅ‘Ґ№њ ‰ХСа€¤м(ЂЂЂЃ™ҐбСХЙ”№Ѕ™™ҐЌҐ…°№НС‘Ґё№Ѕё ‰‘…С„€°ЂЎЌЎХ№¬иЃНСЙҐ№њ¤ЂфшЃ™ЅЙЭ…Й‘•ђ№БХН ЎЌЎХ№¬¤¤м(ЂЂЂЃЌЅ№НРЃСЎЙ•…‘%ђЂфЃ…Э…ҐРЃНС…ЙСAҐQЎЙ•…ђЎ™ҐбСХЙ”¤м(ЂЂЂЃЌЅ№НРЃН•ННҐЅёЂфЃ™ҐбСХЙ”№…‘…БС•И№Н•ННҐЅ№НlБtм(ЂЂЂЃҐЂ …Н•ННҐЅё¤ЃСЎЙЅЬЃ№•ЬЃЙЙЅИ ‰…­”ЃA¤ЃM•ННҐЅёЃЭ…МЃ№ЅРЃЅБ•№•ђ€¤м(ЂЂЂЃ…Э…ҐРЃНС…ЙСAҐQХЙёЎ™ҐбСХЙ”°ЃСЎЙ•…‘%ђ¤м(ЂЂЂЃН•ННҐЅё№…Н­EХ•НСҐЅёЎм(ЂЂЂЂЂЃҐђиЂ‰Щ…±Х”€°(ЂЂЂЂЂЃСеБ”иЂ‰С•бР€°(ЂЂЂЂЂЃБЙЅµБРиЂ‰Y…±Х”€°(ЂЂЂЂЂЃµХ±СҐ±Ґ№”иЃ™…±Н”°(ЂЂЂЂЂЃН•ЌЙ•РиЃ™…±Н”°(ЂЂЂЂЂЃЅБСҐЅ№…°иЃ™…±Н”°(ЂЂЂЃф¤м(ЂЂЂЃЌЅ№НРЃЕХ•НСҐЅ№I•ЕХ•НРЂфЃ…Э…ҐРЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤Ђфш(ЂЂЂЂЂЃµ•СЎЅђЎµ•НН…ќ”°Ђ‰ҐС•ґЅСЅЅ°ЅЙ•ЕХ•НСUН•Й%№БХР€¤°(ЂЂЂЂ¤м(ЂЂЂЃҐЂЎСеБ•ЅЃЕХ•НСҐЅ№I•ЕХ•НР№ҐђЂ„ффЂ‰№Хµ‰•И€ЃсрЂ…9Хµ‰•И№ҐНM…™•%№С•ќ•ИЎЕХ•НСҐЅ№I•ЕХ•НР№Ґђ¤¤Ѓм(ЂЂЂЂЂЃСЎЙЅЬЃ№•ЬЃЙЙЅИ ‰EХ•НСҐЅёЃЙ•ЕХ•НРЃЎ…МЃ№јЃ№Хµ•ЙҐЊЃ!ЅНРЃ%€¤м(ЂЂЂЃф((ЂЂЂЃЭЙҐС•I•ЕХ•НРЎ™ҐбСХЙ”№‘•Н­СЅБ%№БХР°Ѓм(ЂЂЂЂЂЃҐђиЂМ°(ЂЂЂЂЂЃµ•СЎЅђиЂ‰СЎЙ•…ђЅ‘•±•С”€°(ЂЂЂЂЂЃБ…Й…µМиЃмЃСЎЙ•…‘%ђЃф°(ЂЂЂЃф¤м(ЂЂЂЃ…Э…ҐРЃ•бБ•ЌРЎ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤ЂфшЃЙ•ЕХ•НС%ђЎµ•НН…ќ”°ЂМ¤¤¤№Й•НЅ±Щ•М№СЅЕХ…°Ўм(ЂЂЂЂЂЃҐђиЂМ°(ЂЂЂЂЂЃЙ•НХ±РиЃнф°(ЂЂЂЃф¤м(ЂЂЂЃЭЙҐС•I•ЕХ•НРЎ™ҐбСХЙ”№‘•Н­СЅБ%№БХР°Ѓм(ЂЂЂЂЂЃҐђиЃЕХ•НСҐЅ№I•ЕХ•НР№Ґђ°(ЂЂЂЂЂЃЙ•НХ±РиЃмЃ…№НЭ•ЙМиЃмЃЩ…±Х”иЃмЃ…№НЭ•ЙМиЃl‰±…С”‰tЃфЃфЃф°(ЂЂЂЃф¤м(ЂЂЂЃ…Э…ҐРЃ№•ЬЃAЙЅµҐН” ЎЙ•НЅ±Щ”¤ЂфшЃН•СQҐµ•ЅХРЎЙ•НЅ±Щ”°ЂА¤¤м(ЂЂЂЃ•бБ•ЌРЎ™ЅЙЭ…Й‘•ђ№©ЅҐё €€¤¤№№ЅР№СЅЅ№С…ҐёЎЕХ•НСҐЅ№I•ЕХ•НР№Ґђ¤м(ЂЂЂЃ…Э…ҐРЃНСЅБҐбСХЙ”Ў™ҐбСХЙ”¤м(ЂЃф¤м((ЂЃҐР ‰Й•СХЙ№МЃ„ЃЌЅµµ…№ђЃ•ЙЙЅИЃЭҐСЎЅХРЃ±Ґ™•ЌеЌ±”Ѓ№ЅСҐ™ҐЌ…СҐЅ№МЃ™ЅИЃ„ЃЙ•©•ЌС•ђЃQХЙё€°Ѓ…Не№ЊЂ ¤ЂфшЃм(ЂЂЂЃЌЅ№НРЃ™ҐбСХЙ”ЂфЃЌЙ•…С•ҐбСХЙ” ¤м(ЂЂЂЃЌЅ№НРЃСЎЙ•…‘%ђЂфЃ…Э…ҐРЃНС…ЙСAҐQЎЙ•…ђЎ™ҐбСХЙ”¤м(ЂЂЂЃЌЅ№НРЃН•ННҐЅёЂфЃ™ҐбСХЙ”№…‘…БС•И№Н•ННҐЅ№НlБtм(ЂЂЂЃҐЂ …Н•ННҐЅё¤ЃСЎЙЅЬЃ№•ЬЃЙЙЅИ ‰…­”ЃA¤ЃM•ННҐЅёЃЭ…МЃ№ЅРЃЅБ•№•ђ€¤м(ЂЂЂЃН•ННҐЅё№Й•©•ЌС9•бСQХЙёЎм(ЂЂЂЂЂЃЌЅ‘”иЂ‰Х№…Щ…Ґ±…‰±”€°(ЂЂЂЂЂЃµ•НН…ќ”иЂ‰Не№СЎ•СҐЊЃЙ•©•ЌСҐЅё€°(ЂЂЂЂЂЃЙ•СЙе…‰±”иЃСЙХ”°(ЂЂЂЃф¤м((ЂЂЂЃЭЙҐС•I•ЕХ•НРЎ™ҐбСХЙ”№‘•Н­СЅБ%№БХР°Ѓм(ЂЂЂЂЂЃҐђиЂИ°(ЂЂЂЂЂЃµ•СЎЅђиЂ‰СХЙёЅНС…ЙР€°(ЂЂЂЂЂЃБ…Й…µМиЃмЃСЎЙ•…‘%ђ°ЃҐ№БХРиЃmмЃСеБ”иЂ‰С•бР€°ЃС•бРиЂ‰Й•©•ЌС•ђ€ЃхtЃф°(ЂЂЂЃф¤м(ЂЂЂЃ…Э…ҐРЃ•бБ•ЌР (ЂЂЂЂЂЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤ЂфшЃЙ•ЕХ•НС%ђЎµ•НН…ќ”°ЂИ¤¤°(ЂЂЂЂ¤№Й•НЅ±Щ•М№СЅ5…СЌЎ=‰©•ЌРЎм(ЂЂЂЂЂЃ•ЙЙЅИиЃмЃЌЅ‘”иЂґМИАЬМ°Ѓµ•НН…ќ”иЂ‰Не№СЎ•СҐЊЃЙ•©•ЌСҐЅё€Ѓф°(ЂЂЂЃф¤м(ЂЂЂЃ•бБ•ЌРЎ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№µ•НН…ќ•М№НЅµ” Ўµ•НН…ќ”¤ЂфшЃµ•СЎЅђЎµ•НН…ќ”°Ђ‰СХЙёЅНС…ЙС•ђ€¤¤¤№СЅ	” (ЂЂЂЂЂЃ™…±Н”°(ЂЂЂЂ¤м(ЂЂЂЃ…Э…ҐРЃНСЅБҐбСХЙ”Ў™ҐбСХЙ”¤м(ЂЃф¤м((ЂЃҐР ‰БЙЅ©•ЌСМЃ„ЃЩҐНҐ‰±”Ѓ№…СҐЩ”Ѓ™…Ґ±ХЙ”Ѓ‰•™ЅЙ”ЃСЎ”Ѓ™…Ґ±•ђЃQХЙёЃС•ЙµҐ№…°€°Ѓ…Не№ЊЂ ¤ЂфшЃм(ЂЂЂЃЌЅ№НРЃ™ҐбСХЙ”ЂфЃЌЙ•…С•ҐбСХЙ” ¤м(ЂЂЂЃЌЅ№НРЃСЎЙ•…‘%ђЂфЃ…Э…ҐРЃНС…ЙСAҐQЎЙ•…ђЎ™ҐбСХЙ”¤м(ЂЂЂЃЌЅ№НРЃН•ННҐЅёЂфЃ™ҐбСХЙ”№…‘…БС•И№Н•ННҐЅ№НlБtм(ЂЂЂЃҐЂ …Н•ННҐЅё¤ЃСЎЙЅЬЃ№•ЬЃЙЙЅИ ‰…­”ЃA¤ЃM•ННҐЅёЃЭ…МЃ№ЅРЃЅБ•№•ђ€¤м((ЂЂЂЃЭЙҐС•I•ЕХ•НРЎ™ҐбСХЙ”№‘•Н­СЅБ%№БХР°Ѓм(ЂЂЂЂЂЃҐђиЂИ°(ЂЂЂЂЂЃµ•СЎЅђиЂ‰СХЙёЅНС…ЙР€°(ЂЂЂЂЂЃБ…Й…µМиЃмЃСЎЙ•…‘%ђ°ЃҐ№БХРиЃmмЃСеБ”иЂ‰С•бР€°ЃС•бРиЂ‰™…Ґ±•ђ€ЃхtЃф°(ЂЂЂЃф¤м(ЂЂЂЃ…Э…ҐРЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤ЂфшЃЙ•ЕХ•НС%ђЎµ•НН…ќ”°ЂИ¤¤м(ЂЂЂЃН•ННҐЅё№НС…ЙСI•…НЅ№Ґ№њ ‰ЩҐНҐ‰±”Ѓ™…Ґ±ХЙ”ЃЌЅ№С•бР€¤м(ЂЂЂЃ…Э…ҐРЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ (ЂЂЂЂЂЂЎµ•НН…ќ”¤Ђфш(ЂЂЂЂЂЂЂЃµ•СЎЅђЎµ•НН…ќ”°Ђ‰ҐС•ґЅНС…ЙС•ђ€¤Ђ(ЂЂЂЂЂЂЂЂ Ўµ•НН…ќ”№Б…Й…µМЃ…МЃ)НЅ№=‰©•ЌР¤№ҐС•ґЃ…МЃ)НЅ№=‰©•ЌРЃрЃХ№‘•™Ґ№•ђ¤ь№СеБ”ЂфффЂ‰Й•…НЅ№Ґ№њ€°(ЂЂЂЂ¤м(ЂЂЂЃН•ННҐЅё№™…Ґ±QХЙёЎм(ЂЂЂЂЂЃЌЅ‘”иЂ‰№…СҐЩ•…Ґ±ХЙ”€°(ЂЂЂЂЂЃµ•НН…ќ”иЂњФАМиЃм‰µ•НН…ќ”€и‰M•ЙЩҐЌ”ЃС•µБЅЙ…ЙҐ±дЃХ№…Щ…Ґ±…‰±”€°‰СеБ”€и‰…БҐ}•ЙЙЅИ‰фњ°(ЂЂЂЂЂЃЙ•СЙе…‰±”иЃ™…±Н”°(ЂЂЂЃф¤м(ЂЂЂЃЌЅ№НРЃЌЅµБ±•С•ђЂфЃ…Э…ҐРЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤Ђфш(ЂЂЂЂЂЃµ•СЎЅђЎµ•НН…ќ”°Ђ‰СХЙёЅЌЅµБ±•С•ђ€¤°(ЂЂЂЂ¤м(ЂЂЂЃ•бБ•ЌРЎЌЅµБ±•С•ђ¤№СЅ5…СЌЎ=‰©•ЌРЎм(ЂЂЂЂЂЃБ…Й…µМиЃм(ЂЂЂЂЂЂЂЃСХЙёиЃм(ЂЂЂЂЂЂЂЂЂЃНС…СХМиЂ‰™…Ґ±•ђ€°(ЂЂЂЂЂЂЂЂЂЃ•ЙЙЅИиЃм(ЂЂЂЂЂЂЂЂЂЂЂЃµ•НН…ќ”иЃ•бБ•ЌР№НСЙҐ№ќЅ№С…Ґ№Ґ№њ ‰M•ЙЩҐЌ”ЃС•µБЅЙ…ЙҐ±дЃХ№…Щ…Ґ±…‰±”€¤°(ЂЂЂЂЂЂЂЂЂЂЂЃЌЅ‘•бЙЙЅЙ%№™јиЂ‰ЅСЎ•И€°(ЂЂЂЂЂЂЂЂЂЂЂЃ…‘‘ҐСҐЅ№…±•С…Ґ±МиЃ№Х±°°(ЂЂЂЂЂЂЂЂЂЃф°(ЂЂЂЂЂЂЂЃф°(ЂЂЂЂЂЃф°(ЂЂЂЃф¤м(ЂЂЂЃЌЅ№НРЃЩҐНҐ‰±•ЙЙЅИЂфЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№µ•НН…ќ•М№™Ґ№ђ Ўµ•НН…ќ”¤ЂфшЃµ•СЎЅђЎµ•НН…ќ”°Ђ‰•ЙЙЅИ€¤¤м(ЂЂЂЃ•бБ•ЌРЎЩҐНҐ‰±•ЙЙЅИ¤№СЅ5…СЌЎ=‰©•ЌРЎм(ЂЂЂЂЂЃБ…Й…µМиЃм(ЂЂЂЂЂЂЂЃ•ЙЙЅИиЃм(ЂЂЂЂЂЂЂЂЂЃµ•НН…ќ”иЃ•бБ•ЌР№НСЙҐ№ќЅ№С…Ґ№Ґ№њ ‰M•ЙЩҐЌ”ЃС•µБЅЙ…ЙҐ±дЃХ№…Щ…Ґ±…‰±”€¤°(ЂЂЂЂЂЂЂЂЂЃЌЅ‘•бЙЙЅЙ%№™јиЂ‰ЅСЎ•И€°(ЂЂЂЂЂЂЂЂЂЃ…‘‘ҐСҐЅ№…±•С…Ґ±МиЃ№Х±°°(ЂЂЂЂЂЂЂЃф°(ЂЂЂЂЂЂЂЃЭҐ±±I•СЙдиЃ™…±Н”°(ЂЂЂЂЂЂЂЃСЎЙ•…‘%ђ°(ЂЂЂЂЂЃф°(ЂЂЂЃф¤м((ЂЂЂЃЌЅ№НРЃҐС•µ%№‘•аЂфЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№µ•НН…ќ•М№™Ґ№‘%№‘•а Ўµ•НН…ќ”¤Ђфш(ЂЂЂЂЂЃµ•СЎЅђЎµ•НН…ќ”°Ђ‰ҐС•ґЅЌЅµБ±•С•ђ€¤°(ЂЂЂЂ¤м(ЂЂЂЃЌЅ№НРЃ•ЙЙЅЙ%№‘•аЂфЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№µ•НН…ќ•М№™Ґ№‘%№‘•а Ўµ•НН…ќ”¤ЂфшЃµ•СЎЅђЎµ•НН…ќ”°Ђ‰•ЙЙЅИ€¤¤м(ЂЂЂЃЌЅ№НРЃСХЙ№%№‘•аЂфЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№µ•НН…ќ•М№™Ґ№‘%№‘•а Ўµ•НН…ќ”¤Ђфш(ЂЂЂЂЂЃµ•СЎЅђЎµ•НН…ќ”°Ђ‰СХЙёЅЌЅµБ±•С•ђ€¤°(ЂЂЂЂ¤м(ЂЂЂЃ•бБ•ЌРЎҐС•µ%№‘•а¤№СЅ	•Й•…С•ЙQЎ…№=ЙЕХ…° А¤м(ЂЂЂЃ•бБ•ЌРЎ•ЙЙЅЙ%№‘•а¤№СЅ	•Й•…С•ЙQЎ…ёЎҐС•µ%№‘•а¤м(ЂЂЂЃ•бБ•ЌРЎСХЙ№%№‘•а¤№СЅ	•Й•…С•ЙQЎ…ёЎ•ЙЙЅЙ%№‘•а¤м(ЂЂЂЃ…Э…ҐРЃНСЅБҐбСХЙ”Ў™ҐбСХЙ”¤м(ЂЃф¤м((ЂЃҐР ‰БЙЅ©•ЌСМЃЅµµ…№ђ°Ѓ•№•ЙҐЊЃQЅЅ°°ЃЙ•±Ґ…‰±”ЃҐ±”ЃЎ…№ќ”°Ѓ…№ђЃQХЙёЃҐ™ЃЅХСБХР€°Ѓ…Не№ЊЂ ¤ЂфшЃм(ЂЂЂЃЌЅ№НРЃ™ҐбСХЙ”ЂфЃЌЙ•…С•ҐбСХЙ” ¤м(ЂЂЂЃЌЅ№НРЃСЎЙ•…‘%ђЂфЃ…Э…ҐРЃНС…ЙСAҐQЎЙ•…ђЎ™ҐбСХЙ”¤м(ЂЂЂЃ…Э…ҐРЃНС…ЙСAҐQХЙёЎ™ҐбСХЙ”°ЃСЎЙ•…‘%ђ¤м(ЂЂЂЃЌЅ№НРЃН•ННҐЅёЂфЃ™ҐбСХЙ”№…‘…БС•И№Н•ННҐЅ№НlБtм(ЂЂЂЃҐЂ …Н•ННҐЅё¤ЃСЎЙЅЬЃ№•ЬЃЙЙЅИ ‰…­”ЃA¤ЃM•ННҐЅёЃЭ…МЃ№ЅРЃЅБ•№•ђ€¤м((ЂЂЂЃЌЅ№НРЃЌЅµµ…№‘%ђЂфЃН•ННҐЅё№НС…ЙСЅµµ…№‘б•ЌХСҐЅё ‰БЙҐ№СЃ‘Ѕ№”€°Ђ€ЅНе№СЎ•СҐЊ€¤м(ЂЂЂЃ…Э…ҐРЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ (ЂЂЂЂЂЂЎµ•НН…ќ”¤Ђфш(ЂЂЂЂЂЂЂЃµ•СЎЅђЎµ•НН…ќ”°Ђ‰ҐС•ґЅНС…ЙС•ђ€¤Ђ(ЂЂЂЂЂЂЂЂЎµ•НН…ќ”№Б…Й…µМЃ…МЃ)НЅ№=‰©•ЌР¤№ҐС•ґЂ„ффЃХ№‘•™Ґ№•ђЂ(ЂЂЂЂЂЂЂЂ Ўµ•НН…ќ”№Б…Й…µМЃ…МЃ)НЅ№=‰©•ЌР¤№ҐС•ґЃ…МЃ)НЅ№=‰©•ЌР¤№ҐђЂфффЃЌЅµµ…№‘%ђ°(ЂЂЂЂ¤м(ЂЂЂЃН•ННҐЅё№…ББ•№‘Ѕµµ…№‘=ХСБХРЎЌЅµµ…№‘%ђ°Ђ‰‘Ѕ№•qё€¤м(ЂЂЂЃ…Э…ҐРЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤Ђфш(ЂЂЂЂЂЃµ•СЎЅђЎµ•НН…ќ”°Ђ‰ҐС•ґЅЌЅµµ…№‘б•ЌХСҐЅёЅЅХСБХС•±С„€¤°(ЂЂЂЂ¤м(ЂЂЂЃН•ННҐЅё№ЌЅµБ±•С•%С•ґЎЌЅµµ…№‘%ђ°ЃмЃНС…СХМиЂ‰НХЌЌ••‘•ђ€Ѓф¤м((ЂЂЂЃЌЅ№НРЃСЅЅ±%ђЂфЃН•ННҐЅё№НС…ЙСQЅЅ±б•ЌХСҐЅё ‰ЌХНСЅґ€°ЃмЃЩ…±Х”иЂДЃф¤м(ЂЂЂЃН•ННҐЅё№Й•Б±…Ќ•QЅЅ±=ХСБХРЎСЅЅ±%ђ°Ѓм(ЂЂЂЂЂЃЌЅ№С•№РиЃmмЃСеБ”иЂ‰С•бР€°ЃС•бРиЂ‰ЌХНСЅґЃЅХСБХР€Ѓхt°(ЂЂЂЃф¤м(ЂЂЂЃН•ННҐЅё№ЌЅµБ±•С•%С•ґЎСЅЅ±%ђ°ЃмЃНС…СХМиЂ‰НХЌЌ••‘•ђ€Ѓф¤м(ЂЂЂЃЌЅ№НРЃСЅЅ±ЅµБ±•С•ђЂфЃ…Э…ҐРЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ (ЂЂЂЂЂЂЎµ•НН…ќ”¤Ђфш(ЂЂЂЂЂЂЂЃµ•СЎЅђЎµ•НН…ќ”°Ђ‰ҐС•ґЅЌЅµБ±•С•ђ€¤Ђ(ЂЂЂЂЂЂЂЂ Ўµ•НН…ќ”№Б…Й…µМЃ…МЃ)НЅ№=‰©•ЌР¤№ҐС•ґЃ…МЃ)НЅ№=‰©•ЌРЃрЃХ№‘•™Ґ№•ђ¤ь№ҐђЂфффЃСЅЅ±%ђ°(ЂЂЂЂ¤м(ЂЂЂЃ•бБ•ЌРЎСЅЅ±ЅµБ±•С•ђ¤№СЅ5…СЌЎ=‰©•ЌРЎм(ЂЂЂЂЂЃБ…Й…µМиЃмЃҐС•ґиЃмЃСеБ”иЂ‰‘е№…µҐЌQЅЅ±…±°€°ЃСЅЅ°иЂ‰ЌХНСЅґ€°ЃНХЌЌ•НМиЃСЙХ”ЃфЃф°(ЂЂЂЃф¤м((ЂЂЂЃН•ННҐЅё№•µҐСҐ±•Ў…№ќ”Ўl(ЂЂЂЂЂЃм(ЂЂЂЂЂЂЂЃБ…С иЂ‰Н…µБ±”№СбР€°(ЂЂЂЂЂЂЂЃ­Ґ№ђиЂ‰ХБ‘…С”€°(ЂЂЂЂЂЂЂЃХ№Ґ™Ґ•‘Ґ™иЂ€ґґґЃ„ЅН…µБ±”№СбСqё¬¬¬Ѓ€ЅН…µБ±”№СбСq№ ЂґДЂ¬ДЃqёµЅ±‘qё­№•Эqё€°(ЂЂЂЂЂЃф°(ЂЂЂЃt¤м(ЂЂЂЃ…Э…ҐРЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤ЂфшЃµ•СЎЅђЎµ•НН…ќ”°Ђ‰ҐС•ґЅ™Ґ±•Ў…№ќ”ЅБ…СЌЎUБ‘…С•ђ€¤¤м(ЂЂЂЃ…Э…ҐРЃ•бБ•ЌР (ЂЂЂЂЂЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤ЂфшЃµ•СЎЅђЎµ•НН…ќ”°Ђ‰СХЙёЅ‘Ґ™ЅХБ‘…С•ђ€¤¤°(ЂЂЂЂ¤№Й•НЅ±Щ•М№СЅ5…СЌЎ=‰©•ЌРЎмЃБ…Й…µМиЃмЃ‘Ґ™иЃ•бБ•ЌР№НСЙҐ№ќЅ№С…Ґ№Ґ№њ €­№•Ь€¤ЃфЃф¤м((ЂЂЂЃН•ННҐЅё№…ББ•№‘Q•бР ‰™Ґ№ҐНЎ•ђ€¤м(ЂЂЂЃН•ННҐЅё№НХЌЌ••‘QХЙё ¤м(ЂЂЂЃЌЅ№НРЃЌЅµБ±•С•ђЂфЃ…Э…ҐРЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤Ђфш(ЂЂЂЂЂЃµ•СЎЅђЎµ•НН…ќ”°Ђ‰СХЙёЅЌЅµБ±•С•ђ€¤°(ЂЂЂЂ¤м(ЂЂЂЃ•бБ•ЌРЎЌЅµБ±•С•ђ¤№СЅ5…СЌЎ=‰©•ЌРЎм(ЂЂЂЂЂЃБ…Й…µМиЃм(ЂЂЂЂЂЂЂЃСХЙёиЃм(ЂЂЂЂЂЂЂЂЂЃНС…СХМиЂ‰ЌЅµБ±•С•ђ€°(ЂЂЂЂЂЂЂЂЂЃҐС•µМиЃmмЃСеБ”иЂ‰™Ґ±•Ў…№ќ”€Ѓф°ЃмЃСеБ”иЂ‰…ќ•№С5•НН…ќ”€Ѓхt°(ЂЂЂЂЂЂЂЃф°(ЂЂЂЂЂЃф°(ЂЂЂЃф¤м(ЂЂЂЃ…Э…ҐРЃНСЅБҐбСХЙ”Ў™ҐбСХЙ”¤м(ЂЃф¤м((ЂЃҐР ‰ЙЅХ№ђµСЙҐБМЃ…ёЃ•…Й±дЃББЙЅЩ…°ЃСЎЙЅХќ ЃСЎ”ЃЙ•ЩҐ•Э•ђЃЅ‘•аЃ№…СҐЩ”ЃЙ•ЕХ•НР€°Ѓ…Не№ЊЂ ¤ЂфшЃм(ЂЂЂЃЌЅ№НРЃ™ҐбСХЙ”ЂфЃЌЙ•…С•ҐбСХЙ” ¤м(ЂЂЂЃЌЅ№НРЃСЎЙ•…‘%ђЂфЃ…Э…ҐРЃНС…ЙСAҐQЎЙ•…ђЎ™ҐбСХЙ”¤м(ЂЂЂЃЌЅ№НРЃН•ННҐЅёЂфЃ™ҐбСХЙ”№…‘…БС•И№Н•ННҐЅ№НlБtм(ЂЂЂЃҐЂ …Н•ННҐЅё¤ЃСЎЙЅЬЃ№•ЬЃЙЙЅИ ‰…­”ЃA¤ЃM•ННҐЅёЃЭ…МЃ№ЅРЃЅБ•№•ђ€¤м(ЂЂЂЃН•ННҐЅё№Й•ЕХ•НСББЙЅЩ…±=№9•бСQХЙё ‰±±ЅЬЃ№…СҐЩ”Ѓ…ЌСҐЅёь€°Ђ‰=№”µНЎЅРЃ…ББЙЅЩ…°€¤м((ЂЂЂЃЌЅ№НРЃСХЙ№%ђЂфЃ…Э…ҐРЃНС…ЙСAҐQХЙёЎ™ҐбСХЙ”°ЃСЎЙ•…‘%ђ¤м(ЂЂЂЃЌЅ№НРЃЙ•ЕХ•НРЂфЃ…Э…ҐРЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤Ђфш(ЂЂЂЂЂЃµ•СЎЅђЎµ•НН…ќ”°Ђ‰µЌБM•ЙЩ•ИЅ•±ҐЌҐС…СҐЅёЅЙ•ЕХ•НР€¤°(ЂЂЂЂ¤м(ЂЂЂЃ•бБ•ЌРЎЙ•ЕХ•НР¤№СЅЕХ…°Ўм(ЂЂЂЂЂЃҐђиЂґЕ|ААБ|ААД°(ЂЂЂЂЂЃµ•СЎЅђиЂ‰µЌБM•ЙЩ•ИЅ•±ҐЌҐС…СҐЅёЅЙ•ЕХ•НР€°(ЂЂЂЂЂЃБ…Й…µМиЃм(ЂЂЂЂЂЂЂЃН•ЙЩ•Й9…µ”иЂ‰A¤€°(ЂЂЂЂЂЂЂЃСЎЙ•…‘%ђ°(ЂЂЂЂЂЂЂЃСХЙ№%ђ°(ЂЂЂЂЂЂЂЃµЅ‘”иЂ‰™ЅЙґ€°(ЂЂЂЂЂЂЂЃµ•НН…ќ”иЂ‰±±ЅЬЃ№…СҐЩ”Ѓ…ЌСҐЅёь€°(ЂЂЂЂЂЂЂЃЙ•ЕХ•НС•‘MЌЎ•µ„иЃмЃСеБ”иЂ‰Ѕ‰©•ЌР€°ЃБЙЅБ•ЙСҐ•МиЃнфЃф°(ЂЂЂЂЂЂЂЃ}µ•С„иЃм(ЂЂЂЂЂЂЂЂЂЃЌЅ‘•б}…ББЙЅЩ…±}­Ґ№ђиЂ‰µЌБ}СЅЅ±}Ќ…±°€°(ЂЂЂЂЂЂЂЂЂЃЙ•…НЅёиЂ‰=№”µНЎЅРЃ…ББЙЅЩ…°€°(ЂЂЂЂЂЂЂЃф°(ЂЂЂЂЂЃф°(ЂЂЂЃф¤м(ЂЂЂЃ•бБ•ЌР (ЂЂЂЂЂЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№µ•НН…ќ•М№НЅµ” Ўµ•НН…ќ”¤ЂфшЃµ•СЎЅђЎµ•НН…ќ”°Ђ‰ҐС•ґЅСЅЅ°ЅЙ•ЕХ•НСUН•Й%№БХР€¤¤°(ЂЂЂЂ¤№СЅ	”Ў™…±Н”¤м((ЂЂЂЃЌЅ№НРЃ…ББЙЅЩ…±I•ЕХ•НС%ђЂфЃЙ•ЕХ•НР№Ґђм(ЂЂЂЃҐЂЎСеБ•ЅЃ…ББЙЅЩ…±I•ЕХ•НС%ђЂ„ффЂ‰№Хµ‰•И€¤Ѓм(ЂЂЂЂЂЃСЎЙЅЬЃ№•ЬЃЙЙЅИ ‰ББЙЅЩ…°ЃЙ•ЕХ•НРЃЎ…МЃ№јЃ№Хµ•ЙҐЊЃ!ЅНРЃ%€¤м(ЂЂЂЃф(ЂЂЂЃЭЙҐС•I•ЕХ•НРЎ™ҐбСХЙ”№‘•Н­СЅБ%№БХР°Ѓм(ЂЂЂЂЂЃҐђиЃ…ББЙЅЩ…±I•ЕХ•НС%ђ°(ЂЂЂЂЂЃЙ•НХ±РиЃмЃ…ЌСҐЅёиЂ‰…ЌЌ•БР€°ЃЌЅ№С•№РиЃнф°Ѓ}µ•С„иЃ№Х±°Ѓф°(ЂЂЂЃф¤м(ЂЂЂЃ…Э…ҐРЃЩ¤№Э…ҐСЅИ  ¤ЂфшЃм(ЂЂЂЂЂЃ•бБ•ЌРЎН•ННҐЅё№Ґ№С•Й…ЌСҐЅ№I•НБЅ№Н•М¤№СЅ5…СЌЎ=‰©•ЌРЎl(ЂЂЂЂЂЂЂЃмЃЙ•НБЅ№Н”иЃмЃСеБ”иЂ‰…ББЙЅЩ…°€°Ѓ…ЌСҐЅ№%ђиЂ‰…±±ЅЭ=№Ќ”€ЃфЃф°(ЂЂЂЂЂЃt¤м(ЂЂЂЃф¤м(ЂЂЂЃЭЙҐС•I•ЕХ•НРЎ™ҐбСХЙ”№‘•Н­СЅБ%№БХР°Ѓм(ЂЂЂЂЂЃҐђиЃ…ББЙЅЩ…±I•ЕХ•НС%ђ°(ЂЂЂЂЂЃЙ•НХ±РиЃмЃ…ЌСҐЅёиЂ‰…ЌЌ•БР€Ѓф°(ЂЂЂЃф¤м(ЂЂЂЃ…Э…ҐРЃ№•ЬЃAЙЅµҐН” ЎЙ•НЅ±Щ”¤ЂфшЃН•СQҐµ•ЅХРЎЙ•НЅ±Щ”°ЂА¤¤м(ЂЂЂЃ•бБ•ЌРЎН•ННҐЅё№Ґ№С•Й…ЌСҐЅ№I•НБЅ№Н•М¤№СЅ!…Щ•1•№ќС  Д¤м((ЂЂЂЃН•ННҐЅё№…ББ•№‘Q•бР ‰ЌЅ№СҐ№Х•ђ€¤м(ЂЂЂЃН•ННҐЅё№НХЌЌ••‘QХЙё ¤м(ЂЂЂЃ…Э…ҐРЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤ЂфшЃСХЙ№Щ•№РЎµ•НН…ќ”°Ђ‰СХЙёЅЌЅµБ±•С•ђ€°ЃСХЙ№%ђ¤¤м(ЂЂЂЃ…Э…ҐРЃНСЅБҐбСХЙ”Ў™ҐбСХЙ”¤м(ЂЃф¤м((ЂЃҐР ‰ЙЅХ№ђµСЙҐБМЃ„Ѓ‘•Ќ±…Й•ђЃ№…СҐЩ”ЃББЙЅЩ…°ЃНЌЅБ”ЃЭҐСЎЅХРЃ•бБЅНҐ№њЃ„ЃБ…е±Ѕ…ђ€°Ѓ…Не№ЊЂ ¤ЂфшЃм(ЂЂЂЃЌЅ№НРЃ™ҐбСХЙ”ЂфЃЌЙ•…С•ҐбСХЙ” ¤м(ЂЂЂЃЌЅ№НРЃСЎЙ•…‘%ђЂфЃ…Э…ҐРЃНС…ЙСAҐQЎЙ•…ђЎ™ҐбСХЙ”¤м(ЂЂЂЃЌЅ№НРЃН•ННҐЅёЂфЃ™ҐбСХЙ”№…‘…БС•И№Н•ННҐЅ№НlБtм(ЂЂЂЃҐЂ …Н•ННҐЅё¤ЃСЎЙЅЬЃ№•ЬЃЙЙЅИ ‰…­”ЃA¤ЃM•ННҐЅёЃЭ…МЃ№ЅРЃЅБ•№•ђ€¤м(ЂЂЂЃ…Э…ҐРЃНС…ЙСAҐQХЙёЎ™ҐбСХЙ”°ЃСЎЙ•…‘%ђ¤м(ЂЂЂЃН•ННҐЅё№Й•ЕХ•НСББЙЅЩ…° ‰I•µ•µ‰•ИЃ№…СҐЩ”Ѓ…ЌСҐЅёь€°ЃХ№‘•™Ґ№•ђ°Ђ‰…±Э…еМ€¤м(ЂЂЂЃЌЅ№НРЃЙ•ЕХ•НРЂфЃ…Э…ҐРЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤Ђфш(ЂЂЂЂЂЃµ•СЎЅђЎµ•НН…ќ”°Ђ‰µЌБM•ЙЩ•ИЅ•±ҐЌҐС…СҐЅёЅЙ•ЕХ•НР€¤°(ЂЂЂЂ¤м(ЂЂЂЃ•бБ•ЌРЎЙ•ЕХ•НР¤№СЅ5…СЌЎ=‰©•ЌРЎмЃБ…Й…µМиЃмЃ}µ•С„иЃмЃБ•ЙНҐНРиЂ‰…±Э…еМ€ЃфЃфЃф¤м(ЂЂЂЃҐЂЎСеБ•ЅЃЙ•ЕХ•НР№ҐђЂ„ффЂ‰№Хµ‰•И€¤ЃСЎЙЅЬЃ№•ЬЃЙЙЅИ ‰ББЙЅЩ…°ЃЙ•ЕХ•НРЃЎ…МЃ№јЃ№Хµ•ЙҐЊЃ%€¤м(ЂЂЂЃЭЙҐС•I•ЕХ•НРЎ™ҐбСХЙ”№‘•Н­СЅБ%№БХР°Ѓм(ЂЂЂЂЂЃҐђиЃЙ•ЕХ•НР№Ґђ°(ЂЂЂЂЂЃЙ•НХ±РиЃмЃ…ЌСҐЅёиЂ‰…ЌЌ•БР€°ЃЌЅ№С•№РиЃнф°Ѓ}µ•С„иЃмЃБ•ЙНҐНРиЂ‰…±Э…еМ€ЃфЃф°(ЂЂЂЃф¤м(ЂЂЂЃ…Э…ҐРЃЩ¤№Э…ҐСЅИ  ¤ЂфшЃм(ЂЂЂЂЂЃ•бБ•ЌРЎН•ННҐЅё№Ґ№С•Й…ЌСҐЅ№I•НБЅ№Н•М¤№СЅ5…СЌЎ=‰©•ЌРЎl(ЂЂЂЂЂЂЂЃмЃЙ•НБЅ№Н”иЃмЃСеБ”иЂ‰…ББЙЅЩ…°€°Ѓ…ЌСҐЅ№%ђиЂ‰…±±ЅЭ±Э…еМ€ЃфЃф°(ЂЂЂЂЂЃt¤м(ЂЂЂЃф¤м(ЂЂЂЃН•ННҐЅё№НХЌЌ••‘QХЙё ¤м(ЂЂЂЃ…Э…ҐРЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤ЂфшЃµ•СЎЅђЎµ•НН…ќ”°Ђ‰СХЙёЅЌЅµБ±•С•ђ€¤¤м(ЂЂЂЃ…Э…ҐРЃНСЅБҐбСХЙ”Ў™ҐбСХЙ”¤м(ЂЃф¤м((ЂЃҐР ‰™…Ґ±МЃЌ±ЅН•ђЃ™ЅИЃ‘•№Ґ•ђ°ЃЌ…№Ќ•±±•ђ°Ѓ•ЙЙЅЙ•ђ°Ѓ…№ђЃµ…±™ЅЙµ•ђЃ№…СҐЩ”ЃББЙЅЩ…°ЃЙ•НБЅ№Н•М€°Ѓ…Не№ЊЂ ¤ЂфшЃм(ЂЂЂЃЌЅ№НРЃЙ•НБЅ№Н•МиЃ)НЅ№=‰©•ЌСmtЂфЃl(ЂЂЂЂЂЃмЃЙ•НХ±РиЃмЃ…ЌСҐЅёиЂ‰‘•Ќ±Ґ№”€ЃфЃф°(ЂЂЂЂЂЃмЃЙ•НХ±РиЃмЃ…ЌСҐЅёиЂ‰Ќ…№Ќ•°€ЃфЃф°(ЂЂЂЂЂЃмЃ•ЙЙЅИиЃмЃЌЅ‘”иЂґД°Ѓµ•НН…ќ”иЂ‰‘ҐНµҐНН•ђ€ЃфЃф°(ЂЂЂЂЂЃмЃЙ•НХ±РиЃмЃ…ЌСҐЅёиЂ‰…±±ЅЭЅЙM•ННҐЅё€ЃфЃф°(ЂЂЂЂЂЃмЃЙ•НХ±РиЃмЃ…ЌСҐЅёиЂ‰…ЌЌ•БР€°ЃЌЅ№С•№РиЃнф°Ѓ}µ•С„иЃмЃБ•ЙНҐНРиЂ‰Н•ННҐЅё€ЃфЃфЃф°(ЂЂЂЃtм(ЂЂЂЃ™ЅИЂЎЌЅ№НРЃЙ•НБЅ№Н”ЃЅЃЙ•НБЅ№Н•М¤Ѓм(ЂЂЂЂЂЃЌЅ№НРЃ™ҐбСХЙ”ЂфЃЌЙ•…С•ҐбСХЙ” ¤м(ЂЂЂЂЂЃЌЅ№НРЃСЎЙ•…‘%ђЂфЃ…Э…ҐРЃНС…ЙСAҐQЎЙ•…ђЎ™ҐбСХЙ”¤м(ЂЂЂЂЂЃЌЅ№НРЃН•ННҐЅёЂфЃ™ҐбСХЙ”№…‘…БС•И№Н•ННҐЅ№НlБtм(ЂЂЂЂЂЃҐЂ …Н•ННҐЅё¤ЃСЎЙЅЬЃ№•ЬЃЙЙЅИ ‰…­”ЃA¤ЃM•ННҐЅёЃЭ…МЃ№ЅРЃЅБ•№•ђ€¤м(ЂЂЂЂЂЃ…Э…ҐРЃНС…ЙСAҐQХЙёЎ™ҐбСХЙ”°ЃСЎЙ•…‘%ђ¤м(ЂЂЂЂЂЃН•ННҐЅё№Й•ЕХ•НСББЙЅЩ…° ‰ББЙЅЩ”ЃЅ№Ќ”€¤м(ЂЂЂЂЂЃЌЅ№НРЃЙ•ЕХ•НРЂфЃ…Э…ҐРЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤Ђфш(ЂЂЂЂЂЂЂЃµ•СЎЅђЎµ•НН…ќ”°Ђ‰µЌБM•ЙЩ•ИЅ•±ҐЌҐС…СҐЅёЅЙ•ЕХ•НР€¤°(ЂЂЂЂЂЂ¤м(ЂЂЂЂЂЃЌЅ№НРЃ…ББЙЅЩ…±I•ЕХ•НС%ђЂфЃЙ•ЕХ•НР№Ґђм(ЂЂЂЂЂЃҐЂЎСеБ•ЅЃ…ББЙЅЩ…±I•ЕХ•НС%ђЂ„ффЂ‰№Хµ‰•И€¤Ѓм(ЂЂЂЂЂЂЂЃСЎЙЅЬЃ№•ЬЃЙЙЅИ ‰ББЙЅЩ…°ЃЙ•ЕХ•НРЃЎ…МЃ№јЃ№Хµ•ЙҐЊЃ!ЅНРЃ%€¤м(ЂЂЂЂЂЃф(ЂЂЂЂЂЃЭЙҐС•I•ЕХ•НРЎ™ҐбСХЙ”№‘•Н­СЅБ%№БХР°ЃмЃҐђиЃ…ББЙЅЩ…±I•ЕХ•НС%ђ°Ђёё№Й•НБЅ№Н”Ѓф¤м(ЂЂЂЂЂЃ…Э…ҐРЃЩ¤№Э…ҐСЅИ  ¤ЂфшЃм(ЂЂЂЂЂЂЂЃ•бБ•ЌРЎН•ННҐЅё№Ґ№С•Й…ЌСҐЅ№I•НБЅ№Н•М№…Р ґД¤¤№СЅ5…СЌЎ=‰©•ЌРЎм(ЂЂЂЂЂЂЂЂЂЃЙ•НБЅ№Н”иЃмЃСеБ”иЂ‰…ББЙЅЩ…°€°Ѓ…ЌСҐЅ№%ђиЂ‰‘•№д€Ѓф°(ЂЂЂЂЂЂЂЃф¤м(ЂЂЂЂЂЃф¤м(ЂЂЂЂЂЃН•ННҐЅё№НХЌЌ••‘QХЙё ¤м(ЂЂЂЂЂЃ…Э…ҐРЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤ЂфшЃµ•СЎЅђЎµ•НН…ќ”°Ђ‰СХЙёЅЌЅµБ±•С•ђ€¤¤м(ЂЂЂЂЂЃ…Э…ҐРЃНСЅБҐбСХЙ”Ў™ҐбСХЙ”¤м(ЂЂЂЃф(ЂЃф¤м((ЂЃҐР ‰Й•НЅ±Щ•МЃЌ…№Ќ•±±•ђЃББЙЅЩ…°ЃНС…С”Ѓ…№ђЃЌЅ№НХµ•МЃҐСМЃЙ•Н•ЙЩ•ђЃ±…С”µЙ•НБЅ№Н”Ѓ№…µ•НБ…Ќ”€°Ѓ…Не№ЊЂ ¤ЂфшЃм(ЂЂЂЃЌЅ№НРЃ™ҐбСХЙ”ЂфЃЌЙ•…С•ҐбСХЙ” ¤м(ЂЂЂЃЌЅ№НРЃ™ЅЙЭ…Й‘•ђиЃНСЙҐ№ќmtЂфЃmtм(ЂЂЂЃ™ҐбСХЙ”№Ѕ™™ҐЌҐ…°№НС‘Ґё№Н•С№ЌЅ‘Ґ№њ ‰ХСа€¤м(ЂЂЂЃ™ҐбСХЙ”№Ѕ™™ҐЌҐ…°№НС‘Ґё№Ѕё ‰‘…С„€°ЂЎЌЎХ№¬иЃНСЙҐ№њ¤ЂфшЃ™ЅЙЭ…Й‘•ђ№БХН ЎЌЎХ№¬¤¤м(ЂЂЂЃЌЅ№НРЃСЎЙ•…‘%ђЂфЃ…Э…ҐРЃНС…ЙСAҐQЎЙ•…ђЎ™ҐбСХЙ”¤м(ЂЂЂЃЌЅ№НРЃСХЙ№%ђЂфЃ…Э…ҐРЃНС…ЙСAҐQХЙёЎ™ҐбСХЙ”°ЃСЎЙ•…‘%ђ¤м(ЂЂЂЃЌЅ№НРЃН•ННҐЅёЂфЃ™ҐбСХЙ”№…‘…БС•И№Н•ННҐЅ№НlБtм(ЂЂЂЃҐЂ …Н•ННҐЅё¤ЃСЎЙЅЬЃ№•ЬЃЙЙЅИ ‰…­”ЃA¤ЃM•ННҐЅёЃЭ…МЃ№ЅРЃЅБ•№•ђ€¤м(ЂЂЂЃН•ННҐЅё№Й•ЕХ•НСББЙЅЩ…° ‰…№Ќ•°ЃБ•№‘Ґ№њЃББЙЅЩ…°€¤м(ЂЂЂЃЌЅ№НРЃ…ББЙЅЩ…±I•ЕХ•НРЂфЃ…Э…ҐРЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤Ђфш(ЂЂЂЂЂЃµ•СЎЅђЎµ•НН…ќ”°Ђ‰µЌБM•ЙЩ•ИЅ•±ҐЌҐС…СҐЅёЅЙ•ЕХ•НР€¤°(ЂЂЂЂ¤м(ЂЂЂЃЌЅ№НРЃ…ББЙЅЩ…±I•ЕХ•НС%ђЂфЃ…ББЙЅЩ…±I•ЕХ•НР№Ґђм(ЂЂЂЃҐЂЎСеБ•ЅЃ…ББЙЅЩ…±I•ЕХ•НС%ђЂ„ффЂ‰№Хµ‰•И€¤Ѓм(ЂЂЂЂЂЃСЎЙЅЬЃ№•ЬЃЙЙЅИ ‰ББЙЅЩ…°ЃЙ•ЕХ•НРЃЎ…МЃ№јЃ№Хµ•ЙҐЊЃ!ЅНРЃ%€¤м(ЂЂЂЃф(ЂЂЂЃН•ННҐЅё№ЌЅµБ±•С•…№Ќ•±±…СҐЅ№=№I•ЕХ•НР ¤м((ЂЂЂЃЭЙҐС•I•ЕХ•НРЎ™ҐбСХЙ”№‘•Н­СЅБ%№БХР°Ѓм(ЂЂЂЂЂЃҐђиЂМ°(ЂЂЂЂЂЃµ•СЎЅђиЂ‰СХЙёЅҐ№С•ЙЙХБР€°(ЂЂЂЂЂЃБ…Й…µМиЃмЃСЎЙ•…‘%ђ°ЃСХЙ№%ђЃф°(ЂЂЂЃф¤м(ЂЂЂЃ…Э…ҐРЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤ЂфшЃЙ•ЕХ•НС%ђЎµ•НН…ќ”°ЂМ¤¤м(ЂЂЂЃЌЅ№НРЃЙ•НЅ±Щ•ђЂфЃ…Э…ҐРЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤Ђфш(ЂЂЂЂЂЃµ•СЎЅђЎµ•НН…ќ”°Ђ‰Н•ЙЩ•ЙI•ЕХ•НРЅЙ•НЅ±Щ•ђ€¤°(ЂЂЂЂ¤м(ЂЂЂЃЌЅ№НРЃЌЅµБ±•С•ђЂфЃ…Э…ҐРЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤Ђфш(ЂЂЂЂЂЃµ•СЎЅђЎµ•НН…ќ”°Ђ‰СХЙёЅЌЅµБ±•С•ђ€¤°(ЂЂЂЂ¤м(ЂЂЂЃ•бБ•ЌРЎЙ•НЅ±Щ•ђ¤№СЅ5…СЌЎ=‰©•ЌРЎм(ЂЂЂЂЂЃБ…Й…µМиЃмЃСЎЙ•…‘%ђ°ЃЙ•ЕХ•НС%ђиЃ…ББЙЅЩ…±I•ЕХ•НС%ђЃф°(ЂЂЂЃф¤м(ЂЂЂЃЌЅ№НРЃЙ•НБЅ№Н•%№‘•аЂфЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№µ•НН…ќ•М№™Ґ№‘%№‘•а Ўµ•НН…ќ”¤ЂфшЃЙ•ЕХ•НС%ђЎµ•НН…ќ”°ЂМ¤¤м(ЂЂЂЃЌЅ№НРЃЙ•НЅ±Щ•‘%№‘•аЂфЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№µ•НН…ќ•М№Ґ№‘•б=ЎЙ•НЅ±Щ•ђ¤м(ЂЂЂЃЌЅ№НРЃС•ЙµҐ№…±%№‘•аЂфЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№µ•НН…ќ•М№Ґ№‘•б=ЎЌЅµБ±•С•ђ¤м(ЂЂЂЃ•бБ•ЌРЎЙ•НЅ±Щ•‘%№‘•а¤№СЅ	•Й•…С•ЙQЎ…ёЎЙ•НБЅ№Н•%№‘•а¤м(ЂЂЂЃ•бБ•ЌРЎС•ЙµҐ№…±%№‘•а¤№СЅ	•Й•…С•ЙQЎ…ёЎЙ•НЅ±Щ•‘%№‘•а¤м((ЂЂЂЃЭЙҐС•I•ЕХ•НРЎ™ҐбСХЙ”№‘•Н­СЅБ%№БХР°Ѓм(ЂЂЂЂЂЃҐђиЃ…ББЙЅЩ…±I•ЕХ•НС%ђ°(ЂЂЂЂЂЃЙ•НХ±РиЃмЃ…ЌСҐЅёиЂ‰…ЌЌ•БР€Ѓф°(ЂЂЂЃф¤м(ЂЂЂЃЭЙҐС•I•ЕХ•НРЎ™ҐбСХЙ”№‘•Н­СЅБ%№БХР°Ѓм(ЂЂЂЂЂЃҐђиЂґЕ|ФАБ|ААА°(ЂЂЂЂЂЃЙ•НХ±РиЃмЃ…ЌСҐЅёиЂ‰…ЌЌ•БР€Ѓф°(ЂЂЂЃф¤м(ЂЂЂЃЭЙҐС•I•ЕХ•НРЎ™ҐбСХЙ”№‘•Н­СЅБ%№БХР°ЃмЃҐђиЂддд°ЃЙ•НХ±РиЃмЃЅ™™ҐЌҐ…°иЃСЙХ”ЃфЃф¤м(ЂЂЂЃ…Э…ҐРЃ№•ЬЃAЙЅµҐН” ЎЙ•НЅ±Щ”¤ЂфшЃН•СQҐµ•ЅХРЎЙ•НЅ±Щ”°ЂА¤¤м(ЂЂЂЃ•бБ•ЌРЎ™ЅЙЭ…Й‘•ђ№©ЅҐё €€¤¤№№ЅР№СЅЅ№С…Ґё (ЂЂЂЂЂЃ)M=8№НСЙҐ№ќҐ™дЎмЃҐђиЂддд°ЃЙ•НХ±РиЃмЃЅ™™ҐЌҐ…°иЃСЙХ”ЃфЃф¤°(ЂЂЂЂ¤м(ЂЂЂЃ•бБ•ЌРЎ™ЅЙЭ…Й‘•ђ№©ЅҐё €€¤¤№№ЅР№СЅЅ№С…ҐёЎMСЙҐ№њЎ…ББЙЅЩ…±I•ЕХ•НС%ђ¤¤м(ЂЂЂЃ•бБ•ЌРЎ™ЅЙЭ…Й‘•ђ№©ЅҐё €€¤¤№№ЅР№СЅЅ№С…Ґё €ґДФААААА€¤м(ЂЂЂЃ•бБ•ЌРЎН•ННҐЅё№Ґ№С•Й…ЌСҐЅ№I•НБЅ№Н•М¤№СЅ!…Щ•1•№ќС  А¤м(ЂЂЂЃ…Э…ҐРЃНСЅБҐбСХЙ”Ў™ҐбСХЙ”¤м(ЂЃф¤м((ЂЃҐР ‰ЙЅХ№ђµСЙҐБМЃ…ёЃ•…Й±дЃНС…№‘…±Ѕ№”ЃEХ•НСҐЅёЃСЎЙЅХќ ЃСЎ”ЃЅ‘•аЃ№…СҐЩ”ЃЙ•ЕХ•НР€°Ѓ…Не№ЊЂ ¤ЂфшЃм(ЂЂЂЃЌЅ№НРЃ™ҐбСХЙ”ЂфЃЌЙ•…С•ҐбСХЙ” ¤м(ЂЂЂЃЌЅ№НРЃСЎЙ•…‘%ђЂфЃ…Э…ҐРЃНС…ЙСAҐQЎЙ•…ђЎ™ҐбСХЙ”¤м(ЂЂЂЃЌЅ№НРЃН•ННҐЅёЂфЃ™ҐбСХЙ”№…‘…БС•И№Н•ННҐЅ№НlБtм(ЂЂЂЃҐЂ …Н•ННҐЅё¤ЃСЎЙЅЬЃ№•ЬЃЙЙЅИ ‰…­”ЃA¤ЃM•ННҐЅёЃЭ…МЃ№ЅРЃЅБ•№•ђ€¤м(ЂЂЂЃН•ННҐЅё№…Н­EХ•НСҐЅ№=№9•бСQХЙё (ЂЂЂЂЂЃм(ЂЂЂЂЂЂЂЃҐђиЂ‰‘•ЌҐНҐЅё€°(ЂЂЂЂЂЂЂЃСеБ”иЂ‰ЌЎЅҐЌ”€°(ЂЂЂЂЂЂЂЃБЙЅµБРиЂ‰ЎЅЅН”€°(ЂЂЂЂЂЂЂЃЅБСҐЅ№МиЃl(ЂЂЂЂЂЂЂЂЂЃмЃЩ…±Х”иЂ‰ЌЅ№СҐ№Х”µЩ…±Х”€°Ѓ±…‰•°иЂ‰Ѕ№СҐ№Х”€Ѓф°(ЂЂЂЂЂЂЂЂЂЃмЃЩ…±Х”иЂ‰НСЅАµЩ…±Х”€°Ѓ±…‰•°иЂ‰MСЅА€Ѓф°(ЂЂЂЂЂЂЂЃt°(ЂЂЂЂЂЂЂЃµХ±СҐБ±”иЃ™…±Н”°(ЂЂЂЂЂЂЂЃ…±±ЅЭ=СЎ•ИиЃ™…±Н”°(ЂЂЂЂЂЂЂЃЅБСҐЅ№…°иЃ™…±Н”°(ЂЂЂЂЂЃф°(ЂЂЂЂЂЃмЃСҐС±”иЂ‰•ЌҐНҐЅё€Ѓф°(ЂЂЂЂ¤м((ЂЂЂЃЌЅ№НРЃСХЙ№%ђЂфЃ…Э…ҐРЃНС…ЙСAҐQХЙёЎ™ҐбСХЙ”°ЃСЎЙ•…‘%ђ¤м(ЂЂЂЃЌЅ№НРЃЙ•ЕХ•НРЂфЃ…Э…ҐРЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤Ђфш(ЂЂЂЂЂЃµ•СЎЅђЎµ•НН…ќ”°Ђ‰ҐС•ґЅСЅЅ°ЅЙ•ЕХ•НСUН•Й%№БХР€¤°(ЂЂЂЂ¤м(ЂЂЂЃ•бБ•ЌРЎЙ•ЕХ•НР¤№СЅ5…СЌЎ=‰©•ЌРЎм(ЂЂЂЂЂЃҐђиЂґД°(ЂЂЂЂЂЃБ…Й…µМиЃм(ЂЂЂЂЂЂЂЃСЎЙ•…‘%ђ°(ЂЂЂЂЂЂЂЃСХЙ№%ђ°(ЂЂЂЂЂЂЂЃҐС•µ%ђиЃ•бБ•ЌР№…№дЎMСЙҐ№њ¤°(ЂЂЂЂЂЂЂЃЕХ•НСҐЅ№МиЃl(ЂЂЂЂЂЂЂЂЂЃм(ЂЂЂЂЂЂЂЂЂЂЂЃҐђиЂ‰‘•ЌҐНҐЅё€°(ЂЂЂЂЂЂЂЂЂЂЂЃЎ•…‘•ИиЂ‰•ЌҐНҐЅё€°(ЂЂЂЂЂЂЂЂЂЂЂЃЕХ•НСҐЅёиЂ‰ЎЅЅН”€°(ЂЂЂЂЂЂЂЂЂЂЂЃЅБСҐЅ№МиЃl(ЂЂЂЂЂЂЂЂЂЂЂЂЂЃмЃ±…‰•°иЂ‰Ѕ№СҐ№Х”€°Ѓ‘•НЌЙҐБСҐЅёиЂ€€Ѓф°(ЂЂЂЂЂЂЂЂЂЂЂЂЂЃмЃ±…‰•°иЂ‰MСЅА€°Ѓ‘•НЌЙҐБСҐЅёиЂ€€Ѓф°(ЂЂЂЂЂЂЂЂЂЂЂЃt°(ЂЂЂЂЂЂЂЂЂЃф°(ЂЂЂЂЂЂЂЃt°(ЂЂЂЂЂЃф°(ЂЂЂЃф¤м(ЂЂЂЃЌЅ№НРЃСХЙ№I•НБЅ№Н•%№‘•аЂфЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№µ•НН…ќ•М№™Ґ№‘%№‘•а Ўµ•НН…ќ”¤Ђфш(ЂЂЂЂЂЃЙ•ЕХ•НС%ђЎµ•НН…ќ”°ЂИ¤°(ЂЂЂЂ¤м(ЂЂЂЃЌЅ№НРЃЕХ•НСҐЅ№%№‘•аЂфЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№µ•НН…ќ•М№Ґ№‘•б=ЎЙ•ЕХ•НР¤м(ЂЂЂЃ•бБ•ЌРЎЕХ•НСҐЅ№%№‘•а¤№СЅ	•Й•…С•ЙQЎ…ёЎСХЙ№I•НБЅ№Н•%№‘•а¤м(ЂЂЂЃЌЅ№НРЃЙ•ЕХ•НС%‘Y…±Х”ЂфЃЙ•ЕХ•НР№Ґђм(ЂЂЂЃҐЂЎСеБ•ЅЃЙ•ЕХ•НС%‘Y…±Х”Ђ„ффЂ‰№Хµ‰•И€¤ЃСЎЙЅЬЃ№•ЬЃЙЙЅИ ‰EХ•НСҐЅёЃЙ•ЕХ•НРЃЎ…МЃ№јЃ№Хµ•ЙҐЊЃ%€¤м(ЂЂЂЃЭЙҐС•I•ЕХ•НРЎ™ҐбСХЙ”№‘•Н­СЅБ%№БХР°Ѓм(ЂЂЂЂЂЃҐђиЃЙ•ЕХ•НС%‘Y…±Х”°(ЂЂЂЂЂЃЙ•НХ±РиЃмЃ…№НЭ•ЙМиЃмЃ‘•ЌҐНҐЅёиЃмЃ…№НЭ•ЙМиЃl‰Ѕ№СҐ№Х”‰tЃфЃфЃф°(ЂЂЂЃф¤м(ЂЂЂЃ…Э…ҐРЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ (ЂЂЂЂЂЂЎµ•НН…ќ”¤Ђфш(ЂЂЂЂЂЂЂЃµ•СЎЅђЎµ•НН…ќ”°Ђ‰ҐС•ґЅЌЅµБ±•С•ђ€¤Ђ(ЂЂЂЂЂЂЂЂ Ўµ•НН…ќ”№Б…Й…µМЃ…МЃ)НЅ№=‰©•ЌР¤№ҐС•ґЃ…МЃ)НЅ№=‰©•ЌРЃрЃХ№‘•™Ґ№•ђ¤ь№ҐђЂффф(ЂЂЂЂЂЂЂЂЂЂЎЙ•ЕХ•НР№Б…Й…µМЃ…МЃ)НЅ№=‰©•ЌР¤№ҐС•µ%ђ°(ЂЂЂЂ¤м(ЂЂЂЃ•бБ•ЌРЎН•ННҐЅё№Ґ№С•Й…ЌСҐЅ№I•НБЅ№Н•М¤№СЅ5…СЌЎ=‰©•ЌРЎl(ЂЂЂЂЂЃм(ЂЂЂЂЂЂЂЃЙ•НБЅ№Н”иЃмЃСеБ”иЂ‰ЕХ•НСҐЅё€°Ѓ…№НЭ•ЙМиЃмЃ‘•ЌҐНҐЅёиЃl‰ЌЅ№СҐ№Х”µЩ…±Х”‰tЃфЃф°(ЂЂЂЂЂЃф°(ЂЂЂЃt¤м((ЂЂЂЃН•ННҐЅё№…ББ•№‘Q•бР ‰ЌЅ№СҐ№Х•ђ€¤м(ЂЂЂЃЌЅ№НРЃСХЙ№ЅµБ±•С•ђЂфЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤Ђфш(ЂЂЂЂЂЃСХЙ№Щ•№РЎµ•НН…ќ”°Ђ‰СХЙёЅЌЅµБ±•С•ђ€°ЃСХЙ№%ђ¤°(ЂЂЂЂ¤м(ЂЂЂЃН•ННҐЅё№НХЌЌ••‘QХЙё ¤м(ЂЂЂЃ…Э…ҐРЃСХЙ№ЅµБ±•С•ђм(ЂЂЂЃ…Э…ҐРЃНСЅБҐбСХЙ”Ў™ҐбСХЙ”¤м(ЂЃф¤м((ЂЃҐР ‰™…Ґ±МЃ„ЃН•ЌЙ•РЃEХ•НСҐЅёЃЌ±ЅН•ђЃЭҐСЎЅХРЃЙ•№‘•ЙҐ№њЃЩҐНҐ‰±”Ѓ•Н­СЅАЃҐ№БХР€°Ѓ…Не№ЊЂ ¤ЂфшЃм(ЂЂЂЃЌЅ№НРЃ™ҐбСХЙ”ЂфЃЌЙ•…С•ҐбСХЙ” ¤м(ЂЂЂЃЌЅ№НРЃСЎЙ•…‘%ђЂфЃ…Э…ҐРЃНС…ЙСAҐQЎЙ•…ђЎ™ҐбСХЙ”¤м(ЂЂЂЃЌЅ№НРЃН•ННҐЅёЂфЃ™ҐбСХЙ”№…‘…БС•И№Н•ННҐЅ№НlБtм(ЂЂЂЃҐЂ …Н•ННҐЅё¤ЃСЎЙЅЬЃ№•ЬЃЙЙЅИ ‰…­”ЃA¤ЃM•ННҐЅёЃЭ…МЃ№ЅРЃЅБ•№•ђ€¤м(ЂЂЂЃ…Э…ҐРЃНС…ЙСAҐQХЙёЎ™ҐбСХЙ”°ЃСЎЙ•…‘%ђ¤м(ЂЂЂЃН•ННҐЅё№…Н­EХ•НСҐЅёЎм(ЂЂЂЂЂЃҐђиЂ‰Н•ЌЙ•Р€°(ЂЂЂЂЂЃСеБ”иЂ‰С•бР€°(ЂЂЂЂЂЃБЙЅµБРиЂ‰M•ЌЙ•РЃЩ…±Х”€°(ЂЂЂЂЂЃµХ±СҐ±Ґ№”иЃ™…±Н”°(ЂЂЂЂЂЃН•ЌЙ•РиЃСЙХ”°(ЂЂЂЂЂЃЅБСҐЅ№…°иЃ™…±Н”°(ЂЂЂЃф¤м(ЂЂЂЃ…Э…ҐРЃЩ¤№Э…ҐСЅИ  ¤ЂфшЃм(ЂЂЂЂЂЃ•бБ•ЌРЎН•ННҐЅё№Ґ№С•Й…ЌСҐЅ№I•НБЅ№Н•М№…Р ґД¤¤№СЅ5…СЌЎ=‰©•ЌРЎм(ЂЂЂЂЂЂЂЃЙ•НБЅ№Н”иЃмЃСеБ”иЂ‰ЕХ•НСҐЅё€°Ѓ…№НЭ•ЙМиЃнф°ЃЌ…№Ќ•±±•ђиЃСЙХ”Ѓф°(ЂЂЂЂЂЃф¤м(ЂЂЂЃф¤м(ЂЂЂЃ•бБ•ЌР (ЂЂЂЂЂЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№µ•НН…ќ•М№™Ґ±С•И Ўµ•НН…ќ”¤ЂфшЃµ•СЎЅђЎµ•НН…ќ”°Ђ‰ҐС•ґЅСЅЅ°ЅЙ•ЕХ•НСUН•Й%№БХР€¤¤°(ЂЂЂЂ¤№СЅ!…Щ•1•№ќС  А¤м(ЂЂЂЃЌЅ№НРЃСХЙ№ЅµБ±•С•ђЂфЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤ЂфшЃµ•СЎЅђЎµ•НН…ќ”°Ђ‰СХЙёЅЌЅµБ±•С•ђ€¤¤м(ЂЂЂЃН•ННҐЅё№НХЌЌ••‘QХЙё ¤м(ЂЂЂЃ…Э…ҐРЃСХЙ№ЅµБ±•С•ђм(ЂЂЂЃ…Э…ҐРЃНСЅБҐбСХЙ”Ў™ҐбСХЙ”¤м(ЂЃф¤м((ЂЃҐР ‰Ќ…№Ќ•±МЃµ…±™ЅЙµ•ђЃ…№ђЃ‘ҐНµҐНН•ђЃ•Н­СЅАЃEХ•НСҐЅёЃЙ•НБЅ№Н•М€°Ѓ…Не№ЊЂ ¤ЂфшЃм(ЂЂЂЃ™ЅИЂЎЌЅ№НРЃЙ•НХ±РЃЅЃl(ЂЂЂЂЂЃмЃ…№НЭ•ЙМиЃмЃ‘•ЌҐНҐЅёиЃмЃ…№НЭ•ЙМиЃl‰Х№‘•Ќ±…Й•ђ‰tЃфЃфЃф°(ЂЂЂЂЂЃмЃ…№НЭ•ЙМиЃнфЃф°(ЂЂЂЃt¤Ѓм(ЂЂЂЂЂЃЌЅ№НРЃ™ҐбСХЙ”ЂфЃЌЙ•…С•ҐбСХЙ” ¤м(ЂЂЂЂЂЃЌЅ№НРЃСЎЙ•…‘%ђЂфЃ…Э…ҐРЃНС…ЙСAҐQЎЙ•…ђЎ™ҐбСХЙ”¤м(ЂЂЂЂЂЃЌЅ№НРЃН•ННҐЅёЂфЃ™ҐбСХЙ”№…‘…БС•И№Н•ННҐЅ№НlБtм(ЂЂЂЂЂЃҐЂ …Н•ННҐЅё¤ЃСЎЙЅЬЃ№•ЬЃЙЙЅИ ‰…­”ЃA¤ЃM•ННҐЅёЃЭ…МЃ№ЅРЃЅБ•№•ђ€¤м(ЂЂЂЂЂЃ…Э…ҐРЃНС…ЙСAҐQХЙёЎ™ҐбСХЙ”°ЃСЎЙ•…‘%ђ¤м(ЂЂЂЂЂЃН•ННҐЅё№…Н­EХ•НСҐЅёЎм(ЂЂЂЂЂЂЂЃҐђиЂ‰‘•ЌҐНҐЅё€°(ЂЂЂЂЂЂЂЃСеБ”иЂ‰ЌЎЅҐЌ”€°(ЂЂЂЂЂЂЂЃБЙЅµБРиЂ‰ЎЅЅН”€°(ЂЂЂЂЂЂЂЃЅБСҐЅ№МиЃmмЃЩ…±Х”иЂ‰­№ЅЭё€°Ѓ±…‰•°иЂ‰-№ЅЭё€Ѓхt°(ЂЂЂЂЂЂЂЃµХ±СҐБ±”иЃ™…±Н”°(ЂЂЂЂЂЂЂЃ…±±ЅЭ=СЎ•ИиЃ™…±Н”°(ЂЂЂЂЂЂЂЃЅБСҐЅ№…°иЃ™…±Н”°(ЂЂЂЂЂЃф¤м(ЂЂЂЂЂЃЌЅ№НРЃЙ•ЕХ•НРЂфЃ…Э…ҐРЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤Ђфш(ЂЂЂЂЂЂЂЃµ•СЎЅђЎµ•НН…ќ”°Ђ‰ҐС•ґЅСЅЅ°ЅЙ•ЕХ•НСUН•Й%№БХР€¤°(ЂЂЂЂЂЂ¤м(ЂЂЂЂЂЃҐЂЎСеБ•ЅЃЙ•ЕХ•НР№ҐђЂ„ффЂ‰№Хµ‰•И€¤ЃСЎЙЅЬЃ№•ЬЃЙЙЅИ ‰EХ•НСҐЅёЃЙ•ЕХ•НРЃЎ…МЃ№јЃ№Хµ•ЙҐЊЃ%€¤м(ЂЂЂЂЂЃЭЙҐС•I•ЕХ•НРЎ™ҐбСХЙ”№‘•Н­СЅБ%№БХР°ЃмЃҐђиЃЙ•ЕХ•НР№Ґђ°ЃЙ•НХ±РЃф¤м(ЂЂЂЂЂЃ…Э…ҐРЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤ЂфшЃµ•СЎЅђЎµ•НН…ќ”°Ђ‰ҐС•ґЅЌЅµБ±•С•ђ€¤¤м(ЂЂЂЂЂЃ•бБ•ЌРЎН•ННҐЅё№Ґ№С•Й…ЌСҐЅ№I•НБЅ№Н•М№…Р ґД¤¤№СЅ5…СЌЎ=‰©•ЌРЎм(ЂЂЂЂЂЂЂЃЙ•НБЅ№Н”иЃмЃСеБ”иЂ‰ЕХ•НСҐЅё€°Ѓ…№НЭ•ЙМиЃнф°ЃЌ…№Ќ•±±•ђиЃСЙХ”Ѓф°(ЂЂЂЂЂЃф¤м(ЂЂЂЂЂЃН•ННҐЅё№НХЌЌ••‘QХЙё ¤м(ЂЂЂЂЂЃ…Э…ҐРЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤ЂфшЃµ•СЎЅђЎµ•НН…ќ”°Ђ‰СХЙёЅЌЅµБ±•С•ђ€¤¤м(ЂЂЂЂЂЃ…Э…ҐРЃНСЅБҐбСХЙ”Ў™ҐбСХЙ”¤м(ЂЂЂЃф(ЂЃф¤м((ЂЃҐР ‰Ќ…№Ќ•±МЃ„ЃEХ•НСҐЅёЃ…РЃСЎ”Ѓ!ЅНРЃ•бБҐЙдЃ‰ЅХ№ђ€°Ѓ…Не№ЊЂ ¤ЂфшЃм(ЂЂЂЃЌЅ№НРЃ™ҐбСХЙ”ЂфЃЌЙ•…С•ҐбСХЙ” ¤м(ЂЂЂЃЌЅ№НРЃСЎЙ•…‘%ђЂфЃ…Э…ҐРЃНС…ЙСAҐQЎЙ•…ђЎ™ҐбСХЙ”¤м(ЂЂЂЃЌЅ№НРЃН•ННҐЅёЂфЃ™ҐбСХЙ”№…‘…БС•И№Н•ННҐЅ№НlБtм(ЂЂЂЃҐЂ …Н•ННҐЅё¤ЃСЎЙЅЬЃ№•ЬЃЙЙЅИ ‰…­”ЃA¤ЃM•ННҐЅёЃЭ…МЃ№ЅРЃЅБ•№•ђ€¤м(ЂЂЂЃ…Э…ҐРЃНС…ЙСAҐQХЙёЎ™ҐбСХЙ”°ЃСЎЙ•…‘%ђ¤м(ЂЂЂЃН•ННҐЅё№…Н­EХ•НСҐЅё (ЂЂЂЂЂЃм(ЂЂЂЂЂЂЂЃҐђиЂ‰Щ…±Х”€°(ЂЂЂЂЂЂЂЃСеБ”иЂ‰С•бР€°(ЂЂЂЂЂЂЂЃБЙЅµБРиЂ‰Y…±Х”€°(ЂЂЂЂЂЂЂЃµХ±СҐ±Ґ№”иЃ™…±Н”°(ЂЂЂЂЂЂЂЃН•ЌЙ•РиЃ™…±Н”°(ЂЂЂЂЂЂЂЃЅБСҐЅ№…°иЃ™…±Н”°(ЂЂЂЂЂЃф°(ЂЂЂЂЂЃмЃ•бБҐЙ•НРиЃ№•ЬЃ…С”Ў…С”№№ЅЬ ¤Ђ¬ЂИА¤№СЅ%M=MСЙҐ№њ ¤Ѓф°(ЂЂЂЂ¤м(ЂЂЂЃЌЅ№НРЃЙ•ЕХ•НРЂфЃ…Э…ҐРЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤Ђфш(ЂЂЂЂЂЃµ•СЎЅђЎµ•НН…ќ”°Ђ‰ҐС•ґЅСЅЅ°ЅЙ•ЕХ•НСUН•Й%№БХР€¤°(ЂЂЂЂ¤м(ЂЂЂЃ…Э…ҐРЃ•бБ•ЌР (ЂЂЂЂЂЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤ЂфшЃµ•СЎЅђЎµ•НН…ќ”°Ђ‰Н•ЙЩ•ЙI•ЕХ•НРЅЙ•НЅ±Щ•ђ€¤¤°(ЂЂЂЂ¤№Й•НЅ±Щ•М№СЅ5…СЌЎ=‰©•ЌРЎм(ЂЂЂЂЂЃБ…Й…µМиЃмЃСЎЙ•…‘%ђ°ЃЙ•ЕХ•НС%ђиЃЙ•ЕХ•НР№ҐђЃф°(ЂЂЂЃф¤м(ЂЂЂЃ…Э…ҐРЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤ЂфшЃµ•СЎЅђЎµ•НН…ќ”°Ђ‰ҐС•ґЅЌЅµБ±•С•ђ€¤¤м(ЂЂЂЃ•бБ•ЌРЎН•ННҐЅё№Ґ№С•Й…ЌСҐЅ№I•НБЅ№Н•М№…Р ґД¤¤№СЅ5…СЌЎ=‰©•ЌРЎм(ЂЂЂЂЂЃЙ•НБЅ№Н”иЃмЃСеБ”иЂ‰ЕХ•НСҐЅё€°Ѓ…№НЭ•ЙМиЃнф°ЃЌ…№Ќ•±±•ђиЃСЙХ”Ѓф°(ЂЂЂЃф¤м(ЂЂЂЃН•ННҐЅё№НХЌЌ••‘QХЙё ¤м(ЂЂЂЃ…Э…ҐРЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤ЂфшЃµ•СЎЅђЎµ•НН…ќ”°Ђ‰СХЙёЅЌЅµБ±•С•ђ€¤¤м(ЂЂЂЃ…Э…ҐРЃНСЅБҐбСХЙ”Ў™ҐбСХЙ”¤м(ЂЃф¤м((ЂЃҐР ‰™ЅЙЭ…Й‘МЃ№Ѕёµ!ЅНРЃЙ•НБЅ№Н•МЃ…№ђЃЌЅ№НХµ•МЃЙ•СҐЙ•ђЃ!ЅНРЃEХ•НСҐЅёЃЙ•НБЅ№Н•М€°Ѓ…Не№ЊЂ ¤ЂфшЃм(ЂЂЂЃЌЅ№НРЃ™ҐбСХЙ”ЂфЃЌЙ•…С•ҐбСХЙ” ¤м(ЂЂЂЃЌЅ№НРЃ™ЅЙЭ…Й‘•ђиЃНСЙҐ№ќmtЂфЃmtм(ЂЂЂЃ™ҐбСХЙ”№Ѕ™™ҐЌҐ…°№НС‘Ґё№Н•С№ЌЅ‘Ґ№њ ‰ХСа€¤м(ЂЂЂЃ™ҐбСХЙ”№Ѕ™™ҐЌҐ…°№НС‘Ґё№Ѕё ‰‘…С„€°ЂЎЌЎХ№¬иЃНСЙҐ№њ¤ЂфшЃ™ЅЙЭ…Й‘•ђ№БХН ЎЌЎХ№¬¤¤м(ЂЂЂЃЌЅ№НРЃСЎЙ•…‘%ђЂфЃ…Э…ҐРЃНС…ЙСAҐQЎЙ•…ђЎ™ҐбСХЙ”¤м(ЂЂЂЃЌЅ№НРЃН•ННҐЅёЂфЃ™ҐбСХЙ”№…‘…БС•И№Н•ННҐЅ№НlБtм(ЂЂЂЃҐЂ …Н•ННҐЅё¤ЃСЎЙЅЬЃ№•ЬЃЙЙЅИ ‰…­”ЃA¤ЃM•ННҐЅёЃЭ…МЃ№ЅРЃЅБ•№•ђ€¤м(ЂЂЂЃ…Э…ҐРЃНС…ЙСAҐQХЙёЎ™ҐбСХЙ”°ЃСЎЙ•…‘%ђ¤м(ЂЂЂЃЌЅ№НРЃҐ№С•Й…ЌСҐЅ№%ђЂфЃН•ННҐЅё№…Н­EХ•НСҐЅёЎм(ЂЂЂЂЂЃҐђиЂ‰Щ…±Х”€°(ЂЂЂЂЂЃСеБ”иЂ‰С•бР€°(ЂЂЂЂЂЃБЙЅµБРиЂ‰Y…±Х”€°(ЂЂЂЂЂЃµХ±СҐ±Ґ№”иЃ™…±Н”°(ЂЂЂЂЂЃН•ЌЙ•РиЃ™…±Н”°(ЂЂЂЂЂЃЅБСҐЅ№…°иЃ™…±Н”°(ЂЂЂЃф¤м(ЂЂЂЃЌЅ№НРЃЙ•ЕХ•НРЂфЃ…Э…ҐРЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤Ђфш(ЂЂЂЂЂЃµ•СЎЅђЎµ•НН…ќ”°Ђ‰ҐС•ґЅСЅЅ°ЅЙ•ЕХ•НСUН•Й%№БХР€¤°(ЂЂЂЂ¤м(ЂЂЂЃҐЂЎСеБ•ЅЃЙ•ЕХ•НР№ҐђЂ„ффЂ‰№Хµ‰•И€¤ЃСЎЙЅЬЃ№•ЬЃЙЙЅИ ‰EХ•НСҐЅёЃЙ•ЕХ•НРЃЎ…МЃ№јЃ№Хµ•ЙҐЊЃ%€¤м(ЂЂЂЃН•ННҐЅё№•бБҐЙ•EХ•НСҐЅёЎҐ№С•Й…ЌСҐЅ№%ђ¤м(ЂЂЂЃ…Э…ҐРЃ•бБ•ЌР (ЂЂЂЂЂЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤ЂфшЃµ•СЎЅђЎµ•НН…ќ”°Ђ‰Н•ЙЩ•ЙI•ЕХ•НРЅЙ•НЅ±Щ•ђ€¤¤°(ЂЂЂЂ¤№Й•НЅ±Щ•М№СЅ5…СЌЎ=‰©•ЌРЎм(ЂЂЂЂЂЃБ…Й…µМиЃмЃСЎЙ•…‘%ђ°ЃЙ•ЕХ•НС%ђиЃЙ•ЕХ•НР№ҐђЃф°(ЂЂЂЃф¤м(ЂЂЂЃ…Э…ҐРЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤ЂфшЃµ•СЎЅђЎµ•НН…ќ”°Ђ‰ҐС•ґЅЌЅµБ±•С•ђ€¤¤м((ЂЂЂЃЭЙҐС•I•ЕХ•НРЎ™ҐбСХЙ”№‘•Н­СЅБ%№БХР°Ѓм(ЂЂЂЂЂЃҐђиЃЙ•ЕХ•НР№Ґђ°(ЂЂЂЂЂЃЙ•НХ±РиЃмЃ…№НЭ•ЙМиЃмЃЩ…±Х”иЃмЃ…№НЭ•ЙМиЃl‰±…С”‰tЃфЃфЃф°(ЂЂЂЃф¤м(ЂЂЂЃЭЙҐС•I•ЕХ•НРЎ™ҐбСХЙ”№‘•Н­СЅБ%№БХР°ЃмЃҐђиЂддд°ЃЙ•НХ±РиЃмЃЅ™™ҐЌҐ…°иЃСЙХ”ЃфЃф¤м(ЂЂЂЃ…Э…ҐРЃ№•ЬЃAЙЅµҐН” ЎЙ•НЅ±Щ”¤ЂфшЃН•СQҐµ•ЅХРЎЙ•НЅ±Щ”°ЂА¤¤м(ЂЂЂЃ•бБ•ЌРЎ™ЅЙЭ…Й‘•ђ№©ЅҐё €€¤¤№№ЅР№СЅЅ№С…Ґё (ЂЂЂЂЂЃ)M=8№НСЙҐ№ќҐ™дЎмЃҐђиЂддд°ЃЙ•НХ±РиЃмЃЅ™™ҐЌҐ…°иЃСЙХ”ЃфЃф¤°(ЂЂЂЂ¤м(ЂЂЂЃ•бБ•ЌРЎ™ЅЙЭ…Й‘•ђ№©ЅҐё €€¤¤№№ЅР№СЅЅ№С…ҐёЎMСЙҐ№њЎЙ•ЕХ•НР№Ґђ¤¤м((ЂЂЂЃН•ННҐЅё№НХЌЌ••‘QХЙё ¤м(ЂЂЂЃ…Э…ҐРЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤ЂфшЃµ•СЎЅђЎµ•НН…ќ”°Ђ‰СХЙёЅЌЅµБ±•С•ђ€¤¤м(ЂЂЂЃ…Э…ҐРЃНСЅБҐбСХЙ”Ў™ҐбСХЙ”¤м(ЂЃф¤м((ЂЃҐР ‰Ќ…№Ќ•±МЃБ•№‘Ґ№њЃНС••ЙҐ№њЃ‰•™ЅЙ”Ѓ‘Й…Ґ№Ґ№њЃЅБ•Й…СҐЅ№МЃ…™С•ИЃ„Ѓ•Н­СЅАЃҐ№БХРЃ•ЙЙЅИ€°Ѓ…Не№ЊЂ ¤ЂфшЃм(ЂЂЂЃЌЅ№НРЃ™ҐбСХЙ”ЂфЃЌЙ•…С•ҐбСХЙ” ¤м(ЂЂЂЃСЙдЃм(ЂЂЂЂЂЃЌЅ№НРЃСЎЙ•…‘%ђЂфЃ…Э…ҐРЃНС…ЙСAҐQЎЙ•…ђЎ™ҐбСХЙ”¤м(ЂЂЂЂЂЃЌЅ№НРЃЅ±‘QХЙ№%ђЂфЃ…Э…ҐРЃНС…ЙСAҐQХЙёЎ™ҐбСХЙ”°ЃСЎЙ•…‘%ђ¤м(ЂЂЂЂЂЃЌЅ№НРЃН•ННҐЅёЂфЃ™ҐбСХЙ”№…‘…БС•И№Н•ННҐЅ№НlБtм(ЂЂЂЂЂЃҐЂ …Н•ННҐЅё¤ЃСЎЙЅЬЃ№•ЬЃЙЙЅИ ‰…­”ЃM•ННҐЅёЃЭ…МЃ№ЅРЃЅБ•№•ђ€¤м(ЂЂЂЂЂЃЌЅ№НРЃ•б•ЌХС”ЂфЃЩ¤№НБе=ёЎН•ННҐЅё°Ђ‰•б•ЌХС”€¤м(ЂЂЂЂЂЃЭЙҐС•I•ЕХ•НРЎ™ҐбСХЙ”№‘•Н­СЅБ%№БХР°Ѓм(ЂЂЂЂЂЂЂЃҐђиЂДАА°(ЂЂЂЂЂЂЂЃµ•СЎЅђиЂ‰СХЙёЅНС••И€°(ЂЂЂЂЂЂЂЃБ…Й…µМиЃм(ЂЂЂЂЂЂЂЂЂЃСЎЙ•…‘%ђ°(ЂЂЂЂЂЂЂЂЂЃ•бБ•ЌС•‘QХЙ№%ђиЃЅ±‘QХЙ№%ђ°(ЂЂЂЂЂЂЂЂЂЃҐ№БХРиЃmмЃСеБ”иЂ‰С•бР€°ЃС•бРиЂ‰µХНРЃ№ЅРЃНС…ЙРЃ‘ХЙҐ№њЃНЎХС‘ЅЭё€Ѓхt°(ЂЂЂЂЂЂЂЃф°(ЂЂЂЂЂЃф¤м(ЂЂЂЂЂЃ…Э…ҐРЃЩ¤№Э…ҐСЅИ  ¤Ђфш(ЂЂЂЂЂЂЂЃ•бБ•ЌРЎ•б•ЌХС”¤№СЅ!…Щ•	••№…±±•‘]ҐС ЎмЃСеБ”иЂ‰СХЙё№Ќ…№Ќ•°€°ЃСХЙ№%ђиЃЅ±‘QХЙ№%ђЃф¤°(ЂЂЂЂЂЂ¤м(ЂЂЂЂЂЂјјЃ9јЃС•ЙµҐ№…°Ѓ•Щ•№РиЃЅ№±дЃНЎХС‘ЅЭё°Ѓ№ЅРЃСЎ”ЂИАµН•ЌЅ№ђЃНС••ЙҐ№њЃСҐµ•ЅХР°ЃЌ…ёЃЙ•±•…Н”ЃСЎҐМЃЭ…ҐС•Иё(ЂЂЂЂЂЃ™ҐбСХЙ”№‘•Н­СЅБ%№БХР№‘•НСЙЅдЎ№•ЬЃЙЙЅИ ‰Mе№СЎ•СҐЊЃ•Н­СЅАЃҐ№БХРЃ™…Ґ±ХЙ”€¤¤м(ЂЂЂЂЂЃЌЅ№НРЃЙ•НБЅ№Н”ЂфЃ…Э…ҐРЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤ЂфшЃЙ•ЕХ•НС%ђЎµ•НН…ќ”°ЂДАА¤¤м(ЂЂЂЂЂЃ•бБ•ЌРЎЙ•НБЅ№Н”¤№СЅ5…СЌЎ=‰©•ЌРЎмЃ•ЙЙЅИиЃмЃЌЅ‘”иЂґМИАЬРЃфЃф¤м(ЂЂЂЂЂЃ•бБ•ЌРЎ)M=8№НСЙҐ№ќҐ™дЎЙ•НБЅ№Н”¤¤№СЅЅ№С…Ґё ‰ЌЅ№№•ЌСҐЅёЃЌ±ЅН•ђЃ‰•™ЅЙ”ЃЙ•Б±…Ќ•µ•№Р€¤м(ЂЂЂЂЂЃ•бБ•ЌРЎ•б•ЌХС”¤№№ЅР№СЅ!…Щ•	••№…±±•‘]ҐС Ў•бБ•ЌР№Ѕ‰©•ЌСЅ№С…Ґ№Ґ№њЎмЃСеБ”иЂ‰СХЙё№НС…ЙР€Ѓф¤¤м(ЂЂЂЂЂЃ•бБ•ЌРЎ…Э…ҐРЃ™ҐбСХЙ”№ЙХ№№Ґ№њ¤№СЅ	” Д¤м(ЂЂЂЃфЃ™Ґ№…±±дЃм(ЂЂЂЂЂЃ™ҐбСХЙ”№ЎЅНР№Ќ±ЅН” ¤м(ЂЂЂЂЂЃ…Э…ҐРЃ™ҐбСХЙ”№ЙХ№№Ґ№њм(ЂЂЂЂЂЃЙµMе№ЊЎ™ҐбСХЙ”№µ…ББҐ№ќMСЅЙ•ҐЙ•ЌСЅЙд°ЃмЃЙ•ЌХЙНҐЩ”иЃСЙХ”°Ѓ™ЅЙЌ”иЃСЙХ”Ѓф¤м(ЂЂЂЃф(ЂЃф¤м((ЂЃҐР ‰НС••ЙМЃ…ёЃ•бС•Й№…°ЃQЎЙ•…ђЃ‰дЃЌ…№Ќ•±±Ґ№њ°ЃЭ…ҐСҐ№њЃ™ЅИЃС•ЙµҐ№…°ЃБЙЅ©•ЌСҐЅё°Ѓ…№ђЃНС…ЙСҐ№њЃЅ№Ќ”€°Ѓ…Не№ЊЂ ¤ЂфшЃм(ЂЂЂЃЌЅ№НРЃ™ҐбСХЙ”ЂфЃЌЙ•…С•ҐбСХЙ” ¤м(ЂЂЂЃЌЅ№НРЃСЎЙ•…‘%ђЂфЃ…Э…ҐРЃНС…ЙСAҐQЎЙ•…ђЎ™ҐбСХЙ”¤м(ЂЂЂЃЌЅ№НРЃЅ±‘QХЙ№%ђЂфЃ…Э…ҐРЃНС…ЙСAҐQХЙёЎ™ҐбСХЙ”°ЃСЎЙ•…‘%ђ¤м(ЂЂЂЃЌЅ№НРЃН•ННҐЅёЂфЃ™ҐбСХЙ”№…‘…БС•И№Н•ННҐЅ№НlБtм(ЂЂЂЃҐЂ …Н•ННҐЅё¤ЃСЎЙЅЬЃ№•ЬЃЙЙЅИ ‰…­”ЃA¤ЃM•ННҐЅёЃЭ…МЃ№ЅРЃЅБ•№•ђ€¤м(ЂЂЂЃЌЅ№НРЃ•б•ЌХС”ЂфЃЩ¤№НБе=ёЎН•ННҐЅё°Ђ‰•б•ЌХС”€¤м(ЂЂЂЃЌЅ№НРЃЅ™™ҐЌҐ…±]ЙҐС”ЂфЃЩ¤№™ё ¤м(ЂЂЂЃ™ҐбСХЙ”№Ѕ™™ҐЌҐ…°№НС‘Ґё№Ѕё ‰‘…С„€°ЃЅ™™ҐЌҐ…±]ЙҐС”¤м(ЂЂЂЃЌЅ№НРЃБ…Й…µМЂфЃм(ЂЂЂЂЂЃСЎЙ•…‘%ђ°(ЂЂЂЂЂЃ•бБ•ЌС•‘QХЙ№%ђиЃЅ±‘QХЙ№%ђ°(ЂЂЂЂЂЃЌ±Ґ•№СUН•Й5•НН…ќ•%ђиЂ‰НС••Иµµ•НН…ќ”€°(ЂЂЂЂЂЃҐ№БХРиЃmмЃСеБ”иЂ‰С•бР€°ЃС•бРиЂ‰№•ЬЃ‘ҐЙ•ЌСҐЅё€Ѓхt°(ЂЂЂЃфм(ЂЂЂЃЭЙҐС•I•ЕХ•НРЎ™ҐбСХЙ”№‘•Н­СЅБ%№БХР°ЃмЃҐђиЂДАА°Ѓµ•СЎЅђиЂ‰СХЙёЅНС••И€°ЃБ…Й…µМЃф¤м(ЂЂЂЃ…Э…ҐРЃЩ¤№Э…ҐСЅИ  ¤Ђфш(ЂЂЂЂЂЃ•бБ•ЌРЎ•б•ЌХС”¤№СЅ!…Щ•	••№…±±•‘]ҐС ЎмЃСеБ”иЂ‰СХЙё№Ќ…№Ќ•°€°ЃСХЙ№%ђиЃЅ±‘QХЙ№%ђЃф¤°(ЂЂЂЂ¤м(ЂЂЂЃ•бБ•ЌРЎ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№µ•НН…ќ•М№НЅµ” Ўµ•НН…ќ”¤ЂфшЃЙ•ЕХ•НС%ђЎµ•НН…ќ”°ЂДАА¤¤¤№СЅ	”Ў™…±Н”¤м(ЂЂЂЃЭЙҐС•I•ЕХ•НРЎ™ҐбСХЙ”№‘•Н­СЅБ%№БХР°ЃмЃҐђиЂДАД°Ѓµ•СЎЅђиЂ‰СХЙёЅНС••И€°ЃБ…Й…µМЃф¤м(ЂЂЂЃЭЙҐС•I•ЕХ•НРЎ™ҐбСХЙ”№‘•Н­СЅБ%№БХР°Ѓм(ЂЂЂЂЂЃҐђиЂДАИ°(ЂЂЂЂЂЃµ•СЎЅђиЂ‰СХЙёЅНС…ЙР€°(ЂЂЂЂЂЃБ…Й…µМиЃмЃСЎЙ•…‘%ђ°ЃҐ№БХРиЃmмЃСеБ”иЂ‰С•бР€°ЃС•бРиЂ‰ЌЅµБ•СҐ№њ€ЃхtЃф°(ЂЂЂЃф¤м(ЂЂЂЃ…Э…ҐРЃ•бБ•ЌР (ЂЂЂЂЂЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤ЂфшЃЙ•ЕХ•НС%ђЎµ•НН…ќ”°ЂДАИ¤¤°(ЂЂЂЂ¤№Й•НЅ±Щ•М№СЅ5…СЌЎ=‰©•ЌРЎмЃ•ЙЙЅИиЃмЃЌЅ‘”иЂґМИАЬИЃфЃф¤м(ЂЂЂЃН•ННҐЅё№ЌЅµБ±•С•…№Ќ•±±…СҐЅё ¤м(ЂЂЂЃЌЅ№НРЃЙ•НБЅ№Н”ЂфЃ…Э…ҐРЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤ЂфшЃЙ•ЕХ•НС%ђЎµ•НН…ќ”°ЂДАА¤¤м(ЂЂЂЃЌЅ№НРЃЙ•Б±…Ќ•µ•№С%ђЂфЂЎЙ•НБЅ№Н”№Й•НХ±РЃ…МЃ)НЅ№=‰©•ЌР¤№СХЙ№%ђм(ЂЂЂЃ•бБ•ЌРЎСеБ•ЅЃЙ•Б±…Ќ•µ•№С%ђ¤№СЅ	” ‰НСЙҐ№њ€¤м(ЂЂЂЃ•бБ•ЌРЎЙ•Б±…Ќ•µ•№С%ђ¤№№ЅР№СЅ	”ЎЅ±‘QХЙ№%ђ¤м(ЂЂЂЃ…Э…ҐРЃ•бБ•ЌР (ЂЂЂЂЂЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤ЂфшЃЙ•ЕХ•НС%ђЎµ•НН…ќ”°ЂДАД¤¤°(ЂЂЂЂ¤№Й•НЅ±Щ•М№СЅ5…СЌЎ=‰©•ЌРЎмЃЙ•НХ±РиЃмЃСХЙ№%ђиЃЙ•Б±…Ќ•µ•№С%ђЃфЃф¤м(ЂЂЂЃ…Э…ҐРЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤Ђфш(ЂЂЂЂЂЃСХЙ№Щ•№РЎµ•НН…ќ”°Ђ‰СХЙёЅНС…ЙС•ђ€°ЃMСЙҐ№њЎЙ•Б±…Ќ•µ•№С%ђ¤¤°(ЂЂЂЂ¤м(ЂЂЂЃЌЅ№НРЃҐ№‘•аЂфЂЎБЙ•‘ҐЌ…С”иЂЎµ•НН…ќ”иЃ)НЅ№=‰©•ЌР¤ЂфшЃ‰ЅЅ±•…ё¤Ђфш(ЂЂЂЂЂЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№µ•НН…ќ•М№™Ґ№‘%№‘•аЎБЙ•‘ҐЌ…С”¤м(ЂЂЂЃ•бБ•ЌРЎҐ№‘•а Ўµ•НН…ќ”¤ЂфшЃСХЙ№Щ•№РЎµ•НН…ќ”°Ђ‰СХЙёЅЌЅµБ±•С•ђ€°ЃЅ±‘QХЙ№%ђ¤¤¤№СЅ	•1•ННQЎ…ё (ЂЂЂЂЂЃҐ№‘•а Ўµ•НН…ќ”¤ЂфшЃЙ•ЕХ•НС%ђЎµ•НН…ќ”°ЂДАА¤¤°(ЂЂЂЂ¤м(ЂЂЂЃ•бБ•ЌРЎҐ№‘•а Ўµ•НН…ќ”¤ЂфшЃЙ•ЕХ•НС%ђЎµ•НН…ќ”°ЂДАА¤¤¤№СЅ	•1•ННQЎ…ё (ЂЂЂЂЂЃҐ№‘•а Ўµ•НН…ќ”¤ЂфшЃСХЙ№Щ•№РЎµ•НН…ќ”°Ђ‰СХЙёЅНС…ЙС•ђ€°ЃMСЙҐ№њЎЙ•Б±…Ќ•µ•№С%ђ¤¤¤°(ЂЂЂЂ¤м(ЂЂЂЃ•бБ•ЌРЎ•б•ЌХС”¤№СЅ!…Щ•	••№…±±•‘QҐµ•М И¤м(ЂЂЂЃ•бБ•ЌРЎ•б•ЌХС”¤№СЅ!…Щ•	••№9СЎ…±±•‘]ҐС  И°Ѓм(ЂЂЂЂЂЃСеБ”иЂ‰СХЙё№НС…ЙР€°(ЂЂЂЂЂЃСХЙ№%ђиЃЙ•Б±…Ќ•µ•№С%ђ°(ЂЂЂЂЂЃҐ№БХРиЃmмЃСеБ”иЂ‰С•бР€°ЃС•бРиЂ‰№•ЬЃ‘ҐЙ•ЌСҐЅё€Ѓхt°(ЂЂЂЃф¤м(ЂЂЂЃ•бБ•ЌРЎЅ™™ҐЌҐ…±]ЙҐС”¤№№ЅР№СЅ!…Щ•	••№…±±•ђ ¤м(ЂЂЂЃН•ННҐЅё№НХЌЌ••‘QХЙё ¤м(ЂЂЂЃ…Э…ҐРЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤Ђфш(ЂЂЂЂЂЃСХЙ№Щ•№РЎµ•НН…ќ”°Ђ‰СХЙёЅЌЅµБ±•С•ђ€°ЃMСЙҐ№њЎЙ•Б±…Ќ•µ•№С%ђ¤¤°(ЂЂЂЂ¤м(ЂЂЂЃ…Э…ҐРЃНСЅБҐбСХЙ”Ў™ҐбСХЙ”¤м(ЂЃф¤м((ЂЃҐР ‰Ў…№‘±•МЃНе№ЌЎЙЅ№ЅХМЃ•бС•Й№…°ЃЌ…№Ќ•±±…СҐЅёЃ…№ђЃЙ•©•ЌСМЃНС…±”ЃЅИЃХ№НХББЅЙС•ђЃНС••ИЃҐ№БХРЃ±ЅЌ…±±д€°Ѓ…Не№ЊЂ ¤ЂфшЃм(ЂЂЂЃЌЅ№НРЃ™ҐбСХЙ”ЂфЃЌЙ•…С•ҐбСХЙ” ¤м(ЂЂЂЃЌЅ№НРЃСЎЙ•…‘%ђЂфЃ…Э…ҐРЃНС…ЙСAҐQЎЙ•…ђЎ™ҐбСХЙ”¤м(ЂЂЂЃЌЅ№НРЃЅ±‘QХЙ№%ђЂфЃ…Э…ҐРЃНС…ЙСAҐQХЙёЎ™ҐбСХЙ”°ЃСЎЙ•…‘%ђ¤м(ЂЂЂЃЌЅ№НРЃН•ННҐЅёЂфЃ™ҐбСХЙ”№…‘…БС•И№Н•ННҐЅ№НlБtм(ЂЂЂЃҐЂ …Н•ННҐЅё¤ЃСЎЙЅЬЃ№•ЬЃЙЙЅИ ‰…­”ЃA¤ЃM•ННҐЅёЃЭ…МЃ№ЅРЃЅБ•№•ђ€¤м(ЂЂЂЃЌЅ№НРЃ•б•ЌХС”ЂфЃЩ¤№НБе=ёЎН•ННҐЅё°Ђ‰•б•ЌХС”€¤м(ЂЂЂЃ™ЅИЂЎЌЅ№НРЃmҐђ°ЃБ…Й…µНtЃЅЃl(ЂЂЂЂЂЃlДАА°ЃмЃСЎЙ•…‘%ђ°Ѓ•бБ•ЌС•‘QХЙ№%ђиЂ‰НС…±”€°ЃҐ№БХРиЃmмЃСеБ”иЂ‰С•бР€°ЃС•бРиЂ‰№•Ь€ЃхtЃхt°(ЂЂЂЂЂЃl(ЂЂЂЂЂЂЂЂДАД°(ЂЂЂЂЂЂЂЃм(ЂЂЂЂЂЂЂЂЂЃСЎЙ•…‘%ђ°(ЂЂЂЂЂЂЂЂЂЃ•бБ•ЌС•‘QХЙ№%ђиЃЅ±‘QХЙ№%ђ°(ЂЂЂЂЂЂЂЂЂЃҐ№БХРиЃl(ЂЂЂЂЂЂЂЂЂЂЂЃмЃСеБ”иЂ‰С•бР€°ЃС•бРиЂ‰№•Ь€Ѓф°(ЂЂЂЂЂЂЂЂЂЂЂЃмЃСеБ”иЂ‰Ґµ…ќ”€°ЃХЙ°иЂ‰Ґµ…ќ”€Ѓф°(ЂЂЂЂЂЂЂЂЂЃt°(ЂЂЂЂЂЂЂЃф°(ЂЂЂЂЂЃt°(ЂЂЂЃtЃ…МЃЌЅ№НР¤Ѓм(ЂЂЂЂЂЃЭЙҐС•I•ЕХ•НРЎ™ҐбСХЙ”№‘•Н­СЅБ%№БХР°Ѓм(ЂЂЂЂЂЂЂЃҐђ°(ЂЂЂЂЂЂЂЃµ•СЎЅђиЂ‰СХЙёЅНС••И€°(ЂЂЂЂЂЂЂЃБ…Й…µМиЃ)M=8№Б…ЙН”Ў)M=8№НСЙҐ№ќҐ™дЎБ…Й…µМ¤¤°(ЂЂЂЂЂЃф¤м(ЂЂЂЂЂЃ…Э…ҐРЃ•бБ•ЌР (ЂЂЂЂЂЂЂЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤ЂфшЃЙ•ЕХ•НС%ђЎµ•НН…ќ”°ЃҐђ¤¤°(ЂЂЂЂЂЂ¤№Й•НЅ±Щ•М№СЅ!…Щ•AЙЅБ•ЙСд ‰•ЙЙЅИ€¤м(ЂЂЂЃф(ЂЂЂЃ•бБ•ЌРЎ•б•ЌХС”¤№№ЅР№СЅ!…Щ•	••№…±±•ђ ¤м(ЂЂЂЃН•ННҐЅё№ЌЅµБ±•С•…№Ќ•±±…СҐЅ№=№I•ЕХ•НР ¤м(ЂЂЂЃЭЙҐС•I•ЕХ•НРЎ™ҐбСХЙ”№‘•Н­СЅБ%№БХР°Ѓм(ЂЂЂЂЂЃҐђиЂДАИ°(ЂЂЂЂЂЃµ•СЎЅђиЂ‰СХЙёЅНС••И€°(ЂЂЂЂЂЃБ…Й…µМиЃмЃСЎЙ•…‘%ђ°Ѓ•бБ•ЌС•‘QХЙ№%ђиЃЅ±‘QХЙ№%ђ°ЃҐ№БХРиЃmмЃСеБ”иЂ‰С•бР€°ЃС•бРиЂ‰№•Ь€ЃхtЃф°(ЂЂЂЃф¤м(ЂЂЂЃЌЅ№НРЃЙ•НБЅ№Н”ЂфЃ…Э…ҐРЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤ЂфшЃЙ•ЕХ•НС%ђЎµ•НН…ќ”°ЂДАИ¤¤м(ЂЂЂЃ•бБ•ЌРЎЙ•НБЅ№Н”¤№СЅ!…Щ•AЙЅБ•ЙСд ‰Й•НХ±Р№СХЙ№%ђ€¤м(ЂЂЂЃН•ННҐЅё№НХЌЌ••‘QХЙё ¤м(ЂЂЂЃ…Э…ҐРЃНСЅБҐбСХЙ”Ў™ҐбСХЙ”¤м(ЂЃф¤м((ЂЃҐР ‰Б…НН•МЃ…ёЃЌЌЅХ№Рµ‰ЅХ№ђЃЅ™™ҐЌҐ…°ЃНС••ИЃ…№ђЃҐСМЃЙ•НХ±РЃСЎЙЅХќ ЃХ№ЌЎ…№ќ•ђ€°Ѓ…Не№ЊЂ ¤ЂфшЃм(ЂЂЂЃЌЅ№НРЃ™ҐбСХЙ”ЂфЃЌЙ•…С•ҐбСХЙ” ¤м(ЂЂЂЃ…Э…ҐРЃ‰Ґ№‘=™™ҐЌҐ…±QЎЙ•…ђЎ™ҐбСХЙ”°Ђ‰Ѕ™™ҐЌҐ…°µСЎЙ•…ђ€¤м(ЂЂЂЃЌЅ№НРЃБ…Й…µМЂфЃм(ЂЂЂЂЂЃСЎЙ•…‘%ђиЂ‰Ѕ™™ҐЌҐ…°µСЎЙ•…ђ€°(ЂЂЂЂЂЃ•бБ•ЌС•‘QХЙ№%ђиЂ‰Ѕ™™ҐЌҐ…°µСХЙё€°(ЂЂЂЂЂЃЌ±Ґ•№СUН•Й5•НН…ќ•%ђиЂ‰µ•НН…ќ”€°(ЂЂЂЂЂЃҐ№БХРиЃmмЃСеБ”иЂ‰С•бР€°ЃС•бРиЂ‰№•ЬЃ‘ҐЙ•ЌСҐЅё€Ѓхt°(ЂЂЂЃфм(ЂЂЂЃЭЙҐС•I•ЕХ•НРЎ™ҐбСХЙ”№‘•Н­СЅБ%№БХР°ЃмЃҐђиЂДАА°Ѓµ•СЎЅђиЂ‰СХЙёЅНС••И€°ЃБ…Й…µМЃф¤м(ЂЂЂЃ…Э…ҐРЃ•бБ•ЌРЎЙ•…‘)НЅ№1Ґ№”Ў™ҐбСХЙ”№Ѕ™™ҐЌҐ…°№НС‘Ґё¤¤№Й•НЅ±Щ•М№СЅЕХ…°Ўм(ЂЂЂЂЂЃҐђиЂДАА°(ЂЂЂЂЂЃµ•СЎЅђиЂ‰СХЙёЅНС••И€°(ЂЂЂЂЂЃБ…Й…µМ°(ЂЂЂЃф¤м(ЂЂЂЃЭЙҐС•I•ЕХ•НРЎ™ҐбСХЙ”№Ѕ™™ҐЌҐ…°№НС‘ЅХР°ЃмЃҐђиЂДАА°ЃЙ•НХ±РиЃмЃСХЙ№%ђиЂ‰Ѕ™™ҐЌҐ…°µСХЙё€ЃфЃф¤м(ЂЂЂЃ…Э…ҐРЃ•бБ•ЌРЎ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤ЂфшЃЙ•ЕХ•НС%ђЎµ•НН…ќ”°ЂДАА¤¤¤№Й•НЅ±Щ•М№СЅЕХ…°Ўм(ЂЂЂЂЂЃҐђиЂДАА°(ЂЂЂЂЂЃЙ•НХ±РиЃмЃСХЙ№%ђиЂ‰Ѕ™™ҐЌҐ…°µСХЙё€Ѓф°(ЂЂЂЃф¤м(ЂЂЂЃ•бБ•ЌРЎ™ҐбСХЙ”№…‘…БС•И№Н•ННҐЅ№М¤№СЅ!…Щ•1•№ќС  А¤м(ЂЂЂЃ…Э…ҐРЃНСЅБҐбСХЙ”Ў™ҐбСХЙ”¤м(ЂЃф¤м((ЂЃҐР ‰ЭЙҐС•МЃСЎ”ЃҐ№С•ЙЙХБРЃЙ•НБЅ№Н”Ѓ‰•™ЅЙ”ЃЌ…№Ќ•±±…СҐЅёЃ±Ґ™•ЌеЌ±”Ѓ№ЅСҐ™ҐЌ…СҐЅ№М€°Ѓ…Не№ЊЂ ¤ЂфшЃм(ЂЂЂЃЌЅ№НРЃ™ҐбСХЙ”ЂфЃЌЙ•…С•ҐбСХЙ” ¤м(ЂЂЂЃЌЅ№НРЃСЎЙ•…‘%ђЂфЃ…Э…ҐРЃНС…ЙСAҐQЎЙ•…ђЎ™ҐбСХЙ”¤м(ЂЂЂЃЌЅ№НРЃСХЙ№%ђЂфЃ…Э…ҐРЃНС…ЙСAҐQХЙёЎ™ҐбСХЙ”°ЃСЎЙ•…‘%ђ¤м(ЂЂЂЃЌЅ№НРЃН•ННҐЅёЂфЃ™ҐбСХЙ”№…‘…БС•И№Н•ННҐЅ№НlБtм(ЂЂЂЃҐЂ …Н•ННҐЅё¤ЃСЎЙЅЬЃ№•ЬЃЙЙЅИ ‰…­”ЃA¤ЃM•ННҐЅёЃЭ…МЃ№ЅРЃЅБ•№•ђ€¤м(ЂЂЂЃН•ННҐЅё№НС…ЙСЅµµ…№‘б•ЌХСҐЅё ‰Н±••АЂДА€¤м(ЂЂЂЃН•ННҐЅё№…Н­EХ•НСҐЅёЎм(ЂЂЂЂЂЃҐђиЂ‰Ќ…№Ќ•°µ‘•ЌҐНҐЅё€°(ЂЂЂЂЂЃСеБ”иЂ‰ЌЎЅҐЌ”€°(ЂЂЂЂЂЃБЙЅµБРиЂ‰Ѕ№СҐ№Х”ь€°(ЂЂЂЂЂЃЅБСҐЅ№МиЃl(ЂЂЂЂЂЂЂЃмЃЩ…±Х”иЂ‰е•М€°Ѓ±…‰•°иЂ‰e•М€Ѓф°(ЂЂЂЂЂЂЂЃмЃЩ…±Х”иЂ‰№ј€°Ѓ±…‰•°иЂ‰9ј€Ѓф°(ЂЂЂЂЂЃt°(ЂЂЂЂЂЃµХ±СҐБ±”иЃ™…±Н”°(ЂЂЂЂЂЃ…±±ЅЭ=СЎ•ИиЃ™…±Н”°(ЂЂЂЂЂЃЅБСҐЅ№…°иЃ™…±Н”°(ЂЂЂЃф¤м(ЂЂЂЃЌЅ№НРЃЕХ•НСҐЅ№I•ЕХ•НРЂфЃ…Э…ҐРЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤Ђфш(ЂЂЂЂЂЃµ•СЎЅђЎµ•НН…ќ”°Ђ‰ҐС•ґЅСЅЅ°ЅЙ•ЕХ•НСUН•Й%№БХР€¤°(ЂЂЂЂ¤м(ЂЂЂЃН•ННҐЅё№ЌЅµБ±•С•…№Ќ•±±…СҐЅ№=№I•ЕХ•НР ¤м((ЂЂЂЃЭЙҐС•I•ЕХ•НРЎ™ҐбСХЙ”№‘•Н­СЅБ%№БХР°Ѓм(ЂЂЂЂЂЃҐђиЂМ°(ЂЂЂЂЂЃµ•СЎЅђиЂ‰СХЙёЅҐ№С•ЙЙХБР€°(ЂЂЂЂЂЃБ…Й…µМиЃмЃСЎЙ•…‘%ђ°ЃСХЙ№%ђЃф°(ЂЂЂЃф¤м(ЂЂЂЃ…Э…ҐРЃ•бБ•ЌРЎ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤ЂфшЃЙ•ЕХ•НС%ђЎµ•НН…ќ”°ЂМ¤¤¤№Й•НЅ±Щ•М№СЅЕХ…°Ўм(ЂЂЂЂЂЃҐђиЂМ°(ЂЂЂЂЂЃЙ•НХ±РиЃнф°(ЂЂЂЃф¤м(ЂЂЂЃЌЅ№НРЃЌЅµБ±•С•ђЂфЃ…Э…ҐРЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤Ђфш(ЂЂЂЂЂЃµ•СЎЅђЎµ•НН…ќ”°Ђ‰СХЙёЅЌЅµБ±•С•ђ€¤°(ЂЂЂЂ¤м(ЂЂЂЃ•бБ•ЌРЎЌЅµБ±•С•ђ¤№СЅ5…СЌЎ=‰©•ЌРЎмЃБ…Й…µМиЃмЃСХЙёиЃмЃНС…СХМиЂ‰Ґ№С•ЙЙХБС•ђ€ЃфЃфЃф¤м((ЂЂЂЃЌЅ№НРЃЙ•НБЅ№Н•%№‘•аЂфЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№µ•НН…ќ•М№™Ґ№‘%№‘•а Ўµ•НН…ќ”¤ЂфшЃЙ•ЕХ•НС%ђЎµ•НН…ќ”°ЂМ¤¤м(ЂЂЂЃЌЅ№НРЃЕХ•НСҐЅ№%С•µ%ђЂфЂЎЕХ•НСҐЅ№I•ЕХ•НР№Б…Й…µМЃ…МЃ)НЅ№=‰©•ЌР¤№ҐС•µ%ђм(ЂЂЂЃЌЅ№НРЃЕХ•НСҐЅ№±ЅН•‘%№‘•аЂфЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№µ•НН…ќ•М№™Ґ№‘%№‘•а (ЂЂЂЂЂЂЎµ•НН…ќ”¤Ђфш(ЂЂЂЂЂЂЂЃµ•СЎЅђЎµ•НН…ќ”°Ђ‰ҐС•ґЅЌЅµБ±•С•ђ€¤Ђ(ЂЂЂЂЂЂЂЂ Ўµ•НН…ќ”№Б…Й…µМЃ…МЃ)НЅ№=‰©•ЌР¤№ҐС•ґЃ…МЃ)НЅ№=‰©•ЌРЃрЃХ№‘•™Ґ№•ђ¤ь№ҐђЂфффЃЕХ•НСҐЅ№%С•µ%ђ°(ЂЂЂЂ¤м(ЂЂЂЃЌЅ№НРЃСХЙ№%№‘•аЂфЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№µ•НН…ќ•М№™Ґ№‘%№‘•а Ўµ•НН…ќ”¤Ђфш(ЂЂЂЂЂЃµ•СЎЅђЎµ•НН…ќ”°Ђ‰СХЙёЅЌЅµБ±•С•ђ€¤°(ЂЂЂЂ¤м(ЂЂЂЃ•бБ•ЌРЎЕХ•НСҐЅ№±ЅН•‘%№‘•а¤№СЅ	•Й•…С•ЙQЎ…ёЎЙ•НБЅ№Н•%№‘•а¤м(ЂЂЂЃ•бБ•ЌРЎСХЙ№%№‘•а¤№СЅ	•Й•…С•ЙQЎ…ёЎЕХ•НСҐЅ№±ЅН•‘%№‘•а¤м(ЂЂЂЃ…Э…ҐРЃНСЅБҐбСХЙ”Ў™ҐбСХЙ”¤м(ЂЃф¤м((ЂЃҐР ‰Й•©•ЌСМЃ…ёЃҐ№С•ЙЙХБРЃСЎ…РЃ‘Ѕ•МЃ№ЅРЃЙ•™•Й•№Ќ”ЃСЎ”Ѓ…ЌСҐЩ”ЃA¤ЃQХЙё€°Ѓ…Не№ЊЂ ¤ЂфшЃм(ЂЂЂЃЌЅ№НРЃ™ҐбСХЙ”ЂфЃЌЙ•…С•ҐбСХЙ” ¤м(ЂЂЂЃЌЅ№НРЃЅ™™ҐЌҐ…±]ЙҐС”ЂфЃЩ¤№™ё ¤м(ЂЂЂЃ™ҐбСХЙ”№Ѕ™™ҐЌҐ…°№НС‘Ґё№Ѕё ‰‘…С„€°ЃЅ™™ҐЌҐ…±]ЙҐС”¤м(ЂЂЂЃЌЅ№НРЃСЎЙ•…‘%ђЂфЃ…Э…ҐРЃНС…ЙСAҐQЎЙ•…ђЎ™ҐбСХЙ”¤м((ЂЂЂЃЭЙҐС•I•ЕХ•НРЎ™ҐбСХЙ”№‘•Н­СЅБ%№БХР°Ѓм(ЂЂЂЂЂЃҐђиЂИ°(ЂЂЂЂЂЃµ•СЎЅђиЂ‰СХЙёЅҐ№С•ЙЙХБР€°(ЂЂЂЂЂЃБ…Й…µМиЃмЃСЎЙ•…‘%ђ°ЃСХЙ№%ђиЂ‰µҐННҐ№њµСХЙё€Ѓф°(ЂЂЂЃф¤м(ЂЂЂЃ…Э…ҐРЃ•бБ•ЌР (ЂЂЂЂЂЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤ЂфшЃЙ•ЕХ•НС%ђЎµ•НН…ќ”°ЂИ¤¤°(ЂЂЂЂ¤№Й•НЅ±Щ•М№СЅ5…СЌЎ=‰©•ЌРЎм(ЂЂЂЂЂЃ•ЙЙЅИиЃмЃЌЅ‘”иЂґМИАЬР°Ѓµ•НН…ќ”иЂ‰бС•Й№…°ЃСХЙёЅҐ№С•ЙЙХБРЃµХНРЃЙ•™•Й•№Ќ”ЃСЎ”Ѓ…ЌСҐЩ”ЃQХЙё€Ѓф°(ЂЂЂЃф¤м(ЂЂЂЃ•бБ•ЌРЎЅ™™ҐЌҐ…±]ЙҐС”¤№№ЅР№СЅ!…Щ•	••№…±±•ђ ¤м(ЂЂЂЃ…Э…ҐРЃНСЅБҐбСХЙ”Ў™ҐбСХЙ”¤м(ЂЃф¤м((ЂЃҐР ‰ҐНЅ±…С•МЃA¤Ѓ…№ђЃ±…Х‘”ЃQЎЙ•…‘МЃ‰•ЎҐ№ђЃСЎ”ЃН…µ”ЃЙ•ќҐНС•Й•ђЃ!…Й№•НМЃБ…С €°Ѓ…Не№ЊЂ ¤ЂфшЃм(ЂЂЂЃЌЅ№НРЃБҐ‘…БС•ИЂфЃ№•ЬЃ…­•!…Й№•НН‘…БС•ИЎЎ…Й№•НН%‘MЌЎ•µ„№Б…ЙН” ‰Б¤€¤¤м(ЂЂЂЃЌЅ№НРЃЌ±…Х‘•‘…БС•ИЂфЃ№•ЬЃ…­•!…Й№•НН‘…БС•ИЎЎ…Й№•НН%‘MЌЎ•µ„№Б…ЙН” ‰Ќ±…Х‘”µЌЅ‘”€¤¤м(ЂЂЂЃЌЅ№НРЃ™ҐбСХЙ”ЂфЃЌЙ•…С•ҐбСХЙ”Ўм(ЂЂЂЂЂЃ•бС•Й№…±‘…БС•ЙМиЃ№•ЬЃ5…АсбС•Й№…±!…Й№•НН%ђ°Ѓ…­•!…Й№•НН‘…БС•ИшЎl(ЂЂЂЂЂЂЂЃl‰Б¤€°ЃБҐ‘…БС•Йt°(ЂЂЂЂЂЂЂЃl‰Ќ±…Х‘”µЌЅ‘”€°ЃЌ±…Х‘•‘…БС•Йt°(ЂЂЂЂЂЃt¤°(ЂЂЂЃф¤м(ЂЂЂЃЌЅ№НРЃЌ±…Х‘•QЎЙ•…‘%ђЂфЃ…Э…ҐРЃНС…ЙСбС•Й№…±QЎЙ•…ђ (ЂЂЂЂЂЃ™ҐбСХЙ”°(ЂЂЂЂЂЃ1U}=}9Q%Y}QI9MA=IQ}5=1}%°(ЂЂЂЂЂЂДА°(ЂЂЂЂ¤м(ЂЂЂЃЌЅ№НРЃБҐQЎЙ•…‘%ђЂфЃ…Э…ҐРЃНС…ЙСбС•Й№…±QЎЙ•…ђЎ™ҐбСХЙ”°Ђ‰ЌЅ‘•бЎЅНРЅБ¤µ№…СҐЩ”€°ЂДД¤м(ЂЂЂЃ•бБ•ЌРЎЌ±…Х‘•QЎЙ•…‘%ђ¤№№ЅР№СЅ	”ЎБҐQЎЙ•…‘%ђ¤м(ЂЂЂЃ•бБ•ЌРЎЌ±…Х‘•‘…БС•И№Н•ННҐЅ№М¤№СЅ!…Щ•1•№ќС  Д¤м(ЂЂЂЃ•бБ•ЌРЎБҐ‘…БС•И№Н•ННҐЅ№М¤№СЅ!…Щ•1•№ќС  Д¤м((ЂЂЂЃЭЙҐС•I•ЕХ•НРЎ™ҐбСХЙ”№‘•Н­СЅБ%№БХР°Ѓм(ЂЂЂЂЂЃҐђиЂДИ°(ЂЂЂЂЂЃµ•СЎЅђиЂ‰СХЙёЅНС…ЙР€°(ЂЂЂЂЂЃБ…Й…µМиЃмЃСЎЙ•…‘%ђиЃЌ±…Х‘•QЎЙ•…‘%ђ°ЃҐ№БХРиЃmмЃСеБ”иЂ‰С•бР€°ЃС•бРиЂ‰Не№СЎ•СҐЊ€ЃхtЃф°(ЂЂЂЃф¤м(ЂЂЂЃ…Э…ҐРЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤ЂфшЃЙ•ЕХ•НС%ђЎµ•НН…ќ”°ЂДИ¤¤м(ЂЂЂЃЌЅ№НРЃЌ±…Х‘•M•ННҐЅёЂфЃЌ±…Х‘•‘…БС•И№Н•ННҐЅ№НlБtм(ЂЂЂЃҐЂ …Ќ±…Х‘•M•ННҐЅё¤ЃСЎЙЅЬЃ№•ЬЃЙЙЅИ ‰…­”Ѓ±…Х‘”ЃM•ННҐЅёЃЭ…МЃ№ЅРЃЅБ•№•ђ€¤м(ЂЂЂЃЌ±…Х‘•M•ННҐЅё№…ББ•№‘Q•бР ‰Ќ±…Х‘”ЃЅХСБХР€¤м(ЂЂЂЃЌЅ№НРЃЌ±…Х‘•MС…ЙС•ђЂфЃ…Э…ҐРЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ (ЂЂЂЂЂЂЎµ•НН…ќ”¤Ђфш(ЂЂЂЂЂЂЂЃµ•СЎЅђЎµ•НН…ќ”°Ђ‰ҐС•ґЅНС…ЙС•ђ€¤Ђ(ЂЂЂЂЂЂЂЂЎµ•НН…ќ”№Б…Й…µМЃ…МЃ)НЅ№=‰©•ЌР¤№СЎЙ•…‘%ђЂфффЃЌ±…Х‘•QЎЙ•…‘%ђ°(ЂЂЂЂ¤м(ЂЂЂЃ•бБ•ЌРЎЌ±…Х‘•MС…ЙС•ђ¤№СЅ	••™Ґ№•ђ ¤м(ЂЂЂЃЌ±…Х‘•M•ННҐЅё№НХЌЌ••‘QХЙё ¤м(ЂЂЂЃ…Э…ҐРЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ (ЂЂЂЂЂЂЎµ•НН…ќ”¤Ђфш(ЂЂЂЂЂЂЂЃµ•СЎЅђЎµ•НН…ќ”°Ђ‰СХЙёЅЌЅµБ±•С•ђ€¤Ђ(ЂЂЂЂЂЂЂЂЎµ•НН…ќ”№Б…Й…µМЃ…МЃ)НЅ№=‰©•ЌР¤№СЎЙ•…‘%ђЂфффЃЌ±…Х‘•QЎЙ•…‘%ђ°(ЂЂЂЂ¤м((ЂЂЂЃ•бБ•ЌРЎБҐ‘…БС•И№Н•ННҐЅ№НlБtь№Ґ№ҐСҐ…±MС…С”№•™™•ЌСҐЩ•5Ѕ‘•°¤№СЅЕХ…° (ЂЂЂЂЂЃБҐ‘…БС•И№Ќ…С…±Ѕњ№‘•™…Х±С5Ѕ‘•°°(ЂЂЂЂ¤м(ЂЂЂЃ•бБ•ЌРЎЌ±…Х‘•‘…БС•И№Н•ННҐЅ№М¤№СЅ!…Щ•1•№ќС  Д¤м(ЂЂЂЃЌЅ№НРЃЙ•НБЅ№Н•%№‘•аЂфЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№µ•НН…ќ•М№™Ґ№‘%№‘•а Ўµ•НН…ќ”¤ЂфшЃЙ•ЕХ•НС%ђЎµ•НН…ќ”°ЂДИ¤¤м(ЂЂЂЃЌЅ№НРЃНС…ЙС•‘%№‘•аЂфЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№µ•НН…ќ•М№™Ґ№‘%№‘•а (ЂЂЂЂЂЂЎµ•НН…ќ”¤Ђфш(ЂЂЂЂЂЂЂЃµ•СЎЅђЎµ•НН…ќ”°Ђ‰СХЙёЅНС…ЙС•ђ€¤Ђ(ЂЂЂЂЂЂЂЂЎµ•НН…ќ”№Б…Й…µМЃ…МЃ)НЅ№=‰©•ЌР¤№СЎЙ•…‘%ђЂфффЃЌ±…Х‘•QЎЙ•…‘%ђ°(ЂЂЂЂ¤м(ЂЂЂЃ•бБ•ЌРЎНС…ЙС•‘%№‘•а¤№СЅ	•Й•…С•ЙQЎ…ёЎЙ•НБЅ№Н•%№‘•а¤м(ЂЂЂЃ…Э…ҐРЃНСЅБҐбСХЙ”Ў™ҐбСХЙ”¤м(ЂЃф¤м((ЂЃҐР ‰­••БМЃН•±•ЌС•ђЃ±…Х‘”Ѓ5Ѕ‘•±МЃЙ•ЕХ•НРµНЌЅБ•ђЃ…№ђЃБЙЅ©•ЌСМЃЌЅ№™ҐЙµ•ђЃ…ЌСХ…°ЃНС…С”€°Ѓ…Не№ЊЂ ¤ЂфшЃм(ЂЂЂЃЌЅ№НРЃБҐ‘…БС•ИЂфЃ№•ЬЃ…­•!…Й№•НН‘…БС•ИЎЎ…Й№•НН%‘MЌЎ•µ„№Б…ЙН” ‰Б¤€¤¤м(ЂЂЂЃЌЅ№НРЃЌ±…Х‘•‘…БС•ИЂфЃ№•ЬЃ…­•!…Й№•НН‘…БС•ИЎЎ…Й№•НН%‘MЌЎ•µ„№Б…ЙН” ‰Ќ±…Х‘”µЌЅ‘”€¤¤м(ЂЂЂЃЌЅ№НРЃ™ҐбСХЙ”ЂфЃЌЙ•…С•ҐбСХЙ”Ўм(ЂЂЂЂЂЃ•бС•Й№…±‘…БС•ЙМиЃ№•ЬЃ5…АсбС•Й№…±!…Й№•НН%ђ°Ѓ…­•!…Й№•НН‘…БС•ИшЎl(ЂЂЂЂЂЂЂЃl‰Б¤€°ЃБҐ‘…БС•Йt°(ЂЂЂЂЂЂЂЃl‰Ќ±…Х‘”µЌЅ‘”€°ЃЌ±…Х‘•‘…БС•Йt°(ЂЂЂЂЂЃt¤°(ЂЂЂЃф¤м(ЂЂЂЃЌЅ№НРЃ™ҐЙНС5Ѕ‘•°ЂфЃЌ±…Х‘•‘…БС•И№Ќ…С…±Ѕњ№µЅ‘•±НlБtь№Й•м(ЂЂЂЃЌЅ№НРЃН•ЌЅ№‘5Ѕ‘•°ЂфЃЌ±…Х‘•‘…БС•И№Ќ…С…±Ѕњ№µЅ‘•±НlЕtь№Й•м(ЂЂЂЃҐЂ …™ҐЙНС5Ѕ‘•°ЃсрЂ…Н•ЌЅ№‘5Ѕ‘•°¤ЃСЎЙЅЬЃ№•ЬЃЙЙЅИ ‰…­”Ѓ±…Х‘”ЃЌ…С…±ЅњЃҐМЃҐ№ЌЅµБ±•С”€¤м((ЂЂЂЃЌЅ№НРЃ™ҐЙНСQЎЙ•…‘%ђЂфЃ…Э…ҐРЃНС…ЙСбС•Й№…±QЎЙ•…ђ (ЂЂЂЂЂЃ™ҐбСХЙ”°(ЂЂЂЂЂЃ•№ЌЅ‘•±…Х‘•QЙ…№НБЅЙС5Ѕ‘•°ЎН•ЌЅ№‘5Ѕ‘•°¤°(ЂЂЂЂЂЂИА°(ЂЂЂЂ¤м(ЂЂЂЃЌЅ№НРЃН•ЌЅ№‘QЎЙ•…‘%ђЂфЃ…Э…ҐРЃНС…ЙСбС•Й№…±QЎЙ•…ђ (ЂЂЂЂЂЃ™ҐбСХЙ”°(ЂЂЂЂЂЃ•№ЌЅ‘•±…Х‘•QЙ…№НБЅЙС5Ѕ‘•°Ў™ҐЙНС5Ѕ‘•°¤°(ЂЂЂЂЂЂИД°(ЂЂЂЂ¤м(ЂЂЂЃ•бБ•ЌРЎЌ±…Х‘•‘…БС•И№Н•ННҐЅ№НlБtь№Ґ№ҐСҐ…±MС…С”№•™™•ЌСҐЩ•5Ѕ‘•°¤№СЅЕХ…°ЎН•ЌЅ№‘5Ѕ‘•°¤м(ЂЂЂЃ•бБ•ЌРЎЌ±…Х‘•‘…БС•И№Н•ННҐЅ№НlЕtь№Ґ№ҐСҐ…±MС…С”№•™™•ЌСҐЩ•5Ѕ‘•°¤№СЅЕХ…°Ў™ҐЙНС5Ѕ‘•°¤м((ЂЂЂЃЭЙҐС•I•ЕХ•НРЎ™ҐбСХЙ”№‘•Н­СЅБ%№БХР°Ѓм(ЂЂЂЂЂЃҐђиЂИИ°(ЂЂЂЂЂЃµ•СЎЅђиЂ‰ЌЅ‘•бЎЅНРЅСЎЙ•…ђЅµЅ‘•°ЅН•±•ЌР€°(ЂЂЂЂЂЃБ…Й…µМиЃмЃСЎЙ•…‘%ђиЃ™ҐЙНСQЎЙ•…‘%ђ°ЃµЅ‘•°иЃ™ҐЙНС5Ѕ‘•°Ѓф°(ЂЂЂЃф¤м(ЂЂЂЃ…Э…ҐРЃ•бБ•ЌР (ЂЂЂЂЂЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤ЂфшЃЙ•ЕХ•НС%ђЎµ•НН…ќ”°ЂИИ¤¤°(ЂЂЂЂ¤№Й•НЅ±Щ•М№СЅ5…СЌЎ=‰©•ЌРЎм(ЂЂЂЂЂЃЙ•НХ±РиЃм(ЂЂЂЂЂЂЂЃ•™™•ЌСҐЩ•5Ѕ‘•°иЃ™ҐЙНС5Ѕ‘•°°(ЂЂЂЂЂЂЂЃЙ•НЅ±Щ•‘5Ѕ‘•±1…‰•°иЂ‰™…­”µЙХ№СҐµ”µБЙҐµ…Йд€°(ЂЂЂЂЂЃф°(ЂЂЂЃф¤м((ЂЂЂЃЭЙҐС•I•ЕХ•НРЎ™ҐбСХЙ”№‘•Н­СЅБ%№БХР°Ѓм(ЂЂЂЂЂЃҐђиЂИМ°(ЂЂЂЂЂЃµ•СЎЅђиЂ‰ЌЅ‘•бЎЅНРЅСЎЙ•…ђЅҐ№НБ•ЌР€°(ЂЂЂЂЂЃБ…Й…µМиЃмЃСЎЙ•…‘%ђиЃ™ҐЙНСQЎЙ•…‘%ђЃф°(ЂЂЂЃф¤м(ЂЂЂЃ…Э…ҐРЃ•бБ•ЌР (ЂЂЂЂЂЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤ЂфшЃЙ•ЕХ•НС%ђЎµ•НН…ќ”°ЂИМ¤¤°(ЂЂЂЂ¤№Й•НЅ±Щ•М№СЅ5…СЌЎ=‰©•ЌРЎм(ЂЂЂЂЂЃЙ•НХ±РиЃм(ЂЂЂЂЂЂЂЃЎ…Й№•НН%ђиЂ‰Ќ±…Х‘”µЌЅ‘”€°(ЂЂЂЂЂЂЂЃСЙ…№НБЅЙС5Ѕ‘•±%ђиЃ•№ЌЅ‘•±…Х‘•QЙ…№НБЅЙС5Ѕ‘•°ЎН•ЌЅ№‘5Ѕ‘•°¤°(ЂЂЂЂЂЂЂЃ•™™•ЌСҐЩ•5Ѕ‘•°иЃ™ҐЙНС5Ѕ‘•°°(ЂЂЂЂЂЂЂЃЙ•НЅ±Щ•‘5Ѕ‘•±1…‰•°иЂ‰™…­”µЙХ№СҐµ”µБЙҐµ…Йд€°(ЂЂЂЂЂЃф°(ЂЂЂЃф¤м((ЂЂЂЃЭЙҐС•I•ЕХ•НРЎ™ҐбСХЙ”№‘•Н­СЅБ%№БХР°Ѓм(ЂЂЂЂЂЃҐђиЂИР°(ЂЂЂЂЂЃµ•СЎЅђиЂ‰СХЙёЅНС…ЙР€°(ЂЂЂЂЂЃБ…Й…µМиЃм(ЂЂЂЂЂЂЂЃСЎЙ•…‘%ђиЃН•ЌЅ№‘QЎЙ•…‘%ђ°(ЂЂЂЂЂЂЂЃµЅ‘•°иЃ•№ЌЅ‘•AҐQЙ…№НБЅЙС5Ѕ‘•°ЎБҐ‘…БС•И№Ќ…С…±Ѕњ№‘•™…Х±С5Ѕ‘•°¤°(ЂЂЂЂЂЂЂЃҐ№БХРиЃmмЃСеБ”иЂ‰С•бР€°ЃС•бРиЂ‰™ЅЙ•Ґќё€Ѓхt°(ЂЂЂЂЂЃф°(ЂЂЂЃф¤м(ЂЂЂЃ…Э…ҐРЃ•бБ•ЌР (ЂЂЂЂЂЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤ЂфшЃЙ•ЕХ•НС%ђЎµ•НН…ќ”°ЂИР¤¤°(ЂЂЂЂ¤№Й•НЅ±Щ•М№СЅ5…СЌЎ=‰©•ЌРЎм(ЂЂЂЂЂЃ•ЙЙЅИиЃм(ЂЂЂЂЂЂЂЃЌЅ‘”иЂґМИШАИ°(ЂЂЂЂЂЂЂЃµ•НН…ќ”иЂ‰QХЙёЃ5Ѕ‘•°ЃЌ…ЙЙҐ•ИЃ‘Ѕ•МЃ№ЅРЃ‰•±Ѕ№њЃСјЃСЎ”ЃQЎЙ•…ђЃ!…Й№•НМ€°(ЂЂЂЂЂЃф°(ЂЂЂЃф¤м(ЂЂЂЃ•бБ•ЌРЎЌ±…Х‘•‘…БС•И№Н•ННҐЅ№НlЕtь№НС…С”№•™™•ЌСҐЩ•5Ѕ‘•°¤№СЅЕХ…°Ў™ҐЙНС5Ѕ‘•°¤м(ЂЂЂЃ…Э…ҐРЃНСЅБҐбСХЙ”Ў™ҐбСХЙ”¤м(ЂЃф¤м((ЂЃҐР ‰Й•©•ЌСМЃ5Ѕ‘•°ЃН•±•ЌСҐЅёЃЭЎ•ёЃСЎ”ЃЅЭ№Ґ№њЃ±…Х‘”ЃM•ННҐЅёЃ‘Ѕ•МЃ№ЅРЃНХББЅЙРЃҐР€°Ѓ…Не№ЊЂ ¤ЂфшЃм(ЂЂЂЃЌЅ№НРЃБҐ‘…БС•ИЂфЃ№•ЬЃ…­•!…Й№•НН‘…БС•ИЎЎ…Й№•НН%‘MЌЎ•µ„№Б…ЙН” ‰Б¤€¤¤м(ЂЂЂЃЌЅ№НРЃЌ±…Х‘•‘…БС•ИЂфЃ№•ЬЃ…­•!…Й№•НН‘…БС•ИЎЎ…Й№•НН%‘MЌЎ•µ„№Б…ЙН” ‰Ќ±…Х‘”µЌЅ‘”€¤¤м(ЂЂЂЃЌЅ№НРЃ™ҐбСХЙ”ЂфЃЌЙ•…С•ҐбСХЙ”Ўм(ЂЂЂЂЂЃ•бС•Й№…±‘…БС•ЙМиЃ№•ЬЃ5…АсбС•Й№…±!…Й№•НН%ђ°Ѓ…­•!…Й№•НН‘…БС•ИшЎl(ЂЂЂЂЂЂЂЃl‰Б¤€°ЃБҐ‘…БС•Йt°(ЂЂЂЂЂЂЂЃl‰Ќ±…Х‘”µЌЅ‘”€°ЃЌ±…Х‘•‘…БС•Йt°(ЂЂЂЂЂЃt¤°(ЂЂЂЃф¤м(ЂЂЂЃЌЅ№НРЃСЎЙ•…‘%ђЂфЃ…Э…ҐРЃНС…ЙСбС•Й№…±QЎЙ•…ђЎ™ҐбСХЙ”°Ѓ1U}=}9Q%Y}QI9MA=IQ}5=1}%°ЂИА¤м(ЂЂЂЃЌЅ№НРЃµЅ‘•°ЂфЃБҐ‘…БС•И№Ќ…С…±Ѕњ№‘•™…Х±С5Ѕ‘•°м(ЂЂЂЃҐЂ …µЅ‘•°¤ЃСЎЙЅЬЃ№•ЬЃЙЙЅИ ‰…­”ЃA¤ЃЌ…С…±ЅњЃЎ…МЃ№јЃ‘•™…Х±РЃ5Ѕ‘•°€¤м(ЂЂЂЃЌЅ№НРЃЌ±…Х‘•M•ННҐЅёЂфЃЌ±…Х‘•‘…БС•И№Н•ННҐЅ№НlБtм(ЂЂЂЃҐЂ …Ќ±…Х‘•M•ННҐЅё¤ЃСЎЙЅЬЃ№•ЬЃЙЙЅИ ‰…­”Ѓ±…Х‘”ЃM•ННҐЅёЃЭ…МЃ№ЅРЃЅБ•№•ђ€¤м(ЂЂЂЃЌ±…Х‘•M•ННҐЅё№Ќ…Б…‰Ґ±ҐСҐ•М№ЌЅ№™ҐќХЙ…СҐЅё№Н•±•ЌС5Ѕ‘•°ЂфЃ™…±Н”м((ЂЂЂЃЭЙҐС•I•ЕХ•НРЎ™ҐбСХЙ”№‘•Н­СЅБ%№БХР°Ѓм(ЂЂЂЂЂЃҐђиЂИД°(ЂЂЂЂЂЃµ•СЎЅђиЂ‰ЌЅ‘•бЎЅНРЅСЎЙ•…ђЅµЅ‘•°ЅН•±•ЌР€°(ЂЂЂЂЂЃБ…Й…µМиЃмЃСЎЙ•…‘%ђ°ЃµЅ‘•°Ѓф°(ЂЂЂЃф¤м((ЂЂЂЃ…Э…ҐРЃ•бБ•ЌР (ЂЂЂЂЂЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤ЂфшЃЙ•ЕХ•НС%ђЎµ•НН…ќ”°ЂИД¤¤°(ЂЂЂЂ¤№Й•НЅ±Щ•М№СЅ5…СЌЎ=‰©•ЌРЎм(ЂЂЂЂЂЃ•ЙЙЅИиЃм(ЂЂЂЂЂЂЂЃЌЅ‘”иЂґМИАЬа°(ЂЂЂЂЂЂЂЃµ•НН…ќ”иЂ‰бС•Й№…°Ѓ!…Й№•НМЃ‘Ѕ•МЃ№ЅРЃНХББЅЙРЃ5Ѕ‘•°ЃН•±•ЌСҐЅё€°(ЂЂЂЂЂЃф°(ЂЂЂЃф¤м(ЂЂЂЃ•бБ•ЌРЎЌ±…Х‘•M•ННҐЅё№НС…С”№•™™•ЌСҐЩ•5Ѕ‘•°¤№СЅЕХ…°ЎЌ±…Х‘•‘…БС•И№Ќ…С…±Ѕњ№‘•™…Х±С5Ѕ‘•°¤м((ЂЂЂЃЌЅ№НРЃЅ™ЂфЃЌ±…Х‘•‘…БС•И№Ќ…С…±Ѕњ№СЎҐ№­Ґ№ќ=БСҐЅ№М№™Ґ№ђ ЎмЃҐђЃф¤ЂфшЃҐђЂфффЂ‰Ѕ™€¤ь№Ґђм(ЂЂЂЃҐЂ …Ѕ™¤ЃСЎЙЅЬЃ№•ЬЃЙЙЅИ ‰…­”Ѓ±…Х‘”ЃЌ…С…±ЅњЃЎ…МЃ№јЃQЎҐ№­Ґ№њЃЅБСҐЅё€¤м(ЂЂЂЃЌ±…Х‘•M•ННҐЅё№Ќ…Б…‰Ґ±ҐСҐ•М№ЌЅ№™ҐќХЙ…СҐЅё№Н•±•ЌСQЎҐ№­Ґ№ќ=БСҐЅёЂфЃ™…±Н”м(ЂЂЂЃЭЙҐС•I•ЕХ•НРЎ™ҐбСХЙ”№‘•Н­СЅБ%№БХР°Ѓм(ЂЂЂЂЂЃҐђиЂИИ°(ЂЂЂЂЂЃµ•СЎЅђиЂ‰ЌЅ‘•бЎЅНРЅСЎЙ•…ђЅСЎҐ№­Ґ№њЅН•±•ЌР€°(ЂЂЂЂЂЃБ…Й…µМиЃмЃСЎЙ•…‘%ђ°ЃСЎҐ№­Ґ№ќ=БСҐЅ№%ђиЃЅ™Ѓф°(ЂЂЂЃф¤м(ЂЂЂЃ…Э…ҐРЃ•бБ•ЌР (ЂЂЂЂЂЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤ЂфшЃЙ•ЕХ•НС%ђЎµ•НН…ќ”°ЂИИ¤¤°(ЂЂЂЂ¤№Й•НЅ±Щ•М№СЅ5…СЌЎ=‰©•ЌРЎм(ЂЂЂЂЂЃ•ЙЙЅИиЃм(ЂЂЂЂЂЂЂЃЌЅ‘”иЂґМИАЬа°(ЂЂЂЂЂЂЂЃµ•НН…ќ”иЂ‰бС•Й№…°Ѓ!…Й№•НМЃ‘Ѕ•МЃ№ЅРЃНХББЅЙРЃQЎҐ№­Ґ№њЃН•±•ЌСҐЅё€°(ЂЂЂЂЂЃф°(ЂЂЂЃф¤м(ЂЂЂЃ…Э…ҐРЃНСЅБҐбСХЙ”Ў™ҐбСХЙ”¤м(ЂЃф¤м((ЂЃҐР ‰™…Ґ±МЃЌ±ЅН•ђЃЭЎ•ёЃ„ЃЩ…±ҐђЃ±…Х‘”ЃСЅ­•ёЃЎ…МЃ№јЃЙ•ќҐНС•Й•ђЃ‘…БС•И€°Ѓ…Не№ЊЂ ¤ЂфшЃм(ЂЂЂЃЌЅ№НРЃ™ҐбСХЙ”ЂфЃЌЙ•…С•ҐбСХЙ” ¤м(ЂЂЂЃЌЅ№НРЃЅ™™ҐЌҐ…±]ЙҐС”ЂфЃЩ¤№™ё ¤м(ЂЂЂЃ™ҐбСХЙ”№Ѕ™™ҐЌҐ…°№НС‘Ґё№Ѕё ‰‘…С„€°ЃЅ™™ҐЌҐ…±]ЙҐС”¤м((ЂЂЂЃЭЙҐС•I•ЕХ•НРЎ™ҐбСХЙ”№‘•Н­СЅБ%№БХР°Ѓм(ЂЂЂЂЂЃҐђиЂИА°(ЂЂЂЂЂЃµ•СЎЅђиЂ‰СЎЙ•…ђЅНС…ЙР€°(ЂЂЂЂЂЃБ…Й…µМиЃмЃµЅ‘•°иЃ1U}=}9Q%Y}QI9MA=IQ}5=1}%°ЃЌЭђиЂ€ЅНе№СЎ•СҐЊ€Ѓф°(ЂЂЂЃф¤м((ЂЂЂЃ…Э…ҐРЃ•бБ•ЌР (ЂЂЂЂЂЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤ЂфшЃЙ•ЕХ•НС%ђЎµ•НН…ќ”°ЂИА¤¤°(ЂЂЂЂ¤№Й•НЅ±Щ•М№СЅ5…СЌЎ=‰©•ЌРЎм(ЂЂЂЂЂЃ•ЙЙЅИиЃмЃЌЅ‘”иЂґМИАЬА°Ѓµ•НН…ќ”иЂ‰бС•Й№…°Ѓ!…Й№•НМЂќЌ±…Х‘”µЌЅ‘”њЃҐМЃХ№…Щ…Ґ±…‰±”€Ѓф°(ЂЂЂЃф¤м(ЂЂЂЃ•бБ•ЌРЎЅ™™ҐЌҐ…±]ЙҐС”¤№№ЅР№СЅ!…Щ•	••№…±±•ђ ¤м(ЂЂЂЃ•бБ•ЌРЎ™ҐбСХЙ”№…‘…БС•И№Н•ННҐЅ№М¤№СЅ!…Щ•1•№ќС  А¤м(ЂЂЂЃ…Э…ҐРЃНСЅБҐбСХЙ”Ў™ҐбСХЙ”¤м(ЂЃф¤м((ЂЃҐР ‰Б…НН•МЃЅ№±дЃСЎ”Ѓ‘•±•ќ…СҐЅёЃIХ№СҐµ”ЃЭЎҐС•±ҐНРЃ™ЙЅґЃЌЅ‘•бЎЅНРЃҐ№С•Й№…°ЃЌЅ№СЙЅ±М€°Ѓ…Не№ЊЂ ¤ЂфшЃм(ЂЂЂЃЌЅ№НРЃ™ҐбСХЙ”ЂфЃЌЙ•…С•ҐбСХЙ”Ўм(ЂЂЂЂЂЃ•№ЩҐЙЅ№µ•№РиЃм(ЂЂЂЂЂЂЂЃY%M%	1}Q=}=%%0иЂ‰е•М€°(ЂЂЂЂЂЂЂЃ=a!=MQ}IU9Q%5}9A=%9PиЂ‰ЎССАијјДИЬёАёАёДиРМДИМ€°(ЂЂЂЂЂЂЂЃ=a!=MQ}IU9Q%5}Q=-8иЂ‰ЙХ№СҐµ”µСЅ­•ё€°(ЂЂЂЂЂЂЂЃ=a!=MQ}1%}AQ иЂ€ЅЅБРЅЌЅ‘•бЎЅНРЅ‰ҐёЅЌЅ‘•бЎЅНР€°(ЂЂЂЂЂЂЂЃ=a!=MQ}Q}%HиЂ€ЅНе№СЎ•СҐЊЅЌЅ‘•бЎЅНРµ‘…С„€°(ЂЂЂЂЂЂЂЃ=a!=MQ}1U}=559иЂ€ЅНе№СЎ•СҐЊЅЌ±…Х‘”€°(ЂЂЂЂЂЃф°(ЂЂЂЃф¤м((ЂЂЂЃ…Э…ҐРЃЩ¤№Э…ҐСЅИ  ¤ЂфшЃм(ЂЂЂЂЂЃ•бБ•ЌРЎ™ҐбСХЙ”№НБ…Э№=™™ҐЌҐ…°¤№СЅ!…Щ•	••№…±±•‘]ҐС  (ЂЂЂЂЂЂЂЂ€ЅНе№СЎ•СҐЊЅЌЅ‘•а€°(ЂЂЂЂЂЂЂЃl‰…БАµН•ЙЩ•И‰t°(ЂЂЂЂЂЂЂЃ•бБ•ЌР№Ѕ‰©•ЌСЅ№С…Ґ№Ґ№њЎм(ЂЂЂЂЂЂЂЂЂЃ•№ШиЃ•бБ•ЌР№Ѕ‰©•ЌСЅ№С…Ґ№Ґ№њЎм(ЂЂЂЂЂЂЂЂЂЂЂЃY%M%	1}Q=}=%%0иЂ‰е•М€°(ЂЂЂЂЂЂЂЂЂЂЂЃ=a!=MQ}IU9Q%5}9A=%9PиЂ‰ЎССАијјДИЬёАёАёДиРМДИМ€°(ЂЂЂЂЂЂЂЂЂЂЂЃ=a!=MQ}IU9Q%5}Q=-8иЂ‰ЙХ№СҐµ”µСЅ­•ё€°(ЂЂЂЂЂЂЂЂЂЂЂЃ=a!=MQ}1%}AQ иЂ€ЅЅБРЅЌЅ‘•бЎЅНРЅ‰ҐёЅЌЅ‘•бЎЅНР€°(ЂЂЂЂЂЂЂЂЂЃф¤°(ЂЂЂЂЂЂЂЃф¤°(ЂЂЂЂЂЂ¤м(ЂЂЂЃф¤м(ЂЂЂЃ…Э…ҐРЃНСЅБҐбСХЙ”Ў™ҐбСХЙ”¤м(ЂЃф¤м((ЂЃҐР ‰‘Ѕ•МЃ№ЅРЃБ…НМЃҐ№С•Й№…°Ѓ!…Й№•НМЃЌЅ№СЙЅ±МЃСјЃСЎ”ЃЅ™™ҐЌҐ…°Ѓ…БАµН•ЙЩ•И€°Ѓ…Не№ЊЂ ¤ЂфшЃм(ЂЂЂЃЌЅ№НРЃ™ҐбСХЙ”ЂфЃЌЙ•…С•ҐбСХЙ”Ўм(ЂЂЂЂЂЃ•№ЩҐЙЅ№µ•№РиЃм(ЂЂЂЂЂЂЂЃY%M%	1}Q=}=%%0иЂ‰е•М€°(ЂЂЂЂЂЂЂЃ=a!=MQ}Q}%HиЂ€ЅНе№СЎ•СҐЊЅЌЅ‘•бЎЅНРµ‘…С„€°(ЂЂЂЂЂЂЂЃ=a!=MQ}9	1}1U}=иЂ€Д€°(ЂЂЂЂЂЂЂЃ=a!=MQ}1U}=559иЂ€ЅНе№СЎ•СҐЊЅЌ±…Х‘”€°(ЂЂЂЂЂЂЂЃ=a!=MQ}A%}=559иЂ€ЅНе№СЎ•СҐЊЅБ¤€°(ЂЂЂЂЂЃф°(ЂЂЂЃф¤м((ЂЂЂЃ…Э…ҐРЃЩ¤№Э…ҐСЅИ  ¤ЂфшЃм(ЂЂЂЂЂЃ•бБ•ЌРЎ™ҐбСХЙ”№НБ…Э№=™™ҐЌҐ…°¤№СЅ!…Щ•	••№…±±•‘]ҐС  (ЂЂЂЂЂЂЂЂ€ЅНе№СЎ•СҐЊЅЌЅ‘•а€°(ЂЂЂЂЂЂЂЃl‰…БАµН•ЙЩ•И‰t°(ЂЂЂЂЂЂЂЃ•бБ•ЌР№Ѕ‰©•ЌСЅ№С…Ґ№Ґ№њЎм(ЂЂЂЂЂЂЂЂЂЃ•№ШиЃ•бБ•ЌР№Ѕ‰©•ЌСЅ№С…Ґ№Ґ№њЎмЃY%M%	1}Q=}=%%0иЂ‰е•М€Ѓф¤°(ЂЂЂЂЂЂЂЃф¤°(ЂЂЂЂЂЂ¤м(ЂЂЂЃф¤м(ЂЂЂЃ…Э…ҐРЃНСЅБҐбСХЙ”Ў™ҐбСХЙ”¤м(ЂЃф¤м((ЂЃҐР ‰™ЅЙЭ…Й‘МЃ„ЃЅ‘•аµЅЭ№•ђЃҐ№С•ЙЙХБРЃЭҐСЎЅХРЃҐ№ЩЅ­Ґ№њЃA¤€°Ѓ…Не№ЊЂ ¤ЂфшЃм(ЂЂЂЃЌЅ№НРЃ™ҐбСХЙ”ЂфЃЌЙ•…С•ҐбСХЙ” ¤м(ЂЂЂЃ…Э…ҐРЃ‰Ґ№‘=™™ҐЌҐ…±QЎЙ•…ђЎ™ҐбСХЙ”°Ђ‰Ѕ™™ҐЌҐ…°µСЎЙ•…ђ€¤м(ЂЂЂЃ™ҐбСХЙ”№Ѕ™™ҐЌҐ…°№НС‘Ґё№Ѕ№Ќ” ‰‘…С„€°ЂЎЌЎХ№¬иЃ	Х™™•И¤ЂфшЃм(ЂЂЂЂЂЃЌЅ№НРЃЙ•ЕХ•НРЂфЃ)M=8№Б…ЙН”ЎЌЎХ№¬№СЅMСЙҐ№њ ‰ХСа€¤¤Ѓ…МЃ)НЅ№=‰©•ЌРм(ЂЂЂЂЂЃ™ҐбСХЙ”№Ѕ™™ҐЌҐ…°№НС‘ЅХР№ЭЙҐС”ЎЂ‘н)M=8№НСЙҐ№ќҐ™дЎмЃҐђиЃЙ•ЕХ•НР№Ґђ°ЃЙ•НХ±РиЃнфЃфҐхq№Ђ¤м(ЂЂЂЃф¤м((ЂЂЂЃЭЙҐС•I•ЕХ•НРЎ™ҐбСХЙ”№‘•Н­СЅБ%№БХР°Ѓм(ЂЂЂЂЂЃҐђиЂа°(ЂЂЂЂЂЃµ•СЎЅђиЂ‰СХЙёЅҐ№С•ЙЙХБР€°(ЂЂЂЂЂЃБ…Й…µМиЃмЃСЎЙ•…‘%ђиЂ‰Ѕ™™ҐЌҐ…°µСЎЙ•…ђ€°ЃСХЙ№%ђиЂ‰Ѕ™™ҐЌҐ…°µСХЙё€Ѓф°(ЂЂЂЃф¤м(ЂЂЂЃ…Э…ҐРЃ•бБ•ЌРЎ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤ЂфшЃЙ•ЕХ•НС%ђЎµ•НН…ќ”°Ђа¤¤¤№Й•НЅ±Щ•М№СЅЕХ…°Ўм(ЂЂЂЂЂЃҐђиЂа°(ЂЂЂЂЂЃЙ•НХ±РиЃнф°(ЂЂЂЃф¤м(ЂЂЂЃ•бБ•ЌРЎ™ҐбСХЙ”№…‘…БС•И№Н•ННҐЅ№М¤№СЅ!…Щ•1•№ќС  А¤м(ЂЂЂЃ…Э…ҐРЃНСЅБҐбСХЙ”Ў™ҐбСХЙ”¤м(ЂЃф¤м((ЂЃҐР ‰™ЅЙЭ…Й‘МЃЅ‘•аµЅЭ№•ђЃЎҐНСЅЙдЃБ…ќҐ№…СҐЅёЃЭҐСЎЅХРЃЅБ•№Ґ№њЃ„ЃA¤ЃM•ННҐЅё€°Ѓ…Не№ЊЂ ¤ЂфшЃм(ЂЂЂЃЌЅ№НРЃ™ҐбСХЙ”ЂфЃЌЙ•…С•ҐбСХЙ” ¤м(ЂЂЂЃ…Э…ҐРЃ‰Ґ№‘=™™ҐЌҐ…±QЎЙ•…ђЎ™ҐбСХЙ”°Ђ‰Ѕ™™ҐЌҐ…°µСЎЙ•…ђ€¤м(ЂЂЂЃЌЅ№НРЃЙ•ЕХ•НРЂфЃм(ЂЂЂЂЂЃҐђиЂа°(ЂЂЂЂЂЃµ•СЎЅђиЂ‰СЎЙ•…ђЅСХЙ№МЅ±ҐНР€°(ЂЂЂЂЂЃБ…Й…µМиЃм(ЂЂЂЂЂЂЂЃСЎЙ•…‘%ђиЂ‰Ѕ™™ҐЌҐ…°µСЎЙ•…ђ€°(ЂЂЂЂЂЂЂЃЌХЙНЅИиЂ‰Ѕ™™ҐЌҐ…°µЌХЙНЅИ€°(ЂЂЂЂЂЂЂЃ±ҐµҐРиЂЬ°(ЂЂЂЂЂЂЂЃНЅЙСҐЙ•ЌСҐЅёиЂ‰‘•НЊ€°(ЂЂЂЂЂЂЂЃҐС•µНYҐ•ЬиЂ‰НХµµ…Йд€°(ЂЂЂЂЂЂЂЃ•бСЙ…=™™ҐЌҐ…±Ґ•±ђиЃмЃ­••АиЃСЙХ”Ѓф°(ЂЂЂЂЂЃф°(ЂЂЂЃфм(ЂЂЂЃЌЅ№НРЃ™ЅЙЭ…Й‘•ђЂфЃ№•ЬЃAЙЅµҐН”с)НЅ№=‰©•ЌРш ЎЙ•НЅ±Щ”¤ЂфшЃм(ЂЂЂЂЂЃ™ҐбСХЙ”№Ѕ™™ҐЌҐ…°№НС‘Ґё№Ѕ№Ќ” ‰‘…С„€°ЂЎЌЎХ№¬иЃ	Х™™•И¤ЂфшЃм(ЂЂЂЂЂЂЂЃЌЅ№НРЃЩ…±Х”ЂфЃ)M=8№Б…ЙН”ЎЌЎХ№¬№СЅMСЙҐ№њ ‰ХСа€¤¤Ѓ…МЃ)НЅ№=‰©•ЌРм(ЂЂЂЂЂЂЂЃЙ•НЅ±Щ”ЎЩ…±Х”¤м(ЂЂЂЂЂЂЂЃ™ҐбСХЙ”№Ѕ™™ҐЌҐ…°№НС‘ЅХР№ЭЙҐС”ЎЂ‘н)M=8№НСЙҐ№ќҐ™дЎмЃҐђиЂа°ЃЙ•НХ±РиЃмЃ‘…С„иЃmtЃфЃфҐхq№Ђ¤м(ЂЂЂЂЂЃф¤м(ЂЂЂЃф¤м((ЂЂЂЃЭЙҐС•I•ЕХ•НРЎ™ҐбСХЙ”№‘•Н­СЅБ%№БХР°ЃЙ•ЕХ•НР¤м(ЂЂЂЃ…Э…ҐРЃ•бБ•ЌРЎ™ЅЙЭ…Й‘•ђ¤№Й•НЅ±Щ•М№СЅЕХ…°ЎЙ•ЕХ•НР¤м(ЂЂЂЃ…Э…ҐРЃ•бБ•ЌРЎ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤ЂфшЃЙ•ЕХ•НС%ђЎµ•НН…ќ”°Ђа¤¤¤№Й•НЅ±Щ•М№СЅЕХ…°Ўм(ЂЂЂЂЂЃҐђиЂа°(ЂЂЂЂЂЃЙ•НХ±РиЃмЃ‘…С„иЃmtЃф°(ЂЂЂЃф¤м(ЂЂЂЃ•бБ•ЌРЎ™ҐбСХЙ”№…‘…БС•И№Н•ННҐЅ№М¤№СЅ!…Щ•1•№ќС  А¤м(ЂЂЂЃ…Э…ҐРЃНСЅБҐбСХЙ”Ў™ҐбСХЙ”¤м(ЂЃф¤м((ЂЃҐР ‰™ЅЙЭ…Й‘МЃЅ™™ҐЌҐ…°ЃЅ‘•аЃUН…ќ”Ѓ№ЅСҐ™ҐЌ…СҐЅ№МЃЭҐСЎЅХРЃ•бС•Й№…°ЃБЙЅ©•ЌСҐЅё€°Ѓ…Не№ЊЂ ¤ЂфшЃм(ЂЂЂЃЌЅ№НРЃ™ҐбСХЙ”ЂфЃЌЙ•…С•ҐбСХЙ” ¤м(ЂЂЂЃЌЅ№НРЃ№ЅСҐ™ҐЌ…СҐЅёЂфЃм(ЂЂЂЂЂЃµ•СЎЅђиЂ‰СЎЙ•…ђЅСЅ­•№UН…ќ”ЅХБ‘…С•ђ€°(ЂЂЂЂЂЃБ…Й…µМиЃм(ЂЂЂЂЂЂЂЃСЎЙ•…‘%ђиЂ‰Ѕ™™ҐЌҐ…°µСЎЙ•…ђ€°(ЂЂЂЂЂЂЂЃСХЙ№%ђиЂ‰Ѕ™™ҐЌҐ…°µСХЙё€°(ЂЂЂЂЂЂЂЃСЅ­•№UН…ќ”иЃм(ЂЂЂЂЂЂЂЂЂЃСЅС…°иЃм(ЂЂЂЂЂЂЂЂЂЂЂЃСЅС…±QЅ­•№МиЂДД°(ЂЂЂЂЂЂЂЂЂЂЂЃҐ№БХСQЅ­•№МиЂФ°(ЂЂЂЂЂЂЂЂЂЂЂЃЌ…ЌЎ•‘%№БХСQЅ­•№МиЂД°(ЂЂЂЂЂЂЂЂЂЂЂЃЌ…ЌЎ•]ЙҐС•%№БХСQЅ­•№МиЂА°(ЂЂЂЂЂЂЂЂЂЂЂЃЅХСБХСQЅ­•№МиЂФ°(ЂЂЂЂЂЂЂЂЂЂЂЃЙ•…НЅ№Ґ№ќ=ХСБХСQЅ­•№МиЂА°(ЂЂЂЂЂЂЂЂЂЃф°(ЂЂЂЂЂЂЂЂЂЃ±…НРиЃм(ЂЂЂЂЂЂЂЂЂЂЂЃСЅС…±QЅ­•№МиЂР°(ЂЂЂЂЂЂЂЂЂЂЂЃҐ№БХСQЅ­•№МиЂР°(ЂЂЂЂЂЂЂЂЂЂЂЃЌ…ЌЎ•‘%№БХСQЅ­•№МиЂА°(ЂЂЂЂЂЂЂЂЂЂЂЃЌ…ЌЎ•]ЙҐС•%№БХСQЅ­•№МиЂА°(ЂЂЂЂЂЂЂЂЂЂЂЃЅХСБХСQЅ­•№МиЂА°(ЂЂЂЂЂЂЂЂЂЂЂЃЙ•…НЅ№Ґ№ќ=ХСБХСQЅ­•№МиЂА°(ЂЂЂЂЂЂЂЂЂЃф°(ЂЂЂЂЂЂЂЂЂЃµЅ‘•±Ѕ№С•бС]Ґ№‘ЅЬиЂДАА°(ЂЂЂЂЂЂЂЃф°(ЂЂЂЂЂЃф°(ЂЂЂЃфм(ЂЂЂЃ™ҐбСХЙ”№Ѕ™™ҐЌҐ…°№НС‘ЅХР№ЭЙҐС”ЎЂ‘н)M=8№НСЙҐ№ќҐ™дЎ№ЅСҐ™ҐЌ…СҐЅёҐхq№Ђ¤м((ЂЂЂЃ…Э…ҐРЃ•бБ•ЌР (ЂЂЂЂЂЃ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤ЂфшЃµ•СЎЅђЎµ•НН…ќ”°Ђ‰СЎЙ•…ђЅСЅ­•№UН…ќ”ЅХБ‘…С•ђ€¤¤°(ЂЂЂЂ¤№Й•НЅ±Щ•М№СЅЕХ…°Ў№ЅСҐ™ҐЌ…СҐЅё¤м(ЂЂЂЃ•бБ•ЌРЎ™ҐбСХЙ”№…‘…БС•И№Н•ННҐЅ№М¤№СЅ!…Щ•1•№ќС  А¤м(ЂЂЂЃ…Э…ҐРЃНСЅБҐбСХЙ”Ў™ҐбСХЙ”¤м(ЂЃф¤м((ЂЃҐР ‰™ЅЙЭ…Й‘МЃЅ‘•аµЅЭ№•ђЃЙ•ЕХ•НСМЃЭҐСЎЅХРЃЅБ•№Ґ№њЃ„ЃA¤ЃM•ННҐЅё€°Ѓ…Не№ЊЂ ¤ЂфшЃм(ЂЂЂЃЌЅ№НРЃ™ҐбСХЙ”ЂфЃЌЙ•…С•ҐбСХЙ” ¤м(ЂЂЂЃ…Э…ҐРЃ‰Ґ№‘=™™ҐЌҐ…±QЎЙ•…ђЎ™ҐбСХЙ”°Ђ‰Ѕ™™ҐЌҐ…°µСЎЙ•…ђ€¤м(ЂЂЂЃ™ҐбСХЙ”№Ѕ™™ҐЌҐ…°№НС‘Ґё№Ѕ№Ќ” ‰‘…С„€°ЂЎЌЎХ№¬иЃ	Х™™•И¤ЂфшЃм(ЂЂЂЂЂЃЌЅ№НРЃЙ•ЕХ•НРЂфЃ)M=8№Б…ЙН”ЎЌЎХ№¬№СЅMСЙҐ№њ ‰ХСа€¤¤Ѓ…МЃ)НЅ№=‰©•ЌРм(ЂЂЂЂЂЃ™ҐбСХЙ”№Ѕ™™ҐЌҐ…°№НС‘ЅХР№ЭЙҐС” (ЂЂЂЂЂЂЂЃЂ‘н)M=8№НСЙҐ№ќҐ™дЎмЃҐђиЃЙ•ЕХ•НР№Ґђ°ЃЙ•НХ±РиЃмЃНЅХЙЌ”иЂ‰Ѕ™™ҐЌҐ…°€ЃфЃфҐхq№Ђ°(ЂЂЂЂЂЂ¤м(ЂЂЂЃф¤м((ЂЂЂЃЭЙҐС•I•ЕХ•НРЎ™ҐбСХЙ”№‘•Н­СЅБ%№БХР°Ѓм(ЂЂЂЂЂЃҐђиЂд°(ЂЂЂЂЂЃµ•СЎЅђиЂ‰СЎЙ•…ђЅЙ•…ђ€°(ЂЂЂЂЂЃБ…Й…µМиЃмЃСЎЙ•…‘%ђиЂ‰Ѕ™™ҐЌҐ…°µСЎЙ•…ђ€Ѓф°(ЂЂЂЃф¤м(ЂЂЂЃ…Э…ҐРЃ•бБ•ЌРЎ™ҐбСХЙ”№ЌЅ±±•ЌСЅИ№Э…ҐСЅИ Ўµ•НН…ќ”¤ЂфшЃЙ•ЕХ•НС%ђЎµ•НН…ќ”°Ђд¤¤¤№Й•НЅ±Щ•М№СЅЕХ…°Ўм(ЂЂЂЂЂЃҐђиЂд°(ЂЂЂЂЂЃЙ•НХ±РиЃмЃНЅХЙЌ”иЂ‰Ѕ™™ҐЌҐ…°€Ѓф°(ЂЂЂЃф¤м(ЂЂЂЃ•бБ•ЌРЎ™ҐбСХЙ”№…‘…БС•И№Н•ННҐЅ№М¤№СЅ!…Щ•1•№ќС  А¤м(ЂЂЂЃ…Э…ҐРЃНСЅБҐбСХЙ”Ў™ҐбСХЙ”¤м(ЂЃф¤м)ф¤м(

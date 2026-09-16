@@ -21,6 +21,7 @@ import {
   THREAD_FORK_METHOD,
   THREAD_INSPECT_METHOD,
   THREAD_MODEL_SELECT_METHOD,
+  THREAD_METADATA_UPDATE_METHOD,
   THREAD_PERMISSION_MODE_SELECT_METHOD,
   THREAD_THINKING_SELECT_METHOD,
   THREAD_OWNERSHIP_LIST_METHOD,
@@ -326,6 +327,7 @@ describe("Renderer fixed Model request client", () => {
       "startUpdate",
       "subscribeCodexAccounts",
       "subscribeThreadUsage",
+      "updateThreadPinned",
     ]);
 
     await expect(client.inspectHarness({ harnessId: piHarnessId, refresh: true })).resolves.toEqual(
@@ -585,6 +587,22 @@ describe("Renderer fixed Model request client", () => {
       client.openHarnessWebUi({ harnessId, url: "http://127.0.0.1/?token=secret" } as never),
     ).rejects.toThrow();
     expect(sendRequest).toHaveBeenCalledOnce();
+  });
+  it("sends External Thread pin state through the standard metadata method", async () => {
+    const sendRequest = vi.fn(async () => ({ thread: { id: "thread-1" } }));
+    const client = createRendererModelClient([{ sendRequest }]);
+    if (!client?.updateThreadPinned) throw new Error("Synthetic pin client was not created");
+
+    await expect(
+      client.updateThreadPinned({
+        threadId: hostThreadIdSchema.parse("thread-1"),
+        isPinned: true,
+      }),
+    ).resolves.toBeUndefined();
+    expect(sendRequest).toHaveBeenCalledWith(THREAD_METADATA_UPDATE_METHOD, {
+      threadId: "thread-1",
+      isPinned: true,
+    });
   });
 
   it("re-reads account quota when a Turn completes without a dispatched Usage notification", async () => {

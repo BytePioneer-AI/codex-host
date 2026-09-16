@@ -465,6 +465,7 @@ export class MappingStore {
         cwd: input.cwd,
         title: input.title ?? "",
         archived: false,
+        isPinned: false,
         transportModelId: input.transportModelId,
         ephemeral: input.ephemeral,
         historyMode: input.historyMode,
@@ -669,6 +670,13 @@ export class MappingStore {
     );
   }
 
+  /** 持久化 External Thread 的置顶状态，不改变其 Native Session 映射。 */
+  async setPinned(hostThreadId: HostThreadId, isPinned: boolean): Promise<StoredThreadRecordV1> {
+    return this.#update(hostThreadId, (current) =>
+      current.isPinned === isPinned ? null : { ...current, isPinned },
+    );
+  }
+
   async removeProvisional(hostThreadId: HostThreadId): Promise<void> {
     this.#requireInitialized();
     await this.#enqueue(async () => {
@@ -836,7 +844,15 @@ export class MappingStore {
   }
 
   async #readRecord(file: string, expectedName: string): Promise<StoredThreadRecordV1> {
-    const parsed = storedThreadRecordV1Schema.safeParse(JSON.parse(await readFile(file, "utf8")));
+    let raw: unknown;
+    try {
+      raw = JSON.parse(await readFile(file, "utf8"));
+    } catch (error) {
+      throw new MappingStoreError("INVALID_RECORD", "Mapping Store record is not valid JSON", {
+        cause: error,
+      });
+    }
+    const parsed = storedThreadRecordV1Schema.safeParse(raw);
     if (!parsed.success) {
       throw new MappingStoreError("INVALID_RECORD", "Mapping Store record is invalid", {
         cause: parsed.error,

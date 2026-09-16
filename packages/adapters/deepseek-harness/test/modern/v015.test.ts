@@ -737,7 +737,17 @@ describe("DSH 0.1.5-rc.1 V3 durable protocol", () => {
   it("keeps exact executable and durable format versions isolated", () => {
     expect(deepSeekModernProfile("0.1.2-rc.1")).toBe(DEEPSEEK_V012_PROFILE);
     expect(deepSeekModernProfile("0.1.5-rc.1")).toBe(DEEPSEEK_V015_PROFILE);
-    for (const version of ["0.1.3-rc.1", "0.1.5-rc.2", "0.1.5-rc.1+build"]) {
+    const rc2 = deepSeekModernProfile("0.1.5-rc.2");
+    expect(rc2).not.toBe(DEEPSEEK_V015_PROFILE);
+    expect(rc2).toMatchObject({
+      version: "0.1.5-rc.2",
+      checkpointPrefix: "v3-turn-end:",
+      sessionFormatVersion: 3,
+      assistantStream: true,
+    });
+    expect(rc2.parseHeader).toBe(DEEPSEEK_V015_PROFILE.parseHeader);
+    expect(rc2.snapshotKeys).toEqual(DEEPSEEK_V015_PROFILE.snapshotKeys);
+    for (const version of ["0.1.3-rc.1", "0.1.5-rc.3", "0.1.5-rc.1+build"]) {
       expect(() => deepSeekModernProfile(version as never)).toThrow(/only supports/);
     }
     for (const version of [0, 1, 2, 4]) {

@@ -200,6 +200,9 @@ describe("DeepSeek executable generation probe", () => {
     ["0.1.5-rc.1", "modern", "0.1.5-rc.1"],
     ["0.1.5-rc.1\n", "modern", "0.1.5-rc.1"],
     ["0.1.5-rc.1\r\n", "modern", "0.1.5-rc.1"],
+    ["0.1.5-rc.2", "modern", "0.1.5-rc.2"],
+    ["0.1.5-rc.2\n", "modern", "0.1.5-rc.2"],
+    ["0.1.5-rc.2\r\n", "modern", "0.1.5-rc.2"],
     ["0.1.2-rc.1\n", "modern", "0.1.2-rc.1"],
     ["0.1.2-rc.1\r\n", "modern", "0.1.2-rc.1"],
   ] as const)("classifies the exact supported output %j", (output, generation, version) => {
@@ -220,10 +223,11 @@ describe("DeepSeek executable generation probe", () => {
     "0.1.1-rc.1",
     "0.1.1-rc.2",
     "0.1.5-alpha.1",
-    "0.1.5-rc.2",
+    "0.1.5-rc.3",
     "0.1.5",
     "0.1.6-rc.1",
     "0.1.5-rc.1+build.1",
+    "0.1.5-rc.2+build.1",
     "0.1.2-alpha.1",
     "0.1.2-alpha.2",
     "0.1.2-alpha.3",
@@ -244,12 +248,14 @@ describe("DeepSeek executable generation probe", () => {
       throw new Error("expected unsupported version to fail");
     } catch (error) {
       expect(error).toMatchObject({ code: "unsupported", retryable: false });
-      expect((error as Error).message).toContain("仅支持 dsh-v0.1.2-rc.1 和 dsh-v0.1.5-rc.1");
       expect((error as Error).message).toContain(
-        "only supports dsh-v0.1.2-rc.1 and dsh-v0.1.5-rc.1",
+        "仅支持 dsh-v0.1.2-rc.1、dsh-v0.1.5-rc.1 和 dsh-v0.1.5-rc.2",
       );
-      expect((error as Error).message).toContain("推荐安装 dsh-v0.1.5-rc.1");
-      expect((error as Error).message).toContain("dsh-v0.1.5-rc.1 is recommended");
+      expect((error as Error).message).toContain(
+        "only supports dsh-v0.1.2-rc.1, dsh-v0.1.5-rc.1 and dsh-v0.1.5-rc.2",
+      );
+      expect((error as Error).message).toContain("推荐安装 dsh-v0.1.5-rc.2");
+      expect((error as Error).message).toContain("dsh-v0.1.5-rc.2 is recommended");
     }
   });
 

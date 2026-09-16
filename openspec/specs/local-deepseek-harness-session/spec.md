@@ -1,11 +1,11 @@
 # local-deepseek-harness-session Specification
 
 ## Purpose
-定义精确 DSH 0.1.2-rc.1 / 0.1.5-rc.1 托管 Web Remote、原生会话与生命周期保证；当前支持范围由 support-dsh-015rc1 更新。
+定义精确 DSH 0.1.2-rc.1 / 0.1.5-rc.1 / 0.1.5-rc.2 托管 Web Remote、原生会话与生命周期保证；当前支持范围由 support-dsh-015rc1 及 015rc2 更新。
 ## Requirements
 ### Requirement: Local DSH Web profile is the runtime source of truth
 
-The DeepSeek Harness Adapter SHALL use a managed authenticated loopback Web Remote started from the user's local DSH Web profile with exact version `0.1.2-rc.1` or `0.1.5-rc.1`. codexhost MUST NOT substitute a private Cordis composition, credentials provider, Skill catalog, or Native Session store, and MUST NOT attach through the retired Legacy Host protocol.
+The DeepSeek Harness Adapter SHALL use a managed authenticated loopback Web Remote started from the user's local DSH Web profile with exact version `0.1.2-rc.1`, `0.1.5-rc.1` or `0.1.5-rc.2`. codexhost MUST NOT substitute a private Cordis composition, credentials provider, Skill catalog, or Native Session store, and MUST NOT attach through the retired Legacy Host protocol.
 
 #### Scenario: Supported DSH Web is already running externally
 - **WHEN** the configured loopback endpoint exposes the recognized unauthenticated DSH Web fingerprint

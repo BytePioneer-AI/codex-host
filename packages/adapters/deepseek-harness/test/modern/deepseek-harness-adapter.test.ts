@@ -806,6 +806,36 @@ describe("DSH 0.1.5-rc.1 session operations", () => {
     await adapter.close();
   });
 
+  it("emits the exact 0.1.5-rc.2 locator while reusing V015 session semantics", async () => {
+    const cwd = path.resolve("fixture-v015-rc2");
+    const { adapter, connection } = setup(["v015-rc2"], { version: "0.1.5-rc.2" });
+    connection.journalSnapshots.set(
+      "session-v015-rc2",
+      v015Snapshot({ sessionId: "session-v015-rc2", cwd, events: [] }),
+    );
+    const created = await adapter.open({ kind: "create", cwd });
+    expect(created).toMatchObject({ ok: true });
+    if (!created.ok) throw new Error(created.error.message);
+    const ref = created.value.initialState.nativeRef;
+    if (!ref) throw new Error("missing native Session reference");
+    expect(ref).toMatchObject({
+      nativeSessionId: "session-v015-rc2",
+      locator: { dshVersion: "0.1.5-rc.2" },
+    });
+    expect(connection.streams).toContainEqual({
+      endpoint: "session/follow",
+      args: {
+        request: {
+          address: { kind: "session", sessionId: "session-v015-rc2" },
+          maxMessages: 200,
+          assistantStream: true,
+        },
+      },
+    });
+    await created.value.close();
+    await adapter.close();
+  });
+
   it.each(["fork", "rollbackLastTurn"] as const)(
     "uses the V3 checkpoint and inherited marker for %s",
     async (kind) => {

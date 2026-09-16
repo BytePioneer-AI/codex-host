@@ -9,7 +9,17 @@ import { DEEPSEEK_V012_PROFILE } from "./v012.js";
 import { DEEPSEEK_V015_PROFILE } from "./v015.js";
 export { DEEPSEEK_V012_PROFILE, DEEPSEEK_V015_PROFILE };
 
-export type DeepSeekModernVersion = "0.1.2-rc.1" | "0.1.5-rc.1";
+export type DeepSeekModernVersion = "0.1.2-rc.1" | "0.1.5-rc.1" | "0.1.5-rc.2";
+
+/**
+ * 0.1.5-rc.2 only refines the DSH Web client UI on top of rc.1, so it reuses the
+ * exact V015 journal/Remote semantics while keeping its own executable version
+ * for checkpoint and session locators.
+ */
+const DEEPSEEK_V015_RC2_PROFILE = Object.freeze<DeepSeekModernProfile>({
+  ...DEEPSEEK_V015_PROFILE,
+  version: "0.1.5-rc.2",
+});
 
 /** Selected once from the executable's exact version; no cross-profile fallback. */
 export interface DeepSeekModernProfile {
@@ -39,9 +49,14 @@ export interface DeepSeekModernProfile {
 export function deepSeekModernProfile(version: DeepSeekModernVersion): DeepSeekModernProfile {
   if (version === "0.1.2-rc.1") return DEEPSEEK_V012_PROFILE;
   if (version === "0.1.5-rc.1") return DEEPSEEK_V015_PROFILE;
-  throw new TypeError("DeepSeek Harness only supports 0.1.2-rc.1 and 0.1.5-rc.1");
+  if (version === "0.1.5-rc.2") return DEEPSEEK_V015_RC2_PROFILE;
+  throw new TypeError("DeepSeek Harness only supports 0.1.2-rc.1, 0.1.5-rc.1 and 0.1.5-rc.2");
+}
+
+export function isDeepSeekV015Version(version: DeepSeekModernVersion): boolean {
+  return version === "0.1.5-rc.1" || version === "0.1.5-rc.2";
 }
 
 export function isDeepSeekV015(profile: DeepSeekModernProfile): boolean {
-  return profile.version === "0.1.5-rc.1";
+  return isDeepSeekV015Version(profile.version);
 }

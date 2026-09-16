@@ -11,7 +11,7 @@ import {
 
 export type DeepSeekProtocolGeneration = "modern";
 
-export type DeepSeekSupportedVersion = "0.1.2-rc.1" | "0.1.5-rc.1";
+export type DeepSeekSupportedVersion = "0.1.2-rc.1" | "0.1.5-rc.1" | "0.1.5-rc.2";
 
 export interface DeepSeekExecutableGeneration {
   readonly generation: DeepSeekProtocolGeneration;
@@ -241,12 +241,12 @@ export function classifyDeepSeekVersionOutput(
       "DeepSeek Harness --version did not return exactly one semantic version",
     );
   }
-  if (version === "0.1.2-rc.1" || version === "0.1.5-rc.1") {
+  if (version === "0.1.2-rc.1" || version === "0.1.5-rc.1" || version === "0.1.5-rc.2") {
     return { generation: "modern", version };
   }
   throw probeError(
     "unsupported",
-    `当前 DeepSeek Harness 版本 ${version} 不受支持；codexhost 仅支持 dsh-v0.1.2-rc.1 和 dsh-v0.1.5-rc.1，推荐安装 dsh-v0.1.5-rc.1。\nDeepSeek Harness ${version} is unsupported. codexhost only supports dsh-v0.1.2-rc.1 and dsh-v0.1.5-rc.1; dsh-v0.1.5-rc.1 is recommended.`,
+    `当前 DeepSeek Harness 版本 ${version} 不受支持；codexhost 仅支持 dsh-v0.1.2-rc.1、dsh-v0.1.5-rc.1 和 dsh-v0.1.5-rc.2，推荐安装 dsh-v0.1.5-rc.2。\nDeepSeek Harness ${version} is unsupported. codexhost only supports dsh-v0.1.2-rc.1, dsh-v0.1.5-rc.1 and dsh-v0.1.5-rc.2; dsh-v0.1.5-rc.2 is recommended.`,
   );
 }
 

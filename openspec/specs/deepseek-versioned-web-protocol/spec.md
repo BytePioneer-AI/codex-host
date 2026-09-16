@@ -2,23 +2,23 @@
 
 ## Purpose
 
-定义仅支持 DSH 0.1.2-rc.1 与 0.1.5-rc.1 的托管 Web Remote 协议、原生会话和检查点隔离要求，同时记录 Legacy 退役、文档同步及可复现覆盖率验证边界。
+定义仅支持 DSH 0.1.2-rc.1、0.1.5-rc.1 与 0.1.5-rc.2 的托管 Web Remote 协议、原生会话和检查点隔离要求，同时记录 Legacy 退役、文档同步及可复现覆盖率验证边界。
 ## Requirements
-### Requirement: Exactly two DSH executable versions are supported
+### Requirement: Exactly three DSH executable versions are supported
 
-Adapter MUST 仅接受 `0.1.2-rc.1` 和 `0.1.5-rc.1` 的精确版本输出，并且 MUST 删除 Legacy 协议代码、分派和专属 SDK。合法但非白名单版本 MUST 通过现有错误入口显示实际版本、仅支持这两个版本及推荐 015rc1 的中英文提示。
+Adapter MUST 仅接受 `0.1.2-rc.1`、`0.1.5-rc.1` 和 `0.1.5-rc.2` 的精确版本输出，并且 MUST 删除 Legacy 协议代码、分派和专属 SDK。合法但非白名单版本 MUST 通过现有错误入口显示实际版本、仅支持这些版本及推荐最新 015 RC 的中英文提示。
 
 #### Scenario: Exact supported RC is selected
 - **WHEN** `--version` 输出任意一个支持版本
 - **THEN** Adapter SHALL 选择对应 Modern profile，且不探测或调用 Legacy Host API
 
 #### Scenario: Different version is installed
-- **WHEN** 版本为 011rc2、012 的其他 prerelease、013、015alpha、015rc2、正式版或带 build metadata 的变体
+- **WHEN** 版本为 011rc2、012 的其他 prerelease、013、015alpha、015rc3、正式版或带 build metadata 的变体
 - **THEN** Adapter SHALL 返回不可重试 unsupported、列出精确支持版本且不启动 DSH Web
 
 ### Requirement: Journal parsing preserves each supported format
 
-012 profile MUST 严格读取 V0；015 profile MUST 严格读取 V3、系统 surface、序号替换、原生新增事件和独立 Assistant 流。所有入口 MUST 保持有界校验；未知 required 事件 MUST 失败，未知 ignorable 事件 SHALL 按原生格式保留而不解释其 surface 元数据。非法远端整数 MUST 保持 protocolError，不能归类为可重试 unavailable。
+012 profile MUST 严格读取 V0；015 profile MUST 严格读取 V3、系统 surface、序号替换、原生新增事件和独立 Assistant 流，015 的两个 RC 共用同一 V3 语义并以各自精确版本参与 locator。所有入口 MUST 保持有界校验；未知 required 事件 MUST 失败，未知 ignorable 事件 SHALL 按原生格式保留而不解释其 surface 元数据。非法远端整数 MUST 保持 protocolError，不能归类为可重试 unavailable。
 
 #### Scenario: V3 journal is loaded
 - **WHEN** 创建、恢复、导入后打开或分页收到合法 V3 日志
@@ -77,9 +77,9 @@ Adapter MUST 仅接受 `0.1.2-rc.1` 和 `0.1.5-rc.1` 的精确版本输出，并
 
 ### Requirement: Documentation and verification match shipped support
 
-连接/导入/消息修订及打包文档 MUST 与双版本实现一致，OpenSpec delta 和 tasks MUST 包含文档改写。项目及多语言 README SHALL 保持原样，plan/todo MUST 仅本地保存，不纳入 PR。整个 DSH Adapter 的行、语句、函数、分支覆盖率 MUST 可复现且至少 80%，目标为 80%～90%；更高覆盖率 SHALL 保留。
+连接/导入/消息修订及打包文档 MUST 与受支持版本实现一致，OpenSpec delta 和 tasks MUST 包含文档改写。项目及多语言 README SHALL 保持原样，plan/todo MUST 仅本地保存，不纳入 PR。整个 DSH Adapter 的行、语句、函数、分支覆盖率 MUST 可复现且至少 80%，目标为 80%～90%；更高覆盖率 SHALL 保留。
 
 #### Scenario: Change is completed
 - **WHEN** 交付草稿 PR
-- **THEN** 文档 SHALL 明确双版本、Legacy 退役及 checkpoint 边界，验证记录 SHALL 给出实际测试命令、四项覆盖率及限制
+- **THEN** 文档 SHALL 明确三个受支持版本、Legacy 退役及 checkpoint 边界，验证记录 SHALL 给出实际测试命令、四项覆盖率及限制
 - **AND** SHALL 完成类型、边界、构建及受影响回归，不声明未执行的真实桌面或模型验证

@@ -15,7 +15,13 @@ The DeepSeek Harness Adapter SHALL use a managed authenticated loopback Web Remo
 #### Scenario: DSH Web is not running
 - **WHEN** an exact supported local command is available
 - **THEN** codexhost SHALL start `web --no-open --host 127.0.0.1 --port 0`, authenticate its managed Web and wait a bounded time
+- **AND** it SHALL issue an authenticated, non-redirecting `GET /` to that managed origin and accept readiness only when the response is HTTP 200 HTML
 - **AND** normal use SHALL NOT require the user to start DSH manually
+
+#### Scenario: The managed Web portal is unavailable
+- **WHEN** bootstrap authentication succeeds but the managed origin rejects the cookie, redirects, fails, or does not serve HTML at `/`
+- **THEN** managed selection SHALL fail with the corresponding authentication, protocol, or availability error
+- **AND** the Adapter SHALL stop only the managed Web process it started
 
 ### Requirement: codexhost creates official DSH Native Sessions
 

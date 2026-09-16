@@ -108,9 +108,9 @@ DeepSeek Adapter 仅支持精确 `0.1.2-rc.1`、`0.1.5-rc.1` 和 `0.1.5-rc.2`，
 
 1. 依次检查显式命令、当前 `PATH` 中的 `dsh`、本地 `npx --offline --no-install @deepseek-ai/dsh`；显式配置不可用时不静默改用其他安装。
 2. 执行 `--version`，仅接受上述三个完整版本号。其他 RC、正式版和带 build metadata 的变体均在启动 Web 前失败，并显示实际版本、支持范围和推荐版本。
-3. 启动 `web --no-open --host 127.0.0.1 --port 0`，等待原生 bootstrap，完成认证，再建立 HTTP/WebSocket 通信。托管进程使用自己的临时端口。
+3. 启动 `web --no-open --host 127.0.0.1 --port 0`，等待原生 bootstrap，完成认证，并使用新签发的 Cookie 对该托管 origin 执行不跟随重定向的 `GET /`；仅在收到 HTTP 200 HTML 后，才继续建立 Remote HTTP/WebSocket 通信。托管进程使用自己的临时端口，认证、Portal 或后续 catalog 校验失败时只清理这个进程。
 
-用户自己启动的 DSH Web（例如由 launchd 等监督服务固定在默认端口上的实例）与托管实例互不影响：codexhost 不探测、不 attach、不停止它，也不会向其发送会话内容，因此无需先关闭它。
+用户自己启动的 DSH Web（例如由 launchd 等监督服务固定在默认端口上的实例）与托管实例互不影响：codexhost 不探测、不 attach、不停止它，也不会向其发送会话内容，因此无需先关闭它。Portal 校验只针对 codexhost 从自己启动的进程 stdout 中取得并认证的临时 origin。
 
 正常使用无需手动启动 `dsh web`。版本变化后重新启动 codexhost，以重新选择对应日志与流式 profile；V0/V3 的历史边界见[消息修订与恢复](../harnesses/deepseek/dsh-edit-recovery.md)。
 

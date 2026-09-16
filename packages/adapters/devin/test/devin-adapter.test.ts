@@ -371,7 +371,7 @@ describe("Devin snapshot", () => {
       text: "ok",
     });
   });
-  it("fails closed on missing identity, foreign session and non-text input", () => {
+  it("fails closed on missing identity and foreign session", () => {
     const noKey: SessionNotification[] = [
       {
         sessionId: info.sessionId,
@@ -383,17 +383,22 @@ describe("Devin snapshot", () => {
     ];
     expect(() => devinSnapshot(info.sessionId, noKey)).toThrow();
     expect(() => devinSnapshot("other", replay)).toThrow();
+  });
+  it("keeps non-text user input in its native turn without text", () => {
     const image: SessionNotification[] = [
       {
         sessionId: info.sessionId,
         update: {
           sessionUpdate: "user_message_chunk",
           content: { type: "image", data: "x", mimeType: "image/png" },
-          _meta: { "cognition.ai/clientMessageId": "k" },
+          _meta: { "cognition.ai/clientMessageId": "k-img" },
         },
       },
     ];
-    expect(() => devinSnapshot(info.sessionId, image)).toThrow();
+    const snapshot = devinSnapshot(info.sessionId, image);
+    expect(snapshot.turns).toHaveLength(1);
+    expect(snapshot.turns[0]?.nativeTurnRef.nativeTurnKey).toBe("k-img");
+    expect(snapshot.turns[0]?.input).toEqual([{ type: "text", text: "" }]);
   });
   it("returns an empty snapshot for a fresh session without a replay spawn", async () => {
     const f = session();

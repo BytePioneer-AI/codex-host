@@ -245,13 +245,13 @@ export function devinSnapshot(
   for (const notification of replay) {
     if (notification.sessionId !== sessionId) throw new Error("Devin replay session mismatch");
     if (notification.update.sessionUpdate === "user_message_chunk") {
-      if (notification.update.content.type !== "text")
-        throw new Error("Devin replay contains unsupported non-text user input");
       const key = devinReplayTurnKey(notification);
       if (!key) throw new Error("Devin replay user message has no stable native identity");
+      const text =
+        notification.update.content.type === "text" ? notification.update.content.text : "";
       const last = groups.at(-1);
-      if (last && last.key === key) last.text += notification.update.content.text;
-      else groups.push({ key, text: notification.update.content.text, events: [] });
+      if (last && last.key === key) last.text += text;
+      else groups.push({ key, text, events: [] });
     } else groups.at(-1)?.events.push(notification);
   }
   const turns: HostTurnSnapshot[] = groups.map((group) => {

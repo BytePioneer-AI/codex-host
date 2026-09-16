@@ -37,9 +37,6 @@ const modernExecutable: DeepSeekExecutableGeneration = {
   command: { command: "resolved-dsh", arguments: ["--offline"], kind: "npx" },
 };
 
-const MODERN_AUTHENTICATION_BODY =
-  "dsh web authentication required; reopen the URL printed by dsh web.\n";
-
 beforeEach(() => {
   vi.stubGlobal(
     "fetch",
@@ -293,147 +290,26 @@ describe("DeepSeek public generation selector", () => {
     await adapter.close();
   });
 
-  it("rejects an external bootstrap URL without probing or echoing its token", async () => {
-    const probeExecutable = vi.fn();
-    const adapter = new DeepSeekHarnessAdapter(
-      { endpoint: "http://127.0.0.1:3080/?token=secret-canary" },
-      { probeExecutable },
-    );
-
-    const inspection = await adapter.inspect();
-    expect(inspection).toMatchObject({
-      status: "unavailable",
-      error: {
-        code: "authenticationRequired",
-        message: expect.stringMatching(
-          /dsh-v0\.1\.2-rc\.1 或 dsh-v0\.1\.5-rc\.1[\s\S]*only these two versions are supported/u,
-        ),
-        stage: "wire-handshake",
-      },
-    });
-    expect(JSON.stringify(inspection)).not.toContain("secret-canary");
-    expect(probeExecutable).not.toHaveBeenCalled();
-  });
-
-  it("identifies an authenticated Modern endpoint without starting or attaching to it", async () => {
-    let externalWebRunning = true;
-    const fetch = vi.fn((input: string | URL, init?: RequestInit) => {
-      const url = new URL(String(input));
-      if (!externalWebRunning) return Promise.reject(new TypeError("fetch failed"));
-      if (url.pathname === "/") {
-        expect(init).toMatchObject({
-          method: "GET",
-          credentials: "omit",
-          redirect: "manual",
-          signal: expect.any(AbortSignal),
-        });
-      }
-      return Promise.resolve(
-        url.pathname === "/"
-          ? new Response(MODERN_AUTHENTICATION_BODY, {
-              status: 401,
-              headers: {
-                "cache-control": "no-store",
-                "content-type": "text/plain; charset=utf-8",
-              },
-            })
-          : new Response("unauthorized", { status: 401 }),
-      );
-    });
+  it("starts the managed delegate without probing any HTTP endpoint", async () => {
+    const fetch = vi.fn(() => Promise.reject(new TypeError("fetch failed")));
     vi.stubGlobal("fetch", fetch);
     const modernDelegate = new FakeAdapter();
-    const createModernAdapter = vi.fn(() => modernDelegate);
-    const probeExecutable = vi.fn(() =>
-      externalWebRunning
-        ? Promise.reject(
-            new DeepSeekGenerationProbeError(
-              "notInstalled",
-              "No local DeepSeek Harness executable was found",
-            ),
-          )
-        : Promise.resolve(modernExecutable),
-    );
-    const endpoint = "http://127.0.0.1:43123/";
     const adapter = new DeepSeekHarnessAdapter(
-      { endpoint },
+      {},
       {
-        probeExecutable,
-        createModernAdapter,
+        probeExecutable: () => Promise.resolve(modernExecutable),
+        createModernAdapter: () => modernDelegate,
       },
     );
 
-    await expect(adapter.inspect()).resolves.toMatchObject({
-      status: "unavailable",
-      error: {
-        code: "authenticationRequired",
-        message:
-          "检测到配置的端点上已有 DeepSeek Harness Modern Web 实例，但当前 codexhost 实例没有其认证凭据。请关闭该 DSH Web 实例，然后重新运行连接诊断。\nA DeepSeek Harness Modern Web instance is listening at the configured endpoint, but this codexhost instance does not have its authentication credentials. Close that DSH Web instance, then run connection diagnostics again.",
-        retryable: false,
-        stage: "wire-handshake",
-        diagnostic: "externalModernWeb",
-      },
-    });
-    expect(fetch).toHaveBeenCalledOnce();
-    expect(fetch.mock.calls[0]?.[0]).toBe(endpoint);
-    expect(fetch.mock.calls.every(([input]) => new URL(String(input)).port === "43123")).toBe(true);
-    expect(createModernAdapter).not.toHaveBeenCalled();
-    externalWebRunning = false;
-    await expect(adapter.inspect({ refresh: true })).resolves.toBe(readyInspection);
-    expect(probeExecutable).toHaveBeenCalledTimes(2);
-    expect(createModernAdapter).toHaveBeenCalledOnce();
+    // An already-running DSH Web (for example a user-supervised instance on the
+    // default port) must not block managed selection: the delegate binds its own
+    // ephemeral port, so selection never touches HTTP endpoints at all.
+    await expect(adapter.inspect()).resolves.toBe(readyInspection);
+    expect(fetch).not.toHaveBeenCalled();
     await adapter.close();
     expect(modernDelegate.closeCalls).toBe(1);
   });
-
-  it.each([401, 403])(
-    "does not identify an arbitrary HTTP %i service as Modern DSH",
-    async (status) => {
-      let cancellations = 0;
-      const body = new TextEncoder().encode(`${MODERN_AUTHENTICATION_BODY}secret-canary`);
-      const fetch = vi.fn((input: string | URL) => {
-        const url = new URL(String(input));
-        return Promise.resolve(
-          url.pathname === "/"
-            ? new Response(
-                new ReadableStream<Uint8Array>({
-                  start(controller) {
-                    controller.enqueue(body);
-                  },
-                  cancel() {
-                    cancellations += 1;
-                  },
-                }),
-                {
-                  status,
-                  headers: {
-                    "cache-control": "no-store",
-                    "content-type": "text/plain; charset=utf-8",
-                  },
-                },
-              )
-            : new Response(null, { status }),
-        );
-      });
-      vi.stubGlobal("fetch", fetch);
-      const createModernAdapter = vi.fn(() => new FakeAdapter());
-      const adapter = new DeepSeekHarnessAdapter(
-        {},
-        {
-          probeExecutable: () => Promise.resolve(modernExecutable),
-          createModernAdapter,
-        },
-      );
-
-      const inspection = await adapter.inspect();
-      expect(inspection).toBe(readyInspection);
-      expect(JSON.stringify(inspection)).not.toContain("secret-canary");
-      expect(cancellations).toBe(1);
-      expect(createModernAdapter).toHaveBeenCalledOnce();
-      expect(fetch).toHaveBeenCalledOnce();
-      expect(new URL(String(fetch.mock.calls[0]?.[0])).pathname).toBe("/");
-      await adapter.close();
-    },
-  );
 
   it("shares one concurrent selection and stays on the selected generation after refresh", async () => {
     const generation = deferred<DeepSeekExecutableGeneration>();

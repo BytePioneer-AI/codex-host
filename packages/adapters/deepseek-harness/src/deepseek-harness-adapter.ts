@@ -21,8 +21,6 @@ import {
 
 import {
   DeepSeekGenerationProbeError,
-  hasDeepSeekModernAuthenticationFingerprint,
-  parseDeepSeekEndpoint,
   probeDeepSeekExecutableGeneration,
   type DeepSeekExecutableGeneration,
   type ProbeDeepSeekGenerationOptions,
@@ -34,12 +32,9 @@ import {
 import { isDeepSeekV015Version } from "./profiles/profile.js";
 
 const DEEPSEEK_HARNESS_ID = harnessIdSchema.parse("deepseek-harness");
-const EXTERNAL_MODERN_WEB_MESSAGE =
-  "检测到配置的端点上已有 DeepSeek Harness Modern Web 实例，但当前 codexhost 实例没有其认证凭据。请关闭该 DSH Web 实例，然后重新运行连接诊断。\nA DeepSeek Harness Modern Web instance is listening at the configured endpoint, but this codexhost instance does not have its authentication credentials. Close that DSH Web instance, then run connection diagnostics again.";
 
 export interface DeepSeekHarnessAdapterOptions {
   readonly command?: string;
-  readonly endpoint?: string;
   readonly environment?: NodeJS.ProcessEnv;
   readonly startupTimeoutMs?: number;
   readonly closeTimeoutMs?: number;
@@ -241,14 +236,6 @@ export class DeepSeekHarnessAdapter implements HarnessAdapter {
 
   async #performSelection(signal: AbortSignal): Promise<DelegateOwner> {
     const startedAt = Date.now();
-    let endpoint: string;
-    try {
-      endpoint = parseDeepSeekEndpoint(this.#options.endpoint);
-    } catch (error) {
-      throw new DelegateSelectionError(
-        this.#withSelectionDiagnostics(error, "wire-handshake", startedAt),
-      );
-    }
     let executable: DeepSeekExecutableGeneration | undefined;
     let executableFailure: HarnessError | undefined;
     try {
@@ -280,17 +267,11 @@ export class DeepSeekHarnessAdapter implements HarnessAdapter {
     if (executableFailure?.code === "unsupported") {
       throw new DelegateSelectionError(executableFailure);
     }
-
-    if (await hasDeepSeekModernAuthenticationFingerprint(endpoint, signal)) {
-      throw new DelegateSelectionError({
-        code: "authenticationRequired",
-        message: EXTERNAL_MODERN_WEB_MESSAGE,
-        retryable: false,
-        diagnostic: "externalModernWeb",
-        stage: "wire-handshake",
-        durationMs: Math.max(0, Date.now() - startedAt),
-      });
-    }
+    // An already-running DSH Web (for example a user-supervised instance on the
+    // default port) is irrelevant: the managed delegate below binds its own
+    // ephemeral port and exchanges its own bootstrap token. Never probe, attach
+    // to, or stop that instance here — a guard would permanently block users
+    // who keep their own DSH Web running.
     if (signal.aborted) throw new DelegateSelectionError(closedError());
 
     if (!executable) {

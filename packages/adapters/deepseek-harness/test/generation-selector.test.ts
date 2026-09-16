@@ -9,8 +9,6 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   classifyDeepSeekVersionOutput,
-  hasDeepSeekModernAuthenticationFingerprint,
-  parseDeepSeekEndpoint,
   probeDeepSeekExecutableGeneration,
   type DeepSeekGenerationProbeError,
   type DeepSeekGenerationProbeDependencies,
@@ -19,12 +17,6 @@ import { deepSeekProcessInvocation } from "../src/executable.js";
 
 const temporaryDirectories: string[] = [];
 const MAX_TIMER_MILLISECONDS = 2_147_483_647;
-const MODERN_AUTHENTICATION_BODY =
-  "dsh web authentication required; reopen the URL printed by dsh web.\n";
-const MODERN_AUTHENTICATION_HEADERS = {
-  "cache-control": "no-store",
-  "content-type": "text/plain; charset=utf-8",
-};
 
 function executable(): string {
   const directory = mkdtempSync(path.join(os.tmpdir(), "codexhost-dsh-version-"));
@@ -88,119 +80,12 @@ afterEach(() => {
 });
 
 describe("DeepSeek executable generation probe", () => {
-  it("matches an exact Modern authentication fingerprint split across body chunks", async () => {
-    const bytes = new TextEncoder().encode(MODERN_AUTHENTICATION_BODY);
-    const fetch = vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      new Response(
-        new ReadableStream<Uint8Array>({
-          start(controller) {
-            controller.enqueue(bytes.subarray(0, 7));
-            controller.enqueue(bytes.subarray(7, 31));
-            controller.enqueue(bytes.subarray(31));
-            controller.close();
-          },
-        }),
-        { status: 401, headers: MODERN_AUTHENTICATION_HEADERS },
-      ),
-    );
-
-    await expect(
-      hasDeepSeekModernAuthenticationFingerprint("http://127.0.0.1:43123/"),
-    ).resolves.toBe(true);
-    expect(fetch).toHaveBeenCalledWith(
-      "http://127.0.0.1:43123/",
-      expect.objectContaining({ method: "GET", credentials: "omit", redirect: "manual" }),
-    );
-  });
-
-  it.each([
-    [
-      "wrong cache-control",
-      () =>
-        new Response("secret-canary", {
-          status: 401,
-          headers: { ...MODERN_AUTHENTICATION_HEADERS, "cache-control": "public" },
-        }),
-    ],
-    [
-      "wrong content-type",
-      () =>
-        new Response("secret-canary", {
-          status: 401,
-          headers: { ...MODERN_AUTHENTICATION_HEADERS, "content-type": "text/html" },
-        }),
-    ],
-    [
-      "missing body",
-      () => new Response(null, { status: 401, headers: MODERN_AUTHENTICATION_HEADERS }),
-    ],
-    [
-      "redirect",
-      () =>
-        new Response("secret-canary", {
-          status: 302,
-          headers: { ...MODERN_AUTHENTICATION_HEADERS, location: "https://example.invalid/secret" },
-        }),
-    ],
-  ] as const)("rejects a Modern authentication fingerprint with %s", async (_label, response) => {
-    const fetch = vi.spyOn(globalThis, "fetch").mockResolvedValue(response());
-
-    await expect(
-      hasDeepSeekModernAuthenticationFingerprint("http://127.0.0.1:43123/"),
-    ).resolves.toBe(false);
-    expect(fetch).toHaveBeenCalledOnce();
-  });
-
-  it("times out when an exact fingerprint prefix never ends", async () => {
-    const timeout = new AbortController();
-    const timeoutSpy = vi.spyOn(AbortSignal, "timeout").mockReturnValue(timeout.signal);
-    vi.spyOn(globalThis, "fetch").mockImplementation((_input, init) => {
-      const signal = init?.signal;
-      return Promise.resolve(
-        new Response(
-          new ReadableStream<Uint8Array>({
-            start(controller) {
-              controller.enqueue(new TextEncoder().encode(MODERN_AUTHENTICATION_BODY));
-              const abort = (): void => controller.error(signal?.reason);
-              if (signal?.aborted) abort();
-              else signal?.addEventListener("abort", abort, { once: true });
-            },
-          }),
-          { status: 401, headers: MODERN_AUTHENTICATION_HEADERS },
-        ),
-      );
-    });
-
-    const result = hasDeepSeekModernAuthenticationFingerprint("http://127.0.0.1:43123/");
-    await Promise.resolve();
-    timeout.abort(new DOMException("secret-canary", "TimeoutError"));
-
-    await expect(result).resolves.toBe(false);
-    expect(timeoutSpy).toHaveBeenCalledWith(1_000);
-  });
-
-  it.each([
-    "http://user:password-canary@127.0.0.1:3080/",
-    "http://127.0.0.1:3080/api",
-    "http://127.0.0.1:3080/#fragment-canary",
-    "http://127.0.0.1:3080/?mode=canary",
-    "http://127.0.0.1.example:3080/",
-  ])("rejects a non-exact DSH probe endpoint %s without echoing it", (endpoint) => {
-    try {
-      parseDeepSeekEndpoint(endpoint);
-      throw new Error("expected endpoint validation to fail");
-    } catch (error) {
-      expect(error).toMatchObject({ code: "protocolError" });
-      expect((error as Error).message).not.toContain("canary");
-    }
-  });
-
   it.each([
     ["0.1.2-rc.1", "modern", "0.1.2-rc.1"],
     ["0.1.5-rc.1", "modern", "0.1.5-rc.1"],
+    ["0.1.5-rc.2", "modern", "0.1.5-rc.2"],
     ["0.1.5-rc.1\n", "modern", "0.1.5-rc.1"],
     ["0.1.5-rc.1\r\n", "modern", "0.1.5-rc.1"],
-    ["0.1.5-rc.2", "modern", "0.1.5-rc.2"],
     ["0.1.5-rc.2\n", "modern", "0.1.5-rc.2"],
     ["0.1.5-rc.2\r\n", "modern", "0.1.5-rc.2"],
     ["0.1.2-rc.1\n", "modern", "0.1.2-rc.1"],

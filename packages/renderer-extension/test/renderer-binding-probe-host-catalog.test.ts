@@ -72,6 +72,7 @@ vi.mock("../src/renderer-composer-dom.js", async (importOriginal) => {
     reconcileComposerNativeControls: vi.fn(),
     disposeComposerAgentControl: vi.fn(),
     sendButtonWithin: () => testState.sendButton,
+    sendButtonForComposer: () => testState.sendButton,
   };
 });
 
@@ -157,6 +158,7 @@ function installFakeBrowser(): void {
     disabled: false,
     parentElement: null,
     getAttribute: () => null,
+    hasAttribute: () => false,
   } as unknown as HTMLButtonElement;
   testState.composer = composer;
   testState.editor = editor;

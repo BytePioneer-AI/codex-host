@@ -37,8 +37,9 @@ import {
   isComposerSubmissionKey,
   mountComposerAgentControl,
   reconcileComposerNativeControls,
+  refreshComposerSendButton,
   renderComposerAgentControl,
-  sendButtonWithin,
+  sendButtonForComposer,
   type ComposerAgentControl,
   type ExternalModelControlView,
   type ExternalPermissionModeControlView,
@@ -2324,8 +2325,7 @@ export function installRendererBindingProbe(
     ) {
       return;
     }
-    const allButtons = [...composer.querySelectorAll<HTMLButtonElement>("button")];
-    const sendButton = sendButtonWithin(composer) ?? allButtons.at(-1) ?? null;
+    const sendButton = sendButtonForComposer(composer);
     if (!sendButton) return;
     const modelTarget = findComposerModelTarget(composer);
     const hostId = activeModelHostId();
@@ -2610,6 +2610,7 @@ export function installRendererBindingProbe(
     if (!composer) return;
     controller.clearPendingSubmission(composer);
     const mounted = mountedByComposer.get(composer);
+    if (mounted) refreshComposerSendButton(mounted.control);
     if (mounted && isOwnershipSubmissionBlocked(mounted.ownershipStatus)) return;
     if (controller.isSwitching(composer) || !applyComposerAgent(composer)) blockEvent(event);
   };
@@ -2655,7 +2656,9 @@ export function installRendererBindingProbe(
     const candidate = composerForElement(button);
     const composer = candidate && isMountedComposer(candidate) ? candidate : null;
     const mounted = composer ? mountedByComposer.get(composer) : undefined;
-    if (!composer || mounted?.control.sendButton !== button) return;
+    if (!composer || !mounted) return;
+    refreshComposerSendButton(mounted.control);
+    if (mounted.control.sendButton !== button) return;
     if (!prepareComposer(composer)) {
       blockEvent(event);
       return;

@@ -23,6 +23,7 @@ export const OWNED_CONTROL_SELECTORS = OWNED_EXTENSION_CONTROL_ATTRIBUTES.map(
 ).join(", ");
 
 export function isOwnedExtensionControl(element: Element): boolean {
+  if (typeof element?.hasAttribute !== "function") return false;
   for (const attr of OWNED_EXTENSION_CONTROL_ATTRIBUTES) {
     if (element.hasAttribute(attr)) return true;
   }

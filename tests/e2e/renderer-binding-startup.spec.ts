@@ -232,6 +232,36 @@ test("a draft waits for the Desktop prewarm policy before applying its Model", a
   await expect(trigger).toHaveAttribute("title", "Startup Model");
 });
 
+test("a mounted Composer accepts a native Send button replaced after agent output", async ({
+  page,
+}) => {
+  await page.setContent("<!doctype html><body></body>");
+  await page.addScriptTag({ content: browserBundle });
+  await expect(
+    page.locator('[data-codexhost-model-control] > button[aria-haspopup="menu"]'),
+  ).toContainText("Startup Model");
+  const send = page.locator("[data-codex-composer-root] button[type=submit]");
+  await expect(send).toBeEnabled();
+
+  await page.evaluate(() => {
+    const submissions: unknown[] = [];
+    window.addEventListener("codexhost:renderer-submission", (event) => {
+      submissions.push((event as CustomEvent).detail);
+    });
+    Reflect.set(globalThis, "rendererSubmissions", submissions);
+  });
+  await send.evaluate((button) => {
+    button.replaceWith(button.cloneNode(true));
+  });
+
+  const replacement = page.locator("[data-codex-composer-root] button[type=submit]");
+  await expect(replacement).toBeEnabled();
+  await replacement.click();
+  await expect
+    .poll(() => page.evaluate(() => Reflect.get(globalThis, "rendererSubmissions")))
+    .toEqual([expect.objectContaining({ agent: "pi", trigger: "click" })]);
+});
+
 test("a draft rebinds when its Composer identity portal gains a conversation", async ({ page }) => {
   await page.setContent("<!doctype html><body></body>");
   await page.addScriptTag({ content: browserBundle });

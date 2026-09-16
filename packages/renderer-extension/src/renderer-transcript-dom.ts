@@ -7,11 +7,19 @@ export const REASONING_SOFT_WRAP_STORAGE_KEY = "codexhost.reasoning-soft-wrap.v1
 export const REASONING_SOFT_WRAP_CHANGE_EVENT = "codexhost:reasoning-soft-wrap-changed";
 
 export function readReasoningTranscriptSoftWrap(ownerWindow: Window): boolean {
-  return ownerWindow.localStorage.getItem(REASONING_SOFT_WRAP_STORAGE_KEY) === "true";
+  try {
+    return ownerWindow.localStorage?.getItem(REASONING_SOFT_WRAP_STORAGE_KEY) === "true";
+  } catch {
+    return false;
+  }
 }
 
 export function setReasoningTranscriptSoftWrap(ownerWindow: Window, enabled: boolean): void {
-  ownerWindow.localStorage.setItem(REASONING_SOFT_WRAP_STORAGE_KEY, String(enabled));
+  try {
+    ownerWindow.localStorage?.setItem(REASONING_SOFT_WRAP_STORAGE_KEY, String(enabled));
+  } catch {
+    // Best-effort only: storage may be unavailable in restricted document contexts.
+  }
   ownerWindow.dispatchEvent(new Event(REASONING_SOFT_WRAP_CHANGE_EVENT));
 }
 

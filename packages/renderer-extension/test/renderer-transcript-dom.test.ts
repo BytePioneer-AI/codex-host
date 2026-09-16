@@ -11,4 +11,31 @@ describe("Reasoning transcript soft wrap", () => {
     expect(dispose).not.toThrow();
     expect(() => dispose()).not.toThrow();
   });
+
+  it("handles restricted environments where accessing localStorage throws", () => {
+    const windowMock = {
+      get localStorage(): Storage {
+        throw new Error("Access is denied for this document");
+      },
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      dispatchEvent: () => true,
+    } as unknown as Window;
+
+    const styleMock = {
+      setAttribute: () => {},
+      remove: () => {},
+      textContent: "",
+      disabled: false,
+    };
+    const documentMock = {
+      defaultView: windowMock,
+      head: { append: () => {} },
+      createElement: () => styleMock,
+    } as unknown as Document;
+
+    const dispose = installReasoningTranscriptSoftWrap(documentMock);
+    expect(dispose).not.toThrow();
+    expect(() => dispose()).not.toThrow();
+  });
 });

@@ -43,6 +43,8 @@ import {
   isNativeContextUsageControlCandidate,
   nativeContextUsageControlForComposer,
   reconcileComposerNativeControls,
+  refreshComposerSendButton,
+  sendButtonForComposer,
   trailingActionAnchor,
   type ComposerAgentControl,
 } from "../src/renderer-composer-dom.js";
@@ -656,6 +658,63 @@ describe("Renderer Composer DOM behavior", () => {
     expect(isComposerSubmitButton(button("Attach files"))).toBe(false);
     expect(isComposerSubmitButton(button("Send"))).toBe(true);
     expect(isComposerSubmitButton(button("", "submit"))).toBe(true);
+  });
+
+  it("refreshes a replaced Send button without releasing an extension block", () => {
+    const button = (disabled: boolean) =>
+      ({
+        type: "submit",
+        disabled,
+        hasAttribute: () => false,
+        getAttribute: () => null,
+      }) as unknown as HTMLButtonElement;
+    const previous = button(false);
+    const replacement = button(false);
+    let buttons = [previous];
+    const control = {
+      composer: {
+        querySelectorAll: (selector: string) => (selector === "button" ? buttons : []),
+      },
+      sendButton: previous,
+      sendDisabledBeforeSwitch: false,
+    } as unknown as ComposerAgentControl;
+
+    buttons = [replacement];
+    expect(refreshComposerSendButton(control)).toBe(true);
+    expect(control.sendButton).toBe(replacement);
+    expect(replacement.disabled).toBe(true);
+    expect(control.sendDisabledBeforeSwitch).toBe(false);
+  });
+
+  it("resolves the Send button while ignoring cancel, voice, and owned buttons", () => {
+    const button = (type = "button", label = "", owned = false) =>
+      ({
+        type,
+        hasAttribute: (attr: string) => owned && attr === "data-codexhost-agent-control",
+        getAttribute: (name: string) => (name === "aria-label" ? label : null),
+        closest: (selector: string) =>
+          owned && selector.includes("data-codexhost-agent-control") ? ({} as Element) : null,
+      }) as unknown as HTMLButtonElement;
+
+    const cancel = button("button", "Cancel");
+    const voice = button("button", "Dictation");
+    const ownedSend = button("submit", "Send", true);
+    const send = button("submit", "Send");
+
+    const composer = (buttons: HTMLButtonElement[]) =>
+      ({
+        querySelectorAll: (selector: string) => (selector === "button" ? buttons : []),
+      }) as unknown as Element;
+
+    // Send button found, ignoring owned submit button
+    expect(sendButtonForComposer(composer([ownedSend, send]))).toBe(send);
+
+    // When no submit button, fallback ignores cancel and voice buttons
+    expect(sendButtonForComposer(composer([cancel, voice]))).toBe(null);
+
+    // Fallback picks plain button when submit is absent, skipping cancel/voice
+    const customSend = button("button", "");
+    expect(sendButtonForComposer(composer([cancel, voice, customSend]))).toBe(customSend);
   });
 
   it("recognizes a dictation control without treating attach or send as voice", () => {

@@ -48,7 +48,10 @@ import {
   mountRendererHarnessCommandControl,
   type RendererHarnessCommandControl,
 } from "./renderer-harness-command-control.js";
-import { isOwnedExtensionControl as isOwnedRendererControl } from "./renderer-dom-owned-controls.js";
+import {
+  isOwnedExtensionControl as isOwnedRendererControl,
+  OWNED_CONTROL_SELECTORS,
+} from "./renderer-dom-owned-controls.js";
 
 export { CONTROL_ATTRIBUTE };
 export type ExternalModelControlView = RendererModelControlView;
@@ -143,6 +146,10 @@ function isComposerTrailingActionButton(element: Element): boolean {
   return isComposerVoiceButton(element) || isComposerSubmitButton(element as HTMLButtonElement);
 }
 
+function isInsideOwnedRendererControl(element: Element): boolean {
+  return isOwnedRendererControl(element) || Boolean(element.closest?.(OWNED_CONTROL_SELECTORS));
+}
+
 function isTrailingActionNode(element: Element): boolean {
   if (isComposerCancelButton(element)) return false;
   if (isComposerTrailingActionButton(element)) return true;
@@ -154,8 +161,23 @@ function isTrailingActionNode(element: Element): boolean {
 export function sendButtonWithin(root: Element): HTMLButtonElement | null {
   return (
     [...root.querySelectorAll<HTMLButtonElement>("button")].find((button) =>
-      isComposerSubmitButton(button),
+      isComposerSubmitButton(button) && !isInsideOwnedRendererControl(button),
     ) ?? null
+  );
+}
+
+export function sendButtonForComposer(root: Element): HTMLButtonElement | null {
+  return (
+    sendButtonWithin(root) ??
+    [...root.querySelectorAll<HTMLButtonElement>("button")]
+      .filter(
+        (button) =>
+          !isInsideOwnedRendererControl(button) &&
+          !isComposerCancelButton(button) &&
+          !isComposerVoiceButton(button),
+      )
+      .at(-1) ??
+    null
   );
 }
 
@@ -376,8 +398,7 @@ export function inspectRendererComposerContract(
     const editors = [...composer.querySelectorAll<HTMLElement>(EDITOR_SELECTOR)].filter(
       contractElementVisible,
     );
-    const allButtons = [...composer.querySelectorAll<HTMLButtonElement>("button")];
-    const sendButton = sendButtonWithin(composer) ?? allButtons.at(-1) ?? null;
+    const sendButton = sendButtonForComposer(composer);
     if (editors.length === 1 && sendButton !== null) result.activeComposerCount += 1;
     if (sendButton) {
       result.sendButtonCount += 1;
@@ -581,6 +602,7 @@ export function reconcileComposerNativeControls(
   hideModel: boolean,
   hidePermissionMode: boolean,
 ): void {
+  refreshComposerSendButton(control);
   refreshNativeContextUsageControl(control);
   refreshNativeModelControl(control);
   // Resolve the permission-mode picker's position before Credits anchors to
@@ -673,6 +695,20 @@ export function mountComposerAgentControl(
   return control;
 }
 
+export function refreshComposerSendButton(control: ComposerAgentControl): boolean {
+  const sendButton = sendButtonForComposer(control.composer);
+  if (!sendButton || sendButton === control.sendButton) return false;
+
+  const submissionWasBlocked = control.sendDisabledBeforeSwitch !== null;
+  control.sendButton = sendButton;
+  if (submissionWasBlocked) {
+    control.sendDisabledBeforeSwitch = sendButton.disabled;
+    if (!sendButton.disabled) sendButton.disabled = true;
+  }
+  refreshTrailingClusterPlacement(control);
+  return true;
+}
+
 export function renderComposerAgentControl(
   control: ComposerAgentControl,
   state: { agent: RendererAgent; phase: ComposerAgentPhase },
@@ -687,6 +723,7 @@ export function renderComposerAgentControl(
   currentCodexAccount: CodexAccountSummary | null = null,
   ownershipError = false,
 ): void {
+  refreshComposerSendButton(control);
   if (control.usage === null) {
     control.usage = mountRendererUsageControl(control.composerId, locale);
   }
@@ -715,8 +752,10 @@ export function renderComposerAgentControl(
     control.sendDisabledBeforeSwitch = control.sendButton.disabled;
     if (!control.sendButton.disabled) control.sendButton.disabled = true;
   } else if (!submissionBlocked && control.sendDisabledBeforeSwitch !== null) {
-    if (control.sendButton.disabled !== control.sendDisabledBeforeSwitch) {
-      control.sendButton.disabled = control.sendDisabledBeforeSwitch;
+    // A natively disabled button was never changed by us. Input may have
+    // enabled it while ownership loaded; do not restore that stale snapshot.
+    if (control.sendDisabledBeforeSwitch === false && control.sendButton.disabled) {
+      control.sendButton.disabled = false;
     }
     control.sendDisabledBeforeSwitch = null;
   }
@@ -771,10 +810,8 @@ export function renderComposerAgentControl(
 }
 
 export function disposeComposerAgentControl(control: ComposerAgentControl): void {
-  if (control.sendDisabledBeforeSwitch !== null) {
-    if (control.sendButton.disabled !== control.sendDisabledBeforeSwitch) {
-      control.sendButton.disabled = control.sendDisabledBeforeSwitch;
-    }
+  if (control.sendDisabledBeforeSwitch === false && control.sendButton.disabled) {
+    control.sendButton.disabled = false;
   }
   restoreNativeControl(control.nativeModelControl);
   restoreNativeControl(control.nativeContextUsageControl);

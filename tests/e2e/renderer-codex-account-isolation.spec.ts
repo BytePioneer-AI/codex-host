@@ -16,6 +16,7 @@ const { outputFiles } = await build({
       const calls = [];
       const pending = new Map();
       const paused = new Set();
+      if (globalThis.delayedOwnership) paused.add("local:ownership");
       const current = { local: "default", remote: "default" };
       const revision = { local: 1, remote: 1 };
       const subscribers = { local: new Set(), remote: new Set() };
@@ -100,6 +101,17 @@ const { outputFiles } = await build({
       composer.style.cssText = "position:fixed;bottom:40px;left:300px;width:600px";
       composer.innerHTML = '<div data-codex-composer contenteditable="true" role="textbox"></div><button type="submit">Send</button>';
       const editor = composer.querySelector("[role=textbox]");
+      if (globalThis.nativeSendState) {
+        const send = composer.querySelector("button[type=submit]");
+        send.disabled = true;
+        editor.addEventListener("input", () => { send.disabled = !editor.textContent; });
+        editor.addEventListener("keydown", (event) => {
+          if (event.key === "Enter" && !event.shiftKey) {
+            event.preventDefault();
+            if (!send.disabled) composer.requestSubmit(send);
+          }
+        });
+      }
       const modelState = {
         atom: {}, get: () => ({ isManuallyChanged: false, modelSettings: null, serviceTier: null }),
         set: () => undefined,
@@ -199,7 +211,7 @@ async function setup(page: Page, options: Record<string, boolean> = {}): Promise
   if ((await page.evaluate(() => Reflect.get(globalThis, "accountsFixture"))) === undefined) {
     throw new Error(pageErrors.join("\n") || "Account isolation fixture did not initialize");
   }
-  if (options.delayedHost) return;
+  if (options.delayedHost || options.delayedOwnership) return;
   if (!options.ownershipError) {
     await expect(page.locator(trigger)).toHaveAttribute("title", /local-default@example.com/);
   }
@@ -476,3 +488,19 @@ test("ownership errors stop spinning without permitting an unknown Thread to sub
   await expect(page.locator('button[type="submit"]')).toBeEnabled();
   await expect(page.locator(trigger)).not.toHaveAttribute("title", /unable|failed|无法|失败/i);
 });
+
+for (const submission of ["click", "enter"] as const) {
+  test(`native input remains submittable via ${submission} after ownership resolves`, async ({ page }) => {
+    await setup(page, { boundThread: true, delayedOwnership: true, nativeSendState: true });
+    await waitForPending(page, "local:ownership");
+    const editor = page.locator("[role=textbox]");
+    await editor.fill("Follow-up");
+    await editor.press("Enter");
+    expect(await calls(page)).not.toContainEqual({ host: "local", method: "submit" });
+    await action(page, "release", "local:ownership");
+    await expect(page.locator(trigger)).toHaveAttribute("aria-busy", "false");
+    if (submission === "click") await page.locator('button[type="submit"]').click({ timeout: 2000 });
+    else await editor.press("Enter");
+    await expect.poll(() => calls(page)).toContainEqual({ host: "local", method: "submit" });
+  });
+}

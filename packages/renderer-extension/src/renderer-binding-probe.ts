@@ -98,6 +98,7 @@ const externalHarnessIds = {
   "kiro-cli": harnessIdSchema.parse("kiro-cli"),
   codebuddy: harnessIdSchema.parse("codebuddy"),
   "cursor-cli": harnessIdSchema.parse("cursor-cli"),
+  devin: harnessIdSchema.parse("devin"),
   hermes: harnessIdSchema.parse("hermes"),
   qoder: harnessIdSchema.parse("qoder"),
   "qoder-cn": harnessIdSchema.parse("qoder-cn"),
@@ -114,6 +115,7 @@ const externalAgents: readonly ExternalRendererAgent[] = [
   "kiro-cli",
   "codebuddy",
   "cursor-cli",
+  "devin",
   "hermes",
   "qoder",
   "qoder-cn",
@@ -470,7 +472,8 @@ export function restoredThreadOwnership(inspection: ThreadInspection): RestoredT
   if (
     inspection.harnessId === "kiro-cli" ||
     inspection.harnessId === "codebuddy" ||
-    inspection.harnessId === "cursor-cli"
+    inspection.harnessId === "cursor-cli" ||
+    inspection.harnessId === "devin"
   ) {
     const route = decodeHarnessPluginRoute(inspection.transportModelId);
     if (!route || route.harnessId !== inspection.harnessId) {
@@ -478,7 +481,7 @@ export function restoredThreadOwnership(inspection: ThreadInspection): RestoredT
     }
     const model = inspection.effectiveModel ?? route.model;
     const thinkingOptionId =
-      inspection.harnessId === "cursor-cli"
+      inspection.harnessId === "cursor-cli" || inspection.harnessId === "devin"
         ? undefined
         : inspection.availableThinkingOptions !== undefined
           ? selectableThinkingOptionId(inspection)
@@ -754,6 +757,7 @@ export function installRendererBindingProbe(
       "kiro-cli": undefined,
       codebuddy: undefined,
       "cursor-cli": undefined,
+      devin: undefined,
       hermes: undefined,
       qoder: undefined,
       "qoder-cn": undefined,

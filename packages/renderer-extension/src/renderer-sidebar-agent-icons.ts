@@ -142,6 +142,7 @@ export function rendererAgentForThreadOwnership(
   if (ownership.harnessId === "kiro-cli") return "kiro-cli";
   if (ownership.harnessId === "codebuddy") return "codebuddy";
   if (ownership.harnessId === "cursor-cli") return "cursor-cli";
+  if (ownership.harnessId === "devin") return "devin";
   if (ownership.harnessId === "hermes") return "hermes";
   if (ownership.harnessId === "qoder") return "qoder";
   if (ownership.harnessId === "qoder-cn") return "qoder-cn";

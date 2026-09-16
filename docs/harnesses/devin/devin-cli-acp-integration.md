@@ -63,9 +63,11 @@ been established.
 
 ## Current limitations
 
-- The Desktop Agent Picker is still based on a static Harness list. This branch
-  delivers the plugin backend and preinstalled bundle; Devin does not appear in
-  the Desktop picker without separate Renderer integration.
+- Devin is wired into the Desktop picker through the existing static Renderer
+  lists (agent selection state, route construction, binding probe, sidebar
+  icons, Connections install link and the production `enabledAgents` list).
+  There is no Devin-specific Host branch; the Thread rides the shared
+  plugin route like the other plugin Harnesses.
 - Fork, rollback, independent thinking selection, usage/account reporting,
   native session import/deletion wiring and subagent transcript browsing are
   not advertised. Image prompt input is outside the current Host text contract.

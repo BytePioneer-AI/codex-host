@@ -153,6 +153,7 @@ describe("production Desktop Controller", () => {
         "kiro-cli",
         "codebuddy",
         "cursor-cli",
+        "devin",
         "qoder",
         "qoder-cn",
         "hermes",

@@ -16,6 +16,7 @@ export const KNOWN_RENDERER_AGENTS = [
   "kiro-cli",
   "codebuddy",
   "cursor-cli",
+  "devin",
   "hermes",
   "qoder",
   "qoder-cn",
@@ -49,6 +50,7 @@ export interface DraftComposerState {
   codeBuddyModel?: HarnessModelRef;
   codeBuddyThinkingOptionId?: HarnessThinkingOptionId;
   cursorCliModel?: HarnessModelRef;
+  devinModel?: HarnessModelRef;
   hermesModel?: HarnessModelRef;
   qoderModel?: HarnessModelRef;
   qoderThinkingOptionId?: HarnessThinkingOptionId;
@@ -231,6 +233,8 @@ export class DraftAgentController<Composer extends object> {
     else if (agent === "codebuddy") delete state.codeBuddyModel;
     if (agent === "cursor-cli" && model) state.cursorCliModel = model;
     else if (agent === "cursor-cli") delete state.cursorCliModel;
+    if (agent === "devin" && model) state.devinModel = model;
+    else if (agent === "devin") delete state.devinModel;
     if (agent === "hermes" && model) state.hermesModel = model;
     else if (agent === "hermes") delete state.hermesModel;
     if (agent === "qoder" && model) state.qoderModel = model;
@@ -277,6 +281,7 @@ export class DraftAgentController<Composer extends object> {
         "kiro-cli",
         "codebuddy",
         "cursor-cli",
+        "devin",
         "hermes",
         "qoder",
         "qoder-cn",
@@ -306,6 +311,7 @@ export class DraftAgentController<Composer extends object> {
     if (agent === "kiro-cli") return state.kiroCliModel;
     if (agent === "codebuddy") return state.codeBuddyModel;
     if (agent === "cursor-cli") return state.cursorCliModel;
+    if (agent === "devin") return state.devinModel;
     if (agent === "hermes") return state.hermesModel;
     if (agent === "qoder") return state.qoderModel;
     if (agent === "qoder-cn") return state.qoderCnModel;
@@ -366,6 +372,7 @@ export class DraftAgentController<Composer extends object> {
     else if (agent === "kiro-cli") state.kiroCliModel = model;
     else if (agent === "codebuddy") state.codeBuddyModel = model;
     else if (agent === "cursor-cli") state.cursorCliModel = model;
+    else if (agent === "devin") state.devinModel = model;
     else if (agent === "hermes") state.hermesModel = model;
     else if (agent === "qoder") state.qoderModel = model;
     else if (agent === "qoder-cn") state.qoderCnModel = model;

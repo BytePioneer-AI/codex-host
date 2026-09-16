@@ -433,7 +433,7 @@ describe("Harness plugin discovery and loading", () => {
         code: `
       import { FakeHarnessAdapter } from ${JSON.stringify(fakeModule)};
       export async function createHarnessAdapter() {
-        await new Promise((resolve) => setTimeout(resolve, 80));
+        await new Promise((resolve) => setTimeout(resolve, 800));
         return new FakeHarnessAdapter(${JSON.stringify(id)});
       }
     `,
@@ -443,7 +443,8 @@ describe("Harness plugin discovery and loading", () => {
     const registry = await loadHarnessPlugins({
       roots: [directory],
       context,
-      loadTimeoutMs: 130,
+      // Leave room for CI imports; two worker waves still exceed a shared 1300ms budget.
+      loadTimeoutMs: 1_300,
       diagnose,
     });
     try {

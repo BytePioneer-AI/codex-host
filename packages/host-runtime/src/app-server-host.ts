@@ -3842,6 +3842,22 @@ export class AppServerHost {
       await this.#setThreadStatus(thread, { type: "active", activeFlags: [] });
     }
     if (event.type === "turn.completed") {
+      // A terminal Harness event can arrive while Desktop approvals or
+      // questions for the same Turn are still pending (for example after a
+      // Harness-side approval timeout). Resolve their UI requests so the
+      // renderer is not left with an unanswered serverRequest.
+      for (const pending of [...this.#pendingDesktopApprovals.values()]) {
+        if (pending.thread === thread && pending.interaction.turnId === event.turnId) {
+          thread.ignoredInteractionIds.add(pending.interaction.interactionId);
+          await this.#resolveDesktopApproval(pending.interaction.interactionId);
+        }
+      }
+      for (const pending of [...this.#pendingDesktopQuestions.values()]) {
+        if (pending.thread === thread && pending.interaction.turnId === event.turnId) {
+          thread.ignoredInteractionIds.add(pending.interaction.interactionId);
+          await this.#resolveDesktopQuestion(pending.interaction.interactionId);
+        }
+      }
       if (!result.completedTurn) throw new Error("Turn projector returned no completed Turn");
       const completedAt = Math.floor(Date.now() / 1000);
       if (ephemeralTurn) {

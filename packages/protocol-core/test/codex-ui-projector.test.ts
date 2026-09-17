@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type {
+  HostApprovalInteraction,
   HostCommandExecutionItem,
   HostFileChangeItem,
   HostQuestionInteraction,
@@ -1397,36 +1398,101 @@ describe("Codex UI projector", () => {
       method: "item/tool/requestUserInput",
       params: { itemId: "synthetic-question", turnId: "turn-1" },
     });
-    expect(() =>
-      value.project({ type: "turn.completed", turnId, outcome: { status: "succeeded" } }),
-    ).toThrow("pending Interactions");
-
-    const closed = value.project(
-      {
-        type: "interaction.closed",
-        interactionId: question.interactionId,
-        turnId,
-        reason: "responded",
-      },
-      2_500,
+    // A pending Interaction must not swallow the terminal Turn event: the
+    // projector force-closes it as cancelled so the renderer still learns
+    // the Turn ended.
+    const completedWithPending = value.project({
+      type: "turn.completed",
+      turnId,
+      outcome: { status: "succeeded" },
+    });
+    expect(completedWithPending.completedTurn).toMatchObject({
+      id: "turn-1",
+      status: "completed",
+    });
+    expect(completedWithPending.messages).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          method: "item/completed",
+          params: expect.objectContaining({
+            turnId: "turn-1",
+            item: expect.objectContaining({
+              id: "synthetic-question",
+              status: "failed",
+              success: false,
+            }),
+          }),
+        }),
+        expect.objectContaining({ method: "turn/completed" }),
+      ]),
     );
-    expect(closed.messages).toMatchObject([
+  });
+
+  it("force-closes an active streamed Item when the Turn completes without an Item terminal event", () => {
+    const value = projector();
+    value.project({ type: "turn.started", turnId });
+    value.project(
       {
-        method: "item/completed",
-        params: {
-          item: {
-            id: "synthetic-question",
-            type: "dynamicToolCall",
-            status: "completed",
-            success: true,
-          },
+        type: "item.started",
+        turnId,
+        item: {
+          type: "agentMessage",
+          itemId: itemId("msg-1"),
+          text: "partial",
         },
       },
-    ]);
-    expect(
-      value.project({ type: "turn.completed", turnId, outcome: { status: "succeeded" } })
-        .completedTurn,
-    ).toMatchObject({ status: "completed", items: [] });
+      1_500,
+    );
+    const completed = value.project({
+      type: "turn.completed",
+      turnId,
+      outcome: { status: "succeeded" },
+    });
+    expect(completed.completedTurn).toMatchObject({ id: "turn-1", status: "completed" });
+    expect(completed.completedTurn?.items).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: "msg-1", type: "agentMessage", text: "partial" }),
+      ]),
+    );
+    expect(completed.messages).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          method: "item/completed",
+          params: expect.objectContaining({
+            turnId: "turn-1",
+            item: expect.objectContaining({ id: "msg-1" }),
+          }),
+        }),
+        expect.objectContaining({ method: "turn/completed" }),
+      ]),
+    );
+  });
+
+  it("force-closes a pending Approval Interaction when the Turn completes", () => {
+    const value = projector();
+    value.project({ type: "turn.started", turnId });
+    const approval: HostApprovalInteraction = {
+      type: "approval",
+      interactionId: hostInteractionIdSchema.parse("approval-1"),
+      turnId,
+      title: "Allow action?",
+      description: "Pending approval at Turn end",
+      subject: { type: "nativeAction" },
+      actions: [
+        { id: "allow", label: "Allow once", effect: "allowOnce" },
+        { id: "reject", label: "Deny", effect: "deny" },
+      ],
+    };
+    value.projectApproval(approval, "Hermes");
+    const completed = value.project({
+      type: "turn.completed",
+      turnId,
+      outcome: { status: "succeeded" },
+    });
+    expect(completed.completedTurn).toMatchObject({ id: "turn-1", status: "completed" });
+    expect(completed.messages).toEqual(
+      expect.arrayContaining([expect.objectContaining({ method: "turn/completed" })]),
+    );
   });
 
   it("associates a Question with an active Generic Tool and protects its lifecycle", () => {

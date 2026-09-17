@@ -718,6 +718,21 @@ export class HermesSession implements HarnessSession {
     this.#activeTurn = null;
     this.#activeTurnId = null;
     active.finish();
+    // A Turn can terminate while approval waiters from that Turn are still
+    // pending — Hermes times out and auto-denies approvals itself without a
+    // matching interaction.closed ever reaching the Host. Release those
+    // waiters as cancelled so the Host sees the Interaction end.
+    for (const [interactionId, waiter] of [...this.#approvalWaiters]) {
+      if (waiter.turnId !== active.turnId) continue;
+      this.#approvalWaiters.delete(interactionId);
+      waiter.resolve({ outcome: { outcome: "cancelled" } });
+      this.#emit({
+        type: "interaction.closed",
+        interactionId,
+        turnId: waiter.turnId,
+        reason: "cancelled",
+      });
+    }
     const nativeTurnRef = nativeTurnRefSchema.parse({
       harnessId: this.#nativeRef.harnessId,
       nativeSessionId: this.#nativeRef.nativeSessionId,

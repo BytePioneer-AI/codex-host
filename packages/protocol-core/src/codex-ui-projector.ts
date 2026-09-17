@@ -1092,11 +1092,41 @@ export class CodexTurnProjector {
 
   #completeTurn(event: TurnCompletedEvent, completedAtMs: number): CodexTurnProjection {
     this.#requireStarted();
-    if (this.#interactions.size > 0) {
-      throw new Error("Host Turn completed with pending Interactions");
+    // The terminal Turn event must always produce a completed Turn. A Harness
+    // can end a Turn while Interactions or streamed Items are still pending
+    // (for example a Harness-side approval timeout that never reaches the
+    // Host). Dropping the terminal event here would leave the renderer
+    // waiting forever, so pending work is force-closed as cancelled instead.
+    const messages: JsonObject[] = [];
+    for (const [interactionId] of [...this.#interactions]) {
+      messages.push(
+        ...this.#closeInteraction(
+          {
+            type: "interaction.closed",
+            interactionId,
+            turnId: this.#turnId,
+            reason: "cancelled",
+          },
+          completedAtMs,
+        ).messages,
+      );
     }
-    const active = [...this.#items.values()].filter(({ outcome }) => outcome === null);
-    if (active.length > 0) throw new Error("Host Turn completed with active Items");
+    for (const projected of this.#items.values()) {
+      if (projected.outcome !== null || !projected.wireStarted) continue;
+      messages.push(
+        ...this.#completeItem(
+          {
+            type: "item.completed",
+            turnId: this.#turnId,
+            snapshot: {
+              item: projected.item,
+              outcome: { status: "cancelled", reason: "Turn ended before Item completion" },
+            },
+          },
+          completedAtMs,
+        ).messages,
+      );
+    }
     this.#completed = true;
     const completedAt = Math.floor(completedAtMs / 1000);
     const error = turnError(event.outcome);
@@ -1139,6 +1169,7 @@ export class CodexTurnProjector {
     return {
       completedTurn: turn,
       messages: [
+        ...messages,
         ...(this.#fileItemId
           ? [
               {

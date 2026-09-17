@@ -8,6 +8,7 @@ import {
   type OfficialThreadListPage,
   type ThreadListExternalAnchor,
   type ThreadListSortDirection,
+  type ThreadListSortKey,
 } from "@codexhost/protocol-core";
 
 import {
@@ -87,7 +88,10 @@ export async function aggregateThreadList(input: {
   requestOfficialPage(params: JsonObject): Promise<OfficialThreadListPage>;
 }): Promise<AggregatedThreadListPage> {
   const { query } = input;
-  if (!query.supportsExternal) throw new Error("External aggregation is not supported for query");
+  if (!query.supportsExternal || query.sortKey === "section_position") {
+    throw new Error("External aggregation is not supported for query");
+  }
+  const externalSortKey: ThreadListSortKey = query.sortKey;
   const start: HostThreadListCursor = query.cursor ?? {
     queryFingerprint: query.queryFingerprint,
     sortDirection: query.sortDirection,
@@ -142,7 +146,7 @@ export async function aggregateThreadList(input: {
         firstOfficialBackwardsCursor = page.backwardsCursor;
       }
       officialBatch = page;
-      officialEntries = page.data.map((thread) => officialThreadListEntry(thread, query.sortKey));
+      officialEntries = page.data.map((thread) => officialThreadListEntry(thread, externalSortKey));
       officialIndex = 0;
       if (officialEntries.length === 0) {
         if (page.nextCursor === null || page.nextCursor === officialCursor) {

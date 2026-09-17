@@ -5,6 +5,7 @@ import { PassThrough, type Readable } from "node:stream";
 
 import { describe, expect, it } from "vitest";
 import { WebSocketServer } from "ws";
+import { readLfFrames } from "@codexhost/protocol-core";
 
 import { createRemoteAppServerWebSocketListener } from "../src/remote-app-server.js";
 import { createRemoteOfficialAppServerConnection } from "../src/remote-official-connection.js";
@@ -31,6 +32,46 @@ async function readFrame(stream: Readable): Promise<string> {
 }
 
 describe("remote official app-server connection", () => {
+  it("preserves history responses larger than 128 MiB and keeps the connection usable", async () => {
+    const server = createServer();
+    const webSockets = new WebSocketServer({ server });
+    const response = Buffer.alloc(128 * 1024 * 1024 + 1, "x");
+    response.write('{"id":1,"result":"');
+    response.write('"}', response.length - 2);
+    webSockets.on("connection", (socket) => {
+      let requests = 0;
+      socket.on("message", (data) => {
+        socket.send(requests++ === 0 ? response : data, { binary: false });
+      });
+    });
+    let connection: Awaited<ReturnType<typeof createRemoteOfficialAppServerConnection>> | undefined;
+    try {
+      await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+      const address = server.address();
+      if (!address || typeof address === "string") throw new Error("Expected a TCP listener");
+      connection = await createRemoteOfficialAppServerConnection(`ws://127.0.0.1:${address.port}`);
+      const frames = readLfFrames(connection.stdout)[Symbol.asyncIterator]();
+      const closedEarly = connection.closed.then(() => {
+        throw new Error("Official connection closed while reading history");
+      });
+      const history = Promise.race([frames.next(), closedEarly]);
+      connection.stdin.write('{"id":1,"method":"thread/turns/list"}\n');
+      const received = await history;
+      expect(received.done).toBe(false);
+      expect(received.value?.equals(response)).toBe(true);
+
+      const following = Promise.race([frames.next(), closedEarly]);
+      connection.stdin.write('{"id":2,"method":"thread/read"}\n');
+      expect((await following).value?.toString()).toBe('{"id":2,"method":"thread/read"}');
+    } finally {
+      connection?.close();
+      await connection?.closed;
+      for (const socket of webSockets.clients) socket.terminate();
+      await new Promise<void>((resolve) => webSockets.close(() => resolve()));
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  }, 20_000);
+
   it("connects multiple LF-JSON clients to one loopback WebSocket listener", async () => {
     const server = createServer();
     const webSockets = new WebSocketServer({ server });

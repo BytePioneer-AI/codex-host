@@ -117,6 +117,36 @@ describe("Renderer CDP Control Session", () => {
     session.close();
   });
 
+  it("fails closed when CDP target discovery hangs past its timeout", async () => {
+    const client = rendererClient();
+    await expect(
+      createRendererCdpControlSession({
+        rendererCdpEndpoint: "http://127.0.0.1:43123",
+        rendererSource: "production renderer",
+        pollIntervalMs: 10,
+        timeoutMs: 40,
+        operations: {
+          listTargets: vi.fn((_endpoint, signal) => {
+            return new Promise<CdpTarget[]>((_resolve, reject) => {
+              const fail = (): void => reject(new Error("Renderer CDP target discovery timed out"));
+              if (signal?.aborted) {
+                fail();
+                return;
+              }
+              signal?.addEventListener("abort", fail, { once: true });
+            });
+          }),
+          connect: vi.fn(async () => client),
+          installDraftPrewarmPolicy: vi.fn(async () => ({
+            state: "ready" as const,
+            reason: "owned-request-bridge" as const,
+          })),
+        },
+      }),
+    ).rejects.toThrow("Primary Codex Renderer CDP target did not become ready");
+    expect(client.close).not.toHaveBeenCalled();
+  });
+
   it("fails closed when the injected Adapter is unsupported", async () => {
     const client = rendererClient({
       version: 2,

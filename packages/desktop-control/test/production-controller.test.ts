@@ -160,6 +160,7 @@ describe("production Desktop Controller", () => {
         "hermes",
       ],
       timeoutMs: 90_000,
+      signal: abort.signal,
     });
     expect(startAttachmentServer).toHaveBeenCalledWith({
       port: 43124,
@@ -175,6 +176,52 @@ describe("production Desktop Controller", () => {
     expect(server.close).toHaveBeenCalledOnce();
     expect(close).toHaveBeenCalledOnce();
     expect(attach).toEqual(expect.any(Function));
+  });
+
+  it("publishes readiness before a pending Renderer install finishes", async () => {
+    const abort = new AbortController();
+    const close = vi.fn();
+    const session: RendererCdpControlSession = {
+      snapshot: controllerSnapshot(),
+      ensureInstalled: vi.fn(async () => controllerSnapshot()),
+      activateDesktop: vi.fn(async () => 1),
+      executeRenderer: vi.fn(),
+      close,
+    };
+    let finishInstall!: (value: RendererCdpControlSession) => void;
+    const install = vi.fn(
+      () =>
+        new Promise<RendererCdpControlSession>((resolve) => {
+          finishInstall = resolve;
+        }),
+    );
+    const ready = vi.fn();
+    const startAttachmentServer = vi.fn(async () => attachmentServer());
+    const run = runDesktopController(controllerOptions(), abort.signal, {
+      readRenderer: vi.fn(async () => "production renderer"),
+      install,
+      startAttachmentServer,
+      ready,
+      sleep: vi.fn(async () => {
+        abort.abort();
+      }),
+      monitorIntervalMs: 1,
+    });
+
+    await vi.waitFor(() => {
+      expect(ready).toHaveBeenCalledWith({
+        schemaVersion: 2,
+        state: "compatible",
+        issues: [],
+      });
+    });
+    expect(startAttachmentServer).toHaveBeenCalledOnce();
+    expect(close).not.toHaveBeenCalled();
+
+    finishInstall(session);
+    await run;
+    expect(install).toHaveBeenCalledOnce();
+    expect(close).toHaveBeenCalledOnce();
   });
 
   it("retries a transient Renderer evaluation failure during cold startup", async () => {

@@ -32,7 +32,7 @@ interface RendererCdpClient {
 }
 
 interface RendererCdpControlOperations {
-  listTargets(endpoint: string): Promise<CdpTarget[]>;
+  listTargets(endpoint: string, signal?: AbortSignal): Promise<CdpTarget[]>;
   connect(webSocketDebuggerUrl: string): Promise<RendererCdpClient>;
   installDraftPrewarmPolicy(renderer: RendererCdpClient): Promise<RendererDraftPrewarmPolicyStatus>;
 }
@@ -51,6 +51,7 @@ export interface InstallRendererCdpControlOptions {
   enabledAgents?: readonly string[];
   pollIntervalMs?: number;
   timeoutMs?: number;
+  signal?: AbortSignal;
 }
 
 interface CreateRendererCdpControlOptions extends InstallRendererCdpControlOptions {
@@ -63,6 +64,40 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function sleep(milliseconds: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+function discoveryTimeoutSignal(timeoutMs: number, signal?: AbortSignal): AbortSignal {
+  const timeout = AbortSignal.timeout(timeoutMs);
+  return signal ? AbortSignal.any([timeout, signal]) : timeout;
+}
+
+function abortFailure(signal: AbortSignal, fallback: string): Error {
+  return signal.reason instanceof Error ? signal.reason : new Error(fallback);
+}
+
+function awaitWithSignal<T>(
+  promise: Promise<T>,
+  signal: AbortSignal,
+  timeoutMessage: string,
+): Promise<T> {
+  if (signal.aborted) return Promise.reject(abortFailure(signal, timeoutMessage));
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = (): void => {
+      signal.removeEventListener("abort", onAbort);
+      reject(abortFailure(signal, timeoutMessage));
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+    promise.then(
+      (value) => {
+        signal.removeEventListener("abort", onAbort);
+        resolve(value);
+      },
+      (error) => {
+        signal.removeEventListener("abort", onAbort);
+        reject(error);
+      },
+    );
+  });
 }
 
 function sameAgents(actual: readonly string[], expected: readonly string[]): boolean {
@@ -134,21 +169,37 @@ async function waitForPrimaryTarget(
   timeoutMs: number,
   pollIntervalMs: number,
   preferredTargetId?: string,
+  signal?: AbortSignal,
 ): Promise<CdpTarget> {
-  const deadline = Date.now() + timeoutMs;
+  const discovery = discoveryTimeoutSignal(timeoutMs, signal);
   let lastError: unknown;
-  while (Date.now() < deadline) {
+  while (!discovery.aborted) {
     try {
       const target = selectPrimaryRendererTarget(
-        await operations.listTargets(endpoint),
+        await awaitWithSignal(
+          operations.listTargets(endpoint, discovery),
+          discovery,
+          "Renderer CDP target discovery timed out",
+        ),
         preferredTargetId,
       );
       if (target) return target;
       lastError = new Error("Renderer CDP has no primary app://-/index.html page target");
     } catch (error) {
       lastError = error;
+      if (discovery.aborted) break;
     }
-    await sleep(pollIntervalMs);
+    if (discovery.aborted) break;
+    try {
+      await awaitWithSignal(
+        sleep(pollIntervalMs),
+        discovery,
+        "Renderer CDP target discovery timed out",
+      );
+    } catch (error) {
+      lastError = error;
+      break;
+    }
   }
   const detail = lastError instanceof Error ? `: ${lastError.message}` : "";
   throw new Error(`Primary Codex Renderer CDP target did not become ready${detail}`);
@@ -310,7 +361,7 @@ class InstalledRendererCdpControlSession implements RendererCdpControlSession {
 }
 
 const defaultOperations: RendererCdpControlOperations = {
-  listTargets: (endpoint) => listCdpTargets(endpoint),
+  listTargets: (endpoint, signal) => listCdpTargets(endpoint, fetch, signal),
   connect: (webSocketDebuggerUrl) => CdpClient.connect(webSocketDebuggerUrl),
   installDraftPrewarmPolicy: installRendererDraftPrewarmPolicyDirect,
 };
@@ -327,6 +378,8 @@ export async function createRendererCdpControlSession(
     operations,
     timeoutMs,
     pollIntervalMs,
+    undefined,
+    options.signal,
   );
   const installed = await installTarget(
     target,

@@ -84,7 +84,6 @@ been established.
 
 ## Brand assets
 
-`assets/icon.svg` is a locally drawn placeholder spiral on a dark plate. It is
-not the official Devin or Cognition mark; replace it with licensed artwork
-before a branded release. The Devin name and marks remain the property of
-Cognition AI, Inc.
+`assets/icon.svg` carries the official Devin mark on a dark plate, and the
+Renderer picker uses the same mark as `currentColor` artwork. The Devin name
+and marks remain the property of Cognition AI, Inc.

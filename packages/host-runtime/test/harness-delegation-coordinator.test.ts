@@ -499,4 +499,44 @@ describe("HarnessDelegationCoordinator", () => {
       await value.close();
     }
   });
+
+  it("reads the projected terminal Turn when a dead Harness cannot serve its history", async () => {
+    const value = await fixture();
+    try {
+      const started = await value.coordinator.start({
+        harnessId: "pi",
+        task: "work",
+        parentThreadId: "parent",
+      });
+      const thread = value.registered[0];
+      if (!thread) throw new Error("delegated Thread was not registered");
+      // The Adapter completed the Turn as failed, then its process died.
+      thread.running = false;
+      thread.activeTurnId = null;
+      thread.historyHydrated = false;
+      thread.turns = [
+        { id: started.turnId, status: "failed", items: [], error: { message: "process exited" } },
+      ];
+      vi.spyOn(thread.session, "readSnapshot").mockResolvedValue({
+        ok: false,
+        error: { code: "nativeFailure", message: "Harness is gone", retryable: false },
+      });
+
+      await expect(
+        value.coordinator.read({ threadId: started.threadId, view: "result" }),
+      ).resolves.toMatchObject({
+        status: "failed",
+        turn: { turnId: started.turnId, status: "failed" },
+        result: { availability: "unavailable", message: "process exited" },
+      });
+
+      // Without any projected Turn there is no known state to report.
+      thread.turns = [];
+      await expect(
+        value.coordinator.read({ threadId: started.threadId, view: "result" }),
+      ).rejects.toMatchObject({ code: "INTERNAL_ERROR" });
+    } finally {
+      await value.close();
+    }
+  });
 });

@@ -158,12 +158,23 @@ export interface ClaudePlanLimitWindow {
 }
 
 /**
+ * A per-model weekly window (e.g. Fable). `rate_limit_event` never carries
+ * these, so they are only present when the Transport's opportunistic
+ * `get_usage` probe succeeded.
+ */
+export interface ClaudePlanLimitScopedWindow extends ClaudePlanLimitWindow {
+  /** Renderer-facing product label, already suffixed with `" · 7-day window"`. */
+  label: string;
+}
+
+/**
  * Claude.ai subscription plan-window utilization from stable `rate_limit_event`
  * pushes. Both windows are optional because one event may report either or both.
  */
 export interface ClaudePlanLimitEvent {
   fiveHour?: ClaudePlanLimitWindow;
   sevenDay?: ClaudePlanLimitWindow;
+  scopedWeekly?: ClaudePlanLimitScopedWindow[];
 }
 
 export interface ClaudeAutonomousTurn {

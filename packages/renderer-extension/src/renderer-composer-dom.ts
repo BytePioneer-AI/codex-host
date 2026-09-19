@@ -610,6 +610,10 @@ export function mountComposerAgentControl(
   onSelectPermissionMode: (permissionModeId: string) => void,
   onSelectCommand: (command: HarnessCommandDescriptor) => void,
 ): ComposerAgentControl {
+  // External Harnesses inject more footer chips than native Codex. Let the
+  // thread column shrink under sidebar / narrow-window pressure so those chips
+  // can flex-shrink and ellipsis instead of overlapping (issue #284).
+  if (composer instanceof HTMLElement) composer.style.minWidth = "0";
   const nativeModelControl = captureNativeControl(nativeModelControlForComposer(composer));
   const nativeContextUsageControl = captureNativeControl(
     nativeContextUsageControlForComposer(composer),

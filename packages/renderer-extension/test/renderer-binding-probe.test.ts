@@ -520,7 +520,7 @@ describe("Renderer Composer DOM behavior", () => {
     expect(formatRendererTokenCount(87000)).toBe("87k");
     expect(formatRendererTokenCount(6700)).toBe("6.7k");
     expect(formatRendererTokenCount(375000)).toBe("375k");
-    expect(rendererUsageTriggerMaxWidth()).toBe("min(180px, 30vw)");
+    expect(rendererUsageTriggerMaxWidth()).toBe("min(140px, 22vw)");
   });
 
   it("places Usage beside the native context wrapper when it is present", () => {

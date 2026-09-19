@@ -1116,8 +1116,18 @@ describe("ClaudeSdkTransport Model control", () => {
           description: "Default",
           supportsAutoMode: true,
         },
-        { value: "sonnet", displayName: "Sonnet" },
-        { value: "opus", displayName: "Opus" },
+        {
+          value: "sonnet",
+          displayName: "Sonnet",
+          description: "Sonnet",
+          supportsAutoMode: true,
+        },
+        {
+          value: "opus",
+          displayName: "Opus",
+          description: "Opus",
+          supportsAutoMode: true,
+        },
       ],
     });
     const configDirectory = await mkdtemp(path.join(os.tmpdir(), "codexhost-claude-picker-"));

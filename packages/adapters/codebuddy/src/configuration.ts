@@ -18,6 +18,10 @@ import {
   text,
   type CodeBuddyRuntimeProfile,
 } from "./common.js";
+import {
+  assessCodeBuddyDirectoryTrust,
+  codeBuddyMissingModelErrorMessage,
+} from "./directory-trust.js";
 
 export const CODEBUDDY_CAPABILITIES: HarnessSessionCapabilities = {
   configuration: {
@@ -53,6 +57,7 @@ export function nativeModel(ref: HarnessModelRef): string {
 export function configuration(
   value: unknown,
   profile: CodeBuddyRuntimeProfile = CODEBUDDY_RUNTIME_PROFILE,
+  trustContext?: { cwd: string; environment: NodeJS.ProcessEnv },
 ) {
   const options = rows(value);
   const get = (id: string) => options.find((option) => option.id === id) ?? {};
@@ -73,8 +78,16 @@ export function configuration(
     currentModel = { ref: currentModelRef, label: text(model.currentValue) };
     models.push(currentModel);
   }
-  if (!currentModel)
-    throw new CodeBuddyError("protocolError", "ACP did not report a valid current Model");
+  if (!currentModel) {
+    const untrusted =
+      trustContext &&
+      assessCodeBuddyDirectoryTrust(trustContext.cwd, trustContext.environment, profile).status ===
+        "untrusted";
+    throw new CodeBuddyError(
+      untrusted ? "invalidRequest" : "protocolError",
+      codeBuddyMissingModelErrorMessage(trustContext?.cwd, trustContext?.environment, profile),
+    );
+  }
   const catalog = harnessModelCatalogSchema.parse({
     models: models.map((item) => ({
       ...item,

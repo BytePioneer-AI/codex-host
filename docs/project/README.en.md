@@ -87,6 +87,16 @@ If you use a portable build, set `CODEXHOST_INSTALL_ROOT` to the extracted Codex
 
 Fully quit Codex Desktop, open a new terminal, and start codexhost.
 
+**Windows** - Defender false positives
+
+Windows Defender may quarantine unsigned `codexhost.exe` as `Wacapew.A!ml` (or similar ML heuristics). That often surfaces as: `could not start: executable path ... does not exist`.
+
+Do not turn Defender off globally. In **Windows Security → Virus & threat protection → Exclusions**, add an exclusion for the CodexHost **install directory** only (typically the install path’s `bin` folder that contains `codexhost.exe`). If the file was already quarantined, restore it from Protection history, add the exclusion, then reinstall or start again.
+
+Avoid read-only ACL workarounds on `codexhost.exe` — they block the installer from overwriting the file and break upgrades.
+
+If a build from the [official Releases](https://github.com/BytePioneer-AI/codex-host/releases) is still flagged, submit a sample to Microsoft: [Submit a file for malware analysis](https://www.microsoft.com/wdsi/filesubmission).
+
 </details>
 
 ### Interaction Examples

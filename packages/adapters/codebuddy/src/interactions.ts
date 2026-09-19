@@ -9,7 +9,16 @@ import {
 } from "@codexhost/harness-adapter";
 import { hostInteractionIdSchema, type HostTurnId } from "@codexhost/shared-contracts";
 import type { CodeBuddyClient } from "./acp-client.js";
-import { CodeBuddyError, failure, nativeError, record, rows, text } from "./common.js";
+import {
+  CODEBUDDY_RUNTIME_PROFILE,
+  CodeBuddyError,
+  failure,
+  nativeError,
+  record,
+  rows,
+  text,
+  type CodeBuddyRuntimeProfile,
+} from "./common.js";
 
 interface Pending {
   interaction: HostInteraction;
@@ -24,17 +33,23 @@ export class CodeBuddyInteractions {
   constructor(
     readonly emit: (output: HarnessOutput) => void,
     readonly client: () => CodeBuddyClient,
+    readonly profile: CodeBuddyRuntimeProfile = CODEBUDDY_RUNTIME_PROFILE,
   ) {}
 
   #question(turnId: HostTurnId, input: unknown): HostQuestionInteraction {
     const questions = rows(record(input).questions);
     if (!questions.length || questions.length > 4)
-      throw new CodeBuddyError("protocolError", "Invalid CodeBuddy question count");
+      throw new CodeBuddyError(
+        "protocolError",
+        `Invalid ${this.profile.displayName} question count`,
+      );
     return {
       type: "question",
-      interactionId: hostInteractionIdSchema.parse(`codebuddy-question-${++this.#sequence}`),
+      interactionId: hostInteractionIdSchema.parse(
+        `${this.profile.interactionIdPrefix}-question-${++this.#sequence}`,
+      ),
       turnId,
-      title: "CodeBuddy",
+      title: this.profile.displayName,
       questions: questions.map((question, index) => {
         const options = rows(question.options).map((option) => ({
           value: text(option.label),
@@ -42,7 +57,10 @@ export class CodeBuddyInteractions {
           ...(option.description ? { description: text(option.description) } : {}),
         }));
         if (!text(question.question) || !options.length || options.some((option) => !option.value))
-          throw new CodeBuddyError("protocolError", "Malformed CodeBuddy question");
+          throw new CodeBuddyError(
+            "protocolError",
+            `Malformed ${this.profile.displayName} question`,
+          );
         return {
           id: text(question.id) || `q_${index}`,
           type: "choice",
@@ -97,9 +115,11 @@ export class CodeBuddyInteractions {
       throw new CodeBuddyError("unsupported", "ACP approval does not provide a reject action");
     const interaction: HostInteraction = {
       type: "approval",
-      interactionId: hostInteractionIdSchema.parse(`codebuddy-approval-${++this.#sequence}`),
+      interactionId: hostInteractionIdSchema.parse(
+        `${this.profile.interactionIdPrefix}-approval-${++this.#sequence}`,
+      ),
       turnId,
-      title: name || request.toolCall.title || "CodeBuddy tool approval",
+      title: name || request.toolCall.title || `${this.profile.displayName} tool approval`,
       subject: { type: "nativeAction" },
       actions,
       description: JSON.stringify(request.toolCall.rawInput ?? {}).slice(0, 16_000),
@@ -146,7 +166,7 @@ export class CodeBuddyInteractions {
   async respond(command: InteractionRespondCommand): Promise<HarnessResult<{ accepted: true }>> {
     const pending = this.#pending.get(command.interactionId);
     if (!pending || pending.responding)
-      return failure("invalidRequest", "Interaction is not awaiting a response");
+      return failure("invalidRequest", "Interaction is not awaiting a response", this.profile);
     const validation = validateHostInteractionResponse(pending.interaction, command.response);
     if (validation) return { ok: false, error: validation };
     pending.responding = true;
@@ -156,7 +176,7 @@ export class CodeBuddyInteractions {
       return { ok: true, value: { accepted: true } };
     } catch (error) {
       pending.responding = false;
-      return { ok: false, error: nativeError(error) };
+      return { ok: false, error: nativeError(error, this.profile) };
     }
   }
 

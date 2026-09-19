@@ -655,7 +655,7 @@ class OpenCodeHarnessSession implements HarnessSession, OpenCodeTransportListene
   }
 
   async #selectModel(command: ModelSelectCommand): Promise<HarnessResult<ModelSelectCompleted>> {
-    if (this.#active || this.#configuring) {
+    if (this.#configuring) {
       return {
         ok: false,
         error: {
@@ -705,7 +705,7 @@ class OpenCodeHarnessSession implements HarnessSession, OpenCodeTransportListene
     if (!this.capabilities.configuration.selectThinkingOption) {
       return { ok: false, error: unsupported("OpenCode Model variants are unavailable") };
     }
-    if (this.#active || this.#configuring) {
+    if (this.#configuring) {
       return {
         ok: false,
         error: {

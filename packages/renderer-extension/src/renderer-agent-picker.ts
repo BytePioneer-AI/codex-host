@@ -68,6 +68,7 @@ export const RENDERER_AGENT_INSTALL_URLS: Readonly<Record<ExternalRendererAgent,
   antigravity: "https://antigravity.google/product/antigravity-cli",
   "kiro-cli": "https://kiro.dev/docs/cli/",
   codebuddy: "https://www.codebuddy.ai/docs/zh/cli/overview",
+  workbuddy: "https://www.workbuddy.ai/docs/workbuddy/Quickstart",
   "cursor-cli": "https://cursor.com/docs/cli/installation",
   devin: "https://docs.devin.ai/cli",
   hermes: "https://hermes-agent.nousresearch.com/docs",
@@ -558,7 +559,8 @@ export function mountRendererAgentPicker(
       const agent = entry.agent as RendererAgent;
       if (!enabledSet.has(agent) || seen.has(agent)) continue;
       seen.add(agent);
-      (entry.section === "more" ? nextMore : nextMain).push(agent);
+      const section = groupPreference.sectionOf(entry.agent, notInstalled.has(agent));
+      (section === "more" ? nextMore : nextMain).push(agent);
     }
 
     // Defensive: an enabled Agent the preference store hasn't recorded yet

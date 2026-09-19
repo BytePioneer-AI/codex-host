@@ -2360,9 +2360,16 @@ describe("DeepSeek Harness Modern Session", () => {
     await test.session.close();
   });
 
-  it("blocks prompts, configuration, and a second command while a command is active", async () => {
+  it("allows configuration but blocks prompts and a second command while a command is active", async () => {
     const execution = deferred<ModernRemoteResult<unknown>>();
-    const test = setup([() => execution.promise]);
+    const selected = { provider: "deepseek", model: "deepseek-v4", reasoningEffort: "off" };
+    const test = setup([
+      () => execution.promise,
+      async () => {
+        test.control.update("modelSelection", { lastUsed: null, next: selected }, 1);
+        return { ok: true, value: { selected } };
+      },
+    ]);
     const outputs = test.session.outputs[Symbol.asyncIterator]();
     const activeTurnId = turnId("active-command");
     await expect(
@@ -2384,14 +2391,19 @@ describe("DeepSeek Harness Modern Session", () => {
     ).resolves.toMatchObject({ ok: false, error: { code: "sessionBusy" } });
     await expect(
       test.session.execute({ type: "thinking.select", thinkingOptionId: "off" as never }),
-    ).resolves.toMatchObject({ ok: false, error: { code: "sessionBusy" } });
+    ).resolves.toMatchObject({ ok: true });
+    expect(await nextEvent(outputs)).toMatchObject({
+      type: "session.state.changed",
+      state: { effectiveThinkingOptionId: "off" },
+    });
     await expect(
       test.session.commands.execute({
         turnId: turnId("blocked-command"),
         commandId: "dsh.compact",
       }),
     ).resolves.toMatchObject({ ok: false, error: { code: "sessionBusy" } });
-    expect(test.remote.calls).toHaveLength(1);
+    expect(test.remote.calls).toHaveLength(2);
+    expect(test.remote.calls[1]).toMatchObject({ endpoint: "session/selectModel" });
 
     execution.resolve({
       ok: true,
@@ -3014,7 +3026,7 @@ describe("DeepSeek Harness Modern Session", () => {
     await test.session.close();
   });
 
-  it("treats a queued delivery as busy and closes without activating or cancelling Native", async () => {
+  it("allows configuration with a queued delivery but blocks new work without activating Native", async () => {
     const respond = vi.fn<ModernApprovalDelivery["respond"]>(async () => undefined);
     const test = setup([]);
     const outputs = test.session.outputs[Symbol.asyncIterator]();
@@ -3032,7 +3044,8 @@ describe("DeepSeek Harness Modern Session", () => {
         type: "model.select",
         model: MODEL_CATALOG.catalog.models[0]?.ref as never,
       }),
-    ).resolves.toMatchObject({ ok: false, error: { code: "sessionBusy" } });
+    ).resolves.toMatchObject({ ok: true });
+    expect(await nextEvent(outputs)).toMatchObject({ type: "session.state.changed" });
     await expect(
       test.session.commands.execute({
         turnId: turnId("blocked-command"),

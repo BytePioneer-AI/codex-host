@@ -6,7 +6,7 @@ import type {
   HostThreadSnapshot,
 } from "@codexhost/harness-adapter";
 import type { NativeSessionRef, HostTurnId } from "@codexhost/shared-contracts";
-import { record, text } from "./common.js";
+import { CODEBUDDY_RUNTIME_PROFILE, record, text, type CodeBuddyRuntimeProfile } from "./common.js";
 import { contentText } from "./projection.js";
 import { codeBuddyChildId, codeBuddyDelegation } from "./subagent-tool.js";
 import { CodeBuddyChildObserver } from "./subagent-history.js";
@@ -38,8 +38,13 @@ export class CodeBuddySubagents {
       emit(event: HostEvent): void;
       locate?: typeof locateCodeBuddyChild;
       read?: typeof readCodeBuddyChild;
+      profile?: CodeBuddyRuntimeProfile;
     },
   ) {}
+
+  get profile() {
+    return this.options.profile ?? CODEBUDDY_RUNTIME_PROFILE;
+  }
 
   begin(turnId: HostTurnId) {
     this.#turnId = turnId;
@@ -86,7 +91,13 @@ export class CodeBuddySubagents {
       if (!meta["codebuddy.ai/toolArgumentsComplete"]) return true;
       call = {
         turnId: this.#turnId,
-        item: codeBuddyDelegation(callId, update.rawInput, "running"),
+        item: codeBuddyDelegation(
+          callId,
+          update.rawInput,
+          "running",
+          undefined,
+          this.profile.displayName,
+        ),
         itemCompleted: false,
         observationDone: false,
       };
@@ -121,7 +132,7 @@ export class CodeBuddySubagents {
                   status: "failed",
                   error: {
                     code: "nativeFailure",
-                    message: "CodeBuddy Subagent invocation failed",
+                    message: `${this.profile.displayName} Subagent invocation failed`,
                     retryable: false,
                   },
                 }
@@ -175,6 +186,7 @@ export class CodeBuddySubagents {
       parent,
       this.options.cwd,
       this.options.environment,
+      this.profile,
     );
     this.#refreshing = true;
     try {
@@ -190,6 +202,7 @@ export class CodeBuddySubagents {
                       this.options.cwd,
                       this.options.environment,
                       call.requestId,
+                      this.profile,
                     )
                   : this.#observer.locate(call.requestId))
               : undefined);
@@ -197,7 +210,14 @@ export class CodeBuddySubagents {
           if (!call.item.subagents[0]?.nativeSubagentId)
             this.#update(call, { nativeSubagentId: id, subagentId: id });
           const snapshot = await (this.options.read
-            ? this.options.read(parent, id, this.options.cwd, this.options.environment, "running")
+            ? this.options.read(
+                parent,
+                id,
+                this.options.cwd,
+                this.options.environment,
+                "running",
+                this.profile,
+              )
             : this.#observer.read(id, "running"));
           if (this.#closed || call.observationDone) continue;
           const observedModel = snapshot.turns.at(-1)?.model;

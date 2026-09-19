@@ -883,7 +883,7 @@ class PiHarnessSession implements HarnessSession {
   }
 
   async #selectModel(command: ModelSelectCommand): Promise<HarnessResult<ModelSelectCompleted>> {
-    if (this.#acceptingTurn || this.#active || this.#configuring) {
+    if (this.#acceptingTurn || this.#configuring) {
       return {
         ok: false,
         error: {
@@ -955,7 +955,7 @@ class PiHarnessSession implements HarnessSession {
         },
       };
     }
-    if (this.#acceptingTurn || this.#active || this.#configuring) {
+    if (this.#acceptingTurn || this.#configuring) {
       return {
         ok: false,
         error: {

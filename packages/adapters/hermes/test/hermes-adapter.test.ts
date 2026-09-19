@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import type { HarnessOutput } from "@codexhost/harness-adapter";
 import {
@@ -708,6 +708,36 @@ describe("HermesSession cancellation", () => {
 });
 
 describe("HermesSession live configuration errors", () => {
+  it("forwards Model selection during an active Turn", async () => {
+    const transport = new FakeTurnTransport();
+    const gate = Promise.withResolvers<{ stopReason: "end_turn" }>();
+    transport.runTurn = () => gate.promise;
+    const select = vi.spyOn(transport, "setModel");
+    const session = new HermesSession({
+      nativeRef: nativeSessionRefSchema.parse({
+        harnessId: "hermes",
+        nativeSessionId: "native-session-1",
+        formatVersion: 1,
+      }),
+      transport: transport as unknown as HermesAcpTransport,
+      open: openResult(),
+      onSettle: () => undefined,
+    });
+    try {
+      await session.execute({
+        type: "turn.start",
+        turnId: hostTurnIdSchema.parse("active-config"),
+        input: [{ type: "text", text: "go" }],
+      });
+      const model = encodeHermesModelRef("openrouter:test-model");
+      if (!model) throw new Error("Expected a Model");
+      expect(await session.execute({ type: "model.select", model })).toMatchObject({ ok: true });
+      expect(select).toHaveBeenCalledWith("openrouter:test-model");
+    } finally {
+      gate.resolve({ stopReason: "end_turn" });
+      await session.close();
+    }
+  });
   it("preserves authentication details from Model selection", async () => {
     const transport = new FakeTurnTransport();
     transport.setModel = async () => {

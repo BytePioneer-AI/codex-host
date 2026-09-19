@@ -43,6 +43,7 @@ interface SubagentOptions {
   port(): Promise<number | null>;
   cwd: string;
   outputLimit: number;
+  observationTimeoutMs: number;
   initialStates?: HostSubagentState[];
   emit(event: HostEvent): void;
   complete(snapshot: HostItemSnapshot): void;
@@ -51,6 +52,7 @@ interface SubagentOptions {
 
 export class AntigravitySubagents {
   readonly #states = new Map<string, HostSubagentState>();
+  readonly #lastObservedAt = new Map<string, number>();
   readonly #transcripts = new Map<string, string>();
   readonly #items = new Map<number, Delegation>();
   readonly #options: SubagentOptions;
@@ -156,10 +158,15 @@ export class AntigravitySubagents {
     if (this.#stopped) return;
     const parentId = this.#options.parentId();
     const port = await this.#options.port();
-    if (!parentId || port === null) return;
+    if (!parentId || port === null) {
+      for (const id of this.#states.keys()) this.#expireUnobserved(id);
+      if (this.#ended && !this.running) this.stop();
+      return;
+    }
     for (const [id, previous] of this.#states) {
       if (this.#stopped) return;
       let status = previous.status;
+      let statusObserved = false;
       try {
         const value = await subagentRpc(port, id, "GetCascadeTrajectory");
         const observed = subagentRunStatus(value, parentId);
@@ -168,6 +175,8 @@ export class AntigravitySubagents {
         if (observed !== "completed" || (status !== "interrupted" && status !== "failed")) {
           status = observed ?? status;
         }
+        statusObserved = observed !== null;
+        if (statusObserved) this.#lastObservedAt.set(id, Date.now());
       } catch {
         // A transient read failure is not evidence that the native child finished.
       }
@@ -202,6 +211,9 @@ export class AntigravitySubagents {
           this.#options.emit({ type: "subagent.transcript.changed", nativeSubagentId: id });
         }
       }
+      // Only a failed observation can expire this child. A slow transcript read
+      // or subsequent RPCs for other children must not invalidate a valid status.
+      if (!statusObserved) this.#expireUnobserved(id);
     }
     if (this.#ended && !this.running) this.stop();
   }
@@ -211,7 +223,32 @@ export class AntigravitySubagents {
       if (!delegation.completed) this.#complete(delegation, outcome);
     }
     this.#ended = true;
+    const now = Date.now();
+    for (const [id, state] of this.#states) {
+      if (state.status === "running" || state.status === "pending") {
+        this.#lastObservedAt.set(id, now);
+      }
+    }
     if (!this.running) this.stop();
+  }
+
+  #expireUnobserved(id: string): void {
+    if (!this.#ended || this.#stopped) return;
+    const state = this.#states.get(id);
+    if (!state || (state.status !== "running" && state.status !== "pending")) return;
+    const now = Date.now();
+    if (now - (this.#lastObservedAt.get(id) ?? now) < this.#options.observationTimeoutMs) return;
+    const resultSummary =
+      "Observation timed out; native Subagent completion could not be confirmed.";
+    this.#states.set(id, { ...state, status: "interrupted", resultSummary });
+    this.#options.emit({
+      type: "subagent.state.changed",
+      nativeSubagentId: id,
+      status: "interrupted",
+      resultSummary,
+    });
+    this.#options.emit({ type: "subagent.transcript.changed", nativeSubagentId: id });
+    this.#lastObservedAt.delete(id);
   }
 
   cancel(): Promise<void> {
@@ -270,6 +307,7 @@ export class AntigravitySubagents {
   stop(): void {
     this.#stopped = true;
     clearInterval(this.#timer);
+    this.#lastObservedAt.clear();
     this.#settled?.();
   }
 

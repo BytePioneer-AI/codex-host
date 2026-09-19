@@ -72,11 +72,6 @@ function discoverySpec(variant: QoderVariant): HarnessDiscoverySpec {
 export const qoderDiscoverySpec = discoverySpec("global");
 export const qoderCnDiscoverySpec = discoverySpec("cn");
 
-export const qoderFallbackSpec: HarnessDiscoverySpec = {
-  ...qoderDiscoverySpec,
-  command: "qoder",
-};
-
 export function resolveQoderExecutable(
   input: {
     variant?: QoderVariant;
@@ -90,28 +85,17 @@ export function resolveQoderExecutable(
   const platform = input.platform ?? process.platform;
   const cn = input.variant === "cn";
   const spec = cn ? qoderCnDiscoverySpec : qoderDiscoverySpec;
-  const resolution =
-    resolveHarnessExecutable(
-      spec,
-      {
-        ...(input.command ? { command: input.command } : {}),
-        environment: input.environment ?? process.env,
-        ...(input.homeDirectory ? { homeDirectory: input.homeDirectory } : {}),
-        platform,
-      },
-      dependencies,
-    ) ??
-    (input.command !== undefined
-      ? undefined
-      : resolveHarnessExecutable(
-          cn ? { ...spec, command: "qodercn" } : qoderFallbackSpec,
-          {
-            environment: input.environment ?? process.env,
-            ...(input.homeDirectory ? { homeDirectory: input.homeDirectory } : {}),
-            platform,
-          },
-          dependencies,
-        ));
+  // Editor launchers (qoder/qodercn) are not SDK-compatible CLI runtimes.
+  const resolution = resolveHarnessExecutable(
+    spec,
+    {
+      ...(input.command ? { command: input.command } : {}),
+      environment: input.environment ?? process.env,
+      ...(input.homeDirectory ? { homeDirectory: input.homeDirectory } : {}),
+      platform,
+    },
+    dependencies,
+  );
 
   if (!resolution) throw new QoderExecutableError("Qoder CLI is not installed");
   return targetPath(platform).isAbsolute(resolution.executable)

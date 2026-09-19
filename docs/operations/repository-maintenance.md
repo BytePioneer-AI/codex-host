@@ -62,21 +62,34 @@ PR 维护只做两件事：**明确标题自动标签、CI 结束后更新一条
 | --- | --- | --- |
 | 格式、ESLint、包边界、完整 TypeScript 类型检查（含测试） | 执行 | 不重复执行 |
 | TypeScript 构建、预装插件构建 | 执行 | 执行 |
-| TypeScript 测试 | 全量 | 除 repository-automation 外全部执行 |
+| TypeScript 测试 | 全量 | 排除下述仅在 Linux x64 执行的测试，其余全部执行 |
 | Rust Clippy、编译和测试 | 执行 | 执行 |
 | Linux npm 安装包 smoke | 执行 | ARM64 执行；macOS / Windows 不适用 |
 
-repository-automation 是运行在 Linux GitHub Actions 中的仓库治理逻辑，其测试不再跨 Desktop 平台和 CPU 架构重复执行。其余测试暂不按包裁剪，以保留文件系统、进程、插件加载及发行产物的跨平台回归覆盖。各平台的 TypeScript 构建仍会检查生产代码类型；Rust 格式校验也随 `check:rust` 保留。
+以下测试仅在 Linux x64 执行，不在其他三个平台重复运行：
+
+- `packages/repository-automation/test/**`：实际运行在 Linux GitHub Actions 中的仓库治理逻辑。
+- `packages/shared-contracts/test/**`：Schema、序列化和浏览器打包边界验证。
+- `packages/renderer-extension/test/**`：浏览器逻辑、模拟 DOM 和显式模拟的平台信息，不是真实 Desktop UI 验证。
+- `tools/gate-claude-code/run.test.mjs`：入口测试会嵌套启动 Vitest，再次执行已被全量套件包含的 Gate 测试；其余 Gate 测试仍跨平台执行。
+
+其余测试继续保留文件系统、进程、路径、锁、SQLite、插件加载及发行产物的跨平台回归覆盖，Linux ARM64 不以安装包 smoke 替代这些测试。各平台的 TypeScript 构建仍会检查生产代码类型；Rust 格式只在 Linux x64 的 `format:check` 中检查一次，各平台继续执行完整 Clippy 和 Rust 测试。
+
+CI 使用全新 runner，且不持久化 Cargo `target` 目录，因此设置 `CARGO_INCREMENTAL=0`，不生成跨次编译使用的增量状态；Cargo 在同一 job 内仍可复用已构建且未变化的依赖产物。通过 `CARGO_PROFILE_DEV_DEBUG=0` 和 `CARGO_PROFILE_TEST_DEBUG=0` 关闭 Rust dev/test 编译的调试符号，减少编译、链接和产物开销；默认调试断言和溢出检查保持开启，但堆栈的源码定位信息会减少。不修改本地 Cargo 配置或 release profile，也不改变发布工作流。固定版本 npm 的安装和 `npm ci` 使用 `--prefer-offline` 优先利用现有 npm 缓存，缓存缺失时仍联网获取；不改变锁文件约束，也不关闭依赖审计。
 
 同一 PR 有新提交时取消旧 CI；每个 `main push` 使用独立并发组，不因后续提交取消，保留确切发布 SHA 的成功证据。不启用测试重试，也不全局放宽超时。
 
-本地 `npm run check` 仍执行完整检查，不受 CI 裁剪影响。复现 CI 的 TypeScript 范围：
+本地 `npm run check` 和 `npm run check:rust` 保持不变，不受 CI 裁剪影响。复现 CI 的 TypeScript 范围：
 
 ```bash
 # Linux x64：构建并运行完整测试
 npm run test:typescript
-# 其他平台：构建并排除仅需在 Linux x64 验证的仓库治理测试
-npm run test:typescript -- --exclude 'packages/repository-automation/test/**'
+# 其他平台：构建并排除仅在 Linux x64 执行的测试
+npm run test:typescript -- \
+  --exclude 'packages/repository-automation/test/**' \
+  --exclude 'packages/shared-contracts/test/**' \
+  --exclude 'packages/renderer-extension/test/**' \
+  --exclude 'tools/gate-claude-code/run.test.mjs'
 ```
 
 工作流将格式、Lint、类型检查、TypeScript 和 Rust 分为独立 step，便于观察瓶颈。修改执行范围后的实际耗时以 Actions 运行结果为准。

@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -63,6 +63,12 @@ describe("Cursor read-only native identity", () => {
     expect(readCursorNativeTurns(f.sessionId, f.home, { HOME: f.home })).toEqual(f.turns);
     expect(readCursorNativeTurns(f.sessionId, f.home, { HOME: f.home })).toEqual(f.turns);
   }, 15_000);
+  it("accepts a symlink to the same native workspace", () => {
+    const f = fixture();
+    const link = path.join(f.home, "workspace-link");
+    symlinkSync(f.home, link, "junction");
+    expect(readCursorNativeTurns(f.sessionId, link, { HOME: f.home })).toEqual(f.turns);
+  });
   it("allows a new empty history without inventing IDs", () => {
     const f = fixture([]);
     expect(readCursorNativeTurns(f.sessionId, f.home, { HOME: f.home })).toEqual([]);

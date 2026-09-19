@@ -60,6 +60,7 @@ export type {
   HarnessPluginListResult,
   HarnessPluginManifest,
 } from "./harness-plugins.js";
+export * from "./harness-launch-settings.js";
 export { codexhostErrorSchema } from "./errors.js";
 export {
   codexAccountUsageParamsSchema,

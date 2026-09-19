@@ -265,7 +265,6 @@ jobs:
 
       - name: Publish platform packages and meta package
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
           NPM_TAG: ${{ needs.prepare.outputs.npm_tag }}
           RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
         run: >

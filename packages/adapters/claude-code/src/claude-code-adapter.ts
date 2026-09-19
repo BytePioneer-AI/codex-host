@@ -1010,7 +1010,7 @@ class ClaudeHarnessSession implements HarnessSession {
   }
 
   async #selectModel(command: ModelSelectCommand): Promise<HarnessResult<ModelSelectCompleted>> {
-    if (this.#acceptingTurn || this.#active || this.#configurationTask || this.#readingHistory) {
+    if (this.#acceptingTurn || this.#configurationTask || this.#readingHistory) {
       return {
         ok: false,
         error: {
@@ -1070,7 +1070,7 @@ class ClaudeHarnessSession implements HarnessSession {
   async #selectThinking(
     command: ThinkingSelectCommand,
   ): Promise<HarnessResult<ThinkingSelectCompleted>> {
-    if (this.#acceptingTurn || this.#active || this.#configurationTask || this.#readingHistory) {
+    if (this.#acceptingTurn || this.#configurationTask || this.#readingHistory) {
       return {
         ok: false,
         error: {

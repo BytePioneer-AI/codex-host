@@ -19,8 +19,8 @@ export interface AgentGroupEntry {
 
 export interface AgentGroupPreferenceStore {
   /** All known external Agents, in display order, each tagged with its section. */
-  list(): readonly AgentGroupEntry[];
-  sectionOf(agent: ExternalRendererAgent): AgentGroupSection;
+  list(notInstalled?: ReadonlySet<ExternalRendererAgent>): readonly AgentGroupEntry[];
+  sectionOf(agent: ExternalRendererAgent, notInstalled?: boolean): AgentGroupSection;
   /**
    * Move `agent` into `section`. When `beforeAgent` is provided the Agent is
    * inserted immediately before it (both must end up in the same section);
@@ -43,7 +43,7 @@ const EXTERNAL_AGENTS: readonly ExternalRendererAgent[] = KNOWN_RENDERER_AGENTS.
 
 interface StoredEntry {
   readonly agent: string;
-  readonly section: AgentGroupSection;
+  readonly section: AgentGroupSection | "auto";
 }
 
 function isKnownExternalAgent(value: unknown): value is ExternalRendererAgent {
@@ -55,7 +55,7 @@ function isStoredEntry(value: unknown): value is StoredEntry {
   const candidate = value as Partial<StoredEntry>;
   return (
     isKnownExternalAgent(candidate.agent) &&
-    (candidate.section === "main" || candidate.section === "more")
+    (candidate.section === "main" || candidate.section === "more" || candidate.section === "auto")
   );
 }
 
@@ -101,9 +101,7 @@ export function createAgentGroupPreferenceStore(
   storage: Storage | null = safeLocalStorage(),
 ): AgentGroupPreferenceStore {
   let order: ExternalRendererAgent[] = [...EXTERNAL_AGENTS];
-  let sections = new Map<ExternalRendererAgent, AgentGroupSection>(
-    EXTERNAL_AGENTS.map((agent) => [agent, "main" as AgentGroupSection]),
-  );
+  const sections = new Map<ExternalRendererAgent, AgentGroupSection>();
   const listeners = new Set<() => void>();
 
   const stored = readStorage(storage);
@@ -115,10 +113,10 @@ export function createAgentGroupPreferenceStore(
       if (seen.has(agent)) continue;
       seen.add(agent);
       nextOrder.push(agent);
-      sections.set(agent, entry.section);
+      if (entry.section !== "auto") sections.set(agent, entry.section);
     }
     // Agents that shipped after the user last saved a preference (new
-    // Harnesses) default to "main" and land at the end of the list.
+    // Harnesses) use installation-based defaults and land at the end of the list.
     for (const agent of EXTERNAL_AGENTS) {
       if (!seen.has(agent)) nextOrder.push(agent);
     }
@@ -128,7 +126,7 @@ export function createAgentGroupPreferenceStore(
   const persist = (): void => {
     writeStorage(
       storage,
-      order.map((agent) => ({ agent, section: sections.get(agent) ?? "main" })),
+      order.map((agent) => ({ agent, section: sections.get(agent) ?? "auto" })),
     );
   };
   const notify = (): void => {
@@ -136,11 +134,14 @@ export function createAgentGroupPreferenceStore(
   };
 
   return {
-    list() {
-      return order.map((agent) => ({ agent, section: sections.get(agent) ?? "main" }));
+    list(notInstalled) {
+      return order.map((agent) => ({
+        agent,
+        section: sections.get(agent) ?? (notInstalled?.has(agent) ? "more" : "main"),
+      }));
     },
-    sectionOf(agent) {
-      return sections.get(agent) ?? "main";
+    sectionOf(agent, notInstalled = false) {
+      return sections.get(agent) ?? (notInstalled ? "more" : "main");
     },
     moveAgent(agent, section, beforeAgent = null) {
       if (!EXTERNAL_AGENTS.includes(agent)) return;
@@ -154,7 +155,7 @@ export function createAgentGroupPreferenceStore(
     },
     resetToDefault() {
       order = [...EXTERNAL_AGENTS];
-      sections = new Map(EXTERNAL_AGENTS.map((agent) => [agent, "main" as AgentGroupSection]));
+      sections.clear();
       persist();
       notify();
     },

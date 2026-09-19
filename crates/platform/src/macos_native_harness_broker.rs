@@ -802,7 +802,7 @@ mod tests {
 
     #[test]
     fn non_claude_brokers_have_independent_launch_agents_and_lifecycle_targets() {
-        for harness_id in ["codebuddy", "cursor-cli"] {
+        for harness_id in ["codebuddy", "workbuddy", "cursor-cli"] {
             let plan = plan_native_harness_broker_launch_agent(
                 NativeHarnessBrokerPaths {
                     harness_id,

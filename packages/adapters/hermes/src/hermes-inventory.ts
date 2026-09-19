@@ -75,8 +75,28 @@ for row in payload.get("providers") or []:
         )
         if slug and model_id:
             available = slug.lower() != "moa" or bool(moa_availability.get(model_id, False))
+            aliases = [
+                alias.strip()
+                for alias in row.get("aliases") or []
+                if isinstance(alias, str) and alias.strip()
+            ]
+            # Hermes names configured custom endpoints as custom:<key>.
+            # The inventory row slug is the bare config key (pi-openai),
+            # which is useful for display but is not a valid native model route.
+            # Prefer the native custom identity for the actual model ref and
+            # retain the bare slug as an alias for matching older snapshots.
+            native_slug = next(
+                (alias for alias in aliases if alias.lower().startswith("custom:")),
+                slug,
+            )
+            native_model_id = native_slug + ":" + model_id
             rows.append({
-                "modelId": slug + ":" + model_id,
+                "modelId": native_model_id,
+                "modelIdAliases": [
+                    alias + ":" + model_id
+                    for alias in aliases
+                    if alias + ":" + model_id != native_model_id
+                ],
                 "label": model_id,
                 "provider": provider,
                 "available": available,
@@ -90,6 +110,8 @@ print(json.dumps({"models": rows, "currentModelId": current_model_id}))
 export interface HermesInventoryModel {
   /** Native Hermes choice id, e.g. `zai:glm-5-turbo`. */
   modelId: string;
+  /** Alternate native identities advertised by Hermes, including custom:<provider>. */
+  modelIdAliases?: string[];
   label: string;
   provider: string;
   /** False when a virtual model depends on providers Hermes cannot currently use. */
@@ -103,6 +125,11 @@ export interface HermesInventory {
 }
 
 export class HermesInventoryError extends Error {}
+export class HermesInventoryTimeoutError extends HermesInventoryError {
+  constructor() {
+    super("Hermes model inventory probe timed out");
+  }
+}
 
 export async function venvPythonFromShim(
   hermesExecutable: string,
@@ -162,7 +189,7 @@ function runProbe(
     let stderr = "";
     const timer = setTimeout(() => {
       child.kill("SIGKILL");
-      reject(new HermesInventoryError("Hermes model inventory probe timed out"));
+      reject(new HermesInventoryTimeoutError());
     }, timeoutMs);
     child.stdout.on("data", (chunk: Buffer) => {
       stdout += chunk.toString("utf8");
@@ -254,9 +281,17 @@ export function catalogModelsFromInventory(inventory: HermesInventory): {
   let defaultModel: HarnessModelRef | null = null;
   for (const model of inventory.models) {
     if (model.available === false) continue;
-    const ref = encodeHermesModelRef(model.modelId);
+    const nativeModelId =
+      model.modelIdAliases?.find((alias) => alias.toLowerCase().startsWith("custom:")) ??
+      model.modelId;
+    const ref = encodeHermesModelRef(nativeModelId);
     if (!ref) continue;
-    if (inventory.currentModelId && model.modelId === inventory.currentModelId) {
+    if (
+      inventory.currentModelId &&
+      (model.modelId === inventory.currentModelId ||
+        nativeModelId === inventory.currentModelId ||
+        model.modelIdAliases?.includes(inventory.currentModelId))
+    ) {
       defaultModel = ref;
     }
     models.push({

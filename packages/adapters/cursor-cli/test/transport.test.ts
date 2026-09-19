@@ -11,8 +11,13 @@ vi.mock("../src/command.js", () => ({
   }),
 }));
 const transports: CursorTransport[] = [];
-function transport(timeoutMs = 2_000) {
-  const result = new CursorTransport({ cwd: process.cwd(), environment: process.env, timeoutMs });
+function transport(timeoutMs = 2_000, loadModelCatalog = true) {
+  const result = new CursorTransport({
+    cwd: process.cwd(),
+    environment: process.env,
+    timeoutMs,
+    loadModelCatalog,
+  });
   transports.push(result);
   return result;
 }
@@ -57,4 +62,54 @@ describe("Cursor ACP process boundary", () => {
     await expect(native.configure("mode", "plan")).rejects.toThrow(/timed out|closed/u);
     await expect(native.prompt("must not run", callbacks)).rejects.toThrow();
   });
+});
+
+it("reads history without waiting for a model catalog that never responds", async () => {
+  state.scenario = "hang-models";
+  const replay = transport(500, false);
+  expect(await replay.open("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")).toMatchObject({
+    configOptions: [],
+  });
+});
+
+it("authenticates ahead of session adoption without creating or loading a session", async () => {
+  state.scenario = "prepare-once";
+  const native = transport();
+  await Promise.all([native.prepare(), native.prepare()]);
+  expect(native.sessionId).toBe("");
+  expect(await native.open()).toMatchObject({ sessionId: expect.any(String) });
+  await expect(native.open()).rejects.toThrow("reopened");
+});
+
+it("reuses a matching model catalog while keeping freshly loaded configuration", async () => {
+  state.scenario = "cached-models";
+  const cached = [{ value: "model", name: "Model", configOptions: [] }];
+  const native = new CursorTransport(
+    { cwd: process.cwd(), environment: process.env, timeoutMs: 500 },
+    cached,
+  );
+  transports.push(native);
+  const info = await native.open();
+  expect(info.nativeModels).toEqual(cached);
+  expect(info.nativeModels).not.toBe(cached);
+  expect(info.configOptions).toMatchObject([{ id: "model", currentValue: "model" }]);
+});
+
+it("refreshes a cached catalog when the native session advertises different models", async () => {
+  state.scenario = "changed-models";
+  const native = new CursorTransport({ cwd: process.cwd(), environment: process.env }, [
+    { value: "removed", name: "Removed", configOptions: [] },
+  ]);
+  transports.push(native);
+  expect((await native.open()).nativeModels).toBeUndefined();
+});
+
+it("closes a process while authentication is pending without leaving a reusable transport", async () => {
+  state.scenario = "hang-auth";
+  const native = transport();
+  const preparing = native.prepare();
+  const failed = expect(preparing).rejects.toThrow(/closed|exited/u);
+  await native.close();
+  await failed;
+  await expect(native.open()).rejects.toThrow("reopened");
 });

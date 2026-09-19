@@ -117,6 +117,15 @@ const FAKE_MODELS = [
 ] as const;
 
 describe("Antigravity Adapter", () => {
+  it.each([Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY, 0, -1])(
+    "rejects invalid Subagent observation timeout %s",
+    (subagentObservationTimeoutMs) => {
+      expect(() => new AntigravityAdapter({ subagentObservationTimeoutMs })).toThrow(
+        new RangeError("subagentObservationTimeoutMs must be a finite positive number"),
+      );
+    },
+  );
+
   it("reads account quota without a Thread and hides it after native authentication stops returning data", async () => {
     const fixture = await fakeAgy([
       JSON.stringify({ event: "command_result", command: USAGE_COMMAND }),
@@ -599,7 +608,10 @@ describe("Antigravity Adapter", () => {
   });
 
   describe("Session Lifecycle & Tool Streaming", () => {
-    async function fakeStreamingAgy(streamLines: readonly string[]): Promise<{
+    async function fakeStreamingAgy(
+      streamLines: readonly string[],
+      keepAlive = false,
+    ): Promise<{
       command: string;
       cwd: string;
       cleanup(): Promise<void>;
@@ -619,6 +631,10 @@ if (process.argv.includes("models")) {
 }
 for (const line of lines) {
   process.stdout.write(line + "\\n");
+}
+if (${keepAlive}) {
+  process.stdin.resume();
+  process.stdin.on("end", () => process.exit(0));
 }
 `;
       const jsPath = path.join(directory, "agy.cjs");
@@ -896,6 +912,73 @@ for (const line of lines) {
         expect(JSON.stringify(completed)).toContain("Synthetic native failure detail");
 
         await session.close();
+      } finally {
+        await adapter.close();
+        await cleanup();
+      }
+    });
+
+    it("releases a completed Turn when its Subagent cannot be observed", async () => {
+      const childId = "30dce1a0-bc56-4c5d-a50d-264f235f09a9";
+      const conversationId = "conv-unobservable-child";
+      const streamLines = [
+        JSON.stringify({ event: "init", conversation_id: conversationId }),
+        JSON.stringify({
+          event: "step_update",
+          step_update: {
+            conversation_id: conversationId,
+            step_index: 1,
+            step_type: "subagent",
+            state: "DONE",
+            subagent_info: {
+              subagents: [{ conversation_id: childId, type_name: "browser" }],
+            },
+          },
+        }),
+        JSON.stringify({
+          event: "result",
+          result: { conversation_id: conversationId, status: "SUCCESS", num_turns: 1 },
+        }),
+      ];
+      const { command, cwd, cleanup } = await fakeStreamingAgy(streamLines, true);
+      const adapter = new AntigravityAdapter({ command, subagentObservationTimeoutMs: 25 });
+      try {
+        const opened = await adapter.open({ kind: "create", cwd });
+        expect(opened.ok).toBe(true);
+        if (!opened.ok) return;
+        const session = opened.value;
+        const iterator = session.outputs[Symbol.asyncIterator]();
+        const turnId = hostTurnIdSchema.parse("turn-unobservable-child");
+        await session.execute({
+          type: "turn.start",
+          turnId,
+          input: [{ type: "text", text: "Delegate to browser" }],
+        });
+        let event: HostEvent;
+        do {
+          event = await nextEvent(iterator);
+        } while (event.type !== "turn.completed");
+        expect(event.outcome.status).toBe("succeeded");
+
+        const deadline = Date.now() + 1_000;
+        while (
+          (session as typeof session & { isActive: boolean }).isActive &&
+          Date.now() < deadline
+        ) {
+          await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+        expect((session as typeof session & { isActive: boolean }).isActive).toBe(false);
+        const snapshot = await session.readSnapshot();
+        expect(snapshot.ok).toBe(true);
+        if (snapshot.ok) {
+          const delegation = snapshot.value.turns[0]?.items.find(
+            ({ item }) => item.type === "subagentDelegation",
+          )?.item;
+          expect(delegation).toMatchObject({
+            type: "subagentDelegation",
+            subagents: [{ nativeSubagentId: childId, status: "interrupted" }],
+          });
+        }
       } finally {
         await adapter.close();
         await cleanup();
@@ -1353,6 +1436,26 @@ if (count === 0) {
           input: [{ type: "text", text: "hi gemini" }],
         });
 
+        // Configure the next invocation while the first native process is still running.
+        expect(
+          await session.execute({
+            type: "model.select",
+            model: harnessModelRefSchema.parse({ id: "gemini-3.7-flash" }),
+          }),
+        ).toMatchObject({ ok: true });
+        expect(
+          await session.execute({
+            type: "thinking.select",
+            thinkingOptionId: harnessThinkingOptionIdSchema.parse("high"),
+          }),
+        ).toMatchObject({ ok: true });
+        expect(
+          await session.execute({
+            type: "model.select",
+            model: harnessModelRefSchema.parse({ id: "claude-3-7-sonnet" }),
+          }),
+        ).toMatchObject({ ok: true });
+
         let turn1Usage: Record<string, unknown> | null = null;
         while (true) {
           const ev = await nextEvent(iterator);
@@ -1363,13 +1466,6 @@ if (count === 0) {
         expect(turn1Usage?.contextWindowTokens).toBe(1_048_576);
         expect(turn1Usage).not.toHaveProperty("cachedInputTokens");
         expect(turn1Usage).not.toHaveProperty("cacheHitRatePercent");
-
-        // Switch to Claude (200k window)
-        const selectClaude = await session.execute({
-          type: "model.select",
-          model: harnessModelRefSchema.parse({ id: "claude-3-7-sonnet" }),
-        });
-        expect(selectClaude.ok).toBe(true);
 
         // Turn 2: Claude
         const turn2Id = hostTurnIdSchema.parse("turn-switch-2");

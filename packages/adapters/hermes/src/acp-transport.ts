@@ -1,11 +1,19 @@
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { Readable, Writable } from "node:stream";
 
-import { sanitizeDiagnosticTail } from "@codexhost/harness-adapter";
+import {
+  sanitizeDiagnosticTail,
+  type HostQuestion,
+  type HostQuestionResponse,
+  type HostItemOutcome,
+  type HostThreadSnapshot,
+} from "@codexhost/harness-adapter";
+import type { HarnessThinkingOption } from "@codexhost/shared-contracts";
 import {
   ClientSideConnection,
   PROTOCOL_VERSION,
   ndJsonStream,
+  type AvailableCommand,
   type Client,
   type InitializeResponse,
   type PromptResponse,
@@ -58,6 +66,8 @@ export interface HermesOpenSession {
   sessionId: string;
   models: HermesModelState | null;
   modes: HermesModeState | null;
+  thinkingOptions?: HarnessThinkingOption[];
+  currentThinkingOptionId?: string;
 }
 
 export type HermesTransportEvent =
@@ -69,6 +79,9 @@ export type HermesTransportEvent =
   | { type: "usage"; used?: number; size?: number };
 
 export interface HermesPermissionRequest {
+  description?: string;
+  effects?: Readonly<Record<string, "allowOnce" | "allowForSession" | "allowAlways" | "deny">>;
+  signal?: AbortSignal;
   request: RequestPermissionRequest;
   options: RequestPermissionRequest["options"];
 }
@@ -93,6 +106,31 @@ export interface HermesOpenResult {
   sessionId: string;
   /** session/load replays the transcript before responding (ACP spec). */
   replay: HermesTransportEvent[];
+}
+
+export interface HermesQuestionRequest {
+  signal?: AbortSignal;
+  title?: string;
+  questions: HostQuestion[];
+}
+export type HermesPromptResponse = PromptResponse & { compactionOutcome?: HostItemOutcome };
+export interface HermesSessionTransport {
+  onFault: (error: HermesTransportError) => void;
+  readonly availableCommands: readonly AvailableCommand[];
+  /** Transport-specific dispatch grammar; ACP uses its advertised first-token grammar. */
+  nativeCommandName?(text: string): string | null;
+  runTurn(
+    text: string,
+    onEvent: (event: HermesTransportEvent) => void,
+    onPermission: (request: HermesPermissionRequest) => Promise<RequestPermissionResponse>,
+    onQuestion?: (request: HermesQuestionRequest) => Promise<HostQuestionResponse>,
+  ): Promise<HermesPromptResponse>;
+  setModel(modelId: string): Promise<void>;
+  setPermissionMode(modeId: string): Promise<void>;
+  setThinking?(optionId: string): Promise<string>;
+  readNativeSnapshot?(): Promise<HostThreadSnapshot>;
+  cancel(): Promise<void>;
+  close(): Promise<void>;
 }
 
 interface ActivePrompt {
@@ -258,6 +296,11 @@ export class HermesAcpTransport {
   #replay: HermesTransportEvent[] | null = null;
   #sessionId: string | null = null;
   #stderrTail = "";
+  #availableCommands: AvailableCommand[] = [];
+
+  get availableCommands(): readonly AvailableCommand[] {
+    return this.#availableCommands;
+  }
 
   /** Late binding: the Session registers its fault consumer on construction. */
   onFault: (error: HermesTransportError) => void = () => undefined;
@@ -492,6 +535,10 @@ export class HermesAcpTransport {
 
   #handleUpdate(notification: { sessionId: string; update: SessionUpdate }): void {
     if (this.#sessionId && notification.sessionId !== this.#sessionId) return;
+    if (notification.update.sessionUpdate === "available_commands_update") {
+      this.#availableCommands = notification.update.availableCommands;
+      return;
+    }
     const event = transportEvent(notification.update);
     if (!event) return;
     if (this.#replay) this.#replay.push(event);
@@ -574,12 +621,6 @@ export class HermesAcpTransport {
       this.#options.commandTimeoutMs,
       "Hermes ACP initialize",
     );
-    if (initialize.protocolVersion !== PROTOCOL_VERSION) {
-      throw new HermesTransportError(
-        "protocolError",
-        `Hermes ACP negotiated unsupported protocol version ${initialize.protocolVersion}`,
-      );
-    }
     this.#initialize = initialize;
     return initialize;
   }

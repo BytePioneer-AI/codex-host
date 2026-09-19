@@ -1,19 +1,7 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 20 20" role="img" aria-label="CodeBuddy">
-  <defs>
-    <linearGradient id="codebuddy-badge-shade" x2="0" y2="100%">
-      <stop offset="0" stop-color="#fff" stop-opacity=".08" />
-      <stop offset="1" stop-opacity=".08" />
-    </linearGradient>
-    <clipPath id="codebuddy-badge-clip">
-      <rect width="20" height="20" rx="3" />
-    </clipPath>
-  </defs>
-  <g clip-path="url(#codebuddy-badge-clip)">
-    <rect width="20" height="20" fill="#202124" />
-    <rect width="20" height="20" fill="url(#codebuddy-badge-shade)" />
-    <svg x="3" y="3" width="14" height="14" viewBox="0 0 40 40" fill="none">
+    <svg width="20" height="20" viewBox="0 0 40 40" fill="none">
       <g clip-path="url(#clip0_5110_14771)">
-        <rect width="40" height="40" rx="20" fill="url(#paint0_linear_5110_14771)" />
+        <rect width="40" height="40" rx="8.63" fill="url(#paint0_linear_5110_14771)" />
         <g filter="url(#filter0_f_5110_14771)">
           <circle cx="12.6071" cy="34.9794" r="14.081" fill="#32E6B9" fill-opacity="0.4" />
         </g>
@@ -44,9 +32,8 @@
           <stop offset="0.437689" stop-color="white" />
         </linearGradient>
         <clipPath id="clip0_5110_14771">
-          <rect width="40" height="40" rx="20" fill="white" />
+          <rect width="40" height="40" rx="8.63" fill="white" />
         </clipPath>
       </defs>
     </svg>
-  </g>
 </svg>

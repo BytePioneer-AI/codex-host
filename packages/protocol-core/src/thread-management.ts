@@ -39,6 +39,7 @@ const THREAD_SOURCE_KINDS = new Set([
 
 export type ThreadListSortDirection = "asc" | "desc";
 export type ThreadListSortKey = "created_at" | "updated_at" | "recency_at";
+export type OfficialThreadListSortKey = ThreadListSortKey | "section_position";
 
 export interface ThreadListExternalAnchor {
   timestamp: number;
@@ -65,7 +66,7 @@ export interface DecodedThreadListRequest {
   ancestorThreadId: string | null;
   searchTerm: string | null;
   sortDirection: ThreadListSortDirection;
-  sortKey: ThreadListSortKey;
+  sortKey: OfficialThreadListSortKey;
   sourceKinds: string[] | null;
   useStateDbOnly: boolean;
   queryFingerprint: string;
@@ -144,9 +145,14 @@ function decodeSortDirection(value: unknown): ThreadListSortDirection {
   return value;
 }
 
-function decodeSortKey(value: unknown): ThreadListSortKey {
+function decodeSortKey(value: unknown): OfficialThreadListSortKey {
   if (value === undefined || value === null) return "created_at";
-  if (value !== "created_at" && value !== "updated_at" && value !== "recency_at") {
+  if (
+    value !== "created_at" &&
+    value !== "updated_at" &&
+    value !== "recency_at" &&
+    value !== "section_position"
+  ) {
     throw new Error("thread/list params.sortKey is unsupported");
   }
   return value;
@@ -284,7 +290,11 @@ export function decodeThreadListRequest(request: JsonRpcRequest): DecodedThreadL
   const cursorText = nullableText(params.cursor, "thread/list params.cursor");
   const hasUnknownFields = Object.keys(params).some((name) => !THREAD_LIST_FIELDS.has(name));
   const isHostCursor = cursorText?.startsWith(HOST_CURSOR_PREFIX) === true;
-  const supportsExternal = !hasUnknownFields && (cursorText === null || isHostCursor);
+  if (sortKey === "section_position" && isHostCursor) {
+    throw new Error("thread/list Host cursor cannot be used with section_position sorting");
+  }
+  const supportsExternal =
+    sortKey !== "section_position" && !hasUnknownFields && (cursorText === null || isHostCursor);
   const cursor =
     supportsExternal && cursorText
       ? decodeHostThreadListCursor(cursorText, {

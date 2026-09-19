@@ -2,9 +2,15 @@ import { readdir, realpath } from "node:fs/promises";
 import path from "node:path";
 import type { HostSubagentStatus, HostThreadSnapshot } from "@codexhost/harness-adapter";
 import type { NativeSessionRef } from "@codexhost/shared-contracts";
-import { CodeBuddyError, record, text } from "./common.js";
+import {
+  CODEBUDDY_RUNTIME_PROFILE,
+  CodeBuddyError,
+  record,
+  type CodeBuddyRuntimeProfile,
+} from "./common.js";
 import { codeBuddyLiveNativeHistory, snapshotFromHistory } from "./history.js";
 import { validCodeBuddyChildId } from "./subagent-tool.js";
+import { CODEBUDDY_CHILD_MAX_BYTES, validateCodeBuddyChildContents } from "./child-provenance.js";
 import {
   codeBuddyFileVersion,
   readCodeBuddyVersionedText,
@@ -25,23 +31,11 @@ interface CachedParent {
 
 interface CachedChild {
   version: CodeBuddyFileVersion | undefined;
+  rawContents: string;
   contents: string;
   entries: Record<string, unknown>[];
+  nativeSessionId: string;
   snapshot?: HostThreadSnapshot;
-}
-
-/** Only a trailing in-flight JSON line may be skipped. No model-controlled log paths. */
-function childContents(contents: string) {
-  const lines = contents.split(/\r?\n/u);
-  if (lines.at(-1)?.trim()) {
-    try {
-      JSON.parse(lines.at(-1) ?? "");
-    } catch {
-      lines.pop();
-    }
-  }
-  const entries = lines.filter((line) => line.trim()).map((line) => record(JSON.parse(line)));
-  return { contents: lines.join("\n"), entries };
 }
 
 /** Session-scoped native child reader. Cached bytes never bypass path or ownership validation. */
@@ -54,6 +48,7 @@ export class CodeBuddyChildObserver {
     readonly parent: NativeSessionRef,
     readonly cwd: string,
     readonly environment: NodeJS.ProcessEnv,
+    readonly profile: CodeBuddyRuntimeProfile = CODEBUDDY_RUNTIME_PROFILE,
   ) {}
 
   close() {
@@ -66,11 +61,11 @@ export class CodeBuddyChildObserver {
     if (this.#closed) throw new CodeBuddyError("invalidRequest", "Subagent observer is closed");
   }
 
-  async #validateWorkspaces(cwds: string[], child = false) {
+  async #validateWorkspaces(cwds: string[]) {
     const expected = await realpath(this.cwd);
     for (const cwd of new Set(cwds)) {
       const actual = await realpath(cwd).catch((error) => {
-        if (!child && ["ENOENT", "ENOTDIR"].includes(String(record(error).code)))
+        if (["ENOENT", "ENOTDIR"].includes(String(record(error).code)))
           throw new CodeBuddyError(
             "invalidRequest",
             "Native Session historical working directory is unavailable; ownership cannot be verified",
@@ -80,9 +75,7 @@ export class CodeBuddyChildObserver {
       if (!equalPath(actual, expected))
         throw new CodeBuddyError(
           "invalidRequest",
-          child
-            ? "Subagent workspace differs from parent"
-            : "Native Session belongs to a different working directory",
+          "Native Session belongs to a different working directory",
         );
     }
   }
@@ -100,7 +93,12 @@ export class CodeBuddyChildObserver {
         return this.#parent;
       }
     }
-    const history = await codeBuddyLiveNativeHistory(this.cwd, this.parent, this.environment);
+    const history = await codeBuddyLiveNativeHistory(
+      this.cwd,
+      this.parent,
+      this.environment,
+      this.profile,
+    );
     this.#assertOpen();
     this.#parent = {
       file: history.file,
@@ -118,7 +116,10 @@ export class CodeBuddyChildObserver {
     const actual = await realpath(expected);
     this.#assertOpen();
     if (!equalPath(actual, expected))
-      throw new CodeBuddyError("invalidRequest", "Redirected CodeBuddy Subagent directory");
+      throw new CodeBuddyError(
+        "invalidRequest",
+        `Redirected ${this.profile.displayName} Subagent directory`,
+      );
     return actual;
   }
 
@@ -130,20 +131,36 @@ export class CodeBuddyChildObserver {
     if (!equalPath(before.realFile, file))
       throw new CodeBuddyError("invalidRequest", "Redirected Subagent transcript");
     this.#assertOpen();
-    if (before.size > 8_000_000)
+    if (before.size > CODEBUDDY_CHILD_MAX_BYTES)
       throw new CodeBuddyError("unsupported", "Subagent transcript exceeds 8 MB");
     const cached = this.#children.get(childId);
-    if (cached && sameCodeBuddyFileVersion(cached.version, before)) return cached;
+    if (cached && sameCodeBuddyFileVersion(cached.version, before)) {
+      await validateCodeBuddyChildContents(
+        cached.rawContents,
+        this.parent,
+        childId,
+        this.cwd,
+        true,
+      );
+      return cached;
+    }
     const source = await readCodeBuddyVersionedText(
         file,
-        8_000_000,
+        CODEBUDDY_CHILD_MAX_BYTES,
         "Subagent transcript exceeds 8 MB",
         before,
       ),
-      data = childContents(source.contents);
+      data = await validateCodeBuddyChildContents(
+        source.contents,
+        this.parent,
+        childId,
+        this.cwd,
+        true,
+      );
     this.#assertOpen();
     const next: CachedChild = {
       ...data,
+      rawContents: source.contents,
       version: source.reusableVersion,
     };
     this.#children.delete(childId);
@@ -181,29 +198,25 @@ export class CodeBuddyChildObserver {
   async read(childId: string, status?: HostSubagentStatus): Promise<HostThreadSnapshot> {
     if (!status) {
       const source = await this.#parentHistory();
-      const states = snapshotFromHistory(source.contents, this.parent, this.cwd).turns.flatMap(
-        (turn) =>
-          turn.items.flatMap(({ item }) =>
-            item.type === "subagentDelegation" ? item.subagents : [],
-          ),
+      const states = snapshotFromHistory(
+        source.contents,
+        this.parent,
+        this.cwd,
+        this.profile,
+      ).turns.flatMap((turn) =>
+        turn.items.flatMap(({ item }) =>
+          item.type === "subagentDelegation" ? item.subagents : [],
+        ),
       );
       status = states.findLast((child) => child.nativeSubagentId === childId)?.status;
     }
     const data = await this.#child(await this.#directory(), childId);
-    const sessions = new Set(data.entries.map((row) => text(row.sessionId)).filter(Boolean));
-    if (sessions.size !== 1)
-      throw new CodeBuddyError("protocolError", "Subagent transcript identity is missing or mixed");
-    await this.#validateWorkspaces(
-      data.entries.flatMap((row) => (typeof row.cwd === "string" ? [row.cwd] : [])),
-      true,
-    );
     this.#assertOpen();
-    const childSessionId = [...sessions][0];
-    if (!childSessionId) throw new CodeBuddyError("protocolError", "Missing native child Session");
     data.snapshot ??= snapshotFromHistory(
       data.contents,
-      { ...this.parent, nativeSessionId: childSessionId },
+      { ...this.parent, nativeSessionId: data.nativeSessionId },
       this.cwd,
+      this.profile,
     );
     const snapshot = structuredClone(data.snapshot);
     projectChildSnapshot(snapshot, this.parent, childId, status);
@@ -216,8 +229,9 @@ export async function locateCodeBuddyChild(
   cwd: string,
   environment: NodeJS.ProcessEnv,
   requestId: string,
+  profile: CodeBuddyRuntimeProfile = CODEBUDDY_RUNTIME_PROFILE,
 ): Promise<string | undefined> {
-  const observer = new CodeBuddyChildObserver(parent, cwd, environment);
+  const observer = new CodeBuddyChildObserver(parent, cwd, environment, profile);
   try {
     return await observer.locate(requestId);
   } finally {
@@ -231,8 +245,9 @@ export async function readCodeBuddyChild(
   cwd: string,
   environment: NodeJS.ProcessEnv,
   status?: HostSubagentStatus,
+  profile: CodeBuddyRuntimeProfile = CODEBUDDY_RUNTIME_PROFILE,
 ): Promise<HostThreadSnapshot> {
-  const observer = new CodeBuddyChildObserver(parent, cwd, environment);
+  const observer = new CodeBuddyChildObserver(parent, cwd, environment, profile);
   try {
     return await observer.read(childId, status);
   } finally {
@@ -252,6 +267,8 @@ function projectChildSnapshot(
       nativeSessionId: parent.nativeSessionId,
       nativeTurnKey: `${childId}:${turn.nativeTurnRef.nativeTurnKey}`,
     };
+    // Child transcript boundaries cannot be opened through the parent Session API.
+    delete turn.checkpoint;
     turn.items = turn.items.filter(
       ({ outcome }) =>
         !(

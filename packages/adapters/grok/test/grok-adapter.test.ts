@@ -1887,6 +1887,49 @@ describe("Grok Adapter ACP projection", () => {
     await opened.value.close();
   });
 
+  it("forwards Model and Thinking selection while a prompt is running", async () => {
+    const transport = new FakeGrokTransport();
+    const adapter = new GrokAdapter(
+      {},
+      {
+        randomUUID: vi.fn(() => "id"),
+        createTransport: () => transport,
+        fetchCredits: async () => null,
+      },
+    );
+    const opened = await adapter.open({ kind: "create", cwd: "/synthetic" });
+    if (!opened.ok) throw new Error(opened.error.message);
+    const session = opened.value;
+    await session.execute({
+      type: "turn.start",
+      turnId: hostTurnIdSchema.parse("active-config"),
+      input: [{ type: "text", text: "go" }],
+    });
+    await expect(
+      session.execute({
+        type: "model.select",
+        model: harnessModelRefSchema.parse({ id: "grok-4.6" }),
+      }),
+    ).resolves.toMatchObject({ ok: true });
+    await expect(
+      session.execute({
+        type: "thinking.select",
+        thinkingOptionId: harnessThinkingOptionIdSchema.parse("low"),
+      }),
+    ).resolves.toMatchObject({ ok: true });
+    expect(transport.setModel).toHaveBeenLastCalledWith("grok-4.6", "low");
+    transport.setModel.mockRejectedValueOnce(new Error("Native rejected selection"));
+    await expect(
+      session.execute({
+        type: "thinking.select",
+        thinkingOptionId: harnessThinkingOptionIdSchema.parse("high"),
+      }),
+    ).resolves.toMatchObject({ ok: false, error: { message: "Native rejected selection" } });
+    transport.finish();
+    await session.close();
+    await adapter.close();
+  });
+
   it("restores the source Session Model and Thinking after Rewind", async () => {
     const transport = new FakeGrokTransport();
     const adapter = new GrokAdapter(

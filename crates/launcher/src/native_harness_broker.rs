@@ -192,7 +192,7 @@ mod tests {
                 .harness_id,
             "claude-code"
         );
-        for id in ["codebuddy", "cursor-cli"] {
+        for id in ["codebuddy", "workbuddy", "cursor-cli"] {
             assert_eq!(
                 parse_native_harness_broker_cli(&["install".into(), "--harness".into(), id.into()])
                     .unwrap()

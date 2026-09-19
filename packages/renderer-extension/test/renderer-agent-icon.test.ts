@@ -4,6 +4,7 @@ import { createRendererAgentIcon } from "../src/renderer-agent-icon.js";
 import antigravityAgentIconUrl from "../src/assets/antigravity-agent.svg";
 import kiroAgentIconUrl from "../src/assets/kiro-agent.svg";
 import codeBuddyAgentIconUrl from "../src/assets/codebuddy-agent.svg";
+import workBuddyAgentIconUrl from "../src/assets/workbuddy-agent.svg";
 import cursorAgentIconUrl from "../src/assets/cursor-agent.svg";
 import hermesAgentIconUrl from "../src/assets/hermes-agent.png";
 import qoderAgentIconUrl from "../src/assets/qoder-agent.svg";
@@ -106,6 +107,7 @@ describe("Renderer Agent icons", () => {
     ["antigravity", antigravityAgentIconUrl],
     ["kiro-cli", kiroAgentIconUrl],
     ["codebuddy", codeBuddyAgentIconUrl],
+    ["workbuddy", workBuddyAgentIconUrl],
     ["cursor-cli", cursorAgentIconUrl],
     ["qoder", qoderAgentIconUrl],
     ["qoder-cn", qoderAgentIconUrl],

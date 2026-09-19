@@ -8,6 +8,7 @@ import {
   type RequestPermissionResponse,
   type SessionNotification,
 } from "@agentclientprotocol/sdk";
+import { CodeBuddyCopyCleanup } from "./copy-cleanup.js";
 import { codeBuddyInvocation } from "./command.js";
 import { bounded, CodeBuddyError, record } from "./common.js";
 
@@ -24,6 +25,8 @@ export interface CodeBuddyClient {
   configure(sessionId: string, configId: string, value: string): Promise<Record<string, unknown>>;
   prompt(sessionId: string, input: string): Promise<Record<string, unknown>>;
   cancel(sessionId: string): Promise<void>;
+  removeCopy?(): Promise<void>;
+  rollback?(sessionId: string, forkPointId: string | null): Promise<Record<string, unknown>>;
   answer(
     sessionId: string,
     toolCallId: string,
@@ -36,11 +39,14 @@ export type CodeBuddyClientFactory = (options: {
   cwd: string;
   environment: NodeJS.ProcessEnv;
   ephemeral: boolean;
+  temporarySessionId?: string;
   handlers: CodeBuddyClientHandlers;
 }) => CodeBuddyClient;
+export type CodeBuddyInvocationFactory = typeof codeBuddyInvocation;
 
 /** One native process per Session; all tool execution stays in CodeBuddy. */
 export class CodeBuddyAcpClient implements CodeBuddyClient {
+  readonly #copyCleanup: CodeBuddyCopyCleanup | undefined;
   readonly #child: ChildProcessWithoutNullStreams;
   readonly #connection: ClientSideConnection;
   readonly #exited: Promise<void>;
@@ -56,9 +62,17 @@ export class CodeBuddyAcpClient implements CodeBuddyClient {
   constructor(
     readonly options: Parameters<CodeBuddyClientFactory>[0],
     readonly operationTimeoutMs = 15_000,
+    readonly invocationFactory: CodeBuddyInvocationFactory = codeBuddyInvocation,
   ) {
     void this.#failed.catch(() => {});
-    const invocation = codeBuddyInvocation(options.environment, options.ephemeral);
+    this.#copyCleanup = options.temporarySessionId
+      ? new CodeBuddyCopyCleanup(options.temporarySessionId, options.cwd)
+      : undefined;
+    const invocation = invocationFactory(
+      this.#copyCleanup?.environment(options.environment) ?? options.environment,
+      options.ephemeral,
+      this.#copyCleanup?.arguments,
+    );
     this.#child = spawn(invocation.command, invocation.arguments, {
       cwd: options.cwd,
       env: invocation.environment,
@@ -105,7 +119,9 @@ export class CodeBuddyAcpClient implements CodeBuddyClient {
       }),
       ndJsonStream(
         Writable.toWeb(this.#child.stdin) as Parameters<typeof ndJsonStream>[0],
-        Readable.toWeb(this.#child.stdout) as Parameters<typeof ndJsonStream>[1],
+        Readable.toWeb(
+          this.#copyCleanup?.protocolOutput(this.#child.stdout) ?? this.#child.stdout,
+        ) as Parameters<typeof ndJsonStream>[1],
       ),
     );
     void this.#connection.closed
@@ -189,6 +205,28 @@ export class CodeBuddyAcpClient implements CodeBuddyClient {
     await this.#request(() => this.#connection.cancel({ sessionId }), "ACP cancel");
   }
 
+  async removeCopy() {
+    const cleanup = this.#copyCleanup;
+    if (!cleanup)
+      throw new CodeBuddyError("invalidState", "No temporary copy is owned by this process");
+    await this.#request(() => cleanup.remove(), "Native temporary Session cleanup");
+  }
+
+  async rollback(sessionId: string, forkPointId: string | null) {
+    return record(
+      await this.#request(
+        () =>
+          this.#connection.extMethod("_codebuddy.ai/session/rollback", {
+            sessionId,
+            forkPointId,
+            reason: "resend_edit",
+            files: false,
+          }),
+        "ACP history rewind",
+      ),
+    );
+  }
+
   async answer(sessionId: string, toolCallId: string, answers: Record<string, string[]> | null) {
     const response = await this.#request(
       () =>
@@ -198,7 +236,7 @@ export class CodeBuddyAcpClient implements CodeBuddyClient {
           decision: answers === null ? "deny" : "allow",
           ...(answers ? { answers } : {}),
         }),
-      "CodeBuddy question response",
+      "ACP question response",
     );
     if (record(response).resolved !== true)
       throw new CodeBuddyError("protocolError", "Native question is no longer pending");

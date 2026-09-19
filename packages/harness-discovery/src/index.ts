@@ -2,6 +2,7 @@ export {
   environmentValue,
   executableExtensions,
   isExecutableFile,
+  isDirectory,
   newestFirst,
   pathDelimiter,
   pathDirectories,

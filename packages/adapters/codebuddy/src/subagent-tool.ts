@@ -18,6 +18,7 @@ export function codeBuddyDelegation(
   input: unknown,
   status: HostSubagentStatus,
   childId?: string,
+  displayName = "CodeBuddy",
 ): HostSubagentDelegationItem {
   const args = record(input);
   const resumed = text(args.resume);
@@ -31,7 +32,7 @@ export function codeBuddyDelegation(
       {
         subagentId: nativeId ?? callId,
         ...(nativeId ? { nativeSubagentId: nativeId } : {}),
-        description: text(args.description) || "CodeBuddy Subagent",
+        description: text(args.description) || `${displayName} Subagent`,
         ...(text(args.subagent_type) ? { role: text(args.subagent_type) } : {}),
         ...(text(args.model) ? { model: text(args.model) } : {}),
         background: args.run_in_background === true,

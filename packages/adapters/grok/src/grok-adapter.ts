@@ -740,7 +740,7 @@ class GrokHarnessSession implements HarnessSession {
     model: HarnessModelRef,
     thinkingOptionId?: HarnessThinkingOptionId,
   ): Promise<HarnessResult<ModelSelectCompleted | ThinkingSelectCompleted>> {
-    if (this.#active || this.#configuring) {
+    if (this.#configuring) {
       return {
         ok: false,
         error: {

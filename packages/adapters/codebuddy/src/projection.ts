@@ -8,7 +8,17 @@ import type {
 } from "@codexhost/harness-adapter";
 import { hostItemIdSchema, jsonValueSchema, type HostTurnId } from "@codexhost/shared-contracts";
 import { createTwoFilesPatch } from "diff";
-import { CodeBuddyError, nativeError, OUTPUT_LIMIT, record, rows, text } from "./common.js";
+import {
+  CODEBUDDY_RUNTIME_PROFILE,
+  CodeBuddyError,
+  nativeError,
+  OUTPUT_LIMIT,
+  record,
+  rows,
+  text,
+  type CodeBuddyRuntimeProfile,
+} from "./common.js";
+import { nativeCommandsEnabled } from "./slash-commands.js";
 
 export function contentText(value: unknown): string {
   if (typeof value === "string") return value;
@@ -42,7 +52,10 @@ export function toolOutput(value: unknown): HostToolOutput {
   };
 }
 
-export function toolOutcome(status: unknown): HostItemOutcome {
+export function toolOutcome(
+  status: unknown,
+  profile: CodeBuddyRuntimeProfile = CODEBUDDY_RUNTIME_PROFILE,
+): HostItemOutcome {
   if (status === "completed") return { status: "succeeded" };
   if (status === "cancelled" || status === "interrupted") return { status: "cancelled" };
   return {
@@ -52,6 +65,7 @@ export function toolOutcome(status: unknown): HostItemOutcome {
         "nativeFailure",
         status === "failed" ? "Tool execution failed" : "Tool completion was not recorded",
       ),
+      profile,
     ),
   };
 }
@@ -62,10 +76,12 @@ export class CodeBuddyTurnOutput {
   readonly #finished = new Set<string>();
   readonly #tools = new Map<string, Record<string, unknown>>();
   readonly #diffs = new Set<string>();
+  #compactionOutcome: HostItemOutcome | undefined;
   constructor(
     readonly turnId: HostTurnId,
     readonly cwd: string,
     readonly emit: (event: HostEvent) => void,
+    readonly profile: CodeBuddyRuntimeProfile = CODEBUDDY_RUNTIME_PROFILE,
   ) {}
 
   #start(item: HostItem) {
@@ -84,12 +100,35 @@ export class CodeBuddyTurnOutput {
     });
   }
 
+  replayCommandResult(items: HostItemSnapshot[]) {
+    if (this.#items.size) return;
+    for (const snapshot of items) {
+      const item = structuredClone(snapshot.item);
+      this.#start(item);
+      this.#finish(item, snapshot.outcome);
+    }
+  }
+
+  confirmCompaction(items: HostItemSnapshot[]) {
+    const persisted = items.find((snapshot) => snapshot.item.type === "contextCompaction");
+    this.#compactionOutcome = persisted ? structuredClone(persisted.outcome) : undefined;
+  }
+
+  compact() {
+    const itemId = hostItemIdSchema.parse(`compact-${this.turnId}`);
+    if (!this.#items.has(itemId)) this.#start({ type: "contextCompaction", itemId });
+  }
+
   update(value: unknown) {
     const update = record(value),
       meta = record(update._meta);
     // Team-member output must never masquerade as the parent response.
     if (meta["codebuddy.ai/memberEvent"]) return;
     const kind = update.sessionUpdate;
+    if (nativeCommandsEnabled(this.profile) && meta["codebuddy.ai/isCompactInternal"] === true) {
+      this.compact();
+      return;
+    }
     if (kind === "agent_message_chunk" || kind === "agent_thought_chunk") {
       const delta = contentText(update.content);
       if (!delta) return;
@@ -130,7 +169,9 @@ export class CodeBuddyTurnOutput {
     // Early content chunks contain partial *arguments*, not command output.
     if (!terminal && !record(merged._meta)["codebuddy.ai/toolArgumentsComplete"]) return;
     const name =
-      text(record(merged._meta)["codebuddy.ai/toolName"]) || text(merged.title) || "CodeBuddy tool";
+      text(record(merged._meta)["codebuddy.ai/toolName"]) ||
+      text(merged.title) ||
+      `${this.profile.displayName} tool`;
     const id = `tool-${callId}`;
     let item = this.#items.get(id)?.item;
     if (!item) {
@@ -159,7 +200,7 @@ export class CodeBuddyTurnOutput {
         update: { type: "output.replace", output },
       });
     }
-    this.#finish(item, toolOutcome(update.status));
+    this.#finish(item, toolOutcome(update.status, this.profile));
     if (update.status === "completed" && !this.#diffs.has(callId)) {
       const changes: Extract<HostItem, { type: "fileChange" }>["changes"] = [];
       for (const diff of rows(merged.content)) {
@@ -198,11 +239,26 @@ export class CodeBuddyTurnOutput {
 
   finish(status: "succeeded" | "failed" | "cancelled", error?: HarnessError) {
     for (const { item } of this.#items.values()) {
+      if (item.type === "contextCompaction" && this.#compactionOutcome) {
+        this.#finish(item, this.#compactionOutcome);
+        continue;
+      }
       const outcome: HostItemOutcome =
-        status === "failed"
+        status === "failed" ||
+        (item.type === "contextCompaction" && status === "succeeded" && !this.#compactionOutcome)
           ? {
-              status,
-              error: error ?? nativeError(new CodeBuddyError("nativeFailure", "Turn failed")),
+              status: "failed",
+              error:
+                error ??
+                nativeError(
+                  new CodeBuddyError(
+                    "nativeFailure",
+                    item.type === "contextCompaction"
+                      ? "Native compaction completion was not confirmed"
+                      : "Turn failed",
+                  ),
+                  this.profile,
+                ),
             }
           : { status };
       this.#finish(item, outcome);

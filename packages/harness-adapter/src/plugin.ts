@@ -3,6 +3,8 @@ import type { HarnessAdapter } from "./text-session.js";
 /** Per Host/connection construction context; never contains Host or Renderer internals. */
 export interface HarnessPluginContext {
   readonly environment: Readonly<Record<string, string | undefined>>;
+  /** Persisted installation directory or legacy entrypoint; only for plugins declaring launchCommand. */
+  readonly launchCommand?: string;
   readonly platform: string;
   readonly managedRemoteHost: boolean;
   readonly brokerDescriptorPath?: string;

@@ -1196,6 +1196,85 @@ describe("AppServerHost installed Harness plugins", () => {
     }
   });
 
+  it("persists launch settings through Host RPC and applies them only to the next plugin factory", async () => {
+    const directory = mkdtempSync(path.join(tmpdir(), "codexhost-launch-rpc-"));
+    const location = path.join(directory, "sample-agent");
+    const entrypoint = path.join(directory, "installed-app");
+    const received = path.join(directory, "received.json");
+    mkdirSync(location);
+    mkdirSync(entrypoint);
+    writeFileSync(
+      path.join(directory, "enabled.json"),
+      JSON.stringify({ version: 1, enabled: ["sample-agent"] }),
+    );
+    writeFileSync(
+      path.join(location, "manifest.json"),
+      JSON.stringify({
+        manifestVersion: 1,
+        id: "sample-agent",
+        name: "Sample",
+        version: "1",
+        adapterApiVersion: 1,
+        entry: "plugin.mjs",
+        launchCommand: true,
+      }),
+    );
+    writeFileSync(
+      path.join(location, "plugin.mjs"),
+      `
+      import { writeFileSync } from "node:fs";
+      import { FakeHarnessAdapter } from ${JSON.stringify(pathToFileURL(path.resolve("packages/harness-adapter/dist/testing.js")).href)};
+      export function createHarnessAdapter(context) {
+        writeFileSync(${JSON.stringify(received)}, JSON.stringify(context.launchCommand ?? null));
+        return new FakeHarnessAdapter("sample-agent");
+      }
+    `,
+    );
+    const options = {
+      pluginDirectory: directory,
+      environment: { CODEXHOST_DATA_DIR: path.join(directory, "data") },
+    };
+    let fixture = createFixture(options);
+    let id = 960;
+    const request = async (method: string, params: JsonObject) => {
+      const requestIdValue = id++;
+      writeRequest(fixture.desktopInput, { id: requestIdValue, method, params });
+      return fixture.collector.waitFor((message) => requestId(message, requestIdValue));
+    };
+    try {
+      const get = "codexhost/harness/launch-settings/get",
+        set = "codexhost/harness/launch-settings/set";
+      expect(await request(get, { harnessId: "sample-agent" })).toMatchObject({
+        result: { path: null, restartRequired: false },
+      });
+      expect(await request(set, { harnessId: "sample-agent", path: entrypoint })).toMatchObject({
+        result: { path: entrypoint, restartRequired: true },
+      });
+      expect(JSON.parse(readFileSync(received, "utf8"))).toBeNull();
+      for (const params of [
+        { harnessId: "pi", path: entrypoint },
+        { harnessId: "missing-agent", path: entrypoint },
+        { harnessId: "../escape", path: entrypoint },
+        { harnessId: "sample-agent", path: "relative.cjs" },
+        { harnessId: "sample-agent", path: entrypoint, extra: true },
+      ])
+        expect(await request(set, params)).toMatchObject({ error: { code: -32602 } });
+      expect(fixture.official.stdin.readableLength).toBe(0);
+      await stopFixture(fixture);
+      fixture = createFixture(options);
+      expect(await request(get, { harnessId: "sample-agent" })).toMatchObject({
+        result: { path: entrypoint, restartRequired: false },
+      });
+      expect(JSON.parse(readFileSync(received, "utf8"))).toBe(entrypoint);
+      expect(await request(set, { harnessId: "sample-agent", path: null })).toMatchObject({
+        result: { path: null, restartRequired: true },
+      });
+    } finally {
+      await stopFixture(fixture);
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   it("validates catalog parameters and leaves uninstalled routes out of the official stream", async () => {
     const fixture = createFixture();
     try {
@@ -4271,6 +4350,89 @@ describe("AppServerHost HarnessAdapter projection", () => {
       result: { data: [], nextCursor: null },
     });
     expect(fixture.adapter.sessions).toHaveLength(0);
+    await stopFixture(fixture);
+  });
+
+  it("forwards section-position Thread lists without External aggregation or Host cursor leakage", async () => {
+    const fixture = createFixture();
+    await startPiThread(fixture);
+    const forward = async (request: JsonObject, response: JsonObject): Promise<void> => {
+      writeRequest(fixture.desktopInput, request);
+      const officialRequest = await readJsonLine(fixture.official.stdin).catch((error: unknown) => {
+        throw new Error(`Timed out forwarding thread/list request ${String(request.id)}`, {
+          cause: error,
+        });
+      });
+      expect(officialRequest).toEqual(request);
+      fixture.official.stdout.write(`${JSON.stringify({ id: officialRequest.id, ...response })}\n`);
+      await expect(
+        fixture.collector.waitFor((message) => message.id === request.id),
+      ).resolves.toEqual({ id: request.id, ...response });
+    };
+
+    await forward(
+      {
+        id: 52,
+        method: "thread/list",
+        params: {
+          cursor: "official-section-cursor",
+          limit: 5,
+          sectionId: "section-1",
+          sortDirection: "asc",
+          sortKey: "section_position",
+        },
+      },
+      {
+        result: {
+          data: [{ id: "official-second" }, { id: "official-first" }],
+          nextCursor: "official-section-next",
+          backwardsCursor: "official-section-backwards",
+        },
+      },
+    );
+    expect(fixture.collector.messages.find((message) => message.id === 52)?.result).toMatchObject({
+      data: [{ id: "official-second" }, { id: "official-first" }],
+      nextCursor: "official-section-next",
+      backwardsCursor: "official-section-backwards",
+    });
+
+    for (const [id, sectionId] of [
+      [53, undefined],
+      [54, null],
+    ] as const) {
+      await forward(
+        {
+          id,
+          method: "thread/list",
+          params: {
+            limit: 5,
+            sortDirection: "asc",
+            sortKey: "section_position",
+            ...(sectionId === undefined ? {} : { sectionId }),
+          },
+        },
+        { error: { code: -32600, message: "sectionId is required" } },
+      );
+    }
+
+    const officialWrite = vi.fn();
+    fixture.official.stdin.on("data", officialWrite);
+    writeRequest(fixture.desktopInput, {
+      id: 55,
+      method: "thread/list",
+      params: {
+        cursor: "codexhost:thread-list:v1:legacy-host-cursor",
+        sectionId: "section-1",
+        sortDirection: "asc",
+        sortKey: "section_position",
+      },
+    });
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 55)),
+    ).resolves.toMatchObject({
+      error: { code: -32602, message: expect.stringContaining("Host cursor") },
+    });
+    expect(officialWrite).not.toHaveBeenCalled();
     await stopFixture(fixture);
   });
 

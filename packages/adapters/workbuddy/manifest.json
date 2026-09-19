@@ -1,0 +1,14 @@
+{
+  "manifestVersion": 1,
+  "id": "workbuddy",
+  "name": "WorkBuddy",
+  "version": "0.0.0",
+  "adapterApiVersion": 1,
+  "launchCommand": true,
+  "entry": "./dist/plugin.js",
+  "icon": "./assets/icon.svg",
+  "links": {
+    "installation": "https://www.workbuddy.ai/docs/workbuddy/Quickstart",
+    "documentation": "https://www.workbuddy.ai/docs/zh/cli/acp"
+  }
+}

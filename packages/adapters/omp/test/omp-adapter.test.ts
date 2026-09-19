@@ -25,7 +25,7 @@ import type {
   OmpTurnEvent,
   OmpTurnResult,
 } from "../src/omp-rpc-session.js";
-import type { OmpNativeModel } from "../src/omp-model-catalog.js";
+import { encodeOmpModelRef, type OmpNativeModel } from "../src/omp-model-catalog.js";
 
 class FakeOmpTransport implements OmpTurnTransport {
   state: OmpSessionState = {
@@ -850,6 +850,49 @@ describe("OMP Adapter Subagents", () => {
     await adapter.close();
   });
 
+  it("forwards Model and Thinking selection during a Turn without admitting another Turn", async () => {
+    const transport = new FakeOmpTransport();
+    transport.autoCompleteTurn = false;
+    const selectModel = vi.spyOn(transport, "selectModel");
+    const selectThinking = vi.spyOn(transport, "selectThinkingOption");
+    vi.spyOn(transport, "getAvailableThinkingLevels").mockResolvedValue([
+      harnessThinkingOptionIdSchema.parse("off"),
+      harnessThinkingOptionIdSchema.parse("high"),
+    ]);
+    const adapter = new OmpAdapter({}, { createTransport: () => transport });
+    await adapter.inspect({ cwd: "/synthetic" });
+    const opened = await adapter.open({ kind: "create", cwd: "/synthetic" });
+    if (!opened.ok) throw new Error(opened.error.message);
+    const session = opened.value;
+    await session.execute({
+      type: "turn.start",
+      turnId: "active-config" as HostTurnId,
+      input: [{ type: "text", text: "go" }],
+    });
+    const model = encodeOmpModelRef({ provider: "synthetic", id: "model" });
+    await expect(session.execute({ type: "model.select", model })).resolves.toMatchObject({
+      ok: true,
+    });
+    await expect(
+      session.execute({
+        type: "thinking.select",
+        thinkingOptionId: harnessThinkingOptionIdSchema.parse("high"),
+      }),
+    ).resolves.toEqual({ ok: true, value: { completed: true } });
+    expect(selectModel).toHaveBeenCalled();
+    expect(selectThinking).toHaveBeenCalled();
+    await expect(
+      session.execute({
+        type: "turn.start",
+        turnId: "duplicate-config" as HostTurnId,
+        input: [{ type: "text", text: "go" }],
+      }),
+    ).resolves.toMatchObject({ ok: false, error: { code: "sessionBusy" } });
+    transport.succeed("done");
+    await session.close();
+    await adapter.close();
+  });
+
   it("projects OMP tool approval requests and returns the selected native option", async () => {
     const transport = new FakeOmpTransport();
     transport.autoCompleteTurn = false;
@@ -906,6 +949,72 @@ describe("OMP Adapter Subagents", () => {
 
     transport.succeed("changed");
     await opened.value.close();
+    await adapter.close();
+  });
+
+  it("projects native questions with descriptions and validates answers before responding", async () => {
+    const transport = new FakeOmpTransport();
+    transport.autoCompleteTurn = false;
+    const adapter = new OmpAdapter({}, { createTransport: () => transport });
+    const opened = await adapter.open({ kind: "create", cwd: "/synthetic" });
+    if (!opened.ok) throw new Error(opened.error.message);
+    const session = opened.value;
+    const iterator = session.outputs[Symbol.asyncIterator]();
+    await session.execute({
+      type: "turn.start",
+      turnId: "question" as HostTurnId,
+      input: [{ type: "text", text: "choose" }],
+    });
+    const started = await nextEvent(iterator);
+    if (started.type === "session.state.changed") await nextEvent(iterator);
+    await nextEvent(iterator);
+    transport.event({
+      type: "interaction.requested",
+      request: {
+        requestId: "question-1",
+        method: "select",
+        title: "Storage?",
+        options: ["JSON", "SQLite"],
+        optionDetails: [{ description: "Portable file" }, {}],
+      },
+    });
+    const output = await nextOutput(iterator);
+    if (output.kind !== "interaction") throw new Error("Missing question");
+    expect(output.interaction).toMatchObject({
+      type: "question",
+      questions: [
+        {
+          type: "choice",
+          prompt: "Storage?",
+          options: [
+            { value: "JSON", label: "JSON", description: "Portable file" },
+            { value: "SQLite", label: "SQLite" },
+          ],
+        },
+      ],
+    });
+    const respond = (answers: string[]) =>
+      session.execute({
+        type: "interaction.respond",
+        interactionId: output.interaction.interactionId,
+        response: { type: "question", answers: { answer: answers } },
+      });
+    expect(await respond(["unsupported"])).toMatchObject({
+      ok: false,
+      error: { code: "invalidRequest" },
+    });
+    expect(transport.respondToInteraction).not.toHaveBeenCalled();
+    expect(await respond(["SQLite"])).toMatchObject({ ok: true });
+    expect(transport.respondToInteraction).toHaveBeenCalledWith({
+      requestId: "question-1",
+      value: "SQLite",
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "interaction.closed",
+      reason: "responded",
+    });
+    expect(await respond(["JSON"])).toMatchObject({ ok: false, error: { code: "invalidState" } });
+    transport.succeed("chosen");
     await adapter.close();
   });
 

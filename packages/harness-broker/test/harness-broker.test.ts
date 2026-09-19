@@ -74,7 +74,7 @@ describe("macOS Aqua Harness broker", () => {
       await server.close();
     }
   });
-  it.each(["codebuddy", "cursor-cli"])(
+  it.each(["codebuddy", "workbuddy", "cursor-cli"])(
     "isolates %s identity and forwards only opted-in delegation environment",
     async (id) => {
       const root = await mkdtemp(path.join(os.tmpdir(), "codexhost-broker-multi-"));

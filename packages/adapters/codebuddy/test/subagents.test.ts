@@ -2,12 +2,17 @@ import { describe, expect, it } from "vitest";
 import type { HostEvent } from "@codexhost/harness-adapter";
 import { hostTurnIdSchema, nativeSessionRefSchema } from "@codexhost/shared-contracts";
 import { CodeBuddySubagents } from "../src/subagents.js";
-import { codeBuddyNativeHistory, snapshotFromHistory } from "../src/history.js";
+import {
+  codeBuddyNativeHistory,
+  codeBuddyProjectSlug,
+  snapshotFromHistory,
+} from "../src/history.js";
 import { mkdtemp, mkdir, writeFile, rm, symlink } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { readCodeBuddyChild } from "../src/subagent-history.js";
 import { codeBuddyChildId } from "../src/subagent-tool.js";
+import { CODEBUDDY_RUNTIME_PROFILE } from "../src/common.js";
 
 const parent = nativeSessionRefSchema.parse({
   harnessId: "codebuddy",
@@ -158,9 +163,10 @@ describe("CodeBuddy native Subagent projection", () => {
       const cwd = path.join(root, "work"),
         other = path.join(root, "other"),
         config = path.join(root, "config");
-      const project = path.join(config, "projects", "fixture"),
+      await Promise.all([mkdir(cwd), mkdir(other)]);
+      const project = path.join(config, "projects", codeBuddyProjectSlug(cwd)),
         children = path.join(project, "parent", "subagents");
-      await Promise.all([mkdir(cwd), mkdir(other), mkdir(children, { recursive: true })]);
+      await mkdir(children, { recursive: true });
       const environment = { CODEBUDDY_CONFIG_DIR: config };
       await writeFile(
         path.join(project, "parent.jsonl"),
@@ -187,6 +193,22 @@ describe("CodeBuddy native Subagent projection", () => {
         (await readCodeBuddyChild(parent, "agent-child", cwd, environment, "running")).turns[0]
           ?.outcome.status,
       ).toBe("unknown");
+      const historyEnabledProfile = {
+        ...CODEBUDDY_RUNTIME_PROFILE,
+        historyCapabilities: { fork: true, forkAcrossCwd: true, rollbackLastTurn: true },
+      };
+      expect(
+        (
+          await readCodeBuddyChild(
+            parent,
+            "agent-child",
+            cwd,
+            environment,
+            "running",
+            historyEnabledProfile,
+          )
+        ).turns[0]?.checkpoint,
+      ).toBeUndefined();
       await expect(readCodeBuddyChild(parent, "../outside", cwd, environment)).rejects.toThrow(
         "Invalid native Subagent ID",
       );

@@ -20,9 +20,12 @@
 | [`architecture/harness-executable-discovery.md`](architecture/harness-executable-discovery.md) | Harness CLI 的跨平台发现和 DSH 特殊连接范围；修改发现或启动逻辑时阅读。 |
 | [`architecture/harness-session-import.md`](architecture/harness-session-import.md) | Pi 与 DSH 本地会话导入契约和恢复边界；扩展导入能力时阅读。 |
 | [`architecture/external-thread-steering.md`](architecture/external-thread-steering.md) | 外部 Thread 取消旧 Turn 后启动新 Turn 的“调整方向”语义；修改 steering 时阅读。 |
+| [`architecture/app-server-transport.md`](architecture/app-server-transport.md) | 原生大历史响应的 WebSocket 与 JSONL 传输边界；排查任务加载、消息大小和转发性能时阅读。 |
 | [`architecture/acp-layer-follow-up.md`](architecture/acp-layer-follow-up.md) | 共享 ACP 层的抽取条件与边界；出现第二个适合共享实现的生产 ACP Harness 时阅读。 |
 
 ## Harness 专项
+
+[能力表边界](harnesses/capability-boundaries.md)记录各 Harness 的接入条件、Cursor 的单向委派，以及 Pi 权限模式、Antigravity 审批与压缩等剩余缺口。
 
 ### Antigravity
 
@@ -39,11 +42,12 @@
 | [`harnesses/claude-code/claude-code-plan-mode.md`](harnesses/claude-code/claude-code-plan-mode.md) | Claude Code 规划模式、计划退出确认与权限状态边界；修改 Plan Mode 时阅读。 |
 | [`harnesses/claude-code/claude-code-edit-recovery.md`](harnesses/claude-code/claude-code-edit-recovery.md) | 最后一条消息编辑后的独立 Session、空历史保留和关闭语义；修改编辑恢复时阅读。 |
 
-### CodeBuddy 与 Cursor
+### CodeBuddy、WorkBuddy 与 Cursor
 
 | 文档 | 内容与阅读时机 |
 | --- | --- |
 | [`harnesses/codebuddy/codebuddy-harness-integration.md`](harnesses/codebuddy/codebuddy-harness-integration.md) | CodeBuddy 原生 ACP 插件、生命周期和能力边界；维护 CodeBuddy Adapter 时阅读。 |
+| [`harnesses/workbuddy/workbuddy-harness-integration.md`](harnesses/workbuddy/workbuddy-harness-integration.md) | WorkBuddy AI 内置 CLI 的公开 ACP 集成、认证隔离和 Desktop 私有运行时边界；维护 WorkBuddy Adapter 时阅读。 |
 | [`harnesses/cursor/cursor-cli-experimental.md`](harnesses/cursor/cursor-cli-experimental.md) | 实验性 Cursor CLI ACP 插件及能力限制；维护 Cursor Adapter 或发行接入时阅读。 |
 
 ### Devin
@@ -59,6 +63,12 @@
 | [`harnesses/deepseek/dsh-edit-recovery.md`](harnesses/deepseek/dsh-edit-recovery.md) | DSH 原生停止确认、消息修订、Fork 和版本化 checkpoint；修改恢复流程时阅读。 |
 | [`harnesses/deepseek/dsh-015rc1-validation.md`](harnesses/deepseek/dsh-015rc1-validation.md) | DSH 支持版本、真实 CLI 生命周期和协议验证证据；变更版本范围或 Gate 时阅读。 |
 
+### Hermes
+
+| 文档 | 内容与阅读时机 |
+| --- | --- |
+| [`harnesses/hermes/hermes-capabilities.md`](harnesses/hermes/hermes-capabilities.md) | Hermes gateway 提问、Thinking、精确派生、协作发现及旧 ACP 的原生能力边界；维护 Hermes Adapter 时阅读。 |
+
 ### OpenCode 与 Pi
 
 | 文档 | 内容与阅读时机 |
@@ -66,6 +76,12 @@
 | [`harnesses/opencode/opencode-harness-integration-analysis.md`](harnesses/opencode/opencode-harness-integration-analysis.md) | OpenCode 官方接口证据、接入设计和实现边界；维护 OpenCode Adapter 时阅读。 |
 | [`harnesses/opencode/opencode-edit-recovery.md`](harnesses/opencode/opencode-edit-recovery.md) | OpenCode 原生 Fork 编辑恢复和取消终态语义；修改编辑或取消时阅读。 |
 | [`harnesses/pi/pi-edit-recovery.md`](harnesses/pi/pi-edit-recovery.md) | Pi 空历史编辑、原生文件发布和生命周期 Gate；修改 Pi 恢复时阅读。 |
+
+### OMP
+
+| 文档 | 内容与阅读时机 |
+| --- | --- |
+| [`harnesses/omp/omp-interactions.md`](harnesses/omp/omp-interactions.md) | OMP 原生提问、审批、选项说明和超时语义；维护 OMP 交互时阅读。 |
 
 ### Grok
 

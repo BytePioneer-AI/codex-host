@@ -46,6 +46,15 @@ export function fixture() {
       return { protocolVersion: 1 };
     }
     async open(_cwd: string, sessionId?: string) {
+      this.update({
+        sessionUpdate: "available_commands_update",
+        availableCommands: [
+          { name: "compact", description: "Compact" },
+          { name: "cost", description: "Cost" },
+          { name: "review", description: "Review", input: { hint: "[target]" } },
+          { name: "fork", description: "Fork" },
+        ],
+      });
       return { sessionId: sessionId ?? "native-session", configOptions: this.options };
     }
     async configure(_sessionId: string, id: string, value: string) {
@@ -61,6 +70,13 @@ export function fixture() {
     }
     async prompt(_id: string, input: string) {
       if (this.cancelPoisoned) return { stopReason: "cancelled" };
+      if (input === "/cost") {
+        this.update({
+          sessionUpdate: "agent_message_chunk",
+          content: { type: "text", text: "Cost: 0 credits" },
+        });
+        return { stopReason: "end_turn" };
+      }
       const id = `user-${++sequence}`;
       if (!this.missingHistory)
         history.push({

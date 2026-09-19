@@ -57,7 +57,8 @@
 ## 命令、并发与错误
 
 - `turn.start` 成功仅表示接受，终态从 outputs 获取；拒绝时不能发 Turn 生命周期事件。
-- 活动 Turn 与第二个 Turn、Model/Thinking 写入、历史操作互斥；冲突返回可重试 `sessionBusy`，不隐式排队或抢占。
+- 活动 Turn 与第二个 Turn、历史操作互斥；冲突返回可重试 `sessionBusy`，不隐式排队或抢占。
+- 活动 Turn 期间的 Model/Thinking 选择遵循[运行时配置规则](../../../../docs/architecture/harness-plugin-runtime.md#运行中切换-model--thinking)，不把活动 Turn 本身作为拒绝条件；测试覆盖原生接受、拒绝和后续 Turn。
 - `interaction.respond` 必须可在所属 Turn 中执行。权限是否支持活动期修改取决于原生语义，仍需控制配置并发。
 - 校验空输入、Turn ID、Interaction ID、配置引用；取消只针对匹配的活动 Turn。
 - 关闭或 fault 后返回 `invalidState`；取消完成后仍可继续的 Session 不应被误当作 fault。

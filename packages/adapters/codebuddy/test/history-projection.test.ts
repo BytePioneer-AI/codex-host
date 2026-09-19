@@ -1,13 +1,15 @@
 import { describe, expect, it } from "vitest";
 import type { HostEvent } from "@codexhost/harness-adapter";
-import { hostTurnIdSchema } from "@codexhost/shared-contracts";
-import { CODEBUDDY_ID } from "../src/common.js";
+import { hostItemIdSchema, hostTurnIdSchema } from "@codexhost/shared-contracts";
+import { CODEBUDDY_ID, CODEBUDDY_RUNTIME_PROFILE } from "../src/common.js";
 import { configuration, modelRef, nativeModel } from "../src/configuration.js";
 import { historyUsage, snapshotFromHistory } from "../src/history.js";
 import { CodeBuddyTurnOutput } from "../src/projection.js";
 import { configOptions } from "./fixtures.js";
 
 const ref = { harnessId: CODEBUDDY_ID, nativeSessionId: "session", formatVersion: 1 as const };
+const nativeCommandProfile = { ...CODEBUDDY_RUNTIME_PROFILE, nativeCommands: true };
+const commandsDisabledProfile = { ...CODEBUDDY_RUNTIME_PROFILE, nativeCommands: false };
 const user = {
   type: "message",
   role: "user",
@@ -25,6 +27,238 @@ const assistant = {
 const lines = (rows: unknown[]) => rows.map((row) => JSON.stringify(row)).join("\n");
 
 describe("CodeBuddy native history and output projection", () => {
+  it("honors a runtime profile that disables native command projection", () => {
+    const snapshot = snapshotFromHistory(
+      lines([
+        user,
+        {
+          ...user,
+          id: "compact",
+          parentId: "user",
+          providerData: { agent: "compact" },
+          content: "native internal prompt",
+        },
+        { ...assistant, parentId: "compact" },
+      ]),
+      ref,
+      process.cwd(),
+      commandsDisabledProfile,
+    );
+    expect(snapshot.turns).toHaveLength(2);
+    expect(JSON.stringify(snapshot)).not.toContain("contextCompaction");
+
+    const events: HostEvent[] = [];
+    const output = new CodeBuddyTurnOutput(
+      hostTurnIdSchema.parse("codebuddy-compact-marker"),
+      process.cwd(),
+      (event) => events.push(event),
+      commandsDisabledProfile,
+    );
+    output.update({
+      sessionUpdate: "agent_message_chunk",
+      messageId: "summary",
+      content: { type: "text", text: "summary" },
+      _meta: { "codebuddy.ai/isCompactInternal": true },
+    });
+    expect(events).toContainEqual(
+      expect.objectContaining({ item: expect.objectContaining({ type: "agentMessage" }) }),
+    );
+  });
+
+  it("groups native local command records and hides compaction prompts and summaries", () => {
+    const snapshot = snapshotFromHistory(
+      lines([
+        {
+          ...user,
+          id: "caveat",
+          providerData: { skipRun: true },
+          content:
+            '<system-reminder data-role="command-caveat">local command notice</system-reminder>',
+        },
+        {
+          ...user,
+          id: "cost",
+          parentId: "caveat",
+          providerData: { skipRun: true },
+          content: "<command-name>/cost</command-name>",
+        },
+        {
+          ...user,
+          id: "cost-result",
+          parentId: "cost",
+          providerData: { skipRun: true },
+          content: "<local-command-stdout>Cost: 1 credit</local-command-stdout>",
+        },
+        {
+          ...user,
+          id: "compact",
+          parentId: "cost-result",
+          providerData: { agent: "compact" },
+          content: "Internal summary instructions",
+        },
+        {
+          type: "reasoning",
+          id: "thinking",
+          parentId: "compact",
+          providerData: { agent: "compact" },
+          content: "Internal analysis",
+        },
+        {
+          ...assistant,
+          parentId: "thinking",
+          providerData: {
+            agent: "compact",
+            isCompactInternal: true,
+            isCompacted: true,
+            compactType: "user-command",
+          },
+          content: "Internal summary",
+        },
+      ]),
+      ref,
+      process.cwd(),
+      nativeCommandProfile,
+    );
+    expect(snapshot.turns).toHaveLength(2);
+    expect(snapshot.turns[0]).toMatchObject({
+      input: [{ text: "/cost" }],
+      items: [{ item: { type: "agentMessage", text: "Cost: 1 credit" } }],
+      outcome: { status: "succeeded" },
+    });
+    expect(snapshot.turns[1]).toMatchObject({
+      input: [{ text: "/compact" }],
+      items: [{ item: { type: "contextCompaction" } }],
+      outcome: { status: "succeeded" },
+    });
+    expect(JSON.stringify(snapshot)).not.toContain("Internal");
+  });
+
+  it("keeps emergency auto-compaction within the original user Turn", () => {
+    const snapshot = snapshotFromHistory(
+      lines([
+        user,
+        {
+          ...user,
+          id: "auto",
+          parentId: "user",
+          providerData: { agent: "compact" },
+          content: "Internal compaction prompt",
+        },
+        {
+          ...assistant,
+          id: "auto-summary",
+          parentId: "auto",
+          providerData: {
+            agent: "compact",
+            isCompactInternal: true,
+            isCompacted: true,
+            compactType: "emergency-auto",
+          },
+        },
+        { ...assistant, parentId: "auto-summary" },
+      ]),
+      ref,
+      process.cwd(),
+      nativeCommandProfile,
+    );
+    expect(snapshot.turns).toHaveLength(1);
+    expect(snapshot.turns[0]).toMatchObject({
+      input: [{ text: "hi" }],
+      items: [
+        { item: { type: "contextCompaction" } },
+        { item: { type: "agentMessage", text: "ok" } },
+      ],
+    });
+  });
+
+  it.each(["failed", "cancelled", "succeeded"] as const)(
+    "does not confirm compaction from a start marker alone (%s)",
+    (status) => {
+      const events: HostEvent[] = [];
+      const output = new CodeBuddyTurnOutput(
+        hostTurnIdSchema.parse("compact-status"),
+        process.cwd(),
+        (event) => events.push(event),
+        nativeCommandProfile,
+      );
+      output.update({
+        sessionUpdate: "agent_message_chunk",
+        content: { type: "text", text: "partial summary" },
+        _meta: { "codebuddy.ai/isCompactInternal": true },
+      });
+      output.finish(status);
+      expect(events).toContainEqual(
+        expect.objectContaining({
+          type: "item.completed",
+          snapshot: expect.objectContaining({
+            item: expect.objectContaining({ type: "contextCompaction" }),
+            outcome: expect.objectContaining({
+              status: status === "succeeded" ? "failed" : status,
+            }),
+          }),
+        }),
+      );
+      expect(JSON.stringify(events)).not.toContain("partial summary");
+    },
+  );
+
+  it.each(["succeeded", "failed", "cancelled"] as const)(
+    "retains confirmed compaction after a %s Turn",
+    (status) => {
+      const events: HostEvent[] = [];
+      const output = new CodeBuddyTurnOutput(
+        hostTurnIdSchema.parse("compact-confirmed"),
+        process.cwd(),
+        (event) => events.push(event),
+      );
+      output.compact();
+      output.confirmCompaction([
+        {
+          item: { type: "contextCompaction", itemId: hostItemIdSchema.parse("native-summary") },
+          outcome: { status: "succeeded" },
+        },
+      ]);
+      output.finish(status);
+      expect(events).toContainEqual(
+        expect.objectContaining({
+          type: "item.completed",
+          snapshot: expect.objectContaining({ outcome: { status: "succeeded" } }),
+        }),
+      );
+    },
+  );
+
+  it.each(["cancelled", "interrupted", "failed", "completed"])(
+    "preserves manual compaction terminal status %s in history",
+    (status) => {
+      const snapshot = snapshotFromHistory(
+        lines([
+          { ...user, providerData: { agent: "compact" } },
+          {
+            ...assistant,
+            status,
+            providerData: {
+              agent: "compact",
+              isCompactInternal: true,
+              isCompacted: false,
+              compactType: "user-command",
+            },
+          },
+        ]),
+        ref,
+        process.cwd(),
+        nativeCommandProfile,
+      );
+      const expected = ["cancelled", "interrupted"].includes(status) ? "cancelled" : "failed";
+      expect(snapshot.turns).toHaveLength(1);
+      expect(snapshot.turns[0]).toMatchObject({
+        input: [{ text: "/compact" }],
+        items: [{ item: { type: "contextCompaction" }, outcome: { status: expected } }],
+        outcome: { status: expected },
+      });
+    },
+  );
+
   it("retains every valid diff in one terminal tool result without duplicate items", () => {
     const events: HostEvent[] = [];
     const output = new CodeBuddyTurnOutput(

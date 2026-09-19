@@ -23,7 +23,11 @@ export const codeBuddyDiscoverySpec: HarnessDiscoverySpec = {
   },
 };
 
-export function codeBuddyInvocation(environment: NodeJS.ProcessEnv, ephemeral: boolean) {
+export function codeBuddyInvocation(
+  environment: NodeJS.ProcessEnv,
+  ephemeral: boolean,
+  argumentsOverride?: string[],
+) {
   const resolved = resolveHarnessExecutable(codeBuddyDiscoverySpec, { environment });
   if (!resolved)
     throw new CodeBuddyError(
@@ -34,9 +38,26 @@ export function codeBuddyInvocation(environment: NodeJS.ProcessEnv, ephemeral: b
   return {
     ...commandInvocation(
       resolved.executable,
-      ["--acp", ...(ephemeral ? ["--no-session-persistence"] : [])],
+      argumentsOverride ?? [
+        "--acp",
+        ...(ephemeral ? ["--no-session-persistence"] : []),
+        ...(!ephemeral &&
+        [
+          "CODEXHOST_CLI_PATH",
+          "CODEXHOST_RUNTIME_ENDPOINT",
+          "CODEXHOST_RUNTIME_TOKEN",
+          "CODEXHOST_THREAD_ID",
+        ].every((key) => environment[key])
+          ? ["--append-system-prompt", CODEBUDDY_DELEGATION_INSTRUCTIONS]
+          : []),
+      ],
       env,
     ),
     environment: env,
   };
 }
+
+// The CLI applies this native option to ACP's agent system prompt. Runtime secrets
+// remain in the per-Session environment and never enter arguments or prompt text.
+export const CODEBUDDY_DELEGATION_INSTRUCTIONS = `This Session runs inside codexhost.
+When the user requests cross-Harness agent delegation, use the executable at the CODEXHOST_CLI_PATH environment variable through your native shell tool. Start with its --help and harness list commands, then use delegate start and thread send/read/wait/cancel as documented by the CLI. Pass --format compact when reporting results. Keep the inherited CODEXHOST_RUNTIME_ENDPOINT, CODEXHOST_RUNTIME_TOKEN and CODEXHOST_THREAD_ID environment variables for all such calls; they identify this Runtime and parent Thread. Do not print or expose their values, replace the configured executable, or start delegation unless the user's request authorizes it. Native CodeBuddy Agent subagents remain available for CodeBuddy-only work.`;

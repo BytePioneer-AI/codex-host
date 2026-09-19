@@ -68,7 +68,7 @@ const step = (state: string) => ({
   },
 });
 
-function fixture() {
+function fixture(options: Partial<ConstructorParameters<typeof AntigravitySubagents>[0]> = {}) {
   const events: HostEvent[] = [];
   const completed: HostItemSnapshot[] = [];
   const observer = new AntigravitySubagents({
@@ -77,11 +77,13 @@ function fixture() {
     port: async () => 1,
     cwd: process.cwd(),
     outputLimit: 64_000,
+    observationTimeoutMs: 30_000,
     emit: (event) => events.push(event),
     complete: (snapshot) => completed.push(snapshot),
     schedule: (work) => {
       void work();
     },
+    ...options,
   });
   return { observer, events, completed };
 }
@@ -225,6 +227,172 @@ describe("Antigravity Subagents", () => {
     }
   });
 
+  it("interrupts only after native status has been unobservable since parent completion", async () => {
+    vi.useFakeTimers();
+    const events: HostEvent[] = [];
+    const observer = new AntigravitySubagents({
+      turnId,
+      parentId: () => parent,
+      port: async () => 1,
+      cwd: process.cwd(),
+      outputLimit: 64_000,
+      observationTimeoutMs: 30_000,
+      emit: (event) => events.push(event),
+      complete: () => undefined,
+      schedule: () => undefined,
+    });
+    vi.mocked(readSubagentTranscript).mockResolvedValue({ ok: true, value: { turns: [] } });
+    try {
+      observer.handle(step("DONE"));
+      observer.finish({ status: "succeeded" });
+      vi.mocked(subagentRpc).mockResolvedValue(native("RUNNING"));
+      await vi.advanceTimersByTimeAsync(25_000);
+      await observer.refresh();
+      vi.mocked(subagentRpc).mockRejectedValue(new Error("401 missing CSRF token"));
+      await vi.advanceTimersByTimeAsync(29_000);
+      await observer.refresh();
+      expect(observer.state(child)?.status).toBe("running");
+
+      await vi.advanceTimersByTimeAsync(2_000);
+      await observer.refresh();
+      await observer.settled;
+      expect(observer.state(child)).toMatchObject({
+        status: "interrupted",
+        resultSummary: expect.stringContaining("could not be confirmed"),
+      });
+      expect(events.filter((event) => event.type === "subagent.state.changed")).toHaveLength(1);
+    } finally {
+      observer.stop();
+      vi.useRealTimers();
+    }
+  });
+
+  it.each(["running", "unobservable"])(
+    "keeps a healthy child observable when later %s children take over 30 seconds to poll",
+    async (siblings) => {
+      vi.useFakeTimers();
+      const { observer, events } = fixture({ schedule: () => undefined });
+      const slowChildren = Array.from(
+        { length: 16 },
+        (_, index) => `30dce1a0-bc56-4c5d-a50d-${String(index).padStart(12, "0")}`,
+      );
+      let settled = false;
+      void observer.settled.then(() => {
+        settled = true;
+      });
+      vi.mocked(readSubagentTranscript).mockResolvedValue({ ok: true, value: { turns: [] } });
+      vi.mocked(subagentRpc).mockImplementation(async (_port, id) => {
+        if (id === child) return native("RUNNING");
+        await new Promise((resolve) => setTimeout(resolve, 2_000));
+        if (siblings === "unobservable") throw new Error("Subagent RPC timed out");
+        return native("RUNNING");
+      });
+      try {
+        const update = step("DONE");
+        update.subagent_info.subagents = update.subagent_info.subagents.flatMap((subagent) =>
+          [child, ...slowChildren].map((id) => ({ ...subagent, conversation_id: id })),
+        );
+        observer.handle(update);
+        observer.finish({ status: "succeeded" });
+        const refresh = observer.refresh();
+        await vi.advanceTimersByTimeAsync(32_000);
+        await refresh;
+        expect(observer.state(child)?.status).toBe("running");
+        expect(settled).toBe(false);
+        expect(events).not.toContainEqual(
+          expect.objectContaining({
+            type: "subagent.state.changed",
+            nativeSubagentId: child,
+            status: "interrupted",
+          }),
+        );
+        if (siblings === "running") {
+          for (const id of slowChildren) expect(observer.state(id)?.status).toBe("running");
+        } else {
+          // Subsequent failed observations retire only the unavailable siblings.
+          vi.mocked(subagentRpc).mockImplementation(async (_port, id) => {
+            if (id === child) return native("RUNNING");
+            throw new Error("Subagent RPC timed out");
+          });
+          await observer.refresh();
+          for (const id of slowChildren) expect(observer.state(id)?.status).toBe("interrupted");
+          expect(observer.state(child)?.status).toBe("running");
+          expect(settled).toBe(false);
+        }
+        vi.mocked(subagentRpc).mockResolvedValue(native("IDLE"));
+        await observer.refresh();
+        await observer.settled;
+        expect(observer.state(child)?.status).toBe("completed");
+        expect(observer.running).toBe(false);
+      } finally {
+        observer.stop();
+        vi.useRealTimers();
+      }
+    },
+  );
+
+  it("does not expire a valid running status while its transcript read is slow", async () => {
+    vi.useFakeTimers();
+    const { observer } = fixture({ schedule: () => undefined });
+    vi.mocked(subagentRpc).mockResolvedValue(native("RUNNING"));
+    vi.mocked(readSubagentTranscript).mockImplementation(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 31_000));
+      return { ok: true, value: { turns: [] } };
+    });
+    try {
+      observer.handle(step("DONE"));
+      observer.finish({ status: "succeeded" });
+      const refresh = observer.refresh();
+      await vi.advanceTimersByTimeAsync(31_000);
+      await refresh;
+      expect(observer.state(child)?.status).toBe("running");
+    } finally {
+      observer.stop();
+      vi.useRealTimers();
+    }
+  });
+
+  it.each(["missing port", "missing parent", "invalid status", "RPC failure"])(
+    "expires unavailable children only after parent completion: %s",
+    async (failure) => {
+      vi.useFakeTimers();
+      const { observer, events } = fixture({
+        schedule: () => undefined,
+        port: async () => (failure === "missing port" ? null : 1),
+        parentId: () => (failure === "missing parent" ? undefined : parent),
+      });
+      vi.mocked(readSubagentTranscript).mockResolvedValue({ ok: true, value: { turns: [] } });
+      if (failure === "RPC failure") {
+        vi.mocked(subagentRpc).mockRejectedValue(new Error("Subagent RPC failed"));
+      } else {
+        vi.mocked(subagentRpc).mockResolvedValue(native("RUNNING", "foreign-parent"));
+      }
+      try {
+        observer.handle(step("DONE"));
+        await vi.advanceTimersByTimeAsync(31_000);
+        await observer.refresh();
+        expect(observer.state(child)?.status).toBe("running");
+        observer.finish({ status: "succeeded" });
+        await vi.advanceTimersByTimeAsync(29_999);
+        await observer.refresh();
+        expect(observer.state(child)?.status).toBe("running");
+        await vi.advanceTimersByTimeAsync(1);
+        await observer.refresh();
+        await observer.settled;
+        expect(observer.state(child)).toMatchObject({
+          status: "interrupted",
+          resultSummary: expect.stringContaining("could not be confirmed"),
+        });
+        await observer.refresh();
+        expect(events.filter((event) => event.type === "subagent.state.changed")).toHaveLength(1);
+        expect(subagentRpc).not.toHaveBeenCalledWith(1, child, "CancelCascadeInvocation");
+      } finally {
+        observer.stop();
+        vi.useRealTimers();
+      }
+    },
+  );
+
   it("validates ownership before cancelling and distinguishes unavailable native cancellation", async () => {
     const { observer, events } = fixture();
     observer.handle(step("ACTIVE"));
@@ -258,6 +426,7 @@ describe("Antigravity Subagents", () => {
       port: async () => 1,
       cwd: process.cwd(),
       outputLimit: 64_000,
+      observationTimeoutMs: 30_000,
       complete: () => undefined,
       emit: (event) => events.push(event),
       schedule: () => undefined,

@@ -106,7 +106,7 @@ test("keeps the Agent menu anchored inside the Codex window zoom", async ({ page
   expect(triggerBox.y - (menuBox.y + menuBox.height)).toBeCloseTo(6 * 1.6, 0);
 });
 
-test("places only uninstalled Harnesses last and restores order after installation", async ({
+test("defaults uninstalled Harnesses to More and restores order after installation", async ({
   page,
 }) => {
   await page.setContent("<!doctype html><body></body>");
@@ -142,8 +142,8 @@ test("places only uninstalled Harnesses last and restores order after installati
   expect(await order()).toEqual(defaults);
   await update({ pi: "notInstalled", "claude-code": "notInstalled", grok: "ready", omp: "ready" });
   await page.evaluate(() => Reflect.get(globalThis, "groupInstallationOrderPicker")());
-  // Main/More membership remains a user preference; sorting stays within each section.
-  expect(await order()).toEqual(["codex", "omp", "claude-code", "grok", "pi"]);
+  // Explicit groups win; untouched missing Harnesses still default to More.
+  expect(await order()).toEqual(["codex", "omp", "grok", "claude-code", "pi"]);
   await update({ pi: "ready", "claude-code": "ready", grok: "ready", omp: "ready" });
   expect(await order()).toEqual(["codex", "claude-code", "omp", "pi", "grok"]);
 });

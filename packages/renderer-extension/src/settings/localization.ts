@@ -160,6 +160,18 @@ export interface RendererSettingsMessages {
   readonly connectionStatus: string;
   readonly connectionHostsScrollLeft: string;
   readonly connectionHostsScrollRight: string;
+  readonly launchPathLabel: string;
+  readonly launchPathPlaceholder: string;
+  readonly launchPathWorkbuddyHelp: string;
+  readonly launchPathSave: string;
+  readonly launchPathReset: string;
+  readonly launchPathRestart: string;
+  readonly launchPathSaved: string;
+  readonly launchPathAutomatic: string;
+  readonly launchPathSaving: string;
+  readonly launchPathLoading: string;
+  readonly launchPathLoadError: string;
+  readonly launchPathSaveError: string;
   readonly connectionOpenInstallation: string;
   readonly connectionOpenHarnessWeb: string;
   readonly connectionInstall: string;
@@ -388,6 +400,21 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   connectionStatus: "Status",
   connectionHostsScrollLeft: "Show previous Hosts",
   connectionHostsScrollRight: "Show more Hosts",
+  launchPathLabel: "Installed application path",
+  launchPathPlaceholder: "Installation folder, e.g. D:\\program\\WorkBuddy",
+  launchPathWorkbuddyHelp:
+    "This integration requires the WorkBuddy app. If it is not detected automatically, enter its installation folder. codexhost locates the required files inside it. Restart codexhost after saving to apply.",
+  launchPathSave: "Save path",
+  launchPathReset: "Clear override",
+  launchPathRestart: "Saved. Restart codexhost to apply; running sessions are unchanged.",
+  launchPathSaved: "This Host is using the saved override. Availability is checked separately.",
+  launchPathAutomatic:
+    "No saved override. Uses environment configuration, then automatic discovery.",
+  launchPathSaving: "Saving…",
+  launchPathLoading: "Loading launch settings…",
+  launchPathLoadError: "Could not load launch settings. Reopen this detail panel to retry.",
+  launchPathSaveError:
+    "Could not save. Enter an existing absolute installation folder on this Host and check configuration permissions.",
   connectionOpenInstallation: "Open official installation page",
   connectionOpenHarnessWeb: "Open DeepSeek Harness Web",
   connectionInstall: "Install",
@@ -628,6 +655,19 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   connectionStatus: "状态",
   connectionHostsScrollLeft: "查看前面的 Host",
   connectionHostsScrollRight: "查看更多 Host",
+  launchPathLabel: "应用安装路径",
+  launchPathPlaceholder: "填写安装目录，例如 D:\\program\\WorkBuddy",
+  launchPathWorkbuddyHelp:
+    "此接入依赖 WorkBuddy 应用。若未自动识别，请填写应用安装目录，codexhost 会自动定位所需文件。保存后重启 codexhost 生效。",
+  launchPathSave: "保存路径",
+  launchPathReset: "清除自定义路径",
+  launchPathRestart: "已保存，重启 codexhost 后生效；当前运行中的会话不受影响。",
+  launchPathSaved: "此 Host 正在使用已保存的路径；是否可用仍以连接检测结果为准。",
+  launchPathAutomatic: "未设置自定义路径，使用环境变量配置或自动发现。",
+  launchPathSaving: "正在保存…",
+  launchPathLoading: "正在读取启动设置…",
+  launchPathLoadError: "无法读取启动设置，请重新打开此详情面板重试。",
+  launchPathSaveError: "保存失败。请填写此 Host 上实际存在的安装目录绝对路径，并确认配置目录可写。",
   connectionOpenInstallation: "前往官方安装页面",
   connectionOpenHarnessWeb: "打开 DeepSeek Harness Web",
   connectionInstall: "安装",

@@ -43,6 +43,8 @@ export interface LoadHarnessPluginsOptions {
   /** Absolute trusted roots only. Each root grants execution through enabled.json. */
   roots: readonly string[];
   context: HarnessPluginContext;
+  /** Local, persisted entrypoints; requested only for opted-in plugins. */
+  launchCommandForPlugin?: (id: string) => Promise<string | undefined>;
   /** Prevent conflicts with explicitly injected Adapters, e.g. test fixtures. */
   reservedIds?: ReadonlySet<string>;
   /** Bound for one plugin's asynchronous import and factory. Defaults to 10s. */
@@ -287,6 +289,9 @@ export async function loadHarnessPlugins(
         id: manifest.id,
         name: manifest.name,
         version: manifest.version,
+        ...(manifest.launchCommand && !options.context.managedRemoteHost
+          ? { launchCommand: true }
+          : {}),
         ...(manifest.links ? { links: manifest.links } : {}),
       });
       let adapter: HarnessAdapter;
@@ -297,9 +302,12 @@ export async function loadHarnessPlugins(
       } else {
         try {
           if (manifest.icon) descriptor.icon = await readPluginIcon(candidate.root, manifest.icon);
+          const launchCommand = descriptor.launchCommand
+            ? await options.launchCommandForPlugin?.(manifest.id)
+            : undefined;
           adapter = await loadAdapter(
             candidate,
-            options.context,
+            { ...options.context, ...(launchCommand ? { launchCommand } : {}) },
             timeoutMs,
             diagnose,
             options.warmup !== false,

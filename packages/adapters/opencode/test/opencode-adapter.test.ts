@@ -878,6 +878,9 @@ describe("OpenCode HarnessAdapter", () => {
     const model = encodeOpenCodeModelRef({ providerID: "provider-1", modelID: "model-1" });
     const thinkingOptionId = encodeOpenCodeVariant("high");
 
+    await session.execute(turn("in-progress", "before switching"));
+    expect(await nextEvent(iterator)).toMatchObject({ type: "turn.started" });
+    const runningPrompt = structuredClone(transport.promptCalls.at(-1));
     await expect(session.execute({ type: "model.select", model })).resolves.toEqual({
       ok: true,
       value: { completed: true },
@@ -910,6 +913,11 @@ describe("OpenCode HarnessAdapter", () => {
       state: { effectiveModel: model, effectiveThinkingOptionId: thinkingOptionId },
     });
 
+    expect(transport.promptCalls.at(-1)).toEqual(runningPrompt);
+    appendTerminal(transport);
+    await completeAfterBusy(transport);
+    expect(await nextEvent(iterator)).toMatchObject({ type: "turn.completed" });
+
     await expect(session.execute(turn("selected", "hello"))).resolves.toMatchObject({ ok: true });
     expect(transport.promptCalls.at(-1)).toMatchObject({
       model: { providerID: "provider-1", modelID: "model-1" },
@@ -918,7 +926,9 @@ describe("OpenCode HarnessAdapter", () => {
     expect(await nextEvent(iterator)).toMatchObject({ type: "turn.started" });
     appendTerminal(transport);
     await completeAfterBusy(transport);
-    expect(await nextEvent(iterator)).toMatchObject({ type: "turn.completed" });
+    let event = await nextEvent(iterator);
+    while (event.type === "session.usage.changed") event = await nextEvent(iterator);
+    expect(event).toMatchObject({ type: "turn.completed" });
     await session.close();
     await adapter.close();
   });

@@ -3459,7 +3459,7 @@ describe("Claude Code HarnessAdapter", () => {
     await session.close();
   });
 
-  it("serializes selection and preserves definite Model rejection", async () => {
+  it("selects Model and Thinking during a Turn and preserves native Model rejection", async () => {
     const { adapter, transports } = fixture();
     const session = await openSession(adapter);
     const iterator = session.outputs[Symbol.asyncIterator]();
@@ -3471,15 +3471,24 @@ describe("Claude Code HarnessAdapter", () => {
     if (!transport) throw new Error("Fake Claude transport was not created");
     const alias = encodeClaudeModelRef("sonnet");
     await expect(session.execute({ type: "model.select", model: alias })).resolves.toMatchObject({
-      ok: false,
-      error: { code: "sessionBusy" },
+      ok: true,
+    });
+    expect(transport.setModel).toHaveBeenCalledWith("sonnet");
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "session.state.changed",
+      state: { effectiveModel: alias },
     });
     await expect(
       session.execute({
         type: "thinking.select",
         thinkingOptionId: harnessThinkingOptionIdSchema.parse("high"),
       }),
-    ).resolves.toMatchObject({ ok: false, error: { code: "sessionBusy" } });
+    ).resolves.toMatchObject({ ok: true });
+    expect(transport.setThinkingOption).toHaveBeenCalledWith("high");
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "session.state.changed",
+      state: { effectiveThinkingOptionId: "high" },
+    });
     transport.finish({ status: "succeeded" });
     await nextEvent(iterator);
     await nextEvent(iterator);

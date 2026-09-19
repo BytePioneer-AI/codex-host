@@ -1,6 +1,6 @@
 import { PassThrough, Readable } from "node:stream";
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { parseJsonFrame, readLfFrames, writeFrame } from "../src/index.js";
 
@@ -21,6 +21,43 @@ describe("Protocol Core strict JSONL", () => {
     if (!firstFrame) throw new Error("expected one JSONL frame");
     await writeFrame(output, firstFrame);
     expect(Buffer.concat(chunks)).toEqual(Buffer.from('{"a":1}\n'));
+  });
+
+  it("emits multiple frames including empty frames across chunk boundaries", async () => {
+    const frames: Buffer[] = [];
+    for await (const frame of readLfFrames(
+      Readable.from([Buffer.from("first\n\nsec"), Buffer.from("ond\n")]),
+    )) {
+      frames.push(frame);
+    }
+    expect(frames).toEqual([Buffer.from("first"), Buffer.alloc(0), Buffer.from("second")]);
+  });
+
+  it("copies a fragmented frame once when its terminating newline arrives", async () => {
+    const chunkCount = 64;
+    const chunkSize = 64 * 1024;
+    const chunks = Array.from({ length: chunkCount }, () => Buffer.alloc(chunkSize, 0x78));
+    const finalChunk = chunks.at(-1);
+    if (!finalChunk) throw new Error("expected a final protocol chunk");
+    finalChunk[finalChunk.length - 1] = 0x0a;
+
+    let concatenatedBytes = 0;
+    const bufferConcat = Buffer.concat;
+    const concat = vi.spyOn(Buffer, "concat").mockImplementation((parts, totalLength) => {
+      concatenatedBytes += totalLength ?? parts.reduce((total, part) => total + part.length, 0);
+      return bufferConcat(parts, totalLength);
+    });
+    try {
+      const frames: Buffer[] = [];
+      for await (const frame of readLfFrames(Readable.from(chunks))) frames.push(frame);
+
+      expect(frames).toHaveLength(1);
+      expect(frames[0]).toHaveLength(chunkCount * chunkSize - 1);
+      expect(concat).toHaveBeenCalledOnce();
+      expect(concatenatedBytes).toBe(chunkCount * chunkSize - 1);
+    } finally {
+      concat.mockRestore();
+    }
   });
 
   it("rejects unterminated, empty, invalid UTF-8, and invalid JSON frames", async () => {

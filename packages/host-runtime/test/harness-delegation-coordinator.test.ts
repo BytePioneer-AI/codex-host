@@ -2,9 +2,11 @@ import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
+import type { HarnessAdapter } from "@codexhost/harness-adapter";
 import { FakeHarnessAdapter } from "@codexhost/harness-adapter/testing";
 import type { FakeHarnessSession } from "@codexhost/harness-adapter/testing";
 import { MappingStore } from "@codexhost/mapping-store";
+import type { ExternalHarnessId } from "@codexhost/protocol-core";
 import { harnessIdSchema, hostThreadIdSchema, hostTurnIdSchema } from "@codexhost/shared-contracts";
 import { describe, expect, it, vi } from "vitest";
 
@@ -15,23 +17,27 @@ import { ExternalThreadRuntime } from "../src/external-thread-runtime.js";
 async function fixture(
   adapter = new FakeHarnessAdapter(harnessIdSchema.parse("pi")),
   officialThreadCwd: (threadId: string) => Promise<string | undefined> = async () => undefined,
+  environment: NodeJS.ProcessEnv = {},
 ) {
   const directory = await mkdtemp(path.join(os.tmpdir(), "codexhost-delegation-coordinator-"));
   const store = new MappingStore({ directory });
   await store.initialize();
   const repository = new ExternalThreadRepository(store);
-  const adapters = new Map([["pi" as const, adapter]]);
+  const adapters = new Map<ExternalHarnessId, HarnessAdapter>([
+    [adapter.harnessId as ExternalHarnessId, adapter],
+  ]);
   const registered: ReturnType<ExternalThreadRuntime["register"]>[] = [];
   const notifications: unknown[] = [];
   const runtime = new ExternalThreadRuntime({
     adapters,
+    environment,
     repository,
     consumeOutputs: async () => undefined,
     diagnose: () => undefined,
   });
   const coordinator = new HarnessDelegationCoordinator({
     adapters,
-    environment: {},
+    environment,
     externalRuntime: runtime,
     repository,
     registerExternalThread: (input) => {
@@ -147,6 +153,75 @@ describe("HarnessDelegationCoordinator", () => {
         status: "running",
       });
     } finally {
+      await value.close();
+    }
+  });
+
+  it("receives, persists, and resumes WorkBuddy delegation through the ordinary Thread path", async () => {
+    const environment = {
+      CODEXHOST_CLI_PATH: "/opt/codexhost/bin/codexhost",
+      CODEXHOST_RUNTIME_ENDPOINT: "http://127.0.0.1:43123",
+      CODEXHOST_RUNTIME_TOKEN: "runtime-token",
+    };
+    const adapter = new RecordingAdapter(harnessIdSchema.parse("workbuddy"));
+    const value = await fixture(adapter, async () => undefined, environment);
+    let restoredRuntime: ExternalThreadRuntime | undefined;
+    try {
+      await expect(value.coordinator.listHarnesses()).resolves.toEqual({
+        harnesses: ["codex", "workbuddy"],
+      });
+      const started = await value.coordinator.start({
+        harnessId: "workbuddy",
+        task: "delegate through WorkBuddy",
+        cwd: "/synthetic",
+        parentThreadId: "parent-thread",
+      });
+      expect(started).toMatchObject({
+        harnessId: "workbuddy",
+        status: "running",
+        deepLink: `codex://threads/${started.threadId}`,
+      });
+      expect(adapter.openInputs[0]).toMatchObject({
+        kind: "create",
+        executionPolicy: "unattended-full-access",
+        environment: {
+          ...environment,
+          CODEXHOST_THREAD_ID: started.threadId,
+        },
+      });
+      await expect(value.repository.find(started.threadId)).resolves.toMatchObject({
+        harnessId: "workbuddy",
+        state: "ready",
+        nativeSessionRef: { harnessId: "workbuddy" },
+      });
+
+      const session = adapter.sessions[0];
+      if (!session) throw new Error("WorkBuddy delegation did not open a Session");
+      session.succeedTurn();
+      value.runtime.clear();
+      const adapters = new Map<ExternalHarnessId, HarnessAdapter>([["workbuddy", adapter]]);
+      restoredRuntime = new ExternalThreadRuntime({
+        adapters,
+        environment,
+        repository: value.repository,
+        consumeOutputs: async () => undefined,
+        diagnose: () => undefined,
+      });
+      const restored = await restoredRuntime.resolve(started.threadId);
+      expect(restored.kind).toBe("external");
+      if (restored.kind !== "external") throw new Error("WorkBuddy delegation did not resume");
+      expect(restored.thread.harnessId).toBe("workbuddy");
+      expect(adapter.openInputs.at(-1)).toMatchObject({
+        kind: "resume",
+        environment: {
+          ...environment,
+          CODEXHOST_THREAD_ID: started.threadId,
+        },
+        nativeRef: { harnessId: "workbuddy" },
+      });
+    } finally {
+      restoredRuntime?.clear();
+      await adapter.close();
       await value.close();
     }
   });

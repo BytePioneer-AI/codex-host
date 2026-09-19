@@ -152,6 +152,7 @@ describe("production Desktop Controller", () => {
         "antigravity",
         "kiro-cli",
         "codebuddy",
+        "workbuddy",
         "cursor-cli",
         "devin",
         "qoder",

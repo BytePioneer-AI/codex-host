@@ -66,7 +66,7 @@ const variants = [
     variant: "global",
     id: "qoder",
     command: "qodercli",
-    fallback: "qoder",
+    editorCommand: "qoder",
     npmPackage: "@qoder-ai/qodercli",
     token: "QODER_PERSONAL_ACCESS_TOKEN",
     override: "CODEXHOST_QODER_COMMAND",
@@ -78,7 +78,7 @@ const variants = [
     variant: "cn",
     id: "qoder-cn",
     command: "qoderclicn",
-    fallback: "qodercn",
+    editorCommand: "qodercn",
     npmPackage: "@qodercn-ai/qoderclicn",
     token: "QODERCN_PERSONAL_ACCESS_TOKEN",
     override: "CODEXHOST_QODERCN_COMMAND",
@@ -314,15 +314,34 @@ for (const v of variants)
       ).toBe(entry);
     });
 
-    it("finds its own command and fallback, not the other distribution", () => {
-      for (const command of [v.command, v.fallback]) {
-        expect(
+    it("rejects editor-only installations without starting an SDK query (#329)", async () => {
+      const queryFactory = vi.fn();
+      const adapter = new QoderAdapter({
+        variant: v.variant,
+        environment: { PATH: "/bin" },
+        platform: "linux",
+        queryFactory,
+        resolveExecutable: (input) =>
           resolveQoderExecutable(
-            { variant: v.variant, platform: "linux", environment: { PATH: "/bin" } },
-            { isExecutable: (candidate) => candidate === `/bin/${command}` },
+            { ...input, variant: v.variant },
+            { isExecutable: (candidate) => candidate === `/bin/${v.editorCommand}` },
           ),
-        ).toBe(`/bin/${command}`);
-      }
+      });
+      adapters.push(adapter);
+      expect(await adapter.inspect()).toMatchObject({
+        status: "notInstalled",
+        error: { code: "notInstalled" },
+      });
+      expect(queryFactory).not.toHaveBeenCalled();
+    });
+
+    it("finds its own CLI, not the other distribution", () => {
+      expect(
+        resolveQoderExecutable(
+          { variant: v.variant, platform: "linux", environment: { PATH: "/bin" } },
+          { isExecutable: (candidate) => candidate === `/bin/${v.command}` },
+        ),
+      ).toBe(`/bin/${v.command}`);
       expect(() =>
         resolveQoderExecutable(
           { variant: v.variant, platform: "linux", environment: { PATH: "/bin" } },

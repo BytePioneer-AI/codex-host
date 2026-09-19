@@ -18,7 +18,7 @@ const str = (v: unknown) => (typeof v === "string" ? v : "");
 
 // session/load rewrites toolCallId to replay-N-M. Address the native Task by
 // verified parent Turn position, Task position and input fingerprint instead.
-// Native Turn history is append-only for this adapter (fork/rollback unsupported).
+// Native Turn order stays stable within each session, including a complete-history fork.
 export function cursorTaskHandle(turnIndex: number, taskIndex: number, input: unknown) {
   const args = obj(input);
   const digest = createHash("sha256")

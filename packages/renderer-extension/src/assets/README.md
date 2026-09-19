@@ -1,16 +1,21 @@
 # Renderer brand assets
 
-`codexhost-logo.png` is the 3:4 codexhost product logo used by the installer and
-application branding. `codexhost-icon.png` is its square crop used for the
-in-product brand mark.
+`codexhost-logo.png`, `codexhost-icon.png`, and `codexhost-logo-transparent.png`
+are legacy artwork, no longer used by the installer or current product branding.
 
 `codexhost-logo-transparent.png` is the white-background-free square logo
 extracted from `codexhost-logo.png`. `codex-logo.png` is the Codex X mark
 source and `codex-logo-transparent.png` is its white-background-free square
 variant. `codex-logo-bright.png` recolors that mark in the official bright
-Codex blue so it stays visible on dark surfaces and is the Renderer settings
-brand icon (settings header mark and the application-header settings trigger
-button).
+Codex blue so it stays visible on dark surfaces.
+
+`codexhost-app-icon.png` is the selected white rounded-square codexhost icon
+with a dark C and central rounded square, with transparent outer corners.
+It is the Renderer settings brand icon (settings header mark and the
+application-header settings trigger button).
+The same selected PNG is stored at `crates/launcher/assets/codexhost.png` for
+macOS application and DMG icons. Windows application and installer icons use
+the multi-size `crates/launcher/assets/codexhost.ico` generated from that PNG.
 
 `codex-agent.png` is the Codex App GA mark distributed with OpenAI's official
 `openai.chatgpt` VS Code extension. It is bundled as a data URL so the Renderer
@@ -29,6 +34,13 @@ capture of `https://www.codebuddy.cn/`. The original purple background, white
 mark, 40×40 viewBox and rounded clipping are preserved without modification.
 It matches `packages/adapters/codebuddy/assets/icon.svg` byte for byte; both
 copies are bundled locally so no network request is needed.
+
+`workbuddy-agent.svg` is the WorkBuddy mark provided as `10001.svg` from a
+capture of `https://www.workbuddy.ai/`. The original green gradient, yellow
+glow, white mark, 130×130 viewBox and rounded clipping are preserved without
+modification. It matches `packages/adapters/workbuddy/assets/icon.svg` byte
+for byte, which is also used by the README capability table; both copies are
+bundled locally so no installed application path or network request is needed.
 
 `cursor-agent.svg` is the unmodified official Cursor Cube favicon from
 `https://cursor.com/favicon.svg`, with its original 512×512 viewBox, dark rounded

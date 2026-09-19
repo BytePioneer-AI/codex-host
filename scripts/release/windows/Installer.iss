@@ -13,6 +13,8 @@ Compression=lzma
 SolidCompression=yes
 WizardStyle=modern
 UninstallDisplayName=codexhost
+SetupIconFile=..\..\..\crates\launcher\assets\codexhost.ico
+UninstallDisplayIcon={app}\bin\codexhost-start.exe
 
 #if Architecture == "x64"
 ArchitecturesAllowed=x64compatible

@@ -406,6 +406,95 @@ describe("Read-only Harness accounts", () => {
 });
 
 describe("Renderer Connections page", () => {
+  it.each(["workbuddy"] as const)(
+    "edits %s launch settings in the local right-side inspector",
+    async (agent) => {
+      const messages = rendererSettingsMessages("zh-CN");
+      let changed: () => void = () => undefined;
+      const diagnostics: RendererConnectionDiagnostics = {
+        snapshot: () => ({
+          adapter: { state: "ready", reason: "ready", modelUpdates: 1, hook: "request-bridge" },
+          hosts: ["local", "remote-test"].map((hostId) => ({
+            hostId,
+            active: hostId === "local",
+            agents: [{ agent, availability: "notInstalled", error: null }],
+          })),
+        }),
+        refresh: vi.fn(async () => undefined),
+        getLaunchSettings: vi.fn(async () => ({ path: null, restartRequired: false })),
+        setLaunchSettings: vi.fn(async (_hostId, _agent, path) => ({
+          path,
+          restartRequired: true,
+        })),
+        subscribe: (listener) => {
+          changed = listener;
+          return () => undefined;
+        },
+      };
+      const page = createDefaultRendererSettingsPages(
+        messages,
+        () => null,
+        () => diagnostics,
+      ).find(({ id }) => id === "connections");
+      if (!page) throw new Error("Expected connections page");
+      const document = new FakeDocument("Win32");
+      const content = document.createElement("main");
+      const scope = new RendererSettingsPageScope();
+      const cleanup = page.mount({
+        content: content as unknown as HTMLElement,
+        signal: scope.signal,
+        runLatest: (op, handlers) => scope.runLatest(op, handlers),
+      });
+      const row = descendants(content).find(({ dataset }) => dataset.connectionItem === agent);
+      if (!row) throw new Error("Expected Harness row");
+      row.dispatch("click", { target: null });
+      const panel = elementWithClass(content, "settings-connection-inspector__body");
+      const input = descendants(panel).find(({ tagName }) => tagName === "input");
+      if (!input) throw new Error("Expected launch path input");
+      await vi.waitFor(() => expect(input.disabled).toBe(false));
+      expect(diagnostics.getLaunchSettings).toHaveBeenCalledWith("local", agent);
+      const save = descendants(panel).find(
+        ({ textContent }) => textContent === messages.launchPathSave,
+      );
+      if (!save) throw new Error("Expected save button");
+      expect(save.disabled).toBe(true);
+      input.value = "D:\\Custom Apps";
+      input.dispatch("input");
+      changed();
+      expect(descendants(content).find(({ tagName }) => tagName === "input")).toBe(input);
+      expect(input.value).toBe("D:\\Custom Apps");
+      save.dispatch("click");
+      save.dispatch("click");
+      await vi.waitFor(() => expect(visibleText(panel)).toContain(messages.launchPathRestart));
+      expect(diagnostics.setLaunchSettings).toHaveBeenCalledExactlyOnceWith(
+        "local",
+        agent,
+        input.value,
+      );
+      const reset = descendants(panel).find(
+        ({ textContent }) => textContent === messages.launchPathReset,
+      );
+      if (!reset) throw new Error("Expected reset button");
+      reset.dispatch("click");
+      await vi.waitFor(() => expect(input.value).toBe(""));
+      expect(diagnostics.setLaunchSettings).toHaveBeenLastCalledWith("local", agent, null);
+      if (!diagnostics.setLaunchSettings) throw new Error("Expected settings writer");
+      vi.mocked(diagnostics.setLaunchSettings).mockRejectedValueOnce(new Error("no access"));
+      input.value = "missing";
+      input.dispatch("input");
+      save.dispatch("click");
+      await vi.waitFor(() => expect(visibleText(panel)).toContain(messages.launchPathSaveError));
+      expect(input.value).toBe("missing");
+      const remote = descendants(content).find(
+        ({ dataset }) => dataset.connectionHostTab === "remote-test",
+      );
+      if (!remote) throw new Error("Expected remote tab");
+      remote.dispatch("click");
+      expect(descendants(content).some(({ dataset }) => dataset.harnessLaunch)).toBe(false);
+      cleanup?.();
+      scope.dispose();
+    },
+  );
   it("opens managed DSH Web only for the local Host and coalesces repeated clicks", async () => {
     const opened = deferred<undefined>();
     const diagnostics: RendererConnectionDiagnostics = {

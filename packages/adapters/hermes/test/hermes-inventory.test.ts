@@ -32,6 +32,26 @@ describe("Hermes model catalog", () => {
     expect(catalog.defaultModel).not.toBeNull();
   });
 
+  it("matches the configured custom provider alias without selecting another provider's model", () => {
+    const catalog = catalogModelsFromInventory({
+      models: [
+        { modelId: "other:gpt-5.6-sol", label: "gpt-5.6-sol", provider: "Other" },
+        {
+          modelId: "pi-openai:gpt-5.6-sol",
+          modelIdAliases: ["custom:pi-openai:gpt-5.6-sol", "pi openai:gpt-5.6-sol"],
+          label: "gpt-5.6-sol",
+          provider: "Pi OpenAI",
+        },
+      ],
+      currentModelId: "custom:pi-openai:gpt-5.6-sol",
+    });
+    expect(catalog.defaultModel).toEqual(encodeHermesModelRef("custom:pi-openai:gpt-5.6-sol"));
+    expect(catalog.models.map(({ ref }) => ref)).toContainEqual(catalog.defaultModel);
+    expect(catalog.models.map(({ ref }) => ref)).toContainEqual(
+      encodeHermesModelRef("custom:pi-openai:gpt-5.6-sol"),
+    );
+  });
+
   it("does not invent a default when Hermes reports no configured model", () => {
     const catalog = catalogModelsFromInventory({
       models: [{ modelId: "zai:glm-5-turbo", label: "glm-5-turbo", provider: "Z.AI" }],

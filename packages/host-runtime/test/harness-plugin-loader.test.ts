@@ -71,8 +71,49 @@ afterEach(async () => {
 });
 
 describe("Harness plugin discovery and loading", () => {
+  it("passes saved commands only to opted-in local factories and exposes the setting", async () => {
+    const directory = await root(["custom-agent", "ordinary-agent"]);
+    const saved = "/custom/entry";
+    const marker = path.join(directory, "received.txt");
+    await plugin(directory, "custom-agent", {
+      manifest: { launchCommand: true },
+      code: `
+        import { writeFileSync } from "node:fs";
+        import { FakeHarnessAdapter } from ${JSON.stringify(fakeModule)};
+        export function createHarnessAdapter(context) {
+          writeFileSync(${JSON.stringify(marker)}, JSON.stringify(context.launchCommand ?? null));
+          return new FakeHarnessAdapter("custom-agent");
+        }
+      `,
+    });
+    await plugin(directory, "ordinary-agent");
+    const launchCommandForPlugin = vi.fn(async () => saved);
+    const local = await loadHarnessPlugins({ roots: [directory], context, launchCommandForPlugin });
+    try {
+      expect(launchCommandForPlugin).toHaveBeenCalledExactlyOnceWith("custom-agent");
+      expect(JSON.parse(await readFile(marker, "utf8"))).toBe(saved);
+      expect(local.list().find(({ id }) => id === "custom-agent")?.launchCommand).toBe(true);
+      expect(local.list().find(({ id }) => id === "ordinary-agent")?.launchCommand).toBeUndefined();
+    } finally {
+      await local.close();
+    }
+    launchCommandForPlugin.mockClear();
+    const remote = await loadHarnessPlugins({
+      roots: [directory],
+      context: { ...context, managedRemoteHost: true },
+      launchCommandForPlugin,
+    });
+    try {
+      expect(launchCommandForPlugin).not.toHaveBeenCalled();
+      expect(JSON.parse(await readFile(marker, "utf8"))).toBeNull();
+      expect(remote.list().every(({ launchCommand }) => !launchCommand)).toBe(true);
+    } finally {
+      await remote.close();
+    }
+  });
   it.each([
     ["codebuddy", "CodeBuddy", "CODEXHOST_CODEBUDDY_COMMAND"],
+    ["workbuddy", "WorkBuddy", "CODEXHOST_WORKBUDDY_COMMAND"],
     ["qoder", "Qoder", "CODEXHOST_QODER_COMMAND"],
     ["qoder-cn", "Qoder CN", "CODEXHOST_QODERCN_COMMAND"],
   ])(

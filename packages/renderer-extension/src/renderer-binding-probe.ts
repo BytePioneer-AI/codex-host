@@ -97,6 +97,7 @@ const externalHarnessIds = {
   antigravity: harnessIdSchema.parse("antigravity"),
   "kiro-cli": harnessIdSchema.parse("kiro-cli"),
   codebuddy: harnessIdSchema.parse("codebuddy"),
+  workbuddy: harnessIdSchema.parse("workbuddy"),
   "cursor-cli": harnessIdSchema.parse("cursor-cli"),
   devin: harnessIdSchema.parse("devin"),
   hermes: harnessIdSchema.parse("hermes"),
@@ -114,6 +115,7 @@ const externalAgents: readonly ExternalRendererAgent[] = [
   "antigravity",
   "kiro-cli",
   "codebuddy",
+  "workbuddy",
   "cursor-cli",
   "devin",
   "hermes",
@@ -472,6 +474,7 @@ export function restoredThreadOwnership(inspection: ThreadInspection): RestoredT
   if (
     inspection.harnessId === "kiro-cli" ||
     inspection.harnessId === "codebuddy" ||
+    inspection.harnessId === "workbuddy" ||
     inspection.harnessId === "cursor-cli" ||
     inspection.harnessId === "devin"
   ) {
@@ -508,7 +511,7 @@ export function restoredThreadOwnership(inspection: ThreadInspection): RestoredT
   if (inspection.harnessId === "qoder" || inspection.harnessId === "qoder-cn") {
     const route = decodeHarnessPluginRoute(inspection.transportModelId);
     if (!route || route.harnessId !== inspection.harnessId) {
-      throw new Error("Qoder Thread reported an incompatible transport Model");
+      throw new Error("Harness Thread reported an incompatible transport Model");
     }
     const model = inspection.effectiveModel ?? route.model;
     const thinkingOptionId =
@@ -756,6 +759,7 @@ export function installRendererBindingProbe(
       antigravity: undefined,
       "kiro-cli": undefined,
       codebuddy: undefined,
+      workbuddy: undefined,
       "cursor-cli": undefined,
       devin: undefined,
       hermes: undefined,
@@ -2253,6 +2257,16 @@ export function installRendererBindingProbe(
       return refreshConnectionHosts(harnessAvailabilityByHost.keys(), (hostId) =>
         refreshHarnessAvailabilityForHost(hostId, true, false, true),
       );
+    },
+    async getLaunchSettings(hostId, agent) {
+      const client = hostId === "local" ? modelClientForHost(hostId) : null;
+      if (!client?.getHarnessLaunchSettings) throw new Error("Launch settings are unavailable");
+      return client.getHarnessLaunchSettings({ harnessId: externalHarnessIds[agent] });
+    },
+    async setLaunchSettings(hostId, agent, path) {
+      const client = hostId === "local" ? modelClientForHost(hostId) : null;
+      if (!client?.setHarnessLaunchSettings) throw new Error("Launch settings are unavailable");
+      return client.setHarnessLaunchSettings({ harnessId: externalHarnessIds[agent], path });
     },
     async openWebUi(hostId: string, agent: ExternalRendererAgent): Promise<void> {
       const state = hostHarnessAvailabilityState(hostId);

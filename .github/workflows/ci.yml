@@ -9,6 +9,12 @@ on:
 permissions:
   contents: read
 
+# Cold CI builds skip incremental state and debug symbols, retaining debug assertions.
+env:
+  CARGO_INCREMENTAL: "0"
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  CARGO_PROFILE_TEST_DEBUG: "0"
+
 # Superseded PR runs are disposable; main runs provide per-commit release evidence.
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
@@ -36,7 +42,7 @@ jobs:
           cache: npm
 
       - name: Setup npm
-        run: npm install --global npm@11.8.0
+        run: npm install --global --prefer-offline npm@11.8.0
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@master
@@ -44,7 +50,7 @@ jobs:
           toolchain: 1.97.1
 
       - name: Install dependencies
-        run: npm ci
+        run: npm ci --prefer-offline
 
       - name: Check formatting
         if: runner.os == 'Linux'
@@ -62,13 +68,22 @@ jobs:
         if: runner.os == 'Linux'
         run: npm run test:typescript
 
-      # Repository governance runs on Linux in production, not on Desktop platforms.
+      # Linux x64 covers governance, browser/contracts, and the nested Gate runner test.
       - name: Test TypeScript (cross-platform)
         if: runner.os != 'Linux'
-        run: npm run test:typescript -- --exclude 'packages/repository-automation/test/**'
+        run: >
+          npm run test:typescript --
+          --exclude 'packages/repository-automation/test/**'
+          --exclude 'packages/shared-contracts/test/**'
+          --exclude 'packages/renderer-extension/test/**'
+          --exclude 'tools/gate-claude-code/run.test.mjs'
 
+      # Rust formatting is already covered by the Linux x64 formatting step.
       - name: Check Rust
-        run: npm run check:rust
+        run: >
+          cargo clippy --workspace --all-targets --locked
+          --features codexhost-shim/test-utils,codexhost-gate-a-native/gate-tools
+          -- -D warnings && npm run test:rust
 
       - name: Smoke-test Linux npm package
         if: runner.os == 'Linux'
@@ -91,7 +106,7 @@ jobs:
           cache: npm
 
       - name: Setup npm
-        run: npm install --global npm@11.8.0
+        run: npm install --global --prefer-offline npm@11.8.0
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@master
@@ -99,13 +114,22 @@ jobs:
           toolchain: 1.97.1
 
       - name: Install dependencies
-        run: npm ci
+        run: npm ci --prefer-offline
 
+      # Keep the same cross-platform coverage as macOS and Windows.
       - name: Test TypeScript (cross-platform)
-        run: npm run test:typescript -- --exclude 'packages/repository-automation/test/**'
+        run: >
+          npm run test:typescript --
+          --exclude 'packages/repository-automation/test/**'
+          --exclude 'packages/shared-contracts/test/**'
+          --exclude 'packages/renderer-extension/test/**'
+          --exclude 'tools/gate-claude-code/run.test.mjs'
 
       - name: Check Rust
-        run: npm run check:rust
+        run: >
+          cargo clippy --workspace --all-targets --locked
+          --features codexhost-shim/test-utils,codexhost-gate-a-native/gate-tools
+          -- -D warnings && npm run test:rust
 
       - name: Smoke-test Linux ARM64 npm package
         run: >

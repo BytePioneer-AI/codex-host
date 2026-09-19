@@ -114,10 +114,13 @@ export interface AntigravityAdapterOptions {
   inspectTimeoutMs?: number;
   printTimeout?: string;
   toolOutputLimit?: number;
+  subagentObservationTimeoutMs?: number;
 }
 
 interface ActiveTurn {
   command: TurnStartCommand;
+  /** Model passed to this CLI invocation, independent of later selections. */
+  model: HarnessModelRef | undefined;
   process: ChildProcessByStdio<Writable, Readable, Readable>;
   exited: Promise<void>;
   questions: AntigravityQuestionBridge;
@@ -159,6 +162,7 @@ const antigravityHarnessId = harnessIdSchema.parse("antigravity");
 const DEFAULT_INSPECT_TIMEOUT_MS = 20_000;
 const DEFAULT_PRINT_TIMEOUT = "30m";
 const DEFAULT_TOOL_OUTPUT_LIMIT = 64_000;
+const DEFAULT_SUBAGENT_OBSERVATION_TIMEOUT_MS = 30_000;
 const CONTEXT_USAGE_TIMEOUT_MS = 8_000;
 const CONTEXT_USAGE_RETRY_MS = 100;
 const TRAJECTORY_TIMEOUT_MS = 2_000;
@@ -489,6 +493,7 @@ class AntigravitySession implements HarnessSession {
   readonly #onClosed: () => void;
   readonly #printTimeout: string;
   readonly #toolOutputLimit: number;
+  readonly #subagentObservationTimeoutMs: number;
   readonly #history: AntigravityHistory;
   readonly #subagentObservers = new Set<AntigravitySubagents>();
   #active: ActiveTurn | null = null;
@@ -513,6 +518,7 @@ class AntigravitySession implements HarnessSession {
     printTimeout: string;
     thinkingOptionId?: HarnessThinkingOptionId;
     toolOutputLimit: number;
+    subagentObservationTimeoutMs: number;
     onClosed(): void;
   }) {
     this.#catalog = input.catalog;
@@ -526,6 +532,7 @@ class AntigravitySession implements HarnessSession {
     this.#printTimeout = input.printTimeout;
     this.#thinkingOptionId = input.thinkingOptionId ?? input.history.thinkingOptionId;
     this.#toolOutputLimit = input.toolOutputLimit;
+    this.#subagentObservationTimeoutMs = input.subagentObservationTimeoutMs;
     this.#onClosed = input.onClosed;
     this.initialState = this.#state();
     this.outputs = this.#channel.outputs;
@@ -710,6 +717,7 @@ class AntigravitySession implements HarnessSession {
     }
     const active: ActiveTurn = {
       command,
+      model: this.#model,
       process: child,
       exited: new Promise<void>((resolve) => child.once("close", () => resolve())),
       questions,
@@ -719,6 +727,7 @@ class AntigravitySession implements HarnessSession {
         port: () => this.#languageServerPort(active),
         cwd: this.#cwd,
         outputLimit: this.#toolOutputLimit,
+        observationTimeoutMs: this.#subagentObservationTimeoutMs,
         initialStates: this.#history
           .snapshot()
           .flatMap((turn) =>
@@ -880,7 +889,7 @@ class AntigravitySession implements HarnessSession {
     if (event.event === "step_update") {
       if (event.step_update.conversation_id !== this.#nativeRef?.nativeSessionId) return;
       await this.#handleStep(active, event.step_update);
-      const usage = hostUsage(event.step_update.usage, this.#model?.id);
+      const usage = hostUsage(event.step_update.usage, active.model?.id);
       if (usage) this.#publishUsage(active, usage);
       this.#ensureContextUsage(active, event.step_update.conversation_id);
       return;
@@ -892,7 +901,7 @@ class AntigravitySession implements HarnessSession {
 
   async #handleResult(active: ActiveTurn, event: AntigravityResultEvent): Promise<void> {
     if (this.#active !== active) return;
-    const usage = hostUsage(event.result.usage, this.#model?.id);
+    const usage = hostUsage(event.result.usage, active.model?.id);
     if (usage) this.#publishUsage(active, usage);
     this.#ensureContextUsage(active, event.result.conversation_id);
     if (active.contextUsagePromise) {
@@ -989,7 +998,7 @@ class AntigravitySession implements HarnessSession {
     active.contextUsagePromise = pollAntigravityContextUsage(
       active.logPath,
       conversationId,
-      this.#model?.id,
+      active.model?.id,
       () =>
         active.receivedResult || active.cancellationRequested || active.process.exitCode !== null,
     );
@@ -1281,12 +1290,6 @@ class AntigravitySession implements HarnessSession {
   }
 
   #selectModel(command: ModelSelectCommand): HarnessResult<ModelSelectCompleted> {
-    if (this.isActive) {
-      return {
-        ok: false,
-        error: { code: "sessionBusy", message: "Turn is active", retryable: true },
-      };
-    }
     this.#model = harnessModelRefSchema.parse(command.model);
     // Efforts are per-Model, so a Model that does not accept the retained
     // option must drop it rather than pass a combination the CLI rejects.
@@ -1300,12 +1303,6 @@ class AntigravitySession implements HarnessSession {
   }
 
   #selectThinking(command: ThinkingSelectCommand): HarnessResult<ThinkingSelectCompleted> {
-    if (this.isActive) {
-      return {
-        ok: false,
-        error: { code: "sessionBusy", message: "Turn is active", retryable: true },
-      };
-    }
     const requested = harnessThinkingOptionIdSchema.safeParse(command.thinkingOptionId);
     if (!requested.success) {
       return {
@@ -1443,6 +1440,7 @@ export class AntigravityAdapter implements HarnessAdapter {
   readonly #printTimeout: string;
   readonly #sessions = new Set<AntigravitySession>();
   readonly #toolOutputLimit: number;
+  readonly #subagentObservationTimeoutMs: number;
   #closed = false;
   #quota: AntigravityQuotaSnapshot | null = null;
   #quotaCwd: string | null = null;
@@ -1455,6 +1453,12 @@ export class AntigravityAdapter implements HarnessAdapter {
     this.#inspectTimeoutMs = options.inspectTimeoutMs ?? DEFAULT_INSPECT_TIMEOUT_MS;
     this.#printTimeout = options.printTimeout ?? DEFAULT_PRINT_TIMEOUT;
     this.#toolOutputLimit = options.toolOutputLimit ?? DEFAULT_TOOL_OUTPUT_LIMIT;
+    const subagentObservationTimeoutMs =
+      options.subagentObservationTimeoutMs ?? DEFAULT_SUBAGENT_OBSERVATION_TIMEOUT_MS;
+    if (!Number.isFinite(subagentObservationTimeoutMs) || subagentObservationTimeoutMs <= 0) {
+      throw new RangeError("subagentObservationTimeoutMs must be a finite positive number");
+    }
+    this.#subagentObservationTimeoutMs = subagentObservationTimeoutMs;
   }
 
   async inspect(input: InspectHarnessInput = {}): Promise<HarnessInspection> {
@@ -1655,6 +1659,7 @@ export class AntigravityAdapter implements HarnessAdapter {
             printTimeout: this.#printTimeout,
             ...(params.thinkingOptionId ? { thinkingOptionId: params.thinkingOptionId } : {}),
             toolOutputLimit: this.#toolOutputLimit,
+            subagentObservationTimeoutMs: this.#subagentObservationTimeoutMs,
             onClosed: () => this.#sessions.delete(session),
           });
           this.#sessions.add(session);
@@ -1693,6 +1698,7 @@ export class AntigravityAdapter implements HarnessAdapter {
             printTimeout: this.#printTimeout,
             ...(params.thinkingOptionId ? { thinkingOptionId: params.thinkingOptionId } : {}),
             toolOutputLimit: this.#toolOutputLimit,
+            subagentObservationTimeoutMs: this.#subagentObservationTimeoutMs,
             onClosed: () => this.#sessions.delete(session),
           });
           this.#sessions.add(session);
@@ -1755,6 +1761,7 @@ export class AntigravityAdapter implements HarnessAdapter {
       printTimeout: this.#printTimeout,
       ...(thinkingOptionId ? { thinkingOptionId } : {}),
       toolOutputLimit: this.#toolOutputLimit,
+      subagentObservationTimeoutMs: this.#subagentObservationTimeoutMs,
       onClosed: () => this.#sessions.delete(session),
     });
     this.#sessions.add(session);

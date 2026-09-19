@@ -253,6 +253,7 @@ export async function runDesktopController(
           "antigravity",
           "kiro-cli",
           "codebuddy",
+          "workbuddy",
           "cursor-cli",
           "devin",
           "qoder",

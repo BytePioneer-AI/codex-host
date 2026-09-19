@@ -1,4 +1,12 @@
 import {
+  HARNESS_LAUNCH_SETTINGS_GET_METHOD,
+  HARNESS_LAUNCH_SETTINGS_SET_METHOD,
+  harnessLaunchSettingsGetSchema,
+  harnessLaunchSettingsSetSchema,
+  harnessLaunchSettingsSchema,
+  type HarnessLaunchSettings,
+  type HarnessLaunchSettingsGet,
+  type HarnessLaunchSettingsSet,
   IDLE_RELEASE_SETTINGS_METHOD,
   LOADED_SESSIONS_METHOD,
   loadedSessionsSchema,
@@ -156,6 +164,8 @@ function notificationTarget(manager: RequestManagerCandidate): RequestManagerCan
 }
 
 export interface RendererModelClient extends Partial<RendererSessionImportClient> {
+  getHarnessLaunchSettings?(input: HarnessLaunchSettingsGet): Promise<HarnessLaunchSettings>;
+  setHarnessLaunchSettings?(input: HarnessLaunchSettingsSet): Promise<HarnessLaunchSettings>;
   setIdleReleaseSettings?(settings: IdleReleaseSettings): Promise<IdleReleaseSettings>;
   listLoadedSessions?(): Promise<LoadedSession[]>;
   currentHostId?(): string | null;
@@ -309,6 +319,26 @@ export function createRendererModelClient(
   };
 
   return Object.freeze({
+    async getHarnessLaunchSettings(
+      input: HarnessLaunchSettingsGet,
+    ): Promise<HarnessLaunchSettings> {
+      return harnessLaunchSettingsSchema.parse(
+        await manager.sendRequest(
+          HARNESS_LAUNCH_SETTINGS_GET_METHOD,
+          harnessLaunchSettingsGetSchema.parse(input),
+        ),
+      );
+    },
+    async setHarnessLaunchSettings(
+      input: HarnessLaunchSettingsSet,
+    ): Promise<HarnessLaunchSettings> {
+      return harnessLaunchSettingsSchema.parse(
+        await manager.sendRequest(
+          HARNESS_LAUNCH_SETTINGS_SET_METHOD,
+          harnessLaunchSettingsSetSchema.parse(input),
+        ),
+      );
+    },
     async listLoadedSessions(): Promise<LoadedSession[]> {
       return loadedSessionsSchema.parse(await manager.sendRequest(LOADED_SESSIONS_METHOD, {}));
     },

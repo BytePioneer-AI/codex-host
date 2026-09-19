@@ -4,8 +4,11 @@ import {
   harnessIdSchema,
   harnessInspectionSchema,
   harnessPermissionModeIdSchema,
+  harnessThinkingOptionIdSchema,
   hostTurnIdSchema,
+  nativeCheckpointRefSchema,
 } from "@codexhost/shared-contracts";
+import * as derivation from "../src/derivation.js";
 import { CodeBuddyAdapter } from "../src/codebuddy-adapter.js";
 import { CodeBuddyError } from "../src/common.js";
 import { modelRef } from "../src/configuration.js";
@@ -49,6 +52,70 @@ async function create(adapter: CodeBuddyAdapter, environment = {}) {
 }
 
 describe("CodeBuddy native Adapter", () => {
+  it.each(["fork", "rollbackLastTurn"] as const)(
+    "does not begin %s after shutdown completes during a source snapshot",
+    async (kind) => {
+      const native = fixture();
+      const entered = Promise.withResolvers<undefined>();
+      const release = Promise.withResolvers<undefined>();
+      const adapter = new CodeBuddyAdapter({
+        ...native,
+        readHistory: async () => {
+          entered.resolve(undefined);
+          await release.promise;
+          return native.readHistory();
+        },
+      });
+      adapters.push(adapter);
+      native.history.push({ id: "user-1", type: "message", role: "user", content: "hello" });
+      const source = await create(adapter);
+      const sourceRef = source.initialState.nativeRef;
+      if (!sourceRef) throw Error("No native identity");
+      const derive = vi.spyOn(derivation, "deriveCodeBuddySession");
+      try {
+        const input = { cwd: process.cwd(), sourceRef };
+        const opening = adapter.open(
+          kind === "fork"
+            ? {
+                ...input,
+                kind,
+                checkpoint: nativeCheckpointRefSchema.parse({
+                  harnessId: "codebuddy",
+                  nativeSessionId: sourceRef.nativeSessionId,
+                  checkpointId: "user-1",
+                  formatVersion: 1,
+                }),
+              }
+            : { ...input, kind },
+        );
+        await entered.promise;
+        await adapter.close();
+        expect(native.clients[0]?.closed).toBe(true);
+        release.resolve(undefined);
+        expect(await opening).toMatchObject({ error: { code: "invalidState" } });
+        expect(derive).not.toHaveBeenCalled();
+        expect(native.clients).toHaveLength(1);
+      } finally {
+        release.resolve(undefined);
+        derive.mockRestore();
+      }
+    },
+  );
+
+  it("keeps the CodeBuddy native commands distinct from the WorkBuddy catalog", async () => {
+    const { adapter } = setup();
+    const session = await create(adapter);
+    expect(adapter.commandCatalog?.commands.map((command) => command.invocation)).toEqual([
+      "/compact",
+      "/cost",
+    ]);
+    const available = await session.commands?.list();
+    if (!available?.ok) throw Error("CodeBuddy command catalog is unavailable");
+    const invocations = available.value.commands.map((command) => command.invocation);
+    expect(invocations).toEqual(expect.arrayContaining(["/compact", "/cost", "/review"]));
+    expect(invocations).not.toContain("/init");
+  });
+
   it("completes PARTIAL_SUCCESS while retaining a recovered diagnostic Tool failure", async () => {
     const { adapter, native } = setup();
     const session = await create(adapter),
@@ -188,7 +255,7 @@ describe("CodeBuddy native Adapter", () => {
     });
   });
 
-  it("rejects busy starts/config/snapshots, cancels only the matching Turn, and continues once", async () => {
+  it("allows active Model/Thinking selection but rejects busy starts/snapshots and cancels only the matching Turn", async () => {
     const { adapter } = setup();
     const session = await create(adapter);
     const events = collect(session);
@@ -197,8 +264,14 @@ describe("CodeBuddy native Adapter", () => {
       error: { code: "sessionBusy" },
     });
     expect(await session.execute({ type: "model.select", model: modelRef("other") })).toMatchObject(
-      { error: { code: "sessionBusy" } },
+      { ok: true },
     );
+    expect(
+      await session.execute({
+        type: "thinking.select",
+        thinkingOptionId: harnessThinkingOptionIdSchema.parse("high"),
+      }),
+    ).toMatchObject({ ok: true });
     expect(await session.readSnapshot()).toMatchObject({ error: { code: "sessionBusy" } });
     expect(
       await session.execute({ type: "turn.cancel", turnId: hostTurnIdSchema.parse("wrong") }),
@@ -211,6 +284,17 @@ describe("CodeBuddy native Adapter", () => {
     await events.completed(2);
     expect(await session.readSnapshot()).toMatchObject({
       value: { turns: [{ outcome: { status: "unknown" } }, { outcome: { status: "succeeded" } }] },
+    });
+  });
+
+  it("keeps unlisted Model selection disabled for the ordinary CodeBuddy profile", async () => {
+    const { adapter } = setup();
+    const session = await create(adapter);
+
+    expect(
+      await session.execute({ type: "model.select", model: modelRef("not-in-native-options") }),
+    ).toMatchObject({
+      error: { code: "invalidRequest", message: expect.stringContaining("Unavailable CodeBuddy") },
     });
   });
 

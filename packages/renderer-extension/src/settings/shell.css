@@ -1129,6 +1129,52 @@
   padding: 12px;
 }
 
+.settings-harness-launch {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+  padding-top: 12px;
+  border-top: 1px solid var(--settings-divider);
+}
+
+.settings-harness-launch label {
+  display: grid;
+  gap: 8px;
+  color: var(--settings-text);
+  font-size: 12px;
+}
+
+.settings-harness-launch input {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  padding: 8px;
+  color: var(--settings-text);
+  background: var(--settings-surface);
+  border: 1px solid var(--settings-divider);
+  border-radius: 6px;
+  font: inherit;
+}
+
+.settings-harness-launch input:focus-visible {
+  outline: 2px solid var(--settings-focus);
+  outline-offset: 2px;
+}
+
+.settings-harness-launch p {
+  margin: 0;
+  color: var(--settings-muted);
+  font-size: 11px;
+  line-height: 16px;
+  overflow-wrap: anywhere;
+}
+
+.settings-harness-launch__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
 .settings-connection-install-callout {
   display: grid;
   grid-template-columns: 28px minmax(0, 1fr);

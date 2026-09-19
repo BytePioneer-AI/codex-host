@@ -39,6 +39,8 @@ const pluginPresentationShape = {
   id: harnessPluginIdSchema,
   name: z.string().trim().min(1).max(128),
   version: z.string().min(1).max(128),
+  /** The factory accepts a persisted local entrypoint through its construction context. */
+  launchCommand: z.literal(true).optional(),
   links: z
     .object({
       documentation: documentationUrlSchema.optional(),

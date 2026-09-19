@@ -1691,7 +1691,7 @@ describe("Pi HarnessAdapter Session", () => {
     await opened.value.close();
   });
 
-  it("selects an idle Model with state-before-result ordering and rejects active races", async () => {
+  it("selects Models while idle or running with state-before-result ordering", async () => {
     const { adapter, transports } = fixture();
     const session = await openSession(adapter);
     const iterator = session.outputs[Symbol.asyncIterator]();
@@ -1735,13 +1735,17 @@ describe("Pi HarnessAdapter Session", () => {
         type: "model.select",
         model: encodePiModelRef({ provider: "synthetic-provider", id: "synthetic-model" }),
       }),
-    ).resolves.toMatchObject({ ok: false, error: { code: "sessionBusy" } });
-    expect(transports[0]?.selectModel).toHaveBeenCalledOnce();
+    ).resolves.toEqual({ ok: true, value: { completed: true } });
+    expect(transports[0]?.selectModel).toHaveBeenCalledTimes(2);
+    await expect(session.execute(textTurn("duplicate-active"))).resolves.toMatchObject({
+      ok: false,
+      error: { code: "sessionBusy" },
+    });
     transports[0]?.succeed("active");
     await session.close();
   });
 
-  it("selects Thinking with corrected state-before-result ordering and rejects active races", async () => {
+  it("selects Thinking while idle or running with corrected state-before-result ordering", async () => {
     const { adapter, transports } = fixture();
     await expect(adapter.inspect({ cwd: "/synthetic" })).resolves.toMatchObject({
       status: "ready",
@@ -1784,8 +1788,12 @@ describe("Pi HarnessAdapter Session", () => {
         type: "thinking.select",
         thinkingOptionId: harnessThinkingOptionIdSchema.parse("off"),
       }),
-    ).resolves.toMatchObject({ ok: false, error: { code: "sessionBusy" } });
-    expect(transports[1]?.selectThinkingOption).toHaveBeenCalledOnce();
+    ).resolves.toEqual({ ok: true, value: { completed: true } });
+    expect(transports[1]?.selectThinkingOption).toHaveBeenCalledTimes(2);
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "session.state.changed",
+      state: { effectiveThinkingOptionId: "off" },
+    });
     transports[1]?.succeed("active-thinking");
     await session.close();
   });

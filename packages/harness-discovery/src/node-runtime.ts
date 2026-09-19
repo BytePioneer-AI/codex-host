@@ -3,6 +3,9 @@ import path from "node:path";
 /**
  * Guarantees the harness child process can resolve `node`, which a
  * `#!/usr/bin/env node` entrypoint needs and a GUI-launched PATH rarely has.
+ *
+ * The Host runtime is a fallback: preserve an existing Node.js selection so
+ * package-manager shims continue to use the Node.js installation they belong to.
  */
 export function withNodeRuntimeOnPath(
   environment: NodeJS.ProcessEnv,
@@ -16,7 +19,7 @@ export function withNodeRuntimeOnPath(
   const equal =
     platform === "win32" ? (value: string) => value.toLowerCase() : (value: string) => value;
   if (!directories.some((directory) => equal(directory) === equal(runtimeDirectory))) {
-    directories.unshift(runtimeDirectory);
+    directories.push(runtimeDirectory);
   }
   return { ...environment, [pathKey]: directories.join(delimiter) };
 }

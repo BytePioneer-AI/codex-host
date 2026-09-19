@@ -10,7 +10,18 @@ import {
   harnessPermissionModeIdSchema,
   harnessThinkingOptionSchema,
 } from "@codexhost/shared-contracts";
-import { CodeBuddyError, record, rows, text } from "./common.js";
+import {
+  CODEBUDDY_RUNTIME_PROFILE,
+  CodeBuddyError,
+  record,
+  rows,
+  text,
+  type CodeBuddyRuntimeProfile,
+} from "./common.js";
+import {
+  assessCodeBuddyDirectoryTrust,
+  codeBuddyMissingModelErrorMessage,
+} from "./directory-trust.js";
 
 export const CODEBUDDY_CAPABILITIES: HarnessSessionCapabilities = {
   configuration: {
@@ -19,9 +30,18 @@ export const CODEBUDDY_CAPABILITIES: HarnessSessionCapabilities = {
     selectPermissionMode: true,
     permissionModeScope: "live",
   },
-  history: { fork: false, forkAcrossCwd: false, rollbackLastTurn: false },
+  history: { fork: true, forkAcrossCwd: false, rollbackLastTurn: true },
   subagents: { observe: true, readTranscript: true },
 };
+
+export function capabilitiesForProfile(
+  profile: CodeBuddyRuntimeProfile = CODEBUDDY_RUNTIME_PROFILE,
+): HarnessSessionCapabilities {
+  return {
+    ...CODEBUDDY_CAPABILITIES,
+    history: profile.historyCapabilities ?? CODEBUDDY_CAPABILITIES.history,
+  };
+}
 
 export function modelRef(modelId: string): HarnessModelRef {
   return harnessModelRefSchema.parse({ id: `cb.${Buffer.from(modelId).toString("base64url")}` });
@@ -30,11 +50,15 @@ export function modelRef(modelId: string): HarnessModelRef {
 export function nativeModel(ref: HarnessModelRef): string {
   const value = Buffer.from(ref.id.slice(3), "base64url").toString("utf8");
   if (!value || !ref.id.startsWith("cb.") || modelRef(value).id !== ref.id)
-    throw new CodeBuddyError("invalidRequest", "Invalid CodeBuddy Model Ref");
+    throw new CodeBuddyError("invalidRequest", "Invalid native Model Ref");
   return value;
 }
 
-export function configuration(value: unknown) {
+export function configuration(
+  value: unknown,
+  profile: CodeBuddyRuntimeProfile = CODEBUDDY_RUNTIME_PROFILE,
+  trustContext?: { cwd: string; environment: NodeJS.ProcessEnv },
+) {
   const options = rows(value);
   const get = (id: string) => options.find((option) => option.id === id) ?? {};
   const model = get("model"),
@@ -48,9 +72,22 @@ export function configuration(value: unknown) {
     ref: modelRef(text(option.value)),
     label: text(option.name),
   }));
-  const currentModel = models.find((item) => item.ref.id === modelRef(text(model.currentValue)).id);
-  if (!currentModel)
-    throw new CodeBuddyError("protocolError", "ACP did not report a valid current Model");
+  const currentModelRef = modelRef(text(model.currentValue));
+  let currentModel = models.find((item) => item.ref.id === currentModelRef.id);
+  if (!currentModel && profile.allowUnlistedModelSelection) {
+    currentModel = { ref: currentModelRef, label: text(model.currentValue) };
+    models.push(currentModel);
+  }
+  if (!currentModel) {
+    const untrusted =
+      trustContext &&
+      assessCodeBuddyDirectoryTrust(trustContext.cwd, trustContext.environment, profile).status ===
+        "untrusted";
+    throw new CodeBuddyError(
+      untrusted ? "invalidRequest" : "protocolError",
+      codeBuddyMissingModelErrorMessage(trustContext?.cwd, trustContext?.environment, profile),
+    );
+  }
   const catalog = harnessModelCatalogSchema.parse({
     models: models.map((item) => ({
       ...item,
@@ -83,8 +120,13 @@ export function configuration(value: unknown) {
   return { catalog, permissionModes, state, options };
 }
 
-export function confirmedConfiguration(response: unknown, id: string, value: string) {
-  const result = configuration(record(response).configOptions);
+export function confirmedConfiguration(
+  response: unknown,
+  id: string,
+  value: string,
+  profile: CodeBuddyRuntimeProfile = CODEBUDDY_RUNTIME_PROFILE,
+) {
+  const result = configuration(record(response).configOptions, profile);
   if (result.options.find((option) => option.id === id)?.currentValue !== value) {
     throw new CodeBuddyError("protocolError", `ACP did not confirm ${id}`);
   }

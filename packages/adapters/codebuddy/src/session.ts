@@ -168,7 +168,7 @@ export class CodeBuddySession implements HarnessSession {
             if (this.#replaying) return;
             if (this.subagents.update(update)) return;
             if (update.sessionUpdate === "config_option_update" && this.#config)
-              this.#apply(configuration(update.configOptions, this.profile));
+              this.#apply(configuration(update.configOptions, this.profile, { cwd: this.input.cwd, environment: this.environment }));
             if (
               update.sessionUpdate === "usage_update" &&
               typeof update.used === "number" &&
@@ -260,7 +260,7 @@ export class CodeBuddySession implements HarnessSession {
           }
         : {}),
     });
-    this.#apply(configuration(opened.configOptions, this.profile), false);
+    this.#apply(configuration(opened.configOptions, this.profile, { cwd: this.input.cwd, environment: this.environment }), false);
     if (this.input.kind === "create" && this.input.executionPolicy === "unattended-full-access") {
       // Unlike bypassPermissions, the native fullAccess option also covers HIGH/CRITICAL actions.
       await this.#configure("mode", "fullAccess");
@@ -602,7 +602,7 @@ export class CodeBuddySession implements HarnessSession {
       if (this.#closed) return;
       this.#client = this.#createClient();
       const loaded = await this.#openClient();
-      this.#apply(configuration(loaded.configOptions, this.profile));
+      this.#apply(configuration(loaded.configOptions, this.profile, { cwd: this.input.cwd, environment: this.environment }));
       if (saved.effectiveModel) await this.#configure("model", nativeModel(saved.effectiveModel));
       if (saved.effectiveThinkingOptionId)
         await this.#configure("thought_level", saved.effectiveThinkingOptionId);

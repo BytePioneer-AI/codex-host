@@ -711,7 +711,7 @@ export async function deriveCodeBuddySession(
     const opened = await client.open(input.cwd, temporary.nativeSessionId);
     if (opened.sessionId && opened.sessionId !== temporary.nativeSessionId)
       throw new CodeBuddyError("protocolError", "ACP loaded a different temporary Session");
-    const nativeState = configuration(opened.configOptions, profile).state;
+    const nativeState = configuration(opened.configOptions, profile, { cwd: input.cwd, environment }).state;
     const available = await bounded(commands, 5_000, "Native command discovery", abort);
     if (!Array.isArray(available) || !available.some((entry) => record(entry).name === "fork"))
       throw new CodeBuddyError("unsupported", "Native Session does not advertise /fork");

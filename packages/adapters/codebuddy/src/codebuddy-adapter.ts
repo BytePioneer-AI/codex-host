@@ -25,6 +25,7 @@ import {
   type CodeBuddyRuntimeProfile,
 } from "./common.js";
 import { capabilitiesForProfile, configuration } from "./configuration.js";
+import { assertCodeBuddyDirectoryTrusted } from "./directory-trust.js";
 import { deriveCodeBuddySession } from "./derivation.js";
 import { codeBuddyCanonicalCwd, validateNativeRef } from "./history.js";
 import { CodeBuddySession, type CodeBuddyHistoryReader } from "./session.js";
@@ -109,6 +110,7 @@ export class CodeBuddyAdapter implements HarnessAdapter {
       if (this.#closed) throw new CodeBuddyError("invalidState", "Adapter is closed");
       if (!(await stat(cwd)).isDirectory())
         throw new CodeBuddyError("invalidRequest", "Working directory is not a directory");
+      assertCodeBuddyDirectoryTrusted(cwd, this.#environment, this.#profile);
       // Protocol-only disposable Session: no prompt, transcript or user Session is persisted.
       client = this.#factory({
         cwd,
@@ -124,7 +126,7 @@ export class CodeBuddyAdapter implements HarnessAdapter {
       this.#inspections.add(client);
       await client.initialize();
       const opened = await client.open(cwd);
-      const config = configuration(opened.configOptions, this.#profile);
+      const config = configuration(opened.configOptions, this.#profile, { cwd, environment: this.#environment });
       return harnessInspectionSchema.parse({
         status: "ready",
         catalog: config.catalog,
@@ -162,6 +164,8 @@ export class CodeBuddyAdapter implements HarnessAdapter {
     try {
       if (!(await stat(input.cwd)).isDirectory())
         throw new CodeBuddyError("invalidRequest", "Working directory is not a directory");
+      const environment = { ...this.#environment, ...input.environment };
+      assertCodeBuddyDirectoryTrusted(input.cwd, environment, this.#profile);
       if (this.#closed)
         throw new CodeBuddyError("invalidState", "Adapter closed while opening Session");
       if (input.kind === "resume") validateNativeRef(input.nativeRef, this.#profile);

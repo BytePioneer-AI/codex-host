@@ -75,7 +75,7 @@ export function codeBuddyCanonicalCwd(cwd: string) {
   }
 }
 
-function codeBuddyConfigRoot(environment: NodeJS.ProcessEnv, profile: CodeBuddyRuntimeProfile) {
+export function codeBuddyConfigRoot(environment: NodeJS.ProcessEnv, profile: CodeBuddyRuntimeProfile) {
   const configuredRoot = profile.configDirectoryEnvironmentVariables
     .map((name) => environment[name])
     .find((value): value is string => typeof value === "string" && value.trim().length > 0);

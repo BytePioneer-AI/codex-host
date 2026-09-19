@@ -1512,6 +1512,97 @@ describe("Claude Code HarnessAdapter", () => {
     }
   });
 
+  it.each(["succeeded", "failed"] as const)(
+    "reads history after a %s autonomous Turn without a persisted User Message",
+    async (status) => {
+      const { adapter, transports, history } = fixture();
+      const session = await openSession(adapter);
+      try {
+        await session.execute(textTurn("initial"));
+        const transport = transports[0];
+        const sent = transport?.turns[0];
+        if (!transport || !sent) throw new Error("Fake Claude Turn was not submitted");
+        transport.finish({ status: "succeeded" });
+        await Promise.resolve();
+        history.push({
+          type: "user",
+          uuid: sent.userMessageId,
+          session_id: transport.sessionId,
+          message: { role: "user", content: "initial" },
+        });
+
+        transport.autonomousTurnHandler?.({
+          nativeTurnKey: "autonomous-123456",
+          events: [
+            { type: "text.delta", messageId: "wake-response", delta: "Wakeup result" },
+            {
+              type: "message.completed",
+              messageId: "wake-response",
+              checkpointId: "wake-checkpoint",
+            },
+          ],
+          result: status === "succeeded" ? { status } : { status, kind: "native" },
+        });
+        // A real Assistant checkpoint must still be persisted before reading.
+        await expect(session.readSnapshot()).resolves.toMatchObject({
+          ok: false,
+          error: { code: "sessionBusy" },
+        });
+        history.push({
+          type: "assistant",
+          uuid: "wake-checkpoint",
+          session_id: transport.sessionId,
+          message: { role: "assistant", content: "Wakeup result" },
+        });
+        // The synthetic Turn key never appears in the native transcript.
+        await expect(session.readSnapshot()).resolves.toMatchObject({ ok: true });
+        await expect(session.execute(textTurn("follow-up"))).resolves.toMatchObject({ ok: true });
+        transport.finish({ status: "succeeded" });
+        await Promise.resolve();
+      } finally {
+        await adapter.close();
+      }
+    },
+  );
+
+  it("still waits for an observed autonomous User Message to persist", async () => {
+    const { adapter, transports, history } = fixture();
+    const session = await openSession(adapter);
+    try {
+      await session.execute(textTurn("initial"));
+      const transport = transports[0];
+      const sent = transport?.turns[0];
+      if (!transport || !sent) throw new Error("Fake Claude Turn was not submitted");
+      transport.finish({ status: "succeeded" });
+      await Promise.resolve();
+      history.push({
+        type: "user",
+        uuid: sent.userMessageId,
+        session_id: transport.sessionId,
+        message: { role: "user", content: "initial" },
+      });
+      transport.autonomousTurnHandler?.({
+        nativeTurnKey: "notification-user",
+        userMessageId: "notification-user",
+        events: [],
+        result: { status: "failed", kind: "native" },
+      });
+      await expect(session.readSnapshot()).resolves.toMatchObject({
+        ok: false,
+        error: { code: "sessionBusy" },
+      });
+      history.push({
+        type: "user",
+        uuid: "notification-user",
+        session_id: transport.sessionId,
+        message: { role: "user", content: "Task completed" },
+      });
+      await expect(session.readSnapshot()).resolves.toMatchObject({ ok: true });
+    } finally {
+      await adapter.close();
+    }
+  });
+
   it("projects automatic Compaction and defers Usage refresh until Turn completion", async () => {
     const { adapter, transports } = fixture();
     const session = await openSession(adapter);

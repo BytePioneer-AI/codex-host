@@ -89,6 +89,16 @@ xattr -dr com.apple.quarantine /Applications/codexhost.app
 
 然后完全退出 Codex Desktop，重新打开终端并启动 codexhost。
 
+**Windows** - Defender 误报隔离
+
+Windows Defender 可能将未签名的 `codexhost.exe` 误判为 `Wacapew.A!ml` 等 ML 启发式威胁并隔离，导致启动时报错：`could not start: executable path ... does not exist`。
+
+不要全局关闭 Defender。可在「Windows 安全中心 → 病毒和威胁防护 → 排除项」中，仅为 CodexHost **安装目录**添加排除（常见为安装路径下的 `bin`，内含 `codexhost.exe`）。若文件已被隔离，请先在防护历史中还原，再添加排除后重新安装或启动。
+
+请勿给 `codexhost.exe` 设置只读 ACL 来阻止隔离——这会阻止安装程序覆盖文件，导致后续升级失败。
+
+若确认安装包来自[官方 Releases](https://github.com/BytePioneer-AI/codex-host/releases) 仍被误报，可向 Microsoft 提交样本：[提交文件供恶意软件分析](https://www.microsoft.com/wdsi/filesubmission)。
+
 </details>
 
 ### 交互展示

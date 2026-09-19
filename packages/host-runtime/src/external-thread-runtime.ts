@@ -34,7 +34,7 @@ import {
   externalThreadValue,
   type ExternalThreadRepository,
 } from "./external-thread-repository.js";
-import { DELEGATION_THREAD_ID_ENV } from "./delegation-types.js";
+import { openHarnessSession } from "./open-harness-session.js";
 import { SessionStateObserver } from "./session-state-observer.js";
 import { DesktopRequestQueue } from "./desktop-request-queue.js";
 import { ExternalThreadIdleRelease } from "./external-thread-idle-release.js";
@@ -545,20 +545,24 @@ export class ExternalThreadRuntime {
       });
     }
     const restoredSelection = decodeExternalTransportSelection(harnessId, record.transportModelId);
-    const opened = await adapter.open({
-      kind: "resume",
-      cwd: record.cwd,
-      environment: { ...this.#environment, [DELEGATION_THREAD_ID_ENV]: record.hostThreadId },
-      nativeRef: record.nativeSessionRef as NativeSessionRef,
-      knownTurnRefs: record.turnMappings.map(({ nativeTurnRef }) => nativeTurnRef),
-      ...(restoredSelection?.model ? { model: restoredSelection.model } : {}),
-      ...(restoredSelection?.thinkingOptionId
-        ? { thinkingOptionId: restoredSelection.thinkingOptionId }
-        : {}),
-      ...(harnessId === "grok" && restoredSelection?.permissionModeId
-        ? { permissionModeId: restoredSelection.permissionModeId }
-        : {}),
-    });
+    const opened = await openHarnessSession(
+      adapter,
+      {
+        kind: "resume",
+        cwd: record.cwd,
+        nativeRef: record.nativeSessionRef as NativeSessionRef,
+        knownTurnRefs: record.turnMappings.map(({ nativeTurnRef }) => nativeTurnRef),
+        ...(restoredSelection?.model ? { model: restoredSelection.model } : {}),
+        ...(restoredSelection?.thinkingOptionId
+          ? { thinkingOptionId: restoredSelection.thinkingOptionId }
+          : {}),
+        ...(harnessId === "grok" && restoredSelection?.permissionModeId
+          ? { permissionModeId: restoredSelection.permissionModeId }
+          : {}),
+      },
+      this.#environment,
+      record.hostThreadId,
+    );
     if (!opened.ok) {
       throw new ExternalThreadOpenError(mapExternalThreadHarnessError(opened.error, "resume"));
     }

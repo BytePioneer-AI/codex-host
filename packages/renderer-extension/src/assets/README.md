@@ -58,6 +58,13 @@ first-party page asset so the Renderer does not make a network request. The
 square source is stored with transparent rounded corners so the black plate
 does not render as a hard square.
 
+`zcode-agent.svg` is the user-selected Z.ai mark provided as `10001.svg` from
+a capture of `https://chat.z.ai/`, used for ZCode. The original 30×30 viewBox,
+dark rounded plate, white border and white mark are preserved without
+modification. It matches `packages/adapters/zcode/assets/icon.svg` byte for
+byte; the README also references that plugin asset. Both copies are bundled
+locally without runtime network requests.
+
 `codexhost-readme.svg` embeds `codex-agent.png`, `claude-agent.svg`, and
 `pi-agent.svg` in a responsive vector composition. Its background is `#F2EDE7`.
 The README references this SVG through HTML because GitHub strips inline CSS

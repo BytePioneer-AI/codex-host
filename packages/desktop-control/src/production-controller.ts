@@ -257,6 +257,7 @@ export async function runDesktopController(
           "cursor-cli",
           "qoder",
           "qoder-cn",
+          "zcode",
           "hermes",
         ],
         timeoutMs: PRODUCTION_INSTALL_TIMEOUT_MS,

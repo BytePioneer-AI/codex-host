@@ -1,6 +1,14 @@
 import type { ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  cpSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { pathToFileURL } from "node:url";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -790,6 +798,91 @@ describe("AppServerHost installed Harness plugins", () => {
     }
   }, 15_000);
 
+  it("runs the relocated ZCode plugin through Host create, turn and persisted resume", async () => {
+    const directory = mkdtempSync(path.join(tmpdir(), "codexhost-zcode-host-"));
+    cpSync(
+      path.resolve("packages/host-runtime/dist/plugins/zcode"),
+      path.join(directory, "zcode"),
+      { recursive: true },
+    );
+    writeFileSync(
+      path.join(directory, "enabled.json"),
+      JSON.stringify({ version: 1, enabled: ["zcode"] }),
+    );
+    let delegation: DelegationControlApi | undefined;
+    const options = {
+      pluginDirectory: directory,
+      externalAdapters: new Map<ExternalHarnessId, FakeHarnessAdapter>(),
+      environment: {
+        CODEXHOST_ZCODE_COMMAND: path.resolve(
+          "packages/adapters/zcode/test/fixtures/app-server.cjs",
+        ),
+        ZCODE_FIXTURE_STORE: path.join(directory, "sessions.json"),
+      },
+      onDelegationApi: (api: DelegationControlRegistration) => {
+        delegation = api;
+        return undefined;
+      },
+    };
+    let fixture = createFixture(options);
+    try {
+      await fixture.ready;
+      writeRequest(fixture.desktopInput, {
+        id: 960,
+        method: "codexhost/harness/inspect",
+        params: { harnessId: "zcode", cwd: directory },
+      });
+      expect(await fixture.collector.waitFor((m) => requestId(m, 960))).toMatchObject({
+        result: { status: "ready" },
+      });
+      const route = encodeHarnessPluginRoute(
+        harnessPluginRouteSchema.parse({ harnessId: "zcode" }),
+      );
+      const threadId = await startExternalThread(fixture, route, 961, { cwd: directory });
+      const turnId = await startPiTurn(fixture, threadId, 962);
+      expect(
+        await fixture.collector.waitFor((m) => turnEvent(m, "turn/completed", turnId)),
+      ).toMatchObject({ params: { turn: { status: "completed" } } });
+      const mapping = await fixture.mappingStore.getThread(hostThreadIdSchema.parse(threadId));
+      expect(mapping).toMatchObject({
+        harnessId: "zcode",
+        nativeSessionRef: { harnessId: "zcode" },
+      });
+      const mappingStoreDirectory = fixture.mappingStoreDirectory;
+      await closeFixture(fixture);
+      fixture = createFixture({ ...options, mappingStoreDirectory });
+      await fixture.ready;
+      writeRequest(fixture.desktopInput, {
+        id: 963,
+        method: "thread/resume",
+        params: { threadId },
+      });
+      expect(await fixture.collector.waitFor((m) => requestId(m, 963))).toMatchObject({
+        result: { thread: { id: threadId, turns: [{ status: "completed" }] } },
+      });
+      const next = await startPiTurn(fixture, threadId, 964);
+      await fixture.collector.waitFor((m) => turnEvent(m, "turn/completed", next));
+      if (!delegation) throw new Error("Delegation API missing");
+      const delegated = await delegation.start({
+        harnessId: harnessIdSchema.parse("zcode"),
+        task: "Fixture task",
+        cwd: directory,
+        parentThreadId: threadId,
+      });
+      expect(
+        await delegation.wait({ threadId: delegated.threadId, view: "result", timeoutMs: 5000 }),
+      ).toMatchObject({ status: "completed", result: { text: "Fixture reply." } });
+      await delegation.send({ threadId: delegated.threadId, message: "Continue fixture" });
+      expect(
+        await delegation.wait({ threadId: delegated.threadId, view: "result", timeoutMs: 5000 }),
+      ).toMatchObject({ status: "completed" });
+      expect(fixture.official.stdin.readableLength).toBe(0);
+    } finally {
+      await stopFixture(fixture);
+      rmSync(directory, { recursive: true, force: true });
+    }
+  }, 15_000);
+
   it("keeps Qoder Global and CN Threads on distinct shared plugin routes", async () => {
     const ids = [harnessIdSchema.parse("qoder"), harnessIdSchema.parse("qoder-cn")];
     const fixture = createFixture({
@@ -1193,6 +1286,48 @@ describe("AppServerHost installed Harness plugins", () => {
       } finally {
         rmSync(directory, { recursive: true, force: true });
       }
+    }
+  });
+
+  it("routes write-only pairing settings locally and omits generated environment for native shared services", async () => {
+    const state = {
+      supported: true as const,
+      configured: true,
+      restartRequired: true,
+      description: "Synthetic native connection",
+    };
+    const native = Object.assign(new FakeHarnessAdapter(harnessIdSchema.parse("pi")), {
+      sessionEnvironmentScope: vi.fn(async () => "native" as const),
+      connection: {
+        get: vi.fn(async () => ({ ok: true as const, value: state })),
+        set: vi.fn(async (secret: string | null) => ({
+          ok: true as const,
+          value: { ...state, configured: secret !== null },
+        })),
+      },
+    });
+    const open = vi.spyOn(native, "open");
+    const fixture = createFixture({ externalAdapters: new Map([["pi", native]]) });
+    try {
+      for (const [index, [method, params]] of (
+        [
+          ["codexhost/harness/connection/get", { harnessId: "pi" }],
+          ["codexhost/harness/connection/set", { harnessId: "pi", secret: "private-fixture" }],
+        ] satisfies Array<[string, JsonObject]>
+      ).entries()) {
+        writeRequest(fixture.desktopInput, { id: 960 + index, method, params });
+        expect(
+          await fixture.collector.waitFor((message) => requestId(message, 960 + index)),
+        ).toMatchObject({ result: state });
+      }
+      expect(native.connection.set).toHaveBeenCalledExactlyOnceWith("private-fixture");
+      await startPiThread(fixture);
+      expect(open).toHaveBeenCalledOnce();
+      expect(open.mock.calls[0]?.[0]).not.toHaveProperty("environment");
+      expect(fixture.official.stdin.readableLength).toBe(0);
+      expect(String(fixture.diagnosticOutput.read() ?? "")).not.toContain("private-fixture");
+    } finally {
+      await stopFixture(fixture);
     }
   });
 

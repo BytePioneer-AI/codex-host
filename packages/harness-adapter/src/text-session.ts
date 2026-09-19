@@ -1,5 +1,6 @@
 import type {
   HarnessAccountSnapshot,
+  HarnessConnectionState,
   HarnessCommandCatalog,
   HarnessId,
   HarnessInspection,
@@ -557,6 +558,15 @@ export interface HarnessSessionImportCapability {
 
 export interface HarnessAdapter {
   readonly harnessId: HarnessId;
+  /** Optional native connection configuration. secret is write-only; persistence belongs to the plugin. */
+  readonly connection?: {
+    get(): Promise<HarnessResult<HarnessConnectionState>>;
+    set(secret: string | null, cwd?: string): Promise<HarnessResult<HarnessConnectionState>>;
+  };
+  /** Native shared services may not accept per-Session environments. This read-only query must
+   * not connect/open a Session. Host then does not generate delegation credentials for that
+   * target. Explicit OpenSessionInput.environment must still be honored or rejected, never dropped. */
+  sessionEnvironmentScope?(input: OpenSessionInput): Promise<"session" | "native">;
   /** Static command metadata. Reading it must not inspect, connect to, or open a Native Session. */
   readonly commandCatalog?: HarnessCommandCatalog;
   readonly sessionImport?: HarnessSessionImportCapability;

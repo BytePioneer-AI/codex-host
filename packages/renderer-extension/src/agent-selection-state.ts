@@ -20,6 +20,7 @@ export const KNOWN_RENDERER_AGENTS = [
   "hermes",
   "qoder",
   "qoder-cn",
+  "zcode",
 ] as const;
 export const DEFAULT_RENDERER_AGENTS = KNOWN_RENDERER_AGENTS;
 export type RendererAgent = (typeof KNOWN_RENDERER_AGENTS)[number];
@@ -57,6 +58,8 @@ export interface DraftComposerState {
   qoderThinkingOptionId?: HarnessThinkingOptionId;
   qoderCnModel?: HarnessModelRef;
   qoderCnThinkingOptionId?: HarnessThinkingOptionId;
+  zcodeModel?: HarnessModelRef;
+  zcodeThinkingOptionId?: HarnessThinkingOptionId;
   permissionModeByAgent?: Partial<Record<ExternalRendererAgent, HarnessPermissionModeId>>;
 }
 
@@ -242,6 +245,8 @@ export class DraftAgentController<Composer extends object> {
     else if (agent === "qoder") delete state.qoderModel;
     if (agent === "qoder-cn" && model) state.qoderCnModel = model;
     else if (agent === "qoder-cn") delete state.qoderCnModel;
+    if (agent === "zcode" && model) state.zcodeModel = model;
+    else if (agent === "zcode") delete state.zcodeModel;
     if (agent === "pi" && thinkingOptionId) state.piThinkingOptionId = thinkingOptionId;
     else if (agent === "pi") delete state.piThinkingOptionId;
     if (agent === "claude-code" && thinkingOptionId) {
@@ -272,6 +277,9 @@ export class DraftAgentController<Composer extends object> {
     if (agent === "qoder-cn" && thinkingOptionId) {
       state.qoderCnThinkingOptionId = thinkingOptionId;
     } else if (agent === "qoder-cn") delete state.qoderCnThinkingOptionId;
+    if (agent === "zcode" && thinkingOptionId) {
+      state.zcodeThinkingOptionId = thinkingOptionId;
+    } else if (agent === "zcode") delete state.zcodeThinkingOptionId;
     if (agent !== "codex") {
       const permissionModeByAgent: NonNullable<DraftComposerState["permissionModeByAgent"]> = {};
       for (const candidate of [
@@ -289,6 +297,7 @@ export class DraftAgentController<Composer extends object> {
         "hermes",
         "qoder",
         "qoder-cn",
+        "zcode",
       ] as const) {
         const current = state.permissionModeByAgent?.[candidate];
         if (candidate !== agent && current) permissionModeByAgent[candidate] = current;
@@ -319,6 +328,7 @@ export class DraftAgentController<Composer extends object> {
     if (agent === "hermes") return state.hermesModel;
     if (agent === "qoder") return state.qoderModel;
     if (agent === "qoder-cn") return state.qoderCnModel;
+    if (agent === "zcode") return state.zcodeModel;
     return undefined;
   }
 
@@ -338,6 +348,7 @@ export class DraftAgentController<Composer extends object> {
     if (agent === "workbuddy") return state.workBuddyThinkingOptionId;
     if (agent === "qoder") return state.qoderThinkingOptionId;
     if (agent === "qoder-cn") return state.qoderCnThinkingOptionId;
+    if (agent === "zcode") return state.zcodeThinkingOptionId;
     return undefined;
   }
 
@@ -381,6 +392,7 @@ export class DraftAgentController<Composer extends object> {
     else if (agent === "hermes") state.hermesModel = model;
     else if (agent === "qoder") state.qoderModel = model;
     else if (agent === "qoder-cn") state.qoderCnModel = model;
+    else if (agent === "zcode") state.zcodeModel = model;
     else state.antigravityModel = model;
     return state;
   }
@@ -449,6 +461,10 @@ export class DraftAgentController<Composer extends object> {
       state.qoderCnThinkingOptionId = thinkingOptionId;
     } else if (agent === "qoder-cn") {
       delete state.qoderCnThinkingOptionId;
+    } else if (agent === "zcode" && thinkingOptionId) {
+      state.zcodeThinkingOptionId = thinkingOptionId;
+    } else if (agent === "zcode") {
+      delete state.zcodeThinkingOptionId;
     }
     return state;
   }

@@ -107,13 +107,21 @@ Context 包含环境变量快照、平台、是否为受管远程 Host，以及�
 
 ## 自定义启动路径设置
 
-连接设置页的本地 Host 右侧详情卡片为 WorkBuddy 提供路径输入、保存和清除操作；不对远程/Broker 提供此入口。Manifest 可声明 `launchCommand: true`，该标记同时进入公开插件描述；Host 不维护具体 Harness 的命令变量名单。
+连接设置页的本地 Host 右侧详情卡片为 ZCode、WorkBuddy 提供路径输入、保存和清除操作；不对远程/Broker 提供此入口。Manifest 可声明 `launchCommand: true`，该标记同时进入公开插件描述；Host 不维护具体 Harness 的命令变量名单。
 
 `codexhost/harness/launch-settings/get` 接受 `{ harnessId }`，`codexhost/harness/launch-settings/set` 接受 `{ harnessId, path }`；`path: null` 清除设置。返回 `{ path, restartRequired }`。只允许已加载目录中声明该设置的本地插件。保存时校验绝对路径及安装目录存在性，兼容已保存的文件入口，不执行文件，不把保存成功等同于原生协议或认证可用。路径不包含命令行参数或包裹引号。
 
-配置按插件保存到 `${CODEXHOST_DATA_DIR}/harness-launch-settings/<id>.json`，未设置数据目录时使用 `~/.codexhost`；采用临时文件加原子替换，不写 Renderer localStorage，不改进程全局环境。下次 Host 构造插件时，经公共 `HarnessPluginContext.launchCommand` 传给声明支持的工厂。WorkBuddy 工厂将其映射到原生启动配置，优先于继承的命令环境变量；清除设置后恢复环境变量或自动发现。
+配置按插件保存到 `${CODEXHOST_DATA_DIR}/harness-launch-settings/<id>.json`，未设置数据目录时使用 `~/.codexhost`；采用临时文件加原子替换，不写 Renderer localStorage，不改进程全局环境。下次 Host 构造插件时，经公共 `HarnessPluginContext.launchCommand` 传给声明支持的工厂。ZCode、WorkBuddy 工厂将其映射到各自原生启动配置，优先于继承的命令环境变量；清除设置后恢复环境变量或自动发现。
 
-**修改需要重启 codexhost。** 已创建的 Adapter 与 Session 不热替换；`restartRequired` 比较当前持久化值与此 Host 构造时的值。仅刷新连接状态不会应用新路径。设置页填写应用安装目录，例如 `D:\program\WorkBuddy`，不要求用户定位 `.exe` 或脚本。WorkBuddy Adapter 定位 `WorkBuddy.exe` / `WorkBuddy AI.exe` 及同目录内置脚本。目录布局不完整时检查失败，不借用其他安装的文件，也不回退到 PATH 或默认安装。底层保留原有文件入口覆盖兼容能力。注册表自动发现不在本功能范围内。
+**修改需要重启 codexhost。** 已创建的 Adapter 与 Session 不热替换；`restartRequired` 比较当前持久化值与此 Host 构造时的值。仅刷新连接状态不会应用新路径。设置页填写应用安装目录，例如 `D:\program\Zcode`、`D:\program\WorkBuddy`，不要求用户定位 `.exe` 或脚本。ZCode Adapter 在目录内定位 `resources/glm/zcode.cjs`；WorkBuddy Adapter 定位 `WorkBuddy.exe` / `WorkBuddy AI.exe` 及同目录内置脚本。目录布局不完整时检查失败，不借用其他安装的文件，也不回退到 PATH 或默认安装。底层保留原有文件入口覆盖兼容能力。注册表自动发现不在本功能范围内。
+
+## 原生连接设置与共享服务环境
+
+插件可实现 `HarnessAdapter.connection.get()/set(secret)`。Host 提供公共 RPC `codexhost/harness/connection/get`（`{ harnessId }`）和 `codexhost/harness/connection/set`（`{ harnessId, secret, cwd? }`）；`secret: null` 表示清除。返回值仅为不支持，或 `{ supported: true, configured, restartRequired, description, cwd? }`。可选的非秘密 `cwd` 字段表示该连接要求显式工作区；未配置时为 `null`，Renderer 提供工作目录输入，不从 Host 启动目录猜测。Host 不解释、不保存连接材料，不回传 secret 或插件异常正文；响应经过严格 schema 校验。配置持久化和生效时机归插件所有，保存成功不代表连接成功。
+
+本地连接详情页按能力显示密码输入、保存和清除按钮，不写浏览器存储，提交后清空输入。没有此能力的旧插件不受影响；远程页不提供此表单。ZCode 使用该入口保存用户主动提供的原生配对链接，重启后生效，具体限制见 [ZCode 接入](../harnesses/zcode/zcode-harness-integration.md#可选desktop配对后端)。
+
+插件还可实现只读的 `sessionEnvironmentScope(input)`，根据本次目标返回 `session` 或 `native`，不得为此连接服务或打开 Session。默认 `session` 保持原行为：Host 为 create、resume、fork、rollback 和委派创建注入基础环境及该 Thread 的委派身份。`native` 用于不能接收独立环境的共享原生服务：Host 不生成、注入这些覆盖值；不能把多个 Thread 身份写进共享进程冒充隔离。调用者显式传入的 `OpenSessionInput.environment` 不会被过滤，Adapter 必须落实或明确拒绝。范围查询失败时不执行 open，也不自动切换后端。
 
 ## 加载与关闭行为
 

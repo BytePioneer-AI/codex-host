@@ -15,7 +15,7 @@ import {
   externalThreadValue,
   type ExternalThreadRepository,
 } from "./external-thread-repository.js";
-import { DELEGATION_THREAD_ID_ENV } from "./delegation-types.js";
+import { openHarnessSession } from "./open-harness-session.js";
 import type { ExternalThread, ExternalThreadRuntime } from "./external-thread-runtime.js";
 
 export type ExternalThreadForkResult =
@@ -127,16 +127,17 @@ export async function executeExternalThreadFork(input: {
 
   let opened: Awaited<ReturnType<HarnessAdapter["open"]>>;
   try {
-    opened = await adapter.open({
-      kind: "fork",
-      cwd: targetCwd,
-      environment: {
-        ...(input.environment ?? process.env),
-        [DELEGATION_THREAD_ID_ENV]: provisional.hostThreadId,
+    opened = await openHarnessSession(
+      adapter,
+      {
+        kind: "fork",
+        cwd: targetCwd,
+        sourceRef: nativeSessionRef as NativeSessionRef,
+        checkpoint: boundary.nativeCheckpointRef as NativeCheckpointRef,
       },
-      sourceRef: nativeSessionRef as NativeSessionRef,
-      checkpoint: boundary.nativeCheckpointRef as NativeCheckpointRef,
-    });
+      input.environment ?? process.env,
+      provisional.hostThreadId,
+    );
   } catch {
     await repository.removeProvisional(provisional.hostThreadId).catch(() => undefined);
     return { ok: false, error: { code: -32076, message: "External Thread fork failed" } };

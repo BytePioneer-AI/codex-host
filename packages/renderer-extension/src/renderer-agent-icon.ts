@@ -8,6 +8,7 @@ import workBuddyAgentIconUrl from "./assets/workbuddy-agent.svg";
 import cursorAgentIconUrl from "./assets/cursor-agent.svg";
 import ompAgentIconUrl from "./assets/omp-agent.svg";
 import openCodeAgentIconUrl from "./assets/opencode-agent.png";
+import zcodeAgentIconUrl from "./assets/zcode-agent.svg";
 import qoderAgentIconUrl from "./assets/qoder-agent.svg";
 import type { RendererAgent } from "./agent-selection-state.js";
 
@@ -27,6 +28,7 @@ export const RENDERER_AGENT_LABELS: Record<RendererAgent, string> = {
   hermes: "Hermes",
   qoder: "Qoder",
   "qoder-cn": "Qoder CN",
+  zcode: "ZCode",
 };
 
 const PI_PATHS = [
@@ -163,9 +165,9 @@ export function createRendererAgentIcon(
     image.style.flex = "none";
     return image;
   }
-  if (agent === "qoder" || agent === "qoder-cn") {
+  if (agent === "qoder" || agent === "qoder-cn" || agent === "zcode") {
     const image = ownerDocument.createElement("img");
-    image.src = qoderAgentIconUrl;
+    image.src = agent === "zcode" ? zcodeAgentIconUrl : qoderAgentIconUrl;
     image.alt = "";
     image.draggable = false;
     image.style.width = `${size}px`;

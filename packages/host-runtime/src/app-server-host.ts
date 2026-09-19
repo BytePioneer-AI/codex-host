@@ -104,12 +104,17 @@ import {
   DELEGATION_CLI_PATH_ENV,
   DELEGATION_RUNTIME_ENDPOINT_ENV,
   DELEGATION_RUNTIME_TOKEN_ENV,
-  DELEGATION_THREAD_ID_ENV,
   DelegationControlError,
 } from "./delegation-types.js";
 import { HarnessDelegationCoordinator } from "./harness-delegation-coordinator.js";
 import { loadHarnessPlugins } from "./harness-plugin-loader.js";
 import { HarnessLaunchSettingsStore } from "./harness-launch-settings.js";
+import { openHarnessSession } from "./open-harness-session.js";
+import { handleHarnessConnectionSettings } from "./harness-connection-settings.js";
+import {
+  HARNESS_CONNECTION_GET_METHOD,
+  HARNESS_CONNECTION_SET_METHOD,
+} from "@codexhost/shared-contracts";
 import {
   HARNESS_LAUNCH_SETTINGS_GET_METHOD,
   HARNESS_LAUNCH_SETTINGS_SET_METHOD,
@@ -1038,6 +1043,21 @@ export class AppServerHost {
     }
     if (request.method === "codexhost/harness/web-ui/open") {
       this.#dispatchDesktopRequest(() => this.#openHarnessWebUi(request));
+      return;
+    }
+    if (
+      request.method === HARNESS_CONNECTION_GET_METHOD ||
+      request.method === HARNESS_CONNECTION_SET_METHOD
+    ) {
+      this.#dispatchDesktopRequest(async () => {
+        await this.#waitForPlugins();
+        const result = await handleHarnessConnectionSettings(
+          request.method,
+          request.params,
+          this.#externalAdapters,
+        );
+        await this.#writer.json(rpcEnvelope(request, result));
+      });
       return;
     }
     if (
@@ -2942,17 +2962,18 @@ export class AppServerHost {
       return;
     }
 
-    const sessionResult = await adapter.open({
-      kind: "create",
-      cwd,
-      environment: {
-        ...(this.#options.environment ?? process.env),
-        [DELEGATION_THREAD_ID_ENV]: record.hostThreadId,
+    const sessionResult = await openHarnessSession(
+      adapter,
+      {
+        kind: "create",
+        cwd,
+        ...(requestedModel ? { model: requestedModel } : {}),
+        ...(requestedThinkingOptionId ? { thinkingOptionId: requestedThinkingOptionId } : {}),
+        ...(requestedPermissionModeId ? { permissionModeId: requestedPermissionModeId } : {}),
       },
-      ...(requestedModel ? { model: requestedModel } : {}),
-      ...(requestedThinkingOptionId ? { thinkingOptionId: requestedThinkingOptionId } : {}),
-      ...(requestedPermissionModeId ? { permissionModeId: requestedPermissionModeId } : {}),
-    });
+      this.#options.environment ?? process.env,
+      record.hostThreadId,
+    );
     if (!sessionResult.ok) {
       this.#routeObservationTracker.rejectCreate(request.id);
       await this.#repository.removeProvisional(record.hostThreadId).catch(() => undefined);

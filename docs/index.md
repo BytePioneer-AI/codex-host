@@ -83,6 +83,13 @@
 | --- | --- |
 | [`harnesses/grok/subagent-status-and-model.md`](harnesses/grok/subagent-status-and-model.md) | Grok Subagent 状态、Model、Transcript 与 Desktop 投影；修改 Grok Subagent 时阅读。 |
 
+### ZCode
+
+| 文档 | 内容与阅读时机 |
+| --- | --- |
+| [`harnesses/zcode/zcode-harness-integration.md`](harnesses/zcode/zcode-harness-integration.md) | ZCode stdio 与实验性 Desktop 配对后端、配置、隔离和能力边界；真实官方账号尚待验收。 |
+| [`harnesses/zcode/zcode-official-provider-proposal.md`](harnesses/zcode/zcode-official-provider-proposal.md) | 官方账号模型缺失原因、原生认证与验证码依据、隔离探针和分阶段验收要求；配合接入文档阅读。 |
+
 ## 账号与 Desktop 产品接入
 
 | 文档 | 内容与阅读时机 |

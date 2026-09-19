@@ -12,6 +12,7 @@ export default defineConfig({
     include: [
       "packages/**/test/**/*.test.ts",
       "packages/repository-automation/test/**/*.test.mjs",
+      "packages/adapters/zcode/prototypes/**/*.test.mjs",
       "tests/release/**/*.test.mjs",
       "tools/**/*.test.mjs",
     ],

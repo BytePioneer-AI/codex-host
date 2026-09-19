@@ -305,7 +305,7 @@ export class CodeBuddySession implements HarnessSession {
     const listed =
       Array.isArray(option?.options) &&
       option.options.some((option) => record(option).value === value);
-    const allowedProductModel = id === "model" && this.profile.allowUnlistedModelSelection;
+    const allowedProductModel = id === "model" && this.profile.allowUnlistedModelSelection?.(value);
     if (!listed && !allowedProductModel)
       throw new CodeBuddyError(
         "invalidRequest",

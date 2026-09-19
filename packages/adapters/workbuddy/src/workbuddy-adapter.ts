@@ -14,47 +14,63 @@ import { harnessInspectionSchema } from "@codexhost/shared-contracts";
 import { workBuddyInvocation } from "./command.js";
 import { WORKBUDDY_RUNTIME_PROFILE } from "./common.js";
 import {
-  loadWorkBuddyProductModels,
-  mergeWorkBuddyProductModels,
-  type WorkBuddyProductModel,
-} from "./product-models.js";
+  WorkBuddyLiveProductContext,
+  withWorkBuddyLiveProduct,
+  type WorkBuddyLiveProductSnapshotReader,
+} from "./live-product.js";
+import { mergeWorkBuddyProductModels, type WorkBuddyProductModel } from "./product-models.js";
 
 export type WorkBuddyAdapterOptions = Omit<
   CodeBuddyAdapterOptions,
   "profile" | "invocationFactory"
 > & {
   productModels?: () => Promise<readonly WorkBuddyProductModel[]>;
+  productSnapshotReader?: WorkBuddyLiveProductSnapshotReader;
+  productDesktopExecutable?: (environment: NodeJS.ProcessEnv) => string;
   platform?: NodeJS.Platform;
 };
 
 export class WorkBuddyAdapter extends CodeBuddyAdapter {
-  readonly #productModels: () => Promise<readonly WorkBuddyProductModel[]>;
+  readonly #liveProduct: WorkBuddyLiveProductContext | undefined;
 
   constructor(options: WorkBuddyAdapterOptions = {}) {
-    const { productModels, platform = process.platform, ...codeBuddyOptions } = options;
-    const environment = { ...(codeBuddyOptions.environment ?? process.env) };
+    const {
+      productModels,
+      productSnapshotReader,
+      productDesktopExecutable,
+      platform = process.platform,
+      ...codeBuddyOptions
+    } = options;
+    const liveProduct =
+      platform === "win32"
+        ? new WorkBuddyLiveProductContext({
+            ...(productModels ? { productModels } : {}),
+            ...(productSnapshotReader ? { reader: productSnapshotReader } : {}),
+            ...(productDesktopExecutable ? { desktopExecutable: productDesktopExecutable } : {}),
+          })
+        : undefined;
+    const nativeFactory =
+      codeBuddyOptions.clientFactory ??
+      ((clientOptions) => new CodeBuddyAcpClient(clientOptions, undefined, workBuddyInvocation));
     const windowsProfile = {
       ...WORKBUDDY_RUNTIME_PROFILE,
-      allowUnlistedModelSelection: true,
+      allowUnlistedModelSelection: (id: string) => liveProduct?.allowsModel(id) === true,
     };
     super({
       ...codeBuddyOptions,
       profile: platform === "win32" ? windowsProfile : WORKBUDDY_RUNTIME_PROFILE,
       invocationFactory: workBuddyInvocation,
-      clientFactory:
-        codeBuddyOptions.clientFactory ??
-        ((clientOptions) => new CodeBuddyAcpClient(clientOptions, undefined, workBuddyInvocation)),
+      clientFactory: liveProduct
+        ? withWorkBuddyLiveProduct(nativeFactory, liveProduct)
+        : nativeFactory,
     });
-    this.#productModels =
-      platform === "win32"
-        ? (productModels ?? (() => loadWorkBuddyProductModels(environment)))
-        : async () => [];
+    this.#liveProduct = liveProduct;
   }
 
   override async inspect(input: InspectHarnessInput = {}): Promise<HarnessInspection> {
     const inspection = await super.inspect(input);
     if (inspection.status !== "ready") return inspection;
-    const productModels = await this.#productModels().catch(() => []);
+    const productModels = this.#liveProduct?.models ?? [];
     if (productModels.length === 0) return inspection;
     return harnessInspectionSchema.parse({
       ...inspection,

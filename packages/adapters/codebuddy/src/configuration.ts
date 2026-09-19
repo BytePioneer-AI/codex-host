@@ -69,7 +69,7 @@ export function configuration(
   }));
   const currentModelRef = modelRef(text(model.currentValue));
   let currentModel = models.find((item) => item.ref.id === currentModelRef.id);
-  if (!currentModel && profile.allowUnlistedModelSelection) {
+  if (!currentModel && profile.allowUnlistedModelSelection?.(text(model.currentValue))) {
     currentModel = { ref: currentModelRef, label: text(model.currentValue) };
     models.push(currentModel);
   }

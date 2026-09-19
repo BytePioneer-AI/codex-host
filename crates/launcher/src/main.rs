@@ -44,8 +44,9 @@ use codexhost_platform::{
 use codexhost_platform::{DesktopSession, launch_desktop_session};
 #[cfg(target_os = "windows")]
 use codexhost_platform::{
-    RunningDesktopChoice, hide_console_window, process_executable_path, process_exists,
-    prompt_running_desktop, show_error_dialog, terminate_process_by_id,
+    RunningDesktopChoice, hide_console_window, process_environment_variable_for_executable,
+    process_executable_path, process_exists, prompt_running_desktop, show_error_dialog,
+    terminate_process_by_id,
 };
 use compatibility::{MAX_CONTROLLER_READINESS_LINE_BYTES, parse_controller_readiness_line};
 use desktop_attachment::{
@@ -84,6 +85,8 @@ const NPM_UPDATE_RUNTIME_ENV: [&str; 4] = [
     NPM_PACKAGE_ROOT_ENV,
 ];
 const START_MENU_ARGUMENT: &str = "--start-menu";
+#[cfg(target_os = "windows")]
+const READ_PROCESS_ENVIRONMENT_ARGUMENT: &str = "--codexhost-read-process-environment";
 const READY_LINE: &str = "ready";
 const STARTUP_TRACE_ENV: &str = "CODEXHOST_STARTUP_TRACE";
 const CONTROLLER_STOP_GRACE: Duration = Duration::from_secs(1);
@@ -1196,6 +1199,51 @@ fn default_launch_options() -> LaunchOptions {
     }
 }
 
+#[cfg(target_os = "windows")]
+fn read_process_environment(arguments: &[String]) -> Result<(), Box<dyn Error>> {
+    let (executable, name, command_line_contains) = match arguments {
+        [executable_flag, executable, name_flag, name]
+            if executable_flag == "--executable" && name_flag == "--name" =>
+        {
+            (executable, name, None)
+        }
+        [
+            executable_flag,
+            executable,
+            command_flag,
+            command_line,
+            name_flag,
+            name,
+        ] if executable_flag == "--executable"
+            && command_flag == "--command-line-contains"
+            && name_flag == "--name" =>
+        {
+            (executable, name, Some(command_line.as_str()))
+        }
+        _ => return Err("invalid process environment request".into()),
+    };
+    let executable = PathBuf::from(executable);
+    if !executable.is_absolute() {
+        return Err("process executable must be absolute".into());
+    }
+    let executable = canonical_existing_file(&executable)?;
+    if name.is_empty()
+        || name.len() > 128
+        || name
+            .chars()
+            .any(|character| matches!(character, '=' | '\0'))
+    {
+        return Err("invalid process environment variable name".into());
+    }
+    if let Some(value) =
+        process_environment_variable_for_executable(&executable, command_line_contains, name)?
+    {
+        std::io::stdout().write_all(value.as_bytes())?;
+        std::io::stdout().flush()?;
+    }
+    Ok(())
+}
+
 fn run(arguments: &[String]) -> Result<(), Box<dyn Error>> {
     match arguments.first().map(String::as_str) {
         #[cfg(target_os = "windows")]
@@ -1204,6 +1252,8 @@ fn run(arguments: &[String]) -> Result<(), Box<dyn Error>> {
         }
         None => launch(default_launch_options(), false),
         Some(START_MENU_ARGUMENT) if arguments.len() == 1 => launch(default_launch_options(), true),
+        #[cfg(target_os = "windows")]
+        Some(READ_PROCESS_ENVIRONMENT_ARGUMENT) => read_process_environment(&arguments[1..]),
         Some("inspect") => {
             let custom_install_root = parse_inspect_options(&arguments[1..])?
                 .map(|path| absolute_directory(&path, "--custom-install"))

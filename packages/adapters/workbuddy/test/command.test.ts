@@ -1,6 +1,7 @@
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
+  WORKBUDDY_DISABLE_PRODUCT_CACHE_ENV,
   WORKBUDDY_MACOS_CLI,
   WORKBUDDY_MACOS_ELECTRON,
   workBuddyEnvironment,
@@ -84,6 +85,29 @@ describe("WorkBuddy command invocation", () => {
     });
 
     expect(invocation.environment.ACC_PRODUCT_CONFIG_PATH).toBe(productConfigPath);
+  });
+
+  it("suppresses disk snapshot inference for the Windows live-product path", () => {
+    let inspected = false;
+    const invocation = workBuddyInvocation(
+      {
+        HOME: "/Users/test",
+        [WORKBUDDY_DISABLE_PRODUCT_CACHE_ENV]: "1",
+      },
+      true,
+      {
+        platform: "darwin",
+        isExecutable: isBundledExecutable,
+        lstat: () => {
+          inspected = true;
+          return productConfigMetadata();
+        },
+      },
+    );
+
+    expect(inspected).toBe(false);
+    expect(invocation.environment).not.toHaveProperty("ACC_PRODUCT_CONFIG_PATH");
+    expect(invocation.environment).not.toHaveProperty(WORKBUDDY_DISABLE_PRODUCT_CACHE_ENV);
   });
 
   it("resolves the product snapshot from an explicit WorkBuddy root", () => {

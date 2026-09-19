@@ -1,4 +1,4 @@
-import { readFile, stat } from "node:fs/promises";
+import { execFile } from "node:child_process";
 import path from "node:path";
 import { modelRef } from "@codexhost/adapter-codebuddy";
 import type { HarnessModelCatalog } from "@codexhost/harness-adapter";
@@ -6,19 +6,30 @@ import {
   HARNESS_MODEL_LABEL_MAX_LENGTH,
   harnessModelCatalogSchema,
 } from "@codexhost/shared-contracts";
-import { workBuddyInvocation } from "./command.js";
+import { WORKBUDDY_DISABLE_PRODUCT_CACHE_ENV } from "./command.js";
 
 const MAX_PRODUCT_SNAPSHOT_BYTES = 8 * 1024 * 1024;
+const PRODUCT_SNAPSHOT_READ_TIMEOUT_MS = 3_000;
 const PRODUCT_CONFIG_PATH_ENV = "ACC_PRODUCT_CONFIG_PATH";
 const PRODUCT_CONFIG_INLINE_ENVS = [
   "ACC_PRODUCT_CONFIG_V3",
   "ACC_PRODUCT_CONFIG_V2",
   "ACC_PRODUCT_CONFIG",
 ] as const;
+const LAUNCHER_EXECUTABLE_ENV = "CODEXHOST_LAUNCHER_EXECUTABLE";
+const READ_PROCESS_ENVIRONMENT_ARGUMENT = "--codexhost-read-process-environment";
+const LIVE_PRODUCT_CONFIG_ENV = "ACC_PRODUCT_CONFIG_V3";
+const WORKBUDDY_DAEMON_COMMAND = "app.asar\\main\\daemon-app-server-entry.js";
+
 export interface WorkBuddyProductModel {
   id: string;
   name: string;
   credits?: string;
+}
+
+export interface WorkBuddyLiveProductSnapshot {
+  serialized: string;
+  models: WorkBuddyProductModel[];
 }
 
 function record(value: unknown): Record<string, unknown> {
@@ -65,47 +76,68 @@ export function parseWorkBuddyProductModels(value: unknown): WorkBuddyProductMod
   return parsed;
 }
 
-async function readProductJson(file: string): Promise<unknown | undefined> {
-  const metadata = await stat(file);
-  if (!metadata.isFile() || metadata.size <= 0 || metadata.size > MAX_PRODUCT_SNAPSHOT_BYTES)
-    return;
-  return JSON.parse(await readFile(file, "utf8"));
-}
-
-function bundledFallbackProductPath(invocation: ReturnType<typeof workBuddyInvocation>) {
-  const cli = invocation.arguments[0];
-  if (!cli || cli.startsWith("-")) return;
-  return path.join(path.dirname(path.dirname(cli)), "product.json");
-}
-
-export async function loadWorkBuddyProductModels(
+export function sanitizeWorkBuddyProductEnvironment(
   environment: NodeJS.ProcessEnv,
-): Promise<WorkBuddyProductModel[]> {
-  const invocation = workBuddyInvocation(environment, true);
-  const productEnvironment = invocation.environment;
-  const configuredPath = nonBlank(productEnvironment[PRODUCT_CONFIG_PATH_ENV]);
-  if (configuredPath) {
-    try {
-      return parseWorkBuddyProductModels(await readProductJson(configuredPath));
-    } catch {
-      return [];
-    }
-  }
-  for (const name of PRODUCT_CONFIG_INLINE_ENVS) {
-    const inline = nonBlank(productEnvironment[name]);
-    if (!inline) continue;
-    try {
-      return parseWorkBuddyProductModels(JSON.parse(inline));
-    } catch {
-      return [];
-    }
-  }
-  const fallback = bundledFallbackProductPath(invocation);
-  if (!fallback) return [];
+): NodeJS.ProcessEnv {
+  const sanitized = { ...environment };
+  delete sanitized[PRODUCT_CONFIG_PATH_ENV];
+  for (const name of PRODUCT_CONFIG_INLINE_ENVS) delete sanitized[name];
+  sanitized[WORKBUDDY_DISABLE_PRODUCT_CACHE_ENV] = "1";
+  return sanitized;
+}
+
+function readProcessEnvironment(
+  launcher: string,
+  desktopExecutable: string,
+): Promise<string | undefined> {
+  return new Promise((resolve) => {
+    execFile(
+      launcher,
+      [
+        READ_PROCESS_ENVIRONMENT_ARGUMENT,
+        "--executable",
+        desktopExecutable,
+        "--command-line-contains",
+        WORKBUDDY_DAEMON_COMMAND,
+        "--name",
+        LIVE_PRODUCT_CONFIG_ENV,
+      ],
+      {
+        encoding: "utf8",
+        maxBuffer: MAX_PRODUCT_SNAPSHOT_BYTES + 1,
+        timeout: PRODUCT_SNAPSHOT_READ_TIMEOUT_MS,
+        windowsHide: true,
+      },
+      (error, stdout) => {
+        if (error || typeof stdout !== "string" || stdout.length === 0) {
+          resolve(undefined);
+          return;
+        }
+        resolve(stdout);
+      },
+    );
+  });
+}
+
+/** Reads the live App-owned snapshot without writing or logging its sensitive contents. */
+export async function loadWorkBuddyLiveProductSnapshot(
+  environment: NodeJS.ProcessEnv,
+  desktopExecutable: string,
+  read: (
+    launcher: string,
+    executable: string,
+  ) => Promise<string | undefined> = readProcessEnvironment,
+): Promise<WorkBuddyLiveProductSnapshot | undefined> {
+  const launcher = nonBlank(environment[LAUNCHER_EXECUTABLE_ENV]);
+  if (!launcher || !path.win32.isAbsolute(launcher) || !path.win32.isAbsolute(desktopExecutable))
+    return;
+  const serialized = await read(launcher, desktopExecutable).catch(() => undefined);
+  if (!serialized || Buffer.byteLength(serialized, "utf8") > MAX_PRODUCT_SNAPSHOT_BYTES) return;
   try {
-    return parseWorkBuddyProductModels(await readProductJson(fallback));
+    const value: unknown = JSON.parse(serialized);
+    return { serialized, models: parseWorkBuddyProductModels(value) };
   } catch {
-    return [];
+    return;
   }
 }
 
@@ -113,7 +145,7 @@ function normalizedLabel(value: string): string {
   return value.trim().toLocaleLowerCase();
 }
 
-/** Native ACP Models stay first; product-file duplicates are removed by ID and display label. */
+/** Native ACP Models stay first; live product duplicates are removed by ID and display label. */
 export function mergeWorkBuddyProductModels(
   catalog: HarnessModelCatalog,
   productModels: readonly WorkBuddyProductModel[],

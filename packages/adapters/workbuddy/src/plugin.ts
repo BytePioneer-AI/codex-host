@@ -13,6 +13,7 @@ export function createHarnessAdapter(context: HarnessPluginContext) {
       ...(context.brokerDescriptorPath ? { descriptorPath: context.brokerDescriptorPath } : {}),
     });
   return new WorkBuddyAdapter({
+    platform: context.platform as NodeJS.Platform,
     environment: {
       ...context.environment,
       ...(context.launchCommand ? { CODEXHOST_WORKBUDDY_COMMAND: context.launchCommand } : {}),

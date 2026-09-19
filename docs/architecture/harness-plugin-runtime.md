@@ -139,7 +139,7 @@ Qoder 的启动认证失败或消息流意外结束会终结活动 Turn、发布
 
 Qoder 沿用现有公共 Model Catalog 和工具投影契约，不增加专用分组、禁用状态或文件全文字段。模型目录保留 SDK 返回的模型及顺序，不因 `isEnabled` 字段过滤模型；模型选择是否成功由原生接口决定。两版 Adapter 均按工作目录缓存成功目录，不设时间有效期，显式 `refresh` 清除对应缓存，关闭 Adapter 时清空；失败结果不缓存。SDK 查询仍使用 `fetchStrategy: "cache"`，显式刷新仅绕过 Adapter 缓存，不强制原生联网更新。Write/Edit 沿用 Pi/OMP 已使用的公共工具投影兼容路径，不增加 namespace 开关或原生 patch 门槛，也不改变其他 Harness 的历史状态投影。
 
-WorkBuddy 以独立的 `workbuddy` 预装插件接入 WorkBuddy AI 随应用分发的 CLI，普通 Session 使用该 CLI 公开的标准 `--acp` stdio 接口；精确 Fork 与修订组合公开 CLI 管理参数、原生命令和公开 rollback 扩展，跨目录时使用受来源与目标校验的临时历史桥接。它可以复用 CodeBuddy ACP 的协议实现，但拥有独立的 Harness ID 和固定安全命令目录；未显式配置时主动注入 `~/.workbuddy-ai`，避免内置 CLI 回退到 `~/.codebuddy`。插件不会自动改用 PATH 中的独立 CodeBuddy。它不连接 WorkBuddy Desktop 私有 owner runtime，不调用私有激活、admission 或 grant 接口，也不能接管 Desktop 已有任务、连接器或登录态。macOS App 已包含所需 CLI；首次 ACP 认证仍按需在 Host 外通过该内置 CLI 完成。详细能力和验证边界见 [WorkBuddy Harness 集成](../harnesses/workbuddy/workbuddy-harness-integration.md)。
+WorkBuddy 以独立的 `workbuddy` 预装插件接入 WorkBuddy AI 随应用分发的 CLI，普通 Session 使用该 CLI 公开的标准 `--acp` stdio 接口；精确 Fork 与修订组合公开 CLI 管理参数、原生命令和公开 rollback 扩展，跨目录时使用受来源与目标校验的临时历史桥接。它可以复用 CodeBuddy ACP 的协议实现，但拥有独立的 Harness ID 和固定安全命令目录；未显式配置时主动注入 `~/.workbuddy-ai`，避免内置 CLI 回退到 `~/.codebuddy`。插件不会自动改用 PATH 中的独立 CodeBuddy。Windows 本地 Adapter 可以通过 Native Launcher 从同用户、同安装入口的 WorkBuddy 进程内存读取受限大小的 `ACC_PRODUCT_CONFIG_V3`，仅用于把 App 已解析的实时 CLI 模型快照传给当前内置 CLI；不持久化或记录完整值，读取失败也不使用旧磁盘缓存。该路径不连接 WorkBuddy Desktop 私有 owner runtime，不调用私有激活、admission 或 grant 接口，也不能接管 Desktop 已有任务、连接器或登录态；macOS 保持原有 ACP 行为。详细能力和验证边界见 [WorkBuddy Harness 集成](../harnesses/workbuddy/workbuddy-harness-integration.md)。
 
 ## 公共查询和路由
 

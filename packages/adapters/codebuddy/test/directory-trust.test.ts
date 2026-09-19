@@ -134,5 +134,10 @@ describe("CodeBuddy directory trust surfacing", () => {
     expect(codeBuddyMissingModelErrorMessage(unknownProject, unknownEnv)).toMatch(
       /trustedDirectories/,
     );
+
+    await writeFile(path.join(config, "settings.json"), JSON.stringify({ trustAll: true }), "utf8");
+    expect(codeBuddyMissingModelErrorMessage(project, environment)).toBe(
+      "ACP did not report a valid current Model",
+    );
   });
 });

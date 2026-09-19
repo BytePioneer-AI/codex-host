@@ -48,7 +48,9 @@ function readSettingsObject(settingsPath: string): Record<string, unknown> | und
 function trustedDirectoryEntries(settings: Record<string, unknown>): string[] {
   // Documented field is trustedDirectories; accept trustDirectories as a misspelling seen in the wild.
   const value = settings.trustedDirectories ?? settings.trustDirectories;
-  return Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === "string") : [];
+  return Array.isArray(value)
+    ? value.filter((entry): entry is string => typeof entry === "string")
+    : [];
 }
 
 /** Read user settings and decide whether headless ACP can skip the directory-trust prompt. */
@@ -117,6 +119,9 @@ export function codeBuddyMissingModelErrorMessage(
   if (assessment.status === "untrusted") {
     return codeBuddyDirectoryTrustErrorMessage(assessment, profile);
   }
+  if (assessment.status === "trusted") {
+    return base;
+  }
   return (
     `${base}. If headless ACP is stuck on directory trust / worktree setup, trust the working directory in the ${profile.displayName} CLI ` +
     `or add it to trustedDirectories in "${assessment.settingsPath}" (or set "trustAll": true), then retry.`
@@ -131,6 +136,9 @@ export function assertCodeBuddyDirectoryTrusted(
 ): void {
   const assessment = assessCodeBuddyDirectoryTrust(cwd, environment, profile);
   if (assessment.status === "untrusted") {
-    throw new CodeBuddyError("invalidRequest", codeBuddyDirectoryTrustErrorMessage(assessment, profile));
+    throw new CodeBuddyError(
+      "invalidRequest",
+      codeBuddyDirectoryTrustErrorMessage(assessment, profile),
+    );
   }
 }

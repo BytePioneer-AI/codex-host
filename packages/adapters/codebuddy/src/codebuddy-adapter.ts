@@ -126,7 +126,10 @@ export class CodeBuddyAdapter implements HarnessAdapter {
       this.#inspections.add(client);
       await client.initialize();
       const opened = await client.open(cwd);
-      const config = configuration(opened.configOptions, this.#profile, { cwd, environment: this.#environment });
+      const config = configuration(opened.configOptions, this.#profile, {
+        cwd,
+        environment: this.#environment,
+      });
       return harnessInspectionSchema.parse({
         status: "ready",
         catalog: config.catalog,
@@ -191,6 +194,7 @@ export class CodeBuddyAdapter implements HarnessAdapter {
         if (snapshot && !snapshot.ok) return snapshot;
         const boundCwd = text(record(sourceRef.locator).boundCwd);
         const sourceCwd = (source?.input.cwd ?? boundCwd) || input.cwd;
+        assertCodeBuddyDirectoryTrusted(sourceCwd, environment, this.#profile);
         if (
           input.kind === "fork" &&
           !capabilities.forkAcrossCwd &&

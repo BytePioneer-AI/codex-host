@@ -114,6 +114,24 @@ describe("CDP client", () => {
     });
   });
 
+  it("forwards an abort signal to CDP target discovery", async () => {
+    const abort = new AbortController();
+    const fetchImpl: CdpFetch = async (url, init) => {
+      expect(url).toBe("http://127.0.0.1:9222/json/list");
+      expect(init?.signal).toBe(abort.signal);
+      return {
+        ok: true,
+        status: 200,
+        async json() {
+          return [];
+        },
+      };
+    };
+    await expect(listCdpTargets("http://127.0.0.1:9222", fetchImpl, abort.signal)).resolves.toEqual(
+      [],
+    );
+  });
+
   it("rejects non-loopback discovery and target endpoints", async () => {
     await expect(listCdpTargets("http://example.com:9222")).rejects.toThrow("loopback");
     const fetchImpl: CdpFetch = async () => ({

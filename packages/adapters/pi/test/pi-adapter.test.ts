@@ -433,6 +433,34 @@ describe("Pi HarnessAdapter Session", () => {
     await adapter.close();
   });
 
+  it("falls back inspect cwd when Host omits cwd or supplies the filesystem root", async () => {
+    const { adapter, dependencies } = fixture();
+    const cwdSpy = vi.spyOn(process, "cwd").mockReturnValue("/");
+
+    try {
+      await expect(adapter.inspect({ cwd: "/", refresh: true })).resolves.toMatchObject({
+        status: "ready",
+      });
+      await expect(adapter.inspect({ refresh: true })).resolves.toMatchObject({
+        status: "ready",
+      });
+    } finally {
+      cwdSpy.mockRestore();
+    }
+
+    const inspectCwds = vi
+      .mocked(dependencies.createTransport)
+      .mock.calls.map((call) => call[0]?.cwd);
+    expect(inspectCwds).toHaveLength(2);
+    for (const inspectCwd of inspectCwds) {
+      expect(inspectCwd).toEqual(expect.any(String));
+      expect(inspectCwd).not.toBe("/");
+      expect(path.resolve(inspectCwd as string)).not.toBe(path.parse(inspectCwd as string).root);
+      expect(path.isAbsolute(inspectCwd as string)).toBe(true);
+    }
+    await adapter.close();
+  });
+
   it("does not translate execution policy into Pi permission options", async () => {
     const { adapter, dependencies } = fixture();
     const opened = await adapter.open({

@@ -1,0 +1,11 @@
+{
+  "manifestVersion": 1,
+  "id": "kimi-code",
+  "name": "Kimi Code",
+  "version": "0.1.0",
+  "adapterApiVersion": 1,
+  "entry": "./dist/plugin.js",
+  "links": {
+    "documentation": "https://moonshotai.github.io/kimi-code/en/reference/kimi-acp.html"
+  }
+}

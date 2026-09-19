@@ -102,6 +102,7 @@ const externalHarnessIds = {
   hermes: harnessIdSchema.parse("hermes"),
   qoder: harnessIdSchema.parse("qoder"),
   "qoder-cn": harnessIdSchema.parse("qoder-cn"),
+  "kimi-code": harnessIdSchema.parse("kimi-code"),
 } as const;
 
 const externalAgents: readonly ExternalRendererAgent[] = [
@@ -119,6 +120,7 @@ const externalAgents: readonly ExternalRendererAgent[] = [
   "hermes",
   "qoder",
   "qoder-cn",
+  "kimi-code",
 ];
 type HarnessAvailability = Partial<Record<ExternalRendererAgent, RendererAgentAvailability>>;
 type HarnessAvailabilityErrors = Partial<Record<ExternalRendererAgent, CodexhostError | undefined>>;
@@ -523,6 +525,24 @@ export function restoredThreadOwnership(inspection: ThreadInspection): RestoredT
       ...(permissionModeId ? { permissionModeId } : {}),
     };
   }
+  if (inspection.harnessId === "kimi-code") {
+    const route = decodeHarnessPluginRoute(inspection.transportModelId);
+    if (!route || route.harnessId !== inspection.harnessId) {
+      throw new Error("Kimi Code Thread reported an incompatible transport Model");
+    }
+    const model = inspection.effectiveModel ?? route.model;
+    const thinkingOptionId =
+      inspection.availableThinkingOptions !== undefined
+        ? selectableThinkingOptionId(inspection)
+        : (inspection.effectiveThinkingOptionId ?? route.thinkingOptionId);
+    const permissionModeId = inspection.effectivePermissionModeId ?? route.permissionModeId;
+    return {
+      agent: inspection.harnessId,
+      ...(model ? { model } : {}),
+      ...(thinkingOptionId ? { thinkingOptionId } : {}),
+      ...(permissionModeId ? { permissionModeId } : {}),
+    };
+  }
   throw new Error("Thread owner is not a Renderer Agent");
 }
 
@@ -761,6 +781,7 @@ export function installRendererBindingProbe(
       hermes: undefined,
       qoder: undefined,
       "qoder-cn": undefined,
+      "kimi-code": undefined,
     },
     webUi: Object.fromEntries(
       externalAgents.map((agent) => [agent, false]),

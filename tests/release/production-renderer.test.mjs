@@ -13,11 +13,12 @@ async function source(relative) {
 
 describe("production Renderer release chain", () => {
   it("uses the fixed production Agent list without a development enable switch", async () => {
-    const [productionEntry, probeEntry, installer, agentState] = await Promise.all([
+    const [productionEntry, probeEntry, installer, agentState, controller] = await Promise.all([
       source("packages/renderer-extension/src/production-entry.ts"),
       source("packages/renderer-extension/src/probe-entry.ts"),
       source("packages/renderer-extension/src/install-renderer-binding.ts"),
       source("packages/renderer-extension/src/agent-selection-state.ts"),
+      source("packages/desktop-control/src/production-controller.ts"),
     ]);
 
     expect(agentState).toContain('"deepseek-harness",');
@@ -25,6 +26,11 @@ describe("production Renderer release chain", () => {
     expect(agentState).toContain('"grok",');
     expect(agentState).toContain('"antigravity",');
     expect(agentState).toContain("DEFAULT_RENDERER_AGENTS = KNOWN_RENDERER_AGENTS");
+    const rendererAgents = agentState.match(/KNOWN_RENDERER_AGENTS = \[([^\]]+)\]/)[1];
+    const controllerAgents = controller.match(/enabledAgents: \[([^\]]+)\]/)[1];
+    expect([...controllerAgents.matchAll(/"([^"]+)"/g)].map((match) => match[1])).toEqual(
+      [...rendererAgents.matchAll(/"([^"]+)"/g)].map((match) => match[1]),
+    );
     expect(productionEntry).toContain("installRendererBinding(DEFAULT_RENDERER_AGENTS");
     expect(productionEntry).toContain("__codexhostProductionConfigV1");
     expect(productionEntry).toContain('window.addEventListener("DOMContentLoaded"');

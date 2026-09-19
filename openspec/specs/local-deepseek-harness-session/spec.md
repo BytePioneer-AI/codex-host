@@ -1,26 +1,27 @@
 # local-deepseek-harness-session Specification
 
 ## Purpose
-定义精确 DSH 0.1.2-rc.1 / 0.1.5-rc.1 托管 Web Remote、原生会话与生命周期保证；当前支持范围由 support-dsh-015rc1 更新。
+定义精确 DSH 0.1.2-rc.1 / 0.1.5-rc.1 / 0.1.5-rc.2 托管 Web Remote、原生会话与生命周期保证；当前支持范围由 support-dsh-015rc1 及 015rc2 更新。
 ## Requirements
 ### Requirement: Local DSH Web profile is the runtime source of truth
 
-The DeepSeek Harness Adapter SHALL use a managed authenticated loopback Web Remote started from the user's local DSH Web profile with exact version `0.1.2-rc.1` or `0.1.5-rc.1`. codexhost MUST NOT substitute a private Cordis composition, credentials provider, Skill catalog, or Native Session store, and MUST NOT attach through the retired Legacy Host protocol.
+The DeepSeek Harness Adapter SHALL use a managed authenticated loopback Web Remote started from the user's local DSH Web profile with exact version `0.1.2-rc.1`, `0.1.5-rc.1` or `0.1.5-rc.2`. codexhost MUST NOT substitute a private Cordis composition, credentials provider, Skill catalog, or Native Session store, and MUST NOT attach through the retired Legacy Host protocol.
 
-#### Scenario: Supported DSH Web is already running externally
-- **WHEN** the configured loopback endpoint exposes the recognized unauthenticated DSH Web fingerprint
-- **THEN** the Adapter SHALL report missing authentication and instruct the user to close that instance and retry diagnostics
-- **AND** it MUST NOT reuse unknown credentials or stop the external process
+#### Scenario: An unrelated DSH Web is already running on this machine
+- **WHEN** a DSH Web that codexhost did not start (for example a user-supervised instance on the default port) is listening anywhere on the loopback
+- **THEN** managed selection SHALL proceed and start its own Web on an ephemeral loopback port with its own bootstrap token
+- **AND** the Adapter MUST NOT reuse the external instance's credentials, attach to it, send Session content to it, or stop it
 
 #### Scenario: DSH Web is not running
 - **WHEN** an exact supported local command is available
 - **THEN** codexhost SHALL start `web --no-open --host 127.0.0.1 --port 0`, authenticate its managed Web and wait a bounded time
+- **AND** it SHALL issue an authenticated, non-redirecting `GET /` to that managed origin and accept readiness only when the response is HTTP 200 HTML
 - **AND** normal use SHALL NOT require the user to start DSH manually
 
-#### Scenario: Endpoint belongs to another service
-- **WHEN** the configured endpoint responds without the recognized DSH fingerprint
-- **THEN** the Adapter MUST NOT terminate, replace, attach to, or send Session content to that service
-- **AND** any supported managed Web SHALL use its own ephemeral loopback port
+#### Scenario: The managed Web portal is unavailable
+- **WHEN** bootstrap authentication succeeds but the managed origin rejects the cookie, redirects, fails, or does not serve HTML at `/`
+- **THEN** managed selection SHALL fail with the corresponding authentication, protocol, or availability error
+- **AND** the Adapter SHALL stop only the managed Web process it started
 
 ### Requirement: codexhost creates official DSH Native Sessions
 
@@ -101,9 +102,9 @@ The Adapter SHALL map native prompt, cancellation, text, Reasoning, Tool, struct
 
 The Adapter SHALL own only the managed Web process it started. It MUST NOT stop an externally owned Web, and SHALL preserve bounded cleanup and native execution-stop confirmation during shutdown.
 
-#### Scenario: External Web is detected
-- **WHEN** codexhost reports the external instance's missing authentication
-- **THEN** closing the Adapter SHALL NOT terminate the external DSH process
+#### Scenario: External Web remains independent
+- **WHEN** codexhost starts, verifies, or closes its managed Web while an external DSH Web is running
+- **THEN** the Adapter SHALL NOT probe, authenticate with, or terminate the external DSH process
 
 #### Scenario: Adapter closes a managed Host
 - **WHEN** codexhost started DSH Web and later shuts down

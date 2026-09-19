@@ -1,6 +1,6 @@
 # DSH 消息修订、恢复与原生停止确认
 
-仅支持 DSH `0.1.2-rc.1` 和 `0.1.5-rc.1`，均通过 codexhost 托管、认证的 Web Remote 创建、恢复和 Fork 原生 Session。Legacy 协议已移除；其他版本通过原有连接诊断明确提示这两个支持版本，并推荐 `dsh-v0.1.5-rc.1`。
+仅支持 DSH `0.1.2-rc.1`、`0.1.5-rc.1` 和 `0.1.5-rc.2`，均通过 codexhost 托管、认证的 Web Remote 创建、恢复和 Fork 原生 Session。Legacy 协议已移除；其他版本通过原有连接诊断明确提示这些支持版本，并推荐 `dsh-v0.1.5-rc.2`。
 
 修订上一条消息使用原生历史操作，仅回滚最后一个回合；Fork 根据原生 seed 标记和已验证的历史前缀确认继承关系，不改写源会话。恢复通过公开历史 API 读取，保持 Native Session ID 和原生配置语义。
 
@@ -9,7 +9,7 @@
 | DSH 版本 | 原生历史与流式 | Checkpoint |
 | --- | --- | --- |
 | `0.1.2-rc.1` | V0 日志，持久化 Assistant chunk | `turn-end:` |
-| `0.1.5-rc.1` | V3 日志，独立 Assistant baseline/start/chunk/end 与持久化 message/attempt 结算 | `v3-turn-end:`，附带版本 locator |
+| `0.1.5-rc.1` / `0.1.5-rc.2` | V3 日志，独立 Assistant baseline/start/chunk/end 与持久化 message/attempt 结算 | `v3-turn-end:`，附带版本 locator |
 
 V3 系统消息参与原生 surface 引用和替换，不作为用户回合展示。Assistant 流重连后以原生 baseline 和持久化结算去重。两个格式的 checkpoint 不能混用：DSH 原生迁移可能重编号 seq，旧 checkpoint 不可用于 V3 Fork/回滚，Adapter 在修改原生会话前拒绝不匹配的引用。codexhost 不迁移原生文件，也不保证新日志可以由旧版 DSH 打开。
 
@@ -21,4 +21,4 @@ V3 系统消息参与原生 surface 引用和替换，不作为用户回合展�
 
 提供基于本地 SSE 模型、隔离临时数据和真实 CLI 的生命周期 Gate：`tools/gate-dsh/lifecycle.real.test.mjs`。通过对应的 `CODEXHOST_DSH_REAL_COMMAND` 指定原生命令，缺少命令时明确跳过。
 
-Gate 覆盖流式输出、取消、空/保留历史编辑、冷恢复、默认配置保持、源历史不变和活动关闭。两个支持版本均已在 Windows 运行此 Gate；不把默认配置验证推广为任意非默认配置，也不证明独立第三方客户端或任意后台工具进程的退出。具体命令、覆盖率和范围见 [015rc1 验证记录](dsh-015rc1-validation.md)。
+Gate 覆盖流式输出、取消、空/保留历史编辑、冷恢复、默认配置保持、源历史不变和活动关闭。`0.1.2-rc.1` 与 `0.1.5-rc.1` 已在 Windows 运行此 Gate；`0.1.5-rc.2` 复用经上游完整差异核对未变化的 V015 协议 profile，尚未单独运行真实生命周期 Gate。不把默认配置验证推广为任意非默认配置，也不证明独立第三方客户端或任意后台工具进程的退出。具体命令、覆盖率和范围见 [015rc1 验证记录](dsh-015rc1-validation.md)。

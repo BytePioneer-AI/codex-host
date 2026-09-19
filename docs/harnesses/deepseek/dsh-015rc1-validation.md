@@ -1,21 +1,21 @@
 # DSH 012rc1 / 015rc1 对接验证
 
-实现基线为 upstream `9d36363f`，在 Windows、Node.js `v24.11.0`、npm `11.8.0`、Vitest `4.1.10` 下验证。当前仅支持精确 `0.1.2-rc.1` 与 `0.1.5-rc.1`；旧 DSH Legacy 实现、SDK 和专属测试已删除。
+实现基线为 upstream `9d36363f`，在 Windows、Node.js `v24.11.0`、npm `11.8.0`、Vitest `4.1.10` 下验证。当前支持精确 `0.1.2-rc.1`、`0.1.5-rc.1` 与 `0.1.5-rc.2`；旧 DSH Legacy 实现、SDK 和专属测试已删除。
 
 ## 自动化测试与覆盖率
 
-执行 `npm run test:deepseek:coverage`，整个 DSH Adapter 的 **820 项测试 / 22 个文件全部通过**。范围为 `packages/adapters/deepseek-harness/src/**/*.ts`，包含未执行文件；未把统计缩小到新增代码，四项门槛均为 80%。
+执行 `npm run test:deepseek:coverage`，整个 DSH Adapter 的 **826 项测试 / 22 个文件全部通过**。范围为 `packages/adapters/deepseek-harness/src/**/*.ts`，包含未执行文件；未把统计缩小到新增代码，四项门槛均为 80%。
 
-| 指标 | 覆盖率 | 已覆盖 / 总数 |
-| --- | --- | --- |
-| 语句 | 86.52% | 5537 / 6399 |
-| 分支 | 81.95% | 4746 / 5791 |
-| 函数 | 92.98% | 888 / 955 |
-| 行 | 89.01% | 5139 / 5773 |
+| 指标 | 覆盖率 |
+| --- | --- |
+| 语句 | 86.50% |
+| 分支 | 81.92% |
+| 函数 | 93.15% |
+| 行 | 88.96% |
 
 HTML 和 JSON 摘要由同一命令生成到 `coverage/deepseek-harness/`，不纳入 Git。函数覆盖率超过 90% 保留，不删除有效测试来降低数字。
 
-重点覆盖精确版本拒绝、端点认证诊断、选择/关闭并发、V0/V3 格式隔离、系统 surface 与替换、PTC/反馈/队伍事件、Assistant 流与结算重试、重连、Fork/回滚、继承队列清理、原生持久化确认，以及模型、权限、工具、Usage 和错误边界。实际 Host 输出还经 `CodexTurnProjector` 回放，确认取消尝试的可见标记及追加/完成一致性。
+重点覆盖精确版本拒绝、托管 bootstrap 认证与 Portal 校验、选择/关闭并发、V0/V3 格式隔离、系统 surface 与替换、PTC/反馈/队伍事件、Assistant 流与结算重试、重连、Fork/回滚、继承队列清理、原生持久化确认，以及模型、权限、工具、Usage 和错误边界。实际 Host 输出还经 `CodexTurnProjector` 回放，确认取消尝试的可见标记及追加/完成一致性。
 
 额外定向检查：
 
@@ -33,7 +33,7 @@ $env:CODEXHOST_DSH_REAL_COMMAND = '<准确版本的 dsh.cmd 绝对路径>'
 npx vitest run --config tests/vitest.config.js tools/gate-dsh/lifecycle.real.test.mjs
 ```
 
-两个版本各 1 项真实生命周期 Gate **均通过**。Gate 启动真实 DSH Web/Remote、临时 `DSH_HOME` 和本地 SSE 模拟模型，使用自己的探测端点；覆盖：
+`0.1.2-rc.1` 与 `0.1.5-rc.1` 各 1 项真实生命周期 Gate **均通过**。Gate 启动真实 DSH Web/Remote、临时 `DSH_HOME` 和本地 SSE 模拟模型，并验证托管进程自己的临时 origin；覆盖：
 
 - 最终消息之前已有增量文本、原生取消及 HTTP 流停止。
 - 单回合回滚为空会话、多回合回滚保留前缀，默认模型/Thinking/权限保持。
@@ -45,6 +45,8 @@ npx vitest run --config tests/vitest.config.js tools/gate-dsh/lifecycle.real.tes
 ## 协议源码证据
 
 参考 DSH `dsh-v0.1.5-rc.1` 标签（`183f08e9c6dde7e36cd2318eaee70b0da08fb35e`），并与 `dsh-v0.1.2-rc.1` 对比。测试样本 `packages/adapters/deepseek-harness/test/fixtures/dsh-015rc1-empty-response-retry.v3.jsonl` 原样取自该标签的 `snapshots/session/empty-response-retry-current/session.v3.jsonl`，由 DSH 自己记录并脱敏，包含系统消息、请求头、空响应重试、独立 Assistant attempt 和最终消息。
+
+`0.1.5-rc.2` 相对 `dsh-v0.1.5-rc.1` 标签的完整 diff 仅包含 Web 客户端 UI（反馈对话框与分类、共享文件类型图标、交付物/消息气泡样式）与一条注释，未改动 journal 格式、Session Remote、事件 schema 或 Assistant 流；因此 015rc2 共用 V015 profile，仅以自身精确版本参与 checkpoint 与会话 locator。
 
 原生快照省略事件 `seq`/`time`，并以 `{{...}}` 替换机器环境。回归测试只补回连续序号及固定时间，并把 `{{tools}}` 替换成最小合法工具声明；保留原始事件名、字段、顺序、系统消息来源和 Assistant 压缩流。此样本用于协议解析，不代表真实模型或桌面验证。
 
@@ -61,4 +63,4 @@ npx vitest run --config tests/vitest.config.js tools/gate-dsh/lifecycle.real.tes
 
 整数校验现通过既有协议错误类型失败，非法 chunk 索引及 finish 的 status/providerRetryAfterMs 保持 `protocolError`，不触发 journal 重连。Assistant start 的结算查找改为从 `startedAfterSeq + 1` 按索引遍历，保留匹配条件，不复制历史数组。
 
-补充测试先复现旧实现的错误，再验证修复；167 项聚焦回归与上述 820 项全 Adapter 测试通过。性能回归断言不访问已排除的历史前缀，不使用依赖机器速度的耗时阈值。本轮未重复运行此前已通过的真实 CLI 生命周期 Gate。
+补充测试先复现旧实现的错误，再验证修复；聚焦回归与上述 826 项全 Adapter 测试通过。性能回归断言不访问已排除的历史前缀，不使用依赖机器速度的耗时阈值。本轮未重复运行此前已通过的真实 CLI 生命周期 Gate；`0.1.5-rc.2` 仍以第 49 行记录的上游完整差异证据复用 V015 profile，未单独运行真实 CLI Gate。

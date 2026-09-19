@@ -144,6 +144,12 @@ function authResponse(authority = AUTHORITY): Response {
   });
 }
 
+function htmlResponse(): Response {
+  return new Response("<!doctype html>", {
+    headers: { "content-type": "text/html; charset=utf-8" },
+  });
+}
+
 function jsonResponse(value: unknown, status = 200): Response {
   return new Response(JSON.stringify(value), {
     status,
@@ -198,6 +204,7 @@ function harness(
     platform?: NodeJS.Platform;
     killProcessTree?: ModernRemoteConnectionDependencies["killProcessTree"];
     connectionOptions?: Partial<ConstructorParameters<typeof ModernRemoteConnection>[0]>;
+    portalFetch?: ModernRemoteConnectionDependencies["fetch"];
     readiness?: string;
   } = {},
 ): {
@@ -215,9 +222,19 @@ function harness(
   const killProcessTree = vi.fn<ModernRemoteConnectionDependencies["killProcessTree"]>(
     options.killProcessTree ?? (() => undefined),
   );
+  let getRequests = 0;
+  const managedFetch: ModernRemoteConnectionDependencies["fetch"] = (url, init) => {
+    if (init.method === "GET") {
+      getRequests += 1;
+      if (getRequests === 2) {
+        return options.portalFetch?.(url, init) ?? Promise.resolve(htmlResponse());
+      }
+    }
+    return fetch(url, init);
+  };
   const dependencies: ModernRemoteConnectionDependencies = {
     spawn,
-    fetch,
+    fetch: managedFetch,
     createWebSocket:
       options.createWebSocket ??
       (() => {
@@ -412,7 +429,7 @@ describe("DeepSeek Harness Modern Web Remote connection", () => {
     },
   );
 
-  it("starts managed Web, exchanges the token, and sends an authenticated unary envelope", async () => {
+  it("starts managed Web, verifies its portal, and sends an authenticated unary envelope", async () => {
     const requests: Array<{ url: string; init: RequestInit }> = [];
     const fetch = vi.fn<ModernRemoteConnectionDependencies["fetch"]>((url, init) => {
       requests.push({ url: url.href, init });
@@ -426,7 +443,10 @@ describe("DeepSeek Harness Modern Web Remote connection", () => {
         }),
       );
     });
-    const { child, connection, spawn } = harness(fetch);
+    const portalFetch = vi.fn<ModernRemoteConnectionDependencies["fetch"]>(() =>
+      Promise.resolve(htmlResponse()),
+    );
+    const { child, connection, spawn } = harness(fetch, { portalFetch });
 
     await expect(connection.call("session/modelCatalog", {})).resolves.toEqual({
       ok: true,
@@ -439,6 +459,12 @@ describe("DeepSeek Harness Modern Web Remote connection", () => {
     );
     expect(requests[0]?.url).toBe(`http://127.0.0.1:4567/?token=${TOKEN}`);
     expect(requests[0]?.init).toMatchObject({ method: "GET", redirect: "manual" });
+    expect(portalFetch).toHaveBeenCalledWith(new URL(`http://${AUTHORITY}/`), {
+      method: "GET",
+      redirect: "manual",
+      headers: { cookie: COOKIE },
+      signal: expect.any(AbortSignal),
+    });
     expect(requests[1]?.url).toBe("http://127.0.0.1:4567/api/session/modelCatalog");
     expect(requests[1]?.init.headers).toEqual({
       "content-type": "application/json",
@@ -453,6 +479,153 @@ describe("DeepSeek Harness Modern Web Remote connection", () => {
 
     await connection.close();
     expect(child.kill).toHaveBeenCalledWith("SIGTERM");
+  });
+
+  it.each([
+    [401, "text/html", "authenticationRequired"],
+    [403, "text/html", "authenticationRequired"],
+    [302, "text/html", "protocolError"],
+    [307, "text/html", "protocolError"],
+    [404, "text/html", "protocolError"],
+    [500, "text/html", "unavailable"],
+    [201, "text/html", "protocolError"],
+    [204, "text/html", "protocolError"],
+    [200, "application/json", "protocolError"],
+    [200, "text/plain", "protocolError"],
+    [200, null, "protocolError"],
+  ] as const)(
+    "rejects managed portal HTTP %s / %s as %s and stops its process",
+    async (status, contentType, code) => {
+      const cancelled = vi.fn();
+      const portal = new Response(
+        status === 204 ? null : new ReadableStream({ cancel: cancelled }),
+        {
+          status,
+          headers: {
+            ...(contentType ? { "content-type": contentType } : {}),
+            location: `https://untrusted.invalid/?token=${TOKEN}`,
+          },
+        },
+      );
+      const setup = harness(
+        vi.fn(() => Promise.resolve(authResponse())),
+        {
+          portalFetch: vi.fn(() => Promise.resolve(portal)),
+        },
+      );
+
+      await expect(setup.connection.connect()).rejects.toMatchObject({
+        code,
+        message: expect.not.stringContaining(TOKEN),
+      });
+      expect(setup.child.kill).toHaveBeenCalledWith("SIGTERM");
+      if (status !== 204) expect(cancelled).toHaveBeenCalledOnce();
+    },
+  );
+
+  it.each([
+    ["an empty body", ""],
+    ["a JSON body", '{"error":"not the portal"}'],
+    ["an error-text body", "upstream maintenance page"],
+  ] as const)("rejects %s served as portal HTML", async (_label, body) => {
+    const setup = harness(
+      vi.fn(() => Promise.resolve(authResponse())),
+      {
+        portalFetch: vi.fn(() =>
+          Promise.resolve(
+            new Response(body, {
+              status: 200,
+              headers: { "content-type": "text/html; charset=utf-8" },
+            }),
+          ),
+        ),
+      },
+    );
+
+    await expect(setup.connection.connect()).rejects.toMatchObject({
+      code: "protocolError",
+      message: expect.stringContaining("unexpected response body"),
+    });
+    await setup.connection.close();
+  });
+
+  it("reports an absent portal response body", async () => {
+    const setup = harness(
+      vi.fn(() => Promise.resolve(authResponse())),
+      {
+        portalFetch: vi.fn(() =>
+          Promise.resolve(
+            new Response(null, {
+              status: 200,
+              headers: { "content-type": "text/html; charset=utf-8" },
+            }),
+          ),
+        ),
+      },
+    );
+
+    await expect(setup.connection.connect()).rejects.toMatchObject({
+      code: "protocolError",
+      message: expect.stringContaining("empty response"),
+    });
+    await setup.connection.close();
+  });
+
+  it.each([
+    ["an uppercase doctype", "<!DOCTYPE HTML>\n<html></html>"],
+    ["a whitespace and BOM prefix", '  \uFEFF<html lang="en"></html>'],
+  ] as const)("accepts %s as the portal body", async (_label, body) => {
+    const setup = harness(
+      vi.fn(() => Promise.resolve(authResponse())),
+      {
+        portalFetch: vi.fn(() =>
+          Promise.resolve(
+            new Response(body, {
+              status: 200,
+              headers: { "content-type": "text/html; charset=utf-8" },
+            }),
+          ),
+        ),
+      },
+    );
+
+    await expect(setup.connection.connect()).resolves.toBeUndefined();
+    await setup.connection.close();
+  });
+
+  it("bounds the portal body read and cancels the remainder", async () => {
+    const encoder = new TextEncoder();
+    const cancelled = vi.fn();
+    const oversized = new ReadableStream<Uint8Array>({
+      start(controller) {
+        // One 4 KiB chunk: larger than the 1 KiB probe bound, so retention must
+        // be truncated before the stream is canceled.
+        controller.enqueue(encoder.encode(`<!doctype html>\n<html>${"x".repeat(4_096)}`));
+      },
+      cancel: cancelled,
+    });
+    const decode = vi.spyOn(TextDecoder.prototype, "decode");
+    const setup = harness(
+      vi.fn(() => Promise.resolve(authResponse())),
+      {
+        portalFetch: vi.fn(() =>
+          Promise.resolve(
+            new Response(oversized, {
+              status: 200,
+              headers: { "content-type": "text/html; charset=utf-8" },
+            }),
+          ),
+        ),
+      },
+    );
+
+    await expect(setup.connection.connect()).resolves.toBeUndefined();
+    expect(cancelled).toHaveBeenCalledOnce();
+    const decoded = decode.mock.calls.map(([input]) => input?.byteLength ?? 0);
+    expect(decoded.length).toBeGreaterThan(0);
+    for (const byteLength of decoded) expect(byteLength).toBeLessThanOrEqual(1_024);
+    decode.mockRestore();
+    await setup.connection.close();
   });
 
   it("opens only the owned loopback Web URL and clears it when the process closes", async () => {

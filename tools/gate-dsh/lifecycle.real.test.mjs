@@ -114,7 +114,6 @@ for (const [id, variable, Adapter] of [
         new Adapter({
           command,
           environment,
-          endpoint: `${new URL(baseURL).origin}/`,
           startupTimeoutMs: 30000,
         });
       let adapter = createAdapter();

@@ -3287,9 +3287,17 @@ describe("AppServerHost HarnessAdapter projection", () => {
       `${JSON.stringify({ id: turnStart.id, result: { turn: { id: "native-turn-2" } } })}\n`,
     );
     await expect(send).resolves.toMatchObject({ turnId: "native-turn-2", status: "running" });
-    await expect(
-      delegationApi.send({ threadId: "native-child", message: "again" }),
-    ).rejects.toMatchObject({ code: "THREAD_BUSY" });
+    const busySend = delegationApi.send({ threadId: "native-child", message: "again" });
+    const busyResult = expect(busySend).rejects.toMatchObject({ code: "THREAD_BUSY" });
+    const busyRead = await readJsonLine(fixture.official.stdin);
+    expect(busyRead).toMatchObject({ method: "thread/read" });
+    fixture.official.stdout.write(
+      `${JSON.stringify({
+        id: busyRead.id,
+        result: { thread: { id: "native-child", turns: [] } },
+      })}\n`,
+    );
+    await busyResult;
 
     const cancel = delegationApi.cancel({ threadId: "native-child" });
     const interrupt = await readJsonLine(fixture.official.stdin);
@@ -3300,6 +3308,137 @@ describe("AppServerHost HarnessAdapter projection", () => {
     fixture.official.stdout.write(`${JSON.stringify({ id: interrupt.id, result: {} })}\n`);
     await expect(cancel).resolves.toMatchObject({ turnId: "native-turn-2", cancelled: true });
     await stopFixture(fixture);
+  });
+
+  it.each([
+    ["send", "completed"],
+    ["send", "failed"],
+    ["send", "interrupted"],
+    ["send", "cancelled"],
+    ["read", "completed"],
+  ] as const)("reconciles a stale native Turn on %s after %s", async (operation, status) => {
+    let delegationApi: DelegationControlApi | undefined;
+    const fixture = createFixture({
+      onDelegationApi: (api) => {
+        delegationApi = api;
+        return undefined;
+      },
+    });
+    try {
+      await fixture.ready;
+      if (!delegationApi) throw new Error("Delegation API was not registered");
+      await bindOfficialThread(fixture, "native-coordinator");
+      fixture.official.stdout.write(
+        `${JSON.stringify({
+          method: "turn/started",
+          params: { threadId: "native-coordinator", turn: { id: "finished-turn" } },
+        })}\n`,
+      );
+      await fixture.collector.waitFor((message) =>
+        turnEvent(message, "turn/started", "finished-turn"),
+      );
+      // No turn/completed notification reaches this Host, but native history is authoritative.
+      const sending =
+        operation === "send"
+          ? delegationApi.send({ threadId: "native-coordinator", message: "Report" })
+          : delegationApi.read({ threadId: "native-coordinator", view: "result" });
+      const read = await Promise.race([
+        readJsonLine(fixture.official.stdin),
+        sending.then(() => {
+          throw new Error("Report started before reading native state");
+        }),
+      ]);
+      expect(read).toMatchObject({ method: "thread/read" });
+      fixture.official.stdout.write(
+        `${JSON.stringify({
+          id: read.id,
+          result: {
+            thread: {
+              id: "native-coordinator",
+              status: { type: "idle" },
+              turns: [{ id: "finished-turn", status, items: [] }],
+            },
+          },
+        })}\n`,
+      );
+      if (operation === "read") {
+        await expect(sending).resolves.toMatchObject({ status: "completed" });
+      } else {
+        const start = await readJsonLine(fixture.official.stdin);
+        expect(start).toMatchObject({ method: "turn/start" });
+        fixture.official.stdout.write(
+          `${JSON.stringify({ id: start.id, result: { turn: { id: "report-turn" } } })}\n`,
+        );
+        await expect(sending).resolves.toMatchObject({ turnId: "report-turn", status: "running" });
+      }
+    } finally {
+      await stopFixture(fixture);
+    }
+  });
+
+  it.each([
+    { name: "still running", state: "active", turnId: "cached-turn", status: "inProgress" },
+    { name: "missing cached Turn", state: "idle", turnId: "other-turn", status: "completed" },
+    { name: "unknown terminal", state: "idle", turnId: "cached-turn", status: "unknown" },
+    {
+      name: "native Thread still active",
+      state: "active",
+      turnId: "cached-turn",
+      status: "completed",
+    },
+    {
+      name: "newer Turn started during read",
+      state: "idle",
+      turnId: "cached-turn",
+      status: "completed",
+    },
+  ])("keeps native report admission busy when $name", async ({ name, state, turnId, status }) => {
+    let delegationApi: DelegationControlApi | undefined;
+    const fixture = createFixture({
+      onDelegationApi: (api) => {
+        delegationApi = api;
+        return undefined;
+      },
+    });
+    try {
+      await fixture.ready;
+      if (!delegationApi) throw new Error("Delegation API was not registered");
+      await bindOfficialThread(fixture, "native-coordinator");
+      const started = (id: string) => ({
+        method: "turn/started",
+        params: { threadId: "native-coordinator", turn: { id } },
+      });
+      fixture.official.stdout.write(`${JSON.stringify(started("cached-turn"))}\n`);
+      await fixture.collector.waitFor((message) =>
+        turnEvent(message, "turn/started", "cached-turn"),
+      );
+      const sending = delegationApi.send({ threadId: "native-coordinator", message: "Report" });
+      const result = expect(sending).rejects.toMatchObject({ code: "THREAD_BUSY" });
+      const read = await readJsonLine(fixture.official.stdin);
+      expect(read).toMatchObject({ method: "thread/read" });
+      if (name === "newer Turn started during read") {
+        fixture.official.stdout.write(`${JSON.stringify(started("newer-turn"))}\n`);
+        await fixture.collector.waitFor((message) =>
+          turnEvent(message, "turn/started", "newer-turn"),
+        );
+      }
+      fixture.official.stdout.write(
+        `${JSON.stringify({
+          id: read.id,
+          result: {
+            thread: {
+              id: "native-coordinator",
+              status: { type: state },
+              turns: [{ id: turnId, status, items: [] }],
+            },
+          },
+        })}\n`,
+      );
+      await result;
+      expect(fixture.official.stdin.readableLength).toBe(0);
+    } finally {
+      await stopFixture(fixture);
+    }
   });
 
   it("inspects native Codex Models and starts with explicit Model and Thinking", async () => {

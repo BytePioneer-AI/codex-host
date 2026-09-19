@@ -156,6 +156,7 @@ describe("production Desktop Controller", () => {
         "cursor-cli",
         "qoder",
         "qoder-cn",
+        "zcode",
         "hermes",
       ],
       timeoutMs: 90_000,

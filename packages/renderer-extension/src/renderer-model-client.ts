@@ -1,4 +1,12 @@
 import {
+  HARNESS_CONNECTION_GET_METHOD,
+  HARNESS_CONNECTION_SET_METHOD,
+  harnessConnectionGetSchema,
+  harnessConnectionSetSchema,
+  harnessConnectionStateSchema,
+  type HarnessConnectionGet,
+  type HarnessConnectionSet,
+  type HarnessConnectionState,
   HARNESS_LAUNCH_SETTINGS_GET_METHOD,
   HARNESS_LAUNCH_SETTINGS_SET_METHOD,
   harnessLaunchSettingsGetSchema,
@@ -164,6 +172,8 @@ function notificationTarget(manager: RequestManagerCandidate): RequestManagerCan
 }
 
 export interface RendererModelClient extends Partial<RendererSessionImportClient> {
+  getHarnessConnection?(input: HarnessConnectionGet): Promise<HarnessConnectionState>;
+  setHarnessConnection?(input: HarnessConnectionSet): Promise<HarnessConnectionState>;
   getHarnessLaunchSettings?(input: HarnessLaunchSettingsGet): Promise<HarnessLaunchSettings>;
   setHarnessLaunchSettings?(input: HarnessLaunchSettingsSet): Promise<HarnessLaunchSettings>;
   setIdleReleaseSettings?(settings: IdleReleaseSettings): Promise<IdleReleaseSettings>;
@@ -319,6 +329,22 @@ export function createRendererModelClient(
   };
 
   return Object.freeze({
+    async getHarnessConnection(input: HarnessConnectionGet): Promise<HarnessConnectionState> {
+      return harnessConnectionStateSchema.parse(
+        await manager.sendRequest(
+          HARNESS_CONNECTION_GET_METHOD,
+          harnessConnectionGetSchema.parse(input),
+        ),
+      );
+    },
+    async setHarnessConnection(input: HarnessConnectionSet): Promise<HarnessConnectionState> {
+      return harnessConnectionStateSchema.parse(
+        await manager.sendRequest(
+          HARNESS_CONNECTION_SET_METHOD,
+          harnessConnectionSetSchema.parse(input),
+        ),
+      );
+    },
     async getHarnessLaunchSettings(
       input: HarnessLaunchSettingsGet,
     ): Promise<HarnessLaunchSettings> {

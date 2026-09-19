@@ -21,7 +21,7 @@ import {
   externalThreadValue,
   type ExternalThreadRepository,
 } from "./external-thread-repository.js";
-import { DELEGATION_THREAD_ID_ENV } from "./delegation-types.js";
+import { openHarnessSession } from "./open-harness-session.js";
 import type { ExternalThread, ExternalThreadRuntime } from "./external-thread-runtime.js";
 
 export type ExternalThreadRollbackResult =
@@ -131,22 +131,23 @@ async function executeCurrentLastTurnRollback(input: {
   const configuration = currentConfiguration(current);
   let opened: Awaited<ReturnType<HarnessAdapter["open"]>>;
   try {
-    opened = await adapter.open({
-      kind: "rollbackLastTurn",
-      cwd: current.cwd,
-      environment: {
-        ...(input.environment ?? process.env),
-        [DELEGATION_THREAD_ID_ENV]: current.id,
+    opened = await openHarnessSession(
+      adapter,
+      {
+        kind: "rollbackLastTurn",
+        cwd: current.cwd,
+        sourceRef: currentNativeRef as NativeSessionRef,
+        ...(configuration.effectiveModel ? { model: configuration.effectiveModel } : {}),
+        ...(configuration.effectiveThinkingOptionId
+          ? { thinkingOptionId: configuration.effectiveThinkingOptionId }
+          : {}),
+        ...(configuration.effectivePermissionModeId
+          ? { permissionModeId: configuration.effectivePermissionModeId }
+          : {}),
       },
-      sourceRef: currentNativeRef as NativeSessionRef,
-      ...(configuration.effectiveModel ? { model: configuration.effectiveModel } : {}),
-      ...(configuration.effectiveThinkingOptionId
-        ? { thinkingOptionId: configuration.effectiveThinkingOptionId }
-        : {}),
-      ...(configuration.effectivePermissionModeId
-        ? { permissionModeId: configuration.effectivePermissionModeId }
-        : {}),
-    });
+      input.environment ?? process.env,
+      current.id,
+    );
   } catch {
     return { ok: false, error: { code: -32076, message: "External Thread rollback failed" } };
   }
@@ -329,16 +330,17 @@ export async function executeExternalThreadRollback(input: {
 
   let opened: Awaited<ReturnType<HarnessAdapter["open"]>>;
   try {
-    opened = await adapter.open({
-      kind: "fork",
-      cwd: derived.cwd,
-      environment: {
-        ...(input.environment ?? process.env),
-        [DELEGATION_THREAD_ID_ENV]: derived.id,
+    opened = await openHarnessSession(
+      adapter,
+      {
+        kind: "fork",
+        cwd: derived.cwd,
+        sourceRef: sourceNativeRef as NativeSessionRef,
+        checkpoint: boundary.nativeCheckpointRef as NativeCheckpointRef,
       },
-      sourceRef: sourceNativeRef as NativeSessionRef,
-      checkpoint: boundary.nativeCheckpointRef as NativeCheckpointRef,
-    });
+      input.environment ?? process.env,
+      derived.id,
+    );
   } catch {
     return { ok: false, error: { code: -32076, message: "External Thread fork failed" } };
   }

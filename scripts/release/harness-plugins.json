@@ -13,7 +13,8 @@
     "packages/adapters/cursor-cli",
     "packages/adapters/hermes",
     "packages/adapters/qoder",
-    "packages/adapters/qoder-cn"
+    "packages/adapters/qoder-cn",
+    "packages/adapters/zcode"
   ],
   "runtimePackages": [
     "@agentclientprotocol/sdk",

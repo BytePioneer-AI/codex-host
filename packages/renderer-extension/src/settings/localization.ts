@@ -160,8 +160,17 @@ export interface RendererSettingsMessages {
   readonly connectionStatus: string;
   readonly connectionHostsScrollLeft: string;
   readonly connectionHostsScrollRight: string;
+  readonly nativeConnectionWorkspace: string;
+  readonly nativeConnectionLabel: string;
+  readonly nativeConnectionPlaceholder: string;
+  readonly nativeConnectionSave: string;
+  readonly nativeConnectionClear: string;
+  readonly nativeConnectionConfigured: string;
+  readonly nativeConnectionUnconfigured: string;
+  readonly nativeConnectionSaveError: string;
   readonly launchPathLabel: string;
   readonly launchPathPlaceholder: string;
+  readonly launchPathZcodeHelp: string;
   readonly launchPathWorkbuddyHelp: string;
   readonly launchPathSave: string;
   readonly launchPathReset: string;
@@ -400,8 +409,19 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   connectionStatus: "Status",
   connectionHostsScrollLeft: "Show previous Hosts",
   connectionHostsScrollRight: "Show more Hosts",
+  nativeConnectionWorkspace: "Workspace open in the native Desktop (absolute path)",
+  nativeConnectionLabel: "Native Desktop pairing",
+  nativeConnectionPlaceholder: "Paste the native connection URL (kept private)",
+  nativeConnectionSave: "Save pairing",
+  nativeConnectionClear: "Clear pairing",
+  nativeConnectionConfigured: "Pairing is configured. Availability is checked separately.",
+  nativeConnectionUnconfigured: "No Desktop pairing; the standalone backend is used.",
+  nativeConnectionSaveError:
+    "Could not save pairing. Check the native URL, workspace path, application version and configuration permissions.",
   launchPathLabel: "Installed application path",
-  launchPathPlaceholder: "Installation folder, e.g. D:\\program\\WorkBuddy",
+  launchPathPlaceholder: "Installation folder, e.g. D:\\program\\Zcode",
+  launchPathZcodeHelp:
+    "This integration requires the ZCode app. If it is not detected automatically, enter its installation folder. codexhost locates the required files inside it. Restart codexhost after saving to apply.",
   launchPathWorkbuddyHelp:
     "This integration requires the WorkBuddy app. If it is not detected automatically, enter its installation folder. codexhost locates the required files inside it. Restart codexhost after saving to apply.",
   launchPathSave: "Save path",
@@ -655,8 +675,18 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   connectionStatus: "状态",
   connectionHostsScrollLeft: "查看前面的 Host",
   connectionHostsScrollRight: "查看更多 Host",
+  nativeConnectionWorkspace: "原生 Desktop 已打开的工作目录（绝对路径）",
+  nativeConnectionLabel: "原生 Desktop 配对",
+  nativeConnectionPlaceholder: "粘贴原生连接链接（私密保存）",
+  nativeConnectionSave: "保存配对",
+  nativeConnectionClear: "清除配对",
+  nativeConnectionConfigured: "已配置配对；连接及模型可用性由检查确认。",
+  nativeConnectionUnconfigured: "未配置 Desktop 配对，使用独立后端。",
+  nativeConnectionSaveError: "配对保存失败，请检查原生链接、工作目录、应用版本和配置目录权限。",
   launchPathLabel: "应用安装路径",
-  launchPathPlaceholder: "填写安装目录，例如 D:\\program\\WorkBuddy",
+  launchPathPlaceholder: "填写安装目录，例如 D:\\program\\Zcode",
+  launchPathZcodeHelp:
+    "此接入依赖 ZCode 应用。若未自动识别，请填写应用安装目录，codexhost 会自动定位所需文件。保存后重启 codexhost 生效。",
   launchPathWorkbuddyHelp:
     "此接入依赖 WorkBuddy 应用。若未自动识别，请填写应用安装目录，codexhost 会自动定位所需文件。保存后重启 codexhost 生效。",
   launchPathSave: "保存路径",

@@ -1,4 +1,6 @@
 import {
+  HARNESS_CONNECTION_GET_METHOD,
+  HARNESS_CONNECTION_SET_METHOD,
   HARNESS_LAUNCH_SETTINGS_GET_METHOD,
   HARNESS_LAUNCH_SETTINGS_SET_METHOD,
   harnessIdSchema,
@@ -73,9 +75,38 @@ const inspection = {
 };
 
 describe("Renderer fixed Model request client", () => {
+  it("sends write-only native pairing and validates status without accepting a returned secret", async () => {
+    const harnessId = harnessIdSchema.parse("zcode");
+    const state = {
+      supported: true,
+      configured: true,
+      restartRequired: true,
+      description: "Native connection",
+    };
+    const sendRequest = vi.fn().mockResolvedValue(state);
+    const client = createRendererModelClient([{ sendRequest }]);
+    expect(await client?.getHarnessConnection?.({ harnessId })).toEqual(state);
+    expect(sendRequest).toHaveBeenLastCalledWith(HARNESS_CONNECTION_GET_METHOD, { harnessId });
+    await client?.setHarnessConnection?.({ harnessId, secret: "private-fixture", cwd: "/fixture" });
+    expect(sendRequest).toHaveBeenLastCalledWith(HARNESS_CONNECTION_SET_METHOD, {
+      harnessId,
+      secret: "private-fixture",
+      cwd: "/fixture",
+    });
+    await client?.setHarnessConnection?.({ harnessId, secret: null });
+    expect(sendRequest).toHaveBeenLastCalledWith(HARNESS_CONNECTION_SET_METHOD, {
+      harnessId,
+      secret: null,
+    });
+    sendRequest.mockResolvedValueOnce({ ...state, secret: "must-not-return" });
+    await expect(client?.getHarnessConnection?.({ harnessId })).rejects.toThrow();
+    await expect(
+      client?.setHarnessConnection?.({ harnessId, secret: "x".repeat(8193) }),
+    ).rejects.toThrow();
+  });
   it("validates launch setting requests and responses on the selected request client", async () => {
-    const harnessId = harnessIdSchema.parse("workbuddy");
-    const result = { path: "D:\\Apps\\WorkBuddy", restartRequired: true };
+    const harnessId = harnessIdSchema.parse("zcode");
+    const result = { path: "D:\\Apps\\zcode.cjs", restartRequired: true };
     const sendRequest = vi.fn().mockResolvedValue(result);
     const client = createRendererModelClient([{ sendRequest }]);
     if (!client) throw new Error("Expected a model client");
@@ -328,6 +359,7 @@ describe("Renderer fixed Model request client", () => {
       "checkUpdate",
       "executeThreadCommand",
       "forkThread",
+      "getHarnessConnection",
       "getHarnessLaunchSettings",
       "importHarnessSession",
       "inspectCodexAccountUsage",
@@ -351,6 +383,7 @@ describe("Renderer fixed Model request client", () => {
       "selectThreadModel",
       "selectThreadPermissionMode",
       "selectThreadThinking",
+      "setHarnessConnection",
       "setHarnessLaunchSettings",
       "setIdleReleaseSettings",
       "startUpdate",

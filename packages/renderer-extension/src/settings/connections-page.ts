@@ -1,4 +1,8 @@
-import type { CodexhostError, HarnessLaunchSettings } from "@codexhost/shared-contracts";
+import type {
+  CodexhostError,
+  HarnessLaunchSettings,
+  HarnessConnectionState,
+} from "@codexhost/shared-contracts";
 
 import {
   getSharedAgentGroupPreferenceStore,
@@ -11,6 +15,7 @@ import type { RendererAdapterStatus } from "../versioned-renderer-adapter.js";
 import type { RendererSettingsPageDefinition, RendererSettingsPageMountContext } from "./core.js";
 import { createRendererSettingsIcon } from "./icons.js";
 import { createHarnessLaunchControls } from "./harness-launch-controls.js";
+import { createHarnessConnectionControls } from "./harness-connection-controls.js";
 import type { RendererSettingsMessages } from "./localization.js";
 
 export const CODEXHOST_GITHUB_ISSUES_NEW_URL =
@@ -31,6 +36,7 @@ const HARNESS_INSTALL_URLS: Readonly<Record<ExternalRendererAgent, string>> = Ob
   hermes: "https://hermes-agent.nousresearch.com/docs",
   qoder: "https://docs.qoder.com/",
   "qoder-cn": "https://docs.qoder.cn/",
+  zcode: "https://zcode.z.ai/cn/docs/install",
 });
 
 export interface RendererConnectionAgentSnapshot {
@@ -55,6 +61,13 @@ export interface RendererConnectionDiagnostics {
   snapshot(): RendererConnectionSnapshot;
   refresh(): Promise<void>;
   openWebUi?(hostId: string, agent: ExternalRendererAgent): Promise<void>;
+  getConnection?(hostId: string, agent: ExternalRendererAgent): Promise<HarnessConnectionState>;
+  setConnection?(
+    hostId: string,
+    agent: ExternalRendererAgent,
+    secret: string | null,
+    cwd?: string,
+  ): Promise<HarnessConnectionState>;
   getLaunchSettings?(hostId: string, agent: ExternalRendererAgent): Promise<HarnessLaunchSettings>;
   setLaunchSettings?(
     hostId: string,
@@ -536,13 +549,31 @@ function renderConnectionInspector(
   const agent = item.agentSnapshot?.agent;
   const getLaunchSettings = diagnostics?.getLaunchSettings?.bind(diagnostics);
   const setLaunchSettings = diagnostics?.setLaunchSettings?.bind(diagnostics);
-  if (hostId === "local" && agent === "workbuddy" && getLaunchSettings && setLaunchSettings) {
-    launchControls =
-      existingLaunchControls ??
-      createHarnessLaunchControls(document, messages, agent, {
-        get: () => getLaunchSettings(hostId, agent),
-        set: (path) => setLaunchSettings(hostId, agent, path),
-      });
+  const getConnection = diagnostics?.getConnection?.bind(diagnostics);
+  const setConnection = diagnostics?.setConnection?.bind(diagnostics);
+  if (hostId === "local" && agent) {
+    launchControls = existingLaunchControls ?? document.createElement("div");
+    if (!existingLaunchControls) {
+      if ((agent === "zcode" || agent === "workbuddy") && getLaunchSettings && setLaunchSettings) {
+        launchControls.append(
+          createHarnessLaunchControls(document, messages, agent, {
+            get: () => getLaunchSettings(hostId, agent),
+            set: (path) => setLaunchSettings(hostId, agent, path),
+          }),
+        );
+      }
+      if (getConnection && setConnection) {
+        launchControls.append(
+          createHarnessConnectionControls(document, messages, agent, {
+            get: () => getConnection(hostId, agent),
+            set: (secret, cwd) =>
+              cwd !== undefined
+                ? setConnection(hostId, agent, secret, cwd)
+                : setConnection(hostId, agent, secret),
+          }),
+        );
+      }
+    }
     body.append(launchControls);
   }
   inspector.append(body);

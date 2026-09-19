@@ -102,6 +102,7 @@ const externalHarnessIds = {
   hermes: harnessIdSchema.parse("hermes"),
   qoder: harnessIdSchema.parse("qoder"),
   "qoder-cn": harnessIdSchema.parse("qoder-cn"),
+  zcode: harnessIdSchema.parse("zcode"),
 } as const;
 
 const externalAgents: readonly ExternalRendererAgent[] = [
@@ -119,6 +120,7 @@ const externalAgents: readonly ExternalRendererAgent[] = [
   "hermes",
   "qoder",
   "qoder-cn",
+  "zcode",
 ];
 type HarnessAvailability = Partial<Record<ExternalRendererAgent, RendererAgentAvailability>>;
 type HarnessAvailabilityErrors = Partial<Record<ExternalRendererAgent, CodexhostError | undefined>>;
@@ -505,7 +507,11 @@ export function restoredThreadOwnership(inspection: ThreadInspection): RestoredT
         : {}),
     };
   }
-  if (inspection.harnessId === "qoder" || inspection.harnessId === "qoder-cn") {
+  if (
+    inspection.harnessId === "qoder" ||
+    inspection.harnessId === "qoder-cn" ||
+    inspection.harnessId === "zcode"
+  ) {
     const route = decodeHarnessPluginRoute(inspection.transportModelId);
     if (!route || route.harnessId !== inspection.harnessId) {
       throw new Error("Harness Thread reported an incompatible transport Model");
@@ -761,6 +767,7 @@ export function installRendererBindingProbe(
       hermes: undefined,
       qoder: undefined,
       "qoder-cn": undefined,
+      zcode: undefined,
     },
     webUi: Object.fromEntries(
       externalAgents.map((agent) => [agent, false]),
@@ -2253,6 +2260,21 @@ export function installRendererBindingProbe(
       return refreshConnectionHosts(harnessAvailabilityByHost.keys(), (hostId) =>
         refreshHarnessAvailabilityForHost(hostId, true, false, true),
       );
+    },
+    async getConnection(hostId, agent) {
+      const client = hostId === "local" ? modelClientForHost(hostId) : null;
+      if (!client?.getHarnessConnection) return { supported: false };
+      return client.getHarnessConnection({ harnessId: externalHarnessIds[agent] });
+    },
+    async setConnection(hostId, agent, secret, cwd) {
+      const client = hostId === "local" ? modelClientForHost(hostId) : null;
+      if (!client?.setHarnessConnection)
+        throw new Error("Native connection settings are unavailable");
+      return client.setHarnessConnection({
+        harnessId: externalHarnessIds[agent],
+        secret,
+        ...(cwd !== undefined ? { cwd } : {}),
+      });
     },
     async getLaunchSettings(hostId, agent) {
       const client = hostId === "local" ? modelClientForHost(hostId) : null;

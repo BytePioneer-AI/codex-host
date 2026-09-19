@@ -17,6 +17,7 @@ import {
   type RoutedHarnessId,
 } from "@codexhost/protocol-core";
 import { harnessIdSchema, hostThreadIdSchema, hostTurnIdSchema } from "@codexhost/shared-contracts";
+import { openHarnessSession } from "./open-harness-session.js";
 
 import {
   DELEGATION_THREAD_ID_ENV,
@@ -284,14 +285,18 @@ export class HarnessDelegationCoordinator {
           ...(input.requestId ? { requestId: input.requestId } : {}),
           taskDigest: digest,
         });
-        const opened = await adapter.open({
-          kind: "create",
-          cwd: record.cwd,
-          environment: { ...this.#environment, [DELEGATION_THREAD_ID_ENV]: childThreadId },
-          executionPolicy: "unattended-full-access",
-          ...(input.model ? { model: input.model } : {}),
-          ...(input.thinkingOptionId ? { thinkingOptionId: input.thinkingOptionId } : {}),
-        });
+        const opened = await openHarnessSession(
+          adapter,
+          {
+            kind: "create",
+            cwd: record.cwd,
+            executionPolicy: "unattended-full-access",
+            ...(input.model ? { model: input.model } : {}),
+            ...(input.thinkingOptionId ? { thinkingOptionId: input.thinkingOptionId } : {}),
+          },
+          this.#environment,
+          childThreadId,
+        );
         if (!opened.ok) throw new DelegationControlError("DELEGATION_FAILED", opened.error.message);
         session = opened.value;
         if (session.initialState.nativeRef) {

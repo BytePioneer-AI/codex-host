@@ -4,7 +4,7 @@ import type { RendererSettingsMessages } from "./localization.js";
 export function createHarnessLaunchControls(
   document: Document,
   messages: RendererSettingsMessages,
-  agent: "workbuddy",
+  agent: "zcode" | "workbuddy",
   settings: {
     get(): Promise<HarnessLaunchSettings>;
     set(path: string | null): Promise<HarnessLaunchSettings>;
@@ -23,7 +23,8 @@ export function createHarnessLaunchControls(
   input.setAttribute("aria-label", messages.launchPathLabel);
   label.append(input);
   const help = document.createElement("p");
-  help.textContent = messages.launchPathWorkbuddyHelp;
+  help.textContent =
+    agent === "zcode" ? messages.launchPathZcodeHelp : messages.launchPathWorkbuddyHelp;
   const actions = document.createElement("div");
   actions.className = "settings-harness-launch__actions";
   const save = document.createElement("button");

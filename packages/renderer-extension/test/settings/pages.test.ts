@@ -406,7 +406,116 @@ describe("Read-only Harness accounts", () => {
 });
 
 describe("Renderer Connections page", () => {
-  it.each(["workbuddy"] as const)(
+  it("edits native pairing only on the local Host, clears input on save, and hides secret errors", async () => {
+    const messages = rendererSettingsMessages("en");
+    const state = {
+      supported: true as const,
+      configured: false,
+      restartRequired: false,
+      description: "Native pairing via official Relay",
+      cwd: null,
+    };
+    let changed = () => {};
+    const diagnostics: RendererConnectionDiagnostics = {
+      snapshot: () => ({
+        adapter: { state: "ready", reason: "ready", modelUpdates: 1, hook: "request-bridge" },
+        hosts: ["local", "remote-test"].map((hostId) => ({
+          hostId,
+          active: hostId === "local",
+          agents: [{ agent: "zcode", availability: "ready", error: null }],
+        })),
+      }),
+      refresh: vi.fn(async () => {}),
+      getConnection: vi.fn(async () => state),
+      setConnection: vi.fn(async (_host, _agent, secret, cwd) => ({
+        ...state,
+        cwd: secret !== null ? (cwd ?? null) : null,
+        configured: secret !== null,
+        restartRequired: true,
+      })),
+      subscribe: (listener) => {
+        changed = listener;
+        return () => {};
+      },
+    };
+    const page = createDefaultRendererSettingsPages(
+      messages,
+      () => null,
+      () => diagnostics,
+    ).find(({ id }) => id === "connections");
+    if (!page) throw new Error("Missing Connections page");
+    const document = new FakeDocument(),
+      content = document.createElement("main"),
+      scope = new RendererSettingsPageScope();
+    const cleanup = page.mount({
+      content: content as unknown as HTMLElement,
+      signal: scope.signal,
+      runLatest: (op, handlers) => scope.runLatest(op, handlers),
+    });
+    const row = descendants(content).find(({ dataset }) => dataset.connectionItem === "zcode");
+    if (!row) throw new Error("Missing ZCode row");
+    row.dispatch("click", { target: null });
+    const section = descendants(content).find(
+      ({ dataset }) => dataset.harnessConnection === "zcode",
+    );
+    if (!section) throw new Error("Missing native connection controls");
+    const input = descendants(section).find(({ tagName }) => tagName === "input");
+    const save = descendants(section).find(
+      ({ textContent }) => textContent === messages.nativeConnectionSave,
+    );
+    const clear = descendants(section).find(
+      ({ textContent }) => textContent === messages.nativeConnectionClear,
+    );
+    const workspace = descendants(section).find(({ type }) => type === "text");
+    if (!input || !save || !clear || !workspace)
+      throw new Error("Incomplete native connection controls");
+    await vi.waitFor(() => expect(input.disabled).toBe(false));
+    expect(input.type).toBe("password");
+    expect(input.value).toBe("");
+    expect(clear.disabled).toBe(true);
+    input.value = "private-fixture-link";
+    input.dispatch("input");
+    expect(save.disabled).toBe(true);
+    workspace.value = "/fixture";
+    workspace.dispatch("input");
+    changed();
+    expect(descendants(content).find(({ tagName }) => tagName === "input")).toBe(input);
+    save.dispatch("click");
+    save.dispatch("click");
+    expect(input.value).toBe("");
+    await vi.waitFor(() => expect(visibleText(section)).toContain(messages.launchPathRestart));
+    expect(diagnostics.setConnection).toHaveBeenCalledExactlyOnceWith(
+      "local",
+      "zcode",
+      "private-fixture-link",
+      "/fixture",
+    );
+    expect(visibleText(section)).not.toContain("private-fixture-link");
+    clear.dispatch("click");
+    await vi.waitFor(() => expect(clear.disabled).toBe(true));
+    expect(diagnostics.setConnection).toHaveBeenLastCalledWith("local", "zcode", null);
+    if (!diagnostics.setConnection) throw new Error("Missing connection writer");
+    vi.mocked(diagnostics.setConnection).mockRejectedValueOnce(new Error("private-fixture-link"));
+    input.value = "private-fixture-link";
+    workspace.value = "/fixture";
+    workspace.dispatch("input");
+    input.dispatch("input");
+    save.dispatch("click");
+    await vi.waitFor(() =>
+      expect(visibleText(section)).toContain(messages.nativeConnectionSaveError),
+    );
+    expect(visibleText(section)).not.toContain("private-fixture-link");
+    const remote = descendants(content).find(
+      ({ dataset }) => dataset.connectionHostTab === "remote-test",
+    );
+    if (!remote) throw new Error("Missing remote Host tab");
+    remote.dispatch("click");
+    expect(descendants(content).some(({ dataset }) => dataset.harnessConnection)).toBe(false);
+    expect(diagnostics.getConnection).toHaveBeenCalledExactlyOnceWith("local", "zcode");
+    cleanup?.();
+    scope.dispose();
+  });
+  it.each(["zcode", "workbuddy"] as const)(
     "edits %s launch settings in the local right-side inspector",
     async (agent) => {
       const messages = rendererSettingsMessages("zh-CN");

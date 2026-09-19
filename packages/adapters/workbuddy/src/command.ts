@@ -41,6 +41,7 @@ interface WorkBuddyInvocationDependencies {
   getuid?: () => number | undefined;
 }
 
+export const WORKBUDDY_DISABLE_PRODUCT_CACHE_ENV = "CODEXHOST_WORKBUDDY_DISABLE_PRODUCT_CACHE";
 const WORKBUDDY_PRODUCT_CONFIG_PATH_ENV = "ACC_PRODUCT_CONFIG_PATH";
 const WORKBUDDY_PRODUCT_CONFIG_INLINE_ENVS = [
   "ACC_PRODUCT_CONFIG_V3",
@@ -162,23 +163,26 @@ export function workBuddyInvocation(
     process.execPath,
     platform,
   );
-  const productConfigPath = bundle
-    ? bundledProductConfigPath(configuredEnvironment, platform, dependencies)
-    : undefined;
+  const productConfigPath =
+    bundle && configuredEnvironment[WORKBUDDY_DISABLE_PRODUCT_CACHE_ENV] !== "1"
+      ? bundledProductConfigPath(configuredEnvironment, platform, dependencies)
+      : undefined;
+  const launchEnvironment = { ...configuredEnvironment };
+  delete launchEnvironment[WORKBUDDY_DISABLE_PRODUCT_CACHE_ENV];
   const childEnvironment = bundle
     ? {
-        ...configuredEnvironment,
+        ...launchEnvironment,
         // EOF-only native Fork copies do no model work. The bundled CLI otherwise
         // waits for its telemetry channel before copying; normal ACP keeps its policy.
         ...(nativeArguments?.includes("--print") &&
         nativeArguments.includes("--fork-session") &&
-        configuredEnvironment.DISABLE_TELEMETRY === undefined
+        launchEnvironment.DISABLE_TELEMETRY === undefined
           ? { DISABLE_TELEMETRY: "1" }
           : {}),
         ...(productConfigPath ? { [WORKBUDDY_PRODUCT_CONFIG_PATH_ENV]: productConfigPath } : {}),
         ELECTRON_RUN_AS_NODE: "1",
       }
-    : configuredEnvironment;
+    : launchEnvironment;
   return {
     ...commandInvocation(
       executable,

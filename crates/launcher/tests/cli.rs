@@ -48,6 +48,61 @@ fn production_launcher_rejects_the_removed_process_stop_command() {
     assert!(!stderr.contains("native process stop"));
 }
 
+#[cfg(target_os = "windows")]
+#[test]
+fn production_launcher_reads_only_a_matching_process_environment() {
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system time")
+        .as_nanos();
+    let name = format!("CODEXHOST_PROCESS_ENV_TEST_{unique}");
+    let value = format!("snapshot-{unique}");
+    let marker = format!("codexhost-process-environment-{unique}");
+    let command = std::env::var_os("ComSpec").expect("ComSpec");
+    let command_string = command.to_string_lossy().into_owned();
+    let target_arguments = format!("echo {marker} > nul & ping -n 8 127.0.0.1 > nul");
+    let mut target = Command::new(&command)
+        .args(["/d", "/c", &target_arguments])
+        .env(&name, &value)
+        .spawn()
+        .expect("spawn process environment fixture");
+    std::thread::sleep(std::time::Duration::from_millis(200));
+
+    let wrong_process = Command::new(launcher_path())
+        .args([
+            "--codexhost-read-process-environment",
+            "--executable",
+            &command_string,
+            "--command-line-contains",
+            "codexhost-wrong-process",
+            "--name",
+            &name,
+        ])
+        .output()
+        .expect("reject a different process command line");
+    let output = Command::new(launcher_path())
+        .args([
+            "--codexhost-read-process-environment",
+            "--executable",
+            &command_string,
+            "--command-line-contains",
+            &marker,
+            "--name",
+            &name,
+        ])
+        .output()
+        .expect("read process environment");
+    let _ = target.kill();
+    let _ = target.wait();
+
+    assert!(wrong_process.status.success());
+    assert!(wrong_process.stdout.is_empty());
+    assert!(wrong_process.stderr.is_empty());
+    assert!(output.status.success());
+    assert_eq!(output.stdout, value.as_bytes());
+    assert!(output.stderr.is_empty());
+}
+
 #[test]
 fn production_launcher_resolves_resources_beside_its_installed_location() {
     let unique = SystemTime::now()

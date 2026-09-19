@@ -1,6 +1,6 @@
 use super::{DesktopInstallation, PlatformError};
 #[cfg(target_os = "windows")]
-use super::{node_entrypoint_path, windows_process};
+use super::{node_entrypoint_path, windows_process, windows_process_environment};
 use std::path::{Path, PathBuf};
 #[cfg(target_os = "macos")]
 use std::thread;
@@ -783,6 +783,40 @@ pub fn parent_process_id(_process_id: u32) -> Result<Option<u32>, PlatformError>
     Err(PlatformError::Unsupported(
         "parent process discovery currently supports Windows, macOS, and Linux only",
     ))
+}
+
+#[cfg(target_os = "windows")]
+pub fn process_environment_variable_for_executable(
+    executable: &Path,
+    command_line_contains: Option<&str>,
+    name: &str,
+) -> Result<Option<String>, PlatformError> {
+    let expected = windows_executable_key(executable);
+    let command_line_contains = command_line_contains.map(str::to_lowercase);
+    let mut newest: Option<(u64, String)> = None;
+    for process in windows_process::process_entries()? {
+        let Ok(Some(value)) =
+            windows_process_environment::process_environment_variable(process.id, name)
+        else {
+            continue;
+        };
+        if windows_executable_key(&value.executable) != expected || value.value.is_empty() {
+            continue;
+        }
+        if command_line_contains
+            .as_ref()
+            .is_some_and(|expected| !value.command_line.to_lowercase().contains(expected))
+        {
+            continue;
+        }
+        if newest
+            .as_ref()
+            .is_none_or(|(started_at, _)| value.started_at_micros > *started_at)
+        {
+            newest = Some((value.started_at_micros, value.value));
+        }
+    }
+    Ok(newest.map(|(_, value)| value))
 }
 
 #[cfg(target_os = "windows")]

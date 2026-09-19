@@ -36,9 +36,10 @@ const configOptions = [
   },
 ];
 
-function fakeFactory(): CodeBuddyClientFactory {
-  return () =>
-    ({
+function fakeFactory(onCreate?: (environment: NodeJS.ProcessEnv) => void): CodeBuddyClientFactory {
+  return (options) => {
+    onCreate?.(options.environment);
+    return {
       initialize: async () => ({ protocolVersion: 1 }),
       open: async (_cwd, sessionId) => ({
         sessionId: sessionId ?? "workbuddy-native",
@@ -54,7 +55,8 @@ function fakeFactory(): CodeBuddyClientFactory {
       cancel: async () => {},
       answer: async () => {},
       close: async () => {},
-    }) satisfies CodeBuddyClient;
+    } satisfies CodeBuddyClient;
+  };
 }
 
 describe("WorkBuddy Adapter identity", () => {
@@ -102,7 +104,68 @@ describe("WorkBuddy Adapter identity", () => {
     });
   });
 
-  it("selects a product-file Model even when ACP omits it from the option rows", async () => {
+  it("injects only the live Windows App snapshot and removes stale product files", async () => {
+    const environments: NodeJS.ProcessEnv[] = [];
+    const serialized = JSON.stringify({
+      agents: [{ name: "cli", models: ["glm-5.2"] }],
+      models: [{ id: "glm-5.2", name: "GLM-5.2", credits: "x0.79 credits" }],
+    });
+    const adapter = new WorkBuddyAdapter({
+      platform: "win32",
+      environment: {
+        ACC_PRODUCT_CONFIG_PATH: "C:\\stale\\acc-product-config-v3.json",
+        ACC_PRODUCT_CONFIG_V2: "stale-inline",
+        CODEXHOST_LAUNCHER_EXECUTABLE: "C:\\codexhost\\codexhost.exe",
+      },
+      clientFactory: fakeFactory((environment) => environments.push(environment)),
+      productDesktopExecutable: () => "D:\\WorkBuddy\\WorkBuddyAI.exe",
+      productSnapshotReader: async (environment, executable) => {
+        expect(environment).not.toHaveProperty("ACC_PRODUCT_CONFIG_PATH");
+        expect(environment).not.toHaveProperty("ACC_PRODUCT_CONFIG_V2");
+        expect(environment.CODEXHOST_WORKBUDDY_DISABLE_PRODUCT_CACHE).toBe("1");
+        expect(executable).toBe("D:\\WorkBuddy\\WorkBuddyAI.exe");
+        return {
+          serialized,
+          models: [{ id: "glm-5.2", name: "GLM-5.2", credits: "x0.79 credits" }],
+        };
+      },
+    });
+    adapters.push(adapter);
+
+    expect(await adapter.inspect({ cwd: process.cwd() })).toMatchObject({
+      status: "ready",
+      catalog: {
+        models: [{ label: "Native Model" }, { label: "GLM-5.2 · 0.79x" }],
+      },
+    });
+    expect(environments).toHaveLength(1);
+    expect(environments[0]).toMatchObject({ ACC_PRODUCT_CONFIG_V3: serialized });
+    expect(environments[0]).not.toHaveProperty("ACC_PRODUCT_CONFIG_PATH");
+    expect(environments[0]).not.toHaveProperty("ACC_PRODUCT_CONFIG_V2");
+    expect(environments[0]?.CODEXHOST_WORKBUDDY_DISABLE_PRODUCT_CACHE).toBe("1");
+  });
+
+  it("shows no extended Windows Models when the live App snapshot cannot be read", async () => {
+    const environments: NodeJS.ProcessEnv[] = [];
+    const adapter = new WorkBuddyAdapter({
+      platform: "win32",
+      environment: { ACC_PRODUCT_CONFIG_PATH: "C:\\stale\\acc-product-config-v3.json" },
+      clientFactory: fakeFactory((environment) => environments.push(environment)),
+      productDesktopExecutable: () => "D:\\WorkBuddy\\WorkBuddyAI.exe",
+      productSnapshotReader: async () => undefined,
+    });
+    adapters.push(adapter);
+
+    expect(await adapter.inspect({ cwd: process.cwd() })).toMatchObject({
+      status: "ready",
+      catalog: { models: [{ label: "Native Model" }] },
+    });
+    expect(environments[0]).not.toHaveProperty("ACC_PRODUCT_CONFIG_PATH");
+    expect(environments[0]).not.toHaveProperty("ACC_PRODUCT_CONFIG_V3");
+    expect(environments[0]?.CODEXHOST_WORKBUDDY_DISABLE_PRODUCT_CACHE).toBe("1");
+  });
+
+  it("selects a live product Model even when ACP omits it from the option rows", async () => {
     const adapter = new WorkBuddyAdapter({
       platform: "win32",
       clientFactory: fakeFactory(),
@@ -128,10 +191,33 @@ describe("WorkBuddy Adapter identity", () => {
     });
   });
 
-  it("keeps macOS on the ACP catalog and rejects Models omitted by ACP", async () => {
+  it("rejects stale Windows Models not present in the live App snapshot", async () => {
+    const adapter = new WorkBuddyAdapter({
+      platform: "win32",
+      clientFactory: fakeFactory(),
+      productModels: async () => [{ id: "glm-5.2", name: "GLM-5.2" }],
+    });
+    adapters.push(adapter);
+
+    expect(
+      await adapter.open({
+        kind: "create",
+        cwd: process.cwd(),
+        environment: {},
+        model: modelRef("deepseek-v4-flash"),
+      }),
+    ).toMatchObject({
+      ok: false,
+      error: { code: "invalidRequest" },
+    });
+  });
+
+  it("keeps macOS on the ACP catalog and product environment unchanged", async () => {
+    const environments: NodeJS.ProcessEnv[] = [];
     const adapter = new WorkBuddyAdapter({
       platform: "darwin",
-      clientFactory: fakeFactory(),
+      environment: { ACC_PRODUCT_CONFIG_PATH: "/current/product.json" },
+      clientFactory: fakeFactory((environment) => environments.push(environment)),
       productModels: async () => [{ id: "glm-5.2", name: "GLM-5.2" }],
     });
     adapters.push(adapter);
@@ -140,6 +226,7 @@ describe("WorkBuddy Adapter identity", () => {
       status: "ready",
       catalog: { models: [{ label: "Native Model" }] },
     });
+    expect(environments[0]?.ACC_PRODUCT_CONFIG_PATH).toBe("/current/product.json");
     expect(
       await adapter.open({
         kind: "create",

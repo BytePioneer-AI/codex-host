@@ -31,6 +31,9 @@ mod windows_desktop;
 mod windows_process;
 #[cfg(target_os = "windows")]
 #[allow(unsafe_code)]
+mod windows_process_environment;
+#[cfg(target_os = "windows")]
+#[allow(unsafe_code)]
 mod windows_proxy;
 #[cfg(target_os = "windows")]
 #[allow(unsafe_code)]
@@ -71,7 +74,10 @@ pub use process::{
     process_exists, process_snapshot, terminate_process_by_id,
 };
 #[cfg(target_os = "windows")]
-pub use process::{desktop_process_ids, desktop_root_process_ids, process_started_at_micros};
+pub use process::{
+    desktop_process_ids, desktop_root_process_ids, process_environment_variable_for_executable,
+    process_started_at_micros,
+};
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 pub use process::{
     desktop_process_tree, desktop_root_snapshots_for_installation, process_snapshots,

@@ -27,8 +27,8 @@ export interface CodeBuddyRuntimeProfile {
   readonly nativeCommands?: boolean;
   /** Native history operations independently verified for this product profile. */
   readonly historyCapabilities?: HarnessSessionCapabilities["history"];
-  /** The product file is authoritative even when ACP omits its Models from the option rows. */
-  readonly allowUnlistedModelSelection?: boolean;
+  /** Allows a verified product Model even when ACP omits it from the option rows. */
+  readonly allowUnlistedModelSelection?: (nativeModelId: string) => boolean;
 }
 
 export const CODEBUDDY_RUNTIME_PROFILE: CodeBuddyRuntimeProfile = {

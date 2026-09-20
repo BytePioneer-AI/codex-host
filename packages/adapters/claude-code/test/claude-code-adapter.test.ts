@@ -359,6 +359,63 @@ describe("projectClaudePlanLimitToCredits", () => {
       resetsAt: new Date(1_756_648_800 * 1000).toISOString(),
     });
   });
+
+  it("appends per-model weekly windows after the seven-day window", () => {
+    expect(
+      projectClaudePlanLimitToCredits({
+        fiveHour: { utilizationPercent: 62, resetsAtUnix: 1_756_130_400 },
+        sevenDay: { utilizationPercent: 18, resetsAtUnix: 1_756_648_800 },
+        scopedWeekly: [
+          {
+            label: "Fable · 7-day window",
+            utilizationPercent: 32,
+            resetsAtUnix: 1_756_648_799,
+          },
+          { label: "Opus · 7-day window", utilizationPercent: 4 },
+        ],
+      }),
+    ).toEqual({
+      usedPercent: 62,
+      periodType: "five_hour",
+      resetsAt: new Date(1_756_130_400 * 1000).toISOString(),
+      productUsage: [
+        {
+          product: "7-day window",
+          usagePercent: 18,
+          resetsAt: new Date(1_756_648_800 * 1000).toISOString(),
+        },
+        {
+          product: "Fable · 7-day window",
+          usagePercent: 32,
+          resetsAt: new Date(1_756_648_799 * 1000).toISOString(),
+        },
+        { product: "Opus · 7-day window", usagePercent: 4 },
+      ],
+    });
+  });
+
+  it("keeps a per-model window visible when only the five-hour window is known", () => {
+    expect(
+      projectClaudePlanLimitToCredits({
+        fiveHour: { utilizationPercent: 8 },
+        scopedWeekly: [{ label: "Fable · 7-day window", utilizationPercent: 32 }],
+      }),
+    ).toEqual({
+      usedPercent: 8,
+      periodType: "five_hour",
+      productUsage: [{ product: "Fable · 7-day window", usagePercent: 32 }],
+    });
+  });
+
+  it("stays byte-identical to the unscoped projection when no per-model window is known", () => {
+    const unscoped = {
+      fiveHour: { utilizationPercent: 62, resetsAtUnix: 1_756_130_400 },
+      sevenDay: { utilizationPercent: 18, resetsAtUnix: 1_756_648_800 },
+    };
+    expect(JSON.stringify(projectClaudePlanLimitToCredits({ ...unscoped, scopedWeekly: [] }))).toBe(
+      JSON.stringify(projectClaudePlanLimitToCredits(unscoped)),
+    );
+  });
 });
 
 describe("Claude Code HarnessAdapter", () => {

@@ -335,6 +335,23 @@ describe("current Codex Renderer Agent adapter", () => {
     expect(discoverTargets).not.toHaveBeenCalled();
   });
 
+  it("accepts a policy-owned exact target whose inner manager omits duplicate Host metadata", () => {
+    const manager = {
+      sendRequest: vi.fn(),
+      prewarmThreadStart: vi.fn(),
+      enqueueRequest: vi.fn(),
+    };
+    const policy = {
+      state: "ready" as const,
+      hostId: "remote-ssh-discovered:mac",
+      requestTarget: vi.fn(() => manager),
+      select: vi.fn(() => true),
+      clear: vi.fn(async () => undefined),
+    };
+
+    expect(resolveRendererRequestRoute(policy, [], null)).toEqual({ policy, targets: [manager] });
+  });
+
   it.each([
     ["non-callable", {}],
     ["malformed", () => ({})],
@@ -345,6 +362,19 @@ describe("current Codex Renderer Agent adapter", () => {
         sendRequest: vi.fn(),
         prewarmThreadStart: vi.fn(),
         enqueueRequest: vi.fn(),
+      }),
+    ],
+    [
+      "internally host-conflicted",
+      () => ({
+        getHostId: () => "remote-ssh-discovered:mac",
+        requestClient: {
+          hostId: "remote-ssh-discovered:other",
+          sendRequest: vi.fn(),
+          prewarmThreadStart: vi.fn(),
+          enqueueRequest: vi.fn(),
+        },
+        sendRequest: vi.fn(),
       }),
     ],
     [

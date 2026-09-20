@@ -829,15 +829,35 @@ export function activeRendererDraftPrewarmPolicy(
   return activeRendererDraftPrewarmTargets(policy, targets) ? policy : null;
 }
 
-function prewarmTargetHostId(target: PrewarmTarget): string | null {
+function prewarmTargetHostIdentity(target: PrewarmTarget): {
+  hostId: string | null;
+  conflicting: boolean;
+} {
   const bridge = target.requestClient ?? target;
-  const hostId = target.getHostId?.() ?? bridge.hostId;
-  return typeof hostId === "string" && hostId.length > 0 ? hostId : null;
+  const hostIds = new Set(
+    [target.getHostId?.(), bridge.hostId].filter(
+      (value): value is string => typeof value === "string" && value.length > 0,
+    ),
+  );
+  return {
+    hostId: hostIds.size === 1 ? (hostIds.values().next().value ?? null) : null,
+    conflicting: hostIds.size > 1,
+  };
+}
+
+function prewarmTargetHostId(target: PrewarmTarget): string | null {
+  return prewarmTargetHostIdentity(target).hostId;
 }
 
 function isRendererRequestTarget(value: unknown): value is PrewarmTarget {
   if (!isRecord(value) || typeof value.sendRequest !== "function") return false;
-  return isCurrentRequestBridge(value.requestClient ?? value);
+  const bridge = value.requestClient ?? value;
+  return (
+    isRecord(bridge) &&
+    typeof bridge.sendRequest === "function" &&
+    typeof bridge.prewarmThreadStart === "function" &&
+    typeof bridge.enqueueRequest === "function"
+  );
 }
 
 function hasPolicyRequestTarget(policy: RendererDraftPrewarmPolicy): boolean {
@@ -850,7 +870,17 @@ function exactRendererRequestTarget(
   if (typeof policy.requestTarget !== "function") return null;
   try {
     const target = policy.requestTarget();
-    if (!isRendererRequestTarget(target) || prewarmTargetHostId(target) !== policy.hostId) {
+    if (!isRendererRequestTarget(target)) {
+      return null;
+    }
+    const targetIdentity = prewarmTargetHostIdentity(target);
+    // The installed policy owns this exact manager and already pins its Host.
+    // New Desktop wrappers may omit duplicate Host metadata on the inner manager,
+    // but an explicit conflicting identity must still fail closed.
+    if (
+      targetIdentity.conflicting ||
+      (targetIdentity.hostId !== null && targetIdentity.hostId !== policy.hostId)
+    ) {
       return null;
     }
     return [target];

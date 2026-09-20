@@ -26,8 +26,12 @@ export function selectRendererRequestManager<Manager, RequestClient>(
   candidates: readonly RendererRequestManagerCandidate<Manager, RequestClient>[],
   activeHostIds: readonly unknown[],
 ): RendererRequestManagerCandidate<Manager, RequestClient> | null {
-  const unique = new Map<Manager, RendererRequestManagerCandidate<Manager, RequestClient>>();
-  for (const candidate of candidates) unique.set(candidate.manager, candidate);
+  const grouped = new Map<Manager, RendererRequestManagerCandidate<Manager, RequestClient>[]>();
+  for (const candidate of candidates) {
+    const group = grouped.get(candidate.manager) ?? [];
+    group.push(candidate);
+    grouped.set(candidate.manager, group);
+  }
 
   const hosts = new Set(
     activeHostIds.filter((value): value is string => typeof value === "string" && value.length > 0),
@@ -35,13 +39,37 @@ export function selectRendererRequestManager<Manager, RequestClient>(
   if (hosts.size > 1) return null;
 
   const activeHostId = hosts.values().next().value as string | undefined;
-  const eligible = [...unique.values()].filter(
+  const unique: RendererRequestManagerCandidate<Manager, RequestClient>[] = [];
+  for (const group of grouped.values()) {
+    const fallback = group[0];
+    if (fallback === undefined) continue;
+    const candidateHostIds = new Set(
+      group
+        .map((candidate) => candidate.hostId)
+        .filter((value): value is string => typeof value === "string" && value.length > 0),
+    );
+    if (candidateHostIds.size > 1) return null;
+    unique.push(
+      group.find((candidate) => candidate.hostId === activeHostId) ??
+        group.find((candidate) => candidateHostIds.has(candidate.hostId as string)) ??
+        fallback,
+    );
+  }
+  const eligible = unique.filter(
     (candidate) => activeHostId === undefined || candidate.hostId === activeHostId,
   );
   return eligible.length === 1 ? (eligible[0] ?? null) : null;
 }
 
-export function requestManagerFromHookState(value: unknown, activeHostId?: string): object | null {
+export interface RendererHookRequestManagerCandidate {
+  manager: object;
+  hostId: string | null;
+}
+
+export function requestManagerFromHookState(
+  value: unknown,
+  activeHostId?: string,
+): RendererHookRequestManagerCandidate | null {
   const matchesRequestManager = (candidate: unknown): candidate is object => {
     if (
       candidate == null ||
@@ -70,14 +98,46 @@ export function requestManagerFromHookState(value: unknown, activeHostId?: strin
       typeof candidate.sendRequest === "function"
     );
   };
-  if (matchesRequestManager(value)) return value;
+  const candidateFromManager = (
+    manager: object,
+    preferredHostId?: unknown,
+  ): RendererHookRequestManagerCandidate | null => {
+    const normalizeHostId = (candidate: unknown): string | null =>
+      typeof candidate === "string" && candidate.length > 0 ? candidate : null;
+    const managerHostId = normalizeHostId(
+      "getHostId" in manager && typeof manager.getHostId === "function"
+        ? manager.getHostId()
+        : undefined,
+    );
+    const requestClient = "requestClient" in manager ? manager.requestClient : undefined;
+    const requestClientHostId = normalizeHostId(
+      requestClient != null && typeof requestClient === "object" && "hostId" in requestClient
+        ? requestClient.hostId
+        : undefined,
+    );
+    const preferred = normalizeHostId(preferredHostId);
+    const explicitHostIds = new Set(
+      [preferred, managerHostId, requestClientHostId].filter(
+        (candidate): candidate is string => candidate !== null,
+      ),
+    );
+    if (explicitHostIds.size > 1) return null;
+    return {
+      manager,
+      hostId: preferred ?? managerHostId ?? requestClientHostId,
+    };
+  };
+  if (matchesRequestManager(value)) return candidateFromManager(value);
   if (
     value != null &&
     typeof value === "object" &&
     "manager" in value &&
     matchesRequestManager(value.manager)
   ) {
-    return value.manager;
+    // Newer Desktop builds keep the authoritative Host identity on this wrapper,
+    // while the inner manager and request client may no longer repeat it.
+    const wrapperHostId = "hostId" in value ? value.hostId : undefined;
+    return candidateFromManager(value.manager, wrapperHostId);
   }
   if (typeof activeHostId !== "string" || activeHostId.length === 0) return null;
   if (
@@ -93,7 +153,7 @@ export function requestManagerFromHookState(value: unknown, activeHostId?: strin
     return null;
   }
   const manager = value.getForHostId.call(value, activeHostId);
-  return matchesRequestManager(manager) ? manager : null;
+  return matchesRequestManager(manager) ? candidateFromManager(manager) : null;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -136,15 +196,20 @@ const FIND_REQUEST_MANAGER_EXPRESSION = `(() => {
   }
   const activeHostId =
     activeHostIds.size === 1 ? activeHostIds.values().next().value : undefined;
-  const managers = new Set();
+  const managerCandidates = [];
   for (const fiber of composerAncestors) {
     let hook = fiber.memoizedState;
     for (let index = 0; hook != null && index < 120; index += 1, hook = hook.next) {
-      const manager = requestManagerFromHookState(hook.memoizedState, activeHostId);
-      if (manager != null) managers.add(manager);
+      const candidate = requestManagerFromHookState(hook.memoizedState, activeHostId);
+      if (candidate != null) {
+        // Preserve every observed Host identity until selection so duplicate
+        // manager sightings cannot hide a conflicting wrapper identity.
+        managerCandidates.push(candidate);
+      }
     }
   }
-  const candidates = [...managers].map((manager) => {
+  const candidates = managerCandidates.map((candidate) => {
+    const manager = candidate.manager;
     const requestClient =
       typeof manager.requestClient?.sendRequest === 'function' &&
       typeof manager.requestClient?.prewarmThreadStart === 'function' &&
@@ -154,7 +219,7 @@ const FIND_REQUEST_MANAGER_EXPRESSION = `(() => {
     return {
       manager,
       requestClient,
-      hostId: manager?.getHostId?.() ?? requestClient?.hostId ?? null,
+      hostId: candidate.hostId,
       prewarmedThreadManager: manager?.prewarmedThreadManager ?? null,
     };
   });

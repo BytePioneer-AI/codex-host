@@ -10,6 +10,7 @@ import {
   encodeClaudeModelRef,
   mergeClaudeModelPickerOptions,
   normalizeClaudeModelCatalog,
+  parseClaudeModelPickerSettings,
   readClaudeUserModelPicker,
   resolveClaudeConfigDirectory,
 } from "../src/model-catalog.js";
@@ -311,6 +312,24 @@ describe("Claude Code modelPicker.settings merge", () => {
     for (const model of normalized.catalog.models) {
       expect(model.ref.id.startsWith("claude-model-v1.")).toBe(true);
     }
+  });
+
+  it("returns undefined when a non-empty options array has no valid entries", () => {
+    expect(
+      parseClaudeModelPickerSettings({
+        replaceBuiltInOptions: true,
+        options: [{ label: "missing model" }, { model: "  " }, null, "nope"],
+      }),
+    ).toBeUndefined();
+    expect(parseClaudeModelPickerSettings({ options: [] })).toEqual({
+      options: [],
+      replaceBuiltInOptions: false,
+    });
+    expect(parseClaudeModelPickerSettings({ replaceBuiltInOptions: true })).toEqual({
+      options: [],
+      replaceBuiltInOptions: true,
+    });
+    expect(parseClaudeModelPickerSettings({})).toBeUndefined();
   });
 
   it("reads user settings through CLAUDE_CONFIG_DIR and ignores malformed files", async () => {

@@ -129,8 +129,18 @@ export function parseClaudeModelPickerSettings(
   if (parsed.data.options === undefined && parsed.data.replaceBuiltInOptions === undefined) {
     return undefined;
   }
+  const options = parseModelPickerOptions(parsed.data.options);
+  // Non-empty options that yield zero valid entries are malformed — do not return a
+  // settings object that could wipe SDK models when replaceBuiltInOptions is true.
+  if (
+    Array.isArray(parsed.data.options) &&
+    parsed.data.options.length > 0 &&
+    options.length === 0
+  ) {
+    return undefined;
+  }
   return {
-    options: parseModelPickerOptions(parsed.data.options),
+    options,
     replaceBuiltInOptions: parsed.data.replaceBuiltInOptions === true,
   };
 }

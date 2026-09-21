@@ -797,25 +797,34 @@ describe("Renderer binding Host-scoped Claude catalogs", () => {
       () => true,
       {
         currentHostId: () => hostId,
-        clientForHost: (id: string) => id === "local" ? local : remote,
+        clientForHost: (id: string) => (id === "local" ? local : remote),
         subscribeThreadUsage: () => () => undefined,
       } as never,
     );
-    await vi.waitFor(() => expect(testState.renderedModelViews.at(-1)).toMatchObject({
-      status: "ready", selected: readyInspection().catalog.defaultModel,
-    }));
+    await vi.waitFor(() =>
+      expect(testState.renderedModelViews.at(-1)).toMatchObject({
+        status: "ready",
+        selected: readyInspection().catalog.defaultModel,
+      }),
+    );
 
     hostId = "remote";
     window.dispatchEvent(new Event("codexhost:draft-prewarm-policy-changed"));
-    await vi.waitFor(() => expect(testState.renderedModelViews.at(-1)).toMatchObject({
-      status: "ready", selected: { id: remoteModelId },
-    }));
+    await vi.waitFor(() =>
+      expect(testState.renderedModelViews.at(-1)).toMatchObject({
+        status: "ready",
+        selected: { id: remoteModelId },
+      }),
+    );
 
     hostId = "local";
     window.dispatchEvent(new Event("codexhost:draft-prewarm-policy-changed"));
-    await vi.waitFor(() => expect(testState.renderedModelViews.at(-1)).toMatchObject({
-      status: "ready", selected: readyInspection().catalog.defaultModel,
-    }));
+    await vi.waitFor(() =>
+      expect(testState.renderedModelViews.at(-1)).toMatchObject({
+        status: "ready",
+        selected: readyInspection().catalog.defaultModel,
+      }),
+    );
   });
 
   it("reloads a same-Host empty Claude catalog on explicit refresh", async () => {

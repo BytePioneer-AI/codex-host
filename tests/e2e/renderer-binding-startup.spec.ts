@@ -239,14 +239,20 @@ test("a draft waits for the Desktop prewarm policy before applying its Model", a
   await expect(trigger).toHaveAttribute("title", "Startup Model");
 });
 
-test("restores the visible draft selection after a same-Host connection policy changes", async ({ page }) => {
+test("restores the visible draft selection after a same-Host connection policy changes", async ({
+  page,
+}) => {
   await page.addScriptTag({ content: browserBundle });
-  await expect(page.locator('[data-codexhost-model-control] > button[aria-haspopup="menu"]')).toContainText("Startup Model");
+  await expect(
+    page.locator('[data-codexhost-model-control] > button[aria-haspopup="menu"]'),
+  ).toContainText("Startup Model");
   await page.evaluate(() => {
     Reflect.set(globalThis, "appliedConfiguration", null);
     window.dispatchEvent(new Event("codexhost:draft-prewarm-policy-changed"));
   });
-  await expect.poll(() => page.evaluate(() => Reflect.get(globalThis, "appliedConfiguration"))).toMatchObject({ agent: "pi", model: { id: "pi-model-v1.startup" } });
+  await expect
+    .poll(() => page.evaluate(() => Reflect.get(globalThis, "appliedConfiguration")))
+    .toMatchObject({ agent: "pi", model: { id: "pi-model-v1.startup" } });
 });
 
 test("Kiro selects Thinking inside the Model picker before a Thread exists", async ({

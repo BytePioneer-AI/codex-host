@@ -1,6 +1,7 @@
 import { BrokeredHarnessAdapter } from "@codexhost/harness-broker";
 import type { HarnessPluginContext } from "@codexhost/harness-adapter/plugin";
 import { WorkBuddyAdapter } from "./workbuddy-adapter.js";
+import { CODEXHOST_WORKBUDDY_COMMAND } from "./discovery.js";
 import { WORKBUDDY_COMMAND_CATALOG } from "./common.js";
 
 export function createHarnessAdapter(context: HarnessPluginContext) {
@@ -15,7 +16,7 @@ export function createHarnessAdapter(context: HarnessPluginContext) {
   return new WorkBuddyAdapter({
     environment: {
       ...context.environment,
-      ...(context.launchCommand ? { CODEXHOST_WORKBUDDY_COMMAND: context.launchCommand } : {}),
+      ...(context.launchCommand ? { [CODEXHOST_WORKBUDDY_COMMAND]: context.launchCommand } : {}),
     },
   });
 }

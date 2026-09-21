@@ -159,4 +159,65 @@ describe("WorkBuddy app discovery", () => {
     });
     expect(invocation.environment.ACC_PRODUCT_CONFIG_PATH).toBe(snapshot);
   });
+
+  it("discovers a Windows app under %USERPROFILE%\\workbuddy", () => {
+    const root = "C:\\Users\\Test\\workbuddy";
+    const executable = `${root}\\WorkBuddy.exe`;
+    const cli = `${root}\\resources\\app.asar.unpacked\\cli\\bin\\codebuddy`;
+    const invocation = workBuddyInvocation(
+      {
+        USERPROFILE: "C:\\Users\\Test",
+        LOCALAPPDATA: "C:\\Users\\Test\\AppData\\Local",
+        ProgramFiles: "C:\\Program Files",
+      },
+      false,
+      {
+        platform: "win32",
+        isExecutable: (candidate) =>
+          [executable, cli].some((file) => file.toLowerCase() === candidate.toLowerCase()),
+      },
+    );
+    expect(invocation.command.toLowerCase()).toBe(executable.toLowerCase());
+    expect(invocation.arguments).toEqual([cli, "--acp"]);
+  });
+
+  it("falls back to a running WorkBuddy process path on Windows", () => {
+    const executable = "D:\\CustomInstall\\WorkBuddyAI.exe";
+    const cli = "D:\\CustomInstall\\resources\\app.asar.unpacked\\cli\\bin\\codebuddy";
+    const invocation = workBuddyInvocation(
+      {
+        USERPROFILE: "C:\\Users\\Test",
+        LOCALAPPDATA: "C:\\Users\\Test\\AppData\\Local",
+        ProgramFiles: "C:\\Program Files",
+      },
+      false,
+      {
+        platform: "win32",
+        isExecutable: (candidate) => candidate === executable || candidate === cli,
+        runningExecutables: () => [executable],
+      },
+    );
+    expect(invocation.command).toBe(executable);
+    expect(invocation.arguments).toEqual([cli, "--acp"]);
+    expect(invocation.environment.ELECTRON_RUN_AS_NODE).toBe("1");
+  });
+
+  it("does not use a running process when CODEXHOST_WORKBUDDY_COMMAND is set but missing", () => {
+    const running = "D:\\CustomInstall\\WorkBuddy.exe";
+    const cli = "D:\\CustomInstall\\resources\\app.asar.unpacked\\cli\\bin\\codebuddy";
+    expect(() =>
+      workBuddyInvocation(
+        {
+          USERPROFILE: "C:\\Users\\Test",
+          CODEXHOST_WORKBUDDY_COMMAND: "C:\\missing.exe",
+        },
+        false,
+        {
+          platform: "win32",
+          isExecutable: (candidate) => candidate === running || candidate === cli,
+          runningExecutables: () => [running],
+        },
+      ),
+    ).toThrow("unavailable");
+  });
 });

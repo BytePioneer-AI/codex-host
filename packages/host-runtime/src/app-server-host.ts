@@ -1967,12 +1967,28 @@ export class AppServerHost {
     }
   }
 
+  #reconcileCompletedOfficialTurn(threadId: string, turns: readonly unknown[]): void {
+    const activeTurnId = this.#activeOfficialTurns.get(threadId);
+    if (!activeTurnId) return;
+    // A lost terminal notification must not keep an idle Thread busy forever.
+    // Only positive native evidence for this exact cached Turn can clear it.
+    const completed = turns.some(
+      (turn) =>
+        isRecord(turn) &&
+        turn.id === activeTurnId &&
+        (turn.status === "completed" ||
+          turn.status === "failed" ||
+          turn.status === "interrupted" ||
+          turn.status === "cancelled"),
+    );
+    if (!completed) return;
+    this.#activeOfficialTurns.delete(threadId);
+    this.#signalActiveWorkChanged();
+  }
+
   async #sendOfficialDelegationThread(input: ThreadSendInput): Promise<ThreadSendResult> {
     if (!input.message?.trim()) {
       throw new DelegationControlError("INVALID_ARGUMENT", "Message must not be empty");
-    }
-    if (this.#activeOfficialTurns.has(input.threadId)) {
-      throw new DelegationControlError("THREAD_BUSY", "Thread already has an active Turn");
     }
     const current = await this.#requestOfficial("thread/read", {
       threadId: input.threadId,
@@ -1984,8 +2000,10 @@ export class AppServerHost {
     const currentThread = isRecord(current.result.thread) ? current.result.thread : null;
     const currentTurns =
       currentThread && Array.isArray(currentThread.turns) ? currentThread.turns : [];
+    this.#reconcileCompletedOfficialTurn(input.threadId, currentTurns);
     const latestTurn = currentTurns.at(-1);
     if (
+      this.#activeOfficialTurns.has(input.threadId) ||
       (currentThread && isRecord(currentThread.status) && currentThread.status.type === "active") ||
       (isRecord(latestTurn) &&
         (latestTurn.status === "inProgress" || latestTurn.status === "running"))
@@ -2077,6 +2095,7 @@ export class AppServerHost {
     const turns = Array.isArray(thread.turns)
       ? thread.turns.filter((turn): turn is JsonObject => isRecord(turn))
       : [];
+    this.#reconcileCompletedOfficialTurn(input.threadId, turns);
     const running =
       this.#activeOfficialTurns.has(input.threadId) ||
       (isRecord(thread.status) && thread.status.type === "active");

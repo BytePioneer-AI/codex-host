@@ -200,9 +200,10 @@ class BrowserSidebarAgentIconRow implements SidebarAgentIconRow {
     marker.style.width = "14px";
     marker.style.height = "14px";
     marker.style.flex = "none";
+    marker.style.marginRight = "6px";
     marker.style.pointerEvents = "none";
     marker.append(createRendererAgentIcon(agent, 14, this.element.ownerDocument));
-    titleTrigger.insertBefore(marker, title);
+    titleTrigger.prepend(marker);
   }
 
   clear(): void {

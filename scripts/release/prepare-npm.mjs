@@ -281,7 +281,7 @@ export function createNpmPackageManifest({ version, target }) {
 export function createNpmBinLauncherSource({ version }) {
   return `#!/usr/bin/env node
 import { spawn } from "node:child_process";
-import { existsSync, realpathSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { createRequire } from "node:module";
 import { homedir } from "node:os";
 import path from "node:path";
@@ -360,6 +360,17 @@ try {
   }
 }
 
+let platformVersion;
+try {
+  platformVersion = JSON.parse(readFileSync(path.join(packageRoot, "package.json"), "utf8"))?.version;
+} catch {
+  fail(\`cannot read platform package metadata: \${packageRoot}\`);
+}
+if (platformVersion !== version) {
+  fail(
+    \`platform package version mismatch: '\${platformPackage}' at '\${packageRoot}' has \${JSON.stringify(platformVersion) ?? "no version"}; expected \${version}. Close Codex Desktop, then run: npm install -g @codexhost/cli@\${version} \${platformPackage}@\${version}\`,
+  );
+}
 startupTrace("platform package resolved");
 const executableSuffix = process.platform === "win32" ? ".exe" : "";
 const launcher = path.join(packageRoot, "bin", \`codexhost\${executableSuffix}\`);

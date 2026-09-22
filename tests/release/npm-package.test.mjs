@@ -227,18 +227,20 @@ syncBuiltinESMExports();
 `,
   );
 
-  return { launcherPath, npmCliPath, preloadPath };
+  return { launcherPath, npmCliPath, preloadPath, platformRoot };
 }
 
 async function runLauncherLifecycle(
   platform,
-  { locale = "en_US.UTF-8", noColor = false, tty = false } = {},
+  { locale = "en_US.UTF-8", noColor = false, tty = false, platformVersion = "0.1.0" } = {},
 ) {
   const root = await temporaryDirectory();
   try {
-    const { launcherPath, npmCliPath, preloadPath } = await createLauncherLifecycleFixture(
-      root,
-      platform,
+    const { launcherPath, npmCliPath, preloadPath, platformRoot } =
+      await createLauncherLifecycleFixture(root, platform);
+    await writeFile(
+      path.join(platformRoot, "package.json"),
+      JSON.stringify({ name: `@codexhost/cli-${platform}-x64`, version: platformVersion }),
     );
     const environment = {
       ...process.env,
@@ -588,6 +590,24 @@ describe("npm package release", () => {
     expect(readme).toContain("On Windows, the command remains attached until Codex Desktop exits");
     expect(readme).toContain("process trees of completed commands");
   });
+
+  it.each(["win32", "darwin", "linux"])(
+    "rejects mismatched platform payloads before spawning on %s",
+    async (platform) => {
+      for (const platformVersion of ["0.0.9", "0.2.0", null]) {
+        const result = await runLauncherLifecycle(platform, { platformVersion });
+        expect(result.status, result.stderr).toBe(1);
+        expect(result.stderr).toContain("platform package version mismatch");
+        expect(result.stderr).toContain(`@codexhost/cli-${platform}-x64`);
+        expect(result.stderr).toContain("expected 0.1.0");
+        expect(result.stderr).toContain(
+          `npm install -g @codexhost/cli@0.1.0 @codexhost/cli-${platform}-x64@0.1.0`,
+        );
+        expect(result.stderr).not.toContain("received Launcher ready");
+        expect(result.stdout).not.toContain("startup:");
+      }
+    },
+  );
 
   it.each(["darwin", "linux"])("returns after the ready handshake on %s", async (platform) => {
     const result = await runLauncherLifecycle(platform);

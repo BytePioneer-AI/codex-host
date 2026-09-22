@@ -52,6 +52,44 @@ describe("Controller attachment server", () => {
     }
   });
 
+  it("keeps attachment recovery single-flight while duplicate launchers retry", async () => {
+    const port = await availablePort();
+    const recovery = Promise.withResolvers<undefined>();
+    const attach = vi.fn(async () => recovery.promise);
+    const server = await startControllerAttachmentServer({ port, nonce, attach });
+    try {
+      const first = request(port, `ATTACH ${nonce}\n`);
+      await vi.waitFor(() => expect(attach).toHaveBeenCalledOnce());
+
+      await expect(request(port, `ATTACH ${nonce}\n`)).resolves.toBe("busy\n");
+      expect(attach).toHaveBeenCalledOnce();
+
+      recovery.resolve(undefined);
+      await expect(first).resolves.toBe("ready\n");
+      await expect(request(port, `ATTACH ${nonce}\n`)).resolves.toBe("ready\n");
+      expect(attach).toHaveBeenCalledTimes(2);
+    } finally {
+      recovery.resolve(undefined);
+      await server.close();
+    }
+  });
+
+  it("releases a failed attachment so a later retry can recover", async () => {
+    const port = await availablePort();
+    const attach = vi
+      .fn<() => Promise<void>>()
+      .mockRejectedValueOnce(new Error("recovery failed"))
+      .mockResolvedValueOnce(undefined);
+    const server = await startControllerAttachmentServer({ port, nonce, attach });
+    try {
+      await expect(request(port, `ATTACH ${nonce}\n`)).resolves.toBe("failed\n");
+      await expect(request(port, `ATTACH ${nonce}\n`)).resolves.toBe("ready\n");
+      expect(attach).toHaveBeenCalledTimes(2);
+    } finally {
+      await server.close();
+    }
+  });
+
   it("rejects the retired compatibility update command", async () => {
     const port = await availablePort();
     const server = await startControllerAttachmentServer({

@@ -5,6 +5,7 @@ import type {
 } from "@codexhost/shared-contracts";
 
 import type { ClaudeSlashCommandSnapshot } from "./slash-commands.js";
+import type { ClaudeBackgroundCommand } from "./background-commands.js";
 import type { ClaudeNativeFileChange } from "./file-change.js";
 import type { ClaudeModelInspectionSnapshot } from "./model-catalog.js";
 import type { ClaudePermissionMode } from "./permission-modes.js";
@@ -134,6 +135,8 @@ export type ClaudeTurnEvent =
       resultSummary?: string;
     }
   | { type: "subagent.transcript.changed"; callId: string }
+  /** Session-level: delivered on the Thread event channel, never batched into a Turn. */
+  | { type: "backgroundCommand.changed"; command: ClaudeBackgroundCommand }
   | { type: "interaction.requested"; request: ClaudeInteractionRequest }
   | {
       type: "interaction.closed";

@@ -318,7 +318,9 @@ export class CodeBuddySession implements HarnessSession {
     this.#apply(confirmedConfiguration(result, id, value, this.profile));
   }
 
-  async #snapshot(): Promise<HostThreadSnapshot> {
+  async #snapshot(): Promise<
+    ReturnType<typeof snapshotFromHistory> & { state: HarnessSessionState }
+  > {
     if (!this.#ref) throw new CodeBuddyError("invalidState", "Session is not open");
     try {
       const history = await this.readHistory(

@@ -153,6 +153,37 @@ describe("Codex UI projector", () => {
     });
   });
 
+  it("projects unsettled historical commands without inventing a result", () => {
+    const command = (outcome: HostThreadSnapshot["turns"][number]["items"][number]["outcome"]) =>
+      (
+        projectHistoricalTurn({
+          turnId,
+          cwd: "/workspace",
+          snapshot: {
+            nativeTurnRef: nativeTurnRefSchema.parse({
+              harnessId: "claude-code",
+              nativeSessionId: "native",
+              nativeTurnKey: "background-task:1",
+              formatVersion: 1,
+            }),
+            input: [],
+            items: [
+              {
+                item: { type: "commandExecution", itemId: itemId("task"), command: "sleep 5" },
+                outcome,
+              },
+            ],
+            outcome: { status: "unknown", reason: "Running" },
+          },
+        }).items as Array<Record<string, unknown>>
+      )[1];
+    expect(command({ status: "running" })).toMatchObject({ status: "inProgress", exitCode: null });
+    expect(command({ status: "unknown", reason: "ended" })).toMatchObject({
+      status: "completed",
+      exitCode: null,
+    });
+  });
+
   it("projects a complete historical Snapshot without replaying notifications", () => {
     const snapshot: HostThreadSnapshot["turns"][number] = {
       nativeTurnRef: nativeTurnRefSchema.parse({

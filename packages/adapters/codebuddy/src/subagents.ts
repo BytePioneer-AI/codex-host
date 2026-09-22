@@ -54,7 +54,7 @@ export class CodeBuddySubagents {
       .map((call) => call.item.subagents[0])
       .findLast((child) => child?.nativeSubagentId === id);
   }
-  project(snapshot: HostThreadSnapshot): HostThreadSnapshot {
+  project<T extends HostThreadSnapshot>(snapshot: T): T {
     for (const turn of snapshot.turns)
       for (const { item } of turn.items)
         if (item.type === "subagentDelegation")

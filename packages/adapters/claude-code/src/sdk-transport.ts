@@ -24,6 +24,7 @@ import {
   readClaudeUserModelPicker,
   type ClaudeModelInspectionSnapshot,
 } from "./model-catalog.js";
+import { ClaudeBackgroundCommandTracker } from "./background-commands.js";
 import { ClaudeNativeTurnAccumulator, parseClaudePlanLimitEvent } from "./native-message.js";
 import { isClaudePermissionMode, type ClaudePermissionMode } from "./permission-modes.js";
 import { closeClaudeProcessGroup } from "./process-fence.js";
@@ -411,6 +412,7 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
   #skillNames: ReadonlySet<string> = new Set();
   #started = false;
   #backgroundTasks = new Set<string>();
+  readonly #backgroundCommands = new ClaudeBackgroundCommandTracker();
 
   constructor(options: ClaudeSdkTransportOptions) {
     this.sessionId = options.sessionId;
@@ -893,6 +895,18 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
     }
   }
 
+  /**
+   * Task notifications share one native shape for Agents and background
+   * commands. A task already identified as a background command is not a
+   * Subagent, so its notification must not settle one.
+   */
+  #turnEvents(events: ClaudeTurnEvent[]): ClaudeTurnEvent[] {
+    return events.filter(
+      (event) =>
+        event.type !== "subagent.settled" || !this.#backgroundCommands.has(event.nativeSubagentId),
+    );
+  }
+
   #observeBackgroundTasks(message: unknown): void {
     if (!isRecord(message) || message.type !== "system") return;
     if (message.subtype === "background_tasks_changed" && Array.isArray(message.tasks)) {
@@ -917,6 +931,9 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
       for await (const message of activeQuery) {
         this.#observeBackgroundTasks(message);
         this.#observeSlashCommands(message);
+        for (const command of this.#backgroundCommands.consume(message)) {
+          this.#threadEventHandler?.({ type: "backgroundCommand.changed", command });
+        }
         const permissionMode = permissionModeFromMessage(message);
         if (permissionMode && permissionMode !== this.#permissionMode) {
           this.#permissionMode = permissionMode;
@@ -927,7 +944,7 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
         const active = this.#active;
         if (active) {
           const interpreted = active.accumulator.consume(message);
-          for (const event of interpreted.events) active.onEvent(event);
+          for (const event of this.#turnEvents(interpreted.events)) active.onEvent(event);
           if (interpreted.terminal) {
             this.#closeInteractions(active, "superseded");
             this.#active = null;
@@ -942,7 +959,8 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
               this.#provider ? { provider: this.#provider } : {},
             ));
           const interpreted = idle.consume(message);
-          for (const event of interpreted.events) this.#idleHandler.onEvent(event);
+          for (const event of this.#turnEvents(interpreted.events))
+            this.#idleHandler.onEvent(event);
           if (interpreted.terminal) {
             this.#idleAccumulator = null;
             this.#idleHandler.onTerminal(interpreted.terminal);
@@ -970,7 +988,7 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
           autonomous.nativeTurnKey = message.uuid;
         }
         const interpreted = autonomous.accumulator.consume(message);
-        for (const event of interpreted.events) {
+        for (const event of this.#turnEvents(interpreted.events)) {
           if (
             this.#threadEventHandler &&
             canDeliverSettlementImmediately(event, autonomous.events)

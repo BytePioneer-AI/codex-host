@@ -55,13 +55,20 @@ export const storedThreadRecordV1Schema = z
       })
       .strict()
       .optional(),
+    /** Read-only native child: exactly one of a Subagent or a background task. */
     subagent: z
       .object({
         parentHostThreadId: hostThreadIdSchema,
-        nativeSubagentId: nonBlankTextSchema.max(1_024),
+        nativeSubagentId: nonBlankTextSchema.max(1_024).optional(),
+        nativeBackgroundTaskId: nonBlankTextSchema.max(1_024).optional(),
         role: z.string().max(1_024).optional(),
       })
       .strict()
+      .refine(
+        (child) =>
+          (child.nativeSubagentId === undefined) !== (child.nativeBackgroundTaskId === undefined),
+        { message: "Native child must identify exactly one Subagent or background task" },
+      )
       .optional(),
     turnMappings: z.array(storedTurnMappingV1Schema),
     createdAt: isoDateSchema,
@@ -192,11 +199,9 @@ export interface CreateProvisionalThreadInput {
   ephemeral: boolean;
   historyMode: "legacy" | "paginated";
   forkSource?: { hostThreadId: HostThreadId; hostTurnId: HostTurnId };
-  subagent?: {
-    parentHostThreadId: HostThreadId;
-    nativeSubagentId: string;
-    role?: string;
-  };
+  subagent?:
+    | { parentHostThreadId: HostThreadId; nativeSubagentId: string; role?: string }
+    | { parentHostThreadId: HostThreadId; nativeBackgroundTaskId: string; role?: string };
 }
 
 export interface CommitReadyThreadInput {

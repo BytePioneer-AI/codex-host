@@ -41,6 +41,7 @@
 | --- | --- |
 | [`harnesses/claude-code/claude-code-plan-mode.md`](harnesses/claude-code/claude-code-plan-mode.md) | Claude Code 规划模式、计划退出确认与权限状态边界；修改 Plan Mode 时阅读。 |
 | [`harnesses/claude-code/claude-code-edit-recovery.md`](harnesses/claude-code/claude-code-edit-recovery.md) | 最后一条消息编辑后的独立 Session、空历史保留和关闭语义；修改编辑恢复时阅读。 |
+| [`harnesses/claude-code/claude-code-background-commands.md`](harnesses/claude-code/claude-code-background-commands.md) | 后台 Bash 任务的原生子节点展示、状态语义、只读详情与输出来源；修改后台任务支持时阅读。 |
 
 ### CodeBuddy、WorkBuddy 与 Cursor
 

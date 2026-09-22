@@ -1,3 +1,5 @@
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import path from "node:path";
 
 import { describe, expect, it, vi } from "vitest";
@@ -2375,6 +2377,97 @@ describe("Claude Code HarnessAdapter", () => {
       resultSummary: "Analysis complete",
     });
     await session.close();
+  });
+
+  it("publishes background commands outside Turns and reads their detail without a new Session", async () => {
+    const { adapter, dependencies, history, transports } = fixture();
+    const directory = mkdtempSync(path.join(tmpdir(), "claude-background-session-"));
+    const outputFile = path.join(directory, "task-1.output");
+    writeFileSync(outputFile, "started\n");
+    const session = await openSession(adapter);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+    try {
+      await session.execute(textTurn("run in background"));
+      await nextEvent(iterator);
+      await nextEvent(iterator);
+      await nextEvent(iterator);
+      const transport = transports[0];
+      if (!transport) throw new Error("Fake Claude transport was not created");
+      transport.finish({ status: "succeeded" });
+      await nextEvent(iterator);
+      await nextEvent(iterator);
+      const parent = nativeSessionRefSchema.parse({
+        harnessId: "claude-code",
+        nativeSessionId: transport.sessionId,
+        formatVersion: 1,
+      });
+
+      const task = {
+        kind: "command" as const,
+        nativeTaskId: "task-1",
+        description: "sleep 5",
+        status: "running" as const,
+      };
+      transport.threadEvent({
+        type: "backgroundCommand.changed",
+        command: { task, command: "sleep 5", outputFile },
+      });
+      expect(await nextEvent(iterator)).toEqual({ type: "backgroundTask.changed", task });
+      const read = () =>
+        adapter.backgroundTasks.readSnapshot({ parent, nativeTaskId: "task-1", cwd: "/synthetic" });
+      const live = await read();
+      expect(live.ok && live.value.turns[0]?.items[0]).toMatchObject({
+        item: { type: "commandExecution", command: "sleep 5", output: "started\n" },
+        outcome: { status: "running" },
+      });
+      expect(dependencies.readSubagentMessages).not.toHaveBeenCalled();
+      expect(dependencies.createTransport).toHaveBeenCalledOnce();
+
+      // Closing the native process leaves no task running; the transcript cannot revive it.
+      await session.close();
+      const remaining: unknown[] = [];
+      for (let output = await iterator.next(); !output.done; output = await iterator.next()) {
+        if (output.value.kind === "event") remaining.push(output.value.event);
+      }
+      expect(remaining).toContainEqual({
+        type: "backgroundTask.changed",
+        task: { ...task, status: "unknown" },
+      });
+      expect(await read()).toMatchObject({ ok: false, error: { code: "sessionNotFound" } });
+      history.push(
+        {
+          type: "assistant",
+          uuid: "assistant-1",
+          message: {
+            content: [
+              { type: "tool_use", id: "call-1", name: "Bash", input: { command: "sleep 5" } },
+            ],
+          },
+        },
+        {
+          type: "user",
+          uuid: "user-1",
+          toolUseResult: { backgroundTaskId: "task-1" },
+          message: {
+            content: [
+              {
+                type: "tool_result",
+                tool_use_id: "call-1",
+                content: `Command running in background with ID: task-1. Output is being written to: ${outputFile}. You will be notified when it completes.`,
+              },
+            ],
+          },
+        },
+      );
+      const restored = await read();
+      expect(restored.ok && restored.value.turns[0]?.items[0]).toMatchObject({
+        item: { command: "sleep 5", output: "started\n" },
+        outcome: { status: "unknown" },
+      });
+    } finally {
+      await session.close();
+      rmSync(directory, { recursive: true, force: true });
+    }
   });
 
   it("holds the Root Turn until background Subagents and continuations finish", async () => {

@@ -392,6 +392,18 @@ export interface HostItemSnapshot {
   outcome: HostItemOutcome;
 }
 
+/**
+ * History may show native work that has not settled: `running` is still live,
+ * `unknown` has ended without an observed native result.
+ */
+export type HistoricalItemOutcome =
+  HostItemOutcome | { status: "running" } | { status: "unknown"; reason: string };
+
+export interface HostHistoricalItemSnapshot {
+  item: HostItem;
+  outcome: HistoricalItemOutcome;
+}
+
 export type HistoricalTurnOutcome =
   | { status: "succeeded" }
   | { status: "failed"; error: HarnessError }
@@ -402,7 +414,7 @@ export interface HostTurnSnapshot {
   nativeTurnRef: NativeTurnRef;
   checkpoint?: NativeCheckpointRef;
   input: HostTextInput[];
-  items: HostItemSnapshot[];
+  items: HostHistoricalItemSnapshot[];
   outcome: HistoricalTurnOutcome;
   model?: HarnessModelRef;
   /** Native wall-clock timestamps; omit when unavailable. */
@@ -437,6 +449,26 @@ export interface SubagentStateChangedEvent {
   nativeSubagentId: string;
   status: HostSubagentStatus;
   resultSummary?: string;
+}
+
+/**
+ * `unknown`: the task left the native live set or its native process restarted
+ * without an observed result. It is not success.
+ */
+export type HostBackgroundTaskStatus = "running" | "completed" | "failed" | "stopped" | "unknown";
+
+/** A native background command; never a Subagent and never read as a Subagent transcript. */
+export interface HostBackgroundTask {
+  kind: "command";
+  nativeTaskId: string;
+  description: string;
+  status: HostBackgroundTaskStatus;
+}
+
+/** Session-scoped: may arrive without an active Turn. */
+export interface BackgroundTaskChangedEvent {
+  type: "backgroundTask.changed";
+  task: HostBackgroundTask;
 }
 
 export interface SubagentTranscriptChangedEvent {
@@ -498,6 +530,7 @@ export type HostEvent =
   | SessionUsageChangedEvent
   | SubagentStateChangedEvent
   | SubagentTranscriptChangedEvent
+  | BackgroundTaskChangedEvent
   | TurnStartedEvent
   | AutonomousTurnStartedEvent
   | ItemStartedEvent
@@ -539,6 +572,15 @@ export interface HarnessSubagentCapability {
   }): Promise<HarnessResult<HostThreadSnapshot>>;
 }
 
+/** Read-only detail for a background task observed in the parent Native Session. */
+export interface HarnessBackgroundTaskCapability {
+  readSnapshot(input: {
+    parent: NativeSessionRef;
+    nativeTaskId: string;
+    cwd: string;
+  }): Promise<HarnessResult<HostThreadSnapshot>>;
+}
+
 export interface HarnessWebUiAction {
   open(): Promise<HarnessResult<void>>;
 }
@@ -570,6 +612,7 @@ export interface HarnessAdapter {
   readonly liveCommandCatalog?: boolean;
   readonly sessionImport?: HarnessSessionImportCapability;
   readonly subagents?: HarnessSubagentCapability;
+  readonly backgroundTasks?: HarnessBackgroundTaskCapability;
   readonly webUi?: HarnessWebUiAction;
   /** Fresh read-only quota for current native authentication. Return null when unavailable;
    * never return session spend, old authentication caches, or start a model Turn.

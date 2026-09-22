@@ -131,3 +131,41 @@ describe("Native child Session rebinding", () => {
     }
   });
 });
+
+describe("read-only native child identity", () => {
+  it("stores a background task apart from Subagent identities", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "mapping-background-task-"));
+    directories.push(directory);
+    const store = new MappingStore({ directory });
+    await store.initialize();
+    const input = {
+      harnessId,
+      cwd: "/synthetic",
+      transportModelId: "codexhost/antigravity-native",
+      ephemeral: false,
+      historyMode: "paginated" as const,
+    };
+    const child = await store.createProvisional({
+      ...input,
+      hostThreadId: hostThreadIdSchema.parse("background-child"),
+      createRequestId: "background-task:1",
+      subagent: { parentHostThreadId: parentId, nativeBackgroundTaskId: "b0nwqjkbx" },
+    });
+    expect(child.subagent).toEqual({
+      parentHostThreadId: parentId,
+      nativeBackgroundTaskId: "b0nwqjkbx",
+    });
+    await expect(
+      store.createProvisional({
+        ...input,
+        hostThreadId: hostThreadIdSchema.parse("ambiguous-child"),
+        createRequestId: "ambiguous",
+        subagent: {
+          parentHostThreadId: parentId,
+          nativeSubagentId: "agent",
+          nativeBackgroundTaskId: "task",
+        } as never,
+      }),
+    ).rejects.toThrow();
+  });
+});

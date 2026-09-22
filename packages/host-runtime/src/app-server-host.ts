@@ -29,6 +29,7 @@ import type {
   HarnessOutput,
   HarnessSession,
   HostApprovalInteraction,
+  HostBackgroundTask,
   HostSubagentState,
   HostApprovalResponse,
   HostQuestionInteraction,
@@ -3956,6 +3957,10 @@ export class AppServerHost {
       }
       return;
     }
+    if (event.type === "backgroundTask.changed") {
+      await this.#projectBackgroundTask(thread, event.task);
+      return;
+    }
     if (event.type === "session.faulted") {
       this.#externalSteering.fault(thread.id, new Error(event.error.message));
       thread.stateObserver.fault(new Error(event.error.message));
@@ -4070,25 +4075,56 @@ export class AppServerHost {
       subagent.status === "pending" || subagent.status === "running" ? "active" : "idle";
     const record = await this.#repository.materializeSubagent(parent.record, subagent);
     if (!record) return subagent;
-    if (this.#subagentThreadStatuses.has(record.hostThreadId)) {
-      this.#trackRunningSubagent(parent.id, record.hostThreadId, status);
-      await this.#setSubagentThreadStatus(record.hostThreadId, status);
-      return { ...subagent, subagentId: record.hostThreadId };
-    }
-    const thread = externalThreadValue({
-      record,
-      turns: [],
-      sessionId: parent.sessionId,
-      running: status === "active",
-    });
-    this.#subagentThreadStatuses.set(record.hostThreadId, status);
+    await this.#showNativeChild(parent, record, status);
+    return { ...subagent, subagentId: record.hostThreadId };
+  }
+
+  /** Announces a read-only native child once, then follows its live status. */
+  async #showNativeChild(
+    parent: ExternalThread,
+    record: StoredThreadRecordV1,
+    status: "active" | "idle",
+  ): Promise<void> {
     this.#trackRunningSubagent(parent.id, record.hostThreadId, status);
+    if (this.#subagentThreadStatuses.has(record.hostThreadId)) {
+      await this.#setSubagentThreadStatus(record.hostThreadId, status);
+      return;
+    }
+    this.#subagentThreadStatuses.set(record.hostThreadId, status);
     await this.#writer.json({
       method: "thread/started",
       emittedAtMs: Date.now(),
-      params: { thread },
+      params: {
+        thread: externalThreadValue({
+          record,
+          turns: [],
+          sessionId: parent.sessionId,
+          running: status === "active",
+        }),
+      },
     });
-    return { ...subagent, subagentId: record.hostThreadId };
+  }
+
+  /**
+   * Background tasks reuse the read-only child node. The Adapter owns their
+   * live set; the Host only follows each reported task.
+   */
+  async #projectBackgroundTask(parent: ExternalThread, task: HostBackgroundTask): Promise<void> {
+    const record = await this.#repository.materializeBackgroundTask(parent.record, task);
+    if (!record) return;
+    const status = task.status === "running" ? "active" : "idle";
+    if (status === "idle" && this.#subagentThreadStatuses.get(record.hostThreadId) === "idle") {
+      // A native result may supersede an earlier `unknown` ending.
+      await this.#refreshOpenSubagentThread(record.hostThreadId);
+    } else {
+      await this.#showNativeChild(parent, record, status);
+    }
+    // Outside a Turn the parent reflects its running native children, as after turn/completed.
+    if (parent.running || parent.activeTurnId) return;
+    await this.#setThreadStatus(
+      parent,
+      this.#hasRunningSubagents(parent.id) ? { type: "active", activeFlags: [] } : { type: "idle" },
+    );
   }
 
   async #refreshOpenSubagentThread(threadId: string, terminal = true): Promise<void> {

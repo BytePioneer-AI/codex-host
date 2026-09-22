@@ -2604,7 +2604,14 @@ export function installRendererBindingProbe(
     controller.clearPendingSubmission(composer);
     const mounted = mountedByComposer.get(composer);
     if (mounted && isOwnershipSubmissionBlocked(mounted.ownershipStatus)) return;
-    if (controller.isSwitching(composer) || !applyComposerAgent(composer)) blockEvent(event);
+    if (controller.isSwitching(composer)) {
+      blockEvent(event);
+      return;
+    }
+    // Host routing may replace a request client after the editor already owns focus.
+    // Keep draft edits usable while the official route lifecycle rebuilds the client;
+    // submit paths below still fail closed until the Agent route is writable again.
+    applyComposerAgent(composer);
   };
   const onSubmit = (event: Event): void => {
     const element = eventElement(event.target);
@@ -2631,7 +2638,7 @@ export function installRendererBindingProbe(
       return;
     }
     if (composer && !applyComposerAgent(composer)) {
-      blockEvent(event);
+      if (isComposerSubmissionKey(event)) blockEvent(event);
       return;
     }
     if (!isComposerSubmissionKey(event) || !composer) return;

@@ -64,6 +64,7 @@ except Exception:
     # cannot be verified. Normal providers remain available.
     moa_availability = {}
 rows = []
+seen_model_ids = set()
 for row in payload.get("providers") or []:
     slug = str(row.get("slug") or "").strip()
     provider = str(row.get("name") or "").strip() or slug
@@ -74,22 +75,25 @@ for row in payload.get("providers") or []:
             else str(entry).strip()
         )
         if slug and model_id:
+            if model_id in seen_model_ids:
+                # Bare model ids can collide across providers (e.g. "norm"
+                # under both the default custom endpoint and a named custom
+                # provider that route to the same upstream). Keep the first
+                # occurrence so catalog refs stay unique.
+                continue
+            seen_model_ids.add(model_id)
             available = slug.lower() != "moa" or bool(moa_availability.get(model_id, False))
             aliases = [
                 alias.strip()
                 for alias in row.get("aliases") or []
                 if isinstance(alias, str) and alias.strip()
             ]
-            # Hermes names configured custom endpoints as custom:<key>.
-            # The inventory row slug is the bare config key (pi-openai),
-            # which is useful for display but is not a valid native model route.
-            # Prefer the native custom identity for the actual model ref and
-            # retain the bare slug as an alias for matching older snapshots.
-            native_slug = next(
-                (alias for alias in aliases if alias.lower().startswith("custom:")),
-                slug,
-            )
-            native_model_id = native_slug + ":" + model_id
+            # Use the bare model id. Hermes' custom:<key> internal identity
+            # (e.g. "custom:norm") is forwarded verbatim to the endpoint and
+            # rejected with HTTP 401 ("No active credentials for provider:
+            # codex"); the bare id (e.g. "norm") routes successfully. The
+            # prefixed identities remain available as aliases for matching.
+            native_model_id = model_id
             rows.append({
                 "modelId": native_model_id,
                 "modelIdAliases": [
@@ -103,7 +107,7 @@ for row in payload.get("providers") or []:
             })
 current_provider = str(getattr(context, "current_provider", "") or "").strip()
 current_model = str(getattr(context, "current_model", "") or "").strip()
-current_model_id = current_provider + ":" + current_model if current_provider and current_model else None
+current_model_id = current_model if current_model else None
 print(json.dumps({"models": rows, "currentModelId": current_model_id}))
 `;
 
@@ -282,8 +286,8 @@ export function catalogModelsFromInventory(inventory: HermesInventory): {
   for (const model of inventory.models) {
     if (model.available === false) continue;
     const nativeModelId =
-      model.modelIdAliases?.find((alias) => alias.toLowerCase().startsWith("custom:")) ??
-      model.modelId;
+      model.modelId ??
+      model.modelIdAliases?.find((alias) => alias.toLowerCase().startsWith("custom:"));
     const ref = encodeHermesModelRef(nativeModelId);
     if (!ref) continue;
     if (

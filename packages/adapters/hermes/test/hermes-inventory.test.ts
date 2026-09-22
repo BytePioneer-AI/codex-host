@@ -32,7 +32,7 @@ describe("Hermes model catalog", () => {
     expect(catalog.defaultModel).not.toBeNull();
   });
 
-  it("matches the configured custom provider alias without selecting another provider's model", () => {
+  it("prefers the bare model id while still matching the custom: alias as the configured default", () => {
     const catalog = catalogModelsFromInventory({
       models: [
         { modelId: "other:gpt-5.6-sol", label: "gpt-5.6-sol", provider: "Other" },
@@ -45,10 +45,14 @@ describe("Hermes model catalog", () => {
       ],
       currentModelId: "custom:pi-openai:gpt-5.6-sol",
     });
-    expect(catalog.defaultModel).toEqual(encodeHermesModelRef("custom:pi-openai:gpt-5.6-sol"));
+    // The bare model id wins for the transport ref: the custom:<key> identity
+    // is forwarded verbatim by Hermes and rejected by upstream endpoints with
+    // HTTP 401 ("No active credentials for provider: codex"). The custom:
+    // alias still selects the configured default model.
+    expect(catalog.defaultModel).toEqual(encodeHermesModelRef("pi-openai:gpt-5.6-sol"));
     expect(catalog.models.map(({ ref }) => ref)).toContainEqual(catalog.defaultModel);
     expect(catalog.models.map(({ ref }) => ref)).toContainEqual(
-      encodeHermesModelRef("custom:pi-openai:gpt-5.6-sol"),
+      encodeHermesModelRef("pi-openai:gpt-5.6-sol"),
     );
   });
 

@@ -65,9 +65,16 @@ https://github.com/user-attachments/assets/c48192d7-23ff-4f6e-b61a-6345a655bb76
 
 ## 快速使用
 
-**下载安装包**（macOS、Windows）
+**使用 npm**
 
-前往 [最新版本](https://github.com/BytePioneer-AI/codex-host/releases/latest) 下载与系统和 CPU 架构匹配的安装包：macOS 选择 DMG，Windows 选择 EXE。
+> 支持 macOS、Windows 和 [x64/ARM64 Linux](docs/platforms/linux/linux.zh-CN.md)。
+
+```bash
+npm install -g @codexhost/cli
+codexhost
+```
+
+**或下载** [安装包](https://github.com/BytePioneer-AI/codex-host/releases)（macOS、Windows）
 
 <details>
 <summary>安装问题排查</summary>

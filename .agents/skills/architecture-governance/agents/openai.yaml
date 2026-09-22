@@ -1,0 +1,6 @@
+interface:
+  display_name: "architecture-governance"
+  short_description: "Check codexhost ownership and package boundaries"
+  default_prompt: "Use $architecture-governance for the relevant parts of this task, following codexhost repository guidance."
+policy:
+  allow_implicit_invocation: true

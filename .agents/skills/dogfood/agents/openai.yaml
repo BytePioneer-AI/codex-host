@@ -1,0 +1,6 @@
+interface:
+  display_name: "dogfood"
+  short_description: "Explore applications and report reproducible issues"
+  default_prompt: "Use $dogfood for the relevant parts of this task, following codexhost repository guidance."
+policy:
+  allow_implicit_invocation: true

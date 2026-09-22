@@ -1251,18 +1251,13 @@ export function installCurrentRendererAdapter(): {
   };
   if (!captureRoutingPolicy()) {
     updateStatus("installing", "draft-routing-policy-unavailable", null);
-    const policy = window.__codexhostDraftPrewarmPolicyV1;
-    if (!isDraftPrewarmPolicyReady(policy) || !hasPolicyRequestTarget(policy)) {
-      startPolicyCapture();
-    }
+    startPolicyCapture();
   }
   const handleRoutingPolicyChange = (): void => {
     stopPolicyRecapture();
     if (captureRoutingPolicy()) return;
     const policy = window.__codexhostDraftPrewarmPolicyV1;
-    if (isDraftPrewarmPolicyReady(policy) && hasPolicyRequestTarget(policy)) {
-      stopPolicyCapture();
-    }
+    startPolicyCapture();
     if (!hasCapturedRoutingPolicy) return;
     updateStatus("installing", "draft-routing-policy-unavailable", null);
     if (isDraftPrewarmPolicyReady(policy) && !hasPolicyRequestTarget(policy)) {

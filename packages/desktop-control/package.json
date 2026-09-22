@@ -8,8 +8,8 @@
   ],
   "exports": {
     "./renderer-bindings": {
-      "types": "./dist/renderer-react-ownership.d.ts",
-      "import": "./dist/renderer-react-ownership.js"
+      "types": "./dist/renderer-bindings.d.ts",
+      "import": "./dist/renderer-bindings.js"
     },
     ".": {
       "types": "./dist/index.d.ts",

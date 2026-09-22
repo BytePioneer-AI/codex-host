@@ -103,13 +103,19 @@ function fixture() {
   }
   const manager = new Manager();
   const install = () => {
+    const policy = {
+      state: "ready",
+      hostId: "local",
+      requestTarget: () => manager,
+      select: () => true,
+      clear: async () => undefined,
+    };
+    const route = { hostId: "local", manager, policy };
     vi.stubGlobal("window", {
-      __codexhostDraftPrewarmPolicyV1: {
-        state: "ready",
-        hostId: "local",
-        requestTarget: () => manager,
-        select: () => true,
-        clear: async () => undefined,
+      __codexhostHostRoutingV1: {
+        forHost: (hostId: string) => (hostId === "local" ? route : null),
+        forComposer: () => route,
+        hostIdForComposer: () => "local",
       },
       dispatchEvent: vi.fn(),
       addEventListener: vi.fn(),

@@ -81,17 +81,25 @@ JavaScript；正在执行的 Claude Harness 请求会在重启期间失败关闭
 
 在客户端通过 codexhost 启动 Codex Desktop，打开 SSH 工作区，然后在该远程输入框的 Agent/Model 选择器中选择目标 Harness。模型发现、Thread、Turn、工具、审批和历史都会由 SSH 开发机上的 codexhost 处理。本地 Harness 可用性会始终独立初始化和缓存，因此 SSH 连接不可用时，切回本地输入框不会被远程检查阻塞。
 
+Renderer 按明确的 Host ID 从 Desktop 原生 Host registry 取得当前请求 manager；只有没有 registry 的绑定才从当前 React 树中的唯一匹配 manager 解析。registry 返回断线、缺失或不匹配的目标时，不回退到仍残留在其他 Hook 中的旧 manager。Composer 的 Host 身份与连接可用性分开判断：远端断线不意味着当前项目属于本地。
+
+本地和远程连接各自持有请求客户端及提交策略。切换 Composer 不会销毁另一端策略，也不会把本地选择的 Harness carrier 复制到远程原生 Codex。每次请求和切换读取当前原生连接，不必等待 Controller 下一次轮询；Controller 的周期协调用于安装与恢复，而不是决定 Host 路由。连接替换仅使该 Host 的旧客户端失效，已发送请求不重放，旧客户端不得发起新请求。同一 Host 重连后，由当前 Composer 恢复已确认的草稿选择；跨 Host 切换则重新读取目标 Host 的 Model 和 Permission Mode 目录，不沿用另一端的目录。设置覆盖层临时移除所有 Composer 时可以继续查询已发现的原生 registry；查询仍读取 registry 的当前条目，不复活断线连接。多个 Composer 的 Host 身份冲突时，无目标的活动路由仍拒绝猜测，但明确指定 Host 的查询不受影响。
+
 当前 Codex 身份和额度按 Host 隔离；本地账号不会出现在远程输入框中。切换 Host 或更换连接客户端后，旧请求的结果不能覆盖当前输入框。SSH 使用远端原生单账号认证，不转发本地凭据。Composer 只有一个 Codex 入口，没有 per-draft 账号选择。
 
 原生 Codex 端点明确返回“不支持 `codexhost/thread/inspect`”时，会通过同一 Host 连接的原生 `thread/read` 核对 Thread ID、CLI 版本和 Provider 元数据，排除 codexhost 的外部 Thread 标记；验证成功后保留普通 Codex 和远程原生认证，不创建账号绑定。超时、断线、无效响应或无法确认归属时，Agent 控件显示 `!` 和错误说明，而不是持续显示加载动画；重新聚焦窗口会重试。归属尚未确认时仍阻止提交，不把外部 Harness 或连接故障静默改判为 Codex。
 
-明确不支持的扩展接口只在当前 Host 请求客户端内、按具体接口记录；后续调用在本地返回不支持，不重复发送网络探测，Harness 发现、侧边栏归属和额度查询也不为这种错误安排自动重试。账号接口不支持不会禁用 Harness 接口，某个 Harness 未安装也不会禁用其他 Harness。超时、认证失败和参数错误不会被当作接口不支持。请求客户端、底层桥接或活动连接策略替换后重新判断；正常请求保持并发，不缓存其返回结果。
+明确不支持的扩展接口只在当前 Host 请求客户端内、按具体接口记录；后续调用在本地返回不支持，不重复发送网络探测，Harness 发现、侧边栏归属和额度查询也不为这种错误安排自动重试。账号接口不支持不会禁用 Harness 接口，某个 Harness 未安装也不会禁用其他 Harness。超时、认证失败和参数错误不会被当作接口不支持。该 Host 的请求 manager、底层桥接或连接策略替换后重新判断；仅切换当前 Composer 不会清除另一端的接口观察。正常请求保持并发，不缓存其返回结果。
 
 远程项目中新开的任务仍应保持 draft 状态并允许选择 Agent。当前 Desktop 版本会从活动输入框自身的标记判断身份，因此项目页其他位置的后台/预热会话不会再把新任务误锁成已有 Codex Thread；首个 Turn 提交并完成绑定后，实际 Thread 身份才成为准确信息源。
 
 远程 Claude Code 进程使用开发机上的 cwd 和账号。为了让 Codex Desktop 渲染，提示词、流式输出、工具状态、审批和 Diff 会通过现有 SSH 通道投影；凭据文件不会被转发。
 
 ## 诊断与回滚
+
+设置中的“重新诊断连接”会重新解析已知 Host 的当前原生 manager，并分别刷新 Harness 检查；不会重启 Desktop、创建第二条 SSH 传输或自动在远端安装软件。连接不可用与 Harness 未安装是不同的诊断结果，断线期间收到的旧检查结果不能将该 Host 重新标成可用。
+
+若远端显示 `codexhost/harness/inspect is unsupported on this Host connection`，表示该连接不提供 codexhost 扩展接口，而不是 Pi 等 Harness 的安装检查失败。确认远端已安装并启动相同版本的 codexhost，且 Desktop 实际连接到托管入口，然后重新连接 SSH 工作区。仅安装远端 Harness，或仅看到 `remote status` 为 ready，都不能证明现有 Desktop 连接已接入该入口。原生 Codex 连接仍可在同一 Host 上通过原生 Thread 检查继续使用 Codex。
 
 ```bash
 codexhost remote start

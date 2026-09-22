@@ -90,11 +90,12 @@ const { outputFiles } = await build({
       facade.clientForHost = (host) => clients[host];
       const installPolicy = () => {
         const owner = hostId;
-        window.__codexhostDraftPrewarmPolicyV1 = {
+        const policy = {
           state: "ready", hostId: owner,
           select: () => true,
           clear: () => request(owner, "clear", () => undefined),
         };
+        window.__codexhostHostRoutingV1 = { forComposer: () => routeReady ? { hostId: owner, policy } : null };
       };
       installPolicy();
       const composer = document.createElement("form");

@@ -8,6 +8,15 @@ const repositoryRoot = path.resolve(import.meta.dirname, "../..");
 const browserExecutable = process.env.CODEXHOST_PLAYWRIGHT_EXECUTABLE_PATH;
 if (browserExecutable) test.use({ launchOptions: { executablePath: browserExecutable } });
 
+test.beforeEach(async ({ page }) => {
+  // The production binding reads preferences from localStorage; about:blank's
+  // opaque origin rejects that before any Composer can mount.
+  await page.route("https://codexhost.test/**", (route) =>
+    route.fulfill({ contentType: "text/html", body: "<!doctype html><body></body>" }),
+  );
+  await page.goto("https://codexhost.test/");
+});
+
 const { outputFiles } = await build({
   stdin: {
     contents: `
@@ -128,12 +137,13 @@ const { outputFiles } = await build({
       );
 
       setTimeout(() => {
-        window.__codexhostDraftPrewarmPolicyV1 = {
+        const policy = {
           state: "ready",
           hostId: "local",
           select: async () => undefined,
           clear: async () => undefined,
         };
+        window.__codexhostHostRoutingV1 = { forComposer: () => ({ hostId: "local", policy }) };
       }, 100);
     `,
     resolveDir: repositoryRoot,
@@ -227,6 +237,16 @@ test("a draft waits for the Desktop prewarm policy before applying its Model", a
   await expect(trigger).toContainText("Startup Model");
   await expect(trigger).toBeEnabled();
   await expect(trigger).toHaveAttribute("title", "Startup Model");
+});
+
+test("restores the visible draft selection after a same-Host connection policy changes", async ({ page }) => {
+  await page.addScriptTag({ content: browserBundle });
+  await expect(page.locator('[data-codexhost-model-control] > button[aria-haspopup="menu"]')).toContainText("Startup Model");
+  await page.evaluate(() => {
+    Reflect.set(globalThis, "appliedConfiguration", null);
+    window.dispatchEvent(new Event("codexhost:draft-prewarm-policy-changed"));
+  });
+  await expect.poll(() => page.evaluate(() => Reflect.get(globalThis, "appliedConfiguration"))).toMatchObject({ agent: "pi", model: { id: "pi-model-v1.startup" } });
 });
 
 test("Kiro selects Thinking inside the Model picker before a Thread exists", async ({

@@ -1083,8 +1083,8 @@ export function installRendererBindingProbe(
     return isExternalConfigurationReadyView(mounted.modelView, mounted.permissionModeView);
   };
 
-  const clearDraftPrewarm = async (): Promise<void> => {
-    const policy = await waitForRendererDraftPrewarmPolicy(window);
+  const clearDraftPrewarm = async (composer: Element): Promise<void> => {
+    const policy = await waitForRendererDraftPrewarmPolicy(window, composer);
     await policy.clear();
   };
 
@@ -1439,7 +1439,7 @@ export function installRendererBindingProbe(
           throw new Error("External configuration could not be applied to the Composer");
         }
         try {
-          await clearDraftPrewarm();
+          await clearDraftPrewarm(mounted.composer);
         } catch (error) {
           if (isCurrentModelRequest(mounted, generation)) {
             applyAdapterAgent?.(
@@ -1553,7 +1553,7 @@ export function installRendererBindingProbe(
           throw new Error("External Model configuration could not be applied to the Composer");
         }
         try {
-          await clearDraftPrewarm();
+          await clearDraftPrewarm(mounted.composer);
         } catch (error) {
           if (previousModel && isCurrentModelRequest(mounted, generation)) {
             applyExternalConfiguration(
@@ -1702,7 +1702,7 @@ export function installRendererBindingProbe(
           throw new Error("Permission Mode could not be applied to the Composer");
         }
         try {
-          await clearDraftPrewarm();
+          await clearDraftPrewarm(mounted.composer);
         } catch (error) {
           if (isCurrentModelRequest(mounted, generation)) {
             applyExternalConfiguration(
@@ -1841,7 +1841,7 @@ export function installRendererBindingProbe(
           throw new Error("External Thinking could not be applied to the Composer");
         }
         try {
-          await clearDraftPrewarm();
+          await clearDraftPrewarm(mounted.composer);
         } catch (error) {
           if (isCurrentModelRequest(mounted, generation)) {
             applyExternalConfiguration(mounted, agent, model, previousThinking, permissionModeId);
@@ -1951,7 +1951,7 @@ export function installRendererBindingProbe(
           ) ?? nextAgent === "codex"
         );
       },
-      clearPrewarm: clearDraftPrewarm,
+      clearPrewarm: () => clearDraftPrewarm(mounted.composer),
     });
     renderMounted(mounted);
     try {
@@ -2029,10 +2029,11 @@ export function installRendererBindingProbe(
     hostId: string | null,
   ): RendererModelClient | null {
     if (!control || !hostId) return null;
-    const selected = control.clientForHost?.(hostId);
-    if (selected) return selected;
-    const currentHostId = control.currentHostId?.() ?? "local";
-    return currentHostId === hostId ? control : null;
+    if (control.clientForHost) return control.clientForHost(hostId);
+    // Only legacy controls without Host identity are local. An explicit null
+    // means unresolved ownership, never permission to send a local request.
+    if (!control.currentHostId) return hostId === "local" ? control : null;
+    return control.currentHostId() === hostId ? control : null;
   }
 
   function modelClientForHost(hostId: string): RendererModelClient | null {
@@ -2049,6 +2050,28 @@ export function installRendererBindingProbe(
     if (!retry) resetHarnessAvailabilityRetry(hostId);
     const client = modelClientForHost(hostId);
     if (!client) {
+      // Disconnection invalidates outstanding observations even if no replacement
+      // client exists yet. A late reply must not mark this Host ready again.
+      if (state.request) {
+        state.requestGeneration += 1;
+        state.request = null;
+      }
+      if (force || activeModelHostId() === hostId) {
+        for (const agent of externalAgents) {
+          state.availability[agent] = "error";
+          state.errors[agent] = {
+            code: "unavailable",
+            message: `Renderer connection is unavailable for Host ${hostId}`,
+            retryable: true,
+            stage: "request",
+          };
+          state.webUi[agent] = false;
+        }
+        publishConnectionStatus();
+        if (hostId === activeAvailabilityHostId) {
+          for (const mounted of mountedByComposer.values()) renderMounted(mounted);
+        }
+      }
       scheduleHarnessAvailabilityRetry(hostId);
       return Promise.resolve();
     }
@@ -2101,7 +2124,8 @@ export function installRendererBindingProbe(
           } catch (error) {
             status = "error";
             nextError = {
-              code: "internalError",
+              code:
+                error instanceof RendererMethodUnavailableError ? "unavailable" : "internalError",
               message: error instanceof Error ? error.message : String(error),
               retryable: !(error instanceof RendererMethodUnavailableError),
               stage: "request",
@@ -2170,10 +2194,14 @@ export function installRendererBindingProbe(
       if (mounted.hostId === hostId) continue;
       if (!threadIdFromComposerModelTarget(mounted.modelTarget)) {
         controller.clearPendingSubmission(mounted.composer);
+        controller.beginModelRequest(mounted.composer);
         mounted.hostId = hostId;
+        mounted.modelView = { status: "idle" };
+        mounted.permissionModeView = { status: "idle" };
         mounted.usage = null;
         mounted.accountCredits = null;
         mounted.usageRequestGeneration += 1;
+        void loadExternalCatalog(mounted);
         continue;
       }
       const target = controllerTarget(mounted.modelTarget, hostId);
@@ -2250,6 +2278,7 @@ export function installRendererBindingProbe(
       };
     },
     refresh(): Promise<void> {
+      reconcileHarnessAvailabilityHost();
       return refreshConnectionHosts(harnessAvailabilityByHost.keys(), (hostId) =>
         refreshHarnessAvailabilityForHost(hostId, true, false, true),
       );
@@ -2632,6 +2661,21 @@ export function installRendererBindingProbe(
     scheduleScan(mutations.some(mutationMayChangeComposerTarget));
   });
   const onHostRouteChange = (): void => {
+    const hostId = activeModelHostId();
+    // Reapply the visible draft's selection after its native connection changes.
+    // Do this before rebinding Hosts: an old local draft is not a remote choice.
+    for (const mounted of mountedByComposer.values()) {
+      if (
+        hostId &&
+        mounted.hostId === hostId &&
+        !threadIdFromComposerModelTarget(mounted.modelTarget) &&
+        controller.get(mounted.composer).agent !== "codex" &&
+        !controller.isSwitching(mounted.composer) &&
+        isExternalConfigurationStable(mounted.modelView, mounted.permissionModeView)
+      ) {
+        applyComposerAgent(mounted.composer);
+      }
+    }
     sidebarAgentIcons.refresh();
     reconcileHarnessAvailabilityHost();
     void loadCodexAccounts();

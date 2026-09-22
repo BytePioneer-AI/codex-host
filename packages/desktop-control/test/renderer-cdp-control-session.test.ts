@@ -95,6 +95,40 @@ describe("Renderer CDP Control Session", () => {
     session.close();
   });
 
+  it("reconciles a changed Host before judging the previous Adapter readiness", async () => {
+    const binding = readyBinding();
+    const client = rendererClient(binding);
+    const connect = vi.fn(async () => client);
+    const installDraftPrewarmPolicy = vi.fn(async () => {
+      binding.adapter.state = "ready";
+      binding.adapter.reason = "ready";
+      return { state: "ready" as const, reason: "owned-request-bridge" as const };
+    });
+    const session = await createRendererCdpControlSession({
+      rendererCdpEndpoint: "http://127.0.0.1:43123",
+      rendererSource: "production renderer",
+      pollIntervalMs: 1,
+      timeoutMs: 100,
+      operations: {
+        listTargets: async () => [target("page-1")],
+        connect,
+        installDraftPrewarmPolicy,
+      },
+    });
+    try {
+      binding.adapter.state = "installing";
+      binding.adapter.reason = "draft-routing-policy-unavailable";
+      await expect(session.ensureInstalled()).resolves.toMatchObject({
+        binding: { adapter: { state: "ready" } },
+      });
+      expect(connect).toHaveBeenCalledOnce();
+      expect(client.close).not.toHaveBeenCalled();
+      expect(installDraftPrewarmPolicy).toHaveBeenCalledTimes(2);
+    } finally {
+      session.close();
+    }
+  });
+
   it("activates the owned page target", async () => {
     const client = rendererClient();
     const session = await createRendererCdpControlSession({

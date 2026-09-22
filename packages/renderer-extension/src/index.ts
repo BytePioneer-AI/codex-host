@@ -115,7 +115,6 @@ export {
   antigravityTransportModelId,
   hermesTransportModelId,
   claudeTransportModelId,
-  activeRendererDraftPrewarmPolicy,
   decodeAntigravityTransportModelId,
   decodeClaudeTransportModelId,
   decodeDeepSeekHarnessTransportModelId,

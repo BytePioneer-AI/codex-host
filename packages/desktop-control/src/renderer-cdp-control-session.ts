@@ -265,7 +265,8 @@ class InstalledRendererCdpControlSession implements RendererCdpControlSession {
     try {
       const existing = await readBinding(this.renderer);
       if (existing === null) await evaluateSource(this.renderer, this.rendererSource);
-      else validateBindingStatus(existing, this.enabledAgents);
+      // A Host switch can temporarily leave the Adapter installing. Reconcile
+      // native owners before validating readiness; that is not a lost CDP page.
       const draftPrewarmPolicy = await this.operations.installDraftPrewarmPolicy(this.renderer);
       const binding = await waitForBinding(
         this.renderer,

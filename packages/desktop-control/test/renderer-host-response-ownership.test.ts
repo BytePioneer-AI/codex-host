@@ -3,10 +3,8 @@ import { describe, expect, it, vi } from "vitest";
 
 import { installRendererDraftPrewarmPolicyDirect } from "../src/renderer-draft-prewarm-policy.js";
 
-import {
-  installDraftPrewarmPolicyBridge,
-  type DraftPrewarmPolicyTarget,
-} from "../src/renderer-draft-prewarm-runtime.js";
+import { type DraftPrewarmPolicyTarget } from "../src/renderer-draft-prewarm-runtime.js";
+import { installDraftPrewarmPolicyBridge } from "./renderer-draft-prewarm-fixture.js";
 
 type LifecycleEvent = { type: string; hostId: string; id: string; method: string };
 let nextId = 0;

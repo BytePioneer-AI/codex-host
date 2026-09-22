@@ -13,7 +13,6 @@ import {
   GROK_TRANSPORT_MODEL_ID,
   OPENCODE_TRANSPORT_MODEL_ID,
   PI_TRANSPORT_MODEL_ID,
-  activeRendererDraftPrewarmPolicy,
   antigravityTransportModelId,
   claudeTransportModelId,
   decodeAntigravityTransportModelId,
@@ -41,12 +40,9 @@ import {
 } from "../src/index.js";
 import {
   OMP_TRANSPORT_MODEL_ID,
-  createRendererRequestRouteResolver,
   decodeOmpTransportModelId,
   isOmpTransportModelId,
   ompTransportModelId,
-  rendererRequestTargetsForHost,
-  resolveRendererRequestRoute,
   transitionRendererAdapterStatus,
   installCurrentRendererAdapter,
 } from "../src/versioned-renderer-adapter.js";
@@ -252,177 +248,6 @@ describe("current Codex Renderer Agent adapter", () => {
     expect(findActivePrewarmTargets(root)).toEqual([]);
   });
 
-  it("keeps local and remote request targets independently addressable", () => {
-    const local = {
-      hostId: "local",
-      sendRequest: vi.fn(),
-      prewarmThreadStart: vi.fn(),
-      enqueueRequest: vi.fn(),
-    };
-    const remote = {
-      hostId: "remote-ssh-discovered:mac",
-      sendRequest: vi.fn(),
-      prewarmThreadStart: vi.fn(),
-      enqueueRequest: vi.fn(),
-    };
-
-    expect(rendererRequestTargetsForHost([remote, local], "local")).toEqual([local]);
-    expect(rendererRequestTargetsForHost([remote, local], remote.hostId)).toEqual([remote]);
-    expect(rendererRequestTargetsForHost([local, { ...local }], "local")).toBeNull();
-  });
-
-  it("retains the confirmed request manager across transient Composer discovery gaps", () => {
-    const manager = {
-      hostId: "remote-ssh-discovered:mac",
-      sendRequest: vi.fn(),
-      prewarmThreadStart: vi.fn(),
-      enqueueRequest: vi.fn(),
-    };
-    const policy = {
-      state: "ready" as const,
-      hostId: "remote-ssh-discovered:mac",
-      select: vi.fn(() => true),
-      clear: vi.fn(async () => undefined),
-    };
-    const localManager = {
-      hostId: "local",
-      sendRequest: vi.fn(),
-      prewarmThreadStart: vi.fn(),
-      enqueueRequest: vi.fn(),
-    };
-
-    const discovered = resolveRendererRequestRoute(policy, [localManager, manager], null);
-    expect(discovered?.targets).toEqual([manager]);
-
-    const transientGap = resolveRendererRequestRoute(policy, [], discovered);
-    expect(transientGap).toBe(discovered);
-
-    const switchedHostManager = {
-      hostId: "remote-ssh-discovered:replacement",
-      sendRequest: vi.fn(),
-      prewarmThreadStart: vi.fn(),
-      enqueueRequest: vi.fn(),
-    };
-    expect(resolveRendererRequestRoute(policy, [switchedHostManager], discovered)).toBeNull();
-
-    const replacementPolicy = { ...policy };
-    expect(resolveRendererRequestRoute(replacementPolicy, [], discovered)).toBeNull();
-  });
-
-  it("prefers a policy-owned exact request target without Composer discovery", () => {
-    const manager = {
-      hostId: "remote-ssh-discovered:mac",
-      sendRequest: vi.fn(),
-      prewarmThreadStart: vi.fn(),
-      enqueueRequest: vi.fn(),
-    };
-    const policy = {
-      state: "ready" as const,
-      hostId: manager.hostId,
-      requestTarget: vi.fn(() => manager),
-      select: vi.fn(() => true),
-      clear: vi.fn(async () => undefined),
-    };
-
-    const route = resolveRendererRequestRoute(policy, [], null);
-
-    expect(route).toEqual({ policy, targets: [manager] });
-    expect(policy.requestTarget).toHaveBeenCalledOnce();
-
-    const discoverTargets = vi.fn(() => [manager]);
-    const resolver = createRendererRequestRouteResolver(() => policy, discoverTargets);
-    expect(resolver.resolve()?.targets).toEqual([manager]);
-    expect(discoverTargets).not.toHaveBeenCalled();
-  });
-
-  it.each([
-    ["non-callable", {}],
-    ["malformed", () => ({})],
-    [
-      "host-mismatched",
-      () => ({
-        hostId: "remote-ssh-discovered:other",
-        sendRequest: vi.fn(),
-        prewarmThreadStart: vi.fn(),
-        enqueueRequest: vi.fn(),
-      }),
-    ],
-    [
-      "throwing",
-      () => {
-        throw new Error("synthetic target failure");
-      },
-    ],
-  ])("fails closed for a %s policy-owned request target", (_name, requestTarget) => {
-    const matchingDiscoveredManager = {
-      hostId: "remote-ssh-discovered:mac",
-      sendRequest: vi.fn(),
-      prewarmThreadStart: vi.fn(),
-      enqueueRequest: vi.fn(),
-    };
-    const policy = {
-      state: "ready" as const,
-      hostId: matchingDiscoveredManager.hostId,
-      requestTarget,
-      select: vi.fn(() => true),
-      clear: vi.fn(async () => undefined),
-    };
-
-    expect(resolveRendererRequestRoute(policy, [matchingDiscoveredManager], null)).toBeNull();
-  });
-
-  it("keeps Fiber discovery as the fallback for a legacy policy without requestTarget", () => {
-    const manager = {
-      hostId: "remote-ssh-discovered:mac",
-      sendRequest: vi.fn(),
-      prewarmThreadStart: vi.fn(),
-      enqueueRequest: vi.fn(),
-    };
-    const policy = {
-      state: "ready" as const,
-      hostId: manager.hostId,
-      select: vi.fn(() => true),
-      clear: vi.fn(async () => undefined),
-    };
-
-    expect(resolveRendererRequestRoute(policy, [manager], null)).toEqual({
-      policy,
-      targets: [manager],
-    });
-  });
-
-  it("does not revive an invalidated request manager after a later discovery gap", () => {
-    const policy = {
-      state: "ready" as const,
-      hostId: "remote-ssh-discovered:mac",
-      select: vi.fn(() => true),
-      clear: vi.fn(async () => undefined),
-    };
-    const manager = {
-      hostId: policy.hostId,
-      sendRequest: vi.fn(),
-      prewarmThreadStart: vi.fn(),
-      enqueueRequest: vi.fn(),
-    };
-    const switchedHostManager = {
-      hostId: "remote-ssh-discovered:replacement",
-      sendRequest: vi.fn(),
-      prewarmThreadStart: vi.fn(),
-      enqueueRequest: vi.fn(),
-    };
-    let discoveredTargets = [manager];
-    const routeResolver = createRendererRequestRouteResolver(
-      () => policy,
-      () => discoveredTargets,
-    );
-
-    expect(routeResolver.resolve()?.targets).toEqual([manager]);
-    discoveredTargets = [switchedHostManager];
-    expect(routeResolver.resolve()).toBeNull();
-    discoveredTargets = [];
-    expect(routeResolver.resolve()).toBeNull();
-  });
-
   it("finds the current seven-slot new Thread draft identity", () => {
     const wrapper = { isManuallyChanged: false, modelSettings: null, serviceTier: null };
     const draftAtom = { get: vi.fn(() => wrapper) };
@@ -597,6 +422,39 @@ describe("current Codex Renderer Agent adapter", () => {
         querySelector: vi.fn(),
         documentElement: {},
       };
+      const knownPolicies = new Map([[hostId, policy]]);
+      const routes = new Map<
+        typeof policy,
+        {
+          bridge: unknown;
+          route: { hostId: string; manager: typeof requestTarget; policy: typeof policy };
+        }
+      >();
+      const routeFor = (selected: typeof policy) => {
+        const manager = selected.requestTarget();
+        const bridge = Reflect.get(manager, "requestClient");
+        const cached = routes.get(selected);
+        if (cached && cached.bridge === bridge) return cached.route;
+        const route = { hostId: selected.hostId, manager, policy: selected };
+        routes.set(selected, { bridge, route });
+        return route;
+      };
+      Object.defineProperty(fakeWindow, "__codexhostHostRoutingV1", {
+        value: {
+          hostIdForComposer: () => fakeWindow.__codexhostDraftPrewarmPolicyV1.hostId,
+          forComposer: () => {
+            const selected = fakeWindow.__codexhostDraftPrewarmPolicyV1;
+            knownPolicies.set(selected.hostId, selected);
+            return routeFor(selected);
+          },
+          forHost: (id: string) => {
+            const current = fakeWindow.__codexhostDraftPrewarmPolicyV1;
+            knownPolicies.set(current.hostId, current);
+            const selected = knownPolicies.get(id);
+            return selected ? routeFor(selected) : null;
+          },
+        },
+      });
       const priorWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
       const priorDocument = Object.getOwnPropertyDescriptor(globalThis, "document");
       const priorCustomEvent = Object.getOwnPropertyDescriptor(globalThis, "CustomEvent");
@@ -689,35 +547,6 @@ describe("current Codex Renderer Agent adapter", () => {
       false,
     );
     expect(isDraftPrewarmPolicyReady({ state: "ready", clear: vi.fn() })).toBe(false);
-  });
-
-  it("uses a draft routing policy only for the active remote Host", () => {
-    const policy = {
-      state: "ready" as const,
-      hostId: "remote-ssh-discovered:mac",
-      select: vi.fn(),
-      clear: vi.fn(),
-    };
-    const active = {
-      requestClient: {
-        hostId: "remote-ssh-discovered:mac",
-        sendRequest: vi.fn(),
-        prewarmThreadStart: vi.fn(),
-        enqueueRequest: vi.fn(),
-      },
-    };
-    const local = { requestClient: { ...active.requestClient, hostId: "local" } };
-    const duplicateActive = {
-      requestClient: {
-        ...active.requestClient,
-        sendRequest: vi.fn(),
-      },
-    };
-
-    expect(activeRendererDraftPrewarmPolicy(policy, [active])).toBe(policy);
-    expect(activeRendererDraftPrewarmPolicy(policy, [local, active])).toBe(policy);
-    expect(activeRendererDraftPrewarmPolicy(policy, [local])).toBeNull();
-    expect(activeRendererDraftPrewarmPolicy(policy, [active, duplicateActive])).toBeNull();
   });
 
   it("creates base transport selections and clears routing for Codex", () => {

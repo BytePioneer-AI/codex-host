@@ -12,6 +12,7 @@ import {
   type HarnessPermissionModeId,
 } from "@codexhost/shared-contracts";
 
+import { DEEPSEEK_V015_PROFILE, type DeepSeekModernProfile } from "../profiles/profile.js";
 import type { ModernProjectionRow } from "./control-store.js";
 import { ModernRemoteConnectionError } from "./remote-connection.js";
 import {
@@ -227,7 +228,10 @@ function validateSecrets(value: unknown): readonly unknown[] {
   return value;
 }
 
-function parseDescribe(value: unknown): PermissionNamespaceView | null {
+function parseDescribe(
+  value: unknown,
+  profile: DeepSeekModernProfile,
+): PermissionNamespaceView | null {
   assertBoundedJson(value);
   if (!isPlainRecord(value) || !exactKeys(value, ["writable", "hasDocument", "namespaces"])) {
     throw permissionError(
@@ -259,9 +263,12 @@ function parseDescribe(value: unknown): PermissionNamespaceView | null {
       !isPlainRecord(candidate) ||
       !exactKeys(
         candidate,
-        ["ns", "schema", "value", "applies", "secrets", "revision"],
+        profile.sessionFormatVersion === 4
+          ? ["ns", "autoGenerate", "schema", "value", "applies", "secrets", "revision"]
+          : ["ns", "schema", "value", "applies", "secrets", "revision"],
         ["base", "user"],
       ) ||
+      (profile.sessionFormatVersion === 4 && typeof candidate.autoGenerate !== "boolean") ||
       (candidate.applies !== "live" && candidate.applies !== "restart") ||
       !validRevision(candidate.revision)
     ) {
@@ -323,7 +330,10 @@ function permissionSection(
   }
 }
 
-function catalogFromNamespace(view: PermissionNamespaceView): HarnessPermissionModeCatalog {
+function catalogFromNamespace(
+  view: PermissionNamespaceView,
+  profile: DeepSeekModernProfile,
+): HarnessPermissionModeCatalog | null {
   if (view.applies !== "live") {
     throw permissionError("protocolError", "DeepSeek Harness permission settings are not live");
   }
@@ -353,11 +363,13 @@ function catalogFromNamespace(view: PermissionNamespaceView): HarnessPermissionM
   }
   const field = dictionary.defaultPreset as SchemaNode;
   if (field.meta?.required !== true) {
+    if (profile.sessionFormatVersion === 4) return null;
     throw permissionError("protocolError", "DeepSeek Harness permission default is not required");
   }
   const choices =
     field.type === "union" ? field.list : field.type === "const" ? [field] : undefined;
   if (!Array.isArray(choices) || choices.length === 0) {
+    if (profile.sessionFormatVersion === 4) return null;
     throw permissionError(
       "protocolError",
       "DeepSeek Harness permission schema has no preset choices",
@@ -422,15 +434,17 @@ function catalogFromNamespace(view: PermissionNamespaceView): HarnessPermissionM
 /** Strictly parse the Modern `settings/describe` value and its optional permission namespace. */
 export function parseModernPermissionModeCatalog(
   value: unknown,
+  profile: DeepSeekModernProfile = DEEPSEEK_V015_PROFILE,
 ): HarnessPermissionModeCatalog | null {
-  const permission = parseDescribe(value);
-  return permission ? catalogFromNamespace(permission) : null;
+  const permission = parseDescribe(value, profile);
+  return permission ? catalogFromNamespace(permission, profile) : null;
 }
 
 /** Read the exact no-argument Modern settings endpoint. */
 export async function loadModernPermissionModeCatalog(
   remote: ModernPermissionModeRemote,
   signal?: AbortSignal,
+  profile: DeepSeekModernProfile = DEEPSEEK_V015_PROFILE,
 ): Promise<HarnessPermissionModeCatalog | null> {
   try {
     const result = await remote.call<unknown>("settings/describe", {}, signal);
@@ -442,7 +456,7 @@ export async function loadModernPermissionModeCatalog(
         safe.code,
       );
     }
-    return parseModernPermissionModeCatalog(result.value);
+    return parseModernPermissionModeCatalog(result.value, profile);
   } catch (error) {
     if (error instanceof ModernPermissionModeError) throw error;
     if (error instanceof ModernRemoteConnectionError) throw connectionError(error);
@@ -559,8 +573,10 @@ function parseProjectionValue(
 export function readModernPermissionModeState(
   row: ModernProjectionRow | undefined,
   catalog: HarnessPermissionModeCatalog | null,
+  profile?: DeepSeekModernProfile,
 ): ModernPermissionModeState | undefined {
   if (!catalog) {
+    if (profile?.sessionFormatVersion === 4) return undefined;
     if (row) {
       throw permissionError(
         "protocolError",

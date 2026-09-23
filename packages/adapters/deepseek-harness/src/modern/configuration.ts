@@ -261,6 +261,7 @@ export function readModernConfigurationSnapshot(input: {
   readonly nativeRef: NativeSessionRef;
   readonly modelCatalog: ModernModelCatalogSnapshot;
   readonly permissionModes: HarnessPermissionModeCatalog | null;
+  readonly profile?: DeepSeekModernProfile;
 }): ModernConfigurationSnapshot {
   const rows = input.control.snapshot(input.sessionId);
   if (!rows) {
@@ -273,6 +274,7 @@ export function readModernConfigurationSnapshot(input: {
   const permission = readModernPermissionModeState(
     rows[MODERN_PERMISSION_PROJECTION_KEY],
     input.permissionModes,
+    input.profile,
   );
   return {
     model,

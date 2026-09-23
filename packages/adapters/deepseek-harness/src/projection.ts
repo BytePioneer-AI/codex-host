@@ -47,6 +47,27 @@ export function projectToolResult(value: unknown, limit: number): DeepSeekToolRe
   if (!isRecord(value) || !isRecord(value.source) || value.source.kind !== "tool") return null;
   const callId = value.source.callId;
   if (!nonBlankString(callId) || !Array.isArray(value.content)) return null;
+  if (value.role === "tool") {
+    if (
+      value.toolCallId !== callId ||
+      (value.isError !== undefined && typeof value.isError !== "boolean")
+    )
+      return null;
+    const text = contentText(value);
+    const truncated = text.length > limit;
+    return {
+      callId,
+      failed: value.isError === true,
+      ...(text
+        ? {
+            output: {
+              content: [{ type: "text", text: truncated ? text.slice(0, limit) : text }],
+              ...(truncated ? { truncated: true } : {}),
+            },
+          }
+        : {}),
+    };
+  }
   const resultBlocks = value.content.filter(
     (block) =>
       isRecord(block) &&
@@ -236,6 +257,12 @@ export function projectTurnReason(value: unknown): {
     return {
       outcome: { status: "cancelled", reason: "Cancelled by user" },
       history: { status: "cancelled", reason: "Cancelled by user" },
+    };
+  }
+  if (value.kind === "forked") {
+    return {
+      outcome: { status: "cancelled", reason: "Forked from parent Session" },
+      history: { status: "cancelled", reason: "Forked from parent Session" },
     };
   }
   const error: HarnessError = {

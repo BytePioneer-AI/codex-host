@@ -418,6 +418,7 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
       nativeRef: projection.nativeRef,
       modelCatalog: this.#modelCatalog,
       permissionModes: this.#permissionModes,
+      profile: this.#profile,
     });
     this.#nativeRef = projection.nativeRef;
     this.initialState = configuration.state;
@@ -781,6 +782,7 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
       nativeRef: this.#nativeRef,
       modelCatalog: this.#modelCatalog,
       permissionModes: this.#permissionModes,
+      profile: this.#profile,
     });
   }
 

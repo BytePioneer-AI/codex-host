@@ -17,6 +17,7 @@ import {
   type ModernRemoteConnectionErrorCode,
 } from "../../src/modern/remote-connection.js";
 import type { ModernRemoteResult } from "../../src/modern/wire.js";
+import { DEEPSEEK_V017_PROFILE } from "../../src/profiles/profile.js";
 
 const PRESETS = ["read-only", "workspace-write", "danger-full-access"];
 
@@ -118,6 +119,44 @@ class FakeRemote implements ModernPermissionModeRemote {
 }
 
 describe("DeepSeek Harness Modern Permission Mode boundary", () => {
+  it("requires rc.1 settings namespaces to declare autoGenerate", async () => {
+    const v4Namespace = { ...permissionNamespace(), autoGenerate: true };
+    const value = settingsValue([v4Namespace]);
+    expect(parseModernPermissionModeCatalog(value, DEEPSEEK_V017_PROFILE)).toEqual({
+      modes: [
+        { id: "read-only", label: "Read only" },
+        { id: "workspace-write", label: "workspace-write" },
+        { id: "danger-full-access", label: "danger-full-access" },
+      ],
+      defaultModeId: "workspace-write",
+    });
+    await expect(
+      loadModernPermissionModeCatalog(
+        new FakeRemote({ ok: true, value }),
+        undefined,
+        DEEPSEEK_V017_PROFILE,
+      ),
+    ).resolves.not.toBeNull();
+    expect(
+      parseModernPermissionModeCatalog(
+        settingsValue([{ ...v4Namespace, ns: "other", autoGenerate: false }]),
+        DEEPSEEK_V017_PROFILE,
+      ),
+    ).toBeNull();
+    expect(() =>
+      parseModernPermissionModeCatalog(settingsValue(), DEEPSEEK_V017_PROFILE),
+    ).toThrowError(expect.objectContaining({ code: "protocolError" }));
+    expect(() =>
+      parseModernPermissionModeCatalog(
+        settingsValue([{ ...v4Namespace, autoGenerate: "yes" }]),
+        DEEPSEEK_V017_PROFILE,
+      ),
+    ).toThrowError(expect.objectContaining({ code: "protocolError" }));
+    expect(() => parseModernPermissionModeCatalog(value)).toThrowError(
+      expect.objectContaining({ code: "protocolError" }),
+    );
+  });
+
   it("rehydrates the exact permission settings schema and preserves choice order", async () => {
     const remote = new FakeRemote();
     const catalog = await loadModernPermissionModeCatalog(remote);
@@ -286,6 +325,9 @@ describe("DeepSeek Harness Modern Permission Mode boundary", () => {
     expect(() => readModernPermissionModeState({ value: projection(), seq: 1 }, null)).toThrowError(
       ModernPermissionModeError,
     );
+    expect(
+      readModernPermissionModeState({ value: projection(), seq: 1 }, null, DEEPSEEK_V017_PROFILE),
+    ).toBeUndefined();
   });
 
   it("requires projection option names to match the inspected catalog", () => {

@@ -6,6 +6,7 @@ import {
   type ModernControlStreamSource,
 } from "../../src/modern/control-store.js";
 import { ModernRemoteConnectionError } from "../../src/modern/remote-connection.js";
+import { DEEPSEEK_V017_PROFILE } from "../../src/profiles/profile.js";
 
 class ControlFeed implements ModernControlStreamSource {
   readonly calls: Array<{
@@ -150,6 +151,31 @@ function expectCredentialSafe(error: unknown, secret: string): void {
 }
 
 describe("Modern control opening and projection updates", () => {
+  it("accepts rc.1 projection-only control and rejects removed queue/jobs frames", async () => {
+    const feed = new ControlFeed();
+    const store = new ModernControlStore(feed, { profile: DEEPSEEK_V017_PROFILE });
+    store.attach("s1");
+    const ready = store.start();
+    feed.push({
+      type: "baseline",
+      value: { projections: { s1: projectionBlock(1, { title: "rc.1" }) } },
+    });
+    await ready;
+    expect(store.snapshot("s1")?.title).toEqual({ value: "rc.1", seq: 1 });
+    feed.push(projection("s1", "title", "updated", 2));
+    await vi.waitFor(() => expect(store.snapshot("s1")?.title?.seq).toBe(2));
+    feed.push({ type: "queue", sessionId: "s1", items: [] });
+    await expectFault(store, "protocolError");
+    await store.close();
+
+    const oldFeed = new ControlFeed();
+    const oldStore = new ModernControlStore(oldFeed);
+    const oldReady = oldStore.start();
+    oldFeed.push({ type: "baseline", value: { projections: {} } });
+    await expect(oldReady).rejects.toMatchObject({ code: "protocolError" });
+    await oldStore.close();
+  });
+
   it("accepts one exact opening baseline, validates queue/jobs, and publishes higher updates", async () => {
     const feed = new ControlFeed();
     const store = new ModernControlStore(feed);

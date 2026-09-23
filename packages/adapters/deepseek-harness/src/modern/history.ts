@@ -47,7 +47,7 @@ import {
 import type { ModernJournalEvent } from "./journal.js";
 import {
   DEEPSEEK_V012_PROFILE,
-  isDeepSeekV015,
+  hasDeepSeekModernStream,
   type DeepSeekModernProfile,
 } from "../profiles/profile.js";
 import {
@@ -132,6 +132,21 @@ const KNOWN_EVENT_TYPES = new Set([
   "web/deepseek-search-llm-request",
 ]);
 
+const V4_EVENT_TYPES = new Set(["developer/message", "image/offload", "workspace/changes"]);
+
+function knownEvent(type: string, profile: DeepSeekModernProfile): boolean {
+  return (
+    KNOWN_EVENT_TYPES.has(type) || (profile.sessionFormatVersion === 4 && V4_EVENT_TYPES.has(type))
+  );
+}
+
+function surfaceEvent(type: string, profile: DeepSeekModernProfile): boolean {
+  return (
+    SURFACE_EVENT_TYPES.has(type) ||
+    (profile.sessionFormatVersion === 4 && type === "developer/message")
+  );
+}
+
 const SURFACE_EVENT_TYPES = new Set([
   "system/message",
   "user/message",
@@ -149,6 +164,9 @@ interface ValidatorTrace {
   pendingCalls: Set<string>;
   commandStates: Map<string, "running" | "done">;
   commandEventSeqs: Set<number>;
+  requestHeaders: Map<number, Record<string, unknown>>;
+  offloadedImages: Set<string>;
+  toolCalls: Map<string, { name: string; arguments: string; started: boolean }>;
 }
 
 /** Incremental validator shared by the initial history projector and live Session pump. */
@@ -165,6 +183,9 @@ export class ModernEventValidator {
     pendingCalls: new Set(),
     commandStates: new Map(),
     commandEventSeqs: new Set(),
+    requestHeaders: new Map(),
+    offloadedImages: new Set(),
+    toolCalls: new Map(),
   };
 
   constructor(
@@ -182,19 +203,19 @@ export class ModernEventValidator {
     trace.count += 1;
 
     if (
-      isDeepSeekV015(this.#profile) &&
-      !KNOWN_EVENT_TYPES.has(event.type) &&
+      hasDeepSeekModernStream(this.#profile) &&
+      !knownEvent(event.type, this.#profile) &&
       event.ignorable === true
     )
       return;
-    if (!SURFACE_EVENT_TYPES.has(event.type)) {
+    if (!surfaceEvent(event.type, this.#profile)) {
       if (event.surfaceOp !== undefined || event.sourceEventSeqs !== undefined) {
         fail("Modern history has surface metadata on a log-only event");
       }
     } else if (event.surfaceOp === undefined) {
       fail("Modern history surface event omitted surfaceOp");
     }
-    if (!KNOWN_EVENT_TYPES.has(event.type)) {
+    if (!knownEvent(event.type, this.#profile)) {
       if (event.ignorable === true) return;
       fail("Modern history contains an unknown required event");
     }
@@ -217,9 +238,12 @@ export class ModernEventValidator {
       case "turn/end": {
         exactKeys(data, ["turn", "reason"]);
         const turn = positiveInteger(data.turn, "turn/end turn");
-        validateTurnReason(data.reason);
+        validateTurnReason(data.reason, this.#profile);
         if (trace.openTurn !== turn || trace.openStep !== null) {
           fail("Modern history has an invalid turn/end boundary");
+        }
+        if (this.#profile.sessionFormatVersion === 4 && trace.toolCalls.size > 0) {
+          fail("Modern history turn/end leaves unresolved tool calls");
         }
         trace.openTurn = null;
         trace.nextTurn += 1;
@@ -237,6 +261,9 @@ export class ModernEventValidator {
       case "step/end": {
         exactKeys(data, ["turn", "step"]);
         requireOpenStep(trace, data, "step/end");
+        if (this.#profile.sessionFormatVersion === 4 && trace.toolCalls.size > 0) {
+          fail("Modern history step/end leaves unresolved tool calls");
+        }
         trace.openStep = null;
         trace.nextStep += 1;
         trace.pendingCalls.clear();
@@ -244,6 +271,10 @@ export class ModernEventValidator {
       }
       case "user/message":
         validateUserMessage(data, this.#profile);
+        return;
+      case "developer/message":
+        requireOpenStep(trace, data, "developer/message");
+        validateDeveloperHeader(event, trace);
         return;
       case "system/message":
         requireOpenStep(trace, data, "system/message");
@@ -256,6 +287,7 @@ export class ModernEventValidator {
       case "assistant/message": {
         requireOpenStep(trace, data, "assistant/message");
         validateAssistantMessage(data.message, this.#profile);
+        if (this.#profile.sessionFormatVersion === 4) registerV4ToolCalls(data.message, trace);
         if (data.interrupted !== undefined && data.interrupted !== true) {
           fail("Modern history assistant/message has invalid interrupted marker");
         }
@@ -269,9 +301,17 @@ export class ModernEventValidator {
         exactKeys(data, ["turn", "step", "callId", "name", "arguments"]);
         requireOpenStep(trace, data, "tool/call");
         const callId = requiredString(data.callId, "tool/call callId");
-        requiredString(data.name, "tool/call name");
+        const name = requiredString(data.name, "tool/call name");
         if (typeof data.arguments !== "string" || trace.pendingCalls.has(callId)) {
           fail("Modern history contains an invalid tool/call");
+        }
+        if (this.#profile.sessionFormatVersion === 4) {
+          const tool = trace.toolCalls.get(callId);
+          if (!tool || tool.started || tool.name !== name || tool.arguments !== data.arguments) {
+            fail("Modern history tool/call does not match its advertised tool call");
+          }
+          tool.started = true;
+          return;
         }
         trace.pendingCalls.add(callId);
         return;
@@ -279,10 +319,19 @@ export class ModernEventValidator {
       case "tool/result": {
         requiredOptionalKeys(data, ["turn", "step", "message"], ["error", "meta"]);
         const callId = validateToolResultMessage(data.message, this.#profile);
-        if (data.error !== undefined) validateToolError(data.error);
+        if (data.error !== undefined) validateToolError(data.error, this.#profile);
         if (event.surfaceOp === "append") {
           requireOpenStep(trace, data, "tool/result");
-          if (!trace.pendingCalls.delete(callId)) {
+          if (this.#profile.sessionFormatVersion === 4) {
+            const tool = trace.toolCalls.get(callId);
+            if (
+              !tool ||
+              (!tool.started && !isV4ForkToolResult(data, event.sourceEventSeqs, event.seq))
+            ) {
+              fail("Modern history contains an unmatched tool/result");
+            }
+            trace.toolCalls.delete(callId);
+          } else if (!trace.pendingCalls.delete(callId)) {
             fail("Modern history contains an unmatched tool/result");
           }
         } else if (trace.openTurn === null) {
@@ -293,6 +342,7 @@ export class ModernEventValidator {
       case "request/header":
         validateRequestHeader(data);
         if (trace.openTurn === null) fail("Modern history request/header is outside a Turn");
+        trace.requestHeaders.set(event.seq, data.header as Record<string, unknown>);
         return;
       case "request/context":
         validateRequestContext(data, this.#profile);
@@ -302,6 +352,11 @@ export class ModernEventValidator {
         validateModelSelection(data);
         return;
       case "session/end-seed":
+        return;
+      case "image/offload":
+        validateImageOffload(data, trace);
+        return;
+      case "workspace/changes":
         return;
       case "agent-preset/selected":
         exactKeys(data, ["agentPreset"]);
@@ -441,12 +496,145 @@ export class ModernEventValidator {
   }
 }
 
+function registerV4ToolCalls(value: unknown, trace: ValidatorTrace): void {
+  if (!isRecord(value) || !Array.isArray(value.content)) return;
+  for (const block of value.content) {
+    if (!isRecord(block) || block.type !== "tool-call") continue;
+    const callId = requiredString(block.id, "assistant tool-call id");
+    const name = requiredString(block.name, "assistant tool-call name");
+    if (typeof block.arguments !== "string" || trace.toolCalls.has(callId)) {
+      fail("Modern history assistant/message repeats an advertised tool call");
+    }
+    trace.toolCalls.set(callId, { name, arguments: block.arguments, started: false });
+  }
+}
+
+function isV4ForkToolResult(
+  data: Record<string, unknown>,
+  sourceEventSeqs: unknown,
+  seq: number,
+): boolean {
+  if (
+    !isRecord(data.error) ||
+    data.error.name !== "ToolNotStartedError" ||
+    data.error.code !== "TOOL_NOT_STARTED" ||
+    !isRecord(data.message) ||
+    data.message.role !== "tool" ||
+    data.message.isError !== true ||
+    !isRecord(data.message.source) ||
+    data.message.source.kind !== "tool" ||
+    typeof data.message.source.callId !== "string" ||
+    data.message.toolCallId !== data.message.source.callId ||
+    typeof data.message.id !== "string" ||
+    data.message.id !== `forked-tool-result-${data.message.source.callId}-${seq}` ||
+    sourceEventSeqs !== undefined ||
+    !Array.isArray(data.message.content) ||
+    data.message.content.length !== 1
+  ) {
+    return false;
+  }
+  const content = data.message.content[0];
+  return (
+    isRecord(content) &&
+    content.type === "text" &&
+    typeof content.text === "string" &&
+    data.message.id.endsWith(`-${seq}`)
+  );
+}
+
+function validateDeveloperHeader(event: ModernJournalEvent, trace: ValidatorTrace): void {
+  const data = event.data as Record<string, unknown>;
+  if (data.headerSeq === undefined) return;
+  const header = trace.requestHeaders.get(data.headerSeq as number);
+  if (!header || !Array.isArray(header.tools)) {
+    fail("Modern history developer/message references an invalid request/header");
+  }
+  const message = data.message as Record<string, unknown>;
+  for (const block of message.content as unknown[]) {
+    if (!isRecord(block) || block.type !== "tool-addition") continue;
+    const matching = header.tools.filter((tool) => isRecord(tool) && tool.name === block.toolName);
+    if (
+      matching.length !== 1 ||
+      !isRecord(matching[0]) ||
+      typeof matching[0].description !== "string" ||
+      !isRecord(matching[0].parameters) ||
+      (matching[0].deferLoading !== undefined && matching[0].deferLoading !== true)
+    ) {
+      fail("Modern history developer/message references an invalid tool definition");
+    }
+  }
+}
+
+function strictIndex(value: unknown, label: string): number {
+  if (
+    typeof value !== "number" ||
+    !Number.isSafeInteger(value) ||
+    value < 0 ||
+    Object.is(value, -0)
+  ) {
+    fail(`Modern history ${label} is malformed`);
+  }
+  return value;
+}
+
+function validateImageOffload(data: Record<string, unknown>, trace: ValidatorTrace): void {
+  const seen = new Set<number>();
+  for (const target of data.targets as unknown[]) {
+    if (!isRecord(target)) fail("Modern history image/offload target is malformed");
+    exactKeys(target, ["seq", "imageIndexes"]);
+    const seq = strictIndex(target.seq, "image/offload target seq");
+    if (seen.has(seq)) fail("Modern history image/offload repeats a target");
+    seen.add(seq);
+    const source = trace.surface.find((event) => event.seq === seq);
+    if (!source || (source.type !== "user/message" && source.type !== "tool/result")) {
+      fail("Modern history image/offload target is not a current message");
+    }
+    const sourceData =
+      source.type === "user/message"
+        ? source.data
+        : (source.data as Record<string, unknown>).message;
+    const content = isRecord(sourceData) ? sourceData.content : undefined;
+    if (
+      !Array.isArray(content) ||
+      !Array.isArray(target.imageIndexes) ||
+      !target.imageIndexes.length
+    ) {
+      fail("Modern history image/offload indexes are malformed");
+    }
+    const images: Record<string, unknown>[] = [];
+    const collectImages = (value: unknown): void => {
+      if (!Array.isArray(value)) return;
+      for (const block of value) {
+        if (!isRecord(block)) continue;
+        if (block.type === "image") images.push(block);
+        if (Array.isArray(block.content)) collectImages(block.content);
+      }
+    };
+    collectImages(content);
+    let previous = -1;
+    for (const value of target.imageIndexes) {
+      const index = strictIndex(value, "image/offload index");
+      const image = images[index];
+      if (
+        index <= previous ||
+        !isRecord(image) ||
+        image.offloaded === true ||
+        trace.offloadedImages.has(`${seq}:${index}`)
+      ) {
+        fail("Modern history image/offload references an invalid image occurrence");
+      }
+      trace.offloadedImages.add(`${seq}:${index}`);
+      previous = index;
+    }
+  }
+}
+
 function acceptSurfaceEvent(
   trace: ValidatorTrace,
   event: ModernJournalEvent,
   profile: DeepSeekModernProfile,
 ): void {
-  if (!SURFACE_EVENT_TYPES.has(event.type)) return;
+  if (!surfaceEvent(event.type, profile)) return;
   const sources = event.sourceEventSeqs;
   if (
     sources !== undefined &&
@@ -455,18 +643,27 @@ function acceptSurfaceEvent(
         (seq) => !nonNegativeSafeInteger(seq) || Object.is(seq, -0) || seq >= event.seq,
       ) ||
       new Set(sources).size !== sources.length ||
-      (sources.length === 0 && event.type !== "assistant/message"))
+      (sources.length === 0 &&
+        (profile.sessionFormatVersion === 4 || event.type !== "assistant/message")))
   ) {
     fail("Modern history surface event has invalid sourceEventSeqs");
   }
 
   const op = event.surfaceOp;
   if (op === "append") {
+    if (
+      profile.sessionFormatVersion === 4 &&
+      event.type === "system/message" &&
+      trace.surface.length > 0 &&
+      !trace.surface.some((surface) => surface.type === "system/message")
+    ) {
+      fail("Modern history system/message must remain the protected surface head");
+    }
     trace.surface.push(event);
     return;
   }
-  const start = isDeepSeekV015(profile) ? "startSeq" : "start";
-  const end = isDeepSeekV015(profile) ? "endSeq" : "end";
+  const start = hasDeepSeekModernStream(profile) ? "startSeq" : "start";
+  const end = hasDeepSeekModernStream(profile) ? "endSeq" : "end";
   if (
     !isRecord(op) ||
     Reflect.ownKeys(op).length !== 3 ||
@@ -572,6 +769,7 @@ export function resolveModernForkBoundary(
   if (atSeq === null || events[atSeq]?.seq !== atSeq || events[atSeq]?.type !== "turn/end") {
     return null;
   }
+  if (profile.sessionFormatVersion === 4) return { atSeq, events: events.slice(0, atSeq + 1) };
   let cut = atSeq + 1;
   while (cut < events.length && events[cut]?.type !== "turn/start") cut += 1;
   return { atSeq, events: events.slice(0, cut) };
@@ -601,6 +799,7 @@ interface HistoryTurn {
   input: HostTextInput[];
   items: HostItemSnapshot[];
   tools: Map<string, HistoryTool>;
+  advertisedTools: Map<string, { toolName: string; arguments: string }>;
   model: HarnessModelRef | undefined;
 }
 
@@ -655,7 +854,7 @@ export function projectModernHistory(input: ProjectModernHistoryInput): ModernHi
 
   for (const [index, event] of input.events.entries()) {
     validator.accept(event);
-    if (!KNOWN_EVENT_TYPES.has(event.type) || !isRecord(event.data)) continue;
+    if (!knownEvent(event.type, profile) || !isRecord(event.data)) continue;
     const data = event.data;
     switch (event.type) {
       case "turn/start":
@@ -665,6 +864,7 @@ export function projectModernHistory(input: ProjectModernHistoryInput): ModernHi
           input: [],
           items: [],
           tools: new Map(),
+          advertisedTools: new Map(),
           model: effectiveModel,
         };
         break;
@@ -746,7 +946,7 @@ export function projectModernHistory(input: ProjectModernHistoryInput): ModernHi
     harnessId,
     nativeSessionId: input.sessionId,
     formatVersion: 1,
-    ...(isDeepSeekV015(profile) ? { locator: { dshVersion: profile.version } } : {}),
+    ...(hasDeepSeekModernStream(profile) ? { locator: { dshVersion: profile.version } } : {}),
   });
   const state: HarnessSessionState = {
     nativeRef,
@@ -791,7 +991,7 @@ export function modernCheckpointRef(
     nativeSessionId: sessionId,
     checkpointId: `${profile.checkpointPrefix}${seq}`,
     formatVersion: 1,
-    ...(isDeepSeekV015(profile) ? { locator: { dshVersion: profile.version } } : {}),
+    ...(hasDeepSeekModernStream(profile) ? { locator: { dshVersion: profile.version } } : {}),
   });
 }
 
@@ -805,6 +1005,19 @@ function projectAssistantMessage(
   data: Record<string, unknown>,
 ): void {
   const message = data.message as Record<string, unknown>;
+  if (Array.isArray(message.content)) {
+    for (const block of message.content) {
+      if (
+        isRecord(block) &&
+        block.type === "tool-call" &&
+        typeof block.id === "string" &&
+        typeof block.name === "string" &&
+        typeof block.arguments === "string"
+      ) {
+        turn.advertisedTools.set(block.id, { toolName: block.name, arguments: block.arguments });
+      }
+    }
+  }
   const reasoning = contentByType(message.content, "reasoning");
   if (reasoning) {
     const item: HostReasoningItem = {
@@ -843,6 +1056,7 @@ function projectToolCall(
   const itemIndex = turn.items.length;
   turn.items.push({ item, outcome: incompleteToolOutcome(item.toolName) });
   turn.tools.set(data.callId as string, { itemIndex, item, toolName: item.toolName });
+  turn.advertisedTools.delete(data.callId as string);
 }
 
 function projectToolResultEvent(
@@ -854,9 +1068,26 @@ function projectToolResultEvent(
 ): void {
   const result = projectToolResult(data.message, limit);
   if (!result) fail("Modern history contains an unprojectable tool/result");
-  const tool = turn.tools.get(result.callId);
-  if (!tool) fail("Modern history contains an unmatched projected tool/result");
+  let tool = turn.tools.get(result.callId);
+  if (!tool) {
+    const advertised = turn.advertisedTools.get(result.callId);
+    if (advertised && isForkedToolResult(data, result.callId, seq)) {
+      const item: HostToolExecutionItem = {
+        type: "toolExecution",
+        itemId: modernItemId(sessionId, `event:${seq}:tool`),
+        toolName: advertised.toolName,
+        arguments: parseArguments(advertised.arguments),
+      };
+      const itemIndex = turn.items.length;
+      turn.items.push({ item, outcome: incompleteToolOutcome(item.toolName) });
+      tool = { itemIndex, item, toolName: item.toolName };
+    }
+  }
+  if (!tool) {
+    fail("Modern history contains an unmatched projected tool/result");
+  }
   turn.tools.delete(result.callId);
+  turn.advertisedTools.delete(result.callId);
   const item = { ...tool.item, ...(result.output ? { output: result.output } : {}) };
   turn.items[tool.itemIndex] = {
     item,
@@ -884,6 +1115,21 @@ function projectToolResultEvent(
       turn.items.push({ item: fileItem, outcome: { status: "succeeded" } });
     }
   }
+}
+
+function isForkedToolResult(data: Record<string, unknown>, callId: string, seq: number): boolean {
+  const message = data.message;
+  return (
+    isRecord(data.error) &&
+    data.error.name === "ToolNotStartedError" &&
+    data.error.code === "TOOL_NOT_STARTED" &&
+    isRecord(message) &&
+    message.role === "tool" &&
+    message.isError === true &&
+    message.toolCallId === callId &&
+    typeof message.id === "string" &&
+    message.id === `forked-tool-result-${callId}-${seq}`
+  );
 }
 
 function finishIncompleteTools(turn: HistoryTurn, outcome: HostItemOutcome): void {
@@ -1001,11 +1247,16 @@ function validateUserMessage(
   data: Record<string, unknown>,
   profile: DeepSeekModernProfile = DEEPSEEK_V012_PROFILE,
 ): void {
-  exactKeys(data, ["id", "role", "content", "source"]);
+  if (profile.sessionFormatVersion === 4) requiredFields(data, ["id", "role", "content", "source"]);
+  else exactKeys(data, ["id", "role", "content", "source"]);
   requiredString(data.id, "user/message id");
   if (data.role !== "user") fail("Modern history user/message has an invalid role");
   profile.validateContent(data.content);
-  if (!isRecord(data.source) || !requiredString(data.source.kind, "user/message source kind")) {
+  if (
+    !isRecord(data.source) ||
+    !requiredString(data.source.kind, "user/message source kind") ||
+    (profile.sessionFormatVersion === 4 && data.source.kind === "plugin")
+  ) {
     fail("Modern history user/message has an invalid source");
   }
   if (data.source.kind === "user" && data.source.rpcId !== undefined) {
@@ -1018,7 +1269,9 @@ function validateAssistantMessage(
   profile: DeepSeekModernProfile = DEEPSEEK_V012_PROFILE,
 ): void {
   if (!isRecord(value)) fail("Modern history assistant/message is malformed");
-  exactKeys(value, ["id", "role", "content", "source"]);
+  if (profile.sessionFormatVersion === 4)
+    requiredFields(value, ["id", "role", "content", "source"]);
+  else exactKeys(value, ["id", "role", "content", "source"]);
   requiredString(value.id, "assistant/message id");
   if (value.role !== "assistant") fail("Modern history assistant/message has an invalid role");
   profile.validateContent(value.content);
@@ -1037,6 +1290,22 @@ function validateToolResultMessage(
   profile: DeepSeekModernProfile = DEEPSEEK_V012_PROFILE,
 ): string {
   if (!isRecord(value)) fail("Modern history tool/result message is malformed");
+  if (profile.sessionFormatVersion === 4) {
+    requiredFields(value, ["id", "role", "content", "source", "toolCallId"]);
+    requiredString(value.id, "tool/result message id");
+    if (value.role !== "tool" || !isRecord(value.source) || value.source.kind !== "tool") {
+      fail("Modern history tool/result message has an invalid role or source");
+    }
+    const callId = requiredString(value.source.callId, "tool/result source callId");
+    if (
+      value.toolCallId !== callId ||
+      (value.isError !== undefined && typeof value.isError !== "boolean")
+    ) {
+      fail("Modern history tool/result message has invalid callId or isError");
+    }
+    profile.validateContent(value.content);
+    return callId;
+  }
   exactKeys(value, ["id", "role", "content", "source"]);
   requiredString(value.id, "tool/result message id");
   if (value.role !== "user" || !isRecord(value.source) || value.source.kind !== "tool") {
@@ -1060,6 +1329,12 @@ function validateToolResultMessage(
     fail("Modern history tool/result block has invalid isError");
   }
   return callId;
+}
+
+function requiredFields(value: Record<string, unknown>, fields: readonly string[]): void {
+  if (fields.some((field) => !Object.hasOwn(value, field))) {
+    fail("Modern history known event omitted a required field");
+  }
 }
 
 function validateUsage(value: unknown): void {
@@ -1089,7 +1364,7 @@ function validUsage(value: unknown): value is Record<string, unknown> {
     .every((field) => value[field] === undefined || nonNegativeSafeInteger(value[field]));
 }
 
-function validateTurnReason(value: unknown): void {
+function validateTurnReason(value: unknown, profile: DeepSeekModernProfile): void {
   if (!isRecord(value) || typeof value.kind !== "string") {
     fail("Modern history turn/end reason is malformed");
   }
@@ -1098,6 +1373,11 @@ function validateTurnReason(value: unknown): void {
     case "max-tokens":
     case "blocked":
     case "interrupted":
+      exactKeys(value, ["kind"]);
+      return;
+    case "forked":
+      if (profile.sessionFormatVersion !== 4)
+        fail("Modern history contains an unknown Turn outcome");
       exactKeys(value, ["kind"]);
       return;
     case "aborted":
@@ -1169,7 +1449,7 @@ function validateRequestContext(
   requiredOptionalKeys(
     data,
     ["provider", "model"],
-    isDeepSeekV015(profile) ? ["contextWindow", "systemPromptUpdate"] : ["contextWindow"],
+    hasDeepSeekModernStream(profile) ? ["contextWindow", "systemPromptUpdate"] : ["contextWindow"],
   );
   if (!nonBlankString(data.provider) || !nonBlankString(data.model)) {
     fail("Modern history request/context has an invalid Model route");
@@ -1189,11 +1469,18 @@ function validateModelSelection(data: Record<string, unknown>): void {
   }
 }
 
-function validateToolError(value: unknown): void {
+function validateToolError(value: unknown, profile: DeepSeekModernProfile): void {
   if (!isRecord(value)) fail("Modern history tool/result error is malformed");
-  exactKeys(value, ["name", "code"]);
+  requiredOptionalKeys(
+    value,
+    ["name", "code"],
+    profile.sessionFormatVersion === 4 ? ["reason"] : [],
+  );
   requiredString(value.name, "tool/result error name");
   requiredString(value.code, "tool/result error code");
+  if (value.reason !== undefined && typeof value.reason !== "string") {
+    fail("Modern history tool/result error reason is malformed");
+  }
 }
 
 function validateInboxSplice(data: Record<string, unknown>, profile: DeepSeekModernProfile): void {
@@ -1573,7 +1860,7 @@ function validateTeamEvent(
   data: Record<string, unknown>,
   profile: DeepSeekModernProfile,
 ): void {
-  if (data.version !== (isDeepSeekV015(profile) ? 2 : 1))
+  if (data.version !== (hasDeepSeekModernStream(profile) ? 2 : 1))
     fail("Modern history team event version is malformed");
   requiredString(data.teamId, "team event teamId");
   if (type === "team/message/delivered") {

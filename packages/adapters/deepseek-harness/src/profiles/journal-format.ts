@@ -29,7 +29,7 @@ export class ModernJournalError extends Error {
   }
 }
 
-export function parseEvent(value: unknown, format: 0 | 3 = 0): ModernJournalEvent {
+export function parseEvent(value: unknown, format: 0 | 3 | 4 = 0): ModernJournalEvent {
   if (
     !isRecord(value) ||
     !hasRequiredOptionalKeys(
@@ -50,7 +50,7 @@ export function parseEvent(value: unknown, format: 0 | 3 = 0): ModernJournalEven
     throw protocolError("journal event has invalid scalar fields");
   }
   assertJsonValue(value.data, "journal event data");
-  if (format === 3 && value.ignorable === true) {
+  if (format >= 3 && value.ignorable === true) {
     // Vocabulary-aware validation decides whether these fields have surface semantics.
     if (Object.hasOwn(value, "sourceEventSeqs"))
       assertJsonValue(value.sourceEventSeqs, "journal event sourceEventSeqs");
@@ -71,10 +71,10 @@ export function parseEvent(value: unknown, format: 0 | 3 = 0): ModernJournalEven
   return value as unknown as ModernJournalEvent;
 }
 
-function parseSurfaceOp(value: unknown, format: 0 | 3): ModernJournalSurfaceOp {
+function parseSurfaceOp(value: unknown, format: 0 | 3 | 4): ModernJournalSurfaceOp {
   if (value === "append") return value;
-  const start = format === 3 ? "startSeq" : "start";
-  const end = format === 3 ? "endSeq" : "end";
+  const start = format >= 3 ? "startSeq" : "start";
+  const end = format >= 3 ? "endSeq" : "end";
   if (
     !isRecord(value) ||
     !hasExactKeys(value, ["op", start, end]) ||

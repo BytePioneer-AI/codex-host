@@ -10,6 +10,7 @@ import {
   type DeepSeekModernSessionCandidate,
 } from "@codexhost/shared-contracts";
 
+import { DEEPSEEK_V015_PROFILE, type DeepSeekModernProfile } from "../profiles/profile.js";
 import { ModernRemoteConnectionError } from "./remote-connection.js";
 import {
   redactModernCredential,
@@ -171,11 +172,15 @@ function validUpdatedAt(value: unknown): value is number {
   );
 }
 
-function titleFromProjections(value: unknown): string | null {
+function titleFromProjections(value: unknown, profile: DeepSeekModernProfile): string | null {
   if (value === undefined) return null;
   if (
     !isPlainRecord(value) ||
-    !exactKeys(value, ["asOfSeq", "values"]) ||
+    !exactKeys(
+      value,
+      profile.sessionFormatVersion === 4 ? ["kind", "asOfSeq", "values"] : ["asOfSeq", "values"],
+    ) ||
+    (profile.sessionFormatVersion === 4 && value.kind !== "cached" && value.kind !== "sequenced") ||
     !Number.isSafeInteger(value.asOfSeq) ||
     (value.asOfSeq as number) < -1 ||
     !isPlainRecord(value.values)
@@ -194,16 +199,19 @@ function titleFromProjections(value: unknown): string | null {
     : null;
 }
 
-function parseSummary(value: unknown): ParsedSessionSummary {
+function parseSummary(value: unknown, profile: DeepSeekModernProfile): ParsedSessionSummary {
   if (
     !isPlainRecord(value) ||
     !exactKeys(
       value,
-      ["sessionId", "updatedAt", "running", "blank"],
+      profile.sessionFormatVersion === 4
+        ? ["sessionId", "updatedAt", "agentAvailable", "running", "blank"]
+        : ["sessionId", "updatedAt", "running", "blank"],
       ["parentSessionId", "origin", "cwd", "projections"],
     ) ||
     typeof value.running !== "boolean" ||
     typeof value.blank !== "boolean" ||
+    (profile.sessionFormatVersion === 4 && typeof value.agentAvailable !== "boolean") ||
     !validUpdatedAt(value.updatedAt)
   ) {
     throw sessionListError("protocolError", "DeepSeek Harness returned an invalid Session row");
@@ -228,7 +236,7 @@ function parseSummary(value: unknown): ParsedSessionSummary {
     blank: value.blank,
     ...(value.origin === undefined ? {} : { origin: value.origin }),
     ...(value.cwd === undefined ? {} : { cwd: value.cwd }),
-    title: titleFromProjections(value.projections),
+    title: titleFromProjections(value.projections, profile),
   };
 }
 
@@ -242,8 +250,11 @@ function isCanonicalAbsoluteCwd(value: string | undefined): value is string {
   );
 }
 
-/** Strictly parse and filter one exact rc.1 Modern `session/list` value. */
-export function parseModernSessionCandidates(value: unknown): DeepSeekModernSessionCandidate[] {
+/** Strictly parse and filter one Modern `session/list` value for the selected profile. */
+export function parseModernSessionCandidates(
+  value: unknown,
+  profile: DeepSeekModernProfile = DEEPSEEK_V015_PROFILE,
+): DeepSeekModernSessionCandidate[] {
   assertBoundedJson(value);
   if (!isPlainRecord(value) || !exactKeys(value, ["items"]) || !Array.isArray(value.items)) {
     throw sessionListError("protocolError", "DeepSeek Harness returned an invalid Session list");
@@ -257,7 +268,7 @@ export function parseModernSessionCandidates(value: unknown): DeepSeekModernSess
 
   const seen = new Set<string>();
   const summaries = value.items.map((item) => {
-    const summary = parseSummary(item);
+    const summary = parseSummary(item, profile);
     if (seen.has(summary.sessionId)) {
       throw sessionListError(
         "protocolError",
@@ -288,6 +299,7 @@ export function parseModernSessionCandidates(value: unknown): DeepSeekModernSess
 export async function loadModernSessionCandidates(
   remote: ModernSessionListRemote,
   signal?: AbortSignal,
+  profile: DeepSeekModernProfile = DEEPSEEK_V015_PROFILE,
 ): Promise<DeepSeekModernSessionCandidate[]> {
   try {
     const result = await remote.call<unknown>("session/list", { _request: {} }, signal);
@@ -299,7 +311,7 @@ export async function loadModernSessionCandidates(
         safe.code,
       );
     }
-    return parseModernSessionCandidates(result.value);
+    return parseModernSessionCandidates(result.value, profile);
   } catch (error) {
     if (error instanceof ModernSessionListError) throw error;
     if (error instanceof ModernRemoteConnectionError) {

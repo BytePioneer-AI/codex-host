@@ -87,6 +87,22 @@ describe("DeepSeek native result projection", () => {
     ).toEqual({ callId: "read-1", failed: false });
   });
 
+  it("projects V4 tool-role output and failure", () => {
+    const result = {
+      role: "tool",
+      toolCallId: "call-1",
+      isError: true,
+      source: { kind: "tool", callId: "call-1" },
+      content: [{ type: "text", text: "failed read" }],
+    };
+    expect(projectToolResult(result, 6)).toEqual({
+      callId: "call-1",
+      failed: true,
+      output: { content: [{ type: "text", text: "failed" }], truncated: true },
+    });
+    expect(projectToolResult({ ...result, toolCallId: "other" }, 20)).toBeNull();
+  });
+
   it.each([
     null,
     [],

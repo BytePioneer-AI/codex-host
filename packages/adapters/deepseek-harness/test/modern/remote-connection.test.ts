@@ -144,6 +144,12 @@ function authResponse(authority = AUTHORITY): Response {
   });
 }
 
+function authResponseWithLocation(location: "/" | "./", authority = AUTHORITY): Response {
+  const response = authResponse(authority);
+  response.headers.set("location", location);
+  return response;
+}
+
 function jsonResponse(value: unknown, status = 200): Response {
   return new Response(JSON.stringify(value), {
     status,
@@ -480,6 +486,12 @@ describe("DeepSeek Harness Modern Web Remote connection", () => {
     await setup.connection.close();
     await expect(setup.connection.openWebUi()).rejects.toMatchObject({ code: "unavailable" });
     expect(openWebUi).toHaveBeenCalledOnce();
+  });
+
+  it("accepts the relative-root bootstrap redirect used by DSH 0.1.7-rc.1", async () => {
+    const setup = harness(vi.fn(() => Promise.resolve(authResponseWithLocation("./"))));
+    await expect(setup.connection.connect()).resolves.toBeUndefined();
+    await setup.connection.close();
   });
 
   it("redacts the bootstrap token from browser handoff failures", async () => {

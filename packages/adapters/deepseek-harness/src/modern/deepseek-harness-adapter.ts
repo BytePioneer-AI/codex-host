@@ -63,7 +63,7 @@ import { loadModernPermissionModeCatalog, ModernPermissionModeError } from "./pe
 import {
   deepSeekModernProfile,
   type DeepSeekModernVersion,
-  isDeepSeekV015,
+  hasDeepSeekModernStream,
   type DeepSeekModernProfile,
 } from "../profiles/profile.js";
 import {
@@ -198,6 +198,7 @@ export class ModernDeepSeekHarnessAdapter implements HarnessAdapter {
       onFault: (error) => this.#fail(toHarnessError(error, "unavailable")),
     });
     this.#control = new ModernControlStore(this.#connection, {
+      profile: this.#profile,
       onFault: (error) => this.#fail(toHarnessError(error, "unavailable")),
     });
     this.#removeConnectionFaultListener = this.#connection.onFault((error) => {
@@ -275,7 +276,11 @@ export class ModernDeepSeekHarnessAdapter implements HarnessAdapter {
     try {
       await this.#connection.connect();
       this.#assertAccepting();
-      const candidates = await loadModernSessionCandidates(this.#connection, this.#lifetime.signal);
+      const candidates = await loadModernSessionCandidates(
+        this.#connection,
+        this.#lifetime.signal,
+        this.#profile,
+      );
       this.#assertAccepting();
       return { ok: true, value: candidates };
     } catch (error) {
@@ -413,7 +418,7 @@ export class ModernDeepSeekHarnessAdapter implements HarnessAdapter {
       if (forkExpectation) {
         await this.#verifyForkJournal(forkExpectation, journal, cwd);
         if (
-          isDeepSeekV015(this.#profile) &&
+          hasDeepSeekModernStream(this.#profile) &&
           (await clearInheritedForkInbox(this.#connection, journal, this.#lifetime.signal))
         ) {
           await journal.close();
@@ -458,12 +463,13 @@ export class ModernDeepSeekHarnessAdapter implements HarnessAdapter {
           harnessId: this.harnessId,
           nativeSessionId: sessionId,
           formatVersion: 1,
-          ...(isDeepSeekV015(this.#profile)
+          ...(hasDeepSeekModernStream(this.#profile)
             ? { locator: { dshVersion: this.#profile.version } }
             : {}),
         }),
         modelCatalog: catalog,
         permissionModes,
+        profile: this.#profile,
       });
       verifyCreateConfiguration(createConfiguration, openedConfiguration);
       if (createConfiguration?.unattended && !delegationPermissionIsApplied(journal.events)) {
@@ -482,7 +488,7 @@ export class ModernDeepSeekHarnessAdapter implements HarnessAdapter {
         modelCatalog: catalog,
         permissionModes,
         sessionId,
-        ...(isDeepSeekV015(this.#profile)
+        ...(hasDeepSeekModernStream(this.#profile)
           ? { flushSession: () => this.#connection.flushSession(sessionId) }
           : {}),
         randomUUID: this.#dependencies.randomUUID,
@@ -667,7 +673,10 @@ export class ModernDeepSeekHarnessAdapter implements HarnessAdapter {
       }
       atSeq = boundary.atSeq;
       minimumSeedLength = boundary.events.length;
-      if (boundary.events.length < source.events.length) {
+      if (
+        this.#profile.sessionFormatVersion === 4 ||
+        boundary.events.length < source.events.length
+      ) {
         exactSeedLength = boundary.events.length;
       }
     } finally {
@@ -811,7 +820,11 @@ export class ModernDeepSeekHarnessAdapter implements HarnessAdapter {
       return Promise.resolve(this.#permissionModes ?? null);
     }
     if (this.#permissionModesPromise) return this.#permissionModesPromise;
-    const operation = loadModernPermissionModeCatalog(this.#connection)
+    const operation = loadModernPermissionModeCatalog(
+      this.#connection,
+      this.#lifetime.signal,
+      this.#profile,
+    )
       .then((catalog) => {
         this.#permissionModes = catalog;
         this.#permissionModesLoaded = true;
@@ -1102,9 +1115,9 @@ function parseModernForkInput(
 function sessionLocatorMatches(locator: unknown, profile: DeepSeekModernProfile): boolean {
   if (locator === undefined) return true;
   // A Native Session ID may be reopened after upgrading between V3 CLI releases.
-  // The journal header/history still has to parse as V3; checkpoints remain exact.
+  // The journal header/history still has to match the selected format; checkpoints remain exact.
   if (
-    !isDeepSeekV015(profile) ||
+    !hasDeepSeekModernStream(profile) ||
     !isRecord(locator) ||
     Reflect.ownKeys(locator).length !== 1 ||
     typeof locator.dshVersion !== "string"
@@ -1113,14 +1126,20 @@ function sessionLocatorMatches(locator: unknown, profile: DeepSeekModernProfile)
   }
   try {
     const { version } = classifyDeepSeekVersionOutput(locator.dshVersion);
-    return isDeepSeekV015(deepSeekModernProfile(version));
+    const original = deepSeekModernProfile(version);
+    return (
+      original.sessionFormatVersion === profile.sessionFormatVersion ||
+      (profile.sessionFormatVersion === 4 && original.sessionFormatVersion === 3)
+    );
   } catch {
     return false;
   }
 }
 
 function checkpointLocatorMatches(locator: unknown, profile: DeepSeekModernProfile): boolean {
-  return isDeepSeekV015(profile) ? profileLocatorMatches(locator, profile) : locator === undefined;
+  return hasDeepSeekModernStream(profile)
+    ? profileLocatorMatches(locator, profile)
+    : locator === undefined;
 }
 
 function profileLocatorMatches(locator: unknown, profile: DeepSeekModernProfile): boolean {

@@ -28,6 +28,7 @@ for (const [id, variable, Adapter] of [
       let overlapping = false;
       let heldClosed = false;
       let heldStarted = false;
+      const overlapDetails = [];
       const modelRequests = [];
       const server = http.createServer((request, response) => {
         if (request.method === "GET") {
@@ -44,19 +45,42 @@ for (const [id, variable, Adapter] of [
           const text = JSON.stringify(user?.content ?? "");
           const held = text.includes("HOLD_INPUT");
           const main = /(?:FIRST|HOLD|THIRD)_INPUT/u.test(text);
-          modelRequests.push({ held, main, input: text.match(/(?:FIRST|HOLD|THIRD)_INPUT/u)?.[0] });
-          if (main && responses.size > 0) overlapping = true;
+          modelRequests.push({
+            held,
+            main,
+            input: text.match(/(?:FIRST|HOLD|THIRD)_INPUT/u)?.[0],
+            url: request.url,
+            model: body.model,
+            messages: body.messages?.length,
+            sessionId: request.headers["x-deepseek-harness-session-id"],
+          });
+          const activeResponses = [...responses].filter(
+            (active) => !active.writableEnded && !active.destroyed,
+          );
+          if (main && activeResponses.length > 0) {
+            overlapping = true;
+            overlapDetails.push({
+              input: text.match(/(?:FIRST|HOLD|THIRD)_INPUT/u)?.[0],
+              active: activeResponses.map((active) => ({
+                writableEnded: active.writableEnded,
+                destroyed: active.destroyed,
+                finished: active.finished,
+              })),
+            });
+          }
           if (main) responses.add(response);
           if (held) heldStarted = true;
           response.on("close", () => {
             responses.delete(response);
             if (held) heldClosed = true;
           });
+          response.on("finish", () => responses.delete(response));
           response.writeHead(200, {
             "content-type": "text/event-stream",
             "cache-control": "no-cache",
           });
-          const chunk = (content, finish_reason = null) =>
+          const messagesApi = request.url?.endsWith("/messages") === true;
+          const openAiChunk = (content, finish_reason = null) =>
             response.write(
               `data: ${JSON.stringify({
                 id: "chatcmpl-fixture",
@@ -66,12 +90,50 @@ for (const [id, variable, Adapter] of [
                 choices: [{ index: 0, delta: { role: "assistant", content }, finish_reason }],
               })}\n\n`,
             );
-          chunk(held ? "HOLD_BEGIN" : "FIRST_CHUNK");
+          const messagesEvent = (value) => response.write(`data: ${JSON.stringify(value)}\n\n`);
+          if (messagesApi) {
+            messagesEvent({
+              type: "message_start",
+              message: {
+                id: "msg-fixture",
+                model: "deepseek-v4-flash",
+                usage: { input_tokens: 1, output_tokens: 0 },
+              },
+            });
+            messagesEvent({
+              type: "content_block_start",
+              index: 0,
+              content_block: { type: "text", text: "" },
+            });
+            messagesEvent({
+              type: "content_block_delta",
+              index: 0,
+              delta: { type: "text_delta", text: held ? "HOLD_BEGIN" : "FIRST_CHUNK" },
+            });
+          } else {
+            openAiChunk(held ? "HOLD_BEGIN" : "FIRST_CHUNK");
+          }
           if (!held) {
-            await new Promise((resolve) => setTimeout(resolve, 100));
-            chunk(" SECOND_CHUNK");
-            chunk("", "stop");
-            response.end("data: [DONE]\n\n");
+            await new Promise((resolve) => setImmediate(resolve));
+            if (messagesApi) {
+              messagesEvent({
+                type: "content_block_delta",
+                index: 0,
+                delta: { type: "text_delta", text: " SECOND_CHUNK" },
+              });
+              messagesEvent({ type: "content_block_stop", index: 0 });
+              messagesEvent({
+                type: "message_delta",
+                delta: { stop_reason: "end_turn" },
+                usage: { output_tokens: 2 },
+              });
+              messagesEvent({ type: "message_stop" });
+            } else {
+              openAiChunk(" SECOND_CHUNK");
+              openAiChunk("", "stop");
+              response.write("data: [DONE]\n\n");
+            }
+            response.end();
           }
         })().catch(() => {
           response.destroy();
@@ -260,7 +322,11 @@ for (const [id, variable, Adapter] of [
         );
         await session.close();
         await waitFor(() => heldClosed, "active Session close stops native request");
-        assert.equal(overlapping, false);
+        assert.equal(
+          overlapping,
+          false,
+          JSON.stringify({ modelRequests, overlapDetails, responses: responses.size, heldClosed }),
+        );
       } finally {
         await adapter.close();
         await Promise.all(consumers);

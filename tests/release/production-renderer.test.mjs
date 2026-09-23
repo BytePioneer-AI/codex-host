@@ -35,6 +35,22 @@ describe("production Renderer release chain", () => {
     expect(installer).toContain("installCurrentRendererAdapter");
   });
 
+  it("keeps the Controller Agent list in sync with the production Renderer", async () => {
+    const [controller, agentState] = await Promise.all([
+      source("packages/desktop-control/src/production-controller.ts"),
+      source("packages/renderer-extension/src/agent-selection-state.ts"),
+    ]);
+    const agents = (text, pattern) => {
+      const block = text.match(pattern)?.[1];
+      if (!block) throw new Error(`Agent list not found: ${pattern}`);
+      return [...block.matchAll(/"([^"]+)"/g)].map(([, agent]) => agent);
+    };
+    const rendererAgents = agents(agentState, /KNOWN_RENDERER_AGENTS = \[([^\]]*)\]/);
+    const controllerAgents = agents(controller, /enabledAgents: \[([^\]]*)\]/);
+
+    expect(controllerAgents).toEqual(rendererAgents);
+  });
+
   it("accepts Grok and Antigravity in renderer probe capabilities and selections", () => {
     const status = validateProbeStatus({
       version: 2,

@@ -136,6 +136,14 @@ const guides: Readonly<Record<ExternalRendererAgent, InstallationGuide>> = {
     ),
     after: start("agent"),
   },
+  devin: {
+    url: "https://docs.devin.ai/cli",
+    commands: shells(
+      "curl -fsSL https://cli.devin.ai/install.sh | bash",
+      "irm https://cli.devin.ai/install.ps1 | iex",
+    ),
+    after: start("devin auth login"),
+  },
   hermes: {
     url: "https://hermes-agent.nousresearch.com/docs/getting-started/installation",
     commands: shells(

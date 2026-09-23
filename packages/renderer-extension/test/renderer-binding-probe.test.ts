@@ -552,6 +552,29 @@ describe("Renderer Composer DOM behavior", () => {
       expect(control.sendDisabledBeforeSwitch).toBe(false);
     });
 
+    it("keeps the mount-time last-button fallback for unlabelled action buttons", () => {
+      const stale = button(false);
+      const owned = {
+        type: "button",
+        disabled: false,
+        isConnected: true,
+        hasAttribute: (name: string) => name === "data-codexhost-agent-control",
+        parentElement: null,
+      } as unknown as HTMLButtonElement;
+      const action = {
+        type: "button",
+        disabled: false,
+        isConnected: true,
+        hasAttribute: () => false,
+        getAttribute: () => null,
+        textContent: "",
+        parentElement: null,
+      } as unknown as HTMLButtonElement;
+      const { control } = fakeControl(stale, [action, owned]);
+
+      expect(refreshSendButton(control)).toBe(action);
+    });
+
     it("never moves owned controls into the detached trailing cluster", () => {
       const stale = button(false);
       const { control, detachedParent } = fakeControl(stale, []);

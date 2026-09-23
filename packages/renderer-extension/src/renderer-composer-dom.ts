@@ -483,6 +483,27 @@ export function creditsPlacementAnchor(control: ComposerAgentControl): HTMLEleme
 }
 
 /**
+ * Mirrors the mount-time `allButtons.at(-1)` fallback for Composers whose
+ * action button is neither `type="submit"` nor labelled as send. After mount
+ * the Composer also contains our own controls, so skip their buttons.
+ */
+function lastNativeButtonWithin(composer: Element): HTMLButtonElement | null {
+  const buttons = [...composer.querySelectorAll<HTMLButtonElement>("button")];
+  for (let index = buttons.length - 1; index >= 0; index -= 1) {
+    const button = buttons[index];
+    if (button && !isInsideOwnedRendererControl(button, composer)) return button;
+  }
+  return null;
+}
+
+function isInsideOwnedRendererControl(element: Element, composer: Element): boolean {
+  for (let node: Element | null = element; node && node !== composer; node = node.parentElement) {
+    if (typeof node.hasAttribute === "function" && isOwnedRendererControl(node)) return true;
+  }
+  return false;
+}
+
+/**
  * Codex re-renders the trailing action cluster (for example when the draft
  * becomes non-empty or a turn starts/stops), which replaces the send button
  * and its wrapper. Follow the live button so placement never anchors to a
@@ -492,7 +513,8 @@ export function creditsPlacementAnchor(control: ComposerAgentControl): HTMLEleme
 export function refreshSendButton(control: ComposerAgentControl): HTMLButtonElement | null {
   const current = control.sendButton;
   if (current?.isConnected && control.composer.contains(current)) return current;
-  const replacement = sendButtonWithin(control.composer);
+  const replacement =
+    sendButtonWithin(control.composer) ?? lastNativeButtonWithin(control.composer);
   if (!replacement) return null;
   if (control.sendDisabledBeforeSwitch !== null) {
     control.sendDisabledBeforeSwitch = replacement.disabled;

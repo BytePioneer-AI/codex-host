@@ -1,6 +1,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { lstat, rm } from "node:fs/promises";
+import { lstat, rm, stat } from "node:fs/promises";
 import path from "node:path";
 import type { Writable } from "node:stream";
 
@@ -66,7 +66,27 @@ async function socketIdentity(socketPath: string): Promise<UnixFileIdentity | nu
     throw error;
   });
   if (metadata === null) return null;
-  if (!metadata.isSocket()) {
+  if (metadata.isSymbolicLink()) {
+    // Newer Codex builds publish a link to their private daemon socket. Keep
+    // the link's identity for cleanup, but validate the endpoint before use.
+    const target = await stat(socketPath).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT") return null;
+      throw error;
+    });
+    if (target === null) return null;
+    const uid = process.getuid?.();
+    if (
+      uid === undefined ||
+      metadata.uid !== uid ||
+      target.uid !== uid ||
+      !target.isSocket() ||
+      (target.mode & 0o077) !== 0
+    ) {
+      throw new Error(
+        `Shared official app-server link must target a current-user private socket: ${socketPath}`,
+      );
+    }
+  } else if (!metadata.isSocket()) {
     throw new Error(`Shared official app-server path is not a socket: ${socketPath}`);
   }
   return { dev: metadata.dev, ino: metadata.ino };
@@ -144,7 +164,9 @@ export function createRemoteOfficialAppServerListener(input: {
 
   const removeOwnedSocket = async (): Promise<void> => {
     if (ownedSocketIdentity === null) return;
-    const current = await socketIdentity(input.socketPath).catch(() => null);
+    // The backend may already have removed the link target. Cleanup owns the
+    // directory entry, not its target; never follow a replacement here.
+    const current = await lstat(input.socketPath).catch(() => null);
     if (current && sameUnixFileIdentity(current, ownedSocketIdentity)) {
       await rm(input.socketPath, { force: true });
     }

@@ -48,6 +48,8 @@ import {
   type RendererHarnessCommandControl,
 } from "./renderer-harness-command-control.js";
 
+import { inspectComposerCodexUsageGate } from "./renderer-codex-usage-gate.js";
+
 export { CONTROL_ATTRIBUTE };
 export type ExternalModelControlView = RendererModelControlView;
 export type ExternalPermissionModeControlView = RendererPermissionModeControlView;
@@ -76,6 +78,8 @@ export interface RendererComposerContractInspection {
   verifiedContextUsageCandidateCount: number;
   sendButtonCount: number;
   trailingActionOwnerCount: number;
+  codexUsageGateCandidateCount: number;
+  verifiedCodexUsageGateCount: number;
 }
 
 export interface ComposerAgentControl {
@@ -379,8 +383,13 @@ export function inspectRendererComposerContract(
     verifiedContextUsageCandidateCount: 0,
     sendButtonCount: 0,
     trailingActionOwnerCount: 0,
+    codexUsageGateCandidateCount: 0,
+    verifiedCodexUsageGateCount: 0,
   };
   for (const composer of composers) {
+    const usageGate = inspectComposerCodexUsageGate(composer);
+    result.codexUsageGateCandidateCount += usageGate.candidateCount;
+    result.verifiedCodexUsageGateCount += usageGate.verifiedCount;
     if (contractElementVisible(composer)) result.visibleComposerCount += 1;
     const editors = [...composer.querySelectorAll<HTMLElement>(EDITOR_SELECTOR)].filter(
       contractElementVisible,
@@ -721,6 +730,18 @@ export function mountComposerAgentControl(
   return control;
 }
 
+function nativeSendDisabled(button: HTMLButtonElement, fallback: boolean): boolean {
+  const keys = Object.getOwnPropertyNames(button).filter((key) => key.startsWith("__reactProps$"));
+  const key = keys.length === 1 ? keys[0] : undefined;
+  const props: unknown = key ? Object.getOwnPropertyDescriptor(button, key)?.value : undefined;
+  return typeof props === "object" &&
+    props !== null &&
+    "disabled" in props &&
+    typeof props.disabled === "boolean"
+    ? props.disabled
+    : fallback;
+}
+
 export function renderComposerAgentControl(
   control: ComposerAgentControl,
   state: { agent: RendererAgent; phase: ComposerAgentPhase },
@@ -763,7 +784,12 @@ export function renderComposerAgentControl(
     control.sendDisabledBeforeSwitch = control.sendButton.disabled;
     control.sendButton.disabled = true;
   } else if (!submissionBlocked && control.sendDisabledBeforeSwitch !== null) {
-    control.sendButton.disabled = control.sendDisabledBeforeSwitch;
+    // Native quota (or another native blocker) may have changed while switching.
+    // Do not restore a stale DOM flag over the latest committed native props.
+    control.sendButton.disabled = nativeSendDisabled(
+      control.sendButton,
+      control.sendDisabledBeforeSwitch,
+    );
     control.sendDisabledBeforeSwitch = null;
   }
   const pickerView = renderRendererAgentPicker(
@@ -811,7 +837,10 @@ export function renderComposerAgentControl(
 
 export function disposeComposerAgentControl(control: ComposerAgentControl): void {
   if (control.sendDisabledBeforeSwitch !== null) {
-    control.sendButton.disabled = control.sendDisabledBeforeSwitch;
+    control.sendButton.disabled = nativeSendDisabled(
+      control.sendButton,
+      control.sendDisabledBeforeSwitch,
+    );
   }
   restoreNativeControl(control.nativeModelControl);
   restoreNativeControl(control.nativeContextUsageControl);

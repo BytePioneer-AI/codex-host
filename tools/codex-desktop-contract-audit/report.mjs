@@ -246,16 +246,23 @@ export function buildSurfaceResults(contracts, baseline = null, controlled = nul
       activeComposerCount: contracts.composer.activeComposerCount,
       sendButtonCount: contracts.composer.sendButtonCount,
       trailingActionOwnerCount: contracts.composer.trailingActionOwnerCount,
+      codexUsageGateCandidateCount: contracts.composer.codexUsageGateCandidateCount,
+      verifiedCodexUsageGateCount: contracts.composer.verifiedCodexUsageGateCount,
     },
-    live: stateForUnique(
-      contracts.composer.activeComposerCount,
-      contracts.composer.visibleComposerCount > 0,
-    ),
+    live:
+      activeComposer && contracts.composer.verifiedCodexUsageGateCount !== 1
+        ? "fail"
+        : stateForUnique(
+            contracts.composer.activeComposerCount,
+            contracts.composer.visibleComposerCount > 0,
+          ),
     active: contracts.composer.visibleComposerCount > 0,
     reason:
-      contracts.composer.visibleComposerCount > 0
-        ? "active-composer-cardinality"
-        : "composer-state-not-visible",
+      activeComposer && contracts.composer.verifiedCodexUsageGateCount !== 1
+        ? "codex-usage-gate-contract"
+        : contracts.composer.visibleComposerCount > 0
+          ? "active-composer-cardinality"
+          : "composer-state-not-visible",
     baseline,
   });
   const modelResolved = contracts.model.draftCount + contracts.model.conversationCount;

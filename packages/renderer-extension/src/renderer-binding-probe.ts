@@ -51,6 +51,10 @@ import {
 import { installReasoningTranscriptSoftWrap } from "./renderer-transcript-dom.js";
 import { RendererCodexAccountState } from "./renderer-codex-account-state.js";
 import {
+  createRendererCodexUsageGate,
+  type RendererCodexUsageGate,
+} from "./renderer-codex-usage-gate.js";
+import {
   decodeAntigravityTransportModelId,
   decodeClaudeTransportModelId,
   decodeDeepSeekHarnessTransportModelId,
@@ -566,6 +570,7 @@ interface MountedComposer {
   composer: Element;
   composerId: string;
   control: ComposerAgentControl;
+  codexUsageGate: RendererCodexUsageGate;
   modelTarget: readonly unknown[] | null;
   modelView: ExternalModelControlView;
   permissionModeView: ExternalPermissionModeControlView;
@@ -660,6 +665,7 @@ export function applyComposerModelWrite(
 }
 
 function mutationMayChangeComposerTarget(mutation: MutationRecord): boolean {
+  if (mutation.type === "attributes" && mutation.attributeName === "disabled") return false;
   const target =
     mutation.target instanceof Element ? mutation.target : mutation.target.parentElement;
   return !target || editorForElement(target) === null;
@@ -892,6 +898,42 @@ export function installRendererBindingProbe(
     );
   };
 
+  const canIgnoreCodexUsage = (mounted: MountedComposer): boolean => {
+    const state = controller.get(mounted.composer);
+    if (
+      disposed ||
+      mountedByComposer.get(mounted.composer) !== mounted ||
+      adapterStatus.state !== "ready" ||
+      state.agent === "codex" ||
+      controller.isSwitching(mounted.composer) ||
+      isOwnershipSubmissionBlocked(mounted.ownershipStatus) ||
+      mounted.control.sendDisabledBeforeSwitch !== null ||
+      !isExternalConfigurationReady(mounted)
+    )
+      return false;
+    const route = window.__codexhostHostRoutingV1?.forComposer(mounted.composer);
+    const target = findComposerModelTarget(mounted.composer);
+    return (
+      route?.policy.state === "ready" &&
+      route.hostId === mounted.hostId &&
+      harnessAvailabilityByHost.get(route.hostId)?.availability[state.agent] === "ready" &&
+      target !== null &&
+      mounted.modelTarget !== null &&
+      target.length === mounted.modelTarget.length &&
+      target.every((value, index) => value === mounted.modelTarget?.[index]) &&
+      (target[0] === "default" || (state.phase === "locked" && mounted.ownershipStatus === "ready"))
+    );
+  };
+
+  const refreshCodexUsageGate = (mounted: MountedComposer): void => {
+    const status = mounted.codexUsageGate.refresh();
+    const title =
+      status === "unsupported"
+        ? rendererHarnessMessages(settingsLifecycle.locale).codexUsageGateUnavailable
+        : "";
+    if (mounted.control.root.title !== title) mounted.control.root.title = title;
+  };
+
   const renderMounted = (mounted: MountedComposer): void => {
     const accounts = composerCodexAccounts(mounted.composer);
     const currentCodexAccount = accounts?.accounts.find(
@@ -911,6 +953,7 @@ export function installRendererBindingProbe(
       currentCodexAccount ?? null,
       mounted.ownershipStatus === "error",
     );
+    refreshCodexUsageGate(mounted);
     if (mounted.control.usage) {
       mounted.control.usage.onOpen = () => {
         void refreshThreadUsage(
@@ -2464,6 +2507,7 @@ export function installRendererBindingProbe(
       composer,
       composerId: state.composerId,
       control,
+      codexUsageGate: createRendererCodexUsageGate(composer, () => canIgnoreCodexUsage(mounted)),
       modelTarget,
       modelView: inherited?.modelView ?? { status: "idle" },
       permissionModeView: inherited?.permissionModeView ?? { status: "idle" },
@@ -2542,6 +2586,7 @@ export function installRendererBindingProbe(
           window.clearTimeout(timer);
           usageRefreshTimers.delete(composer);
         }
+        mounted.codexUsageGate.dispose();
         disposeComposerAgentControl(mounted.control);
         mountedByComposer.delete(composer);
         continue;
@@ -2550,6 +2595,7 @@ export function installRendererBindingProbe(
       const hideCodexControls = controller.isSwitching(composer) || state.agent !== "codex";
       reconcileComposerNativeControls(mounted.control, hideCodexControls, hideCodexControls);
       if (refreshTargets) refreshMountedConversationTarget(mounted);
+      refreshCodexUsageGate(mounted);
     }
     for (const editor of document.querySelectorAll(EDITOR_SELECTOR)) {
       const composer = composerForEditor(editor);
@@ -2769,7 +2815,7 @@ export function installRendererBindingProbe(
   };
   mutationObserver.observe(document.documentElement, {
     attributes: true,
-    attributeFilter: ["hidden", "aria-hidden", "data-codex-composer-root"],
+    attributeFilter: ["hidden", "aria-hidden", "data-codex-composer-root", "disabled"],
     characterData: true,
     childList: true,
     subtree: true,
@@ -3008,6 +3054,7 @@ export function installRendererBindingProbe(
       for (const mounted of mountedByComposer.values()) {
         mounted.usageRequestGeneration += 1;
         usageRefreshAttempts.delete(mounted.composer);
+        mounted.codexUsageGate.dispose();
         disposeComposerAgentControl(mounted.control);
       }
       mountedByComposer.clear();

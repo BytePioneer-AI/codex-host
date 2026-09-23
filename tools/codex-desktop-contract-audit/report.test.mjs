@@ -15,6 +15,8 @@ const contracts = {
     verifiedContextUsageCandidateCount: 0,
     sendButtonCount: 1,
     trailingActionOwnerCount: 1,
+    codexUsageGateCandidateCount: 1,
+    verifiedCodexUsageGateCount: 1,
   },
   model: { draftCount: 1, conversationCount: 0, missingCount: 0, ambiguousCount: 0 },
   settings: { headerCount: 1, visibleHeaderCount: 1, insertionPointCount: 1 },
@@ -56,6 +58,16 @@ describe("Codex Desktop contract audit report", () => {
     expect(surfaces.find(({ id }) => id === "permission")?.verdict).toBe("unverified");
     expect(surfaces.find(({ id }) => id === "fork")?.verdict).toBe("unverified");
     expect(surfaces.find(({ id }) => id === "composer")?.verdict).toBe("no-impact");
+  });
+
+  it("reports an unverified Codex quota binding without recording account data", () => {
+    const surfaces = buildSurfaceResults({
+      ...contracts,
+      composer: { ...contracts.composer, verifiedCodexUsageGateCount: 0 },
+    });
+    const composer = surfaces.find(({ id }) => id === "composer");
+    expect(composer?.verdict).toBe("confirmed-impact");
+    expect(composer?.reason).toBe("codex-usage-gate-contract");
   });
 
   it("reports ambiguous active ownership as confirmed impact", () => {

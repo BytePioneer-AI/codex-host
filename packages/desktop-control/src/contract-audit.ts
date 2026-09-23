@@ -24,6 +24,8 @@ export interface RendererContractAuditInspection {
     verifiedContextUsageCandidateCount: number;
     sendButtonCount: number;
     trailingActionOwnerCount: number;
+    codexUsageGateCandidateCount: number;
+    verifiedCodexUsageGateCount: number;
   };
   model: {
     draftCount: number;
@@ -176,6 +178,8 @@ export function validateRendererContractAuditInspection(
         "verifiedContextUsageCandidateCount",
         "sendButtonCount",
         "trailingActionOwnerCount",
+        "codexUsageGateCandidateCount",
+        "verifiedCodexUsageGateCount",
       ] as const,
       "Renderer composer contract",
     ),

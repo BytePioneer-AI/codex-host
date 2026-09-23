@@ -15,9 +15,12 @@ export interface RendererHarnessMessages {
   readonly selecting: string;
   readonly permissionsUnavailable: string;
   readonly permissionModeFixedAtCreate: string;
+  readonly codexUsageGateUnavailable: string;
 }
 
 const ENGLISH_HARNESS_MESSAGES: RendererHarnessMessages = Object.freeze({
+  codexUsageGateUnavailable:
+    "Codex quota compatibility could not be verified. Native submission restrictions are unchanged.",
   commands: "Commands",
   harnessCommands: "Harness commands",
   commandsUnavailable: "No Harness commands available yet",
@@ -34,6 +37,7 @@ const ENGLISH_HARNESS_MESSAGES: RendererHarnessMessages = Object.freeze({
 });
 
 const CHINESE_HARNESS_MESSAGES: RendererHarnessMessages = Object.freeze({
+  codexUsageGateUnavailable: "未能验证 Codex 额度兼容绑定，保留原生发送限制。",
   commands: "命令",
   harnessCommands: "Harness 命令",
   commandsUnavailable: "暂无可用的 Harness 命令",

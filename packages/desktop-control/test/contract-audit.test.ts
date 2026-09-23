@@ -16,6 +16,8 @@ const validInspection = {
     verifiedContextUsageCandidateCount: 0,
     sendButtonCount: 1,
     trailingActionOwnerCount: 1,
+    codexUsageGateCandidateCount: 1,
+    verifiedCodexUsageGateCount: 1,
   },
   model: { draftCount: 1, conversationCount: 0, missingCount: 0, ambiguousCount: 0 },
   settings: { headerCount: 1, visibleHeaderCount: 1, insertionPointCount: 1 },

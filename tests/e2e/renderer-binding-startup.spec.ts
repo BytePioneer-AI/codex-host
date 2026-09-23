@@ -86,6 +86,69 @@ const { outputFiles } = await build({
       composer.append(editor, toolbar);
       document.body.append(composer);
 
+      if (globalThis.startupQuota) {
+        composer.style.marginTop = "480px";
+        send.textContent = "Send";
+        editor.textContent = "quota isolation fixture";
+        const auth = { read: () => ({ authMethod: "chatgpt", authenticatedAccountId: "a", userId: "u", plan: "plus" }) };
+        const usage = { read: () => ({ data: { plan_type: "plus", rate_limit: { allowed: false } } }) };
+        const reserve = { read: () => ({ active: false, eligible: true, hardBlocked: false }) };
+        const accountGate = { read: (get) => {
+          const a = get(auth), u = get(usage).data;
+          return a.authMethod === "chatgpt" && a.authenticatedAccountId != null &&
+            u.plan_type === a.plan && u.rate_limit.allowed === false;
+        } };
+        const reserveGate = { read: (get) => get(reserve).hardBlocked };
+        const store = {
+          get: (atom) => atom.read(store.get),
+          sub: () => () => {},
+        };
+        const subscribers = [];
+        const hooks = [];
+        let otherBlocked = false;
+        const blocked = () => !editor.textContent.trim() || otherBlocked ||
+          subscribers.some((subscriber) => subscriber.getSnapshot());
+        const render = () => {
+          send.__reactProps$quota = { disabled: blocked() };
+          send.disabled = send.__reactProps$quota.disabled;
+        };
+        for (const atom of [accountGate, reserveGate]) {
+          const subscriber = {
+            getSnapshot: () => store.get(atom),
+            subscribe: (listener) => store.sub(atom, listener),
+          };
+          const instance = { value: subscriber.getSnapshot(), getSnapshot: subscriber.getSnapshot };
+          const effect = {
+            deps: [subscriber.subscribe],
+            create: () => subscriber.subscribe(() => {
+              instance.value = instance.getSnapshot();
+              render();
+            }),
+          };
+          hooks.push({ memoizedState: [subscriber, [store, atom]] }, { queue: instance }, { memoizedState: effect });
+          subscribers.push(subscriber);
+        }
+        hooks.forEach((hook, i) => { hook.next = hooks[i + 1] ?? null; });
+        editor.__reactFiber$startup.memoizedProps = {
+          composerController: {}, onLocalSubmitStart: undefined, submitDisabled: false,
+        };
+        editor.__reactFiber$startup.memoizedState = hooks[0];
+        globalThis.quotaFixture = {
+          nativeSubmissions: 0,
+          accountBlocked: () => store.get(accountGate),
+          setOtherBlocked(value) { otherBlocked = value; render(); },
+          render,
+        };
+        // Offline native guard: the button is not the only submission restriction.
+        const submit = () => { if (!blocked()) globalThis.quotaFixture.nativeSubmissions++; };
+        send.addEventListener("click", submit);
+        editor.addEventListener("input", render);
+        editor.addEventListener("keydown", (event) => {
+          if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); submit(); }
+        });
+        render();
+      }
+
       const unavailable = async () => {
         throw new Error("unused fixed control");
       };
@@ -166,6 +229,78 @@ const { outputFiles } = await build({
 
 const browserBundle = outputFiles[0]?.text;
 if (!browserBundle) throw new Error("Renderer binding startup E2E bundle was not generated");
+
+test("quota isolation follows the Composer route and preserves native click/Enter guards", async ({
+  page,
+}, testInfo) => {
+  await page.evaluate(() => Reflect.set(globalThis, "startupQuota", true));
+  await page.addScriptTag({ content: browserBundle });
+  const send = page.locator("button[type=submit]");
+  const editor = page.locator("[data-codex-composer]");
+  const agent = page.locator('[data-codexhost-agent-control] > button[aria-haspopup="menu"]');
+  await expect(send).toBeEnabled();
+  expect(await page.evaluate(() => Reflect.get(globalThis, "quotaFixture").accountBlocked())).toBe(
+    true,
+  );
+
+  await agent.click();
+  await page.getByRole("menuitemradio", { name: "Codex", exact: true }).click();
+  await expect(send).toBeDisabled();
+  await editor.press("Enter");
+  expect(await page.evaluate(() => Reflect.get(globalThis, "quotaFixture").nativeSubmissions)).toBe(
+    0,
+  );
+
+  await agent.click();
+  await page.getByRole("menuitemradio", { name: "Pi", exact: true }).click();
+  await expect(send).toBeEnabled();
+  await editor.fill("");
+  await expect(send).toBeDisabled();
+  await editor.press("Enter");
+  expect(await page.evaluate(() => Reflect.get(globalThis, "quotaFixture").nativeSubmissions)).toBe(
+    0,
+  );
+  await editor.fill("quota isolation fixture");
+  await expect(send).toBeEnabled();
+  await page.evaluate(() => Reflect.get(globalThis, "quotaFixture").setOtherBlocked(true));
+  await expect(send).toBeDisabled();
+  await editor.press("Enter");
+  expect(await page.evaluate(() => Reflect.get(globalThis, "quotaFixture").nativeSubmissions)).toBe(
+    0,
+  );
+  await page.evaluate(() => Reflect.get(globalThis, "quotaFixture").setOtherBlocked(false));
+  await expect(send).toBeEnabled();
+  await send.click();
+  await editor.press("Enter");
+  expect(await page.evaluate(() => Reflect.get(globalThis, "quotaFixture").nativeSubmissions)).toBe(
+    2,
+  );
+  expect(await page.evaluate(() => Reflect.get(globalThis, "quotaFixture").accountBlocked())).toBe(
+    true,
+  );
+  await page.screenshot({ path: testInfo.outputPath("quota-click-enter.png") });
+});
+
+test("quota projection is revoked when the Adapter becomes unavailable", async ({ page }) => {
+  await page.evaluate(() => Reflect.set(globalThis, "startupQuota", true));
+  await page.addScriptTag({ content: browserBundle });
+  const send = page.locator("button[type=submit]");
+  await expect(send).toBeEnabled();
+  await page.evaluate(() => {
+    const binding = window.__codexhostRendererBindingProbeV1;
+    if (!binding) throw new Error("Binding fixture is unavailable");
+    binding.setAdapter({
+      state: "unsupported",
+      reason: "draft-routing-policy-unavailable",
+      modelUpdates: 0,
+      hook: null,
+    });
+  });
+  await expect(send).toBeDisabled();
+  expect(await page.evaluate(() => Reflect.get(globalThis, "quotaFixture").nativeSubmissions)).toBe(
+    0,
+  );
+});
 
 test("a new conversation shows Harness commands but disables compact before a Thread exists", async ({
   page,

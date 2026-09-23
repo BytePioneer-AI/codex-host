@@ -32,6 +32,18 @@ npm run audit:codex-desktop -- --mode controlled
 
 Controlled mode reuses the existing production `RendererControlSession`. It can reload the Renderer and install Title, Draft/Prewarm, and Renderer binding policies. It still does not automatically submit, create a Thread, open Settings, execute Fork, or exercise title creation, so those behavior checks remain `unverified`.
 
+## Composer quota compatibility
+
+The Composer surface includes `codexUsageGateCandidateCount` and
+`verifiedCodexUsageGateCount`. The read-only probe checks the committed Composer's
+instance-local boolean subscribers for both Codex account quota and reserve
+`hardBlocked`. It does not install projections, alter quota data or submit input.
+An active Composer whose quota bindings cannot be verified is reported as
+`confirmed-impact` (`codex-usage-gate-contract`); authentication/loading states may
+also prevent verification, so inspect again after native account data has loaded.
+Only counts are retained, never account or query snapshots. These structure checks
+do not prove click/Enter behavior or isolation across multiple windows.
+
 ## Transcript surface
 
 The `transcript` surface covers the contract that external Harness Reasoning depends on.

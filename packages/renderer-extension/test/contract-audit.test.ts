@@ -27,6 +27,8 @@ describe("Renderer contract audit inspectors", () => {
       querySelectorAll: () => list([]),
     } as unknown as HTMLButtonElement;
     const composer = {
+      matches: () => false,
+      querySelector: () => editor,
       hidden: false,
       getAttribute: () => null,
       getBoundingClientRect: () => ({ width: 600, height: 120 }),
@@ -46,6 +48,8 @@ describe("Renderer contract audit inspectors", () => {
       visibleComposerCount: 1,
       activeComposerCount: 1,
       sendButtonCount: 1,
+      codexUsageGateCandidateCount: 0,
+      verifiedCodexUsageGateCount: 0,
     });
   });
 

@@ -11,7 +11,7 @@ import {
 
 export type DeepSeekProtocolGeneration = "modern";
 
-export type DeepSeekSupportedVersion = "0.1.2-rc.1" | "0.1.5-rc.1";
+export type DeepSeekSupportedVersion = "0.1.2-rc.1" | "0.1.5-rc.1" | "0.1.5-rc.2";
 
 export interface DeepSeekExecutableGeneration {
   readonly generation: DeepSeekProtocolGeneration;
@@ -88,108 +88,6 @@ const SEMVER_PATTERN = new RegExp(
   "u",
 );
 
-export const DEFAULT_DEEPSEEK_ENDPOINT = "http://127.0.0.1:3080/";
-const MODERN_AUTHENTICATION_FINGERPRINT = Buffer.from(
-  "dsh web authentication required; reopen the URL printed by dsh web.\n",
-);
-const MODERN_AUTHENTICATION_PROBE_TIMEOUT_MS = 1_000;
-
-/** Identify the unauthenticated root served by supported Modern DSH without accepting credentials. */
-export async function hasDeepSeekModernAuthenticationFingerprint(
-  endpoint: string,
-  signal?: AbortSignal,
-): Promise<boolean> {
-  const timeout = AbortSignal.timeout(MODERN_AUTHENTICATION_PROBE_TIMEOUT_MS);
-  const requestSignal = signal ? AbortSignal.any([signal, timeout]) : timeout;
-  let response: Response;
-  try {
-    response = await globalThis.fetch(endpoint, {
-      method: "GET",
-      credentials: "omit",
-      redirect: "manual",
-      signal: requestSignal,
-    });
-  } catch {
-    return false;
-  }
-  if (
-    response.status !== 401 ||
-    response.headers.get("cache-control") !== "no-store" ||
-    response.headers.get("content-type") !== "text/plain; charset=utf-8"
-  ) {
-    await response.body?.cancel().catch(() => undefined);
-    return false;
-  }
-  const body = response.body;
-  if (!body) return false;
-  const reader = body.getReader();
-  let offset = 0;
-  try {
-    for (;;) {
-      const item = await reader.read();
-      if (item.done) return offset === MODERN_AUTHENTICATION_FINGERPRINT.byteLength;
-      if (
-        offset + item.value.byteLength > MODERN_AUTHENTICATION_FINGERPRINT.byteLength ||
-        !item.value.every(
-          (byte: number, index: number) =>
-            byte === MODERN_AUTHENTICATION_FINGERPRINT[offset + index],
-        )
-      ) {
-        await reader.cancel().catch(() => undefined);
-        return false;
-      }
-      offset += item.value.byteLength;
-    }
-  } catch {
-    return false;
-  } finally {
-    reader.releaseLock();
-  }
-}
-
-function loopbackHostname(hostname: string): boolean {
-  if (hostname === "localhost" || hostname === "[::1]") return true;
-  const octets = hostname.split(".");
-  return (
-    octets.length === 4 &&
-    octets[0] === "127" &&
-    octets.every((octet) => /^(?:0|[1-9]\d{0,2})$/u.test(octet) && Number(octet) <= 255)
-  );
-}
-
-/** Validate and canonicalize the only endpoint form eligible for local DSH wire probes. */
-export function parseDeepSeekEndpoint(endpoint = DEFAULT_DEEPSEEK_ENDPOINT): string {
-  let parsed: URL;
-  try {
-    parsed = new URL(endpoint);
-  } catch {
-    throw probeError("protocolError", "DeepSeek Harness endpoint is invalid");
-  }
-  if (
-    (parsed.protocol !== "http:" && parsed.protocol !== "https:") ||
-    !loopbackHostname(parsed.hostname) ||
-    parsed.username !== "" ||
-    parsed.password !== "" ||
-    parsed.hash !== "" ||
-    parsed.pathname !== "/"
-  ) {
-    throw probeError(
-      "protocolError",
-      "DeepSeek Harness endpoint must be an uncredentialed loopback HTTP root",
-    );
-  }
-  if (parsed.searchParams.has("token")) {
-    throw probeError(
-      "authenticationRequired",
-      "DeepSeek Harness Web bootstrap URL 不可作为连接端点；请关闭该实例，让 codexhost 启动 dsh-v0.1.2-rc.1 或 dsh-v0.1.5-rc.1（仅支持这两个版本）。\nA DeepSeek Harness Web bootstrap URL cannot be used as an endpoint. Close that instance and let codexhost start dsh-v0.1.2-rc.1 or dsh-v0.1.5-rc.1; only these two versions are supported.",
-    );
-  }
-  if (parsed.search !== "") {
-    throw probeError("protocolError", "DeepSeek Harness endpoint must not contain a query");
-  }
-  return parsed.href;
-}
-
 function probeError(
   code: DeepSeekGenerationProbeErrorCode,
   message: string,
@@ -241,12 +139,12 @@ export function classifyDeepSeekVersionOutput(
       "DeepSeek Harness --version did not return exactly one semantic version",
     );
   }
-  if (version === "0.1.2-rc.1" || version === "0.1.5-rc.1") {
+  if (version === "0.1.2-rc.1" || version === "0.1.5-rc.1" || version === "0.1.5-rc.2") {
     return { generation: "modern", version };
   }
   throw probeError(
     "unsupported",
-    `当前 DeepSeek Harness 版本 ${version} 不受支持；codexhost 仅支持 dsh-v0.1.2-rc.1 和 dsh-v0.1.5-rc.1，推荐安装 dsh-v0.1.5-rc.1。\nDeepSeek Harness ${version} is unsupported. codexhost only supports dsh-v0.1.2-rc.1 and dsh-v0.1.5-rc.1; dsh-v0.1.5-rc.1 is recommended.`,
+    `当前 DeepSeek Harness 版本 ${version} 不受支持；codexhost 仅支持 dsh-v0.1.2-rc.1、dsh-v0.1.5-rc.1 和 dsh-v0.1.5-rc.2，推荐安装 dsh-v0.1.5-rc.2。\nDeepSeek Harness ${version} is unsupported. codexhost only supports dsh-v0.1.2-rc.1, dsh-v0.1.5-rc.1 and dsh-v0.1.5-rc.2; dsh-v0.1.5-rc.2 is recommended.`,
   );
 }
 

@@ -10,10 +10,9 @@ vi.mock("../src/deepseek-harness-adapter.js", () => ({
 beforeEach(() => vi.clearAllMocks());
 
 describe("DeepSeek plugin construction policy", () => {
-  it("preserves the explicit command, endpoint, environment and local Web UI handoff", async () => {
+  it("preserves the explicit command, environment and local Web UI handoff", async () => {
     const environment = {
       CODEXHOST_DEEPSEEK_HARNESS_COMMAND: "/synthetic/dsh",
-      CODEXHOST_DEEPSEEK_HARNESS_ENDPOINT: "http://127.0.0.1:12345",
       CODEXHOST_RUNTIME_TOKEN: "synthetic-token",
     };
     const openLocalUrl = vi.fn(async () => undefined);
@@ -25,7 +24,6 @@ describe("DeepSeek plugin construction policy", () => {
     });
     expect(DeepSeekHarnessAdapter).toHaveBeenCalledWith({
       command: environment.CODEXHOST_DEEPSEEK_HARNESS_COMMAND,
-      endpoint: environment.CODEXHOST_DEEPSEEK_HARNESS_ENDPOINT,
       environment,
       openWebUi: expect.any(Function),
     });

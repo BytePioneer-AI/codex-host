@@ -1,11 +1,11 @@
 # deepseek-harness-fast-session Specification
 
 ## Purpose
-规定 DeepSeek Harness 的公共 Adapter、原生凭据复用、文本/工具输出与取消语义；当前双 RC 历史能力由 support-dsh-015rc1 更新，具体格式边界见 deepseek-versioned-web-protocol。
+规定 DeepSeek Harness 的公共 Adapter、原生凭据复用、文本/工具输出与取消语义；当前 RC 历史能力由 support-dsh-015rc1 及 015rc2 更新，具体格式边界见 deepseek-versioned-web-protocol。
 ## Requirements
 ### Requirement: DeepSeek Harness uses the shared Adapter contract
 
-The system SHALL provide one public `deepseek-harness` implementation of `HarnessAdapter` and `HarnessSession` supporting exact DSH `0.1.2-rc.1` and `0.1.5-rc.1`. DSH Remote methods, event names and version profiles MUST remain internal to that Adapter package.
+The system SHALL provide one public `deepseek-harness` implementation of `HarnessAdapter` and `HarnessSession` supporting exact DSH `0.1.2-rc.1`, `0.1.5-rc.1` and `0.1.5-rc.2`. DSH Remote methods, event names and version profiles MUST remain internal to that Adapter package.
 
 #### Scenario: New DeepSeek Session opens
 - **WHEN** Host opens the DeepSeek Adapter with a create input and an exact supported runtime

@@ -126,6 +126,7 @@ const DEFAULT_MAX_WEBSOCKET_PAYLOAD_BYTES = 32 * 1024 * 1024;
 const DEFAULT_MAX_QUEUED_STREAM_FRAMES = 4_096;
 const DEFAULT_MAX_QUEUED_STREAM_BYTES = 32 * 1024 * 1024;
 const DEFAULT_MAX_READINESS_BYTES = 16 * 1024;
+const PORTAL_BODY_PROBE_BYTES = 1_024;
 const STDERR_CHUNK_TAIL_MAX_LENGTH = 16 * 1024;
 const MAX_TIMER_DELAY_MS = 2_147_483_647;
 const OPEN = 1;
@@ -902,6 +903,7 @@ export class ModernRemoteConnection {
       child.on("error", this.#managedError);
       const cookie = await this.#exchangeToken(launchUrl);
       const origin = new URL(launchUrl.origin);
+      await this.#verifyPortal(origin, cookie);
       this.#origin = origin;
       this.#cookie = cookie;
       if (this.#options.openWebUi) this.#launchUrl = launchUrl.href;
@@ -1038,6 +1040,96 @@ export class ModernRemoteConnection {
       throw this.#protocolFailure(messageOf(error));
     } finally {
       await cancelResponse(response);
+    }
+  }
+
+  async #verifyPortal(origin: URL, cookie: string): Promise<void> {
+    let response: Response;
+    try {
+      response = await this.#dependencies.fetch(origin, {
+        method: "GET",
+        redirect: "manual",
+        headers: { cookie },
+        signal: AbortSignal.any([
+          this.#lifetime.signal,
+          AbortSignal.timeout(this.#startupTimeoutMs),
+        ]),
+      });
+    } catch (error) {
+      throw this.#transportFailure("DeepSeek Harness Web portal verification failed", error);
+    }
+    try {
+      if (response.status === 401 || response.status === 403) {
+        throw new ModernRemoteConnectionError(
+          "authenticationRequired",
+          "DeepSeek Harness Web rejected its authenticated portal verification",
+        );
+      }
+      if (response.status >= 300 && response.status < 400) {
+        throw new ModernRemoteConnectionError(
+          "protocolError",
+          "DeepSeek Harness Web portal returned an unexpected redirect",
+        );
+      }
+      if (response.status !== 200) {
+        throw new ModernRemoteConnectionError(
+          response.status >= 500 ? "unavailable" : "protocolError",
+          `DeepSeek Harness Web portal verification failed with HTTP ${String(response.status)}`,
+        );
+      }
+      const mediaType = response.headers
+        .get("content-type")
+        ?.split(";", 1)[0]
+        ?.trim()
+        .toLowerCase();
+      if (mediaType !== "text/html") {
+        throw new ModernRemoteConnectionError(
+          "protocolError",
+          "DeepSeek Harness Web portal returned a non-HTML response",
+        );
+      }
+      await this.#verifyPortalBody(response);
+    } finally {
+      await cancelResponse(response);
+    }
+  }
+
+  /** Bounded body read: the managed portal must serve its HTML document, not an empty, JSON, or error body. */
+  async #verifyPortalBody(response: Response): Promise<void> {
+    const body = response.body;
+    if (!body) {
+      throw new ModernRemoteConnectionError(
+        "protocolError",
+        "DeepSeek Harness Web portal returned an empty response",
+      );
+    }
+    const reader = body.getReader();
+    const chunks: Uint8Array[] = [];
+    try {
+      let bytes = 0;
+      for (;;) {
+        const item = await reader.read();
+        if (item.done) break;
+        // Retain only the probe allowance: a single read() may return a chunk
+        // larger than the bound (possibly a view into a larger buffer), and
+        // canceling afterwards cannot un-retain what was already pushed.
+        const retained = item.value.subarray(0, PORTAL_BODY_PROBE_BYTES - bytes).slice();
+        chunks.push(retained);
+        bytes += retained.byteLength;
+        if (bytes >= PORTAL_BODY_PROBE_BYTES) break;
+      }
+    } catch (error) {
+      if (this.#fault) throw this.#fault;
+      throw this.#transportFailure("DeepSeek Harness Web portal verification failed", error);
+    } finally {
+      await reader.cancel().catch(() => undefined);
+      reader.releaseLock();
+    }
+    if (!isPortalHtmlBody(chunks)) {
+      throw new ModernRemoteConnectionError(
+        "protocolError",
+        "DeepSeek Harness Web portal returned an unexpected response body",
+      );
     }
   }
 
@@ -1230,6 +1322,16 @@ async function cancelResponse(response: Response): Promise<void> {
   } catch {
     // Rejection already owns the request; body cleanup is best-effort and must not replace it.
   }
+}
+
+/**
+ * The supported portal serves the built HTML document; structured index
+ * injections are spliced inside its head and body tags, never before the
+ * doctype, so the bounded prefix identifies the real portal.
+ */
+function isPortalHtmlBody(chunks: Uint8Array[]): boolean {
+  const prefix = new TextDecoder("utf-8").decode(Buffer.concat(chunks));
+  return /^\uFEFF?\s*(?:<!doctype html|<html)/i.test(prefix);
 }
 
 async function readBoundedJson(response: Response, maxBytes: number): Promise<unknown> {

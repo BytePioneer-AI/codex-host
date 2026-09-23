@@ -10,6 +10,7 @@ import {
   type RequestPermissionResponse,
 } from "@agentclientprotocol/sdk";
 import { devinInvocation } from "./command.js";
+import { devinApiKey } from "./credentials.js";
 
 export interface DevinTransportOptions {
   cwd: string;
@@ -116,12 +117,16 @@ export class DevinTransport {
       );
       if (init.protocolVersion !== 1 || (requiresLoadSession && !init.agentCapabilities?.loadSession))
         throw new Error("Devin does not support the required ACP session protocol");
-      // Devin 3000.11+ requires an explicit authenticate call in ACP mode; the
-      // advertised browser method resolves through the CLI's stored credentials.
-      // The adapter never launches a login flow or reads credentials.
+      // Devin 3000.11+ requires an explicit authenticate call carrying the API
+      // key in _meta.api_key. Without a key, the only advertised alternative is
+      // a PKCE browser flow; never trigger it implicitly — let the following
+      // request surface authenticationRequired instead.
       const authMethod = init.authMethods?.[0]?.id;
-      if (authMethod)
-        await this.#bounded(this.#connection.authenticate({ methodId: authMethod }));
+      const apiKey = authMethod ? await devinApiKey(this.options.environment) : undefined;
+      if (authMethod && apiKey)
+        await this.#bounded(
+          this.#connection.authenticate({ methodId: authMethod, _meta: { api_key: apiKey } }),
+        );
       return this.#connection;
     } catch (error) {
       await this.close();

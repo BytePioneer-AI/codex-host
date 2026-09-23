@@ -1,6 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { HarnessResult, HarnessSession } from "@codexhost/harness-adapter";
-import type { HarnessCommandCatalog } from "@codexhost/shared-contracts";
+import {
+  harnessCommandDescriptorSchema,
+  type HarnessCommandCatalog,
+} from "@codexhost/shared-contracts";
 
 import {
   ExternalCommandError,
@@ -50,7 +53,12 @@ describe("command resolution before the live catalog loads", () => {
       ok: true,
       value: {
         commands: [
-          { id: "x.compact", invocation: "/compact", label: "Compact", argumentMode: "none" },
+          harnessCommandDescriptorSchema.parse({
+            id: "x.compact",
+            invocation: "/compact",
+            label: "Compact",
+            argumentMode: "none",
+          }),
         ],
       },
     }),

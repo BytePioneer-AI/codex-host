@@ -482,14 +482,35 @@ export function creditsPlacementAnchor(control: ComposerAgentControl): HTMLEleme
   return root?.parentElement ? root : null;
 }
 
+/**
+ * Codex re-renders the trailing action cluster (for example when the draft
+ * becomes non-empty or a turn starts/stops), which replaces the send button
+ * and its wrapper. Follow the live button so placement never anchors to a
+ * detached subtree: moving owned controls there disconnects them, and the
+ * next scan would dispose and remount the whole control (closing open menus).
+ */
+export function refreshSendButton(control: ComposerAgentControl): HTMLButtonElement | null {
+  const current = control.sendButton;
+  if (current?.isConnected && control.composer.contains(current)) return current;
+  const replacement = sendButtonWithin(control.composer);
+  if (!replacement) return null;
+  if (control.sendDisabledBeforeSwitch !== null) {
+    control.sendDisabledBeforeSwitch = replacement.disabled;
+    replacement.disabled = true;
+  }
+  control.sendButton = replacement;
+  return replacement;
+}
+
 function refreshTrailingClusterPlacement(control: ComposerAgentControl): void {
-  const sendButton = control.sendButton;
+  const sendButton = refreshSendButton(control);
   const modelRoot = control.modelPicker?.root;
   const agentRoot = control.root ?? control.picker?.root;
   if (!sendButton || !modelRoot || !agentRoot) return;
   const anchor = trailingActionAnchor(sendButton);
   const parent = anchor.parentElement;
   if (!parent || typeof parent.insertBefore !== "function") return;
+  if (!parent.isConnected || !control.composer.contains(parent)) return;
   if (
     modelRoot.parentElement === parent &&
     agentRoot.parentElement === parent &&

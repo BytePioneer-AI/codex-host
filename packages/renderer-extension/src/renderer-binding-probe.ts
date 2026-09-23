@@ -31,6 +31,7 @@ import {
   composerForEditor,
   composerForElement,
   disposeComposerAgentControl,
+  refreshSendButton,
   editorForElement,
   eventElement,
   isComposerInputIntent,
@@ -2647,7 +2648,7 @@ export function installRendererBindingProbe(
     const candidate = composerForElement(button);
     const composer = candidate && isMountedComposer(candidate) ? candidate : null;
     const mounted = composer ? mountedByComposer.get(composer) : undefined;
-    if (!composer || mounted?.control.sendButton !== button) return;
+    if (!composer || !mounted || refreshSendButton(mounted.control) !== button) return;
     if (!prepareComposer(composer)) {
       blockEvent(event);
       return;

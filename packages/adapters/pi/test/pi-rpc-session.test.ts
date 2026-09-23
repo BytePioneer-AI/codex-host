@@ -777,6 +777,31 @@ async function waitFor(predicate: () => boolean): Promise<void> {
 }
 
 describe("Pi RPC Turn aggregation", () => {
+  it("observes versioned subagent widgets outside a model Turn without starting an autonomous Turn", async () => {
+    const { rpc, process: fakeProcess, onFault } = autonomousSession();
+    await rpc.start();
+    const status = vi.fn();
+    const autonomous = vi.fn();
+    rpc.setSubagentStatusHandler(status);
+    rpc.setAutonomousTurnHandler(autonomous);
+    fakeProcess().stdout.write(
+      JSON.stringify({
+        type: "extension_ui_request",
+        method: "setWidget",
+        widgetKey: "subagent-async",
+        widgetLines: [
+          'PI_SUBAGENT_ASYNC_JSON:{"kind":"pi-subagents.async-status-snapshot","version":1,"runs":[{"id":"run-1","kind":"subagent","label":"worker","state":"complete"}]}',
+        ],
+      }) + "\n",
+    );
+    expect(status).toHaveBeenCalledWith([
+      { id: "run-1", kind: "subagent", label: "worker", state: "complete" },
+    ]);
+    expect(autonomous).not.toHaveBeenCalled();
+    expect(onFault).not.toHaveBeenCalled();
+    await rpc.close();
+  });
+
   it("shares pending close confirmation between concurrent callers", async () => {
     const child = new FakePiRpcProcess("final-only");
     const rpc = new PiRpcSession(

@@ -8,7 +8,10 @@ import {
   formatRendererCreditsPercent,
 } from "./renderer-usage-control.js";
 import {
+  applyRendererTriggerChipSqueezeRoot,
+  applyRendererTriggerChipSqueezeTrigger,
   ensureRendererTriggerChipStyle,
+  rendererCreditsTriggerMaxWidth,
   TRIGGER_CHIP_CLASS,
 } from "./renderer-trigger-chip-style.js";
 
@@ -350,8 +353,8 @@ export function mountRendererCreditsControl(composerId: string): RendererCredits
   root.style.alignItems = "center";
   root.style.alignSelf = "center";
   root.style.height = "28px";
-  root.style.flex = "0 0 auto";
   root.style.verticalAlign = "middle";
+  applyRendererTriggerChipSqueezeRoot(root, rendererCreditsTriggerMaxWidth(), "40px");
 
   const trigger = document.createElement("button");
   trigger.className = TRIGGER_CHIP_CLASS;
@@ -361,8 +364,7 @@ export function mountRendererCreditsControl(composerId: string): RendererCredits
   trigger.setAttribute("aria-label", "Account limit");
   trigger.title = "Account limit";
   trigger.style.gap = "5px";
-  trigger.style.width = "fit-content";
-  trigger.style.maxWidth = "min(72px, 18vw)";
+  applyRendererTriggerChipSqueezeTrigger(trigger);
   // Match the 28px height shared by the Model/Permission-mode/Agent triggers
   // it sits next to — a shorter box here previously threw off the row's
   // vertical alignment (visible as Credits sitting a few px lower than its

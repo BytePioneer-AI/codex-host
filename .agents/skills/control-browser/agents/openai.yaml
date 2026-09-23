@@ -1,0 +1,6 @@
+interface:
+  display_name: "control-browser"
+  short_description: "Control browsers using available session tools"
+  default_prompt: "Use $control-browser for the relevant parts of this task, following codexhost repository guidance."
+policy:
+  allow_implicit_invocation: true

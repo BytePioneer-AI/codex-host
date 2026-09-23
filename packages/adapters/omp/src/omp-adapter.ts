@@ -4,6 +4,8 @@ import path from "node:path";
 
 import {
   HarnessOutputChannel,
+  liveHarnessCommandPrompt,
+  mergeLiveHarnessCommands,
   validateHostApprovalResponse,
   validateHostQuestionResponse,
   type HarnessAdapter,
@@ -55,6 +57,7 @@ import {
 } from "@codexhost/harness-adapter";
 import {
   harnessCommandCatalogSchema,
+  type HarnessCommandCatalog,
   harnessIdSchema,
   harnessPermissionModeIdSchema,
   harnessThinkingOptionIdSchema,
@@ -74,6 +77,11 @@ import {
   type NativeTurnRef,
 } from "@codexhost/shared-contracts";
 
+import {
+  OMP_LIVE_COMMAND_ID_PREFIX,
+  ompLiveCommands,
+  type OmpAvailableCommand,
+} from "./omp-slash-commands.js";
 import { mapOmpSnapshot, resolveOmpForkBoundary, type OmpSessionHistory } from "./omp-history.js";
 import { rollbackOmpLastTurn } from "./omp-last-turn-rollback.js";
 import {
@@ -143,6 +151,8 @@ export interface OmpTurnTransport {
   respondToInteraction(response: OmpInteractionResponse): Promise<void>;
   abort(): Promise<void>;
   close(): Promise<void>;
+  /** Latest native command list of the running process; absent on older transports. */
+  readonly availableCommands?: readonly OmpAvailableCommand[] | null;
 }
 
 export interface OmpAdapterDependencies {
@@ -631,7 +641,7 @@ class OmpHarnessSession implements HarnessSession {
       subagents: { observe: true, readTranscript: true },
     };
     this.commands = {
-      list: async () => ({ ok: true, value: ompCommandCatalog }),
+      list: async () => ({ ok: true, value: this.#liveCommandCatalog() }),
       execute: (command) => this.#executeHarnessCommand(command),
     };
     this.#transport = options.startedTransport ?? null;
@@ -1367,9 +1377,37 @@ class OmpHarnessSession implements HarnessSession {
     }
   }
 
+  /**
+   * Built-ins plus the skills and extension commands of the running process.
+   * Never starts the process just to list commands.
+   */
+  #liveCommandCatalog(): HarnessCommandCatalog {
+    const native = this.#transport?.availableCommands ?? null;
+    return mergeLiveHarnessCommands(
+      ompCommandCatalog,
+      OMP_LIVE_COMMAND_ID_PREFIX,
+      native ? ompLiveCommands(native) : null,
+    );
+  }
+
   async #executeHarnessCommand(
     command: HarnessCommandInvocation,
   ): Promise<HarnessResult<HarnessCommandAccepted>> {
+    const livePrompt = liveHarnessCommandPrompt(
+      this.#liveCommandCatalog(),
+      OMP_LIVE_COMMAND_ID_PREFIX,
+      command.commandId,
+      command.arguments?.text,
+    );
+    if (livePrompt !== null) {
+      // OMP expands skill and extension commands from prompt text.
+      const started = await this.execute({
+        type: "turn.start",
+        turnId: command.turnId,
+        input: [{ type: "text", text: livePrompt }],
+      });
+      return started.ok ? { ok: true, value: { turnId: command.turnId } } : started;
+    }
     if (command.commandId !== "omp.compact") {
       return {
         ok: false,
@@ -2114,6 +2152,7 @@ class OmpHarnessSession implements HarnessSession {
 
 export class OmpAdapter implements HarnessAdapter {
   readonly commandCatalog = ompCommandCatalog;
+  readonly liveCommandCatalog = true;
   readonly harnessId: HarnessId = ompHarnessId;
   readonly subagents: HarnessSubagentCapability = {
     readSnapshot: async (input) => {

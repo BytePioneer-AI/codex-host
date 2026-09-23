@@ -3,9 +3,14 @@ import type { ThreadUsageSnapshot } from "@codexhost/shared-contracts";
 import type { RendererSettingsLocale } from "./settings/localization.js";
 
 import {
+  applyRendererTriggerChipSqueezeRoot,
+  applyRendererTriggerChipSqueezeTrigger,
   ensureRendererTriggerChipStyle,
+  rendererUsageTriggerMaxWidth,
   TRIGGER_CHIP_CLASS,
 } from "./renderer-trigger-chip-style.js";
+
+export { rendererUsageTriggerMaxWidth } from "./renderer-trigger-chip-style.js";
 
 export interface RendererUsageControl {
   root: HTMLDivElement;
@@ -197,10 +202,6 @@ export function formatRendererPlanWindow(
   if (resetsAtUnix === undefined) return percent;
   const reset = formatRendererPlanReset(resetsAtUnix, locale);
   return reset.length > 0 ? `${percent} · ${reset}` : percent;
-}
-
-export function rendererUsageTriggerMaxWidth(): string {
-  return "min(180px, 30vw)";
 }
 
 /** Whether a snapshot contains anything useful for the left Usage popover. */
@@ -406,8 +407,8 @@ export function mountRendererUsageControl(
   root.style.alignItems = "center";
   root.style.alignSelf = "center";
   root.style.height = "28px";
-  root.style.flex = "0 0 auto";
   root.style.verticalAlign = "middle";
+  applyRendererTriggerChipSqueezeRoot(root, rendererUsageTriggerMaxWidth(), "40px");
 
   const trigger = document.createElement("button");
   trigger.className = TRIGGER_CHIP_CLASS;
@@ -421,8 +422,7 @@ export function mountRendererUsageControl(
   // avoiding Codex's private trigger class names.
   trigger.style.color = "var(--color-text-tertiary, #8f8f8f)";
   trigger.style.gap = "4px";
-  trigger.style.width = "fit-content";
-  trigger.style.maxWidth = rendererUsageTriggerMaxWidth();
+  applyRendererTriggerChipSqueezeTrigger(trigger);
   // Match the 28px height shared by the Model/Permission-mode/Agent triggers
   // it sits next to — a shorter box here previously threw off the row's
   // vertical alignment (visible as Usage sitting a few px lower than its
@@ -593,7 +593,8 @@ export function renderRendererUsageControl(
   const accessibleSummary = `${messages.threadUsage}: ${compactSummary}${
     contextPercent !== undefined ? `; ${messages.context} ${decimal(contextPercent, 1)}%` : ""
   }`;
-  control.trigger.style.maxWidth = rendererUsageTriggerMaxWidth();
+  applyRendererTriggerChipSqueezeRoot(control.root, rendererUsageTriggerMaxWidth(), "40px");
+  applyRendererTriggerChipSqueezeTrigger(control.trigger);
   control.trigger.setAttribute("aria-label", accessibleSummary);
   control.trigger.title = accessibleSummary;
   control.label.textContent = compactSummary;

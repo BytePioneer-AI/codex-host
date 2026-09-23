@@ -32,4 +32,4 @@ No Harness plugin contract changes. Account v2 exposes global native-derived sta
 
 ## Impact
 
-Host Runtime, shared Account contracts, Renderer and generic native process integration are simplified. Release scripts and license files remain unchanged; opencodex MIT attribution applies to the native credential envelope and inactive quota reading. New implementation validation is pending; see `tasks.md` and `evidence.md`.
+Host Runtime, shared Account contracts, Renderer and generic native process integration are simplified. New implementation validation is pending; see `tasks.md` and `evidence.md`.

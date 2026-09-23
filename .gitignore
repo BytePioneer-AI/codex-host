@@ -23,6 +23,10 @@ node_modules/
 .eslintcache
 *.tsbuildinfo
 
+# Local website draft and deployment workflow
+/website/
+/.github/workflows/deploy-website.yml
+
 # Build, test, and coverage output
 target/
 dist/

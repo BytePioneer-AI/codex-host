@@ -23,6 +23,7 @@ import {
   type SessionUpdate,
 } from "@agentclientprotocol/sdk";
 
+import { parseGrokAvailableCommands, type GrokAvailableCommand } from "./grok-slash-commands.js";
 import { GrokExecutableError, grokInvocation, resolveGrokExecutable } from "./command.js";
 import {
   GROK_SESSION_DELETE_METHOD,
@@ -518,6 +519,7 @@ export class GrokAcpTransport {
   #initialize: InitializeResponse | null = null;
   #replay: GrokTransportEvent[] | null = null;
   #sessionId: string | null = null;
+  #availableCommands: GrokAvailableCommand[] | null = null;
   #startupModelId: string | undefined;
   #stderrTail = "";
 
@@ -939,8 +941,19 @@ export class GrokAcpTransport {
     this.#activeCompact = null;
   }
 
+  /** Latest ACP `available_commands_update` of the open Session, if any. */
+  get availableCommands(): readonly GrokAvailableCommand[] | null {
+    return this.#availableCommands;
+  }
+
   #handleUpdate(notification: SessionNotification): void {
     if (this.#sessionId && notification.sessionId !== this.#sessionId) return;
+    const update = notification.update as { sessionUpdate?: unknown; availableCommands?: unknown };
+    if (update.sessionUpdate === "available_commands_update") {
+      // Command catalog state, not Turn or replay content.
+      this.#availableCommands = parseGrokAvailableCommands(update.availableCommands);
+      return;
+    }
     const metadata = isRecord(notification._meta) ? notification._meta : undefined;
     const event = transportEvent(notification.update, metadata);
     if (!event) return;

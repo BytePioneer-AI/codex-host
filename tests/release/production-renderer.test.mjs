@@ -13,11 +13,12 @@ async function source(relative) {
 
 describe("production Renderer release chain", () => {
   it("uses the fixed production Agent list without a development enable switch", async () => {
-    const [productionEntry, probeEntry, installer, agentState] = await Promise.all([
+    const [productionEntry, probeEntry, installer, agentState, controller] = await Promise.all([
       source("packages/renderer-extension/src/production-entry.ts"),
       source("packages/renderer-extension/src/probe-entry.ts"),
       source("packages/renderer-extension/src/install-renderer-binding.ts"),
       source("packages/renderer-extension/src/agent-selection-state.ts"),
+      source("packages/desktop-control/src/production-controller.ts"),
     ]);
 
     expect(agentState).toContain('"deepseek-harness",');
@@ -25,6 +26,11 @@ describe("production Renderer release chain", () => {
     expect(agentState).toContain('"grok",');
     expect(agentState).toContain('"antigravity",');
     expect(agentState).toContain("DEFAULT_RENDERER_AGENTS = KNOWN_RENDERER_AGENTS");
+    const rendererAgents = agentState.match(/KNOWN_RENDERER_AGENTS = \[([^\]]+)\]/)[1];
+    const controllerAgents = controller.match(/enabledAgents: \[([^\]]+)\]/)[1];
+    expect([...controllerAgents.matchAll(/"([^"]+)"/g)].map((match) => match[1])).toEqual(
+      [...rendererAgents.matchAll(/"([^"]+)"/g)].map((match) => match[1]),
+    );
     expect(productionEntry).toContain("installRendererBinding(DEFAULT_RENDERER_AGENTS");
     expect(productionEntry).toContain("__codexhostProductionConfigV1");
     expect(productionEntry).toContain('window.addEventListener("DOMContentLoaded"');
@@ -33,6 +39,22 @@ describe("production Renderer release chain", () => {
     expect(probeEntry).toContain("installRendererBinding(DEFAULT_RENDERER_AGENTS)");
     expect(probeEntry).not.toContain("enableClaudeCode");
     expect(installer).toContain("installCurrentRendererAdapter");
+  });
+
+  it("keeps the Controller Agent list in sync with the production Renderer", async () => {
+    const [controller, agentState] = await Promise.all([
+      source("packages/desktop-control/src/production-controller.ts"),
+      source("packages/renderer-extension/src/agent-selection-state.ts"),
+    ]);
+    const agents = (text, pattern) => {
+      const block = text.match(pattern)?.[1];
+      if (!block) throw new Error(`Agent list not found: ${pattern}`);
+      return [...block.matchAll(/"([^"]+)"/g)].map(([, agent]) => agent);
+    };
+    const rendererAgents = agents(agentState, /KNOWN_RENDERER_AGENTS = \[([^\]]*)\]/);
+    const controllerAgents = agents(controller, /enabledAgents: \[([^\]]*)\]/);
+
+    expect(controllerAgents).toEqual(rendererAgents);
   });
 
   it("accepts Grok and Antigravity in renderer probe capabilities and selections", () => {

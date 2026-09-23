@@ -7,6 +7,7 @@ import {
   isRendererModelPickerDisabled,
   type RendererModelControlView,
 } from "../src/renderer-model-picker.js";
+import type { RendererRequestOptions } from "../src/renderer-request-sender.js";
 import type { installRendererSidebarAgentIcons } from "../src/renderer-sidebar-agent-icons.js";
 import type { RendererConnectionDiagnostics } from "../src/settings/connections-page.js";
 import type { RendererSessionImportClient } from "../src/settings/session-import-page.js";
@@ -23,6 +24,7 @@ const testState = vi.hoisted(() => ({
   sidebarOptions: null as null | Parameters<typeof installRendererSidebarAgentIcons>[0],
   documentListeners: new Map<string, EventListener>(),
   modelTarget: ["conversation", "thread-a"] as readonly unknown[],
+  prewarmClears: 0,
 }));
 
 vi.mock("../src/renderer-composer-dom.js", async (importOriginal) => {
@@ -82,7 +84,11 @@ vi.mock("../src/versioned-renderer-adapter.js", async (importOriginal) => {
   return {
     ...original,
     findComposerModelTarget: () => testState.modelTarget,
-    waitForRendererDraftPrewarmPolicy: async () => ({ clear: async () => undefined }),
+    waitForRendererDraftPrewarmPolicy: async () => ({
+      clear: async () => {
+        testState.prewarmClears += 1;
+      },
+    }),
   };
 });
 
@@ -174,6 +180,7 @@ function installFakeBrowser(): void {
   testState.getSessionImportClient = null;
   testState.documentListeners.clear();
   testState.modelTarget = ["conversation", "thread-a"];
+  testState.prewarmClears = 0;
   const window_ = {
     addEventListener: listeners.addEventListener.bind(listeners),
     removeEventListener: listeners.removeEventListener.bind(listeners),
@@ -228,6 +235,187 @@ afterEach(() => {
 });
 
 describe("Renderer binding Host-scoped Claude catalogs", () => {
+  it.each([
+    { pendingHarness: "pi", modelFirst: true },
+    { pendingHarness: "claude-code", modelFirst: true },
+    { pendingHarness: "claude-code", modelFirst: false },
+  ] as const)(
+    "loads the current remote Model while $pendingHarness is queued (Model completes first: $modelFirst)",
+    async ({ pendingHarness, modelFirst }) => {
+      installFakeBrowser();
+      const pending = Promise.withResolvers<ReturnType<typeof readyInspection>>();
+      const catalog = Promise.withResolvers<ReturnType<typeof readyInspection>>();
+      if (modelFirst) catalog.resolve(readyInspection());
+      const local = {
+        inspectHarness: vi.fn(async () => readyInspection()),
+      };
+      const remote = {
+        inspectHarness: vi.fn(
+          async (input: { harnessId: string }, options?: RendererRequestOptions) => {
+            if (!options) return catalog.promise;
+            return input.harnessId === pendingHarness ? pending.promise : readyInspection();
+          },
+        ),
+        inspectThread: vi.fn(async () => ({
+          owner: "external" as const,
+          harnessId: "claude-code",
+          transportModelId:
+            "codexhost/claude-code-native@claude-model-v1.b3B1cw@bypassPermissions@auto",
+          effectiveModel: harnessModelRefSchema.parse({ id: "claude-model-v1.b3B1cw" }),
+          history: { fork: true, forkAcrossCwd: false, rollbackLastTurn: true },
+          locked: true,
+        })),
+        inspectThreadCommands: vi.fn(async () => ({ commands: [] })),
+        inspectThreadUsage: vi.fn(async () => ({ threadId: "thread-a", usage: null })),
+      };
+      const { installRendererBindingProbe } = await import("../src/renderer-binding-probe.js");
+      const probe = installRendererBindingProbe({
+        enabledAgents: ["codex", "pi", "claude-code"],
+        defaultAgent: "codex",
+      });
+      try {
+        probe.setAdapter(
+          { state: "ready", reason: "ready", modelUpdates: 0, hook: "request-bridge" },
+          undefined,
+          undefined,
+          {
+            ...remote,
+            currentHostId: () => "remote-host",
+            clientForHost: (hostId: string) => (hostId === "local" ? local : remote),
+            subscribeThreadUsage: () => () => undefined,
+          } as never,
+        );
+        await vi.waitFor(() => {
+          expect(probe.lockedSelection()?.agent).toBe("claude-code");
+          expect(remote.inspectHarness).toHaveBeenCalledWith({ harnessId: "claude-code" });
+          expect(testState.renderedModelViews.at(-1)).toMatchObject({
+            status: modelFirst ? "ready" : "loading",
+          });
+        });
+        expect(remote.inspectHarness).toHaveBeenCalledWith(
+          { harnessId: "pi", refresh: false },
+          { priority: "background" },
+        );
+        expect(remote.inspectHarness).toHaveBeenCalledWith(
+          { harnessId: "claude-code", refresh: false },
+          { priority: "background" },
+        );
+        expect(local.inspectHarness).toHaveBeenCalledWith(
+          { harnessId: "pi", refresh: false },
+          { priority: "background" },
+        );
+        expect(remote.inspectThread).toHaveBeenCalledWith({ threadId: "thread-a" });
+        expect(probe.status().availability[pendingHarness]).toBe("checking");
+        const foregroundCalls = () =>
+          remote.inspectHarness.mock.calls.filter(([, options]) => options === undefined).length;
+        expect(foregroundCalls()).toBe(1);
+        const renderedBeforeDiscovery = testState.renderedModelViews.length;
+        pending.resolve(readyInspection());
+        await vi.waitFor(() => expect(probe.status().availability[pendingHarness]).toBe("ready"));
+        expect(foregroundCalls()).toBe(1);
+        if (modelFirst) {
+          expect(testState.renderedModelViews.slice(renderedBeforeDiscovery)).not.toContainEqual(
+            expect.objectContaining({ status: "loading" }),
+          );
+        }
+        catalog.resolve(readyInspection());
+        await vi.waitFor(() =>
+          expect(testState.renderedModelViews.at(-1)).toMatchObject({ status: "ready" }),
+        );
+      } finally {
+        probe.dispose();
+        pending.resolve(readyInspection());
+        catalog.resolve(readyInspection());
+      }
+    },
+  );
+
+  it("waits for Host ownership rather than probing local when the route is unknown", async () => {
+    installFakeBrowser();
+    const inspectHarness = vi.fn(async () => {
+      throw new Error("Renderer Model request manager is unavailable");
+    });
+    const modelControl = {
+      currentHostId: () => null,
+      clientForHost: vi.fn(() => null),
+      inspectHarness,
+      inspectThread: vi.fn(),
+      inspectThreadCommands: vi.fn(async () => ({ commands: [] })),
+      inspectThreadUsage: vi.fn(),
+      subscribeThreadUsage: () => () => undefined,
+    };
+    const { installRendererBindingProbe } = await import("../src/renderer-binding-probe.js");
+    const probe = installRendererBindingProbe({
+      enabledAgents: ["codex", "pi"],
+      defaultAgent: "codex",
+    });
+    probe.setAdapter(
+      { state: "ready", reason: "ready", modelUpdates: 0, hook: "request-bridge" },
+      undefined,
+      undefined,
+      modelControl as never,
+    );
+    await Promise.resolve();
+    const diagnostics = testState.getConnectionDiagnostics?.();
+    expect(
+      diagnostics
+        ?.snapshot()
+        .hosts.find(({ hostId }) => hostId === "local")
+        ?.agents.find(({ agent }) => agent === "pi"),
+    ).toMatchObject({ availability: "checking", error: null });
+    expect(inspectHarness).not.toHaveBeenCalled();
+  });
+  it("reports a disconnected Host and ignores its late availability reply without affecting local", async () => {
+    installFakeBrowser();
+    const pending = Promise.withResolvers<ReturnType<typeof readyInspection>>();
+    const local = {
+      inspectHarness: vi.fn(async () => readyInspection()),
+      inspectThread: vi.fn(async () => ({ owner: "codex", locked: true })),
+      inspectThreadCommands: vi.fn(async () => ({ commands: [] })),
+      inspectThreadUsage: vi.fn(async () => ({ threadId: "thread-a", usage: null })),
+      subscribeThreadUsage: () => () => undefined,
+    };
+    const remote = {
+      ...local,
+      inspectHarness: vi.fn(async (input: { harnessId: string }) =>
+        input.harnessId === "pi" ? pending.promise : readyInspection(),
+      ),
+    };
+    let connected = true;
+    const modelControl = {
+      ...remote,
+      currentHostId: () => "remote-ssh-discovered:linux",
+      clientForHost: (hostId: string) => (hostId === "local" ? local : connected ? remote : null),
+    };
+    const { installRendererBindingProbe } = await import("../src/renderer-binding-probe.js");
+    const probe = installRendererBindingProbe({
+      enabledAgents: ["codex", "pi"],
+      defaultAgent: "codex",
+    });
+    probe.setAdapter(
+      { state: "ready", reason: "ready", modelUpdates: 0, hook: "request-bridge" },
+      undefined,
+      undefined,
+      modelControl as never,
+    );
+    await vi.waitFor(() => expect(remote.inspectHarness).toHaveBeenCalled());
+    connected = false;
+    const diagnostics = testState.getConnectionDiagnostics?.();
+    await diagnostics?.refresh();
+    pending.resolve(readyInspection());
+    await Promise.resolve();
+    await Promise.resolve();
+    const hosts = diagnostics?.snapshot().hosts;
+    expect(
+      hosts
+        ?.find(({ hostId }) => hostId === "remote-ssh-discovered:linux")
+        ?.agents.find(({ agent }) => agent === "pi"),
+    ).toMatchObject({ availability: "error", error: { code: "unavailable", retryable: true } });
+    expect(
+      hosts?.find(({ hostId }) => hostId === "local")?.agents.find(({ agent }) => agent === "pi"),
+    ).toMatchObject({ availability: "ready", error: null });
+  });
+
   it("does not rediscover the request route for unrelated sidebar rows", async () => {
     installFakeBrowser();
     const host = {
@@ -661,12 +849,8 @@ describe("Renderer binding Host-scoped Claude catalogs", () => {
   it("loads an external catalog for a draft mounted before the Adapter", async () => {
     installFakeBrowser();
     testState.modelTarget = ["default"];
-    let claudeInspections = 0;
     const hostA = {
-      inspectHarness: vi.fn(async () => {
-        claudeInspections += 1;
-        return readyInspection();
-      }),
+      inspectHarness: vi.fn(async () => readyInspection()),
     };
     const modelControl = {
       currentHostId: () => "host-a",
@@ -677,6 +861,7 @@ describe("Renderer binding Host-scoped Claude catalogs", () => {
       inspectThreadUsage: vi.fn(),
       subscribeThreadUsage: () => () => undefined,
     };
+    const applyAgent = vi.fn(() => true);
     const { installRendererBindingProbe } = await import("../src/renderer-binding-probe.js");
     const probe = installRendererBindingProbe({
       enabledAgents: ["codex", "claude-code"],
@@ -685,12 +870,106 @@ describe("Renderer binding Host-scoped Claude catalogs", () => {
     probe.setAdapter(
       { state: "ready", reason: "ready", modelUpdates: 0, hook: "request-bridge" },
       undefined,
-      undefined,
+      applyAgent,
       modelControl as never,
     );
 
-    await vi.waitFor(() => expect(claudeInspections).toBeGreaterThanOrEqual(2));
-    expect(testState.renderedModelViews.at(-1)).not.toMatchObject({ status: "error" });
+    expect(applyAgent).toHaveBeenCalledWith(
+      "claude-code",
+      undefined,
+      undefined,
+      undefined,
+      testState.composer,
+    );
+    await vi.waitFor(() =>
+      expect(testState.renderedModelViews.at(-1)).toMatchObject({ status: "ready" }),
+    );
+    expect(hostA.inspectHarness).toHaveBeenCalledWith({ harnessId: "claude-code" });
+  });
+
+  it("reloads a ready draft catalog when the Composer changes Hosts", async () => {
+    installFakeBrowser();
+    testState.modelTarget = ["default"];
+    let hostId = "local";
+    const local = { inspectHarness: vi.fn(async () => readyInspection()) };
+    const remoteModelId = "claude-model-v1.c29ubmV0";
+    const remote = { inspectHarness: vi.fn(async () => readyInspection(remoteModelId)) };
+    const { installRendererBindingProbe } = await import("../src/renderer-binding-probe.js");
+    const probe = installRendererBindingProbe({
+      enabledAgents: ["codex", "claude-code"],
+      defaultAgent: "claude-code",
+    });
+    probe.setAdapter(
+      { state: "ready", reason: "ready", modelUpdates: 0, hook: "request-bridge" },
+      undefined,
+      () => true,
+      {
+        currentHostId: () => hostId,
+        clientForHost: (id: string) => (id === "local" ? local : remote),
+        subscribeThreadUsage: () => () => undefined,
+      } as never,
+    );
+    await vi.waitFor(() =>
+      expect(testState.renderedModelViews.at(-1)).toMatchObject({
+        status: "ready",
+        selected: readyInspection().catalog.defaultModel,
+      }),
+    );
+
+    hostId = "remote";
+    window.dispatchEvent(new Event("codexhost:draft-prewarm-policy-changed"));
+    await vi.waitFor(() =>
+      expect(testState.renderedModelViews.at(-1)).toMatchObject({
+        status: "ready",
+        selected: { id: remoteModelId },
+      }),
+    );
+
+    hostId = "local";
+    window.dispatchEvent(new Event("codexhost:draft-prewarm-policy-changed"));
+    await vi.waitFor(() =>
+      expect(testState.renderedModelViews.at(-1)).toMatchObject({
+        status: "ready",
+        selected: readyInspection().catalog.defaultModel,
+      }),
+    );
+  });
+
+  it("reapplies the selected carrier and clears destination prewarm when a draft changes Hosts", async () => {
+    installFakeBrowser();
+    testState.modelTarget = ["default"];
+    let hostId = "local";
+    const local = { inspectHarness: vi.fn(async () => readyInspection()) };
+    const remote = { inspectHarness: vi.fn(async () => readyInspection()) };
+    const applyAgent = vi.fn<(agent: string) => boolean>(() => true);
+    const { installRendererBindingProbe } = await import("../src/renderer-binding-probe.js");
+    const probe = installRendererBindingProbe({
+      enabledAgents: ["codex", "claude-code"],
+      defaultAgent: "claude-code",
+    });
+    probe.setAdapter(
+      { state: "ready", reason: "ready", modelUpdates: 0, hook: "request-bridge" },
+      undefined,
+      applyAgent,
+      {
+        currentHostId: () => hostId,
+        clientForHost: (id: string) => (id === "local" ? local : remote),
+        subscribeThreadUsage: () => () => undefined,
+      } as never,
+    );
+    await vi.waitFor(() =>
+      expect(testState.renderedModelViews.at(-1)).toMatchObject({ status: "ready" }),
+    );
+    const applicationsBeforeSwitch = applyAgent.mock.calls.length;
+    const clearsBeforeSwitch = testState.prewarmClears;
+
+    hostId = "remote";
+    window.dispatchEvent(new Event("codexhost:draft-prewarm-policy-changed"));
+
+    await vi.waitFor(() => expect(remote.inspectHarness).toHaveBeenCalled());
+    expect(applyAgent.mock.calls.length).toBeGreaterThan(applicationsBeforeSwitch);
+    expect(applyAgent.mock.calls.at(-1)?.[0]).toBe("claude-code");
+    expect(testState.prewarmClears).toBeGreaterThan(clearsBeforeSwitch);
   });
 
   it("reloads a same-Host empty Claude catalog on explicit refresh", async () => {

@@ -4,7 +4,8 @@ import os from "node:os";
 import path from "node:path";
 
 const SKILL_VERSION = 7;
-const SKILL_RELATIVE_PATH = path.join("skills", "codexhost-delegation", "SKILL.md");
+export const DELEGATION_SKILL_NAME = "codexhost-delegation";
+const SKILL_RELATIVE_PATH = path.join("skills", DELEGATION_SKILL_NAME, "SKILL.md");
 const PREVIOUS_MANAGED_DIGESTS: readonly string[] = [
   "9d2f491850fb0b4084a31ba9b5e4a550b5e833747af322090d8ed0ff80b88c30",
   "2bb0aebb9b06febbc6c0c0bcdb0b32506c7cdbf8dc3b734cc6b2a86621270e4e",
@@ -178,4 +179,21 @@ export async function installDelegationSkills(
     }
   }
   return results;
+}
+
+/**
+ * Path of the Codex-visible (`~/.agents`) Skill copy, only while it still holds
+ * the managed content. A user-managed conflicting copy is never referenced.
+ */
+export async function managedDelegationSkillReference(
+  input: { homeDirectory?: string } = {},
+): Promise<{ name: string; path: string } | null> {
+  const filePath = path.join(input.homeDirectory ?? os.homedir(), ".agents", SKILL_RELATIVE_PATH);
+  try {
+    return (await readOptional(filePath)) === CODEXHOST_DELEGATION_SKILL
+      ? { name: DELEGATION_SKILL_NAME, path: filePath }
+      : null;
+  } catch {
+    return null;
+  }
 }

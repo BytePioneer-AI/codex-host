@@ -227,18 +227,20 @@ syncBuiltinESMExports();
 `,
   );
 
-  return { launcherPath, npmCliPath, preloadPath };
+  return { launcherPath, npmCliPath, preloadPath, platformRoot };
 }
 
 async function runLauncherLifecycle(
   platform,
-  { locale = "en_US.UTF-8", noColor = false, tty = false } = {},
+  { locale = "en_US.UTF-8", noColor = false, tty = false, platformVersion = "0.1.0" } = {},
 ) {
   const root = await temporaryDirectory();
   try {
-    const { launcherPath, npmCliPath, preloadPath } = await createLauncherLifecycleFixture(
-      root,
-      platform,
+    const { launcherPath, npmCliPath, preloadPath, platformRoot } =
+      await createLauncherLifecycleFixture(root, platform);
+    await writeFile(
+      path.join(platformRoot, "package.json"),
+      JSON.stringify({ name: `@codexhost/cli-${platform}-x64`, version: platformVersion }),
     );
     const environment = {
       ...process.env,
@@ -392,7 +394,7 @@ describe("npm package release", () => {
     });
   });
 
-  it("generates OpenCode and pinned opencodex notices from repository license assets", async () => {
+  it("generates SDK notices from repository license assets", async () => {
     const root = process.cwd();
     const output = await temporaryDirectory();
     try {
@@ -400,14 +402,6 @@ describe("npm package release", () => {
       const notice = await readFile(path.join(output, "THIRD_PARTY_NOTICES.txt"), "utf8");
       const license = await readFile(
         path.join(output, "licenses/OpenCode-SDK-LICENSE.txt"),
-        "utf8",
-      );
-      const opencodexLicense = await readFile(
-        path.join(output, "licenses/opencodex-LICENSE.txt"),
-        "utf8",
-      );
-      const opencodexSource = await readFile(
-        path.join(root, "third-party/opencodex.LICENSE"),
         "utf8",
       );
       expect(
@@ -428,12 +422,6 @@ describe("npm package release", () => {
       expect(notice).toContain("@opencode-ai/sdk");
       expect(notice).toContain("licenses/OpenCode-SDK-LICENSE.txt");
       expect(license).toContain("Copyright (c) 2025 opencode");
-      expect(notice).toContain(
-        "opencodex native profiles (2d4d7a22381a2e497c2442902104619e25f937c7)",
-      );
-      expect(notice).toContain("License text: licenses/opencodex-LICENSE.txt");
-      expect(opencodexLicense).toBe(opencodexSource);
-      expect(opencodexLicense).toContain("MIT License");
     } finally {
       await rm(output, { recursive: true, force: true });
     }
@@ -603,6 +591,24 @@ describe("npm package release", () => {
     expect(readme).toContain("process trees of completed commands");
   });
 
+  it.each(["win32", "darwin", "linux"])(
+    "rejects mismatched platform payloads before spawning on %s",
+    async (platform) => {
+      for (const platformVersion of ["0.0.9", "0.2.0", null]) {
+        const result = await runLauncherLifecycle(platform, { platformVersion });
+        expect(result.status, result.stderr).toBe(1);
+        expect(result.stderr).toContain("platform package version mismatch");
+        expect(result.stderr).toContain(`@codexhost/cli-${platform}-x64`);
+        expect(result.stderr).toContain("expected 0.1.0");
+        expect(result.stderr).toContain(
+          `npm install -g @codexhost/cli@0.1.0 @codexhost/cli-${platform}-x64@0.1.0`,
+        );
+        expect(result.stderr).not.toContain("received Launcher ready");
+        expect(result.stdout).not.toContain("startup:");
+      }
+    },
+  );
+
   it.each(["darwin", "linux"])("returns after the ready handshake on %s", async (platform) => {
     const result = await runLauncherLifecycle(platform);
 
@@ -715,7 +721,6 @@ describe("npm package release", () => {
       });
       expect(paths).toEqual(expectedNpmPackagePaths(target));
       expect(paths).toContain("licenses/OpenCode-SDK-LICENSE.txt");
-      expect(paths).toContain("licenses/opencodex-LICENSE.txt");
       expect(paths).not.toContain("runtime/node");
       expect(paths).toContain("bin/codexhost");
       expect(paths).toContain("libexec/codexhost-shim");

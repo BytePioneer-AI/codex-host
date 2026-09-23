@@ -1,6 +1,11 @@
+import { spawn } from "node:child_process";
 import path from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
+
+vi.mock("node:child_process", () => ({
+  spawn: vi.fn(() => ({ unref: vi.fn() })),
+}));
 
 import type {
   RemoteHostInstallationStatus,
@@ -38,6 +43,7 @@ let restore: (() => void) | undefined;
 afterEach(() => {
   restore?.();
   restore = undefined;
+  vi.mocked(spawn).mockClear();
 });
 
 function runtime(
@@ -103,6 +109,43 @@ describe("remote Host lifecycle", () => {
     expect(launch).not.toHaveBeenCalled();
     expect(terminate).not.toHaveBeenCalled();
   });
+
+  it.each([undefined, "/custom/claude"])(
+    "leaves Claude discovery to the inherited environment (override: %s)",
+    async (command) => {
+      const environment = {
+        HOME: home,
+        PATH: "/user/bin",
+        ...(command ? { CODEXHOST_CLAUDE_COMMAND: command } : {}),
+      };
+      restore = setRemoteHostLifecycleDependenciesForTest({
+        inspectInstallation: vi.fn().mockResolvedValue({
+          ...readyInstallation,
+          claudeCommand: "/old/claude",
+        }),
+        probeProtocol: vi.fn().mockResolvedValue(runtime("stopped")),
+        waitForRuntime: vi.fn().mockResolvedValue(runtime("running", "codexhost")),
+      });
+
+      await expect(startRemoteHost({ platform: "linux", environment })).resolves.toMatchObject({
+        state: "running",
+        changed: true,
+      });
+      expect(spawn).toHaveBeenCalledOnce();
+      expect(spawn).toHaveBeenCalledWith(
+        manifest.wrapperPath,
+        ["-c", "features.code_mode_host=true", "app-server", "--listen", "unix://"],
+        expect.objectContaining({
+          detached: true,
+          env: expect.objectContaining({
+            ...environment,
+            PATH: expect.stringContaining(environment.PATH),
+          }),
+        }),
+      );
+      expect(vi.mocked(spawn).mock.calls[0]?.[2]?.env?.CODEXHOST_CLAUDE_COMMAND).toBe(command);
+    },
+  );
 
   it("uses process verification when an active listener cannot be classified", async () => {
     const operations: string[] = [];

@@ -336,6 +336,10 @@ function updatesPage(
       // Presentation-only: emphasise the manual path once the automatic one has
       // visibly failed.
       const setManualFallback = (fallback: boolean): void => {
+        // While automatic update works, manual download is a one-line escape hatch;
+        // once it fails, the section returns at full weight.
+        controls.className =
+          !fallback && !windows ? "settings-update-controls is-quiet" : "settings-update-controls";
         manualNpmDescription.textContent = windows
           ? messages.updateWindowsNpmDescription
           : fallback
@@ -358,6 +362,7 @@ function updatesPage(
 
       const renderUnavailable = (detail: string): void => {
         panel.dataset.updateState = "unavailable";
+        delete panel.dataset.inline;
         panel.replaceChildren();
         const copy = document.createElement("p");
         copy.className = "settings-update-summary";
@@ -366,14 +371,16 @@ function updatesPage(
         notes.replaceChildren();
       };
 
+      // Failed requests point at the manual download without exposing internal
+      // detail. A start timeout is handled separately: the Host may still be
+      // updating, so continue reading status rather than retrying the start.
       const renderRequestFailure = (error: unknown): void => {
+        console.error("codexhost update request failed", error);
         renderPendingStatus(
           null,
           error instanceof RendererUpdateRequestTimeoutError
             ? messages.updateRequestTimeout
-            : error instanceof Error
-              ? error.message
-              : messages.updateFailed,
+            : messages.updateServiceUnavailable,
           "failed",
         );
       };
@@ -392,11 +399,17 @@ function updatesPage(
             {
               success(result) {
                 const message = statusMessage(result.status, messages);
-                if (isPendingStatus(result.status)) scheduleStatusPoll(client);
                 if (message) renderPendingStatus(result.status, message);
+                if (result.status === null || isPendingStatus(result.status)) {
+                  scheduleStatusPoll(client);
+                }
               },
               failure(error) {
-                renderRequestFailure(error);
+                if (error instanceof RendererUpdateRequestTimeoutError) {
+                  scheduleStatusPoll(client);
+                } else {
+                  renderRequestFailure(error);
+                }
               },
             },
           );
@@ -409,6 +422,7 @@ function updatesPage(
         viewPhase: UpdateStatus["phase"] | "pending" = status?.phase ?? "pending",
       ): void => {
         panel.dataset.updateState = viewPhase;
+        delete panel.dataset.inline;
         panel.replaceChildren();
         panel.append(createPanelHead(document, viewPhase, message));
         setManualFallback(viewPhase === "failed");
@@ -431,14 +445,6 @@ function updatesPage(
           detail.textContent = `${percent}% · ${formatUpdateBytes(status.downloadedBytes)} / ${formatUpdateBytes(status.totalBytes)}`;
           panel.append(progress, detail);
         }
-        if (viewPhase === "failed") {
-          const retry = document.createElement("button");
-          retry.type = "button";
-          retry.className = "settings-command-button";
-          retry.append(createRendererSettingsIcon("refresh", 16), messages.updateRetry);
-          retry.addEventListener("click", () => void load());
-          panel.append(createPanelActions(document, retry));
-        }
       };
 
       const start = (client: RendererUpdateClient): void => {
@@ -458,7 +464,11 @@ function updatesPage(
             },
             failure(error) {
               pending = false;
-              renderRequestFailure(error);
+              if (error instanceof RendererUpdateRequestTimeoutError) {
+                scheduleStatusPoll(client, true);
+              } else {
+                renderRequestFailure(error);
+              }
             },
           },
         );
@@ -497,21 +507,26 @@ function updatesPage(
         panel.dataset.updateState = view;
         panel.replaceChildren();
         setManualFallback(Boolean(result.error) || actionableStatus !== null);
-        if (result.error || !result.updateAvailable || windows || actionableStatus) {
-          panel.append(
-            createPanelHead(
-              document,
-              view,
-              actionableStatus
-                ? (statusMessage(actionableStatus, messages) ?? messages.updateFailed)
-                : result.error
-                  ? messages.updateFailed
-                  : result.updateAvailable
+        // Every state gets a status line; a bare button in an empty card reads as unfinished.
+        const inlineUpdate =
+          !result.error && !windows && !actionableStatus && result.updateAvailable;
+        if (inlineUpdate) panel.dataset.inline = "";
+        else delete panel.dataset.inline;
+        panel.append(
+          createPanelHead(
+            document,
+            view,
+            actionableStatus
+              ? (statusMessage(actionableStatus, messages) ?? messages.updateFailed)
+              : result.error
+                ? messages.updateFailed
+                : result.updateAvailable
+                  ? windows
                     ? messages.updateWindowsManualRequired
-                    : messages.updateUpToDate,
-            ),
-          );
-        }
+                    : messages.updateAvailable
+                  : messages.updateUpToDate,
+          ),
+        );
         if (actionableStatus?.error) {
           const error = document.createElement("p");
           error.className = "settings-update-error";

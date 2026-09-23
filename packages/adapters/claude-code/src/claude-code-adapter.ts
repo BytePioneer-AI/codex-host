@@ -55,6 +55,7 @@ import {
 } from "@codexhost/harness-adapter";
 import {
   harnessCommandCatalogSchema,
+  type HarnessCommandCatalog,
   harnessIdSchema,
   hostInteractionIdSchema,
   hostItemIdSchema,
@@ -98,6 +99,7 @@ import {
   CLAUDE_THINKING_OPTIONS,
   parseClaudeThinkingOptionId,
 } from "./thinking-options.js";
+import { claudeDynamicCommandPrompt, claudeLiveCommandCatalog } from "./slash-commands.js";
 import { claudePlanReviewResponse, createClaudePlanReview } from "./plan-review.js";
 import { ClaudeSubagentLifecycle } from "./subagent-lifecycle.js";
 import { ClaudeTaskTracker } from "./task-tracker.js";
@@ -223,7 +225,8 @@ export const claudeCommandCatalog = harnessCommandCatalogSchema.parse({
 type ClaudeHarnessCommand =
   | { id: "claude.compact"; text: string | undefined }
   | { id: "claude.init" }
-  | { id: "claude.recap" };
+  | { id: "claude.recap" }
+  | { id: "slash"; text: string };
 
 function parseClaudeHarnessCommand(
   command: HarnessCommandInvocation,
@@ -600,7 +603,7 @@ class ClaudeHarnessSession implements HarnessSession {
         formatVersion: 1,
       });
     this.commands = {
-      list: async () => ({ ok: true, value: claudeCommandCatalog }),
+      list: async () => ({ ok: true, value: this.#liveCommandCatalog() }),
       execute: (command) => this.#executeHarnessCommand(command),
     };
     const durable = this.#openMode === "resume" || options.nativeRef !== undefined;
@@ -865,13 +868,30 @@ class ClaudeHarnessSession implements HarnessSession {
     return { ok: true, value: { turnId: command.turnId } };
   }
 
+  /** Built-ins plus the live commands and skills of the started native Session. */
+  #liveCommandCatalog(): HarnessCommandCatalog {
+    return claudeLiveCommandCatalog(
+      claudeCommandCatalog,
+      this.#transport?.slashCommands?.() ?? null,
+    );
+  }
+
   async #executeHarnessCommand(
     command: HarnessCommandInvocation,
   ): Promise<HarnessResult<HarnessCommandAccepted>> {
     if (this.#phase !== "open") {
       return { ok: false, error: invalidState("Claude Code Session is not open") };
     }
-    const parsed = parseClaudeHarnessCommand(command);
+    const argumentText = command.arguments?.text;
+    const dynamicPrompt = claudeDynamicCommandPrompt(
+      this.#liveCommandCatalog(),
+      command.commandId,
+      typeof argumentText === "string" ? argumentText : undefined,
+    );
+    const parsed: HarnessResult<ClaudeHarnessCommand> =
+      dynamicPrompt === null
+        ? parseClaudeHarnessCommand(command)
+        : { ok: true, value: { id: "slash", text: dynamicPrompt } };
     if (!parsed.ok) return parsed;
     if (this.#acceptingTurn || this.#active || this.#configurationTask || this.#readingHistory) {
       return {
@@ -963,7 +983,11 @@ class ClaudeHarnessSession implements HarnessSession {
           )
         : parsed.value.id === "claude.init"
           ? transport.init(nativeTurnKey, (event) => this.#handleTurnEvent(active, event))
-          : transport.recap(nativeTurnKey, (event) => this.#handleTurnEvent(active, event));
+          : parsed.value.id === "slash"
+            ? transport.runTurn(parsed.value.text, nativeTurnKey, (event) =>
+                this.#handleTurnEvent(active, event),
+              )
+            : transport.recap(nativeTurnKey, (event) => this.#handleTurnEvent(active, event));
     try {
       void running.then(
         (result) => this.#finishResult(active, result),
@@ -2439,6 +2463,7 @@ class ClaudeHarnessSession implements HarnessSession {
 
 export class ClaudeCodeAdapter implements HarnessAdapter {
   readonly commandCatalog = claudeCommandCatalog;
+  readonly liveCommandCatalog = true;
   readonly harnessId: HarnessId = claudeCodeHarnessId;
   readonly sessionImport = Object.freeze({
     listCandidates: async (): Promise<HarnessResult<readonly HarnessSessionImportCandidate[]>> => {

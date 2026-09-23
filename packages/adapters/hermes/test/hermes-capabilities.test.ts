@@ -188,6 +188,24 @@ describe("Hermes native diff projection", () => {
 });
 
 describe("Hermes native commands", () => {
+  it("skips invalid and duplicate live entries without losing valid commands", () => {
+    const catalog = hermesCommandCatalog([
+      ...nativeCommands,
+      { name: "review docs", description: "Whitespace" },
+      { name: "custom/review", description: "Slash" },
+      { name: "审查", description: "Non-ASCII id" },
+      { name: "review", description: "Review", input: { hint: "Files" } },
+      { name: "review", description: "Duplicate" },
+      { name: "model", description: "Excluded" },
+    ]);
+    expect(catalog.commands.map(({ id }) => id)).toEqual([
+      "hermes.compress",
+      "hermes.context",
+      "hermes.review",
+    ]);
+    expect(catalog.commands.at(-1)).toMatchObject({ argumentMode: "text", description: "Review" });
+  });
+
   it("only exposes commands actually advertised by this native session", () => {
     expect(hermesCommandCatalog([])).toEqual({ commands: [] });
     expect(

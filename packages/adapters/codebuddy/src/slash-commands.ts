@@ -1,4 +1,8 @@
-import type { HarnessCommandInvocation, HarnessResult } from "@codexhost/harness-adapter";
+import {
+  isExcludedLiveCommand,
+  type HarnessCommandInvocation,
+  type HarnessResult,
+} from "@codexhost/harness-adapter";
 import {
   harnessCommandCatalogSchema,
   type HarnessCommandCatalog,
@@ -58,7 +62,13 @@ export function commandCatalog(
   return {
     commands: rows(value).flatMap((entry) => {
       const name = text(entry.name).replace(/^\//u, "");
-      if (excluded.has(name) || seen.has(name)) return [];
+      const skill = record(entry._meta).type === "skill";
+      if (
+        excluded.has(name) ||
+        seen.has(name) ||
+        isExcludedLiveCommand(name, skill ? "skill" : "command")
+      )
+        return [];
       const parsed = harnessCommandCatalogSchema.safeParse({
         commands: [
           {
@@ -72,6 +82,7 @@ export function commandCatalog(
               name === "compact" || record(entry.input).hint || record(entry._meta).type === "skill"
                 ? "text"
                 : "none",
+            ...(record(entry._meta).type === "skill" ? { kind: "skill" } : {}),
           },
         ],
       });

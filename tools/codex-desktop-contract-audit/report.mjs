@@ -16,6 +16,7 @@ export const AUDIT_SURFACE_IDS = Object.freeze([
   "sidebar",
   "transcript",
   "usage-credits",
+  "codex-usage-gate",
   "fork",
 ]);
 
@@ -98,7 +99,11 @@ function validateSurface(value, index) {
   };
 }
 
-export function validateAuditReport(value) {
+/**
+ * `baseline`: a reviewed report may predate surfaces added since; those are
+ * compared as having no baseline instead of rejecting the whole report.
+ */
+export function validateAuditReport(value, { baseline = false } = {}) {
   exactKeys(
     value,
     [
@@ -132,11 +137,14 @@ export function validateAuditReport(value) {
   ) {
     throw new Error("audit report checksRun is invalid");
   }
-  if (!Array.isArray(value.surfaces) || value.surfaces.length !== AUDIT_SURFACE_IDS.length) {
+  if (
+    !Array.isArray(value.surfaces) ||
+    (baseline ? value.surfaces.length === 0 : value.surfaces.length !== AUDIT_SURFACE_IDS.length)
+  ) {
     throw new Error("audit report surfaces are incomplete");
   }
   const surfaces = value.surfaces.map(validateSurface);
-  if (new Set(surfaces.map(({ id }) => id)).size !== AUDIT_SURFACE_IDS.length) {
+  if (new Set(surfaces.map(({ id }) => id)).size !== surfaces.length) {
     throw new Error("audit report surfaces must be unique");
   }
   const report = {
@@ -207,6 +215,7 @@ function classifySurface({
   reason,
   baseline,
 }) {
+  const baselined = baselineSurface(baseline, id) !== null;
   const baselineChanged = compareObserved(baseline, id, observed);
   let verdict;
   let finalReason = reason;
@@ -226,7 +235,7 @@ function classifySurface({
     verdict,
     reason: finalReason,
     evidence: {
-      static: baseline ? (baselineChanged ? "changed" : "pass") : "not-run",
+      static: baselined ? (baselineChanged ? "changed" : "pass") : "not-run",
       liveStructure: live,
       installation,
       behavior,
@@ -394,6 +403,31 @@ export function buildSurfaceResults(contracts, baseline = null, controlled = nul
     reason: usageActive ? "context-usage-owner-cardinality" : "usage-control-state-inactive",
     baseline,
   });
+  // External Harness submission while ChatGPT Codex usage is exhausted depends
+  // on one Composer owner exposing one reserve gate and, when it reads usage,
+  // one Account gate (renderer-codex-usage-gate.ts). The Account gate returns
+  // early for API-key sign-in or loading, so its absence is unverified.
+  const gate = contracts.codexUsageGate;
+  const gateActive = gate.composerCount > 0;
+  const gateStructure =
+    gate.ownerCount === gate.composerCount &&
+    gate.reserveGateCount === gate.composerCount &&
+    gate.accountGateCount <= gate.composerCount;
+  const accountGateObserved = gate.accountGateCount === gate.composerCount;
+  const codexUsageGate = classifySurface({
+    id: "codex-usage-gate",
+    observed: gate,
+    live: !gateActive ? "inactive" : gateStructure ? "pass" : "fail",
+    active: gateActive && (!gateStructure || accountGateObserved),
+    reason: !gateActive
+      ? "composer-state-not-visible"
+      : !gateStructure
+        ? "codex-usage-gate-cardinality"
+        : accountGateObserved
+          ? "codex-usage-gate-cardinality"
+          : "codex-usage-account-gate-dormant",
+    baseline,
+  });
   const forkActive = contracts.fork.annotatedResponseCount > 0;
   const fork = classifySurface({
     id: "fork",
@@ -419,6 +453,7 @@ export function buildSurfaceResults(contracts, baseline = null, controlled = nul
     sidebar,
     transcript,
     usageCredits,
+    codexUsageGate,
     fork,
   ];
 }

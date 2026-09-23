@@ -121,16 +121,7 @@ test("localizes shared Harness command and Permission Mode controls in Chinese",
   });
 
   const commandTrigger = page.locator("[data-codexhost-harness-command-control] button");
-  await expect(commandTrigger).toHaveAttribute("aria-label", "Harness 命令");
-  await commandTrigger.hover();
-  const commandMenu = page.locator("[data-codexhost-harness-command-menu]");
-  await expect(commandMenu).toBeVisible();
-  await expect(commandMenu).toContainText("命令");
-  await expect(commandMenu).toContainText("压缩当前对话上下文");
-  await expect(commandMenu).toContainText("↵");
-  await expect(commandMenu).not.toContainText("文本");
-  await page.mouse.move(700, 700);
-  await expect(commandMenu).toBeHidden();
+  await expect(commandTrigger).toHaveAttribute("aria-label", "输入 # 打开命令、技能和 Agent");
 
   const permissionTrigger = page.locator("[data-codexhost-permission-mode-control] > button");
   await expect(permissionTrigger).toContainText("完全访问");
@@ -144,21 +135,7 @@ test("localizes shared Harness command and Permission Mode controls in Chinese",
   await expect(permissionMenu).toContainText("无需批准提示即可运行所有工具操作。");
 });
 
-test("disables compact without a Thread even when it accepts text arguments", async ({ page }) => {
-  await page.setContent("<!doctype html><body></body>");
-  await page.addScriptTag({ content: browserBundle });
-  await page.evaluate(() => {
-    Reflect.get(globalThis, "setupHarnessControlsChinese")();
-    Reflect.get(globalThis, "setHarnessCommandSession")(false);
-  });
-  await page.locator("[data-codexhost-harness-command-control] button").click();
-  const compact = page.locator('[data-command-id="omp.compact"]');
-  await expect(compact).toBeDisabled();
-  await page.evaluate(() => Reflect.get(globalThis, "setHarnessCommandSession")(true));
-  await expect(compact).toBeEnabled();
-});
-
-test("keeps the command entry visible as its catalog and execution state change", async ({
+test("keeps the command entry enabled as its catalog and execution state change", async ({
   page,
 }) => {
   await page.setContent(
@@ -167,25 +144,24 @@ test("keeps the command entry visible as its catalog and execution state change"
   await page.addScriptTag({ content: browserBundle });
   await page.evaluate(() => Reflect.get(globalThis, "setupHarnessControlsChinese")());
 
+  // The button opens the # menu, which also lists delegation targets, so it
+  // never depends on the Harness command catalog.
   const root = page.locator("[data-codexhost-harness-command-control]");
   const trigger = root.locator("button");
-  const menu = page.locator("[data-codexhost-harness-command-menu]");
-  await trigger.click();
-  await expect(menu).toBeVisible();
-
-  await page.evaluate(() => Reflect.get(globalThis, "setHarnessCommandState")(false, false));
-  await expect(root).toBeVisible();
-  await expect(trigger).toBeDisabled();
-  await expect(trigger).toHaveAttribute("title", "暂无可用的 Harness 命令");
-  await expect(menu).toBeHidden();
-
-  await page.evaluate(() => Reflect.get(globalThis, "setHarnessCommandState")(true, true));
-  await expect(trigger).toBeDisabled();
-  await page.evaluate(() => Reflect.get(globalThis, "setHarnessCommandState")(true, false));
-  await expect(trigger).toBeEnabled();
-  await expect(trigger).toHaveAttribute("title", "Harness 命令");
-  await trigger.click();
-  await expect(menu).toBeVisible();
+  for (const [available, executing] of [
+    [false, false],
+    [true, true],
+    [true, false],
+  ] as const) {
+    await page.evaluate(
+      ([nextAvailable, nextExecuting]) =>
+        Reflect.get(globalThis, "setHarnessCommandState")(nextAvailable, nextExecuting),
+      [available, executing] as const,
+    );
+    await expect(root).toBeVisible();
+    await expect(trigger).toBeEnabled();
+    await expect(trigger).toHaveAttribute("title", "输入 # 打开命令、技能和 Agent");
+  }
 });
 
 test("keeps the Permission Mode menu anchored inside the Codex window zoom", async ({ page }) => {

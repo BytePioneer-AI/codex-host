@@ -126,7 +126,7 @@ describe("DeepSeek public generation selector", () => {
     await adapter.close();
   });
 
-  it.each(["0.1.2-rc.1", "0.1.5-rc.1"] as const)(
+  it.each(["0.1.2-rc.1", "0.1.5-rc.1", "0.1.5-rc.2", "0.1.5-rc.3"] as const)(
     "revalidates import metadata and preserves %s native identity",
     async (version) => {
       const modern = new FakeAdapter();
@@ -166,7 +166,7 @@ describe("DeepSeek public generation selector", () => {
             harnessId: "deepseek-harness",
             nativeSessionId: "native",
             formatVersion: 1,
-            ...(version === "0.1.5-rc.1" ? { locator: { dshVersion: version } } : {}),
+            ...(version === "0.1.2-rc.1" ? {} : { locator: { dshVersion: version } }),
           },
         },
       });
@@ -179,7 +179,7 @@ describe("DeepSeek public generation selector", () => {
     },
   );
 
-  it.each(["0.1.2-rc.1", "0.1.5-rc.1"] as const)(
+  it.each(["0.1.2-rc.1", "0.1.5-rc.1", "0.1.5-rc.2", "0.1.5-rc.3"] as const)(
     "passes exact %s through the managed Modern Adapter factory",
     async (version) => {
       const executable = { ...modernExecutable, version };
@@ -233,40 +233,25 @@ describe("DeepSeek public generation selector", () => {
     await adapter.close();
   });
 
-  it.each(["0.1.1-rc.2", "0.1.3-rc.1", "0.1.5-rc.2", "0.1.5"])(
-    "rejects unsupported %s before touching an endpoint",
-    async (version) => {
-      const createModernAdapter = vi.fn();
-      const adapter = new DeepSeekHarnessAdapter(
-        {},
-        {
-          probeExecutable: async () => ({
-            ...classifyDeepSeekVersionOutput(version),
-            command: modernExecutable.command,
-          }),
-          createModernAdapter,
-        },
-      );
+  it("does not reject an untested CLI version before inspecting the native Web", async () => {
+    const createModernAdapter = vi.fn(() => new FakeAdapter());
+    const adapter = new DeepSeekHarnessAdapter(
+      {},
+      {
+        probeExecutable: async () => ({
+          ...classifyDeepSeekVersionOutput("0.1.5-rc.3"),
+          command: modernExecutable.command,
+        }),
+        createModernAdapter,
+      },
+    );
 
-      await expect(adapter.inspect()).resolves.toMatchObject({
-        status: "unavailable",
-        error: {
-          code: "unsupported",
-          retryable: false,
-          stage: "version",
-          durationMs: expect.any(Number),
-          message: expect.stringContaining("仅支持 dsh-v0.1.2-rc.1 和 dsh-v0.1.5-rc.1"),
-        },
-      });
-      await expect(adapter.sessionImport.resolveCandidate("native")).resolves.toMatchObject({
-        ok: false,
-        error: { code: "unsupported" },
-      });
-      expect(globalThis.fetch).not.toHaveBeenCalled();
-      expect(createModernAdapter).not.toHaveBeenCalled();
-      await adapter.close();
-    },
-  );
+    await expect(adapter.inspect()).resolves.toBe(readyInspection);
+    expect(createModernAdapter).toHaveBeenCalledWith(
+      expect.objectContaining({ version: "0.1.5-rc.3" }),
+    );
+    await adapter.close();
+  });
 
   it("never retries a version probe whose process cleanup was not confirmed", async () => {
     const probeExecutable = vi.fn(() =>
@@ -303,9 +288,7 @@ describe("DeepSeek public generation selector", () => {
       status: "unavailable",
       error: {
         code: "authenticationRequired",
-        message: expect.stringMatching(
-          /dsh-v0\.1\.2-rc\.1 或 dsh-v0\.1\.5-rc\.1[\s\S]*only these two versions are supported/u,
-        ),
+        message: expect.stringContaining("cannot be used as an endpoint"),
         stage: "wire-handshake",
       },
     });

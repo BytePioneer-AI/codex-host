@@ -617,8 +617,31 @@ function v015Snapshot(input: Parameters<typeof exactJournalSnapshot>[0]): Record
   };
 }
 
-describe("DSH 0.1.5-rc.1 session operations", () => {
+describe("DSH V3 session operations", () => {
   const locator = { dshVersion: "0.1.5-rc.1" };
+
+  it("fails closed on an untested CLI whose journal does not match the chosen profile", async () => {
+    const cwd = path.resolve("fixture-untested-journal");
+    const { adapter, connection } = setup([], { version: "0.1.5-rc.3" });
+    connection.journalSnapshots.set(
+      "session-untested",
+      exactJournalSnapshot({ sessionId: "session-untested", cwd, events: [] }),
+    );
+    await expect(
+      adapter.open({
+        kind: "resume",
+        cwd,
+        nativeRef: nativeSessionRefSchema.parse({
+          harnessId: "deepseek-harness",
+          nativeSessionId: "session-untested",
+          formatVersion: 1,
+          locator: { dshVersion: "0.1.5-rc.3" },
+        }),
+      }),
+    ).resolves.toMatchObject({ ok: false, error: { code: "protocolError" } });
+    expect(connection.calls.some(({ endpoint }) => endpoint === "session/create")).toBe(false);
+    await adapter.close();
+  });
 
   it.each(["session", "adapter"] as const)(
     "reports failed V3 persistence confirmation during %s close",
@@ -742,69 +765,99 @@ describe("DSH 0.1.5-rc.1 session operations", () => {
     },
   );
 
-  it("creates, selects native permissions and resumes a V3 Session", async () => {
-    const cwd = path.resolve("fixture-v015-create");
-    const { adapter, connection } = setup(["v015"], { version: "0.1.5-rc.1" });
-    connection.permissionModesEnabled = true;
-    connection.journalSnapshots.set("session-v015", {
-      ...v015Snapshot({ sessionId: "session-v015", cwd, events: [] }),
-      projections: {
-        asOfSeq: -1,
-        values: { modelSelection: { lastUsed: null, next: null } },
-      },
-    });
-    const created = await adapter.open({
-      kind: "create",
-      cwd,
-      permissionModeId: "danger-full-access" as never,
-    });
-    expect(created).toMatchObject({ ok: true });
-    if (!created.ok) throw new Error(created.error.message);
-    const ref = created.value.initialState.nativeRef;
-    if (!ref) throw new Error("missing native Session reference");
-    expect(ref).toMatchObject({ nativeSessionId: "session-v015", locator });
-    expect(connection.streams).toContainEqual({
-      endpoint: "session/follow",
-      args: {
-        request: {
-          address: { kind: "session", sessionId: "session-v015" },
-          maxMessages: 200,
-          assistantStream: true,
+  it.each(["0.1.5-rc.1", "0.1.5-rc.2", "0.1.5-rc.3"] as const)(
+    "creates, selects native permissions and resumes a %s V3 Session",
+    async (version) => {
+      const cwd = path.resolve("fixture-v015-create");
+      const { adapter, connection } = setup(["v015"], { version });
+      connection.permissionModesEnabled = true;
+      connection.journalSnapshots.set("session-v015", {
+        ...v015Snapshot({ sessionId: "session-v015", cwd, events: [] }),
+        projections: {
+          asOfSeq: -1,
+          values: { modelSelection: { lastUsed: null, next: null } },
         },
-      },
-    });
-    expect(connection.calls).toContainEqual({
-      endpoint: "commands/execute",
-      args: {
-        agentId: "session-v015",
-        line: "/permission danger-full-access",
-        submittedAttachments: [],
-      },
-    });
-    await created.value.close();
-    connection.journalSnapshots.set("session-v015", {
-      ...v015Snapshot({
-        sessionId: "session-v015",
+      });
+      const created = await adapter.open({
+        kind: "create",
         cwd,
-        events: [exactJournalEvent(0, "permission/preset", { preset: "danger-full-access" })],
-      }),
-      projections: {
-        asOfSeq: 0,
-        values: {
-          modelSelection: { lastUsed: null, next: null },
-          permissions: permissionProjection("danger-full-access"),
+        permissionModeId: "danger-full-access" as never,
+      });
+      expect(created).toMatchObject({ ok: true });
+      if (!created.ok) throw new Error(created.error.message);
+      const ref = created.value.initialState.nativeRef;
+      if (!ref) throw new Error("missing native Session reference");
+      expect(ref).toMatchObject({
+        nativeSessionId: "session-v015",
+        locator: { dshVersion: version },
+      });
+      expect(connection.streams).toContainEqual({
+        endpoint: "session/follow",
+        args: {
+          request: {
+            address: { kind: "session", sessionId: "session-v015" },
+            maxMessages: 200,
+            assistantStream: true,
+          },
         },
-      },
-    });
-    const resumed = await adapter.open({ kind: "resume", nativeRef: ref, cwd });
-    if (!resumed.ok) throw new Error(resumed.error.message);
-    expect(resumed).toMatchObject({ ok: true });
-    expect(connection.calls.filter(({ endpoint }) => endpoint === "session/create")).toHaveLength(
-      1,
-    );
-    if (resumed.ok) await resumed.value.close();
-    await adapter.close();
-  });
+      });
+      expect(connection.calls).toContainEqual({
+        endpoint: "commands/execute",
+        args: {
+          agentId: "session-v015",
+          line: "/permission danger-full-access",
+          submittedAttachments: [],
+        },
+      });
+      await created.value.close();
+      connection.journalSnapshots.set("session-v015", {
+        ...v015Snapshot({
+          sessionId: "session-v015",
+          cwd,
+          events: [exactJournalEvent(0, "permission/preset", { preset: "danger-full-access" })],
+        }),
+        projections: {
+          asOfSeq: 0,
+          values: {
+            modelSelection: { lastUsed: null, next: null },
+            permissions: permissionProjection("danger-full-access"),
+          },
+        },
+      });
+      const mismatched = await adapter.open({
+        kind: "resume",
+        nativeRef: {
+          ...ref,
+          locator: { dshVersion: version === "0.1.5-rc.1" ? "0.1.5-rc.2" : "0.1.5-rc.1" },
+        },
+        cwd,
+      });
+      expect(mismatched).toMatchObject({ ok: true });
+      if (mismatched.ok) await mismatched.value.close();
+      await expect(
+        adapter.open({
+          kind: "resume",
+          nativeRef: { ...ref, locator: { dshVersion: "0.1.2-rc.1" } },
+          cwd,
+        }),
+      ).resolves.toMatchObject({ ok: false, error: { code: "invalidRequest" } });
+      await expect(
+        adapter.open({
+          kind: "resume",
+          nativeRef: { ...ref, locator: { dshVersion: "not-a-version" } },
+          cwd,
+        }),
+      ).resolves.toMatchObject({ ok: false, error: { code: "invalidRequest" } });
+      const resumed = await adapter.open({ kind: "resume", nativeRef: ref, cwd });
+      if (!resumed.ok) throw new Error(resumed.error.message);
+      expect(resumed).toMatchObject({ ok: true });
+      expect(connection.calls.filter(({ endpoint }) => endpoint === "session/create")).toHaveLength(
+        1,
+      );
+      if (resumed.ok) await resumed.value.close();
+      await adapter.close();
+    },
+  );
 
   it.each(["fork", "rollbackLastTurn"] as const)(
     "uses the V3 checkpoint and inherited marker for %s",
@@ -875,6 +928,18 @@ describe("DSH 0.1.5-rc.1 session operations", () => {
       ok: false,
       error: { code: "invalidRequest" },
     });
+    await expect(
+      adapter.open({
+        kind: "fork",
+        cwd,
+        sourceRef: { ...forkRefs("session-old", 2).sourceRef, locator },
+        checkpoint: {
+          ...forkRefs("session-old", 2).checkpoint,
+          checkpointId: "v3-turn-end:2",
+          locator: { dshVersion: "0.1.5-rc.2" },
+        },
+      }),
+    ).resolves.toMatchObject({ ok: false, error: { code: "invalidRequest" } });
     expect(connection.calls.some(({ endpoint }) => endpoint === "session/fork")).toBe(false);
     await adapter.close();
     const older = setup();

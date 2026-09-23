@@ -31,6 +31,7 @@ import {
   composerForEditor,
   composerForElement,
   disposeComposerAgentControl,
+  refreshSendButton,
   editorForElement,
   eventElement,
   isComposerInputIntent,
@@ -43,9 +44,17 @@ import {
   type ExternalModelControlView,
   type ExternalPermissionModeControlView,
 } from "./renderer-composer-dom.js";
-import { rendererHarnessMessages } from "./renderer-harness-localization.js";
+import {
+  rendererHarnessMessages,
+  rendererLiveCommandsPendingNotice,
+} from "./renderer-harness-localization.js";
 import { installReasoningTranscriptSoftWrap } from "./renderer-transcript-dom.js";
 import { RendererCodexAccountState } from "./renderer-codex-account-state.js";
+import {
+  createRendererCodexUsageGate,
+  type RendererCodexUsageGate,
+  type RendererCodexUsageGateStatus,
+} from "./renderer-codex-usage-gate.js";
 import {
   decodeAntigravityTransportModelId,
   decodeClaudeTransportModelId,
@@ -81,6 +90,11 @@ import {
   routeRendererHarnessCommandSelection,
 } from "./renderer-harness-command-claim.js";
 import { installRendererSettingsLifecycle } from "./renderer-settings-lifecycle.js";
+import {
+  installRendererDelegationMention,
+  type RendererDelegationMentionControl,
+} from "./renderer-delegation-mention.js";
+import { RENDERER_AGENT_LABELS } from "./renderer-agent-icon.js";
 import { openRendererThread } from "./renderer-fork-control.js";
 import type {
   RendererConnectionDiagnostics,
@@ -103,6 +117,7 @@ const externalHarnessIds = {
   hermes: harnessIdSchema.parse("hermes"),
   qoder: harnessIdSchema.parse("qoder"),
   "qoder-cn": harnessIdSchema.parse("qoder-cn"),
+  "kimi-code": harnessIdSchema.parse("kimi-code"),
 } as const;
 
 const externalAgents: readonly ExternalRendererAgent[] = [
@@ -121,6 +136,7 @@ const externalAgents: readonly ExternalRendererAgent[] = [
   "hermes",
   "qoder",
   "qoder-cn",
+  "kimi-code",
 ];
 type HarnessAvailability = Partial<Record<ExternalRendererAgent, RendererAgentAvailability>>;
 type HarnessAvailabilityErrors = Partial<Record<ExternalRendererAgent, CodexhostError | undefined>>;
@@ -222,7 +238,10 @@ export function shouldReloadExternalCatalogAfterAvailabilityRefresh(
   configurationReady: boolean,
   explicitRefresh = false,
 ): boolean {
-  return explicitRefresh || previous !== next || !configurationReady;
+  // A foreground inspection may already have loaded this catalog while the
+  // initial background discovery was queued. Do not blank it a second time.
+  const initialDiscoveryReady = previous === "checking" && next === "ready";
+  return explicitRefresh || (!initialDiscoveryReady && previous !== next) || !configurationReady;
 }
 
 function isExternalConfigurationReadyView(
@@ -526,6 +545,24 @@ export function restoredThreadOwnership(inspection: ThreadInspection): RestoredT
       ...(permissionModeId ? { permissionModeId } : {}),
     };
   }
+  if (inspection.harnessId === "kimi-code") {
+    const route = decodeHarnessPluginRoute(inspection.transportModelId);
+    if (!route || route.harnessId !== inspection.harnessId) {
+      throw new Error("Kimi Code Thread reported an incompatible transport Model");
+    }
+    const model = inspection.effectiveModel ?? route.model;
+    const thinkingOptionId =
+      inspection.availableThinkingOptions !== undefined
+        ? selectableThinkingOptionId(inspection)
+        : (inspection.effectiveThinkingOptionId ?? route.thinkingOptionId);
+    const permissionModeId = inspection.effectivePermissionModeId ?? route.permissionModeId;
+    return {
+      agent: inspection.harnessId,
+      ...(model ? { model } : {}),
+      ...(thinkingOptionId ? { thinkingOptionId } : {}),
+      ...(permissionModeId ? { permissionModeId } : {}),
+    };
+  }
   throw new Error("Thread owner is not a Renderer Agent");
 }
 
@@ -537,6 +574,7 @@ interface MountedComposer {
   composer: Element;
   composerId: string;
   control: ComposerAgentControl;
+  codexUsageGate: RendererCodexUsageGate;
   modelTarget: readonly unknown[] | null;
   modelView: ExternalModelControlView;
   permissionModeView: ExternalPermissionModeControlView;
@@ -547,6 +585,13 @@ interface MountedComposer {
   hostId: string | null;
   usageRequestGeneration: number;
   commandRequestGeneration: number;
+}
+
+interface MountedCatalogRequest {
+  client: RendererModelClient;
+  hostId: string;
+  agent: ExternalRendererAgent;
+  generation: number;
 }
 
 interface PendingComposerReplacement {
@@ -563,7 +608,12 @@ export function shouldTransferComposerState(
   submissionPending = false,
 ): boolean {
   if (!sourceTarget || !replacementTarget) return false;
-  if (sourceTarget === replacementTarget) return true;
+  if (
+    sourceTarget.length === replacementTarget.length &&
+    sourceTarget.every((value, index) => value === replacementTarget[index])
+  ) {
+    return true;
+  }
   return (
     (sourcePhase === "locked" || submissionPending) &&
     sourceTarget[0] === "default" &&
@@ -607,13 +657,6 @@ export function scopedComposerTarget(
 
 export function isComposerModelWriteAllowed(target: readonly unknown[] | null): boolean {
   return target?.[0] === "default";
-}
-
-export function shouldApplyDraftAgentCarrier(
-  agent: RendererAgent,
-  model: HarnessModelRef | undefined,
-): boolean {
-  return agent === "codex" || model !== undefined;
 }
 
 export function applyComposerModelWrite(
@@ -672,6 +715,7 @@ export function installRendererBindingProbe(
     ...(options.defaultAgent ? { defaultAgent: options.defaultAgent } : {}),
   });
   const mountedByComposer = new Map<Element, MountedComposer>();
+  const catalogRequests = new WeakMap<MountedComposer, MountedCatalogRequest>();
   const pendingReplacements = new Map<Element, PendingComposerReplacement>();
   let disposed = false;
   const disposeReasoningSoftWrap = installReasoningTranscriptSoftWrap(document);
@@ -765,6 +809,7 @@ export function installRendererBindingProbe(
       hermes: undefined,
       qoder: undefined,
       "qoder-cn": undefined,
+      "kimi-code": undefined,
     },
     webUi: Object.fromEntries(
       externalAgents.map((agent) => [agent, false]),
@@ -857,12 +902,23 @@ export function installRendererBindingProbe(
     );
   };
 
+  const showCodexUsageGateStatus = (
+    mounted: MountedComposer,
+    status: RendererCodexUsageGateStatus,
+  ): void => {
+    const title =
+      status === "unsupported"
+        ? rendererHarnessMessages(settingsLifecycle.locale).codexUsageGateUnavailable
+        : "";
+    if (mounted.control.root.title !== title) mounted.control.root.title = title;
+  };
+
   const renderMounted = (mounted: MountedComposer): void => {
     const accounts = composerCodexAccounts(mounted.composer);
     const currentCodexAccount = accounts?.accounts.find(
       ({ accountId }) => accountId === accounts.readyAccountId,
     );
-    renderComposerAgentControl(
+    const externalSubmissionReady = renderComposerAgentControl(
       mounted.control,
       controller.get(mounted.composer),
       adapterStatus.state,
@@ -876,6 +932,7 @@ export function installRendererBindingProbe(
       currentCodexAccount ?? null,
       mounted.ownershipStatus === "error",
     );
+    showCodexUsageGateStatus(mounted, mounted.codexUsageGate.update(externalSubmissionReady));
     if (mounted.control.usage) {
       mounted.control.usage.onOpen = () => {
         void refreshThreadUsage(
@@ -886,18 +943,46 @@ export function installRendererBindingProbe(
     }
   };
 
-  const refreshCommands = async (mounted: MountedComposer): Promise<void> => {
+  let delegationMention: RendererDelegationMentionControl | null = null;
+  /**
+   * Workspace of each Host's current draft, published by the draft prewarm
+   * (the only place Desktop names it). A draft asks the Host for that
+   * workspace's live commands and skills.
+   */
+  const draftWorkspaces = new Map<string, string>();
+  {
+    const published: unknown = Reflect.get(window, "__codexhostDraftWorkspacesV1");
+    if (typeof published === "object" && published !== null) {
+      for (const [hostId, cwd] of Object.entries(published)) {
+        if (typeof cwd === "string" && cwd.length > 0) draftWorkspaces.set(hostId, cwd);
+      }
+    }
+  }
+  /**
+   * `keepCurrent` refreshes in place (the `#` menu reopening) instead of
+   * clearing first, so an open menu never flickers empty.
+   */
+  const refreshCommands = async (
+    mounted: MountedComposer,
+    { keepCurrent = false }: { keepCurrent?: boolean } = {},
+  ): Promise<void> => {
     const generation = ++mounted.commandRequestGeneration;
     const agent = controller.get(mounted.composer).agent;
-    const hostId = threadIdFromComposerModelTarget(mounted.modelTarget)
-      ? mounted.hostId
-      : activeModelHostId();
+    const threadId = threadIdFromComposerModelTarget(mounted.modelTarget);
+    const hostId = threadId ? mounted.hostId : activeModelHostId();
     const requestControl = modelControl;
     const client = modelClientForHostFrom(requestControl, hostId);
-    mounted.control.harnessCommands.setCommands([]);
+    if (!keepCurrent || agent === "codex") mounted.control.harnessCommands.setCommands([]);
     if (agent === "codex" || !client) return;
     try {
-      const catalog = await client.inspectHarnessCommands({ harnessId: externalHarnessIds[agent] });
+      // A Thread's loaded Session reports its live catalog (custom commands,
+      // skills); the Host falls back to the static Adapter catalog otherwise.
+      const catalog = threadId
+        ? await client.inspectThreadCommands({ threadId })
+        : await client.inspectHarnessCommands({
+            harnessId: externalHarnessIds[agent],
+            ...(hostId && draftWorkspaces.has(hostId) ? { cwd: draftWorkspaces.get(hostId) } : {}),
+          });
       if (
         disposed ||
         mountedByComposer.get(mounted.composer) !== mounted ||
@@ -912,7 +997,9 @@ export function installRendererBindingProbe(
       mounted.control.harnessCommands.setCommands(
         catalog.commands,
         threadIdFromComposerModelTarget(mounted.modelTarget) !== null,
+        catalog.source,
       );
+      delegationMention?.refresh();
     } catch {
       // Keep the entry unavailable. Never open a Session as a catalog fallback.
     }
@@ -1087,9 +1174,27 @@ export function installRendererBindingProbe(
     return isExternalConfigurationReadyView(mounted.modelView, mounted.permissionModeView);
   };
 
-  const clearDraftPrewarm = async (): Promise<void> => {
-    const policy = await waitForRendererDraftPrewarmPolicy(window);
+  const clearDraftPrewarm = async (composer: Element): Promise<void> => {
+    const policy = await waitForRendererDraftPrewarmPolicy(window, composer);
     await policy.clear();
+  };
+
+  const applyDraftAgentCarrier = (composer: Element, agent: RendererAgent): boolean => {
+    const model = controller.modelForAgent(composer, agent);
+    const hasConcreteModel = model !== undefined;
+    return (
+      applyAdapterAgent?.(
+        agent,
+        model,
+        agent !== "codex" && hasConcreteModel
+          ? controller.thinkingOptionForAgent(composer, agent)
+          : undefined,
+        agent !== "codex" && hasConcreteModel
+          ? controller.permissionModeForAgent(composer, agent)
+          : undefined,
+        composer,
+      ) ?? agent === "codex"
+    );
   };
 
   const applyExternalConfiguration = (
@@ -1263,20 +1368,16 @@ export function installRendererBindingProbe(
     }
     if (isDraft) mounted.hostId = requestHostId;
     const availability = hostHarnessAvailabilityState(requestHostId).availability[agent];
-    if (availability !== "ready") {
+    // The selected Harness inspection already validates availability. Waiting
+    // for its background discovery first would defeat interactive scheduling.
+    if (availability !== "ready" && availability !== "checking") {
       mounted.modelView = {
-        status:
-          adapterStatus.state !== "ready" || availability === "checking"
-            ? "waitingForAdapter"
-            : "error",
+        status: adapterStatus.state === "ready" ? "error" : "waitingForAdapter",
         thinkingSelectionSupported: false,
-        ...(availability && availability !== "checking"
-          ? { error: `${agent} runtime is ${availability}` }
-          : {}),
+        ...(availability ? { error: `${agent} runtime is ${availability}` } : {}),
       };
       mounted.permissionModeView = { status: "idle" };
       renderMounted(mounted);
-      if (availability === "checking") void refreshHarnessAvailability();
       return;
     }
     mounted.modelView = {
@@ -1287,6 +1388,7 @@ export function installRendererBindingProbe(
     renderMounted(mounted);
     if (adapterStatus.state !== "ready") return;
     const generation = controller.beginModelRequest(mounted.composer);
+    let catalogRequest: MountedCatalogRequest | undefined;
     try {
       if (!requestModelControl || !requestHostId) {
         throw new Error("External configuration control is unavailable");
@@ -1295,6 +1397,8 @@ export function installRendererBindingProbe(
       if (!client) {
         throw new Error(`Renderer Model request manager is unavailable for Host ${requestHostId}`);
       }
+      catalogRequest = { client, hostId: requestHostId, agent, generation };
+      catalogRequests.set(mounted, catalogRequest);
       const inspection = await client.inspectHarness({
         harnessId: externalHarnessIds[agent],
       });
@@ -1443,7 +1547,7 @@ export function installRendererBindingProbe(
           throw new Error("External configuration could not be applied to the Composer");
         }
         try {
-          await clearDraftPrewarm();
+          await clearDraftPrewarm(mounted.composer);
         } catch (error) {
           if (isCurrentModelRequest(mounted, generation)) {
             applyAdapterAgent?.(
@@ -1509,6 +1613,9 @@ export function installRendererBindingProbe(
         };
       }
     } finally {
+      if (catalogRequest && catalogRequests.get(mounted) === catalogRequest) {
+        catalogRequests.delete(mounted);
+      }
       if (isCurrentModelRequest(mounted, generation)) renderMounted(mounted);
     }
   };
@@ -1557,7 +1664,7 @@ export function installRendererBindingProbe(
           throw new Error("External Model configuration could not be applied to the Composer");
         }
         try {
-          await clearDraftPrewarm();
+          await clearDraftPrewarm(mounted.composer);
         } catch (error) {
           if (previousModel && isCurrentModelRequest(mounted, generation)) {
             applyExternalConfiguration(
@@ -1706,7 +1813,7 @@ export function installRendererBindingProbe(
           throw new Error("Permission Mode could not be applied to the Composer");
         }
         try {
-          await clearDraftPrewarm();
+          await clearDraftPrewarm(mounted.composer);
         } catch (error) {
           if (isCurrentModelRequest(mounted, generation)) {
             applyExternalConfiguration(
@@ -1845,7 +1952,7 @@ export function installRendererBindingProbe(
           throw new Error("External Thinking could not be applied to the Composer");
         }
         try {
-          await clearDraftPrewarm();
+          await clearDraftPrewarm(mounted.composer);
         } catch (error) {
           if (isCurrentModelRequest(mounted, generation)) {
             applyExternalConfiguration(mounted, agent, model, previousThinking, permissionModeId);
@@ -1938,24 +2045,8 @@ export function installRendererBindingProbe(
     const composerId = controller.get(mounted.composer).composerId;
     controller.invalidateModelRequests(mounted.composer);
     const switching = controller.switchAgent(mounted.composer, agent, {
-      applyAgent(nextAgent) {
-        const model = controller.modelForAgent(mounted.composer, nextAgent);
-        if (!shouldApplyDraftAgentCarrier(nextAgent, model)) return true;
-        return (
-          applyAdapterAgent?.(
-            nextAgent,
-            model,
-            nextAgent !== "codex"
-              ? controller.thinkingOptionForAgent(mounted.composer, nextAgent)
-              : undefined,
-            nextAgent !== "codex"
-              ? controller.permissionModeForAgent(mounted.composer, nextAgent)
-              : undefined,
-            mounted.composer,
-          ) ?? nextAgent === "codex"
-        );
-      },
-      clearPrewarm: clearDraftPrewarm,
+      applyAgent: (nextAgent) => applyDraftAgentCarrier(mounted.composer, nextAgent),
+      clearPrewarm: () => clearDraftPrewarm(mounted.composer),
     });
     renderMounted(mounted);
     try {
@@ -2033,10 +2124,11 @@ export function installRendererBindingProbe(
     hostId: string | null,
   ): RendererModelClient | null {
     if (!control || !hostId) return null;
-    const selected = control.clientForHost?.(hostId);
-    if (selected) return selected;
-    const currentHostId = control.currentHostId?.() ?? "local";
-    return currentHostId === hostId ? control : null;
+    if (control.clientForHost) return control.clientForHost(hostId);
+    // Only legacy controls without Host identity are local. An explicit null
+    // means unresolved ownership, never permission to send a local request.
+    if (!control.currentHostId) return hostId === "local" ? control : null;
+    return control.currentHostId() === hostId ? control : null;
   }
 
   function modelClientForHost(hostId: string): RendererModelClient | null {
@@ -2053,6 +2145,28 @@ export function installRendererBindingProbe(
     if (!retry) resetHarnessAvailabilityRetry(hostId);
     const client = modelClientForHost(hostId);
     if (!client) {
+      // Disconnection invalidates outstanding observations even if no replacement
+      // client exists yet. A late reply must not mark this Host ready again.
+      if (state.request) {
+        state.requestGeneration += 1;
+        state.request = null;
+      }
+      if (force || activeModelHostId() === hostId) {
+        for (const agent of externalAgents) {
+          state.availability[agent] = "error";
+          state.errors[agent] = {
+            code: "unavailable",
+            message: `Renderer connection is unavailable for Host ${hostId}`,
+            retryable: true,
+            stage: "request",
+          };
+          state.webUi[agent] = false;
+        }
+        publishConnectionStatus();
+        if (hostId === activeAvailabilityHostId) {
+          for (const mounted of mountedByComposer.values()) renderMounted(mounted);
+        }
+      }
       scheduleHarnessAvailabilityRetry(hostId);
       return Promise.resolve();
     }
@@ -2081,10 +2195,12 @@ export function installRendererBindingProbe(
           let nextError: CodexhostError | undefined;
           let webUiAvailable = false;
           try {
-            const inspection = await client.inspectHarness({
-              harnessId: externalHarnessIds[agent],
-              refresh,
-            });
+            // Bulk discovery must not occupy the native interactive slots needed
+            // to identify the visible Thread and load its selected configuration.
+            const inspection = await client.inspectHarness(
+              { harnessId: externalHarnessIds[agent], refresh },
+              { priority: "background" },
+            );
             status = inspection.status === "ready" ? "ready" : inspection.status;
             webUiAvailable =
               hostId === "local" &&
@@ -2105,7 +2221,8 @@ export function installRendererBindingProbe(
           } catch (error) {
             status = "error";
             nextError = {
-              code: "internalError",
+              code:
+                error instanceof RendererMethodUnavailableError ? "unavailable" : "internalError",
               message: error instanceof Error ? error.message : String(error),
               retryable: !(error instanceof RendererMethodUnavailableError),
               stage: "request",
@@ -2133,8 +2250,15 @@ export function installRendererBindingProbe(
           }
           for (const mounted of mountedByComposer.values()) {
             const composerState = controller.get(mounted.composer);
+            const pendingCatalog = catalogRequests.get(mounted);
+            const loadingCurrentCatalog =
+              pendingCatalog?.client === client &&
+              pendingCatalog.hostId === hostId &&
+              pendingCatalog.agent === agent &&
+              isCurrentModelRequest(mounted, pendingCatalog.generation);
             if (
               composerState.agent === agent &&
+              (status !== "ready" || !loadingCurrentCatalog || (refresh && force)) &&
               shouldReloadExternalCatalogAfterAvailabilityRefresh(
                 previousStatus,
                 status,
@@ -2174,10 +2298,18 @@ export function installRendererBindingProbe(
       if (mounted.hostId === hostId) continue;
       if (!threadIdFromComposerModelTarget(mounted.modelTarget)) {
         controller.clearPendingSubmission(mounted.composer);
+        controller.beginModelRequest(mounted.composer);
         mounted.hostId = hostId;
+        mounted.modelView = { status: "idle" };
+        mounted.permissionModeView = { status: "idle" };
         mounted.usage = null;
         mounted.accountCredits = null;
         mounted.usageRequestGeneration += 1;
+        const state = controller.get(mounted.composer);
+        if (applyDraftAgentCarrier(mounted.composer, state.agent)) {
+          void clearDraftPrewarm(mounted.composer).catch(() => undefined);
+        }
+        void loadExternalCatalog(mounted);
         continue;
       }
       const target = controllerTarget(mounted.modelTarget, hostId);
@@ -2254,6 +2386,7 @@ export function installRendererBindingProbe(
       };
     },
     refresh(): Promise<void> {
+      reconcileHarnessAvailabilityHost();
       return refreshConnectionHosts(harnessAvailabilityByHost.keys(), (hostId) =>
         refreshHarnessAvailabilityForHost(hostId, true, false, true),
       );
@@ -2343,15 +2476,17 @@ export function installRendererBindingProbe(
         if (!composer.isConnected || !mounted) return;
         void selectPermissionMode(mounted, permissionModeId);
       },
-      (command) => {
-        const mounted = mountedByComposer.get(composer);
-        if (mounted) selectCommand(mounted, command);
+      () => {
+        // The button is the discoverable entry to the `#` menu.
+        const editor = composer.querySelector<HTMLElement>(EDITOR_SELECTOR);
+        if (editor) delegationMention?.openFor(editor);
       },
     );
     const mounted: MountedComposer = {
       composer,
       composerId: state.composerId,
       control,
+      codexUsageGate: createRendererCodexUsageGate(composer),
       modelTarget,
       modelView: inherited?.modelView ?? { status: "idle" },
       permissionModeView: inherited?.permissionModeView ?? { status: "idle" },
@@ -2369,20 +2504,7 @@ export function installRendererBindingProbe(
     };
     mountedByComposer.set(composer, mounted);
     if (isComposerModelWriteAllowed(modelTarget)) {
-      const model = controller.modelForAgent(composer, state.agent);
-      if (shouldApplyDraftAgentCarrier(state.agent, model)) {
-        applyAdapterAgent?.(
-          state.agent,
-          model,
-          state.agent !== "codex"
-            ? controller.thinkingOptionForAgent(composer, state.agent)
-            : undefined,
-          state.agent !== "codex"
-            ? controller.permissionModeForAgent(composer, state.agent)
-            : undefined,
-          composer,
-        );
-      }
+      applyDraftAgentCarrier(composer, state.agent);
     }
     renderMounted(mounted);
     sidebarAgentIcons.refresh();
@@ -2443,6 +2565,7 @@ export function installRendererBindingProbe(
           window.clearTimeout(timer);
           usageRefreshTimers.delete(composer);
         }
+        mounted.codexUsageGate.dispose();
         disposeComposerAgentControl(mounted.control);
         mountedByComposer.delete(composer);
         continue;
@@ -2451,6 +2574,7 @@ export function installRendererBindingProbe(
       const hideCodexControls = controller.isSwitching(composer) || state.agent !== "codex";
       reconcileComposerNativeControls(mounted.control, hideCodexControls, hideCodexControls);
       if (refreshTargets) refreshMountedConversationTarget(mounted);
+      showCodexUsageGateStatus(mounted, mounted.codexUsageGate.refresh());
     }
     for (const editor of document.querySelectorAll(EDITOR_SELECTOR)) {
       const composer = composerForEditor(editor);
@@ -2531,22 +2655,8 @@ export function installRendererBindingProbe(
       return state.phase === "locked" && mounted.ownershipStatus === "ready";
     }
     if (!mounted || !isComposerModelWriteAllowed(mounted.modelTarget)) return false;
-    const model = controller.modelForAgent(composer, state.agent);
-    if (!shouldApplyDraftAgentCarrier(state.agent, model)) return false;
-    return applyComposerModelWrite(
-      mounted.modelTarget,
-      () =>
-        applyAdapterAgent?.(
-          state.agent,
-          model,
-          state.agent !== "codex"
-            ? controller.thinkingOptionForAgent(composer, state.agent)
-            : undefined,
-          state.agent !== "codex"
-            ? controller.permissionModeForAgent(composer, state.agent)
-            : undefined,
-          composer,
-        ) ?? state.agent === "codex",
+    return applyComposerModelWrite(mounted.modelTarget, () =>
+      applyDraftAgentCarrier(composer, state.agent),
     );
   };
   const blockEvent = (event: Event): void => {
@@ -2623,7 +2733,7 @@ export function installRendererBindingProbe(
     const candidate = composerForElement(button);
     const composer = candidate && isMountedComposer(candidate) ? candidate : null;
     const mounted = composer ? mountedByComposer.get(composer) : undefined;
-    if (!composer || mounted?.control.sendButton !== button) return;
+    if (!composer || !mounted || refreshSendButton(mounted.control) !== button) return;
     if (!prepareComposer(composer)) {
       blockEvent(event);
       return;
@@ -2636,6 +2746,21 @@ export function installRendererBindingProbe(
     scheduleScan(mutations.some(mutationMayChangeComposerTarget));
   });
   const onHostRouteChange = (): void => {
+    const hostId = activeModelHostId();
+    // Reapply the visible draft's selection after its native connection changes.
+    // Do this before rebinding Hosts: an old local draft is not a remote choice.
+    for (const mounted of mountedByComposer.values()) {
+      if (
+        hostId &&
+        mounted.hostId === hostId &&
+        !threadIdFromComposerModelTarget(mounted.modelTarget) &&
+        controller.get(mounted.composer).agent !== "codex" &&
+        !controller.isSwitching(mounted.composer) &&
+        isExternalConfigurationStable(mounted.modelView, mounted.permissionModeView)
+      ) {
+        applyComposerAgent(mounted.composer);
+      }
+    }
     sidebarAgentIcons.refresh();
     reconcileHarnessAvailabilityHost();
     void loadCodexAccounts();
@@ -2695,9 +2820,78 @@ export function installRendererBindingProbe(
       void refreshHarnessAvailability(true);
     }
   };
+  const onDraftWorkspace = (event: Event): void => {
+    const detail: unknown = (event as CustomEvent).detail;
+    if (typeof detail !== "object" || detail === null) return;
+    const { hostId, cwd } = detail as { hostId?: unknown; cwd?: unknown };
+    if (typeof hostId !== "string" || typeof cwd !== "string" || cwd.length === 0) return;
+    draftWorkspaces.set(hostId, cwd);
+    for (const mounted of mountedByComposer.values()) {
+      if (
+        !threadIdFromComposerModelTarget(mounted.modelTarget) &&
+        activeModelHostId() === hostId &&
+        controller.get(mounted.composer).agent !== "codex"
+      ) {
+        void refreshCommands(mounted, { keepCurrent: true });
+      }
+    }
+  };
   window.addEventListener("codexhost:draft-prewarm-policy-changed", onHostRouteChange);
+  window.addEventListener("codexhost:draft-workspace", onDraftWorkspace);
   window.addEventListener("codexhost:renderer-adapter-status", onAdapterStatus);
   window.addEventListener("focus", onWindowFocus);
+  delegationMention = installRendererDelegationMention(document, {
+    onOpen: (editor) => {
+      const composer = composerForElement(editor);
+      const mounted = composer ? mountedByComposer.get(composer) : undefined;
+      if (mounted && controller.get(mounted.composer).agent !== "codex") {
+        void refreshCommands(mounted, { keepCurrent: true });
+      }
+    },
+    readTargets: () => {
+      const availability = activeHarnessAvailabilityState().availability;
+      return enabledAgents
+        .filter((agent) => agent === "codex" || availability[agent] === "ready")
+        .map((agent) => ({ agent, label: RENDERER_AGENT_LABELS[agent] }));
+    },
+    isComposerEditor: (editor) => {
+      const composer = composerForElement(editor);
+      return composer !== null && mountedByComposer.has(composer);
+    },
+    readLocale: () => settingsLifecycle.locale,
+    // Desktop's own suggestion menu hugs the input card and covers the
+    // top tray (workspace / branch bar), so anchor to the card when present.
+    anchorForEditor: (editor) =>
+      editor.closest("[data-composer-body]") ?? composerForElement(editor),
+    readCommands: (editor) => {
+      const composer = composerForElement(editor);
+      const mounted = composer ? mountedByComposer.get(composer) : undefined;
+      if (!mounted || controller.get(mounted.composer).agent === "codex") return null;
+      const { commands, hasSession, executingCommandId, source } =
+        mounted.control.harnessCommands.snapshot();
+      // While a command runs, the ⌘ button is disabled too.
+      if (executingCommandId !== null) return null;
+      const messages = rendererHarnessMessages(settingsLifecycle.locale);
+      const agent = controller.get(mounted.composer).agent;
+      const pendingNotice =
+        source === "static"
+          ? rendererLiveCommandsPendingNotice(
+              settingsLifecycle.locale,
+              RENDERER_AGENT_LABELS[agent],
+            )
+          : null;
+      if (commands.length === 0 && pendingNotice === null) return null;
+      return {
+        commands,
+        pendingNotice,
+        disabledReason: (command) =>
+          !hasSession && rendererHarnessCommandExecutesDirectly(command)
+            ? messages.commandRequiresConversation
+            : null,
+        select: (command) => selectCommand(mounted, command),
+      };
+    },
+  });
 
   const connectedComposers = (): MountedComposer[] =>
     [...mountedByComposer.values()].filter(
@@ -2817,6 +3011,7 @@ export function installRendererBindingProbe(
       modelControl = null;
       mutationObserver.disconnect();
       disposeReasoningSoftWrap();
+      delegationMention?.dispose();
       sidebarAgentIcons.dispose();
       settingsLifecycle.dispose();
       document.removeEventListener("beforeinput", onBeforeInput, true);
@@ -2824,6 +3019,7 @@ export function installRendererBindingProbe(
       document.removeEventListener("keydown", onKeyDown, true);
       document.removeEventListener("click", onClick, true);
       window.removeEventListener("codexhost:draft-prewarm-policy-changed", onHostRouteChange);
+      window.removeEventListener("codexhost:draft-workspace", onDraftWorkspace);
       window.removeEventListener("codexhost:renderer-adapter-status", onAdapterStatus);
       window.removeEventListener("focus", onWindowFocus);
       for (const state of harnessAvailabilityByHost.values()) {
@@ -2837,6 +3033,7 @@ export function installRendererBindingProbe(
       for (const mounted of mountedByComposer.values()) {
         mounted.usageRequestGeneration += 1;
         usageRefreshAttempts.delete(mounted.composer);
+        mounted.codexUsageGate.dispose();
         disposeComposerAgentControl(mounted.control);
       }
       mountedByComposer.clear();

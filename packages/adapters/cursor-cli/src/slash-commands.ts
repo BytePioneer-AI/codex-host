@@ -3,11 +3,21 @@ import {
   harnessCommandDescriptorSchema,
   type HarnessCommandCatalog,
 } from "@codexhost/shared-contracts";
-import type { HarnessCommandInvocation, HarnessResult } from "@codexhost/harness-adapter";
+import {
+  isExcludedLiveCommand,
+  type HarnessCommandInvocation,
+  type HarnessResult,
+} from "@codexhost/harness-adapter";
+
+/** Cursor rewrites its own CLI configuration file. */
+const CURSOR_EXCLUSIONS = { names: ["update-cli-config"] };
 
 export function cursorCommands(native: AvailableCommand[]): HarnessCommandCatalog {
   const commands = new Map<string, HarnessCommandCatalog["commands"][number]>();
   for (const command of native) {
+    // Cursor does not tell skills and commands apart, so the common command
+    // exclusions apply to every entry.
+    if (isExcludedLiveCommand(command.name, "command", CURSOR_EXCLUSIONS)) continue;
     const result = harnessCommandDescriptorSchema.safeParse({
       id: `cursor.${command.name}`,
       invocation: `/${command.name}`,

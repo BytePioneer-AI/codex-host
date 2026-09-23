@@ -1,4 +1,5 @@
 import { z } from "zod";
+export * from "./credential-imports.js";
 import { WORKSPACE_CONTRACT_VERSION } from "./version.js";
 export {
   IDLE_RELEASE_SETTINGS_METHOD,
@@ -308,3 +309,15 @@ export const packageMetadata = {
   name: "@codexhost/shared-contracts",
   contractVersion: WORKSPACE_CONTRACT_VERSION,
 } as const;
+
+export {
+  DELEGATION_MENTION_PATH_PREFIX,
+  HARNESS_COMMAND_MENTION_PATH_PREFIX,
+  delegationMentionPath,
+  harnessCommandMentionPath,
+  restoreHarnessCommandMentions,
+  formatDelegationMentionLink,
+  stripDelegationMentions,
+  type DelegationMention,
+  type DelegationMentionRewrite,
+} from "./delegation-mention.js";

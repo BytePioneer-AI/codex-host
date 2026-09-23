@@ -11,11 +11,23 @@
 
 以上实现归各 Harness 插件所有，不在公共 Adapter、Host 或 Renderer 中添加 Harness 专用分支。跨插件参考实现不等于共用原生协议；各自保留配置确认、取消、持久化和权限语义。
 
+## Kimi Thinking 配置
+
+Kimi 通过 ACP `configOptions` 提供当前会话、当前 Model 的 Thinking 列表和选中值。插件在创建、恢复、配置命令响应及 `config_option_update` 通知中读取这些事实，将列表保存在会话内存状态的 `availableThinkingOptions` 中，沿公共状态事件更新 Desktop；不轮询，也不在启动检查时遍历切换 Model。不同会话或 Host 不共享可变列表。
+
+启动检查只读取配置文件中的 Model 目录并检查认证。配置文件不是 Thinking 能力目录，因此草稿目录不猜测 `medium` 或 `off/on`，也不自动发送 Thinking 默认值；未显式选择时保留原生默认配置。会话建立后使用原生列表。切换 Model 以返回的新配置整体替换旧列表，不自动重放旧 Thinking；原生未提供列表时清除旧列表。当前 Model 的选项不扩散到其他 Model。
+
+显式选择或持久化恢复的 Thinking 值不在当前原生列表中时返回错误，不将 `medium` 映射为 `on`，也不静默替换用户选择。应重新选择原生支持的值或清除旧选择。`off/on` 是部分 Model 的原生取值，不是所有 Kimi Model 的固定能力。
+
 ## Cursor 剩余边界
 
 Cursor 当前 ACP 没有 Usage、Fork、回滚或上下文压缩出口。macOS/Linux 的 Fork 通过隔离的 CLI 会话副本执行原生 `/fork`，历史位置再用 `/rewind` 的“仅恢复对话”选项回退，最后由 ACP 恢复；修订上一条复用这条路径，包括单轮回退为空会话。会话内容不做格式转换，目标边界必须有原生回退点。Windows Fork/修订和跨工作区 Fork 仍不支持。插件不重写原生消息来合成回滚，也不把普通 `/compact` Prompt 计为压缩。
 
 Agent 间任务协作目前是单向的：正常 Cursor Session 可以通过原生 MCP 向其他 Harness 委派、查询及跟进任务。无人值守入站需要确认原生 Full Access 已生效，但 Cursor 的 `--force` 可能被团队策略静默降级，而 ACP 只公布 Agent/Plan/Ask，不能确认最终审批策略，因此仍返回 `unsupported`。这不同于缺少向外委派能力，能力表分别标明。
+
+## Pi subagent 插件
+
+Pi Adapter 接入 `pi-subagents`（nicobailon）的异步 Host 状态与检查协议，以及同步 workflow 的 `workflowChildren` 摘要，复用公共子 Thread 和渲染链路。异步转写是原生有界窗口；同步 workflow 从父结果定位只读子 Session，文件不可用时可展示明确标注的原生结果摘要。没有已支持身份协议的同步单 Agent 调用及其他同名插件不自动兼容。详见 [Pi subagent 映射](pi/pi-subagents.md)。
 
 ## Pi 权限模式
 

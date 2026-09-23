@@ -24,6 +24,12 @@ import {
   type PiAdapterOptions,
   type PiTurnTransport,
 } from "../src/pi-adapter.js";
+import { piWorkflowSubagentId } from "../src/pi-subagent-workflow.js";
+import {
+  piSubagentId,
+  type PiSubagentInspection,
+  type PiSubagentNode,
+} from "../src/pi-subagents.js";
 import type { PiSessionHistory } from "../src/pi-history.js";
 import { encodePiModelRef } from "../src/pi-model-catalog.js";
 import {
@@ -51,6 +57,18 @@ class FakePiTransport implements PiTurnTransport {
     thinkingLevel: harnessThinkingOptionIdSchema.parse("high"),
     contextUsage: { contextUsedTokens: 40, contextWindowTokens: 200 },
   };
+  subagentHandler: ((runs: PiSubagentNode[]) => void) | undefined;
+  readonly setSubagentStatusHandler = vi.fn((handler: (runs: PiSubagentNode[]) => void) => {
+    this.subagentHandler = handler;
+  });
+  readonly inspectSubagent = vi.fn(async (): Promise<PiSubagentInspection> => ({
+    kind: "pi-subagents.inspect-reply",
+    version: 1,
+    requestId: "request",
+    asyncId: "run-1",
+    status: "complete",
+    finalOutput: "child answer",
+  }));
   readonly abort = vi.fn(async () => undefined);
   readonly respondToInteraction = vi.fn(async (response: PiInteractionResponse) => {
     this.event({
@@ -352,7 +370,203 @@ async function nextInteraction(
   return output.interaction;
 }
 
+describe("Pi adapter credential imports wiring", () => {
+  it("exposes the read-only other-logins listing through the adapter, not just the inner module", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "pi-adapter-others-"));
+    try {
+      await writeFile(
+        path.join(directory, "auth.json"),
+        JSON.stringify({ anthropic: { type: "oauth", access: "a-secret" } }),
+      );
+      const adapter = new PiAdapter({ environment: { PI_CODING_AGENT_DIR: directory } });
+      expect(await adapter.credentialImports.listOthers?.()).toEqual([
+        { provider: "anthropic", type: "oauth" },
+      ]);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("Pi HarnessAdapter Session", () => {
+  it("maps synchronous workflow partial results and reads the final child through the live parent", async () => {
+    const { adapter, transports } = fixture();
+    const session = await openSession(adapter);
+    const output = session.outputs[Symbol.asyncIterator]();
+    await session.execute(textTurn("workflow-turn"));
+    const transport = transports[0];
+    if (!transport) throw new Error("Missing transport");
+    const details = (state: string) => ({
+      mode: "workflow",
+      runId: "parent-call",
+      workflowChildren: {
+        version: 1,
+        parentToolCallId: "parent-call",
+        workflowRunId: "parent-call",
+        inventoryComplete: state !== "running",
+        workflowState: state,
+        children: [{ childId: "review", agent: "delegate", state }],
+      },
+      results: [{ workflowKey: "review", finalOutput: "child failed validation", exitCode: 1 }],
+    });
+    transport.event({
+      type: "tool.started",
+      callId: "parent-call",
+      toolName: "subagent",
+      arguments: { async: false, workflowScript: "..." },
+    });
+    transport.event({
+      type: "tool.updated",
+      callId: "parent-call",
+      output: { details: details("running") },
+    });
+    transport.event({
+      type: "tool.completed",
+      callId: "parent-call",
+      toolName: "subagent",
+      isError: true,
+      result: { details: details("failed") },
+    });
+    transport.succeed("review failed");
+    const events = [];
+    for (;;) {
+      const event = await nextEvent(output);
+      events.push(event);
+      if (event.type === "turn.completed") break;
+    }
+    expect(
+      events.filter(
+        (event) => event.type === "item.started" && event.item.type === "subagentDelegation",
+      ),
+    ).toHaveLength(1);
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        type: "item.completed",
+        snapshot: {
+          item: expect.objectContaining({
+            type: "subagentDelegation",
+            subagents: [expect.objectContaining({ status: "failed" })],
+          }),
+          outcome: { status: "succeeded" },
+        },
+      }),
+    );
+    transport.history.entries.push({
+      id: "workflow-result",
+      parentId: transport.history.leafId,
+      type: "message",
+      message: {
+        role: "toolResult",
+        toolName: "subagent",
+        toolCallId: "parent-call",
+        isError: true,
+        details: details("failed"),
+      },
+    });
+    transport.history.leafId = "workflow-result";
+    const parent = nativeSessionRefSchema.parse({
+      harnessId: "pi",
+      nativeSessionId: "pi-session-1",
+      formatVersion: 1,
+      locator: { sessionFile: "/synthetic/pi-session.jsonl" },
+    });
+    const read = await adapter.subagents.readSnapshot({
+      parent,
+      nativeSubagentId: piWorkflowSubagentId({ workflowRunId: "parent-call", childId: "review" }),
+      cwd: "/synthetic",
+    });
+    expect(read).toMatchObject({ ok: true });
+    expect(JSON.stringify(read)).toContain("child failed validation");
+    expect(transport.inspectSubagent).not.toHaveBeenCalled();
+    expect(transports).toHaveLength(1);
+    await adapter.close();
+  });
+
+  it("projects asynchronous child cards and preserves running children after parent cancellation", async () => {
+    const { adapter, transports } = fixture();
+    const session = await openSession(adapter);
+    const output = session.outputs[Symbol.asyncIterator]();
+    await session.execute(textTurn("subagent-turn"));
+    const transport = transports[0];
+    if (!transport) throw new Error("Missing transport");
+    transport.subagentHandler?.([
+      { id: "run-1", kind: "subagent", label: "reviewer", state: "running" },
+    ]);
+    transport.event({
+      type: "tool.started",
+      callId: "call",
+      toolName: "subagent",
+      arguments: { agent: "reviewer", task: "review", async: true },
+    });
+    transport.event({
+      type: "tool.completed",
+      callId: "call",
+      toolName: "subagent",
+      isError: false,
+      result: {
+        details: { mode: "single", asyncId: "run-1", asyncDir: "/tmp/run-1", results: [] },
+      },
+    });
+    transport.succeed("launched", true);
+    const events = [];
+    for (;;) {
+      const event = await nextEvent(output);
+      events.push(event);
+      if (event.type === "turn.completed") break;
+    }
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        type: "item.completed",
+        snapshot: {
+          item: expect.objectContaining({
+            type: "subagentDelegation",
+            subagents: [expect.objectContaining({ status: "running" })],
+          }),
+          outcome: { status: "succeeded" },
+        },
+      }),
+    );
+    transport.subagentHandler?.([
+      { id: "run-1", kind: "subagent", label: "reviewer", state: "complete" },
+    ]);
+    for (;;) {
+      const event = await nextEvent(output);
+      if (event.type === "subagent.state.changed") {
+        expect(event.status).toBe("completed");
+        break;
+      }
+    }
+    await adapter.close();
+  });
+
+  it("reads a live parent's child without opening another Pi process and rejects a different cwd", async () => {
+    const { adapter, transports } = fixture();
+    const session = await openSession(adapter);
+    await session.readSnapshot();
+    const parent = nativeSessionRefSchema.parse({
+      harnessId: "pi",
+      nativeSessionId: "pi-session-1",
+      formatVersion: 1,
+      locator: { sessionFile: "/synthetic/pi-session.jsonl" },
+    });
+    const nativeSubagentId = piSubagentId({ runId: "run-1" });
+    const result = await adapter.subagents.readSnapshot({
+      parent,
+      nativeSubagentId,
+      cwd: "/synthetic",
+    });
+    expect(result).toMatchObject({
+      ok: true,
+      value: { turns: [{ items: [{ item: { text: "child answer" } }] }] },
+    });
+    expect(transports).toHaveLength(1);
+    expect(
+      await adapter.subagents.readSnapshot({ parent, nativeSubagentId, cwd: "/foreign" }),
+    ).toMatchObject({ ok: false });
+    expect(transports[0]?.inspectSubagent).toHaveBeenCalledTimes(1);
+    await adapter.close();
+  });
+
   it("reports a missing executable as not installed", async () => {
     const { adapter, dependencies, transports } = fixture();
     vi.mocked(dependencies.createTransport).mockImplementationOnce((options) => {

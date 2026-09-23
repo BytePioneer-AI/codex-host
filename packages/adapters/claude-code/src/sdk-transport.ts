@@ -11,10 +11,19 @@ import {
 } from "@anthropic-ai/claude-agent-sdk";
 import { sanitizeDiagnosticTail } from "@codexhost/harness-adapter";
 import type { HarnessAccountSnapshot, HarnessThinkingOptionId } from "@codexhost/shared-contracts";
+import {
+  parseClaudeSlashCommands,
+  type ClaudeSlashCommand,
+  type ClaudeSlashCommandSnapshot,
+} from "./slash-commands.js";
 import { projectClaudeAccountUsage } from "./account-usage.js";
 
 import { resolveClaudeCodeExecutable, withNodeRuntimeOnPath } from "./command.js";
-import type { ClaudeModelInspectionSnapshot } from "./model-catalog.js";
+import {
+  mergeClaudeModelPickerOptions,
+  readClaudeUserModelPicker,
+  type ClaudeModelInspectionSnapshot,
+} from "./model-catalog.js";
 import { ClaudeNativeTurnAccumulator, parseClaudePlanLimitEvent } from "./native-message.js";
 import { isClaudePermissionMode, type ClaudePermissionMode } from "./permission-modes.js";
 import { closeClaudeProcessGroup } from "./process-fence.js";
@@ -398,6 +407,8 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
   #interactionOrdinal = 0;
   #provider: string | undefined;
   #query: Query | null = null;
+  #slashCommands: ClaudeSlashCommand[] | null = null;
+  #skillNames: ReadonlySet<string> = new Set();
   #started = false;
   #backgroundTasks = new Set<string>();
 
@@ -477,7 +488,10 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
     });
     this.#query = activeQuery;
     try {
-      await activeQuery.initializationResult();
+      const initialization = await activeQuery.initializationResult();
+      this.#slashCommands = parseClaudeSlashCommands(
+        (initialization as { commands?: unknown }).commands,
+      );
       this.#provider = (await activeQuery.accountInfo().catch(() => undefined))?.apiProvider;
     } catch (error) {
       activeQuery.close();
@@ -486,6 +500,22 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
     }
     this.#started = true;
     this.#consumeTask = this.#consume(activeQuery);
+  }
+
+  slashCommands(): ClaudeSlashCommandSnapshot | null {
+    if (!this.#started || this.#slashCommands === null) return null;
+    return { commands: this.#slashCommands, skillNames: this.#skillNames };
+  }
+
+  #observeSlashCommands(message: unknown): void {
+    if (!isRecord(message) || message.type !== "system") return;
+    if (message.subtype === "init" && Array.isArray(message.skills)) {
+      this.#skillNames = new Set(
+        message.skills.filter((name): name is string => typeof name === "string"),
+      );
+    } else if (message.subtype === "commands_changed") {
+      this.#slashCommands = parseClaudeSlashCommands(message.commands);
+    }
   }
 
   async getContextUsage(): Promise<ClaudeTransportContextUsage | null> {
@@ -886,6 +916,7 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
     try {
       for await (const message of activeQuery) {
         this.#observeBackgroundTasks(message);
+        this.#observeSlashCommands(message);
         const permissionMode = permissionModeFromMessage(message);
         if (permissionMode && permissionMode !== this.#permissionMode) {
           this.#permissionMode = permissionMode;
@@ -1075,8 +1106,9 @@ export class ClaudeSdkModelInspector implements ClaudeModelInspector {
       const canSelectModel =
         Array.isArray(initialized.models) && typeof candidate.setModel === "function";
       const canSelectPermissionMode = typeof candidate.setPermissionMode === "function";
+      const modelPicker = await readClaudeUserModelPicker(this.#environment);
       return {
-        models: initialized.models,
+        models: mergeClaudeModelPickerOptions(initialized.models, modelPicker),
         canSelectModel,
         canSelectPermissionMode,
       };

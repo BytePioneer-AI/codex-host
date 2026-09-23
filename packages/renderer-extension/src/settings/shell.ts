@@ -88,7 +88,7 @@ export function mountRendererSettingsShell(
   brandCopy.className = "settings-brand__copy";
   const brandName = ownerDocument.createElement("span");
   brandName.className = "settings-brand__name";
-  brandName.textContent = "Codex Host";
+  brandName.textContent = "CodexHost";
   const brandTitle = ownerDocument.createElement("span");
   brandTitle.className = "settings-brand__title";
   brandTitle.id = "codexhost-settings-dialog-title";

@@ -1,6 +1,6 @@
 import nodePath from "node:path";
 
-import type { HarnessAdapter } from "@codexhost/harness-adapter";
+import type { HarnessAdapter, HarnessSession } from "@codexhost/harness-adapter";
 import {
   mapExternalThreadHarnessError,
   type DecodedThreadForkRequest,
@@ -8,7 +8,12 @@ import {
   type ExternalThreadRpcError,
   type JsonObject,
 } from "@codexhost/protocol-core";
-import type { NativeCheckpointRef, NativeSessionRef } from "@codexhost/shared-contracts";
+import {
+  permissionModeFixedAtCreate,
+  type HarnessPermissionModeId,
+  type NativeCheckpointRef,
+  type NativeSessionRef,
+} from "@codexhost/shared-contracts";
 
 import {
   createExternalThreadRecordInput,
@@ -147,6 +152,7 @@ export async function executeExternalThreadFork(input: {
   }
 
   const session = opened.value;
+  const inheritedPermissionModeId = await inheritSourcePermissionMode(source, session);
   try {
     const derivedNativeRef = session.initialState.nativeRef;
     if (
@@ -178,6 +184,9 @@ export async function executeExternalThreadFork(input: {
       thread,
       turns: aligned.turns,
       ...(snapshot.value.state ? { restoredState: snapshot.value.state } : {}),
+      ...(inheritedPermissionModeId
+        ? { requestedPermissionModeId: inheritedPermissionModeId }
+        : {}),
     });
     return {
       ok: true,
@@ -193,5 +202,32 @@ export async function executeExternalThreadFork(input: {
       ok: false,
       error: { code: -32081, message: "External Fork could not be persisted" },
     };
+  }
+}
+
+/**
+ * A fork continues the source conversation, so it keeps the source's current Permission Mode
+ * instead of silently dropping back to the Harness default. Failure is non-fatal: the derived
+ * Session then keeps whatever mode the Harness opened it with.
+ */
+async function inheritSourcePermissionMode(
+  source: ExternalThread,
+  session: HarnessSession,
+): Promise<HarnessPermissionModeId | undefined> {
+  const sourceModeId =
+    source.stateObserver.state.effectivePermissionModeId ?? source.requestedPermissionModeId;
+  if (!sourceModeId) return undefined;
+  const configuration = session.capabilities.configuration;
+  if (!configuration.selectPermissionMode || permissionModeFixedAtCreate(configuration)) {
+    return undefined;
+  }
+  try {
+    const selected = await session.execute({
+      type: "permissionMode.select",
+      permissionModeId: sourceModeId,
+    });
+    return selected.ok ? sourceModeId : undefined;
+  } catch {
+    return undefined;
   }
 }

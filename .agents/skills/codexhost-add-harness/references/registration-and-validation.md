@@ -109,7 +109,7 @@ CLI 插件需要时读取 `packages/harness-discovery/src/index.ts`、`resolve.t
 | Adapter 公共行为 | 检查、创建、后续 Turn、取消、快照、配置、交互、错误、并发和 close；按能力补 resume/派生 | 插件自己的 test；公共 Fake/契约测试仅作语义参考 |
 | 原生边界 | 启动参数/环境、SDK/RPC 解析、事件关联、超时/退出、原生历史和平台差异 | 插件 Transport/投影测试 |
 | 插件加载 | 实际 ESM 工厂、身份、资源、依赖、独立实例、close；未安装 CLI 与坏插件应被正确区分 | `packages/host-runtime/test/harness-plugin-loader.test.ts`、`installed-harness-plugins.test.ts` |
-| Host 集成 | 目录查询、inspect、共享路由创建、Turn、持久化/恢复及支持能力；错误不落官方路径 | `packages/host-runtime/test/app-server-host.test.ts`、受影响的 Runtime 测试 |
+| Host 集成 | 目录查询、inspect、共享路由创建、Turn、持久化/恢复及支持能力；错误不落官方路径 | `packages/host-runtime/test/app-server-host*.test.ts`、受影响的 Runtime 测试 |
 | 预装发行 | Bundle 在仓库外加载，不借用 workspace/node_modules；依赖及许可齐全 | `tests/release/host-bundle.test.mjs`、payload/npm 测试 |
 | Desktop/委派 | 对应范围的可见行为和目标环境 | [Renderer 清单](renderer-product-integration.md)、[委派清单](cross-harness-delegation.md) |
 

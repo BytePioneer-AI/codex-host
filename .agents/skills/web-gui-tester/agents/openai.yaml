@@ -1,0 +1,6 @@
+interface:
+  display_name: "web-gui-tester"
+  short_description: "Verify GUI behavior with observed visual evidence"
+  default_prompt: "Use $web-gui-tester for the relevant parts of this task, following codexhost repository guidance."
+policy:
+  allow_implicit_invocation: true

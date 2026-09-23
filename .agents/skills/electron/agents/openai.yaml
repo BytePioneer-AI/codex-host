@@ -1,0 +1,6 @@
+interface:
+  display_name: "electron"
+  short_description: "Inspect and test Electron desktop interfaces"
+  default_prompt: "Use $electron for the relevant parts of this task, following codexhost repository guidance."
+policy:
+  allow_implicit_invocation: true

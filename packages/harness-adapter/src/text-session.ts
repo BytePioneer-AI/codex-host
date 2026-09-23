@@ -20,6 +20,7 @@ import type {
 } from "@codexhost/shared-contracts";
 
 import type { HostUsage } from "./usage.js";
+import type { HarnessCredentialExport, HarnessCredentialImports } from "./credential-imports.js";
 
 export type {
   HarnessInspection,
@@ -556,9 +557,17 @@ export interface HarnessSessionImportCapability {
 }
 
 export interface HarnessAdapter {
+  readonly credentialExport?: HarnessCredentialExport;
+  readonly credentialImports?: HarnessCredentialImports;
   readonly harnessId: HarnessId;
   /** Static command metadata. Reading it must not inspect, connect to, or open a Native Session. */
   readonly commandCatalog?: HarnessCommandCatalog;
+  /**
+   * True when a Session whose native process runs reports workspace commands
+   * and skills beyond {@link commandCatalog}. The Composer then tells a draft
+   * without them that they load after its first message.
+   */
+  readonly liveCommandCatalog?: boolean;
   readonly sessionImport?: HarnessSessionImportCapability;
   readonly subagents?: HarnessSubagentCapability;
   readonly webUi?: HarnessWebUiAction;

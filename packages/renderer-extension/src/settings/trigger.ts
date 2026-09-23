@@ -11,6 +11,7 @@ const SETTINGS_APPLICATION_HEADER_SELECTOR = 'header[data-pip-obstacle="app-shel
 const SETTINGS_HEADER_SLOT_SELECTOR = ':scope > [data-test-id="header-shell-slot"]';
 const SETTINGS_HEADER_NATIVE_ACTION_GROUP_SELECTOR =
   ':scope > [data-app-shell-header-obstacle="true"]';
+const UPDATE_ACCENT = "#3b82f6";
 
 export interface RendererSettingsTriggerControl {
   root: HTMLElement;
@@ -205,27 +206,20 @@ export function mountRendererSettingsTrigger(
   updateButton.style.display = "none";
   updateButton.style.alignItems = "center";
   updateButton.style.justifyContent = "center";
+  updateButton.style.width = "28px";
   updateButton.style.height = "28px";
-  updateButton.style.padding = "0 10px";
-  updateButton.style.gap = "6px";
-  updateButton.style.border = "1px solid #1d4ed8";
-  updateButton.style.borderRadius = "7px";
-  updateButton.style.background = "#2563eb";
-  updateButton.style.color = "#ffffff";
+  updateButton.style.padding = "0";
+  updateButton.style.border = "0";
+  updateButton.style.borderRadius = "8px";
+  updateButton.style.background = "transparent";
+  // One accent that reads on both light and dark title bars; the icon alone
+  // signals the update, the accessible name and tooltip carry the wording.
+  updateButton.style.color = UPDATE_ACCENT;
   updateButton.style.cursor = available ? "pointer" : "not-allowed";
   updateButton.style.opacity = available ? "1" : "0.5";
-  updateButton.style.boxShadow = "0 1px 2px rgba(15, 23, 42, 0.18)";
   updateButton.style.outlineOffset = "2px";
   updateButton.style.setProperty("-webkit-app-region", "no-drag");
-  updateButton.append(createRendererSettingsIcon("updates", 15));
-
-  const updateLabel = ownerDocument.createElement("span");
-  updateLabel.textContent = messages.pageLabels.updates;
-  updateLabel.style.fontSize = "12px";
-  updateLabel.style.fontWeight = "600";
-  updateLabel.style.lineHeight = "1";
-  updateLabel.style.whiteSpace = "nowrap";
-  updateButton.append(updateLabel);
+  updateButton.append(createRendererSettingsIcon("updates", 16));
 
   const onPointerEnter = (): void => {
     if (!button.disabled) button.style.background = "rgba(127, 127, 127, 0.16)";
@@ -238,14 +232,10 @@ export function mountRendererSettingsTrigger(
     if (!button.disabled) onOpen(button);
   };
   const onUpdatePointerEnter = (): void => {
-    if (!updateButton.disabled) {
-      updateButton.style.background = "#1d4ed8";
-      updateButton.style.boxShadow = "0 2px 4px rgba(15, 23, 42, 0.22)";
-    }
+    if (!updateButton.disabled) updateButton.style.background = "rgba(59, 130, 246, 0.14)";
   };
   const onUpdatePointerLeave = (): void => {
-    updateButton.style.background = "#2563eb";
-    updateButton.style.boxShadow = "0 1px 2px rgba(15, 23, 42, 0.18)";
+    updateButton.style.background = "transparent";
   };
   const onUpdateClick = (event: MouseEvent): void => {
     event.stopPropagation();

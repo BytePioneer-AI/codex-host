@@ -1,21 +1,17 @@
 # Renderer brand assets
 
-`codexhost-logo.png`, `codexhost-icon.png`, and `codexhost-logo-transparent.png`
-are legacy artwork, no longer used by the installer or current product branding.
-
-`codexhost-logo-transparent.png` is the white-background-free square logo
-extracted from `codexhost-logo.png`. `codex-logo.png` is the Codex X mark
+`codex-logo.png` is the Codex X mark
 source and `codex-logo-transparent.png` is its white-background-free square
 variant. `codex-logo-bright.png` recolors that mark in the official bright
 Codex blue so it stays visible on dark surfaces.
 
-`codexhost-app-icon.png` is the selected white rounded-square codexhost icon
-with a dark C and central rounded square, with transparent outer corners.
-It is the Renderer settings brand icon (settings header mark and the
-application-header settings trigger button).
-The same selected PNG is stored at `crates/launcher/assets/codexhost.png` for
-macOS application and DMG icons. Windows application and installer icons use
-the multi-size `crates/launcher/assets/codexhost.ico` generated from that PNG.
+`codexhost-app-icon.svg` is the vector master of the codexhost brand icon: a
+light gray rounded tile with a charcoal C and central rounded square, padded to
+the macOS icon grid. It is the Renderer settings brand icon (settings header
+mark and the application-header settings trigger button).
+`crates/launcher/assets/codexhost.png` is a 1024px render of this SVG for macOS
+application and DMG icons. Windows application and installer icons use the
+multi-size `crates/launcher/assets/codexhost.ico` generated from that PNG.
 
 `codex-agent.png` is the Codex App GA mark distributed with OpenAI's official
 `openai.chatgpt` VS Code extension. It is bundled as a data URL so the Renderer
@@ -62,10 +58,5 @@ resized copy of the Grok mark served by `grok.com`, provided from a captured
 first-party page asset so the Renderer does not make a network request. The
 square source is stored with transparent rounded corners so the black plate
 does not render as a hard square.
-
-`codexhost-readme.svg` embeds `codex-agent.png`, `claude-agent.svg`, and
-`pi-agent.svg` in a responsive vector composition. Its background is `#F2EDE7`.
-The README references this SVG through HTML because GitHub strips inline CSS
-background and border-radius declarations from Markdown HTML.
 
 These product names and marks remain trademarks of their respective owners.

@@ -20,6 +20,7 @@ import {
   type NativeCheckpointRef,
 } from "@codexhost/shared-contracts";
 
+import { PiSubagents } from "./pi-subagents.js";
 import { encodePiModelRef, type PiNativeModelRef } from "./pi-model-catalog.js";
 
 export interface PiSessionHistory {
@@ -159,7 +160,11 @@ function toolOutput(value: unknown): HostToolOutput | undefined {
   return text.length > 0 ? { content: [{ type: "text", text }] } : undefined;
 }
 
-function snapshotItems(entries: PiEntry[], outcome: HistoricalTurnOutcome): HostItemSnapshot[] {
+function snapshotItems(
+  entries: PiEntry[],
+  outcome: HistoricalTurnOutcome,
+  subagents?: PiSubagents,
+): HostItemSnapshot[] {
   const snapshots: HostItemSnapshot[] = [];
   const toolCalls = new Map<
     string,
@@ -232,6 +237,12 @@ function snapshotItems(entries: PiEntry[], outcome: HistoricalTurnOutcome): Host
       ...(output ? { output } : {}),
     };
     const toolSucceeded = nativeMessage.isError === false;
+    const delegation = subagents?.project(
+      call.name,
+      nativeMessage,
+      itemId(call.entryId, "subagent", call.ordinal),
+      nativeMessage.toolCallId,
+    );
     snapshots.push({
       item,
       outcome: toolSucceeded
@@ -245,6 +256,7 @@ function snapshotItems(entries: PiEntry[], outcome: HistoricalTurnOutcome): Host
             },
           },
     });
+    if (delegation) snapshots.push({ item: delegation, outcome: { status: "succeeded" } });
   }
   return snapshots;
 }
@@ -260,6 +272,7 @@ function modelChange(entry: PiEntry): PiNativeModelRef | null {
 export function mapPiSnapshot(
   history: PiSessionHistory,
   state: PiHistoryState,
+  subagents: PiSubagents = new PiSubagents(() => undefined),
 ): HostThreadSnapshot {
   const active = activePiEntries(history);
   const turns: HostThreadSnapshot["turns"] = [];
@@ -297,7 +310,7 @@ export function mapPiSnapshot(
       nativeTurnRef,
       checkpoint,
       input: [{ type: "text", text: userText }],
-      items: snapshotItems(entries, outcome),
+      items: snapshotItems(entries, outcome, subagents),
       outcome,
       ...(effectiveModel ? { model: encodePiModelRef(effectiveModel) } : {}),
     });

@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "license": "MIT",
+  "license": "LGPL-3.0-only",
   "exports": {
     ".": "./index.mjs"
   },

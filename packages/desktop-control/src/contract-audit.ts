@@ -49,6 +49,12 @@ export interface RendererContractAuditInspection {
     textBodyCount: number;
     textBodyOwnerCount: number;
   };
+  codexUsageGate: {
+    composerCount: number;
+    ownerCount: number;
+    reserveGateCount: number;
+    accountGateCount: number;
+  };
   fork: {
     annotatedResponseCount: number;
     candidateButtonCount: number;
@@ -131,6 +137,7 @@ export function validateRendererContractAuditInspection(
       "settings",
       "sidebar",
       "transcript",
+      "codexUsageGate",
       "fork",
       "production",
     ],
@@ -204,6 +211,11 @@ export function validateRendererContractAuditInspection(
         "textBodyOwnerCount",
       ] as const,
       "Renderer transcript contract",
+    ),
+    codexUsageGate: integerRecord(
+      value.codexUsageGate,
+      ["composerCount", "ownerCount", "reserveGateCount", "accountGateCount"] as const,
+      "Renderer Codex usage gate contract",
     ),
     fork: integerRecord(
       value.fork,

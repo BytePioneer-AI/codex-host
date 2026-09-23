@@ -11,28 +11,11 @@ import type { RendererAdapterStatus } from "../versioned-renderer-adapter.js";
 import type { RendererSettingsPageDefinition, RendererSettingsPageMountContext } from "./core.js";
 import { createRendererSettingsIcon } from "./icons.js";
 import { createHarnessLaunchControls } from "./harness-launch-controls.js";
+import { createHarnessInstallationPanel } from "./harness-installation-panel.js";
 import type { RendererSettingsMessages } from "./localization.js";
 
 export const CODEXHOST_GITHUB_ISSUES_NEW_URL =
   "https://github.com/BytePioneer-AI/codex-host/issues/new";
-
-const HARNESS_INSTALL_URLS: Readonly<Record<ExternalRendererAgent, string>> = Object.freeze({
-  pi: "https://pi.dev/",
-  "claude-code": "https://code.claude.com/docs/en/quickstart",
-  "deepseek-harness": "https://deepseek-harness.github.io/deepseek-harness/",
-  opencode: "https://opencode.ai/docs/",
-  grok: "https://grok.com/",
-  omp: "https://github.com/can1357/oh-my-pi",
-  antigravity: "https://antigravity.google/product/antigravity-cli",
-  "kiro-cli": "https://kiro.dev/docs/cli/",
-  codebuddy: "https://www.codebuddy.ai/docs/zh/cli/overview",
-  workbuddy: "https://www.workbuddy.ai/docs/workbuddy/Quickstart",
-  "cursor-cli": "https://cursor.com/docs/cli/installation",
-  devin: "https://docs.devin.ai/cli",
-  hermes: "https://hermes-agent.nousresearch.com/docs",
-  qoder: "https://docs.qoder.com/",
-  "qoder-cn": "https://docs.qoder.cn/",
-});
 
 export interface RendererConnectionAgentSnapshot {
   readonly agent: ExternalRendererAgent;
@@ -326,11 +309,13 @@ function createConnectionRow(
   action.className = "settings-connection-row__action";
   action.setAttribute("role", "cell");
   if (item.agentSnapshot?.availability === "notInstalled") {
-    const install = document.createElement("a");
+    const install = document.createElement("button");
+    install.type = "button";
     install.className = "settings-connection-install-link";
-    install.href = HARNESS_INSTALL_URLS[item.agentSnapshot.agent];
-    install.target = "_blank";
-    install.rel = "noopener noreferrer";
+    install.addEventListener("click", (event) => {
+      event.stopPropagation();
+      select();
+    });
     install.setAttribute("aria-label", `${messages.connectionOpenInstallation}: ${item.name}`);
     install.title = messages.connectionOpenInstallation;
     install.append(createRendererSettingsIcon("download", 17));
@@ -413,10 +398,17 @@ function renderConnectionInspector(
   messages: RendererSettingsMessages,
   diagnostics: RendererConnectionDiagnostics | null,
   existingLaunchControls: HTMLElement | null,
+  refresh: () => void,
 ): HTMLElement | null {
   inspector.replaceChildren(createInspectorHeader(document, item, messages));
   const body = document.createElement("div");
   body.className = "settings-connection-inspector__body";
+  if (item.agentSnapshot?.agent === "deepseek-harness") {
+    const compatibility = document.createElement("p");
+    compatibility.className = "settings-connection-compatibility";
+    compatibility.textContent = messages.connectionDeepSeekTestedVersions;
+    body.append(compatibility);
+  }
 
   if (item.agentSnapshot?.availability === "notInstalled") {
     const callout = document.createElement("div");
@@ -431,14 +423,14 @@ function renderConnectionInspector(
     description.textContent = messages.connectionInstallDescription;
     copy.append(title, description);
     callout.append(icon, copy);
-    const install = document.createElement("a");
-    install.className = "settings-command-button settings-connection-install-button";
-    install.href = HARNESS_INSTALL_URLS[item.agentSnapshot.agent];
-    install.target = "_blank";
-    install.rel = "noopener noreferrer";
-    install.append(
-      messages.connectionOpenInstallation,
-      createRendererSettingsIcon("external-link", 14),
+    const install = createHarnessInstallationPanel(
+      document,
+      item.agentSnapshot.agent,
+      hostId,
+      messages,
+      (button, command, label) =>
+        copyDiagnosticsToClipboard(document, button, command, messages, label),
+      refresh,
     );
     body.append(callout, install);
   } else if (item.error) {
@@ -840,6 +832,7 @@ export function createConnectionsSettingsPage(
             messages,
             getDiagnostics(),
             existing,
+            runRefresh,
           );
           launchControls = { hostId: selectedHost.hostId, itemKey: item.key, element };
         };

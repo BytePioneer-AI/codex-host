@@ -225,17 +225,6 @@ export async function writeThirdPartyNotices(root, payloadRoot) {
     "License text: licenses/create-dmg-background-LICENSE.txt",
     "",
   );
-  await copyReleaseFile(
-    path.join(root, "third-party", "opencodex.LICENSE"),
-    path.join(licensesDirectory, "opencodex-LICENSE.txt"),
-    "opencodex native profile license",
-  );
-  notices.push(
-    "opencodex native profiles (2d4d7a22381a2e497c2442902104619e25f937c7)",
-    "License: MIT",
-    "License text: licenses/opencodex-LICENSE.txt",
-    "",
-  );
   await writeFile(
     path.join(payloadRoot, "THIRD_PARTY_NOTICES.txt"),
     `${notices.join("\n").trimEnd()}\n`,
@@ -264,7 +253,6 @@ export function expectedPayloadPaths(target) {
     "licenses/OpenCode-SDK-LICENSE.txt",
     "licenses/Qoder-Agent-SDK-LICENSE.txt",
     "licenses/QoderCN-Agent-SDK-LICENSE.txt",
-    "licenses/opencodex-LICENSE.txt",
     "licenses/diff-LICENSE.txt",
     "licenses/lucide-LICENSE.txt",
     "licenses/tailwindcss-LICENSE.txt",

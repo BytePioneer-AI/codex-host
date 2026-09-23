@@ -8,6 +8,7 @@ import workBuddyAgentIconUrl from "../src/assets/workbuddy-agent.svg";
 import cursorAgentIconUrl from "../src/assets/cursor-agent.svg";
 import hermesAgentIconUrl from "../src/assets/hermes-agent.png";
 import qoderAgentIconUrl from "../src/assets/qoder-agent.svg";
+import kimiAgentIconUrl from "../src/assets/kimi-agent.svg";
 
 describe("Renderer Agent icons", () => {
   it("renders OpenCode with the bundled official square mark", () => {
@@ -111,6 +112,7 @@ describe("Renderer Agent icons", () => {
     ["cursor-cli", cursorAgentIconUrl],
     ["qoder", qoderAgentIconUrl],
     ["qoder-cn", qoderAgentIconUrl],
+    ["kimi-code", kimiAgentIconUrl],
   ] as const)("renders %s with the bundled SVG asset", (agent, assetUrl) => {
     const image = {
       src: "",

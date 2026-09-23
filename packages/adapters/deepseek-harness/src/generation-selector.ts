@@ -9,13 +9,13 @@ import {
   type DeepSeekCommandInvocation,
 } from "./executable.js";
 
-export type DeepSeekProtocolGeneration = "modern";
+import type { DeepSeekModernVersion } from "./profiles/profile.js";
 
-export type DeepSeekSupportedVersion = "0.1.2-rc.1" | "0.1.5-rc.1";
+export type DeepSeekProtocolGeneration = "modern";
 
 export interface DeepSeekExecutableGeneration {
   readonly generation: DeepSeekProtocolGeneration;
-  readonly version: DeepSeekSupportedVersion;
+  readonly version: DeepSeekModernVersion;
   readonly command: DeepSeekCommandInvocation;
 }
 
@@ -25,7 +25,6 @@ export type DeepSeekGenerationProbeErrorCode =
   | "unavailable"
   | "protocolError"
   | "processExited"
-  | "unsupported"
   | "cancelled";
 
 export class DeepSeekGenerationProbeError extends Error {
@@ -181,7 +180,7 @@ export function parseDeepSeekEndpoint(endpoint = DEFAULT_DEEPSEEK_ENDPOINT): str
   if (parsed.searchParams.has("token")) {
     throw probeError(
       "authenticationRequired",
-      "DeepSeek Harness Web bootstrap URL 不可作为连接端点；请关闭该实例，让 codexhost 启动 dsh-v0.1.2-rc.1 或 dsh-v0.1.5-rc.1（仅支持这两个版本）。\nA DeepSeek Harness Web bootstrap URL cannot be used as an endpoint. Close that instance and let codexhost start dsh-v0.1.2-rc.1 or dsh-v0.1.5-rc.1; only these two versions are supported.",
+      "DeepSeek Harness Web bootstrap URL 不可作为连接端点；请关闭该实例，让 codexhost 启动本地 DSH Web。\nA DeepSeek Harness Web bootstrap URL cannot be used as an endpoint. Close that instance and let codexhost start the local DSH Web.",
     );
   }
   if (parsed.search !== "") {
@@ -241,13 +240,7 @@ export function classifyDeepSeekVersionOutput(
       "DeepSeek Harness --version did not return exactly one semantic version",
     );
   }
-  if (version === "0.1.2-rc.1" || version === "0.1.5-rc.1") {
-    return { generation: "modern", version };
-  }
-  throw probeError(
-    "unsupported",
-    `当前 DeepSeek Harness 版本 ${version} 不受支持；codexhost 仅支持 dsh-v0.1.2-rc.1 和 dsh-v0.1.5-rc.1，推荐安装 dsh-v0.1.5-rc.1。\nDeepSeek Harness ${version} is unsupported. codexhost only supports dsh-v0.1.2-rc.1 and dsh-v0.1.5-rc.1; dsh-v0.1.5-rc.1 is recommended.`,
-  );
+  return { generation: "modern", version };
 }
 
 interface CapturedVersionOutput {

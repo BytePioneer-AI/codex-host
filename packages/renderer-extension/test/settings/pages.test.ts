@@ -2,6 +2,7 @@ import {
   harnessIdSchema,
   hostThreadIdSchema,
   type CodexAccountListResult,
+  type CredentialImportsRequest,
   type HarnessAccountInspectResult,
   type HarnessAccountListResult,
   type HarnessAccountSourceListResult,
@@ -18,6 +19,15 @@ vi.mock("../../src/settings/icons.js", () => ({
 }));
 
 import { RendererSettingsPageScope } from "../../src/settings/core.js";
+import {
+  RENDERER_UPDATE_REQUEST_TIMEOUT_MS,
+  RendererUpdateRequestTimeoutError,
+} from "../../src/settings/update-request.js";
+import {
+  defaultImportName,
+  mountCredentialImports,
+} from "../../src/settings/credential-imports.js";
+import { credentialImportChinese } from "../../src/settings/credential-import-messages.js";
 import { createHarnessAccounts } from "../../src/settings/harness-accounts.js";
 import { rendererSettingsMessages } from "../../src/settings/localization.js";
 import { createRendererModelClient } from "../../src/renderer-model-client.js";
@@ -51,6 +61,32 @@ class FakeElement {
   tabIndex = 0;
   disabled = false;
   focused = false;
+  open = false;
+  parent: FakeElement | undefined;
+  get isConnected(): boolean {
+    return Boolean(this.parent);
+  }
+  showModal(): void {
+    this.open = true;
+  }
+  close(): void {
+    this.open = false;
+    this.dispatch("close");
+  }
+  remove(): void {
+    if (this.parent) {
+      const index = this.parent.children.indexOf(this);
+      if (index >= 0) this.parent.children.splice(index, 1);
+    }
+    this.parent = undefined;
+  }
+  querySelector(selector: string): FakeElement | null {
+    return (
+      descendants(this).find(
+        (element) => selector === "[role=alert]" && element.getAttribute("role") === "alert",
+      ) ?? null
+    );
+  }
   scrollLeft = 0;
   scrollWidth = 0;
   clientWidth = 0;
@@ -69,6 +105,7 @@ class FakeElement {
   }
 
   append(...children: unknown[]): void {
+    for (const child of children) if (child instanceof FakeElement) child.parent = this;
     this.children.push(...children);
   }
 
@@ -214,6 +251,283 @@ function visibleText(root: FakeElement): string {
     .filter(Boolean)
     .join(" ");
 }
+
+describe("Credential import controls", () => {
+  const source = {
+    id: "source-a",
+    harnessId: "codex",
+    label: "a@example.com",
+    provider: "openai-codex" as const,
+  };
+  const wait = () => new Promise((resolve) => setTimeout(resolve, 0));
+  const buttonNamed = (root: FakeElement, text: string): FakeElement => {
+    const button = descendants(root).find(
+      (element) => element.tagName === "button" && element.textContent === text,
+    );
+    if (!button) throw new Error(`Expected button ${text}`);
+    return button;
+  };
+  const mount = (
+    imports: () => unknown[],
+    sources: unknown[] = [source],
+    others: unknown[] = [],
+  ) => {
+    const doc = new FakeDocument();
+    const root = new FakeElement("div", doc);
+    const scope = new AbortController();
+    const credentialImports = vi.fn(async (request: CredentialImportsRequest) => {
+      if (request.action === "import") {
+        imports().push({
+          name: request.name,
+          source,
+          importedAt: "2026-01-01T00:00:00Z",
+        });
+      }
+      if (request.action === "remove") {
+        imports().splice(
+          imports().findIndex((record) => (record as { name: string }).name === request.name),
+          1,
+        );
+      }
+      return {
+        sources,
+        targets: [
+          { harnessId: "pi", providers: ["openai-codex" as const], imports: imports(), others },
+        ],
+      };
+    });
+    const controls = mountCredentialImports(
+      root as unknown as HTMLElement,
+      scope.signal,
+      () => ({ credentialImports }) as never,
+      credentialImportChinese,
+      () => {},
+    );
+    return { root, scope, credentialImports, controls };
+  };
+
+  it("renders no target for an incompatible or unknown login", async () => {
+    const { controls, scope } = mount(() => []);
+    expect(controls.button("codex", source.label)).toBeNull();
+    await controls.refresh();
+    expect(controls.button("claude-code", "person@example.com")).toBeNull();
+    expect(controls.button("codex", source.label)).not.toBeNull();
+    scope.abort();
+  });
+
+  it("requires confirmation, then lists the copy in the Pi section and removes it", async () => {
+    const imports: unknown[] = [];
+    const { root, scope, credentialImports, controls } = mount(() => imports);
+    const section = controls.section as unknown as FakeElement;
+    expect(section.hidden).toBe(true);
+    await controls.refresh();
+    expect(section.hidden).toBe(false);
+    expect(visibleText(section)).toContain(credentialImportChinese.sectionEmpty);
+    const first = controls.button("codex", source.label) as unknown as FakeElement;
+    expect(first.title).toBe(credentialImportChinese.add);
+    expect(first.dataset.state).toBeUndefined();
+    first.dispatch("click");
+    expect(credentialImports).toHaveBeenCalledTimes(1);
+    expect(visibleText(root)).toContain("保留全部已有 Provider 配置");
+    buttonNamed(root, credentialImportChinese.confirm).dispatch("click");
+    await wait();
+    expect(credentialImports).toHaveBeenLastCalledWith(
+      { action: "import", sourceId: source.id, name: "codex", confirmed: true },
+      "pi",
+    );
+    expect(visibleText(root)).toContain(credentialImportChinese.doneTitle);
+    expect(visibleText(root)).toContain("无需重启");
+    buttonNamed(root, credentialImportChinese.close).dispatch("click");
+
+    const imported = controls.button("codex", source.label) as unknown as FakeElement;
+    expect(imported.dataset.state).toBe("imported");
+    expect(imported.title).toContain("已复制");
+    expect(visibleText(section)).toContain(source.label);
+    expect(visibleText(section)).toContain("codex/…");
+    expect(visibleText(section)).toContain(credentialImportChinese.copied);
+    // The icon of an existing copy moves focus to its row instead of opening another dialog.
+    imported.dispatch("click");
+    expect(descendants(root).filter((element) => element.tagName === "dialog")).toHaveLength(0);
+
+    buttonNamed(section, credentialImportChinese.rowRemove).dispatch("click");
+    expect(credentialImports).toHaveBeenCalledTimes(2);
+    expect(visibleText(root)).toContain("不影响来源登录");
+    const dialog = descendants(root).find((element) => element.tagName === "dialog");
+    if (!dialog) throw new Error("Expected remove dialog");
+    buttonNamed(dialog, credentialImportChinese.remove).dispatch("click");
+    await wait();
+    expect(credentialImports).toHaveBeenLastCalledWith(
+      { action: "remove", name: "codex", confirmed: true },
+      "pi",
+    );
+    expect(visibleText(section)).toContain(credentialImportChinese.sectionEmpty);
+    expect((controls.button("codex", source.label) as unknown as FakeElement).dataset.state).toBe(
+      undefined,
+    );
+    scope.abort();
+  });
+
+  it("hides the whole Pi surface when Pi is not an import target", async () => {
+    const doc = new FakeDocument();
+    const root = new FakeElement("div", doc);
+    const scope = new AbortController();
+    // A missing or unconfigured Pi reports no target at all.
+    const credentialImports = vi.fn(async () => ({ sources: [source], targets: [] }));
+    const controls = mountCredentialImports(
+      root as unknown as HTMLElement,
+      scope.signal,
+      () => ({ credentialImports }) as never,
+      credentialImportChinese,
+      () => {},
+    );
+    await controls.refresh();
+    expect((controls.section as unknown as FakeElement).hidden).toBe(true);
+    expect(controls.button("codex", source.label)).toBeNull();
+    scope.abort();
+  });
+
+  it("lists every login in Pi in one list, with actions only on codexhost's own copies", async () => {
+    const ours = {
+      name: "codex",
+      source,
+      importedAt: "2026-01-01T00:00:00Z",
+    };
+    const { controls, scope } = mount(
+      () => [ours],
+      [source],
+      [
+        { provider: "anthropic", type: "oauth" },
+        { provider: "codex1", type: "oauth", label: "me@example.com", vendor: "openai-codex" },
+        { provider: "openai-codex", type: "api_key" },
+      ],
+    );
+    const section = controls.section as unknown as FakeElement;
+    await controls.refresh();
+    const text = visibleText(section);
+    // 1 codexhost copy + 3 logins Pi already had.
+    expect(text).toContain("4");
+    expect(text).toContain(source.label);
+    expect(text).toContain("me@example.com");
+    expect(text).toContain("codex1");
+    expect(text).toContain("anthropic");
+    expect(text).toContain("openai-codex");
+    expect(text).toContain("API Key");
+    // Pi's own logins start collapsed behind a disclosure and carry no actions.
+    const group = elementWithClass(section, "settings-pi-accounts__others");
+    expect(group.hidden).toBe(true);
+    const toggle = elementWithClass(section, "settings-pi-accounts__toggle");
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    expect(visibleText(toggle)).toContain(credentialImportChinese.othersTitle);
+    expect(visibleText(toggle)).toContain("3");
+    toggle.dispatch("click");
+    expect(group.hidden).toBe(false);
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+    const others = descendants(group).filter((element) =>
+      element.className.split(" ").includes("settings-pi-accounts__row--other"),
+    );
+    expect(others).toHaveLength(3);
+    // A recognized vendor gets the account table's own mark; the rest keep the neutral Pi mark.
+    expect(others[1]?.getAttribute("aria-label")).toBe("me@example.com · Codex");
+    expect(others[1]?.children.find((child) => child instanceof FakeElement)?.dataset.agent).toBe(
+      "codex",
+    );
+    expect(
+      others[0]?.children.find((child) => child instanceof FakeElement)?.dataset.agent,
+    ).toBeUndefined();
+    expect(others[0]?.getAttribute("aria-label")).toBe("anthropic");
+    for (const row of others) {
+      expect(descendants(row).some((element) => element.tagName === "button")).toBe(false);
+    }
+    expect(buttonNamed(section, credentialImportChinese.rowRemove).disabled).toBe(false);
+    scope.abort();
+  });
+
+  it("shows the empty guidance only when Pi has no logins at all", async () => {
+    const { controls, scope } = mount(() => []);
+    await controls.refresh();
+    expect(visibleText(controls.section as unknown as FakeElement)).toContain(
+      credentialImportChinese.sectionEmpty,
+    );
+    scope.abort();
+  });
+
+  it("keeps a copy of a non-current login listed without warnings or a re-copy button", async () => {
+    const other = {
+      name: "codex",
+      source: { ...source, id: "gone", label: "old@example.com" },
+      importedAt: "2026-01-01T00:00:00Z",
+    };
+    const { controls, scope } = mount(() => [other]);
+    const section = controls.section as unknown as FakeElement;
+    await controls.refresh();
+    expect(visibleText(section)).toContain("old@example.com");
+    expect(visibleText(section)).not.toContain("退出");
+    expect(
+      descendants(section).some(
+        (element) =>
+          element.tagName === "button" &&
+          element.textContent === credentialImportChinese.rowReimport,
+      ),
+    ).toBe(false);
+    expect(buttonNamed(section, credentialImportChinese.rowRemove).disabled).toBe(false);
+    scope.abort();
+  });
+
+  it("adds a second account beside the first under an account-specific default name", async () => {
+    const first = {
+      name: "codex",
+      source: { ...source, id: "gone", label: "old@example.com" },
+      importedAt: "2026-01-01T00:00:00Z",
+    };
+    const imports: unknown[] = [first];
+    const { root, scope, credentialImports, controls } = mount(() => imports);
+    await controls.refresh();
+    (controls.button("codex", source.label) as unknown as FakeElement).dispatch("click");
+    const input = descendants(root).find((element) => element.tagName === "input");
+    expect(input?.value).toBe("codex-a");
+    buttonNamed(root, credentialImportChinese.confirm).dispatch("click");
+    await wait();
+    expect(credentialImports).toHaveBeenLastCalledWith(
+      { action: "import", sourceId: source.id, name: "codex-a", confirmed: true },
+      "pi",
+    );
+    const section = controls.section as unknown as FakeElement;
+    expect(visibleText(section)).toContain("old@example.com");
+    expect(visibleText(section)).toContain("a@example.com");
+    scope.abort();
+  });
+});
+
+describe("Default import entry names", () => {
+  const record = (name: string) => ({
+    name,
+    source: { id: name, harnessId: "codex", label: "x", provider: "openai-codex" as const },
+    importedAt: "2026-01-01T00:00:00Z",
+  });
+  const codex = (label: string) => ({
+    id: "s",
+    harnessId: "codex",
+    label,
+    provider: "openai-codex" as const,
+  });
+  it("uses the plain name first, then the account, then a number", () => {
+    expect(defaultImportName(codex("a@x.com"), [])).toBe("codex");
+    expect(defaultImportName(codex("Ann.Lee+work@x.com"), [record("codex")])).toBe(
+      "codex-ann-lee-work",
+    );
+    expect(defaultImportName(codex("a@x.com"), [record("codex"), record("codex-a")])).toBe(
+      "codex2",
+    );
+    expect(defaultImportName(codex("Codex"), [record("codex")])).toBe("codex2");
+    expect(defaultImportName(codex("___@x.com"), [record("codex")])).toBe("codex2");
+    expect(
+      defaultImportName({ ...codex("9s74@relay.com"), provider: "xai" }, [record("grok")]),
+    ).toBe("grok-9s74");
+    expect(
+      defaultImportName(codex(`${"a".repeat(80)}@x.com`), [record("codex")]).length,
+    ).toBeLessThanOrEqual(48);
+  });
+});
 
 describe("Read-only Harness accounts", () => {
   const result: HarnessAccountListResult = {
@@ -406,6 +720,108 @@ describe("Read-only Harness accounts", () => {
 });
 
 describe("Renderer Connections page", () => {
+  it.each([
+    ["pi", "https://pi.dev/install.sh"],
+    ["claude-code", "https://claude.ai/install.sh"],
+    ["deepseek-harness", "npm install -g @deepseek-ai/dsh@0.1.5-rc.1"],
+    ["opencode", "opencode-ai"],
+    ["grok", "@xai-official/grok"],
+    ["omp", "https://omp.sh/install"],
+    ["antigravity", "https://antigravity.google/cli/install.sh"],
+    ["kiro-cli", "https://cli.kiro.dev/install"],
+    ["codebuddy", "@tencent-ai/codebuddy-code"],
+    ["workbuddy", "应用内置 CLI"],
+    ["cursor-cli", "https://cursor.com/install"],
+    ["hermes", "https://hermes-agent.nousresearch.com/install.sh"],
+    ["qoder", "https://qoder.com/install"],
+    ["qoder-cn", "https://static.qoder.com.cn/qoder-cli-cn/install.sh"],
+  ] as const)("shows actionable installation instructions for %s", async (agent, expected) => {
+    const refresh = vi.fn(async () => undefined);
+    const diagnostics: RendererConnectionDiagnostics = {
+      snapshot: () => ({
+        adapter: { state: "ready", reason: "ready", modelUpdates: 1, hook: "request-bridge" },
+        hosts: [
+          {
+            hostId: "remote-test",
+            active: true,
+            agents: [{ agent, availability: "notInstalled", error: null }],
+          },
+        ],
+      }),
+      refresh,
+      subscribe: () => () => undefined,
+    };
+    const page = createDefaultRendererSettingsPages(
+      rendererSettingsMessages("zh-CN"),
+      () => null,
+      () => diagnostics,
+    ).find(({ id }) => id === "connections");
+    if (!page) throw new Error("Expected connections page");
+    const document = new FakeDocument("Win32");
+    const content = document.createElement("main");
+    const scope = new RendererSettingsPageScope();
+    const cleanup = page.mount({
+      content: content as unknown as HTMLElement,
+      signal: scope.signal,
+      runLatest: (op, handlers) => scope.runLatest(op, handlers),
+    });
+    const install = elementWithClass(content, "settings-connection-install-link");
+    expect(install.tagName).toBe("button");
+    expect(install.href).toBe("");
+    install.dispatch("click", { stopPropagation() {} });
+    const panel = elementWithClass(content, "settings-harness-installation");
+    expect(visibleText(panel)).toContain(expected);
+    expect(
+      visibleText(content).includes("已在 DSH 0.1.2-rc.1、0.1.5-rc.1 和 0.1.5-rc.2 上测试。"),
+    ).toBe(agent === "deepseek-harness");
+    expect(visibleText(panel)).toContain("请在远程 Host 上安装。");
+    expect(visibleText(panel)).not.toMatch(
+      /选择本机系统|此页面不会自动执行|Windows ARM64|PATH|WSL|安装完成不代表已就绪/,
+    );
+    expect(refresh).not.toHaveBeenCalled();
+    const blocks = descendants(panel).filter(
+      ({ className }) => className === "settings-harness-installation-command",
+    );
+    expect(blocks.length).toBe(
+      agent === "workbuddy"
+        ? 0
+        : ["deepseek-harness", "opencode", "grok", "codebuddy"].includes(agent)
+          ? 1
+          : 2,
+    );
+    for (const block of blocks) {
+      const code = descendants(block).find(({ tagName }) => tagName === "code");
+      const copy = descendants(block).find(({ tagName }) => tagName === "button");
+      if (!code || !copy) throw new Error("Expected install command and copy button");
+      const command = code.textContent;
+      copy.dispatch("click");
+      await vi.waitFor(() => expect(document.clipboardWriteText).toHaveBeenLastCalledWith(command));
+      expect(command).not.toContain("sudo");
+      document.clipboardWriteText.mockRejectedValueOnce(new Error("denied"));
+      copy.dispatch("click");
+      await vi.waitFor(() => expect(visibleNotesText(copy)).toContain("复制失败"));
+    }
+    for (const link of descendants(panel).filter(({ tagName }) => tagName === "a")) {
+      expect(link.href).toMatch(/^https:\/\//);
+      expect(link).toMatchObject({ target: "_blank", rel: "noopener noreferrer" });
+    }
+    const check = descendants(panel).find(
+      ({ dataset }) => dataset.connectionAction === "check-install",
+    );
+    if (!check) throw new Error("Expected installation check button");
+    check.dispatch("click");
+    expect(check.disabled).toBe(true);
+    await vi.waitFor(() => expect(refresh).toHaveBeenCalledOnce());
+    await vi.waitFor(() =>
+      expect(
+        descendants(content).find(({ dataset }) => dataset.connectionAction === "check-install")
+          ?.disabled,
+      ).toBe(false),
+    );
+    cleanup?.();
+    scope.dispose();
+  });
+
   it.each(["workbuddy"] as const)(
     "edits %s launch settings in the local right-side inspector",
     async (agent) => {
@@ -551,6 +967,7 @@ describe("Renderer Connections page", () => {
     );
     if (!dshRow) throw new Error("DeepSeek Harness row is not rendered");
     dshRow.dispatch("click", { target: null });
+    expect(visibleText(content)).toContain("其他版本可以尝试连接，但尚未验证。");
     const open = descendants(content).find(
       ({ dataset }) => dataset.connectionAction === "open-web-ui",
     );
@@ -681,14 +1098,9 @@ describe("Renderer Connections page", () => {
     await vi.waitFor(() => expect(refresh.disabled).toBe(false));
     expect(visibleNotesText(refresh)).toContain("重新诊断连接");
 
-    const installLink = descendants(content).find(
-      ({ tagName, href }) =>
-        tagName === "a" && href === "https://deepseek-harness.github.io/deepseek-harness/",
-    );
-    expect(installLink).toMatchObject({
-      target: "_blank",
-      rel: "noopener noreferrer",
-    });
+    const installLink = elementWithClass(content, "settings-connection-install-link");
+    expect(installLink.tagName).toBe("button");
+    expect(installLink.href).toBe("");
 
     expect(visibleText(content)).toContain("查看错误");
     const remoteTab = descendants(content).find(
@@ -821,7 +1233,11 @@ describe("Renderer Codex Accounts page", () => {
     );
     expect(visibleText(content)).toContain("work@example.com");
     expect(visibleText(content)).toContain("2 张");
-    expect(visibleText(content)).not.toContain("登录");
+    expect(
+      descendants(content)
+        .filter((element) => element.tagName === "button")
+        .map((element) => element.textContent),
+    ).not.toContain("登录");
     expect(visibleText(content)).not.toContain("添加 Codex 账号");
     expect(descendants(content).some(({ textContent }) => textContent === "使用重置")).toBe(false);
     scope.dispose();
@@ -829,6 +1245,70 @@ describe("Renderer Codex Accounts page", () => {
 });
 
 describe("Renderer Updates page", () => {
+  it.each(["succeeded", "failed"] as const)(
+    "keeps polling after start/status timeouts until the Host reports %s",
+    async (terminalPhase) => {
+      vi.useFakeTimers();
+      const request = deferred<{ status: UpdateStatus }>();
+      const client = {
+        checkUpdate: vi.fn(async () => updateCheck()),
+        startUpdate: vi.fn(() => request.promise),
+        readUpdateStatus: vi
+          .fn<() => Promise<{ status: UpdateStatus | null }>>()
+          .mockRejectedValueOnce(new RendererUpdateRequestTimeoutError())
+          .mockResolvedValueOnce({ status: null })
+          .mockResolvedValueOnce({ status: updateStatus("prepared") })
+          .mockResolvedValueOnce({ status: updateStatus("downloading") })
+          .mockResolvedValueOnce({ status: updateStatus(terminalPhase) }),
+      };
+      const page = createDefaultRendererSettingsPages(undefined, () => client).find(
+        ({ id }) => id === "updates",
+      );
+      if (!page) throw new Error("Updates page is not registered");
+      const document = new FakeDocument();
+      const content = document.createElement("main");
+      const scope = new RendererSettingsPageScope();
+      const cleanup = page.mount({
+        content: content as unknown as HTMLElement,
+        signal: scope.signal,
+        runLatest: (operation, handlers) => scope.runLatest(operation, handlers),
+      });
+      try {
+        await vi.advanceTimersByTimeAsync(0);
+        const panel = elementWithClass(content, "settings-update-panel");
+        const button = descendants(panel).find(({ tagName }) => tagName === "button");
+        if (!button) throw new Error("Update button is not rendered");
+        button.dispatch("click");
+        await vi.advanceTimersByTimeAsync(RENDERER_UPDATE_REQUEST_TIMEOUT_MS);
+        expect(panel.dataset.updateState).toBe("pending");
+        for (const [index, phase] of [
+          "pending",
+          "pending",
+          "prepared",
+          "downloading",
+          terminalPhase,
+        ].entries()) {
+          expect(document.defaultView.setTimeout).toHaveBeenCalledTimes(index + 1);
+          const poll = vi.mocked(document.defaultView.setTimeout).mock.calls.at(-1)?.[0];
+          if (typeof poll !== "function") throw new Error("Missing status poll callback");
+          poll();
+          await vi.advanceTimersByTimeAsync(0);
+          expect(panel.dataset.updateState).toBe(phase);
+        }
+        expect(client.startUpdate).toHaveBeenCalledOnce();
+        expect(client.readUpdateStatus).toHaveBeenCalledTimes(5);
+        expect(document.defaultView.setTimeout).toHaveBeenCalledTimes(5);
+        request.resolve({ status: updateStatus("prepared") });
+        await vi.advanceTimersByTimeAsync(0);
+        expect(panel.dataset.updateState).toBe(terminalPhase);
+      } finally {
+        cleanup?.();
+        scope.dispose();
+        vi.useRealTimers();
+      }
+    },
+  );
+
   it.each([
     [updateStatus("prepared"), "正在准备更新..."],
     [updateStatus("waiting-for-exit"), "正在等待应用退出..."],
@@ -949,6 +1429,49 @@ describe("Renderer Updates page", () => {
       "https://github.com/BytePioneer-AI/codex-host/releases/tag/v1.2.3",
     );
 
+    cleanup?.();
+    scope.dispose();
+  });
+
+  it("points to GitHub Releases without a retry or internal detail when the update request fails", async () => {
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const client = {
+      checkUpdate: vi.fn(async () => {
+        throw new Error("Renderer Model request manager is unavailable");
+      }),
+      startUpdate: vi.fn(),
+      readUpdateStatus: vi.fn(async () => ({ status: null })),
+    };
+    const page = createDefaultRendererSettingsPages(
+      rendererSettingsMessages("zh-CN"),
+      () => client,
+    ).find(({ id }) => id === "updates");
+    if (!page) throw new Error("Updates page is not registered");
+
+    const document = new FakeDocument();
+    const content = document.createElement("main");
+    const scope = new RendererSettingsPageScope();
+    const cleanup = page.mount({
+      content: content as unknown as HTMLElement,
+      signal: scope.signal,
+      runLatest: (operation, handlers) => scope.runLatest(operation, handlers),
+    });
+
+    const panel = elementWithClass(content, "settings-update-panel");
+    await vi.waitFor(() => expect(panel.dataset.updateState).toBe("failed"));
+    expect(visibleText(panel)).toContain("暂时无法自动更新");
+    expect(visibleText(content)).not.toContain("request manager");
+    expect(descendants(panel).find(({ tagName }) => tagName === "button")).toBeUndefined();
+    expect(
+      descendants(content).find(
+        (candidate) =>
+          candidate.tagName === "a" && visibleNotesText(candidate).includes("GitHub Releases"),
+      ),
+    ).toBeDefined();
+    expect(client.checkUpdate).toHaveBeenCalledOnce();
+    expect(consoleError).toHaveBeenCalled();
+
+    consoleError.mockRestore();
     cleanup?.();
     scope.dispose();
   });

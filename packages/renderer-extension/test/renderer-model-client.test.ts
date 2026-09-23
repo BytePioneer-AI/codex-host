@@ -326,6 +326,7 @@ describe("Renderer fixed Model request client", () => {
     if (!client) throw new Error("Synthetic Model client was not created");
     expect(Object.keys(client).sort()).toEqual([
       "checkUpdate",
+      "credentialImports",
       "executeThreadCommand",
       "forkThread",
       "getHarnessLaunchSettings",

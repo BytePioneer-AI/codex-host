@@ -7,7 +7,6 @@ import type {
 import type {
   AccountCreditsSnapshot,
   CodexAccountSummary,
-  HarnessCommandDescriptor,
   ThreadUsageSnapshot,
 } from "@codexhost/shared-contracts";
 import {
@@ -482,14 +481,60 @@ export function creditsPlacementAnchor(control: ComposerAgentControl): HTMLEleme
   return root?.parentElement ? root : null;
 }
 
+/**
+ * Mirrors the mount-time `allButtons.at(-1)` fallback for Composers whose
+ * action button is neither `type="submit"` nor labelled as send. After mount
+ * the Composer also contains our own controls, so skip their buttons.
+ */
+function lastNativeButtonWithin(composer: Element): HTMLButtonElement | null {
+  const buttons = [...composer.querySelectorAll<HTMLButtonElement>("button")];
+  for (let index = buttons.length - 1; index >= 0; index -= 1) {
+    const button = buttons[index];
+    if (button && !isInsideOwnedRendererControl(button, composer)) return button;
+  }
+  return null;
+}
+
+function isInsideOwnedRendererControl(element: Element, composer: Element): boolean {
+  for (let node: Element | null = element; node && node !== composer; node = node.parentElement) {
+    if (typeof node.hasAttribute === "function" && isOwnedRendererControl(node)) return true;
+  }
+  return false;
+}
+
+/**
+ * Codex re-renders the trailing action cluster (for example when the draft
+ * becomes non-empty or a turn starts/stops), which replaces the send button
+ * and its wrapper. Follow the live button so placement never anchors to a
+ * detached subtree: moving owned controls there disconnects them, and the
+ * next scan would dispose and remount the whole control (closing open menus).
+ */
+export function refreshSendButton(control: ComposerAgentControl): HTMLButtonElement | null {
+  const current = control.sendButton;
+  if (current?.isConnected && control.composer.contains(current)) return current;
+  // Only a Composer that was mounted through the unlabelled fallback keeps
+  // using it; otherwise a Stop/Attach button would be mistaken for send.
+  const replacement =
+    sendButtonWithin(control.composer) ??
+    (current && !isComposerSubmitButton(current) ? lastNativeButtonWithin(control.composer) : null);
+  if (!replacement) return null;
+  if (control.sendDisabledBeforeSwitch !== null) {
+    control.sendDisabledBeforeSwitch = replacement.disabled;
+    replacement.disabled = true;
+  }
+  control.sendButton = replacement;
+  return replacement;
+}
+
 function refreshTrailingClusterPlacement(control: ComposerAgentControl): void {
-  const sendButton = control.sendButton;
+  const sendButton = refreshSendButton(control);
   const modelRoot = control.modelPicker?.root;
   const agentRoot = control.root ?? control.picker?.root;
   if (!sendButton || !modelRoot || !agentRoot) return;
   const anchor = trailingActionAnchor(sendButton);
   const parent = anchor.parentElement;
   if (!parent || typeof parent.insertBefore !== "function") return;
+  if (!parent.isConnected || !control.composer.contains(parent)) return;
   if (
     modelRoot.parentElement === parent &&
     agentRoot.parentElement === parent &&
@@ -608,8 +653,12 @@ export function mountComposerAgentControl(
   onSelectModel: (modelId: string) => void,
   onSelectThinking: (thinkingOptionId: string) => void,
   onSelectPermissionMode: (permissionModeId: string) => void,
-  onSelectCommand: (command: HarnessCommandDescriptor) => void,
+  onOpenCommandMenu: () => void,
 ): ComposerAgentControl {
+  // External Harnesses inject more footer chips than native Codex. Let the
+  // thread column shrink under sidebar / narrow-window pressure so those chips
+  // can flex-shrink and ellipsis instead of overlapping (issue #284).
+  if (composer instanceof HTMLElement) composer.style.minWidth = "0";
   const nativeModelControl = captureNativeControl(nativeModelControlForComposer(composer));
   const nativeContextUsageControl = captureNativeControl(
     nativeContextUsageControlForComposer(composer),
@@ -638,7 +687,7 @@ export function mountComposerAgentControl(
   const harnessCommands = mountRendererHarnessCommandControl(
     toolbar ?? composer,
     trailingActionAnchor(sendButton),
-    onSelectCommand,
+    onOpenCommandMenu,
   );
 
   const permissionParent = nativePermissionModeControl?.element.parentElement;
@@ -672,6 +721,21 @@ export function mountComposerAgentControl(
   return control;
 }
 
+function nativeSendDisabled(button: HTMLButtonElement, fallback: boolean): boolean {
+  const key = Object.getOwnPropertyNames(button).find((name) => name.startsWith("__reactProps$"));
+  const props: unknown = key ? Object.getOwnPropertyDescriptor(button, key)?.value : undefined;
+  return typeof props === "object" &&
+    props !== null &&
+    "disabled" in props &&
+    typeof props.disabled === "boolean"
+    ? props.disabled
+    : fallback;
+}
+
+/**
+ * Returns whether this Composer is ready to submit to an external Harness:
+ * not Codex, Adapter ready, and no codexhost submission blocker.
+ */
 export function renderComposerAgentControl(
   control: ComposerAgentControl,
   state: { agent: RendererAgent; phase: ComposerAgentPhase },
@@ -685,7 +749,7 @@ export function renderComposerAgentControl(
   locale: RendererSettingsLocale = "en",
   currentCodexAccount: CodexAccountSummary | null = null,
   ownershipError = false,
-): void {
+): boolean {
   if (control.usage === null) {
     control.usage = mountRendererUsageControl(control.composerId, locale);
   }
@@ -714,7 +778,12 @@ export function renderComposerAgentControl(
     control.sendDisabledBeforeSwitch = control.sendButton.disabled;
     control.sendButton.disabled = true;
   } else if (!submissionBlocked && control.sendDisabledBeforeSwitch !== null) {
-    control.sendButton.disabled = control.sendDisabledBeforeSwitch;
+    // Native blockers, including the Codex usage gate, may have changed while
+    // switching; restore from the latest native props rather than a stale flag.
+    control.sendButton.disabled = nativeSendDisabled(
+      control.sendButton,
+      control.sendDisabledBeforeSwitch,
+    );
     control.sendDisabledBeforeSwitch = null;
   }
   const pickerView = renderRendererAgentPicker(
@@ -757,13 +826,16 @@ export function renderComposerAgentControl(
   control.harnessCommands.setLocale(locale);
   control.harnessCommands.root.hidden = state.agent === "codex";
   control.harnessCommands.root.style.display = state.agent === "codex" ? "none" : "inline-flex";
-  if (state.agent === "codex") control.harnessCommands.close();
   renderRendererCreditsControl(control.credits, accountCredits, locale);
+  return state.agent !== "codex" && adapterState === "ready" && !submissionBlocked;
 }
 
 export function disposeComposerAgentControl(control: ComposerAgentControl): void {
   if (control.sendDisabledBeforeSwitch !== null) {
-    control.sendButton.disabled = control.sendDisabledBeforeSwitch;
+    control.sendButton.disabled = nativeSendDisabled(
+      control.sendButton,
+      control.sendDisabledBeforeSwitch,
+    );
   }
   restoreNativeControl(control.nativeModelControl);
   restoreNativeControl(control.nativeContextUsageControl);

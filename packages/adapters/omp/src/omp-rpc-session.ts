@@ -11,6 +11,7 @@ import {
   type JsonValue,
 } from "@codexhost/shared-contracts";
 
+import { parseOmpAvailableCommands, type OmpAvailableCommand } from "./omp-slash-commands.js";
 import { resolveOmpExecutable, withNodeRuntimeOnPath } from "./command.js";
 import type { OmpSessionHistory } from "./omp-history.js";
 
@@ -523,6 +524,7 @@ export class OmpRpcSession {
   #failed = false;
   #pending = new Map<string, PendingCommand>();
   #state: OmpSessionState | null = null;
+  #availableCommands: OmpAvailableCommand[] | null = null;
   #latestCacheHitRatePercent: number | null | undefined;
   #manualCompaction: ManualCompaction | null = null;
   #stderrTail = "";
@@ -1015,8 +1017,18 @@ export class OmpRpcSession {
     }
   }
 
+  /** Latest `available_commands_update` of the running process, if any. */
+  get availableCommands(): readonly OmpAvailableCommand[] | null {
+    return this.#availableCommands;
+  }
+
   #handle(value: Record<string, unknown>): void {
     if (this.#closed || this.#failed) return;
+    if (value.type === "available_commands_update") {
+      // Command catalog state, not Turn content.
+      this.#availableCommands = parseOmpAvailableCommands(value.commands);
+      return;
+    }
     if (value.type === "ready") {
       this.#readyResolve?.();
       this.#readyResolve = null;

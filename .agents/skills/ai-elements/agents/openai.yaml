@@ -1,0 +1,6 @@
+interface:
+  display_name: "ai-elements"
+  short_description: "Build chat interfaces with applicable UI components"
+  default_prompt: "Use $ai-elements for the relevant parts of this task, following codexhost repository guidance."
+policy:
+  allow_implicit_invocation: true

@@ -20,7 +20,7 @@ To compare against a report that has already been reviewed:
 npm run audit:codex-desktop -- --baseline .codexhost/update-impact/26.1/audit-report.json
 ```
 
-The tool never chooses a baseline automatically. A first run without a baseline still records current evidence, while baseline-dependent conclusions remain explicit.
+The tool never chooses a baseline automatically. A first run without a baseline still records current evidence, while baseline-dependent conclusions remain explicit. A reviewed baseline recorded before a surface existed is still accepted; that surface is compared as having no baseline (`static: not-run`).
 
 ## Controlled installation check
 
@@ -31,6 +31,22 @@ npm run audit:codex-desktop -- --mode controlled
 ```
 
 Controlled mode reuses the existing production `RendererControlSession`. It can reload the Renderer and install Title, Draft/Prewarm, and Renderer binding policies. It still does not automatically submit, create a Thread, open Settings, execute Fork, or exercise title creation, so those behavior checks remain `unverified`.
+
+## Codex usage gate surface
+
+The `codex-usage-gate` surface covers `renderer-codex-usage-gate.ts`, which lets an external Harness submit while the ChatGPT-signed-in Codex subscription is out of usage. For each Composer with an editor it records bounded counts:
+
+- `ownerCount` — Composer owners exposing `onLocalSubmitStart` and boolean `submitDisabled`;
+- `reserveGateCount` — boolean subscriptions whose selector reads reserve `hardBlocked`;
+- `accountGateCount` — boolean subscriptions whose selector reads `authMethod` and `rate_limit.allowed`.
+
+Verdicts:
+
+- an owner or reserve count other than one per Composer, or more than one Account gate, is `confirmed-impact`;
+- no Account gate is `unverified` (`codex-usage-account-gate-dormant`): the selector returns early for API-key sign-in or while Account data loads, so inspect again signed in with ChatGPT;
+- no Composer with an editor is `unverified`.
+
+The probe replays selectors read-only and never lifts gates, writes Account or query data, or submits input. Whether Send and Enter work for an external Agent with exhausted usage is behavioral and stays outside this tool.
 
 ## Transcript surface
 

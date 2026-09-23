@@ -7,6 +7,7 @@ export interface RendererHarnessMessages {
   readonly harnessCommands: string;
   readonly commandsUnavailable: string;
   readonly commandRequiresConversation: string;
+  readonly commandMenuHint: string;
   readonly textArgument: string;
   readonly permissionMode: string;
   readonly permissions: string;
@@ -14,6 +15,7 @@ export interface RendererHarnessMessages {
   readonly selecting: string;
   readonly permissionsUnavailable: string;
   readonly permissionModeFixedAtCreate: string;
+  readonly codexUsageGateUnavailable: string;
 }
 
 const ENGLISH_HARNESS_MESSAGES: RendererHarnessMessages = Object.freeze({
@@ -21,6 +23,7 @@ const ENGLISH_HARNESS_MESSAGES: RendererHarnessMessages = Object.freeze({
   harnessCommands: "Harness commands",
   commandsUnavailable: "No Harness commands available yet",
   commandRequiresConversation: "Start a conversation before running this command",
+  commandMenuHint: "Type # for commands, skills and agents",
   textArgument: "Text",
   permissionMode: "Permission mode",
   permissions: "Permissions",
@@ -29,6 +32,8 @@ const ENGLISH_HARNESS_MESSAGES: RendererHarnessMessages = Object.freeze({
   permissionsUnavailable: "Permissions unavailable",
   permissionModeFixedAtCreate:
     "Grok fixes its Permission Mode when the Session is created. Start a new Thread to change it.",
+  codexUsageGateUnavailable:
+    "Could not separate this Harness from the Codex usage limit in this Desktop version. Codex usage limits still apply to sending.",
 });
 
 const CHINESE_HARNESS_MESSAGES: RendererHarnessMessages = Object.freeze({
@@ -36,6 +41,7 @@ const CHINESE_HARNESS_MESSAGES: RendererHarnessMessages = Object.freeze({
   harnessCommands: "Harness 命令",
   commandsUnavailable: "暂无可用的 Harness 命令",
   commandRequiresConversation: "请先开始对话，再执行此命令",
+  commandMenuHint: "输入 # 打开命令、技能和 Agent",
   textArgument: "文本",
   permissionMode: "权限模式",
   permissions: "权限",
@@ -43,6 +49,8 @@ const CHINESE_HARNESS_MESSAGES: RendererHarnessMessages = Object.freeze({
   selecting: "正在选择...",
   permissionsUnavailable: "权限不可用",
   permissionModeFixedAtCreate: "Grok 的权限模式在会话创建时确定，如需更改请新建会话",
+  codexUsageGateUnavailable:
+    "当前 Desktop 版本无法将此 Harness 与 Codex 额度限制分离，发送仍受 Codex 额度限制",
 });
 
 // Some Harness catalogs expose preset IDs as labels. Keep IDs untouched and
@@ -177,4 +185,19 @@ export function rendererPermissionModePresentation(
         ? undefined
         : (CHINESE_PERMISSION_MODE_DESCRIPTIONS.get(mode.description) ?? mode.description),
   };
+}
+
+/**
+ * `#` menu hint while a draft shows only a Harness's built-in commands: its
+ * project commands and skills load once a message starts the native Session.
+ */
+export function rendererLiveCommandsPendingNotice(
+  locale: RendererSettingsLocale,
+  harnessLabel: string,
+): string {
+  // Drop qualifiers such as "(Experimental)" from the display label.
+  const harness = harnessLabel.replace(/\s*[(（][^)）]*[)）]\s*$/u, "").trim() || harnessLabel;
+  return locale === "zh-CN"
+    ? `发送一条消息后，会加载 ${harness} 在当前项目的全部命令和技能`
+    : `Send a message to load all ${harness} commands and skills for this project`;
 }

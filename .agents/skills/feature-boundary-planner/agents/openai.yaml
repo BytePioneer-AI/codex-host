@@ -1,0 +1,6 @@
+interface:
+  display_name: "feature-boundary-planner"
+  short_description: "Trace feature impact, ownership and validation"
+  default_prompt: "Use $feature-boundary-planner for the relevant parts of this task, following codexhost repository guidance."
+policy:
+  allow_implicit_invocation: true

@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 
+import { classifyDeepSeekVersionOutput } from "../generation-selector.js";
 import { deepSeekHarnessCommandCatalog } from "../harness-commands.js";
 
 import {
@@ -1100,7 +1101,22 @@ function parseModernForkInput(
 
 function sessionLocatorMatches(locator: unknown, profile: DeepSeekModernProfile): boolean {
   if (locator === undefined) return true;
-  return isDeepSeekV015(profile) && profileLocatorMatches(locator, profile);
+  // A Native Session ID may be reopened after upgrading between V3 CLI releases.
+  // The journal header/history still has to parse as V3; checkpoints remain exact.
+  if (
+    !isDeepSeekV015(profile) ||
+    !isRecord(locator) ||
+    Reflect.ownKeys(locator).length !== 1 ||
+    typeof locator.dshVersion !== "string"
+  ) {
+    return false;
+  }
+  try {
+    const { version } = classifyDeepSeekVersionOutput(locator.dshVersion);
+    return isDeepSeekV015(deepSeekModernProfile(version));
+  } catch {
+    return false;
+  }
 }
 
 function checkpointLocatorMatches(locator: unknown, profile: DeepSeekModernProfile): boolean {

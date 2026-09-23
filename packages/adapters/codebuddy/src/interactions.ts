@@ -100,12 +100,13 @@ export class CodeBuddyInteractions {
         });
       });
     }
+    // Native ACP approve({ alwaysApprove: true }) defaults to this tool's session scope.
     const actions = request.options.flatMap((option) => {
       const effect =
         option.kind === "allow_once"
           ? "allowOnce"
           : option.kind === "allow_always"
-            ? "allowAlways"
+            ? "allowForSession"
             : option.kind === "reject_once" || option.kind === "reject_always"
               ? "deny"
               : undefined;

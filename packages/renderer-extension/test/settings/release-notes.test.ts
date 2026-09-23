@@ -103,13 +103,23 @@ describe("Release notes Markdown", () => {
     expect(code?.textContent).toBe("npm install -g @codexhost/cli\ncodexhost");
   });
 
-  it("preserves authored line breaks within bilingual paragraphs", () => {
+  it("sets the translation line of a bilingual paragraph apart", () => {
     const root = render(
       [
         "Download the installer matching your OS and CPU architecture:",
         "下载与你的操作系统和 CPU 架构对应的安装包：",
       ].join("\n"),
     );
+
+    const paragraph = descendants(root).find((element) => element.tagName === "p");
+    expect(paragraph?.children).toHaveLength(2);
+    const translation = paragraph?.children[1] as FakeElement;
+    expect(translation.tagName).toBe("span");
+    expect(translation.className).toBe("release-note-translation");
+  });
+
+  it("preserves authored line breaks within single-language paragraphs", () => {
+    const root = render(["First line", "Second line"].join("\n"));
 
     const paragraph = descendants(root).find((element) => element.tagName === "p");
     expect(paragraph?.children).toHaveLength(3);

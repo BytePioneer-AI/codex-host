@@ -1,0 +1,6 @@
+interface:
+  display_name: "agent-browser"
+  short_description: "Automate browser tasks with the available CLI"
+  default_prompt: "Use $agent-browser for the relevant parts of this task, following codexhost repository guidance."
+policy:
+  allow_implicit_invocation: true

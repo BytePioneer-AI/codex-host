@@ -1,10 +1,10 @@
 import { expect, test, type Page } from "@playwright/test";
 import { build } from "esbuild";
 import path from "node:path";
-
 import { tailwindEsbuildPlugin } from "../../packages/renderer-extension/scripts/tailwind-esbuild-plugin.mjs";
 
-const repositoryRoot = path.resolve(import.meta.dirname, "../..");
+type RecordedRequest = { method: string; params: { model?: string } };
+
 const browserExecutable = process.env.CODEXHOST_PLAYWRIGHT_EXECUTABLE_PATH;
 if (browserExecutable) test.use({ launchOptions: { executablePath: browserExecutable } });
 
@@ -12,163 +12,57 @@ const { outputFiles } = await build({
   stdin: {
     contents: `
       import { installCurrentRendererAdapter } from "./packages/renderer-extension/src/versioned-renderer-adapter.ts";
-
-      const counters = new Map();
-      const managers = new Map();
-      let managerSequence = 0;
-      let policySequence = 0;
-      let throwOnSelect = false;
-      let throwOnNonNullSelect = false;
-
-      const createManager = (hostId) => {
-        const id = \`manager-\${++managerSequence}\`;
-        const counter = { requestCalls: 0 };
-        counters.set(id, counter);
-        const manager = {
-          id,
-          hostId,
-          sendRequest: async () => {
-            counter.requestCalls += 1;
-            return {
-              threadId: "thread-lifecycle",
-              usage: { inputTokens: 1 },
-            };
-          },
-          prewarmThreadStart: () => undefined,
-          enqueueRequest: () => undefined,
-        };
-        managers.set(id, manager);
-        return manager;
-      };
-
-      const createPolicy = (hostId, requestTarget) => {
-        const id = \`policy-\${++policySequence}\`;
-        const counter = { selections: 0, requestTargetReads: 0 };
-        counters.set(id, counter);
-        const policy = {
-          id,
-          state: "ready",
-          hostId,
-          select: (selection) => {
-            counter.selections += 1;
-            if (throwOnSelect || (throwOnNonNullSelect && selection !== null)) {
-              throw new Error("synthetic policy selection failure");
-            }
-            return true;
-          },
-          clear: async () => undefined,
-        };
-        if (requestTarget !== undefined) {
-          policy.requestTarget = () => {
-            counter.requestTargetReads += 1;
-            return requestTarget;
+      import { installRendererDraftPrewarmPolicyDirect } from "./packages/desktop-control/src/renderer-draft-prewarm-policy.ts";
+      globalThis.setupHostRoutes = async (initialHostId) => {
+        const createManager = (hostId) => {
+          const calls = [];
+          const requestClient = {
+            hostId,
+            sendRequest: async (method, params) => {
+              calls.push({ method, params });
+              if (method === "codexhost/settings/idle-release/set") return params;
+              return { threadId: "thread-test", usage: null };
+            },
+            prewarmThreadStart: () => undefined,
+            enqueueRequest: () => undefined,
+            onResult: () => undefined,
+            onError: () => undefined,
           };
-        }
-        return policy;
-      };
-
-      globalThis.setupAdapterLifecycle = () => {
-        document.body.replaceChildren();
+          return {
+            calls, requestClient,
+            getHostId: () => hostId,
+            sendRequest(method, params) { return this.requestClient.sendRequest(method, params); },
+            prewarmedThreadManager: { discardAllPrewarmedThreads: () => undefined },
+            onNotification: () => undefined,
+            onRequest: () => undefined,
+            dispatchAppServerResponse: () => undefined,
+          };
+        };
+        const local = createManager("local");
+        const remote = createManager("remote-ssh-discovered:linux");
+        const managers = new Map([["local", local], [remote.getHostId(), remote]]);
+        const registry = {
+          addManager: () => undefined,
+          getForHostId: (hostId) => managers.get(hostId),
+          waitForManagerForHostId: () => undefined,
+        };
         const editor = document.createElement("div");
         editor.setAttribute("data-codex-composer", "true");
         editor.setAttribute("data-codex-composer-root", "true");
-        editor.setAttribute("contenteditable", "true");
-        editor.setAttribute("role", "textbox");
-        const portal = document.createElement("div");
-        portal.setAttribute("data-above-composer-portal", "true");
-        portal.setAttribute("data-above-composer-conversation-id", "thread-displayed-old");
-        editor.append(portal);
-        const initialManager = createManager("remote-ssh-discovered:initial");
-        const managerHook = { memoizedState: initialManager, next: null };
-        Object.defineProperty(editor, "__reactFiber$lifecycle", {
-          configurable: true,
-          value: { memoizedState: managerHook, return: null },
-        });
-        document.body.append(editor);
-
-        const initialPolicy = createPolicy(initialManager.hostId);
-        window.__codexhostMainProcessTitlePolicyV1 = { state: "ready" };
-        window.__codexhostDraftPrewarmPolicyV1 = initialPolicy;
+        const fiber = {
+          memoizedProps: { executionTargetHostId: initialHostId },
+          memoizedState: { memoizedState: registry, next: { memoizedState: local, next: null } },
+          return: null,
+        };
+        Object.defineProperty(editor, "__reactFiber$host", { value: fiber });
+        document.body.replaceChildren(editor);
+        await installRendererDraftPrewarmPolicyDirect({ evaluate: (source) => (0, eval)(source) });
         const adapter = installCurrentRendererAdapter();
-
-        const state = {
-          adapter,
-          initialManager,
-          initialPolicy,
-          portal,
-          managerHook,
-          replacementManager: null,
-          replacementPolicy: null,
-        };
-        globalThis.__adapterLifecycleState = state;
-        return {
-          initialManagerId: initialManager.id,
-          initialPolicyId: initialPolicy.id,
-        };
+        globalThis.hostRoutes = { adapter, fiber, local, remote, managers, createManager, editor };
       };
-
-      globalThis.replaceAdapterRoute = (withManager) => {
-        const state = globalThis.__adapterLifecycleState;
-        const replacementManager = createManager("remote-ssh-discovered:replacement");
-        const replacementPolicy = createPolicy(replacementManager.hostId);
-        state.replacementManager = replacementManager;
-        state.replacementPolicy = replacementPolicy;
-        state.managerHook.memoizedState = withManager ? replacementManager : {};
-        window.__codexhostDraftPrewarmPolicyV1 = replacementPolicy;
-        return {
-          replacementManagerId: replacementManager.id,
-          replacementPolicyId: replacementPolicy.id,
-        };
-      };
-
-      globalThis.replaceAdapterRouteWithExactTarget = (mode) => {
-        const state = globalThis.__adapterLifecycleState;
-        const replacementManager = createManager("remote-ssh-discovered:replacement");
-        const exactTarget =
-          mode === "valid"
-            ? replacementManager
-            : mode === "host-mismatch"
-              ? createManager("remote-ssh-discovered:other")
-              : {};
-        const replacementPolicy = createPolicy(replacementManager.hostId, exactTarget);
-        state.replacementManager = replacementManager;
-        state.replacementPolicy = replacementPolicy;
-        state.managerHook.memoizedState = mode === "valid" ? {} : replacementManager;
-        window.__codexhostDraftPrewarmPolicyV1 = replacementPolicy;
-        return {
-          replacementManagerId: replacementManager.id,
-          replacementPolicyId: replacementPolicy.id,
-        };
-      };
-
-      globalThis.revealReplacementManager = () => {
-        const state = globalThis.__adapterLifecycleState;
-        state.managerHook.memoizedState = state.replacementManager;
-      };
-      globalThis.publishRendererMutation = () => {
-        const marker = document.createElement("div");
-        marker.textContent = "route discovery changed";
-        document.body.append(marker);
-      };
-
-      globalThis.readCurrentHostId = () =>
-        globalThis.__adapterLifecycleState.adapter.modelControl?.currentHostId?.() ?? null;
-      globalThis.publishRouteChange = () =>
-        window.dispatchEvent(new CustomEvent("codexhost:draft-prewarm-policy-changed"));
-      globalThis.enablePolicyCleanupFailure = () => { throwOnSelect = true; };
-      globalThis.enablePolicySelectionFailure = () => { throwOnNonNullSelect = true; };
-      globalThis.disposeAdapter = () => {
-        try {
-          globalThis.__adapterLifecycleState.adapter.dispose();
-          return null;
-        } catch (error) {
-          return error instanceof Error ? error.message : String(error);
-        }
-      };
-      globalThis.readLifecycleCounter = (id) => counters.get(id);
     `,
-    resolveDir: repositoryRoot,
-    sourcefile: "renderer-adapter-lifecycle-e2e-entry.ts",
+    resolveDir: path.resolve(import.meta.dirname, "../.."),
+    sourcefile: "renderer-host-routing-e2e.ts",
     loader: "ts",
   },
   bundle: true,
@@ -179,291 +73,115 @@ const { outputFiles } = await build({
   plugins: [tailwindEsbuildPlugin()],
   write: false,
 });
+const bundle = outputFiles[0]?.text;
+if (!bundle) throw new Error("Host routing browser bundle was not generated");
+const browserBundle: string = bundle;
 
-const browserBundle = outputFiles[0]?.text;
-if (!browserBundle) throw new Error("Renderer adapter lifecycle E2E bundle was not generated");
-const browserBundleText: string = browserBundle;
-
-async function setup(page: Page): Promise<{
-  initialManagerId: string;
-  initialPolicyId: string;
-}> {
-  await page.route("https://codexhost.test/**", async (route) => {
-    await route.fulfill({ contentType: "text/html", body: "<!doctype html><body></body>" });
-  });
+async function setup(page: Page, hostId: string): Promise<void> {
+  await page.route("https://codexhost.test/**", (route) =>
+    route.fulfill({ contentType: "text/html", body: "<!doctype html><body></body>" }),
+  );
   await page.goto("https://codexhost.test/");
-  await page.addScriptTag({ content: browserBundleText });
-  return page.evaluate(() => {
-    const setupAdapterLifecycle = Reflect.get(globalThis, "setupAdapterLifecycle");
-    if (typeof setupAdapterLifecycle !== "function") {
-      throw new Error("Adapter lifecycle setup is unavailable");
-    }
-    return setupAdapterLifecycle();
-  });
+  await page.addScriptTag({ content: browserBundle });
+  await page.evaluate((initial) => Reflect.get(globalThis, "setupHostRoutes")(initial), hostId);
 }
 
-async function replaceRoute(
-  page: Page,
-  withManager: boolean,
-): Promise<{ replacementManagerId: string; replacementPolicyId: string }> {
-  return page.evaluate((managerReady) => {
-    const replaceAdapterRoute = Reflect.get(globalThis, "replaceAdapterRoute");
-    if (typeof replaceAdapterRoute !== "function") {
-      throw new Error("Adapter route replacement is unavailable");
-    }
-    return replaceAdapterRoute(managerReady);
-  }, withManager);
-}
-
-async function counter(
-  page: Page,
-  id: string,
-): Promise<{
-  requestCalls?: number;
-  selections?: number;
-  requestTargetReads?: number;
-}> {
-  return page.evaluate((counterId) => {
-    const readLifecycleCounter = Reflect.get(globalThis, "readLifecycleCounter");
-    if (typeof readLifecycleCounter !== "function") {
-      throw new Error("Adapter lifecycle counter is unavailable");
-    }
-    return readLifecycleCounter(counterId);
-  }, id);
-}
-
-async function replaceRouteWithExactTarget(
-  page: Page,
-  mode: "valid" | "malformed" | "host-mismatch",
-): Promise<{ replacementManagerId: string; replacementPolicyId: string }> {
-  return page.evaluate((targetMode) => {
-    const replace = Reflect.get(globalThis, "replaceAdapterRouteWithExactTarget");
-    if (typeof replace !== "function") {
-      throw new Error("Adapter exact route replacement is unavailable");
-    }
-    return replace(targetMode);
-  }, mode);
-}
-
-async function publishRouteChange(page: Page): Promise<void> {
-  await page.evaluate(() => {
-    const publish = Reflect.get(globalThis, "publishRouteChange");
-    if (typeof publish !== "function") {
-      throw new Error("Adapter route-change publisher is unavailable");
-    }
-    publish();
-  });
-}
-
-for (const replacement of ["policy", "bridge"]) {
-  test(`a replacement connection ${replacement} rechecks unsupported methods even when the request manager is reused`, async ({
-    page,
-  }) => {
-    await page.setContent("<!doctype html><body></body>");
-    await page.addScriptTag({ content: browserBundleText });
-    const result = await page.evaluate(async (replacement) => {
-      Reflect.get(globalThis, "setupAdapterLifecycle")();
-      const state = Reflect.get(globalThis, "__adapterLifecycleState");
-      let supported = false;
-      let requests = 0;
-      state.initialManager.sendRequest = async () => {
-        requests += 1;
-        if (!supported) throw Object.assign(new Error("Method not found"), { code: -32601 });
-        return { threadId: "thread-lifecycle", usage: null };
+for (const hostId of ["local", "remote-ssh-discovered:linux"]) {
+  test(`both Hosts remain usable when ${hostId} opens first`, async ({ page }) => {
+    await setup(page, hostId);
+    const result = await page.evaluate(async () => {
+      const state = Reflect.get(globalThis, "hostRoutes");
+      const control = state.adapter.modelControl;
+      const local = control.clientForHost("local");
+      const remote = control.clientForHost(state.remote.getHostId());
+      await Promise.all([
+        local.inspectThreadUsage({ threadId: "thread-test" }),
+        remote.inspectThreadUsage({ threadId: "thread-test" }),
+      ]);
+      const switched = [];
+      for (const next of ["local", state.remote.getHostId(), "local"]) {
+        state.fiber.memoizedProps.executionTargetHostId = next;
+        switched.push(control.currentHostId());
+        await control.inspectThreadUsage({ threadId: "thread-test" });
+      }
+      return {
+        switched,
+        stableLocal: local === control.clientForHost("local"),
+        stableRemote: remote === control.clientForHost(state.remote.getHostId()),
+        localCalls: state.local.calls.filter(
+          (call: RecordedRequest) => call.method === "codexhost/thread/usage/inspect",
+        ).length,
+        remoteCalls: state.remote.calls.filter(
+          (call: RecordedRequest) => call.method === "codexhost/thread/usage/inspect",
+        ).length,
       };
-      const inspect = () =>
-        state.adapter.modelControl.inspectThreadUsage({ threadId: "thread-lifecycle" });
-      await inspect().catch(() => undefined);
-      supported = true;
-      await inspect().catch(() => undefined);
-      const beforeReconnect = requests;
-      if (replacement === "policy") {
-        Reflect.set(window, "__codexhostDraftPrewarmPolicyV1", {
-          ...state.initialPolicy,
-          requestTarget: () => state.initialManager,
-        });
-      } else {
-        state.initialManager.requestClient = { ...state.initialManager };
-      }
-      try {
-        return { beforeReconnect, result: await inspect(), requests };
-      } finally {
-        state.adapter.dispose();
-      }
-    }, replacement);
+    });
     expect(result).toEqual({
-      beforeReconnect: 1,
-      result: { threadId: "thread-lifecycle", usage: null },
-      requests: 2,
+      switched: ["local", "remote-ssh-discovered:linux", "local"],
+      stableLocal: true,
+      stableRemote: true,
+      localCalls: 3,
+      remoteCalls: 2,
     });
   });
 }
 
-test("an active-route read moves requests to the resolved request manager", async ({ page }) => {
-  const initial = await setup(page);
-  const replacement = await replaceRoute(page, true);
-
-  await expect
-    .poll(() =>
-      page.evaluate(() => {
-        const readCurrentHostId = Reflect.get(globalThis, "readCurrentHostId");
-        if (typeof readCurrentHostId !== "function") return null;
-        return readCurrentHostId();
-      }),
-    )
-    .toBe("remote-ssh-discovered:replacement");
-  await page.evaluate(async () => {
-    const state = Reflect.get(globalThis, "__adapterLifecycleState");
-    await state.adapter.modelControl.inspectThreadUsage({ threadId: "thread-lifecycle" });
-  });
-  expect(await counter(page, initial.initialManagerId)).toMatchObject({ requestCalls: 0 });
-  expect(await counter(page, replacement.replacementManagerId)).toMatchObject({ requestCalls: 1 });
-});
-
-test("one policy event reconnects an exact request target without Fiber discovery or DOM mutation", async ({
+test("native disconnection retires only that Host, including while settings hide the Composer", async ({
   page,
 }) => {
-  const initial = await setup(page);
-  const replacement = await replaceRouteWithExactTarget(page, "valid");
-
-  await publishRouteChange(page);
-  await publishRouteChange(page);
-
-  await page.evaluate(async () => {
-    const state = Reflect.get(globalThis, "__adapterLifecycleState");
-    await state.adapter.modelControl.inspectThreadUsage({ threadId: "thread-lifecycle" });
+  await setup(page, "remote-ssh-discovered:linux");
+  const result = await page.evaluate(async () => {
+    const state = Reflect.get(globalThis, "hostRoutes");
+    const control = state.adapter.modelControl;
+    const local = control.clientForHost("local");
+    const remote = control.clientForHost(state.remote.getHostId());
+    state.editor.remove();
+    state.managers.delete(state.remote.getHostId());
+    const missing = control.clientForHost(state.remote.getHostId());
+    let retired = false;
+    try {
+      await remote.inspectThreadUsage({ threadId: "thread-test" });
+    } catch {
+      retired = true;
+    }
+    await local.inspectThreadUsage({ threadId: "thread-test" });
+    state.managers.set(state.remote.getHostId(), state.createManager(state.remote.getHostId()));
+    const replacement = control.clientForHost(state.remote.getHostId());
+    await replacement.inspectThreadUsage({ threadId: "thread-test" });
+    return {
+      missing: missing === null,
+      retired,
+      replaced: replacement !== remote,
+      localStable: control.clientForHost("local") === local,
+    };
   });
-  expect(await counter(page, initial.initialManagerId)).toMatchObject({ requestCalls: 0 });
-  expect(await counter(page, replacement.replacementManagerId)).toMatchObject({ requestCalls: 1 });
-  expect(await counter(page, replacement.replacementPolicyId)).toMatchObject({
-    selections: 1,
-  });
+  expect(result).toEqual({ missing: true, retired: true, replaced: true, localStable: true });
 });
 
-for (const mode of ["malformed", "host-mismatch"] as const) {
-  test(`a ${mode} exact request target fails closed without falling back to Fiber discovery`, async ({
-    page,
-  }) => {
-    const initial = await setup(page);
-    const replacement = await replaceRouteWithExactTarget(page, mode);
-
-    await publishRouteChange(page);
-    await page.evaluate(() => {
-      const publishRendererMutation = Reflect.get(globalThis, "publishRendererMutation");
-      if (typeof publishRendererMutation !== "function") {
-        throw new Error("Renderer mutation publisher is unavailable");
-      }
-      publishRendererMutation();
-    });
-    await page.waitForTimeout(100);
-
-    expect(await counter(page, replacement.replacementPolicyId)).toMatchObject({ selections: 0 });
-    expect(await counter(page, replacement.replacementManagerId)).toMatchObject({
-      requestCalls: 0,
-    });
-    expect(await counter(page, initial.initialManagerId)).toMatchObject({ requestCalls: 0 });
-  });
-}
-
-test("a renderer mutation recaptures a request manager after a transient discovery gap", async ({
+test("switching Hosts does not send a local external carrier to stock remote Codex", async ({
   page,
 }) => {
-  await setup(page);
-  const replacement = await replaceRoute(page, false);
-  await page.evaluate(() => {
-    const publishRouteChange = Reflect.get(globalThis, "publishRouteChange");
-    if (typeof publishRouteChange !== "function") {
-      throw new Error("Adapter route-change publisher is unavailable");
-    }
-    publishRouteChange();
+  await setup(page, "local");
+  const result = await page.evaluate(async () => {
+    const state = Reflect.get(globalThis, "hostRoutes");
+    state.adapter.applyAgent("pi");
+    state.fiber.memoizedProps.executionTargetHostId = state.remote.getHostId();
+    state.adapter.modelControl.currentHostId();
+    await state.remote.requestClient.sendRequest("thread/start", { model: "native-model" });
+    await state.local.requestClient.sendRequest("thread/start", { model: "native-model" });
+    state.adapter.dispose();
+    await state.local.requestClient.sendRequest("thread/start", { model: "native-model" });
+    return {
+      remote: state.remote.calls
+        .filter((call: RecordedRequest) => call.method === "thread/start")
+        .map((call: RecordedRequest) => call.params.model),
+      local: state.local.calls
+        .filter((call: RecordedRequest) => call.method === "thread/start")
+        .map((call: RecordedRequest) => call.params.model),
+    };
   });
-  await page.waitForTimeout(100);
-  await page.evaluate(() => {
-    const revealReplacementManager = Reflect.get(globalThis, "revealReplacementManager");
-    if (typeof revealReplacementManager !== "function") {
-      throw new Error("Adapter replacement manager is unavailable");
-    }
-    revealReplacementManager();
+  expect(result).toEqual({
+    remote: ["native-model"],
+    local: ["codexhost/pi-native", "native-model"],
   });
-  await page.waitForTimeout(150);
-  expect(await counter(page, replacement.replacementPolicyId)).toMatchObject({ selections: 0 });
-  expect(await counter(page, replacement.replacementManagerId)).toMatchObject({
-    requestCalls: 0,
-  });
-  await page.evaluate(() => {
-    const publishRendererMutation = Reflect.get(globalThis, "publishRendererMutation");
-    if (typeof publishRendererMutation !== "function") {
-      throw new Error("Renderer mutation publisher is unavailable");
-    }
-    publishRendererMutation();
-  });
-  await expect
-    .poll(async () => counter(page, replacement.replacementPolicyId))
-    .toMatchObject({
-      selections: 1,
-    });
-  await page.evaluate(async () => {
-    const state = Reflect.get(globalThis, "__adapterLifecycleState");
-    await state.adapter.modelControl.inspectThreadUsage({ threadId: "thread-lifecycle" });
-  });
-  expect(await counter(page, replacement.replacementManagerId)).toMatchObject({ requestCalls: 1 });
-});
-
-test("a failed replacement selection disconnects the temporary mutation observer", async ({
-  page,
-}) => {
-  await setup(page);
-  const replacement = await replaceRoute(page, false);
-  await page.evaluate(() => {
-    const publishRouteChange = Reflect.get(globalThis, "publishRouteChange");
-    const revealReplacementManager = Reflect.get(globalThis, "revealReplacementManager");
-    const enablePolicySelectionFailure = Reflect.get(globalThis, "enablePolicySelectionFailure");
-    if (
-      typeof publishRouteChange !== "function" ||
-      typeof revealReplacementManager !== "function" ||
-      typeof enablePolicySelectionFailure !== "function"
-    ) {
-      throw new Error("Adapter selection-failure controls are unavailable");
-    }
-    publishRouteChange();
-    revealReplacementManager();
-    enablePolicySelectionFailure();
-  });
-  await page.evaluate(() => {
-    const publishRendererMutation = Reflect.get(globalThis, "publishRendererMutation");
-    if (typeof publishRendererMutation !== "function") {
-      throw new Error("Renderer mutation publisher is unavailable");
-    }
-    publishRendererMutation();
-  });
-  await expect
-    .poll(async () => counter(page, replacement.replacementPolicyId))
-    .toMatchObject({
-      selections: 1,
-    });
-
-  await page.evaluate(() => {
-    const publishRendererMutation = Reflect.get(globalThis, "publishRendererMutation");
-    if (typeof publishRendererMutation !== "function") {
-      throw new Error("Renderer mutation publisher is unavailable");
-    }
-    publishRendererMutation();
-  });
-  await page.waitForTimeout(150);
-  expect(await counter(page, replacement.replacementPolicyId)).toMatchObject({ selections: 1 });
-});
-
-test("adapter disposal continues after the routing policy rejects cleanup", async ({ page }) => {
-  await setup(page);
-  const cleanupError = await page.evaluate(() => {
-    const enablePolicyCleanupFailure = Reflect.get(globalThis, "enablePolicyCleanupFailure");
-    const disposeAdapter = Reflect.get(globalThis, "disposeAdapter");
-    if (typeof enablePolicyCleanupFailure !== "function" || typeof disposeAdapter !== "function") {
-      throw new Error("Adapter cleanup controls are unavailable");
-    }
-    enablePolicyCleanupFailure();
-    return disposeAdapter();
-  });
-
-  expect(cleanupError).toBeNull();
 });

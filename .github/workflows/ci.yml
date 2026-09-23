@@ -49,6 +49,12 @@ jobs:
         with:
           toolchain: 1.97.1
 
+      # Reuse compiled dependencies; only main refreshes the cache so PRs cannot evict it.
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
       - name: Install dependencies
         run: npm ci --prefer-offline
 
@@ -69,8 +75,12 @@ jobs:
         run: npm run test:typescript
 
       # Linux x64 covers governance, browser/contracts, and the nested Gate runner test.
+      # Windows runs only platform-sensitive files (see tests/vitest.config.js);
+      # pure-logic files are covered by the Linux and macOS lanes.
       - name: Test TypeScript (cross-platform)
         if: runner.os != 'Linux'
+        env:
+          CODEXHOST_TEST_SCOPE: ${{ runner.os == 'Windows' && 'platform' || '' }}
         run: >
           npm run test:typescript --
           --exclude 'packages/repository-automation/test/**'
@@ -112,6 +122,12 @@ jobs:
         uses: dtolnay/rust-toolchain@master
         with:
           toolchain: 1.97.1
+
+      # Reuse compiled dependencies; only main refreshes the cache so PRs cannot evict it.
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Install dependencies
         run: npm ci --prefer-offline

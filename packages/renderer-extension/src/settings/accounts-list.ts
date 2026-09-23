@@ -3,7 +3,6 @@ import type { CodexAccountSummary, HarnessAccountListResult } from "@codexhost/s
 import { KNOWN_RENDERER_AGENTS } from "../agent-selection-state.js";
 import { createRendererAgentIcon } from "../renderer-agent-icon.js";
 import { codexAccountDisplayName } from "../renderer-codex-account-options.js";
-import { createAccountDetails } from "./accounts-details.js";
 import {
   accountUsageColumnLabel,
   renderAccountResetCredits,
@@ -11,7 +10,6 @@ import {
   type AccountUsageDisplay,
   type AccountUsageViewState,
 } from "./accounts-usage.js";
-import { createRendererSettingsIcon } from "./icons.js";
 import type { RendererSettingsMessages } from "./localization.js";
 
 let resetDetailsSequence = 0;
@@ -77,7 +75,7 @@ export function createAccountsTable(document: Document, messages: RendererSettin
       messages.accountColumnAccount,
       accountUsageColumnLabel("five_hour", display, messages),
       accountUsageColumnLabel("seven_day", display, messages),
-      messages.accountColumnActions,
+      messages.credentialImports.column,
     ];
     headers.forEach((cell, index) => {
       cell.textContent = labels[index] ?? "";
@@ -145,6 +143,22 @@ function createAccountPerson(
   return person;
 }
 
+/**
+ * The last column only ever holds the Harness target mark(s) a login can be copied to. Rows with no
+ * verified-compatible target keep an empty cell so the table columns stay aligned.
+ */
+function createTargetCell(
+  document: Document,
+  action: HTMLElement | null | undefined,
+): HTMLTableCellElement {
+  const cell = document.createElement("td");
+  cell.className = action
+    ? "settings-account-management-cell"
+    : "settings-account-management-cell settings-account-management-cell--empty";
+  if (action) cell.append(action);
+  return cell;
+}
+
 export function renderAccountRows(
   document: Document,
   account: CodexAccountSummary,
@@ -155,6 +169,7 @@ export function renderAccountRows(
     display: AccountUsageDisplay;
     resetExpanded: boolean;
     onRetry: () => void;
+    importAction?: HTMLElement | null;
     onResetExpanded: (open: boolean) => void;
   },
 ): HTMLTableRowElement[] {
@@ -168,9 +183,10 @@ export function renderAccountRows(
   const personCell = document.createElement("td");
   personCell.className = "settings-account-person-cell";
   const mark = document.createElement("div");
-  mark.className = "settings-account-row__mark";
+  mark.className = "settings-harness-account__logo";
+  mark.dataset.agent = "codex";
   mark.setAttribute("aria-hidden", "true");
-  mark.append(createRendererSettingsIcon("terminal", 17));
+  mark.append(createRendererAgentIcon("codex", 26, document));
   personCell.append(
     createAccountPerson(document, messages, {
       name: name.full,
@@ -192,21 +208,8 @@ export function renderAccountRows(
     account.planType === "pro" ? "weekly-only" : "all",
   );
   if (usage.additional) personCell.append(usage.additional);
-  const actionsCell = document.createElement("td");
-  actionsCell.className = "settings-account-management-cell";
-  const management = document.createElement("div");
-  management.className = "settings-account-management";
-  if (input.usage) {
-    const refresh = document.createElement("button");
-    refresh.type = "button";
-    refresh.className = "settings-account-action";
-    refresh.textContent = messages.accountCreditsRefresh;
-    refresh.dataset.accountFocus = `${account.accountId}:refresh`;
-    refresh.disabled = input.usage.status === "loading";
-    refresh.addEventListener("click", input.onRetry);
-    management.append(refresh);
-  }
-  actionsCell.append(management);
+  const actionsCell = createTargetCell(document, input.importAction);
+  if (input.importAction) row.className += " settings-account-row--targets";
   const continuationRows = usage.continuationCells.map((cells) => {
     const continuation = document.createElement("tr");
     continuation.className = "settings-account-row settings-account-quota-continuation-row";
@@ -242,7 +245,7 @@ export function renderAccountRows(
     reset.summary.setAttribute("aria-expanded", String(!detailsRow.hidden));
     input.onResetExpanded(!detailsRow.hidden);
   });
-  management.append(reset.summary);
+  personCell.append(reset.summary);
   return [row, ...continuationRows, detailsRow];
 }
 
@@ -251,6 +254,7 @@ export function renderHarnessAccountRows(
   account: HarnessAccountListResult["accounts"][number],
   messages: RendererSettingsMessages,
   display: AccountUsageDisplay,
+  importAction?: HTMLElement | null,
 ): HTMLTableRowElement[] {
   const row = document.createElement("tr");
   row.className = "settings-account-row";
@@ -282,20 +286,9 @@ export function renderHarnessAccountRows(
     account.harnessId === "grok" ? "weekly-only" : "all",
   );
   if (usage.additional) personCell.append(usage.additional);
-  const managementCell = document.createElement("td");
-  managementCell.className = "settings-account-management-cell";
-  const management = document.createElement("div");
-  management.className = "settings-account-native";
-  const label = document.createElement("span");
-  label.textContent = messages.accountNativeManaged;
-  const info = createAccountDetails(document, messages, {
-    label: `${account.harnessName} · ${messages.accountNativeManaged}`,
-    description: messages.accountNativeManagementHint.replace("{harness}", account.harnessName),
-    focusKey: `harness:${account.harnessId}:info`,
-    icon: "info",
-  });
-  management.append(label, info);
-  managementCell.append(management);
+  const managementCell = createTargetCell(document, importAction);
+  if (importAction) row.className += " settings-account-row--targets";
+  personCell.title = messages.accountNativeManagementHint.replace("{harness}", account.harnessName);
   const continuationRows = usage.continuationCells.map((cells) => {
     const continuation = document.createElement("tr");
     continuation.className = "settings-account-row settings-account-quota-continuation-row";

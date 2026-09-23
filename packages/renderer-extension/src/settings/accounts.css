@@ -168,16 +168,6 @@
   gap: 11px;
   min-width: 0;
 }
-.settings-account-row__mark {
-  display: grid;
-  place-items: center;
-  width: 34px;
-  height: 34px;
-  color: light-dark(#67558d, #c3baff);
-  background: light-dark(#f0ecf7, #353044);
-  border: 1px solid light-dark(#d9d0e6, #4d435f);
-  border-radius: 10px;
-}
 .settings-account-row__identity {
   min-width: 0;
 }
@@ -339,24 +329,6 @@
 .settings-account-quota-continuation-row > .settings-account-usage-cell {
   background: inherit;
 }
-.settings-account-management {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-end;
-  gap: 4px;
-}
-.settings-account-native {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 3px;
-  color: var(--settings-muted);
-  font-size: 11px;
-}
-.settings-account-native .settings-icon-button {
-  width: 25px;
-  height: 28px;
-}
 .settings-account-usage > button {
   justify-self: start;
 }
@@ -467,11 +439,6 @@
   line-height: 1.6;
   overflow-wrap: anywhere;
 }
-.settings-account-dialog__close {
-  position: absolute;
-  top: 12px;
-  right: 12px;
-}
 
 @container (max-width: 680px) {
   .settings-account-table,
@@ -502,9 +469,20 @@
   .settings-account-usage-cell--message {
     grid-column: 1 / -1;
   }
-  .settings-account-table .settings-account-management-cell {
-    border-top: 1px solid var(--settings-divider);
-    padding-top: 8px;
+  .settings-account-table .settings-account-row > td.settings-account-management-cell--empty {
+    display: none;
+  }
+  .settings-account-row--targets {
+    position: relative;
+  }
+  .settings-account-row--targets .settings-account-person-cell {
+    padding-right: 32px;
+  }
+  .settings-account-table .settings-account-row--targets > td.settings-account-management-cell {
+    position: absolute;
+    top: 14px;
+    right: 12px;
+    width: auto;
   }
   .settings-account-email {
     font-size: 13px;
@@ -521,13 +499,6 @@
   .settings-account-extra-usage .settings-account-usage__percent {
     grid-column: 1 / -1;
   }
-  .settings-account-management {
-    flex-direction: row;
-    justify-content: space-between;
-  }
-  .settings-account-native {
-    justify-content: flex-start;
-  }
   .settings-account-table tr:not(.settings-account-row, [hidden]),
   .settings-account-table tr:not(.settings-account-row, [hidden]) > td {
     display: block;
@@ -542,7 +513,239 @@
   }
 }
 
+/* Small Harness target mark: muted when nothing is copied, full-strength with a dot when it is. */
+.settings-account-harness-target {
+  position: relative;
+  width: 26px;
+  height: 28px;
+  color: var(--settings-subtle);
+}
+.settings-account-harness-target:hover:not(:disabled) {
+  color: var(--settings-text);
+}
+.settings-account-harness-target:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.settings-account-harness-target[data-state] {
+  color: var(--settings-text);
+}
+.settings-account-harness-target[data-state]::after {
+  content: "";
+  position: absolute;
+  top: 5px;
+  right: 3px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--settings-text);
+}
+/* Dedicated "imported into Pi" section: same card language as the account table, lighter header. */
+.settings-pi-accounts {
+  margin-top: 28px;
+}
+.settings-pi-accounts[hidden] {
+  display: none;
+}
+.settings-pi-accounts__header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 2px 12px;
+  font-size: 13px;
+}
+.settings-pi-accounts__header > svg {
+  flex: none;
+}
+.settings-pi-accounts__header > :last-child {
+  color: var(--settings-muted);
+  font-variant-numeric: tabular-nums;
+}
+.settings-pi-accounts__card {
+  container-type: inline-size;
+  overflow: hidden;
+  border: 1px solid var(--account-border, light-dark(#e2e2e8, #36363b));
+  border-radius: 11px;
+}
+.settings-pi-accounts__row {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 11px;
+  padding: 14px 16px;
+  background: light-dark(#ffffff, #232326);
+}
+.settings-pi-accounts__row + .settings-pi-accounts__row {
+  border-top: 1px solid var(--settings-divider);
+}
+.settings-pi-accounts__others > .settings-pi-accounts__row:first-child {
+  border-top: 1px solid var(--settings-divider);
+}
+.settings-pi-accounts__row:hover {
+  background: light-dark(#f7f7fa, #26262a);
+}
+.settings-pi-accounts__identity {
+  min-width: 0;
+}
+.settings-pi-accounts__identity code {
+  color: var(--settings-text);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+}
+/* Disclosure for Pi's own logins: a quiet strip that reads as a divider until opened. */
+.settings-pi-accounts__toggle {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  padding: 10px 16px;
+  color: var(--settings-muted);
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+}
+.settings-pi-accounts__row + .settings-pi-accounts__toggle {
+  border-top: 1px solid var(--settings-divider);
+}
+.settings-pi-accounts__toggle:hover {
+  color: var(--settings-text);
+  background: var(--settings-hover);
+}
+.settings-pi-accounts__toggle > svg {
+  flex: none;
+  transition: transform 120ms ease;
+}
+.settings-pi-accounts__toggle[aria-expanded="true"] > svg {
+  transform: rotate(90deg);
+}
+.settings-pi-accounts__toggle-count {
+  font-variant-numeric: tabular-nums;
+}
+.settings-pi-accounts__others[hidden] {
+  display: none;
+}
+.settings-pi-accounts__others > .settings-pi-accounts__row {
+  border-top: 1px solid var(--settings-divider);
+}
+.settings-pi-accounts__other-mark {
+  color: var(--settings-subtle);
+}
+.settings-pi-accounts__identity code {
+  overflow-wrap: anywhere;
+}
+.settings-pi-accounts__actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+.settings-pi-accounts__remove:hover:not(:disabled) {
+  color: var(--settings-danger);
+}
+.settings-pi-accounts__empty {
+  margin: 0;
+  padding: 16px;
+  color: var(--settings-muted);
+  font-size: 12px;
+  background: light-dark(#ffffff, #232326);
+}
+.settings-pi-accounts :focus-visible {
+  outline: 2px solid var(--settings-focus);
+  outline-offset: -2px;
+}
+@container (max-width: 680px) {
+  .settings-pi-accounts__row {
+    grid-template-columns: 34px minmax(0, 1fr);
+  }
+  .settings-pi-accounts__actions {
+    grid-column: 2;
+  }
+}
+.settings-credential-dialog {
+  width: min(420px, calc(100vw - 40px));
+}
+.settings-credential-dialog__body {
+  display: grid;
+  gap: 12px;
+}
+.settings-account-dialog .settings-credential-dialog__body p {
+  margin: 0;
+}
+.settings-credential-dialog__line {
+  display: grid;
+  grid-template-columns: 80px minmax(0, 1fr);
+  align-items: baseline;
+  gap: 12px;
+  font-size: 12px;
+}
+.settings-credential-dialog__line > :first-child {
+  color: var(--settings-muted);
+}
+.settings-credential-dialog__line > :last-child {
+  color: var(--settings-text);
+  overflow-wrap: anywhere;
+}
+.settings-credential-dialog code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+}
+.settings-credential-dialog__field {
+  display: grid;
+  gap: 6px;
+  color: var(--settings-muted);
+  font-size: 12px;
+}
+.settings-credential-dialog input {
+  width: 100%;
+  box-sizing: border-box;
+  min-height: 32px;
+  padding: 6px 10px;
+  color: var(--settings-text);
+  font: inherit;
+  font-size: 13px;
+  background: var(--settings-inset);
+  border: 1px solid var(--settings-border);
+  border-radius: 8px;
+}
+.settings-credential-dialog input:read-only {
+  color: var(--settings-muted);
+}
+.settings-account-dialog .settings-credential-dialog__error {
+  margin: 12px 0 0;
+  color: var(--settings-danger);
+}
+.settings-credential-dialog__error:empty {
+  display: none;
+}
+.settings-credential-dialog__actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 18px;
+}
+.settings-credential-dialog__remove {
+  margin-right: auto;
+}
+.settings-credential-dialog .settings-command-button--danger {
+  color: var(--settings-danger);
+}
+.settings-credential-dialog .settings-command-button--danger:hover:not(:disabled) {
+  color: var(--settings-danger);
+  background: var(--settings-danger-bg);
+  border-color: var(--settings-danger-border);
+}
+.settings-credential-dialog :focus-visible {
+  outline: 2px solid var(--settings-focus);
+  outline-offset: 1px;
+}
+
 @media (forced-colors: active) {
+  .settings-account-harness-target[data-state]::after {
+    background: Highlight;
+  }
   .settings-account-usage__bar {
     border: 1px solid CanvasText;
   }

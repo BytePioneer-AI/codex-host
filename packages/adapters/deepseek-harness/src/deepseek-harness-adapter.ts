@@ -31,6 +31,7 @@ import {
   ModernDeepSeekHarnessAdapter,
   type ModernDeepSeekHarnessAdapterOptions,
 } from "./modern/deepseek-harness-adapter.js";
+import { deepSeekModernProfile, isDeepSeekV015 } from "./profiles/profile.js";
 
 const DEEPSEEK_HARNESS_ID = harnessIdSchema.parse("deepseek-harness");
 const EXTERNAL_MODERN_WEB_MESSAGE =
@@ -78,7 +79,7 @@ class DelegateSelectionError extends Error {
   }
 }
 
-/** Public DeepSeek Adapter that verifies one supported DSH version for its lifetime. */
+/** Public DeepSeek Adapter that selects a native journal profile for its executable. */
 export class DeepSeekHarnessAdapter implements HarnessAdapter {
   readonly commandCatalog = deepSeekHarnessCommandCatalog();
   readonly harnessId: HarnessId = DEEPSEEK_HARNESS_ID;
@@ -107,8 +108,8 @@ export class DeepSeekHarnessAdapter implements HarnessAdapter {
             harnessId: this.harnessId,
             nativeSessionId,
             formatVersion: 1,
-            ...(this.#delegate?.version === "0.1.5-rc.1"
-              ? { locator: { dshVersion: "0.1.5-rc.1" } }
+            ...(this.#delegate && isDeepSeekV015(deepSeekModernProfile(this.#delegate.version))
+              ? { locator: { dshVersion: this.#delegate.version } }
               : {}),
           }),
         },
@@ -276,10 +277,6 @@ export class DeepSeekHarnessAdapter implements HarnessAdapter {
         durationMs: Math.max(0, Date.now() - startedAt),
       };
     }
-    if (executableFailure?.code === "unsupported") {
-      throw new DelegateSelectionError(executableFailure);
-    }
-
     if (await hasDeepSeekModernAuthenticationFingerprint(endpoint, signal)) {
       throw new DelegateSelectionError({
         code: "authenticationRequired",
@@ -298,7 +295,7 @@ export class DeepSeekHarnessAdapter implements HarnessAdapter {
           ? { ...executableFailure, durationMs: Math.max(0, Date.now() - startedAt) }
           : {
               code: "notInstalled",
-              message: "No supported local DeepSeek Harness executable was found",
+              message: "No local DeepSeek Harness executable was found",
               retryable: false,
               stage: "resolve-executable",
               durationMs: Math.max(0, Date.now() - startedAt),

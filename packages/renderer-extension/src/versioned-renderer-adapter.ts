@@ -1,4 +1,9 @@
-import { committedReactAncestors } from "@codexhost/desktop-control/renderer-bindings";
+import {
+  committedReactAncestors,
+  type RendererHostRoute,
+  type RendererHostRouting,
+} from "@codexhost/desktop-control/renderer-bindings";
+import { createRendererHostClients } from "./renderer-host-clients.js";
 import { installIdleReleasePreferenceSync } from "./renderer-idle-release-preference.js";
 import {
   encodeHarnessPluginRoute,
@@ -8,7 +13,6 @@ import {
   harnessThinkingOptionIdSchema,
   hostThreadIdSchema,
   type ExternalThreadForkParams,
-  type HarnessInspectParams,
   type HarnessModelRef,
   type HarnessPermissionModeId,
   type HarnessThinkingOptionId,
@@ -27,10 +31,7 @@ import {
 
 import type { RendererAgent } from "./agent-selection-state.js";
 import { installRendererForkControl } from "./renderer-fork-control.js";
-import { installRendererExternalSteering } from "./renderer-external-steering.js";
-import { installRendererExternalQueue } from "./renderer-external-queue.js";
 import {
-  createRendererModelClient,
   createThreadUsageSubscriptionRelay,
   type RendererModelClient,
 } from "./renderer-model-client.js";
@@ -139,7 +140,7 @@ export interface RendererDraftPrewarmPolicy {
 }
 
 interface RendererDraftPrewarmPolicyTarget {
-  __codexhostDraftPrewarmPolicyV1?: RendererDraftPrewarmPolicy;
+  __codexhostHostRoutingV1?: RendererHostRouting;
   setTimeout(handler: TimerHandler, timeout?: number): number;
 }
 
@@ -150,6 +151,7 @@ declare global {
   interface Window {
     __codexhostMainProcessTitlePolicyV1?: { state: "ready" };
     __codexhostDraftPrewarmPolicyV1?: RendererDraftPrewarmPolicy;
+    __codexhostHostRoutingV1?: RendererHostRouting;
   }
 }
 
@@ -171,7 +173,7 @@ function transportModelIdForAgent(agent: RendererAgent): string | null {
     agent === "devin"
   )
     return encodeHarnessPluginRoute({ harnessId: harnessIdSchema.parse(agent) });
-  if (agent === "qoder" || agent === "qoder-cn") {
+  if (agent === "qoder" || agent === "qoder-cn" || agent === "kimi-code") {
     return encodeHarnessPluginRoute({ harnessId: harnessIdSchema.parse(agent) });
   }
   return null;
@@ -826,122 +828,13 @@ export function isDraftPrewarmPolicyReady(value: unknown): value is RendererDraf
   );
 }
 
-export function activeRendererDraftPrewarmPolicy(
-  policy: unknown,
-  targets: readonly PrewarmTarget[],
-): RendererDraftPrewarmPolicy | null {
-  if (!isDraftPrewarmPolicyReady(policy)) return null;
-  return activeRendererDraftPrewarmTargets(policy, targets) ? policy : null;
-}
-
-function prewarmTargetHostId(target: PrewarmTarget): string | null {
-  const bridge = target.requestClient ?? target;
-  const hostId = target.getHostId?.() ?? bridge.hostId;
-  return typeof hostId === "string" && hostId.length > 0 ? hostId : null;
-}
-
-function isRendererRequestTarget(value: unknown): value is PrewarmTarget {
-  if (!isRecord(value) || typeof value.sendRequest !== "function") return false;
-  return isCurrentRequestBridge(value.requestClient ?? value);
-}
-
-function hasPolicyRequestTarget(policy: RendererDraftPrewarmPolicy): boolean {
-  return "requestTarget" in policy;
-}
-
-function exactRendererRequestTarget(
-  policy: RendererDraftPrewarmPolicy,
-): readonly PrewarmTarget[] | null {
-  if (typeof policy.requestTarget !== "function") return null;
-  try {
-    const target = policy.requestTarget();
-    if (!isRendererRequestTarget(target) || prewarmTargetHostId(target) !== policy.hostId) {
-      return null;
-    }
-    return [target];
-  } catch {
-    return null;
-  }
-}
-
-export function rendererRequestTargetsForHost(
-  targets: readonly PrewarmTarget[],
-  hostId: string,
-): readonly PrewarmTarget[] | null {
-  const matching = targets.filter((target) => prewarmTargetHostId(target) === hostId);
-  return matching.length === 1 ? matching : null;
-}
-
-function activeRendererDraftPrewarmTargets(
-  policy: unknown,
-  targets: readonly PrewarmTarget[],
-): readonly PrewarmTarget[] | null {
-  if (!isDraftPrewarmPolicyReady(policy)) return null;
-  if (hasPolicyRequestTarget(policy)) return exactRendererRequestTarget(policy);
-  return rendererRequestTargetsForHost(targets, policy.hostId);
-}
-
-export interface RendererRequestRoute {
-  readonly policy: RendererDraftPrewarmPolicy;
-  readonly targets: readonly PrewarmTarget[];
-}
-
-export function resolveRendererRequestRoute(
-  policy: unknown,
-  discoveredTargets: readonly PrewarmTarget[],
-  previous: RendererRequestRoute | null,
-): RendererRequestRoute | null {
-  const activeTargets = activeRendererDraftPrewarmTargets(policy, discoveredTargets);
-  if (isDraftPrewarmPolicyReady(policy) && activeTargets) {
-    return { policy, targets: activeTargets };
-  }
-
-  if (isDraftPrewarmPolicyReady(policy) && hasPolicyRequestTarget(policy)) return null;
-
-  // Composer replacement and settings overlays can briefly remove the only
-  // Fiber path that exposes the request manager. Retain the confirmed route
-  // only while discovery is empty and the installed policy object is unchanged.
-  // Positive discovery for another Host invalidates the cache immediately;
-  // policy identity also prevents reuse across reconnects or same-id switches.
-  return discoveredTargets.length === 0 &&
-    isDraftPrewarmPolicyReady(policy) &&
-    previous?.policy === policy
-    ? previous
-    : null;
-}
-
-export function createRendererRequestRouteResolver(
-  readPolicy: () => unknown,
-  discoverTargets: () => readonly PrewarmTarget[],
-): {
-  resolve(): RendererRequestRoute | null;
-  clear(): void;
-} {
-  let route: RendererRequestRoute | null = null;
-  return {
-    resolve() {
-      // Persist null invalidations too, otherwise a later empty discovery gap
-      // could revive a request manager that belonged to the previous Host.
-      const policy = readPolicy();
-      const discoveredTargets =
-        isDraftPrewarmPolicyReady(policy) && hasPolicyRequestTarget(policy)
-          ? []
-          : discoverTargets();
-      route = resolveRendererRequestRoute(policy, discoveredTargets, route);
-      return route;
-    },
-    clear() {
-      route = null;
-    },
-  };
-}
-
 export async function waitForRendererDraftPrewarmPolicy(
   target: RendererDraftPrewarmPolicyTarget,
+  composer?: Element,
 ): Promise<RendererDraftPrewarmPolicy> {
   const deadline = Date.now() + DRAFT_PREWARM_POLICY_WAIT_TIMEOUT_MS;
   while (true) {
-    const policy = target.__codexhostDraftPrewarmPolicyV1;
+    const policy = target.__codexhostHostRoutingV1?.forComposer(composer)?.policy;
     if (isDraftPrewarmPolicyReady(policy)) return policy;
     const remaining = deadline - Date.now();
     if (remaining <= 0) throw new Error("Renderer draft prewarm policy is unavailable");
@@ -989,7 +882,7 @@ export function modelSelectionForAgent(
                       })
                     : agent === "hermes"
                       ? hermesTransportModelId(model, permissionModeId)
-                      : agent === "qoder" || agent === "qoder-cn"
+                      : agent === "qoder" || agent === "qoder-cn" || agent === "kimi-code"
                         ? encodeHarnessPluginRoute({
                             harnessId: harnessIdSchema.parse(agent),
                             ...(model ? { model } : {}),
@@ -1033,94 +926,37 @@ export function installCurrentRendererAdapter(): {
 
   const usageSubscription = createThreadUsageSubscriptionRelay();
   const idleReleaseSync = installIdleReleasePreferenceSync(window);
-  const requestRouteResolver = createRendererRequestRouteResolver(
-    () => window.__codexhostDraftPrewarmPolicyV1,
-    () => findActivePrewarmTargets(document),
-  );
-  const clientsByTarget = new WeakMap<
-    PrewarmTarget,
-    {
-      client: RendererModelClient;
-      policy: RendererDraftPrewarmPolicy | null;
-      requestClient: PrewarmTarget["requestClient"];
-    }
-  >();
-  const turnControlCleanups = new Set<() => void>();
-  const modelClientForTargets = (
-    targets: readonly PrewarmTarget[],
-    policy: RendererDraftPrewarmPolicy | null = null,
-  ): RendererModelClient | null => {
-    const target = targets[0];
-    if (targets.length !== 1 || !target) return null;
-    const cached = clientsByTarget.get(target);
-    // A policy-less auxiliary lookup must not replace the active route's client.
-    // Explicit policy changes and request-client replacement still invalidate it.
-    if (
-      cached &&
-      (policy === null || cached.policy === policy) &&
-      cached.requestClient === target.requestClient
-    )
-      return cached.client;
-    const client = createRendererModelClient([target]);
-    if (client) {
-      // A new connection must not inherit unsupported-method observations.
-      // Turn controls belong to the manager, so do not install duplicate hooks.
-      if (!cached) {
-        const queueCleanup = installRendererExternalQueue(target);
-        if (queueCleanup) turnControlCleanups.add(queueCleanup);
-        const steeringCleanup = installRendererExternalSteering(target);
-        if (steeringCleanup) turnControlCleanups.add(steeringCleanup);
-      }
-      clientsByTarget.set(target, { client, policy, requestClient: target.requestClient });
-    }
-    return client;
-  };
-  let activeRoutePolicy: RendererDraftPrewarmPolicy | null = null;
-  let activeRouteClient: RendererModelClient | null = null;
-  const syncActiveRoute = (route: RendererRequestRoute | null): RendererModelClient | null => {
-    const policy = route?.policy ?? null;
-    const client = route ? modelClientForTargets(route.targets, route.policy) : null;
-    usageSubscription.connect(client);
-    const localClient =
-      policy?.hostId === "local"
-        ? client
-        : modelClientForTargets(
-            rendererRequestTargetsForHost(findActivePrewarmTargets(document), "local") ?? [],
-          );
-    idleReleaseSync.connect(localClient);
-    if (activeRoutePolicy === policy && activeRouteClient === client) return client;
-    activeRoutePolicy = policy;
-    activeRouteClient = client;
-    return client;
-  };
-  const currentRequestRoute = (): RendererRequestRoute | null => {
-    const route = requestRouteResolver.resolve();
-    syncActiveRoute(route);
+  const clients = createRendererHostClients(() => window.__codexhostHostRoutingV1);
+  const currentRequestRoute = (): RendererHostRoute | null => {
+    const route = disposed ? null : (window.__codexhostHostRoutingV1?.forComposer() ?? null);
+    usageSubscription.connect(clients.forRoute(route));
+    idleReleaseSync.connect(disposed ? null : clients.forHost("local"));
+    updateStatus(
+      route ? "ready" : "installing",
+      route ? "ready" : "draft-routing-policy-unavailable",
+      route ? "request-bridge" : null,
+    );
     return route;
   };
   const currentModelClient = (): RendererModelClient => {
-    const client = currentRequestRoute() ? activeRouteClient : null;
+    const client = clients.forRoute(currentRequestRoute());
     if (!client) throw new Error("Renderer Model request manager is unavailable");
     return client;
   };
   const modelControl: RendererModelClient = Object.freeze({
-    currentHostId: () => currentRequestRoute()?.policy.hostId ?? null,
-    clientForHost(hostId: string): RendererModelClient | null {
-      const route = currentRequestRoute();
-      if (route?.policy.hostId === hostId)
-        return modelClientForTargets(route.targets, route.policy);
-      const policy = window.__codexhostDraftPrewarmPolicyV1;
-      if (isDraftPrewarmPolicyReady(policy) && hasPolicyRequestTarget(policy)) return null;
-      const targets = rendererRequestTargetsForHost(findActivePrewarmTargets(document), hostId);
-      return modelClientForTargets(targets ?? []);
+    currentHostId: () => {
+      currentRequestRoute();
+      return disposed ? null : (window.__codexhostHostRoutingV1?.hostIdForComposer() ?? null);
     },
+    clientForHost: (hostId: string) => (disposed ? null : clients.forHost(hostId)),
     listHarnessPlugins: async () => {
       const client = currentModelClient();
       if (!client.listHarnessPlugins) throw new Error("Harness plugin directory is unavailable");
       return client.listHarnessPlugins();
     },
     forkThread: (input: ExternalThreadForkParams) => currentModelClient().forkThread(input),
-    inspectHarness: (input: HarnessInspectParams) => currentModelClient().inspectHarness(input),
+    inspectHarness: (...args: Parameters<RendererModelClient["inspectHarness"]>) =>
+      currentModelClient().inspectHarness(...args),
     inspectThread: (input: ThreadInspectionParams) => currentModelClient().inspectThread(input),
     inspectHarnessCommands: (input: HarnessCommandsInspectParams) =>
       currentModelClient().inspectHarnessCommands(input),
@@ -1173,6 +1009,14 @@ export function installCurrentRendererAdapter(): {
       if (!client.listHarnessAccounts) throw new Error("Harness account inspection is unavailable");
       return client.listHarnessAccounts(input);
     },
+    credentialImports: (
+      request: Parameters<NonNullable<RendererModelClient["credentialImports"]>>[0],
+      targetHarnessId?: string,
+    ) => {
+      const client = currentModelClient();
+      if (!client.credentialImports) throw new Error("Credential imports are unavailable");
+      return client.credentialImports(request, targetHarnessId);
+    },
     listCodexAccounts: () => currentModelClient().listCodexAccounts(),
     refreshCodexAccounts: () => {
       const client = currentModelClient();
@@ -1196,81 +1040,19 @@ export function installCurrentRendererAdapter(): {
     },
   });
 
-  let routingPolicy: RendererDraftPrewarmPolicy | null = null;
-  let policyTimer: number | null = null;
-  let policyRecaptureObserver: MutationObserver | null = null;
-  let hasCapturedRoutingPolicy = false;
-  let selectedRoutingPolicy: RendererDraftPrewarmPolicy | null = null;
-  let selectedCarrier: string | null = null;
-  let desiredCarrier: string | null = null;
-  const stopPolicyCapture = (): void => {
-    if (policyTimer === null) return;
-    window.clearInterval(policyTimer);
-    policyTimer = null;
-  };
-  const stopPolicyRecapture = (): void => {
-    policyRecaptureObserver?.disconnect();
-    policyRecaptureObserver = null;
-  };
-  const captureRoutingPolicy = (): boolean => {
-    const route = currentRequestRoute();
-    if (!route) return false;
-    routingPolicy = route.policy;
-    stopPolicyRecapture();
-    if (selectedRoutingPolicy !== routingPolicy || selectedCarrier !== desiredCarrier) {
-      try {
-        routingPolicy.select(desiredCarrier);
-      } catch {
-        updateStatus("installing", "draft-routing-policy-unavailable", null);
-        return false;
-      }
-      selectedRoutingPolicy = routingPolicy;
-      selectedCarrier = desiredCarrier;
-    }
-    hasCapturedRoutingPolicy = true;
-    stopPolicyCapture();
-    updateStatus("ready", "ready", "request-bridge");
-    return true;
-  };
-  const startPolicyCapture = (): void => {
-    stopPolicyCapture();
-    policyTimer = window.setInterval(captureRoutingPolicy, DRAFT_PREWARM_POLICY_POLL_INTERVAL_MS);
-  };
-  const startPolicyRecapture = (): void => {
-    stopPolicyRecapture();
-    policyRecaptureObserver = new MutationObserver(() => {
-      captureRoutingPolicy();
-    });
-    policyRecaptureObserver.observe(document.documentElement, {
-      attributes: true,
-      attributeFilter: ["hidden", "aria-hidden", "data-codex-composer-root"],
-      characterData: true,
-      childList: true,
-      subtree: true,
-    });
-  };
-  if (!captureRoutingPolicy()) {
-    updateStatus("installing", "draft-routing-policy-unavailable", null);
-    startPolicyCapture();
-  }
+  const selectedPolicies = new Map<string, RendererDraftPrewarmPolicy>();
   const handleRoutingPolicyChange = (): void => {
-    stopPolicyRecapture();
-    if (captureRoutingPolicy()) return;
-    const policy = window.__codexhostDraftPrewarmPolicyV1;
-    startPolicyCapture();
-    if (!hasCapturedRoutingPolicy) return;
-    updateStatus("installing", "draft-routing-policy-unavailable", null);
-    if (isDraftPrewarmPolicyReady(policy) && !hasPolicyRequestTarget(policy)) {
-      startPolicyRecapture();
-    }
+    currentRequestRoute();
   };
   window.addEventListener("codexhost:draft-prewarm-policy-changed", handleRoutingPolicyChange);
+  currentRequestRoute();
 
   const applyAgent = (
     agent: RendererAgent,
     model?: HarnessModelRef,
     thinkingOptionId?: HarnessThinkingOptionId,
     permissionModeId?: HarnessPermissionModeId,
+    composer?: Element,
   ): boolean => {
     if (disposed) return false;
     const selection = modelSelectionForAgent(
@@ -1283,17 +1065,14 @@ export function installCurrentRendererAdapter(): {
     );
     const carrier = selection?.model;
     if (carrier !== null && carrier !== undefined && typeof carrier !== "string") return false;
-    desiredCarrier = carrier ?? null;
-    const route = currentRequestRoute();
+    const route = window.__codexhostHostRoutingV1?.forComposer(composer);
     if (!route) return false;
-    routingPolicy = route.policy;
     try {
-      if (route.policy.select(desiredCarrier)) {
+      if (route.policy.select(carrier ?? null)) {
         modelUpdates += 1;
         liveStatus.modelUpdates = modelUpdates;
       }
-      selectedRoutingPolicy = route.policy;
-      selectedCarrier = desiredCarrier;
+      selectedPolicies.set(route.hostId, route.policy);
     } catch {
       updateStatus("installing", "draft-routing-policy-unavailable", null);
       return false;
@@ -1307,23 +1086,18 @@ export function installCurrentRendererAdapter(): {
     dispose() {
       if (disposed) return;
       disposed = true;
-      stopPolicyCapture();
-      stopPolicyRecapture();
       window.removeEventListener(
         "codexhost:draft-prewarm-policy-changed",
         handleRoutingPolicyChange,
       );
-      const activeRoutingPolicy = routingPolicy;
-      routingPolicy = null;
-      requestRouteResolver.clear();
       const cleanups = [
-        () => activeRoutingPolicy?.select(null),
-        () => syncActiveRoute(null),
+        ...[...selectedPolicies.values()].map((policy) => () => policy.select(null)),
         () => forkControl.dispose(),
-        ...turnControlCleanups,
+        () => clients.dispose(),
         () => usageSubscription.dispose(),
         () => idleReleaseSync.dispose(),
       ];
+      selectedPolicies.clear();
       for (const cleanup of cleanups) {
         try {
           cleanup();

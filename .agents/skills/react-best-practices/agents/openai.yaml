@@ -1,0 +1,6 @@
+interface:
+  display_name: "react-best-practices"
+  short_description: "Apply React performance rules to the actual stack"
+  default_prompt: "Use $react-best-practices for the relevant parts of this task, following codexhost repository guidance."
+policy:
+  allow_implicit_invocation: true

@@ -1,5 +1,10 @@
 import { WORKSPACE_CONTRACT_VERSION } from "@codexhost/shared-contracts";
 
+export type {
+  HarnessCredentialTransfer,
+  HarnessCredentialExport,
+  HarnessCredentialImports,
+} from "./credential-imports.js";
 export { validateHostApprovalResponse } from "./approval.js";
 export { validateHostInteractionResponse } from "./interaction.js";
 export { HarnessOutputChannel } from "./output-channel.js";
@@ -103,3 +108,13 @@ export const packageMetadata = {
   name: "@codexhost/harness-adapter",
   contractVersion: WORKSPACE_CONTRACT_VERSION,
 } as const;
+export {
+  COMMON_EXCLUDED_LIVE_COMMAND_PREFIXES,
+  COMMON_EXCLUDED_LIVE_COMMANDS,
+  LiveHarnessCommandCatalog,
+  isExcludedLiveCommand,
+  liveHarnessCommandPrompt,
+  mergeLiveHarnessCommands,
+  type LiveCommandExclusions,
+  type LiveHarnessCommand,
+} from "./live-command-catalog.js";

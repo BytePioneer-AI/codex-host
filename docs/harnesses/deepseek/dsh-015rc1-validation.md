@@ -1,6 +1,6 @@
-# DSH 012rc1 / 015rc1 对接验证
+# DSH 012rc1 / 015rc1 / 015rc2 对接验证
 
-实现基线为 upstream `9d36363f`，在 Windows、Node.js `v24.11.0`、npm `11.8.0`、Vitest `4.1.10` 下验证。当前仅支持精确 `0.1.2-rc.1` 与 `0.1.5-rc.1`；旧 DSH Legacy 实现、SDK 和专属测试已删除。
+实现基线为 upstream `9d36363f`，在 Windows、Node.js `v24.11.0`、npm `11.8.0`、Vitest `4.1.10` 下验证。本节所述原始基线仅支持精确 `0.1.2-rc.1` 与 `0.1.5-rc.1`；旧 DSH Legacy 实现、SDK 和专属测试已删除。
 
 ## 自动化测试与覆盖率
 
@@ -15,7 +15,7 @@
 
 HTML 和 JSON 摘要由同一命令生成到 `coverage/deepseek-harness/`，不纳入 Git。函数覆盖率超过 90% 保留，不删除有效测试来降低数字。
 
-重点覆盖精确版本拒绝、端点认证诊断、选择/关闭并发、V0/V3 格式隔离、系统 surface 与替换、PTC/反馈/队伍事件、Assistant 流与结算重试、重连、Fork/回滚、继承队列清理、原生持久化确认，以及模型、权限、工具、Usage 和错误边界。实际 Host 输出还经 `CodexTurnProjector` 回放，确认取消尝试的可见标记及追加/完成一致性。
+上述原始基线覆盖精确版本拒绝（当前已改为 SemVer 探测与协议校验，见下文连接版本策略）、端点认证诊断、选择/关闭并发、V0/V3 格式隔离、系统 surface 与替换、PTC/反馈/队伍事件、Assistant 流与结算重试、重连、Fork/回滚、继承队列清理、原生持久化确认，以及模型、权限、工具、Usage 和错误边界。实际 Host 输出还经 `CodexTurnProjector` 回放，确认取消尝试的可见标记及追加/完成一致性。
 
 额外定向检查：
 
@@ -56,6 +56,16 @@ npx vitest run --config tests/vitest.config.js tools/gate-dsh/lifecycle.real.tes
 - `session-query/session-log-export/src/index.ts`、`archive.ts`：认证 HEAD 响应之前等待原生 flush。
 
 未使用浏览器自动化、computer use 或真实计费模型；未启动用户桌面、修改参考 DSH 源码或用户会话。未运行未受影响的 Rust 全套测试；模型提供商、第三方客户端和全部操作系统的组合不包含在本次验证内。
+
+## 0.1.5-rc.2 适配与验证边界
+
+`0.1.5-rc.2` 复用 V3 profile；Fork checkpoint 的 `dshVersion` locator 仍要求精确版本匹配，同为 V3 的 Session Ref 则可跨 CLI 版本尝试恢复。上游开源标签 [`dsh-v0.1.5-rc.2`](https://github.com/deepseek-ai/deepseek-harness/tree/dsh-v0.1.5-rc.2)（`fb2c4b9e`）与 rc.1（`183f08e9`）比较，Web、Session、Agent、命令及日志协议实现均未改变；非版本元数据的生产源码改动只涉及反馈类型的注释。因此 V3 解析器没有新增分支，未承诺未来版本兼容。
+
+本机全局 `@deepseek-ai/dsh@0.1.5-rc.2` 的依赖声明使用 `^0.1.5-rc.2`，npm 实际安装了部分 `0.1.5-rc.3` 的子包。隔离临时 `DSH_HOME`、本地模拟模型的真实 CLI Gate 在 Web 启动阶段失败：`@deepseek-ai/dsh-sandbox-local` 未能加载；没有执行到 Session 生命周期断言。`dsh --version` 和 `dsh --help` 成功不证明 Web 可启动。另在 `/tmp` 用 npm overrides 精确安装 rc.2 DSH 子包后再次运行 Gate，Web 已输出启动 URL，但仍在启动阶段因 `user patch-layer watching requires the Cordis HMR service` 退出；即使固定 HMR 包为 `1.0.17` 仍复现。两次均未执行到 Session 生命周期断言。随后在用户目录隔离安装并精确固定 rc.2 DSH 子包、`@deepseek-ai/cordis@4.0.2` 与 `@deepseek-ai/cordis-plugin-hmr@1.0.17`，以 DSH 原生 `initProfile` 将 Gate 的临时 Web profile 设为 `patchReload: startup`（不更改 Gate 的其他路径）。macOS arm64、Node.js `v24.18.0` 下真实 CLI 生命周期 Gate **1/1 通过**，覆盖前述流式、取消、编辑、恢复和关闭；复跑仍 1/1 通过。原始全局安装未删除，`dsh` 可执行文件的原始 symlink 已备份，用户 Web profile 修改前也已备份。正在运行的托管 Web 在修改后持续监听回环端口，并返回预期的无凭据 401 指纹。此处的 `startup` 关闭 profile patch 的实时热重载；默认 `live` 在本机仍因 HMR 服务缺失失败。npm 未批准的安装脚本不计入测试结果，其他原生模块组合尚未完整验证；此前 Windows 验证仅覆盖 rc.1/012。
+
+## 连接版本策略
+
+连接不再仅按 `--version` 白名单拒绝：接受单行规范 SemVer，`0.1.2` 系列尝试 V0，其余尝试 V3；Web Remote、历史和流式数据仍由原生协议解析器严格验证。V3 Session Ref 可跨 CLI 版本尝试恢复，格式不符时失败；Fork 的 checkpoint 仍需匹配创建它的精确 CLI 版本，避免在未知原生迁移后按旧序号修改历史。设置 → 连接始终显示上述三个**已测试**版本，未测试版本不宣称兼容。本策略的自动化测试只证明版本探测、路由及模拟原生协议行为；真实生命周期证据仍限于前述三版，不涵盖其他版本。
 
 ## CodeRabbit 复核修复
 

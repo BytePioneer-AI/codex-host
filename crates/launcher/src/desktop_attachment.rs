@@ -21,6 +21,9 @@ use crate::runtime_instance::{
     try_acquire_launcher_guard,
 };
 
+const ATTACHMENT_RETRY_INITIAL_DELAY: Duration = Duration::from_millis(100);
+const ATTACHMENT_RETRY_MAX_DELAY: Duration = Duration::from_secs(1);
+
 #[derive(Debug)]
 pub(super) struct RuntimeControl {
     pub(super) renderer_cdp_endpoint: String,
@@ -63,6 +66,7 @@ pub(super) fn acquire_launcher_ownership(
 
     let descriptor_path = default_descriptor_path()?;
     let started = Instant::now();
+    let mut retry_delay = ATTACHMENT_RETRY_INITIAL_DELAY;
     while started.elapsed() < timeout {
         let descriptor = read_descriptor(&descriptor_path).ok().flatten();
         if let Some(descriptor) = &descriptor {
@@ -77,7 +81,17 @@ pub(super) fn acquire_launcher_ownership(
         if let Some(guard) = try_acquire_launcher_guard(&guard_path)? {
             return Ok(LauncherOwnership::Acquired(guard));
         }
-        thread::sleep(Duration::from_millis(100));
+        // A recovering Controller reports busy while one attachment owns the
+        // recovery work. Back off retries so another Launcher cannot create a
+        // connection storm while the healthy owner keeps its guard.
+        let remaining = timeout.saturating_sub(started.elapsed());
+        if remaining.is_zero() {
+            break;
+        }
+        thread::sleep(retry_delay.min(remaining));
+        retry_delay = retry_delay
+            .saturating_mul(2)
+            .min(ATTACHMENT_RETRY_MAX_DELAY);
     }
     Err("another codexhost Launcher did not become attachable before timeout".into())
 }
@@ -134,10 +148,18 @@ fn connect_controlled_instance(descriptor: &RuntimeDescriptor) -> std::io::Resul
 }
 
 fn send_controlled_attachment(
-    mut stream: TcpStream,
+    stream: TcpStream,
     descriptor: &RuntimeDescriptor,
 ) -> Result<bool, Box<dyn Error>> {
-    stream.set_read_timeout(Some(Duration::from_secs(10)))?;
+    send_controlled_attachment_with_timeout(stream, descriptor, Duration::from_secs(10))
+}
+
+fn send_controlled_attachment_with_timeout(
+    mut stream: TcpStream,
+    descriptor: &RuntimeDescriptor,
+    read_timeout: Duration,
+) -> Result<bool, Box<dyn Error>> {
+    stream.set_read_timeout(Some(read_timeout))?;
     stream.set_write_timeout(Some(Duration::from_secs(2)))?;
     writeln!(stream, "ATTACH {}", descriptor.nonce)?;
     let mut response = String::new();
@@ -145,16 +167,27 @@ fn send_controlled_attachment(
         Ok(_) => {}
         // An orderly Controller close is an empty response, but Winsock may surface the same
         // close as WSAECONNRESET. Both mean the controlled Desktop is not attachable yet.
-        Err(error) if error.kind() == io::ErrorKind::ConnectionReset => return Ok(false),
+        Err(error)
+            if matches!(
+                error.kind(),
+                io::ErrorKind::ConnectionAborted
+                    | io::ErrorKind::ConnectionReset
+                    | io::ErrorKind::TimedOut
+                    | io::ErrorKind::WouldBlock
+            ) =>
+        {
+            return Ok(false);
+        }
         Err(error) => return Err(error.into()),
     }
     match response.trim_end() {
         "ready" => Ok(true),
+        "busy" => Ok(false),
         "rejected" => Err("Desktop Controller rejected the attachment nonce".into()),
         "failed" => Err("Desktop Controller could not restore the running Desktop".into()),
-        // An empty or malformed status means the Controller was still restoring
-        // the Desktop when its socket timeout fired. The acquisition loop treats
-        // this as transient and retries rather than failing the whole launch.
+        // An empty or malformed status can come from a Controller that is still
+        // restoring the Desktop. Treat it as transient rather than abandoning
+        // the healthy Launcher that still owns the runtime guard.
         _ => Ok(false),
     }
 }
@@ -197,4 +230,57 @@ pub(super) fn stop_stale_launcher(descriptor: &RuntimeDescriptor) -> Result<(), 
 #[cfg(not(target_os = "windows"))]
 pub(super) fn stop_stale_launcher(_descriptor: &RuntimeDescriptor) -> Result<(), Box<dyn Error>> {
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn descriptor(port: u16) -> RuntimeDescriptor {
+        RuntimeDescriptor::new(10, port, "0123456789abcdef0123456789abcdef".into())
+            .expect("runtime descriptor")
+    }
+
+    #[test]
+    fn controlled_attachment_treats_busy_as_transient() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("attachment listener");
+        let descriptor = descriptor(listener.local_addr().expect("attachment address").port());
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("attachment connection");
+            let mut request = String::new();
+            BufReader::new(stream.try_clone().expect("clone stream"))
+                .read_line(&mut request)
+                .expect("attachment request");
+            writeln!(stream, "busy").expect("attachment response");
+        });
+
+        assert!(!try_activate_controlled_instance(&descriptor).expect("busy Controller"));
+        server.join().expect("attachment server");
+    }
+
+    #[test]
+    fn controlled_attachment_treats_read_timeout_as_transient() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("attachment listener");
+        let descriptor = descriptor(listener.local_addr().expect("attachment address").port());
+        let server = thread::spawn(move || {
+            let (stream, _) = listener.accept().expect("attachment connection");
+            let mut request = String::new();
+            BufReader::new(stream.try_clone().expect("clone stream"))
+                .read_line(&mut request)
+                .expect("attachment request");
+            thread::sleep(Duration::from_millis(100));
+            drop(stream);
+        });
+        let stream = connect_controlled_instance(&descriptor).expect("Controller connection");
+
+        assert!(
+            !send_controlled_attachment_with_timeout(
+                stream,
+                &descriptor,
+                Duration::from_millis(20)
+            )
+            .expect("timed-out Controller")
+        );
+        server.join().expect("attachment server");
+    }
 }

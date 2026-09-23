@@ -41,10 +41,13 @@ import type {
 } from "@codexhost/harness-adapter";
 import {
   HarnessOutputChannel as OutputChannel,
+  liveHarnessCommandPrompt,
+  mergeLiveHarnessCommands,
   validateHostApprovalResponse,
   validateHostQuestionResponse,
 } from "@codexhost/harness-adapter";
 import {
+  type HarnessCommandCatalog,
   harnessIdSchema,
   harnessModelRefSchema,
   hostItemIdSchema,
@@ -68,6 +71,11 @@ import {
 } from "./acp-transport.js";
 import { KiroExecutableError, resolveKiroExecutable } from "./command.js";
 import { KIRO_COMMAND_CATALOG, formatKiroCommandResult } from "./commands.js";
+import {
+  KIRO_LIVE_COMMAND_ID_PREFIX,
+  kiroLiveCommands,
+  type KiroAvailableCommand,
+} from "./kiro-slash-commands.js";
 import { KiroTurnOutput } from "./turn-output.js";
 import { KiroUsage } from "./usage.js";
 import {
@@ -140,6 +148,8 @@ export interface KiroAcpTransportLike {
   compact(): Promise<unknown>;
   sendExtensionRequest(method: string, params: Record<string, unknown>): Promise<unknown>;
   close(): Promise<void>;
+  /** Latest native command list of the open Session; absent on older transports. */
+  readonly availableCommands?: readonly KiroAvailableCommand[] | null;
 }
 
 export interface KiroAdapterOptions {
@@ -163,6 +173,7 @@ export interface KiroAdapterDependencies {
 export class KiroAdapter implements HarnessAdapter {
   readonly harnessId: HarnessId = harnessIdSchema.parse("kiro-cli");
   readonly commandCatalog = KIRO_COMMAND_CATALOG;
+  readonly liveCommandCatalog = true;
 
   readonly #options: KiroAdapterOptions;
   readonly #deps: KiroAdapterDependencies;
@@ -694,7 +705,7 @@ export class KiroSession implements HarnessSession {
     this.outputs = this.#channel.outputs;
 
     this.commands = {
-      list: async () => ({ ok: true, value: KIRO_COMMAND_CATALOG }),
+      list: async () => ({ ok: true, value: this.#liveCommandCatalog() }),
       execute: async (cmd: HarnessCommandInvocation) => this.#executeHarnessCommand(cmd),
     };
   }
@@ -1270,9 +1281,34 @@ export class KiroSession implements HarnessSession {
     };
   }
 
+  /** Built-ins plus the steering, agent and skill commands the open Session advertises. */
+  #liveCommandCatalog(): HarnessCommandCatalog {
+    const native = this.#transport.availableCommands ?? null;
+    return mergeLiveHarnessCommands(
+      KIRO_COMMAND_CATALOG,
+      KIRO_LIVE_COMMAND_ID_PREFIX,
+      native ? kiroLiveCommands(native) : null,
+    );
+  }
+
   async #executeHarnessCommand(
     command: HarnessCommandInvocation,
   ): Promise<HarnessResult<HarnessCommandAccepted>> {
+    const livePrompt = liveHarnessCommandPrompt(
+      this.#liveCommandCatalog(),
+      KIRO_LIVE_COMMAND_ID_PREFIX,
+      command.commandId,
+      command.arguments?.text,
+    );
+    if (livePrompt !== null) {
+      // ACP invokes advertised commands as prompt text starting with `/name`.
+      const started = await this.execute({
+        type: "turn.start",
+        turnId: hostTurnIdSchema.parse(command.turnId),
+        input: [{ type: "text", text: livePrompt }],
+      });
+      return started.ok ? { ok: true, value: { turnId: command.turnId } } : started;
+    }
     if (this.#closed)
       return {
         ok: false,

@@ -4,6 +4,7 @@ import type {
   JsonValue,
 } from "@codexhost/shared-contracts";
 
+import type { ClaudeSlashCommandSnapshot } from "./slash-commands.js";
 import type { ClaudeNativeFileChange } from "./file-change.js";
 import type { ClaudeModelInspectionSnapshot } from "./model-catalog.js";
 import type { ClaudePermissionMode } from "./permission-modes.js";
@@ -192,6 +193,8 @@ export interface ClaudeTurnTransport {
   setIdleLive(live: boolean): void;
   start(): Promise<void>;
   getContextUsage(): Promise<ClaudeTransportContextUsage | null>;
+  /** Live slash commands of the started native Session, when known. */
+  slashCommands?(): ClaudeSlashCommandSnapshot | null;
   getPermissionMode(): ClaudePermissionMode;
   setModel(model?: string): Promise<void>;
   setThinkingOption(thinkingOptionId: HarnessThinkingOptionId): Promise<void>;

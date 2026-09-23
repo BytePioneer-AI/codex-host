@@ -1,5 +1,6 @@
 import type {
   HarnessAdapter,
+  HarnessError,
   HarnessModelRef,
   HarnessResult,
   HarnessSession,
@@ -38,6 +39,8 @@ import { DELEGATION_THREAD_ID_ENV } from "./delegation-types.js";
 import { SessionStateObserver } from "./session-state-observer.js";
 import { DesktopRequestQueue } from "./desktop-request-queue.js";
 import { ExternalThreadIdleRelease } from "./external-thread-idle-release.js";
+import { createDisabledDiagnosticLog, type DiagnosticLog } from "./logging/diagnostic-log.js";
+import { harnessErrorFields } from "./logging/thread-event-log.js";
 
 export interface TurnProjectionGate {
   promise: Promise<void>;
@@ -191,8 +194,9 @@ export class ExternalThreadRuntime {
   readonly idleRelease: ExternalThreadIdleRelease;
   readonly #adapters: Map<ExternalHarnessId, HarnessAdapter>;
   readonly #consumeOutputs: (thread: ExternalThread) => Promise<void>;
-  readonly #diagnose: (error: unknown) => void;
+  readonly #diagnose: (error: unknown, thread?: ExternalThread) => void;
   readonly #environment: NodeJS.ProcessEnv;
+  readonly #log: DiagnosticLog;
   readonly #repository: ExternalThreadRepository;
   readonly #restores = new Map<string, Promise<ExternalThread>>();
   readonly #subagentRunning: (threadId: string) => boolean;
@@ -203,7 +207,8 @@ export class ExternalThreadRuntime {
     environment?: NodeJS.ProcessEnv;
     repository: ExternalThreadRepository;
     consumeOutputs(thread: ExternalThread): Promise<void>;
-    diagnose(error: unknown): void;
+    diagnose(error: unknown, thread?: ExternalThread): void;
+    log?: DiagnosticLog;
     subagentRunning?(threadId: string): boolean;
     idleRelease?: {
       queue: DesktopRequestQueue;
@@ -213,6 +218,7 @@ export class ExternalThreadRuntime {
   }) {
     this.#adapters = input.adapters;
     this.#environment = input.environment ?? process.env;
+    this.#log = input.log ?? createDisabledDiagnosticLog();
     this.#repository = input.repository;
     this.#consumeOutputs = input.consumeOutputs;
     this.#diagnose = input.diagnose;
@@ -220,7 +226,10 @@ export class ExternalThreadRuntime {
     this.idleRelease = new ExternalThreadIdleRelease({
       threads: () => this.values(),
       get: (id) => this.get(id),
-      remove: (id) => this.remove(id),
+      remove: (id) => {
+        this.#log.knownThread(id)?.write("info", "session.released", { reason: "idle" });
+        this.remove(id);
+      },
       queue: input.idleRelease?.queue ?? new DesktopRequestQueue(),
       canRelease: input.idleRelease?.canRelease ?? (() => false),
       ...(input.idleRelease?.onClosed ? { onClosed: input.idleRelease.onClosed } : {}),
@@ -309,6 +318,16 @@ export class ExternalThreadRuntime {
       persistenceError: null,
       ignoredInteractionIds: new Set(),
     };
+    this.#log.thread(externalThread.id, harnessId).write("info", "session.opened", {
+      cwd: input.record.cwd,
+      historyMode: input.record.historyMode,
+      nativeSessionId: input.record.nativeSessionRef?.nativeSessionId,
+      subagentParentThreadId: input.record.subagent?.parentHostThreadId,
+      modelId: effectiveModel?.id,
+      thinkingOptionId: effectiveThinkingOptionId,
+      permissionModeId: effectivePermissionModeId,
+      restoredTurns: input.turns.length,
+    });
     this.idleRelease.touch(externalThread);
     externalThread.outputTask = this.#consumeOutputs(externalThread);
     this.#threads.set(externalThread.id, externalThread);
@@ -337,7 +356,7 @@ export class ExternalThreadRuntime {
       await current.session.close();
       await current.outputTask;
     } catch (error) {
-      this.#diagnose(error);
+      this.#diagnose(error, current);
     }
     await this.#retireSubagents(current.id);
     this.#threads.delete(current.id);
@@ -398,6 +417,8 @@ export class ExternalThreadRuntime {
       };
     }
     if (!record) return { kind: "official" };
+    // Route later request diagnostics for this ID to its Thread log, even if restore fails.
+    this.#log.thread(record.hostThreadId, record.harnessId);
     if (record.state !== "ready" || !record.nativeSessionRef) {
       return {
         kind: "error",
@@ -422,9 +443,24 @@ export class ExternalThreadRuntime {
         this.idleRelease.touch(restored);
         return { kind: "external", thread: restored, historyFresh: false };
       }
+      const threadLog = this.#log.thread(record.hostThreadId, record.harnessId);
+      const startedAtMs = Date.now();
       restoring = this.#restore(record).finally(() => {
         this.#restores.delete(threadId);
       });
+      void restoring.then(
+        () =>
+          threadLog.write("info", "session.restored", {
+            durationMs: Date.now() - startedAtMs,
+            subagent: record.subagent !== undefined,
+          }),
+        (error: unknown) =>
+          threadLog.write("error", "session.restore.failed", {
+            durationMs: Date.now() - startedAtMs,
+            code: error instanceof ExternalThreadOpenError ? error.rpcError.code : undefined,
+            message: errorMessage(error),
+          }),
+      );
       this.#restores.set(threadId, restoring);
     }
     try {
@@ -440,9 +476,19 @@ export class ExternalThreadRuntime {
     }
   }
 
+  /** Mapped RPC errors keep only a message; the Thread log keeps the native failure detail. */
+  #logHarnessFailure(record: StoredThreadRecordV1, stage: string, error: HarnessError): void {
+    this.#log
+      .thread(record.hostThreadId, record.harnessId)
+      .write("error", "harness.request.failed", { stage, error: harnessErrorFields(error) });
+  }
+
   async refresh(thread: ExternalThread): Promise<ExternalThreadRpcError | null> {
     const snapshot = await thread.session.readSnapshot();
-    if (!snapshot.ok) return mapExternalThreadHarnessError(snapshot.error, "read");
+    if (!snapshot.ok) {
+      this.#logHarnessFailure(thread.record, "history.read", snapshot.error);
+      return mapExternalThreadHarnessError(snapshot.error, "read");
+    }
     try {
       const aligned = await this.#repository.alignSnapshot(thread.record, snapshot.value);
       thread.record = aligned.record;
@@ -482,7 +528,7 @@ export class ExternalThreadRuntime {
       const failure = error instanceof Error ? error : new Error(errorMessage(error));
       thread.persistenceError = failure;
       thread.stateObserver.fault(failure);
-      this.#diagnose("External Turn identity could not be persisted");
+      this.#diagnose("External Turn identity could not be persisted", thread);
       return failure;
     }
   }
@@ -520,6 +566,7 @@ export class ExternalThreadRuntime {
         return this.#restore(latest);
       }
       if (!snapshot.ok) {
+        this.#logHarnessFailure(record, "subagent.read", snapshot.error);
         throw new ExternalThreadOpenError(mapExternalThreadHarnessError(snapshot.error, "read"));
       }
       const session = new ReadonlySnapshotSession(
@@ -560,6 +607,7 @@ export class ExternalThreadRuntime {
         : {}),
     });
     if (!opened.ok) {
+      this.#logHarnessFailure(record, "resume.open", opened.error);
       throw new ExternalThreadOpenError(mapExternalThreadHarnessError(opened.error, "resume"));
     }
     const session = opened.value;
@@ -580,6 +628,7 @@ export class ExternalThreadRuntime {
           permissionModeId: restoredSelection.permissionModeId,
         });
         if (!selected.ok) {
+          this.#logHarnessFailure(record, "resume.permissionMode", selected.error);
           throw new ExternalThreadOpenError(
             mapExternalThreadHarnessError(selected.error, "resume"),
           );
@@ -587,6 +636,7 @@ export class ExternalThreadRuntime {
       }
       const snapshot = await session.readSnapshot();
       if (!snapshot.ok) {
+        this.#logHarnessFailure(record, "resume.read", snapshot.error);
         throw new ExternalThreadOpenError(mapExternalThreadHarnessError(snapshot.error, "read"));
       }
       let aligned = await this.#repository.alignSnapshot(record, snapshot.value);

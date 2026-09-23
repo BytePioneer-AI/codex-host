@@ -12,7 +12,7 @@
 
 ## Decisions
 
-1. **先固定证据，再定 profile。** 对照两个 tag 的 Remote endpoint、认证、Session 列表、模型/权限/命令、日志、Assistant 流、Fork/队列、关闭与 flush，记录字段矩阵。rc.3 仅在真实 Web 与生命周期 Gate 通过后列为已验证；V4 为 `0.1.7-rc.1` 选择独立 profile。保留其他 SemVer 版本尝试原生协议校验的现行策略，未知版本不获得已验证声明。备选的“放开版本号即可支持”会将 V4 错交给 V3 校验，因此不采用。
+1. **先固定证据，再定 profile。** 对照两个 tag 的 Remote endpoint、认证、Session 列表、模型/权限/命令、日志、Assistant 流、Fork/队列、关闭与 flush，记录字段矩阵。`0.1.5-rc.3` 在真实 Web 与生命周期 Gate 通过后沿用 V3；`0.1.7-rc.1` 选择独立 V4 profile，且两个新增版本均已通过真实 Gate。保留其他 SemVer 版本尝试原生协议校验的现行策略，未知版本不获得已验证声明。备选的“放开版本号即可支持”会将 V4 错交给 V3 校验，因此不采用。
 2. **按原生格式隔离恢复。** V0/V3 路径保持现有行为；V4 在 Adapter 内校验 header、事件、surface 引用、Assistant baseline/settlement、控制投影。对 `developer/message`、新 Fork closers、错误详情及其他已知事件按标签源码制定投影或明确忽略规则；未知 required 事件失败，原生标为 ignorable 的事件仅按其允许的语义处理。备选的宽松解析会使错误历史看似可恢复，因此不采用。
 3. **原生确认决定 mutation 成败。** 创建、恢复、显式导入、连续回合、取消、权限、Fork、最后回合回滚、队列清理和关闭沿用现有 Adapter 操作入口；V4 checkpoint 使用独立格式标记及精确版本 locator，跨格式或迁移后的旧序号不得用于 Fork/回滚。只有原生前缀、marker/closer、控制状态和持久化结果可确认时才接纳新子 Session。备选的直接复用 V3 checkpoint 会误把迁移后的 seq 当作同一切点，因此不采用。
 4. **最小改动所有权。** 先改 `packages/adapters/deepseek-harness` 和测试；连接页仅更新已验证版本文案与推荐安装版本。Host/`shared-contracts` 仅在确实无法表达原生能力时改，保持公共插件契约与发布清单边界。使用现有 `tools/gate-dsh/lifecycle.real.test.mjs`、`test:deepseek:coverage` 和 Vitest；真实 Gate 如因 017 原生模型 API 变化而失败，先区分测试模型桩和 Adapter 故障，再作必要修正。
@@ -32,6 +32,21 @@
 
 ## Open Questions
 
-- 017 的认证、Session 列表、模型/权限目录、控制流、命令和 export flush 是否维持本机部署下的原生契约，需按 tag 源码与真实 Gate 逐项确认。
-- 017 的已知新事件和 Fork synthetic closers 中哪些影响 Host 可见输出，需在协议矩阵中逐项标注和测试。
-- 新推荐安装版本以两版精确安装及生命周期 Gate 的实际结果决定；未通过时保持当前推荐版本并如实说明阻塞。
+- 017 的认证、Session 列表、模型/权限目录、控制流、命令和 export flush 已按 tag 源码与真实 Gate 逐项确认；后续协议变更仍需新的精确版本 Gate。
+- 017 的已知新事件和 Fork synthetic closers 已在协议矩阵中标注并由 V4 profile 定向测试；未被公共契约表示的 DSH wire 继续留在 Adapter 内。
+- 两个新增版本均已通过生命周期 Gate，可在设置页和验证记录中列为已验证；未来版本仍不得仅凭 SemVer 探测结果宣称兼容。
+
+## 协议差异与当前证据
+
+固定源码标签已完成核对：`dsh-v0.1.5-rc.3` 为 `a4c74a91e06b00fe0b0937bde982170c526cc842`，Session 日志继续使用 V3；`dsh-v0.1.7-rc.1` 为 `46a7f68b0922371ce7144b668b90e377d8e799f4`，Session 日志使用 V4。rc.3 与既有 rc.2 的所查 Web、Session、命令和日志实现没有协议性变化，因此沿用 V3 profile；版本号仍由 Adapter 选择，Remote、历史和流式响应继续做格式校验。
+
+| 标签 | 原生格式 | Adapter profile | 已确认的差异 | checkpoint |
+| --- | --- | --- | --- | --- |
+| `dsh-v0.1.5-rc.3` | V3 | `DEEPSEEK_V015_PROFILE` | 继承既有 V3 的 surface、Assistant stream、队列和 export flush 语义 | `v3-turn-end:` + 精确版本 locator |
+| `dsh-v0.1.7-rc.1` | V4 | `DEEPSEEK_V017_PROFILE` | `developer/message`、V4 `surfaceOp`/引用、image offload、workspace changes、V4 Assistant chunk 校验，以及 `forked` synthetic closer | `v4-turn-end:` + 精确版本 locator |
+
+V4 的 `developer/message` 只接受 `role=developer`、受约束的 `source`、合法内容块和与 `request/header` 一致的 `headerSeq`；工具添加或移除不会被伪装成用户消息。V4 的 Fork 只在继承前缀、开放回合和 `forked` 结束原因满足标签规则时接纳；V3 checkpoint、迁移前序号及其他格式引用在 mutation 前拒绝。V4 wire 类型仅存在于 DeepSeek Adapter 内部。
+
+自动化 profile、Remote、历史、控制、Session 列表、V4 Fork 合成 Tool Result 和 checkpoint 隔离测试覆盖上述规则；整个 Adapter 的 23 个文件、843 项测试通过，语句/分支/函数/行覆盖率依次为 86.22% / 81.85% / 92.92% / 88.97%。真实 CLI 生命周期 Gate 在 Windows、Node.js `v24.11.0`、npm `11.8.0`、Vitest `4.1.10` 下使用精确 npm 隔离 `dsh.cmd` 运行：最终复跑 `0.1.5-rc.3` 为 1/1（Vitest 11.49 秒），`0.1.7-rc.1` 为 1/1（Vitest 8.20 秒）；覆盖流式增量、取消 HTTP 停止、空/保留回滚、冷恢复、继续、关闭和请求无重叠。真实 V4 Fork、真实模型、Desktop 端到端和其他平台未由本次真实 Gate 验证。
+
+实际 Web snapshot 对顶层 V4 Session 省略 `delegationDepth`；Adapter 将其按 Web 契约规范化为 `0`，显式非法值仍拒绝。

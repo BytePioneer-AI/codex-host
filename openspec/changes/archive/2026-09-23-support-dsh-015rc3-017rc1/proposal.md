@@ -1,6 +1,6 @@
 ## Why
 
-codexhost 已验证的 DSH 版本止于 `0.1.5-rc.2`，而当前 Adapter 将所有非 `0.1.2` 的 SemVer CLI 都交给 V3 profile。`0.1.5-rc.3` 仍写入 V3；`0.1.7-rc.1` 已改用 V4 并调整原生事件与 Session Remote，现有尝试连接策略不足以证明两版可用。主 OpenSpec 仍记载早期“双版本白名单”，也与当前实现不符。
+变更开始时 codexhost 已验证的 DSH 版本止于 `0.1.5-rc.2`，而当时 Adapter 将所有非 `0.1.2` 的 SemVer CLI 都交给 V3 profile。`0.1.5-rc.3` 仍写入 V3；`0.1.7-rc.1` 已改用 V4 并调整原生事件与 Session Remote，原有尝试连接策略不足以证明两版可用。主 OpenSpec 仍记载早期“双版本白名单”，也与当前实现不符。
 
 ## What Changes
 
@@ -24,3 +24,7 @@ None.
 ## Impact
 
 主要涉及 `packages/adapters/deepseek-harness` 的 profile、Remote 校验、历史/控制/恢复与定向测试，以及真实 CLI Gate。只有现有连接文案确需更新时才改 `packages/renderer-extension`；仅在公共契约确有缺口时调整 Host 或 `shared-contracts`。同步 `docs/harnesses/deepseek/`、受影响的架构文档和 OpenSpec 主规格。参考 DSH 仓库只用于读取与隔离验证，不纳入 PR，不改写用户原生 Session 数据。
+
+## 当前实证状态
+
+已完成两个 release tag 的源码核对、Adapter 内 V3/V4 定向回归和真实 CLI 生命周期 Gate。`0.1.5-rc.3` 与 `0.1.7-rc.1` 均通过 1/1 Gate，覆盖托管 Web 启动、inspect/create、流式增量、取消及 HTTP 停止、空/保留历史回滚、冷恢复、继续输入、活动关闭和请求无重叠。真实模型、Desktop 端到端和其他平台仍未验证。

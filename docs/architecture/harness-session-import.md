@@ -2,12 +2,12 @@
 
 ## 当前范围
 
-设置 → 会话导入可登记 **Claude Code、Pi、Hermes** 和 **DSH** 的原生 Session（已验证 `0.1.2-rc.1` / `0.1.5-rc.1` / `0.1.5-rc.2`）。导入只建立 Host Thread 与原生 Session 的映射，不复制 Transcript、不转换 Harness、不发送用户 Turn；打开后仍通过对应 Adapter 的 `open({ kind: "resume" })` 恢复历史并继续会话。
+设置 → 会话导入可登记 **Claude Code、Pi、Hermes** 和 **DSH** 的原生 Session（已验证 `0.1.2-rc.1` / `0.1.5-rc.1` / `0.1.5-rc.2` / `0.1.5-rc.3` / `0.1.7-rc.1`；命令和限制见 [DSH 验证记录](../harnesses/deepseek/dsh-015rc1-validation.md)）。导入只建立 Host Thread 与原生 Session 的映射，不复制 Transcript、不转换 Harness、不发送用户 Turn；打开后仍通过对应 Adapter 的 `open({ kind: "resume" })` 恢复历史并继续会话。
 
 - 设置页始终使用本地 Host，即使 Composer 当前连接远程工作区。
 - 可选 Harness 来自该 Host 已加载、同时提供发现和解析能力的 Adapter，不使用 Renderer 内置 Harness 名单。
 - 目录表示“实现了导入接口”，不保证当前原生运行时可用。不兼容的 DSH 原生协议、旧 Host、缺失插件或不可用存储会明确失败，不伪装成无候选。
-- DSH 仅允许本机、codexhost 托管的 Web；`0.1.2-rc.1`、`0.1.5-rc.1` 和 `0.1.5-rc.2` 已验证。其他 SemVer 版本可尝试连接及导入，须通过原生 Web 与历史协议校验；Legacy 协议已移除。不把版本号当作兼容保证。
+- DSH 仅允许本机、codexhost 托管的 Web；`0.1.2-rc.1`、`0.1.5-rc.1`、`0.1.5-rc.2`、`0.1.5-rc.3` 和 `0.1.7-rc.1` 已验证。其他 SemVer 版本可尝试连接及导入，须通过原生 Web 与历史协议校验；Legacy 协议已移除。不把版本号当作兼容保证。
 - 本次没有增加远程扫描、Claude Code Broker 导入，也没有完成整个 Agent Picker 的动态插件化。
 
 ## Adapter 契约与职责
@@ -93,7 +93,7 @@ Host 不承诺在 resolver 与 resume 之间锁住外部客户端；当前没有
 ## DSH 原生规则
 
 - 通过托管 Web 的公开 Session API 发现候选并重新检查所选 Session，不直接扫描或改写 DSH 的原生日志文件。
-- 导入只登记映射；打开 Thread 后才读取原生历史，并继续相同 Native Session ID。`0.1.2-rc.1` 使用 V0 日志；已验证的 `0.1.5-rc.1` / `0.1.5-rc.2` 使用 V3 日志及独立 Assistant 流，系统消息参与原生历史引用但不展示为用户回合。
+- 导入只登记映射；打开 Thread 后才读取原生历史，并继续相同 Native Session ID。`0.1.2-rc.1` 使用 V0 日志；已验证的 `0.1.5-rc.1` / `0.1.5-rc.2` / `0.1.5-rc.3` 使用 V3 日志及独立 Assistant 流；`0.1.7-rc.1` 使用 V4 日志并校验 `developer/message`、surface 引用、Assistant 流块和 Fork closer。系统消息和开发者指令参与原生历史引用但不展示为用户回合。
 - 两种日志的序号与 checkpoint 不可互换。原生格式迁移由 DSH 负责，codexhost 不把旧 checkpoint 当作迁移后的序号，也不提供降级迁移。详见[消息修订与恢复](../harnesses/deepseek/dsh-edit-recovery.md)。
 - 若配置的回环端点已有无法认证的 DSH Web，先关闭该实例，再重新运行连接诊断，让 codexhost 启动自己的 Web；不会接管或停止外部进程。
 

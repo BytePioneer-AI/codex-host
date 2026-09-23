@@ -1,4 +1,34 @@
-# DSH 012rc1 / 015rc1 / 015rc2 对接验证
+# DSH 012rc1 / 015rc1 / 015rc2 / 015rc3 / 017rc1 对接验证
+
+## 本次版本扩展验证（support-dsh-015rc3-017rc1）
+
+本次变更新增两个隔离 release：`dsh-v0.1.5-rc.3`（`a4c74a91e06b00fe0b0937bde982170c526cc842`）和 `dsh-v0.1.7-rc.1`（`46a7f68b0922371ce7144b668b90e377d8e799f4`）。前者沿用 V3 Session 日志和既有 V3 Remote 语义；后者使用 V4 Session 日志，Adapter 以独立 profile 校验 V4 header、`developer/message`、surface 引用、image offload、workspace changes、Assistant 流块和 Fork 的 `forked` synthetic closer。
+
+`0.1.5-rc.3` 和 `0.1.7-rc.1` 的真实 CLI 生命周期 Gate 均已通过，覆盖托管 Web 启动、inspect/create、流式增量、取消及 HTTP 停止、空/保留历史回滚、冷恢复、继续输入、活动关闭和请求无重叠。两个版本均使用精确 npm 隔离的 `dsh.cmd`，没有把 `--version` 成功当作对接证据。
+
+真实 Gate 环境为 Windows、Node.js `v24.11.0`、npm `11.8.0`、Vitest `4.1.10`。命令模板如下（`<TEMP>\rc3` 或 `<TEMP>\rc1` 替换为对应精确版本的隔离目录）：
+
+```powershell
+$env:CODEXHOST_DSH_REAL_COMMAND = '<TEMP>\rc1\node_modules\.bin\dsh.cmd'
+.\node_modules\.bin\vitest.cmd run --config tests/vitest.config.js tools/gate-dsh/lifecycle.real.test.mjs --reporter=verbose
+```
+
+最终复跑结果：`dsh-v0.1.5-rc.3` 为 1/1 通过（Vitest 11.49 秒），`dsh-v0.1.7-rc.1` 为 1/1 通过（Vitest 8.20 秒）。两个 Gate 均使用本地 SSE 模拟模型和隔离临时 `DSH_HOME`，不调用真实计费模型。真实 Gate 不覆盖原生 V4 Fork 或真实模型的工具调用；这些协议边界由下面的定向回归检查。
+
+V4 `session/follow` 的 Web snapshot 对顶层 Session 省略 `delegationDepth`，Adapter 按 DSH Web 实际契约将缺省值规范化为 `0`；显式提供的值仍必须是非负安全整数。
+
+本次执行 `npm run test:deepseek:coverage`，整个 DSH Adapter 的 **843 项测试 / 23 个文件全部通过**；范围仍为 `packages/adapters/deepseek-harness/src/**/*.ts`，四项 80% 门槛均通过。
+
+| 指标 | 覆盖率 | 已覆盖 / 总数 |
+| --- | --- | --- |
+| 语句 | 86.22% | 5758 / 6678 |
+| 分支 | 81.85% | 5063 / 6185 |
+| 函数 | 92.92% | 919 / 989 |
+| 行 | 88.97% | 5351 / 6014 |
+
+协议和 profile 的定向回归已覆盖 V3/V4 合法与非法历史、developer 工具引用、Assistant stream、Fork 边界、原生 `forked-tool-result` 的校验与投影、跨格式 checkpoint、控制读回、分页和实时去重。V4 checkpoint 使用 `v4-turn-end:` 前缀及精确版本 locator；V3/V0 或迁移前 checkpoint 在 mutation 前拒绝。DSH 原生 Session、凭据和迁移仍由 DSH 所有，codexhost 不读取或改写原生日志文件。
+
+本次 `npm run build:typescript`、`npm run typecheck`、`npm run lint`、`npm run format:check`、OpenSpec strict 和 `git diff --check` 均通过。未使用真实计费模型、Desktop 或浏览器自动化，也未在其他平台运行本次新增版本的真实 Gate。
 
 实现基线为 upstream `9d36363f`，在 Windows、Node.js `v24.11.0`、npm `11.8.0`、Vitest `4.1.10` 下验证。本节所述原始基线仅支持精确 `0.1.2-rc.1` 与 `0.1.5-rc.1`；旧 DSH Legacy 实现、SDK 和专属测试已删除。
 

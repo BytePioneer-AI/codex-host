@@ -69,6 +69,7 @@ import {
   writeClaudePermissionModePreference,
 } from "./renderer-permission-mode-preference.js";
 import { isPermissionModeControlReady } from "./renderer-permission-mode-picker.js";
+import { isRendererModelSelectionReady } from "./renderer-model-picker.js";
 import {
   readNewThreadAgentPreference,
   readNewThreadExternalConfigurationPreference,
@@ -102,6 +103,8 @@ const externalHarnessIds = {
   hermes: harnessIdSchema.parse("hermes"),
   qoder: harnessIdSchema.parse("qoder"),
   "qoder-cn": harnessIdSchema.parse("qoder-cn"),
+  "kimi-code": harnessIdSchema.parse("kimi-code"),
+  "mimo-code": harnessIdSchema.parse("mimo-code"),
 } as const;
 
 const externalAgents: readonly ExternalRendererAgent[] = [
@@ -119,6 +122,8 @@ const externalAgents: readonly ExternalRendererAgent[] = [
   "hermes",
   "qoder",
   "qoder-cn",
+  "kimi-code",
+  "mimo-code",
 ];
 type HarnessAvailability = Partial<Record<ExternalRendererAgent, RendererAgentAvailability>>;
 type HarnessAvailabilityErrors = Partial<Record<ExternalRendererAgent, CodexhostError | undefined>>;
@@ -228,9 +233,7 @@ function isExternalConfigurationReadyView(
   permissionModeView: ExternalPermissionModeControlView,
 ): boolean {
   return (
-    modelView.status !== "selecting" &&
-    modelView.catalog?.models.some((model) => model.ref.id === modelView.selected?.id) === true &&
-    isPermissionModeControlReady(permissionModeView)
+    isRendererModelSelectionReady(modelView) && isPermissionModeControlReady(permissionModeView)
   );
 }
 
@@ -505,7 +508,12 @@ export function restoredThreadOwnership(inspection: ThreadInspection): RestoredT
         : {}),
     };
   }
-  if (inspection.harnessId === "qoder" || inspection.harnessId === "qoder-cn") {
+  if (
+    inspection.harnessId === "qoder" ||
+    inspection.harnessId === "qoder-cn" ||
+    inspection.harnessId === "kimi-code" ||
+    inspection.harnessId === "mimo-code"
+  ) {
     const route = decodeHarnessPluginRoute(inspection.transportModelId);
     if (!route || route.harnessId !== inspection.harnessId) {
       throw new Error("Harness Thread reported an incompatible transport Model");
@@ -609,8 +617,9 @@ export function isComposerModelWriteAllowed(target: readonly unknown[] | null): 
 export function shouldApplyDraftAgentCarrier(
   agent: RendererAgent,
   model: HarnessModelRef | undefined,
+  modelSelectionSupported = true,
 ): boolean {
-  return agent === "codex" || model !== undefined;
+  return agent === "codex" || model !== undefined || !modelSelectionSupported;
 }
 
 export function applyComposerModelWrite(
@@ -761,6 +770,8 @@ export function installRendererBindingProbe(
       hermes: undefined,
       qoder: undefined,
       "qoder-cn": undefined,
+      "kimi-code": undefined,
+      "mimo-code": undefined,
     },
     webUi: Object.fromEntries(
       externalAgents.map((agent) => [agent, false]),
@@ -1091,7 +1102,7 @@ export function installRendererBindingProbe(
   const applyExternalConfiguration = (
     mounted: MountedComposer,
     agent: Exclude<RendererAgent, "codex">,
-    model: HarnessModelRef,
+    model: HarnessModelRef | undefined,
     thinkingOptionId?: HarnessThinkingOptionId,
     permissionModeId?: HarnessPermissionModeId,
   ): boolean => {
@@ -1371,10 +1382,31 @@ export function installRendererBindingProbe(
         !inspection.capabilities.configuration.selectModel ||
         inspection.catalog.models.length === 0
       ) {
+        // These plugins explicitly support their native default. Preserve legacy empty-catalog
+        // blocking: some older adapters use ready + selectModel=false while discovery is pending.
+        const nativeDefault =
+          !inspection.capabilities.configuration.selectModel &&
+          (agent === "kimi-code" || agent === "mimo-code");
+        if (current.phase === "draft" && nativeDefault) {
+          if (
+            !applyExternalConfiguration(
+              mounted,
+              agent,
+              undefined,
+              undefined,
+              selectedPermissionModeId,
+            )
+          ) {
+            throw new Error("Native default configuration could not be applied to the Composer");
+          }
+          await clearDraftPrewarm();
+          if (!isCurrentModelRequest(mounted, generation)) return;
+        }
         mounted.modelView = {
           status: "empty",
           catalog: inspection.catalog,
           thinkingSelectionSupported: false,
+          modelSelectionSupported: !nativeDefault,
         };
         if (selectedPermissionModeId && mounted.permissionModeView.catalog) {
           controller.setExternalPermissionMode(mounted.composer, agent, selectedPermissionModeId);
@@ -1409,7 +1441,25 @@ export function installRendererBindingProbe(
       const selected = previousModelAvailable
         ? previousModel
         : (preferredConfiguration?.model ?? inspection.catalog.defaultModel);
-      if (!selected) throw new Error("External Harness did not report its default Model");
+      if (!selected) {
+        // A native catalog may intentionally have no default. Let the user choose;
+        // submission remains blocked until a catalog Model is selected.
+        mounted.modelView = {
+          status: "ready",
+          catalog: inspection.catalog,
+          thinkingSelectionSupported: inspection.capabilities.configuration.selectThinkingOption,
+        };
+        if (selectedPermissionModeId && mounted.permissionModeView.catalog) {
+          controller.setExternalPermissionMode(mounted.composer, agent, selectedPermissionModeId);
+          mounted.permissionModeView = {
+            status: "ready",
+            catalog: mounted.permissionModeView.catalog,
+            selected: selectedPermissionModeId,
+            ...permissionModeLock,
+          };
+        }
+        return;
+      }
       const effectiveCatalog =
         current.phase === "locked" && mounted.threadConfiguration
           ? catalogWithConfigurationState(inspection.catalog, selected, mounted.threadConfiguration)
@@ -1672,7 +1722,7 @@ export function installRendererBindingProbe(
     if (
       !catalog ||
       !selectedPermissionModeId ||
-      !model ||
+      (!model && mounted.modelView.modelSelectionSupported !== false) ||
       !modelControl ||
       mounted.permissionModeView.selectionLocked
     ) {
@@ -2122,6 +2172,8 @@ export function installRendererBindingProbe(
               adapterStatus.state === "ready" &&
               composerState.phase === "draft" &&
               composerState.agent === agent &&
+              agent !== "kimi-code" &&
+              agent !== "mimo-code" &&
               status !== "ready"
             ) {
               await switchComposerAgent(mounted, "codex");
@@ -2366,7 +2418,9 @@ export function installRendererBindingProbe(
     mountedByComposer.set(composer, mounted);
     if (isComposerModelWriteAllowed(modelTarget)) {
       const model = controller.modelForAgent(composer, state.agent);
-      if (shouldApplyDraftAgentCarrier(state.agent, model)) {
+      if (
+        shouldApplyDraftAgentCarrier(state.agent, model, mounted.modelView.modelSelectionSupported)
+      ) {
         applyAdapterAgent?.(
           state.agent,
           model,
@@ -2528,7 +2582,10 @@ export function installRendererBindingProbe(
     }
     if (!mounted || !isComposerModelWriteAllowed(mounted.modelTarget)) return false;
     const model = controller.modelForAgent(composer, state.agent);
-    if (!shouldApplyDraftAgentCarrier(state.agent, model)) return false;
+    if (
+      !shouldApplyDraftAgentCarrier(state.agent, model, mounted.modelView.modelSelectionSupported)
+    )
+      return false;
     return applyComposerModelWrite(
       mounted.modelTarget,
       () =>

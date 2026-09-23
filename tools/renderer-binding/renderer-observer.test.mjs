@@ -108,7 +108,15 @@ describe("Renderer tooling observer", () => {
   });
 
   it("accepts the complete production external Agent set", () => {
-    for (const agent of ["opencode", "grok", "omp", "qoder", "qoder-cn"]) {
+    for (const agent of [
+      "opencode",
+      "grok",
+      "omp",
+      "qoder",
+      "qoder-cn",
+      "kimi-code",
+      "mimo-code",
+    ]) {
       expect(
         validateRendererObserverStatus({
           ...validStatus,

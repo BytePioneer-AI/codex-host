@@ -74,6 +74,12 @@ const runtimeLicenses = [
     output: "MCP-SDK-LICENSE.txt",
   },
   {
+    packageName: "@mimo-ai/sdk",
+    license: "MIT",
+    source: "LICENSE",
+    output: "MiMo-SDK-LICENSE.txt",
+  },
+  {
     packageName: "@opencode-ai/sdk",
     license: "MIT",
     source: "scripts/release/licenses/opencode-ai-sdk-1.18.25-MIT.txt",
@@ -232,6 +238,7 @@ export function expectedNpmPackagePaths(target) {
     "licenses/Agent-Client-Protocol-SDK-LICENSE.txt",
     "licenses/Claude-Agent-SDK-LICENSE.md",
     "licenses/MCP-SDK-LICENSE.txt",
+    "licenses/MiMo-SDK-LICENSE.txt",
     "licenses/OpenCode-SDK-LICENSE.txt",
     "licenses/Qoder-Agent-SDK-LICENSE.txt",
     "licenses/QoderCN-Agent-SDK-LICENSE.txt",

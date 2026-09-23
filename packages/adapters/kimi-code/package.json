@@ -1,0 +1,31 @@
+{
+  "name": "@codexhost/adapter-kimi-code",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "files": [
+    "dist",
+    "manifest.json"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./plugin": {
+      "types": "./dist/plugin.d.ts",
+      "import": "./dist/plugin.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "test:native-provider": "npm run build && node test/native-provider.mjs"
+  },
+  "dependencies": {
+    "@codexhost/harness-adapter": "0.0.0",
+    "@codexhost/harness-discovery": "0.0.0",
+    "@codexhost/shared-contracts": "0.0.0",
+    "ws": "8.21.3",
+    "zod": "4.4.3"
+  }
+}

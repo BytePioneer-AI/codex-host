@@ -426,6 +426,10 @@ describe("npm package release", () => {
       expect(notice).toContain("@qoder-ai/qoder-agent-sdk");
       expect(notice).toContain("@qodercn-ai/qodercn-agent-sdk");
       expect(notice).toContain("@opencode-ai/sdk");
+      expect(notice).toContain("@mimo-ai/sdk");
+      expect(await readFile(path.join(output, "licenses/MiMo-SDK-LICENSE.txt"), "utf8")).toBe(
+        await readFile(path.join(root, "node_modules/@mimo-ai/sdk/LICENSE"), "utf8"),
+      );
       expect(notice).toContain("licenses/OpenCode-SDK-LICENSE.txt");
       expect(license).toContain("Copyright (c) 2025 opencode");
       expect(notice).toContain(

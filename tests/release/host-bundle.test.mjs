@@ -66,6 +66,7 @@ async function runPackagedHost(host, directory, requests) {
   Object.assign(environment, {
     HOME: directory,
     USERPROFILE: directory,
+    CODEX_HOME: path.join(directory, ".codex"),
     CODEXHOST_DATA_DIR: path.join(directory, "data"),
     CODEXHOST_PLUGIN_DIRECTORY: path.join(directory, "user-plugins"),
     CODEXHOST_STOCK_CODEX_PATH: process.execPath,
@@ -188,6 +189,11 @@ describe("release Host and independent plugin Bundles", () => {
       expect(pluginAudits.find(({ id }) => id === "opencode").runtimePackages).toContain(
         "@opencode-ai/sdk",
       );
+      const mimoAudit = pluginAudits.find(({ id }) => id === "mimo-code");
+      expect(mimoAudit.runtimePackages).toContain("@mimo-ai/sdk");
+      expect(mimoAudit.runtimePackages).not.toContain("cross-spawn");
+      expect(mimoAudit.runtimePackages).not.toContain("@opencode-ai/sdk");
+      expect(pluginAudits.find(({ id }) => id === "kimi-code")).toBeDefined();
       expect(pluginAudits.find(({ id }) => id === "deepseek-harness").runtimePackages).toContain(
         "@deepseek-ai/schemastery",
       );

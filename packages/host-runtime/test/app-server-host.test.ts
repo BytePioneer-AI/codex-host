@@ -790,8 +790,11 @@ describe("AppServerHost installed Harness plugins", () => {
     }
   }, 15_000);
 
-  it("keeps Qoder Global and CN Threads on distinct shared plugin routes", async () => {
-    const ids = [harnessIdSchema.parse("qoder"), harnessIdSchema.parse("qoder-cn")];
+  it.each([
+    ["qoder", "qoder-cn"],
+    ["kimi-code", "mimo-code"],
+  ])("keeps %s and %s Threads on distinct shared plugin routes", async (firstId, secondId) => {
+    const ids = [harnessIdSchema.parse(firstId), harnessIdSchema.parse(secondId)];
     const fixture = createFixture({
       externalAdapters: new Map(ids.map((id) => [id, new FakeHarnessAdapter(id)])),
     });
@@ -1275,43 +1278,46 @@ describe("AppServerHost installed Harness plugins", () => {
     }
   });
 
-  it("validates catalog parameters and leaves uninstalled routes out of the official stream", async () => {
-    const fixture = createFixture();
-    try {
-      writeRequest(fixture.desktopInput, {
-        id: 911,
-        method: "codexhost/harness/plugins/list",
-        params: { directory: "/untrusted" },
-      });
-      expect(await fixture.collector.waitFor((message) => requestId(message, 911))).toMatchObject({
-        error: { code: -32602 },
-      });
-      writeRequest(fixture.desktopInput, {
-        id: 912,
-        method: "thread/start",
-        params: {
-          model: encodeHarnessPluginRoute(
-            harnessPluginRouteSchema.parse({ harnessId: "missing-agent" }),
-          ),
-          cwd: "/synthetic",
-        },
-      });
-      expect(await fixture.collector.waitFor((message) => requestId(message, 912))).toHaveProperty(
-        "error",
-      );
-      writeRequest(fixture.desktopInput, {
-        id: 913,
-        method: "thread/start",
-        params: { model: "codexhost/plugin-v1@invalid", cwd: "/synthetic" },
-      });
-      expect(await fixture.collector.waitFor((message) => requestId(message, 913))).toHaveProperty(
-        "error",
-      );
-      expect(fixture.official.stdin.readableLength).toBe(0);
-    } finally {
-      await stopFixture(fixture);
-    }
-  });
+  it.each(["missing-agent", "kimi-code", "mimo-code"])(
+    "validates catalog parameters and leaves uninstalled %s out of the official stream",
+    async (harnessId) => {
+      const fixture = createFixture();
+      try {
+        writeRequest(fixture.desktopInput, {
+          id: 911,
+          method: "codexhost/harness/plugins/list",
+          params: { directory: "/untrusted" },
+        });
+        expect(await fixture.collector.waitFor((message) => requestId(message, 911))).toMatchObject(
+          {
+            error: { code: -32602 },
+          },
+        );
+        writeRequest(fixture.desktopInput, {
+          id: 912,
+          method: "thread/start",
+          params: {
+            model: encodeHarnessPluginRoute(harnessPluginRouteSchema.parse({ harnessId })),
+            cwd: "/synthetic",
+          },
+        });
+        expect(
+          await fixture.collector.waitFor((message) => requestId(message, 912)),
+        ).toHaveProperty("error");
+        writeRequest(fixture.desktopInput, {
+          id: 913,
+          method: "thread/start",
+          params: { model: "codexhost/plugin-v1@invalid", cwd: "/synthetic" },
+        });
+        expect(
+          await fixture.collector.waitFor((message) => requestId(message, 913)),
+        ).toHaveProperty("error");
+        expect(fixture.official.stdin.readableLength).toBe(0);
+      } finally {
+        await stopFixture(fixture);
+      }
+    },
+  );
 });
 
 describe("AppServerHost HarnessAdapter projection", () => {

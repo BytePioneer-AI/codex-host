@@ -1,0 +1,12 @@
+{
+  "manifestVersion": 1,
+  "id": "mimo-code",
+  "name": "MiMo Code",
+  "version": "0.0.0",
+  "adapterApiVersion": 1,
+  "entry": "dist/plugin.js",
+  "links": {
+    "documentation": "https://github.com/XiaomiMiMo/MiMo-Code",
+    "installation": "https://github.com/XiaomiMiMo/MiMo-Code"
+  }
+}

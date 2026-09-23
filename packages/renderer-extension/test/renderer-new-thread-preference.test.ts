@@ -46,6 +46,33 @@ const permissionModes = harnessPermissionModeCatalogSchema.parse({
 });
 
 describe("Renderer new-Thread external configuration preference", () => {
+  it("isolates native-default permission preferences without inventing a Model", () => {
+    const storage = memoryStorage();
+    const catalog = harnessModelCatalogSchema.parse({ models: [], thinkingOptions: [] });
+    writeNewThreadExternalConfigurationPreference(
+      "kimi-code",
+      undefined,
+      undefined,
+      harnessPermissionModeIdSchema.parse("ask"),
+      storage,
+    );
+    writeNewThreadExternalConfigurationPreference(
+      "mimo-code",
+      undefined,
+      undefined,
+      harnessPermissionModeIdSchema.parse("auto"),
+      storage,
+    );
+    expect(
+      readNewThreadExternalConfigurationPreference("kimi-code", catalog, permissionModes, storage),
+    ).toEqual({ permissionModeId: "ask" });
+    expect(
+      readNewThreadExternalConfigurationPreference("mimo-code", catalog, permissionModes, storage),
+    ).toEqual({ permissionModeId: "auto" });
+    expect(
+      readNewThreadExternalConfigurationPreference("mimo-code", catalog, undefined, storage),
+    ).toBeUndefined();
+  });
   it("persists and restores the Grok Permission Mode with Model and Thinking", () => {
     const storage = memoryStorage();
     const permissionModeId = harnessPermissionModeIdSchema.parse("auto");

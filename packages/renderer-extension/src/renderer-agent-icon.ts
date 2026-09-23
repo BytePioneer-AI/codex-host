@@ -27,6 +27,8 @@ export const RENDERER_AGENT_LABELS: Record<RendererAgent, string> = {
   hermes: "Hermes",
   qoder: "Qoder",
   "qoder-cn": "Qoder CN",
+  "kimi-code": "Kimi Code",
+  "mimo-code": "MiMo Code",
 };
 
 const PI_PATHS = [
@@ -173,6 +175,22 @@ export function createRendererAgentIcon(
     image.style.objectFit = "contain";
     image.style.flex = "none";
     return image;
+  }
+  if (agent === "kimi-code" || agent === "mimo-code") {
+    const mark = ownerDocument.createElement("span");
+    mark.textContent = agent === "kimi-code" ? "K" : "M";
+    mark.setAttribute("aria-hidden", "true");
+    mark.style.width = `${size}px`;
+    mark.style.height = `${size}px`;
+    mark.style.display = "inline-grid";
+    mark.style.placeItems = "center";
+    mark.style.fontSize = `${Math.round(size * 0.7)}px`;
+    mark.style.fontWeight = "700";
+    mark.style.border = "1px solid currentColor";
+    mark.style.borderRadius = "25%";
+    mark.style.boxSizing = "border-box";
+    mark.style.flex = "none";
+    return mark;
   }
   const mark = ownerDocument.createElement("img");
   mark.src = grokAgentIconUrl;

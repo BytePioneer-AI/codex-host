@@ -18,6 +18,7 @@ import {
 } from "./renderer-agent-picker.js";
 import {
   mountRendererModelPicker,
+  isRendererModelSelectionReady,
   renderRendererModelPicker,
   syncRendererModelTriggerClass,
   thinkingOptionsForModel,
@@ -695,9 +696,6 @@ export function renderComposerAgentControl(
   }
 
   const selectedModel = modelView.selected;
-  const selectedCatalogModel = modelView.catalog?.models.find(
-    (model) => model.ref.id === selectedModel?.id,
-  );
   const availableThinkingOptions =
     modelView.thinkingSelectionSupported === false
       ? []
@@ -705,7 +703,7 @@ export function renderComposerAgentControl(
   const thinkingReady =
     availableThinkingOptions.length === 0 ||
     availableThinkingOptions.some(({ id }) => id === modelView.selectedThinkingOptionId);
-  const modelReady = selectedModel !== undefined && selectedCatalogModel !== undefined;
+  const modelReady = isRendererModelSelectionReady(modelView);
   const modelBlocked =
     state.agent !== "codex" && (modelView.status === "selecting" || !modelReady || !thinkingReady);
   const permissionModeBlocked =

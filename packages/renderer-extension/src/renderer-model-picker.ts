@@ -42,6 +42,7 @@ export interface RendererModelControlView {
   selectedThinkingOptionId?: HarnessThinkingOptionId;
   resolvedModelLabel?: string;
   thinkingSelectionSupported?: boolean;
+  modelSelectionSupported?: boolean;
   error?: string;
 }
 
@@ -148,6 +149,16 @@ export function isRendererModelPickerDisabled(view: RendererModelControlView): b
   );
 }
 
+/** A ready native default needs no invented catalog entry to enable submission. */
+export function isRendererModelSelectionReady(view: RendererModelControlView): boolean {
+  if (view.status === "empty" && view.modelSelectionSupported === false && view.catalog)
+    return true;
+  return (
+    view.status !== "selecting" &&
+    view.catalog?.models.some((model) => model.ref.id === view.selected?.id) === true
+  );
+}
+
 export function shouldCloseRendererModelPicker(view: RendererModelControlView): boolean {
   return isRendererModelPickerDisabled(view) && view.status !== "selecting";
 }
@@ -174,7 +185,8 @@ export function rendererModelPickerPresentation(
   else if (view.status === "waitingForAdapter" || view.status === "loading") {
     modelLabel = "Loading models...";
   } else if (view.status === "selecting") modelLabel = "Selecting...";
-  else if (view.status === "empty") modelLabel = "No models";
+  else if (view.status === "empty")
+    modelLabel = view.modelSelectionSupported === false ? "Native model" : "No models";
   else if (view.status === "error") modelLabel = "Models unavailable";
   return {
     modelLabel,

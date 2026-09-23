@@ -92,9 +92,9 @@ describe("release Payload", () => {
       await createPayload(root, target);
       const paths = await validatePayload({ payloadRoot: root, target, root: "/repo/source" });
       expect(paths).toEqual(expectedPayloadPaths(target));
-      expect(paths).toHaveLength(24 + preinstalledHarnessPluginPaths().length);
+      expect(paths).toHaveLength(25 + preinstalledHarnessPluginPaths().length);
       expect(expectedPayloadPaths(releaseTarget("windows-x64"))).toHaveLength(
-        26 + preinstalledHarnessPluginPaths().length,
+        27 + preinstalledHarnessPluginPaths().length,
       );
       expect(paths).toContain("licenses/tailwindcss-LICENSE.txt");
       expect(paths).toContain("app/plugins/enabled.json");
@@ -186,6 +186,10 @@ describe("release Payload", () => {
       expect(notice).toContain("@qoder-ai/qoder-agent-sdk");
       expect(notice).toContain("@qodercn-ai/qodercn-agent-sdk");
       expect(notice).toContain("@opencode-ai/sdk");
+      expect(notice).toContain("@mimo-ai/sdk");
+      expect(await readFile(path.join(output, "licenses/MiMo-SDK-LICENSE.txt"), "utf8")).toBe(
+        await readFile(path.join(root, "node_modules/@mimo-ai/sdk/LICENSE"), "utf8"),
+      );
       expect(notice).toContain("licenses/OpenCode-SDK-LICENSE.txt");
       expect(license).toContain("Copyright (c) 2025 opencode");
       expect(notice).toContain(

@@ -17,9 +17,13 @@ const { outputFiles } = await build({
 
       const model = { id: "pi-model-v1.startup" };
       const kiro = globalThis.startupAgent === "kiro-cli";
+      const nativeDefault = ["kimi-code", "mimo-code"].includes(globalThis.startupAgent) && !globalThis.startupSelectable;
       const inspection = {
         status: "ready",
-        catalog: kiro ? parseKiroModelCatalog([{
+        ...(nativeDefault ? { permissionModes: { defaultModeId: "native-default", modes: [
+          { id: "native-default", label: "Native configuration" }, { id: "ask", label: "Ask" },
+        ] } } : {}),
+        catalog: nativeDefault ? { models: [], thinkingOptions: [] } : kiro ? parseKiroModelCatalog([{
           id: "model",
           currentValue: "auto",
           options: [
@@ -31,15 +35,15 @@ const { outputFiles } = await build({
           ],
         }]) : {
           models: [{ ref: model, label: "Startup Model" }],
-          defaultModel: model,
+          ...(globalThis.startupSelectable ? {} : { defaultModel: model }),
           thinkingOptions: [],
         },
         capabilities: {
           configuration: {
-            selectModel: true,
+            selectModel: !nativeDefault,
             selectThinkingOption: kiro,
-            selectPermissionMode: false,
-            permissionModeScope: "live" as const,
+            selectPermissionMode: nativeDefault,
+            permissionModeScope: nativeDefault ? "atCreate" : "live",
           },
           history: { fork: true, forkAcrossCwd: true, rollbackLastTurn: true },
         },
@@ -71,6 +75,18 @@ const { outputFiles } = await build({
         },
       });
       const toolbar = document.createElement("div");
+      if (nativeDefault) {
+        const permission = document.createElement("button");
+        permission.type = "button";
+        permission.setAttribute("aria-haspopup", "menu");
+        permission.setAttribute("data-composer-navigation-target", "permissions");
+        Object.defineProperty(permission, "__reactFiber$permissions", { value: {
+          memoizedProps: { "aria-haspopup": "menu", "data-composer-navigation-target": "permissions",
+            showPermissionsModeDropdown: true, permissionsHostId: "local", permissionsCwdOverride: null },
+          return: null,
+        } });
+        toolbar.append(permission);
+      }
       const send = document.createElement("button");
       send.type = "submit";
       toolbar.append(send);
@@ -84,18 +100,20 @@ const { outputFiles } = await build({
       globalThis.commandCatalogRequests = [];
       globalThis.appliedConfiguration = null;
       const binding = installRendererBindingProbe({
-        enabledAgents: ["codex", "pi", "deepseek-harness", "opencode", "claude-code", "grok", "omp", "kiro-cli"],
+        enabledAgents: ["codex", "pi", "deepseek-harness", "opencode", "claude-code", "grok", "omp", "kiro-cli", "kimi-code", "mimo-code"],
         defaultAgent: globalThis.startupAgent ?? "pi",
       });
       binding.setAdapter(
         { state: "ready", reason: "ready", modelUpdates: 0, hook: "model-state" },
         undefined,
-        (agent, model, thinkingOptionId) => {
-          globalThis.appliedConfiguration = { agent, model, thinkingOptionId };
+        (agent, model, thinkingOptionId, permissionModeId) => {
+          globalThis.appliedConfiguration = { agent, model, thinkingOptionId, ...(permissionModeId ? { permissionModeId } : {}) };
           return true;
         },
         {
-          inspectHarness: async () => inspection,
+          inspectHarness: async () => globalThis.startupUnavailable
+            ? { status: "notInstalled", error: { code: "notInstalled", message: "CLI is not installed", retryable: false } }
+            : inspection,
           inspectHarnessCommands: async (input) => {
             globalThis.commandCatalogRequests.push(input);
             if (kiro) return KIRO_COMMAND_CATALOG;
@@ -151,6 +169,114 @@ const { outputFiles } = await build({
 
 const browserBundle = outputFiles[0]?.text;
 if (!browserBundle) throw new Error("Renderer binding startup E2E bundle was not generated");
+
+test.beforeEach(async ({ page }) => {
+  // Renderer preferences need a normal origin; about:blank denies localStorage in Edge.
+  await page.route("http://codexhost.test/", (route) =>
+    route.fulfill({ contentType: "text/html", body: "<!doctype html><body></body>" }),
+  );
+  await page.goto("http://codexhost.test/");
+});
+
+for (const agent of ["kimi-code", "mimo-code"] as const) {
+  test(`${agent} native default permits submission and keeps its Agent identity`, async ({
+    page,
+  }, testInfo) => {
+    await page.setContent("<!doctype html><body></body>");
+    await page.evaluate((id) => Reflect.set(globalThis, "startupAgent", id), agent);
+    await page.addScriptTag({ content: browserBundle });
+    await expect(
+      page.getByRole("button", { name: "Model: Native model", exact: true }),
+    ).toBeVisible();
+    await expect(page.locator('button[type="submit"]')).toBeEnabled();
+    await expect
+      .poll(() => page.evaluate(() => Reflect.get(globalThis, "appliedConfiguration")))
+      .toMatchObject({ agent });
+    expect(
+      await page.evaluate(() => Reflect.get(globalThis, "appliedConfiguration").model),
+    ).toBeUndefined();
+    await page.locator("[data-codexhost-permission-mode-control] > button").click();
+    await page.locator('button[data-permission-mode-id="ask"]').click();
+    await expect
+      .poll(() => page.evaluate(() => Reflect.get(globalThis, "appliedConfiguration")))
+      .toMatchObject({ agent, permissionModeId: "ask" });
+    expect(
+      await page.evaluate(
+        (id) =>
+          JSON.parse(localStorage.getItem("codexhost.new-thread-preference.v1") ?? "{}")
+            .externalByAgent[id],
+        agent,
+      ),
+    ).toEqual({ permissionModeId: "ask" });
+    expect(
+      await page
+        .locator("[data-codex-composer-root]")
+        .evaluate((composer) =>
+          composer.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })),
+        ),
+    ).toBe(true);
+    await page.screenshot({ path: testInfo.outputPath(`${agent}-native-default.png`) });
+  });
+
+  test(`${agent} unavailable CLI keeps submission disabled`, async ({ page }) => {
+    await page.setContent("<!doctype html><body></body>");
+    await page.evaluate((id) => {
+      Reflect.set(globalThis, "startupAgent", id);
+      Reflect.set(globalThis, "startupUnavailable", true);
+    }, agent);
+    await page.addScriptTag({ content: browserBundle });
+    await expect
+      .poll(() =>
+        page.evaluate(
+          (id) => window.__codexhostRendererBindingProbeV1?.status().availability?.[id],
+          agent,
+        ),
+      )
+      .toBe("notInstalled");
+    await expect(page.locator('button[type="submit"]')).toBeDisabled();
+    await expect(
+      page.getByRole("button", {
+        name: `Select Agent, current ${agent === "kimi-code" ? "Kimi Code" : "MiMo Code"}`,
+      }),
+    ).toBeVisible();
+    expect(
+      await page
+        .locator("[data-codex-composer-root]")
+        .evaluate((composer) =>
+          composer.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })),
+        ),
+    ).toBe(false);
+  });
+}
+
+for (const agent of ["kimi-code", "mimo-code"] as const) {
+  test(`${agent} catalog without a native default requires an explicit model choice`, async ({
+    page,
+  }) => {
+    await page.setContent("<!doctype html><body></body>");
+    await page.evaluate((id) => {
+      Reflect.set(globalThis, "startupAgent", id);
+      Reflect.set(globalThis, "startupSelectable", true);
+    }, agent);
+    await page.addScriptTag({ content: browserBundle });
+    const trigger = page.locator("[data-codexhost-model-control] > button");
+    await expect(trigger).toHaveAttribute("aria-label", "Model: Select model");
+    await expect(trigger).toBeEnabled();
+    await expect(page.locator('button[type="submit"]')).toBeDisabled();
+    await trigger.click();
+    await page
+      .getByRole("menu", { name: "Model", exact: true })
+      .locator('[data-model-id="pi-model-v1.startup"]')
+      .click();
+    await expect(page.locator('button[type="submit"]')).toBeEnabled();
+    expect(
+      await page.evaluate(() => Reflect.get(globalThis, "appliedConfiguration")),
+    ).toMatchObject({
+      agent,
+      model: { id: "pi-model-v1.startup" },
+    });
+  });
+}
 
 test("a new conversation shows Harness commands but disables compact before a Thread exists", async ({
   page,

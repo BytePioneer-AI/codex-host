@@ -146,6 +146,8 @@ export function rendererAgentForThreadOwnership(
   if (ownership.harnessId === "hermes") return "hermes";
   if (ownership.harnessId === "qoder") return "qoder";
   if (ownership.harnessId === "qoder-cn") return "qoder-cn";
+  if (ownership.harnessId === "kimi-code") return "kimi-code";
+  if (ownership.harnessId === "mimo-code") return "mimo-code";
   return null;
 }
 

@@ -1,0 +1,13 @@
+{
+  "manifestVersion": 1,
+  "id": "kimi-code",
+  "name": "Kimi Code",
+  "version": "0.0.0",
+  "adapterApiVersion": 1,
+  "entry": "dist/plugin.js",
+  "launchCommand": true,
+  "links": {
+    "documentation": "https://moonshotai.github.io/kimi-code/en/reference/server-api.html",
+    "installation": "https://github.com/MoonshotAI/kimi-code"
+  }
+}

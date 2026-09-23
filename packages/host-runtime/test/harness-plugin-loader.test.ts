@@ -116,6 +116,8 @@ describe("Harness plugin discovery and loading", () => {
     ["workbuddy", "WorkBuddy", "CODEXHOST_WORKBUDDY_COMMAND"],
     ["qoder", "Qoder", "CODEXHOST_QODER_COMMAND"],
     ["qoder-cn", "Qoder CN", "CODEXHOST_QODERCN_COMMAND"],
+    ["kimi-code", "Kimi Code", "CODEXHOST_KIMI_COMMAND"],
+    ["mimo-code", "MiMo Code", "CODEXHOST_MIMO_COMMAND"],
   ])(
     "loads the relocated %s bundle without workspace dependencies and isolates factories",
     async (id, name, commandVariable) => {

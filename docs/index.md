@@ -63,6 +63,12 @@
 | --- | --- |
 | [`harnesses/hermes/hermes-capabilities.md`](harnesses/hermes/hermes-capabilities.md) | Hermes gateway 提问、Thinking、精确派生、协作发现及旧 ACP 的原生能力边界；维护 Hermes Adapter 时阅读。 |
 
+### Kimi Code 与 MiMo Code
+
+| 文档 | 内容与阅读时机 |
+| --- | --- |
+| [`harnesses/kimi-mimo-integration.md`](harnesses/kimi-mimo-integration.md) | 两个原生插件的启动、会话语义、配置限制、Desktop 与预装发行，以及合成和真实验收边界。 |
+
 ### OpenCode 与 Pi
 
 | 文档 | 内容与阅读时机 |
@@ -120,6 +126,7 @@
 
 | 文档 | 内容与阅读时机 |
 | --- | --- |
+| [`proposals/kimi-mimo-harness-integration.md`](proposals/kimi-mimo-harness-integration.md) | Kimi Code 与 MiMo Code 原生接入方案、隔离服务验证、SDK 限制及 Desktop 分阶段验收；规划两种 Agent 的支持时阅读。 |
 | [`proposals/external-harness-idle-unload-proposal.md`](proposals/external-harness-idle-unload-proposal.md) | 外部 Harness 空闲释放与恢复方案、实现进展及验证边界；评估闲置资源回收时阅读。 |
 | [`proposals/Reasoning 实时预览与持久 Transcript 的后续方案.md`](proposals/Reasoning%20实时预览与持久%20Transcript%20的后续方案.md) | Reasoning 实时预览与持久留痕方案；规划 Reasoning 展示时阅读。 |
 | [`proposals/外部 Harness 回合文件变更汇总问题与后续方案.md`](proposals/外部%20Harness%20回合文件变更汇总问题与后续方案.md) | Turn 文件变更重复汇总问题、语义分层和候选方案；设计净 diff 时阅读。 |

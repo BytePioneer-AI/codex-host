@@ -173,6 +173,7 @@ export interface KiroAdapterDependencies {
 export class KiroAdapter implements HarnessAdapter {
   readonly harnessId: HarnessId = harnessIdSchema.parse("kiro-cli");
   readonly commandCatalog = KIRO_COMMAND_CATALOG;
+  readonly liveCommandCatalog = true;
 
   readonly #options: KiroAdapterOptions;
   readonly #deps: KiroAdapterDependencies;

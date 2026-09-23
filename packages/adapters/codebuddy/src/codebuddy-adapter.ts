@@ -43,6 +43,7 @@ export interface CodeBuddyAdapterOptions {
 export class CodeBuddyAdapter implements HarnessAdapter {
   readonly harnessId;
   readonly commandCatalog?: HarnessCommandCatalog;
+  readonly liveCommandCatalog = true;
   readonly subagents: HarnessSubagentCapability = {
     readSnapshot: async ({ parent, nativeSubagentId, cwd }) => {
       try {

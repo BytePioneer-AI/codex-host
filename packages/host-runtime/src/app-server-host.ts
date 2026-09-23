@@ -51,6 +51,7 @@ import {
   type HarnessPluginDescriptor,
   externalThreadForkParamsSchema,
   harnessCommandCatalogSchema,
+  type HarnessCommandCatalog,
   harnessCommandsInspectParamsSchema,
   type HarnessId,
   harnessIdSchema,
@@ -118,6 +119,11 @@ import {
   isExternalCommandCandidate,
   resolveExternalCommand,
 } from "./external-command-routing.js";
+import {
+  isLiveCommandCatalog,
+  LiveCommandCatalogCache,
+  sameWorkspace,
+} from "./live-command-catalog-cache.js";
 import {
   DELEGATION_CLI_PATH_ENV,
   DELEGATION_RUNTIME_ENDPOINT_ENV,
@@ -523,6 +529,7 @@ export class AppServerHost {
   readonly #accountInspections = new HarnessAccountInspectionCache();
   #externalRuntime: ExternalThreadRuntime;
   readonly #externalSteering = new ExternalTurnSteering();
+  readonly #liveCommandCache = new LiveCommandCatalogCache();
   #repository: ExternalThreadRepository;
   #pendingDesktopApprovals = new Map<HostApprovalRequestId, PendingDesktopApproval>();
   #pendingDesktopQuestions = new Map<HostQuestionRequestId, PendingDesktopQuestion>();
@@ -1188,7 +1195,7 @@ export class AppServerHost {
           rpcError(request, -32602, "Invalid Harness command inspection params"),
         );
       } else {
-        await this.#writeHarnessCommandCatalog(request, params.data.harnessId);
+        await this.#writeHarnessCommandCatalog(request, params.data.harnessId, params.data.cwd);
       }
       return;
     }
@@ -2545,31 +2552,80 @@ export class AppServerHost {
       return;
     }
     // A loaded Session reports its live catalog (custom commands, skills). Never
-    // open a Session only to read commands; unloaded Threads use the static one.
+    // open a Session only to read commands; unloaded Threads fall back to the
+    // workspace cache, then the static catalog.
     const loaded = this.#externalRuntime.get(params.data.threadId);
-    if (loaded?.session.commands) {
-      const catalog = await inspectLiveCommandCatalog(loaded.session.commands);
+    if (loaded) {
+      const catalog = await this.#inspectLoadedCommands(loaded);
       if (catalog) {
         await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(catalog) }));
         return;
       }
     }
-    await this.#writeHarnessCommandCatalog(request, location.record.harnessId);
+    await this.#writeHarnessCommandCatalog(
+      request,
+      location.record.harnessId,
+      loaded?.cwd ?? location.record.cwd,
+      params.data.threadId,
+    );
   }
 
-  async #writeHarnessCommandCatalog(request: JsonRpcRequest, harnessId: HarnessId): Promise<void> {
+  /**
+   * Catalog of a loaded Session, marked live or static. A live catalog is
+   * remembered for its Harness and workspace so later drafts there can show it.
+   */
+  async #inspectLoadedCommands(thread: ExternalThread): Promise<HarnessCommandCatalog | null> {
+    if (!thread.session.commands) return null;
+    const catalog = await inspectLiveCommandCatalog(thread.session.commands);
+    if (!catalog) return null;
+    const staticCatalog = this.#externalAdapters.get(thread.harnessId)?.commandCatalog;
+    if (staticCatalog && !isLiveCommandCatalog(catalog, staticCatalog)) return null;
+    const live = { ...catalog, source: "live" as const };
+    this.#liveCommandCache.remember(thread.harnessId, thread.cwd, live);
+    return live;
+  }
+
+  async #writeHarnessCommandCatalog(
+    request: JsonRpcRequest,
+    harnessId: HarnessId,
+    cwd?: string,
+    inspectedThreadId?: string,
+  ): Promise<void> {
     await this.#waitForPlugins();
     const adapter = this.#externalAdapters.get(harnessId);
     if (!adapter) {
       await this.#writer.json(rpcError(request, -32077, `Harness '${harnessId}' is unavailable`));
       return;
     }
+    let catalog: HarnessCommandCatalog;
     try {
-      const catalog = harnessCommandCatalogSchema.parse(adapter.commandCatalog ?? { commands: [] });
-      await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(catalog) }));
+      // `static` tells the Composer live commands exist but are not loaded
+      // yet; Harnesses without live catalogs leave the source unset.
+      catalog = harnessCommandCatalogSchema.parse({
+        ...(adapter.commandCatalog ?? { commands: [] }),
+        ...(adapter.liveCommandCatalog ? { source: "static" } : {}),
+      });
     } catch {
       await this.#writer.json(rpcError(request, -32078, "Harness command catalog is invalid"));
+      return;
     }
+    if (cwd && adapter.liveCommandCatalog) {
+      // Draft of a known workspace: a loaded Session there (a prewarmed draft
+      // or an open Thread) or the last catalog seen for it. Never start one.
+      for (const thread of this.#externalRuntime.values()) {
+        if (thread.id === inspectedThreadId) continue;
+        if (thread.harnessId !== harnessId || !sameWorkspace(thread.cwd, cwd)) continue;
+        const live = await this.#inspectLoadedCommands(thread);
+        if (live) {
+          catalog = live;
+          break;
+        }
+      }
+      if (catalog.source === "static") {
+        catalog = this.#liveCommandCache.lookup(harnessId, cwd) ?? catalog;
+      }
+    }
+    await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(catalog) }));
   }
 
   async #executeThreadCommand(request: JsonRpcRequest): Promise<void> {
@@ -3633,8 +3689,17 @@ export class AppServerHost {
     }
     this.#pendingExternalCommandRequests.add(thread.id);
     try {
-      const command = await resolveExternalCommand(commands, text);
+      const adapter = this.#externalAdapters.get(thread.harnessId);
+      const command = await resolveExternalCommand(commands, text, {
+        liveCatalogPending: (catalog) =>
+          adapter?.liveCommandCatalog === true &&
+          !isLiveCommandCatalog(catalog, adapter.commandCatalog ?? { commands: [] }),
+      });
       assertActive?.();
+      if (!command) {
+        this.#pendingExternalCommandRequests.delete(thread.id);
+        return await this.#beginExternalTurn(thread, text);
+      }
       return await this.#beginExternalCommand(thread, command.commandId, command.arguments);
     } catch (error) {
       if (error instanceof ExternalCommandError || error instanceof ExternalSteerError) throw error;

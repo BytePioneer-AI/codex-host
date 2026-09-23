@@ -181,3 +181,18 @@ export function rendererPermissionModePresentation(
         : (CHINESE_PERMISSION_MODE_DESCRIPTIONS.get(mode.description) ?? mode.description),
   };
 }
+
+/**
+ * `#` menu hint while a draft shows only a Harness's built-in commands: its
+ * project commands and skills load once a message starts the native Session.
+ */
+export function rendererLiveCommandsPendingNotice(
+  locale: RendererSettingsLocale,
+  harnessLabel: string,
+): string {
+  // Drop qualifiers such as "(Experimental)" from the display label.
+  const harness = harnessLabel.replace(/\s*[(（][^)）]*[)）]\s*$/u, "").trim() || harnessLabel;
+  return locale === "zh-CN"
+    ? `发送一条消息后，会加载 ${harness} 在当前项目的全部命令和技能`
+    : `Send a message to load all ${harness} commands and skills for this project`;
+}

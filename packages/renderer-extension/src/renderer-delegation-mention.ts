@@ -273,6 +273,11 @@ export interface RendererDelegationMentionControl {
 /** Same catalog and selection path as the Composer command (⌘) button. */
 export interface RendererDelegationCommandSource {
   commands: readonly HarnessCommandDescriptor[];
+  /**
+   * Shown below the commands while the workspace's live commands and skills
+   * are not loaded yet (a draft whose native Session has not run).
+   */
+  pendingNotice?: string | null;
   /** Non-null when the command cannot run now; shown instead of its description. */
   disabledReason(command: HarnessCommandDescriptor): string | null;
   select(command: HarnessCommandDescriptor): void;
@@ -474,6 +479,17 @@ export function installRendererDelegationMention(
         }
       }
     }
+    const notice = commands?.source.pendingNotice;
+    if (notice && (rows.length > 0 || trigger.query === "")) {
+      if (!rows.some((row) => row.querySelector("[data-command-id]"))) {
+        rows.push(sectionHeader(commandsTitle(locale)));
+      }
+      const hint = ownerDocument.createElement("div");
+      hint.setAttribute("data-codexhost-command-notice", "");
+      hint.className = "px-row-x py-1.5 text-sm text-codex-description";
+      hint.textContent = notice;
+      rows.push(hint);
+    }
     rowsRendered = rows.length;
     list.replaceChildren(...rows);
     activeIndex = Math.min(activeIndex, Math.max(0, entries.length - 1));
@@ -519,7 +535,8 @@ export function installRendererDelegationMention(
     const targets = filterDelegationTargets(allTargets, trigger.query);
     const source = options.readCommands(trigger.editor);
     const commandMatches = source ? filterDelegationCommands(source.commands, trigger.query) : [];
-    if (targets.length === 0 && commandMatches.length === 0) {
+    const showsNotice = Boolean(source?.pendingNotice) && trigger.query === "";
+    if (targets.length === 0 && commandMatches.length === 0 && !showsNotice) {
       close();
       return;
     }

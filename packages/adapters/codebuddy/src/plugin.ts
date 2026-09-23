@@ -9,6 +9,7 @@ export function createHarnessAdapter(context: HarnessPluginContext) {
       harnessId: "codebuddy",
       forwardDelegationEnvironment: true,
       commandCatalog: CODEBUDDY_COMMAND_CATALOG,
+      liveCommandCatalog: true,
       environment: { ...context.environment },
     });
   return new CodeBuddyAdapter({ environment: { ...context.environment } });

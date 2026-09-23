@@ -1463,6 +1463,7 @@ export class GrokAdapter implements HarnessAdapter {
         : readGrokCredentials(this.#environment ?? process.env),
   };
   readonly commandCatalog = grokCommandCatalog;
+  readonly liveCommandCatalog = true;
   readonly harnessId: HarnessId = grokHarnessId;
   readonly subagents: HarnessSubagentCapability = {
     readSnapshot: async (input) => {

@@ -2463,6 +2463,7 @@ class ClaudeHarnessSession implements HarnessSession {
 
 export class ClaudeCodeAdapter implements HarnessAdapter {
   readonly commandCatalog = claudeCommandCatalog;
+  readonly liveCommandCatalog = true;
   readonly harnessId: HarnessId = claudeCodeHarnessId;
   readonly sessionImport = Object.freeze({
     listCandidates: async (): Promise<HarnessResult<readonly HarnessSessionImportCandidate[]>> => {

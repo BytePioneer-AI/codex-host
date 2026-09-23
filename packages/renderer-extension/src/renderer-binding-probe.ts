@@ -43,7 +43,10 @@ import {
   type ExternalModelControlView,
   type ExternalPermissionModeControlView,
 } from "./renderer-composer-dom.js";
-import { rendererHarnessMessages } from "./renderer-harness-localization.js";
+import {
+  rendererHarnessMessages,
+  rendererLiveCommandsPendingNotice,
+} from "./renderer-harness-localization.js";
 import { installReasoningTranscriptSoftWrap } from "./renderer-transcript-dom.js";
 import { RendererCodexAccountState } from "./renderer-codex-account-state.js";
 import {
@@ -898,6 +901,20 @@ export function installRendererBindingProbe(
 
   let delegationMention: RendererDelegationMentionControl | null = null;
   /**
+   * Workspace of each Host's current draft, published by the draft prewarm
+   * (the only place Desktop names it). A draft asks the Host for that
+   * workspace's live commands and skills.
+   */
+  const draftWorkspaces = new Map<string, string>();
+  {
+    const published: unknown = Reflect.get(window, "__codexhostDraftWorkspacesV1");
+    if (typeof published === "object" && published !== null) {
+      for (const [hostId, cwd] of Object.entries(published)) {
+        if (typeof cwd === "string" && cwd.length > 0) draftWorkspaces.set(hostId, cwd);
+      }
+    }
+  }
+  /**
    * `keepCurrent` refreshes in place (the `#` menu reopening) instead of
    * clearing first, so an open menu never flickers empty.
    */
@@ -918,7 +935,10 @@ export function installRendererBindingProbe(
       // skills); the Host falls back to the static Adapter catalog otherwise.
       const catalog = threadId
         ? await client.inspectThreadCommands({ threadId })
-        : await client.inspectHarnessCommands({ harnessId: externalHarnessIds[agent] });
+        : await client.inspectHarnessCommands({
+            harnessId: externalHarnessIds[agent],
+            ...(hostId && draftWorkspaces.has(hostId) ? { cwd: draftWorkspaces.get(hostId) } : {}),
+          });
       if (
         disposed ||
         mountedByComposer.get(mounted.composer) !== mounted ||
@@ -933,6 +953,7 @@ export function installRendererBindingProbe(
       mounted.control.harnessCommands.setCommands(
         catalog.commands,
         threadIdFromComposerModelTarget(mounted.modelTarget) !== null,
+        catalog.source,
       );
       delegationMention?.refresh();
     } catch {
@@ -2752,7 +2773,24 @@ export function installRendererBindingProbe(
       void refreshHarnessAvailability(true);
     }
   };
+  const onDraftWorkspace = (event: Event): void => {
+    const detail: unknown = (event as CustomEvent).detail;
+    if (typeof detail !== "object" || detail === null) return;
+    const { hostId, cwd } = detail as { hostId?: unknown; cwd?: unknown };
+    if (typeof hostId !== "string" || typeof cwd !== "string" || cwd.length === 0) return;
+    draftWorkspaces.set(hostId, cwd);
+    for (const mounted of mountedByComposer.values()) {
+      if (
+        !threadIdFromComposerModelTarget(mounted.modelTarget) &&
+        activeModelHostId() === hostId &&
+        controller.get(mounted.composer).agent !== "codex"
+      ) {
+        void refreshCommands(mounted, { keepCurrent: true });
+      }
+    }
+  };
   window.addEventListener("codexhost:draft-prewarm-policy-changed", onHostRouteChange);
+  window.addEventListener("codexhost:draft-workspace", onDraftWorkspace);
   window.addEventListener("codexhost:renderer-adapter-status", onAdapterStatus);
   window.addEventListener("focus", onWindowFocus);
   delegationMention = installRendererDelegationMention(document, {
@@ -2782,13 +2820,23 @@ export function installRendererBindingProbe(
       const composer = composerForElement(editor);
       const mounted = composer ? mountedByComposer.get(composer) : undefined;
       if (!mounted || controller.get(mounted.composer).agent === "codex") return null;
-      const { commands, hasSession, executingCommandId } =
+      const { commands, hasSession, executingCommandId, source } =
         mounted.control.harnessCommands.snapshot();
       // While a command runs, the ⌘ button is disabled too.
-      if (commands.length === 0 || executingCommandId !== null) return null;
+      if (executingCommandId !== null) return null;
       const messages = rendererHarnessMessages(settingsLifecycle.locale);
+      const agent = controller.get(mounted.composer).agent;
+      const pendingNotice =
+        source === "static"
+          ? rendererLiveCommandsPendingNotice(
+              settingsLifecycle.locale,
+              RENDERER_AGENT_LABELS[agent],
+            )
+          : null;
+      if (commands.length === 0 && pendingNotice === null) return null;
       return {
         commands,
+        pendingNotice,
         disabledReason: (command) =>
           !hasSession && rendererHarnessCommandExecutesDirectly(command)
             ? messages.commandRequiresConversation
@@ -2924,6 +2972,7 @@ export function installRendererBindingProbe(
       document.removeEventListener("keydown", onKeyDown, true);
       document.removeEventListener("click", onClick, true);
       window.removeEventListener("codexhost:draft-prewarm-policy-changed", onHostRouteChange);
+      window.removeEventListener("codexhost:draft-workspace", onDraftWorkspace);
       window.removeEventListener("codexhost:renderer-adapter-status", onAdapterStatus);
       window.removeEventListener("focus", onWindowFocus);
       for (const state of harnessAvailabilityByHost.values()) {

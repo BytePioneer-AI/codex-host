@@ -166,4 +166,134 @@ describe("Thread command catalog", () => {
     expect(list).toHaveBeenCalled();
     await stopFixture(fixture);
   });
+  it("serves a draft the live catalog of its workspace, then the cached one", async () => {
+    const fixture = createFixture();
+    try {
+      Object.assign(fixture.adapter, {
+        commandCatalog: { commands: [staticCommand] },
+        liveCommandCatalog: true,
+      });
+      await startPiThread(fixture);
+      const session = fixture.adapter.sessions[0];
+      if (!session) throw new Error("Fake Pi Session was not opened");
+      const execute = async ({ turnId }: HarnessCommandInvocation) => ({
+        ok: true as const,
+        value: { turnId },
+      });
+      session.commands = {
+        list: async () => ({ ok: true, value: { commands: [staticCommand, liveSkill] } }),
+        execute,
+      };
+      const inspect = async (id: number, cwd?: string) => {
+        writeRequest(fixture.desktopInput, {
+          id,
+          method: "codexhost/harness/commands/inspect",
+          params: { harnessId: "pi", ...(cwd ? { cwd } : {}) },
+        });
+        return fixture.collector.waitFor((message) => requestId(message, id));
+      };
+
+      await expect(inspect(2, "/synthetic/")).resolves.toMatchObject({
+        result: { commands: [staticCommand, liveSkill], source: "live" },
+      });
+      // The native process went away: the workspace cache still answers.
+      session.commands = {
+        list: async () => ({ ok: true, value: { commands: [staticCommand] } }),
+        execute,
+      };
+      await expect(inspect(3, "/synthetic")).resolves.toMatchObject({
+        result: { commands: [staticCommand, liveSkill], source: "live" },
+      });
+      await expect(inspect(4, "/elsewhere")).resolves.toMatchObject({
+        result: { commands: [staticCommand], source: "static" },
+      });
+      await expect(inspect(5)).resolves.toMatchObject({
+        result: { commands: [staticCommand], source: "static" },
+      });
+    } finally {
+      await stopFixture(fixture);
+    }
+  });
+
+  it("leaves the source unset for Harnesses without live catalogs", async () => {
+    const fixture = createFixture();
+    try {
+      Object.assign(fixture.adapter, { commandCatalog: { commands: [staticCommand] } });
+      writeRequest(fixture.desktopInput, {
+        id: 2,
+        method: "codexhost/harness/commands/inspect",
+        params: { harnessId: "pi", cwd: "/synthetic" },
+      });
+      const response = await fixture.collector.waitFor((message) => requestId(message, 2));
+      expect(response).toMatchObject({ result: { commands: [staticCommand] } });
+      expect(response.result).not.toHaveProperty("source");
+    } finally {
+      await stopFixture(fixture);
+    }
+  });
+
+  it("marks a Thread catalog static until its Session reports live commands", async () => {
+    const fixture = createFixture();
+    try {
+      Object.assign(fixture.adapter, {
+        commandCatalog: { commands: [staticCommand] },
+        liveCommandCatalog: true,
+      });
+      const threadId = await startPiThread(fixture);
+      const session = fixture.adapter.sessions[0];
+      if (!session) throw new Error("Fake Pi Session was not opened");
+      session.commands = {
+        list: async () => ({ ok: true, value: { commands: [staticCommand] } }),
+        execute: async ({ turnId }) => ({ ok: true, value: { turnId } }),
+      };
+      writeRequest(fixture.desktopInput, {
+        id: 2,
+        method: "codexhost/thread/commands/inspect",
+        params: { threadId },
+      });
+      await expect(
+        fixture.collector.waitFor((message) => requestId(message, 2)),
+      ).resolves.toMatchObject({ result: { commands: [staticCommand], source: "static" } });
+    } finally {
+      await stopFixture(fixture);
+    }
+  });
+  it.each([
+    ["sends a workspace command as a prompt before the live catalog loads", true, "/review hi"],
+    ["rejects the same command for a Harness without live catalogs", false, "/review hi"],
+    ["rejects an excluded command before the live catalog loads", true, "/clear"],
+  ] as const)("%s", async (_name, liveCommandCatalog, text) => {
+    const fixture = createFixture();
+    try {
+      Object.assign(fixture.adapter, {
+        commandCatalog: { commands: [staticCommand] },
+        liveCommandCatalog,
+      });
+      const threadId = await startPiThread(fixture);
+      const session = fixture.adapter.sessions[0];
+      if (!session) throw new Error("Fake Pi Session was not opened");
+      const execute = vi.fn(async ({ turnId }: HarnessCommandInvocation) => ({
+        ok: true as const,
+        value: { turnId },
+      }));
+      session.commands = {
+        list: async () => ({ ok: true, value: { commands: [staticCommand] } }),
+        execute,
+      };
+      writeRequest(fixture.desktopInput, {
+        id: 2,
+        method: "turn/start",
+        params: { threadId, input: [{ type: "text", text }] },
+      });
+      const response = await fixture.collector.waitFor((message) => requestId(message, 2));
+      if (liveCommandCatalog && text !== "/clear") {
+        expect(response).toMatchObject({ result: { turn: {} } });
+        expect(execute).not.toHaveBeenCalled();
+      } else {
+        expect(response).toMatchObject({ error: { code: -32078 } });
+      }
+    } finally {
+      await stopFixture(fixture);
+    }
+  });
 });

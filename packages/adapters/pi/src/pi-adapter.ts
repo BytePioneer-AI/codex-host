@@ -1974,6 +1974,7 @@ class PiHarnessSession implements HarnessSession {
 export class PiAdapter implements HarnessAdapter {
   readonly credentialImports: HarnessCredentialImports;
   readonly commandCatalog = piCommandCatalog;
+  readonly liveCommandCatalog = true;
   readonly harnessId: HarnessId = piHarnessId;
   readonly subagents: HarnessSubagentCapability = {
     readSnapshot: async ({ parent, nativeSubagentId, cwd }) => {

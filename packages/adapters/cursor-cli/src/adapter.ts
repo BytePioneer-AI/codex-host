@@ -87,6 +87,7 @@ function rejected(code: HarnessError["code"], message: string): { ok: false; err
 }
 export class CursorAdapter implements HarnessAdapter {
   readonly commandCatalog = CURSOR_COMMAND_CATALOG;
+  readonly liveCommandCatalog = true;
   readonly subagents: HarnessSubagentCapability = {
     readSnapshot: async ({ parent, nativeSubagentId, cwd }) => {
       if (parent.harnessId !== this.harnessId || this.#closed)

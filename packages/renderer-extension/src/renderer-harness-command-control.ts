@@ -1,4 +1,4 @@
-import type { HarnessCommandDescriptor } from "@codexhost/shared-contracts";
+import type { HarnessCommandCatalog, HarnessCommandDescriptor } from "@codexhost/shared-contracts";
 
 import { rendererHarnessMessages } from "./renderer-harness-localization.js";
 import type { RendererSettingsLocale } from "./settings/localization.js";
@@ -38,12 +38,18 @@ export interface RendererHarnessCommandSnapshot {
   commands: readonly HarnessCommandDescriptor[];
   hasSession: boolean;
   executingCommandId: string | null;
+  /** Host catalog source; `static` means live commands exist but are not loaded yet. */
+  source: HarnessCommandCatalog["source"];
 }
 
 export interface RendererHarnessCommandControl {
   root: HTMLElement;
   trigger: HTMLButtonElement;
-  setCommands(commands: readonly HarnessCommandDescriptor[], hasSession?: boolean): void;
+  setCommands(
+    commands: readonly HarnessCommandDescriptor[],
+    hasSession?: boolean,
+    source?: HarnessCommandCatalog["source"],
+  ): void;
   /** Current catalog state, read by the `#` Composer menu. */
   snapshot(): RendererHarnessCommandSnapshot;
   setExecuting(commandId: string | null): void;
@@ -91,6 +97,7 @@ export function mountRendererHarnessCommandControl(
 
   let commands: readonly HarnessCommandDescriptor[] = [];
   let hasSession = true;
+  let source: HarnessCommandCatalog["source"];
   let executingCommandId: string | null = null;
   let hovered = false;
 
@@ -130,12 +137,13 @@ export function mountRendererHarnessCommandControl(
       reference.parentElement.insertBefore(root, reference);
       return true;
     },
-    setCommands(nextCommands, nextHasSession = true) {
+    setCommands(nextCommands, nextHasSession = true, nextSource) {
       commands = [...nextCommands];
       hasSession = nextHasSession;
+      source = nextSource;
     },
     snapshot() {
-      return { commands, hasSession, executingCommandId };
+      return { commands, hasSession, executingCommandId, source };
     },
     setExecuting(commandId) {
       executingCommandId = commandId;

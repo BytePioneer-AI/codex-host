@@ -325,6 +325,32 @@ describe("Renderer draft prewarm policy", () => {
     });
   });
 
+  it("publishes the prewarmed draft's workspace for the Composer", async () => {
+    const prewarmThreadStart = vi.fn(async (parameters: unknown) => parameters);
+    const bridge = requestBridgeFixture({ prewarmThreadStart });
+    const events: unknown[] = [];
+    const target: DraftPrewarmPolicyTarget = {
+      dispatchEvent: (event: Event) => {
+        if (event.type === "codexhost:draft-workspace") {
+          events.push((event as CustomEvent).detail);
+        }
+        return true;
+      },
+    };
+    installDraftPrewarmPolicyBridge(requestManagerFixture(), bridge, "local", target, {
+      discardAllPrewarmedThreads: vi.fn(),
+    });
+
+    await bridge.prewarmThreadStart?.({ cwd: "/tmp/project", model: "gpt-5" });
+    await bridge.prewarmThreadStart?.({ ephemeral: true, cwd: "/tmp/other" });
+
+    expect(events).toEqual([
+      { hostId: "local", cwd: "/tmp/project" },
+      { hostId: "local", cwd: "/tmp/project" },
+    ]);
+    expect(target.__codexhostDraftWorkspacesV1).toEqual({ local: "/tmp/project" });
+  });
+
   it("rejects an in-flight prewarm after the selected Harness changes", async () => {
     const stalePrewarm = Promise.withResolvers<unknown>();
     const prewarmThreadStart = vi

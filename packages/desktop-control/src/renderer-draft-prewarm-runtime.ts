@@ -536,9 +536,31 @@ export function createDraftPrewarmPolicyBridge(
     }
     return shouldUseBridge(method, routedParameters) ? sendBridged() : sendDirect();
   };
+  // The draft's workspace reaches the Host only through this prewarm. Publish
+  // it so the Composer can ask for that workspace's live Harness commands;
+  // again once the prewarm settles, when a prewarmed Session may report them.
+  const publishDraftWorkspace = (parameters: unknown): void => {
+    if (!isRecord(parameters) || parameters.ephemeral === true) return;
+    const cwd = parameters.cwd;
+    if (typeof cwd !== "string" || cwd.length === 0) return;
+    const drafts = isRecord(target.__codexhostDraftWorkspacesV1)
+      ? target.__codexhostDraftWorkspacesV1
+      : {};
+    drafts[hostId] = cwd;
+    Object.defineProperty(target, "__codexhostDraftWorkspacesV1", {
+      configurable: true,
+      value: drafts,
+    });
+    if (typeof target.dispatchEvent === "function" && typeof CustomEvent === "function") {
+      target.dispatchEvent(
+        new CustomEvent("codexhost:draft-workspace", { detail: { hostId, cwd } }),
+      );
+    }
+  };
   const routedPrewarm = (parameters: unknown, options?: unknown): unknown => {
     const routedParameters = routeThreadStart(parameters);
     const generation = prewarmGeneration;
+    publishDraftWorkspace(routedParameters);
     const pending = shouldUseBridge("thread/start", routedParameters)
       ? routedSend("thread/start", routedParameters, options)
       : options === undefined
@@ -556,6 +578,7 @@ export function createDraftPrewarmPolicyBridge(
       if (disposed || generation !== prewarmGeneration) {
         throw new Error("Renderer draft prewarm was invalidated by a configuration change");
       }
+      publishDraftWorkspace(routedParameters);
       return result;
     });
   };

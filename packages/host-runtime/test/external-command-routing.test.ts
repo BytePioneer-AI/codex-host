@@ -2,7 +2,11 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { HarnessResult, HarnessSession } from "@codexhost/harness-adapter";
 import type { HarnessCommandCatalog } from "@codexhost/shared-contracts";
 
-import { inspectLiveCommandCatalog } from "../src/external-command-routing.js";
+import {
+  ExternalCommandError,
+  inspectLiveCommandCatalog,
+  resolveExternalCommand,
+} from "../src/external-command-routing.js";
 
 afterEach(() => vi.useRealTimers());
 
@@ -37,5 +41,43 @@ describe("bounded live command inspection", () => {
     pending.reject(new Error("late native failure"));
     await vi.advanceTimersByTimeAsync(0);
     expect(vi.getTimerCount()).toBe(0);
+  });
+});
+
+describe("command resolution before the live catalog loads", () => {
+  const builtInsOnly: NonNullable<HarnessSession["commands"]> = {
+    list: async () => ({
+      ok: true,
+      value: {
+        commands: [
+          { id: "x.compact", invocation: "/compact", label: "Compact", argumentMode: "none" },
+        ],
+      },
+    }),
+    execute: async ({ turnId }) => ({ ok: true, value: { turnId } }),
+  };
+
+  it("passes an unknown command through as a prompt while the catalog is pending", async () => {
+    await expect(
+      resolveExternalCommand(builtInsOnly, "/teambition 你好", { liveCatalogPending: () => true }),
+    ).resolves.toBeNull();
+  });
+
+  it("still rejects excluded commands and unknown commands once the catalog is live", async () => {
+    await expect(
+      resolveExternalCommand(builtInsOnly, "/clear", { liveCatalogPending: () => true }),
+    ).rejects.toBeInstanceOf(ExternalCommandError);
+    await expect(
+      resolveExternalCommand(builtInsOnly, "/teambition", { liveCatalogPending: () => false }),
+    ).rejects.toMatchObject({ code: -32078 });
+    await expect(resolveExternalCommand(builtInsOnly, "/teambition")).rejects.toMatchObject({
+      code: -32078,
+    });
+  });
+
+  it("keeps resolving catalog commands", async () => {
+    await expect(
+      resolveExternalCommand(builtInsOnly, "/compact", { liveCatalogPending: () => true }),
+    ).resolves.toEqual({ commandId: "x.compact" });
   });
 });

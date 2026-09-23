@@ -17,9 +17,9 @@ const { outputFiles } = await build({
       import { installRendererDelegationMention } from "./packages/renderer-extension/src/renderer-delegation-mention.ts";
       import { mountRendererHarnessCommandControl } from "./packages/renderer-extension/src/renderer-harness-command-control.ts";
       import { rendererHarnessCommandExecutesDirectly } from "./packages/renderer-extension/src/renderer-harness-command-claim.ts";
-      import { rendererHarnessMessages } from "./packages/renderer-extension/src/renderer-harness-localization.ts";
+      import { rendererHarnessMessages, rendererLiveCommandsPendingNotice } from "./packages/renderer-extension/src/renderer-harness-localization.ts";
 
-      globalThis.setupHashMenu = ({ commands, hasSession, locale }) => {
+      globalThis.setupHashMenu = ({ commands, hasSession, locale, source }) => {
         const editor = document.createElement("div");
         editor.contentEditable = "true";
         editor.setAttribute("data-test-editor", "");
@@ -27,8 +27,8 @@ const { outputFiles } = await build({
         document.body.append(editor, toolbar);
         let menu = null;
         const control = mountRendererHarnessCommandControl(toolbar, null, () => menu.openFor(editor), locale);
-        control.setCommands(commands, hasSession);
-        globalThis.setHasSession = (next) => control.setCommands(commands, next);
+        control.setCommands(commands, hasSession, source);
+        globalThis.setHasSession = (next) => control.setCommands(commands, next, source);
         menu = installRendererDelegationMention(document, {
           readTargets: () => [],
           isComposerEditor: (element) => element === editor,
@@ -36,9 +36,12 @@ const { outputFiles } = await build({
           anchorForEditor: () => editor,
           readCommands: () => {
             const snapshot = control.snapshot();
-            if (snapshot.commands.length === 0) return null;
+            const pendingNotice =
+              snapshot.source === "static" ? rendererLiveCommandsPendingNotice(locale, "Cursor CLI (Experimental)") : null;
+            if (snapshot.commands.length === 0 && pendingNotice === null) return null;
             return {
               commands: snapshot.commands,
+              pendingNotice,
               disabledReason: (command) =>
                 !snapshot.hasSession && rendererHarnessCommandExecutesDirectly(command)
                   ? rendererHarnessMessages(locale).commandRequiresConversation
@@ -64,7 +67,12 @@ const bundle: string = bundleText;
 
 async function setup(
   page: Page,
-  options: { commands: unknown[]; hasSession: boolean; locale: "en" | "zh-CN" },
+  options: {
+    commands: unknown[];
+    hasSession: boolean;
+    locale: "en" | "zh-CN";
+    source?: "live" | "static";
+  },
 ): Promise<void> {
   await page.setContent("<!doctype html><body></body>");
   await page.addScriptTag({ content: bundle });
@@ -156,4 +164,35 @@ test("the command button spaces # from a preceding word", async ({ page }) => {
   await trigger(page).click();
   await expect(page.locator("[data-test-editor]")).toHaveText("hello #");
   await expect(menu(page)).toBeVisible();
+});
+
+test("a draft without its workspace's live catalog explains when it loads", async ({ page }) => {
+  await setup(page, { commands: [], hasSession: false, locale: "zh-CN", source: "static" });
+  const notice = menu(page).locator("[data-codexhost-command-notice]");
+  await trigger(page).click();
+  await expect(notice).toHaveText("发送一条消息后，会加载 Cursor CLI 在当前项目的全部命令和技能");
+  await expect(menu(page)).toContainText("命令");
+  // A query matching nothing closes the menu instead of keeping only the hint.
+  await page.keyboard.type("zzz");
+  await expect(menu(page)).toBeHidden();
+});
+
+test("a live workspace catalog shows no loading hint", async ({ page }) => {
+  await setup(page, {
+    commands: [
+      {
+        id: "x.slash.review",
+        invocation: "/review",
+        label: "review",
+        argumentMode: "text",
+        kind: "skill",
+      },
+    ],
+    hasSession: false,
+    locale: "en",
+    source: "live",
+  });
+  await trigger(page).click();
+  await expect(menu(page).locator('[data-command-id="x.slash.review"]')).toBeVisible();
+  await expect(menu(page).locator("[data-codexhost-command-notice]")).toHaveCount(0);
 });

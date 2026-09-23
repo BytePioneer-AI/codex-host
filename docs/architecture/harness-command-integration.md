@@ -45,8 +45,16 @@ For commands with visible progress, decide explicitly whether they need:
 
 Catalog reads never open or resume a Session:
 
-- `codexhost/harness/commands/inspect { harnessId }` returns the static Adapter metadata. The Renderer uses it before a Thread exists.
-- `codexhost/thread/commands/inspect { threadId }` returns the loaded Session's `session.commands.list()` when that Session is already loaded, and falls back to the static Adapter metadata when it is not loaded, the listing fails, or the read exceeds the Host’s one-second inspection deadline. The Renderer uses it for existing Threads and refreshes it whenever the Composer `#` menu opens.
+- `codexhost/harness/commands/inspect { harnessId, cwd? }` serves a draft before its Thread exists. Without `cwd` it returns the static Adapter metadata. With `cwd` it returns, in order: the live catalog of a loaded Session of the same Harness and workspace (for example the draft's own prewarmed Session), the workspace's cached live catalog, then the static metadata.
+- `codexhost/thread/commands/inspect { threadId }` returns the loaded Session's `session.commands.list()` when that Session is already loaded and reports live entries, and otherwise falls back like the draft read for the Thread's workspace. A listing failure or a read past the Host's one-second inspection deadline also falls back. The Renderer uses it for existing Threads and refreshes it whenever the Composer `#` menu opens.
+
+For Harnesses whose Adapter sets `liveCommandCatalog: true`, inspection results carry `source`: `live` when they include what a native Session reported for the workspace, `static` when they are the Adapter built-ins only. Other Harnesses leave `source` unset.
+
+Every live result is remembered in memory per Harness and workspace (at most 64 workspaces, least recently used first out), so a new draft in a workspace that already had a running Session shows its project commands and skills. The cache never crosses workspaces and never survives a Host restart; the Host never starts a native process to fill it.
+
+A draft's workspace reaches the Host only through Desktop's `thread/start` prewarm. The desktop-control draft bridge publishes that `cwd` per Host (`window.__codexhostDraftWorkspacesV1` and the `codexhost:draft-workspace` event, once when the prewarm starts and again when it settles); the Renderer passes it to the draft read and refreshes the draft's catalog when it changes. A draft with no workspace uses the static catalog.
+
+When the result is `static`, the `#` menu adds a hint under the commands that the project's commands and skills load after a message is sent. The hint shows on a bare `#` even when no command is listed, and is dropped once the query matches nothing.
 
 The Composer `#` menu is the single command surface; it has no Harness-specific catalog branches. The command (⌘) button is its discoverable entry: hovering explains the `#` trigger, and clicking types `#` at the caret (spaced from a preceding word) to open the menu. The button holds the Harness command catalog the menu reads.
 
@@ -57,7 +65,7 @@ The Composer `#` menu is the single command surface; it has no Harness-specific 
 
 The command button belongs to the active external Harness controls, near the Composer's left-side actions. It stays visible and enabled before a Thread exists and whatever the catalog or execution state, because the `#` menu also lists delegation targets. Switching to Codex hides it. The `#` menu MUST remain outside the Codex React-managed Slash command list; it owns its own focus, keyboard navigation, positioning, and scrolling.
 
-For typed submission, the Host first checks for a leading slash-command token (ignoring leading whitespace). Only command candidates have trailing whitespace removed before catalog matching; ordinary prompts retain their original text and skip command catalog inspection. Unknown slash commands are rejected.
+For typed submission, the Host first checks for a leading slash-command token (ignoring leading whitespace). Only command candidates have trailing whitespace removed before catalog matching; ordinary prompts retain their original text and skip command catalog inspection. Unknown slash commands are rejected, except while a `liveCommandCatalog` Harness's Session still reports only its built-ins (its native process has not started, typically a Thread's first message): the Composer may already list the workspace's live commands from another Session or the cache, so the text goes to the Harness as an ordinary prompt and the native Harness resolves it, as live commands always execute. Commonly excluded commands stay rejected.
 
 Only add Renderer-specific code when the command needs a new presentation or interaction.
 

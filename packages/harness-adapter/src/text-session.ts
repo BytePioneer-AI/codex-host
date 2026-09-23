@@ -562,6 +562,12 @@ export interface HarnessAdapter {
   readonly harnessId: HarnessId;
   /** Static command metadata. Reading it must not inspect, connect to, or open a Native Session. */
   readonly commandCatalog?: HarnessCommandCatalog;
+  /**
+   * True when a Session whose native process runs reports workspace commands
+   * and skills beyond {@link commandCatalog}. The Composer then tells a draft
+   * without them that they load after its first message.
+   */
+  readonly liveCommandCatalog?: boolean;
   readonly sessionImport?: HarnessSessionImportCapability;
   readonly subagents?: HarnessSubagentCapability;
   readonly webUi?: HarnessWebUiAction;

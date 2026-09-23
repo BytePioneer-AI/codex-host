@@ -301,6 +301,7 @@ export type {
   UpdateStatus,
   UpdateStatusResult,
 } from "./updates.js";
+export { KNOWN_RENDERER_AGENTS, type RendererAgent } from "./renderer-agents.js";
 export { WORKSPACE_CONTRACT_VERSION } from "./version.js";
 
 export const workspaceContractVersionSchema = z.literal(WORKSPACE_CONTRACT_VERSION);

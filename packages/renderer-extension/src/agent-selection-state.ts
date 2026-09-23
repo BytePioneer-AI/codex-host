@@ -3,26 +3,13 @@ import type {
   HarnessPermissionModeId,
   HarnessThinkingOptionId,
 } from "@codexhost/shared-contracts";
+import {
+  KNOWN_RENDERER_AGENTS,
+  type RendererAgent,
+} from "@codexhost/shared-contracts/renderer-agents";
 
-export const KNOWN_RENDERER_AGENTS = [
-  "codex",
-  "pi",
-  "claude-code",
-  "deepseek-harness",
-  "opencode",
-  "grok",
-  "omp",
-  "antigravity",
-  "kiro-cli",
-  "codebuddy",
-  "workbuddy",
-  "cursor-cli",
-  "hermes",
-  "qoder",
-  "qoder-cn",
-] as const;
+export { KNOWN_RENDERER_AGENTS, type RendererAgent };
 export const DEFAULT_RENDERER_AGENTS = KNOWN_RENDERER_AGENTS;
-export type RendererAgent = (typeof KNOWN_RENDERER_AGENTS)[number];
 export type ExternalRendererAgent = Exclude<RendererAgent, "codex">;
 export type RendererAgentAvailability =
   "checking" | "ready" | "notInstalled" | "unavailable" | "error";

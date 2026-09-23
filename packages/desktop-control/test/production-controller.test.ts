@@ -2,6 +2,8 @@ import path from "node:path";
 
 import { describe, expect, it, vi } from "vitest";
 
+import { KNOWN_RENDERER_AGENTS } from "@codexhost/shared-contracts/renderer-agents";
+
 import {
   parseDesktopControllerArguments,
   runDesktopController,
@@ -141,23 +143,7 @@ describe("production Desktop Controller", () => {
       rendererCdpEndpoint: "http://127.0.0.1:43123",
       rendererSource:
         'globalThis.__zod_globalConfig ??= {}; globalThis.__zod_globalConfig.jitless = true;\nObject.defineProperty(window, "__codexhostProductionConfigV1", { configurable: true, value: { defaultAgent: "pi" } });\nproduction renderer',
-      enabledAgents: [
-        "codex",
-        "pi",
-        "claude-code",
-        "deepseek-harness",
-        "opencode",
-        "grok",
-        "omp",
-        "antigravity",
-        "kiro-cli",
-        "codebuddy",
-        "workbuddy",
-        "cursor-cli",
-        "qoder",
-        "qoder-cn",
-        "hermes",
-      ],
+      enabledAgents: KNOWN_RENDERER_AGENTS,
       timeoutMs: 90_000,
     });
     expect(startAttachmentServer).toHaveBeenCalledWith({

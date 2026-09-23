@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 
+import { KNOWN_RENDERER_AGENTS } from "@codexhost/shared-contracts/renderer-agents";
 import {
   startControllerAttachmentServer,
   type ControllerAttachmentServer,
@@ -242,23 +243,9 @@ export async function runDesktopController(
       {
         rendererCdpEndpoint: options.rendererCdpEndpoint,
         rendererSource: `${RENDERER_CSP_BOOTSTRAP}\n${configuration}\n${rendererSource}`,
-        enabledAgents: [
-          "codex",
-          "pi",
-          "claude-code",
-          "deepseek-harness",
-          "opencode",
-          "grok",
-          "omp",
-          "antigravity",
-          "kiro-cli",
-          "codebuddy",
-          "workbuddy",
-          "cursor-cli",
-          "qoder",
-          "qoder-cn",
-          "hermes",
-        ],
+        // The Renderer validates this sequence element by element, so it must
+        // stay the single shared catalog rather than a local copy.
+        enabledAgents: KNOWN_RENDERER_AGENTS,
         timeoutMs: PRODUCTION_INSTALL_TIMEOUT_MS,
       },
       dependencies,

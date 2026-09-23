@@ -11,6 +11,10 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
     },
+    "./renderer-agents": {
+      "types": "./dist/renderer-agents.d.ts",
+      "import": "./dist/renderer-agents.js"
+    },
     "./version": {
       "types": "./dist/version.d.ts",
       "import": "./dist/version.js"

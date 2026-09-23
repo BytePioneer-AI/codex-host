@@ -4,12 +4,13 @@ import {
   runDesktopController,
   type DesktopControllerDependencies,
 } from "@codexhost/desktop-control";
+import { KNOWN_RENDERER_AGENTS } from "@codexhost/shared-contracts/renderer-agents";
 import { DEFAULT_RENDERER_AGENTS } from "../src/agent-selection-state.js";
 
 describe("production Controller / Renderer Agent contract", () => {
   afterEach(() => vi.useRealTimers());
 
-  it("accepts the actual Renderer Agent set without reinjecting a healthy page", async () => {
+  it("accepts the actual Renderer Agent catalog without reinjecting a healthy page", async () => {
     vi.useFakeTimers();
     const abort = new AbortController();
     let clock = 0;
@@ -72,12 +73,15 @@ describe("production Controller / Renderer Agent contract", () => {
     );
     await vi.runAllTimersAsync();
     await run;
-    expect(install).toHaveBeenCalled();
-    expect([...(install.mock.calls[0]?.[0].enabledAgents ?? [])].sort()).toEqual(
-      [...DEFAULT_RENDERER_AGENTS].sort(),
-    );
+    expect(install).toHaveBeenCalledOnce();
+    // `enabledAgents` is matched element by element against the Renderer
+    // binding, so the Controller and the bundle must agree on the exact order.
+    expect(DEFAULT_RENDERER_AGENTS).toEqual([...KNOWN_RENDERER_AGENTS]);
+    expect(install.mock.calls[0]?.[0].enabledAgents).toEqual([...KNOWN_RENDERER_AGENTS]);
+    // A healthy binding is installed exactly once; the monitor loop only
+    // re-reads it, so no further Renderer evaluation is injected.
     expect(
       client.command.mock.calls.filter(([method]) => method === "Runtime.evaluate"),
-    ).toHaveLength(2);
+    ).toHaveLength(1);
   });
 });

@@ -553,7 +553,7 @@ describe("Renderer Composer DOM behavior", () => {
     });
 
     it("keeps the mount-time last-button fallback for unlabelled action buttons", () => {
-      const stale = button(false);
+      const stale = { ...button(false), type: "button" } as unknown as HTMLButtonElement;
       const owned = {
         type: "button",
         disabled: false,
@@ -573,6 +573,23 @@ describe("Renderer Composer DOM behavior", () => {
       const { control } = fakeControl(stale, [action, owned]);
 
       expect(refreshSendButton(control)).toBe(action);
+    });
+
+    it("does not mistake a Stop button for send once a labelled send button is replaced", () => {
+      const stale = button(false);
+      const stop = {
+        type: "button",
+        disabled: false,
+        isConnected: true,
+        hasAttribute: () => false,
+        getAttribute: (name: string) => (name === "aria-label" ? "Stop" : null),
+        textContent: "",
+        parentElement: null,
+      } as unknown as HTMLButtonElement;
+      const { control } = fakeControl(stale, [stop]);
+
+      expect(refreshSendButton(control)).toBeNull();
+      expect(control.sendButton).toBe(stale);
     });
 
     it("never moves owned controls into the detached trailing cluster", () => {

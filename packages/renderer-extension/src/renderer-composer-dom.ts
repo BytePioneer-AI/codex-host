@@ -513,8 +513,11 @@ function isInsideOwnedRendererControl(element: Element, composer: Element): bool
 export function refreshSendButton(control: ComposerAgentControl): HTMLButtonElement | null {
   const current = control.sendButton;
   if (current?.isConnected && control.composer.contains(current)) return current;
+  // Only a Composer that was mounted through the unlabelled fallback keeps
+  // using it; otherwise a Stop/Attach button would be mistaken for send.
   const replacement =
-    sendButtonWithin(control.composer) ?? lastNativeButtonWithin(control.composer);
+    sendButtonWithin(control.composer) ??
+    (current && !isComposerSubmitButton(current) ? lastNativeButtonWithin(control.composer) : null);
   if (!replacement) return null;
   if (control.sendDisabledBeforeSwitch !== null) {
     control.sendDisabledBeforeSwitch = replacement.disabled;

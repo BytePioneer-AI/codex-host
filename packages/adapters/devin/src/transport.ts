@@ -116,8 +116,12 @@ export class DevinTransport {
       );
       if (init.protocolVersion !== 1 || (requiresLoadSession && !init.agentCapabilities?.loadSession))
         throw new Error("Devin does not support the required ACP session protocol");
-      // Devin authenticates through its own stored credentials (`devin auth login`);
-      // the adapter never launches a login flow or reads credentials.
+      // Devin 3000.11+ requires an explicit authenticate call in ACP mode; the
+      // advertised browser method resolves through the CLI's stored credentials.
+      // The adapter never launches a login flow or reads credentials.
+      const authMethod = init.authMethods?.[0]?.id;
+      if (authMethod)
+        await this.#bounded(this.#connection.authenticate({ methodId: authMethod }));
       return this.#connection;
     } catch (error) {
       await this.close();

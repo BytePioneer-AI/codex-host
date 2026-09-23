@@ -91,6 +91,51 @@ describe.skipIf(process.platform === "win32")("official Unix socket links", () =
     await expect(lstat(f.socketPath)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
+  it("removes a dangling link when the backend exits before readiness", async () => {
+    const f = await fixture();
+    await symlink(f.target, f.socketPath);
+    const failure = expect(f.listener.listen()).rejects.toThrow(
+      "exited before its socket was ready",
+    );
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    f.child.emit("exit", 1, null);
+    await failure;
+    await expect(lstat(f.socketPath)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("removes a dangling link after startup times out and the backend stops", async () => {
+    const f = await fixture();
+    await symlink(f.target, f.socketPath);
+    await expect(f.listener.listen()).rejects.toThrow("socket was not ready after 10000ms");
+    await expect(f.listener.closed).resolves.toMatchObject({ signal: "SIGTERM" });
+    await expect(lstat(f.socketPath)).rejects.toMatchObject({ code: "ENOENT" });
+  }, 15_000);
+
+  it("preserves a dangling link owned by another user", async () => {
+    const f = await fixture();
+    await symlink(f.target, f.socketPath);
+    const uid = process.getuid?.();
+    if (uid === undefined) throw new Error("Unix uid is unavailable");
+    vi.spyOn(process, "getuid").mockReturnValue(uid + 1);
+    const failure = expect(f.listener.listen()).rejects.toThrow();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    f.child.emit("exit", 1, null);
+    await failure;
+    expect((await lstat(f.socketPath)).isSymbolicLink()).toBe(true);
+  });
+
+  it("preserves a replacement link when startup fails", async () => {
+    const f = await fixture();
+    await symlink(f.target, f.socketPath);
+    const failure = expect(f.listener.listen()).rejects.toThrow();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    await rename(f.socketPath, path.join(f.root, "original"));
+    await symlink(f.target, f.socketPath);
+    f.child.emit("exit", 1, null);
+    await failure;
+    expect((await lstat(f.socketPath)).isSymbolicLink()).toBe(true);
+  });
+
   it("preserves a replacement link at the same path", async () => {
     const f = await fixture();
     await f.bind();

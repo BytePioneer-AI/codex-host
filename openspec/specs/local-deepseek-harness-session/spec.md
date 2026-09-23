@@ -1,7 +1,7 @@
 # local-deepseek-harness-session Specification
 
 ## Purpose
-定义精确 DSH 0.1.2-rc.1 / 0.1.5-rc.1 托管 Web Remote、原生会话与生命周期保证；当前支持范围由 support-dsh-015rc1 更新。
+定义已验证 DSH 版本的托管 Web Remote、原生会话与生命周期保证；当前支持范围由对应的版本验证记录更新。
 ## Requirements
 ### Requirement: Local DSH Web profile is the runtime source of truth
 
@@ -114,4 +114,3 @@ The Adapter SHALL own only the managed Web process it started. It MUST NOT stop 
 - **WHEN** codexhost started DSH Web and later shuts down
 - **THEN** it SHALL stop native work and request bounded process termination after closing Sessions and connections
 - **AND** official persistence SHALL remain available on the next DSH start
-

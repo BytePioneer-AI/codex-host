@@ -1,7 +1,7 @@
 # deepseek-harness-fast-session Specification
 
 ## Purpose
-规定 DeepSeek Harness 的公共 Adapter、原生凭据复用、文本/工具输出与取消语义；当前双 RC 历史能力由 support-dsh-015rc1 更新，具体格式边界见 deepseek-versioned-web-protocol。
+规定 DeepSeek Harness 的公共 Adapter、原生凭据复用、文本/工具输出与取消语义；当前已验证版本与格式边界见 deepseek-versioned-web-protocol。
 ## Requirements
 ### Requirement: DeepSeek Harness uses the shared Adapter contract
 
@@ -48,4 +48,3 @@ The Session SHALL map `turn.cancel` to a DSH `session/cancel` RPC and SHALL only
 - **WHEN** DSH rejects `session/cancel` as unknown
 - **THEN** the Session SHALL return a protocol or unsupported failure
 - **AND** it SHALL NOT report successful cancellation
-

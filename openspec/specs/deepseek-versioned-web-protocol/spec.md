@@ -2,7 +2,7 @@
 
 ## Purpose
 
-定义仅支持 DSH 0.1.2-rc.1 与 0.1.5-rc.1 的托管 Web Remote 协议、原生会话和检查点隔离要求，同时记录 Legacy 退役、文档同步及可复现覆盖率验证边界。
+定义已验证 DSH 版本的托管 Web Remote 协议、原生会话和检查点隔离要求，同时记录 Legacy 退役、文档同步及可复现覆盖率验证边界。
 ## Requirements
 ### Requirement: Journal parsing preserves each supported format
 
@@ -99,4 +99,3 @@ Adapter MUST 将单行规范 SemVer `--version` 输出用于选择原生格式�
 - **WHEN** `--version` 输出其他规范 SemVer，或输出不符合单行规范 SemVer
 - **THEN** 规范 SemVer SHALL 进入有界原生协议尝试，格式不兼容时明确失败；非法版本输出 SHALL 在启动 Web 前失败
 - **AND** 未经真实版本 Gate 的版本 MUST NOT 被列为“已验证”
-

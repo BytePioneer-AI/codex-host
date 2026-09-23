@@ -1,5 +1,8 @@
 import type { ChildProcess, spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
+import { lstat, mkdtemp, rm, symlink } from "node:fs/promises";
+import { createServer } from "node:net";
+import os from "node:os";
 import path from "node:path";
 import { PassThrough } from "node:stream";
 
@@ -94,6 +97,43 @@ describe("shared remote official app-server", () => {
     expect(child.kill).toHaveBeenCalledWith("SIGTERM");
     await expect(listener.closed).resolves.toEqual({ code: null, signal: "SIGTERM" });
   });
+
+  it.skipIf(process.platform === "win32")(
+    "accepts an official socket symlink and removes only its owned entry",
+    async () => {
+      const directory = await mkdtemp(path.join(os.tmpdir(), "codexhost-official-socket-"));
+      const target = path.join(directory, "target.sock");
+      const entry = path.join(directory, "entry.sock");
+      const server = createServer();
+      const child = new FakeOfficialListenerProcess();
+      child.kill.mockImplementation(() => {
+        server.close(() => child.emit("exit", null, "SIGTERM"));
+        return true;
+      });
+      const listener = createRemoteOfficialAppServerListener({
+        stockCodexPath: "/synthetic/codex",
+        arguments: ["app-server", "--listen", `unix://${entry}`],
+        socketPath: entry,
+        environment: {},
+        diagnosticOutput: new PassThrough(),
+        spawnOfficial: vi.fn(() => child as unknown as ChildProcess) as unknown as typeof spawn,
+      });
+      try {
+        await new Promise<void>((resolve, reject) => {
+          server.once("error", reject);
+          server.listen(target, resolve);
+        });
+        await symlink(target, entry);
+        await listener.listen();
+        await listener.close();
+        await expect(lstat(entry)).rejects.toMatchObject({ code: "ENOENT" });
+      } finally {
+        await listener.close().catch(() => undefined);
+        if (server.listening) await new Promise<void>((resolve) => server.close(() => resolve()));
+        await rm(directory, { recursive: true, force: true });
+      }
+    },
+  );
 
   it("escalates shutdown when the official listener ignores SIGTERM", async () => {
     const child = new StubbornOfficialListenerProcess();

@@ -1,6 +1,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { lstat, rm } from "node:fs/promises";
+import { lstat, rm, stat } from "node:fs/promises";
 import path from "node:path";
 import type { Writable } from "node:stream";
 
@@ -66,10 +66,27 @@ async function socketIdentity(socketPath: string): Promise<UnixFileIdentity | nu
     throw error;
   });
   if (metadata === null) return null;
-  if (!metadata.isSocket()) {
+  if (metadata.isSymbolicLink()) {
+    const target = await stat(socketPath).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT") return null;
+      throw error;
+    });
+    if (target === null) return null;
+    if (!target.isSocket()) {
+      throw new Error(`Shared official app-server path does not target a socket: ${socketPath}`);
+    }
+  } else if (!metadata.isSocket()) {
     throw new Error(`Shared official app-server path is not a socket: ${socketPath}`);
   }
   return { dev: metadata.dev, ino: metadata.ino };
+}
+
+async function socketEntryIdentity(socketPath: string): Promise<UnixFileIdentity | null> {
+  const metadata = await lstat(socketPath).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === "ENOENT") return null;
+    throw error;
+  });
+  return metadata === null ? null : { dev: metadata.dev, ino: metadata.ino };
 }
 
 function sameUnixFileIdentity(left: UnixFileIdentity, right: UnixFileIdentity): boolean {
@@ -144,7 +161,7 @@ export function createRemoteOfficialAppServerListener(input: {
 
   const removeOwnedSocket = async (): Promise<void> => {
     if (ownedSocketIdentity === null) return;
-    const current = await socketIdentity(input.socketPath).catch(() => null);
+    const current = await socketEntryIdentity(input.socketPath).catch(() => null);
     if (current && sameUnixFileIdentity(current, ownedSocketIdentity)) {
       await rm(input.socketPath, { force: true });
     }

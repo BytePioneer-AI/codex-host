@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  ModernEventValidator,
   matchesModernForkHistory,
   projectModernHistory,
   resolveModernForkBoundary,
@@ -182,6 +183,82 @@ describe("DSH 0.1.7-rc.1 V4 journal", () => {
       ]),
     );
     expect(projected.snapshot.turns[0]?.input).toEqual([{ type: "text", text: "Read" }]);
+  });
+
+  it.each([
+    { content: [{ type: "text", text: "replacement" }] },
+    {
+      content: [
+        { type: "text", text: "first" },
+        { type: "text", text: "second" },
+      ],
+    },
+    { content: [] },
+  ])(
+    "accepts V4 tool result content replacement %j in history and live validation",
+    ({ content }) => {
+      const prefix = v4History().slice(0, 9);
+      const replacement: ModernJournalEvent = {
+        ...event(9, "tool/result", {
+          turn: 1,
+          step: 1,
+          message: {
+            id: "tool-1",
+            role: "tool",
+            toolCallId: "call-1",
+            isError: false,
+            source: { kind: "tool", callId: "call-1" },
+            content,
+          },
+        }),
+        surfaceOp: { op: "replace", startSeq: 8, endSeq: 8 },
+        sourceEventSeqs: [8],
+      };
+      const events = [
+        ...prefix,
+        replacement,
+        event(10, "step/end", { turn: 1, step: 1 }),
+        event(11, "turn/end", { turn: 1, reason: { kind: "completed" } }),
+      ];
+      const validator = new ModernEventValidator(100, DEEPSEEK_V017_PROFILE);
+      expect(() => events.forEach((item) => validator.accept(item))).not.toThrow();
+      expect(() =>
+        projectModernHistory({ sessionId, events, profile: DEEPSEEK_V017_PROFILE }),
+      ).not.toThrow();
+    },
+  );
+
+  it.each([
+    { id: "different-message" },
+    { toolCallId: "different-call" },
+    { source: { kind: "tool", callId: "different-call" } },
+    { isError: true },
+    { extension: "changed" },
+  ])("rejects V4 tool result replacement changing metadata %j", (changed) => {
+    const replacement: ModernJournalEvent = {
+      ...event(9, "tool/result", {
+        turn: 1,
+        step: 1,
+        message: {
+          id: "tool-1",
+          role: "tool",
+          toolCallId: "call-1",
+          isError: false,
+          source: { kind: "tool", callId: "call-1" },
+          content: [{ type: "text", text: "File" }],
+          ...changed,
+        },
+      }),
+      surfaceOp: { op: "replace", startSeq: 8, endSeq: 8 },
+      sourceEventSeqs: [8],
+    };
+    expect(() =>
+      projectModernHistory({
+        sessionId,
+        events: [...v4History().slice(0, 9), replacement],
+        profile: DEEPSEEK_V017_PROFILE,
+      }),
+    ).toThrow("tool/result replacement changed more than result content");
   });
 
   it("keeps native V4 message and block extensions opaque", () => {

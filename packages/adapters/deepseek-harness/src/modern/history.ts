@@ -700,7 +700,10 @@ function acceptSurfaceEvent(
     if (
       shadowed.length !== 1 ||
       shadowed[0]?.type !== "tool/result" ||
-      !isDeepStrictEqual(comparableToolResultData(shadowed[0]), comparableToolResultData(event))
+      !isDeepStrictEqual(
+        comparableToolResultData(shadowed[0], profile),
+        comparableToolResultData(event, profile),
+      )
     ) {
       fail("Modern history tool/result replacement changed more than result content");
     }
@@ -708,15 +711,23 @@ function acceptSurfaceEvent(
   trace.surface.splice(startIndex, endIndex - startIndex + 1, event);
 }
 
-function comparableToolResultData(event: ModernJournalEvent): Record<string, unknown> {
+function comparableToolResultData(
+  event: ModernJournalEvent,
+  profile: DeepSeekModernProfile,
+): Record<string, unknown> {
   const data = event.data;
   if (
     !isRecord(data) ||
     !isRecord(data.message) ||
     !Array.isArray(data.message.content) ||
-    !isRecord(data.message.content[0])
+    (profile.sessionFormatVersion !== 4 && !isRecord(data.message.content[0]))
   ) {
     fail("Modern history tool/result replacement is malformed");
+  }
+  // V4 stores result blocks directly on the Tool message; V0/V3 wrap them
+  // in one tool-result block whose metadata must remain unchanged.
+  if (profile.sessionFormatVersion === 4) {
+    return { ...data, message: { ...data.message, content: null } };
   }
   return {
     ...data,

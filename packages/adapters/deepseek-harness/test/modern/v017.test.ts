@@ -124,11 +124,15 @@ function v4History(): ModernJournalEvent[] {
   ];
 }
 
-describe("DSH 0.1.7-rc.1 V4 journal", () => {
-  it("selects V4 only for the pinned tag and keeps V3 isolated", () => {
+describe("DSH 0.1.7 V4 journal", () => {
+  it("selects V4 from the minimum release onward and keeps older V3 isolated", () => {
     expect(deepSeekModernProfile("0.1.7-rc.1")).toBe(DEEPSEEK_V017_PROFILE);
     expect(deepSeekModernProfile("0.1.5-rc.3").sessionFormatVersion).toBe(3);
-    expect(deepSeekModernProfile("0.1.7-rc.2").sessionFormatVersion).toBe(3);
+    expect(deepSeekModernProfile("0.1.7-rc.0").sessionFormatVersion).toBe(3);
+    expect(deepSeekModernProfile("0.1.7-rc.2").sessionFormatVersion).toBe(4);
+    for (const version of ["0.1.7", "0.1.8-alpha.1", "0.2.0", "1.0.0"]) {
+      expect(deepSeekModernProfile(version).sessionFormatVersion).toBe(4);
+    }
     expect(isDeepSeekV015(DEEPSEEK_V017_PROFILE)).toBe(false);
     expect(hasDeepSeekModernStream(DEEPSEEK_V017_PROFILE)).toBe(true);
     expect(

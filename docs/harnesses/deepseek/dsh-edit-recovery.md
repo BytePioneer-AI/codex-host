@@ -1,6 +1,6 @@
 # DSH 消息修订、恢复与原生停止确认
 
-Adapter 已在 DSH `0.1.2-rc.1`、`0.1.5-rc.1`、`0.1.5-rc.2`、`0.1.5-rc.3` 和 `0.1.7-rc.1` 验证，通过 codexhost 托管、认证的 Web Remote 创建、恢复和 Fork 原生 Session；其他规范 SemVer 版本可尝试连接，但未验证兼容。rc.2 的真实 CLI 生命周期仅在固定依赖、Web profile 使用 `patchReload: startup` 的 macOS 环境中通过。Legacy 协议已移除。
+Adapter 已在 DSH `0.1.2-rc.1`、`0.1.5-rc.1`、`0.1.5-rc.2`、`0.1.5-rc.3` 和 `0.1.7-rc.1` 验证，通过 codexhost 托管、认证的 Web Remote 创建、恢复和 Fork 原生 Session；低于 `0.1.7-rc.1` 的现代版本按 V3 尝试，`0.1.7-rc.1` 及更高规范 SemVer 版本按 V4 尝试，但未通过真实 Gate 的版本不宣称兼容。`0.1.7-rc.2` 当前只有源码协议审计和自动化路由回归，尚未完成真实 CLI 生命周期 Gate。Legacy 协议已移除。
 
 修订上一条消息使用原生历史操作，仅回滚最后一个回合；Fork 根据原生 seed 标记和已验证的历史前缀确认继承关系，不改写源会话。恢复通过公开历史 API 读取，保持 Native Session ID 和原生配置语义。
 

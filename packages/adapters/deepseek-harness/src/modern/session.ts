@@ -115,7 +115,6 @@ import {
 const DEEPSEEK_HARNESS_ID = harnessIdSchema.parse("deepseek-harness");
 const NATIVE_CLOSE_TIMEOUT_MS = 5_000;
 const CANCELLED_ASSISTANT_ATTEMPT_SUFFIX = "\n\n[生成尝试已取消 / Generation attempt cancelled]";
-const CANCELLED_REASONING_SUFFIX = "\n\n[临时思考已取消 / Provisional reasoning cancelled]";
 
 export const MODERN_PROMPT_CORRELATION_GRACE_MS = 5_000;
 export const MODERN_ACCEPTED_CORRELATION_TIMEOUT_MS = 300_000;
@@ -1613,14 +1612,6 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
   #cancelReasoningItem(active: ActiveHostTurn): void {
     const reasoning = active.reasoning;
     if (!reasoning) return;
-    reasoning.text += CANCELLED_REASONING_SUFFIX;
-    reasoning.item = { ...reasoning.item, text: reasoning.text };
-    this.#emit({
-      type: "item.updated",
-      turnId: active.turnId,
-      itemId: reasoning.item.itemId,
-      update: { type: "text.append", text: CANCELLED_REASONING_SUFFIX },
-    });
     delete active.reasoning;
     this.#completeItem(active, reasoning.item, { status: "cancelled" });
   }

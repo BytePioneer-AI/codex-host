@@ -1078,8 +1078,8 @@ describe("DeepSeek Harness Modern Session", () => {
       text: "final thought",
       itemId: expect.stringContaining("step:2"),
     });
-    expect(reasoningItems[0]?.text).toContain("临时思考已取消");
-    expect(reasoningItems[2]?.text).toContain("临时思考已取消");
+    expect(reasoningItems[0]?.text).toBe("draft");
+    expect(reasoningItems[2]?.text).toBe("removed provisional thought");
     const snapshot = await test.session.readSnapshot();
     expect(snapshot).toMatchObject({ ok: true });
     if (!snapshot.ok) throw new Error("expected multi-step Modern history Snapshot");

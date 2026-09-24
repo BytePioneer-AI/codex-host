@@ -125,7 +125,10 @@ function nestedString(
 
 function toolWorkingDirectory(args: JsonValue, defaultCwd: string): string {
   const workdir = nestedString(args, ["workdir"]);
-  return workdir === undefined ? defaultCwd : path.resolve(defaultCwd, workdir);
+  if (workdir === undefined) return defaultCwd;
+  const windows = /^(?:[a-z]:[/\\]|\\\\)/iu;
+  const paths = windows.test(defaultCwd) || windows.test(workdir) ? path.win32 : path.posix;
+  return paths.resolve(defaultCwd, workdir);
 }
 
 function toolOutputText(item: Extract<HostItem, { type: "toolExecution" }>): string | null {

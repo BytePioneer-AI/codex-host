@@ -1,4 +1,3 @@
-import path from "node:path";
 import { describe, expect, it } from "vitest";
 import type {
   HostCommandExecutionItem,
@@ -1201,7 +1200,7 @@ describe("Codex UI projector", () => {
           item: {
             type: "commandExecution",
             command: "Get-ChildItem src",
-            cwd: path.resolve("/workspace", "scripts"),
+            cwd: "/workspace/scripts",
           },
         },
       },
@@ -1223,7 +1222,7 @@ describe("Codex UI projector", () => {
             type: "commandExecution",
             command: "Get-ChildItem src",
             aggregatedOutput: "file.ts",
-            cwd: path.resolve("/workspace", "scripts"),
+            cwd: "/workspace/scripts",
             exitCode: null,
           },
         },
@@ -1236,6 +1235,33 @@ describe("Codex UI projector", () => {
         item: { ...command, itemId: itemId("dsh-pwsh-missing"), arguments: { description: "x" } },
       }).messages,
     ).toMatchObject([{ params: { item: { type: "dynamicToolCall", tool: "pwsh" } } }]);
+  });
+
+  it("resolves Windows tool workdir using session path rules on any host", () => {
+    const value = new CodexTurnProjector({
+      threadId: "thread-1",
+      turnId,
+      cwd: "C:\\repo",
+      startedAtMs: 1_000,
+    });
+    value.project({ type: "turn.started", turnId });
+    for (const [index, workdir, cwd] of [
+      ["relative", "scripts", "C:\\repo\\scripts"],
+      ["absolute", "D:\\tools", "D:\\tools"],
+    ] as const) {
+      expect(
+        value.project({
+          type: "item.started",
+          turnId,
+          item: {
+            type: "toolExecution",
+            itemId: itemId(`dsh-pwsh-${index}`),
+            toolName: "pwsh",
+            arguments: { command: "Get-ChildItem", workdir },
+          },
+        }).messages,
+      ).toMatchObject([{ params: { item: { type: "commandExecution", cwd } } }]);
+    }
   });
 
   it("docks Todo tools on turn/plan/updated and hides the name-only card", () => {

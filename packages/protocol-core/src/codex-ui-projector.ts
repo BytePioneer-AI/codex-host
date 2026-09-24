@@ -145,7 +145,7 @@ export function toolCommandLine(toolName: string, args: JsonValue): string | und
   const command = nestedString(args, ["command", "cmd", "script", "commandLine", "command_line"]);
   if (
     command &&
-    ["bash", "exec", "terminal", "run", "shell", "powershell", "command"].includes(lower)
+    ["bash", "exec", "terminal", "run", "shell", "powershell", "pwsh", "command"].includes(lower)
   ) {
     return command;
   }

@@ -1077,6 +1077,54 @@ describe("Codex UI projector", () => {
     ]);
   });
 
+  it("shows a DSH pwsh command and output in the Command Execution card", () => {
+    const value = projector();
+    const commandId = itemId("dsh-pwsh");
+    const command: HostToolExecutionItem = {
+      type: "toolExecution",
+      itemId: commandId,
+      toolName: "pwsh",
+      arguments: { command: "Get-ChildItem src", description: "List source files" },
+    };
+    value.project({ type: "turn.started", turnId });
+    expect(value.project({ type: "item.started", turnId, item: command }).messages).toMatchObject([
+      {
+        method: "item/started",
+        params: {
+          item: { type: "commandExecution", command: "Get-ChildItem src" },
+        },
+      },
+    ]);
+    expect(
+      value.project({
+        type: "item.completed",
+        turnId,
+        snapshot: {
+          item: { ...command, output: { content: [{ type: "text", text: "file.ts" }] } },
+          outcome: { status: "succeeded" },
+        },
+      }).messages,
+    ).toMatchObject([
+      {
+        method: "item/completed",
+        params: {
+          item: {
+            type: "commandExecution",
+            command: "Get-ChildItem src",
+            aggregatedOutput: "file.ts",
+          },
+        },
+      },
+    ]);
+    expect(
+      value.project({
+        type: "item.started",
+        turnId,
+        item: { ...command, itemId: itemId("dsh-pwsh-missing"), arguments: { description: "x" } },
+      }).messages,
+    ).toMatchObject([{ params: { item: { type: "dynamicToolCall", tool: "pwsh" } } }]);
+  });
+
   it("docks Todo tools on turn/plan/updated and hides the name-only card", () => {
     const value = projector();
     const todoId = itemId("todo-1");

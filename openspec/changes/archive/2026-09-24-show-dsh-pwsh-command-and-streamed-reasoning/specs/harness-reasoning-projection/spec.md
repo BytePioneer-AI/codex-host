@@ -1,24 +1,4 @@
-# harness-reasoning-projection Specification
-
-## Purpose
-
-Define the minimal UI-independent Host Reasoning Item, its ordered lifecycle and Native history ownership, and its faithful projection through a Desktop-verified Codex native carrier.
-## Requirements
-### Requirement: HarnessSession exposes a minimal UI-independent Reasoning Item
-
-HarnessSession SHALL represent explicit user-visible native reasoning text as a `reasoning` Host Item containing only a stable Host Item ID and accumulated text. Reasoning SHALL use the existing ordered text-append update and SHALL NOT expose native Harness blocks, Codex app-server fields, Provider or Model identity, token counts, encrypted data, or inferred content.
-
-#### Scenario: Native Harness emits visible reasoning text
-
-- **WHEN** a concrete Adapter observes non-empty visible reasoning text from an accepted native Turn
-- **THEN** it SHALL start one Reasoning Item for the owning native Assistant-message boundary and append that text in native order
-- **AND** no Harness-native payload SHALL cross the HarnessAdapter seam
-
-#### Scenario: Native Harness emits no visible reasoning text
-
-- **WHEN** a Turn emits only empty reasoning boundaries, redacted or encrypted blocks, signatures, Thinking configuration, reasoning Token counts, or no reasoning event
-- **THEN** the Adapter SHALL emit no Reasoning Item for that evidence
-- **AND** it SHALL NOT infer or manufacture display text
+## MODIFIED Requirements
 
 ### Requirement: Reasoning Items have complete ordered lifecycles
 
@@ -94,19 +74,3 @@ Protocol Core SHALL convert Host Reasoning lifecycle events and historical snaps
 - **THEN** Protocol Core SHALL preserve the native Reasoning Item projection without merging it into final Agent Message text
 - **AND** Renderer MAY show explicit summary notifications only after the user opts in
 - **AND** disabling that preference SHALL leave no custom reasoning panel or retained display text
-
-### Requirement: Reasoning remains presentation output owned by Native history
-
-Reasoning content SHALL NOT determine Turn success, become a second persisted Transcript, or cross into unrelated Harness context. Native Session history SHALL remain the sole persistent content source for external Threads.
-
-#### Scenario: Reasoning is the only displayable native content
-
-- **WHEN** a Harness's established terminal classifier would reject or fail a Turn that has no valid final answer or Tool outcome
-- **THEN** the presence of Reasoning text SHALL NOT convert that Turn to success
-
-#### Scenario: External Thread is persisted or reopened
-
-- **WHEN** Host persists ownership metadata or later reopens an external Thread
-- **THEN** Mapping Store SHALL contain no Reasoning text and the Adapter SHALL reread supported Reasoning from Native Session history
-- **AND** diagnostics and committed Gate evidence SHALL omit the Reasoning content
-

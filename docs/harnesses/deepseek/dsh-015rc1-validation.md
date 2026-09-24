@@ -17,16 +17,16 @@ $env:CODEXHOST_DSH_REAL_COMMAND = '<TEMP>\rc1\node_modules\.bin\dsh.cmd'
 
 V4 `session/follow` 的 Web snapshot 对顶层 Session 省略 `delegationDepth`，Adapter 按 DSH Web 实际契约将缺省值规范化为 `0`；显式提供的值仍必须是非负安全整数。
 
-本次执行 `npm run test:deepseek:coverage`，整个 DSH Adapter 的 **843 项测试 / 23 个文件全部通过**；范围仍为 `packages/adapters/deepseek-harness/src/**/*.ts`，四项 80% 门槛均通过。
+本次复跑 `npm run test:deepseek:coverage`，整个 DSH Adapter 的 **849 项测试 / 23 个文件全部通过**；范围仍为 `packages/adapters/deepseek-harness/src/**/*.ts`，四项 80% 门槛均通过。新增覆盖 V0/V3/V4 可见思考增量、最终修订、放弃尝试、步骤结束与重连去重；`pwsh` 完整命令投影由 Protocol Core 的定向测试覆盖。
 
 | 指标 | 覆盖率 | 已覆盖 / 总数 |
 | --- | --- | --- |
-| 语句 | 86.22% | 5758 / 6678 |
-| 分支 | 81.85% | 5063 / 6185 |
-| 函数 | 92.92% | 919 / 989 |
-| 行 | 88.97% | 5351 / 6014 |
+| 语句 | 86.44% | 5792 / 6700 |
+| 分支 | 82.17% | 5099 / 6205 |
+| 函数 | 93.23% | 923 / 990 |
+| 行 | 89.14% | 5380 / 6035 |
 
-协议和 profile 的定向回归已覆盖 V3/V4 合法与非法历史、developer 工具引用、Assistant stream、Fork 边界、原生 `forked-tool-result` 的校验与投影、跨格式 checkpoint、控制读回、分页和实时去重。V4 checkpoint 使用 `v4-turn-end:` 前缀及精确版本 locator；V3/V0 或迁移前 checkpoint 在 mutation 前拒绝。DSH 原生 Session、凭据和迁移仍由 DSH 所有，codexhost 不读取或改写原生日志文件。
+协议和 profile 的定向回归已覆盖 V3/V4 合法与非法历史、developer 工具引用、Assistant stream、Fork 边界、原生 `forked-tool-result` 的校验与投影、跨格式 checkpoint、控制读回、分页和实时去重。Protocol Core 的 `pwsh` 命令框测试单独执行；DSH 思考流测试还经过 `CodexTurnProjector` 验证增量通知。V4 checkpoint 使用 `v4-turn-end:` 前缀及精确版本 locator；V3/V0 或迁移前 checkpoint 在 mutation 前拒绝。DSH 原生 Session、凭据和迁移仍由 DSH 所有，codexhost 不读取或改写原生日志文件。
 
 本次 `npm run build:typescript`、`npm run typecheck`、`npm run lint`、`npm run format:check`、OpenSpec strict 和 `git diff --check` 均通过。未使用真实计费模型、Desktop 或浏览器自动化，也未在其他平台运行本次新增版本的真实 Gate。
 

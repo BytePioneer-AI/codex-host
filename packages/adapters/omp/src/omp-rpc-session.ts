@@ -628,6 +628,11 @@ export class OmpRpcSession {
       ),
     ]);
     await this.#send("negotiate_protocol", { protocolVersion: 2 }).catch(() => undefined);
+    // OMP servers gate subagent lifecycle/progress/event frames behind an explicit
+    // subscription that defaults to "off". Subscribe during startup so native
+    // subagent delegations reach the Host; OMP builds without the command reject
+    // it and this degrades gracefully.
+    await this.#send("set_subagent_subscription", { level: "events" }).catch(() => undefined);
     try {
       this.#state = parseSessionState(await this.#send("get_state", {}));
     } catch (error) {

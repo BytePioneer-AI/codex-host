@@ -32,6 +32,7 @@ class FakeOmpProcess extends EventEmitter {
       "none" | "async-job" | "frame-gaps" | "unknown-update" | "malformed-update" = "none",
     readonly onPrompt?: (process: FakeOmpProcess) => void,
     readonly interactionOverrides: Record<string, unknown> = {},
+    readonly subagentSubscriptionMode: "gated" | "unsupported" = "gated",
   ) {
     super();
     this.stdin.on("data", (chunk: Buffer) => {
@@ -58,6 +59,14 @@ class FakeOmpProcess extends EventEmitter {
 
   #output(value: Record<string, unknown>): void {
     this.stdout.write(`${JSON.stringify(value)}\n`);
+  }
+
+  // Mirrors the real RPC server: subagent frames stay silent until the client
+  // subscribes, so the mock cannot hand out frames the server would never send.
+  #subagentSubscription: "off" | "progress" | "events" = "off";
+
+  #subagentFramesSubscribed(): boolean {
+    return this.#subagentSubscription !== "off";
   }
 
   sendFrame(value: Record<string, unknown>): void {
@@ -165,6 +174,23 @@ class FakeOmpProcess extends EventEmitter {
       }
       return;
     }
+    if (command.type === "set_subagent_subscription") {
+      if (this.subagentSubscriptionMode === "unsupported") {
+        this.#output({
+          id: command.id,
+          type: "response",
+          command: command.type,
+          success: false,
+          error: `Unknown command: ${command.type}`,
+        });
+        return;
+      }
+      const level = command.level;
+      if (level === "off" || level === "progress" || level === "events") {
+        this.#subagentSubscription = level;
+      }
+      return this.#response(command, { level: this.#subagentSubscription });
+    }
     if (command.type === "negotiate_protocol")
       return this.#response(command, { protocolVersion: 2 });
     if (command.type === "get_state") return this.#response(command, this.#state());
@@ -223,31 +249,33 @@ class FakeOmpProcess extends EventEmitter {
           });
           return;
         }
-        this.#output({
-          type: "subagent_lifecycle",
-          payload: {
-            id: "subagent-1",
-            index: 0,
-            agent: "task",
-            agentSource: "bundled",
-            status: "started",
-            description: "Inspect the repository",
-            sessionFile: "/tmp/subagent.jsonl",
-            parentToolCallId: "tool-1",
-          },
-        });
-        this.#output({
-          type: "subagent_progress",
-          payload: {
-            index: 0,
-            agent: "task",
-            agentSource: "bundled",
-            task: "Inspect the repository",
-            progress: { id: "subagent-1", status: "running", recentOutput: [] },
-            parentToolCallId: "tool-1",
-            sessionFile: "/tmp/subagent.jsonl",
-          },
-        });
+        if (this.#subagentFramesSubscribed()) {
+          this.#output({
+            type: "subagent_lifecycle",
+            payload: {
+              id: "subagent-1",
+              index: 0,
+              agent: "task",
+              agentSource: "bundled",
+              status: "started",
+              description: "Inspect the repository",
+              sessionFile: "/tmp/subagent.jsonl",
+              parentToolCallId: "tool-1",
+            },
+          });
+          this.#output({
+            type: "subagent_progress",
+            payload: {
+              index: 0,
+              agent: "task",
+              agentSource: "bundled",
+              task: "Inspect the repository",
+              progress: { id: "subagent-1", status: "running", recentOutput: [] },
+              parentToolCallId: "tool-1",
+              sessionFile: "/tmp/subagent.jsonl",
+            },
+          });
+        }
         const message = {
           role: "assistant",
           responseId: "assistant-1",
@@ -262,17 +290,19 @@ class FakeOmpProcess extends EventEmitter {
           });
           this.#output({ type: "message_end", message: { ...message, stopReason: "stop" } });
         }
-        this.#output({
-          type: "subagent_lifecycle",
-          payload: {
-            id: "subagent-1",
-            index: 0,
-            agent: "task",
-            agentSource: "bundled",
-            status: "completed",
-            parentToolCallId: "tool-1",
-          },
-        });
+        if (this.#subagentFramesSubscribed()) {
+          this.#output({
+            type: "subagent_lifecycle",
+            payload: {
+              id: "subagent-1",
+              index: 0,
+              agent: "task",
+              agentSource: "bundled",
+              status: "completed",
+              parentToolCallId: "tool-1",
+            },
+          });
+        }
         this.#output({
           type: "agent_end",
           isTerminal: true,
@@ -362,6 +392,50 @@ describe("OMP RPC session", () => {
       cancelled: false,
     });
     expect(events).toContainEqual({ type: "text.delta", messageId: "assistant-1", delta: "PONG" });
+    await session.close();
+  });
+
+  it("subscribes to subagent frames during startup so native delegations are not silent", async () => {
+    const process = new FakeOmpProcess();
+    const adapter: OmpRpcProcessAdapter = { spawn: () => process as never };
+    const session = new OmpRpcSession({ cwd: "/synthetic", commandTimeoutMs: 2_000 }, adapter);
+    await session.start();
+    expect(process.commands).toContainEqual(
+      expect.objectContaining({ type: "set_subagent_subscription", level: "events" }),
+    );
+    const events: OmpTurnEvent[] = [];
+    await session.runTurn("spawn scouts", (event) => events.push(event));
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        type: "subagent.started",
+        callId: "tool-1",
+        nativeSubagentId: "subagent-1",
+        description: "Inspect the repository",
+      }),
+    );
+    await session.close();
+  });
+
+  it("still starts and settles turns when the server rejects the subagent subscription", async () => {
+    const process = new FakeOmpProcess(
+      "complete",
+      undefined,
+      "none",
+      "none",
+      undefined,
+      {},
+      "unsupported",
+    );
+    const adapter: OmpRpcProcessAdapter = { spawn: () => process as never };
+    const session = new OmpRpcSession({ cwd: "/synthetic", commandTimeoutMs: 2_000 }, adapter);
+    await expect(session.start()).resolves.toBeDefined();
+    const events: OmpTurnEvent[] = [];
+    await expect(session.runTurn("hello", (event) => events.push(event))).resolves.toEqual({
+      text: "PONG",
+      cancelled: false,
+    });
+    expect(events).toContainEqual({ type: "text.delta", messageId: "assistant-1", delta: "PONG" });
+    expect(events.some((event) => event.type.startsWith("subagent"))).toBe(false);
     await session.close();
   });
 

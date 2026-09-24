@@ -20,6 +20,7 @@ import {
 import {
   DEEPSEEK_V012_PROFILE,
   DEEPSEEK_V015_PROFILE,
+  DEEPSEEK_V017_PROFILE,
   type DeepSeekModernProfile,
 } from "../../src/profiles/profile.js";
 import { parseModernModelCatalog } from "../../src/modern/catalog.js";
@@ -450,9 +451,11 @@ function setup(
   const journal: ModernJournal & { closeCalls: number } = {
     profile,
     header:
-      profile.sessionFormatVersion === 3
-        ? { version: 3, id: SESSION_ID, createdAt: 1, isSeeded: false }
-        : { version: 0, id: SESSION_ID, createdAt: 1 },
+      profile.sessionFormatVersion === 4
+        ? { version: 4, id: SESSION_ID, createdAt: 1, isSeeded: false, delegationDepth: 0 }
+        : profile.sessionFormatVersion === 3
+          ? { version: 3, id: SESSION_ID, createdAt: 1, isSeeded: false }
+          : { version: 0, id: SESSION_ID, createdAt: 1 },
     cursor: history.length - 1,
     projections: { asOfSeq: history.length - 1, values: {} },
     events: history,
@@ -1523,6 +1526,40 @@ describe("DeepSeek Harness Modern Session", () => {
       expect(done.done).toBe(true);
     },
   );
+
+  it("projects a V4 forked turn as cancelled in live output", async () => {
+    const test = setup(
+      [() => accepted()],
+      [],
+      ["request-1"],
+      5_000,
+      null,
+      undefined,
+      undefined,
+      [],
+      DEEPSEEK_V017_PROFILE,
+    );
+    const outputs = test.session.outputs[Symbol.asyncIterator]();
+    const id = turnId("host-turn-fork");
+    await test.session.execute({
+      type: "turn.start",
+      turnId: id,
+      input: [{ type: "text", text: "fork me" }],
+    });
+    test.feed.push(event(0, "turn/start", { turn: 1 }));
+    test.feed.push(event(1, "step/start", { turn: 1, step: 1 }));
+    test.feed.push(userMessage(2, "fork me", "request-1"));
+    expect(await nextEvent(outputs)).toEqual({ type: "turn.started", turnId: id });
+
+    test.feed.push(event(3, "step/end", { turn: 1, step: 1 }));
+    test.feed.push(event(4, "turn/end", { turn: 1, reason: { kind: "forked" } }));
+    expect(await nextEvent(outputs)).toMatchObject({
+      type: "turn.completed",
+      turnId: id,
+      outcome: { status: "cancelled", reason: "Forked from parent Session" },
+    });
+    await test.session.close();
+  });
 
   it("accepts an uncertain prompt when its native user requestId arrives during grace", async () => {
     vi.useFakeTimers();

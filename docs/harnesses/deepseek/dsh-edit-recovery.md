@@ -20,6 +20,6 @@ V3 系统消息参与原生 surface 引用和替换，不作为用户回合展�
 
 015 正常会话关闭和 Fork 队列清理后，还会通过认证的原生 `HEAD /api/session.export` 等待日志写入完成；该请求不下载日志内容。原生回执和内存历史读取不等于落盘完成，尤其不能在 Windows 结束托管进程前省略这一步。持久化确认失败时明确报告失败。
 
-提供基于本地 SSE 模型、隔离临时数据和真实 CLI 的生命周期 Gate：`tools/gate-dsh/lifecycle.real.test.mjs`。通过对应的 `CODEXHOST_DSH_REAL_COMMAND` 指定原生命令，缺少命令时明确跳过。rc.3 和 rc.1 Gate 均已通过；Windows、Node.js `v24.11.0`、Vitest `4.1.10` 的命令、耗时和未验证边界见[版本验证记录](dsh-015rc1-validation.md)。
+提供基于本地 SSE 模型、隔离临时数据和真实 CLI 的生命周期 Gate：`tools/gate-dsh/lifecycle.real.test.mjs`。通过对应的 `CODEXHOST_DSH_REAL_COMMAND` 指定原生命令，缺少命令时明确跳过。`0.1.5-rc.3` 和 `0.1.7-rc.1` 的 Gate 均已通过；Windows、Node.js `v24.11.0`、Vitest `4.1.10` 的命令、耗时和未验证边界见[版本验证记录](dsh-015rc1-validation.md)。
 
 Gate 覆盖流式输出、取消、空/保留历史编辑、冷恢复、默认配置保持、源历史不变和活动关闭。此前两个支持版本均已在 Windows 运行此 Gate；rc.2 已在固定依赖和启动时加载 profile 的 macOS 环境中通过。不把默认配置验证推广为任意非默认配置，也不证明独立第三方客户端或任意后台工具进程的退出。具体命令、覆盖率及 rc.2 的安装限制见 [版本验证记录](dsh-015rc1-validation.md)。

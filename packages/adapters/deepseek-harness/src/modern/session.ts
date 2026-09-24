@@ -2888,6 +2888,9 @@ function turnOutcome(reason: unknown): TurnOutcome {
   if (reason.kind === "aborted") {
     return { status: "cancelled", reason: "Cancelled by user" };
   }
+  if (reason.kind === "forked") {
+    return { status: "cancelled", reason: "Forked from parent Session" };
+  }
   return {
     status: "failed",
     error: {

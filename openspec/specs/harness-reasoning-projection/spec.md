@@ -61,14 +61,25 @@ Protocol Core SHALL convert Host Reasoning lifecycle events and historical snaps
 #### Scenario: Live Reasoning is projected from a stable stream
 
 - **WHEN** an external Turn emits authoritative Reasoning text before the first Agent Message text
-- **THEN** the originating Codex Thread SHALL receive one Reasoning Item lifecycle with each character represented exactly once
+- **THEN** the originating Codex Thread SHALL receive one Reasoning Item lifecycle with each displayed character represented exactly once
 - **AND** the Reasoning SHALL remain ordered before that Agent text in the protocol lifecycle
+
+#### Scenario: Reasoning ends with line breaks
+
+- **WHEN** live or historical Reasoning text ends with CR or LF characters
+- **THEN** Protocol Core SHALL omit all terminal line breaks from the Codex Reasoning preview and `thinking` transcript while preserving line breaks inside the text
+- **AND** live projection SHALL hold terminal line breaks until subsequent text proves they are internal, without changing the Host Item or Native history
 
 #### Scenario: Modern DSH streams and later confirms reasoning
 
 - **WHEN** Modern DSH emits visible `reasoning-delta` in an accepted Turn and later commits a matching Reasoning block in `assistant/message`
-- **THEN** the Adapter SHALL append each native delta while the Turn runs, append any final suffix exactly once, and complete one Reasoning Item
+- **THEN** the Adapter SHALL append each non-terminal text delta while the Turn runs, hold trailing line breaks until continuation or settlement, append any final suffix exactly once, and complete one Reasoning Item
 - **AND** ordinary Agent text SHALL remain live
+
+#### Scenario: Modern DSH final reasoning has fewer terminal line breaks than its provisional stream
+
+- **WHEN** provisional Reasoning differs from the committed block only in its terminal line breaks
+- **THEN** the Adapter SHALL complete one Reasoning Item with the exact committed text instead of cancelling it as a revision
 
 #### Scenario: Modern DSH revises provisional reasoning
 
@@ -109,4 +120,3 @@ Reasoning content SHALL NOT determine Turn success, become a second persisted Tr
 - **WHEN** Host persists ownership metadata or later reopens an external Thread
 - **THEN** Mapping Store SHALL contain no Reasoning text and the Adapter SHALL reread supported Reasoning from Native Session history
 - **AND** diagnostics and committed Gate evidence SHALL omit the Reasoning content
-

@@ -881,7 +881,7 @@ describe("DeepSeek Harness Modern Session", () => {
     await test.session.close();
   });
 
-  it("streams V0 reasoning and reconciles revised, delta-free, and repeated Turns", async () => {
+  it("streams V0 reasoning and reconciles trailing line breaks, revisions, and repeated Turns", async () => {
     const test = setup(
       [() => accepted(), () => accepted(), () => accepted(), () => accepted()],
       [],
@@ -937,7 +937,7 @@ describe("DeepSeek Harness Modern Session", () => {
         streamed.push(...(await eventsThrough(outputs, "item.updated")));
         expect(streamed.at(-1)).toMatchObject({
           type: "item.updated",
-          update: { type: "text.append", text: ["first thought\n\n", "use path A"][index] },
+          update: { type: "text.append", text: ["first thought", "use path A"][index] },
         });
         expect(test.feed.seen.at(-1)?.type).toBe("assistant/chunk");
       }
@@ -956,14 +956,18 @@ describe("DeepSeek Harness Modern Session", () => {
       expect(
         emitted.flatMap((item) => (item.type === "item.started" ? [item.item.type] : [])),
       ).toEqual(
-        index < 2 ? ["reasoning", "agentMessage", "reasoning"] : ["agentMessage", "reasoning"],
+        index === 1
+          ? ["reasoning", "agentMessage", "reasoning"]
+          : index === 0
+            ? ["reasoning", "agentMessage"]
+            : ["agentMessage", "reasoning"],
       );
       expect(
         emitted.flatMap((item) =>
           item.type === "item.completed" ? [item.snapshot.item.type] : [],
         ),
       ).toEqual(
-        index < 2 ? ["reasoning", "reasoning", "agentMessage"] : ["reasoning", "agentMessage"],
+        index === 1 ? ["reasoning", "reasoning", "agentMessage"] : ["reasoning", "agentMessage"],
       );
       expect(
         emitted.find(
@@ -973,7 +977,7 @@ describe("DeepSeek Harness Modern Session", () => {
             item.snapshot.outcome.status === "succeeded",
         ),
       ).toMatchObject({ snapshot: { item: { text: value.final } } });
-      if (index < 2) {
+      if (index === 1) {
         expect(
           emitted.find(
             (item) =>
@@ -1211,6 +1215,50 @@ describe("DeepSeek Harness Modern Session", () => {
       }),
     );
     expect(test.feed.seen.some((entry) => entry.type === "assistant/message")).toBe(false);
+    test.feed.push({
+      type: "assistant-stream",
+      frame: {
+        type: "chunk",
+        attemptId: "reasoning-attempt",
+        revision: 3,
+        index: 1,
+        time: 1_004,
+        chunk: { type: "reasoning-delta", index: 0, text: "\n\n" },
+      },
+    });
+    test.feed.push({
+      type: "assistant-stream",
+      frame: {
+        type: "chunk",
+        attemptId: "reasoning-attempt",
+        revision: 4,
+        index: 2,
+        time: 1_005,
+        chunk: { type: "reasoning-delta", index: 0, text: "again" },
+      },
+    });
+    test.feed.push({
+      type: "assistant-stream",
+      frame: {
+        type: "chunk",
+        attemptId: "reasoning-attempt",
+        revision: 5,
+        index: 3,
+        time: 1_006,
+        chunk: { type: "reasoning-delta", index: 0, text: "\n\n\n" },
+      },
+    });
+    test.feed.push({
+      type: "assistant-stream",
+      frame: {
+        type: "chunk",
+        attemptId: "reasoning-attempt",
+        revision: 6,
+        index: 4,
+        time: 1_007,
+        chunk: { type: "reasoning-delta", index: 0, text: "\n\n" },
+      },
+    });
     test.feed.push(
       event(
         3,
@@ -1221,10 +1269,18 @@ describe("DeepSeek Harness Modern Session", () => {
           message: {
             id: "reasoning-final",
             role: "assistant",
-            content: [{ type: "reasoning", text: "Thinking" }],
+            content: [{ type: "reasoning", text: "Think\n\nagain later\n\n\n" }],
             source: { kind: "model", provider: "deepseek", model: "deepseek-v4" },
           },
-          stream: [{ type: "reasoning-chunks", time0: 1_003, index: 0, dt: [], texts: ["Think"] }],
+          stream: [
+            {
+              type: "reasoning-chunks",
+              time0: 1_003,
+              index: 0,
+              dt: [1, 1, 1, 1],
+              texts: ["Think", "\n\n", "again", "\n\n\n", "\n\n"],
+            },
+          ],
         },
         true,
       ),
@@ -1234,8 +1290,8 @@ describe("DeepSeek Harness Modern Session", () => {
       frame: {
         type: "end",
         attemptId: "reasoning-attempt",
-        revision: 3,
-        index: 1,
+        revision: 7,
+        index: 5,
         outcome: { kind: "committed", eventType: "assistant/message", seq: 3 },
       },
     });
@@ -1243,20 +1299,42 @@ describe("DeepSeek Harness Modern Session", () => {
     test.feed.push(event(5, "turn/end", { turn: 1, reason: { kind: "completed" } }));
     const completed = await eventsThrough(outputs, "turn.completed");
     expect(completed.filter(({ type }) => type === "item.updated")).toMatchObject([
-      { update: { type: "text.append", text: "ing" } },
+      { update: { type: "text.append", text: "\n\nagain" } },
+      { update: { type: "text.append", text: " later\n\n\n" } },
     ]);
     expect(completed.filter(({ type }) => type === "item.completed")).toMatchObject([
       {
         snapshot: {
-          item: { type: "reasoning", text: "Thinking" },
+          item: { type: "reasoning", text: "Think\n\nagain later\n\n\n" },
           outcome: { status: "succeeded" },
         },
       },
     ]);
+    const finalWire = completed.flatMap((entry) =>
+      entry.type === "item.updated" || entry.type === "item.completed"
+        ? ui.project(entry).messages
+        : [],
+    );
+    expect(
+      finalWire.filter(({ method }) => method === "item/commandExecution/outputDelta"),
+    ).toMatchObject([{ params: { delta: "\n\nagain" } }, { params: { delta: " later" } }]);
+    expect(finalWire).toContainEqual(
+      expect.objectContaining({
+        method: "item/completed",
+        params: expect.objectContaining({
+          item: expect.objectContaining({
+            command: "thinking",
+            aggregatedOutput: "Think\n\nagain later",
+          }),
+        }),
+      }),
+    );
     const snapshot = await test.session.readSnapshot();
     expect(snapshot).toMatchObject({
       ok: true,
-      value: { turns: [{ items: [{ item: { type: "reasoning", text: "Thinking" } }] }] },
+      value: {
+        turns: [{ items: [{ item: { type: "reasoning", text: "Think\n\nagain later\n\n\n" } }] }],
+      },
     });
     await test.session.close();
   });

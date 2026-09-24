@@ -475,13 +475,15 @@ function projectItem(
         phase: item.phase ?? null,
         memoryCitation: null,
       };
-    case "reasoning":
+    case "reasoning": {
+      const text = reasoningDisplayText(item.text);
       return {
         id: reasoningPreviewItemId(item.itemId),
         type: "reasoning",
-        summary: item.text.length > 0 ? [item.text] : [],
+        summary: text ? [text] : [],
         content: [],
       };
+    }
     case "contextCompaction":
       return { id: item.itemId, type: "contextCompaction" };
     case "commandExecution":
@@ -574,6 +576,10 @@ export function reasoningPreviewItemId(itemId: HostItemId): string {
   return `${itemId}-summary`;
 }
 
+function reasoningDisplayText(text: string): string {
+  return text.replace(/[\r\n]+$/u, "");
+}
+
 /**
  * Codex renders Reasoning summary deltas as an ephemeral one-line preview but
  * keeps no text after the Turn. The Command Execution lane is the one that
@@ -594,7 +600,7 @@ function projectReasoningTranscriptItem(
     source: "agent",
     status: itemStatus(outcome),
     commandActions: [],
-    aggregatedOutput: item.text.length > 0 ? item.text : null,
+    aggregatedOutput: reasoningDisplayText(item.text) || null,
     exitCode: outcome ? 0 : null,
     durationMs,
   };
@@ -665,6 +671,7 @@ export function projectHistoricalTurn(input: HistoricalTurnProjectionInput): Jso
             return [];
           if (isFileMutatingTool(item.toolName)) return [];
         }
+        if (item.type === "reasoning" && !reasoningDisplayText(item.text)) return [];
         return item.type === "reasoning"
           ? [
               projectItem(item, outcome, cwd, true, input.threadId ?? ""),
@@ -884,7 +891,9 @@ export class CodexTurnProjector {
     this.#items.set(event.item.itemId, projected);
     if (
       (event.item.type === "agentMessage" || event.item.type === "reasoning") &&
-      event.item.text.length === 0
+      (event.item.type === "reasoning"
+        ? reasoningDisplayText(event.item.text).length === 0
+        : event.item.text.length === 0)
     ) {
       // An empty Reasoning Item would surface as a transcript card with no
       // content, so defer the wire Item until real summary text arrives.
@@ -905,10 +914,11 @@ export class CodexTurnProjector {
     const startedItem = event.item.type === "reasoning" ? { ...event.item, text: "" } : event.item;
     const messages = [this.#startWireItem(projected, startedItem, startedAtMs)];
     if (event.item.type === "reasoning") {
+      const text = reasoningDisplayText(event.item.text);
       messages.push(
         this.#startReasoningTranscript(event.item, startedAtMs),
-        this.#reasoningOutputDelta(event.item.itemId, event.item.text, startedAtMs),
-        ...this.#reasoningDelta(projected, event.item.text, startedAtMs),
+        this.#reasoningOutputDelta(event.item.itemId, text, startedAtMs),
+        ...this.#reasoningDelta(projected, text, startedAtMs),
       );
     }
     return { messages };
@@ -937,6 +947,10 @@ export class CodexTurnProjector {
           },
         });
       } else if (next.type === "reasoning") {
+        const previousText =
+          previous.type === "reasoning" ? reasoningDisplayText(previous.text) : "";
+        const delta = reasoningDisplayText(next.text).slice(previousText.length);
+        if (!delta) return { messages };
         if (!projected.wireStarted) {
           messages.push(
             this.#startWireItem(projected, { ...next, text: "" }, emittedAtMs),
@@ -944,8 +958,8 @@ export class CodexTurnProjector {
           );
         }
         messages.push(
-          this.#reasoningOutputDelta(event.itemId, event.update.text, emittedAtMs),
-          ...this.#reasoningDelta(projected, event.update.text, emittedAtMs),
+          this.#reasoningOutputDelta(event.itemId, delta, emittedAtMs),
+          ...this.#reasoningDelta(projected, delta, emittedAtMs),
         );
       }
     } else if (event.update.type === "output.append") {

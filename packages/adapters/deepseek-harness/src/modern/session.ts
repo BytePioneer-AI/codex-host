@@ -198,6 +198,7 @@ interface LiveTextItem<T extends HostAgentMessageItem | HostReasoningItem> {
 interface LiveReasoningItem extends LiveTextItem<HostReasoningItem> {
   readonly attemptId?: string;
   readonly provisional: boolean;
+  pendingLineBreaks: string;
 }
 
 interface LiveTool {
@@ -2115,7 +2116,13 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
         itemId: modernItemId(this.#sessionId, `turn:${active.nativeTurn}:step:${step}:${key}`),
         text: "",
       };
-      active.reasoning = { item, text: "", provisional, ...(attemptId ? { attemptId } : {}) };
+      active.reasoning = {
+        item,
+        text: "",
+        provisional,
+        pendingLineBreaks: "",
+        ...(attemptId ? { attemptId } : {}),
+      };
       this.#emit({ type: "item.started", turnId: active.turnId, item });
     }
     return active.reasoning;
@@ -2127,16 +2134,21 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
     step: number,
     provisional = false,
     attemptId?: string,
+    final = false,
   ): void {
     if (!text) return;
     const reasoning = this.#startReasoning(active, step, provisional, attemptId);
-    reasoning.text += text;
+    const candidate = final ? text : reasoning.pendingLineBreaks + text;
+    const appended = final ? candidate : candidate.replace(/[\r\n]+$/u, "");
+    reasoning.pendingLineBreaks = final ? "" : candidate.slice(appended.length);
+    if (!appended) return;
+    reasoning.text += appended;
     reasoning.item = { ...reasoning.item, text: reasoning.text };
     this.#emit({
       type: "item.updated",
       turnId: active.turnId,
       itemId: reasoning.item.itemId,
-      update: { type: "text.append", text },
+      update: { type: "text.append", text: appended },
     });
   }
 
@@ -2168,7 +2180,7 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
       this.#cancelReasoningItem(active);
     }
     const suffix = finalText.slice(active.reasoning?.text.length ?? 0);
-    if (suffix) this.#appendReasoning(active, suffix, step);
+    if (suffix) this.#appendReasoning(active, suffix, step, false, undefined, true);
     const current = active.reasoning;
     if (!current) return;
     delete active.reasoning;

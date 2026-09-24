@@ -5,7 +5,7 @@
 ## Requirements
 ### Requirement: Local DSH Web profile is the runtime source of truth
 
-The DeepSeek Harness Adapter SHALL use a managed authenticated loopback Web Remote started from the user's local DSH Web profile. Versions `0.1.5-rc.3` and `0.1.7-rc.1` remain the verified Gate entries; modern SemVer versions below 0.1.7-rc.1 use V3 and versions at or above it may attempt V4. Every unverified runtime MUST pass the selected native protocol checks before being reported ready and MUST NOT be described as verified without a real lifecycle Gate. codexhost MUST NOT substitute a private Cordis composition, credentials provider, Skill catalog, or Native Session store, and MUST NOT attach through the retired Legacy Host protocol.
+The DeepSeek Harness Adapter SHALL use a managed authenticated loopback Web Remote started from the user's local DSH Web profile. Versions `0.1.5-rc.3` and `0.1.7-rc.1` SHALL be added to the verified list only after their respective native lifecycle Gates pass; other normative SemVer versions MUST pass the selected native protocol checks before being reported ready. codexhost MUST NOT substitute a private Cordis composition, credentials provider, Skill catalog, or Native Session store, and MUST NOT attach through the retired Legacy Host protocol.
 
 #### Scenario: Supported DSH Web is already running externally
 - **WHEN** the configured loopback endpoint exposes the recognized unauthenticated DSH Web fingerprint
@@ -63,7 +63,7 @@ The Adapter SHALL build Snapshot and live Harness outputs only from the official
 - **AND** recovery SHALL use public history and the matching assistant baseline without reading native JSONL files
 
 #### Scenario: DSH migrates a Session to V4
-- **WHEN** a 0.1.7-rc.1 or later runtime opens a native Session that DSH migrated from V3 to V4
+- **WHEN** `0.1.7-rc.1` opens a native Session that DSH migrated from V3 to V4
 - **THEN** the Adapter SHALL read and validate the current V4 history without performing its own file migration
 - **AND** any pre-migration checkpoint SHALL NOT authorize a mutating Fork or rollback
 

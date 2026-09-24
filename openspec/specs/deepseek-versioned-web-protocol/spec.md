@@ -6,14 +6,14 @@
 ## Requirements
 ### Requirement: Journal parsing preserves each supported format
 
-012 profile MUST 严格读取 V0；低于 0.1.7-rc.1 的现代 SemVer MUST 严格读取 V3；0.1.7-rc.1 及更高 SemVer MUST 尝试现有 V4 profile，包括原生新增的 developer/message、Fork 结束原因、来源和 surface 关系。所有入口 MUST 有界校验；未知 required 事件 MUST 失败，原生 ignorable 事件 SHALL 仅按允许的格式规则处理。非法远端整数 MUST 保持 protocolError，不能归类为可重试 unavailable。
+012 profile MUST 严格读取 V0；015 系列已验证版本 MUST 严格读取 V3；`0.1.7-rc.1` MUST 严格读取 V4，包括原生新增的 `developer/message`、Fork 结束原因、来源和 surface 关系。所有入口 MUST 有界校验；未知 required 事件 MUST 失败，原生 ignorable 事件 SHALL 仅按允许的格式规则处理。非法远端整数 MUST 保持 protocolError，不能归类为可重试 unavailable。
 
 #### Scenario: V3 journal is loaded
 - **WHEN** 使用 `0.1.5-rc.3` 创建、恢复、导入后打开或分页收到合法 V3 日志
 - **THEN** Adapter SHALL 保留系统 surface、PTC、Assistant 结算、usage 和原生继承标记的现有投影语义
 
 #### Scenario: V4 journal is loaded
-- **WHEN** 使用 0.1.7-rc.1 或更高版本收到合法 V4 历史或实时事件
+- **WHEN** 使用 `0.1.7-rc.1` 收到合法 V4 历史或实时事件
 - **THEN** Adapter SHALL 验证 V4 header、已知事件、来源/替换关系和原生 Fork closers，并只向公共 Harness 输出可表示的内容
 - **AND** 系统与开发者指令 MUST NOT 被伪装成用户输入或 Assistant 回答
 
@@ -89,16 +89,11 @@ V3 Session 正常关闭以及 Fork 待办移除后，Adapter MUST 通过认证�
 
 ### Requirement: DSH executable versions are selected by native format validation
 
-Adapter MUST 将单行规范 SemVer `--version` 输出用于选择原生格式尝试，而不是将版本号当作兼容证明。已验证版本列表 MUST 仅包含通过固定 tag 源码审计和真实 CLI 生命周期 Gate 的版本；当前 Gate 证据包括 `0.1.5-rc.3` 的 V3 与 `0.1.7-rc.1` 的 V4。0.1.7-rc.1 及更高的未测试 SemVer 版本可按 V4 尝试托管 Web，但 MUST 经原生 Remote、历史和流式协议校验才能报告可用，且不得列为已验证；Legacy Host 协议不得恢复。
+Adapter MUST 将单行规范 SemVer `--version` 输出用于选择原生格式尝试，而不是将版本号当作兼容证明。已验证版本列表 MUST 仅包含通过固定 tag 源码审计和真实 CLI 生命周期 Gate 的版本；本变更目标包括 `0.1.5-rc.3` 的 V3 与 `0.1.7-rc.1` 的 V4。未测试的 SemVer 版本可尝试托管 Web，但 MUST 经原生 Remote、历史和流式协议校验才能报告可用；Legacy Host 协议不得恢复。
 
-#### Scenario: Verified release is selected
+#### Scenario: Exact supported RC is selected
 - **WHEN** `--version` 输出已验证的 `0.1.5-rc.3` 或 `0.1.7-rc.1`
 - **THEN** Adapter SHALL 分别选择 V3 或 V4 Modern profile，并按该版本的原生协议完成连接诊断
-
-#### Scenario: DSH rc2 and later versions select V4
-- **WHEN** --version 输出 0.1.7-rc.2 或更高的规范 SemVer
-- **THEN** Adapter SHALL 选择 V4 Modern profile 并按原生协议执行连接诊断
-- **AND** 版本只有在真实生命周期 Gate 通过后才能加入已验证列表
 
 #### Scenario: Different version is installed
 - **WHEN** `--version` 输出其他规范 SemVer，或输出不符合单行规范 SemVer

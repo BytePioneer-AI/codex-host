@@ -1,5 +1,6 @@
 import { createTwoFilesPatch, parsePatch } from "diff";
 import { randomUUID } from "node:crypto";
+import { realpath, stat } from "node:fs/promises";
 import path from "node:path";
 
 import {
@@ -83,6 +84,7 @@ import {
   type OmpAvailableCommand,
 } from "./omp-slash-commands.js";
 import { mapOmpSnapshot, resolveOmpForkBoundary, type OmpSessionHistory } from "./omp-history.js";
+import { readOmpSessionHistory } from "./omp-session-file.js";
 import { rollbackOmpLastTurn } from "./omp-last-turn-rollback.js";
 import {
   OmpRpcFaultError,
@@ -342,6 +344,55 @@ function sessionFileFromRef(ref: NativeSessionRef): string {
     throw new Error("Omp Native Session Ref has no resumable Session file");
   }
   return ref.locator.sessionFile;
+}
+
+const MAX_SUBAGENT_TRANSCRIPT_BYTES = 8 * 1024 * 1024;
+
+/** OMP writes each child transcript next to its parent Session file as `<stem>/<subagentId>.jsonl`. */
+function subagentTranscriptPath(parentSessionFile: string, nativeSubagentId: string): string {
+  if (
+    nativeSubagentId.includes("/") ||
+    nativeSubagentId.includes("\\") ||
+    nativeSubagentId.includes("\u0000") ||
+    nativeSubagentId === "." ||
+    nativeSubagentId === ".."
+  ) {
+    throw new Error("Omp Subagent ID is not a plain transcript file name");
+  }
+  if (!parentSessionFile.endsWith(".jsonl") || path.isAbsolute(parentSessionFile) === false) {
+    throw new Error("Omp Native Session file has an unsupported layout");
+  }
+  return `${parentSessionFile.slice(0, -".jsonl".length)}/${nativeSubagentId}.jsonl`;
+}
+
+type SubagentTranscriptFile =
+  { status: "read"; history: OmpSessionHistory } | { status: "missing" };
+
+async function readSubagentTranscriptFile(
+  parentSessionFile: string,
+  nativeSubagentId: string,
+): Promise<SubagentTranscriptFile> {
+  const transcriptFile = subagentTranscriptPath(parentSessionFile, nativeSubagentId);
+  const parentDirectory = path.dirname(transcriptFile);
+  let metadata;
+  try {
+    metadata = await stat(transcriptFile);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return { status: "missing" };
+    throw error;
+  }
+  if (!metadata.isFile()) return { status: "missing" };
+  if (metadata.size > MAX_SUBAGENT_TRANSCRIPT_BYTES) {
+    throw new Error("Omp Subagent transcript exceeds the supported size");
+  }
+  const [resolvedTranscript, resolvedParentDirectory] = await Promise.all([
+    realpath(transcriptFile),
+    realpath(parentDirectory),
+  ]);
+  if (path.dirname(resolvedTranscript) !== resolvedParentDirectory) {
+    throw new Error("Omp Subagent transcript resolves outside its parent Session directory");
+  }
+  return { status: "read", history: await readOmpSessionHistory(transcriptFile) };
 }
 
 function toolFailure(toolName: string): HarnessError {
@@ -2172,6 +2223,22 @@ export class OmpAdapter implements HarnessAdapter {
       }
       let transport: OmpTurnTransport | undefined;
       try {
+        // OMP's RPC subagent registry is in-memory and only populated by live
+        // task events, so a resumed cold process cannot resolve completed
+        // children by ID. Read the on-disk transcript next to the parent
+        // Session file first; fall back to the RPC path for layouts without
+        // a readable transcript file.
+        const transcriptFile = await readSubagentTranscriptFile(
+          sessionFileFromRef(input.parent),
+          input.nativeSubagentId,
+        );
+        if (transcriptFile.status === "read") {
+          const snapshot = mapOmpSnapshot(transcriptFile.history, {
+            sessionId: input.parent.nativeSessionId,
+            model: null,
+          });
+          return { ok: true, value: snapshot };
+        }
         transport = this.#createTransport({
           cwd: input.cwd,
           sessionFile: sessionFileFromRef(input.parent),

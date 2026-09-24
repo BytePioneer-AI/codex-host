@@ -1,4 +1,8 @@
-import { describe, expect, it, vi } from "vitest";
+import { mkdir, rm, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { HarnessOutput, HostUsage } from "@codexhost/harness-adapter";
 import {
@@ -246,6 +250,15 @@ function historyTurn(input: {
     },
   ];
 }
+
+const temporaryDirectories: string[] = [];
+
+afterEach(async () => {
+  while (temporaryDirectories.length > 0) {
+    const directory = temporaryDirectories.pop();
+    if (directory) await rm(directory, { recursive: true, force: true });
+  }
+});
 
 describe("OMP Adapter Session environment", () => {
   it("uses OMP's native yolo default without changing ordinary create semantics", async () => {
@@ -686,6 +699,89 @@ describe("OMP Adapter Subagents", () => {
         outcome: { status: "succeeded" },
       });
     }
+    await adapter.close();
+  });
+
+  it("reads a completed Subagent transcript from disk without spawning an OMP process", async () => {
+    const root = path.join(tmpdir(), `codexhost-omp-subagent-${randomUUID()}`);
+    const parentSessionFile = path.join(root, "parent.jsonl");
+    const transcriptDirectory = path.join(root, "parent");
+    await mkdir(transcriptDirectory, { recursive: true });
+    temporaryDirectories.push(root);
+    await writeFile(
+      path.join(transcriptDirectory, "scout.jsonl"),
+      [
+        JSON.stringify({ type: "title", v: 1, title: "", updatedAt: "2026-01-01T00:00:00.000Z" }),
+        JSON.stringify({
+          type: "session",
+          version: 3,
+          id: "child-session",
+          timestamp: "2026-01-01T00:00:00.000Z",
+          cwd: "/synthetic",
+        }),
+        JSON.stringify({
+          type: "message",
+          id: "child-user-1",
+          parentId: null,
+          message: { role: "user", content: [{ type: "text", text: "Inspect the repository" }] },
+        }),
+        JSON.stringify({
+          type: "message",
+          id: "child-assistant-1",
+          parentId: "child-user-1",
+          message: {
+            role: "assistant",
+            content: [{ type: "text", text: "I inspected it." }],
+            stopReason: "stop",
+          },
+        }),
+      ].join("\n") + "\n",
+      "utf8",
+    );
+    const createTransport = vi.fn();
+    const adapter = new OmpAdapter({}, { createTransport: createTransport as never });
+    const parent = nativeSessionRefSchema.parse({
+      harnessId: "omp",
+      nativeSessionId: "parent-session",
+      locator: { sessionFile: parentSessionFile },
+      formatVersion: 1,
+    });
+    const result = await adapter.subagents.readSnapshot({
+      parent,
+      nativeSubagentId: "scout",
+      cwd: "/synthetic",
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.turns).toHaveLength(1);
+      expect(result.value.turns[0]?.input).toEqual([
+        { type: "text", text: "Inspect the repository" },
+      ]);
+      expect(result.value.turns[0]?.items).toContainEqual({
+        item: expect.objectContaining({ type: "agentMessage", text: "I inspected it." }),
+        outcome: { status: "succeeded" },
+      });
+    }
+    expect(createTransport).not.toHaveBeenCalled();
+    await adapter.close();
+  });
+
+  it("rejects Subagent IDs that cannot name a transcript file", async () => {
+    const transport = new FakeOmpTransport();
+    const adapter = new OmpAdapter({}, { createTransport: () => transport });
+    const parent = nativeSessionRefSchema.parse({
+      harnessId: "omp",
+      nativeSessionId: "omp-parent",
+      locator: { sessionFile: "/synthetic/omp-parent.jsonl" },
+      formatVersion: 1,
+    });
+    const result = await adapter.subagents.readSnapshot({
+      parent,
+      nativeSubagentId: "../escape",
+      cwd: "/synthetic",
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.code).toBe("protocolError");
     await adapter.close();
   });
 

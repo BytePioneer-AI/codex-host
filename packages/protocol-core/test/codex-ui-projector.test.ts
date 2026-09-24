@@ -1,3 +1,4 @@
+import path from "node:path";
 import { describe, expect, it } from "vitest";
 import type {
   HostCommandExecutionItem,
@@ -1084,14 +1085,22 @@ describe("Codex UI projector", () => {
       type: "toolExecution",
       itemId: commandId,
       toolName: "pwsh",
-      arguments: { command: "Get-ChildItem src", description: "List source files" },
+      arguments: {
+        command: "Get-ChildItem src",
+        description: "List source files",
+        workdir: "scripts",
+      },
     };
     value.project({ type: "turn.started", turnId });
     expect(value.project({ type: "item.started", turnId, item: command }).messages).toMatchObject([
       {
         method: "item/started",
         params: {
-          item: { type: "commandExecution", command: "Get-ChildItem src" },
+          item: {
+            type: "commandExecution",
+            command: "Get-ChildItem src",
+            cwd: path.resolve("/workspace", "scripts"),
+          },
         },
       },
     ]);
@@ -1112,6 +1121,8 @@ describe("Codex UI projector", () => {
             type: "commandExecution",
             command: "Get-ChildItem src",
             aggregatedOutput: "file.ts",
+            cwd: path.resolve("/workspace", "scripts"),
+            exitCode: null,
           },
         },
       },

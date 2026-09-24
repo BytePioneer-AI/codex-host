@@ -23,6 +23,7 @@ import type {
 } from "@codexhost/shared-contracts";
 import { REASONING_TRANSCRIPT_COMMAND } from "@codexhost/shared-contracts";
 import { createTwoFilesPatch } from "diff";
+import path from "node:path";
 import { summarizeFileChanges } from "./file-change-summary.js";
 
 import {
@@ -120,6 +121,11 @@ function nestedString(
     if (nested !== undefined) return nested;
   }
   return undefined;
+}
+
+function toolWorkingDirectory(args: JsonValue, defaultCwd: string): string {
+  const workdir = nestedString(args, ["workdir"]);
+  return workdir === undefined ? defaultCwd : path.resolve(defaultCwd, workdir);
 }
 
 function toolOutputText(item: Extract<HostItem, { type: "toolExecution" }>): string | null {
@@ -499,13 +505,13 @@ function projectItem(
           id: item.itemId,
           type: "commandExecution",
           command,
-          cwd: defaultCwd,
+          cwd: toolWorkingDirectory(item.arguments, defaultCwd),
           processId: null,
           source: "agent",
           status: itemStatus(outcome),
           commandActions: [],
           aggregatedOutput: includeCommandOutput ? toolOutputText(item) : null,
-          exitCode: outcome ? (outcome.status === "succeeded" ? 0 : 1) : null,
+          exitCode: null,
           durationMs: item.durationMs ?? null,
         };
       }

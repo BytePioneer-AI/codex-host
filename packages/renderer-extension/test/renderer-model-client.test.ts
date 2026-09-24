@@ -782,6 +782,13 @@ describe("Renderer fixed Model request client", () => {
     ).rejects.toThrow("does not match");
   });
 
+  it("accepts a null update check when the Host has no update capability", async () => {
+    const client = createRendererModelClient([{ sendRequest: vi.fn(async () => null) }]);
+    if (!client) throw new Error("Synthetic update client was not created");
+
+    await expect(client.checkUpdate()).resolves.toBeNull();
+  });
+
   it("rejects update results that expose privileged artifact data", async () => {
     const sendRequest = vi.fn(async () => ({
       currentVersion: "1.2.2",

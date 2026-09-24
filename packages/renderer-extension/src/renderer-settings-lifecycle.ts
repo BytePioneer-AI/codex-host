@@ -153,6 +153,7 @@ export function installRendererSettingsLifecycle(
     if (disposed || updateRetryTimer !== null) return;
     const delay = UPDATE_RETRY_DELAYS_MS[updateRetryAttempt];
     if (delay === undefined) return;
+    checkedUpdateClient = null;
     updateRetryAttempt += 1;
     updateRetryTimer = ownerWindow.setTimeout(() => {
       updateRetryTimer = null;
@@ -194,21 +195,19 @@ export function installRendererSettingsLifecycle(
     void checkUpdateWithTimeout(client)
       .then((result) => {
         if (disposed || generation !== updateCheckGeneration) return;
-        updateAvailable = result.updateAvailable;
+        updateAvailable = result?.updateAvailable ?? false;
         trigger?.setUpdateAvailable(updateAvailable);
-        if (result.error === null) {
+        if (result === null || result.error === null) {
           updateRetryAttempt = 0;
           clearUpdateRetry();
           return;
         }
-        checkedUpdateClient = null;
         scheduleUpdateRetry(client);
       })
       .catch(() => {
         if (disposed || generation !== updateCheckGeneration || checkedUpdateClient !== client) {
           return;
         }
-        checkedUpdateClient = null;
         scheduleUpdateRetry(client);
       });
   };

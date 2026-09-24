@@ -2298,7 +2298,11 @@ export class AppServerHost {
     }
     const coordinator = this.#options.updateCoordinator;
     if (!coordinator) {
-      await this.#writer.json(rpcError(request, -32090, "Application updates are unavailable"));
+      await this.#writer.json(
+        request.method === "codexhost/update/check"
+          ? rpcEnvelope(request, { result: null })
+          : rpcError(request, -32090, "Application updates are unavailable"),
+      );
       return;
     }
     try {

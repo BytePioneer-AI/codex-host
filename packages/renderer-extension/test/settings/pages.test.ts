@@ -1350,6 +1350,37 @@ describe("Renderer Updates page", () => {
     scope.dispose();
   });
 
+  it("shows updates as unavailable when the Host has no update capability", async () => {
+    const client = {
+      checkUpdate: vi.fn(async () => null),
+      startUpdate: vi.fn(),
+      readUpdateStatus: vi.fn(),
+    };
+    const page = createDefaultRendererSettingsPages(
+      rendererSettingsMessages("zh-CN"),
+      () => client,
+    ).find(({ id }) => id === "updates");
+    if (!page) throw new Error("Updates page is not registered");
+
+    const document = new FakeDocument();
+    const content = document.createElement("main");
+    const scope = new RendererSettingsPageScope();
+    const cleanup = page.mount({
+      content: content as unknown as HTMLElement,
+      signal: scope.signal,
+      runLatest: (operation, handlers) => scope.runLatest(operation, handlers),
+    });
+
+    const panel = elementWithClass(content, "settings-update-panel");
+    await vi.waitFor(() => expect(panel.dataset.updateState).toBe("unavailable"));
+    expect(visibleText(panel)).toContain("运行时尚未安装该项能力");
+    expect(visibleText(panel)).not.toContain("当前已是最新版本");
+    expect(descendants(panel).some(({ tagName }) => tagName === "button")).toBe(false);
+
+    cleanup?.();
+    scope.dispose();
+  });
+
   it("shows only the Update action before an update starts and ignores stale success state", async () => {
     const client = {
       checkUpdate: vi.fn(async () => updateCheck(updateStatus("succeeded"))),

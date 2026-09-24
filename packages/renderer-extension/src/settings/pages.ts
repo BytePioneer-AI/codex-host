@@ -83,7 +83,7 @@ export const DEFAULT_RENDERER_SETTINGS_PAGE_IDS = [
 export type DefaultRendererSettingsPageId = (typeof DEFAULT_RENDERER_SETTINGS_PAGE_IDS)[number];
 
 export interface RendererUpdateClient {
-  checkUpdate(): Promise<UpdateCheckResult>;
+  checkUpdate(): Promise<UpdateCheckResult | null>;
   startUpdate(): Promise<UpdateStartResult>;
   readUpdateStatus(): Promise<UpdateStatusResult>;
 }
@@ -494,7 +494,14 @@ function updatesPage(
         );
       };
 
-      const renderCheck = (result: UpdateCheckResult, client: RendererUpdateClient): void => {
+      const renderCheck = (
+        result: UpdateCheckResult | null,
+        client: RendererUpdateClient,
+      ): void => {
+        if (result === null) {
+          renderUnavailable(messages.runtimeCapabilityNotInstalled);
+          return;
+        }
         currentVersionValue.textContent = `v${result.currentVersion}`;
         latestVersionValue.textContent = result.latestVersion ? `v${result.latestVersion}` : "-";
         latestVersionValue.className = result.updateAvailable

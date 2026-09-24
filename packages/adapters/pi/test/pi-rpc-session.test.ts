@@ -32,6 +32,7 @@ type Scenario =
   | "long-running"
   | "cancel"
   | "cancel-no-settle"
+  | "cancel-slow-settle"
   | "malformed-tool"
   | "interaction"
   | "interaction-timeout"
@@ -418,6 +419,23 @@ class FakePiRpcProcess extends EventEmitter {
       this.#startInteractionTurn(command);
       return;
     }
+    if (command.type === "abort" && this.#scenario === "cancel-slow-settle") {
+      // The Abort acknowledgement and settlement arrive well past the former 2s bound.
+      setTimeout(() => {
+        this.#respond(command);
+        setTimeout(() => {
+          this.#output({
+            type: "tool_execution_end",
+            toolCallId: "long-tool",
+            toolName: "gate_long_tool",
+            result: { content: [{ type: "text", text: "cancelled" }] },
+            isError: true,
+          });
+          this.#settleAgent();
+        }, 700);
+      }, 2_500);
+      return;
+    }
     this.#respond(command);
     if (
       command.type === "abort" &&
@@ -494,10 +512,15 @@ class FakePiRpcProcess extends EventEmitter {
       this.#scenario === "prompt-auto-compaction" ||
       this.#scenario === "prompt-preflight-compaction" ||
       this.#scenario === "settled-streaming" ||
-      ((this.#scenario === "cancel" || this.#scenario === "long-running") && this.#promptCount > 1)
+      ((this.#scenario === "cancel" ||
+        this.#scenario === "cancel-slow-settle" ||
+        this.#scenario === "long-running") &&
+        this.#promptCount > 1)
     ) {
       const text =
-        this.#scenario === "cancel" || this.#scenario === "long-running"
+        this.#scenario === "cancel" ||
+        this.#scenario === "cancel-slow-settle" ||
+        this.#scenario === "long-running"
           ? "continued"
           : "synthetic final text";
       const message = {
@@ -588,7 +611,11 @@ class FakePiRpcProcess extends EventEmitter {
       }, 180_001);
       return;
     }
-    if (this.#scenario === "cancel" || this.#scenario === "cancel-no-settle") {
+    if (
+      this.#scenario === "cancel" ||
+      this.#scenario === "cancel-no-settle" ||
+      this.#scenario === "cancel-slow-settle"
+    ) {
       this.#output({
         type: "tool_execution_start",
         toolCallId: "long-tool",
@@ -715,7 +742,7 @@ function session(
   options: {
     commandTimeoutMs?: number;
     nativeCompactionDelayMs?: number;
-    cancelTimeoutMs?: number;
+    cancelTimeoutMs?: number | "default";
   } = {},
 ): PiRpcSession {
   const processAdapter: PiRpcProcessAdapter = {
@@ -730,7 +757,9 @@ function session(
     {
       cwd: process.cwd(),
       commandTimeoutMs: options.commandTimeoutMs ?? 2_000,
-      cancelTimeoutMs: options.cancelTimeoutMs ?? 500,
+      ...(options.cancelTimeoutMs === "default"
+        ? {}
+        : { cancelTimeoutMs: options.cancelTimeoutMs ?? 500 }),
       closeTimeoutMs: 500,
       onFault,
     },
@@ -1549,6 +1578,46 @@ describe("Pi RPC Turn aggregation", () => {
       cancelled: false,
     });
     await rpc.close();
+  });
+
+  it("settles a cancellation whose Abort acknowledgement is slower than the former bound", async () => {
+    vi.useFakeTimers();
+    const onFault = vi.fn();
+    const rpc = session("cancel-slow-settle", onFault, {
+      commandTimeoutMs: 30_000,
+      cancelTimeoutMs: "default",
+    });
+    const events: PiTurnEvent[] = [];
+
+    try {
+      await rpc.start();
+      const turn = rpc.runTurn("cancel me slowly", (event) => events.push(event));
+      for (
+        let attempt = 0;
+        attempt < 10 && !events.some(({ type }) => type === "tool.started");
+        attempt += 1
+      ) {
+        await vi.advanceTimersByTimeAsync(0);
+      }
+      expect(events.some(({ type }) => type === "tool.started")).toBe(true);
+
+      const aborting = rpc.abort();
+      await vi.advanceTimersByTimeAsync(2_001);
+      expect(onFault).not.toHaveBeenCalled();
+
+      await vi.advanceTimersByTimeAsync(1_200);
+      await expect(aborting).resolves.toBeUndefined();
+      await expect(turn).resolves.toEqual({ text: "", cancelled: true });
+      expect(onFault).not.toHaveBeenCalled();
+
+      await expect(rpc.runTurn("continue", (event) => events.push(event))).resolves.toEqual({
+        text: "continued",
+        cancelled: false,
+      });
+      await rpc.close();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("fails and closes a cancellation that does not reach stable settlement", async () => {

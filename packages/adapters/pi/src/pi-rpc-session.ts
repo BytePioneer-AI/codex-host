@@ -511,7 +511,10 @@ export class PiRpcSession {
     }
     this.#options = {
       commandTimeoutMs: 30_000,
-      cancelTimeoutMs: 2_000,
+      // Bounds proven stable settlement (Abort acknowledgement plus agent_settled and get_state
+      // confirmation), not the RPC write round trip; must exceed the Host's 20s external steering
+      // bound so a slow cancellation times out gracefully instead of faulting the whole Session.
+      cancelTimeoutMs: 30_000,
       closeTimeoutMs: 2_000,
       ...options,
     };

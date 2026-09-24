@@ -11,11 +11,9 @@ import { parse } from "smol-toml";
  * `devin auth login` stores that key in credentials.toml, so the adapter reads
  * it back and hands it to Devin's own handshake — it is never sent elsewhere.
  */
-export async function devinApiKey(
-  environment: NodeJS.ProcessEnv,
-): Promise<string | undefined> {
-  const explicit = environment.CODEXHOST_DEVIN_API_KEY ?? environment.DEVIN_API_KEY;
-  if (explicit?.trim()) return explicit.trim();
+export async function devinApiKey(environment: NodeJS.ProcessEnv): Promise<string | undefined> {
+  const explicit = environment.CODEXHOST_DEVIN_API_KEY?.trim() || environment.DEVIN_API_KEY?.trim();
+  if (explicit) return explicit;
   try {
     const file = path.join(
       environment.XDG_DATA_HOME ?? path.join(os.homedir(), ".local", "share"),

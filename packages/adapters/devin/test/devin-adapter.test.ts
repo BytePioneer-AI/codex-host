@@ -475,9 +475,7 @@ describe("Devin session import", () => {
         return { sessions: rows };
       }),
     };
-    vi.spyOn(DevinTransport.prototype, "probe").mockResolvedValue(
-      connection as never,
-    );
+    vi.spyOn(DevinTransport.prototype, "probe").mockResolvedValue(connection as never);
     vi.spyOn(DevinTransport.prototype, "close").mockResolvedValue();
     return connection;
   }

@@ -76,8 +76,7 @@ export class DevinAdapter implements HarnessAdapter {
   readonly harnessId = harnessIdSchema.parse("devin");
   readonly sessionImport = {
     listCandidates: () => this.#listImportCandidates(),
-    resolveCandidate: (nativeSessionId: string) =>
-      this.#resolveImportCandidate(nativeSessionId),
+    resolveCandidate: (nativeSessionId: string) => this.#resolveImportCandidate(nativeSessionId),
   };
   readonly #sessions = new Set<DevinSession>();
   readonly #inspections = new Map<
@@ -203,9 +202,7 @@ export class DevinAdapter implements HarnessAdapter {
   async #withProbeConnection<T>(
     action: (connection: ClientSideConnection) => Promise<T>,
   ): Promise<T> {
-    const transport = new DevinTransport(
-      this.transportOptions(process.cwd()),
-    );
+    const transport = new DevinTransport(this.transportOptions(process.cwd()));
     try {
       const connection = await transport.probe();
       return await action(connection);
@@ -278,9 +275,8 @@ export class DevinSession implements HarnessSession {
         formatVersion: 1,
       }),
       ...(current ? { effectiveModel: devinModelRef(current) } : {}),
-      effectivePermissionModeId: harnessPermissionModeIdSchema.parse(
-        info.modes?.currentModeId ?? "accept-edits",
-      ),
+      // Fails closed when Devin returns no usable native permission mode catalog.
+      effectivePermissionModeId: devinModes(info).defaultModeId,
     };
   }
   async readSnapshot(): Promise<HarnessResult<HostThreadSnapshot>> {

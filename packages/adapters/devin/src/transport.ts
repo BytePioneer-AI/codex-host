@@ -12,6 +12,10 @@ import {
 import { devinInvocation } from "./command.js";
 import { devinApiKey } from "./credentials.js";
 
+/** Devin's agent-type auth method; accepts `_meta.api_key` in place of its PKCE flow. */
+const DEVIN_API_KEY_AUTH_METHOD = "devin-browser";
+const REPLAY_LIMIT = 100_000;
+
 export interface DevinTransportOptions {
   cwd: string;
   environment: NodeJS.ProcessEnv;
@@ -32,6 +36,7 @@ export class DevinTransport {
   #connection: ClientSideConnection | undefined;
   #callbacks: DevinCallbacks | undefined;
   #collecting = false;
+  #replayOverflow = false;
   #closed = false;
   #fault: Error | undefined;
   #rejectFault!: (error: Error) => void;
@@ -86,8 +91,9 @@ export class DevinTransport {
           if (this.sessionId && value.sessionId !== this.sessionId) return;
           if (this.#callbacks) this.#callbacks.update(value);
           else if (this.#collecting) {
-            if (this.replay.length < 100_000) this.replay.push(value);
-            else throw new Error("Devin replay exceeds the supported history limit");
+            // The SDK swallows notification handler errors, so record overflow for the caller.
+            if (this.replay.length < REPLAY_LIMIT) this.replay.push(value);
+            else this.#replayOverflow = true;
           }
         },
         requestPermission: (value) =>
@@ -115,13 +121,18 @@ export class DevinTransport {
           clientInfo: { name: "codexhost", version: "0.9.0" },
         }),
       );
-      if (init.protocolVersion !== 1 || (requiresLoadSession && !init.agentCapabilities?.loadSession))
+      if (
+        init.protocolVersion !== 1 ||
+        (requiresLoadSession && !init.agentCapabilities?.loadSession)
+      )
         throw new Error("Devin does not support the required ACP session protocol");
       // Devin 3000.11+ requires an explicit authenticate call carrying the API
-      // key in _meta.api_key. Without a key, the only advertised alternative is
-      // a PKCE browser flow; never trigger it implicitly — let the following
-      // request surface authenticationRequired instead.
-      const authMethod = init.authMethods?.[0]?.id;
+      // key in _meta.api_key on its browser method, which then skips PKCE.
+      // Without a key, never trigger the browser flow implicitly — let the
+      // following request surface authenticationRequired instead.
+      const authMethod = init.authMethods?.find(
+        (method) => method.id === DEVIN_API_KEY_AUTH_METHOD,
+      )?.id;
       const apiKey = authMethod ? await devinApiKey(this.options.environment) : undefined;
       if (authMethod && apiKey)
         await this.#bounded(
@@ -146,6 +157,7 @@ export class DevinTransport {
           )
         : this.#bounded(connection.newSession({ cwd: this.options.cwd, mcpServers: [] })));
       this.#collecting = false;
+      this.#assertReplayComplete();
       if ("sessionId" in info && typeof info.sessionId === "string")
         this.sessionId = info.sessionId;
       if (!this.sessionId) throw new Error("Devin returned no native session ID");
@@ -169,7 +181,8 @@ export class DevinTransport {
   async reload(): Promise<SessionNotification[]> {
     if (!this.#connection || this.#closed || !this.sessionId)
       throw new Error("Devin session is not open");
-    const start = this.replay.length;
+    this.replay = [];
+    this.#replayOverflow = false;
     this.#collecting = true;
     try {
       await this.#bounded(
@@ -182,7 +195,12 @@ export class DevinTransport {
     } finally {
       this.#collecting = false;
     }
-    return this.replay.slice(start);
+    this.#assertReplayComplete();
+    return this.replay;
+  }
+
+  #assertReplayComplete() {
+    if (this.#replayOverflow) throw new Error("Devin replay exceeds the supported history limit");
   }
 
   async configure(configId: string, value: string) {

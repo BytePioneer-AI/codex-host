@@ -392,7 +392,10 @@ async function readSubagentTranscriptFile(
   if (path.dirname(resolvedTranscript) !== resolvedParentDirectory) {
     throw new Error("Omp Subagent transcript resolves outside its parent Session directory");
   }
-  return { status: "read", history: await readOmpSessionHistory(transcriptFile) };
+  return {
+    status: "read",
+    history: await readOmpSessionHistory(transcriptFile, MAX_SUBAGENT_TRANSCRIPT_BYTES),
+  };
 }
 
 function toolFailure(toolName: string): HarnessError {

@@ -773,7 +773,7 @@ describe("Renderer Connections page", () => {
     expect(visibleText(panel)).toContain(expected);
     expect(
       visibleText(content).includes(
-        "已在 DSH 0.1.2-rc.1、0.1.5-rc.1、0.1.5-rc.2、0.1.5-rc.3 和 0.1.7-rc.1 上测试。",
+        "支持 DSH 版本：0.1.2-rc.1、0.1.5-rc.1、0.1.5-rc.2、0.1.5-rc.3、0.1.7-rc.1 和 0.1.7-rc.2。",
       ),
     ).toBe(agent === "deepseek-harness");
     expect(visibleText(panel)).toContain("请在远程 Host 上安装。");
@@ -969,8 +969,9 @@ describe("Renderer Connections page", () => {
     );
     if (!dshRow) throw new Error("DeepSeek Harness row is not rendered");
     dshRow.dispatch("click", { target: null });
+    expect(visibleText(content)).toContain("0.1.7-rc.2");
     expect(visibleText(content)).toContain(
-      "其他规范 SemVer 版本可以在通过原生协议检查后尝试连接，但尚未验证。",
+      "其他规范 SemVer 版本可以在通过原生协议检查后尝试连接，但尚未列入支持列表。",
     );
     const open = descendants(content).find(
       ({ dataset }) => dataset.connectionAction === "open-web-ui",

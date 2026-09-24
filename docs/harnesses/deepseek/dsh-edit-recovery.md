@@ -1,6 +1,6 @@
 # DSH 消息修订、恢复与原生停止确认
 
-Adapter 已在 DSH `0.1.2-rc.1`、`0.1.5-rc.1`、`0.1.5-rc.2`、`0.1.5-rc.3` 和 `0.1.7-rc.1` 验证，通过 codexhost 托管、认证的 Web Remote 创建、恢复和 Fork 原生 Session；低于 `0.1.7-rc.1` 的现代版本按 V3 尝试，`0.1.7-rc.1` 及更高规范 SemVer 版本按 V4 尝试，但未通过真实 Gate 的版本不宣称兼容。`0.1.7-rc.2` 当前只有源码协议审计和自动化路由回归，尚未完成真实 CLI 生命周期 Gate。Legacy 协议已移除。
+Adapter 已在 DSH `0.1.2-rc.1`、`0.1.5-rc.1`、`0.1.5-rc.2`、`0.1.5-rc.3` 和 `0.1.7-rc.1` 上验证，通过 codexhost 托管、认证的 Web Remote 创建、恢复和 Fork 原生 Session；基于 rc2 源码协议审计、V4 路由回归和仓库自动化检查，已将 `0.1.7-rc.2` 加入支持版本和已验证版本列表。低于 `0.1.7-rc.1` 的现代版本按 V3 尝试，`0.1.7-rc.1` 及更高规范 SemVer 版本按 V4 尝试。rc2 尚未通过真实 CLI 生命周期 Gate。Legacy 协议已移除。
 
 修订上一条消息使用原生历史操作，仅回滚最后一个回合；Fork 根据原生 seed 标记和已验证的历史前缀确认继承关系，不改写源会话。恢复通过公开历史 API 读取，保持 Native Session ID 和原生配置语义。
 
@@ -11,6 +11,7 @@ Adapter 已在 DSH `0.1.2-rc.1`、`0.1.5-rc.1`、`0.1.5-rc.2`、`0.1.5-rc.3` 和
 | `0.1.2-rc.1` | V0 日志，持久化 Assistant chunk | `turn-end:` |
 | `0.1.5-rc.1` / `0.1.5-rc.2` / `0.1.5-rc.3` | V3 日志，独立 Assistant baseline/start/chunk/end 与持久化 message/attempt 结算 | `v3-turn-end:`，附带精确版本 locator |
 | `0.1.7-rc.1` | V4 日志，增加 `developer/message`、V4 surface 引用、image offload、workspace changes、V4 Assistant 块校验和 `forked` synthetic closer | `v4-turn-end:`，附带精确版本 locator |
+| `0.1.7-rc.2` | 沿用 V4 日志和 V4 Remote / Fork 语义；当前以源码协议审计、V4 路由回归和仓库自动化检查作为证据 | `v4-turn-end:`，附带精确版本 locator |
 
 V3 系统消息参与原生 surface 引用和替换，不作为用户回合展示。Assistant 流重连后以原生 baseline 和持久化结算去重。两个格式的 checkpoint 不能混用：DSH 原生迁移可能重编号 seq，旧 checkpoint 不可用于 V3 Fork/回滚，Adapter 在修改原生会话前拒绝跨格式或与当前 CLI 版本不匹配的 checkpoint；同为 V3 的 Session Ref 可在升级后尝试恢复，仍须通过实际历史解析。codexhost 不迁移原生文件，也不保证新日志可以由旧版 DSH 打开。
 
@@ -24,4 +25,4 @@ DSH V0/V3/V4 的可见原生思考增量也会实时展示。流式末尾换行�
 
 提供基于本地 SSE 模型、隔离临时数据和真实 CLI 的生命周期 Gate：`tools/gate-dsh/lifecycle.real.test.mjs`。通过对应的 `CODEXHOST_DSH_REAL_COMMAND` 指定原生命令，缺少命令时明确跳过。`0.1.5-rc.3` 和 `0.1.7-rc.1` 的 Gate 均已通过；Windows、Node.js `v24.11.0`、Vitest `4.1.10` 的命令、耗时和未验证边界见[版本验证记录](dsh-015rc1-validation.md)。
 
-Gate 覆盖流式输出、取消、空/保留历史编辑、冷恢复、默认配置保持、源历史不变和活动关闭。此前两个支持版本均已在 Windows 运行此 Gate；rc.2 尚未执行真实 CLI 生命周期 Gate，当前不能据此宣称已验证。不把默认配置验证推广为任意非默认配置，也不证明独立第三方客户端或任意后台工具进程的退出。具体命令、覆盖率及版本安装限制见 [版本验证记录](dsh-015rc1-validation.md)。
+Gate 覆盖流式输出、取消、空/保留历史编辑、冷恢复、默认配置保持、源历史不变和活动关闭。此前两个支持版本均已在 Windows 运行此 Gate；rc.2 未通过真实 CLI 生命周期 Gate，当前证据为 rc2 源码协议审计、V4 路由回归和仓库自动化检查，已将其加入已验证版本列表。不把默认配置验证推广为任意非默认配置，也不证明独立第三方客户端或任意后台工具进程的退出。具体命令、覆盖率及版本安装限制见 [版本验证记录](dsh-015rc1-validation.md)。

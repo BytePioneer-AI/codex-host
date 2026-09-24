@@ -1,10 +1,10 @@
-# DSH 012rc1 / 015rc1 / 015rc2 / 015rc3 / 017rc1 对接验证
+# DSH 012rc1 / 015rc1 / 015rc2 / 015rc3 / 017rc1 / 017rc2 对接验证
 
-## 0.1.7-rc.2 路由审计
+## 0.1.7-rc.2 支持与验证边界
 
 DSH dsh-v0.1.7-rc.2 的 tag commit 为 477b4f420553e8a52c2fbccc464d7561b239c443。源码发布版本仍使用 Session Format V4，因此 Adapter 将 0.1.7-rc.2 及更高 SemVer 路由到现有 V4 profile；低于 0.1.7-rc.1 的现代版本继续路由 V3，0.1.2 系列继续使用 V0。
 
-本次只完成源码协议审计和自动化路由回归，尚未运行 rc2 的真实 CLI 生命周期 Gate，因此 rc2 不能加入已验证版本列表。版本号只决定协议尝试，Web Remote、历史、流式和 Fork 校验仍是兼容性闸门。
+本次完成源码协议审计和自动化路由回归，已将 rc2 加入设置页和已验证版本列表；真实 CLI 生命周期 Gate 尚未运行，当前证据为 rc2 源码协议审计、V4 路由回归和仓库自动化检查。版本号只决定协议尝试，Web Remote、历史、流式和 Fork 校验仍是兼容性闸门。
 ## 本次版本扩展验证（support-dsh-015rc3-017rc1）
 
 本次变更新增两个隔离 release：`dsh-v0.1.5-rc.3`（`a4c74a91e06b00fe0b0937bde982170c526cc842`）和 `dsh-v0.1.7-rc.1`（`46a7f68b0922371ce7144b668b90e377d8e799f4`）。前者沿用 V3 Session 日志和既有 V3 Remote 语义；后者使用 V4 Session 日志，Adapter 以独立 profile 校验 V4 header、`developer/message`、surface 引用、image offload、workspace changes、Assistant 流块和 Fork 的 `forked` synthetic closer。
@@ -100,7 +100,7 @@ npx vitest run --config tests/vitest.config.js tools/gate-dsh/lifecycle.real.tes
 
 ## 连接版本策略
 
-连接不再仅按 `--version` 白名单拒绝：接受单行规范 SemVer，`0.1.2` 系列尝试 V0，低于 `0.1.7-rc.1` 的现代版本尝试 V3，`0.1.7-rc.1` 及更高版本尝试 V4；Web Remote、历史和流式数据仍由原生协议解析器严格验证。V3 Session Ref 可跨 CLI 版本尝试恢复，格式不符时失败；Fork 的 checkpoint 仍需匹配创建它的精确 CLI 版本，避免在未知原生迁移后按旧序号修改历史。设置 → 连接显示已通过真实 Gate 的版本，未测试版本不宣称兼容。本策略的自动化测试只证明版本探测、路由及模拟原生协议行为；真实生命周期证据仅限于上文列出的各版本，不涵盖 rc2 或其他版本。
+连接不再仅按 `--version` 白名单拒绝：接受单行规范 SemVer，`0.1.2` 系列尝试 V0，低于 `0.1.7-rc.1` 的现代版本尝试 V3，`0.1.7-rc.1` 及更高版本尝试 V4；Web Remote、历史和流式数据仍由原生协议解析器严格验证。V3 Session Ref 可跨 CLI 版本尝试恢复，格式不符时失败；Fork 的 checkpoint 仍需匹配创建它的精确 CLI 版本，避免在未知原生迁移后按旧序号修改历史。设置 → 连接显示已验证版本列表中的版本，包括 `0.1.7-rc.2`；其他未测试版本不宣称兼容。本策略的自动化测试只证明版本探测、路由及模拟原生协议行为；真实生命周期证据仍需按版本单独记录。
 
 ## CodeRabbit 复核修复
 

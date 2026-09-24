@@ -77,6 +77,15 @@ codexhost SHALL 从同一权威模板向 `~/.agents/skills/codexhost-delegation/
 - **AND** Host SHALL 跟踪该 Thread 的官方通知以便后续提取结果
 - **AND** 该 Thread SHALL 按官方既有语义出现在聚合会话列表中
 
+#### Scenario: 委派给 Cursor CLI
+- **WHEN** 用户已授权使用 Cursor 原生 Run Everything，且委派请求采用 `unattended-full-access`
+- **THEN** Cursor Adapter SHALL 通过原生 `--force acp` 请求该执行策略，并继续服从 Cursor 的团队策略与原生拒绝规则
+- **AND** Adapter SHALL 持久化该请求策略，使恢复、Fork 和上一轮修订沿用同一策略
+- **AND** Host MUST NOT 将 Agent/Plan/Ask 配置或启动成功解释为 ACP 已确认 effective 全权限
+- **AND** 若无人值守会话仍请求工具或计划审批，Adapter SHALL 取消该原生请求并让当前 Turn 以明确错误结束，不自动批准、不挂起等待、不伪报成功
+- **AND** 显式用户取消 SHALL 保留既有取消结果，不被随后到达的权限请求改写为失败
+- **AND** 普通会话、目录检查和只读历史读取 SHALL 保留既有权限行为
+
 #### Scenario: 用户在子 Thread 中继续交互
 - **WHEN** 用户打开投影出来的子 Thread 并提交输入
 - **THEN** 该 Thread SHALL 接受输入并按其所属 Harness 的普通 Thread 语义执行

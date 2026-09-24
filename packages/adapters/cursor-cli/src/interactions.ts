@@ -19,7 +19,12 @@ export class CursorInteractions {
       resolve: (response: HostInteractionResponse | undefined) => void;
     }
   >();
-  constructor(readonly emit: (output: HarnessOutput) => void) {}
+  constructor(
+    readonly emit: (output: HarnessOutput) => void,
+    /** Unattended full access has no approval channel, so approvals are cancelled and the Turn fails
+     * instead of waiting for a decision, choosing an option, or reporting success. */
+    readonly refuseUnattendedApproval?: () => Promise<void>,
+  ) {}
   #ask(interaction: HostInteraction): Promise<HostInteractionResponse | undefined> {
     return new Promise((resolve) => {
       this.#pending.set(interaction.interactionId, { interaction, resolve });
@@ -30,6 +35,10 @@ export class CursorInteractions {
     turnId: HostTurnId,
     request: RequestPermissionRequest,
   ): Promise<RequestPermissionResponse> {
+    if (this.refuseUnattendedApproval) {
+      await this.refuseUnattendedApproval();
+      return { outcome: { outcome: "cancelled" } };
+    }
     const response = await this.#ask({
       type: "approval",
       interactionId: hostInteractionIdSchema.parse(randomUUID()),
@@ -58,6 +67,10 @@ export class CursorInteractions {
   ): Promise<Record<string, unknown>> {
     const interactionId = hostInteractionIdSchema.parse(randomUUID());
     if (method === "cursor/create_plan" && typeof params.plan === "string") {
+      if (this.refuseUnattendedApproval) {
+        await this.refuseUnattendedApproval();
+        return { outcome: { outcome: "cancelled" } };
+      }
       const response = await this.#ask({
         type: "approval",
         interactionId,

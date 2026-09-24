@@ -4,8 +4,8 @@ import { commandInvocation, resolveHarnessExecutable } from "@codexhost/harness-
 
 export function cursorInvocation(
   environment: NodeJS.ProcessEnv,
-  command?: string,
-  args: string[] = ["acp"],
+  command: string | undefined,
+  args: string[],
 ) {
   const resolution = resolveHarnessExecutable(
     {

@@ -985,6 +985,7 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
           const nativeTurnKey = autonomous.nativeTurnKey ?? `autonomous-${Date.now()}`;
           this.#autonomousTurnHandler({
             nativeTurnKey,
+            ...(autonomous.nativeTurnKey ? { userMessageId: autonomous.nativeTurnKey } : {}),
             events: autonomous.events,
             result: interpreted.terminal,
           });

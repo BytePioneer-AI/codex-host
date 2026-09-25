@@ -765,6 +765,7 @@ describe("ClaudeSdkTransport autonomous task continuation", () => {
     ]);
     expect(autonomous[0]).toMatchObject({
       nativeTurnKey: "00000000-0000-4000-8000-000000000040",
+      userMessageId: "00000000-0000-4000-8000-000000000040",
       result: { status: "succeeded" },
       events: [
         { type: "text.delta", delta: "Background analysis result" },
@@ -772,6 +773,22 @@ describe("ClaudeSdkTransport autonomous task continuation", () => {
       ],
     });
     await value.transport.close();
+  });
+
+  it("does not treat a synthetic autonomous Turn key as a User Message UUID", async () => {
+    const value = fixture();
+    const autonomous: ClaudeAutonomousTurn[] = [];
+    value.transport.setAutonomousTurnHandler((turn) => autonomous.push(turn));
+    await value.transport.start();
+    try {
+      pushAssistantText(value.fakeQuery, "Wakeup result", "00000000-0000-4000-8000-000000000042");
+      completeTurn(value.fakeQuery);
+      await vi.waitFor(() => expect(autonomous).toHaveLength(1));
+      expect(autonomous[0]?.nativeTurnKey).toMatch(/^autonomous-/);
+      expect(autonomous[0]?.userMessageId).toBeUndefined();
+    } finally {
+      await value.transport.close();
+    }
   });
 
   it("preserves a failed task-notification whose user content is text blocks", async () => {

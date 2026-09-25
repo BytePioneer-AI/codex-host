@@ -75,6 +75,7 @@ import {
   type NativeTurnRef,
 } from "@codexhost/shared-contracts";
 
+import { resolvePiInspectCwd } from "./command.js";
 import { mapPiSnapshot, resolvePiForkBoundary, type PiSessionHistory } from "./pi-history.js";
 import {
   PiSubagents,
@@ -2138,7 +2139,7 @@ export class PiAdapter implements HarnessAdapter {
         },
       };
     }
-    const cwd = input.cwd ?? process.cwd();
+    const cwd = resolvePiInspectCwd(input.cwd);
     const inFlight = this.#inspectionInFlight.get(cwd);
     if (inFlight) return inFlight;
     if (!input.refresh) {

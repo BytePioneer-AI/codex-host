@@ -719,15 +719,14 @@ fn windows_executable_key(path: &Path) -> String {
 }
 
 #[cfg(target_os = "windows")]
-pub fn descendant_executable_exists(
+fn windows_descendant_ids(
     root_process_id: u32,
-    executable: &Path,
-) -> Result<bool, PlatformError> {
-    let entries = windows_process::process_entries()?;
+    entries: &[windows_process::ProcessEntry],
+) -> Vec<u32> {
     let mut owned = vec![root_process_id];
     loop {
         let mut changed = false;
-        for process in &entries {
+        for process in entries {
             if !owned.contains(&process.id) && owned.contains(&process.parent_id) {
                 owned.push(process.id);
                 changed = true;
@@ -737,11 +736,72 @@ pub fn descendant_executable_exists(
             break;
         }
     }
+    owned.into_iter().skip(1).collect()
+}
+
+/// Capture every requested executable while its Desktop ancestry is still observable.
+/// A missing or inaccessible member fails closed before the caller terminates the root.
+#[cfg(target_os = "windows")]
+pub fn descendant_executable_snapshots(
+    root_process_id: u32,
+    executables: &[&Path],
+) -> Result<Vec<ProcessSnapshot>, PlatformError> {
+    let entries = windows_process::process_entries()?;
+    let expected = executables
+        .iter()
+        .map(|path| windows_executable_key(path))
+        .collect::<Vec<_>>();
+    let mut snapshots = Vec::new();
+    for process_id in windows_descendant_ids(root_process_id, &entries) {
+        let original_parent = entries
+            .iter()
+            .find(|process| process.id == process_id)
+            .expect("descendant came from the process entries")
+            .parent_id;
+        let snapshot = match process_snapshot(process_id) {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                if windows_process::process_entries()?
+                    .iter()
+                    .any(|process| process.id == process_id)
+                {
+                    return Err(error);
+                }
+                continue;
+            }
+        };
+        if snapshot.parent_id != original_parent {
+            continue;
+        }
+        if expected.contains(&windows_executable_key(&snapshot.executable)) {
+            snapshots.push(snapshot);
+        }
+    }
+    if expected.iter().any(|executable| {
+        !snapshots
+            .iter()
+            .any(|snapshot| windows_executable_key(&snapshot.executable) == *executable)
+    }) {
+        return Err(PlatformError::NotFound(
+            "managed Desktop Shim/Host chain is no longer attributable to its root".into(),
+        ));
+    }
+    Ok(snapshots)
+}
+
+#[cfg(target_os = "windows")]
+pub fn descendant_executable_exists(
+    root_process_id: u32,
+    executable: &Path,
+) -> Result<bool, PlatformError> {
+    let entries = windows_process::process_entries()?;
     let expected = windows_executable_key(executable);
-    Ok(owned.into_iter().skip(1).any(|process_id| {
-        windows_process::process_image_path(process_id)
-            .is_ok_and(|path| windows_executable_key(&path) == expected)
-    }))
+    Ok(windows_descendant_ids(root_process_id, &entries)
+        .into_iter()
+        .any(|process_id| {
+            windows_process::process_image_path(process_id)
+                .is_ok_and(|path| windows_executable_key(&path) == expected)
+        }))
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
@@ -905,8 +965,10 @@ pub fn process_exists(_process_id: u32) -> bool {
 #[cfg(all(test, target_os = "windows"))]
 mod windows_tests {
     use std::path::Path;
+    use std::process::{Command, Stdio};
 
-    use super::windows_executable_key;
+    use super::{descendant_executable_snapshots, windows_descendant_ids, windows_executable_key};
+    use crate::windows_process::ProcessEntry;
 
     #[test]
     fn treats_verbatim_and_regular_windows_executable_paths_as_equal() {
@@ -914,6 +976,53 @@ mod windows_tests {
             windows_executable_key(Path::new(r"\\?\D:\Program\node.exe")),
             windows_executable_key(Path::new(r"d:\program\node.exe")),
         );
+    }
+
+    #[test]
+    fn captures_descendants_before_intermediate_parents_exit() {
+        let entries = [
+            ProcessEntry {
+                id: 1,
+                parent_id: 0,
+            },
+            ProcessEntry {
+                id: 2,
+                parent_id: 1,
+            },
+            ProcessEntry {
+                id: 3,
+                parent_id: 2,
+            },
+            ProcessEntry {
+                id: 4,
+                parent_id: 3,
+            },
+        ];
+        assert_eq!(windows_descendant_ids(1, &entries), [2, 3, 4]);
+        // A post-shutdown snapshot cannot rediscover the surviving orphan chain.
+        assert!(windows_descendant_ids(1, &entries[2..]).is_empty());
+    }
+
+    #[test]
+    fn captures_a_live_windows_child_process_instance() {
+        let mut child = Command::new("cmd.exe")
+            .args(["/d", "/c", "ping -n 5 127.0.0.1 >NUL"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("start child process");
+        let child_id = child.id();
+        let captured = (|| {
+            let executable = crate::windows_process::process_image_path(child_id)?;
+            descendant_executable_snapshots(std::process::id(), &[&executable])
+                .map_err(std::io::Error::other)
+        })();
+        let _ = child.kill();
+        let _ = child.wait();
+
+        let snapshots = captured.expect("capture live child process");
+        assert!(snapshots.iter().any(|snapshot| snapshot.id == child_id));
     }
 }
 

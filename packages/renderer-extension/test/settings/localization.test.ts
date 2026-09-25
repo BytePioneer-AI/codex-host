@@ -42,8 +42,9 @@ describe("Renderer settings localization", () => {
     expect(chinese.updateWaitingForExit).toBe("正在等待应用退出...");
     expect(chinese.updateInstallingNpm).toBe("正在通过 npm 安装...");
     expect(chinese.updateAndRestart).toBe("更新");
-    expect(chinese.updateWindowsManualRequired).toContain("Windows 暂不支持自动更新");
-    expect(chinese.updateWindowsInstallerDescription).toContain("适用于当前系统的安装包");
+    expect(chinese.updateWindowsInstallerDescription).toBe(
+      "如需手动更新，请下载并运行适用于当前系统的安装包。",
+    );
     expect(chinese.updateManualNpmDescription).toBe(
       "如需手动更新，请在终端运行以下命令。更新完成后，请退出 Codex 并通过 codexhost 重新启动。",
     );

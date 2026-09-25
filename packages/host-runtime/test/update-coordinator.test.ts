@@ -217,6 +217,123 @@ describe("Host update coordinator", () => {
     expect(spawnUpdater).not.toHaveBeenCalled();
   });
 
+  it("hands a Windows update to Launcher without starting the Helper", async () => {
+    const fixture = await npmFixture();
+    const localAppData = path.join(fixture.root, "local-app-data");
+    fixture.environment.LOCALAPPDATA = localAppData;
+    await writeFile(
+      path.join(path.dirname(fixture.hostRuntimePath), "codexhost-distribution.json"),
+      JSON.stringify({
+        schemaVersion: 1,
+        version: "1.2.2",
+        distribution: "npm",
+        target: "windows-x64",
+      }),
+    );
+    await file(
+      path.join(path.dirname(fixture.hostRuntimePath), "..", "libexec", "codexhost-updater.exe"),
+    );
+    const spawnUpdater = vi.fn(() => ({ pid: 779 }) as unknown as ChildProcess);
+    const manager = createBackgroundUpdateManager({
+      platform: "win32",
+      randomId: () => "windows",
+      spawnUpdater,
+      now: () => 10_000,
+    });
+    const coordinator = createHostUpdateCoordinator({
+      hostRuntimePath: fixture.hostRuntimePath,
+      environment: fixture.environment,
+      platform: "win32",
+      architecture: "x64",
+      manager,
+      fetchLatest: async () => release(),
+    });
+
+    await expect(coordinator.start()).resolves.toMatchObject({
+      status: { version: "1.2.3", installation: "npm", phase: "prepared" },
+    });
+    const updaterRequestPath = path.join(
+      localAppData,
+      "codexhost",
+      "updates",
+      "update-1.2.3-windows",
+      "request-v1.json",
+    );
+    await vi.waitFor(async () =>
+      expect(await readFile(updaterRequestPath, "utf8")).not.toEqual(""),
+    );
+    expect(spawnUpdater).not.toHaveBeenCalled();
+  });
+
+  it("hands a verified Windows installer to Launcher without starting the Helper", async () => {
+    const fixture = await npmFixture();
+    const localAppData = path.join(fixture.root, "local-app-data");
+    fixture.environment.LOCALAPPDATA = localAppData;
+    await writeFile(
+      path.join(path.dirname(fixture.hostRuntimePath), "codexhost-distribution.json"),
+      JSON.stringify({
+        schemaVersion: 1,
+        version: "1.2.2",
+        distribution: "installer",
+        target: "windows-x64",
+      }),
+    );
+    await file(path.join(fixture.root, "platform", "libexec", "codexhost-updater.exe"));
+    const bytes = Buffer.from("windows-installer-fixture");
+    const spawnUpdater = vi.fn(() => ({ pid: 780 }) as unknown as ChildProcess);
+    const manager = createBackgroundUpdateManager({
+      platform: "win32",
+      randomId: () => "windows-installer",
+      spawnUpdater,
+      download: async (_source, destination) => {
+        await writeFile(destination, bytes, { flag: "wx", mode: 0o600 });
+        return { bytes: bytes.length, finalUrl: "https://downloads.example.test/final" };
+      },
+    });
+    const coordinator = createHostUpdateCoordinator({
+      hostRuntimePath: fixture.hostRuntimePath,
+      environment: fixture.environment,
+      platform: "win32",
+      architecture: "x64",
+      manager,
+      fetchLatest: async () => ({
+        ...release(),
+        assets: [
+          {
+            name: "codexhost-1.2.3-windows-x64.exe",
+            size: bytes.length,
+            digest: `sha256:${digest(bytes)}`,
+            downloadUrl:
+              "https://github.com/BytePioneer-AI/codex-host/releases/download/v1.2.3/codexhost-1.2.3-windows-x64.exe",
+          },
+        ],
+      }),
+    });
+
+    await expect(coordinator.start()).resolves.toMatchObject({
+      status: { version: "1.2.3", installation: "windows-installer" },
+    });
+    const operation = path.join(
+      localAppData,
+      "codexhost",
+      "updates",
+      "update-1.2.3-windows-installer",
+    );
+    const requestPath = path.join(operation, "request-v1.json");
+    await vi.waitFor(async () => expect(await readFile(requestPath, "utf8")).not.toEqual(""));
+    const request = JSON.parse(await readFile(requestPath, "utf8"));
+    expect(request.installation).toMatchObject({
+      kind: "windows-installer",
+      installer_path: path.join(operation, "update.exe"),
+      artifact_sha256: digest(bytes),
+      install_root: path.join(fixture.root, "platform"),
+    });
+    await expect(coordinator.status()).resolves.toMatchObject({
+      status: { phase: "prepared", installation: "windows-installer" },
+    });
+    expect(spawnUpdater).not.toHaveBeenCalled();
+  });
+
   it("returns before a macOS artifact download completes", async () => {
     const fixture = await macFixture();
     const bytes = Buffer.from("macos-dmg-fixture");

@@ -56,7 +56,7 @@ The Host and Update Manager SHALL persist a `downloading` status for installer a
 - **AND** the Launcher SHALL NOT stop the managed Desktop for that failed operation
 
 ### Requirement: Update starts once and stops the managed Desktop process tree
-Host SHALL serialize update starts across current Host processes. After successful preparation it SHALL respond to the initiating Renderer. On Windows it SHALL start the temporary Updater; on macOS the Launcher SHALL start that helper from the prepared request. The Launcher SHALL then stop the owned Desktop process tree without invoking Electron `app.quit()`. The helper SHALL install only after the exact Launcher exits.
+Host SHALL serialize update starts across current Host processes. After successful preparation it SHALL respond to the initiating Renderer. On Windows and macOS the Launcher SHALL start the temporary Updater from the prepared request, outside the managed Desktop process tree, and the Host SHALL NOT start that helper. The Launcher SHALL then stop the owned Desktop process tree without invoking Electron `app.quit()`. The helper SHALL install only after the exact Launcher exits.
 
 #### Scenario: User starts the current candidate
 - **WHEN** no update operation is active and the current candidate remains the latest stable Release
@@ -69,6 +69,14 @@ Host SHALL serialize update starts across current Host processes. After successf
 #### Scenario: Launcher does not exit
 - **WHEN** the managed Launcher remains alive past the Updater wait timeout
 - **THEN** the helper SHALL record failure and SHALL NOT modify the installed distribution
+
+#### Scenario: Helper fails before taking the wait position
+- **WHEN** the Launcher cannot start the Helper or the Helper exits before confirming the exact live Launcher
+- **THEN** the operation SHALL become `failed`, the managed Desktop SHALL keep running, and the Launcher SHALL NOT repeatedly start that request
+
+#### Scenario: Windows Desktop does not fully stop
+- **WHEN** Windows cannot terminate the managed Desktop root or its Shim/Host chain remains alive
+- **THEN** the Launcher SHALL remain alive while the Helper is waiting, SHALL retry bounded observation, and SHALL NOT let the Helper install over the running chain
 
 ### Requirement: Update status survives restart
 The update capability SHALL store strict local operation status outside the installation root, discover the newest valid operation after relaunch, and expose only version, installation kind, phase, update time, and bounded error. It SHALL treat a freshly observed `restarting` phase as pending and SHALL clean stale terminal work without deleting active work.
@@ -87,7 +95,6 @@ The existing background manager and native helper SHALL continue to use exact-ve
 #### Scenario: macOS parent directory is not writable
 - **WHEN** the Updater cannot stage or replace the App in its current parent directory
 - **THEN** it SHALL preserve or restore the prior App and record a permission failure without invoking hidden privilege escalation
-
 ### Requirement: ARM64 Linux npm distributions SHALL use npm updates
 Strict distribution metadata SHALL accept `linux-arm64`, SHALL require it to match a running `linux/arm64` host, and SHALL resolve its installed update context through the existing npm update path. It MUST NOT select or require a GitHub Release installer asset for Linux.
 
@@ -96,4 +103,3 @@ Strict distribution metadata SHALL accept `linux-arm64`, SHALL require it to mat
 - **THEN** Host resolves the verified npm package paths and reports npm installation availability
 - **AND** update preparation uses exact-version npm installation
 - **AND** no DMG, EXE, `.deb`, or `.rpm` installer asset is selected
-

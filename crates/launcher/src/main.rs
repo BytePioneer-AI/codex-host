@@ -27,7 +27,7 @@ use std::sync::{OnceLock, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 use active_update::start_pending_update;
 use active_update::update_waiting_for_launcher_exit;
 #[cfg(target_os = "windows")]
@@ -44,7 +44,8 @@ use codexhost_platform::{
 use codexhost_platform::{DesktopSession, launch_desktop_session};
 #[cfg(target_os = "windows")]
 use codexhost_platform::{
-    RunningDesktopChoice, hide_console_window, process_executable_path, process_exists,
+    PlatformError, ProcessSnapshot, RunningDesktopChoice, descendant_executable_snapshots,
+    hide_console_window, process_executable_path, process_exists, process_snapshot,
     prompt_running_desktop, show_error_dialog, terminate_process_by_id,
 };
 use compatibility::{MAX_CONTROLLER_READINESS_LINE_BYTES, parse_controller_readiness_line};
@@ -621,8 +622,10 @@ fn wait_for_desktop_exit(
 }
 
 fn should_stop_desktop_for_update(helper_started: bool) -> bool {
-    if helper_started {
-        return true;
+    // On these platforms the Launcher itself must have started the Helper.
+    // A stale waiting status alone must never shut down the managed Desktop.
+    if cfg!(any(target_os = "macos", target_os = "windows")) && !helper_started {
+        return false;
     }
     match update_waiting_for_launcher_exit() {
         Ok(waiting) => waiting,
@@ -646,13 +649,63 @@ fn stop_managed_desktop_for_update(
 }
 
 #[cfg(target_os = "windows")]
+fn captured_process_is_alive(captured: &ProcessSnapshot) -> Result<bool, PlatformError> {
+    match process_snapshot(captured.id) {
+        Ok(current) => Ok(current.started_at_micros == captured.started_at_micros),
+        Err(PlatformError::NotFound(_)) => Ok(false),
+        Err(error) => Err(error),
+    }
+}
+
+#[cfg(target_os = "windows")]
 fn stop_managed_desktop_for_update(
     desktop: &mut DesktopProcess,
     controller: &mut SupervisedChild,
+    options: &ResolvedLaunchOptions,
+    captured_host_chain: &mut Option<Vec<ProcessSnapshot>>,
 ) -> Result<(), Box<dyn Error>> {
+    // Capture exact process instances while the Desktop ancestry is intact.
+    // Windows keeps orphan children alive after the root exits, but their
+    // intermediate parents may no longer appear in a later process snapshot.
+    if captured_host_chain.is_none() {
+        *captured_host_chain = Some(descendant_executable_snapshots(
+            desktop.id(),
+            &[&options.shim, &options.node],
+        )?);
+    }
+    let host_chain = captured_host_chain
+        .as_ref()
+        .expect("managed Host chain was just captured");
+    if !update_waiting_for_launcher_exit()? {
+        return Err("Updater is no longer waiting for Launcher exit".into());
+    }
+    if desktop.try_wait()?.is_none()
+        && let Err(error) = desktop.kill()
+    {
+        // The root can exit between try_wait and kill; only that race is safe to ignore.
+        if desktop.try_wait()?.is_none() {
+            return Err(error.into());
+        }
+    }
+    desktop.wait()?;
+    let started = Instant::now();
+    loop {
+        let mut host_alive = false;
+        for captured in host_chain {
+            host_alive |= captured_process_is_alive(captured)?;
+        }
+        if !host_alive {
+            break;
+        }
+        if started.elapsed() >= Duration::from_secs(10) {
+            return Err("managed Desktop Host chain remained alive after root exit".into());
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+    if !update_waiting_for_launcher_exit()? {
+        return Err("Updater stopped waiting before managed Host exit".into());
+    }
     let _ = stop_desktop_controller(controller);
-    let _ = desktop.kill();
-    let _ = desktop.wait();
     Ok(())
 }
 
@@ -739,6 +792,8 @@ fn supervise_desktop(
                 eprintln!(
                     "codexhost launcher: managed Desktop could not be stopped for update: {error}"
                 );
+                thread::sleep(Duration::from_millis(100));
+                continue;
             } else {
                 return Ok(());
             }
@@ -821,12 +876,29 @@ fn supervise_desktop(
     };
     startup_trace("runtime descriptor published");
     notify_ready_and_detach()?;
+    let mut started_update_request = None;
+    let mut captured_update_host_chain = None;
     loop {
-        if should_stop_desktop_for_update(false) {
-            if let Err(error) = stop_managed_desktop_for_update(&mut desktop, &mut controller) {
+        let previous_update_request = started_update_request.clone();
+        if let Err(error) = start_pending_update(&mut started_update_request) {
+            eprintln!("codexhost launcher: pending update could not be started: {error}");
+        }
+        if started_update_request != previous_update_request {
+            captured_update_host_chain = None;
+        }
+        let helper_started = started_update_request.is_some();
+        if should_stop_desktop_for_update(helper_started) {
+            if let Err(error) = stop_managed_desktop_for_update(
+                &mut desktop,
+                &mut controller,
+                options,
+                &mut captured_update_host_chain,
+            ) {
                 eprintln!(
                     "codexhost launcher: managed Desktop could not be stopped for update: {error}"
                 );
+                thread::sleep(Duration::from_millis(100));
+                continue;
             } else {
                 return Ok(());
             }
@@ -1294,6 +1366,13 @@ mod tests {
     };
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     use super::{DESKTOP_TREE_REFRESH_INTERVAL, desktop_tree_refresh_due};
+
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    #[test]
+    fn does_not_stop_desktop_without_a_launcher_started_helper() {
+        assert!(!super::should_stop_desktop_for_update(false));
+    }
+
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     #[test]
     fn throttles_full_desktop_tree_refreshes() {

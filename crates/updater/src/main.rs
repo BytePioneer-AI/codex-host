@@ -57,6 +57,8 @@ fn wait_for_launcher_exit(request: &UpdateRequest) -> Result<(), Box<dyn Error>>
         )
         .into());
     }
+    // Publish readiness only after confirming this is the exact live Launcher.
+    write_status(request, "waiting-for-exit", None)?;
     let started = Instant::now();
     while process_exists(request.wait_pid) {
         if started.elapsed() >= WAIT_TIMEOUT {
@@ -116,7 +118,6 @@ fn wait_for_relaunch(request: &UpdateRequest) -> Result<(), Box<dyn Error>> {
 
 fn apply(request_path: &Path) -> Result<(), Box<dyn Error>> {
     let request = UpdateRequest::parse(request_path)?;
-    write_status(&request, "waiting-for-exit", None)?;
     let result = (|| -> Result<(), Box<dyn Error>> {
         wait_for_launcher_exit(&request)?;
         write_status(&request, "installing", None)?;
@@ -159,7 +160,8 @@ fn main() -> ExitCode {
 
 #[cfg(test)]
 mod tests {
-    use super::relaunched_launcher_is_ready;
+    use super::request::{Installation, NpmInstallation, UpdateRequest};
+    use super::{relaunched_launcher_is_ready, wait_for_launcher_exit};
 
     #[test]
     fn accepts_a_live_relaunched_launcher_without_executable_path_matching() {
@@ -174,5 +176,29 @@ mod tests {
     #[test]
     fn rejects_a_relaunched_launcher_that_has_exited() {
         assert!(!relaunched_launcher_is_ready(42, 41, |_| false));
+    }
+
+    #[test]
+    fn does_not_report_ready_for_an_exited_launcher() {
+        let status_path = std::env::temp_dir().join(format!(
+            "codexhost-unpublished-update-status-{}.json",
+            std::process::id()
+        ));
+        let request = UpdateRequest {
+            schema_version: 1,
+            version: "1.2.3".into(),
+            wait_pid: u32::MAX,
+            wait_executable: std::env::current_exe().expect("test executable"),
+            runtime_descriptor_path: status_path.clone(),
+            status_path: status_path.clone(),
+            installation: Installation::Npm(NpmInstallation {
+                node_path: status_path.clone(),
+                npm_cli_path: status_path.clone(),
+                npm_launcher_path: status_path.clone(),
+            }),
+        };
+
+        assert!(wait_for_launcher_exit(&request).is_err());
+        assert!(!status_path.exists());
     }
 }

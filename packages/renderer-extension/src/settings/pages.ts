@@ -359,12 +359,10 @@ function updatesPage(
         // While automatic update works, manual download is a one-line escape hatch;
         // once it fails, the section returns at full weight.
         controls.className =
-          !fallback && !windows ? "settings-update-controls is-quiet" : "settings-update-controls";
-        manualNpmDescription.textContent = windows
-          ? messages.updateWindowsNpmDescription
-          : fallback
-            ? messages.updateManualFallbackDescription
-            : messages.updateManualNpmDescription;
+          !fallback ? "settings-update-controls is-quiet" : "settings-update-controls";
+        manualNpmDescription.textContent = fallback
+          ? messages.updateManualFallbackDescription
+          : messages.updateManualNpmDescription;
         manualNpmDescription.className = fallback
           ? "settings-update-manual-description is-fallback"
           : "settings-update-manual-description";
@@ -528,8 +526,7 @@ function updatesPage(
         panel.replaceChildren();
         setManualFallback(Boolean(result.error) || actionableStatus !== null);
         // Every state gets a status line; a bare button in an empty card reads as unfinished.
-        const inlineUpdate =
-          !result.error && !windows && !actionableStatus && result.updateAvailable;
+        const inlineUpdate = !result.error && !actionableStatus && result.updateAvailable;
         if (inlineUpdate) panel.dataset.inline = "";
         else delete panel.dataset.inline;
         panel.append(
@@ -541,9 +538,7 @@ function updatesPage(
               : result.error
                 ? messages.updateFailed
                 : result.updateAvailable
-                  ? windows
-                    ? messages.updateWindowsManualRequired
-                    : messages.updateAvailable
+                  ? messages.updateAvailable
                   : messages.updateUpToDate,
           ),
         );
@@ -560,7 +555,7 @@ function updatesPage(
           panel.append(error);
         }
         const buttons: HTMLElement[] = [];
-        if (!windows && result.updateAvailable && result.installationAvailable) {
+        if (result.updateAvailable && result.installationAvailable) {
           const update = document.createElement("button");
           update.type = "button";
           update.className = "settings-command-button";

@@ -55,6 +55,7 @@ import {
   enumValue,
   exactKeys,
   fail,
+  nonNegativeFiniteNumber,
   nonNegativeInteger,
   nonNegativeSafeInteger,
   positiveInteger,
@@ -1629,7 +1630,8 @@ function validateRetry(data: Record<string, unknown>): void {
   requiredString(data.provider, "llm/retry provider");
   requiredString(data.policyKey, "llm/retry policyKey");
   positiveInteger(data.retry, "llm/retry retry");
-  nonNegativeInteger(data.delayMs, "llm/retry delayMs");
+  // DSH applies jittered exponential backoff and records the raw fractional delay.
+  nonNegativeFiniteNumber(data.delayMs, "llm/retry delayMs");
   if (mode === "normal") positiveInteger(data.maxRetries, "llm/retry maxRetries");
   validateLlmFailure(data.failure, "llm/retry failure");
 }

@@ -91,6 +91,7 @@ import {
   RendererMethodUnavailableError,
   type RendererRequestOptions,
 } from "./renderer-request-sender.js";
+import { verifyNativeCodexThread } from "./renderer-native-thread.js";
 import {
   createRendererSessionImportClient,
   type RendererSessionImportClient,
@@ -399,23 +400,7 @@ export function createRendererModelClient(
         // Stock Codex has no Host inspection API. Verify its native Thread on
         // this same connection; neither an RPC failure nor a missing Account
         // establishes ownership. Match the external markers used by the Host.
-        const native = await manager.sendRequest("thread/read", {
-          threadId: params.threadId,
-          includeTurns: false,
-        });
-        const thread = isRecord(native) ? native.thread : null;
-        if (
-          !isRecord(thread) ||
-          thread.id !== params.threadId ||
-          typeof thread.modelProvider !== "string" ||
-          !thread.modelProvider ||
-          thread.modelProvider === "codexhost" ||
-          typeof thread.cliVersion !== "string" ||
-          !thread.cliVersion ||
-          thread.cliVersion === "codexhost"
-        ) {
-          throw new Error("Native Thread response cannot establish Codex ownership");
-        }
+        await verifyNativeCodexThread(manager.sendRequest, params.threadId);
         return { owner: "codex", locked: true };
       }
       return threadInspectionSchema.parse(result);

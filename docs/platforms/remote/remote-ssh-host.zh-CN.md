@@ -45,6 +45,7 @@ codexhost remote uninstall  # 卸载，保留 Thread 映射数据
 
 ## 常见问题
 
+- **运行中的原生 Codex 任务插入消息时提示不支持 `codexhost/thread/ownership/list`**：客户端会通过同一连接核对原生 Thread，再交给 Desktop 原生插话流程。外部 Harness Thread 和连接故障不会触发这条回退。
 - **`codexhost/harness/inspect is unsupported on this Host connection`**：当前 SSH 连接没有接入 codexhost。确认被控机器已安装并启动相同版本的 codexhost，然后重新连接 SSH 工作区。
 - **`remote status` 提示 degraded 或需要重新安装**：重新执行 `codexhost remote install`，再执行 `codexhost remote start`。
 - **看不到某个 Harness**：在被控机器上检查该 Harness 是否已安装并登录，然后在设置中点击「重新诊断连接」。

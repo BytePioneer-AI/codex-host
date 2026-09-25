@@ -78,6 +78,10 @@ Host SHALL serialize update starts across current Host processes. After successf
 - **WHEN** Windows cannot terminate the managed Desktop root or its Shim/Host chain remains alive
 - **THEN** the Launcher SHALL terminate captured Desktop descendants by exact process identity, check for late installation-owned processes, remain alive while the Helper is waiting, retry bounded observation, and SHALL NOT let the Helper install over the running chain
 
+#### Scenario: Windows descendant capture cannot observe the managed tree
+- **WHEN** the Desktop root exits before the Launcher captures its descendants, or the descendant ancestry is no longer observable while the Helper is waiting
+- **THEN** the Launcher SHALL terminate the installation-owned Desktop, Shim, and Host processes by exact process identity, confirm none remain, and complete the handoff; it SHALL stop nothing once the Helper no longer waits for the Launcher exit
+
 #### Scenario: Windows Launcher process inspection fails
 - **WHEN** the Updater cannot reliably inspect whether the exact Launcher instance is still running
 - **THEN** it SHALL record failure and SHALL NOT begin installation

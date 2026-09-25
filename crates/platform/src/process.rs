@@ -4,9 +4,9 @@ use super::{node_entrypoint_path, windows_process};
 #[cfg(target_os = "windows")]
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 use std::thread;
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 use std::time::{Duration, Instant};
 
 #[cfg(target_os = "linux")]
@@ -819,6 +819,31 @@ pub fn descendant_process_snapshots(
     Ok(snapshots)
 }
 
+/// Terminate every process running one of `executables`, retrying until none
+/// remain or `timeout` elapses. Returns the snapshots still alive when the
+/// timeout was reached, so callers can fail loudly; an empty return confirms
+/// that no process using those executables is still running.
+#[cfg(target_os = "windows")]
+pub fn terminate_executable_snapshots(
+    executables: &[&Path],
+    timeout: Duration,
+) -> Result<Vec<ProcessSnapshot>, PlatformError> {
+    let started = Instant::now();
+    loop {
+        let remaining = running_executable_snapshots(executables)?;
+        if remaining.is_empty() {
+            return Ok(Vec::new());
+        }
+        if started.elapsed() >= timeout {
+            return Ok(remaining);
+        }
+        for snapshot in &remaining {
+            crate::terminate_process_instance(snapshot, true)?;
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+}
+
 /// Find surviving processes using installation-owned executables, including
 /// late descendants whose parent exited before they could be captured.
 #[cfg(target_os = "windows")]
@@ -1063,11 +1088,37 @@ mod windows_tests {
 
     use super::{
         belongs_to_current_parent, descendant_process_snapshots, process_instance_exists,
-        process_snapshot, running_executable_snapshots, windows_descendant_ids,
-        windows_executable_key,
+        process_snapshot, running_executable_snapshots, terminate_executable_snapshots,
+        windows_descendant_ids, windows_executable_key,
     };
     use crate::terminate_process_instance;
     use crate::windows_process::ProcessEntry;
+
+    fn unique_executable_copy(label: &str) -> std::path::PathBuf {
+        let source = std::env::var_os("SystemRoot")
+            .map(|root| std::path::PathBuf::from(root).join(r"System32\ping.exe"))
+            .unwrap_or_else(|| std::path::PathBuf::from(r"C:\Windows\System32\ping.exe"));
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system time")
+            .as_nanos();
+        let destination = std::env::temp_dir().join(format!(
+            "codexhost-sweep-fixture-{label}-{}-{nanos}.exe",
+            std::process::id()
+        ));
+        std::fs::copy(&source, &destination).expect("copy sweep fixture executable");
+        destination
+    }
+
+    fn spawn_owned_fixture(executable: &Path) -> std::process::Child {
+        std::process::Command::new(executable)
+            .args(["-n", "30", "127.0.0.1"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn owned process fixture")
+    }
 
     #[test]
     fn treats_verbatim_and_regular_windows_executable_paths_as_equal() {
@@ -1197,6 +1248,50 @@ mod windows_tests {
             started_at_micros: 100,
         };
         assert!(!belongs_to_current_parent(&parent, &old_orphan));
+    }
+
+    #[test]
+    fn sweeps_owned_processes_until_none_remain() {
+        let executable = unique_executable_copy("terminate");
+        let mut child = spawn_owned_fixture(&executable);
+        let snapshot = process_snapshot(child.id()).expect("fixture process snapshot");
+
+        let remaining = terminate_executable_snapshots(&[&executable], Duration::from_secs(5))
+            .expect("sweep owned processes");
+
+        assert!(remaining.is_empty());
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while process_instance_exists(snapshot.id, snapshot.started_at_micros)
+            .expect("confirm swept fixture exit")
+            && Instant::now() < deadline
+        {
+            thread::sleep(Duration::from_millis(20));
+        }
+        assert!(
+            !process_instance_exists(snapshot.id, snapshot.started_at_micros)
+                .expect("confirm swept fixture exit")
+        );
+        let _ = child.wait();
+        let _ = std::fs::remove_file(&executable);
+    }
+
+    #[test]
+    fn sweep_reports_surviving_snapshots_when_the_timeout_is_reached() {
+        let executable = unique_executable_copy("report");
+        let mut child = spawn_owned_fixture(&executable);
+        let snapshot = process_snapshot(child.id()).expect("fixture process snapshot");
+
+        let remaining = terminate_executable_snapshots(&[&executable], Duration::ZERO)
+            .expect("report owned survivors");
+
+        assert!(remaining.iter().any(|process| process.id == snapshot.id));
+        assert!(
+            process_instance_exists(snapshot.id, snapshot.started_at_micros)
+                .expect("fixture survives a zero-timeout sweep")
+        );
+        let _ = child.kill();
+        let _ = child.wait();
+        let _ = std::fs::remove_file(&executable);
     }
 }
 

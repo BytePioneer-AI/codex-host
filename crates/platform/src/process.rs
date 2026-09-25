@@ -1,6 +1,8 @@
 use super::{DesktopInstallation, PlatformError};
 #[cfg(target_os = "windows")]
 use super::{node_entrypoint_path, windows_process};
+#[cfg(target_os = "windows")]
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 #[cfg(target_os = "macos")]
 use std::thread;
@@ -739,42 +741,70 @@ fn windows_descendant_ids(
     owned.into_iter().skip(1).collect()
 }
 
-/// Capture every requested executable while its Desktop ancestry is still observable.
-/// A missing or inaccessible member fails closed before the caller terminates the root.
 #[cfg(target_os = "windows")]
-pub fn descendant_executable_snapshots(
-    root_process_id: u32,
+fn belongs_to_current_parent(parent: &ProcessSnapshot, child: &ProcessSnapshot) -> bool {
+    child.parent_id == parent.id && child.started_at_micros >= parent.started_at_micros
+}
+
+/// Capture the complete Desktop descendant tree while ancestry is still observable.
+/// Every parent edge is checked against a live process instance, so an old
+/// orphan with a reused parent PID cannot be claimed and terminated.
+/// Required executables must be present; inaccessible live members fail closed.
+#[cfg(target_os = "windows")]
+pub fn descendant_process_snapshots(
+    root: &ProcessSnapshot,
     executables: &[&Path],
 ) -> Result<Vec<ProcessSnapshot>, PlatformError> {
+    if !process_instance_exists(root.id, root.started_at_micros)? {
+        return Err(PlatformError::NotFound(
+            "managed Desktop root exited before descendant capture".into(),
+        ));
+    }
     let entries = windows_process::process_entries()?;
     let expected = executables
         .iter()
         .map(|path| windows_executable_key(path))
         .collect::<Vec<_>>();
+    let mut known = HashMap::from([(root.id, root.clone())]);
     let mut snapshots = Vec::new();
-    for process_id in windows_descendant_ids(root_process_id, &entries) {
-        let original_parent = entries
-            .iter()
-            .find(|process| process.id == process_id)
-            .expect("descendant came from the process entries")
-            .parent_id;
-        let snapshot = match process_snapshot(process_id) {
-            Ok(snapshot) => snapshot,
-            Err(error) => {
-                if windows_process::process_entries()?
-                    .iter()
-                    .any(|process| process.id == process_id)
-                {
-                    return Err(error);
-                }
+    loop {
+        let mut changed = false;
+        for process in &entries {
+            if known.contains_key(&process.id) {
                 continue;
             }
-        };
-        if snapshot.parent_id != original_parent {
-            continue;
-        }
-        if expected.contains(&windows_executable_key(&snapshot.executable)) {
+            let Some(parent) = known.get(&process.parent_id) else {
+                continue;
+            };
+            let snapshot = match process_snapshot(process.id) {
+                Ok(snapshot) => snapshot,
+                Err(error) => {
+                    if windows_process::process_entries()?
+                        .iter()
+                        .any(|entry| entry.id == process.id)
+                    {
+                        return Err(error);
+                    }
+                    continue;
+                }
+            };
+            if snapshot.parent_id != process.parent_id
+                || !belongs_to_current_parent(parent, &snapshot)
+            {
+                continue;
+            }
+            if !process_instance_exists(parent.id, parent.started_at_micros)? {
+                return Err(PlatformError::NotFound(format!(
+                    "managed Desktop parent PID {} exited during descendant capture",
+                    parent.id
+                )));
+            }
+            known.insert(snapshot.id, snapshot.clone());
             snapshots.push(snapshot);
+            changed = true;
+        }
+        if !changed {
+            break;
         }
     }
     if expected.iter().any(|executable| {
@@ -785,6 +815,39 @@ pub fn descendant_executable_snapshots(
         return Err(PlatformError::NotFound(
             "managed Desktop Shim/Host chain is no longer attributable to its root".into(),
         ));
+    }
+    Ok(snapshots)
+}
+
+/// Find surviving processes using installation-owned executables, including
+/// late descendants whose parent exited before they could be captured.
+#[cfg(target_os = "windows")]
+pub fn running_executable_snapshots(
+    executables: &[&Path],
+) -> Result<Vec<ProcessSnapshot>, PlatformError> {
+    let expected = executables
+        .iter()
+        .map(|path| windows_executable_key(path))
+        .collect::<Vec<_>>();
+    let mut snapshots = Vec::new();
+    for entry in windows_process::process_entries()? {
+        let Ok(executable) = windows_process::process_image_path(entry.id) else {
+            continue;
+        };
+        if !expected.contains(&windows_executable_key(&executable)) {
+            continue;
+        }
+        match process_snapshot(entry.id) {
+            Ok(snapshot) => snapshots.push(snapshot),
+            Err(error) => {
+                if windows_process::process_entries()?
+                    .iter()
+                    .any(|process| process.id == entry.id)
+                {
+                    return Err(error);
+                }
+            }
+        }
     }
     Ok(snapshots)
 }
@@ -859,6 +922,35 @@ pub fn process_started_at_micros(process_id: u32) -> Result<u64, PlatformError> 
             source,
         }
     })
+}
+
+/// Return whether the exact Windows process instance is still live. Enumeration
+/// or inspection failure must never be mistaken for a completed Launcher exit.
+#[cfg(target_os = "windows")]
+pub fn process_instance_exists(
+    process_id: u32,
+    expected_started_at_micros: u64,
+) -> Result<bool, PlatformError> {
+    let listed = |entries: Vec<windows_process::ProcessEntry>| {
+        entries.iter().any(|process| process.id == process_id)
+    };
+    if !listed(windows_process::process_entries()?) {
+        return Ok(false);
+    }
+    match windows_process::process_started_at_micros(process_id) {
+        Ok(started_at_micros) => Ok(started_at_micros == expected_started_at_micros),
+        Err(source) => {
+            if !listed(windows_process::process_entries()?) {
+                Ok(false)
+            } else {
+                Err(PlatformError::ProcessInspection {
+                    process_id,
+                    operation: "read start time",
+                    source,
+                })
+            }
+        }
+    }
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
@@ -966,8 +1058,15 @@ pub fn process_exists(_process_id: u32) -> bool {
 mod windows_tests {
     use std::path::Path;
     use std::process::{Command, Stdio};
+    use std::thread;
+    use std::time::{Duration, Instant};
 
-    use super::{descendant_executable_snapshots, windows_descendant_ids, windows_executable_key};
+    use super::{
+        belongs_to_current_parent, descendant_process_snapshots, process_instance_exists,
+        process_snapshot, running_executable_snapshots, windows_descendant_ids,
+        windows_executable_key,
+    };
+    use crate::terminate_process_instance;
     use crate::windows_process::ProcessEntry;
 
     #[test]
@@ -1015,14 +1114,99 @@ mod windows_tests {
         let child_id = child.id();
         let captured = (|| {
             let executable = crate::windows_process::process_image_path(child_id)?;
-            descendant_executable_snapshots(std::process::id(), &[&executable])
-                .map_err(std::io::Error::other)
+            let root = process_snapshot(std::process::id()).map_err(std::io::Error::other)?;
+            let descendants = descendant_process_snapshots(&root, &[&executable])
+                .map_err(std::io::Error::other)?;
+            let matching =
+                running_executable_snapshots(&[&executable]).map_err(std::io::Error::other)?;
+            Ok::<_, std::io::Error>((descendants, matching))
         })();
         let _ = child.kill();
         let _ = child.wait();
 
-        let snapshots = captured.expect("capture live child process");
+        let (snapshots, matching) = captured.expect("capture live child process");
         assert!(snapshots.iter().any(|snapshot| snapshot.id == child_id));
+        assert!(matching.iter().any(|snapshot| snapshot.id == child_id));
+    }
+
+    #[test]
+    fn checks_the_exact_windows_process_instance() {
+        let current = process_snapshot(std::process::id()).expect("current process snapshot");
+        assert!(
+            process_instance_exists(current.id, current.started_at_micros)
+                .expect("inspect current instance")
+        );
+        assert!(
+            !process_instance_exists(current.id, current.started_at_micros.saturating_add(1))
+                .expect("reject another instance")
+        );
+    }
+
+    #[test]
+    fn terminates_captured_descendants_after_the_windows_root_exits() {
+        let mut root = Command::new("cmd.exe")
+            .args(["/d", "/c", "ping -n 10 127.0.0.1 >NUL"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("start process tree root");
+        let root_snapshot = process_snapshot(root.id()).expect("root process snapshot");
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let captured = loop {
+            let snapshots = descendant_process_snapshots(&root_snapshot, &[])
+                .expect("inspect process tree descendants");
+            if !snapshots.is_empty() {
+                break Some(snapshots);
+            }
+            if Instant::now() >= deadline {
+                break None;
+            }
+            thread::sleep(Duration::from_millis(20));
+        };
+        let _ = root.kill();
+        let _ = root.wait();
+        assert!(
+            !process_instance_exists(root_snapshot.id, root_snapshot.started_at_micros)
+                .expect("observe stopped root")
+        );
+        let captured = captured.expect("cmd.exe did not start its ping.exe descendant");
+
+        for descendant in &captured {
+            terminate_process_instance(descendant, true).expect("terminate captured descendant");
+        }
+        for descendant in &captured {
+            let deadline = Instant::now() + Duration::from_secs(2);
+            while process_instance_exists(descendant.id, descendant.started_at_micros)
+                .expect("observe terminated descendant")
+                && Instant::now() < deadline
+            {
+                thread::sleep(Duration::from_millis(20));
+            }
+            assert!(
+                !process_instance_exists(descendant.id, descendant.started_at_micros)
+                    .expect("confirm descendant exit")
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_an_old_orphan_after_its_parent_pid_is_reused() {
+        let parent = super::ProcessSnapshot {
+            id: 42,
+            parent_id: 1,
+            process_group_id: 42,
+            executable: "parent.exe".into(),
+            started_at_micros: 200,
+        };
+        let old_orphan = super::ProcessSnapshot {
+            id: 43,
+            parent_id: 42,
+            process_group_id: 43,
+            executable: "old-child.exe".into(),
+            started_at_micros: 100,
+        };
+        assert!(!belongs_to_current_parent(&parent, &old_orphan));
     }
 }
 

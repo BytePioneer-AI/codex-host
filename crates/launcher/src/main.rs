@@ -44,9 +44,10 @@ use codexhost_platform::{
 use codexhost_platform::{DesktopSession, launch_desktop_session};
 #[cfg(target_os = "windows")]
 use codexhost_platform::{
-    PlatformError, ProcessSnapshot, RunningDesktopChoice, descendant_executable_snapshots,
-    hide_console_window, process_executable_path, process_exists, process_snapshot,
-    prompt_running_desktop, show_error_dialog, terminate_process_by_id,
+    PlatformError, ProcessSnapshot, RunningDesktopChoice, descendant_process_snapshots,
+    hide_console_window, process_executable_path, process_exists, process_instance_exists,
+    process_snapshot, prompt_running_desktop, running_executable_snapshots, show_error_dialog,
+    terminate_process_by_id, terminate_process_instance,
 };
 use compatibility::{MAX_CONTROLLER_READINESS_LINE_BYTES, parse_controller_readiness_line};
 use desktop_attachment::{
@@ -650,32 +651,30 @@ fn stop_managed_desktop_for_update(
 
 #[cfg(target_os = "windows")]
 fn captured_process_is_alive(captured: &ProcessSnapshot) -> Result<bool, PlatformError> {
-    match process_snapshot(captured.id) {
-        Ok(current) => Ok(current.started_at_micros == captured.started_at_micros),
-        Err(PlatformError::NotFound(_)) => Ok(false),
-        Err(error) => Err(error),
-    }
+    process_instance_exists(captured.id, captured.started_at_micros)
 }
 
 #[cfg(target_os = "windows")]
 fn stop_managed_desktop_for_update(
     desktop: &mut DesktopProcess,
+    root: &ProcessSnapshot,
+    installation: &DesktopInstallation,
     controller: &mut SupervisedChild,
     options: &ResolvedLaunchOptions,
-    captured_host_chain: &mut Option<Vec<ProcessSnapshot>>,
+    captured_descendants: &mut Option<Vec<ProcessSnapshot>>,
 ) -> Result<(), Box<dyn Error>> {
     // Capture exact process instances while the Desktop ancestry is intact.
     // Windows keeps orphan children alive after the root exits, but their
     // intermediate parents may no longer appear in a later process snapshot.
-    if captured_host_chain.is_none() {
-        *captured_host_chain = Some(descendant_executable_snapshots(
-            desktop.id(),
+    if captured_descendants.is_none() {
+        *captured_descendants = Some(descendant_process_snapshots(
+            root,
             &[&options.shim, &options.node],
         )?);
     }
-    let host_chain = captured_host_chain
+    let descendants = captured_descendants
         .as_ref()
-        .expect("managed Host chain was just captured");
+        .expect("managed Desktop descendants were just captured");
     if !update_waiting_for_launcher_exit()? {
         return Err("Updater is no longer waiting for Launcher exit".into());
     }
@@ -690,15 +689,18 @@ fn stop_managed_desktop_for_update(
     desktop.wait()?;
     let started = Instant::now();
     loop {
-        let mut host_alive = false;
-        for captured in host_chain {
-            host_alive |= captured_process_is_alive(captured)?;
+        let mut descendants_alive = false;
+        for captured in descendants {
+            if captured_process_is_alive(captured)? {
+                descendants_alive = true;
+                terminate_process_instance(captured, true)?;
+            }
         }
-        if !host_alive {
+        if !descendants_alive {
             break;
         }
         if started.elapsed() >= Duration::from_secs(10) {
-            return Err("managed Desktop Host chain remained alive after root exit".into());
+            return Err("managed Desktop descendants remained alive after root exit".into());
         }
         thread::sleep(Duration::from_millis(100));
     }
@@ -706,6 +708,17 @@ fn stop_managed_desktop_for_update(
         return Err("Updater stopped waiting before managed Host exit".into());
     }
     let _ = stop_desktop_controller(controller);
+    let remaining = running_executable_snapshots(&[
+        &installation.desktop_executable,
+        &options.shim,
+        &options.node,
+    ])?;
+    if !remaining.is_empty() {
+        return Err("installation-owned Desktop, Shim, or Host processes remain alive".into());
+    }
+    if !update_waiting_for_launcher_exit()? {
+        return Err("Updater stopped waiting before Launcher exit".into());
+    }
     Ok(())
 }
 
@@ -849,6 +862,7 @@ fn supervise_desktop(
     startup_trace("Codex Desktop launched");
     let desktop_pid = desktop.id();
     wait_for_launched_desktop_ownership(installation, &mut desktop, Duration::from_secs(5))?;
+    let desktop_root = process_snapshot(desktop_pid)?;
     let mut controller = match start_desktop_controller(options, control, environment) {
         Ok(started) => started,
         Err(error) => {
@@ -877,22 +891,24 @@ fn supervise_desktop(
     startup_trace("runtime descriptor published");
     notify_ready_and_detach()?;
     let mut started_update_request = None;
-    let mut captured_update_host_chain = None;
+    let mut captured_update_descendants = None;
     loop {
         let previous_update_request = started_update_request.clone();
         if let Err(error) = start_pending_update(&mut started_update_request) {
             eprintln!("codexhost launcher: pending update could not be started: {error}");
         }
         if started_update_request != previous_update_request {
-            captured_update_host_chain = None;
+            captured_update_descendants = None;
         }
         let helper_started = started_update_request.is_some();
         if should_stop_desktop_for_update(helper_started) {
             if let Err(error) = stop_managed_desktop_for_update(
                 &mut desktop,
+                &desktop_root,
+                installation,
                 &mut controller,
                 options,
-                &mut captured_update_host_chain,
+                &mut captured_update_descendants,
             ) {
                 eprintln!(
                     "codexhost launcher: managed Desktop could not be stopped for update: {error}"

@@ -13,6 +13,7 @@ type Handle = *mut c_void;
 
 const INVALID_HANDLE_VALUE: Handle = -1_isize as Handle;
 const TH32CS_SNAPPROCESS: u32 = 0x0000_0002;
+const ERROR_NO_MORE_FILES: i32 = 18;
 const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x0000_1000;
 const PROCESS_TERMINATE: u32 = 0x0000_0001;
 const JOB_OBJECT_EXTENDED_LIMIT_INFORMATION_CLASS: i32 = 9;
@@ -181,19 +182,26 @@ pub fn process_entries() -> io::Result<Vec<ProcessEntry>> {
         let mut entry: NativeProcessEntry = zeroed();
         entry.size = size_of::<NativeProcessEntry>() as u32;
         let mut entries = Vec::new();
-        if Process32FirstW(snapshot, &mut entry) != 0 {
-            loop {
-                entries.push(ProcessEntry {
-                    id: entry.process_id,
-                    parent_id: entry.parent_process_id,
-                });
-                if Process32NextW(snapshot, &mut entry) == 0 {
-                    break;
-                }
+        if Process32FirstW(snapshot, &mut entry) == 0 {
+            let error = io::Error::last_os_error();
+            CloseHandle(snapshot);
+            return Err(error);
+        }
+        loop {
+            entries.push(ProcessEntry {
+                id: entry.process_id,
+                parent_id: entry.parent_process_id,
+            });
+            if Process32NextW(snapshot, &mut entry) == 0 {
+                let error = io::Error::last_os_error();
+                CloseHandle(snapshot);
+                return if error.raw_os_error() == Some(ERROR_NO_MORE_FILES) {
+                    Ok(entries)
+                } else {
+                    Err(error)
+                };
             }
         }
-        CloseHandle(snapshot);
-        Ok(entries)
     }
 }
 

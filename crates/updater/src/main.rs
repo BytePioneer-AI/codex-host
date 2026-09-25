@@ -13,6 +13,8 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use codexhost_platform::{process_executable_path, process_exists};
+#[cfg(target_os = "windows")]
+use codexhost_platform::{process_instance_exists, process_started_at_micros};
 use serde::Deserialize;
 
 use install::{install, relaunch};
@@ -45,7 +47,13 @@ fn same_executable(left: &Path, right: &Path) -> bool {
 }
 
 fn wait_for_launcher_exit(request: &UpdateRequest) -> Result<(), Box<dyn Error>> {
-    if !process_exists(request.wait_pid) {
+    #[cfg(target_os = "windows")]
+    let launcher_started_at = process_started_at_micros(request.wait_pid)?;
+    #[cfg(target_os = "windows")]
+    let launcher_exists = process_instance_exists(request.wait_pid, launcher_started_at)?;
+    #[cfg(not(target_os = "windows"))]
+    let launcher_exists = process_exists(request.wait_pid);
+    if !launcher_exists {
         return Err("Launcher exited before the background Updater started".into());
     }
     let expected = request.wait_executable.canonicalize()?;
@@ -57,10 +65,21 @@ fn wait_for_launcher_exit(request: &UpdateRequest) -> Result<(), Box<dyn Error>>
         )
         .into());
     }
+    #[cfg(target_os = "windows")]
+    if !process_instance_exists(request.wait_pid, launcher_started_at)? {
+        return Err("Launcher exited before the background Updater was ready".into());
+    }
     // Publish readiness only after confirming this is the exact live Launcher.
     write_status(request, "waiting-for-exit", None)?;
     let started = Instant::now();
-    while process_exists(request.wait_pid) {
+    loop {
+        #[cfg(target_os = "windows")]
+        let launcher_exists = process_instance_exists(request.wait_pid, launcher_started_at)?;
+        #[cfg(not(target_os = "windows"))]
+        let launcher_exists = process_exists(request.wait_pid);
+        if !launcher_exists {
+            break;
+        }
         if started.elapsed() >= WAIT_TIMEOUT {
             return Err("Launcher did not exit before the update timeout".into());
         }

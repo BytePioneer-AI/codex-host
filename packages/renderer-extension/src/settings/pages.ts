@@ -358,8 +358,9 @@ function updatesPage(
       const setManualFallback = (fallback: boolean): void => {
         // While automatic update works, manual download is a one-line escape hatch;
         // once it fails, the section returns at full weight.
-        controls.className =
-          !fallback ? "settings-update-controls is-quiet" : "settings-update-controls";
+        controls.className = !fallback
+          ? "settings-update-controls is-quiet"
+          : "settings-update-controls";
         manualNpmDescription.textContent = fallback
           ? messages.updateManualFallbackDescription
           : messages.updateManualNpmDescription;

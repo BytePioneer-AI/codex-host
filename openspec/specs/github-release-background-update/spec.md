@@ -76,7 +76,11 @@ Host SHALL serialize update starts across current Host processes. After successf
 
 #### Scenario: Windows Desktop does not fully stop
 - **WHEN** Windows cannot terminate the managed Desktop root or its Shim/Host chain remains alive
-- **THEN** the Launcher SHALL remain alive while the Helper is waiting, SHALL retry bounded observation, and SHALL NOT let the Helper install over the running chain
+- **THEN** the Launcher SHALL terminate captured Desktop descendants by exact process identity, check for late installation-owned processes, remain alive while the Helper is waiting, retry bounded observation, and SHALL NOT let the Helper install over the running chain
+
+#### Scenario: Windows Launcher process inspection fails
+- **WHEN** the Updater cannot reliably inspect whether the exact Launcher instance is still running
+- **THEN** it SHALL record failure and SHALL NOT begin installation
 
 ### Requirement: Update status survives restart
 The update capability SHALL store strict local operation status outside the installation root, discover the newest valid operation after relaunch, and expose only version, installation kind, phase, update time, and bounded error. It SHALL treat a freshly observed `restarting` phase as pending and SHALL clean stale terminal work without deleting active work.

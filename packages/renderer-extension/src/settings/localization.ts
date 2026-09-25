@@ -681,7 +681,7 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   connectionOpenInstallation: "查看安装指引",
   connectionOpenHarnessWeb: "打开 DeepSeek Harness Web",
   connectionDeepSeekTestedVersions:
-    "支持 DSH 版本：0.1.2-rc.1、0.1.5-rc.1、0.1.5-rc.2、0.1.5-rc.3、0.1.7-rc.1 和 0.1.7-rc.2。其他规范 SemVer 版本可以在通过原生协议检查后尝试连接，但尚未列入支持列表。",
+    "支持 DSH 版本：0.1.2-rc.1、0.1.5-rc.1、0.1.5-rc.2、0.1.5-rc.3、0.1.7-rc.1 和 0.1.7-rc.2。其他版本可以在通过原生协议检查后尝试连接，但尚未列入支持列表。",
   connectionInstall: "安装",
   connectionInstallDescription: "尚未检测到该 Harness。",
   connectionErrorTitle: "连接检查失败",

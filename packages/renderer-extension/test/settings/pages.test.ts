@@ -971,7 +971,7 @@ describe("Renderer Connections page", () => {
     dshRow.dispatch("click", { target: null });
     expect(visibleText(content)).toContain("0.1.7-rc.2");
     expect(visibleText(content)).toContain(
-      "其他规范 SemVer 版本可以在通过原生协议检查后尝试连接，但尚未列入支持列表。",
+      "其他版本可以在通过原生协议检查后尝试连接，但尚未列入支持列表。",
     );
     const open = descendants(content).find(
       ({ dataset }) => dataset.connectionAction === "open-web-ui",

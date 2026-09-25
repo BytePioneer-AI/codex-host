@@ -256,9 +256,18 @@ function visibleText(root: FakeElement): string {
 describe("Diagnostic log export controls", () => {
   it("selects a Harness or runtime and reports export progress, paths, and failures", async () => {
     const document = new FakeDocument();
+    const writable = { write: vi.fn(async () => undefined), close: vi.fn(async () => undefined) };
+    (document.defaultView as Window & { showSaveFilePicker?: unknown }).showSaveFilePicker = vi.fn(
+      async () => ({ name: "chosen/pi.jsonl.gz", createWritable: async () => writable }),
+    );
     const content = document.createElement("main");
     const scope = new RendererSettingsPageScope();
-    const pending = deferred<{ path: string; fileCount: number; bytes: number }>();
+    const pending = deferred<{
+      fileName: string;
+      data: string;
+      fileCount: number;
+      bytes: number;
+    }>();
     const exportLogs = vi
       .fn()
       .mockReturnValueOnce(pending.promise)
@@ -291,11 +300,13 @@ describe("Diagnostic log export controls", () => {
     select.value = "1";
     button.dispatch("click");
     button.dispatch("click");
-    expect(exportLogs).toHaveBeenCalledExactlyOnceWith({ kind: "harness", harnessId: "pi" });
+    await vi.waitFor(() =>
+      expect(exportLogs).toHaveBeenCalledExactlyOnceWith({ kind: "harness", harnessId: "pi" }),
+    );
     expect(button.disabled).toBe(true);
     expect(select.disabled).toBe(true);
-    pending.resolve({ path: "/Downloads/pi.jsonl.gz", fileCount: 2, bytes: 128 });
-    await vi.waitFor(() => expect(visibleText(content)).toContain("/Downloads/pi.jsonl.gz"));
+    pending.resolve({ fileName: "pi.jsonl.gz", data: "AQI=", fileCount: 2, bytes: 128 });
+    await vi.waitFor(() => expect(visibleText(content)).toContain("chosen/pi.jsonl.gz"));
     expect(visibleText(content)).toContain("已导出 2 个日志文件");
     expect(button.disabled).toBe(false);
     select.value = "2";

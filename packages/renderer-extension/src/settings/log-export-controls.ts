@@ -9,6 +9,42 @@ export interface DiagnosticLogClient {
   exportDiagnosticLogs?(scope: DiagnosticLogScope): Promise<DiagnosticLogExportResult>;
 }
 
+interface DiagnosticLogFileHandle {
+  readonly name: string;
+  createWritable(): Promise<{
+    write(data: Uint8Array): Promise<void>;
+    close(): Promise<void>;
+  }>;
+}
+
+interface SaveFilePickerWindow extends Window {
+  showSaveFilePicker?: (options: {
+    suggestedName: string;
+    types: readonly { description: string; accept: Readonly<Record<string, readonly string[]>> }[];
+  }) => Promise<DiagnosticLogFileHandle>;
+}
+
+async function pickDiagnosticLogFile(ownerWindow: Window): Promise<DiagnosticLogFileHandle> {
+  const picker = (ownerWindow as SaveFilePickerWindow).showSaveFilePicker;
+  if (!picker) throw new Error("Save dialog is unavailable");
+  return picker({
+    suggestedName: "codexhost-diagnostics.jsonl.gz",
+    types: [{ description: "Gzip JSONL diagnostics", accept: { "application/gzip": [".gz"] } }],
+  });
+}
+
+async function saveDiagnosticLog(
+  handle: DiagnosticLogFileHandle,
+  result: DiagnosticLogExportResult,
+): Promise<string> {
+  const binary = atob(result.data);
+  const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
+  const writable = await handle.createWritable();
+  await writable.write(bytes);
+  await writable.close();
+  return handle.name || result.fileName;
+}
+
 export function mountLogExportControls(
   context: RendererSettingsPageMountContext,
   messages: RendererSettingsMessages,
@@ -57,20 +93,28 @@ export function mountLogExportControls(
     button.disabled = true;
     select.disabled = true;
     status.textContent = text.exporting;
-    void context.runLatest(() => exportLogs(scope), {
-      success(result) {
-        button.disabled = false;
-        select.disabled = false;
-        status.textContent = text.saved.replace("{count}", String(result.fileCount));
-        filePath.textContent = result.path;
-        filePath.hidden = false;
+    void context.runLatest(
+      async () => {
+        const handle = await pickDiagnosticLogFile(document.defaultView ?? window);
+        const result = await exportLogs(scope);
+        return { name: await saveDiagnosticLog(handle, result), result };
       },
-      failure(error) {
-        button.disabled = false;
-        select.disabled = false;
-        status.textContent = `${text.failed} ${error instanceof Error ? error.message : ""}`.trim();
+      {
+        success({ name, result }) {
+          button.disabled = false;
+          select.disabled = false;
+          status.textContent = text.saved.replace("{count}", String(result.fileCount));
+          filePath.textContent = name;
+          filePath.hidden = false;
+        },
+        failure(error) {
+          button.disabled = false;
+          select.disabled = false;
+          status.textContent =
+            `${text.failed} ${error instanceof Error ? error.message : ""}`.trim();
+        },
       },
-    });
+    );
   });
   row.item.append(select, button);
   card.append(row.item, status, filePath);

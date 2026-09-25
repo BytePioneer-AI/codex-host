@@ -10,7 +10,8 @@ export const diagnosticLogListResultSchema = z.array(diagnosticLogScopeSchema);
 export const diagnosticLogExportParamsSchema = diagnosticLogScopeSchema;
 export type DiagnosticLogScope = z.infer<typeof diagnosticLogScopeSchema>;
 export const diagnosticLogExportResultSchema = z.object({
-  path: z.string().min(1),
+  fileName: z.string().min(1),
+  data: z.string().min(1),
   fileCount: z.number().int().nonnegative(),
   bytes: z.number().int().nonnegative(),
 });

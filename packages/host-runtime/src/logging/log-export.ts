@@ -1,13 +1,13 @@
 import { randomUUID } from "node:crypto";
 import { createReadStream } from "node:fs";
-import { mkdir, open, readdir, rm, stat } from "node:fs/promises";
-import os from "node:os";
+import { readFile, readdir } from "node:fs/promises";
 import path from "node:path";
-import { Readable } from "node:stream";
 import { createInterface } from "node:readline";
-import { pipeline } from "node:stream/promises";
-import { createGzip } from "node:zlib";
+import { gzip } from "node:zlib";
+import { promisify } from "node:util";
 import type { DiagnosticLogExportResult, DiagnosticLogScope } from "@codexhost/shared-contracts";
+
+const gzipAsync = promisify(gzip);
 
 async function threadHarness(file: string): Promise<string | undefined> {
   const stream = createReadStream(file, "utf8");
@@ -70,7 +70,6 @@ export async function listDiagnosticLogs(directory: string): Promise<DiagnosticL
 export async function exportDiagnosticLogs(
   directory: string,
   scope: DiagnosticLogScope,
-  destinationDirectory = path.join(os.homedir(), "Downloads"),
 ): Promise<DiagnosticLogExportResult> {
   const files = (await diagnosticFiles(directory))
     .filter((entry) =>
@@ -80,35 +79,23 @@ export async function exportDiagnosticLogs(
     )
     .map((entry) => entry.file);
   if (files.length === 0) throw new Error("No diagnostic logs are available to export");
-  await mkdir(destinationDirectory, { recursive: true });
   const label =
     scope.kind === "runtime"
       ? "runtime"
       : `harness-${scope.harnessId.replace(/[^a-z0-9_-]/gi, "_").slice(0, 60)}`;
-  const archivePath = path.join(
-    destinationDirectory,
-    `codexhost-diagnostics-${label}-${new Date().toISOString().slice(0, 10)}-${randomUUID().slice(0, 8)}.jsonl.gz`,
-  );
+  const fileName = `codexhost-diagnostics-${label}-${new Date().toISOString().slice(0, 10)}-${randomUUID().slice(0, 8)}.jsonl.gz`;
   let fileCount = 0;
-  async function* contents(): AsyncGenerator<Buffer | string> {
-    for (const file of files.sort()) {
-      try {
-        yield* createReadStream(file);
-        yield "\n";
-        fileCount += 1;
-      } catch (error) {
-        // Rotation or retention can remove a file after the directory was listed.
-        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-      }
+  const contents: Buffer[] = [];
+  for (const file of files.sort()) {
+    try {
+      contents.push(await readFile(file), Buffer.from("\n"));
+      fileCount += 1;
+    } catch (error) {
+      // Rotation or retention can remove a file after the directory was listed.
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     }
   }
-  const archive = await open(archivePath, "wx", 0o600);
-  try {
-    await pipeline(Readable.from(contents()), createGzip(), archive.createWriteStream());
-    if (fileCount === 0) throw new Error("No diagnostic logs are available to export");
-    return { path: archivePath, fileCount, bytes: (await stat(archivePath)).size };
-  } catch (error) {
-    await rm(archivePath, { force: true });
-    throw error;
-  }
+  if (fileCount === 0) throw new Error("No diagnostic logs are available to export");
+  const archive = await gzipAsync(Buffer.concat(contents));
+  return { fileName, data: archive.toString("base64"), fileCount, bytes: archive.length };
 }

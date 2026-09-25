@@ -63,9 +63,7 @@ describe("Host diagnostic logging", () => {
     const actualExport = logExport.exportDiagnosticLogs;
     const exportSpy = vi
       .spyOn(logExport, "exportDiagnosticLogs")
-      .mockImplementation((directory, scope) =>
-        actualExport(directory, scope, path.join(fixture.mappingStoreDirectory, "exports")),
-      );
+      .mockImplementation((directory, scope) => actualExport(directory, scope));
     writeRequest(fixture.desktopInput, { id: 70, method: "codexhost/logs/list", params: {} });
     const listed = await fixture.collector.waitFor((message) => requestId(message, 70));
     expect(listed.result).toContainEqual({ kind: "harness", harnessId: "pi" });
@@ -76,9 +74,9 @@ describe("Host diagnostic logging", () => {
     });
     const response = await fixture.collector.waitFor((message) => requestId(message, 71));
     expect(response).toHaveProperty("result");
-    const result = response.result as { path: string; fileCount: number };
+    const result = response.result as { data: string; fileCount: number };
     expect(result.fileCount).toBe(1);
-    const contents = gunzipSync(readFileSync(result.path)).toString("utf8");
+    const contents = gunzipSync(Buffer.from(result.data, "base64")).toString("utf8");
     expect(contents).toContain("thread.created");
     expect(contents).not.toContain("host.started");
     writeRequest(fixture.desktopInput, {

@@ -79,7 +79,7 @@ describe("Renderer fixed Model request client", () => {
     const client = createRendererModelClient([{ sendRequest }]);
     expect(await client?.listDiagnosticLogs?.()).toEqual([scope]);
     expect(sendRequest).toHaveBeenLastCalledWith("codexhost/logs/list", {});
-    const result = { path: "/Downloads/pi.jsonl.gz", fileCount: 2, bytes: 128 };
+    const result = { fileName: "pi.jsonl.gz", data: "AQI=", fileCount: 2, bytes: 128 };
     sendRequest.mockResolvedValueOnce(result);
     expect(await client?.exportDiagnosticLogs?.(scope)).toEqual(result);
     expect(sendRequest).toHaveBeenLastCalledWith("codexhost/logs/export", scope);

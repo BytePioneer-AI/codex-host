@@ -224,6 +224,7 @@ export interface RendererSettingsMessages {
   readonly updateFailed: string;
   readonly updateRetry: string;
   readonly updateManualNpmDescription: string;
+  readonly updateWindowsNpmDescription: string;
   readonly updateWindowsInstallerDescription: string;
   readonly updateManualTitle: string;
   readonly updateManualFallbackDescription: string;
@@ -472,6 +473,8 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   updateFailed: "Update failed.",
   updateRetry: "Retry",
   updateManualNpmDescription: "To update manually, quit codexhost and run this command:",
+  updateWindowsNpmDescription:
+    "On Windows, quit codexhost before running this command in a terminal:",
   updateWindowsInstallerDescription:
     "To update manually, download and run the installer for this system.",
   updateManualTitle: "Manual update",
@@ -723,6 +726,8 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   updateRetry: "重试",
   updateManualNpmDescription:
     "如需手动更新，请在终端运行以下命令。更新完成后，请退出 Codex 并通过 codexhost 重新启动。",
+  updateWindowsNpmDescription:
+    "在 Windows 上手动更新前，请先退出 codexhost，再在终端运行以下命令：",
   updateWindowsInstallerDescription: "如需手动更新，请下载并运行适用于当前系统的安装包。",
   updateManualTitle: "手动更新",
   updateManualFallbackDescription:

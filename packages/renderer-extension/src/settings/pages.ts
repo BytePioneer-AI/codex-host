@@ -279,7 +279,9 @@ function updatesPage(
       manualNpm.hidden = true;
       const manualNpmDescription = document.createElement("p");
       manualNpmDescription.className = "settings-update-manual-description";
-      manualNpmDescription.textContent = messages.updateManualNpmDescription;
+      manualNpmDescription.textContent = windows
+        ? messages.updateWindowsNpmDescription
+        : messages.updateManualNpmDescription;
       const manualNpmCommandRow = document.createElement("div");
       manualNpmCommandRow.className = "settings-update-command";
       const manualNpmCommand = document.createElement("code");
@@ -361,9 +363,11 @@ function updatesPage(
         controls.className = !fallback
           ? "settings-update-controls is-quiet"
           : "settings-update-controls";
-        manualNpmDescription.textContent = fallback
-          ? messages.updateManualFallbackDescription
-          : messages.updateManualNpmDescription;
+        manualNpmDescription.textContent = windows
+          ? messages.updateWindowsNpmDescription
+          : fallback
+            ? messages.updateManualFallbackDescription
+            : messages.updateManualNpmDescription;
         manualNpmDescription.className = fallback
           ? "settings-update-manual-description is-fallback"
           : "settings-update-manual-description";

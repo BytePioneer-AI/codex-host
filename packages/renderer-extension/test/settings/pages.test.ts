@@ -1536,6 +1536,72 @@ describe("Renderer Updates page", () => {
     },
   );
 
+  it.each([
+    {
+      platform: "Win32",
+      locale: "en",
+      normal: "On Windows, quit codexhost before running this command in a terminal:",
+      fallback: "On Windows, quit codexhost before running this command in a terminal:",
+    },
+    {
+      platform: "Win32",
+      locale: "zh-CN",
+      normal: "在 Windows 上手动更新前，请先退出 codexhost，再在终端运行以下命令：",
+      fallback: "在 Windows 上手动更新前，请先退出 codexhost，再在终端运行以下命令：",
+    },
+    {
+      platform: "MacIntel",
+      locale: "en",
+      normal: "To update manually, quit codexhost and run this command:",
+      fallback:
+        "The automatic update did not complete. Run this command in a terminal instead, then quit Codex and relaunch it with codexhost.",
+    },
+    {
+      platform: "MacIntel",
+      locale: "zh-CN",
+      normal:
+        "如需手动更新，请在终端运行以下命令。更新完成后，请退出 Codex 并通过 codexhost 重新启动。",
+      fallback:
+        "自动更新未能完成，请改用下列命令在终端手动更新。完成后请退出 Codex 并通过 codexhost 重新启动。",
+    },
+  ] as const)(
+    "shows the correct npm manual-update order on $platform in $locale",
+    async ({ platform, locale, normal, fallback }) => {
+      const client = {
+        checkUpdate: vi.fn(async () => updateCheck()),
+        startUpdate: vi.fn(async () => ({ status: updateStatus("failed") })),
+        readUpdateStatus: vi.fn(async () => ({ status: null })),
+      };
+      const page = createDefaultRendererSettingsPages(
+        rendererSettingsMessages(locale),
+        () => client,
+      ).find(({ id }) => id === "updates");
+      if (!page) throw new Error("Updates page is not registered");
+
+      const document = new FakeDocument(platform);
+      const content = document.createElement("main");
+      const scope = new RendererSettingsPageScope();
+      const cleanup = page.mount({
+        content: content as unknown as HTMLElement,
+        signal: scope.signal,
+        runLatest: (operation, handlers) => scope.runLatest(operation, handlers),
+      });
+
+      const panel = elementWithClass(content, "settings-update-panel");
+      await vi.waitFor(() => expect(panel.dataset.updateState).toBe("available"));
+      const description = elementWithClass(content, "settings-update-manual-description");
+      expect(description.textContent).toBe(normal);
+      const updateButton = descendants(panel).find(({ tagName }) => tagName === "button");
+      if (!updateButton) throw new Error("Update command is not rendered");
+      updateButton.dispatch("click");
+      await vi.waitFor(() => expect(panel.dataset.updateState).toBe("failed"));
+      expect(description.textContent).toBe(fallback);
+
+      cleanup?.();
+      scope.dispose();
+    },
+  );
+
   it("renders the open-source project introduction on the About page", () => {
     const page = createDefaultRendererSettingsPages(rendererSettingsMessages("zh-CN")).find(
       ({ id }) => id === "about",

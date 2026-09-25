@@ -25,13 +25,13 @@ Get-Content "$env:USERPROFILE\.codexhost\logs\threads\<hostThreadId>.jsonl" -Wai
 会记录：
 
 - Thread 生命周期：创建、恢复及其耗时、空闲释放、删除
-- Session：Model / Thinking / Permission Mode 的变化，以及 `session.faulted` 的错误 code、stage 和 stderr 尾部
+- Session：Model / Thinking / Permission Mode 的变化，以及 `session.faulted` 的错误 code、stage、可重试性和耗时
 - Turn：开始，以及结束时的状态、耗时、错误、各类 Item 的数量和 token 用量
 - Item：仅在完成时记一条，包含类型、状态、耗时、增量更新次数和文本字节数；命令只记退出码，工具只记名称，文件变更只记文件数
 - 交互：Approval / Question 的打开与关闭及关闭原因
 - 失败的 Thread 级 Desktop 请求：方法名与错误码
 
-一概不记录：prompt、模型回复与 reasoning 正文、工具输入输出、命令行文本、文件内容与 diff、环境变量值、凭据与 Token、原始协议帧。
+一概不记录：prompt、模型回复与 reasoning 正文、工具输入输出、命令行文本、文件内容与 diff、环境变量值、凭据与 Token、原始协议帧。原生错误可能回显这些内容，因此落盘时也会移除错误消息、diagnostic、stderr 尾部、异常 cause 和自由文本取消原因，仅保留结构化错误元数据；`debug` 级别同样遵守此边界。
 
 兜底措施：凭据形状的字段名和内联密钥被替换为 `[redacted]`；路径中的用户主目录替换为 `~`；过长字符串被截断；单条记录超过 16 KiB 时只保留头部字段。
 

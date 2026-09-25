@@ -32,6 +32,7 @@ function logDirectory(fixture: ReturnType<typeof createFixture>): string {
 async function threadLog(
   fixture: ReturnType<typeof createFixture>,
   threadId: string,
+  expected: Record<string, unknown>,
 ): Promise<Record<string, unknown>[]> {
   const filePath = path.join(logDirectory(fixture), "threads", `${threadId}.jsonl`);
   let lines: Record<string, unknown>[] = [];
@@ -40,7 +41,7 @@ async function threadLog(
       .split("\n")
       .filter((line) => line.length > 0)
       .map((line) => JSON.parse(line) as Record<string, unknown>);
-    expect(lines.length).toBeGreaterThan(0);
+    expect(lines).toEqual(expect.arrayContaining([expect.objectContaining(expected)]));
   });
   return lines;
 }
@@ -57,7 +58,7 @@ describe("Host diagnostic logging", () => {
     const fixture = host();
     const threadId = await startPiThread(fixture);
     const turnId = await completePiTurn(fixture, threadId, 2);
-    const lines = await threadLog(fixture, threadId);
+    const lines = await threadLog(fixture, threadId, { event: "turn.completed", turnId });
 
     expect(lines.every((line) => line.hostThreadId === threadId)).toBe(true);
     expect(lines.every((line) => line.harnessId === "pi")).toBe(true);
@@ -92,7 +93,7 @@ describe("Host diagnostic logging", () => {
       (message) => message.method === "turn/completed" && messageTurnId(message) === turnId,
     );
 
-    const lines = await threadLog(fixture, threadId);
+    const lines = await threadLog(fixture, threadId, { event: "turn.completed", turnId });
     const contents = JSON.stringify(lines);
     expect(contents).not.toContain(prompt);
     expect(contents).not.toContain(reply);
@@ -113,18 +114,15 @@ describe("Host diagnostic logging", () => {
     const response = await fixture.collector.waitFor((message) => requestId(message, 50));
     expect(response).toHaveProperty("error");
 
-    const lines = await threadLog(fixture, threadId);
-    await vi.waitFor(async () => {
-      const failure = (await threadLog(fixture, threadId)).find(
-        (line) => line.event === "desktop.request.failed",
-      );
-      expect(failure).toMatchObject({
-        level: "warn",
-        method: "thread/rollback",
-        requestId: 50,
-      });
+    const lines = await threadLog(fixture, threadId, {
+      event: "desktop.request.failed",
+      requestId: 50,
     });
-    expect(lines.length).toBeGreaterThan(0);
+    expect(lines.find((line) => line.event === "desktop.request.failed")).toMatchObject({
+      level: "warn",
+      method: "thread/rollback",
+      requestId: 50,
+    });
   });
 
   it("writes process-level events outside any Thread log", async () => {

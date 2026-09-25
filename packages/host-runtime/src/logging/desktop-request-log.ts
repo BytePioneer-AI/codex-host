@@ -13,7 +13,8 @@ const PENDING_REQUESTS_MAX = 1_024;
 
 /**
  * Correlates Host-authored Desktop responses with their Thread-scoped requests. Only the method,
- * JSON-RPC error code, and error message are recorded; request params never are.
+ * JSON-RPC error code, ID, and timing are persisted; the file logger omits free-text error
+ * messages, and request params never enter the log.
  */
 export class DesktopRequestLog {
   readonly #pending = new Map<JsonRpcId, PendingDesktopRequest>();

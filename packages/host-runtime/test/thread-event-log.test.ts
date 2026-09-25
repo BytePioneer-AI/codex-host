@@ -1,11 +1,7 @@
 import { describe, expect, it } from "vitest";
 
-import type {
-  HarnessOutput,
-  HostItem,
-  HostItemSnapshot,
-  HostTurnId,
-} from "@codexhost/harness-adapter";
+import type { HarnessOutput, HostItem, HostItemSnapshot } from "@codexhost/harness-adapter";
+import type { HostTurnId } from "@codexhost/shared-contracts";
 import type { DiagnosticLogFields, DiagnosticLogLevel } from "../src/logging/diagnostic-log.js";
 import { ThreadEventLog } from "../src/logging/thread-event-log.js";
 

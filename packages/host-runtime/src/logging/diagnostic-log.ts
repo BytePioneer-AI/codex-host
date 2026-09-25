@@ -23,9 +23,8 @@ export type DiagnosticLogFields = Readonly<Record<string, DiagnosticLogValue>>;
 export const DIAGNOSTIC_LOG_FILE_MAX_BYTES = 5 * 1024 * 1024;
 const RECORD_MAX_BYTES = 16 * 1024;
 const STRING_MAX_CHARS = 2_000;
-/** Tail fields keep their end: the last stderr lines explain a native failure. */
-const TAIL_MAX_CHARS = 4_000;
-const TAIL_KEYS = new Set(["stderrTail"]);
+/** Native error text can echo prompts, commands, outputs, or credentials. Never persist it. */
+const CONTENT_KEYS = new Set(["message", "diagnostic", "stderrTail", "cause", "cancelReason"]);
 const COLLECTION_MAX_ENTRIES = 50;
 const VALUE_MAX_DEPTH = 4;
 const SENSITIVE_KEY =
@@ -171,8 +170,8 @@ export class FileDiagnosticLog implements DiagnosticLog {
 }
 
 /**
- * Serializes one bounded, redacted JSON record. Callers pass metadata only; this is a second
- * line of defense against credentials, home-directory paths, and unbounded native text.
+ * Omits free-form error text before persistence, then bounds and redacts the remaining metadata.
+ * This applies to Thread and runtime records at every log level, including nested error fields.
  */
 export function formatDiagnosticRecord(input: {
   ts: Date;
@@ -205,9 +204,9 @@ function sanitizeFields(fields: DiagnosticLogFields): Record<string, unknown> {
 }
 
 function sanitizeValue(key: string, value: DiagnosticLogValue, depth: number): unknown {
-  if (value === undefined) return undefined;
+  if (value === undefined || CONTENT_KEYS.has(key)) return undefined;
   if (SENSITIVE_KEY.test(key)) return "[redacted]";
-  if (typeof value === "string") return sanitizeText(value, TAIL_KEYS.has(key));
+  if (typeof value === "string") return sanitizeText(value);
   if (typeof value === "number") return Number.isFinite(value) ? value : null;
   if (typeof value !== "object" || value === null) return value;
   if (depth >= VALUE_MAX_DEPTH) return "[truncated]";
@@ -236,16 +235,14 @@ const homeDirectoryPatterns = (() => {
   );
 })();
 
-function sanitizeText(value: string, tail: boolean): string {
-  const limit = tail ? TAIL_MAX_CHARS : STRING_MAX_CHARS;
+function sanitizeText(value: string): string {
+  const limit = STRING_MAX_CHARS;
   // Bound before redaction so a huge value cannot make regex work unbounded.
-  const bounded = tail ? value.slice(-limit * 2) : value.slice(0, limit * 2);
+  const bounded = value.slice(0, limit * 2);
   let text = sanitizeDiagnosticTail(bounded);
   for (const pattern of homeDirectoryPatterns) text = text.replace(pattern, "~");
   if (text.length <= limit) return text;
-  return tail
-    ? `[truncated]${text.slice(-limit)}`
-    : `${text.slice(0, limit)}[truncated ${text.length - limit} chars]`;
+  return `${text.slice(0, limit)}[truncated ${text.length - limit} chars]`;
 }
 
 /** Serializes appends per file and rotates a full file once to `<name>.1.jsonl`. */

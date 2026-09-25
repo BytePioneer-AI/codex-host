@@ -111,6 +111,61 @@ describe("diagnostic log location and level", () => {
     ).toEqual(["session.faulted"]);
   });
 
+  it.each(["info", "debug"] as const)(
+    "omits native error content from Thread and runtime files at %s level",
+    async (level) => {
+      const directory = temporaryDirectory();
+      const log = new FileDiagnosticLog({
+        directory,
+        level,
+        pid: 42,
+        now: () => new Date("2026-09-25T00:00:00.000Z"),
+      });
+      const content = "SENTINEL_PRIVATE_COMMAND";
+      const credential = "SENTINEL_JSON_CREDENTIAL";
+      const nativeText = `Permission denied: printf '${content}'; {"api_key":"${credential}"}`;
+      const error = {
+        code: "nativeFailure" as const,
+        retryable: false,
+        stage: "turn",
+        durationMs: 12,
+        message: nativeText,
+        diagnostic: nativeText,
+        stderrTail: nativeText,
+      };
+      const thread = log.thread("thread-1", "antigravity");
+      thread.output({ kind: "event", event: { type: "session.faulted", error } });
+      thread.write("warn", "desktop.request.failed", {
+        method: "turn/start",
+        code: -32073,
+        message: nativeText,
+      });
+      thread.write("info", "turn.completed", {
+        status: "cancelled",
+        cancelReason: nativeText,
+      });
+      log.runtime("error", "host.diagnostic", { message: nativeText, cause: nativeText, error });
+      await log.flush();
+
+      const records = [
+        ...readLines(path.join(directory, "threads", "thread-1.jsonl")),
+        ...readLines(path.join(directory, "runtime", "host-20260925-42.jsonl")),
+      ];
+      expect(records).toHaveLength(4);
+      expect(JSON.stringify(records)).not.toContain(content);
+      expect(JSON.stringify(records)).not.toContain(credential);
+      expect(records[0]?.error).toEqual({
+        code: "nativeFailure",
+        retryable: false,
+        stage: "turn",
+        durationMs: 12,
+      });
+      expect(records[1]).toMatchObject({ method: "turn/start", code: -32073 });
+      expect(records[2]).toMatchObject({ status: "cancelled" });
+      expect(records[3]?.error).toEqual(records[0]?.error);
+    },
+  );
+
   it("keeps an unexpected Thread identity out of the filesystem path", async () => {
     const directory = temporaryDirectory();
     const log = new FileDiagnosticLog({ directory, level: "info", pid: 9 });
@@ -161,25 +216,21 @@ describe("record sanitization", () => {
       access_token: "[redacted]",
     });
     expect(
-      record({ message: "failed with Authorization: Bearer sk-live-secret" }).message,
+      record({ modelId: "custom Authorization: Bearer sk-live-secret" }).modelId,
     ).not.toContain("sk-live-secret");
   });
 
   it("replaces the home directory in paths", () => {
     const home = os.homedir();
-    const message = record({ message: `cannot read ${path.join(home, "project", "file.ts")}` })
-      .message as string;
-    expect(message).not.toContain(home);
-    expect(message.startsWith("cannot read ~")).toBe(true);
+    const cwd = record({ cwd: path.join(home, "project") }).cwd as string;
+    expect(cwd).not.toContain(home);
+    expect(cwd.startsWith("~")).toBe(true);
   });
 
-  it("bounds long values and keeps the tail of stderr", () => {
-    const head = record({ message: "a".repeat(10_000) }).message as string;
+  it("bounds long metadata values", () => {
+    const head = record({ modelId: "a".repeat(10_000) }).modelId as string;
     expect(head.length).toBeLessThan(10_000);
     expect(head).toContain("[truncated");
-    const tail = record({ stderrTail: `${"a".repeat(10_000)}FINAL_LINE` }).stderrTail as string;
-    expect(tail.endsWith("FINAL_LINE")).toBe(true);
-    expect(tail.length).toBeLessThan(10_000);
   });
 
   it("drops a record whose fields exceed the size limit", () => {

@@ -35,7 +35,7 @@ interface WorkBuddyInvocationDependencies {
   platform?: NodeJS.Platform;
   isExecutable?: (candidate: string) => boolean;
   isDirectory?: (candidate: string) => boolean;
-  runningExecutables?: () => string[];
+  windowsInstallExecutables?: () => string[];
   lstat?: (candidate: string) => {
     isDirectory(): boolean;
     isFile(): boolean;
@@ -151,8 +151,8 @@ export function workBuddyInvocation(
       )) ||
       (platform === "darwin" &&
         /\/(?:WorkBuddy|WorkBuddy AI)\.app\/Contents\/MacOS\/Electron$/u.test(explicitExecutable)));
-  const discoveryDependencies = dependencies.runningExecutables
-    ? { runningExecutables: dependencies.runningExecutables }
+  const discoveryDependencies = dependencies.windowsInstallExecutables
+    ? { windowsInstallExecutables: dependencies.windowsInstallExecutables }
     : {};
   const bundle = configuredDirectory
     ? resolveWorkBuddyInstallDirectory(

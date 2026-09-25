@@ -4,6 +4,8 @@ WorkBuddy 作为独立的 `workbuddy` Harness 运行 WorkBuddy AI 随应用分�
 
 ## 接口选择与已确认版本
 
+本集成覆盖 **国内版（CN / 腾讯）**（[copilot.tencent.com](https://copilot.tencent.com) / workbuddy.cn，对应 issue #348 与维护者实机验证）以及同名可执行文件的 **国际版**（[workbuddy.ai](https://www.workbuddy.ai)）。两版 Desktop 入口均为 `WorkBuddy.exe` / `WorkBuddy AI.exe` / `WorkBuddyAI.exe`，并配对同安装目录内置 `codebuddy` CLI；发现逻辑不区分发行渠道。
+
 本集成在 macOS 上检查了 **WorkBuddy AI 5.5.2**。应用内置 CLI 的包版本为 **CodeBuddy 2.137.1**，路径为：
 
 ```text
@@ -13,7 +15,7 @@ WorkBuddy 作为独立的 `workbuddy` Harness 运行 WorkBuddy AI 随应用分�
 内置 `product.json` 将产品、认证端点和应用数据目录配置为 WorkBuddy；内部 CLI 入口仍名为 `codebuddy`，不表示它应被发现为独立的 `codebuddy` Harness。插件自动发现应用与其同一安装目录中的内置 CLI，不回退到 PATH 中的独立 CodeBuddy：
 
 - macOS：依次检查 `/Applications`、`~/Applications` 下的 `WorkBuddy AI.app` 和 `WorkBuddy.app`，使用 `Contents/MacOS/Electron` 与 `Contents/Resources/app.asar.unpacked/cli/bin/codebuddy`。
-- Windows：检查 PATH 及 `%LOCALAPPDATA%/Programs`、`%LOCALAPPDATA%`、`%ProgramFiles%`、`%USERPROFILE%/workbuddy` 下的 `WorkBuddy AI`、`WorkBuddy`、`WorkBuddyAI`，匹配 `WorkBuddy AI.exe`、`WorkBuddy.exe` 或新版安装器使用的 `WorkBuddyAI.exe`，并配对同目录 `resources/app.asar.unpacked/cli/bin/codebuddy`；标准路径与空 `InstallLocation` 均未命中时，再尝试从正在运行的 WorkBuddy 进程读取可执行路径。不混用不同安装的可执行文件与 CLI。用户标准安装根依据[官方常见问题](https://www.workbuddy.cn/docs/workbuddy/From-Beginner-to-Expert-Guide/FAQ)。路径发现和启动参数已通过模拟 Windows 文件布局测试。
+- Windows：检查 PATH 及 `%LOCALAPPDATA%/Programs`、`%LOCALAPPDATA%`、`%ProgramFiles%` 下的 `WorkBuddy AI`、`WorkBuddy`、`WorkBuddyAI`，匹配 `WorkBuddy AI.exe`、`WorkBuddy.exe` 或新版安装器使用的 `WorkBuddyAI.exe`，并配对同目录 `resources/app.asar.unpacked/cli/bin/codebuddy`。标准安装根未命中且卸载项 `InstallLocation` 为空时，继续从卸载注册表 `DisplayIcon`（HKCU/HKLM Uninstall 及 WOW6432Node）与开始菜单 `.lnk` 快捷方式定位自定义安装 EXE（例如 `D:\program\WorkBuddy\WorkBuddyAI\WorkBuddyAI.exe`），无需应用正在运行，也不在默认发现路径上同步调用 PowerShell/`Get-Process`。不混用不同安装的可执行文件与 CLI。用户标准安装根依据[官方常见问题](https://www.workbuddy.cn/docs/workbuddy/From-Beginner-to-Expert-Guide/FAQ)。路径发现和启动参数已通过模拟 Windows 文件布局测试。
 - Linux：官方当前[平台说明](https://www.workbuddy.ai/docs/workbuddy/From-Beginner-to-Expert-Guide/FQA)列出 macOS 和 Windows；没有已确认的 Linux App 安装布局，插件不猜测自动发现路径。
 
 标准布局下只需安装 WorkBuddy App，不需要另外全局安装 CLI，也不要求 App 窗口保持运行；应用内部打包路径并非 WorkBuddy 对外承诺的稳定接口。`CODEXHOST_WORKBUDDY_COMMAND` 支持应用安装目录，也可显式选择支持 `--acp` 的原生 CLI，或 Windows `WorkBuddy.exe` / `WorkBuddy AI.exe` / `WorkBuddyAI.exe`、macOS WorkBuddy 应用内的 `Contents/MacOS/Electron`。明确指定 Desktop 入口时仍校验并使用同安装目录的内置 CLI，缺失时检查失败，不把 EXE 当裸 CLI 启动，也不静默换用其他安装。

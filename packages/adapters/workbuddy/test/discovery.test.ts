@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { workBuddyInvocation } from "../src/command.js";
+import {
+  parseUninstallRegistryOutput,
+  parseWindowsDisplayIcon,
+} from "../src/discovery.js";
 
 describe("WorkBuddy app discovery", () => {
   it.each(["WorkBuddy.exe", "WorkBuddy AI.exe", "WorkBuddyAI.exe"])(
@@ -160,30 +164,9 @@ describe("WorkBuddy app discovery", () => {
     expect(invocation.environment.ACC_PRODUCT_CONFIG_PATH).toBe(snapshot);
   });
 
-  it("discovers a Windows app under %USERPROFILE%\\workbuddy", () => {
-    const root = "C:\\Users\\Test\\workbuddy";
-    const executable = `${root}\\WorkBuddy.exe`;
-    const cli = `${root}\\resources\\app.asar.unpacked\\cli\\bin\\codebuddy`;
-    const invocation = workBuddyInvocation(
-      {
-        USERPROFILE: "C:\\Users\\Test",
-        LOCALAPPDATA: "C:\\Users\\Test\\AppData\\Local",
-        ProgramFiles: "C:\\Program Files",
-      },
-      false,
-      {
-        platform: "win32",
-        isExecutable: (candidate) =>
-          [executable, cli].some((file) => file.toLowerCase() === candidate.toLowerCase()),
-      },
-    );
-    expect(invocation.command.toLowerCase()).toBe(executable.toLowerCase());
-    expect(invocation.arguments).toEqual([cli, "--acp"]);
-  });
-
-  it("falls back to a running WorkBuddy process path on Windows", () => {
-    const executable = "D:\\CustomInstall\\WorkBuddyAI.exe";
-    const cli = "D:\\CustomInstall\\resources\\app.asar.unpacked\\cli\\bin\\codebuddy";
+  it("discovers a custom Windows install via DisplayIcon / Start Menu when app is not running", () => {
+    const executable = "D:\\program\\WorkBuddy\\WorkBuddyAI\\WorkBuddyAI.exe";
+    const cli = "D:\\program\\WorkBuddy\\WorkBuddyAI\\resources\\app.asar.unpacked\\cli\\bin\\codebuddy";
     const invocation = workBuddyInvocation(
       {
         USERPROFILE: "C:\\Users\\Test",
@@ -194,7 +177,7 @@ describe("WorkBuddy app discovery", () => {
       {
         platform: "win32",
         isExecutable: (candidate) => candidate === executable || candidate === cli,
-        runningExecutables: () => [executable],
+        windowsInstallExecutables: () => [executable],
       },
     );
     expect(invocation.command).toBe(executable);
@@ -202,9 +185,10 @@ describe("WorkBuddy app discovery", () => {
     expect(invocation.environment.ELECTRON_RUN_AS_NODE).toBe("1");
   });
 
-  it("does not use a running process when CODEXHOST_WORKBUDDY_COMMAND is set but missing", () => {
-    const running = "D:\\CustomInstall\\WorkBuddy.exe";
-    const cli = "D:\\CustomInstall\\resources\\app.asar.unpacked\\cli\\bin\\codebuddy";
+  it("does not use install fallbacks when CODEXHOST_WORKBUDDY_COMMAND is set but missing", () => {
+    const custom = "D:\\program\\WorkBuddy\\WorkBuddyAI\\WorkBuddyAI.exe";
+    const cli =
+      "D:\\program\\WorkBuddy\\WorkBuddyAI\\resources\\app.asar.unpacked\\cli\\bin\\codebuddy";
     expect(() =>
       workBuddyInvocation(
         {
@@ -214,10 +198,35 @@ describe("WorkBuddy app discovery", () => {
         false,
         {
           platform: "win32",
-          isExecutable: (candidate) => candidate === running || candidate === cli,
-          runningExecutables: () => [running],
+          isExecutable: (candidate) => candidate === custom || candidate === cli,
+          windowsInstallExecutables: () => [custom],
         },
       ),
     ).toThrow("unavailable");
+  });
+});
+
+describe("Windows DisplayIcon / uninstall registry parsing", () => {
+  it.each([
+    ['"D:\\program\\WorkBuddy\\WorkBuddyAI\\WorkBuddyAI.exe",0', "D:\\program\\WorkBuddy\\WorkBuddyAI\\WorkBuddyAI.exe"],
+    ["D:\\program\\WorkBuddy\\WorkBuddyAI\\WorkBuddyAI.exe,0", "D:\\program\\WorkBuddy\\WorkBuddyAI\\WorkBuddyAI.exe"],
+    ['"C:\\Apps\\WorkBuddy AI.exe"', "C:\\Apps\\WorkBuddy AI.exe"],
+    ["C:\\Apps\\WorkBuddy.exe", "C:\\Apps\\WorkBuddy.exe"],
+  ])("parses DisplayIcon %s", (value, expected) => {
+    expect(parseWindowsDisplayIcon(value)).toBe(expected);
+  });
+
+  it("extracts WorkBuddy EXE paths from uninstall registry output", () => {
+    const output = [
+      "HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\WorkBuddyAI",
+      "    DisplayName    REG_SZ    WorkBuddy AI",
+      "    DisplayIcon    REG_SZ    \"D:\\program\\WorkBuddy\\WorkBuddyAI\\WorkBuddyAI.exe\",0",
+      "HKEY_LOCAL_MACHINE\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\OtherApp",
+      "    DisplayName    REG_SZ    Other App",
+      "    DisplayIcon    REG_SZ    C:\\Other\\App.exe,0",
+    ].join("\r\n");
+    expect(parseUninstallRegistryOutput(output)).toEqual([
+      "D:\\program\\WorkBuddy\\WorkBuddyAI\\WorkBuddyAI.exe",
+    ]);
   });
 });

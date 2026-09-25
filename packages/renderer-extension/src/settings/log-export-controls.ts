@@ -95,8 +95,8 @@ export function mountLogExportControls(
     status.textContent = text.exporting;
     void context.runLatest(
       async () => {
-        const handle = await pickDiagnosticLogFile(document.defaultView ?? window);
         const result = await exportLogs(scope);
+        const handle = await pickDiagnosticLogFile(document.defaultView ?? window);
         return { name: await saveDiagnosticLog(handle, result), result };
       },
       {

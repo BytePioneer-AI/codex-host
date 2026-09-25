@@ -257,9 +257,11 @@ describe("Diagnostic log export controls", () => {
   it("selects a Harness or runtime and reports export progress, paths, and failures", async () => {
     const document = new FakeDocument();
     const writable = { write: vi.fn(async () => undefined), close: vi.fn(async () => undefined) };
-    (document.defaultView as Window & { showSaveFilePicker?: unknown }).showSaveFilePicker = vi.fn(
+    const saveFilePicker = vi.fn(
       async () => ({ name: "chosen/pi.jsonl.gz", createWritable: async () => writable }),
     );
+    (document.defaultView as Window & { showSaveFilePicker?: unknown }).showSaveFilePicker =
+      saveFilePicker;
     const content = document.createElement("main");
     const scope = new RendererSettingsPageScope();
     const pending = deferred<{
@@ -313,6 +315,7 @@ describe("Diagnostic log export controls", () => {
     button.dispatch("click");
     await vi.waitFor(() => expect(visibleText(content)).toContain("日志导出失败。 disk full"));
     expect(exportLogs).toHaveBeenLastCalledWith({ kind: "runtime" });
+    expect(saveFilePicker).toHaveBeenCalledTimes(1);
     expect(button.disabled).toBe(false);
     scope.dispose();
   });

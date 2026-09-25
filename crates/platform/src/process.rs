@@ -1103,30 +1103,13 @@ mod windows_tests {
     }
 
     #[test]
-    fn captures_a_live_windows_child_process_instance() {
-        let mut child = Command::new("cmd.exe")
-            .args(["/d", "/c", "ping -n 5 127.0.0.1 >NUL"])
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .expect("start child process");
-        let child_id = child.id();
-        let captured = (|| {
-            let executable = crate::windows_process::process_image_path(child_id)?;
-            let root = process_snapshot(std::process::id()).map_err(std::io::Error::other)?;
-            let descendants = descendant_process_snapshots(&root, &[&executable])
-                .map_err(std::io::Error::other)?;
-            let matching =
-                running_executable_snapshots(&[&executable]).map_err(std::io::Error::other)?;
-            Ok::<_, std::io::Error>((descendants, matching))
-        })();
-        let _ = child.kill();
-        let _ = child.wait();
-
-        let (snapshots, matching) = captured.expect("capture live child process");
-        assert!(snapshots.iter().any(|snapshot| snapshot.id == child_id));
-        assert!(matching.iter().any(|snapshot| snapshot.id == child_id));
+    fn finds_the_current_windows_process_by_executable() {
+        // Use this test binary rather than cmd.exe: parallel tests may launch
+        // unrelated cmd.exe children whose images are not always inspectable.
+        let current = process_snapshot(std::process::id()).expect("current process snapshot");
+        let matching = running_executable_snapshots(&[&current.executable])
+            .expect("scan the current executable");
+        assert!(matching.iter().any(|snapshot| snapshot.id == current.id));
     }
 
     #[test]
@@ -1164,14 +1147,21 @@ mod windows_tests {
             }
             thread::sleep(Duration::from_millis(20));
         };
+        let captured = captured.expect("cmd.exe did not start its ping.exe descendant");
+        let required_executable = &captured[0].executable;
+        let required = descendant_process_snapshots(&root_snapshot, &[required_executable])
+            .expect("capture the required descendant executable");
+        assert!(
+            required
+                .iter()
+                .any(|snapshot| snapshot.id == captured[0].id)
+        );
         let _ = root.kill();
         let _ = root.wait();
         assert!(
             !process_instance_exists(root_snapshot.id, root_snapshot.started_at_micros)
                 .expect("observe stopped root")
         );
-        let captured = captured.expect("cmd.exe did not start its ping.exe descendant");
-
         for descendant in &captured {
             terminate_process_instance(descendant, true).expect("terminate captured descendant");
         }

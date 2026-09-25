@@ -416,6 +416,20 @@ describe("OMP RPC session", () => {
     await session.close();
   });
 
+  it("skips the subagent subscription for transports that opt out", async () => {
+    const process = new FakeOmpProcess();
+    const adapter: OmpRpcProcessAdapter = { spawn: () => process as never };
+    const session = new OmpRpcSession(
+      { cwd: "/synthetic", commandTimeoutMs: 2_000, subscribeSubagentEvents: false },
+      adapter,
+    );
+    await session.start();
+    expect(process.commands).not.toContainEqual(
+      expect.objectContaining({ type: "set_subagent_subscription" }),
+    );
+    await session.close();
+  });
+
   it("still starts and settles turns when the server rejects the subagent subscription", async () => {
     const process = new FakeOmpProcess(
       "complete",

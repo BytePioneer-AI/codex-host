@@ -348,8 +348,14 @@ function sessionFileFromRef(ref: NativeSessionRef): string {
 
 const MAX_SUBAGENT_TRANSCRIPT_BYTES = 8 * 1024 * 1024;
 
-/** OMP writes each child transcript next to its parent Session file as `<stem>/<subagentId>.jsonl`. */
-function subagentTranscriptPath(parentSessionFile: string, nativeSubagentId: string): string {
+/**
+ * OMP writes each child transcript next to its parent Session file as `<stem>/<subagentId>.jsonl`.
+ * Returns null when the parent Session file does not use that layout, so callers fall back to RPC.
+ */
+function subagentTranscriptPath(
+  parentSessionFile: string,
+  nativeSubagentId: string,
+): string | null {
   if (
     nativeSubagentId.includes("/") ||
     nativeSubagentId.includes("\\") ||
@@ -359,8 +365,8 @@ function subagentTranscriptPath(parentSessionFile: string, nativeSubagentId: str
   ) {
     throw new Error("Omp Subagent ID is not a plain transcript file name");
   }
-  if (!parentSessionFile.endsWith(".jsonl") || path.isAbsolute(parentSessionFile) === false) {
-    throw new Error("Omp Native Session file has an unsupported layout");
+  if (!parentSessionFile.endsWith(".jsonl") || !path.isAbsolute(parentSessionFile)) {
+    return null;
   }
   return `${parentSessionFile.slice(0, -".jsonl".length)}/${nativeSubagentId}.jsonl`;
 }
@@ -373,6 +379,7 @@ async function readSubagentTranscriptFile(
   nativeSubagentId: string,
 ): Promise<SubagentTranscriptFile> {
   const transcriptFile = subagentTranscriptPath(parentSessionFile, nativeSubagentId);
+  if (transcriptFile === null) return { status: "missing" };
   const parentDirectory = path.dirname(transcriptFile);
   let metadata;
   try {
@@ -2245,6 +2252,7 @@ export class OmpAdapter implements HarnessAdapter {
         transport = this.#createTransport({
           cwd: input.cwd,
           sessionFile: sessionFileFromRef(input.parent),
+          subscribeSubagentEvents: false,
           onFault: () => undefined,
         });
         await transport.start();
@@ -2323,7 +2331,11 @@ export class OmpAdapter implements HarnessAdapter {
   async #inspectCwd(cwd: string): Promise<HarnessInspection> {
     const startedAt = Date.now();
     let stage = "spawn";
-    const transport = this.#createTransport({ cwd, onFault: () => undefined });
+    const transport = this.#createTransport({
+      cwd,
+      subscribeSubagentEvents: false,
+      onFault: () => undefined,
+    });
     this.#inspections.add(transport);
     try {
       stage = "startup";

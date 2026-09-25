@@ -183,6 +183,11 @@ export interface OmpRpcSessionOptions {
   cancelTimeoutMs?: number;
   closeTimeoutMs?: number;
   onSubagentEvent?: (event: OmpTurnEvent) => void;
+  /**
+   * Subscribe to native subagent frames during startup (default true). Short-lived
+   * transports that never run Turns, such as inspection or transcript reads, opt out.
+   */
+  subscribeSubagentEvents?: boolean;
   onFault?: (error: OmpRpcFaultError) => void;
 }
 
@@ -632,7 +637,9 @@ export class OmpRpcSession {
     // subscription that defaults to "off". Subscribe during startup so native
     // subagent delegations reach the Host; OMP builds without the command reject
     // it and this degrades gracefully.
-    await this.#send("set_subagent_subscription", { level: "events" }).catch(() => undefined);
+    if (this.#options.subscribeSubagentEvents !== false) {
+      await this.#send("set_subagent_subscription", { level: "events" }).catch(() => undefined);
+    }
     try {
       this.#state = parseSessionState(await this.#send("get_state", {}));
     } catch (error) {

@@ -766,6 +766,40 @@ describe("OMP Adapter Subagents", () => {
     await adapter.close();
   });
 
+  it("falls back to OMP RPC when the parent Session file has no transcript layout", async () => {
+    const transport = new FakeOmpTransport();
+    const createdOptions: OmpRpcSessionOptions[] = [];
+    const adapter = new OmpAdapter(
+      {},
+      {
+        createTransport: (options: OmpRpcSessionOptions) => {
+          createdOptions.push(options);
+          return transport;
+        },
+      },
+    );
+    const parent = nativeSessionRefSchema.parse({
+      harnessId: "omp",
+      nativeSessionId: "omp-parent",
+      locator: { sessionFile: "relative/omp-parent.session" },
+      formatVersion: 1,
+    });
+    const result = await adapter.subagents.readSnapshot({
+      parent,
+      nativeSubagentId: "subagent-1",
+      cwd: "/synthetic",
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.value.turns).toHaveLength(1);
+    expect(createdOptions).toEqual([
+      expect.objectContaining({
+        sessionFile: "relative/omp-parent.session",
+        subscribeSubagentEvents: false,
+      }),
+    ]);
+    await adapter.close();
+  });
+
   it("rejects Subagent IDs that cannot name a transcript file", async () => {
     const transport = new FakeOmpTransport();
     const adapter = new OmpAdapter({}, { createTransport: () => transport });

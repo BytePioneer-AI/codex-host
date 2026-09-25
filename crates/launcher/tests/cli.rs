@@ -1,7 +1,9 @@
 use std::fs;
+use std::io::ErrorKind;
 use std::path::PathBuf;
 use std::process::Command;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::thread;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 fn launcher_path() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_codexhost"))
@@ -64,10 +66,18 @@ fn production_launcher_resolves_resources_beside_its_installed_location() {
     let installed = bin.join(source.file_name().expect("launcher file name"));
     fs::copy(&source, &installed).expect("copy installed launcher");
 
-    let output = Command::new(&installed)
-        .args(["launch"])
-        .output()
-        .expect("run installed launcher");
+    // Some Linux filesystems briefly report the freshly copied executable as busy.
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let output = loop {
+        match Command::new(&installed).args(["launch"]).output() {
+            Err(error)
+                if error.kind() == ErrorKind::ExecutableFileBusy && Instant::now() < deadline =>
+            {
+                thread::sleep(Duration::from_millis(20));
+            }
+            result => break result.expect("run installed launcher"),
+        }
+    };
     fs::remove_dir_all(&root).expect("remove release layout");
 
     assert!(!output.status.success());

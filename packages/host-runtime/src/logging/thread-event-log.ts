@@ -42,8 +42,12 @@ export class ThreadEventLog {
   ) {}
 
   output(output: HarnessOutput): void {
-    if (output.kind === "interaction") this.#interaction(output.interaction);
-    else this.#event(output.event);
+    try {
+      if (output.kind === "interaction") this.#interaction(output.interaction);
+      else this.#event(output.event);
+    } catch {
+      // Diagnostics must never interrupt the Harness output stream.
+    }
   }
 
   #event(event: HostEvent): void {

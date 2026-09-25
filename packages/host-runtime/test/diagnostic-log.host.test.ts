@@ -125,6 +125,48 @@ describe("Host diagnostic logging", () => {
     });
   });
 
+  it.each(["info", "debug"])("keeps arbitrary request metadata out of %s logs", async (level) => {
+    const fixture = host({ CODEXHOST_LOG_LEVEL: level });
+    const threadId = await startPiThread(fixture);
+    const failedId = "SENTINEL_PRIVATE_FAILED_ID";
+    const method = "thread/SENTINEL_PRIVATE_METHOD";
+    writeRequest(fixture.desktopInput, {
+      id: failedId,
+      method,
+      params: { threadId },
+    });
+    const failed = await fixture.collector.waitFor((message) => message.id === failedId);
+    expect(failed).toMatchObject({ id: failedId, error: { code: -32076 } });
+    const failedLines = await threadLog(fixture, threadId, {
+      event: "desktop.request.failed",
+      method: "unknown",
+    });
+    const failedRecord = failedLines.find((line) => line.event === "desktop.request.failed");
+    expect(failedRecord).not.toHaveProperty("requestId");
+    expect(JSON.stringify(failedLines)).not.toContain(failedId);
+    expect(JSON.stringify(failedLines)).not.toContain(method);
+
+    const succeededId = "SENTINEL_PRIVATE_SUCCEEDED_ID";
+    writeRequest(fixture.desktopInput, {
+      id: succeededId,
+      method: "thread/read",
+      params: { threadId },
+    });
+    const succeeded = await fixture.collector.waitFor((message) => message.id === succeededId);
+    expect(succeeded).toHaveProperty("result");
+    if (level === "debug") {
+      const lines = await threadLog(fixture, threadId, {
+        event: "desktop.request.completed",
+        method: "thread/read",
+      });
+      const completed = lines.find(
+        (line) => line.event === "desktop.request.completed" && line.method === "thread/read",
+      );
+      expect(completed).not.toHaveProperty("requestId");
+      expect(JSON.stringify(lines)).not.toContain(succeededId);
+    }
+  });
+
   it("writes process-level events outside any Thread log", async () => {
     const fixture = host();
     await fixture.ready;

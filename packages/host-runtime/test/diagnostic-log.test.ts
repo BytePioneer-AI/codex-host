@@ -58,6 +58,18 @@ describe("diagnostic log location and level", () => {
     expect(diagnosticLogLevel({ CODEXHOST_LOG_LEVEL: "nonsense" })).toBe("info");
   });
 
+  it.each(["constructor", "__proto__", "toString"])(
+    "does not accept prototype property %s as a log level",
+    (value) => {
+      const environment = {
+        CODEXHOST_DATA_DIR: temporaryDirectory(),
+        CODEXHOST_LOG_LEVEL: value,
+      };
+      expect(diagnosticLogLevel(environment)).toBe("info");
+      expect(createDiagnosticLog(environment).isEnabled("info")).toBe(true);
+    },
+  );
+
   it("writes nothing when logging is off", async () => {
     const directory = temporaryDirectory();
     const log = createDiagnosticLog({

@@ -59,7 +59,7 @@ export function diagnosticLogDirectory(environment: NodeJS.ProcessEnv): string {
 
 export function diagnosticLogLevel(environment: NodeJS.ProcessEnv): DiagnosticLogLevel | "off" {
   const value = environment[DIAGNOSTIC_LOG_LEVEL_ENV]?.trim().toLowerCase();
-  return value === "off" || (value !== undefined && value in LEVEL_RANK)
+  return value === "off" || (value !== undefined && Object.hasOwn(LEVEL_RANK, value))
     ? (value as DiagnosticLogLevel | "off")
     : "info";
 }

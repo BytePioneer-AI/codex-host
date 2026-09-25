@@ -11,10 +11,38 @@ interface PendingDesktopRequest {
 /** Requests forwarded to the official app-server are forgotten, so this bound is a safety net. */
 const PENDING_REQUESTS_MAX = 1_024;
 
+// Log labels only: unknown protocol methods must not become free-text log content.
+const LOGGED_METHODS = new Set([
+  "thread/archive",
+  "thread/delete",
+  "thread/fork",
+  "thread/items/list",
+  "thread/metadata/update",
+  "thread/name/set",
+  "thread/read",
+  "thread/resume",
+  "thread/revert",
+  "thread/rollback",
+  "thread/turns/list",
+  "thread/unarchive",
+  "thread/unsubscribe",
+  "turn/start",
+  "turn/steer",
+  "turn/interrupt",
+  "codexhost/thread/fork",
+  "codexhost/thread/inspect",
+  "codexhost/thread/usage/inspect",
+  "codexhost/thread/model/select",
+  "codexhost/thread/thinking/select",
+  "codexhost/thread/permission-mode/select",
+  "codexhost/thread/commands/inspect",
+  "codexhost/thread/command/execute",
+]);
+
 /**
- * Correlates Host-authored Desktop responses with their Thread-scoped requests. Only the method,
- * JSON-RPC error code, ID, and timing are persisted; the file logger omits free-text error
- * messages, and request params never enter the log.
+ * Correlates Host-authored Desktop responses with their Thread-scoped requests. Only known
+ * methods, numeric IDs, JSON-RPC error codes, and timing are persisted. String IDs remain
+ * in memory for correlation; request params and free-text errors never enter the log.
  */
 export class DesktopRequestLog {
   readonly #pending = new Map<JsonRpcId, PendingDesktopRequest>();
@@ -29,7 +57,11 @@ export class DesktopRequestLog {
       const oldest = this.#pending.keys().next();
       if (!oldest.done) this.#pending.delete(oldest.value);
     }
-    this.#pending.set(id, { method, threadId, startedAtMs: this.now() });
+    this.#pending.set(id, {
+      method: LOGGED_METHODS.has(method) ? method : "unknown",
+      threadId,
+      startedAtMs: this.now(),
+    });
   }
 
   forget(id: JsonRpcId): void {
@@ -50,14 +82,14 @@ export class DesktopRequestLog {
     if (!error) {
       thread?.write("debug", "desktop.request.completed", {
         method: pending.method,
-        requestId: id,
+        requestId: typeof id === "number" ? id : undefined,
         durationMs,
       });
       return;
     }
     const fields = {
       method: pending.method,
-      requestId: id,
+      requestId: typeof id === "number" ? id : undefined,
       durationMs,
       code: typeof error.code === "number" ? error.code : undefined,
       message: typeof error.message === "string" ? error.message : undefined,

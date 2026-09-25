@@ -39,6 +39,27 @@ function itemSnapshot(
 }
 
 describe("Thread event log", () => {
+  it("continues after malformed diagnostic metadata", () => {
+    const { records, log } = collector();
+    expect(() =>
+      log.output({
+        kind: "event",
+        event: { type: "turn.autonomous.started", turnId: TURN },
+      } as HarnessOutput),
+    ).not.toThrow();
+    log.output({ kind: "event", event: { type: "turn.started", turnId: TURN } });
+    expect(records).toEqual([{ level: "info", event: "turn.started", fields: { turnId: TURN } }]);
+  });
+
+  it("does not propagate a diagnostic sink failure", () => {
+    const log = new ThreadEventLog(() => {
+      throw new Error("synthetic diagnostic sink failure");
+    });
+    expect(() =>
+      log.output({ kind: "event", event: { type: "turn.started", turnId: TURN } }),
+    ).not.toThrow();
+  });
+
   it("records a Turn as bounded metadata without streaming deltas", () => {
     const { records, log } = collector();
     log.output({ kind: "event", event: { type: "turn.started", turnId: TURN } });

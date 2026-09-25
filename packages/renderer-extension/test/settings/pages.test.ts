@@ -257,9 +257,10 @@ describe("Diagnostic log export controls", () => {
   it("selects a Harness or runtime and reports export progress, paths, and failures", async () => {
     const document = new FakeDocument();
     const writable = { write: vi.fn(async () => undefined), close: vi.fn(async () => undefined) };
-    const saveFilePicker = vi.fn(
-      async () => ({ name: "chosen/pi.jsonl.gz", createWritable: async () => writable }),
-    );
+    const saveFilePicker = vi.fn(async () => ({
+      name: "chosen/pi.jsonl.gz",
+      createWritable: async () => writable,
+    }));
     (document.defaultView as Window & { showSaveFilePicker?: unknown }).showSaveFilePicker =
       saveFilePicker;
     const content = document.createElement("main");

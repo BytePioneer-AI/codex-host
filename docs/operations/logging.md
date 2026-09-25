@@ -18,6 +18,12 @@ Host Runtime 把诊断记录写成 JSONL 文件，每行一条 JSON。日志的�
 Get-Content "$env:USERPROFILE\.codexhost\logs\threads\<hostThreadId>.jsonl" -Wait
 ```
 
+## 从设置页导出
+
+打开 **CodexHost 设置 → 通用 → 诊断日志**，选择 Harness 后点击 **导出日志**。来源列表来自已有日志，即使 Harness 已卸载，保留的日志仍可导出；进程日志作为独立选项，不混入 Harness 导出。Host 会先刷新待写入记录，再将所选来源的 JSONL（包括轮转文件）合并压缩为 `codexhost-diagnostics-harness-<Harness>-<日期>-<标识>.jsonl.gz` 或 `codexhost-diagnostics-runtime-<日期>-<标识>.jsonl.gz`，保存到本机用户目录下的 `Downloads/`，设置页显示完整路径与文件数量。
+
+导出只包含诊断日志，不包含映射数据库、账号凭据或 Harness 原始会话；不会上传文件，也不会改变日志开关。关闭日志后仍可导出已有文件。当前入口固定连接本机 Host，不导出远程 Host 的日志。若没有日志或文件写入失败，页面会显示错误。分享前请检查内容。
+
 ## 记录边界
 
 每行都带 `ts`、`level`、`event`、`pid`，对话级日志另外带 `hostThreadId` 和 `harnessId`。

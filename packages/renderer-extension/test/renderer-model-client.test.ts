@@ -73,6 +73,20 @@ const inspection = {
 };
 
 describe("Renderer fixed Model request client", () => {
+  it("lists diagnostic sources and sends the selected Harness to log export", async () => {
+    const scope = { kind: "harness" as const, harnessId: "pi" };
+    const sendRequest = vi.fn().mockResolvedValueOnce([scope]);
+    const client = createRendererModelClient([{ sendRequest }]);
+    expect(await client?.listDiagnosticLogs?.()).toEqual([scope]);
+    expect(sendRequest).toHaveBeenLastCalledWith("codexhost/logs/list", {});
+    const result = { path: "/Downloads/pi.jsonl.gz", fileCount: 2, bytes: 128 };
+    sendRequest.mockResolvedValueOnce(result);
+    expect(await client?.exportDiagnosticLogs?.(scope)).toEqual(result);
+    expect(sendRequest).toHaveBeenLastCalledWith("codexhost/logs/export", scope);
+    sendRequest.mockResolvedValueOnce({ path: 42 });
+    await expect(client?.exportDiagnosticLogs?.(scope)).rejects.toThrow();
+  });
+
   it("validates launch setting requests and responses on the selected request client", async () => {
     const harnessId = harnessIdSchema.parse("workbuddy");
     const result = { path: "D:\\Apps\\WorkBuddy", restartRequired: true };
@@ -328,6 +342,7 @@ describe("Renderer fixed Model request client", () => {
       "checkUpdate",
       "credentialImports",
       "executeThreadCommand",
+      "exportDiagnosticLogs",
       "forkThread",
       "getHarnessLaunchSettings",
       "importHarnessSession",
@@ -339,6 +354,7 @@ describe("Renderer fixed Model request client", () => {
       "inspectThreadCommands",
       "inspectThreadUsage",
       "listCodexAccounts",
+      "listDiagnosticLogs",
       "listHarnessAccountSources",
       "listHarnessAccounts",
       "listHarnessPlugins",

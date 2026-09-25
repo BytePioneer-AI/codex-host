@@ -1,5 +1,8 @@
 import {
   DELEGATION_MENTION_PATH_PREFIX,
+  DIAGNOSTIC_LOG_EXPORT_METHOD,
+  DIAGNOSTIC_LOG_LIST_METHOD,
+  diagnosticLogExportParamsSchema,
   IDLE_RELEASE_SETTINGS_METHOD,
   restoreHarnessCommandMentions,
   LOADED_SESSIONS_METHOD,
@@ -179,6 +182,7 @@ import {
 import type { HostUpdateCoordinator } from "./update-coordinator.js";
 import {
   createDiagnosticLog,
+  diagnosticLogDirectory,
   type DiagnosticLog,
   type DiagnosticLogFields,
   type DiagnosticLogLevel,
@@ -186,6 +190,7 @@ import {
 import { DesktopRequestLog } from "./logging/desktop-request-log.js";
 import { harnessErrorFields } from "./logging/thread-event-log.js";
 import { scheduleDiagnosticLogRetention } from "./logging/log-retention.js";
+import { exportDiagnosticLogs, listDiagnosticLogs } from "./logging/log-export.js";
 
 const SUBAGENT_TERMINAL_REFRESH_DELAYS_MS = [0, 50, 100, 150] as const;
 const THREAD_USAGE_UPDATED_METHOD = "codexhost/thread/usage/updated";
@@ -1021,6 +1026,36 @@ export class AppServerHost {
     frame: Buffer<ArrayBufferLike>,
   ): Promise<void> {
     if (this.#closeRequested) return;
+    if (
+      request.method === DIAGNOSTIC_LOG_EXPORT_METHOD ||
+      request.method === DIAGNOSTIC_LOG_LIST_METHOD
+    ) {
+      this.#dispatchDesktopRequest(async () => {
+        const listing = request.method === DIAGNOSTIC_LOG_LIST_METHOD;
+        const params = listing
+          ? updateEmptyParamsSchema.safeParse(request.params ?? {})
+          : diagnosticLogExportParamsSchema.safeParse(request.params);
+        if (!params.success) {
+          await this.#writer.json(rpcError(request, -32602, "Invalid diagnostic log request"));
+          return;
+        }
+        try {
+          await this.#log.flush();
+          const directory =
+            this.#log.directory ?? diagnosticLogDirectory(this.#options.environment ?? process.env);
+          const result = listing
+            ? await listDiagnosticLogs(directory)
+            : await exportDiagnosticLogs(
+                directory,
+                diagnosticLogExportParamsSchema.parse(params.data),
+              );
+          await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(result) }));
+        } catch (error) {
+          await this.#writer.json(rpcError(request, -32603, errorMessage(error).slice(0, 500)));
+        }
+      });
+      return;
+    }
     if (request.method === LOADED_SESSIONS_METHOD) {
       await this.#writer.json(
         rpcEnvelope(request, { result: this.#externalRuntime.idleRelease.list() }),

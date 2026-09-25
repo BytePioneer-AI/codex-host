@@ -27,6 +27,7 @@ import {
   type RendererImportedThreadOpener,
 } from "./session-import-page.js";
 import { createAppearanceSettingsPage } from "./appearance-page.js";
+import type { DiagnosticLogClient } from "./log-export-controls.js";
 import type { LoadedSessionsClient } from "./loaded-sessions-table.js";
 import { createReleaseNotesElement } from "./release-notes.js";
 import { createAccountsSettingsPage, type RendererCodexAccountClient } from "./accounts-page.js";
@@ -621,12 +622,13 @@ export function createDefaultRendererSettingsPages(
   openImportedThread: RendererImportedThreadOpener = () =>
     Promise.reject(new Error("Imported Thread navigation is unavailable")),
   getLoadedSessionsClient: () => LoadedSessionsClient | null = () => null,
+  getDiagnosticLogClient: () => DiagnosticLogClient | null = () => null,
 ): readonly RendererSettingsPageDefinition[] {
   return Object.freeze([
     createConnectionsSettingsPage(messages, getDiagnostics),
     createAccountsSettingsPage(messages, getAccountClient),
     createSessionImportSettingsPage(messages, getSessionImportClient, openImportedThread),
-    createAppearanceSettingsPage(messages, getLoadedSessionsClient),
+    createAppearanceSettingsPage(messages, getLoadedSessionsClient, getDiagnosticLogClient),
     updatesPage(messages, getUpdateClient),
     aboutPage(messages),
   ]);

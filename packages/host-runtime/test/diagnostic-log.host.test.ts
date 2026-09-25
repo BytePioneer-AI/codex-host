@@ -1,5 +1,7 @@
 import { readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
+import { gunzipSync } from "node:zlib";
+import * as logExport from "../src/logging/log-export.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
@@ -47,6 +49,7 @@ async function threadLog(
 }
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   while (fixtures.length > 0) {
     const fixture = fixtures.pop();
     if (fixture) await closeFixture(fixture).catch(() => undefined);
@@ -54,6 +57,40 @@ afterEach(async () => {
 });
 
 describe("Host diagnostic logging", () => {
+  it("lists log sources and exports only the requested Harness through Desktop RPC", async () => {
+    const fixture = host();
+    await startPiThread(fixture);
+    const actualExport = logExport.exportDiagnosticLogs;
+    const exportSpy = vi
+      .spyOn(logExport, "exportDiagnosticLogs")
+      .mockImplementation((directory, scope) =>
+        actualExport(directory, scope, path.join(fixture.mappingStoreDirectory, "exports")),
+      );
+    writeRequest(fixture.desktopInput, { id: 70, method: "codexhost/logs/list", params: {} });
+    const listed = await fixture.collector.waitFor((message) => requestId(message, 70));
+    expect(listed.result).toContainEqual({ kind: "harness", harnessId: "pi" });
+    writeRequest(fixture.desktopInput, {
+      id: 71,
+      method: "codexhost/logs/export",
+      params: { kind: "harness", harnessId: "pi" },
+    });
+    const response = await fixture.collector.waitFor((message) => requestId(message, 71));
+    expect(response).toHaveProperty("result");
+    const result = response.result as { path: string; fileCount: number };
+    expect(result.fileCount).toBe(1);
+    const contents = gunzipSync(readFileSync(result.path)).toString("utf8");
+    expect(contents).toContain("thread.created");
+    expect(contents).not.toContain("host.started");
+    writeRequest(fixture.desktopInput, {
+      id: 72,
+      method: "codexhost/logs/export",
+      params: { kind: "harness", harnessId: "pi", directory: "/unrelated" },
+    });
+    const invalid = await fixture.collector.waitFor((message) => requestId(message, 72));
+    expect(invalid).toMatchObject({ error: { code: -32602 } });
+    expect(exportSpy).toHaveBeenCalledTimes(1);
+  });
+
   it("writes one log per External Thread conversation", async () => {
     const fixture = host();
     const threadId = await startPiThread(fixture);

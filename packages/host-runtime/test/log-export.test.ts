@@ -4,7 +4,11 @@ import path from "node:path";
 import { gunzipSync } from "node:zlib";
 import { afterEach, describe, expect, it } from "vitest";
 import { FileDiagnosticLog } from "../src/logging/diagnostic-log.js";
-import { exportDiagnosticLogs, listDiagnosticLogs } from "../src/logging/log-export.js";
+import {
+  DIAGNOSTIC_LOG_EXPORT_MAX_BYTES,
+  exportDiagnosticLogs,
+  listDiagnosticLogs,
+} from "../src/logging/log-export.js";
 
 const directories: string[] = [];
 function temporaryDirectory(): string {
@@ -68,5 +72,18 @@ describe("diagnostic log export", () => {
     await expect(
       exportDiagnosticLogs(directory, { kind: "harness", harnessId: "pi" }),
     ).rejects.toThrow("No diagnostic logs");
+  });
+
+  it("rejects an export whose selected files exceed the hard byte limit", async () => {
+    const directory = temporaryDirectory();
+    const source = path.join(directory, "logs");
+    mkdirSync(path.join(source, "runtime"), { recursive: true });
+    writeFileSync(
+      path.join(source, "runtime", "host-large.jsonl"),
+      Buffer.alloc(DIAGNOSTIC_LOG_EXPORT_MAX_BYTES + 1),
+    );
+    await expect(exportDiagnosticLogs(source, { kind: "runtime" })).rejects.toThrow(
+      "32 MiB export limit",
+    );
   });
 });

@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { createReadStream } from "node:fs";
-import { readFile, readdir } from "node:fs/promises";
+import { readFile, readdir, stat } from "node:fs/promises";
 import path from "node:path";
 import { createInterface } from "node:readline";
 import { gzip } from "node:zlib";
@@ -8,6 +8,7 @@ import { promisify } from "node:util";
 import type { DiagnosticLogExportResult, DiagnosticLogScope } from "@codexhost/shared-contracts";
 
 const gzipAsync = promisify(gzip);
+export const DIAGNOSTIC_LOG_EXPORT_MAX_BYTES = 32 * 1024 * 1024;
 
 async function threadHarness(file: string): Promise<string | undefined> {
   const stream = createReadStream(file, "utf8");
@@ -84,11 +85,31 @@ export async function exportDiagnosticLogs(
       ? "runtime"
       : `harness-${scope.harnessId.replace(/[^a-z0-9_-]/gi, "_").slice(0, 60)}`;
   const fileName = `codexhost-diagnostics-${label}-${new Date().toISOString().slice(0, 10)}-${randomUUID().slice(0, 8)}.jsonl.gz`;
-  let fileCount = 0;
-  const contents: Buffer[] = [];
+  const selectedFiles: string[] = [];
+  let selectedBytes = 0;
   for (const file of files.sort()) {
     try {
-      contents.push(await readFile(file), Buffer.from("\n"));
+      const size = (await stat(file)).size;
+      if (selectedBytes + size > DIAGNOSTIC_LOG_EXPORT_MAX_BYTES) {
+        throw new Error("Selected diagnostic logs exceed the 32 MiB export limit");
+      }
+      selectedBytes += size;
+      selectedFiles.push(file);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+  }
+  let fileCount = 0;
+  const contents: Buffer[] = [];
+  let actualBytes = 0;
+  for (const file of selectedFiles) {
+    try {
+      const content = await readFile(file);
+      actualBytes += content.length;
+      if (actualBytes > DIAGNOSTIC_LOG_EXPORT_MAX_BYTES) {
+        throw new Error("Selected diagnostic logs exceed the 32 MiB export limit");
+      }
+      contents.push(content, Buffer.from("\n"));
       fileCount += 1;
     } catch (error) {
       // Rotation or retention can remove a file after the directory was listed.

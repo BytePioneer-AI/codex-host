@@ -675,7 +675,10 @@ export function projectHistoricalTurn(input: HistoricalTurnProjectionInput): Jso
   };
   const entries = snapshot.items.map((entry) => ({ entry, projected: projectEntry(entry) }));
   const lastVisible = entries.findLast(({ projected }) => projected.length > 0)?.entry;
-  const finalAnswer = inferredFinalAnswer(lastVisible, snapshot.outcome.status === "succeeded");
+  const finalAnswer = inferredFinalAnswer(
+    lastVisible,
+    historicalStatus(snapshot.outcome) === "completed",
+  );
   return {
     id: turnId,
     status: historicalStatus(snapshot.outcome),

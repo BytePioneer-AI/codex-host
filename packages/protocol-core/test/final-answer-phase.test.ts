@@ -120,19 +120,35 @@ describe("final answer phase inference", () => {
     });
   });
 
-  it("does not infer for Turns that did not succeed", () => {
+  it("does not infer for cancelled or failed Turns", () => {
     const cancelled = { status: "cancelled", reason: "stopped" } as const;
-    const live = liveTurn([command, answer], cancelled);
+    const failed = {
+      status: "failed",
+      error: { code: "nativeFailure", message: "boom", retryable: false },
+    } as const;
+    for (const outcome of [cancelled, failed]) {
+      const live = liveTurn([command, answer], outcome);
 
-    expect(live.messages.map(({ method }) => method)).toEqual(["turn/completed"]);
-    expect(live.completedTurn).toMatchObject({ items: [{ id: "answer", phase: null }] });
-    expect(historicalTurn([command, answer], cancelled)).toMatchObject({
-      items: [{ type: "userMessage" }, { id: "command" }, { id: "answer", phase: null }],
-    });
-    expect(
-      historicalTurn([command, answer], { status: "unknown", reason: "no terminal record" }),
-    ).toMatchObject({
-      items: [{ type: "userMessage" }, { id: "command" }, { id: "answer", phase: null }],
+      expect(live.messages.map(({ method }) => method)).not.toContain("item/completed");
+      expect(live.completedTurn).toMatchObject({ items: [{ id: "answer", phase: null }] });
+      expect(historicalTurn([command, answer], outcome)).toMatchObject({
+        items: [{ type: "userMessage" }, { id: "command" }, { id: "answer", phase: null }],
+      });
+    }
+  });
+
+  it("infers for historical Turns that lack native terminal evidence", () => {
+    // Claude Code transcripts omit the SDK Result, so its Adapter reports `unknown`.
+    const unknown = { status: "unknown", reason: "no terminal record" } as const;
+
+    expect(historicalTurn([progress, command, answer], unknown)).toMatchObject({
+      status: "completed",
+      items: [
+        { type: "userMessage" },
+        { id: "progress", phase: null },
+        { id: "command" },
+        { id: "answer", phase: "final_answer" },
+      ],
     });
   });
 });

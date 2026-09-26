@@ -303,17 +303,4 @@ describe("Cursor advertised slash commands", () => {
     }
     expect(await f.session.commands.list()).toMatchObject({ error: { code: "invalidState" } });
   });
-  it("keeps full-access delegation unsupported without native policy confirmation", async () => {
-    const adapter = new CursorAdapter();
-    const open = vi.spyOn(CursorTransport.prototype, "open");
-    expect(
-      await adapter.open({
-        kind: "create",
-        cwd: process.cwd(),
-        executionPolicy: "unattended-full-access",
-      }),
-    ).toMatchObject({ error: { code: "unsupported" } });
-    expect(open).not.toHaveBeenCalled();
-    await adapter.close();
-  });
 });

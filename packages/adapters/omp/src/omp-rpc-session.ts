@@ -851,6 +851,14 @@ export class OmpRpcSession {
     }
   }
 
+  async steer(message: string): Promise<void> {
+    if (!this.#child || !this.#state || this.#closed || this.#failed) {
+      throw new Error("Omp RPC Session is unavailable");
+    }
+    if (message.length === 0) throw new Error("Omp steer text must not be empty");
+    await this.#send("steer", { message });
+  }
+
   async runTurn(text: string, onEvent: (event: OmpTurnEvent) => void): Promise<OmpTurnResult> {
     if (!this.#child || !this.#state || this.#closed || this.#failed) {
       throw new Error("Omp RPC Session is unavailable");

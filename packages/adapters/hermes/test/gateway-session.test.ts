@@ -463,3 +463,149 @@ describe("Hermes gateway native turn projection", () => {
     });
   });
 });
+
+function hermesTurn(key: string, text: string) {
+  return {
+    nativeTurnRef: {
+      harnessId: "hermes" as never,
+      nativeSessionId: "native",
+      nativeTurnKey: key,
+      formatVersion: 1 as const,
+    },
+    input: [{ type: "text" as const, text }],
+    items: [],
+    outcome: { status: "succeeded" as const },
+  };
+}
+
+describe("Hermes gateway native steer", () => {
+  function allowSteer(f: ReturnType<typeof fixture>, status: "queued" | "rejected" = "queued") {
+    const impl = f.request.getMockImplementation();
+    f.request.mockImplementation(async (method, params) => {
+      if (method === "session.steer") return { status };
+      return (await impl?.(method, params)) ?? {};
+    });
+  }
+
+  it("inserts into the active Turn and binds the original native Turn", async () => {
+    const f = fixture();
+    allowSteer(f);
+    const session = makeSession(f);
+    expect(session.capabilities.steer).toBe(true);
+    vi.mocked(f.bridge.readNativeSnapshot)
+      .mockResolvedValueOnce({ turns: [] })
+      .mockResolvedValueOnce({
+        turns: [hermesTurn("prompt", "go"), hermesTurn("steer-row", "follow up")],
+      });
+    const completed = outputsUntilComplete(session);
+    const turnId = hostTurnIdSchema.parse("steer-turn");
+    await session.execute({
+      type: "turn.start",
+      turnId,
+      input: [{ type: "text", text: "go" }],
+    });
+    await expect(
+      session.execute({
+        type: "turn.start",
+        turnId: hostTurnIdSchema.parse("busy"),
+        input: [{ type: "text", text: "no" }],
+      }),
+    ).resolves.toMatchObject({ ok: false, error: { code: "sessionBusy" } });
+    await expect(
+      session.execute({
+        type: "turn.steer",
+        turnId,
+        input: [{ type: "text", text: "   " }],
+      }),
+    ).resolves.toMatchObject({ ok: false, error: { code: "invalidRequest" } });
+    await expect(
+      session.execute({
+        type: "turn.steer",
+        turnId,
+        input: [
+          { type: "text", text: "follow" },
+          { type: "text", text: "up" },
+        ],
+      }),
+    ).resolves.toEqual({ ok: true, value: { accepted: true } });
+    expect(f.request).toHaveBeenCalledWith("session.steer", {
+      session_id: "runtime",
+      text: "follow\nup",
+    });
+    f.emit("message.complete", { status: "complete", text: "done" });
+    const outputs = await completed;
+    expect(JSON.stringify(outputs)).not.toContain("userMessage");
+    expect(
+      outputs.find((output) => output.kind === "event" && output.event.type === "turn.completed"),
+    ).toMatchObject({
+      event: {
+        nativeTurnRef: { nativeTurnKey: "prompt" },
+        outcome: { status: "succeeded" },
+      },
+    });
+    await session.close();
+  });
+
+  it("rejects an inactive target and a native rejection without counting it", async () => {
+    const f = fixture();
+    allowSteer(f, "rejected");
+    const session = makeSession(f);
+    await expect(
+      session.execute({
+        type: "turn.steer",
+        turnId: hostTurnIdSchema.parse("missing"),
+        input: [{ type: "text", text: "later" }],
+      }),
+    ).resolves.toMatchObject({ ok: false, error: { code: "invalidState" } });
+    vi.mocked(f.bridge.readNativeSnapshot)
+      .mockResolvedValueOnce({ turns: [] })
+      .mockResolvedValueOnce({
+        turns: [hermesTurn("prompt", "go"), hermesTurn("foreign", "other")],
+      });
+    const completed = outputsUntilComplete(session);
+    const turnId = hostTurnIdSchema.parse("rejected-steer");
+    await session.execute({
+      type: "turn.start",
+      turnId,
+      input: [{ type: "text", text: "go" }],
+    });
+    await expect(
+      session.execute({
+        type: "turn.steer",
+        turnId,
+        input: [{ type: "text", text: "later" }],
+      }),
+    ).resolves.toMatchObject({ ok: false, error: { code: "invalidState" } });
+    f.emit("message.complete", { status: "complete" });
+    const outputs = await completed;
+    expect(
+      outputs.find((output) => output.kind === "event" && output.event.type === "turn.completed"),
+    ).toMatchObject({
+      event: { outcome: { status: "failed", error: { code: "protocolError" } } },
+    });
+    expect(JSON.stringify(outputs)).not.toContain("foreign");
+    await session.close();
+  });
+
+  it("fails when the pre-turn anchor disappears", async () => {
+    const f = fixture();
+    const session = makeSession(f);
+    vi.mocked(f.bridge.readNativeSnapshot)
+      .mockResolvedValueOnce({ turns: [hermesTurn("old", "before")] })
+      .mockResolvedValueOnce({ turns: [hermesTurn("replacement", "go")] });
+    const completed = outputsUntilComplete(session);
+    await session.execute({
+      type: "turn.start",
+      turnId: hostTurnIdSchema.parse("anchor"),
+      input: [{ type: "text", text: "go" }],
+    });
+    f.emit("message.complete", { status: "complete" });
+    const outputs = await completed;
+    expect(
+      outputs.find((output) => output.kind === "event" && output.event.type === "turn.completed"),
+    ).toMatchObject({
+      event: { outcome: { status: "failed", error: { code: "protocolError" } } },
+    });
+    await session.close();
+  });
+});

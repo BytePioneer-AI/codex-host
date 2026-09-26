@@ -116,6 +116,24 @@ function ok<T>(value: T): HarnessResult<T> {
   return { ok: true, value };
 }
 
+function nativeTurnsOpenedAfter(
+  previousKey: string | undefined,
+  turns: readonly HostTurnSnapshot[],
+): HostTurnSnapshot[] | "missing-anchor" {
+  if (previousKey === undefined) return [...turns];
+  const index = turns.findIndex((turn) => turn.nativeTurnRef.nativeTurnKey === previousKey);
+  if (index < 0) return "missing-anchor";
+  return turns.slice(index + 1);
+}
+
+function hermesOpenedTurnCountMatches(
+  opened: readonly HostTurnSnapshot[],
+  acceptedSteers: number,
+): boolean {
+  if (opened.length === 0 && acceptedSteers === 0) return true;
+  return opened.length === 1 + acceptedSteers;
+}
+
 function usageFromPromptResponse(usage: PromptResponse["usage"]): HostUsage | null {
   if (!usage) return null;
   return {
@@ -193,6 +211,7 @@ class ActiveTurn {
   compactionText = "";
   nativeCompactionOutcome: HostItemOutcome | undefined;
   nativeTurnSnapshot: HostTurnSnapshot | undefined;
+  acceptedSteers = 0;
   #currentText: {
     kind: "reasoning" | "agentMessage";
     item: HostReasoningItem | HostAgentMessageItem;
@@ -636,6 +655,7 @@ export class HermesSession implements HarnessSession {
     // session.
     this.#availableModels = options.open.session.models?.availableModels ?? [];
     this.capabilities.configuration.selectThinkingOption = !!this.#transport.setThinking;
+    if (this.#transport.steer) this.capabilities.steer = true;
     this.#state = {
       nativeRef: this.#nativeRef,
       ...(options.open.session.thinkingOptions
@@ -717,7 +737,7 @@ export class HermesSession implements HarnessSession {
       case "turn.start":
         return this.#startTurn(command);
       case "turn.steer":
-        return Promise.resolve(err("unsupported", "Hermes native steering is not enabled"));
+        return this.#steer(command);
       case "turn.cancel":
         return this.#cancelTurn(command);
       case "interaction.respond":
@@ -816,6 +836,45 @@ export class HermesSession implements HarnessSession {
     return ok({ turnId: active.turnId });
   }
 
+  async #steer(command: TurnSteerCommand): Promise<HarnessResult<TurnSteerAccepted>> {
+    if (!this.#transport.steer) return err("unsupported", "Hermes Session cannot steer");
+    const active = this.#activeTurn;
+    if (!active || active.turnId !== command.turnId) {
+      return err("invalidState", "Hermes Turn is not active");
+    }
+    const text = command.input.map((chunk) => chunk.text).join("\n");
+    if (text.trim().length === 0) {
+      return err("invalidRequest", "turn.steer requires non-empty text input");
+    }
+    let status: "queued" | "rejected";
+    try {
+      status = await this.#transport.steer(text);
+    } catch (error) {
+      if (this.#closed || this.#faulted) {
+        return err(
+          "invalidState",
+          this.#closed ? "Hermes Session is closed" : "Hermes Session has faulted",
+        );
+      }
+      if (error instanceof HermesTransportError) {
+        return { ok: false, error: transportErrorToHarness(error) };
+      }
+      return err("nativeFailure", error instanceof Error ? error.message : String(error));
+    }
+    if (this.#closed || this.#faulted) {
+      return err(
+        "invalidState",
+        this.#closed ? "Hermes Session is closed" : "Hermes Session has faulted",
+      );
+    }
+    if (this.#activeTurn !== active || active.turnId !== command.turnId) {
+      return err("invalidState", "Hermes Turn is not active");
+    }
+    if (status === "rejected") return err("invalidState", "Hermes rejected the steered input");
+    active.acceptedSteers += 1;
+    return ok({ accepted: true });
+  }
+
   async #runTurn(active: ActiveTurn, text: string): Promise<void> {
     this.#emit({ type: "turn.started", turnId: active.turnId });
     if (active.compactionItem)
@@ -863,9 +922,29 @@ export class HermesSession implements HarnessSession {
     active.nativeCompactionOutcome = promptResponse?.compactionOutcome;
     if (active.persistsHistory && this.#transport.readNativeSnapshot) {
       try {
-        const latest = (await this.#transport.readNativeSnapshot()).turns.at(-1);
-        if (latest?.nativeTurnRef.nativeTurnKey !== previousNativeTurnKey)
-          active.nativeTurnSnapshot = latest;
+        const opened = nativeTurnsOpenedAfter(
+          previousNativeTurnKey,
+          (await this.#transport.readNativeSnapshot()).turns,
+        );
+        const expected = 1 + active.acceptedSteers;
+        if (
+          opened === "missing-anchor" ||
+          !hermesOpenedTurnCountMatches(opened, active.acceptedSteers)
+        ) {
+          if (outcome.status === "succeeded") {
+            outcome = {
+              status: "failed",
+              error: harnessError(
+                "protocolError",
+                opened === "missing-anchor"
+                  ? "Hermes history no longer contains the Turn that was current when this Turn started"
+                  : `Hermes Turn persisted ${opened.length} new Native Turns; ${expected} are required`,
+              ),
+            };
+          }
+        } else if (opened.length > 0) {
+          active.nativeTurnSnapshot = opened[0];
+        }
       } catch (error) {
         outcome = {
           status: "failed",

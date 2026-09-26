@@ -189,6 +189,14 @@ export class HermesGatewaySessionTransport implements HermesSessionTransport {
   async readNativeSnapshot(): Promise<HostThreadSnapshot> {
     return this.history.readSnapshot();
   }
+  async steer(text: string): Promise<"queued" | "rejected"> {
+    const result = await this.transport.request("session.steer", {
+      session_id: this.sessionId,
+      text,
+    });
+    if (result.status === "queued" || result.status === "rejected") return result.status;
+    throw new Error("Hermes session.steer returned an unknown status");
+  }
   async setThinking(optionId: string): Promise<string> {
     if (!hermesGatewayThinkingOptions.some(({ id }) => id === optionId))
       throw new Error("Unsupported Hermes reasoning effort");

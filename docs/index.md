@@ -68,7 +68,7 @@
 
 | 文档 | 内容与阅读时机 |
 | --- | --- |
-| [`harnesses/hermes/hermes-capabilities.md`](harnesses/hermes/hermes-capabilities.md) | Hermes gateway 提问、Thinking、精确派生、协作发现及旧 ACP 的原生能力边界；维护 Hermes Adapter 时阅读。 |
+| [`harnesses/hermes/hermes-capabilities.md`](harnesses/hermes/hermes-capabilities.md) | Hermes gateway 提问、Thinking、精确派生、同轮插入、协作发现及旧 ACP 的原生能力边界；维护 Hermes Adapter 时阅读。 |
 
 ### OpenCode 与 Pi
 

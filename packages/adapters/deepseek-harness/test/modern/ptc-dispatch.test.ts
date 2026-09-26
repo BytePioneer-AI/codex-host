@@ -120,34 +120,33 @@ function ptcTurn(
     arguments: RUN_CODE_ARGUMENTS,
   });
   body(push, FORMATS[format].dispatch);
-  if (ending === "completed") {
-    push("tool/result", {
-      turn: 1,
-      step: 1,
-      message:
-        format !== "V4"
-          ? {
-              id: "result-1",
-              role: "user",
-              content: [
-                {
-                  type: "tool-result",
-                  toolCallId: "call-1",
-                  content: [{ type: "text", text: "2026-09-27" }],
-                },
-              ],
-              source: { kind: "tool", callId: "call-1" },
-            }
-          : {
-              id: "result-1",
-              role: "tool",
-              toolCallId: "call-1",
-              isError: false,
-              content: [{ type: "text", text: "2026-09-27" }],
-              source: { kind: "tool", callId: "call-1" },
-            },
-    });
-  }
+  // Every Tool call settles before step/end, even in an aborted Turn.
+  push("tool/result", {
+    turn: 1,
+    step: 1,
+    message:
+      format !== "V4"
+        ? {
+            id: "result-1",
+            role: "user",
+            content: [
+              {
+                type: "tool-result",
+                toolCallId: "call-1",
+                content: [{ type: "text", text: "2026-09-27" }],
+              },
+            ],
+            source: { kind: "tool", callId: "call-1" },
+          }
+        : {
+            id: "result-1",
+            role: "tool",
+            toolCallId: "call-1",
+            isError: false,
+            content: [{ type: "text", text: "2026-09-27" }],
+            source: { kind: "tool", callId: "call-1" },
+          },
+  });
   push("step/end", { turn: 1, step: 1 });
   push("turn/end", {
     turn: 1,
@@ -167,81 +166,109 @@ function project(format: Format, events: readonly ModernJournalEvent[]) {
   });
 }
 
-describe("DeepSeek Harness PTC code dispatch projection", () => {
-  it.each(["V0", "V3", "V4"] as const)(
-    "projects every %s sub-call as its own Tool Item in place of run_code",
-    (format) => {
-      const date = subCall(1, "pwsh", { command: "Get-Date", description: "Read the date" });
-      const read = subCall(2, "read", { path: "src/missing.ts" });
-      const events = ptcTurn(format, (push, dispatch) => {
+function wireItems(turn: unknown) {
+  return projectHistoricalTurn({
+    turnId: "turn-1" as never,
+    cwd: "/fixture",
+    snapshot: turn as never,
+  }).items;
+}
+
+describe("DeepSeek Harness V4 PTC dispatch projection", () => {
+  it("projects every V4 sub-call as its own Tool Item in place of run_code", () => {
+    const date = subCall(1, "pwsh", { command: "Get-Date", description: "Read the date" });
+    const read = subCall(2, "read", { path: "src/missing.ts" });
+    const events = ptcTurn("V4", (push, dispatch) => {
+      push(`${dispatch}-start`, date);
+      push(dispatch, settled(date, "2026-09-27\r\n"));
+      push(`${dispatch}-start`, read);
+      push(dispatch, { ...settled(read, "Error: file not found"), isError: true });
+    });
+    const startSeq = events.findIndex(({ type }) => type === "tool/ptc-dispatch-start");
+
+    const turn = project("V4", events).snapshot.turns[0];
+    expect(turn?.items).toEqual([
+      {
+        item: {
+          type: "toolExecution",
+          itemId: `dsh-modern:${SESSION_ID}:event:${startSeq}:tool`,
+          toolName: "pwsh",
+          arguments: { command: "Get-Date", description: "Read the date" },
+          output: { content: [{ type: "text", text: "2026-09-27\r\n" }] },
+        },
+        outcome: { status: "succeeded" },
+      },
+      {
+        item: {
+          type: "toolExecution",
+          itemId: `dsh-modern:${SESSION_ID}:event:${startSeq + 2}:tool`,
+          toolName: "read",
+          arguments: { path: "src/missing.ts" },
+          output: { content: [{ type: "text", text: "Error: file not found" }] },
+        },
+        outcome: {
+          status: "failed",
+          error: expect.objectContaining({ message: "DeepSeek Harness Tool 'read' failed" }),
+        },
+      },
+    ]);
+
+    // Desktop shows each sub-call through the same carrier as a direct call.
+    const wire = wireItems(turn);
+    expect(wire).not.toContainEqual(expect.objectContaining({ tool: "run_code" }));
+    expect(wire).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: "commandExecution",
+          command: "Get-Date",
+          aggregatedOutput: "2026-09-27\r\n",
+          status: "completed",
+        }),
+        expect.objectContaining({
+          type: "commandExecution",
+          command: "read src/missing.ts",
+          status: "failed",
+        }),
+      ]),
+    );
+  });
+
+  it.each([
+    ["V0", "tool/code-dispatch"],
+    ["V3", "tool/ptc-dispatch"],
+  ] as const)("keeps %s PTC Turns as one run_code Tool", (format, dispatch) => {
+    const date = subCall(1, "pwsh", { command: "Get-Date" });
+    const turn = project(
+      format,
+      ptcTurn(format, (push) => {
         push(`${dispatch}-start`, date);
-        push(dispatch, settled(date, "2026-09-27\r\n"));
-        push(`${dispatch}-start`, read);
-        push(dispatch, { ...settled(read, "Error: file not found"), isError: true });
-      });
-      const startSeq = events.findIndex(({ type }) => type.endsWith("-dispatch-start"));
-
-      const turn = project(format, events).snapshot.turns[0];
-      expect(turn?.items).toEqual([
-        {
-          item: {
-            type: "toolExecution",
-            itemId: `dsh-modern:${SESSION_ID}:event:${startSeq}:tool`,
-            toolName: "pwsh",
-            arguments: { command: "Get-Date", description: "Read the date" },
-            output: { content: [{ type: "text", text: "2026-09-27\r\n" }] },
-          },
-          outcome: { status: "succeeded" },
+        push(dispatch, settled(date, "2026-09-27"));
+      }),
+    ).snapshot.turns[0];
+    expect(turn?.items).toEqual([
+      {
+        item: {
+          type: "toolExecution",
+          itemId: expect.any(String),
+          toolName: "run_code",
+          arguments: JSON.parse(RUN_CODE_ARGUMENTS),
+          output: { content: [{ type: "text", text: "2026-09-27" }] },
         },
-        {
-          item: {
-            type: "toolExecution",
-            itemId: `dsh-modern:${SESSION_ID}:event:${startSeq + 2}:tool`,
-            toolName: "read",
-            arguments: { path: "src/missing.ts" },
-            output: { content: [{ type: "text", text: "Error: file not found" }] },
-          },
-          outcome: {
-            status: "failed",
-            error: expect.objectContaining({ message: "DeepSeek Harness Tool 'read' failed" }),
-          },
-        },
-      ]);
+        outcome: { status: "succeeded" },
+      },
+    ]);
+    expect(wireItems(turn)).toContainEqual(
+      expect.objectContaining({ type: "dynamicToolCall", tool: "run_code" }),
+    );
+  });
 
-      // Desktop shows each sub-call through the same carrier as a direct call.
-      const wire = projectHistoricalTurn({
-        turnId: "turn-1" as never,
-        cwd: "/fixture",
-        snapshot: turn as never,
-      });
-      expect(wire.items).not.toContainEqual(expect.objectContaining({ tool: "run_code" }));
-      expect(wire.items).toEqual(
-        expect.arrayContaining([
-          expect.objectContaining({
-            type: "commandExecution",
-            command: "Get-Date",
-            aggregatedOutput: "2026-09-27\r\n",
-            status: "completed",
-          }),
-          expect.objectContaining({
-            type: "commandExecution",
-            command: "read src/missing.ts",
-            status: "failed",
-          }),
-        ]),
-      );
-    },
-  );
-
-  it("projects no Item for the run_code program itself", () => {
-    for (const format of ["V0", "V3", "V4"] as const) {
-      expect(
-        project(
-          format,
-          ptcTurn(format, () => undefined),
-        ).snapshot.turns[0]?.items,
-      ).toEqual([]);
-    }
+  it("projects no Item for the V4 run_code program itself", () => {
+    expect(
+      project(
+        "V4",
+        ptcTurn("V4", () => undefined),
+      ).snapshot.turns[0]?.items,
+    ).toEqual([]);
 
     const forkRepair = (name: string): ModernJournalEvent[] => [
       event(0, "turn/start", { turn: 1 }, false),
@@ -303,12 +330,7 @@ describe("DeepSeek Harness PTC code dispatch projection", () => {
         push(dispatch, settled(edit, "<path>src/a.ts</path>"));
       }),
     ).snapshot.turns[0];
-    const wire = projectHistoricalTurn({
-      turnId: "turn-1" as never,
-      cwd: "/fixture",
-      snapshot: turn as never,
-    });
-    expect(wire.items).toContainEqual(
+    expect(wireItems(turn)).toContainEqual(
       expect.objectContaining({
         type: "fileChange",
         changes: [expect.objectContaining({ path: "src/a.ts" })],
@@ -337,8 +359,8 @@ describe("DeepSeek Harness PTC code dispatch projection", () => {
   it("closes an unsettled sub-call with the Turn and shows a settle without its start", () => {
     const pending = subCall(1, "pwsh", { command: "Start-Sleep 60" });
     const aborted = project(
-      "V3",
-      ptcTurn("V3", (push, dispatch) => push(`${dispatch}-start`, pending), "aborted"),
+      "V4",
+      ptcTurn("V4", (push, dispatch) => push(`${dispatch}-start`, pending), "aborted"),
     ).snapshot.turns[0];
     expect(aborted?.items.map(({ item, outcome }) => [item.type, outcome?.status])).toEqual([
       ["toolExecution", "cancelled"],
@@ -346,8 +368,8 @@ describe("DeepSeek Harness PTC code dispatch projection", () => {
 
     const orphan = subCall(2, "grep", { pattern: "TODO" });
     const settledOnly = project(
-      "V3",
-      ptcTurn("V3", (push, dispatch) => push(dispatch, settled(orphan, "a.ts:1"))),
+      "V4",
+      ptcTurn("V4", (push, dispatch) => push(dispatch, settled(orphan, "a.ts:1"))),
     ).snapshot.turns[0];
     expect(settledOnly?.items[0]).toMatchObject({
       item: { toolName: "grep", output: { content: [{ type: "text", text: "a.ts:1" }] } },
@@ -355,7 +377,7 @@ describe("DeepSeek Harness PTC code dispatch projection", () => {
     });
   });
 
-  it("validates a sub-call failure identity with the tool/result rules of each format", () => {
+  it("accepts the V4 sub-call failure identity and keeps earlier formats strict", () => {
     const cancelled = subCall(1, "pwsh", { command: "Start-Sleep 60" });
     const withError = (format: Format, error: unknown) =>
       ptcTurn(format, (push, dispatch) => {
@@ -369,18 +391,14 @@ describe("DeepSeek Harness PTC code dispatch projection", () => {
     const abort = { name: "AbortError", code: "TOOL_ABORTED" };
     const incompatible = "Modern history known event has an incompatible schema";
 
-    for (const format of ["V3", "V4"] as const) {
-      expect(project(format, withError(format, abort)).snapshot.turns[0]?.items[0]).toMatchObject({
+    for (const error of [abort, { ...abort, reason: "user cancelled" }]) {
+      expect(project("V4", withError("V4", error)).snapshot.turns[0]?.items[0]).toMatchObject({
         item: { toolName: "pwsh" },
         outcome: { status: "failed" },
       });
-      expect(() => project(format, withError(format, { name: "AbortError" }))).toThrow(
-        incompatible,
-      );
     }
-    const detailed = { ...abort, reason: "user cancelled" };
-    expect(() => project("V4", withError("V4", detailed))).not.toThrow();
-    expect(() => project("V3", withError("V3", detailed))).toThrow(incompatible);
+    expect(() => project("V4", withError("V4", { name: "AbortError" }))).toThrow(incompatible);
+    expect(() => project("V3", withError("V3", abort))).toThrow(incompatible);
     expect(() => project("V0", withError("V0", abort))).toThrow(incompatible);
   });
 });

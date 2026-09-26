@@ -102,13 +102,17 @@ Adapter MUST 将单行规范 SemVer `--version` 输出用于选择原生格式�
 
 ### Requirement: PTC 子调用按原生 Tool 投影
 
-PTC 模式下 `run_code` 程序发出的每个嵌套 Tool 调用（V0 `tool/code-dispatch*`，V3/V4 `tool/ptc-dispatch*`）SHALL 在实时事件和冷历史中各自投影为一个 Host Tool Item，保留原生 Tool 名称、参数、有界输出和结果；外层 `run_code` 调用 SHALL NOT 投影为 Item。子调用的原生失败标识 MUST 按所在格式 `tool/result` 的 error 规则校验，V0 MUST NOT 接受该字段。
+V4 会话中，PTC 模式下 `run_code` 程序发出的每个嵌套 Tool 调用（`tool/ptc-dispatch*`）SHALL 在实时事件和冷历史中各自投影为一个 Host Tool Item，保留原生 Tool 名称、参数、有界输出和结果；外层 `run_code` 调用 SHALL NOT 投影为 Item。V4 子调用的原生失败标识 MUST 按 V4 `tool/result` 的 error 规则校验。V0/V3 的子调用事件 SHALL 只校验、不投影，`run_code` SHALL 仍投影为普通 Tool Item，其结束事件 MUST NOT 接受失败标识。
 
 #### Scenario: PTC 程序执行 shell 命令
-- **WHEN** `run_code` 程序以非空 `command` 调用 `pwsh`
+- **WHEN** V4 会话中 `run_code` 程序以非空 `command` 调用 `pwsh`
 - **THEN** Codex Thread SHALL 收到该命令的 `commandExecution` Item 及其输出，且 SHALL NOT 收到 `run_code` Item
 - **AND** 实时与冷历史中的 Item 身份 SHALL 一致
 
+#### Scenario: V0/V3 PTC 会话保持原显示
+- **WHEN** V0 或 V3 会话中 `run_code` 程序发出子调用
+- **THEN** Codex Thread SHALL 只收到一个 `run_code` Tool Item，SHALL NOT 为子调用生成 Item
+
 #### Scenario: 子调用失败或未结束
-- **WHEN** 子调用以 `isError` 或合法的原生 `error` 结束，或回合结束时仍未结束
+- **WHEN** V4 子调用以 `isError` 或合法的原生 `error` 结束，或回合结束时仍未结束
 - **THEN** 对应 Item SHALL 以失败或回合结果完成，历史 SHALL 仍可加载

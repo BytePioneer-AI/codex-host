@@ -65,12 +65,13 @@ import {
 } from "../profiles/validation.js";
 export { ModernHistoryError, type ModernHistoryErrorCode } from "../profiles/validation.js";
 import {
-  codeDispatchItem,
-  codeDispatchKey,
-  codeDispatchOutcome,
-  codeDispatchOutput,
   isPtcProgramTool,
-} from "./code-dispatch.js";
+  projectsPtcDispatches,
+  ptcDispatchItem,
+  ptcDispatchKey,
+  ptcDispatchOutcome,
+  ptcDispatchOutput,
+} from "./ptc-dispatch.js";
 import { redactModernCredential } from "./wire.js";
 
 export const MODERN_HISTORY_MAX_EVENTS = 1_000_000;
@@ -937,21 +938,28 @@ export function projectModernHistory(input: ProjectModernHistoryInput): ModernHi
         }
         break;
       case "tool/call":
-        if (active) projectToolCall(active, input.sessionId, data, event.seq);
+        if (active) projectToolCall(active, input.sessionId, data, event.seq, profile);
         break;
       case "tool/result":
         if (active && event.surfaceOp === "append") {
-          projectToolResultEvent(active, input.sessionId, data, event.seq, toolOutputLimit);
+          projectToolResultEvent(
+            active,
+            input.sessionId,
+            data,
+            event.seq,
+            toolOutputLimit,
+            profile,
+          );
         }
         break;
-      case "tool/code-dispatch-start":
       case "tool/ptc-dispatch-start":
-        if (active) projectCodeDispatchStart(active, input.sessionId, data, event.seq);
+        if (active && projectsPtcDispatches(profile)) {
+          projectPtcDispatchStart(active, input.sessionId, data, event.seq);
+        }
         break;
-      case "tool/code-dispatch":
       case "tool/ptc-dispatch":
-        if (active) {
-          projectCodeDispatchSettle(active, input.sessionId, data, event.seq, toolOutputLimit);
+        if (active && projectsPtcDispatches(profile)) {
+          projectPtcDispatchSettle(active, input.sessionId, data, event.seq, toolOutputLimit);
         }
         break;
       case "turn/end":
@@ -1075,11 +1083,12 @@ function projectToolCall(
   sessionId: string,
   data: Record<string, unknown>,
   seq: number,
+  profile: DeepSeekModernProfile,
 ): void {
   if (turn.tools.has(data.callId as string) || turn.programCalls.has(data.callId as string)) {
     fail("Modern history reused an unfinished Tool callId");
   }
-  if (isPtcProgramTool(data.name as string)) {
+  if (isPtcProgramTool(profile, data.name as string)) {
     turn.programCalls.add(data.callId as string);
     turn.advertisedTools.delete(data.callId as string);
     return;
@@ -1102,6 +1111,7 @@ function projectToolResultEvent(
   data: Record<string, unknown>,
   seq: number,
   limit: number,
+  profile: DeepSeekModernProfile,
 ): void {
   const result = projectToolResult(data.message, limit);
   if (!result) fail("Modern history contains an unprojectable tool/result");
@@ -1109,7 +1119,7 @@ function projectToolResultEvent(
   const forked = advertised !== undefined && isForkedToolResult(data, result.callId, seq);
   if (
     turn.programCalls.delete(result.callId) ||
-    (forked && isPtcProgramTool(advertised.toolName))
+    (forked && isPtcProgramTool(profile, advertised.toolName))
   ) {
     turn.advertisedTools.delete(result.callId);
     return;
@@ -1162,22 +1172,22 @@ function projectToolResultEvent(
   }
 }
 
-function projectCodeDispatchStart(
+function projectPtcDispatchStart(
   turn: HistoryTurn,
   sessionId: string,
   data: Record<string, unknown>,
   seq: number,
 ): HistoryTool {
-  const key = codeDispatchKey(data);
-  if (turn.tools.has(key)) fail("Modern history reused an unfinished code dispatch");
-  const item = codeDispatchItem(modernItemId(sessionId, `event:${seq}:tool`), data);
+  const key = ptcDispatchKey(data);
+  if (turn.tools.has(key)) fail("Modern history reused an unfinished PTC dispatch");
+  const item = ptcDispatchItem(modernItemId(sessionId, `event:${seq}:tool`), data);
   const tool = { itemIndex: turn.items.length, item, toolName: item.toolName };
   turn.items.push({ item, outcome: incompleteToolOutcome(item.toolName) });
   turn.tools.set(key, tool);
   return tool;
 }
 
-function projectCodeDispatchSettle(
+function projectPtcDispatchSettle(
   turn: HistoryTurn,
   sessionId: string,
   data: Record<string, unknown>,
@@ -1186,12 +1196,12 @@ function projectCodeDispatchSettle(
 ): void {
   // Dispatch events are log-only; a settle without its start still shows the call.
   const tool =
-    turn.tools.get(codeDispatchKey(data)) ?? projectCodeDispatchStart(turn, sessionId, data, seq);
-  turn.tools.delete(codeDispatchKey(data));
-  const output = codeDispatchOutput(data, limit);
+    turn.tools.get(ptcDispatchKey(data)) ?? projectPtcDispatchStart(turn, sessionId, data, seq);
+  turn.tools.delete(ptcDispatchKey(data));
+  const output = ptcDispatchOutput(data, limit);
   turn.items[tool.itemIndex] = {
     item: { ...tool.item, ...(output ? { output } : {}) },
-    outcome: codeDispatchOutcome(data, tool.toolName),
+    outcome: ptcDispatchOutcome(data, tool.toolName),
   };
 }
 
@@ -1791,18 +1801,15 @@ function validateCodeDispatch(
   profile: DeepSeekModernProfile,
 ): void {
   const required = ["rootCallId", "parentCallId", "subCallId", "name", "arguments"];
-  const settled = type === "tool/code-dispatch" || type === "tool/ptc-dispatch";
-  if (settled) required.push("isError", "content");
-  // PTC-era writers (0.1.6+) settle a failed sub-call with tool/result's optional error identity.
-  requiredOptionalKeys(
-    data,
-    required,
-    settled && hasDeepSeekModernStream(profile) ? ["error"] : [],
-  );
+  if (type === "tool/code-dispatch" || type === "tool/ptc-dispatch")
+    required.push("isError", "content");
+  // V4 settles a failed sub-call with tool/result's optional error identity.
+  const v4Settle = type === "tool/ptc-dispatch" && profile.sessionFormatVersion === 4;
+  requiredOptionalKeys(data, required, v4Settle ? ["error"] : []);
   for (const key of ["rootCallId", "parentCallId", "subCallId", "name"]) {
     requiredString(data[key], `tool/code-dispatch ${key}`);
   }
-  if (settled) {
+  if (type === "tool/code-dispatch" || type === "tool/ptc-dispatch") {
     if (typeof data.isError !== "boolean" || !Array.isArray(data.content)) {
       fail("Modern history tool/code-dispatch result is malformed");
     }

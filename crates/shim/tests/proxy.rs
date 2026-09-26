@@ -629,6 +629,17 @@ fn macos_browser_sandbox_fallback_rejects_unrelated_commands() {
 #[cfg(target_os = "macos")]
 #[test]
 fn macos_native_helpers_do_not_become_host_runtime_owners() {
+    assert_macos_native_helper_routing(false);
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn macos_nested_cli_native_helpers_do_not_become_host_runtime_owners() {
+    assert_macos_native_helper_routing(true);
+}
+
+#[cfg(target_os = "macos")]
+fn assert_macos_native_helper_routing(nested_cli: bool) {
     for (depth, detached) in [
         (0, false),
         (1, false),
@@ -639,6 +650,25 @@ fn macos_native_helpers_do_not_become_host_runtime_owners() {
     ] {
         let directory = temporary_directory();
         let bundle = macos_fixture_bundle(&directory);
+        let mut cli = bundle.join("Contents/Resources/codex");
+        if nested_cli {
+            let nested =
+                bundle.join("Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex");
+            fs::create_dir_all(nested.parent().unwrap()).unwrap();
+            // Model the official nested app identity used by CLI discovery.
+            fs::write(
+                bundle.join("Contents/Resources/codex-cli/CodexCLI.app/Contents/Info.plist"),
+                concat!(
+                    "<?xml version=\"1.0\" encoding=\"UTF-8\"?><plist version=\"1.0\"><dict>",
+                    "<key>CFBundleIdentifier</key><string>com.openai.codex.cli</string>",
+                    "<key>CFBundleExecutable</key><string>codex</string>",
+                    "</dict></plist>"
+                ),
+            )
+            .unwrap();
+            fs::rename(&cli, &nested).unwrap();
+            cli = nested;
+        }
         let desktop = bundle.join("Contents/MacOS/ChatGPT");
         let mut command = Command::new(if detached {
             fake_codex_path()
@@ -664,10 +694,7 @@ fn macos_native_helpers_do_not_become_host_runtime_owners() {
             .env_remove("CODEXHOST_NPM_NODE_PATH")
             .env_remove("CODEXHOST_NPM_PACKAGE_ROOT")
             .env_remove(REMOTE_SSH_MANAGED_ENV)
-            .env(
-                STOCK_CODEX_PATH_ENV,
-                bundle.join("Contents/Resources/codex"),
-            )
+            .env(STOCK_CODEX_PATH_ENV, &cli)
             .env(CODEX_CLI_PATH_ENV, shim_path())
             .env(HOST_NODE_PATH_ENV, fake_codex_path())
             .env(HOST_RUNTIME_PATH_ENV, fake_codex_path())

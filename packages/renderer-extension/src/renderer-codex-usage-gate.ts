@@ -62,7 +62,11 @@ function hooksOf(fiber: unknown): Hook[] {
   return hook == null ? result : [];
 }
 
-/** Composer components that combine native submit blockers into `submitDisabled`. */
+/**
+ * Composer components that combine native submit blockers into `submitDisabled`
+ * and hold the reserve gate. Desktop wraps the owner in a pass-through component
+ * with the same props but no gate hooks, so props alone are ambiguous.
+ */
 function submitOwners(composer: Element): Fiber[] {
   // The ProseMirror editor is not rendered by React; start at its nearest React host.
   let element: Element | null = composer.querySelector(EDITOR_SELECTOR) ?? composer;
@@ -78,8 +82,8 @@ function submitOwners(composer: Element): Fiber[] {
           isRecord(props) &&
           "onLocalSubmitStart" in props &&
           typeof props.submitDisabled === "boolean",
-      );
-      return owners as Fiber[];
+      ) as Fiber[];
+      return owners.filter((owner) => gateSubscriptions(owner).reserve.length > 0);
     }
     element = element.parentElement;
   }

@@ -109,10 +109,17 @@ function composerFixture(
   hooks.forEach((hook, i) => {
     hook.next = hooks[i + 1] ?? null;
   });
-  const owner = {
-    memoizedProps: { onLocalSubmitStart() {}, submitDisabled: false },
-    memoizedState: hooks[0] as unknown,
+  const props = { onLocalSubmitStart() {}, submitDisabled: false };
+  // Desktop wraps the owner in a pass-through component with the same props.
+  const wrapper = {
+    memoizedProps: props,
+    memoizedState: { memoizedState: null, next: null },
     return: null,
+  };
+  const owner = {
+    memoizedProps: props,
+    memoizedState: hooks[0] as unknown,
+    return: wrapper,
   };
   const editor = { parentElement: null, __reactFiber$test: owner };
   const composer = {

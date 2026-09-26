@@ -171,6 +171,7 @@ export class FakeHarnessSession implements HarnessSession {
   #active: ActiveFakeTurn | null = null;
   #closed = false;
   #completeCancellationDuringRequest = false;
+  #completeTurnDuringSteerAcceptance = false;
   #interactionOrdinal = 0;
   #itemOrdinal = 0;
   #nextModelRejection: HarnessError | null = null;
@@ -351,6 +352,10 @@ export class FakeHarnessSession implements HarnessSession {
     this.#completeCancellationDuringRequest = true;
   }
 
+  completeTurnOnNextSteerAcceptance(): void {
+    this.#completeTurnDuringSteerAcceptance = true;
+  }
+
   requestApprovalOnNextTurn(title: string, description?: string): void {
     this.#nextApproval = { title, ...(description ? { description } : {}) };
   }
@@ -472,6 +477,10 @@ export class FakeHarnessSession implements HarnessSession {
       };
     }
     this.steers.push(command);
+    if (this.#completeTurnDuringSteerAcceptance) {
+      this.#completeTurnDuringSteerAcceptance = false;
+      this.succeedTurn();
+    }
     return { ok: true, value: { accepted: true } };
   }
 

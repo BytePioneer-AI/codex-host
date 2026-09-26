@@ -82,16 +82,6 @@ export async function executeExternalThreadFork(input: {
     if (refreshError) return { ok: false, error: refreshError };
   }
 
-  // Native history may have split this Turn at steered input while Desktop still shows it whole.
-  if (fork.lastTurnId && source.steeredTurnIds.has(fork.lastTurnId)) {
-    return {
-      ok: false,
-      error: {
-        code: -32080,
-        message: "This Turn took steered input; reopen the Thread before forking from it",
-      },
-    };
-  }
   const mappings = source.record.turnMappings;
   let boundaryIndex: number;
   if (fork.lastTurnId) {
@@ -103,6 +93,16 @@ export async function executeExternalThreadFork(input: {
     boundaryIndex = mappings.length - 1;
   }
   const boundary = mappings[boundaryIndex];
+  // Native history may have split this boundary Turn while Desktop still shows it whole.
+  if (boundary && source.steeredTurnIds.has(boundary.hostTurnId)) {
+    return {
+      ok: false,
+      error: {
+        code: -32080,
+        message: "This Turn took steered input; reopen the Thread before forking from it",
+      },
+    };
+  }
   if (boundaryIndex < 0 || !boundary?.nativeCheckpointRef) {
     return {
       ok: false,

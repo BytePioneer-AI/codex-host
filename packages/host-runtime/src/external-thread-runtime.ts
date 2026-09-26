@@ -66,6 +66,7 @@ export interface ExternalThread {
   usageTurnId: HostTurnId | null;
   projectedTurns: Map<HostTurnId, { projector: CodexTurnProjector }>;
   responseGates: Map<HostTurnId, TurnProjectionGate>;
+  pendingSteerProjections: Set<Promise<void>>;
   ephemeralTurnIds: Set<HostTurnId>;
   persistenceError: Error | null;
   ignoredInteractionIds: Set<HostInteractionId>;
@@ -200,6 +201,7 @@ export class ExternalThreadRuntime {
   readonly #environment: NodeJS.ProcessEnv;
   readonly #repository: ExternalThreadRepository;
   readonly #restores = new Map<string, Promise<ExternalThread>>();
+  readonly #steeredTurnIds = new Map<string, Set<HostTurnId>>();
   readonly #subagentRunning: (threadId: string) => boolean;
   readonly #threads = new Map<string, ExternalThread>();
 
@@ -225,7 +227,8 @@ export class ExternalThreadRuntime {
     this.idleRelease = new ExternalThreadIdleRelease({
       threads: () => this.values(),
       get: (id) => this.get(id),
-      remove: (id) => this.remove(id),
+      // Idle release detaches only the Native Session. Host Thread state survives restoration.
+      remove: (id) => this.#detach(id),
       queue: input.idleRelease?.queue ?? new DesktopRequestQueue(),
       canRelease: input.idleRelease?.canRelease ?? (() => false),
       ...(input.idleRelease?.onClosed ? { onClosed: input.idleRelease.onClosed } : {}),
@@ -237,17 +240,25 @@ export class ExternalThreadRuntime {
     return this.#threads.get(threadId);
   }
 
+  #detach(threadId: string): void {
+    const thread = this.#threads.get(threadId);
+    this.#threads.delete(threadId);
+    if (!thread || thread.steeredTurnIds.size === 0) this.#steeredTurnIds.delete(threadId);
+  }
+
   values(): ExternalThread[] {
     return [...this.#threads.values()];
   }
 
   remove(threadId: string): void {
     this.#threads.delete(threadId);
+    this.#steeredTurnIds.delete(threadId);
   }
 
   clear(): void {
     this.#threads.clear();
     this.#restores.clear();
+    this.#steeredTurnIds.clear();
   }
 
   register(input: {
@@ -282,6 +293,11 @@ export class ExternalThreadRuntime {
     // live status lives in the Host, not in the stored record, so seed it here
     // instead of publishing a Thread that claims to be idle.
     const running = this.#subagentRunning(input.record.hostThreadId);
+    let steeredTurnIds = this.#steeredTurnIds.get(input.record.hostThreadId);
+    if (!steeredTurnIds) {
+      steeredTurnIds = new Set();
+      this.#steeredTurnIds.set(input.record.hostThreadId, steeredTurnIds);
+    }
     const externalThread: ExternalThread = {
       id: input.record.hostThreadId,
       cwd: input.record.cwd,
@@ -310,10 +326,11 @@ export class ExternalThreadRuntime {
       usageTurnId: null,
       projectedTurns: new Map(),
       responseGates: new Map(),
+      pendingSteerProjections: new Set(),
       ephemeralTurnIds: new Set(),
       persistenceError: null,
       ignoredInteractionIds: new Set(),
-      steeredTurnIds: new Set(),
+      steeredTurnIds,
     };
     this.idleRelease.touch(externalThread);
     externalThread.outputTask = this.#consumeOutputs(externalThread);
@@ -376,7 +393,7 @@ export class ExternalThreadRuntime {
     }
     for (const child of this.#threads.values()) {
       if (!(await descendant(child.record))) continue;
-      this.#threads.delete(child.id);
+      this.remove(child.id);
       try {
         await child.session.close();
         await child.outputTask;

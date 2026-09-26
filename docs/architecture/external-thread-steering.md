@@ -16,17 +16,19 @@ codexhost 对外部 Harness Thread 保留一个「调整方向」操作，按当
 - `ExternalTurnSteering` 统一校验非空文本、`expectedTurnId` 和 `threadId + clientUserMessageId` 去重。原生拒绝不会自动改走退路，也不会自动重试。
 - `turn/steer` 回执包含 `turnId` 和 `delivery`：`activeTurn` 表示送入当前 Turn，`newTurn` 表示停止旧 Turn 后开始了新 Turn。
 
-原生同轮插入成功后，Host 在当前 Turn 发布 `userMessage` Item。Desktop 提交带 `clientUserMessageId` 时，投影把它写入 Item 的 `clientId`，用于结算 Desktop 的乐观 steer 消息；Adapter 不发布这条 Host Item。刷新后的历史仍完全按 Adapter 的原生历史解析，不把不同的原生 Turn 强行合并。
+原生同轮插入成功后，Host 在当前 Turn 发布 `userMessage` Item。Desktop 提交带 `clientUserMessageId` 时，投影把它写入 Item 的 `clientId`，用于结算 Desktop 的乐观 steer 消息；Adapter 不发布这条 Host Item。Host 会让并发的 Turn 终态投影等待这条已接受输入完成实时投影，避免 Harness 接受输入后立刻结束时遗漏乐观消息结算。刷新后的历史仍完全按 Adapter 的原生历史解析，不把不同的原生 Turn 强行合并。
 
 Pi 的历史会把插入文本保存成新的用户条目。Pi Adapter 因而按“原提问加本轮已接受插入数”校验新用户条目数量，并仍把第一条原提问绑定为当前 Host Turn 的原生身份。
 
 ## Fork 与撤销窗口
 
-原生历史可能已经在插入点分轮，而 Desktop 在重新读取前仍把内容显示为一个 Turn。Host 在内存中用 `ExternalThread.steeredTurnIds` 记录插过队的 Host Turn：
+原生历史可能已经在插入点分轮，而 Desktop 在重新读取前仍把内容显示为一个 Turn。Host Runtime 按 Host Thread ID 在内存中拥有 `steeredTurnIds`，记录插过队的 Host Turn：
 
-- 对该 Turn 的 Fork，以及该 Thread 的撤销，返回 `-32080` 并要求重新打开 Thread。
-- Desktop 重新读取并成功刷新历史后清除已结束 Turn 的标记，此时操作按新的原生 Turn 边界执行。
-- 标记不持久化；Host 重启后自然消失。
+- Fork 先解析请求的实际 Checkpoint 边界，再检查该边界的 Host Turn；省略 `lastTurnId` 或使用 `beforeTurnId` 不会绕过保护。
+- 对 steered 边界的 Fork，以及该 Thread 的撤销，返回 `-32080` 并要求重新打开 Thread。
+- 空闲释放只卸载 Native Session，不等于 Desktop 已读取历史；Session 恢复后继续使用同一组未读标记。
+- Desktop 重新读取历史并成功收到 Turn 边界后，只清除实际返回的已结束 Turn 的标记。只读取 Items 或未包含该 Turn 的分页不会解除保护，此时操作继续按已读取的原生 Turn 边界执行。
+- 标记不落盘；Host 进程重启后自然消失。
 
 这项保护只覆盖 Desktop 视图与原生历史暂时不一致的窗口，不改变 Fork 或回退的持久化格式。
 

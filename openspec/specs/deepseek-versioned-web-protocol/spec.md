@@ -102,11 +102,11 @@ Adapter MUST 将单行规范 SemVer `--version` 输出用于选择原生格式�
 
 ### Requirement: PTC 子调用按原生 Tool 投影
 
-PTC 模式下 `run_code` 程序发出的每个嵌套 Tool 调用（V0 `tool/code-dispatch*`，V3/V4 `tool/ptc-dispatch*`）SHALL 在实时事件和冷历史中各自投影为一个 Host Tool Item，保留原生 Tool 名称、参数、有界输出和结果；外层 `run_code` Item SHALL 保留。子调用的原生失败标识 MUST 按所在格式 `tool/result` 的 error 规则校验，V0 MUST NOT 接受该字段。
+PTC 模式下 `run_code` 程序发出的每个嵌套 Tool 调用（V0 `tool/code-dispatch*`，V3/V4 `tool/ptc-dispatch*`）SHALL 在实时事件和冷历史中各自投影为一个 Host Tool Item，保留原生 Tool 名称、参数、有界输出和结果；外层 `run_code` 调用 SHALL NOT 投影为 Item。子调用的原生失败标识 MUST 按所在格式 `tool/result` 的 error 规则校验，V0 MUST NOT 接受该字段。
 
 #### Scenario: PTC 程序执行 shell 命令
 - **WHEN** `run_code` 程序以非空 `command` 调用 `pwsh`
-- **THEN** Codex Thread SHALL 在 `run_code` Item 之外收到该命令的 `commandExecution` Item 及其输出
+- **THEN** Codex Thread SHALL 收到该命令的 `commandExecution` Item 及其输出，且 SHALL NOT 收到 `run_code` Item
 - **AND** 实时与冷历史中的 Item 身份 SHALL 一致
 
 #### Scenario: 子调用失败或未结束

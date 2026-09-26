@@ -7,18 +7,18 @@ DSH dsh-v0.1.7-rc.2 的 tag commit 为 477b4f420553e8a52c2fbccc464d7561b239c443�
 本次完成源码协议审计和自动化路由回归，已将 rc2 加入设置页和已验证版本列表；真实 CLI 生命周期 Gate 尚未运行，当前证据为 rc2 源码协议审计、V4 路由回归和仓库自动化检查。版本号只决定协议尝试，Web Remote、历史、流式和 Fork 校验仍是兼容性闸门。
 ## PTC 子调用显示验证
 
-PTC 模式下，模型调用 `run_code`，程序内实际执行的 Tool 只写入子调用事件。此前 Adapter 只校验这些事件、不做投影，Desktop 仅显示名为 `run_code` 的普通卡片。事件语义参考 DSH `dsh-v0.1.7-rc.2`（`477b4f420553e8a52c2fbccc464d7561b239c443`）的 `packages/core/tools/src/ptc.ts`：开始事件在子调用真正开始时写入；每个已开始的子调用恰好对应一条结束事件，取消也不例外；两条事件都位于外层 `run_code` 的 `tool/result` 之前。`0.1.6-alpha` 起，结束事件可附带与 `tool/result` 相同的可选 `error`（`name`/`code`/`reason`），`0.1.5-rc.3` 和 `0.1.2-rc.1` 不写该字段。
+PTC 模式下，模型调用 `run_code`，程序内实际执行的 Tool 只写入子调用事件。此前 Adapter 只校验这些事件、不做投影，Desktop 仅显示名为 `run_code` 的普通卡片。现在每个子调用单独投影，`run_code` 本身不再投影。事件语义参考 DSH `dsh-v0.1.7-rc.2`（`477b4f420553e8a52c2fbccc464d7561b239c443`）的 `packages/core/tools/src/ptc.ts`：开始事件在子调用真正开始时写入；每个已开始的子调用恰好对应一条结束事件，取消也不例外；两条事件都位于外层 `run_code` 的 `tool/result` 之前。`0.1.6-alpha` 起，结束事件可附带与 `tool/result` 相同的可选 `error`（`name`/`code`/`reason`），`0.1.5-rc.3` 和 `0.1.2-rc.1` 不写该字段。
 
-本次复跑 `npm run test:deepseek:coverage`，整个 DSH Adapter 的 **870 项测试 / 24 个文件全部通过**，四项 80% 门槛均通过。新增测试覆盖 V0/V3/V4 子调用的历史投影、实时生命周期与原生耗时、实时与冷历史的 Item 身份一致、输出上限、未结束和缺少开始事件的子调用、各格式 `error` 校验，以及经 Protocol Core 投影后的 `commandExecution` 和文件改动。
+本次复跑 `npm run test:deepseek:coverage`，整个 DSH Adapter 的 **871 项测试 / 24 个文件全部通过**，四项 80% 门槛均通过。新增测试覆盖 V0/V3/V4 子调用的历史投影、`run_code` 本身（含 Fork 中未启动的调用）不产生 Item、实时生命周期与原生耗时、实时与冷历史的 Item 身份一致、输出上限、未结束和缺少开始事件的子调用、各格式 `error` 校验，以及经 Protocol Core 投影后的 `commandExecution` 和文件改动。
 
 | 指标 | 结果 | 覆盖数 |
 | --- | ---: | ---: |
-| 语句 | 86.55% | 5872 / 6784 |
-| 分支 | 82.27% | 5186 / 6303 |
-| 函数 | 93.32% | 936 / 1003 |
-| 行 | 89.27% | 5451 / 6106 |
+| 语句 | 86.58% | 5886 / 6798 |
+| 分支 | 82.32% | 5201 / 6318 |
+| 函数 | 93.32% | 937 / 1004 |
+| 行 | 89.29% | 5464 / 6119 |
 
-另用 Windows 上 9 个真实原生会话（V0/V3/V4 × standard/ptc）离线回放历史投影，全部加载成功；standard 会话的显示结果不变，ptc 会话中的 `pwsh`/`read`/`grep`/`glob` 子调用均显示为命令卡片。真实会话内容未写入仓库。尚未在 Codex Desktop 中实机验证实时显示。
+另用 Windows 上 9 个真实原生会话（V0/V3/V4 × standard/ptc）离线回放历史投影，全部加载成功；standard 会话的显示结果不变，ptc 会话中的 `pwsh`/`read`/`grep`/`glob` 子调用均显示为命令卡片，不再出现 `run_code` 卡片。真实会话内容未写入仓库。尚未在 Codex Desktop 中实机验证实时显示。
 
 ## 本次版本扩展验证（support-dsh-015rc3-017rc1）
 

@@ -62,6 +62,7 @@ import {
   codeDispatchKey,
   codeDispatchOutcome,
   codeDispatchOutput,
+  isPtcProgramTool,
 } from "./code-dispatch.js";
 import {
   modernConfigurationHarnessError,
@@ -221,6 +222,8 @@ interface ActiveHostTurn {
   reasoning?: LiveReasoningItem;
   reasoningOrdinal: number;
   readonly tools: Map<string, LiveTool>;
+  /** Open PTC program calls, which project no Item of their own. */
+  readonly programCalls: Set<string>;
   readonly interactions: Set<HostInteractionId>;
   terminal: boolean;
   cancelAcknowledged: boolean;
@@ -1992,6 +1995,7 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
       input: [...input],
       autonomous,
       tools: new Map(),
+      programCalls: new Set(),
       reasoningOrdinal: 0,
       interactions: new Set(),
       terminal: false,
@@ -2215,8 +2219,12 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
 
   #startTool(active: ActiveHostTurn, data: Record<string, unknown>, seq: number): void {
     const callId = data.callId as string;
-    if (active.tools.has(callId)) {
+    if (active.tools.has(callId) || active.programCalls.has(callId)) {
       throw new ModernHistoryError("protocolError", "Modern tool/call is duplicated");
+    }
+    if (isPtcProgramTool(data.name as string)) {
+      active.programCalls.add(callId);
+      return;
     }
     const item: HostToolExecutionItem = {
       type: "toolExecution",
@@ -2235,6 +2243,7 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
   #completeTool(active: ActiveHostTurn, data: Record<string, unknown>, seq: number): void {
     const result = projectToolResult(data.message, this.#toolOutputLimit);
     if (!result) throw new ModernHistoryError("protocolError", "Modern tool/result is malformed");
+    if (active.programCalls.delete(result.callId)) return;
     const tool = active.tools.get(result.callId);
     if (!tool) throw new ModernHistoryError("protocolError", "Modern tool/result is unmatched");
     active.tools.delete(result.callId);
@@ -2445,6 +2454,7 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
         input: hostBound ? [...pending.command.input] : [...buffer.input],
         autonomous: !hostBound,
         tools: new Map(),
+        programCalls: new Set(),
         reasoningOrdinal: 0,
         interactions: new Set(),
         terminal: false,

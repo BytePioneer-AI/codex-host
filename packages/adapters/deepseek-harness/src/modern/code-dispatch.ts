@@ -15,7 +15,14 @@ import { redactModernCredential } from "./wire.js";
  * `run_code` result carries only the program's curated output, yet each one is
  * a real native Tool execution. Every dispatch becomes its own Host Tool Item,
  * so Desktop renders it exactly like a direct call of the same Tool.
+ *
+ * The `run_code` call itself projects no Item: Desktop has no carrier for its
+ * program source, and each Tool it dispatched is already shown.
  */
+
+export function isPtcProgramTool(toolName: string): boolean {
+  return toolName === "run_code";
+}
 
 /** Open-Tool key, prefixed so a sub-call can never collide with a native callId. */
 export function codeDispatchKey(data: Readonly<Record<string, unknown>>): string {

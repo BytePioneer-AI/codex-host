@@ -881,7 +881,7 @@ describe("DeepSeek Harness Modern Session", () => {
     await test.session.close();
   });
 
-  it("streams PTC sub-calls as their own Tool Items with native durations", async () => {
+  it("streams PTC sub-calls in place of run_code with native durations", async () => {
     const test = setup([() => accepted()], [], ["request-1"]);
     const outputs = test.session.outputs[Symbol.asyncIterator]();
     const id = turnId("ptc-turn");
@@ -974,10 +974,8 @@ describe("DeepSeek Harness Modern Session", () => {
       return item?.type === "toolExecution" ? [[entry.type, item.toolName]] : [];
     });
     expect(tools).toEqual([
-      ["item.started", "run_code"],
       ["item.started", "pwsh"],
       ["item.completed", "pwsh"],
-      ["item.completed", "run_code"],
     ]);
     const subCall = emitted.find(
       (entry) =>
@@ -1025,7 +1023,6 @@ describe("DeepSeek Harness Modern Session", () => {
     // Live and cold history agree on the sub-call's identity.
     const snapshot = await test.session.readSnapshot();
     expect(snapshot.ok && snapshot.value.turns[0]?.items.map(({ item }) => item.itemId)).toEqual([
-      `dsh-modern:${SESSION_ID}:event:4:tool`,
       `dsh-modern:${SESSION_ID}:event:5:tool`,
     ]);
     await test.session.close();

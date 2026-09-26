@@ -69,6 +69,7 @@ import {
   codeDispatchKey,
   codeDispatchOutcome,
   codeDispatchOutput,
+  isPtcProgramTool,
 } from "./code-dispatch.js";
 import { redactModernCredential } from "./wire.js";
 
@@ -817,6 +818,8 @@ interface HistoryTurn {
   input: HostTextInput[];
   items: HostItemSnapshot[];
   tools: Map<string, HistoryTool>;
+  /** Open PTC program calls, which project no Item of their own. */
+  programCalls: Set<string>;
   advertisedTools: Map<string, { toolName: string; arguments: string }>;
   model: HarnessModelRef | undefined;
 }
@@ -882,6 +885,7 @@ export function projectModernHistory(input: ProjectModernHistoryInput): ModernHi
           input: [],
           items: [],
           tools: new Map(),
+          programCalls: new Set(),
           advertisedTools: new Map(),
           model: effectiveModel,
         };
@@ -1072,8 +1076,13 @@ function projectToolCall(
   data: Record<string, unknown>,
   seq: number,
 ): void {
-  if (turn.tools.has(data.callId as string)) {
+  if (turn.tools.has(data.callId as string) || turn.programCalls.has(data.callId as string)) {
     fail("Modern history reused an unfinished Tool callId");
+  }
+  if (isPtcProgramTool(data.name as string)) {
+    turn.programCalls.add(data.callId as string);
+    turn.advertisedTools.delete(data.callId as string);
+    return;
   }
   const item: HostToolExecutionItem = {
     type: "toolExecution",
@@ -1096,10 +1105,18 @@ function projectToolResultEvent(
 ): void {
   const result = projectToolResult(data.message, limit);
   if (!result) fail("Modern history contains an unprojectable tool/result");
+  const advertised = turn.advertisedTools.get(result.callId);
+  const forked = advertised !== undefined && isForkedToolResult(data, result.callId, seq);
+  if (
+    turn.programCalls.delete(result.callId) ||
+    (forked && isPtcProgramTool(advertised.toolName))
+  ) {
+    turn.advertisedTools.delete(result.callId);
+    return;
+  }
   let tool = turn.tools.get(result.callId);
   if (!tool) {
-    const advertised = turn.advertisedTools.get(result.callId);
-    if (advertised && isForkedToolResult(data, result.callId, seq)) {
+    if (forked) {
       const item: HostToolExecutionItem = {
         type: "toolExecution",
         itemId: modernItemId(sessionId, `event:${seq}:tool`),

@@ -32,8 +32,8 @@ export interface RendererContractAuditInspection {
     ambiguousCount: number;
   };
   settings: {
-    headerCount: number;
-    visibleHeaderCount: number;
+    railCount: number;
+    visibleRailCount: number;
     insertionPointCount: number;
   };
   sidebar: {
@@ -193,7 +193,7 @@ export function validateRendererContractAuditInspection(
     ),
     settings: integerRecord(
       value.settings,
-      ["headerCount", "visibleHeaderCount", "insertionPointCount"] as const,
+      ["railCount", "visibleRailCount", "insertionPointCount"] as const,
       "Renderer settings contract",
     ),
     sidebar: integerRecord(

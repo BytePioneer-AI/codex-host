@@ -33,7 +33,7 @@ vi.mock("../src/settings/shell.js", () => ({
 }));
 
 vi.mock("../src/settings/trigger.js", () => ({
-  installRendererSettingsHeaderTrigger: vi.fn(() => ({
+  installRendererSettingsRailTrigger: vi.fn(() => ({
     root: null,
     refresh: triggerRefresh,
     setUpdateAvailable: triggerSetUpdateAvailable,

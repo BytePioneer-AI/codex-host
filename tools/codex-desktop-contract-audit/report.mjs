@@ -346,14 +346,14 @@ export function buildSurfaceResults(contracts, baseline = null, controlled = nul
         : "title-policy-not-installed",
     baseline,
   });
-  const settingsActive = contracts.settings.visibleHeaderCount > 0;
+  const settingsActive = contracts.settings.visibleRailCount > 0;
   const settings = classifySurface({
     id: "settings",
     observed: contracts.settings,
     live: stateForUnique(contracts.settings.insertionPointCount, settingsActive),
     behavior: controlled?.settingsBehavior ?? "not-run",
     active: settingsActive,
-    reason: settingsActive ? "settings-insertion-cardinality" : "application-header-state-inactive",
+    reason: settingsActive ? "settings-insertion-cardinality" : "navigation-rail-state-inactive",
     baseline,
   });
   const sidebarActive = contracts.sidebar.rowCount > 0;

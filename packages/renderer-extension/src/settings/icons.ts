@@ -137,6 +137,38 @@ export function createRendererSettingsIcon(name: RendererSettingsIconName, size 
   return icon;
 }
 
+const SVG_NAMESPACE = "http://www.w3.org/2000/svg";
+
+/**
+ * Line brand mark in `currentColor` for native icon surfaces such as the rail:
+ * the app icon's open ring and core square without its plate. The ring is a
+ * little heavier than native strokes so the mark stays recognizable at 20px.
+ */
+export function createRendererSettingsBrandGlyph(size = 20): SVGElement {
+  const svg = document.createElementNS(SVG_NAMESPACE, "svg");
+  svg.setAttribute("viewBox", "12.8 12.2 40 40");
+  svg.setAttribute("width", String(size));
+  svg.setAttribute("height", String(size));
+  svg.setAttribute("aria-hidden", "true");
+  svg.setAttribute("focusable", "false");
+  const ring = document.createElementNS(SVG_NAMESPACE, "path");
+  ring.setAttribute("d", "M 44.55 23.97 A 14.35 14.35 0 1 0 44.55 40.43");
+  ring.setAttribute("fill", "none");
+  ring.setAttribute("stroke", "currentColor");
+  ring.setAttribute("stroke-width", "4.4");
+  ring.setAttribute("stroke-linecap", "round");
+  const core = document.createElementNS(SVG_NAMESPACE, "rect");
+  core.setAttribute("x", "27.6");
+  core.setAttribute("y", "27");
+  core.setAttribute("width", "10.4");
+  core.setAttribute("height", "10.4");
+  core.setAttribute("rx", "2.4");
+  core.setAttribute("fill", "currentColor");
+  svg.append(ring, core);
+  svg.classList.add("codexhost-settings-icon");
+  return svg;
+}
+
 export function createRendererSettingsBrandIcon(size = 22): HTMLImageElement {
   const icon = document.createElement("img");
   icon.src = codexhostLogoUrl;

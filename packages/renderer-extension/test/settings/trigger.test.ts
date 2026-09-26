@@ -1,48 +1,39 @@
 import { describe, expect, it, vi } from "vitest";
 
 import {
-  type RendererSettingsBounds,
-  installRendererSettingsHeaderTrigger,
+  inspectRendererSettingsContract,
+  installRendererSettingsRailTrigger,
   mountRendererSettingsTrigger,
-  selectRendererSettingsHeaderSlot,
 } from "../../src/settings/trigger.js";
 
-function bounds(left: number, top: number, width: number, height: number): RendererSettingsBounds {
-  return {
-    left,
-    right: left + width,
-    top,
-    bottom: top + height,
-    width,
-    height,
-  };
-}
-
-class FakeHeaderElement {
+class FakeElement {
   readonly attributes = new Map<string, string>();
-  readonly children: FakeHeaderElement[] = [];
+  readonly children: FakeElement[] = [];
   readonly listeners = new Map<string, (event: { stopPropagation(): void }) => void>();
   readonly classList = { add: vi.fn() };
   readonly style: Record<string, string | ((name: string, value: string) => void)> = {};
   disabled = false;
   isConnected = true;
-  parentElement: FakeHeaderElement | null = null;
+  parentElement: FakeElement | null = null;
   title = "";
   type = "";
 
   constructor(
-    readonly left = 0,
-    readonly width = 80,
+    readonly tagName = "DIV",
+    readonly height = 36,
   ) {
     this.style.setProperty = (name: string, value: string) => {
       this.style[name] = value;
     };
   }
 
-  get firstChild(): FakeHeaderElement | null {
+  get firstElementChild(): FakeElement | null {
     return this.children[0] ?? null;
   }
-  get nextSibling(): FakeHeaderElement | null {
+  get lastElementChild(): FakeElement | null {
+    return this.children.at(-1) ?? null;
+  }
+  get nextSibling(): FakeElement | null {
     if (!this.parentElement) return null;
     const index = this.parentElement.children.indexOf(this);
     return this.parentElement.children[index + 1] ?? null;
@@ -50,23 +41,22 @@ class FakeHeaderElement {
   addEventListener(name: string, listener: (event: { stopPropagation(): void }) => void): void {
     this.listeners.set(name, listener);
   }
-  append(...children: FakeHeaderElement[]): void {
+  append(...children: FakeElement[]): void {
     for (const child of children) this.insertBefore(child, null);
   }
-  appendChild(child: FakeHeaderElement): FakeHeaderElement {
+  appendChild(child: FakeElement): FakeElement {
     return this.insertBefore(child, null);
   }
-  getBoundingClientRect(): DOMRect {
-    return {
-      left: this.left,
-      right: this.left + this.width,
-      top: 0,
-      bottom: 46,
-      width: this.width,
-      height: 46,
-    } as DOMRect;
+  dispatch(name: string): void {
+    this.listeners.get(name)?.({ stopPropagation: vi.fn() });
   }
-  insertBefore(child: FakeHeaderElement, before: FakeHeaderElement | null): FakeHeaderElement {
+  getBoundingClientRect(): DOMRect {
+    return { width: this.height > 0 ? 52 : 0, height: this.height } as DOMRect;
+  }
+  hasAttribute(name: string): boolean {
+    return this.attributes.has(name);
+  }
+  insertBefore(child: FakeElement, before: FakeElement | null): FakeElement {
     child.remove();
     child.parentElement = this;
     child.isConnected = true;
@@ -76,20 +66,22 @@ class FakeHeaderElement {
     return child;
   }
   matches(selector: string): boolean {
-    const attribute = /^\[([^=\]]+)="([^"]*)"\]$/.exec(selector);
-    if (!attribute) return false;
-    const [, name, value] = attribute;
-    return name !== undefined && this.attributes.get(name) === value;
+    const match = /^([a-z]*)\[([^=\]]+)(?:="([^"]*)")?\]$/.exec(selector);
+    if (!match) return false;
+    const [, tag, name, value] = match;
+    if (tag && tag.toUpperCase() !== this.tagName) return false;
+    return (
+      name !== undefined &&
+      this.attributes.has(name) &&
+      (value === undefined || this.attributes.get(name) === value)
+    );
   }
-  querySelector(selector: string): FakeHeaderElement | null {
+  querySelector(selector: string): FakeElement | null {
     return this.querySelectorAll(selector)[0] ?? null;
   }
-  querySelectorAll(selector: string): FakeHeaderElement[] {
-    const scoped = selector.startsWith(":scope > ");
-    const target = scoped ? selector.slice(":scope > ".length) : selector;
-    if (scoped) return this.children.filter((child) => child.matches(target));
+  querySelectorAll(selector: string): FakeElement[] {
     return this.children.flatMap((child) => [
-      ...(child.matches(target) ? [child] : []),
+      ...(child.matches(selector) ? [child] : []),
       ...child.querySelectorAll(selector),
     ]);
   }
@@ -113,224 +105,136 @@ class FakeHeaderElement {
   }
 }
 
-interface FakeHeader {
-  header: FakeHeaderElement;
-  startSlot: FakeHeaderElement;
-  surface: FakeHeaderElement;
-  pageHeader: FakeHeaderElement;
-  actionGroup: FakeHeaderElement | null;
-  endSlot: FakeHeaderElement;
+interface FakeRail {
+  rail: FakeElement;
+  destinations: FakeElement;
+  home: FakeElement;
+  more: FakeElement;
 }
 
-// Mirrors Codex Desktop 0.153.4: both shell slots carry the obstacle attribute, and the native
-// action group is the trailing obstacle child of the header context menu surface.
-function createFakeHeader(options: { nativeActions: boolean }): FakeHeader {
-  const header = new FakeHeaderElement(0, 1510);
-  const startSlot = new FakeHeaderElement(0, 216);
-  startSlot.setAttribute("data-test-id", "header-shell-slot");
-  startSlot.setAttribute("data-app-shell-header-obstacle", "true");
-  const surface = new FakeHeaderElement(216, 1119);
-  surface.setAttribute("data-testid", "app-shell-header-context-menu-surface");
-  const pageHeader = new FakeHeaderElement(223, 1071);
-  pageHeader.setAttribute("data-app-shell-page-header", "true");
-  surface.append(pageHeader);
-  let actionGroup: FakeHeaderElement | null = null;
-  if (options.nativeActions) {
-    actionGroup = new FakeHeaderElement(1299, 31);
-    actionGroup.setAttribute("data-app-shell-header-obstacle", "true");
-    surface.append(actionGroup);
+// Mirrors Codex Desktop 26.924: nav > [border, destinations (Home … More), footer].
+function createFakeRail(options: { visible?: boolean; destinations?: boolean } = {}): FakeRail {
+  const rail = new FakeElement("NAV", options.visible === false ? 0 : 837);
+  rail.setAttribute("data-app-navigation-rail", "true");
+  const destinations = new FakeElement();
+  const home = new FakeElement("BUTTON");
+  if (options.destinations !== false) {
+    home.setAttribute("data-sidebar-destination", "builtin:home");
   }
-  const endSlot = new FakeHeaderElement(1447, 63);
-  endSlot.setAttribute("data-test-id", "header-shell-slot");
-  endSlot.setAttribute("data-app-shell-header-obstacle", "true");
-  header.append(startSlot, surface, endSlot);
-  return { header, startSlot, surface, pageHeader, actionGroup, endSlot };
+  const more = new FakeElement("BUTTON");
+  more.setAttribute("aria-haspopup", "dialog");
+  destinations.append(home, more);
+  rail.append(new FakeElement(), destinations, new FakeElement());
+  return { rail, destinations, home, more };
 }
 
-function stubHeaderDocument(current: () => FakeHeaderElement): Document {
+function stubRailDocument(current: () => FakeElement): Document {
   const document = {
-    createElement: () => new FakeHeaderElement(),
-    createElementNS: () => new FakeHeaderElement(),
+    createElement: (tag: string) => new FakeElement(tag.toUpperCase()),
+    createElementNS: () => new FakeElement("SVG"),
     querySelector: (selector: string) =>
-      selector === 'header[data-pip-obstacle="app-shell-header"]' ? current() : null,
-    querySelectorAll: () => [],
+      selector === "nav[data-app-navigation-rail]" ? current() : null,
+    querySelectorAll: (selector: string) =>
+      selector === "nav[data-app-navigation-rail]" ? [current()] : [],
   } as unknown as Document;
   vi.stubGlobal("document", document);
   return document;
 }
 
-describe("Renderer settings header trigger", () => {
-  const header = bounds(240, 36, 942, 46);
-
-  it("selects the right-side group containing Open Location and the context menu", () => {
-    expect(
-      selectRendererSettingsHeaderSlot(header, [
-        { value: "open-location", bounds: bounds(1018, 45, 128, 28), visibleButtonCount: 1 },
-        { value: "actions", bounds: bounds(1018, 36, 164, 46), visibleButtonCount: 2 },
-        { value: "context-menu", bounds: bounds(1154, 45, 28, 28), visibleButtonCount: 1 },
-      ]),
-    ).toBe("actions");
-  });
-
-  it("selects the structural action group when a blank thread has no native actions", () => {
-    expect(
-      selectRendererSettingsHeaderSlot(header, [
-        {
-          value: "empty-actions",
-          bounds: bounds(1176, 59, 0, 0),
-          visibleButtonCount: 0,
-          structuralActionGroup: true,
-        },
-      ]),
-    ).toBe("empty-actions");
-  });
-
-  it("shows a dedicated update button and opens the Updates page directly", () => {
-    class FakeElement {
-      readonly attributes = new Map<string, string>();
-      readonly children: FakeElement[] = [];
-      readonly listeners = new Map<string, (event: { stopPropagation(): void }) => void>();
-      readonly classList = { add: vi.fn() };
-      readonly style: Record<string, string | ((name: string, value: string) => void)> = {};
-      disabled = false;
-      isConnected = true;
-      title = "";
-      type = "";
-
-      constructor() {
-        this.style.setProperty = (name: string, value: string) => {
-          this.style[name] = value;
-        };
-      }
-
-      addEventListener(name: string, listener: (event: { stopPropagation(): void }) => void): void {
-        this.listeners.set(name, listener);
-      }
-      append(...children: FakeElement[]): void {
-        this.children.push(...children);
-      }
-      appendChild(child: FakeElement): FakeElement {
-        this.children.push(child);
-        return child;
-      }
-      dispatch(name: string): void {
-        this.listeners.get(name)?.({ stopPropagation: vi.fn() });
-      }
-      hasAttribute(name: string): boolean {
-        return this.attributes.has(name);
-      }
-      remove(): void {
-        this.isConnected = false;
-      }
-      removeEventListener(name: string): void {
-        this.listeners.delete(name);
-      }
-      setAttribute(name: string, value: string): void {
-        this.attributes.set(name, value);
-      }
-      toggleAttribute(name: string, force: boolean): void {
-        if (force) this.attributes.set(name, "");
-        else this.attributes.delete(name);
-      }
-    }
-
-    const document = {
-      createElement: () => new FakeElement(),
-      createElementNS: () => new FakeElement(),
-    } as unknown as Document;
-    vi.stubGlobal("document", document);
-    const opened = vi.fn();
-    const control = mountRendererSettingsTrigger(
-      "test",
-      true,
-      (opener, pageId) => opened(opener, pageId),
-      document,
-    );
-
-    expect(control.updateButton.style.display).toBe("none");
-    control.setUpdateAvailable(true);
-    expect(control.updateButton.style.display).toBe("inline-flex");
-    expect(control.updateButton.style.background).toBe("transparent");
-    expect(control.updateButton.style.color).toBe("#3b82f6");
-    expect(control.updateButton.children).toHaveLength(1);
-    expect(control.updateButton.title).toBe("A new version is available.");
-    expect(control.root.hasAttribute("data-update-available")).toBe(true);
-    (control.updateButton as unknown as FakeElement).dispatch("click");
-    expect(opened).toHaveBeenCalledWith(control.updateButton, "updates");
-    control.setUpdateAvailable(false);
-    expect(control.updateButton.style.display).toBe("none");
-    control.dispose();
-    vi.unstubAllGlobals();
-  });
-
-  it("mounts directly before the native header action group", () => {
-    const shell = createFakeHeader({ nativeActions: true });
-    const document = stubHeaderDocument(() => shell.header);
-
+describe("Renderer settings navigation rail trigger", () => {
+  it("badges the icon for updates and opens the Updates page directly", () => {
+    const document = stubRailDocument(() => createFakeRail().rail);
     try {
-      const control = installRendererSettingsHeaderTrigger({
-        available: true,
-        onOpen: vi.fn(),
-        ownerDocument: document,
-      });
+      const opened = vi.fn();
+      const control = mountRendererSettingsTrigger(
+        "test",
+        true,
+        (opener, pageId) => opened(opener, pageId),
+        document,
+      );
+      const button = control.button as unknown as FakeElement;
+      const badge = button.children[1];
 
-      expect(control.root).not.toBeNull();
-      expect(shell.surface.children).toEqual([shell.pageHeader, control.root, shell.actionGroup]);
-      expect(shell.header.children).toEqual([shell.startSlot, shell.surface, shell.endSlot]);
+      expect(button.style.width).toBe("36px");
+      expect(button.style.color).toContain("--color-text-secondary-ghost");
+      expect(button.children[0]?.children[0]?.attributes.get("stroke")).toBe("currentColor");
+      expect(badge?.style.display).toBe("none");
+      button.dispatch("click");
+      expect(opened).toHaveBeenLastCalledWith(control.button, undefined);
+
+      control.setUpdateAvailable(true);
+      expect(badge?.style.display).toBe("block");
+      expect(control.button.title).toBe("codexhost settings · A new version is available.");
+      expect(control.root.hasAttribute("data-update-available")).toBe(true);
+      button.dispatch("click");
+      expect(opened).toHaveBeenLastCalledWith(control.button, "updates");
+
+      control.setUpdateAvailable(false);
+      expect(badge?.style.display).toBe("none");
+      expect(control.button.title).toBe("codexhost settings");
       control.dispose();
     } finally {
       vi.unstubAllGlobals();
     }
   });
 
-  it("mounts directly before the application header end slot without Thread actions", () => {
-    const shell = createFakeHeader({ nativeActions: false });
-    const document = stubHeaderDocument(() => shell.header);
-
+  it("mounts directly above the rail's More button", () => {
+    const shell = createFakeRail();
+    const document = stubRailDocument(() => shell.rail);
     try {
-      const control = installRendererSettingsHeaderTrigger({
+      const control = installRendererSettingsRailTrigger({
         available: true,
         onOpen: vi.fn(),
         ownerDocument: document,
       });
 
-      expect(control.root).not.toBeNull();
-      expect(shell.header.children).toEqual([
-        shell.startSlot,
-        shell.surface,
-        control.root,
-        shell.endSlot,
-      ]);
-      expect(shell.surface.children).toEqual([shell.pageHeader]);
+      expect(shell.destinations.children).toEqual([shell.home, control.root, shell.more]);
       control.dispose();
+      expect(shell.destinations.children).toEqual([shell.home, shell.more]);
     } finally {
       vi.unstubAllGlobals();
     }
   });
 
-  it("remounts before the native action group when Codex replaces the application header", () => {
-    const shell = createFakeHeader({ nativeActions: true });
-    let current = shell.header;
-    const document = stubHeaderDocument(() => current);
-
+  it("remounts when Codex replaces the navigation rail", () => {
+    const shell = createFakeRail();
+    let current = shell.rail;
+    const document = stubRailDocument(() => current);
     try {
-      const control = installRendererSettingsHeaderTrigger({
+      const control = installRendererSettingsRailTrigger({
         available: true,
         onOpen: vi.fn(),
         ownerDocument: document,
       });
-      expect(shell.surface.children).toEqual([shell.pageHeader, control.root, shell.actionGroup]);
-
-      const replacement = createFakeHeader({ nativeActions: true });
-      current = replacement.header;
+      const replacement = createFakeRail();
+      current = replacement.rail;
 
       expect(control.refresh()).toBe(true);
-      expect(shell.surface.children).toEqual([shell.pageHeader, shell.actionGroup]);
-      expect(replacement.surface.children).toEqual([
-        replacement.pageHeader,
+      expect(shell.destinations.children).toEqual([shell.home, shell.more]);
+      expect(replacement.destinations.children).toEqual([
+        replacement.home,
         control.root,
-        replacement.actionGroup,
+        replacement.more,
       ]);
+      control.dispose();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("mounts last when the rail has no More button", () => {
+    const shell = createFakeRail();
+    shell.more.remove();
+    const document = stubRailDocument(() => shell.rail);
+    try {
+      const control = installRendererSettingsRailTrigger({
+        available: true,
+        onOpen: vi.fn(),
+        ownerDocument: document,
+      });
+      expect(shell.destinations.children).toEqual([shell.home, control.root]);
+      expect(control.refresh()).toBe(true);
+      expect(shell.destinations.children).toEqual([shell.home, control.root]);
       control.dispose();
     } finally {
       vi.unstubAllGlobals();
@@ -338,43 +242,58 @@ describe("Renderer settings header trigger", () => {
   });
 
   it("stays put when another injected control mounts before the owned trigger", () => {
-    const shell = createFakeHeader({ nativeActions: true });
-    const document = stubHeaderDocument(() => shell.header);
-
+    const shell = createFakeRail();
+    const document = stubRailDocument(() => shell.rail);
     try {
-      const control = installRendererSettingsHeaderTrigger({
+      const control = installRendererSettingsRailTrigger({
         available: true,
         onOpen: vi.fn(),
         ownerDocument: document,
       });
-      const foreign = new FakeHeaderElement(1200, 24);
-      shell.surface.insertBefore(foreign, control.root as unknown as FakeHeaderElement);
+      const foreign = new FakeElement();
+      shell.destinations.insertBefore(foreign, control.root as unknown as FakeElement);
 
       expect(control.refresh()).toBe(true);
-      expect(shell.surface.children).toEqual([
-        shell.pageHeader,
-        foreign,
-        control.root,
-        shell.actionGroup,
-      ]);
+      expect(shell.destinations.children).toEqual([shell.home, foreign, control.root, shell.more]);
       control.dispose();
     } finally {
       vi.unstubAllGlobals();
     }
   });
 
-  it("fails closed without a visible or structural bounded action group", () => {
-    expect(
-      selectRendererSettingsHeaderSlot(header, [
-        { value: "open-location", bounds: bounds(1018, 45, 128, 28), visibleButtonCount: 1 },
-        { value: "hidden", bounds: bounds(1018, 36, 164, 46), visibleButtonCount: 0 },
-        {
-          value: "outside",
-          bounds: bounds(1184, 59, 0, 0),
-          visibleButtonCount: 0,
-          structuralActionGroup: true,
-        },
-      ]),
-    ).toBeNull();
+  it("unmounts while the rail is hidden or has no native destinations", () => {
+    for (const options of [{ visible: false }, { destinations: false }]) {
+      const shell = createFakeRail(options);
+      const document = stubRailDocument(() => shell.rail);
+      try {
+        const control = installRendererSettingsRailTrigger({
+          available: true,
+          onOpen: vi.fn(),
+          ownerDocument: document,
+        });
+        expect(control.refresh()).toBe(false);
+        expect(control.root?.isConnected ?? false).toBe(false);
+        expect(shell.destinations.children).toEqual([shell.home, shell.more]);
+        control.dispose();
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    }
+  });
+
+  it("counts visible rails with a destination column for the contract audit", () => {
+    const visible = createFakeRail();
+    expect(inspectRendererSettingsContract(stubRailDocument(() => visible.rail))).toEqual({
+      railCount: 1,
+      visibleRailCount: 1,
+      insertionPointCount: 1,
+    });
+    const hidden = createFakeRail({ visible: false });
+    expect(inspectRendererSettingsContract(stubRailDocument(() => hidden.rail))).toEqual({
+      railCount: 1,
+      visibleRailCount: 0,
+      insertionPointCount: 0,
+    });
+    vi.unstubAllGlobals();
   });
 });

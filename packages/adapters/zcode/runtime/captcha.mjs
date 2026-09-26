@@ -41,7 +41,14 @@ export async function requestCaptcha(config, signal, notify, { timeoutMs = 150_0
     response.setHeader("Cache-Control", "no-store");
     response.setHeader("Referrer-Policy", "no-referrer");
     response.setHeader("X-Content-Type-Options", "nosniff");
-    const url = new URL(request.url, origin);
+    let url;
+    try {
+      url = new URL(request.url, origin);
+    } catch {
+      // An async handler's rejection would crash the worker; reject malformed targets.
+      response.writeHead(400).end();
+      return;
+    }
     const pathname = url.pathname;
     if (request.headers.host !== new URL(origin).host || url.searchParams.get("token") !== token) {
       response.writeHead(404).end();

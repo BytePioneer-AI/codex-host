@@ -30,11 +30,12 @@ const node: Text = ["Requires Node.js (including npm).", "需先安装 Node.js�
 // user-run instructions, not a Host installer or a claim of Adapter compatibility.
 const guides: Readonly<Record<ExternalRendererAgent, InstallationGuide>> = {
   zcode: {
-    url: "https://github.com/zai-org/ZCode",
+    // ZCode Desktop alone is not enough; the codexhost runtime is built from the guide.
+    url: "https://github.com/BytePioneer-AI/codex-host/blob/main/docs/harnesses/zcode/zcode-harness-integration.md#%E8%BF%90%E8%A1%8C%E5%8C%85%E4%B8%8E%E5%AE%89%E8%A3%85",
     commands: [],
     before: [
-      "Install ZCode 3.14.3 and the compatible codexhost local runtime.",
-      "请安装 ZCode 3.14.3 及配套 codexhost 本地运行包。",
+      "Install ZCode 3.14.3, then build and install the codexhost local runtime from the linked guide. Requires Node 24.",
+      "请安装 ZCode 3.14.3，再按链接中的说明构建并安装 codexhost 本地运行包；需要 Node 24。",
     ],
     after: [
       "Sign in and select your plan in ZCode, then check again. The Desktop window does not need to stay open.",

@@ -38,6 +38,9 @@ for (const directory of await readdir(path.join(source, "packages"))) {
       alias[pkg.name + (key === "." ? "" : key.slice(1))] = path.join(root, value);
   }
 }
+// native-source-patches.mjs changes exactly four pinned source files; an alias or filter
+// that misses one would otherwise ship an unpatched runtime.
+const patched = new Set();
 await build({
   absWorkingDir: source,
   entryPoints: [
@@ -65,8 +68,11 @@ await build({
           },
           async ({ path: file }) => {
             const original = await readFile(file, "utf8");
-            const contents = patchNativeSource(file.replaceAll("\\", "/"), original);
-            return contents === undefined ? undefined : { contents, loader: "ts" };
+            const normalized = file.replaceAll("\\", "/");
+            const contents = patchNativeSource(normalized, original);
+            if (contents === undefined) return undefined;
+            patched.add(normalized);
+            return { contents, loader: "ts" };
           },
         );
       },
@@ -84,6 +90,8 @@ await build({
   legalComments: "eof",
   metafile: true,
 });
+if (patched.size !== 4)
+  throw new Error(`Expected 4 patched ZCode source files, applied ${patched.size}`);
 // node-pty loads a native addon; keep its package layout instead of embedding binary paths.
 const require = createRequire(path.join(source, "packages/server/package.json"));
 const copied = new Set();

@@ -3,11 +3,22 @@ import { readFile, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
-import { StringDecoder } from "node:string_decoder";
 import { withNodeRuntimeOnPath } from "@codexhost/harness-discovery";
 import type { HarnessLocalPage } from "@codexhost/harness-adapter/plugin";
 import { ZcodeError } from "./errors.js";
 import { record, text } from "./protocol.js";
+
+const MAX_RESPONSE_BYTES = 64 * 1024 * 1024;
+// A missing runtime file is an incomplete installation, not a native failure.
+function isFile(file: string) {
+  return stat(file).then(
+    (entry) => entry.isFile(),
+    (error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT") return false;
+      throw error;
+    },
+  );
+}
 
 export const ZCODE_SOURCE_REVISION = "29628c9acdb81b703bbd4080c207a0e7ce5e276e";
 export interface TransportOptions {
@@ -81,11 +92,11 @@ export class ServiceTransport {
         "ZCode runtime does not match the supported source revision",
       );
     const entry = path.join(root, "worker.cjs");
-    if (!(await stat(entry)).isFile())
+    if (!(await isFile(entry)))
       throw new ZcodeError("notInstalled", "ZCode service entry is missing");
     const nativeAgent = path.join(root, manifest.agent);
     const providerConfig = path.join(root, manifest.providerConfig);
-    if (!(await stat(nativeAgent)).isFile() || !(await stat(providerConfig)).isFile())
+    if (!(await isFile(nativeAgent)) || !(await isFile(providerConfig)))
       throw new ZcodeError(
         "notInstalled",
         "ZCode runtime is missing its Agent or Provider configuration",
@@ -112,22 +123,33 @@ export class ServiceTransport {
       if (!this.#closed && !this.#closePromise)
         this.#fail(new ZcodeError("processExited", "ZCode service input closed"));
     });
-    const decoder = new StringDecoder("utf8");
-    let buffer = "";
+    // Scan raw bytes: UTF-8 continuation bytes never equal 0x0a, so each line is joined
+    // and decoded once, and its size is checked before each piece is kept.
+    let parts: Buffer[] = [];
+    let lineBytes = 0;
+    const tooLarge = () =>
+      this.#fail(new ZcodeError("protocolError", "ZCode response exceeded 64 MiB"));
     child.stdout.on("data", (chunk: Buffer) => {
-      buffer += decoder.write(chunk);
-      if (Buffer.byteLength(buffer) > 64 * 1024 * 1024)
-        return this.#fail(new ZcodeError("protocolError", "ZCode response exceeded 64 MiB"));
+      if (this.#fault || this.#closed) return;
+      let start = 0;
       let index: number;
-      while ((index = buffer.indexOf("\n")) >= 0) {
-        const line = buffer.slice(0, index);
-        buffer = buffer.slice(index + 1);
+      while ((index = chunk.indexOf(0x0a, start)) >= 0) {
+        lineBytes += index - start;
+        if (lineBytes > MAX_RESPONSE_BYTES) return tooLarge();
+        parts.push(chunk.subarray(start, index));
+        const line = Buffer.concat(parts, lineBytes).toString("utf8");
+        parts = [];
+        lineBytes = 0;
+        start = index + 1;
         try {
           this.#receive(record(JSON.parse(line)));
         } catch {
           this.#fail(new ZcodeError("protocolError", "Invalid ZCode service response"));
         }
       }
+      lineBytes += chunk.length - start;
+      if (lineBytes > MAX_RESPONSE_BYTES) return tooLarge();
+      if (start < chunk.length) parts.push(chunk.subarray(start));
     });
     try {
       const initialized = record(

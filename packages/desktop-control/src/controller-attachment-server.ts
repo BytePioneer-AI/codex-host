@@ -122,9 +122,11 @@ export async function startControllerAttachmentServer(
     async close() {
       if (closed) return;
       closed = true;
+      // Stop accepting first, so no page can start after the current ones are collected.
+      const serverClosed = closeServer(server);
       for (const socket of sockets) socket.destroy();
       await Promise.all(pages);
-      await closeServer(server);
+      await serverClosed;
     },
   };
 }

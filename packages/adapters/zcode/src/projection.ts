@@ -59,7 +59,9 @@ export function fileChanges(value: unknown): HostFileChange[] {
       !hunks.every(
         (hunk) =>
           typeof hunk.oldStart === "number" &&
+          typeof hunk.oldLines === "number" &&
           typeof hunk.newStart === "number" &&
+          typeof hunk.newLines === "number" &&
           Array.isArray(hunk.lines) &&
           hunk.lines.every((line) => typeof line === "string"),
       )

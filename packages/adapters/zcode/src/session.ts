@@ -169,11 +169,21 @@ export class ZcodeSession implements HarnessSession {
         throw new ZcodeError("invalidRequest", "ZCode approval does not match a native option");
       answer = { optionId: option.optionId };
     }
-    await this.transport.command(this.sessionId, "resolveInteraction", {
-      interactionId: String(id),
-      answer,
-    });
+    // Claim the native request before sending, so a user response and Turn cleanup
+    // cannot both resolve it. A rejected command releases the claim for a retry while
+    // the Host interaction is still open.
     this.#nativeInteractions.delete(String(id));
+    try {
+      await this.transport.command(this.sessionId, "resolveInteraction", {
+        interactionId: String(id),
+        answer,
+      });
+    } catch (error) {
+      // Turn cleanup may have ended the Host interaction meanwhile; do not revive it.
+      if (this.#pendingInteractions.has(`zcode:${String(id)}`))
+        this.#nativeInteractions.set(String(id), pending);
+      throw error;
+    }
   }
   #reject(id: string | number) {
     const pending = this.#nativeInteractions.get(String(id));
@@ -631,7 +641,9 @@ export class ZcodeSession implements HarnessSession {
     if (this.#active?.accepted) this.#finish(this.#active, { status: "failed", error: normalized });
     this.#emit({ type: "session.faulted", error: normalized });
     this.#channel.end();
-    void this.transport.close();
+    // The Host does not close a faulted Session. Close it here so the Adapter releases
+    // the native Session only after its service process has actually stopped.
+    void this.close();
   }
   close(): Promise<void> {
     return (this.#closePromise ??= this.#close());

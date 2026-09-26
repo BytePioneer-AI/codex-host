@@ -1,4 +1,5 @@
 import { EventEmitter } from "node:events";
+import { connect } from "node:net";
 import path from "node:path";
 import { PassThrough } from "node:stream";
 import { describe, expect, it } from "vitest";
@@ -79,6 +80,25 @@ describe("ZCode manual verification boundary", () => {
       });
       expect(JSON.stringify(request.events)).not.toContain("fixture-proof");
       await expect(fetch(url)).rejects.toThrow();
+    } finally {
+      request.abort.abort();
+    }
+  });
+  it("rejects an unparsable request target without failing the worker", async () => {
+    const request = begin();
+    const url = new URL(await request.url);
+    try {
+      const status = await new Promise((resolve, reject) => {
+        const socket = connect(Number(url.port), url.hostname);
+        let reply = "";
+        socket.setEncoding("utf8");
+        socket.on("data", (chunk) => (reply += chunk));
+        socket.on("error", reject);
+        socket.on("close", () => resolve(reply.split(" ")[1]));
+        socket.end(`GET //[ HTTP/1.1\r\nHost: ${url.host}\r\nConnection: close\r\n\r\n`);
+      });
+      expect(status).toBe("400");
+      expect((await fetch(url)).status).toBe(200);
     } finally {
       request.abort.abort();
     }

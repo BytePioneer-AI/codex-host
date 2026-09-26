@@ -16,10 +16,11 @@ import {
 import { requestCaptcha } from "./captcha.mjs";
 import { completeNewModelSelection } from "@zcode/provider";
 
-const write = (value) => process.stdout.write(`${JSON.stringify(value)}\n`);
-// Native services log to console; stdout belongs exclusively to this transport.
-for (const name of ["log", "info", "debug", "warn"])
-  console[name] = (...args) => console.error(...args);
+// stdout belongs exclusively to this transport. Any other stdout writer, including
+// console and native dependencies, is redirected to stderr.
+const protocolWrite = process.stdout.write.bind(process.stdout);
+const write = (value) => protocolWrite(`${JSON.stringify(value)}\n`);
+process.stdout.write = process.stderr.write.bind(process.stderr);
 const calls = new Set([
   "createSession",
   "resumeSession",
@@ -166,13 +167,6 @@ input.on("line", (line) => {
     if (!Number.isSafeInteger(request.id) || typeof request.method !== "string") throw new Error();
   } catch {
     void close().finally(() => process.exit(1));
-    return;
-  }
-  if (request.method === "close") {
-    void close().then(() => {
-      write({ id: request.id, result: null });
-      process.exit(0);
-    });
     return;
   }
   void dispatch(request).then(

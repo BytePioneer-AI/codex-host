@@ -147,6 +147,78 @@ describe("ZCode owned local service transport", () => {
     await expect(transport.start()).rejects.toMatchObject({ code: "unsupported" });
     await transport.close();
   });
+  it.each(["worker.cjs", "agent/zcode.cjs", "agent/provider/zcode-builtin.json"])(
+    "reports an incomplete runtime without %s as not installed",
+    async (file) => {
+      const root = await fixture("send(null)");
+      await rm(path.join(root, file));
+      const transport = new ServiceTransport({
+        cwd: root,
+        environment: {},
+        runtimeDirectory: root,
+      });
+      await expect(transport.start()).rejects.toMatchObject({ code: "notInstalled" });
+      await transport.close();
+    },
+  );
+  it("reassembles a response line delivered across many chunks", async () => {
+    const root = await fixture("send({text:'中'.repeat(3*1024*1024)})");
+    const transport = new ServiceTransport({ cwd: root, environment: {}, runtimeDirectory: root });
+    try {
+      await transport.start();
+      expect(await transport.request("large")).toEqual({ text: "中".repeat(3 * 1024 * 1024) });
+    } finally {
+      await transport.close();
+    }
+  });
+  describe("64 MiB response line limit", () => {
+    const MAX = 64 * 1024 * 1024;
+    // Lines of an exact UTF-8 byte length, padded with 3-byte characters so a
+    // character count cannot pass for a byte count.
+    const sized = `const sized=(value,bytes)=>{const fill=bytes-Buffer.byteLength(JSON.stringify(value(''))),text='中'.repeat(Math.floor(fill/3))+'x'.repeat(fill%3);return JSON.stringify(value(text))};
+      if(method==='sized')process.stdout.write(sized(text=>({id,result:text}),params.bytes)+'\\n');
+      else process.stdout.write(sized(text=>({key:'unused',event:'unused',value:text}),params.bytes)+'\\n'+sized(text=>({id,result:text}),params.bytes)+'\\n');`;
+    async function transport() {
+      const root = await fixture(sized);
+      const value = new ServiceTransport({ cwd: root, environment: {}, runtimeDirectory: root });
+      await value.start();
+      return value;
+    }
+    it("rejects a line one byte over the limit whose newline arrives in its last chunk", async () => {
+      const service = await transport();
+      try {
+        await expect(service.request("sized", { bytes: MAX + 1 })).rejects.toMatchObject({
+          code: "protocolError",
+          message: "ZCode response exceeded 64 MiB",
+        });
+      } finally {
+        await service.close();
+      }
+    }, 60_000);
+    it.each([MAX, MAX - 1])(
+      "accepts a %i byte line",
+      async (bytes) => {
+        const service = await transport();
+        try {
+          const result = await service.request("sized", { bytes });
+          expect(Buffer.byteLength(JSON.stringify({ id: 2, result }))).toBe(bytes);
+        } finally {
+          await service.close();
+        }
+      },
+      60_000,
+    );
+    it("limits each line separately when several lines share a chunk", async () => {
+      const service = await transport();
+      try {
+        const bytes = 40 * 1024 * 1024;
+        const result = await service.request("pair", { bytes });
+        expect(Buffer.byteLength(JSON.stringify({ id: 2, result }))).toBe(bytes);
+      } finally {
+        await service.close();
+      }
+    }, 60_000);
+  });
   it("passes the Thread environment into its child and closes independently", async () => {
     const root = await fixture("send({marker:process.env.CODEXHOST_THREAD_ID})");
     const one = new ServiceTransport({

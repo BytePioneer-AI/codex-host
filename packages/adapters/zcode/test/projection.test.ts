@@ -116,5 +116,19 @@ describe("ZCode native projections", () => {
     expect(
       fileChanges({ filePath: "a.txt", structuredPatch: [{ oldStart: 1, newStart: 1 }] }),
     ).toEqual([]);
+    expect(
+      fileChanges({
+        filePath: "a.txt",
+        structuredPatch: [{ oldStart: 1, newStart: 1, lines: ["-old", "+new"] }],
+      }),
+    ).toEqual([]);
+    expect(
+      fileChanges({
+        filePath: "a.txt",
+        structuredPatch: [
+          { oldStart: 1, oldLines: 1, newStart: 1, newLines: 1, lines: ["-old", "+new"] },
+        ],
+      }),
+    ).toMatchObject([{ kind: "update", unifiedDiff: expect.stringContaining("@@ -1,1 +1,1 @@") }]);
   });
 });

@@ -9,6 +9,8 @@ import { DraftAgentController, DEFAULT_RENDERER_AGENTS } from "../src/agent-sele
 import { RENDERER_AGENT_LABELS } from "../src/renderer-agent-icon.js";
 import { modelSelectionForAgent } from "../src/versioned-renderer-adapter.js";
 import { restoredThreadOwnership } from "../src/renderer-binding-probe.js";
+import { RENDERER_AGENT_INSTALL_URLS } from "../src/renderer-agent-picker.js";
+import { harnessInstallationGuide } from "../src/settings/harness-installation-guides.js";
 
 describe("ZCode Desktop selection", () => {
   it.each(["zcode-local-v1"])(
@@ -63,4 +65,12 @@ describe("ZCode Desktop selection", () => {
       expect(controller.permissionModeForAgent(composer, "zcode")).toBeUndefined();
     },
   );
+  it("points both install entries at the codexhost runtime installation steps", () => {
+    const guide = harnessInstallationGuide("zcode", "en");
+    expect(guide.url).toMatch(
+      /codex-host\/blob\/main\/docs\/harnesses\/zcode\/zcode-harness-integration\.md#/,
+    );
+    expect(RENDERER_AGENT_INSTALL_URLS.zcode).toBe(guide.url);
+    expect(guide.before).toContain("Node 24");
+  });
 });

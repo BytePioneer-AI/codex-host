@@ -3,9 +3,11 @@ use std::io::{self, Read, Write};
 #[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 const HANDOFF_FILE: &str = "cleanup-complete-v1";
 const TOKEN_BYTES: usize = 32;
+static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(0);
 
 /// Authorizes installation only after this Helper's Launcher finished cleanup.
 /// A fresh token is required for every Helper launch, including retries.
@@ -36,13 +38,47 @@ impl UpdateHandoff {
 
     /// Publish only after managed Desktop cleanup has completed successfully.
     pub fn publish(&self, request_path: &Path) -> io::Result<()> {
+        self.publish_with_sync(request_path, File::sync_all)
+    }
+
+    fn publish_with_sync(
+        &self,
+        request_path: &Path,
+        sync: impl FnOnce(&File) -> io::Result<()>,
+    ) -> io::Result<()> {
+        let destination = handoff_path(request_path)?;
         let mut options = OpenOptions::new();
         options.create_new(true).write(true);
         #[cfg(unix)]
         options.mode(0o600);
-        let mut file = options.open(handoff_path(request_path)?)?;
-        file.write_all(self.token.as_bytes())?;
-        file.sync_all()
+        let (temporary, mut file) = loop {
+            let id = NEXT_TEMP_ID.fetch_add(1, Ordering::Relaxed);
+            let temporary = destination.with_file_name(format!(
+                ".{HANDOFF_FILE}.{}.{}.tmp",
+                std::process::id(),
+                id
+            ));
+            match options.open(&temporary) {
+                Ok(file) => break (temporary, file),
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+                Err(error) => return Err(error),
+            }
+        };
+
+        let prepared = file
+            .write_all(self.token.as_bytes())
+            .and_then(|()| sync(&file));
+        drop(file);
+        if let Err(error) = prepared {
+            let _ = fs::remove_file(&temporary);
+            return Err(error);
+        }
+
+        // A hard link publishes the fully synced file without replacing a prior handoff.
+        let published = fs::hard_link(&temporary, &destination);
+        // Once linked, failure to remove the staging name cannot revoke publication.
+        let _ = fs::remove_file(&temporary);
+        published
     }
 
     /// Verify only after the Launcher has exited, immediately before installing.
@@ -95,6 +131,7 @@ fn invalid_handoff() -> io::Error {
 mod tests {
     use super::{HANDOFF_FILE, UpdateHandoff};
     use std::fs;
+    use std::io;
     use std::path::{Path, PathBuf};
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -142,6 +179,26 @@ mod tests {
     }
 
     #[test]
+    fn a_sync_failure_after_the_full_write_does_not_publish_authorization() {
+        let (root, request, handoff) = fixture();
+        let error = handoff
+            .publish_with_sync(&request, |file| {
+                assert_eq!(file.metadata()?.len(), TOKEN.len() as u64);
+                Err(io::Error::other("simulated sync failure"))
+            })
+            .unwrap_err();
+        assert_eq!(error.to_string(), "simulated sync failure");
+        assert_eq!(
+            handoff.verify(&request).unwrap_err().kind(),
+            io::ErrorKind::NotFound
+        );
+        assert_eq!(fs::read_dir(&root).unwrap().count(), 0);
+        handoff.publish(&request).unwrap();
+        handoff.verify(&request).unwrap();
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn rejects_missing_mismatched_truncated_and_oversized_authorization() {
         let (root, request, handoff) = fixture();
         assert!(handoff.verify(&request).is_err());
@@ -165,6 +222,7 @@ mod tests {
         let retry = UpdateHandoff::from_token("fedcba9876543210fedcba9876543210").unwrap();
         assert!(retry.verify(&request).is_err());
         assert!(retry.publish(&request).is_err());
+        previous.verify(&request).unwrap();
         fs::remove_dir_all(root).unwrap();
     }
 

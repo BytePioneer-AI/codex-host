@@ -4,7 +4,7 @@
 
 会话和 inspect 都无条件声明 `capabilities.steer`。不探测 `pi --version`：那会在 Host 进程里 `spawnSync`，最长阻塞 5 秒。版本门槛也没有区分度。`steer` 在 0.32.0 引入，而 Pi Adapter 已经依赖 0.8x 才有的 RPC `agent_settled` 与 `get_entries`（Pi CHANGELOG）。能被 Adapter 驱动的 Pi 都具备 steer。
 
-`turn.steer` 只对当前活跃 Turn 调用这个 RPC，不取消、不另起 Turn。空文本是 `invalidRequest`。目标不是活跃 Turn、会话已关闭，或原生拒绝，是 `invalidState`。原生接受后 Adapter 不发布 `userMessage`。实时里的 user `message_end` 仍被忽略，不会变成 Agent 消息或新 Turn。忙时 `turn.start` 仍是 `sessionBusy`。
+`turn.steer` 只对当前活跃 Turn 调用这个 RPC，不取消、不另起 Turn。空文本是 `invalidRequest`。目标不是活跃 Turn、会话已关闭，或原生拒绝，是 `invalidState`。Turn 开始终态身份校验后不再接受新的 steer；已经发出的 RPC 会先结算，原生成功回执计入历史数量后才读取 snapshot，因此不会因 Turn 清理竞态把已接受输入误报为失败。原生接受后 Adapter 不发布 `userMessage`。实时里的 user `message_end` 仍被忽略，不会变成 Agent 消息或新 Turn。忙时 `turn.start` 仍是 `sessionBusy`。
 
 ## 历史
 

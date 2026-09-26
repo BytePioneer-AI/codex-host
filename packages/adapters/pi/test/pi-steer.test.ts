@@ -217,6 +217,44 @@ describe("Pi turn.steer", () => {
     expect(userMessageEvents(outputs)).toEqual([]);
   });
 
+  it("waits for an accepted steer before completing and closes steer admission", async () => {
+    const { session, transports, outputs } = await openSession();
+    const turnId = await startTurn(session);
+    const transport = transports[0];
+    if (!transport) throw new Error("Missing transport");
+    const accepted = Promise.withResolvers<undefined>();
+    transport.steer.mockImplementationOnce(() => accepted.promise);
+    const steering = session.execute({
+      type: "turn.steer",
+      turnId,
+      input: [{ type: "text", text: "reply pong" }],
+    });
+    await vi.waitFor(() => expect(transport.steer).toHaveBeenCalledOnce());
+
+    transport.history = historyOf(["run the tool", "reply pong"]);
+    transport.resolveTurn?.({ text: "pong", cancelled: false });
+    await Promise.resolve();
+    await expect(
+      session.execute({
+        type: "turn.steer",
+        turnId,
+        input: [{ type: "text", text: "too late" }],
+      }),
+    ).resolves.toMatchObject({ ok: false, error: { code: "invalidState" } });
+
+    accepted.resolve(undefined);
+    await expect(steering).resolves.toEqual({ ok: true, value: { accepted: true } });
+    await vi.waitFor(() => {
+      expect(hostEvents(outputs).some((event) => event.type === "turn.completed")).toBe(true);
+    });
+    expect(hostEvents(outputs).find((event) => event.type === "turn.completed")).toMatchObject({
+      turnId,
+      nativeTurnRef: { nativeTurnKey: "user-1" },
+      outcome: { status: "succeeded", checkpoint: { checkpointId: "user-1" } },
+    });
+    expect(transport.steer).toHaveBeenCalledOnce();
+  });
+
   it("keeps the original prompt when one steer adds exactly one user entry", async () => {
     const { session, transports, outputs } = await openSession();
     const turnId = await startTurn(session);

@@ -269,6 +269,10 @@ Adapter 应在提交 prompt **之前**建立 SSE 订阅，但不能为 Host Turn
 
 历史 Snapshot 应以持久的 User/Assistant Message 与 Part 为事实源，而不是重放临时 SSE 文本。一个 Host Turn 由一个 user message 及其后、下一个 user message 前的 assistant/compaction/tool parts 组成；Native Turn/Item identity 必须直接使用 OpenCode ID，避免重连后生成新 ID 导致 UI 重复。Model/Thinking 选择写入 namespaced Session metadata，原生更新成功后才发布 effective state；这样即使尚未产生下一条 User Message，Resume 也能恢复当前选择，同时保留其他原生 metadata。
 
+### 同轮插入
+
+本次不声明 `capabilities.steer`。上游 V1 `prompt_async` 在忙碌时再提交会把消息写入当前运行，但该行为没有文档；Adapter 现有的实时用户消息绑定会把插入之后的回复丢掉并提前结束这一轮。V2 `delivery:"steer"` 属于另一套 runner，不能和当前 V1 运行混用。`turn.steer` 因此返回 `unsupported`，由 Host 停止当前 Turn 后再发送。忙碌时的 `turn.start` 仍是 `sessionBusy`。
+
 ### Adapter 内部责任边界
 
 `packages/adapters/opencode/src/opencode-adapter.ts` 仍保留为一个 Session façade，但它内部有四类必须保持同一状态机原子性的职责：Turn admission/completion、OpenCode SSE 到 Host Item/Interaction 的投影、Session state/usage projection，以及 history lifecycle/reconnect reconciliation。当前已将受管 Server 的进程生命周期与 SDK transport 拆到 `server-connection.ts` / `sdk-transport.ts`；暂不把上述四类状态机进一步拆成多个对象，因为它们共享 `ActiveTurn`、admission buffer、interaction closure 和 exactly-once completion invariant。下一次拆分应以可观察的 HarnessSession seam 为边界，并先为跨模块事件顺序建立契约测试，避免用 event bus 或共享可变全局状态替代现有显式状态机。

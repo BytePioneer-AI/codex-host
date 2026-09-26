@@ -31,6 +31,8 @@ import type {
   TurnCancelCommand,
   TurnStartAccepted,
   TurnStartCommand,
+  TurnSteerAccepted,
+  TurnSteerCommand,
 } from "@codexhost/harness-adapter";
 import {
   HarnessOutputChannel,
@@ -1199,6 +1201,7 @@ export class QoderSession implements HarnessSession {
   }
 
   async execute(command: TurnStartCommand): Promise<HarnessResult<TurnStartAccepted>>;
+  async execute(command: TurnSteerCommand): Promise<HarnessResult<TurnSteerAccepted>>;
   async execute(command: TurnCancelCommand): Promise<HarnessResult<TurnCancelAccepted>>;
   async execute(
     command: InteractionRespondCommand,
@@ -1217,6 +1220,15 @@ export class QoderSession implements HarnessSession {
     }
 
     switch (command.type) {
+      case "turn.steer":
+        return {
+          ok: false,
+          error: {
+            code: "unsupported",
+            message: "Qoder native steering is not enabled",
+            retryable: false,
+          },
+        };
       case "turn.start": {
         if (this.#activeTurn) {
           return {

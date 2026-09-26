@@ -28,6 +28,7 @@ import type {
   HarnessAdapter,
   HarnessOutput,
   HarnessSession,
+  HostTextInput,
   HostApprovalInteraction,
   HostSubagentState,
   HostApprovalResponse,
@@ -79,6 +80,8 @@ import {
   threadThinkingSelectParamsSchema,
   threadOwnershipListParamsSchema,
   threadOwnershipListResultSchema,
+  threadSteeringInspectParamsSchema,
+  threadSteeringInspectResultSchema,
   permissionModeFixedAtCreate,
   updateCheckResultSchema,
   updateEmptyParamsSchema,
@@ -1174,6 +1177,10 @@ export class AppServerHost {
     }
     if (request.method === "codexhost/thread/ownership/list") {
       await this.#listThreadOwnership(request);
+      return;
+    }
+    if (request.method === "codexhost/thread/steering/inspect") {
+      await this.#inspectThreadSteering(request);
       return;
     }
     if (request.method === "codexhost/thread/model/select") {
@@ -2537,6 +2544,25 @@ export class AppServerHost {
     }
   }
 
+  /** Read the same capability fact that Desktop `turn/steer` will use. */
+  async #inspectThreadSteering(request: JsonRpcRequest): Promise<void> {
+    const params = threadSteeringInspectParamsSchema.safeParse(request.params);
+    if (!params.success) {
+      await this.#writer.json(rpcError(request, -32602, "Invalid Thread steering params"));
+      return;
+    }
+    const location = await this.#locateExternalThread(params.data.threadId);
+    if (await this.#writeResolutionError(request, location)) return;
+    const delivery =
+      location.kind !== "external"
+        ? "official"
+        : this.#externalRuntime.get(params.data.threadId)?.session.capabilities.steer
+          ? "activeTurn"
+          : "newTurn";
+    const result = threadSteeringInspectResultSchema.parse({ delivery });
+    await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(result) }));
+  }
+
   async #inspectThreadCommands(request: JsonRpcRequest): Promise<void> {
     const params = threadCommandsInspectParamsSchema.safeParse(request.params);
     if (!params.success) {
@@ -3185,8 +3211,15 @@ export class AppServerHost {
     return true;
   }
 
-  #refreshExternalThread(thread: ExternalThread): Promise<ExternalThreadRpcError | null> {
-    return this.#externalRuntime.refresh(thread);
+  /** Refresh history before Desktop acts on native Turn boundaries. */
+  async #refreshExternalThread(thread: ExternalThread): Promise<ExternalThreadRpcError | null> {
+    const error = await this.#externalRuntime.refresh(thread);
+    if (!error) {
+      for (const turnId of thread.steeredTurnIds) {
+        if (turnId !== thread.activeTurnId) thread.steeredTurnIds.delete(turnId);
+      }
+    }
+    return error;
   }
 
   #persistTerminalIdentity(
@@ -3654,9 +3687,14 @@ export class AppServerHost {
         thread,
         requestObject(request),
         (text, assertActive) => this.#beginExternalInputTurn(thread, text, assertActive),
+        (input) => this.#insertExternalInput(thread, input),
       );
       try {
-        await this.#writer.json(rpcEnvelope(request, { result: { turnId: started.turnId } }));
+        await this.#writer.json(
+          rpcEnvelope(request, {
+            result: { turnId: started.turnId, delivery: started.delivery },
+          }),
+        );
       } finally {
         started.gate.resolve();
       }
@@ -3673,6 +3711,56 @@ export class AppServerHost {
     } finally {
       this.#signalActiveWorkChanged();
     }
+  }
+
+  /** Native same-Turn input. Once the Harness accepts it, the Host shows it in that Turn. */
+  async #insertExternalInput(
+    thread: ExternalThread,
+    input: { turnId: HostTurnId; text: string; clientUserMessageId?: string },
+  ): Promise<{ turnId: HostTurnId; gate: TurnProjectionGate }> {
+    const steered: HostTextInput[] = [
+      {
+        type: "text",
+        text: rewriteDelegationMentionText(restoreHarnessCommandMentions(input.text)),
+      },
+    ];
+    const result = await thread.session.execute({
+      type: "turn.steer",
+      turnId: input.turnId,
+      input: steered,
+    });
+    if (!result.ok) throw new ExternalSteerError(-32074, result.error.message);
+    thread.steeredTurnIds.add(input.turnId);
+    const item = {
+      type: "userMessage" as const,
+      itemId: hostItemIdSchema.parse(randomUUID()),
+      input: steered,
+    };
+    try {
+      // The Harness can finish immediately after accepting; there is then no live Turn to update.
+      if (thread.activeTurnId === input.turnId) {
+        const projection = this.#projectedTurn(thread, input.turnId);
+        if (input.clientUserMessageId) {
+          projection.projector.bindUserMessageClientId(item.itemId, input.clientUserMessageId);
+        }
+        await this.#projectHarnessOutput(thread, {
+          kind: "event",
+          event: { type: "item.started", turnId: input.turnId, item },
+        });
+        await this.#projectHarnessOutput(thread, {
+          kind: "event",
+          event: {
+            type: "item.completed",
+            turnId: input.turnId,
+            snapshot: { item, outcome: { status: "succeeded" } },
+          },
+        });
+      }
+    } catch (error) {
+      // Native delivery already succeeded. Reporting failure here would invite a duplicate retry.
+      this.#diagnose(error);
+    }
+    return { turnId: input.turnId, gate: { promise: Promise.resolve(), resolve: () => undefined } };
   }
 
   /** Keep command restoration and dispatch identical for start and steer submissions. */

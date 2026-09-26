@@ -68,6 +68,8 @@ import type {
   TurnCancelCommand,
   TurnStartAccepted,
   TurnStartCommand,
+  TurnSteerAccepted,
+  TurnSteerCommand,
 } from "./text-session.js";
 
 interface ActiveFakeTurn {
@@ -158,6 +160,7 @@ export class FakeHarnessSession implements HarnessSession {
   readonly initialUsage: HostUsage | null;
   commands?: HarnessCommandCapability;
   readonly interactionResponses: InteractionRespondCommand[] = [];
+  readonly steers: TurnSteerCommand[] = [];
   readonly outputs: AsyncIterable<HarnessOutput>;
   snapshotReads = 0;
   usageRefreshes = 0;
@@ -203,6 +206,7 @@ export class FakeHarnessSession implements HarnessSession {
     initialPermissionModeId: HarnessPermissionModeId | undefined = permissionModes?.defaultModeId,
     supportsRollbackLastTurn = false,
     permissionModeScope: HarnessPermissionModeScope = "live",
+    supportsSteer = false,
   ) {
     this.harnessId = harnessId;
     const availableThinkingOptions = thinkingOptionsForModel(catalog, initialModel);
@@ -224,6 +228,7 @@ export class FakeHarnessSession implements HarnessSession {
         rollbackLastTurn: supportsRollbackLastTurn,
       },
       subagents: { observe: false, readTranscript: false },
+      ...(supportsSteer ? { steer: true } : {}),
     };
     this.cwd = cwd;
     this.#catalog = catalog;
@@ -358,6 +363,7 @@ export class FakeHarnessSession implements HarnessSession {
   }
 
   execute(command: TurnStartCommand): Promise<HarnessResult<TurnStartAccepted>>;
+  execute(command: TurnSteerCommand): Promise<HarnessResult<TurnSteerAccepted>>;
   execute(command: TurnCancelCommand): Promise<HarnessResult<TurnCancelAccepted>>;
   execute(command: InteractionRespondCommand): Promise<HarnessResult<InteractionRespondAccepted>>;
   execute(command: ModelSelectCommand): Promise<HarnessResult<ModelSelectCompleted>>;
@@ -370,6 +376,7 @@ export class FakeHarnessSession implements HarnessSession {
   ): Promise<
     HarnessResult<
       | TurnStartAccepted
+      | TurnSteerAccepted
       | TurnCancelAccepted
       | InteractionRespondAccepted
       | ModelSelectCompleted
@@ -378,6 +385,7 @@ export class FakeHarnessSession implements HarnessSession {
     >
   > {
     if (this.#closed) return { ok: false, error: invalidStateError };
+    if (command.type === "turn.steer") return this.#steer(command);
     if (command.type === "turn.cancel") return this.#cancel(command);
     if (command.type === "interaction.respond") return this.#respond(command);
     if (command.type === "model.select") return this.#selectModel(command);
@@ -439,6 +447,32 @@ export class FakeHarnessSession implements HarnessSession {
       this.requestApproval(pending.title, pending.description);
     }
     return { ok: true, value: { turnId: command.turnId } };
+  }
+
+  /** Accepts steered input into the active Turn, as a native insertion primitive would. */
+  #steer(command: TurnSteerCommand): HarnessResult<TurnSteerAccepted> {
+    if (!this.capabilities.steer) {
+      return {
+        ok: false,
+        error: {
+          code: "invalidRequest",
+          message: "Fake Harness Session does not steer",
+          retryable: false,
+        },
+      };
+    }
+    if (this.#active?.command.turnId !== command.turnId) {
+      return {
+        ok: false,
+        error: {
+          code: "invalidState",
+          message: "Fake Harness steer target is not the active Turn",
+          retryable: false,
+        },
+      };
+    }
+    this.steers.push(command);
+    return { ok: true, value: { accepted: true } };
   }
 
   appendText(text: string): void {
@@ -994,6 +1028,8 @@ export class FakeHarnessAdapter implements HarnessAdapter {
   readonly supportsFork: boolean;
   readonly supportsForkAcrossCwd: boolean;
   readonly supportsRollbackLastTurn: boolean;
+  /** Sessions opened after this is set declare native steering. */
+  supportsSteer = false;
   readonly permissionModeScope: HarnessPermissionModeScope;
   inspectionCalls = 0;
   #closePromise: Promise<void> | null = null;
@@ -1270,6 +1306,7 @@ export class FakeHarnessAdapter implements HarnessAdapter {
       permissionModeId,
       this.supportsRollbackLastTurn,
       this.permissionModeScope,
+      this.supportsSteer,
     );
     this.sessions.push(session);
     this.#sessionsByNativeId.set(nativeRef.nativeSessionId, session);

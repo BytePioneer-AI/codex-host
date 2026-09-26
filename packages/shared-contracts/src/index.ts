@@ -176,6 +176,8 @@ export {
   threadThinkingSelectParamsSchema,
   threadOwnershipListParamsSchema,
   threadOwnershipListResultSchema,
+  threadSteeringInspectParamsSchema,
+  threadSteeringInspectResultSchema,
   threadOwnershipSchema,
 } from "./harness-models.js";
 export type {
@@ -200,6 +202,7 @@ export type {
   ThreadOwnership,
   ThreadOwnershipListParams,
   ThreadOwnershipListResult,
+  ThreadSteeringInspectResult,
 } from "./harness-models.js";
 export {
   harnessCommandCatalogSchema,

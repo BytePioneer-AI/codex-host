@@ -117,18 +117,8 @@ function targetedSubagentId(argumentsValue: unknown): string | undefined {
   );
 }
 
-function includesAuthenticationFailure(
-  message: Record<string, unknown>,
-  errors: string[],
-): boolean {
-  if (errors.some((error) => AUTHENTICATION_ERRORS.has(error))) return true;
-  const text = [message.result, ...(Array.isArray(message.errors) ? message.errors : [])]
-    .filter((value): value is string => typeof value === "string")
-    .join(" ")
-    .toLowerCase();
-  return (
-    text.includes("not logged in") || text.includes("invalid api key") || text.includes("oauth")
-  );
+function includesAuthenticationFailure(errors: string[]): boolean {
+  return errors.some((error) => AUTHENTICATION_ERRORS.has(error));
 }
 
 function failure(kind: ClaudeTransportFailureKind): ClaudeTransportTurnResult {
@@ -472,7 +462,7 @@ export class ClaudeNativeTurnAccumulator {
       terminal = failure("protocol");
     } else if (this.#textConflict) {
       terminal = failure("textConflict");
-    } else if (includesAuthenticationFailure(message, this.#assistantErrors)) {
+    } else if (includesAuthenticationFailure(this.#assistantErrors)) {
       terminal = failure("authentication");
     } else if (this.#cancelRequested && ABORTED_TERMINALS.has(terminalReason)) {
       terminal = { status: "cancelled", reason: terminalReason };

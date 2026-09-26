@@ -1,14 +1,14 @@
-import { appendFileSync, mkdirSync, renameSync, statSync } from "node:fs";
+import { appendFileSync, chmodSync, mkdirSync, renameSync, statSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
 const DEFAULT_MAX_BYTES = 5 * 1024 * 1024;
 
-export function runtimeLogPath(environment: NodeJS.ProcessEnv): string {
+export function runtimeLogPath(environment: NodeJS.ProcessEnv, pid: number): string {
   const dataDirectory = environment.CODEXHOST_DATA_DIR
     ? path.resolve(environment.CODEXHOST_DATA_DIR)
     : path.join(os.homedir(), ".codexhost");
-  return path.join(dataDirectory, "logs", "host-runtime.log");
+  return path.join(dataDirectory, "logs", `host-runtime-${pid}.log`);
 }
 
 /**
@@ -31,21 +31,36 @@ export function installRuntimeLog(input: {
   let size = 0;
   let atLineStart = true;
   try {
-    mkdirSync(path.dirname(filePath), { recursive: true });
+    mkdirSync(path.dirname(filePath), { recursive: true, mode: 0o700 });
+    chmodSync(path.dirname(filePath), 0o700);
+    appendFileSync(filePath, "", { mode: 0o600 });
+    chmodSync(filePath, 0o600);
+    try {
+      chmodSync(`${filePath}.1`, 0o600);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
     size = statSync(filePath).size;
   } catch {
-    // A missing file starts empty; an unusable directory fails on append below.
+    // Do not capture diagnostics if the private log cannot be prepared.
+    return () => {};
   }
 
   const append = (text: string): void => {
     try {
-      const bytes = Buffer.byteLength(text);
-      if (size > 0 && size + bytes > maxBytes) {
+      let bytes = Buffer.from(text);
+      if (bytes.length > maxBytes) {
+        let start = bytes.length - maxBytes;
+        // Keep the newest diagnostics without cutting through a UTF-8 character.
+        while (start < bytes.length && (bytes.readUInt8(start) & 0xc0) === 0x80) start += 1;
+        bytes = bytes.subarray(start);
+      }
+      if (size > 0 && size + bytes.length > maxBytes) {
         renameSync(filePath, `${filePath}.1`);
         size = 0;
       }
-      appendFileSync(filePath, text);
-      size += bytes;
+      appendFileSync(filePath, bytes, { mode: 0o600 });
+      size += bytes.length;
     } catch {
       // Ignored by design.
     }

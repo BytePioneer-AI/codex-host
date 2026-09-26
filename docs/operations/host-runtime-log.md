@@ -2,9 +2,10 @@
 
 Host Runtime 的 stderr 由 Codex Desktop 接管，Desktop 只保留最后一行，`npm start` 也会在就绪后脱离终端。因此 Runtime 把自己的诊断输出另存一份到文件，崩溃后仍有据可查。
 
-- 位置：`<数据目录>/logs/host-runtime.log`，数据目录为 `CODEXHOST_DATA_DIR`，未设置时是 `~/.codexhost`。
-- 始终开启，无需配置。单个文件上限 5 MiB，超过后轮转为 `host-runtime.log.1`，只保留一份旧文件。
-- 每行带 UTC 时间和进程号，多个 Runtime 进程可以同时追加。
+- 位置：`<数据目录>/logs/host-runtime-<进程号>.log`，数据目录为 `CODEXHOST_DATA_DIR`，未设置时是 `~/.codexhost`。
+- 始终开启，无需配置。每个进程独立写入和轮转，避免多个 Runtime 争用同一文件。单个文件上限 5 MiB，超过后轮转为同名 `.log.1`，每个进程只保留一份旧文件；单次输出超过上限时只保留末尾完整 UTF-8 字符。
+- 每行带 UTC 时间和进程号。上限按进程计算，不是日志目录的总上限；已退出进程的日志保留供排查，之后可手动清理。
+- 日志目录使用 `0700`、当前文件与轮转文件使用 `0600`；启动时也会收紧已有对象的权限（权限位按平台支持生效）。
 
 记录内容：
 

@@ -9,7 +9,11 @@ const arguments_ = process.argv.slice(2);
 
 // Only the long-lived Host Runtime is logged; the CLI subcommands report on their own stderr.
 function runLoggedHostRuntime(): Promise<number> {
-  installRuntimeLog({ filePath: runtimeLogPath(process.env), stream: process.stderr, process });
+  installRuntimeLog({
+    filePath: runtimeLogPath(process.env, process.pid),
+    stream: process.stderr,
+    process,
+  });
   return runHostRuntime({ arguments: arguments_, environment: process.env });
 }
 

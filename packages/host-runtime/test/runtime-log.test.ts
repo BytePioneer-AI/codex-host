@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -32,11 +32,11 @@ describe("Host Runtime log", () => {
   });
 
   it("resolves the log below the data directory", () => {
-    expect(runtimeLogPath({ CODEXHOST_DATA_DIR: directory })).toBe(
-      path.join(directory, "logs", "host-runtime.log"),
+    expect(runtimeLogPath({ CODEXHOST_DATA_DIR: directory }, 4242)).toBe(
+      path.join(directory, "logs", "host-runtime-4242.log"),
     );
-    expect(runtimeLogPath({})).toBe(
-      path.join(os.homedir(), ".codexhost", "logs", "host-runtime.log"),
+    expect(runtimeLogPath({}, 4242)).toBe(
+      path.join(os.homedir(), ".codexhost", "logs", "host-runtime-4242.log"),
     );
   });
 
@@ -115,4 +115,87 @@ describe("Host Runtime log", () => {
     expect(stream.write("still forwarded\n")).toBe(true);
     expect(stream.written).toEqual(["still forwarded\n"]);
   });
+
+  it("keeps concurrent Runtime logs and their rotations independent", async () => {
+    const first = fakeStream();
+    const second = fakeStream();
+    const firstPath = runtimeLogPath({ CODEXHOST_DATA_DIR: directory }, 4242);
+    const secondPath = runtimeLogPath({ CODEXHOST_DATA_DIR: directory }, 4243);
+    const firstStop = installRuntimeLog({
+      filePath: firstPath,
+      stream: first,
+      process: fakeProcess(),
+      maxBytes: 200,
+    });
+    const secondStop = installRuntimeLog({
+      filePath: secondPath,
+      stream: second,
+      process: Object.assign(new EventEmitter(), { pid: 4243 }) as NodeJS.Process,
+      maxBytes: 200,
+    });
+    for (let index = 0; index < 20; index += 1) {
+      first.write(`first runtime ${index}\n`);
+      second.write(`second runtime ${index}\n`);
+    }
+    firstStop();
+    secondStop();
+    for (const [index, filePath] of [firstPath, secondPath].entries()) {
+      for (const suffix of ["", ".1"]) {
+        const text = await readFile(`${filePath}${suffix}`, "utf8");
+        expect(Buffer.byteLength(text)).toBeLessThanOrEqual(200);
+        expect(text).toContain(index === 0 ? "first runtime" : "second runtime");
+        expect(text).not.toContain(index === 0 ? "second runtime" : "first runtime");
+      }
+    }
+  });
+
+  it("bounds oversized writes and preserves a complete UTF-8 tail", async () => {
+    const filePath = path.join(directory, "host-runtime.log");
+    const stream = fakeStream();
+    const stop = installRuntimeLog({ filePath, stream, process: fakeProcess(), maxBytes: 100 });
+    const oversized = `${"中😀".repeat(100)}tail\n`;
+    stream.write(oversized);
+    stop();
+    const current = await readFile(filePath, "utf8");
+    expect(Buffer.byteLength(current)).toBeLessThanOrEqual(100);
+    expect(current).toMatch(/tail\n$/u);
+    expect(current).not.toContain("\uFFFD");
+    expect((await stat(`${filePath}.1`)).size).toBeLessThanOrEqual(100);
+    expect(stream.written).toEqual([oversized]);
+  });
+
+  it("bounds the first write to an empty file", async () => {
+    const filePath = path.join(directory, "host-runtime.log");
+    const stop = installRuntimeLog({
+      filePath,
+      stream: fakeStream(),
+      process: fakeProcess(),
+      maxBytes: 16,
+    });
+    stop();
+    expect((await stat(filePath)).size).toBeLessThanOrEqual(16);
+  });
+
+  it.skipIf(process.platform === "win32")(
+    "restricts existing and rotated log permissions",
+    async () => {
+      const logs = path.join(directory, "logs");
+      const filePath = path.join(logs, "host-runtime.log");
+      await mkdir(logs);
+      await chmod(logs, 0o755);
+      await writeFile(filePath, "old current\n");
+      await writeFile(`${filePath}.1`, "old previous\n");
+      await chmod(filePath, 0o666);
+      await chmod(`${filePath}.1`, 0o666);
+      const stream = fakeStream();
+      const stop = installRuntimeLog({ filePath, stream, process: fakeProcess(), maxBytes: 100 });
+      expect((await stat(logs)).mode & 0o777).toBe(0o700);
+      expect((await stat(filePath)).mode & 0o777).toBe(0o600);
+      expect((await stat(`${filePath}.1`)).mode & 0o777).toBe(0o600);
+      stream.write("x".repeat(150));
+      stop();
+      expect((await stat(filePath)).mode & 0o777).toBe(0o600);
+      expect((await stat(`${filePath}.1`)).mode & 0o777).toBe(0o600);
+    },
+  );
 });

@@ -1,5 +1,9 @@
 # Renderer brand assets
 
+`zcode-agent.svg` matches the ZCode Adapter's `assets/icon.svg`, preserved from
+the upstream codex-host ZCode integration snapshot `b66013bb`. It is bundled as
+a data URL and does not load an installed application asset at runtime.
+
 `codex-logo.png` is the Codex X mark
 source and `codex-logo-transparent.png` is its white-background-free square
 variant. `codex-logo-bright.png` recolors that mark in the official bright

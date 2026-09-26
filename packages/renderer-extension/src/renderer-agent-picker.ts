@@ -74,6 +74,7 @@ export const RENDERER_AGENT_INSTALL_URLS: Readonly<Record<ExternalRendererAgent,
   qoder: "https://docs.qoder.com/",
   "qoder-cn": "https://docs.qoder.cn/",
   "kimi-code": "https://moonshotai.github.io/kimi-code/en/guides/getting-started.html",
+  zcode: "https://github.com/zai-org/ZCode",
 };
 
 type AgentAvailability = Partial<Record<ExternalRendererAgent, RendererAgentAvailability>>;

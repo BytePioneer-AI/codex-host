@@ -26,6 +26,7 @@ const classes = {
   hermes: "HermesAdapter",
   qoder: "QoderAdapter",
   "qoder-cn": "QoderAdapter",
+  zcode: "ZcodeAdapter",
 };
 
 const unavailable: HarnessInspection = {
@@ -127,6 +128,7 @@ describe("installed Harness composition", () => {
       hermes: ["/help", "/tools", "/context", "/version", "/compress"],
       qoder: ["/compact"],
       "qoder-cn": ["/compact"],
+      zcode: ["/compact", "/goal"],
     };
     const registry = await load();
     try {

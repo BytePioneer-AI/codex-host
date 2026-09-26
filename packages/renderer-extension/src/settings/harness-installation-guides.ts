@@ -29,6 +29,18 @@ const node: Text = ["Requires Node.js (including npm).", "需先安装 Node.js�
 // Sources: each entry's official URL, checked when updating the guide. These are
 // user-run instructions, not a Host installer or a claim of Adapter compatibility.
 const guides: Readonly<Record<ExternalRendererAgent, InstallationGuide>> = {
+  zcode: {
+    url: "https://github.com/zai-org/ZCode",
+    commands: [],
+    before: [
+      "Install ZCode 3.14.3 and the compatible codexhost local runtime.",
+      "请安装 ZCode 3.14.3 及配套 codexhost 本地运行包。",
+    ],
+    after: [
+      "Sign in and select your plan in ZCode, then check again. The Desktop window does not need to stay open.",
+      "在 ZCode 中登录并选择套餐，然后重新检测；使用时不需要保持 ZCode 窗口打开。",
+    ],
+  },
   pi: {
     url: "https://pi.dev/",
     commands: shells(

@@ -38,6 +38,7 @@
 
 - 通知通过普通的 `send` 在被通知 Thread 中启动一个新 Turn，外部 Harness 与原生 Codex 使用同一路径；不做同轮注入。
 - 被通知 Thread 正忙时通知保持待送达并重试，最长 6 小时。`THREAD_BUSY` 从不被当作已送达；`thread send` 自身“不排队”的语义不变。
+- 投递失败会重试；如果接收方已收到消息但确认响应丢失，通知可能重复。
 - 同一个被通知 Thread 同时到期的多条通知合并为一条消息，只启动一个 Turn。
 - 被通知 Thread 不存在、只读，或超过 6 小时仍无法送达时，watch 标记为 `undeliverable` 并保留原因，可由 `thread watches` 查看。
 

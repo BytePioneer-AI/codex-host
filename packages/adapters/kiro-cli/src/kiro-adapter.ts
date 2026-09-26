@@ -35,6 +35,8 @@ import type {
   ThinkingSelectCompleted,
   TurnCancelAccepted,
   TurnCancelCommand,
+  TurnSteerAccepted,
+  TurnSteerCommand,
   TurnOutcome,
   TurnStartAccepted,
   TurnStartCommand,
@@ -806,6 +808,7 @@ export class KiroSession implements HarnessSession {
   }
 
   async execute(command: TurnStartCommand): Promise<HarnessResult<TurnStartAccepted>>;
+  async execute(command: TurnSteerCommand): Promise<HarnessResult<TurnSteerAccepted>>;
   async execute(command: TurnCancelCommand): Promise<HarnessResult<TurnCancelAccepted>>;
   async execute(
     command: InteractionRespondCommand,
@@ -828,6 +831,13 @@ export class KiroSession implements HarnessSession {
     }
     if (command.type === "turn.cancel") {
       return this.#cancelTurn(command);
+    }
+    // Kiro's `_session/steer` is unpublished and unverified here; do not claim it.
+    if (command.type === "turn.steer") {
+      return {
+        ok: false,
+        error: { code: "unsupported", message: "Kiro steering is not enabled", retryable: false },
+      };
     }
     if (command.type === "interaction.respond") {
       return this.#respondInteraction(command);

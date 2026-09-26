@@ -678,6 +678,46 @@ describe("KimiSession", () => {
       await rm(home, { recursive: true, force: true });
     });
 
+    it("rejects turn.steer and still rejects a second turn.start as sessionBusy", async () => {
+      const transport = new MockKimiTransport();
+      transport.promptMock = vi.fn(() => new Promise(() => {}));
+      const session = new KimiSession({
+        transport,
+        sessionId: "session-steer",
+        cwd: "D:/project",
+        initialState: {},
+      });
+      const turnId = hostTurnIdSchema.parse("turn-steer");
+      expect(session.capabilities.steer).toBeUndefined();
+      expect(
+        await session.execute({
+          type: "turn.start",
+          turnId,
+          input: [{ type: "text", text: "Task 1" }],
+        }),
+      ).toMatchObject({ ok: true });
+      expect(
+        await session.execute({
+          type: "turn.steer",
+          turnId,
+          input: [{ type: "text", text: "insert" }],
+        }),
+      ).toMatchObject({
+        ok: false,
+        error: { code: "unsupported", message: expect.stringContaining("cannot steer") },
+      });
+      expect(
+        await session.execute({
+          type: "turn.start",
+          turnId: hostTurnIdSchema.parse("turn-steer-next"),
+          input: [{ type: "text", text: "Task 2" }],
+        }),
+      ).toMatchObject({ ok: false, error: { code: "sessionBusy" } });
+      await vi.waitFor(() => {
+        expect(transport.promptMock).toHaveBeenCalledTimes(1);
+      });
+    });
+
     it("rejects concurrent turn start with sessionBusy", async () => {
       const transport = new MockKimiTransport();
       transport.promptMock = vi.fn(

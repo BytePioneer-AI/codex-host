@@ -1,5 +1,10 @@
 import type { HarnessAdapter } from "./text-session.js";
 
+export interface HarnessLocalPage {
+  show(): Promise<void>;
+  close(): Promise<void>;
+}
+
 /** Per Host/connection construction context; never contains Host or Renderer internals. */
 export interface HarnessPluginContext {
   readonly environment: Readonly<Record<string, string | undefined>>;
@@ -9,6 +14,8 @@ export interface HarnessPluginContext {
   readonly managedRemoteHost: boolean;
   readonly brokerDescriptorPath?: string;
   readonly openLocalUrl?: (url: string) => Promise<void>;
+  /** Opens a background page in the local Desktop browser; owner must close it. */
+  readonly openLocalPage?: (url: string) => Promise<HarnessLocalPage>;
 }
 
 /** A loaded module supplies a factory, not a global registration side effect. */

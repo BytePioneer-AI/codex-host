@@ -1,6 +1,7 @@
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { createLocalPageOpener } from "@codexhost/desktop-control";
 
 import type { HarnessPluginContext } from "@codexhost/harness-adapter/plugin";
 
@@ -15,6 +16,7 @@ export function installedHarnessPluginOptions(
   hostRuntimeUrl: string = import.meta.url,
 ): { pluginRoots: readonly string[]; pluginContext: HarnessPluginContext } {
   const opener = managedRemoteHost ? undefined : createLauncherUrlOpener(environment);
+  const openLocalPage = managedRemoteHost ? undefined : createLocalPageOpener(environment);
   return {
     pluginRoots: [
       path.join(path.dirname(fileURLToPath(hostRuntimeUrl)), "plugins"),
@@ -31,6 +33,7 @@ export function installedHarnessPluginOptions(
       platform: process.platform,
       managedRemoteHost,
       ...(opener ? { openLocalUrl: (url: string) => opener(new URL(url)) } : {}),
+      ...(openLocalPage ? { openLocalPage } : {}),
     },
   };
 }

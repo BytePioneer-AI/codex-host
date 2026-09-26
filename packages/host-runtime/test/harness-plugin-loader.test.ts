@@ -116,6 +116,7 @@ describe("Harness plugin discovery and loading", () => {
     ["workbuddy", "WorkBuddy", "CODEXHOST_WORKBUDDY_COMMAND"],
     ["qoder", "Qoder", "CODEXHOST_QODER_COMMAND"],
     ["qoder-cn", "Qoder CN", "CODEXHOST_QODERCN_COMMAND"],
+    ["zcode", "ZCode", "CODEXHOST_ZCODE_RUNTIME_DIR"],
   ])(
     "loads the relocated %s bundle without workspace dependencies and isolates factories",
     async (id, name, commandVariable) => {
@@ -589,6 +590,15 @@ describe("Harness plugin registry lifetime", () => {
       path.join(data, "plugins"),
     );
     expect(installedHarnessPluginOptions({}, true).pluginContext.openLocalUrl).toBeUndefined();
+    expect(
+      installedHarnessPluginOptions(
+        {
+          CODEXHOST_CONTROL_PORT: "43210",
+          CODEXHOST_CONTROL_NONCE: "1".repeat(32),
+        },
+        true,
+      ).pluginContext.openLocalPage,
+    ).toBeUndefined();
     const custom = path.resolve("custom-plugins");
     expect(
       installedHarnessPluginOptions({ CODEXHOST_PLUGIN_DIRECTORY: custom }).pluginRoots[1],

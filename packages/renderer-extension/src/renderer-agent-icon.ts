@@ -1,3 +1,4 @@
+import zcodeAgentIconUrl from "./assets/zcode-agent.svg";
 import kimiAgentIconUrl from "./assets/kimi-agent.svg";
 import codexAgentIconUrl from "./assets/codex-agent.png";
 import grokAgentIconUrl from "./assets/grok-agent.png";
@@ -29,6 +30,7 @@ export const RENDERER_AGENT_LABELS: Record<RendererAgent, string> = {
   qoder: "Qoder",
   "qoder-cn": "Qoder CN",
   "kimi-code": "Kimi Code",
+  zcode: "ZCode",
 };
 
 const PI_PATHS = [
@@ -130,21 +132,24 @@ export function createRendererAgentIcon(
     agent === "codebuddy" ||
     agent === "workbuddy" ||
     agent === "cursor-cli" ||
-    agent === "kimi-code"
+    agent === "kimi-code" ||
+    agent === "zcode"
   ) {
     const image = ownerDocument.createElement("img");
     image.src =
-      agent === "kimi-code"
-        ? kimiAgentIconUrl
-        : agent === "codebuddy"
-          ? codeBuddyAgentIconUrl
-          : agent === "workbuddy"
-            ? workBuddyAgentIconUrl
-            : agent === "cursor-cli"
-              ? cursorAgentIconUrl
-              : agent === "kiro-cli"
-                ? kiroAgentIconUrl
-                : antigravityAgentIconUrl;
+      agent === "zcode"
+        ? zcodeAgentIconUrl
+        : agent === "kimi-code"
+          ? kimiAgentIconUrl
+          : agent === "codebuddy"
+            ? codeBuddyAgentIconUrl
+            : agent === "workbuddy"
+              ? workBuddyAgentIconUrl
+              : agent === "cursor-cli"
+                ? cursorAgentIconUrl
+                : agent === "kiro-cli"
+                  ? kiroAgentIconUrl
+                  : antigravityAgentIconUrl;
     image.alt = "";
     image.draggable = false;
     image.style.width = `${size}px`;

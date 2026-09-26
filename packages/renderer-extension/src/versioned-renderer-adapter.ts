@@ -168,7 +168,7 @@ function transportModelIdForAgent(agent: RendererAgent): string | null {
   if (agent === "kiro-cli") return encodeHarnessPluginRoute({ harnessId: KIRO_CLI_HARNESS_ID });
   if (agent === "codebuddy" || agent === "workbuddy" || agent === "cursor-cli")
     return encodeHarnessPluginRoute({ harnessId: harnessIdSchema.parse(agent) });
-  if (agent === "qoder" || agent === "qoder-cn" || agent === "kimi-code") {
+  if (agent === "qoder" || agent === "qoder-cn" || agent === "kimi-code" || agent === "zcode") {
     return encodeHarnessPluginRoute({ harnessId: harnessIdSchema.parse(agent) });
   }
   return null;
@@ -874,7 +874,10 @@ export function modelSelectionForAgent(
                       })
                     : agent === "hermes"
                       ? hermesTransportModelId(model, permissionModeId)
-                      : agent === "qoder" || agent === "qoder-cn" || agent === "kimi-code"
+                      : agent === "qoder" ||
+                          agent === "qoder-cn" ||
+                          agent === "kimi-code" ||
+                          agent === "zcode"
                         ? encodeHarnessPluginRoute({
                             harnessId: harnessIdSchema.parse(agent),
                             ...(model ? { model } : {}),

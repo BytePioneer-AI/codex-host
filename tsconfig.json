@@ -24,6 +24,7 @@
     { "path": "./packages/adapters/qoder/tsconfig.json" },
     { "path": "./packages/adapters/qoder-cn/tsconfig.json" },
     { "path": "./packages/adapters/kimi-code/tsconfig.json" },
+    { "path": "./packages/adapters/zcode/tsconfig.json" },
     { "path": "./packages/host-runtime/tsconfig.json" },
     { "path": "./packages/renderer-extension/tsconfig.json" }
   ]

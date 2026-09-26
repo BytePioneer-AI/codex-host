@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process";
 import { readdirSync, readFileSync } from "node:fs";
 import {
   harnessCandidates,
+  isExecutableFile,
   targetPath,
   type HarnessDiscoverySpec,
 } from "@codexhost/harness-discovery";
@@ -110,7 +111,7 @@ export function readWindowsShortcutTarget(filePath: string): string | undefined 
  */
 export function listWindowsInstallExecutables(
   environment: NodeJS.ProcessEnv = process.env,
-  isExecutable: (path: string) => boolean = () => false,
+  isExecutable: (path: string) => boolean = (path) => isExecutableFile(path, "win32"),
 ): string[] {
   if (process.platform !== "win32") return [];
   const found: string[] = [];
@@ -217,8 +218,28 @@ function pairWorkBuddyExecutable(
   return { executable: candidate, cli };
 }
 
-function listUninstallDisplayIconExecutables(isExecutable: (path: string) => boolean): string[] {
-  const found: string[] = [];
+/**
+ * From uninstall-hive candidate lists (priority order), return EXE paths that
+ * successfully pair with a same-install CLI. Skips hives whose candidates all
+ * fail pairing so a stale HKCU entry cannot mask a later HKLM install; stops
+ * iterating once any hive yields a valid pair (callers that query registry
+ * lazily thus avoid scanning later hives).
+ */
+export function selectPairedExecutablesFromHives(
+  hiveCandidateLists: Iterable<readonly string[]>,
+  isExecutable: (path: string) => boolean,
+): string[] {
+  for (const candidates of hiveCandidateLists) {
+    const pairable: string[] = [];
+    for (const exe of candidates) {
+      if (pairWorkBuddyExecutable(exe, "win32", isExecutable)) pairable.push(exe);
+    }
+    if (pairable.length > 0) return pairable;
+  }
+  return [];
+}
+
+function* queryUninstallDisplayIconHives(): Generator<string[]> {
   for (const root of UNINSTALL_REGISTRY_ROOTS) {
     let output = "";
     try {
@@ -232,16 +253,14 @@ function listUninstallDisplayIconExecutables(isExecutable: (path: string) => boo
       continue;
     }
     const fromHive = parseUninstallRegistryOutput(output);
-    if (fromHive.length === 0) continue;
-    const pairable = fromHive.filter((exe) =>
-      Boolean(pairWorkBuddyExecutable(exe, "win32", isExecutable)),
-    );
-    // Short-circuit only after a valid EXE+CLI pair so a stale HKCU candidate
-    // cannot mask a later HKLM install (avoid 4× ~2s when a hive already pairs).
-    if (pairable.length > 0) return pairable;
-    found.push(...fromHive);
+    if (fromHive.length > 0) yield fromHive;
   }
-  return found;
+}
+
+function listUninstallDisplayIconExecutables(isExecutable: (path: string) => boolean): string[] {
+  // Validate EXE+CLI pairing per hive before early-stop; keep querying only while
+  // the current hive's candidates all fail pairing.
+  return selectPairedExecutablesFromHives(queryUninstallDisplayIconHives(), isExecutable);
 }
 
 /** Collect DisplayIcon EXE paths for WorkBuddy uninstall entries. */

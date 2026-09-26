@@ -3,6 +3,7 @@ import { workBuddyInvocation } from "../src/command.js";
 import {
   parseUninstallRegistryOutput,
   parseWindowsDisplayIcon,
+  selectPairedExecutablesFromHives,
 } from "../src/discovery.js";
 
 describe("WorkBuddy app discovery", () => {
@@ -166,7 +167,8 @@ describe("WorkBuddy app discovery", () => {
 
   it("discovers a custom Windows install via DisplayIcon / Start Menu when app is not running", () => {
     const executable = "D:\\program\\WorkBuddy\\WorkBuddyAI\\WorkBuddyAI.exe";
-    const cli = "D:\\program\\WorkBuddy\\WorkBuddyAI\\resources\\app.asar.unpacked\\cli\\bin\\codebuddy";
+    const cli =
+      "D:\\program\\WorkBuddy\\WorkBuddyAI\\resources\\app.asar.unpacked\\cli\\bin\\codebuddy";
     const invocation = workBuddyInvocation(
       {
         USERPROFILE: "C:\\Users\\Test",
@@ -208,8 +210,14 @@ describe("WorkBuddy app discovery", () => {
 
 describe("Windows DisplayIcon / uninstall registry parsing", () => {
   it.each([
-    ['"D:\\program\\WorkBuddy\\WorkBuddyAI\\WorkBuddyAI.exe",0', "D:\\program\\WorkBuddy\\WorkBuddyAI\\WorkBuddyAI.exe"],
-    ["D:\\program\\WorkBuddy\\WorkBuddyAI\\WorkBuddyAI.exe,0", "D:\\program\\WorkBuddy\\WorkBuddyAI\\WorkBuddyAI.exe"],
+    [
+      '"D:\\program\\WorkBuddy\\WorkBuddyAI\\WorkBuddyAI.exe",0',
+      "D:\\program\\WorkBuddy\\WorkBuddyAI\\WorkBuddyAI.exe",
+    ],
+    [
+      "D:\\program\\WorkBuddy\\WorkBuddyAI\\WorkBuddyAI.exe,0",
+      "D:\\program\\WorkBuddy\\WorkBuddyAI\\WorkBuddyAI.exe",
+    ],
     ['"C:\\Apps\\WorkBuddy AI.exe"', "C:\\Apps\\WorkBuddy AI.exe"],
     ["C:\\Apps\\WorkBuddy.exe", "C:\\Apps\\WorkBuddy.exe"],
   ])("parses DisplayIcon %s", (value, expected) => {
@@ -220,7 +228,7 @@ describe("Windows DisplayIcon / uninstall registry parsing", () => {
     const output = [
       "HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\WorkBuddyAI",
       "    DisplayName    REG_SZ    WorkBuddy AI",
-      "    DisplayIcon    REG_SZ    \"D:\\program\\WorkBuddy\\WorkBuddyAI\\WorkBuddyAI.exe\",0",
+      '    DisplayIcon    REG_SZ    "D:\\program\\WorkBuddy\\WorkBuddyAI\\WorkBuddyAI.exe",0',
       "HKEY_LOCAL_MACHINE\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\OtherApp",
       "    DisplayName    REG_SZ    Other App",
       "    DisplayIcon    REG_SZ    C:\\Other\\App.exe,0",
@@ -228,5 +236,39 @@ describe("Windows DisplayIcon / uninstall registry parsing", () => {
     expect(parseUninstallRegistryOutput(output)).toEqual([
       "D:\\program\\WorkBuddy\\WorkBuddyAI\\WorkBuddyAI.exe",
     ]);
+  });
+});
+
+describe("uninstall hive pairing early-stop", () => {
+  const brokenExe = "C:\\Users\\Broken\\WorkBuddy.exe";
+  const goodExe = "C:\\Program Files\\WorkBuddy\\WorkBuddy.exe";
+  const goodCli = "C:\\Program Files\\WorkBuddy\\resources\\app.asar.unpacked\\cli\\bin\\codebuddy";
+  const otherExe = "C:\\Program Files\\WorkBuddy AI\\WorkBuddy AI.exe";
+  const otherCli =
+    "C:\\Program Files\\WorkBuddy AI\\resources\\app.asar.unpacked\\cli\\bin\\codebuddy";
+
+  it("skips a hive whose candidates fail pairing and uses a later hive", () => {
+    const isExecutable = (candidate: string) => candidate === goodExe || candidate === goodCli;
+    expect(selectPairedExecutablesFromHives([[brokenExe], [goodExe]], isExecutable)).toEqual([
+      goodExe,
+    ]);
+  });
+
+  it("stops after the first hive that yields a successful EXE+CLI pair", () => {
+    const isExecutable = (candidate: string) =>
+      [goodExe, goodCli, otherExe, otherCli].includes(candidate);
+    let pulled = 0;
+    function* hives(): Generator<string[]> {
+      pulled += 1;
+      yield [goodExe];
+      pulled += 1;
+      yield [otherExe];
+    }
+    expect(selectPairedExecutablesFromHives(hives(), isExecutable)).toEqual([goodExe]);
+    expect(pulled).toBe(1);
+  });
+
+  it("returns nothing when every hive fails pairing", () => {
+    expect(selectPairedExecutablesFromHives([[brokenExe], [otherExe]], () => false)).toEqual([]);
   });
 });

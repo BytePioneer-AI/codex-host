@@ -26,6 +26,7 @@ import {
   type CodeBuddyRuntimeProfile,
 } from "./common.js";
 import { capabilitiesForProfile, configuration } from "./configuration.js";
+import { codeBuddySupportsSteer } from "./steer.js";
 import { deriveCodeBuddySession } from "./derivation.js";
 import { codeBuddyCanonicalCwd, validateNativeRef } from "./history.js";
 import { CodeBuddySessionImport } from "./session-import.js";
@@ -132,11 +133,13 @@ export class CodeBuddyAdapter implements HarnessAdapter {
       await client.initialize();
       const opened = await client.open(cwd);
       const config = configuration(opened.configOptions, this.#profile);
+      const capabilities = capabilitiesForProfile(this.#profile);
+      if (codeBuddySupportsSteer(client.nativeVersion)) capabilities.steer = true;
       return harnessInspectionSchema.parse({
         status: "ready",
         catalog: config.catalog,
         permissionModes: config.permissionModes,
-        capabilities: capabilitiesForProfile(this.#profile),
+        capabilities,
       });
     } catch (error) {
       const issue = nativeError(error, this.#profile);

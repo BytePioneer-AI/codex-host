@@ -3,6 +3,7 @@ import type {
   HostFileChange,
   HostItem,
   HostItemOutcome,
+  HostItemSnapshot,
   HostItemUpdate,
   HostQuestionInteraction,
   HostTurnSnapshot,
@@ -34,6 +35,7 @@ import {
   projectCodexQuestionRequest,
   type CodexQuestionRequestProjection,
 } from "./codex-question.js";
+import { inferredFinalAnswer } from "./final-answer-phase.js";
 
 export type ProjectableHostEvent =
   | TurnStartedEvent
@@ -653,6 +655,27 @@ export function projectHistoricalTurn(input: HistoricalTurnProjectionInput): Jso
           additionalDetails: null,
         }
       : null;
+  const projectEntry = ({ item, outcome }: HostItemSnapshot): JsonObject[] => {
+    if (itemFileChanges(item) !== null) {
+      return files?.itemId === item.itemId
+        ? [projectItem(files, { status: "succeeded" }, cwd)]
+        : [];
+    }
+    if (item.type === "toolExecution") {
+      if (isTodoTool(item.toolName) || todoPlanFromTool(item.toolName, item.arguments)) return [];
+      if (isFileMutatingTool(item.toolName)) return [];
+    }
+    if (item.type === "reasoning" && !reasoningDisplayText(item.text)) return [];
+    return item.type === "reasoning"
+      ? [
+          projectItem(item, outcome, cwd, true, input.threadId ?? ""),
+          projectReasoningTranscriptItem(item, outcome, cwd),
+        ]
+      : [projectItem(item, outcome, cwd, true, input.threadId ?? "")];
+  };
+  const entries = snapshot.items.map((entry) => ({ entry, projected: projectEntry(entry) }));
+  const lastVisible = entries.findLast(({ projected }) => projected.length > 0)?.entry;
+  const finalAnswer = inferredFinalAnswer(lastVisible, snapshot.outcome.status === "succeeded");
   return {
     id: turnId,
     status: historicalStatus(snapshot.outcome),
@@ -663,25 +686,11 @@ export function projectHistoricalTurn(input: HistoricalTurnProjectionInput): Jso
         clientId: null,
         content: snapshot.input.map(({ text }) => ({ type: "text", text, text_elements: [] })),
       },
-      ...snapshot.items.flatMap(({ item, outcome }) => {
-        if (itemFileChanges(item) !== null) {
-          return files?.itemId === item.itemId
-            ? [projectItem(files, { status: "succeeded" }, cwd)]
-            : [];
-        }
-        if (item.type === "toolExecution") {
-          if (isTodoTool(item.toolName) || todoPlanFromTool(item.toolName, item.arguments))
-            return [];
-          if (isFileMutatingTool(item.toolName)) return [];
-        }
-        if (item.type === "reasoning" && !reasoningDisplayText(item.text)) return [];
-        return item.type === "reasoning"
-          ? [
-              projectItem(item, outcome, cwd, true, input.threadId ?? ""),
-              projectReasoningTranscriptItem(item, outcome, cwd),
-            ]
-          : [projectItem(item, outcome, cwd, true, input.threadId ?? "")];
-      }),
+      ...entries.flatMap(({ entry, projected }) =>
+        finalAnswer && entry === lastVisible
+          ? projectEntry({ ...entry, item: finalAnswer })
+          : projected,
+      ),
     ],
     error,
     startedAt: hasTiming ? Math.floor(startedAtMs / 1000) : null,
@@ -1123,6 +1132,10 @@ export class CodexTurnProjector {
     this.#completed = true;
     const completedAt = Math.floor(completedAtMs / 1000);
     const error = turnError(event.outcome);
+    const lastWireItemId = this.#wireItemOrder.at(-1);
+    const lastVisible = lastWireItemId === undefined ? undefined : this.#items.get(lastWireItemId);
+    const finalAnswer = inferredFinalAnswer(lastVisible, event.outcome.status === "succeeded");
+    if (lastVisible && finalAnswer) lastVisible.item = finalAnswer;
     const turn: JsonObject = {
       id: this.#turnId,
       status: turnStatus(event.outcome),
@@ -1175,6 +1188,11 @@ export class CodexTurnProjector {
               },
             ]
           : []),
+        // Desktop ignores Turn items on turn/completed and replaces an Item by id
+        // on item/completed, so the inferred phase must arrive as a replacement.
+        ...(lastVisible && finalAnswer
+          ? [this.#completedItemReplay(lastVisible, completedAtMs)]
+          : []),
         ...(error
           ? [
               {
@@ -1194,6 +1212,21 @@ export class CodexTurnProjector {
           params: { threadId: this.#threadId, turn },
         },
       ],
+    };
+  }
+
+  #completedItemReplay(projected: ProjectedItem, emittedAtMs: number): JsonObject {
+    const startedAtMs = projected.startedAtMs ?? emittedAtMs;
+    return {
+      method: "item/completed",
+      emittedAtMs,
+      params: {
+        threadId: this.#threadId,
+        turnId: this.#turnId,
+        startedAtMs,
+        completedAtMs: startedAtMs + (projected.durationMs ?? 0),
+        item: projectItem(projected.item, projected.outcome, this.#cwd),
+      },
     };
   }
 

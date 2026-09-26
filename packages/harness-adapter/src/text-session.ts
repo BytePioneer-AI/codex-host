@@ -283,7 +283,11 @@ export interface HostAgentMessageItem {
   type: "agentMessage";
   itemId: HostItemId;
   text: string;
-  /** Omit when the Harness cannot distinguish progress from its final answer. */
+  /**
+   * Omit when the Harness cannot distinguish progress from its final answer; the
+   * Host then treats the message that ends a succeeded Turn as its final answer.
+   * Set `commentary` to keep such a message out of that inference.
+   */
   phase?: "commentary" | "final_answer";
 }
 

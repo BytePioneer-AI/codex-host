@@ -4,13 +4,16 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { FakeHarnessAdapter, FakeHarnessSession } from "@codexhost/harness-adapter/testing";
-import { type JsonObject } from "@codexhost/protocol-core";
+import { decodeExternalTransportSelection, type JsonObject } from "@codexhost/protocol-core";
 import {
   encodeHarnessPluginRoute,
   harnessPluginRouteSchema,
   harnessIdSchema,
+  harnessPermissionModeCatalogSchema,
+  harnessPermissionModeIdSchema,
   hostThreadIdSchema,
 } from "@codexhost/shared-contracts";
+import type { DelegationControlApi } from "../src/delegation-types.js";
 
 import {
   method,
@@ -19,6 +22,7 @@ import {
   turnEvent,
   writeRequest,
   readJsonLine,
+  answerOfficialParentCwd,
   createFixture,
   startExternalThread,
   startPiThread,
@@ -28,6 +32,128 @@ import {
 } from "./app-server-host-fixture.js";
 
 describe("AppServerHost idle resource release", () => {
+  it.each(["auto", "default"] as const)(
+    "resumes delegated Claude with its saved %s permission after idle release",
+    async (expectedMode) => {
+      vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"] });
+      const permissionModes = harnessPermissionModeCatalogSchema.parse({
+        modes: [
+          { id: "default", label: "Default" },
+          { id: "auto", label: "Auto" },
+        ],
+        defaultModeId: "default",
+      });
+      const adapter = new FakeHarnessAdapter(
+        harnessIdSchema.parse("claude-code"),
+        undefined,
+        true,
+        true,
+        null,
+        permissionModes,
+      );
+      const nativeOpen = adapter.open.bind(adapter);
+      vi.spyOn(adapter, "open").mockImplementation(async (input) => {
+        if (input.kind !== "create" || input.executionPolicy !== "unattended-full-access") {
+          return nativeOpen(input);
+        }
+        const opened = await nativeOpen({
+          ...input,
+          permissionModeId: harnessPermissionModeIdSchema.parse("auto"),
+        });
+        if (!opened.ok) return opened;
+        // Claude publishes native identity and effective configuration after startup.
+        Object.defineProperty(opened.value, "initialState", { value: {} });
+        await opened.value.execute({
+          type: "permissionMode.select",
+          permissionModeId: harnessPermissionModeIdSchema.parse("auto"),
+        });
+        return opened;
+      });
+      let delegationApi: DelegationControlApi | undefined;
+      const fixture = createFixture({
+        externalAdapters: new Map([["claude-code", adapter]]),
+        onDelegationApi: (api) => {
+          delegationApi = api;
+          return undefined;
+        },
+      });
+      let resumed: FakeHarnessSession | undefined;
+      try {
+        await fixture.ready;
+        if (!delegationApi) throw new Error("Delegation API was not registered");
+        const starting = delegationApi.start({
+          harnessId: "claude-code",
+          task: "check permissions",
+          cwd: "/synthetic",
+          parentThreadId: "parent-thread",
+        });
+        await answerOfficialParentCwd(fixture);
+        const started = await starting;
+        const threadId = hostThreadIdSchema.parse(started.threadId);
+        const source = adapter.sessions[0];
+        if (!source) throw new Error("Missing delegated Session");
+        const stored = await fixture.mappingStore.getThread(threadId);
+        source.succeedTurn();
+        await fixture.collector.waitFor((message) =>
+          turnEvent(message, "turn/completed", started.turnId),
+        );
+        expect(
+          decodeExternalTransportSelection("claude-code", stored?.transportModelId),
+        ).toMatchObject({ permissionModeId: "auto" });
+        if (expectedMode === "default") {
+          writeRequest(fixture.desktopInput, {
+            id: 900,
+            method: "codexhost/thread/permission-mode/select",
+            params: { threadId, permissionModeId: expectedMode },
+          });
+          expect(
+            await fixture.collector.waitFor((message) => requestId(message, 900)),
+          ).toMatchObject({ result: { effectivePermissionModeId: expectedMode } });
+        }
+        const snapshot = await source.readSnapshot();
+        if (!snapshot.ok) throw new Error(snapshot.error.message);
+        const close = vi.spyOn(source, "close");
+        vi.mocked(adapter.open).mockImplementation(async (input) => {
+          if (input.kind !== "resume") return nativeOpen(input);
+          resumed = new FakeHarnessSession(
+            adapter.harnessId,
+            adapter.catalog,
+            input.model,
+            input.nativeRef,
+            snapshot.value,
+            true,
+            input.cwd,
+            true,
+            input.thinkingOptionId,
+            null,
+            permissionModes,
+          );
+          expect(resumed.state.effectivePermissionModeId).toBe("default");
+          return { ok: true, value: resumed };
+        });
+        writeRequest(fixture.desktopInput, {
+          id: 901,
+          method: "codexhost/settings/idle-release/set",
+          params: { enabled: true, timeoutMinutes: 10 },
+        });
+        await fixture.collector.waitFor((message) => requestId(message, 901));
+        await vi.advanceTimersByTimeAsync(11 * 60_000);
+        expect(close).toHaveBeenCalledOnce();
+        const next = await delegationApi.send({ threadId, message: "continue" });
+        if (!resumed) throw new Error("Missing resumed Session");
+        expect(resumed.state.effectivePermissionModeId).toBe(expectedMode);
+        resumed.succeedTurn();
+        await fixture.collector.waitFor((message) =>
+          turnEvent(message, "turn/completed", next.turnId),
+        );
+      } finally {
+        fixture.host.close();
+        await stopFixture(fixture);
+        vi.useRealTimers();
+      }
+    },
+  );
+
   it("validates settings locally without forwarding them to the official server", async () => {
     const fixture = createFixture();
     try {

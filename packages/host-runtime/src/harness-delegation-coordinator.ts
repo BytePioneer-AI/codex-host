@@ -330,6 +330,28 @@ export class HarnessDelegationCoordinator {
             revision = thread.stateObserver.revision;
           }
         }
+        const state = thread.stateObserver.state;
+        if (state.effectiveModel && state.effectivePermissionModeId) {
+          const transportModelId = encodeExternalTransportSelection(targetHarnessId, {
+            model: state.effectiveModel,
+            permissionModeId: state.effectivePermissionModeId,
+            ...(state.effectiveThinkingOptionId
+              ? { thinkingOptionId: state.effectiveThinkingOptionId }
+              : {}),
+          });
+          thread.record = await this.#repository.setTransportModelId(
+            childThreadId,
+            transportModelId,
+          );
+          thread.transportModelId = transportModelId;
+          thread.requestedPermissionModeId = state.effectivePermissionModeId;
+          thread.thread = externalThreadValue({
+            record: thread.record,
+            turns: thread.turns,
+            sessionId: thread.sessionId,
+            running: thread.running,
+          });
+        }
         await this.#repository.setDelegationStatus(delegationId, "running");
         await this.#notifyThreadStarted(thread.thread);
         return {

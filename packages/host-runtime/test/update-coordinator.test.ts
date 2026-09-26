@@ -334,6 +334,62 @@ describe("Host update coordinator", () => {
     expect(spawnUpdater).not.toHaveBeenCalled();
   });
 
+  it("does not reinstall an already installed release after a failed restart", async () => {
+    const fixture = await npmFixture();
+    const localAppData = path.join(fixture.root, "local-app-data");
+    fixture.environment.LOCALAPPDATA = localAppData;
+    await writeFile(
+      path.join(path.dirname(fixture.hostRuntimePath), "codexhost-distribution.json"),
+      JSON.stringify({
+        schemaVersion: 1,
+        version: "1.2.3",
+        distribution: "installer",
+        target: "windows-x64",
+      }),
+    );
+    await file(path.join(fixture.root, "platform", "libexec", "codexhost-updater.exe"));
+    const stateDirectory = path.join(localAppData, "codexhost", "updates");
+    const operation = path.join(stateDirectory, "update-failed-restart");
+    await mkdir(operation, { recursive: true });
+    await writeFile(
+      path.join(operation, "status-v1.json"),
+      JSON.stringify({
+        schemaVersion: 1,
+        version: "1.2.3",
+        installation: "windows-installer",
+        phase: "failed",
+        updatedAt: Math.floor(Date.now() / 1000),
+        error: "Restart readiness check failed",
+      }),
+    );
+    const prepareWindowsInstaller = vi.fn(async () => {
+      throw new Error("An installed release must not be prepared again");
+    });
+    const coordinator = createHostUpdateCoordinator({
+      hostRuntimePath: fixture.hostRuntimePath,
+      environment: fixture.environment,
+      platform: "win32",
+      architecture: "x64",
+      manager: {
+        ...createBackgroundUpdateManager({ platform: "win32" }),
+        prepareWindowsInstaller,
+      },
+      fetchLatest: async () => release("1.2.3"),
+    });
+
+    await expect(coordinator.check()).resolves.toMatchObject({
+      currentVersion: "1.2.3",
+      latestVersion: "1.2.3",
+      updateAvailable: false,
+      installationAvailable: false,
+      status: { version: "1.2.3", phase: "failed", error: "Restart readiness check failed" },
+    });
+    await expect(coordinator.start()).rejects.toThrow(
+      "The selected update is no longer the current GitHub Release",
+    );
+    expect(prepareWindowsInstaller).not.toHaveBeenCalled();
+  });
+
   it("returns before a macOS artifact download completes", async () => {
     const fixture = await macFixture();
     const bytes = Buffer.from("macos-dmg-fixture");

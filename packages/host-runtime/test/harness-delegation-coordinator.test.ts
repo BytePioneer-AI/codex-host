@@ -12,12 +12,13 @@ import { describe, expect, it, vi } from "vitest";
 
 import { HarnessDelegationCoordinator } from "../src/harness-delegation-coordinator.js";
 import { ExternalThreadRepository } from "../src/external-thread-repository.js";
-import { ExternalThreadRuntime } from "../src/external-thread-runtime.js";
+import { ExternalThreadRuntime, type ExternalThread } from "../src/external-thread-runtime.js";
 
 async function fixture(
   adapter = new FakeHarnessAdapter(harnessIdSchema.parse("pi")),
   officialThreadCwd: (threadId: string) => Promise<string | undefined> = async () => undefined,
   environment: NodeJS.ProcessEnv = {},
+  externalThreadBusy: (thread: ExternalThread) => boolean = (thread) => thread.running,
 ) {
   const directory = await mkdtemp(path.join(os.tmpdir(), "codexhost-delegation-coordinator-"));
   const store = new MappingStore({ directory });
@@ -66,6 +67,7 @@ async function fixture(
     listOfficial: vi.fn(async () => ({ threads: [], nextCursor: null })),
     officialThreadCwd,
     activeOfficialParents: () => [],
+    externalThreadBusy,
   });
   return {
     adapter,
@@ -510,6 +512,7 @@ describe("HarnessDelegationCoordinator", () => {
       });
       const thread = value.registered[0];
       if (!thread) throw new Error("delegated Thread was not registered");
+      expect(value.coordinator.activeThreadIds()).toEqual([started.threadId]);
       // The Adapter completed the Turn as failed, then its process died.
       thread.running = false;
       thread.activeTurnId = null;
@@ -535,6 +538,37 @@ describe("HarnessDelegationCoordinator", () => {
       await expect(
         value.coordinator.read({ threadId: started.threadId, view: "result" }),
       ).rejects.toMatchObject({ code: "INTERNAL_ERROR" });
+    } finally {
+      await value.close();
+    }
+  });
+
+  it("reads a pending steer replacement as running and keeps the delegation running", async () => {
+    const value = await fixture(
+      new FakeHarnessAdapter(harnessIdSchema.parse("pi")),
+      async () => undefined,
+      {},
+      () => true,
+    );
+    try {
+      const started = await value.coordinator.start({
+        harnessId: "pi",
+        task: "work",
+        parentThreadId: "parent",
+      });
+      const thread = value.registered[0];
+      if (!thread) throw new Error("delegated Thread was not registered");
+      // Old Turn has ended; the replacement Turn has not started.
+      thread.running = false;
+      thread.activeTurnId = null;
+      thread.turns = [{ id: started.turnId, status: "interrupted", items: [] }];
+
+      await expect(
+        value.coordinator.read({ threadId: started.threadId, view: "result" }),
+      ).resolves.toMatchObject({ status: "running" });
+      await expect(
+        value.repository.getDelegationByChild(hostThreadIdSchema.parse(started.threadId)),
+      ).resolves.toMatchObject({ status: "running" });
     } finally {
       await value.close();
     }

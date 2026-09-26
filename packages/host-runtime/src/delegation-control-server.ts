@@ -5,12 +5,14 @@ import {
   DelegationControlError,
   type DelegationControlApi,
   type DelegationStartInput,
+  type DelegationWatchApi,
   type HarnessInspectInput,
   type ThreadCancelInput,
   type ThreadListInput,
   type ThreadSendInput,
   type ThreadReadInput,
   type ThreadWaitInput,
+  type ThreadWatchRequest,
 } from "./delegation-types.js";
 
 const MAX_REQUEST_BYTES = 2 * 1024 * 1024;
@@ -71,9 +73,56 @@ function closeServer(server: Server): Promise<void> {
   });
 }
 
+function watchApi(api: DelegationWatchApi | undefined): DelegationWatchApi {
+  if (!api)
+    throw new DelegationControlError("INVALID_ARGUMENT", "This Runtime does not support watches");
+  return api;
+}
+
+/** The Turn already started, so a watch failure is reported beside it, not thrown. */
+function watchStartedTurn(watches: DelegationWatchApi, request: ThreadWatchRequest) {
+  return watches.watch(request).catch((error: unknown) => ({
+    state: "notRegistered" as const,
+    reason: error instanceof Error ? error.message : String(error),
+  }));
+}
+
+/** `delegate start --watch`: the Host-resolved parent is the notified Thread. */
+async function startWithWatch(
+  api: DelegationControlApi,
+  watches: DelegationWatchApi,
+  body: Record<string, unknown>,
+): Promise<unknown> {
+  const { watchTimeoutMs, ...start } = body;
+  const result = await api.start(start as unknown as DelegationStartInput);
+  const watch = await watchStartedTurn(watches, {
+    threadId: result.threadId,
+    timeoutMs: watchTimeoutMs as number,
+    ...(result.parentThreadId ? { notifyThreadId: result.parentThreadId } : {}),
+  });
+  return { ...result, watch };
+}
+
+/** `thread send --watch`: notify the caller when that Thread stops. */
+async function sendWithWatch(
+  api: DelegationControlApi,
+  watches: DelegationWatchApi,
+  body: Record<string, unknown>,
+): Promise<unknown> {
+  const { watchTimeoutMs, notifyThreadId, ...send } = body;
+  const result = await api.send(send as unknown as ThreadSendInput);
+  const watch = await watchStartedTurn(watches, {
+    threadId: result.threadId,
+    timeoutMs: watchTimeoutMs as number,
+    ...(typeof notifyThreadId === "string" ? { notifyThreadId } : {}),
+  });
+  return { ...result, watch };
+}
+
 export async function startDelegationControlServer(input: {
   token: string;
   api: DelegationControlApi;
+  watchApi?: DelegationWatchApi;
 }): Promise<DelegationControlServer> {
   const server = createServer((request, response) => {
     void (async () => {
@@ -98,10 +147,22 @@ export async function startDelegationControlServer(input: {
           writeJson(response, 200, await input.api.inspect(body as unknown as HarnessInspectInput));
           return;
         case "/v1/delegate/start":
-          writeJson(response, 200, await input.api.start(body as unknown as DelegationStartInput));
+          writeJson(
+            response,
+            200,
+            body.watchTimeoutMs === undefined
+              ? await input.api.start(body as unknown as DelegationStartInput)
+              : await startWithWatch(input.api, watchApi(input.watchApi), body),
+          );
           return;
         case "/v1/thread/send":
-          writeJson(response, 200, await input.api.send(body as unknown as ThreadSendInput));
+          writeJson(
+            response,
+            200,
+            body.watchTimeoutMs === undefined
+              ? await input.api.send(body as unknown as ThreadSendInput)
+              : await sendWithWatch(input.api, watchApi(input.watchApi), body),
+          );
           return;
         case "/v1/thread/cancel":
           writeJson(response, 200, await input.api.cancel(body as unknown as ThreadCancelInput));
@@ -111,6 +172,16 @@ export async function startDelegationControlServer(input: {
           return;
         case "/v1/thread/wait":
           writeJson(response, 200, await input.api.wait(body as unknown as ThreadWaitInput));
+          return;
+        case "/v1/thread/watch":
+          writeJson(
+            response,
+            200,
+            await watchApi(input.watchApi).watch(body as unknown as ThreadWatchRequest),
+          );
+          return;
+        case "/v1/thread/watches":
+          writeJson(response, 200, await watchApi(input.watchApi).watches());
           return;
         case "/v1/thread/list":
           writeJson(response, 200, await input.api.list(body as unknown as ThreadListInput));

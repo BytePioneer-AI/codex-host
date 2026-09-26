@@ -3,11 +3,14 @@ import {
   type DelegationControlApi,
   type DelegationControlRegistration,
   type DelegationStartInput,
+  type DelegationWatchApi,
   type HarnessInspectInput,
   type ThreadListInput,
   type ThreadReadInput,
   type ThreadWaitInput,
+  type ThreadWatchRequest,
 } from "./delegation-types.js";
+import { DelegationWatchService } from "./delegation-watch.js";
 
 function only<T>(values: readonly T[], message: string): T {
   const value = values.length === 1 ? values[0] : undefined;
@@ -19,8 +22,14 @@ function only<T>(values: readonly T[], message: string): T {
   return value;
 }
 
-export class DelegationControlRegistry implements DelegationControlApi {
+export class DelegationControlRegistry implements DelegationControlApi, DelegationWatchApi {
   readonly #registrations = new Set<DelegationControlRegistration>();
+  // Watches sit above the sessions so either end may belong to any registered session.
+  readonly #watchService: DelegationWatchService;
+
+  constructor(options: { diagnose?: (error: unknown) => void } = {}) {
+    this.#watchService = new DelegationWatchService(this, options);
+  }
 
   get size(): number {
     return this.#registrations.size;
@@ -66,6 +75,20 @@ export class DelegationControlRegistry implements DelegationControlApi {
     return (await this.#registrationForThread(input.threadId)).wait(input);
   }
 
+  async watch(request: ThreadWatchRequest) {
+    const notifyThreadId = request.notifyThreadId ?? (await this.#inferCaller(request.threadId));
+    return this.#watchService.watch({ ...request, notifyThreadId });
+  }
+
+  async watches() {
+    return this.#watchService.watches();
+  }
+
+  /** Stops all watches; pending notifications are dropped with the Host Runtime. */
+  close(): void {
+    this.#watchService.close();
+  }
+
   async list(input: ThreadListInput) {
     if (input.parentThreadId) {
       return (await this.#registrationForThread(input.parentThreadId)).list(input);
@@ -87,6 +110,26 @@ export class DelegationControlRegistry implements DelegationControlApi {
       .sort((left, right) => this.#compareThreads(left, right, input.sort))
       .slice(0, input.limit);
     return { threads, nextCursor: null };
+  }
+
+  /**
+   * A caller without a Host-provided Thread identity (native Codex) is the only
+   * Thread with an active Turn besides the one it is watching.
+   */
+  async #inferCaller(watchedThreadId: string): Promise<string> {
+    const active = await Promise.all(
+      [...this.#registrations].map((registration) => registration.activeThreadIds?.() ?? []),
+    );
+    const candidates = [...new Set(active.flat())].filter((id) => id !== watchedThreadId);
+    const caller = candidates.length === 1 ? candidates[0] : undefined;
+    if (caller) return caller;
+    throw new DelegationControlError(
+      "PARENT_THREAD_AMBIGUOUS",
+      candidates.length === 0
+        ? "The notified Thread cannot be inferred because no other active Turn was found; pass --notify"
+        : "The notified Thread cannot be inferred uniquely; pass --notify explicitly",
+      { activeThreadIds: candidates },
+    );
   }
 
   async #registrationForStart(input: DelegationStartInput): Promise<DelegationControlRegistration> {

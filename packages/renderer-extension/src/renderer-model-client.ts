@@ -1,4 +1,11 @@
 import {
+  DIAGNOSTIC_LOG_EXPORT_METHOD,
+  DIAGNOSTIC_LOG_LIST_METHOD,
+  diagnosticLogListResultSchema,
+  diagnosticLogExportResultSchema,
+  diagnosticLogExportParamsSchema,
+  type DiagnosticLogExportResult,
+  type DiagnosticLogScope,
   HARNESS_LAUNCH_SETTINGS_GET_METHOD,
   HARNESS_LAUNCH_SETTINGS_SET_METHOD,
   harnessLaunchSettingsGetSchema,
@@ -199,6 +206,8 @@ export interface RendererModelClient extends Partial<RendererSessionImportClient
     input: ThreadPermissionModeSelectParams,
   ): Promise<HarnessConfigurationState>;
   checkUpdate(): Promise<UpdateCheckResult>;
+  listDiagnosticLogs?(): Promise<DiagnosticLogScope[]>;
+  exportDiagnosticLogs?(scope: DiagnosticLogScope): Promise<DiagnosticLogExportResult>;
   startUpdate(): Promise<UpdateStartResult>;
   readUpdateStatus(): Promise<UpdateStatusResult>;
   inspectCodexAccountUsage?(input: CodexAccountUsageParams): Promise<CodexAccountUsageResult>;
@@ -475,6 +484,19 @@ export function createRendererModelClient(
         updateEmptyParamsSchema.parse({}),
       );
       return updateCheckResultSchema.parse(result);
+    },
+    async listDiagnosticLogs(): Promise<DiagnosticLogScope[]> {
+      return diagnosticLogListResultSchema.parse(
+        await manager.sendRequest(DIAGNOSTIC_LOG_LIST_METHOD, {}),
+      );
+    },
+    async exportDiagnosticLogs(scope: DiagnosticLogScope): Promise<DiagnosticLogExportResult> {
+      return diagnosticLogExportResultSchema.parse(
+        await manager.sendRequest(
+          DIAGNOSTIC_LOG_EXPORT_METHOD,
+          diagnosticLogExportParamsSchema.parse(scope),
+        ),
+      );
     },
     async startUpdate(): Promise<UpdateStartResult> {
       const result = await manager.sendRequest(

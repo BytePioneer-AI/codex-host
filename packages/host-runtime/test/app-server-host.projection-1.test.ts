@@ -777,7 +777,8 @@ describe("AppServerHost HarnessAdapter projection", () => {
     });
 
     try {
-      await vi.waitFor(() => expect(fixture.spawnOfficial).toHaveBeenCalledTimes(1));
+      await fixture.ready;
+      expect(fixture.spawnOfficial).toHaveBeenCalledTimes(1);
       expect(() => fixture.host.close()).not.toThrow();
       await expect(fixture.running).resolves.toBe(0);
       expect(fixture.official.kill).toHaveBeenCalledWith("SIGTERM");

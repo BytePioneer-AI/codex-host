@@ -37,7 +37,7 @@ export class ExternalThreadIdleRelease {
       canRelease(thread: ExternalThread): boolean;
       onClosed?(thread: ExternalThread): Promise<void>;
       queue: DesktopRequestQueue;
-      diagnose(error: unknown): void;
+      diagnose(error: unknown, thread?: ExternalThread): void;
     },
   ) {}
 
@@ -242,7 +242,7 @@ export class ExternalThreadIdleRelease {
       this.options.remove(thread.id);
     } catch (error) {
       state.closeFailed = true;
-      this.options.diagnose(error);
+      this.options.diagnose(error, thread);
     } finally {
       if (timeout) clearTimeout(timeout);
     }

@@ -30,6 +30,7 @@ import {
 import { credentialImportChinese } from "../../src/settings/credential-import-messages.js";
 import { createHarnessAccounts } from "../../src/settings/harness-accounts.js";
 import { rendererSettingsMessages } from "../../src/settings/localization.js";
+import { mountLogExportControls } from "../../src/settings/log-export-controls.js";
 import { createRendererModelClient } from "../../src/renderer-model-client.js";
 import { RendererSessionImportUnavailableError } from "../../src/renderer-session-import-client.js";
 const HARNESS_SESSION_LIST_METHOD = "codexhost/harness/session-import/list";
@@ -251,6 +252,75 @@ function visibleText(root: FakeElement): string {
     .filter(Boolean)
     .join(" ");
 }
+
+describe("Diagnostic log export controls", () => {
+  it("selects a Harness or runtime and reports export progress, paths, and failures", async () => {
+    const document = new FakeDocument();
+    const writable = { write: vi.fn(async () => undefined), close: vi.fn(async () => undefined) };
+    const saveFilePicker = vi.fn(async () => ({
+      name: "chosen/pi.jsonl.gz",
+      createWritable: async () => writable,
+    }));
+    (document.defaultView as Window & { showSaveFilePicker?: unknown }).showSaveFilePicker =
+      saveFilePicker;
+    const content = document.createElement("main");
+    const scope = new RendererSettingsPageScope();
+    const pending = deferred<{
+      fileName: string;
+      data: string;
+      fileCount: number;
+      bytes: number;
+    }>();
+    const exportLogs = vi
+      .fn()
+      .mockReturnValueOnce(pending.promise)
+      .mockRejectedValueOnce(new Error("disk full"));
+    const client = {
+      listDiagnosticLogs: vi
+        .fn()
+        .mockResolvedValue([
+          { kind: "harness", harnessId: "claude-code" },
+          { kind: "harness", harnessId: "pi" },
+          { kind: "runtime" },
+        ]),
+      exportDiagnosticLogs: exportLogs,
+    };
+    mountLogExportControls(
+      {
+        content: content as unknown as HTMLElement,
+        signal: scope.signal,
+        runLatest: (operation, handlers) => scope.runLatest(operation, handlers),
+      },
+      rendererSettingsMessages("zh-CN"),
+      () => client,
+    );
+    const button = descendants(content).find((node) => node.tagName === "button");
+    const select = descendants(content).find((node) => node.tagName === "select");
+    if (!button || !select) throw new Error("Export controls were not mounted");
+    expect(button.disabled).toBe(true);
+    await vi.waitFor(() => expect(button.disabled).toBe(false));
+    expect(visibleText(content)).toContain("进程日志（不区分 Harness）");
+    select.value = "1";
+    button.dispatch("click");
+    button.dispatch("click");
+    await vi.waitFor(() =>
+      expect(exportLogs).toHaveBeenCalledExactlyOnceWith({ kind: "harness", harnessId: "pi" }),
+    );
+    expect(button.disabled).toBe(true);
+    expect(select.disabled).toBe(true);
+    pending.resolve({ fileName: "pi.jsonl.gz", data: "AQI=", fileCount: 2, bytes: 128 });
+    await vi.waitFor(() => expect(visibleText(content)).toContain("chosen/pi.jsonl.gz"));
+    expect(visibleText(content)).toContain("已导出 2 个日志文件");
+    expect(button.disabled).toBe(false);
+    select.value = "2";
+    button.dispatch("click");
+    await vi.waitFor(() => expect(visibleText(content)).toContain("日志导出失败。 disk full"));
+    expect(exportLogs).toHaveBeenLastCalledWith({ kind: "runtime" });
+    expect(saveFilePicker).toHaveBeenCalledTimes(1);
+    expect(button.disabled).toBe(false);
+    scope.dispose();
+  });
+});
 
 describe("Credential import controls", () => {
   const source = {

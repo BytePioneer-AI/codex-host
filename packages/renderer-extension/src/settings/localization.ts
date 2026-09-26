@@ -23,6 +23,19 @@ export interface RendererSettingsLanguageControl {
 }
 
 export interface RendererSettingsMessages {
+  readonly diagnosticLogs: {
+    source: string;
+    runtime: string;
+    loading: string;
+    empty: string;
+    title: string;
+    description: string;
+    export: string;
+    exporting: string;
+    saved: string;
+    failed: string;
+    unavailable: string;
+  };
   readonly credentialImports: CredentialImportMessages;
   readonly locale: RendererSettingsLocale;
   readonly title: string;
@@ -252,6 +265,20 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   starOnGitHub: "Star to support",
   sectionsLabel: "Settings sections",
   generalSection: "General",
+  diagnosticLogs: {
+    title: "Diagnostic logs",
+    source: "Log source",
+    runtime: "Runtime (not Harness-specific)",
+    loading: "Loading log sources…",
+    empty: "No diagnostic logs are available yet.",
+    description:
+      "Choose a Harness or runtime logs, then select a new location to save the JSONL.gz export. Review the file before sharing.",
+    export: "Export logs",
+    exporting: "Exporting logs…",
+    saved: "Exported {count} log files to:",
+    failed: "Could not export logs.",
+    unavailable: "Log export is unavailable. Connect to an updated local Host and try again.",
+  },
   otherSection: "Other",
   appearanceDescription: "Conversation display and local resource management.",
   appearanceGroup: "Appearance",
@@ -518,6 +545,20 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   starOnGitHub: "Star 支持",
   sectionsLabel: "设置分类",
   generalSection: "通用",
+  diagnosticLogs: {
+    title: "诊断日志",
+    source: "日志来源",
+    runtime: "进程日志（不区分 Harness）",
+    loading: "正在读取日志来源…",
+    empty: "暂无可导出的诊断日志。",
+    description:
+      "按 Harness 选择本机对话日志，或单独选择进程日志，再选择新的保存位置导出 JSONL.gz。分享前请检查内容。",
+    export: "导出日志",
+    exporting: "正在导出日志…",
+    saved: "已导出 {count} 个日志文件，保存到：",
+    failed: "日志导出失败。",
+    unavailable: "日志导出不可用，请连接更新后的本机 Host 再试。",
+  },
   otherSection: "其他",
   appearanceDescription: "会话显示与本地资源管理。",
   appearanceGroup: "外观",

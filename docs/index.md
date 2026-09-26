@@ -92,6 +92,7 @@
 | [`product/codex-native-account-switching-design.md`](product/codex-native-account-switching-design.md) | 移除 Codex 多账号切换后的只读边界；修改 Codex 认证或账号路由时阅读。 |
 | [`architecture/renderer-settings-styling.md`](architecture/renderer-settings-styling.md) | 设置页 Tailwind CSS 使用边界、构建方式与编写规则；新增或改版设置页界面时阅读。 |
 | [`operations/codex-desktop-upgrade-diagnosis-playbook.md`](operations/codex-desktop-upgrade-diagnosis-playbook.md) | Desktop 更新后 Renderer、Bridge、Agent 和 Model 异常的诊断流程；升级兼容性回归时阅读。 |
+| [`operations/logging.md`](operations/logging.md) | 运行日志的位置、记录边界、容量回收与配置；排查运行问题或新增日志记录点时阅读。 |
 
 ## 平台、进程与远程运行
 

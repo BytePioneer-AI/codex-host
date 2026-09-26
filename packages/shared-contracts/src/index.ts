@@ -302,6 +302,16 @@ export type {
   UpdateStatusResult,
 } from "./updates.js";
 export { WORKSPACE_CONTRACT_VERSION } from "./version.js";
+export {
+  DIAGNOSTIC_LOG_EXPORT_METHOD,
+  DIAGNOSTIC_LOG_LIST_METHOD,
+  diagnosticLogListResultSchema,
+  diagnosticLogScopeSchema,
+  diagnosticLogExportParamsSchema,
+  diagnosticLogExportResultSchema,
+  type DiagnosticLogExportResult,
+  type DiagnosticLogScope,
+} from "./diagnostic-logs.js";
 
 export const workspaceContractVersionSchema = z.literal(WORKSPACE_CONTRACT_VERSION);
 

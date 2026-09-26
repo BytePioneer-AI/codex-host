@@ -47,6 +47,13 @@ function turnStatus(value: unknown): DelegationThreadStatus {
   return "completed";
 }
 
+/** Codex Items mark the final answer as `final_answer`; the delegation surface reports `final`. */
+function explicitMessagePhase(value: unknown): DelegationMessage["phase"] | null {
+  if (value === "commentary") return "commentary";
+  if (value === "final_answer") return "final";
+  return null;
+}
+
 function allVisibleMessages(turns: readonly JsonObject[]): DelegationMessage[] {
   const messages: DelegationMessage[] = [];
   for (const turn of turns) {
@@ -65,11 +72,10 @@ function allVisibleMessages(turns: readonly JsonObject[]): DelegationMessage[] {
       } else if (item.type === "agentMessage" && typeof item.text === "string" && item.text) {
         const itemIndex = agentItems.indexOf(item);
         const phase =
-          item.phase === "commentary" || item.phase === "final"
-            ? item.phase
-            : turn.status === "inProgress" || itemIndex < agentItems.length - 1
-              ? "commentary"
-              : "final";
+          explicitMessagePhase(item.phase) ??
+          (turn.status === "inProgress" || itemIndex < agentItems.length - 1
+            ? "commentary"
+            : "final");
         messages.push({ id, turnId, role: "agent", phase, text: item.text });
       }
     }

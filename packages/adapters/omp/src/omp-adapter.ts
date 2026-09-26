@@ -156,6 +156,7 @@ export interface OmpTurnTransport {
     onEvent: (event: OmpTurnEvent) => void,
   ): Promise<OmpCompactResult>;
   runTurn(text: string, onEvent: (event: OmpTurnEvent) => void): Promise<OmpTurnResult>;
+  steer(message: string): Promise<void>;
   respondToInteraction(response: OmpInteractionResponse): Promise<void>;
   abort(): Promise<void>;
   close(): Promise<void>;
@@ -185,6 +186,7 @@ interface ActiveTurn {
   agentMessageId: string | null;
   compactionItem: HostContextCompactionItem | null;
   sawAssistantMessage: boolean;
+  acceptedSteerCount: number;
   reasoningItem: HostReasoningItem | null;
   tools: Map<string, ActiveTool>;
   interactions: Map<HostInteractionId, ActiveInteraction>;
@@ -707,6 +709,7 @@ class OmpHarnessSession implements HarnessSession {
       },
       history: { fork: true, forkAcrossCwd: true, rollbackLastTurn: true },
       subagents: { observe: true, readTranscript: true },
+      steer: true,
     };
     this.commands = {
       list: async () => ({ ok: true, value: this.#liveCommandCatalog() }),
@@ -994,20 +997,11 @@ class OmpHarnessSession implements HarnessSession {
       return { ok: false, error: invalidState("Omp Session is not open") };
     }
     if (command.type === "turn.cancel") return this.#cancel(command);
-    if (command.type === "turn.steer") {
-      return {
-        ok: false,
-        error: {
-          code: "unsupported",
-          message: "Omp native steering is not enabled",
-          retryable: false,
-        },
-      };
-    }
     if (command.type === "interaction.respond") return this.#respond(command);
     if (command.type === "model.select") return this.#selectModel(command);
     if (command.type === "thinking.select") return this.#selectThinking(command);
     if (command.type === "permissionMode.select") return this.#selectPermissionMode(command);
+    if (command.type === "turn.steer") return this.#steer(command);
     if (this.#acceptingTurn || this.#active || this.#configuring) {
       return {
         ok: false,
@@ -1077,6 +1071,7 @@ class OmpHarnessSession implements HarnessSession {
         agentMessageId: null,
         compactionItem: null,
         sawAssistantMessage: false,
+        acceptedSteerCount: 0,
         reasoningItem: null,
         tools: new Map(),
         interactions: new Map(),
@@ -1477,6 +1472,46 @@ class OmpHarnessSession implements HarnessSession {
     }
   }
 
+  async #steer(command: TurnSteerCommand): Promise<HarnessResult<TurnSteerAccepted>> {
+    if (!this.capabilities.steer) {
+      return {
+        ok: false,
+        error: {
+          code: "unsupported",
+          message: "Omp does not insert input into a running Turn",
+          retryable: false,
+        },
+      };
+    }
+    const active = this.#active;
+    if (!active || active.command.turnId !== command.turnId) {
+      return { ok: false, error: invalidState("Omp Turn is not active") };
+    }
+    const text = command.input.map((input) => input.text).join("\n");
+    if (text.length === 0) {
+      return {
+        ok: false,
+        error: {
+          code: "invalidRequest",
+          message: "Omp steer text must not be empty",
+          retryable: false,
+        },
+      };
+    }
+    const transport = this.#transport;
+    if (!transport) return { ok: false, error: invalidState("Omp Turn is not active") };
+    try {
+      await transport.steer(text);
+    } catch (error) {
+      return { ok: false, error: invalidState(errorMessage(error)) };
+    }
+    if (this.#active !== active || this.#phase !== "open") {
+      return { ok: false, error: invalidState("Omp Turn ended before steer was accepted") };
+    }
+    active.acceptedSteerCount += 1;
+    return { ok: true, value: { accepted: true } };
+  }
+
   async #cancel(command: TurnCancelCommand): Promise<HarnessResult<TurnCancelAccepted>> {
     const active = this.#active;
     if (!active || active.command.turnId !== command.turnId) {
@@ -1601,6 +1636,7 @@ class OmpHarnessSession implements HarnessSession {
         agentMessageId: null,
         compactionItem: null,
         sawAssistantMessage: false,
+        acceptedSteerCount: 0,
         reasoningItem: null,
         tools: new Map(),
         interactions: new Map(),
@@ -2185,9 +2221,11 @@ class OmpHarnessSession implements HarnessSession {
     const created = snapshot.turns.filter(
       (turn) => !active.beforeNativeTurnKeys.has(turn.nativeTurnRef.nativeTurnKey),
     );
-    if (created.length !== 1) {
+    const expected = 1 + active.acceptedSteerCount;
+    if (created.length !== expected) {
+      const countText = expected === 1 ? "one" : `${expected}`;
       throw new Error(
-        `Omp Turn persisted ${created.length} new User Entries; exactly one is required`,
+        `Omp Turn persisted ${created.length} new User Entries; exactly ${countText} is required`,
       );
     }
     const turn = created[0];
@@ -2451,6 +2489,7 @@ export class OmpAdapter implements HarnessAdapter {
           },
           history: { fork: true, forkAcrossCwd: true, rollbackLastTurn: true },
           subagents: { observe: true, readTranscript: true },
+          steer: true,
         },
       };
     } catch (error) {

@@ -13,23 +13,29 @@ import {
 } from "@codexhost/harness-discovery";
 import { workBuddyDelegationArguments } from "./delegation.js";
 import {
+  CODEXHOST_WORKBUDDY_COMMAND,
   resolveWorkBuddyBundle,
   resolveWorkBuddyInstallDirectory,
   WORKBUDDY_MACOS_ELECTRON,
 } from "./discovery.js";
-export { WORKBUDDY_MACOS_ELECTRON, WORKBUDDY_MACOS_CLI } from "./discovery.js";
+export {
+  CODEXHOST_WORKBUDDY_COMMAND,
+  WORKBUDDY_MACOS_ELECTRON,
+  WORKBUDDY_MACOS_CLI,
+} from "./discovery.js";
 
 export const workBuddyDiscoverySpec: HarnessDiscoverySpec = {
   id: "workbuddy",
   // An absolute app-owned default deliberately prevents discovery of an unrelated PATH codebuddy.
   command: WORKBUDDY_MACOS_ELECTRON,
-  commandEnvironmentVariable: "CODEXHOST_WORKBUDDY_COMMAND",
+  commandEnvironmentVariable: CODEXHOST_WORKBUDDY_COMMAND,
 };
 
 interface WorkBuddyInvocationDependencies {
   platform?: NodeJS.Platform;
   isExecutable?: (candidate: string) => boolean;
   isDirectory?: (candidate: string) => boolean;
+  windowsInstallExecutables?: () => string[];
   lstat?: (candidate: string) => {
     isDirectory(): boolean;
     isFile(): boolean;
@@ -119,11 +125,11 @@ export function workBuddyInvocation(
     : argumentsOverride;
   const platform = dependencies.platform ?? process.platform;
   const configured =
-    environmentValue(environment, "CODEXHOST_WORKBUDDY_COMMAND")?.trim() || undefined;
+    environmentValue(environment, CODEXHOST_WORKBUDDY_COMMAND)?.trim() || undefined;
   if (!configured && platform !== "darwin" && platform !== "win32")
     throw new CodeBuddyError(
       "notInstalled",
-      "WorkBuddy app discovery is available on macOS and Windows; set CODEXHOST_WORKBUDDY_COMMAND for a compatible native runtime on this platform",
+      `WorkBuddy app discovery is available on macOS and Windows; set ${CODEXHOST_WORKBUDDY_COMMAND} for a compatible native runtime on this platform`,
     );
   const isExecutable =
     dependencies.isExecutable ?? ((candidate: string) => isExecutableFile(candidate, platform));
@@ -145,10 +151,25 @@ export function workBuddyInvocation(
       )) ||
       (platform === "darwin" &&
         /\/(?:WorkBuddy|WorkBuddy AI)\.app\/Contents\/MacOS\/Electron$/u.test(explicitExecutable)));
+  const discoveryDependencies = dependencies.windowsInstallExecutables
+    ? { windowsInstallExecutables: dependencies.windowsInstallExecutables }
+    : {};
   const bundle = configuredDirectory
-    ? resolveWorkBuddyInstallDirectory(configuredDirectory, environment, platform, isExecutable)
+    ? resolveWorkBuddyInstallDirectory(
+        configuredDirectory,
+        environment,
+        platform,
+        isExecutable,
+        discoveryDependencies,
+      )
     : !configured || explicitDesktop
-      ? resolveWorkBuddyBundle(environment, platform, isExecutable, explicitExecutable)
+      ? resolveWorkBuddyBundle(
+          environment,
+          platform,
+          isExecutable,
+          explicitExecutable,
+          discoveryDependencies,
+        )
       : undefined;
   const executable =
     configured && !explicitDesktop && !configuredDirectory

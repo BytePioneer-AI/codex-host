@@ -78,6 +78,7 @@ describe("AppServerHost idle resource release", () => {
         },
       });
       let resumed: FakeHarnessSession | undefined;
+      let resumedCommands: readonly unknown[][] = [];
       try {
         await fixture.ready;
         if (!delegationApi) throw new Error("Delegation API was not registered");
@@ -101,6 +102,28 @@ describe("AppServerHost idle resource release", () => {
           decodeExternalTransportSelection("claude-code", stored?.transportModelId),
         ).toMatchObject({ permissionModeId: "auto" });
         if (expectedMode === "default") {
+          vi.spyOn(fixture.mappingStore, "setTransportModelId").mockRejectedValueOnce(
+            new Error("synthetic write failure"),
+          );
+          writeRequest(fixture.desktopInput, {
+            id: 899,
+            method: "codexhost/thread/permission-mode/select",
+            params: { threadId, permissionModeId: expectedMode },
+          });
+          expect(
+            await fixture.collector.waitFor((message) => requestId(message, 899)),
+          ).toMatchObject({
+            error: {
+              code: -32078,
+              message: expect.stringContaining("could not be saved"),
+            },
+          });
+          expect(
+            decodeExternalTransportSelection(
+              "claude-code",
+              (await fixture.mappingStore.getThread(threadId))?.transportModelId,
+            ),
+          ).toMatchObject({ permissionModeId: "auto" });
           writeRequest(fixture.desktopInput, {
             id: 900,
             method: "codexhost/thread/permission-mode/select",
@@ -129,6 +152,7 @@ describe("AppServerHost idle resource release", () => {
             permissionModes,
           );
           expect(resumed.state.effectivePermissionModeId).toBe("default");
+          resumedCommands = vi.spyOn(resumed, "execute").mock.calls;
           return { ok: true, value: resumed };
         });
         writeRequest(fixture.desktopInput, {
@@ -142,6 +166,10 @@ describe("AppServerHost idle resource release", () => {
         const next = await delegationApi.send({ threadId, message: "continue" });
         if (!resumed) throw new Error("Missing resumed Session");
         expect(resumed.state.effectivePermissionModeId).toBe(expectedMode);
+        // The resumed Session starts at default, so assert the restore itself.
+        expect(resumedCommands).toContainEqual([
+          { type: "permissionMode.select", permissionModeId: expectedMode },
+        ]);
         resumed.succeedTurn();
         await fixture.collector.waitFor((message) =>
           turnEvent(message, "turn/completed", next.turnId),

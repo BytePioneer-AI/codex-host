@@ -129,6 +129,8 @@ export interface HermesSessionTransport {
   setPermissionMode(modeId: string): Promise<void>;
   setThinking?(optionId: string): Promise<string>;
   readNativeSnapshot?(): Promise<HostThreadSnapshot>;
+  /** Gateway `session.steer`. Absent on the ACP fallback. */
+  steer?(text: string): Promise<"queued" | "rejected">;
   cancel(): Promise<void>;
   close(): Promise<void>;
 }

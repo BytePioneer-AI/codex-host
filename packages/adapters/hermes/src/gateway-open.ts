@@ -28,6 +28,7 @@ export const gatewayCapabilities: HarnessSessionCapabilities = {
     permissionModeScope: "live",
   },
   history: { fork: true, forkAcrossCwd: false, rollbackLastTurn: true },
+  steer: true,
 };
 export function gatewayPermissionModes() {
   return harnessPermissionModeCatalogSchema.parse({

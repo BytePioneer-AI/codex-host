@@ -771,3 +771,42 @@ describe("HermesSession live configuration errors", () => {
     await session.close();
   });
 });
+
+describe("Hermes ACP steer", () => {
+  it("does not declare steer and leaves a busy turn.start blocked", async () => {
+    const transport = new FakeTurnTransport();
+    transport.runTurn = () => new Promise(() => undefined);
+    const session = new HermesSession({
+      nativeRef: nativeSessionRefSchema.parse({
+        harnessId: "hermes",
+        nativeSessionId: "native-session-1",
+        formatVersion: 1,
+      }),
+      transport: transport as unknown as HermesAcpTransport,
+      open: openResult(),
+      onSettle: () => undefined,
+    });
+    expect(session.capabilities.steer).toBeUndefined();
+    const turnId = hostTurnIdSchema.parse("acp-turn");
+    await session.execute({
+      type: "turn.start",
+      turnId,
+      input: [{ type: "text", text: "go" }],
+    });
+    await expect(
+      session.execute({
+        type: "turn.steer",
+        turnId,
+        input: [{ type: "text", text: "later" }],
+      }),
+    ).resolves.toMatchObject({ ok: false, error: { code: "unsupported" } });
+    await expect(
+      session.execute({
+        type: "turn.start",
+        turnId: hostTurnIdSchema.parse("busy"),
+        input: [{ type: "text", text: "no" }],
+      }),
+    ).resolves.toMatchObject({ ok: false, error: { code: "sessionBusy" } });
+    await session.close();
+  });
+});

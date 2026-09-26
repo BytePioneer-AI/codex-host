@@ -881,6 +881,257 @@ describe("DeepSeek Harness Modern Session", () => {
     await test.session.close();
   });
 
+  it("streams V4 PTC sub-calls in place of run_code with native durations", async () => {
+    const test = setup(
+      [() => accepted()],
+      [],
+      ["request-1"],
+      5_000,
+      null,
+      undefined,
+      undefined,
+      [],
+      DEEPSEEK_V017_PROFILE,
+    );
+    const outputs = test.session.outputs[Symbol.asyncIterator]();
+    const id = turnId("ptc-turn");
+    const runCode = JSON.stringify({ code: "await tools.pwsh({ command: 'Get-Date' })" });
+    await test.session.execute({
+      type: "turn.start",
+      turnId: id,
+      input: [{ type: "text", text: "date" }],
+    });
+    test.feed.push(event(0, "turn/start", { turn: 1 }));
+    test.feed.push(event(1, "step/start", { turn: 1, step: 1 }));
+    test.feed.push(userMessage(2, "date", "request-1"));
+    expect(await nextEvent(outputs)).toEqual({ type: "turn.started", turnId: id });
+    test.feed.push(
+      event(
+        3,
+        "assistant/message",
+        {
+          turn: 1,
+          step: 1,
+          message: {
+            id: "assistant-3",
+            role: "assistant",
+            content: [{ type: "tool-call", id: "call-1", name: "run_code", arguments: runCode }],
+            source: { kind: "model", provider: "deepseek", model: "deepseek-v4" },
+          },
+          stream: [],
+        },
+        true,
+      ),
+    );
+    test.feed.push(
+      event(4, "tool/call", {
+        turn: 1,
+        step: 1,
+        callId: "call-1",
+        name: "run_code",
+        arguments: runCode,
+      }),
+    );
+    const dispatch = {
+      rootCallId: "call-1",
+      parentCallId: "call-1",
+      subCallId: "call-1:ptc:1",
+      name: "pwsh",
+      arguments: { command: "Get-Date" },
+    };
+    test.feed.push({ ...event(5, "tool/ptc-dispatch-start", dispatch), time: 2_000 });
+    test.feed.push({
+      ...event(6, "tool/ptc-dispatch", {
+        ...dispatch,
+        isError: false,
+        content: [{ type: "text", text: "2026-09-27" }],
+      }),
+      time: 2_450,
+    });
+    test.feed.push(
+      event(
+        7,
+        "tool/result",
+        {
+          turn: 1,
+          step: 1,
+          message: {
+            id: "result-7",
+            role: "tool",
+            toolCallId: "call-1",
+            isError: false,
+            content: [{ type: "text", text: "2026-09-27" }],
+            source: { kind: "tool", callId: "call-1" },
+          },
+        },
+        true,
+      ),
+    );
+    test.feed.push(event(8, "step/end", { turn: 1, step: 1 }));
+    test.feed.push(event(9, "turn/end", { turn: 1, reason: { kind: "completed" } }));
+
+    const emitted = await eventsThrough(outputs, "turn.completed");
+    const tools = emitted.flatMap((entry) => {
+      const item =
+        entry.type === "item.started"
+          ? entry.item
+          : entry.type === "item.completed"
+            ? entry.snapshot.item
+            : undefined;
+      return item?.type === "toolExecution" ? [[entry.type, item.toolName]] : [];
+    });
+    expect(tools).toEqual([
+      ["item.started", "pwsh"],
+      ["item.completed", "pwsh"],
+    ]);
+    const subCall = emitted.find(
+      (entry) =>
+        entry.type === "item.completed" &&
+        entry.snapshot.item.type === "toolExecution" &&
+        entry.snapshot.item.toolName === "pwsh",
+    );
+    expect(subCall).toMatchObject({
+      snapshot: {
+        item: {
+          itemId: `dsh-modern:${SESSION_ID}:event:5:tool`,
+          arguments: { command: "Get-Date" },
+          output: { content: [{ type: "text", text: "2026-09-27" }] },
+          durationMs: 450,
+        },
+        outcome: { status: "succeeded" },
+      },
+    });
+
+    const ui = new CodexTurnProjector({
+      threadId: "dsh-ptc",
+      turnId: id,
+      cwd: "/fixture",
+      startedAtMs: 1_000,
+    });
+    ui.project({ type: "turn.started", turnId: id });
+    const wire = emitted.flatMap((entry) =>
+      entry.type === "item.started" || entry.type === "item.completed"
+        ? ui.project(entry).messages
+        : [],
+    );
+    expect(wire).toContainEqual(
+      expect.objectContaining({
+        method: "item/completed",
+        params: expect.objectContaining({
+          item: expect.objectContaining({
+            type: "commandExecution",
+            command: "Get-Date",
+            aggregatedOutput: "2026-09-27",
+          }),
+        }),
+      }),
+    );
+
+    // Live and cold history agree on the sub-call's identity.
+    const snapshot = await test.session.readSnapshot();
+    expect(snapshot.ok && snapshot.value.turns[0]?.items.map(({ item }) => item.itemId)).toEqual([
+      `dsh-modern:${SESSION_ID}:event:5:tool`,
+    ]);
+    await test.session.close();
+  });
+
+  it("keeps a V0 run_code live as one Tool and ignores its dispatches", async () => {
+    const test = setup([() => accepted()], [], ["request-1"]);
+    const outputs = test.session.outputs[Symbol.asyncIterator]();
+    const runCode = JSON.stringify({ code: "await tools.pwsh({ command: 'Get-Date' })" });
+    await test.session.execute({
+      type: "turn.start",
+      turnId: turnId("v0-ptc-turn"),
+      input: [{ type: "text", text: "date" }],
+    });
+    test.feed.push(event(0, "turn/start", { turn: 1 }));
+    test.feed.push(event(1, "step/start", { turn: 1, step: 1 }));
+    test.feed.push(userMessage(2, "date", "request-1"));
+    expect(await nextEvent(outputs)).toMatchObject({ type: "turn.started" });
+    test.feed.push(
+      event(
+        3,
+        "assistant/message",
+        {
+          turn: 1,
+          step: 1,
+          message: {
+            id: "assistant-3",
+            role: "assistant",
+            content: [{ type: "tool-call", id: "call-1", name: "run_code", arguments: runCode }],
+            source: { kind: "model", provider: "deepseek", model: "deepseek-v4" },
+          },
+        },
+        true,
+      ),
+    );
+    test.feed.push(
+      event(4, "tool/call", {
+        turn: 1,
+        step: 1,
+        callId: "call-1",
+        name: "run_code",
+        arguments: runCode,
+      }),
+    );
+    const dispatch = {
+      rootCallId: "call-1",
+      parentCallId: "call-1",
+      subCallId: "call-1:code:1",
+      name: "pwsh",
+      arguments: { command: "Get-Date" },
+    };
+    test.feed.push(event(5, "tool/code-dispatch-start", dispatch));
+    test.feed.push(
+      event(6, "tool/code-dispatch", {
+        ...dispatch,
+        isError: false,
+        content: [{ type: "text", text: "2026-09-27" }],
+      }),
+    );
+    test.feed.push(
+      event(
+        7,
+        "tool/result",
+        {
+          turn: 1,
+          step: 1,
+          message: {
+            id: "result-7",
+            role: "user",
+            content: [
+              {
+                type: "tool-result",
+                toolCallId: "call-1",
+                content: [{ type: "text", text: "2026-09-27" }],
+              },
+            ],
+            source: { kind: "tool", callId: "call-1" },
+          },
+        },
+        true,
+      ),
+    );
+    test.feed.push(event(8, "step/end", { turn: 1, step: 1 }));
+    test.feed.push(event(9, "turn/end", { turn: 1, reason: { kind: "completed" } }));
+
+    const emitted = await eventsThrough(outputs, "turn.completed");
+    const tools = emitted.flatMap((entry) => {
+      const item =
+        entry.type === "item.started"
+          ? entry.item
+          : entry.type === "item.completed"
+            ? entry.snapshot.item
+            : undefined;
+      return item?.type === "toolExecution" ? [[entry.type, item.toolName]] : [];
+    });
+    expect(tools).toEqual([
+      ["item.started", "run_code"],
+      ["item.completed", "run_code"],
+    ]);
+    await test.session.close();
+  });
+
   it("streams V0 reasoning and reconciles trailing line breaks, revisions, and repeated Turns", async () => {
     const test = setup(
       [() => accepted(), () => accepted(), () => accepted(), () => accepted()],

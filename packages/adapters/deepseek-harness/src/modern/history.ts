@@ -64,6 +64,14 @@ import {
   validateLlmFailure,
 } from "../profiles/validation.js";
 export { ModernHistoryError, type ModernHistoryErrorCode } from "../profiles/validation.js";
+import {
+  isPtcProgramTool,
+  projectsPtcDispatches,
+  ptcDispatchItem,
+  ptcDispatchKey,
+  ptcDispatchOutcome,
+  ptcDispatchOutput,
+} from "./ptc-dispatch.js";
 import { redactModernCredential } from "./wire.js";
 
 export const MODERN_HISTORY_MAX_EVENTS = 1_000_000;
@@ -811,6 +819,8 @@ interface HistoryTurn {
   input: HostTextInput[];
   items: HostItemSnapshot[];
   tools: Map<string, HistoryTool>;
+  /** Open PTC program calls, which project no Item of their own. */
+  programCalls: Set<string>;
   advertisedTools: Map<string, { toolName: string; arguments: string }>;
   model: HarnessModelRef | undefined;
 }
@@ -876,6 +886,7 @@ export function projectModernHistory(input: ProjectModernHistoryInput): ModernHi
           input: [],
           items: [],
           tools: new Map(),
+          programCalls: new Set(),
           advertisedTools: new Map(),
           model: effectiveModel,
         };
@@ -927,11 +938,28 @@ export function projectModernHistory(input: ProjectModernHistoryInput): ModernHi
         }
         break;
       case "tool/call":
-        if (active) projectToolCall(active, input.sessionId, data, event.seq);
+        if (active) projectToolCall(active, input.sessionId, data, event.seq, profile);
         break;
       case "tool/result":
         if (active && event.surfaceOp === "append") {
-          projectToolResultEvent(active, input.sessionId, data, event.seq, toolOutputLimit);
+          projectToolResultEvent(
+            active,
+            input.sessionId,
+            data,
+            event.seq,
+            toolOutputLimit,
+            profile,
+          );
+        }
+        break;
+      case "tool/ptc-dispatch-start":
+        if (active && projectsPtcDispatches(profile)) {
+          projectPtcDispatchStart(active, input.sessionId, data, event.seq);
+        }
+        break;
+      case "tool/ptc-dispatch":
+        if (active && projectsPtcDispatches(profile)) {
+          projectPtcDispatchSettle(active, input.sessionId, data, event.seq, toolOutputLimit);
         }
         break;
       case "turn/end":
@@ -1055,9 +1083,15 @@ function projectToolCall(
   sessionId: string,
   data: Record<string, unknown>,
   seq: number,
+  profile: DeepSeekModernProfile,
 ): void {
-  if (turn.tools.has(data.callId as string)) {
+  if (turn.tools.has(data.callId as string) || turn.programCalls.has(data.callId as string)) {
     fail("Modern history reused an unfinished Tool callId");
+  }
+  if (isPtcProgramTool(profile, data.name as string)) {
+    turn.programCalls.add(data.callId as string);
+    turn.advertisedTools.delete(data.callId as string);
+    return;
   }
   const item: HostToolExecutionItem = {
     type: "toolExecution",
@@ -1077,13 +1111,22 @@ function projectToolResultEvent(
   data: Record<string, unknown>,
   seq: number,
   limit: number,
+  profile: DeepSeekModernProfile,
 ): void {
   const result = projectToolResult(data.message, limit);
   if (!result) fail("Modern history contains an unprojectable tool/result");
+  const advertised = turn.advertisedTools.get(result.callId);
+  const forked = advertised !== undefined && isForkedToolResult(data, result.callId, seq);
+  if (
+    turn.programCalls.delete(result.callId) ||
+    (forked && isPtcProgramTool(profile, advertised.toolName))
+  ) {
+    turn.advertisedTools.delete(result.callId);
+    return;
+  }
   let tool = turn.tools.get(result.callId);
   if (!tool) {
-    const advertised = turn.advertisedTools.get(result.callId);
-    if (advertised && isForkedToolResult(data, result.callId, seq)) {
+    if (forked) {
       const item: HostToolExecutionItem = {
         type: "toolExecution",
         itemId: modernItemId(sessionId, `event:${seq}:tool`),
@@ -1127,6 +1170,39 @@ function projectToolResultEvent(
       turn.items.push({ item: fileItem, outcome: { status: "succeeded" } });
     }
   }
+}
+
+function projectPtcDispatchStart(
+  turn: HistoryTurn,
+  sessionId: string,
+  data: Record<string, unknown>,
+  seq: number,
+): HistoryTool {
+  const key = ptcDispatchKey(data);
+  if (turn.tools.has(key)) fail("Modern history reused an unfinished PTC dispatch");
+  const item = ptcDispatchItem(modernItemId(sessionId, `event:${seq}:tool`), data);
+  const tool = { itemIndex: turn.items.length, item, toolName: item.toolName };
+  turn.items.push({ item, outcome: incompleteToolOutcome(item.toolName) });
+  turn.tools.set(key, tool);
+  return tool;
+}
+
+function projectPtcDispatchSettle(
+  turn: HistoryTurn,
+  sessionId: string,
+  data: Record<string, unknown>,
+  seq: number,
+  limit: number,
+): void {
+  // Dispatch events are log-only; a settle without its start still shows the call.
+  const tool =
+    turn.tools.get(ptcDispatchKey(data)) ?? projectPtcDispatchStart(turn, sessionId, data, seq);
+  turn.tools.delete(ptcDispatchKey(data));
+  const output = ptcDispatchOutput(data, limit);
+  turn.items[tool.itemIndex] = {
+    item: { ...tool.item, ...(output ? { output } : {}) },
+    outcome: ptcDispatchOutcome(data, tool.toolName),
+  };
 }
 
 function isForkedToolResult(data: Record<string, unknown>, callId: string, seq: number): boolean {
@@ -1727,7 +1803,9 @@ function validateCodeDispatch(
   const required = ["rootCallId", "parentCallId", "subCallId", "name", "arguments"];
   if (type === "tool/code-dispatch" || type === "tool/ptc-dispatch")
     required.push("isError", "content");
-  exactKeys(data, required);
+  // V4 settles a failed sub-call with tool/result's optional error identity.
+  const v4Settle = type === "tool/ptc-dispatch" && profile.sessionFormatVersion === 4;
+  requiredOptionalKeys(data, required, v4Settle ? ["error"] : []);
   for (const key of ["rootCallId", "parentCallId", "subCallId", "name"]) {
     requiredString(data[key], `tool/code-dispatch ${key}`);
   }
@@ -1736,6 +1814,7 @@ function validateCodeDispatch(
       fail("Modern history tool/code-dispatch result is malformed");
     }
     profile.validateContent(data.content);
+    if (data.error !== undefined) validateToolError(data.error, profile);
   }
 }
 

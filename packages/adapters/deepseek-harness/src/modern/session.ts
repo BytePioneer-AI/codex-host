@@ -105,6 +105,14 @@ import {
   type ModernJournalRemote,
 } from "./journal.js";
 import { DEEPSEEK_V012_PROFILE, type DeepSeekModernProfile } from "../profiles/profile.js";
+import {
+  isPtcProgramTool,
+  projectsPtcDispatches,
+  ptcDispatchItem,
+  ptcDispatchKey,
+  ptcDispatchOutcome,
+  ptcDispatchOutput,
+} from "./ptc-dispatch.js";
 import { ModernRemoteConnectionError } from "./remote-connection.js";
 import {
   redactModernCredential,
@@ -215,6 +223,8 @@ interface ActiveHostTurn {
   reasoning?: LiveReasoningItem;
   reasoningOrdinal: number;
   readonly tools: Map<string, LiveTool>;
+  /** Open PTC program calls, which project no Item of their own. */
+  readonly programCalls: Set<string>;
   readonly interactions: Set<HostInteractionId>;
   terminal: boolean;
   cancelAcknowledged: boolean;
@@ -1986,6 +1996,7 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
       input: [...input],
       autonomous,
       tools: new Map(),
+      programCalls: new Set(),
       reasoningOrdinal: 0,
       interactions: new Set(),
       terminal: false,
@@ -2042,6 +2053,16 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
         return;
       case "tool/result":
         if (event.surfaceOp === "append") this.#completeTool(active, data, event.seq);
+        return;
+      case "tool/ptc-dispatch-start":
+        if (projectsPtcDispatches(this.#profile)) {
+          this.#startPtcDispatch(active, data, event.seq, event.time);
+        }
+        return;
+      case "tool/ptc-dispatch":
+        if (projectsPtcDispatches(this.#profile)) {
+          this.#settlePtcDispatch(active, data, event.seq, event.time);
+        }
         return;
       case "step/end":
         this.#cancelReasoningItem(active);
@@ -2201,8 +2222,12 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
 
   #startTool(active: ActiveHostTurn, data: Record<string, unknown>, seq: number): void {
     const callId = data.callId as string;
-    if (active.tools.has(callId)) {
+    if (active.tools.has(callId) || active.programCalls.has(callId)) {
       throw new ModernHistoryError("protocolError", "Modern tool/call is duplicated");
+    }
+    if (isPtcProgramTool(this.#profile, data.name as string)) {
+      active.programCalls.add(callId);
+      return;
     }
     const item: HostToolExecutionItem = {
       type: "toolExecution",
@@ -2221,6 +2246,7 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
   #completeTool(active: ActiveHostTurn, data: Record<string, unknown>, seq: number): void {
     const result = projectToolResult(data.message, this.#toolOutputLimit);
     if (!result) throw new ModernHistoryError("protocolError", "Modern tool/result is malformed");
+    if (active.programCalls.delete(result.callId)) return;
     const tool = active.tools.get(result.callId);
     if (!tool) throw new ModernHistoryError("protocolError", "Modern tool/result is unmatched");
     active.tools.delete(result.callId);
@@ -2257,6 +2283,43 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
         this.#completeItem(active, fileItem, { status: "succeeded" });
       }
     }
+  }
+
+  #startPtcDispatch(
+    active: ActiveHostTurn,
+    data: Record<string, unknown>,
+    seq: number,
+    time: number,
+  ): LiveTool {
+    const key = ptcDispatchKey(data);
+    if (active.tools.has(key)) {
+      throw new ModernHistoryError("protocolError", "Modern PTC dispatch is duplicated");
+    }
+    const item = ptcDispatchItem(modernItemId(this.#sessionId, `event:${seq}:tool`), data);
+    // Native event times give the sub-call's real duration, including on replay.
+    const tool = { item, toolName: item.toolName, startedAtMs: time };
+    active.tools.set(key, tool);
+    this.#emit({ type: "item.started", turnId: active.turnId, item });
+    return tool;
+  }
+
+  #settlePtcDispatch(
+    active: ActiveHostTurn,
+    data: Record<string, unknown>,
+    seq: number,
+    time: number,
+  ): void {
+    // Dispatch events are log-only; a settle without its start still shows the call.
+    const tool =
+      active.tools.get(ptcDispatchKey(data)) ?? this.#startPtcDispatch(active, data, seq, time);
+    active.tools.delete(ptcDispatchKey(data));
+    const output = ptcDispatchOutput(data, this.#toolOutputLimit);
+    const item: HostToolExecutionItem = {
+      ...tool.item,
+      ...(output ? { output } : {}),
+      durationMs: Math.max(0, time - tool.startedAtMs),
+    };
+    this.#completeItem(active, item, ptcDispatchOutcome(data, tool.toolName));
   }
 
   #finishTurn(
@@ -2394,6 +2457,7 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
         input: hostBound ? [...pending.command.input] : [...buffer.input],
         autonomous: !hostBound,
         tools: new Map(),
+        programCalls: new Set(),
         reasoningOrdinal: 0,
         interactions: new Set(),
         terminal: false,

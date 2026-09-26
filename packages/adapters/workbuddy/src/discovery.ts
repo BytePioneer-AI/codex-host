@@ -65,17 +65,103 @@ export function parseWindowsDisplayIcon(value: string): string | undefined {
   return bare?.groups?.path?.trim();
 }
 
+/** Decode Shell Link ANSI path bytes (Windows system ACP). Injectable for tests. */
+export type ShellLinkAnsiDecoder = (bytes: Uint8Array) => string;
+
+const WINDOWS_ACP_TO_ENCODING: Readonly<Record<number, string>> = {
+  932: "shift_jis",
+  936: "gbk",
+  949: "euc-kr",
+  950: "big5",
+  1250: "windows-1250",
+  1251: "windows-1251",
+  1252: "windows-1252",
+  1253: "windows-1253",
+  1254: "windows-1254",
+  1255: "windows-1255",
+  1256: "windows-1256",
+  1257: "windows-1257",
+  1258: "windows-1258",
+  65001: "utf-8",
+};
+
+let cachedWindowsAnsiEncoding: string | undefined;
+
+/** Map a Windows ACP code-page number to a WHATWG TextDecoder label. */
+export function mapWindowsAcpToEncoding(acp: number): string {
+  return WINDOWS_ACP_TO_ENCODING[acp] ?? "utf-8";
+}
+
+/**
+ * Default ANSI decoder for Shell Link LocalBasePath / CommonPathSuffix.
+ * On win32 uses the system ACP (cached); elsewhere falls back to UTF-8.
+ */
+export function defaultDecodeWindowsAnsi(bytes: Uint8Array): string {
+  if (process.platform !== "win32") {
+    return Buffer.from(bytes).toString("utf8");
+  }
+  const label = windowsAnsiEncodingLabel();
+  try {
+    return new TextDecoder(label).decode(bytes);
+  } catch {
+    return Buffer.from(bytes).toString("utf8");
+  }
+}
+
+function windowsAnsiEncodingLabel(): string {
+  if (cachedWindowsAnsiEncoding !== undefined) return cachedWindowsAnsiEncoding;
+  cachedWindowsAnsiEncoding = detectWindowsAnsiEncodingLabel();
+  return cachedWindowsAnsiEncoding;
+}
+
+function detectWindowsAnsiEncodingLabel(): string {
+  try {
+    const output = execFileSync(
+      "reg.exe",
+      ["query", "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Nls\\CodePage", "/v", "ACP"],
+      {
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "ignore"],
+        windowsHide: true,
+        timeout: 1_000,
+      },
+    );
+    const match = output.match(/\bACP\s+REG_SZ\s+(\d+)/iu);
+    if (match?.[1]) return mapWindowsAcpToEncoding(Number(match[1]));
+  } catch {
+    // Prefer utf-8 over guessing a single-byte page when ACP lookup fails.
+  }
+  return "utf-8";
+}
+
+export interface ReadWindowsShortcutOptions {
+  readonly decodeAnsi?: ShellLinkAnsiDecoder;
+}
+
 /**
  * Minimal Shell Link (.lnk) LocalBasePath reader. Returns undefined when the
  * shortcut has no local path or the file is not a recognizable link.
+ * Per MS-SHLLINK, concatenates LocalBasePath + CommonPathSuffix when the
+ * suffix is nonempty (ANSI and Unicode).
  */
-export function readWindowsShortcutTarget(filePath: string): string | undefined {
+export function readWindowsShortcutTarget(
+  filePath: string,
+  options?: ReadWindowsShortcutOptions,
+): string | undefined {
   let buffer: Buffer;
   try {
     buffer = readFileSync(filePath);
   } catch {
     return undefined;
   }
+  return parseWindowsShortcutTargetBuffer(buffer, options);
+}
+
+/** Parse a Shell Link buffer; exposed for unit tests without touching the filesystem. */
+export function parseWindowsShortcutTargetBuffer(
+  buffer: Buffer,
+  options?: ReadWindowsShortcutOptions,
+): string | undefined {
   if (buffer.length < 0x4c) return undefined;
   if (buffer.readUInt32LE(0) !== 0x4c) return undefined;
   const linkFlags = buffer.readUInt32LE(0x14);
@@ -92,16 +178,36 @@ export function readWindowsShortcutTarget(filePath: string): string | undefined 
   const linkInfoHeaderSize = buffer.readUInt32LE(offset + 4);
   const linkInfoFlags = buffer.readUInt32LE(offset + 8);
   if (!(linkInfoFlags & 0x01)) return undefined;
+  const decodeAnsi = options?.decodeAnsi ?? defaultDecodeWindowsAnsi;
+  const linkEnd = offset + linkInfoSize;
   if (linkInfoHeaderSize >= 0x24) {
-    const unicodeOffset = buffer.readUInt32LE(offset + 0x1c);
-    if (unicodeOffset > 0 && unicodeOffset < linkInfoSize) {
-      const path = readNullTerminatedUtf16(buffer, offset + unicodeOffset, offset + linkInfoSize);
-      if (path) return path;
+    const unicodeBaseOffset = buffer.readUInt32LE(offset + 0x1c);
+    const unicodeSuffixOffset = buffer.readUInt32LE(offset + 0x20);
+    if (unicodeBaseOffset > 0 && unicodeBaseOffset < linkInfoSize) {
+      const base = readNullTerminatedUtf16(buffer, offset + unicodeBaseOffset, linkEnd);
+      if (base) {
+        const suffix =
+          unicodeSuffixOffset > 0 && unicodeSuffixOffset < linkInfoSize
+            ? readNullTerminatedUtf16(buffer, offset + unicodeSuffixOffset, linkEnd)
+            : undefined;
+        return joinShellLinkPath(base, suffix);
+      }
     }
   }
   const localBasePathOffset = buffer.readUInt32LE(offset + 0x10);
+  const commonPathSuffixOffset = buffer.readUInt32LE(offset + 0x18);
   if (localBasePathOffset <= 0 || localBasePathOffset >= linkInfoSize) return undefined;
-  return readNullTerminatedAnsi(buffer, offset + localBasePathOffset, offset + linkInfoSize);
+  const base = readNullTerminatedAnsi(buffer, offset + localBasePathOffset, linkEnd, decodeAnsi);
+  if (!base) return undefined;
+  const suffix =
+    commonPathSuffixOffset > 0 && commonPathSuffixOffset < linkInfoSize
+      ? readNullTerminatedAnsi(buffer, offset + commonPathSuffixOffset, linkEnd, decodeAnsi)
+      : undefined;
+  return joinShellLinkPath(base, suffix);
+}
+
+function joinShellLinkPath(base: string, suffix: string | undefined): string {
+  return suffix ? base + suffix : base;
 }
 
 /**
@@ -343,11 +449,16 @@ function listShortcutFiles(directory: string, depth: number): string[] {
   return found;
 }
 
-function readNullTerminatedAnsi(buffer: Buffer, start: number, end: number): string | undefined {
+function readNullTerminatedAnsi(
+  buffer: Buffer,
+  start: number,
+  end: number,
+  decodeAnsi: ShellLinkAnsiDecoder,
+): string | undefined {
   let cursor = start;
   while (cursor < end && buffer[cursor] !== 0) cursor += 1;
   if (cursor === start) return undefined;
-  return buffer.subarray(start, cursor).toString("utf8");
+  return decodeAnsi(buffer.subarray(start, cursor));
 }
 
 function readNullTerminatedUtf16(buffer: Buffer, start: number, end: number): string | undefined {

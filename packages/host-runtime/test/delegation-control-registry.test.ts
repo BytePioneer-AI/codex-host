@@ -132,4 +132,74 @@ describe("DelegationControlRegistry", () => {
       code: "PARENT_THREAD_AMBIGUOUS",
     });
   });
+
+  it("watches a Thread in one session and notifies a Thread in another", async () => {
+    vi.useFakeTimers();
+    try {
+      const registry = new DelegationControlRegistry();
+      const watched = registration("child");
+      const subscriber = registration("parent");
+      registry.register(watched);
+      registry.register(subscriber);
+      await expect(
+        registry.watch({ threadId: "child", notifyThreadId: "parent", timeoutMs: 60_000 }),
+      ).resolves.toMatchObject({ state: "watching" });
+
+      vi.mocked(watched.read).mockResolvedValue({
+        threadId: "child",
+        harnessId: "pi",
+        status: "completed",
+        turn: null,
+        progress: [],
+        result: { availability: "available", text: "done" },
+        nextCursor: null,
+      });
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(subscriber.send).toHaveBeenCalledTimes(1);
+      expect(vi.mocked(subscriber.send).mock.calls[0]?.[0]).toMatchObject({ threadId: "parent" });
+      expect(watched.send).not.toHaveBeenCalled();
+
+      // Closing drops remaining watches with the Host Runtime.
+      await registry.watch({ threadId: "parent", notifyThreadId: "child", timeoutMs: 60_000 });
+      registry.close();
+      await expect(registry.watches()).resolves.toEqual({ watches: [] });
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("infers the notified Thread only when exactly one other Thread is active", async () => {
+    vi.useFakeTimers();
+    try {
+      const registry = new DelegationControlRegistry();
+      const session = registration("child");
+      session.ownsThread = () => true;
+      const active = vi.fn(() => ["child", "caller"]);
+      session.activeThreadIds = active;
+      registry.register(session);
+
+      await expect(registry.watch({ threadId: "child", timeoutMs: 60_000 })).resolves.toMatchObject(
+        { state: "watching", notifyThreadId: "caller" },
+      );
+
+      active.mockReturnValue(["child"]);
+      await expect(registry.watch({ threadId: "child", timeoutMs: 60_000 })).rejects.toMatchObject({
+        code: "PARENT_THREAD_AMBIGUOUS",
+        details: { activeThreadIds: [] },
+      });
+      active.mockReturnValue(["child", "caller", "other"]);
+      await expect(registry.watch({ threadId: "child", timeoutMs: 60_000 })).rejects.toMatchObject({
+        code: "PARENT_THREAD_AMBIGUOUS",
+        details: { activeThreadIds: ["caller", "other"] },
+      });
+      // An explicit notified Thread never needs inference.
+      await expect(
+        registry.watch({ threadId: "child", notifyThreadId: "other", timeoutMs: 60_000 }),
+      ).resolves.toMatchObject({ notifyThreadId: "other" });
+      registry.close();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

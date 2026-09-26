@@ -26,11 +26,7 @@ pub(crate) fn poll_pending_update(
             return Ok(false);
         }
         stop(update).map_err(|error| io::Error::other(error.to_string()))?;
-        if !update.waiting_for_launcher_exit()? {
-            return Err(io::Error::other(
-                "Updater stopped waiting before Launcher exit",
-            ));
-        }
+        update.authorize_launcher_exit()?;
         Ok(true)
     })();
     match result {

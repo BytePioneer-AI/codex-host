@@ -67,6 +67,7 @@ fn ready_helper(label: &str) -> (PathBuf, StartedUpdate) {
             child,
             pending,
             abort_reason: None,
+            handoff: super::UpdateHandoff::from_token(&"ab".repeat(16)).unwrap(),
         },
     )
 }
@@ -389,6 +390,7 @@ fn clears_a_completed_helper_before_considering_another_request() {
         child: sleeping_helper(),
         pending,
         abort_reason: None,
+        handoff: super::UpdateHandoff::from_token(&"ab".repeat(16)).unwrap(),
     });
 
     start_pending_update_at(&root, 42, &launcher, &mut started_request)
@@ -582,6 +584,12 @@ fn polling_aborts_the_helper_when_desktop_shutdown_fails() {
     let status = read_status(&started.pending);
     assert_eq!(status["phase"], "failed");
     assert_eq!(status["error"], "Desktop ownership was lost");
+    assert!(
+        started
+            .handoff
+            .verify(&started.pending.request_path)
+            .is_err()
+    );
     fs::remove_dir_all(root).expect("remove failed Desktop handoff fixture");
 }
 
@@ -658,6 +666,12 @@ fn polling_rejects_a_helper_exit_during_successful_desktop_shutdown() {
         .as_mut()
         .expect("retain failed operation until cleanup");
     assert!(started.child.try_wait().unwrap().is_some());
+    assert!(
+        started
+            .handoff
+            .verify(&started.pending.request_path)
+            .is_err()
+    );
     let status = read_status(&started.pending);
     assert_eq!(status["phase"], "failed");
     assert!(
@@ -667,6 +681,64 @@ fn polling_rejects_a_helper_exit_during_successful_desktop_shutdown() {
             .contains("exited after becoming ready")
     );
     fs::remove_dir_all(root).expect("remove Helper exit during stop fixture");
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[test]
+fn polling_authorizes_installation_only_after_successful_desktop_shutdown() {
+    let (root, started) = ready_helper("poll-successful-cleanup");
+    assert!(
+        started
+            .handoff
+            .verify(&started.pending.request_path)
+            .is_err()
+    );
+    let mut operation = Some(started);
+    assert!(
+        crate::desktop_update::poll_pending_update(&mut operation, |started| {
+            assert!(
+                started
+                    .handoff
+                    .verify(&started.pending.request_path)
+                    .is_err()
+            );
+            Ok(())
+        })
+        .unwrap()
+    );
+    let started = operation.as_mut().unwrap();
+    started
+        .handoff
+        .verify(&started.pending.request_path)
+        .unwrap();
+    assert!(started.child.try_wait().unwrap().is_none());
+    assert_eq!(read_status(&started.pending)["phase"], "waiting-for-exit");
+    started
+        .abort(&std::io::Error::other("test cleanup"))
+        .unwrap();
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[test]
+fn failed_authorization_publication_aborts_instead_of_reusing_a_stale_marker() {
+    let (root, started) = ready_helper("poll-stale-cleanup-marker");
+    super::UpdateHandoff::from_token(&"cd".repeat(16))
+        .unwrap()
+        .publish(&started.pending.request_path)
+        .unwrap();
+    let mut operation = Some(started);
+    assert!(!crate::desktop_update::poll_pending_update(&mut operation, |_| Ok(())).unwrap());
+    let started = operation.as_mut().unwrap();
+    assert!(started.child.try_wait().unwrap().is_some());
+    assert!(
+        started
+            .handoff
+            .verify(&started.pending.request_path)
+            .is_err()
+    );
+    assert_eq!(read_status(&started.pending)["phase"], "failed");
+    fs::remove_dir_all(root).unwrap();
 }
 
 #[test]

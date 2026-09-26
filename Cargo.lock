@@ -95,6 +95,7 @@ name = "codexhost-launcher"
 version = "0.10.1"
 dependencies = [
  "codexhost-platform",
+ "codexhost-updater",
  "fs2",
  "getrandom",
  "nix",

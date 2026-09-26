@@ -16,6 +16,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 use codexhost_platform::atomic_replace_file;
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+use codexhost_updater::UpdateHandoff;
 use serde::{Deserialize, Serialize};
 
 use crate::runtime_instance::default_descriptor_path;
@@ -77,6 +79,7 @@ pub(crate) struct StartedUpdate {
     child: Child,
     pending: PendingUpdate,
     abort_reason: Option<String>,
+    handoff: UpdateHandoff,
 }
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
@@ -144,6 +147,17 @@ impl StartedUpdate {
 
     pub(crate) fn waiting_for_launcher_exit(&mut self) -> io::Result<bool> {
         self.waiting_for_launcher_exit_at(std::process::id(), &std::env::current_exe()?)
+    }
+
+    pub(crate) fn authorize_launcher_exit(&mut self) -> io::Result<()> {
+        if !self.waiting_for_launcher_exit()? {
+            return Err(invalid(
+                "Updater stopped waiting before cleanup authorization",
+            ));
+        }
+        // The caller has completed Desktop cleanup and its final process check.
+        // A crash before this publication must not be permission to install.
+        self.handoff.publish(&self.pending.request_path)
     }
 }
 
@@ -423,12 +437,14 @@ fn record_updater_start_failure(pending: &PendingUpdate, error: &io::Error) -> i
 }
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
-fn spawn_updater(pending: &PendingUpdate) -> io::Result<Child> {
+fn spawn_updater(pending: &PendingUpdate, handoff: &UpdateHandoff) -> io::Result<Child> {
     let mut command = Command::new(&pending.helper_path);
     command
         .arg("apply")
         .arg("--request")
         .arg(&pending.request_path)
+        .arg("--handoff-token")
+        .arg(handoff.token())
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
@@ -468,7 +484,14 @@ fn start_pending_update_at(
     else {
         return Ok(());
     };
-    let child = match spawn_updater(&pending) {
+    let mut random = [0_u8; 16];
+    getrandom::fill(&mut random).map_err(|error| io::Error::other(error.to_string()))?;
+    let token = random
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    let handoff = UpdateHandoff::from_token(&token)?;
+    let child = match spawn_updater(&pending, &handoff) {
         Ok(child) => child,
         Err(error) => {
             if let Err(status_error) = record_updater_start_failure(&pending, &error) {
@@ -485,6 +508,7 @@ fn start_pending_update_at(
         child,
         pending,
         abort_reason: None,
+        handoff,
     });
     let result = transfer_lock_to_updater(&started.pending, started.child.id()).and_then(|()| {
         // Keep the old Launcher alive until the Updater has taken its wait position.

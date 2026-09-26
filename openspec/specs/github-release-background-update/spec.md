@@ -56,7 +56,7 @@ The Host and Update Manager SHALL persist a `downloading` status for installer a
 - **AND** the Launcher SHALL NOT stop the managed Desktop for that failed operation
 
 ### Requirement: Update starts once and stops the managed Desktop process tree
-Host SHALL serialize update starts across current Host processes. After successful preparation it SHALL respond to the initiating Renderer. On Windows and macOS the Launcher SHALL start the temporary Updater from the prepared request, outside the managed Desktop process tree, and the Host SHALL NOT start that helper. The Launcher SHALL then stop the owned Desktop process tree without invoking Electron `app.quit()`. The helper SHALL install only after the exact Launcher exits.
+Host SHALL serialize update starts across current Host processes. After successful preparation it SHALL respond to the initiating Renderer. On Windows and macOS the Launcher SHALL start the temporary Updater from the prepared request, outside the managed Desktop process tree, and the Host SHALL NOT start that helper. The Launcher SHALL then stop the owned Desktop process tree without invoking Electron `app.quit()`. On Windows and macOS the helper SHALL require a fresh per-launch handoff token and SHALL install only after the Launcher exits and a matching cleanup authorization has been published. Windows SHALL additionally verify the Launcher's exact process instance while waiting.
 
 #### Scenario: User starts the current candidate
 - **WHEN** no update operation is active and the current candidate remains the latest stable Release
@@ -77,6 +77,15 @@ Host SHALL serialize update starts across current Host processes. After successf
 #### Scenario: Helper exits after taking the wait position
 - **WHEN** the Helper exits after reporting readiness while the status still says `waiting-for-exit`
 - **THEN** the Launcher SHALL detect the exit through its retained child process handle, record failure, and SHALL NOT begin Desktop shutdown for that stale status
+
+#### Scenario: Launcher exits without finishing Desktop cleanup
+- **WHEN** the Windows or macOS Launcher crashes or is forcibly terminated before successful cleanup and final checks
+- **THEN** the Helper SHALL reject installation without a matching cleanup authorization, record failure, and SHALL NOT treat Launcher exit alone as permission to install
+
+#### Scenario: Cleanup authorization is incomplete or stale
+- **WHEN** the authorization is missing, incomplete, non-regular, or belongs to a previous Helper token
+- **THEN** the Helper SHALL fail before publishing `installing` or invoking the installer
+- **AND** the Launcher SHALL create and synchronize the authorization only after successful cleanup; publication failure SHALL abort the update instead of overwriting an existing authorization
 
 #### Scenario: Windows Desktop does not fully stop
 - **WHEN** Windows cannot terminate the managed Desktop root or its Shim/Host chain remains alive

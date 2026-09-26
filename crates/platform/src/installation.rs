@@ -1,5 +1,7 @@
 #[cfg(any(target_os = "windows", target_os = "macos"))]
 use std::env;
+#[cfg(target_os = "macos")]
+use std::fs;
 #[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
 use std::fs::File;
 #[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
@@ -803,6 +805,8 @@ mod windows_tests {
 #[cfg(target_os = "macos")]
 const CODEX_BUNDLE_IDENTIFIER: &str = "com.openai.codex";
 #[cfg(target_os = "macos")]
+const CODEX_CLI_BUNDLE_IDENTIFIER: &str = "com.openai.codex.cli";
+#[cfg(target_os = "macos")]
 const MACH_O_MAGICS: [[u8; 4]; 8] = [
     [0xfe, 0xed, 0xfa, 0xce],
     [0xce, 0xfa, 0xed, 0xfe],
@@ -830,6 +834,26 @@ fn required_string<'a>(
                 bundle.display()
             ))
         })
+}
+
+/// Read an app bundle's declared executable without accepting path traversal.
+#[cfg(target_os = "macos")]
+fn bundle_executable_name<'a>(
+    dictionary: &'a plist::Dictionary,
+    bundle: &Path,
+) -> Result<&'a str, PlatformError> {
+    let executable_name = required_string(dictionary, "CFBundleExecutable", bundle)?;
+    if !matches!(
+        Path::new(executable_name).components().next(),
+        Some(std::path::Component::Normal(_))
+    ) || Path::new(executable_name).components().count() != 1
+    {
+        return Err(PlatformError::Invalid(format!(
+            "App bundle '{}' has unsafe CFBundleExecutable '{executable_name}'",
+            bundle.display()
+        )));
+    }
+    Ok(executable_name)
 }
 
 #[cfg(target_os = "macos")]
@@ -897,6 +921,61 @@ fn canonical_macho_executable(path: &Path, label: &str) -> Result<PathBuf, Platf
     Ok(canonical)
 }
 
+/// Find the official CLI bundle by its identity rather than its versioned layout.
+#[cfg(target_os = "macos")]
+fn discover_nested_codex_cli(bundle: &Path) -> Result<PathBuf, PlatformError> {
+    let resources = bundle.join("Contents/Resources");
+    let mut directories = vec![resources];
+    let mut cli_candidates = Vec::new();
+    while let Some(directory) = directories.pop() {
+        for entry in fs::read_dir(&directory)? {
+            let entry = entry?;
+            if !entry.file_type()?.is_dir() {
+                continue; // Never follow directory symlinks outside the official bundle.
+            }
+            let path = entry.path();
+            if path.extension().is_some_and(|extension| extension == "app") {
+                let Ok(Value::Dictionary(dictionary)) =
+                    Value::from_file(path.join("Contents/Info.plist"))
+                else {
+                    continue;
+                };
+                if dictionary
+                    .get("CFBundleIdentifier")
+                    .and_then(Value::as_string)
+                    == Some(CODEX_CLI_BUNDLE_IDENTIFIER)
+                {
+                    let executable = path
+                        .join("Contents/MacOS")
+                        .join(bundle_executable_name(&dictionary, &path)?);
+                    let executable = canonical_macho_executable(&executable, "Codex CLI")?;
+                    if !executable.starts_with(path.canonicalize()?) {
+                        return Err(PlatformError::Invalid(format!(
+                            "Codex CLI '{}' resolves outside its app bundle",
+                            executable.display()
+                        )));
+                    }
+                    cli_candidates.push(executable);
+                    continue; // The matched CLI bundle cannot contain another CLI owner.
+                }
+            }
+            // A future package may nest the CLI inside another helper bundle.
+            directories.push(path);
+        }
+    }
+    match cli_candidates.len() {
+        1 => Ok(cli_candidates.remove(0)),
+        0 => Err(PlatformError::NotFound(format!(
+            "Codex CLI is unavailable in '{}' (no legacy executable or com.openai.codex.cli app bundle)",
+            bundle.display()
+        ))),
+        _ => Err(PlatformError::Invalid(format!(
+            "Codex App '{}' contains multiple com.openai.codex.cli app bundles",
+            bundle.display()
+        ))),
+    }
+}
+
 #[cfg(target_os = "macos")]
 fn inspect_bundle(bundle: &Path) -> Result<DesktopInstallation, PlatformError> {
     let bundle = bundle.canonicalize().map_err(|error| {
@@ -925,13 +1004,7 @@ fn inspect_bundle(bundle: &Path) -> Result<DesktopInstallation, PlatformError> {
             bundle.display()
         )));
     }
-    let executable_name = required_string(dictionary, "CFBundleExecutable", &bundle)?;
-    if Path::new(executable_name).components().count() != 1 {
-        return Err(PlatformError::Invalid(format!(
-            "App bundle '{}' has unsafe CFBundleExecutable '{executable_name}'",
-            bundle.display()
-        )));
-    }
+    let executable_name = bundle_executable_name(dictionary, &bundle)?;
     let version = required_string(dictionary, "CFBundleShortVersionString", &bundle)?.to_owned();
     let build = required_string(dictionary, "CFBundleVersion", &bundle)?.to_owned();
     let asar_integrity = macos_asar_integrity(dictionary, &bundle)?;
@@ -940,17 +1013,15 @@ fn inspect_bundle(bundle: &Path) -> Result<DesktopInstallation, PlatformError> {
         "Desktop executable",
     )?;
     let legacy_cli = bundle.join("Contents/Resources/codex");
-    // Desktop 26.924 moved its packaged CLI into a nested CodexCLI.app.
-    // Keep an existing legacy path authoritative so an invalid or escaped
-    // executable cannot be hidden by a second candidate.
-    let cli_path = match legacy_cli.symlink_metadata() {
-        Ok(_) => legacy_cli,
+    // Keep an existing legacy executable authoritative. A broken legacy path
+    // must not be hidden by an unrelated nested app bundle.
+    let packaged_codex_cli = match legacy_cli.symlink_metadata() {
+        Ok(_) => canonical_macho_executable(&legacy_cli, "Codex CLI")?,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            bundle.join("Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex")
+            discover_nested_codex_cli(&bundle)?
         }
         Err(error) => return Err(PlatformError::Io(error)),
     };
-    let packaged_codex_cli = canonical_macho_executable(&cli_path, "Codex CLI")?;
     if !desktop_executable.starts_with(&bundle) || !packaged_codex_cli.starts_with(&bundle) {
         return Err(PlatformError::Invalid(format!(
             "App bundle '{}' resolves an executable outside the bundle",
@@ -1039,6 +1110,23 @@ pub fn discover_codex_desktop_from_root(root: &Path) -> Result<DesktopInstallati
     inspect_bundle(root)
 }
 
+/// Match a validated Desktop bundle to its actual CLI, regardless of CLI depth.
+#[cfg(target_os = "macos")]
+pub fn discover_codex_desktop_for_cli(cli_path: &Path) -> Option<DesktopInstallation> {
+    let cli_path = cli_path.canonicalize().ok()?;
+    cli_path
+        .ancestors()
+        .filter(|ancestor| {
+            ancestor
+                .extension()
+                .is_some_and(|extension| extension == "app")
+        })
+        .find_map(|ancestor| {
+            let installation = inspect_bundle(ancestor).ok()?;
+            (installation.executable_codex_cli == cli_path).then_some(installation)
+        })
+}
+
 #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
 pub fn discover_codex_desktop() -> Result<DesktopInstallation, PlatformError> {
     Err(PlatformError::Unsupported(
@@ -1050,9 +1138,11 @@ pub fn discover_codex_desktop() -> Result<DesktopInstallation, PlatformError> {
 mod tests {
     use std::fs;
     use std::os::unix::fs::{PermissionsExt, symlink};
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
 
-    use super::{DesktopIdentity, PlatformError, discover_from_candidates};
+    use super::{
+        DesktopIdentity, PlatformError, discover_codex_desktop_for_cli, discover_from_candidates,
+    };
     use crate::temporary_directory;
 
     fn temporary_bundle(name: &str, bundle_identifier: &str, include_cli: bool) -> PathBuf {
@@ -1092,6 +1182,32 @@ mod tests {
                 .expect("make fixture executable");
         }
         bundle
+    }
+
+    /// Build a nested CLI bundle fixture with a configurable location and executable name.
+    fn nested_cli_bundle(
+        desktop: &Path,
+        relative_bundle: &str,
+        bundle_identifier: &str,
+        executable_name: &str,
+    ) -> PathBuf {
+        let cli_bundle = desktop.join("Contents/Resources").join(relative_bundle);
+        fs::create_dir_all(cli_bundle.join("Contents/MacOS")).expect("create CLI bundle");
+        fs::write(
+            cli_bundle.join("Contents/Info.plist"),
+            format!(
+                concat!(
+                    "<?xml version=\"1.0\" encoding=\"UTF-8\"?>",
+                    "<plist version=\"1.0\"><dict>",
+                    "<key>CFBundleIdentifier</key><string>{}</string>",
+                    "<key>CFBundleExecutable</key><string>{}</string>",
+                    "</dict></plist>"
+                ),
+                bundle_identifier, executable_name
+            ),
+        )
+        .expect("write CLI plist");
+        cli_bundle.join("Contents/MacOS").join(executable_name)
     }
 
     #[test]
@@ -1136,9 +1252,12 @@ mod tests {
     #[test]
     fn discovers_nested_codex_cli_in_current_desktop_bundle() {
         let bundle = temporary_bundle("ChatGPT.app", "com.openai.codex", false);
-        let nested_cli =
-            bundle.join("Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex");
-        fs::create_dir_all(nested_cli.parent().expect("CLI directory")).expect("create CLI bundle");
+        let nested_cli = nested_cli_bundle(
+            &bundle,
+            "codex-cli/CodexCLI.app",
+            "com.openai.codex.cli",
+            "codex",
+        );
         fs::write(&nested_cli, [0xcf, 0xfa, 0xed, 0xfe]).expect("write Mach-O marker");
         fs::set_permissions(&nested_cli, fs::Permissions::from_mode(0o755))
             .expect("make nested CLI executable");
@@ -1147,15 +1266,97 @@ mod tests {
         let canonical_cli = nested_cli.canonicalize().expect("nested CLI path");
         assert_eq!(installation.packaged_codex_cli, canonical_cli);
         assert_eq!(installation.executable_codex_cli, canonical_cli);
+        assert_eq!(
+            discover_codex_desktop_for_cli(&nested_cli)
+                .expect("Desktop owning nested CLI")
+                .install_root,
+            bundle.canonicalize().expect("Desktop bundle")
+        );
+    }
+
+    #[test]
+    fn discovers_cli_when_nested_bundle_and_executable_are_renamed() {
+        let bundle = temporary_bundle("ChatGPT.app", "com.openai.codex", false);
+        let nested_cli = nested_cli_bundle(
+            &bundle,
+            "packaged/tools/OfficialCLI.app",
+            "com.openai.codex.cli",
+            "codex-real",
+        );
+        fs::write(&nested_cli, [0xcf, 0xfa, 0xed, 0xfe]).expect("write Mach-O marker");
+        fs::set_permissions(&nested_cli, fs::Permissions::from_mode(0o755))
+            .expect("make nested CLI executable");
+
+        let installation = discover_from_candidates([bundle]).expect("renamed CLI bundle");
+        assert_eq!(
+            installation.executable_codex_cli,
+            nested_cli.canonicalize().expect("CLI path")
+        );
+    }
+
+    #[test]
+    fn rejects_multiple_official_cli_bundles() {
+        let bundle = temporary_bundle("ChatGPT.app", "com.openai.codex", false);
+        for relative in ["first/CLI.app", "second/CLI.app"] {
+            let cli = nested_cli_bundle(&bundle, relative, "com.openai.codex.cli", "codex");
+            fs::write(&cli, [0xcf, 0xfa, 0xed, 0xfe]).expect("write Mach-O marker");
+            fs::set_permissions(&cli, fs::Permissions::from_mode(0o755))
+                .expect("make nested CLI executable");
+        }
+        assert!(matches!(
+            discover_from_candidates([bundle]),
+            Err(PlatformError::Invalid(message)) if message.contains("multiple com.openai.codex.cli")
+        ));
+    }
+
+    #[test]
+    fn preserves_legacy_cli_when_both_official_layouts_exist() {
+        let bundle = temporary_bundle("ChatGPT.app", "com.openai.codex", true);
+        let nested_cli = nested_cli_bundle(
+            &bundle,
+            "codex-cli/CodexCLI.app",
+            "com.openai.codex.cli",
+            "codex",
+        );
+        fs::write(&nested_cli, [0xcf, 0xfa, 0xed, 0xfe]).expect("write Mach-O marker");
+        fs::set_permissions(&nested_cli, fs::Permissions::from_mode(0o755))
+            .expect("make nested CLI executable");
+
+        let installation = discover_from_candidates([bundle.clone()]).expect("legacy CLI bundle");
+        assert_eq!(
+            installation.executable_codex_cli,
+            bundle
+                .join("Contents/Resources/codex")
+                .canonicalize()
+                .expect("legacy CLI")
+        );
+    }
+
+    #[test]
+    fn rejects_unsafe_nested_cli_executable_name() {
+        let bundle = temporary_bundle("ChatGPT.app", "com.openai.codex", false);
+        nested_cli_bundle(
+            &bundle,
+            "codex-cli/CodexCLI.app",
+            "com.openai.codex.cli",
+            "../codex",
+        );
+        assert!(matches!(
+            discover_from_candidates([bundle]),
+            Err(PlatformError::Invalid(message)) if message.contains("unsafe CFBundleExecutable")
+        ));
     }
 
     #[test]
     fn rejects_nested_cli_symlink_outside_desktop_bundle() {
         let bundle = temporary_bundle("ChatGPT.app", "com.openai.codex", false);
-        let nested_cli =
-            bundle.join("Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex");
+        let nested_cli = nested_cli_bundle(
+            &bundle,
+            "codex-cli/CodexCLI.app",
+            "com.openai.codex.cli",
+            "codex",
+        );
         let external = bundle.parent().expect("parent").join("external-codex");
-        fs::create_dir_all(nested_cli.parent().expect("CLI directory")).expect("create CLI bundle");
         fs::write(&external, [0xcf, 0xfa, 0xed, 0xfe]).expect("write external CLI");
         fs::set_permissions(&external, fs::Permissions::from_mode(0o755))
             .expect("make external CLI executable");

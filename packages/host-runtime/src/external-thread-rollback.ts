@@ -232,6 +232,17 @@ export async function executeExternalThreadRollback(input: {
   if (derived.running) {
     return { ok: false, error: { code: -32072, message: "External Thread has an active Turn" } };
   }
+  // Native history may have split a steered Turn that Desktop still shows whole, so Desktop's
+  // "last Turns" and native Turn boundaries can disagree until it rereads this Thread.
+  if (derived.steeredTurnIds.size > 0) {
+    return {
+      ok: false,
+      error: {
+        code: -32080,
+        message: "A Turn here took steered input; reopen the Thread before undoing Turns",
+      },
+    };
+  }
   const refreshError = await runtime.refresh(derived);
   if (refreshError) return { ok: false, error: refreshError };
   if (

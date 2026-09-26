@@ -1,4 +1,4 @@
-import type { HostTurnId } from "@codexhost/shared-contracts";
+import type { HarnessSessionCapabilities, HostTurnId } from "@codexhost/shared-contracts";
 import type { JsonObject } from "@codexhost/protocol-core";
 import type {
   HarnessResult,
@@ -14,7 +14,10 @@ interface SteeringThread {
   running: boolean;
   activeTurnId: HostTurnId | null;
   persistenceError: Error | null;
-  session: { execute(command: TurnCancelCommand): Promise<HarnessResult<TurnCancelAccepted>> };
+  session: {
+    readonly capabilities: Pick<HarnessSessionCapabilities, "steer">;
+    execute(command: TurnCancelCommand): Promise<HarnessResult<TurnCancelAccepted>>;
+  };
 }
 
 export class ExternalSteerError extends Error {
@@ -67,12 +70,22 @@ function parseInput(params: JsonObject): SteeringInput {
   };
 }
 
-export interface ExternalSteerStarted {
+export interface ExternalTurnAdmission {
   turnId: HostTurnId;
   gate: TurnProjectionGate;
 }
 
-type StartSteeredTurn = (text: string, assertActive: () => void) => Promise<ExternalSteerStarted>;
+/** `activeTurn`: native same-Turn input; `newTurn`: the previous Turn stopped and this one started. */
+export interface ExternalSteerStarted extends ExternalTurnAdmission {
+  delivery: "activeTurn" | "newTurn";
+}
+
+type StartSteeredTurn = (text: string, assertActive: () => void) => Promise<ExternalTurnAdmission>;
+type InsertSteeredInput = (input: {
+  turnId: HostTurnId;
+  text: string;
+  clientUserMessageId?: string;
+}) => Promise<ExternalTurnAdmission>;
 
 interface PendingSteer {
   turnId: string;
@@ -80,7 +93,10 @@ interface PendingSteer {
   reject(error: Error): void;
 }
 
-/** Host-owned stop-then-start coordination, not a native Harness steer capability. */
+/**
+ * The Host's single steer operation. A Session declaring native steering takes the input into
+ * its active Turn; otherwise the Host stops that Turn and starts the input as the next one.
+ */
 export class ExternalTurnSteering {
   readonly #pending = new Map<string, PendingSteer>();
   readonly #receipts = new Map<
@@ -99,6 +115,7 @@ export class ExternalTurnSteering {
     thread: SteeringThread,
     params: JsonObject,
     start: StartSteeredTurn,
+    insert: InsertSteeredInput,
   ): Promise<ExternalSteerStarted> {
     try {
       const input = parseInput(params);
@@ -124,7 +141,15 @@ export class ExternalTurnSteering {
         // Do not use Codex's mismatch wording: Desktop automatically retries it against another Turn.
         throw new ExternalSteerError(-32074, "External steering must reference the active Turn");
       }
-      const result = this.#replace(thread, input, start);
+      const result = thread.session.capabilities.steer
+        ? insert({
+            turnId: thread.activeTurnId,
+            text: input.text,
+            ...(input.clientUserMessageId
+              ? { clientUserMessageId: input.clientUserMessageId }
+              : {}),
+          }).then((admitted) => ({ ...admitted, delivery: "activeTurn" as const }))
+        : this.#replace(thread, input, start);
       if (key) {
         const receipt = { fingerprint, result, settled: false };
         this.#receipts.set(key, receipt);
@@ -235,7 +260,7 @@ export class ExternalTurnSteering {
       }
       // Command discovery can await native data. Recheck cancellation after
       // that await, immediately before the replacement actually executes.
-      return await start(input.text, assertActive);
+      return { ...(await start(input.text, assertActive)), delivery: "newTurn" };
     } finally {
       clearTimeout(timeout);
       if (this.#pending.get(thread.id) === pending) this.#pending.delete(thread.id);

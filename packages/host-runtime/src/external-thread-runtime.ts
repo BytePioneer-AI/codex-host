@@ -77,6 +77,11 @@ export interface ExternalThread {
   ephemeralTurnIds: Set<HostTurnId>;
   persistenceError: Error | null;
   ignoredInteractionIds: Set<HostInteractionId>;
+  /**
+   * Turns that took native steered input since Desktop last read this Thread's history. Desktop
+   * still shows each as one Turn, while native history may have split it at the steered input.
+   */
+  steeredTurnIds: Set<HostTurnId>;
 }
 
 export type ExternalThreadLocation =
@@ -320,6 +325,7 @@ export class ExternalThreadRuntime {
       persistenceError: null,
       projectedTerminalTurnId: null,
       ignoredInteractionIds: new Set(),
+      steeredTurnIds: new Set(),
     };
     this.idleRelease.touch(externalThread);
     externalThread.outputTask = this.#consumeOutputs(externalThread);

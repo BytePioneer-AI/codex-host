@@ -276,6 +276,59 @@ describe("AppServerHost HarnessAdapter projection", () => {
     await stopFixture(fixture);
   });
 
+  it("reads the projected failed Turn without native history only until a later start fails", async () => {
+    let delegationApi: DelegationControlApi | undefined;
+    const fixture = createFixture({
+      onDelegationApi: (api) => {
+        delegationApi = api;
+        return undefined;
+      },
+    });
+    try {
+      await fixture.ready;
+      if (!delegationApi) throw new Error("Delegation API was not registered");
+      const starting = delegationApi.start({
+        harnessId: "pi",
+        task: "review auth",
+        cwd: "/synthetic",
+        parentThreadId: "parent-thread",
+      });
+      await answerOfficialParentCwd(fixture);
+      const started = await starting;
+      const session = fixture.adapter.sessions[0];
+      if (!session) throw new Error("Delegated Session was not opened");
+      session.failTurn({ code: "nativeFailure", message: "process exited", retryable: false });
+      await fixture.collector.waitFor((message) =>
+        turnEvent(message, "turn/completed", started.turnId),
+      );
+      vi.spyOn(session, "readSnapshot").mockResolvedValue({
+        ok: false,
+        error: { code: "nativeFailure", message: "Harness is gone", retryable: false },
+      });
+      await expect(
+        delegationApi.read({ threadId: started.threadId, view: "result" }),
+      ).resolves.toMatchObject({
+        status: "failed",
+        turn: { turnId: started.turnId, status: "failed" },
+      });
+
+      session.rejectNextTurn({
+        code: "nativeFailure",
+        message: "synthetic start failure",
+        retryable: false,
+      });
+      await expect(
+        delegationApi.send({ threadId: started.threadId, message: "retry" }),
+      ).rejects.toMatchObject({ code: "DELEGATION_FAILED" });
+      // The earlier failed Turn must not answer for the start that never ran.
+      await expect(
+        delegationApi.wait({ threadId: started.threadId, view: "result", timeoutMs: 1_000 }),
+      ).rejects.toMatchObject({ code: "INTERNAL_ERROR" });
+    } finally {
+      await stopFixture(fixture);
+    }
+  });
+
   it("projects delegated input while reading visible progress from a running external Turn", async () => {
     let delegationApi: DelegationControlApi | undefined;
     const fixture = createFixture({

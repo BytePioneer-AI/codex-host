@@ -517,6 +517,7 @@ describe("HarnessDelegationCoordinator", () => {
       thread.turns = [
         { id: started.turnId, status: "failed", items: [], error: { message: "process exited" } },
       ];
+      thread.projectedTerminalTurnId = hostTurnIdSchema.parse(started.turnId);
       vi.spyOn(thread.session, "readSnapshot").mockResolvedValue({
         ok: false,
         error: { code: "nativeFailure", message: "Harness is gone", retryable: false },
@@ -530,8 +531,15 @@ describe("HarnessDelegationCoordinator", () => {
         result: { availability: "unavailable", message: "process exited" },
       });
 
-      // Without any projected Turn there is no known state to report.
-      thread.turns = [];
+      // Only the marked terminal Turn may answer: not a different latest Turn…
+      thread.turns = [...thread.turns, { id: "later-native-turn", status: "completed", items: [] }];
+      await expect(
+        value.coordinator.read({ threadId: started.threadId, view: "result" }),
+      ).rejects.toMatchObject({ code: "INTERNAL_ERROR" });
+
+      // …nor the older Turn once a later start cleared the mark.
+      thread.turns = thread.turns.slice(0, 1);
+      thread.projectedTerminalTurnId = null;
       await expect(
         value.coordinator.read({ threadId: started.threadId, view: "result" }),
       ).rejects.toMatchObject({ code: "INTERNAL_ERROR" });

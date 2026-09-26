@@ -455,9 +455,14 @@ export class HarnessDelegationCoordinator {
     if (!thread.running && !resolution.historyFresh) {
       const error = await this.#externalRuntime.refresh(thread);
       // A Harness that died cannot serve its native history, but the Host already
-      // projected the terminal Turn. Report that state instead of hiding a known
-      // failure behind a read error.
-      if (error && thread.turns.length === 0)
+      // projected the terminal Turn. Report that Turn only while it is still the
+      // latest attempt, so an older Turn never stands in for a later start.
+      const last = thread.turns.at(-1);
+      const projectedTerminal =
+        thread.projectedTerminalTurnId !== null &&
+        last?.id === thread.projectedTerminalTurnId &&
+        (last.status === "completed" || last.status === "failed" || last.status === "interrupted");
+      if (error && !projectedTerminal)
         throw new DelegationControlError("INTERNAL_ERROR", error.message);
     }
     const turns = thread.activeTurnId

@@ -205,6 +205,8 @@ class FakeOmpTransport implements OmpTurnTransport {
     });
   }
 
+  readonly steer = vi.fn(async () => undefined);
+
   async abort(): Promise<void> {
     this.#resolveTurn?.({ text: "", cancelled: true });
   }

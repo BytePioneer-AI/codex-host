@@ -85,6 +85,7 @@
 | 文档 | 内容与阅读时机 |
 | --- | --- |
 | [`harnesses/omp/omp-interactions.md`](harnesses/omp/omp-interactions.md) | OMP 原生提问、审批、选项说明和超时语义；维护 OMP 交互时阅读。 |
+| [`harnesses/omp/omp-steer.md`](harnesses/omp/omp-steer.md) | OMP RPC `steer` 的同轮插入；未实机验证。 |
 
 ### Grok
 

@@ -1348,7 +1348,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_nested_cli_symlink_outside_desktop_bundle() {
+    fn rejects_nested_cli_directory_escaping_its_bundle() {
         let bundle = temporary_bundle("ChatGPT.app", "com.openai.codex", false);
         let nested_cli = nested_cli_bundle(
             &bundle,
@@ -1356,15 +1356,37 @@ mod tests {
             "com.openai.codex.cli",
             "codex",
         );
-        let external = bundle.parent().expect("parent").join("external-codex");
+        let external_directory = bundle.parent().expect("parent").join("external-cli-bin");
+        fs::create_dir(&external_directory).expect("create external CLI directory");
+        let external = external_directory.join("codex");
         fs::write(&external, [0xcf, 0xfa, 0xed, 0xfe]).expect("write external CLI");
         fs::set_permissions(&external, fs::Permissions::from_mode(0o755))
             .expect("make external CLI executable");
-        symlink(&external, nested_cli).expect("link external CLI");
+        let macos_directory = nested_cli.parent().expect("CLI directory");
+        fs::remove_dir(macos_directory).expect("replace CLI directory");
+        symlink(&external_directory, macos_directory).expect("link external CLI directory");
 
         assert!(matches!(
             discover_from_candidates([bundle]),
-            Err(PlatformError::Invalid(_))
+            Err(PlatformError::Invalid(message)) if message.contains("resolves outside its app bundle")
+        ));
+    }
+
+    #[test]
+    fn rejects_legacy_cli_directory_escaping_desktop_bundle() {
+        let bundle = temporary_bundle("Codex.app", "com.openai.codex", false);
+        let resources = bundle.join("Contents/Resources");
+        let external_resources = bundle.parent().expect("parent").join("external-resources");
+        fs::rename(&resources, &external_resources).expect("move Resources outside bundle");
+        let external_cli = external_resources.join("codex");
+        fs::write(&external_cli, [0xcf, 0xfa, 0xed, 0xfe]).expect("write external CLI");
+        fs::set_permissions(&external_cli, fs::Permissions::from_mode(0o755))
+            .expect("make external CLI executable");
+        symlink(&external_resources, resources).expect("link external Resources directory");
+
+        assert!(matches!(
+            discover_from_candidates([bundle]),
+            Err(PlatformError::Invalid(message)) if message.contains("resolves an executable outside the bundle")
         ));
     }
 

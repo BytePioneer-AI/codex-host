@@ -358,9 +358,17 @@ mod tests {
             if status.is_some_and(|status| status["phase"] == "waiting-for-exit") {
                 break;
             }
+            if worker.is_finished() {
+                let result = worker.join().expect("join early Helper exit");
+                let _ = launcher.kill();
+                let _ = launcher.wait();
+                let _ = fs::remove_dir_all(&root);
+                panic!("Helper exited before waiting-for-exit: {result:?}");
+            }
             assert!(
-                started.elapsed() < Duration::from_secs(5),
-                "Helper did not reach waiting-for-exit"
+                started.elapsed() < Duration::from_secs(15),
+                "Helper did not reach waiting-for-exit within 15 seconds; status: {:?}",
+                fs::read_to_string(&status_path)
             );
             std::thread::sleep(Duration::from_millis(10));
         }

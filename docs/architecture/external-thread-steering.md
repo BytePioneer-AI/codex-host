@@ -5,9 +5,9 @@ codexhost 对外部 Harness Thread 保留一个「调整方向」操作，按当
 - **原生同轮插入**：Session 声明 `capabilities.steer` 时，Host 发送公共命令 `turn.steer`，由 Adapter 调用 Harness 自己的插入原语，在原生安全边界把输入送入**当前 Turn**，不取消、不另起 Turn。
 - **停止后重发（退路）**：Session 未声明能力时，Host 继续取消当前 Turn，等待它终结，再把本次输入作为新 Turn 执行。
 
-早期设计没有公共 `turn.steer`，因为当时能统一确认的外部 Harness 语义只有停止后重发。现在 Pi RPC 已提供可验证的同轮插入和接受回执；用显式 capability 让 Adapter 选择加入，可以保留各 Harness 的真实语义，而未加入的 Adapter 仍走原有退路。因此本次改变的是能力足够时的送达方式，不改变停止后重发的默认行为。
+早期设计没有公共 `turn.steer`，因为当时能统一确认的外部 Harness 语义只有停止后重发。现在 Pi、Claude Code 等 Harness 已提供可验证的同轮插入和接受回执；用显式 capability 让 Adapter 选择加入，可以保留各 Harness 的真实语义，而未加入的 Adapter 仍走原有退路。因此本次改变的是能力足够时的送达方式，不改变停止后重发的默认行为。
 
-官方 Codex Thread 仍透传原生 `turn/steer`。Pi 的原生依据与验证层级见 [`../harnesses/pi/pi-steer.md`](../harnesses/pi/pi-steer.md)。
+官方 Codex Thread 仍透传原生 `turn/steer`。各 Harness 的原生依据与验证层级见 `docs/harnesses/` 下对应文档，例如 [`../harnesses/pi/pi-steer.md`](../harnesses/pi/pi-steer.md)。
 
 ## 公共契约与执行
 
@@ -56,7 +56,7 @@ Host 和 Renderer 必须配套发布。只升级 Host、让旧 Renderer 仍按�
 - 公共 Harness 输入只支持文本；图片、空输入和 tool response 在送达前拒绝。
 - 当前 Turn 没有确认的 ID 时不猜测目标，也不把过期目标改为另一 Turn 重试。
 - 原生语义差异照实保留；过晚的插入如何处理、历史如何分轮均由 Harness 决定，Host 不补偿。
-- 当前 base 只有 Pi 声明 `capabilities.steer`；其他 Adapter 接受公共命令类型但返回 `unsupported`，因此保持停止后重发。
+- 声明 `capabilities.steer` 的 Adapter：Pi、Claude Code、Qoder / Qoder CN、OMP、Grok、CodeBuddy / WorkBuddy（≥ 2.143.1）、DeepSeek Harness（≥ 0.1.2-alpha.2）、Hermes gateway。其余 Adapter（Cursor、OpenCode、Kimi Code、Antigravity、Kiro、Hermes ACP 后备路径等）接受公共命令类型但返回 `unsupported`，因此保持停止后重发。各 Harness 的原生依据和验证层级见各自的 `docs/harnesses/*/…steer*.md`。
 - 原生乐观消息结算依据 Codex Desktop **26.915.31945 / build 9922** 的只读 Bundle 核查：`clientId` 等于 `clientUserMessageId` 的 `userMessage` 会结算待定 `steeringUserMessage`。该核查不是运行中 Desktop 实测。
 
 原有跟进消息队列、版本化 Renderer 绑定和服务端队列排除规则不变。

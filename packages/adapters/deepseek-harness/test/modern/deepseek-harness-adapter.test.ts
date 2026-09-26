@@ -135,11 +135,25 @@ class FakeConnection implements ModernConnectionLike {
     if (endpoint === "session/list") {
       return Promise.resolve(this.sessionListResult as ModernRemoteResult<T>);
     }
-    if (endpoint === "settings/describe") {
+    if (endpoint === "settings/describe" && this.formatVersion !== 4) {
       return Promise.resolve({
         ok: true,
-        value: settingsValue(this.permissionModesEnabled, this.formatVersion),
+        value: settingsValue(this.permissionModesEnabled),
       } as ModernRemoteResult<T>);
+    }
+    if (endpoint === "permissionPresets/catalog" && this.formatVersion === 4) {
+      return Promise.resolve(
+        (this.permissionModesEnabled
+          ? { ok: true, value: permissionCatalog() }
+          : {
+              ok: false,
+              error: {
+                code: "gateway/service-unavailable",
+                message: 'active Service "permissionPresets" is unavailable',
+                details: {},
+              },
+            }) as ModernRemoteResult<T>,
+      );
     }
     if (endpoint === "session/create") {
       const request = args.request as { sessionId: string; agentPreset?: string };
@@ -152,7 +166,7 @@ class FakeConnection implements ModernConnectionLike {
           type: "projection",
           sessionId: request.sessionId,
           key: "permissions",
-          value: permissionProjection("workspace-write"),
+          value: permissionProjection("workspace-write", this.formatVersion),
           seq: 0,
         });
       }
@@ -207,7 +221,7 @@ class FakeConnection implements ModernConnectionLike {
         type: "projection",
         sessionId: request.agentId,
         key: "permissions",
-        value: permissionProjection(permissionModeId),
+        value: permissionProjection(permissionModeId, this.formatVersion),
         seq: 1,
       });
       return Promise.resolve({
@@ -343,7 +357,7 @@ class FakeConnection implements ModernConnectionLike {
   }
 }
 
-function settingsValue(withPermissions = false, formatVersion = 0): Record<string, unknown> {
+function settingsValue(withPermissions = false): Record<string, unknown> {
   if (!withPermissions) return { writable: true, hasDocument: true, namespaces: [] };
   const choices = ["workspace-write", "danger-full-access"].map((id) => Schema.const(id));
   return {
@@ -361,7 +375,6 @@ function settingsValue(withPermissions = false, formatVersion = 0): Record<strin
         base: { defaultPreset: "workspace-write" },
         user: {},
         applies: "live",
-        ...(formatVersion === 4 ? { autoGenerate: false } : {}),
         secrets: [],
         revision: 0,
       },
@@ -369,7 +382,18 @@ function settingsValue(withPermissions = false, formatVersion = 0): Record<strin
   };
 }
 
-function permissionProjection(currentValue: string): Record<string, unknown> {
+/** DSH 0.1.7's process-level preset catalog (V4). */
+function permissionCatalog(): Record<string, unknown> {
+  const options = ["workspace-write", "danger-full-access"].map((value) => ({
+    value,
+    name: value,
+  }));
+  return { options, defaultOptions: options, defaultPreset: "workspace-write" };
+}
+
+function permissionProjection(currentValue: string, formatVersion = 0): Record<string, unknown> {
+  // V4 projects only the current value; its options come from the catalog.
+  if (formatVersion === 4) return { currentValue };
   return {
     options: ["workspace-write", "danger-full-access"].map((value) => ({
       value,
@@ -658,6 +682,115 @@ describe("DSH V4 session operations", () => {
     if (resumed.ok) await resumed.value.close();
     await adapter.close();
     expect(connection.flushSession).toHaveBeenCalledTimes(2);
+  });
+
+  it("inspects, applies and resumes V4 Permission presets from the process catalog", async () => {
+    const cwd = path.resolve("fixture-v017-permissions");
+    const { adapter, connection } = setup(["v017"], { version: "0.1.7-rc.1" });
+    connection.permissionModesEnabled = true;
+    const snapshot = (events: Record<string, unknown>[], preset?: string) => ({
+      ...v017Snapshot({ sessionId: "session-v017", cwd, events }),
+      projections: {
+        asOfSeq: events.length - 1,
+        values: {
+          modelSelection: { lastUsed: null, next: null },
+          ...(preset ? { permissions: { currentValue: preset } } : {}),
+        },
+      },
+    });
+    connection.journalSnapshots.set("session-v017", snapshot([]));
+
+    await expect(adapter.inspect()).resolves.toMatchObject({
+      status: "ready",
+      permissionModes: {
+        modes: [{ id: "workspace-write" }, { id: "danger-full-access" }],
+        defaultModeId: "workspace-write",
+      },
+      capabilities: { configuration: { selectPermissionMode: true } },
+    });
+    const endpoints = connection.calls.map(({ endpoint }) => endpoint);
+    expect(endpoints).toContain("permissionPresets/catalog");
+    expect(endpoints).not.toContain("settings/describe");
+
+    const created = await adapter.open({
+      kind: "create",
+      cwd,
+      permissionModeId: "danger-full-access" as never,
+    });
+    if (!created.ok) throw new Error(created.error.message);
+    expect(connection.calls).toContainEqual({
+      endpoint: "commands/execute",
+      args: {
+        agentId: "session-v017",
+        line: "/permission danger-full-access",
+        submittedAttachments: [],
+      },
+    });
+    expect(created.value.initialState.effectivePermissionModeId).toBe("danger-full-access");
+    const ref = created.value.initialState.nativeRef;
+    if (!ref) throw new Error("missing V4 Native Session reference");
+    await created.value.close();
+
+    connection.journalSnapshots.set(
+      "session-v017",
+      snapshot(
+        [exactJournalEvent(0, "permission/preset", { preset: "danger-full-access" })],
+        "danger-full-access",
+      ),
+    );
+    const resumed = await adapter.open({ kind: "resume", nativeRef: ref, cwd });
+    if (!resumed.ok) throw new Error(resumed.error.message);
+    expect(resumed.value.initialState.effectivePermissionModeId).toBe("danger-full-access");
+    await resumed.value.close();
+    await adapter.close();
+  });
+
+  it("delegates V4 unattended work only through the full-access preset", async () => {
+    const cwd = path.resolve("fixture-v017-unattended");
+    const { adapter, connection } = setup(["v017"], { version: "0.1.7-rc.1" });
+    connection.permissionModesEnabled = true;
+    const events = [
+      exactJournalEvent(0, "permission/preset", { preset: "danger-full-access" }),
+      exactJournalEvent(1, "sandbox/mode", { mode: "danger-full-access" }),
+      exactJournalEvent(2, "approval/policy", { policy: "never" }),
+    ];
+    connection.journalSnapshots.set("session-v017", {
+      ...v017Snapshot({ sessionId: "session-v017", cwd, events }),
+      projections: {
+        asOfSeq: 2,
+        values: {
+          modelSelection: { lastUsed: null, next: null },
+          permissions: { currentValue: "danger-full-access" },
+        },
+      },
+    });
+    const opened = await adapter.open({
+      kind: "create",
+      cwd,
+      executionPolicy: "unattended-full-access",
+    });
+    expect(opened).toMatchObject({ ok: true });
+    if (opened.ok) await opened.value.close();
+    await adapter.close();
+  });
+
+  it("hides V4 Permission control when DSH composes no permission presets", async () => {
+    const { adapter, connection } = setup(["v017"], { version: "0.1.7-rc.1" });
+    const inspection = await adapter.inspect();
+    expect(inspection).toMatchObject({
+      status: "ready",
+      capabilities: { configuration: { selectPermissionMode: false } },
+    });
+    expect(inspection).not.toHaveProperty("permissionModes");
+    expect(connection.calls.map(({ endpoint }) => endpoint)).toContain("permissionPresets/catalog");
+    await expect(
+      adapter.open({
+        kind: "create",
+        cwd: path.resolve("fixture-v017-no-permissions"),
+        permissionModeId: "workspace-write" as never,
+      }),
+    ).resolves.toMatchObject({ ok: false, error: { code: "unsupported" } });
+    await adapter.close();
   });
 
   it("accepts a migrated V3 Session ref but rejects its old checkpoint before Fork", async () => {

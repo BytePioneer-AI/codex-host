@@ -9,6 +9,7 @@ import {
   loadModernPermissionModeCatalog,
   ModernPermissionModeError,
   parseModernPermissionModeCatalog,
+  parseModernPermissionPresetCatalog,
   readModernPermissionModeState,
   type ModernPermissionModeRemote,
 } from "../../src/modern/permission-modes.js";
@@ -17,7 +18,10 @@ import {
   type ModernRemoteConnectionErrorCode,
 } from "../../src/modern/remote-connection.js";
 import type { ModernRemoteResult } from "../../src/modern/wire.js";
-import { DEEPSEEK_V017_PROFILE } from "../../src/profiles/profile.js";
+import { DEEPSEEK_V015_PROFILE, DEEPSEEK_V017_PROFILE } from "../../src/profiles/profile.js";
+
+const V3 = DEEPSEEK_V015_PROFILE;
+const V4 = DEEPSEEK_V017_PROFILE;
 
 const PRESETS = ["read-only", "workspace-write", "danger-full-access"];
 
@@ -76,6 +80,16 @@ function settingsValue(
   return { writable: true, hasDocument: true, namespaces, ...overrides };
 }
 
+/** DSH 0.1.7's `permissionPresets/catalog` value (V4). */
+function presetCatalog(overrides: Readonly<Record<string, unknown>> = {}): Record<string, unknown> {
+  const options = [
+    { value: "read-only", name: "Read only", description: "Read files only." },
+    { value: "workspace-write", name: "workspace-write" },
+    { value: "danger-full-access", name: "danger-full-access", description: "" },
+  ];
+  return { options, defaultOptions: options, defaultPreset: "workspace-write", ...overrides };
+}
+
 function projection(
   currentValue = "workspace-write",
   options: readonly {
@@ -119,42 +133,110 @@ class FakeRemote implements ModernPermissionModeRemote {
 }
 
 describe("DeepSeek Harness Modern Permission Mode boundary", () => {
-  it("requires rc.1 settings namespaces to declare autoGenerate", async () => {
-    const v4Namespace = { ...permissionNamespace(), autoGenerate: true };
-    const value = settingsValue([v4Namespace]);
-    expect(parseModernPermissionModeCatalog(value, DEEPSEEK_V017_PROFILE)).toEqual({
+  it("reads V4 presets from the process catalog instead of settings", async () => {
+    const remote = new FakeRemote({ ok: true, value: presetCatalog() });
+    await expect(loadModernPermissionModeCatalog(remote, undefined, V4)).resolves.toEqual({
       modes: [
-        { id: "read-only", label: "Read only" },
+        { id: "read-only", label: "Read only", description: "Read files only." },
         { id: "workspace-write", label: "workspace-write" },
         { id: "danger-full-access", label: "danger-full-access" },
       ],
       defaultModeId: "workspace-write",
     });
-    await expect(
-      loadModernPermissionModeCatalog(
-        new FakeRemote({ ok: true, value }),
-        undefined,
-        DEEPSEEK_V017_PROFILE,
-      ),
-    ).resolves.not.toBeNull();
+    expect(remote.calls).toEqual([{ endpoint: "permissionPresets/catalog", args: {} }]);
+
+    // A live `auto` is selectable but never a configured default.
+    const auto = { value: "auto", name: "Auto" };
+    const options = [...(presetCatalog().options as unknown[]), auto];
     expect(
-      parseModernPermissionModeCatalog(
-        settingsValue([{ ...v4Namespace, ns: "other", autoGenerate: false }]),
-        DEEPSEEK_V017_PROFILE,
+      parseModernPermissionPresetCatalog(presetCatalog({ options }))?.modes.map(({ id }) => id),
+    ).toEqual(["read-only", "workspace-write", "danger-full-access", "auto"]);
+  });
+
+  it("hides V4 permissions only when the catalog Service is not composed", async () => {
+    const failure = (code: string) =>
+      new FakeRemote({ ok: false, error: { code, message: "unavailable", details: {} } });
+    await expect(
+      loadModernPermissionModeCatalog(failure("gateway/service-unavailable"), undefined, V4),
+    ).resolves.toBeNull();
+    await expect(
+      loadModernPermissionModeCatalog(failure("gateway/internal"), undefined, V4),
+    ).rejects.toMatchObject({ code: "remoteError", nativeCode: "gateway/internal" });
+    // Earlier formats never read the process catalog.
+    await expect(
+      loadModernPermissionModeCatalog(failure("gateway/service-unavailable"), undefined, V3),
+    ).rejects.toMatchObject({ code: "remoteError" });
+  });
+
+  it.each([
+    ["extra catalog keys", presetCatalog({ extra: true })],
+    ["no options", presetCatalog({ options: [], defaultOptions: [] })],
+    [
+      "a reserved custom option",
+      presetCatalog({
+        options: [...(presetCatalog().options as unknown[]), { value: "custom", name: "Custom" }],
+      }),
+    ],
+    [
+      "duplicate options",
+      presetCatalog({
+        options: [
+          { value: "workspace-write", name: "workspace-write" },
+          { value: "workspace-write", name: "workspace-write" },
+        ],
+      }),
+    ],
+    ["a blank label", presetCatalog({ options: [{ value: "workspace-write", name: " " }] })],
+    [
+      "extra option keys",
+      presetCatalog({ options: [{ value: "workspace-write", name: "w", extra: 1 }] }),
+    ],
+    ["an unknown default", presetCatalog({ defaultPreset: "unknown" })],
+    [
+      "a default that is not configured",
+      presetCatalog({
+        options: [...(presetCatalog().options as unknown[]), { value: "auto", name: "Auto" }],
+        defaultPreset: "auto",
+      }),
+    ],
+    [
+      "defaults missing from the options",
+      presetCatalog({ defaultOptions: [{ value: "workspace-write", name: "Workspace" }] }),
+    ],
+  ])("rejects a V4 catalog with %s", (_label, value) => {
+    expect(() => parseModernPermissionPresetCatalog(value)).toThrowError(ModernPermissionModeError);
+  });
+
+  it("reads a V4 current-only projection, including custom and a later auto", () => {
+    const catalog = parseModernPermissionPresetCatalog(presetCatalog());
+    const read = (currentValue: string) =>
+      readModernPermissionModeState({ value: { currentValue }, seq: 3 }, catalog, V4);
+    expect(read("danger-full-access")).toEqual({
+      permissionModeId: "danger-full-access",
+      projectionSeq: 3,
+    });
+    expect(read("custom")?.permissionModeId).toBe("custom");
+    expect(read("auto")?.permissionModeId).toBe("auto");
+    expect(() => read("unknown")).toThrowError(ModernPermissionModeError);
+    expect(
+      isModernPermissionModeProjectionMatch(
+        { currentValue: "read-only" },
+        catalog,
+        harnessPermissionModeIdSchema.parse("read-only"),
+        V4,
       ),
-    ).toBeNull();
+    ).toBe(true);
+    // Each format accepts only its own projection shape.
     expect(() =>
-      parseModernPermissionModeCatalog(settingsValue(), DEEPSEEK_V017_PROFILE),
-    ).toThrowError(expect.objectContaining({ code: "protocolError" }));
+      readModernPermissionModeState({ value: projection(), seq: 1 }, catalog, V4),
+    ).toThrowError(ModernPermissionModeError);
     expect(() =>
-      parseModernPermissionModeCatalog(
-        settingsValue([{ ...v4Namespace, autoGenerate: "yes" }]),
-        DEEPSEEK_V017_PROFILE,
+      readModernPermissionModeState(
+        { value: { currentValue: "workspace-write" }, seq: 1 },
+        parseModernPermissionModeCatalog(settingsValue()),
+        V3,
       ),
-    ).toThrowError(expect.objectContaining({ code: "protocolError" }));
-    expect(() => parseModernPermissionModeCatalog(value)).toThrowError(
-      expect.objectContaining({ code: "protocolError" }),
-    );
+    ).toThrowError(ModernPermissionModeError);
   });
 
   it("rehydrates the exact permission settings schema and preserves choice order", async () => {
@@ -256,11 +338,11 @@ describe("DeepSeek Harness Modern Permission Mode boundary", () => {
     const catalog = parseModernPermissionModeCatalog(settingsValue());
     if (!catalog) throw new Error("expected permission catalog");
 
-    expect(readModernPermissionModeState({ value: projection(), seq: 12 }, catalog)).toEqual({
+    expect(readModernPermissionModeState({ value: projection(), seq: 12 }, catalog, V3)).toEqual({
       permissionModeId: "workspace-write",
       projectionSeq: 12,
     });
-    expect(readModernPermissionModeState({ value: projection(), seq: -1 }, catalog)).toEqual({
+    expect(readModernPermissionModeState({ value: projection(), seq: -1 }, catalog, V3)).toEqual({
       permissionModeId: "workspace-write",
       projectionSeq: -1,
     });
@@ -269,7 +351,7 @@ describe("DeepSeek Harness Modern Permission Mode boundary", () => {
       ...PRESETS.map(presetOption),
       { value: "custom", name: "Custom" },
     ]);
-    expect(readModernPermissionModeState({ value: custom, seq: 13 }, catalog)).toEqual({
+    expect(readModernPermissionModeState({ value: custom, seq: 13 }, catalog, V3)).toEqual({
       permissionModeId: "custom",
       projectionSeq: 13,
     });
@@ -278,6 +360,7 @@ describe("DeepSeek Harness Modern Permission Mode boundary", () => {
         custom,
         catalog,
         harnessPermissionModeIdSchema.parse("custom"),
+        V3,
       ),
     ).toThrowError(TypeError);
     expect(
@@ -285,6 +368,7 @@ describe("DeepSeek Harness Modern Permission Mode boundary", () => {
         projection("read-only"),
         catalog,
         harnessPermissionModeIdSchema.parse("workspace-write"),
+        V3,
       ),
     ).toBe(false);
   });
@@ -315,19 +399,19 @@ describe("DeepSeek Harness Modern Permission Mode boundary", () => {
     ["invalid sequence", { value: projection(), seq: -2 }],
   ])("fails closed on a %s permissions row", (_label, row) => {
     const catalog = parseModernPermissionModeCatalog(settingsValue());
-    expect(() => readModernPermissionModeState(row, catalog)).toThrowError(
+    expect(() => readModernPermissionModeState(row, catalog, V3)).toThrowError(
       ModernPermissionModeError,
     );
   });
 
-  it("fails when catalog and projection capability presence disagree", () => {
-    expect(readModernPermissionModeState(undefined, null)).toBeUndefined();
-    expect(() => readModernPermissionModeState({ value: projection(), seq: 1 }, null)).toThrowError(
+  it.each([
+    ["V3", V3, projection()],
+    ["V4", V4, { currentValue: "workspace-write" }],
+  ])("fails when %s catalog and projection presence disagree", (_name, profile, value) => {
+    expect(readModernPermissionModeState(undefined, null, profile)).toBeUndefined();
+    expect(() => readModernPermissionModeState({ value, seq: 1 }, null, profile)).toThrowError(
       ModernPermissionModeError,
     );
-    expect(
-      readModernPermissionModeState({ value: projection(), seq: 1 }, null, DEEPSEEK_V017_PROFILE),
-    ).toBeUndefined();
   });
 
   it("requires projection option names to match the inspected catalog", () => {
@@ -339,7 +423,7 @@ describe("DeepSeek Harness Modern Permission Mode boundary", () => {
     ]);
 
     expect(() =>
-      readModernPermissionModeState({ value: mismatched, seq: 1 }, catalog),
+      readModernPermissionModeState({ value: mismatched, seq: 1 }, catalog, V3),
     ).toThrowError(ModernPermissionModeError);
   });
 
@@ -351,9 +435,9 @@ describe("DeepSeek Harness Modern Permission Mode boundary", () => {
       ...PRESETS.slice(1).map(presetOption),
     ]);
 
-    expect(readModernPermissionModeState({ value: withEmptyDescription, seq: 2 }, catalog)).toEqual(
-      { permissionModeId: "workspace-write", projectionSeq: 2 },
-    );
+    expect(
+      readModernPermissionModeState({ value: withEmptyDescription, seq: 2 }, catalog, V3),
+    ).toEqual({ permissionModeId: "workspace-write", projectionSeq: 2 });
   });
 
   it("enforces a finite namespace bound", () => {

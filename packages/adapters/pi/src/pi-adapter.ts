@@ -182,6 +182,8 @@ interface ActiveTurn {
   compactionItem: HostContextCompactionItem | null;
   sawAssistantMessage: boolean;
   acceptedSteerCount: number;
+  acceptingSteers: boolean;
+  pendingSteers: Set<Promise<void>>;
   reasoningItem: HostReasoningItem | null;
   tools: Map<string, ActiveTool>;
   interactions: Map<HostInteractionId, ActiveInteraction>;
@@ -823,6 +825,8 @@ class PiHarnessSession implements HarnessSession {
         compactionItem: null,
         sawAssistantMessage: false,
         acceptedSteerCount: 0,
+        acceptingSteers: true,
+        pendingSteers: new Set(),
         reasoningItem: null,
         tools: new Map(),
         interactions: new Map(),
@@ -1112,6 +1116,9 @@ class PiHarnessSession implements HarnessSession {
     if (!active || active.command.turnId !== command.turnId) {
       return { ok: false, error: invalidState("Pi Turn is not active") };
     }
+    if (!active.acceptingSteers) {
+      return { ok: false, error: invalidState("Pi Turn is completing") };
+    }
     const text = command.input.map((input) => input.text).join("\n");
     if (text.length === 0) {
       return {
@@ -1125,16 +1132,23 @@ class PiHarnessSession implements HarnessSession {
     }
     const transport = this.#transport;
     if (!transport) return { ok: false, error: invalidState("Pi Turn is not active") };
+    let accepted: Promise<void>;
     try {
-      await transport.steer(text);
+      accepted = transport.steer(text).then(() => {
+        active.acceptedSteerCount += 1;
+      });
     } catch (error) {
       return { ok: false, error: invalidState(errorMessage(error)) };
     }
-    if (this.#active !== active || this.#phase !== "open") {
-      return { ok: false, error: invalidState("Pi Turn ended before steer was accepted") };
+    active.pendingSteers.add(accepted);
+    try {
+      await accepted;
+      return { ok: true, value: { accepted: true } };
+    } catch (error) {
+      return { ok: false, error: invalidState(errorMessage(error)) };
+    } finally {
+      active.pendingSteers.delete(accepted);
     }
-    active.acceptedSteerCount += 1;
-    return { ok: true, value: { accepted: true } };
   }
 
   async #cancel(command: TurnCancelCommand): Promise<HarnessResult<TurnCancelAccepted>> {
@@ -1268,6 +1282,8 @@ class PiHarnessSession implements HarnessSession {
         compactionItem: null,
         sawAssistantMessage: false,
         acceptedSteerCount: 0,
+        acceptingSteers: false,
+        pendingSteers: new Set(),
         reasoningItem: null,
         tools: new Map(),
         interactions: new Map(),
@@ -1445,6 +1461,8 @@ class PiHarnessSession implements HarnessSession {
       compactionItem: null,
       sawAssistantMessage: false,
       acceptedSteerCount: 0,
+      acceptingSteers: false,
+      pendingSteers: new Set(),
       reasoningItem: null,
       tools: new Map(),
       interactions: new Map(),
@@ -1939,6 +1957,8 @@ class PiHarnessSession implements HarnessSession {
     active: ActiveTurn,
     transport: PiTurnTransport,
   ): Promise<{ nativeTurnRef: NativeTurnRef; checkpoint: NativeCheckpointRef }> {
+    active.acceptingSteers = false;
+    await Promise.allSettled([...active.pendingSteers]);
     const snapshot = mapPiSnapshot(await transport.getEntries(), {
       sessionId: transport.state.sessionId,
       model: nativeModelForHistory(transport.state),

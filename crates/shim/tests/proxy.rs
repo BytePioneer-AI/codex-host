@@ -602,7 +602,7 @@ fn macos_browser_sandbox_fallback_keeps_explicit_targets_authoritative() {
 
 #[cfg(target_os = "macos")]
 #[test]
-fn macos_browser_sandbox_fallback_rejects_unrelated_commands() {
+fn macos_browser_dropped_override_discovers_regardless_of_command() {
     let directory = temporary_directory();
     let bundle = macos_fixture_bundle(&directory);
     for arguments in [
@@ -610,18 +610,31 @@ fn macos_browser_sandbox_fallback_rejects_unrelated_commands() {
         vec!["exec", "sandbox"],
         vec!["--model", "sandbox"],
     ] {
-        let output = Command::new(shim_path())
-            .args(arguments)
-            .env_remove(STOCK_CODEX_PATH_ENV)
+        // Inherited launcher/runtime state (for example CODEXHOST_HOST_NODE_PATH
+        // with CODEXHOST_DATA_DIR) would route the app-server branch to the Host
+        // Runtime instead of the fixture official CLI. CODEX_CLI_PATH does not
+        // carry the prefix, so it needs its own removal.
+        let mut command = Command::new(shim_path());
+        for (key, _) in std::env::vars_os() {
+            if key.to_string_lossy().starts_with("CODEXHOST_") {
+                command.env_remove(key);
+            }
+        }
+        let output = command
+            .args(&arguments)
             .env_remove(CODEX_CLI_PATH_ENV)
             .env(CUSTOM_INSTALL_ROOT_ENV, &bundle)
+            .env("FAKE_CODEX_PRINT_INVOCATION", "1")
             .stdin(Stdio::null())
             .output()
             .unwrap();
         let stderr = String::from_utf8_lossy(&output.stderr);
-        assert!(!output.status.success(), "{stderr}");
-        assert!(output.stdout.is_empty());
-        assert!(stderr.contains("CODEXHOST_STOCK_CODEX_PATH is required"));
+        assert!(
+            output.status.success(),
+            "{arguments:?}: {} {stderr}",
+            output.status
+        );
+        assert!(stderr.contains("codex_cli_path_present=false"), "{stderr}");
     }
     fs::remove_dir_all(directory).unwrap();
 }
@@ -720,6 +733,7 @@ fn assert_macos_native_helper_routing(nested_cli: bool) {
     }
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn rejects_missing_stock_cli_without_a_cli_override() {
     let output = Command::new(shim_path())
@@ -734,6 +748,64 @@ fn rejects_missing_stock_cli_without_a_cli_override() {
         String::from_utf8_lossy(&output.stderr)
             .contains(&format!("{STOCK_CODEX_PATH_ENV} is required"))
     );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn macos_browser_helper_dropping_the_cli_override_reaches_official_cli() {
+    let directory = temporary_directory();
+    let bundle = macos_fixture_bundle(&directory);
+    let mut command = Command::new(shim_path());
+    for (key, _) in std::env::vars_os() {
+        if key.to_string_lossy().starts_with("CODEXHOST_") {
+            command.env_remove(key);
+        }
+    }
+    let output = command
+        .args(["app-server", "--listen", "stdio://"])
+        .env_remove(CODEX_CLI_PATH_ENV)
+        .env(CUSTOM_INSTALL_ROOT_ENV, &bundle)
+        .env("FAKE_CODEX_PRINT_INVOCATION", "1")
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "{stderr}");
+    assert!(
+        stderr.contains("args=app-server|--listen|stdio://"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("codex_cli_path_present=false"), "{stderr}");
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[cfg(any(target_os = "windows", target_os = "macos"))]
+#[test]
+fn rejects_missing_stock_cli_when_a_dropped_override_cannot_be_discovered() {
+    let missing_installation = temporary_directory().join("missing-portable-codex");
+    let output = Command::new(shim_path())
+        .args(["config", "read"])
+        .env_remove(STOCK_CODEX_PATH_ENV)
+        .env_remove(CODEX_CLI_PATH_ENV)
+        .env(CUSTOM_INSTALL_ROOT_ENV, &missing_installation)
+        .env("PATH", fake_codex_path().parent().expect("fake CLI parent"))
+        .stdin(Stdio::null())
+        .output()
+        .expect("run shim whose helper dropped every override");
+
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("Desktop-managed official Codex CLI could not be discovered")
+    );
+
+    fs::remove_dir_all(
+        missing_installation
+            .parent()
+            .expect("missing portable installation parent"),
+    )
+    .expect("remove missing portable installation fixture");
 }
 
 #[cfg(target_os = "windows")]
@@ -779,6 +851,47 @@ fn discovers_official_cli_when_browser_helper_preserves_only_codex_cli_path() {
         "{stderr}"
     );
     assert!(stderr.contains("NODE_USE_ENV_PROXY=1"), "{stderr}");
+
+    fs::remove_dir_all(
+        installation_root
+            .parent()
+            .expect("portable installation parent"),
+    )
+    .expect("remove portable Codex installation");
+}
+
+#[cfg(target_os = "windows")]
+#[test]
+fn discovers_official_cli_when_browser_helper_drops_the_cli_override() {
+    let installation_root = temporary_directory().join("portable-codex");
+    let app_root = installation_root.join("app");
+    let resources = app_root.join("resources");
+    fs::create_dir_all(&resources).expect("create portable Codex resources");
+    fs::write(app_root.join("ChatGPT.exe"), b"desktop").expect("write fake Desktop executable");
+    fs::write(resources.join("app.asar"), b"asar").expect("write fake app.asar");
+    fs::copy(fake_codex_path(), resources.join("codex.exe"))
+        .expect("install fake official Codex CLI");
+
+    let output = Command::new(shim_path())
+        .args(["config", "read"])
+        .env_remove(STOCK_CODEX_PATH_ENV)
+        .env_remove(CODEX_CLI_PATH_ENV)
+        .env(CUSTOM_INSTALL_ROOT_ENV, &installation_root)
+        .env("FAKE_CODEX_PRINT_INVOCATION", "1")
+        .stdin(Stdio::null())
+        .output()
+        .expect("run Browser Use style shim invocation without a CLI override");
+
+    assert!(
+        output.status.success(),
+        "Browser Use style shim invocation exited {}; stderr={}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(output.stdout.is_empty());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("args=config|read"), "{stderr}");
+    assert!(stderr.contains("codex_cli_path_present=false"), "{stderr}");
 
     fs::remove_dir_all(
         installation_root

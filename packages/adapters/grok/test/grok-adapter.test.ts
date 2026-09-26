@@ -20,6 +20,7 @@ import {
 import { describe, expect, it, vi } from "vitest";
 
 import type { GrokCompactResult } from "../src/grok-manual-compaction.js";
+import { GROK_INTERJECT_METHOD } from "../src/acp-transport.js";
 import {
   GrokAdapter,
   GrokTransportError,
@@ -60,6 +61,8 @@ class FakeGrokTransport implements GrokAcpTransportLike {
   readonly openCalls: GrokOpenInput[] = [];
   readonly compactCalls: Array<string | undefined> = [];
   readonly cancel = vi.fn(async () => undefined);
+  readonly interjectCalls: string[] = [];
+  interjectStatus: "queued" | "rejected" = "queued";
   readonly close = vi.fn(async () => undefined);
   readonly setModel = vi.fn(async () => undefined);
   readonly deleteSession = vi.fn(async (sessionId: string) => {
@@ -82,6 +85,11 @@ class FakeGrokTransport implements GrokAcpTransportLike {
   #resolve: ((response: PromptResponse) => void) | null = null;
   #compactResolve: ((result: GrokCompactResult) => void) | null = null;
   #compactOnEvent: ((event: GrokTransportEvent) => void) | null = null;
+
+  async interject(text: string): Promise<"queued" | "rejected"> {
+    this.interjectCalls.push(text);
+    return this.interjectStatus;
+  }
 
   async inspect(): Promise<InitializeResponse> {
     return initialize;
@@ -2667,5 +2675,191 @@ describe("Grok Adapter ACP projection", () => {
     } finally {
       await rm(grokHome, { recursive: true, force: true });
     }
+  });
+});
+
+describe("Grok native steer", () => {
+  it("inserts into the active Turn and keeps one native Turn", async () => {
+    const transport = new FakeGrokTransport();
+    const { adapter, session } = await openedSession(transport);
+    expect(session.capabilities.steer).toBe(true);
+    expect(GROK_INTERJECT_METHOD).toBe("_x.ai/interject");
+    const outputs = session.outputs[Symbol.asyncIterator]();
+    const turnId = hostTurnIdSchema.parse("grok-steer");
+    await session.execute({
+      type: "turn.start",
+      turnId,
+      input: [{ type: "text", text: "go" }],
+    });
+    expect(await nextEvent(outputs)).toMatchObject({ type: "turn.started", turnId });
+    await expect(
+      session.execute({
+        type: "turn.steer",
+        turnId: hostTurnIdSchema.parse("missing"),
+        input: [{ type: "text", text: "later" }],
+      }),
+    ).resolves.toMatchObject({ ok: false, error: { code: "invalidState" } });
+    await expect(
+      session.execute({
+        type: "turn.start",
+        turnId: hostTurnIdSchema.parse("busy"),
+        input: [{ type: "text", text: "no" }],
+      }),
+    ).resolves.toMatchObject({ ok: false, error: { code: "sessionBusy" } });
+    await expect(
+      session.execute({
+        type: "turn.steer",
+        turnId,
+        input: [{ type: "text", text: "   " }],
+      }),
+    ).resolves.toMatchObject({ ok: false, error: { code: "invalidRequest" } });
+    transport.event({
+      type: "user.text",
+      text: "follow up",
+      metadata: { eventId: "live-steer" },
+    });
+    await expect(
+      session.execute({
+        type: "turn.steer",
+        turnId,
+        input: [
+          { type: "text", text: "follow" },
+          { type: "text", text: "up" },
+        ],
+      }),
+    ).resolves.toEqual({ ok: true, value: { accepted: true } });
+    expect(transport.interjectCalls).toEqual(["follow\nup"]);
+    transport.finish();
+    const emitted = [];
+    let completed = false;
+    while (!completed) {
+      const event = await nextEvent(outputs);
+      emitted.push(event);
+      completed = event.type === "turn.completed" || event.type === "session.faulted";
+    }
+    expect(JSON.stringify(emitted)).not.toContain("userMessage");
+    expect(emitted.at(-1)).toMatchObject({
+      type: "turn.completed",
+      turnId,
+      nativeTurnRef: { nativeTurnKey: "grok-prompt-1" },
+      outcome: { status: "succeeded" },
+    });
+    await session.close();
+    await adapter.close();
+  });
+
+  it("binds the original Turn when native history splits, and rejects a mismatched count", async () => {
+    const split = new FakeGrokTransport();
+    const splitSession = await openedSession(split);
+    const splitOutputs = splitSession.session.outputs[Symbol.asyncIterator]();
+    const splitTurn = hostTurnIdSchema.parse("grok-split");
+    await splitSession.session.execute({
+      type: "turn.start",
+      turnId: splitTurn,
+      input: [{ type: "text", text: "go" }],
+    });
+    expect(await nextEvent(splitOutputs)).toMatchObject({ type: "turn.started" });
+    await splitSession.session.execute({
+      type: "turn.steer",
+      turnId: splitTurn,
+      input: [{ type: "text", text: "later" }],
+    });
+    split.event({ type: "user.text", text: "<system-reminder>split" });
+    split.event({ type: "user.text", text: "inserted", metadata: { eventId: "steer-row" } });
+    split.finish();
+    let splitCompleted: Awaited<ReturnType<typeof nextEvent>> | undefined;
+    for (;;) {
+      const event = await nextEvent(splitOutputs);
+      if (event.type === "turn.completed" || event.type === "session.faulted") {
+        splitCompleted = event;
+        break;
+      }
+    }
+    expect(splitCompleted).toMatchObject({
+      type: "turn.completed",
+      nativeTurnRef: { nativeTurnKey: "grok-session-user-1" },
+      outcome: { status: "succeeded" },
+    });
+    await splitSession.session.close();
+    await splitSession.adapter.close();
+
+    const mismatch = new FakeGrokTransport();
+    const mismatchSession = await openedSession(mismatch);
+    const mismatchOutputs = mismatchSession.session.outputs[Symbol.asyncIterator]();
+    const mismatchTurn = hostTurnIdSchema.parse("grok-mismatch");
+    await mismatchSession.session.execute({
+      type: "turn.start",
+      turnId: mismatchTurn,
+      input: [{ type: "text", text: "go" }],
+    });
+    expect(await nextEvent(mismatchOutputs)).toMatchObject({ type: "turn.started" });
+    await mismatchSession.session.execute({
+      type: "turn.steer",
+      turnId: mismatchTurn,
+      input: [{ type: "text", text: "later" }],
+    });
+    mismatch.event({ type: "user.text", text: "<system-reminder>a" });
+    mismatch.event({ type: "user.text", text: "mid", metadata: { eventId: "mid" } });
+    mismatch.event({ type: "user.text", text: "<system-reminder>b" });
+    mismatch.event({ type: "user.text", text: "late", metadata: { eventId: "late" } });
+    mismatch.finish();
+    let mismatchCompleted: Awaited<ReturnType<typeof nextEvent>> | undefined;
+    for (;;) {
+      const event = await nextEvent(mismatchOutputs);
+      if (event.type === "turn.completed" || event.type === "session.faulted") {
+        mismatchCompleted = event;
+        break;
+      }
+    }
+    expect(mismatchCompleted).toMatchObject({
+      type: "turn.completed",
+      outcome: {
+        status: "failed",
+        error: { message: expect.stringContaining("3 new Native Turns") },
+      },
+    });
+    await mismatchSession.session.close();
+    await mismatchSession.adapter.close();
+  });
+
+  it("does not count a rejected interjection toward the native Turn identity", async () => {
+    const transport = new FakeGrokTransport();
+    transport.interjectStatus = "rejected";
+    const { adapter, session } = await openedSession(transport);
+    const outputs = session.outputs[Symbol.asyncIterator]();
+    const turnId = hostTurnIdSchema.parse("grok-rejected");
+    await session.execute({
+      type: "turn.start",
+      turnId,
+      input: [{ type: "text", text: "go" }],
+    });
+    expect(await nextEvent(outputs)).toMatchObject({ type: "turn.started" });
+    await expect(
+      session.execute({
+        type: "turn.steer",
+        turnId,
+        input: [{ type: "text", text: "later" }],
+      }),
+    ).resolves.toMatchObject({ ok: false, error: { code: "invalidState" } });
+    transport.event({ type: "user.text", text: "<system-reminder>split" });
+    transport.event({ type: "user.text", text: "extra", metadata: { eventId: "extra" } });
+    transport.finish();
+    let completed: Awaited<ReturnType<typeof nextEvent>> | undefined;
+    for (;;) {
+      const event = await nextEvent(outputs);
+      if (event.type === "turn.completed" || event.type === "session.faulted") {
+        completed = event;
+        break;
+      }
+    }
+    expect(completed).toMatchObject({
+      type: "turn.completed",
+      outcome: {
+        status: "failed",
+        error: { message: expect.stringContaining("2 new Native Turns") },
+      },
+    });
+    await session.close();
+    await adapter.close();
   });
 });

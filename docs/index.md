@@ -92,6 +92,7 @@
 | 文档 | 内容与阅读时机 |
 | --- | --- |
 | [`harnesses/grok/subagent-status-and-model.md`](harnesses/grok/subagent-status-and-model.md) | Grok Subagent 状态、Model、Transcript 与 Desktop 投影；修改 Grok Subagent 时阅读。 |
+| [`harnesses/grok/native-steer.md`](harnesses/grok/native-steer.md) | Grok ACP `_x.ai/interject` 的同轮插入和历史分轮；维护 Grok Adapter 的插队行为时阅读。 |
 
 ### Kimi Code
 

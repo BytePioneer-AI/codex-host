@@ -21,7 +21,7 @@ const completedTurns = [
         contentItems: [{ type: "inputText", text: "secret output" }],
       },
       { id: "progress-1", type: "agentMessage", phase: "commentary", text: "Checking auth." },
-      { id: "final-1", type: "agentMessage", phase: "final", text: "Found two issues." },
+      { id: "final-1", type: "agentMessage", phase: "final_answer", text: "Found two issues." },
     ],
   },
 ];
@@ -111,7 +111,7 @@ describe("delegation snapshot", () => {
         status: "completed",
         items: [
           { id: "blank", type: "agentMessage", phase: "commentary", text: "\n\n" },
-          { id: "answer", type: "agentMessage", phase: "final", text: "Answer" },
+          { id: "answer", type: "agentMessage", phase: "final_answer", text: "Answer" },
           { id: "trailing-blank", type: "agentMessage", phase: "commentary", text: " " },
         ],
       },
@@ -135,7 +135,7 @@ describe("delegation snapshot", () => {
     turns[0]?.items.push({
       id: "new-answer",
       type: "agentMessage",
-      phase: "final",
+      phase: "final_answer",
       text: "New answer",
     });
     const next = projectDelegationThreadSnapshot({ ...input, view: "messages", cursor, limit: 1 });
@@ -176,6 +176,30 @@ describe("delegation snapshot", () => {
     expect(second.result).toEqual(first.result);
     expect(second.turn).toEqual(first.turn);
     expect(second.status).toBe(first.status);
+  });
+
+  it("reports an explicit Codex final answer even when later commentary follows", () => {
+    const snapshot = projectDelegationThreadSnapshot({
+      threadId: "thread-1",
+      harnessId: "codex",
+      thread: { status: { type: "idle" } },
+      turns: [
+        {
+          id: "turn-1",
+          status: "completed",
+          items: [
+            { id: "answer", type: "agentMessage", phase: "final_answer", text: "Answer" },
+            { id: "note", type: "agentMessage", phase: "commentary", text: "Trailing note." },
+          ],
+        },
+      ],
+      running: false,
+      view: "result",
+    });
+    expect(snapshot).toMatchObject({
+      result: { availability: "available", text: "Answer" },
+      progress: [{ id: "note", text: "Trailing note." }],
+    });
   });
 
   it("reports a running checkpoint without inventing a result", () => {

@@ -950,7 +950,7 @@ describe("AppServerHost HarnessAdapter projection", () => {
                 status: "completed",
                 items: [
                   { id: "reasoning", type: "reasoning", summary: ["hidden"] },
-                  { id: "final", type: "agentMessage", phase: "final", text: "done" },
+                  { id: "final", type: "agentMessage", phase: "final_answer", text: "done" },
                 ],
               },
             ],

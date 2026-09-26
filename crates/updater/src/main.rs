@@ -212,6 +212,7 @@ mod tests {
     };
     use codexhost_updater::UpdateHandoff;
     use std::fs;
+    use std::path::Path;
     use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
     #[test]
@@ -274,11 +275,12 @@ mod tests {
             std::process::id()
         ));
         fs::create_dir(&root).unwrap();
-        let mut command = std::process::Command::new(if cfg!(target_os = "windows") {
+        let fixture_executable = if cfg!(target_os = "windows") {
             "ping"
         } else {
             "/bin/sleep"
-        });
+        };
+        let mut command = std::process::Command::new(fixture_executable);
         if cfg!(target_os = "windows") {
             command.args(["-n", "60", "127.0.0.1"]);
         } else {
@@ -299,7 +301,13 @@ mod tests {
             schema_version: 1,
             version: "1.2.3".into(),
             wait_pid: launcher.id(),
-            wait_executable: codexhost_platform::process_executable_path(launcher.id()).unwrap(),
+            // On Unix, spawn can return before the child completes exec. Use
+            // the known fixture executable instead of sampling that transition.
+            wait_executable: if cfg!(target_os = "windows") {
+                codexhost_platform::process_executable_path(launcher.id()).unwrap()
+            } else {
+                Path::new(fixture_executable).canonicalize().unwrap()
+            },
             runtime_descriptor_path: root.join("runtime.json"),
             status_path: status_path.clone(),
             installation: Installation::Npm(NpmInstallation {

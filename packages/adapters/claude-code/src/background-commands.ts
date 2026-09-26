@@ -369,7 +369,11 @@ export async function readClaudeBackgroundOutput(
     const length = Math.min(size, limitBytes);
     const buffer = Buffer.alloc(length);
     const { bytesRead } = await handle.read(buffer, 0, length, size - length);
-    return { text: buffer.subarray(0, bytesRead).toString("utf8"), truncated: size > length };
+    // A tail can begin inside a multi-byte character; drop its continuation bytes.
+    let start = 0;
+    if (size > length)
+      while (start < bytesRead && (buffer.readUInt8(start) & 0xc0) === 0x80) start += 1;
+    return { text: buffer.subarray(start, bytesRead).toString("utf8"), truncated: size > length };
   } catch {
     return null;
   } finally {

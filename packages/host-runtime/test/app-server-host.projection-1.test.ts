@@ -1170,6 +1170,160 @@ describe("AppServerHost HarnessAdapter projection", () => {
     }
   });
 
+  it("does not keep a disconnected Host waiting for an opened background command", async () => {
+    const pi = harnessIdSchema.parse("pi");
+    const adapter = Object.assign(new FakeHarnessAdapter(pi), {
+      backgroundTasks: {
+        readSnapshot: vi.fn(async (input: { parent: { nativeSessionId: string } }) => ({
+          ok: true as const,
+          value: {
+            turns: [
+              {
+                nativeTurnRef: {
+                  harnessId: pi,
+                  nativeSessionId: input.parent.nativeSessionId,
+                  nativeTurnKey: "background-task:dev-server",
+                  formatVersion: 1,
+                },
+                input: [{ type: "text" as const, text: "npm run dev" }],
+                items: [],
+                outcome: { status: "unknown" as const, reason: "Running" },
+              },
+            ],
+          },
+        })),
+      },
+    });
+    const fixture = createFixture({
+      externalAdapters: new Map([["pi", adapter]]) as ReadonlyMap<
+        ExternalHarnessId,
+        FakeHarnessAdapter
+      >,
+    });
+    try {
+      const threadId = await startPiThread(fixture);
+      const turnId = await startPiTurn(fixture, threadId);
+      const session = adapter.sessions[0];
+      if (!session) throw new Error("Fake Pi Session was not opened");
+      await fixture.collector.waitFor((message) => turnEvent(message, "turn/started", turnId));
+      const childStarted = fixture.collector.waitFor(
+        (message) =>
+          method(message, "thread/started") &&
+          (messageParams(message).thread as JsonObject | undefined)?.parentThreadId === threadId,
+      );
+      session.emitBackgroundTask({
+        kind: "command",
+        nativeTaskId: "dev-server",
+        description: "npm run dev",
+        status: "running",
+      });
+      const childId = (messageParams(await childStarted).thread as JsonObject).id as string;
+      // Opening the detail loads the child as a running read-only Thread.
+      writeRequest(fixture.desktopInput, {
+        id: 96,
+        method: "thread/resume",
+        params: { threadId: childId, excludeTurns: true },
+      });
+      const opened = await fixture.collector.waitFor((message) => requestId(message, 96));
+      expect((opened.result as JsonObject).thread).toEqual(
+        expect.objectContaining({ id: childId, status: { type: "active", activeFlags: [] } }),
+      );
+      session.succeedTurn();
+      await fixture.collector.waitFor((message) => turnEvent(message, "turn/completed", turnId));
+      writeRequest(fixture.desktopInput, { id: 97, method: "codexhost/sessions/loaded/list" });
+      const loaded = await fixture.collector.waitFor((message) => requestId(message, 97));
+      expect(
+        (loaded.result as JsonObject[]).find((entry) => entry.threadId === threadId),
+      ).toMatchObject({ state: "busy", reason: "background" });
+
+      fixture.host.disconnect();
+      const settled = await Promise.race([
+        fixture.running.then(() => "settled" as const),
+        new Promise<"pending">((resolve) => setTimeout(() => resolve("pending"), 1_000)),
+      ]);
+      expect(settled).toBe("settled");
+    } finally {
+      fixture.host.close();
+      fixture.desktopInput.end();
+      await fixture.running;
+      rmSync(fixture.mappingStoreDirectory, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps a disconnected Host draining an opened running Subagent", async () => {
+    const pi = harnessIdSchema.parse("pi");
+    const adapter = Object.assign(new FakeHarnessAdapter(pi), {
+      subagents: {
+        readSnapshot: vi.fn(async (input: { parent: { nativeSessionId: string } }) => ({
+          ok: true as const,
+          value: {
+            turns: [
+              {
+                nativeTurnRef: {
+                  harnessId: pi,
+                  nativeSessionId: input.parent.nativeSessionId,
+                  nativeTurnKey: "drain-subagent-turn",
+                  formatVersion: 1,
+                },
+                input: [{ type: "text" as const, text: "Inspect files" }],
+                items: [],
+                outcome: { status: "unknown" as const, reason: "Background work" },
+              },
+            ],
+          },
+        })),
+      },
+    });
+    const fixture = createFixture({
+      externalAdapters: new Map([["pi", adapter]]) as ReadonlyMap<
+        ExternalHarnessId,
+        FakeHarnessAdapter
+      >,
+    });
+    try {
+      const threadId = await startPiThread(fixture);
+      const turnId = await startPiTurn(fixture, threadId);
+      const session = adapter.sessions[0];
+      if (!session) throw new Error("Fake Pi Session was not opened");
+      await fixture.collector.waitFor((message) => turnEvent(message, "turn/started", turnId));
+      const childStarted = fixture.collector.waitFor(
+        (message) =>
+          method(message, "thread/started") &&
+          (messageParams(message).thread as JsonObject | undefined)?.parentThreadId === threadId,
+      );
+      const itemId = session.startSubagentDelegation({
+        subagentId: "drain-subagent-call",
+        nativeSubagentId: "native-drain-subagent",
+        description: "Inspect files",
+        background: true,
+        status: "running",
+      });
+      const childId = (messageParams(await childStarted).thread as JsonObject).id as string;
+      writeRequest(fixture.desktopInput, {
+        id: 96,
+        method: "thread/resume",
+        params: { threadId: childId, excludeTurns: true },
+      });
+      await fixture.collector.waitFor((message) => requestId(message, 96));
+      session.completeItem(itemId, { status: "succeeded" });
+      session.succeedTurn();
+      await fixture.collector.waitFor((message) => turnEvent(message, "turn/completed", turnId));
+
+      fixture.host.disconnect();
+      const beforeSettled = await Promise.race([
+        fixture.running.then(() => "settled" as const),
+        new Promise<"pending">((resolve) => setTimeout(() => resolve("pending"), 100)),
+      ]);
+      // Unlike a background command, a running Subagent still holds the drain.
+      expect(beforeSettled).toBe("pending");
+    } finally {
+      fixture.host.close();
+      fixture.desktopInput.end();
+      await fixture.running;
+      rmSync(fixture.mappingStoreDirectory, { recursive: true, force: true });
+    }
+  });
+
   it("preserves an external Turn and rejects official retries after backend failure", async () => {
     const fixture = createFixture();
     try {

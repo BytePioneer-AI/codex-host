@@ -553,6 +553,8 @@ export class AppServerHost {
   #writer: OrderedWriter;
   #subagentThreadStatuses = new Map<string, "active" | "idle">();
   #runningSubagentsByParent = new Map<string, Set<string>>();
+  /** Read-only children that are native background commands rather than Subagents. */
+  #backgroundTaskChildIds = new Set<string>();
   #pendingExternalCommandRequests = new Set<string>();
   #closeRequested = false;
   readonly #pluginLoadAbort = new AbortController();
@@ -873,10 +875,19 @@ export class AppServerHost {
       this.#externalSteering.hasPending() ||
       this.#pendingOfficialTurnStarts.size > 0 ||
       this.#activeOfficialTurns.size > 0 ||
-      this.#runningSubagentsByParent.size > 0 ||
+      // Background commands can outlive every Turn (dev servers, watchers); they
+      // keep their Session from idle release but do not hold the disconnect drain,
+      // whether or not their read-only child is loaded.
+      [...this.#runningSubagentsByParent.values()].some((children) =>
+        [...children].some((child) => !this.#backgroundTaskChildIds.has(child)),
+      ) ||
       this.#externalRuntime
         .values()
-        .some((thread) => thread.running || thread.activeTurnId !== null)
+        .some(
+          (thread) =>
+            !thread.record.subagent?.nativeBackgroundTaskId &&
+            (thread.running || thread.activeTurnId !== null),
+        )
     );
   }
 
@@ -4112,6 +4123,7 @@ export class AppServerHost {
   async #projectBackgroundTask(parent: ExternalThread, task: HostBackgroundTask): Promise<void> {
     const record = await this.#repository.materializeBackgroundTask(parent.record, task);
     if (!record) return;
+    this.#backgroundTaskChildIds.add(record.hostThreadId);
     const status = task.status === "running" ? "active" : "idle";
     if (status === "idle" && this.#subagentThreadStatuses.get(record.hostThreadId) === "idle") {
       // A native result may supersede an earlier `unknown` ending.

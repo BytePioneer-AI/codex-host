@@ -25,7 +25,7 @@ Claude Code 的后台 Bash 任务（`run_in_background` 或原生后台化，`ta
 - Transport 通过 Thread 事件通道直接交给 Session，不进入 Turn 批次；Session 发出公共 `backgroundTask.changed`，并保存本 Session 的观测事实供详情读取。
 - 详情由 `ClaudeCodeAdapter.backgroundTasks.readSnapshot` 提供：优先使用活 Session 的事实；没有时从原生 transcript 取 Bash 命令、输出路径和已送达的通知；通知只认 `origin.kind: "task-notification"` 的原生 envelope，且 `tool-use-id` 必须是已观测的 Bash 调用，普通用户文本不影响状态或路径。输出文件只在 Adapter 读取，按工具输出上限读取末尾。
 - 公共契约（`@codexhost/harness-adapter`）区分后台任务与子 Agent：任务 ID 不进入 `nativeSubagentId`，也不交给 Subagent transcript 读取。历史 Item 结果可为 `running`/`unknown`，投影为 `inProgress`/`completed`，不附带退出码。
-- Host 复用只读子节点（列表、`thread/started`、状态通知、拒绝输入、运行中子节点计数）。MappingStore 子节点记录用 `nativeBackgroundTaskId`（与 `nativeSubagentId` 二选一），只存定位元数据，不存输出。运行中的后台命令计入父 Thread 的运行中子节点，因此空闲释放显示 `busy/background`，不会释放正在运行任务的 Session。
+- Host 复用只读子节点（列表、`thread/started`、状态通知、拒绝输入、运行中子节点计数）。MappingStore 子节点记录用 `nativeBackgroundTaskId`（与 `nativeSubagentId` 二选一），只存定位元数据，不存输出。运行中的后台命令计入父 Thread 的运行中子节点，因此空闲释放显示 `busy/background`，不会释放正在运行任务的 Session。Desktop 断开后的活动工作排空只等待 Turn 和 Subagent，不等待后台命令：开发服务器、`tail -f` 等命令可以一直运行，不能让 Host 无限等待关闭。
 
 ## 验证
 

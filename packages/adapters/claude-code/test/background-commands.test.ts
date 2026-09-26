@@ -239,6 +239,12 @@ describe("Claude background command detail", () => {
         text: "BACKGROUND_DONE\n",
         truncated: true,
       });
+      const multibyte = path.join(directory, "multibyte.output");
+      writeFileSync(multibyte, "中b");
+      expect(await readClaudeBackgroundOutput(multibyte, 3)).toEqual({
+        text: "b",
+        truncated: true,
+      });
       const command = {
         task: {
           kind: "command" as const,

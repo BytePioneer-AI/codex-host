@@ -110,6 +110,7 @@ export function readWindowsShortcutTarget(filePath: string): string | undefined 
  */
 export function listWindowsInstallExecutables(
   environment: NodeJS.ProcessEnv = process.env,
+  isExecutable: (path: string) => boolean = () => false,
 ): string[] {
   if (process.platform !== "win32") return [];
   const found: string[] = [];
@@ -123,7 +124,7 @@ export function listWindowsInstallExecutables(
     seen.add(key);
     found.push(trimmed);
   };
-  for (const candidate of listUninstallDisplayIconExecutables()) add(candidate);
+  for (const candidate of listUninstallDisplayIconExecutables(isExecutable)) add(candidate);
   for (const candidate of listStartMenuShortcutExecutables(environment)) add(candidate);
   return found;
 }
@@ -188,7 +189,8 @@ export function resolveWorkBuddyBundle(
 
   if (!explicitExecutable && platform === "win32") {
     const installs =
-      dependencies.windowsInstallExecutables?.() ?? listWindowsInstallExecutables(environment);
+      dependencies.windowsInstallExecutables?.() ??
+      listWindowsInstallExecutables(environment, isExecutable);
     for (const candidate of installs) {
       if (paths.extname(candidate).toLowerCase() !== ".exe") continue;
       if (!WORKBUDDY_EXE_BASENAME.test(paths.basename(candidate))) continue;
@@ -215,7 +217,7 @@ function pairWorkBuddyExecutable(
   return { executable: candidate, cli };
 }
 
-function listUninstallDisplayIconExecutables(): string[] {
+function listUninstallDisplayIconExecutables(isExecutable: (path: string) => boolean): string[] {
   const found: string[] = [];
   for (const root of UNINSTALL_REGISTRY_ROOTS) {
     let output = "";
@@ -229,9 +231,15 @@ function listUninstallDisplayIconExecutables(): string[] {
     } catch {
       continue;
     }
-    found.push(...parseUninstallRegistryOutput(output));
-    // Stop after the first hive that yields a WorkBuddy EXE (avoid 4× ~2s worst case).
-    if (found.length > 0) return found;
+    const fromHive = parseUninstallRegistryOutput(output);
+    if (fromHive.length === 0) continue;
+    const pairable = fromHive.filter((exe) =>
+      Boolean(pairWorkBuddyExecutable(exe, "win32", isExecutable)),
+    );
+    // Short-circuit only after a valid EXE+CLI pair so a stale HKCU candidate
+    // cannot mask a later HKLM install (avoid 4× ~2s when a hive already pairs).
+    if (pairable.length > 0) return pairable;
+    found.push(...fromHive);
   }
   return found;
 }

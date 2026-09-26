@@ -332,7 +332,8 @@ describe("Shell Link LocalBasePath + CommonPathSuffix", () => {
       "D:\\程序\\WorkBuddy\\WorkBuddyAI.exe",
     );
     // Fixed UTF-8 decoding would corrupt the GBK path.
-    expect(parseWindowsShortcutTargetBuffer(buffer)).not.toBe(
+    const decodeUtf8 = (bytes: Uint8Array) => new TextDecoder("utf-8").decode(bytes);
+    expect(parseWindowsShortcutTargetBuffer(buffer, { decodeAnsi: decodeUtf8 })).not.toBe(
       "D:\\程序\\WorkBuddy\\WorkBuddyAI.exe",
     );
   });
@@ -365,7 +366,8 @@ function buildMinimalShellLink(options: {
   unicodeBase?: string;
   unicodeSuffix?: string;
 }): Buffer {
-  const hasUnicode = options.unicodeBase !== undefined;
+  const unicodeBaseText = options.unicodeBase;
+  const hasUnicode = unicodeBaseText !== undefined;
   const headerSize = 0x4c;
   const linkInfoHeaderSize = hasUnicode ? 0x24 : 0x1c;
   const volumeId = Buffer.alloc(0x11);
@@ -377,9 +379,10 @@ function buildMinimalShellLink(options: {
 
   const ansiBase = Buffer.concat([options.ansiBase, Buffer.from([0])]);
   const ansiSuffix = Buffer.concat([options.ansiSuffix, Buffer.from([0])]);
-  const unicodeBase = hasUnicode
-    ? Buffer.concat([Buffer.from(options.unicodeBase!, "utf16le"), Buffer.alloc(2)])
-    : Buffer.alloc(0);
+  const unicodeBase =
+    unicodeBaseText !== undefined
+      ? Buffer.concat([Buffer.from(unicodeBaseText, "utf16le"), Buffer.alloc(2)])
+      : Buffer.alloc(0);
   const unicodeSuffix = hasUnicode
     ? Buffer.concat([Buffer.from(options.unicodeSuffix ?? "", "utf16le"), Buffer.alloc(2)])
     : Buffer.alloc(0);

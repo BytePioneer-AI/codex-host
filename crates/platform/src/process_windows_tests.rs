@@ -4,7 +4,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use super::{
-    belongs_to_current_parent, descendant_process_snapshots, process_instance_exists,
+    descendant_process_snapshots, descendant_process_snapshots_with, process_instance_exists,
     process_snapshot, running_executable_snapshots, running_executable_snapshots_with,
     windows_descendant_ids, windows_executable_key,
 };
@@ -226,21 +226,132 @@ fn terminates_captured_descendants_after_the_windows_root_exits() {
     }
 }
 
-#[test]
-fn rejects_an_old_orphan_after_its_parent_pid_is_reused() {
-    let parent = super::ProcessSnapshot {
-        id: 42,
-        parent_id: 1,
-        process_group_id: 42,
-        executable: "parent.exe".into(),
-        started_at_micros: 200,
-    };
-    let old_orphan = super::ProcessSnapshot {
-        id: 43,
-        parent_id: 42,
-        process_group_id: 43,
-        executable: "old-child.exe".into(),
+fn assert_changed_parent_aborts_capture() {
+    let root = ProcessSnapshot {
+        id: 1,
+        parent_id: 0,
+        process_group_id: 1,
+        executable: "root.exe".into(),
         started_at_micros: 100,
     };
-    assert!(!belongs_to_current_parent(&parent, &old_orphan));
+    let child = ProcessSnapshot {
+        id: 2,
+        parent_id: 1,
+        process_group_id: 2,
+        executable: "child.exe".into(),
+        started_at_micros: 200,
+    };
+    let suspicious = ProcessSnapshot {
+        id: 3,
+        parent_id: 9,
+        process_group_id: 3,
+        executable: "grandchild.exe".into(),
+        started_at_micros: 300,
+    };
+    let entries = [
+        entry(1, 0, "root.exe"),
+        entry(2, 1, "child.exe"),
+        entry(3, 2, "grandchild.exe"),
+    ];
+
+    let error = descendant_process_snapshots_with(
+        &root,
+        &[],
+        &entries,
+        |process_id| match process_id {
+            2 => Ok(child.clone()),
+            3 => Ok(suspicious.clone()),
+            _ => panic!("unexpected process snapshot"),
+        },
+        |_, _| Ok(true),
+        |_| panic!("all process snapshots are readable"),
+    )
+    .expect_err("an uncertain edge must abort the entire capture, including known descendants");
+
+    assert!(matches!(error, PlatformError::NotFound(message) if message.contains("PID 3")));
+}
+
+#[test]
+fn rejects_a_changed_toolhelp_parent_during_descendant_capture() {
+    assert_changed_parent_aborts_capture();
+}
+
+fn capture_with_old_orphan(parent_current: bool) -> Result<Vec<ProcessSnapshot>, PlatformError> {
+    let root = ProcessSnapshot {
+        id: 1,
+        parent_id: 0,
+        process_group_id: 1,
+        executable: "root.exe".into(),
+        started_at_micros: 100,
+    };
+    let child = ProcessSnapshot {
+        id: 2,
+        parent_id: 1,
+        process_group_id: 2,
+        executable: "child.exe".into(),
+        started_at_micros: 200,
+    };
+    let old_orphan = ProcessSnapshot {
+        id: 3,
+        parent_id: 2,
+        process_group_id: 3,
+        executable: "old-orphan.exe".into(),
+        started_at_micros: 150,
+    };
+    let current_grandchild = ProcessSnapshot {
+        id: 4,
+        parent_id: 2,
+        process_group_id: 4,
+        executable: "current-grandchild.exe".into(),
+        started_at_micros: 300,
+    };
+    let entries = [
+        entry(1, 0, "root.exe"),
+        entry(2, 1, "child.exe"),
+        entry(3, 2, "old-orphan.exe"),
+        entry(4, 2, "current-grandchild.exe"),
+    ];
+
+    descendant_process_snapshots_with(
+        &root,
+        &[Path::new("child.exe"), Path::new("current-grandchild.exe")],
+        &entries,
+        |process_id| match process_id {
+            2 => Ok(child.clone()),
+            3 => Ok(old_orphan.clone()),
+            4 => Ok(current_grandchild.clone()),
+            _ => panic!("unexpected process snapshot"),
+        },
+        |process_id, started_at_micros| match process_id {
+            1 => {
+                assert_eq!(started_at_micros, 100);
+                Ok(true)
+            }
+            2 => {
+                assert_eq!(started_at_micros, 200);
+                Ok(parent_current)
+            }
+            _ => panic!("unexpected parent liveness check"),
+        },
+        |_| panic!("all process snapshots are readable"),
+    )
+}
+
+#[test]
+fn skips_an_old_orphan_without_losing_current_descendants() {
+    let captured = capture_with_old_orphan(true).expect("capture current descendants");
+    assert_eq!(
+        captured
+            .iter()
+            .map(|process| process.id)
+            .collect::<Vec<_>>(),
+        [2, 4]
+    );
+}
+
+#[test]
+fn rejects_an_old_orphan_when_the_known_parent_has_exited() {
+    let error = capture_with_old_orphan(false)
+        .expect_err("a dead known parent prevents safe descendant capture");
+    assert!(matches!(error, PlatformError::NotFound(message) if message.contains("PID 2")));
 }

@@ -709,11 +709,6 @@ fn windows_descendant_ids(
     owned.into_iter().skip(1).collect()
 }
 
-#[cfg(target_os = "windows")]
-fn belongs_to_current_parent(parent: &ProcessSnapshot, child: &ProcessSnapshot) -> bool {
-    child.parent_id == parent.id && child.started_at_micros >= parent.started_at_micros
-}
-
 /// Capture the complete Desktop descendant tree while ancestry is still observable.
 /// Every parent edge is checked against a live process instance, so an old
 /// orphan with a reused parent PID cannot be claimed and terminated.
@@ -729,6 +724,29 @@ pub fn descendant_process_snapshots(
         ));
     }
     let entries = windows_process::process_entries()?;
+    descendant_process_snapshots_with(
+        root,
+        executables,
+        &entries,
+        process_snapshot,
+        process_instance_exists,
+        |process_id| {
+            Ok(windows_process::process_entries()?
+                .iter()
+                .any(|entry| entry.id == process_id))
+        },
+    )
+}
+
+#[cfg(target_os = "windows")]
+fn descendant_process_snapshots_with(
+    root: &ProcessSnapshot,
+    executables: &[&Path],
+    entries: &[windows_process::ProcessEntry],
+    mut snapshot: impl FnMut(u32) -> Result<ProcessSnapshot, PlatformError>,
+    mut is_current: impl FnMut(u32, u64) -> Result<bool, PlatformError>,
+    mut is_listed: impl FnMut(u32) -> Result<bool, PlatformError>,
+) -> Result<Vec<ProcessSnapshot>, PlatformError> {
     let expected = executables
         .iter()
         .map(|path| windows_executable_key(path))
@@ -737,35 +755,39 @@ pub fn descendant_process_snapshots(
     let mut snapshots = Vec::new();
     loop {
         let mut changed = false;
-        for process in &entries {
+        for process in entries {
             if known.contains_key(&process.id) {
                 continue;
             }
             let Some(parent) = known.get(&process.parent_id) else {
                 continue;
             };
-            let snapshot = match process_snapshot(process.id) {
+            let snapshot = match snapshot(process.id) {
                 Ok(snapshot) => snapshot,
                 Err(error) => {
-                    if windows_process::process_entries()?
-                        .iter()
-                        .any(|entry| entry.id == process.id)
-                    {
+                    if is_listed(process.id)? {
                         return Err(error);
                     }
                     continue;
                 }
             };
-            if snapshot.parent_id != process.parent_id
-                || !belongs_to_current_parent(parent, &snapshot)
-            {
-                continue;
+            if snapshot.parent_id != process.parent_id {
+                return Err(PlatformError::NotFound(format!(
+                    "managed Desktop parent edge for PID {} changed during descendant capture",
+                    process.id
+                )));
             }
-            if !process_instance_exists(parent.id, parent.started_at_micros)? {
+            if !is_current(parent.id, parent.started_at_micros)? {
                 return Err(PlatformError::NotFound(format!(
                     "managed Desktop parent PID {} exited during descendant capture",
                     parent.id
                 )));
+            }
+            // Windows retains the old parent PID after its owner exits. If
+            // that PID now belongs to this newer parent, the older process
+            // cannot be part of the current Desktop tree.
+            if snapshot.started_at_micros < parent.started_at_micros {
+                continue;
             }
             known.insert(snapshot.id, snapshot.clone());
             snapshots.push(snapshot);

@@ -135,6 +135,18 @@ export interface TurnStartCommand {
   input: HostTextInput[];
 }
 
+/**
+ * Native same-Turn input, sent only when `capabilities.steer` is true. The Adapter hands it to the
+ * Harness's own insertion primitive, which takes it at its safe boundary without cancelling the
+ * Turn, and succeeds once the Harness accepts it. The Host shows the accepted input live; history
+ * snapshots group it however the native history does.
+ */
+export interface TurnSteerCommand {
+  type: "turn.steer";
+  turnId: HostTurnId;
+  input: HostTextInput[];
+}
+
 export interface TurnCancelCommand {
   type: "turn.cancel";
   turnId: HostTurnId;
@@ -249,6 +261,7 @@ export interface HarnessCommandCapability {
 
 export type HostCommand =
   | TurnStartCommand
+  | TurnSteerCommand
   | TurnCancelCommand
   | InteractionRespondCommand
   | ModelSelectCommand
@@ -257,6 +270,10 @@ export type HostCommand =
 
 export interface TurnStartAccepted {
   turnId: HostTurnId;
+}
+
+export interface TurnSteerAccepted {
+  accepted: true;
 }
 
 export interface TurnCancelAccepted {
@@ -285,6 +302,13 @@ export interface HostAgentMessageItem {
   text: string;
   /** Omit when the Harness cannot distinguish progress from its final answer. */
   phase?: "commentary" | "final_answer";
+}
+
+/** User input steered into a running Turn; the Host publishes it when the Harness accepts it. */
+export interface HostUserMessageItem {
+  type: "userMessage";
+  itemId: HostItemId;
+  input: HostTextInput[];
 }
 
 export interface HostReasoningItem {
@@ -367,6 +391,7 @@ export interface HostSubagentDelegationItem {
 }
 
 export type HostItem =
+  | HostUserMessageItem
   | HostAgentMessageItem
   | HostReasoningItem
   | HostContextCompactionItem
@@ -521,6 +546,7 @@ export interface HarnessSession {
   refreshUsage?(): Promise<void>;
   readSnapshot(): Promise<HarnessResult<HostThreadSnapshot>>;
   execute(command: TurnStartCommand): Promise<HarnessResult<TurnStartAccepted>>;
+  execute(command: TurnSteerCommand): Promise<HarnessResult<TurnSteerAccepted>>;
   execute(command: TurnCancelCommand): Promise<HarnessResult<TurnCancelAccepted>>;
   execute(command: InteractionRespondCommand): Promise<HarnessResult<InteractionRespondAccepted>>;
   execute(command: ModelSelectCommand): Promise<HarnessResult<ModelSelectCompleted>>;

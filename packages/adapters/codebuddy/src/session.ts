@@ -24,6 +24,8 @@ import type {
   TurnOutcome,
   TurnStartAccepted,
   TurnStartCommand,
+  TurnSteerAccepted,
+  TurnSteerCommand,
 } from "@codexhost/harness-adapter";
 import { HarnessOutputChannel } from "@codexhost/harness-adapter";
 import {
@@ -65,6 +67,7 @@ import {
   isExcludedInvocation,
   nativeCommandsEnabled,
 } from "./slash-commands.js";
+import { codeBuddySupportsSteer } from "./steer.js";
 
 type SessionInput = Extract<OpenSessionInput, { kind: "create" | "resume" }>;
 export type CodeBuddyHistoryReader = typeof readNativeHistory;
@@ -77,6 +80,8 @@ interface ActiveTurn {
   nativeCommand: boolean;
   cancelled: boolean;
   done: boolean;
+  /** Steers this Turn's native process has already accepted. Not persisted. */
+  acceptedSteers: number;
 }
 
 export class CodeBuddySession implements HarnessSession {
@@ -224,6 +229,8 @@ export class CodeBuddySession implements HarnessSession {
       rewind = pendingNativeHistoryRewind(history);
     }
     await this.#client.initialize();
+    if (codeBuddySupportsSteer(this.#client.nativeVersion)) this.capabilities.steer = true;
+    else delete this.capabilities.steer;
     const opened = await this.#client.open(this.input.cwd, this.#ref?.nativeSessionId);
     const sessionId = this.#ref?.nativeSessionId ?? text(opened.sessionId);
     if (!sessionId || (opened.sessionId && opened.sessionId !== sessionId))
@@ -374,6 +381,7 @@ export class CodeBuddySession implements HarnessSession {
   }
 
   execute(command: TurnStartCommand): Promise<HarnessResult<TurnStartAccepted>>;
+  execute(command: TurnSteerCommand): Promise<HarnessResult<TurnSteerAccepted>>;
   execute(command: TurnCancelCommand): Promise<HarnessResult<TurnCancelAccepted>>;
   execute(command: InteractionRespondCommand): Promise<HarnessResult<InteractionRespondAccepted>>;
   execute(command: ModelSelectCommand): Promise<HarnessResult<ModelSelectCompleted>>;
@@ -385,7 +393,11 @@ export class CodeBuddySession implements HarnessSession {
     command: HostCommand,
   ): Promise<
     HarnessResult<
-      TurnStartAccepted | TurnCancelAccepted | InteractionRespondAccepted | ModelSelectCompleted
+      | TurnStartAccepted
+      | TurnSteerAccepted
+      | TurnCancelAccepted
+      | InteractionRespondAccepted
+      | ModelSelectCompleted
     >
   > {
     const invocation =
@@ -410,12 +422,17 @@ export class CodeBuddySession implements HarnessSession {
     nativeCommand = false,
   ): Promise<
     HarnessResult<
-      TurnStartAccepted | TurnCancelAccepted | InteractionRespondAccepted | ModelSelectCompleted
+      | TurnStartAccepted
+      | TurnSteerAccepted
+      | TurnCancelAccepted
+      | InteractionRespondAccepted
+      | ModelSelectCompleted
     >
   > {
     if (this.#closed || this.#fault)
       return failure("invalidState", "Session is closed or faulted", this.profile);
     if (command.type === "interaction.respond") return this.#interactions.respond(command);
+    if (command.type === "turn.steer") return this.#steer(command);
     if (command.type === "turn.cancel") {
       const active = this.#active;
       if (!active || active.command.turnId !== command.turnId || !this.#ref)
@@ -473,6 +490,7 @@ export class CodeBuddySession implements HarnessSession {
           nativeCommand,
           cancelled: false,
           done: false,
+          acceptedSteers: 0,
           completion: Promise.resolve(),
         };
         this.#active = active;
@@ -500,6 +518,38 @@ export class CodeBuddySession implements HarnessSession {
     } finally {
       this.#busy = false;
     }
+  }
+
+  async #steer(command: TurnSteerCommand): Promise<HarnessResult<TurnSteerAccepted>> {
+    const steer = this.#client.steer?.bind(this.#client);
+    if (!this.capabilities.steer || !steer)
+      return failure(
+        "unsupported",
+        "This CodeBuddy build cannot steer the active Turn",
+        this.profile,
+      );
+    const active = this.#active;
+    if (!active || active.done || active.command.turnId !== command.turnId || !this.#ref)
+      return failure("invalidState", "Steer target is not the active Turn", this.profile);
+    const body = command.input.map((item) => item.text).join("\n");
+    if (!body.trim())
+      return failure("invalidRequest", "Steer requires nonempty text", this.profile);
+    let result;
+    try {
+      result = await steer(this.#ref.nativeSessionId, body);
+    } catch (error) {
+      return { ok: false, error: nativeError(error, this.profile) };
+    }
+    if (!result.steered)
+      return failure(
+        "invalidState",
+        result.reason === "stale"
+          ? "CodeBuddy rejected steer for a different request"
+          : "CodeBuddy is not accepting steer",
+        this.profile,
+      );
+    if (this.#active === active) active.acceptedSteers += 1;
+    return { ok: true, value: { accepted: true } };
   }
 
   async #run(active: ActiveTurn) {
@@ -536,9 +586,13 @@ export class CodeBuddySession implements HarnessSession {
       const added = snapshot.turns.filter(
         (turn) => !active.before.has(turn.nativeTurnRef.nativeTurnKey),
       );
+      // Each persisted user row is already its own native Turn. An accepted steer adds one.
+      const expectedNativeTurns = 1 + active.acceptedSteers;
       if (
-        added.length > 1 ||
-        (!active.nativeCommand && outcome.status === "succeeded" && added.length !== 1)
+        added.length > expectedNativeTurns ||
+        (!active.nativeCommand &&
+          outcome.status === "succeeded" &&
+          added.length !== expectedNativeTurns)
       )
         throw new CodeBuddyError(
           "protocolError",

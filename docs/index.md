@@ -19,7 +19,7 @@
 | [`architecture/harness-command-integration.md`](architecture/harness-command-integration.md) | Harness 原生命令的 Adapter、Host、Renderer 边界；新增命令能力时阅读。 |
 | [`architecture/harness-executable-discovery.md`](architecture/harness-executable-discovery.md) | Harness CLI 的跨平台发现、连接页安装指引和 DSH 特殊连接范围；修改安装指引、发现或启动逻辑时阅读。 |
 | [`architecture/harness-session-import.md`](architecture/harness-session-import.md) | Pi 与 DSH 本地会话导入契约和恢复边界；扩展导入能力时阅读。 |
-| [`architecture/external-thread-steering.md`](architecture/external-thread-steering.md) | 外部 Thread 取消旧 Turn 后启动新 Turn 的“调整方向”语义；修改 steering 时阅读。 |
+| [`architecture/external-thread-steering.md`](architecture/external-thread-steering.md) | 外部 Thread 按 Session 能力选择原生同轮插入或停止后重发；修改 steering 时阅读。 |
 | [`architecture/app-server-transport.md`](architecture/app-server-transport.md) | 原生大历史响应的 WebSocket 与 JSONL 传输边界；排查任务加载、消息大小和转发性能时阅读。 |
 | [`architecture/acp-layer-follow-up.md`](architecture/acp-layer-follow-up.md) | 共享 ACP 层的抽取条件与边界；出现第二个适合共享实现的生产 ACP Harness 时阅读。 |
 
@@ -41,6 +41,13 @@
 | --- | --- |
 | [`harnesses/claude-code/claude-code-plan-mode.md`](harnesses/claude-code/claude-code-plan-mode.md) | Claude Code 规划模式、计划退出确认与权限状态边界；修改 Plan Mode 时阅读。 |
 | [`harnesses/claude-code/claude-code-edit-recovery.md`](harnesses/claude-code/claude-code-edit-recovery.md) | 最后一条消息编辑后的独立 Session、空历史保留和关闭语义；修改编辑恢复时阅读。 |
+| [`harnesses/claude-code/claude-code-steer.md`](harnesses/claude-code/claude-code-steer.md) | Claude Code `priority: "next"` 同轮插入、接受条件和历史分轮；修改运行中插入时阅读。 |
+
+### Qoder
+
+| 文档 | 内容与阅读时机 |
+| --- | --- |
+| [`harnesses/qoder/qoder-steer.md`](harnesses/qoder/qoder-steer.md) | Qoder 与 Qoder CN 的 `priority: "next"` 同轮插入及未实机验证的声明依据；修改运行中插入时阅读。 |
 
 ### CodeBuddy、WorkBuddy 与 Cursor
 
@@ -54,14 +61,14 @@
 
 | 文档 | 内容与阅读时机 |
 | --- | --- |
-| [`harnesses/deepseek/dsh-edit-recovery.md`](harnesses/deepseek/dsh-edit-recovery.md) | DSH 原生停止确认、消息修订、V0/V3/V4 Fork 和版本化 checkpoint；修改恢复流程时阅读。 |
+| [`harnesses/deepseek/dsh-edit-recovery.md`](harnesses/deepseek/dsh-edit-recovery.md) | DSH 原生停止确认、消息修订、V0/V3/V4 Fork、同轮插入和版本化 checkpoint；修改恢复或插入流程时阅读。 |
 | [`harnesses/deepseek/dsh-015rc1-validation.md`](harnesses/deepseek/dsh-015rc1-validation.md) | DSH 012/015/017 版本、真实 CLI 生命周期和协议验证证据；变更版本范围或 Gate 时阅读。 |
 
 ### Hermes
 
 | 文档 | 内容与阅读时机 |
 | --- | --- |
-| [`harnesses/hermes/hermes-capabilities.md`](harnesses/hermes/hermes-capabilities.md) | Hermes gateway 提问、Thinking、精确派生、协作发现及旧 ACP 的原生能力边界；维护 Hermes Adapter 时阅读。 |
+| [`harnesses/hermes/hermes-capabilities.md`](harnesses/hermes/hermes-capabilities.md) | Hermes gateway 提问、Thinking、精确派生、同轮插入、协作发现及旧 ACP 的原生能力边界；维护 Hermes Adapter 时阅读。 |
 
 ### OpenCode 与 Pi
 
@@ -71,18 +78,27 @@
 | [`harnesses/opencode/opencode-edit-recovery.md`](harnesses/opencode/opencode-edit-recovery.md) | OpenCode 原生 Fork 编辑恢复和取消终态语义；修改编辑或取消时阅读。 |
 | [`harnesses/pi/pi-edit-recovery.md`](harnesses/pi/pi-edit-recovery.md) | Pi 空历史编辑、原生文件发布和生命周期 Gate；修改 Pi 恢复时阅读。 |
 | [`harnesses/pi/pi-subagents.md`](harnesses/pi/pi-subagents.md) | Pi 的 pi-subagents 异步状态、同步 workflow 子任务、记录读取与适配边界。 |
+| [`harnesses/pi/pi-steer.md`](harnesses/pi/pi-steer.md) | Pi RPC `steer` 的同轮插入、历史分轮和实机验证记录。 |
 
 ### OMP
 
 | 文档 | 内容与阅读时机 |
 | --- | --- |
 | [`harnesses/omp/omp-interactions.md`](harnesses/omp/omp-interactions.md) | OMP 原生提问、审批、选项说明和超时语义；维护 OMP 交互时阅读。 |
+| [`harnesses/omp/omp-steer.md`](harnesses/omp/omp-steer.md) | OMP RPC `steer` 的同轮插入；未实机验证。 |
 
 ### Grok
 
 | 文档 | 内容与阅读时机 |
 | --- | --- |
 | [`harnesses/grok/subagent-status-and-model.md`](harnesses/grok/subagent-status-and-model.md) | Grok Subagent 状态、Model、Transcript 与 Desktop 投影；修改 Grok Subagent 时阅读。 |
+| [`harnesses/grok/native-steer.md`](harnesses/grok/native-steer.md) | Grok ACP `_x.ai/interject` 的同轮插入和历史分轮；维护 Grok Adapter 的插队行为时阅读。 |
+
+### Kimi Code
+
+| 文档 | 内容与阅读时机 |
+| --- | --- |
+| [`harnesses/kimi-code/native-steer.md`](harnesses/kimi-code/native-steer.md) | Kimi Code ACP 没有同轮插入，以及因此不声明 steer 的依据；维护 Kimi Adapter 的插队行为时阅读。 |
 
 ## 账号与 Desktop 产品接入
 

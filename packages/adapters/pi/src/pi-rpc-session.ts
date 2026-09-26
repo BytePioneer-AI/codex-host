@@ -760,6 +760,14 @@ export class PiRpcSession {
     }
   }
 
+  async steer(message: string): Promise<void> {
+    if (!this.#child || !this.#state || this.#closed || this.#failed) {
+      throw new Error("Pi RPC Session is unavailable");
+    }
+    if (message.length === 0) throw new Error("Pi steer text must not be empty");
+    await this.#send("steer", { message });
+  }
+
   async runTurn(text: string, onEvent: (event: PiTurnEvent) => void): Promise<PiTurnResult> {
     if (!this.#child || !this.#state || this.#closed || this.#failed) {
       throw new Error("Pi RPC Session is unavailable");

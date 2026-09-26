@@ -39,6 +39,8 @@ import {
   type TurnOutcome,
   type TurnStartAccepted,
   type TurnStartCommand,
+  type TurnSteerAccepted,
+  type TurnSteerCommand,
 } from "@codexhost/harness-adapter";
 import {
   harnessIdSchema,
@@ -104,7 +106,11 @@ import {
   type ModernJournalOptions,
   type ModernJournalRemote,
 } from "./journal.js";
-import { DEEPSEEK_V012_PROFILE, type DeepSeekModernProfile } from "../profiles/profile.js";
+import {
+  DEEPSEEK_V012_PROFILE,
+  deepSeekNativeSteerSupported,
+  type DeepSeekModernProfile,
+} from "../profiles/profile.js";
 import { ModernRemoteConnectionError } from "./remote-connection.js";
 import {
   redactModernCredential,
@@ -125,6 +131,7 @@ const DSH_COMPACT_CANCELLED = "Compaction cancelled.";
 
 export function modernSessionCapabilities(
   permissionModes: HarnessPermissionModeCatalog | null,
+  version: string,
 ): HarnessSessionCapabilities {
   return {
     configuration: {
@@ -135,6 +142,7 @@ export function modernSessionCapabilities(
     },
     history: { fork: true, forkAcrossCwd: false, rollbackLastTurn: true },
     autonomousTurns: { observe: true },
+    ...(deepSeekNativeSteerSupported(version) ? { steer: true as const } : {}),
   };
 }
 
@@ -162,6 +170,15 @@ interface PendingPrompt {
   grace: PromptCorrelationGrace | undefined;
   correlationTimer: ReturnType<typeof setTimeout> | undefined;
   buffer?: NativeTurnBuffer;
+}
+
+interface PendingSteer {
+  readonly requestId: string;
+  readonly done: Promise<void>;
+  target?: "next-step" | "next-turn";
+  spliced: boolean;
+  settled: boolean;
+  resolve: () => void;
 }
 
 type PromptGraceResolution =
@@ -326,7 +343,9 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
   readonly #events: ModernJournalEvent[];
   readonly #journalLifetime = new AbortController();
   readonly #pendingByRequestId = new Map<string, PendingPrompt>();
+  readonly #pendingSteers = new Map<string, PendingSteer>();
   readonly #boundRequestIds = new Set<string>();
+  readonly #steerRequestIds = new Set<string>();
   readonly #operationControllers = new Set<AbortController>();
   readonly #removeControlSubscriptions: (() => void)[];
   readonly #acceptedTurnIds = new Set<HostTurnId>();
@@ -434,7 +453,7 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
     this.#usage = this.initialUsage;
     this.#fallbackModel = configuration.state.effectiveModel as HarnessModelRef;
     this.#fallbackThinkingOptionId = configuration.state.effectiveThinkingOptionId;
-    this.capabilities = modernSessionCapabilities(this.#permissionModes);
+    this.capabilities = modernSessionCapabilities(this.#permissionModes, this.#profile.version);
     this.outputs = this.#channel.outputs;
     this.commands = {
       list: () => this.#listHarnessCommands(),
@@ -508,6 +527,7 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
   }
 
   execute(command: TurnStartCommand): Promise<HarnessResult<TurnStartAccepted>>;
+  execute(command: TurnSteerCommand): Promise<HarnessResult<TurnSteerAccepted>>;
   execute(command: TurnCancelCommand): Promise<HarnessResult<TurnCancelAccepted>>;
   execute(command: InteractionRespondCommand): Promise<HarnessResult<InteractionRespondAccepted>>;
   execute(command: ModelSelectCommand): Promise<HarnessResult<ModelSelectCompleted>>;
@@ -520,6 +540,7 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
   ): Promise<
     HarnessResult<
       | TurnStartAccepted
+      | TurnSteerAccepted
       | TurnCancelAccepted
       | InteractionRespondAccepted
       | ModelSelectCompleted
@@ -531,6 +552,8 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
     switch (command.type) {
       case "turn.start":
         return this.#start(command);
+      case "turn.steer":
+        return this.#steer(command);
       case "turn.cancel":
         return this.#cancel(command);
       case "interaction.respond":
@@ -1078,6 +1101,173 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
     } finally {
       this.#operationControllers.delete(abort);
     }
+  }
+
+  async #steer(command: TurnSteerCommand): Promise<HarnessResult<TurnSteerAccepted>> {
+    if (this.capabilities.steer !== true) {
+      return {
+        ok: false,
+        error: {
+          code: "unsupported",
+          message: "DeepSeek Harness cannot steer",
+          retryable: false,
+        },
+      };
+    }
+    const active = this.#active;
+    if (!active || active.terminal || active.turnId !== command.turnId) {
+      return { ok: false, error: invalidState("DeepSeek Harness Turn is not active") };
+    }
+    if (!command.input.some((part) => part.text.trim().length > 0)) {
+      return {
+        ok: false,
+        error: {
+          code: "invalidRequest",
+          message: "DeepSeek Harness steer text is empty",
+          retryable: false,
+        },
+      };
+    }
+    const requestId = this.#randomUUID();
+    if (
+      !requestId ||
+      this.#pendingByRequestId.has(requestId) ||
+      this.#boundRequestIds.has(requestId) ||
+      this.#steerRequestIds.has(requestId)
+    ) {
+      return {
+        ok: false,
+        error: {
+          code: "internalError",
+          message: "DeepSeek Harness request identity generation failed",
+          retryable: false,
+        },
+      };
+    }
+
+    const abort = new AbortController();
+    const pending = this.#registerSteer(requestId);
+    this.#operationControllers.add(abort);
+    try {
+      const response = await callAbortable(
+        this.#remote.call<unknown>(
+          "session/prompt",
+          {
+            request: {
+              requestId,
+              sessionId: this.#sessionId,
+              mode: "steer",
+              content: command.input.map(({ text }) => ({ type: "text", text })),
+            },
+          },
+          abort.signal,
+        ),
+        abort.signal,
+      );
+      if (!response.ok) return this.#rejectSteerRpc(pending, response.error);
+      if (!acceptedValue(response.value)) return this.#rejectSteerReceipt(pending);
+      return await this.#finishSteer(pending, active, command.turnId);
+    } catch (error) {
+      if (pending.spliced) return this.#faultAdmittedSteer();
+      this.#pendingSteers.delete(requestId);
+      if (this.#faulted) return { ok: false, error: this.#faulted };
+      if (this.#closed || this.#closing) return { ok: false, error: closedError() };
+      return {
+        ok: false,
+        error: unavailableError(error, "DeepSeek Harness session/prompt steer failed", false),
+      };
+    } finally {
+      this.#operationControllers.delete(abort);
+    }
+  }
+
+  #registerSteer(requestId: string): PendingSteer {
+    let settle: () => void = () => {};
+    const done = new Promise<void>((resolve) => {
+      settle = resolve;
+    });
+    const pending: PendingSteer = {
+      requestId,
+      done,
+      spliced: false,
+      settled: false,
+      resolve: () => {
+        if (pending.settled) return;
+        pending.settled = true;
+        settle();
+      },
+    };
+    this.#steerRequestIds.add(requestId);
+    this.#pendingSteers.set(requestId, pending);
+    return pending;
+  }
+
+  #rejectSteerRpc(
+    pending: PendingSteer,
+    failure: ModernRemoteFailure,
+  ): HarnessResult<TurnSteerAccepted> {
+    this.#pendingSteers.delete(pending.requestId);
+    if (pending.spliced) return this.#faultAdmittedSteer();
+    return { ok: false, error: steerRemoteFailure(failure) };
+  }
+
+  #rejectSteerReceipt(pending: PendingSteer): HarnessResult<TurnSteerAccepted> {
+    this.#pendingSteers.delete(pending.requestId);
+    const error: HarnessError = {
+      code: "protocolError",
+      message: "DeepSeek Harness session/prompt returned an invalid steer receipt",
+      retryable: false,
+    };
+    this.#fault(error);
+    return { ok: false, error: this.#faulted ?? error };
+  }
+
+  #faultAdmittedSteer(): HarnessResult<TurnSteerAccepted> {
+    const error: HarnessError = {
+      code: "protocolError",
+      message: "DeepSeek Harness session/prompt failed after steer admission",
+      retryable: false,
+    };
+    this.#fault(error);
+    return { ok: false, error: this.#faulted ?? error };
+  }
+
+  async #finishSteer(
+    pending: PendingSteer,
+    active: ActiveHostTurn,
+    turnId: HostTurnId,
+  ): Promise<HarnessResult<TurnSteerAccepted>> {
+    if (!pending.spliced) {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      await Promise.race([
+        pending.done,
+        new Promise<void>((resolve) => {
+          timer = setTimeout(resolve, this.#promptCorrelationGraceMs);
+        }),
+      ]);
+      if (timer) clearTimeout(timer);
+    }
+    this.#pendingSteers.delete(pending.requestId);
+    if (this.#faulted) return { ok: false, error: this.#faulted };
+    if (this.#closed || this.#closing) return { ok: false, error: closedError() };
+    if (this.#active !== active || active.terminal || active.turnId !== turnId) {
+      return { ok: false, error: invalidState("DeepSeek Harness Turn is not active") };
+    }
+    if (pending.target === "next-step") return { ok: true, value: { accepted: true } };
+    if (pending.target === "next-turn") {
+      return {
+        ok: false,
+        error: invalidState("DeepSeek Harness moved the steered input to the next Turn"),
+      };
+    }
+    return {
+      ok: false,
+      error: {
+        code: "protocolError",
+        message: "DeepSeek Harness steer was not recorded",
+        retryable: false,
+      },
+    };
   }
 
   #acceptPrompt(pending: PendingPrompt): HarnessResult<TurnStartAccepted> {
@@ -1804,6 +1994,7 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
       if (source?.kind === "user") {
         buffer.input.push(...textInputs(event.data.content));
         if (allowBinding && typeof source.rpcId === "string") {
+          if (this.#steerRequestIds.has(source.rpcId)) return;
           if (this.#boundRequestIds.has(source.rpcId)) {
             throw new ModernHistoryError(
               "protocolError",
@@ -1853,6 +2044,10 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
 
   #observePromptAdmission(event: ModernJournalEvent): void {
     if (event.type !== "agent/inbox/spliced" || !isRecord(event.data)) return;
+    const target =
+      event.data.target === "next-step" || event.data.target === "next-turn"
+        ? event.data.target
+        : undefined;
     const inserted = event.data.inserted;
     if (!Array.isArray(inserted)) return;
     for (const message of inserted) {
@@ -1861,6 +2056,15 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
       }
       const rpcId = message.source.rpcId;
       if (typeof rpcId !== "string") continue;
+      const steer = this.#pendingSteers.get(rpcId);
+      if (steer) {
+        if (target && !steer.spliced) {
+          steer.target = target;
+          steer.spliced = true;
+          steer.resolve();
+        }
+        continue;
+      }
       const pending = this.#pendingByRequestId.get(rpcId);
       if (!pending) continue;
       pending.admissionObserved = true;
@@ -2543,6 +2747,8 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
   }
 
   #abortOperations(): void {
+    for (const pending of this.#pendingSteers.values()) pending.resolve();
+    this.#pendingSteers.clear();
     for (const controller of this.#operationControllers) {
       controller.abort(new OperationAborted());
     }
@@ -2626,6 +2832,14 @@ async function callAbortable<T>(promise: Promise<T>, signal: AbortSignal): Promi
 
 function acceptedValue(value: unknown): boolean {
   return isRecord(value) && Reflect.ownKeys(value).length === 1 && value.accepted === true;
+}
+
+function steerRemoteFailure(failure: ModernRemoteFailure): HarnessError {
+  const safe = sanitizeModernRemoteFailure(failure);
+  if (safe.code === "session/agent-busy" || safe.code === "session/steer-unavailable") {
+    return invalidState(`DeepSeek Harness session/prompt failed: ${safe.message}`);
+  }
+  return remoteFailure("session/prompt", failure);
 }
 
 function remoteFailure(endpoint: string, failure: ModernRemoteFailure): HarnessError {

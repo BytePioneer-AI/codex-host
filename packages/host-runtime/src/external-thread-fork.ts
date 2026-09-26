@@ -93,6 +93,16 @@ export async function executeExternalThreadFork(input: {
     boundaryIndex = mappings.length - 1;
   }
   const boundary = mappings[boundaryIndex];
+  // Native history may have split this boundary Turn while Desktop still shows it whole.
+  if (boundary && source.steeredTurnIds.has(boundary.hostTurnId)) {
+    return {
+      ok: false,
+      error: {
+        code: -32080,
+        message: "This Turn took steered input; reopen the Thread before forking from it",
+      },
+    };
+  }
   if (boundaryIndex < 0 || !boundary?.nativeCheckpointRef) {
     return {
       ok: false,

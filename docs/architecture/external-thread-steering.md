@@ -1,71 +1,74 @@
 # 外部 Thread 的「调整方向」
 
-codexhost 将外部 Harness Thread 的「调整方向」定义为：**取消当前 Turn，等待它终结，再自动执行本次新输入**。用户继续使用 Codex Desktop 原有按钮、跟进处理方式设置和单条消息反向操作，不需要手动停止后重发。官方 Codex Thread 仍透传原生 `turn/steer`，不改变同轮追加输入的语义。
+codexhost 对外部 Harness Thread 保留一个「调整方向」操作，按当前 Session 的能力选择送达方式：
 
-## 所有权与执行
+- **原生同轮插入**：Session 声明 `capabilities.steer` 时，Host 发送公共命令 `turn.steer`，由 Adapter 调用 Harness 自己的插入原语，在原生安全边界把输入送入**当前 Turn**，不取消、不另起 Turn。
+- **停止后重发（退路）**：Session 未声明能力时，Host 继续取消当前 Turn，等待它终结，再把本次输入作为新 Turn 执行。
 
-- `AppServerHost` 显式按 Thread 所有权分流 `turn/steer`，外部 Thread 不再落入官方 Account 查找。
-- `ExternalTurnSteering` 在取消前校验非空文本输入及 `expectedTurnId`，注册指定旧 Turn 的终态等待，再调用现有 `turn.cancel`。不会调用 Harness 私有接口或增加 `turn.steer` 公共命令。
-- 取消 acknowledgement 不等于完成。等待旧 Turn 的 Interaction/Item 关闭、终态身份持久化及 Desktop 终态通知写出后，复用普通 `turn/start` 的底层启动函数，分配真实的新 Host Turn ID，返回 `{turnId}`。
-- 同 Thread 的其他 start、Harness command、委派 start 不能抢占这个替换过程。若原生自主 Turn 已先开始，替换失败，不取消这个意外的新 Turn。
-- 取消与旧轮终态等待合计最多 20 秒，短于当前 Desktop 的 30 秒提交超时。超时、Session fault、输出流结束、Host 关闭/断连、显式停止替换、旧轮失败或持久化失败均不再自动启动新轮。新轮启动本身仍遵循原有 Adapter admission 语义；客户端超时不意味着它没有被接受。
-- 同一连接内以 `threadId + clientUserMessageId` 合并相同请求，并保留有界的成功交付回执供 outcome-unknown 重试使用；同一消息 ID 不得携带不同的旧轮 ID 或输入。不承诺跨 Host 重启或回执淘汰后的 exactly-once。
+早期设计没有公共 `turn.steer`，因为当时能统一确认的外部 Harness 语义只有停止后重发。现在 Pi、Claude Code 等 Harness 已提供可验证的同轮插入和接受回执；用显式 capability 让 Adapter 选择加入，可以保留各 Harness 的真实语义，而未加入的 Adapter 仍走原有退路。因此本次改变的是能力足够时的送达方式，不改变停止后重发的默认行为。
 
-普通停止仍调用 Adapter 原来的取消实现。原生进程、工具和子任务的退出速度及恢复策略属于 Adapter；本功能没有增加统一的强杀策略，也不会回滚旧轮已经完成的文件修改。
+官方 Codex Thread 仍透传原生 `turn/steer`。各 Harness 的原生依据与验证层级见 `docs/harnesses/` 下对应文档，例如 [`../harnesses/pi/pi-steer.md`](../harnesses/pi/pi-steer.md)。
+
+## 公共契约与执行
+
+- `HarnessSessionCapabilities.steer` 只有在 Session 能把输入交给原生同轮插入原语时才为 `true`；缺省表示不支持。
+- `TurnSteerCommand { turnId, input }` 定义在 `packages/harness-adapter/src/text-session.ts`。Adapter 在 Harness 确认接受或入队后返回 `{ accepted: true }`，不等待插入实际执行完毕。
+- `ExternalTurnSteering` 统一校验非空文本、`expectedTurnId` 和 `threadId + clientUserMessageId` 去重。原生拒绝不会自动改走退路，也不会自动重试。
+- `turn/steer` 回执包含 `turnId` 和 `delivery`：`activeTurn` 表示送入当前 Turn，`newTurn` 表示停止旧 Turn 后开始了新 Turn。
+
+原生同轮插入成功后，Host 在当前 Turn 发布 `userMessage` Item。Desktop 提交带 `clientUserMessageId` 时，投影把它写入 Item 的 `clientId`，用于结算 Desktop 的乐观 steer 消息；Adapter 不发布这条 Host Item。Host 会让并发的 Turn 终态投影等待这条已接受输入完成实时投影，避免 Harness 接受输入后立刻结束时遗漏乐观消息结算。刷新后的历史仍完全按 Adapter 的原生历史解析，不把不同的原生 Turn 强行合并。
+
+Pi 的历史会把插入文本保存成新的用户条目。Pi Adapter 因而按“原提问加本轮已接受插入数”校验新用户条目数量，并仍把第一条原提问绑定为当前 Host Turn 的原生身份。
+
+## Fork 与撤销窗口
+
+原生历史可能已经在插入点分轮，而 Desktop 在重新读取前仍把内容显示为一个 Turn。Host Runtime 按 Host Thread ID 在内存中拥有 `steeredTurnIds`，记录插过队的 Host Turn：
+
+- Fork 先解析请求的实际 Checkpoint 边界，再检查该边界的 Host Turn；省略 `lastTurnId` 或使用 `beforeTurnId` 不会绕过保护。
+- 对 steered 边界的 Fork，以及该 Thread 的撤销，返回 `-32080` 并要求重新打开 Thread。
+- 空闲释放只卸载 Native Session，不等于 Desktop 已读取历史；Session 恢复后继续使用同一组未读标记。
+- Desktop 重新读取历史并成功收到 Turn 边界后，只清除实际返回的已结束 Turn 的标记。只读取 Items 或未包含该 Turn 的分页不会解除保护，此时操作继续按已读取的原生 Turn 边界执行。
+- 标记不落盘；Host 进程重启后自然消失。
+
+这项保护只覆盖 Desktop 视图与原生历史暂时不一致的窗口，不改变 Fork 或回退的持久化格式。
+
+## 停止后重发退路
+
+- `AppServerHost` 按 Thread 所有权分流 Desktop `turn/steer`，外部 Thread 不会落入官方 Account 查找。
+- `ExternalTurnSteering` 在取消前注册指定旧 Turn 的终态等待，再调用现有 `turn.cancel`。取消 acknowledgement 不等于完成。
+- 等待旧 Turn 的 Interaction/Item 关闭、终态身份持久化及 Desktop 终态通知写出后，Host 复用普通 `turn/start` 的底层启动函数，分配真实的新 Host Turn ID。
+- 同 Thread 的其他 start 和 Harness command 不能抢占替换过程。若原生自主 Turn 已先开始，替换失败，不取消该 Turn。
+- 取消与终态等待合计最多 20 秒。超时、Session fault、输出流结束、Host 关闭、显式停止、旧轮失败或持久化失败均不再自动启动新轮。
+- 成功回执在当前连接内有界保留，用于 outcome-unknown 重试；不承诺跨 Host 重启的 exactly-once。
+
+普通停止仍调用 Adapter 原来的取消实现。本功能不增加统一强杀策略，也不回滚旧 Turn 已完成的文件修改。
 
 ## Renderer 接入
 
-只在 Host 实现 cancel/start 不足以接入官方界面：官方 steer 会把乐观消息放在旧 Turn，旧轮 interrupted 时又可能将它恢复到暂停队列。
+Renderer 在展示输入前调用 `codexhost/thread/steering/inspect`，读取 `official`、`activeTurn` 或 `newTurn`。Host 执行和预检读取同一个 Session capability：
 
-`renderer-external-steering.ts` 在已确认的 RequestManager 上包装 `steerTurn`。Desktop Manager 同时是 `RpcTarget`，跨组件 RPC 禁止访问实例自身属性（即使该属性是函数）。因此对原型方法的包装放在该实例专属的原型层上，不用 `manager.sendRequest = ...` 创建实例属性，也不修改共享类原型。卸载时移除覆盖并恢复原型查找，不能仅赋回原函数；否则模型和权限列表仍会被 RPC 拒绝。
+- `official` 与 `activeTurn` 使用 Desktop 自己的 steer 展示，乐观消息属于当前 Turn。
+- `newTurn` 继续使用 `renderer-external-steering.ts` 的停止后重发展示：先走 Desktop 的普通 `startTurn` 占位，再只把本次出站 `turn/start` 转换成 `turn/steer`。
+- follower 窗口继续使用 Desktop 原有 owner 转发；失败不暗中重试或入队。
 
-接入流程：
+Host 和 Renderer 必须配套发布。只升级 Host、让旧 Renderer 仍按停止后重发方式展示原生同轮插入，不属于支持路径。
 
-1. 查询当前连接的 Thread 所有权；官方 Thread 走原函数，follower 窗口继续使用 Desktop 原有 owner 转发。
-2. 外部输入使用 Desktop 自己的 `startTurn` 展示流程。新输入从一开始就属于新 Turn 占位，保留 `clientUserMessageId`、输入及附件展示上下文；不创建旧轮 `steeringUserMessage`，不修改官方 transcript 内部实体。
-3. 仅将本次 `threadId + clientUserMessageId` 对应的出站 `turn/start` 转成 `turn/steer`，携带原先捕获的 `expectedTurnId`。把 Host 的 `{turnId}` 回执转换成正常 start 展示流程需要的 Turn envelope。其他 start、请求选项及官方 steer 不变。
-4. 成功后解除本次旧轮 interrupted 引入的队列暂停，保留此前已暂停的消息。失败不自动重试或偷偷排队；Desktop 原有失败提交展示负责保留输入。
-5. 绑定卸载时停止新的替换，恢复包装过的方法；尚未发出的替换不能因卸载而意外成为普通 start。
+### 当前边界
 
-Host 和 Renderer 接入必须配套发布；仅升级 Host、让旧 Renderer 仍创建旧轮乐观 steer 消息，不属于经过接入的产品路径。
+- 公共 Harness 输入只支持文本；图片、空输入和 tool response 在送达前拒绝。
+- 当前 Turn 没有确认的 ID 时不猜测目标，也不把过期目标改为另一 Turn 重试。
+- 原生语义差异照实保留；过晚的插入如何处理、历史如何分轮均由 Harness 决定，Host 不补偿。
+- 声明 `capabilities.steer` 的 Adapter：Pi、Claude Code、Qoder / Qoder CN、OMP、Grok、CodeBuddy / WorkBuddy（≥ 2.143.1）、DeepSeek Harness（≥ 0.1.2-alpha.2）、Hermes gateway。其余 Adapter（Cursor、OpenCode、Kimi Code、Antigravity、Kiro、Hermes ACP 后备路径等）接受公共命令类型但返回 `unsupported`，因此保持停止后重发。各 Harness 的原生依据和验证层级见各自的 `docs/harnesses/*/…steer*.md`。
+- 原生乐观消息结算依据 Codex Desktop **26.915.31945 / build 9922** 的只读 Bundle 核查：`clientId` 等于 `clientUserMessageId` 的 `userMessage` 会结算待定 `steeringUserMessage`。该核查不是运行中 Desktop 实测。
 
-### 当前兼容边界
-
-接入点依据 Codex Desktop **26.901.51231 / build 8109** 的 `app-initial-cadb12d4a15e.js`：`steerTurn`、`startTurn`、`sendRequest`、`getTurnCoordinator()` 的 submissionHost，以及队列的 `loadMessages` / `readMessages` / `mutate`。这些是版本相关的 Desktop JavaScript 绑定，不是 Harness SDK 契约。更新 Desktop 后需重新核实。
-
-- 当前公共 Harness 输入仅支持文本。图片等非文本输入、空输入、tool response 在停止前拒绝，不静默丢弃后再取消旧轮。
-- 新输入作为普通文本 `turn.start` 提交，不另行解释成 Harness command。原有独立 command 路径不变。
-- 当前轮尚无确认的 Turn ID 时不猜测目标，也不把过期目标改为另一轮重试。
-- 旧轮和新轮在 Native Session 历史中是两个真实 Turn，不复用旧 ID、不伪造同轮注入，不合并 Fork/Rollback 身份。
-
-## 跟进消息队列
-
-Codex Desktop **26.903.61454 / build 8378** 在功能开关及 app-server 版本满足条件时使用服务端队列。运行中追加消息会先调用 `thread/queue/list`，再调用 `thread/queue/add`；仅让 Host 返回空列表不能恢复入队。外部 Thread 不属于官方 app-server，Host 对这些请求的拒绝仍需保留，不能透传或伪造服务端队列。
-
-`renderer-external-queue.ts` 在当前 Manager 的 `getTurnCoordinator().serverQueue.isEnabled(threadId)` 上排除外部 Thread，让 Desktop 继续使用保留的本地队列：
-
-- 只读取同一个 Manager 的 `getConversation(threadId)`，核对 Thread ID 及 Host 投影的保留标记 `modelProvider: "codexhost"`。不根据当前 Agent 选择或 Model 名称猜测，不跨 Host 缓存身份，也不增加 RPC。
-- 普通入队、编辑、重排、删除／恢复、暂停和终态后的自动执行仍由 Desktop 原有队列负责，不新增 Host 队列或 Harness 命令。
-- 官方 Thread、尚未加载的 Thread 和无 Thread ID 的开关探测保留原函数。Thread 元数据加载后重新读取，不缓存此前的未知结果。旧版 Desktop 没有此后端时不做修改。
-- 包装的是队列后端自身的可写普通方法，不修改 Manager 或 Coordinator 的 RpcTarget 方法。卸载恢复原属性；不覆盖后来安装的其他包装。
-
-该边界来自实际代码和运行中开关观察，不代表能确定功能开关何时启用，或断言此接口首次出现于该 Desktop 版本。
+原有跟进消息队列、版本化 Renderer 绑定和服务端队列排除规则不变。
 
 ## 验证
 
-针对性测试：
+- `packages/host-runtime/test/external-turn-steering.test.ts`：原生插入不取消、按消息去重、失败释放回执，以及停止后重发的终态等待与失败边界。
+- `packages/host-runtime/test/app-server-host.native-steering.test.ts`：Desktop 原生插入的 `clientId` 投影、送达方式查询、Fork/撤销窗口和重新读取后放行。
+- `packages/protocol-core/test/codex-ui-projector.test.ts`：插入的 `userMessage` 在实时与历史投影中留在所属 Turn。
+- `packages/renderer-extension/test/renderer-external-steering*.test.ts`：按送达方式选择 Desktop 展示，并保持 RpcTarget、owner/follower、失败和卸载语义。
+- `packages/adapters/pi/test/pi-steer.test.ts`：Pi capability、RPC 参数、非活跃目标、身份计数、数量不符和忙时 start。
 
-- `packages/host-runtime/test/external-turn-steering.test.ts`：延迟/同步终态、去重、冲突、过期目标、输入预检、超时迟到、fault、关闭、显式停止、自主 Turn 及启动失败。
-- `packages/host-runtime/test/app-server-host*.test.ts`：真实 Host 路由、外部不泄漏官方流、取消与启动顺序、响应 gate、同 Thread start 竞争、官方透传。
-- `packages/renderer-extension/test/renderer-external-steering.test.ts`：正常 start 占位、唯一输入、无旧轮 steer Item、去重、队列暂停恢复、owner/follower、失败和卸载。
-- `packages/renderer-extension/test/renderer-external-steering-rpc.test.ts`：类方法的 RPC 可访问性、模型／权限列表读取、官方与外部 steer、实例隔离、卸载和重复安装，以及卸载期间待定请求的清理。
-- `packages/renderer-extension/test/renderer-external-queue.test.ts`：经生产 Adapter 安装路径验证外部入队、已有暂停消息、队列清空后再次入队、同连接官方队列、Manager 隔离、元数据更新、旧版后端和卸载恢复。
-- `packages/renderer-extension/test/versioned-renderer-adapter.test.ts`：现有版本化绑定与清理回归。
-
-实现时还在 Node VM 中回放了上述 Desktop Bundle 的真实 `lun`（普通 start）、`GS`（占位写入）和 `Irn`（旧轮消息恢复）helper：legacy / canonical 历史各验证启动成功与启动失败，检查单条新输入、无旧轮 steer 恢复、失败输入保留。该回放仍模拟了准备器与传输，不是实际窗口或原生 Session 测试。
-
-针对 RpcTarget 实例属性回归，还在运行中的上述版本 Desktop 内通过其真实 `RpcStub` 调用了 `model/list` 和 `permissionProfile/list`，验证原型挂接修复后两者成功返回，并重试了此前失败的只读查询。该检查没有发送新消息、修改权限选择或验证原生 Harness 执行。
-
-针对服务端队列回归，还在 Node VM 中回放了 26.903.61454 Bundle 的真实 Turn Coordinator：修复前复现 `thread/queue/list` 错误，修复后验证入队、编辑、重排、删除／恢复、每次终态后仅启动下一条消息，以及官方服务端队列保留。回放使用合成存储、传输和执行器，不调用原生 Harness。运行中只读探测另外确认了真实 Thread 元数据及开关；用隔离的后端对象验证外部 Thread 被排除、官方 Thread 保持启用，没有修改用户窗口的队列或发送消息。
-
-以上合成测试和只读 RPC 检查不替代真实 Desktop 与各原生 Harness 验收。发布验收应覆盖流式文本、工具运行、Question/Approval、连续提交、已有队列、取消失败、刷新历史，以及多窗口和远端连接。不得把类型检查或合成测试通过称为所有 Harness 的实机兼容性证明。
+2026-09-24 曾用 Pi 0.85.1 经 `PiAdapter` 实机核对原生插入；本次向上游基线移植只运行合成测试，没有重新运行真实 Harness 或 Desktop。类型检查和合成测试不能替代发布前的流式文本、工具运行、交互、连续提交、刷新历史、多窗口与远端连接验收。

@@ -21,6 +21,7 @@ import {
   DEEPSEEK_V012_PROFILE,
   DEEPSEEK_V015_PROFILE,
   DEEPSEEK_V017_PROFILE,
+  deepSeekNativeSteerSupported,
   type DeepSeekModernProfile,
 } from "../../src/profiles/profile.js";
 import { parseModernModelCatalog } from "../../src/modern/catalog.js";
@@ -42,6 +43,7 @@ import {
 import {
   MODERN_ACCEPTED_CORRELATION_TIMEOUT_MS,
   ModernHarnessSession,
+  modernSessionCapabilities,
   type ModernSessionControl,
 } from "../../src/modern/session.js";
 
@@ -313,6 +315,26 @@ function requestHeader(seq: number): ModernJournalEvent {
   return event(seq, "request/header", {
     header: { config: { provider: "deepseek", model: "deepseek-v4" } },
     reason: "initial",
+  });
+}
+
+function steerSplice(
+  seq: number,
+  rpcId: string,
+  target: "next-step" | "next-turn",
+  text = "follow up",
+): ModernJournalEvent {
+  return event(seq, "agent/inbox/spliced", {
+    target,
+    start: 0,
+    inserted: [
+      {
+        id: `steer-${seq}`,
+        role: "user",
+        content: [{ type: "text", text }],
+        source: { kind: "user", rpcId },
+      },
+    ],
   });
 }
 
@@ -4703,6 +4725,270 @@ describe("DeepSeek Harness Modern Session", () => {
           output.update.text === "settled",
       ),
     ).toHaveLength(1);
+    await test.session.close();
+  });
+});
+
+describe("DeepSeek native steer", () => {
+  it("gates steer on session-controller 0.1.2-alpha.2", () => {
+    expect(deepSeekNativeSteerSupported("0.1.2-alpha.2")).toBe(true);
+    expect(deepSeekNativeSteerSupported("0.1.2-alpha.10")).toBe(true);
+    expect(deepSeekNativeSteerSupported("0.1.2-rc.1")).toBe(true);
+    expect(deepSeekNativeSteerSupported("0.1.2")).toBe(true);
+    expect(deepSeekNativeSteerSupported("0.1.5")).toBe(true);
+    expect(deepSeekNativeSteerSupported("0.1.2-alpha.1")).toBe(false);
+    expect(deepSeekNativeSteerSupported("0.1.1")).toBe(false);
+    expect(deepSeekNativeSteerSupported("not-a-version")).toBe(false);
+    expect(modernSessionCapabilities(null, DEEPSEEK_V012_PROFILE.version).steer).toBe(true);
+    expect(modernSessionCapabilities(null, DEEPSEEK_V015_PROFILE.version).steer).toBe(true);
+    expect(modernSessionCapabilities(null, "0.1.2-alpha.1").steer).toBeUndefined();
+  });
+
+  it("rejects steer on an older native version and while no Turn is active", async () => {
+    const older = { ...DEEPSEEK_V012_PROFILE, version: "0.1.2-alpha.1" };
+    const test = setup(
+      [],
+      [],
+      ["request-1"],
+      5_000,
+      null,
+      undefined,
+      MODERN_ACCEPTED_CORRELATION_TIMEOUT_MS,
+      [],
+      older,
+    );
+    expect(test.session.capabilities.steer).toBeUndefined();
+    await expect(
+      test.session.execute({
+        type: "turn.steer",
+        turnId: turnId("missing"),
+        input: [{ type: "text", text: "later" }],
+      }),
+    ).resolves.toEqual({
+      ok: false,
+      error: { code: "unsupported", message: "DeepSeek Harness cannot steer", retryable: false },
+    });
+    await test.session.close();
+
+    const current = setup([]);
+    expect(current.session.capabilities.steer).toBe(true);
+    await expect(
+      current.session.execute({
+        type: "turn.steer",
+        turnId: turnId("missing"),
+        input: [{ type: "text", text: "later" }],
+      }),
+    ).resolves.toMatchObject({ ok: false, error: { code: "invalidState" } });
+    await expect(
+      current.session.execute({
+        type: "turn.steer",
+        turnId: turnId("missing"),
+        input: [{ type: "text", text: "   " }],
+      }),
+    ).resolves.toMatchObject({ ok: false, error: { code: "invalidState" } });
+    await current.session.close();
+  });
+
+  it("inserts into the active Turn and keeps the original native identity", async () => {
+    const test = setup(
+      [
+        () => accepted(),
+        () => {
+          test.feed.push(steerSplice(3, "request-2", "next-step"));
+          return accepted();
+        },
+      ],
+      [],
+      ["request-1", "request-2"],
+    );
+    const outputs = test.session.outputs[Symbol.asyncIterator]();
+    const id = turnId("host-turn-1");
+    await expect(
+      test.session.execute({
+        type: "turn.start",
+        turnId: id,
+        input: [{ type: "text", text: "first" }],
+      }),
+    ).resolves.toEqual({ ok: true, value: { turnId: id } });
+    test.feed.push(event(0, "turn/start", { turn: 1 }));
+    test.feed.push(event(1, "step/start", { turn: 1, step: 1 }));
+    test.feed.push(userMessage(2, "first", "request-1"));
+    expect(await nextEvent(outputs)).toEqual({ type: "turn.started", turnId: id });
+
+    await expect(
+      test.session.execute({
+        type: "turn.start",
+        turnId: turnId("host-turn-2"),
+        input: [{ type: "text", text: "blocked" }],
+      }),
+    ).resolves.toMatchObject({ ok: false, error: { code: "sessionBusy" } });
+    await expect(
+      test.session.execute({
+        type: "turn.steer",
+        turnId: id,
+        input: [{ type: "text", text: "   " }],
+      }),
+    ).resolves.toMatchObject({ ok: false, error: { code: "invalidRequest" } });
+
+    await expect(
+      test.session.execute({
+        type: "turn.steer",
+        turnId: id,
+        input: [
+          { type: "text", text: "follow" },
+          { type: "text", text: "up" },
+        ],
+      }),
+    ).resolves.toEqual({ ok: true, value: { accepted: true } });
+    expect(test.remote.calls[1]).toMatchObject({
+      endpoint: "session/prompt",
+      args: {
+        request: {
+          requestId: "request-2",
+          sessionId: SESSION_ID,
+          mode: "steer",
+          content: [
+            { type: "text", text: "follow" },
+            { type: "text", text: "up" },
+          ],
+        },
+      },
+    });
+
+    test.feed.push(userMessage(4, "followup", "request-2"));
+    test.feed.push(event(5, "step/end", { turn: 1, step: 1 }));
+    test.feed.push(event(6, "turn/end", { turn: 1, reason: { kind: "completed" } }));
+    const emitted: HostEvent[] = [];
+    while (
+      !emitted.some((item) => item.type === "turn.completed" || item.type === "session.faulted")
+    ) {
+      emitted.push(await nextEvent(outputs));
+    }
+    expect(emitted.some((item) => item.type === "session.faulted")).toBe(false);
+    expect(JSON.stringify(emitted)).not.toContain("userMessage");
+    expect(emitted.at(-1)).toMatchObject({
+      type: "turn.completed",
+      turnId: id,
+      nativeTurnRef: { nativeTurnKey: "turn:1" },
+    });
+    await expect(test.session.readSnapshot()).resolves.toMatchObject({
+      ok: true,
+      value: { turns: [{ input: [{ text: "first" }, { text: "followup" }] }] },
+    });
+    await test.session.close();
+  });
+
+  it("does not accept a steer that native moved to the next Turn", async () => {
+    const test = setup(
+      [
+        () => accepted(),
+        () => {
+          test.feed.push(steerSplice(2, "request-2", "next-turn"));
+          return accepted();
+        },
+      ],
+      [],
+      ["request-1", "request-2"],
+    );
+    const outputs = test.session.outputs[Symbol.asyncIterator]();
+    const id = turnId("host-turn-1");
+    await test.session.execute({
+      type: "turn.start",
+      turnId: id,
+      input: [{ type: "text", text: "first" }],
+    });
+    test.feed.push(event(0, "turn/start", { turn: 1 }));
+    test.feed.push(userMessage(1, "first", "request-1"));
+    expect(await nextEvent(outputs)).toMatchObject({ type: "turn.started", turnId: id });
+    await expect(
+      test.session.execute({
+        type: "turn.steer",
+        turnId: id,
+        input: [{ type: "text", text: "later" }],
+      }),
+    ).resolves.toMatchObject({
+      ok: false,
+      error: { code: "invalidState", message: expect.stringContaining("next Turn") },
+    });
+    await test.session.close();
+  });
+
+  it("maps steer admission failures without changing turn.start busy behavior", async () => {
+    const test = setup(
+      [
+        () => accepted(),
+        () => ({
+          ok: false as const,
+          error: { code: "session/agent-busy", message: "agent busy", details: {} },
+        }),
+      ],
+      [],
+      ["request-1", "request-2"],
+      30,
+    );
+    const outputs = test.session.outputs[Symbol.asyncIterator]();
+    const id = turnId("host-turn-1");
+    await test.session.execute({
+      type: "turn.start",
+      turnId: id,
+      input: [{ type: "text", text: "first" }],
+    });
+    test.feed.push(event(0, "turn/start", { turn: 1 }));
+    test.feed.push(userMessage(1, "first", "request-1"));
+    expect(await nextEvent(outputs)).toMatchObject({ type: "turn.started" });
+    await expect(
+      test.session.execute({
+        type: "turn.steer",
+        turnId: id,
+        input: [{ type: "text", text: "later" }],
+      }),
+    ).resolves.toMatchObject({ ok: false, error: { code: "invalidState" } });
+    test.feed.push(userMessage(2, "echo", "request-2"));
+    test.feed.push(event(3, "turn/end", { turn: 1, reason: { kind: "completed" } }));
+    const emitted: HostEvent[] = [];
+    while (
+      !emitted.some((item) => item.type === "turn.completed" || item.type === "session.faulted")
+    ) {
+      emitted.push(await nextEvent(outputs));
+    }
+    expect(emitted.at(-1)).toMatchObject({
+      type: "turn.completed",
+      nativeTurnRef: { nativeTurnKey: "turn:1" },
+    });
+    await test.session.close();
+  });
+
+  it("reports an unrecorded steer without binding a late echo", async () => {
+    const test = setup([() => accepted(), () => accepted()], [], ["request-1", "request-2"], 20);
+    const outputs = test.session.outputs[Symbol.asyncIterator]();
+    const id = turnId("host-turn-1");
+    await test.session.execute({
+      type: "turn.start",
+      turnId: id,
+      input: [{ type: "text", text: "first" }],
+    });
+    test.feed.push(event(0, "turn/start", { turn: 1 }));
+    test.feed.push(userMessage(1, "first", "request-1"));
+    expect(await nextEvent(outputs)).toMatchObject({ type: "turn.started" });
+    await expect(
+      test.session.execute({
+        type: "turn.steer",
+        turnId: id,
+        input: [{ type: "text", text: "later" }],
+      }),
+    ).resolves.toMatchObject({
+      ok: false,
+      error: { code: "protocolError", message: "DeepSeek Harness steer was not recorded" },
+    });
+    test.feed.push(userMessage(2, "late", "request-2"));
+    test.feed.push(event(3, "turn/end", { turn: 1, reason: { kind: "completed" } }));
+    const emitted: HostEvent[] = [];
+    while (
+      !emitted.some((item) => item.type === "turn.completed" || item.type === "session.faulted")
+    ) {
+      emitted.push(await nextEvent(outputs));
+    }
+    expect(emitted.some((item) => item.type === "session.faulted")).toBe(false);
     await test.session.close();
   });
 });

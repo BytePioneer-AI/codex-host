@@ -14,10 +14,11 @@ import {
   ClaudeSdkTransport,
   type ClaudeSdkTransportOptions,
 } from "../src/sdk-transport.js";
-import type {
-  ClaudeAutonomousTurn,
-  ClaudeTransportTurnResult,
-  ClaudeTurnEvent,
+import {
+  ClaudeSteerMissedTurnError,
+  type ClaudeAutonomousTurn,
+  type ClaudeTransportTurnResult,
+  type ClaudeTurnEvent,
 } from "../src/transport.js";
 
 class FakeQuery {
@@ -2322,5 +2323,75 @@ describe("ClaudeSdkTransport autonomous Subagent settlement ordering", () => {
     }
     expect(turns).toEqual([]);
     expect(immediate).toEqual([expect.objectContaining({ nativeSubagentId: "existing-child" })]);
+  });
+});
+
+describe("ClaudeSdkTransport steer", () => {
+  it("pushes priority next and accepts when Claude starts that command", async () => {
+    const value = fixture();
+    await value.transport.start();
+    const prompt = value.queryInput().prompt;
+    if (typeof prompt === "string" || !prompt) throw new Error("expected streaming input");
+    const input = prompt[Symbol.asyncIterator]();
+    const turn = value.transport.runTurn(
+      "hello",
+      "00000000-0000-4000-8000-000000000030",
+      () => undefined,
+    );
+    await expect(input.next()).resolves.toMatchObject({
+      done: false,
+      value: {
+        type: "user",
+        message: { role: "user", content: "hello" },
+        parent_tool_use_id: null,
+      },
+    });
+    const steerId = "00000000-0000-4000-8000-000000000031";
+    let settled = false;
+    const steered = value.transport.steer("PIN", steerId).then(() => {
+      settled = true;
+    });
+    await expect(input.next()).resolves.toMatchObject({
+      done: false,
+      value: {
+        type: "user",
+        priority: "next",
+        uuid: steerId,
+        origin: { kind: "human" },
+        parent_tool_use_id: null,
+        session_id: "00000000-0000-4000-8000-000000000001",
+        message: { role: "user", content: "PIN" },
+      },
+    });
+    value.fakeQuery.push({
+      type: "command_lifecycle",
+      state: "queued",
+      command_uuid: steerId,
+      uuid: "00000000-0000-4000-8000-000000000032",
+      session_id: "00000000-0000-4000-8000-000000000001",
+    } as unknown as SDKMessage);
+    await steered;
+    expect(settled).toBe(true);
+    completeTurn(value.fakeQuery);
+    await turn;
+    await value.transport.close();
+  });
+
+  it("rejects a steer when the Turn ends before Claude queues it", async () => {
+    const value = fixture();
+    await value.transport.start();
+    const turn = value.transport.runTurn(
+      "hello",
+      "00000000-0000-4000-8000-000000000034",
+      () => undefined,
+    );
+    const steered = value.transport.steer("PIN", "00000000-0000-4000-8000-000000000035");
+    completeTurn(value.fakeQuery);
+    await expect(steered).rejects.toBeInstanceOf(ClaudeSteerMissedTurnError);
+    await turn;
+    await expect(
+      value.transport.steer("later", "00000000-0000-4000-8000-000000000036"),
+    ).rejects.toBeInstanceOf(ClaudeSteerMissedTurnError);
+    await value.transport.close();
   });
 });

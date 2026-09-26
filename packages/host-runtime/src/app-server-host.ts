@@ -28,6 +28,7 @@ import type {
   HarnessAdapter,
   HarnessOutput,
   HarnessSession,
+  HostTextInput,
   HostApprovalInteraction,
   HostSubagentState,
   HostApprovalResponse,
@@ -79,6 +80,8 @@ import {
   threadThinkingSelectParamsSchema,
   threadOwnershipListParamsSchema,
   threadOwnershipListResultSchema,
+  threadSteeringInspectParamsSchema,
+  threadSteeringInspectResultSchema,
   permissionModeFixedAtCreate,
   updateCheckResultSchema,
   updateEmptyParamsSchema,
@@ -1174,6 +1177,10 @@ export class AppServerHost {
     }
     if (request.method === "codexhost/thread/ownership/list") {
       await this.#listThreadOwnership(request);
+      return;
+    }
+    if (request.method === "codexhost/thread/steering/inspect") {
+      await this.#inspectThreadSteering(request);
       return;
     }
     if (request.method === "codexhost/thread/model/select") {
@@ -2537,6 +2544,25 @@ export class AppServerHost {
     }
   }
 
+  /** Read the same capability fact that Desktop `turn/steer` will use. */
+  async #inspectThreadSteering(request: JsonRpcRequest): Promise<void> {
+    const params = threadSteeringInspectParamsSchema.safeParse(request.params);
+    if (!params.success) {
+      await this.#writer.json(rpcError(request, -32602, "Invalid Thread steering params"));
+      return;
+    }
+    const location = await this.#locateExternalThread(params.data.threadId);
+    if (await this.#writeResolutionError(request, location)) return;
+    const delivery =
+      location.kind !== "external"
+        ? "official"
+        : this.#externalRuntime.get(params.data.threadId)?.session.capabilities.steer
+          ? "activeTurn"
+          : "newTurn";
+    const result = threadSteeringInspectResultSchema.parse({ delivery });
+    await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(result) }));
+  }
+
   async #inspectThreadCommands(request: JsonRpcRequest): Promise<void> {
     const params = threadCommandsInspectParamsSchema.safeParse(request.params);
     if (!params.success) {
@@ -3185,8 +3211,28 @@ export class AppServerHost {
     return true;
   }
 
+  /** Refresh history before Desktop acts on native Turn boundaries. */
   #refreshExternalThread(thread: ExternalThread): Promise<ExternalThreadRpcError | null> {
     return this.#externalRuntime.refresh(thread);
+  }
+
+  #markExternalHistoryRead(thread: ExternalThread, turns: JsonObject[]): void {
+    // Live projections have not yet been realigned to the native Turn boundaries.
+    if (!thread.historyHydrated) return;
+    for (const turnId of thread.steeredTurnIds) {
+      if (
+        turnId !== thread.activeTurnId &&
+        turns.some(
+          (turn) =>
+            turn.id === turnId &&
+            (turn.status === "completed" ||
+              turn.status === "failed" ||
+              turn.status === "interrupted"),
+        )
+      ) {
+        thread.steeredTurnIds.delete(turnId);
+      }
+    }
   }
 
   #persistTerminalIdentity(
@@ -3426,16 +3472,18 @@ export class AppServerHost {
         return;
       }
     }
+    const readTurns = includeTurns ? [...this.#externalHistoryTurns(thread)] : [];
     await this.#writer.json(
       rpcEnvelope(request, {
         result: {
           thread: {
             ...thread.thread,
-            turns: includeTurns ? this.#externalHistoryTurns(thread) : [],
+            turns: readTurns,
           },
         },
       }),
     );
+    if (includeTurns) this.#markExternalHistoryRead(thread, readTurns);
     await this.#replayExternalUsage(thread);
   }
 
@@ -3463,6 +3511,9 @@ export class AppServerHost {
           ? listExternalTurns(turns, params)
           : listExternalItems(turns, params);
       await this.#writer.json(rpcEnvelope(request, { result }));
+      if (request.method === "thread/turns/list") {
+        this.#markExternalHistoryRead(thread, result.data);
+      }
     } catch (error) {
       await this.#writer.json(
         rpcError(
@@ -3489,7 +3540,7 @@ export class AppServerHost {
         return;
       }
     }
-    const turns = this.#externalHistoryTurns(thread);
+    const turns = [...this.#externalHistoryTurns(thread)];
     const responseThread = {
       ...thread.thread,
       turns: params.excludeTurns === true ? [] : turns,
@@ -3535,6 +3586,8 @@ export class AppServerHost {
           },
         }),
       );
+      if (params.excludeTurns !== true) this.#markExternalHistoryRead(thread, turns);
+      else if (initialTurnsPage) this.#markExternalHistoryRead(thread, initialTurnsPage.data);
     } catch (error) {
       await this.#writer.json(
         rpcError(
@@ -3654,9 +3707,14 @@ export class AppServerHost {
         thread,
         requestObject(request),
         (text, assertActive) => this.#beginExternalInputTurn(thread, text, assertActive),
+        (input) => this.#insertExternalInput(thread, input),
       );
       try {
-        await this.#writer.json(rpcEnvelope(request, { result: { turnId: started.turnId } }));
+        await this.#writer.json(
+          rpcEnvelope(request, {
+            result: { turnId: started.turnId, delivery: started.delivery },
+          }),
+        );
       } finally {
         started.gate.resolve();
       }
@@ -3672,6 +3730,63 @@ export class AppServerHost {
       );
     } finally {
       this.#signalActiveWorkChanged();
+    }
+  }
+
+  /** Native same-Turn input. Once the Harness accepts it, the Host shows it in that Turn. */
+  async #insertExternalInput(
+    thread: ExternalThread,
+    input: { turnId: HostTurnId; text: string; clientUserMessageId?: string },
+  ): Promise<{ turnId: HostTurnId; gate: TurnProjectionGate }> {
+    const steered: HostTextInput[] = [
+      {
+        type: "text",
+        text: rewriteDelegationMentionText(restoreHarnessCommandMentions(input.text)),
+      },
+    ];
+    const projectionDone = Promise.withResolvers<undefined>();
+    thread.pendingSteerProjections.add(projectionDone.promise);
+    try {
+      const result = await thread.session.execute({
+        type: "turn.steer",
+        turnId: input.turnId,
+        input: steered,
+      });
+      if (!result.ok) throw new ExternalSteerError(-32074, result.error.message);
+      thread.steeredTurnIds.add(input.turnId);
+      const item = {
+        type: "userMessage" as const,
+        itemId: hostItemIdSchema.parse(randomUUID()),
+        input: steered,
+      };
+      try {
+        const projection = this.#projectedTurn(thread, input.turnId);
+        if (input.clientUserMessageId) {
+          projection.projector.bindUserMessageClientId(item.itemId, input.clientUserMessageId);
+        }
+        await this.#projectHarnessOutput(thread, {
+          kind: "event",
+          event: { type: "item.started", turnId: input.turnId, item },
+        });
+        await this.#projectHarnessOutput(thread, {
+          kind: "event",
+          event: {
+            type: "item.completed",
+            turnId: input.turnId,
+            snapshot: { item, outcome: { status: "succeeded" } },
+          },
+        });
+      } catch (error) {
+        // Native delivery already succeeded. Reporting failure here would invite a duplicate retry.
+        this.#diagnose(error);
+      }
+      return {
+        turnId: input.turnId,
+        gate: { promise: Promise.resolve(), resolve: () => undefined },
+      };
+    } finally {
+      projectionDone.resolve(undefined);
+      thread.pendingSteerProjections.delete(projectionDone.promise);
     }
   }
 
@@ -3986,6 +4101,9 @@ export class AppServerHost {
       return;
     }
 
+    if (event.type === "turn.completed" && thread.pendingSteerProjections.size > 0) {
+      await Promise.allSettled([...thread.pendingSteerProjections]);
+    }
     const projection = this.#projectedTurn(thread, event.turnId);
     await this.#waitForTurnResponse(thread, event.turnId);
     if (
@@ -4037,6 +4155,7 @@ export class AppServerHost {
       thread.activeTurnId = null;
       thread.projectedTurns.delete(event.turnId);
       thread.responseGates.delete(event.turnId);
+      thread.pendingSteerProjections.clear();
       this.#signalActiveWorkChanged();
       const delegation = await this.#repository.getDelegationByChild(thread.record.hostThreadId);
       if (delegation) {

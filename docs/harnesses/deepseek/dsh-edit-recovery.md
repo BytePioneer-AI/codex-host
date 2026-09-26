@@ -23,6 +23,18 @@ DSH V0/V3/V4 的可见原生思考增量也会实时展示。流式末尾换行�
 
 015 正常会话关闭和 Fork 队列清理后，还会通过认证的原生 `HEAD /api/session.export` 等待日志写入完成；该请求不下载日志内容。原生回执和内存历史读取不等于落盘完成，尤其不能在 Windows 结束托管进程前省略这一步。持久化确认失败时明确报告失败。
 
+## 同轮插入
+
+`session/prompt` 的 `mode:"steer"` 从 `@deepseek-ai/dsh-api-session-controller` `0.1.2-alpha.2` 起存在，并调用 `agent.steer`。Adapter 只在可解析的规范 SemVer 不低于该版本时声明 `capabilities.steer`。读不到版本或更低时不声明，`turn.steer` 返回 `unsupported`。已收录的 `0.1.2-rc.1`、`0.1.5` 与 `0.1.7` 画像都高于这个门槛。
+
+`turn.steer` 只对当前未结束的活跃 Turn 发送 `mode:"steer"`，不取消、不另起 Turn。空文本是 `invalidRequest`。目标 Turn 不活跃是 `invalidState`。插入用的 `requestId` 不进入待绑定的 prompt 集合，因此中途出现的用户消息不会把已经关联好的 Turn 再绑一次。
+
+RPC 回执 `{accepted:true}` 不够。Adapter 等待同一 `requestId` 的 `agent/inbox/spliced`。`target:"next-step"` 才返回 `{accepted:true}`。`target:"next-turn"`（中止时 inbox 会改投下一轮）是 `invalidState`，不把这次插入算进当前 Turn。等到关联宽限仍没有 splice，是 `protocolError`，并保留该 `requestId`，避免迟到回声再去绑定。`session/agent-busy` 与 `session/steer-unavailable` 只在这次插入里映射为 `invalidState`；`turn.start` 遇到 `session/agent-busy` 仍是 `sessionBusy`。
+
+Adapter 不发布 `userMessage`。历史仍按现有日志投影把同一原生 Turn 里的用户文本收进该轮输入，不另分组。忙时 `turn.start` 仍是 `sessionBusy`。
+
+本机没有可运行的 `dsh`，未做实机插入。行为依据已发布的 `0.1.2-alpha.2` 包：`mode` 为 `'queue' | 'steer'`，且 `mode === "steer"` 时调用 `agent.steer`。单元测试覆盖版本门槛、请求参数、非活跃目标、`next-step` / `next-turn`、回声不重新绑定、忙时 `turn.start`，以及不发布 `userMessage`。
+
 提供基于本地 SSE 模型、隔离临时数据和真实 CLI 的生命周期 Gate：`tools/gate-dsh/lifecycle.real.test.mjs`。通过对应的 `CODEXHOST_DSH_REAL_COMMAND` 指定原生命令，缺少命令时明确跳过。`0.1.5-rc.3` 和 `0.1.7-rc.1` 的 Gate 均已通过；Windows、Node.js `v24.11.0`、Vitest `4.1.10` 的命令、耗时和未验证边界见[版本验证记录](dsh-015rc1-validation.md)。
 
 Gate 覆盖流式输出、取消、空/保留历史编辑、冷恢复、默认配置保持、源历史不变和活动关闭。此前两个支持版本均已在 Windows 运行此 Gate；rc.2 未通过真实 CLI 生命周期 Gate，当前证据为 rc2 源码协议审计、V4 路由回归和仓库自动化检查，已将其加入已验证版本列表。不把默认配置验证推广为任意非默认配置，也不证明独立第三方客户端或任意后台工具进程的退出。具体命令、覆盖率及版本安装限制见 [版本验证记录](dsh-015rc1-validation.md)。

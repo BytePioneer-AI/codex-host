@@ -143,6 +143,7 @@ class FakePiTransport implements PiTurnTransport {
       return { outcome: "succeeded" };
     },
   );
+  readonly steer = vi.fn(async () => undefined);
   readonly runTurn = vi.fn((text: string, onEvent: (event: PiTurnEvent) => void) => {
     this.text = text;
     this.onEvent = onEvent;

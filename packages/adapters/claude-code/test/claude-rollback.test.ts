@@ -111,6 +111,7 @@ async function fixture(turns = 1) {
         },
         setModel: async () => undefined,
         setThinkingOption: async () => undefined,
+        steer: async () => undefined,
         respondToInteraction: async () => undefined,
         compact: async () => ({ status: "succeeded" as const }),
         init: async () => ({ status: "succeeded" as const }),

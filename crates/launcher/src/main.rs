@@ -4,6 +4,7 @@ mod active_update;
 mod compatibility;
 mod desktop_attachment;
 mod desktop_path_overrides;
+mod desktop_update;
 mod installation_layout;
 mod native_harness_broker;
 mod runtime_instance;
@@ -27,9 +28,10 @@ use std::sync::{OnceLock, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 
-#[cfg(any(target_os = "macos", target_os = "windows"))]
-use active_update::start_pending_update;
+#[cfg(target_os = "linux")]
 use active_update::update_waiting_for_launcher_exit;
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+use codexhost_platform::launch_desktop_session;
 #[cfg(target_os = "windows")]
 use codexhost_platform::{
     APPX_RESUME_ARGUMENT, DesktopProcess, launch_desktop, resume_packaged_application,
@@ -40,20 +42,19 @@ use codexhost_platform::{
     desktop_root_process_ids_for_installation, discover_codex_desktop, node_entrypoint_path,
     spawn_supervised,
 };
-#[cfg(any(target_os = "macos", target_os = "linux"))]
-use codexhost_platform::{DesktopSession, launch_desktop_session};
 #[cfg(target_os = "windows")]
 use codexhost_platform::{
-    PlatformError, ProcessSnapshot, RunningDesktopChoice, descendant_process_snapshots,
-    hide_console_window, process_executable_path, process_exists, process_instance_exists,
-    process_snapshot, prompt_running_desktop, running_executable_snapshots, show_error_dialog,
-    terminate_executable_snapshots, terminate_process_by_id, terminate_process_instance,
+    RunningDesktopChoice, hide_console_window, process_executable_path, process_exists,
+    process_snapshot, prompt_running_desktop, show_error_dialog, terminate_process_by_id,
 };
 use compatibility::{MAX_CONTROLLER_READINESS_LINE_BYTES, parse_controller_readiness_line};
 use desktop_attachment::{
     LauncherOwnership, RuntimeControl, acquire_launcher_ownership, allocate_runtime_control,
     endpoint_ready, publish_runtime_descriptor, stop_stale_launcher, wait_for_host_chain,
 };
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+use desktop_update::poll_pending_update;
+use desktop_update::stop_managed_desktop_for_update;
 use installation_layout::InstalledResources;
 use native_harness_broker::run_native_harness_broker_cli;
 use runtime_instance::{
@@ -622,159 +623,6 @@ fn wait_for_desktop_exit(
     }
 }
 
-fn should_stop_desktop_for_update(helper_started: bool) -> bool {
-    // On these platforms the Launcher itself must have started the Helper.
-    // A stale waiting status alone must never shut down the managed Desktop.
-    if cfg!(any(target_os = "macos", target_os = "windows")) && !helper_started {
-        return false;
-    }
-    match update_waiting_for_launcher_exit() {
-        Ok(waiting) => waiting,
-        Err(error) => {
-            eprintln!("codexhost launcher: pending update exit state could not be read: {error}");
-            false
-        }
-    }
-}
-
-#[cfg(any(target_os = "macos", target_os = "linux"))]
-fn stop_managed_desktop_for_update(
-    desktop: &mut DesktopSession,
-    controller: &mut SupervisedChild,
-) -> Result<(), Box<dyn Error>> {
-    let _ = stop_desktop_controller(controller);
-    desktop.shutdown(Duration::from_secs(2))?;
-    desktop.cleanup_escaped(Duration::from_secs(2))?;
-    desktop.disarm_cleanup();
-    Ok(())
-}
-
-#[cfg(target_os = "windows")]
-fn captured_process_is_alive(captured: &ProcessSnapshot) -> Result<bool, PlatformError> {
-    process_instance_exists(captured.id, captured.started_at_micros)
-}
-
-/// Complete an update stop whose descendant capture can never succeed: the
-/// managed root exited first (user quit or crash) or its ancestry is no longer
-/// observable, so waiting to capture again would only burn the Updater's
-/// timeout. The update already requires every installation-owned process to
-/// be gone, so terminate exactly that process set instead. Nothing is stopped
-/// once the Updater no longer waits for the Launcher exit.
-#[cfg(target_os = "windows")]
-fn stop_escaped_desktop_for_update(
-    desktop: &mut DesktopProcess,
-    controller: &mut SupervisedChild,
-    owned_executables: &[&Path],
-    still_waiting: impl Fn() -> std::io::Result<bool>,
-    capture_error: PlatformError,
-) -> Result<(), Box<dyn Error>> {
-    eprintln!(
-        "codexhost launcher: managed Desktop capture failed for update ({capture_error}); stopping installation-owned processes instead"
-    );
-    if !still_waiting()? {
-        return Err("Updater is no longer waiting for Launcher exit".into());
-    }
-    let _ = stop_desktop_controller(controller);
-    if desktop.try_wait()?.is_none() {
-        let _ = desktop.kill();
-    }
-    let _ = desktop.wait();
-    let remaining = terminate_executable_snapshots(owned_executables, Duration::from_secs(10))?;
-    if !remaining.is_empty() {
-        return Err(
-            "installation-owned Desktop, Shim, or Host processes remained alive for update".into(),
-        );
-    }
-    if !still_waiting()? {
-        return Err("Updater stopped waiting before Launcher exit".into());
-    }
-    Ok(())
-}
-
-#[cfg(target_os = "windows")]
-fn stop_managed_desktop_for_update(
-    desktop: &mut DesktopProcess,
-    root: &ProcessSnapshot,
-    installation: &DesktopInstallation,
-    controller: &mut SupervisedChild,
-    options: &ResolvedLaunchOptions,
-    captured_descendants: &mut Option<Vec<ProcessSnapshot>>,
-    still_waiting: impl Fn() -> std::io::Result<bool>,
-) -> Result<(), Box<dyn Error>> {
-    // Capture exact process instances while the Desktop ancestry is intact.
-    // Windows keeps orphan children alive after the root exits, but their
-    // intermediate parents may no longer appear in a later process snapshot.
-    if captured_descendants.is_none() {
-        match descendant_process_snapshots(root, &[&options.shim, &options.node]) {
-            Ok(captured) => *captured_descendants = Some(captured),
-            Err(error) => {
-                // The root can exit or reshape between Updater readiness and
-                // this capture; that capture can never succeed again, so stop
-                // the installation-owned processes and finish the handoff.
-                return stop_escaped_desktop_for_update(
-                    desktop,
-                    controller,
-                    &[
-                        &installation.desktop_executable,
-                        &options.shim,
-                        &options.node,
-                    ],
-                    still_waiting,
-                    error,
-                );
-            }
-        }
-    }
-    let descendants = captured_descendants
-        .as_ref()
-        .expect("managed Desktop descendants were just captured");
-    if !still_waiting()? {
-        return Err("Updater is no longer waiting for Launcher exit".into());
-    }
-    if desktop.try_wait()?.is_none()
-        && let Err(error) = desktop.kill()
-    {
-        // The root can exit between try_wait and kill; only that race is safe to ignore.
-        if desktop.try_wait()?.is_none() {
-            return Err(error.into());
-        }
-    }
-    desktop.wait()?;
-    let started = Instant::now();
-    loop {
-        let mut descendants_alive = false;
-        for captured in descendants {
-            if captured_process_is_alive(captured)? {
-                descendants_alive = true;
-                terminate_process_instance(captured, true)?;
-            }
-        }
-        if !descendants_alive {
-            break;
-        }
-        if started.elapsed() >= Duration::from_secs(10) {
-            return Err("managed Desktop descendants remained alive after root exit".into());
-        }
-        thread::sleep(Duration::from_millis(100));
-    }
-    if !still_waiting()? {
-        return Err("Updater stopped waiting before managed Host exit".into());
-    }
-    let _ = stop_desktop_controller(controller);
-    let remaining = running_executable_snapshots(&[
-        &installation.desktop_executable,
-        &options.shim,
-        &options.node,
-    ])?;
-    if !remaining.is_empty() {
-        return Err("installation-owned Desktop, Shim, or Host processes remain alive".into());
-    }
-    if !still_waiting()? {
-        return Err("Updater stopped waiting before Launcher exit".into());
-    }
-    Ok(())
-}
-
 fn stop_desktop_controller(controller: &mut SupervisedChild) -> Result<(), Box<dyn Error>> {
     if let Some(status) = controller.try_wait()? {
         controller.disarm_cleanup();
@@ -846,22 +694,44 @@ fn supervise_desktop(
     let mut last_desktop_tree_refresh = Instant::now();
     loop {
         #[cfg(target_os = "macos")]
-        if let Err(error) = start_pending_update(&mut started_update_request) {
-            eprintln!("codexhost launcher: pending update could not be started: {error}");
-        }
-        #[cfg(target_os = "macos")]
-        let helper_started = started_update_request.is_some();
-        #[cfg(target_os = "linux")]
-        let helper_started = false;
-        if should_stop_desktop_for_update(helper_started) {
-            if let Err(error) = stop_managed_desktop_for_update(&mut desktop, &mut controller) {
-                eprintln!(
-                    "codexhost launcher: managed Desktop could not be stopped for update: {error}"
-                );
+        match poll_pending_update(&mut started_update_request, |update| {
+            stop_managed_desktop_for_update(&mut desktop, &mut controller, || {
+                update.waiting_for_launcher_exit()
+            })
+        }) {
+            Ok(true) => return Ok(()),
+            Ok(false) => {}
+            Err(error) => {
+                eprintln!("codexhost launcher: update cancellation is pending: {error}");
                 thread::sleep(Duration::from_millis(100));
                 continue;
-            } else {
-                return Ok(());
+            }
+        }
+        #[cfg(target_os = "linux")]
+        let update_waiting = match update_waiting_for_launcher_exit() {
+            Ok(waiting) => waiting,
+            Err(error) => {
+                eprintln!(
+                    "codexhost launcher: pending update exit state could not be read: {error}"
+                );
+                false
+            }
+        };
+        #[cfg(target_os = "linux")]
+        if update_waiting {
+            match stop_managed_desktop_for_update(
+                &mut desktop,
+                &mut controller,
+                update_waiting_for_launcher_exit,
+            ) {
+                Ok(()) => return Ok(()),
+                Err(error) => {
+                    eprintln!(
+                        "codexhost launcher: managed Desktop could not be stopped for update: {error}"
+                    );
+                    thread::sleep(Duration::from_millis(100));
+                    continue;
+                }
             }
         }
         if let Some(status) = controller.try_wait()? {
@@ -944,33 +814,23 @@ fn supervise_desktop(
     startup_trace("runtime descriptor published");
     notify_ready_and_detach()?;
     let mut started_update_request = None;
-    let mut captured_update_descendants = None;
     loop {
-        let previous_update_request = started_update_request.clone();
-        if let Err(error) = start_pending_update(&mut started_update_request) {
-            eprintln!("codexhost launcher: pending update could not be started: {error}");
-        }
-        if started_update_request != previous_update_request {
-            captured_update_descendants = None;
-        }
-        let helper_started = started_update_request.is_some();
-        if should_stop_desktop_for_update(helper_started) {
-            if let Err(error) = stop_managed_desktop_for_update(
+        match poll_pending_update(&mut started_update_request, |update| {
+            stop_managed_desktop_for_update(
                 &mut desktop,
                 &desktop_root,
                 installation,
                 &mut controller,
                 options,
-                &mut captured_update_descendants,
-                update_waiting_for_launcher_exit,
-            ) {
-                eprintln!(
-                    "codexhost launcher: managed Desktop could not be stopped for update: {error}"
-                );
+                || update.waiting_for_launcher_exit(),
+            )
+        }) {
+            Ok(true) => return Ok(()),
+            Ok(false) => {}
+            Err(error) => {
+                eprintln!("codexhost launcher: update cancellation is pending: {error}");
                 thread::sleep(Duration::from_millis(100));
                 continue;
-            } else {
-                return Ok(());
             }
         }
         if let Some(status) = controller.try_wait()? {
@@ -1403,7 +1263,7 @@ mod tests {
     use std::net::TcpListener;
     use std::path::{Path, PathBuf};
     use std::process::Command;
-    #[cfg(any(target_os = "windows", target_os = "macos"))]
+    #[cfg(target_os = "macos")]
     use std::process::Stdio;
     use std::thread;
     #[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
@@ -1415,15 +1275,11 @@ mod tests {
     use codexhost_platform::configure_background_command;
     #[cfg(any(target_os = "windows", target_os = "macos"))]
     use codexhost_platform::spawn_supervised;
-    #[cfg(target_os = "windows")]
-    use codexhost_platform::{DesktopIdentity, DesktopInstallation};
 
     #[cfg(target_os = "windows")]
     use super::PI_COMMAND_ENV;
     #[cfg(any(target_os = "windows", target_os = "macos"))]
     use super::stop_desktop_controller;
-    #[cfg(target_os = "windows")]
-    use super::stop_managed_desktop_for_update;
     #[cfg(target_os = "macos")]
     use super::wait_for_controller_ready;
     #[cfg(target_os = "windows")]
@@ -1440,12 +1296,6 @@ mod tests {
     };
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     use super::{DESKTOP_TREE_REFRESH_INTERVAL, desktop_tree_refresh_due};
-
-    #[cfg(any(target_os = "macos", target_os = "windows"))]
-    #[test]
-    fn does_not_stop_desktop_without_a_launcher_started_helper() {
-        assert!(!super::should_stop_desktop_for_update(false));
-    }
 
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     #[test]
@@ -1536,278 +1386,6 @@ mod tests {
         let mut controller = spawn_supervised(&mut command).expect("spawn Controller fixture");
 
         stop_desktop_controller(&mut controller).expect("stop owned Controller");
-    }
-
-    #[cfg(target_os = "windows")]
-    fn unique_executable_copy(label: &str) -> PathBuf {
-        let source = std::env::var_os("SystemRoot")
-            .map(|root| PathBuf::from(root).join(r"System32\ping.exe"))
-            .unwrap_or_else(|| PathBuf::from(r"C:\Windows\System32\ping.exe"));
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("system time")
-            .as_nanos();
-        let destination = std::env::temp_dir().join(format!(
-            "codexhost-update-stop-fixture-{label}-{}-{nanos}.exe",
-            std::process::id()
-        ));
-        std::fs::copy(&source, &destination).expect("copy update stop fixture executable");
-        destination
-    }
-
-    #[cfg(target_os = "windows")]
-    fn windows_update_fixtures(
-        desktop_executable: PathBuf,
-        shim: PathBuf,
-        node: PathBuf,
-    ) -> (DesktopInstallation, ResolvedLaunchOptions) {
-        let installation = DesktopInstallation {
-            identity: DesktopIdentity::WindowsPackage {
-                package_name: "codexhost-test".into(),
-                package_family_name: "codexhost-test".into(),
-                appx_activation: None,
-            },
-            version: "0.0.0-test".into(),
-            build: "test".into(),
-            asar_integrity: String::new(),
-            install_root: PathBuf::from(r"C:\codexhost-update-stop-test"),
-            desktop_launcher: desktop_executable.clone(),
-            desktop_executable,
-            packaged_codex_cli: PathBuf::new(),
-            executable_codex_cli: PathBuf::new(),
-        };
-        let options = ResolvedLaunchOptions {
-            shim,
-            node,
-            host_runtime: PathBuf::new(),
-            desktop_controller: PathBuf::new(),
-            renderer_extension: PathBuf::new(),
-            pi: None,
-            custom_install_root: None,
-        };
-        (installation, options)
-    }
-
-    #[cfg(target_os = "windows")]
-    fn wait_until_desktop_runs_shim(
-        desktop_root: &codexhost_platform::ProcessSnapshot,
-        shim: &Path,
-    ) {
-        let fixture_name = shim
-            .file_name()
-            .expect("fixture executable name")
-            .to_string_lossy()
-            .to_lowercase();
-        let deadline = std::time::Instant::now() + Duration::from_secs(5);
-        while !codexhost_platform::descendant_process_snapshots(desktop_root, &[])
-            .expect("inspect Desktop descendants")
-            .iter()
-            .any(|process| {
-                process
-                    .executable
-                    .to_string_lossy()
-                    .to_lowercase()
-                    .ends_with(&fixture_name)
-            })
-        {
-            assert!(
-                std::time::Instant::now() < deadline,
-                "the Desktop root did not start the Shim executable"
-            );
-            thread::sleep(Duration::from_millis(20));
-        }
-    }
-
-    #[cfg(target_os = "windows")]
-    fn spawn_controller_fixture() -> codexhost_platform::SupervisedChild {
-        let mut command = Command::new("cmd.exe");
-        command.args(["/d", "/c", "ping", "-n", "30", "127.0.0.1"]);
-        configure_background_command(&mut command);
-        spawn_supervised(&mut command).expect("spawn Controller fixture")
-    }
-
-    #[cfg(target_os = "windows")]
-    #[test]
-    fn update_stop_completes_after_the_root_exits_before_descendant_capture() {
-        let shim = unique_executable_copy("orphan-shim");
-        let desktop_executable = unique_executable_copy("unused-desktop");
-        let node = unique_executable_copy("unused-node");
-        let mut root = Command::new("cmd.exe");
-        root.args(["/d", "/c"])
-            .arg(&shim)
-            .args(["-n", "30", "127.0.0.1", ">nul"])
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null());
-        let mut desktop = codexhost_platform::DesktopProcess::from_child(
-            root.spawn().expect("spawn Desktop root fixture"),
-        );
-        let root_snapshot =
-            codexhost_platform::process_snapshot(desktop.id()).expect("root fixture snapshot");
-        wait_until_desktop_runs_shim(&root_snapshot, &shim);
-        // The user quits the managed Desktop before the update stop captures it.
-        desktop.kill().expect("quit Desktop root fixture");
-        desktop.wait().expect("reap Desktop root fixture");
-
-        let mut controller = spawn_controller_fixture();
-        let (installation, options) =
-            windows_update_fixtures(desktop_executable, shim.clone(), node);
-        let mut captured_descendants = None;
-
-        stop_managed_desktop_for_update(
-            &mut desktop,
-            &root_snapshot,
-            &installation,
-            &mut controller,
-            &options,
-            &mut captured_descendants,
-            || Ok(true),
-        )
-        .expect("complete the update stop after the root exited first");
-
-        assert!(controller.try_wait().expect("Controller status").is_some());
-        assert!(
-            codexhost_platform::running_executable_snapshots(&[&shim])
-                .expect("scan surviving Shim processes")
-                .is_empty(),
-            "the orphaned installation-owned process was terminated"
-        );
-    }
-
-    #[cfg(target_os = "windows")]
-    #[test]
-    fn update_stop_recovers_when_the_owned_chain_is_not_attributable() {
-        let shim = unique_executable_copy("absent-shim");
-        let desktop_executable = unique_executable_copy("unused-desktop");
-        let node = unique_executable_copy("unused-node");
-        let mut root = Command::new("cmd.exe");
-        root.args(["/d", "/c", "ping", "-n", "30", "127.0.0.1", ">nul"])
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null());
-        let mut desktop = codexhost_platform::DesktopProcess::from_child(
-            root.spawn().expect("spawn Desktop root fixture"),
-        );
-        let root_snapshot =
-            codexhost_platform::process_snapshot(desktop.id()).expect("root fixture snapshot");
-        let mut controller = spawn_controller_fixture();
-        let (installation, options) =
-            windows_update_fixtures(desktop_executable, shim.clone(), node);
-        let mut captured_descendants = None;
-
-        stop_managed_desktop_for_update(
-            &mut desktop,
-            &root_snapshot,
-            &installation,
-            &mut controller,
-            &options,
-            &mut captured_descendants,
-            || Ok(true),
-        )
-        .expect("recover the update stop when the chain is not attributable");
-
-        assert!(
-            desktop.try_wait().expect("Desktop root status").is_some(),
-            "the live Desktop root was stopped by the recovery"
-        );
-        assert!(controller.try_wait().expect("Controller status").is_some());
-    }
-
-    #[cfg(target_os = "windows")]
-    #[test]
-    fn update_stop_leaves_the_desktop_running_when_the_updater_is_no_longer_waiting() {
-        let shim = unique_executable_copy("live-shim");
-        let desktop_executable = unique_executable_copy("unused-desktop");
-        let node = unique_executable_copy("unused-node");
-        let mut root = Command::new("cmd.exe");
-        root.args(["/d", "/c"])
-            .arg(&shim)
-            .args(["-n", "30", "127.0.0.1", ">nul"])
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null());
-        let mut desktop = codexhost_platform::DesktopProcess::from_child(
-            root.spawn().expect("spawn Desktop root fixture"),
-        );
-        let root_snapshot =
-            codexhost_platform::process_snapshot(desktop.id()).expect("root fixture snapshot");
-        wait_until_desktop_runs_shim(&root_snapshot, &shim);
-        let mut controller = spawn_controller_fixture();
-        let (installation, options) =
-            windows_update_fixtures(desktop_executable, shim.clone(), node);
-        let mut captured_descendants = None;
-
-        let result = stop_managed_desktop_for_update(
-            &mut desktop,
-            &root_snapshot,
-            &installation,
-            &mut controller,
-            &options,
-            &mut captured_descendants,
-            || Ok(false),
-        );
-
-        assert!(result.is_err());
-        assert!(
-            desktop.try_wait().expect("Desktop root status").is_none(),
-            "the Desktop keeps running when the Updater stopped waiting"
-        );
-        assert!(controller.try_wait().expect("Controller status").is_none());
-        assert!(
-            !codexhost_platform::running_executable_snapshots(&[&shim])
-                .expect("scan the running Shim")
-                .is_empty(),
-            "the captured Shim keeps running"
-        );
-        let _ = desktop.kill();
-        let _ = desktop.wait();
-        let _ = controller.force_terminate();
-        let _ = controller.wait();
-        let _ =
-            codexhost_platform::terminate_executable_snapshots(&[&shim], Duration::from_secs(5));
-    }
-
-    #[cfg(target_os = "windows")]
-    #[test]
-    fn recovered_update_stop_leaves_the_desktop_running_when_the_updater_stopped_waiting() {
-        let shim = unique_executable_copy("absent-shim");
-        let desktop_executable = unique_executable_copy("unused-desktop");
-        let node = unique_executable_copy("unused-node");
-        let mut root = Command::new("cmd.exe");
-        root.args(["/d", "/c", "ping", "-n", "30", "127.0.0.1", ">nul"])
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null());
-        let mut desktop = codexhost_platform::DesktopProcess::from_child(
-            root.spawn().expect("spawn Desktop root fixture"),
-        );
-        let root_snapshot =
-            codexhost_platform::process_snapshot(desktop.id()).expect("root fixture snapshot");
-        let mut controller = spawn_controller_fixture();
-        let (installation, options) =
-            windows_update_fixtures(desktop_executable, shim.clone(), node);
-        let mut captured_descendants = None;
-
-        let result = stop_managed_desktop_for_update(
-            &mut desktop,
-            &root_snapshot,
-            &installation,
-            &mut controller,
-            &options,
-            &mut captured_descendants,
-            || Ok(false),
-        );
-
-        assert!(result.is_err());
-        assert!(
-            desktop.try_wait().expect("Desktop root status").is_none(),
-            "the recovery stops nothing once the Updater stopped waiting"
-        );
-        assert!(controller.try_wait().expect("Controller status").is_none());
-        let _ = desktop.kill();
-        let _ = desktop.wait();
-        let _ = controller.force_terminate();
-        let _ = controller.wait();
     }
 
     #[cfg(target_os = "macos")]

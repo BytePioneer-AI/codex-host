@@ -74,13 +74,27 @@ Host SHALL serialize update starts across current Host processes. After successf
 - **WHEN** the Launcher cannot start the Helper or the Helper exits before confirming the exact live Launcher
 - **THEN** the operation SHALL become `failed`, the managed Desktop SHALL keep running, and the Launcher SHALL NOT repeatedly start that request
 
+#### Scenario: Helper exits after taking the wait position
+- **WHEN** the Helper exits after reporting readiness while the status still says `waiting-for-exit`
+- **THEN** the Launcher SHALL detect the exit through its retained child process handle, record failure, and SHALL NOT begin Desktop shutdown for that stale status
+
 #### Scenario: Windows Desktop does not fully stop
 - **WHEN** Windows cannot terminate the managed Desktop root or its Shim/Host chain remains alive
-- **THEN** the Launcher SHALL terminate captured Desktop descendants by exact process identity, check for late installation-owned processes, remain alive while the Helper is waiting, retry bounded observation, and SHALL NOT let the Helper install over the running chain
+- **THEN** the Launcher SHALL terminate only captured Desktop descendants by exact process identity and check for late installation-owned processes
+- **AND** failed termination, surviving installation-owned processes, or inconclusive inspection SHALL abort the update by stopping and reaping the Helper before recording failure; the Launcher SHALL remain alive until cancellation completes
 
 #### Scenario: Windows descendant capture cannot observe the managed tree
 - **WHEN** the Desktop root exits before the Launcher captures its descendants, or the descendant ancestry is no longer observable while the Helper is waiting
-- **THEN** the Launcher SHALL terminate the installation-owned Desktop, Shim, and Host processes by exact process identity, confirm none remain, and complete the handoff; it SHALL stop nothing once the Helper no longer waits for the Launcher exit
+- **THEN** the Launcher SHALL stop and reap the Helper, record failure, and SHALL NOT terminate processes based only on matching executable paths or repeatedly retry the failed capture
+
+#### Scenario: Windows npm shares a Node executable with unrelated work
+- **WHEN** the managed Host and unrelated processes use a Node executable outside the installation's bundled runtime
+- **THEN** only captured Desktop descendants SHALL be terminated; unrelated Node processes SHALL remain running and SHALL NOT block the final installation-process check
+
+#### Scenario: Windows installation process cannot be inspected
+- **WHEN** a live process has a Toolhelp executable name matching an installation-owned executable but its full identity cannot be inspected
+- **THEN** the final scan SHALL fail instead of treating the process as absent; unrelated protected system processes SHALL be ignored
+- **AND** executable path and start time SHALL be sampled from the same process handle and the final snapshot path SHALL match before the scan reports an installation process
 
 #### Scenario: Windows Launcher process inspection fails
 - **WHEN** the Updater cannot reliably inspect whether the exact Launcher instance is still running

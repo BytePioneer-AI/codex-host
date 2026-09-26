@@ -4,9 +4,9 @@ use super::{node_entrypoint_path, windows_process};
 #[cfg(target_os = "windows")]
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[cfg(target_os = "macos")]
 use std::thread;
-#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[cfg(target_os = "macos")]
 use std::time::{Duration, Instant};
 
 #[cfg(target_os = "linux")]
@@ -130,39 +130,7 @@ pub fn process_snapshot(process_id: u32) -> Result<ProcessSnapshot, PlatformErro
 
 #[cfg(target_os = "windows")]
 pub fn process_snapshot(process_id: u32) -> Result<ProcessSnapshot, PlatformError> {
-    let parent_id = windows_process::process_entries()
-        .map_err(|error| {
-            PlatformError::Io(std::io::Error::new(
-                error.kind(),
-                format!("enumerate processes while inspecting PID {process_id}: {error}"),
-            ))
-        })?
-        .into_iter()
-        .find(|process| process.id == process_id)
-        .ok_or_else(|| PlatformError::NotFound(format!("cannot inspect PID {process_id}")))?
-        .parent_id;
-    let executable = windows_process::process_image_path(process_id).map_err(|source| {
-        PlatformError::ProcessInspection {
-            process_id,
-            operation: "read executable",
-            source,
-        }
-    })?;
-    let started_at_micros =
-        windows_process::process_started_at_micros(process_id).map_err(|source| {
-            PlatformError::ProcessInspection {
-                process_id,
-                operation: "read start time",
-                source,
-            }
-        })?;
-    Ok(ProcessSnapshot {
-        id: process_id,
-        parent_id,
-        process_group_id: process_id,
-        executable,
-        started_at_micros,
-    })
+    windows_process::process_snapshot(process_id)
 }
 
 #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
@@ -819,56 +787,56 @@ pub fn descendant_process_snapshots(
     Ok(snapshots)
 }
 
-/// Terminate every process running one of `executables`, retrying until none
-/// remain or `timeout` elapses. Returns the snapshots still alive when the
-/// timeout was reached, so callers can fail loudly; an empty return confirms
-/// that no process using those executables is still running.
-#[cfg(target_os = "windows")]
-pub fn terminate_executable_snapshots(
-    executables: &[&Path],
-    timeout: Duration,
-) -> Result<Vec<ProcessSnapshot>, PlatformError> {
-    let started = Instant::now();
-    loop {
-        let remaining = running_executable_snapshots(executables)?;
-        if remaining.is_empty() {
-            return Ok(Vec::new());
-        }
-        if started.elapsed() >= timeout {
-            return Ok(remaining);
-        }
-        for snapshot in &remaining {
-            crate::terminate_process_instance(snapshot, true)?;
-        }
-        thread::sleep(Duration::from_millis(100));
-    }
-}
-
-/// Find surviving processes using installation-owned executables, including
-/// late descendants whose parent exited before they could be captured.
+/// Find surviving processes using the requested executables. A matching path
+/// does not establish ownership: shared runtimes may belong to unrelated work.
+/// An inaccessible live process with a matching basename fails closed.
 #[cfg(target_os = "windows")]
 pub fn running_executable_snapshots(
     executables: &[&Path],
+) -> Result<Vec<ProcessSnapshot>, PlatformError> {
+    running_executable_snapshots_with(
+        executables,
+        &windows_process::process_entries()?,
+        process_snapshot,
+        |process_id| {
+            Ok(windows_process::process_entries()?
+                .iter()
+                .any(|entry| entry.id == process_id))
+        },
+    )
+}
+
+#[cfg(target_os = "windows")]
+fn running_executable_snapshots_with(
+    executables: &[&Path],
+    entries: &[windows_process::ProcessEntry],
+    mut snapshot: impl FnMut(u32) -> Result<ProcessSnapshot, PlatformError>,
+    mut is_listed: impl FnMut(u32) -> Result<bool, PlatformError>,
 ) -> Result<Vec<ProcessSnapshot>, PlatformError> {
     let expected = executables
         .iter()
         .map(|path| windows_executable_key(path))
         .collect::<Vec<_>>();
+    let names = executables
+        .iter()
+        .filter_map(|path| path.file_name())
+        .map(|name| windows_executable_key(Path::new(name)))
+        .collect::<Vec<_>>();
     let mut snapshots = Vec::new();
-    for entry in windows_process::process_entries()? {
-        let Ok(executable) = windows_process::process_image_path(entry.id) else {
-            continue;
-        };
-        if !expected.contains(&windows_executable_key(&executable)) {
+    for entry in entries {
+        if !names.contains(&windows_executable_key(&entry.executable_name)) {
             continue;
         }
-        match process_snapshot(entry.id) {
-            Ok(snapshot) => snapshots.push(snapshot),
+        match snapshot(entry.id) {
+            Ok(snapshot) => {
+                // The Toolhelp entry may predate PID reuse. Select only the
+                // executable bound to the final snapshot's process instance.
+                if expected.contains(&windows_executable_key(&snapshot.executable)) {
+                    snapshots.push(snapshot);
+                }
+            }
             Err(error) => {
-                if windows_process::process_entries()?
-                    .iter()
-                    .any(|process| process.id == entry.id)
-                {
+                if is_listed(entry.id)? {
                     return Err(error);
                 }
             }
@@ -1080,220 +1048,8 @@ pub fn process_exists(_process_id: u32) -> bool {
 }
 
 #[cfg(all(test, target_os = "windows"))]
-mod windows_tests {
-    use std::path::Path;
-    use std::process::{Command, Stdio};
-    use std::thread;
-    use std::time::{Duration, Instant};
-
-    use super::{
-        belongs_to_current_parent, descendant_process_snapshots, process_instance_exists,
-        process_snapshot, running_executable_snapshots, terminate_executable_snapshots,
-        windows_descendant_ids, windows_executable_key,
-    };
-    use crate::terminate_process_instance;
-    use crate::windows_process::ProcessEntry;
-
-    fn unique_executable_copy(label: &str) -> std::path::PathBuf {
-        let source = std::env::var_os("SystemRoot")
-            .map(|root| std::path::PathBuf::from(root).join(r"System32\ping.exe"))
-            .unwrap_or_else(|| std::path::PathBuf::from(r"C:\Windows\System32\ping.exe"));
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("system time")
-            .as_nanos();
-        let destination = std::env::temp_dir().join(format!(
-            "codexhost-sweep-fixture-{label}-{}-{nanos}.exe",
-            std::process::id()
-        ));
-        std::fs::copy(&source, &destination).expect("copy sweep fixture executable");
-        destination
-    }
-
-    fn spawn_owned_fixture(executable: &Path) -> std::process::Child {
-        std::process::Command::new(executable)
-            .args(["-n", "30", "127.0.0.1"])
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .expect("spawn owned process fixture")
-    }
-
-    #[test]
-    fn treats_verbatim_and_regular_windows_executable_paths_as_equal() {
-        assert_eq!(
-            windows_executable_key(Path::new(r"\\?\D:\Program\node.exe")),
-            windows_executable_key(Path::new(r"d:\program\node.exe")),
-        );
-    }
-
-    #[test]
-    fn captures_descendants_before_intermediate_parents_exit() {
-        let entries = [
-            ProcessEntry {
-                id: 1,
-                parent_id: 0,
-            },
-            ProcessEntry {
-                id: 2,
-                parent_id: 1,
-            },
-            ProcessEntry {
-                id: 3,
-                parent_id: 2,
-            },
-            ProcessEntry {
-                id: 4,
-                parent_id: 3,
-            },
-        ];
-        assert_eq!(windows_descendant_ids(1, &entries), [2, 3, 4]);
-        // A post-shutdown snapshot cannot rediscover the surviving orphan chain.
-        assert!(windows_descendant_ids(1, &entries[2..]).is_empty());
-    }
-
-    #[test]
-    fn finds_the_current_windows_process_by_executable() {
-        // Use this test binary rather than cmd.exe: parallel tests may launch
-        // unrelated cmd.exe children whose images are not always inspectable.
-        let current = process_snapshot(std::process::id()).expect("current process snapshot");
-        let matching = running_executable_snapshots(&[&current.executable])
-            .expect("scan the current executable");
-        assert!(matching.iter().any(|snapshot| snapshot.id == current.id));
-    }
-
-    #[test]
-    fn checks_the_exact_windows_process_instance() {
-        let current = process_snapshot(std::process::id()).expect("current process snapshot");
-        assert!(
-            process_instance_exists(current.id, current.started_at_micros)
-                .expect("inspect current instance")
-        );
-        assert!(
-            !process_instance_exists(current.id, current.started_at_micros.saturating_add(1))
-                .expect("reject another instance")
-        );
-    }
-
-    #[test]
-    fn terminates_captured_descendants_after_the_windows_root_exits() {
-        let mut root = Command::new("cmd.exe")
-            .args(["/d", "/c", "ping -n 10 127.0.0.1 >NUL"])
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .expect("start process tree root");
-        let root_snapshot = process_snapshot(root.id()).expect("root process snapshot");
-        let deadline = Instant::now() + Duration::from_secs(3);
-        let captured = loop {
-            let snapshots = descendant_process_snapshots(&root_snapshot, &[])
-                .expect("inspect process tree descendants");
-            if !snapshots.is_empty() {
-                break Some(snapshots);
-            }
-            if Instant::now() >= deadline {
-                break None;
-            }
-            thread::sleep(Duration::from_millis(20));
-        };
-        let captured = captured.expect("cmd.exe did not start its ping.exe descendant");
-        let required_executable = &captured[0].executable;
-        let required = descendant_process_snapshots(&root_snapshot, &[required_executable])
-            .expect("capture the required descendant executable");
-        assert!(
-            required
-                .iter()
-                .any(|snapshot| snapshot.id == captured[0].id)
-        );
-        let _ = root.kill();
-        let _ = root.wait();
-        assert!(
-            !process_instance_exists(root_snapshot.id, root_snapshot.started_at_micros)
-                .expect("observe stopped root")
-        );
-        for descendant in &captured {
-            terminate_process_instance(descendant, true).expect("terminate captured descendant");
-        }
-        for descendant in &captured {
-            let deadline = Instant::now() + Duration::from_secs(2);
-            while process_instance_exists(descendant.id, descendant.started_at_micros)
-                .expect("observe terminated descendant")
-                && Instant::now() < deadline
-            {
-                thread::sleep(Duration::from_millis(20));
-            }
-            assert!(
-                !process_instance_exists(descendant.id, descendant.started_at_micros)
-                    .expect("confirm descendant exit")
-            );
-        }
-    }
-
-    #[test]
-    fn rejects_an_old_orphan_after_its_parent_pid_is_reused() {
-        let parent = super::ProcessSnapshot {
-            id: 42,
-            parent_id: 1,
-            process_group_id: 42,
-            executable: "parent.exe".into(),
-            started_at_micros: 200,
-        };
-        let old_orphan = super::ProcessSnapshot {
-            id: 43,
-            parent_id: 42,
-            process_group_id: 43,
-            executable: "old-child.exe".into(),
-            started_at_micros: 100,
-        };
-        assert!(!belongs_to_current_parent(&parent, &old_orphan));
-    }
-
-    #[test]
-    fn sweeps_owned_processes_until_none_remain() {
-        let executable = unique_executable_copy("terminate");
-        let mut child = spawn_owned_fixture(&executable);
-        let snapshot = process_snapshot(child.id()).expect("fixture process snapshot");
-
-        let remaining = terminate_executable_snapshots(&[&executable], Duration::from_secs(5))
-            .expect("sweep owned processes");
-
-        assert!(remaining.is_empty());
-        let deadline = Instant::now() + Duration::from_secs(2);
-        while process_instance_exists(snapshot.id, snapshot.started_at_micros)
-            .expect("confirm swept fixture exit")
-            && Instant::now() < deadline
-        {
-            thread::sleep(Duration::from_millis(20));
-        }
-        assert!(
-            !process_instance_exists(snapshot.id, snapshot.started_at_micros)
-                .expect("confirm swept fixture exit")
-        );
-        let _ = child.wait();
-        let _ = std::fs::remove_file(&executable);
-    }
-
-    #[test]
-    fn sweep_reports_surviving_snapshots_when_the_timeout_is_reached() {
-        let executable = unique_executable_copy("report");
-        let mut child = spawn_owned_fixture(&executable);
-        let snapshot = process_snapshot(child.id()).expect("fixture process snapshot");
-
-        let remaining = terminate_executable_snapshots(&[&executable], Duration::ZERO)
-            .expect("report owned survivors");
-
-        assert!(remaining.iter().any(|process| process.id == snapshot.id));
-        assert!(
-            process_instance_exists(snapshot.id, snapshot.started_at_micros)
-                .expect("fixture survives a zero-timeout sweep")
-        );
-        let _ = child.kill();
-        let _ = child.wait();
-        let _ = std::fs::remove_file(&executable);
-    }
-}
+#[path = "process_windows_tests.rs"]
+mod windows_tests;
 
 #[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
 mod tests {

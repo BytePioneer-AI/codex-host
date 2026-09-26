@@ -74,7 +74,6 @@ pub use process::{
 pub use process::{
     descendant_process_snapshots, desktop_process_ids, desktop_root_process_ids,
     process_instance_exists, process_started_at_micros, running_executable_snapshots,
-    terminate_executable_snapshots,
 };
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 pub use process::{

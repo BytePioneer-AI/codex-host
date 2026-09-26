@@ -9,12 +9,14 @@ Renderer 更新指令 → Host 准备请求与状态 → Launcher 启动 Updater
                                         → Updater 安装、重启并确认新 Launcher
 ```
 
-Launcher 持有 Desktop 生命周期，在看到指向自身的 `prepared` 请求后启动临时 `codexhost-updater.exe`，转交活动锁，并等待 Helper 确认 `waiting-for-exit`。Helper 在确认确切、仍存活的 Launcher 可执行文件与进程实例后才发布该状态。若 Helper 启动或就绪失败，请求变为 `failed`，Launcher 保持 Desktop 运行，不重复启动同一请求；用户可重新发起更新。
+Launcher 持有 Desktop 生命周期，在看到指向自身的 `prepared` 请求后启动临时 `codexhost-updater.exe`，转交活动锁，并等待 Helper 确认 `waiting-for-exit`。Helper 在确认确切、仍存活的 Launcher 可执行文件与进程实例后才发布该状态。Launcher 保留 Helper 的子进程句柄，关闭 Desktop 前及交接期间持续核对进程存活和当前请求。若 Helper 启动、就绪或后续存活检查失败，请求变为 `failed`；尚未开始关闭的 Desktop 保持运行，不重复启动同一请求，用户可重新发起更新。
 
-Helper 就绪后，Launcher 先按 PID 和启动时间记录 Desktop 根进程及后代。Windows 子进程不会因父进程退出而自动结束，因此 Launcher 终止根进程后，还会逐个按确切实例终止已确认归属的后代，并等待退出。后代归属必须有仍存活的父实例，且子进程不能早于父实例启动，避免把复用父 PID 的旧孤儿进程误杀。Launcher 随后停止 Desktop Controller，并扫描安装所用的 Desktop、Shim 和 Host 可执行文件路径，以发现快照之后生成的进程。只要这些进程仍存活，Launcher 就不退出，Helper 也不会覆盖安装文件。
+Helper 就绪后，Launcher 先按 PID 和启动时间记录 Desktop 根进程及后代。Windows 子进程不会因父进程退出而自动结束，因此 Launcher 终止根进程后，还会逐个按确切实例终止已确认归属的后代，并等待退出。后代归属必须有仍存活的父实例，且子进程不能早于父实例启动，避免把复用父 PID 的旧孤儿进程误杀。Launcher 随后停止 Desktop Controller，并只读扫描 Desktop、Shim 和安装内捆绑的 Node 可执行文件路径，以发现快照之后生成的进程。npm 或 `--node` 使用的共享系统 Node 不属于被替换的安装文件，不参与全局退出检查；已确认属于 Desktop 的 Node 后代仍必须退出。
 
-若后代捕获无法完成——例如 Desktop 根进程在 Helper 就绪与捕获之间自行退出，或归属链不再可观察——Launcher 不会反复重试注定失败的捕获。此时它改用同一套安装所属可执行文件扫描，逐个按确切实例终止现存进程并确认全部退出，再完成交接；若 Helper 已不再等待，则不停止任何进程。残留进程无法在限时内清除时，更新失败并保持可重试。
+若后代捕获无法完成——例如 Desktop 根进程在 Helper 就绪与捕获之间自行退出，或归属链不再可观察——Launcher 立即中止更新，不反复捕获，也不按可执行文件路径清扫其他进程。终止已归属进程失败、最终扫描发现残留或检查失败同样中止更新。中止时先停止并回收 Helper，再记录 `failed`；取消未完成时 Launcher 保持存活，避免普通退出分支意外放行安装。仅路径相同不足以证明归属，其他 Node 任务或独立 Desktop 实例不会因此被强杀。
 
 Updater 等待旧 Launcher 时以 PID 和启动时间核对进程实例；Windows 进程枚举或检查失败不能当作“已退出”。只有旧实例确实退出后，Updater 才执行对应的精确版本 npm 安装或已校验 SHA-256 的静默安装器，随后重新启动 codexhost，并等待新 Launcher 发布运行时描述符。安装、重启或检查失败都写入 `failed`，不会自动提权。
 
-AppX Desktop 不能假设可由 Launcher 的 Job 原子封闭。后代快照和最终可执行文件扫描是安全边界：扫描到残留进程会阻止更新完成；无法检查的进程或扫描之后的极端新建进程仍需通过真实升级与故障注入验证。
+进程快照在同一 Windows 进程句柄下读取映像路径和启动时间，最终扫描再次核对该快照路径。无法读取完整映像时，Toolhelp 的可执行文件名用于区分相关候选与无关受保护进程：同名且仍存活的候选会阻止更新，System、CSRSS 等无关进程不会使所有更新失败。
+
+AppX Desktop 不能假设可由 Launcher 的 Job 原子封闭。后代快照和最终只读扫描仍不能排除扫描结束之后才创建的新进程；真实安装器升级及失败恢复需要独立 Windows 环境验证。

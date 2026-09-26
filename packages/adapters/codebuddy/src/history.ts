@@ -4,12 +4,7 @@ import { access, readdir, realpath } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
-import type {
-  HostItemSnapshot,
-  HostThreadSnapshot,
-  HostTurnSnapshot,
-  HostUsage,
-} from "@codexhost/harness-adapter";
+import type { HostItemSnapshot, HostTurnSnapshot, HostUsage } from "@codexhost/harness-adapter";
 import {
   hostItemIdSchema,
   nativeCheckpointRefSchema,
@@ -475,16 +470,20 @@ export function nativeHistoryRows(contents: string) {
   return chain.reverse();
 }
 
+// CodeBuddy's native history mapper resolves every Item to a terminal
+// outcome; preserve that narrower fact for its live command-result replay.
+type CodeBuddyTurnSnapshot = Omit<HostTurnSnapshot, "items"> & { items: HostItemSnapshot[] };
+
 export function snapshotFromHistory(
   contents: string,
   ref: NativeSessionRef,
   cwd: string,
   profile: CodeBuddyRuntimeProfile = CODEBUDDY_RUNTIME_PROFILE,
-): HostThreadSnapshot {
+): { turns: CodeBuddyTurnSnapshot[] } {
   const supportsNativeCommands = nativeCommandsEnabled(profile);
   const supportsFork = capabilitiesForProfile(profile).history.fork;
-  const turns: HostTurnSnapshot[] = [];
-  let current: HostTurnSnapshot | undefined;
+  const turns: CodeBuddyTurnSnapshot[] = [];
+  let current: CodeBuddyTurnSnapshot | undefined;
   const tools = new Map<string, HostItemSnapshot>();
   // CodeBuddy persists a Tool call and its result from separate writers, so a call that
   // is refused before it runs can land its result first. Hold such a result until its

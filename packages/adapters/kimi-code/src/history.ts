@@ -14,7 +14,6 @@ import {
   type HostItemSnapshot,
   type HostReasoningItem,
   type HostTextInput,
-  type HostThreadSnapshot,
   type HostToolExecutionItem,
   type HostTurnSnapshot,
   type HostUsage,
@@ -191,11 +190,15 @@ export interface KimiNativeTurnBuilder {
   fileHistoryCheckpoint: Map<string, { key: string; version: number; size?: number }>;
 }
 
+// Kimi's native history mapper resolves every Item to a terminal outcome;
+// keep that narrower fact for live replay of the correlated native Turn.
+export type KimiTurnSnapshot = Omit<HostTurnSnapshot, "items"> & { items: HostItemSnapshot[] };
+
 export async function parseKimiWireLog(
   wireContent: string,
   sessionId: string,
   mainHomeDir?: string,
-): Promise<HostTurnSnapshot[]> {
+): Promise<KimiTurnSnapshot[]> {
   const turns = new Map<number, KimiNativeTurnBuilder>();
   let eventOrder = 0;
 
@@ -421,7 +424,7 @@ export async function parseKimiWireLog(
     }
   }
 
-  const snapshots: HostTurnSnapshot[] = [];
+  const snapshots: KimiTurnSnapshot[] = [];
 
   for (const [turnId, turn] of turns.entries()) {
     const items: HostItemSnapshot[] = [];
@@ -655,7 +658,7 @@ export async function parseKimiWireLog(
 export async function readKimiSessionSnapshot(
   sessionId: string,
   options: { homeDirectory?: string; kimiCodeHome?: string } = {},
-): Promise<HostThreadSnapshot> {
+): Promise<{ turns: KimiTurnSnapshot[] }> {
   const located = await locateKimiSession(sessionId, options);
   if (!located) {
     throw new Error(`Kimi native session not found: ${sessionId}`);

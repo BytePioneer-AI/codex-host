@@ -3,11 +3,12 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { InitializeResponse, PromptResponse } from "@agentclientprotocol/sdk";
-import type { HarnessOutput, HostInteraction, HostTurnSnapshot } from "@codexhost/harness-adapter";
+import type { HarnessOutput, HostInteraction } from "@codexhost/harness-adapter";
 import { hostTurnIdSchema } from "@codexhost/shared-contracts";
 import { KimiAdapter, type KimiAcpTransportLike } from "../src/kimi-adapter.js";
 import { KimiSession } from "../src/kimi-session.js";
 import { readKimiCommandHistory } from "../src/command-history.js";
+import type { KimiTurnSnapshot } from "../src/history.js";
 import { createHostItemFromToolState, KimiToolCallAccumulator } from "../src/projection.js";
 import * as projection from "../src/projection.js";
 import {
@@ -56,7 +57,7 @@ function nativeTurn(
   key: number,
   text: string,
   status: "unknown" | "succeeded" = "succeeded",
-): HostTurnSnapshot {
+): KimiTurnSnapshot {
   return {
     nativeTurnRef: createKimiNativeTurnRef("review-session", key),
     input: [{ type: "text", text }],
@@ -77,7 +78,7 @@ describe("Kimi PR review regressions", () => {
     "completes a turn with %s usage and accepts the next turn",
     async (scenario) => {
       const transport = new Transport();
-      const turns: HostTurnSnapshot[] = [];
+      const turns: KimiTurnSnapshot[] = [];
       const usage = { inputTokens: 10, outputTokens: 5, totalTokens: 15 };
       transport.prompt.mockImplementation(async (text) => {
         turns.push(nativeTurn(turns.length, text));

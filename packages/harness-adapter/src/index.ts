@@ -14,9 +14,11 @@ export { parseHostUsage } from "./usage.js";
 export type { HostUsage } from "./usage.js";
 export type {
   AutonomousTurnStartedEvent,
+  BackgroundTaskChangedEvent,
   CreateSessionInput,
   ForkSessionInput,
   HarnessAdapter,
+  HarnessBackgroundTaskCapability,
   HarnessCommandAccepted,
   HarnessCommandCapability,
   HarnessCommandInvocation,
@@ -54,7 +56,11 @@ export type {
   HostEvent,
   HostFileChange,
   HostFileChangeItem,
+  HistoricalItemOutcome,
   HistoricalTurnOutcome,
+  HostBackgroundTask,
+  HostBackgroundTaskStatus,
+  HostHistoricalItemSnapshot,
   HostInteraction,
   HostInteractionResponse,
   HostItem,

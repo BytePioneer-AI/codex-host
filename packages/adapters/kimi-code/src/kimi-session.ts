@@ -28,7 +28,6 @@ import {
   type HostQuestionInteraction,
   type HostReasoningItem,
   type HostThreadSnapshot,
-  type HostTurnSnapshot,
   type HostUsage,
   type InteractionRespondAccepted,
   type InteractionRespondCommand,
@@ -67,6 +66,7 @@ import {
   createKimiNativeTurnRef,
   readKimiSessionSnapshot,
   readKimiSessionUsage,
+  type KimiTurnSnapshot,
 } from "./history.js";
 import {
   decodeKimiModelRefId,
@@ -144,7 +144,7 @@ export interface KimiSessionOptions {
   contextWindowTokens?: number;
   homeDirectory?: string;
   kimiCodeHome?: string;
-  readNativeSnapshot?: () => Promise<HostThreadSnapshot>;
+  readNativeSnapshot?: () => Promise<{ turns: KimiTurnSnapshot[] }>;
   nativeTurnFlushTimeoutMs?: number;
   onCommandsUpdate?: (catalog: HarnessCommandCatalog) => void;
 }
@@ -163,7 +163,7 @@ export class KimiSession implements HarnessSession {
   #contextWindowTokens: number;
   #homeDirectory: string | undefined;
   #kimiCodeHome: string | undefined;
-  #readNativeSnapshot: () => Promise<HostThreadSnapshot>;
+  #readNativeSnapshot: () => Promise<{ turns: KimiTurnSnapshot[] }>;
   #nativeTurnFlushTimeoutMs: number;
   #closed = false;
   #faulted = false;
@@ -429,7 +429,7 @@ export class KimiSession implements HarnessSession {
     }
   }
 
-  async #readNativeTurns(): Promise<HostTurnSnapshot[]> {
+  async #readNativeTurns(): Promise<KimiTurnSnapshot[]> {
     return (await this.#readNativeSnapshot()).turns;
   }
 
@@ -819,7 +819,7 @@ export class KimiSession implements HarnessSession {
     if (isCommandTurn) appendAgentText(formatKimiCommandOutput(commandOutput));
     completeAgentMessage(hasHadToolCallsInTurn ? "final_answer" : undefined);
 
-    let currentNativeTurn: HostTurnSnapshot | null = null;
+    let currentNativeTurn: KimiTurnSnapshot | null = null;
     if (isCommandTurn) {
       const outcome: TurnOutcome = promptError
         ? {
@@ -829,7 +829,7 @@ export class KimiSession implements HarnessSession {
         : promptResponse?.stopReason === "cancelled"
           ? { status: "cancelled", reason: "Native command cancelled" }
           : { status: "succeeded" };
-      const commandTurn: HostTurnSnapshot = {
+      const commandTurn: KimiTurnSnapshot = {
         nativeTurnRef: createKimiNativeTurnRef(this.#sessionId, `command:${turnId}`),
         input: command.input,
         items: completedItems,
@@ -960,12 +960,12 @@ export class KimiSession implements HarnessSession {
   async #waitForNativeTurn(
     previousKeys: ReadonlySet<string>,
     inputText: string,
-  ): Promise<{ turn: HostTurnSnapshot | null; error: Error | null }> {
+  ): Promise<{ turn: KimiTurnSnapshot | null; error: Error | null }> {
     const deadline = Date.now() + this.#nativeTurnFlushTimeoutMs;
     const normalizedInput = inputText.trim();
     let lastError: Error | null = null;
     let pollInterval = nativeTurnFlushPollMs;
-    let lastCandidateTurn: HostTurnSnapshot | null = null;
+    let lastCandidateTurn: KimiTurnSnapshot | null = null;
 
     do {
       try {

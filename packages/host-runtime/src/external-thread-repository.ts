@@ -2,7 +2,11 @@ import { randomUUID } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 
-import type { HostSubagentState, HostThreadSnapshot } from "@codexhost/harness-adapter";
+import type {
+  HostBackgroundTask,
+  HostSubagentState,
+  HostThreadSnapshot,
+} from "@codexhost/harness-adapter";
 import {
   MappingStore,
   type CommitReadyThreadInput,
@@ -27,6 +31,7 @@ import {
   type NativeTurnRef,
 } from "@codexhost/shared-contracts";
 import {
+  materializeExternalBackgroundTask,
   materializeExternalSubagent,
   projectExternalSnapshot,
 } from "./external-subagent-threads.js";
@@ -122,6 +127,10 @@ export class ExternalThreadRepository {
 
   materializeSubagent(parent: StoredThreadRecordV1, child: HostSubagentState) {
     return materializeExternalSubagent(this.store, parent, child);
+  }
+
+  materializeBackgroundTask(parent: StoredThreadRecordV1, task: HostBackgroundTask) {
+    return materializeExternalBackgroundTask(this.store, parent, task);
   }
 
   findByCreateRequest(createRequestId: string): Promise<StoredThreadRecordV1 | null> {

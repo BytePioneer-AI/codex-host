@@ -720,6 +720,103 @@ describe("ClaudeSdkTransport Tool interpretation", () => {
   });
 });
 
+describe("ClaudeSdkTransport background commands", () => {
+  it("publishes native background Bash facts on the Thread channel without a Turn", async () => {
+    const value = fixture();
+    const threadEvents: ClaudeTurnEvent[] = [];
+    value.transport.setAutonomousTurnHandler(() => undefined);
+    value.transport.setThreadEventHandler((event) => threadEvents.push(event));
+    await value.transport.start();
+    const session = { session_id: "00000000-0000-4000-8000-000000000001" };
+    const task = { task_id: "b0nwqjkbx", task_type: "local_bash", description: "sleep 5" };
+    for (const message of [
+      { type: "system", subtype: "background_tasks_changed", tasks: [task], ...session },
+      { type: "system", subtype: "task_started", ...task, ...session },
+      { type: "system", subtype: "background_tasks_changed", tasks: [], ...session },
+      {
+        type: "system",
+        subtype: "task_updated",
+        task_id: task.task_id,
+        patch: { status: "failed" },
+        ...session,
+      },
+    ]) {
+      value.fakeQuery.push(message as unknown as SDKMessage);
+    }
+    await vi.waitFor(() =>
+      expect(
+        threadEvents.flatMap((event) =>
+          event.type === "backgroundCommand.changed" ? [event.command.task.status] : [],
+        ),
+      ).toEqual(["running", "unknown", "failed"]),
+    );
+    await value.transport.close();
+  });
+
+  it("settles Subagents but not background commands from task notifications", async () => {
+    const value = fixture();
+    const threadEvents: ClaudeTurnEvent[] = [];
+    value.transport.setAutonomousTurnHandler(() => undefined);
+    value.transport.setThreadEventHandler((event) => threadEvents.push(event));
+    await value.transport.start();
+    const session = { session_id: "00000000-0000-4000-8000-000000000001" };
+    const notification = (taskId: string, callId: string) => ({
+      type: "system",
+      subtype: "task_notification",
+      task_id: taskId,
+      tool_use_id: callId,
+      status: "completed",
+      output_file: `/tmp/${taskId}.output`,
+      summary: "done",
+      ...session,
+    });
+    for (const message of [
+      {
+        type: "system",
+        subtype: "task_started",
+        task_id: "bash-task",
+        task_type: "local_bash",
+        description: "sleep 5",
+        ...session,
+      },
+      notification("bash-task", "bash-call"),
+      {
+        type: "user",
+        uuid: "00000000-0000-4000-8000-000000000050",
+        parent_tool_use_id: null,
+        origin: { kind: "task-notification" },
+        message: {
+          role: "user",
+          content:
+            "<task-notification><task-id>bash-task</task-id><tool-use-id>bash-call</tool-use-id><status>completed</status></task-notification>",
+        },
+        ...session,
+      },
+      // An unknown task type keeps the existing Subagent settlement semantics.
+      notification("agent-task", "agent-call"),
+    ]) {
+      value.fakeQuery.push(message as unknown as SDKMessage);
+    }
+    await vi.waitFor(() =>
+      expect(threadEvents.filter((event) => event.type === "subagent.settled")).toEqual([
+        {
+          type: "subagent.settled",
+          nativeSubagentId: "agent-task",
+          callId: "agent-call",
+          status: "completed",
+          resultSummary: "done",
+        },
+      ]),
+    );
+    expect(
+      threadEvents.flatMap((event) =>
+        event.type === "backgroundCommand.changed" ? [event.command.task.status] : [],
+      ),
+    ).toEqual(["running", "completed"]);
+    await value.transport.close();
+  });
+});
+
 describe("ClaudeSdkTransport autonomous task continuation", () => {
   it("publishes Root output produced after a background task notification", async () => {
     const value = fixture();

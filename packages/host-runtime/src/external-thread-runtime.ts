@@ -497,20 +497,29 @@ export class ExternalThreadRuntime {
       });
     }
     if (record.subagent) {
+      const { nativeSubagentId, nativeBackgroundTaskId } = record.subagent;
+      const parent = record.nativeSessionRef as NativeSessionRef;
       const subagents = adapter.subagents;
-      if (!subagents) {
+      const backgroundTasks = adapter.backgroundTasks;
+      // Background task IDs are never Subagent IDs; each child reads its own native source.
+      const readChild =
+        nativeSubagentId !== undefined && subagents
+          ? () => subagents.readSnapshot({ parent, nativeSubagentId, cwd: record.cwd })
+          : nativeBackgroundTaskId !== undefined && backgroundTasks
+            ? () =>
+                backgroundTasks.readSnapshot({
+                  parent,
+                  nativeTaskId: nativeBackgroundTaskId,
+                  cwd: record.cwd,
+                })
+            : null;
+      if (!readChild) {
         throw new ExternalThreadOpenError({
           code: -32077,
           message: "External Harness Subagent history is unavailable",
         });
       }
-      const subagent = record.subagent;
-      const parent = record.nativeSessionRef as NativeSessionRef;
-      const snapshot = await subagents.readSnapshot({
-        parent,
-        nativeSubagentId: subagent.nativeSubagentId,
-        cwd: record.cwd,
-      });
+      const snapshot = await readChild();
       const latest = await this.#repository.find(record.hostThreadId);
       if (
         latest?.state === "ready" &&
@@ -526,12 +535,7 @@ export class ExternalThreadRuntime {
         record.harnessId,
         record.nativeSessionRef as NativeSessionRef,
         snapshot.value,
-        () =>
-          subagents.readSnapshot({
-            parent,
-            nativeSubagentId: subagent.nativeSubagentId,
-            cwd: record.cwd,
-          }),
+        readChild,
       );
       const aligned = await this.#repository.alignSnapshot(record, snapshot.value);
       const sessionId = await this.#repository.sessionTreeId(aligned.record);

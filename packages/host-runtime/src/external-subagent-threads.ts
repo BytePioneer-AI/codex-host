@@ -1,6 +1,10 @@
 import { createHash, randomUUID } from "node:crypto";
 
-import type { HostSubagentState, HostThreadSnapshot } from "@codexhost/harness-adapter";
+import type {
+  HostBackgroundTask,
+  HostSubagentState,
+  HostThreadSnapshot,
+} from "@codexhost/harness-adapter";
 import type { StoredThreadRecordV1 } from "@codexhost/mapping-store";
 import { projectHistoricalTurn, type JsonObject } from "@codexhost/protocol-core";
 import { hostThreadIdSchema, type NativeSessionRef } from "@codexhost/shared-contracts";
@@ -11,11 +15,12 @@ function childCreateRequest(
   parent: Pick<StoredThreadRecordV1, "hostThreadId" | "harnessId">,
   nativeRef: NativeSessionRef,
   id: string,
+  kind: "subagent" | "background-task" = "subagent",
 ) {
   const key = createHash("sha256")
     .update(JSON.stringify([parent.hostThreadId, parent.harnessId, nativeRef.nativeSessionId, id]))
     .digest("hex");
-  return `subagent:${key}`;
+  return `${kind}:${key}`;
 }
 
 /** Indexed for current records; legacy metadata is scanned at most once per Snapshot. */
@@ -43,7 +48,11 @@ function subagentMaterializer(
       const byRequest = new Map<string, StoredThreadRecordV1>();
       const children = new Map<string, StoredThreadRecordV1[]>();
       for (const record of records) {
-        if (!record.subagent || record.harnessId !== parent.harnessId || !record.nativeSessionRef)
+        if (
+          !record.subagent?.nativeSubagentId ||
+          record.harnessId !== parent.harnessId ||
+          !record.nativeSessionRef
+        )
           continue;
         const owner = {
           hostThreadId: record.subagent.parentHostThreadId,
@@ -69,7 +78,7 @@ function subagentMaterializer(
     if (
       !previousRef ||
       !owner.nativeSessionRef ||
-      !existing.subagent ||
+      !existing.subagent?.nativeSubagentId ||
       visited.has(existing.hostThreadId)
     ) {
       throw new Error("Invalid retained Subagent Session tree");
@@ -151,6 +160,46 @@ function subagentMaterializer(
           nativeSessionRef: nativeRef,
         });
   };
+}
+
+/**
+ * A background task gets one read-only child per parent Native Session. Its
+ * detail is always read from the Adapter; only locating metadata is stored.
+ */
+export async function materializeExternalBackgroundTask(
+  store: ExternalThreadStore,
+  parent: StoredThreadRecordV1,
+  task: HostBackgroundTask,
+): Promise<StoredThreadRecordV1 | null> {
+  if (!parent.nativeSessionRef || parent.state !== "ready") return null;
+  const nativeSessionRef = parent.nativeSessionRef;
+  const createRequestId = childCreateRequest(
+    parent,
+    nativeSessionRef,
+    task.nativeTaskId,
+    "background-task",
+  );
+  const provisional =
+    (await store.getThreadByCreateRequest(createRequestId)) ??
+    (await store.createProvisional({
+      hostThreadId: hostThreadIdSchema.parse(randomUUID()),
+      createRequestId,
+      harnessId: parent.harnessId,
+      cwd: parent.cwd,
+      // Stored titles are bounded; the Adapter keeps the full native facts.
+      title: `Background command · ${task.description}`.slice(0, 4_096),
+      transportModelId: parent.transportModelId,
+      ephemeral: parent.ephemeral,
+      historyMode: "paginated",
+      subagent: {
+        parentHostThreadId: parent.hostThreadId,
+        nativeBackgroundTaskId: task.nativeTaskId,
+        role: "background-command",
+      },
+    }));
+  return provisional.state === "ready"
+    ? provisional
+    : store.commitReady({ hostThreadId: provisional.hostThreadId, nativeSessionRef });
 }
 
 /** The same native child must have one Host identity in live events and restored history. */

@@ -38,6 +38,7 @@ import type {
   InspectHarnessInput,
   HostAgentMessageItem,
   HostApprovalInteraction,
+  HostBackgroundTask,
   HostCommand,
   HostCommandExecutionItem,
   HostEvent,
@@ -547,6 +548,10 @@ export class FakeHarnessSession implements HarnessSession {
         ...(resultSummary ? { resultSummary } : {}),
       },
     });
+  }
+
+  emitBackgroundTask(task: HostBackgroundTask): void {
+    this.#channel.emit({ kind: "event", event: { type: "backgroundTask.changed", task } });
   }
 
   replaceToolOutput(itemId: HostItemId, output: HostToolOutput): void {

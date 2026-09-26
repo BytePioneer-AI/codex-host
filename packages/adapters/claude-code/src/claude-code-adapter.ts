@@ -73,6 +73,12 @@ import {
   type NativeTurnRef,
 } from "@codexhost/shared-contracts";
 
+import {
+  claudeBackgroundCommandFromTranscript,
+  claudeBackgroundCommandSnapshot,
+  readClaudeBackgroundOutput,
+  type ClaudeBackgroundCommand,
+} from "./background-commands.js";
 import { ClaudeBackgroundOccupancy } from "./background-occupancy.js";
 import { ClaudeSessionImportIndex } from "./claude-session-import.js";
 import { ClaudeCodeExecutableError, resolveClaudeCodeExecutable } from "./command.js";
@@ -552,6 +558,8 @@ class ClaudeHarnessSession implements HarnessSession {
   #requestUsageBoundary = 0;
   #autonomousOrdinal = 0;
   #occupancy = new ClaudeBackgroundOccupancy();
+  /** Latest observed background commands of this Native Session, across CLI processes. */
+  readonly #backgroundCommands = new Map<string, ClaudeBackgroundCommand>();
   #cancelEscalation: ReturnType<typeof setTimeout> | null = null;
   #continuationQuiescence: ReturnType<typeof setTimeout> | null = null;
 
@@ -1024,6 +1032,23 @@ class ClaudeHarnessSession implements HarnessSession {
     );
   }
 
+  observedBackgroundCommand(
+    sessionId: string,
+    nativeTaskId: string,
+  ): ClaudeBackgroundCommand | undefined {
+    return this.#sessionId === sessionId ? this.#backgroundCommands.get(nativeTaskId) : undefined;
+  }
+
+  /** Its CLI process ended, so nothing that process reported can still be running. */
+  #endBackgroundCommands(): void {
+    for (const [nativeTaskId, command] of this.#backgroundCommands) {
+      if (command.task.status !== "running") continue;
+      const ended = { ...command, task: { ...command.task, status: "unknown" as const } };
+      this.#backgroundCommands.set(nativeTaskId, ended);
+      this.#event({ type: "backgroundTask.changed", task: ended.task });
+    }
+  }
+
   async prepareRollback(sessionId: string): Promise<HarnessResult<unknown>> {
     return this.#sessionId === sessionId ? this.readSnapshot() : { ok: true, value: null };
   }
@@ -1380,6 +1405,7 @@ class ClaudeHarnessSession implements HarnessSession {
     );
     if (this.#transport !== closingTransport) await settle(this.#transport?.close());
     if (failures.length === 0) await settle(this.#releaseUnusedClaim());
+    this.#endBackgroundCommands();
     const active = this.#active;
     if (active)
       this.#finishFailed(active, invalidState("Claude Code Session closed during active Turn"));
@@ -1434,6 +1460,10 @@ class ClaudeHarnessSession implements HarnessSession {
       transport.setThreadEventHandler((event) => {
         // Thread-level events (e.g. a background Subagent settling) are not
         // Turn-scoped and must not be gated on an active Turn.
+        if (event.type === "backgroundCommand.changed") {
+          this.#backgroundCommands.set(event.command.task.nativeTaskId, event.command);
+          this.#event({ type: "backgroundTask.changed", task: event.command.task });
+        }
         if (event.type === "subagent.settled") {
           this.#settleBackgroundSubagent(
             event.status,
@@ -2425,6 +2455,7 @@ class ClaudeHarnessSession implements HarnessSession {
       .then(() => transport?.close())
       .then(
         () => {
+          this.#endBackgroundCommands();
           if (this.#phase !== "open" || this.#active !== active) return;
           this.#transport = null;
           this.#openMode = "resume";
@@ -2449,6 +2480,7 @@ class ClaudeHarnessSession implements HarnessSession {
     this.#contextRefreshWake = null;
     const active = this.#active;
     if (active) this.#finishFailed(active, error);
+    this.#endBackgroundCommands();
     this.#phase = "faulted";
     this.#event({ type: "session.faulted", error });
     this.#channel.end();
@@ -2534,6 +2566,61 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
           error: {
             code: "protocolError",
             message: "Claude Code Subagent history is invalid",
+            retryable: false,
+          },
+        };
+      }
+    },
+  };
+  /**
+   * Live facts come from the Session that observed the task. Without one (Host
+   * or CLI restart) the stored transcript supplies command, output file and any
+   * delivered result; the task is then never reported as running.
+   */
+  readonly backgroundTasks = {
+    readSnapshot: async (input: {
+      parent: NativeSessionRef;
+      nativeTaskId: string;
+      cwd: string;
+    }): Promise<HarnessResult<HostThreadSnapshot>> => {
+      if (input.parent.harnessId !== this.harnessId || input.nativeTaskId.trim().length === 0) {
+        return {
+          ok: false,
+          error: {
+            code: "invalidRequest",
+            message: "Claude Code background command reference is invalid",
+            retryable: false,
+          },
+        };
+      }
+      try {
+        const sessionId = input.parent.nativeSessionId;
+        const command =
+          [...this.#sessions]
+            .map((session) => session.observedBackgroundCommand(sessionId, input.nativeTaskId))
+            .find((observed) => observed !== undefined) ??
+          claudeBackgroundCommandFromTranscript(
+            await this.#dependencies.readSessionMessages({ cwd: input.cwd, sessionId }),
+            input.nativeTaskId,
+          );
+        if (!command) {
+          return {
+            ok: false,
+            error: {
+              code: "sessionNotFound",
+              message: "Claude Code background command is not in its Native Session",
+              retryable: false,
+            },
+          };
+        }
+        const output = await readClaudeBackgroundOutput(command.outputFile, this.#toolOutputLimit);
+        return { ok: true, value: claudeBackgroundCommandSnapshot(input.parent, command, output) };
+      } catch {
+        return {
+          ok: false,
+          error: {
+            code: "protocolError",
+            message: "Claude Code background command history is invalid",
             retryable: false,
           },
         };

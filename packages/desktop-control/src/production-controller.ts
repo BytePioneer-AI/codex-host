@@ -255,6 +255,7 @@ export async function runDesktopController(
           "codebuddy",
           "workbuddy",
           "cursor-cli",
+          "devin",
           "hermes",
           "qoder",
           "qoder-cn",

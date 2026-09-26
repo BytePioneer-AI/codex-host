@@ -154,6 +154,7 @@ describe("production Desktop Controller", () => {
         "codebuddy",
         "workbuddy",
         "cursor-cli",
+        "devin",
         "hermes",
         "qoder",
         "qoder-cn",

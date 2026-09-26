@@ -154,6 +154,7 @@ describe("AppServerHost hermetic Claude projection", () => {
         let permissionMode = input.permissionMode;
         return {
           sessionId: input.sessionId,
+          steer: async () => undefined,
           setAutonomousTurnHandler: () => undefined,
           setIdleTurnHandler: () => undefined,
           setThreadEventHandler: () => undefined,

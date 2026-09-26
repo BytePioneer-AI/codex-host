@@ -2489,4 +2489,140 @@ describe("QoderAdapter", () => {
       expect(snapshot?.contextUsedTokens).toBe(25_200);
     });
   });
+
+  describe("turn.steer", () => {
+    it.each(["global", "cn"] as const)("declares steer for the %s variant", async (variant) => {
+      const adapter = new QoderAdapter({
+        variant,
+        resolveExecutable: () => "D:/tools/qodercli.exe",
+        queryFactory: () => new FakeQoderQuery(),
+      });
+      const opened = await adapter.open({ kind: "create", cwd: "D:/workspace" });
+      expect(opened.ok).toBe(true);
+      if (!opened.ok) return;
+      expect(opened.value.capabilities.steer).toBe(true);
+      const inspection = await adapter.inspect({ cwd: "D:/workspace" });
+      expect(inspection).toMatchObject({ status: "ready", capabilities: { steer: true } });
+      await opened.value.close();
+      await adapter.close();
+    });
+
+    it("pushes priority next into the active Turn and does not emit a userMessage item", async () => {
+      const fakeQuery = new FakeQoderQuery();
+      const pushed: SDKUserMessage[] = [];
+      const adapter = new QoderAdapter({
+        resolveExecutable: () => "D:/tools/qodercli.exe",
+        queryFactory: (input) => {
+          if (typeof input.prompt !== "string") {
+            const iterator = input.prompt[Symbol.asyncIterator]();
+            void (async () => {
+              while (true) {
+                const next = await iterator.next();
+                if (next.done) break;
+                pushed.push(next.value);
+              }
+            })();
+          }
+          return fakeQuery;
+        },
+      });
+      const opened = await adapter.open({ kind: "create", cwd: "D:/workspace" });
+      if (!opened.ok) throw new Error(opened.error.message);
+      const session = opened.value;
+      const collector = new OutputCollector(session.outputs);
+      const turnId = hostTurnIdSchema.parse("turn-steer");
+      await session.execute({
+        type: "turn.start",
+        turnId,
+        input: [{ type: "text", text: "Hello" }],
+      });
+      await vi.waitFor(() => expect(pushed).toHaveLength(1));
+      const steer = session.execute({
+        type: "turn.steer",
+        turnId,
+        input: [{ type: "text", text: "PIN" }],
+      });
+      await vi.waitFor(() => expect(pushed).toHaveLength(2));
+      const steeredMessage = pushed[1];
+      expect(steeredMessage).toMatchObject({
+        type: "user",
+        priority: "next",
+        origin: { kind: "human" },
+        parent_tool_use_id: null,
+        message: { role: "user", content: [{ type: "text", text: "PIN" }] },
+      });
+      fakeQuery.push({
+        type: "command_lifecycle",
+        state: "queued",
+        command_uuid: steeredMessage?.uuid,
+        uuid: "00000000-0000-4000-8000-000000000001",
+        session_id: "qoder-session",
+      } as unknown as SDKMessage);
+      await expect(steer).resolves.toEqual({ ok: true, value: { accepted: true } });
+      expect(collector.outputs.some(hasUserMessageItem)).toBe(false);
+      await expect(
+        session.execute({
+          type: "turn.start",
+          turnId: hostTurnIdSchema.parse("turn-2"),
+          input: [{ type: "text", text: "again" }],
+        }),
+      ).resolves.toMatchObject({ ok: false, error: { code: "sessionBusy" } });
+      expect(pushed).toHaveLength(2);
+      await expect(
+        session.execute({
+          type: "turn.steer",
+          turnId: hostTurnIdSchema.parse("turn-2"),
+          input: [{ type: "text", text: "other" }],
+        }),
+      ).resolves.toMatchObject({ ok: false, error: { code: "invalidState" } });
+      await expect(
+        session.execute({
+          type: "turn.steer",
+          turnId,
+          input: [{ type: "text", text: "" }],
+        }),
+      ).resolves.toMatchObject({ ok: false, error: { code: "invalidRequest" } });
+      expect(pushed).toHaveLength(2);
+      const missed = session.execute({
+        type: "turn.steer",
+        turnId,
+        input: [{ type: "text", text: "late" }],
+      });
+      await vi.waitFor(() => expect(pushed).toHaveLength(3));
+      fakeQuery.push({ type: "result", subtype: "success" } as SDKResultMessage);
+      await expect(missed).resolves.toMatchObject({
+        ok: false,
+        error: { code: "invalidState" },
+      });
+      await collector.waitFor(
+        (output) => output.kind === "event" && output.event.type === "turn.completed",
+      );
+      await expect(
+        session.execute({
+          type: "turn.steer",
+          turnId,
+          input: [{ type: "text", text: "idle" }],
+        }),
+      ).resolves.toMatchObject({ ok: false, error: { code: "invalidState" } });
+      await session.close();
+      await expect(
+        session.execute({
+          type: "turn.steer",
+          turnId,
+          input: [{ type: "text", text: "closed" }],
+        }),
+      ).resolves.toMatchObject({ ok: false, error: { code: "invalidState" } });
+      expect(collector.outputs.some(hasUserMessageItem)).toBe(false);
+      await adapter.close();
+    });
+  });
 });
+
+function hasUserMessageItem(output: HarnessOutput): boolean {
+  if (output.kind !== "event") return false;
+  if (output.event.type === "item.started") return output.event.item.type === "userMessage";
+  if (output.event.type === "item.completed") {
+    return output.event.snapshot.item.type === "userMessage";
+  }
+  return false;
+}

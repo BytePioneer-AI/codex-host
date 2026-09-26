@@ -99,6 +99,14 @@ import type {
 } from "./qoder-sdk-types.js";
 import { QoderUsageTracker } from "./qoder-usage.js";
 
+/** The running Turn ended before Qoder queued this steer. */
+export class QoderSteerMissedTurnError extends Error {
+  constructor() {
+    super("Qoder steer missed the active Turn");
+    this.name = "QoderSteerMissedTurnError";
+  }
+}
+
 export class PushableInput<T> implements AsyncIterable<T> {
   #queue: T[] = [];
   #waiters: Array<(result: IteratorResult<T>) => void> = [];
@@ -208,6 +216,10 @@ export class QoderSession implements HarnessSession {
   #commandCatalog: HarnessCommandCatalog = QODER_FALLBACK_COMMAND_CATALOG;
   #state: HarnessSessionState;
   #activeTurn: ActiveTurnState | null = null;
+  readonly #pendingSteers = new Map<
+    string,
+    { resolve(): void; reject(error: QoderSteerMissedTurnError): void }
+  >();
   #closed = false;
   #consumerLoopDone: Promise<void>;
 
@@ -269,6 +281,8 @@ export class QoderSession implements HarnessSession {
         forkAcrossCwd: false,
         rollbackLastTurn: true,
       },
+      // Qoder SDK 1.0.39 inserts `priority: "next"` at a safe boundary. Not live-verified.
+      steer: true,
     };
 
     this.#state = {
@@ -385,6 +399,9 @@ export class QoderSession implements HarnessSession {
         break;
       case "result":
         this.#handleResultMessage(message as SDKResultMessage);
+        break;
+      case "command_lifecycle":
+        this.#observeSteer(message);
         break;
       default:
         // Diagnostic or progress events (model_queue_status, status, hook_*, task_*, files_persisted, mirror_error, etc.)
@@ -911,6 +928,7 @@ export class QoderSession implements HarnessSession {
 
     const userMessageUuid = this.#activeTurn.userMessageUuid;
     const lastAssistantMessageUuid = this.#activeTurn.lastAssistantMessageUuid;
+    this.#rejectPendingSteers();
     this.#activeTurn = null;
 
     const nativeTurnRef = this.#createNativeTurnRef(userMessageUuid);
@@ -1221,14 +1239,7 @@ export class QoderSession implements HarnessSession {
 
     switch (command.type) {
       case "turn.steer":
-        return {
-          ok: false,
-          error: {
-            code: "unsupported",
-            message: "Qoder native steering is not enabled",
-            retryable: false,
-          },
-        };
+        return this.#steer(command);
       case "turn.start": {
         if (this.#activeTurn) {
           return {
@@ -1723,6 +1734,95 @@ export class QoderSession implements HarnessSession {
     return { ok: true, value: { turnId: command.turnId } };
   }
 
+  async #steer(command: TurnSteerCommand): Promise<HarnessResult<TurnSteerAccepted>> {
+    if (!this.#activeTurn || this.#activeTurn.turnId !== command.turnId) {
+      return {
+        ok: false,
+        error: {
+          code: "invalidState",
+          message: "Qoder steer target is not the active Turn",
+          retryable: false,
+        },
+      };
+    }
+    const text = command.input.map((input) => input.text).join("\n");
+    if (text.length === 0) {
+      return {
+        ok: false,
+        error: {
+          code: "invalidRequest",
+          message: "Qoder steer text must not be empty",
+          retryable: false,
+        },
+      };
+    }
+    try {
+      await this.#insertSteer(text, randomUUID());
+    } catch (error) {
+      if (error instanceof QoderSteerMissedTurnError) {
+        return {
+          ok: false,
+          error: {
+            code: "invalidState",
+            message: "Qoder steer missed the active Turn",
+            retryable: false,
+          },
+        };
+      }
+      throw error;
+    }
+    return { ok: true, value: { accepted: true } };
+  }
+
+  /**
+   * Qoder accepts the input with `queued`; `started` follows when `priority: "next"` joins the
+   * running Turn, as in Claude Code 2.1.280. Waiting for `started` would hold the caller for a
+   * whole tool call.
+   */
+  #insertSteer(text: string, messageId: string): Promise<void> {
+    if (this.#closed || !this.#activeTurn) {
+      return Promise.reject(new QoderSteerMissedTurnError());
+    }
+    const promise = new Promise<void>((resolve, reject) => {
+      this.#pendingSteers.set(messageId, { resolve, reject });
+    });
+    const sdkMessage: SDKUserMessage = {
+      type: "user",
+      uuid: messageId,
+      ...(this.#state.nativeRef?.nativeSessionId
+        ? { session_id: this.#state.nativeRef.nativeSessionId }
+        : {}),
+      parent_tool_use_id: null,
+      origin: { kind: "human" },
+      priority: "next",
+      message: {
+        role: "user",
+        content: [{ type: "text", text }],
+      },
+    };
+    try {
+      this.#pushableInput.push(sdkMessage);
+    } catch {
+      this.#pendingSteers.delete(messageId);
+      return Promise.reject(new QoderSteerMissedTurnError());
+    }
+    return promise;
+  }
+
+  #observeSteer(message: { command_uuid: string; state: string }): void {
+    if (message.state !== "queued") return;
+    const pending = this.#pendingSteers.get(message.command_uuid);
+    if (!pending) return;
+    this.#pendingSteers.delete(message.command_uuid);
+    pending.resolve();
+  }
+
+  #rejectPendingSteers(): void {
+    const error = new QoderSteerMissedTurnError();
+    for (const pending of this.#pendingSteers.values()) pending.reject(error);
+    this.#pendingSteers.clear();
+  }
+
   #cancelPendingInteractions(turnId: HostTurnId, reason: string): void {
     for (const [id, pending] of this.#pendingInteractions) {
       this.#emitEvent({
@@ -1828,6 +1928,7 @@ export class QoderSession implements HarnessSession {
 
       const turnId = this.#activeTurn.turnId;
       const nativeTurnRef = this.#createNativeTurnRef(this.#activeTurn.userMessageUuid);
+      this.#rejectPendingSteers();
       this.#activeTurn = null;
       this.#emitEvent({
         type: "turn.completed",

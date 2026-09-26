@@ -178,6 +178,14 @@ export interface ClaudeIdleTurnHandler {
   onTerminal(result: ClaudeTransportTurnResult): void;
 }
 
+/** The running Turn ended before Claude queued this steer. */
+export class ClaudeSteerMissedTurnError extends Error {
+  constructor() {
+    super("Claude Code steer missed the active Turn");
+    this.name = "ClaudeSteerMissedTurnError";
+  }
+}
+
 export interface ClaudeTurnTransport {
   readonly sessionId: string;
   setAutonomousTurnHandler(handler: (turn: ClaudeAutonomousTurn) => void): void;
@@ -217,6 +225,13 @@ export interface ClaudeTurnTransport {
     userMessageId: string,
     onEvent: (event: ClaudeTurnEvent) => void,
   ): Promise<ClaudeTransportTurnResult>;
+  /**
+   * Inserts text into the active Turn at Claude's tool boundary (`priority: "next"`).
+   * Resolves when Claude emits `command_lifecycle` `queued` for that message: from then on Claude
+   * owns its delivery, joining the running Turn after the current tool call, or running it next.
+   * Rejects with {@link ClaudeSteerMissedTurnError} when the Turn ends first.
+   */
+  steer(text: string, messageId: string): Promise<void>;
   respondToInteraction(response: ClaudeInteractionResponse): Promise<void>;
   abort(): Promise<void>;
   close(): Promise<void>;

@@ -41,6 +41,13 @@
 | --- | --- |
 | [`harnesses/claude-code/claude-code-plan-mode.md`](harnesses/claude-code/claude-code-plan-mode.md) | Claude Code 规划模式、计划退出确认与权限状态边界；修改 Plan Mode 时阅读。 |
 | [`harnesses/claude-code/claude-code-edit-recovery.md`](harnesses/claude-code/claude-code-edit-recovery.md) | 最后一条消息编辑后的独立 Session、空历史保留和关闭语义；修改编辑恢复时阅读。 |
+| [`harnesses/claude-code/claude-code-steer.md`](harnesses/claude-code/claude-code-steer.md) | Claude Code `priority: "next"` 同轮插入、接受条件和历史分轮；修改运行中插入时阅读。 |
+
+### Qoder
+
+| 文档 | 内容与阅读时机 |
+| --- | --- |
+| [`harnesses/qoder/qoder-steer.md`](harnesses/qoder/qoder-steer.md) | Qoder 与 Qoder CN 的 `priority: "next"` 同轮插入及未实机验证的声明依据；修改运行中插入时阅读。 |
 
 ### CodeBuddy、WorkBuddy 与 Cursor
 

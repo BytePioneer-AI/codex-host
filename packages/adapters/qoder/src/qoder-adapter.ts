@@ -182,6 +182,7 @@ export class QoderAdapter implements HarnessAdapter {
               forkAcrossCwd: false,
               rollbackLastTurn: true,
             },
+            steer: true,
           },
         };
 

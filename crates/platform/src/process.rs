@@ -1,6 +1,8 @@
 use super::{DesktopInstallation, PlatformError};
 #[cfg(target_os = "windows")]
 use super::{node_entrypoint_path, windows_process};
+#[cfg(target_os = "windows")]
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 #[cfg(target_os = "macos")]
 use std::thread;
@@ -128,39 +130,7 @@ pub fn process_snapshot(process_id: u32) -> Result<ProcessSnapshot, PlatformErro
 
 #[cfg(target_os = "windows")]
 pub fn process_snapshot(process_id: u32) -> Result<ProcessSnapshot, PlatformError> {
-    let parent_id = windows_process::process_entries()
-        .map_err(|error| {
-            PlatformError::Io(std::io::Error::new(
-                error.kind(),
-                format!("enumerate processes while inspecting PID {process_id}: {error}"),
-            ))
-        })?
-        .into_iter()
-        .find(|process| process.id == process_id)
-        .ok_or_else(|| PlatformError::NotFound(format!("cannot inspect PID {process_id}")))?
-        .parent_id;
-    let executable = windows_process::process_image_path(process_id).map_err(|source| {
-        PlatformError::ProcessInspection {
-            process_id,
-            operation: "read executable",
-            source,
-        }
-    })?;
-    let started_at_micros =
-        windows_process::process_started_at_micros(process_id).map_err(|source| {
-            PlatformError::ProcessInspection {
-                process_id,
-                operation: "read start time",
-                source,
-            }
-        })?;
-    Ok(ProcessSnapshot {
-        id: process_id,
-        parent_id,
-        process_group_id: process_id,
-        executable,
-        started_at_micros,
-    })
+    windows_process::process_snapshot(process_id)
 }
 
 #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
@@ -719,15 +689,14 @@ fn windows_executable_key(path: &Path) -> String {
 }
 
 #[cfg(target_os = "windows")]
-pub fn descendant_executable_exists(
+fn windows_descendant_ids(
     root_process_id: u32,
-    executable: &Path,
-) -> Result<bool, PlatformError> {
-    let entries = windows_process::process_entries()?;
+    entries: &[windows_process::ProcessEntry],
+) -> Vec<u32> {
     let mut owned = vec![root_process_id];
     loop {
         let mut changed = false;
-        for process in &entries {
+        for process in entries {
             if !owned.contains(&process.id) && owned.contains(&process.parent_id) {
                 owned.push(process.id);
                 changed = true;
@@ -737,11 +706,180 @@ pub fn descendant_executable_exists(
             break;
         }
     }
+    owned.into_iter().skip(1).collect()
+}
+
+/// Capture the complete Desktop descendant tree while ancestry is still observable.
+/// Every parent edge is checked against a live process instance, so an old
+/// orphan with a reused parent PID cannot be claimed and terminated.
+/// Required executables must be present; inaccessible live members fail closed.
+#[cfg(target_os = "windows")]
+pub fn descendant_process_snapshots(
+    root: &ProcessSnapshot,
+    executables: &[&Path],
+) -> Result<Vec<ProcessSnapshot>, PlatformError> {
+    if !process_instance_exists(root.id, root.started_at_micros)? {
+        return Err(PlatformError::NotFound(
+            "managed Desktop root exited before descendant capture".into(),
+        ));
+    }
+    let entries = windows_process::process_entries()?;
+    descendant_process_snapshots_with(
+        root,
+        executables,
+        &entries,
+        process_snapshot,
+        process_instance_exists,
+        |process_id| {
+            Ok(windows_process::process_entries()?
+                .iter()
+                .any(|entry| entry.id == process_id))
+        },
+    )
+}
+
+#[cfg(target_os = "windows")]
+fn descendant_process_snapshots_with(
+    root: &ProcessSnapshot,
+    executables: &[&Path],
+    entries: &[windows_process::ProcessEntry],
+    mut snapshot: impl FnMut(u32) -> Result<ProcessSnapshot, PlatformError>,
+    mut is_current: impl FnMut(u32, u64) -> Result<bool, PlatformError>,
+    mut is_listed: impl FnMut(u32) -> Result<bool, PlatformError>,
+) -> Result<Vec<ProcessSnapshot>, PlatformError> {
+    let expected = executables
+        .iter()
+        .map(|path| windows_executable_key(path))
+        .collect::<Vec<_>>();
+    let mut known = HashMap::from([(root.id, root.clone())]);
+    let mut snapshots = Vec::new();
+    loop {
+        let mut changed = false;
+        for process in entries {
+            if known.contains_key(&process.id) {
+                continue;
+            }
+            let Some(parent) = known.get(&process.parent_id) else {
+                continue;
+            };
+            let snapshot = match snapshot(process.id) {
+                Ok(snapshot) => snapshot,
+                Err(error) => {
+                    if is_listed(process.id)? {
+                        return Err(error);
+                    }
+                    continue;
+                }
+            };
+            if snapshot.parent_id != process.parent_id {
+                return Err(PlatformError::NotFound(format!(
+                    "managed Desktop parent edge for PID {} changed during descendant capture",
+                    process.id
+                )));
+            }
+            if !is_current(parent.id, parent.started_at_micros)? {
+                return Err(PlatformError::NotFound(format!(
+                    "managed Desktop parent PID {} exited during descendant capture",
+                    parent.id
+                )));
+            }
+            // Windows retains the old parent PID after its owner exits. If
+            // that PID now belongs to this newer parent, the older process
+            // cannot be part of the current Desktop tree.
+            if snapshot.started_at_micros < parent.started_at_micros {
+                continue;
+            }
+            known.insert(snapshot.id, snapshot.clone());
+            snapshots.push(snapshot);
+            changed = true;
+        }
+        if !changed {
+            break;
+        }
+    }
+    if expected.iter().any(|executable| {
+        !snapshots
+            .iter()
+            .any(|snapshot| windows_executable_key(&snapshot.executable) == *executable)
+    }) {
+        return Err(PlatformError::NotFound(
+            "managed Desktop Shim/Host chain is no longer attributable to its root".into(),
+        ));
+    }
+    Ok(snapshots)
+}
+
+/// Find surviving processes using the requested executables. A matching path
+/// does not establish ownership: shared runtimes may belong to unrelated work.
+/// An inaccessible live process with a matching basename fails closed.
+#[cfg(target_os = "windows")]
+pub fn running_executable_snapshots(
+    executables: &[&Path],
+) -> Result<Vec<ProcessSnapshot>, PlatformError> {
+    running_executable_snapshots_with(
+        executables,
+        &windows_process::process_entries()?,
+        process_snapshot,
+        |process_id| {
+            Ok(windows_process::process_entries()?
+                .iter()
+                .any(|entry| entry.id == process_id))
+        },
+    )
+}
+
+#[cfg(target_os = "windows")]
+fn running_executable_snapshots_with(
+    executables: &[&Path],
+    entries: &[windows_process::ProcessEntry],
+    mut snapshot: impl FnMut(u32) -> Result<ProcessSnapshot, PlatformError>,
+    mut is_listed: impl FnMut(u32) -> Result<bool, PlatformError>,
+) -> Result<Vec<ProcessSnapshot>, PlatformError> {
+    let expected = executables
+        .iter()
+        .map(|path| windows_executable_key(path))
+        .collect::<Vec<_>>();
+    let names = executables
+        .iter()
+        .filter_map(|path| path.file_name())
+        .map(|name| windows_executable_key(Path::new(name)))
+        .collect::<Vec<_>>();
+    let mut snapshots = Vec::new();
+    for entry in entries {
+        if !names.contains(&windows_executable_key(&entry.executable_name)) {
+            continue;
+        }
+        match snapshot(entry.id) {
+            Ok(snapshot) => {
+                // The Toolhelp entry may predate PID reuse. Select only the
+                // executable bound to the final snapshot's process instance.
+                if expected.contains(&windows_executable_key(&snapshot.executable)) {
+                    snapshots.push(snapshot);
+                }
+            }
+            Err(error) => {
+                if is_listed(entry.id)? {
+                    return Err(error);
+                }
+            }
+        }
+    }
+    Ok(snapshots)
+}
+
+#[cfg(target_os = "windows")]
+pub fn descendant_executable_exists(
+    root_process_id: u32,
+    executable: &Path,
+) -> Result<bool, PlatformError> {
+    let entries = windows_process::process_entries()?;
     let expected = windows_executable_key(executable);
-    Ok(owned.into_iter().skip(1).any(|process_id| {
-        windows_process::process_image_path(process_id)
-            .is_ok_and(|path| windows_executable_key(&path) == expected)
-    }))
+    Ok(windows_descendant_ids(root_process_id, &entries)
+        .into_iter()
+        .any(|process_id| {
+            windows_process::process_image_path(process_id)
+                .is_ok_and(|path| windows_executable_key(&path) == expected)
+        }))
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
@@ -799,6 +937,35 @@ pub fn process_started_at_micros(process_id: u32) -> Result<u64, PlatformError> 
             source,
         }
     })
+}
+
+/// Return whether the exact Windows process instance is still live. Enumeration
+/// or inspection failure must never be mistaken for a completed Launcher exit.
+#[cfg(target_os = "windows")]
+pub fn process_instance_exists(
+    process_id: u32,
+    expected_started_at_micros: u64,
+) -> Result<bool, PlatformError> {
+    let listed = |entries: Vec<windows_process::ProcessEntry>| {
+        entries.iter().any(|process| process.id == process_id)
+    };
+    if !listed(windows_process::process_entries()?) {
+        return Ok(false);
+    }
+    match windows_process::process_started_at_micros(process_id) {
+        Ok(started_at_micros) => Ok(started_at_micros == expected_started_at_micros),
+        Err(source) => {
+            if !listed(windows_process::process_entries()?) {
+                Ok(false)
+            } else {
+                Err(PlatformError::ProcessInspection {
+                    process_id,
+                    operation: "read start time",
+                    source,
+                })
+            }
+        }
+    }
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
@@ -903,19 +1070,8 @@ pub fn process_exists(_process_id: u32) -> bool {
 }
 
 #[cfg(all(test, target_os = "windows"))]
-mod windows_tests {
-    use std::path::Path;
-
-    use super::windows_executable_key;
-
-    #[test]
-    fn treats_verbatim_and_regular_windows_executable_paths_as_equal() {
-        assert_eq!(
-            windows_executable_key(Path::new(r"\\?\D:\Program\node.exe")),
-            windows_executable_key(Path::new(r"d:\program\node.exe")),
-        );
-    }
-}
+#[path = "process_windows_tests.rs"]
+mod windows_tests;
 
 #[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
 mod tests {

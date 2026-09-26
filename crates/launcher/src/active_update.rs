@@ -1,33 +1,38 @@
 use std::fs;
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 use std::fs::OpenOptions;
 use std::io;
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 use std::io::Write;
 #[cfg(target_os = "macos")]
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 use std::process::{Child, Command, Stdio};
-
-#[cfg(target_os = "macos")]
-use codexhost_platform::atomic_replace_file;
-use serde::{Deserialize, Serialize};
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 use std::thread;
-#[cfg(target_os = "macos")]
-use std::time::{Duration, Instant};
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+use codexhost_platform::atomic_replace_file;
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+use codexhost_updater::UpdateHandoff;
+use serde::{Deserialize, Serialize};
 
 use crate::runtime_instance::default_descriptor_path;
 
 const ACTIVE_UPDATE_LOCK_FILE: &str = "active-update-v1.lock";
 const STATUS_FILE: &str = "status-v1.json";
 const REQUEST_FILE: &str = "request-v1.json";
+#[cfg(target_os = "windows")]
+const UPDATER_FILE: &str = "codexhost-updater.exe";
+#[cfg(not(target_os = "windows"))]
 const UPDATER_FILE: &str = "codexhost-updater";
 const MAX_STATE_FILE_BYTES: u64 = 4 * 1024;
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 const UPDATER_READY_TIMEOUT: Duration = Duration::from_secs(10);
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 const UPDATER_READY_POLL: Duration = Duration::from_millis(20);
 
 #[derive(Deserialize, Serialize)]
@@ -37,11 +42,20 @@ struct ActiveUpdateLock {
     status_path: PathBuf,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct UpdateStatusProbe {
     schema_version: u8,
+    version: String,
+    installation: String,
     phase: String,
+    updated_at: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    downloaded_bytes: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    total_bytes: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -58,6 +72,93 @@ struct PendingUpdate {
     status_path: PathBuf,
     helper_path: PathBuf,
     request_path: PathBuf,
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+pub(crate) struct StartedUpdate {
+    child: Child,
+    pending: PendingUpdate,
+    abort_reason: Option<String>,
+    handoff: UpdateHandoff,
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+impl StartedUpdate {
+    fn stop_helper(&mut self) -> io::Result<()> {
+        if self.child.try_wait()?.is_some() {
+            return Ok(());
+        }
+        if let Err(error) = self.child.kill() {
+            // The process may have exited between try_wait and kill. Otherwise
+            // retain the Child so the caller can retry termination safely.
+            if self.child.try_wait()?.is_none() {
+                return Err(error);
+            }
+        }
+        self.child.wait()?;
+        Ok(())
+    }
+
+    pub(crate) fn abort(&mut self, error: &io::Error) -> io::Result<()> {
+        let reason = self
+            .abort_reason
+            .get_or_insert_with(|| error.to_string())
+            .clone();
+        self.stop_helper()?;
+        record_updater_start_failure(&self.pending, &io::Error::other(reason))
+    }
+
+    fn waiting_for_launcher_exit_at(
+        &mut self,
+        launcher_pid: u32,
+        launcher_executable: &Path,
+    ) -> io::Result<bool> {
+        if let Some(reason) = self.abort_reason.clone() {
+            self.abort(&io::Error::other(reason))?;
+            return Ok(false);
+        }
+        let phase = read_update_phase(&self.pending.status_path)?;
+        if matches!(phase.as_deref(), Some("failed" | "succeeded") | None) {
+            self.stop_helper()?;
+            return Ok(false);
+        }
+        let state_directory = self
+            .pending
+            .lock_path
+            .parent()
+            .ok_or_else(|| invalid("active update lock has no parent directory"))?;
+        let current = pending_update_at(state_directory, launcher_pid, launcher_executable)?;
+        if self.child.try_wait()?.is_some() {
+            record_updater_start_failure(
+                &self.pending,
+                &invalid("background Updater exited after becoming ready for Launcher exit"),
+            )?;
+            return Ok(false);
+        }
+        if matches!(current, Some((phase, pending)) if phase == "waiting-for-exit" && pending == self.pending)
+        {
+            return Ok(true);
+        }
+        self.abort(&invalid(
+            "active update request changed while the background Updater was waiting",
+        ))?;
+        Ok(false)
+    }
+
+    pub(crate) fn waiting_for_launcher_exit(&mut self) -> io::Result<bool> {
+        self.waiting_for_launcher_exit_at(std::process::id(), &std::env::current_exe()?)
+    }
+
+    pub(crate) fn authorize_launcher_exit(&mut self) -> io::Result<()> {
+        if !self.waiting_for_launcher_exit()? {
+            return Err(invalid(
+                "Updater stopped waiting before cleanup authorization",
+            ));
+        }
+        // The caller has completed Desktop cleanup and its final process check.
+        // A crash before this publication must not be permission to install.
+        self.handoff.publish(&self.pending.request_path)
+    }
 }
 
 fn invalid(message: impl Into<String>) -> io::Error {
@@ -166,7 +267,7 @@ fn pending_update_at(
     )))
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn pending_startable_update_at(
     state_directory: &Path,
     launcher_pid: u32,
@@ -178,6 +279,7 @@ fn pending_startable_update_at(
     }
 }
 
+#[cfg(any(target_os = "linux", test))]
 fn waiting_for_launcher_exit_at(
     state_directory: &Path,
     launcher_pid: u32,
@@ -197,6 +299,7 @@ fn update_state_directory() -> io::Result<PathBuf> {
         .map(|parent| parent.join("updates"))
 }
 
+#[cfg(target_os = "linux")]
 pub(crate) fn update_waiting_for_launcher_exit() -> io::Result<bool> {
     waiting_for_launcher_exit_at(
         &update_state_directory()?,
@@ -205,7 +308,7 @@ pub(crate) fn update_waiting_for_launcher_exit() -> io::Result<bool> {
     )
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn read_update_phase(status_path: &Path) -> io::Result<Option<String>> {
     let Some(status_bytes) = read_bounded_regular_file(status_path)? else {
         return Ok(None);
@@ -218,11 +321,17 @@ fn read_update_phase(status_path: &Path) -> io::Result<Option<String>> {
     Ok(Some(status.phase))
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn wait_for_updater_ready(child: &mut Child, status_path: &Path) -> io::Result<()> {
     let started = Instant::now();
     loop {
-        match read_update_phase(status_path)?.as_deref() {
+        let phase = read_update_phase(status_path)?;
+        if let Some(status) = child.try_wait()? {
+            return Err(invalid(format!(
+                "background Updater exited before waiting for Launcher exit: {status}"
+            )));
+        }
+        match phase.as_deref() {
             Some("waiting-for-exit") => return Ok(()),
             Some("prepared") | None => {}
             Some("failed") => {
@@ -236,11 +345,6 @@ fn wait_for_updater_ready(child: &mut Child, status_path: &Path) -> io::Result<(
                 )));
             }
         }
-        if let Some(status) = child.try_wait()? {
-            return Err(invalid(format!(
-                "background Updater exited before waiting for Launcher exit: {status}"
-            )));
-        }
         if started.elapsed() >= UPDATER_READY_TIMEOUT {
             return Err(invalid(
                 "background Updater did not reach waiting-for-exit before the startup timeout",
@@ -250,7 +354,7 @@ fn wait_for_updater_ready(child: &mut Child, status_path: &Path) -> io::Result<(
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn transfer_lock_to_updater(pending: &PendingUpdate, updater_pid: u32) -> io::Result<()> {
     let parent = pending
         .lock_path
@@ -274,6 +378,7 @@ fn transfer_lock_to_updater(pending: &PendingUpdate, updater_pid: u32) -> io::Re
         )?;
         file.write_all(b"\n")?;
         file.sync_all()?;
+        drop(file);
         atomic_replace_file(&temporary, &pending.lock_path).map_err(io::Error::other)?;
         Ok(())
     })();
@@ -283,269 +388,153 @@ fn transfer_lock_to_updater(pending: &PendingUpdate, updater_pid: u32) -> io::Re
     result
 }
 
-#[cfg(target_os = "macos")]
-pub(crate) fn start_pending_update(started_request: &mut Option<PathBuf>) -> io::Result<()> {
-    if started_request.is_some() {
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+fn record_updater_start_failure(pending: &PendingUpdate, error: &io::Error) -> io::Result<()> {
+    let status_bytes = read_bounded_regular_file(&pending.status_path)?
+        .ok_or_else(|| invalid("active update status is missing"))?;
+    let mut status = serde_json::from_slice::<UpdateStatusProbe>(&status_bytes)
+        .map_err(|parse_error| invalid(format!("invalid active update status: {parse_error}")))?;
+    if status.schema_version != 1 {
+        return Err(invalid("active update status schema is unsupported"));
+    }
+    if status.phase == "failed" {
         return Ok(());
     }
-    let Some(pending) = pending_startable_update_at(
-        &update_state_directory()?,
-        std::process::id(),
-        &std::env::current_exe()?,
-    )?
-    else {
-        return Ok(());
-    };
-    let mut child = Command::new(&pending.helper_path)
+    if status.phase != "prepared" && status.phase != "waiting-for-exit" {
+        return Err(invalid(
+            "active update status changed before startup failure",
+        ));
+    }
+    status.phase = "failed".into();
+    status.updated_at = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    status.downloaded_bytes = None;
+    status.total_bytes = None;
+    status.error = Some(error.to_string().chars().take(500).collect());
+    let parent = pending
+        .status_path
+        .parent()
+        .ok_or_else(|| invalid("active update status has no parent directory"))?;
+    let temporary = parent.join(format!(".{STATUS_FILE}.{}.tmp", std::process::id()));
+    let result = (|| {
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary)?;
+        serde_json::to_writer(&mut file, &status)?;
+        file.write_all(b"\n")?;
+        file.sync_all()?;
+        drop(file);
+        atomic_replace_file(&temporary, &pending.status_path).map_err(io::Error::other)?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
+    result
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+fn spawn_updater(pending: &PendingUpdate, handoff: &UpdateHandoff) -> io::Result<Child> {
+    let mut command = Command::new(&pending.helper_path);
+    command
         .arg("apply")
         .arg("--request")
         .arg(&pending.request_path)
-        .process_group(0)
+        .arg("--handoff-token")
+        .arg(handoff.token())
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()?;
-    if let Err(error) = transfer_lock_to_updater(&pending, child.id()) {
-        let _ = child.kill();
-        let _ = child.wait();
+        .stderr(Stdio::null());
+    #[cfg(target_os = "macos")]
+    {
+        command.process_group(0);
+    }
+    #[cfg(target_os = "windows")]
+    codexhost_platform::configure_background_command(&mut command);
+    command.spawn()
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+fn start_pending_update_at(
+    state_directory: &Path,
+    launcher_pid: u32,
+    launcher_executable: &Path,
+    started_update: &mut Option<StartedUpdate>,
+) -> io::Result<()> {
+    if let Some(previous) = started_update.as_mut() {
+        match previous.waiting_for_launcher_exit_at(launcher_pid, launcher_executable) {
+            Ok(true) => return Ok(()),
+            Ok(false) => *started_update = None,
+            Err(error) => {
+                if let Err(abort_error) = previous.abort(&error) {
+                    return Err(io::Error::other(format!(
+                        "{error}; additionally could not abort update: {abort_error}"
+                    )));
+                }
+                *started_update = None;
+                return Err(error);
+            }
+        }
+    }
+    let Some(pending) =
+        pending_startable_update_at(state_directory, launcher_pid, launcher_executable)?
+    else {
+        return Ok(());
+    };
+    let mut random = [0_u8; 16];
+    getrandom::fill(&mut random).map_err(|error| io::Error::other(error.to_string()))?;
+    let token = random
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    let handoff = UpdateHandoff::from_token(&token)?;
+    let child = match spawn_updater(&pending, &handoff) {
+        Ok(child) => child,
+        Err(error) => {
+            if let Err(status_error) = record_updater_start_failure(&pending, &error) {
+                return Err(io::Error::other(format!(
+                    "{error}; additionally could not record update failure: {status_error}"
+                )));
+            }
+            return Err(error);
+        }
+    };
+    // Store the Child before any fallible handoff: a failed termination must
+    // never release the only handle for an Updater that could still install.
+    let started = started_update.insert(StartedUpdate {
+        child,
+        pending,
+        abort_reason: None,
+        handoff,
+    });
+    let result = transfer_lock_to_updater(&started.pending, started.child.id()).and_then(|()| {
+        // Keep the old Launcher alive until the Updater has taken its wait position.
+        wait_for_updater_ready(&mut started.child, &started.pending.status_path)
+    });
+    if let Err(error) = result {
+        if let Err(abort_error) = started.abort(&error) {
+            return Err(io::Error::other(format!(
+                "{error}; additionally could not abort update: {abort_error}"
+            )));
+        }
+        *started_update = None;
         return Err(error);
     }
-    // Keep the old Launcher alive until the Updater has taken its wait position.
-    if let Err(error) = wait_for_updater_ready(&mut child, &pending.status_path) {
-        let _ = child.kill();
-        let _ = child.wait();
-        return Err(error);
-    }
-    *started_request = Some(pending.request_path);
     Ok(())
 }
 
-#[cfg(test)]
-mod tests {
-    use std::fs;
-    use std::path::{Path, PathBuf};
-    use std::time::{SystemTime, UNIX_EPOCH};
-
-    use serde_json::json;
-
-    #[cfg(target_os = "macos")]
-    use super::STATUS_FILE;
-    use super::{ACTIVE_UPDATE_LOCK_FILE, PendingUpdate, waiting_for_launcher_exit_at};
-    #[cfg(target_os = "macos")]
-    use super::{
-        atomic_replace_file, pending_startable_update_at, pending_update_at,
-        transfer_lock_to_updater, wait_for_updater_ready,
-    };
-
-    fn fixture_directory(label: &str) -> PathBuf {
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("system time")
-            .as_nanos();
-        let path =
-            std::env::temp_dir().join(format!("codexhost-{label}-{}-{unique}", std::process::id()));
-        fs::create_dir(&path).expect("create active update fixture");
-        path
-    }
-
-    fn write_pending_update(root: &Path, launcher: &Path, launcher_pid: u32) -> PendingUpdate {
-        let operation = root.join("update-1.2.3-fixture");
-        fs::create_dir_all(&operation).expect("create update operation fixture");
-        let helper_path = operation.join("codexhost-updater");
-        fs::write(&helper_path, b"helper").expect("write Helper fixture");
-        let status_path = operation.join("status-v1.json");
-        fs::write(
-            &status_path,
-            format!(
-                "{}\n",
-                json!({
-                    "schemaVersion": 1,
-                    "version": "1.2.3",
-                    "installation": "macos-dmg",
-                    "phase": "prepared",
-                    "updatedAt": 1,
-                })
-            ),
-        )
-        .expect("write update status fixture");
-        let request_path = operation.join("request-v1.json");
-        fs::write(
-            &request_path,
-            format!(
-                "{}\n",
-                json!({
-                    "schema_version": 1,
-                    "version": "1.2.3",
-                    "wait_pid": launcher_pid,
-                    "wait_executable": launcher,
-                    "status_path": status_path,
-                    "installation": { "kind": "macos-dmg" },
-                })
-            ),
-        )
-        .expect("write update request fixture");
-        fs::write(
-            root.join(ACTIVE_UPDATE_LOCK_FILE),
-            format!("{}\n", json!({ "ownerPid": 42, "statusPath": status_path })),
-        )
-        .expect("write active update lock fixture");
-        PendingUpdate {
-            lock_path: root.join(ACTIVE_UPDATE_LOCK_FILE),
-            status_path: status_path
-                .canonicalize()
-                .expect("canonical status fixture"),
-            helper_path: helper_path
-                .canonicalize()
-                .expect("canonical Helper fixture"),
-            request_path: request_path
-                .canonicalize()
-                .expect("canonical request fixture"),
-        }
-    }
-
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn resolves_only_a_request_for_the_current_launcher() {
-        let fixture = fixture_directory("pending-update");
-        let root = fixture.join("updates");
-        fs::create_dir(&root).expect("create update root");
-        let launcher = fixture.join("codexhost");
-        fs::write(&launcher, b"launcher").expect("write Launcher fixture");
-        let expected = write_pending_update(&root, &launcher, 42);
-
-        assert_eq!(
-            pending_startable_update_at(&root, 42, &launcher).expect("resolve pending update"),
-            Some(expected)
-        );
-        assert!(pending_update_at(&root, 43, &launcher).is_err());
-        fs::remove_dir_all(fixture).expect("remove pending update fixture");
-    }
-
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn waits_for_the_updater_ready_handshake_before_returning() {
-        let fixture = fixture_directory("updater-ready");
-        let status_path = fixture.join(STATUS_FILE);
-        fs::write(
-            &status_path,
-            format!(
-                "{}\n",
-                json!({
-                    "schemaVersion": 1,
-                    "version": "1.2.3",
-                    "installation": "macos-dmg",
-                    "phase": "prepared",
-                    "updatedAt": 1,
-                })
-            ),
-        )
-        .expect("write prepared status fixture");
-        let mut child = std::process::Command::new("/bin/sleep")
-            .arg("2")
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-            .expect("spawn updater fixture");
-        let ready_status_path = status_path.clone();
-        let writer = std::thread::spawn(move || {
-            std::thread::sleep(std::time::Duration::from_millis(50));
-            let temporary_status_path = ready_status_path
-                .with_file_name(format!(".{STATUS_FILE}.{}.tmp", std::process::id()));
-            fs::write(
-                &temporary_status_path,
-                format!(
-                    "{}\n",
-                    json!({
-                        "schemaVersion": 1,
-                        "version": "1.2.3",
-                        "installation": "macos-dmg",
-                        "phase": "waiting-for-exit",
-                        "updatedAt": 2,
-                    })
-                ),
-            )
-            .expect("write waiting status fixture");
-            atomic_replace_file(&temporary_status_path, &ready_status_path)
-                .expect("publish waiting status fixture");
-        });
-        let started = std::time::Instant::now();
-        wait_for_updater_ready(&mut child, &status_path).expect("wait for updater readiness");
-        assert!(started.elapsed() >= std::time::Duration::from_millis(40));
-        writer.join().expect("join status writer");
-        child.kill().expect("stop updater fixture");
-        let _ = child.wait().expect("reap updater fixture");
-        fs::remove_dir_all(fixture).expect("remove updater ready fixture");
-    }
-
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn transfers_the_active_lock_to_the_updater_process() {
-        let fixture = fixture_directory("update-owner");
-        let root = fixture.join("updates");
-        fs::create_dir(&root).expect("create update root");
-        let launcher = fixture.join("codexhost");
-        fs::write(&launcher, b"launcher").expect("write Launcher fixture");
-        let pending = write_pending_update(&root, &launcher, 42);
-
-        transfer_lock_to_updater(&pending, 99).expect("transfer update lock");
-        let lock = serde_json::from_slice::<serde_json::Value>(
-            &fs::read(root.join(ACTIVE_UPDATE_LOCK_FILE)).expect("read transferred lock"),
-        )
-        .expect("parse transferred lock");
-        assert_eq!(lock["ownerPid"], 99);
-        assert_eq!(lock["statusPath"].as_str(), pending.status_path.to_str());
-        fs::remove_dir_all(fixture).expect("remove transferred lock fixture");
-    }
-
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn waits_until_the_final_request_exists() {
-        let fixture = fixture_directory("incomplete-update");
-        let root = fixture.join("updates");
-        fs::create_dir(&root).expect("create update root");
-        let launcher = fixture.join("codexhost");
-        fs::write(&launcher, b"launcher").expect("write Launcher fixture");
-        let expected = write_pending_update(&root, &launcher, 42);
-        fs::remove_file(expected.request_path).expect("remove incomplete request");
-
-        assert_eq!(
-            pending_startable_update_at(&root, 42, &launcher).expect("ignore incomplete update"),
-            None
-        );
-        fs::remove_dir_all(fixture).expect("remove incomplete update fixture");
-    }
-
-    #[test]
-    fn treats_waiting_for_exit_as_a_managed_desktop_stop() {
-        let fixture = fixture_directory("waiting-update");
-        let root = fixture.join("updates");
-        fs::create_dir(&root).expect("create update root");
-        let launcher = fixture.join("codexhost");
-        fs::write(&launcher, b"launcher").expect("write Launcher fixture");
-        let pending = write_pending_update(&root, &launcher, 42);
-        fs::write(
-            &pending.status_path,
-            format!(
-                "{}\n",
-                json!({
-                    "schemaVersion": 1,
-                    "version": "1.2.3",
-                    "installation": "macos-dmg",
-                    "phase": "waiting-for-exit",
-                    "updatedAt": 2,
-                })
-            ),
-        )
-        .expect("write waiting status fixture");
-
-        #[cfg(target_os = "macos")]
-        assert_eq!(
-            pending_startable_update_at(&root, 42, &launcher).expect("do not restart Helper"),
-            None
-        );
-        assert!(waiting_for_launcher_exit_at(&root, 42, &launcher).expect("detect waiting update"));
-        assert!(waiting_for_launcher_exit_at(&root, 43, &launcher).is_err());
-        fs::remove_dir_all(fixture).expect("remove waiting update fixture");
-    }
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+pub(crate) fn start_pending_update(started_update: &mut Option<StartedUpdate>) -> io::Result<()> {
+    start_pending_update_at(
+        &update_state_directory()?,
+        std::process::id(),
+        &std::env::current_exe()?,
+        started_update,
+    )
 }
+
+#[cfg(test)]
+mod tests;

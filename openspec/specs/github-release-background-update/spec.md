@@ -56,7 +56,7 @@ The Host and Update Manager SHALL persist a `downloading` status for installer a
 - **AND** the Launcher SHALL NOT stop the managed Desktop for that failed operation
 
 ### Requirement: Update starts once and stops the managed Desktop process tree
-Host SHALL serialize update starts across current Host processes. After successful preparation it SHALL respond to the initiating Renderer. On Windows it SHALL start the temporary Updater; on macOS the Launcher SHALL start that helper from the prepared request. The Launcher SHALL then stop the owned Desktop process tree without invoking Electron `app.quit()`. The helper SHALL install only after the exact Launcher exits.
+Host SHALL serialize update starts across current Host processes. After successful preparation it SHALL respond to the initiating Renderer. On Windows and macOS the Launcher SHALL start the temporary Updater from the prepared request, outside the managed Desktop process tree, and the Host SHALL NOT start that helper. The Launcher SHALL then stop the owned Desktop process tree without invoking Electron `app.quit()`. On Windows and macOS the helper SHALL require a fresh per-launch handoff token and SHALL install only after the Launcher exits and a matching cleanup authorization has been published. Windows SHALL additionally verify the Launcher's exact process instance while waiting.
 
 #### Scenario: User starts the current candidate
 - **WHEN** no update operation is active and the current candidate remains the latest stable Release
@@ -69,6 +69,45 @@ Host SHALL serialize update starts across current Host processes. After successf
 #### Scenario: Launcher does not exit
 - **WHEN** the managed Launcher remains alive past the Updater wait timeout
 - **THEN** the helper SHALL record failure and SHALL NOT modify the installed distribution
+
+#### Scenario: Helper fails before taking the wait position
+- **WHEN** the Launcher cannot start the Helper or the Helper exits before confirming the exact live Launcher
+- **THEN** the operation SHALL become `failed`, the managed Desktop SHALL keep running, and the Launcher SHALL NOT repeatedly start that request
+
+#### Scenario: Helper exits after taking the wait position
+- **WHEN** the Helper exits after reporting readiness while the status still says `waiting-for-exit`
+- **THEN** the Launcher SHALL detect the exit through its retained child process handle, record failure, and SHALL NOT begin Desktop shutdown for that stale status
+
+#### Scenario: Launcher exits without finishing Desktop cleanup
+- **WHEN** the Windows or macOS Launcher crashes or is forcibly terminated before successful cleanup and final checks
+- **THEN** the Helper SHALL reject installation without a matching cleanup authorization, record failure, and SHALL NOT treat Launcher exit alone as permission to install
+
+#### Scenario: Cleanup authorization is incomplete or stale
+- **WHEN** the authorization is missing, incomplete, non-regular, or belongs to a previous Helper token
+- **THEN** the Helper SHALL fail before publishing `installing` or invoking the installer
+- **AND** the Launcher SHALL create and synchronize the authorization only after successful cleanup; publication failure SHALL abort the update instead of overwriting an existing authorization
+
+#### Scenario: Windows Desktop does not fully stop
+- **WHEN** Windows cannot terminate the managed Desktop root or its Shim/Host chain remains alive
+- **THEN** the Launcher SHALL terminate only captured Desktop descendants by exact process identity and check for late installation-owned processes
+- **AND** failed termination, surviving installation-owned processes, or inconclusive inspection SHALL abort the update by stopping and reaping the Helper before recording failure; the Launcher SHALL remain alive until cancellation completes
+
+#### Scenario: Windows descendant capture cannot observe the managed tree
+- **WHEN** the Desktop root exits before the Launcher captures its descendants, or the descendant ancestry is no longer observable while the Helper is waiting
+- **THEN** the Launcher SHALL stop and reap the Helper, record failure, and SHALL NOT terminate processes based only on matching executable paths or repeatedly retry the failed capture
+
+#### Scenario: Windows npm shares a Node executable with unrelated work
+- **WHEN** the managed Host and unrelated processes use a Node executable outside the installation's bundled runtime
+- **THEN** only captured Desktop descendants SHALL be terminated; unrelated Node processes SHALL remain running and SHALL NOT block the final installation-process check
+
+#### Scenario: Windows installation process cannot be inspected
+- **WHEN** a live process has a Toolhelp executable name matching an installation-owned executable but its full identity cannot be inspected
+- **THEN** the final scan SHALL fail instead of treating the process as absent; unrelated protected system processes SHALL be ignored
+- **AND** executable path and start time SHALL be sampled from the same process handle and the final snapshot path SHALL match before the scan reports an installation process
+
+#### Scenario: Windows Launcher process inspection fails
+- **WHEN** the Updater cannot reliably inspect whether the exact Launcher instance is still running
+- **THEN** it SHALL record failure and SHALL NOT begin installation
 
 ### Requirement: Update status survives restart
 The update capability SHALL store strict local operation status outside the installation root, discover the newest valid operation after relaunch, and expose only version, installation kind, phase, update time, and bounded error. It SHALL treat a freshly observed `restarting` phase as pending and SHALL clean stale terminal work without deleting active work.
@@ -87,7 +126,6 @@ The existing background manager and native helper SHALL continue to use exact-ve
 #### Scenario: macOS parent directory is not writable
 - **WHEN** the Updater cannot stage or replace the App in its current parent directory
 - **THEN** it SHALL preserve or restore the prior App and record a permission failure without invoking hidden privilege escalation
-
 ### Requirement: ARM64 Linux npm distributions SHALL use npm updates
 Strict distribution metadata SHALL accept `linux-arm64`, SHALL require it to match a running `linux/arm64` host, and SHALL resolve its installed update context through the existing npm update path. It MUST NOT select or require a GitHub Release installer asset for Linux.
 
@@ -96,4 +134,3 @@ Strict distribution metadata SHALL accept `linux-arm64`, SHALL require it to mat
 - **THEN** Host resolves the verified npm package paths and reports npm installation availability
 - **AND** update preparation uses exact-version npm installation
 - **AND** no DMG, EXE, `.deb`, or `.rpm` installer asset is selected
-

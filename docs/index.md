@@ -107,6 +107,7 @@
 | [`platforms/macos/native-aqua-broker.md`](platforms/macos/native-aqua-broker.md) | 在 macOS Aqua 会话运行远程原生 Harness 插件的 Broker；修改 Broker 时阅读。 |
 | [`platforms/macos/macos-process-observation.md`](platforms/macos/macos-process-observation.md) | macOS shim 进程树观察、路径读取优化与安全不变量；修改进程监管时阅读。 |
 | [`platforms/windows/windows-tool-compatibility.md`](platforms/windows/windows-tool-compatibility.md) | Windows Browser Use、Computer Use 和辅助进程路由；修改 Windows 原生工具支持时阅读。 |
+| [`platforms/windows/windows-auto-update.md`](platforms/windows/windows-auto-update.md) | Windows 自动更新的 Host、Launcher、Updater 交接、进程身份校验与失败边界；修改更新生命周期时阅读。 |
 
 ## 维护
 

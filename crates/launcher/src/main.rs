@@ -4,6 +4,7 @@ mod active_update;
 mod compatibility;
 mod desktop_attachment;
 mod desktop_path_overrides;
+mod desktop_update;
 mod installation_layout;
 mod native_harness_broker;
 mod runtime_instance;
@@ -27,9 +28,10 @@ use std::sync::{OnceLock, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 
-#[cfg(target_os = "macos")]
-use active_update::start_pending_update;
+#[cfg(target_os = "linux")]
 use active_update::update_waiting_for_launcher_exit;
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+use codexhost_platform::launch_desktop_session;
 #[cfg(target_os = "windows")]
 use codexhost_platform::{
     APPX_RESUME_ARGUMENT, DesktopProcess, launch_desktop, resume_packaged_application,
@@ -40,18 +42,19 @@ use codexhost_platform::{
     desktop_root_process_ids_for_installation, discover_codex_desktop, node_entrypoint_path,
     spawn_supervised,
 };
-#[cfg(any(target_os = "macos", target_os = "linux"))]
-use codexhost_platform::{DesktopSession, launch_desktop_session};
 #[cfg(target_os = "windows")]
 use codexhost_platform::{
     RunningDesktopChoice, hide_console_window, process_executable_path, process_exists,
-    prompt_running_desktop, show_error_dialog, terminate_process_by_id,
+    process_snapshot, prompt_running_desktop, show_error_dialog, terminate_process_by_id,
 };
 use compatibility::{MAX_CONTROLLER_READINESS_LINE_BYTES, parse_controller_readiness_line};
 use desktop_attachment::{
     LauncherOwnership, RuntimeControl, acquire_launcher_ownership, allocate_runtime_control,
     endpoint_ready, publish_runtime_descriptor, stop_stale_launcher, wait_for_host_chain,
 };
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+use desktop_update::poll_pending_update;
+use desktop_update::stop_managed_desktop_for_update;
 use installation_layout::InstalledResources;
 use native_harness_broker::run_native_harness_broker_cli;
 use runtime_instance::{
@@ -620,42 +623,6 @@ fn wait_for_desktop_exit(
     }
 }
 
-fn should_stop_desktop_for_update(helper_started: bool) -> bool {
-    if helper_started {
-        return true;
-    }
-    match update_waiting_for_launcher_exit() {
-        Ok(waiting) => waiting,
-        Err(error) => {
-            eprintln!("codexhost launcher: pending update exit state could not be read: {error}");
-            false
-        }
-    }
-}
-
-#[cfg(any(target_os = "macos", target_os = "linux"))]
-fn stop_managed_desktop_for_update(
-    desktop: &mut DesktopSession,
-    controller: &mut SupervisedChild,
-) -> Result<(), Box<dyn Error>> {
-    let _ = stop_desktop_controller(controller);
-    desktop.shutdown(Duration::from_secs(2))?;
-    desktop.cleanup_escaped(Duration::from_secs(2))?;
-    desktop.disarm_cleanup();
-    Ok(())
-}
-
-#[cfg(target_os = "windows")]
-fn stop_managed_desktop_for_update(
-    desktop: &mut DesktopProcess,
-    controller: &mut SupervisedChild,
-) -> Result<(), Box<dyn Error>> {
-    let _ = stop_desktop_controller(controller);
-    let _ = desktop.kill();
-    let _ = desktop.wait();
-    Ok(())
-}
-
 fn stop_desktop_controller(controller: &mut SupervisedChild) -> Result<(), Box<dyn Error>> {
     if let Some(status) = controller.try_wait()? {
         controller.disarm_cleanup();
@@ -727,20 +694,44 @@ fn supervise_desktop(
     let mut last_desktop_tree_refresh = Instant::now();
     loop {
         #[cfg(target_os = "macos")]
-        if let Err(error) = start_pending_update(&mut started_update_request) {
-            eprintln!("codexhost launcher: pending update could not be started: {error}");
+        match poll_pending_update(&mut started_update_request, |update| {
+            stop_managed_desktop_for_update(&mut desktop, &mut controller, || {
+                update.waiting_for_launcher_exit()
+            })
+        }) {
+            Ok(true) => return Ok(()),
+            Ok(false) => {}
+            Err(error) => {
+                eprintln!("codexhost launcher: update cancellation is pending: {error}");
+                thread::sleep(Duration::from_millis(100));
+                continue;
+            }
         }
-        #[cfg(target_os = "macos")]
-        let helper_started = started_update_request.is_some();
         #[cfg(target_os = "linux")]
-        let helper_started = false;
-        if should_stop_desktop_for_update(helper_started) {
-            if let Err(error) = stop_managed_desktop_for_update(&mut desktop, &mut controller) {
+        let update_waiting = match update_waiting_for_launcher_exit() {
+            Ok(waiting) => waiting,
+            Err(error) => {
                 eprintln!(
-                    "codexhost launcher: managed Desktop could not be stopped for update: {error}"
+                    "codexhost launcher: pending update exit state could not be read: {error}"
                 );
-            } else {
-                return Ok(());
+                false
+            }
+        };
+        #[cfg(target_os = "linux")]
+        if update_waiting {
+            match stop_managed_desktop_for_update(
+                &mut desktop,
+                &mut controller,
+                update_waiting_for_launcher_exit,
+            ) {
+                Ok(()) => return Ok(()),
+                Err(error) => {
+                    eprintln!(
+                        "codexhost launcher: managed Desktop could not be stopped for update: {error}"
+                    );
+                    thread::sleep(Duration::from_millis(100));
+                    continue;
+                }
             }
         }
         if let Some(status) = controller.try_wait()? {
@@ -794,6 +785,7 @@ fn supervise_desktop(
     startup_trace("Codex Desktop launched");
     let desktop_pid = desktop.id();
     wait_for_launched_desktop_ownership(installation, &mut desktop, Duration::from_secs(5))?;
+    let desktop_root = process_snapshot(desktop_pid)?;
     let mut controller = match start_desktop_controller(options, control, environment) {
         Ok(started) => started,
         Err(error) => {
@@ -821,14 +813,24 @@ fn supervise_desktop(
     };
     startup_trace("runtime descriptor published");
     notify_ready_and_detach()?;
+    let mut started_update_request = None;
     loop {
-        if should_stop_desktop_for_update(false) {
-            if let Err(error) = stop_managed_desktop_for_update(&mut desktop, &mut controller) {
-                eprintln!(
-                    "codexhost launcher: managed Desktop could not be stopped for update: {error}"
-                );
-            } else {
-                return Ok(());
+        match poll_pending_update(&mut started_update_request, |update| {
+            stop_managed_desktop_for_update(
+                &mut desktop,
+                &desktop_root,
+                installation,
+                &mut controller,
+                options,
+                || update.waiting_for_launcher_exit(),
+            )
+        }) {
+            Ok(true) => return Ok(()),
+            Ok(false) => {}
+            Err(error) => {
+                eprintln!("codexhost launcher: update cancellation is pending: {error}");
+                thread::sleep(Duration::from_millis(100));
+                continue;
             }
         }
         if let Some(status) = controller.try_wait()? {
@@ -1294,6 +1296,7 @@ mod tests {
     };
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     use super::{DESKTOP_TREE_REFRESH_INTERVAL, desktop_tree_refresh_due};
+
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     #[test]
     fn throttles_full_desktop_tree_refreshes() {

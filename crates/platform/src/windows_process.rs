@@ -1,7 +1,8 @@
-use std::ffi::c_void;
+use super::{PlatformError, ProcessSnapshot};
+use std::ffi::{OsString, c_void};
 use std::io;
 use std::mem::{size_of, zeroed};
-use std::os::windows::ffi::OsStrExt;
+use std::os::windows::ffi::{OsStrExt, OsStringExt};
 use std::os::windows::io::AsRawHandle;
 use std::path::PathBuf;
 use std::process::Child;
@@ -13,6 +14,7 @@ type Handle = *mut c_void;
 
 const INVALID_HANDLE_VALUE: Handle = -1_isize as Handle;
 const TH32CS_SNAPPROCESS: u32 = 0x0000_0002;
+const ERROR_NO_MORE_FILES: i32 = 18;
 const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x0000_1000;
 const PROCESS_TERMINATE: u32 = 0x0000_0001;
 const JOB_OBJECT_EXTENDED_LIMIT_INFORMATION_CLASS: i32 = 9;
@@ -116,10 +118,11 @@ unsafe extern "system" {
     fn MoveFileExW(existing: *const u16, replacement: *const u16, flags: u32) -> i32;
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub struct ProcessEntry {
     pub id: u32,
     pub parent_id: u32,
+    pub executable_name: PathBuf,
 }
 
 pub struct ChildJob(Handle);
@@ -181,19 +184,33 @@ pub fn process_entries() -> io::Result<Vec<ProcessEntry>> {
         let mut entry: NativeProcessEntry = zeroed();
         entry.size = size_of::<NativeProcessEntry>() as u32;
         let mut entries = Vec::new();
-        if Process32FirstW(snapshot, &mut entry) != 0 {
-            loop {
-                entries.push(ProcessEntry {
-                    id: entry.process_id,
-                    parent_id: entry.parent_process_id,
-                });
-                if Process32NextW(snapshot, &mut entry) == 0 {
-                    break;
-                }
+        if Process32FirstW(snapshot, &mut entry) == 0 {
+            let error = io::Error::last_os_error();
+            CloseHandle(snapshot);
+            return Err(error);
+        }
+        loop {
+            entries.push(ProcessEntry {
+                id: entry.process_id,
+                parent_id: entry.parent_process_id,
+                executable_name: PathBuf::from(OsString::from_wide(
+                    &entry.executable_name[..entry
+                        .executable_name
+                        .iter()
+                        .position(|character| *character == 0)
+                        .unwrap_or(entry.executable_name.len())],
+                )),
+            });
+            if Process32NextW(snapshot, &mut entry) == 0 {
+                let error = io::Error::last_os_error();
+                CloseHandle(snapshot);
+                return if error.raw_os_error() == Some(ERROR_NO_MORE_FILES) {
+                    Ok(entries)
+                } else {
+                    Err(error)
+                };
             }
         }
-        CloseHandle(snapshot);
-        Ok(entries)
     }
 }
 
@@ -203,16 +220,76 @@ pub fn process_image_path(process_id: u32) -> io::Result<PathBuf> {
         if process.is_null() {
             return Err(io::Error::last_os_error());
         }
-        let mut buffer = vec![0_u16; 32_768];
-        let mut length = buffer.len() as u32;
-        let result = QueryFullProcessImageNameW(process, 0, buffer.as_mut_ptr(), &mut length);
+        let result = process_image_path_from_handle(process);
         CloseHandle(process);
-        if result == 0 {
-            return Err(io::Error::last_os_error());
-        }
-        buffer.truncate(length as usize);
-        Ok(PathBuf::from(String::from_utf16_lossy(&buffer)))
+        result
     }
+}
+
+fn process_image_path_from_handle(process: Handle) -> io::Result<PathBuf> {
+    let mut buffer = vec![0_u16; 32_768];
+    let mut length = buffer.len() as u32;
+    let result =
+        unsafe { QueryFullProcessImageNameW(process, 0, buffer.as_mut_ptr(), &mut length) };
+    if result == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    buffer.truncate(length as usize);
+    Ok(PathBuf::from(OsString::from_wide(&buffer)))
+}
+
+pub fn process_snapshot(process_id: u32) -> Result<ProcessSnapshot, PlatformError> {
+    let process = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, process_id) };
+    if process.is_null() {
+        let source = io::Error::last_os_error();
+        if !process_entries()?
+            .iter()
+            .any(|entry| entry.id == process_id)
+        {
+            return Err(PlatformError::NotFound(format!(
+                "cannot inspect PID {process_id}"
+            )));
+        }
+        return Err(PlatformError::ProcessInspection {
+            process_id,
+            operation: "open process",
+            source,
+        });
+    }
+
+    // Keep one handle open throughout enumeration and inspection so the PID,
+    // executable and creation time cannot come from different process instances.
+    let result = (|| {
+        let parent_id = process_entries()?
+            .into_iter()
+            .find(|entry| entry.id == process_id)
+            .ok_or_else(|| PlatformError::NotFound(format!("cannot inspect PID {process_id}")))?
+            .parent_id;
+        let executable = process_image_path_from_handle(process).map_err(|source| {
+            PlatformError::ProcessInspection {
+                process_id,
+                operation: "read executable",
+                source,
+            }
+        })?;
+        let started_at_micros =
+            process_started_at_micros_from_handle(process).map_err(|source| {
+                PlatformError::ProcessInspection {
+                    process_id,
+                    operation: "read start time",
+                    source,
+                }
+            })?;
+        Ok(ProcessSnapshot {
+            id: process_id,
+            parent_id,
+            process_group_id: process_id,
+            executable,
+            started_at_micros,
+        })
+    })();
+    unsafe { CloseHandle(process) };
+    result
 }
 
 fn process_started_at_micros_from_handle(process: Handle) -> io::Result<u64> {

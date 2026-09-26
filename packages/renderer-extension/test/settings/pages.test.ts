@@ -1481,60 +1481,126 @@ describe("Renderer Updates page", () => {
     scope.dispose();
   });
 
+  it.each(["npm", "windows-installer"] as const)(
+    "offers an in-app Windows update for %s installations",
+    async (installation) => {
+      const client = {
+        checkUpdate: vi.fn(async () => ({ ...updateCheck(), installation })),
+        startUpdate: vi.fn(async () => ({ status: updateStatus("prepared", installation) })),
+        readUpdateStatus: vi.fn(async () => ({ status: updateStatus("prepared", installation) })),
+      };
+      const page = createDefaultRendererSettingsPages(
+        rendererSettingsMessages("zh-CN"),
+        () => client,
+      ).find(({ id }) => id === "updates");
+      if (!page) throw new Error("Updates page is not registered");
+
+      const document = new FakeDocument("Win32");
+      const content = document.createElement("main");
+      const scope = new RendererSettingsPageScope();
+      const cleanup = page.mount({
+        content: content as unknown as HTMLElement,
+        signal: scope.signal,
+        runLatest: (operation, handlers) => scope.runLatest(operation, handlers),
+      });
+
+      const panel = elementWithClass(content, "settings-update-panel");
+      await vi.waitFor(() => {
+        expect(visibleText(panel)).not.toContain("正在检查更新");
+        expect(visibleNotesText(content)).not.toContain("暂不支持自动更新");
+        expect(descendants(panel).some(({ tagName }) => tagName === "button")).toBe(true);
+      });
+      const updateButton = descendants(panel).find(({ tagName }) => tagName === "button");
+      if (!updateButton) throw new Error("Windows update command is not rendered");
+      if (installation === "npm") {
+        expect(visibleNotesText(content)).toContain("npm install -g @codexhost/cli@latest");
+      } else {
+        const link = descendants(content).find(
+          ({ tagName, href }) =>
+            tagName === "a" &&
+            href ===
+              "https://github.com/BytePioneer-AI/codex-host/releases/download/v1.2.3/codexhost-1.2.3-windows-x64.exe",
+        );
+        expect(link).toMatchObject({ target: "_blank", rel: "noopener noreferrer" });
+        expect(visibleNotesText(content)).toContain(
+          "如需手动更新，请下载并运行适用于当前系统的安装包。",
+        );
+      }
+      updateButton?.dispatch("click");
+      await vi.waitFor(() => {
+        expect(client.startUpdate).toHaveBeenCalledOnce();
+      });
+
+      cleanup?.();
+      scope.dispose();
+    },
+  );
+
   it.each([
-    ["npm" as const, "Windows 暂不支持自动更新。请退出 codexhost，在终端运行以下命令完成更新。"],
-    [
-      "windows-installer" as const,
-      "Windows 暂不支持自动更新。请下载并运行适用于当前系统的安装包。",
-    ],
-  ])("renders manual Windows updates for %s installations", async (installation, expected) => {
-    const client = {
-      checkUpdate: vi.fn(async () => ({ ...updateCheck(), installation })),
-      startUpdate: vi.fn(),
-      readUpdateStatus: vi.fn(async () => ({ status: null })),
-    };
-    const page = createDefaultRendererSettingsPages(
-      rendererSettingsMessages("zh-CN"),
-      () => client,
-    ).find(({ id }) => id === "updates");
-    if (!page) throw new Error("Updates page is not registered");
+    {
+      platform: "Win32",
+      locale: "en",
+      normal: "On Windows, quit codexhost before running this command in a terminal:",
+      fallback: "On Windows, quit codexhost before running this command in a terminal:",
+    },
+    {
+      platform: "Win32",
+      locale: "zh-CN",
+      normal: "在 Windows 上手动更新前，请先退出 codexhost，再在终端运行以下命令：",
+      fallback: "在 Windows 上手动更新前，请先退出 codexhost，再在终端运行以下命令：",
+    },
+    {
+      platform: "MacIntel",
+      locale: "en",
+      normal: "To update manually, quit codexhost and run this command:",
+      fallback:
+        "The automatic update did not complete. Run this command in a terminal instead, then quit Codex and relaunch it with codexhost.",
+    },
+    {
+      platform: "MacIntel",
+      locale: "zh-CN",
+      normal:
+        "如需手动更新，请在终端运行以下命令。更新完成后，请退出 Codex 并通过 codexhost 重新启动。",
+      fallback:
+        "自动更新未能完成，请改用下列命令在终端手动更新。完成后请退出 Codex 并通过 codexhost 重新启动。",
+    },
+  ] as const)(
+    "shows the correct npm manual-update order on $platform in $locale",
+    async ({ platform, locale, normal, fallback }) => {
+      const client = {
+        checkUpdate: vi.fn(async () => updateCheck()),
+        startUpdate: vi.fn(async () => ({ status: updateStatus("failed") })),
+        readUpdateStatus: vi.fn(async () => ({ status: null })),
+      };
+      const page = createDefaultRendererSettingsPages(
+        rendererSettingsMessages(locale),
+        () => client,
+      ).find(({ id }) => id === "updates");
+      if (!page) throw new Error("Updates page is not registered");
 
-    const document = new FakeDocument("Win32");
-    const content = document.createElement("main");
-    const scope = new RendererSettingsPageScope();
-    const cleanup = page.mount({
-      content: content as unknown as HTMLElement,
-      signal: scope.signal,
-      runLatest: (operation, handlers) => scope.runLatest(operation, handlers),
-    });
+      const document = new FakeDocument(platform);
+      const content = document.createElement("main");
+      const scope = new RendererSettingsPageScope();
+      const cleanup = page.mount({
+        content: content as unknown as HTMLElement,
+        signal: scope.signal,
+        runLatest: (operation, handlers) => scope.runLatest(operation, handlers),
+      });
 
-    await vi.waitFor(() => {
-      expect(visibleText(content)).toContain(expected);
-      expect(visibleText(elementWithClass(content, "settings-update-panel"))).toContain(
-        "Windows 暂不支持自动更新",
-      );
-    });
-    expect(
-      descendants(elementWithClass(content, "settings-update-panel")).find(
-        ({ tagName }) => tagName === "button",
-      ),
-    ).toBeUndefined();
-    expect(client.startUpdate).not.toHaveBeenCalled();
-    if (installation === "npm") {
-      expect(visibleText(content)).toContain("npm install -g @codexhost/cli@latest");
-    } else {
-      const link = descendants(content).find(
-        ({ tagName, href }) =>
-          tagName === "a" &&
-          href ===
-            "https://github.com/BytePioneer-AI/codex-host/releases/download/v1.2.3/codexhost-1.2.3-windows-x64.exe",
-      );
-      expect(link).toMatchObject({ target: "_blank", rel: "noopener noreferrer" });
-    }
+      const panel = elementWithClass(content, "settings-update-panel");
+      await vi.waitFor(() => expect(panel.dataset.updateState).toBe("available"));
+      const description = elementWithClass(content, "settings-update-manual-description");
+      expect(description.textContent).toBe(normal);
+      const updateButton = descendants(panel).find(({ tagName }) => tagName === "button");
+      if (!updateButton) throw new Error("Update command is not rendered");
+      updateButton.dispatch("click");
+      await vi.waitFor(() => expect(panel.dataset.updateState).toBe("failed"));
+      expect(description.textContent).toBe(fallback);
 
-    cleanup?.();
-    scope.dispose();
-  });
+      cleanup?.();
+      scope.dispose();
+    },
+  );
 
   it("renders the open-source project introduction on the About page", () => {
     const page = createDefaultRendererSettingsPages(rendererSettingsMessages("zh-CN")).find(

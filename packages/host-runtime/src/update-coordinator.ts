@@ -244,7 +244,10 @@ export function createHostUpdateCoordinator(
                       onPrepared,
                     });
             }
-            if (platform !== "darwin") manager.start(prepared);
+            // The Launcher starts this helper on Windows and macOS so it is not
+            // inside the Desktop process tree. A Host-started Windows helper is
+            // assigned to the Shim Job and dies when that Job closes.
+            if (platform !== "darwin" && platform !== "win32") manager.start(prepared);
           } catch (error) {
             await lock.release();
             rejectPrepared(error);

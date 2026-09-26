@@ -380,7 +380,20 @@ function updatesPage(
         }
       };
 
+      // Unavailable can follow a rendered check (Retry after an error), so it
+      // restores the metadata and manual controls to their unchecked state.
       const renderUnavailable = (detail: string): void => {
+        currentVersionValue.textContent = "-";
+        latestVersionValue.textContent = "-";
+        latestVersionValue.className = "";
+        installationValue.textContent = "-";
+        manualTitle.hidden = false;
+        manualNpm.hidden = true;
+        manualWindowsInstaller.hidden = true;
+        manualWindowsInstallerLink.href = CODEXHOST_RELEASES_LATEST_URL;
+        releaseLink.hidden = false;
+        releaseLink.href = CODEXHOST_RELEASES_LATEST_URL;
+        controls.className = "settings-update-controls";
         panel.dataset.updateState = "unavailable";
         delete panel.dataset.inline;
         panel.replaceChildren();

@@ -1381,6 +1381,55 @@ describe("Renderer Updates page", () => {
     scope.dispose();
   });
 
+  it("clears the previous check when Retry finds updates unavailable", async () => {
+    const client = {
+      checkUpdate: vi
+        .fn<() => Promise<UpdateCheckResult | null>>()
+        .mockResolvedValueOnce({ ...updateCheck(), error: "network down" })
+        .mockResolvedValueOnce(null),
+      startUpdate: vi.fn(),
+      readUpdateStatus: vi.fn(),
+    };
+    const page = createDefaultRendererSettingsPages(
+      rendererSettingsMessages("zh-CN"),
+      () => client,
+    ).find(({ id }) => id === "updates");
+    if (!page) throw new Error("Updates page is not registered");
+
+    const document = new FakeDocument();
+    const content = document.createElement("main");
+    const scope = new RendererSettingsPageScope();
+    const cleanup = page.mount({
+      content: content as unknown as HTMLElement,
+      signal: scope.signal,
+      runLatest: (operation, handlers) => scope.runLatest(operation, handlers),
+    });
+
+    const panel = elementWithClass(content, "settings-update-panel");
+    const metadata = elementWithClass(content, "settings-update-metadata");
+    const manualNpm = descendants(content).find(
+      ({ className }) => className === "settings-update-manual",
+    );
+    await vi.waitFor(() => expect(panel.dataset.updateState).toBe("error"));
+    expect(visibleText(metadata)).toContain("v1.2.3");
+    expect(manualNpm?.hidden).toBe(false);
+
+    const retry = descendants(panel).find(
+      ({ tagName, children }) => tagName === "button" && children.includes("重试"),
+    );
+    if (!retry) throw new Error("Missing Retry button");
+    retry.dispatch("click");
+    await vi.waitFor(() => expect(panel.dataset.updateState).toBe("unavailable"));
+    expect(visibleText(metadata)).not.toMatch(/v1\.2\.[23]/);
+    expect(manualNpm?.hidden).toBe(true);
+    expect(elementWithClass(content, "settings-update-controls").className).toBe(
+      "settings-update-controls",
+    );
+
+    cleanup?.();
+    scope.dispose();
+  });
+
   it("shows only the Update action before an update starts and ignores stale success state", async () => {
     const client = {
       checkUpdate: vi.fn(async () => updateCheck(updateStatus("succeeded"))),

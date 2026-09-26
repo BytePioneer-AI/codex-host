@@ -42,10 +42,11 @@ const WORKBUDDY_EXE_BASENAME = /^(?:WorkBuddy|WorkBuddy AI|WorkBuddyAI)\.exe$/iu
 const WORKBUDDY_PRODUCT = /WorkBuddy(?:\s*AI|AI)?/iu;
 
 const UNINSTALL_REGISTRY_ROOTS = [
+  // Prefer HKCU first so a per-user install can short-circuit before HKLM scans.
   "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall",
+  "HKCU\\Software\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall",
   "HKLM\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall",
   "HKLM\\Software\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall",
-  "HKCU\\Software\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall",
 ] as const;
 
 export interface WorkBuddyDiscoveryDependencies {
@@ -229,6 +230,8 @@ function listUninstallDisplayIconExecutables(): string[] {
       continue;
     }
     found.push(...parseUninstallRegistryOutput(output));
+    // Stop after the first hive that yields a WorkBuddy EXE (avoid 4× ~2s worst case).
+    if (found.length > 0) return found;
   }
   return found;
 }
@@ -258,12 +261,12 @@ export function parseUninstallRegistryOutput(output: string): string[] {
     }
     const nameMatch = line.match(/^DisplayName\s+REG_\w+\s+(.*)$/iu);
     if (nameMatch) {
-      displayName = nameMatch[1]!.trim();
+      displayName = (nameMatch[1] ?? "").trim();
       continue;
     }
     const iconMatch = line.match(/^DisplayIcon\s+REG_\w+\s+(.*)$/iu);
     if (iconMatch) {
-      displayIcon = iconMatch[1]!.trim();
+      displayIcon = (iconMatch[1] ?? "").trim();
     }
   }
   flush();

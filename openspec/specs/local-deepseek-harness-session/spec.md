@@ -68,7 +68,17 @@ The Adapter SHALL build Snapshot and live Harness outputs only from the official
 - **AND** any pre-migration checkpoint SHALL NOT authorize a mutating Fork or rollback
 
 ### Requirement: DSH Permission Modes remain dynamically provider-owned
-The Adapter SHALL discover the selectable Permission Mode catalog from the native `permission` settings namespace and SHALL read each Session's effective mode from the authoritative `permissions` projection. It MUST NOT hardcode preset IDs, order, labels, descriptions, or defaults, parse command settlement text as state, or substitute Agent composition presets.
+The Adapter SHALL discover the selectable Permission Mode catalog from the native `permission` settings namespace, or for V4 from the process-level `permissionPresets/catalog` Remote, and SHALL read each Session's effective mode from the authoritative `permissions` projection. It MUST NOT hardcode preset IDs, order, labels, descriptions, or defaults, parse command settlement text as state, or substitute Agent composition presets.
+
+#### Scenario: V4 composes no permission presets
+- **WHEN** the V4 catalog Remote reports `gateway/service-unavailable`
+- **THEN** the Adapter SHALL report `selectPermissionMode=false` and omit the catalog
+- **AND** any other catalog failure SHALL fail inspection closed
+
+#### Scenario: V4 current value is outside the inspected catalog
+- **WHEN** a V4 `permissions` projection reports `custom` or the reserved `auto` preset that a live integration published after inspection
+- **THEN** the Adapter SHALL publish it as the current value without making it selectable
+- **AND** any other unknown value SHALL fail closed
 
 #### Scenario: New Session selects a native permission preset
 - **WHEN** create input names one mode from the inspected catalog

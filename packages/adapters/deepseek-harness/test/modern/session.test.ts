@@ -82,7 +82,7 @@ class FakeControl implements ModernSessionControl {
   readonly #listeners = new Map<string, Set<(row: ModernProjectionRow | undefined) => void>>();
   readonly #rows: Record<string, ModernProjectionRow>;
 
-  constructor(permissionModeId?: string) {
+  constructor(permissionModeId?: string, profile: DeepSeekModernProfile = DEEPSEEK_V012_PROFILE) {
     this.#rows = {
       modelSelection: {
         value: {
@@ -92,7 +92,7 @@ class FakeControl implements ModernSessionControl {
         seq: 0,
       },
       ...(permissionModeId
-        ? { permissions: { value: permissionValue(permissionModeId), seq: 0 } }
+        ? { permissions: { value: permissionValue(permissionModeId, profile), seq: 0 } }
         : {}),
     };
   }
@@ -416,7 +416,12 @@ function accepted(): ModernRemoteResult<unknown> {
   return { ok: true, value: { accepted: true } };
 }
 
-function permissionValue(currentValue: string): ModernControlJsonValue {
+function permissionValue(
+  currentValue: string,
+  profile: DeepSeekModernProfile = DEEPSEEK_V012_PROFILE,
+): ModernControlJsonValue {
+  // V4 projects only the current value; its options come from the process catalog.
+  if (profile.sessionFormatVersion === 4) return { currentValue };
   return {
     options: PERMISSION_CATALOG.modes.map(({ id, label }) => ({ value: id, name: label })),
     currentValue,
@@ -447,7 +452,7 @@ function setup(
 } {
   const feed = new EventFeed();
   const remote = new FakeRemote(handlers, replacementFeeds);
-  const control = new FakeControl(permissionModes ? permissionModes.defaultModeId : undefined);
+  const control = new FakeControl(permissionModes?.defaultModeId, profile);
   const journal: ModernJournal & { closeCalls: number } = {
     profile,
     header:
@@ -568,6 +573,108 @@ async function eventsThrough(
   const events: HostEvent[] = [];
   while (events.at(-1)?.type !== terminalType) events.push(await nextEvent(iterator));
   return events;
+}
+
+/**
+ * Stream one native PTC Turn: `run_code` dispatches `pwsh Get-Date` at seq 5-6,
+ * 450ms apart, in the profile's own event and message shapes.
+ */
+async function streamPtcTurn(
+  profile: DeepSeekModernProfile,
+): Promise<{ test: ReturnType<typeof setup>; emitted: HostEvent[] }> {
+  const v4 = profile.sessionFormatVersion === 4;
+  const test = setup(
+    [() => accepted()],
+    [],
+    ["request-1"],
+    5_000,
+    null,
+    undefined,
+    undefined,
+    [],
+    profile,
+  );
+  const outputs = test.session.outputs[Symbol.asyncIterator]();
+  await test.session.execute({
+    type: "turn.start",
+    turnId: turnId("ptc-turn"),
+    input: [{ type: "text", text: "date" }],
+  });
+  const runCode = JSON.stringify({ code: "await tools.pwsh({ command: 'Get-Date' })" });
+  const kind = v4 ? "ptc" : "code";
+  const dispatch = {
+    rootCallId: "call-1",
+    parentCallId: "call-1",
+    subCallId: `call-1:${kind}:1`,
+    name: "pwsh",
+    arguments: { command: "Get-Date" },
+  };
+  const content = [{ type: "text", text: "2026-09-27" }];
+  const source = { kind: "tool", callId: "call-1" };
+  const events = [
+    event(0, "turn/start", { turn: 1 }),
+    event(1, "step/start", { turn: 1, step: 1 }),
+    userMessage(2, "date", "request-1"),
+    event(
+      3,
+      "assistant/message",
+      {
+        turn: 1,
+        step: 1,
+        message: {
+          id: "assistant-3",
+          role: "assistant",
+          content: [{ type: "tool-call", id: "call-1", name: "run_code", arguments: runCode }],
+          source: { kind: "model", provider: "deepseek", model: "deepseek-v4" },
+        },
+        ...(v4 ? { stream: [] } : {}),
+      },
+      true,
+    ),
+    event(4, "tool/call", {
+      turn: 1,
+      step: 1,
+      callId: "call-1",
+      name: "run_code",
+      arguments: runCode,
+    }),
+    { ...event(5, `tool/${kind}-dispatch-start`, dispatch), time: 2_000 },
+    { ...event(6, `tool/${kind}-dispatch`, { ...dispatch, isError: false, content }), time: 2_450 },
+    event(
+      7,
+      "tool/result",
+      {
+        turn: 1,
+        step: 1,
+        message: v4
+          ? { id: "result-7", role: "tool", toolCallId: "call-1", isError: false, content, source }
+          : {
+              id: "result-7",
+              role: "user",
+              content: [{ type: "tool-result", toolCallId: "call-1", content }],
+              source,
+            },
+      },
+      true,
+    ),
+    event(8, "step/end", { turn: 1, step: 1 }),
+    event(9, "turn/end", { turn: 1, reason: { kind: "completed" } }),
+  ];
+  for (const entry of events) test.feed.push(entry);
+  return { test, emitted: await eventsThrough(outputs, "turn.completed") };
+}
+
+/** The `[event type, Tool name]` sequence of every emitted Tool Item. */
+function toolLifecycle(emitted: readonly HostEvent[]): Array<[string, string]> {
+  return emitted.flatMap((entry): Array<[string, string]> => {
+    const item =
+      entry.type === "item.started"
+        ? entry.item
+        : entry.type === "item.completed"
+          ? entry.snapshot.item
+          : undefined;
+    return item?.type === "toolExecution" ? [[entry.type, item.toolName]] : [];
+  });
 }
 
 async function waitForGraceTimer(): Promise<void> {
@@ -882,118 +989,16 @@ describe("DeepSeek Harness Modern Session", () => {
   });
 
   it("streams V4 PTC sub-calls in place of run_code with native durations", async () => {
-    const test = setup(
-      [() => accepted()],
-      [],
-      ["request-1"],
-      5_000,
-      null,
-      undefined,
-      undefined,
-      [],
-      DEEPSEEK_V017_PROFILE,
-    );
-    const outputs = test.session.outputs[Symbol.asyncIterator]();
-    const id = turnId("ptc-turn");
-    const runCode = JSON.stringify({ code: "await tools.pwsh({ command: 'Get-Date' })" });
-    await test.session.execute({
-      type: "turn.start",
-      turnId: id,
-      input: [{ type: "text", text: "date" }],
-    });
-    test.feed.push(event(0, "turn/start", { turn: 1 }));
-    test.feed.push(event(1, "step/start", { turn: 1, step: 1 }));
-    test.feed.push(userMessage(2, "date", "request-1"));
-    expect(await nextEvent(outputs)).toEqual({ type: "turn.started", turnId: id });
-    test.feed.push(
-      event(
-        3,
-        "assistant/message",
-        {
-          turn: 1,
-          step: 1,
-          message: {
-            id: "assistant-3",
-            role: "assistant",
-            content: [{ type: "tool-call", id: "call-1", name: "run_code", arguments: runCode }],
-            source: { kind: "model", provider: "deepseek", model: "deepseek-v4" },
-          },
-          stream: [],
-        },
-        true,
-      ),
-    );
-    test.feed.push(
-      event(4, "tool/call", {
-        turn: 1,
-        step: 1,
-        callId: "call-1",
-        name: "run_code",
-        arguments: runCode,
-      }),
-    );
-    const dispatch = {
-      rootCallId: "call-1",
-      parentCallId: "call-1",
-      subCallId: "call-1:ptc:1",
-      name: "pwsh",
-      arguments: { command: "Get-Date" },
-    };
-    test.feed.push({ ...event(5, "tool/ptc-dispatch-start", dispatch), time: 2_000 });
-    test.feed.push({
-      ...event(6, "tool/ptc-dispatch", {
-        ...dispatch,
-        isError: false,
-        content: [{ type: "text", text: "2026-09-27" }],
-      }),
-      time: 2_450,
-    });
-    test.feed.push(
-      event(
-        7,
-        "tool/result",
-        {
-          turn: 1,
-          step: 1,
-          message: {
-            id: "result-7",
-            role: "tool",
-            toolCallId: "call-1",
-            isError: false,
-            content: [{ type: "text", text: "2026-09-27" }],
-            source: { kind: "tool", callId: "call-1" },
-          },
-        },
-        true,
-      ),
-    );
-    test.feed.push(event(8, "step/end", { turn: 1, step: 1 }));
-    test.feed.push(event(9, "turn/end", { turn: 1, reason: { kind: "completed" } }));
-
-    const emitted = await eventsThrough(outputs, "turn.completed");
-    const tools = emitted.flatMap((entry) => {
-      const item =
-        entry.type === "item.started"
-          ? entry.item
-          : entry.type === "item.completed"
-            ? entry.snapshot.item
-            : undefined;
-      return item?.type === "toolExecution" ? [[entry.type, item.toolName]] : [];
-    });
-    expect(tools).toEqual([
+    const { test, emitted } = await streamPtcTurn(DEEPSEEK_V017_PROFILE);
+    const itemId = `dsh-modern:${SESSION_ID}:event:5:tool`;
+    expect(toolLifecycle(emitted)).toEqual([
       ["item.started", "pwsh"],
       ["item.completed", "pwsh"],
     ]);
-    const subCall = emitted.find(
-      (entry) =>
-        entry.type === "item.completed" &&
-        entry.snapshot.item.type === "toolExecution" &&
-        entry.snapshot.item.toolName === "pwsh",
-    );
-    expect(subCall).toMatchObject({
+    expect(emitted.find(({ type }) => type === "item.completed")).toMatchObject({
       snapshot: {
         item: {
-          itemId: `dsh-modern:${SESSION_ID}:event:5:tool`,
+          itemId,
           arguments: { command: "Get-Date" },
           output: { content: [{ type: "text", text: "2026-09-27" }] },
           durationMs: 450,
@@ -1002,15 +1007,17 @@ describe("DeepSeek Harness Modern Session", () => {
       },
     });
 
+    // Desktop shows the sub-call as the same command card as a direct pwsh call.
     const ui = new CodexTurnProjector({
       threadId: "dsh-ptc",
-      turnId: id,
+      turnId: turnId("ptc-turn"),
       cwd: "/fixture",
       startedAtMs: 1_000,
     });
-    ui.project({ type: "turn.started", turnId: id });
     const wire = emitted.flatMap((entry) =>
-      entry.type === "item.started" || entry.type === "item.completed"
+      entry.type === "turn.started" ||
+      entry.type === "item.started" ||
+      entry.type === "item.completed"
         ? ui.project(entry).messages
         : [],
     );
@@ -1030,102 +1037,14 @@ describe("DeepSeek Harness Modern Session", () => {
     // Live and cold history agree on the sub-call's identity.
     const snapshot = await test.session.readSnapshot();
     expect(snapshot.ok && snapshot.value.turns[0]?.items.map(({ item }) => item.itemId)).toEqual([
-      `dsh-modern:${SESSION_ID}:event:5:tool`,
+      itemId,
     ]);
     await test.session.close();
   });
 
   it("keeps a V0 run_code live as one Tool and ignores its dispatches", async () => {
-    const test = setup([() => accepted()], [], ["request-1"]);
-    const outputs = test.session.outputs[Symbol.asyncIterator]();
-    const runCode = JSON.stringify({ code: "await tools.pwsh({ command: 'Get-Date' })" });
-    await test.session.execute({
-      type: "turn.start",
-      turnId: turnId("v0-ptc-turn"),
-      input: [{ type: "text", text: "date" }],
-    });
-    test.feed.push(event(0, "turn/start", { turn: 1 }));
-    test.feed.push(event(1, "step/start", { turn: 1, step: 1 }));
-    test.feed.push(userMessage(2, "date", "request-1"));
-    expect(await nextEvent(outputs)).toMatchObject({ type: "turn.started" });
-    test.feed.push(
-      event(
-        3,
-        "assistant/message",
-        {
-          turn: 1,
-          step: 1,
-          message: {
-            id: "assistant-3",
-            role: "assistant",
-            content: [{ type: "tool-call", id: "call-1", name: "run_code", arguments: runCode }],
-            source: { kind: "model", provider: "deepseek", model: "deepseek-v4" },
-          },
-        },
-        true,
-      ),
-    );
-    test.feed.push(
-      event(4, "tool/call", {
-        turn: 1,
-        step: 1,
-        callId: "call-1",
-        name: "run_code",
-        arguments: runCode,
-      }),
-    );
-    const dispatch = {
-      rootCallId: "call-1",
-      parentCallId: "call-1",
-      subCallId: "call-1:code:1",
-      name: "pwsh",
-      arguments: { command: "Get-Date" },
-    };
-    test.feed.push(event(5, "tool/code-dispatch-start", dispatch));
-    test.feed.push(
-      event(6, "tool/code-dispatch", {
-        ...dispatch,
-        isError: false,
-        content: [{ type: "text", text: "2026-09-27" }],
-      }),
-    );
-    test.feed.push(
-      event(
-        7,
-        "tool/result",
-        {
-          turn: 1,
-          step: 1,
-          message: {
-            id: "result-7",
-            role: "user",
-            content: [
-              {
-                type: "tool-result",
-                toolCallId: "call-1",
-                content: [{ type: "text", text: "2026-09-27" }],
-              },
-            ],
-            source: { kind: "tool", callId: "call-1" },
-          },
-        },
-        true,
-      ),
-    );
-    test.feed.push(event(8, "step/end", { turn: 1, step: 1 }));
-    test.feed.push(event(9, "turn/end", { turn: 1, reason: { kind: "completed" } }));
-
-    const emitted = await eventsThrough(outputs, "turn.completed");
-    const tools = emitted.flatMap((entry) => {
-      const item =
-        entry.type === "item.started"
-          ? entry.item
-          : entry.type === "item.completed"
-            ? entry.snapshot.item
-            : undefined;
-      return item?.type === "toolExecution" ? [[entry.type, item.toolName]] : [];
-    });
-    expect(tools).toEqual([
+    const { test, emitted } = await streamPtcTurn(DEEPSEEK_V012_PROFILE);
+    expect(toolLifecycle(emitted)).toEqual([
       ["item.started", "run_code"],
       ["item.completed", "run_code"],
     ]);
@@ -3034,41 +2953,53 @@ describe("DeepSeek Harness Modern Session", () => {
     await test.session.close();
   });
 
-  it("selects Permission through the exact command and confirms its projection", async () => {
-    const receipt = deferred<ModernRemoteResult<unknown>>();
-    const test = setup([() => receipt.promise], [], ["autonomous-1"], 5_000, PERMISSION_CATALOG);
-    const outputs = test.session.outputs[Symbol.asyncIterator]();
+  it.each([
+    ["V0", DEEPSEEK_V012_PROFILE, { images: [] }],
+    ["V4", DEEPSEEK_V017_PROFILE, { submittedAttachments: [] }],
+  ])(
+    "selects %s Permission through the exact command and confirms its projection",
+    async (_name, profile, attachments) => {
+      const receipt = deferred<ModernRemoteResult<unknown>>();
+      const test = setup(
+        [() => receipt.promise],
+        [],
+        ["autonomous-1"],
+        5_000,
+        PERMISSION_CATALOG,
+        undefined,
+        undefined,
+        [],
+        profile,
+      );
+      const outputs = test.session.outputs[Symbol.asyncIterator]();
 
-    const selecting = test.session.execute({
-      type: "permissionMode.select",
-      permissionModeId: "danger-full-access" as never,
-    });
-    await vi.waitFor(() => expect(test.remote.calls).toHaveLength(1));
-    expect(test.remote.calls[0]).toMatchObject({
-      endpoint: "commands/execute",
-      args: {
-        agentId: SESSION_ID,
-        line: "/permission danger-full-access",
-        images: [],
-      },
-      options: { timeoutMs: null },
-    });
-    expect(test.remote.calls[0]?.signal).toBeInstanceOf(AbortSignal);
-    test.control.update("permissions", permissionValue("danger-full-access"), 1);
-    receipt.resolve({
-      ok: true,
-      value: {
-        commandId: "permission-1",
-        result: { kind: "success", text: "full access" },
-      },
-    });
-    await expect(selecting).resolves.toEqual({ ok: true, value: { completed: true } });
-    expect(await nextEvent(outputs)).toMatchObject({
-      type: "session.state.changed",
-      state: { effectivePermissionModeId: "danger-full-access" },
-    });
-    await test.session.close();
-  });
+      const selecting = test.session.execute({
+        type: "permissionMode.select",
+        permissionModeId: "danger-full-access" as never,
+      });
+      await vi.waitFor(() => expect(test.remote.calls).toHaveLength(1));
+      expect(test.remote.calls[0]).toMatchObject({
+        endpoint: "commands/execute",
+        args: { agentId: SESSION_ID, line: "/permission danger-full-access", ...attachments },
+        options: { timeoutMs: null },
+      });
+      expect(test.remote.calls[0]?.signal).toBeInstanceOf(AbortSignal);
+      test.control.update("permissions", permissionValue("danger-full-access", profile), 1);
+      receipt.resolve({
+        ok: true,
+        value: {
+          commandId: "permission-1",
+          result: { kind: "success", text: "full access" },
+        },
+      });
+      await expect(selecting).resolves.toEqual({ ok: true, value: { completed: true } });
+      expect(await nextEvent(outputs)).toMatchObject({
+        type: "session.state.changed",
+        state: { effectivePermissionModeId: "danger-full-access" },
+      });
+      await test.session.close();
+    },
+  );
 
   it("does not let late journal configuration roll back newer control state", async () => {
     const test = setup([]);

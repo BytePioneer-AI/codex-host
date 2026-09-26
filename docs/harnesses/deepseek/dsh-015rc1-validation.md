@@ -32,6 +32,39 @@ PTC 模式下，模型调用 `run_code`，程序内实际执行的 Tool 只写�
 
 真实会话内容未写入仓库。尚未在 Codex Desktop 中实机验证隐藏 `run_code` 后的实时显示。
 
+## V4 权限模式验证
+
+此前 V4 会话在 Desktop 输入框左下角没有权限选择器。原因是 DSH 0.1.7 改了权限接口，Adapter 仍按旧方式读取（依据 `dsh-v0.1.7-rc.1`/`rc.2` 的 `packages/interaction/permission-presets`）：
+
+| | V0/V3 | V4（0.1.7+） |
+| --- | --- | --- |
+| 可选模式 | `settings/describe` 中 `permission` 命名空间的 `defaultPreset` 枚举 | 该字段只剩普通字符串；改由进程级接口 `permissionPresets/catalog` 返回 `options`、`defaultOptions`、`defaultPreset` |
+| 会话 `permissions` 投影 | `options` + `currentValue` | 只有 `currentValue` |
+| 切换 | `/permission <模式>` 命令 | 不变 |
+
+Adapter 读不到 V4 的模式列表，就不公布该能力，选择器因此隐藏；需要 `danger-full-access` 的无人值守委派也因此不可用。现在 V4 改为读取 `permissionPresets/catalog`，并按只含当前值的投影读取会话模式。切换、确认和新建会话时应用模式的流程与 V0/V3 相同。V0/V3 仍读取 `settings/describe`，行为不变。
+
+- **未组合权限插件：** DSH 对未组合的服务返回 `gateway/service-unavailable`，此时不显示选择器；其他错误仍使检测失败。
+- **`auto` 模式：** 由实验性 Auto review 插件在运行中登记，可能晚于目录读取出现。当前值为 `auto` 或 `custom` 时照常显示为当前值，但不作为可选项；其他未知值仍按协议错误处理。Adapter 重新检测时会重新读取目录。
+
+本节改动后复跑 `npm run test:deepseek:coverage`，整个 DSH Adapter 的 **888 项测试 / 24 个文件全部通过**，四项 80% 门槛均通过。新增测试覆盖 V4 目录解析与各类非法目录、未组合插件时隐藏选择器、只含当前值的投影（含 `custom`/`auto`）、V4 在会话内切换，以及适配器层的检测、带模式新建、冷恢复和无人值守委派。
+
+| 指标 | 结果 | 覆盖数 |
+| --- | ---: | ---: |
+| 语句 | 86.65% | 5937 / 6851 |
+| 分支 | 82.43% | 5256 / 6376 |
+| 函数 | 93.39% | 947 / 1014 |
+| 行 | 89.32% | 5514 / 6173 |
+
+真实 CLI 验证在 Windows、Node.js `v24.11.0`、本机安装的 DSH `0.1.7-rc.1` 上进行，使用隔离的临时 `DSH_HOME`，不调用模型：
+
+- 检测得到 `read-only`、`workspace-write`、`danger-full-access` 三个模式，默认 `workspace-write`，并公布可切换能力。
+- 以 `read-only` 新建会话后，在会话内切换到 `workspace-write`，状态和快照均确认新值；换新的 Adapter 冷恢复后仍为 `workspace-write`。
+- 无人值守委派新建成功，原生模式为 `danger-full-access`。
+- 真实生命周期 Gate（`tools/gate-dsh/lifecycle.real.test.mjs`）复跑 1/1 通过（Vitest 7.38 秒）。
+
+尚未在 Codex Desktop 界面中实机点选验证；Auto review 插件未在本机启用，`auto` 仅由单元测试覆盖。
+
 ## 本次版本扩展验证（support-dsh-015rc3-017rc1）
 
 本次变更新增两个隔离 release：`dsh-v0.1.5-rc.3`（`a4c74a91e06b00fe0b0937bde982170c526cc842`）和 `dsh-v0.1.7-rc.1`（`46a7f68b0922371ce7144b668b90e377d8e799f4`）。前者沿用 V3 Session 日志和既有 V3 Remote 语义；后者使用 V4 Session 日志，Adapter 以独立 profile 校验 V4 header、`developer/message`、surface 引用、image offload、workspace changes、Assistant 流块和 Fork 的 `forked` synthetic closer。

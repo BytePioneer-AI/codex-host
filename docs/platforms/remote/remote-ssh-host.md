@@ -45,6 +45,7 @@ Upgrade both machines to the same version using the same package manager. Then r
 
 ## Troubleshooting
 
+- **Inserting a message into a running native Codex task reports unsupported `codexhost/thread/ownership/list`**: the client verifies the native Thread on the same connection and then uses Desktop's native steering. This fallback does not apply to external Harness Threads or connection failures.
 - **`codexhost/harness/inspect is unsupported on this Host connection`**: the SSH connection isn't going through codexhost. Make sure the same codexhost version is installed and running on the remote machine, then reconnect the SSH workspace.
 - **`remote status` says degraded or asks you to reinstall**: run `codexhost remote install`, then `codexhost remote start`.
 - **A Harness is missing**: make sure it is installed and signed in on the remote machine, then click **Run connection diagnostics** in Settings.

@@ -61,7 +61,7 @@
 
 | 文档 | 内容与阅读时机 |
 | --- | --- |
-| [`harnesses/deepseek/dsh-edit-recovery.md`](harnesses/deepseek/dsh-edit-recovery.md) | DSH 原生停止确认、消息修订、V0/V3/V4 Fork 和版本化 checkpoint；修改恢复流程时阅读。 |
+| [`harnesses/deepseek/dsh-edit-recovery.md`](harnesses/deepseek/dsh-edit-recovery.md) | DSH 原生停止确认、消息修订、V0/V3/V4 Fork、同轮插入和版本化 checkpoint；修改恢复或插入流程时阅读。 |
 | [`harnesses/deepseek/dsh-015rc1-validation.md`](harnesses/deepseek/dsh-015rc1-validation.md) | DSH 012/015/017 版本、真实 CLI 生命周期和协议验证证据；变更版本范围或 Gate 时阅读。 |
 
 ### Hermes

@@ -17,6 +17,28 @@ const handlers = () => ({
   fault: vi.fn(),
 });
 describe("CodeBuddy ACP process retirement", () => {
+  it("sends session/steer without an underscore prefix", async () => {
+    const callbacks = handlers();
+    const client = new CodeBuddyAcpClient({
+      cwd: process.cwd(),
+      environment: process.env,
+      ephemeral: false,
+      handlers: callbacks,
+    });
+    try {
+      await client.initialize();
+      await client.open(process.cwd());
+      expect(client.nativeVersion).toBeNull();
+      await expect(client.steer("native", "now")).resolves.toEqual({ steered: true });
+      await expect(client.steer("other", "now")).resolves.toEqual({
+        steered: false,
+        reason: "idle",
+      });
+    } finally {
+      await client.close();
+    }
+  });
+
   it("settles an accepted prompt on exit even while descendants retain native pipes", async () => {
     state.scenario = "exit-open-pipes";
     const callbacks = handlers();

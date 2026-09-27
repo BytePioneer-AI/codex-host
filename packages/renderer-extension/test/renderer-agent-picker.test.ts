@@ -190,6 +190,31 @@ describe("Renderer Agent picker presentation", () => {
     expect(shouldBypassCodexUsageGateForNativeModel(null)).toBe(false);
   });
 
+  it("reads the current Desktop selectedLabelCandidate model shape", () => {
+    const modelButton = {
+      getAttribute: () => null,
+      hasAttribute: () => false,
+      matches: () => true,
+    } as unknown as Element;
+    Object.defineProperty(modelButton, "__reactFiber$test", {
+      value: {
+        return: {
+          memoizedProps: {
+            selectedLabelCandidate: {
+              id: "cliproxy/gpt-5.6-sol:high",
+              model: "cliproxy/gpt-5.6-sol",
+              modelLabel: "GPT 5.6 Sol (CLIProxy)",
+              reasoningEffort: "high",
+            },
+          },
+        },
+      },
+    });
+    const composer = { querySelectorAll: () => [modelButton] } as unknown as Element;
+    expect(nativeModelIdForComposer(composer)).toBe("cliproxy/gpt-5.6-sol");
+    expect(shouldBypassCodexUsageGateForNativeModel(nativeModelIdForComposer(composer))).toBe(true);
+  });
+
   it("recognizes only the native React Model menu as the Model candidate", () => {
     const element = (
       ownAttributes: readonly string[],

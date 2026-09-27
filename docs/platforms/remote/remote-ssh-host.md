@@ -47,5 +47,6 @@ Upgrade both machines to the same version using the same package manager. Then r
 
 - **`codexhost/harness/inspect is unsupported on this Host connection`**: the SSH connection isn't going through codexhost. Make sure the same codexhost version is installed and running on the remote machine, then reconnect the SSH workspace.
 - **`remote status` says degraded or asks you to reinstall**: run `codexhost remote install`, then `codexhost remote start`.
+- **Native Codex requests fail with `Official request failed; retry explicitly`**: if the official Codex process on the remote machine exits, codexhost restarts it automatically with backoff, and reconnecting the SSH workspace retries immediately. If it keeps failing, run `codexhost remote stop` and then `codexhost remote start`.
 - **A Harness is missing**: make sure it is installed and signed in on the remote machine, then click **Run connection diagnostics** in Settings.
 - **Install fails on macOS with a launchd / `gui/$UID` error**: the remote Mac needs someone logged in to the desktop. Log in, then run `codexhost remote install` again.

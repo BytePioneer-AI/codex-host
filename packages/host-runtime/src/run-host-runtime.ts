@@ -241,6 +241,9 @@ export async function runHostRuntime(input: {
           delegationEnvironment.CODEX_HOME ?? path.join(homedir(), ".codex"),
         ),
         diagnosticOutput: process.stderr,
+        // The listener outlives Desktop connections and Shim reuses it on
+        // reconnect, so a failed official generation must be replaced here.
+        recovery: {},
         createBackend: () =>
           createOwnedUnixBackend({
             stockCodexPath,
@@ -282,29 +285,23 @@ export async function runHostRuntime(input: {
         },
       });
 
-      let stopping = false;
-      const officialState: { unexpectedExit: Error | null } = { unexpectedExit: null };
       const stop = (): void => {
-        stopping = true;
         void listener.close();
       };
       try {
         await prepareRemoteAppServerSocketDirectory(socketPath);
+        // Native Codex failure never closes this listener: external Harness
+        // sessions stay alive while the Scope restarts the official generation.
         await officialRuntimeScope.start().catch(() => {
           officialRuntimeScope.gate.unavailable();
         });
         await listener.listen();
-        void officialRuntimeScope.failure().then((result) => {
-          if (!stopping) officialState.unexpectedExit = result;
-          // Keep remote external Harness sessions alive when only native Codex fails.
-        });
         process.title = MANAGED_REMOTE_APP_SERVER_PROCESS_TITLE;
         process.once("SIGINT", stop);
         process.once("SIGTERM", stop);
         await listener.closed;
-        return officialState.unexpectedExit ? 1 : 0;
+        return 0;
       } finally {
-        stopping = true;
         process.removeListener("SIGINT", stop);
         process.removeListener("SIGTERM", stop);
         try {

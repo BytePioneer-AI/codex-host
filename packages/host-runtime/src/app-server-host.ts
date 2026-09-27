@@ -819,16 +819,8 @@ export class AppServerHost {
     void this.#waitForPlugins();
     if (this.#closeRequested) await this.#closeOfficialRuntime();
     try {
-      void this.#officialRuntime
-        .failure()
-        .then(async () => {
-          // A recovered/shared Scope may have outlived this one-shot failure.
-          if (this.#officialRuntimeScope.gate.phase !== "unavailable") return;
-          // Prove exit without terminally closing the Scope or detaching Desktop.
-          // Backend reconnection must be able to reuse this same native client.
-          await this.#officialRuntimeScope.owner.stop();
-        })
-        .catch((error: unknown) => this.#diagnose(error));
+      // The Scope proves official exit (and optionally restarts it); this native
+      // client stays attached so a replacement generation can reuse it.
       await this.#forwardDesktop();
       return 0;
     } catch (error) {

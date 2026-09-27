@@ -6,7 +6,7 @@ Define secure, isolated, and reversible execution of registered Harnesses throug
 ## Requirements
 ### Requirement: Remote Host SHALL use Codex's native SSH control transport
 
-On macOS and Linux, codexhost SHALL recognize a Codex `app-server --listen unix://` invocation, own the resolved Unix control socket, accept Codex WebSocket connections, and create one Host session per connection. One long-lived stock Codex app-server listener SHALL serve all of those Host sessions through a private sibling Unix socket, with one independent WebSocket connection per Host session. An unexpected Desktop transport disconnect SHALL end that Host session's Desktop input without treating the disconnect as a user cancellation. If an official or external Harness Turn is active, or an official `turn/start` has been forwarded and is awaiting its response, the Host session SHALL retain its owned runtime resources until the work reaches a real terminal event. Explicit listener shutdown SHALL still hard-close every owned Host session. The native Shim SHALL forward `app-server proxy` and other app-server management commands to stock Codex without entering Host Runtime.
+On macOS and Linux, codexhost SHALL recognize a Codex `app-server --listen unix://` invocation, own the resolved Unix control socket, accept Codex WebSocket connections, and create one Host session per connection. One long-lived stock Codex app-server listener SHALL serve all of those Host sessions through a private sibling Unix socket, with one independent WebSocket connection per Host session. If that stock listener exits or becomes unavailable while the managed listener keeps running, codexhost SHALL prove the previous process exit and start a replacement generation with bounded backoff instead of leaving a managed listener that accepts connections but cannot serve native Codex. An unexpected Desktop transport disconnect SHALL end that Host session's Desktop input without treating the disconnect as a user cancellation. If an official or external Harness Turn is active, or an official `turn/start` has been forwarded and is awaiting its response, the Host session SHALL retain its owned runtime resources until the work reaches a real terminal event. Explicit listener shutdown SHALL still hard-close every owned Host session. The native Shim SHALL forward `app-server proxy` and other app-server management commands to stock Codex without entering Host Runtime.
 
 #### Scenario: Desktop connects through the stock proxy
 
@@ -47,6 +47,16 @@ On macOS and Linux, codexhost SHALL recognize a Codex `app-server --listen unix:
 - **THEN** codexhost retains the official connection while the start request is pending
 - **AND** a successful response keeps the session alive until `turn/completed`
 - **AND** a failed response releases the disconnected session without leaking it
+
+#### Scenario: Shared stock listener fails while the managed listener keeps running
+
+- **GIVEN** the managed remote listener has started the shared stock Codex app-server listener
+- **WHEN** that stock listener exits, or one official connection fails and makes the shared runtime unavailable
+- **THEN** codexhost proves the previous stock process exited before starting a replacement generation
+- **AND** it retries with bounded backoff that resets after a generation stays ready
+- **AND** a Desktop reconnect starts the replacement immediately instead of waiting for the remaining backoff
+- **AND** attached Host sessions reconnect and reinitialize on the replacement without restarting the managed listener or external Harness sessions
+- **AND** work in flight on the failed generation fails explicitly instead of being replayed
 
 #### Scenario: Desktop repeats a matching remote listener bootstrap
 

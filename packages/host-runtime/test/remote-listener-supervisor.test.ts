@@ -55,6 +55,45 @@ describe("remote listener supervisor watch", () => {
     watch.close();
   });
 
+  it("reports immediate loss when a required supervisor is already gone", () => {
+    vi.useFakeTimers();
+    const onLost = vi.fn();
+    const watch = watchRemoteListenerSupervisor({
+      onLost,
+      outputs: [],
+      parentProcessId: () => 1,
+      supervisorRequired: true,
+      intervalMs: 100,
+    });
+
+    expect(onLost).toHaveBeenCalledOnce();
+    expect(onLost).toHaveBeenCalledWith("supervisor exited before startup completed");
+    vi.advanceTimersByTime(1_000);
+    expect(onLost).toHaveBeenCalledOnce();
+    expect(vi.getTimerCount()).toBe(0);
+    watch.close();
+  });
+
+  it("still watches a live required supervisor", () => {
+    vi.useFakeTimers();
+    let parent = 4_242;
+    const onLost = vi.fn();
+    const watch = watchRemoteListenerSupervisor({
+      onLost,
+      outputs: [],
+      parentProcessId: () => parent,
+      supervisorRequired: true,
+      intervalMs: 100,
+    });
+
+    vi.advanceTimersByTime(300);
+    expect(onLost).not.toHaveBeenCalled();
+    parent = 1;
+    vi.advanceTimersByTime(100);
+    expect(onLost).toHaveBeenCalledWith("supervisor process 4242 exited");
+    watch.close();
+  });
+
   it("treats a closed diagnostic pipe as supervisor loss instead of crashing", () => {
     const stdout = new EventEmitter();
     const stderr = new EventEmitter();

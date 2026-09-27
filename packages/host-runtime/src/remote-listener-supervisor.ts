@@ -28,6 +28,12 @@ export interface RemoteListenerSupervisorOptions {
   outputs?: readonly ErrorEmitter[];
   /** Current parent process id. Defaults to `process.ppid`, which is live on Unix. */
   parentProcessId?: () => number;
+  /**
+   * The listener must have a supervisor. An initial init-like parent then means
+   * the supervisor was already killed before the watch started, and `onLost` is
+   * called synchronously before this function returns.
+   */
+  supervisorRequired?: boolean;
   intervalMs?: number;
 }
 
@@ -60,8 +66,13 @@ export function watchRemoteListenerSupervisor(
   }
 
   // A listener that already belongs to init (or an init-like parent) has no
-  // supervisor to watch. Otherwise a reparented listener has lost its Shim.
-  if (supervisor > 1) {
+  // supervisor to watch. When one is required, the Shim was killed while the
+  // listener was still starting and the listener was reparented before this
+  // watch could record its parent. Otherwise a reparented listener has lost its
+  // Shim.
+  if (supervisor <= 1) {
+    if (options.supervisorRequired) lose("supervisor exited before startup completed");
+  } else {
     timer = setInterval(() => {
       if (parentProcessId() !== supervisor) lose(`supervisor process ${supervisor} exited`);
     }, options.intervalMs ?? DEFAULT_SUPERVISOR_POLL_INTERVAL_MS);

@@ -300,8 +300,12 @@ export async function runHostRuntime(input: {
           process.stderr.write(`codexhost: remote listener ${reason}; closing\n`);
           stop();
         },
+        // Shim always spawns this listener as its child, so an init parent at
+        // startup means the supervisor is already gone.
+        supervisorRequired: true,
       });
       try {
+        if (supervisorLost) return 0;
         await prepareRemoteAppServerSocketDirectory(socketPath);
         // Native Codex failure never closes this listener: external Harness
         // sessions stay alive while the Scope restarts the official generation.

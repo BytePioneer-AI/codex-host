@@ -1,7 +1,10 @@
 import path from "node:path";
+import { cp, mkdtemp, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
 import { pathToFileURL } from "node:url";
 
 import { describe, expect, it, vi } from "vitest";
+import { harnessIdSchema } from "@codexhost/shared-contracts";
 import type { HarnessInspection } from "@codexhost/harness-adapter";
 import { warmup as warmupClaude } from "@codexhost/adapter-claude-code/plugin";
 import { warmup as warmupAntigravity } from "@codexhost/adapter-antigravity/plugin";
@@ -235,3 +238,52 @@ describe("installed Harness composition", () => {
     expect(remote.pluginContext.openLocalUrl).toBeUndefined();
   });
 });
+
+it.runIf(Boolean(process.env.CODEXHOST_OPENCODE_REAL_COMMAND))(
+  "loads the relocated OpenCode Bundle and opens a real isolated Session",
+  async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "codexhost-opencode-plugin-"));
+    const plugins = path.join(root, "plugins");
+    let registry: Awaited<ReturnType<typeof loadHarnessPlugins>> | undefined;
+    try {
+      await cp(path.join(pluginRoot, "opencode"), path.join(plugins, "opencode"), {
+        recursive: true,
+      });
+      await writeFile(
+        path.join(plugins, "enabled.json"),
+        JSON.stringify({ version: 1, enabled: ["opencode"] }),
+      );
+      registry = await loadHarnessPlugins({
+        roots: [plugins],
+        warmup: false,
+        context: {
+          environment: {
+            ...process.env,
+            CODEXHOST_OPENCODE_COMMAND: process.env.CODEXHOST_OPENCODE_REAL_COMMAND,
+            OPENCODE_TEST_HOME: path.join(root, "home"),
+            OPENCODE_CONFIG_DIR: path.join(root, "config"),
+            OPENCODE_DISABLE_PROJECT_CONFIG: "true",
+            XDG_DATA_HOME: path.join(root, "data"),
+            XDG_CACHE_HOME: path.join(root, "cache"),
+            XDG_STATE_HOME: path.join(root, "state"),
+          },
+          platform: process.platform,
+          managedRemoteHost: false,
+        },
+      });
+      const adapter = registry.adapters.get(harnessIdSchema.parse("opencode"));
+      expect(adapter).toBeDefined();
+      if (!adapter) throw new Error("OpenCode plugin was not loaded");
+      expect(await adapter.inspect({ cwd: root })).toMatchObject({ status: "ready" });
+      const opened = await adapter.open({ kind: "create", cwd: root });
+      if (!opened.ok) throw new Error(opened.error.message);
+      expect(opened.value.initialState.nativeRef?.harnessId).toBe("opencode");
+      expect(await opened.value.readSnapshot()).toMatchObject({ ok: true, value: { turns: [] } });
+      await opened.value.close();
+    } finally {
+      await registry?.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  },
+  45_000,
+);

@@ -1,6 +1,6 @@
 import type { HarnessPluginContext } from "@codexhost/harness-adapter/plugin";
 
-import { OpenCodeAdapter } from "./opencode-adapter.js";
+import { OpenCodeAdapter } from "./versioned-adapter.js";
 
 export const OPENCODE_COMMAND_ENV = "CODEXHOST_OPENCODE_COMMAND";
 

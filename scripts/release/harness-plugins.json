@@ -24,6 +24,7 @@
     "@hono/node-server",
     "@modelcontextprotocol/sdk",
     "@opencode-ai/sdk",
+    "@opencode/client",
     "@qoder-ai/qoder-agent-sdk",
     "@qodercn-ai/qodercn-agent-sdk",
     "ajv",

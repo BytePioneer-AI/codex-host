@@ -59,4 +59,19 @@ describe("delegation mention rewrite", () => {
     expect(text).toContain("codexhost-delegation");
     expect(rewriteDelegationMentionText("plain")).toBe("plain");
   });
+
+  it("strips the carrier but keeps the raw task for a natively-delegating Harness", () => {
+    const text = rewriteDelegationMentionText(`${link} 随便给它分配个任务`, {
+      nativeDelegation: true,
+    });
+    expect(text).toBe("@Claude Code 随便给它分配个任务");
+    expect(text).not.toContain("codexhost delegation");
+    expect(text).not.toContain("codexhost-delegation");
+    expect(text).not.toContain("subagent://");
+    expect(text).not.toContain("\n");
+  });
+
+  it("leaves non-mention text untouched for a natively-delegating Harness", () => {
+    expect(rewriteDelegationMentionText("plain", { nativeDelegation: true })).toBe("plain");
+  });
 });

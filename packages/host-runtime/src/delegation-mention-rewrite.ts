@@ -32,9 +32,25 @@ function appendInstruction(text: string, mentions: readonly DelegationMention[])
 }
 
 /** External Harness Turns carry plain text only. */
-export function rewriteDelegationMentionText(text: string): string {
+export interface DelegationTextRewriteOptions {
+  /**
+   * The target External Harness performs delegation natively. In that case the
+   * `#` mention carrier is still restored to its readable `@Label` form, but no
+   * managed CLI-skill instruction is appended: the Harness authorizes and
+   * executes the delegation through its own runtime instead of invoking
+   * `codexhost delegate start`.
+   */
+  readonly nativeDelegation?: boolean;
+}
+
+export function rewriteDelegationMentionText(
+  text: string,
+  options: DelegationTextRewriteOptions = {},
+): string {
   const { text: stripped, mentions } = stripDelegationMentions(text);
-  return mentions.length === 0 ? text : appendInstruction(stripped, mentions);
+  if (mentions.length === 0) return text;
+  if (options.nativeDelegation === true) return stripped;
+  return appendInstruction(stripped, mentions);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

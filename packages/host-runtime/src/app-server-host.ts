@@ -3751,7 +3751,14 @@ export class AppServerHost {
       const result = await thread.session.execute({
         type: "turn.start",
         turnId,
-        input: [{ type: "text", text: rewriteDelegationMentionText(text) }],
+        input: [
+          {
+            type: "text",
+            text: rewriteDelegationMentionText(text, {
+              nativeDelegation: thread.session.capabilities.delegation?.native === true,
+            }),
+          },
+        ],
       });
       if (!result.ok) throw new ExternalSteerError(-32073, result.error.message);
       return { turnId, turn: projection.projector.pendingTurn(), gate };

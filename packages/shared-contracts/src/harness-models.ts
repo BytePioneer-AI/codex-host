@@ -180,6 +180,17 @@ export const harnessSessionCapabilitiesSchema = z
       })
       .strict()
       .optional(),
+    delegation: z
+      .object({
+        // The Harness performs delegation authorization and execution natively
+        // (its own model declares the delegated action and its own runtime
+        // starts the child Thread). The Host still strips the `#` mention
+        // carrier, but must not append the managed CLI-skill instruction that
+        // assumes the model has to run `codexhost delegate start` itself.
+        native: z.boolean(),
+      })
+      .strict()
+      .optional(),
   })
   .strict();
 

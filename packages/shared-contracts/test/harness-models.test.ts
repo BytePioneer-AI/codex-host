@@ -11,6 +11,7 @@ import {
   harnessModelSelectionStateSchema,
   harnessThinkingOptionIdSchema,
   harnessWebUiOpenParamsSchema,
+  harnessSessionCapabilitiesSchema,
   harnessWebUiOpenResultSchema,
   threadInspectionParamsSchema,
   threadInspectionSchema,
@@ -92,6 +93,23 @@ describe("Harness Model runtime contracts", () => {
     expect(JSON.parse(JSON.stringify(harnessInspectionSchema.parse(readyInspection())))).toEqual(
       readyInspection(),
     );
+  });
+
+  it("accepts a Harness that performs delegation natively", () => {
+    const capabilities = {
+      ...readyInspection().capabilities,
+      delegation: { native: true },
+    };
+    expect(harnessSessionCapabilitiesSchema.parse(capabilities).delegation).toEqual({
+      native: true,
+    });
+    // delegation is strictly typed: an unknown flag inside it is rejected.
+    expect(
+      harnessSessionCapabilitiesSchema.safeParse({
+        ...capabilities,
+        delegation: { native: true, unknown: true },
+      }).success,
+    ).toBe(false);
   });
 
   it("rejects native configuration and unknown fields", () => {

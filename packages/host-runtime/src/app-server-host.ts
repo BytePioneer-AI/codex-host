@@ -2781,6 +2781,7 @@ export class AppServerHost {
     const gate = turnProjectionGate();
     thread.running = true;
     thread.activeTurnId = turnId;
+    thread.projectedTerminalTurnId = null;
     thread.projectedTurns.set(turnId, projection);
     thread.responseGates.set(turnId, gate);
     thread.ephemeralTurnIds.add(turnId);
@@ -3620,6 +3621,7 @@ export class AppServerHost {
     };
     thread.running = true;
     thread.activeTurnId = turnId;
+    thread.projectedTerminalTurnId = null;
     thread.projectedTurns.set(turnId, projection);
     thread.responseGates.set(turnId, {
       promise: Promise.resolve(),
@@ -3790,6 +3792,7 @@ export class AppServerHost {
     const gate = turnProjectionGate();
     thread.running = true;
     thread.activeTurnId = turnId;
+    thread.projectedTerminalTurnId = null;
     thread.projectedTurns.set(turnId, projection);
     thread.responseGates.set(turnId, gate);
 
@@ -4024,6 +4027,7 @@ export class AppServerHost {
       };
       thread.running = true;
       thread.activeTurnId = event.turnId;
+      thread.projectedTerminalTurnId = null;
       thread.projectedTurns.set(event.turnId, projection);
       thread.responseGates.set(event.turnId, {
         promise: Promise.resolve(),
@@ -4075,6 +4079,7 @@ export class AppServerHost {
         thread.ephemeralTurnIds.delete(event.turnId);
       } else {
         thread.turns.push(result.completedTurn);
+        thread.projectedTerminalTurnId = event.turnId;
         thread.thread.updatedAt = completedAt;
         thread.thread.recencyAt = completedAt;
       }

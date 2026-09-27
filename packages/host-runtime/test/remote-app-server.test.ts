@@ -653,6 +653,60 @@ describe("remote SSH app-server transport", () => {
   );
 
   it.skipIf(process.platform === "win32")(
+    "shares one bind between concurrent listen calls",
+    async () => {
+      const root = await mkdtemp(path.join("/tmp", "ch-listen-twice-"));
+      const socketPath = path.join(root, "control.sock");
+      const listener = createRemoteAppServerWebSocketListener({
+        socketPath,
+        diagnosticOutput: new PassThrough(),
+        createSession: () => ({
+          run: async () => 0,
+          disconnect: () => undefined,
+          close: () => undefined,
+        }),
+      });
+
+      try {
+        const first = listener.listen();
+        const second = listener.listen();
+        const closing = listener.close();
+        await expect(Promise.all([first, second])).resolves.toEqual([undefined, undefined]);
+        await closing;
+        await expect(lstat(socketPath)).rejects.toMatchObject({ code: "ENOENT" });
+      } finally {
+        await listener.close();
+        await rm(root, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it.skipIf(process.platform === "win32")("retries listen after a failed attempt", async () => {
+    const root = await mkdtemp(path.join("/tmp", "ch-listen-retry-"));
+    const socketPath = path.join(root, "control.sock");
+    const listener = createRemoteAppServerWebSocketListener({
+      socketPath,
+      diagnosticOutput: new PassThrough(),
+      createSession: () => ({
+        run: async () => 0,
+        disconnect: () => undefined,
+        close: () => undefined,
+      }),
+    });
+
+    try {
+      await writeFile(socketPath, "not a socket");
+      await expect(listener.listen()).rejects.toThrow("is not a socket");
+      await rm(socketPath);
+      await listener.listen();
+      expect((await lstat(socketPath)).isSocket()).toBe(true);
+    } finally {
+      await listener.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it.skipIf(process.platform === "win32")(
     "makes an existing control-socket directory private",
     async () => {
       const root = await mkdtemp(path.join("/tmp", "ch-mode-"));

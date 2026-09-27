@@ -471,6 +471,9 @@ export function createRemoteAppServerWebSocketListener(input: {
     async listen() {
       if (closing) throw new Error("Remote app-server listener is closed");
       if (listening) return;
+      // Concurrent callers share one bind, so close() always waits for the
+      // attempt that can still bind the server.
+      if (listenAttempt) return listenAttempt;
       const bind = async (): Promise<void> => {
         await new Promise<void>((resolve, reject) => {
           const onError = (error: Error) => reject(error);
@@ -503,7 +506,13 @@ export function createRemoteAppServerWebSocketListener(input: {
         }
       })();
       listenAttempt = attempt;
-      await attempt;
+      try {
+        await attempt;
+      } catch (error) {
+        // A failed attempt may be retried; a successful one stays for close().
+        if (listenAttempt === attempt) listenAttempt = null;
+        throw error;
+      }
     },
     close() {
       if (closing) return closing;

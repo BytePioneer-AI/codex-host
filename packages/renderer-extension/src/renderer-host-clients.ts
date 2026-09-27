@@ -5,6 +5,7 @@ import type {
 import { createRendererModelClient, type RendererModelClient } from "./renderer-model-client.js";
 import { installRendererExternalQueue } from "./renderer-external-queue.js";
 import { installRendererExternalSteering } from "./renderer-external-steering.js";
+import { installRendererManualCompaction } from "./renderer-manual-compaction.js";
 
 /** Model clients follow native connection identities, never the active Composer.
  * A captured client may finish an in-flight request after replacement, but may
@@ -55,7 +56,11 @@ export function createRendererHostClients(readRouting: () => RendererHostRouting
     const cleanups: (() => void)[] = [];
     entries.set(route.hostId, { route, client, cleanups });
     try {
-      for (const install of [installRendererExternalQueue, installRendererExternalSteering]) {
+      for (const install of [
+        installRendererExternalQueue,
+        installRendererExternalSteering,
+        installRendererManualCompaction,
+      ]) {
         const cleanup = install(target);
         if (cleanup) cleanups.push(cleanup);
       }

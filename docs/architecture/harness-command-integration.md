@@ -146,6 +146,8 @@ Adapter static commandCatalog (no native request or Session)
 
 Pi manual `/compact` and automatic compaction have no Host wall-clock deadline: native `compaction_end` determines their outcome. Pending Prompt and Compact response timeouts pause while compaction is active and resume afterward. Startup, other RPC responses, cancellation, and process cleanup retain their existing bounds.
 
+A command Turn is user-invoked, so right before it projects a `contextCompaction` `item/started`, the Host sends `codexhost/thread/manual-compaction/started`. The Renderer registers it through Desktop's manual compaction binding, which lets Desktop's follow-up queue continue after the compaction as it does for native manual compaction. See [external Thread steering](external-thread-steering.md#手动压缩后的自动执行).
+
 Grok maps optional trailing text to native `userContext`. Claude `/compact`
 maps it to custom summarization instructions. `/init` and `/recap` take no
 arguments. These commands invoke Harness-native operations and must not be

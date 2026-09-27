@@ -918,7 +918,7 @@ export function installCurrentRendererAdapter(): {
 
   const usageSubscription = createThreadUsageSubscriptionRelay();
   const idleReleaseSync = installIdleReleasePreferenceSync(window);
-  const clients = createRendererHostClients(() => window.__codexhostHostRoutingV1);
+  const clients = createRendererHostClients(() => window.__codexhostHostRoutingV1, window);
   const currentRequestRoute = (): RendererHostRoute | null => {
     const route = disposed ? null : (window.__codexhostHostRoutingV1?.forComposer() ?? null);
     usageSubscription.connect(clients.forRoute(route));

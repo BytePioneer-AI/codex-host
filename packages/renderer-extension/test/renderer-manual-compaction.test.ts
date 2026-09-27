@@ -6,14 +6,16 @@ import { THREAD_MANUAL_COMPACTION_STARTED_METHOD } from "@codexhost/shared-contr
 import { describe, expect, it } from "vitest";
 
 import { createRendererHostClients } from "../src/renderer-host-clients.js";
-import { installRendererManualCompaction } from "../src/renderer-manual-compaction.js";
+import {
+  installRendererManualCompaction,
+  type RendererMessageTarget,
+} from "../src/renderer-manual-compaction.js";
 
-type NotificationCallback = (notification: unknown, receivedAtMs?: number) => void;
+type MessageListener = Parameters<RendererMessageTarget["addEventListener"]>[1];
 
 // Mirrors the Desktop manager members this binding reads. Methods live on the
 // prototype, as on Desktop's RpcTarget manager.
 class FakeManager {
-  readonly callbacks = new Map<string, NotificationCallback[]>();
   readonly conversations = new Map<string, unknown>([
     ["external", { id: "external", modelProvider: "codexhost" }],
     ["native", { id: "native", modelProvider: "openai" }],
@@ -24,15 +26,6 @@ class FakeManager {
   sendRequest(): Promise<unknown> {
     return Promise.reject(new Error("Unexpected RPC"));
   }
-  addNotificationCallback(method: string, callback: NotificationCallback): () => void {
-    this.callbacks.set(method, [...(this.callbacks.get(method) ?? []), callback]);
-    return () => {
-      this.callbacks.set(
-        method,
-        (this.callbacks.get(method) ?? []).filter((candidate) => candidate !== callback),
-      );
-    };
-  }
   registerPendingManualContextCompaction(threadId: string): void {
     this.registered.push(threadId);
   }
@@ -42,82 +35,134 @@ class FakeManager {
   getStreamRole(threadId: string): unknown {
     return this.roles.get(threadId) ?? null;
   }
-  notify(params: unknown, method = THREAD_MANUAL_COMPACTION_STARTED_METHOD): void {
-    for (const callback of this.callbacks.get(method) ?? []) callback({ method, params }, 0);
+}
+
+// Desktop's main process posts each Host notification to the Renderer window
+// as { type: "mcp-notification", hostId, method, params }.
+class FakeWindow implements RendererMessageTarget {
+  readonly listeners = new Set<MessageListener>();
+
+  addEventListener(type: "message", listener: MessageListener): void {
+    if (type === "message") this.listeners.add(listener);
   }
-  listenerCount(): number {
-    return this.callbacks.get(THREAD_MANUAL_COMPACTION_STARTED_METHOD)?.length ?? 0;
+  removeEventListener(type: "message", listener: MessageListener): void {
+    if (type === "message") this.listeners.delete(listener);
+  }
+  post(data: unknown, source: unknown = this): void {
+    for (const listener of [...this.listeners]) listener({ data, source });
+  }
+  notify(
+    params: unknown,
+    { hostId = "local", method = THREAD_MANUAL_COMPACTION_STARTED_METHOD } = {},
+  ): void {
+    this.post({ type: "mcp-notification", hostId, method, params });
   }
 }
 
 const started = (threadId: string) => ({ threadId, turnId: "compact-turn" });
 
+function install(manager: FakeManager, window: FakeWindow, hostId = "local") {
+  return installRendererManualCompaction(manager, hostId, window);
+}
+
 describe("renderer manual compaction registration", () => {
   it("registers an announced external command compaction with Desktop", () => {
     const manager = new FakeManager();
+    const window = new FakeWindow();
     manager.roles.set("external", { role: "owner" });
-    const dispose = installRendererManualCompaction(manager);
+    const dispose = install(manager, window);
     expect(dispose).toBeTypeOf("function");
-    manager.notify(started("external"));
+    window.notify(started("external"));
     expect(manager.registered).toEqual(["external"]);
     dispose?.();
   });
 
-  it("registers when Desktop reports no stream role for the Thread", () => {
+  it("registers when Desktop reports no stream role or the message has no source", () => {
     const manager = new FakeManager();
-    const dispose = installRendererManualCompaction(manager);
-    manager.notify(started("external"));
+    const window = new FakeWindow();
+    const dispose = install(manager, window);
+    window.post(
+      {
+        type: "mcp-notification",
+        hostId: "local",
+        method: THREAD_MANUAL_COMPACTION_STARTED_METHOD,
+        params: started("external"),
+      },
+      null,
+    );
     expect(manager.registered).toEqual(["external"]);
     dispose?.();
   });
 
   it("does not register in a follower window, which never consumes the registration", () => {
     const manager = new FakeManager();
+    const window = new FakeWindow();
     manager.roles.set("external", { role: "follower", ownerClientId: "owner-window" });
-    const dispose = installRendererManualCompaction(manager);
-    manager.notify(started("external"));
+    const dispose = install(manager, window);
+    window.notify(started("external"));
     expect(manager.registered).toEqual([]);
     dispose?.();
   });
 
   it("registers only loaded Host-projected external Threads", () => {
     const manager = new FakeManager();
+    const window = new FakeWindow();
     manager.conversations.set("mismatched", { id: "other", modelProvider: "codexhost" });
-    const dispose = installRendererManualCompaction(manager);
-    for (const threadId of ["native", "unloaded", "mismatched"]) manager.notify(started(threadId));
+    const dispose = install(manager, window);
+    for (const threadId of ["native", "unloaded", "mismatched"]) window.notify(started(threadId));
     expect(manager.registered).toEqual([]);
     dispose?.();
   });
 
-  it("ignores malformed announcements and other notification methods", () => {
+  it("ignores other Hosts, other frames, other messages and malformed announcements", () => {
     const manager = new FakeManager();
-    const dispose = installRendererManualCompaction(manager);
-    manager.notify({ threadId: "external" });
-    manager.notify({ ...started("external"), extra: true });
-    manager.notify(null);
-    manager.callbacks.get(THREAD_MANUAL_COMPACTION_STARTED_METHOD)?.[0]?.({
-      method: "thread/status/changed",
+    const window = new FakeWindow();
+    const dispose = install(manager, window);
+    window.notify(started("external"), { hostId: "ssh:remote" });
+    window.notify(started("external"), { method: "thread/status/changed" });
+    window.post(
+      {
+        type: "mcp-notification",
+        hostId: "local",
+        method: THREAD_MANUAL_COMPACTION_STARTED_METHOD,
+        params: started("external"),
+      },
+      { frame: "embedded" },
+    );
+    window.post({
+      type: "mcp-request",
+      hostId: "local",
+      method: THREAD_MANUAL_COMPACTION_STARTED_METHOD,
       params: started("external"),
     });
+    window.notify({ threadId: "external" });
+    window.notify({ ...started("external"), extra: true });
+    window.notify(null);
+    window.post(null);
+    window.post("mcp-notification");
     expect(manager.registered).toEqual([]);
     dispose?.();
   });
 
   it("leaves Desktop builds without the registration binding unchanged", () => {
     const manager = new FakeManager();
+    const window = new FakeWindow();
     Object.defineProperty(manager, "registerPendingManualContextCompaction", { value: undefined });
-    expect(installRendererManualCompaction(manager)).toBeNull();
-    expect(manager.listenerCount()).toBe(0);
-    expect(installRendererManualCompaction(null)).toBeNull();
+    expect(install(manager, window)).toBeNull();
+    expect(window.listeners.size).toBe(0);
+    expect(installRendererManualCompaction(null, "local", window)).toBeNull();
+    expect(installRendererManualCompaction(new FakeManager(), "local", null)).toBeNull();
+    expect(window.listeners.size).toBe(0);
   });
 
-  it("removes its notification callback on uninstall", () => {
+  it("removes its message listener on uninstall", () => {
     const manager = new FakeManager();
-    const dispose = installRendererManualCompaction(manager);
-    expect(manager.listenerCount()).toBe(1);
+    const window = new FakeWindow();
+    const dispose = install(manager, window);
+    expect(window.listeners.size).toBe(1);
     dispose?.();
-    expect(manager.listenerCount()).toBe(0);
-    manager.notify(started("external"));
+    expect(window.listeners.size).toBe(0);
+    window.notify(started("external"));
     expect(manager.registered).toEqual([]);
   });
 
@@ -135,16 +180,19 @@ describe("renderer manual compaction registration", () => {
     const routing = {
       forHost: (hostId: string) => routes.get(hostId) ?? null,
     } as unknown as RendererHostRouting;
-    const clients = createRendererHostClients(() => routing);
+    const window = new FakeWindow();
+    const clients = createRendererHostClients(() => routing, window);
     try {
       expect(clients.forHost("ssh:remote")).not.toBeNull();
-      expect(managers.get("ssh:remote")?.listenerCount()).toBe(1);
-      expect(managers.get("local")?.listenerCount()).toBe(0);
-      managers.get("ssh:remote")?.notify(started("external"));
+      expect(window.listeners.size).toBe(1);
+      window.notify(started("external"), { hostId: "local" });
+      expect(managers.get("ssh:remote")?.registered).toEqual([]);
+      window.notify(started("external"), { hostId: "ssh:remote" });
       expect(managers.get("ssh:remote")?.registered).toEqual(["external"]);
+      expect(managers.get("local")?.registered).toEqual([]);
     } finally {
       clients.dispose();
     }
-    expect(managers.get("ssh:remote")?.listenerCount()).toBe(0);
+    expect(window.listeners.size).toBe(0);
   });
 });

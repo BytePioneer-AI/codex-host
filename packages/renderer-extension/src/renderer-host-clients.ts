@@ -5,12 +5,18 @@ import type {
 import { createRendererModelClient, type RendererModelClient } from "./renderer-model-client.js";
 import { installRendererExternalQueue } from "./renderer-external-queue.js";
 import { installRendererExternalSteering } from "./renderer-external-steering.js";
-import { installRendererManualCompaction } from "./renderer-manual-compaction.js";
+import {
+  installRendererManualCompaction,
+  type RendererMessageTarget,
+} from "./renderer-manual-compaction.js";
 
 /** Model clients follow native connection identities, never the active Composer.
  * A captured client may finish an in-flight request after replacement, but may
  * not dispatch another request through a retired manager. */
-export function createRendererHostClients(readRouting: () => RendererHostRouting | undefined) {
+export function createRendererHostClients(
+  readRouting: () => RendererHostRouting | undefined,
+  messages: RendererMessageTarget | null = null,
+) {
   let disposed = false;
   const entries = new Map<
     string,
@@ -57,11 +63,11 @@ export function createRendererHostClients(readRouting: () => RendererHostRouting
     entries.set(route.hostId, { route, client, cleanups });
     try {
       for (const install of [
-        installRendererExternalQueue,
-        installRendererExternalSteering,
-        installRendererManualCompaction,
+        () => installRendererExternalQueue(target),
+        () => installRendererExternalSteering(target),
+        () => installRendererManualCompaction(target, route.hostId, messages),
       ]) {
-        const cleanup = install(target);
+        const cleanup = install();
         if (cleanup) cleanups.push(cleanup);
       }
     } catch (error) {

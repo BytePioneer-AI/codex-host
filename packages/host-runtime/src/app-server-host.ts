@@ -299,6 +299,15 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+function officialThreadBusy(thread: Record<string, unknown> | null): boolean {
+  if (thread && isRecord(thread.status) && thread.status.type === "active") return true;
+  const turns = thread && Array.isArray(thread.turns) ? thread.turns : [];
+  const latestTurn = turns.at(-1);
+  return (
+    isRecord(latestTurn) && (latestTurn.status === "inProgress" || latestTurn.status === "running")
+  );
+}
+
 function isCreditsAdapter(adapter: HarnessAdapter): adapter is HarnessAdapter & {
   credits(): unknown;
   refreshCredits?: () => Promise<unknown>;
@@ -2037,15 +2046,38 @@ export class AppServerHost {
       throw new DelegationControlError("THREAD_NOT_FOUND", "Official Thread was not found");
     }
     const currentThread = isRecord(current.result.thread) ? current.result.thread : null;
-    const currentTurns =
-      currentThread && Array.isArray(currentThread.turns) ? currentThread.turns : [];
-    const latestTurn = currentTurns.at(-1);
-    if (
-      (currentThread && isRecord(currentThread.status) && currentThread.status.type === "active") ||
-      (isRecord(latestTurn) &&
-        (latestTurn.status === "inProgress" || latestTurn.status === "running"))
-    ) {
+    if (officialThreadBusy(currentThread)) {
       throw new DelegationControlError("THREAD_BUSY", "Thread already has an active Turn");
+    }
+    // Read stays idle after unsubscribe and does not resubscribe. Resume does, and
+    // excludeTurns keeps paginated history out of the response without replacing config.
+    const resumed = await this.#requestOfficial("thread/resume", {
+      threadId: input.threadId,
+      excludeTurns: true,
+    });
+    if (isRecord(resumed.error) || !isRecord(resumed.result)) {
+      throw new DelegationControlError(
+        "DELEGATION_FAILED",
+        isRecord(resumed.error) && typeof resumed.error.message === "string"
+          ? resumed.error.message
+          : "Official Thread resume failed",
+      );
+    }
+    const resumedThread = isRecord(resumed.result.thread) ? resumed.result.thread : null;
+    if (!resumedThread || resumedThread.id !== input.threadId) {
+      throw new DelegationControlError(
+        "DELEGATION_FAILED",
+        "Official Thread resume did not return the requested Thread",
+      );
+    }
+    if (officialThreadBusy(resumedThread)) {
+      throw new DelegationControlError("THREAD_BUSY", "Thread already has an active Turn");
+    }
+    if (!isRecord(resumedThread.status) || resumedThread.status.type !== "idle") {
+      throw new DelegationControlError(
+        "DELEGATION_FAILED",
+        "Official Thread is not idle after resume",
+      );
     }
     const response = await this.#requestOfficial("turn/start", {
       threadId: input.threadId,

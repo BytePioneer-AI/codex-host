@@ -2997,6 +2997,14 @@ export class AppServerHost {
         });
         thread.transportModelId = transportModelId;
         thread.requestedModel = effectiveModel;
+        thread.thread = externalThreadValue({
+          record: { ...thread.record, transportModelId },
+          turns: thread.turns,
+          sessionId: thread.sessionId,
+          running: thread.running,
+        });
+        // Resume restores the saved selection, so an unsaved change must not
+        // be reported as a completed selection.
         try {
           thread.record = await this.#repository.setTransportModelId(
             thread.record.hostThreadId,
@@ -3004,13 +3012,15 @@ export class AppServerHost {
           );
         } catch (error) {
           this.#diagnose(error);
+          await this.#writer.json(
+            rpcError(
+              request,
+              -32078,
+              `Permission Mode was applied but could not be saved: ${errorMessage(error)}`,
+            ),
+          );
+          return;
         }
-        thread.thread = externalThreadValue({
-          record: { ...thread.record, transportModelId },
-          turns: thread.turns,
-          sessionId: thread.sessionId,
-          running: thread.running,
-        });
       }
       await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(projected) }));
     } catch (error) {

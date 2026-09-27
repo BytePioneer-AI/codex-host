@@ -305,8 +305,9 @@ export async function runHostRuntime(input: {
         supervisorRequired: true,
       });
       try {
-        if (supervisorLost) return 0;
         await prepareRemoteAppServerSocketDirectory(socketPath);
+        // Also covers a loss reported while the directory was being prepared.
+        if (supervisorLost) return 0;
         // Native Codex failure never closes this listener: external Harness
         // sessions stay alive while the Scope restarts the official generation.
         await officialRuntimeScope.start().catch(() => {

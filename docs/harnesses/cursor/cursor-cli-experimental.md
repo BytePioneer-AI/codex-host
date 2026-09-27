@@ -34,6 +34,10 @@ integration. [CLI ACP](https://cursor.com/docs/cli/acp) is the selected interfac
   enabled only when the Host supplies all four delegation environment variables.
 - Native Agent, Plan and Ask configuration, confirmed by the ACP response before
   changing Host state. These are execution modes, not fabricated approval levels.
+- Delegated `unattended-full-access` through the native `--force` Run Everything
+  request, recorded in the Native Session Ref locator and reused by resume and by
+  derived Fork/rollback Sessions. ACP still confirms no effective policy, so a Turn
+  that receives a native approval or plan request is cancelled and failed instead.
 - Native tool approvals and Cursor's blocking question/plan extensions, with
   exact interaction correlation, response validation and cancellation cleanup.
 - Session resume and read-only snapshots, with strict native turn identity checks.
@@ -77,9 +81,10 @@ contract investigation before release acceptance.
 - The Desktop Agent Picker is still based on a static Harness list. This integration
   adds Cursor explicitly and uses the shared plugin carrier. Its independent model
   and mode preferences do not inherit another Harness's Thinking selection.
-- Context compaction, usage/account reporting, native session import and unattended
-  inbound delegation are not advertised. Historical Fork/revision require the native
-  CLI bridge described below. Image/audio prompt inputs are outside the current Host
+- Context compaction, usage/account reporting and native session import are not
+  advertised. Historical Fork/revision require the native CLI bridge described below.
+  Inbound unattended delegation is a native Run Everything request, not an
+  ACP-confirmed approval policy. Image/audio prompt inputs are outside the current Host
   text contract.
 - Edit Diff is partial: it requires native ACP diff content. Delete/rename semantics,
   shell edits and missing historical diffs are not inferred. Other Cursor notification
@@ -178,7 +183,7 @@ native extensions, not fabricated RPC methods.
 | --- | --- |
 | Thinking | `initialize.clientCapabilities._meta.parameterizedModelPicker = true`, `cursor/list_available_models`, and `session/set_config_option`; implemented. |
 | Slash commands | `available_commands_update` plus native `session/prompt` slash parsing; implemented for advertised commands only. |
-| Cross-Harness collaboration | Native HTTP MCP passed to `session/new` / `session/load`; outbound tools implemented. Inbound unattended execution remains unsupported. |
+| Cross-Harness collaboration | Native HTTP MCP passed to `session/new` / `session/load`; outbound tools implemented. Inbound unattended execution requests native `--force` Run Everything without claiming ACP policy confirmation. |
 | Usage | The native ACP agent emits neither usage updates nor prompt usage; remains unknown. Shared SDK schemas alone are not evidence that Cursor emits these fields. |
 | Fork / edit previous message | ACP has no Fork or rollback operation. A native CLI `/fork` + conversation-only `/rewind` bridge supports historical Fork and edit previous message on macOS/Linux at available native anchors. |
 | Context compaction | The interactive CLI command is not part of the ACP slash-command handler; no native ACP compaction operation is implemented. Sending `/compact` as plain model text is not compaction. |
@@ -231,12 +236,20 @@ Closing a Session terminates its owned CLI requests and removes its listener.
 No bridge token or Host credential is persisted in a user configuration file.
 
 This makes a normal Cursor Thread able to delegate outward and observe/follow up
-on other Harnesses. It does not make Cursor a supported unattended destination.
-The native `--force` ACP path checks team policy and silently falls back to an
-allowlist when Run Everything is disabled; ACP reports only Agent/Plan/Ask and
-provides no confirmation of the effective approval policy. Therefore
-`unattended-full-access` still returns typed `unsupported` before creating a Session,
-rather than claiming the policy succeeded or inventing approval answers.
+on other Harnesses. A Host `unattended-full-access` request is carried into the
+native ACP process as Cursor's own Run Everything request (`--force` before the
+`acp` subcommand), persisted in the Native Session Ref locator, and reused by resume
+and by derived Fork/rollback Sessions. The native `--force` path still checks team
+policy and silently falls back to an allowlist when Run Everything is disabled; ACP
+reports only Agent/Plan/Ask and provides no confirmation of the effective approval
+policy. The adapter therefore claims no confirmation: a Turn that nevertheless
+receives a native approval or plan request is cancelled and reported as
+`nativeFailure`, never approved, and native denies, admin allowlists and Cursor's
+team policy continue to apply. Question extensions remain interactive and are never
+answered on the user's behalf. Refs persisted without a locator remain `default`.
+The installed `2026.09.18-9a7762b` bundle makes this fallback in
+`src/acp/cursor-acp-agent.ts`: `teamSettingsService.getAutoRunControls()` degrades to
+an allowlist with a debug log and no client-visible result.
 
 Real native acceptance on the tested CLI confirmed Thinking selection and an
 administrative slash command without a model request. A separate native Turn
@@ -247,9 +260,12 @@ Model ref after account-wide preferences were changed; native Turn identities
 remained equal. Native model preferences modified for validation were restored.
 Automated tests additionally cover tool discovery, argument safety, authentication,
 Session isolation, bounded waits, shutdown, partial configuration failure, and
-restoring non-Thinking parameters from saved Model refs. These are plugin/native
-checks, not a claim of visual Desktop acceptance or an end-to-end delegated task
-against another live Harness.
+restoring non-Thinking parameters from saved Model refs. They also cover the native
+`--force` argument, policy persistence through resume/Fork/rollback, and the
+cancel-and-fail path for a native approval request in unattended full access; a live
+unattended delegated Turn under Cursor team policy was not exercised. These are
+plugin/native checks, not a claim of visual Desktop acceptance or an end-to-end
+delegated task against another live Harness.
 
 ## Native Edit Diff
 

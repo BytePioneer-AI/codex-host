@@ -230,6 +230,8 @@ export interface ClaudeTransportFactoryInput {
   model?: string;
   thinkingOptionId: HarnessThinkingOptionId;
   permissionMode: ClaudePermissionMode;
+  /** Native prerequisite for a later live `bypassPermissions` selection. */
+  allowDangerouslySkipPermissions: boolean;
   onPermissionModeChanged(permissionMode: ClaudePermissionMode): void;
   onFault(error: unknown): void;
   onPlanLimit(planLimit: ClaudePlanLimitEvent): void;
@@ -247,6 +249,8 @@ export interface ClaudeModelInspectorFactoryInput {
 }
 
 export interface ClaudeAdapterDependencies {
+  /** Whether Claude Code accepts `bypassPermissions` in the Session environment. */
+  bypassPermissionsAvailable(environment?: NodeJS.ProcessEnv): boolean;
   createInspector(input: ClaudeModelInspectorFactoryInput): ClaudeModelInspector;
   createTransport(input: ClaudeTransportFactoryInput): ClaudeTurnTransport;
   deleteSession(input: { cwd: string; sessionId: string }): Promise<void>;

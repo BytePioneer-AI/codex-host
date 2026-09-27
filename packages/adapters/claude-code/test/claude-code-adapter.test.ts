@@ -210,7 +210,10 @@ class FakeClaudeTransport implements ClaudeTurnTransport {
   }
 }
 
-function fixture(options: ClaudeCodeAdapterOptions = {}) {
+function fixture(
+  options: ClaudeCodeAdapterOptions = {},
+  { bypassPermissionsAvailable = true }: { bypassPermissionsAvailable?: boolean } = {},
+) {
   const history: unknown[] = [];
   const transports: FakeClaudeTransport[] = [];
   const inspectors: Array<{
@@ -221,6 +224,7 @@ function fixture(options: ClaudeCodeAdapterOptions = {}) {
   let uuid = 0;
   const dependencies: ClaudeAdapterDependencies = {
     randomUUID: () => `claude-id-${++uuid}`,
+    bypassPermissionsAvailable: vi.fn(() => bypassPermissionsAvailable),
     inspectInstallation,
     createInspector: vi.fn(() => {
       const inspector = {
@@ -3459,6 +3463,196 @@ describe("Claude Code HarnessAdapter", () => {
     await session.close();
   });
 
+  it("passes the native bypass prerequisite from the Session environment", async () => {
+    const available = fixture();
+    const sandboxed = { IS_SANDBOX: "1" };
+    const session = await openSession(available.adapter, sandboxed);
+    await session.execute(textTurn("bypass-prerequisite"));
+    expect(available.dependencies.bypassPermissionsAvailable).toHaveBeenCalledWith(sandboxed);
+    expect(available.dependencies.createTransport).toHaveBeenCalledWith(
+      expect.objectContaining({ allowDangerouslySkipPermissions: true }),
+    );
+    available.transports[0]?.finish({ status: "succeeded" });
+    await session.close();
+
+    const unavailable = fixture({}, { bypassPermissionsAvailable: false });
+    const rootSession = await openSession(unavailable.adapter);
+    await rootSession.execute(textTurn("root-prerequisite"));
+    expect(unavailable.dependencies.createTransport).toHaveBeenCalledWith(
+      expect.objectContaining({ allowDangerouslySkipPermissions: false }),
+    );
+    unavailable.transports[0]?.finish({ status: "succeeded" });
+    await rootSession.close();
+  });
+
+  it("omits bypass permissions from the catalog when Claude Code cannot use it", async () => {
+    const { adapter } = fixture({}, { bypassPermissionsAvailable: false });
+
+    const inspection = await adapter.inspect({ cwd: "/synthetic" });
+    expect(inspection).toMatchObject({
+      status: "ready",
+      permissionModes: {
+        defaultModeId: "default",
+        modes: [{ id: "plan" }, { id: "default" }, { id: "acceptEdits" }, { id: "auto" }],
+      },
+    });
+  });
+
+  it("rejects unavailable bypass permissions for create and live selection", async () => {
+    const { adapter, dependencies, transports } = fixture(
+      {},
+      { bypassPermissionsAvailable: false },
+    );
+    const bypass = harnessPermissionModeIdSchema.parse("bypassPermissions");
+    const unavailable = {
+      ok: false,
+      error: {
+        code: "unsupported",
+        message: expect.stringContaining("IS_SANDBOX=1"),
+        retryable: false,
+      },
+    };
+
+    await expect(
+      adapter.open({ kind: "create", cwd: "/synthetic", permissionModeId: bypass }),
+    ).resolves.toMatchObject(unavailable);
+    expect(dependencies.createTransport).not.toHaveBeenCalled();
+
+    const session = await openSession(adapter);
+    await session.execute(textTurn("root-live-selection"));
+    await expect(
+      session.execute({ type: "permissionMode.select", permissionModeId: bypass }),
+    ).resolves.toMatchObject(unavailable);
+    expect(transports[0]?.setPermissionMode).not.toHaveBeenCalled();
+    expect(transports[0]?.permissionMode).toBe("default");
+    transports[0]?.finish({ status: "succeeded" });
+    await session.close();
+  });
+
+  it("keeps a restored Thread usable when its saved bypass mode is unavailable", async () => {
+    const { adapter, dependencies, transports } = fixture(
+      {},
+      { bypassPermissionsAvailable: false },
+    );
+    const opened = await adapter.open({
+      kind: "resume",
+      cwd: "/synthetic",
+      nativeRef: nativeSessionRefSchema.parse({
+        harnessId: "claude-code",
+        nativeSessionId: "restored-bypass-session",
+        formatVersion: 1,
+      }),
+    });
+    if (!opened.ok) throw new Error(opened.error.message);
+    const session = opened.value;
+    const iterator = session.outputs[Symbol.asyncIterator]();
+
+    // Host restores a saved Thread mode through a cold selection before the first Turn.
+    await expect(
+      session.execute({
+        type: "permissionMode.select",
+        permissionModeId: harnessPermissionModeIdSchema.parse("bypassPermissions"),
+      }),
+    ).resolves.toEqual({ ok: true, value: { completed: true } });
+    await expect(nextEvent(iterator)).resolves.toMatchObject({
+      type: "session.state.changed",
+      state: { effectivePermissionModeId: "default" },
+    });
+
+    await session.execute(textTurn("restored-cold-selection"));
+    expect(dependencies.createTransport).toHaveBeenCalledWith(
+      expect.objectContaining({
+        permissionMode: "default",
+        allowDangerouslySkipPermissions: false,
+      }),
+    );
+    transports[0]?.finish({ status: "succeeded" });
+    await session.close();
+  });
+
+  it("restores an unavailable bypass Permission Mode as the native default", async () => {
+    const { adapter, dependencies, transports } = fixture(
+      {},
+      { bypassPermissionsAvailable: false },
+    );
+    const opened = await adapter.open({
+      kind: "resume",
+      cwd: "/synthetic",
+      nativeRef: nativeSessionRefSchema.parse({
+        harnessId: "claude-code",
+        nativeSessionId: "bypass-session",
+        formatVersion: 1,
+      }),
+      permissionModeId: harnessPermissionModeIdSchema.parse("bypassPermissions"),
+    });
+    if (!opened.ok) throw new Error(opened.error.message);
+
+    await opened.value.execute(textTurn("restored-bypass"));
+    expect(dependencies.createTransport).toHaveBeenCalledWith(
+      expect.objectContaining({
+        openMode: "resume",
+        permissionMode: "default",
+        allowDangerouslySkipPermissions: false,
+      }),
+    );
+    transports[0]?.finish({ status: "succeeded" });
+    await opened.value.close();
+  });
+
+  it("explains native bypass permission rejections", async () => {
+    const { adapter, transports } = fixture();
+    const session = await openSession(adapter);
+    await session.execute(textTurn("native-bypass-rejection"));
+    const bypass = harnessPermissionModeIdSchema.parse("bypassPermissions");
+
+    transports[0]?.setPermissionMode.mockRejectedValueOnce(
+      new Error(
+        "Cannot set permission mode to bypassPermissions because the session was not launched with --dangerously-skip-permissions",
+      ),
+    );
+    await expect(
+      session.execute({ type: "permissionMode.select", permissionModeId: bypass }),
+    ).resolves.toMatchObject({
+      ok: false,
+      error: {
+        code: "nativeFailure",
+        message: expect.stringContaining("started this Session without bypass permissions"),
+        retryable: false,
+      },
+    });
+
+    transports[0]?.setPermissionMode.mockRejectedValueOnce(
+      new Error(
+        "Cannot set permission mode to bypassPermissions because it is disabled by settings or configuration",
+      ),
+    );
+    await expect(
+      session.execute({ type: "permissionMode.select", permissionModeId: bypass }),
+    ).resolves.toMatchObject({
+      ok: false,
+      error: {
+        code: "nativeFailure",
+        message: expect.stringContaining("permissions.disableBypassPermissionsMode"),
+        retryable: false,
+      },
+    });
+
+    transports[0]?.setPermissionMode.mockRejectedValueOnce(new Error("connection closed"));
+    await expect(
+      session.execute({ type: "permissionMode.select", permissionModeId: bypass }),
+    ).resolves.toMatchObject({
+      ok: false,
+      error: {
+        code: "nativeFailure",
+        message: "Claude Code rejected the Permission Mode selection",
+        retryable: true,
+      },
+    });
+    expect(transports[0]?.permissionMode).toBe("default");
+    transports[0]?.finish({ status: "succeeded" });
+    await session.close();
+  });
+
   it("selects Model and Thinking during a Turn and preserves native Model rejection", async () => {
     const { adapter, transports } = fixture();
     const session = await openSession(adapter);
@@ -4935,6 +5129,7 @@ describe("Claude Code HarnessAdapter", () => {
   it("rejects missing installation before acceptance without outputs", async () => {
     const dependencies: ClaudeAdapterDependencies = {
       randomUUID: () => "claude-id",
+      bypassPermissionsAvailable: () => true,
       inspectInstallation: () => undefined,
       createInspector: () => ({
         inspect: async () => ({

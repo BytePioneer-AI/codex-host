@@ -114,6 +114,7 @@ describe("AppServerHost hermetic Claude projection", () => {
     let nativeTurnKey: string | undefined;
     const dependencies: ClaudeAdapterDependencies = {
       randomUUID: () => `claude-hermetic-${++uuid}`,
+      bypassPermissionsAvailable: () => true,
       inspectInstallation: () => undefined,
       createInspector: () => ({
         inspect: async () => ({

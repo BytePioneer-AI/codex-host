@@ -9,7 +9,6 @@ import type { PermissionUpdate, Query, SDKMessage } from "@anthropic-ai/claude-a
 import { harnessThinkingOptionIdSchema } from "@codexhost/shared-contracts";
 
 import {
-  allowsDangerouslySkipPermissions,
   ClaudeSdkModelInspector,
   ClaudeSdkTransport,
   type ClaudeSdkTransportOptions,
@@ -90,6 +89,7 @@ function fixture(
   permissionMode: ClaudeSdkTransportOptions["permissionMode"] = "default",
   thinkingOptionId = harnessThinkingOptionIdSchema.parse("auto"),
   environment?: NodeJS.ProcessEnv,
+  allowDangerouslySkipPermissions = true,
 ) {
   const fakeQuery = new FakeQuery();
   let queryInput: QueryInput | undefined;
@@ -108,6 +108,7 @@ function fixture(
     openMode,
     permissionMode,
     thinkingOptionId,
+    allowDangerouslySkipPermissions,
     closeTimeoutMs: 100,
     onPermissionModeChanged,
     onFault,
@@ -1008,13 +1009,44 @@ describe("ClaudeSdkTransport Thinking control", () => {
 });
 
 describe("ClaudeSdkTransport root safety", () => {
-  it("does not enable dangerous permission skipping when running as root", () => {
-    expect(allowsDangerouslySkipPermissions(() => 0)).toBe(false);
+  it("omits the dangerous flag when the Session cannot use bypass permissions", async () => {
+    const value = fixture(
+      "resume",
+      "auto",
+      harnessThinkingOptionIdSchema.parse("auto"),
+      undefined,
+      false,
+    );
+
+    await value.transport.start();
+    expect(options(value).permissionMode).toBe("auto");
+    expect(options(value)).not.toHaveProperty("allowDangerouslySkipPermissions");
+    await value.transport.close();
   });
 
-  it("enables dangerous permission skipping for non-root and platforms without getuid", () => {
-    expect(allowsDangerouslySkipPermissions(() => 1000)).toBe(true);
-    expect(allowsDangerouslySkipPermissions(undefined)).toBe(true);
+  it("does not pass the dangerous flag unless the caller opts in", async () => {
+    const fakeQuery = new FakeQuery();
+    let queryInput: QueryInput | undefined;
+    const transport = new ClaudeSdkTransport({
+      command: process.execPath,
+      cwd: process.cwd(),
+      sessionId: "00000000-0000-4000-8000-000000000001",
+      openMode: "create",
+      permissionMode: "default",
+      thinkingOptionId: harnessThinkingOptionIdSchema.parse("auto"),
+      closeTimeoutMs: 100,
+      onPermissionModeChanged: vi.fn(),
+      onFault: vi.fn(),
+      onPlanLimit: vi.fn(),
+      queryFactory: vi.fn((input) => {
+        queryInput = input;
+        return fakeQuery as unknown as Query;
+      }),
+    });
+
+    await transport.start();
+    expect(queryInput?.options).not.toHaveProperty("allowDangerouslySkipPermissions");
+    await transport.close();
   });
 });
 

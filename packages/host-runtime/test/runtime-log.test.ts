@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events";
-import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -90,8 +90,9 @@ describe("Host Runtime log", () => {
   it("rotates once the size limit is reached and keeps one previous file", async () => {
     const filePath = path.join(directory, "host-runtime.log");
     const stream = fakeStream();
-    installRuntimeLog({ filePath, stream, process: fakeProcess(), maxBytes: 400 });
+    const stop = installRuntimeLog({ filePath, stream, process: fakeProcess(), maxBytes: 400 });
     for (let index = 0; index < 20; index += 1) stream.write(`diagnostic line ${index}\n`);
+    stop();
 
     const current = await readFile(filePath, "utf8");
     const previous = await readFile(`${filePath}.1`, "utf8");
@@ -99,6 +100,76 @@ describe("Host Runtime log", () => {
     expect(Buffer.byteLength(previous)).toBeLessThanOrEqual(400);
     expect(current).toContain("diagnostic line 19");
     expect(previous).not.toContain("diagnostic line 19");
+  });
+
+  it("replaces an existing rotated file before renaming", async () => {
+    const filePath = path.join(directory, "host-runtime.log");
+    await writeFile(filePath, "old current\n");
+    await writeFile(`${filePath}.1`, "stale previous marker\n");
+    const stream = fakeStream();
+    const stop = installRuntimeLog({ filePath, stream, process: fakeProcess(), maxBytes: 120 });
+    stream.write(`${"x".repeat(100)}\n`);
+    stop();
+
+    expect(await readFile(`${filePath}.1`, "utf8")).not.toContain("stale previous marker");
+    expect(await readFile(filePath, "utf8")).toContain("x".repeat(100));
+  });
+
+  it("bounds stale Runtime logs without deleting active or unrelated files", async () => {
+    const logs = path.join(directory, "logs");
+    await mkdir(logs);
+    await writeFile(path.join(logs, "host-runtime-7001.log"), "s".repeat(120));
+    await writeFile(path.join(logs, "host-runtime-7001.log.1"), "s".repeat(120));
+    await writeFile(path.join(logs, "host-runtime-7002.log"), "a".repeat(120));
+    await writeFile(path.join(logs, "thread-diagnostics.jsonl"), "u".repeat(500));
+
+    const stop = installRuntimeLog({
+      filePath: path.join(logs, "host-runtime-4242.log"),
+      stream: fakeStream(),
+      process: fakeProcess(),
+      maxBytes: 100,
+      maxDirectoryBytes: 300,
+      isProcessActive: (pid) => pid === 7002,
+    });
+    stop();
+
+    const names = await readdir(logs);
+    expect(names).not.toContain("host-runtime-7001.log");
+    expect(names).not.toContain("host-runtime-7001.log.1");
+    expect(names).toContain("host-runtime-7002.log");
+    expect(names).toContain("thread-diagnostics.jsonl");
+    const runtimeBytes = (
+      await Promise.all(
+        names
+          .filter((name) => /^host-runtime-\d+\.log(?:\.1)?$/u.test(name))
+          .map(async (name) => (await stat(path.join(logs, name))).size),
+      )
+    ).reduce((sum, size) => sum + size, 0);
+    expect(runtimeBytes).toBeLessThanOrEqual(300);
+  });
+
+  it("bounds tiny Runtime logs by file count", async () => {
+    const logs = path.join(directory, "logs");
+    await mkdir(logs);
+    for (let pid = 7100; pid < 7106; pid += 1) {
+      await writeFile(path.join(logs, `host-runtime-${pid}.log`), "small\n");
+    }
+
+    const currentPath = path.join(logs, "host-runtime-4242.log");
+    const stop = installRuntimeLog({
+      filePath: currentPath,
+      stream: fakeStream(),
+      process: fakeProcess(),
+      maxFiles: 3,
+      isProcessActive: () => false,
+    });
+    stop();
+
+    const runtimeLogs = (await readdir(logs)).filter((name) =>
+      /^host-runtime-\d+\.log(?:\.1)?$/u.test(name),
+    );
+    expect(runtimeLogs).toHaveLength(3);
+    expect(runtimeLogs).toContain(path.basename(currentPath));
   });
 
   it("never lets a logging failure reach the Runtime", async () => {

@@ -95,6 +95,14 @@ The Host SHALL start the selected Harness with the remote cwd, remote command, a
 - **AND** the SSH bootstrap command returns successfully without waiting for the listener lifetime
 - **AND** the native listener process remains alive and owns the expected Unix control socket
 
+#### Scenario: Desktop bootstrap finds a stale control socket
+
+- **GIVEN** a previous listener exited without removing its control socket and no process owns that socket
+- **WHEN** Codex Desktop starts the managed `app-server --listen unix://` entrypoint
+- **THEN** the managed entrypoint does not use the stale socket identity as its readiness baseline
+- **AND** it reports readiness as soon as the replacement listener's socket accepts a connection, even when the filesystem reuses the stale socket's inode number
+- **AND** it does not terminate the healthy replacement listener at the startup timeout
+
 #### Scenario: Non-listener commands retain foreground ownership
 
 - **WHEN** the managed entrypoint receives `app-server proxy`, `app-server --stdio`, an explicit custom listener path, or an ordinary Codex command

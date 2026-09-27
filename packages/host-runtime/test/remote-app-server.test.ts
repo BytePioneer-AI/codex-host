@@ -622,6 +622,37 @@ describe("remote SSH app-server transport", () => {
   );
 
   it.skipIf(process.platform === "win32")(
+    "releases a socket bound by a listen that was in flight when close started",
+    async () => {
+      const root = await mkdtemp(path.join("/tmp", "ch-close-listen-"));
+      const socketPath = path.join(root, "control.sock");
+      const listener = createRemoteAppServerWebSocketListener({
+        socketPath,
+        diagnosticOutput: new PassThrough(),
+        createSession: () => ({
+          run: async () => 0,
+          disconnect: () => undefined,
+          close: () => undefined,
+        }),
+      });
+
+      try {
+        // Supervisor loss can request shutdown while startup is still binding.
+        const listening = listener.listen();
+        const closing = listener.close();
+        await listening;
+        await closing;
+        await expect(lstat(socketPath)).rejects.toMatchObject({ code: "ENOENT" });
+        await expect(listener.listen()).rejects.toThrow("listener is closed");
+        await expect(lstat(socketPath)).rejects.toMatchObject({ code: "ENOENT" });
+      } finally {
+        await listener.close();
+        await rm(root, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it.skipIf(process.platform === "win32")(
     "makes an existing control-socket directory private",
     async () => {
       const root = await mkdtemp(path.join("/tmp", "ch-mode-"));

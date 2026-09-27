@@ -33,6 +33,7 @@ import {
   remoteAppServerSocketPath,
   remoteUnixListenerUrl,
 } from "./remote-app-server.js";
+import { watchRemoteListenerSupervisor } from "./remote-listener-supervisor.js";
 import { remoteOfficialAppServerSocketPath } from "./remote-official-app-server.js";
 import { createHostUpdateCoordinator, type HostUpdateCoordinator } from "./update-coordinator.js";
 
@@ -288,6 +289,18 @@ export async function runHostRuntime(input: {
       const stop = (): void => {
         void listener.close();
       };
+      // Desktop's reconnect cleanup can kill the Shim supervisor and stock Codex
+      // while this retitled listener survives. An unsupervised listener must
+      // close normally and release its socket instead of lingering or crashing
+      // on its closed diagnostic pipes.
+      let supervisorLost = false;
+      const supervisor = watchRemoteListenerSupervisor({
+        onLost: (reason) => {
+          supervisorLost = true;
+          process.stderr.write(`codexhost: remote listener ${reason}; closing\n`);
+          stop();
+        },
+      });
       try {
         await prepareRemoteAppServerSocketDirectory(socketPath);
         // Native Codex failure never closes this listener: external Harness
@@ -295,6 +308,7 @@ export async function runHostRuntime(input: {
         await officialRuntimeScope.start().catch(() => {
           officialRuntimeScope.gate.unavailable();
         });
+        if (supervisorLost) return 0;
         await listener.listen();
         process.title = MANAGED_REMOTE_APP_SERVER_PROCESS_TITLE;
         process.once("SIGINT", stop);
@@ -302,6 +316,7 @@ export async function runHostRuntime(input: {
         await listener.closed;
         return 0;
       } finally {
+        supervisor.close();
         process.removeListener("SIGINT", stop);
         process.removeListener("SIGTERM", stop);
         try {

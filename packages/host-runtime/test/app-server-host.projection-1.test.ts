@@ -1469,6 +1469,8 @@ describe("AppServerHost HarnessAdapter projection", () => {
 
   it("rejects privileged update params and unavailable composition", async () => {
     const fixture = createFixture();
+    const officialWrite = vi.fn();
+    fixture.official.stdin.on("data", officialWrite);
     writeRequest(fixture.desktopInput, {
       id: 22,
       method: "codexhost/update/start",
@@ -1492,9 +1494,21 @@ describe("AppServerHost HarnessAdapter projection", () => {
       method: "codexhost/update/check",
       params: {},
     });
-    await expect(
-      fixture.collector.waitFor((message) => requestId(message, 23)),
-    ).resolves.toMatchObject({ error: { code: -32090 } });
+    await expect(fixture.collector.waitFor((message) => requestId(message, 23))).resolves.toEqual({
+      id: 23,
+      result: null,
+    });
+
+    for (const [id, method] of [
+      [25, "codexhost/update/start"],
+      [26, "codexhost/update/status"],
+    ] as const) {
+      writeRequest(fixture.desktopInput, { id, method, params: {} });
+      await expect(
+        fixture.collector.waitFor((message) => requestId(message, id)),
+      ).resolves.toMatchObject({ error: { code: -32090 } });
+    }
+    expect(officialWrite).not.toHaveBeenCalled();
     await stopFixture(fixture);
   });
 

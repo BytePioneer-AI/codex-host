@@ -58,6 +58,12 @@ function failedUpdateCheck(): UpdateCheckResult {
   };
 }
 
+type UpdateClientStub = ReturnType<typeof updateClient>;
+
+function updateClient(check: () => Promise<UpdateCheckResult | null>) {
+  return { checkUpdate: vi.fn(check), startUpdate: vi.fn(), readUpdateStatus: vi.fn() };
+}
+
 describe("Renderer Settings lifecycle", () => {
   afterEach(() => {
     vi.useRealTimers();
@@ -113,6 +119,65 @@ describe("Renderer Settings lifecycle", () => {
     await vi.advanceTimersByTimeAsync(1);
     expect(checkUpdate).toHaveBeenCalledTimes(2);
 
+    lifecycle.dispose();
+  });
+
+  function installWithClients(clients: { current: UpdateClientStub }) {
+    const ownerWindow = {
+      navigator: { languages: ["en"] },
+      document: {},
+      setTimeout,
+      clearTimeout,
+    } as unknown as Window;
+    return installRendererSettingsLifecycle(ownerWindow, {
+      getUpdateClient: () => clients.current,
+    });
+  }
+
+  it("treats a null update check as final and clears the indicator", async () => {
+    vi.useFakeTimers();
+    const client = updateClient(async () => null);
+    const lifecycle = installWithClients({ current: client });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(triggerSetUpdateAvailable).toHaveBeenLastCalledWith(false);
+
+    for (let index = 0; index < 20; index += 1) lifecycle.refresh();
+    await vi.advanceTimersByTimeAsync(60_000);
+    lifecycle.refresh();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(client.checkUpdate).toHaveBeenCalledTimes(1);
+    lifecycle.dispose();
+  });
+
+  it.each([
+    ["a structured error", async () => failedUpdateCheck()],
+    ["a rejected request", async () => Promise.reject(new Error("unavailable"))],
+  ])("stops refresh-driven checks after retries are exhausted by %s", async (_, check) => {
+    vi.useFakeTimers();
+    const clients = { current: updateClient(check) };
+    const failing = clients.current;
+    const lifecycle = installWithClients(clients);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(failing.checkUpdate).toHaveBeenCalledTimes(5);
+
+    for (let index = 0; index < 20; index += 1) lifecycle.refresh();
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(failing.checkUpdate).toHaveBeenCalledTimes(5);
+
+    clients.current = updateClient(async () => ({
+      ...failedUpdateCheck(),
+      latestVersion: "0.3.3",
+      updateAvailable: true,
+      error: null,
+    }));
+    lifecycle.refresh();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(clients.current.checkUpdate).toHaveBeenCalledTimes(1);
+    expect(triggerSetUpdateAvailable).toHaveBeenLastCalledWith(true);
+
+    for (let index = 0; index < 20; index += 1) lifecycle.refresh();
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(clients.current.checkUpdate).toHaveBeenCalledTimes(1);
     lifecycle.dispose();
   });
 

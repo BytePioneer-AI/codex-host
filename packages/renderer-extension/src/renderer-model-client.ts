@@ -198,7 +198,7 @@ export interface RendererModelClient extends Partial<RendererSessionImportClient
   selectThreadPermissionMode(
     input: ThreadPermissionModeSelectParams,
   ): Promise<HarnessConfigurationState>;
-  checkUpdate(): Promise<UpdateCheckResult>;
+  checkUpdate(): Promise<UpdateCheckResult | null>;
   startUpdate(): Promise<UpdateStartResult>;
   readUpdateStatus(): Promise<UpdateStatusResult>;
   inspectCodexAccountUsage?(input: CodexAccountUsageParams): Promise<CodexAccountUsageResult>;
@@ -469,12 +469,12 @@ export function createRendererModelClient(
     selectThreadModel,
     selectThreadThinking,
     selectThreadPermissionMode,
-    async checkUpdate(): Promise<UpdateCheckResult> {
+    async checkUpdate(): Promise<UpdateCheckResult | null> {
       const result = await manager.sendRequest(
         UPDATE_CHECK_METHOD,
         updateEmptyParamsSchema.parse({}),
       );
-      return updateCheckResultSchema.parse(result);
+      return updateCheckResultSchema.nullable().parse(result);
     },
     async startUpdate(): Promise<UpdateStartResult> {
       const result = await manager.sendRequest(

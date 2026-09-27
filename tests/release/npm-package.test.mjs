@@ -420,6 +420,10 @@ describe("npm package release", () => {
       expect(notice).toContain("@qoder-ai/qoder-agent-sdk");
       expect(notice).toContain("@qodercn-ai/qodercn-agent-sdk");
       expect(notice).toContain("@opencode-ai/sdk");
+      expect(notice).toContain("@opencode/client");
+      expect(
+        await readFile(path.join(output, "licenses/OpenCode-v2-Client-LICENSE.txt"), "utf8"),
+      ).toContain("MIT License");
       expect(notice).toContain("licenses/OpenCode-SDK-LICENSE.txt");
       expect(license).toContain("Copyright (c) 2025 opencode");
     } finally {

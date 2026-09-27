@@ -18,6 +18,13 @@ function semanticHistory(snapshot: HostThreadSnapshot) {
     items: turn.items.map(({ item, outcome }) => {
       const { itemId: _itemId, ...content } = item;
       void _itemId;
+      // Fork regenerates native Part IDs, including FileChange source links.
+      // They locate items within a Session; they are not history content.
+      if (content.type === "fileChange") {
+        const { sourceItemIds: _sourceItemIds, ...change } = content;
+        void _sourceItemIds;
+        return { item: change, outcome };
+      }
       return { item: content, outcome };
     }),
     outcome: turn.outcome,

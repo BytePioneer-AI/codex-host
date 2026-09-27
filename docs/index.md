@@ -112,6 +112,7 @@
 
 | 文档 | 内容与阅读时机 |
 | --- | --- |
+| [`operations/host-runtime-log.md`](operations/host-runtime-log.md) | Host Runtime 日志文件的位置、内容与边界；排查 Runtime 崩溃或异常退出时阅读。 |
 | [`operations/repository-maintenance.md`](operations/repository-maintenance.md) | PR 标签、CI 评论和发布前检查自动化；修改仓库自动化时阅读。 |
 
 ## 待评估方案与问题调查

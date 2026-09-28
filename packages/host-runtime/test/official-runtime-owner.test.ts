@@ -900,6 +900,89 @@ describe("single official runtime owner", () => {
     }
   });
 
+  it("rewrites a native resolution notification to the client-visible request ID", async () => {
+    const f = fixture();
+    const a = f.attach();
+    try {
+      await f.owner.start();
+      await a.client.initialize(initialization);
+      f.gate.initialized();
+      f.connection().emit({
+        id: 7,
+        method: "item/tool/requestUserInput",
+        params: {
+          threadId: "thread-one",
+          turnId: "turn-one",
+          itemId: "item-one",
+          isBlocking: true,
+          questions: [],
+        },
+      });
+      await vi.waitFor(() => expect(a.output).toHaveLength(1));
+      const id = a.output[0]?.id;
+      if (typeof id !== "string") throw new Error("Missing projected server ID");
+
+      // The native notification names the native ID; the client only saw the projection.
+      f.connection().emit({
+        method: "serverRequest/resolved",
+        params: { threadId: "thread-one", requestId: 7 },
+      });
+      await vi.waitFor(() => expect(a.output).toHaveLength(2));
+      expect(a.output[1]).toEqual({
+        method: "serverRequest/resolved",
+        params: { threadId: "thread-one", requestId: id },
+      });
+
+      // A resolution of an unknown native request is dropped rather than
+      // forwarded with an ID this client never saw.
+      f.connection().emit({
+        method: "serverRequest/resolved",
+        params: { threadId: "thread-two", requestId: 99 },
+      });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(a.output).toHaveLength(2);
+    } finally {
+      await f.owner.stop();
+    }
+  });
+
+  it("drops a native resolution that follows an answered server request", async () => {
+    const f = fixture();
+    const a = f.attach();
+    try {
+      await f.owner.start();
+      await a.client.initialize(initialization);
+      f.gate.initialized();
+      f.connection().emit({
+        id: 7,
+        method: "item/tool/requestUserInput",
+        params: {
+          threadId: "thread-one",
+          turnId: "turn-one",
+          itemId: "item-one",
+          isBlocking: true,
+          questions: [],
+        },
+      });
+      await vi.waitFor(() => expect(a.output).toHaveLength(1));
+      const id = a.output[0]?.id;
+      if (typeof id !== "string") throw new Error("Missing projected server ID");
+
+      // The answer consumes the reply route, so the native resolution that
+      // follows cannot be named by an ID the client saw and is dropped.
+      await a.client.send({ id, result: { answers: {} } });
+      expect(f.connection().requests.at(-1)).toEqual({ id: 7, result: { answers: {} } });
+      f.connection().emit({
+        method: "serverRequest/resolved",
+        params: { threadId: "thread-one", requestId: 7 },
+      });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(a.output).toHaveLength(1);
+    } finally {
+      await f.owner.stop();
+    }
+  });
+
   it("does not lose the first request's lease when a duplicate ID is rejected", async () => {
     const f = fixture();
     const a = f.attach();

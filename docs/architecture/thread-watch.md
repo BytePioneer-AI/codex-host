@@ -1,15 +1,15 @@
-# Thread watch：一次性的 Thread 停下通知
+# Thread watch：一次性的 Thread 停下或等待回答通知
 
-`codexhost thread watch` 让一个 Thread 在另一个 Thread **停下（不再运行）时收到一次通知**。调用方注册后立即返回，可以继续工作或结束自己的 Turn，不需要等待或轮询。
+`codexhost thread watch` 让一个 Thread 在另一个 Thread **停下（不再运行）或等待回答问题**时收到一次通知。调用方注册后立即返回，可以继续工作或结束自己的 Turn，不需要等待或轮询。
 
-它是显式选择的能力：不调用时，Host 不会因为子任务终态而主动向任何 Thread 提交输入。同一变更中的忙碌判断修正（见“实现与边界”）不依赖 watch，也作用于普通的 `thread read`、`wait`、`send`。
+它是显式选择的能力：不调用时，Host 不会因为子任务终态或提问而主动向任何 Thread 提交输入。同一变更中的忙碌判断修正（见“实现与边界”）不依赖 watch，也作用于普通的 `thread read`、`wait`、`send`。
 
 ## 模型
 
 - 只有两个 Thread：被观察的 Thread 和被通知的 Thread。与委派的父子关系无关，任意两个不同的 Thread 都可以。
-- 一次性。被观察 Thread 停下，或 watch 到期，哪个先到就通知一次，随后 watch 消失。换了一个仍在运行的 Turn 不会通知。没有取消或退订；想继续等就再注册一次。
+- 一次性。被观察 Thread 停下、出现待回答的问题，或 watch 到期，哪个先到就通知一次，随后 watch 消失。换了一个仍在运行的 Turn 不会通知。没有取消或退订；想继续等就再注册一次。
 - 每次注册各自兑现。同一对 Thread 仍在观察中时重复注册，返回已有的 watch；该 watch 已停下、通知仍在待送达时再次注册（例如 Thread 又开始了新一轮），会新建一个 watch 观察下一次停下，旧通知照常送达，不会被替换或丢弃。
-- 通知只报告执行状态：Thread 链接和结果；终态结果注明来自哪个 Turn，以便区分同一 Thread 不同轮次的通知。通知不包含会话正文或摘要，也不代表工作被验收。接收方应自行 `thread read`。
+- 通知只报告执行状态：Thread 链接和结果；终态结果注明来自哪个 Turn，`needsInput` 另外给出问题请求 ID 与 Turn，以便区分同一 Thread 不同轮次的通知。通知不包含会话正文或摘要，也不代表工作被验收。接收方应自行 `thread read`。
 
 入口：
 
@@ -26,13 +26,16 @@
 | 结果 | 含义 |
 | --- | --- |
 | `completed` / `failed` / `interrupted` | Thread 停下时的终态 |
+| `needsInput` | Thread 仍在运行，但有待回答的问题；通知给出问题请求 ID 与 Turn |
 | `timedOut` | 到期时 Thread 仍未停下；也覆盖 Harness 停止但没有报告的情况 |
 | `unreadable` | 连续 60 秒读取失败，状态未知 |
 | `notFound` | Thread 已不存在 |
 
 默认观察 29 分钟，`--timeout-ms` 可调整；到期报告 `timedOut`，需要继续等待时再注册一次。
 
-注册时 Thread 已是终态则返回 `alreadyTerminal`：不注册、不通知，调用方直接读取即可。
+注册时 Thread 已是终态则返回 `alreadyTerminal`；注册时已经有待回答的问题则返回 `alreadyNeedsInput` 并在响应中带上 `pendingQuestions`：两种情况都不注册、不通知，调用方直接读取并处理即可。回答问题后可再次注册，等待下一个问题或终态。
+
+问题请求本身来自结构化原生请求，读取与回答方式见[委派问题交互](delegation-questions.md)；问题不会把任务变成终态，被观察 Thread 在等待回答期间仍是 `running`。
 
 ## 送达
 
@@ -61,7 +64,7 @@
 
 ## 实现与边界
 
-- `packages/host-runtime/src/delegation-watch.ts` 只依赖公开的 `read` 与 `send`，每轮完成后间隔 2 秒继续轮询（现有 `thread wait` 同样基于轮询）。它不依赖具体 Harness、Desktop、Renderer 或委派血缘。
+- `packages/host-runtime/src/delegation-watch.ts` 只依赖公开的 `read` 与 `send`，每轮完成后间隔 2 秒继续轮询（现有 `thread wait` 同样基于轮询）。它不依赖具体 Harness、Desktop、Renderer 或委派血缘；就绪条件为终态或 `pendingQuestions` 非空。
 - 服务由 `DelegationControlRegistry` 持有，位于各 Host 会话之上，因此两端可以属于不同的 Host 会话。
 - watch 只存在于 Host Runtime 内存中，Runtime 重启后丢失；委派关系本身仍然持久化，重启后可重新注册。
 - 原生 Codex 的 `thread/read` 只有返回“Thread 不存在”类错误时才报告 `notFound`；其他读取错误按读取失败处理，持续 60 秒才报告 `unreadable`。

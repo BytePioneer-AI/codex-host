@@ -434,7 +434,36 @@ export class OfficialRuntimeOwner {
         pending.finish();
       }
     }
+    if (typeof value.method === "string" && value.method === "serverRequest/resolved") {
+      const resolved = this.#resolvedNotification(client, value);
+      // A resolution with no matching request is either already answered or
+      // retired. It cannot be named by an ID this client saw, so it is dropped
+      // rather than leaking a native request ID into the client's stream.
+      if (!resolved) return;
+      return client.output({
+        ...event,
+        value: resolved,
+        frame: Buffer.from(`${JSON.stringify(resolved)}\n`),
+      });
+    }
     await client.output(event);
+  }
+
+  /**
+   * A resolution notification names the native request ID, but this client only
+   * ever saw the rewritten ID. Rewrite it back so the client retires the same
+   * request it was asked about instead of one it cannot match.
+   */
+  #resolvedNotification(client: Client, value: JsonObject): JsonObject | null {
+    const params = object(value.params) ? value.params : null;
+    const requestId = params?.requestId;
+    if (!params || (typeof requestId !== "string" && typeof requestId !== "number")) return null;
+    for (const [forwardedId, originalId] of client.serverRequests) {
+      if (originalId !== requestId) continue;
+      client.serverRequests.delete(forwardedId);
+      return { ...value, params: { ...params, requestId: forwardedId } };
+    }
+    return null;
   }
 
   #remember(client: Client, method: string, params: JsonObject, response: JsonObject): void {

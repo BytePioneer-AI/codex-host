@@ -1,3 +1,6 @@
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { PassThrough } from "node:stream";
 
 import { describe, expect, it, vi } from "vitest";
@@ -28,6 +31,7 @@ describe("delegation CLI", () => {
     ["thread", "cancel", "--help"],
     ["thread", "read", "--help"],
     ["thread", "wait", "--help"],
+    ["thread", "answer", "--help"],
     ["thread", "watch", "--help"],
     ["thread", "watches", "--help"],
     ["thread", "list", "--help"],
@@ -548,6 +552,169 @@ describe("delegation CLI", () => {
       notifyThreadId: "parent",
       timeoutMs: 1_740_000,
     });
+  });
+
+  it("answers a pending Question from an answers file", async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), "codexhost-cli-answers-"));
+    const answersFile = path.join(directory, "answers.json");
+    await writeFile(answersFile, JSON.stringify({ decision: ["continue"], note: ["typed"] }));
+    const fetchImpl = successfulFetch({
+      threadId: "child",
+      interactionId: "interaction-1",
+      turnId: "turn-1",
+      harnessId: "pi",
+      status: "running",
+      next: { read: "read", wait: "wait" },
+    });
+    const output = new PassThrough();
+    try {
+      expect(
+        await runDelegationCli({
+          arguments: [
+            "thread",
+            "answer",
+            "codex://threads/child",
+            "--interaction",
+            "interaction-1",
+            "--answers-file",
+            answersFile,
+            "--format",
+            "compact",
+          ],
+          environment: {
+            [DELEGATION_RUNTIME_ENDPOINT_ENV]: "http://127.0.0.1:4321",
+            [DELEGATION_RUNTIME_TOKEN_ENV]: "token",
+          },
+          output,
+          fetchImpl,
+        }),
+      ).toBe(0);
+      const [url, init] = vi.mocked(fetchImpl).mock.calls[0] ?? [];
+      expect(String(url)).toContain("/v1/thread/answer");
+      expect(JSON.parse(String(init?.body))).toEqual({
+        threadId: "child",
+        interactionId: "interaction-1",
+        answers: { decision: ["continue"], note: ["typed"] },
+      });
+      expect(JSON.parse(outputText(output))).toEqual({
+        thread: "codex://threads/child",
+        interaction: "interaction-1",
+        turn: "turn-1",
+        harnessId: "pi",
+        status: "running",
+      });
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("passes the answers file shape through and reports structured answer errors", async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), "codexhost-cli-answers-"));
+    const environment = {
+      [DELEGATION_RUNTIME_ENDPOINT_ENV]: "http://127.0.0.1:4321",
+      [DELEGATION_RUNTIME_TOKEN_ENV]: "token",
+    };
+    const fetchImpl = successfulFetch({});
+    try {
+      for (const content of ["not json", "[]", JSON.stringify({ decision: "continue" })]) {
+        const file = path.join(
+          directory,
+          `${Buffer.from(content).toString("hex").slice(0, 12)}.json`,
+        );
+        await writeFile(file, content);
+        expect(
+          await runDelegationCli({
+            arguments: [
+              "thread",
+              "answer",
+              "child",
+              "--interaction",
+              "interaction-1",
+              "--answers-file",
+              file,
+            ],
+            environment,
+            output: new PassThrough(),
+            diagnosticOutput: new PassThrough(),
+            fetchImpl,
+          }),
+        ).toBe(1);
+      }
+      // An optional answer may be empty and every Question may be skipped: the
+      // Host owns required answers, option membership, and cardinality.
+      for (const answers of [{ decision: [] }, {}]) {
+        const file = path.join(
+          directory,
+          `${Buffer.from(JSON.stringify(answers)).toString("hex")}.json`,
+        );
+        await writeFile(file, JSON.stringify(answers));
+        expect(
+          await runDelegationCli({
+            arguments: [
+              "thread",
+              "answer",
+              "child",
+              "--interaction",
+              "interaction-1",
+              "--answers-file",
+              file,
+            ],
+            environment,
+            output: new PassThrough(),
+            diagnosticOutput: new PassThrough(),
+            fetchImpl,
+          }),
+        ).toBe(0);
+        const [, init] = vi.mocked(fetchImpl).mock.calls.at(-1) ?? [];
+        expect(JSON.parse(String(init?.body))).toMatchObject({ answers });
+      }
+      expect(
+        await runDelegationCli({
+          arguments: [
+            "thread",
+            "answer",
+            "child",
+            "--interaction",
+            "interaction-1",
+            "--answers-file",
+            path.join(directory, "missing.json"),
+          ],
+          environment,
+          output: new PassThrough(),
+          diagnosticOutput: new PassThrough(),
+          fetchImpl,
+        }),
+      ).toBe(1);
+
+      const stale = successfulFetch({
+        error: { code: "QUESTION_NOT_PENDING", message: "Question request is not pending" },
+      });
+      const diagnosticOutput = new PassThrough();
+      const file = path.join(directory, "valid.json");
+      await writeFile(file, JSON.stringify({ decision: ["continue"] }));
+      expect(
+        await runDelegationCli({
+          arguments: [
+            "thread",
+            "answer",
+            "child",
+            "--interaction",
+            "interaction-1",
+            "--answers-file",
+            file,
+          ],
+          environment,
+          output: new PassThrough(),
+          diagnosticOutput,
+          fetchImpl: stale,
+        }),
+      ).toBe(1);
+      expect(JSON.parse(outputText(diagnosticOutput))).toEqual({
+        error: { code: "QUESTION_NOT_PENDING", message: "Question request is not pending" },
+      });
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
   });
 
   it("does not offer watch options on thread send", async () => {

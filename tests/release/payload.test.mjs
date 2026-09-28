@@ -92,12 +92,14 @@ describe("release Payload", () => {
       await createPayload(root, target);
       const paths = await validatePayload({ payloadRoot: root, target, root: "/repo/source" });
       expect(paths).toEqual(expectedPayloadPaths(target));
-      expect(paths).toHaveLength(24 + preinstalledHarnessPluginPaths().length);
+      expect(paths).toHaveLength(26 + preinstalledHarnessPluginPaths().length);
       expect(expectedPayloadPaths(releaseTarget("windows-x64"))).toHaveLength(
-        26 + preinstalledHarnessPluginPaths().length,
+        28 + preinstalledHarnessPluginPaths().length,
       );
       expect(paths).toContain("licenses/tailwindcss-LICENSE.txt");
       expect(paths).toContain("app/plugins/enabled.json");
+      expect(paths).toContain("app/console-server.mjs");
+      expect(paths).toContain("app/console-web.js");
       expect(paths).toContain("app/plugins/claude-code/plugin.mjs");
       expect(expectedPayloadPaths(releaseTarget("windows-x64"))).toContain(
         "libexec/codexhost-node-repl.exe",

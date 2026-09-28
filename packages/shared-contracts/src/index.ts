@@ -1,5 +1,14 @@
 import { z } from "zod";
 export * from "./credential-imports.js";
+export {
+  CONSOLE_HOST_METHODS,
+  CONSOLE_OPEN_METHOD,
+  isConsoleHostMethod,
+  type ConsoleHostMethod,
+  consoleOpenParamsSchema,
+  consoleOpenResultSchema,
+  type ConsoleOpenResult,
+} from "./console.js";
 import { WORKSPACE_CONTRACT_VERSION } from "./version.js";
 export {
   IDLE_RELEASE_SETTINGS_METHOD,

@@ -1651,6 +1651,64 @@ describe("Renderer Updates page", () => {
     scope.dispose();
   });
 
+  it("offers the codexhost console on the About page when the Host can open it", async () => {
+    const openConsole = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("port 26339 is used by another program"))
+      .mockResolvedValueOnce({ url: "http://127.0.0.1:26339/" });
+    const client = {
+      checkUpdate: vi.fn(),
+      startUpdate: vi.fn(),
+      readUpdateStatus: vi.fn(),
+      openConsole,
+    };
+    const pages = createDefaultRendererSettingsPages(
+      rendererSettingsMessages("zh-CN"),
+      () => client,
+    );
+    const page = pages.find(({ id }) => id === "about");
+    if (!page) throw new Error("About page is not registered");
+    const document = new FakeDocument();
+    const content = document.createElement("main");
+    const scope = new RendererSettingsPageScope();
+    page.mount({
+      content: content as unknown as HTMLElement,
+      signal: scope.signal,
+      runLatest: (operation, handlers) => scope.runLatest(operation, handlers),
+    });
+
+    expect(visibleText(content)).toContain("codexhost 控制台独立于 Codex Desktop 运行");
+    const button = descendants(content).find(
+      (element) => element.tagName === "button" && element.textContent === "打开控制台",
+    );
+    if (!button) throw new Error("console button is missing");
+    button.dispatch("click");
+    await vi.waitFor(() =>
+      expect(visibleText(content)).toContain("port 26339 is used by another program"),
+    );
+    button.dispatch("click");
+    await vi.waitFor(() => expect(openConsole).toHaveBeenCalledTimes(2));
+    scope.dispose();
+
+    const withoutConsole = createDefaultRendererSettingsPages(
+      rendererSettingsMessages("en"),
+      () => ({
+        checkUpdate: vi.fn(),
+        startUpdate: vi.fn(),
+        readUpdateStatus: vi.fn(),
+      }),
+    ).find(({ id }) => id === "about");
+    const plain = new FakeDocument().createElement("main");
+    const plainScope = new RendererSettingsPageScope();
+    withoutConsole?.mount({
+      content: plain as unknown as HTMLElement,
+      signal: plainScope.signal,
+      runLatest: (operation, handlers) => plainScope.runLatest(operation, handlers),
+    });
+    expect(visibleText(plain)).not.toContain("Open console");
+    plainScope.dispose();
+  });
+
   it("renders GitHub Release notes as structured Markdown", async () => {
     const client = {
       checkUpdate: vi.fn(async () => ({

@@ -230,6 +230,8 @@ export function expectedNpmPackagePaths(target) {
     ...(target.hostPlatform === "win32" ? ["libexec/codexhost-node-repl.exe"] : []),
     `libexec/codexhost-updater${target.executableSuffix}`,
     "app/codexhost-distribution.json",
+    "app/console-server.mjs",
+    "app/console-web.js",
     "app/desktop-controller.mjs",
     "app/host-runtime.mjs",
     "app/renderer-extension.js",
@@ -385,6 +387,7 @@ const shim = path.join(packageRoot, "libexec", \`codexhost-shim\${executableSuff
 const hostRuntime = path.join(packageRoot, "app", "host-runtime.mjs");
 const desktopController = path.join(packageRoot, "app", "desktop-controller.mjs");
 const rendererExtension = path.join(packageRoot, "app", "renderer-extension.js");
+const consoleServer = path.join(packageRoot, "app", "console-server.mjs");
 
 function fail(message) {
   console.error(\`codexhost: \${message}\`);
@@ -507,12 +510,16 @@ let launchArguments;
 let remoteArguments = null;
 let brokerArguments = null;
 let delegationArguments = null;
+let consoleArguments = null;
 if (userArguments.length === 0) {
   launchArguments = ["launch"];
 } else if (userArguments[0] === "launch") {
   launchArguments = userArguments;
 } else if (userArguments[0] === "inspect") {
   launchArguments = userArguments;
+} else if (userArguments[0] === "console") {
+  launchArguments = null;
+  consoleArguments = userArguments.slice(1);
 } else if (userArguments[0] === "remote") {
   launchArguments = null;
   remoteArguments = userArguments.slice(1);
@@ -533,6 +540,7 @@ if (userArguments.length === 0) {
       "  codexhost",
       "  codexhost --version",
       "  codexhost inspect",
+      "  codexhost console",
       "  codexhost launch [launcher options]",
       "  codexhost remote install|start|stop|status|uninstall",
       "  codexhost broker install|status|stop|uninstall",
@@ -578,7 +586,17 @@ if (launchArguments?.[0] === "launch") {
   launchArguments = ["launch", ...extras, ...launchArguments.slice(1)];
 }
 
-if (delegationArguments !== null) {
+if (consoleArguments !== null) {
+  if (consoleArguments.length > 0) fail("console accepts no arguments");
+  if (!existsSync(consoleServer)) fail(\`missing console: \${consoleServer}\`);
+  const child = spawn(process.execPath, [consoleServer, "open"], {
+    env: { ...updateEnvironment, CODEXHOST_LAUNCHER_EXECUTABLE: launcher },
+    stdio: "inherit",
+    windowsHide: true,
+  });
+  child.on("error", (error) => fail(error.message));
+  child.on("exit", (code) => process.exit(code ?? 1));
+} else if (delegationArguments !== null) {
   const child = spawn(
     process.execPath,
     [hostRuntime, "--codexhost-delegation-cli", ...delegationArguments],
@@ -879,7 +897,14 @@ export async function validateNpmPackage({ packageRoot, target, root }) {
   for (const file of files.filter((entry) => /\.(?:js|md|mjs|txt)$/u.test(entry.relative))) {
     const text = await readFile(file.absolute, "utf8");
     const forbiddenReferences = [root];
-    if (["app/desktop-controller.mjs", "app/renderer-extension.js"].includes(file.relative)) {
+    if (
+      [
+        "app/console-server.mjs",
+        "app/console-web.js",
+        "app/desktop-controller.mjs",
+        "app/renderer-extension.js",
+      ].includes(file.relative)
+    ) {
       forbiddenReferences.push("@anthropic-ai/", "@codexhost/adapter-claude-code");
     }
     if (file.relative !== "package.json" && text.includes("runtime/node")) {
@@ -1056,10 +1081,27 @@ export async function prepareNpmPackage({
     },
     root,
   );
+  await runCommand(
+    {
+      label: "Console Server Bundle build",
+      command: process.execPath,
+      args: [
+        "packages/console-server/scripts/build-release.mjs",
+        "--output",
+        path.join(packageRoot, "app", "console-server.mjs"),
+      ],
+    },
+    root,
+  );
   await copyReleaseFile(
     path.join(root, "packages", "renderer-extension", "dist", "production.js"),
     path.join(packageRoot, "app", "renderer-extension.js"),
     "production Renderer Bundle",
+  );
+  await copyReleaseFile(
+    path.join(root, "packages", "renderer-extension", "dist", "console.js"),
+    path.join(packageRoot, "app", "console-web.js"),
+    "console page Bundle",
   );
   await writeDistributionMetadata(path.join(packageRoot, "app", "codexhost-distribution.json"), {
     version: packageVersion,

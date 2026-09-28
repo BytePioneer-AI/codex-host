@@ -6,6 +6,7 @@ import {
   mkdir,
   mkdtemp,
   readFile,
+  realpath,
   rm,
   symlink,
   writeFile,
@@ -497,6 +498,8 @@ describe("npm package release", () => {
     expect(source).toContain('runNativeBroker("uninstall"');
     expect(source).toContain('userArguments[0] === "delegate"');
     expect(source).toContain('userArguments[0] === "thread"');
+    expect(source).toContain('userArguments[0] === "console"');
+    expect(source).toContain('[consoleServer, "open"]');
     expect(source).toContain('"--codexhost-delegation-cli"');
     expect(source).toContain("CODEXHOST_CLI_PATH");
     expect(source).toContain('"--codexhost-remote"');
@@ -690,6 +693,35 @@ describe("npm package release", () => {
         expect(result.status).toBe(0);
         expect(result.stderr).toBe("");
         expect(result.stdout).toContain("usage:");
+      } finally {
+        await rm(root, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it.runIf(process.platform === "darwin")(
+    "opens the packaged console with the npm update environment and the Launcher",
+    async () => {
+      const root = await temporaryDirectory();
+      try {
+        const { brewPrefix, cellarNode } = await createHomebrewNodeLayout(root);
+        const { userBin, packageRoot } = await createGlobalCodexhostInstall(brewPrefix);
+        const missing = spawnCodexhost(cellarNode, userBin, ["console"]);
+        expect(missing.status).toBe(1);
+        expect(missing.stderr).toContain("missing console");
+
+        await writeFile(
+          path.join(packageRoot, "app", "console-server.mjs"),
+          "console.log(JSON.stringify({ args: process.argv.slice(2), launcher: process.env.CODEXHOST_LAUNCHER_EXECUTABLE, packageRoot: process.env.CODEXHOST_NPM_PACKAGE_ROOT }));\n",
+        );
+        const result = spawnCodexhost(cellarNode, userBin, ["console"]);
+        expect(result.status).toBe(0);
+        const reported = JSON.parse(result.stdout);
+        expect(reported.args).toEqual(["open"]);
+        const realPackageRoot = await realpath(packageRoot);
+        expect(reported.launcher).toBe(path.join(realPackageRoot, "bin", "codexhost"));
+        expect(reported.packageRoot).toBe(realPackageRoot);
+        expect(spawnCodexhost(cellarNode, userBin, ["console", "extra"]).status).toBe(1);
       } finally {
         await rm(root, { recursive: true, force: true });
       }

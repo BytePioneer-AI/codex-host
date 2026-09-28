@@ -980,6 +980,12 @@ export function installCurrentRendererAdapter(): {
     checkUpdate: () => settingsModelClient().checkUpdate(),
     startUpdate: () => settingsModelClient().startUpdate(),
     readUpdateStatus: () => settingsModelClient().readUpdateStatus(),
+    // The console lives on this machine, so it is always opened through the local Host.
+    openConsole: async () => {
+      const client = disposed ? null : clients.forHost("local");
+      if (!client?.openConsole) throw new Error("The codexhost console is unavailable");
+      return client.openConsole();
+    },
     inspectCodexAccountUsage: (
       input: Parameters<NonNullable<RendererModelClient["inspectCodexAccountUsage"]>>[0],
     ) => {

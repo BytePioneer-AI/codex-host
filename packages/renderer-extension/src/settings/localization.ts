@@ -241,6 +241,10 @@ export interface RendererSettingsMessages {
   readonly aboutOpenSource: string;
   readonly aboutStarCallout: string;
   readonly aboutRepository: string;
+  readonly aboutConsole: string;
+  readonly aboutConsoleOpen: string;
+  readonly aboutConsoleOpening: string;
+  readonly aboutConsoleFailed: string;
   readonly pageLabels: Readonly<Record<DefaultRendererSettingsPageId, string>>;
 }
 
@@ -500,6 +504,11 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   aboutOpenSource: "codexhost is an open-source project. The source code is available at:",
   aboutStarCallout: "⭐ If this project helps you, please give us a Star! ⭐",
   aboutRepository: "Open-source repository",
+  aboutConsole:
+    "The codexhost console runs outside Codex Desktop. It shows startup diagnostics and logs, and can update codexhost even when Codex cannot start.",
+  aboutConsoleOpen: "Open console",
+  aboutConsoleOpening: "Opening…",
+  aboutConsoleFailed: "The console could not be opened",
   pageLabels: Object.freeze({
     connections: "Connections",
     appearance: "General",
@@ -753,6 +762,11 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   aboutOpenSource: "codexhost 是一个开源项目，开源地址：",
   aboutStarCallout: "⭐ 如果这个项目对你有帮助，请给我们一个 Star！⭐",
   aboutRepository: "开源仓库",
+  aboutConsole:
+    "codexhost 控制台独立于 Codex Desktop 运行，可以查看启动诊断和日志；即使 Codex 无法启动，也能在控制台更新 codexhost。",
+  aboutConsoleOpen: "打开控制台",
+  aboutConsoleOpening: "正在打开…",
+  aboutConsoleFailed: "控制台打开失败",
   pageLabels: Object.freeze({
     connections: "连接",
     appearance: "通用",

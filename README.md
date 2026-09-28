@@ -67,6 +67,10 @@ Grab the installer for your platform from [Releases](https://github.com/BytePion
 <details>
 <summary>Installation troubleshooting</summary>
 
+**codexhost does not start, or Codex opens without codexhost features**
+
+Run `codexhost console` (Windows: Start Menu → "codexhost console") to open the local console at `http://127.0.0.1:26339/`. It shows why the last start failed, the Codex Desktop version, Host Runtime logs, and can update codexhost while Codex is not running. It starts together with codexhost: installer launches open it in your browser, and terminal launches print its address.
+
 **macOS: "App can't be verified" on first launch**
 
 ```bash

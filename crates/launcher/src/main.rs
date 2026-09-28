@@ -2,6 +2,7 @@
 
 mod active_update;
 mod compatibility;
+mod console;
 mod desktop_attachment;
 mod desktop_path_overrides;
 mod installation_layout;
@@ -9,6 +10,7 @@ mod native_harness_broker;
 mod runtime_instance;
 #[cfg(target_os = "linux")]
 mod secure_storage;
+mod startup_record;
 #[cfg(target_os = "macos")]
 mod system_proxy_environment;
 
@@ -58,6 +60,7 @@ use runtime_instance::{
     StartupObservation, StartupState, classify_startup, default_descriptor_path, read_descriptor,
     remove_matching_descriptor,
 };
+use startup_record::StartupOutcome;
 #[cfg(target_os = "macos")]
 use system_proxy_environment::launcher_proxy_environment;
 
@@ -124,7 +127,7 @@ impl Error for UnmanagedDesktopConflict {}
 
 fn usage() {
     eprintln!(
-        "usage:\n  codexhost\n  codexhost inspect [--custom-install <absolute-directory>]\n  codexhost launch [--shim <absolute-file>] [--node <absolute-file>] [--host-runtime <absolute-file>] [--desktop-controller <absolute-file>] [--renderer <absolute-file>] [--pi <absolute-file>] [--custom-install <absolute-directory>]\n  codexhost broker install|status|stop|uninstall\n  codexhost delegate --help\n  codexhost harness inspect ...\n  codexhost delegate start ...\n  codexhost thread send|cancel|read|wait|list ..."
+        "usage:\n  codexhost\n  codexhost inspect [--json] [--custom-install <absolute-directory>]\n  codexhost console\n  codexhost launch [--shim <absolute-file>] [--node <absolute-file>] [--host-runtime <absolute-file>] [--desktop-controller <absolute-file>] [--renderer <absolute-file>] [--pi <absolute-file>] [--custom-install <absolute-directory>]\n  codexhost broker install|status|stop|uninstall\n  codexhost delegate --help\n  codexhost harness inspect ...\n  codexhost delegate start ...\n  codexhost thread send|cancel|read|wait|list ..."
     );
 }
 
@@ -189,6 +192,7 @@ fn run_delegation_cli(arguments: &[String]) -> Result<(), Box<dyn Error>> {
 }
 
 fn startup_trace(stage: &str) {
+    startup_record::stage(stage);
     if env::var_os(STARTUP_TRACE_ENV).as_deref() != Some(std::ffi::OsStr::new("1")) {
         return;
     }
@@ -210,6 +214,9 @@ fn emit_ready_line(output: &mut impl Write) -> std::io::Result<()> {
 /// non-zero on stderr exactly like before.
 fn notify_ready_and_detach() -> Result<(), Box<dyn Error>> {
     startup_trace("publishing ready");
+    startup_record::finish(StartupOutcome::Ready, None);
+    // Before `ready`: a terminal launch must still see the printed address.
+    console::show_for_launch(None);
     emit_ready_line(&mut std::io::stdout())?;
     codexhost_platform::detach_from_terminal()?;
     Ok(())
@@ -287,7 +294,12 @@ fn discover_desktop(
     }
 }
 
-fn inspect(custom_install_root: Option<&Path>) -> Result<(), Box<dyn Error>> {
+fn inspect(custom_install_root: Option<&Path>, json: bool) -> Result<(), Box<dyn Error>> {
+    if json {
+        let document = console::inspect_json(discover_desktop(custom_install_root))?;
+        println!("{}", serde_json::to_string(&document)?);
+        return Ok(());
+    }
     let installation = discover_desktop(custom_install_root)?;
     let process_ids = codexhost_platform::desktop_process_ids_for_installation(&installation)?;
     print_installation(&installation, &process_ids);
@@ -371,20 +383,27 @@ fn parse_launch_options(arguments: &[String]) -> Result<LaunchOptions, String> {
 }
 
 /// Parse the options accepted by `codexhost inspect`.
-fn parse_inspect_options(arguments: &[String]) -> Result<Option<PathBuf>, String> {
-    let mut custom_install_root = None;
+#[derive(Debug, Default, PartialEq, Eq)]
+struct InspectOptions {
+    custom_install_root: Option<PathBuf>,
+    json: bool,
+}
+
+fn parse_inspect_options(arguments: &[String]) -> Result<InspectOptions, String> {
+    let mut options = InspectOptions::default();
     let mut index = 0;
     while index < arguments.len() {
         match arguments[index].as_str() {
             "--custom-install" => {
-                custom_install_root =
+                options.custom_install_root =
                     Some(required_path(arguments, &mut index, "--custom-install")?)
             }
+            "--json" => options.json = true,
             unknown => return Err(format!("unknown inspect option: {unknown}")),
         }
         index += 1;
     }
-    Ok(custom_install_root)
+    Ok(options)
 }
 
 fn absolute_directory(path: &Path, label: &str) -> Result<PathBuf, Box<dyn Error>> {
@@ -481,6 +500,7 @@ fn desktop_controller_command(
             name.to_str(),
             Some(
                 "CODEXHOST_STARTUP_TRACE"
+                    | "CODEXHOST_DATA_DIR"
                     | "HTTP_PROXY"
                     | "http_proxy"
                     | "HTTPS_PROXY"
@@ -985,8 +1005,14 @@ fn launch(
 ) -> Result<(), Box<dyn Error>> {
     startup_trace("launch requested");
     let options = options.resolve()?;
+    start_launch_console(&options);
     startup_trace("resources resolved");
     let installation = discover_desktop(options.custom_install_root.as_deref())?;
+    startup_record::desktop(
+        &installation.version,
+        &installation.build,
+        &installation.install_root,
+    );
     startup_trace("Codex Desktop installation discovered");
     startup_trace("acquiring Launcher ownership");
     let _launcher_guard = match acquire_launcher_ownership(&installation, Duration::from_secs(120))?
@@ -997,6 +1023,8 @@ fn launch(
         }
         LauncherOwnership::Attached => {
             startup_trace("attached to existing controlled Desktop");
+            startup_record::finish(StartupOutcome::Attached, None);
+            console::show_for_launch(None);
             return Ok(());
         }
     };
@@ -1114,8 +1142,14 @@ fn launch(
 ) -> Result<(), Box<dyn Error>> {
     startup_trace("launch requested");
     let options = options.resolve()?;
+    start_launch_console(&options);
     startup_trace("resources resolved");
     let installation = discover_desktop(options.custom_install_root.as_deref())?;
+    startup_record::desktop(
+        &installation.version,
+        &installation.build,
+        &installation.install_root,
+    );
     startup_trace("Codex Desktop installation discovered");
     startup_trace("acquiring Launcher ownership");
     let _launcher_guard = match acquire_launcher_ownership(&installation, Duration::from_secs(120))?
@@ -1126,6 +1160,8 @@ fn launch(
         }
         LauncherOwnership::Attached => {
             startup_trace("attached to existing controlled Desktop");
+            startup_record::finish(StartupOutcome::Attached, None);
+            console::show_for_launch(None);
             return Ok(());
         }
     };
@@ -1184,6 +1220,43 @@ fn launch(
     )
 }
 
+fn start_launch_console(options: &ResolvedLaunchOptions) {
+    if let Ok(installed) = InstalledResources::from_current_executable() {
+        console::start_for_launch(console::console_command_for(
+            &options.node,
+            &options.host_runtime,
+            &installed.console_server,
+        ));
+    }
+}
+
+fn open_console() -> Result<(), Box<dyn Error>> {
+    let installed = InstalledResources::from_current_executable()?;
+    if !installed.console_server.is_file() {
+        return Err(format!(
+            "bundled console is missing: {}",
+            installed.console_server.display()
+        )
+        .into());
+    }
+    let command = console::ConsoleCommand {
+        node: installed.node,
+        console_server: installed.console_server,
+    };
+    if console::open(&command, None)? {
+        Ok(())
+    } else {
+        Err("codexhost console could not be opened".into())
+    }
+}
+
+fn is_launch_command(arguments: &[String]) -> bool {
+    matches!(
+        arguments.first().map(String::as_str),
+        None | Some(START_MENU_ARGUMENT) | Some("launch")
+    )
+}
+
 fn default_launch_options() -> LaunchOptions {
     LaunchOptions {
         shim: None,
@@ -1205,11 +1278,15 @@ fn run(arguments: &[String]) -> Result<(), Box<dyn Error>> {
         None => launch(default_launch_options(), false),
         Some(START_MENU_ARGUMENT) if arguments.len() == 1 => launch(default_launch_options(), true),
         Some("inspect") => {
-            let custom_install_root = parse_inspect_options(&arguments[1..])?
+            let options = parse_inspect_options(&arguments[1..])?;
+            let custom_install_root = options
+                .custom_install_root
                 .map(|path| absolute_directory(&path, "--custom-install"))
                 .transpose()?;
-            inspect(custom_install_root.as_deref())
+            inspect(custom_install_root.as_deref(), options.json)
         }
+        Some("console") if arguments.len() == 1 => open_console(),
+        Some("console") => Err("console accepts no arguments".into()),
         Some("launch") => launch(parse_launch_options(&arguments[1..])?, false),
         Some("open-loopback-url") if arguments.len() == 1 => {
             let url = read_bounded_loopback_url(std::io::stdin().lock())?;
@@ -1238,15 +1315,30 @@ fn main() -> ExitCode {
     if start_menu_launch || appx_resume {
         hide_console_window();
     }
+    let launching = is_launch_command(&arguments);
+    if launching {
+        startup_record::begin();
+        console::set_presentation(if arguments.first().map(String::as_str) == Some("launch") {
+            console::Presentation::Print
+        } else {
+            console::Presentation::Browser
+        });
+    }
     match run(&arguments) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             let message = format!("codexhost launcher: {error}");
             eprintln!("{message}");
+            let console_opened = launching && {
+                startup_record::finish(StartupOutcome::Failed, Some(&error.to_string()));
+                console::show_for_launch(Some("startup-failure"))
+            };
             #[cfg(target_os = "windows")]
-            if start_menu_launch {
+            if start_menu_launch && !console_opened {
                 show_error_dialog(&message);
             }
+            #[cfg(not(target_os = "windows"))]
+            let _ = console_opened;
             ExitCode::FAILURE
         }
     }
@@ -1463,10 +1555,19 @@ mod tests {
         assert_eq!(
             parse_inspect_options(&["--custom-install".into(), "/opt/CodexPortable".into()])
                 .expect("inspect accepts a custom install root")
+                .custom_install_root
                 .as_deref(),
             Some(Path::new("/opt/CodexPortable"))
         );
-        assert_eq!(parse_inspect_options(&[]).expect("bare inspect"), None);
+        assert_eq!(
+            parse_inspect_options(&[]).expect("bare inspect"),
+            super::InspectOptions::default()
+        );
+        assert!(
+            parse_inspect_options(&["--json".into()])
+                .expect("inspect accepts --json")
+                .json
+        );
     }
 
     #[test]

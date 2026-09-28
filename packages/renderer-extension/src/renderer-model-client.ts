@@ -1,4 +1,8 @@
 import {
+  CONSOLE_OPEN_METHOD,
+  consoleOpenParamsSchema,
+  consoleOpenResultSchema,
+  type ConsoleOpenResult,
   HARNESS_LAUNCH_SETTINGS_GET_METHOD,
   HARNESS_LAUNCH_SETTINGS_SET_METHOD,
   harnessLaunchSettingsGetSchema,
@@ -201,6 +205,7 @@ export interface RendererModelClient extends Partial<RendererSessionImportClient
   checkUpdate(): Promise<UpdateCheckResult | null>;
   startUpdate(): Promise<UpdateStartResult>;
   readUpdateStatus(): Promise<UpdateStatusResult>;
+  openConsole?(): Promise<ConsoleOpenResult>;
   inspectCodexAccountUsage?(input: CodexAccountUsageParams): Promise<CodexAccountUsageResult>;
   listHarnessAccountSources?(): Promise<HarnessAccountSourceListResult>;
   inspectHarnessAccount?(input: HarnessAccountInspectParams): Promise<HarnessAccountInspectResult>;
@@ -489,6 +494,13 @@ export function createRendererModelClient(
         updateEmptyParamsSchema.parse({}),
       );
       return updateStatusResultSchema.parse(result);
+    },
+    async openConsole(): Promise<ConsoleOpenResult> {
+      const result = await manager.sendRequest(
+        CONSOLE_OPEN_METHOD,
+        consoleOpenParamsSchema.parse({}),
+      );
+      return consoleOpenResultSchema.parse(result);
     },
     async inspectCodexAccountUsage(
       input: CodexAccountUsageParams,

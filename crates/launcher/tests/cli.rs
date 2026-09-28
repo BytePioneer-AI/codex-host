@@ -66,6 +66,7 @@ fn production_launcher_resolves_resources_beside_its_installed_location() {
 
     let output = Command::new(&installed)
         .args(["launch"])
+        .env("CODEXHOST_DATA_DIR", root.join("data"))
         .output()
         .expect("run installed launcher");
     fs::remove_dir_all(&root).expect("remove release layout");
@@ -95,6 +96,7 @@ fn finder_launch_resolves_standard_app_resources_and_defaults_to_codex() {
     fs::copy(launcher_path(), &installed).expect("copy app launcher");
 
     let output = Command::new(&installed)
+        .env("CODEXHOST_DATA_DIR", root.join("data"))
         .output()
         .expect("run Finder-style launcher");
     fs::remove_dir_all(&root).expect("remove app layout");

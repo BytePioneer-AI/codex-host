@@ -73,6 +73,7 @@ describe("DelegationWatchService", () => {
       await vi.advanceTimersByTimeAsync(POLL_MS);
       expect(fake.sent).toHaveLength(1);
       expect(fake.sent[0]?.threadId).toBe("parent");
+      expect(fake.sent[0]?.steer).toBe(true);
       expect(fake.sent[0]?.message).toContain(
         `codex://threads/child: ${status} (Turn turn-child).`,
       );

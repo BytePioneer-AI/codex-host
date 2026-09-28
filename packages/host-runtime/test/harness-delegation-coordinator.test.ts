@@ -51,6 +51,9 @@ async function fixture(
       registered.push(thread);
       return thread;
     },
+    steerExternalTurn: async () => {
+      throw new Error("Unexpected steer");
+    },
     startExternalTurn: async (thread, text, turnId) => {
       thread.running = true;
       thread.activeTurnId = hostTurnIdSchema.parse(turnId);

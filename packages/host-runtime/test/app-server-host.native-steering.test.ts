@@ -1,6 +1,7 @@
 import { FakeHarnessSession } from "@codexhost/harness-adapter/testing";
 import type { JsonObject } from "@codexhost/protocol-core";
 import { describe, expect, it, vi } from "vitest";
+import type { DelegationControlApi } from "../src/delegation-types.js";
 
 import {
   createFixture,
@@ -22,6 +23,56 @@ function steeredUserMessage(message: JsonObject, turnId: string): JsonObject | n
 }
 
 describe("Native steering", () => {
+  it.each([true, false])("delegated steer reuses the Desktop path (native=%s)", async (native) => {
+    let api: DelegationControlApi | undefined;
+    const fixture = createFixture({
+      onDelegationApi: (value) => {
+        api = value;
+        return undefined;
+      },
+    });
+    fixture.adapter.supportsSteer = native;
+    try {
+      const threadId = await startPiThread(fixture);
+      const oldTurn = await startPiTurn(fixture, threadId);
+      const session = fixture.adapter.sessions[0];
+      if (!api || !session) throw new Error("Delegation fixture missing");
+      session.completeCancellationOnRequest();
+      const execute = vi.spyOn(session, "execute");
+      const result = await api.send({ threadId, message: "watch notification", steer: true });
+      expect(result.turnId === oldTurn).toBe(native);
+      expect(execute.mock.calls.map(([command]) => command.type)).toEqual(
+        native ? ["turn.steer"] : ["turn.cancel", "turn.start"],
+      );
+    } finally {
+      await stopFixture(fixture);
+    }
+  });
+
+  it("does not start another Turn after an external steer with unknown acceptance", async () => {
+    let api: DelegationControlApi | undefined;
+    const fixture = createFixture({
+      onDelegationApi: (value) => {
+        api = value;
+        return undefined;
+      },
+    });
+    fixture.adapter.supportsSteer = true;
+    try {
+      const threadId = await startPiThread(fixture);
+      await startPiTurn(fixture, threadId);
+      const session = fixture.adapter.sessions[0];
+      if (!api || !session) throw new Error("Delegation fixture missing");
+      const execute = vi.spyOn(session, "execute").mockRejectedValueOnce(new Error("lost receipt"));
+      await expect(api.send({ threadId, message: "notification", steer: true })).rejects.toThrow(
+        "lost receipt",
+      );
+      expect(execute.mock.calls.map(([command]) => command.type)).toEqual(["turn.steer"]);
+    } finally {
+      await stopFixture(fixture);
+    }
+  });
+
   it("takes a Desktop steer into the active Turn and settles Desktop's optimistic message", async () => {
     const fixture = createFixture();
     fixture.adapter.supportsSteer = true;

@@ -5,6 +5,7 @@ import type {
 import { createRendererModelClient, type RendererModelClient } from "./renderer-model-client.js";
 import { installRendererExternalQueue } from "./renderer-external-queue.js";
 import { installRendererExternalSteering } from "./renderer-external-steering.js";
+import { restoreThreadReferenceCapability } from "./renderer-thread-reference-capability.js";
 
 /** Model clients follow native connection identities, never the active Composer.
  * A captured client may finish an in-flight request after replacement, but may
@@ -52,6 +53,11 @@ export function createRendererHostClients(readRouting: () => RendererHostRouting
       },
     ]);
     if (!client) return null;
+    restoreThreadReferenceCapability(
+      client,
+      target,
+      () => !disposed && readRouting()?.forHost(route.hostId) === route,
+    );
     const cleanups: (() => void)[] = [];
     entries.set(route.hostId, { route, client, cleanups });
     try {

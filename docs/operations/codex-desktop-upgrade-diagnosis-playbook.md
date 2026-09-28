@@ -14,6 +14,21 @@
 
 ## 一、先建立分层模型
 
+### 历史原生会话不能拖入引用或通过 `@` 搜索会话
+
+Desktop 可根据 `thread-reference-capability:<threadId>` 决定是否注册原生会话引用接收区。
+历史会话可能已经保存了 `read_thread` 工具，但本机缺少这一 UI 标记；新草稿与历史会话应分开测试。
+
+codexhost 在已有的 Thread ownership inspection 中按需请求
+`includeReferenceCapability: true`。所属 Host 只对原生 Codex Thread 验证：通过官方
+`thread/read` 取得 rollout 路径，限定到当前 Codex home 的 sessions/archived_sessions，
+最多读取首个 1 MiB 中的第一条 `session_meta`，核对 Thread ID 与 `dynamic_tools` 中的
+`read_thread`。确认后返回 `supportsThreadReferences: true`，不返回会话正文。
+
+Renderer 仅补回缺失的 UI 标记，保留明确的 false；连接被替换或已有标记时不接受迟到结果。
+每个连接内每条 Thread 至多尝试一次能力恢复，旧 Host 不支持该可选参数时回退到原有检查。
+此兼容路径不为 External Harness 新增读取工具，也不修改原生拖拽、搜索或消息发送流程。
+
 不要把“注入失败”“Harness 不可用”和“Agent 切换失败”当成同一个问题。至少分为以下几层：
 
 ```text

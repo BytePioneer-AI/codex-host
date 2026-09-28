@@ -43,9 +43,3 @@ export function button(
 export function formatTime(ms: number | null | undefined, locale: string): string {
   return typeof ms === "number" && ms > 0 ? new Date(ms).toLocaleString(locale) : "—";
 }
-
-export function formatBytes(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
-}

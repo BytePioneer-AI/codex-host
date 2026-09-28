@@ -2,10 +2,15 @@ import { describe, expect, it, vi } from "vitest";
 
 import { failedStep, renderStartupDiagnostics } from "../../src/console/pages/diagnostics.js";
 import { consoleMessages } from "../../src/console/messages.js";
-import type { ConsoleOverview } from "../../src/console/state.js";
+import { ConsoleState, type ConsoleOverview } from "../../src/console/state.js";
+import { createOverviewPage } from "../../src/console/pages/overview.js";
+import type { RendererSettingsPageMountContext } from "../../src/settings/core.js";
+
+vi.mock("../../src/settings/icons.js", () => ({ createRendererSettingsIcon: () => null }));
 
 vi.mock("../../src/console/dom.js", () => ({
   formatTime: () => "12:00",
+  button: (_document: Document, label: unknown) => ({ tag: "button", label }),
   h: (_document: Document, tag: string, attributes: object, ...children: unknown[]) => ({
     tag,
     attributes,
@@ -18,10 +23,8 @@ vi.mock("../../src/console/dom.js", () => ({
 
 function overview(): ConsoleOverview {
   return {
-    console: { version: "0.10.2", appDirectory: "", distribution: null },
-    homeDirectory: "",
+    console: { version: "0.10.2", distribution: null },
     inspect: null,
-    inspectError: null,
     startup: [
       {
         id: "test",
@@ -34,8 +37,6 @@ function overview(): ConsoleOverview {
       },
     ],
     controller: null,
-    controllerAlive: false,
-    logs: [],
     launchAvailable: true,
     summary: { state: "running", detail: null },
     issueUrl: "",
@@ -50,6 +51,54 @@ function render(value: ConsoleOverview): string {
 }
 
 describe("overview startup diagnostics", () => {
+  it("shows starting without a launch button, and enables retry only after failure", () => {
+    const state = new ConsoleState();
+    state.overview = overview();
+    state.overview.summary.state = "starting";
+    const latest = state.overview.startup[0];
+    if (!latest) throw new Error("Missing fixture startup");
+    latest.outcome = "starting";
+    const replaceChildren = vi.fn();
+    let refresh: (() => void) | undefined;
+    vi.spyOn(state, "subscribe").mockImplementation((listener) => {
+      refresh = listener;
+      return () => undefined;
+    });
+    const context = {
+      content: { ownerDocument: {}, replaceChildren },
+    } as unknown as RendererSettingsPageMountContext;
+    createOverviewPage(consoleMessages("zh-CN"), state, vi.fn(), "zh-CN").mount(context);
+    const initial = JSON.stringify(replaceChildren.mock.calls.at(-1));
+    expect(initial).toContain("codexhost 正在启动");
+    expect(initial).not.toContain('"tag":"button"');
+    expect(initial).not.toContain("启动成功");
+    expect(initial).not.toContain("codexhost 未运行");
+
+    state.overview.summary = { state: "startup-failed", detail: "failed to start" };
+    latest.outcome = "failed";
+    refresh?.();
+    const failed = JSON.stringify(replaceChildren.mock.calls.at(-1));
+    expect(failed).toContain('"tag":"button"');
+    expect(failed).toContain("启动 codexhost");
+
+    state.overview.summary = { state: "running", detail: null };
+    latest.outcome = "ready";
+    refresh?.();
+    const ready = JSON.stringify(replaceChildren.mock.calls.at(-1));
+    expect(ready).toContain("codexhost 正在运行");
+    expect(ready).not.toContain('"tag":"button"');
+  });
+
+  it("does not present an abandoned starting record as a successful startup", () => {
+    const value = overview();
+    const latest = value.startup[0];
+    if (!latest) throw new Error("Missing fixture startup");
+    latest.outcome = "starting";
+    value.summary.state = "startup-failed";
+    expect(render(value)).toContain("本次启动未完成");
+    expect(render(value)).not.toContain("启动成功");
+  });
+
   it("shows only the latest successful start without timeline or duplicate report actions", () => {
     const value = overview();
     const latest = value.startup[0];

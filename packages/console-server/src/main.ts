@@ -18,7 +18,7 @@ const appDirectory = path.dirname(entryPath);
 
 function usage(): never {
   console.error(
-    "usage: console-server open [--reason <reason>] [--no-browser] | console-server ensure | console-server serve",
+    "usage: console-server open [--no-browser] | console-server ensure | console-server serve",
   );
   process.exit(2);
 }
@@ -52,19 +52,13 @@ async function serve(): Promise<void> {
 }
 
 interface OpenArguments {
-  reason?: string;
   browser: boolean;
 }
 
 function parseOpenArguments(arguments_: string[]): OpenArguments {
   const parsed: OpenArguments = { browser: true };
-  for (let index = 0; index < arguments_.length; index += 1) {
-    const argument = arguments_[index];
-    const value = arguments_[index + 1];
-    if (argument === "--reason" && value) {
-      parsed.reason = value;
-      index += 1;
-    } else if (argument === "--no-browser") {
+  for (const argument of arguments_) {
+    if (argument === "--no-browser") {
       parsed.browser = false;
     } else {
       usage();
@@ -81,7 +75,6 @@ async function open(arguments_: string[]): Promise<void> {
     entryPath,
     launcherExecutable: installation.launcherExecutable,
     browser: parsed.browser,
-    ...(parsed.reason ? { reason: parsed.reason } : {}),
   });
   console.log(`codexhost console: ${url}`);
 }

@@ -1004,8 +1004,8 @@ fn launch(
     _interactive_running_desktop: bool,
 ) -> Result<(), Box<dyn Error>> {
     startup_trace("launch requested");
-    let options = options.resolve()?;
     start_launch_console(&options);
+    let options = options.resolve()?;
     startup_trace("resources resolved");
     let installation = discover_desktop(options.custom_install_root.as_deref())?;
     startup_record::desktop(
@@ -1141,8 +1141,8 @@ fn launch(
     _interactive_running_desktop: bool,
 ) -> Result<(), Box<dyn Error>> {
     startup_trace("launch requested");
-    let options = options.resolve()?;
     start_launch_console(&options);
+    let options = options.resolve()?;
     startup_trace("resources resolved");
     let installation = discover_desktop(options.custom_install_root.as_deref())?;
     startup_record::desktop(
@@ -1220,11 +1220,16 @@ fn launch(
     )
 }
 
-fn start_launch_console(options: &ResolvedLaunchOptions) {
+fn start_launch_console(options: &LaunchOptions) {
+    // Recovery needs only Node and the console entrypoint, not a complete
+    // Desktop resource set. Resolve those paths before validating the rest.
     if let Ok(installed) = InstalledResources::from_current_executable() {
         console::start_for_launch(console::console_command_for(
-            &options.node,
-            &options.host_runtime,
+            options.node.as_deref().unwrap_or(&installed.node),
+            options
+                .host_runtime
+                .as_deref()
+                .unwrap_or(&installed.host_runtime),
             &installed.console_server,
         ));
     }
@@ -1243,7 +1248,7 @@ fn open_console() -> Result<(), Box<dyn Error>> {
         node: installed.node,
         console_server: installed.console_server,
     };
-    if console::open(&command, None)? {
+    if console::open(&command)? {
         Ok(())
     } else {
         Err("codexhost console could not be opened".into())

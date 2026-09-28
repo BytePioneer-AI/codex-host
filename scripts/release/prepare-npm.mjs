@@ -394,15 +394,9 @@ function fail(message) {
   process.exit(1);
 }
 
-for (const [label, filePath] of [
-  ["launcher", launcher],
-  ["shim", shim],
-  ["host runtime", hostRuntime],
-  ["desktop controller", desktopController],
-  ["renderer extension", rendererExtension],
-]) {
-  if (!existsSync(filePath)) fail(\`missing \${label}: \${filePath}\`);
-}
+// Desktop resources are validated by the Launcher after it starts the recovery
+// console. Do not prevent recovery when one of those resources is missing.
+if (!existsSync(launcher)) fail(\`missing launcher: \${launcher}\`);
 
 function existingFile(filePath) {
   return typeof filePath === "string" && filePath.length > 0 && existsSync(filePath)

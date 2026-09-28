@@ -79,6 +79,42 @@ fn production_launcher_resolves_resources_beside_its_installed_location() {
     assert!(!stderr.contains("--shim is required"));
 }
 
+#[cfg(unix)]
+#[test]
+fn console_starts_before_missing_desktop_resources_are_rejected() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system time")
+        .as_nanos();
+    let root = std::env::temp_dir().join(format!("codexhost early console {unique}"));
+    fs::create_dir_all(root.join("bin")).expect("create bin");
+    fs::create_dir_all(root.join("runtime")).expect("create runtime");
+    fs::create_dir_all(root.join("app")).expect("create app");
+    let installed = root.join("bin/codexhost");
+    fs::copy(launcher_path(), &installed).expect("copy launcher");
+    fs::write(root.join("app/console-server.mjs"), "fixture").expect("console entry");
+    let node = root.join("runtime/node");
+    // No real server or browser: record the native launch order only.
+    fs::write(&node, "#!/bin/sh\nprintf '%s\\n' \"$2\" >> \"$CODEXHOST_DATA_DIR/calls\"\nif [ \"$2\" = open ]; then\n  echo 'codexhost console: http://127.0.0.1:26339/'\nfi\n")
+        .expect("fake Node");
+    fs::set_permissions(&node, fs::Permissions::from_mode(0o755)).expect("make executable");
+    let output = Command::new(&installed)
+        .arg("launch")
+        .env("CODEXHOST_CONSOLE", "1")
+        .env("CODEXHOST_DATA_DIR", &root)
+        .output()
+        .expect("run launcher");
+    let calls = fs::read_to_string(root.join("calls")).unwrap_or_default();
+    fs::remove_dir_all(&root).expect("remove fixture");
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("bundled Shim"), "{stderr}");
+    assert_eq!(calls, "ensure\nopen\n");
+    assert!(stderr.contains("codexhost console: http://127.0.0.1:26339/"));
+}
+
 #[cfg(target_os = "macos")]
 #[test]
 fn finder_launch_resolves_standard_app_resources_and_defaults_to_codex() {

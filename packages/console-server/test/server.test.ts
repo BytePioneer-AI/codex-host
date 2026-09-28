@@ -1,5 +1,5 @@
 import { request as httpRequest } from "node:http";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -151,12 +151,61 @@ describe("console server", () => {
       inspect: InspectDocument;
       issueUrl: string;
     };
+    expect(Object.keys(overview).sort()).toEqual(
+      [
+        "console",
+        "inspect",
+        "startup",
+        "controller",
+        "launchAvailable",
+        "summary",
+        "issueUrl",
+        "hostAvailable",
+      ].sort(),
+    );
+    expect(overview).toHaveProperty("console", { version: "1.0.0", distribution: null });
     expect(overview.summary.state).toBe("stopped");
     expect(overview.inspect.desktop?.version).toBe("26.924.20706");
     expect(overview.issueUrl).toMatch(
       /^https:\/\/github\.com\/BytePioneer-AI\/codex-host\/issues\/new\?/u,
     );
     expect(decodeURIComponent(overview.issueUrl)).toContain("26.924.20706");
+  });
+
+  it("reports a live Launcher startup, then failure without leaving a stale starting state", async () => {
+    const { base } = await start();
+    const file = consolePaths({ CODEXHOST_DATA_DIR: directory }).startupRecordFile;
+    await mkdir(path.dirname(file), { recursive: true });
+    const record = {
+      id: "active-launch",
+      pid: process.pid,
+      launcherVersion: "1.0.0",
+      startedAtMs: Date.now(),
+      finishedAtMs: null,
+      outcome: "starting",
+      error: null,
+      stages: [],
+      desktop: null,
+    };
+    const save = (changes: object) =>
+      writeFile(file, JSON.stringify({ schemaVersion: 1, records: [{ ...record, ...changes }] }));
+    const summary = async () => {
+      const result = (await (await fetch(`${base}/api/overview`)).json()) as {
+        summary: { state: string };
+      };
+      return result.summary.state;
+    };
+    await save({});
+    expect(await summary()).toBe("starting");
+    await save({ pid: -1 });
+    expect(await summary()).toBe("startup-failed");
+    await save({ outcome: "failed", finishedAtMs: Date.now(), error: "startup timeout" });
+    expect(await summary()).toBe("startup-failed");
+  });
+
+  it("does not expose the unused Host availability route", async () => {
+    const { base } = await start();
+    expect((await fetch(`${base}/api/host`)).status).toBe(404);
   });
 
   it("accepts changes only from the console page", async () => {
@@ -205,6 +254,9 @@ describe("console server", () => {
 
   it("exports a redacted diagnostics report as a download", async () => {
     const { base } = await start();
+    const logs = consolePaths({ CODEXHOST_DATA_DIR: directory }).logsDirectory;
+    await mkdir(logs, { recursive: true });
+    await writeFile(path.join(logs, "host-runtime-12.log"), "Runtime diagnostic\n");
     const response = await fetch(`${base}/api/diagnostics/export`);
     expect(response.status).toBe(200);
     expect(response.headers.get("content-disposition")).toMatch(
@@ -213,7 +265,11 @@ describe("console server", () => {
     const report = (await response.json()) as {
       schemaVersion: number;
       desktop: { version: string };
+      logs: { name: string; tail: string }[];
     };
+    expect(report.logs).toEqual([
+      expect.objectContaining({ name: "host-runtime-12.log", tail: "Runtime diagnostic\n" }),
+    ]);
     expect(report.schemaVersion).toBe(1);
     expect(report.desktop.version).toBe("26.924.20706");
   });

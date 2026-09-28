@@ -108,6 +108,22 @@ export function renderStartupDiagnostics(
     sections.push(
       h(document, "div", { className: "console-panel console-muted" }, messages.noStart),
     );
+  } else if (latest.outcome === "starting") {
+    const starting = overview.summary.state === "starting";
+    sections.push(
+      h(
+        document,
+        "section",
+        { className: "console-panel" },
+        h(document, "h2", { className: "console-panel__title" }, messages.latestStart),
+        h(
+          document,
+          "p",
+          { className: "console-muted" },
+          starting ? messages.starting : messages.startupInterrupted,
+        ),
+      ),
+    );
   } else if (latest.outcome === "failed") {
     const step = messages.steps[failedStep(latest.stages)];
     sections.push(

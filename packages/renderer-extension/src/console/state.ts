@@ -9,7 +9,7 @@ export interface StartupRecord {
   id: string;
   launcherVersion: string;
   startedAtMs: number;
-  outcome: "ready" | "attached" | "failed";
+  outcome: "starting" | "ready" | "attached" | "failed";
   error: string | null;
   stages: StartupStage[];
   desktop: { version: string; build: string; installRoot: string } | null;
@@ -18,16 +18,13 @@ export interface StartupRecord {
 export interface ConsoleOverview {
   console: {
     version: string;
-    appDirectory: string;
     distribution: { version: string; distribution: "npm" | "installer"; target: string } | null;
   };
-  homeDirectory: string;
   inspect: {
     desktop: { version: string; build: string; installRoot: string } | null;
     desktopError: string | null;
     runtime: { running: boolean };
   } | null;
-  inspectError: string | null;
   startup: StartupRecord[];
   controller: {
     renderer: {
@@ -39,11 +36,15 @@ export interface ConsoleOverview {
       updatedAt: number;
     };
   } | null;
-  controllerAlive: boolean;
-  logs: { name: string; size: number; modifiedAt: number }[];
   launchAvailable: boolean;
   summary: {
-    state: "running" | "integration-unavailable" | "startup-failed" | "desktop-missing" | "stopped";
+    state:
+      | "starting"
+      | "running"
+      | "integration-unavailable"
+      | "startup-failed"
+      | "desktop-missing"
+      | "stopped";
     detail: string | null;
   };
   issueUrl: string;

@@ -1,6 +1,5 @@
 import { spawn } from "node:child_process";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import os from "node:os";
 
 import { isConsoleHostMethod } from "@codexhost/shared-contracts";
 import { allowedChange, allowedHost, CONSOLE_REQUEST_HEADER } from "./request-guard.js";
@@ -166,7 +165,7 @@ export function startConsoleServer(options: ConsoleServerOptions): Promise<Runni
   };
 
   async function collect() {
-    const [inspectResult, startup, controller, logs] = await Promise.all([
+    const [inspectResult, startup, controller] = await Promise.all([
       loadInspect().then(
         (value) => ({ value, error: null as string | null }),
         (error: unknown) => ({
@@ -176,7 +175,6 @@ export function startConsoleServer(options: ConsoleServerOptions): Promise<Runni
       ),
       readStartupRecords(options.paths.startupRecordFile),
       readControllerStatus(options.paths.controllerStatusFile),
-      listLogFiles(options.paths.logsDirectory),
     ]);
     const inspectDocument = inspectResult.value;
     const controllerAlive = controller !== null && processIsAlive(controller.pid);
@@ -184,6 +182,7 @@ export function startConsoleServer(options: ConsoleServerOptions): Promise<Runni
       running: inspectDocument?.runtime.running ?? false,
       desktopError: inspectDocument?.desktopError ?? null,
       latestStartup: startup[0] ?? null,
+      launcherAlive: startup[0]?.outcome === "starting" && processIsAlive(startup[0].pid),
       controller,
       controllerAlive,
     });
@@ -193,33 +192,23 @@ export function startConsoleServer(options: ConsoleServerOptions): Promise<Runni
       startup,
       controller,
       controllerAlive,
-      logs,
       summary,
     };
   }
 
   async function overview(): Promise<unknown> {
     const collected = await collect();
-    const { inspectDocument, inspectError, startup, controller, controllerAlive, logs, summary } =
-      collected;
+    const { inspectDocument, startup, controller, summary } = collected;
     // A plain link opens reliably; a window opened after a request can be blocked.
     const reportIssueUrl = issueUrl(await diagnosticReport(collected, false));
     return {
       console: {
-        service: CONSOLE_SERVICE,
         version: options.version,
-        pid: process.pid,
-        port,
-        appDirectory: options.installation.appDirectory,
         distribution: options.installation.distribution,
       },
-      homeDirectory: os.homedir(),
       inspect: inspectDocument,
-      inspectError,
       startup,
       controller,
-      controllerAlive,
-      logs,
       launchAvailable: launchCommand(options.installation, environment) !== null,
       summary,
       issueUrl: reportIssueUrl,
@@ -242,7 +231,7 @@ export function startConsoleServer(options: ConsoleServerOptions): Promise<Runni
         startup: collected.startup,
         controller: collected.controller,
         controllerAlive: collected.controllerAlive,
-        logs: withLogs ? collected.logs : [],
+        logs: withLogs ? await listLogFiles(options.paths.logsDirectory) : [],
       },
       (name, maxBytes) => readLogTail(options.paths.logsDirectory, name, maxBytes),
     );
@@ -358,10 +347,6 @@ export function startConsoleServer(options: ConsoleServerOptions): Promise<Runni
           error: error instanceof Error ? error.message : String(error),
         });
       }
-      return;
-    }
-    if (route === "GET /api/host") {
-      sendJson(response, 200, { available: await options.host.available() });
       return;
     }
     if (route === "POST /api/host/request") {

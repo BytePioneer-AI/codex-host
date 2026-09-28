@@ -74,7 +74,6 @@ export interface OpenConsoleOptions {
   entryPath: string;
   environment?: NodeJS.ProcessEnv;
   launcherExecutable: string | null;
-  reason?: string;
   /** False returns the address without opening a browser. */
   browser?: boolean;
 }

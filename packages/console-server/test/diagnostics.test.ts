@@ -62,6 +62,35 @@ describe("console diagnostics", () => {
     expect(await readStartupRecords(path.join(directory, "missing.json"))).toEqual([]);
   });
 
+  it("reads an unfinished startup alongside completed records", async () => {
+    const filePath = path.join(directory, "launcher-startup-v1.json");
+    const starting = { ...failedStartup, outcome: "starting", finishedAtMs: null, error: null };
+    await writeFile(
+      filePath,
+      JSON.stringify({ schemaVersion: 1, records: [starting, failedStartup] }),
+    );
+    expect(await readStartupRecords(filePath)).toEqual([starting, failedStartup]);
+  });
+
+  it("reports a live unfinished launch as starting, not stopped or an old integration failure", () => {
+    const input = {
+      running: false,
+      desktopError: null,
+      latestStartup: {
+        ...failedStartup,
+        outcome: "starting" as const,
+        finishedAtMs: null,
+        error: null,
+      },
+      launcherAlive: true,
+      controller: unavailableController,
+      controllerAlive: true,
+    };
+    expect(summarize(input)).toEqual({ state: "starting", detail: null });
+    expect(summarize({ ...input, running: true }).state).toBe("starting");
+    expect(summarize({ ...input, launcherAlive: false }).state).toBe("startup-failed");
+  });
+
   it("reads the Desktop Controller status document", async () => {
     const filePath = path.join(directory, "desktop-controller-v1.json");
     await writeFile(filePath, JSON.stringify({ schemaVersion: 1, ...unavailableController }));

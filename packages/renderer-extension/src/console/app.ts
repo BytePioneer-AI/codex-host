@@ -74,9 +74,13 @@ function statusCard(
           { className: "console-status-card__title" },
           state.offline
             ? messages.consoleOffline
-            : running
-              ? messages.hostRunning
-              : messages.hostStopped,
+            : !overview
+              ? messages.statusLoading
+              : summary === "starting"
+                ? messages.starting
+                : running
+                  ? messages.hostRunning
+                  : messages.hostStopped,
         ),
       ),
       h(

@@ -15,8 +15,8 @@ export interface StartupRecord {
   pid: number;
   launcherVersion: string;
   startedAtMs: number;
-  finishedAtMs: number;
-  outcome: "ready" | "attached" | "failed";
+  finishedAtMs: number | null;
+  outcome: "starting" | "ready" | "attached" | "failed";
   error: string | null;
   stages: StartupStage[];
   desktop: { version: string; build: string; installRoot: string } | null;
@@ -54,7 +54,7 @@ async function readBoundedJson(filePath: string): Promise<unknown> {
   }
 }
 
-const OUTCOMES = new Set(["ready", "attached", "failed"]);
+const OUTCOMES = new Set(["starting", "ready", "attached", "failed"]);
 const RENDERER_STATES = new Set(["installing", "installed", "unavailable"]);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -67,7 +67,8 @@ function parseStartupRecord(value: unknown): StartupRecord | null {
     typeof value.id !== "string" ||
     typeof value.pid !== "number" ||
     typeof value.startedAtMs !== "number" ||
-    typeof value.finishedAtMs !== "number" ||
+    (typeof value.finishedAtMs !== "number" &&
+      !(value.outcome === "starting" && value.finishedAtMs === null)) ||
     !OUTCOMES.has(String(value.outcome)) ||
     !Array.isArray(value.stages)
   ) {
@@ -197,7 +198,12 @@ export async function readLogTail(
 }
 
 export type ConsoleHealthState =
-  "running" | "integration-unavailable" | "startup-failed" | "desktop-missing" | "stopped";
+  | "starting"
+  | "running"
+  | "integration-unavailable"
+  | "startup-failed"
+  | "desktop-missing"
+  | "stopped";
 
 export interface ConsoleSummary {
   state: ConsoleHealthState;
@@ -208,6 +214,7 @@ export interface SummaryInput {
   running: boolean;
   desktopError: string | null;
   latestStartup: StartupRecord | null;
+  launcherAlive?: boolean;
   controller: ControllerStatus | null;
   controllerAlive: boolean;
   now?: number;
@@ -237,6 +244,9 @@ export function integrationFailing(
  * is reported separately from a clean run.
  */
 export function summarize(input: SummaryInput): ConsoleSummary {
+  if (input.latestStartup?.outcome === "starting" && input.launcherAlive) {
+    return { state: "starting", detail: null };
+  }
   if (input.running) {
     const renderer = input.controllerAlive ? input.controller?.renderer : undefined;
     if (renderer && integrationFailing(renderer, input.now ?? Date.now())) {
@@ -247,6 +257,9 @@ export function summarize(input: SummaryInput): ConsoleSummary {
   if (input.desktopError) return { state: "desktop-missing", detail: input.desktopError };
   if (input.latestStartup?.outcome === "failed") {
     return { state: "startup-failed", detail: input.latestStartup.error };
+  }
+  if (input.latestStartup?.outcome === "starting") {
+    return { state: "startup-failed", detail: "Launcher exited before startup completed." };
   }
   return { state: "stopped", detail: null };
 }

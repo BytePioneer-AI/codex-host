@@ -26,6 +26,7 @@ const MAX_FILE_BYTES: u64 = 256 * 1024;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum StartupOutcome {
+    Starting,
     Ready,
     Attached,
     Failed,
@@ -53,7 +54,7 @@ pub struct StartupRecord {
     pub pid: u32,
     pub launcher_version: String,
     pub started_at_ms: u64,
-    pub finished_at_ms: u64,
+    pub finished_at_ms: Option<u64>,
     pub outcome: StartupOutcome,
     pub error: Option<String>,
     pub stages: Vec<StartupStage>,
@@ -100,6 +101,10 @@ pub fn begin() {
         stages: Vec::new(),
         desktop: None,
     });
+    drop(active);
+    // Publish before the console opens; a missing runtime endpoint is expected
+    // while this Launcher is still starting Desktop.
+    finish(StartupOutcome::Starting, None);
 }
 
 /// When this process began recording its launch.
@@ -154,7 +159,7 @@ pub fn finish(outcome: StartupOutcome, error: Option<&str>) {
             pid: std::process::id(),
             launcher_version: env!("CARGO_PKG_VERSION").to_owned(),
             started_at_ms: active.started_at_ms,
-            finished_at_ms: now_ms(),
+            finished_at_ms: (outcome != StartupOutcome::Starting).then(now_ms),
             outcome,
             error: error.map(bounded_error),
             stages: active.stages.clone(),
@@ -271,13 +276,30 @@ fn persist(path: &Path, record: StartupRecord) -> std::io::Result<()> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn starting_record_has_no_finish_time_and_is_replaced_by_its_outcome() {
+        let starting = record("start", StartupOutcome::Starting);
+        let json = serde_json::to_value(&starting).expect("serialize starting");
+        assert_eq!(json["outcome"], "starting");
+        assert!(json["finishedAtMs"].is_null());
+        let restored: StartupRecord = serde_json::from_value(json).expect("read starting");
+        assert_eq!(restored, starting);
+        for outcome in [StartupOutcome::Ready, StartupOutcome::Failed] {
+            let completed = record("start", outcome);
+            assert_eq!(
+                merge(vec![starting.clone()], completed.clone()),
+                vec![completed]
+            );
+        }
+    }
+
     fn record(id: &str, outcome: StartupOutcome) -> StartupRecord {
         StartupRecord {
             id: id.to_owned(),
             pid: 1,
             launcher_version: "1.2.3".into(),
             started_at_ms: 1,
-            finished_at_ms: 2,
+            finished_at_ms: (outcome != StartupOutcome::Starting).then_some(2),
             outcome,
             error: None,
             stages: vec![StartupStage {

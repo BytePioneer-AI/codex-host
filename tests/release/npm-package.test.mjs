@@ -714,6 +714,22 @@ describe("npm package release", () => {
           path.join(packageRoot, "app", "console-server.mjs"),
           "console.log(JSON.stringify({ args: process.argv.slice(2), launcher: process.env.CODEXHOST_LAUNCHER_EXECUTABLE, packageRoot: process.env.CODEXHOST_NPM_PACKAGE_ROOT }));\n",
         );
+        // Recovery must not depend on the resources used to launch Desktop.
+        for (const relative of [
+          "libexec/codexhost-shim",
+          "app/host-runtime.mjs",
+          "app/desktop-controller.mjs",
+          "app/renderer-extension.js",
+        ]) {
+          await rm(path.join(packageRoot, relative));
+        }
+        await writeExecutable(
+          path.join(packageRoot, "bin", "codexhost"),
+          '#!/bin/sh\necho "early-launcher-reached" >&2\nexit 23\n',
+        );
+        const launch = spawnCodexhost(cellarNode, userBin, []);
+        expect(launch.status).toBe(23);
+        expect(launch.stderr).toContain("early-launcher-reached");
         const result = spawnCodexhost(cellarNode, userBin, ["console"]);
         expect(result.status).toBe(0);
         const reported = JSON.parse(result.stdout);

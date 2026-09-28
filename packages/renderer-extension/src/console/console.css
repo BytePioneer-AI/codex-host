@@ -261,13 +261,6 @@
   white-space: nowrap;
 }
 
-.console-subtitle {
-  margin-bottom: 6px;
-  color: var(--settings-muted);
-  font-size: 12px;
-  font-weight: 600;
-}
-
 .console-actions {
   display: flex;
   flex-wrap: wrap;

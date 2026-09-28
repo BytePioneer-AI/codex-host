@@ -25,7 +25,8 @@ function hostRequiredView(
     "primary",
   );
   const running = state.overview?.inspect?.runtime.running ?? false;
-  start.disabled = running || !state.overview?.launchAvailable;
+  const starting = state.overview?.summary.state === "starting";
+  start.disabled = starting || running || !state.overview?.launchAvailable;
   return h(
     document,
     "div",
@@ -40,15 +41,23 @@ function hostRequiredView(
       document,
       "div",
       { className: "console-empty__title" },
-      running ? messages.hostUnreachableTitle : messages.hostRequiredTitle,
+      starting
+        ? messages.startingTitle
+        : running
+          ? messages.hostUnreachableTitle
+          : messages.hostRequiredTitle,
     ),
     h(
       document,
       "p",
       { className: "console-empty__body" },
-      running ? messages.hostUnreachableBody : messages.hostRequiredBody,
+      starting
+        ? messages.startingDetail
+        : running
+          ? messages.hostUnreachableBody
+          : messages.hostRequiredBody,
     ),
-    running ? null : start,
+    running || starting ? null : start,
   );
 }
 
@@ -69,7 +78,7 @@ export function hostPage(
     icon: definition.icon,
     mount(context: RendererSettingsPageMountContext) {
       const document = context.content.ownerDocument;
-      let mountedFor: boolean | null = null;
+      let mountedFor: string | null = null;
       let cleanup: (() => void) | undefined;
       const unmount = (): void => {
         try {
@@ -81,13 +90,21 @@ export function hostPage(
       };
       const sync = (): void => {
         const available = state.overview?.hostAvailable ?? false;
-        if (available === mountedFor) return;
-        mountedFor = available;
+        const starting = state.overview?.summary.state === "starting";
+        const mode = available
+          ? "available"
+          : starting
+            ? "starting"
+            : state.overview?.inspect?.runtime.running
+              ? "unreachable"
+              : "offline";
+        if (mode === mountedFor) return;
+        mountedFor = mode;
         unmount();
         context.content.replaceChildren();
         if (available) {
           cleanup = definition.mount(context) ?? undefined;
-        } else if (offline) {
+        } else if (offline && !starting) {
           cleanup = offline.mount(context) ?? undefined;
         } else {
           context.content.append(

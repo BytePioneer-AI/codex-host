@@ -121,12 +121,9 @@ fn parse_console_url(stdout: &[u8]) -> Option<String> {
         .filter(|url| crate::validate_loopback_root_url(url).is_ok())
 }
 
-fn console_url(command: &ConsoleCommand, reason: Option<&str>) -> Result<String, Box<dyn Error>> {
+fn console_url(command: &ConsoleCommand) -> Result<String, Box<dyn Error>> {
     let mut process = node_command(command)?;
     process.arg("open").arg("--no-browser");
-    if let Some(reason) = reason {
-        process.arg("--reason").arg(reason);
-    }
     let output = process.stderr(Stdio::inherit()).output()?;
     if !output.status.success() {
         return Err("codexhost console could not be started".into());
@@ -136,7 +133,7 @@ fn console_url(command: &ConsoleCommand, reason: Option<&str>) -> Result<String,
 
 /// Shows the console for this launch's outcome. A terminal launch prints the
 /// address. An installer launch already opened the console before starting
-/// Codex Desktop; it opens the diagnostics again only for a problem (`reason`),
+/// Codex Desktop; it opens the overview again only for a problem (`reason`),
 /// and after a successful start watches for a persistent Codex UI integration
 /// failure.
 pub fn show_for_launch(reason: Option<&str>) -> bool {
@@ -223,7 +220,7 @@ fn show(reason: Option<&str>) -> bool {
     if let Some(ensure) = ensure {
         let _ = ensure.join();
     }
-    let url = match console_url(&command, reason) {
+    let url = match console_url(&command) {
         Ok(url) => url,
         Err(error) => {
             eprintln!("codexhost launcher: {error}");
@@ -241,12 +238,9 @@ fn show(reason: Option<&str>) -> bool {
 
 /// Runs `console-server open`, which ensures one console instance on the
 /// configured port and opens it in the default browser.
-pub fn open(command: &ConsoleCommand, reason: Option<&str>) -> Result<bool, Box<dyn Error>> {
+pub fn open(command: &ConsoleCommand) -> Result<bool, Box<dyn Error>> {
     let mut process = node_command(command)?;
     process.arg("open");
-    if let Some(reason) = reason {
-        process.arg("--reason").arg(reason);
-    }
     Ok(process.status()?.success())
 }
 

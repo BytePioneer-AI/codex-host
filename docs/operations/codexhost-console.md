@@ -17,6 +17,10 @@
 | 安装包（macOS 打开应用、Windows 开始菜单） | 先启动控制台并在默认浏览器打开总览，再启动 Codex Desktop；启动失败或注入持续失败时另外打开总览查看原因 |
 | 终端（npm 的 `codexhost`、`codexhost launch`、`npm start`） | 控制台在后台与 Codex Desktop 一同启动，启动结束时在终端输出 `codexhost console: http://127.0.0.1:26339/` |
 
+控制台在校验 Shim、Host Runtime、Desktop Controller 和 Renderer 等 Codex 启动资源之前启动；这些文件缺失时，仍能提供故障恢复入口。npm 包装脚本将这部分校验交给 Launcher，不提前拦截。Launcher、Node 和控制台自身文件仍须可用，端口占用等控制台自身故障不保证能打开网页；命令参数解析失败也不进入启动流程。
+
+Launcher 在打开控制台之前先写入 `starting` 启动记录（`finishedAtMs: null`）。只要该记录对应的 Launcher 仍存活，总览和侧边栏显示“正在启动”，不再提示重复启动；启动完成或失败后由同一条记录更新结果。超时沿用 Launcher 原有的超时与失败处理，不在网页额外设置倒计时。如果 Launcher 异常退出而留下未完成记录，控制台显示启动失败，不会永久停在“正在启动”。
+
 设置 `CODEXHOST_CONSOLE=0` 可关闭以上行为。其他打开方式：
 
 | 方式 | 说明 |

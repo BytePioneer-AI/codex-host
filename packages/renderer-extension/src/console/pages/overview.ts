@@ -17,6 +17,14 @@ function summaryView(
   messages: ConsoleMessages,
 ): { tone: Tone; icon: RendererSettingsIconName; title: string; detail: string } {
   const { state, detail } = overview.summary;
+  if (state === "starting") {
+    return {
+      tone: "info",
+      icon: "refresh",
+      title: messages.startingTitle,
+      detail: messages.startingDetail,
+    };
+  }
   if (state === "running") {
     return { tone: "ok", icon: "check", title: messages.running, detail: messages.runningDetail };
   }
@@ -56,7 +64,11 @@ export function createOverviewPage(
         const summary = summaryView(overview, messages);
         const actions = h(document, "div", { className: "console-actions" });
         const summaryState = overview.summary.state;
-        if (summaryState !== "running" && summaryState !== "integration-unavailable") {
+        if (
+          summaryState !== "starting" &&
+          summaryState !== "running" &&
+          summaryState !== "integration-unavailable"
+        ) {
           const start = button(
             document,
             [

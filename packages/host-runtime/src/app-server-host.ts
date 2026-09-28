@@ -2336,7 +2336,11 @@ export class AppServerHost {
       const exists = await this.#requestOfficial("project/read", {
         projectId: update.projectId,
       }).then(
-        (response) => !isRecord(response.error) && isRecord(response.result),
+        (response) =>
+          !isRecord(response.error) &&
+          isRecord(response.result) &&
+          isRecord(response.result.project) &&
+          response.result.project.id === update.projectId,
         () => false,
       );
       if (!exists) {
@@ -2373,19 +2377,32 @@ export class AppServerHost {
     const records = await this.#repository.list();
     for (const record of records) {
       if (record.projectId !== projectId) continue;
-      const updated = await this.#repository.updateMetadata(record.hostThreadId, {
-        projectId: null,
-      });
+      // A concurrent Desktop update may have reassigned the Thread since the listing.
+      const updated = await this.#repository.updateMetadata(
+        record.hostThreadId,
+        { projectId: null },
+        { ifProjectId: projectId },
+      );
+      if (updated.projectId !== undefined) continue;
       const loaded = this.#externalRuntime.get(updated.hostThreadId);
-      if (loaded) {
-        loaded.record = updated;
-        loaded.thread = { ...loaded.thread, projectId: null };
-      }
+      if (loaded) this.#syncLoadedExternalThread(loaded, updated);
       await this.#writer.json({
         method: "thread/project/updated",
         params: { threadId: updated.hostThreadId, projectId: null },
       });
     }
+  }
+
+  #syncLoadedExternalThread(thread: ExternalThread, record: StoredThreadRecordV1): JsonObject {
+    const projected = externalThreadValue({
+      record,
+      turns: [],
+      sessionId: thread.sessionId,
+      running: thread.running,
+    });
+    thread.record = record;
+    thread.thread = { ...thread.thread, ...projected, turns: thread.thread.turns ?? [] };
+    return projected;
   }
 
   async #persistExternalThreadRecord(
@@ -2419,20 +2436,9 @@ export class AppServerHost {
       await this.#writer.json(rpcError(request, -32081, failureMessage));
       return null;
     }
-    const projected = externalThreadValue({
-      record,
-      turns: [],
-      sessionId,
-      ...(location.thread ? { running: location.thread.running } : { loaded: false }),
-    });
-    if (location.thread) {
-      location.thread.record = record;
-      location.thread.thread = {
-        ...location.thread.thread,
-        ...projected,
-        turns: location.thread.thread.turns ?? [],
-      };
-    }
+    const projected = location.thread
+      ? this.#syncLoadedExternalThread(location.thread, record)
+      : externalThreadValue({ record, turns: [], sessionId, loaded: false });
     return { record, thread: projected };
   }
 

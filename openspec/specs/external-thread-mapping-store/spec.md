@@ -135,7 +135,7 @@ Mapping Store SHALL provide an idempotent archive-state update for an existing E
 
 
 ### Requirement: Mapping Store patches Desktop organization metadata atomically
-Mapping Store SHALL provide one patch update for an External Host Thread's optional project assignment, Git metadata (`branch`, `originUrl`, `sha`), and Daybreak choice. Omitted fields SHALL remain unchanged and a cleared field SHALL be removed from the record. A changed patch SHALL use the same per-Thread serialization, strict validation, backup, atomic replacement, Revision, and in-memory index commit rules as other record updates. Records written before these fields existed SHALL remain valid.
+Mapping Store SHALL provide one patch update for an External Host Thread's optional project assignment, Git metadata (`branch`, `originUrl`, `sha`), and Daybreak choice. Omitted fields SHALL remain unchanged and a cleared field SHALL be removed from the record. A changed patch SHALL use the same per-Thread serialization, strict validation, backup, atomic replacement, Revision, and in-memory index commit rules as other record updates. Records written before these fields existed SHALL remain valid. A Git origin URL MUST be stored without embedded credentials: the password and any non-ssh user name SHALL be removed before the write. The patch MAY be conditioned on the currently stored project assignment, in which case a mismatch SHALL leave the record unchanged.
 
 #### Scenario: Metadata patch is applied and restarted
 - **WHEN** Host assigns a project, sets Git metadata, and later clears one Git field

@@ -72,6 +72,7 @@ export interface ExternalThreadStore {
   updateMetadata(
     hostThreadId: HostThreadId,
     patch: ThreadMetadataPatch,
+    options?: { ifProjectId?: string },
   ): Promise<StoredThreadRecordV1>;
   removeProvisional(hostThreadId: HostThreadId): Promise<void>;
   removeThread(hostThreadId: HostThreadId): Promise<void>;
@@ -198,8 +199,9 @@ export class ExternalThreadRepository {
   updateMetadata(
     hostThreadId: HostThreadId,
     patch: ThreadMetadataPatch,
+    options?: { ifProjectId?: string },
   ): Promise<StoredThreadRecordV1> {
-    return this.store.updateMetadata(hostThreadId, patch);
+    return this.store.updateMetadata(hostThreadId, patch, options);
   }
 
   removeProvisional(hostThreadId: HostThreadId): Promise<void> {

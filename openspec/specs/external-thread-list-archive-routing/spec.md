@@ -161,12 +161,13 @@ Host Runtime SHALL handle `thread/metadata/update` for a persisted External Thre
 #### Scenario: Official Codex deletes a project
 - **WHEN** official Codex emits `project/changed` with `changeType=deleted`
 - **THEN** Host SHALL forward the notification unchanged, clear every External assignment to that project, and emit `thread/project/updated` with `projectId=null` for each cleared Thread
+- **AND** a Thread reassigned to another project before its clear is written SHALL keep the new assignment
 
 ### Requirement: Unsupported External metadata changes fail closed
 A current or future management request that references a persisted External Thread MUST be handled by a supported Host operation or fail explicitly. It MUST NOT fall through to official Codex merely because Host does not support that metadata field.
 
 #### Scenario: Unsupported metadata field is requested
-- **WHEN** `thread/metadata/update` references an External Thread and includes a field outside the current Codex metadata contract, such as the retired `isPinned`
+- **WHEN** `thread/metadata/update` references an External Thread and includes a field outside the current Codex metadata contract, such as the retired `isPinned` or an unknown key inside `gitInfo`
 - **THEN** Host SHALL return explicit unsupported naming each such field
 - **AND** it SHALL apply none of the request's fields and SHALL not forward the External Thread ID to official Codex
 

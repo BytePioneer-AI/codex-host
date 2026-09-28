@@ -40,7 +40,9 @@ function answerOfficial(fixture: Fixture, projects: ReadonlySet<string>): JsonLi
         request.method === "project/read"
           ? projects.has(params.projectId as string)
             ? { id: request.id, result: { project: { id: params.projectId } } }
-            : { id: request.id, error: { code: -32602, message: "project not found" } }
+            : params.projectId === "mismatched"
+              ? { id: request.id, result: { project: { id: "project-a" } } }
+              : { id: request.id, error: { code: -32602, message: "project not found" } }
           : { id: request.id, result: { data: [], nextCursor: null, backwardsCursor: null } };
       fixture.official.stdout.write(`${JSON.stringify(response)}\n`);
     }
@@ -176,6 +178,17 @@ describe("External Thread metadata updates", () => {
     await expect(
       updateMetadata(fixture, 31, { threadId, projectId: "missing", daybreakEnabled: true }),
     ).resolves.toMatchObject({ error: { code: -32602, message: "Project is unavailable" } });
+    await expect(
+      updateMetadata(fixture, 34, { threadId, projectId: "mismatched" }),
+    ).resolves.toMatchObject({ error: { code: -32602, message: "Project is unavailable" } });
+    await expect(
+      updateMetadata(fixture, 35, { threadId, gitInfo: { branch: "main", futureField: "x" } }),
+    ).resolves.toMatchObject({
+      error: {
+        code: -32078,
+        message: "External Thread metadata fields are unsupported: gitInfo.futureField",
+      },
+    });
     await expect(
       updateMetadata(fixture, 32, { threadId, gitInfo: { branch: "" } }),
     ).resolves.toMatchObject({ error: { code: -32602 } });

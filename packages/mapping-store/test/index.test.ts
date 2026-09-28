@@ -744,6 +744,42 @@ describe("mapping-store package", () => {
     await second.close();
   });
 
+  it("never persists credentials embedded in a Git origin URL", async () => {
+    const store = new MappingStore({ directory: await temporaryStoreDirectory() });
+    await store.initialize();
+    await createReady(store);
+    const origin = async (originUrl: string) =>
+      (await store.updateMetadata(threadId, { gitInfo: { originUrl } })).gitInfo?.originUrl;
+    await expect(origin("https://ghp_secret@github.com/o/r.git")).resolves.toBe(
+      "https://github.com/o/r.git",
+    );
+    await expect(origin("https://user:pass@example.com/r.git")).resolves.toBe(
+      "https://example.com/r.git",
+    );
+    await expect(origin("ssh://git@github.com/o/r.git")).resolves.toBe(
+      "ssh://git@github.com/o/r.git",
+    );
+    await expect(origin("git@github.com:o/r.git")).resolves.toBe("git@github.com:o/r.git");
+    await store.close();
+  });
+
+  it("applies a conditional project clear only while the assignment still matches", async () => {
+    const store = new MappingStore({ directory: await temporaryStoreDirectory() });
+    await store.initialize();
+    await createReady(store);
+    await store.updateMetadata(threadId, { projectId: "project-b" });
+    await expect(
+      store.updateMetadata(threadId, { projectId: null }, { ifProjectId: "project-a" }),
+    ).resolves.toMatchObject({ projectId: "project-b" });
+    const cleared = await store.updateMetadata(
+      threadId,
+      { projectId: null },
+      { ifProjectId: "project-b" },
+    );
+    expect(cleared).not.toHaveProperty("projectId");
+    await store.close();
+  });
+
   it("keeps prior archive state and Revision when archive replacement fails", async () => {
     const directory = await temporaryStoreDirectory();
     let fail = false;

@@ -194,6 +194,11 @@ describe("Codex Thread list and management protocol boundary", () => {
     expect(() => decode({ threadId: "t", projectId: "  " })).toThrow("non-empty");
     expect(() => decode({ threadId: "t", gitInfo: { branch: "" } })).toThrow("non-empty");
     expect(() => decode({ threadId: "t", daybreakEnabled: "yes" })).toThrow("boolean");
+    expect(decode({ threadId: "t", gitInfo: { branch: "main", futureField: "x" } })).toEqual({
+      threadId: "t",
+      gitInfo: { branch: "main" },
+      unsupportedFields: ["gitInfo.futureField"],
+    });
   });
 
   it("filters thread/list by project while keeping External aggregation", () => {

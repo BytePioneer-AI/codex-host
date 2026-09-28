@@ -352,6 +352,7 @@ const THREAD_METADATA_UPDATE_FIELDS = new Set([
   "daybreakEnabled",
   "gitInfo",
 ]);
+const GIT_INFO_FIELDS = new Set(["branch", "originUrl", "sha"]);
 
 function nonBlankTextOrNull(value: unknown, name: string): string | null {
   if (value === null) return null;
@@ -400,6 +401,10 @@ export function decodeThreadMetadataUpdateRequest(
       }
     }
     decoded.gitInfo = gitInfo;
+    for (const name of Object.keys(params.gitInfo)) {
+      if (!GIT_INFO_FIELDS.has(name)) decoded.unsupportedFields.push(`gitInfo.${name}`);
+    }
+    decoded.unsupportedFields.sort();
   }
   return decoded;
 }

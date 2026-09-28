@@ -94,6 +94,22 @@ function sameJson(left: unknown, right: unknown): boolean {
   return JSON.stringify(left) === JSON.stringify(right);
 }
 
+/** Records must not persist credentials, such as a token embedded in a Git remote URL. */
+function withoutUrlCredentials(value: string): string {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    return value; // scp-style remotes such as git@host:path carry no secret
+  }
+  // An ssh user name (usually `git`) identifies the account, not a secret.
+  const keepUser = url.protocol === "ssh:" || url.protocol === "git+ssh:";
+  if (!url.password && (keepUser || !url.username)) return value;
+  url.password = "";
+  if (!keepUser) url.username = "";
+  return url.toString();
+}
+
 function applyThreadMetadataPatch(
   current: StoredThreadRecordV1,
   patch: ThreadMetadataPatch,
@@ -109,7 +125,7 @@ function applyThreadMetadataPatch(
     for (const name of ["branch", "originUrl", "sha"] as const) {
       const value =
         patch.gitInfo[name] === undefined ? current.gitInfo?.[name] : patch.gitInfo[name];
-      if (value) gitInfo[name] = value;
+      if (value) gitInfo[name] = name === "originUrl" ? withoutUrlCredentials(value) : value;
     }
     if (Object.keys(gitInfo).length === 0) delete next.gitInfo;
     else next.gitInfo = gitInfo;
@@ -693,11 +709,19 @@ export class MappingStore {
     );
   }
 
+  /**
+   * Patch Desktop metadata. With `ifProjectId`, the patch applies only while the
+   * stored assignment still equals it; otherwise the current record is returned.
+   */
   async updateMetadata(
     hostThreadId: HostThreadId,
     patch: ThreadMetadataPatch,
+    options: { ifProjectId?: string } = {},
   ): Promise<StoredThreadRecordV1> {
     return this.#update(hostThreadId, (current) => {
+      if (options.ifProjectId !== undefined && current.projectId !== options.ifProjectId) {
+        return null;
+      }
       const next = applyThreadMetadataPatch(current, patch);
       return sameJson(next, current) ? null : next;
     });

@@ -83,9 +83,11 @@ export const DEFAULT_RENDERER_SETTINGS_PAGE_IDS = [
 export type DefaultRendererSettingsPageId = (typeof DEFAULT_RENDERER_SETTINGS_PAGE_IDS)[number];
 
 export interface RendererUpdateClient {
-  checkUpdate(): Promise<UpdateCheckResult>;
+  checkUpdate(): Promise<UpdateCheckResult | null>;
   startUpdate(): Promise<UpdateStartResult>;
   readUpdateStatus(): Promise<UpdateStatusResult>;
+  /** Opens the local codexhost console; absent on Hosts that cannot. */
+  openConsole?(): Promise<unknown>;
 }
 
 function panelIconName(view: string): RendererSettingsIconName {
@@ -157,7 +159,46 @@ function formatUpdateBytes(value: number): string {
   return `${scaled.toFixed(scaled >= 10 ? 0 : 1)} ${unit}`;
 }
 
-function aboutPage(messages: RendererSettingsMessages): RendererSettingsPageDefinition {
+function consoleSection(
+  document: Document,
+  messages: RendererSettingsMessages,
+  client: RendererUpdateClient | null,
+): HTMLElement | null {
+  if (!client?.openConsole) return null;
+  const openConsole = client.openConsole.bind(client);
+  const section = document.createElement("div");
+  section.className = "settings-about-repository";
+  const copy = document.createElement("p");
+  copy.textContent = messages.aboutConsole;
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "settings-command-button settings-command-button--secondary";
+  button.textContent = messages.aboutConsoleOpen;
+  const status = document.createElement("p");
+  status.setAttribute("role", "status");
+  status.hidden = true;
+  button.addEventListener("click", () => {
+    button.disabled = true;
+    button.textContent = messages.aboutConsoleOpening;
+    status.hidden = true;
+    void openConsole()
+      .catch((error: unknown) => {
+        status.textContent = `${messages.aboutConsoleFailed}: ${error instanceof Error ? error.message : String(error)}`;
+        status.hidden = false;
+      })
+      .finally(() => {
+        button.disabled = false;
+        button.textContent = messages.aboutConsoleOpen;
+      });
+  });
+  section.append(copy, button, status);
+  return section;
+}
+
+function aboutPage(
+  messages: RendererSettingsMessages,
+  getClient: () => RendererUpdateClient | null = () => null,
+): RendererSettingsPageDefinition {
   return Object.freeze({
     id: "about",
     label: messages.pageLabels.about,
@@ -204,6 +245,8 @@ function aboutPage(messages: RendererSettingsMessages): RendererSettingsPageDefi
       );
       repositorySection.append(openSource, repository);
       panel.append(product, tagline, introduction, starCallout, repositorySection);
+      const consoleEntry = consoleSection(document, messages, getClient());
+      if (consoleEntry) panel.append(consoleEntry);
       context.content.append(heading, panel);
       return undefined;
     },
@@ -357,12 +400,13 @@ function updatesPage(
 
       // Presentation-only: emphasise the manual path once the automatic one has
       // visibly failed.
-      const setManualFallback = (fallback: boolean): void => {
+      const setManualFallback = (fallback: boolean, manualOnly = false): void => {
         // While automatic update works, manual download is a one-line escape hatch;
         // once it fails, the section returns at full weight.
-        controls.className = !fallback
-          ? "settings-update-controls is-quiet"
-          : "settings-update-controls";
+        controls.className =
+          !fallback && !manualOnly
+            ? "settings-update-controls is-quiet"
+            : "settings-update-controls";
         manualNpmDescription.textContent = windows
           ? messages.updateWindowsNpmDescription
           : fallback
@@ -383,7 +427,20 @@ function updatesPage(
         }
       };
 
+      // Unavailable can follow a rendered check (Retry after an error), so it
+      // restores the metadata and manual controls to their unchecked state.
       const renderUnavailable = (detail: string): void => {
+        currentVersionValue.textContent = "-";
+        latestVersionValue.textContent = "-";
+        latestVersionValue.className = "";
+        installationValue.textContent = "-";
+        manualTitle.hidden = false;
+        manualNpm.hidden = true;
+        manualWindowsInstaller.hidden = true;
+        manualWindowsInstallerLink.href = CODEXHOST_RELEASES_LATEST_URL;
+        releaseLink.hidden = false;
+        releaseLink.href = CODEXHOST_RELEASES_LATEST_URL;
+        controls.className = "settings-update-controls";
         panel.dataset.updateState = "unavailable";
         delete panel.dataset.inline;
         panel.replaceChildren();
@@ -497,7 +554,14 @@ function updatesPage(
         );
       };
 
-      const renderCheck = (result: UpdateCheckResult, client: RendererUpdateClient): void => {
+      const renderCheck = (
+        result: UpdateCheckResult | null,
+        client: RendererUpdateClient,
+      ): void => {
+        if (result === null) {
+          renderUnavailable(messages.runtimeCapabilityNotInstalled);
+          return;
+        }
         currentVersionValue.textContent = `v${result.currentVersion}`;
         latestVersionValue.textContent = result.latestVersion ? `v${result.latestVersion}` : "-";
         latestVersionValue.className = result.updateAvailable
@@ -526,12 +590,14 @@ function updatesPage(
           result.status?.phase === "failed" && result.status.version === result.latestVersion
             ? result.status
             : null;
+        const manualOnly = result.updateAvailable && !result.installationAvailable && !result.error;
         const view = result.error ? "error" : result.updateAvailable ? "available" : "current";
         panel.dataset.updateState = view;
         panel.replaceChildren();
-        setManualFallback(Boolean(result.error) || actionableStatus !== null);
+        setManualFallback(Boolean(result.error) || actionableStatus !== null, manualOnly);
         // Every state gets a status line; a bare button in an empty card reads as unfinished.
-        const inlineUpdate = !result.error && !actionableStatus && result.updateAvailable;
+        const inlineUpdate =
+          !result.error && !actionableStatus && result.updateAvailable && !manualOnly;
         if (inlineUpdate) panel.dataset.inline = "";
         else delete panel.dataset.inline;
         panel.append(
@@ -542,9 +608,11 @@ function updatesPage(
               ? (statusMessage(actionableStatus, messages) ?? messages.updateFailed)
               : result.error
                 ? messages.updateFailed
-                : result.updateAvailable
-                  ? messages.updateAvailable
-                  : messages.updateUpToDate,
+                : manualOnly
+                  ? messages.updateManualRequired
+                  : result.updateAvailable
+                    ? messages.updateAvailable
+                    : messages.updateUpToDate,
           ),
         );
         if (actionableStatus?.error) {
@@ -618,7 +686,7 @@ export function createDefaultRendererSettingsPages(
   getDiagnostics: () => RendererConnectionDiagnostics | null = () => null,
   getAccountClient: () => RendererCodexAccountClient | null = () => null,
   getSessionImportClient: () => RendererSessionImportClient | null = () => null,
-  openImportedThread: RendererImportedThreadOpener = () =>
+  openImportedThread: RendererImportedThreadOpener | null = () =>
     Promise.reject(new Error("Imported Thread navigation is unavailable")),
   getLoadedSessionsClient: () => LoadedSessionsClient | null = () => null,
 ): readonly RendererSettingsPageDefinition[] {
@@ -628,7 +696,7 @@ export function createDefaultRendererSettingsPages(
     createSessionImportSettingsPage(messages, getSessionImportClient, openImportedThread),
     createAppearanceSettingsPage(messages, getLoadedSessionsClient),
     updatesPage(messages, getUpdateClient),
-    aboutPage(messages),
+    aboutPage(messages, getUpdateClient),
   ]);
 }
 

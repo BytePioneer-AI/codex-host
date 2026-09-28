@@ -97,6 +97,7 @@ export interface RendererSettingsMessages {
   readonly sessionImportAction: string;
   readonly sessionImportImporting: string;
   readonly sessionImportImported: string;
+  readonly sessionImportImportedInCodex: string;
   readonly sessionImportOpenFailed: string;
   readonly sessionImportCopyProjectPath: string;
   readonly sessionImportPathCopied: string;
@@ -193,6 +194,9 @@ export interface RendererSettingsMessages {
   readonly connectionGroupMoveToMain: string;
   readonly connectionGroupDragHandle: string;
   readonly connectionGroupReset: string;
+  readonly connectionGroupLoading: string;
+  readonly connectionGroupSaving: string;
+  readonly connectionGroupSyncFailed: string;
   readonly pickerMoreAgentsLabel: string;
   readonly pickerManageLink: string;
   readonly pickerHideUnusedAgentsCta: string;
@@ -210,6 +214,7 @@ export interface RendererSettingsMessages {
   readonly updateLatestVersion: string;
   readonly updateUpToDate: string;
   readonly updateAvailable: string;
+  readonly updateManualRequired: string;
   readonly updateAndRestart: string;
   readonly updateChecking: string;
   readonly updateDownloading: string;
@@ -240,6 +245,10 @@ export interface RendererSettingsMessages {
   readonly aboutOpenSource: string;
   readonly aboutStarCallout: string;
   readonly aboutRepository: string;
+  readonly aboutConsole: string;
+  readonly aboutConsoleOpen: string;
+  readonly aboutConsoleOpening: string;
+  readonly aboutConsoleFailed: string;
   readonly pageLabels: Readonly<Record<DefaultRendererSettingsPageId, string>>;
 }
 
@@ -334,6 +343,7 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   sessionImportAction: "Import and open",
   sessionImportImporting: "Importing...",
   sessionImportImported: "Session imported",
+  sessionImportImportedInCodex: "Session imported. View it in Codex.",
   sessionImportOpenFailed:
     "The Codex sidebar has not shown it yet. Make sure the folder below is added as a project, then try opening it again.",
   sessionImportCopyProjectPath: "Copy project path",
@@ -440,6 +450,10 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   connectionGroupMoveToMain: "Move back to Main",
   connectionGroupDragHandle: "Drag to reorder",
   connectionGroupReset: "Reset order",
+  connectionGroupLoading: "Loading shared Harness order…",
+  connectionGroupSaving: "Saving shared Harness order…",
+  connectionGroupSyncFailed:
+    "Could not sync Harness order. The last confirmed order is shown; check codexhost and retry your change.",
   pickerMoreAgentsLabel: "More agents",
   pickerManageLink: "Manage",
   pickerHideUnusedAgentsCta: "Hide unused agents",
@@ -457,6 +471,7 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   updateLatestVersion: "Latest version",
   updateUpToDate: "You are up to date.",
   updateAvailable: "A new version is available.",
+  updateManualRequired: "A new version is available. Update manually.",
   updateAndRestart: "Update",
   updateChecking: "Checking for updates...",
   updateDownloading: "Downloading update...",
@@ -474,7 +489,7 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   updateRetry: "Retry",
   updateManualNpmDescription: "To update manually, quit codexhost and run this command:",
   updateWindowsNpmDescription:
-    "On Windows, quit codexhost before running this command in a terminal:",
+    "On Windows, quit codexhost and its separate Console before running this command in a terminal:",
   updateWindowsInstallerDescription:
     "To update manually, download and run the installer for this system.",
   updateManualTitle: "Manual update",
@@ -497,6 +512,11 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   aboutOpenSource: "codexhost is an open-source project. The source code is available at:",
   aboutStarCallout: "⭐ If this project helps you, please give us a Star! ⭐",
   aboutRepository: "Open-source repository",
+  aboutConsole:
+    "The codexhost console runs outside Codex Desktop. It shows startup diagnostics and logs, and can update codexhost even when Codex cannot start.",
+  aboutConsoleOpen: "Open console",
+  aboutConsoleOpening: "Opening…",
+  aboutConsoleFailed: "The console could not be opened",
   pageLabels: Object.freeze({
     connections: "Connections",
     appearance: "General",
@@ -595,6 +615,7 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   sessionImportAction: "导入并打开",
   sessionImportImporting: "正在导入……",
   sessionImportImported: "会话已导入",
+  sessionImportImportedInCodex: "导入成功，请在 Codex 中查看。",
   sessionImportOpenFailed: "Codex 侧栏尚未显示该会话。请确认以下文件夹已添加为项目，然后重试打开。",
   sessionImportCopyProjectPath: "复制项目路径",
   sessionImportPathCopied: "已复制",
@@ -694,6 +715,10 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   connectionGroupMoveToMain: "移回常用",
   connectionGroupDragHandle: "拖动排序",
   connectionGroupReset: "恢复默认排列",
+  connectionGroupLoading: "正在读取共享 Harness 排序…",
+  connectionGroupSaving: "正在保存共享 Harness 排序…",
+  connectionGroupSyncFailed:
+    "Harness 排序同步失败，当前显示上次确认的顺序。请确认 codexhost 正常运行后重试修改。",
   pickerMoreAgentsLabel: "更多 Agent",
   pickerManageLink: "管理",
   pickerHideUnusedAgentsCta: "收起不常用的 Agent",
@@ -711,6 +736,7 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   updateLatestVersion: "最新版本",
   updateUpToDate: "当前已是最新版本。",
   updateAvailable: "有新版本可用。",
+  updateManualRequired: "有新版本可用，请手动更新。",
   updateAndRestart: "更新",
   updateChecking: "正在检查更新...",
   updateDownloading: "正在下载更新...",
@@ -727,7 +753,7 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   updateManualNpmDescription:
     "如需手动更新，请在终端运行以下命令。更新完成后，请退出 Codex 并通过 codexhost 重新启动。",
   updateWindowsNpmDescription:
-    "在 Windows 上手动更新前，请先退出 codexhost，再在终端运行以下命令：",
+    "在 Windows 上手动更新前，请先退出 codexhost 及独立控制台，再在终端运行以下命令：",
   updateWindowsInstallerDescription: "如需手动更新，请下载并运行适用于当前系统的安装包。",
   updateManualTitle: "手动更新",
   updateManualFallbackDescription:
@@ -748,6 +774,11 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   aboutOpenSource: "codexhost 是一个开源项目，开源地址：",
   aboutStarCallout: "⭐ 如果这个项目对你有帮助，请给我们一个 Star！⭐",
   aboutRepository: "开源仓库",
+  aboutConsole:
+    "codexhost 控制台独立于 Codex Desktop 运行，可以查看启动诊断和日志；即使 Codex 无法启动，也能在控制台更新 codexhost。",
+  aboutConsoleOpen: "打开控制台",
+  aboutConsoleOpening: "正在打开…",
+  aboutConsoleFailed: "控制台打开失败",
   pageLabels: Object.freeze({
     connections: "连接",
     appearance: "通用",

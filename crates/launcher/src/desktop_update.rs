@@ -36,6 +36,8 @@ pub(crate) fn poll_pending_update(
             if let Some(update) = started.as_mut() {
                 update.abort(&error)?;
             }
+            #[cfg(target_os = "windows")]
+            crate::console::resume_after_update_failure();
             Ok(false)
         }
     }
@@ -67,6 +69,7 @@ pub(crate) fn stop_managed_desktop_for_update(
     installation: &codexhost_platform::DesktopInstallation,
     controller: &mut SupervisedChild,
     options: &crate::ResolvedLaunchOptions,
+    stop_console: impl FnOnce() -> Result<(), Box<dyn Error>>,
     mut still_waiting: impl FnMut() -> io::Result<bool>,
 ) -> Result<(), Box<dyn Error>> {
     use codexhost_platform::{
@@ -113,6 +116,13 @@ pub(crate) fn stop_managed_desktop_for_update(
         return Err("Updater stopped waiting before managed Host exit".into());
     }
     stop_desktop_controller(controller)?;
+    if !still_waiting()? {
+        return Err("Updater stopped waiting before Console shutdown".into());
+    }
+    stop_console()?;
+    if !still_waiting()? {
+        return Err("Updater stopped waiting before final process scan".into());
+    }
     let bundled_node =
         crate::installation_layout::InstalledResources::from_current_executable()?.node;
     let executables = installation_executables(

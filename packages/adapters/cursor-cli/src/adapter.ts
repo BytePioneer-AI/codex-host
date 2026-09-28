@@ -33,7 +33,6 @@ import {
 import {
   harnessIdSchema,
   harnessPermissionModeIdSchema,
-  nativeSessionRefSchema,
   nativeTurnRefSchema,
 } from "@codexhost/shared-contracts";
 import {
@@ -59,10 +58,11 @@ import { CursorTurnOutput, cursorSnapshot } from "./projection.js";
 import { cursorThinking, cursorThinkingState } from "./thinking.js";
 import { CURSOR_COMMAND_CATALOG, cursorCommands, cursorCommandPrompt } from "./slash-commands.js";
 import { CursorInteractions } from "./interactions.js";
+import { cursorExecutionPolicy, cursorNativeSessionRef } from "./session-ref.js";
 import { forkCursorSession, validateCursorFork } from "./fork.js";
 import { cursorForkAvailable, cursorCheckpoint } from "./fork-support.js";
 import { type CursorSubagents, cursorTaskAddress } from "./subagents.js";
-import type { HarnessSubagentCapability } from "@codexhost/harness-adapter";
+import type { HarnessExecutionPolicy, HarnessSubagentCapability } from "@codexhost/harness-adapter";
 
 export interface CursorAdapterOptions {
   environment?: NodeJS.ProcessEnv;
@@ -104,7 +104,12 @@ export class CursorAdapter implements HarnessAdapter {
         if (active) return { ok: true, value: active };
         const options = session?.transport.options ?? this.transportOptions(cwd);
         const before = readCursorNativeTurns(parent.nativeSessionId, cwd, options.environment);
-        replay = new CursorTransport({ ...options, delegation: false, loadModelCatalog: false });
+        replay = new CursorTransport({
+          ...options,
+          delegation: false,
+          executionPolicy: "default",
+          loadModelCatalog: false,
+        });
         await replay.open(parent.nativeSessionId);
         const after = readCursorNativeTurns(parent.nativeSessionId, cwd, options.environment);
         if (JSON.stringify(before) !== JSON.stringify(after))
@@ -192,14 +197,22 @@ export class CursorAdapter implements HarnessAdapter {
     input: Exclude<OpenSessionInput, ForkSessionInput | RollbackLastTurnSessionInput>,
     prepared?: CursorTransport,
   ): Promise<HarnessResult<HarnessSession>> {
-    if (input.kind === "create" && input.executionPolicy === "unattended-full-access")
-      return rejected(
-        "unsupported",
-        "Cursor ACP cannot confirm unattended full access under native team policy",
-      );
     if (input.kind === "resume" && input.nativeRef.harnessId !== this.harnessId)
       return rejected("invalidRequest", "Session belongs to another Harness");
-    const options = { ...this.transportOptions(input.cwd, input.environment), delegation: true };
+    let executionPolicy: HarnessExecutionPolicy;
+    try {
+      executionPolicy =
+        input.kind === "create"
+          ? (input.executionPolicy ?? "default")
+          : cursorExecutionPolicy(input.nativeRef);
+    } catch {
+      return rejected("invalidRequest", "Invalid Cursor Native Session locator");
+    }
+    const options = {
+      ...this.transportOptions(input.cwd, input.environment),
+      delegation: true,
+      executionPolicy,
+    };
     const transport = prepared ?? new CursorTransport(options);
     try {
       const before =
@@ -278,10 +291,12 @@ export class CursorAdapter implements HarnessAdapter {
     const signal = controller.signal;
     if (!cursorForkAvailable())
       return rejected("unsupported", "Cursor Fork requires macOS/Linux with /usr/bin/script");
+    let executionPolicy: HarnessExecutionPolicy;
     try {
       if (input.kind === "fork") validateCursorFork(input.sourceRef, input.checkpoint);
       else if (input.sourceRef.harnessId !== this.harnessId || input.sourceRef.formatVersion !== 1)
         return rejected("invalidRequest", "Invalid Cursor rollback source");
+      executionPolicy = cursorExecutionPolicy(input.sourceRef);
     } catch {
       return rejected("invalidRequest", "Invalid Cursor fork checkpoint");
     }
@@ -327,7 +342,7 @@ export class CursorAdapter implements HarnessAdapter {
           ...new Set([...Object.keys(sourceEnvironment), ...Object.keys(options.environment)]),
         ].every((key) => sourceEnvironment[key] === options.environment[key]);
       transport = new CursorTransport(
-        { ...options, delegation: true },
+        { ...options, delegation: true, executionPolicy },
         sameEnvironment ? source?.info.nativeModels : undefined,
       );
       // Authentication needs no target ID; overlap it with the native CLI transaction.
@@ -367,11 +382,7 @@ export class CursorAdapter implements HarnessAdapter {
           kind: "resume",
           cwd: input.cwd,
           environment: options.environment,
-          nativeRef: nativeSessionRefSchema.parse({
-            harnessId: this.harnessId,
-            nativeSessionId: derived.sessionId,
-            formatVersion: 1,
-          }),
+          nativeRef: cursorNativeSessionRef(derived.sessionId, executionPolicy),
           ...(model ? { model } : {}),
           ...(thinking ? { thinkingOptionId: thinking } : {}),
           ...(mode ? { permissionModeId: mode } : {}),
@@ -445,9 +456,11 @@ export class CursorSession implements HarnessSession {
   readonly initialState: HarnessSessionState;
   readonly #channel = new HarnessOutputChannel<HarnessOutput>();
   readonly outputs = this.#channel.outputs;
-  readonly #interactions = new CursorInteractions((output) => this.#channel.emit(output));
+  readonly #interactions: CursorInteractions;
+  readonly #executionPolicy: HarnessExecutionPolicy;
   readonly #submitted = new Set<string>();
   #active: { command: TurnStartCommand; cancelled: boolean; task: Promise<void> } | undefined;
+  #unattendedApproval = false;
   #configuring = false;
   #closed = false;
   #fresh: boolean;
@@ -477,12 +490,15 @@ export class CursorSession implements HarnessSession {
     this.info = structuredClone(info);
     this.#fresh = created;
     this.#snapshot = loadedSnapshot;
+    this.#executionPolicy = transport.options.executionPolicy ?? "default";
+    this.#interactions = new CursorInteractions(
+      (output) => this.#channel.emit(output),
+      this.#executionPolicy === "unattended-full-access"
+        ? () => this.#refuseUnattendedApproval()
+        : undefined,
+    );
     this.initialState = {
-      nativeRef: nativeSessionRefSchema.parse({
-        harnessId: "cursor-cli",
-        nativeSessionId: transport.sessionId,
-        formatVersion: 1,
-      }),
+      nativeRef: cursorNativeSessionRef(transport.sessionId, this.#executionPolicy),
       effectiveModel: cursorConfiguredModelRef(cursorModels(info).current, info.configOptions),
       ...cursorThinkingState(info),
       effectivePermissionModeId: harnessPermissionModeIdSchema.parse(
@@ -499,6 +515,11 @@ export class CursorSession implements HarnessSession {
       this.transport.options.environment,
       allowMissing,
     );
+  }
+  /** Bound to unattended full access only; Cursor itself keeps enforcing its team policy. */
+  #refuseUnattendedApproval(): Promise<void> {
+    this.#unattendedApproval = true;
+    return this.transport.cancel();
   }
   async readSnapshot(): Promise<HarnessResult<HostThreadSnapshot>> {
     if (this.#closed) return rejected("invalidState", "Cursor session is closed");
@@ -520,6 +541,7 @@ export class CursorSession implements HarnessSession {
         replay = new CursorTransport({
           ...this.transport.options,
           delegation: false,
+          executionPolicy: "default",
           loadModelCatalog: false,
         });
         await replay.open(this.transport.sessionId);
@@ -678,6 +700,7 @@ export class CursorSession implements HarnessSession {
       before.length,
     );
     this.#subagentOutput = output.subagents;
+    this.#unattendedApproval = false;
     this.#channel.emit({ kind: "event", event: { type: "turn.started", turnId: command.turnId } });
     let outcome: TurnOutcome = {
       status: "failed",
@@ -719,6 +742,18 @@ export class CursorSession implements HarnessSession {
         ? { status: "cancelled" }
         : { status: "failed", error: cursorError(error) };
     }
+    // A native approval request in unattended full access terminates the Turn as an explicit
+    // native failure; it is never answered with an approval the Host did not grant. An explicit
+    // user cancel keeps its terminal state, including the Adapter's own cancel that releases it.
+    if (!this.#active?.cancelled && this.#unattendedApproval)
+      outcome = {
+        status: "failed",
+        error: {
+          code: "nativeFailure",
+          message: "Cursor requested approval during unattended full access",
+          retryable: false,
+        },
+      };
     try {
       const after = this.#native(this.#fresh);
       const added = after.filter((turn) => !before.some((old) => old.id === turn.id));

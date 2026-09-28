@@ -52,8 +52,8 @@ describe("Renderer contract audit inspectors", () => {
   it("reports inactive Settings, Sidebar, and Fork surfaces with zero counts", () => {
     const root = { querySelectorAll: () => list([]) } as unknown as Document;
     expect(inspectRendererSettingsContract(root)).toEqual({
-      headerCount: 0,
-      visibleHeaderCount: 0,
+      railCount: 0,
+      visibleRailCount: 0,
       insertionPointCount: 0,
     });
     expect(inspectRendererSidebarContract(root)).toEqual({

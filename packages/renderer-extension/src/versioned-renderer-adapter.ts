@@ -1,3 +1,5 @@
+import { startAgentGroupSync } from "./agent-group-sync.js";
+import { getSharedAgentGroupPreferenceStore } from "./agent-group-preference.js";
 import {
   committedReactAncestors,
   type RendererHostRoute,
@@ -919,6 +921,11 @@ export function installCurrentRendererAdapter(): {
   const usageSubscription = createThreadUsageSubscriptionRelay();
   const idleReleaseSync = installIdleReleasePreferenceSync(window);
   const clients = createRendererHostClients(() => window.__codexhostHostRoutingV1);
+  const stopGroupSync = startAgentGroupSync(
+    getSharedAgentGroupPreferenceStore(),
+    () => (disposed ? null : clients.forHost("local")),
+    { migrateLegacy: true },
+  );
   const currentRequestRoute = (): RendererHostRoute | null => {
     const route = disposed ? null : (window.__codexhostHostRoutingV1?.forComposer() ?? null);
     usageSubscription.connect(clients.forRoute(route));
@@ -935,6 +942,15 @@ export function installCurrentRendererAdapter(): {
     if (!client) throw new Error("Renderer Model request manager is unavailable");
     return client;
   };
+  // The Settings page can open on native pages without a Composer. Host-level
+  // settings requests keep the Composer's Host when there is one and otherwise
+  // fall back to the local Host instead of failing.
+  const settingsModelClient = (): RendererModelClient => {
+    const client =
+      clients.forRoute(currentRequestRoute()) ?? (disposed ? null : clients.forHost("local"));
+    if (!client) throw new Error("Renderer Model request manager is unavailable");
+    return client;
+  };
   const modelControl: RendererModelClient = Object.freeze({
     currentHostId: () => {
       currentRequestRoute();
@@ -942,7 +958,7 @@ export function installCurrentRendererAdapter(): {
     },
     clientForHost: (hostId: string) => (disposed ? null : clients.forHost(hostId)),
     listHarnessPlugins: async () => {
-      const client = currentModelClient();
+      const client = settingsModelClient();
       if (!client.listHarnessPlugins) throw new Error("Harness plugin directory is unavailable");
       return client.listHarnessPlugins();
     },
@@ -968,18 +984,24 @@ export function installCurrentRendererAdapter(): {
       currentModelClient().selectThreadThinking(input),
     selectThreadPermissionMode: (input: ThreadPermissionModeSelectParams) =>
       currentModelClient().selectThreadPermissionMode(input),
-    checkUpdate: () => currentModelClient().checkUpdate(),
-    startUpdate: () => currentModelClient().startUpdate(),
-    readUpdateStatus: () => currentModelClient().readUpdateStatus(),
+    checkUpdate: () => settingsModelClient().checkUpdate(),
+    startUpdate: () => settingsModelClient().startUpdate(),
+    readUpdateStatus: () => settingsModelClient().readUpdateStatus(),
+    // The console lives on this machine, so it is always opened through the local Host.
+    openConsole: async () => {
+      const client = disposed ? null : clients.forHost("local");
+      if (!client?.openConsole) throw new Error("The codexhost console is unavailable");
+      return client.openConsole();
+    },
     inspectCodexAccountUsage: (
       input: Parameters<NonNullable<RendererModelClient["inspectCodexAccountUsage"]>>[0],
     ) => {
-      const client = currentModelClient();
+      const client = settingsModelClient();
       if (!client.inspectCodexAccountUsage) throw new Error("Codex Account Usage is unavailable");
       return client.inspectCodexAccountUsage(input);
     },
     listHarnessAccountSources: () => {
-      const client = currentModelClient();
+      const client = settingsModelClient();
       if (!client.listHarnessAccountSources) {
         throw new Error("Harness account source discovery is unavailable");
       }
@@ -988,7 +1010,7 @@ export function installCurrentRendererAdapter(): {
     inspectHarnessAccount: (
       input: Parameters<NonNullable<RendererModelClient["inspectHarnessAccount"]>>[0],
     ) => {
-      const client = currentModelClient();
+      const client = settingsModelClient();
       if (!client.inspectHarnessAccount) {
         throw new Error("Harness account inspection is unavailable");
       }
@@ -997,7 +1019,7 @@ export function installCurrentRendererAdapter(): {
     listHarnessAccounts: (
       input?: Parameters<NonNullable<RendererModelClient["listHarnessAccounts"]>>[0],
     ) => {
-      const client = currentModelClient();
+      const client = settingsModelClient();
       if (!client.listHarnessAccounts) throw new Error("Harness account inspection is unavailable");
       return client.listHarnessAccounts(input);
     },
@@ -1005,19 +1027,19 @@ export function installCurrentRendererAdapter(): {
       request: Parameters<NonNullable<RendererModelClient["credentialImports"]>>[0],
       targetHarnessId?: string,
     ) => {
-      const client = currentModelClient();
+      const client = settingsModelClient();
       if (!client.credentialImports) throw new Error("Credential imports are unavailable");
       return client.credentialImports(request, targetHarnessId);
     },
-    listCodexAccounts: () => currentModelClient().listCodexAccounts(),
+    listCodexAccounts: () => settingsModelClient().listCodexAccounts(),
     refreshCodexAccounts: () => {
-      const client = currentModelClient();
+      const client = settingsModelClient();
       return client.refreshCodexAccounts?.() ?? client.listCodexAccounts();
     },
     subscribeCodexAccounts: (
       listener: Parameters<NonNullable<RendererModelClient["subscribeCodexAccounts"]>>[0],
     ) => {
-      const client = currentModelClient();
+      const client = settingsModelClient();
       if (!client.subscribeCodexAccounts) throw new Error("Codex Account updates are unavailable");
       return client.subscribeCodexAccounts(listener);
     },
@@ -1085,6 +1107,7 @@ export function installCurrentRendererAdapter(): {
       const cleanups = [
         ...[...selectedPolicies.values()].map((policy) => () => policy.select(null)),
         () => forkControl.dispose(),
+        () => stopGroupSync(),
         () => clients.dispose(),
         () => usageSubscription.dispose(),
         () => idleReleaseSync.dispose(),

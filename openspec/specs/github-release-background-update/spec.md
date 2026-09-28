@@ -32,9 +32,22 @@ Host SHALL derive the expected installer asset name from the packaged distributi
 ### Requirement: Installed distribution determines update execution
 The update capability SHALL read strict packaged distribution metadata and resolve the current npm, Windows installer, or macOS installer layout before preparation. It SHALL reject a target or distribution mismatch and SHALL use only absolute verified runtime paths derived from the installed package and Launcher-supplied identity.
 
-#### Scenario: npm distribution starts an update
-- **WHEN** packaged metadata identifies npm and the fixed npm runtime paths are available
+#### Scenario: Supported npm distribution starts an update
+- **WHEN** packaged metadata identifies npm on macOS or Linux and the fixed npm runtime paths are available
 - **THEN** Host SHALL prepare the exact discovered version through the npm update path and SHALL NOT select a DMG or EXE
+
+#### Scenario: Windows npm distribution requires a manual update
+- **WHEN** packaged metadata identifies npm on Windows and a newer stable Release exists
+- **THEN** Host SHALL report its version and release notes without a check failure, and SHALL mark application installation unavailable
+- **AND** Renderer SHALL explain the manual npm update path, including quitting codexhost and its separate Console, without presenting an installation action or a retryable failure
+- **AND** a direct start request SHALL fail before acquiring an update lock or preparing an npm operation
+- **AND** the Windows installer distribution SHALL retain its application update path
+
+#### Scenario: Offline Console checks updates on Windows or macOS
+- **WHEN** codexhost is not running and the Console checks a Windows or macOS installation with a newer stable Release
+- **THEN** the Console SHALL report the version and release notes without a check failure, while marking application installation unavailable
+- **AND** the update page SHALL show a manual update path without an installation action or retryable failure
+- **AND** a direct offline start request SHALL fail before acquiring an update lock or preparing an operation
 
 #### Scenario: Installer metadata does not match host target
 - **WHEN** packaged metadata declares a target different from the running platform and architecture
@@ -96,7 +109,7 @@ Host SHALL serialize update starts across current Host processes. After successf
 - **WHEN** the Desktop root exits before the Launcher captures its descendants, or the descendant ancestry is no longer observable while the Helper is waiting
 - **THEN** the Launcher SHALL stop and reap the Helper, record failure, and SHALL NOT terminate processes based only on matching executable paths or repeatedly retry the failed capture
 
-#### Scenario: Windows npm shares a Node executable with unrelated work
+#### Scenario: Windows managed Host uses a shared Node executable
 - **WHEN** the managed Host and unrelated processes use a Node executable outside the installation's bundled runtime
 - **THEN** only captured Desktop descendants SHALL be terminated; unrelated Node processes SHALL remain running and SHALL NOT block the final installation-process check
 

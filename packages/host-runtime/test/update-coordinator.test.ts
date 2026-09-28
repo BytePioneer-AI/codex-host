@@ -1,6 +1,6 @@
 import type { ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -217,7 +217,7 @@ describe("Host update coordinator", () => {
     expect(spawnUpdater).not.toHaveBeenCalled();
   });
 
-  it("hands a Windows update to Launcher without starting the Helper", async () => {
+  it("checks Windows npm releases but requires a manual update before locking or preparing", async () => {
     const fixture = await npmFixture();
     const localAppData = path.join(fixture.root, "local-app-data");
     fixture.environment.LOCALAPPDATA = localAppData;
@@ -234,34 +234,50 @@ describe("Host update coordinator", () => {
       path.join(path.dirname(fixture.hostRuntimePath), "..", "libexec", "codexhost-updater.exe"),
     );
     const spawnUpdater = vi.fn(() => ({ pid: 779 }) as unknown as ChildProcess);
-    const manager = createBackgroundUpdateManager({
-      platform: "win32",
-      randomId: () => "windows",
-      spawnUpdater,
-      now: () => 10_000,
+    const prepareNpm = vi.fn(async () => {
+      throw new Error("Windows npm updates must not be prepared");
     });
+    const manager = {
+      ...createBackgroundUpdateManager({
+        platform: "win32",
+        randomId: () => "windows",
+        spawnUpdater,
+        now: () => 10_000,
+      }),
+      prepareNpm,
+    };
+    const fetchLatest = vi.fn(async () => release());
     const coordinator = createHostUpdateCoordinator({
       hostRuntimePath: fixture.hostRuntimePath,
       environment: fixture.environment,
       platform: "win32",
       architecture: "x64",
       manager,
-      fetchLatest: async () => release(),
+      fetchLatest,
     });
 
-    await expect(coordinator.start()).resolves.toMatchObject({
-      status: { version: "1.2.3", installation: "npm", phase: "prepared" },
+    await expect(coordinator.start()).rejects.toThrow(
+      "Windows npm installations require a manual update",
+    );
+    await expect(readdir(path.join(localAppData, "codexhost", "updates"))).rejects.toMatchObject({
+      code: "ENOENT",
     });
-    const updaterRequestPath = path.join(
-      localAppData,
-      "codexhost",
-      "updates",
-      "update-1.2.3-windows",
-      "request-v1.json",
+    expect(fetchLatest).not.toHaveBeenCalled();
+    await expect(coordinator.check()).resolves.toMatchObject({
+      currentVersion: "1.2.2",
+      installation: "npm",
+      latestVersion: "1.2.3",
+      updateAvailable: true,
+      installationAvailable: false,
+      releaseNotes: "Release 1.2.3",
+      releaseNotesUrl: "https://github.com/BytePioneer-AI/codex-host/releases/tag/v1.2.3",
+      error: null,
+    });
+    await expect(coordinator.start()).rejects.toThrow(
+      "Windows npm installations require a manual update",
     );
-    await vi.waitFor(async () =>
-      expect(await readFile(updaterRequestPath, "utf8")).not.toEqual(""),
-    );
+    expect(fetchLatest).toHaveBeenCalledTimes(1);
+    expect(prepareNpm).not.toHaveBeenCalled();
     expect(spawnUpdater).not.toHaveBeenCalled();
   });
 

@@ -142,12 +142,21 @@ impl Fixture {
         &mut self,
         waiting: impl FnMut() -> std::io::Result<bool>,
     ) -> Result<(), Box<dyn std::error::Error>> {
+        self.stop_with_console(|| Ok(()), waiting)
+    }
+
+    fn stop_with_console(
+        &mut self,
+        stop_console: impl FnOnce() -> Result<(), Box<dyn std::error::Error>>,
+        waiting: impl FnMut() -> std::io::Result<bool>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
         stop_managed_desktop_for_update(
             &mut self.desktop,
             &self.root,
             &self.installation,
             &mut self.controller,
             &self.options,
+            stop_console,
             waiting,
         )
     }
@@ -227,6 +236,39 @@ fn successful_stop_terminates_owned_descendants_and_preserves_shared_node() {
     }
     assert!(fixture.controller.try_wait().unwrap().is_some());
     assert!(fixture.unrelated_node.try_wait().unwrap().is_none());
+}
+
+#[test]
+fn console_stop_failure_blocks_update_handoff() {
+    let mut fixture = Fixture::new();
+    let error = fixture
+        .stop_with_console(|| Err("console did not exit".into()), || Ok(true))
+        .unwrap_err();
+    assert!(error.to_string().contains("console did not exit"));
+    assert!(fixture.unrelated_node.try_wait().unwrap().is_none());
+}
+
+#[test]
+fn final_scan_runs_after_console_stop() {
+    let mut fixture = Fixture::new();
+    let executable = fixture.installation.desktop_executable.clone();
+    let mut late_process = None;
+    let result = fixture.stop_with_console(
+        || {
+            late_process = Some(ping(&executable));
+            Ok(())
+        },
+        || Ok(true),
+    );
+    assert!(
+        result
+            .unwrap_err()
+            .to_string()
+            .contains("installation-owned Desktop, Shim, or Host processes remain alive")
+    );
+    let mut late_process = late_process.unwrap();
+    late_process.kill().unwrap();
+    late_process.wait().unwrap();
 }
 
 #[test]

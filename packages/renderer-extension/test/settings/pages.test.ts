@@ -1350,6 +1350,86 @@ describe("Renderer Updates page", () => {
     scope.dispose();
   });
 
+  it("shows updates as unavailable when the Host has no update capability", async () => {
+    const client = {
+      checkUpdate: vi.fn(async () => null),
+      startUpdate: vi.fn(),
+      readUpdateStatus: vi.fn(),
+    };
+    const page = createDefaultRendererSettingsPages(
+      rendererSettingsMessages("zh-CN"),
+      () => client,
+    ).find(({ id }) => id === "updates");
+    if (!page) throw new Error("Updates page is not registered");
+
+    const document = new FakeDocument();
+    const content = document.createElement("main");
+    const scope = new RendererSettingsPageScope();
+    const cleanup = page.mount({
+      content: content as unknown as HTMLElement,
+      signal: scope.signal,
+      runLatest: (operation, handlers) => scope.runLatest(operation, handlers),
+    });
+
+    const panel = elementWithClass(content, "settings-update-panel");
+    await vi.waitFor(() => expect(panel.dataset.updateState).toBe("unavailable"));
+    expect(visibleText(panel)).toContain("运行时尚未安装该项能力");
+    expect(visibleText(panel)).not.toContain("当前已是最新版本");
+    expect(descendants(panel).some(({ tagName }) => tagName === "button")).toBe(false);
+
+    cleanup?.();
+    scope.dispose();
+  });
+
+  it("clears the previous check when Retry finds updates unavailable", async () => {
+    const client = {
+      checkUpdate: vi
+        .fn<() => Promise<UpdateCheckResult | null>>()
+        .mockResolvedValueOnce({ ...updateCheck(), error: "network down" })
+        .mockResolvedValueOnce(null),
+      startUpdate: vi.fn(),
+      readUpdateStatus: vi.fn(),
+    };
+    const page = createDefaultRendererSettingsPages(
+      rendererSettingsMessages("zh-CN"),
+      () => client,
+    ).find(({ id }) => id === "updates");
+    if (!page) throw new Error("Updates page is not registered");
+
+    const document = new FakeDocument();
+    const content = document.createElement("main");
+    const scope = new RendererSettingsPageScope();
+    const cleanup = page.mount({
+      content: content as unknown as HTMLElement,
+      signal: scope.signal,
+      runLatest: (operation, handlers) => scope.runLatest(operation, handlers),
+    });
+
+    const panel = elementWithClass(content, "settings-update-panel");
+    const metadata = elementWithClass(content, "settings-update-metadata");
+    const manualNpm = descendants(content).find(
+      ({ className }) => className === "settings-update-manual",
+    );
+    await vi.waitFor(() => expect(panel.dataset.updateState).toBe("error"));
+    expect(visibleText(metadata)).toContain("v1.2.3");
+    expect(manualNpm?.hidden).toBe(false);
+
+    const retry = descendants(panel).find(
+      ({ tagName, children }) => tagName === "button" && children.includes("重试"),
+    );
+    if (!retry) throw new Error("Missing Retry button");
+    retry.dispatch("click");
+    await vi.waitFor(() => expect(panel.dataset.updateState).toBe("unavailable"));
+    expect(visibleText(metadata)).not.toMatch(/v1\.2\.[23]/);
+    expect(manualNpm?.hidden).toBe(true);
+    expect(elementWithClass(content, "settings-update-controls").className).toBe(
+      "settings-update-controls",
+    );
+
+    cleanup?.();
+    scope.dispose();
+  });
+
   it("shows only the Update action before an update starts and ignores stale success state", async () => {
     const client = {
       checkUpdate: vi.fn(async () => updateCheck(updateStatus("succeeded"))),
@@ -1482,10 +1562,14 @@ describe("Renderer Updates page", () => {
   });
 
   it.each(["npm", "windows-installer"] as const)(
-    "offers an in-app Windows update for %s installations",
+    "renders the Windows update path for %s installations",
     async (installation) => {
       const client = {
-        checkUpdate: vi.fn(async () => ({ ...updateCheck(), installation })),
+        checkUpdate: vi.fn(async () => ({
+          ...updateCheck(),
+          installation,
+          installationAvailable: installation === "windows-installer",
+        })),
         startUpdate: vi.fn(async () => ({ status: updateStatus("prepared", installation) })),
         readUpdateStatus: vi.fn(async () => ({ status: updateStatus("prepared", installation) })),
       };
@@ -1507,14 +1591,23 @@ describe("Renderer Updates page", () => {
       const panel = elementWithClass(content, "settings-update-panel");
       await vi.waitFor(() => {
         expect(visibleText(panel)).not.toContain("正在检查更新");
-        expect(visibleNotesText(content)).not.toContain("暂不支持自动更新");
-        expect(descendants(panel).some(({ tagName }) => tagName === "button")).toBe(true);
+        expect(panel.dataset.updateState).toBe("available");
       });
       const updateButton = descendants(panel).find(({ tagName }) => tagName === "button");
-      if (!updateButton) throw new Error("Windows update command is not rendered");
       if (installation === "npm") {
+        expect(updateButton).toBeUndefined();
+        expect(visibleText(panel)).toContain("有新版本可用，请手动更新。");
+        expect(visibleText(panel)).not.toContain("更新失败");
+        expect(visibleText(panel)).not.toContain("重试");
+        expect(visibleNotesText(content)).toContain("退出 codexhost 及独立控制台");
         expect(visibleNotesText(content)).toContain("npm install -g @codexhost/cli@latest");
+        expect(visibleNotesText(content)).toContain("Safer updates");
+        expect(elementWithClass(content, "settings-update-controls").className).toBe(
+          "settings-update-controls",
+        );
+        expect(client.startUpdate).not.toHaveBeenCalled();
       } else {
+        if (!updateButton) throw new Error("Windows installer update command is not rendered");
         const link = descendants(content).find(
           ({ tagName, href }) =>
             tagName === "a" &&
@@ -1525,11 +1618,76 @@ describe("Renderer Updates page", () => {
         expect(visibleNotesText(content)).toContain(
           "如需手动更新，请下载并运行适用于当前系统的安装包。",
         );
+        updateButton.dispatch("click");
+        await vi.waitFor(() => expect(client.startUpdate).toHaveBeenCalledOnce());
       }
-      updateButton?.dispatch("click");
-      await vi.waitFor(() => {
-        expect(client.startUpdate).toHaveBeenCalledOnce();
+
+      cleanup?.();
+      scope.dispose();
+    },
+  );
+
+  it.each([
+    { platform: "Win32", installation: "windows-installer" },
+    { platform: "MacIntel", installation: "npm" },
+    { platform: "MacIntel", installation: "macos-dmg" },
+  ] as const)(
+    "shows a neutral manual update for offline $platform $installation installations",
+    async ({ platform, installation }) => {
+      const client = {
+        checkUpdate: vi.fn(async () => ({
+          ...updateCheck(),
+          installation,
+          installationAvailable: false,
+          error: null,
+        })),
+        startUpdate: vi.fn(),
+        readUpdateStatus: vi.fn(),
+      };
+      const page = createDefaultRendererSettingsPages(
+        rendererSettingsMessages("en"),
+        () => client,
+      ).find(({ id }) => id === "updates");
+      if (!page) throw new Error("Updates page is not registered");
+
+      const document = new FakeDocument(platform);
+      const content = document.createElement("main");
+      const scope = new RendererSettingsPageScope();
+      const cleanup = page.mount({
+        content: content as unknown as HTMLElement,
+        signal: scope.signal,
+        runLatest: (operation, handlers) => scope.runLatest(operation, handlers),
       });
+
+      const panel = elementWithClass(content, "settings-update-panel");
+      await vi.waitFor(() => expect(panel.dataset.updateState).toBe("available"));
+      expect(visibleText(panel)).toContain("A new version is available. Update manually.");
+      expect(visibleText(panel)).not.toContain("Update failed");
+      expect(visibleText(panel)).not.toContain("Retry");
+      expect(descendants(panel).find(({ tagName }) => tagName === "button")).toBeUndefined();
+      expect(elementWithClass(content, "settings-update-controls").className).toBe(
+        "settings-update-controls",
+      );
+      expect(visibleNotesText(content)).toContain("Safer updates");
+      if (installation === "npm") {
+        expect(visibleNotesText(content)).toContain("npm install -g @codexhost/cli@latest");
+      } else if (platform === "Win32") {
+        const installerLink = descendants(content).find(
+          ({ tagName, href }) =>
+            tagName === "a" &&
+            href ===
+              "https://github.com/BytePioneer-AI/codex-host/releases/download/v1.2.3/codexhost-1.2.3-windows-x64.exe",
+        );
+        expect(installerLink?.hidden).toBe(false);
+      } else {
+        const releaseLink = descendants(content).find(
+          ({ tagName, href }) =>
+            tagName === "a" &&
+            href === "https://github.com/BytePioneer-AI/codex-host/releases/tag/v1.2.3",
+        );
+        expect(releaseLink?.hidden).toBe(false);
+      }
+      expect(client.startUpdate).not.toHaveBeenCalled();
 
       cleanup?.();
       scope.dispose();
@@ -1540,14 +1698,16 @@ describe("Renderer Updates page", () => {
     {
       platform: "Win32",
       locale: "en",
-      normal: "On Windows, quit codexhost before running this command in a terminal:",
-      fallback: "On Windows, quit codexhost before running this command in a terminal:",
+      normal:
+        "On Windows, quit codexhost and its separate Console before running this command in a terminal:",
+      fallback:
+        "On Windows, quit codexhost and its separate Console before running this command in a terminal:",
     },
     {
       platform: "Win32",
       locale: "zh-CN",
-      normal: "在 Windows 上手动更新前，请先退出 codexhost，再在终端运行以下命令：",
-      fallback: "在 Windows 上手动更新前，请先退出 codexhost，再在终端运行以下命令：",
+      normal: "在 Windows 上手动更新前，请先退出 codexhost 及独立控制台，再在终端运行以下命令：",
+      fallback: "在 Windows 上手动更新前，请先退出 codexhost 及独立控制台，再在终端运行以下命令：",
     },
     {
       platform: "MacIntel",
@@ -1568,7 +1728,10 @@ describe("Renderer Updates page", () => {
     "shows the correct npm manual-update order on $platform in $locale",
     async ({ platform, locale, normal, fallback }) => {
       const client = {
-        checkUpdate: vi.fn(async () => updateCheck()),
+        checkUpdate: vi.fn(async () => ({
+          ...updateCheck(),
+          installationAvailable: platform !== "Win32",
+        })),
         startUpdate: vi.fn(async () => ({ status: updateStatus("failed") })),
         readUpdateStatus: vi.fn(async () => ({ status: null })),
       };
@@ -1592,6 +1755,14 @@ describe("Renderer Updates page", () => {
       const description = elementWithClass(content, "settings-update-manual-description");
       expect(description.textContent).toBe(normal);
       const updateButton = descendants(panel).find(({ tagName }) => tagName === "button");
+      if (platform === "Win32") {
+        expect(updateButton).toBeUndefined();
+        expect(description.textContent).toBe(fallback);
+        expect(client.startUpdate).not.toHaveBeenCalled();
+        cleanup?.();
+        scope.dispose();
+        return;
+      }
       if (!updateButton) throw new Error("Update command is not rendered");
       updateButton.dispatch("click");
       await vi.waitFor(() => expect(panel.dataset.updateState).toBe("failed"));
@@ -1635,6 +1806,64 @@ describe("Renderer Updates page", () => {
 
     cleanup?.();
     scope.dispose();
+  });
+
+  it("offers the codexhost console on the About page when the Host can open it", async () => {
+    const openConsole = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("port 26339 is used by another program"))
+      .mockResolvedValueOnce({ url: "http://127.0.0.1:26339/" });
+    const client = {
+      checkUpdate: vi.fn(),
+      startUpdate: vi.fn(),
+      readUpdateStatus: vi.fn(),
+      openConsole,
+    };
+    const pages = createDefaultRendererSettingsPages(
+      rendererSettingsMessages("zh-CN"),
+      () => client,
+    );
+    const page = pages.find(({ id }) => id === "about");
+    if (!page) throw new Error("About page is not registered");
+    const document = new FakeDocument();
+    const content = document.createElement("main");
+    const scope = new RendererSettingsPageScope();
+    page.mount({
+      content: content as unknown as HTMLElement,
+      signal: scope.signal,
+      runLatest: (operation, handlers) => scope.runLatest(operation, handlers),
+    });
+
+    expect(visibleText(content)).toContain("codexhost 控制台独立于 Codex Desktop 运行");
+    const button = descendants(content).find(
+      (element) => element.tagName === "button" && element.textContent === "打开控制台",
+    );
+    if (!button) throw new Error("console button is missing");
+    button.dispatch("click");
+    await vi.waitFor(() =>
+      expect(visibleText(content)).toContain("port 26339 is used by another program"),
+    );
+    button.dispatch("click");
+    await vi.waitFor(() => expect(openConsole).toHaveBeenCalledTimes(2));
+    scope.dispose();
+
+    const withoutConsole = createDefaultRendererSettingsPages(
+      rendererSettingsMessages("en"),
+      () => ({
+        checkUpdate: vi.fn(),
+        startUpdate: vi.fn(),
+        readUpdateStatus: vi.fn(),
+      }),
+    ).find(({ id }) => id === "about");
+    const plain = new FakeDocument().createElement("main");
+    const plainScope = new RendererSettingsPageScope();
+    withoutConsole?.mount({
+      content: plain as unknown as HTMLElement,
+      signal: plainScope.signal,
+      runLatest: (operation, handlers) => plainScope.runLatest(operation, handlers),
+    });
+    expect(visibleText(plain)).not.toContain("Open console");
+    plainScope.dispose();
   });
 
   it("renders GitHub Release notes as structured Markdown", async () => {
@@ -1870,6 +2099,61 @@ describe("Renderer Session Import page", () => {
     expect(
       descendants(content).filter(({ dataset }) => dataset.sessionImportId !== undefined),
     ).toHaveLength(1);
+    scope.dispose();
+  });
+
+  it("reports a successful Web import without navigation or a retry-open action", async () => {
+    const client = {
+      listSessionImportSources: vi.fn(async () => ({
+        harnesses: [{ harnessId: harnessIdSchema.parse("pi"), name: "Pi" }],
+      })),
+      listHarnessSessions: vi.fn(async () => ({
+        total: 1,
+        candidates: [
+          {
+            nativeSessionId: "web-session",
+            title: "Web import",
+            cwd: "/work",
+            running: false,
+            updatedAt: 1000,
+          },
+        ],
+      })),
+      importHarnessSession: vi.fn(async () => ({
+        threadId: hostThreadIdSchema.parse("web-imported"),
+      })),
+    };
+    const page = createDefaultRendererSettingsPages(
+      rendererSettingsMessages("en"),
+      () => null,
+      () => null,
+      () => null,
+      () => client,
+      null,
+    ).find(({ id }) => id === "session-import");
+    if (!page) throw new Error("Session import page missing");
+    const content = new FakeDocument().createElement("main");
+    const scope = new RendererSettingsPageScope();
+    page.mount({
+      content: content as unknown as HTMLElement,
+      signal: scope.signal,
+      runLatest: (operation, handlers) => scope.runLatest(operation, handlers),
+    });
+    await vi.waitFor(() => expect(visibleText(content)).toContain("Web import"));
+    const button = descendants(content).find(
+      ({ dataset }) => dataset.sessionImportAction === "import",
+    );
+    button?.dispatch("click");
+    await vi.waitFor(() =>
+      expect(visibleText(content)).toContain("Session imported. View it in Codex."),
+    );
+    expect(client.importHarnessSession).toHaveBeenCalledWith({
+      harnessId: "pi",
+      nativeSessionId: "web-session",
+    });
+    expect(
+      descendants(content).some(({ dataset }) => dataset.sessionImportAction === "retry-open"),
+    ).toBe(false);
     scope.dispose();
   });
 

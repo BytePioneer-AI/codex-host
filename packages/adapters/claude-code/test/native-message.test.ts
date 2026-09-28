@@ -894,6 +894,14 @@ describe("Claude native Turn interpretation", () => {
     );
   });
 
+  it("does not read authentication failure from the text of a successful Turn", () => {
+    const turn = new ClaudeNativeTurnAccumulator();
+    const text = "Configure the OAuth client; a user who is not logged in sees invalid API key.";
+
+    turn.consume(assistant(text));
+    expect(turn.consume(result({ result: text })).terminal).toEqual({ status: "succeeded" });
+  });
+
   it("requires a requested cancel and authoritative aborted terminal", () => {
     const cancelled = new ClaudeNativeTurnAccumulator();
     cancelled.requestCancel();

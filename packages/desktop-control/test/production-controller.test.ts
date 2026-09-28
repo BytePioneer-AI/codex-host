@@ -279,6 +279,59 @@ describe("production Desktop Controller", () => {
     expect(startAttachmentServer).toHaveBeenCalledOnce();
   });
 
+  it("publishes Renderer integration failure and recovery for the console", async () => {
+    const abort = new AbortController();
+    const session: RendererCdpControlSession = {
+      snapshot: controllerSnapshot(),
+      ensureInstalled: vi.fn(),
+      activateDesktop: vi.fn(async () => 1),
+
+      executeRenderer: vi.fn(),
+      close: vi.fn(),
+    };
+    const install = vi
+      .fn<DesktopControllerDependencies["install"]>()
+      .mockRejectedValueOnce(
+        new Error("Production Renderer Adapter is unsupported: signature-mismatch"),
+      )
+      .mockResolvedValueOnce(session);
+    const publishStatus = vi.fn();
+    let currentTime = 0;
+
+    await runDesktopController(controllerOptions(), abort.signal, {
+      readRenderer: vi.fn(async () => "production renderer"),
+      install,
+      startAttachmentServer: vi.fn(async () => attachmentServer()),
+      ready: vi.fn(),
+      publishStatus,
+      sleep: vi.fn(async (milliseconds: number) => {
+        if (milliseconds === 1) currentTime += 30_000;
+        if (install.mock.calls.length >= 2) abort.abort();
+      }),
+      now: () => currentTime,
+      monitorIntervalMs: 1,
+    });
+
+    const states = publishStatus.mock.calls.map(([document]) => document.renderer);
+    expect(states.map((renderer) => renderer.state)).toEqual([
+      "installing",
+      "unavailable",
+      "installing",
+      "installed",
+    ]);
+    expect(states[1]).toMatchObject({
+      error: "Production Renderer Adapter is unsupported: signature-mismatch",
+      failures: 1,
+    });
+    expect(states[3]).toMatchObject({
+      error: null,
+      failures: 1,
+      lastError: "Production Renderer Adapter is unsupported: signature-mismatch",
+      lastFailedAt: 0,
+      lastInstalledAt: 30_000,
+    });
+  });
+
   it("suppresses an unclassified inspection failure without leaking its error", async () => {
     const abort = new AbortController();
     abort.abort();

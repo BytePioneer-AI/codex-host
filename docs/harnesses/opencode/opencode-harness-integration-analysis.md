@@ -1,10 +1,49 @@
 # OpenCode Harness 接入调研
 
-> 调研基线：OpenCode `v1.18.25`（2026-08-28 发布）。本文只把 OpenCode 官方仓库、官方文档、官方 Release、官方 npm 包和本机实际运行结果作为能力证据。
+> 当前实现同时接入 OpenCode CLI v1 和 v2。v1 验证基线为 `1.18.25`，v2 为 `2.0.16`。下文原有 SDK/HTTP 调研以 v1 为基线，不能把旧包的 `/v2` 导出误读为 CLI 2.x 支持。
 
 > 下文 DeepSeek Host API 对比保留调研时的历史基线；当前 DSH Legacy 已移除，仅支持 `0.1.2-rc.1` / `0.1.5-rc.1` 托管 Web，现行范围见[连接流程](../../architecture/harness-executable-discovery.md#deepseek-harness-的特殊性)和[消息修订与恢复](../deepseek/dsh-edit-recovery.md)。
 
 本文同时记录接入设计、官方能力证据和 `codex/opencode-harness` 分支的第一版实现。下文单独区分“官方接口存在”“当前已实现”“当前已对外声明”和“仍需真实 Gate”，避免把类型或 endpoint 的存在误报成平台能力。
+
+## 双版本接入与维护范围
+
+OpenCode 保留一个 Harness ID 和一个预装插件。`versioned-adapter.ts` 在 inspect/open 时解析实际 CLI 的 `--version`，将会话交给对应原生实现；已经打开的会话固定使用启动时选中的可执行文件。未知主版本或无法识别的输出明确失败，不尝试旧协议。
+
+| CLI | 原生客户端 | 实现 |
+| --- | --- | --- |
+| v1 | `@opencode-ai/sdk@1.18.25` 的 `/v2/client` 导出 | 既有 `opencode-adapter.ts`、`sdk-transport.ts` 等模块；维护兼容与必要修复 |
+| v2 | `@opencode/client@2.0.16` Promise 客户端 | `src/v2/` 的连接、会话、历史、交互与配置模块；作为后续新能力主线 |
+
+版本选择、协议及状态转换全部属于 OpenCode Adapter。Host、Renderer 和公共契约没有增加按 OpenCode 版本分支。两代实现共用 CLI 发现、模型/Thinking 标识编码、权限模式目录和命令目录；不把 v2 的执行事件伪装为 v1 SDK 消息。
+
+默认使用已有发现规则选择 `opencode`。两版同时安装时可通过 `CODEXHOST_OPENCODE_COMMAND` 指向所需可执行文件；它是执行环境的选择，不是在同一个 Thread 中切换协议。Host 需要重新建立连接才能应用其环境变化。
+
+v1 的已有 Native Ref 不变。v2 的 Session locator 额外记录 `protocol: 2`，公共 `formatVersion` 仍为 `1`。Resume/Fork/Rollback 必须匹配 CLI 主版本；匹配失败保留原记录并提示选择对应安装。codexhost 不迁移 OpenCode 数据库，也不承诺 v1/v2 会话可互换。
+
+### v2 的原生语义与限制
+
+- 每个会话管理独立的 loopback 前台 `serve` 进程，随机密码、原生固定用户名 `opencode`；不连接用户共享后台服务。关闭/启动失败回收进程。配置与认证继续由原生 OpenCode 读取。
+- Server listener 就绪不代表配置插件已激活。读取 Model Catalog 前有界等待原生 `opencode.config.provider`、`opencode.config.agent` 和 `opencode.config.policy` 激活；避免缓存启动期间的空模型列表。该探测与客户端版本一起维护。
+- Prompt 使用原生 inbox 接纳；`session.execution.*`、消息列表中的 durable `idle` 决定执行结果。HTTP 返回、文本结束或 interrupt 确认均不是 Turn 终态。已有活动原生执行会被拒绝接管。
+- 流式文本/Reasoning 由原生 transient delta 投影，Tool、历史和终态从原生持久消息校验。取消可能使没有 `text.ended` 的 transient 文本未落盘，完成快照以原生历史为准，部分流式文本可能消失；不制造持久历史。
+- 历史读取遍历原生游标分页；一次执行中的追加用户输入归入同一个 Turn。Fork 使用原生 `before` 边界，新消息 ID 以派生结果为准；校验语义前缀、源未变、当前 Model/Thinking/权限和目录。Rollback 通过 Fork 移除末轮，保留当前文件。
+- 支持原生审批的允许一次/拒绝、原生 Question、平面的字符串/数字/布尔/多选 Form；答案校验后交给原生端点。External、hidden 或 conditional Form 当前无法映射，明确报错并停止执行，不自动作答。
+- 支持 Model、Thinking、权限模式切换和 `/compact`；Usage 投影原生累计 token 与费用。未额外声明后台自主 Turn、子 Agent 专用观察、原生会话导入或复杂 Form 的完整支持。
+
+### 验证方式
+
+先运行 `npm run build:typescript`。分别把 `CODEXHOST_OPENCODE_REAL_COMMAND` 设置为 v1/v2 CLI 的绝对路径，再使用 `tests/vitest.config.js` 运行：
+
+- `packages/adapters/opencode/test/opencode-adapter.real.test.ts`：隔离配置下的模型/Thinking/权限切换及冷恢复，不调用 Model。
+- `packages/adapters/opencode/test/opencode-adapter.rollback.real.test.ts`：本机假 Model 驱动真实 CLI，包含审批、Question、原生编辑、Diff、精确 Fork、Rollback、`/compact`、源保留和冷恢复。
+- `tools/gate-opencode/cancel.real.test.mjs`：真实流式请求取消、后续 Turn、请求无重叠、暖/冷历史。
+
+单元测试覆盖版本路由、跨代拒绝、分页、配置激活、流式与接纳竞态、取消与迟到事件。发行测试检查两代客户端均在独立插件 Bundle 内、核心 Host 不包含它们、插件可搬移加载及许可证齐全。真实验证使用 macOS arm64、隔离目录和 loopback 测试模型；不代表 Windows、Linux、SSH、真实账号或 Desktop GUI 已验收。
+
+v1 Fork 校验同时修复了既有问题：派生后的 FileChange `sourceItemIds` 属于新 Session 的 Part 身份，不能与源的绝对 ID 比较为内容差异；语义校验仍保留输入、输出、文件 patch、结果与当前配置。
+
+以下章节保留 v1 的接口依据和实现分析。
 
 ## 结论
 

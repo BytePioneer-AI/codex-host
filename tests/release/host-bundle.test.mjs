@@ -66,6 +66,7 @@ async function runPackagedHost(host, directory, requests) {
   Object.assign(environment, {
     HOME: directory,
     USERPROFILE: directory,
+    CODEX_HOME: path.dirname(official),
     CODEXHOST_DATA_DIR: path.join(directory, "data"),
     CODEXHOST_PLUGIN_DIRECTORY: path.join(directory, "user-plugins"),
     CODEXHOST_STOCK_CODEX_PATH: process.execPath,
@@ -185,8 +186,8 @@ describe("release Host and independent plugin Bundles", () => {
       expect(pluginAudits.find(({ id }) => id === "grok").runtimePackages).toContain(
         "@agentclientprotocol/sdk",
       );
-      expect(pluginAudits.find(({ id }) => id === "opencode").runtimePackages).toContain(
-        "@opencode-ai/sdk",
+      expect(pluginAudits.find(({ id }) => id === "opencode").runtimePackages).toEqual(
+        expect.arrayContaining(["@opencode-ai/sdk", "@opencode/client"]),
       );
       expect(pluginAudits.find(({ id }) => id === "deepseek-harness").runtimePackages).toContain(
         "@deepseek-ai/schemastery",

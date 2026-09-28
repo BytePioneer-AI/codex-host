@@ -2,21 +2,32 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { CursorTransport, type CursorCallbacks } from "../src/transport.js";
 
-const state = vi.hoisted(() => ({ scenario: "normal" }));
+const state = vi.hoisted(() => ({ scenario: "normal", arguments: [] as string[][] }));
 vi.mock("../src/command.js", () => ({
-  cursorInvocation: () => ({
-    command: process.execPath,
-    arguments: [path.resolve("packages/adapters/cursor-cli/test/fixtures/acp.mjs"), state.scenario],
-    windowsVerbatimArguments: false,
-  }),
+  cursorInvocation: (_environment: unknown, _command: unknown, args: string[]) => {
+    state.arguments.push(args);
+    return {
+      command: process.execPath,
+      arguments: [
+        path.resolve("packages/adapters/cursor-cli/test/fixtures/acp.mjs"),
+        state.scenario,
+      ],
+      windowsVerbatimArguments: false,
+    };
+  },
 }));
 const transports: CursorTransport[] = [];
-function transport(timeoutMs = 2_000, loadModelCatalog = true) {
+function transport(
+  timeoutMs = 2_000,
+  loadModelCatalog = true,
+  executionPolicy?: "unattended-full-access",
+) {
   const result = new CursorTransport({
     cwd: process.cwd(),
     environment: process.env,
     timeoutMs,
     loadModelCatalog,
+    ...(executionPolicy ? { executionPolicy } : {}),
   });
   transports.push(result);
   return result;
@@ -24,6 +35,7 @@ function transport(timeoutMs = 2_000, loadModelCatalog = true) {
 afterEach(async () => {
   await Promise.all(transports.splice(0).map((transport) => transport.close()));
   state.scenario = "normal";
+  state.arguments = [];
 });
 const callbacks: CursorCallbacks = {
   update: () => {},
@@ -112,4 +124,13 @@ it("closes a process while authentication is pending without leaving a reusable 
   await native.close();
   await failed;
   await expect(native.open()).rejects.toThrow("reopened");
+});
+
+it("requests native Run Everything only for unattended full access", async () => {
+  const unattended = transport(2_000, true, "unattended-full-access");
+  await unattended.open();
+  expect(state.arguments).toEqual([["--force", "acp"]]);
+  const ordinary = transport();
+  await ordinary.open();
+  expect(state.arguments).toEqual([["--force", "acp"], ["acp"]]);
 });

@@ -7,8 +7,9 @@
 ## 模型
 
 - 只有两个 Thread：被观察的 Thread 和被通知的 Thread。与委派的父子关系无关，任意两个不同的 Thread 都可以。
-- 一次性。被观察 Thread 停下，或 watch 到期，哪个先到就通知一次，随后 watch 消失。换了一个仍在运行的 Turn 不会通知。没有取消或退订；想继续等就再注册一次。同一对被观察 Thread 与被通知 Thread 只保留一个 watch。
-- 通知只报告执行状态：Thread 链接和结果。它不读取会话内容、不生成摘要，也不代表工作被验收。接收方应自行 `thread read`。
+- 一次性。被观察 Thread 停下，或 watch 到期，哪个先到就通知一次，随后 watch 消失。换了一个仍在运行的 Turn 不会通知。没有取消或退订；想继续等就再注册一次。
+- 每次注册各自兑现。同一对 Thread 仍在观察中时重复注册，返回已有的 watch；该 watch 已停下、通知仍在待送达时再次注册（例如 Thread 又开始了新一轮），会新建一个 watch 观察下一次停下，旧通知照常送达，不会被替换或丢弃。
+- 通知只报告执行状态：Thread 链接和结果；终态结果注明来自哪个 Turn，以便区分同一 Thread 不同轮次的通知。它不读取会话内容、不生成摘要，也不代表工作被验收。接收方应自行 `thread read`。
 
 入口：
 
@@ -16,10 +17,9 @@
 | --- | --- |
 | `thread watch <thread> [--notify <thread>] [--timeout-ms <n>]` | 观察一个已有 Thread |
 | `delegate start ... --watch true` | 创建委派后顺手观察，通知 Host 解析出的发起方 |
-| `thread send ... --watch true [--notify <thread>]` | 发送后续消息后，在该 Thread 停下时通知 |
 | `thread watches` | 列出尚未送达的 watch |
 
-`delegate start` 和 `thread send` 先完成自己的动作；watch 注册失败不会让命令失败，而是在返回的 `watch` 字段里报告 `notRegistered` 和原因。
+`delegate start` 先完成委派；watch 注册失败不会让命令失败，而是在返回的 `watch` 字段里报告 `notRegistered` 和原因。`thread send` 不提供 `--watch`，发送后需要通知时单独执行 `thread watch`。
 
 ## 结果
 
@@ -30,7 +30,7 @@
 | `unreadable` | 连续 60 秒读取失败，状态未知 |
 | `notFound` | Thread 已不存在 |
 
-默认超时 29 分钟，可用 `--timeout-ms` 调整。
+默认观察 29 分钟，`--timeout-ms` 可调整；到期报告 `timedOut`，需要继续等待时再注册一次。
 
 注册时 Thread 已是终态则返回 `alreadyTerminal`：不注册、不通知，调用方直接读取即可。
 
@@ -53,9 +53,11 @@
 
 ## 被通知 Thread 的确定
 
-1. 显式 `--notify`；
-2. Host 提供给外部 Harness 的 `CODEXHOST_THREAD_ID`；
-3. 两者都没有（原生 Codex）时由 Host 推断：除被观察 Thread 外，恰好只有一个 Thread 有活跃 Turn 时，它就是调用方。否则返回 `PARENT_THREAD_AMBIGUOUS`，需要显式 `--notify`。
+身份只确定一次，watch 不做自己的推断：
+
+1. `delegate start --watch`：使用委派已经解析出的父 Thread；没有父 Thread 时报告 `notRegistered`。
+2. `thread watch`：显式 `--notify`，否则使用 Host 提供给外部 Harness 的 `CODEXHOST_THREAD_ID`。
+3. 两者都没有（原生 Codex）时返回 `INVALID_ARGUMENT`，要求显式 `--notify`。原生 Codex 可使用 `delegate start` 响应中返回的 parent 作为自己的 Thread。
 
 ## 实现与边界
 

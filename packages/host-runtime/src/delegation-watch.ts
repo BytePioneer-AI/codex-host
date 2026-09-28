@@ -70,7 +70,10 @@ function describe(watch: Watch): string {
     case "notFound":
       return `${link} no longer exists.`;
     default:
-      return `${link}: ${watch.outcome}.`;
+      // The Turn tells a re-registered watch's notifications apart.
+      return watch.turnId
+        ? `${link}: ${watch.outcome} (Turn ${watch.turnId}).`
+        : `${link}: ${watch.outcome}.`;
   }
 }
 
@@ -109,7 +112,10 @@ export class DelegationWatchService {
     if (typeof input.threadId !== "string" || !input.threadId.trim())
       throw new DelegationControlError("INVALID_ARGUMENT", "Thread identifier is required");
     if (typeof input.notifyThreadId !== "string" || !input.notifyThreadId.trim())
-      throw new DelegationControlError("INVALID_ARGUMENT", "Notified Thread is required");
+      throw new DelegationControlError(
+        "INVALID_ARGUMENT",
+        "Notified Thread is required; pass --notify <thread>",
+      );
     if (input.threadId === input.notifyThreadId)
       throw new DelegationControlError("INVALID_ARGUMENT", "A Thread cannot watch itself");
     if (!Number.isSafeInteger(input.timeoutMs) || input.timeoutMs <= 0)
@@ -148,11 +154,12 @@ export class DelegationWatchService {
   async watches(): Promise<ThreadWatchListResult> {
     return {
       watches: this.#watches.map(
-        ({ threadId, notifyThreadId, state, outcome, reason, registeredAt }) => ({
+        ({ threadId, notifyThreadId, state, outcome, turnId, reason, registeredAt }) => ({
           threadId,
           notifyThreadId,
           state,
           ...(outcome ? { outcome } : {}),
+          ...(turnId ? { turnId } : {}),
           ...(reason ? { reason } : {}),
           registeredAt,
         }),
@@ -186,10 +193,12 @@ export class DelegationWatchService {
     for (const watch of [...this.#watches]) {
       if (this.#closed) return;
       if (watch.state !== "watching") continue;
-      const outcome = await this.#observe(watch);
-      if (!outcome) continue;
+      const observed = await this.#observe(watch);
+      if (!observed) continue;
+      const { outcome, turnId } = observed;
       watch.state = "pendingDelivery";
       watch.outcome = outcome;
+      if (turnId) watch.turnId = turnId;
       watch.deliveryDeadline = Date.now() + DELIVERY_WINDOW_MS;
     }
     const subscribers = new Set(
@@ -203,19 +212,27 @@ export class DelegationWatchService {
     }
   }
 
-  async #observe(watch: Watch): Promise<ThreadWatchOutcome | undefined> {
+  async #observe(
+    watch: Watch,
+  ): Promise<{ outcome: ThreadWatchOutcome; turnId?: string } | undefined> {
     try {
       const snapshot = await this.#api.read({ threadId: watch.threadId, view: "result" });
-      if (terminal(snapshot.status)) return snapshot.status as ThreadWatchOutcome;
+      if (terminal(snapshot.status)) {
+        return {
+          outcome: snapshot.status as ThreadWatchOutcome,
+          ...(snapshot.turn ? { turnId: snapshot.turn.turnId } : {}),
+        };
+      }
       delete watch.unreadableSince;
     } catch (error) {
-      if (errorCode(error) === "THREAD_NOT_FOUND") return "notFound";
+      if (errorCode(error) === "THREAD_NOT_FOUND") return { outcome: "notFound" };
       // Other read failures may be transient, so only a sustained failure is reported.
       watch.unreadableSince ??= Date.now();
       watch.lastReadError = error instanceof Error ? error.message : String(error);
-      if (Date.now() - watch.unreadableSince >= UNREADABLE_GRACE_MS) return "unreadable";
+      if (Date.now() - watch.unreadableSince >= UNREADABLE_GRACE_MS)
+        return { outcome: "unreadable" };
     }
-    return Date.now() >= watch.deadline ? "timedOut" : undefined;
+    return Date.now() >= watch.deadline ? { outcome: "timedOut" } : undefined;
   }
 
   /** All notifications pending for one subscriber start a single Turn. */

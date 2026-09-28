@@ -122,7 +122,6 @@ export function compactDelegationOutput(
         thread: threadLink(result.threadId),
         harnessId: result.harnessId,
         status: result.status,
-        ...watchOutput(result.watch),
       };
     }
     case "thread cancel": {

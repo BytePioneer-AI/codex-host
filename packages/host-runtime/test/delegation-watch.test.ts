@@ -73,7 +73,9 @@ describe("DelegationWatchService", () => {
       await vi.advanceTimersByTimeAsync(POLL_MS);
       expect(fake.sent).toHaveLength(1);
       expect(fake.sent[0]?.threadId).toBe("parent");
-      expect(fake.sent[0]?.message).toContain(`codex://threads/child: ${status}.`);
+      expect(fake.sent[0]?.message).toContain(
+        `codex://threads/child: ${status} (Turn turn-child).`,
+      );
       expect(fake.sent[0]?.message).toContain("execution state only");
 
       // The terminal state stays readable, but the one-shot watch is gone.
@@ -148,7 +150,7 @@ describe("DelegationWatchService", () => {
     fake.update("child", { status: "completed" });
     await vi.advanceTimersByTimeAsync(POLL_MS);
     expect(fake.sent).toHaveLength(1);
-    expect(fake.sent[0]?.message).toContain("codex://threads/child: completed.");
+    expect(fake.sent[0]?.message).toContain("codex://threads/child: completed (Turn turn-2).");
   });
 
   it("notifies once when the same pair is registered again for a new Turn", async () => {
@@ -171,7 +173,7 @@ describe("DelegationWatchService", () => {
     fake.update("child", { status: "completed" });
     await vi.advanceTimersByTimeAsync(POLL_MS);
     expect(fake.sent).toHaveLength(1);
-    expect(fake.sent[0]?.message).toContain("codex://threads/child: completed.");
+    expect(fake.sent[0]?.message).toContain("codex://threads/child: completed (Turn turn-2).");
   });
 
   it("merges notifications due together for one subscriber into one Turn", async () => {
@@ -187,8 +189,8 @@ describe("DelegationWatchService", () => {
     fake.update("b", { status: "failed" });
     await vi.advanceTimersByTimeAsync(POLL_MS);
     expect(fake.sent).toHaveLength(1);
-    expect(fake.sent[0]?.message).toContain("codex://threads/a: completed.");
-    expect(fake.sent[0]?.message).toContain("codex://threads/b: failed.");
+    expect(fake.sent[0]?.message).toContain("codex://threads/a: completed (Turn turn-a).");
+    expect(fake.sent[0]?.message).toContain("codex://threads/b: failed (Turn turn-b).");
   });
 
   it("treats a repeated registration as the same watch", async () => {
@@ -202,6 +204,43 @@ describe("DelegationWatchService", () => {
     fake.update("child", { status: "completed" });
     await vi.advanceTimersByTimeAsync(POLL_MS);
     expect(fake.sent).toHaveLength(1);
+  });
+
+  it("delivers each registration when the pair is watched again after a stop", async () => {
+    const fake = runtime({
+      child: { status: "running", turnId: "turn-1" },
+      parent: { status: "running" },
+    });
+    const service = new DelegationWatchService(fake, { pollIntervalMs: POLL_MS });
+    await service.watch({ threadId: "child", notifyThreadId: "parent", timeoutMs: 60_000 });
+    fake.update("child", { status: "failed" });
+    fake.sendFailures.push(busy());
+    await vi.advanceTimersByTimeAsync(POLL_MS);
+    await expect(service.watches()).resolves.toMatchObject({
+      watches: [{ state: "pendingDelivery", outcome: "failed", turnId: "turn-1" }],
+    });
+
+    // A new run starts while the first notification still waits for the busy subscriber.
+    fake.update("child", { status: "running", turnId: "turn-2" });
+    fake.sendFailures.push(busy());
+    await expect(
+      service.watch({ threadId: "child", notifyThreadId: "parent", timeoutMs: 60_000 }),
+    ).resolves.toMatchObject({ state: "watching" });
+    await vi.advanceTimersByTimeAsync(POLL_MS);
+    await expect(service.watches()).resolves.toMatchObject({
+      watches: [
+        { state: "pendingDelivery", outcome: "failed", turnId: "turn-1" },
+        { state: "watching" },
+      ],
+    });
+
+    fake.update("child", { status: "completed" });
+    await vi.advanceTimersByTimeAsync(POLL_MS);
+    // Both stops arrive in one message and name their Turns; neither replaces the other.
+    expect(fake.sent).toHaveLength(1);
+    expect(fake.sent[0]?.message).toContain("codex://threads/child: failed (Turn turn-1).");
+    expect(fake.sent[0]?.message).toContain("codex://threads/child: completed (Turn turn-2).");
+    await expect(service.watches()).resolves.toEqual({ watches: [] });
   });
 
   it("rejects a watch whose target or subscriber does not exist", async () => {
@@ -219,6 +258,12 @@ describe("DelegationWatchService", () => {
     await expect(
       service.watch({ threadId: "child", notifyThreadId: "other", timeoutMs: 0 }),
     ).rejects.toMatchObject({ code: "INVALID_ARGUMENT" });
+    await expect(
+      service.watch({ threadId: "child", notifyThreadId: "", timeoutMs: 60_000 }),
+    ).rejects.toMatchObject({
+      code: "INVALID_ARGUMENT",
+      message: expect.stringContaining("--notify"),
+    });
     await expect(service.watches()).resolves.toEqual({ watches: [] });
   });
 

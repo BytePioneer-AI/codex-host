@@ -169,37 +169,15 @@ describe("DelegationControlRegistry", () => {
     }
   });
 
-  it("infers the notified Thread only when exactly one other Thread is active", async () => {
-    vi.useFakeTimers();
-    try {
-      const registry = new DelegationControlRegistry();
-      const session = registration("child");
-      session.ownsThread = () => true;
-      const active = vi.fn(() => ["child", "caller"]);
-      session.activeThreadIds = active;
-      registry.register(session);
-
-      await expect(registry.watch({ threadId: "child", timeoutMs: 60_000 })).resolves.toMatchObject(
-        { state: "watching", notifyThreadId: "caller" },
-      );
-
-      active.mockReturnValue(["child"]);
-      await expect(registry.watch({ threadId: "child", timeoutMs: 60_000 })).rejects.toMatchObject({
-        code: "PARENT_THREAD_AMBIGUOUS",
-        details: { activeThreadIds: [] },
-      });
-      active.mockReturnValue(["child", "caller", "other"]);
-      await expect(registry.watch({ threadId: "child", timeoutMs: 60_000 })).rejects.toMatchObject({
-        code: "PARENT_THREAD_AMBIGUOUS",
-        details: { activeThreadIds: ["caller", "other"] },
-      });
-      // An explicit notified Thread never needs inference.
-      await expect(
-        registry.watch({ threadId: "child", notifyThreadId: "other", timeoutMs: 60_000 }),
-      ).resolves.toMatchObject({ notifyThreadId: "other" });
-      registry.close();
-    } finally {
-      vi.useRealTimers();
-    }
+  it("never infers the notified Thread", async () => {
+    const registry = new DelegationControlRegistry();
+    const session = registration("child");
+    session.ownsThread = () => true;
+    registry.register(session);
+    await expect(
+      registry.watch({ threadId: "child", notifyThreadId: "", timeoutMs: 60_000 }),
+    ).rejects.toMatchObject({ code: "INVALID_ARGUMENT" });
+    expect(session.read).not.toHaveBeenCalled();
+    registry.close();
   });
 });

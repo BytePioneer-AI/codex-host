@@ -175,19 +175,22 @@ describe("delegation control server", () => {
   });
 
   it("registers a watch on the delegated child for the Host-resolved parent", async () => {
-    const start = vi.fn(async () => ({
+    const started = {
       delegationId: "delegation-1",
       threadId: "child",
       turnId: "turn-1",
       harnessId: "pi" as const,
       deepLink: "codex://threads/child",
       status: "running" as const,
-      parentThreadId: "parent",
       next: { read: "read", wait: "wait" },
+    };
+    const start = vi.fn(async (): Promise<typeof started & { parentThreadId?: string }> => ({
+      ...started,
+      parentThreadId: "parent",
     }));
-    const watch = vi.fn(async (input: { threadId: string; notifyThreadId?: string }) => ({
+    const watch = vi.fn(async (input: { threadId: string; notifyThreadId: string }) => ({
       threadId: input.threadId,
-      notifyThreadId: input.notifyThreadId ?? "inferred",
+      notifyThreadId: input.notifyThreadId,
       state: "watching" as const,
       status: "running" as const,
       timeoutMs: 5_000,
@@ -236,24 +239,21 @@ describe("delegation control server", () => {
         watch: { state: "notRegistered", reason: "synthetic watch failure" },
       });
 
-      api.send.mockResolvedValue({
-        threadId: "child",
-        turnId: "turn-2",
-        harnessId: "pi",
-        status: "running",
-        next: { read: "read", wait: "wait" },
-      });
-      const sent = await fetch(
-        `${server.endpoint}/v1/thread/send`,
-        authorized({ threadId: "child", message: "continue", watchTimeoutMs: 5_000 }),
+      // Without a Host-resolved parent the watch is reported as not registered.
+      start.mockResolvedValueOnce(started);
+      watch.mockRejectedValueOnce(new Error("Notified Thread is required; pass --notify <thread>"));
+      const orphan = await fetch(
+        `${server.endpoint}/v1/delegate/start`,
+        authorized({ harnessId: "pi", task: "work", watchTimeoutMs: 5_000 }),
       );
-      await expect(sent.json()).resolves.toMatchObject({
-        turnId: "turn-2",
-        watch: { state: "watching" },
+      await expect(orphan.json()).resolves.toMatchObject({
+        watch: { state: "notRegistered", reason: expect.stringContaining("--notify") },
       });
-      // Only the message reaches the Host session; an omitted notified Thread is inferred.
-      expect(api.send).toHaveBeenCalledWith({ threadId: "child", message: "continue" });
-      expect(watch).toHaveBeenLastCalledWith({ threadId: "child", timeoutMs: 5_000 });
+      expect(watch).toHaveBeenLastCalledWith({
+        threadId: "child",
+        notifyThreadId: "",
+        timeoutMs: 5_000,
+      });
 
       const rejected = await fetch(
         `${unsupported.endpoint}/v1/thread/watch`,

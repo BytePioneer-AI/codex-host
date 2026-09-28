@@ -8,7 +8,7 @@ import {
   type ThreadListInput,
   type ThreadReadInput,
   type ThreadWaitInput,
-  type ThreadWatchRequest,
+  type ThreadWatchInput,
 } from "./delegation-types.js";
 import { DelegationWatchService } from "./delegation-watch.js";
 
@@ -75,9 +75,8 @@ export class DelegationControlRegistry implements DelegationControlApi, Delegati
     return (await this.#registrationForThread(input.threadId)).wait(input);
   }
 
-  async watch(request: ThreadWatchRequest) {
-    const notifyThreadId = request.notifyThreadId ?? (await this.#inferCaller(request.threadId));
-    return this.#watchService.watch({ ...request, notifyThreadId });
+  async watch(input: ThreadWatchInput) {
+    return this.#watchService.watch(input);
   }
 
   async watches() {
@@ -110,26 +109,6 @@ export class DelegationControlRegistry implements DelegationControlApi, Delegati
       .sort((left, right) => this.#compareThreads(left, right, input.sort))
       .slice(0, input.limit);
     return { threads, nextCursor: null };
-  }
-
-  /**
-   * A caller without a Host-provided Thread identity (native Codex) is the only
-   * Thread with an active Turn besides the one it is watching.
-   */
-  async #inferCaller(watchedThreadId: string): Promise<string> {
-    const active = await Promise.all(
-      [...this.#registrations].map((registration) => registration.activeThreadIds?.() ?? []),
-    );
-    const candidates = [...new Set(active.flat())].filter((id) => id !== watchedThreadId);
-    const caller = candidates.length === 1 ? candidates[0] : undefined;
-    if (caller) return caller;
-    throw new DelegationControlError(
-      "PARENT_THREAD_AMBIGUOUS",
-      candidates.length === 0
-        ? "The notified Thread cannot be inferred because no other active Turn was found; pass --notify"
-        : "The notified Thread cannot be inferred uniquely; pass --notify explicitly",
-      { activeThreadIds: candidates },
-    );
   }
 
   async #registrationForStart(input: DelegationStartInput): Promise<DelegationControlRegistration> {

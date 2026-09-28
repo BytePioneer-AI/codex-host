@@ -39,7 +39,7 @@ export interface DelegationProgress {
  * uses the same Question contract the Harness Adapter reported.
  */
 export interface DelegationPendingQuestion {
-  /** Opaque identity accepted by `thread answer --interaction`. */
+  /** Opaque Host request identity accepted by `thread answer --interaction`, not an Adapter ID. */
   interactionId: string;
   /** Turn that is waiting for this answer. */
   turnId: string;

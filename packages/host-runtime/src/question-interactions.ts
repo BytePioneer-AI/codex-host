@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { validateHostQuestionResponse } from "@codexhost/harness-adapter";
 import type { HostQuestionInteraction, HostQuestionResponse } from "@codexhost/harness-adapter";
 import type { JsonObject, JsonValue, RoutedHarnessId } from "@codexhost/protocol-core";
@@ -28,6 +29,7 @@ interface PendingQuestion extends QuestionRequest {
 /** Owns pending Questions and their single settlement, independently of transport. */
 export class QuestionInteractions {
   readonly #pending = new Map<string | number, PendingQuestion>();
+  readonly #identityPrefix = randomUUID();
 
   constructor(
     readonly effects: {
@@ -52,8 +54,8 @@ export class QuestionInteractions {
   read(threadId: string): DelegationPendingQuestion[] {
     return [...this.#pending.values()]
       .filter((request) => request.threadId === threadId)
-      .map(({ interaction: { interactionId, turnId, title, expiresAt, questions } }) => ({
-        interactionId,
+      .map(({ requestId, interaction: { turnId, title, expiresAt, questions } }) => ({
+        interactionId: this.#publicId(requestId),
         turnId,
         ...(title ? { title } : {}),
         ...(expiresAt ? { expiresAt } : {}),
@@ -66,18 +68,11 @@ export class QuestionInteractions {
       throw new DelegationControlError("INVALID_ARGUMENT", "Interaction identifier is required");
     }
     const request = [...this.#pending.values()].find(
-      ({ threadId, interaction }) =>
-        threadId === input.threadId && interaction.interactionId === input.interactionId,
+      ({ requestId }) => this.#publicId(requestId) === input.interactionId,
     );
-    if (!request) {
-      if (
-        [...this.#pending.values()].some(
-          ({ interaction }) => interaction.interactionId === input.interactionId,
-        )
-      ) {
-        throw new DelegationControlError("INVALID_ARGUMENT", "Question belongs to another Thread");
-      }
-      throw this.#notPending();
+    if (!request) throw this.#notPending();
+    if (request.threadId !== input.threadId) {
+      throw new DelegationControlError("INVALID_ARGUMENT", "Question belongs to another Thread");
     }
     if (
       !input.answers ||
@@ -98,7 +93,7 @@ export class QuestionInteractions {
     return {
       threadId: request.threadId,
       turnId: request.interaction.turnId,
-      interactionId: request.interaction.interactionId,
+      interactionId: this.#publicId(request.requestId),
       harnessId: request.harnessId,
       status: "running",
       next: {
@@ -181,6 +176,11 @@ export class QuestionInteractions {
         request.respond({ type: "question", answers: {}, cancelled: true }),
       )
       .catch(this.effects.diagnose);
+  }
+
+  /** Host wire IDs are unique here; the prefix also separates rebuilt Host instances. */
+  #publicId(requestId: string | number): string {
+    return `${this.#identityPrefix}:${requestId}`;
   }
 
   #notPending(): DelegationControlError {

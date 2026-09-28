@@ -37,6 +37,16 @@ function questionFixture(): {
   };
 }
 
+async function pendingQuestionId(api: DelegationControlApi, threadId: string): Promise<string> {
+  let id: string | undefined;
+  await vi.waitFor(async () => {
+    id = (await api.read({ threadId, view: "result" })).pendingQuestions?.[0]?.interactionId;
+    expect(id).toBeTypeOf("string");
+  });
+  if (!id) throw new Error("Question was not exposed by read");
+  return id;
+}
+
 /** Frames the fake native process received, parsed per line. */
 function officialRequests(fixture: Fixture): JsonObject[] {
   const requests: JsonObject[] = [];
@@ -86,7 +96,9 @@ function officialQuestion(nativeId: number, threadId: string, turnId: string): J
 async function emitOfficialQuestion(
   fixture: Fixture,
   input: { nativeId: number; threadId: string; turnId: string },
-): Promise<string> {
+  api: DelegationControlApi,
+  readThread: (threadId: string) => Promise<void>,
+): Promise<{ requestId: string; interactionId: string }> {
   emitOfficial(fixture, officialQuestion(input.nativeId, input.threadId, input.turnId));
   const request = await fixture.collector.waitFor(
     (message) =>
@@ -96,7 +108,11 @@ async function emitOfficialQuestion(
   if (typeof request.id !== "string") {
     throw new Error("Native Question was not forwarded with a Host request ID");
   }
-  return request.id;
+  const reading = api.read({ threadId: input.threadId, view: "result" });
+  await readThread(input.threadId);
+  const question = (await reading).pendingQuestions?.find(({ turnId }) => turnId === input.turnId);
+  if (!question) throw new Error("Native Question was not exposed by read");
+  return { requestId: request.id, interactionId: question.interactionId };
 }
 
 /** Answers every `thread/read` the delegation API asks the native process for. */
@@ -175,8 +191,8 @@ describe("AppServerHost pending Questions", () => {
           optional: false,
           secret: false,
         };
-        const interactionId = first.askQuestion(question);
-        expect(second.askQuestion(question)).toBe(interactionId);
+        const nativeInteractionId = first.askQuestion(question);
+        expect(second.askQuestion(question)).toBe(nativeInteractionId);
         for (const threadId of [firstThread, secondThread]) {
           await fixture.collector.waitFor(
             (message) =>
@@ -184,13 +200,20 @@ describe("AppServerHost pending Questions", () => {
               (message.params as JsonObject).threadId === threadId,
           );
         }
+        const firstId = await pendingQuestionId(api, firstThread);
+        const secondId = await pendingQuestionId(api, secondThread);
+        expect(secondId).not.toBe(firstId);
         if (operation === "answer") {
           await expect(
-            api.answer({ threadId: secondThread, interactionId, answers: { value: ["second"] } }),
+            api.answer({
+              threadId: secondThread,
+              interactionId: secondId,
+              answers: { value: ["second"] },
+            }),
           ).resolves.toMatchObject({ threadId: secondThread });
           expect(second.interactionResponses).toHaveLength(1);
         } else {
-          second.expireQuestion(interactionId);
+          second.expireQuestion(nativeInteractionId);
         }
         await vi.waitFor(async () => {
           expect(
@@ -200,9 +223,13 @@ describe("AppServerHost pending Questions", () => {
         expect(first.interactionResponses).toEqual([]);
         expect(
           (await api.read({ threadId: firstThread, view: "result" })).pendingQuestions,
-        ).toMatchObject([{ interactionId }]);
+        ).toMatchObject([{ interactionId: firstId }]);
         await expect(
-          api.answer({ threadId: firstThread, interactionId, answers: { value: ["first"] } }),
+          api.answer({
+            threadId: firstThread,
+            interactionId: firstId,
+            answers: { value: ["first"] },
+          }),
         ).resolves.toMatchObject({ threadId: firstThread });
         expect(first.interactionResponses).toHaveLength(1);
       } finally {
@@ -219,7 +246,7 @@ describe("AppServerHost pending Questions", () => {
       const session = fixture.adapter.sessions[0];
       if (!session) throw new Error("Fake Pi Session was not opened");
       await startPiTurn(fixture, threadId);
-      const interactionId = session.askQuestion({
+      session.askQuestion({
         id: "decision",
         type: "choice",
         prompt: "Continue?",
@@ -231,6 +258,7 @@ describe("AppServerHost pending Questions", () => {
         allowOther: false,
         optional: false,
       });
+      const interactionId = await pendingQuestionId(api, threadId);
       const request = await fixture.collector.waitFor((message) =>
         method(message, "item/tool/requestUserInput"),
       );
@@ -301,7 +329,7 @@ describe("AppServerHost pending Questions", () => {
       const session = fixture.adapter.sessions[0];
       if (!session) throw new Error("Fake Pi Session was not opened");
       await startPiTurn(fixture, threadId);
-      const interactionId = session.askQuestion({
+      session.askQuestion({
         id: "decision",
         type: "choice",
         prompt: "Continue?",
@@ -310,6 +338,7 @@ describe("AppServerHost pending Questions", () => {
         allowOther: false,
         optional: false,
       });
+      const interactionId = await pendingQuestionId(api, threadId);
       await fixture.collector.waitFor((message) => method(message, "item/tool/requestUserInput"));
 
       for (const answers of [
@@ -355,7 +384,7 @@ describe("AppServerHost pending Questions", () => {
       const session = fixture.adapter.sessions[0];
       if (!session) throw new Error("Fake Pi Session was not opened");
       await startPiTurn(fixture, threadId);
-      const optionalId = session.askQuestion({
+      session.askQuestion({
         id: "note",
         type: "text",
         prompt: "Note",
@@ -363,6 +392,7 @@ describe("AppServerHost pending Questions", () => {
         secret: false,
         optional: true,
       });
+      const optionalId = await pendingQuestionId(api, threadId);
       await fixture.collector.waitFor((message) => method(message, "item/tool/requestUserInput"));
       // Every Question may be skipped when none of them is required.
       await expect(
@@ -374,7 +404,7 @@ describe("AppServerHost pending Questions", () => {
         });
       });
 
-      const requiredId = session.askQuestion({
+      session.askQuestion({
         id: "value",
         type: "text",
         prompt: "Value",
@@ -382,6 +412,7 @@ describe("AppServerHost pending Questions", () => {
         secret: false,
         optional: false,
       });
+      const requiredId = await pendingQuestionId(api, threadId);
       await vi.waitFor(async () => {
         expect((await api.read({ threadId, view: "result" })).pendingQuestions).toEqual([
           expect.objectContaining({ interactionId: requiredId }),
@@ -413,7 +444,7 @@ describe("AppServerHost pending Questions", () => {
       const session = fixture.adapter.sessions[0];
       if (!session) throw new Error("Fake Pi Session was not opened");
       await startPiTurn(fixture, threadId);
-      const interactionId = session.askQuestion({
+      session.askQuestion({
         id: "decision",
         type: "choice",
         prompt: "Continue?",
@@ -422,6 +453,7 @@ describe("AppServerHost pending Questions", () => {
         allowOther: false,
         optional: false,
       });
+      const interactionId = await pendingQuestionId(api, threadId);
       const request = await fixture.collector.waitFor((message) =>
         method(message, "item/tool/requestUserInput"),
       );
@@ -463,7 +495,7 @@ describe("AppServerHost pending Questions", () => {
       const session = fixture.adapter.sessions[0];
       if (!session) throw new Error("Fake Pi Session was not opened");
       await startPiTurn(fixture, threadId);
-      const interactionId = session.askQuestion({
+      const nativeInteractionId = session.askQuestion({
         id: "value",
         type: "text",
         prompt: "Value",
@@ -471,12 +503,13 @@ describe("AppServerHost pending Questions", () => {
         secret: false,
         optional: false,
       });
+      const interactionId = await pendingQuestionId(api, threadId);
       const request = await fixture.collector.waitFor((message) =>
         method(message, "item/tool/requestUserInput"),
       );
       if (typeof request.id !== "number") throw new Error("Question request has no numeric ID");
 
-      session.expireQuestion(interactionId);
+      session.expireQuestion(nativeInteractionId);
       await expect(
         fixture.collector.waitFor(
           (message) =>
@@ -506,7 +539,7 @@ describe("AppServerHost pending Questions", () => {
       const session = fixture.adapter.sessions[0];
       if (!session) throw new Error("Fake Pi Session was not opened");
       await startPiTurn(fixture, threadId);
-      const interactionId = session.askQuestion({
+      session.askQuestion({
         id: "value",
         type: "text",
         prompt: "Value",
@@ -514,6 +547,7 @@ describe("AppServerHost pending Questions", () => {
         secret: false,
         optional: false,
       });
+      const interactionId = await pendingQuestionId(api, threadId);
       await fixture.collector.waitFor((message) => method(message, "item/tool/requestUserInput"));
 
       session.failTurn({ code: "nativeFailure", message: "process exited", retryable: false });
@@ -536,11 +570,16 @@ describe("AppServerHost pending Questions", () => {
     try {
       const api = await ready();
       const threadId = "official-thread";
-      const interactionId = await emitOfficialQuestion(fixture, {
-        nativeId: 7,
-        threadId,
-        turnId: "official-turn",
-      });
+      const { requestId, interactionId } = await emitOfficialQuestion(
+        fixture,
+        {
+          nativeId: 7,
+          threadId,
+          turnId: "official-turn",
+        },
+        api,
+        readThread,
+      );
 
       const reading = api.read({ threadId, view: "result" });
       await readThread(threadId);
@@ -577,7 +616,7 @@ describe("AppServerHost pending Questions", () => {
         result: { answers: { decision: { answers: ["Continue"] } } },
       });
       expect(resolvedRequests(fixture)).toEqual([
-        expect.objectContaining({ params: { threadId, requestId: interactionId } }),
+        expect.objectContaining({ params: { threadId, requestId } }),
       ]);
 
       // The resolution that follows the answer cannot be named by an ID the
@@ -592,7 +631,7 @@ describe("AppServerHost pending Questions", () => {
 
       // The retired reply route no longer accepts a late Desktop reply.
       writeRequest(fixture.desktopInput, {
-        id: interactionId,
+        id: requestId,
         result: { answers: { decision: { answers: ["Stop"] } } },
       });
       await nextTick();
@@ -613,16 +652,26 @@ describe("AppServerHost pending Questions", () => {
     try {
       const api = await ready();
       const threadId = "official-thread";
-      const firstTurn = await emitOfficialQuestion(fixture, {
-        nativeId: 11,
-        threadId,
-        turnId: "turn-one",
-      });
-      const secondTurn = await emitOfficialQuestion(fixture, {
-        nativeId: 12,
-        threadId,
-        turnId: "turn-two",
-      });
+      const firstTurn = await emitOfficialQuestion(
+        fixture,
+        {
+          nativeId: 11,
+          threadId,
+          turnId: "turn-one",
+        },
+        api,
+        readThread,
+      );
+      const secondTurn = await emitOfficialQuestion(
+        fixture,
+        {
+          nativeId: 12,
+          threadId,
+          turnId: "turn-two",
+        },
+        api,
+        readThread,
+      );
 
       // A server request that is not a Question keeps the ordinary reply path.
       emitOfficial(fixture, {
@@ -649,29 +698,29 @@ describe("AppServerHost pending Questions", () => {
       });
       await vi.waitFor(() => {
         expect(resolvedRequests(fixture)).toEqual([
-          expect.objectContaining({ params: { threadId, requestId: firstTurn } }),
+          expect.objectContaining({ params: { threadId, requestId: firstTurn.requestId } }),
         ]);
       });
       // The other Turn's Question is untouched and still answerable.
       const reading = api.read({ threadId, view: "result" });
       await readThread(threadId);
       await expect(reading).resolves.toMatchObject({
-        pendingQuestions: [expect.objectContaining({ interactionId: secondTurn })],
+        pendingQuestions: [expect.objectContaining({ interactionId: secondTurn.interactionId })],
       });
       await expect(
         api.answer({
           threadId,
-          interactionId: firstTurn,
+          interactionId: firstTurn.interactionId,
           answers: { decision: ["Continue"] },
         }),
       ).rejects.toMatchObject({ code: "QUESTION_NOT_PENDING" });
       await expect(
         api.answer({
           threadId,
-          interactionId: secondTurn,
+          interactionId: secondTurn.interactionId,
           answers: { decision: ["Continue"] },
         }),
-      ).resolves.toMatchObject({ interactionId: secondTurn, status: "running" });
+      ).resolves.toMatchObject({ interactionId: secondTurn.interactionId, status: "running" });
       await waitForRequest(requests, (request) => request.id === 12);
     } finally {
       await stopFixture(fixture);
@@ -685,11 +734,16 @@ describe("AppServerHost pending Questions", () => {
     try {
       const api = await ready();
       const threadId = "official-thread";
-      const interactionId = await emitOfficialQuestion(fixture, {
-        nativeId: 9,
-        threadId,
-        turnId: "official-turn",
-      });
+      const { requestId, interactionId } = await emitOfficialQuestion(
+        fixture,
+        {
+          nativeId: 9,
+          threadId,
+          turnId: "official-turn",
+        },
+        api,
+        readThread,
+      );
 
       // An undeclared option, an unknown Question ID, and a malformed answer
       // shape are not delivered and do not consume the Question.
@@ -698,7 +752,7 @@ describe("AppServerHost pending Questions", () => {
         { missing: { answers: ["Continue"] } },
         { decision: "not-an-answer-array" },
       ]) {
-        writeRequest(fixture.desktopInput, { id: interactionId, result: { answers } });
+        writeRequest(fixture.desktopInput, { id: requestId, result: { answers } });
         await nextTick();
         expect(requests.some((request) => request.id === 9)).toBe(false);
       }
@@ -709,7 +763,7 @@ describe("AppServerHost pending Questions", () => {
       });
 
       writeRequest(fixture.desktopInput, {
-        id: interactionId,
+        id: requestId,
         result: { answers: { decision: { answers: ["Continue"] } } },
       });
       await waitForRequest(requests, (request) => request.id === 9);
@@ -732,11 +786,16 @@ describe("AppServerHost pending Questions", () => {
     try {
       const api = await ready();
       const threadId = "official-thread";
-      const interactionId = await emitOfficialQuestion(fixture, {
-        nativeId: 7,
-        threadId,
-        turnId: "official-turn",
-      });
+      const { requestId, interactionId } = await emitOfficialQuestion(
+        fixture,
+        {
+          nativeId: 7,
+          threadId,
+          turnId: "official-turn",
+        },
+        api,
+        readThread,
+      );
 
       const answered = api
         .answer({ threadId, interactionId, answers: { decision: ["Continue"] } })
@@ -745,7 +804,7 @@ describe("AppServerHost pending Questions", () => {
           (error: DelegationControlError) => error,
         );
       writeRequest(fixture.desktopInput, {
-        id: interactionId,
+        id: requestId,
         result: { answers: { decision: { answers: ["Continue"] } } },
       });
 

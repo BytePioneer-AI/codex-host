@@ -38,18 +38,39 @@ function fixture(options: { expiresAt?: string; gate?: Promise<void> } = {}) {
     parseResponse: () => ({ type: "question", answers: { value: ["desktop"] } }),
     respond,
   });
+  const interactionId = questions.read("thread")[0]?.interactionId;
+  if (!interactionId) throw new Error("Missing registered Question");
   const answer = () =>
     questions.answer({
       threadId: "thread",
-      interactionId: "question",
+      interactionId,
       answers: { value: ["cli"] },
     });
-  return { questions, respond, answer, effects };
+  return { questions, respond, answer, effects, interactionId };
 }
 
 afterEach(() => vi.useRealTimers());
 
 describe("Question settlement across asynchronous boundaries", () => {
+  it("does not reuse answer identities when the Host instance is rebuilt", async () => {
+    const old = fixture();
+    await old.questions.close(-1);
+    const current = fixture();
+    expect(current.interactionId).not.toBe(old.interactionId);
+    for (const interactionId of [old.interactionId, "question"]) {
+      await expect(
+        current.questions.answer({
+          threadId: "thread",
+          interactionId,
+          answers: { value: ["stale"] },
+        }),
+      ).rejects.toMatchObject({ code: "QUESTION_NOT_PENDING" });
+    }
+    expect(current.respond).not.toHaveBeenCalled();
+    await current.answer();
+    expect(current.respond).toHaveBeenCalledOnce();
+  });
+
   it("keeps a rejected in-flight answer correctable despite a concurrent Desktop reply", async () => {
     const f = fixture();
     const delivering = Promise.withResolvers<undefined>();

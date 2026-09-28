@@ -158,6 +158,7 @@ describe("production Desktop Controller", () => {
         "qoder",
         "qoder-cn",
         "kimi-code",
+        "zcode",
       ],
       timeoutMs: 90_000,
     });
@@ -165,6 +166,7 @@ describe("production Desktop Controller", () => {
       port: 43124,
       nonce: attachmentNonce,
       attach: expect.any(Function),
+      openLocalPage: expect.any(Function),
     });
     expect(ready).toHaveBeenCalledWith({
       schemaVersion: 2,

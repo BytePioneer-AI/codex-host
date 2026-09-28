@@ -1,0 +1,11 @@
+{
+  "manifestVersion": 1,
+  "id": "zcode",
+  "name": "ZCode",
+  "version": "0.1.0",
+  "adapterApiVersion": 1,
+  "entry": "./dist/plugin.js",
+  "icon": "assets/icon.svg",
+  "launchCommand": true,
+  "links": { "documentation": "https://github.com/zai-org/ZCode" }
+}

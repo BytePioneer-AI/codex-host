@@ -1,5 +1,7 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
+import { openRendererLocalPage } from "./renderer-local-page.js";
+import { listCdpTargets } from "./cdp-client.js";
 
 import {
   startControllerAttachmentServer,
@@ -274,6 +276,7 @@ export async function runDesktopController(
           "qoder",
           "qoder-cn",
           "kimi-code",
+          "zcode",
         ],
         timeoutMs: PRODUCTION_INSTALL_TIMEOUT_MS,
       },
@@ -328,6 +331,13 @@ export async function runDesktopController(
     attachmentServer = await dependencies.startAttachmentServer({
       port: options.attachmentPort,
       nonce: options.attachmentNonce,
+      openLocalPage: (url) =>
+        openRendererLocalPage(
+          (expression) =>
+            useSession(async () => (await recoverSession()).executeRenderer(expression)),
+          url,
+          () => listCdpTargets(options.rendererCdpEndpoint),
+        ),
       attach: () =>
         useSession(async () => {
           const current = await recoverSession();

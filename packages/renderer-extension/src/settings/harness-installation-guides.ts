@@ -29,6 +29,19 @@ const node: Text = ["Requires Node.js (including npm).", "需先安装 Node.js�
 // Sources: each entry's official URL, checked when updating the guide. These are
 // user-run instructions, not a Host installer or a claim of Adapter compatibility.
 const guides: Readonly<Record<ExternalRendererAgent, InstallationGuide>> = {
+  zcode: {
+    // codexhost runs the Agent CLI bundled with the installed ZCode Desktop.
+    url: "https://github.com/BytePioneer-AI/codex-host/blob/main/docs/harnesses/zcode/zcode-harness-integration.md#%E5%AE%89%E8%A3%85",
+    commands: [],
+    before: [
+      "Install ZCode Desktop and sign in with a Start Plan account. Requires Node 24. If ZCode.app is not in /Applications, set its path in the connection settings.",
+      "请安装 ZCode Desktop 并登录 Start Plan 账号；需要 Node 24。ZCode.app 不在 /Applications 时，可在连接设置中填写其路径。",
+    ],
+    after: [
+      "Check again after signing in. The ZCode Desktop window does not need to stay open.",
+      "登录后重新检测；使用时不需要保持 ZCode 窗口打开。",
+    ],
+  },
   pi: {
     url: "https://pi.dev/",
     commands: shells(

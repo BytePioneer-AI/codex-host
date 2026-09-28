@@ -30,6 +30,7 @@ describe("compact delegation output", () => {
       status,
       result,
       timedOut: status === "running",
+      pendingQuestions: [],
       ...(status === "running" ? { progress: "Latest update" } : {}),
     });
   });
@@ -74,7 +75,33 @@ describe("compact delegation output", () => {
       hasMore: false,
       nextCursor: "bookmark",
       error: "Model unavailable",
+      pendingQuestions: [],
     });
+  });
+
+  it.each([
+    ["thread read", "result"],
+    ["thread read", "messages"],
+    ["thread wait", "result"],
+    ["thread wait", "messages"],
+  ] as const)("preserves empty pendingQuestions in %s --view %s", (command, view) => {
+    expect(
+      compactDelegationOutput(
+        command,
+        {
+          threadId: "thread",
+          harnessId: "pi",
+          status: "completed",
+          result: { availability: "unavailable" },
+          progress: [],
+          messages: [],
+          hasMore: false,
+          nextCursor: null,
+          pendingQuestions: [],
+        },
+        view,
+      ),
+    ).toHaveProperty("pendingQuestions", []);
   });
 
   it("exposes discoverable Model IDs and native Thinking restrictions", () => {

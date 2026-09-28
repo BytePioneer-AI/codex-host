@@ -302,6 +302,7 @@ describe("delegation CLI", () => {
               messages: [{ role: "user", text: "Question" }],
               hasMore: true,
               nextCursor: "page-2",
+              pendingQuestions: [],
             }
           : snapshot,
       );

@@ -62,7 +62,7 @@ function snapshotOutput(
     harnessId: snapshot.harnessId,
     status: snapshot.status,
     ...(snapshot.timedOut !== undefined ? { timedOut: snapshot.timedOut } : {}),
-    ...(snapshot.pendingQuestions?.length ? { pendingQuestions: snapshot.pendingQuestions } : {}),
+    pendingQuestions: snapshot.pendingQuestions ?? [],
   };
   if (view === "messages") {
     if (typeof snapshot.hasMore !== "boolean") {

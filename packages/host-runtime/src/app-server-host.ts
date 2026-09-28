@@ -318,6 +318,23 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+/**
+ * Codex app-server reports an unknown Thread with these messages. Any other
+ * error from a Thread read is a failure to read, not proof that it is missing.
+ */
+const OFFICIAL_THREAD_MISSING =
+  /no rollout found for thread id|thread not found|invalid thread id/i;
+
+function officialThreadReadError(error: Record<string, unknown>): DelegationControlError {
+  const message = typeof error.message === "string" ? error.message : "";
+  return OFFICIAL_THREAD_MISSING.test(message)
+    ? new DelegationControlError("THREAD_NOT_FOUND", message || "Official Thread was not found")
+    : new DelegationControlError(
+        "INTERNAL_ERROR",
+        message ? `Official Thread read failed: ${message}` : "Official Thread read failed",
+      );
+}
+
 function codexAccountRpcError(error: unknown): { code: number; message: string } {
   const message = error instanceof Error ? error.message : "";
   return message === "Unknown Codex Account"
@@ -2035,8 +2052,9 @@ export class AppServerHost {
       threadId: input.threadId,
       includeTurns: true,
     });
-    if (isRecord(current.error) || !isRecord(current.result)) {
-      throw new DelegationControlError("THREAD_NOT_FOUND", "Official Thread was not found");
+    if (isRecord(current.error)) throw officialThreadReadError(current.error);
+    if (!isRecord(current.result)) {
+      throw new DelegationControlError("INTERNAL_ERROR", "Official Thread read returned no result");
     }
     const currentThread = isRecord(current.result.thread) ? current.result.thread : null;
     const currentTurns =
@@ -2119,18 +2137,11 @@ export class AppServerHost {
       threadId: input.threadId,
       includeTurns: true,
     });
-    if (isRecord(response.error)) {
-      throw new DelegationControlError(
-        "THREAD_NOT_FOUND",
-        typeof response.error.message === "string"
-          ? response.error.message
-          : "Official Thread was not found",
-      );
-    }
+    if (isRecord(response.error)) throw officialThreadReadError(response.error);
     const result = isRecord(response.result) ? response.result : null;
     const thread = result && isRecord(result.thread) ? result.thread : null;
     if (!thread)
-      throw new DelegationControlError("THREAD_NOT_FOUND", "Official Thread was not found");
+      throw new DelegationControlError("INTERNAL_ERROR", "Official Thread read returned no Thread");
     const turns = Array.isArray(thread.turns)
       ? thread.turns.filter((turn): turn is JsonObject => isRecord(turn))
       : [];

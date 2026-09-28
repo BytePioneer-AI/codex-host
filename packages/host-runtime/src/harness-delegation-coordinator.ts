@@ -395,7 +395,9 @@ export class HarnessDelegationCoordinator {
     }
     const thread = resolution.thread;
     if (thread.record.subagent) {
-      throw new DelegationControlError("DELEGATION_FAILED", "Thread is read-only");
+      throw new DelegationControlError("DELEGATION_FAILED", "Thread is read-only", {
+        readOnly: true,
+      });
     }
     if (this.#externalThreadBusy(thread) || thread.activeTurnId) {
       throw new DelegationControlError("THREAD_BUSY", "Thread already has an active Turn");

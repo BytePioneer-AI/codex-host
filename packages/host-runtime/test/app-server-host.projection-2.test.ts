@@ -466,6 +466,37 @@ describe("AppServerHost HarnessAdapter projection", () => {
     await stopFixture(fixture);
   });
 
+  it("reports a native Codex read failure as not found only when the Thread is missing", async () => {
+    let delegationApi: DelegationControlApi | undefined;
+    const fixture = createFixture({
+      onDelegationApi: (api) => {
+        delegationApi = api;
+        return undefined;
+      },
+    });
+    await fixture.ready;
+    if (!delegationApi) throw new Error("Delegation API was not registered");
+    await bindOfficialThread(fixture, "native-thread");
+    const answer = async (error: { code: number; message: string }) => {
+      const read = await readJsonLine(fixture.official.stdin);
+      expect(read).toMatchObject({ method: "thread/read", params: { threadId: "native-thread" } });
+      fixture.official.stdout.write(`${JSON.stringify({ id: read.id, error })}\n`);
+    };
+
+    const failing = delegationApi.read({ threadId: "native-thread", view: "result" });
+    await answer({ code: -32603, message: "internal error" });
+    await expect(failing).rejects.toMatchObject({ code: "INTERNAL_ERROR" });
+
+    const missing = delegationApi.read({ threadId: "native-thread", view: "result" });
+    await answer({ code: -32600, message: "no rollout found for thread id native-thread" });
+    await expect(missing).rejects.toMatchObject({ code: "THREAD_NOT_FOUND" });
+
+    const sending = delegationApi.send({ threadId: "native-thread", message: "notify" });
+    await answer({ code: -32603, message: "internal error" });
+    await expect(sending).rejects.toMatchObject({ code: "INTERNAL_ERROR" });
+    await stopFixture(fixture);
+  });
+
   it("lists native and external Threads through the delegation CLI list surface", async () => {
     let delegationApi: DelegationControlApi | undefined;
     const fixture = createFixture({

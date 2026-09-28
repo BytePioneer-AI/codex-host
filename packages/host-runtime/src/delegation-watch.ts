@@ -34,6 +34,19 @@ function errorCode(error: unknown): string | undefined {
   return error instanceof DelegationControlError ? error.code : undefined;
 }
 
+/**
+ * - permanent: the notified Thread is missing or read-only; retrying cannot help.
+ * - rejected: the Host refused the send with a structured error before a Turn
+ *   started (busy, resume or start failure), so a retry cannot duplicate it.
+ * - unknown: an unstructured failure such as a timeout; a Turn may already have
+ *   started, so retrying could deliver the notification twice.
+ */
+function deliveryFailure(error: unknown): "permanent" | "rejected" | "unknown" {
+  if (!(error instanceof DelegationControlError)) return "unknown";
+  if (error.code === "THREAD_NOT_FOUND" || error.details?.readOnly === true) return "permanent";
+  return "rejected";
+}
+
 function threadLink(threadId: string): string {
   return `codex://threads/${threadId}`;
 }
@@ -211,14 +224,16 @@ export class DelegationWatchService {
       await this.#api.send({ threadId: notifyThreadId, message: notification(pending) });
       for (const watch of pending) this.#remove(watch);
     } catch (error) {
-      const code = errorCode(error);
-      const permanent = code === "THREAD_NOT_FOUND" || code === "DELEGATION_FAILED";
-      const reason = error instanceof Error ? error.message : String(error);
+      const failure = deliveryFailure(error);
+      const message = error instanceof Error ? error.message : String(error);
       for (const watch of pending) {
-        // THREAD_BUSY and unknown failures are retried; they are never treated as delivered.
-        if (permanent || Date.now() >= (watch.deliveryDeadline ?? 0)) {
+        // A rejected send is retried and never treated as delivered.
+        if (failure !== "rejected" || Date.now() >= (watch.deliveryDeadline ?? 0)) {
           watch.state = "undeliverable";
-          watch.reason = reason;
+          watch.reason =
+            failure === "unknown"
+              ? `Delivery outcome unknown; the notification may already have started a Turn, so it is not retried (${message})`
+              : message;
         }
       }
       this.#trimUndeliverable();

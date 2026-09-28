@@ -227,7 +227,9 @@ describe("DelegationWatchService", () => {
     const service = new DelegationWatchService(fake, { pollIntervalMs: POLL_MS });
     await service.watch({ threadId: "child", notifyThreadId: "parent", timeoutMs: 60_000 });
     fake.update("child", { status: "completed" });
-    fake.sendFailures.push(new DelegationControlError("DELEGATION_FAILED", "Thread is read-only"));
+    fake.sendFailures.push(
+      new DelegationControlError("DELEGATION_FAILED", "Thread is read-only", { readOnly: true }),
+    );
     await vi.advanceTimersByTimeAsync(POLL_MS);
     await expect(service.watches()).resolves.toMatchObject({
       watches: [{ state: "undeliverable", outcome: "completed", reason: "Thread is read-only" }],
@@ -267,21 +269,40 @@ describe("DelegationWatchService", () => {
     expect(fake.sent[0]?.message).toContain("Harness is gone");
   });
 
-  it("retries delivery after send throws synchronously", async () => {
+  it("retries a send the Host rejected before starting a Turn", async () => {
     const fake = runtime({ child: { status: "running" }, parent: { status: "completed" } });
     const service = new DelegationWatchService(fake, { pollIntervalMs: POLL_MS });
     await service.watch({ threadId: "child", notifyThreadId: "parent", timeoutMs: 60_000 });
-    const send = fake.send.getMockImplementation();
     fake.update("child", { status: "completed" });
-    fake.send.mockImplementationOnce(() => {
-      throw new TypeError("synthetic bug");
-    });
+    fake.sendFailures.push(
+      new DelegationControlError("DELEGATION_FAILED", "Official Thread resume failed"),
+    );
     await vi.advanceTimersByTimeAsync(POLL_MS);
     expect(fake.sent).toEqual([]);
+    await expect(service.watches()).resolves.toMatchObject({
+      watches: [{ state: "pendingDelivery", outcome: "completed" }],
+    });
 
-    if (send) fake.send.mockImplementation(send);
     await vi.advanceTimersByTimeAsync(POLL_MS);
     expect(fake.sent).toHaveLength(1);
+    await expect(service.watches()).resolves.toEqual({ watches: [] });
+  });
+
+  it("does not retry a send whose outcome is unknown", async () => {
+    const fake = runtime({ child: { status: "running" }, parent: { status: "completed" } });
+    const service = new DelegationWatchService(fake, { pollIntervalMs: POLL_MS });
+    await service.watch({ threadId: "child", notifyThreadId: "parent", timeoutMs: 60_000 });
+    fake.update("child", { status: "completed" });
+    fake.send.mockImplementationOnce(async () => {
+      throw new Error("Official app-server request timed out");
+    });
+    await vi.advanceTimersByTimeAsync(POLL_MS * 5);
+    expect(fake.send).toHaveBeenCalledOnce();
+    const { watches } = await service.watches();
+    expect(watches).toMatchObject([{ state: "undeliverable", outcome: "completed" }]);
+    expect(watches[0]?.reason).toContain("Delivery outcome unknown");
+    expect(watches[0]?.reason).toContain("timed out");
+    expect(vi.getTimerCount()).toBe(0);
   });
 
   it("stops all work when closed", async () => {

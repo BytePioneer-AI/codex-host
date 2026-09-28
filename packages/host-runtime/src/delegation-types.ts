@@ -4,6 +4,7 @@ import type {
   HarnessModelRef,
   HarnessSessionState,
   HarnessThinkingOptionId,
+  HostQuestion,
 } from "@codexhost/harness-adapter";
 
 export const DELEGATION_RUNTIME_ENDPOINT_ENV = "CODEXHOST_RUNTIME_ENDPOINT";
@@ -39,6 +40,21 @@ export interface DelegationProgress {
   text: string;
 }
 
+/**
+ * One Question request the Host is waiting to answer. It is reported by
+ * `thread read`, so a caller can answer it without registering a watch, and it
+ * uses the same Question contract the Harness Adapter reported.
+ */
+export interface DelegationPendingQuestion {
+  /** Opaque identity accepted by `thread answer --interaction`. */
+  interactionId: string;
+  /** Turn that is waiting for this answer. */
+  turnId: string;
+  title?: string;
+  expiresAt?: string;
+  questions: HostQuestion[];
+}
+
 export interface DelegationThreadSnapshot {
   hostId?: string;
   threadId: string;
@@ -54,6 +70,8 @@ export interface DelegationThreadSnapshot {
   messages?: DelegationMessage[];
   hasMore?: boolean;
   nextCursor: string | null;
+  /** Empty when the Thread is not waiting for an answer. */
+  pendingQuestions?: DelegationPendingQuestion[];
 }
 
 export interface DelegationStartInput {
@@ -141,6 +159,24 @@ export interface ThreadWaitInput extends ThreadReadInput {
   timeoutMs: number;
 }
 
+export interface ThreadAnswerInput {
+  threadId: string;
+  /** Interaction ID reported by `thread read` in `pendingQuestions`. */
+  interactionId: string;
+  /** Question ID to answer values, in the reported Question's value space. */
+  answers: Record<string, string[]>;
+}
+
+export interface ThreadAnswerResult {
+  threadId: string;
+  interactionId: string;
+  turnId: string;
+  harnessId: RoutedHarnessId;
+  /** The answered Turn keeps running; this receipt is not proof it will succeed. */
+  status: "running";
+  next: { read: string; wait: string };
+}
+
 export interface ThreadListInput {
   cwd?: string;
   parentThreadId?: string;
@@ -183,6 +219,8 @@ export type ThreadWatchOutcome =
   | "completed"
   | "failed"
   | "interrupted"
+  /** The Thread is running but waiting for an answer. */
+  | "needsInput"
   /** The Thread was still running when the watch expired. */
   | "timedOut"
   /** Reads kept failing, so the state of the Thread is unknown. */
@@ -192,10 +230,15 @@ export type ThreadWatchOutcome =
 export interface ThreadWatchResult {
   threadId: string;
   notifyThreadId: string;
-  /** `alreadyTerminal` means no watch was registered and no notification will be sent. */
-  state: "watching" | "alreadyTerminal";
+  /**
+   * `alreadyTerminal` and `alreadyNeedsInput` mean no watch was registered and
+   * no notification will be sent.
+   */
+  state: "watching" | "alreadyTerminal" | "alreadyNeedsInput";
   status: DelegationThreadStatus;
   timeoutMs: number;
+  /** Present for `alreadyNeedsInput`, so the caller can answer without re-reading. */
+  pendingQuestions?: DelegationPendingQuestion[];
 }
 
 export interface ThreadWatchEntry {
@@ -203,8 +246,10 @@ export interface ThreadWatchEntry {
   notifyThreadId: string;
   state: "watching" | "pendingDelivery" | "undeliverable";
   outcome?: ThreadWatchOutcome;
-  /** Turn that reached the terminal outcome, when the Thread reported one. */
+  /** Turn that reached the reported outcome, when the Thread reported one. */
   turnId?: string;
+  /** Question request that reported `needsInput`. */
+  interactionId?: string;
   /** Present for `undeliverable`. */
   reason?: string;
   registeredAt: string;
@@ -232,6 +277,7 @@ export interface DelegationControlApi {
   cancel(input: ThreadCancelInput): Promise<ThreadCancelResult>;
   read(input: ThreadReadInput): Promise<DelegationThreadSnapshot>;
   wait(input: ThreadWaitInput): Promise<DelegationThreadSnapshot & { timedOut: boolean }>;
+  answer(input: ThreadAnswerInput): Promise<ThreadAnswerResult>;
   list(input: ThreadListInput): Promise<DelegationThreadListResult>;
 }
 
@@ -249,6 +295,8 @@ export type DelegationControlErrorCode =
   | "RESPONSE_TOO_LARGE"
   | "RUNTIME_UNREACHABLE"
   | "DELEGATION_FAILED"
+  /** The Question request is unknown, already answered, or no longer pending. */
+  | "QUESTION_NOT_PENDING"
   | "INTERNAL_ERROR";
 
 export class DelegationControlError extends Error {

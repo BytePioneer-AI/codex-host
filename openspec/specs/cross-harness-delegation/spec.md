@@ -238,17 +238,23 @@ Host SHALL 向它拉起的 Harness 进程提供配套 CLI 的绝对路径、Runt
 - **AND** 它 MUST NOT 仅以自由文本表述成败
 
 ### Requirement: 调用方可显式注册一次性 Thread 停下通知
-系统 SHALL 提供 `codexhost thread watch <thread> [--notify <thread>] [--timeout-ms <n>]` 与 `codexhost thread watches`。watch 在被观察 Thread 停下或到期时，SHALL 通过与 `thread send` 相同的路径在被通知 Thread 中启动一个新 Turn，作为一次性通知。被观察 Thread 与被通知 Thread 可以是任意两个不同的 Thread，不要求委派血缘。通知 SHALL 只报告执行状态与 Thread 链接，MUST NOT 携带或摘要会话内容，也 MUST NOT 被表述为工作已验收。watch SHALL 只保存在 Host Runtime 内存中，不提供取消操作。
+系统 SHALL 提供 `codexhost thread watch <thread> [--notify <thread>] [--timeout-ms <n>]` 与 `codexhost thread watches`。watch 在被观察 Thread 停下、出现待回答的问题或到期时，SHALL 通过与 `thread send` 相同的路径在被通知 Thread 中启动一个新 Turn，且只通知一次。被观察 Thread 与被通知 Thread 可以是任意两个不同的 Thread，不要求委派血缘。通知 SHALL 只报告执行状态与 Thread 链接，MUST NOT 携带或摘要会话内容，也 MUST NOT 被表述为工作已验收。watch SHALL 只保存在 Host Runtime 内存中，不提供取消操作。
 
 #### Scenario: 注册后立即返回
 - **WHEN** 调用方对一个运行中的 Thread 执行 `thread watch`
-- **THEN** 命令 SHALL 返回 `state: "watching"`，不等待 Thread 停下
+- **THEN** 命令 SHALL 立即返回 `state: "watching"`
 - **AND** 调用方 SHALL 可以结束自己的 Turn，无需等待或轮询
 
 #### Scenario: 注册时已是终态
-- **WHEN** 被观察 Thread 在注册时已完成、失败或中断
+- **WHEN** 被观察 Thread 在注册时没有运行
 - **THEN** 命令 SHALL 返回 `state: "alreadyTerminal"` 与当前状态
 - **AND** MUST NOT 注册 watch 或发送通知
+
+#### Scenario: 注册时已经在等待回答
+- **WHEN** 被观察 Thread 在注册时已经存在待回答的问题
+- **THEN** 命令 SHALL 返回 `state: "alreadyNeedsInput"` 与当前 `pendingQuestions`
+- **AND** MUST NOT 注册 watch 或异步重复通知
+- **AND** 调用方回答问题后 SHALL 能够再次注册 watch，等待下一个问题或终态
 
 #### Scenario: 被通知 Thread 的确定
 - **WHEN** 调用方执行 `thread watch`
@@ -257,38 +263,32 @@ Host SHALL 向它拉起的 Harness 进程提供配套 CLI 的绝对路径、Runt
 - **AND** MUST NOT 根据活跃 Turn 推断被通知方
 
 #### Scenario: 通知结果
-- **WHEN** 被观察 Thread 停下、到期、持续无法读取或不再存在
-- **THEN** 通知结果 SHALL 分别为 `completed`、`failed`、`interrupted`、`timedOut`、`unreadable` 或 `notFound`
-- **AND** 终态结果 SHALL 在快照提供 Turn 身份时注明其来源 Turn
+- **WHEN** 被观察 Thread 停下、等待回答、到期、持续无法读取或不再存在
+- **THEN** 通知结果 SHALL 分别为 `completed`、`failed`、`interrupted`、`needsInput`、`timedOut`、`unreadable` 或 `notFound`
+- **AND** 终态结果 SHALL 注明其来源 Turn，`needsInput` SHALL 注明问题请求标识与 Turn
 - **AND** 读取失败 SHALL 在持续 60 秒后才报告 `unreadable`，仅在确认 Thread 不存在时报告 `notFound`
+
+#### Scenario: 等待回答期间的通知只发一次
+- **WHEN** 被观察 Thread 出现待回答的问题并触发一次 `needsInput` 通知
+- **THEN** 该 watch SHALL 在成功送达后移除
+- **AND** 同一个问题 MUST NOT 再次触发同一 watch 的通知
+- **AND** 调用方回答后重新注册 watch SHALL 覆盖后续的问题或终态
 
 #### Scenario: 调整方向不视为停下
 - **WHEN** 被观察 Thread 的旧 Turn 因“调整方向”被停止并由新 Turn 接续
-- **THEN** watch MUST NOT 因旧 Turn 的终态通知
-- **AND** SHALL 继续观察 Thread，直到真正停下或达到观察期限
-
-#### Scenario: 重复注册与下一次停止
-- **WHEN** 同一对 Thread 再次注册 watch
-- **THEN** 仍处于观察中的注册 SHALL 去重并保留原观察期限
-- **AND** 旧通知已待投递且被观察 Thread 重新运行时，SHALL 为下一次停止建立新观察
-- **AND** 旧通知 MUST NOT 被新注册替换或丢弃
+- **THEN** watch MUST NOT 通知
+- **AND** SHALL 在 Thread 真正停下时通知一次
 
 #### Scenario: 被通知 Thread 正忙
 - **WHEN** 通知到期时被通知 Thread 有活跃 Turn
 - **THEN** 通知 SHALL 保持待送达并在最长 6 小时内重试
 - **AND** `THREAD_BUSY` MUST NOT 被视为已送达
 - **AND** `thread send` 自身 MUST NOT 因此改为排队
-- **AND** 每次投递 SHALL 合并该接收方当前所有待投递通知，包括此前轮询积累的通知
-
-#### Scenario: 已确认未启动的投递失败
-- **WHEN** 投递失败且调用链确认未启动 Turn，例如 resume 校验失败或原生明确拒绝启动
-- **THEN** Host SHALL 在投递期限内保留通知并重试
-- **AND** 接收方已不存在或只读时 SHALL 直接标记 `undeliverable`
 
 #### Scenario: 投递结果未知
 - **WHEN** 投递失败且调用链不能证明未启动 Turn，例如 Harness 启动确认超时
 - **THEN** Host MUST NOT 重试该投递
-- **AND** SHALL 将 watch 标记为 `undeliverable` 并保留结果未知的原因
+- **AND** SHALL 将 watch 标记为 `undeliverable` 并保留原因
 
 #### Scenario: 无法投递
 - **WHEN** 被通知 Thread 不存在、只读，或超过 6 小时仍无法送达
@@ -306,7 +306,7 @@ Host SHALL 向它拉起的 Harness 进程提供配套 CLI 的绝对路径、Runt
 - **AND** Delegation 关系 SHALL 保持持久化，调用方可重新注册
 
 ### Requirement: `thread read` 返回精简的可见对话结果而非执行轨迹
-`codexhost thread read <thread> [--view result|messages] [--cursor <cursor>] [--limit <n>]` SHALL 立即读取指定 Thread 当前已由 Host 投影的可见对话结果。`<thread>` SHALL 接受裸 Thread 标识或 `codex://threads/<id>` 深度链接。`--view` 默认 SHALL 为 `result`；`--view messages` SHALL 附带有界的用户与 Agent 可见消息。首版 `thread read` MUST NOT 返回工具调用、工具参数、工具输出、文件变更、reasoning summary、隐藏推理或 Harness 私有 Transcript。
+`codexhost thread read <thread> [--view result|messages] [--cursor <cursor>] [--limit <n>]` SHALL 立即读取指定 Thread 当前已由 Host 投影的可见对话结果。`<thread>` SHALL 接受裸 Thread 标识或 `codex://threads/<id>` 深度链接。`--view` 默认 SHALL 为 `result`；`--view messages` SHALL 附带有界的用户与 Agent 可见消息。首版 `thread read` MUST NOT 返回工具调用、工具参数、工具输出、文件变更、reasoning summary、隐藏推理或 Harness 私有 Transcript。快照 SHALL 同时返回 `pendingQuestions`，列出该 Thread 当前等待回答的结构化问题请求；空数组 SHALL 表示没有问题，且读取或回答问题 MUST NOT 要求先注册 watch。
 
 #### Scenario: 默认读取已完成 Thread
 - **WHEN** 调用方执行 `codexhost thread read <thread>` 且最近 Turn 已完成并存在最终 Agent 消息
@@ -320,6 +320,17 @@ Host SHALL 向它拉起的 Harness 进程提供配套 CLI 的绝对路径、Runt
 - **THEN** CLI SHALL 立即返回 `status: "running"`、活跃 Turn 的标识与状态、截至读取时最新的 Agent 可见进度消息、`result.availability: "pending"` 和 `nextCursor`
 - **AND** 没有 Agent 可见进度消息时 SHALL 返回空的 `progress` 数组
 - **AND** 读取 MUST NOT 等待 Turn 完成
+
+#### Scenario: 读取待回答的问题
+- **WHEN** Thread 正在等待回答一个由原生结构化请求报告的问题
+- **THEN** 快照 SHALL 在 `pendingQuestions` 中包含该请求的交互 ID、`turnId`、问题与已有的回答约束
+- **AND** 该 Thread 的 `status` SHALL 保持 `running`，MUST NOT 因提问记为完成或新建 `waiting` 状态
+- **AND** JSON 与 compact 输出 SHALL 都暴露该字段
+
+#### Scenario: 没有待回答的问题
+- **WHEN** Thread 当前没有被 Host 观察到的待回答请求
+- **THEN** `pendingQuestions` SHALL 为空数组
+- **AND** Host MUST NOT 从聊天正文、工具输出或屏幕内容反推一个问题
 
 #### Scenario: 消息视图读取多轮对话
 - **WHEN** 调用方执行 `codexhost thread read <thread> --view messages`
@@ -351,7 +362,7 @@ Host SHALL 向它拉起的 Harness 进程提供配套 CLI 的绝对路径、Runt
 - **AND** MUST NOT 将 `activity`、`raw` 或 `full-transcript` 作为首版读取视图
 
 ### Requirement: `thread wait` 有界等待并复用 `thread read` 的结果形状
-`codexhost thread wait <thread> [--timeout-ms <n>] [--view result|messages] [--cursor <cursor>] [--limit <n>]` SHALL 有界等待指定 Thread 达到终态或等待期限到期。等待结束后 SHALL 返回与相同读取参数下 `thread read` 一致的快照字段，并额外返回 `timedOut`。`--view` 默认 SHALL 为 `result`；`--cursor` 与 `--limit` SHALL 仅在 `--view messages` 时控制消息增量与页大小。
+`codexhost thread wait <thread> [--timeout-ms <n>] [--view result|messages] [--cursor <cursor>] [--limit <n>]` SHALL 有界等待指定 Thread 达到终态、出现待回答的问题或等待期限到期。等待结束后 SHALL 返回与相同读取参数下 `thread read` 一致的快照字段，并额外返回 `timedOut`。`--view` 默认 SHALL 为 `result`；`--cursor` 与 `--limit` SHALL 仅在 `--view messages` 时控制消息增量与页大小。
 
 #### Scenario: 等待已终止 Thread
 - **WHEN** 调用方等待一个已处于终态的 Thread
@@ -363,8 +374,14 @@ Host SHALL 向它拉起的 Harness 进程提供配套 CLI 的绝对路径、Runt
 - **THEN** CLI SHALL 返回 `timedOut: false` 与终态快照
 - **AND** 若最终 Agent 消息可用，`result.availability` SHALL 为 `available`
 
+#### Scenario: 等待期间出现待回答的问题
+- **WHEN** Thread 在等待期限内开始等待回答一个结构化问题
+- **THEN** CLI SHALL 立即返回 `timedOut: false`、`status: "running"` 与包含该请求的 `pendingQuestions`
+- **AND** MUST NOT 等到 Turn 终态或等待期限到期
+- **AND** 调用方 SHALL 通过 `status` 与 `pendingQuestions` 区分完成与等待回答
+
 #### Scenario: 等待到期但 Thread 仍在运行
-- **WHEN** Thread 在等待期限到期时仍有活跃 Turn
+- **WHEN** Thread 在等待期限到期时仍有活跃 Turn 且没有待回答的问题
 - **THEN** CLI SHALL 以成功退出返回 `timedOut: true`、`status: "running"` 和 `result.availability: "pending"`
 - **AND** 被观察的 Thread SHALL 继续执行
 
@@ -458,3 +475,46 @@ Thread 观察命令 SHALL 接受裸 Thread 标识与 Codex 深度链接两种形
 - **THEN** Host MUST NOT 启动或取消 Turn、发送消息或回复 Interaction
 - **AND** send/cancel MUST 仅由对应的显式命令触发
 
+### Requirement: 委派侧可读取并回答待处理的问题请求
+系统 SHALL 提供 `codexhost thread answer <thread> --interaction <id> --answers-file <file>`，把答案交回产生该问题的原生结构化请求。Host SHALL 对每个待回答请求维护唯一状态，Desktop 与委派 CLI SHALL 消费同一份状态并共用结算逻辑。答案文件 SHALL 沿用问题 ID 到答案数组的结构。Host SHALL 按报告的回答约束校验答案；无效答案 MUST NOT 消耗请求，SHALL 以 `INVALID_ARGUMENT` 失败并保持请求待回答。首个被原生接受的答案 SHALL 结算该请求并让原 Turn 继续；同一问题的其余回答 SHALL 以 `QUESTION_NOT_PENDING` 失败。CLI 回答成功后 SHALL 同步关闭 Desktop 中的同一问题。请求被取消、过期、Turn 结束、原生自行解决或 Runtime 关闭后，旧交互 ID MUST NOT 再被接受。问题 MUST NOT 进入 `approval` 权限通道，也 MUST NOT 扩大任何权限策略。
+
+#### Scenario: 回答待处理的问题
+- **WHEN** 调用方对 `thread read` 报告的交互 ID 执行 `thread answer`，答案满足该请求的约束
+- **THEN** Host SHALL 把答案交回原生请求，并返回被回答的 Thread、交互 ID、Turn、Harness 与 `status: "running"`
+- **AND** 原 Turn SHALL 继续执行，MUST NOT 被当作已成功完成
+- **AND** Desktop 中的同一问题 SHALL 被同步关闭
+
+#### Scenario: 无效答案
+- **WHEN** 答案包含未知问题 ID、缺少必答项、未声明的选项或数量不符
+- **THEN** 命令 SHALL 以 `INVALID_ARGUMENT` 失败
+- **AND** 该请求 SHALL 保持待回答，调用方 SHALL 能够改正后重答
+
+#### Scenario: 并发回答只结算一次
+- **WHEN** Desktop 与委派 CLI 同时回答同一个问题
+- **THEN** 只有一个答案 SHALL 被交回原生请求
+- **AND** 其余回答 SHALL 以 `QUESTION_NOT_PENDING` 失败，MUST NOT 产生第二个原生回答
+
+#### Scenario: Desktop 已回答
+- **WHEN** 用户已经在 Desktop 中回答该问题
+- **THEN** 后续 CLI 回答 SHALL 以 `QUESTION_NOT_PENDING` 失败
+- **AND** `thread read` SHALL 不再列出该请求
+
+#### Scenario: 旧交互 ID 失效
+- **WHEN** 请求已被取消、过期，其 Turn 已结束，原生已自行解决，或所属 Host Runtime 已关闭
+- **THEN** 该交互 ID 的回答 SHALL 以 `QUESTION_NOT_PENDING` 失败
+- **AND** MUST NOT 把旧答案交回新 Turn、新请求或新进程
+
+#### Scenario: 原生关闭通知落到同一请求
+- **WHEN** 原生 Codex 报告服务端请求已解决
+- **THEN** Host SHALL 清除对应待回答请求，并把关闭通知的请求标识改写为 Desktop 与 CLI 已知的标识
+- **AND** MUST NOT 用原生请求 ID 对照改写后的标识
+
+#### Scenario: 问题不是权限许可
+- **WHEN** 被回答的请求是问题而不是 `approval`
+- **THEN** 回答 SHALL 只作用于该问题请求
+- **AND** MUST NOT 改变 Native 权限策略、审批结果或 sandbox 设置
+
+#### Scenario: 问题请求的生命周期
+- **WHEN** Host Runtime 未观察到某个旧问题请求（例如重启之前）
+- **THEN** 该请求 MUST NOT 从历史文本、工具输出或屏幕内容重建为可回答请求
+- **AND** 待回答请求 SHALL 只存在于当前 Runtime 内存中

@@ -2324,3 +2324,27 @@ describe("ClaudeSdkTransport autonomous Subagent settlement ordering", () => {
     expect(immediate).toEqual([expect.objectContaining({ nativeSubagentId: "existing-child" })]);
   });
 });
+
+describe("ClaudeSdkTransport native background tasks", () => {
+  it("reports background tasks from the native live set", async () => {
+    const value = fixture();
+    await value.transport.start();
+    try {
+      expect(value.transport.hasBackgroundTasks()).toBe(false);
+      value.fakeQuery.push({
+        type: "system",
+        subtype: "background_tasks_changed",
+        tasks: [{ task_id: "bash-1", task_type: "local_bash", description: "sleep 5" }],
+      } as unknown as SDKMessage);
+      await vi.waitFor(() => expect(value.transport.hasBackgroundTasks()).toBe(true));
+      value.fakeQuery.push({
+        type: "system",
+        subtype: "background_tasks_changed",
+        tasks: [],
+      } as unknown as SDKMessage);
+      await vi.waitFor(() => expect(value.transport.hasBackgroundTasks()).toBe(false));
+    } finally {
+      await value.transport.close();
+    }
+  });
+});

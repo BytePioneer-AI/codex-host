@@ -999,6 +999,11 @@ class ClaudeHarnessSession implements HarnessSession {
     return { ok: true, value: { turnId: command.turnId } };
   }
 
+  /** Closing the native process stops its background tasks, so they keep the Session. */
+  hasBackgroundWork(): boolean {
+    return this.#transport?.hasBackgroundTasks() ?? false;
+  }
+
   refreshUsage(): Promise<void> {
     if (this.#phase !== "open" || !this.#transport) return Promise.resolve();
     const now = Date.now();

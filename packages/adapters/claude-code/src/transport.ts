@@ -191,6 +191,8 @@ export interface ClaudeTurnTransport {
    */
   setThreadEventHandler(handler: ((event: ClaudeTurnEvent) => void) | null): void;
   setIdleLive(live: boolean): void;
+  /** Native background tasks of any type are still active on this process. */
+  hasBackgroundTasks(): boolean;
   start(): Promise<void>;
   getContextUsage(): Promise<ClaudeTransportContextUsage | null>;
   /** Live slash commands of the started native Session, when known. */

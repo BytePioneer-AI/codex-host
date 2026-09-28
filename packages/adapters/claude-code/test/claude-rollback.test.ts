@@ -104,6 +104,7 @@ async function fixture(turns = 1) {
         setIdleTurnHandler: () => undefined,
         setThreadEventHandler: () => undefined,
         setIdleLive: () => undefined,
+        hasBackgroundTasks: () => false,
         getContextUsage: async () => null,
         getPermissionMode: () => permissionMode,
         setPermissionMode: async (mode) => {

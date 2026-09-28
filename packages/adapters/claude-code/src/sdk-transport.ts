@@ -877,6 +877,10 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
       throw new AggregateError(failures, "Claude SDK shutdown could not be confirmed");
   }
 
+  hasBackgroundTasks(): boolean {
+    return this.#backgroundTasks.size > 0;
+  }
+
   async #stopBackgroundTasks(): Promise<void> {
     const requested = new Set<string>();
     const deadline = Date.now() + this.#closeTimeoutMs;

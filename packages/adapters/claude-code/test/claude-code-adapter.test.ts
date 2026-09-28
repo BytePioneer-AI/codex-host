@@ -47,6 +47,10 @@ class FakeClaudeTransport implements ClaudeTurnTransport {
   setIdleLive(live: boolean): void {
     this.idleLive = live;
   }
+  readonly backgroundTaskIds = new Set<string>();
+  hasBackgroundTasks(): boolean {
+    return this.backgroundTaskIds.size > 0;
+  }
   readonly abort = vi.fn(async () => undefined);
   readonly close = vi.fn(async () => undefined);
   contextUsage: ClaudeTransportContextUsage | null = null;
@@ -362,6 +366,22 @@ describe("projectClaudePlanLimitToCredits", () => {
 });
 
 describe("Claude Code HarnessAdapter", () => {
+  it("reports background work while its native process has background tasks", async () => {
+    const { adapter, transports } = fixture();
+    const session = await openSession(adapter);
+    expect(session.hasBackgroundWork?.()).toBe(false);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+    await session.execute(textTurn("background-work"));
+    await nextEvent(iterator);
+    const transport = transports[0];
+    if (!transport) throw new Error("Fake Claude transport was not created");
+    transport.backgroundTaskIds.add("bash-task");
+    expect(session.hasBackgroundWork?.()).toBe(true);
+    transport.backgroundTaskIds.delete("bash-task");
+    expect(session.hasBackgroundWork?.()).toBe(false);
+    await session.close();
+  });
+
   it("passes per-Session delegation environment to the SDK transport", async () => {
     const { adapter, dependencies } = fixture();
     const session = await openSession(adapter, {
@@ -4955,6 +4975,7 @@ describe("Claude Code HarnessAdapter", () => {
         setIdleTurnHandler: () => undefined,
         setThreadEventHandler: () => undefined,
         setIdleLive: () => undefined,
+        hasBackgroundTasks: () => false,
         start: async () => {
           throw new ClaudeCodeExecutableError("Claude Code is not installed");
         },

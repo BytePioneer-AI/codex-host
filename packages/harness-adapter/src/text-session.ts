@@ -519,6 +519,8 @@ export interface HarnessSession {
   readonly commands?: HarnessCommandCapability;
 
   refreshUsage?(): Promise<void>;
+  /** Native background work (e.g. a background command) is still running; the Session must not be released. */
+  hasBackgroundWork?(): boolean;
   readSnapshot(): Promise<HarnessResult<HostThreadSnapshot>>;
   execute(command: TurnStartCommand): Promise<HarnessResult<TurnStartAccepted>>;
   execute(command: TurnCancelCommand): Promise<HarnessResult<TurnCancelAccepted>>;

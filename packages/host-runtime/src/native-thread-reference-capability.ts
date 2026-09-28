@@ -2,6 +2,7 @@ import { open, realpath } from "node:fs/promises";
 import path from "node:path";
 
 const MAX_METADATA_BYTES = 1024 * 1024;
+const REFERENCE_READ_TIMEOUT_MS = 2_000;
 const record = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
@@ -12,7 +13,13 @@ export async function nativeThreadSupportsReferences(input: {
   readThread(): Promise<unknown>;
 }): Promise<boolean> {
   try {
-    const response = await input.readThread();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const response = await Promise.race([
+      input.readThread(),
+      new Promise<null>((resolve) => {
+        timer = setTimeout(() => resolve(null), REFERENCE_READ_TIMEOUT_MS);
+      }),
+    ]).finally(() => clearTimeout(timer));
     const result = record(response) && record(response.result) ? response.result : null;
     const thread = result && record(result.thread) ? result.thread : null;
     if (thread?.id !== input.threadId || typeof thread.path !== "string") return false;
@@ -48,6 +55,7 @@ export async function nativeThreadSupportsReferences(input: {
         if (!record(tool)) return false;
         if (tool.type === "namespace") {
           return (
+            tool.name === "codex_app" &&
             Array.isArray(tool.tools) &&
             tool.tools.some((item: unknown) => record(item) && item.name === "read_thread")
           );

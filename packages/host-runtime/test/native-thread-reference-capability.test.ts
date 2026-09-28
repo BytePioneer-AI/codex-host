@@ -1,7 +1,7 @@
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { afterEach, expect, it } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import { nativeThreadSupportsReferences } from "../src/native-thread-reference-capability.js";
 import {
   createFixture,
@@ -51,6 +51,34 @@ it("accepts the older flat tool format", async () => {
 it("does not infer support from other thread tools", async () => {
   const { input } = await fixture([{ name: "list_threads" }]);
   expect(await nativeThreadSupportsReferences(input)).toBe(false);
+});
+
+it("rejects read_thread in an unrelated namespace", async () => {
+  const { input } = await fixture([
+    { type: "namespace", name: "unrelated", tools: [{ name: "read_thread" }] },
+  ]);
+  expect(await nativeThreadSupportsReferences(input)).toBe(false);
+});
+
+it("bounds an unresponsive optional RPC and ignores late responses", async () => {
+  vi.useFakeTimers();
+  try {
+    let finish: (value: unknown) => void = () => {};
+    const pending = nativeThreadSupportsReferences({
+      codexHome: "/unused",
+      threadId: "test",
+      readThread: () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    });
+    await vi.advanceTimersByTimeAsync(2000);
+    await expect(pending).resolves.toBe(false);
+    finish({ result: { thread: { id: "test", path: "/unused" } } });
+    expect(vi.getTimerCount()).toBe(0);
+  } finally {
+    vi.useRealTimers();
+  }
 });
 it("rejects a rollout outside session directories", async () => {
   const { input } = await fixture([{ name: "read_thread" }], "unrelated");
@@ -112,6 +140,35 @@ it("exposes only proven support through native Thread inspection", async () => {
       result: { owner: "codex", locked: true, supportsThreadReferences: true },
     });
   } finally {
+    await stopFixture(host);
+  }
+});
+
+it("releases queued ownership inspections after the optional read deadline", async () => {
+  const host = createFixture();
+  try {
+    await host.ready;
+    vi.useFakeTimers();
+    writeRequest(host.desktopInput, {
+      id: 901,
+      method: "codexhost/thread/inspect",
+      params: { threadId: "slow-thread", includeReferenceCapability: true },
+    });
+    await readJsonLine(host.official.stdin);
+    writeRequest(host.desktopInput, {
+      id: 902,
+      method: "codexhost/thread/inspect",
+      params: { threadId: "slow-thread" },
+    });
+    await vi.advanceTimersByTimeAsync(2000);
+    for (const id of [901, 902]) {
+      await expect(host.collector.waitFor((message) => requestId(message, id))).resolves.toEqual({
+        id,
+        result: { owner: "codex", locked: true },
+      });
+    }
+  } finally {
+    vi.useRealTimers();
     await stopFixture(host);
   }
 });

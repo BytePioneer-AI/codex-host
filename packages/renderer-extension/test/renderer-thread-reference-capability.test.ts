@@ -14,7 +14,7 @@ function fixture(value?: boolean) {
   const original = Object.freeze({ inspectThread: inspect }) as unknown as RendererModelClient;
   let current = true;
   const storage = {
-    readValue: (key: string) => values.get(key),
+    readValue: vi.fn((key: string) => values.get(key)),
     writeValue: vi.fn((key: string, value: boolean) => values.set(key, value)),
   };
   const client = restoreThreadReferenceCapability(original, { storage }, () => current);
@@ -37,6 +37,25 @@ it("restores missing native metadata only after Host proof", async () => {
   expect(f.inspect).toHaveBeenCalledWith({ ...input, includeReferenceCapability: true });
   expect(f.storage.writeValue).toHaveBeenCalledWith(f.key, true);
 });
+
+it.each(["before", "after"])(
+  "preserves inspection when storage reads fail %s the RPC",
+  async (phase) => {
+    const f = fixture();
+    if (phase === "after") f.storage.readValue.mockReturnValueOnce(undefined);
+    f.storage.readValue.mockImplementation(() => {
+      throw new Error("Persistence unavailable");
+    });
+    await expect(f.client.inspectThread(input)).resolves.toMatchObject({
+      owner: "codex",
+      locked: true,
+    });
+    expect(f.inspect).toHaveBeenCalledWith(
+      phase === "before" ? input : { ...input, includeReferenceCapability: true },
+    );
+    expect(f.storage.writeValue).not.toHaveBeenCalled();
+  },
+);
 it.each([false, true])("preserves an explicit %s native flag", async (value) => {
   const f = fixture(value);
   await f.client.inspectThread(input);

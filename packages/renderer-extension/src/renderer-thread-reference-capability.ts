@@ -16,9 +16,16 @@ export function restoreThreadReferenceCapability(
   if (typeof read !== "function" || typeof write !== "function") return client;
   const inspect = client.inspectThread.bind(client);
   const checked = new Set<string>();
+  const isMissing = (key: string): boolean => {
+    try {
+      return read.call(storage, key) === undefined;
+    } catch {
+      return false;
+    }
+  };
   const inspectThread: RendererModelClient["inspectThread"] = async (input) => {
     const key = `thread-reference-capability:${input.threadId}`;
-    if (!isCurrent() || checked.has(input.threadId) || read.call(storage, key) !== undefined) {
+    if (!isCurrent() || checked.has(input.threadId) || !isMissing(key)) {
       return inspect(input);
     }
     checked.add(input.threadId);
@@ -31,7 +38,7 @@ export function restoreThreadReferenceCapability(
       result.owner === "codex" &&
       result.supportsThreadReferences === true &&
       isCurrent() &&
-      read.call(storage, key) === undefined
+      isMissing(key)
     ) {
       try {
         write.call(storage, key, true);

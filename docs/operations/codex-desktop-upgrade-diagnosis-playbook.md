@@ -23,7 +23,7 @@ codexhost 在已有的 Thread ownership inspection 中按需请求
 `includeReferenceCapability: true`。所属 Host 只对原生 Codex Thread 验证：通过官方
 `thread/read` 取得 rollout 路径，限定到当前 Codex home 的 sessions/archived_sessions，
 最多读取首个 1 MiB 中的第一条 `session_meta`，核对 Thread ID 与 `dynamic_tools` 中的
-`read_thread`。确认后返回 `supportsThreadReferences: true`，不返回会话正文。
+原生 `codex_app` 命名空间内的 `read_thread`（兼容旧式扁平工具）。官方读取请求最多等待 2 秒，超时仍继续返回归属检查。确认后返回 `supportsThreadReferences: true`，不返回会话正文。
 
 Renderer 仅补回缺失的 UI 标记，保留明确的 false；连接被替换或已有标记时不接受迟到结果。
 每个连接内每条 Thread 至多尝试一次能力恢复，旧 Host 不支持该可选参数时回退到原有检查。

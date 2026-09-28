@@ -5,7 +5,7 @@
 Define strict, atomic, recoverable persistence for external Thread ownership, Native identity, Turn mappings, and Fork metadata without storing conversation content or credentials.
 ## Requirements
 ### Requirement: Mapping Store persists only external identity and management metadata
-Mapping Store SHALL persist one strict versioned record per external Host Thread containing ownership, Native Session identity, Native Turn mappings, optional Fork Anchors, Fork source, cwd, title, archive state, transport carrier, and required Desktop timeline metadata. It SHALL additionally persist Delegation relations that associate a parent Host Thread with a child Host Thread created for another Harness, together with their Harness identities, status, and optional originating Request ID. It MUST NOT persist conversation content or credentials.
+Mapping Store SHALL persist one strict versioned record per external Host Thread containing ownership, Native Session identity, Native Turn mappings, optional Fork Anchors, Fork source, cwd, title, archive state, optional Desktop organization metadata (project assignment, Git metadata, and Daybreak choice), transport carrier, and required Desktop timeline metadata. It SHALL additionally persist Delegation relations that associate a parent Host Thread with a child Host Thread created for another Harness, together with their Harness identities, status, and optional originating Request ID. It MUST NOT persist conversation content or credentials.
 
 #### Scenario: Ready external Thread is stored
 - **WHEN** Host commits an external Thread with Native identity and Turn mappings
@@ -133,6 +133,19 @@ Mapping Store SHALL provide an idempotent archive-state update for an existing E
 - **WHEN** temp write, sync, backup, or atomic replacement fails while changing archive state
 - **THEN** the prior archive state, durable record, in-memory record, Revision, and indexes SHALL remain authoritative
 
+
+### Requirement: Mapping Store patches Desktop organization metadata atomically
+Mapping Store SHALL provide one patch update for an External Host Thread's optional project assignment, Git metadata (`branch`, `originUrl`, `sha`), and Daybreak choice. Omitted fields SHALL remain unchanged and a cleared field SHALL be removed from the record. A changed patch SHALL use the same per-Thread serialization, strict validation, backup, atomic replacement, Revision, and in-memory index commit rules as other record updates. Records written before these fields existed SHALL remain valid.
+
+#### Scenario: Metadata patch is applied and restarted
+- **WHEN** Host assigns a project, sets Git metadata, and later clears one Git field
+- **THEN** a subsequent restart SHALL recover the project assignment and remaining Git fields without the cleared field
+- **AND** Native Session identity, Turn mappings, Fork source, title, cwd, archive state, and Harness ownership SHALL remain unchanged
+
+#### Scenario: Requested metadata already matches
+- **WHEN** a patch leaves every stored field at its current value
+- **THEN** Mapping Store SHALL return the current valid record as success
+- **AND** it SHALL NOT perform an unnecessary durable replacement or Revision increment
 ### Requirement: Mapping Store updates the transport carrier atomically
 
 Mapping Store SHALL provide an idempotent transport-carrier update for an existing external Thread using the same strict validation, per-Thread serialization, backup, atomic replacement, Revision, and in-memory commit rules as other record updates.

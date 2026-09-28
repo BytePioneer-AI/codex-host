@@ -20,6 +20,7 @@ export type {
   StoredDelegationRecordV1,
   StoredThreadRecordV1,
   StoredTurnMappingV1,
+  ThreadMetadataPatch,
 } from "./records.js";
 
 export const packageMetadata = {

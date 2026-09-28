@@ -30,6 +30,7 @@ import {
   type StoredDelegationRecordV1,
   type StoredThreadRecordV1,
   type StoredTurnMappingV1,
+  type ThreadMetadataPatch,
 } from "./records.js";
 
 export type MappingStoreErrorCode =
@@ -91,6 +92,29 @@ function nativeTurnKey(mapping: StoredTurnMappingV1): string {
 
 function sameJson(left: unknown, right: unknown): boolean {
   return JSON.stringify(left) === JSON.stringify(right);
+}
+
+function applyThreadMetadataPatch(
+  current: StoredThreadRecordV1,
+  patch: ThreadMetadataPatch,
+): StoredThreadRecordV1 {
+  const next = { ...current };
+  if (patch.projectId !== undefined) {
+    if (patch.projectId === null) delete next.projectId;
+    else next.projectId = patch.projectId;
+  }
+  if (patch.daybreakEnabled !== undefined) next.daybreakEnabled = patch.daybreakEnabled;
+  if (patch.gitInfo !== undefined) {
+    const gitInfo: NonNullable<StoredThreadRecordV1["gitInfo"]> = {};
+    for (const name of ["branch", "originUrl", "sha"] as const) {
+      const value =
+        patch.gitInfo[name] === undefined ? current.gitInfo?.[name] : patch.gitInfo[name];
+      if (value) gitInfo[name] = value;
+    }
+    if (Object.keys(gitInfo).length === 0) delete next.gitInfo;
+    else next.gitInfo = gitInfo;
+  }
+  return next;
 }
 
 function systemErrorCode(error: unknown): string | null {
@@ -667,6 +691,16 @@ export class MappingStore {
     return this.#update(hostThreadId, (current) =>
       current.archived === archived ? null : { ...current, archived },
     );
+  }
+
+  async updateMetadata(
+    hostThreadId: HostThreadId,
+    patch: ThreadMetadataPatch,
+  ): Promise<StoredThreadRecordV1> {
+    return this.#update(hostThreadId, (current) => {
+      const next = applyThreadMetadataPatch(current, patch);
+      return sameJson(next, current) ? null : next;
+    });
   }
 
   async removeProvisional(hostThreadId: HostThreadId): Promise<void> {

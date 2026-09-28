@@ -46,6 +46,7 @@ export {
   decodeThreadArchiveRequest,
   decodeThreadListRequest,
   decodeThreadMetadataUpdateRequest,
+  observeDeletedProject,
   encodeHostThreadListCursor,
 } from "./thread-management.js";
 export type {

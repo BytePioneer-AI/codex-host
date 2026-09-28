@@ -16,6 +16,7 @@ import {
   type StoredDelegationRecordV1,
   type StoredThreadRecordV1,
   type StoredTurnMappingV1,
+  type ThreadMetadataPatch,
 } from "@codexhost/mapping-store";
 import type { JsonObject } from "@codexhost/protocol-core";
 import {
@@ -68,6 +69,10 @@ export interface ExternalThreadStore {
     transportModelId: string,
   ): Promise<StoredThreadRecordV1>;
   setArchived(hostThreadId: HostThreadId, archived: boolean): Promise<StoredThreadRecordV1>;
+  updateMetadata(
+    hostThreadId: HostThreadId,
+    patch: ThreadMetadataPatch,
+  ): Promise<StoredThreadRecordV1>;
   removeProvisional(hostThreadId: HostThreadId): Promise<void>;
   removeThread(hostThreadId: HostThreadId): Promise<void>;
   close(): Promise<void>;
@@ -188,6 +193,13 @@ export class ExternalThreadRepository {
 
   setArchived(hostThreadId: HostThreadId, archived: boolean): Promise<StoredThreadRecordV1> {
     return this.store.setArchived(hostThreadId, archived);
+  }
+
+  updateMetadata(
+    hostThreadId: HostThreadId,
+    patch: ThreadMetadataPatch,
+  ): Promise<StoredThreadRecordV1> {
+    return this.store.updateMetadata(hostThreadId, patch);
   }
 
   removeProvisional(hostThreadId: HostThreadId): Promise<void> {
@@ -550,13 +562,21 @@ export function externalThreadValue(input: {
     turns: input.turns,
     preview: previewText,
     name: record.title || null,
-    gitInfo: null,
+    gitInfo: record.gitInfo
+      ? {
+          branch: record.gitInfo.branch ?? null,
+          originUrl: record.gitInfo.originUrl ?? null,
+          sha: record.gitInfo.sha ?? null,
+        }
+      : null,
     forkedFromId: record.forkSource?.hostThreadId ?? null,
     parentThreadId: record.subagent?.parentHostThreadId ?? null,
     ephemeral: record.ephemeral,
     canAcceptDirectInput: record.subagent ? false : input.loaded === false ? null : true,
     historyMode: record.historyMode,
     isPinned: false,
+    projectId: record.projectId ?? null,
+    daybreakEnabled: record.daybreakEnabled ?? null,
     agentNickname: record.subagent ? record.title || null : null,
     agentRole: record.subagent?.role ?? null,
     extra: null,

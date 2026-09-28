@@ -704,6 +704,46 @@ describe("mapping-store package", () => {
     await third.close();
   });
 
+  it("patches Thread metadata, clears fields with null, and skips no-op writes", async () => {
+    const directory = await temporaryStoreDirectory();
+    let replacements = 0;
+    const first = new MappingStore({
+      directory,
+      beforeReplace() {
+        replacements += 1;
+      },
+    });
+    await first.initialize();
+    await createReady(first);
+    await first.updateMetadata(threadId, {
+      projectId: "project-a",
+      daybreakEnabled: true,
+      gitInfo: { branch: "main", sha: "abc123" },
+    });
+    const patched = await first.updateMetadata(threadId, { gitInfo: { sha: null } });
+    expect(patched).toMatchObject({
+      projectId: "project-a",
+      daybreakEnabled: true,
+      gitInfo: { branch: "main" },
+    });
+    expect(patched.gitInfo).not.toHaveProperty("sha");
+    const afterChangeReplacements = replacements;
+    await expect(first.updateMetadata(threadId, { projectId: "project-a" })).resolves.toEqual(
+      patched,
+    );
+    expect(replacements).toBe(afterChangeReplacements);
+    await first.updateMetadata(threadId, { projectId: null, gitInfo: { branch: null } });
+    await first.close();
+
+    const second = new MappingStore({ directory });
+    await second.initialize();
+    const reloaded = await second.getThread(threadId);
+    expect(reloaded).toMatchObject({ daybreakEnabled: true });
+    expect(reloaded).not.toHaveProperty("projectId");
+    expect(reloaded).not.toHaveProperty("gitInfo");
+    await second.close();
+  });
+
   it("keeps prior archive state and Revision when archive replacement fails", async () => {
     const directory = await temporaryStoreDirectory();
     let fail = false;

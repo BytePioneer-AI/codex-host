@@ -129,6 +129,7 @@ function includesExternalRecord(
       return false;
   }
   if (record.archived !== query.archived) return false;
+  if (query.projectId !== undefined && (record.projectId ?? null) !== query.projectId) return false;
   if (query.cwd !== null && !query.cwd.includes(record.cwd)) return false;
   if (
     query.modelProviders !== null &&

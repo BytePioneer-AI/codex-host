@@ -46,6 +46,11 @@ Host SHALL apply supported `thread/list` filters to External records using only 
 - **THEN** Host SHALL not treat External Fork lineage as a Codex Subagent relationship
 - **AND** it SHALL omit ordinary External records from that filtered result
 
+#### Scenario: Project filter is requested
+- **WHEN** `projectId` is a project ID
+- **THEN** Host SHALL include only External records whose persisted project assignment equals it
+- **AND** `projectId=null` SHALL include only unassigned External records, and omission SHALL include every project
+
 #### Scenario: Pinned rows are requested
 - **WHEN** `isPinned=true`
 - **THEN** Host SHALL omit External records because External Pin is unsupported
@@ -131,17 +136,34 @@ Host SHALL preserve original official Codex behavior for Thread list and managem
 - **WHEN** the official process exits or Host closes before an internal list response arrives
 - **THEN** every pending aggregate request SHALL settle with failure in bounded time
 
+### Requirement: External Desktop metadata updates are persisted Host operations
+Host Runtime SHALL handle `thread/metadata/update` for a persisted External Thread as a Host-owned metadata patch. Project assignment, Git metadata, and the Daybreak choice are Desktop organization metadata: Host SHALL persist them only in the Mapping Store, MUST NOT open or modify the Harness Native Session, and SHALL follow current Codex patch semantics (omitted or null leaves a field unchanged, an empty `projectId` clears the assignment, and a null Git field clears that field). Host SHALL respond with the updated Metadata-only Thread, which SHALL expose the persisted `projectId`, `gitInfo`, and `daybreakEnabled`.
+
+#### Scenario: Desktop assigns a new External Thread to a project
+- **WHEN** Desktop sends `thread/metadata/update` with a non-empty `projectId` for a ready External Thread
+- **THEN** Host SHALL confirm through official `project/read` that the project exists, persist the assignment, return the updated Thread, and then emit `thread/project/updated`
+- **AND** the Thread SHALL appear in `thread/list` results filtered by that project after restart
+
+#### Scenario: Project is unavailable
+- **WHEN** official Codex cannot read the requested project
+- **THEN** Host SHALL return an explicit invalid-params error without changing Host state or emitting a notification
+
+#### Scenario: Git metadata or Daybreak choice is patched
+- **WHEN** the update includes `gitInfo` fields or `daybreakEnabled`
+- **THEN** Host SHALL persist only the supplied fields and return the merged values
+- **AND** it SHALL NOT emit `thread/project/updated` when the project assignment is unchanged
+
+#### Scenario: Official Codex deletes a project
+- **WHEN** official Codex emits `project/changed` with `changeType=deleted`
+- **THEN** Host SHALL forward the notification unchanged, clear every External assignment to that project, and emit `thread/project/updated` with `projectId=null` for each cleared Thread
+
 ### Requirement: Unsupported External metadata changes fail closed
 A current or future management request that references a persisted External Thread MUST be handled by a supported Host operation or fail explicitly. It MUST NOT fall through to official Codex merely because Host does not support that metadata field.
 
-#### Scenario: External Pin update is requested
-- **WHEN** `thread/metadata/update` references an External Thread and requests `isPinned`
-- **THEN** Host SHALL return explicit unsupported
-- **AND** it SHALL not modify Mapping Store or forward the External Thread ID to official Codex
-
-#### Scenario: External Git metadata update is requested
-- **WHEN** `thread/metadata/update` references an External Thread and includes Git metadata
-- **THEN** Host SHALL return explicit unsupported without changing Native or Host state
+#### Scenario: Unsupported metadata field is requested
+- **WHEN** `thread/metadata/update` references an External Thread and includes a field outside the current Codex metadata contract, such as the retired `isPinned`
+- **THEN** Host SHALL return explicit unsupported naming each such field
+- **AND** it SHALL apply none of the request's fields and SHALL not forward the External Thread ID to official Codex
 
 #### Scenario: Official metadata update is requested
 - **WHEN** `thread/metadata/update` references no persisted External Thread

@@ -33,6 +33,14 @@ export const storedTurnMappingV1Schema = z
 
 export type StoredTurnMappingV1 = z.infer<typeof storedTurnMappingV1Schema>;
 
+const storedGitInfoV1Schema = z
+  .object({
+    branch: nonBlankTextSchema.max(4_096).optional(),
+    originUrl: nonBlankTextSchema.max(16_384).optional(),
+    sha: nonBlankTextSchema.max(1_024).optional(),
+  })
+  .strict();
+
 export const storedThreadRecordV1Schema = z
   .object({
     formatVersion: z.literal(1),
@@ -45,6 +53,9 @@ export const storedThreadRecordV1Schema = z
     cwd: nonBlankTextSchema.max(16_384),
     title: z.string().max(4_096),
     archived: z.boolean(),
+    projectId: nonBlankTextSchema.max(1_024).optional(),
+    daybreakEnabled: z.boolean().optional(),
+    gitInfo: storedGitInfoV1Schema.optional(),
     transportModelId: nonBlankTextSchema.max(1_024),
     ephemeral: z.boolean(),
     historyMode: z.enum(["legacy", "paginated"]),
@@ -180,6 +191,20 @@ export interface FindRecentDelegationInput {
   targetHarnessId: HarnessId;
   taskDigest: string;
   since: Date;
+}
+
+/**
+ * Desktop organization metadata for an External Thread. Omitted fields stay
+ * unchanged; `null` clears the stored value.
+ */
+export interface ThreadMetadataPatch {
+  projectId?: string | null;
+  daybreakEnabled?: boolean;
+  gitInfo?: {
+    branch?: string | null;
+    originUrl?: string | null;
+    sha?: string | null;
+  };
 }
 
 export interface CreateProvisionalThreadInput {

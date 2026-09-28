@@ -116,7 +116,8 @@ export interface LaunchCommand {
 
 /**
  * npm installations must start through the npm wrapper, which supplies the
- * packaged resources to the Launcher; other installations start the Launcher.
+ * packaged resources to the Launcher; other installations use explicit `launch`
+ * rather than the browser-opening no-argument entrypoint. The console is already open.
  */
 export function launchCommand(
   installation: ConsoleInstallation,
@@ -131,6 +132,6 @@ export function launchCommand(
     return null;
   }
   return installation.launcherExecutable
-    ? { command: installation.launcherExecutable, args: [] }
+    ? { command: installation.launcherExecutable, args: ["launch"] }
     : null;
 }

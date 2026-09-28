@@ -218,7 +218,7 @@ describe("console server", () => {
     expect((await post({ origin: "http://evil.example", ...CHANGE })).status).toBe(403);
     expect(launch).not.toHaveBeenCalled();
     expect((await post({ origin: base, ...CHANGE })).status).toBe(202);
-    expect(launch).toHaveBeenCalledWith("/opt/codexhost/bin/codexhost", []);
+    expect(launch).toHaveBeenCalledWith("/opt/codexhost/bin/codexhost", ["launch"]);
   });
 
   it("refuses an update while codexhost is running", async () => {

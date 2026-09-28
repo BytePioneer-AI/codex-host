@@ -62,9 +62,26 @@ describe("console installation", () => {
     expect(launchCommand(installation, {})).toBeNull();
     expect(launchCommand({ ...installation, distribution: null }, {})).toEqual({
       command: "/pkg/bin/codexhost",
-      args: [],
+      args: ["launch"],
     });
   });
+
+  it.each(["macos-arm64", "windows-x64"] as const)(
+    "starts %s installer builds without the browser-opening no-argument entrypoint",
+    (target) => {
+      const launcher = path.resolve("/installed/codexhost");
+      expect(
+        launchCommand(
+          {
+            appDirectory: path.resolve("/installed/app"),
+            distribution: { schemaVersion: 1, version: "1.0.0", distribution: "installer", target },
+            launcherExecutable: launcher,
+          },
+          {},
+        ),
+      ).toEqual({ command: launcher, args: ["launch"] });
+    },
+  );
 
   it("rejects inspect output from an unknown schema", () => {
     expect(() => parseInspectDocument({ schemaVersion: 2, runtime: {} })).toThrow("schema");

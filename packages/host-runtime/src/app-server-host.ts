@@ -1701,8 +1701,22 @@ export class AppServerHost {
       this.#nativeAccountObserver?.observe(parsed);
       return;
     }
-    if (forwarded === parsed) await this.#writer.frame(input.frame);
-    else await this.#writer.json(forwarded);
+    try {
+      if (forwarded === parsed) await this.#writer.frame(input.frame);
+      else await this.#writer.json(forwarded);
+    } finally {
+      if (
+        isRecord(parsed) &&
+        parsed.method === "turn/completed" &&
+        isRecord(parsed.params) &&
+        typeof parsed.params.threadId === "string"
+      ) {
+        // Disconnect must wait for Question cleanup and the terminal frame to be written.
+        this.#forgetPendingOfficialTurnStarts(parsed.params.threadId);
+        this.#activeOfficialTurns.delete(parsed.params.threadId);
+        this.#signalActiveWorkChanged();
+      }
+    }
     this.#nativeAccountObserver?.observe(parsed);
   }
 
@@ -1824,10 +1838,7 @@ export class AppServerHost {
       }
     }
     if (value.method === "turn/completed" && typeof params.threadId === "string") {
-      this.#forgetPendingOfficialTurnStarts(params.threadId);
       const turn = isRecord(params.turn) ? params.turn : null;
-      this.#activeOfficialTurns.delete(params.threadId);
-      this.#signalActiveWorkChanged();
       await this.#questions.closeWhere(
         (request) =>
           request.threadId === params.threadId && request.interaction.turnId === turn?.id,

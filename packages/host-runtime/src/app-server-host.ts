@@ -327,6 +327,23 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+/**
+ * Codex app-server reports an unknown Thread with these messages. Any other
+ * error from a Thread read is a failure to read, not proof that it is missing.
+ */
+const OFFICIAL_THREAD_MISSING =
+  /no rollout found for thread id|thread not found|invalid thread id/i;
+
+function officialThreadReadError(error: Record<string, unknown>): DelegationControlError {
+  const message = typeof error.message === "string" ? error.message : "";
+  return OFFICIAL_THREAD_MISSING.test(message)
+    ? new DelegationControlError("THREAD_NOT_FOUND", message || "Official Thread was not found")
+    : new DelegationControlError(
+        "INTERNAL_ERROR",
+        message ? `Official Thread read failed: ${message}` : "Official Thread read failed",
+      );
+}
+
 function codexAccountRpcError(error: unknown): { code: number; message: string } {
   const message = error instanceof Error ? error.message : "";
   return message === "Unknown Codex Account"
@@ -706,6 +723,7 @@ export class AppServerHost {
       listOfficial: (input) => this.#listDelegationThreads(input),
       officialThreadCwd: (threadId) => this.#readOfficialThreadCwd(threadId),
       activeOfficialParents: () => [...this.#activeOfficialTurns.keys()],
+      externalThreadBusy: (thread) => this.#externalThreadBusy(thread),
     });
     const unregisterDelegationApi = options.onDelegationApi?.({
       listHarnesses: () =>
@@ -2042,8 +2060,9 @@ export class AppServerHost {
       threadId: input.threadId,
       includeTurns: true,
     });
-    if (isRecord(current.error) || !isRecord(current.result)) {
-      throw new DelegationControlError("THREAD_NOT_FOUND", "Official Thread was not found");
+    if (isRecord(current.error)) throw officialThreadReadError(current.error);
+    if (!isRecord(current.result)) {
+      throw new DelegationControlError("INTERNAL_ERROR", "Official Thread read returned no result");
     }
     const currentThread = isRecord(current.result.thread) ? current.result.thread : null;
     if (officialThreadBusy(currentThread)) {
@@ -2061,6 +2080,7 @@ export class AppServerHost {
         isRecord(resumed.error) && typeof resumed.error.message === "string"
           ? resumed.error.message
           : "Official Thread resume failed",
+        { notStarted: true },
       );
     }
     const resumedThread = isRecord(resumed.result.thread) ? resumed.result.thread : null;
@@ -2068,6 +2088,7 @@ export class AppServerHost {
       throw new DelegationControlError(
         "DELEGATION_FAILED",
         "Official Thread resume did not return the requested Thread",
+        { notStarted: true },
       );
     }
     if (officialThreadBusy(resumedThread)) {
@@ -2077,6 +2098,7 @@ export class AppServerHost {
       throw new DelegationControlError(
         "DELEGATION_FAILED",
         "Official Thread is not idle after resume",
+        { notStarted: true },
       );
     }
     const response = await this.#requestOfficial("turn/start", {
@@ -2084,9 +2106,11 @@ export class AppServerHost {
       input: [{ type: "text", text: input.message }],
     });
     if (isRecord(response.error)) {
+      // app-server answered turn/start with an error, so no Turn was started.
       throw new DelegationControlError(
         "DELEGATION_FAILED",
         typeof response.error.message === "string" ? response.error.message : "Turn start failed",
+        { notStarted: true },
       );
     }
     const result = isRecord(response.result) ? response.result : null;
@@ -2149,18 +2173,11 @@ export class AppServerHost {
       threadId: input.threadId,
       includeTurns: true,
     });
-    if (isRecord(response.error)) {
-      throw new DelegationControlError(
-        "THREAD_NOT_FOUND",
-        typeof response.error.message === "string"
-          ? response.error.message
-          : "Official Thread was not found",
-      );
-    }
+    if (isRecord(response.error)) throw officialThreadReadError(response.error);
     const result = isRecord(response.result) ? response.result : null;
     const thread = result && isRecord(result.thread) ? result.thread : null;
     if (!thread)
-      throw new DelegationControlError("THREAD_NOT_FOUND", "Official Thread was not found");
+      throw new DelegationControlError("INTERNAL_ERROR", "Official Thread read returned no Thread");
     const turns = Array.isArray(thread.turns)
       ? thread.turns.filter((turn): turn is JsonObject => isRecord(turn))
       : [];
@@ -2687,11 +2704,7 @@ export class AppServerHost {
     thread: ExternalThread,
     params: ReturnType<typeof threadCommandExecuteParamsSchema.parse>,
   ): Promise<void> {
-    if (
-      thread.running ||
-      this.#externalSteering.hasPending(thread.id) ||
-      this.#pendingExternalCommandRequests.has(thread.id)
-    ) {
+    if (this.#externalThreadBusy(thread) || this.#pendingExternalCommandRequests.has(thread.id)) {
       await this.#writer.json(
         rpcError(request, -32072, "External Thread already has an active operation"),
       );
@@ -3601,12 +3614,16 @@ export class AppServerHost {
     return active ? [...thread.turns, active.projector.pendingTurn()] : thread.turns;
   }
 
+  #externalThreadBusy(thread: ExternalThread): boolean {
+    return thread.running || this.#externalSteering.hasPending(thread.id);
+  }
+
   async #startDelegatedExternalTurn(
     thread: ExternalThread,
     text: string,
     requestedTurnId: string,
   ): Promise<void> {
-    if (thread.running || this.#externalSteering.hasPending(thread.id)) {
+    if (this.#externalThreadBusy(thread)) {
       throw new Error("External Thread already has an active Turn");
     }
     const turnId = hostTurnIdSchema.parse(requestedTurnId);
@@ -3643,11 +3660,7 @@ export class AppServerHost {
   }
 
   async #startExternalTurn(request: JsonRpcRequest, thread: ExternalThread): Promise<void> {
-    if (
-      thread.running ||
-      this.#externalSteering.hasPending(thread.id) ||
-      this.#pendingExternalCommandRequests.has(thread.id)
-    ) {
+    if (this.#externalThreadBusy(thread) || this.#pendingExternalCommandRequests.has(thread.id)) {
       await this.#writer.json(
         rpcError(request, -32072, "External Thread already has an active Turn"),
       );

@@ -28,6 +28,8 @@ describe("delegation CLI", () => {
     ["thread", "cancel", "--help"],
     ["thread", "read", "--help"],
     ["thread", "wait", "--help"],
+    ["thread", "watch", "--help"],
+    ["thread", "watches", "--help"],
     ["thread", "list", "--help"],
   ])("shows scoped help for %s %s", async (group, command, help) => {
     const output = new PassThrough();
@@ -476,5 +478,125 @@ describe("delegation CLI", () => {
     expect(DELEGATION_HELP).toContain("ignore_default_excludes = true");
     expect(DELEGATION_HELP).toContain('include_only containing "CODEXHOST_RUNTIME_ENDPOINT"');
     expect(DELEGATION_HELP).toContain('Avoid unconstrained inherit = "all"');
+  });
+
+  it("watches a Thread for the calling Thread with the 29 minute default", async () => {
+    const fetchImpl = successfulFetch({
+      threadId: "child",
+      notifyThreadId: "caller",
+      state: "watching",
+      status: "running",
+      timeoutMs: 1_740_000,
+    });
+    const output = new PassThrough();
+    expect(
+      await runDelegationCli({
+        arguments: ["thread", "watch", "codex://threads/child", "--format", "compact"],
+        environment: {
+          [DELEGATION_RUNTIME_ENDPOINT_ENV]: "http://127.0.0.1:4321",
+          [DELEGATION_RUNTIME_TOKEN_ENV]: "token",
+          [DELEGATION_THREAD_ID_ENV]: "caller",
+        },
+        output,
+        fetchImpl,
+      }),
+    ).toBe(0);
+    const [url, init] = vi.mocked(fetchImpl).mock.calls[0] ?? [];
+    expect(String(url)).toContain("/v1/thread/watch");
+    expect(JSON.parse(String(init?.body))).toEqual({
+      threadId: "child",
+      notifyThreadId: "caller",
+      timeoutMs: 1_740_000,
+    });
+    expect(JSON.parse(outputText(output))).toEqual({
+      thread: "codex://threads/child",
+      notify: "codex://threads/caller",
+      state: "watching",
+      status: "running",
+      timeoutMs: 1_740_000,
+    });
+  });
+
+  it("requires --notify when the caller Thread is unknown", async () => {
+    const fetchImpl = successfulFetch({});
+    const environment = {
+      [DELEGATION_RUNTIME_ENDPOINT_ENV]: "http://127.0.0.1:4321",
+      [DELEGATION_RUNTIME_TOKEN_ENV]: "token",
+    };
+    expect(
+      await runDelegationCli({
+        arguments: ["thread", "watch", "child"],
+        environment,
+        output: new PassThrough(),
+        diagnosticOutput: new PassThrough(),
+        fetchImpl,
+      }),
+    ).toBe(1);
+    expect(fetchImpl).not.toHaveBeenCalled();
+
+    expect(
+      await runDelegationCli({
+        arguments: ["thread", "watch", "child", "--notify", "codex://threads/parent"],
+        environment,
+        output: new PassThrough(),
+        fetchImpl,
+      }),
+    ).toBe(0);
+    const [, init] = vi.mocked(fetchImpl).mock.calls[0] ?? [];
+    expect(JSON.parse(String(init?.body))).toEqual({
+      threadId: "child",
+      notifyThreadId: "parent",
+      timeoutMs: 1_740_000,
+    });
+  });
+
+  it("does not offer watch options on thread send", async () => {
+    const fetchImpl = successfulFetch({});
+    expect(
+      await runDelegationCli({
+        arguments: ["thread", "send", "child", "--message", "continue", "--watch", "true"],
+        environment: {
+          [DELEGATION_RUNTIME_ENDPOINT_ENV]: "http://127.0.0.1:4321",
+          [DELEGATION_RUNTIME_TOKEN_ENV]: "token",
+        },
+        output: new PassThrough(),
+        diagnosticOutput: new PassThrough(),
+        fetchImpl,
+      }),
+    ).toBe(1);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("asks delegate start to watch the child only when requested", async () => {
+    const environment = {
+      [DELEGATION_RUNTIME_ENDPOINT_ENV]: "http://127.0.0.1:4321",
+      [DELEGATION_RUNTIME_TOKEN_ENV]: "token",
+    };
+    const fetchImpl = successfulFetch({});
+    const base = ["delegate", "start", "--harness", "pi", "--task", "work"];
+    await runDelegationCli({ arguments: base, environment, output: new PassThrough(), fetchImpl });
+    await runDelegationCli({
+      arguments: [...base, "--watch", "true", "--watch-timeout-ms", "5000"],
+      environment,
+      output: new PassThrough(),
+      fetchImpl,
+    });
+    const bodies = vi
+      .mocked(fetchImpl)
+      .mock.calls.map(([, init]) => JSON.parse(String(init?.body)) as Record<string, unknown>);
+    expect(bodies[0]).not.toHaveProperty("watchTimeoutMs");
+    expect(bodies[1]).toMatchObject({ watchTimeoutMs: 5_000 });
+
+    const diagnosticOutput = new PassThrough();
+    expect(
+      await runDelegationCli({
+        arguments: [...base, "--watch-timeout-ms", "5000"],
+        environment,
+        output: new PassThrough(),
+        diagnosticOutput,
+        fetchImpl,
+      }),
+    ).toBe(1);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
   });
 });

@@ -10,6 +10,8 @@ export const DELEGATION_RUNTIME_ENDPOINT_ENV = "CODEXHOST_RUNTIME_ENDPOINT";
 export const DELEGATION_RUNTIME_TOKEN_ENV = "CODEXHOST_RUNTIME_TOKEN";
 export const DELEGATION_CLI_PATH_ENV = "CODEXHOST_CLI_PATH";
 export const DELEGATION_THREAD_ID_ENV = "CODEXHOST_THREAD_ID";
+/** Default watch expiry; callers adjust it with --timeout-ms. */
+export const DEFAULT_WATCH_TIMEOUT_MS = 29 * 60_000;
 
 export type DelegationThreadStatus =
   "creating" | "running" | "completed" | "failed" | "interrupted";
@@ -89,6 +91,8 @@ export interface DelegationStartResult {
   cwd?: string;
   parentThreadId?: string;
   configuration?: DelegationConfigurationResult;
+  /** Present only when the caller asked `delegate start` to also watch the child. */
+  watch?: ThreadWatchResult | { state: "notRegistered"; reason: string };
   next: { read: string; wait: string };
 }
 
@@ -155,6 +159,59 @@ export interface DelegationThreadListItem {
 export interface DelegationThreadListResult {
   threads: DelegationThreadListItem[];
   nextCursor: string | null;
+}
+
+export interface ThreadWatchInput {
+  /** Thread observed until it stops. */
+  threadId: string;
+  /** Thread that receives the single notification. */
+  notifyThreadId: string;
+  timeoutMs: number;
+}
+
+export type ThreadWatchOutcome =
+  | "completed"
+  | "failed"
+  | "interrupted"
+  /** The Thread was still running when the watch expired. */
+  | "timedOut"
+  /** Reads kept failing, so the state of the Thread is unknown. */
+  | "unreadable"
+  | "notFound";
+
+export interface ThreadWatchResult {
+  threadId: string;
+  notifyThreadId: string;
+  /** `alreadyTerminal` means no watch was registered and no notification will be sent. */
+  state: "watching" | "alreadyTerminal";
+  status: DelegationThreadStatus;
+  timeoutMs: number;
+}
+
+export interface ThreadWatchEntry {
+  threadId: string;
+  notifyThreadId: string;
+  state: "watching" | "pendingDelivery" | "undeliverable";
+  outcome?: ThreadWatchOutcome;
+  /** Turn that reached the terminal outcome, when the Thread reported one. */
+  turnId?: string;
+  /** Present for `undeliverable`. */
+  reason?: string;
+  registeredAt: string;
+}
+
+export interface ThreadWatchListResult {
+  watches: ThreadWatchEntry[];
+}
+
+/**
+ * Opt-in, one-shot notifications when a watched Thread stops. Separate from
+ * DelegationControlApi so Host sessions keep implementing only the per-Thread
+ * operations.
+ */
+export interface DelegationWatchApi {
+  watch(input: ThreadWatchInput): Promise<ThreadWatchResult>;
+  watches(): Promise<ThreadWatchListResult>;
 }
 
 export interface DelegationControlApi {

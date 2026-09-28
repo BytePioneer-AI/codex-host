@@ -3,11 +3,14 @@ import {
   type DelegationControlApi,
   type DelegationControlRegistration,
   type DelegationStartInput,
+  type DelegationWatchApi,
   type HarnessInspectInput,
   type ThreadListInput,
   type ThreadReadInput,
   type ThreadWaitInput,
+  type ThreadWatchInput,
 } from "./delegation-types.js";
+import { DelegationWatchService } from "./delegation-watch.js";
 
 function only<T>(values: readonly T[], message: string): T {
   const value = values.length === 1 ? values[0] : undefined;
@@ -19,8 +22,14 @@ function only<T>(values: readonly T[], message: string): T {
   return value;
 }
 
-export class DelegationControlRegistry implements DelegationControlApi {
+export class DelegationControlRegistry implements DelegationControlApi, DelegationWatchApi {
   readonly #registrations = new Set<DelegationControlRegistration>();
+  // Watches sit above the sessions so either end may belong to any registered session.
+  readonly #watchService: DelegationWatchService;
+
+  constructor(options: { diagnose?: (error: unknown) => void } = {}) {
+    this.#watchService = new DelegationWatchService(this, options);
+  }
 
   get size(): number {
     return this.#registrations.size;
@@ -64,6 +73,19 @@ export class DelegationControlRegistry implements DelegationControlApi {
 
   async wait(input: ThreadWaitInput) {
     return (await this.#registrationForThread(input.threadId)).wait(input);
+  }
+
+  async watch(input: ThreadWatchInput) {
+    return this.#watchService.watch(input);
+  }
+
+  async watches() {
+    return this.#watchService.watches();
+  }
+
+  /** Stops all watches; pending notifications are dropped with the Host Runtime. */
+  close(): void {
+    this.#watchService.close();
   }
 
   async list(input: ThreadListInput) {

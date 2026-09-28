@@ -8,15 +8,15 @@ export function restoreThreadReferenceCapability(
   client: RendererModelClient,
   manager: unknown,
   isCurrent: () => boolean,
-): void {
-  if (!record(manager) || !record(manager.storage)) return;
+): RendererModelClient {
+  if (!record(manager) || !record(manager.storage)) return client;
   const storage = manager.storage;
   const read = storage.readValue;
   const write = storage.writeValue;
-  if (typeof read !== "function" || typeof write !== "function") return;
+  if (typeof read !== "function" || typeof write !== "function") return client;
   const inspect = client.inspectThread.bind(client);
   const checked = new Set<string>();
-  client.inspectThread = async (input) => {
+  const inspectThread: RendererModelClient["inspectThread"] = async (input) => {
     const key = `thread-reference-capability:${input.threadId}`;
     if (!isCurrent() || checked.has(input.threadId) || read.call(storage, key) !== undefined) {
       return inspect(input);
@@ -41,4 +41,5 @@ export function restoreThreadReferenceCapability(
     }
     return result;
   };
+  return Object.freeze({ ...client, inspectThread });
 }

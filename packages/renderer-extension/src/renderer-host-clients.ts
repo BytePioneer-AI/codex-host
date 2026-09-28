@@ -37,7 +37,7 @@ export function createRendererHostClients(readRouting: () => RendererHostRouting
     if (cached?.route === route) return cached.client;
     retire(route.hostId);
     const target = route.manager;
-    const client = createRendererModelClient([
+    const nativeClient = createRendererModelClient([
       {
         sendRequest(method, params, options) {
           if (disposed || readRouting()?.forHost(route.hostId) !== route) {
@@ -52,9 +52,9 @@ export function createRendererHostClients(readRouting: () => RendererHostRouting
           : {}),
       },
     ]);
-    if (!client) return null;
-    restoreThreadReferenceCapability(
-      client,
+    if (!nativeClient) return null;
+    const client = restoreThreadReferenceCapability(
+      nativeClient,
       target,
       () => !disposed && readRouting()?.forHost(route.hostId) === route,
     );

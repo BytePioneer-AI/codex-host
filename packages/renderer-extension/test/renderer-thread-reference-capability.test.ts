@@ -11,13 +11,15 @@ function fixture(value?: boolean) {
   const inspect = vi
     .fn()
     .mockResolvedValue({ owner: "codex", locked: true, supportsThreadReferences: true });
-  const client = { inspectThread: inspect } as unknown as RendererModelClient;
+  const original = Object.freeze({ inspectThread: inspect }) as unknown as RendererModelClient;
   let current = true;
   const storage = {
     readValue: (key: string) => values.get(key),
     writeValue: vi.fn((key: string, value: boolean) => values.set(key, value)),
   };
-  restoreThreadReferenceCapability(client, { storage }, () => current);
+  const client = restoreThreadReferenceCapability(original, { storage }, () => current);
+  expect(original.inspectThread).toBe(inspect);
+  expect(Object.isFrozen(original)).toBe(true);
   return {
     client,
     inspect,

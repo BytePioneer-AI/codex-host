@@ -35,16 +35,19 @@ function errorCode(error: unknown): string | undefined {
 }
 
 /**
+ * A failed send is retried only when the call chain proves no Turn started.
  * - permanent: the notified Thread is missing or read-only; retrying cannot help.
- * - rejected: the Host refused the send with a structured error before a Turn
- *   started (busy, resume or start failure), so a retry cannot duplicate it.
- * - unknown: an unstructured failure such as a timeout; a Turn may already have
- *   started, so retrying could deliver the notification twice.
+ * - rejected: THREAD_BUSY is decided before any start, and `notStarted` marks a
+ *   start the target explicitly refused, so a retry cannot duplicate it.
+ * - unknown: anything else. A structured error is not proof: an adapter may
+ *   report a timed-out start whose native Turn was accepted, so a retry could
+ *   deliver the notification twice.
  */
 function deliveryFailure(error: unknown): "permanent" | "rejected" | "unknown" {
   if (!(error instanceof DelegationControlError)) return "unknown";
   if (error.code === "THREAD_NOT_FOUND" || error.details?.readOnly === true) return "permanent";
-  return "rejected";
+  if (error.code === "THREAD_BUSY" || error.details?.notStarted === true) return "rejected";
+  return "unknown";
 }
 
 function threadLink(threadId: string): string {

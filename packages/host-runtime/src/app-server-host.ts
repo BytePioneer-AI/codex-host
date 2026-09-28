@@ -2072,9 +2072,11 @@ export class AppServerHost {
       input: [{ type: "text", text: input.message }],
     });
     if (isRecord(response.error)) {
+      // app-server answered turn/start with an error, so no Turn was started.
       throw new DelegationControlError(
         "DELEGATION_FAILED",
         typeof response.error.message === "string" ? response.error.message : "Turn start failed",
+        { notStarted: true },
       );
     }
     const result = isRecord(response.result) ? response.result : null;

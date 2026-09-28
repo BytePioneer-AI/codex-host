@@ -30,7 +30,7 @@
 | `unreadable` | 连续 60 秒读取失败，状态未知 |
 | `notFound` | Thread 已不存在 |
 
-默认超时 29 分钟，略短于被通知 Agent 的 30 分钟 Prompt Cache 寿命，使唤醒仍能命中缓存；`--timeout-ms` 可调整。
+默认超时 29 分钟，可用 `--timeout-ms` 调整。
 
 注册时 Thread 已是终态则返回 `alreadyTerminal`：不注册、不通知，调用方直接读取即可。
 
@@ -38,10 +38,10 @@
 
 - 通知通过普通的 `send` 在被通知 Thread 中启动一个新 Turn，外部 Harness 与原生 Codex 使用同一路径；不做同轮注入。
 - 被通知 Thread 正忙时通知保持待送达并重试，最长 6 小时。`THREAD_BUSY` 从不被当作已送达；`thread send` 自身“不排队”的语义不变。
-- 投递失败按原因处理：
-  - Host 以结构化错误拒绝（忙碌、resume 或启动失败）时尚未启动 Turn，保持待送达并重试；
-  - 被通知 Thread 不存在或只读时立即标记 `undeliverable`；
-  - 结果未知的失败（例如请求超时）可能已经启动了 Turn，为避免重复唤醒不再重试，标记 `undeliverable` 并在原因中说明。
+- 投递失败只有在调用链能证明没有启动 Turn 时才重试：
+  - `THREAD_BUSY`（启动前判定），或错误带 `notStarted`（例如原生 Codex 的 `turn/start` 明确返回错误）：保持待送达并重试；
+  - 被通知 Thread 不存在或只读：立即标记 `undeliverable`；
+  - 其他失败都视为结果未知，包括 Harness 启动确认超时后包装成的 `DELEGATION_FAILED`：原生可能已经启动了 Turn，为避免重复唤醒不再重试，标记 `undeliverable` 并在原因中说明。
 - 同一个被通知 Thread 同时到期的多条通知合并为一条消息，只启动一个 Turn。
 - 被通知 Thread 不存在、只读，或超过 6 小时仍无法送达时，watch 标记为 `undeliverable` 并保留原因，可由 `thread watches` 查看。
 
@@ -64,11 +64,4 @@
 - watch 只存在于 Host Runtime 内存中，Runtime 重启后丢失；委派关系本身仍然持久化，重启后可重新注册。
 - 原生 Codex 的 `thread/read` 只有返回“Thread 不存在”类错误时才报告 `notFound`；其他读取错误按读取失败处理，持续 60 秒才报告 `unreadable`。
 - 忙碌判断统一为 `running || 存在待处理的调整方向`。它同时作用于普通 `thread read`/`wait`/`send` 和委派状态，避免停止后重发的空档被读成 `interrupted`。
-- 被通知 Thread 不存在、只读，或超过 6 小时仍无法送达时，watch 标记为 `undeliverable` 并保留原因，可由 `thread watches` 查看。
-
-## 与 Stop 的关系
-
-- 用户 Stop 被观察的 Thread，Thread 停下，watch 以 `interrupted` 通知一次。“调整方向”的停止后重发不算停下，不会通知。
-- 用户 Stop 被通知 Thread 的当前 Turn，不会取消已注册的 watch：该 Thread 空闲后，到期的通知仍会启动一个新 Turn。watch 不能取消，这是注册 watch 时就选择的行为。
-- 与 `thread send` 的“不排队”约定和 [调整方向](external-thread-steering.md) 的“失败不自动重试或偷偷排队”并不冲突：待送达的通知只存在于显式注册的 watch 中，普通消息的语义不变。
-：进程或协议故障时 Adapter 先以失败终结活跃 Turn。`thread read` 在 Harness 已死、无法刷新原生历史时，返回 Host 已投影的终态 Turn，因此这类失败会以 `failed` 被及时通知，而不是等到超时。
+- 异常退出依赖 Adapter 契约：进程或协议故障时 Adapter 先以失败终结活跃 Turn。`thread read` 在 Harness 已死、无法刷新原生历史时，返回 Host 已投影的终态 Turn，因此这类失败会以 `failed` 被及时通知，而不是等到超时。

@@ -275,7 +275,7 @@ describe("DelegationWatchService", () => {
     await service.watch({ threadId: "child", notifyThreadId: "parent", timeoutMs: 60_000 });
     fake.update("child", { status: "completed" });
     fake.sendFailures.push(
-      new DelegationControlError("DELEGATION_FAILED", "Official Thread resume failed"),
+      new DelegationControlError("DELEGATION_FAILED", "turn/start refused", { notStarted: true }),
     );
     await vi.advanceTimersByTimeAsync(POLL_MS);
     expect(fake.sent).toEqual([]);
@@ -286,6 +286,25 @@ describe("DelegationWatchService", () => {
     await vi.advanceTimersByTimeAsync(POLL_MS);
     expect(fake.sent).toHaveLength(1);
     await expect(service.watches()).resolves.toEqual({ watches: [] });
+  });
+
+  it("does not retry a structured failure that does not prove the Turn never started", async () => {
+    const fake = runtime({ child: { status: "running" }, parent: { status: "completed" } });
+    const service = new DelegationWatchService(fake, { pollIntervalMs: POLL_MS });
+    await service.watch({ threadId: "child", notifyThreadId: "parent", timeoutMs: 60_000 });
+    fake.update("child", { status: "completed" });
+    // An adapter start whose acknowledgement timed out is wrapped like this.
+    fake.sendFailures.push(
+      new DelegationControlError(
+        "DELEGATION_FAILED",
+        "Aqua Harness broker session.execute timed out",
+      ),
+    );
+    await vi.advanceTimersByTimeAsync(POLL_MS * 5);
+    expect(fake.send).toHaveBeenCalledOnce();
+    const { watches } = await service.watches();
+    expect(watches).toMatchObject([{ state: "undeliverable", outcome: "completed" }]);
+    expect(watches[0]?.reason).toContain("Delivery outcome unknown");
   });
 
   it("does not retry a send whose outcome is unknown", async () => {

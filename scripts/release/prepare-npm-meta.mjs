@@ -67,6 +67,8 @@ The \`codexhost\` command starts Codex Desktop. On macOS and Linux it returns im
 On macOS, \`remote install\` installs a current-user Aqua Harness broker so Background SSH Hosts can use native Claude Code login without reading, copying, or unlocking Keychain credentials.
 
 If installation used \`--omit=optional\`, reinstall without that option so npm can select the native package for the current architecture.
+
+If startup reports a platform package version mismatch, close Codex Desktop and run the exact reinstall command in the error. This installs both the CLI and its platform package at the same version, replacing stale independently installed payloads. \`codexhost --version\` reports the CLI package version; startup also validates the platform payload before launching it.
 `;
 }
 

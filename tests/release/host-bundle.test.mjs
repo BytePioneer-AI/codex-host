@@ -185,8 +185,8 @@ describe("release Host and independent plugin Bundles", () => {
       expect(pluginAudits.find(({ id }) => id === "grok").runtimePackages).toContain(
         "@agentclientprotocol/sdk",
       );
-      expect(pluginAudits.find(({ id }) => id === "opencode").runtimePackages).toContain(
-        "@opencode-ai/sdk",
+      expect(pluginAudits.find(({ id }) => id === "opencode").runtimePackages).toEqual(
+        expect.arrayContaining(["@opencode-ai/sdk", "@opencode/client"]),
       );
       expect(pluginAudits.find(({ id }) => id === "deepseek-harness").runtimePackages).toContain(
         "@deepseek-ai/schemastery",

@@ -26,10 +26,6 @@ Record each failed step once to Host diagnostic output and `.codexhost-native-ac
 
 Consolidating OfficialWorkGate lease kinds; choosing between Owner lazy resume and Renderer navigation restoration; narrowing external termination to the same CODEX_HOME or app-server only; re-evaluating inactive-account OAuth refresh. None is claimed complete by this change.
 
-## Source and licenses
-
-The native credential envelope and inactive quota reading reference opencodex `2d4d7a22381a2e497c2442902104619e25f937c7`. Reused code retains `third-party/opencodex.LICENSE`; installer/npm notices include the MIT text and source. Release scripts and license files are unchanged.
-
 ## Risks and validation
 
 Same-user programs can still read plaintext credentials or rewrite shared auth after switching. File/backend identity verification is not a multi-client atomic switch guarantee. External termination is deliberately documented at its current broad scope. Prior validation applies to removed implementation, not this simplification; code, platform, real Account and Desktop validation remain pending in `evidence.md`.

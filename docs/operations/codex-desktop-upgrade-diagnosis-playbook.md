@@ -307,6 +307,22 @@ grok
 - Model client 是否每次调用重新查找 target
 - 注入的对象是否仍是当前 Fiber 中的同一个对象
 
+### 检查 Codex 额度门
+
+ChatGPT 登录的 Codex 额度耗尽时，外部 Agent 的发送按钮仍为 disabled，且 Agent 控件悬停提示「无法将此 Harness 与 Codex 额度限制分离」，说明 `renderer-codex-usage-gate.ts` 没有绑定成功。API Key 登录不会触发这道门，不能用来复现。
+
+在主 Renderer 中只读检查（不修改 getSnapshot，不订阅 store）：
+
+```text
+1. 从编辑器向上找到唯一带 onLocalSubmitStart 和布尔 submitDisabled 的组件
+2. 在其 hook 链中找「useMemo([store, atom]) → useSyncExternalStore inst → 订阅 effect」三连
+3. 对每个布尔候选，用追踪代理重放 atom.read：
+   - 读取 hardBlocked 但不读取 active：reserve 门，必须恰好 1 个
+   - 读取 authMethod 且读取 rate_limit.allowed：账号门，额度耗尽时必须恰好 1 个
+```
+
+任一步骤数量不对，按 Desktop 新结构修改识别条件；不要改为按 hook 序号、压缩名或写入账号数据放行。若 Desktop 改为按 Thread、Model 或 host 豁免外部 Harness，或不再在 Renderer 中拦截，删除该模块。
+
 ## 七、常见误判
 
 ### 误判 1：Adapter ready 就代表全部修复
@@ -395,6 +411,7 @@ grok
 - [ ] 点击 DeepSeek Harness 后 Model catalog 可加载
 - [ ] 点击 Grok 后 Model catalog 可加载
 - [ ] 切回 Codex 后原生 Composer 仍可用
+- [ ] ChatGPT 账号 Codex 额度耗尽时，新 Thread 和已有外部 Thread 均可发送；切回 Codex 后发送按钮恢复 disabled
 - [ ] 新 Thread 和未锁定 Thread 都完成切换验证
 - [ ] 已锁定 Thread 仍按设计保持 locked
 - [ ] 真实错误不会只被转换为笼统的 `Models unavailable`

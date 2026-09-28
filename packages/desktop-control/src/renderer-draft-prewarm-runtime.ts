@@ -46,6 +46,10 @@ export function createDraftPrewarmPolicyBridge(
   const originalOnNotification = manager.onNotification;
   const originalDispatchAppServerResponse = manager.dispatchAppServerResponse;
   let selectedModel: string | null = null;
+  // Native discard clears the current pool but cannot cancel a thread/start
+  // already in flight. Reject its late result so the previous Harness cannot
+  // repopulate the next draft's prewarm cache after a selection change.
+  let prewarmGeneration = 0;
   const isRecord = (value: unknown): value is Record<string, unknown> =>
     typeof value === "object" && value !== null && !Array.isArray(value);
   const isUnsupportedPosixBridgeSpawn = (value: unknown): boolean => {
@@ -532,14 +536,51 @@ export function createDraftPrewarmPolicyBridge(
     }
     return shouldUseBridge(method, routedParameters) ? sendBridged() : sendDirect();
   };
+  // The draft's workspace reaches the Host only through this prewarm. Publish
+  // it so the Composer can ask for that workspace's live Harness commands;
+  // again once the prewarm settles, when a prewarmed Session may report them.
+  const publishDraftWorkspace = (parameters: unknown): void => {
+    if (!isRecord(parameters) || parameters.ephemeral === true) return;
+    const cwd = parameters.cwd;
+    if (typeof cwd !== "string" || cwd.length === 0) return;
+    const drafts = isRecord(target.__codexhostDraftWorkspacesV1)
+      ? target.__codexhostDraftWorkspacesV1
+      : {};
+    drafts[hostId] = cwd;
+    Object.defineProperty(target, "__codexhostDraftWorkspacesV1", {
+      configurable: true,
+      value: drafts,
+    });
+    if (typeof target.dispatchEvent === "function" && typeof CustomEvent === "function") {
+      target.dispatchEvent(
+        new CustomEvent("codexhost:draft-workspace", { detail: { hostId, cwd } }),
+      );
+    }
+  };
   const routedPrewarm = (parameters: unknown, options?: unknown): unknown => {
     const routedParameters = routeThreadStart(parameters);
-    if (shouldUseBridge("thread/start", routedParameters)) {
-      return routedSend("thread/start", routedParameters, options);
+    const generation = prewarmGeneration;
+    publishDraftWorkspace(routedParameters);
+    const pending = shouldUseBridge("thread/start", routedParameters)
+      ? routedSend("thread/start", routedParameters, options)
+      : options === undefined
+        ? originalPrewarm.call(bridge, routedParameters)
+        : originalPrewarm.call(bridge, routedParameters, options);
+    if (
+      (isRecord(parameters) && parameters.ephemeral === true) ||
+      (typeof pending !== "object" && typeof pending !== "function") ||
+      pending === null ||
+      typeof Reflect.get(pending, "then") !== "function"
+    ) {
+      return pending;
     }
-    return options === undefined
-      ? originalPrewarm.call(bridge, routedParameters)
-      : originalPrewarm.call(bridge, routedParameters, options);
+    return Promise.resolve(pending).then((result) => {
+      if (disposed || generation !== prewarmGeneration) {
+        throw new Error("Renderer draft prewarm was invalidated by a configuration change");
+      }
+      publishDraftWorkspace(routedParameters);
+      return result;
+    });
   };
   bridge.sendRequest = routedSend;
   bridge.prewarmThreadStart = routedPrewarm;
@@ -617,17 +658,20 @@ export function createDraftPrewarmPolicyBridge(
       }
       if (selectedModel === model) return false;
       selectedModel = model;
+      prewarmGeneration += 1;
       return true;
     },
     clear(): Promise<void> {
       if (disposed || (isCurrentManager && !isCurrentManager()))
         return Promise.reject(new Error("Renderer request manager is retired"));
+      prewarmGeneration += 1;
       prewarmedThreadManager.discardAllPrewarmedThreads();
       return Promise.resolve();
     },
     dispose(): void {
       if (disposed) return;
       disposed = true;
+      prewarmGeneration += 1;
       retireResponses();
       if (bridge.sendRequest === routedSend) bridge.sendRequest = originalSend;
       if (bridge.prewarmThreadStart === routedPrewarm) {

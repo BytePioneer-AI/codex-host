@@ -192,7 +192,7 @@ describe("remote SSH Host installation", () => {
     const nodePath = await executable(path.join(home, "node"));
     const shimPath = await executable(path.join(home, "codexhost-shim"));
     const hostRuntimePath = await regularFile(path.join(home, "host-runtime.mjs"));
-    const claudeCommand = await executable(path.join(home, "claude"));
+    await executable(path.join(home, "claude"));
     await writeFile(profilePath, "export EXISTING_SETTING=1\n", "utf8");
 
     try {
@@ -203,8 +203,8 @@ describe("remote SSH Host installation", () => {
         nodePath,
         shimPath,
         hostRuntimePath,
-        claudeCommand,
         platform: "darwin" as const,
+        environment: { HOME: home, PATH: home },
       };
       const first = await installRemoteHost(options);
       const second = await installRemoteHost(options);
@@ -221,7 +221,14 @@ describe("remote SSH Host installation", () => {
       );
       expect(profile).toContain(`export CODEXHOST_HOST_RUNTIME_PATH='${hostRuntimePath}'`);
       expect(profile).toContain("export CODEXHOST_REMOTE_SSH_MANAGED='1'");
-      expect(profile).toContain(`export CODEXHOST_CLAUDE_COMMAND='${claudeCommand}'`);
+      expect(profile).not.toContain("CODEXHOST_CLAUDE_COMMAND");
+      expect(first).not.toHaveProperty("claudeCommand");
+      expect(second).not.toHaveProperty("claudeCommand");
+      expect(
+        JSON.parse(
+          await readFile(path.join(home, ".codexhost", "remote", "manifest.json"), "utf8"),
+        ),
+      ).not.toHaveProperty("claudeCommand");
       expect(profile).toContain(
         `CODEXHOST_DATA_DIR='${path.join(home, ".codexhost", "remote", "data")}'`,
       );
@@ -234,6 +241,46 @@ describe("remote SSH Host installation", () => {
         stockCodexPath,
         profilePath,
         dataDirectory: path.join(home, ".codexhost", "remote", "data"),
+      });
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
+  it("reinstalls without depending on a previously recorded Claude path", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "codexhost-remote-harness-discovery-"));
+    const options = {
+      home,
+      stockCodexPath: await executable(path.join(home, "stock-codex")),
+      nodePath: await executable(path.join(home, "node")),
+      shimPath: await executable(path.join(home, "codexhost-shim")),
+      hostRuntimePath: await regularFile(path.join(home, "host-runtime.mjs")),
+      platform: "linux" as const,
+      environment: { HOME: home, SHELL: "/bin/bash", PATH: home },
+    };
+
+    try {
+      const installed = await installRemoteHost(options);
+      const manifestPath = path.join(home, ".codexhost", "remote", "manifest.json");
+      const oldCommand = path.join(home, "removed-claude");
+      await writeFile(
+        manifestPath,
+        JSON.stringify({ ...installed, claudeCommand: oldCommand }),
+        "utf8",
+      );
+      const profile = await readFile(installed.profilePath, "utf8");
+      await writeFile(
+        installed.profilePath,
+        profile.replace("\nfi\n", `\n  export CODEXHOST_CLAUDE_COMMAND='${oldCommand}'\nfi\n`),
+        "utf8",
+      );
+
+      const reinstalled = await installRemoteHost(options);
+      expect(reinstalled).not.toHaveProperty("claudeCommand");
+      expect(await readFile(installed.profilePath, "utf8")).toBe(profile);
+      await expect(inspectRemoteHostInstallation(options)).resolves.toMatchObject({
+        state: "ready",
+        issues: [],
       });
     } finally {
       await rm(home, { recursive: true, force: true });

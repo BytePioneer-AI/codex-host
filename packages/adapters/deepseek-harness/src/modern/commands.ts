@@ -4,11 +4,7 @@ import {
   sanitizeModernRemoteFailure,
   type ModernRemoteResult,
 } from "./wire.js";
-import {
-  DEEPSEEK_V012_PROFILE,
-  isDeepSeekV015,
-  type DeepSeekModernProfile,
-} from "../profiles/profile.js";
+import { DEEPSEEK_V012_PROFILE, type DeepSeekModernProfile } from "../profiles/profile.js";
 
 const MAX_COMMAND_ID_LENGTH = 512;
 const MAX_COMMAND_RESULT_TEXT_LENGTH = 64 * 1_024;
@@ -192,7 +188,7 @@ export function executeModernCommand(
   return callModernCommand(
     remote,
     "commands/execute",
-    isDeepSeekV015(profile)
+    profile.sessionFormatVersion !== 0
       ? { agentId, line, submittedAttachments: [] }
       : { agentId, line, images: [] },
     parseModernCommandExecution,

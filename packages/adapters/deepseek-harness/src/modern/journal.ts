@@ -39,7 +39,7 @@ export type ModernJournalJson =
   | { readonly [key: string]: ModernJournalJson };
 
 export interface ModernJournalHeader {
-  readonly version: 0 | 3;
+  readonly version: 0 | 3 | 4;
   readonly id: string;
   readonly createdAt: number;
   readonly cwd?: string;

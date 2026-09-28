@@ -5,6 +5,7 @@ import {
   hostInteractionIdSchema,
   harnessPermissionModeIdSchema,
   harnessInspectionSchema,
+  nativeSessionRefSchema,
 } from "@codexhost/shared-contracts";
 import type { HarnessOutput } from "@codexhost/harness-adapter";
 import { CursorAdapter, CursorSession } from "../src/adapter.js";
@@ -72,8 +73,12 @@ class FakeTransport extends CursorTransport {
     };
   }
 }
-function session() {
-  const transport = new FakeTransport({ cwd: process.cwd(), environment: {} });
+function session(executionPolicy?: "unattended-full-access") {
+  const transport = new FakeTransport({
+    cwd: process.cwd(),
+    environment: {},
+    ...(executionPolicy ? { executionPolicy } : {}),
+  });
   const session = new CursorSession(transport, info, () => {});
   const output: HarnessOutput[] = [];
   const done = (async () => {
@@ -333,6 +338,240 @@ describe("Cursor turn lifecycle", () => {
       event: { outcome: { status: "failed", error: { code: "processExited" } } },
     });
     expect(terminal && "event" in terminal && "nativeTurnRef" in terminal.event).toBe(false);
+  });
+});
+
+describe("Cursor execution policy", () => {
+  const sessionId = info.sessionId;
+  function stubNativeSession() {
+    vi.spyOn(CursorTransport.prototype, "prepare").mockResolvedValue();
+    vi.spyOn(CursorTransport.prototype, "open").mockImplementation(async function (
+      this: CursorTransport,
+    ) {
+      this.sessionId = sessionId;
+      return structuredClone(info);
+    });
+    vi.spyOn(CursorTransport.prototype, "close").mockResolvedValue();
+  }
+  it("records delegated unattended full access and continues it on resume", async () => {
+    stubNativeSession();
+    const adapter = new CursorAdapter();
+    try {
+      const created = await adapter.open({
+        kind: "create",
+        cwd: process.cwd(),
+        executionPolicy: "unattended-full-access",
+      });
+      if (!created.ok) throw Error(created.error.message);
+      if (!(created.value instanceof CursorSession)) throw Error("Unexpected Session");
+      expect(created.value.transport.options.executionPolicy).toBe("unattended-full-access");
+      const ref = created.value.initialState.nativeRef;
+      if (!ref) throw Error("Missing Native Session Ref");
+      expect(ref.locator).toEqual({ executionPolicy: "unattended-full-access" });
+      const resumed = await adapter.open({
+        kind: "resume",
+        cwd: process.cwd(),
+        nativeRef: ref,
+      });
+      if (!resumed.ok) throw Error(resumed.error.message);
+      if (!(resumed.value instanceof CursorSession)) throw Error("Unexpected Session");
+      expect(resumed.value.transport.options.executionPolicy).toBe("unattended-full-access");
+      expect(resumed.value.initialState.nativeRef?.locator).toEqual({
+        executionPolicy: "unattended-full-access",
+      });
+    } finally {
+      await adapter.close();
+    }
+  });
+  it("keeps ordinary sessions and refs without a recorded policy unforced", async () => {
+    stubNativeSession();
+    const adapter = new CursorAdapter();
+    try {
+      const created = await adapter.open({ kind: "create", cwd: process.cwd() });
+      if (!created.ok) throw Error(created.error.message);
+      if (!(created.value instanceof CursorSession)) throw Error("Unexpected Session");
+      expect(created.value.transport.options.executionPolicy).toBe("default");
+      expect(created.value.initialState.nativeRef?.locator).toEqual({ executionPolicy: "default" });
+      const resumed = await adapter.open({
+        kind: "resume",
+        cwd: process.cwd(),
+        nativeRef: nativeSessionRefSchema.parse({
+          harnessId: "cursor-cli",
+          nativeSessionId: sessionId,
+          formatVersion: 1,
+        }),
+      });
+      if (!resumed.ok) throw Error(resumed.error.message);
+      if (!(resumed.value instanceof CursorSession)) throw Error("Unexpected Session");
+      expect(resumed.value.transport.options.executionPolicy).toBe("default");
+    } finally {
+      await adapter.close();
+    }
+  });
+  it("rejects a Native Session Ref whose recorded policy is unknown", async () => {
+    const open = vi.spyOn(CursorTransport.prototype, "open");
+    const adapter = new CursorAdapter();
+    try {
+      expect(
+        await adapter.open({
+          kind: "resume",
+          cwd: process.cwd(),
+          nativeRef: nativeSessionRefSchema.parse({
+            harnessId: "cursor-cli",
+            nativeSessionId: sessionId,
+            locator: { executionPolicy: "everything" },
+            formatVersion: 1,
+          }),
+        }),
+      ).toMatchObject({ error: { code: "invalidRequest" } });
+      expect(open).not.toHaveBeenCalled();
+    } finally {
+      await adapter.close();
+    }
+  });
+  it("fails an unattended Turn that requests native approval without approving it", async () => {
+    const f = session("unattended-full-access");
+    const cancel = vi.spyOn(f.transport, "cancel");
+    const answers: unknown[] = [];
+    f.transport.action = async (text, callbacks) => {
+      answers.push(
+        await callbacks.permission({
+          sessionId: info.sessionId,
+          toolCall: { toolCallId: "shell-1", title: "Synthetic shell" },
+          options: [{ kind: "allow_once", optionId: "allow", name: "Allow" }],
+        }),
+      );
+      native.turns.push({ id: randomUUID(), text });
+      return { stopReason: "end_turn" };
+    };
+    await f.session.execute(start);
+    await vi.waitFor(() =>
+      expect(f.output.some((x) => x.kind === "event" && x.event.type === "turn.completed")).toBe(
+        true,
+      ),
+    );
+    expect(answers).toEqual([{ outcome: { outcome: "cancelled" } }]);
+    expect(cancel).toHaveBeenCalled();
+    expect(f.output.some((x) => x.kind === "interaction")).toBe(false);
+    expect(f.output).toContainEqual(
+      expect.objectContaining({
+        event: expect.objectContaining({
+          type: "turn.completed",
+          outcome: {
+            status: "failed",
+            error: {
+              code: "nativeFailure",
+              message: "Cursor requested approval during unattended full access",
+              retryable: false,
+            },
+          },
+        }),
+      }),
+    );
+    await f.session.close();
+    await f.done;
+  });
+  it.each(["cancel-first", "approval-first"] as const)(
+    "keeps an explicit user cancel that races an unattended approval request (%s)",
+    async (order) => {
+      const f = session("unattended-full-access");
+      const answers: unknown[] = [];
+      const approval = (): Parameters<CursorCallbacks["permission"]>[0] => ({
+        sessionId: info.sessionId,
+        toolCall: { toolCallId: "shell-1", title: "Synthetic shell" },
+        options: [{ kind: "allow_once", optionId: "allow", name: "Allow" }],
+      });
+      f.transport.action = async (text, callbacks) => {
+        if (order === "cancel-first") {
+          expect(await f.session.execute({ type: "turn.cancel", turnId })).toMatchObject({
+            ok: true,
+          });
+          answers.push(await callbacks.permission(approval()));
+        } else {
+          const pending = callbacks.permission(approval());
+          expect(await f.session.execute({ type: "turn.cancel", turnId })).toMatchObject({
+            ok: true,
+          });
+          answers.push(await pending);
+        }
+        native.turns.push({ id: randomUUID(), text });
+        return { stopReason: "cancelled" };
+      };
+      await f.session.execute(start);
+      await vi.waitFor(() =>
+        expect(f.output.some((x) => x.kind === "event" && x.event.type === "turn.completed")).toBe(
+          true,
+        ),
+      );
+      expect(answers).toEqual([{ outcome: { outcome: "cancelled" } }]);
+      expect(f.output.some((x) => x.kind === "interaction")).toBe(false);
+      expect(f.output).toContainEqual(
+        expect.objectContaining({
+          event: expect.objectContaining({
+            type: "turn.completed",
+            outcome: { status: "cancelled" },
+          }),
+        }),
+      );
+      await f.session.close();
+      await f.done;
+    },
+  );
+  it("cancels an unattended native plan request instead of accepting it", async () => {
+    const f = session("unattended-full-access");
+    const cancel = vi.spyOn(f.transport, "cancel");
+    const answers: unknown[] = [];
+    f.transport.action = async (text, callbacks) => {
+      answers.push(
+        await callbacks.extension("cursor/create_plan", { name: "Plan", plan: "Do a thing" }),
+      );
+      native.turns.push({ id: randomUUID(), text });
+      return { stopReason: "end_turn" };
+    };
+    await f.session.execute(start);
+    await vi.waitFor(() =>
+      expect(f.output.some((x) => x.kind === "event" && x.event.type === "turn.completed")).toBe(
+        true,
+      ),
+    );
+    expect(answers).toEqual([{ outcome: { outcome: "cancelled" } }]);
+    expect(cancel).toHaveBeenCalled();
+    expect(f.output.some((x) => x.kind === "interaction")).toBe(false);
+    await f.session.close();
+    await f.done;
+  });
+  it("keeps interactive approvals for ordinary sessions", async () => {
+    const f = session();
+    const answers: unknown[] = [];
+    f.transport.action = async (text, callbacks) => {
+      const pending = callbacks.permission({
+        sessionId: info.sessionId,
+        toolCall: { toolCallId: "shell-1", title: "Synthetic shell" },
+        options: [{ kind: "allow_once", optionId: "allow", name: "Allow" }],
+      });
+      await vi.waitFor(() => expect(f.output.some((x) => x.kind === "interaction")).toBe(true));
+      const interaction = f.output.find((x) => x.kind === "interaction");
+      if (interaction?.kind !== "interaction") throw new Error("Missing interaction");
+      expect(
+        await f.session.execute({
+          type: "interaction.respond",
+          interactionId: interaction.interaction.interactionId,
+          response: { type: "approval", actionId: "allow" },
+        }),
+      ).toMatchObject({ ok: true });
+      answers.push(await pending);
+      native.turns.push({ id: randomUUID(), text });
+      return { stopReason: "end_turn" };
+    };
+    await f.session.execute(start);
+    await vi.waitFor(() =>
+      expect(f.output.some((x) => x.kind === "event" && x.event.type === "turn.completed")).toBe(
+        true,
+      ),
+    );
+    expect(answers).toEqual([{ outcome: { outcome: "selected", optionId: "allow" } }]);
+    await f.session.close();
+    await f.done;
   });
 });
 

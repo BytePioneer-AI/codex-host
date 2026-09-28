@@ -74,6 +74,12 @@ const runtimeLicenses = [
     output: "MCP-SDK-LICENSE.txt",
   },
   {
+    packageName: "@opencode/client",
+    license: "MIT",
+    source: "scripts/release/licenses/opencode-client-2.0.16-MIT.txt",
+    output: "OpenCode-v2-Client-LICENSE.txt",
+  },
+  {
     packageName: "@opencode-ai/sdk",
     license: "MIT",
     source: "scripts/release/licenses/opencode-ai-sdk-1.18.25-MIT.txt",
@@ -233,9 +239,9 @@ export function expectedNpmPackagePaths(target) {
     "licenses/Claude-Agent-SDK-LICENSE.md",
     "licenses/MCP-SDK-LICENSE.txt",
     "licenses/OpenCode-SDK-LICENSE.txt",
+    "licenses/OpenCode-v2-Client-LICENSE.txt",
     "licenses/Qoder-Agent-SDK-LICENSE.txt",
     "licenses/QoderCN-Agent-SDK-LICENSE.txt",
-    "licenses/opencodex-LICENSE.txt",
     "licenses/diff-LICENSE.txt",
     "licenses/lucide-LICENSE.txt",
     "licenses/tailwindcss-LICENSE.txt",
@@ -282,7 +288,7 @@ export function createNpmPackageManifest({ version, target }) {
 export function createNpmBinLauncherSource({ version }) {
   return `#!/usr/bin/env node
 import { spawn } from "node:child_process";
-import { existsSync, realpathSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { createRequire } from "node:module";
 import { homedir } from "node:os";
 import path from "node:path";
@@ -361,6 +367,17 @@ try {
   }
 }
 
+let platformVersion;
+try {
+  platformVersion = JSON.parse(readFileSync(path.join(packageRoot, "package.json"), "utf8"))?.version;
+} catch {
+  fail(\`cannot read platform package metadata: \${packageRoot}\`);
+}
+if (platformVersion !== version) {
+  fail(
+    \`platform package version mismatch: '\${platformPackage}' at '\${packageRoot}' has \${JSON.stringify(platformVersion) ?? "no version"}; expected \${version}. Close Codex Desktop, then run: npm install -g @codexhost/cli@\${version} \${platformPackage}@\${version}\`,
+  );
+}
 startupTrace("platform package resolved");
 const executableSuffix = process.platform === "win32" ? ".exe" : "";
 const launcher = path.join(packageRoot, "bin", \`codexhost\${executableSuffix}\`);
@@ -808,7 +825,7 @@ export async function writeThirdPartyNotices(root, packageRoot) {
       );
     }
     await copyReleaseFile(
-      dependency.packageName === "@opencode-ai/sdk"
+      dependency.source.startsWith("scripts/release/licenses/")
         ? resolveRuntimeLicenseSource(root, dependency)
         : path.join(dependencyRoot, dependency.source),
       path.join(licensesDirectory, dependency.output),
@@ -821,17 +838,6 @@ export async function writeThirdPartyNotices(root, packageRoot) {
       "",
     );
   }
-  await copyReleaseFile(
-    path.join(root, "third-party", "opencodex.LICENSE"),
-    path.join(licensesDirectory, "opencodex-LICENSE.txt"),
-    "opencodex native profile license",
-  );
-  notices.push(
-    "opencodex native profiles (2d4d7a22381a2e497c2442902104619e25f937c7)",
-    "License: MIT",
-    "License text: licenses/opencodex-LICENSE.txt",
-    "",
-  );
   await writeFile(
     path.join(packageRoot, "THIRD_PARTY_NOTICES.txt"),
     `${notices.join("\n").trimEnd()}\n`,

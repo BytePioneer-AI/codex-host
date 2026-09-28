@@ -1,5 +1,7 @@
 import {
+  DELEGATION_MENTION_PATH_PREFIX,
   IDLE_RELEASE_SETTINGS_METHOD,
+  restoreHarnessCommandMentions,
   LOADED_SESSIONS_METHOD,
   idleReleaseSettingsSchema,
 } from "@codexhost/shared-contracts";
@@ -8,6 +10,11 @@ import {
   credentialImportsParamsSchema,
 } from "@codexhost/shared-contracts";
 import { handleCredentialImports } from "./credential-imports.js";
+import {
+  rewriteDelegationMentionInput,
+  rewriteDelegationMentionText,
+} from "./delegation-mention-rewrite.js";
+import { managedDelegationSkillReference } from "./delegation-skill.js";
 import { AccountRateLimits } from "./codex-runtime/account-rate-limits.js";
 import { NativeAccountObserver } from "./native-account-observer.js";
 import { HarnessAccountInspectionCache, listHarnessAccountSources } from "./harness-accounts.js";
@@ -44,6 +51,7 @@ import {
   type HarnessPluginDescriptor,
   externalThreadForkParamsSchema,
   harnessCommandCatalogSchema,
+  type HarnessCommandCatalog,
   harnessCommandsInspectParamsSchema,
   type HarnessId,
   harnessIdSchema,
@@ -105,6 +113,17 @@ import {
   type ExternalThreadResolution,
 } from "./external-thread-runtime.js";
 import { ExternalSteerError, ExternalTurnSteering } from "./external-turn-steering.js";
+import {
+  ExternalCommandError,
+  inspectLiveCommandCatalog,
+  isExternalCommandCandidate,
+  resolveExternalCommand,
+} from "./external-command-routing.js";
+import {
+  isLiveCommandCatalog,
+  LiveCommandCatalogCache,
+  sameWorkspace,
+} from "./live-command-catalog-cache.js";
 import {
   DELEGATION_CLI_PATH_ENV,
   DELEGATION_RUNTIME_ENDPOINT_ENV,
@@ -189,6 +208,7 @@ import {
   decodeThreadMetadataUpdateRequest,
   decodeThreadRevertRequest,
   decodeThreadRollbackRequest,
+  encodeJsonFrame,
   mapExternalThreadHarnessError,
   projectCodexRateLimitsToCredits,
   observeCodexRateLimits,
@@ -235,6 +255,8 @@ export interface AppServerHostOptions {
   /** Defaults to true. A listener that shares one store across sessions owns closing it. */
   closeMappingStoreOnExit?: boolean;
   spawnOfficial?: typeof spawn;
+  /** Grace period for each official app-server stop step. Tests shorten it. */
+  officialCloseTimeoutMs?: number;
   createOfficialConnection?: () =>
     OfficialAppServerConnection | Promise<OfficialAppServerConnection>;
   accountControl?: CodexAccountControl;
@@ -277,6 +299,15 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+function officialThreadBusy(thread: Record<string, unknown> | null): boolean {
+  if (thread && isRecord(thread.status) && thread.status.type === "active") return true;
+  const turns = thread && Array.isArray(thread.turns) ? thread.turns : [];
+  const latestTurn = turns.at(-1);
+  return (
+    isRecord(latestTurn) && (latestTurn.status === "inProgress" || latestTurn.status === "running")
+  );
+}
+
 function isCreditsAdapter(adapter: HarnessAdapter): adapter is HarnessAdapter & {
   credits(): unknown;
   refreshCredits?: () => Promise<unknown>;
@@ -294,6 +325,23 @@ function projectAccountCredits(value: unknown): AccountCreditsSnapshot | null {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+/**
+ * Codex app-server reports an unknown Thread with these messages. Any other
+ * error from a Thread read is a failure to read, not proof that it is missing.
+ */
+const OFFICIAL_THREAD_MISSING =
+  /no rollout found for thread id|thread not found|invalid thread id/i;
+
+function officialThreadReadError(error: Record<string, unknown>): DelegationControlError {
+  const message = typeof error.message === "string" ? error.message : "";
+  return OFFICIAL_THREAD_MISSING.test(message)
+    ? new DelegationControlError("THREAD_NOT_FOUND", message || "Official Thread was not found")
+    : new DelegationControlError(
+        "INTERNAL_ERROR",
+        message ? `Official Thread read failed: ${message}` : "Official Thread read failed",
+      );
 }
 
 function codexAccountRpcError(error: unknown): { code: number; message: string } {
@@ -507,6 +555,7 @@ export class AppServerHost {
   readonly #accountInspections = new HarnessAccountInspectionCache();
   #externalRuntime: ExternalThreadRuntime;
   readonly #externalSteering = new ExternalTurnSteering();
+  readonly #liveCommandCache = new LiveCommandCatalogCache();
   #repository: ExternalThreadRepository;
   #pendingDesktopApprovals = new Map<HostApprovalRequestId, PendingDesktopApproval>();
   #pendingDesktopQuestions = new Map<HostQuestionRequestId, PendingDesktopQuestion>();
@@ -570,6 +619,9 @@ export class AppServerHost {
                   ...(this.#options.spawnOfficial
                     ? { spawnOfficial: this.#options.spawnOfficial }
                     : {}),
+                  ...(this.#options.officialCloseTimeoutMs === undefined
+                    ? {}
+                    : { closeTimeoutMs: this.#options.officialCloseTimeoutMs }),
                 }),
           ),
       });
@@ -671,6 +723,7 @@ export class AppServerHost {
       listOfficial: (input) => this.#listDelegationThreads(input),
       officialThreadCwd: (threadId) => this.#readOfficialThreadCwd(threadId),
       activeOfficialParents: () => [...this.#activeOfficialTurns.keys()],
+      externalThreadBusy: (thread) => this.#externalThreadBusy(thread),
     });
     const unregisterDelegationApi = options.onDelegationApi?.({
       listHarnesses: () =>
@@ -1169,7 +1222,7 @@ export class AppServerHost {
           rpcError(request, -32602, "Invalid Harness command inspection params"),
         );
       } else {
-        await this.#writeHarnessCommandCatalog(request, params.data.harnessId);
+        await this.#writeHarnessCommandCatalog(request, params.data.harnessId, params.data.cwd);
       }
       return;
     }
@@ -1509,7 +1562,36 @@ export class AppServerHost {
         return;
       }
     }
-    await this.#forwardOfficialRequest(request, frame);
+    await this.#forwardOfficialRequest(
+      request,
+      await this.#rewriteOfficialDelegationMentions(request, frame),
+    );
+  }
+
+  /** Native Codex Turns: turn `#` delegation chips into an explicit Skill-backed request. */
+  async #rewriteOfficialDelegationMentions(
+    request: JsonRpcRequest,
+    frame: Buffer<ArrayBufferLike>,
+  ): Promise<Buffer<ArrayBufferLike>> {
+    if (request.method !== "turn/start" && request.method !== "turn/steer") return frame;
+    if (!isRecord(request.params) || !Array.isArray(request.params.input)) return frame;
+    const input = request.params.input as JsonValue[];
+    if (
+      !input.some(
+        (item) =>
+          isRecord(item) &&
+          typeof item.text === "string" &&
+          item.text.includes(DELEGATION_MENTION_PATH_PREFIX),
+      )
+    ) {
+      return frame;
+    }
+    const rewritten = rewriteDelegationMentionInput(input, await managedDelegationSkillReference());
+    if (!rewritten) return frame;
+    return encodeJsonFrame({
+      ...(request as unknown as JsonObject),
+      params: { ...(request.params as JsonObject), input: rewritten },
+    });
   }
 
   async #forwardOfficialNonRequest(
@@ -1978,28 +2060,57 @@ export class AppServerHost {
       threadId: input.threadId,
       includeTurns: true,
     });
-    if (isRecord(current.error) || !isRecord(current.result)) {
-      throw new DelegationControlError("THREAD_NOT_FOUND", "Official Thread was not found");
+    if (isRecord(current.error)) throw officialThreadReadError(current.error);
+    if (!isRecord(current.result)) {
+      throw new DelegationControlError("INTERNAL_ERROR", "Official Thread read returned no result");
     }
     const currentThread = isRecord(current.result.thread) ? current.result.thread : null;
-    const currentTurns =
-      currentThread && Array.isArray(currentThread.turns) ? currentThread.turns : [];
-    const latestTurn = currentTurns.at(-1);
-    if (
-      (currentThread && isRecord(currentThread.status) && currentThread.status.type === "active") ||
-      (isRecord(latestTurn) &&
-        (latestTurn.status === "inProgress" || latestTurn.status === "running"))
-    ) {
+    if (officialThreadBusy(currentThread)) {
       throw new DelegationControlError("THREAD_BUSY", "Thread already has an active Turn");
+    }
+    // Read stays idle after unsubscribe and does not resubscribe. Resume does, and
+    // excludeTurns keeps paginated history out of the response without replacing config.
+    const resumed = await this.#requestOfficial("thread/resume", {
+      threadId: input.threadId,
+      excludeTurns: true,
+    });
+    if (isRecord(resumed.error) || !isRecord(resumed.result)) {
+      throw new DelegationControlError(
+        "DELEGATION_FAILED",
+        isRecord(resumed.error) && typeof resumed.error.message === "string"
+          ? resumed.error.message
+          : "Official Thread resume failed",
+        { notStarted: true },
+      );
+    }
+    const resumedThread = isRecord(resumed.result.thread) ? resumed.result.thread : null;
+    if (!resumedThread || resumedThread.id !== input.threadId) {
+      throw new DelegationControlError(
+        "DELEGATION_FAILED",
+        "Official Thread resume did not return the requested Thread",
+        { notStarted: true },
+      );
+    }
+    if (officialThreadBusy(resumedThread)) {
+      throw new DelegationControlError("THREAD_BUSY", "Thread already has an active Turn");
+    }
+    if (!isRecord(resumedThread.status) || resumedThread.status.type !== "idle") {
+      throw new DelegationControlError(
+        "DELEGATION_FAILED",
+        "Official Thread is not idle after resume",
+        { notStarted: true },
+      );
     }
     const response = await this.#requestOfficial("turn/start", {
       threadId: input.threadId,
       input: [{ type: "text", text: input.message }],
     });
     if (isRecord(response.error)) {
+      // app-server answered turn/start with an error, so no Turn was started.
       throw new DelegationControlError(
         "DELEGATION_FAILED",
         typeof response.error.message === "string" ? response.error.message : "Turn start failed",
+        { notStarted: true },
       );
     }
     const result = isRecord(response.result) ? response.result : null;
@@ -2062,18 +2173,11 @@ export class AppServerHost {
       threadId: input.threadId,
       includeTurns: true,
     });
-    if (isRecord(response.error)) {
-      throw new DelegationControlError(
-        "THREAD_NOT_FOUND",
-        typeof response.error.message === "string"
-          ? response.error.message
-          : "Official Thread was not found",
-      );
-    }
+    if (isRecord(response.error)) throw officialThreadReadError(response.error);
     const result = isRecord(response.result) ? response.result : null;
     const thread = result && isRecord(result.thread) ? result.thread : null;
     if (!thread)
-      throw new DelegationControlError("THREAD_NOT_FOUND", "Official Thread was not found");
+      throw new DelegationControlError("INTERNAL_ERROR", "Official Thread read returned no Thread");
     const turns = Array.isArray(thread.turns)
       ? thread.turns.filter((turn): turn is JsonObject => isRecord(turn))
       : [];
@@ -2243,7 +2347,11 @@ export class AppServerHost {
     }
     const coordinator = this.#options.updateCoordinator;
     if (!coordinator) {
-      await this.#writer.json(rpcError(request, -32090, "Application updates are unavailable"));
+      await this.#writer.json(
+        request.method === "codexhost/update/check"
+          ? rpcEnvelope(request, { result: null })
+          : rpcError(request, -32090, "Application updates are unavailable"),
+      );
       return;
     }
     try {
@@ -2496,22 +2604,81 @@ export class AppServerHost {
       await this.#writer.json(rpcEnvelope(request, { result: { commands: [] } }));
       return;
     }
-    await this.#writeHarnessCommandCatalog(request, location.record.harnessId);
+    // A loaded Session reports its live catalog (custom commands, skills). Never
+    // open a Session only to read commands; unloaded Threads fall back to the
+    // workspace cache, then the static catalog.
+    const loaded = this.#externalRuntime.get(params.data.threadId);
+    if (loaded) {
+      const catalog = await this.#inspectLoadedCommands(loaded);
+      if (catalog) {
+        await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(catalog) }));
+        return;
+      }
+    }
+    await this.#writeHarnessCommandCatalog(
+      request,
+      location.record.harnessId,
+      loaded?.cwd ?? location.record.cwd,
+      params.data.threadId,
+    );
   }
 
-  async #writeHarnessCommandCatalog(request: JsonRpcRequest, harnessId: HarnessId): Promise<void> {
+  /**
+   * Catalog of a loaded Session, marked live or static. A live catalog is
+   * remembered for its Harness and workspace so later drafts there can show it.
+   */
+  async #inspectLoadedCommands(thread: ExternalThread): Promise<HarnessCommandCatalog | null> {
+    if (!thread.session.commands) return null;
+    const catalog = await inspectLiveCommandCatalog(thread.session.commands);
+    if (!catalog) return null;
+    const staticCatalog = this.#externalAdapters.get(thread.harnessId)?.commandCatalog;
+    if (staticCatalog && !isLiveCommandCatalog(catalog, staticCatalog)) return null;
+    const live = { ...catalog, source: "live" as const };
+    this.#liveCommandCache.remember(thread.harnessId, thread.cwd, live);
+    return live;
+  }
+
+  async #writeHarnessCommandCatalog(
+    request: JsonRpcRequest,
+    harnessId: HarnessId,
+    cwd?: string,
+    inspectedThreadId?: string,
+  ): Promise<void> {
     await this.#waitForPlugins();
     const adapter = this.#externalAdapters.get(harnessId);
     if (!adapter) {
       await this.#writer.json(rpcError(request, -32077, `Harness '${harnessId}' is unavailable`));
       return;
     }
+    let catalog: HarnessCommandCatalog;
     try {
-      const catalog = harnessCommandCatalogSchema.parse(adapter.commandCatalog ?? { commands: [] });
-      await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(catalog) }));
+      // `static` tells the Composer live commands exist but are not loaded
+      // yet; Harnesses without live catalogs leave the source unset.
+      catalog = harnessCommandCatalogSchema.parse({
+        ...(adapter.commandCatalog ?? { commands: [] }),
+        ...(adapter.liveCommandCatalog ? { source: "static" } : {}),
+      });
     } catch {
       await this.#writer.json(rpcError(request, -32078, "Harness command catalog is invalid"));
+      return;
     }
+    if (cwd && adapter.liveCommandCatalog) {
+      // Draft of a known workspace: a loaded Session there (a prewarmed draft
+      // or an open Thread) or the last catalog seen for it. Never start one.
+      for (const thread of this.#externalRuntime.values()) {
+        if (thread.id === inspectedThreadId) continue;
+        if (thread.harnessId !== harnessId || !sameWorkspace(thread.cwd, cwd)) continue;
+        const live = await this.#inspectLoadedCommands(thread);
+        if (live) {
+          catalog = live;
+          break;
+        }
+      }
+      if (catalog.source === "static") {
+        catalog = this.#liveCommandCache.lookup(harnessId, cwd) ?? catalog;
+      }
+    }
+    await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(catalog) }));
   }
 
   async #executeThreadCommand(request: JsonRpcRequest): Promise<void> {
@@ -2537,11 +2704,7 @@ export class AppServerHost {
     thread: ExternalThread,
     params: ReturnType<typeof threadCommandExecuteParamsSchema.parse>,
   ): Promise<void> {
-    if (
-      thread.running ||
-      this.#externalSteering.hasPending(thread.id) ||
-      this.#pendingExternalCommandRequests.has(thread.id)
-    ) {
+    if (this.#externalThreadBusy(thread) || this.#pendingExternalCommandRequests.has(thread.id)) {
       await this.#writer.json(
         rpcError(request, -32072, "External Thread already has an active operation"),
       );
@@ -2573,18 +2736,27 @@ export class AppServerHost {
         return;
       }
       try {
-        await this.#startExternalCommand(
-          request,
+        const started = await this.#beginExternalCommand(
           thread,
           params.commandId,
           params.arguments,
           params.turnId,
-          "command",
         );
+        try {
+          const result = threadCommandExecuteResultSchema.parse({
+            accepted: true,
+            turnId: started.turnId,
+          });
+          await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(result) }));
+        } finally {
+          started.gate.resolve();
+        }
       } catch (error) {
         this.#diagnose(error);
         await this.#writer.json(
-          rpcError(request, -32073, `External Harness command failed: ${errorMessage(error)}`),
+          error instanceof ExternalCommandError
+            ? rpcError(request, error.code, error.message)
+            : rpcError(request, -32073, `External Harness command failed: ${errorMessage(error)}`),
         );
       }
     } finally {
@@ -2592,26 +2764,23 @@ export class AppServerHost {
     }
   }
 
-  async #startExternalCommand(
-    request: JsonRpcRequest,
+  async #beginExternalCommand(
     thread: ExternalThread,
     commandId: string,
     arguments_: JsonObject | undefined,
-    requestedTurnId: HostTurnId | undefined,
-    responseKind: "command" | "turn",
-  ): Promise<void> {
+    requestedTurnId?: HostTurnId,
+  ): Promise<{ turnId: HostTurnId; turn: JsonObject; gate: TurnProjectionGate }> {
     const commands = thread.session.commands;
     if (!commands) {
-      await this.#writer.json(
-        rpcError(request, -32078, "External Harness does not expose commands"),
-      );
-      return;
+      throw new ExternalCommandError(-32078, "External Harness does not expose commands");
     }
-    if (thread.running || this.#externalSteering.hasPending(thread.id)) {
-      await this.#writer.json(
-        rpcError(request, -32072, "External Thread already has an active operation"),
-      );
-      return;
+    if (this.#closeRequested || this.#externalRuntime.get(thread.id) !== thread) {
+      throw new ExternalCommandError(-32073, "External Thread is no longer available");
+    }
+    // Admission belongs to the caller. A steering replacement retains its
+    // reservation until this command starts, after the old Turn has stopped.
+    if (thread.running || thread.activeTurnId) {
+      throw new ExternalCommandError(-32072, "External Thread already has an active operation");
     }
     const turnId = requestedTurnId ?? hostTurnIdSchema.parse(randomUUID());
     const projection: ProjectedTurn = {
@@ -2625,17 +2794,19 @@ export class AppServerHost {
     const gate = turnProjectionGate();
     thread.running = true;
     thread.activeTurnId = turnId;
+    thread.projectedTerminalTurnId = null;
     thread.projectedTurns.set(turnId, projection);
     thread.responseGates.set(turnId, gate);
     thread.ephemeralTurnIds.add(turnId);
 
-    let result: Awaited<ReturnType<NonNullable<HarnessSession["commands"]>["execute"]>>;
     try {
-      result = await commands.execute({
+      const result = await commands.execute({
         turnId,
         commandId,
         ...(arguments_ ? { arguments: arguments_ } : {}),
       });
+      if (!result.ok) throw new ExternalCommandError(-32073, result.error.message);
+      return { turnId: result.value.turnId, turn: projection.projector.pendingTurn(), gate };
     } catch (error) {
       thread.running = false;
       thread.activeTurnId = null;
@@ -2645,31 +2816,6 @@ export class AppServerHost {
       gate.resolve();
       this.#signalActiveWorkChanged();
       throw error;
-    }
-    if (!result.ok) {
-      thread.running = false;
-      thread.activeTurnId = null;
-      thread.projectedTurns.delete(turnId);
-      thread.responseGates.delete(turnId);
-      thread.ephemeralTurnIds.delete(turnId);
-      gate.resolve();
-      this.#signalActiveWorkChanged();
-      await this.#writer.json(rpcError(request, -32073, result.error.message));
-      return;
-    }
-    try {
-      const response =
-        responseKind === "command"
-          ? jsonValueSchema.parse(
-              threadCommandExecuteResultSchema.parse({
-                accepted: true,
-                turnId: result.value.turnId,
-              }),
-            )
-          : { turn: projection.projector.pendingTurn() };
-      await this.#writer.json(rpcEnvelope(request, { result: response as JsonObject }));
-    } finally {
-      gate.resolve();
     }
   }
 
@@ -2901,6 +3047,14 @@ export class AppServerHost {
         });
         thread.transportModelId = transportModelId;
         thread.requestedModel = effectiveModel;
+        thread.thread = externalThreadValue({
+          record: { ...thread.record, transportModelId },
+          turns: thread.turns,
+          sessionId: thread.sessionId,
+          running: thread.running,
+        });
+        // Resume restores the saved selection, so an unsaved change must not
+        // be reported as a completed selection.
         try {
           thread.record = await this.#repository.setTransportModelId(
             thread.record.hostThreadId,
@@ -2908,13 +3062,15 @@ export class AppServerHost {
           );
         } catch (error) {
           this.#diagnose(error);
+          await this.#writer.json(
+            rpcError(
+              request,
+              -32078,
+              `Permission Mode was applied but could not be saved: ${errorMessage(error)}`,
+            ),
+          );
+          return;
         }
-        thread.thread = externalThreadValue({
-          record: { ...thread.record, transportModelId },
-          turns: thread.turns,
-          sessionId: thread.sessionId,
-          running: thread.running,
-        });
       }
       await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(projected) }));
     } catch (error) {
@@ -3458,12 +3614,16 @@ export class AppServerHost {
     return active ? [...thread.turns, active.projector.pendingTurn()] : thread.turns;
   }
 
+  #externalThreadBusy(thread: ExternalThread): boolean {
+    return thread.running || this.#externalSteering.hasPending(thread.id);
+  }
+
   async #startDelegatedExternalTurn(
     thread: ExternalThread,
     text: string,
     requestedTurnId: string,
   ): Promise<void> {
-    if (thread.running || this.#externalSteering.hasPending(thread.id)) {
+    if (this.#externalThreadBusy(thread)) {
       throw new Error("External Thread already has an active Turn");
     }
     const turnId = hostTurnIdSchema.parse(requestedTurnId);
@@ -3478,6 +3638,7 @@ export class AppServerHost {
     };
     thread.running = true;
     thread.activeTurnId = turnId;
+    thread.projectedTerminalTurnId = null;
     thread.projectedTurns.set(turnId, projection);
     thread.responseGates.set(turnId, {
       promise: Promise.resolve(),
@@ -3499,11 +3660,7 @@ export class AppServerHost {
   }
 
   async #startExternalTurn(request: JsonRpcRequest, thread: ExternalThread): Promise<void> {
-    if (
-      thread.running ||
-      this.#externalSteering.hasPending(thread.id) ||
-      this.#pendingExternalCommandRequests.has(thread.id)
-    ) {
+    if (this.#externalThreadBusy(thread) || this.#pendingExternalCommandRequests.has(thread.id)) {
       await this.#writer.json(
         rpcError(request, -32072, "External Thread already has an active Turn"),
       );
@@ -3532,57 +3689,8 @@ export class AppServerHost {
       await this.#writer.json(rpcError(request, -32602, errorMessage(error)));
       return;
     }
-    const commandCandidate = text.trimStart();
-    if (thread.session.commands && /^\/[^\s/]+(?:\s|$)/u.test(commandCandidate)) {
-      const commandText = commandCandidate.trimEnd();
-      this.#pendingExternalCommandRequests.add(thread.id);
-      try {
-        const catalog = await thread.session.commands.list();
-        if (!catalog.ok) {
-          await this.#writer.json(rpcError(request, -32073, catalog.error.message));
-          return;
-        }
-        const matched = catalog.value.commands
-          .toSorted((left, right) => right.invocation.length - left.invocation.length)
-          .find((command) => {
-            if (commandText === command.invocation) return true;
-            return (
-              command.argumentMode === "text" && commandText.startsWith(`${command.invocation} `)
-            );
-          });
-        if (matched) {
-          const argumentText = commandText.slice(matched.invocation.length).trimStart();
-          try {
-            await this.#startExternalCommand(
-              request,
-              thread,
-              matched.id,
-              argumentText.length > 0 ? { text: argumentText } : undefined,
-              undefined,
-              "turn",
-            );
-          } catch (error) {
-            this.#diagnose(error);
-            await this.#writer.json(
-              rpcError(request, -32073, `External Harness command failed: ${errorMessage(error)}`),
-            );
-          }
-          return;
-        }
-        await this.#writer.json(
-          rpcError(request, -32078, "External Harness does not expose the requested command"),
-        );
-        return;
-      } finally {
-        this.#pendingExternalCommandRequests.delete(thread.id);
-      }
-    }
-    if (this.#externalSteering.hasPending(thread.id)) {
-      await this.#writer.json(rpcError(request, -32072, "External Thread is changing direction"));
-      return;
-    }
     try {
-      const started = await this.#beginExternalTurn(thread, text);
+      const started = await this.#beginExternalInputTurn(thread, text);
       try {
         await this.#writer.json(rpcEnvelope(request, { result: { turn: started.turn } }));
       } finally {
@@ -3592,7 +3700,9 @@ export class AppServerHost {
       await this.#writer.json(
         rpcError(
           request,
-          error instanceof ExternalSteerError ? error.code : -32073,
+          error instanceof ExternalSteerError || error instanceof ExternalCommandError
+            ? error.code
+            : -32073,
           errorMessage(error),
         ),
       );
@@ -3601,8 +3711,10 @@ export class AppServerHost {
 
   async #steerExternalTurn(request: JsonRpcRequest, thread: ExternalThread): Promise<void> {
     try {
-      const started = await this.#externalSteering.run(thread, requestObject(request), (text) =>
-        this.#beginExternalTurn(thread, text),
+      const started = await this.#externalSteering.run(
+        thread,
+        requestObject(request),
+        (text, assertActive) => this.#beginExternalInputTurn(thread, text, assertActive),
       );
       try {
         await this.#writer.json(rpcEnvelope(request, { result: { turnId: started.turnId } }));
@@ -3613,12 +3725,52 @@ export class AppServerHost {
       await this.#writer.json(
         rpcError(
           request,
-          error instanceof ExternalSteerError ? error.code : -32074,
+          error instanceof ExternalSteerError || error instanceof ExternalCommandError
+            ? error.code
+            : -32074,
           errorMessage(error),
         ),
       );
     } finally {
       this.#signalActiveWorkChanged();
+    }
+  }
+
+  /** Keep command restoration and dispatch identical for start and steer submissions. */
+  async #beginExternalInputTurn(
+    thread: ExternalThread,
+    inputText: string,
+    assertActive?: () => void,
+  ): Promise<{ turnId: HostTurnId; turn: JsonObject; gate: TurnProjectionGate }> {
+    const text = restoreHarnessCommandMentions(inputText);
+    const commands = thread.session.commands;
+    if (!commands || !isExternalCommandCandidate(text)) {
+      assertActive?.();
+      return this.#beginExternalTurn(thread, text);
+    }
+    this.#pendingExternalCommandRequests.add(thread.id);
+    try {
+      const adapter = this.#externalAdapters.get(thread.harnessId);
+      const command = await resolveExternalCommand(commands, text, {
+        liveCatalogPending: (catalog) =>
+          adapter?.liveCommandCatalog === true &&
+          !isLiveCommandCatalog(catalog, adapter.commandCatalog ?? { commands: [] }),
+      });
+      assertActive?.();
+      if (!command) {
+        this.#pendingExternalCommandRequests.delete(thread.id);
+        return await this.#beginExternalTurn(thread, text);
+      }
+      return await this.#beginExternalCommand(thread, command.commandId, command.arguments);
+    } catch (error) {
+      if (error instanceof ExternalCommandError || error instanceof ExternalSteerError) throw error;
+      this.#diagnose(error);
+      throw new ExternalCommandError(
+        -32073,
+        `External Harness command failed: ${errorMessage(error)}`,
+      );
+    } finally {
+      this.#pendingExternalCommandRequests.delete(thread.id);
     }
   }
 
@@ -3653,6 +3805,7 @@ export class AppServerHost {
     const gate = turnProjectionGate();
     thread.running = true;
     thread.activeTurnId = turnId;
+    thread.projectedTerminalTurnId = null;
     thread.projectedTurns.set(turnId, projection);
     thread.responseGates.set(turnId, gate);
 
@@ -3660,7 +3813,7 @@ export class AppServerHost {
       const result = await thread.session.execute({
         type: "turn.start",
         turnId,
-        input: [{ type: "text", text }],
+        input: [{ type: "text", text: rewriteDelegationMentionText(text) }],
       });
       if (!result.ok) throw new ExternalSteerError(-32073, result.error.message);
       return { turnId, turn: projection.projector.pendingTurn(), gate };
@@ -3887,6 +4040,7 @@ export class AppServerHost {
       };
       thread.running = true;
       thread.activeTurnId = event.turnId;
+      thread.projectedTerminalTurnId = null;
       thread.projectedTurns.set(event.turnId, projection);
       thread.responseGates.set(event.turnId, {
         promise: Promise.resolve(),
@@ -3938,6 +4092,7 @@ export class AppServerHost {
         thread.ephemeralTurnIds.delete(event.turnId);
       } else {
         thread.turns.push(result.completedTurn);
+        thread.projectedTerminalTurnId = event.turnId;
         thread.thread.updatedAt = completedAt;
         thread.thread.recencyAt = completedAt;
       }

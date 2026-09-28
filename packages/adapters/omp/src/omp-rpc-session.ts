@@ -11,6 +11,7 @@ import {
   type JsonValue,
 } from "@codexhost/shared-contracts";
 
+import { parseOmpAvailableCommands, type OmpAvailableCommand } from "./omp-slash-commands.js";
 import { resolveOmpExecutable, withNodeRuntimeOnPath } from "./command.js";
 import type { OmpSessionHistory } from "./omp-history.js";
 
@@ -182,6 +183,11 @@ export interface OmpRpcSessionOptions {
   cancelTimeoutMs?: number;
   closeTimeoutMs?: number;
   onSubagentEvent?: (event: OmpTurnEvent) => void;
+  /**
+   * Subscribe to native subagent frames during startup (default true). Short-lived
+   * transports that never run Turns, such as inspection or transcript reads, opt out.
+   */
+  subscribeSubagentEvents?: boolean;
   onFault?: (error: OmpRpcFaultError) => void;
 }
 
@@ -523,6 +529,7 @@ export class OmpRpcSession {
   #failed = false;
   #pending = new Map<string, PendingCommand>();
   #state: OmpSessionState | null = null;
+  #availableCommands: OmpAvailableCommand[] | null = null;
   #latestCacheHitRatePercent: number | null | undefined;
   #manualCompaction: ManualCompaction | null = null;
   #stderrTail = "";
@@ -626,6 +633,13 @@ export class OmpRpcSession {
       ),
     ]);
     await this.#send("negotiate_protocol", { protocolVersion: 2 }).catch(() => undefined);
+    // OMP servers gate subagent lifecycle/progress/event frames behind an explicit
+    // subscription that defaults to "off". Subscribe during startup so native
+    // subagent delegations reach the Host; OMP builds without the command reject
+    // it and this degrades gracefully.
+    if (this.#options.subscribeSubagentEvents !== false) {
+      await this.#send("set_subagent_subscription", { level: "events" }).catch(() => undefined);
+    }
     try {
       this.#state = parseSessionState(await this.#send("get_state", {}));
     } catch (error) {
@@ -1015,8 +1029,18 @@ export class OmpRpcSession {
     }
   }
 
+  /** Latest `available_commands_update` of the running process, if any. */
+  get availableCommands(): readonly OmpAvailableCommand[] | null {
+    return this.#availableCommands;
+  }
+
   #handle(value: Record<string, unknown>): void {
     if (this.#closed || this.#failed) return;
+    if (value.type === "available_commands_update") {
+      // Command catalog state, not Turn content.
+      this.#availableCommands = parseOmpAvailableCommands(value.commands);
+      return;
+    }
     if (value.type === "ready") {
       this.#readyResolve?.();
       this.#readyResolve = null;

@@ -1,3 +1,10 @@
+/** Native Desktop scheduling metadata, never part of the Host RPC params.
+ * Keep interactive work out of the background discovery queue; critical
+ * capacity remains reserved for native Thread/Turn lifecycle operations. */
+export interface RendererRequestOptions {
+  readonly priority: "background" | "interactive";
+}
+
 export class RendererMethodUnavailableError extends Error {
   readonly code = -32601;
 
@@ -25,14 +32,18 @@ function isUnsupportedMethod(error: unknown, method: string): boolean {
 /** One sender per request client. Only explicit method absence is remembered;
  * successes, params, Harness availability and transient failures are not cached. */
 export function createRendererRequestSender(
-  send: (method: string, params: unknown) => Promise<unknown> | unknown,
-): (method: string, params: unknown) => Promise<unknown> {
+  send: (
+    method: string,
+    params: unknown,
+    options?: RendererRequestOptions,
+  ) => Promise<unknown> | unknown,
+): (method: string, params: unknown, options?: RendererRequestOptions) => Promise<unknown> {
   const unsupported = new Map<string, RendererMethodUnavailableError>();
-  return async (method, params) => {
+  return async (method, params, options) => {
     const known = unsupported.get(method);
     if (known) throw known;
     try {
-      return await send(method, params);
+      return await (options === undefined ? send(method, params) : send(method, params, options));
     } catch (error) {
       if (!method.startsWith("codexhost/") || !isUnsupportedMethod(error, method)) throw error;
       const unavailable = new RendererMethodUnavailableError(method, error);

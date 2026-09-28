@@ -11,6 +11,7 @@ import {
   type JsonValue,
 } from "@codexhost/shared-contracts";
 
+import { parsePiNativeCommands, type PiNativeCommand } from "./pi-slash-commands.js";
 import type { PiEmptySessionConfiguration } from "./pi-empty-session.js";
 import { resolvePiExecutable, withNodeRuntimeOnPath } from "./command.js";
 import type { PiSessionHistory } from "./pi-history.js";
@@ -510,7 +511,10 @@ export class PiRpcSession {
     }
     this.#options = {
       commandTimeoutMs: 30_000,
-      cancelTimeoutMs: 2_000,
+      // Bounds proven stable settlement (Abort acknowledgement plus agent_settled and get_state
+      // confirmation), not the RPC write round trip; must exceed the Host's 20s external steering
+      // bound so a slow cancellation times out gracefully instead of faulting the whole Session.
+      cancelTimeoutMs: 30_000,
       closeTimeoutMs: 2_000,
       ...options,
     };
@@ -610,6 +614,11 @@ export class PiRpcSession {
       throw fault;
     }
     return this;
+  }
+
+  /** Live slash commands, prompt templates and skills of the running Pi Session. */
+  async getCommands(): Promise<PiNativeCommand[]> {
+    return parsePiNativeCommands(await this.#send("get_commands", {}));
   }
 
   async getEntries(): Promise<PiSessionHistory> {

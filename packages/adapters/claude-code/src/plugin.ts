@@ -13,6 +13,7 @@ export async function createHarnessAdapter(context: HarnessPluginContext): Promi
   if (context.platform === "darwin" && context.managedRemoteHost) {
     return new BrokeredHarnessAdapter({
       commandCatalog: claudeCommandCatalog,
+      liveCommandCatalog: true,
       environment,
       ...(context.brokerDescriptorPath ? { descriptorPath: context.brokerDescriptorPath } : {}),
     });

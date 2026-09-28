@@ -3,8 +3,9 @@ import { mkdir, open, readFile, rename, rm, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-const SKILL_VERSION = 7;
-const SKILL_RELATIVE_PATH = path.join("skills", "codexhost-delegation", "SKILL.md");
+const SKILL_VERSION = 8;
+export const DELEGATION_SKILL_NAME = "codexhost-delegation";
+const SKILL_RELATIVE_PATH = path.join("skills", DELEGATION_SKILL_NAME, "SKILL.md");
 const PREVIOUS_MANAGED_DIGESTS: readonly string[] = [
   "9d2f491850fb0b4084a31ba9b5e4a550b5e833747af322090d8ed0ff80b88c30",
   "2bb0aebb9b06febbc6c0c0bcdb0b32506c7cdbf8dc3b734cc6b2a86621270e4e",
@@ -12,6 +13,7 @@ const PREVIOUS_MANAGED_DIGESTS: readonly string[] = [
   "ba509f57e5448e796b3dfdd5031dcb08672eded50b61c0a54de84cfa02c49dd3",
   "d3ddf6db9bc5c5df825479c885bbbf0ca08da66f7057a12e02e1fdf57525149e",
   "15eb63519ff867e1536c97188a0c43738d7a49d38d4d6adeb7a1036726e7246d",
+  "b9c1cce41d2556e73a6514aa55618d7d3f2f9ef935f5ae50b0da5a04941514b4",
 ];
 
 export const CODEXHOST_DELEGATION_SKILL = `---
@@ -55,7 +57,12 @@ user’s request and the task:
 - read its current state immediately;
 - wait for a bounded period;
 - check it again later;
+- watch it, so the Host notifies this Thread once when the watched Thread stops
+  and no waiting or polling is needed meanwhile;
 - leave it running in the background.
+
+A watch notification reports execution state only. Read the Thread before
+judging or reporting its work.
 
 Report the result returned by read or a completed wait, together with the target
 agent, status, and a labeled task link. Keep internal tracking IDs in tool calls.
@@ -178,4 +185,21 @@ export async function installDelegationSkills(
     }
   }
   return results;
+}
+
+/**
+ * Path of the Codex-visible (`~/.agents`) Skill copy, only while it still holds
+ * the managed content. A user-managed conflicting copy is never referenced.
+ */
+export async function managedDelegationSkillReference(
+  input: { homeDirectory?: string } = {},
+): Promise<{ name: string; path: string } | null> {
+  const filePath = path.join(input.homeDirectory ?? os.homedir(), ".agents", SKILL_RELATIVE_PATH);
+  try {
+    return (await readOptional(filePath)) === CODEXHOST_DELEGATION_SKILL
+      ? { name: DELEGATION_SKILL_NAME, path: filePath }
+      : null;
+  } catch {
+    return null;
+  }
 }

@@ -1,9 +1,9 @@
 # Application icons
 
-`codexhost.png` is the selected high-resolution white tile with a charcoal C
-and center square. Keep it byte-identical to the Renderer asset
-`packages/renderer-extension/src/assets/codexhost-app-icon.png` when replacing
-the brand artwork.
+`codexhost.png` is a 1024px render of the vector brand icon
+`packages/renderer-extension/src/assets/codexhost-app-icon.svg`: a light gray
+rounded tile with a charcoal C and center square. When replacing the brand
+artwork, edit the SVG and re-render this PNG from it.
 
 macOS packaging creates its ICNS sizes directly from this PNG. Windows launchers
 and the Inno Setup installer use `codexhost.ico`, with 16, 24, 32, 48, 64, 128,

@@ -34,11 +34,17 @@ function historyEntry(value: unknown): JsonObject | null {
   return value as JsonObject;
 }
 
-export async function readOmpSessionHistory(sessionFile: string): Promise<OmpSessionHistory> {
+export async function readOmpSessionHistory(
+  sessionFile: string,
+  maxBytes?: number,
+): Promise<OmpSessionHistory> {
   const entries: JsonObject[] = [];
   let leafId: string | null = null;
   const lines = readline.createInterface({
-    input: createReadStream(sessionFile, { encoding: "utf8" }),
+    input: createReadStream(sessionFile, {
+      encoding: "utf8",
+      ...(maxBytes === undefined ? {} : { end: maxBytes - 1 }),
+    }),
     crlfDelay: Number.POSITIVE_INFINITY,
   });
   try {

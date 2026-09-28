@@ -177,6 +177,7 @@ export interface RendererSettingsMessages {
   readonly launchPathSaveError: string;
   readonly connectionOpenInstallation: string;
   readonly connectionOpenHarnessWeb: string;
+  readonly connectionDeepSeekTestedVersions: string;
   readonly connectionInstall: string;
   readonly connectionInstallDescription: string;
   readonly connectionErrorTitle: string;
@@ -218,6 +219,7 @@ export interface RendererSettingsMessages {
   readonly updateInstalling: string;
   readonly updateInstallingNpm: string;
   readonly updateRequestTimeout: string;
+  readonly updateServiceUnavailable: string;
   readonly updateRestarting: string;
   readonly updateSucceeded: string;
   readonly updateFailed: string;
@@ -232,6 +234,8 @@ export interface RendererSettingsMessages {
   readonly updateCopyFailed: string;
   readonly updateDownloadFromReleases: string;
   readonly updateDownloadWindowsInstaller: string;
+  readonly updateStarCallout: string;
+  readonly updateStarLink: string;
   readonly aboutTagline: string;
   readonly aboutParagraphs: readonly string[];
   readonly aboutOpenSource: string;
@@ -245,7 +249,7 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   locale: "en",
   title: "Settings",
   close: "Close settings",
-  starOnGitHub: "Give us a Star~",
+  starOnGitHub: "Star to support",
   sectionsLabel: "Settings sections",
   generalSection: "General",
   otherSection: "Other",
@@ -416,11 +420,12 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   launchPathLoadError: "Could not load launch settings. Reopen this detail panel to retry.",
   launchPathSaveError:
     "Could not save. Enter an existing absolute installation folder on this Host and check configuration permissions.",
-  connectionOpenInstallation: "Open official installation page",
+  connectionOpenInstallation: "Show installation instructions",
   connectionOpenHarnessWeb: "Open DeepSeek Harness Web",
+  connectionDeepSeekTestedVersions:
+    "Supported DSH versions: 0.1.2-rc.1, 0.1.5-rc.1, 0.1.5-rc.2, 0.1.5-rc.3, 0.1.7-rc.1 and 0.1.7-rc.2. Other versions may connect after native protocol checks, but are not listed as supported.",
   connectionInstall: "Install",
-  connectionInstallDescription:
-    "This Harness was not detected. Follow its official installation guide, then return here and run the check again.",
+  connectionInstallDescription: "This Harness was not detected.",
   connectionErrorTitle: "Connection check failed",
   connectionErrorLog: "Error log",
   connectionOpenIssue: "Open GitHub Issue",
@@ -462,7 +467,10 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   updateWaitingForExit: "Waiting for the application to close...",
   updateInstalling: "Installing update...",
   updateInstallingNpm: "Installing update through npm...",
-  updateRequestTimeout: "The update service did not respond. Try again.",
+  updateRequestTimeout:
+    "The update service did not respond. Download the latest version from GitHub Releases below.",
+  updateServiceUnavailable:
+    "Automatic updates are unavailable right now. Download the latest version from GitHub Releases below.",
   updateRestarting: "Restarting to finish the update...",
   updateSucceeded: "Update installed successfully.",
   updateFailed: "Update failed.",
@@ -480,6 +488,9 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   updateCopyFailed: "Copy failed",
   updateDownloadFromReleases: "Download from GitHub Releases",
   updateDownloadWindowsInstaller: "Download Windows installer",
+  updateStarCallout:
+    "If CodexHost has helped you, please Star it on GitHub. It means a lot to us 👉",
+  updateStarLink: "GitHub",
   aboutTagline: "Run Pi and other Harnesses in Codex Desktop",
   aboutParagraphs: Object.freeze([
     "We believe Codex Desktop offers the best desktop development experience available today.",
@@ -504,7 +515,7 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   locale: "zh-CN",
   title: "设置",
   close: "关闭设置",
-  starOnGitHub: "点个 Star~",
+  starOnGitHub: "Star 支持",
   sectionsLabel: "设置分类",
   generalSection: "通用",
   otherSection: "其他",
@@ -667,11 +678,12 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   launchPathLoading: "正在读取启动设置…",
   launchPathLoadError: "无法读取启动设置，请重新打开此详情面板重试。",
   launchPathSaveError: "保存失败。请填写此 Host 上实际存在的安装目录绝对路径，并确认配置目录可写。",
-  connectionOpenInstallation: "前往官方安装页面",
+  connectionOpenInstallation: "查看安装指引",
   connectionOpenHarnessWeb: "打开 DeepSeek Harness Web",
+  connectionDeepSeekTestedVersions:
+    "支持 DSH 版本：0.1.2-rc.1、0.1.5-rc.1、0.1.5-rc.2、0.1.5-rc.3、0.1.7-rc.1 和 0.1.7-rc.2。其他版本可以在通过原生协议检查后尝试连接，但尚未列入支持列表。",
   connectionInstall: "安装",
-  connectionInstallDescription:
-    "尚未检测到该 Harness。请按照官方安装指南完成安装，然后返回此页面重新检查。",
+  connectionInstallDescription: "尚未检测到该 Harness。",
   connectionErrorTitle: "连接检查失败",
   connectionErrorLog: "错误日志",
   connectionOpenIssue: "提交 GitHub Issue",
@@ -710,7 +722,8 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   updateWaitingForExit: "正在等待应用退出...",
   updateInstalling: "正在安装更新...",
   updateInstallingNpm: "正在通过 npm 安装...",
-  updateRequestTimeout: "更新服务未响应，请重试。",
+  updateRequestTimeout: "更新服务未响应，请通过下方 GitHub Releases 手动下载最新版本。",
+  updateServiceUnavailable: "暂时无法自动更新，请通过下方 GitHub Releases 手动下载最新版本。",
   updateRestarting: "正在重启以完成更新...",
   updateSucceeded: "更新安装成功。",
   updateFailed: "更新失败。",
@@ -729,6 +742,8 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   updateCopyFailed: "复制失败",
   updateDownloadFromReleases: "前往 GitHub Releases 下载",
   updateDownloadWindowsInstaller: "下载 Windows 安装包",
+  updateStarCallout: "如果 CodexHost 帮到了你，请在 GitHub 点个 Star，这对我们意义重大 👉",
+  updateStarLink: "GitHub",
   aboutTagline: "在 Codex Desktop 中运行 Pi 和其他 Harness",
   aboutParagraphs: Object.freeze([
     "我们认为 Codex Desktop 提供了目前最好的桌面开发交互体验。",

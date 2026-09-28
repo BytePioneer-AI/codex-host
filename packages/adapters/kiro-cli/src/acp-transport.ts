@@ -22,6 +22,7 @@ import {
   type SessionUpdate,
 } from "@agentclientprotocol/sdk";
 
+import { parseKiroAvailableCommands, type KiroAvailableCommand } from "./kiro-slash-commands.js";
 import { KiroExecutableError, kiroInvocation, resolveKiroExecutable } from "./command.js";
 import type { KiroUserInputParams, KiroUserInputResult } from "./projection.js";
 import {
@@ -254,6 +255,7 @@ export class KiroAcpTransport {
   #initialize: InitializeResponse | null = null;
   #replay: KiroTransportEvent[] | null = null;
   #sessionId: string | null = null;
+  #availableCommands: KiroAvailableCommand[] | null = null;
   #stderrTail = "";
   readonly #configUpdates = new Set<{
     update(params: SessionNotification): void;
@@ -791,7 +793,23 @@ export class KiroAcpTransport {
     return initialize;
   }
 
+  /** Latest ACP `available_commands_update` of the open Session, if any. */
+  get availableCommands(): readonly KiroAvailableCommand[] | null {
+    return this.#availableCommands;
+  }
+
   #handleUpdate(params: SessionNotification): void {
+    const commandsUpdate = params.update as {
+      sessionUpdate?: unknown;
+      availableCommands?: unknown;
+    };
+    if (commandsUpdate.sessionUpdate === "available_commands_update") {
+      // Command catalog state, not Turn or replay content.
+      if (!this.#sessionId || params.sessionId === this.#sessionId) {
+        this.#availableCommands = parseKiroAvailableCommands(commandsUpdate.availableCommands);
+      }
+      return;
+    }
     for (const listener of this.#configUpdates) listener.update(params);
     const update = params.update;
     const meta =

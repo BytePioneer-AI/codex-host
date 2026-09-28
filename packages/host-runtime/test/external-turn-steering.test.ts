@@ -27,7 +27,9 @@ function fixture() {
     turnId: hostTurnIdSchema.parse("new"),
     gate: { promise: Promise.resolve(), resolve: vi.fn() },
   };
-  const start = vi.fn<(text: string) => Promise<typeof started>>().mockResolvedValue(started);
+  const start = vi
+    .fn<(text: string, assertActive: () => void) => Promise<typeof started>>()
+    .mockResolvedValue(started);
   const params = {
     threadId: "thread",
     expectedTurnId: "old",
@@ -60,7 +62,7 @@ describe("Host stop-then-start coordination", () => {
     await expect(duplicate).resolves.toBe(f.started);
     await expect(f.coordinator.run(f.thread, f.params, f.start)).resolves.toBe(f.started);
     expect(f.execute).toHaveBeenCalledOnce();
-    expect(f.start).toHaveBeenCalledExactlyOnceWith("new input");
+    expect(f.start).toHaveBeenCalledExactlyOnceWith("new input", expect.any(Function));
     expect(f.coordinator.hasPending()).toBe(false);
   });
 
@@ -178,6 +180,30 @@ describe("Host stop-then-start coordination", () => {
       else f.coordinator.fault("thread", new Error("late fault"));
       await expect(result).rejects.toBeInstanceOf(Error);
       expect(f.start).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["interrupt", "close", "fault"])(
+    "rechecks %s after asynchronous replacement preparation",
+    async (reason) => {
+      const f = fixture();
+      const preparing = Promise.withResolvers<undefined>();
+      const prepared = Promise.withResolvers<undefined>();
+      f.start.mockImplementation(async (_text, assertActive) => {
+        preparing.resolve(undefined);
+        await prepared.promise;
+        assertActive();
+        return f.started;
+      });
+      const result = f.coordinator.run(f.thread, f.params, f.start);
+      f.complete();
+      await preparing.promise;
+      if (reason === "interrupt") f.coordinator.interrupt("thread", "old");
+      else if (reason === "close") f.coordinator.close();
+      else f.coordinator.fault("thread", new Error("preparation fault"));
+      prepared.resolve(undefined);
+      await expect(result).rejects.toBeInstanceOf(Error);
+      expect(f.coordinator.hasPending()).toBe(false);
     },
   );
 

@@ -1,9 +1,12 @@
 import { createTwoFilesPatch, parsePatch } from "diff";
 import { randomUUID } from "node:crypto";
+import { realpath, stat } from "node:fs/promises";
 import path from "node:path";
 
 import {
   HarnessOutputChannel,
+  liveHarnessCommandPrompt,
+  mergeLiveHarnessCommands,
   validateHostApprovalResponse,
   validateHostQuestionResponse,
   type HarnessAdapter,
@@ -55,6 +58,7 @@ import {
 } from "@codexhost/harness-adapter";
 import {
   harnessCommandCatalogSchema,
+  type HarnessCommandCatalog,
   harnessIdSchema,
   harnessPermissionModeIdSchema,
   harnessThinkingOptionIdSchema,
@@ -74,7 +78,13 @@ import {
   type NativeTurnRef,
 } from "@codexhost/shared-contracts";
 
+import {
+  OMP_LIVE_COMMAND_ID_PREFIX,
+  ompLiveCommands,
+  type OmpAvailableCommand,
+} from "./omp-slash-commands.js";
 import { mapOmpSnapshot, resolveOmpForkBoundary, type OmpSessionHistory } from "./omp-history.js";
+import { readOmpSessionHistory } from "./omp-session-file.js";
 import { rollbackOmpLastTurn } from "./omp-last-turn-rollback.js";
 import {
   OmpRpcFaultError,
@@ -143,6 +153,8 @@ export interface OmpTurnTransport {
   respondToInteraction(response: OmpInteractionResponse): Promise<void>;
   abort(): Promise<void>;
   close(): Promise<void>;
+  /** Latest native command list of the running process; absent on older transports. */
+  readonly availableCommands?: readonly OmpAvailableCommand[] | null;
 }
 
 export interface OmpAdapterDependencies {
@@ -332,6 +344,65 @@ function sessionFileFromRef(ref: NativeSessionRef): string {
     throw new Error("Omp Native Session Ref has no resumable Session file");
   }
   return ref.locator.sessionFile;
+}
+
+const MAX_SUBAGENT_TRANSCRIPT_BYTES = 8 * 1024 * 1024;
+
+/**
+ * OMP writes each child transcript next to its parent Session file as `<stem>/<subagentId>.jsonl`.
+ * Returns null when the parent Session file does not use that layout, so callers fall back to RPC.
+ */
+function subagentTranscriptPath(
+  parentSessionFile: string,
+  nativeSubagentId: string,
+): string | null {
+  if (
+    nativeSubagentId.includes("/") ||
+    nativeSubagentId.includes("\\") ||
+    nativeSubagentId.includes("\u0000") ||
+    nativeSubagentId === "." ||
+    nativeSubagentId === ".."
+  ) {
+    throw new Error("Omp Subagent ID is not a plain transcript file name");
+  }
+  if (!parentSessionFile.endsWith(".jsonl") || !path.isAbsolute(parentSessionFile)) {
+    return null;
+  }
+  return `${parentSessionFile.slice(0, -".jsonl".length)}/${nativeSubagentId}.jsonl`;
+}
+
+type SubagentTranscriptFile =
+  { status: "read"; history: OmpSessionHistory } | { status: "missing" };
+
+async function readSubagentTranscriptFile(
+  parentSessionFile: string,
+  nativeSubagentId: string,
+): Promise<SubagentTranscriptFile> {
+  const transcriptFile = subagentTranscriptPath(parentSessionFile, nativeSubagentId);
+  if (transcriptFile === null) return { status: "missing" };
+  const parentDirectory = path.dirname(transcriptFile);
+  let metadata;
+  try {
+    metadata = await stat(transcriptFile);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return { status: "missing" };
+    throw error;
+  }
+  if (!metadata.isFile()) return { status: "missing" };
+  if (metadata.size > MAX_SUBAGENT_TRANSCRIPT_BYTES) {
+    throw new Error("Omp Subagent transcript exceeds the supported size");
+  }
+  const [resolvedTranscript, resolvedParentDirectory] = await Promise.all([
+    realpath(transcriptFile),
+    realpath(parentDirectory),
+  ]);
+  if (path.dirname(resolvedTranscript) !== resolvedParentDirectory) {
+    throw new Error("Omp Subagent transcript resolves outside its parent Session directory");
+  }
+  return {
+    status: "read",
+    history: await readOmpSessionHistory(transcriptFile, MAX_SUBAGENT_TRANSCRIPT_BYTES),
+  };
 }
 
 function toolFailure(toolName: string): HarnessError {
@@ -631,7 +702,7 @@ class OmpHarnessSession implements HarnessSession {
       subagents: { observe: true, readTranscript: true },
     };
     this.commands = {
-      list: async () => ({ ok: true, value: ompCommandCatalog }),
+      list: async () => ({ ok: true, value: this.#liveCommandCatalog() }),
       execute: (command) => this.#executeHarnessCommand(command),
     };
     this.#transport = options.startedTransport ?? null;
@@ -1367,9 +1438,37 @@ class OmpHarnessSession implements HarnessSession {
     }
   }
 
+  /**
+   * Built-ins plus the skills and extension commands of the running process.
+   * Never starts the process just to list commands.
+   */
+  #liveCommandCatalog(): HarnessCommandCatalog {
+    const native = this.#transport?.availableCommands ?? null;
+    return mergeLiveHarnessCommands(
+      ompCommandCatalog,
+      OMP_LIVE_COMMAND_ID_PREFIX,
+      native ? ompLiveCommands(native) : null,
+    );
+  }
+
   async #executeHarnessCommand(
     command: HarnessCommandInvocation,
   ): Promise<HarnessResult<HarnessCommandAccepted>> {
+    const livePrompt = liveHarnessCommandPrompt(
+      this.#liveCommandCatalog(),
+      OMP_LIVE_COMMAND_ID_PREFIX,
+      command.commandId,
+      command.arguments?.text,
+    );
+    if (livePrompt !== null) {
+      // OMP expands skill and extension commands from prompt text.
+      const started = await this.execute({
+        type: "turn.start",
+        turnId: command.turnId,
+        input: [{ type: "text", text: livePrompt }],
+      });
+      return started.ok ? { ok: true, value: { turnId: command.turnId } } : started;
+    }
     if (command.commandId !== "omp.compact") {
       return {
         ok: false,
@@ -2114,6 +2213,7 @@ class OmpHarnessSession implements HarnessSession {
 
 export class OmpAdapter implements HarnessAdapter {
   readonly commandCatalog = ompCommandCatalog;
+  readonly liveCommandCatalog = true;
   readonly harnessId: HarnessId = ompHarnessId;
   readonly subagents: HarnessSubagentCapability = {
     readSnapshot: async (input) => {
@@ -2133,9 +2233,26 @@ export class OmpAdapter implements HarnessAdapter {
       }
       let transport: OmpTurnTransport | undefined;
       try {
+        // OMP's RPC subagent registry is in-memory and only populated by live
+        // task events, so a resumed cold process cannot resolve completed
+        // children by ID. Read the on-disk transcript next to the parent
+        // Session file first; fall back to the RPC path for layouts without
+        // a readable transcript file.
+        const transcriptFile = await readSubagentTranscriptFile(
+          sessionFileFromRef(input.parent),
+          input.nativeSubagentId,
+        );
+        if (transcriptFile.status === "read") {
+          const snapshot = mapOmpSnapshot(transcriptFile.history, {
+            sessionId: input.parent.nativeSessionId,
+            model: null,
+          });
+          return { ok: true, value: snapshot };
+        }
         transport = this.#createTransport({
           cwd: input.cwd,
           sessionFile: sessionFileFromRef(input.parent),
+          subscribeSubagentEvents: false,
           onFault: () => undefined,
         });
         await transport.start();
@@ -2214,7 +2331,11 @@ export class OmpAdapter implements HarnessAdapter {
   async #inspectCwd(cwd: string): Promise<HarnessInspection> {
     const startedAt = Date.now();
     let stage = "spawn";
-    const transport = this.#createTransport({ cwd, onFault: () => undefined });
+    const transport = this.#createTransport({
+      cwd,
+      subscribeSubagentEvents: false,
+      onFault: () => undefined,
+    });
     this.#inspections.add(transport);
     try {
       stage = "startup";

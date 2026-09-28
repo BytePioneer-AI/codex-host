@@ -102,8 +102,12 @@ function sleep(milliseconds: number): Promise<void> {
 }
 
 function sameAgents(actual: readonly string[], expected: readonly string[]): boolean {
+  // The Renderer owns presentation order; the Controller only verifies membership.
+  const expectedSet = new Set(expected);
   return (
-    actual.length === expected.length && actual.every((agent, index) => agent === expected[index])
+    actual.length === expected.length &&
+    new Set(actual).size === actual.length &&
+    actual.every((agent) => expectedSet.has(agent))
   );
 }
 

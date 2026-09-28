@@ -146,7 +146,22 @@ export function rendererAgentForThreadOwnership(
   if (ownership.harnessId === "hermes") return "hermes";
   if (ownership.harnessId === "qoder") return "qoder";
   if (ownership.harnessId === "qoder-cn") return "qoder-cn";
+  if (ownership.harnessId === "kimi-code") return "kimi-code";
   return null;
+}
+
+// Desktop wraps some titles (hover label, secondary line), so the title is not always a direct
+// child of the trigger. Anchor the icon to the title's outermost wrapper that still sits in a
+// horizontal flex row, keeping it on the title line.
+function sidebarAgentIconAnchor(titleTrigger: HTMLElement, title: HTMLElement): HTMLElement {
+  const view = title.ownerDocument.defaultView;
+  let anchor = title;
+  while (anchor.parentElement && anchor.parentElement !== titleTrigger) {
+    const style = view?.getComputedStyle(anchor.parentElement);
+    if (style?.display.includes("flex") && !style.flexDirection.startsWith("column")) break;
+    anchor = anchor.parentElement;
+  }
+  return anchor;
 }
 
 class BrowserSidebarAgentIconRow implements SidebarAgentIconRow {
@@ -175,12 +190,13 @@ class BrowserSidebarAgentIconRow implements SidebarAgentIconRow {
       this.clear();
       return;
     }
+    const anchor = sidebarAgentIconAnchor(titleTrigger, title);
     const icons = [
       ...this.element.querySelectorAll<HTMLElement>(`[${SIDEBAR_AGENT_ICON_ATTRIBUTE}]`),
     ];
     if (
       icons.length === 1 &&
-      icons[0]?.parentElement === titleTrigger &&
+      icons[0]?.nextElementSibling === anchor &&
       icons[0].getAttribute(SIDEBAR_AGENT_ICON_ATTRIBUTE) === agent
     ) {
       return;
@@ -201,7 +217,7 @@ class BrowserSidebarAgentIconRow implements SidebarAgentIconRow {
     marker.style.flex = "none";
     marker.style.pointerEvents = "none";
     marker.append(createRendererAgentIcon(agent, 14, this.element.ownerDocument));
-    titleTrigger.insertBefore(marker, title);
+    anchor.before(marker);
   }
 
   clear(): void {

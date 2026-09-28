@@ -606,6 +606,7 @@ class BrokeredHarnessSession implements HarnessSession {
 export class BrokeredHarnessAdapter implements HarnessAdapter {
   readonly #sessions = new Set<BrokeredHarnessSession>();
   readonly commandCatalog?: HarnessCommandCatalog;
+  readonly liveCommandCatalog?: boolean;
   readonly harnessId: HarnessId;
   readonly #descriptorPath: string;
   readonly #forwardEnvironment: boolean;
@@ -636,11 +637,13 @@ export class BrokeredHarnessAdapter implements HarnessAdapter {
       descriptorPath?: string;
       environment?: NodeJS.ProcessEnv;
       commandCatalog?: HarnessCommandCatalog;
+      liveCommandCatalog?: boolean;
     } = {},
   ) {
     this.harnessId = harnessPluginIdSchema.parse(input.harnessId ?? "claude-code");
     this.#forwardEnvironment = input.forwardDelegationEnvironment === true;
     if (input.commandCatalog) this.commandCatalog = input.commandCatalog;
+    if (input.liveCommandCatalog) this.liveCommandCatalog = true;
     this.#descriptorPath =
       input.descriptorPath ?? defaultHarnessBrokerDescriptorPath(input.environment, this.harnessId);
   }

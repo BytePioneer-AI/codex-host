@@ -10,6 +10,7 @@ export function createHarnessAdapter(context: HarnessPluginContext): HarnessAdap
       harnessId: "cursor-cli",
       forwardDelegationEnvironment: true,
       commandCatalog: CURSOR_COMMAND_CATALOG,
+      liveCommandCatalog: true,
       environment: { ...context.environment },
     });
   return new CursorAdapter({ environment: { ...context.environment } });

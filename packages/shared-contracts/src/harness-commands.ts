@@ -22,6 +22,11 @@ export const harnessCommandDescriptorSchema = z
     label: commandLabelSchema,
     description: commandDescriptionSchema.optional(),
     argumentMode: z.enum(["none", "text"]),
+    /**
+     * Native distinction reported by the Harness. Omitted when the Harness does
+     * not tell skills and commands apart; consumers treat that as "command".
+     */
+    kind: z.enum(["command", "skill"]).optional(),
   })
   .strict();
 
@@ -30,6 +35,12 @@ export type HarnessCommandDescriptor = z.infer<typeof harnessCommandDescriptorSc
 export const harnessCommandCatalogSchema = z
   .object({
     commands: z.array(harnessCommandDescriptorSchema),
+    /**
+     * `live` when the catalog includes what a native Session reports for its
+     * workspace (custom commands, skills); `static` for Adapter built-ins only.
+     * Omitted by Adapters; set by the Host on inspection results.
+     */
+    source: z.enum(["live", "static"]).optional(),
   })
   .strict()
   .superRefine((catalog, context) => {
@@ -48,7 +59,13 @@ export const harnessCommandCatalogSchema = z
 
 export type HarnessCommandCatalog = z.infer<typeof harnessCommandCatalogSchema>;
 
-export const harnessCommandsInspectParamsSchema = z.object({ harnessId: harnessIdSchema }).strict();
+export const harnessCommandsInspectParamsSchema = z
+  .object({
+    harnessId: harnessIdSchema,
+    /** Workspace of a draft without a Thread, for its live catalog when known. */
+    cwd: z.string().min(1).optional(),
+  })
+  .strict();
 
 export type HarnessCommandsInspectParams = z.infer<typeof harnessCommandsInspectParamsSchema>;
 

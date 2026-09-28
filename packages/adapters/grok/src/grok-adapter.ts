@@ -9,6 +9,8 @@ import type {
 } from "@agentclientprotocol/sdk";
 import {
   HarnessOutputChannel,
+  liveHarnessCommandPrompt,
+  mergeLiveHarnessCommands,
   validateHostApprovalResponse,
   type HarnessAdapter,
   type HarnessCommandAccepted,
@@ -53,6 +55,7 @@ import {
 } from "@codexhost/harness-adapter";
 import {
   harnessCommandCatalogSchema,
+  type HarnessCommandCatalog,
   harnessIdSchema,
   type HarnessPermissionModeId,
   harnessPermissionModeIdSchema,
@@ -129,6 +132,11 @@ import {
   usageFromSignals,
   usageFromUpdate,
 } from "./grok-usage.js";
+import {
+  GROK_LIVE_COMMAND_ID_PREFIX,
+  grokLiveCommands,
+  type GrokAvailableCommand,
+} from "./grok-slash-commands.js";
 
 export interface GrokAdapterOptions {
   command?: string;
@@ -169,6 +177,8 @@ export interface GrokAcpTransportLike {
   setModel(modelId: string, reasoningEffort?: string): Promise<void>;
   cancel(): Promise<void>;
   close(): Promise<void>;
+  /** Latest native command list of the open Session; absent on older transports. */
+  readonly availableCommands?: readonly GrokAvailableCommand[] | null;
 }
 
 interface ActiveTool {
@@ -365,7 +375,7 @@ class GrokHarnessSession implements HarnessSession {
     this.#usage = this.initialUsage;
     this.capabilities = capabilitiesForModels(modelState);
     this.commands = {
-      list: async () => ({ ok: true, value: grokCommandCatalog }),
+      list: async () => ({ ok: true, value: this.#liveCommandCatalog() }),
       execute: (command) => this.#executeHarnessCommand(command),
     };
     this.#state = stateForGrokModel(
@@ -535,9 +545,34 @@ class GrokHarnessSession implements HarnessSession {
     return { ok: true, value: { turnId: command.turnId } };
   }
 
+  /** Built-ins plus the commands, workflows and skills the open Session advertises. */
+  #liveCommandCatalog(): HarnessCommandCatalog {
+    const native = this.#transport.availableCommands ?? null;
+    return mergeLiveHarnessCommands(
+      grokCommandCatalog,
+      GROK_LIVE_COMMAND_ID_PREFIX,
+      native ? grokLiveCommands(native) : null,
+    );
+  }
+
   async #executeHarnessCommand(
     command: HarnessCommandInvocation,
   ): Promise<HarnessResult<HarnessCommandAccepted>> {
+    const livePrompt = liveHarnessCommandPrompt(
+      this.#liveCommandCatalog(),
+      GROK_LIVE_COMMAND_ID_PREFIX,
+      command.commandId,
+      command.arguments?.text,
+    );
+    if (livePrompt !== null) {
+      // ACP invokes advertised commands as prompt text starting with `/name`.
+      const started = await this.execute({
+        type: "turn.start",
+        turnId: command.turnId,
+        input: [{ type: "text", text: livePrompt }],
+      });
+      return started.ok ? { ok: true, value: { turnId: command.turnId } } : started;
+    }
     if (command.commandId !== "grok.compact") {
       return {
         ok: false,
@@ -1428,6 +1463,7 @@ export class GrokAdapter implements HarnessAdapter {
         : readGrokCredentials(this.#environment ?? process.env),
   };
   readonly commandCatalog = grokCommandCatalog;
+  readonly liveCommandCatalog = true;
   readonly harnessId: HarnessId = grokHarnessId;
   readonly subagents: HarnessSubagentCapability = {
     readSnapshot: async (input) => {

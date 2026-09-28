@@ -325,6 +325,71 @@ describe("Renderer draft prewarm policy", () => {
     });
   });
 
+  it("publishes the prewarmed draft's workspace for the Composer", async () => {
+    const prewarmThreadStart = vi.fn(async (parameters: unknown) => parameters);
+    const bridge = requestBridgeFixture({ prewarmThreadStart });
+    const events: unknown[] = [];
+    const target: DraftPrewarmPolicyTarget = {
+      dispatchEvent: (event: Event) => {
+        if (event.type === "codexhost:draft-workspace") {
+          events.push((event as CustomEvent).detail);
+        }
+        return true;
+      },
+    };
+    installDraftPrewarmPolicyBridge(requestManagerFixture(), bridge, "local", target, {
+      discardAllPrewarmedThreads: vi.fn(),
+    });
+
+    await bridge.prewarmThreadStart?.({ cwd: "/tmp/project", model: "gpt-5" });
+    await bridge.prewarmThreadStart?.({ ephemeral: true, cwd: "/tmp/other" });
+
+    expect(events).toEqual([
+      { hostId: "local", cwd: "/tmp/project" },
+      { hostId: "local", cwd: "/tmp/project" },
+    ]);
+    expect(target.__codexhostDraftWorkspacesV1).toEqual({ local: "/tmp/project" });
+  });
+
+  it("rejects an in-flight prewarm after the selected Harness changes", async () => {
+    const stalePrewarm = Promise.withResolvers<unknown>();
+    const prewarmThreadStart = vi
+      .fn<(parameters: unknown) => Promise<unknown>>()
+      .mockImplementationOnce(() => stalePrewarm.promise)
+      .mockImplementationOnce(async (parameters) => parameters);
+    const manager = requestManagerFixture();
+    const bridge = requestBridgeFixture({ prewarmThreadStart });
+    const discardAllPrewarmedThreads = vi.fn();
+    const target: DraftPrewarmPolicyTarget = {};
+    installDraftPrewarmPolicyBridge(manager, bridge, "local", target, {
+      discardAllPrewarmedThreads,
+    });
+    const policy = target.__codexhostDraftPrewarmPolicyV1 as {
+      select(model: string | null): boolean;
+      clear(): Promise<void>;
+    };
+
+    policy.select("codexhost/pi-native");
+    const pendingPi = bridge.prewarmThreadStart({ model: "native-model" }) as Promise<unknown>;
+    policy.select("codexhost/claude-code-native");
+    await policy.clear();
+    stalePrewarm.resolve({ thread: { id: "stale-pi" } });
+
+    await expect(pendingPi).rejects.toThrow(
+      "Renderer draft prewarm was invalidated by a configuration change",
+    );
+    await expect(bridge.prewarmThreadStart({ model: "native-model" })).resolves.toEqual({
+      model: "codexhost/claude-code-native",
+    });
+    expect(prewarmThreadStart).toHaveBeenNthCalledWith(1, {
+      model: "codexhost/pi-native",
+    });
+    expect(prewarmThreadStart).toHaveBeenNthCalledWith(2, {
+      model: "codexhost/claude-code-native",
+    });
+    expect(discardAllPrewarmedThreads).toHaveBeenCalledOnce();
+  });
+
   it("tunnels private Host requests through the stock Remote Control app-server", async () => {
     const manager = requestManagerFixture();
     const originalNotification = manager.onNotification as ReturnType<typeof vi.fn>;

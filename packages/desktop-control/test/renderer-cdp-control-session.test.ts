@@ -151,6 +151,41 @@ describe("Renderer CDP Control Session", () => {
     session.close();
   });
 
+  it("accepts the Renderer Agent list in its own presentation order", async () => {
+    const client = rendererClient({
+      version: 2,
+      enabledAgents: ["pi", "codex"],
+      adapter: { state: "ready", reason: "ready" },
+    } as never);
+    const session = await createRendererCdpControlSession({
+      rendererCdpEndpoint: "http://127.0.0.1:43123",
+      rendererSource: "production renderer",
+      enabledAgents: ["codex", "pi"],
+      pollIntervalMs: 1,
+      timeoutMs: 100,
+      operations: {
+        listTargets: vi.fn(async () => [target("page-1")]),
+        connect: vi.fn(async () => client),
+        installDraftPrewarmPolicy: vi.fn(async () => ({
+          state: "ready" as const,
+          reason: "owned-request-bridge" as const,
+        })),
+      },
+    });
+
+    await expect(session.ensureInstalled()).resolves.toMatchObject({
+      binding: { enabledAgents: ["pi", "codex"] },
+    });
+    // A healthy check must not re-run the Renderer bundle, which remounts every Composer control.
+    expect(
+      client.commands.filter(
+        ({ method, params }) =>
+          method === "Runtime.evaluate" && params?.expression === "production renderer",
+      ),
+    ).toHaveLength(1);
+    session.close();
+  });
+
   it("fails closed when the injected Adapter is unsupported", async () => {
     const client = rendererClient({
       version: 2,

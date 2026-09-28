@@ -1,6 +1,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { lstat, rm } from "node:fs/promises";
+import { lstat, rm, stat } from "node:fs/promises";
 import path from "node:path";
 import type { Writable } from "node:stream";
 
@@ -60,16 +60,38 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-async function socketIdentity(socketPath: string): Promise<UnixFileIdentity | null> {
+async function inspectSocket(
+  socketPath: string,
+): Promise<{ identity: UnixFileIdentity; ready: boolean } | null> {
   const metadata = await lstat(socketPath).catch((error: NodeJS.ErrnoException) => {
     if (error.code === "ENOENT") return null;
     throw error;
   });
   if (metadata === null) return null;
-  if (!metadata.isSocket()) {
+  const identity = { dev: metadata.dev, ino: metadata.ino };
+  if (metadata.isSymbolicLink()) {
+    // Newer Codex builds publish a link to their private daemon socket. Keep
+    // the link's identity for cleanup, but validate the endpoint before use.
+    const uid = process.getuid?.();
+    if (uid === undefined || metadata.uid !== uid) {
+      throw new Error(
+        `Shared official app-server link must belong to the current user: ${socketPath}`,
+      );
+    }
+    const target = await stat(socketPath).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT") return null;
+      throw error;
+    });
+    if (target === null) return { identity, ready: false };
+    if (target.uid !== uid || !target.isSocket() || (target.mode & 0o077) !== 0) {
+      throw new Error(
+        `Shared official app-server link must target a current-user private socket: ${socketPath}`,
+      );
+    }
+  } else if (!metadata.isSocket()) {
     throw new Error(`Shared official app-server path is not a socket: ${socketPath}`);
   }
-  return { dev: metadata.dev, ino: metadata.ino };
+  return { identity, ready: true };
 }
 
 function sameUnixFileIdentity(left: UnixFileIdentity, right: UnixFileIdentity): boolean {
@@ -79,6 +101,7 @@ function sameUnixFileIdentity(left: UnixFileIdentity, right: UnixFileIdentity): 
 async function waitForOfficialSocket(
   socketPath: string,
   closed: Promise<RemoteOfficialAppServerExit>,
+  onIdentity: (identity: UnixFileIdentity) => void,
 ): Promise<void> {
   const deadline = Date.now() + 10_000;
   const state: { exit: RemoteOfficialAppServerExit | null } = { exit: null };
@@ -94,7 +117,11 @@ async function waitForOfficialSocket(
           : `Shared official app-server exited before its socket was ready (code=${String(exit.code)}, signal=${String(exit.signal)})`,
       );
     }
-    if ((await socketIdentity(socketPath)) !== null) return;
+    const socket = await inspectSocket(socketPath);
+    if (socket !== null) {
+      onIdentity(socket.identity);
+      if (socket.ready) return;
+    }
     await new Promise<void>((resolve) => setTimeout(resolve, 25));
   }
   throw new Error(`Shared official app-server socket was not ready after 10000ms: ${socketPath}`);
@@ -111,7 +138,12 @@ export function createRemoteOfficialAppServerListener(input: {
   closeTimeoutMs?: number;
 }): RemoteOfficialAppServerListener {
   const spawnOfficial = input.spawnOfficial ?? spawn;
-  const waitUntilReady = input.waitUntilReady ?? waitForOfficialSocket;
+  const waitUntilReady =
+    input.waitUntilReady ??
+    ((socketPath, closed) =>
+      waitForOfficialSocket(socketPath, closed, (identity) => {
+        ownedSocketIdentity ??= identity;
+      }));
   const closeTimeoutMs = input.closeTimeoutMs ?? DEFAULT_CLOSE_TIMEOUT_MS;
   const closed = Promise.withResolvers<RemoteOfficialAppServerExit>();
   let child: ChildProcess | null = null;
@@ -144,7 +176,9 @@ export function createRemoteOfficialAppServerListener(input: {
 
   const removeOwnedSocket = async (): Promise<void> => {
     if (ownedSocketIdentity === null) return;
-    const current = await socketIdentity(input.socketPath).catch(() => null);
+    // The backend may already have removed the link target. Cleanup owns the
+    // directory entry, not its target; never follow a replacement here.
+    const current = await lstat(input.socketPath).catch(() => null);
     if (current && sameUnixFileIdentity(current, ownedSocketIdentity)) {
       await rm(input.socketPath, { force: true });
     }
@@ -171,7 +205,8 @@ export function createRemoteOfficialAppServerListener(input: {
         spawned.stderr?.pipe(input.diagnosticOutput, { end: false });
         try {
           await waitUntilReady(input.socketPath, closed.promise);
-          ownedSocketIdentity = await socketIdentity(input.socketPath).catch(() => null);
+          ownedSocketIdentity ??=
+            (await inspectSocket(input.socketPath).catch(() => null))?.identity ?? null;
         } catch (error) {
           let stopFailed = false;
           try {
@@ -179,7 +214,8 @@ export function createRemoteOfficialAppServerListener(input: {
           } catch {
             stopFailed = true;
           }
-          ownedSocketIdentity ??= await socketIdentity(input.socketPath).catch(() => null);
+          ownedSocketIdentity ??=
+            (await inspectSocket(input.socketPath).catch(() => null))?.identity ?? null;
           // A live process may still own the socket after an unconfirmed exit.
           if (!stopFailed) await removeOwnedSocket();
           throw new Error(`Shared official app-server startup failed: ${errorMessage(error)}`);

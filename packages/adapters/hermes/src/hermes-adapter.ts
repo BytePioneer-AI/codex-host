@@ -71,6 +71,7 @@ const HERMES_THREAD_ID_ENV = "CODEXHOST_THREAD_ID";
 
 export class HermesAdapter implements HarnessAdapter {
   readonly commandCatalog = HERMES_COMMAND_CATALOG;
+  readonly liveCommandCatalog = true;
   readonly harnessId: HarnessId = hermesHarnessId;
 
   readonly sessionImport = {

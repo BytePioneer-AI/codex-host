@@ -519,6 +519,21 @@ describe("DeepSeek Harness Modern history projection", () => {
     );
   });
 
+  it("accepts the fractional jittered delay DSH records for an LLM retry (#367)", () => {
+    expect(() =>
+      projectModernHistory({ sessionId: SESSION_ID, events: [llmRetry(462.36616349221646)] }),
+    ).not.toThrow();
+  });
+
+  it.each([-1, Number.NaN, Number.POSITIVE_INFINITY, "462"])(
+    "refuses an LLM retry delay of %s",
+    (delayMs) => {
+      expect(() =>
+        projectModernHistory({ sessionId: SESSION_ID, events: [llmRetry(delayMs)] }),
+      ).toThrowError(ModernHistoryError);
+    },
+  );
+
   it("accepts canonical delegated sandbox and approval sources", () => {
     expect(() =>
       projectModernHistory({
@@ -763,3 +778,18 @@ describe("DeepSeek Harness Modern history projection", () => {
     expect(projection.snapshot.turns[0]?.outcome).toEqual({ status: "succeeded" });
   });
 });
+
+function llmRetry(delayMs: unknown) {
+  return event(0, "llm/retry", {
+    retryId: "retry-1",
+    turn: 1,
+    step: 1,
+    provider: "deepseek",
+    mode: "normal",
+    policyKey: "default",
+    retry: 1,
+    maxRetries: 5,
+    delayMs,
+    failure: { message: "502 status code (no body)", code: "SERVER" },
+  });
+}

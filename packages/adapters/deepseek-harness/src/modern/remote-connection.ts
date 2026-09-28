@@ -1023,7 +1023,8 @@ export class ModernRemoteConnection {
     } catch (error) {
       throw this.#transportFailure("DeepSeek Harness Web authentication failed", error);
     }
-    if (response.status !== 303 || response.headers.get("location") !== "/") {
+    const location = response.headers.get("location");
+    if (response.status !== 303 || (location !== "/" && location !== "./")) {
       await cancelResponse(response);
       throw new ModernRemoteConnectionError(
         response.status === 401 || response.status === 403

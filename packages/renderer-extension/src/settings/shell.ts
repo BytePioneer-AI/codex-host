@@ -88,7 +88,7 @@ export function mountRendererSettingsShell(
   brandCopy.className = "settings-brand__copy";
   const brandName = ownerDocument.createElement("span");
   brandName.className = "settings-brand__name";
-  brandName.textContent = "Codex Host";
+  brandName.textContent = "CodexHost";
   const brandTitle = ownerDocument.createElement("span");
   brandTitle.className = "settings-brand__title";
   brandTitle.id = "codexhost-settings-dialog-title";
@@ -210,7 +210,7 @@ export function mountRendererSettingsShell(
   starLink.rel = "noopener noreferrer";
   starLink.setAttribute("aria-label", messages.starOnGitHub);
   starLink.title = messages.starOnGitHub;
-  starLink.append(createRendererSettingsIcon("star", 17));
+  starLink.append(createRendererSettingsIcon("github", 17));
   const starLabel = ownerDocument.createElement("span");
   starLabel.textContent = messages.starOnGitHub;
   starLink.append(starLabel);

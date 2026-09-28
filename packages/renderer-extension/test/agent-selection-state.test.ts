@@ -675,4 +675,53 @@ describe("Renderer draft Agent controller", () => {
     expect(agents.thinkingOptionForAgent(composer, "codebuddy")).toBeUndefined();
     expect(agents.thinkingOptionForAgent(composer, "qoder")).toBe(low);
   });
+
+  it("supports Kimi Code draft switching, model scoping, thinking options, and restoration", async () => {
+    const composer = {};
+    const agents = controller();
+    const kimiModel = harnessModelRefSchema.parse({ id: "kimi-k1.5" });
+    const kimiThinking = harnessThinkingOptionIdSchema.parse("high");
+    const permissionMode = harnessPermissionModeIdSchema.parse("prompt");
+    const operations = {
+      applyAgent: () => true,
+      clearPrewarm: async () => undefined,
+    };
+
+    agents.mount(composer, ["default"]);
+    await agents.switchAgent(composer, "kimi-code", operations);
+    expect(agents.get(composer)).toMatchObject({
+      agent: "kimi-code",
+      phase: "draft",
+    });
+
+    agents.setExternalModel(composer, "kimi-code", kimiModel);
+    agents.setExternalThinkingOption(composer, "kimi-code", kimiThinking);
+    agents.setExternalPermissionMode(composer, "kimi-code", permissionMode);
+
+    expect(agents.modelForAgent(composer, "kimi-code")).toEqual(kimiModel);
+    expect(agents.thinkingOptionForAgent(composer, "kimi-code")).toBe(kimiThinking);
+    expect(agents.permissionModeForAgent(composer, "kimi-code")).toBe(permissionMode);
+
+    expect(agents.modelForAgent(composer, "pi")).toBeUndefined();
+    expect(agents.modelForAgent(composer, "qoder")).toBeUndefined();
+
+    agents.lock(composer);
+    expect(agents.get(composer).phase).toBe("locked");
+
+    const restored = {};
+    agents.mount(restored, ["conversation", "kimi-thread-1"]);
+    agents.restore(restored, "kimi-code", kimiModel, kimiThinking, permissionMode);
+    expect(agents.get(restored)).toMatchObject({
+      agent: "kimi-code",
+      phase: "locked",
+      kimiCodeModel: kimiModel,
+      kimiCodeThinkingOptionId: kimiThinking,
+      permissionModeByAgent: {
+        "kimi-code": permissionMode,
+      },
+    });
+    expect(agents.modelForAgent(restored, "kimi-code")).toEqual(kimiModel);
+    expect(agents.thinkingOptionForAgent(restored, "kimi-code")).toBe(kimiThinking);
+    expect(agents.permissionModeForAgent(restored, "kimi-code")).toBe(permissionMode);
+  });
 });

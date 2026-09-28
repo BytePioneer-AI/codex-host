@@ -108,3 +108,13 @@ export const packageMetadata = {
   name: "@codexhost/harness-adapter",
   contractVersion: WORKSPACE_CONTRACT_VERSION,
 } as const;
+export {
+  COMMON_EXCLUDED_LIVE_COMMAND_PREFIXES,
+  COMMON_EXCLUDED_LIVE_COMMANDS,
+  LiveHarnessCommandCatalog,
+  isExcludedLiveCommand,
+  liveHarnessCommandPrompt,
+  mergeLiveHarnessCommands,
+  type LiveCommandExclusions,
+  type LiveHarnessCommand,
+} from "./live-command-catalog.js";

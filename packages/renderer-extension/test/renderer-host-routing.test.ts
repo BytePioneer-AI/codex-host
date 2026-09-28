@@ -21,8 +21,11 @@ const ready = {
 };
 
 function manager(hostId: string) {
-  const nativeSend = vi.fn(async (method: string, params: unknown) => {
+  const nativeSend = vi.fn<
+    (method: string, params: unknown, options?: unknown) => Promise<unknown>
+  >(async (method, params) => {
     if (method === "codexhost/harness/inspect") return ready;
+    if (method === "codexhost/thread/inspect") return { owner: "codex", locked: true };
     if (method === "codexhost/settings/idle-release/set") return params;
     return { threadId: "thread-test", usage: null };
   });
@@ -38,8 +41,10 @@ function manager(hostId: string) {
     nativeSend,
     requestClient,
     getHostId: () => hostId,
-    sendRequest(method: string, params: unknown) {
-      return this.requestClient.sendRequest(method, params);
+    sendRequest(method: string, params: unknown, options?: unknown) {
+      return options === undefined
+        ? this.requestClient.sendRequest(method, params)
+        : this.requestClient.sendRequest(method, params, options);
     },
     prewarmedThreadManager: { discardAllPrewarmedThreads: vi.fn() },
     onNotification: vi.fn(),
@@ -122,6 +127,47 @@ it.each(["local", remoteId])(
       expect(fixture.remote.nativeSend).not.toHaveBeenCalledWith(
         "codexhost/settings/idle-release/set",
         expect.anything(),
+      );
+    } finally {
+      adapter.dispose();
+    }
+  },
+);
+
+it.each(["local", remoteId])(
+  "preserves background discovery priority through every request wrapper on %s",
+  async (hostId) => {
+    const { adapter, local, remote, fiber, managers } = await setup(hostId);
+    try {
+      const native = hostId === "local" ? local : remote;
+      await adapter.modelControl?.inspectHarness(piRequest, { priority: "background" });
+      expect(native.nativeSend).toHaveBeenLastCalledWith("codexhost/harness/inspect", piRequest, {
+        priority: "background",
+      });
+
+      const client = adapter.modelControl?.clientForHost?.(hostId);
+      fiber.memoizedProps.executionTargetHostId = hostId === "local" ? remoteId : "local";
+      await client?.inspectHarness(piRequest, { priority: "background" });
+      expect(native.nativeSend).toHaveBeenLastCalledWith("codexhost/harness/inspect", piRequest, {
+        priority: "background",
+      });
+      await client?.inspectThread(threadRequest);
+      expect(native.nativeSend).toHaveBeenLastCalledWith("codexhost/thread/inspect", threadRequest);
+      await client?.inspectHarness(piRequest);
+      expect(native.nativeSend).toHaveBeenLastCalledWith("codexhost/harness/inspect", piRequest);
+
+      const replacement = manager(hostId);
+      managers.set(hostId, replacement);
+      await expect(client?.inspectHarness(piRequest, { priority: "background" })).rejects.toThrow(
+        "unavailable",
+      );
+      await adapter.modelControl
+        ?.clientForHost?.(hostId)
+        ?.inspectHarness(piRequest, { priority: "background" });
+      expect(replacement.nativeSend).toHaveBeenCalledExactlyOnceWith(
+        "codexhost/harness/inspect",
+        piRequest,
+        { priority: "background" },
       );
     } finally {
       adapter.dispose();

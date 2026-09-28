@@ -61,6 +61,7 @@ export class QoderAdapter implements HarnessAdapter {
   readonly harnessId: HarnessId;
   readonly #variant: QoderVariant;
   readonly commandCatalog = QODER_FALLBACK_COMMAND_CATALOG;
+  readonly liveCommandCatalog = true;
 
   readonly #commandOverride: string | undefined;
   readonly #environment: Record<string, string | undefined>;

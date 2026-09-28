@@ -38,11 +38,13 @@ export function createRendererHostClients(readRouting: () => RendererHostRouting
     const target = route.manager;
     const client = createRendererModelClient([
       {
-        sendRequest(method, params) {
+        sendRequest(method, params, options) {
           if (disposed || readRouting()?.forHost(route.hostId) !== route) {
             throw new Error(`Renderer request manager is unavailable for Host ${route.hostId}`);
           }
-          return target.sendRequest(method, params);
+          return options === undefined
+            ? target.sendRequest(method, params)
+            : target.sendRequest(method, params, options);
         },
         ...(target.addNotificationCallback
           ? { addNotificationCallback: target.addNotificationCallback.bind(target) }

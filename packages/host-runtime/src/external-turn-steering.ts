@@ -72,6 +72,8 @@ export interface ExternalSteerStarted {
   gate: TurnProjectionGate;
 }
 
+type StartSteeredTurn = (text: string, assertActive: () => void) => Promise<ExternalSteerStarted>;
+
 interface PendingSteer {
   turnId: string;
   resolve(outcome: TurnOutcome): void;
@@ -96,7 +98,7 @@ export class ExternalTurnSteering {
   run(
     thread: SteeringThread,
     params: JsonObject,
-    start: (text: string) => Promise<ExternalSteerStarted>,
+    start: StartSteeredTurn,
   ): Promise<ExternalSteerStarted> {
     try {
       const input = parseInput(params);
@@ -178,7 +180,7 @@ export class ExternalTurnSteering {
   async #replace(
     thread: SteeringThread,
     input: SteeringInput,
-    start: (text: string) => Promise<ExternalSteerStarted>,
+    start: StartSteeredTurn,
   ): Promise<ExternalSteerStarted> {
     const turnId = thread.activeTurnId;
     if (!turnId)
@@ -216,9 +218,12 @@ export class ExternalTurnSteering {
       clearTimeout(timeout);
       // A terminal and a stop/fault may both settle before the await continuation.
       // Promise.race alone would prefer the already-fulfilled terminal in that case.
-      if (failureReason) throw failureReason;
-      if (this.#closed)
-        throw new ExternalSteerError(-32074, "External steering connection is closed");
+      const assertActive = (): void => {
+        if (failureReason) throw failureReason;
+        if (this.#closed)
+          throw new ExternalSteerError(-32074, "External steering connection is closed");
+      };
+      assertActive();
       if (outcome.status === "failed") throw new ExternalSteerError(-32074, outcome.error.message);
       if (thread.persistenceError)
         throw new ExternalSteerError(
@@ -228,7 +233,9 @@ export class ExternalTurnSteering {
       if (thread.running || thread.activeTurnId) {
         throw new ExternalSteerError(-32072, "Another External Turn started before replacement");
       }
-      return await start(input.text);
+      // Command discovery can await native data. Recheck cancellation after
+      // that await, immediately before the replacement actually executes.
+      return await start(input.text, assertActive);
     } finally {
       clearTimeout(timeout);
       if (this.#pending.get(thread.id) === pending) this.#pending.delete(thread.id);

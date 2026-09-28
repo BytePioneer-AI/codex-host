@@ -13,7 +13,8 @@
     "packages/adapters/cursor-cli",
     "packages/adapters/hermes",
     "packages/adapters/qoder",
-    "packages/adapters/qoder-cn"
+    "packages/adapters/qoder-cn",
+    "packages/adapters/kimi-code"
   ],
   "runtimePackages": [
     "@agentclientprotocol/sdk",
@@ -23,6 +24,7 @@
     "@hono/node-server",
     "@modelcontextprotocol/sdk",
     "@opencode-ai/sdk",
+    "@opencode/client",
     "@qoder-ai/qoder-agent-sdk",
     "@qodercn-ai/qodercn-agent-sdk",
     "ajv",
@@ -33,6 +35,7 @@
     "fast-uri",
     "hono",
     "json-schema-traverse",
+    "smol-toml",
     "ws",
     "zod",
     "zod-to-json-schema"

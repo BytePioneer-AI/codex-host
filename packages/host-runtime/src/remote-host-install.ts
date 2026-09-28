@@ -31,7 +31,6 @@ export interface RemoteHostManifestV1 {
   hostRuntimePath: string;
   dataDirectory: string;
   entrypointSha256?: string;
-  claudeCommand?: string;
   profileBackupPath?: string;
 }
 
@@ -43,7 +42,6 @@ export interface RemoteHostInstallOptions {
   nodePath?: string;
   shimPath?: string;
   hostRuntimePath?: string;
-  claudeCommand?: string;
   platform?: NodeJS.Platform;
   environment?: NodeJS.ProcessEnv;
 }
@@ -245,9 +243,6 @@ function installManagedProfileBlock(contents: string, manifest: RemoteHostManife
     `export CODEXHOST_DATA_DIR=${shellQuote(manifest.dataDirectory)}`,
     "export CODEXHOST_DEFAULT_AGENT='codex'",
     "export CODEXHOST_REMOTE_SSH_MANAGED='1'",
-    ...(manifest.claudeCommand
-      ? [`export CODEXHOST_CLAUDE_COMMAND=${shellQuote(manifest.claudeCommand)}`]
-      : []),
   ];
   const block = [
     PROFILE_START,
@@ -324,7 +319,7 @@ async function readManifest(filePath: string): Promise<RemoteHostManifestV1 | nu
     "hostRuntimePath",
     "dataDirectory",
     "entrypointSha256",
-    "claudeCommand",
+    "claudeCommand", // Inert metadata accepted from older format-1 manifests.
     "profileBackupPath",
   ]);
   const requiredPaths = [
@@ -434,13 +429,6 @@ export async function installRemoteHost(
   const nodePath = await executable(options.nodePath, "Node runtime");
   const shimPath = await executable(options.shimPath, "codexhost Shim");
   const hostRuntimePath = await existingFile(options.hostRuntimePath, "codexhost Host Runtime");
-  const discoveredClaude =
-    options.claudeCommand ??
-    previousManifest?.claudeCommand ??
-    (await discoverExecutable("claude", environment));
-  const claudeCommand = discoveredClaude
-    ? await executable(discoveredClaude, "Claude Code command")
-    : undefined;
 
   let manifest: RemoteHostManifestV1 = {
     format: MANIFEST_FORMAT,
@@ -451,7 +439,6 @@ export async function installRemoteHost(
     shimPath,
     hostRuntimePath,
     dataDirectory: paths.dataDirectory,
-    ...(claudeCommand ? { claudeCommand } : {}),
     ...(previousManifest?.profileBackupPath
       ? { profileBackupPath: previousManifest.profileBackupPath }
       : {}),

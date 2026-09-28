@@ -30,6 +30,108 @@ function projector(): CodexTurnProjector {
 }
 
 describe("Codex UI projector", () => {
+  it("omits terminal Reasoning line breaks in live and historical Desktop text", () => {
+    const value = projector();
+    const reasoningId = itemId("line-break-reasoning");
+    const rawText = "First\n\n\r\nSecond\r\n\n";
+    const visibleText = "First\n\n\r\nSecond";
+    value.project({ type: "turn.started", turnId });
+    expect(
+      value.project({
+        type: "item.started",
+        turnId,
+        item: { type: "reasoning", itemId: reasoningId, text: "" },
+      }).messages,
+    ).toEqual([]);
+    const first = value.project({
+      type: "item.updated",
+      turnId,
+      itemId: reasoningId,
+      update: { type: "text.append", text: "First\n\n" },
+    });
+    expect(
+      first.messages.filter(({ method }) => method === "item/commandExecution/outputDelta"),
+    ).toMatchObject([{ params: { delta: "First" } }]);
+    expect(
+      value.project({
+        type: "item.updated",
+        turnId,
+        itemId: reasoningId,
+        update: { type: "text.append", text: "\r\n" },
+      }).messages,
+    ).toEqual([]);
+    const continued = value.project({
+      type: "item.updated",
+      turnId,
+      itemId: reasoningId,
+      update: { type: "text.append", text: "Second\r\n\n" },
+    });
+    expect(
+      continued.messages.filter(({ method }) => method === "item/commandExecution/outputDelta"),
+    ).toMatchObject([{ params: { delta: "\n\n\r\nSecond" } }]);
+    expect(
+      value.project({
+        type: "item.completed",
+        turnId,
+        snapshot: {
+          item: { type: "reasoning", itemId: reasoningId, text: rawText },
+          outcome: { status: "succeeded" },
+        },
+      }).messages,
+    ).toMatchObject([
+      { params: { item: { type: "reasoning", summary: [visibleText] } } },
+      { params: { item: { type: "commandExecution", aggregatedOutput: visibleText } } },
+    ]);
+    expect(
+      value.project({ type: "turn.completed", turnId, outcome: { status: "succeeded" } })
+        .completedTurn,
+    ).toMatchObject({
+      items: [
+        { type: "reasoning", summary: [visibleText] },
+        { type: "commandExecution", aggregatedOutput: visibleText },
+      ],
+    });
+
+    const snapshot: HostThreadSnapshot["turns"][number] = {
+      nativeTurnRef: nativeTurnRefSchema.parse({
+        harnessId: "pi",
+        nativeSessionId: "session-1",
+        nativeTurnKey: "turn-1",
+        formatVersion: 1,
+      }),
+      input: [],
+      items: [
+        {
+          item: { type: "reasoning", itemId: reasoningId, text: rawText },
+          outcome: { status: "succeeded" },
+        },
+      ],
+      outcome: { status: "succeeded" },
+    };
+    expect(projectHistoricalTurn({ turnId, cwd: "/workspace", snapshot })).toMatchObject({
+      items: [
+        { type: "userMessage" },
+        { type: "reasoning", summary: [visibleText] },
+        { type: "commandExecution", aggregatedOutput: visibleText },
+      ],
+    });
+    expect(
+      projectHistoricalTurn({
+        turnId,
+        cwd: "/workspace",
+        snapshot: {
+          ...snapshot,
+          items: [
+            {
+              item: { type: "reasoning", itemId: reasoningId, text: "\r\n\n" },
+              outcome: { status: "succeeded" },
+            },
+          ],
+        },
+      }).items,
+    ).toMatchObject([{ type: "userMessage" }]);
+  });
+
   it("does not invent historical duration from invalid native timing", () => {
     const snapshot: HostThreadSnapshot["turns"][number] = {
       nativeTurnRef: nativeTurnRefSchema.parse({
@@ -1075,6 +1177,91 @@ describe("Codex UI projector", () => {
         },
       },
     ]);
+  });
+
+  it("shows a DSH pwsh command and output in the Command Execution card", () => {
+    const value = projector();
+    const commandId = itemId("dsh-pwsh");
+    const command: HostToolExecutionItem = {
+      type: "toolExecution",
+      itemId: commandId,
+      toolName: "pwsh",
+      arguments: {
+        command: "Get-ChildItem src",
+        description: "List source files",
+        workdir: "scripts",
+      },
+    };
+    value.project({ type: "turn.started", turnId });
+    expect(value.project({ type: "item.started", turnId, item: command }).messages).toMatchObject([
+      {
+        method: "item/started",
+        params: {
+          item: {
+            type: "commandExecution",
+            command: "Get-ChildItem src",
+            cwd: "/workspace/scripts",
+          },
+        },
+      },
+    ]);
+    expect(
+      value.project({
+        type: "item.completed",
+        turnId,
+        snapshot: {
+          item: { ...command, output: { content: [{ type: "text", text: "file.ts" }] } },
+          outcome: { status: "succeeded" },
+        },
+      }).messages,
+    ).toMatchObject([
+      {
+        method: "item/completed",
+        params: {
+          item: {
+            type: "commandExecution",
+            command: "Get-ChildItem src",
+            aggregatedOutput: "file.ts",
+            cwd: "/workspace/scripts",
+            exitCode: null,
+          },
+        },
+      },
+    ]);
+    expect(
+      value.project({
+        type: "item.started",
+        turnId,
+        item: { ...command, itemId: itemId("dsh-pwsh-missing"), arguments: { description: "x" } },
+      }).messages,
+    ).toMatchObject([{ params: { item: { type: "dynamicToolCall", tool: "pwsh" } } }]);
+  });
+
+  it("resolves Windows tool workdir using session path rules on any host", () => {
+    const value = new CodexTurnProjector({
+      threadId: "thread-1",
+      turnId,
+      cwd: "C:\\repo",
+      startedAtMs: 1_000,
+    });
+    value.project({ type: "turn.started", turnId });
+    for (const [index, workdir, cwd] of [
+      ["relative", "scripts", "C:\\repo\\scripts"],
+      ["absolute", "D:\\tools", "D:\\tools"],
+    ] as const) {
+      expect(
+        value.project({
+          type: "item.started",
+          turnId,
+          item: {
+            type: "toolExecution",
+            itemId: itemId(`dsh-pwsh-${index}`),
+            toolName: "pwsh",
+            arguments: { command: "Get-ChildItem", workdir },
+          },
+        }).messages,
+      ).toMatchObject([{ params: { item: { type: "commandExecution", cwd } } }]);
+    }
   });
 
   it("docks Todo tools on turn/plan/updated and hides the name-only card", () => {

@@ -194,6 +194,12 @@ interface LiveTextItem<T extends HostAgentMessageItem | HostReasoningItem> {
   text: string;
 }
 
+interface LiveReasoningItem extends LiveTextItem<HostReasoningItem> {
+  readonly attemptId?: string;
+  readonly provisional: boolean;
+  pendingLineBreaks: string;
+}
+
 interface LiveTool {
   item: HostToolExecutionItem;
   readonly toolName: string;
@@ -206,7 +212,8 @@ interface ActiveHostTurn {
   readonly input: HostTextInput[];
   readonly autonomous: boolean;
   agent?: LiveTextItem<HostAgentMessageItem>;
-  reasoning?: LiveTextItem<HostReasoningItem>;
+  reasoning?: LiveReasoningItem;
+  reasoningOrdinal: number;
   readonly tools: Map<string, LiveTool>;
   readonly interactions: Set<HostInteractionId>;
   terminal: boolean;
@@ -418,6 +425,7 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
       nativeRef: projection.nativeRef,
       modelCatalog: this.#modelCatalog,
       permissionModes: this.#permissionModes,
+      profile: this.#profile,
     });
     this.#nativeRef = projection.nativeRef;
     this.initialState = configuration.state;
@@ -781,6 +789,7 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
       nativeRef: this.#nativeRef,
       modelCatalog: this.#modelCatalog,
       permissionModes: this.#permissionModes,
+      profile: this.#profile,
     });
   }
 
@@ -1579,6 +1588,9 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
     if (attempt && !attempt.projected && active?.nativeTurn === attempt.turn && active.agent) {
       this.#cancelAgentItem(active);
     }
+    if (attempt && active?.reasoning?.attemptId === attempt.attemptId) {
+      this.#cancelReasoningItem(active);
+    }
     this.#assistantAttempt = undefined;
   }
 
@@ -1595,6 +1607,13 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
     });
     delete active.agent;
     this.#completeItem(active, agent.item, { status: "cancelled" });
+  }
+
+  #cancelReasoningItem(active: ActiveHostTurn): void {
+    const reasoning = active.reasoning;
+    if (!reasoning) return;
+    delete active.reasoning;
+    this.#completeItem(active, reasoning.item, { status: "cancelled" });
   }
 
   #projectAssistantLiveChunks(): void {
@@ -1667,6 +1686,7 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
       if (!initialReplay) this.#projectAssistantLiveChunks();
     } else {
       this.#cancelAgentItem(active);
+      this.#cancelReasoningItem(active);
     }
     attempt.projected = true;
     if (attempt.ended) this.#assistantAttempt = undefined;
@@ -1966,6 +1986,7 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
       input: [...input],
       autonomous,
       tools: new Map(),
+      reasoningOrdinal: 0,
       interactions: new Set(),
       terminal: false,
       cancelAcknowledged: false,
@@ -2022,6 +2043,9 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
       case "tool/result":
         if (event.surfaceOp === "append") this.#completeTool(active, data, event.seq);
         return;
+      case "step/end":
+        this.#cancelReasoningItem(active);
+        return;
       case "turn/end":
         this.#finishTurn(buffer, active, data.reason, event.seq);
         return;
@@ -2040,7 +2064,7 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
     if (chunk.type === "text-delta") {
       this.#appendAgent(active, chunk.text as string, step, attemptId);
     } else if (chunk.type === "reasoning-delta") {
-      // DSH may revise this provisional text in block-end; assistant/message is authoritative.
+      this.#appendReasoning(active, chunk.text as string, step, true, attemptId);
     } else if (chunk.type === "usage" && !initialReplay) {
       this.#publishUsageChanges(active.turnId);
     }
@@ -2070,29 +2094,52 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
     });
   }
 
-  #startReasoning(active: ActiveHostTurn, step: number): LiveTextItem<HostReasoningItem> {
+  #startReasoning(
+    active: ActiveHostTurn,
+    step: number,
+    provisional: boolean,
+    attemptId?: string,
+  ): LiveReasoningItem {
     if (!active.reasoning) {
+      const key = provisional ? `reasoning:provisional:${++active.reasoningOrdinal}` : "reasoning";
       const item: HostReasoningItem = {
         type: "reasoning",
-        itemId: modernItemId(this.#sessionId, `turn:${active.nativeTurn}:step:${step}:reasoning`),
+        itemId: modernItemId(this.#sessionId, `turn:${active.nativeTurn}:step:${step}:${key}`),
         text: "",
       };
-      active.reasoning = { item, text: "" };
+      active.reasoning = {
+        item,
+        text: "",
+        provisional,
+        pendingLineBreaks: "",
+        ...(attemptId ? { attemptId } : {}),
+      };
       this.#emit({ type: "item.started", turnId: active.turnId, item });
     }
     return active.reasoning;
   }
 
-  #appendReasoning(active: ActiveHostTurn, text: string, step: number): void {
+  #appendReasoning(
+    active: ActiveHostTurn,
+    text: string,
+    step: number,
+    provisional = false,
+    attemptId?: string,
+    final = false,
+  ): void {
     if (!text) return;
-    const reasoning = this.#startReasoning(active, step);
-    reasoning.text += text;
+    const reasoning = this.#startReasoning(active, step, provisional, attemptId);
+    const candidate = final ? text : reasoning.pendingLineBreaks + text;
+    const appended = final ? candidate : candidate.replace(/[\r\n]+$/u, "");
+    reasoning.pendingLineBreaks = final ? "" : candidate.slice(appended.length);
+    if (!appended) return;
+    reasoning.text += appended;
     reasoning.item = { ...reasoning.item, text: reasoning.text };
     this.#emit({
       type: "item.updated",
       turnId: active.turnId,
       itemId: reasoning.item.itemId,
-      update: { type: "text.append", text },
+      update: { type: "text.append", text: appended },
     });
   }
 
@@ -2120,7 +2167,11 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
   }
 
   #completeReasoning(active: ActiveHostTurn, finalText: string, step: number): void {
-    if (finalText) this.#appendReasoning(active, finalText, step);
+    if (active.reasoning && !finalText.startsWith(active.reasoning.text)) {
+      this.#cancelReasoningItem(active);
+    }
+    const suffix = finalText.slice(active.reasoning?.text.length ?? 0);
+    if (suffix) this.#appendReasoning(active, suffix, step, false, undefined, true);
     const current = active.reasoning;
     if (!current) return;
     delete active.reasoning;
@@ -2218,6 +2269,7 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
     const projected = turnOutcome(reason);
     const itemOutcome = toItemOutcome(projected);
     this.#discardAssistantAttempt();
+    this.#cancelReasoningItem(active);
     this.#closeActiveInteractions(active);
     this.#completeOpenItems(active, itemOutcome);
     active.terminal = true;
@@ -2342,6 +2394,7 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
         input: hostBound ? [...pending.command.input] : [...buffer.input],
         autonomous: !hostBound,
         tools: new Map(),
+        reasoningOrdinal: 0,
         interactions: new Set(),
         terminal: false,
         cancelAcknowledged: false,
@@ -2885,6 +2938,9 @@ function turnOutcome(reason: unknown): TurnOutcome {
   if (reason.kind === "completed" || reason.kind === "max-tokens") return { status: "succeeded" };
   if (reason.kind === "aborted") {
     return { status: "cancelled", reason: "Cancelled by user" };
+  }
+  if (reason.kind === "forked") {
+    return { status: "cancelled", reason: "Forked from parent Session" };
   }
   return {
     status: "failed",

@@ -149,6 +149,13 @@ export function nonNegativeInteger(value: unknown, label: string): number {
   return boundedInteger(value, label, 0);
 }
 
+export function nonNegativeFiniteNumber(value: unknown, label: string): number {
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
+    fail(`${label} must be a finite number greater than or equal to 0`);
+  }
+  return value;
+}
+
 export function nonNegativeSafeInteger(value: unknown): value is number {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
 }

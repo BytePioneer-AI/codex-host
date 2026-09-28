@@ -1,0 +1,239 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Update Failure State</title>
+    <style>
+      :root {
+        --settings-bg: #ffffff;
+        --settings-panel: #ffffff;
+        --settings-text: #0d0d0d;
+        --settings-muted: #676767;
+        --settings-border: rgb(13 13 13 / 9%);
+        --settings-divider: rgb(13 13 13 / 7%);
+        --settings-hover: rgb(13 13 13 / 5%);
+        --settings-focus: #0b75d1;
+        --settings-danger: #b42318;
+        --page-ground: #f3f3f3;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root:not([data-theme="light"]) {
+          color-scheme: dark;
+          --settings-bg: #202020;
+          --settings-panel: #232323;
+          --settings-text: #ececec;
+          --settings-muted: #a3a3a3;
+          --settings-border: rgb(255 255 255 / 9%);
+          --settings-divider: rgb(255 255 255 / 7%);
+          --settings-hover: rgb(255 255 255 / 7%);
+          --settings-focus: #66aaf9;
+          --settings-danger: #f87171;
+          --page-ground: #161616;
+        }
+      }
+      :root[data-theme="dark"] {
+        color-scheme: dark;
+        --settings-bg: #202020;
+        --settings-panel: #232323;
+        --settings-text: #ececec;
+        --settings-muted: #a3a3a3;
+        --settings-border: rgb(255 255 255 / 9%);
+        --settings-divider: rgb(255 255 255 / 7%);
+        --settings-hover: rgb(255 255 255 / 7%);
+        --settings-focus: #66aaf9;
+        --settings-danger: #f87171;
+        --page-ground: #161616;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        background: var(--page-ground);
+        color: var(--settings-text);
+        font:
+          14px/1.5 system-ui,
+          -apple-system,
+          BlinkMacSystemFont,
+          "Segoe UI",
+          "PingFang SC",
+          sans-serif;
+        padding-inline: 16px;
+        padding-block: 32px;
+      }
+      .frame {
+        max-width: 860px;
+        margin-inline: auto;
+        padding: 40px 48px 48px;
+        background: var(--settings-bg);
+        border: 1px solid var(--settings-border);
+        border-radius: 12px;
+      }
+      @media (max-width: 600px) {
+        .frame {
+          padding: 24px 20px 28px;
+        }
+      }
+
+      /* —— 以下与 shell.css 中更新页样式一致 —— */
+      .settings-section-label {
+        padding: 0 0 28px;
+        font-size: 24px;
+        font-weight: 600;
+        line-height: 30px;
+      }
+      .settings-update-metadata {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px 48px;
+        margin-bottom: 20px;
+      }
+      .settings-update-metadata__item {
+        display: grid;
+        min-width: 0;
+        gap: 4px;
+      }
+      .settings-update-metadata__item span {
+        color: var(--settings-muted);
+        font-size: 12px;
+        line-height: 18px;
+      }
+      .settings-update-metadata__item strong {
+        font-size: 15px;
+        font-weight: 500;
+        line-height: 22px;
+      }
+
+      .settings-update-panel {
+        display: grid;
+        gap: 12px;
+        padding: 20px;
+        background: var(--settings-panel);
+        border: 1px solid var(--settings-border);
+        border-radius: 8px;
+      }
+      .settings-update-panel__head {
+        display: flex;
+        align-items: center;
+        min-width: 0;
+        gap: 8px;
+      }
+      .settings-update-panel__head svg {
+        flex: none;
+        color: var(--settings-danger);
+      }
+      .settings-update-panel__title {
+        min-width: 0;
+        overflow-wrap: anywhere;
+        font-size: 14px;
+        font-weight: 600;
+        line-height: 22px;
+      }
+
+      .settings-update-controls {
+        display: grid;
+        min-width: 0;
+        gap: 10px;
+        margin-top: 24px;
+      }
+      .settings-update-manual-title {
+        font-size: 15px;
+        font-weight: 600;
+        line-height: 22px;
+      }
+      .settings-update-actions {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        flex-wrap: wrap;
+      }
+      .settings-update-link {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        width: max-content;
+        max-width: 100%;
+        min-height: 30px;
+        padding: 5px 10px;
+        color: var(--settings-text);
+        font-size: 12px;
+        text-decoration: none;
+        background: var(--settings-panel);
+        border: 1px solid var(--settings-border);
+        border-radius: 7px;
+      }
+      .settings-update-link:hover {
+        background: var(--settings-hover);
+      }
+      .settings-update-link:focus-visible {
+        outline: 2px solid var(--settings-focus);
+        outline-offset: 2px;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="frame">
+      <div class="settings-section-label">更新</div>
+
+      <div class="settings-update-metadata">
+        <div class="settings-update-metadata__item"><span>当前版本</span><strong>-</strong></div>
+        <div class="settings-update-metadata__item"><span>最新版本</span><strong>-</strong></div>
+        <div class="settings-update-metadata__item"><span>安装方式</span><strong>-</strong></div>
+      </div>
+
+      <section class="settings-update-panel" data-update-state="failed" aria-live="polite">
+        <div class="settings-update-panel__head">
+          <svg
+            width="16"
+            height="16"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            aria-hidden="true"
+          >
+            <path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3" />
+            <path d="M12 9v4" />
+            <path d="M12 17h.01" />
+          </svg>
+          <strong class="settings-update-panel__title"
+            >暂时无法自动更新，请通过下方 GitHub Releases 手动下载最新版本。</strong
+          >
+        </div>
+      </section>
+
+      <div class="settings-update-controls">
+        <div class="settings-update-manual-title">手动更新</div>
+        <div class="settings-update-actions">
+          <a
+            class="settings-update-link"
+            href="https://github.com/BytePioneer-AI/codex-host/releases/latest"
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            前往 GitHub Releases 下载
+            <svg
+              width="14"
+              height="14"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              aria-hidden="true"
+            >
+              <path d="M15 3h6v6" />
+              <path d="M10 14 21 3" />
+              <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+            </svg>
+          </a>
+        </div>
+      </div>
+    </div>
+  </body>
+</html>

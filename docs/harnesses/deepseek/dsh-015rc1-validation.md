@@ -1,6 +1,41 @@
-# DSH 012rc1 / 015rc1 对接验证
+# DSH 012rc1 / 015rc1 / 015rc2 / 015rc3 / 017rc1 / 017rc2 对接验证
 
-实现基线为 upstream `9d36363f`，在 Windows、Node.js `v24.11.0`、npm `11.8.0`、Vitest `4.1.10` 下验证。当前仅支持精确 `0.1.2-rc.1` 与 `0.1.5-rc.1`；旧 DSH Legacy 实现、SDK 和专属测试已删除。
+## 0.1.7-rc.2 支持与验证边界
+
+DSH dsh-v0.1.7-rc.2 的 tag commit 为 477b4f420553e8a52c2fbccc464d7561b239c443。源码发布版本仍使用 Session Format V4，因此 Adapter 将 0.1.7-rc.2 及更高 SemVer 路由到现有 V4 profile；低于 0.1.7-rc.1 的现代版本继续路由 V3，0.1.2 系列继续使用 V0。
+
+本次完成源码协议审计和自动化路由回归，已将 rc2 加入设置页和已验证版本列表；真实 CLI 生命周期 Gate 尚未运行，当前证据为 rc2 源码协议审计、V4 路由回归和仓库自动化检查。版本号只决定协议尝试，Web Remote、历史、流式和 Fork 校验仍是兼容性闸门。
+## 本次版本扩展验证（support-dsh-015rc3-017rc1）
+
+本次变更新增两个隔离 release：`dsh-v0.1.5-rc.3`（`a4c74a91e06b00fe0b0937bde982170c526cc842`）和 `dsh-v0.1.7-rc.1`（`46a7f68b0922371ce7144b668b90e377d8e799f4`）。前者沿用 V3 Session 日志和既有 V3 Remote 语义；后者使用 V4 Session 日志，Adapter 以独立 profile 校验 V4 header、`developer/message`、surface 引用、image offload、workspace changes、Assistant 流块和 Fork 的 `forked` synthetic closer。
+
+`0.1.5-rc.3` 和 `0.1.7-rc.1` 的真实 CLI 生命周期 Gate 均已通过，覆盖托管 Web 启动、inspect/create、流式增量、取消及 HTTP 停止、空/保留历史回滚、冷恢复、继续输入、活动关闭和请求无重叠。两个版本均使用精确 npm 隔离的 `dsh.cmd`，没有把 `--version` 成功当作对接证据。
+
+真实 Gate 环境为 Windows、Node.js `v24.11.0`、npm `11.8.0`、Vitest `4.1.10`。命令模板如下（`<TEMP>\rc3` 或 `<TEMP>\rc1` 替换为对应精确版本的隔离目录）：
+
+```powershell
+$env:CODEXHOST_DSH_REAL_COMMAND = '<TEMP>\rc1\node_modules\.bin\dsh.cmd'
+.\node_modules\.bin\vitest.cmd run --config tests/vitest.config.js tools/gate-dsh/lifecycle.real.test.mjs --reporter=verbose
+```
+
+最终复跑结果：`dsh-v0.1.5-rc.3` 为 1/1 通过（Vitest 11.49 秒），`dsh-v0.1.7-rc.1` 为 1/1 通过（Vitest 8.20 秒）。两个 Gate 均使用本地 SSE 模拟模型和隔离临时 `DSH_HOME`，不调用真实计费模型。真实 Gate 不覆盖原生 V4 Fork 或真实模型的工具调用；这些协议边界由下面的定向回归检查。
+
+V4 `session/follow` 的 Web snapshot 对顶层 Session 省略 `delegationDepth`，Adapter 按 DSH Web 实际契约将缺省值规范化为 `0`；显式提供的值仍必须是非负安全整数。
+
+本次复跑 `npm run test:deepseek:coverage`，整个 DSH Adapter 的 **849 项测试 / 23 个文件全部通过**；范围仍为 `packages/adapters/deepseek-harness/src/**/*.ts`，四项 80% 门槛均通过。新增覆盖 V0/V3/V4 可见思考增量、最终修订、放弃尝试、步骤结束与重连去重；`pwsh` 完整命令投影由 Protocol Core 的定向测试覆盖。
+
+| 指标 | 覆盖率 | 已覆盖 / 总数 |
+| --- | --- | --- |
+| 语句 | 86.44% | 5792 / 6700 |
+| 分支 | 82.17% | 5099 / 6205 |
+| 函数 | 93.23% | 923 / 990 |
+| 行 | 89.14% | 5380 / 6035 |
+
+协议和 profile 的定向回归已覆盖 V3/V4 合法与非法历史、developer 工具引用、Assistant stream、Fork 边界、原生 `forked-tool-result` 的校验与投影、跨格式 checkpoint、控制读回、分页和实时去重。Protocol Core 的 `pwsh` 命令框测试单独执行；DSH 思考流测试还经过 `CodexTurnProjector` 验证增量通知。V4 checkpoint 使用 `v4-turn-end:` 前缀及精确版本 locator；V3/V0 或迁移前 checkpoint 在 mutation 前拒绝。DSH 原生 Session、凭据和迁移仍由 DSH 所有，codexhost 不读取或改写原生日志文件。
+
+本次 `npm run build:typescript`、`npm run typecheck`、`npm run lint`、`npm run format:check`、OpenSpec strict 和 `git diff --check` 均通过。未使用真实计费模型、Desktop 或浏览器自动化，也未在其他平台运行本次新增版本的真实 Gate。
+
+实现基线为 upstream `9d36363f`，在 Windows、Node.js `v24.11.0`、npm `11.8.0`、Vitest `4.1.10` 下验证。本节所述原始基线仅支持精确 `0.1.2-rc.1` 与 `0.1.5-rc.1`；旧 DSH Legacy 实现、SDK 和专属测试已删除。
 
 ## 自动化测试与覆盖率
 
@@ -15,7 +50,7 @@
 
 HTML 和 JSON 摘要由同一命令生成到 `coverage/deepseek-harness/`，不纳入 Git。函数覆盖率超过 90% 保留，不删除有效测试来降低数字。
 
-重点覆盖精确版本拒绝、端点认证诊断、选择/关闭并发、V0/V3 格式隔离、系统 surface 与替换、PTC/反馈/队伍事件、Assistant 流与结算重试、重连、Fork/回滚、继承队列清理、原生持久化确认，以及模型、权限、工具、Usage 和错误边界。实际 Host 输出还经 `CodexTurnProjector` 回放，确认取消尝试的可见标记及追加/完成一致性。
+上述原始基线覆盖精确版本拒绝（当前已改为 SemVer 探测与协议校验，见下文连接版本策略）、端点认证诊断、选择/关闭并发、V0/V3 格式隔离、系统 surface 与替换、PTC/反馈/队伍事件、Assistant 流与结算重试、重连、Fork/回滚、继承队列清理、原生持久化确认，以及模型、权限、工具、Usage 和错误边界。实际 Host 输出还经 `CodexTurnProjector` 回放，确认取消尝试的可见标记及追加/完成一致性。
 
 额外定向检查：
 
@@ -56,6 +91,16 @@ npx vitest run --config tests/vitest.config.js tools/gate-dsh/lifecycle.real.tes
 - `session-query/session-log-export/src/index.ts`、`archive.ts`：认证 HEAD 响应之前等待原生 flush。
 
 未使用浏览器自动化、computer use 或真实计费模型；未启动用户桌面、修改参考 DSH 源码或用户会话。未运行未受影响的 Rust 全套测试；模型提供商、第三方客户端和全部操作系统的组合不包含在本次验证内。
+
+## 0.1.5-rc.2 适配与验证边界
+
+`0.1.5-rc.2` 复用 V3 profile；Fork checkpoint 的 `dshVersion` locator 仍要求精确版本匹配，同为 V3 的 Session Ref 则可跨 CLI 版本尝试恢复。上游开源标签 [`dsh-v0.1.5-rc.2`](https://github.com/deepseek-ai/deepseek-harness/tree/dsh-v0.1.5-rc.2)（`fb2c4b9e`）与 rc.1（`183f08e9`）比较，Web、Session、Agent、命令及日志协议实现均未改变；非版本元数据的生产源码改动只涉及反馈类型的注释。因此 V3 解析器没有新增分支，未承诺未来版本兼容。
+
+本机全局 `@deepseek-ai/dsh@0.1.5-rc.2` 的依赖声明使用 `^0.1.5-rc.2`，npm 实际安装了部分 `0.1.5-rc.3` 的子包。隔离临时 `DSH_HOME`、本地模拟模型的真实 CLI Gate 在 Web 启动阶段失败：`@deepseek-ai/dsh-sandbox-local` 未能加载；没有执行到 Session 生命周期断言。`dsh --version` 和 `dsh --help` 成功不证明 Web 可启动。另在 `/tmp` 用 npm overrides 精确安装 rc.2 DSH 子包后再次运行 Gate，Web 已输出启动 URL，但仍在启动阶段因 `user patch-layer watching requires the Cordis HMR service` 退出；即使固定 HMR 包为 `1.0.17` 仍复现。两次均未执行到 Session 生命周期断言。随后在用户目录隔离安装并精确固定 rc.2 DSH 子包、`@deepseek-ai/cordis@4.0.2` 与 `@deepseek-ai/cordis-plugin-hmr@1.0.17`，以 DSH 原生 `initProfile` 将 Gate 的临时 Web profile 设为 `patchReload: startup`（不更改 Gate 的其他路径）。macOS arm64、Node.js `v24.18.0` 下真实 CLI 生命周期 Gate **1/1 通过**，覆盖前述流式、取消、编辑、恢复和关闭；复跑仍 1/1 通过。原始全局安装未删除，`dsh` 可执行文件的原始 symlink 已备份，用户 Web profile 修改前也已备份。正在运行的托管 Web 在修改后持续监听回环端口，并返回预期的无凭据 401 指纹。此处的 `startup` 关闭 profile patch 的实时热重载；默认 `live` 在本机仍因 HMR 服务缺失失败。npm 未批准的安装脚本不计入测试结果，其他原生模块组合尚未完整验证；此前 Windows 验证仅覆盖 rc.1/012。
+
+## 连接版本策略
+
+连接不再仅按 `--version` 白名单拒绝：接受单行规范 SemVer，`0.1.2` 系列尝试 V0，低于 `0.1.7-rc.1` 的现代版本尝试 V3，`0.1.7-rc.1` 及更高版本尝试 V4；Web Remote、历史和流式数据仍由原生协议解析器严格验证。V3 Session Ref 可跨 CLI 版本尝试恢复，格式不符时失败；Fork 的 checkpoint 仍需匹配创建它的精确 CLI 版本，避免在未知原生迁移后按旧序号修改历史。设置 → 连接显示已验证版本列表中的版本，包括 `0.1.7-rc.2`；其他未测试版本不宣称兼容。本策略的自动化测试只证明版本探测、路由及模拟原生协议行为；真实生命周期证据仍需按版本单独记录。
 
 ## CodeRabbit 复核修复
 

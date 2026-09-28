@@ -89,6 +89,7 @@ import {
 import {
   createRendererRequestSender,
   RendererMethodUnavailableError,
+  type RendererRequestOptions,
 } from "./renderer-request-sender.js";
 import {
   createRendererSessionImportClient,
@@ -180,7 +181,10 @@ export interface RendererModelClient extends Partial<RendererSessionImportClient
   listHarnessPlugins?(): Promise<HarnessPluginListResult>;
   clientForHost?(hostId: string): RendererModelClient | null;
   forkThread(input: ExternalThreadForkParams): Promise<ExternalThreadForkResult>;
-  inspectHarness(input: HarnessInspectParams): Promise<HarnessInspection>;
+  inspectHarness(
+    input: HarnessInspectParams,
+    options?: RendererRequestOptions,
+  ): Promise<HarnessInspection>;
   openHarnessWebUi?(input: HarnessWebUiOpenParams): Promise<void>;
   inspectThread(input: ThreadInspectionParams): Promise<ThreadInspection>;
   inspectHarnessCommands(input: HarnessCommandsInspectParams): Promise<HarnessCommandCatalog>;
@@ -194,7 +198,7 @@ export interface RendererModelClient extends Partial<RendererSessionImportClient
   selectThreadPermissionMode(
     input: ThreadPermissionModeSelectParams,
   ): Promise<HarnessConfigurationState>;
-  checkUpdate(): Promise<UpdateCheckResult>;
+  checkUpdate(): Promise<UpdateCheckResult | null>;
   startUpdate(): Promise<UpdateStartResult>;
   readUpdateStatus(): Promise<UpdateStatusResult>;
   inspectCodexAccountUsage?(input: CodexAccountUsageParams): Promise<CodexAccountUsageResult>;
@@ -270,14 +274,19 @@ export function createRendererModelClient(
   const source = managers[0];
   if (managers.length !== 1 || !source) return null;
   const manager = {
-    sendRequest: createRendererRequestSender((method, params) =>
-      source.sendRequest(method, params),
+    sendRequest: createRendererRequestSender((method, params, options) =>
+      options === undefined
+        ? source.sendRequest(method, params)
+        : source.sendRequest(method, params, options),
     ),
   };
 
-  const inspectHarness = async (input: HarnessInspectParams): Promise<HarnessInspection> => {
+  const inspectHarness = async (
+    input: HarnessInspectParams,
+    options?: RendererRequestOptions,
+  ): Promise<HarnessInspection> => {
     const params = harnessInspectParamsSchema.parse(input);
-    const result = await manager.sendRequest(HARNESS_INSPECT_METHOD, params);
+    const result = await manager.sendRequest(HARNESS_INSPECT_METHOD, params, options);
     return harnessInspectionSchema.parse(result);
   };
   const inspectHarnessCommands = async (
@@ -460,12 +469,12 @@ export function createRendererModelClient(
     selectThreadModel,
     selectThreadThinking,
     selectThreadPermissionMode,
-    async checkUpdate(): Promise<UpdateCheckResult> {
+    async checkUpdate(): Promise<UpdateCheckResult | null> {
       const result = await manager.sendRequest(
         UPDATE_CHECK_METHOD,
         updateEmptyParamsSchema.parse({}),
       );
-      return updateCheckResultSchema.parse(result);
+      return updateCheckResultSchema.nullable().parse(result);
     },
     async startUpdate(): Promise<UpdateStartResult> {
       const result = await manager.sendRequest(

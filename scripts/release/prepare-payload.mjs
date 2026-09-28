@@ -38,6 +38,12 @@ const runtimeLicenses = [
     output: "MCP-SDK-LICENSE.txt",
   },
   {
+    packageName: "@opencode/client",
+    license: "MIT",
+    source: "scripts/release/licenses/opencode-client-2.0.16-MIT.txt",
+    output: "OpenCode-v2-Client-LICENSE.txt",
+  },
+  {
     packageName: "@opencode-ai/sdk",
     license: "MIT",
     source: "scripts/release/licenses/opencode-ai-sdk-1.18.25-MIT.txt",
@@ -201,7 +207,7 @@ export async function writeThirdPartyNotices(root, payloadRoot) {
       );
     }
     await copyReleaseFile(
-      dependency.packageName === "@opencode-ai/sdk"
+      dependency.source.startsWith("scripts/release/licenses/")
         ? resolveRuntimeLicenseSource(root, dependency)
         : path.join(dependencyRoot, dependency.source),
       path.join(licensesDirectory, dependency.output),
@@ -223,17 +229,6 @@ export async function writeThirdPartyNotices(root, payloadRoot) {
     "create-dmg example installer background",
     "License: MIT",
     "License text: licenses/create-dmg-background-LICENSE.txt",
-    "",
-  );
-  await copyReleaseFile(
-    path.join(root, "third-party", "opencodex.LICENSE"),
-    path.join(licensesDirectory, "opencodex-LICENSE.txt"),
-    "opencodex native profile license",
-  );
-  notices.push(
-    "opencodex native profiles (2d4d7a22381a2e497c2442902104619e25f937c7)",
-    "License: MIT",
-    "License text: licenses/opencodex-LICENSE.txt",
     "",
   );
   await writeFile(
@@ -262,9 +257,9 @@ export function expectedPayloadPaths(target) {
     "licenses/create-dmg-background-LICENSE.txt",
     "licenses/MCP-SDK-LICENSE.txt",
     "licenses/OpenCode-SDK-LICENSE.txt",
+    "licenses/OpenCode-v2-Client-LICENSE.txt",
     "licenses/Qoder-Agent-SDK-LICENSE.txt",
     "licenses/QoderCN-Agent-SDK-LICENSE.txt",
-    "licenses/opencodex-LICENSE.txt",
     "licenses/diff-LICENSE.txt",
     "licenses/lucide-LICENSE.txt",
     "licenses/tailwindcss-LICENSE.txt",

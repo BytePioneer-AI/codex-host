@@ -14,11 +14,15 @@ import {
 import { describe, expect, it, vi } from "vitest";
 
 vi.mock("../../src/settings/icons.js", () => ({
-  createRendererSettingsIcon: () => "icon",
+  createRendererSettingsIcon: () => ({ classList: { add() {} } }),
   isRendererSettingsIconName: () => true,
 }));
 
 import { RendererSettingsPageScope } from "../../src/settings/core.js";
+import {
+  RENDERER_UPDATE_REQUEST_TIMEOUT_MS,
+  RendererUpdateRequestTimeoutError,
+} from "../../src/settings/update-request.js";
 import {
   defaultImportName,
   mountCredentialImports,
@@ -716,6 +720,110 @@ describe("Read-only Harness accounts", () => {
 });
 
 describe("Renderer Connections page", () => {
+  it.each([
+    ["pi", "https://pi.dev/install.sh"],
+    ["claude-code", "https://claude.ai/install.sh"],
+    ["deepseek-harness", "npm install -g @deepseek-ai/dsh@0.1.5-rc.1"],
+    ["opencode", "opencode-ai"],
+    ["grok", "@xai-official/grok"],
+    ["omp", "https://omp.sh/install"],
+    ["antigravity", "https://antigravity.google/cli/install.sh"],
+    ["kiro-cli", "https://cli.kiro.dev/install"],
+    ["codebuddy", "@tencent-ai/codebuddy-code"],
+    ["workbuddy", "应用内置 CLI"],
+    ["cursor-cli", "https://cursor.com/install"],
+    ["hermes", "https://hermes-agent.nousresearch.com/install.sh"],
+    ["qoder", "https://qoder.com/install"],
+    ["qoder-cn", "https://static.qoder.com.cn/qoder-cli-cn/install.sh"],
+  ] as const)("shows actionable installation instructions for %s", async (agent, expected) => {
+    const refresh = vi.fn(async () => undefined);
+    const diagnostics: RendererConnectionDiagnostics = {
+      snapshot: () => ({
+        adapter: { state: "ready", reason: "ready", modelUpdates: 1, hook: "request-bridge" },
+        hosts: [
+          {
+            hostId: "remote-test",
+            active: true,
+            agents: [{ agent, availability: "notInstalled", error: null }],
+          },
+        ],
+      }),
+      refresh,
+      subscribe: () => () => undefined,
+    };
+    const page = createDefaultRendererSettingsPages(
+      rendererSettingsMessages("zh-CN"),
+      () => null,
+      () => diagnostics,
+    ).find(({ id }) => id === "connections");
+    if (!page) throw new Error("Expected connections page");
+    const document = new FakeDocument("Win32");
+    const content = document.createElement("main");
+    const scope = new RendererSettingsPageScope();
+    const cleanup = page.mount({
+      content: content as unknown as HTMLElement,
+      signal: scope.signal,
+      runLatest: (op, handlers) => scope.runLatest(op, handlers),
+    });
+    const install = elementWithClass(content, "settings-connection-install-link");
+    expect(install.tagName).toBe("button");
+    expect(install.href).toBe("");
+    install.dispatch("click", { stopPropagation() {} });
+    const panel = elementWithClass(content, "settings-harness-installation");
+    expect(visibleText(panel)).toContain(expected);
+    expect(
+      visibleText(content).includes(
+        "支持 DSH 版本：0.1.2-rc.1、0.1.5-rc.1、0.1.5-rc.2、0.1.5-rc.3、0.1.7-rc.1 和 0.1.7-rc.2。",
+      ),
+    ).toBe(agent === "deepseek-harness");
+    expect(visibleText(panel)).toContain("请在远程 Host 上安装。");
+    expect(visibleText(panel)).not.toMatch(
+      /选择本机系统|此页面不会自动执行|Windows ARM64|PATH|WSL|安装完成不代表已就绪/,
+    );
+    expect(refresh).not.toHaveBeenCalled();
+    const blocks = descendants(panel).filter(
+      ({ className }) => className === "settings-harness-installation-command",
+    );
+    expect(blocks.length).toBe(
+      agent === "workbuddy"
+        ? 0
+        : ["deepseek-harness", "opencode", "grok", "codebuddy"].includes(agent)
+          ? 1
+          : 2,
+    );
+    for (const block of blocks) {
+      const code = descendants(block).find(({ tagName }) => tagName === "code");
+      const copy = descendants(block).find(({ tagName }) => tagName === "button");
+      if (!code || !copy) throw new Error("Expected install command and copy button");
+      const command = code.textContent;
+      copy.dispatch("click");
+      await vi.waitFor(() => expect(document.clipboardWriteText).toHaveBeenLastCalledWith(command));
+      expect(command).not.toContain("sudo");
+      document.clipboardWriteText.mockRejectedValueOnce(new Error("denied"));
+      copy.dispatch("click");
+      await vi.waitFor(() => expect(visibleNotesText(copy)).toContain("复制失败"));
+    }
+    for (const link of descendants(panel).filter(({ tagName }) => tagName === "a")) {
+      expect(link.href).toMatch(/^https:\/\//);
+      expect(link).toMatchObject({ target: "_blank", rel: "noopener noreferrer" });
+    }
+    const check = descendants(panel).find(
+      ({ dataset }) => dataset.connectionAction === "check-install",
+    );
+    if (!check) throw new Error("Expected installation check button");
+    check.dispatch("click");
+    expect(check.disabled).toBe(true);
+    await vi.waitFor(() => expect(refresh).toHaveBeenCalledOnce());
+    await vi.waitFor(() =>
+      expect(
+        descendants(content).find(({ dataset }) => dataset.connectionAction === "check-install")
+          ?.disabled,
+      ).toBe(false),
+    );
+    cleanup?.();
+    scope.dispose();
+  });
+
   it.each(["workbuddy"] as const)(
     "edits %s launch settings in the local right-side inspector",
     async (agent) => {
@@ -861,6 +969,10 @@ describe("Renderer Connections page", () => {
     );
     if (!dshRow) throw new Error("DeepSeek Harness row is not rendered");
     dshRow.dispatch("click", { target: null });
+    expect(visibleText(content)).toContain("0.1.7-rc.2");
+    expect(visibleText(content)).toContain(
+      "其他版本可以在通过原生协议检查后尝试连接，但尚未列入支持列表。",
+    );
     const open = descendants(content).find(
       ({ dataset }) => dataset.connectionAction === "open-web-ui",
     );
@@ -991,14 +1103,9 @@ describe("Renderer Connections page", () => {
     await vi.waitFor(() => expect(refresh.disabled).toBe(false));
     expect(visibleNotesText(refresh)).toContain("重新诊断连接");
 
-    const installLink = descendants(content).find(
-      ({ tagName, href }) =>
-        tagName === "a" && href === "https://deepseek-harness.github.io/deepseek-harness/",
-    );
-    expect(installLink).toMatchObject({
-      target: "_blank",
-      rel: "noopener noreferrer",
-    });
+    const installLink = elementWithClass(content, "settings-connection-install-link");
+    expect(installLink.tagName).toBe("button");
+    expect(installLink.href).toBe("");
 
     expect(visibleText(content)).toContain("查看错误");
     const remoteTab = descendants(content).find(
@@ -1143,6 +1250,70 @@ describe("Renderer Codex Accounts page", () => {
 });
 
 describe("Renderer Updates page", () => {
+  it.each(["succeeded", "failed"] as const)(
+    "keeps polling after start/status timeouts until the Host reports %s",
+    async (terminalPhase) => {
+      vi.useFakeTimers();
+      const request = deferred<{ status: UpdateStatus }>();
+      const client = {
+        checkUpdate: vi.fn(async () => updateCheck()),
+        startUpdate: vi.fn(() => request.promise),
+        readUpdateStatus: vi
+          .fn<() => Promise<{ status: UpdateStatus | null }>>()
+          .mockRejectedValueOnce(new RendererUpdateRequestTimeoutError())
+          .mockResolvedValueOnce({ status: null })
+          .mockResolvedValueOnce({ status: updateStatus("prepared") })
+          .mockResolvedValueOnce({ status: updateStatus("downloading") })
+          .mockResolvedValueOnce({ status: updateStatus(terminalPhase) }),
+      };
+      const page = createDefaultRendererSettingsPages(undefined, () => client).find(
+        ({ id }) => id === "updates",
+      );
+      if (!page) throw new Error("Updates page is not registered");
+      const document = new FakeDocument();
+      const content = document.createElement("main");
+      const scope = new RendererSettingsPageScope();
+      const cleanup = page.mount({
+        content: content as unknown as HTMLElement,
+        signal: scope.signal,
+        runLatest: (operation, handlers) => scope.runLatest(operation, handlers),
+      });
+      try {
+        await vi.advanceTimersByTimeAsync(0);
+        const panel = elementWithClass(content, "settings-update-panel");
+        const button = descendants(panel).find(({ tagName }) => tagName === "button");
+        if (!button) throw new Error("Update button is not rendered");
+        button.dispatch("click");
+        await vi.advanceTimersByTimeAsync(RENDERER_UPDATE_REQUEST_TIMEOUT_MS);
+        expect(panel.dataset.updateState).toBe("pending");
+        for (const [index, phase] of [
+          "pending",
+          "pending",
+          "prepared",
+          "downloading",
+          terminalPhase,
+        ].entries()) {
+          expect(document.defaultView.setTimeout).toHaveBeenCalledTimes(index + 1);
+          const poll = vi.mocked(document.defaultView.setTimeout).mock.calls.at(-1)?.[0];
+          if (typeof poll !== "function") throw new Error("Missing status poll callback");
+          poll();
+          await vi.advanceTimersByTimeAsync(0);
+          expect(panel.dataset.updateState).toBe(phase);
+        }
+        expect(client.startUpdate).toHaveBeenCalledOnce();
+        expect(client.readUpdateStatus).toHaveBeenCalledTimes(5);
+        expect(document.defaultView.setTimeout).toHaveBeenCalledTimes(5);
+        request.resolve({ status: updateStatus("prepared") });
+        await vi.advanceTimersByTimeAsync(0);
+        expect(panel.dataset.updateState).toBe(terminalPhase);
+      } finally {
+        cleanup?.();
+        scope.dispose();
+        vi.useRealTimers();
+      }
+    },
+  );
+
   it.each([
     [updateStatus("prepared"), "正在准备更新..."],
     [updateStatus("waiting-for-exit"), "正在等待应用退出..."],
@@ -1174,6 +1345,86 @@ describe("Renderer Updates page", () => {
     await vi.waitFor(() => {
       expect(visibleText(elementWithClass(content, "settings-update-panel"))).toContain(expected);
     });
+
+    cleanup?.();
+    scope.dispose();
+  });
+
+  it("shows updates as unavailable when the Host has no update capability", async () => {
+    const client = {
+      checkUpdate: vi.fn(async () => null),
+      startUpdate: vi.fn(),
+      readUpdateStatus: vi.fn(),
+    };
+    const page = createDefaultRendererSettingsPages(
+      rendererSettingsMessages("zh-CN"),
+      () => client,
+    ).find(({ id }) => id === "updates");
+    if (!page) throw new Error("Updates page is not registered");
+
+    const document = new FakeDocument();
+    const content = document.createElement("main");
+    const scope = new RendererSettingsPageScope();
+    const cleanup = page.mount({
+      content: content as unknown as HTMLElement,
+      signal: scope.signal,
+      runLatest: (operation, handlers) => scope.runLatest(operation, handlers),
+    });
+
+    const panel = elementWithClass(content, "settings-update-panel");
+    await vi.waitFor(() => expect(panel.dataset.updateState).toBe("unavailable"));
+    expect(visibleText(panel)).toContain("运行时尚未安装该项能力");
+    expect(visibleText(panel)).not.toContain("当前已是最新版本");
+    expect(descendants(panel).some(({ tagName }) => tagName === "button")).toBe(false);
+
+    cleanup?.();
+    scope.dispose();
+  });
+
+  it("clears the previous check when Retry finds updates unavailable", async () => {
+    const client = {
+      checkUpdate: vi
+        .fn<() => Promise<UpdateCheckResult | null>>()
+        .mockResolvedValueOnce({ ...updateCheck(), error: "network down" })
+        .mockResolvedValueOnce(null),
+      startUpdate: vi.fn(),
+      readUpdateStatus: vi.fn(),
+    };
+    const page = createDefaultRendererSettingsPages(
+      rendererSettingsMessages("zh-CN"),
+      () => client,
+    ).find(({ id }) => id === "updates");
+    if (!page) throw new Error("Updates page is not registered");
+
+    const document = new FakeDocument();
+    const content = document.createElement("main");
+    const scope = new RendererSettingsPageScope();
+    const cleanup = page.mount({
+      content: content as unknown as HTMLElement,
+      signal: scope.signal,
+      runLatest: (operation, handlers) => scope.runLatest(operation, handlers),
+    });
+
+    const panel = elementWithClass(content, "settings-update-panel");
+    const metadata = elementWithClass(content, "settings-update-metadata");
+    const manualNpm = descendants(content).find(
+      ({ className }) => className === "settings-update-manual",
+    );
+    await vi.waitFor(() => expect(panel.dataset.updateState).toBe("error"));
+    expect(visibleText(metadata)).toContain("v1.2.3");
+    expect(manualNpm?.hidden).toBe(false);
+
+    const retry = descendants(panel).find(
+      ({ tagName, children }) => tagName === "button" && children.includes("重试"),
+    );
+    if (!retry) throw new Error("Missing Retry button");
+    retry.dispatch("click");
+    await vi.waitFor(() => expect(panel.dataset.updateState).toBe("unavailable"));
+    expect(visibleText(metadata)).not.toMatch(/v1\.2\.[23]/);
+    expect(manualNpm?.hidden).toBe(true);
+    expect(elementWithClass(content, "settings-update-controls").className).toBe(
+      "settings-update-controls",
+    );
 
     cleanup?.();
     scope.dispose();
@@ -1263,6 +1514,49 @@ describe("Renderer Updates page", () => {
       "https://github.com/BytePioneer-AI/codex-host/releases/tag/v1.2.3",
     );
 
+    cleanup?.();
+    scope.dispose();
+  });
+
+  it("points to GitHub Releases without a retry or internal detail when the update request fails", async () => {
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const client = {
+      checkUpdate: vi.fn(async () => {
+        throw new Error("Renderer Model request manager is unavailable");
+      }),
+      startUpdate: vi.fn(),
+      readUpdateStatus: vi.fn(async () => ({ status: null })),
+    };
+    const page = createDefaultRendererSettingsPages(
+      rendererSettingsMessages("zh-CN"),
+      () => client,
+    ).find(({ id }) => id === "updates");
+    if (!page) throw new Error("Updates page is not registered");
+
+    const document = new FakeDocument();
+    const content = document.createElement("main");
+    const scope = new RendererSettingsPageScope();
+    const cleanup = page.mount({
+      content: content as unknown as HTMLElement,
+      signal: scope.signal,
+      runLatest: (operation, handlers) => scope.runLatest(operation, handlers),
+    });
+
+    const panel = elementWithClass(content, "settings-update-panel");
+    await vi.waitFor(() => expect(panel.dataset.updateState).toBe("failed"));
+    expect(visibleText(panel)).toContain("暂时无法自动更新");
+    expect(visibleText(content)).not.toContain("request manager");
+    expect(descendants(panel).find(({ tagName }) => tagName === "button")).toBeUndefined();
+    expect(
+      descendants(content).find(
+        (candidate) =>
+          candidate.tagName === "a" && visibleNotesText(candidate).includes("GitHub Releases"),
+      ),
+    ).toBeDefined();
+    expect(client.checkUpdate).toHaveBeenCalledOnce();
+    expect(consoleError).toHaveBeenCalled();
+
+    consoleError.mockRestore();
     cleanup?.();
     scope.dispose();
   });
@@ -1394,9 +1688,18 @@ describe("Renderer Updates page", () => {
     // Status and the update action come first; the manual fallback stays visible
     // right below it, and release notes render last.
     expect(content.children.indexOf(panel)).toBeLessThan(content.children.indexOf(controls));
-    expect(content.children.indexOf(controls)).toBeLessThan(
+    const starBanner = elementWithClass(content, "settings-update-star");
+    expect(content.children.indexOf(controls)).toBeLessThan(content.children.indexOf(starBanner));
+    expect(content.children.indexOf(starBanner)).toBeLessThan(
       content.children.indexOf(elementWithClass(content, "settings-update-notes-section")),
     );
+    expect(visibleText(starBanner)).toContain("如果 CodexHost 帮到了你，请在 GitHub 点个 Star");
+    const starLink = descendants(starBanner).find(({ tagName }) => tagName === "a");
+    expect(starLink).toMatchObject({
+      href: "https://github.com/BytePioneer-AI/codex-host",
+      target: "_blank",
+      rel: "noopener noreferrer",
+    });
     expect(descendants(panel)).toContain(updateButton);
     expect(descendants(panel)).not.toContain(notes);
     expect(notes.children.map((child) => (child as FakeElement).tagName)).toEqual(["h2", "ul"]);

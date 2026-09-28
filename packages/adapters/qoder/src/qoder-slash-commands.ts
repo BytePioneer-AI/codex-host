@@ -1,4 +1,8 @@
-import type { HarnessCommandInvocation, HarnessResult } from "@codexhost/harness-adapter";
+import {
+  isExcludedLiveCommand,
+  type HarnessCommandInvocation,
+  type HarnessResult,
+} from "@codexhost/harness-adapter";
 import {
   harnessCommandCatalogSchema,
   type HarnessCommandCatalog,
@@ -64,7 +68,8 @@ export function mapQoderSlashCommands(
     const rawName = typeof native === "string" ? native : native.name;
     if (typeof rawName !== "string") continue;
     const cleanName = rawName.replace(/^\//, "").trim().toLowerCase();
-    if (!cleanName) continue;
+    // Qoder does not tell skills and commands apart.
+    if (!cleanName || isExcludedLiveCommand(cleanName, "command")) continue;
     const id = `qoder.${cleanName}`;
     if (seenIds.has(id)) continue;
     seenIds.add(id);

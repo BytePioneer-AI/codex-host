@@ -175,7 +175,11 @@ function approval(
   };
 }
 
-function question(eventId: string, agentId = "session-1"): Record<string, unknown> {
+function question(
+  eventId: string,
+  agentId = "session-1",
+  callId?: string,
+): Record<string, unknown> {
   return {
     type: "waterfall",
     event: "user-questions/request",
@@ -190,7 +194,11 @@ function question(eventId: string, agentId = "session-1"): Record<string, unknow
           header: "Review",
           options: [{ label: "Yes", description: "Continue" }, { label: "No" }],
           multiSelect: false,
-          intent: { kind: "plan-review", approve: "Yes" },
+          intent: {
+            kind: "plan-review",
+            approve: "Yes",
+            ...(callId === undefined ? {} : { callId }),
+          },
         },
       ],
     },
@@ -207,6 +215,21 @@ async function startGateway(
   await gateway.start();
   return gateway;
 }
+
+it("preserves the optional V4 plan-review intent callId", async () => {
+  const feed = new EventFeed();
+  const remote = new FakeRemote(feed);
+  const gateway = await startGateway(remote, feed);
+  const sink = sinkProbe();
+  const detach = gateway.attach("session-1", sink);
+  feed.push(question("question-call-id", "session-1", "tool-call-1"));
+  await vi.waitFor(() => expect(sink.deliveries).toHaveLength(1));
+  expect(sink.deliveries[0]?.request).toMatchObject({
+    questions: [{ intent: { kind: "plan-review", approve: "Yes", callId: "tool-call-1" } }],
+  });
+  await detach();
+  await gateway.close();
+});
 
 function captureRejection(promise: Promise<unknown>): Promise<unknown> {
   return promise.then(

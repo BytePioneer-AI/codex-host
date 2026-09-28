@@ -1,5 +1,6 @@
 import { isDeepStrictEqual } from "node:util";
 
+import type { DeepSeekModernProfile } from "../profiles/profile.js";
 import { ModernRemoteConnectionError } from "./remote-connection.js";
 import { redactModernCredential } from "./wire.js";
 
@@ -54,6 +55,7 @@ export class ModernControlStoreError extends Error {
 }
 
 export interface ModernControlStoreOptions {
+  readonly profile?: DeepSeekModernProfile;
   readonly maxSessions?: number;
   readonly maxKeysPerSession?: number;
   readonly maxWaiters?: number;
@@ -491,10 +493,14 @@ function parseBaseline(
   value: unknown,
   maxSessions: number,
   maxKeys: number,
+  formatVersion: DeepSeekModernProfile["sessionFormatVersion"],
 ): ParsedControlBaseline {
   if (
     !isRecord(value) ||
-    !hasExactKeys(value, ["queues", "jobs", "projections"]) ||
+    !hasExactKeys(
+      value,
+      formatVersion === 4 ? ["projections"] : ["queues", "jobs", "projections"],
+    ) ||
     !isPlainRecord(value.projections)
   ) {
     throw storeError(
@@ -503,8 +509,10 @@ function parseBaseline(
     );
   }
   const sessions = new Set<string>();
-  parseSessionCollection(value.queues, "queues", sessions, maxSessions);
-  parseSessionCollection(value.jobs, "jobs", sessions, maxSessions);
+  if (formatVersion !== 4) {
+    parseSessionCollection(value.queues, "queues", sessions, maxSessions);
+    parseSessionCollection(value.jobs, "jobs", sessions, maxSessions);
+  }
   const projections: Record<string, ParsedProjectionBaseline> = Object.create(null) as Record<
     string,
     ParsedProjectionBaseline
@@ -529,12 +537,16 @@ function parseControlFrame(
   value: unknown,
   maxSessions: number,
   maxKeys: number,
+  formatVersion: DeepSeekModernProfile["sessionFormatVersion"],
 ): ParsedControlFrame {
   if (!isRecord(value) || typeof value.type !== "string") {
     throw storeError("protocolError", "DeepSeek Harness control stream emitted an invalid frame");
   }
   if (value.type === "baseline" && hasExactKeys(value, ["type", "value"])) {
-    return { type: "baseline", value: parseBaseline(value.value, maxSessions, maxKeys) };
+    return {
+      type: "baseline",
+      value: parseBaseline(value.value, maxSessions, maxKeys, formatVersion),
+    };
   }
   if (
     value.type === "projection" &&
@@ -554,6 +566,7 @@ function parseControlFrame(
     };
   }
   if (
+    formatVersion !== 4 &&
     value.type === "queue" &&
     hasExactKeys(value, ["type", "sessionId", "items"]) &&
     validIdentifier(value.sessionId) &&
@@ -564,6 +577,7 @@ function parseControlFrame(
     return { type: "queue", sessionId: value.sessionId };
   }
   if (
+    formatVersion !== 4 &&
     value.type === "jobs" &&
     hasExactKeys(value, ["type", "sessionId", "jobs"]) &&
     validIdentifier(value.sessionId) &&
@@ -583,6 +597,7 @@ function parseSeed(value: ModernProjectionSeed, maxKeys: number): ParsedProjecti
 /** Projection-only owner for the Modern Adapter-wide `session/control` stream. */
 export class ModernControlStore {
   readonly #lifetime = new AbortController();
+  readonly #formatVersion: DeepSeekModernProfile["sessionFormatVersion"];
   readonly #maxKeys: number;
   readonly #maxSessions: number;
   readonly #maxWaiters: number;
@@ -604,6 +619,7 @@ export class ModernControlStore {
 
   constructor(source: ModernControlStreamSource, options: ModernControlStoreOptions = {}) {
     this.#source = source;
+    this.#formatVersion = options.profile?.sessionFormatVersion ?? 3;
     this.#maxSessions = positiveInteger(options.maxSessions ?? DEFAULT_MAX_SESSIONS, "maxSessions");
     this.#maxKeys = positiveInteger(
       options.maxKeysPerSession ?? DEFAULT_MAX_KEYS_PER_SESSION,
@@ -804,7 +820,12 @@ export class ModernControlStore {
   replaceBaseline(frame: unknown): void {
     this.#assertUsable();
     try {
-      const parsed = parseControlFrame(frame, this.#maxSessions, this.#maxKeys);
+      const parsed = parseControlFrame(
+        frame,
+        this.#maxSessions,
+        this.#maxKeys,
+        this.#formatVersion,
+      );
       if (parsed.type !== "baseline") {
         throw storeError("protocolError", "Control baseline replacement requires a baseline frame");
       }
@@ -860,7 +881,12 @@ export class ModernControlStore {
                 : "DeepSeek Harness control stream ended before its baseline",
             );
           }
-          const frame = parseControlFrame(next.value, this.#maxSessions, this.#maxKeys);
+          const frame = parseControlFrame(
+            next.value,
+            this.#maxSessions,
+            this.#maxKeys,
+            this.#formatVersion,
+          );
           if (!generationOpened && frame.type !== "baseline") {
             throw storeError(
               "protocolError",

@@ -144,6 +144,11 @@ Host Runtime SHALL handle `thread/metadata/update` for a persisted External Thre
 - **THEN** Host SHALL confirm through official `project/read` that the project exists, persist the assignment, return the updated Thread, and then emit `thread/project/updated`
 - **AND** the Thread SHALL appear in `thread/list` results filtered by that project after restart
 
+#### Scenario: Harness defers its native Session to the first Turn
+- **WHEN** Desktop updates metadata for a loaded External Thread whose record is still provisional because the Harness has not reported native identity
+- **THEN** Host SHALL persist the metadata on the provisional record and return the updated Thread
+- **AND** committing native identity later SHALL preserve the persisted metadata
+
 #### Scenario: Project is unavailable
 - **WHEN** official Codex cannot read the requested project
 - **THEN** Host SHALL return an explicit invalid-params error without changing Host state or emitting a notification

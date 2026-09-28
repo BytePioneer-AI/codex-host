@@ -2355,6 +2355,7 @@ export class AppServerHost {
       location,
       (hostThreadId) => this.#repository.updateMetadata(hostThreadId, patch),
       "External Thread metadata could not be persisted",
+      true,
     );
     if (!updated) return;
     await this.#writer.json(rpcEnvelope(request, { result: { thread: updated.thread } }));
@@ -2392,8 +2393,13 @@ export class AppServerHost {
     location: Extract<ExternalThreadLocation, { kind: "external" }>,
     write: (hostThreadId: StoredThreadRecordV1["hostThreadId"]) => Promise<StoredThreadRecordV1>,
     failureMessage: string,
+    allowProvisional = false,
   ): Promise<{ record: StoredThreadRecordV1; thread: JsonObject } | null> {
-    if (location.record.state !== "ready" || !location.record.nativeSessionRef) {
+    const hasNativeSession =
+      location.record.state === "ready" && location.record.nativeSessionRef !== undefined;
+    // Host metadata may precede a Harness's deferred native Session, but only
+    // while the loaded Thread still owns the provisional record.
+    if (!hasNativeSession && !(allowProvisional && location.thread)) {
       await this.#writer.json(rpcError(request, -32079, "External Native Session is unavailable"));
       return null;
     }

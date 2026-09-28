@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
+import type { HarnessSessionState } from "@codexhost/harness-adapter";
+import { FakeHarnessAdapter, FakeHarnessSession } from "@codexhost/harness-adapter/testing";
 import type { JsonObject } from "@codexhost/protocol-core";
-import { hostThreadIdSchema } from "@codexhost/shared-contracts";
+import { harnessIdSchema, hostThreadIdSchema } from "@codexhost/shared-contracts";
 
 import {
   JsonLineCollector,
@@ -14,6 +16,19 @@ import {
 } from "./app-server-host-fixture.js";
 
 type Fixture = ReturnType<typeof createFixture>;
+
+/** A Harness that creates its native Session only when the first Turn starts. */
+class DeferredNativeSessionAdapter extends FakeHarnessAdapter {
+  override async open(input: Parameters<FakeHarnessAdapter["open"]>[0]) {
+    const opened = await super.open(input);
+    if (input.kind === "create" && opened.ok && opened.value instanceof FakeHarnessSession) {
+      const state: HarnessSessionState = { ...opened.value.initialState };
+      delete state.nativeRef;
+      (opened.value as { initialState: HarnessSessionState }).initialState = state;
+    }
+    return opened;
+  }
+}
 
 /** Answer official `project/read` sub-requests and empty `thread/list` pages. */
 function answerOfficial(fixture: Fixture, projects: ReadonlySet<string>): JsonLineCollector {
@@ -75,6 +90,37 @@ describe("External Thread metadata updates", () => {
       result: { thread: { projectId: null } },
     });
     await expect(listIds(fixture, 16, { projectId: null })).resolves.toEqual([threadId]);
+    await stopFixture(fixture);
+  });
+
+  it("assigns a project before a deferred native Session exists and keeps it once ready", async () => {
+    const adapter = new DeferredNativeSessionAdapter(harnessIdSchema.parse("pi"));
+    const fixture = createFixture({ externalAdapters: new Map([["pi", adapter]]) });
+    answerOfficial(fixture, new Set(["project-a"]));
+    const threadId = await startPiThread(fixture);
+    const hostThreadId = hostThreadIdSchema.parse(threadId);
+    await expect(fixture.mappingStore.getThread(hostThreadId)).resolves.toMatchObject({
+      state: "creating",
+    });
+
+    await expect(
+      updateMetadata(fixture, 17, { threadId, projectId: "project-a" }),
+    ).resolves.toMatchObject({ result: { thread: { id: threadId, projectId: "project-a" } } });
+    // The Harness later reports its native identity, as on the first Turn.
+    await fixture.mappingStore.commitReady({
+      hostThreadId,
+      nativeSessionRef: {
+        harnessId: harnessIdSchema.parse("pi"),
+        nativeSessionId: "late",
+        formatVersion: 1,
+      },
+    });
+
+    await expect(fixture.mappingStore.getThread(hostThreadId)).resolves.toMatchObject({
+      state: "ready",
+      projectId: "project-a",
+    });
+    await expect(listIds(fixture, 19, { projectId: "project-a" })).resolves.toEqual([threadId]);
     await stopFixture(fixture);
   });
 

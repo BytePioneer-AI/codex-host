@@ -183,6 +183,7 @@ fn run_delegation_cli(arguments: &[String]) -> Result<(), Box<dyn Error>> {
         .arg("--codexhost-delegation-cli")
         .args(arguments)
         .env(CODEXHOST_CLI_PATH_ENV, &executable)
+        .env_remove("CODEXHOST_CLI_NODE_PATH")
         .status()?;
     if status.success() {
         Ok(())

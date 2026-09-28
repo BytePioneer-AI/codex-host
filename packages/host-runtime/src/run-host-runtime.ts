@@ -13,10 +13,10 @@ import { createOwnedUnixBackend } from "./codex-runtime/owned-official-backends.
 import { DelegationControlRegistry } from "./delegation-control-registry.js";
 import { installedHarnessPluginOptions } from "./installed-harness-plugins.js";
 import { startDelegationControlServer } from "./delegation-control-server.js";
+import { delegationCliEnvironment } from "./delegation-cli-invocation.js";
 import { installDelegationSkills } from "./delegation-skill.js";
 import type { DelegationControlRegistration } from "./delegation-types.js";
 import {
-  DELEGATION_CLI_PATH_ENV,
   DELEGATION_RUNTIME_ENDPOINT_ENV,
   DELEGATION_RUNTIME_TOKEN_ENV,
 } from "./delegation-types.js";
@@ -82,10 +82,6 @@ function requiredRuntimeConfiguration(environment: NodeJS.ProcessEnv): {
   return { stockCodexPath, defaultAgent };
 }
 
-function delegationCliPath(environment: NodeJS.ProcessEnv): string | undefined {
-  return environment[DELEGATION_CLI_PATH_ENV] ?? environment.CODEXHOST_LAUNCHER_EXECUTABLE;
-}
-
 async function prepareDelegationRuntime(input: {
   environment: NodeJS.ProcessEnv;
   createHost(
@@ -102,10 +98,9 @@ async function prepareDelegationRuntime(input: {
   });
   const token = randomBytes(32).toString("hex");
   const server = await startDelegationControlServer({ token, api: registry, watchApi: registry });
-  const cliPath = delegationCliPath(input.environment);
   const environment = {
     ...input.environment,
-    ...(cliPath ? { [DELEGATION_CLI_PATH_ENV]: cliPath } : {}),
+    ...delegationCliEnvironment(input.environment),
     [DELEGATION_RUNTIME_ENDPOINT_ENV]: server.endpoint,
     [DELEGATION_RUNTIME_TOKEN_ENV]: token,
   };

@@ -22,7 +22,7 @@ export function delegationMentionInstruction(mentions: readonly DelegationMentio
   return [
     `[codexhost delegation] The user mentioned ${describeTargets(mentions)}.`,
     `Use the ${DELEGATION_SKILL_NAME} skill to delegate this request to ${plural ? "each mentioned Harness" : "that Harness"}`,
-    "with `codexhost delegate start --harness <id>`, instead of doing the task yourself.",
+    "using the executable in CODEXHOST_CLI_PATH with `delegate start --harness <id>`, instead of doing the task yourself.",
   ].join(" ");
 }
 

@@ -29,6 +29,7 @@ describe("delegation mention rewrite", () => {
     const body = (text as { text: string }).text;
     expect(body.startsWith("@Claude Code review this change\n\n[codexhost delegation]")).toBe(true);
     expect(body).toContain("Harness `claude-code`");
+    expect(body).toContain("executable in CODEXHOST_CLI_PATH");
     expect(body).not.toContain("subagent://");
   });
 
@@ -57,6 +58,7 @@ describe("delegation mention rewrite", () => {
     const text = rewriteDelegationMentionText(`${link} fix the test`);
     expect(text).toContain("@Claude Code fix the test");
     expect(text).toContain("codexhost-delegation");
+    expect(text).toContain("executable in CODEXHOST_CLI_PATH");
     expect(rewriteDelegationMentionText("plain")).toBe("plain");
   });
 });

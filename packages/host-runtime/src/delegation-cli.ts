@@ -1,12 +1,15 @@
 import type { Writable } from "node:stream";
 
 import { delegationCliHelp, type DelegationCliCommand } from "./delegation-cli-help.js";
+import { delegationNextCommands } from "./delegation-cli-invocation.js";
 import { compactDelegationOutput } from "./delegation-cli-output.js";
 
 export { DELEGATION_HELP } from "./delegation-cli-help.js";
 
 import {
   DEFAULT_WATCH_TIMEOUT_MS,
+  DELEGATION_CLI_PATH_ENV,
+  DELEGATION_CLI_NODE_PATH_ENV,
   DELEGATION_RUNTIME_ENDPOINT_ENV,
   DELEGATION_RUNTIME_TOKEN_ENV,
   DELEGATION_THREAD_ID_ENV,
@@ -89,7 +92,7 @@ async function requestRuntime(input: {
     ];
     throw new DelegationControlError(
       "RUNTIME_UNREACHABLE",
-      `${missingEnvironmentVariables.join(" and ")} ${missingEnvironmentVariables.length === 1 ? "is" : "are"} required. If this command runs inside native Codex, shell_environment_policy may have filtered the Host-provided CODEXHOST_* variables. Prefer inherit = "all" with ignore_default_excludes = true and a narrow include_only allowlist that contains "CODEXHOST_RUNTIME_ENDPOINT" and "CODEXHOST_RUNTIME_TOKEN" plus the variables required by the platform and invoked tools; do not use unconstrained inherit = "all".`,
+      `${missingEnvironmentVariables.join(" and ")} ${missingEnvironmentVariables.length === 1 ? "is" : "are"} required. If this command runs inside native Codex, shell_environment_policy may have filtered the Host-provided CODEXHOST_* variables. Prefer inherit = "all" with ignore_default_excludes = true and a narrow include_only allowlist that contains "CODEXHOST_RUNTIME_ENDPOINT", "CODEXHOST_RUNTIME_TOKEN", "CODEXHOST_CLI_PATH", and "CODEXHOST_CLI_NODE_PATH" (when supplied) plus the variables required by the platform and invoked tools; do not use unconstrained inherit = "all".`,
       {
         reason: "missing_runtime_environment",
         missingEnvironmentVariables,
@@ -97,7 +100,12 @@ async function requestRuntime(input: {
           recommendedPolicy: {
             inherit: "all",
             ignoreDefaultExcludes: true,
-            includeOnlyMustContain: [DELEGATION_RUNTIME_ENDPOINT_ENV, DELEGATION_RUNTIME_TOKEN_ENV],
+            includeOnlyMustContain: [
+              DELEGATION_RUNTIME_ENDPOINT_ENV,
+              DELEGATION_RUNTIME_TOKEN_ENV,
+              DELEGATION_CLI_PATH_ENV,
+              DELEGATION_CLI_NODE_PATH_ENV,
+            ],
           },
         },
       },
@@ -163,8 +171,20 @@ export async function runDelegationCli(input: {
       name: DelegationCliCommand,
       body: unknown,
       view: "result" | "messages" = "result",
-    ): void =>
+    ): void => {
+      if (
+        format === "json" &&
+        (name === "delegate start" || name === "thread send") &&
+        body !== null &&
+        typeof body === "object" &&
+        "next" in body &&
+        "threadId" in body &&
+        typeof body.threadId === "string"
+      ) {
+        body = { ...body, next: delegationNextCommands(environment, body.threadId) };
+      }
       writeJson(output, format === "json" ? body : compactDelegationOutput(name, body, view));
+    };
     if (group === "harness" && command === "list") {
       rejectUnknown(parsed, []);
       if (parsed.positionals.length > 0) {

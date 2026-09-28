@@ -48,11 +48,12 @@ Compact output keeps task links, Harness, status, title, and workspace.`,
 
 export type DelegationCliCommand = keyof typeof COMMAND_HELP;
 
-const COMMON_HELP = `Thread references accept a bare ID or codex://threads/<id>.
+const COMMON_HELP = `Inside a Host-managed session, run these commands through the executable in CODEXHOST_CLI_PATH. The application includes this CLI; no separate npm installation or PATH entry is required. If CODEXHOST_CLI_NODE_PATH is set, invoke that Node executable with CODEXHOST_CLI_PATH as its first argument. JSON next.read/next.wait commands use the invoking CLI paths (POSIX syntax on macOS/Linux, PowerShell on Windows); adapt the syntax if using a different shell.
+Thread references accept a bare ID or codex://threads/<id>.
 --format json is the compatible full JSON output (default); --format compact returns concise JSON using task links instead of internal IDs.
 Success is written to stdout; errors {"error":{"code":"...","message":"...","details":{...}}} go to stderr with exit code 1. Exit code 0 means the command succeeded, not that the delegated task succeeded.
 read/wait are non-consuming. Native Codex callers need local Runtime access; RUNTIME_UNREACHABLE requires the Host-provided environment and a sandbox that permits that connection.
-Native Codex shell commands also need the Host-provided CODEXHOST_* environment variables. If shell_environment_policy filters them, prefer inherit = "all" with ignore_default_excludes = true and a narrow include_only containing "CODEXHOST_RUNTIME_ENDPOINT" and "CODEXHOST_RUNTIME_TOKEN" plus the variables required by the platform and invoked tools. Avoid unconstrained inherit = "all", which forwards unrelated ambient variables.`;
+Native Codex shell commands also need the Host-provided CODEXHOST_* environment variables. If shell_environment_policy filters them, prefer inherit = "all" with ignore_default_excludes = true and a narrow include_only containing "CODEXHOST_RUNTIME_ENDPOINT", "CODEXHOST_RUNTIME_TOKEN", "CODEXHOST_CLI_PATH", and "CODEXHOST_CLI_NODE_PATH" (when supplied) plus the variables required by the platform and invoked tools. Avoid unconstrained inherit = "all", which forwards unrelated ambient variables.`;
 
 export const DELEGATION_HELP = `usage:
   codexhost harness list

@@ -5,6 +5,8 @@ import { describe, expect, it, vi } from "vitest";
 import { DELEGATION_HELP, runDelegationCli } from "../src/delegation-cli.js";
 import {
   DELEGATION_RUNTIME_ENDPOINT_ENV,
+  DELEGATION_CLI_PATH_ENV,
+  DELEGATION_CLI_NODE_PATH_ENV,
   DELEGATION_RUNTIME_TOKEN_ENV,
   DELEGATION_THREAD_ID_ENV,
 } from "../src/delegation-types.js";
@@ -411,7 +413,7 @@ describe("delegation CLI", () => {
       error: {
         code: "RUNTIME_UNREACHABLE",
         message:
-          'CODEXHOST_RUNTIME_ENDPOINT and CODEXHOST_RUNTIME_TOKEN are required. If this command runs inside native Codex, shell_environment_policy may have filtered the Host-provided CODEXHOST_* variables. Prefer inherit = "all" with ignore_default_excludes = true and a narrow include_only allowlist that contains "CODEXHOST_RUNTIME_ENDPOINT" and "CODEXHOST_RUNTIME_TOKEN" plus the variables required by the platform and invoked tools; do not use unconstrained inherit = "all".',
+          'CODEXHOST_RUNTIME_ENDPOINT and CODEXHOST_RUNTIME_TOKEN are required. If this command runs inside native Codex, shell_environment_policy may have filtered the Host-provided CODEXHOST_* variables. Prefer inherit = "all" with ignore_default_excludes = true and a narrow include_only allowlist that contains "CODEXHOST_RUNTIME_ENDPOINT", "CODEXHOST_RUNTIME_TOKEN", "CODEXHOST_CLI_PATH", and "CODEXHOST_CLI_NODE_PATH" (when supplied) plus the variables required by the platform and invoked tools; do not use unconstrained inherit = "all".',
         details: {
           reason: "missing_runtime_environment",
           missingEnvironmentVariables: [
@@ -425,6 +427,8 @@ describe("delegation CLI", () => {
               includeOnlyMustContain: [
                 DELEGATION_RUNTIME_ENDPOINT_ENV,
                 DELEGATION_RUNTIME_TOKEN_ENV,
+                DELEGATION_CLI_PATH_ENV,
+                DELEGATION_CLI_NODE_PATH_ENV,
               ],
             },
           },

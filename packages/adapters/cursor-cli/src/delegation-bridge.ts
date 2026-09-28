@@ -19,6 +19,7 @@ export async function createCursorDelegationBridge(
   commandTimeoutMs = 65_000,
 ) {
   const cli = environment.CODEXHOST_CLI_PATH;
+  const node = environment.CODEXHOST_CLI_NODE_PATH;
   const runtimeToken = environment.CODEXHOST_RUNTIME_TOKEN;
   if (
     !cli ||
@@ -29,6 +30,8 @@ export async function createCursorDelegationBridge(
     return undefined;
   if (!path.isAbsolute(cli))
     throw new Error("Cursor delegation requires an absolute Host CLI path");
+  if (node && !path.isAbsolute(node))
+    throw new Error("Cursor delegation requires an absolute Host CLI Node path");
   const token = randomBytes(32).toString("base64url");
   const children = new Set<ChildProcess>();
   const servers = new Set<McpServer>();
@@ -45,8 +48,8 @@ export async function createCursorDelegationBridge(
           return;
         }
         const child = execFile(
-          cli,
-          [...args, "--format", "compact"],
+          node ?? cli,
+          [...(node ? [cli] : []), ...args, "--format", "compact"],
           {
             cwd,
             env: environment,

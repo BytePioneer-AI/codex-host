@@ -682,6 +682,7 @@ export class BrokeredHarnessAdapter implements HarnessAdapter {
       if (this.#forwardEnvironment && input.environment) {
         const allowed = [
           "CODEXHOST_CLI_PATH",
+          "CODEXHOST_CLI_NODE_PATH",
           "CODEXHOST_RUNTIME_ENDPOINT",
           "CODEXHOST_RUNTIME_TOKEN",
           "CODEXHOST_THREAD_ID",

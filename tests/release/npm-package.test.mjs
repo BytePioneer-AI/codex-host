@@ -291,6 +291,8 @@ childProcess.spawn = (command, args, options) => {
     command,
     args,
     stdoutFd: Array.isArray(options?.stdio) ? options.stdio[1]?.fd : null,
+    cliPath: options?.env?.CODEXHOST_CLI_PATH,
+    cliNodePath: options?.env?.CODEXHOST_CLI_NODE_PATH,
   }) + "\\n");
   const child = new EventEmitter();
   const exitCode = exitCodes[call++] ?? 1;
@@ -328,6 +330,23 @@ syncBuiltinESMExports();
 }
 
 describe("npm package release", () => {
+  it.each(["darwin", "win32"])(
+    "exports a matching Node/script invocation for delegation on %s",
+    async (platform) => {
+      const { result, calls } = await runGeneratedWrapperLifecycle(
+        platform,
+        ["delegate", "--help"],
+        [0],
+      );
+      expect(result.status, result.stderr).toBe(0);
+      expect(calls).toHaveLength(1);
+      expect(calls[0].command).toBe(process.execPath);
+      expect(calls[0].cliNodePath).toBe(process.execPath);
+      expect(calls[0].cliPath).toMatch(/codexhost\.js$/u);
+      expect(calls[0].args.slice(1)).toEqual(["--codexhost-delegation-cli", "delegate", "--help"]);
+    },
+  );
+
   it("maps the current host to a release target id", () => {
     expect(hostReleaseTargetId("darwin", "arm64")).toBe("macos-arm64");
     expect(hostReleaseTargetId("darwin", "x64")).toBe("macos-x64");

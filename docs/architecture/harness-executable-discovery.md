@@ -11,6 +11,14 @@ codexhost 从桌面环境启动时，进程拿到的 `PATH` 往往不同于用�
 
 它不负责发现或安装 codexhost 自身，也不负责发现 Codex Desktop 应用包。codexhost/Codex Desktop 的原生安装发现和启动仍由 Launcher、发布包与 Rust 平台层负责。
 
+### 委派使用的 codexhost CLI
+
+应用安装包已经包含委派 CLI。Host 通过 `CODEXHOST_CLI_PATH` 向官方 Codex 与外部 Harness 提供当前运行版本的入口；内置委派 Skill 的所有调用、委派 mention 指令及 CLI 帮助均使用这一路径契约，不依赖额外安装的 npm CLI 或用户 PATH。POSIX Shell 使用 `"$CODEXHOST_CLI_PATH"`，PowerShell 使用 `& $env:CODEXHOST_CLI_PATH`，以保留路径中的空格。
+
+受管 Skill 随 Host 启动升级，用户修改过的副本仍按原有冲突保护保留。变量缺失或路径失效时，应排查当前会话的 Host 启动与 Shell 环境过滤；缺少该变量不等于用户缺少 npm 安装。JSON 输出的 `next.read` / `next.wait` 由调用方 CLI 根据本机入口生成，不采用远程 Runtime 的安装路径，也不回退到 PATH。生成的命令在 macOS/Linux 使用 POSIX 语法，在 Windows 使用 PowerShell 语法，其他 Shell 需要转换语法。
+
+npm 安装由 Host 选择 npm JavaScript 入口，同时通过 `CODEXHOST_CLI_NODE_PATH` 提供对应的 Node 可执行文件。该变量存在时，以 Node 路径、CLI 路径、命令参数的顺序调用，避免依赖 shebang 的 PATH 查找或 Windows 文件关联。显式 CLI 路径优先；安装包原生入口不需要这个变量。Shell 环境过滤应同时保留 Host 提供的这些变量。
+
 ## 包边界
 
 公共实现位于：

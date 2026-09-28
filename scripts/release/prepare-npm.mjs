@@ -598,6 +598,7 @@ if (consoleArguments !== null) {
       env: {
         ...updateEnvironment,
         CODEXHOST_CLI_PATH: fileURLToPath(import.meta.url),
+        CODEXHOST_CLI_NODE_PATH: process.execPath,
       },
       stdio: "inherit",
       windowsHide: true,

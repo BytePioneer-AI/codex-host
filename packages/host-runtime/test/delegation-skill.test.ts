@@ -1,4 +1,5 @@
-import { mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
+import { spawnSync } from "node:child_process";
+import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -18,6 +19,78 @@ function paths(root: string): string[] {
 }
 
 describe("delegation Skill installation", () => {
+  it.each([4, 7, 8])(
+    "upgrades shipped version %s without treating it as user content",
+    async (version) => {
+      const root = await home();
+      try {
+        const previous = await readFile(
+          new URL(`./fixtures/codexhost-delegation-v${version}.md`, import.meta.url),
+          "utf8",
+        );
+        for (const destination of paths(root)) {
+          await mkdir(path.dirname(destination), { recursive: true });
+          await writeFile(destination, previous);
+        }
+        const results = await installDelegationSkills({ homeDirectory: root });
+        expect(results.map((result) => result.status)).toEqual(["updated", "updated"]);
+        for (const destination of paths(root)) {
+          expect(await readFile(destination, "utf8")).toBe(CODEXHOST_DELEGATION_SKILL);
+        }
+      } finally {
+        await rm(root, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it.skipIf(process.platform === "win32").each([false, true])(
+    "runs the installed Skill through the application CLI (stale PATH CLI: %s)",
+    async (staleCli) => {
+      const root = await home();
+      try {
+        const launcher = path.join(
+          root,
+          "App with spaces $literal.app",
+          "Contents",
+          "MacOS",
+          "codexhost",
+        );
+        const bin = path.join(root, "bin");
+        await mkdir(path.dirname(launcher), { recursive: true });
+        await mkdir(bin);
+        await writeFile(
+          launcher,
+          '#!/bin/sh\n[ "$1" = delegate ] && [ "$2" = --help ] || exit 42\n[ "$CODEXHOST_RUNTIME_TOKEN" = fixture-token ] || exit 43\nprintf "%s\\n" current-application-cli\n',
+        );
+        await chmod(launcher, 0o755);
+        if (staleCli) {
+          const stale = path.join(bin, "codexhost");
+          await writeFile(stale, "#!/bin/sh\nexit 99\n");
+          await chmod(stale, 0o755);
+        }
+        await installDelegationSkills({ homeDirectory: root });
+        for (const destination of paths(root)) {
+          const skill = await readFile(destination, "utf8");
+          const command = /`([^`\n]*delegate --help)`/u.exec(skill)?.[1];
+          expect(command).toBeDefined();
+          const result = spawnSync("/bin/sh", ["-c", command ?? "exit 44"], {
+            env: {
+              PATH: bin,
+              CODEXHOST_CLI_PATH: launcher,
+              CODEXHOST_RUNTIME_TOKEN: "fixture-token",
+            },
+            encoding: "utf8",
+            timeout: 5_000,
+          });
+          expect(result.status, result.stderr).toBe(0);
+          expect(result.stdout.trim()).toBe("current-application-cli");
+        }
+      } finally {
+        await rm(root, { recursive: true, force: true });
+      }
+    },
+  );
+
   it("atomically installs identical managed copies", async () => {
     const root = await home();
     const results = await installDelegationSkills({ homeDirectory: root });
@@ -79,11 +152,11 @@ describe("delegation Skill installation", () => {
   });
 
   it("routes natural agent requests and points execution to the authoritative help", () => {
-    expect(CODEXHOST_DELEGATION_SKILL).toContain("version: 8");
+    expect(CODEXHOST_DELEGATION_SKILL).toContain("version: 9");
     expect(CODEXHOST_DELEGATION_SKILL).toContain("@agent) to independently perform a task");
     expect(CODEXHOST_DELEGATION_SKILL).toContain("session's content, progress, or results");
     expect(CODEXHOST_DELEGATION_SKILL).toContain("Not for recapping the current conversation");
-    expect(CODEXHOST_DELEGATION_SKILL).toContain("codexhost delegate --help");
+    expect(CODEXHOST_DELEGATION_SKILL).toContain('"$CODEXHOST_CLI_PATH" delegate --help');
     expect(CODEXHOST_DELEGATION_SKILL).toContain("send a follow-up message");
     expect(CODEXHOST_DELEGATION_SKILL).toContain("cancel its current Turn");
     expect(CODEXHOST_DELEGATION_SKILL).not.toContain("--timeout-ms");

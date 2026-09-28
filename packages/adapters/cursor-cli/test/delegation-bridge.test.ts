@@ -12,7 +12,7 @@ const cleanup: Array<() => Promise<unknown>> = [];
 afterEach(async () => {
   for (const action of cleanup.splice(0).reverse()) await action();
 });
-async function setup(thread = "parent-one", timeoutMs?: number) {
+async function setup(thread = "parent-one", timeoutMs?: number, npm = false) {
   const cwd = await mkdtemp(path.join(os.tmpdir(), "cursor-delegation-"));
   cleanup.push(() => rm(cwd, { recursive: true, force: true }));
   const cli = path.join(cwd, "host-cli");
@@ -26,6 +26,7 @@ async function setup(thread = "parent-one", timeoutMs?: number) {
     {
       ...process.env,
       CODEXHOST_CLI_PATH: cli,
+      ...(npm ? { CODEXHOST_CLI_NODE_PATH: process.execPath, PATH: "/empty" } : {}),
       CODEXHOST_RUNTIME_ENDPOINT: "http://synthetic-host.invalid",
       CODEXHOST_RUNTIME_TOKEN: "synthetic-secret",
       CODEXHOST_THREAD_ID: thread,
@@ -48,6 +49,14 @@ async function setup(thread = "parent-one", timeoutMs?: number) {
 }
 
 describe.skipIf(process.platform === "win32")("Cursor native MCP delegation bridge", () => {
+  it("runs an npm script through the supplied Node without PATH lookup", async () => {
+    const f = await setup("parent-one", undefined, true);
+    const result = await f.client.callTool({ name: "harness_list", arguments: {} });
+    expect(result.isError).not.toBe(true);
+    const text = (result.content as Array<{ text: string }>)[0]?.text ?? "null";
+    expect(JSON.parse(text).args).toEqual(["harness", "list", "--format", "compact"]);
+  });
+
   it("advertises bounded tools and preserves exact arguments, parent and session environment", async () => {
     const f = await setup();
     const { tools } = await f.client.listTools();

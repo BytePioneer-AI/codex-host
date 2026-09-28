@@ -3,10 +3,12 @@ import { mkdir, open, readFile, rename, rm, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-const SKILL_VERSION = 8;
+const SKILL_VERSION = 9;
 export const DELEGATION_SKILL_NAME = "codexhost-delegation";
 const SKILL_RELATIVE_PATH = path.join("skills", DELEGATION_SKILL_NAME, "SKILL.md");
 const PREVIOUS_MANAGED_DIGESTS: readonly string[] = [
+  "ca06be59f0d47c9a54d05ed2d9588c9c737306cc155cb4dff3fe2a2a61891dde",
+  "fa7944cd1e72ffbaf932fca2074bdb78aad4670d8990b6711220dd83c39509a0",
   "9d2f491850fb0b4084a31ba9b5e4a550b5e833747af322090d8ed0ff80b88c30",
   "2bb0aebb9b06febbc6c0c0bcdb0b32506c7cdbf8dc3b734cc6b2a86621270e4e",
   "aff258622dc8ff321f32b15620d081e578cb9c9ed1134d6a57f35ca8e7762c0a",
@@ -30,9 +32,33 @@ description: >
 
 # Execute the task
 
-Before acting, run:
+Use the executable supplied by the active Host in CODEXHOST_CLI_PATH for every
+CLI call. Application installers already include it; no separate npm installation is
+required. If CODEXHOST_CLI_NODE_PATH is unset, start with the command for your shell:
 
-\`codexhost delegate --help\`
+- POSIX shells: \`"$CODEXHOST_CLI_PATH" delegate --help\`
+- PowerShell: \`& $env:CODEXHOST_CLI_PATH delegate --help\`
+- cmd: \`"%CODEXHOST_CLI_PATH%" delegate --help\`
+
+If CODEXHOST_CLI_NODE_PATH is set, the CLI is a Node script. Use the supplied
+Node executable followed by the CLI path for every command, including help:
+
+- POSIX shells: \`"$CODEXHOST_CLI_NODE_PATH" "$CODEXHOST_CLI_PATH" delegate --help\`
+- PowerShell: \`& $env:CODEXHOST_CLI_NODE_PATH $env:CODEXHOST_CLI_PATH delegate --help\`
+- cmd: \`"%CODEXHOST_CLI_NODE_PATH%" "%CODEXHOST_CLI_PATH%" delegate --help\`
+
+Keep using this invocation for commands shown in help. JSON next.read/next.wait
+commands already use the invoking CLI paths: POSIX syntax on macOS/Linux and
+PowerShell on Windows. Adapt shell syntax when needed, keeping the same paths
+and arguments. Do not
+resolve codexhost through PATH or hard-code an application installation directory.
+Preserve the inherited CODEXHOST_RUNTIME_ENDPOINT, CODEXHOST_RUNTIME_TOKEN, and
+CODEXHOST_THREAD_ID for subsequent calls without printing their values.
+
+If CODEXHOST_CLI_PATH is missing or cannot be executed, report the Host CLI
+environment problem. Check whether the current session was launched through
+codexhost and whether its shell environment policy filtered the variable; do not
+install another CLI, create symlinks, or change the user's PATH as recovery.
 
 Use CLI help as the authoritative source for commands and behavior. Consult
 command-specific help for options and the Harness listing command when the

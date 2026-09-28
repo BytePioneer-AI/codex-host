@@ -1512,6 +1512,68 @@ describe("AppServerHost HarnessAdapter projection", () => {
     await stopFixture(fixture);
   });
 
+  it("opens the local console only when the Host can", async () => {
+    const consoleOpener = { open: vi.fn(async () => ({ url: "http://127.0.0.1:26339/" })) };
+    const local = createFixture({ consoleOpener });
+    writeRequest(local.desktopInput, { id: 27, method: "codexhost/console/open", params: {} });
+    await expect(
+      local.collector.waitFor((message) => requestId(message, 27)),
+    ).resolves.toMatchObject({ result: { url: "http://127.0.0.1:26339/" } });
+    writeRequest(local.desktopInput, {
+      id: 28,
+      method: "codexhost/console/open",
+      params: { url: "https://example.com" },
+    });
+    await expect(
+      local.collector.waitFor((message) => requestId(message, 28)),
+    ).resolves.toMatchObject({ error: { code: -32602 } });
+    expect(consoleOpener.open).toHaveBeenCalledOnce();
+    await stopFixture(local);
+
+    const remote = createFixture();
+    writeRequest(remote.desktopInput, { id: 29, method: "codexhost/console/open", params: {} });
+    await expect(
+      remote.collector.waitFor((message) => requestId(message, 29)),
+    ).resolves.toMatchObject({ error: { code: -32090 } });
+    await stopFixture(remote);
+  });
+
+  it("answers console requests through Desktop handling without writing to Desktop", async () => {
+    const updateCoordinator = {
+      check: vi.fn(async () => ({
+        currentVersion: "1.2.2",
+        installation: "npm" as const,
+        latestVersion: "1.2.3",
+        updateAvailable: true,
+        installationAvailable: true,
+        releaseNotes: null,
+        releaseNotesUrl: null,
+        status: null,
+        error: null,
+      })),
+      start: vi.fn(),
+      status: vi.fn(async () => ({ status: null })),
+    };
+    const fixture = createFixture({ updateCoordinator });
+    const before = fixture.collector.messages.length;
+
+    await expect(
+      fixture.host.handleConsoleRequest("codexhost/update/check", {}),
+    ).resolves.toMatchObject({ result: { latestVersion: "1.2.3" } });
+    await expect(
+      fixture.host.handleConsoleRequest("codexhost/update/start", { url: "https://x" }),
+    ).resolves.toMatchObject({ error: { code: -32602 } });
+    await expect(
+      fixture.host.handleConsoleRequest("codexhost/thread/fork", {}),
+    ).resolves.toMatchObject({ error: { code: -32601 } });
+    await expect(fixture.host.handleConsoleRequest("thread/start", {})).resolves.toMatchObject({
+      error: { code: -32601 },
+    });
+
+    expect(fixture.collector.messages.slice(before)).toEqual([]);
+    await stopFixture(fixture);
+  });
+
   it("handles Pi inspection locally without opening a Thread Session", async () => {
     const fixture = createFixture();
     const officialWrite = vi.fn();

@@ -36,9 +36,12 @@ afterEach(async () => {
 
 describe("console Harnesses", () => {
   it("uses the Host Runtime's plugin roots", () => {
-    expect(
-      harnessPluginRoots("/opt/codexhost/app", false, { CODEXHOST_DATA_DIR: "/data" }),
-    ).toEqual([path.join("/opt/codexhost/app", "plugins"), path.join("/data", "plugins")]);
+    const appDirectory = path.resolve("/opt/codexhost/app");
+    const dataDirectory = path.resolve("/data");
+    expect(harnessPluginRoots(appDirectory, false, { CODEXHOST_DATA_DIR: dataDirectory })).toEqual([
+      path.join(appDirectory, "plugins"),
+      path.join(dataDirectory, "plugins"),
+    ]);
     expect(
       harnessPluginRoots("/repo/packages/console-server/dist", true, {
         CODEXHOST_PLUGIN_DIRECTORY: "/custom",

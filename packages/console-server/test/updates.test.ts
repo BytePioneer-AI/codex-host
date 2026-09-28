@@ -25,7 +25,7 @@ const release = {
   assets: [],
 };
 
-async function npmLayout() {
+async function npmLayout(platform: NodeJS.Platform = process.platform) {
   const packageRoot = path.join(root, "package");
   const appDirectory = path.join(packageRoot, "app");
   await mkdir(path.join(packageRoot, "libexec"), { recursive: true });
@@ -33,7 +33,7 @@ async function npmLayout() {
   const updater = path.join(
     packageRoot,
     "libexec",
-    process.platform === "win32" ? "codexhost-updater.exe" : "codexhost-updater",
+    platform === "win32" ? "codexhost-updater.exe" : "codexhost-updater",
   );
   await writeFile(updater, "updater");
   const npmCli = path.join(root, "npm-cli.js");
@@ -75,7 +75,7 @@ describe("console updates", () => {
   });
 
   it("makes the Updater wait for the console process, then hands off", async () => {
-    const { target, environment } = await npmLayout();
+    const { target, environment } = await npmLayout("linux");
     const spawnUpdater = vi.fn(() => Object.assign(new EventEmitter(), { pid: 4321 }) as never);
     const onHandedOff = vi.fn();
     const updates = createConsoleUpdates({

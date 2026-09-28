@@ -53,8 +53,9 @@ describe("Desktop Controller status", () => {
   });
 
   it("resolves the status file under the codexhost data directory", () => {
-    expect(defaultControllerStatusPath({ CODEXHOST_DATA_DIR: "/data/codexhost" })).toBe(
-      path.join("/data/codexhost", "diagnostics", "desktop-controller-v1.json"),
+    const dataDirectory = path.resolve("/data/codexhost");
+    expect(defaultControllerStatusPath({ CODEXHOST_DATA_DIR: dataDirectory })).toBe(
+      path.join(dataDirectory, "diagnostics", "desktop-controller-v1.json"),
     );
   });
 

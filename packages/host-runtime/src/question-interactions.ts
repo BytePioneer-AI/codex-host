@@ -66,11 +66,18 @@ export class QuestionInteractions {
       throw new DelegationControlError("INVALID_ARGUMENT", "Interaction identifier is required");
     }
     const request = [...this.#pending.values()].find(
-      ({ interaction }) => interaction.interactionId === input.interactionId,
+      ({ threadId, interaction }) =>
+        threadId === input.threadId && interaction.interactionId === input.interactionId,
     );
-    if (!request) throw this.#notPending();
-    if (request.threadId !== input.threadId) {
-      throw new DelegationControlError("INVALID_ARGUMENT", "Question belongs to another Thread");
+    if (!request) {
+      if (
+        [...this.#pending.values()].some(
+          ({ interaction }) => interaction.interactionId === input.interactionId,
+        )
+      ) {
+        throw new DelegationControlError("INVALID_ARGUMENT", "Question belongs to another Thread");
+      }
+      throw this.#notPending();
     }
     if (
       !input.answers ||

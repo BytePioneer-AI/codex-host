@@ -7,6 +7,7 @@ import {
   createFixture,
   method,
   startPiThread,
+  startExternalThread,
   startPiTurn,
   stopFixture,
   writeRequest,
@@ -154,6 +155,62 @@ function resolvedRequests(fixture: Fixture): JsonObject[] {
 const nextTick = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
 
 describe("AppServerHost pending Questions", () => {
+  it.each(["answer", "close"] as const)(
+    "scopes %s to its Thread when interaction IDs collide",
+    async (operation) => {
+      const { fixture, ready } = questionFixture();
+      try {
+        const api = await ready();
+        const firstThread = await startExternalThread(fixture, "codexhost/pi-native", 1);
+        await startPiTurn(fixture, firstThread, 2);
+        const secondThread = await startExternalThread(fixture, "codexhost/pi-native", 3);
+        await startPiTurn(fixture, secondThread, 4);
+        const [first, second] = fixture.adapter.sessions;
+        if (!first || !second) throw new Error("Fake Pi Sessions were not opened");
+        const question = {
+          id: "value",
+          type: "text" as const,
+          prompt: "Value?",
+          multiline: false,
+          optional: false,
+          secret: false,
+        };
+        const interactionId = first.askQuestion(question);
+        expect(second.askQuestion(question)).toBe(interactionId);
+        for (const threadId of [firstThread, secondThread]) {
+          await fixture.collector.waitFor(
+            (message) =>
+              method(message, "item/tool/requestUserInput") &&
+              (message.params as JsonObject).threadId === threadId,
+          );
+        }
+        if (operation === "answer") {
+          await expect(
+            api.answer({ threadId: secondThread, interactionId, answers: { value: ["second"] } }),
+          ).resolves.toMatchObject({ threadId: secondThread });
+          expect(second.interactionResponses).toHaveLength(1);
+        } else {
+          second.expireQuestion(interactionId);
+        }
+        await vi.waitFor(async () => {
+          expect(
+            (await api.read({ threadId: secondThread, view: "result" })).pendingQuestions,
+          ).toEqual([]);
+        });
+        expect(first.interactionResponses).toEqual([]);
+        expect(
+          (await api.read({ threadId: firstThread, view: "result" })).pendingQuestions,
+        ).toMatchObject([{ interactionId }]);
+        await expect(
+          api.answer({ threadId: firstThread, interactionId, answers: { value: ["first"] } }),
+        ).resolves.toMatchObject({ threadId: firstThread });
+        expect(first.interactionResponses).toHaveLength(1);
+      } finally {
+        await stopFixture(fixture);
+      }
+    },
+  );
+
   it("answers a pending external Question once through the delegation API", async () => {
     const { fixture, ready } = questionFixture();
     try {

@@ -2145,6 +2145,79 @@ function pushSettlement(
 }
 
 describe("ClaudeSdkTransport autonomous Subagent settlement ordering", () => {
+  it("keeps a background command settlement after the Tool result that detached it", async () => {
+    const value = fixture();
+    const turns: ClaudeAutonomousTurn[] = [];
+    const immediate: ClaudeTurnEvent[] = [];
+    value.transport.setAutonomousTurnHandler((turn) => turns.push(turn));
+    value.transport.setThreadEventHandler((event) => immediate.push(event));
+    await value.transport.start();
+    try {
+      value.fakeQuery.push({
+        type: "assistant",
+        uuid: "assistant-bash-1",
+        parent_tool_use_id: null,
+        message: {
+          id: "message-bash-1",
+          content: [
+            {
+              type: "tool_use",
+              id: "bash-1",
+              name: "Bash",
+              input: { command: "sleep 1", run_in_background: true },
+            },
+          ],
+        },
+      } as unknown as SDKMessage);
+      value.fakeQuery.push({
+        type: "user",
+        parent_tool_use_id: null,
+        message: {
+          role: "user",
+          content: [
+            {
+              type: "tool_result",
+              tool_use_id: "bash-1",
+              content:
+                "Command running in background with ID: task-1. Output is being written to: /tmp/task-1.output.",
+              is_error: false,
+            },
+          ],
+        },
+        tool_use_result: { stdout: "", stderr: "", interrupted: false, backgroundTaskId: "task-1" },
+      } as unknown as SDKMessage);
+      value.fakeQuery.push({
+        type: "system",
+        subtype: "task_notification",
+        task_id: "task-1",
+        tool_use_id: "bash-1",
+        status: "completed",
+        output_file: "/tmp/task-1.output",
+        summary: "Background command completed",
+      } as unknown as SDKMessage);
+      completeTurn(value.fakeQuery);
+      await vi.waitFor(() => expect(turns).toHaveLength(1));
+      expect(immediate).toEqual([]);
+      const events = turns[0]?.events ?? [];
+      const detached = events.findIndex(
+        (event) => event.type === "tool.completed" && event.callId === "bash-1",
+      );
+      expect(events[detached]).toMatchObject({
+        backgroundTaskId: "task-1",
+        backgroundOutputFile: "/tmp/task-1.output",
+      });
+      const settled = events.findIndex((event) => event.type === "subagent.settled");
+      expect(settled).toBeGreaterThan(detached);
+      expect(events[settled]).toMatchObject({
+        callId: "bash-1",
+        status: "completed",
+        outputFile: "/tmp/task-1.output",
+      });
+    } finally {
+      await value.transport.close();
+    }
+  });
+
   it.each(["unset", "cleared"])(
     "keeps settlements in the autonomous batch when the Thread handler is %s",
     async (handlerState) => {
@@ -2345,6 +2418,36 @@ describe("ClaudeSdkTransport native background tasks", () => {
       await vi.waitFor(() => expect(value.transport.hasBackgroundTasks()).toBe(false));
     } finally {
       await value.transport.close();
+    }
+  });
+});
+
+describe("ClaudeSdkTransport background task stop", () => {
+  it("bounds a background task stop by the abort timeout", async () => {
+    const value = fixture();
+    value.fakeQuery.stopTask.mockImplementation(async () => new Promise(() => undefined));
+    const transport = new ClaudeSdkTransport({
+      command: process.execPath,
+      cwd: process.cwd(),
+      sessionId: "00000000-0000-4000-8000-000000000001",
+      openMode: "create",
+      permissionMode: "default",
+      thinkingOptionId: harnessThinkingOptionIdSchema.parse("auto"),
+      closeTimeoutMs: 20,
+      abortTimeoutMs: 20,
+      onPermissionModeChanged: value.onPermissionModeChanged,
+      onFault: value.onFault,
+      onPlanLimit: value.onPlanLimit,
+      queryFactory: value.queryFactory,
+    });
+    await transport.start();
+    try {
+      await expect(transport.stopBackgroundTask("bash-1")).rejects.toThrow(
+        "Claude background task stop timed out",
+      );
+    } finally {
+      value.fakeQuery.stopTask.mockImplementation(async () => undefined);
+      await transport.close();
     }
   });
 });

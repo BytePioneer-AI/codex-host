@@ -9,6 +9,7 @@ import type {
   HistoricalTurnOutcome,
   InteractionClosedEvent,
   ItemCompletedEvent,
+  ItemDetachedEvent,
   ItemStartedEvent,
   ItemUpdatedEvent,
   TurnCompletedEvent,
@@ -40,6 +41,7 @@ export type ProjectableHostEvent =
   | ItemStartedEvent
   | ItemUpdatedEvent
   | ItemCompletedEvent
+  | ItemDetachedEvent
   | InteractionClosedEvent
   | TurnCompletedEvent;
 
@@ -729,6 +731,8 @@ export class CodexTurnProjector {
   readonly #turnId: HostTurnId;
   #completed = false;
   #started = false;
+  /** Items allowed to outlive the Turn terminal; they settle later on this Turn. */
+  readonly #detached = new Set<HostItemId>();
   #fileItemId: HostItemId | null = null;
 
   constructor(input: {
@@ -744,6 +748,30 @@ export class CodexTurnProjector {
     this.#input = input.initialInput ?? [];
     this.#startedAtMs = input.startedAtMs;
     this.#startedAt = Math.floor(input.startedAtMs / 1000);
+  }
+
+  get completed(): boolean {
+    return this.#completed;
+  }
+
+  /** A completed Turn still owns detached Items that have not settled. */
+  get hasOpenDetachedItems(): boolean {
+    return [...this.#detached].some((itemId) => this.#items.get(itemId)?.outcome === null);
+  }
+
+  /**
+   * Wire format of detached Items that have not settled: `inProgress` with the
+   * output accumulated so far. History projection overlays these by Item id.
+   */
+  openDetachedWireItems(): ReadonlyMap<HostItemId, JsonObject> {
+    const items = new Map<HostItemId, JsonObject>();
+    for (const itemId of this.#wireItemOrder) {
+      if (!this.#detached.has(itemId)) continue;
+      const projected = this.#items.get(itemId);
+      if (!projected || projected.outcome) continue;
+      items.set(itemId, projectItem(projected.item, null, this.#cwd, true, this.#threadId));
+    }
+    return items;
   }
 
   pendingTurn(startedAt: number | null = null): JsonObject {
@@ -775,8 +803,22 @@ export class CodexTurnProjector {
     if (event.turnId !== this.#turnId) {
       throw new Error("Host output references another Turn");
     }
-    if (this.#completed) throw new Error("Host output follows the Turn terminal event");
+    if (
+      this.#completed &&
+      !(
+        (event.type === "item.updated" && this.#detached.has(event.itemId)) ||
+        (event.type === "item.completed" && this.#detached.has(event.snapshot.item.itemId))
+      )
+    ) {
+      throw new Error("Host output follows the Turn terminal event");
+    }
     switch (event.type) {
+      case "item.detached":
+        if (this.#activeItem(event.itemId).item.type !== "commandExecution") {
+          throw new Error("Only a command Item can outlive its Turn");
+        }
+        this.#detached.add(event.itemId);
+        return { messages: [] };
       case "turn.started":
         return this.#startTurn();
       case "item.started":
@@ -1118,7 +1160,9 @@ export class CodexTurnProjector {
     if (this.#interactions.size > 0) {
       throw new Error("Host Turn completed with pending Interactions");
     }
-    const active = [...this.#items.values()].filter(({ outcome }) => outcome === null);
+    const active = [...this.#items.values()].filter(
+      ({ item, outcome }) => outcome === null && !this.#detached.has(item.itemId),
+    );
     if (active.length > 0) throw new Error("Host Turn completed with active Items");
     this.#completed = true;
     const completedAt = Math.floor(completedAtMs / 1000);
@@ -1131,7 +1175,11 @@ export class CodexTurnProjector {
         ...this.#projectInput(),
         ...this.#wireItemOrder.flatMap((itemId) => {
           const projected = this.#items.get(itemId);
-          if (!projected?.outcome) throw new Error("Host Turn contains an incomplete Item");
+          if (!projected) throw new Error("Host Turn contains an unknown Item");
+          if (!projected.outcome) {
+            if (this.#detached.has(itemId)) return [];
+            throw new Error("Host Turn contains an incomplete Item");
+          }
           if (!projected.wireStarted) return [];
           if (projected.item.type === "reasoning") {
             const reasoning = projected.item;

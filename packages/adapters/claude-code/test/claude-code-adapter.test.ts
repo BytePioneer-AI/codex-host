@@ -1,4 +1,6 @@
 import path from "node:path";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 
 import { describe, expect, it, vi } from "vitest";
 import {
@@ -48,8 +50,13 @@ class FakeClaudeTransport implements ClaudeTurnTransport {
     this.idleLive = live;
   }
   readonly backgroundTaskIds = new Set<string>();
+  readonly stopBackgroundTaskCalls: string[] = [];
   hasBackgroundTasks(): boolean {
     return this.backgroundTaskIds.size > 0;
+  }
+  async stopBackgroundTask(taskId: string): Promise<void> {
+    this.stopBackgroundTaskCalls.push(taskId);
+    this.backgroundTaskIds.delete(taskId);
   }
   readonly abort = vi.fn(async () => undefined);
   readonly close = vi.fn(async () => undefined);
@@ -1476,6 +1483,200 @@ describe("Claude Code HarnessAdapter", () => {
       liveStarted.item.itemId,
     ]);
     await session.close();
+  });
+
+  it("uses one Tool Item identity for a live Turn and its native history snapshot", async () => {
+    const { adapter, history, transports } = fixture();
+    const session = await openSession(adapter);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+
+    await session.execute(textTurn("stable-live-tool-items"));
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    const transport = transports[0];
+    const nativeTurnKey = transport?.turns[0]?.userMessageId;
+    if (!transport || !nativeTurnKey) throw new Error("Fake Claude Turn did not start");
+
+    transport.event({
+      type: "tool.started",
+      callId: "bash-live-1",
+      toolName: "Bash",
+      arguments: { command: "npm run dev" },
+    });
+    const firstStarted = await nextEvent(iterator);
+    if (firstStarted.type !== "item.started" || firstStarted.item.type !== "commandExecution") {
+      throw new Error("Claude live Bash command did not start");
+    }
+    transport.event({
+      type: "tool.started",
+      callId: "bash-live-2",
+      toolName: "Bash",
+      arguments: { command: "npm run build" },
+    });
+    const secondStarted = await nextEvent(iterator);
+    if (secondStarted.type !== "item.started" || secondStarted.item.type !== "commandExecution") {
+      throw new Error("Claude live background Bash did not start");
+    }
+    transport.event({
+      type: "tool.completed",
+      callId: "bash-live-1",
+      toolName: "Bash",
+      outputText: "built",
+      isError: false,
+    });
+    await nextEvent(iterator);
+    transport.event({
+      type: "tool.completed",
+      callId: "bash-live-2",
+      toolName: "Bash",
+      outputText: "Command running in background with ID: bash-task-1.",
+      isError: false,
+      backgroundTaskId: "bash-task-1",
+    });
+    expect(await nextEvent(iterator)).toMatchObject({ type: "item.detached" });
+    transport.event({
+      type: "message.completed",
+      messageId: "native-assistant",
+      checkpointId: "native-assistant",
+    });
+    transport.finish({ status: "succeeded" });
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+
+    history.push(
+      {
+        type: "user",
+        uuid: nativeTurnKey,
+        session_id: transport.sessionId,
+        message: { role: "user", content: "stable-live-tool-items" },
+      },
+      {
+        type: "assistant",
+        uuid: "native-assistant",
+        session_id: transport.sessionId,
+        message: {
+          id: "native-message",
+          role: "assistant",
+          content: [
+            {
+              type: "tool_use",
+              id: "bash-live-1",
+              name: "Bash",
+              input: { command: "npm run dev" },
+            },
+            {
+              type: "tool_use",
+              id: "bash-live-2",
+              name: "Bash",
+              input: { command: "npm run build" },
+            },
+          ],
+          stop_reason: "end_turn",
+        },
+      },
+      {
+        type: "user",
+        uuid: "native-tool-results",
+        session_id: transport.sessionId,
+        toolUseResult: { stdout: "built" },
+        message: {
+          role: "user",
+          content: [
+            { type: "tool_result", tool_use_id: "bash-live-1", content: "built" },
+            {
+              type: "tool_result",
+              tool_use_id: "bash-live-2",
+              content: "Command running in background with ID: bash-task-1.",
+            },
+          ],
+        },
+      },
+    );
+
+    const snapshot = await session.readSnapshot();
+    if (!snapshot.ok) throw new Error(snapshot.error.message);
+    const commands = snapshot.value.turns[0]?.items.filter(
+      ({ item }) => item.type === "commandExecution",
+    );
+    expect(commands?.map(({ item }) => item.itemId)).toEqual([
+      firstStarted.type === "item.started" ? firstStarted.item.itemId : "",
+      secondStarted.type === "item.started" ? secondStarted.item.itemId : "",
+    ]);
+    await session.close();
+  });
+
+  it("settles a detached background command from its task notification, not as a Subagent", async () => {
+    const { adapter, transports } = fixture();
+    const session = await openSession(adapter);
+    const directory = await mkdtemp(path.join(tmpdir(), "claude-live-bg-"));
+    try {
+      const outputFile = path.join(directory, "task-1.output");
+      await writeFile(outputFile, "ticked\n");
+      const iterator = session.outputs[Symbol.asyncIterator]();
+      await session.execute(textTurn("background-command"));
+      await nextEvent(iterator);
+      await nextEvent(iterator);
+      await nextEvent(iterator);
+      const transport = transports[0];
+      if (!transport) throw new Error("Fake Claude transport was not created");
+
+      transport.event({
+        type: "tool.started",
+        callId: "bash-call",
+        toolName: "Bash",
+        arguments: { command: "sleep 3" },
+      });
+      await nextEvent(iterator);
+      transport.event({
+        type: "tool.completed",
+        callId: "bash-call",
+        toolName: "Bash",
+        outputText: "Command running in background with ID: bash-task.",
+        isError: false,
+        backgroundTaskId: "bash-task",
+      });
+      expect(await nextEvent(iterator)).toMatchObject({ type: "item.detached" });
+
+      // Desktop's "stop all background terminals" stops the detached command's task.
+      await session.stopBackgroundWork?.();
+      expect(transport.stopBackgroundTaskCalls).toEqual(["bash-task"]);
+
+      // Its native notification completes the command with the task's output file.
+      transport.threadEvent({
+        type: "subagent.settled",
+        nativeSubagentId: "bash-task",
+        callId: "bash-call",
+        status: "interrupted",
+        outputFile,
+      });
+      expect(await nextEvent(iterator)).toMatchObject({
+        type: "item.updated",
+        update: { type: "output.append", text: "ticked\n" },
+      });
+      expect(await nextEvent(iterator)).toMatchObject({
+        type: "item.completed",
+        snapshot: {
+          item: { output: "ticked\n" },
+          outcome: { status: "cancelled", reason: "Background command stopped" },
+        },
+      });
+
+      // The same notification shape still settles Subagents it does not name.
+      transport.threadEvent({
+        type: "subagent.settled",
+        nativeSubagentId: "agent-task",
+        callId: "agent-call",
+        status: "completed",
+      });
+      expect(await nextEvent(iterator)).toMatchObject({
+        type: "subagent.state.changed",
+        nativeSubagentId: "agent-task",
+      });
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+      await adapter.close();
+    }
   });
 
   it.each([false, true])("waits for transcript persistence (timeout: %s)", async (timeout) => {
@@ -4976,6 +5177,7 @@ describe("Claude Code HarnessAdapter", () => {
         setThreadEventHandler: () => undefined,
         setIdleLive: () => undefined,
         hasBackgroundTasks: () => false,
+        stopBackgroundTask: async () => undefined,
         start: async () => {
           throw new ClaudeCodeExecutableError("Claude Code is not installed");
         },

@@ -355,10 +355,14 @@ function canDeliverSettlementImmediately(
 ): boolean {
   if (event.type !== "subagent.settled") return false;
   // A notification without a continuation may never produce a Terminal. Deliver
-  // it now unless this batch still owes the child its creation/reactivation.
-  // Otherwise Host would discard the unknown child's terminal state and later
+  // it now unless this batch still owes the task its creation/reactivation: a
+  // Subagent lifecycle, or the Tool result that moved a command to the background.
+  // Otherwise Host would discard the unknown task's terminal state and later
   // replay its buffered lifecycle as running.
   return !pendingEvents.some((pending) => {
+    if (pending.type === "tool.completed") {
+      return event.callId !== undefined && pending.callId === event.callId;
+    }
     if (
       pending.type !== "subagent.started" &&
       pending.type !== "subagent.updated" &&
@@ -691,12 +695,19 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
     const activeQuery = this.#query;
     if (!active || !activeQuery) throw new Error("Claude SDK transport has no active Turn");
     active.accumulator.requestCancel();
-    const timeout = rejectAfter(this.#abortTimeoutMs, INTERRUPT_TIMEOUT_MESSAGE);
     try {
-      await Promise.race([activeQuery.interrupt(), timeout.promise]);
+      await this.#stopRequest(activeQuery.interrupt(), INTERRUPT_TIMEOUT_MESSAGE);
     } catch (error) {
       await this.close();
       throw error instanceof Error ? error : new Error(INTERRUPT_TIMEOUT_MESSAGE);
+    }
+  }
+
+  /** A user stop must answer: native stop requests share the abort timeout. */
+  async #stopRequest(request: Promise<unknown>, timeoutMessage: string): Promise<void> {
+    const timeout = rejectAfter(this.#abortTimeoutMs, timeoutMessage);
+    try {
+      await Promise.race([request, timeout.promise]);
     } finally {
       timeout.cancel();
     }
@@ -879,6 +890,12 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
 
   hasBackgroundTasks(): boolean {
     return this.#backgroundTasks.size > 0;
+  }
+
+  /** The native `task_notification` that follows reports the stopped task. */
+  async stopBackgroundTask(taskId: string): Promise<void> {
+    if (!this.#query) throw new Error("Claude SDK transport is not running");
+    await this.#stopRequest(this.#query.stopTask(taskId), "Claude background task stop timed out");
   }
 
   async #stopBackgroundTasks(): Promise<void> {

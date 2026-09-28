@@ -297,6 +297,19 @@ describe("OpenCode v2 Session lifecycle", () => {
       f.events.filter((e) => e.kind === "event" && e.event.type === "turn.started"),
     ).toHaveLength(1);
   });
+  it("rejects turn.steer without submitting another prompt", async () => {
+    const f = fixture();
+    await f.start();
+    await f.turn();
+    const calls = f.prompt.mock.calls.length;
+    const steered = await f.session.execute({
+      type: "turn.steer",
+      turnId: hostTurnIdSchema.parse("host-turn"),
+      input: [{ type: "text", text: "change direction" }],
+    });
+    expect(steered).toMatchObject({ ok: false, error: { code: "unsupported" } });
+    expect(f.prompt.mock.calls.length).toBe(calls);
+  });
   it("closes the owned connection if rejected admission cannot be interrupted", async () => {
     const f = fixture();
     await f.start();

@@ -258,6 +258,7 @@ function createConnectionIdentityIcon(
 }
 
 interface ConnectionRowGroupController {
+  readonly disabled: boolean;
   readonly section: AgentGroupSection;
   readonly moveLabel: string;
   readonly dragHandleTitle: string;
@@ -334,6 +335,7 @@ function createConnectionRow(
   if (group) {
     const toggle = document.createElement("button");
     toggle.type = "button";
+    toggle.disabled = group.disabled;
     toggle.className = "settings-connection-row__group-toggle";
     toggle.title = group.moveLabel;
     toggle.setAttribute("aria-label", group.moveLabel);
@@ -358,7 +360,7 @@ function createConnectionRow(
     select();
   });
   if (group) {
-    row.draggable = true;
+    row.draggable = !group.disabled;
     row.dataset.connectionGroupSection = group.section;
     row.addEventListener("dragstart", group.onDragStart);
     row.addEventListener("dragover", group.onDragOver);
@@ -610,7 +612,7 @@ function createGroupResetButton(
   document: Document,
   messages: RendererSettingsMessages,
   onReset: () => void,
-): HTMLElement {
+): HTMLButtonElement {
   const button = document.createElement("button");
   button.type = "button";
   button.className = "settings-connection-group-reset";
@@ -648,7 +650,10 @@ export function createConnectionsSettingsPage(
       header.append(headingCopy, refresh);
       const content = document.createElement("div");
       content.className = "settings-connections-content";
-      context.content.append(header, content);
+      const syncMessage = document.createElement("p");
+      syncMessage.className = "settings-page-description";
+      syncMessage.setAttribute("role", "status");
+      context.content.append(header, syncMessage, content);
 
       let pending = false;
       let selectedHostId: string | null = null;
@@ -707,6 +712,15 @@ export function createConnectionsSettingsPage(
       };
 
       const render = (snapshot: RendererConnectionSnapshot | null): void => {
+        const syncStatus = groupPreference.syncStatus();
+        const groupDisabled = syncStatus === "loading" || syncStatus === "saving";
+        syncMessage.hidden = syncStatus === "ready";
+        syncMessage.textContent =
+          syncStatus === "error"
+            ? messages.connectionGroupSyncFailed
+            : syncStatus === "saving"
+              ? messages.connectionGroupSaving
+              : messages.connectionGroupLoading;
         latestSnapshot = snapshot;
         disposeHostScroller();
         disposeHostScroller = () => undefined;
@@ -907,6 +921,7 @@ export function createConnectionsSettingsPage(
           agent: ExternalRendererAgent,
           section: AgentGroupSection,
         ): ConnectionRowGroupController => ({
+          disabled: groupDisabled,
           section,
           moveLabel:
             section === "main"
@@ -917,6 +932,10 @@ export function createConnectionsSettingsPage(
             groupPreference.moveAgent(agent, section === "main" ? "more" : "main", null);
           },
           onDragStart(event) {
+            if (groupDisabled) {
+              event.preventDefault();
+              return;
+            }
             draggingAgent = agent;
             event.dataTransfer?.setData("text/plain", agent);
             if (event.dataTransfer) event.dataTransfer.effectAllowed = "move";
@@ -1011,11 +1030,11 @@ export function createConnectionsSettingsPage(
           }
           rows.append(zone);
 
-          rows.append(
-            createGroupResetButton(document, messages, () => {
-              groupPreference.resetToDefault();
-            }),
-          );
+          const reset = createGroupResetButton(document, messages, () => {
+            groupPreference.resetToDefault();
+          });
+          reset.disabled = groupDisabled;
+          rows.append(reset);
         }
 
         const selectedItem = items.find((item) => item.key === selectedItemKey) ?? items[0];

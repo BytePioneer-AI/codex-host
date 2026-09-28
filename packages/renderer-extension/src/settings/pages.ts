@@ -681,7 +681,7 @@ export function createDefaultRendererSettingsPages(
   getDiagnostics: () => RendererConnectionDiagnostics | null = () => null,
   getAccountClient: () => RendererCodexAccountClient | null = () => null,
   getSessionImportClient: () => RendererSessionImportClient | null = () => null,
-  openImportedThread: RendererImportedThreadOpener = () =>
+  openImportedThread: RendererImportedThreadOpener | null = () =>
     Promise.reject(new Error("Imported Thread navigation is unavailable")),
   getLoadedSessionsClient: () => LoadedSessionsClient | null = () => null,
 ): readonly RendererSettingsPageDefinition[] {

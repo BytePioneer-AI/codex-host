@@ -1,4 +1,9 @@
 import {
+  HARNESS_DISPLAY_GET_METHOD,
+  HARNESS_DISPLAY_SET_METHOD,
+  harnessDisplaySettingsSchema,
+  type HarnessDisplaySet,
+  type HarnessDisplaySettings,
   CONSOLE_OPEN_METHOD,
   consoleOpenParamsSchema,
   consoleOpenResultSchema,
@@ -177,6 +182,8 @@ function notificationTarget(manager: RequestManagerCandidate): RequestManagerCan
 }
 
 export interface RendererModelClient extends Partial<RendererSessionImportClient> {
+  getHarnessDisplaySettings?(): Promise<HarnessDisplaySettings>;
+  setHarnessDisplaySettings?(input: HarnessDisplaySet): Promise<HarnessDisplaySettings>;
   getHarnessLaunchSettings?(input: HarnessLaunchSettingsGet): Promise<HarnessLaunchSettings>;
   setHarnessLaunchSettings?(input: HarnessLaunchSettingsSet): Promise<HarnessLaunchSettings>;
   setIdleReleaseSettings?(settings: IdleReleaseSettings): Promise<IdleReleaseSettings>;
@@ -345,6 +352,16 @@ export function createRendererModelClient(
   };
 
   return Object.freeze({
+    async getHarnessDisplaySettings() {
+      return harnessDisplaySettingsSchema.parse(
+        await manager.sendRequest(HARNESS_DISPLAY_GET_METHOD, {}),
+      );
+    },
+    async setHarnessDisplaySettings(input: HarnessDisplaySet) {
+      return harnessDisplaySettingsSchema.parse(
+        await manager.sendRequest(HARNESS_DISPLAY_SET_METHOD, input),
+      );
+    },
     async getHarnessLaunchSettings(
       input: HarnessLaunchSettingsGet,
     ): Promise<HarnessLaunchSettings> {

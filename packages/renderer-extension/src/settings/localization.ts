@@ -97,6 +97,7 @@ export interface RendererSettingsMessages {
   readonly sessionImportAction: string;
   readonly sessionImportImporting: string;
   readonly sessionImportImported: string;
+  readonly sessionImportImportedInCodex: string;
   readonly sessionImportOpenFailed: string;
   readonly sessionImportCopyProjectPath: string;
   readonly sessionImportPathCopied: string;
@@ -193,6 +194,9 @@ export interface RendererSettingsMessages {
   readonly connectionGroupMoveToMain: string;
   readonly connectionGroupDragHandle: string;
   readonly connectionGroupReset: string;
+  readonly connectionGroupLoading: string;
+  readonly connectionGroupSaving: string;
+  readonly connectionGroupSyncFailed: string;
   readonly pickerMoreAgentsLabel: string;
   readonly pickerManageLink: string;
   readonly pickerHideUnusedAgentsCta: string;
@@ -339,6 +343,7 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   sessionImportAction: "Import and open",
   sessionImportImporting: "Importing...",
   sessionImportImported: "Session imported",
+  sessionImportImportedInCodex: "Session imported. View it in Codex.",
   sessionImportOpenFailed:
     "The Codex sidebar has not shown it yet. Make sure the folder below is added as a project, then try opening it again.",
   sessionImportCopyProjectPath: "Copy project path",
@@ -445,6 +450,10 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   connectionGroupMoveToMain: "Move back to Main",
   connectionGroupDragHandle: "Drag to reorder",
   connectionGroupReset: "Reset order",
+  connectionGroupLoading: "Loading shared Harness order…",
+  connectionGroupSaving: "Saving shared Harness order…",
+  connectionGroupSyncFailed:
+    "Could not sync Harness order. The last confirmed order is shown; check codexhost and retry your change.",
   pickerMoreAgentsLabel: "More agents",
   pickerManageLink: "Manage",
   pickerHideUnusedAgentsCta: "Hide unused agents",
@@ -607,6 +616,7 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   sessionImportAction: "导入并打开",
   sessionImportImporting: "正在导入……",
   sessionImportImported: "会话已导入",
+  sessionImportImportedInCodex: "导入成功，请在 Codex 中查看。",
   sessionImportOpenFailed: "Codex 侧栏尚未显示该会话。请确认以下文件夹已添加为项目，然后重试打开。",
   sessionImportCopyProjectPath: "复制项目路径",
   sessionImportPathCopied: "已复制",
@@ -706,6 +716,10 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   connectionGroupMoveToMain: "移回常用",
   connectionGroupDragHandle: "拖动排序",
   connectionGroupReset: "恢复默认排列",
+  connectionGroupLoading: "正在读取共享 Harness 排序…",
+  connectionGroupSaving: "正在保存共享 Harness 排序…",
+  connectionGroupSyncFailed:
+    "Harness 排序同步失败，当前显示上次确认的顺序。请确认 codexhost 正常运行后重试修改。",
   pickerMoreAgentsLabel: "更多 Agent",
   pickerManageLink: "管理",
   pickerHideUnusedAgentsCta: "收起不常用的 Agent",

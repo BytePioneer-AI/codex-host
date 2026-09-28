@@ -506,7 +506,11 @@ describe("current Codex Renderer Agent adapter", () => {
             fakeWindow.__codexhostDraftPrewarmPolicyV1 = policy;
             expect(adapter.modelControl?.clientForHost?.("local")).toBe(localClient);
           }
-          expect(requestTarget.sendRequest).toHaveBeenCalledTimes(1);
+          expect(requestTarget.sendRequest).toHaveBeenCalledTimes(2);
+          expect(requestTarget.sendRequest).toHaveBeenCalledWith(
+            "codexhost/harness/display-settings/get",
+            {},
+          );
           expect(remoteTarget.sendRequest).not.toHaveBeenCalled();
           // Auxiliary lookups must not disable real connection or explicit policy invalidation.
           Object.defineProperty(requestTarget, "requestClient", { value: { ...requestTarget } });

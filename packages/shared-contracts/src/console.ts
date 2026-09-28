@@ -21,6 +21,8 @@ export type ConsoleOpenResult = z.infer<typeof consoleOpenResultSchema>;
  */
 export const CONSOLE_HOST_METHODS = Object.freeze([
   "codexhost/harness/plugins/list",
+  "codexhost/harness/display-settings/get",
+  "codexhost/harness/display-settings/set",
   "codexhost/harness/inspect",
   "codexhost/harness/launch-settings/get",
   "codexhost/harness/launch-settings/set",

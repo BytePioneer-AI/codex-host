@@ -1945,6 +1945,61 @@ describe("Renderer Session Import page", () => {
     scope.dispose();
   });
 
+  it("reports a successful Web import without navigation or a retry-open action", async () => {
+    const client = {
+      listSessionImportSources: vi.fn(async () => ({
+        harnesses: [{ harnessId: harnessIdSchema.parse("pi"), name: "Pi" }],
+      })),
+      listHarnessSessions: vi.fn(async () => ({
+        total: 1,
+        candidates: [
+          {
+            nativeSessionId: "web-session",
+            title: "Web import",
+            cwd: "/work",
+            running: false,
+            updatedAt: 1000,
+          },
+        ],
+      })),
+      importHarnessSession: vi.fn(async () => ({
+        threadId: hostThreadIdSchema.parse("web-imported"),
+      })),
+    };
+    const page = createDefaultRendererSettingsPages(
+      rendererSettingsMessages("en"),
+      () => null,
+      () => null,
+      () => null,
+      () => client,
+      null,
+    ).find(({ id }) => id === "session-import");
+    if (!page) throw new Error("Session import page missing");
+    const content = new FakeDocument().createElement("main");
+    const scope = new RendererSettingsPageScope();
+    page.mount({
+      content: content as unknown as HTMLElement,
+      signal: scope.signal,
+      runLatest: (operation, handlers) => scope.runLatest(operation, handlers),
+    });
+    await vi.waitFor(() => expect(visibleText(content)).toContain("Web import"));
+    const button = descendants(content).find(
+      ({ dataset }) => dataset.sessionImportAction === "import",
+    );
+    button?.dispatch("click");
+    await vi.waitFor(() =>
+      expect(visibleText(content)).toContain("Session imported. View it in Codex."),
+    );
+    expect(client.importHarnessSession).toHaveBeenCalledWith({
+      harnessId: "pi",
+      nativeSessionId: "web-session",
+    });
+    expect(
+      descendants(content).some(({ dataset }) => dataset.sessionImportAction === "retry-open"),
+    ).toBe(false);
+    scope.dispose();
+  });
+
   it("discovers Harness options, ignores stale Harness results, and imports Pi with an activity warning", async () => {
     const oldList = deferred<{ candidates: []; total: number }>();
     const client = {

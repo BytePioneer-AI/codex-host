@@ -17,6 +17,13 @@ import {
   credentialImportsParamsSchema,
 } from "@codexhost/shared-contracts";
 import { handleCredentialImports } from "./credential-imports.js";
+import { HarnessDisplaySettingsStore } from "./harness-display-settings.js";
+import {
+  HARNESS_DISPLAY_GET_METHOD,
+  HARNESS_DISPLAY_SET_METHOD,
+  harnessDisplayGetSchema,
+  harnessDisplaySetSchema,
+} from "@codexhost/shared-contracts";
 import {
   rewriteDelegationMentionInput,
   rewriteDelegationMentionText,
@@ -1080,6 +1087,33 @@ export class AppServerHost {
     frame: Buffer<ArrayBufferLike>,
   ): Promise<void> {
     if (this.#closeRequested) return;
+    if (
+      request.method === HARNESS_DISPLAY_GET_METHOD ||
+      request.method === HARNESS_DISPLAY_SET_METHOD
+    ) {
+      const parsed = (
+        request.method === HARNESS_DISPLAY_SET_METHOD
+          ? harnessDisplaySetSchema
+          : harnessDisplayGetSchema
+      ).safeParse(request.params ?? {});
+      if (!parsed.success) {
+        await this.#writer.json(rpcError(request, -32602, "Invalid Harness display settings"));
+        return;
+      }
+      try {
+        const store = new HarnessDisplaySettingsStore(this.#options.environment ?? process.env);
+        const result =
+          request.method === HARNESS_DISPLAY_SET_METHOD
+            ? await store.set(harnessDisplaySetSchema.parse(parsed.data))
+            : await store.get();
+        await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(result) }));
+      } catch {
+        await this.#writer.json(
+          rpcError(request, -32000, "Could not save or read Harness display settings"),
+        );
+      }
+      return;
+    }
     if (request.method === LOADED_SESSIONS_METHOD) {
       await this.#writer.json(
         rpcEnvelope(request, { result: this.#externalRuntime.idleRelease.list() }),

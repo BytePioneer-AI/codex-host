@@ -1,3 +1,5 @@
+import { startAgentGroupSync } from "./agent-group-sync.js";
+import { getSharedAgentGroupPreferenceStore } from "./agent-group-preference.js";
 import {
   committedReactAncestors,
   type RendererHostRoute,
@@ -919,6 +921,11 @@ export function installCurrentRendererAdapter(): {
   const usageSubscription = createThreadUsageSubscriptionRelay();
   const idleReleaseSync = installIdleReleasePreferenceSync(window);
   const clients = createRendererHostClients(() => window.__codexhostHostRoutingV1);
+  const stopGroupSync = startAgentGroupSync(
+    getSharedAgentGroupPreferenceStore(),
+    () => (disposed ? null : clients.forHost("local")),
+    { migrateLegacy: true },
+  );
   const currentRequestRoute = (): RendererHostRoute | null => {
     const route = disposed ? null : (window.__codexhostHostRoutingV1?.forComposer() ?? null);
     usageSubscription.connect(clients.forRoute(route));
@@ -1100,6 +1107,7 @@ export function installCurrentRendererAdapter(): {
       const cleanups = [
         ...[...selectedPolicies.values()].map((policy) => () => policy.select(null)),
         () => forkControl.dispose(),
+        () => stopGroupSync(),
         () => clients.dispose(),
         () => usageSubscription.dispose(),
         () => idleReleaseSync.dispose(),

@@ -1,4 +1,6 @@
 import { hostRequestManager, consoleUpdateClient } from "./api.js";
+import { startAgentGroupSync } from "../agent-group-sync.js";
+import { getSharedAgentGroupPreferenceStore } from "../agent-group-preference.js";
 import { createConsoleConnectionDiagnostics } from "./connection-diagnostics.js";
 import consoleCss from "./console.css";
 import { h } from "./dom.js";
@@ -108,6 +110,14 @@ export function startConsoleApp(document: Document): void {
   const manager = hostRequestManager();
   const modelClient = createRendererModelClient([manager]);
   if (!modelClient) throw new Error("Console Host client is unavailable");
+  const stopGroupSync = startAgentGroupSync(
+    getSharedAgentGroupPreferenceStore(),
+    () => modelClient,
+    { migrateLegacy: false },
+  );
+  window.addEventListener("pagehide", (event) => {
+    if (!event.persisted) stopGroupSync();
+  });
   const diagnostics = createConsoleConnectionDiagnostics(modelClient);
   const sessionImportClient = createRendererSessionImportClient((method, params) =>
     manager.sendRequest(method, params),
@@ -119,7 +129,7 @@ export function startConsoleApp(document: Document): void {
     () => diagnostics,
     () => modelClient,
     () => sessionImportClient,
-    () => Promise.reject(new Error(messages.openInCodex)),
+    null,
   );
   const navigate = (pageId: string): void => {
     window.location.hash = pageId;

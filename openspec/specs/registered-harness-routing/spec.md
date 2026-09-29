@@ -316,11 +316,11 @@ Release composition and audit SHALL include the DeepSeek Adapter's official Host
 - **AND** it SHALL NOT require `runtime/cordis.yml`, `runtime/server.mjs`, or `dsh-jsonrpc-agent`
 
 ### Requirement: 委派创建可携带显式 Model 与 Thinking
-`codexhost delegate start` SHALL 接受可选 `--model <opaque-ref>` 与 `--thinking <option-id>`，并在创建目标普通可写 Thread 时应用这些配置。该能力 SHALL 支持全部已注册外部 Harness 和原生 Codex。
+`codexhost delegate start` SHALL 接受可选 `--model <model>` 与 `--thinking <thinking>`，并在创建目标普通可写 Thread 时应用这些配置。调用方可传入 Catalog ID 或其声明的 `nativeId`。该能力 SHALL 支持全部已注册外部 Harness 和原生 Codex。
 
 #### Scenario: 外部 Harness 使用显式配置创建
-- **WHEN** 调用方对外部 Harness 指定有效 Model 与 Thinking
-- **THEN** Coordinator SHALL 通过公共 Adapter seam 调用 `open({kind: "create", model, thinkingOptionId})`
+- **WHEN** 调用方对外部 Harness 指定有效 Model 与 Thinking（使用 ID 或 nativeId）
+- **THEN** Coordinator SHALL 解析配置并通过公共 Adapter seam 调用 `open({kind: "create", model, thinkingOptionId})`
 - **AND** MUST NOT 增加 Harness 专用 Delegation 分支
 
 #### Scenario: 原生 Codex 使用显式配置创建

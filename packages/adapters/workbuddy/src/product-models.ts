@@ -133,6 +133,7 @@ export function mergeWorkBuddyProductModels(
       : productModel.name;
     models.push({
       ref,
+      nativeId: productModel.id,
       label:
         annotatedLabel.length <= HARNESS_MODEL_LABEL_MAX_LENGTH
           ? annotatedLabel

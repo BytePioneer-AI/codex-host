@@ -42,8 +42,9 @@ function inspectOutput({ harnessId, inspection }: HarnessInspectResult): unknown
   return {
     harnessId,
     status: inspection.status,
-    models: catalog.models.map(({ ref, label, supportedThinkingOptionIds }) => ({
+    models: catalog.models.map(({ ref, label, nativeId, supportedThinkingOptionIds }) => ({
       id: ref.id,
+      ...(nativeId ? { nativeId } : {}),
       label,
       ...(supportedThinkingOptionIds ? { thinking: supportedThinkingOptionIds } : {}),
     })),

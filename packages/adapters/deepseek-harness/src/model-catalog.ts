@@ -124,6 +124,7 @@ export function normalizeDeepSeekModelCatalog(
   const models = groups.flatMap((group) =>
     group.models.map((model) => ({
       ref: encodeDeepSeekHarnessModelRef({ provider: group.id, model: model.id }),
+      nativeId: `${group.id}/${model.id}`,
       label: `${group.name} / ${model.name}`,
       ...(model.reasoning && model.reasoning.efforts.length > 0
         ? { supportedThinkingOptionIds: model.reasoning.efforts.map((effort) => effort.id) }
@@ -132,7 +133,11 @@ export function normalizeDeepSeekModelCatalog(
   );
   const defaultModel = selection ? encodeDeepSeekHarnessModelRef(selection) : undefined;
   if (selection && defaultModel && !models.some((model) => model.ref.id === defaultModel.id)) {
-    models.unshift({ ref: defaultModel, label: `${selection.provider} / ${selection.model}` });
+    models.unshift({
+      ref: defaultModel,
+      nativeId: `${selection.provider}/${selection.model}`,
+      label: `${selection.provider} / ${selection.model}`,
+    });
   }
   const defaultReasoning = selection
     ? groups

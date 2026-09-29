@@ -431,8 +431,8 @@ export async function runDelegationCli(input: {
           ? { taskName: value(parsed, "--task-name") }
           : {}),
         ...(cwdOption(parsed) ? { cwd: cwdOption(parsed) } : {}),
-        ...(value(parsed, "--model") ? { model: { id: value(parsed, "--model") } } : {}),
-        ...(value(parsed, "--thinking") ? { thinkingOptionId: value(parsed, "--thinking") } : {}),
+        ...(value(parsed, "--model") ? { model: value(parsed, "--model") } : {}),
+        ...(value(parsed, "--thinking") ? { thinking: value(parsed, "--thinking") } : {}),
         ...(parentThread ? { parentThreadId: normalizeThreadId(parentThread) } : {}),
         ...(value(parsed, "--request-id") ? { requestId: value(parsed, "--request-id") } : {}),
         ...(parsed.repeated.get("--ref") ? { refs: parsed.repeated.get("--ref") } : {}),

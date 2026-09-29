@@ -66,6 +66,11 @@ describe("Claude Code runtime Model catalog", () => {
         ({ resolvedModelLabel }) => resolvedModelLabel === "runtime-custom",
       ),
     ).toHaveLength(3);
+    expect(normalized.catalog.models.map(({ nativeId }) => nativeId)).toEqual([
+      "default",
+      "custom-model",
+      "sonnet",
+    ]);
     expect(normalized.catalog.defaultModel).toEqual(CLAUDE_DEFAULT_MODEL_REF);
     expect(normalized.catalog.thinkingOptions).toEqual([
       { id: "off", label: "Off" },
@@ -313,6 +318,11 @@ describe("Claude Code modelPicker.settings merge", () => {
     for (const model of normalized.catalog.models) {
       expect(model.ref.id.startsWith("claude-model-v1.")).toBe(true);
     }
+    expect(normalized.catalog.models.map((model) => model.nativeId)).toEqual([
+      "default",
+      "minimax-m2[1m]",
+      "provider-x/custom-opus",
+    ]);
   });
 
   it("returns undefined when a non-empty options array has no valid entries", () => {

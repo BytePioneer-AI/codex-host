@@ -92,7 +92,11 @@ export class HermesAdapter implements HarnessAdapter {
       const inspection: HarnessInspection = {
         status: "ready",
         catalog: {
-          models: catalog.models.map(({ ref, label }) => ({ ref, label })),
+          models: catalog.models.map(({ ref, label, nativeId }) => ({
+            ref,
+            label,
+            ...(nativeId ? { nativeId } : {}),
+          })),
           thinkingOptions: hermesGatewayThinkingOptions,
           ...(catalog.defaultModel ? { defaultModel: catalog.defaultModel } : {}),
         },

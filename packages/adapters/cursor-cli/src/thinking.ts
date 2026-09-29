@@ -49,7 +49,8 @@ export function cursorThinking(options: SessionConfigOption[] | null | undefined
   return combinations.flatMap(({ values, labels }) => {
     const encoded = Buffer.from(JSON.stringify(values)).toString("base64url");
     const id = harnessThinkingOptionIdSchema.safeParse(`cursor.${encoded}`);
-    return id.success ? [{ id: id.data, label: labels.join(" / "), values }] : [];
+    const nativeId = values.map(([k, v]) => `${k}=${v}`).join(",");
+    return id.success ? [{ id: id.data, label: labels.join(" / "), values, nativeId }] : [];
   });
 }
 
@@ -61,9 +62,10 @@ export function cursorThinkingState(info: CursorSessionInfo) {
     ),
   );
   return {
-    availableThinkingOptions: options.map(({ id, label }): HarnessThinkingOption => ({
+    availableThinkingOptions: options.map(({ id, label, nativeId }): HarnessThinkingOption => ({
       id,
       label,
+      nativeId,
     })),
     ...(current ? { effectiveThinkingOptionId: current.id } : {}),
   };

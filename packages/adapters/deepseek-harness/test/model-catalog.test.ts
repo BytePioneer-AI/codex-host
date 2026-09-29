@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import {
   decodeDeepSeekHarnessModelRef,
   encodeDeepSeekHarnessModelRef,
+  normalizeDeepSeekModelCatalog,
 } from "../src/model-catalog.js";
 
 describe("DeepSeek Model references", () => {
@@ -36,5 +37,25 @@ describe("DeepSeek Model references", () => {
         model: "x".repeat(HARNESS_MODEL_REF_MAX_LENGTH),
       }),
     ).toThrow("too long");
+  });
+
+  it("sets nativeId to provider/model for all catalog entries", () => {
+    const catalog = normalizeDeepSeekModelCatalog(
+      [
+        {
+          id: "gateway",
+          name: "Gateway",
+          models: [
+            { id: "deepseek-flash", name: "DeepSeek Flash" },
+            { id: "deepseek-pro", name: "DeepSeek Pro" },
+          ],
+        },
+      ],
+      { provider: "gateway", model: "deepseek-flash" },
+    );
+    expect(catalog.models.map((m) => m.nativeId)).toEqual([
+      "gateway/deepseek-flash",
+      "gateway/deepseek-pro",
+    ]);
   });
 });

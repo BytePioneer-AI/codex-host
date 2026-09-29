@@ -305,6 +305,7 @@ export function normalizeClaudeModelCatalog(
     return {
       ref: encodeClaudeModelRef(row.value),
       label: labels.get(row.value) ?? row.displayName,
+      nativeId: row.value,
       ...(row.resolvedModel ? { resolvedModelLabel: row.resolvedModel } : {}),
       supportedThinkingOptionIds: [...CLAUDE_THINKING_OPTION_IDS],
     };

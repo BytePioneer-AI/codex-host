@@ -29,6 +29,10 @@ describe("Hermes model catalog", () => {
       "Z.AI / glm-5-turbo",
       "MiniMax / MiniMax-M3",
     ]);
+    expect(catalog.models.map(({ nativeId }) => nativeId)).toEqual([
+      "zai:glm-5-turbo",
+      "minimax-oauth:MiniMax-M3",
+    ]);
     expect(catalog.defaultModel).not.toBeNull();
   });
 

@@ -51,6 +51,10 @@ describe("Pi Model Catalog normalization", () => {
       "a-provider / same",
       "z-provider / same",
     ]);
+    expect(catalog.models.map(({ nativeId }) => nativeId)).toEqual([
+      "a-provider/same",
+      "z-provider/same",
+    ]);
     expect(catalog.models[0]?.ref).not.toEqual(catalog.models[1]?.ref);
     expect(catalog.defaultModel).toEqual(catalog.models[1]?.ref);
     expect(catalog.defaultThinkingOptionId).toBe("high");
@@ -64,6 +68,21 @@ describe("Pi Model Catalog normalization", () => {
       "max",
     ]);
     expect(catalog.models[0]?.supportedThinkingOptionIds).toEqual(["off"]);
+  });
+
+  it("omits native selectors whose Provider and Model parts concatenate ambiguously", () => {
+    const first = { provider: "local/provider", id: "family/model", reasoning: false };
+    const second = { provider: "local", id: "provider/family/model", reasoning: false };
+    const catalog = normalizePiModelCatalog([first, second], second, null, null);
+
+    expect(catalog.models).toHaveLength(2);
+    expect(new Set(catalog.models.map(({ ref }) => ref.id)).size).toBe(2);
+    expect(catalog.models.map(({ nativeId }) => nativeId)).toEqual([undefined, undefined]);
+  });
+
+  it("publishes an unambiguous native selector for the synthesized current Model", () => {
+    const catalog = normalizePiModelCatalog([], { provider: "custom", id: "active" }, null, null);
+    expect(catalog.models[0]?.nativeId).toBe("custom/active");
   });
 
   it("normalizes only Pi-reported Thinking levels and keeps unknown labels Adapter-owned", () => {

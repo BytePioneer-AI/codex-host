@@ -99,6 +99,7 @@ export function decodeOpenCodeVariant(id: HarnessThinkingOptionId): string | und
 function variantOption(variant: string | undefined): HarnessThinkingOption {
   return harnessThinkingOptionSchema.parse({
     id: encodeOpenCodeVariant(variant),
+    ...(variant ? { nativeId: variant } : {}),
     label: variant ?? "Default",
   });
 }
@@ -134,6 +135,7 @@ export function normalizeOpenCodeModelCatalog(
   const models = nativeModels
     .map(({ provider, model }) => ({
       ref: encodeOpenCodeModelRef({ providerID: provider.id, modelID: model.id }),
+      nativeId: `${provider.id}/${model.id}`,
       label: `${provider.name} / ${model.name}`,
       resolvedModelLabel: `${provider.id}/${model.id}`,
       supportedThinkingOptionIds: [

@@ -130,7 +130,12 @@ export function normalizePiModelCatalog(
 ): HarnessModelCatalog {
   const byRef = new Map<
     string,
-    { model: HarnessModelCatalog["models"][number]; reasoning: boolean; synthesized: boolean }
+    {
+      model: Omit<HarnessModelCatalog["models"][number], "nativeId">;
+      nativeId: string;
+      reasoning: boolean;
+      synthesized: boolean;
+    }
   >();
   for (const native of nativeModels) {
     const ref = encodePiModelRef(native);
@@ -146,6 +151,7 @@ export function normalizePiModelCatalog(
         ref,
         label: `${native.provider} / ${native.id}`,
       },
+      nativeId: `${native.provider}/${native.id}`,
       reasoning: native.reasoning,
       synthesized: false,
     });
@@ -165,6 +171,7 @@ export function normalizePiModelCatalog(
         ref: defaultModel,
         label: `${effectiveModel.provider} / ${effectiveModel.id}`,
       },
+      nativeId: `${effectiveModel.provider}/${effectiveModel.id}`,
       reasoning,
       synthesized: true,
     });
@@ -192,9 +199,13 @@ export function normalizePiModelCatalog(
   const effectiveThinkingOptionIds = thinkingLevels
     ? allThinkingOptionIds.filter((id) => thinkingLevels.includes(id))
     : allThinkingOptionIds;
+  const nativeIdCounts = new Map<string, number>();
+  for (const { nativeId } of byRef.values())
+    nativeIdCounts.set(nativeId, (nativeIdCounts.get(nativeId) ?? 0) + 1);
   const models = [...byRef.values()]
-    .map(({ model, reasoning, synthesized }) => ({
+    .map(({ model, nativeId, reasoning, synthesized }) => ({
       ...model,
+      ...(nativeIdCounts.get(nativeId) === 1 ? { nativeId } : {}),
       supportedThinkingOptionIds: reasoning
         ? synthesized
           ? effectiveThinkingOptionIds

@@ -37,6 +37,24 @@ But **Codex** isn't the only great **Agent Harness** — **Claude Code** and **P
 
 </div>
 
+<a name="support"></a>
+<details>
+<summary><strong>☕ If you'd like to support CodexHost's ongoing development, feel free to buy me a coffee</strong></summary>
+
+<p align="center">
+  <img src="docs/imgs/sponsor-wechat.png" width="200" alt="WeChat Pay" /><br />
+  <sub>Scan with WeChat · Any amount is appreciated, and every bit of support means a lot.</sub>
+</p>
+
+CodexHost is free and open source. Sponsorship helps cover the real costs of keeping it going:
+
+- 🛠️ **Development time**: new features, bug fixes, and reviewing community PRs
+- 🤖 **AI subscriptions**: paid plans for the Harnesses and AI services CodexHost integrates with, so every integration can be tested and kept up to date
+
+<p align="center">❤️ Thank you for your support ❤️</p>
+
+</details>
+
 ## Interface Preview
 
 No more switching apps: **Pi, Claude Code, Grok Build, and ten-plus other Harnesses** all run right inside the same Codex Desktop window.

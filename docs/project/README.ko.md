@@ -36,6 +36,24 @@
 
 </div>
 
+<a name="support"></a>
+<details>
+<summary><strong>☕ CodexHost의 지속적인 개발을 응원하고 싶으시다면 커피 한 잔 사 주세요</strong></summary>
+
+<p align="center">
+  <img src="../imgs/sponsor-wechat.png" width="200" alt="WeChat Pay" /><br />
+  <sub>WeChat으로 스캔 · 금액에 상관없이 모든 후원이 큰 힘이 됩니다</sub>
+</p>
+
+CodexHost는 무료 오픈 소스 프로젝트입니다. 후원금은 프로젝트를 유지하는 데 드는 실제 비용에 사용됩니다.
+
+- 🛠️ **개발 시간**: 새로운 기능, 버그 수정, 커뮤니티 PR 리뷰
+- 🤖 **AI 구독**: CodexHost가 연동하는 각 Harness와 AI 서비스의 유료 구독으로, 모든 연동을 실제로 테스트하고 최신 상태로 유지합니다
+
+<p align="center">❤️ 후원해 주셔서 감사합니다 ❤️</p>
+
+</details>
+
 ## 인터페이스 미리보기
 
 앱을 전환하지 않고도 **Pi, Claude Code, Grok Build 등 10개 이상의 Harness**를 하나의 Codex Desktop 창에서 바로 사용할 수 있습니다.

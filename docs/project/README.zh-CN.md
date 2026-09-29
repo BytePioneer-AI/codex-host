@@ -36,6 +36,24 @@
 
 </div>
 
+<a name="support"></a>
+<details>
+<summary><strong>☕ 如果愿意支持 CodexHost 的持续开发，欢迎请我喝杯咖啡</strong></summary>
+
+<p align="center">
+  <img src="../imgs/sponsor-wechat.png" width="200" alt="WeChat Pay" /><br />
+  <sub>微信扫码 · 金额不限，每一份支持都意义重大</sub>
+</p>
+
+CodexHost 是免费开源的项目。赞助将用于维持项目运行的实际成本：
+
+- 🛠️ **开发时间**：新功能、问题修复，以及审核社区提交的 PR
+- 🤖 **AI 订阅**：CodexHost 接入的各个 Harness 与 AI 服务的付费订阅，确保每个集成都能被实际测试并保持最新
+
+<p align="center">❤️ 感谢每一份支持 ❤️</p>
+
+</details>
+
 ## 界面预览
 
 无需切换应用，**Pi、Claude Code、Grok Build 等十余个 Harness** 都可以在同一个 Codex Desktop 窗口中直接使用。

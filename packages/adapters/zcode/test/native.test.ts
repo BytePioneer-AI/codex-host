@@ -670,6 +670,7 @@ describe.skipIf(!app)("ZCode Start Plan with synthetic credentials and a local P
       inspected.catalog.models.find((m) => m.label === "Start Plan / GLM-5.3-Flash"),
     );
     expect(model.supportedThinkingOptionIds).toEqual(["low", "high", "max"]);
+    expect(model.nativeId).toBe("account:zai-start-plan/GLM-5.3-Flash");
     expect(prewarm).not.toHaveBeenCalled();
     const opened = await adapter.open({ kind: "create", cwd: root, model: model.ref });
     if (!opened.ok) throw new Error(JSON.stringify(opened.error));

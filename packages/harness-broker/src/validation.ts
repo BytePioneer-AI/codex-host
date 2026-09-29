@@ -223,6 +223,7 @@ const eventKeys = new Map<string, ReadonlySet<string>>([
   ["item.started", new Set(["type", "turnId", "item"])],
   ["item.updated", new Set(["type", "turnId", "itemId", "update"])],
   ["item.completed", new Set(["type", "turnId", "snapshot"])],
+  ["item.detached", new Set(["type", "turnId", "itemId"])],
   ["interaction.closed", new Set(["type", "interactionId", "turnId", "reason"])],
   ["turn.completed", new Set(["type", "turnId", "nativeTurnRef", "outcome"])],
   ["session.faulted", new Set(["type", "error"])],

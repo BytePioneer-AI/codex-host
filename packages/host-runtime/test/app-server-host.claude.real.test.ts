@@ -157,6 +157,8 @@ describe("AppServerHost hermetic Claude projection", () => {
           setIdleTurnHandler: () => undefined,
           setThreadEventHandler: () => undefined,
           setIdleLive: () => undefined,
+          hasBackgroundTasks: () => false,
+          stopBackgroundTask: async () => undefined,
           start: async () => undefined,
           getContextUsage: async () => ({
             usedTokens: 30,

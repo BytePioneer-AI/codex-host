@@ -1,8 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { hostInteractionIdSchema, hostTurnIdSchema } from "@codexhost/shared-contracts";
-import type { HostQuestionResponse } from "@codexhost/harness-adapter";
+import type { JsonObject } from "@codexhost/protocol-core";
 import { QuestionInteractions } from "../src/question-interactions.js";
-import { DelegationControlError } from "../src/delegation-types.js";
 
 function fixture(options: { expiresAt?: string; gate?: Promise<void> } = {}) {
   const effects = {
@@ -14,80 +12,59 @@ function fixture(options: { expiresAt?: string; gate?: Promise<void> } = {}) {
     diagnose: vi.fn(),
   };
   const questions = new QuestionInteractions(effects);
-  const respond = vi.fn<(answer: HostQuestionResponse) => Promise<void>>(async () => undefined);
+  const respond = vi.fn<(reply: JsonObject) => Promise<void>>(async () => undefined);
+  const request = { questions: [{ id: "value", question: "Value?", options: null }] };
   questions.register({
     requestId: -1,
     threadId: "thread",
+    turnId: "turn",
     harnessId: "pi",
-    interaction: {
-      type: "question",
-      interactionId: hostInteractionIdSchema.parse("question"),
-      turnId: hostTurnIdSchema.parse("turn"),
-      ...(options.expiresAt ? { expiresAt: options.expiresAt } : {}),
-      questions: [
-        {
-          id: "value",
-          type: "text",
-          prompt: "Value?",
-          multiline: false,
-          optional: false,
-          secret: false,
-        },
-      ],
-    },
-    parseResponse: () => ({ type: "question", answers: { value: ["desktop"] } }),
+    request,
+    ...(options.expiresAt ? { expiresAt: options.expiresAt } : {}),
     respond,
   });
   const interactionId = questions.read("thread")[0]?.interactionId;
   if (!interactionId) throw new Error("Missing registered Question");
-  const answer = () =>
-    questions.answer({
-      threadId: "thread",
-      interactionId,
-      answers: { value: ["cli"] },
-    });
-  return { questions, respond, answer, effects, interactionId };
+  const result = { answers: { value: { answers: ["cli"] } }, nativeField: "untouched" };
+  const answer = () => questions.answer({ threadId: "thread", interactionId, result });
+  return { questions, respond, answer, effects, interactionId, result, request };
 }
 
 afterEach(() => vi.useRealTimers());
 
-describe("Question settlement across asynchronous boundaries", () => {
-  it("does not reuse answer identities when the Host instance is rebuilt", async () => {
+describe("Pending Question ownership", () => {
+  it("preserves request/reply data and rejects identities from a previous Host", async () => {
     const old = fixture();
     await old.questions.close(-1);
     const current = fixture();
     expect(current.interactionId).not.toBe(old.interactionId);
-    for (const interactionId of [old.interactionId, "question"]) {
-      await expect(
-        current.questions.answer({
-          threadId: "thread",
-          interactionId,
-          answers: { value: ["stale"] },
-        }),
-      ).rejects.toMatchObject({ code: "QUESTION_NOT_PENDING" });
-    }
-    expect(current.respond).not.toHaveBeenCalled();
+    expect(current.questions.read("thread")[0]?.request).toBe(current.request);
+    await expect(
+      current.questions.answer({
+        threadId: "thread",
+        interactionId: old.interactionId,
+        result: current.result,
+      }),
+    ).rejects.toMatchObject({ code: "QUESTION_NOT_PENDING" });
     await current.answer();
-    expect(current.respond).toHaveBeenCalledOnce();
+    expect(current.respond).toHaveBeenCalledExactlyOnceWith({ result: current.result });
   });
 
-  it("keeps a rejected in-flight answer correctable despite a concurrent Desktop reply", async () => {
+  it("claims one reply across both entries and never retries an uncertain failure", async () => {
     const f = fixture();
     const delivering = Promise.withResolvers<undefined>();
     f.respond.mockImplementationOnce(() => delivering.promise);
-    const rejected = expect(f.answer()).rejects.toMatchObject({ code: "INVALID_ARGUMENT" });
+    const rejected = expect(f.answer()).rejects.toThrow("lost reply acknowledgement");
     await f.questions.handleDesktopResponse({ id: -1, result: {} });
-    expect(f.respond).toHaveBeenCalledTimes(1);
-    delivering.reject(new DelegationControlError("INVALID_ARGUMENT", "Native answer rejected"));
+    expect(f.respond).toHaveBeenCalledOnce();
+    delivering.reject(new Error("lost reply acknowledgement"));
     await rejected;
-    expect(f.questions.read("thread")).toHaveLength(1);
-    await f.answer();
-    expect(f.respond).toHaveBeenCalledTimes(2);
-    expect(f.questions.read("thread")).toEqual([]);
-    expect(f.effects.resolved).toHaveBeenCalledTimes(1);
+    await expect(f.answer()).rejects.toMatchObject({ code: "QUESTION_NOT_PENDING" });
+    expect(f.respond).toHaveBeenCalledOnce();
+    expect(f.effects.resolved).toHaveBeenCalledOnce();
   });
 
-  it("rejects an answer that expired while waiting for Host admission", async () => {
+  it("expires before a queued answer can claim the request", async () => {
     vi.useFakeTimers();
     const admission = Promise.withResolvers<undefined>();
     const f = fixture({
@@ -99,27 +76,21 @@ describe("Question settlement across asynchronous boundaries", () => {
     expect(f.questions.read("thread")).toEqual([]);
     admission.resolve(undefined);
     await rejected;
-    expect(f.respond).toHaveBeenCalledExactlyOnceWith({
-      type: "question",
-      answers: {},
-      cancelled: true,
-    });
-    expect(f.effects.resolved).toHaveBeenCalledTimes(1);
+    expect(f.respond).toHaveBeenCalledExactlyOnceWith({ result: { answers: {} } });
+    expect(f.effects.resolved).toHaveBeenCalledOnce();
   });
 
-  it("does not cancel or close twice when a timely answer settles after its deadline", async () => {
+  it("does not cancel an already claimed reply or resolve it twice", async () => {
     vi.useFakeTimers();
     const f = fixture({ expiresAt: new Date(Date.now() + 1000).toISOString() });
     const delivering = Promise.withResolvers<undefined>();
     f.respond.mockImplementationOnce(() => delivering.promise);
     const answered = f.answer();
     await vi.advanceTimersByTimeAsync(1001);
-    expect(f.respond).toHaveBeenCalledTimes(1);
-    // The Harness's close event may arrive before respond() acknowledges it.
     await f.questions.close(-1);
     delivering.resolve(undefined);
     await answered;
-    expect(f.effects.resolved).toHaveBeenCalledTimes(1);
-    expect(f.respond).toHaveBeenCalledTimes(1);
+    expect(f.effects.resolved).toHaveBeenCalledOnce();
+    expect(f.respond).toHaveBeenCalledOnce();
   });
 });

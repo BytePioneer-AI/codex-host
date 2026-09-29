@@ -1,101 +1,63 @@
 # 委派问题交互：读取、回答与一次性通知
 
-子 Agent 在 Turn 运行中提出结构化问题时，Turn 不会结束，父 Agent 若只用 `thread wait` 或 watch 等终态就会互相等待。本能力让父 Agent 直接读到待回答问题、把答案交回原生请求，并用一次性 watch 在出现问题时被唤醒。原生 Codex 与提供公共 Question 契约的外部 Harness 走同一条读取、回答与结算路径。
+受委派方执行中提出问题时，委派方可以读取同一份挂起请求并提交答复。问题与答案沿用既有 Desktop 协议；Host 只补登记、查询、一次性答复和失效管理，不另建问题语义模型。
 
-## 问题从哪来
+## 现有路径与职责
 
-问题只来自原生结构化请求，不从聊天正文、工具输出或屏幕反推：
+- 外部 Harness 的结构化 Question 仍由现有 projector 生成 Desktop 请求；委派方看到的 `request` 就是该请求的 params，答复仍由原有 `parseResponse` 映射选项文本，再交给 Adapter 的 `interaction.respond`。
+- 原生 Codex 的 `item/tool/requestUserInput` 参数原样登记；答复经已有服务端请求 ID 映射返回，不先转成 HostQuestion 再转换回去。
+- `QuestionInteractions` 只保存一份挂起请求和回复回调，不判断选项、必填、多选或自由文本规则。协议处理者负责原有解析与校验。
+- Desktop 的显示、答复、取消和非法输入语义不变。外部 Question 的非法 Desktop 答复仍按原路径转换为取消；原生答复仍直接转发。
+- `approval` 不进入本接口，权限规则不变。请求只来自结构化事件，不从聊天、工具文本或屏幕重建。
 
-- 外部 Harness 通过公共 `HarnessOutput` 的 `kind: interaction`、`type: question` 报告，通过 `interaction.closed` 报告关闭；Host 同时把它投影成 Desktop 的 `item/tool/requestUserInput`。
-- 原生 Codex 通过官方 App Server 的 `item/tool/requestUserInput` 服务端请求提问；Host 在既有转发处登记请求内容与所属 Turn，并在原生 `serverRequest/resolved` 通知到达时清除。
-- 只有能解析出 Thread、Turn 与问题列表的请求才进入待回答状态；无法解析的请求仍照常转发给 Desktop，但不暴露为可回答请求，Host 不猜测。
+## 读取与答复
 
-`approval` 不进入这条通道，仍按各自原生权限规则处理。问题不是权限许可，不改变任何权限策略。
-
-## 唯一状态与两种回答入口
-
-Host 的 `QuestionInteractions` 完整负责问题登记、读取、校验、单次答复和失效清理，用一个 Map 保存当前请求。Desktop 和 CLI 共用这个答复出口；`AppServerHost` 只把两种原生协议的解析与回复接进来。原生 Codex 的格式转换在 `official-question.ts`，外部 Harness 沿用公共 Question 契约。watch 只消费读取结果。
-
-- 首次有效答案结算请求：交还原生请求、删除状态、并在需要时向 Desktop 发送 `serverRequest/resolved` 关闭同一问题。
-- 无效答案（未知问题 ID、缺少必答项、未声明的选项、数量不符）不消耗请求，请求保持待回答，可改正后重答。
-- 并发的第二份答案得到 `QUESTION_NOT_PENDING`，不会产生第二个原生回答。
-- 过期、取消、Turn 结束、Runtime 关闭或原生自行解决后，旧交互 ID 不再有效。
-- 对外 `interactionId` 由当前 Host 实例标识和 Host 请求编号派生，是不透明的答题凭证；调用方从 `read`/`wait`/watch 结果取得，不使用 Adapter 的局部编号或 Desktop 的协议请求编号。会话释放恢复、Host 重建后，旧凭证不会命中新问题。
-- 原生启动请求按对应 RPC 响应结算，活跃轮次按匹配的 Turn 结束事件结算，均在消息写出后释放断连排空约束。结束事件先于启动响应时，已结束的 Turn 身份只保留在尚未完成的请求中，响应到达后不重新标为活跃；旧轮结束不会清理下一轮的启动请求。
-- 回答只交回原生请求，不代替执行成功的证据；调用方仍需 `read` 或 `wait` 观察结果。
-
-## 读取
-
-`thread read` 快照新增 `pendingQuestions`；列表为空表示没有待回答请求。每项包含交互 ID、所属 Turn、标题、可选过期时间，以及沿用公共 Question 契约的问题（`choice`/`text`、选项值、`multiple`、`allowOther`、`optional`、`secret`）：
+`thread read` / `thread wait` 在 JSON 和 compact 输出中均返回 `pendingQuestions`；无问题时是空数组。每项包含不透明 `interactionId`、所属 `turnId`、可选的 `expiresAt` 和原请求参数 `request`：
 
 ```json
 {
-  "thread": "codex://threads/<id>",
-  "status": "running",
-  "pendingQuestions": [
-    {
-      "interactionId": "…",
-      "turnId": "…",
-      "questions": [
-        {
-          "id": "decision",
-          "type": "choice",
-          "prompt": "Continue?",
-          "options": [{ "value": "continue", "label": "Continue" }],
-          "multiple": false,
-          "allowOther": false,
-          "optional": false
-        }
-      ]
-    }
-  ]
+  "interactionId": "opaque-host-request-id",
+  "turnId": "turn-1",
+  "request": {
+    "threadId": "child",
+    "turnId": "turn-1",
+    "itemId": "item-1",
+    "isBlocking": true,
+    "questions": [{
+      "id": "decision",
+      "header": "Question",
+      "question": "Continue?",
+      "options": [{ "label": "Continue", "description": "Keep going" }],
+      "isOther": false,
+      "isSecret": false
+    }]
+  }
 }
 ```
-
-读取是当前事实，不需要先注册 watch；JSON 与 compact 输出都暴露该字段。原生 Codex 问题没有多选与可选项声明，Host 按协议原样保留自由度：选项的 `value` 就是原生答案字符串（选项 label），无选项问题按自由文本处理，`isOther` 映射为 `allowOther`，`isSecret` 映射为 `secret`。
-
-## 回答
 
 ```bash
 codexhost thread answer <thread> --interaction <id> --answers-file <file>
 ```
 
-答案文件是问题 ID 到答案数组的 JSON 对象，例如 `{"decision":["continue"],"note":["free text"]}`；取值来自读取结果中的选项值，自由文本、`allowOther` 与无选项问题接受文本。可选问题可省略或填空数组，全部可选时允许 `{}`。命令返回被回答的 Thread、交互 ID、Turn、Harness 与 `status: "running"`，表示答复提交成功；后续是否继续或完成仍以执行事件和读取结果为准。
+文件内容直接使用现有回复 result 结构，例如 `{"answers":{"decision":{"answers":["Continue"]}}}`。使用请求中的选项文本或原协议允许的文本答案；选项文本到 Harness 原始值的转换由已有解析器负责。CLI 只读取 JSON 并传递，不额外解释题目。
 
-失败语义：
+结果不表示受委派方工作已经成功，仍需 read/wait 查看后续执行。非法输入、取消及下游失败沿原有回复路径处理，不保证请求保留可重试；失败后先重新读取。无法解析文件或缺少回复参数时不提交；未知、过期或已被领取的凭证返回 `QUESTION_NOT_PENDING`，凭证属于另一 Thread 时返回 `INVALID_ARGUMENT`。
 
-| 错误 | 含义 |
+## 生命周期与通知
+
+- Desktop 与委派方共享一个请求，只能被领取一次；交回原处理者前即领取，避免并发回复或不明确的发送结果导致重复提交。委派方答复后关闭 Desktop 中同一问题。
+- 对外凭证由 Host 实例标识和请求编号派生，不使用可复用的 Adapter 局部 ID。会话恢复或 Host 重建后，旧答案不能命中新问题。
+- 超时、取消、Turn 结束或原生关闭事件使请求失效。待处理信息只存在于 Runtime 内存；不恢复历史问题。
+- 原生启动请求按对应 RPC 响应结算，活跃轮按匹配 Turn 的终态结算，输出写完后才释放断连排空约束。尚未完成的请求记录提前到达的终态，避免晚响应复活旧轮；旧轮结束不清理下一轮的启动。
+- watch 在问题出现或任务结束时通知一次。注册时已存在问题返回 `alreadyNeedsInput` 及当前请求，不新增通知；已结束返回 `alreadyTerminal`。答复后重新 watch 等待后续。
+- wait 遇到待处理请求即返回 `timedOut: false`。通知投递机制保持原有语义，调用者收到通知后应读取当前状态。
+
+## 实现入口
+
+| 文件 | 职责 |
 | --- | --- |
-| `INVALID_ARGUMENT` | 答案或参数非法，请求保持待回答；交互 ID 属于别的 Thread 也在此列 |
-| `QUESTION_NOT_PENDING` | 交互 ID 未知、已被用户或他人回答、已取消、已过期、Turn 已结束或请求所属 Runtime 已关闭 |
-
-外部 Harness 的回答通过公共 `interaction.respond` 交回，约束由公共 Question 校验器判定；原生 Codex 的回答通过官方服务端请求回复通道，用 Host 转发时登记的请求 ID 交回，因此不会被误送到另一个进程或另一代际的请求上。
-
-## 一次性通知
-
-出现待回答问题与任务终态一样，都是 watch 的就绪条件：
-
-- 已被观察的 Thread 出现问题时，本次 watch 通知一次，结果类型为 `needsInput`，通知中给出 Thread 链接、交互 ID 与 Turn，并提示重新 `read` 后回答；通知送达后该 watch 移除。
-- 注册时已经存在问题（例如提问发生在注册之前）直接返回 `state: "alreadyNeedsInput"` 与当前 `pendingQuestions`，不登记 watch、不再异步重复通知；已经结束仍返回 `alreadyTerminal`。
-- 通知的投递沿用既有语义：被通知 Thread 正忙时保持待送达并重试，`THREAD_BUSY` 从不视为已送达，结果未知不重试。发送、失败、超时、重注册行为不变。
-- `delegate start --watch true` 使用同一 watch，因此同样会报告 `needsInput`、`alreadyNeedsInput`。
-
-`thread wait` 使用同样的就绪条件：存在待回答问题即返回快照，`timedOut: false` 表示条件已达到，调用方按 `status` 与 `pendingQuestions` 区分“完成”和“等待回答”，不会一直等到超时。
-
-## 边界
-
-- 待回答请求与 watch 都只存在于当前 Host Runtime 内存，Runtime 重启后丢失，不新增持久订阅、恢复日志或数据库状态；运行时没有观察到的旧请求不会从历史文本重建。
-- 不改变 Desktop 既有问题投影、普通 `thread send` 的投递语义和 `approval` 处理。
-- Host 不判断业务答案，只校验协议约束。主 Agent 只在任务授权内回答，需要用户决定的问题交回用户。
-- 问题不会成为新的持久状态：没有 `waiting` 标志，任务在等待回答期间保持 `running`。
-
-## 相关实现
-
-| 位置 | 职责 |
-| --- | --- |
-| `packages/host-runtime/src/question-interactions.ts` | 完整问题生命周期：登记、读取、共同答复、并发与失效处理 |
-| `packages/host-runtime/src/official-question.ts` | 原生 Codex 问题及答案的协议转换 |
-| `packages/host-runtime/src/app-server-host.ts` | 把原生请求、回复通道和关闭事件接到同一问题生命周期 |
-| `packages/host-runtime/src/harness-delegation-coordinator.ts` | `read`/`wait` 暴露 `pendingQuestions` 与回答路由 |
-| `packages/host-runtime/src/delegation-watch.ts` | `needsInput` 与 `alreadyNeedsInput` 的一次性通知 |
-| `packages/host-runtime/src/codex-runtime/official-runtime-owner.ts` | 把原生 `serverRequest/resolved` 的请求 ID 改写回客户端可见 ID |
+| `packages/host-runtime/src/question-interactions.ts` | 请求登记、读取、一次性领取和失效 |
+| `packages/host-runtime/src/app-server-host.ts` | 接通原有外部及原生请求、回复和关闭事件 |
+| `packages/protocol-core/src/codex-question.ts` | 已有外部 Question 的 Desktop 投影及答复解析，未为委派改写 |
+| `packages/host-runtime/src/harness-delegation-coordinator.ts` | read/wait/answer 入口 |
+| `packages/host-runtime/src/delegation-watch.ts` | 一次性 needsInput/终态通知 |

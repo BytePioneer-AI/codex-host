@@ -144,17 +144,9 @@ describe("compact delegation output", () => {
     const question = {
       interactionId: "interaction-1",
       turnId: "private-turn",
-      questions: [
-        {
-          id: "decision",
-          type: "choice" as const,
-          prompt: "Continue?",
-          options: [{ value: "continue", label: "Continue" }],
-          multiple: false,
-          allowOther: false,
-          optional: false,
-        },
-      ],
+      request: {
+        questions: [{ id: "decision", question: "Continue?", options: [{ label: "Continue" }] }],
+      },
     };
     expect(
       compactDelegationOutput("thread read", {

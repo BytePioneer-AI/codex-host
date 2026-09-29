@@ -1,3 +1,4 @@
+import type { JsonValue } from "@codexhost/protocol-core";
 import { readFile } from "node:fs/promises";
 import type { Writable } from "node:stream";
 
@@ -39,39 +40,16 @@ function positiveInteger(value: string | undefined, name: string, maximum?: numb
   return number;
 }
 
-/**
- * Answer values keep the reported Question ID to answer-array structure. Only
- * the file's JSON shape is checked here; required answers, option membership,
- * and cardinality are the Host's Question constraints, so an optional answer
- * may be empty and every Question may be skipped.
- */
-function questionAnswers(source: string, path: string): Record<string, string[]> {
-  let parsed: unknown;
+/** Load the existing reply result; its owner interprets and validates it. */
+function questionReply(source: string, path: string): JsonValue {
   try {
-    parsed = JSON.parse(source);
+    return JSON.parse(source) as JsonValue;
   } catch (error) {
     throw new DelegationControlError(
       "INVALID_ARGUMENT",
       `Answers file '${path}' is not valid JSON: ${error instanceof Error ? error.message : String(error)}`,
     );
   }
-  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-    throw new DelegationControlError(
-      "INVALID_ARGUMENT",
-      `Answers file '${path}' must contain a JSON object mapping Question IDs to answer arrays`,
-    );
-  }
-  const answers: Record<string, string[]> = {};
-  for (const [questionId, value] of Object.entries(parsed)) {
-    if (!Array.isArray(value) || !value.every((entry) => typeof entry === "string")) {
-      throw new DelegationControlError(
-        "INVALID_ARGUMENT",
-        `Answers file '${path}' must map each Question ID to an array of strings`,
-      );
-    }
-    answers[questionId] = [...value];
-  }
-  return answers;
 }
 
 function options(arguments_: readonly string[]): {
@@ -443,7 +421,7 @@ export async function runDelegationCli(input: {
           body: {
             threadId: normalizeThreadId(threadId),
             interactionId,
-            answers: questionAnswers(source, answersFile),
+            result: questionReply(source, answersFile),
           },
           ...(input.fetchImpl ? { fetchImpl: input.fetchImpl } : {}),
         }),

@@ -44,7 +44,11 @@ describe("Question and native Turn lifecycle boundaries", () => {
       const oldId = (await api.read({ threadId, view: "result" })).pendingQuestions?.[0]
         ?.interactionId;
       if (!oldId) throw new Error("Missing original Question");
-      await api.answer({ threadId, interactionId: oldId, answers: { value: ["first answer"] } });
+      await api.answer({
+        threadId,
+        interactionId: oldId,
+        result: { answers: { value: { answers: ["first answer"] } } },
+      });
       first.succeedTurn();
       await fixture.collector.waitFor((m) => turnEvent(m, "turn/completed", firstTurn));
       const snapshot = await first.readSnapshot();
@@ -82,7 +86,7 @@ describe("Question and native Turn lifecycle boundaries", () => {
         api.answer({
           threadId,
           interactionId: oldId,
-          answers: { value: ["stale first answer"] },
+          result: { answers: { value: { answers: ["stale first answer"] } } },
         }),
       ).rejects.toMatchObject({ code: "QUESTION_NOT_PENDING" });
       expect(resumed.interactionResponses).toEqual([]);
@@ -94,7 +98,7 @@ describe("Question and native Turn lifecycle boundaries", () => {
         api.answer({
           threadId,
           interactionId: newId,
-          answers: { value: ["new answer"] },
+          result: { answers: { value: { answers: ["new answer"] } } },
         }),
       ).resolves.toMatchObject({ turnId: secondTurn });
       expect(resumed.interactionResponses).toMatchObject([

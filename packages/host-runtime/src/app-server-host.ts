@@ -158,7 +158,6 @@ import type {
 } from "./delegation-types.js";
 import { projectDelegationThreadSnapshot } from "./delegation-snapshot.js";
 import { QuestionInteractions } from "./question-interactions.js";
-import { parseOfficialQuestion, parseOfficialQuestionResponse } from "./official-question.js";
 import {
   canonicalizeOfficialCodexModelRef,
   decodeOfficialCodexModelRef,
@@ -1729,42 +1728,32 @@ export class AppServerHost {
 
   #observeOfficialServerRequest(parsed: JsonValue, forwarded: JsonValue): JsonValue | null {
     if (!isRecord(forwarded)) return forwarded;
-    if (forwarded.method === "item/tool/requestUserInput") {
-      try {
-        const question = parseOfficialQuestion(forwarded as JsonObject);
-        if (question && typeof forwarded.id === "string") {
-          const requestId = forwarded.id;
-          this.#questions.register({
-            ...question,
-            requestId,
-            harnessId: "codex",
-            parseResponse: parseOfficialQuestionResponse,
-            retire: () => {
-              this.#officialServerRequests.delete(requestId);
-            },
-            respond: async (response, desktopReply) => {
-              const reply = desktopReply ?? {
-                result: {
-                  answers: Object.fromEntries(
-                    Object.entries(response.answers).map(([id, answers]) => [id, { answers }]),
-                  ),
-                },
-              };
-              try {
-                if (await this.#replyToOfficialServerRequest(requestId, reply)) return;
-              } catch (error) {
-                this.#diagnose(error);
-              }
-              throw new DelegationControlError(
-                "QUESTION_NOT_PENDING",
-                "Native Question reply route is no longer available",
-              );
-            },
-          });
-        }
-      } catch (error) {
-        this.#diagnose(error);
-      }
+    const params = forwarded.params;
+    if (
+      forwarded.method === "item/tool/requestUserInput" &&
+      typeof forwarded.id === "string" &&
+      isRecord(params) &&
+      typeof params.threadId === "string" &&
+      typeof params.turnId === "string"
+    ) {
+      const requestId = forwarded.id;
+      this.#questions.register({
+        requestId,
+        threadId: params.threadId,
+        turnId: params.turnId,
+        harnessId: "codex",
+        request: params as JsonObject,
+        retire: () => {
+          this.#officialServerRequests.delete(requestId);
+        },
+        respond: async (reply) => {
+          if (await this.#replyToOfficialServerRequest(requestId, reply)) return;
+          throw new DelegationControlError(
+            "QUESTION_NOT_PENDING",
+            "Native Question reply route is no longer available",
+          );
+        },
+      });
     }
     if (
       forwarded.method !== "serverRequest/resolved" ||
@@ -1848,8 +1837,7 @@ export class AppServerHost {
         }
       }
       await this.#questions.closeWhere(
-        (request) =>
-          request.threadId === params.threadId && request.interaction.turnId === turn?.id,
+        (request) => request.threadId === params.threadId && request.turnId === turn?.id,
       );
       const delegation = await this.#repository.getDelegationByChild(
         hostThreadIdSchema.parse(params.threadId),
@@ -4169,7 +4157,7 @@ export class AppServerHost {
       await this.#resolveDesktopApproval(interactionId);
       await this.#questions.closeWhere(
         (request) =>
-          request.threadId === thread.id && request.interaction.interactionId === interactionId,
+          request.threadId === thread.id && request.nativeInteractionId === interactionId,
       );
     }
     const ephemeralTurn =
@@ -4215,7 +4203,7 @@ export class AppServerHost {
       this.#signalActiveWorkChanged();
       // A Turn that ended has no Question left to answer; only its own are retired.
       await this.#questions.closeWhere(
-        (request) => request.threadId === thread.id && request.interaction.turnId === event.turnId,
+        (request) => request.threadId === thread.id && request.turnId === event.turnId,
       );
       const delegation = await this.#repository.getDelegationByChild(thread.record.hostThreadId);
       if (delegation) {
@@ -4564,9 +4552,11 @@ export class AppServerHost {
       requestId,
       threadId: thread.id,
       harnessId: thread.harnessId,
-      interaction,
-      parseResponse: result.questionRequest.parseResponse,
-      respond: async (response) => {
+      turnId: interaction.turnId,
+      nativeInteractionId: interaction.interactionId,
+      ...(interaction.expiresAt ? { expiresAt: interaction.expiresAt } : {}),
+      request: result.questionRequest.request.params as JsonObject,
+      respond: async (reply) => {
         if (
           this.#externalRuntime.get(thread.id) !== thread ||
           this.#externalRuntime.idleRelease.failure(thread)
@@ -4576,19 +4566,29 @@ export class AppServerHost {
             "Question Thread is no longer active",
           );
         }
-        const result = await thread.session.execute({
+        let response;
+        try {
+          response =
+            "error" in reply
+              ? { type: "question" as const, answers: {}, cancelled: true as const }
+              : result.questionRequest.parseResponse(reply.result);
+        } catch (error) {
+          this.#diagnose(error);
+          response = { type: "question" as const, answers: {}, cancelled: true as const };
+        }
+        const submitted = await thread.session.execute({
           type: "interaction.respond",
           interactionId: interaction.interactionId,
           response,
         });
-        if (result.ok) return;
+        if (submitted.ok) return;
         const code =
-          result.error.code === "invalidState"
+          submitted.error.code === "invalidState"
             ? "QUESTION_NOT_PENDING"
-            : result.error.code === "invalidRequest"
+            : submitted.error.code === "invalidRequest"
               ? "INVALID_ARGUMENT"
               : "DELEGATION_FAILED";
-        throw new DelegationControlError(code, result.error.message);
+        throw new DelegationControlError(code, submitted.error.message);
       },
     });
     try {

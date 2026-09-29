@@ -612,17 +612,9 @@ describe("HarnessDelegationCoordinator", () => {
       value.pending.push({
         interactionId: "interaction-1",
         turnId: started.turnId,
-        questions: [
-          {
-            id: "decision",
-            type: "choice",
-            prompt: "Continue?",
-            options: [{ value: "continue", label: "Continue" }],
-            multiple: false,
-            allowOther: false,
-            optional: false,
-          },
-        ],
+        request: {
+          questions: [{ id: "decision", question: "Continue?", options: [{ label: "Continue" }] }],
+        },
       });
 
       await expect(
@@ -644,14 +636,14 @@ describe("HarnessDelegationCoordinator", () => {
         value.coordinator.answer({
           threadId: started.threadId,
           interactionId: "interaction-1",
-          answers: { decision: ["continue"] },
+          result: { answers: { decision: { answers: ["continue"] } } },
         }),
       ).resolves.toMatchObject({ status: "running", interactionId: "interaction-1" });
       expect(value.answers).toEqual([
         {
           threadId: started.threadId,
           interactionId: "interaction-1",
-          answers: { decision: ["continue"] },
+          result: { answers: { decision: { answers: ["continue"] } } },
         },
       ]);
 

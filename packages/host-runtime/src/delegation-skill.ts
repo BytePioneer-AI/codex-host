@@ -3,10 +3,11 @@ import { mkdir, open, readFile, rename, rm, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-const SKILL_VERSION = 9;
+const SKILL_VERSION = 10;
 export const DELEGATION_SKILL_NAME = "codexhost-delegation";
 const SKILL_RELATIVE_PATH = path.join("skills", DELEGATION_SKILL_NAME, "SKILL.md");
 const PREVIOUS_MANAGED_DIGESTS: readonly string[] = [
+  "a6e753ed092239429ebc0dcba8090fb9425fa65292b7810ba990c13a531816a6",
   "9d2f491850fb0b4084a31ba9b5e4a550b5e833747af322090d8ed0ff80b88c30",
   "2bb0aebb9b06febbc6c0c0bcdb0b32506c7cdbf8dc3b734cc6b2a86621270e4e",
   "aff258622dc8ff321f32b15620d081e578cb9c9ed1134d6a57f35ca8e7762c0a",
@@ -65,18 +66,18 @@ user’s request and the task:
 
 A delegated Thread may ask a Question while its Turn is still running, and that
 Turn cannot finish until it is answered. \`thread read\` reports those requests in
-\`pendingQuestions\` with the interaction ID, the Turn, the prompts, the options,
-and the answer constraints; an empty list means none. Reading and answering need
-no watch.
+\`pendingQuestions\` with an opaque interaction ID, the Turn, and the original
+Desktop request parameters in \`request\`; an empty list means none. Reading and
+answering need no watch.
 
-Answer a Question with \`thread answer <thread> --interaction <id>
---answers-file <file>\`, where the file maps each Question ID to an array of
-answer values taken from the reported options; free-text and allowOther
-Questions take text. An invalid answer changes nothing and can be corrected.
-After answering, watch the Thread again or read it for the outcome: the receipt
-means the answer was accepted, not that the work succeeded. A Question the user
-must decide, and anything outside the task authorization, belongs to the user
-rather than to you.
+Answer with \`thread answer <thread> --interaction <id> --answers-file <file>\`.
+The file contains the existing reply result, for example
+\`{"answers":{"decision":{"answers":["Continue"]}}}\`. Use the prompts and option
+labels in the reported request. The existing handler owns reply interpretation,
+cancellation, and invalid-input behavior. Read again before retrying a failed
+reply. After answering, watch again or read for the outcome; submission does not
+prove the work succeeded. A Question the user must decide, and anything outside the task authorization,
+belongs to the user rather than to you.
 
 A watch notification can report that the watched Thread needs input
 (\`needsInput\`), naming the request and Turn, and it may also report

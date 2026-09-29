@@ -113,7 +113,7 @@ describe("DelegationControlRegistry", () => {
     await registry.answer({
       threadId: "parent-b",
       interactionId: "interaction-1",
-      answers: { decision: ["continue"] },
+      result: { answers: { decision: { answers: ["continue"] } } },
     });
 
     expect(second.start).toHaveBeenCalledOnce();

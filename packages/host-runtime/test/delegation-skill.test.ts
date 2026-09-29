@@ -79,7 +79,7 @@ describe("delegation Skill installation", () => {
   });
 
   it("routes natural agent requests and points execution to the authoritative help", () => {
-    expect(CODEXHOST_DELEGATION_SKILL).toContain("version: 9");
+    expect(CODEXHOST_DELEGATION_SKILL).toContain("version: 10");
     expect(CODEXHOST_DELEGATION_SKILL).toContain("@agent) to independently perform a task");
     expect(CODEXHOST_DELEGATION_SKILL).toContain("session's content, progress, or results");
     expect(CODEXHOST_DELEGATION_SKILL).toContain("Not for recapping the current conversation");
@@ -93,7 +93,7 @@ describe("delegation Skill installation", () => {
     expect(CODEXHOST_DELEGATION_SKILL).toContain("pendingQuestions");
     expect(CODEXHOST_DELEGATION_SKILL).toContain("thread answer <thread> --interaction <id>");
     expect(CODEXHOST_DELEGATION_SKILL).toContain("--answers-file <file>");
-    expect(CODEXHOST_DELEGATION_SKILL).toContain("An invalid answer changes nothing");
+    expect(CODEXHOST_DELEGATION_SKILL).toContain("existing reply result");
     expect(CODEXHOST_DELEGATION_SKILL).toContain("needsInput");
     expect(CODEXHOST_DELEGATION_SKILL).toContain("alreadyNeedsInput");
     expect(CODEXHOST_DELEGATION_SKILL).toContain("outside the task authorization");

@@ -1,10 +1,9 @@
-import type { RoutedHarnessId } from "@codexhost/protocol-core";
+import type { JsonObject, JsonValue, RoutedHarnessId } from "@codexhost/protocol-core";
 import type {
   HarnessInspection,
   HarnessModelRef,
   HarnessSessionState,
   HarnessThinkingOptionId,
-  HostQuestion,
 } from "@codexhost/harness-adapter";
 
 export const DELEGATION_RUNTIME_ENDPOINT_ENV = "CODEXHOST_RUNTIME_ENDPOINT";
@@ -43,9 +42,9 @@ export interface DelegationPendingQuestion {
   interactionId: string;
   /** Turn that is waiting for this answer. */
   turnId: string;
-  title?: string;
   expiresAt?: string;
-  questions: HostQuestion[];
+  /** Unchanged params of the existing requestUserInput request shown to Desktop. */
+  request: JsonObject;
 }
 
 export interface DelegationThreadSnapshot {
@@ -153,8 +152,8 @@ export interface ThreadAnswerInput {
   threadId: string;
   /** Interaction ID reported by `thread read` in `pendingQuestions`. */
   interactionId: string;
-  /** Question ID to answer values, in the reported Question's value space. */
-  answers: Record<string, string[]>;
+  /** The existing requestUserInput reply result, passed to its original handler. */
+  result: JsonValue;
 }
 
 export interface ThreadAnswerResult {
@@ -162,7 +161,7 @@ export interface ThreadAnswerResult {
   interactionId: string;
   turnId: string;
   harnessId: RoutedHarnessId;
-  /** The answered Turn keeps running; this receipt is not proof it will succeed. */
+  /** Reply submission receipt; read the Thread for its actual execution state. */
   status: "running";
   next: { read: string; wait: string };
 }
